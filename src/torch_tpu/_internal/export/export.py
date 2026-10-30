@@ -101,7 +101,8 @@ class ExportedMlir:
 
   Attributes:
     module: The ContextedModule instance.
-    executable: The compiled PJRT executable.
+    executable: The compiled PJRT executable, or None for a no-op graph or
+      when `fx_to_mlir` was asked not to compile one.
     mlir_result_tensors: A flattened list of tensors that the MLIR graph will
       actually produce as outputs.
     reconstruct_fx_outputs_fn: A function that takes the flattened MLIR outputs
@@ -119,7 +120,7 @@ class ExportedMlir:
   """
 
   module: tpu_torch_compile.ContextedModule | None
-  executable: tpu_torch_compile.LoadedExecutableWithMetadata
+  executable: tpu_torch_compile.LoadedExecutableWithMetadata | None
   mlir_result_tensors: list[torch.Tensor]
   reconstruct_fx_outputs_fn: Callable[
       [Sequence[Any], Sequence[torch.Tensor]], Any
@@ -530,6 +531,7 @@ def fx_to_mlir(
     dynamic_outputs: Sequence[bool] | None = None,
     donated_inputs: Sequence[int] | None = None,
     module_name: str | None = None,
+    compile_executable: bool = True,
 ) -> ExportedMlir:
   """Converts an FX graph module to MLIR using TorchTPU's FX-tracing mode.
 
@@ -550,6 +552,11 @@ def fx_to_mlir(
       output is dynamic.
     donated_inputs: A list of argument indices to donate.
     module_name: Optional custom identifier for the compiled region.
+    compile_executable: Whether to also compile the module into an
+      executable. Callers that only embed the module in a larger program,
+      such as scan lowering, pass False to skip a full XLA compile. The
+      module is then always built, and `argument_layouts`, `donated_inputs`
+      and `module_name`, which only affect the executable, must be unset.
 
   Returns:
     An `ExportedMlir` object containing the MLIR representation of the graph and
@@ -678,21 +685,36 @@ def fx_to_mlir(
       finally:
         tpu_torch_compile.clear_export_mode_default_device_generators()
 
-    compile_result = tpu_torch_compile.traverse_and_compile(
-        result_tensors=result_tensors,
-        argument_tensors=argument_tensors,
-        build_mlir_module=build_mlir_module,
-        use_stablehlo_bounds=use_stablehlo_bounds,
-        argument_layouts=internal_layouts,
-        donated_inputs=list(donated_inputs)
-        if donated_inputs is not None
-        else [],
-        module_name=module_name,
-    )
+    if not compile_executable:
+      if argument_layouts or donated_inputs or module_name:
+        raise ValueError(
+            "argument_layouts, donated_inputs and module_name configure the"
+            " executable and need compile_executable=True"
+        )
+      module = tpu_torch_compile.build_mlir(
+          result_tensors=result_tensors,
+          argument_tensors=argument_tensors,
+          use_stablehlo_bounds=use_stablehlo_bounds,
+      )
+      executable = None
+    else:
+      compile_result = tpu_torch_compile.traverse_and_compile(
+          result_tensors=result_tensors,
+          argument_tensors=argument_tensors,
+          build_mlir_module=build_mlir_module,
+          use_stablehlo_bounds=use_stablehlo_bounds,
+          argument_layouts=internal_layouts,
+          donated_inputs=list(donated_inputs)
+          if donated_inputs is not None
+          else [],
+          module_name=module_name,
+      )
+      module = compile_result.module
+      executable = compile_result.executable
 
     return ExportedMlir(
-        module=compile_result.module,
-        executable=compile_result.executable,
+        module=module,
+        executable=executable,
         mlir_result_tensors=result_tensors,
         reconstruct_fx_outputs_fn=reconstruct_fx_outputs_fn,
         updates_default_generator_state=updates_default_generator_state,
