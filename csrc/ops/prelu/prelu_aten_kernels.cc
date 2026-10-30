@@ -164,7 +164,7 @@ at::Tensor AtenPreluKernel(const at::Tensor& self, const at::Tensor& weight) {
                            .out_dims = self_shape,
                            .op_param_cache_keys = OpParamCacheKeys::Empty()})));
 
-    return MakeTensor(output_buf);
+    return MakeTensor(std::move(output_buf));
   });
 }
 
@@ -219,7 +219,8 @@ std::tuple<at::Tensor, at::Tensor> AtenPreluKernelBackward(
                            .out_dims_list = out_dims_list,
                            .op_param_cache_keys = OpParamCacheKeys::Empty()})));
 
-    return {MakeTensor(output_bufs[0]), MakeTensor(output_bufs[1])};
+    return {MakeTensor(std::move(output_bufs[0])),
+            MakeTensor(std::move(output_bufs[1]))};
   });
 }
 

@@ -313,8 +313,8 @@ std::tuple<at::Tensor, at::Tensor> AtenSparseDenseMatmulGradWithAdagrad(
           results[1].set_layout(*acc_buf.shape().layout());
         }
 
-        return std::make_tuple(torch_tpu::MakeTensor(results[0]),
-                               torch_tpu::MakeTensor(results[1]));
+        return std::make_tuple(torch_tpu::MakeTensor(std::move(results[0])),
+                               torch_tpu::MakeTensor(std::move(results[1])));
       });
 }
 

@@ -148,7 +148,7 @@ absl::StatusOr<at::Tensor> CopyOrCastValuesTensor(
                           {.out_dtype = out_dtype,
                            .out_dims = out_dims,
                            .op_param_cache_keys = std::move(pk)})));
-    return MakeTensor(res_buf);
+    return MakeTensor(std::move(res_buf));
   }
   TT_ASSIGN_OR_RETURN(
       at::Tensor dst,
@@ -176,7 +176,7 @@ absl::StatusOr<at::Tensor> ScaleValuesOnTpu(const at::Tensor& values,
                                       {.out_dtype = out_dtype,
                                        .out_dims = out_dims,
                                        .op_param_cache_keys = std::move(pk)})));
-  return MakeTensor(res_buf);
+  return MakeTensor(std::move(res_buf));
 }
 
 absl::StatusOr<int64_t> ExtractOutputSize(const at::Tensor& count_tensor) {
@@ -346,8 +346,8 @@ at::Tensor& AddOutSparseSparse(const at::Tensor& self, const at::Tensor& other,
                            .out_dims_list = out_dims_list,
                            .op_param_cache_keys = std::move(pk)})));
     SetSparseCooTensorInPlace(out, self.sparse_dim(), self.dense_dim(),
-                              self.sizes(), MakeTensor(results[0]),
-                              MakeTensor(results[1]),
+                              self.sizes(), MakeTensor(std::move(results[0])),
+                              MakeTensor(std::move(results[1])),
                               /*is_coalesced=*/false);
   } else {
     const auto builder_fn = [val_dtype](FixedSizeSpan<mlir::MlirOp, 4> inputs) {
@@ -363,8 +363,8 @@ at::Tensor& AddOutSparseSparse(const at::Tensor& self, const at::Tensor& other,
                            .out_dims_list = out_dims_list,
                            .op_param_cache_keys = std::move(pk)})));
     SetSparseCooTensorInPlace(out, self.sparse_dim(), self.dense_dim(),
-                              self.sizes(), MakeTensor(results[0]),
-                              MakeTensor(results[1]),
+                              self.sizes(), MakeTensor(std::move(results[0])),
+                              MakeTensor(std::move(results[1])),
                               /*is_coalesced=*/false);
   }
   return out;
@@ -572,7 +572,7 @@ at::Tensor& MulOutSparseImpl(const at::Tensor& self, const at::Tensor& other,
                                        .out_dims = val_dims,
                                        .op_param_cache_keys = std::move(pk)})));
   SetSparseCooTensorInPlace(out, sp.sparse_dim(), sp.dense_dim(), sp.sizes(),
-                            new_indices, MakeTensor(res_buf),
+                            new_indices, MakeTensor(std::move(res_buf)),
                             sp.is_coalesced());
   return out;
 }
@@ -618,9 +618,9 @@ at::Tensor& NegOutSparseImpl(const at::Tensor& self, OpParamCacheKeys pk,
                                       {.out_dtype = out_dtype,
                                        .out_dims = val_dims,
                                        .op_param_cache_keys = std::move(pk)})));
-  SetSparseCooTensorInPlace(out, self.sparse_dim(), self.dense_dim(),
-                            self.sizes(), new_indices, MakeTensor(res_buf),
-                            self.is_coalesced());
+  SetSparseCooTensorInPlace(
+      out, self.sparse_dim(), self.dense_dim(), self.sizes(), new_indices,
+      MakeTensor(std::move(res_buf)), self.is_coalesced());
   return out;
 }
 
@@ -772,9 +772,11 @@ at::Tensor AtenCoalesceSparse(const at::Tensor& self) {
                           {.out_dtypes = out_dtypes,
                            .out_dims_list = out_dims_list,
                            .op_param_cache_keys = OpParamCacheKeys::Empty()})));
-    const at::Tensor compacted_indices = MakeTensor(coalesce_results[0]);
-    const at::Tensor compacted_values = MakeTensor(coalesce_results[1]);
-    const at::Tensor count_tensor = MakeTensor(coalesce_results[2]);
+    const at::Tensor compacted_indices =
+        MakeTensor(std::move(coalesce_results[0]));
+    const at::Tensor compacted_values =
+        MakeTensor(std::move(coalesce_results[1]));
+    const at::Tensor count_tensor = MakeTensor(std::move(coalesce_results[2]));
     TT_ASSIGN_OR_THROW(const int64_t output_size,
                        ExtractOutputSize(count_tensor));
     if (output_size == self._nnz()) {
@@ -802,8 +804,9 @@ at::Tensor AtenCoalesceSparse(const at::Tensor& self) {
                            .out_dims_list = slice_dims_list,
                            .op_param_cache_keys = std::move(slice_pk)})));
     return MakeSparseCooTensor(self.sparse_dim(), self.dense_dim(),
-                               self.sizes(), MakeTensor(slice_results[0]),
-                               MakeTensor(slice_results[1]),
+                               self.sizes(),
+                               MakeTensor(std::move(slice_results[0])),
+                               MakeTensor(std::move(slice_results[1])),
                                /*is_coalesced=*/true);
   });
 }
@@ -834,7 +837,7 @@ at::Tensor AtenToDenseSparse(const at::Tensor& self,
                                 {.out_dtype = out_dtype,
                                  .out_dims = out_dims,
                                  .op_param_cache_keys = std::move(pk)})));
-          return MakeTensor(zero_buf);
+          return MakeTensor(std::move(zero_buf));
         }
         const auto dense_builder =
             [out_dims, out_dtype](FixedSizeSpan<mlir::MlirOp, 2> inputs) {
@@ -847,7 +850,7 @@ at::Tensor AtenToDenseSparse(const at::Tensor& self,
                               {.out_dtype = out_dtype,
                                .out_dims = out_dims,
                                .op_param_cache_keys = std::move(pk)})));
-        return MakeTensor(dense_buf);
+        return MakeTensor(std::move(dense_buf));
       });
 }
 

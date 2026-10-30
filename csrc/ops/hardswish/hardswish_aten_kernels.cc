@@ -146,7 +146,7 @@ at::Tensor AtenHardswishBackward(const at::Tensor& grad_output,
                          {.out_dtype = output_mlir_type,
                           .out_dims = self.sizes(),
                           .op_param_cache_keys = OpParamCacheKeys::Empty()})));
-    return MakeTensor(result);
+    return MakeTensor(std::move(result));
   });
 }
 

@@ -609,12 +609,12 @@ CreateFlashAttentionKernelImpl(const at::Tensor& query, const at::Tensor& key,
   // returning to Python, so that the Tensor state has stabilized.
   size_t res_idx = 1;
   at::Tensor lse_tensor =
-      return_lse ? MakeTensor(results[res_idx++])
+      return_lse ? MakeTensor(std::move(results[res_idx++]))
                  : at::empty(lse_dims, query.options().dtype(at::kFloat));
   at::Tensor philox_seed =
-      has_dropout ? MakeTensor(results[res_idx++]) : at::Tensor();
+      has_dropout ? MakeTensor(std::move(results[res_idx++])) : at::Tensor();
   at::Tensor philox_offset =
-      has_dropout ? MakeTensor(results[res_idx++]) : at::Tensor();
+      has_dropout ? MakeTensor(std::move(results[res_idx++])) : at::Tensor();
 
   // Return the output with the strides of the meta function, so that views
   // traced by torch.compile (e.g. merging heads) are also valid in eager mode.

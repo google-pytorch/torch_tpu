@@ -2850,15 +2850,17 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::alltoall(
                                             .op_param_cache_keys =
                                                 OpParamCacheKeys::Empty()}));
 
-          at::Tensor concatenated_input = MakeTensor(concatenated_input_buf);
-          at::Tensor output_placeholder = MakeTensor(output_placeholder_buf);
+          at::Tensor concatenated_input =
+              MakeTensor(std::move(concatenated_input_buf));
+          at::Tensor output_placeholder =
+              MakeTensor(std::move(output_placeholder_buf));
 
           TT_ASSIGN_OR_THROW(
               DeviceBufferRef ragged_output_buf,
               AllToAllBaseUnevenSplits(output_placeholder, concatenated_input,
                                        output_split_sizes, input_split_sizes));
 
-          at::Tensor ragged_output = MakeTensor(ragged_output_buf);
+          at::Tensor ragged_output = MakeTensor(std::move(ragged_output_buf));
           TT_ASSIGN_OR_THROW(auto slice_param_keys,
                              TT_MAKE_OP_PARAM_CACHE_KEYS(slice_sizes));
           auto slice_builder =

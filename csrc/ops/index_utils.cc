@@ -223,7 +223,7 @@ absl::Status ResolveNegativeIndices(std::vector<at::Tensor>& indices,
 
   for (size_t i = 0; i < num_resolutions; ++i) {
     size_t original_idx = original_indices[i];
-    indices[original_idx] = MakeTensor(result_bufs[i]);
+    indices[original_idx] = MakeTensor(std::move(result_bufs[i]));
   }
 
   return absl::OkStatus();

@@ -624,7 +624,7 @@ at::Tensor AtenAvgPool1d(const at::Tensor& self, at::IntArrayRef kernel_size,
                            /*divisor_override=*/std::nullopt, out_type,
                            output_size, /*spatial_dim_count=*/1,
                            std::move(param_keys)));
-        return MakeTensor(result_buf);
+        return MakeTensor(std::move(result_buf));
       });
 }
 

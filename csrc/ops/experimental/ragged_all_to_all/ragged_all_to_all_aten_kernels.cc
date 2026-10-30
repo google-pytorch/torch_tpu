@@ -148,7 +148,7 @@ at::Tensor AtenRaggedAllToAll(const at::Tensor& operand,
                   RaggedAllToAllCommon(operand, output, input_offsets,
                                        send_sizes, output_offsets, recv_sizes,
                                        process_group_name, param_keys));
-              return MakeTensor(result);
+              return MakeTensor(std::move(result));
             });
 }
 

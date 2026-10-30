@@ -388,7 +388,7 @@ at::Tensor AtenAddmmDtype(const at::Tensor& self, const at::Tensor& mat1,
                   auto result_buffer,
                   AddMm(self, mat1, mat2, std::move(promoted_beta),
                         std::move(promoted_alpha), out_dtype, param_keys));
-              return MakeTensor(result_buffer);
+              return MakeTensor(std::move(result_buffer));
             });
 }
 

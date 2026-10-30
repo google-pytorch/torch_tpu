@@ -188,7 +188,7 @@ std::vector<at::Tensor> PyCallCustomKernel(
         std::vector<at::Tensor> result_tensors;
         result_tensors.reserve(results.size());
         for (auto& result : results) {
-          result_tensors.push_back(MakeTensor(result));
+          result_tensors.push_back(MakeTensor(std::move(result)));
         }
         return result_tensors;
       });

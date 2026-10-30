@@ -507,7 +507,7 @@ at::Tensor AtenNormalFloatTensor(double mean, const at::Tensor& std,
                   DispatchNormal2(gen, std::move(builder), std, mlir_type,
                                   out_dims, std::move(param_keys)));
 
-              return MakeTensor(output_buf);
+              return MakeTensor(std::move(output_buf));
             });
 }
 
@@ -566,7 +566,7 @@ at::Tensor AtenNormalTensorFloat(const at::Tensor& mean, double std,
                   DispatchNormal2(gen, std::move(builder), mean, mlir_type,
                                   out_dims, std::move(param_keys)));
 
-              return MakeTensor(output_buf);
+              return MakeTensor(std::move(output_buf));
             });
 }
 
@@ -623,7 +623,7 @@ at::Tensor AtenNormalTensorTensor(const at::Tensor& mean, const at::Tensor& std,
                   DispatchNormal3(gen, std::move(builder), mean, std, mlir_type,
                                   out_dims, OpParamCacheKeys::Empty()));
 
-              return MakeTensor(output_buf);
+              return MakeTensor(std::move(output_buf));
             });
 }
 

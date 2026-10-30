@@ -298,7 +298,8 @@ std::tuple<at::Tensor, at::Tensor> AtenWeightNormInterface(const at::Tensor& v,
                                              CopyIntVector(g.sizes())},
                            .op_param_cache_keys = std::move(param_keys)})));
 
-    return std::make_tuple(MakeTensor(weight_norm_buf), MakeTensor(v_norm_buf));
+    return std::make_tuple(MakeTensor(std::move(weight_norm_buf)),
+                           MakeTensor(std::move(v_norm_buf)));
   });
 }
 
@@ -332,7 +333,8 @@ std::tuple<at::Tensor, at::Tensor> AtenWeightNormInterfaceBackward(
                                    CopyIntVector(saved_g.sizes())},
                  .op_param_cache_keys = std::move(param_keys)})));
 
-        return std::make_tuple(MakeTensor(grad_v_buf), MakeTensor(grad_g_buf));
+        return std::make_tuple(MakeTensor(std::move(grad_v_buf)),
+                               MakeTensor(std::move(grad_g_buf)));
       });
 }
 

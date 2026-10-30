@@ -1476,7 +1476,7 @@ at::Tensor AtenEinsum(c10::string_view equation, at::TensorList tensors,
                            {.out_dtype = out_dtype,
                             .out_dims = std::move(output_dims),
                             .op_param_cache_keys = std::move(param_keys)})));
-    return MakeTensor(result_buffer);
+    return MakeTensor(std::move(result_buffer));
   });
 }
 

@@ -68,7 +68,7 @@ at::Tensor ApplyNullaryOp(MlirNullaryOpBuilder op_builder,
                      .out_dims = out_dims,
                      .op_param_cache_keys = std::move(op_param_cache_keys),
                      .split_mode = split_mode}));
-  return MakeTensor(result_buf);
+  return MakeTensor(std::move(result_buf));
 }
 
 absl::Status ApplyNullaryOpOut(at::Tensor& out, MlirNullaryOpBuilder op_builder,
