@@ -19,10 +19,44 @@ https://github.com/pytorch/pytorch/blob/main/docs/source/accelerator/testing.md.
 """
 
 from collections.abc import Mapping, Sequence
-from typing import Final
+from typing import Final, TypeVar
+import unittest
 
 import torch
 from torch.testing._internal.opinfo import core as opinfo_core
+
+_T = TypeVar("_T")
+
+
+def _is_oss() -> bool:
+  """Returns whether this is an OSS version of TorchTPU.
+
+  Unlike `oss_utils.is_oss()`, which detects the runtime environment, this is
+  decided when Copybara exports the source, like `is_oss()` in
+  build_files/build_defs.bzl.
+  """
+  return True  # copybara:comment(oss-only)
+  # copybara:uncomment return False
+
+
+def _if_oss(oss_value: _T, internal_value: _T) -> _T:
+  """Returns `oss_value` in OSS, or `internal_value` in Google3.
+
+  Python counterpart of `if_oss` in build_files/build_defs.bzl, e.g. to exclude
+  tests that fail due to Google3-specific test environment issues only, which
+  still run in OSS:
+
+    "TestFoo": [
+        "test_bar",
+        *_if_oss([], ["test_baz"]),
+    ]
+
+  Args:
+    oss_value: The value to return in OSS.
+    internal_value: The value to return in Google3.
+  """
+  return oss_value if _is_oss() else internal_value
+
 
 # Decorators applied to OpInfo-based tests, i.e. tests parametrized by `@ops`,
 # for TPU.
@@ -41,7 +75,28 @@ from torch.testing._internal.opinfo import core as opinfo_core
 # this targets individual ops and dtypes of a test method.
 OP_OVERRIDES: Final[
     Mapping[str, Mapping[str, Sequence[opinfo_core.DecorateInfo]]]
-] = {}
+] = {
+    # go/keep-sorted start block=yes
+    "inductor/test_compiled_autograd": {
+        # `testlib::mutating_custom_op` has no TPU kernel.
+        "auto_functionalize.simple": [
+            opinfo_core.DecorateInfo(
+                unittest.expectedFailure,
+                "TestCompiledAutogradOpInfo",
+                "test_hops_in_bwd",
+            ),
+        ],
+        # Dynamo fails to trace a generator.
+        "scan.simple": [
+            opinfo_core.DecorateInfo(
+                unittest.expectedFailure,
+                "TestCompiledAutogradOpInfo",
+                "test_hops_in_bwd",
+            ),
+        ],
+    },
+    # go/keep-sorted end
+}
 
 # Generic test classes or methods excluded from instantiation for TPU.
 #
@@ -89,14 +144,21 @@ TEST_EXCLUSIONS: Final[
     },
     "dynamo/test_repros": {
         "ReproTestsDevice": [
-            "test_custom_op_mutation_with_noop_add",
-            "test_data_attr_mutation_with_noop_add",
             "test_layer_norm_mixed_dtype_aot_eager_decomp_partition_errors",
             "test_mem_leak_guards",
             "test_memleak_when_graph_input_has_tensor_attr",
             "test_tensor_set_data_cross_device",
             "test_tensor_set_data_cross_device_placeholder_metadata",
             "test_torch_device_is_initialized",
+            # Inductor CPU backend requires a C++ compiler unavailable in
+            # Google3.
+            *_if_oss(
+                [],
+                [
+                    "test_custom_op_mutation_with_noop_add",
+                    "test_data_attr_mutation_with_noop_add",
+                ],
+            ),
         ],
     },
     "dynamo/test_streams": {
