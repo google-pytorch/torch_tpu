@@ -224,6 +224,7 @@ class MultiBucketCompilationTest(seed_test_utils.RepeatableTest):
         )
         utils.assert_close(actual_out, expected_out, rtol=2e-2, atol=2e-2)
         utils.assert_close(k_cache, k_ref)
+        utils.assert_close(v_cache, v_ref)
         if step == 1:
           # Step 0 compiles [127, 255] for the initial eager input layout and
           # step 1 compiles [127, 255] for the recurrent KV output layout.
