@@ -25,6 +25,7 @@
 #include "csrc/internal/mosaic/kiln/core/control_flow.h"
 #include "csrc/internal/mosaic/kiln/core/dma.h"
 #include "csrc/internal/mosaic/kiln/core/dtype.h"
+#include "csrc/internal/mosaic/kiln/core/elementwise.h"
 #include "csrc/internal/mosaic/kiln/core/index_arg.h"
 #include "csrc/internal/mosaic/kiln/core/memory.h"
 #include "csrc/internal/mosaic/kiln/core/ref.h"
@@ -119,11 +120,10 @@ llvm::SmallVector<Slots, 4> AllocaSlots(
   return slots;
 }
 
-// The copy of block `step` of `operand` between HBM and its slot.
+// The copy of block `block` of `operand` between HBM and slot `slot`.
 AsyncCopyDescriptor Copy(const PipelineOperand& operand, const Slots& slots,
-                         Scalar step, Direction direction) {
-  const BlockRegion region = operand.region(step);
-  const Scalar slot = step % kSlots;
+                         Scalar block, Scalar slot, Direction direction) {
+  const BlockRegion region = operand.region(block);
   Ref hbm = HbmWindow(operand.hbm, region);
   Ref vmem = SlotWindow(slots.vmem, slot, operand.block_shape, region.sizes);
   return direction == Direction::kToVmem
@@ -131,38 +131,160 @@ AsyncCopyDescriptor Copy(const PipelineOperand& operand, const Slots& slots,
              : MakeAsyncCopy(vmem, hbm, slots.sems(slot));
 }
 
-// Starts the copies of block `step` of each of `operands`.
-void StartCopies(llvm::ArrayRef<PipelineOperand> operands,
-                 llvm::ArrayRef<Slots> slots, Scalar step,
-                 Direction direction) {
-  for (size_t i = 0; i < operands.size(); ++i) {
-    Copy(operands[i], slots[i], step, direction).Start();
+// The slot of input block `step` of a pipeline starting at `begin`: alternating
+// from slot 0 at `begin`, and non-negative for any `begin`.
+Scalar InputSlot(Scalar step, Scalar begin) { return (step - begin) % kSlots; }
+
+// Starts the copies of the blocks of step `step` of each of `inputs`.
+void StartInputCopies(llvm::ArrayRef<PipelineOperand> inputs,
+                      llvm::ArrayRef<Slots> slots, Scalar step, Scalar begin) {
+  for (size_t i = 0; i < inputs.size(); ++i) {
+    Copy(inputs[i], slots[i], step, InputSlot(step, begin), Direction::kToVmem)
+        .Start();
   }
 }
 
-// Waits for the copies of block `step` of each of `operands`.
-void WaitCopies(llvm::ArrayRef<PipelineOperand> operands,
-                llvm::ArrayRef<Slots> slots, Scalar step, Direction direction) {
-  for (size_t i = 0; i < operands.size(); ++i) {
-    Copy(operands[i], slots[i], step, direction).Wait();
+// Waits for the copies of the blocks of step `step` of each of `inputs`.
+void WaitInputCopies(llvm::ArrayRef<PipelineOperand> inputs,
+                     llvm::ArrayRef<Slots> slots, Scalar step, Scalar begin) {
+  for (size_t i = 0; i < inputs.size(); ++i) {
+    Copy(inputs[i], slots[i], step, InputSlot(step, begin), Direction::kToVmem)
+        .Wait();
   }
 }
 
-// The slots of block `step` of each of `operands`.
-llvm::SmallVector<Ref, 4> SlotRefs(llvm::ArrayRef<PipelineOperand> operands,
-                                   llvm::ArrayRef<Slots> slots, Scalar step) {
-  llvm::SmallVector<Ref, 4> refs;
-  for (size_t i = 0; i < operands.size(); ++i) {
-    refs.push_back(Slot(slots[i].vmem, step % kSlots, operands[i].block_shape));
+// The blocks of step `step` of each of `inputs`, each spanning only that step.
+llvm::SmallVector<PipelineBlock, 4> InputBlocks(
+    llvm::ArrayRef<PipelineOperand> inputs, llvm::ArrayRef<Slots> slots,
+    Scalar step, Scalar begin) {
+  llvm::SmallVector<PipelineBlock, 4> blocks;
+  if (inputs.empty()) return blocks;
+  const Scalar true_scalar = I32(1).ToBool();
+  for (size_t i = 0; i < inputs.size(); ++i) {
+    blocks.push_back(PipelineBlock{
+        .ref =
+            Slot(slots[i].vmem, InputSlot(step, begin), inputs[i].block_shape),
+        .index = step,
+        .is_first_step = true_scalar,
+        .is_last_step = true_scalar,
+    });
   }
-  return refs;
+  return blocks;
+}
+
+// The block of `step` of each of `outputs`: `block_index(step)`, or `step` by
+// default.
+llvm::SmallVector<Scalar, 2> BlockIndices(
+    llvm::ArrayRef<PipelineOperand> outputs, Scalar step) {
+  llvm::SmallVector<Scalar, 2> blocks;
+  for (const PipelineOperand& output : outputs) {
+    if (output.block_index == nullptr) {
+      blocks.push_back(step);
+      continue;
+    }
+    const Scalar block = output.block_index(step);
+    ABSL_CHECK(block.dtype() == i32)  // CRASH_OK
+        << "PipelineOperand::block_index must return an i32 Scalar";
+    blocks.push_back(block);
+  }
+  return blocks;
+}
+
+// The slot bookkeeping of one output, carried from step to step. Blocks
+// alternate between the two slots, switching whenever the block index changes,
+// so any sequence of block indices works.
+struct OutputState {
+  // The block of the previous step, and its slot.
+  Scalar block;
+  Scalar slot;
+  // The block of the step about to run, computed by the previous step (or
+  // before the loop), so that each block index is computed once and the
+  // previous step's `is_last_step` and this step's slot change agree.
+  Scalar next_block;
+  // The block before `block`. Its copy out of slot `1 - slot` may still be in
+  // flight. Only meaningful if `has_prev_block` (an i32 0 / 1) is 1.
+  Scalar prev_block;
+  Scalar has_prev_block;
+};
+
+// The loop variables of `states`, which must not be resized while in use.
+llvm::SmallVector<LoopVar> LoopVars(llvm::MutableArrayRef<OutputState> states) {
+  llvm::SmallVector<LoopVar> vars;
+  for (OutputState& s : states) {
+    vars.append(
+        {&s.block, &s.slot, &s.next_block, &s.prev_block, &s.has_prev_block});
+  }
+  return vars;
+}
+
+// The state before the first step, whose block takes slot 0.
+llvm::SmallVector<OutputState, 2> InitialStates(
+    llvm::ArrayRef<PipelineOperand> outputs, Scalar begin) {
+  llvm::SmallVector<OutputState, 2> states;
+  for (const Scalar& block : BlockIndices(outputs, begin)) {
+    states.push_back(OutputState{.block = block,
+                                 .slot = I32(0),
+                                 .next_block = block,
+                                 .prev_block = I32(0),
+                                 .has_prev_block = I32(0)});
+  }
+  return states;
+}
+
+// Adds the output blocks of `s.step` to `s`. On entering a new block, first
+// waits for the copy out of the block before the previous one, whose slot it
+// reuses. Advances `states` to this step.
+void BeginOutputBlocks(llvm::ArrayRef<PipelineOperand> outputs,
+                       llvm::ArrayRef<Slots> slots,
+                       llvm::MutableArrayRef<OutputState> states, Scalar begin,
+                       Scalar end, PipelineStep& s) {
+  const Scalar step = s.step;
+  const llvm::SmallVector<Scalar, 2> next_blocks =
+      BlockIndices(outputs, Min(step + 1, end - 1));
+  for (size_t o = 0; o < outputs.size(); ++o) {
+    const OutputState prev = states[o];
+    const Scalar block = prev.next_block;
+    // False on the first step, whose block is the initial `prev.block`.
+    const Scalar changed = block != prev.block;
+    const Scalar slot = Select(changed, 1 - prev.slot, prev.slot);
+    If(changed & (prev.has_prev_block == 1),
+       [&] {  // REF_CAPTURE_OK=called inline
+         Copy(outputs[o], slots[o], prev.prev_block, slot, Direction::kToHbm)
+             .Wait();
+       });
+    s.outputs.push_back(PipelineBlock{
+        .ref = Slot(slots[o].vmem, slot, outputs[o].block_shape),
+        .index = block,
+        .is_first_step = (step == begin) | changed,
+        .is_last_step = (step + 1 == end) | (next_blocks[o] != block),
+    });
+    states[o] = OutputState{
+        .block = block,
+        .slot = slot,
+        .next_block = next_blocks[o],
+        .prev_block = Select(changed, prev.block, prev.prev_block),
+        .has_prev_block = Select(changed, I32(1), prev.has_prev_block),
+    };
+  }
+}
+
+// Starts copying out the output blocks that end at `s.step`.
+void EndOutputBlocks(llvm::ArrayRef<PipelineOperand> outputs,
+                     llvm::ArrayRef<Slots> slots,
+                     llvm::ArrayRef<OutputState> states,
+                     const PipelineStep& s) {
+  for (size_t o = 0; o < outputs.size(); ++o) {
+    If(s.outputs[o].is_last_step, [&] {  // REF_CAPTURE_OK=called inline
+      Copy(outputs[o], slots[o], states[o].block, states[o].slot,
+           Direction::kToHbm)
+          .Start();
+    });
+  }
 }
 
 }  // namespace
 
 // TODO(b/576608541): Follow-ups:
-// - consecutive steps accumulating into one output block (e.g. the K steps
-//   of a matmul);
 // - Pallas-style block indices (`index_map`), with offsets and tile-rounded
 //   edge sizes derived from the HBM shape;
 // - a configurable number of slots (`pl.Buffered`);
@@ -175,35 +297,43 @@ void EmitPipeline(IndexArg begin_arg, IndexArg end_arg,
   const Scalar end = end_arg.ToScalar();
   ABSL_CHECK(begin.dtype() == i32 && end.dtype() == i32)  // CRASH_OK
       << "pipeline bounds must be i32 Scalars";
+  for (const PipelineOperand& input : inputs) {
+    ABSL_CHECK(input.block_index == nullptr)  // CRASH_OK
+        << "PipelineOperand::block_index is not supported for inputs yet";
+  }
 
   RunScoped([&] {  // REF_CAPTURE_OK=called inline
     const llvm::SmallVector<Slots, 4> input_slots = AllocaSlots(inputs);
     const llvm::SmallVector<Slots, 4> output_slots = AllocaSlots(outputs);
     If(begin < end, [&] {  // REF_CAPTURE_OK=called inline
-      StartCopies(inputs, input_slots, begin, Direction::kToVmem);
-      For(begin, end, [&](Scalar step) {  // REF_CAPTURE_OK=called inline
-        If(step + 1 < end, [&] {          // REF_CAPTURE_OK=called inline
-          StartCopies(inputs, input_slots, step + 1, Direction::kToVmem);
-        });
-        WaitCopies(inputs, input_slots, step, Direction::kToVmem);
-        // The output slots of this step were last copied out at step - 2.
-        if (!outputs.empty()) {
-          If(step >= begin + kSlots, [&] {  // REF_CAPTURE_OK=called inline
-            WaitCopies(outputs, output_slots, step - kSlots, Direction::kToHbm);
+      llvm::SmallVector<OutputState, 2> states = InitialStates(outputs, begin);
+      StartInputCopies(inputs, input_slots, begin, begin);
+      For(begin, end, 1, LoopVars(states),
+          [&](Scalar step) {          // REF_CAPTURE_OK=called inline
+            If(step + 1 < end, [&] {  // REF_CAPTURE_OK=called inline
+              StartInputCopies(inputs, input_slots, step + 1, begin);
+            });
+            WaitInputCopies(inputs, input_slots, step, begin);
+            PipelineStep pipeline_step{
+                .step = step,
+                .inputs = InputBlocks(inputs, input_slots, step, begin)};
+            BeginOutputBlocks(outputs, output_slots, states, begin, end,
+                              pipeline_step);
+            body(pipeline_step);
+            EndOutputBlocks(outputs, output_slots, states, pipeline_step);
           });
-        }
-        body(PipelineStep{.step = step,
-                          .inputs = SlotRefs(inputs, input_slots, step),
-                          .outputs = SlotRefs(outputs, output_slots, step)});
-        StartCopies(outputs, output_slots, step, Direction::kToHbm);
-      });
 
-      // The loop waited for every output copy but the last two.
-      if (!outputs.empty()) {
-        If(end - 1 > begin, [&] {  // REF_CAPTURE_OK=called inline
-          WaitCopies(outputs, output_slots, end - 2, Direction::kToHbm);
+      // `states` now holds the final states. The loop waited for every output
+      // copy but those of the last two blocks.
+      for (size_t o = 0; o < outputs.size(); ++o) {
+        const OutputState& s = states[o];
+        If(s.has_prev_block == 1, [&] {  // REF_CAPTURE_OK=called inline
+          Copy(outputs[o], output_slots[o], s.prev_block, 1 - s.slot,
+               Direction::kToHbm)
+              .Wait();
         });
-        WaitCopies(outputs, output_slots, end - 1, Direction::kToHbm);
+        Copy(outputs[o], output_slots[o], s.block, s.slot, Direction::kToHbm)
+            .Wait();
       }
     });
   });
