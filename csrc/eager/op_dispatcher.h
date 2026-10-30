@@ -531,7 +531,8 @@ absl::Status DispatchOpOut(NAryMlirOpBuilder<kArity, kNumOutputs> op_builder,
 //    buffer. This prevents compiler specialization on the value, meaning that
 //    the executable can be reused in the future even if the scalar value
 //    changes. To prevent redundant host-to-device transfers, created
-//    DeviceBufferRefs are cached and reused.
+//    DeviceBufferRefs are cached and reused, up to 1024 per thread
+//    (kMaxCachedScalarBuffers in op_dispatcher.cc).
 [[deprecated("Use PromoteScalar() instead.")]]
 absl::StatusOr<at::Tensor> MakeTensor(
     const at::Scalar& scalar,
