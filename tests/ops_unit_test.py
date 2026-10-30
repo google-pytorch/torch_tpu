@@ -25096,6 +25096,56 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
             self.assertEqual(out_tpu.dtype, torch.float32)
             utils.assert_close(out_tpu.cpu(), expected)
 
+  def test_addmm_half_precision_scalar_and_accumulation(self):
+    # 1. float16 with alpha=70000.0 (overflows float16 to inf on host, but
+    # valid in float32 opmath_type).
+    s1 = torch.zeros(2, 2, dtype=torch.float16, device="tpu")
+    m1 = torch.full((2, 2), 1e-4, dtype=torch.float16, device="tpu")
+    m2 = torch.eye(2, dtype=torch.float16, device="tpu")
+    expected1 = (
+        s1.cpu().float() * 0.0 + 70000.0 * (m1.cpu().float() @ m2.cpu().float())
+    ).to(torch.float16)
+    res1 = torch.addmm(s1, m1, m2, beta=0.0, alpha=70000.0)
+    self.assertEqual(res1.dtype, torch.float16)
+    self.assertFalse(torch.isinf(res1).any())
+    utils.assert_close(
+        actual=res1.cpu(), expected=expected1, rtol=2e-3, atol=1e-2
+    )
+
+    out1 = torch.empty_like(s1)
+    torch.addmm(s1, m1, m2, beta=0.0, alpha=70000.0, out=out1)
+    self.assertEqual(out1.dtype, torch.float16)
+    self.assertFalse(torch.isinf(out1).any())
+    utils.assert_close(
+        actual=out1.cpu(), expected=expected1, rtol=2e-3, atol=1e-2
+    )
+
+    # 2. bfloat16 accumulation and addition precision in float32.
+    s2 = torch.full((1, 1), 2.0, dtype=torch.bfloat16, device="tpu")
+    a2 = torch.tensor([[16384.0, 63.0]], dtype=torch.bfloat16, device="tpu")
+    b2 = torch.ones((2, 1), dtype=torch.bfloat16, device="tpu")
+    expected2 = (s2.cpu().float() + (a2.cpu().float() @ b2.cpu().float())).to(
+        torch.bfloat16
+    )
+    res2 = torch.addmm(s2, a2, b2, beta=1.0, alpha=1.0)
+    self.assertEqual(res2.dtype, torch.bfloat16)
+    utils.assert_close(actual=res2.cpu(), expected=expected2)
+
+    # 3. float16 intermediate product 80000.0 + (-50000.0) = 30000.0
+    # (2 * 40000 overflows float16 max 65504 to inf without float32 math).
+    s3 = torch.full((1, 1), -50000.0, dtype=torch.float16, device="tpu")
+    a3 = torch.full((1, 1), 200.0, dtype=torch.float16, device="tpu")
+    b3 = torch.full((1, 1), 200.0, dtype=torch.float16, device="tpu")
+    res3 = torch.addmm(s3, a3, b3, beta=1.0, alpha=2.0)
+    self.assertEqual(res3.dtype, torch.float16)
+    self.assertFalse(torch.isinf(res3).any())
+    utils.assert_close(
+        actual=res3.cpu(),
+        expected=torch.tensor([[30000.0]], dtype=torch.float16),
+        rtol=1e-3,
+        atol=1.0,
+    )
+
 
 if __name__ == "__main__":
   absltest.main()
