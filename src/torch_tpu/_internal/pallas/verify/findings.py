@@ -32,6 +32,94 @@ from torch_tpu._internal.utils import annotations
 _PUBLIC_PREFIX = "torch.tpu.pallas.verifier"
 
 
+class _DefaultTpuDeviceKind(str):
+  """Sentinel `str` subclass marking an un-overridden default TPU device kind."""
+
+
+# Canonical TorchTPU device names (matching `TpuSpec::name` in `tpu_hardware.cc`)
+# and their common aliases.
+_CANONICAL_TPU_DEVICE_KINDS: dict[str, str] = {
+    "tpu v5e": "TPU v5e",
+    "tpu v5 lite": "TPU v5e",
+    "v5e": "TPU v5e",
+    "v5 lite": "TPU v5e",
+    "tpu v5p": "TPU v5p",
+    "tpu v5": "TPU v5p",
+    "v5p": "TPU v5p",
+    "v5": "TPU v5p",
+    "tpu v6e": "TPU v6e",
+    "tpu v6 lite": "TPU v6e",
+    "tpu v6": "TPU v6e",
+    "v6e": "TPU v6e",
+    "v6 lite": "TPU v6e",
+    "v6": "TPU v6e",
+    "trillium": "TPU v6e",
+    "tpu v7": "TPU v7",
+    "tpu v7x": "TPU v7",
+    "tpu7x": "TPU v7",
+    "tpu7": "TPU v7",
+    "v7": "TPU v7",
+    "v7x": "TPU v7",
+    "tpu v8i": "TPU v8i",
+    "tpu8i": "TPU v8i",
+    "v8i": "TPU v8i",
+    "tpu v8t": "TPU v8t",
+    "tpu8t": "TPU v8t",
+    "v8t": "TPU v8t",
+}
+
+_TORCH_TO_JAX_TPU_DEVICE_KIND: dict[str, str] = {
+    "TPU v5e": "TPU v5e",
+    "TPU v5p": "TPU v5p",
+    "TPU v6e": "TPU v6e",
+    "TPU v7": "TPU7x",
+    "TPU v8i": "TPU8i",
+    "TPU v8t": "TPU8t",
+}
+
+# TPU generations that support DMA done-count mode on
+# `pltpu.SemaphoreType.REGULAR` semaphores for non-SMEM transfers (TPU v5p and
+# newer; TPU v5e requires `pltpu.SemaphoreType.DMA` for non-SMEM transfers).
+_DMA_DONE_COUNT_TPU_KINDS = frozenset({
+    "TPU v5p",
+    "TPU v6e",
+    "TPU v7",
+    "TPU v8i",
+    "TPU v8t",
+})
+
+# Default TorchTPU device kind that ops without a mesh or inferred target are
+# lowered for.
+DEFAULT_TPU_DEVICE_KIND: str = _DefaultTpuDeviceKind("TPU v7")
+
+
+def is_default_tpu_device_kind(device_kind: str) -> bool:
+  """Returns whether `device_kind` is the un-overridden default sentinel."""
+  return isinstance(device_kind, _DefaultTpuDeviceKind)
+
+
+def normalize_tpu_device_kind(device_kind: str) -> str:
+  """Normalizes TPU device aliases to TorchTPU's canonical `TPU v*` names."""
+  key = " ".join(
+      device_kind.strip().lower().replace("_", " ").replace("-", " ").split()
+  )
+  canonical = _CANONICAL_TPU_DEVICE_KINDS.get(key)
+  if canonical is not None:
+    return canonical
+  return device_kind.strip()
+
+
+def jax_tpu_device_kind(device_kind: str) -> str:
+  """Maps a TorchTPU or JAX TPU device name to JAX's `AbstractDevice` string."""
+  canonical = normalize_tpu_device_kind(device_kind)
+  return _TORCH_TO_JAX_TPU_DEVICE_KIND.get(canonical, device_kind.strip())
+
+
+def supports_dma_done_count_mode(device_kind: str) -> bool:
+  """Returns whether `device_kind` supports DMA done-count regular semaphores."""
+  return normalize_tpu_device_kind(device_kind) in _DMA_DONE_COUNT_TPU_KINDS
+
+
 def _exp_reason(qualname: str) -> str:
   return f"{_PUBLIC_PREFIX}.{qualname} is experimental and subject to change."
 
@@ -67,10 +155,39 @@ class Severity(enum.Enum):
 class Phase(enum.Enum):
   """Verification engine that produced a finding."""
 
+  # `@jax_op` registration contracts and eager argument checks.
+  CONTRACTS = "contracts"
+  # Pallas TPU (Mosaic) lowering, run on the host without a TPU.
+  LOWERING = "lowering"
+  # Buffer donation and aliasing in the FX graph of a PyTorch program.
+  FX_GRAPH = "fx_graph"
+  # Registered custom backward compared against the forward kernel.
+  AUTOGRAD = "autograd"
+  # Static model checking of Pallas kernel Jaxprs, semaphores, and memory
+  # accesses.
+  MODEL_CHECK = "model_check"
+
 
 @annotations.experimental(_exp_reason("FindingCategory"))
 class FindingCategory(enum.Enum):
   """Kind of safety violation or warning."""
+
+  # PyTorch program and `@jax_op` contract safety.
+  USE_AFTER_DONATE = "use_after_donate"
+  ALIASED_DONOR_INPUTS = "aliased_donor_inputs"
+  DONATED_PARAMETER = "donated_parameter"
+  ZERO_OUTPUT_SILENT_SKIP = "zero_output_silent_skip"
+  PARTITION_SPEC_MISMATCH = "partition_spec_mismatch"
+  FAKE_KERNEL_MISMATCH = "fake_kernel_mismatch"
+  AUTOGRAD_PARITY_MISMATCH = "autograd_parity_mismatch"
+  LOWERING_FAILURE = "lowering_failure"
+
+  # Kernel concurrency, memory, semaphore, and hardware safety.
+  UNWRITTEN_OUTPUT = "unwritten_output"
+  OUT_OF_BOUNDS_ACCESS = "out_of_bounds_access"
+  INVALID_DEVICE_ID = "invalid_device_id"
+  HARDWARE_CONSTRAINT_VIOLATION = "hardware_constraint_violation"
+  LOW_PRECISION_ACCUMULATION = "low_precision_accumulation"
 
   # Parts of the program that could not be verified (bounded unrolling,
   # solver timeouts, unsupported constructs, skipped phases).
@@ -201,3 +318,23 @@ class VerificationReport:
 
   def __str__(self) -> str:
     return self.summary()
+
+
+def report_of(
+    phase: Phase | None, detected: Iterable[VerificationFinding] = ()
+) -> VerificationReport:
+  """Returns a single-phase report holding `detected`."""
+  phases = (phase,) if phase is not None else ()
+  return VerificationReport(findings=tuple(detected), checked_phases=phases)
+
+
+def merge_reports(*reports: VerificationReport) -> VerificationReport:
+  """Combines several reports, keeping the first-seen phase order."""
+  merged_findings: list[VerificationFinding] = []
+  phases: list[Phase] = []
+  for rep in reports:
+    phases.extend(p for p in rep.checked_phases if p not in phases)
+    merged_findings.extend(rep.findings)
+  return VerificationReport(
+      findings=tuple(merged_findings), checked_phases=tuple(phases)
+  )
