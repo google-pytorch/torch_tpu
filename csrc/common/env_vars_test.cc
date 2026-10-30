@@ -162,9 +162,9 @@ TEST(EnvVarsTest, GetIntegerEnvOnceReturnsNulloptOnInvalidValue) {
 // environment that libtpu and XLA read.
 template <typename ReadFirst>
 void CheckRankIsExpandedOnFirstRead(ReadFirst read_first) {
-  SetEnv<kXlaFlagsEnvVar>("--xla_disable_hlo_passes=some_pass_${RANK}");
-  SetEnv<kLibtpuInitArgsEnvVar>("some_args_${RANK}");
-  SetEnv<kRankEnvVar>("1234");
+  SafeSetEnv<kXlaFlagsEnvVar>("--xla_disable_hlo_passes=some_pass_${RANK}");
+  SafeSetEnv<kLibtpuInitArgsEnvVar>("some_args_${RANK}");
+  SafeSetEnv<kRankEnvVar>("1234");
 
   read_first();
 
@@ -217,6 +217,35 @@ TEST(EnvVarsDeathTest, EnsureRankIsExpandedInEnvVarsExpandsRank) {
         std::exit(0);
       },
       testing::ExitedWithCode(0), "");
+}
+
+TEST(EnvVarsTest, SetEnvBeforeGetEnvOnceSucceeds) {
+  SafeSetEnv<kTorchTpuBasePortEnvVar>("1234");
+  EXPECT_EQ(GetEnvOnce<kTorchTpuBasePortEnvVar>(), "1234");
+}
+
+TEST(EnvVarsTest, UnsetEnvBeforeGetEnvOnceSucceeds) {
+  SafeSetEnv<kNnodesEnvVar>("2");
+  SafeUnsetEnv<kNnodesEnvVar>();
+  EXPECT_EQ(GetEnvOnce<kNnodesEnvVar>(), std::nullopt);
+}
+
+TEST(EnvVarsDeathTest, SetEnvAfterGetEnvOnceCrashes) {
+  EXPECT_DEATH(
+      {
+        static_cast<void>(GetEnvOnce<kTorchTpuDevicesPerHostEnvVar>());
+        SafeSetEnv<kTorchTpuDevicesPerHostEnvVar>("4");
+      },
+      "TORCH_TPU_DEVICES_PER_HOST.*GetEnvOnce");
+}
+
+TEST(EnvVarsDeathTest, UnsetEnvAfterGetIntegerEnvOnceCrashes) {
+  EXPECT_DEATH(
+      {
+        static_cast<void>(GetIntegerEnvOnce<int, kNodeRankEnvVar>());
+        SafeUnsetEnv<kNodeRankEnvVar>();
+      },
+      "NODE_RANK.*GetEnvOnce");
 }
 
 }  // namespace
