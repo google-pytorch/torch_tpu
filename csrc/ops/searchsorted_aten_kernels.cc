@@ -415,7 +415,7 @@ at::Tensor AtenSearchsortedTensor(const at::Tensor& sorted_sequence,
                                  SearchsortedTensorInternal(
                                      sorted_sequence, values, out_int32, right,
                                      side, sorter, std::move(param_keys)));
-              return MakeTensor(result);
+              return MakeTensor(std::move(result));
             });
 }
 
@@ -447,7 +447,7 @@ at::Tensor AtenSearchsortedScalar(const at::Tensor& sorted_sequence,
                                  SearchsortedTensorInternal(
                                      sorted_sequence, values, out_int32, right,
                                      side, sorter, std::move(param_keys)));
-              return MakeTensor(result);
+              return MakeTensor(std::move(result));
             });
 }
 

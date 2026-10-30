@@ -184,10 +184,10 @@ TEST(AutoDonateInPlaceBuffer, EligibilityAndAliasingTests) {
 
   TT_ASSERT_OK_AND_ASSIGN(auto dummy_buffer,
                           CreateEmptyDeviceBufferRef({2, 3}, f32_type));
-  at::Tensor t = MakeTensor(dummy_buffer);
+  at::Tensor t = MakeTensor(std::move(dummy_buffer));
   TT_ASSERT_OK_AND_ASSIGN(dummy_buffer,
                           CreateEmptyDeviceBufferRef({2, 3}, f32_type));
-  at::Tensor other = MakeTensor(dummy_buffer);
+  at::Tensor other = MakeTensor(std::move(dummy_buffer));
   ASSERT_FALSE(t.is_alias_of(other));
 
   // In kDeferAndFuse, eligible tensor donates.
@@ -241,14 +241,14 @@ TEST(AutoDonateInPlaceBuffer, EligibilityAndAliasingTests) {
   // Zero-sized tensor does not donate.
   TT_ASSERT_OK_AND_ASSIGN(dummy_buffer,
                           CreateEmptyDeviceBufferRef({0}, f32_type));
-  at::Tensor t_zero_sized = MakeTensor(dummy_buffer);
+  at::Tensor t_zero_sized = MakeTensor(std::move(dummy_buffer));
   EXPECT_FALSE(should_donate(t_zero_sized, {t_zero_sized}, f32_type));
 
   // Contiguous FP4 tensor donates, while transposed or sliced FP4 views do not.
   constexpr auto fp4_type = mlir::ElementType::F4E2M1FN;
   TT_ASSERT_OK_AND_ASSIGN(dummy_buffer,
                           CreateEmptyDeviceBufferRef({2, 8}, fp4_type));
-  at::Tensor t_fp4 = MakeTensor(dummy_buffer);
+  at::Tensor t_fp4 = MakeTensor(std::move(dummy_buffer));
   EXPECT_TRUE(should_donate(t_fp4, {t_fp4}, fp4_type));
 
   at::Tensor t_fp4_transposed = t_fp4;
@@ -271,10 +271,10 @@ TEST(AutoDonateInPlaceBuffer, DetectsDonation) {
 
   TT_ASSERT_OK_AND_ASSIGN(auto dummy_buffer,
                           CreateEmptyDeviceBufferRef({2, 3}, f32_type));
-  at::Tensor a = MakeTensor(dummy_buffer);
+  at::Tensor a = MakeTensor(std::move(dummy_buffer));
   TT_ASSERT_OK_AND_ASSIGN(dummy_buffer,
                           CreateEmptyDeviceBufferRef({2, 3}, f32_type));
-  at::Tensor b = MakeTensor(dummy_buffer);
+  at::Tensor b = MakeTensor(std::move(dummy_buffer));
   ASSERT_FALSE(a.is_alias_of(b));
 
   Indices donated;
@@ -302,10 +302,10 @@ TEST(AutoDonateInPlaceBuffers, MultiOutputDonation) {
 
   TT_ASSERT_OK_AND_ASSIGN(auto dummy_buffer,
                           CreateEmptyDeviceBufferRef({4, 5}, f32_type));
-  at::Tensor in0 = MakeTensor(dummy_buffer);
+  at::Tensor in0 = MakeTensor(std::move(dummy_buffer));
   TT_ASSERT_OK_AND_ASSIGN(dummy_buffer,
                           CreateEmptyDeviceBufferRef({2, 3}, f32_type));
-  at::Tensor in1 = MakeTensor(dummy_buffer);
+  at::Tensor in1 = MakeTensor(std::move(dummy_buffer));
   ASSERT_FALSE(in0.is_alias_of(in1));
   at::Tensor out0 = in1;  // Aliases in1.
   at::Tensor out1 = in0;  // Aliases in0.
@@ -333,7 +333,7 @@ TEST(AutoDonateInPlaceBuffers, CannotDonateBufferMultipleTimes) {
 
   TT_ASSERT_OK_AND_ASSIGN(auto dummy_buffer,
                           CreateEmptyDeviceBufferRef({2, 3}, f32_type));
-  at::Tensor in = MakeTensor(dummy_buffer);
+  at::Tensor in = MakeTensor(std::move(dummy_buffer));
   at::Tensor out0 = in;  // Aliases in.
   at::Tensor out1 = in;  // Also aliases in.
 

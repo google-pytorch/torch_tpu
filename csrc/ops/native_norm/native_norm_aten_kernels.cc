@@ -89,7 +89,7 @@ absl::StatusOr<at::Tensor> PNorm(const at::Tensor& self,
                      .out_dims = output_dims,
                      .op_param_cache_keys = std::move(op_cache_keys)}));
 
-  return MakeTensor(result_buf);
+  return MakeTensor(std::move(result_buf));
 }
 
 }  // namespace

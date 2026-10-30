@@ -551,7 +551,7 @@ at::Tensor AtenJaggedToPaddedDenseForward(const at::Tensor& values,
                   DeviceBufferRef result_buf,
                   JaggedToPaddedDense(values, offsets, max_lengths,
                                       padding_value, std::move(param_keys)));
-              return MakeTensor(result_buf);
+              return MakeTensor(std::move(result_buf));
             });
 }
 
@@ -568,7 +568,7 @@ at::Tensor AtenPaddedDenseToJaggedForward(const at::Tensor& dense,
                   DeviceBufferRef result_buf,
                   PaddedDenseToJagged(dense, offsets, total_L_val,
                                       std::move(param_keys)));
-              return MakeTensor(result_buf);
+              return MakeTensor(std::move(result_buf));
             });
 }
 

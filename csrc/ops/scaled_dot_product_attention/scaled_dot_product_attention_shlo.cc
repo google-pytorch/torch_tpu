@@ -855,7 +855,7 @@ absl::StatusOr<FusedAttentionResults> ScaledDotProductFusedAttentionShlo(
   // Construct the LSE tensor before calling ContiguousToView so that if
   // ContiguousToView materializes the stream, the LSE DeviceBufferRef is not
   // dropped.
-  at::Tensor logsumexp = MakeTensor(results[1]);
+  at::Tensor logsumexp = MakeTensor(std::move(results[1]));
 
   // Return the output with the strides of the meta function, so that views
   // traced by torch.compile (e.g. merging heads) are also valid in eager mode.

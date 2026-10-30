@@ -708,7 +708,7 @@ absl::StatusOr<at::Tensor> MakeEmptyMemoryFormat(
   // Create an empty DeviceBufferRef.
   TT_ASSIGN_OR_RETURN(DeviceBufferRef buffer,
                       CreateEmptyDeviceBufferRef(std::move(xla_sizes), dtype));
-  at::Tensor result = MakeTensor(buffer);
+  at::Tensor result = MakeTensor(std::move(buffer));
 
   // MakeTensor defaults to a contiguous tensor, and so
   // does aten::empty().

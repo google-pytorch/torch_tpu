@@ -102,7 +102,7 @@ bool AtenEqual(const at::Tensor& self, const at::Tensor& other) {
                        .out_dims = {},
                        .op_param_cache_keys = std::move(param_keys)}));
 
-    auto result = MakeTensor(result_buf);
+    auto result = MakeTensor(std::move(result_buf));
     TT_ASSIGN_OR_THROW(
         auto materialized_result_buf,
         MaterializeAndReturn(result, MaterializationReason::kScalarConversion));

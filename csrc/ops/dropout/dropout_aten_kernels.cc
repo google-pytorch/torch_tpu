@@ -97,7 +97,8 @@ std::tuple<at::Tensor, at::Tensor> AtenDropoutCommonImpl(
             {.out_dtypes = {output_dtype, mlir::ElementType::PRED},
              .out_dims_list = {input.sizes(), input.sizes()},
              .op_param_cache_keys = std::move(param_keys)})));
-    return {MakeTensor(results[0]), MakeTensor(results[1])};
+    return {MakeTensor(std::move(results[0])),
+            MakeTensor(std::move(results[1]))};
   }
   if (p >= 1.0) {
     auto op_builder =
@@ -115,7 +116,8 @@ std::tuple<at::Tensor, at::Tensor> AtenDropoutCommonImpl(
             {.out_dtypes = {output_dtype, mlir::ElementType::PRED},
              .out_dims_list = {input.sizes(), input.sizes()},
              .op_param_cache_keys = std::move(param_keys)})));
-    return {MakeTensor(results[0]), MakeTensor(results[1])};
+    return {MakeTensor(std::move(results[0])),
+            MakeTensor(std::move(results[1]))};
   }
 
   const int64_t num_elements = input.numel();
@@ -136,7 +138,7 @@ std::tuple<at::Tensor, at::Tensor> AtenDropoutCommonImpl(
           RngUsage{num_elements, bit_width}));
 
   // [output, mask]
-  return {MakeTensor(results[0]), MakeTensor(results[1])};
+  return {MakeTensor(std::move(results[0])), MakeTensor(std::move(results[1]))};
 }
 
 }  // namespace
@@ -197,7 +199,7 @@ at::Tensor AtenNativeDropoutBackward(const at::Tensor& grad_output,
                               {.out_dtype = output_dtype,
                                .out_dims = grad_output.sizes(),
                                .op_param_cache_keys = std::move(param_keys)})));
-        return MakeTensor(output_buf);
+        return MakeTensor(std::move(output_buf));
       });
 }
 

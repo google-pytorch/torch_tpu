@@ -103,7 +103,7 @@ absl::StatusOr<at::Tensor> DispatchOutOfPlace(const at::Tensor& self,
                     {.out_dtype = self_mlir_type,
                      .out_dims = out_dims,
                      .op_param_cache_keys = OpParamCacheKeys::Empty()}));
-  return MakeTensor(result_buf);
+  return MakeTensor(std::move(result_buf));
 }
 
 // Dispatch logic for in-place masked fill op.

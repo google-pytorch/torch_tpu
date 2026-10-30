@@ -86,7 +86,7 @@ absl::StatusOr<DeviceBufferRef> Vdot(const at::Tensor& lhs,
 at::Tensor AtenVdot(const at::Tensor& lhs, const at::Tensor& rhs) {
   TT_KERNEL(OpName::kVdot, param_keys, (lhs, rhs), {
     TT_ASSIGN_OR_THROW(auto result, Vdot(lhs, rhs, std::move(param_keys)));
-    return MakeTensor(result);
+    return MakeTensor(std::move(result));
   });
 }
 

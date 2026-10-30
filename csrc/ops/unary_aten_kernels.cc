@@ -130,7 +130,7 @@ absl::StatusOr<at::Tensor> UnaryOp(const at::Tensor& self,
            .out_dims = output_dims,
            .computation_dtype = options.computation_dtype,
            .op_param_cache_keys = std::move(options.op_param_cache_keys)}));
-  return MakeTensor(result_buf);
+  return MakeTensor(std::move(result_buf));
 }
 absl::StatusOr<at::Tensor> UnaryOp(const at::Tensor& self, OpName op_name,
                                    MlirUnaryOpBuilder op_builder,

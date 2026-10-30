@@ -180,7 +180,7 @@ at::Tensor AtenCol2Im(const at::Tensor& input, at::IntArrayRef output_size,
                   DeviceBufferRef result,
                   AtenCol2Im(input, output_size, kernel_size, dilation, padding,
                              stride, std::move(param_keys)));
-              return MakeTensor(result);
+              return MakeTensor(std::move(result));
             });
 }
 

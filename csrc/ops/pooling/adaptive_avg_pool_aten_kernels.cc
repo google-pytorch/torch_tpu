@@ -584,7 +584,7 @@ absl::StatusOr<at::Tensor> MakeAdaptiveAvgPoolZeroOutput(
     TT_RETURN_IF_ERROR(AssignBufferToAtTensor(std::move(zero_buf), out->get()));
     return out->get();
   }
-  return MakeTensor(zero_buf);
+  return MakeTensor(std::move(zero_buf));
 }
 
 }  // namespace
@@ -682,7 +682,7 @@ absl::StatusOr<at::Tensor> AdaptiveAvgPool2dHelper(
                        // Override the OpName to kAvgPool2dOut, since we are
                        // lowering into it, anyway.
                        /*override_op_name=*/OpName::kAvgPool2dOut));
-    return MakeTensor(buffer);
+    return MakeTensor(std::move(buffer));
   } else {
     auto op_builder = [in_h, in_w, out_h, out_w](
                           mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
@@ -704,7 +704,7 @@ absl::StatusOr<at::Tensor> AdaptiveAvgPool2dHelper(
                       {.out_dtype = output_mlir_dtype,
                        .out_dims = std::move(out_dims),
                        .op_param_cache_keys = std::move(param_keys)}));
-    return MakeTensor(buffer);
+    return MakeTensor(std::move(buffer));
   }
 }
 

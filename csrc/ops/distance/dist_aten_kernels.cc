@@ -638,7 +638,7 @@ at::Tensor AtenCdistForward(const at::Tensor& x1, const at::Tensor& x2,
                        .out_dims = output_shape,
                        .op_param_cache_keys = std::move(param_keys)}));
 
-    return MakeTensor(result_buf);
+    return MakeTensor(std::move(result_buf));
   });
 }
 
@@ -695,7 +695,7 @@ at::Tensor AtenCdistBackward(const at::Tensor& grad, const at::Tensor& x1,
                        .out_dims = out_shape,
                        .op_param_cache_keys = std::move(param_keys)}));
 
-    return MakeTensor(result_buf);
+    return MakeTensor(std::move(result_buf));
   });
 }
 
@@ -736,7 +736,7 @@ at::Tensor AtenPdistForward(const at::Tensor& self, double p) {
                        .out_dims = output_shape,
                        .op_param_cache_keys = std::move(param_keys)}));
 
-    return MakeTensor(result_buf);
+    return MakeTensor(std::move(result_buf));
   });
 }
 
@@ -783,7 +783,7 @@ at::Tensor AtenPdistBackward(const at::Tensor& grad, const at::Tensor& self,
                        .out_dims = output_shape,
                        .op_param_cache_keys = std::move(param_keys)}));
 
-    return MakeTensor(result_buf);
+    return MakeTensor(std::move(result_buf));
   });
 }
 
