@@ -544,6 +544,11 @@ absl::StatusOr<mlir::MlirOp> Squeeze(mlir::MlirOp input,
 // Supports bounded dynamic flatten.
 mlir::MlirOp Flatten(mlir::MlirOp input);
 
+// Consumes the diagnostics of `diag_handler` and returns them formatted for an
+// error message. Never returns an empty string.
+std::string ConsumeMlirDiagnostics(
+    mlir::BaseScopedDiagnosticHandler& diag_handler);
+
 // Applies Numpy's broadcasting rules, if needed. See
 // https://numpy.org/devdocs//user/basics.broadcasting.html#broadcastable-arrays
 
@@ -569,7 +574,7 @@ absl::StatusOr<std::array<mlir::MlirOp, kNumInputs>> ApplyBroadcastIfNeeded(
   TT_RET_CHECK(mlir::succeeded(broadcasted_values_or_fail),
                error::kInvalidArgument)
       << "failed to broadcast tensors: "
-      << diag_handler.ConsumeStatus().message();
+      << ConsumeMlirDiagnostics(diag_handler);
   mlir::SmallVector<mlir::Value, kNumInputs> broadcasted_values =
       std::move(*broadcasted_values_or_fail);
   for (int i = 0; i < kNumInputs; ++i) {
