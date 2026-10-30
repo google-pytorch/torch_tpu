@@ -34,8 +34,10 @@
 #include "c10/core/ScalarType.h"
 #include "c10/core/SymInt.h"
 #include "csrc/common/fake_symbol.h"
+#include "csrc/common/macro_utils.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
+#include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
 namespace {
@@ -140,6 +142,15 @@ TEST(ToStringTensorTest, ContainersOfTensorsUseTheTensorOverload) {
             absl::StrCat("[", expected, "]"));
   EXPECT_EQ(ToString(at::ITensorListRef({tensor})),
             absl::StrCat("[", expected, "]"));
+}
+
+TEST(ToStringScalarTypeTest, ScalarTypes) {
+  EXPECT_EQ(ToString(at::ScalarType::Float), "float32");
+  EXPECT_EQ(ToString(at::ScalarType::BFloat16), "bfloat16");
+  EXPECT_EQ(ToString(at::ScalarType::Float8_e8m0fnu), "float8_e8m0fnu");
+#if TT_HAS_FLOAT8_E5M3FNU
+  EXPECT_EQ(ToString(at::ScalarType::Float8_e5m3fnu), "float8_e5m3fnu");
+#endif
 }
 
 }  // namespace
