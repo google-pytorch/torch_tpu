@@ -7826,6 +7826,37 @@ Supported combinations for non-constant padding:
     ):
       torch.linalg.cholesky_ex(a, check_errors=True)
 
+  def test_linalg_lu_invalid_inputs(self):
+    out = _make_lu_unpack_outputs(p=(2, 2), l=(2, 2), u=(2, 2))
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_lu(): expected input tensor to have at least 2 dimensions, got 0""",
+        gpu="""linalg.lu: Expected tensor with 2 or more dimensions. Got size: [] instead""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.linalg.lu(torch.tensor(1.0, device=et.device()), out=out)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_lu(): expected input tensor to have at least 2 dimensions, got 1""",
+        gpu="""linalg.lu: Expected tensor with 2 or more dimensions. Got size: [3] instead""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.linalg.lu(torch.ones(3, device=et.device()), out=out)
+
+    out_cpu_p = (
+        torch.empty((2, 2), device="cpu"),
+        torch.empty((2, 2), device=et.device()),
+        torch.empty((2, 2), device=et.device()),
+    )
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_lu(): expected all output tensors to be on tpu, got cpu, tpu:0, and tpu:0""",
+        gpu="""Expected all tensors to be on the same device, but got L is on cuda:0, different from other tensors on cpu (when checking argument in method wrapper_CUDA_linalg_lu_out_out)""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.linalg.lu(torch.ones(2, 2, device=et.device()), out=out_cpu_p)
+
   def test_lu_unpack_data_rank_too_low(self):
     data = torch.ones(4, device=et.device())
     pivots = torch.ones(4, device=et.device(), dtype=torch.int32)
