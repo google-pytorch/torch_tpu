@@ -35,6 +35,55 @@
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 
 namespace torch_tpu {
+namespace {
+
+// Returns `self[n, safe_target[n, ...], ...]` for in-range targets, computed as
+// a sum over the class dimension 1 of `self` with every other class set to 0.
+absl::StatusOr<mlir::MlirOp> SelectTargetByMaskedSum(mlir::MlirOp self,
+                                                     mlir::MlirOp safe_target) {
+  const int64_t rank = GetTensorTypeOrDie(self).getRank();
+  // Class indices fit in 32 bits, and 64-bit compares are emulated on TPU.
+  const mlir::Type i32_type =
+      mlir::getElementType(self.getContext(), mlir::ElementType::I32);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp class_iota, Iota(self, 1, i32_type));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp target_i32,
+                      CastIfNeeded(safe_target, mlir::ElementType::I32));
+  Dimensions target_dims = {0};
+  for (int64_t i = 2; i < rank; ++i) {
+    target_dims.push_back(i);
+  }
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp target_bcast,
+                      BroadcastIfNeeded(target_i32, class_iota, target_dims));
+  mlir::MlirOp is_target = mlir::stablehlo::Compare(
+      class_iota, target_bcast, mlir::stablehlo::ComparisonDirection::EQ);
+  mlir::MlirOp zero = MakeConstantLike(self, 0.0);
+  mlir::MlirOp masked = mlir::stablehlo::Select(is_target, self, zero);
+  return BuildSumShlo(masked, {1}, ReductionMode::kDropDims);
+}
+
+// Returns `self[n, safe_target[n, ...], ...]` along class dimension 1.
+absl::StatusOr<mlir::MlirOp> SelectTargetLogProbs(
+    mlir::MlirOp self, mlir::MlirOp safe_target,
+    NllTargetSelection target_selection) {
+  switch (target_selection) {
+    case NllTargetSelection::kGather: {
+      // `self` is already in the compute dtype.
+      TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
+                          GetElementType(self));
+      TT_ASSIGN_OR_RETURN(mlir::MlirOp target_unsqueeze,
+                          Unsqueeze(safe_target, 1));
+      TT_ASSIGN_OR_RETURN(
+          mlir::MlirOp gathered_unsqueeze,
+          BuildGatherShlo(self, 1, target_unsqueeze, /*sparse_grad=*/false,
+                          compute_dtype));
+      return Squeeze(gathered_unsqueeze, {1});
+    }
+    case NllTargetSelection::kMaskedSum:
+      return SelectTargetByMaskedSum(self, safe_target);
+  }
+}
+
+}  // namespace
 
 mlir::MlirOp GatherWeightsShlo(mlir::MlirOp weight, mlir::MlirOp safe_target) {
   const mlir::RankedTensorType target_type = GetTensorTypeOrDie(safe_target);
@@ -53,7 +102,8 @@ mlir::MlirOp GatherWeightsShlo(mlir::MlirOp weight, mlir::MlirOp safe_target) {
 
 absl::StatusOr<MlirOpResults<2>> BuildNllLossForwardOutShlo(
     mlir::MlirOp self, mlir::MlirOp target, std::optional<mlir::MlirOp> weight,
-    int64_t reduction, int64_t ignore_index, mlir::MlirBuilder& builder) {
+    int64_t reduction, int64_t ignore_index, mlir::MlirBuilder& builder,
+    NllTargetSelection target_selection) {
   const mlir::RankedTensorType orig_self_type = GetTensorTypeOrDie(self);
   const mlir::RankedTensorType orig_target_type = GetTensorTypeOrDie(target);
 
@@ -119,11 +169,9 @@ absl::StatusOr<MlirOpResults<2>> BuildNllLossForwardOutShlo(
   mlir::MlirOp safe_target = mlir::stablehlo::Select(mask, target, zero_target);
 
   // raw_loss = -self[safe_target] along class dimension 1.
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp target_unsqueeze, Unsqueeze(safe_target, 1));
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp gathered_unsqueeze,
-                      BuildGatherShlo(self, 1, target_unsqueeze,
-                                      /*sparse_grad=*/false, compute_dtype));
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp gathered, Squeeze(gathered_unsqueeze, {1}));
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp gathered,
+      SelectTargetLogProbs(self, safe_target, target_selection));
   mlir::MlirOp raw_loss = mlir::stablehlo::Neg(gathered);
 
   // Apply class weights and mask out ignored positions using Select (not Mul).

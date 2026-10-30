@@ -21154,6 +21154,43 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
 
           self.assert_close_tpu_vs_cpu(compute_empty_prob)
 
+  def test_cross_entropy_flattened_logits_slice_lowers_without_gather(self):
+    """No-grad cross_entropy over `logits[:, :-1].flatten(0, 1)` has no gather.
+
+    The flattened slice is a (B, S - 1, V) buffer viewed as (B * (S - 1), V).
+    With S - 1 not a multiple of 8 that reshape changes the TPU tile layout,
+    and compiling it is slow at LLM vocabulary sizes if anything materializes
+    it. The loss must read the log-probs through reductions only, which XLA
+    can hoist above the reshape. A gather would make XLA materialize it.
+    """
+    b, s, v = 2, 16, 128
+    g = torch.Generator().manual_seed(0)
+    logits = torch.randn(b, s, v, generator=g, dtype=torch.bfloat16)
+    labels = torch.randint(0, v, (b, s), generator=g)
+
+    def loss_fn(x, y):
+      with torch.no_grad():
+        return torch.nn.functional.cross_entropy(
+            x[:, :-1, :].flatten(0, 1), y, reduction="none"
+        )
+
+    self.assert_close_tpu_vs_cpu(
+        lambda device: loss_fn(
+            logits.to(device), labels[:, 1:].flatten().to(device)
+        )
+    )
+
+    x = logits.to("tpu")
+    y = labels[:, 1:].flatten().to("tpu")
+    with execution_mode.set_eager_mode(
+        execution_mode.EagerMode._INTERNAL_COMPILE_FX_GRAPH
+    ):
+      loss = loss_fn(x, y)
+    mlir_text = tpu_torch_compile.serialize_mlir_text(
+        tpu_torch_compile.build_mlir([loss], [x, y])
+    )
+    self.assertNotIn("stablehlo.gather", mlir_text)
+
   @parameterized.product(
       shape=[(100,), (0,), (2, 10, 5), (2, 2, 2, 2), (1, 0, 2)],
       return_inverse=[True, False],
