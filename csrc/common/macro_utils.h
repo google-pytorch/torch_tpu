@@ -90,6 +90,17 @@
   (TORCH_VERSION_MAJOR > (major) ||       \
    (TORCH_VERSION_MAJOR == (major) && TORCH_VERSION_MINOR >= (minor)))
 
+// True in an #if when built against a PyTorch version that defines
+// c10::ScalarType::Float8_e5m3fnu (added as the 6th FP8 type in
+// AT_FORALL_FLOAT8_TYPES in PyTorch 2.16 nightly, PR #201269).
+// Requires ScalarType.h to be included before evaluating this macro.
+// TODO(b/579965801): Replace TT_HAS_FLOAT8_E5M3FNU with
+// TT_TORCH_VERSION_GE(2, 16) once internal PyTorch and OSS 2.16 nightly pins
+// include PR #201269.
+#define TT_COUNT_FLOAT8_TYPE_(_1, _2) +1
+#define TT_HAS_FLOAT8_E5M3FNU \
+  ((0 AT_FORALL_FLOAT8_TYPES(TT_COUNT_FLOAT8_TYPE_)) >= 6)
+
 namespace torch_tpu {
 namespace internal {
 

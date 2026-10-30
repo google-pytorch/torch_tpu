@@ -284,6 +284,10 @@ std::string_view ToString(const at::ScalarType scalar_type) {
       return "float8_e5m2fnuz";
     case at::ScalarType::Float8_e8m0fnu:
       return "float8_e8m0fnu";
+#if TT_HAS_FLOAT8_E5M3FNU
+    case at::ScalarType::Float8_e5m3fnu:
+      return "float8_e5m3fnu";
+#endif
     case at::ScalarType::Float4_e2m1fn_x2:
       return "float4_e2m1fn_x2";
     // These cases are listed for completeness but should never be reached.
