@@ -15,6 +15,7 @@
 """End-to-end tests for distributed handshake protocol."""
 
 import os
+import sys
 from unittest import mock
 
 from absl.testing import absltest
@@ -440,5 +441,13 @@ class HandshakeDispatchStageE2ETest(
   _handshake_stage = "DISPATCH_STAGE"
 
 
+def _main_then_fail():
+  # Deliberately fail after the tests run so that CI prints this test's log.
+  try:
+    absltest.main()
+  finally:
+    sys.exit("Deliberate failure.")
+
+
 if __name__ == "__main__":
-  multiprocessing.handle_test_main(absltest.main)
+  multiprocessing.handle_test_main(_main_then_fail)
