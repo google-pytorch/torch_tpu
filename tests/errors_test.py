@@ -41,6 +41,18 @@ _DROPOUT_INTERNAL_ASSERTION_ERROR_RE = re.compile(
     r"""dropout > 0 INTERNAL ASSERT FAILED .*""",
 )
 
+# Regex used by:
+#   - TpuVsGpuErrorTest.test_invalid_index_in_take
+#   - TpuVsGpuErrorTest.test_normal_errors_negative_std_tensor
+#
+# Matches a CUDA device-side assertion.
+_CUDA_DEVICE_ASSERTION_RE = re.compile(
+    r"CUDA error: device-side assert triggered.*",
+    # Device-side assertions from PyTorch are multi-line error messages, with
+    # suggestions for retrieving more information from the failing assertion.
+    re.DOTALL,
+)
+
 
 def setUpModule():
   """Called by absltest after flags are parsed and before tests are run."""
@@ -2087,10 +2099,8 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     t = torch.tensor([0, 1, 2], device=et.device(), dtype=torch.float32)
     with et.assert_raises_message(
         IndexError,
-        gpu="""CUDA error: device-side assert triggered
-Search for `cudaErrorAssert' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
-Device-side assertion tracking was not enabled by user.""",
         tpu="""take(): expected indices to be in range [-3, 2], got 3""",
+        gpu=_CUDA_DEVICE_ASSERTION_RE,
     ):
       torch.take(t, torch.tensor([0, 3], dtype=torch.int64, device=et.device()))
 
@@ -9583,10 +9593,8 @@ Supported combinations for non-constant padding:
     out = torch.empty(2, device=device)
     with et.assert_raises_message(
         RuntimeError,
-        gpu="""CUDA error: device-side assert triggered
-Search for `cudaErrorAssert' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
-Device-side assertion tracking was not enabled by user.""",
         tpu="""normal(): expected all elements of std >= 0.0, got min element: -1""",
+        gpu=_CUDA_DEVICE_ASSERTION_RE,
     ):
       torch.normal(
           mean=0.0, std=torch.tensor([-1.0, 1.0], device=device), out=out
@@ -16730,6 +16738,88 @@ Got a.dtype()=Float8_e4m3fn, scale_a.dtype()=Float, scale_a.size()=[1], scale_a.
       torch.zeros(
           too_many_bytes, dtype=torch.uint8, device="cpu", pin_memory=True
       )
+
+  def test_device_event_elapsed_time_non_event(self):
+    device_module = torch.get_device_module(et.device())
+    event = device_module.Event(enable_timing=True)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""_event_elapsed_time(): expected start and end to be torch.Event objects, got TpuEvent and NoneType""",
+        gpu="""expected other to be a torch.cuda.Event object""",
+    ):
+      event.elapsed_time(None)
+
+  def test_device_event_elapsed_time_pending_event(self):
+    # A large device-to-host copy keeps the events recorded after it pending.
+    device = et.device()
+    device_module = torch.get_device_module(device)
+
+    size = 8192 * 8192
+    t_dev = torch.ones(size, device=device, dtype=torch.float32)
+    t_cpu = torch.empty(size, device="cpu", pin_memory=True)
+
+    start = device_module.Event(enable_timing=True)
+    end = device_module.Event(enable_timing=True)
+
+    t_cpu.copy_(t_dev, non_blocking=True)
+
+    start.record()
+    end.record()
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""Both events must be completed before calculating elapsed time.""",
+        gpu="""Both events must be completed before calculating elapsed time.""",
+    ):
+      start.elapsed_time(end)
+
+    end.synchronize()
+
+  def test_device_event_elapsed_time_unrecorded_event(self):
+    device_module = torch.get_device_module(et.device())
+
+    recorded = device_module.Event(enable_timing=True)
+    unrecorded = device_module.Event(enable_timing=True)
+
+    recorded.record()
+
+    with et.assert_raises_message(
+        ValueError,
+        tpu="""Both events must be recorded before calculating elapsed time.""",
+        gpu="""Both events must be recorded before calculating elapsed time.""",
+    ):
+      recorded.elapsed_time(unrecorded)
+
+    with et.assert_raises_message(
+        ValueError,
+        tpu="""Both events must be recorded before calculating elapsed time.""",
+        gpu="""Both events must be recorded before calculating elapsed time.""",
+    ):
+      unrecorded.elapsed_time(recorded)
+
+  def test_device_event_elapsed_time_untimed_event(self):
+    device_module = torch.get_device_module(et.device())
+
+    timed = device_module.Event(enable_timing=True)
+    untimed = device_module.Event()
+
+    timed.record()
+    untimed.record()
+
+    with et.assert_raises_message(
+        ValueError,
+        tpu="""Both events must be created with argument 'enable_timing=True'.""",
+        gpu="""Both events must be created with argument 'enable_timing=True'.""",
+    ):
+      timed.elapsed_time(untimed)
+
+    with et.assert_raises_message(
+        ValueError,
+        tpu="""Both events must be created with argument 'enable_timing=True'.""",
+        gpu="""Both events must be created with argument 'enable_timing=True'.""",
+    ):
+      untimed.elapsed_time(timed)
 
 
 class InputPreprocessingErrorTest(et.ErrorTestBase):
