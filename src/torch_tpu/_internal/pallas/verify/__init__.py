@@ -15,6 +15,7 @@
 """Pallas kernel and PyTorch program verification for TorchTPU."""
 
 # pylint: disable=g-importing-member
+from torch_tpu._internal.pallas.verify.findings import CounterexampleStep
 from torch_tpu._internal.pallas.verify.findings import FindingCategory
 from torch_tpu._internal.pallas.verify.findings import Phase
 from torch_tpu._internal.pallas.verify.findings import Severity
@@ -28,6 +29,7 @@ from torch_tpu._internal.pallas.verify.verifier import verify
 # PEP 8 requires this to be a list of strings, not a tuple or a list of objects.
 __all__ = [
     # go/keep-sorted start
+    "CounterexampleStep",
     "FindingCategory",
     "Phase",
     "Severity",

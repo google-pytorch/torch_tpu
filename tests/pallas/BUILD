@@ -137,9 +137,67 @@ torch_tpu_py_test(
     ],
     deps = [
         "//shims/absl_py/testing:absltest",
+        "//shims/jax:pallas",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
+        "//src/torch_tpu/_internal/pallas/verify:findings",
         "//tests:seed_test_utils",
+        "@pypi//jax",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "pallas_verify_fx_test",
+    srcs = ["pallas_verify_fx_test.py"],
+    env = {
+        # Keeps JAX off the TPU of OSS CI hosts.
+        "JAX_PLATFORMS": "cpu",
+        "XLA_FLAGS": "--xla_force_host_platform_device_count=4",
+    },
+    shard_count = 4,
+    deps = if_oss(
+        ["//shims/ortools"],
+        [],
+    ) + [
+        "//shims/absl_py/testing:absltest",
+        "//shims/jax:pallas",
+        "//shims/jax:pallas_tpu",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/pallas",
+        "//src/torch_tpu/_internal/pallas:mock_device",
+        "//src/torch_tpu/_internal/pallas/verify:fx_verifier",
+        "//src/torch_tpu/_internal/pallas/verify:verifier",
+        "//src/torch_tpu/_internal/utils:hardware",
+        "//tests:seed_test_utils",
+        "@pypi//jax",
+        "@pypi//numpy",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "pallas_verify_kernel_test",
+    srcs = ["pallas_verify_kernel_test.py"],
+    env = {
+        # Keeps JAX off the TPU of OSS CI hosts.
+        "JAX_PLATFORMS": "cpu",
+    },
+    shard_count = 4,
+    deps = if_oss(
+        ["//shims/ortools"],
+        [],
+    ) + [
+        "//shims/absl_py/testing:absltest",
+        "//shims/jax:pallas",
+        "//shims/jax:pallas_tpu",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/pallas:mock_device",
+        "//src/torch_tpu/_internal/pallas/verify:jaxpr_model",
+        "//src/torch_tpu/_internal/pallas/verify:smt_checker",
+        "//tests:seed_test_utils",
+        "@pypi//jax",
+        "@pypi//numpy",
     ],
 )
 
