@@ -148,6 +148,7 @@
 #include "csrc/ops/leaky_relu/leaky_relu_aten_kernels.h"
 #include "csrc/ops/lerp/lerp_aten_kernels.h"
 #include "csrc/ops/linalg/cholesky/linalg_cholesky_kernels.h"
+#include "csrc/ops/linalg/cross/linalg_cross_kernels.h"
 #include "csrc/ops/linalg/linalg_kernels.h"
 #include "csrc/ops/linalg/linalg_svd_kernels.h"
 #include "csrc/ops/linalg/lu/linalg_lu_kernels.h"
@@ -801,6 +802,7 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kLerpTensorOut>(m, AtenLerpTensorOut);
   ImplStable<OpName::kLgammaOut>(m, AtenLgammaOut);
   ImplStable<OpName::kLinalgCholeskyExL>(m, AtenLinalgCholeskyExL);
+  ImplStable<OpName::kLinalgCrossOut>(m, AtenLinalgCrossOut);
   ImplStable<OpName::kLinalgInvExInverse>(m, AtenLinalgInvExInverse);
   ImplStable<OpName::kLinalgLuFactorExOut>(m, AtenLinalgLuFactorExOut);
   ImplStable<OpName::kLinalgLuOut>(m, AtenLinalgLuOut);

@@ -12459,6 +12459,74 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         torch.equal(l_transposed.cpu(), torch.tensor([[2.0, 0.0], [0.0, 3.0]]))
     )
 
+  @parameterized.product(
+      shape_and_dim=[
+          ((3,), -1),
+          ((3,), 0),
+          ((4, 3), -1),
+          ((3, 4), 0),
+          ((2, 3, 5), 1),
+          ((2, 3, 5), -2),
+          ((2, 4, 3, 5), 2),
+          ((0, 3), -1),
+          ((2, 0, 3), -1),
+      ],
+      dtype=[
+          torch.float16,
+          torch.float32,
+          torch.float64,
+          torch.int8,
+          torch.int32,
+          torch.int64,
+          torch.complex64,
+          torch.complex128,
+      ],
+  )
+  def test_linalg_cross(self, shape_and_dim, dtype):
+    shape, dim = shape_and_dim
+    if dtype.is_floating_point or dtype.is_complex:
+      a = torch.randn(shape, dtype=dtype)
+      b = torch.randn(shape, dtype=dtype)
+    else:
+      a = torch.randint(0, 20, shape, dtype=dtype)
+      b = torch.randint(0, 20, shape, dtype=dtype)
+
+    def run(device):
+      a_dev = a.to(device)
+      b_dev = b.to(device)
+      out_func = torch.linalg.cross(a_dev, b_dev, dim=dim)
+      out_cross = torch.cross(a_dev, b_dev, dim=dim)
+      out_buf = torch.empty_like(a_dev)
+      torch.linalg.cross(a_dev, b_dev, dim=dim, out=out_buf)
+      return out_func, out_cross, out_buf
+
+    rtol, atol = (1.2e-3, 1.2e-3) if dtype == torch.float16 else (None, None)
+    self.assert_close_tpu_vs_cpu(run, rtol=rtol, atol=atol)
+
+  @parameterized.product(
+      shapes_and_dim=[
+          ((1, 3), (4, 3), -1),
+          ((4, 3), (1, 3), -1),
+          ((2, 3, 1), (1, 3, 5), 1),
+      ],
+      dtype=[torch.float32, torch.bfloat16, torch.complex64],
+  )
+  def test_linalg_cross_broadcast_and_backward(self, shapes_and_dim, dtype):
+    shape_a, shape_b, dim = shapes_and_dim
+    a = torch.randn(shape_a, dtype=dtype)
+    b = torch.randn(shape_b, dtype=dtype)
+    grad_out = torch.randn(torch.broadcast_shapes(shape_a, shape_b), dtype=dtype)
+
+    def run(device):
+      a_dev = a.to(device).detach().requires_grad_(True)
+      b_dev = b.to(device).detach().requires_grad_(True)
+      out = torch.linalg.cross(a_dev, b_dev, dim=dim)
+      out.backward(grad_out.to(device))
+      return out, a_dev.grad, b_dev.grad
+
+    rtol, atol = (1.4e-2, 1.2e-2) if dtype == torch.bfloat16 else (None, None)
+    self.assert_close_tpu_vs_cpu(run, rtol=rtol, atol=atol)
+
   def _assert_all_nan(self, *tensors):
     for t in tensors:
       self.assertTrue(torch.isnan(t.to("cpu")).all())
