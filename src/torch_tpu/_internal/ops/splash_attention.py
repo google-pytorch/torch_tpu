@@ -483,6 +483,8 @@ def _get_splash_op_names(**splash_kwargs):
   torch_fwd_fn.register_fake(
       # lse: (batch, num_q_heads, q_seq_len)
       lambda q, k, v, segment_ids=None: (
+          # Kernel outputs are allocated via `torch.empty`,
+          # which are contiguous whatever the input strides.
           torch.empty_like(q, memory_format=torch.contiguous_format),
           torch.empty(
               q.shape[0],
