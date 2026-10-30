@@ -194,11 +194,10 @@ absl::Status ValidateAddmvInputs(const at::Tensor& self, const at::Tensor& mat,
   if (self.dim() == 1) {
     TT_RET_CHECK(self.size(0) == 1 || self.size(0) == mat.size(0),
                  error::kInvalidArgument)
-        << "expected the first argument (vector of size [" << self.size(0)
-        << "]) to match the first dimension of the second argument (matrix of "
-           "size ["
-        << absl::StrJoin(mat.sizes(), /* separator= */ ", ") << "]), got "
-        << self.size(0) << " vs " << mat.size(0);
+        << "expected arguments shapes " << ToString(self.sizes()) << ", "
+        << ToString(mat.sizes()) << ", " << ToString(vec.sizes())
+        << " to have compatible shapes, got " << self.size(0) << " vs "
+        << mat.size(0) << " which is not compatible";
   }
 
   TT_RET_CHECK(mat.size(1) == vec.size(0), error::kInvalidArgument)
