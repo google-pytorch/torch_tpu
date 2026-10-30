@@ -40,12 +40,15 @@ class DynamismMode(enum.Enum):
   """Mode of dynamism testing."""
 
   EAGER = "eager"
-  COMPILE = "compile"
+  COMPILE_NOGRAD = "compile_nograd"
+  COMPILE_GRAD = "compile_grad"
 
 
 EAGER = DynamismMode.EAGER
-COMPILE = DynamismMode.COMPILE
-ALL_MODES = frozenset({DynamismMode.EAGER, DynamismMode.COMPILE})
+COMPILE_NOGRAD = DynamismMode.COMPILE_NOGRAD
+COMPILE_GRAD = DynamismMode.COMPILE_GRAD
+COMPILE = frozenset({DynamismMode.COMPILE_NOGRAD, DynamismMode.COMPILE_GRAD})
+ALL_MODES = frozenset(DynamismMode)
 
 
 @dataclasses.dataclass(frozen=True, order=True)
@@ -110,7 +113,7 @@ def _mark_tensor_dynamic(
         lower_bound=lower_bound,
         upper_bound=upper_bound,
     )
-  elif mode == DynamismMode.COMPILE:
+  elif mode in COMPILE:
     torch._dynamo.mark_dynamic(
         tensor,
         dimension,
@@ -263,12 +266,13 @@ DenyList = dict[str, dict[str, set[DynamismMode] | frozenset[DynamismMode]]]
 DYNAMISM_DENY_LISTS: DenyList = {
     # TODO: b/449736443 - Support bounded dimensions in these lowerings.
     "the lowering broadcasts a bounded input to a static shape": {
+        "atanh": {COMPILE_GRAD},
         "baddbmm": {EAGER},
         "baddbmm.dtype": {EAGER},
         "bernoulli": {EAGER},
         # These abort the test process with a CHECK failure.
         "linalg.lu_solve": {EAGER},
-        "linalg.qr": {EAGER},
+        "linalg.qr": {EAGER, COMPILE_GRAD},
         "linalg.solve_triangular": {EAGER},
         "linalg.svd": {EAGER},
         "linalg.svdvals": {EAGER},
@@ -283,19 +287,22 @@ DYNAMISM_DENY_LISTS: DenyList = {
         # cross_entropy_loss lowers via gather/scatter and static element count
         # queries, and requires synchronized target/weight dynamic marking.
         "nn.functional.cross_entropy": ALL_MODES,
-        "sort": {EAGER},  # stablehlo.iota must be static
+        # digamma backward lowers via polygamma, triggering a static-shape
+        # getNumElements() assertion in BroadcastInDimOp_ReplaceWithReshape.
+        "digamma": {COMPILE_GRAD},
+        "sort": {EAGER, COMPILE_GRAD},  # stablehlo.iota must be static
         # stablehlo.reshape allows at most one bounded dimension. This fails
         # when dims 0 and 2 are both dynamic, which happens in compile mode
         # because dims marked in earlier subtests stay dynamic.
         # TODO: b/566327707 - Remove once marked dims no longer carry over.
-        "torch.ops.aten._safe_softmax.default": {COMPILE},
+        "torch.ops.aten._safe_softmax.default": COMPILE,
     },
     # TODO: b/449736443 - Support bounded dimensions in these lowerings.
     "linalg decompositions do not support bounded dimensions": {
         "geqrf": {EAGER},  # Aborts the test process with a CHECK failure.
         "linalg.cholesky": {EAGER},
-        "linalg.cholesky_ex": {EAGER},
-        "linalg.inv": {EAGER},
+        "linalg.cholesky_ex": {EAGER, COMPILE_GRAD},
+        "linalg.inv": {EAGER, COMPILE_GRAD},
         "linalg.lu": {EAGER},
         "linalg.solve_ex": {EAGER},
     },
@@ -311,8 +318,10 @@ DYNAMISM_DENY_LISTS: DenyList = {
         "addmm": ALL_MODES,
         "addmm.dtype": ALL_MODES,
         "addmv": ALL_MODES,
-        "baddbmm.dtype": {COMPILE},
+        "baddbmm": {COMPILE_GRAD},
+        "baddbmm.dtype": COMPILE,
         "dot": ALL_MODES,
+        "linalg.solve_triangular": {COMPILE_GRAD},  # A, B have dim dependency
         "native_layer_norm": ALL_MODES,  # input/weight/bias have dim dependency
         "_weight_norm_interface": ALL_MODES,  # v and g have dim dependency
         "_weight_norm_interface_backward": (
@@ -398,25 +407,32 @@ DYNAMISM_DENY_LISTS: DenyList = {
         "xlogy": ALL_MODES,
     },
     "untriaged: numerical mismatch": {
-        "bmm": {COMPILE},  # under dynamic compile
-        "bmm.dtype": {COMPILE},  # under dynamic compile
+        "asin": {COMPILE_GRAD},  # float16 compiled backward tolerance
+        "atan": {COMPILE_GRAD},  # float16 compiled backward tolerance
+        "bmm": COMPILE,  # under dynamic compile
+        "bmm.dtype": COMPILE,  # under dynamic compile
         "conj_physical": ALL_MODES,  # identity operation for i64 and f64 fails
+        "erf": {COMPILE_GRAD},  # float16 compiled backward tolerance
+        "erfinv": {COMPILE_GRAD},  # bfloat16 compiled backward tolerance
+        "exp2": {COMPILE_GRAD},  # float16 compiled backward tolerance
         "expm1": ALL_MODES,  # result differs
-        "mm": {COMPILE},  # under dynamic compile
-        "mm.dtype": {COMPILE},  # under dynamic compile
+        "mm": COMPILE,  # under dynamic compile
+        "mm.dtype": COMPILE,  # under dynamic compile
         "nn.functional.hardswish": ALL_MODES,  # adjust tolerance
         "nn.functional.nll_loss": ALL_MODES,  # or failure in some shards
         "nn.functional.relu": ALL_MODES,  # tolerance
         # Also on `compiled_deny_list` in op_testing.py, where compiled results
         # mismatch CPU even with static shapes.
-        "nn.functional.scaled_dot_product_attention": {COMPILE},
+        "nn.functional.scaled_dot_product_attention": COMPILE,
+        "tanh": {COMPILE_GRAD},  # float16/bfloat16 compiled backward tolerance
         "to": ALL_MODES,  # fails numerics (?)
     },
     "untriaged: buffer dimension mismatch": {
-        "full_like": {COMPILE},
-        "isinf": {COMPILE},
-        "ones_like": {COMPILE},
-        "zeros_like": {COMPILE},
+        "fill": {COMPILE_GRAD},  # backward emits zeros_like
+        "full_like": COMPILE,
+        "isinf": COMPILE,
+        "ones_like": COMPILE,
+        "zeros_like": COMPILE,
     },
     "untriaged: MLIR assertion failure (bounds length vs rank)": {
         "bincount": ALL_MODES,
@@ -464,12 +480,13 @@ DYNAMISM_DENY_LISTS: DenyList = {
         # enhance view op to detect squeeze
         "squeeze": ALL_MODES,
         "squeeze_copy": ALL_MODES,
-        "var_mean": {COMPILE},  # reshape lowering failure in compile mode
+        "var_mean": COMPILE,  # reshape lowering failure in compile mode
     },
     "untriaged: shape mismatch": {
         "ldexp": ALL_MODES,  # dynamic shape value permutation mismatch
+        "nn.functional.logsigmoid": {COMPILE_GRAD},  # inferred bound [0]
         "nn.functional.mse_loss": ALL_MODES,  # binop LHS / RHS mismatch
-        "std": {COMPILE},  # shape mismatch on out under dynamic compile
+        "std": COMPILE,  # shape mismatch on out under dynamic compile
     },
     "untriaged: data-dependent output shape (invalid TPU shape)": {
         "unique": ALL_MODES,
@@ -484,12 +501,13 @@ DYNAMISM_DENY_LISTS: DenyList = {
         "_thnn_fused_gru_cell": ALL_MODES,
         "_thnn_fused_lstm_cell": ALL_MODES,
         "_transformer_encoder_layer_fwd": ALL_MODES,
-        "angle": {COMPILE},  # Dynamo error
+        "angle": COMPILE,  # Dynamo error
+        "bernoulli": {COMPILE_GRAD},  # Dynamo no_dispatch error
         "floor_divide": ALL_MODES,
         # Eager mode is triaged under "the lowering broadcasts a bounded input
         # to a static shape".
-        "linalg.svd": {COMPILE},
-        "linalg.svdvals": {COMPILE},
+        "linalg.svd": COMPILE,
+        "linalg.svdvals": COMPILE,
         "nn.functional.adaptive_avg_pool2d": (
             ALL_MODES
         ),  # sort op fails to infer
@@ -732,17 +750,17 @@ class DynamicOpInfo:
     Args:
       input_value: First positional argument passed to the op.
       args: Remaining positional arguments passed to the op.
-      mode: Dynamism execution mode (`EAGER` or `COMPILE`). Simultaneous
-        multi-dimension plans are only emitted in `COMPILE` mode.
+      mode: Dynamism execution mode (`EAGER`, `COMPILE_NOGRAD`, or
+        `COMPILE_GRAD`). Simultaneous multi-dimension plans are only emitted in
+        compiled modes.
 
     Returns:
       A sequence of `DynamicMarkingPlan` instances targeting the canonical
       primary input tensor: one single-dimension plan (`"t{i}d{d}"`) per
       `TensorDim` returned by `get_candidate_dims`, plus a combined
-      multi-dimension plan (`"t{i}d{d0}_t{i}d{d1}..."`) when
-      `mode == DynamismMode.COMPILE` and at least two candidate dimensions
-      exist. Returns `()` if no dimensions on the canonical input tensor can be
-      marked dynamic.
+      multi-dimension plan (`"t{i}d{d0}_t{i}d{d1}..."`) when `mode` is in
+      `COMPILE` and at least two candidate dimensions exist. Returns `()` if no
+      dimensions on the canonical input tensor can be marked dynamic.
     """
     candidates = list(self.get_candidate_dims(input_value, args))
     if not candidates:
@@ -755,8 +773,9 @@ class DynamicOpInfo:
         for candidate in candidates
     ]
     # Eager `dynamism.mark_dynamic` only supports one dynamic dimension per
-    # tensor, so simultaneous multi-dimension plans are restricted to COMPILE.
-    if mode == DynamismMode.COMPILE and len(candidates) >= 2:
+    # tensor, so simultaneous multi-dimension plans are restricted to compiled
+    # modes.
+    if mode in COMPILE and len(candidates) >= 2:
       dims_tuple = tuple(candidates)
       plans.append(
           DynamicMarkingPlan(

@@ -6125,6 +6125,17 @@ def _op_func(
   return op.inplace_variant if variant == OpVariant.INPLACE else op
 
 
+def _dynamism_mode(*, use_compiled: bool, compute_grad: bool) -> DynamismMode:
+  """Returns the active `DynamismMode` for `(use_compiled, compute_grad)`."""
+  if use_compiled:
+    return (
+        DynamismMode.COMPILE_GRAD
+        if compute_grad
+        else DynamismMode.COMPILE_NOGRAD
+    )
+  return DynamismMode.EAGER
+
+
 def _requires_grad_input(input_value: _pytree.PyTree) -> _pytree.PyTree:
   """Sets requires_grad=True for the non-empty float/complex input tensors."""
 
@@ -6954,6 +6965,15 @@ class OpInfoTestBase(TorchTpuTestBase):
     if variant == OpVariant.OUT:
       device_op_input.kwargs["out"] = out
 
+    if compute_grad:
+      # We only support testing gradients when input_value is a tensor or a
+      # (possibly nested) list/tuple of tensors.
+      device_op_input.input_value = _requires_grad_input(
+          device_op_input.input_value
+      )
+      if not _can_compute_grad(variant, device_op_input.input_value):
+        return _dummy_grad(device)
+
     is_dynamic_test = bool(
         _CHECK_DYNAMISM.value and device == torch.device("tpu")
     )
@@ -6963,8 +6983,8 @@ class OpInfoTestBase(TorchTpuTestBase):
           op,
           variant,
           dtype,
-          op_input,
           device_op_input,
+          compute_grad=compute_grad,
           use_compiled=use_compiled,
           marking_plan=marking_plan,
       )
@@ -6977,14 +6997,6 @@ class OpInfoTestBase(TorchTpuTestBase):
           device_op_input,
           is_dynamic_test=is_dynamic_test,
       )
-    if compute_grad:
-      # We only support testing gradients when input_value is a tensor or a
-      # (possibly nested) list/tuple of tensors.
-      device_op_input.input_value = _requires_grad_input(
-          device_op_input.input_value
-      )
-      if not _can_compute_grad(variant, device_op_input.input_value):
-        return _dummy_grad(device)
     input_value = device_op_input.input_value
 
     try:
@@ -7098,15 +7110,17 @@ class OpInfoTestBase(TorchTpuTestBase):
       op: OpInfo,
       variant: OpVariant,
       dtype: torch.dtype,
-      op_input: OpInput,
       device_op_input: OpInput,
       *,
+      compute_grad: bool = False,
       use_compiled: bool,
       marking_plan: DynamicMarkingPlan,
   ) -> None:
     """Marks dimensions of `device_op_input` dynamic, or skips the test."""
     op_name = _op_name_for_logging(op, variant)
-    dynamism_mode = DynamismMode.COMPILE if use_compiled else DynamismMode.EAGER
+    dynamism_mode = _dynamism_mode(
+        use_compiled=use_compiled, compute_grad=compute_grad
+    )
     print(
         f">>> Marking dynamism for {op_name} with dtype {dtype}"
         f" (mode={dynamism_mode.value}) ...",
@@ -7115,7 +7129,10 @@ class OpInfoTestBase(TorchTpuTestBase):
 
     # Verify op is supported with dynamism.
     skip = self.dynamism_filter_fn(
-        op, op_input.input_value, op_input.args, mode=dynamism_mode
+        op,
+        device_op_input.input_value,
+        device_op_input.args,
+        mode=dynamism_mode,
     )
     if skip is not None:
       self.skipTest(skip)
@@ -7672,7 +7689,11 @@ class OpInfoTestBase(TorchTpuTestBase):
             skip_output_indices=skip_output_indices,
         )
       dynamism_skip, marking_plans = self._resolve_dynamism_plans(
-          op, golden_input, use_compiled=use_compiled
+          op,
+          golden_input,
+          variant=variant,
+          compute_grad=compute_grad,
+          use_compiled=use_compiled,
       )
       if dynamism_skip is not None:
         self._subtests_run += 1
@@ -7714,6 +7735,8 @@ class OpInfoTestBase(TorchTpuTestBase):
       op: OpInfo,
       golden_input: OpInput,
       *,
+      variant: OpVariant = OpVariant.BASE,
+      compute_grad: bool = False,
       use_compiled: bool,
   ) -> tuple[str | None, Sequence[DynamicMarkingPlan | None]]:
     """Resolves dynamism skip reason and marking plans for a sample.
@@ -7722,6 +7745,8 @@ class OpInfoTestBase(TorchTpuTestBase):
       op: The `OpInfo` descriptor for the operator under test.
       golden_input: Sample input bundle containing `input_value`, `args`, and
         `kwargs`.
+      variant: The `OpVariant` being evaluated.
+      compute_grad: Whether gradient computation is active.
       use_compiled: Whether the test is running under `torch.compile`.
 
     Returns:
@@ -7734,9 +7759,23 @@ class OpInfoTestBase(TorchTpuTestBase):
     if not _CHECK_DYNAMISM.value or _CHECK_SYMBOLIC_SHAPES.value:
       return None, (None,)
 
-    dynamism_mode = DynamismMode.COMPILE if use_compiled else DynamismMode.EAGER
+    input_value = golden_input.input_value
+    if compute_grad:
+      input_value = _requires_grad_input(copy.deepcopy(input_value))
+      if not _can_compute_grad(variant, input_value):
+        return (
+            (
+                f"Gradients cannot be computed for variant={variant.value} on"
+                " this sample."
+            ),
+            (),
+        )
+
+    dynamism_mode = _dynamism_mode(
+        use_compiled=use_compiled, compute_grad=compute_grad
+    )
     skip = self.dynamism_filter_fn(
-        op, golden_input.input_value, golden_input.args, mode=dynamism_mode
+        op, input_value, golden_input.args, mode=dynamism_mode
     )
     if skip is not None:
       return skip, ()
@@ -7744,7 +7783,7 @@ class OpInfoTestBase(TorchTpuTestBase):
     plans = list(
         self.dynamism_generate_plans_fn(
             op,
-            golden_input.input_value,
+            input_value,
             golden_input.args,
             mode=dynamism_mode,
         )
@@ -8006,17 +8045,11 @@ class TorchTpuVsCpuTestBase(TorchTpuTestBase):
 
 def _golden_file_prefix() -> str:
   """Returns the prefix for the golden file name."""
+  if _COMPUTE_GRAD.value:
+    return "ops_test_gpu_golden_grad"
   if is_compiled_mode():
-    return (
-        "ops_test_gpu_golden_grad_compiled"
-        if _COMPUTE_GRAD.value
-        else "ops_test_gpu_golden_compiled"
-    )
-  return (
-      "ops_test_gpu_golden_grad"
-      if _COMPUTE_GRAD.value
-      else "ops_test_gpu_golden"
-  )
+    return "ops_test_gpu_golden_compiled"
+  return "ops_test_gpu_golden"
 
 
 def _golden_file_basename(shard: int) -> str:

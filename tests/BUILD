@@ -587,6 +587,7 @@ torch_tpu_py_library(
 # * ops_test_perf: TPU only, for measuring compilation/execution time.
 # * ops_test_dynamic: TPU vs GPU, bounds a dimension.
 # * ops_test_dynamic_compiled: TPU vs GPU, bounds a dimension under torch.compile.
+# * ops_test_dynamic_compiled_grad: gradient on TPU vs GPU, bounds dimensions under torch.compile.
 # * ops_test_compiled: TPU vs GPU (torch.compile TpuBackend vs GPU inductor backend).
 
 # We chose to manually maintain the duplicate tests instead of using a for-loop to generate the
@@ -1062,6 +1063,43 @@ torch_tpu_py_test(
     tags = [
         "nomsan",  # TODO: fix the test in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.
+        "ops-test",  # Heavy ops test: see run_bazel_diff.py for details.
+    ] + _OSS_GOLDEN_TAGS,
+    deps = [
+        ":dynamism_test_utils",
+        ":op_testing",
+        ":oss_utils",
+        ":quantize_utils",
+        "//csrc/eager:tpu_aten_kernels",
+        "//shims/absl_py/flags",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/utils:test_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "ops_test_dynamic_compiled_grad",
+    timeout = "long",
+    srcs = ["ops_test.py"],
+    args = [
+        "--check_dynamism=True",
+        "--compute_grad=True",
+        "--use_compiled=True",
+        "--print_op_inputs=1",
+        "--max_samples_per_op_dtype=1",  # No need to test many samples to catch dynamism bugs.
+    ],
+    data = _GPU_GOLDENS_GRAD_DATA,
+    main = "ops_test.py",
+    nopresubmit = "Dynamic compile grad tests are run in postsubmit to avoid overloading the presubmit.",
+    run_on_accelerators = [
+        "requires-tpu-v6e",
+        "requires-tpu-v5lite",
+    ],
+    shard_count = 50,
+    tags = [
+        "nosan",  # Rely on ops_test_grad for *san coverage.
         "ops-test",  # Heavy ops test: see run_bazel_diff.py for details.
     ] + _OSS_GOLDEN_TAGS,
     deps = [
