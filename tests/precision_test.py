@@ -14,7 +14,6 @@
 
 import concurrent.futures
 import threading
-import unittest
 import warnings
 
 from absl.testing import absltest
@@ -279,7 +278,6 @@ class PrecisionTest(seed_test_utils.RepeatableTest):
     t.start()
     t.join()
 
-  @unittest.skip("b/514829191")
   def test_torch_compile_precision_caching_bug(self):
     # Arrange
     n = 256
@@ -291,6 +289,7 @@ class PrecisionTest(seed_test_utils.RepeatableTest):
     expected_default = 1.0
     # Under HIGHEST (f32 math), one_plus_beyond_bf16_epsilon is preserved.
     expected_highest = 1.0 + 2**-7 + 2**-16
+    self.assertNotEqual(expected_default, expected_highest)
 
     a = eye.clone() * one_plus_beyond_bf16_epsilon
 
@@ -314,10 +313,34 @@ class PrecisionTest(seed_test_utils.RepeatableTest):
     with precision(Precision.DEFAULT):
       actual = torch.compile(tensor_square)(a)
 
-      # Assert
-      # This assert fails because tensor_square is not freshly compiled.
-      # Instead, torch.compile gives a false positive cache hit.
       self.assertEqual(actual[0, 0].item(), expected_default)
+
+  def test_torch_compile_set_float32_matmul_precision_caching(self):
+    n = 256
+    device = torch.device("tpu")
+    eye = torch.eye(n, dtype=torch.float32, device=device)
+    one_plus_beyond_bf16_epsilon = 1 + 2**-8
+    # Under DEFAULT (bf16 math), one_plus_beyond_bf16_epsilon rounds to 1.0.
+    expected_default = 1.0
+    # Under HIGHEST (f32 math), one_plus_beyond_bf16_epsilon is preserved.
+    expected_highest = 1.0 + 2**-7 + 2**-16
+    self.assertNotEqual(expected_default, expected_highest)
+
+    a = eye.clone() * one_plus_beyond_bf16_epsilon
+
+    compiled_square = torch.compile(lambda x: x @ x, backend="tpu")
+
+    try:
+      torch.set_float32_matmul_precision("highest")
+      actual_highest = compiled_square(a)
+      self.assertEqual(actual_highest[0, 0].item(), expected_highest)
+
+      torch.set_float32_matmul_precision("medium")
+      actual_medium = compiled_square(a)
+      self.assertEqual(actual_medium[0, 0].item(), expected_default)
+
+    finally:
+      torch.set_float32_matmul_precision("medium")
 
   def test_pytorch_global_precision(self):
     try:

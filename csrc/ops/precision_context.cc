@@ -53,8 +53,7 @@ void PyPopPrecision() { PopContextState<PrecisionContextState>(); }
 // it doesn't ensure that the precision is included in an op's cache key.
 // Precedence order:
 // 1. Thread-local `PrecisionContextState` (`with torch.tpu.precision(...):`)
-// 2. ATen `at::NoTF32Guard` (`HIGHEST` when active, without triggering the
-//    global precision performance warning)
+// 2. ATen `at::NoTF32Guard` (`HIGHEST` when active)
 // 3. Global precision setting (`PyGetGlobalPrecision()`)
 [[nodiscard]] mlir::stablehlo::Precision PyUnsafeGetPrecision() {
   const auto state = GetContextState<PrecisionContextState>();
@@ -70,26 +69,28 @@ void PyPopPrecision() { PopContextState<PrecisionContextState>(); }
                                                  // NoTF32Guard
   }
 
-  const auto current_global_precision = PyGetGlobalPrecision();
-
-  if (current_global_precision !=
-      mlir::stablehlo::Precision::DEFAULT) {  // EXPLICIT_PRECISION_OK=root
-                                              // usage
-    TT_WARN_ONCE(
-        WarningCategory::kPerformance,
-        absl::StrCat("TPU is using ", ToString(current_global_precision),
-                     " precision as requested, but performance may be "
-                     "significantly lower. Consider using ",
-                     "torch.set_float32_matmul_precision('medium') for better ",
-                     "performance."));
-  }
-
-  return current_global_precision;
+  return PyGetGlobalPrecision();
 }
 
+// Emits a one-time performance warning when falling through to a non-default
+// global precision setting (skipped when overridden by `PrecisionContextState`
+// or `at::NoTF32Guard`).
 [[nodiscard]] mlir::stablehlo::Precision GetAndAddPrecisionTo(
     OpParamCacheKeys& param_keys, const std::string_view param_name) {
   const auto precision = PyUnsafeGetPrecision();
+  if (!GetContextState<PrecisionContextState>().has_value() &&
+      !at::NoTF32Guard::should_disable_tf32() &&
+      precision !=
+          mlir::stablehlo::Precision::DEFAULT) {  // EXPLICIT_PRECISION_OK=root
+    TT_WARN_ONCE(
+        WarningCategory::kPerformance,
+        absl::StrCat(
+            "TPU is using ", ToString(precision),
+            " precision as requested, but performance may be significantly "
+            "lower. Consider using "
+            "torch.set_float32_matmul_precision('medium') for better "
+            "performance."));
+  }
   ABSL_CHECK_OK(param_keys.SetParam(param_name, precision));  // CRASH_OK
   return precision;
 }
