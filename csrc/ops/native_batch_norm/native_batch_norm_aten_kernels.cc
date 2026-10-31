@@ -159,6 +159,122 @@ absl::StatusOr<BatchNormDispatchParams> PrepareBatchNormDispatch(
   };
 }
 
+// Returns true if training-mode batch norm must update the running stats.
+// PyTorch requires both running stats or neither. Like `at::batch_norm`, an
+// empty input leaves them unchanged.
+bool ShouldUpdateRunningStats(const at::Tensor& input,
+                              const std::optional<at::Tensor>& running_mean,
+                              const std::optional<at::Tensor>& running_variance,
+                              bool training) {
+  return training && running_mean && running_variance && input.numel() > 0;
+}
+
+// Runs training-mode batch norm, and writes the updated running stats into
+// `running_mean` and `running_variance` in place, as PyTorch's CPU and CUDA
+// kernels do.
+//
+// `outputs` holds (out, save_mean, save_invstd). A defined tensor is an out
+// tensor: it gets the result, resized if needed. An undefined one is set to a
+// new tensor holding the result.
+absl::Status TpuBatchNormTrainingUpdateStats(
+    const at::Tensor& input, std::optional<at::Tensor> weight,
+    std::optional<at::Tensor> bias, const at::Tensor& running_mean,
+    const at::Tensor& running_variance, double momentum, double eps,
+    OpParamCacheKeys param_keys, std::array<at::Tensor, 3>& outputs) {
+  TT_RETURN_IF_ERROR(ValidateIsFloating(input, /*arg_name=*/"input"));
+  TT_ASSIGN_OR_RETURN(const auto input_dtype,
+                      ConvertTo<mlir::ElementType>(input.scalar_type()));
+  const auto acc_type = ToAccumulateType(input.scalar_type());
+  TT_ASSIGN_OR_RETURN(const auto acc_dtype,
+                      ConvertTo<mlir::ElementType>(acc_type));
+  TT_ASSIGN_OR_RETURN(const auto running_mean_dtype,
+                      ConvertTo<mlir::ElementType>(running_mean.scalar_type()));
+  TT_ASSIGN_OR_RETURN(
+      const auto running_var_dtype,
+      ConvertTo<mlir::ElementType>(running_variance.scalar_type()));
+  const Dimensions features_dims = {input.size(kTorchFeaturesDimensionIndex)};
+
+  // Pass momentum as a tensor input rather than a constant, so the program
+  // does not depend on its value.
+  TT_ASSIGN_OR_RETURN(const at::Tensor momentum_tensor,
+                      PromoteScalar(at::Scalar(momentum)).GetTensor(acc_type));
+
+  std::vector<at::Tensor> inputs = {input, running_mean, running_variance,
+                                    momentum_tensor};
+  inputs.reserve(6);
+
+  const int weight_idx = weight ? inputs.size() : -1;
+  if (weight) {
+    inputs.push_back(*weight);
+  }
+
+  const int bias_idx = bias ? inputs.size() : -1;
+  if (bias) {
+    inputs.push_back(*bias);
+  }
+
+  auto op_builder =
+      [weight_idx, bias_idx, eps, acc_dtype](
+          absl::Span<mlir::MlirOp> mlir_inputs,
+          mlir::MlirBuilder& builder) -> absl::StatusOr<MlirOpResults<5>> {
+    std::optional<mlir::MlirOp> weight_op =
+        GetOptionalMlirOp(mlir_inputs, weight_idx);
+    std::optional<mlir::MlirOp> bias_op =
+        GetOptionalMlirOp(mlir_inputs, bias_idx);
+    return BuildBatchNormTrainingAndUpdateStats(
+        /*input=*/mlir_inputs[0], weight_op, bias_op,
+        /*running_mean=*/mlir_inputs[1], /*running_variance=*/mlir_inputs[2],
+        /*momentum=*/mlir_inputs[3], eps, acc_dtype);
+  };
+
+  const std::array<mlir::ElementType, 5> out_dtypes = {
+      input_dtype, acc_dtype, acc_dtype, running_mean_dtype, running_var_dtype};
+  const std::array<absl::Span<const int64_t>, 5> out_dims_list = {
+      input.sizes(), features_dims, features_dims, features_dims,
+      features_dims};
+
+  // Like DispatchOpOut, donate the buffers of the tensors written in place
+  // (the running stats, and out tensors that alias an input) in eager mode.
+  // DispatchOpOut itself is not used, as it bumps the version counters.
+  const std::array<at::Tensor, 5> destinations = {
+      outputs[0], outputs[1], outputs[2], running_mean, running_variance};
+  std::vector<uint8_t> output_donated(destinations.size(), 0);
+  Indices donated_indices;
+  internal::AutoDonateInPlaceBuffers(destinations, out_dtypes, out_dims_list,
+                                     inputs, donated_indices, output_donated);
+  const bool autodonated = !donated_indices.empty();
+
+  std::optional<DeviceBufferRefArray<5>> results;
+  TT_ASSIGN_OR_RETURN(results,
+                      (DispatchOp<kDynamicSize, 5>(
+                          std::move(op_builder), inputs,
+                          {.out_dtypes = out_dtypes,
+                           .out_dims_list = out_dims_list,
+                           .op_param_cache_keys = std::move(param_keys),
+                           .donated_indices = std::move(donated_indices),
+                           .autodonated = autodonated})));
+  for (int i = 0; i < 3; ++i) {
+    if (outputs[i].defined()) {
+      TT_RETURN_IF_ERROR(internal::AssignBufferToOutput(
+          outputs[i], std::move((*results)[i]), output_donated[i]));
+    } else {
+      outputs[i] = MakeTensor((*results)[i]);
+    }
+  }
+  // Like PyTorch's CPU and CUDA kernels, update the running stats without
+  // bumping their version counters: autograd saves them for the backward.
+  TT_RETURN_IF_ERROR(AssignBufferToAtTensor(std::move((*results)[3]),
+                                            running_mean, output_donated[3],
+                                            /*bump_version=*/false));
+  TT_RETURN_IF_ERROR(AssignBufferToAtTensor(std::move((*results)[4]),
+                                            running_variance, output_donated[4],
+                                            /*bump_version=*/false));
+  if (autodonated) {
+    TT_RETURN_IF_ERROR(internal::RunPostponedMaterialization());
+  }
+  return absl::OkStatus();
+}
+
 absl::StatusOr<DeviceBufferRefArray<3>> TpuBatchNorm(
     const at::Tensor& input, std::optional<at::Tensor> weight,
     std::optional<at::Tensor> bias, std::optional<at::Tensor> running_mean,
@@ -187,6 +303,13 @@ absl::Status TpuBatchNormOut(const at::Tensor& input,
                              bool training, double momentum, double eps,
                              OpParamCacheKeys param_keys, at::Tensor& out,
                              at::Tensor& save_mean, at::Tensor& save_invstd) {
+  if (ShouldUpdateRunningStats(input, running_mean, running_variance,
+                               training)) {
+    std::array<at::Tensor, 3> outputs = {out, save_mean, save_invstd};
+    return TpuBatchNormTrainingUpdateStats(
+        input, std::move(weight), std::move(bias), *running_mean,
+        *running_variance, momentum, eps, std::move(param_keys), outputs);
+  }
   TT_ASSIGN_OR_RETURN(auto p, PrepareBatchNormDispatch(
                                   input, weight, bias, running_mean,
                                   running_variance, training, momentum, eps));
@@ -314,8 +437,20 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenNativeBatchNorm(
     double momentum, double eps) {
   TT_KERNEL(OpName::kNativeBatchNorm, param_keys,
             (input, weight, bias, running_mean, running_variance, training,
-             IgnoreInCacheKey(momentum, "Doesn't affect SHLO"), eps),
+             IgnoreInCacheKey(momentum, "Passed as a tensor input when used"),
+             eps),
             {
+              if (ShouldUpdateRunningStats(
+                      input, SanitizeOptionalTensor(running_mean),
+                      SanitizeOptionalTensor(running_variance), training)) {
+                std::array<at::Tensor, 3> outputs;
+                TT_THROW_IF_ERROR(TpuBatchNormTrainingUpdateStats(
+                    input, SanitizeOptionalTensor(weight),
+                    SanitizeOptionalTensor(bias), *running_mean,
+                    *running_variance, momentum, eps, std::move(param_keys),
+                    outputs));
+                return {outputs[0], outputs[1], outputs[2]};
+              }
               TT_ASSIGN_OR_THROW(
                   (auto [output, mean, variance_inverse]),
                   TpuBatchNorm(input, SanitizeOptionalTensor(weight),
@@ -338,8 +473,8 @@ std::tuple<at::Tensor&, at::Tensor&, at::Tensor&> AtenNativeBatchNormOut(
   TT_KERNEL(
       OpName::kNativeBatchNormOut, param_keys,
       (input, weight, bias, running_mean, running_variance, training,
-       IgnoreInCacheKey(momentum, "Doesn't affect SHLO"), eps, out, save_mean,
-       save_invstd),
+       IgnoreInCacheKey(momentum, "Passed as a tensor input when used"), eps,
+       out, save_mean, save_invstd),
       {
         TT_THROW_IF_ERROR(TpuBatchNormOut(
             input, SanitizeOptionalTensor(weight), SanitizeOptionalTensor(bias),
@@ -395,8 +530,8 @@ std::tuple<at::Tensor&, at::Tensor&, at::Tensor&> AtenNativeBatchNormLegitOut(
   TT_KERNEL(
       OpName::kNativeBatchNormLegitOut, param_keys,
       (input, weight, bias, running_mean, running_variance, training,
-       IgnoreInCacheKey(momentum, "Doesn't affect SHLO"), eps, out, save_mean,
-       save_invstd),
+       IgnoreInCacheKey(momentum, "Passed as a tensor input when used"), eps,
+       out, save_mean, save_invstd),
       {
         TT_THROW_IF_ERROR(TpuBatchNormOut(
             input, SanitizeOptionalTensor(weight), SanitizeOptionalTensor(bias),
