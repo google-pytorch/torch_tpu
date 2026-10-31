@@ -1,0 +1,158 @@
+<!--
+Copyright 2026 Google LLC
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+-->
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' https://avatars.githubusercontent.com; connect-src https://api.github.com; object-src 'none'; base-uri 'self'; form-action 'none';"
+    />
+    <title>TorchTPU GitHub Work Dashboard</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header>
+      <h1>
+        <a href="https://github.com/google-pytorch/torch_tpu" target="_blank"
+          >TorchTPU GitHub</a
+        >
+        Work Dashboard
+      </h1>
+      <label>
+        GitHub @user:
+        <input id="username" placeholder="e.g. zhanyong-wan" spellcheck="false" />
+      </label>
+      <a
+        class="pill"
+        href="https://github.com/notifications?query=is%3Aunread"
+        target="_blank"
+        >Unread Notifications &#8599;</a
+      >
+    </header>
+
+    <main>
+      <div class="row">
+        <label class="label">
+          My Role
+          <select id="role">
+            <option value="oncaller">Oncaller</option>
+            <option value="ic">Individual Contributor</option>
+          </select>
+        </label>
+        <span id="ci-status">
+          <a class="pill" href="http://go/tt-gh-cis" target="_blank"
+            >CI Status &#8599;</a
+          >
+          <span class="muted">(Googlers only)</span>
+        </span>
+      </div>
+
+      <details>
+        <summary class="label">
+          GitHub token (optional): raises the search limit from 10 to 30 per
+          minute
+        </summary>
+        <div class="card">
+          <p>
+            Without a token, GitHub allows 10 searches per minute, possibly
+            shared with others on your network. With a personal token, you get
+            30 per minute of your own. To create one:
+          </p>
+          <ol>
+            <li>
+              Open
+              <a
+                href="https://github.com/settings/personal-access-tokens/new"
+                target="_blank"
+                >GitHub &rarr; Settings &rarr; Fine-grained tokens &rarr;
+                Generate new token</a
+              >.
+            </li>
+            <li>
+              Give it a name (e.g. "TorchTPU dashboard") and an expiration.
+              Leave <b>Repository access</b> as <b>Public repositories</b> and
+              don't add any permissions; read-only access to public data is all
+              the dashboard needs.
+            </li>
+            <li>Click <b>Generate token</b>, copy it, and paste it below.</li>
+          </ol>
+          <p class="muted">
+            The token is kept only in this browser tab's memory and is sent only
+            to api.github.com. It is never saved, so paste it again after you
+            reload the page.
+          </p>
+          <div class="row">
+            <input
+              id="token"
+              type="password"
+              placeholder="Paste your GitHub token"
+              autocomplete="off"
+            />
+            <button id="token-use" class="btn primary">Use Token</button>
+            <button id="token-clear" class="btn">Clear Token</button>
+            <span id="token-status" class="muted"></span>
+          </div>
+        </div>
+      </details>
+
+      <section class="card">
+        <div id="tabs" class="tabs"></div>
+        <h2>Filter</h2>
+        <div id="presets" class="row"></div>
+        <div id="filters" class="row"></div>
+        <div class="row">
+          <input
+            id="extra"
+            class="grow"
+            placeholder="Extra qualifiers (e.g. label:bug)"
+            aria-label="Extra qualifiers"
+          />
+          <button id="apply" class="btn primary">Apply</button>
+          <button id="refresh" class="btn">Refresh</button>
+          <button id="reset" class="btn">Reset View Defaults</button>
+        </div>
+        <div class="row query">
+          <div class="grow">
+            <div id="description" class="muted"></div>
+            <code id="query"></code>
+          </div>
+          <button id="copy" class="btn">Copy Query</button>
+          <a id="open" class="btn" target="_blank">Open on GitHub &#8599;</a>
+        </div>
+      </section>
+
+      <div id="banner" hidden></div>
+
+      <section class="card results">
+        <div class="row toolbar">
+          <b id="count" class="grow">Loading...</b>
+          <span id="rate" class="muted"></span>
+        </div>
+        <div class="scroll">
+          <table>
+            <thead id="thead"></thead>
+            <tbody id="tbody"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <script src="views.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>

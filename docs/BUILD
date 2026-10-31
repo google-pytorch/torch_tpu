@@ -33,4 +33,11 @@ exports_files(
     visibility = ["//tests/api:__pkg__"],
 )
 
+# Static files of the GitHub work dashboard, published to GitHub Pages by
+# `.github/workflows/dashboard_pages.yml`.
+filegroup(
+    name = "dashboard",
+    srcs = glob(["developers/dashboard/*"]),
+)
+
 torch_tpu_package_end()
