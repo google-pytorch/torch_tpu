@@ -399,8 +399,12 @@ class _WrapperModule(torch.nn.Module):
   def forward(self, *args: Any) -> Any:
     if self.cpu_arg_indices:
       device = torch.accelerator.current_accelerator()
+      # Contiguous with storage offset 0, the layout the executable was
+      # compiled for in `_SubmodCompiler.compile_submod`.
       args = tuple(
-          arg.to(device) if i in self.cpu_arg_indices else arg
+          arg.to(device, memory_format=torch.contiguous_format)
+          if i in self.cpu_arg_indices
+          else arg
           for i, arg in enumerate(args)
       )
     x = self.submod(*args)
@@ -526,8 +530,19 @@ class _SubmodCompiler(torch.fx.interpreter.Interpreter):
           " and `capture_scalar_outputs`."
       )
 
+    # `_WrapperModule.forward` copies CPU arguments to the device as contiguous
+    # tensors with storage offset 0. Compile against that layout: the CPU
+    # tensors here may be views, e.g. `t[1]` of a CPU partition's output, and
+    # the executable would otherwise be built for the view's base storage and
+    # read past the copied buffer.
+    compile_args = [
+        torch.empty_like(arg, memory_format=torch.contiguous_format)
+        if i in cpu_arg_indices
+        else arg
+        for i, arg in enumerate(args)
+    ]
     compiled_submod_real = self.compiler_fn(
-        input_mod, args, module_name=full_submod_name
+        input_mod, compile_args, module_name=full_submod_name
     )
     wrapper = _WrapperModule(
         compiled_submod_real, unwrap_singleton_tuple, cpu_arg_indices
