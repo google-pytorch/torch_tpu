@@ -346,6 +346,22 @@ static absl::Status SetDefaultDeviceAssignment(
   // required by Pallas/Mosaic.
   // LINT.IfChange
   options.set_num_replicas(1);
+  TT_ASSIGN_OR_RETURN(const std::vector<int64_t> job_device_ids,  // INT_VEC_OK
+                      PjrtBackend::GetInstance().GetJobDeviceIds());
+  if (static_cast<int>(job_device_ids.size()) != num_devices) {
+    // A job sharing the slice compiles for its own devices only, so its
+    // programs never wait on the other job's processes.
+    const int num_job_devices = job_device_ids.size();
+    options.set_num_partitions(num_job_devices);
+    xla::DeviceAssignment job_da(1, num_job_devices);
+    for (int idx = 0; idx < num_job_devices; ++idx) {
+      job_da(0, idx) = job_device_ids[idx];
+    }
+    options.set_device_assignment(job_da);
+    options.set_use_spmd_partitioning(true);
+    options.set_use_shardy_partitioner(true);
+    return absl::OkStatus();
+  }
   options.set_num_partitions(num_devices);
   xla::DeviceAssignment da(1, num_devices);
   if (num_devices == 1) {
