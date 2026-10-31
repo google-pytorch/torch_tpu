@@ -1611,6 +1611,28 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
         self.assert_close_tpu_vs_cpu(run)
 
+  def test_gelu_exact_negative_tail_precision_float32(self):
+    """Tests exact gelu and its gradient in float32 for negative inputs.
+
+    0.5 * (1 + erf(x / sqrt(2))) loses all precision for x << 0 because
+    erf(...) is close to -1, so the kernel computes 0.5 * erfc(-x / sqrt(2)).
+    """
+    x = torch.linspace(-9.0, -3.0, 601, dtype=torch.float64)
+    # The float64 reference also uses erfc, since 1 + erf(...) loses precision
+    # in float64 too below about x = -8.
+    cdf = 0.5 * torch.special.erfc(-x / math.sqrt(2.0))
+    pdf = torch.exp(-0.5 * x * x) / math.sqrt(2.0 * math.pi)
+    want_out = (x * cdf).to(torch.float32)
+    want_grad = (cdf + x * pdf).to(torch.float32)
+
+    x_tpu = x.to(torch.float32).to("tpu")
+    out = torch.nn.functional.gelu(x_tpu, approximate="none")
+    grad = torch.ops.aten.gelu_backward(
+        torch.ones_like(x_tpu), x_tpu, approximate="none"
+    )
+    utils.assert_close(out.cpu(), want_out, rtol=1e-4, atol=0.0)
+    utils.assert_close(grad.cpu(), want_grad, rtol=1e-4, atol=0.0)
+
   def test_complex_abs_out_dtype(self):
     device = torch.device("tpu")
     x = torch.tensor([3.0 + 4.0j], dtype=torch.complex64, device=device)

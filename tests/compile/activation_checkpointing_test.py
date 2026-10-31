@@ -289,7 +289,7 @@ class ActivationCheckpointingTest(seed_test_utils.RepeatableTest):
   def _assert_hlo_cse_idempotent(
       self,
       expected_barriers: int,
-      expected_erfs: int,
+      expected_exponentials: int,
       expected_dots: int,
   ) -> None:
     all_module_before = sorted(
@@ -316,7 +316,10 @@ class ActivationCheckpointingTest(seed_test_utils.RepeatableTest):
     with open(before_files[0], "r") as f:
       first_entry = f.read().split("ENTRY ", maxsplit=1)[1]
     self.assertEqual(first_entry.count("opt-barrier("), expected_barriers)
-    self.assertEqual(first_entry.count("erf("), expected_erfs)
+    # gelu computes its CDF with `chlo.erfc`, which has no HLO op: it lowers
+    # to a polynomial approximation with `exponential` ops, which also
+    # appear in the gelu gradient. Count those as the gelu marker.
+    self.assertEqual(first_entry.count("exponential("), expected_exponentials)
     self.assertEqual(first_entry.count("dot("), expected_dots)
 
     for before_path, after_path in zip(before_files, after_files, strict=True):
@@ -324,7 +327,7 @@ class ActivationCheckpointingTest(seed_test_utils.RepeatableTest):
         before_entry = f.read().split("ENTRY ", maxsplit=1)[1]
       with open(after_path, "r") as f:
         after_entry = f.read().split("ENTRY ", maxsplit=1)[1]
-      for op_token in ("opt-barrier(", "erf(", "dot(", "rsqrt("):
+      for op_token in ("opt-barrier(", "exponential(", "dot(", "rsqrt("):
         self.assertEqual(
             before_entry.count(op_token),
             after_entry.count(op_token),
@@ -683,9 +686,9 @@ class ActivationCheckpointingTest(seed_test_utils.RepeatableTest):
     )
     bwd_mlir = debug.stablehlo_backward_text[0]
     self.assertEqual(bwd_mlir.count("stablehlo.optimization_barrier"), 2)
-    self.assertEqual(bwd_mlir.count("chlo.erf"), 2)
+    self.assertEqual(bwd_mlir.count("chlo.erfc"), 2)
     self._assert_hlo_cse_idempotent(
-        expected_barriers=2, expected_erfs=2, expected_dots=8
+        expected_barriers=2, expected_exponentials=4, expected_dots=8
     )
 
   def test_activation_checkpointing(self):
@@ -700,13 +703,13 @@ class ActivationCheckpointingTest(seed_test_utils.RepeatableTest):
     )
     bwd_mlir = debug.stablehlo_backward_text[0]
     self.assertEqual(bwd_mlir.count("stablehlo.optimization_barrier"), 2)
-    self.assertEqual(bwd_mlir.count("chlo.erf"), 2)
+    self.assertEqual(bwd_mlir.count("chlo.erfc"), 2)
     # 8 backward aten.mm ops lower to 8 stablehlo.dot_general ops in MLIR; XLA
     # HLO additionally lowers the 2 recomputed aten.addmm ops to 2 dot( ops
     # (8 + 2 = 10 total dot( ops in HLO).
     self.assertEqual(bwd_mlir.count("stablehlo.dot_general"), 8)
     self._assert_hlo_cse_idempotent(
-        expected_barriers=2, expected_erfs=2, expected_dots=10
+        expected_barriers=2, expected_exponentials=4, expected_dots=10
     )
 
   def test_activation_checkpointing_fused_step(self):
@@ -719,8 +722,8 @@ class ActivationCheckpointingTest(seed_test_utils.RepeatableTest):
       self.skipTest("Fused-step AC rematerialization requires PyTorch >= 2.12")
 
     # 1. Negative control: without barriers, MLIR CSE deduplicates the 2
-    #    backward recomputed `chlo.erf` ops against the 2 forward `chlo.erf` ops
-    #    (collapsing 4 -> 2).
+    #    backward recomputed `chlo.erfc` ops against the 2 forward `chlo.erfc`
+    #    ops (collapsing 4 -> 2).
     with mock.patch.object(
         mark_activation_checkpoints, "apply", side_effect=lambda gm: None
     ):
@@ -731,9 +734,9 @@ class ActivationCheckpointingTest(seed_test_utils.RepeatableTest):
       )
     no_barrier_mlir = no_barrier_debug.stablehlo_forward_text[0]
     self.assertNotIn("stablehlo.optimization_barrier", no_barrier_mlir)
-    self.assertEqual(no_barrier_mlir.count("chlo.erf"), 2)
+    self.assertEqual(no_barrier_mlir.count("chlo.erfc"), 2)
 
-    # 2. With barriers enabled, all 4 `chlo.erf` ops and 15 HLO `dot(` ops
+    # 2. With barriers enabled, all 4 `chlo.erfc` ops and 15 HLO `dot(` ops
     #    (4 forward addmm + 3 recomputed addmm + 8 backward mm) survive both
     #    MLIR CSE and XLA `HloCSE`.
     torch._dynamo.reset()
@@ -745,10 +748,10 @@ class ActivationCheckpointingTest(seed_test_utils.RepeatableTest):
     self.assertLen(debug.compiled_executables, 1)
     fused_mlir = debug.stablehlo_forward_text[0]
     self.assertEqual(fused_mlir.count("stablehlo.optimization_barrier"), 2)
-    self.assertEqual(fused_mlir.count("chlo.erf"), 4)
+    self.assertEqual(fused_mlir.count("chlo.erfc"), 4)
     self.assertEqual(fused_mlir.count("stablehlo.dot_general"), 8)
     self._assert_hlo_cse_idempotent(
-        expected_barriers=2, expected_erfs=4, expected_dots=15
+        expected_barriers=2, expected_exponentials=6, expected_dots=15
     )
 
   def test_selective_activation_checkpointing_with_layernorm_fused_step(self):
@@ -768,12 +771,12 @@ class ActivationCheckpointingTest(seed_test_utils.RepeatableTest):
     self.assertLen(debug.compiled_executables, 1)
     fused_mlir = debug.stablehlo_forward_text[0]
     self.assertEqual(fused_mlir.count("stablehlo.optimization_barrier"), 2)
-    self.assertEqual(fused_mlir.count("chlo.erf"), 4)
+    self.assertEqual(fused_mlir.count("chlo.erfc"), 4)
     # Under `_sac_policy_fn`, the 4 forward addmm ops are saved (`MUST_SAVE`)
     # and not recomputed in backward, yielding 4 forward addmm + 8 backward mm =
     # 12 HLO `dot(` ops.
     self._assert_hlo_cse_idempotent(
-        expected_barriers=2, expected_erfs=4, expected_dots=12
+        expected_barriers=2, expected_exponentials=6, expected_dots=12
     )
 
   def test_activation_checkpointing_shared_weights_fused_step(self):
@@ -793,10 +796,10 @@ class ActivationCheckpointingTest(seed_test_utils.RepeatableTest):
     self.assertLen(debug.compiled_executables, 1)
     fused_mlir = debug.stablehlo_forward_text[0]
     self.assertEqual(fused_mlir.count("stablehlo.optimization_barrier"), 2)
-    self.assertEqual(fused_mlir.count("chlo.erf"), 4)
+    self.assertEqual(fused_mlir.count("chlo.erfc"), 4)
     self.assertEqual(fused_mlir.count("stablehlo.dot_general"), 8)
     self._assert_hlo_cse_idempotent(
-        expected_barriers=2, expected_erfs=4, expected_dots=15
+        expected_barriers=2, expected_exponentials=6, expected_dots=15
     )
 
 
