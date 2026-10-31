@@ -15289,13 +15289,15 @@ Device-side assertion tracking was not enabled by user.""",
     scalar).
     """
     scalar = torch.tensor(42, device=et.device())
+    out = torch.empty_like(scalar)
 
     with et.assert_raises_message(
         IndexError,
-        gpu="""Dimension specified as -2 but tensor has no dimensions""",
-        tpu="""unique_consecutive(): expected dimension to be either 0 or -1 for a shape with 0 dimensions, got -2""",
+        tpu="""cumsum(): expected dimension to be either 0 or -1 for a shape with 0 dimensions, got -2""",
+        gpu="""Dimension out of range (expected to be in range of [-1, 0], but got -2)""",
+        message_reviewed_by="adivinpatel",
     ):
-      torch.unique_consecutive(scalar, dim=-2)
+      torch.cumsum(scalar, dim=-2, out=out)
 
   @parameterized.named_parameters(
       ("u_mismatch", "u"),
@@ -17129,6 +17131,28 @@ class MaskedSoftmaxErrorTest(et.ErrorTestBase):
     ):
       torch.histc(x)
 
+  def test_unique_consecutive_dim_zero_rank(self):
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""unique_consecutive(): expected tensor with at least 1 dimension, got 0""",
+        gpu="""Dimension specified as 0 but tensor has no dimensions""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.unique_consecutive(
+          torch.tensor(0.0, device=et.device()),
+          dim=0,
+      )
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""unique_dim_consecutive(): expected tensor with at least 1 dimension, got 0""",
+        gpu="""Dimension specified as 0 but tensor has no dimensions""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.ops.aten.unique_dim_consecutive(
+          torch.tensor(0.0, device=et.device()),
+          0,
+      )
+
   def test_unique_consecutive_dim_out_of_bounds(self):
     with et.assert_raises_message(
         IndexError,
@@ -17161,6 +17185,53 @@ class MaskedSoftmaxErrorTest(et.ErrorTestBase):
       torch.unique_consecutive(
           torch.empty(0, 3, device=et.device()),
           dim=1,
+      )
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="complex64",
+          dtype=torch.complex64,
+          tpu_dtype="complex64",
+          gpu_dtype="ComplexFloat",
+      ),
+      dict(
+          testcase_name="float8_e4m3fn",
+          dtype=torch.float8_e4m3fn,
+          tpu_dtype="float8_e4m3fn",
+          gpu_dtype="Float8_e4m3fn",
+      ),
+  )
+  def test_unique_consecutive_unsupported_dtypes(
+      self, dtype, tpu_dtype, gpu_dtype
+  ):
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu=f"""unique_consecutive(): not implemented for {tpu_dtype}""",
+        gpu=f""""unique" not implemented for '{gpu_dtype}'""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.unique_consecutive(
+          torch.empty(0, dtype=dtype, device=et.device()),
+      )
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu=f"""unique_consecutive(): not implemented for {tpu_dtype}""",
+        gpu=f""""unique_dim" not implemented for '{gpu_dtype}'""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.unique_consecutive(
+          torch.empty(0, 3, dtype=dtype, device=et.device()),
+          dim=0,
+      )
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu=f"""unique_dim_consecutive(): not implemented for {tpu_dtype}""",
+        gpu=f""""unique_dim" not implemented for '{gpu_dtype}'""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.ops.aten.unique_dim_consecutive(
+          torch.empty(0, 3, dtype=dtype, device=et.device()),
+          0,
       )
 
   def test_unique_dim_zero_rank(self):
