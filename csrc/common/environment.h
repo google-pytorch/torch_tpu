@@ -34,6 +34,11 @@ absl::Status InitializeDistributedEnvironment(
 absl::Status InitializeSingleDeviceEnvironment(
     std::string_view pci_devices_dir = "/sys/bus/pci/devices");
 
+// Makes the TPU runtime use only the chips listed in `TPU_VISIBLE_DEVICES`, if
+// it is set and no device paths or included devices are configured otherwise.
+// Call it before initializing the TPU runtime.
+void ApplyTpuVisibleDevices();
+
 // Returns whether the TPU device paths that libtpu should use are configured
 // explicitly. Such paths may name device nodes outside of the default
 // locations checked by HasTpuDeviceNodes() in tpu_hardware.h. Does not

@@ -1146,12 +1146,14 @@ torch_tpu_cc_library(
     srcs = ["tpu_hardware.cc"],
     hdrs = ["tpu_hardware.h"],
     deps = [
+        ":env_vars",
         ":error_utils",
         ":utils",
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/base:no_destructor",
         "@com_google_absl//absl/base:nullability",
         "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/functional:function_ref",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
@@ -1162,6 +1164,7 @@ torch_tpu_cc_test(
     name = "tpu_hardware_test",
     srcs = ["tpu_hardware_test.cc"],
     deps = [
+        ":env_vars",
         ":error_utils",
         ":tpu_hardware",
         ":utils",

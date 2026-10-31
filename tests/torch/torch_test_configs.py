@@ -325,8 +325,6 @@ TEST_EXCLUSIONS: Final[
     "test_accelerator": {
         "TestAccelerator": [
             "test_memory_stats",
-            "test_multi_device_context_manager",
-            "test_multi_device_stream_context_manager",
         ],
     },
     "test_ao_sparsity": {
@@ -337,11 +335,9 @@ TEST_EXCLUSIONS: Final[
     },
     "test_autograd": {
         "TestAutogradDeviceType": [
-            "test_backward_device",
             "test_checkpointing_without_reentrant_dataparallel",
             "test_graph_save_on_cpu",
             "test_graph_save_on_cpu_device",
-            "test_inputbuffer_add_multidevice",
             "test_min_max_aminmax_median_backprops_to_all_values",
             "test_pdist_gradgrad",
             "test_pdist_gradgrad_small_p",
@@ -359,20 +355,8 @@ TEST_EXCLUSIONS: Final[
             "test_autograd_composite_implicit_and_dispatch_registration",
             "test_autograd_multiple_dispatch_registrations",
         ],
-        "TestAutogradStreamSynchronization": [
-            "test_consumer_to_multi_producer_case_4_correctness",
-            "test_consumer_to_single_producer_case_3_correctness",
-            "test_consumer_to_single_producer_case_3_correctness_non_default_ambient_stream",
-            "test_consumer_to_single_producer_case_4_correctness",
-        ],
         "TestInputGradBuffers": [
-            "test_different_device_errors",
             "test_lookup_does_not_deadlock_with_python_dispatch",
-        ],
-    },
-    "test_bmm_outer_product": {
-        "TestBmmOuterProductDevice": [
-            "test_non_current_device_outer_product",
         ],
     },
     "test_custom_ops": {
@@ -612,7 +596,6 @@ TEST_EXCLUSIONS: Final[
             "test_forloop_goes_right_direction_multigpu",
             "test_grads_are_never_inplaced_into",
             "test_load_nontensor_step",
-            "test_mixed_device_dtype",
             "test_non_empty_state",
             "test_param_group_with_lrscheduler_goes_right_direction",
             "test_param_groups_lr",
@@ -667,7 +650,6 @@ TEST_EXCLUSIONS: Final[
     "test_serialization": {
         "TestSerializationAccelerator": [
             "test_save_different_dtype_unallocated",
-            "test_serialization_map_location_multi_device",
             "test_skip_data_serialization",
         ],
     },
@@ -698,7 +680,6 @@ TEST_EXCLUSIONS: Final[
         ],
     },
     "test_testing": {
-        "TestAssertCloseMultiDevice": "*",
         "TestMakeTensor": [
             "test_exclude_zero",
             "test_low_ge_high",
@@ -717,13 +698,6 @@ TEST_EXCLUSIONS: Final[
         ],
     },
     "test_torch": {
-        "TestDevicePrecision": [
-            "test_advancedindex_mixed_cpu_devices",
-            "test_advancedindex_mixed_devices_error",
-            "test_copy_noncontig",
-            "test_multidevice_serialization",
-            "test_type_conversions_same_device",
-        ],
         "TestTorchDeviceType": {
             "test__local_scalar_dense_with_empty_tensor": "*",
             "test_addcmul": "*",
@@ -801,7 +775,6 @@ TEST_EXCLUSIONS: Final[
             "test_memory_format_empty_like": "*",
             "test_memory_format_operators": "*",
             "test_multinomial_device_constrain": "*",
-            "test_multinomial_gpu_device_constrain": "*",
             "test_nondeterministic_alert_AdaptiveMaxPool2d": "*",
             "test_nondeterministic_alert_FractionalMaxPool2d": "*",
             "test_nondeterministic_alert_FractionalMaxPool3d": "*",
@@ -837,7 +810,6 @@ TEST_EXCLUSIONS: Final[
             "test_shift_mem_overlap": "*",
             "test_split_with_sizes_copy_out": "*",
             "test_storage": "*",
-            "test_storage_all_devices": "*",
             "test_strides_propagation": "*",
             "test_take_empty": "*",
             "test_tensor_set_errors_cross_device": "*",
@@ -886,8 +858,6 @@ TEST_EXCLUSIONS: Final[
     "test_utils": {
         "TestCheckpointDeviceType": [
             "test_checkpoint_rng_accelerator",
-            "test_get_device_states_recursive",
-            "test_infer_device_state_recursive_multi_device",
         ],
         "TestDeviceLazyInit": [
             "test_fork_poison_on_lazy_init",
