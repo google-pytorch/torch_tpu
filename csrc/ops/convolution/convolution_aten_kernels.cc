@@ -37,6 +37,7 @@
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
 #include "csrc/common/to_string.h"
+#include "csrc/common/utils.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/eager_mode.h"
 #include "csrc/eager/op_dispatcher.h"
@@ -77,7 +78,7 @@ Dimensions ExpandIfNecessary(at::IntArrayRef param, int num_spatial_dims) {
   if (param.size() == 1) {
     return Dimensions(num_spatial_dims, param[0]);
   }
-  return Dimensions(param.begin(), param.end());
+  return CopyIntVector(param);
 }
 
 absl::Status ValidateConvolutionInputs(
@@ -278,19 +279,10 @@ absl::Status ConvolutionBinaryOut(
                                  out, param_keys));
 
   auto op_builder =
-      [stride = Strides(params.expanded_stride.begin(),
-                        params.expanded_stride.end()),
-       padding = Dimensions(params.expanded_padding.begin(),
-                            params.expanded_padding.end()),
-       dilation = Dimensions(params.expanded_dilation.begin(),
-                             params.expanded_dilation.end()),
-       transposed,
-       output_padding = Dimensions(params.expanded_output_padding.begin(),
-                                   params.expanded_output_padding.end()),
-       groups,
-       output_dims =
-           Dimensions(params.output_dims.begin(), params.output_dims.end()),
-       mlir_dtype = params.mlir_dtype,
+      [stride = params.expanded_stride, padding = params.expanded_padding,
+       dilation = params.expanded_dilation, transposed,
+       output_padding = params.expanded_output_padding, groups,
+       output_dims = params.output_dims, mlir_dtype = params.mlir_dtype,
        current_precision =
            params.current_precision](FixedSizeSpan<mlir::MlirOp, 2> inputs) {
         auto& [input, weight] = inputs;
@@ -319,19 +311,10 @@ absl::Status ConvolutionTernaryOut(
                           transposed, output_padding, groups, out, param_keys));
 
   auto op_builder =
-      [stride = Strides(params.expanded_stride.begin(),
-                        params.expanded_stride.end()),
-       padding = Dimensions(params.expanded_padding.begin(),
-                            params.expanded_padding.end()),
-       dilation = Dimensions(params.expanded_dilation.begin(),
-                             params.expanded_dilation.end()),
-       transposed,
-       output_padding = Dimensions(params.expanded_output_padding.begin(),
-                                   params.expanded_output_padding.end()),
-       groups,
-       output_dims =
-           Dimensions(params.output_dims.begin(), params.output_dims.end()),
-       mlir_dtype = params.mlir_dtype,
+      [stride = params.expanded_stride, padding = params.expanded_padding,
+       dilation = params.expanded_dilation, transposed,
+       output_padding = params.expanded_output_padding, groups,
+       output_dims = params.output_dims, mlir_dtype = params.mlir_dtype,
        current_precision =
            params.current_precision](FixedSizeSpan<mlir::MlirOp, 3> inputs) {
         auto& [input, weight, bias] = inputs;
@@ -453,8 +436,7 @@ absl::StatusOr<DeviceBufferRefArray<3>> ConvolutionBackward(
 
   auto input_sizes = input.sizes();
   auto weight_sizes = weight.sizes();
-  Dimensions grad_out_sizes(grad_output.sizes().begin(),
-                            grad_output.sizes().end());
+  Dimensions grad_out_sizes = CopyIntVector(grad_output.sizes());
 
   auto op_builder = [stride = expanded_stride, padding = expanded_padding,
                      dilation = expanded_dilation, groups, transposed,

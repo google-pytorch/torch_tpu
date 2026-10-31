@@ -64,8 +64,7 @@ absl::StatusOr<mlir::MlirOp> BuildReplicationPadShlo(mlir::MlirOp input,
                     mlir::MlirOp op, int64_t dimension, int64_t left_pad,
                     int64_t right_pad) -> absl::StatusOr<mlir::MlirOp> {
     auto input_tensor_type = GetTensorTypeOrDie(op);
-    Dimensions input_shape(input_tensor_type.getShape().begin(),
-                           input_tensor_type.getShape().end());
+    Dimensions input_shape = CopyIntVector(input_tensor_type.getShape());
     // Left and right dimensions for slicing (a vector of 0s and of max vals)
     // and a vector of stride 1.
     auto left_dim = Dimensions(input_shape.size(), 0);
@@ -166,8 +165,7 @@ absl::StatusOr<mlir::MlirOp> BuildReplicationPadBackwardShlo(
   auto pad_fn = [](mlir::MlirOp op, int64_t dimension, int64_t left_pad,
                    int64_t right_pad) -> absl::StatusOr<mlir::MlirOp> {
     mlir::RankedTensorType input_tensor_type = GetTensorTypeOrDie(op);
-    Dimensions input_shape(input_tensor_type.getShape().begin(),
-                           input_tensor_type.getShape().end());
+    Dimensions input_shape = CopyIntVector(input_tensor_type.getShape());
 
     std::vector<mlir::MlirOp> ops;
 
@@ -244,7 +242,7 @@ absl::Status ReplicationPadHelper(
                error::kInvalidArgument)
       << "not implemented for 'Bool'";
 
-  Dimensions padding_vec(padding.begin(), padding.end());
+  Dimensions padding_vec = CopyIntVector(padding);
   TT_ASSIGN_OR_RETURN(auto element_type,
                       ConvertTo<mlir::ElementType>(self.scalar_type()));
   auto op_builder = [padding_vec, out_shape = CopyIntVector(out.sizes()),

@@ -28,17 +28,19 @@ Contract:
       GITHUB_API_URL: (Optional) Base API URL, defaults to
         'https://api.github.com'.
     Event payloads:
-      'issues': Triggered on 'opened', 'reopened', or 'transferred'.
+      'issues': Triggered on 'opened', 'reopened', 'transferred', 'assigned',
+        or 'unassigned'.
       'issue_comment': Triggered on 'created' (on issues or pull requests).
       'pull_request' / 'pull_request_target': Triggered on 'opened',
-        'reopened', 'ready_for_review', or 'review_requested'.
+        'reopened', 'ready_for_review', 'review_requested',
+        'review_request_removed', 'assigned', or 'unassigned'.
       'pull_request_review': Triggered on 'submitted'.
       'pull_request_review_comment': Triggered on 'created'.
       'workflow_run': Relays a 'pull_request_review' or
         'pull_request_review_comment' run. GitHub hands those events a
         read-only token on PRs from forks, so a no-op workflow runs on them
         and this script handles its completion with a write token, looking
-        the PR up by head SHA and treating the run's actor as the sender.
+        open PRs up via the Search API and verifying their head SHA.
 
 - Outputs and Return Code:
     Exit 0: Normal completion, whether labels were modified or the event was
@@ -50,12 +52,13 @@ Contract:
     request and issue label endpoints:
       - Adds 'stat:awaiting-assignee' on issues and 'stat:awaiting-reviewers'
         on pull requests when the item is new, reopened, transferred, or
-        ready for review, on any review request, or when the original poster
-        comments or submits a review.
+        ready for review, when the reviewer list or assignee field changes,
+        or when the original poster comments or submits a review.
       - Adds 'stat:awaiting-requester' when a responder comments or submits
         a review. Responders are assignees on issues, and assignees plus
         reviewers (requested or already reviewed) on pull requests.
-      - Deletes conflicting turn labels on turn flips.
+      - Deletes conflicting turn labels on turn flips (including
+        'stat:awaiting-assignee' on pull requests).
 
 - Failure Cases and Ignored Events:
     - Closed or draft items: Activity on closed issues/PRs or draft PRs is
@@ -64,8 +67,8 @@ Contract:
       original poster nor a responder are ignored (no-op).
     - Bot activity: Items authored by bots (e.g. Copybara) and comments or
       reviews from bots are ignored (no-op).
-    - Self-assigned items: If the creator is also a responder, comments or
-      reviews are ignored to prevent self-ping-pong (no-op).
+    - Self-assigned items: If the creator is also assigned to the item,
+      comments or reviews are ignored to prevent self-ping-pong (no-op).
     - HTTP 404 on label deletion: Swallowed gracefully (label was already
       absent).
     - Other HTTP errors and network timeouts: Raised as exceptions causing the
@@ -84,6 +87,27 @@ import urllib.request
 ASSIGNEE_LABEL: Final[str] = "stat:awaiting-assignee"
 REVIEWERS_LABEL: Final[str] = "stat:awaiting-reviewers"
 REQUESTER_LABEL: Final[str] = "stat:awaiting-requester"
+
+_ISSUE_RESPONDER_ACTIONS: Final[frozenset[str]] = frozenset({
+    # go/keep-sorted start
+    "assigned",
+    "opened",
+    "reopened",
+    "transferred",
+    "unassigned",
+    # go/keep-sorted end
+})
+_PR_RESPONDER_ACTIONS: Final[frozenset[str]] = frozenset({
+    # go/keep-sorted start
+    "assigned",
+    "opened",
+    "ready_for_review",
+    "reopened",
+    "review_request_removed",
+    "review_requested",
+    "unassigned",
+    # go/keep-sorted end
+})
 
 
 class LabelChanges(NamedTuple):
@@ -140,6 +164,8 @@ def determine_label_changes(
       to_add.append(responder_label)
     if REQUESTER_LABEL.lower() in existing_labels:
       to_remove.append(existing_labels[REQUESTER_LABEL.lower()])
+    if is_pr and ASSIGNEE_LABEL.lower() in existing_labels:
+      to_remove.append(existing_labels[ASSIGNEE_LABEL.lower()])
     return LabelChanges(add=tuple(to_add), remove=tuple(to_remove))
 
   def awaiting_requester() -> LabelChanges:
@@ -149,16 +175,15 @@ def determine_label_changes(
       to_add.append(REQUESTER_LABEL)
     if responder_label.lower() in existing_labels:
       to_remove.append(existing_labels[responder_label.lower()])
+    if is_pr and ASSIGNEE_LABEL.lower() in existing_labels:
+      to_remove.append(existing_labels[ASSIGNEE_LABEL.lower()])
     return LabelChanges(add=tuple(to_add), remove=tuple(to_remove))
 
   action = payload.get("action")
-  is_pr_event = event_name in ("pull_request", "pull_request_target")
-  is_opening_event = (
-      event_name == "issues" and action in ("opened", "reopened", "transferred")
-  ) or (is_pr_event and action in ("opened", "reopened", "ready_for_review"))
-  # Any review request means someone now owes a review, whether the author
-  # re-requested it or a reviewer handed off to the next one.
-  if is_opening_event or (is_pr_event and action == "review_requested"):
+  if (event_name == "issues" and action in _ISSUE_RESPONDER_ACTIONS) or (
+      event_name in ("pull_request", "pull_request_target")
+      and action in _PR_RESPONDER_ACTIONS
+  ):
     return awaiting_responder()
 
   is_comment_or_review = (
@@ -173,10 +198,11 @@ def determine_label_changes(
     return LabelChanges()
 
   op_login = ((target.get("user") or {}).get("login") or "").lower()
-  responders = (
-      _logins([target.get("assignee"), *(target.get("assignees") or [])])
-      | reviewers
-  )
+  # Replying to an inline diff thread submits a COMMENTED review, putting the
+  # PR author into `reviewers`.
+  responders = _logins(
+      [target.get("assignee"), *(target.get("assignees") or [])]
+  ) | (reviewers - {op_login})
 
   is_op = bool(op_login and sender_login == op_login)
   is_responder = sender_login in responders
@@ -225,7 +251,9 @@ def resolve_workflow_run(
   """Rebuilds relayed review events from a 'workflow_run' payload.
 
   Returns one (event_name, payload) pair per open PR whose head is the
-  relayed run's head SHA, with the run's actor as the sender.
+  relayed run's head SHA, with the run's actor as the sender. Queries the
+  Search API because `/commits/{sha}/pulls` omits unmerged fork commits, then
+  fetches each candidate PR to check its actual head SHA.
   """
   run = payload.get("workflow_run") or {}
   event_name = run.get("event")
@@ -234,12 +262,24 @@ def resolve_workflow_run(
   if event_name not in RELAYED_EVENTS or not head_sha or not actor:
     return []
 
-  pulls = _get_json(
-      f"{api_url}/repos/{repo}/commits/{head_sha}/pulls",
+  query = urllib.parse.urlencode(
+      {"q": f"repo:{repo} type:pr state:open {head_sha}"}
+  )
+  search = _get_json(
+      f"{api_url}/search/issues?{query}",
       token,
       timeout=timeout,
       opener=opener,
   )
+  pulls = [
+      _get_json(
+          f"{api_url}/repos/{repo}/pulls/{item['number']}",
+          token,
+          timeout=timeout,
+          opener=opener,
+      )
+      for item in search["items"]
+  ]
 
   return [
       (
@@ -279,7 +319,7 @@ def fetch_pr_reviewers(
       f"{base}/reviews?per_page=100", token, timeout=timeout, opener=opener
   )
   return _logins(requested.get("users") or []) | _logins(
-      [r.get("user") for r in reviews]
+      [r.get("user") for r in reviews if r.get("state") != "PENDING"]
   )
 
 

@@ -118,15 +118,15 @@ at::Tensor& AtenMseLossOut(const at::Tensor& self, const at::Tensor& target,
                    error::kInvalidArgument)
         << "expected the input dtype to be none of (uint8, int8, int16, "
            "int32, int64, complex64), got "
-        << torch_tpu::ToString(self.scalar_type());
+        << ToString(self.scalar_type());
     TT_CHECK_THROW(self.is_floating_point(), error::kInvalidArgument)
         << "expected the input dtype to be a floating-point type, got "
-        << torch_tpu::ToString(self.scalar_type());
+        << ToString(self.scalar_type());
     TT_CHECK_THROW(self.scalar_type() == target.scalar_type(),
                    error::kInvalidArgument)
         << "expected input and target to have the same dtype, got "
-        << torch_tpu::ToString(self.scalar_type()) << " and "
-        << torch_tpu::ToString(target.scalar_type());
+        << ToString(self.scalar_type()) << " and "
+        << ToString(target.scalar_type());
     TT_CHECK_THROW(reduction == at::Reduction::None ||
                        reduction == at::Reduction::Mean ||
                        reduction == at::Reduction::Sum,
@@ -170,7 +170,7 @@ at::Tensor AtenMseLossBackward(const at::Tensor& grad_output,
       (grad_output, self, target, reduction), {
         TT_CHECK_THROW(self.is_floating_point(), error::kInvalidArgument)
             << "expected the input dtype to be a floating-point type, got "
-            << torch_tpu::ToString(self.scalar_type());
+            << ToString(self.scalar_type());
 
         TT_ASSIGN_OR_THROW(Dimensions out_dims,
                            InferSize(self, target, grad_output));

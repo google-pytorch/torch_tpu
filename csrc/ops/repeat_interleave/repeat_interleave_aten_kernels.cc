@@ -308,12 +308,12 @@ absl::StatusOr<mlir::MlirOp> BuildUniformRepeatInterleaveShlo(
   // rank-preserving zero-length slice along `dim_val` rather than constructing
   // a degenerate zero-extent `BroadcastInDim`.
   if (repeats == 0 || (rank > 0 && shape[dim_val] == 0)) {
-    const llvm::SmallVector<int64_t> start_indices(rank, 0);
-    llvm::SmallVector<int64_t> limit_indices(shape.begin(), shape.end());
+    const Indices start_indices(rank, 0);
+    Indices limit_indices = CopyIntVector(shape);
     if (rank > 0) {
       limit_indices[dim_val] = 0;
     }
-    const llvm::SmallVector<int64_t> strides(rank, 1);
+    const Strides strides(rank, 1);
     return mlir::stablehlo::Slice(self_op, start_indices, limit_indices,
                                   strides);
   }
@@ -358,7 +358,7 @@ absl::StatusOr<mlir::MlirOp> BuildUniformRepeatInterleaveShlo(
 
   // Step 3: Collapse adjacent axes `dim_val` (size D) and `dim_val + 1`
   // (size `repeats`) into a single axis of size `D * repeats`.
-  llvm::SmallVector<int64_t> out_shape(shape.begin(), shape.end());
+  Dimensions out_shape = CopyIntVector(shape);
   out_shape[dim_val] *= repeats;
   return mlir::stablehlo::Reshape(bcast, out_shape);
 }
@@ -916,15 +916,12 @@ at::Tensor RepeatInterleaveBackwardKernel(const at::Tensor& grad_output,
         TT_ASSIGN_OR_THROW(
             const mlir::ElementType out_dtype,
             ConvertTo<mlir::ElementType>(grad_output.scalar_type()));
-        Dimensions out_dims(self_sizes_ref.begin(), self_sizes_ref.end());
-        llvm::SmallVector<int64_t> self_sizes_vec(self_sizes_ref.begin(),
-                                                  self_sizes_ref.end());
+        Dimensions out_dims = CopyIntVector(self_sizes_ref);
         auto shlo_builder =
-            [self_sizes_vec, resolved_dim,
+            [out_dims, resolved_dim,
              repeats_val](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
           return BuildRepeatInterleaveBackwardShlo(
-              input, absl::MakeConstSpan(self_sizes_vec), resolved_dim,
-              repeats_val);
+              input, absl::MakeConstSpan(out_dims), resolved_dim, repeats_val);
         };
         TT_ASSIGN_OR_THROW(
             auto result,

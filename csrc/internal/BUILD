@@ -39,6 +39,7 @@ torch_tpu_cc_library(
         "//csrc/common:env_vars",
         "//csrc/common:error_utils",
         "//csrc/common:libtpu_version",
+        "//csrc/common:process",
         "//csrc/common:pybind_error_utils",
         "//csrc/common:utils",
         "//shims/pybind11",

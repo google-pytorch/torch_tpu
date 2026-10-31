@@ -24,6 +24,7 @@
 #include "c10/util/string_view.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/utils.h"
 #include "csrc/ops/eye/eye_lib.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -85,7 +86,7 @@ absl::StatusOr<mlir::MlirOp> BuildHouseholderProductCustomCallOp(
 
 Dimensions ConcatBatchAndMatrixDims(llvm::ArrayRef<int64_t> batch_dims,
                                     int64_t m, int64_t n) {
-  Dimensions shape(batch_dims.begin(), batch_dims.end());
+  Dimensions shape = CopyIntVector(batch_dims);
   shape.push_back(m);
   shape.push_back(n);
   return shape;
@@ -177,7 +178,7 @@ absl::StatusOr<MlirOpResults<2>> BuildGeqrfShlo(mlir::MlirOp input) {
   const int64_t k = std::min(m, n);
 
   // tau has shape (..., k)
-  Dimensions tau_dims(a_shape.begin(), a_shape.end() - 2);
+  Dimensions tau_dims = CopyIntVector(a_shape.drop_back(2));
   tau_dims.push_back(k);
   const auto tau_type =
       mlir::RankedTensorType::get(tau_dims, a_type.getElementType());

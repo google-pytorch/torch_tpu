@@ -120,7 +120,9 @@ torch_tpu_cc_library(
     hdrs = ["scan_builder.h"],
     deps = [
         ":op_builder_utils",
+        "//csrc/common:dimension_types",
         "//csrc/common:error_utils",
+        "//csrc/common:utils",
         "//shims/torch:aten_headers",
         "@com_google_absl//absl/functional:any_invocable",
         "@com_google_absl//absl/status",

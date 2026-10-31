@@ -547,7 +547,7 @@ at::Tensor& AtenEmbeddingRenorm_(at::Tensor& self, const at::Tensor& indices,
             << "expected floating point or complex, got "
             << ToString(self.scalar_type());
 
-        Dimensions out_dims(indices.sizes().begin(), indices.sizes().end());
+        Dimensions out_dims = CopyIntVector(indices.sizes());
         out_dims.push_back(self.size(1));
 
         TT_ASSIGN_OR_THROW(auto elem_type,

@@ -307,8 +307,7 @@ GraphKey AnnotateGraphKeyWithArgumentLayouts(
 GraphKey AnnotateGraphKeyWithDonatedInputs(
     const GraphKey& graph_key, absl::Span<const int64_t> donated_inputs) {
   if (donated_inputs.empty()) return graph_key;
-  Indices normalized_donated_inputs(donated_inputs.begin(),
-                                    donated_inputs.end());
+  Indices normalized_donated_inputs = CopyIntVector(donated_inputs);
   std::sort(normalized_donated_inputs.begin(), normalized_donated_inputs.end());
   normalized_donated_inputs.erase(std::unique(normalized_donated_inputs.begin(),
                                               normalized_donated_inputs.end()),

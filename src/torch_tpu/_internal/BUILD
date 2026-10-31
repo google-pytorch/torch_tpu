@@ -51,10 +51,12 @@ pybind_extension(
         "//csrc/common:env_vars",
         "//csrc/common:error_utils",
         "//csrc/common:libtpu_version",
+        "//csrc/common:process",
         "//csrc/common:pybind_error_utils",
         "//csrc/common:utils",
         "//shims/torch:torch_headers",
         "@com_google_absl//absl/log:absl_log",
+        "@com_google_absl//absl/strings",
     ],
 )
 

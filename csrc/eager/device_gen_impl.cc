@@ -146,12 +146,10 @@ absl::StatusOr<at::Tensor> CreateDeviceRngStateTensor(c10::Device device,
   std::vector<uint8_t> host_data_bytes(
       reinterpret_cast<const uint8_t*>(host_data),
       reinterpret_cast<const uint8_t*>(host_data) + sizeof(host_data));
-  TT_ASSIGN_OR_RETURN(
-      auto rng_state_buffer,
-      HostToDeviceTransfer::FromBytesVector(std::move(host_data_bytes),
-                                            mlir::ElementType::UI64, {2})
-          .Run());
-  RecordAsyncHostToDevice(rng_state_buffer);
+  auto transfer = HostToDeviceTransfer::FromBytesVector(
+      std::move(host_data_bytes), mlir::ElementType::UI64, /*dimensions=*/{2});
+  TT_ASSIGN_OR_RETURN(auto rng_state_buffer,
+                      ScheduleHostToDeviceTransfer(std::move(transfer)));
   return MakeTensor(rng_state_buffer, device.index());
 }
 

@@ -67,6 +67,7 @@ torch_tpu_py_test(
         ":continuous_test_utils",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//shims/torch:testing_internal",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//tests:seed_test_utils",

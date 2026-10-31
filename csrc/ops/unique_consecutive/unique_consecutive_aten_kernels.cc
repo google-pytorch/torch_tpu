@@ -329,8 +329,7 @@ BuildUniqueConsecutiveEmptyShlo(mlir::MlirBuilder& builder,
     return outputs;
   }
 
-  Dimensions out_shape(input_type.getShape().begin(),
-                       input_type.getShape().end());
+  Dimensions out_shape = CopyIntVector(input_type.getShape());
   out_shape[*dim] = 0;
   TT_ASSIGN_OR_RETURN(outputs.unique_values,
                       MakeZeroSizedTensor(builder, val_type, out_shape));

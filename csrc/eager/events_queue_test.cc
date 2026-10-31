@@ -25,6 +25,7 @@
 #include <variant>
 #include <vector>
 
+#include "absl/cleanup/cleanup.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
@@ -565,7 +566,7 @@ TEST_F(EventsQueueTest, RetainsFailedCompletedFutures) {
                                   << "Fake error");
   ASSERT_TRUE(failed_future.IsReady());
 
-  RecordAsyncDeviceToHost(std::move(failed_future));
+  internal::MarkStreamActive(device_index, stream_id, std::move(failed_future));
 
   (void)EventSnapshot::Record(device_index, stream_id);
   auto ready_work = GetReadyWork(device_index, stream_id);
@@ -585,7 +586,7 @@ TEST_F(EventsQueueTest, PrunesSuccessfulCompletedFutures) {
   xla::Future<void> ok_future(absl::OkStatus());
   ASSERT_TRUE(ok_future.IsReady());
 
-  RecordAsyncDeviceToHost(std::move(ok_future));
+  internal::MarkStreamActive(device_index, stream_id, std::move(ok_future));
 
   (void)EventSnapshot::Record(device_index, stream_id);
   auto ready_work = GetReadyWork(device_index, stream_id);
@@ -886,162 +887,6 @@ TEST_F(EventsQueueTest, NodeMatcherAcrossSmallAndLargeSpans) {
   }
 }
 
-TEST_F(EventsQueueTest, GraphBreakRetainsNoOpEagerExecution) {
-  ClearAllStreams();
-  ScopedPythonContextCapturer capturer(OpName::kEmpty);
-  Shape shape(Dimensions{8}, mlir::ElementType::F32);
-  const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
-  // Create an already-pending DeviceBufferList.
-  TT_ASSERT_OK_AND_ASSIGN(
-      auto pending_ref,
-      DeviceBufferList::CreatePending(shape, device_index, stream_id));
-
-  // Insert a graph break with this as "must materialize".
-  InsertGraphBreak(device_index, stream_id, {pending_ref.device_buffer_list()},
-                   MaterializationReason::kUnknown,
-                   GraphSplitMode::kSplitGraph);
-
-  // Add some real work and a second graph break.
-  TT_ASSERT_OK_AND_ASSIGN(auto refs_a, DeviceBufferList::CreateDeferred(
-                                           OpName::kAdd, DummyBuilder, {},
-                                           OpParamCacheKeys::Empty(), {shape}));
-  auto ref_a = refs_a[0];
-  RecordDeferredOpCreated(ref_a.device_buffer_list());
-  InsertGraphBreak(device_index, stream_id, {}, MaterializationReason::kUnknown,
-                   GraphSplitMode::kSplitGraph);
-
-  auto ready_work = GetReadyWork(device_index, stream_id);
-  ASSERT_EQ(ready_work.size(), 2);
-  ASSERT_TRUE(std::holds_alternative<EagerExecution>(ready_work[0]));
-
-  // The first EagerExecution has no must_execute and the must_materialize
-  // contains the pending DeviceBufferList.
-  const auto& eager_execution = std::get<EagerExecution>(ready_work[0]);
-  EXPECT_TRUE(eager_execution.must_execute.empty());
-  EXPECT_THAT(eager_execution.must_materialize,
-              testing::ElementsAre(pending_ref.device_buffer_list()));
-
-  // The second EagerExecution has the real work.
-  ASSERT_TRUE(std::holds_alternative<EagerExecution>(ready_work[1]));
-  const auto& eager_execution2 = std::get<EagerExecution>(ready_work[1]);
-  EXPECT_THAT(eager_execution2.must_execute,
-              testing::ElementsAre(ref_a.device_buffer_list()));
-  EXPECT_TRUE(eager_execution2.must_materialize.empty());
-}
-
-TEST_F(EventsQueueTest, EventSnapshotDropsTrailingNoOpEagerExecution) {
-  ClearAllStreams();
-  ScopedPythonContextCapturer capturer(OpName::kEmpty);
-  Shape shape(Dimensions{8}, mlir::ElementType::F32);
-  const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
-  // Create an already-pending DeviceBufferList.
-  TT_ASSERT_OK_AND_ASSIGN(
-      auto pending_ref,
-      DeviceBufferList::CreatePending(shape, device_index, stream_id));
-
-  // Insert a graph break with this as "must materialize".
-  InsertGraphBreak(device_index, stream_id, {pending_ref.device_buffer_list()},
-                   MaterializationReason::kUnknown,
-                   GraphSplitMode::kSplitGraph);
-
-  // Add some real work and a second graph break.
-  TT_ASSERT_OK_AND_ASSIGN(auto refs_a, DeviceBufferList::CreateDeferred(
-                                           OpName::kAdd, DummyBuilder, {},
-                                           OpParamCacheKeys::Empty(), {shape}));
-  auto ref_a = refs_a[0];
-  RecordDeferredOpCreated(ref_a.device_buffer_list());
-  InsertGraphBreak(device_index, stream_id, {}, MaterializationReason::kUnknown,
-                   GraphSplitMode::kSplitGraph);
-
-  // Add the already-pending DeviceBufferList graph break again.
-  InsertGraphBreak(device_index, stream_id, {pending_ref.device_buffer_list()},
-                   MaterializationReason::kUnknown,
-                   GraphSplitMode::kSplitGraph);
-
-  // Record an event snapshot.
-  (void)EventSnapshot::Record(device_index, stream_id);
-
-  auto ready_work = GetReadyWork(device_index, stream_id);
-
-  // When the snapshot is recorded, it will drop the second no-op graph break.
-  // But it will stop popping when it hits a non-no-op EagerExecution.
-  // This will retain the first no-op graph break.
-  ASSERT_EQ(ready_work.size(), 3);
-  ASSERT_TRUE(std::holds_alternative<EagerExecution>(ready_work[0]));
-
-  // The first EagerExecution has no must_execute and the must_materialize
-  // contains the pending DeviceBufferList.
-  const auto& eager_execution = std::get<EagerExecution>(ready_work[0]);
-  EXPECT_TRUE(eager_execution.must_execute.empty());
-  EXPECT_THAT(eager_execution.must_materialize,
-              testing::ElementsAre(pending_ref.device_buffer_list()));
-
-  // The second EagerExecution has the real work.
-  ASSERT_TRUE(std::holds_alternative<EagerExecution>(ready_work[1]));
-  const auto& eager_execution2 = std::get<EagerExecution>(ready_work[1]);
-  EXPECT_THAT(eager_execution2.must_execute,
-              testing::ElementsAre(ref_a.device_buffer_list()));
-  EXPECT_TRUE(eager_execution2.must_materialize.empty());
-
-  // After the second eager execution is the snapshot request; the second
-  // no-op graph break is dropped.
-  ASSERT_TRUE(std::holds_alternative<SnapshotRequest>(ready_work[2]));
-}
-
-TEST_F(EventsQueueTest, DroppedNoOpExecutionsAllowSnapshotReuse) {
-  ClearAllStreams();
-  ScopedPythonContextCapturer capturer(OpName::kEmpty);
-  Shape shape(Dimensions{8}, mlir::ElementType::F32);
-  const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
-
-  // Create a future we control and push it to the events queue.
-  auto [promise, future] = xla::MakePromise<void>();
-  RecordAsyncDeviceToHost(std::move(future));
-
-  // Record a snapshot. This will contain the above future.
-  auto snapshot_future = EventSnapshot::Record(device_index, stream_id);
-
-  // Create an already-pending DeviceBufferList.
-  TT_ASSERT_OK_AND_ASSIGN(
-      auto pending_ref,
-      DeviceBufferList::CreatePending(shape, device_index, stream_id));
-
-  // Insert a graph break with this as "must materialize".
-  InsertGraphBreak(device_index, stream_id, {pending_ref.device_buffer_list()},
-                   MaterializationReason::kUnknown,
-                   GraphSplitMode::kSplitGraph);
-
-  // Record a second snapshot.
-  auto snapshot_future2 = EventSnapshot::Record(device_index, stream_id);
-
-  auto ready_work = GetReadyWork(device_index, stream_id);
-
-  // Pushing the second snapshot request will drop the no-op EagerExecution
-  // and reuse the first snapshot's future.
-  EXPECT_EQ(ready_work.size(), 1);
-  EXPECT_TRUE(std::holds_alternative<SnapshotRequest>(ready_work[0]));
-  auto& snapshot_request = std::get<SnapshotRequest>(ready_work[0]);
-  EXPECT_EQ(snapshot_request.futures.size(), 1);
-
-  // When a snapshot is created, it is shared between the original request and
-  // the second request after the no-op.
-  std::shared_ptr<EventSnapshot> snapshot =
-      std::make_shared<EventSnapshot>(std::move(snapshot_request.futures[0]));
-  snapshot_request.snapshot_promise.Set(std::move(snapshot));
-  ASSERT_TRUE(snapshot_future.IsReady());
-  ASSERT_TRUE(snapshot_future2.IsReady());
-  TT_ASSERT_OK_AND_ASSIGN(auto snapshot_1, snapshot_future.Await());
-  TT_ASSERT_OK_AND_ASSIGN(auto snapshot_2, snapshot_future.Await());
-  EXPECT_EQ(snapshot_1, snapshot_2);
-
-  // Completing the original future completes the snapshot for both.
-  promise.Set(absl::OkStatus());
-  TT_ASSERT_OK_AND_ASSIGN(bool completed, snapshot_1->Query());
-  EXPECT_TRUE(completed);
-  TT_ASSERT_OK_AND_ASSIGN(completed, snapshot_2->Query());
-  EXPECT_TRUE(completed);
-}
-
 // Returns `duration` in milliseconds, the unit of EventSnapshot::ElapsedTime.
 double ToMilliseconds(std::chrono::steady_clock::duration duration) {
   return std::chrono::duration<double, std::milli>(duration).count();
@@ -1049,9 +894,11 @@ double ToMilliseconds(std::chrono::steady_clock::duration duration) {
 
 TEST(EventSnapshotTest, ElapsedTimeMeasuresCompletionTimes) {
   auto [start_promise, start_future] = xla::MakePromise<void>();
+  auto [start_ok_promise, start_ok_future] = xla::MakePromise<void>();
   auto [end_promise, end_future] = xla::MakePromise<void>();
-  EventSnapshot start(std::move(start_future));
-  EventSnapshot end(std::move(end_future));
+  auto [end_ok_promise, end_ok_future] = xla::MakePromise<void>();
+  EventSnapshot start(std::move(start_future), std::move(start_ok_promise));
+  EventSnapshot end(std::move(end_future), std::move(end_ok_promise));
   EXPECT_EQ(start.ElapsedTime(end).status().code(), error::kFailedPrecondition);
 
   const auto before_start = std::chrono::steady_clock::now();
@@ -1075,11 +922,13 @@ TEST(EventSnapshotTest, ElapsedTimeExcludesWorkPendingAtStart) {
   // event captures later work. As in the events queue, the start event also
   // releases the end event.
   auto [earlier_promise, earlier_future] = xla::MakePromise<void>();
-  EventSnapshot start(std::move(earlier_future));
-  auto [chain_promise, chain_future] = xla::MakePromise<void>();
-  start.OkCallback(std::move(chain_promise));
+  auto [earlier_ok_promise, earlier_ok_future] = xla::MakePromise<void>();
+  EventSnapshot start(std::move(earlier_future), std::move(earlier_ok_promise));
+  auto chain_future = start.OkCallback();
   auto [later_promise, later_future] = xla::MakePromise<void>();
-  EventSnapshot end(xla::JoinFutures({later_future, chain_future}));
+  auto [later_ok_promise, later_ok_future] = xla::MakePromise<void>();
+  EventSnapshot end(xla::JoinFutures({later_future, chain_future}),
+                    std::move(later_ok_promise));
   std::this_thread::sleep_for(std::chrono::milliseconds(20));
 
   const auto before_earlier = std::chrono::steady_clock::now();
@@ -1104,10 +953,11 @@ TEST(EventSnapshotTest, ElapsedTimeIsNonNegativeForChainedPendingEvents) {
   // event completes when the first event's completion callback releases it, so
   // the first event must be stamped before that callback runs.
   auto [work_promise, work_future] = xla::MakePromise<void>();
-  EventSnapshot start(std::move(work_future));
-  auto [chain_promise, chain_future] = xla::MakePromise<void>();
-  start.OkCallback(std::move(chain_promise));
-  EventSnapshot end(std::move(chain_future));
+  auto [start_ok_promise, start_ok_future] = xla::MakePromise<void>();
+  EventSnapshot start(std::move(work_future), std::move(start_ok_promise));
+  auto chain_future = start.OkCallback();
+  auto [end_ok_promise, end_ok_future] = xla::MakePromise<void>();
+  EventSnapshot end(std::move(chain_future), std::move(end_ok_promise));
   TT_ASSERT_OK_AND_ASSIGN(bool end_ready, end.Query());
   ASSERT_FALSE(end_ready);
 
@@ -1119,80 +969,175 @@ TEST(EventSnapshotTest, ElapsedTimeIsNonNegativeForChainedPendingEvents) {
 }
 
 TEST(EventSnapshotTest, ElapsedTimeReturnsEventError) {
-  EventSnapshot ok_event{xla::Future<void>(absl::OkStatus())};
-  EventSnapshot failed_event{
-      xla::Future<void>(TT_ERROR(error::kInvalidArgument) << "fake error")};
+  auto [ok_event_ok_callback_promise, ok_event_ok_callback_future] =
+      xla::MakePromise<void>();
+  EventSnapshot ok_event(absl::OkStatus(),
+                         std::move(ok_event_ok_callback_promise));
+  auto [failed_event_ok_callback_promise, failed_event_ok_callback_future] =
+      xla::MakePromise<void>();
+  EventSnapshot failed_event(
+      xla::Future<void>(TT_ERROR(error::kInvalidArgument) << "fake error"),
+      std::move(failed_event_ok_callback_promise));
   EXPECT_EQ(ok_event.ElapsedTime(failed_event).status().code(),
             error::kInvalidArgument);
 }
 
-TEST_F(EventsQueueTest, HandleNoOpSnapshotsEfficiently) {
+TEST_F(EventsQueueTest, CompletesLongSnapshotChainOnSmallStack) {
   ClearAllStreams();
   const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
 
   // Create a small amount of "work" which will complete when we choose.
-  auto [transfer_promise, transfer_future] = xla::MakePromise<void>();
-  RecordAsyncDeviceToHost(std::move(transfer_future));
-
-  // Record 9999 snapshots without starting their materialization.
-  // On the 10000th snapshot, start the materialization for these 10,000.
+  auto [promise, future] = xla::MakePromise<void>();
+  internal::MarkStreamActive(device_index, stream_id, std::move(future));
   std::vector<xla::Future<std::shared_ptr<EventSnapshot>>> snapshot_futures;
-  snapshot_futures.reserve(30000);
-  for (int i = 0; i < 9999; ++i) {
-    snapshot_futures.push_back(EventSnapshot::Record(device_index, stream_id));
+  for (int i = 0; i < 20000; ++i) {
+    snapshot_futures.push_back(
+        MaterializeCurrentStream(MaterializationReason::kExplicitSync));
   }
-  snapshot_futures.push_back(MaterializeStream(
-      device_index, stream_id, MaterializationReason::kUnknown));
-  ASSERT_TRUE(snapshot_futures.back().Await().ok());
-
-  // Push another 20,000 snapshot requests.
-  for (int i = 10000; i < 30000; ++i) {
-    snapshot_futures.push_back(MaterializeStream(
-        device_index, stream_id, MaterializationReason::kUnknown));
+  std::shared_ptr<EventSnapshot> last_snapshot;
+  for (const auto& snapshot_future : snapshot_futures) {
+    TT_ASSERT_OK_AND_ASSIGN(last_snapshot, snapshot_future.Await());
   }
-  ASSERT_TRUE(snapshot_futures.back().Await().ok());
+  TT_ASSERT_OK_AND_ASSIGN(bool completed, last_snapshot->Query());
+  ASSERT_FALSE(completed);
 
-  // Snapshots [0, 9999] are all the same EventSnapshot; snapshot 0 is created
-  // to hold the transfer future, and then snapshots [1, 9999] are copies of it.
-  TT_ASSERT_OK_AND_ASSIGN(std::shared_ptr<EventSnapshot> snapshot_0,
-                          snapshot_futures[0].Await());
-  TT_ASSERT_OK_AND_ASSIGN(bool completed, snapshot_0->Query());
-  EXPECT_FALSE(completed);
-  for (int i = 1; i < 9999; ++i) {
-    TT_ASSERT_OK_AND_ASSIGN(std::shared_ptr<EventSnapshot> snapshot_i,
-                            snapshot_futures[i].Await());
-    EXPECT_EQ(snapshot_0, snapshot_i);
-  }
-
-  // Snapshots [10000, 29999] are all shared_ptrs to different EventSnapshot
-  // objects, but all these EventSnapshot objects have the same backing XLA
-  // future.
-  for (int i = 10000; i < 30000; ++i) {
-    TT_ASSERT_OK_AND_ASSIGN(std::shared_ptr<EventSnapshot> snapshot_i,
-                            snapshot_futures[i].Await());
-    EXPECT_NE(snapshot_0, snapshot_i);
-  }
-
-  // At this point we have at 30k futures to EventSnapshot, of which there are
-  // 20,001 distinct EventSnapshots, with only 2 distinct XLA futures (chained).
-
-  // Complete the transfer and synchronize the first snapshot, which should
-  // complete all snapshots.
+  // The runtime completes device work on threads with 1 MiB stacks.
   std::unique_ptr<tsl::Thread> thread(tsl::Env::Default()->StartThread(
       tsl::ThreadOptions{.stack_size = 1 << 20}, "complete_transfer",
-      [promise = std::move(transfer_promise)]() mutable { promise.Set(); }));
+      [&promise] { promise.Set(); }));
   thread.reset();
-  ASSERT_TRUE(snapshot_0->Synchronize().ok());
-  TT_ASSERT_OK_AND_ASSIGN(completed, snapshot_0->Query());
-  EXPECT_TRUE(completed);
+  EXPECT_TRUE(last_snapshot->Synchronize().ok());
+}
 
-  // All other snapshots must now also be complete.
-  for (int i = 1; i < 30000; ++i) {
-    TT_ASSERT_OK_AND_ASSIGN(std::shared_ptr<EventSnapshot> snapshot_i,
-                            snapshot_futures[i].Await());
-    TT_ASSERT_OK_AND_ASSIGN(completed, snapshot_i->Query());
-    EXPECT_TRUE(completed);
-  }
+TEST_F(EventsQueueTest, OkCallbackReturnsOkAfterError) {
+  ClearAllStreams();
+  const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
+
+  // Create a small amount of "work" which will complete when we choose.
+  auto [promise, future] = xla::MakePromise<void>();
+  internal::MarkStreamActive(device_index, stream_id, future);
+
+  // Create an EventSnapshot with the future and get the OK callback from it.
+  auto [ok_callback_promise, created_ok_callback_future] =
+      xla::MakePromise<void>();
+  ASSERT_TRUE(created_ok_callback_future.IsValid());
+  EventSnapshot snapshot(std::move(future), std::move(ok_callback_promise));
+  auto retrieved_ok_callback = snapshot.OkCallback();
+  ASSERT_TRUE(retrieved_ok_callback.IsValid());
+
+  // The snapshot is not done, so the OK callback is not done.
+  EXPECT_FALSE(created_ok_callback_future.IsReady());
+  EXPECT_FALSE(retrieved_ok_callback.IsReady());
+
+  // The event snapshot fails.
+  promise.Set(TT_ERROR(error::kAborted) << "test error");
+
+  // Awaiting the snapshot gives the failure.
+  auto error = snapshot.Synchronize();
+  EXPECT_EQ(error.code(), error::kAborted);
+
+  // But the OK callback is done and OK.
+  ASSERT_TRUE(created_ok_callback_future.IsReady());
+  EXPECT_TRUE(created_ok_callback_future.Await().ok());
+  ASSERT_TRUE(retrieved_ok_callback.IsReady());
+  EXPECT_TRUE(retrieved_ok_callback.Await().ok());
+}
+
+TEST_F(EventsQueueTest, InsertedWaitBlocksHostToDeviceTransfer) {
+  ClearAllStreams();
+  const auto [device_index, default_stream_id] = GetCurrentDeviceStreamId();
+
+  // Create a small amount of "work" which will complete when we choose.
+  auto [promise, future] = xla::MakePromise<void>();
+  internal::MarkStreamActive(device_index, default_stream_id,
+                             std::move(future));
+
+  // Get an EventSnapshot for the default stream after this "work".
+  auto snapshot_future = MaterializeStream(device_index, default_stream_id,
+                                           MaterializationReason::kUnknown);
+  TT_ASSERT_OK_AND_ASSIGN(std::shared_ptr<EventSnapshot> snapshot,
+                          snapshot_future.Await());
+
+  // Insert a stream wait for the snapshot in a different stream.
+  const auto other_stream_id = NextStreamId(device_index);
+  ExchangeCurrentStreamId(device_index, other_stream_id);
+  absl::Cleanup cleanup = [device_index, default_stream_id] {
+    ExchangeCurrentStreamId(device_index, default_stream_id);
+  };
+  InsertStreamWait(device_index, other_stream_id, *snapshot);
+
+  // Schedule a transfer on the other stream.
+  auto h2d_transfer =
+      HostToDeviceTransfer::FromZeroes(mlir::ElementType::UI8, {});
+  TT_ASSERT_OK_AND_ASSIGN(
+      DeviceBufferRef transferred_ref,
+      ScheduleHostToDeviceTransfer(std::move(h2d_transfer)));
+
+  // The transfer is not yet started.
+  EXPECT_TRUE(transferred_ref.is_transferring());
+  EXPECT_FALSE(transferred_ref.is_materialized());
+
+  // Complete the work for the default stream.
+  promise.Set(absl::OkStatus());
+
+  // The transfer will then start and complete.
+  EXPECT_TRUE(transferred_ref.Synchronize().ok());
+  EXPECT_FALSE(transferred_ref.is_transferring());
+  EXPECT_TRUE(transferred_ref.is_materialized());
+}
+
+TEST_F(EventsQueueTest, InsertedWaitBlocksDeviceToHostTransfer) {
+  ClearAllStreams();
+  const auto [device_index, default_stream_id] = GetCurrentDeviceStreamId();
+
+  // Create a fully-materialized DeviceBufferRef.
+  std::vector<char> data = {0x01};
+  TT_ASSERT_OK_AND_ASSIGN(
+      DeviceBufferRef constant_ref,
+      CreateConstantDeviceBufferRef(std::move(data), Dimensions(),
+                                    mlir::ElementType::UI8));
+  ASSERT_TRUE(Materialize(constant_ref, MaterializationReason::kUnknown).ok());
+  ASSERT_TRUE(constant_ref.Synchronize().ok());
+
+  // Create a small amount of "work" which will complete when we choose.
+  auto [promise, future] = xla::MakePromise<void>();
+  internal::MarkStreamActive(device_index, default_stream_id,
+                             std::move(future));
+
+  // Get an EventSnapshot for the default stream after this "work".
+  auto snapshot_future = MaterializeStream(device_index, default_stream_id,
+                                           MaterializationReason::kUnknown);
+  TT_ASSERT_OK_AND_ASSIGN(std::shared_ptr<EventSnapshot> snapshot,
+                          snapshot_future.Await());
+
+  // Insert a stream wait for the snapshot in a different stream.
+  const auto other_stream_id = NextStreamId(device_index);
+  ExchangeCurrentStreamId(device_index, other_stream_id);
+  absl::Cleanup cleanup = [device_index, default_stream_id] {
+    ExchangeCurrentStreamId(device_index, default_stream_id);
+  };
+  InsertStreamWait(device_index, other_stream_id, *snapshot);
+
+  // Schedule a transfer on the other stream.
+  std::vector<char> dst = {0x00};
+  auto d2h_transfer = DeviceToHostTransfer::IntoBytes(constant_ref, dst.data());
+  ScheduleDeviceToHostTransfer(std::move(d2h_transfer));
+  auto d2h_snapshot_future = MaterializeStream(device_index, other_stream_id,
+                                               MaterializationReason::kUnknown);
+  TT_ASSERT_OK_AND_ASSIGN(std::shared_ptr<EventSnapshot> d2h_snapshot,
+                          d2h_snapshot_future.Await());
+
+  // The transfer is not yet started.
+  TT_ASSERT_OK_AND_ASSIGN(bool completed, d2h_snapshot->Query());
+  ASSERT_FALSE(completed);
+  EXPECT_EQ(dst[0], 0x00);
+
+  // Complete the work for the default stream.
+  promise.Set(absl::OkStatus());
+
+  // The transfer will then start and complete.
+  ASSERT_TRUE(d2h_snapshot->Synchronize().ok());
+  EXPECT_EQ(dst[0], 0x01);
 }
 
 TEST(CompilationModeTest, GetCompilationMode) {

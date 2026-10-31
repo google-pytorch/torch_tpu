@@ -45,6 +45,7 @@
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
+#include "csrc/common/utils.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
@@ -229,8 +230,7 @@ mlir::MlirOp SliceSequenceDim(mlir::MlirOp input, int64_t seq_dim,
   }
   int64_t rank = input_type.getRank();
   Dimensions start_indices(rank, 0);
-  Dimensions limit_indices(input_type.getShape().begin(),
-                           input_type.getShape().end());
+  Dimensions limit_indices = CopyIntVector(input_type.getShape());
   limit_indices[seq_dim] = target_len;
   Strides strides(rank, 1);
   return mlir::stablehlo::Slice(input, start_indices, limit_indices, strides);
@@ -428,9 +428,9 @@ CreateFlashAttentionKernelImpl(const at::Tensor& query, const at::Tensor& key,
   TT_ASSIGN_OR_RETURN(const auto out_dtype,
                       ConvertTo<mlir::ElementType>(query.scalar_type()));
 
-  Dimensions out_dims(query.sizes().begin(), query.sizes().end());
+  Dimensions out_dims = CopyIntVector(query.sizes());
   out_dims[rank - 1] = value.size(rank - 1);
-  Dimensions lse_dims(query.sizes().begin(), query.sizes().end() - 1);
+  Dimensions lse_dims = CopyIntVector(query.sizes().slice(0, rank - 1));
   lse_dims.push_back(1);
 
   TT_ASSIGN_OR_RETURN(auto param_keys,

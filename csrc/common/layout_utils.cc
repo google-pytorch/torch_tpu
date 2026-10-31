@@ -32,6 +32,7 @@
 #include "csrc/common/error_utils.h"
 #include "csrc/common/shape.h"
 #include "csrc/common/to_string.h"
+#include "csrc/common/utils.h"
 #include "csrc/pjrt/pjrt_state.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "xla/layout.h"
@@ -100,8 +101,8 @@ absl::StatusOr<TpuLayout> ResolveTpuLayout(const at::Tensor& tensor) {
   TT_ASSIGN_OR_RETURN(const auto dtype,
                       ConvertTo<mlir::ElementType>(scalar_type));
 
-  Dimensions sizes(tensor.sizes().begin(), tensor.sizes().end());
-  Strides strides(tensor.strides().begin(), tensor.strides().end());
+  Dimensions sizes = CopyIntVector(tensor.sizes());
+  Strides strides = CopyIntVector(tensor.strides());
   int64_t offset = tensor.storage_offset();
 
   if (scalar_type == at::kFloat4_e2m1fn_x2) {

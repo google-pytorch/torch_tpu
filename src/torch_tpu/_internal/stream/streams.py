@@ -162,7 +162,7 @@ class TpuStream(torch.Stream):
       ' notice.'
   )
   def wait_stream(self, stream: Self) -> None:  # pylint: disable=unused-argument
-    """Synchronizes with another stream."""
+    """Makes all future work submitted to the stream wait for another stream."""
     self.wait_event(stream.record_event())
 
   @experimental(
@@ -234,9 +234,9 @@ class TpuEvent(torch.Event):
     - ``synchronize()`` blocks until the snapshotted futures complete.
     - ``query()`` checks whether the snapshotted futures have completed.
     - ``elapsed_time()`` measures the time between two events completing.
+    - ``wait(stream)`` causes `stream` to wait for this event before continuing.
 
   Not yet implemented:
-    - ``wait(stream)`` requires multi-stream support.
     - ``ipc_handle()`` / ``from_ipc_handle()`` require IPC event support.
 
   TODO: b/452051142 - Explore if and how to make better use of streams.
@@ -278,19 +278,15 @@ class TpuEvent(torch.Event):
   @experimental(
       'wait() is experimental and may change or be removed without notice.'
   )
-  def wait(self, stream: torch.Stream | None = None) -> None:  # pylint: disable=unused-argument
-    """No-op placeholder for CUDA stream-wait semantics.
+  def wait(self, stream: torch.Stream | None = None) -> None:
+    """Inserts a cross-stream ordering dependency on stream to this event.
 
-    In CUDA, this inserts a device-side dependency so future work on ``stream``
-    waits for this event without blocking the CPU. torch_tpu does not yet
-    support multi-stream execution, so this is currently a no-op. For CPU-side
-    blocking, use :meth:`synchronize`.
+    Future work on ``stream`` will wait for this event without blocking the CPU.
 
     Args:
-      stream: Ignored. Present for CUDA API compatibility.
+      stream: the stream that should wait for this event.
     """
-    # TODO(bawilson): actually support asynchronous waiting
-    return
+    return super().wait(stream)
 
   @experimental(
       'query() is experimental and may change or be removed without notice.'

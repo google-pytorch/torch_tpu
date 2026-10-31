@@ -229,11 +229,13 @@ void ProcessSnapshotRequest(
         std::make_move_iterator(materialization_futures.begin()),
         std::make_move_iterator(materialization_futures.end()));
     auto snapshot = std::make_shared<EventSnapshot>(
-        xla::JoinFutures(snapshot_request.futures));
+        xla::JoinFutures(snapshot_request.futures),
+        std::move(snapshot_request.ok_callback_promise));
     snapshot_request.snapshot_promise.Set(std::move(snapshot));
   } else {
-    snapshot_request.snapshot_promise.Set(
-        std::make_shared<EventSnapshot>(materialization_error));
+    snapshot_request.snapshot_promise.Set(std::make_shared<EventSnapshot>(
+        materialization_error,
+        std::move(snapshot_request.ok_callback_promise)));
     materialization_error = absl::OkStatus();
   }
   last_device_output.reset();
@@ -738,9 +740,9 @@ absl::StatusOr<std::vector<DeviceBufferRef>> EnqueueExecutable(
   outputs.reserve(output_shapes.size());
   for (const auto& shape : output_shapes) {
     // Create pending buffer lists to hold the results.
-    TT_ASSIGN_OR_RETURN(
-        DeviceBufferRef output_ref,
-        DeviceBufferList::CreatePending(shape, device_index, stream_id));
+    TT_ASSIGN_OR_RETURN(DeviceBufferRef output_ref,
+                        DeviceBufferList::CreatePendingExecution(
+                            shape, device_index, stream_id));
     outputs.push_back(std::move(output_ref));
   }
 

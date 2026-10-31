@@ -470,8 +470,6 @@ DYNAMISM_DENY_LISTS: DenyList = {
         "ldexp": ALL_MODES,  # dynamic shape value permutation mismatch
         "nn.functional.mse_loss": ALL_MODES,  # binop LHS / RHS mismatch
         "std": {COMPILE},  # shape mismatch on out under dynamic compile
-        "tril": ALL_MODES,  # bad broadcast
-        "triu": ALL_MODES,  # bad broadcast, iota-like
     },
     "untriaged: data-dependent output shape (invalid TPU shape)": {
         "unique": ALL_MODES,

@@ -171,6 +171,7 @@ torch_tpu_cc_library(
         ":error_utils",
         ":shape",
         ":to_string",
+        ":utils",
         "//csrc/pjrt:pjrt_state",
         "//shims/torch:aten_headers",
         "//shims/torch/c10/core:base_headers",
@@ -2015,6 +2016,25 @@ torch_tpu_cc_test(
         "//csrc/common:oss_test_main",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
+    ],
+)
+
+torch_tpu_cc_library(
+    name = "process",
+    srcs = ["process.cc"],
+    hdrs = ["process.h"],
+    deps = [
+        ":env_vars",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "process_test",
+    srcs = ["process_test.cc"],
+    deps = [
+        ":process",
+        "//csrc/common:oss_test_main",
     ],
 )
 

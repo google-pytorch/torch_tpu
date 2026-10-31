@@ -55,6 +55,7 @@ torch_tpu_cc_library(
     deps = [
         "//csrc/common:dimension_types",
         "//csrc/common:error_utils",
+        "//csrc/common:utils",
         "//csrc/ops:op_builder_utils",
         "//csrc/ops/cumsum",
         "//csrc/ops/index_select",

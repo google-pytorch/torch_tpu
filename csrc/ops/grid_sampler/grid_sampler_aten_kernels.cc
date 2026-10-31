@@ -70,7 +70,7 @@ enum class InterpolationMode {
 mlir::MlirOp ReshapeIndexTo2D(mlir::MlirOp index) {
   auto ty = GetTensorTypeOrDie(index);
   auto shape = ty.getShape();
-  Dimensions new_shape(shape.begin(), shape.end());
+  Dimensions new_shape = CopyIntVector(shape);
   new_shape.push_back(1);
   auto reshaped_ty =
       mlir::RankedTensorType::get(new_shape, ty.getElementType());
@@ -1080,7 +1080,7 @@ absl::Status ValidateInputAndPaddingMode(const at::Tensor& input,
 
   TT_RET_CHECK(IsFloatingPoint(input), error::kInvalidArgument)
       << "expected the input dtype to be floating point, got "
-      << torch_tpu::ToString(input.scalar_type());
+      << ToString(input.scalar_type());
 
   return absl::OkStatus();
 }
@@ -2205,8 +2205,8 @@ std::tuple<at::Tensor, at::Tensor> AtenGridSampler3dBackward(
           };
         }();
 
-        Dimensions input_dims(input.sizes().begin(), input.sizes().end());
-        Dimensions grid_dims(grid.sizes().begin(), grid.sizes().end());
+        Dimensions input_dims = CopyIntVector(input.sizes());
+        Dimensions grid_dims = CopyIntVector(grid.sizes());
 
         TT_ASSIGN_OR_THROW(
             auto out_bufs,

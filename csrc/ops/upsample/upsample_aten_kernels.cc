@@ -411,8 +411,7 @@ absl::StatusOr<mlir::MlirOp> BuildUpsampleNearestBackwardIndexTensor(
     auto broadcast_indices = mlir::stablehlo::BroadcastInDim(
         broadcast_to_indices_type, index_tensor, {i + 2});
 
-    SmallInt64Vector reshape_dims(grad_output_shape.begin(),
-                                  grad_output_shape.end());
+    SmallInt64Vector reshape_dims = grad_output_shape;
     reshape_dims.push_back(1);
     auto reshape_type = mlir::RankedTensorType::get(
         reshape_dims, builder.getOpBuilder().getI32Type());

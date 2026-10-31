@@ -70,6 +70,16 @@ class HostToDeviceTransfer {
   // Idempotent; repeated calls will return the same DeviceBufferRef.
   absl::StatusOr<DeviceBufferRef> Run();
 
+  // Waits until all of the futures in wait_for are ready, then starts the
+  // transfer and returns the DeviceBufferRef that will hold the transferred
+  // data.
+  // Subsequent calls to RunAfter will fail if wait_for is not empty, as the
+  // wait condition cannot be modified once set. Subsequent calls to Run (
+  // or RunAfter with an empty span) are idempotent and return the same
+  // DeviceBufferRef.
+  absl::StatusOr<DeviceBufferRef> RunAfter(
+      absl::Span<const xla::Future<void>> wait_for);
+
  private:
   // Private constructor. Use static methods to create HostToDevice objects.
   explicit HostToDeviceTransfer(const void* host_data,
@@ -77,35 +87,46 @@ class HostToDeviceTransfer {
                                 mlir::ElementType element_type,
                                 absl::Span<const int64_t> dimensions,
                                 std::vector<uint8_t> backing_data)
-      : host_data_(host_data),
-        host_pinned_ptr_(host_pinned_ptr),
-        element_type_(element_type),
-        dimensions_(CopyIntVector(dimensions)),
-        backing_data_(std::move(backing_data)),
-        layout_(GetContextState<LayoutContextState>()) {}
+      : impl_(std::make_unique<HostToDeviceTransferImpl>(
+            host_data, host_pinned_ptr, element_type, CopyIntVector(dimensions),
+            std::move(backing_data), GetContextState<LayoutContextState>())) {}
 
   // Helper function, common across multiple factories; unpacks FP4E2M1FN data
   // before construction.
   static std::vector<uint8_t> MakeUnpackedFp4(
       const void* host_data, absl::Span<const int64_t> dimensions);
 
-  // The host data to be transferred. This will be nullptr if and only if
-  // backing_data_ is non-empty.
-  const void* host_data_;
-  // The pinned memory pointer, if one is provided. This is used to keep the
-  // host data alive until the transfer completes.
-  const void* absl_nullable host_pinned_ptr_ = nullptr;
-  // The element type of the data to be transferred.
-  mlir::ElementType element_type_;
-  // The dimensions of the data to be transferred.
-  Dimensions dimensions_;
-  // The backing data for the host data, if one is provided.
-  std::vector<uint8_t> backing_data_;
+  struct HostToDeviceTransferImpl {
+    // The host data to be transferred. This will be nullptr if and only if
+    // backing_data is non-empty.
+    const void* host_data;
+    // The pinned memory pointer, if one is provided. This is used to keep the
+    // host data alive until the transfer completes.
+    const void* absl_nullable host_pinned_ptr = nullptr;
+    // The element type of the data to be transferred.
+    mlir::ElementType element_type;
+    // The dimensions of the data to be transferred.
+    Dimensions dimensions;
+    // The backing data for the host data, if one is provided.
+    std::vector<uint8_t> backing_data;
+    // The layout pulled from the context state. This is determined when the
+    // transfer is defined, **not** when it is run.
+    std::optional<std::shared_ptr<const xla::Layout>> layout = std::nullopt;
+  };
+
+  // Starts the transfer, and returns the PjRtBuffer that will contain the
+  // transferred data.
+  // This is the core of the HostToDeviceTransfer, and is used by both Run and
+  // RunAfter.
+  static absl::StatusOr<std::unique_ptr<xla::PjRtBuffer>> StartTransfer(
+      absl_nonnull std::unique_ptr<HostToDeviceTransferImpl> impl);
+
+  // The data for the transfer. Passed to a callback if RunAfter is used with
+  // non-ready futures.
+  absl_nullable std::unique_ptr<HostToDeviceTransferImpl> impl_;
+
   // The DeviceBufferRef that holds the transferred data.
   std::optional<DeviceBufferRef> device_buffer_ref_ = std::nullopt;
-  // The layout pulled from the context state. This is determined when the
-  // transfer is defined, **not** when it is run.
-  std::optional<std::shared_ptr<const xla::Layout>> layout_ = std::nullopt;
 };
 
 // A device-to-host transfer.
@@ -131,6 +152,14 @@ class DeviceToHostTransfer {
   // transfer completes.
   // Idempotent; repeated calls will return the same future.
   xla::Future<> Run();
+
+  // Starts the transfer, or schedules it to run immediately after all of the
+  // futures in wait_for are ready and the buffer materialization completes.
+  // Returns a future that will be set when the transfer completes.
+  // Subsequent calls to RunAfter will fail if wait_for is not empty, as the
+  // wait condition cannot be modified once set. Subsequent calls to Run (or
+  // RunAfter with an empty span) are idempotent and return the same future.
+  xla::Future<> RunAfter(absl::Span<const xla::Future<void>> wait_for);
 
  private:
   // Private constructor. Use static methods to create DeviceToHostTransfer

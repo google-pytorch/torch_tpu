@@ -210,7 +210,7 @@ TEST_F(MaterializeTest, OutOfOrderUnexecutedPending) {
   // Create a buffer in the pending state.
   const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
   TT_ASSERT_OK_AND_ASSIGN(DeviceBufferRef pending_buffer,
-                          DeviceBufferList::CreatePending(
+                          DeviceBufferList::CreatePendingExecution(
                               Shape{Dimensions{10}, mlir::ElementType::F32},
                               device_index, stream_id));
 

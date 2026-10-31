@@ -1212,8 +1212,7 @@ std::string BuildModuleNameFromPyContext(
   }
 
   os << "_";
-  mlir::Location location =
-      torch_tpu::MakeMlirLocation(mlir_context, *python_context);
+  mlir::Location location = MakeMlirLocation(mlir_context, *python_context);
 
   // Traverse the location from the current frame up through callee frames
   // until we hit a viable user frame of the form
@@ -1546,8 +1545,7 @@ absl::StatusOr<mlir::MlirOp> BuildMaybeSlice(mlir::MlirOp op, int64_t dimension,
   }
 
   auto input_tensor_type = GetTensorTypeOrDie(op);
-  Dimensions input_shape(input_tensor_type.getShape().begin(),
-                         input_tensor_type.getShape().end());
+  Dimensions input_shape = CopyIntVector(input_tensor_type.getShape());
 
   TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Current usages are guaranteed to be
                  // within range.

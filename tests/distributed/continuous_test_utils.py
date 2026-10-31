@@ -53,6 +53,10 @@ _PARENT_DRAINS_COMPLETION_QUEUES = hasattr(
     common_distributed, "retrieve_result_from_completion_queue"
 )
 
+# Per-test-case worker timeout. A large number, so effectively unlimited; the
+# BUILD target's `timeout`/`size` bounds the whole test instead.
+_TEST_CASE_TIMEOUT_SEC = 100_000
+
 
 class _ReportSkipsQueue:
   """Wraps a worker's completion queue to report worker skips as skips.
@@ -93,6 +97,28 @@ class TpuMultiProcContinuousTest(
   @classmethod
   def backend_str(cls) -> str:
     return "tpu_dist"
+
+  @classmethod
+  def setUpClass(cls) -> None:
+    # Upstream waits on workers (per test case and at teardown) for
+    # `common_distributed.TIMEOUT_DEFAULT` seconds. Blaze has no per-test-case
+    # timeout, so we effectively disable this one and let the BUILD target's
+    # `timeout`/`size` bound the whole test. We also disallow
+    # `DISTRIBUTED_TESTS_DEFAULT_TIMEOUT`, which would otherwise be ignored.
+    #
+    # `TIMEOUT_DEFAULT` is a module global, so `enterClassContext()` restores it
+    # once this class is done (after `tearDownClass()`, which also uses it).
+    if "DISTRIBUTED_TESTS_DEFAULT_TIMEOUT" in os.environ:
+      raise ValueError(
+          f"{cls.__name__} ignores `DISTRIBUTED_TESTS_DEFAULT_TIMEOUT`; set the"
+          " BUILD target's `timeout`/`size` instead."
+      )
+    cls.enterClassContext(
+        mock.patch.object(
+            common_distributed, "TIMEOUT_DEFAULT", _TEST_CASE_TIMEOUT_SEC
+        )
+    )
+    super().setUpClass()
 
   def setUp(self) -> None:
     # `common_utils.TestCase.setUp()` seeds the torch RNGs, which initializes

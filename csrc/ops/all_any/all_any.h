@@ -26,12 +26,13 @@
 
 namespace torch_tpu {
 
-absl::StatusOr<mlir::MlirOp> BuildAllShlo(
-    mlir::MlirOp input_op, absl::Span<const int64_t> reduce_dims,
-    ReductionMode reduction_mode = ReductionMode::kDropDims);
+enum class AllAnyOp {
+  kAll,
+  kAny,
+};
 
-absl::StatusOr<mlir::MlirOp> BuildAnyShlo(
-    mlir::MlirOp input_op, absl::Span<const int64_t> reduce_dims,
+absl::StatusOr<mlir::MlirOp> BuildAllAnyReductionShlo(
+    AllAnyOp op, mlir::MlirOp input_op, absl::Span<const int64_t> reduce_dims,
     ReductionMode reduction_mode = ReductionMode::kDropDims);
 
 }  // namespace torch_tpu

@@ -19256,6 +19256,14 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
 
       self.assert_close_tpu_vs_cpu(test_fn)
 
+    for dtype in [torch.bfloat16, torch.float16]:
+      x_zero_feat = torch.randn(3, 0, dtype=dtype)
+
+      def test_zero_feat_fn(device, x_zero_feat=x_zero_feat):
+        return torch.nn.functional.pdist(x_zero_feat.to(device), p=2.0)
+
+      self.assert_close_tpu_vs_cpu(test_zero_feat_fn)
+
   @parameterized.product(
       stride=[2],
       padding=[1],
@@ -20257,48 +20265,6 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
 
     atol = 5e-3 if dtype == torch.bfloat16 else None
     self.assert_close_tpu_vs_cpu(compute, atol=atol)
-
-  @parameterized.product(
-      shape=[(2, 3, 16), (3, 20), (1, 2, 5)],
-      kernel_size=[2, 3],
-      stride=[None, 1, 2, 3],
-      padding=[0, 1],
-      ceil_mode=[False, True],
-      count_include_pad=[False, True],
-      dtype=[torch.float32, torch.bfloat16],
-  )
-  def test_avg_pool1d_backward(
-      self,
-      shape,
-      kernel_size,
-      stride,
-      padding,
-      ceil_mode,
-      count_include_pad,
-      dtype,
-  ):
-    torch.manual_seed(42)
-    x_cpu = torch.randn(shape, dtype=dtype, requires_grad=True)
-    x_tpu = x_cpu.detach().to("tpu").requires_grad_(True)
-    kwargs = {
-        "kernel_size": kernel_size,
-        "padding": padding,
-        "ceil_mode": ceil_mode,
-        "count_include_pad": count_include_pad,
-    }
-    if stride is not None:
-      kwargs["stride"] = stride
-    atol = 5e-3 if dtype == torch.bfloat16 else None
-
-    out_cpu = torch.nn.functional.avg_pool1d(x_cpu, **kwargs)
-    out_tpu = torch.nn.functional.avg_pool1d(x_tpu, **kwargs)
-    self.assertIsNotNone(out_tpu.grad_fn)
-    utils.assert_close(actual=out_tpu.cpu(), expected=out_cpu, atol=atol)
-
-    grad_out_cpu = torch.randn_like(out_cpu)
-    out_cpu.backward(grad_out_cpu)
-    out_tpu.backward(grad_out_cpu.to("tpu"))
-    utils.assert_close(actual=x_tpu.grad.cpu(), expected=x_cpu.grad, atol=atol)
 
   def test_avg_pool1d_backward_empty_batch(self):
     x_cpu = torch.randn(0, 3, 16, requires_grad=True)

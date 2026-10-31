@@ -4892,6 +4892,98 @@ Device-side assertion tracking was not enabled by user.""",
     ):
       torch.ops.aten._pdist_backward(grad, self_tensor, 2.0, pdist)
 
+  def test_pdist_forward_invalid_inputs(self):
+    x_1d = torch.ones(3, device=et.device())
+    x_2d = torch.ones(3, 4, device=et.device())
+    x_int32 = torch.ones(3, 4, dtype=torch.int32, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""pdist_forward(): expected the input dtype to be floating point, got int32""",
+        gpu=""""pdist_cuda" not implemented for 'Int'""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.ops.aten._pdist_forward(x_int32, 2.0)
+
+    with et.assert_raises_message(
+        RuntimeError if et.is_on_tpu() else IndexError,
+        tpu="""pdist_forward(): expected the input to be a 2D tensor, got 1D""",
+        gpu="""Dimension out of range (expected to be in range of [-1, 0], but got 1)""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.ops.aten._pdist_forward(x_1d, 2.0)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""pdist_forward(): expected the p value to be >= 0, got -1""",
+        gpu="""pdist only supports non-negative p values""",
+        message_reviewed_by="gunhyun",
+    ):
+      if et.is_on_tpu():
+        torch.ops.aten._pdist_forward(x_2d, -1.0)
+      else:
+        torch.nn.functional.pdist(x_2d, p=-1.0)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""pdist_forward(): expected the input to be contiguous, got non-contiguous tensor""",
+        gpu="""_pdist_forward requires contiguous input""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.ops.aten._pdist_forward(x_2d.t(), 2.0)
+
+  def test_pdist_backward_invalid_inputs(self):
+    grad = torch.ones(1, device=et.device())
+    self_1d = torch.ones(2, device=et.device())
+    self_2d = torch.ones(2, 2, device=et.device())
+    pdist = torch.ones(1, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError if et.is_on_tpu() else IndexError,
+        tpu="""pdist_backward(): expected the input to be a 2D tensor, got 1D""",
+        gpu="""Dimension out of range (expected to be in range of [-1, 0], but got 1)""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.ops.aten._pdist_backward(grad, self_1d, 2.0, pdist)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""pdist_backward(): expected the input to be contiguous, got non-contiguous tensor""",
+        gpu="""_pdist_backward requires self to be contiguous""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.ops.aten._pdist_backward(grad, self_2d.t(), 2.0, pdist)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""pdist_backward(): expected pdist to be contiguous, got non-contiguous tensor""",
+        gpu="""_pdist_backward requires pdist to be contiguous""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.ops.aten._pdist_backward(
+          grad, self_2d, 2.0, torch.ones(2, 2, device=et.device())[:, 0]
+      )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""pdist_backward(): expected grad, input, and pdist to be on the same device, got tpu:0, tpu:0, and cpu""",
+        gpu="""Expected all tensors to be on the same device, but got pdist is on cpu, different from other tensors on cuda:0 (when checking argument in method wrapper_CUDA___pdist_backward)""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.ops.aten._pdist_backward(
+          grad, self_2d, 2.0, torch.ones(1, device="cpu")
+      )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""pdist_backward(): expected grad, input, and pdist to have the same dtype, got float32, float32, and float64""",
+        gpu="""expected scalar type Float but found Double""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.ops.aten._pdist_backward(
+          grad, self_2d, 2.0, pdist.to(torch.float64)
+      )
+
   # TODO(lwh): fix this test once G3 pytorch version is updated
   @unittest.skip("Disabled due to pytorch version mismatch")
   def test_replication_pad_backward(self):
@@ -18112,6 +18204,24 @@ class UpsampleBilinear2dAaErrorTest(et.ErrorTestBase):
           message_reviewed_by="gunhyun",
       ):
         torch.addcdiv(s, t1, t2, value=1e40)
+
+  def test_out_of_memory_error(self):
+    """Tests that OOM raises OutOfMemoryError."""
+    with et.assert_raises_message(
+        torch.OutOfMemoryError,
+        tpu="""the TPU ran out of memory while allocating tensor uint8[107374182400]""",
+        gpu=re.compile(
+            r"CUDA out of memory\. Tried to allocate 100\.00 GiB\..*",
+            re.DOTALL,
+        ),
+        message_reviewed_by="wan",
+    ):
+      # GPU raises torch.OutOfMemoryError here (eager allocation of 100 GiB):
+      b = torch.empty(100 * 1024**3, dtype=torch.uint8, device=et.device())
+      b.fill_(1)
+      # TPU defers allocation/execution and raises torch.OutOfMemoryError here
+      # upon materialization:
+      b[:8].sum().item()
 
 
 if __name__ == "__main__":

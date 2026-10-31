@@ -171,8 +171,7 @@ absl::Status ResolveNegativeIndices(std::vector<at::Tensor>& indices,
                         ConvertTo<mlir::ElementType>(index.scalar_type()));
     out_dtypes.push_back(dtype);
 
-    out_dims_storage.push_back(
-        Dimensions(index.sizes().begin(), index.sizes().end()));
+    out_dims_storage.push_back(CopyIntVector(index.sizes()));
   }
 
   for (const auto& dims : out_dims_storage) {

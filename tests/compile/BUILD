@@ -262,7 +262,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/compile",
-        "//src/torch_tpu/_internal/compile/fx_passes:mark_activation_checkpoints",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
     ],

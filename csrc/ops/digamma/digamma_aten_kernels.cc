@@ -39,7 +39,7 @@ namespace torch_tpu {
 absl::StatusOr<mlir::MlirOp> BuildDigammaShlo(mlir::MlirOp input_op,
                                               mlir::ElementType out_mlir_type) {
   TT_ASSIGN_OR_RETURN(mlir::MlirOp op,
-                      ::torch_tpu::ConvertIfInteger(input_op, out_mlir_type));
+                      ConvertIfInteger(input_op, out_mlir_type));
   mlir::MlirOp digamma_op = mlir::chlo::Digamma(op);
 
   auto zero_cst = MakeConstantLike(op, 0.0);

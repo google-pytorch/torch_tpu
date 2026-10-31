@@ -251,7 +251,9 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:parameterized",
         "//src/torch_tpu",
         "//src/torch_tpu:_tcmalloc_check",
+        "//src/torch_tpu/_internal:env",
         "//src/torch_tpu/_internal:warnings",
+        "//src/torch_tpu/_internal/distributed:multiprocessing",
     ],
 )
 
@@ -304,6 +306,7 @@ torch_tpu_py_test(
         ":subprocess_test_utils",
         "//shims/absl_py/flags",
         "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu:_loader",
         "//src/torch_tpu/_internal:env",
@@ -2916,6 +2919,24 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "view_narrow_dtype_test",
+    size = "medium",
+    srcs = ["view_narrow_dtype_test.py"],
+    main = "view_narrow_dtype_test.py",
+    run_on_accelerators = ["requires-tpu-v6e"],
+    shard_count = 2,
+    tags = ["nofastbuild"],
+    deps = [
+        ":seed_test_utils",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/execution_mode",
     ],
 )
 

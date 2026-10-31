@@ -270,7 +270,7 @@ absl::StatusOr<at::Tensor> MakePlaceholder(absl::Span<const int64_t> sizes,
                                            bool is_pinned_host) {
   TT_ASSIGN_OR_RETURN(mlir::ElementType tensor_element_type,
                       ConvertTo<mlir::ElementType>(dtype));
-  Dimensions physical_sizes(sizes.begin(), sizes.end());
+  Dimensions physical_sizes = CopyIntVector(sizes);
   if (dtype == at::kFloat4_e2m1fn_x2) {
     TT_RET_CHECK(!physical_sizes.empty(), error::kInvalidArgument)
         << "expected float4_e2m1fn_x2 tensors to be at least 1-dimensional";

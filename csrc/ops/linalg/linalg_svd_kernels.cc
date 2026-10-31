@@ -83,7 +83,7 @@ using StablehloTranspose = enum mlir::stablehlo::Transpose;
 
 template <typename T, typename... Dims>
 Dimensions ConcatBatchAndDims(const T& batch_dims, Dims... dims) {
-  Dimensions shape(batch_dims.begin(), batch_dims.end());
+  Dimensions shape = CopyIntVector(batch_dims);
   (shape.push_back(dims), ...);
   return shape;
 }
@@ -863,8 +863,9 @@ absl::StatusOr<MlirOpResults<2>> BuildQdwhShlo(
       any_active = active_mask;
     } else {
       TT_ASSIGN_OR_RETURN(
-          any_active, BuildAnyShlo(active_mask, GetAllDimensions(active_mask),
-                                   ReductionMode::kDropDims));
+          any_active, BuildAllAnyReductionShlo(AllAnyOp::kAny, active_mask,
+                                               GetAllDimensions(active_mask),
+                                               ReductionMode::kDropDims));
     }
 
     const mlir::MlirOp cond = mlir::stablehlo::And(any_active, i_lt_max);
@@ -925,7 +926,7 @@ absl::StatusOr<mlir::MlirOp> MakeEmptySlice(mlir::MlirOp op,
   const mlir::RankedTensorType input_tensor_type = GetTensorTypeOrDie(op);
   const llvm::ArrayRef<int64_t> input_shape = input_tensor_type.getShape();
   const Dimensions left_dim(input_tensor_type.getRank(), 0);
-  Dimensions right_dim(input_shape.begin(), input_shape.end());
+  Dimensions right_dim = CopyIntVector(input_shape);
   right_dim[dimension] = 0;
   const Dimensions strides(input_tensor_type.getRank(), 1);
   return mlir::stablehlo::Slice(op, left_dim, right_dim, strides);
@@ -1060,7 +1061,7 @@ absl::StatusOr<mlir::MlirOp> BuildGetDiagonal(mlir::MlirOp op) {
   const mlir::MlirOp iota = mlir::stablehlo::Iota(builder, iota_type, 0);
   TT_ASSIGN_OR_RETURN(const mlir::MlirOp index_2d, Unsqueeze(iota, 1));
 
-  Dimensions target_index_shape(shape.begin(), shape.end() - 2);
+  Dimensions target_index_shape = CopyIntVector(shape.drop_back(2));
   target_index_shape.reserve(shape.size());
   target_index_shape.push_back(n);
   target_index_shape.push_back(1);
@@ -1136,7 +1137,7 @@ absl::StatusOr<mlir::MlirOp> BuildSliceLastDimension(mlir::MlirOp op,
   const llvm::ArrayRef<int64_t> op_shape = op_type.getShape();
   Dimensions left(op_rank, 0);
   left[op_rank - 1] = start;
-  Dimensions right(op_shape.begin(), op_shape.end());
+  Dimensions right = CopyIntVector(op_shape);
   right[op_rank - 1] = end;
   const Dimensions strides(op_rank, 1);
   return mlir::stablehlo::Slice(op, left, right, strides);
@@ -1186,8 +1187,9 @@ absl::StatusOr<mlir::MlirOp> BuildCheckRankDeficiency(
   if (!batch_shape.empty()) {
     TT_ASSIGN_OR_RETURN(
         need_correction_any,
-        BuildAnyShlo(need_correction, GetAllDimensions(need_correction),
-                     ReductionMode::kDropDims));
+        BuildAllAnyReductionShlo(AllAnyOp::kAny, need_correction,
+                                 GetAllDimensions(need_correction),
+                                 ReductionMode::kDropDims));
   }
 
   return need_correction_any;
@@ -1199,7 +1201,7 @@ absl::StatusOr<mlir::MlirOp> BuildCorrectRankDeficiency(
   mlir::MlirBuilder& builder = u_svd.getBuilder();
   const mlir::RankedTensorType u_type = GetTensorTypeOrDie(u_svd);
   const llvm::ArrayRef<int64_t> u_shape = u_type.getShape();
-  const Dimensions batch_shape(u_shape.begin(), u_shape.end() - 2);
+  const Dimensions batch_shape = CopyIntVector(u_shape.drop_back(2));
 
   TT_ASSIGN_OR_RETURN(
       const mlir::MlirOp need_correction_any,
@@ -1374,8 +1376,9 @@ absl::StatusOr<mlir::MlirOp> BuildIsFiniteShlo(mlir::MlirOp input) {
 absl::StatusOr<mlir::MlirOp> BuildAllFinite(mlir::MlirOp input) {
   TT_ASSIGN_OR_RETURN(const mlir::MlirOp is_finite, BuildIsFiniteShlo(input));
   const int64_t rank = GetTensorTypeOrDie(is_finite).getRank();
-  return BuildAllShlo(is_finite, {rank - 2, rank - 1},
-                      ReductionMode::kDropDims);
+  return BuildAllAnyReductionShlo(AllAnyOp::kAll, is_finite,
+                                  {rank - 2, rank - 1},
+                                  ReductionMode::kDropDims);
 }
 
 // Returns a tensor of the same shape and type as the input, but filled with NaN

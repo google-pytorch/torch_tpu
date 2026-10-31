@@ -22,7 +22,9 @@
 
 #include "absl/status/statusor.h"
 #include "csrc/common/aten_utils.h"
+#include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/utils.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/scan_builder.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -62,8 +64,7 @@ absl::StatusOr<mlir::MlirOp> BuildCumprodShlo(
 
   const mlir::RankedTensorType promoted_type = GetTensorTypeOrDie(input);
   // chlo.ScanOp carries are rank-reduced (the scan dimension is erased).
-  llvm::SmallVector<int64_t> carry_shape(promoted_type.getShape().begin(),
-                                         promoted_type.getShape().end());
+  Dimensions carry_shape = CopyIntVector(promoted_type.getShape());
   carry_shape.erase(carry_shape.begin() + normalized_dim);
 
   const mlir::MlirOp init_value =

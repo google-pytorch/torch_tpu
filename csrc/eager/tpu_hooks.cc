@@ -234,9 +234,16 @@ c10::Stream TpuDeviceGuardImpl::exchangeStream(c10::Stream s) const {
   //     because Z depends on Y, which has not yet been started.
   // By blocking on the exit from stream 2 until Y's materialization is queued,
   // Z's materialization cannot race its inputs, even if Y hasn't finished.
-  TT_THROW_IF_ERROR(MaterializeStream(s.device_index(), old_stream_id,
-                                      MaterializationReason::kExplicitSync)
-                        .Await());
+  TT_ASSIGN_OR_THROW(auto snapshot,
+                     MaterializeStream(s.device_index(), old_stream_id,
+                                       MaterializationReason::kExplicitSync)
+                         .Await());
+  // Because we're dropping this snapshot without returning it to the user, any
+  // errors would be lost if we only chained the OkCallback. To ensure all
+  // errors are raised correctly we inject the full completion future into the
+  // stream so errors are picked up by the next snapshot.
+  internal::MarkStreamActive(s.device_index(), old_stream_id,
+                             snapshot->completion_future());
   return c10::Stream(c10::Stream::UNSAFE, s.device(), old_stream_id);
 }
 
@@ -299,8 +306,11 @@ void TpuDeviceGuardImpl::record(void** event, const c10::Stream& stream,
   *event = new std::shared_ptr<EventSnapshot>(std::move(shared_event));
 }
 void TpuDeviceGuardImpl::block(void* event, const c10::Stream& stream) const {
-  TT_WARN_ONCE(WarningCategory::kTorchTpu,
-               "Asynchronous stream waiting is not yet implemented.");
+  std::shared_ptr<EventSnapshot>* snapshot =
+      reinterpret_cast<std::shared_ptr<EventSnapshot>*>(event);
+  c10::DeviceIndex device_index = stream.device_index();
+  c10::StreamId stream_id = stream.id();
+  InsertStreamWait(device_index, stream_id, **snapshot);
 }
 bool TpuDeviceGuardImpl::queryEvent(void* event) const {
   std::shared_ptr<EventSnapshot>* snapshot =

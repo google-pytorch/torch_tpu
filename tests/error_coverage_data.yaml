@@ -24,7 +24,7 @@ csrc/common/discovery.cc: {remaining: 1, total: 1, infeasible: 0}
 csrc/common/dtype.cc: {remaining: 4, total: 6, infeasible: 0}
 csrc/common/dynamism_utils.cc: {remaining: 1, total: 1, infeasible: 0}
 csrc/common/environment.cc: {remaining: 2, total: 2, infeasible: 0}
-csrc/common/error_utils.cc: {remaining: 5, total: 9, infeasible: 1}
+csrc/common/error_utils.cc: {remaining: 5, total: 10, infeasible: 1}
 csrc/common/error_utils.h: {remaining: 3, total: 3, infeasible: 0}
 csrc/common/excess_precision.cc: {remaining: 0, total: 1, infeasible: 0}
 csrc/common/layout_utils.cc: {remaining: 0, total: 2, infeasible: 0}
@@ -64,7 +64,7 @@ csrc/internal/mosaic/kiln/core/kernel.cc: {remaining: 8, total: 8, infeasible: 0
 csrc/internal/mosaic/kiln/mlir/stablehlo_splice.cc: {remaining: 10, total: 11, infeasible: 1}
 csrc/internal/profiler/profiler_api.cc: {remaining: 5, total: 5, infeasible: 0}
 csrc/internal/profiler/tpu_profiler_plugin.cc: {remaining: 6, total: 6, infeasible: 0}
-csrc/internal/sync/sync.cc: {remaining: 2, total: 2, infeasible: 0}
+csrc/internal/sync/sync.cc: {remaining: 0, total: 2, infeasible: 0}
 csrc/internal/sync/sync_py.cc: {remaining: 0, total: 2, infeasible: 0}
 csrc/internal/testing.cc: {remaining: 0, total: 3, infeasible: 0}
 csrc/mlir/pipeline.cc: {remaining: 0, total: 1, infeasible: 1}
@@ -99,7 +99,7 @@ csrc/ops/convolution/convolution.cc: {remaining: 0, total: 2, infeasible: 1}
 csrc/ops/convolution/convolution_aten_kernels.cc: {remaining: 0, total: 8, infeasible: 0}
 csrc/ops/convolution/convolution_checks.cc: {remaining: 0, total: 16, infeasible: 0}
 csrc/ops/copy_from/copy_from_aten_kernels.cc: {remaining: 0, total: 3, infeasible: 1}
-csrc/ops/copy_from/tpu_to_cpu.cc: {remaining: 0, total: 7, infeasible: 6}
+csrc/ops/copy_from/tpu_to_cpu.cc: {remaining: 0, total: 6, infeasible: 5}
 csrc/ops/copy_from/tpu_to_tpu.cc: {remaining: 1, total: 2, infeasible: 1}
 csrc/ops/cross_entropy_loss/cross_entropy_loss_aten_kernels.cc: {remaining: 0, total: 17, infeasible: 4}
 csrc/ops/ctc_loss/ctc_loss_aten_kernels.cc: {remaining: 0, total: 12, infeasible: 2}

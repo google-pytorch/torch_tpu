@@ -25,7 +25,6 @@
 #include <utility>
 #include <vector>
 
-#include "absl/algorithm/container.h"
 #include "absl/base/nullability.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
@@ -35,8 +34,9 @@
 #include "absl/types/span.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/shape.h"
+#include "csrc/eager/current_stream.h"
 #include "csrc/eager/device_buffer.h"
-#include "csrc/eager/device_buffer_utils.h"
 #include "csrc/eager/host_allocator.h"
 #include "csrc/pjrt/pjrt_utils.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
@@ -151,42 +151,39 @@ HostToDeviceTransfer HostToDeviceTransfer::FromBytesVector(
 }
 
 absl::StatusOr<DeviceBufferRef> HostToDeviceTransfer::Run() {
-  if (device_buffer_ref_.has_value()) {
-    // Transfer is already started.
-    return device_buffer_ref_.value();
-  }
+  return RunAfter({});
+}
 
-  if (absl::c_find(dimensions_, 0) != dimensions_.end()) {
-    // If any dimension is zero, the buffer size is zero. In this case, don't
-    // actually copy any data; just create an empty DeviceBufferRef.
-    TT_ASSIGN_OR_RETURN(
-        device_buffer_ref_,
-        CreateEmptyDeviceBufferRef(std::move(dimensions_), element_type_));
-    return device_buffer_ref_.value();
-  }
-
+absl::StatusOr<std::unique_ptr<xla::PjRtBuffer>>
+HostToDeviceTransfer::StartTransfer(
+    absl_nonnull std::unique_ptr<HostToDeviceTransferImpl> impl) {
   TT_ASSIGN_OR_RETURN(xla::PjRtClient* const client, GetPjRtClient());
   TT_ASSIGN_OR_RETURN(xla::PjRtDevice* const device, GetPjRtDevice());
 
   // Get the parameters for the PjRtBuffer to be created.
-  const xla::PrimitiveType type = ConvertTo<xla::PrimitiveType>(element_type_);
+  const xla::PrimitiveType type =
+      ConvertTo<xla::PrimitiveType>(impl->element_type);
   xla::PjRtClient::HostBufferSemantics semantics =
       xla::PjRtClient::HostBufferSemantics::kImmutableUntilTransferCompletes;
   TT_ASSIGN_OR_RETURN(xla::PjRtMemorySpace* const memory_space,
                       GetDefaultMemorySpace(device));
   const xla::Layout* const layout_ptr =
-      layout_.has_value() ? layout_->get() : nullptr;
+      impl->layout.has_value() ? impl->layout->get() : nullptr;
 
   // Start the transfer; this produces a PjRtBuffer that will contain the
   // transferred data.
   const void* host_data =
-      (backing_data_.empty() ? host_data_ : backing_data_.data());
+      (impl->host_data == nullptr ? impl->backing_data.data()
+                                  : impl->host_data);
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=checked in cpu_to_tpu.cc first
+      host_data != nullptr, error::kInvalidArgument)
+      << "either a nonnull host_data or a non-empty backing_data is required";
   TT_ASSIGN_OR_RETURN(
       std::unique_ptr<xla::PjRtBuffer> buffer,
       AdaptXlaError(
           client->BufferFromHostBuffer(
-              host_data, type, dimensions_, std::nullopt, semantics,
-              [backing_data = std::move(backing_data_)]() mutable {
+              host_data, type, impl->dimensions, std::nullopt, semantics,
+              [backing_data = std::move(impl->backing_data)]() mutable {
                 // This lambda ensures that the backing bytes vector is kept
                 // alive until the transfer completes.
                 backing_data = std::vector<uint8_t>();
@@ -196,9 +193,9 @@ absl::StatusOr<DeviceBufferRef> HostToDeviceTransfer::Run() {
 
   // If a tensor storage pointer was provided, keep the host data alive until
   // the transfer completes.
-  if (host_pinned_ptr_ != nullptr) {
+  if (impl->host_pinned_ptr != nullptr) {
     bool is_host_pinned =
-        HoldPinnedPointerUntil(host_pinned_ptr_, buffer->GetReadyFuture());
+        HoldPinnedPointerUntil(impl->host_pinned_ptr, buffer->GetReadyFuture());
     if (ABSL_VLOG_IS_ON(1)) {
       if (is_host_pinned) {
         ABSL_VLOG(1) << "[HostToDevice::Run] Host buffer is "
@@ -210,11 +207,71 @@ absl::StatusOr<DeviceBufferRef> HostToDeviceTransfer::Run() {
       }
     }
   }
+  return buffer;
+}
 
-  // Wrap the PjRtBuffer in a DeviceBufferRef, save it for idempotency, and
-  // return it.
-  TT_ASSIGN_OR_RETURN(device_buffer_ref_,
-                      DeviceBufferList::CreateMaterialized(std::move(buffer)));
+absl::StatusOr<DeviceBufferRef> HostToDeviceTransfer::RunAfter(
+    absl::Span<const xla::Future<void>> wait_for) {
+  if (device_buffer_ref_.has_value()) {
+    // Transfer has already been scheduled with some wait condition.
+    ABSL_CHECK(wait_for.empty())  // CRASH_OK=invariant
+        << "cannot modify wait condition after transfer has been started";
+    return device_buffer_ref_.value();
+  }
+  ABSL_CHECK(impl_ != nullptr);  // CRASH_OK=invariant
+
+  xla::Future<void> joined_wait_for = absl::OkStatus();
+  if (wait_for.size() > 1) {
+    joined_wait_for = xla::JoinFutures(wait_for);
+  } else if (wait_for.size() == 1) {
+    joined_wait_for = wait_for[0];
+  }
+
+  if (joined_wait_for.IsReady()) {
+    // Nothing to wait for, start the transfer immediately.
+    TT_ASSIGN_OR_RETURN(std::unique_ptr<xla::PjRtBuffer> buffer,
+                        StartTransfer(std::move(impl_)));
+    TT_ASSIGN_OR_RETURN(
+        device_buffer_ref_,
+        DeviceBufferList::CreateMaterialized(std::move(buffer)));
+    return device_buffer_ref_.value();
+  } else {
+    // Create a pending DeviceBufferRef that will be updated when the transfer
+    // completes.
+    Shape expected_shape =
+        Shape(impl_->dimensions, impl_->element_type);  // copy dimensions
+    const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
+    TT_ASSIGN_OR_RETURN(device_buffer_ref_,
+                        DeviceBufferList::CreatePendingTransfer(
+                            expected_shape, device_index, stream_id));
+
+    // Create a callback that will start the transfer and populate the
+    // DeviceBufferList when the wait condition is met.
+    joined_wait_for.OnReady(
+        [device_buffer_list = device_buffer_ref_->device_buffer_list(),
+         impl = std::move(impl_)](absl::Status status) mutable {
+          if (!status.ok()) {
+            ABSL_LOG(WARNING)
+                << "futures that a pending transfer was waiting on "
+                   "failed; continuing with transfer anyway";
+          }
+          auto buffer_or = StartTransfer(std::move(impl));
+          if (!buffer_or.ok()) {
+            device_buffer_list->SetAsError(buffer_or.status());
+            return;
+          }
+          std::vector<std::unique_ptr<xla::PjRtBuffer>> buffers;
+          buffers.push_back(std::move(buffer_or.value()));
+          absl::Status set_materialized_status =
+              device_buffer_list->SetAsMaterialized(std::move(buffers));
+          if (!set_materialized_status.ok()) {
+            ABSL_LOG(ERROR) << "host-to-device transfer failed to set "
+                               "DeviceBufferList as materialized: "
+                            << set_materialized_status;
+          }
+          device_buffer_list.reset();
+        });
+  }
   return device_buffer_ref_.value();
 }
 
@@ -318,8 +375,13 @@ void DeviceToHostTransfer::OnTransferReady(
   // impl is destructed here
 }
 
-xla::Future<> DeviceToHostTransfer::Run() {
+xla::Future<> DeviceToHostTransfer::Run() { return RunAfter({}); }
+
+xla::Future<> DeviceToHostTransfer::RunAfter(
+    absl::Span<const xla::Future<void>> wait_for) {
   if (impl_ == nullptr) {
+    ABSL_CHECK(wait_for.empty())  // CRASH_OK=invariant
+        << "cannot modify wait condition after transfer has been started";
     return future_;
   }
 
@@ -343,13 +405,30 @@ xla::Future<> DeviceToHostTransfer::Run() {
 
   xla::Future<> materialization_future =
       impl_->buffer_ref.GetMaterializationFuture();
-  if (materialization_future.IsReady()) {
+  bool materialization_is_ready = materialization_future.IsReady();
+  size_t num_futures = wait_for.size() + (materialization_is_ready ? 0 : 1);
+
+  if (num_futures == 0) {
+    // Nothing to wait for, start the transfer immediately.
     OnTransferReady(materialization_future.Await(), std::move(impl_));
   } else {
-    materialization_future.OnReady(
-        [impl = std::move(impl_)](absl::Status s) mutable {
-          OnTransferReady(s, std::move(impl));
-        });
+    // Create a joined future that will be ready when all of the wait_for
+    // futures and the materialization future are ready.
+    xla::Future<> joined_wait_for;
+    if (materialization_future.IsReady()) {
+      joined_wait_for = xla::JoinFutures(wait_for);
+    } else {
+      std::vector<xla::Future<void>> futures;
+      futures.reserve(num_futures);
+      for (const auto& future : wait_for) {
+        futures.push_back(future);
+      }
+      futures.push_back(std::move(materialization_future));
+      joined_wait_for = xla::JoinFutures(futures);
+    }
+    joined_wait_for.OnReady([impl = std::move(impl_)](absl::Status s) mutable {
+      OnTransferReady(s, std::move(impl));
+    });
   }
   return future_;
 }

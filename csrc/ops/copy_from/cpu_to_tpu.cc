@@ -149,15 +149,13 @@ absl::Status CopyCpuToTpu(const at::Tensor& src, const at::Tensor& dest,
   // Tensor::storage().data_ptr().get() will not.
   // However, we also need to pass in the storage pointer to indicate that the
   // host buffer should be kept alive during the transfer if it's pinned.
-  TT_ASSIGN_OR_RETURN(
-      DeviceBufferRef tpu_buf,
-      HostToDeviceTransfer::FromTensor(
-          effective_src.data_ptr(), effective_src.storage().data_ptr().get(),
-          tpu_layout.element_type, tpu_layout.sizes)
-          .Run());
+  auto transfer = HostToDeviceTransfer::FromTensor(
+      effective_src.data_ptr(), effective_src.storage().data_ptr().get(),
+      tpu_layout.element_type, tpu_layout.sizes);
   if (transfer_sync_mode == TransferSyncMode::kIsolated) {
-    // Block until the transfer completes, assign the buffer, and return without
-    // touching any streams.
+    // Do the transfer immediately and block on completion; don't touch any
+    // streams.
+    TT_ASSIGN_OR_RETURN(DeviceBufferRef tpu_buf, transfer.Run());
     TT_RETURN_IF_ERROR(AdaptXlaError(
         tpu_buf.Synchronize(),
         /* context= */ "failed to copy buffer from host to device"));
@@ -165,9 +163,10 @@ absl::Status CopyCpuToTpu(const at::Tensor& src, const at::Tensor& dest,
     return absl::OkStatus();
   }
 
-  // Record the transfer on the stream in either kEagerBlocking or
+  // Schedule the transfer on the stream in either kEagerBlocking or
   // kEagerNonBlocking mode, but only block if kEagerBlocking.
-  RecordAsyncHostToDevice(tpu_buf);
+  TT_ASSIGN_OR_RETURN(DeviceBufferRef tpu_buf,
+                      ScheduleHostToDeviceTransfer(std::move(transfer)));
   TT_RETURN_IF_ERROR(AssignBufferToAtTensor(std::move(tpu_buf), dest));
 
   if (transfer_sync_mode == TransferSyncMode::kEagerBlocking) {

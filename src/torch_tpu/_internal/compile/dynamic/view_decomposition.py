@@ -648,6 +648,10 @@ def _decompose_layout(
 
   Returns:
     A tuple of (base_shape, slice_ops, perm_list).
+
+  Raises:
+    NotImplementedError: If the base of the unit-free layout also exceeds the
+      view's storage.
   """
   shape = list(val.shape)
   strides = list(val.stride())
@@ -668,6 +672,21 @@ def _decompose_layout(
   base_shape, slice_ops = _build_body(
       phys_shape, phys_strides, storage_offset, compute_slice_ops
   )
+  if math.prod(_hint(d) for d in base_shape) > _hint(storage_numel):
+    # TODO: lizliang - Decompose these once strided slices are supported.
+    # The fallback moves size-1 dims innermost, but their layout can still
+    # imply a base larger than the storage, e.g. a step-2 slice followed by
+    # a trailing size-1 dim: [::2, None] on a 9-element buffer infers a
+    # [5, 2] base. Decline the decomposition like other unsupported
+    # layouts instead of returning a base that get_base_tensor cannot
+    # materialize from the real storage.
+    raise NotImplementedError(
+        "Unsupported view decomposition: inferred base shape"
+        f" {base_shape} requires"
+        f" {math.prod(_hint(d) for d in base_shape)} elements, which"
+        f" exceeds the view's storage size of {_hint(storage_numel)}"
+        " elements."
+    )
   return base_shape, slice_ops, perm_list
 
 

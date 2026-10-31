@@ -56,7 +56,7 @@ auto SparseDenseMatmulBuilder(int64_t device_batch_size,
                               bool enable_minibatching) {
   return [device_batch_size, max_ids_per_partition,
           max_unique_ids_per_partition,
-          enable_minibatching](torch_tpu::FixedSizeSpan<mlir::MlirOp, 5> inputs)
+          enable_minibatching](FixedSizeSpan<mlir::MlirOp, 5> inputs)
              -> absl::StatusOr<mlir::MlirOp> {
     mlir::MlirOp row_pointers = inputs[0];
     mlir::MlirOp embedding_ids = inputs[1];
@@ -103,14 +103,14 @@ auto SparseDenseMatmulBuilder(int64_t device_batch_size,
             &builder.getContext(),
             mlir::stablehlo::CustomCallApiVersion::API_VERSION_ORIGINAL));
 
-    auto embedding_table_type = torch_tpu::GetTensorTypeOrDie(embedding_table);
+    auto embedding_table_type = GetTensorTypeOrDie(embedding_table);
     int64_t embedding_dim = embedding_table_type.getShape()[1];
 
     // Operands
     std::vector<mlir::Value> operands;
     if (enable_minibatching) {
       auto num_minibatches =
-          torch_tpu::MakeScalarConstant(builder, 1, op_builder.getI32Type());
+          MakeScalarConstant(builder, 1, op_builder.getI32Type());
       operands = {row_pointers.getValue(),    embedding_ids.getValue(),
                   sample_ids.getValue(),      gains.getValue(),
                   num_minibatches.getValue(), embedding_table.getValue()};
@@ -122,9 +122,8 @@ auto SparseDenseMatmulBuilder(int64_t device_batch_size,
 
     // Create activation_init operand (zero tensor of shape [device_batch_size,
     // embedding_dim])
-    auto activation_init =
-        torch_tpu::MakeConstant(builder, 0.0f, op_builder.getF32Type(),
-                                {device_batch_size, embedding_dim});
+    auto activation_init = MakeConstant(builder, 0.0f, op_builder.getF32Type(),
+                                        {device_batch_size, embedding_dim});
     operands.push_back(activation_init.getValue());
 
     auto out_type = mlir::RankedTensorType::get(
@@ -150,23 +149,22 @@ at::Tensor AtenSparseDenseMatmul(
     int64_t max_ids_per_partition, int64_t max_unique_ids_per_partition,
     bool enable_minibatching) {
   TT_KERNEL(
-      torch_tpu::OpName::kSparseDenseMatmul, param_keys,
+      OpName::kSparseDenseMatmul, param_keys,
       (row_pointers, embedding_ids, sample_ids, gains, embedding_table,
        device_batch_size, max_ids_per_partition, max_unique_ids_per_partition,
        enable_minibatching),
       {
-        std::array<torch_tpu::TensorHolder, 5> inputs = {
+        std::array<TensorHolder, 5> inputs = {
             row_pointers, embedding_ids, sample_ids, gains, embedding_table};
 
-        torch_tpu::Dimensions out_dims = {device_batch_size,
-                                          embedding_table.size(1)};
+        Dimensions out_dims = {device_batch_size, embedding_table.size(1)};
 
         auto builder_fn = SparseDenseMatmulBuilder(
             device_batch_size, max_ids_per_partition,
             max_unique_ids_per_partition, enable_minibatching);
 
         TT_ASSIGN_OR_THROW(mlir::ElementType out_dtype,
-                           torch_tpu::ConvertTo<mlir::ElementType>(at::kFloat));
+                           ConvertTo<mlir::ElementType>(at::kFloat));
 
         TT_ASSIGN_OR_THROW(
             std::vector<int64_t> device_assignment,  // INT_VEC_OK
@@ -174,14 +172,14 @@ at::Tensor AtenSparseDenseMatmul(
 
         TT_ASSIGN_OR_THROW(
             auto results,
-            (torch_tpu::DispatchOp<5, 1>(
+            (DispatchOp<5, 1>(
                 builder_fn, inputs,
                 {.out_dtype = out_dtype,
                  .out_dims = out_dims,
                  .op_param_cache_keys = std::move(param_keys),
                  .device_assignment = std::move(device_assignment)})));
 
-        return torch_tpu::MakeTensor(results);
+        return MakeTensor(results);
       });
 }
 

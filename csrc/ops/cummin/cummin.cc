@@ -20,7 +20,9 @@
 #include <utility>
 
 #include "absl/status/statusor.h"
+#include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/utils.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/scan_builder.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -45,7 +47,7 @@ absl::StatusOr<CumminOutputs> BuildCumminShlo(const int64_t dim,
   TT_ASSIGN_OR_RETURN(const int64_t normalized_dim, SafeWrapDim(dim, rank));
   const llvm::ArrayRef<int64_t> shape = input_type.getShape();
   // chlo.ScanOp carries are rank-reduced (the scan dimension is erased).
-  llvm::SmallVector<int64_t> carry_shape(shape.begin(), shape.end());
+  Dimensions carry_shape = CopyIntVector(shape);
   carry_shape.erase(carry_shape.begin() + normalized_dim);
 
   mlir::MlirBuilder& builder = input.getBuilder();

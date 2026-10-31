@@ -38,6 +38,7 @@
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/to_string.h"
+#include "csrc/common/utils.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/structured_log_buffer.h"
@@ -254,7 +255,7 @@ absl::StatusOr<mlir::MlirOp> BuildJaggedToPaddedDenseHlo(
         /*start_index_batching_dims=*/{},
         /*start_index_map=*/{0},
         /*index_vector_dim=*/1);
-    Dimensions slice_sizes(values_shape.begin(), values_shape.end());
+    Dimensions slice_sizes = values_shape;
     slice_sizes[0] = 1;
 
     auto gather_indices_op =
@@ -332,8 +333,7 @@ absl::StatusOr<DeviceBufferRef> JaggedToPaddedDense(
 
   const int64_t batch_size = offsets_vec.size() - 1;
   const auto values_shape_ref = values.sizes();
-  const Dimensions values_shape(values_shape_ref.begin(),
-                                values_shape_ref.end());
+  const Dimensions values_shape = CopyIntVector(values_shape_ref);
   Dimensions padded_shape;
   padded_shape.reserve(values.dim() + 1);
   padded_shape.push_back(batch_size);
@@ -447,7 +447,7 @@ absl::StatusOr<mlir::MlirOp> BuildPaddedToJaggedHlo(
       /*start_index_map=*/{0},
       /*index_vector_dim=*/1);
 
-  Dimensions slice_sizes(flat_dense_shape.begin(), flat_dense_shape.end());
+  Dimensions slice_sizes = flat_dense_shape;
   slice_sizes[0] = 1;
 
   return mlir::stablehlo::Gather(dense_flat, gather_indices_op,
@@ -480,7 +480,7 @@ absl::StatusOr<DeviceBufferRef> PaddedDenseToJagged(
   }
 
   const auto dense_shape_ref = dense.sizes();
-  const Dimensions dense_shape(dense_shape_ref.begin(), dense_shape_ref.end());
+  const Dimensions dense_shape = CopyIntVector(dense_shape_ref);
 
   const int64_t batch_size = num_offsets - 1;
   TT_RET_CHECK(batch_size == dense_shape[0], error::kInvalidArgument)

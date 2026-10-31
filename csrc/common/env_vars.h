@@ -162,6 +162,12 @@ inline constexpr char kTorchTpuInternalSplitRngStateUpdate[] =
 // placeholders are always enabled.
 inline constexpr char kTorchTpuInternalStorageAwarePlaceholdersEnvVar[] =
     "TORCH_TPU_INTERNAL_STORAGE_AWARE_PLACEHOLDERS";
+// The PID of the earliest TorchTPU process in the current process' lineage (see
+// csrc/common/process.h). Set by a TorchTPU process that has no TorchTPU
+// ancestor process and inherited by its descendant processes so they can
+// detect that they have a TorchTPU ancestor process.
+inline constexpr char kTorchTpuInternalTopmostPidEnvVar[] =
+    "TORCH_TPU_INTERNAL_TOPMOST_PID";
 // If set to `"1"` or `"true"`, unbounded kernels are loaded instead of static
 // ones if a compatible one exists.
 inline constexpr char kTorchTpuInternalUseUnboundedDynamicKernelsEnvVar[] =
@@ -314,6 +320,8 @@ inline constexpr auto kEnvVarToStage =
         {kTorchTpuInternalSplitRngStateUpdate, SymbolStage::InternalApi()},
         {kTorchTpuInternalStorageAwarePlaceholdersEnvVar,
          SymbolStage::InternalApi()},
+        {kTorchTpuInternalTopmostPidEnvVar,
+         SymbolStage::InternalImplementation()},
         {kTorchTpuInternalUseUnboundedDynamicKernelsEnvVar,
          SymbolStage::InternalApi()},
         {kTorchTpuInternalXlaOptionsEnvVar, SymbolStage::InternalApi()},

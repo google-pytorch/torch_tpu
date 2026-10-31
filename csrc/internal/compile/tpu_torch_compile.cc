@@ -154,7 +154,7 @@ void ParseTupleLayout(const py::tuple& t, CustomLayout& cl,
   if (t.size() >= 2 && !t[1].is_none()) {
     auto tiles = t[1].cast<std::vector<std::vector<int64_t>>>();  // INT_VEC_OK
     for (const auto& tile : tiles) {
-      cl.tiles.push_back(Indices(tile.begin(), tile.end()));
+      cl.tiles.push_back(CopyIntVector(tile));
     }
   }
   if (t.size() >= 3 && !t[2].is_none()) {
@@ -182,7 +182,7 @@ CustomLayout ParseCustomLayout(const py::object& obj, const at::Tensor& tensor,
         << "expected valid layout for argument " << arg_index << ", got layout "
         << ToString(minor_to_major) << " for shape "
         << ToString(tensor.sizes());
-    cl.minor_to_major = Indices(minor_to_major.begin(), minor_to_major.end());
+    cl.minor_to_major = CopyIntVector(minor_to_major);
   }
 
   return cl;
@@ -629,7 +629,7 @@ TraverseAndCompileOptions ConvertTraverseAndCompileOptions(
       .use_stablehlo_bounds = use_stablehlo_bounds,
       .argument_layouts = ConvertArgumentLayouts(
           argument_tensors, std::move(argument_layouts_opt)),
-      .donated_inputs = Indices(donated_inputs.begin(), donated_inputs.end()),
+      .donated_inputs = CopyIntVector(donated_inputs),
       .module_name = module_name,
   };
 }

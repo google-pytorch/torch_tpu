@@ -29,8 +29,6 @@
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
-#include "absl/strings/str_join.h"
-#include "absl/types/span.h"
 #include "c10/core/DeviceGuard.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
@@ -59,33 +57,6 @@
 namespace torch_tpu {
 
 namespace {
-
-// Translates a low-level XLA OOM error to an error that is easier to understand
-// by a pytorch user. If the status is not an XLA OOM error, returns it as is.
-//
-// `elem_type` is the element type of the tensor that caused the XLA OOM error.
-// `dims` is the dimensions of the tensor that caused the XLA OOM error.
-static absl::Status TranslateXlaTensorOomError(absl::Status status,
-                                               at::ScalarType elem_type,
-                                               absl::Span<const int64_t> dims) {
-  if (status.ok()) {
-    return status;
-  }
-
-  TT_ASSIGN_OR_RETURN(  // ERROR_COV_INFEASIBLE=All PyTorch dtypes are supported
-                        // by mlir::ElementType.
-      const auto dtype, ConvertTo<mlir::ElementType>(elem_type));
-  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=IsXlaOomError doesn't match format of
-                 // compile-time OOM errors
-      !IsXlaOomError(status), error::kResourceExhausted)
-      << "the TPU ran out of memory while awaiting the materialization of "
-         "value "
-      << ToString(dtype) << "[" << absl::StrJoin(dims, ", ") << "]:\n"
-      << status.message();
-
-  // From this point, we know that the given status is not an XLA OOM error.
-  return status;
-}
 
 // Ideal case: both src and dest are contiguous, tensors of the same shape and
 // dtype, and src's storage buffer has exactly the right amount of data to copy
@@ -168,13 +139,10 @@ absl::Status CopyDeviceBufferRefToCpuPtrImpl(
   if (transfer_sync_mode == TransferSyncMode::kEagerNonBlocking) {
     // Start a background materialization of src_buffer_ref (unless it's already
     // started), then start a non-blocking copy and record it on the stream.
-    TT_RETURN_IF_ERROR(TranslateXlaTensorOomError(
-        Materialize(src_buffer_ref, MaterializationReason::kCpuTransfer,
-                    GraphSplitMode::kSplitGraph,
-                    MaterializationBlockMode::kNonBlocking),
-        ConvertTo<at::ScalarType>(src_buffer_ref.element_type()),
-        src_buffer_ref.dimensions()));
-    RecordAsyncDeviceToHost(transfer.Run());
+    TT_RETURN_IF_ERROR(Materialize(
+        src_buffer_ref, MaterializationReason::kCpuTransfer,
+        GraphSplitMode::kSplitGraph, MaterializationBlockMode::kNonBlocking));
+    ScheduleDeviceToHostTransfer(std::move(transfer));
     return absl::OkStatus();
   }
 
@@ -190,17 +158,14 @@ absl::Status CopyDeviceBufferRefToCpuPtrImpl(
   } else {
     // The source buffer is on a different stream. Materialize that stream and
     // block until it completes, then block on the transfer afterward.
-    TT_RETURN_IF_ERROR(TranslateXlaTensorOomError(
-        Materialize(src_buffer_ref, MaterializationReason::kCpuTransfer,
-                    GraphSplitMode::kSplitGraph,
-                    MaterializationBlockMode::kNonBlocking),
-        ConvertTo<at::ScalarType>(src_buffer_ref.element_type()),
-        src_buffer_ref.dimensions()));
+    TT_RETURN_IF_ERROR(Materialize(
+        src_buffer_ref, MaterializationReason::kCpuTransfer,
+        GraphSplitMode::kSplitGraph, MaterializationBlockMode::kNonBlocking));
     TT_RETURN_IF_ERROR(src_buffer_ref.Synchronize());
   }
 
-  // Start the copy from TPU to CPU.
-  RecordAsyncDeviceToHost(transfer.Run());
+  // Schedule the copy from TPU to CPU.
+  ScheduleDeviceToHostTransfer(std::move(transfer));
 
   // Then wait for the copy (and materialization, if on the same stream) to
   // complete, returning any errors.
@@ -259,12 +224,10 @@ absl::Status CopyTpuToCpuWithTpuConversion(
         << "cannot materialize a tensor during a stream-isolated copy, "
            "materialization requires an active stream";
     tsl::profiler::TraceMe trace_mat("CopyTpuToCpu::MaterializeBase");
-    TT_RETURN_IF_ERROR(TranslateXlaTensorOomError(
+    TT_RETURN_IF_ERROR(
         Materialize(src_base_buf, MaterializationReason::kCpuTransfer,
                     GraphSplitMode::kSplitGraph,
-                    MaterializationBlockMode::kBlockUntilStarted),
-        ConvertTo<at::ScalarType>(src_base_buf.element_type()),
-        src_base_buf.dimensions()));
+                    MaterializationBlockMode::kBlockUntilStarted));
   }
 
   // Broadcast src to dest, if needed.

@@ -38,6 +38,7 @@
 #include "csrc/eager/execution_task.h"
 #include "csrc/eager/split_traversal.h"
 #include "csrc/eager/structured_log_buffer.h"
+#include "csrc/pjrt/pjrt_transfer.h"
 #include "xla/future.h"
 
 namespace torch_tpu {
@@ -85,19 +86,32 @@ void RecordCompiledExecutionTask(ExecutionTask&& execution_task,
                                  c10::DeviceIndex device_index,
                                  c10::StreamId stream_id, EagerMode eager_mode);
 
-// Tracks that an async host-to-device copy has been started that will populate
-// the given DeviceBufferRef.
-void RecordAsyncHostToDevice(const DeviceBufferRef& device_buffer_ref);
+// Schedules a host-to-device transfer to be executed on the current stream as
+// soon as it is valid to do so. This will wait for any prior blocking waits
+// (from torch.Event.wait or torch.Stream.wait_event) and then start.
+// If there are no prior blocking waits, this will start immediately.
+// Returns the DeviceBufferRef that will hold the transferred data. The future
+// for the transfer is recorded on the stream; the next-created Event on the
+// current stream will wait for the transfer to complete and report any error.
+absl::StatusOr<DeviceBufferRef> ScheduleHostToDeviceTransfer(
+    HostToDeviceTransfer host_to_device_transfer);
 
-// Tracks that an async device-to-host copy has been started.
-// The future should be the return value from a call to PjRtBuffer::ToLiteral.
-void RecordAsyncDeviceToHost(xla::Future<void> to_literal_future);
+// Schedules a device-to-host transfer to be executed on the current stream as
+// soon as it is valid to do so. This will begin as soon as the device buffer
+// has a ready PjRtBuffer and there are no prior blocking waits on the stream.
+// If already materialized and there are no prior blocking waits, this will
+// start immediately.
+// The future for the transfer is recorded on the stream; the next-created Event
+// on the current stream will wait for the transfer to complete and report any
+// error.
+void ScheduleDeviceToHostTransfer(DeviceToHostTransfer device_to_host_transfer);
 
 // An EventSnapshot is a joined XLA future that represents the state of
 // a stream at a particular point in time.
 class EventSnapshot {
  public:
-  explicit EventSnapshot(xla::Future<void> future);
+  explicit EventSnapshot(xla::Future<void> future,
+                         xla::Promise<void> ok_callback_promise);
 
   static xla::Future<std::shared_ptr<EventSnapshot>> Record(
       c10::DeviceIndex device_index, c10::StreamId stream_id,
@@ -118,9 +132,12 @@ class EventSnapshot {
   // completed.
   absl::StatusOr<double> ElapsedTime(const EventSnapshot& end) const;
 
-  // Sets the promise to OkStatus as soon as the event snapshot is complete
-  // or fails. The error is not propagated to the promise.
-  void OkCallback(xla::Promise<void>&& chain_promise);
+  // A future that is set to OkStatus when the event snapshot completes or
+  // fails.
+  xla::Future<void> OkCallback();
+
+  // Directly returns the wrapped future.
+  xla::Future<void> completion_future() const { return future_; }
 
  private:
   // The completion of an event snapshot, shared with the callback on its future
@@ -142,6 +159,15 @@ class EventSnapshot {
   xla::Future<void> future_;
   absl_nonnull std::shared_ptr<Completion> completion_;
 };
+
+// Instructs the stream specified by device_index and stream_id to wait for the
+// given EventSnapshot to complete before starting any subsequent work.
+// TODO(bawilson): this currently only blocks transfers, not op executions;
+// we handle op execution waits in the case of a single Python thread with the
+// block in TpuDeviceGuardImpl::exchangeStream but this is not sound under
+// multithreading.
+void InsertStreamWait(c10::DeviceIndex device_index, c10::StreamId stream_id,
+                      EventSnapshot& snapshot);
 
 // A future that will resolve to an EventSnapshot during the materialization
 // process (after PrepareSnapshotMaterializations has been called), matched with
@@ -209,6 +235,9 @@ struct SnapshotRequest {
   // When the execution for the traversals has started, an EventSnapshot will be
   // created and provided through this promise.
   xla::Promise<std::shared_ptr<EventSnapshot>> snapshot_promise;
+  // When the snapshot is completed, this promise will be set to OkStatus
+  // (even if the snapshot failed).
+  xla::Promise<void> ok_callback_promise;
 };
 
 using ReadyWork =
@@ -231,6 +260,17 @@ void WriteBackMaterializationFutures(
     c10::DeviceIndex device_index, c10::StreamId stream_id,
     std::vector<xla::Future<void>>&& futures,
     std::optional<DeviceBufferRef> last_device_output = std::nullopt);
+
+namespace internal {
+
+// Injects a future representing some conceptual "work" onto the stream.
+// This is only used for testing and debugging purposes; actual work should be
+// recorded using ScheduleHostToDeviceTransfer, RecordDeferredOpCreated, or
+// ScheduleDeviceToHostTransfer as appropriate.
+void MarkStreamActive(c10::DeviceIndex device_index, c10::StreamId stream_id,
+                      xla::Future<void> future);
+
+}  // namespace internal
 
 }  // namespace torch_tpu
 

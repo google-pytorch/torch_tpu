@@ -24,9 +24,11 @@
 #include "absl/functional/bind_front.h"
 #include "absl/status/statusor.h"
 #include "csrc/common/aten_utils.h"
+#include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/to_string.h"
+#include "csrc/common/utils.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
@@ -123,8 +125,7 @@ absl::StatusOr<mlir::MlirOp> BuildLogcumsumexpShlo(
   const mlir::Type compute_element_type = compute_input_type.getElementType();
 
   // chlo.ScanOp carries are rank-reduced (the scan dimension is erased).
-  llvm::SmallVector<int64_t> carry_shape(compute_input_type.getShape().begin(),
-                                         compute_input_type.getShape().end());
+  Dimensions carry_shape = CopyIntVector(compute_input_type.getShape());
   carry_shape.erase(carry_shape.begin() + normalized_dim);
 
   // The identity of logaddexp is -inf.

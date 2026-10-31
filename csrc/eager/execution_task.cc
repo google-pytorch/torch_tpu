@@ -580,7 +580,10 @@ ExecutionTask::GetArgumentBuffers() {
   std::vector<xla::PjRtBuffer*> root_args;
   root_args.reserve(arguments_.size());
   for (const auto&& [index, argument] : llvm::enumerate(arguments_)) {
-    if (argument.is_executing()) {
+    if (argument.is_executing() || argument.is_transferring()) {
+      // If is_executing() is true, then this will not block as the PjRtBuffer
+      // already exists. If is_transferring() is true, then this will block
+      // until the transfer has started and provides a PjRtBuffer.
       ABSL_VLOG(1) << "Get PjRtBuffer for DeviceBufferRef index: " << index;
       TT_ASSIGN_OR_RETURN(xla::PjRtBuffer * pjrt_buffer,
                           argument.AwaitBuffer());
@@ -655,6 +658,7 @@ absl::Status ExecutionTask::RunInternal() {
   if (!name_.empty()) {
     task_name = name_;
   }
+  const DeviceBufferRef& output = outputs_.front();
 
   // Wait for compilation to complete.
   ABSL_VLOG(1) << "[ExecutionTask::Run] Waiting for compilation for "
@@ -662,7 +666,9 @@ absl::Status ExecutionTask::RunInternal() {
                << task_name;
   TT_ASSIGN_OR_RETURN(
       std::vector<SharedLoadedExecutableWithMetadata> cached_executables,
-      GetCachedExecutables(task_name));
+      GetCachedExecutables(task_name),
+      TranslateXlaTensorOomError(_, ToString(output.element_type()),
+                                 output.dimensions()));
   ABSL_VLOG(1) << "[ExecutionTask::Run] Cached executables size: "
                << cached_executables.size();
 
@@ -687,7 +693,9 @@ absl::Status ExecutionTask::RunInternal() {
   TT_ASSIGN_OR_RETURN(
       PjRtBufferPointers final_results,
       RunSequentialExecutables(cached_executables, std::move(argument_buffers),
-                               output_shapes, task_name, layout_validation_));
+                               output_shapes, task_name, layout_validation_),
+      TranslateXlaTensorOomError(_, ToString(output.element_type()),
+                                 output.dimensions()));
 
   // Assign the final results to the output nodes.
   TT_RETURN_IF_ERROR(SetOutputNodesAsMaterialized(std::move(final_results)));

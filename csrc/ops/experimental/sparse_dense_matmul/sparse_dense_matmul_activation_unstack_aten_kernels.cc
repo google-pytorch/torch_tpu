@@ -181,18 +181,18 @@ std::vector<at::Tensor> AtenSparseDenseMatmulActivationUnstack(
     const at::Tensor& stacked_activations,
     at::IntArrayRef per_feature_batch_sizes, at::IntArrayRef per_feature_dims) {
   TT_KERNEL(
-      torch_tpu::OpName::kSparseDenseMatmulActivationUnstack, param_keys,
+      OpName::kSparseDenseMatmulActivationUnstack, param_keys,
       (stacked_activations, per_feature_batch_sizes, per_feature_dims), {
         TT_THROW_IF_ERROR(ValidateSparseDenseMatmulActivationUnstackInputs(
             stacked_activations, per_feature_batch_sizes, per_feature_dims));
 
         const size_t num_features = per_feature_batch_sizes.size();
-        TT_ASSIGN_OR_THROW(mlir::ElementType out_dtype,
-                           torch_tpu::ConvertTo<mlir::ElementType>(
-                               stacked_activations.scalar_type()));
+        TT_ASSIGN_OR_THROW(
+            mlir::ElementType out_dtype,
+            ConvertTo<mlir::ElementType>(stacked_activations.scalar_type()));
 
         std::vector<mlir::ElementType> out_dtypes(num_features, out_dtype);
-        std::vector<torch_tpu::Dimensions> out_dims_storage;
+        std::vector<Dimensions> out_dims_storage;
         out_dims_storage.reserve(num_features);
         std::vector<absl::Span<const int64_t>> out_dims_list;
         out_dims_list.reserve(num_features);
@@ -209,7 +209,7 @@ std::vector<at::Tensor> AtenSparseDenseMatmulActivationUnstack(
             std::vector<int64_t> device_assignment,  // INT_VEC_OK
             GetWorldDeviceAssignment());
 
-        DispatchOpOptions<torch_tpu::kDynamicSize> options = {
+        DispatchOpOptions<kDynamicSize> options = {
             .out_dtypes = out_dtypes,
             .out_dims_list = out_dims_list,
             .op_param_cache_keys = std::move(param_keys),
@@ -217,9 +217,9 @@ std::vector<at::Tensor> AtenSparseDenseMatmulActivationUnstack(
         };
 
         TT_ASSIGN_OR_THROW(std::vector<DeviceBufferRef> result_buffers,
-                           (torch_tpu::DispatchOp<1, torch_tpu::kDynamicSize>(
-                               std::move(builder_fn), stacked_activations,
-                               std::move(options))));
+                           (DispatchOp<1, kDynamicSize>(std::move(builder_fn),
+                                                        stacked_activations,
+                                                        std::move(options))));
 
         std::vector<at::Tensor> results;
         results.reserve(result_buffers.size());

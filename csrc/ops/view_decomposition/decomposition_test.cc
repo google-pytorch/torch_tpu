@@ -17,15 +17,16 @@
 #include "csrc/ops/view_decomposition/decomposition.h"
 
 #include <cstdint>
-#include <utility>
+#include <variant>
 
 #include "absl/status/status.h"
-#include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/status_test_utils.h"
 #include "csrc/common/to_string.h"
+#include "csrc/ops/view_decomposition/bitcast_primitive.h"
+#include "csrc/ops/view_decomposition/reshape_primitive.h"
 #include "csrc/ops/view_decomposition/strided_layout.h"
 #include "csrc/ops/view_decomposition/view_sequence.h"
 #include "gmock/gmock.h"
@@ -747,6 +748,170 @@ TEST(GetContiguousBaseShape, TwoDimensionOverlapping) {
   // ```
   Dimensions expected_base_shape = {1, 7};
   GetContiguousBaseShapeTest(view_layout, expected_base_shape);
+}
+
+// Returns the number of elements of the layout immediately before the first
+// bitcast in `sequence`, or -1 if there is no bitcast.
+int64_t NumelBeforeFirstBitcast(absl::Span<const ViewPrimitive> sequence,
+                                absl::Span<const int64_t> base_shape) {
+  StridedLayout layout = MakeContiguousBaseLayout(base_shape);
+  for (const auto& primitive : sequence) {
+    if (std::holds_alternative<RealToRealBitcast>(primitive)) {
+      int64_t numel = 1;
+      for (const auto& dim : layout.strided_dims) numel *= dim.size;
+      return numel;
+    }
+    UpdateLayout(layout, primitive);
+  }
+  return -1;
+}
+
+// A wide view (f32) of a narrow base (u8) must bitcast only the bytes covered
+// by the view, not the whole base, so that the work scales with the view.
+void NarrowBaseBitcastScalesWithViewTest(const StridedLayout& view_layout,
+                                         int64_t view_numel,
+                                         const Dimensions& base_shape = {
+                                             1 << 20}) {
+  TT_ASSERT_OK_AND_ASSIGN(
+      ViewSequence sequence,
+      DecomposeIntoViewSequence(base_shape, mlir::ElementType::UI8, view_layout,
+                                mlir::ElementType::F32,
+                                /*is_conj=*/false));
+  Simplify(sequence, base_shape);
+  const absl::Status valid =
+      ValidateViewSequence(sequence, base_shape, view_layout);
+  EXPECT_TRUE(valid.ok()) << valid;
+  const int64_t numel_before_bitcast =
+      NumelBeforeFirstBitcast(sequence, base_shape);
+  EXPECT_GT(numel_before_bitcast, 0) << ToString(sequence);
+  // The view covers 4 * view_numel bytes.
+  EXPECT_LE(numel_before_bitcast, 4 * view_numel) << ToString(sequence);
+}
+
+TEST(DecomposeIntoViewSequence, NarrowBaseWideView1DBitcastsOnlyView) {
+  // 16 KiB float32 view (4096 f32 elements = 16,384 bytes) centered in a
+  // 1 MiB (1 << 20 byte = 262,144 f32 element) uint8 base.
+  constexpr int64_t kViewNumel = 4096;
+  StridedLayout view_layout = {
+      .strided_dims = {{.size = kViewNumel, .stride = 1}},
+      .storage_offset = ((1 << 20) / 4 - kViewNumel) / 2,
+  };
+  NarrowBaseBitcastScalesWithViewTest(view_layout, kViewNumel);
+}
+
+TEST(DecomposeIntoViewSequence, NarrowBaseWideView2DBitcastsOnlyView) {
+  // 16 KiB 64x64 float32 view (4096 f32 elements) centered in a 1 MiB uint8
+  // base.
+  constexpr int64_t kViewNumel = 64 * 64;
+  StridedLayout view_layout = {
+      .strided_dims = {{.size = 64, .stride = 64}, {.size = 64, .stride = 1}},
+      .storage_offset = ((1 << 20) / 4 - kViewNumel) / 2,
+  };
+  NarrowBaseBitcastScalesWithViewTest(view_layout, kViewNumel);
+}
+
+TEST(DecomposeIntoViewSequence,
+     NarrowBaseWideViewStridedColumnBitcastsOnlyView) {
+  // torch.ones(4096, dtype=torch.uint8).view(32, 128).view(torch.float32)[:, 1]
+  // Spans all 32 rows of the base, but only covers 32 float32 elements
+  // (128 bytes).
+  constexpr int64_t kViewNumel = 32;
+  StridedLayout view_layout = {
+      .strided_dims = {{.size = kViewNumel, .stride = 32}},
+      .storage_offset = 1,
+  };
+  NarrowBaseBitcastScalesWithViewTest(view_layout, kViewNumel,
+                                      /*base_shape=*/{4096});
+  NarrowBaseBitcastScalesWithViewTest(view_layout, kViewNumel,
+                                      /*base_shape=*/{32, 128});
+}
+
+TEST(DecomposeIntoViewSequence,
+     NarrowBaseWideViewTransposedAndBroadcastBitcastsOnlyView) {
+  // Transposed 64x64 float32 view centered in a 1 MiB uint8 base.
+  constexpr int64_t kViewNumel = 64 * 64;
+  StridedLayout transposed_view_layout = {
+      .strided_dims = {{.size = 64, .stride = 1}, {.size = 64, .stride = 64}},
+      .storage_offset = ((1 << 20) / 4 - kViewNumel) / 2,
+  };
+  NarrowBaseBitcastScalesWithViewTest(transposed_view_layout, kViewNumel);
+
+  // Broadcasted 64x128 float32 view (backed by 64 f32 elements) centered in a
+  // 1 MiB uint8 base.
+  StridedLayout broadcast_view_layout = {
+      .strided_dims = {{.size = 64, .stride = 1}, {.size = 128, .stride = 0}},
+      .storage_offset = ((1 << 20) / 4 - 64) / 2,
+  };
+  NarrowBaseBitcastScalesWithViewTest(broadcast_view_layout, /*view_numel=*/64);
+}
+
+TEST(DecomposeIntoViewSequence, NarrowBase3DWideView2DBitcastsOnlyViewRows) {
+  // The same 1 MiB uint8 base, after a write through a float32 view has
+  // reshaped it to [256, 1024, 4] (256 rows of 1024 f32 elements = 4 KiB per
+  // row). Both a 64x64 view and a row-aligned 4x1024 view bitcast only the
+  // 4 * 4096 bytes covered by the view, and the row-aligned 4x1024 view
+  // decomposes to [slice, bitcast] with no reshape.
+  constexpr int64_t kViewNumel = 64 * 64;
+  StridedLayout view_layout_64x64 = {
+      .strided_dims = {{.size = 64, .stride = 64}, {.size = 64, .stride = 1}},
+      .storage_offset = ((1 << 20) / 4 - kViewNumel) / 2,
+  };
+  NarrowBaseBitcastScalesWithViewTest(view_layout_64x64, kViewNumel,
+                                      /*base_shape=*/{256, 1024, 4});
+
+  StridedLayout view_layout_rows = {
+      .strided_dims = {{.size = 4, .stride = 1024},
+                       {.size = 1024, .stride = 1}},
+      .storage_offset = 126 * 1024,
+  };
+  const Dimensions base_shape = {256, 1024, 4};
+  NarrowBaseBitcastScalesWithViewTest(view_layout_rows, kViewNumel, base_shape);
+  TT_ASSERT_OK_AND_ASSIGN(
+      ViewSequence sequence,
+      DecomposeIntoViewSequence(base_shape, mlir::ElementType::UI8,
+                                view_layout_rows, mlir::ElementType::F32,
+                                /*is_conj=*/false));
+  Simplify(sequence, base_shape);
+  for (const auto& primitive : sequence) {
+    EXPECT_FALSE(std::holds_alternative<ReshapePrimitive>(primitive))
+        << ToString(sequence);
+  }
+}
+
+TEST(DecomposeIntoViewSequence, NarrowBase3DCompiledArgumentPrefix) {
+  // torch.compile passes a view as the minimal contiguous prefix of its
+  // storage: here the first 32 rows (32 * 1024 f32 elements = 128 KiB) of a
+  // [256, 1024, 4] uint8 base, read as float32 from offset 0.
+  constexpr int64_t kViewNumel = 32 * 1024;
+  StridedLayout view_layout = {
+      .strided_dims = {{.size = kViewNumel, .stride = 1}},
+      .storage_offset = 0,
+  };
+  NarrowBaseBitcastScalesWithViewTest(view_layout, kViewNumel,
+                                      /*base_shape=*/{256, 1024, 4});
+}
+
+TEST(DecomposeIntoViewSequence, EqualSizeRealViewBitcastsOnlyView) {
+  // Same-size real-to-real bitcast (e.g. int32 -> float32): a 4096-element
+  // float32 view centered in a 262,144-element int32 base should slice the
+  // base down to 4096 elements before bitcasting.
+  constexpr int64_t kBaseNumel = 1 << 18;
+  constexpr int64_t kViewNumel = 4096;
+  const Dimensions base_shape = {kBaseNumel};
+  StridedLayout view_layout = {
+      .strided_dims = {{.size = kViewNumel, .stride = 1}},
+      .storage_offset = (kBaseNumel - kViewNumel) / 2,
+  };
+  TT_ASSERT_OK_AND_ASSIGN(
+      ViewSequence sequence,
+      DecomposeIntoViewSequence(base_shape, mlir::ElementType::I32, view_layout,
+                                mlir::ElementType::F32, /*is_conj=*/false));
+  Simplify(sequence, base_shape);
+  const absl::Status valid =
+      ValidateViewSequence(sequence, base_shape, view_layout);
+  EXPECT_TRUE(valid.ok()) << valid;
+  EXPECT_EQ(NumelBeforeFirstBitcast(sequence, base_shape), kViewNumel)
+      << ToString(sequence);
 }
 
 }  // namespace

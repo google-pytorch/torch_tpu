@@ -84,7 +84,7 @@ absl::StatusOr<Dimensions> ExpandAttribute(const Dimensions& values,
     return Dimensions(dim, values[0]);
   }
 
-  Dimensions expanded_values = Dimensions(values.begin(), values.end());
+  Dimensions expanded_values = values;
   ABSL_CHECK_EQ(values.size(), dim)  // CRASH_OK
       << "the attribute was not expanded correctly to match the dim size"
       << ", got expanded values size " << expanded_values.size()

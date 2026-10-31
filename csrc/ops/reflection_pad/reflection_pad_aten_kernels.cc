@@ -55,8 +55,7 @@ absl::StatusOr<mlir::MlirOp> BuildReflectionPadShlo(mlir::MlirOp input,
   auto pad_fn = [](mlir::MlirOp op, int64_t dimension, int64_t left_pad,
                    int64_t right_pad) -> absl::StatusOr<mlir::MlirOp> {
     auto input_tensor_type = GetTensorTypeOrDie(op);
-    Dimensions input_shape(input_tensor_type.getShape().begin(),
-                           input_tensor_type.getShape().end());
+    Dimensions input_shape = CopyIntVector(input_tensor_type.getShape());
     // Left and right dimensions for slicing (a vector of 0s and of max vals)
     // and a vector of stride 1.
     auto left_dim = Dimensions(input_shape.size(), 0);
@@ -116,8 +115,7 @@ absl::StatusOr<mlir::MlirOp> BuildReflectionPadBackwardSidePositivePaddingShlo(
     mlir::MlirOp op, PaddingDirection direction, int64_t padding_size,
     int64_t dimension) {
   mlir::RankedTensorType input_tensor_type = GetTensorTypeOrDie(op);
-  Dimensions input_shape(input_tensor_type.getShape().begin(),
-                         input_tensor_type.getShape().end());
+  Dimensions input_shape = CopyIntVector(input_tensor_type.getShape());
 
   // Slice off the padding and an equivalent size strip from the input.
   // Reflect the padding and add to the input slice.
@@ -201,8 +199,7 @@ absl::StatusOr<mlir::MlirOp> BuildReflectionPadBackwardSideNegativePaddingShlo(
     mlir::MlirOp op, PaddingDirection direction, int64_t padding_size,
     int64_t dimension) {
   mlir::RankedTensorType input_tensor_type = GetTensorTypeOrDie(op);
-  Dimensions input_shape(input_tensor_type.getShape().begin(),
-                         input_tensor_type.getShape().end());
+  Dimensions input_shape = CopyIntVector(input_tensor_type.getShape());
 
   // A negative pad value means we truncated the input.
   // So we have no gradients for those values. We construct a 0 tensor of
@@ -292,7 +289,7 @@ absl::Status ReflectionPadHelper(
                error::kInvalidArgument)
       << "not implemented for bool";
 
-  Dimensions padding_vec(padding.begin(), padding.end());
+  Dimensions padding_vec = CopyIntVector(padding);
   TT_ASSIGN_OR_RETURN(auto element_type,
                       ConvertTo<mlir::ElementType>(self.scalar_type()));
   auto op_builder = [padding_vec, out_shape = CopyIntVector(out.sizes()),
@@ -330,7 +327,7 @@ at::Tensor AtenReflectionPad2d(const at::Tensor& self,
       OpName::kReflectionPad2d, _,
       (self, IgnoreInCacheKey(padding, "Delegates to AtenReflectionPad2dOut")),
       {
-        Dimensions out_dimensions(self.sizes().begin(), self.sizes().end());
+        Dimensions out_dimensions = CopyIntVector(self.sizes());
         out_dimensions[out_dimensions.size() - 2] += padding[2] + padding[3];
         out_dimensions[out_dimensions.size() - 1] += padding[0] + padding[1];
 
@@ -413,8 +410,7 @@ at::Tensor AtenReflectionPad2dBackward(const at::Tensor& grad_output,
              IgnoreInCacheKey(
                  padding, "Delegates to AtenReflectionPad2dBackwardGradInput")),
             {
-              Dimensions gidims(grad_output.sizes().begin(),
-                                grad_output.sizes().end());
+              Dimensions gidims = CopyIntVector(grad_output.sizes());
               TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=Current usages are
                                // guaranteed to be within range.
                   gidims.size() > 2, error::kInvalidArgument)

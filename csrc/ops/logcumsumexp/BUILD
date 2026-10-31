@@ -29,9 +29,11 @@ torch_tpu_cc_library(
     hdrs = ["logcumsumexp_aten_kernels.h"],
     deps = [
         "//csrc/common:aten_utils",
+        "//csrc/common:dimension_types",
         "//csrc/common:dtype",
         "//csrc/common:error_utils",
         "//csrc/common:to_string",
+        "//csrc/common:utils",
         "//csrc/ops:op_builder_utils",
         "//csrc/ops:op_names",
         "//csrc/ops:scan_builder",

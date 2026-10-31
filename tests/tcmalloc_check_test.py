@@ -25,7 +25,9 @@ import warnings
 from absl.testing import absltest
 from absl.testing import parameterized
 from torch_tpu import _tcmalloc_check
+from torch_tpu._internal import env
 from torch_tpu._internal import warnings as warning_categories
+from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
 
 # The prefix users are told to filter on, via
@@ -50,6 +52,16 @@ def _no_tcmalloc() -> Iterator[None]:
       ),
   ):
     yield
+
+
+def _check_tcmalloc_in_child_worker(q) -> None:
+  """Worker function executed in a spawned child process."""
+  with _no_tcmalloc(), warnings.catch_warnings(record=True) as caught:
+    warnings.simplefilter("always")
+    _tcmalloc_check.check_tcmalloc()
+  q.put(
+      (env.has_torch_tpu_ancestor_process(), [str(w.message) for w in caught])
+  )
 
 
 class CheckTcmallocTest(seed_test_utils.RepeatableTest):
@@ -223,6 +235,34 @@ class CheckTcmallocTest(seed_test_utils.RepeatableTest):
         [w for w in caught if _DOCUMENTED_FILTER_PREFIX in str(w.message)]
     )
 
+  def test_does_not_warn_when_has_torch_tpu_ancestor_process(self) -> None:
+    with (
+        _no_tcmalloc(),
+        mock.patch.object(
+            env,
+            "has_torch_tpu_ancestor_process",
+            autospec=True,
+            return_value=True,
+        ),
+        warnings.catch_warnings(record=True) as caught,
+    ):
+      warnings.simplefilter("always")
+      _tcmalloc_check.check_tcmalloc()
+
+    self.assertEmpty(caught)
+
+  def test_does_not_warn_in_spawned_child_process(self) -> None:
+    self.assertFalse(env.has_torch_tpu_ancestor_process())
+    ctx = multiprocessing.get_context("spawn")
+    q = ctx.Queue()
+    proc = ctx.Process(target=_check_tcmalloc_in_child_worker, args=(q,))
+    proc.start()
+    proc.join(timeout=60)
+    self.assertEqual(proc.exitcode, 0)
+    has_ancestor, caught_messages = q.get(timeout=5)
+    self.assertTrue(has_ancestor)
+    self.assertEmpty(caught_messages)
+
 
 if __name__ == "__main__":
-  absltest.main()
+  multiprocessing.handle_test_main(absltest.main)

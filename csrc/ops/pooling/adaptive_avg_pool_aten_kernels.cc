@@ -600,7 +600,7 @@ absl::Status ValidateAdaptiveAvgPool2dInputs(const at::Tensor& self) {
                error::kInvalidArgument)
       << "expected input dtype to be none of (bool, uint8, int8, int16, int32, "
          "int64, complex64), got "
-      << torch_tpu::ToString(self.scalar_type());
+      << ToString(self.scalar_type());
 
   const int64_t spatial_dim_count = 2;
   const int64_t num_dims = self.dim();
@@ -827,7 +827,7 @@ at::Tensor& AtenAdaptiveAvgPool3dOut(const at::Tensor& self,
                        error::kInvalidArgument)
             << "expected input dtype to be none of (bool, uint8, int8, "
                "int16, int32, int64, complex64), got "
-            << torch_tpu::ToString(self.scalar_type());
+            << ToString(self.scalar_type());
 
         TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(out, expected_out_shape));
 

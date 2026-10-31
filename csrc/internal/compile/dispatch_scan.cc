@@ -35,6 +35,7 @@
 #include "c10/util/ArrayRef.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/compilation.h"
+#include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/shape.h"
@@ -346,7 +347,7 @@ bool CanLowerToChloScan(mlir::func::FuncOp main_func,
 
   const llvm::ArrayRef<int64_t> full_shape =
       GetTensorTypeOrDie(scanned[0]).getShape();
-  llvm::SmallVector<int64_t> slice_shape(full_shape.begin(), full_shape.end());
+  Dimensions slice_shape = CopyIntVector(full_shape);
   slice_shape.erase(slice_shape.begin() + scan_dim);
   if (!AllRankedWithShape(main_func.getArgumentTypes(), slice_shape) ||
       !AllRankedWithShape(main_func.getResultTypes(), slice_shape)) {
@@ -699,8 +700,7 @@ mlir::MlirOp CreateIdentityConstant(mlir::MlirBuilder& builder,
                                     mlir::MlirOp input, const int64_t scan_dim,
                                     const IdentityKind kind) {
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
-  llvm::SmallVector<int64_t> reduced_shape(input_type.getShape().begin(),
-                                           input_type.getShape().end());
+  Dimensions reduced_shape = CopyIntVector(input_type.getShape());
   reduced_shape.erase(reduced_shape.begin() + scan_dim);
   const mlir::Type element_type = input_type.getElementType();
   const mlir::RankedTensorType reduced_type =
@@ -882,9 +882,9 @@ AssociativeScanBuffers CollectAssociativeScanBuffers(
 mlir::MlirOp SliceAlongDim(mlir::MlirOp input, const int64_t scan_dim,
                            const int64_t start, const int64_t size) {
   const llvm::ArrayRef<int64_t> shape = GetTensorTypeOrDie(input).getShape();
-  llvm::SmallVector<int64_t, 4> starts(shape.size(), 0);
-  llvm::SmallVector<int64_t, 4> limits(shape.begin(), shape.end());
-  const llvm::SmallVector<int64_t, 4> strides(shape.size(), 1);
+  Dimensions starts(shape.size(), 0);
+  Dimensions limits = CopyIntVector(shape);
+  const Dimensions strides(shape.size(), 1);
   starts[scan_dim] = start;
   limits[scan_dim] = start + size;
   return mlir::stablehlo::Slice(input, starts, limits, strides);

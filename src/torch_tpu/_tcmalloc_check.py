@@ -17,22 +17,19 @@
 Importing this module installs TorchTPU's default filter for the tcmalloc
 warning as a side effect; see `install_default_filters`. The check itself only
 runs when `check_tcmalloc` is called, which `torch_tpu/__init__.py` does once at
-import time.
+import time after `torch_tpu._loader` has been imported.
 
-This module must not import `torch`, not even indirectly. It is part of
-the torch-free preamble of `torch_tpu/__init__.py`: when `torch_tpu` is
-imported before `torch` and PyTorch's device backend autoloading is
-enabled (the default), importing `torch` makes PyTorch load the
-`torch_tpu._loader` backend entry point, which loads TorchTPU's C++
-extensions. Doing that from here would run that setup in the middle of
-`torch_tpu/__init__.py`, and from module scope even before the
-version-dispatch import hook of `_versioned_so_loader` that selects
-those extensions is installed. For the same reason the warning below
-uses `warnings.warn` instead of the torch-based `tt_warnings.warn`;
-that is safe because the check only runs at import time, never under
-`torch.compile`. Also for the same reason, the warning's category prefix is
-hard-coded here instead of being read from TorchTPU's C++ extensions like
-`torch_tpu._internal.warnings` does.
+Module-level code in this module must not import `torch`, not even indirectly,
+because `torch_tpu/__init__.py` imports `_tcmalloc_check` before installing the
+version-dispatch import hook of `_versioned_so_loader`. `check_tcmalloc` itself
+runs after `torch_tpu._loader`, so it can safely import
+`torch_tpu._internal.env` to skip the warning in processes with a TorchTPU
+ancestor process.
+The warning
+below uses `warnings.warn` instead of `tt_warnings.warn` because the check only
+runs at import time, never under `torch.compile`, and hard-codes the warning
+category prefix so `install_default_filters` can run at module import time
+before TorchTPU's C++ extensions are loaded.
 """
 
 import ctypes
@@ -100,6 +97,10 @@ def install_default_filters() -> None:
 def check_tcmalloc() -> None:
   """Warns if tcmalloc is not the allocator of the current process.
 
+  The check is skipped in processes that have a TorchTPU ancestor process (see
+  `env.has_torch_tpu_ancestor_process`) to avoid spamming the log in
+  multi-process programs.
+
   In TorchTPU eager execution, the Python dispatch thread and background runtime
   worker threads allocate and free C++ runtime objects across threads, causing
   arena lock contention under the default glibc ptmalloc2. In Bazel
@@ -111,6 +112,11 @@ def check_tcmalloc() -> None:
   `/proc/self/maps`. Neither probe is assumed to succeed: if a platform offers
   no way to tell, the check stays quiet rather than warn spuriously.
   """
+  from torch_tpu._internal import env  # pylint: disable=g-import-not-at-top
+
+  if env.has_torch_tpu_ancestor_process():
+    return
+
   # Check if tcmalloc or sanitizer symbols are already present in the global
   # symbol table (e.g., statically linked in G3 builds or preloaded via
   # LD_PRELOAD). Passing None to ctypes.CDLL queries RTLD_DEFAULT without

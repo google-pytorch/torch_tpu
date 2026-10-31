@@ -234,7 +234,7 @@ absl::StatusOr<ReduceScatterShapeMode> ValidateReduceScatterInputTensorShape(
   ABSL_VLOG(1) << "ValidateReduceScatterInputTensorShape: stack_mode_dims: "
                << ToString(stack_mode_dims);
 
-  Dimensions actual_input_dims{input.sizes().begin(), input.sizes().end()};
+  Dimensions actual_input_dims = CopyIntVector(input.sizes());
   ABSL_VLOG(1) << "ValidateReduceScatterInputTensorShape: actual_input_dims: "
                << ToString(actual_input_dims);
 

@@ -31,6 +31,7 @@
 #include "absl/types/span.h"
 #include "c10/util/ArrayRef.h"
 #include "csrc/common/dimension_types.h"
+#include "csrc/common/utils.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -48,8 +49,8 @@ namespace {
 // PrepareAttentionLogits enforces, so failures here are internal errors.
 mlir::MlirOp ReshapeBatchDimsOrDie(mlir::MlirOp mlir_op,
                                    absl::Span<const int64_t> shape) {
-  absl::StatusOr<mlir::MlirOp> reshaped = ReshapeToStaticDimensions(
-      mlir_op, Dimensions(shape.begin(), shape.end()));
+  absl::StatusOr<mlir::MlirOp> reshaped =
+      ReshapeToStaticDimensions(mlir_op, CopyIntVector(shape));
   ABSL_CHECK_OK(reshaped.status());  // CRASH_OK
   return *reshaped;
 }
@@ -103,12 +104,12 @@ mlir::MlirOp GetScaleDefaulted(mlir::MlirBuilder& builder,
 
 Strides EmptyLikeStrides(const at::TensorBase& tensor) {
   if (tensor.is_non_overlapping_and_dense()) {
-    return Strides(tensor.strides().begin(), tensor.strides().end());
+    return CopyIntVector(tensor.strides());
   }
   // `at::infer_dense_strides` returns a `std::vector`.
   const std::vector<int64_t> strides =  // INT_VEC_OK
       at::infer_dense_strides(tensor.sizes(), tensor.strides());
-  return Strides(strides.begin(), strides.end());
+  return CopyIntVector(strides);
 }
 
 Strides MatchingLayoutStrides(const at::TensorBase& query,

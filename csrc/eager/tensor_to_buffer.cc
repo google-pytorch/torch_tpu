@@ -425,8 +425,7 @@ at::Tensor MakeTensor(DeviceBufferRef buffer_ref,
 
   const auto dtype = ConvertTo<at::ScalarType>(buffer_ref.element_type());
   auto caffe2_type_meta = c10::scalarTypeToTypeMeta(dtype);
-  Dimensions sizes(buffer_ref.dimensions().begin(),
-                   buffer_ref.dimensions().end());
+  Dimensions sizes = CopyIntVector(buffer_ref.dimensions());
   if (buffer_ref.element_type() == mlir::ElementType::F4E2M1FN) {
     ABSL_CHECK(!sizes.empty());         // CRASH_OK
     ABSL_CHECK_EQ(sizes.back() % 2, 0)  // CRASH_OK

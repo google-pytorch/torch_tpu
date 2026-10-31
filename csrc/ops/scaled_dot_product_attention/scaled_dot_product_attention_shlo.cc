@@ -38,6 +38,7 @@
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
+#include "csrc/common/utils.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/op_builder_utils.h"
@@ -507,7 +508,9 @@ absl::StatusOr<MlirOpResults<2>> BuildScaledDotProductFusedAttentionShloOp(
   // leading batch dims followed by the result's own non-batch dims. Sizes are
   // static, or upper bounds for bounded dynamic dims.
   const Dimensions query_shape = GetStaticShape(query_mlir);
-  const Dimensions batch_dims(query_shape.begin(), query_shape.end() - 3);
+  const Dimensions batch_dims =
+      CopyIntVector(absl::Span<const int64_t>(query_shape)
+                        .subspan(0, query_shape.size() - 3));
   auto restore_batch_dims = [&batch_dims](mlir::MlirOp flat_op) {
     Dimensions dims = batch_dims;
     const Dimensions flat_shape = GetStaticShape(flat_op);
@@ -827,9 +830,10 @@ absl::StatusOr<FusedAttentionResults> ScaledDotProductFusedAttentionShlo(
   TT_ASSIGN_OR_RETURN(const auto out_dtype,
                       ConvertTo<mlir::ElementType>(query.scalar_type()));
 
-  Dimensions out_dims(query.sizes().begin(), query.sizes().end() - 1);
+  const int64_t rank = query.dim();
+  Dimensions out_dims = CopyIntVector(query.sizes().slice(0, rank - 1));
   out_dims.push_back(value.sizes().back());
-  Dimensions lse_dims(query.sizes().begin(), query.sizes().end() - 1);
+  Dimensions lse_dims = CopyIntVector(query.sizes().slice(0, rank - 1));
   const mlir::stablehlo::Precision precision = GetAndAddPrecisionTo(param_keys);
   auto op_builder =
       [is_causal, scale, allow_half_precision_reduction_math, precision](

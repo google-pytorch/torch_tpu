@@ -30,6 +30,7 @@
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
+#include "csrc/common/utils.h"
 #include "csrc/distributed/process_group_tpu.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/op_dispatcher.h"
@@ -63,7 +64,7 @@ auto SparseDenseMatmulGradWithSgdBuilder(int64_t device_batch_size,
   return [max_ids_per_partition,
           computation_name = std::string(computation_name),
           max_unique_ids_per_partition,
-          enable_minibatching](torch_tpu::FixedSizeSpan<mlir::MlirOp, 7> inputs)
+          enable_minibatching](FixedSizeSpan<mlir::MlirOp, 7> inputs)
              -> absl::StatusOr<mlir::MlirOp> {
     mlir::MlirOp row_pointers = inputs[0];
     mlir::MlirOp embedding_ids = inputs[1];
@@ -76,7 +77,7 @@ auto SparseDenseMatmulGradWithSgdBuilder(int64_t device_batch_size,
     mlir::MlirBuilder& builder = row_pointers.getBuilder();
     mlir::OpBuilder& op_builder = builder.getOpBuilder();
 
-    auto embedding_table_type = torch_tpu::GetTensorTypeOrDie(embedding_table);
+    auto embedding_table_type = GetTensorTypeOrDie(embedding_table);
     int64_t embedding_dim = embedding_table_type.getShape()[1];
 
     // Define the optimizer update function.
@@ -87,7 +88,7 @@ auto SparseDenseMatmulGradWithSgdBuilder(int64_t device_batch_size,
         {tensor_type, tensor_type, tensor_type},
         {mlir::TupleType::get(op_builder.getContext(), {tensor_type})});
 
-    mlir::ModuleOp module = torch_tpu::GetModuleOp(builder);
+    mlir::ModuleOp module = GetModuleOp(builder);
     if (!module.lookupSymbol<mlir::func::FuncOp>(computation_name)) {
       // Save current insertion point
       auto prev_insertion_point = op_builder.saveInsertionPoint();
@@ -156,7 +157,7 @@ auto SparseDenseMatmulGradWithSgdBuilder(int64_t device_batch_size,
     std::vector<mlir::Value> operands;
     if (enable_minibatching) {
       auto num_minibatches =
-          torch_tpu::MakeScalarConstant(builder, 1, op_builder.getI32Type());
+          MakeScalarConstant(builder, 1, op_builder.getI32Type());
       operands = {row_pointers.getValue(),     embedding_ids.getValue(),
                   sample_ids.getValue(),       gains.getValue(),
                   num_minibatches.getValue(),  embedding_table.getValue(),
@@ -194,27 +195,26 @@ at::Tensor AtenSparseDenseMatmulGradWithSgd(
     const at::Tensor& learning_rate, int64_t device_batch_size,
     int64_t max_ids_per_partition, int64_t max_unique_ids_per_partition,
     std::string_view computation_name, bool enable_minibatching) {
-  TT_KERNEL(torch_tpu::OpName::kSparseDenseMatmulGradWithSgd, param_keys,
+  TT_KERNEL(OpName::kSparseDenseMatmulGradWithSgd, param_keys,
             (row_pointers, embedding_ids, sample_ids, gains, embedding_table,
              activations_grad, learning_rate, device_batch_size,
              max_ids_per_partition, max_unique_ids_per_partition,
              computation_name, enable_minibatching),
             {
-              std::array<torch_tpu::TensorHolder, 7> inputs = {
+              std::array<TensorHolder, 7> inputs = {
                   row_pointers,    embedding_ids,    sample_ids,   gains,
                   embedding_table, activations_grad, learning_rate};
 
-              torch_tpu::Dimensions out_dims(embedding_table.sizes().begin(),
-                                             embedding_table.sizes().end());
+              Dimensions out_dims = CopyIntVector(embedding_table.sizes());
 
               auto builder_fn = SparseDenseMatmulGradWithSgdBuilder(
                   device_batch_size, max_ids_per_partition,
                   max_unique_ids_per_partition, computation_name,
                   enable_minibatching);
 
-              TT_ASSIGN_OR_THROW(mlir::ElementType out_dtype,
-                                 torch_tpu::ConvertTo<mlir::ElementType>(
-                                     embedding_table.scalar_type()));
+              TT_ASSIGN_OR_THROW(
+                  mlir::ElementType out_dtype,
+                  ConvertTo<mlir::ElementType>(embedding_table.scalar_type()));
 
               TT_ASSIGN_OR_THROW(
                   std::vector<int64_t> device_assignment,  // INT_VEC_OK
@@ -222,20 +222,20 @@ at::Tensor AtenSparseDenseMatmulGradWithSgd(
 
               TT_ASSIGN_OR_THROW(
                   auto results,
-                  (torch_tpu::DispatchOp<7, 1>(
+                  (DispatchOp<7, 1>(
                       builder_fn, inputs,
                       {.out_dtype = out_dtype,
                        .out_dims = out_dims,
                        .op_param_cache_keys = std::move(param_keys),
                        .donated_indices = {4},
                        .device_assignment = std::move(device_assignment)})));
-              TT_ASSIGN_OR_THROW(const torch_tpu::DeviceBufferRef table_buf,
-                                 torch_tpu::GetBuffer(embedding_table));
+              TT_ASSIGN_OR_THROW(const DeviceBufferRef table_buf,
+                                 GetBuffer(embedding_table));
               if (table_buf.shape().layout().has_value()) {
                 results.set_layout(*table_buf.shape().layout());
               }
 
-              return torch_tpu::MakeTensor(results);
+              return MakeTensor(results);
             });
 }
 

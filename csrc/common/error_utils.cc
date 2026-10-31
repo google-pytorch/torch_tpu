@@ -739,6 +739,21 @@ bool IsXlaOomError(const absl::Status& status) {
           absl::StrContains(status.message(), "allocation_size"));
 }
 
+absl::Status TranslateXlaTensorOomError(absl::Status status,
+                                        std::string_view dtype,
+                                        absl::Span<const int64_t> dims) {
+  if (status.ok()) {
+    return status;
+  }
+
+  TT_RET_CHECK(!IsXlaOomError(status), error::kResourceExhausted)
+      << "the TPU ran out of memory while allocating tensor " << dtype << "["
+      << absl::StrJoin(dims, ", ") << "]";
+
+  // From this point, we know that the given status is not an XLA OOM error.
+  return status;
+}
+
 namespace internal {
 // Aligned to 64 bytes (cache-line size) to prevent false sharing with other
 // frequently mutated global variables on the hot dispatch path.
@@ -1070,7 +1085,15 @@ void TranslateToC10ErrorAndThrow(const TtError& e) {
     case error::kPythonNotImplementedError:
       throw  // Translates to Python NotImplementedError.
           c10::NotImplementedError(e.thrown_from(), message);
+    case error::kResourceExhausted:
+      throw  // Translates to Python torch.OutOfMemoryError.
+          c10::OutOfMemoryError(e.thrown_from(), message);
     default:
+      // Fallback: unhandled error codes translate to c10::Error (Python
+      // RuntimeError). If a status code corresponds to a dedicated PyTorch
+      // exception type (e.g. c10::OutOfMemoryError, c10::IndexError, or
+      // c10::ValueError), add an explicit case above instead of relying on
+      // this default fallback.
       throw  // Translates to Python RuntimeError.
           c10::Error(e.thrown_from(), message);
   }

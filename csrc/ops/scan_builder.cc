@@ -24,7 +24,9 @@
 #include "ATen/core/Scalar.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/utils.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
@@ -293,8 +295,7 @@ absl::Status VerifyScanDimSizes(llvm::ArrayRef<mlir::MlirOp> scan_inputs,
 // body).
 mlir::RankedTensorType RankReduceType(const mlir::RankedTensorType type,
                                       const int64_t scan_dim) {
-  llvm::SmallVector<int64_t> shape(type.getShape().begin(),
-                                   type.getShape().end());
+  Dimensions shape = CopyIntVector(type.getShape());
   shape.erase(std::next(shape.begin(), scan_dim));
   return mlir::RankedTensorType::get(shape, type.getElementType());
 }
@@ -614,8 +615,7 @@ absl::StatusOr<mlir::MlirOp> CreateRankReducedConstantLike(
   if (type.hasStaticShape()) {
     TT_ASSIGN_OR_RETURN(const mlir::ElementType element_type,
                         GetElementType(input));
-    llvm::SmallVector<int64_t> reduced_shape(type.getShape().begin(),
-                                             type.getShape().end());
+    Dimensions reduced_shape = CopyIntVector(type.getShape());
     reduced_shape.erase(reduced_shape.begin() + wrapped_dim);
     return MakeConstant(builder, value, element_type, reduced_shape);
   }

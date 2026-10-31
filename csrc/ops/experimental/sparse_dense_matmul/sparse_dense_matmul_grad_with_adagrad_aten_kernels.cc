@@ -31,6 +31,7 @@
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
+#include "csrc/common/utils.h"
 #include "csrc/distributed/process_group_tpu.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/op_dispatcher.h"
@@ -52,8 +53,6 @@
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "xla/side_effect_util.h"
-
-using torch_tpu::is_status_or_ref;
 
 namespace torch_tpu {
 
@@ -85,8 +84,8 @@ auto SparseDenseMatmulGradWithAdagradBuilder(
     auto epsilon_const =
         MakeConstant(builder, static_cast<float>(epsilon), scalar_type);
 
-    auto embedding_table_type = torch_tpu::GetTensorTypeOrDie(embedding_table);
-    auto accumulator_type = torch_tpu::GetTensorTypeOrDie(accumulator);
+    auto embedding_table_type = GetTensorTypeOrDie(embedding_table);
+    auto accumulator_type = GetTensorTypeOrDie(accumulator);
     auto accumulator_shape = accumulator_type.getShape();
     int64_t embedding_dim = embedding_table_type.getShape()[1];
 
@@ -117,7 +116,7 @@ auto SparseDenseMatmulGradWithAdagradBuilder(
         {mlir::TupleType::get(op_builder.getContext(),
                               {param_type, acc_type})});
 
-    mlir::ModuleOp module = torch_tpu::GetModuleOp(builder);
+    mlir::ModuleOp module = GetModuleOp(builder);
     if (!module.lookupSymbol<mlir::func::FuncOp>(computation_name)) {
       // Save current insertion point
       auto prev_insertion_point = op_builder.saveInsertionPoint();
@@ -140,7 +139,7 @@ auto SparseDenseMatmulGradWithAdagradBuilder(
       mlir::MlirOp new_acc;
       if (is_rowwise) {
         auto zero = MakeScalarConstant(builder, 0.0f, mlir::ElementType::F32);
-        auto dtype = torch_tpu::GetTensorTypeOrDie(grad_sq).getElementType();
+        auto dtype = GetTensorTypeOrDie(grad_sq).getElementType();
         auto reduce_builder = [&]  // REF_CAPTURE_OK=called synchronously
             (mlir::RegionBuilder& rb) {
               mlir::stablehlo::buildReduceBody<mlir::stablehlo::AddOp>(
@@ -215,7 +214,7 @@ auto SparseDenseMatmulGradWithAdagradBuilder(
     std::vector<mlir::Value> operands;
     if (enable_minibatching) {
       auto num_minibatches =
-          torch_tpu::MakeScalarConstant(builder, 1, op_builder.getI32Type());
+          MakeScalarConstant(builder, 1, op_builder.getI32Type());
       operands = {row_pointers.getValue(),    embedding_ids.getValue(),
                   sample_ids.getValue(),      gains.getValue(),
                   num_minibatches.getValue(), embedding_table.getValue(),
@@ -245,7 +244,7 @@ auto SparseDenseMatmulGradWithAdagradBuilder(
     auto gte_accumulator = mlir::stablehlo::GetTupleElementOp::create(
         op_builder, builder.getLoc(), op.getResult(0), 1);
 
-    return torch_tpu::MlirOpResults<2>(
+    return MlirOpResults<2>(
         {mlir::MlirOp(builder, gte_table.getResult()),
          mlir::MlirOp(builder, gte_accumulator.getResult())});
   };
@@ -262,32 +261,30 @@ std::tuple<at::Tensor, at::Tensor> AtenSparseDenseMatmulGradWithAdagrad(
     int64_t max_unique_ids_per_partition, std::string_view computation_name,
     bool enable_minibatching) {
   TT_KERNEL(
-      torch_tpu::OpName::kSparseDenseMatmulGradWithAdagrad, param_keys,
+      OpName::kSparseDenseMatmulGradWithAdagrad, param_keys,
       (row_pointers, embedding_ids, sample_ids, gains, embedding_table,
        accumulator, activations_grad, learning_rate, epsilon, device_batch_size,
        max_ids_per_partition, max_unique_ids_per_partition, computation_name,
        enable_minibatching),
       {
-        std::array<torch_tpu::TensorHolder, 8> inputs = {
+        std::array<TensorHolder, 8> inputs = {
             row_pointers,    embedding_ids, sample_ids,       gains,
             embedding_table, accumulator,   activations_grad, learning_rate};
 
-        torch_tpu::Dimensions out_dims(embedding_table.sizes().begin(),
-                                       embedding_table.sizes().end());
-        torch_tpu::Dimensions acc_dims(accumulator.sizes().begin(),
-                                       accumulator.sizes().end());
+        Dimensions out_dims = CopyIntVector(embedding_table.sizes());
+        Dimensions acc_dims = CopyIntVector(accumulator.sizes());
 
         auto builder_fn = SparseDenseMatmulGradWithAdagradBuilder(
             device_batch_size, max_ids_per_partition,
             max_unique_ids_per_partition, computation_name, epsilon,
             enable_minibatching);
 
-        TT_ASSIGN_OR_THROW(mlir::ElementType out_dtype,
-                           torch_tpu::ConvertTo<mlir::ElementType>(
-                               embedding_table.scalar_type()));
+        TT_ASSIGN_OR_THROW(
+            mlir::ElementType out_dtype,
+            ConvertTo<mlir::ElementType>(embedding_table.scalar_type()));
         TT_ASSIGN_OR_THROW(
             mlir::ElementType acc_dtype,
-            torch_tpu::ConvertTo<mlir::ElementType>(accumulator.scalar_type()));
+            ConvertTo<mlir::ElementType>(accumulator.scalar_type()));
 
         TT_ASSIGN_OR_THROW(
             std::vector<int64_t> device_assignment,  // INT_VEC_OK
@@ -295,20 +292,19 @@ std::tuple<at::Tensor, at::Tensor> AtenSparseDenseMatmulGradWithAdagrad(
 
         TT_ASSIGN_OR_THROW(
             auto results,
-            (torch_tpu::DispatchOp<8, 2>(
+            (DispatchOp<8, 2>(
                 builder_fn, inputs,
                 {.out_dtypes = {out_dtype, acc_dtype},
                  .out_dims_list = {out_dims, acc_dims},
                  .op_param_cache_keys = std::move(param_keys),
                  .donated_indices = {4, 5},
                  .device_assignment = std::move(device_assignment)})));
-        TT_ASSIGN_OR_THROW(const auto table_buf,
-                           torch_tpu::GetBuffer(embedding_table));
+        TT_ASSIGN_OR_THROW(const auto table_buf, GetBuffer(embedding_table));
         if (table_buf.shape().layout().has_value()) {
           results[0].set_layout(*table_buf.shape().layout());
         }
-        TT_ASSIGN_OR_THROW(const torch_tpu::DeviceBufferRef acc_buf,
-                           torch_tpu::GetBuffer(accumulator));
+        TT_ASSIGN_OR_THROW(const DeviceBufferRef acc_buf,
+                           GetBuffer(accumulator));
         if (acc_buf.shape().layout().has_value()) {
           results[1].set_layout(*acc_buf.shape().layout());
         }

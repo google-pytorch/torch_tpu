@@ -213,8 +213,7 @@ at::Tensor& AtenArangeStartOut(const at::Scalar& start, const at::Scalar& end,
           TT_ASSIGN_OR_RETURN(
               const mlir::Type mlir_type,
               GetMlirType(builder.getContext(), output_mlir_type));
-          return torch_tpu::BuildArangeOp(num_elements, mlir_type, start_op,
-                                          step_op);
+          return BuildArangeOp(num_elements, mlir_type, start_op, step_op);
         };
 
         TT_THROW_IF_ERROR(DispatchOpOut<3>(

@@ -508,7 +508,7 @@ auto GetAvgPoolOpBuilder(at::IntArrayRef kernel_size, at::IntArrayRef stride,
 absl::Status ValidateAvgPool1dDtype(const at::Tensor& self) {
   TT_RET_CHECK(self.numel() == 0 || self.scalar_type() != at::ScalarType::Long,
                error::kPythonNotImplementedError)
-      << "not implemented for " << torch_tpu::ToString(self.scalar_type());
+      << "not implemented for " << ToString(self.scalar_type());
   TT_RET_CHECK(self.scalar_type() != at::ScalarType::Short &&
                    self.scalar_type() != at::ScalarType::Int &&
                    self.scalar_type() != at::ScalarType::Char &&
@@ -518,7 +518,7 @@ absl::Status ValidateAvgPool1dDtype(const at::Tensor& self) {
                error::kInvalidArgument)
       << "expected input dtype to be none of (bool, uint8, int8, "
          "int16, int32, complex64), got "
-      << torch_tpu::ToString(self.scalar_type());
+      << ToString(self.scalar_type());
   return absl::OkStatus();
 }
 
@@ -681,8 +681,7 @@ at::Tensor& AtenAvgPool2dOut(const at::Tensor& self,
         TT_CHECK_THROW(
             self.numel() == 0 || self.scalar_type() != at::ScalarType::Long,
             error::kPythonNotImplementedError)
-            << "not implemented for "
-            << torch_tpu::ToString(self.scalar_type());
+            << "not implemented for " << ToString(self.scalar_type());
         TT_CHECK_THROW(self.scalar_type() != at::ScalarType::Bool &&
                            self.scalar_type() != at::ScalarType::Short &&
                            self.scalar_type() != at::ScalarType::Int &&
@@ -692,7 +691,7 @@ at::Tensor& AtenAvgPool2dOut(const at::Tensor& self,
                        error::kInvalidArgument)
             << "expected input dtype to be none of (bool, uint8, int8, int16, "
                "int32, complex64), got "
-            << torch_tpu::ToString(self.scalar_type());
+            << ToString(self.scalar_type());
 
         TT_ASSIGN_OR_THROW(
             auto result,
@@ -716,8 +715,7 @@ at::Tensor& AtenAvgPool3dOut(const at::Tensor& self,
       {
         TT_CHECK_THROW(self.scalar_type() != at::ScalarType::Long,
                        error::kPythonNotImplementedError)
-            << "not implemented for "
-            << torch_tpu::ToString(self.scalar_type());
+            << "not implemented for " << ToString(self.scalar_type());
         TT_CHECK_THROW(self.scalar_type() != at::ScalarType::Bool &&
                            self.scalar_type() != at::ScalarType::Byte &&
                            self.scalar_type() != at::ScalarType::Char &&
@@ -728,7 +726,7 @@ at::Tensor& AtenAvgPool3dOut(const at::Tensor& self,
                        error::kInvalidArgument)
             << "expected input dtype to be none of (bool, uint8, int8, "
                "int16, int32, complex64), got "
-            << torch_tpu::ToString(self.scalar_type());
+            << ToString(self.scalar_type());
 
         TT_ASSIGN_OR_THROW(
             auto result,

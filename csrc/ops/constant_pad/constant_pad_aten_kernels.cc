@@ -130,8 +130,7 @@ absl::StatusOr<mlir::MlirOp> BuildConstantPadNdShlo(mlir::MlirOp input,
                                                     mlir::MlirOp val_scalar,
                                                     const Dimensions& pad_vec) {
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
-  Dimensions cur_shape(input_type.getShape().begin(),
-                       input_type.getShape().end());
+  Dimensions cur_shape = CopyIntVector(input_type.getShape());
   const int64_t rank = cur_shape.size();
   const int64_t num_pad_dims = pad_vec.size() / 2;
 

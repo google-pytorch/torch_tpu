@@ -748,9 +748,8 @@ absl::StatusOr<DeviceBufferRef> CreateInverseViewDeviceBufferRef(
 
   std::vector<Shape> output_shapes = {inverse_view_operation.final_shape};
 
-  Dimensions base_dimensions(base_buffer_ref.dimensions().begin(),
-                             base_buffer_ref.dimensions().end());
-  Dimensions view_dims(view_dimensions.begin(), view_dimensions.end());
+  Dimensions base_dimensions = CopyIntVector(base_buffer_ref.dimensions());
+  Dimensions view_dims = CopyIntVector(view_dimensions);
 
   auto [op_builder, inputs, donated_indices] = MakeAsStridedInverseBuilder(
       std::move(inverse_view_operation), std::move(base_buffer_ref),

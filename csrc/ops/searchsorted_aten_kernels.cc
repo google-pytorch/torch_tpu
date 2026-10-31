@@ -159,8 +159,7 @@ mlir::MlirOp Broadcast1DSequenceToQueryDims(mlir::MlirOp seq_op,
                                             int64_t seq_len) {
   auto seq_type = GetTensorTypeOrDie(seq_op);
   if (seq_type.getRank() == 1 && query_type.getRank() > 1) {
-    llvm::SmallVector<int64_t, 4> broadcast_shape(query_type.getShape().begin(),
-                                                  query_type.getShape().end());
+    Dimensions broadcast_shape = CopyIntVector(query_type.getShape());
     broadcast_shape.back() = seq_len;
     llvm::SmallVector<int64_t, 1> bcast_dims = {query_type.getRank() - 1};
     auto bcast_type = seq_type.clone(broadcast_shape);

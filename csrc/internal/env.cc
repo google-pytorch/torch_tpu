@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 #include <cstdint>
+#include <cstdlib>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -22,6 +23,7 @@
 #include "csrc/common/env_vars.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/libtpu_version.h"
+#include "csrc/common/process.h"
 #include "csrc/common/pybind_error_utils.h"
 #include "csrc/common/utils.h"
 #include "pybind11/stl.h"
@@ -130,12 +132,30 @@ std::optional<std::string> PyGetStringEnvOnce(
 }  // namespace
 
 TT_PYBIND11_MODULE(env, m) {
+  // Resolve the process lineage at module import time and mirror the resulting
+  // TORCH_TPU_INTERNAL_TOPMOST_PID into Python's os.environ, so that child
+  // processes spawned from Python (e.g. via os.environ.copy()) inherit it.
+  static_cast<void>(  // VOID_CAST_OK=only called for its side effect.
+      HasTorchTpuAncestorProcess());
+  if (const char* const topmost_pid =
+          std::getenv(  // GETENV_OK=Internal implementation env var.
+              kTorchTpuInternalTopmostPidEnvVar);
+      topmost_pid != nullptr) {
+    PyBindModule::Import("os").attr(
+        "environ")[kTorchTpuInternalTopmostPidEnvVar] = topmost_pid;
+  }
   m.attr("IS_INTERNAL_TORCH_TPU") = static_cast<bool>(TT_IS_INTERNAL_TORCH_TPU);
 #if defined(NDEBUG)
   m.attr("TORCH_TPU_IS_OPTIMIZED_BUILD") = true;
 #else
   m.attr("TORCH_TPU_IS_OPTIMIZED_BUILD") = false;
 #endif
+  m.def("has_torch_tpu_ancestor_process", &HasTorchTpuAncestorProcess,
+        "Returns True if the current process inherited the PID of an "
+        "ancestor TorchTPU process. "
+        "Best-effort: launchers that don't load TorchTPU are invisible, so "
+        "use it only where a wrong answer is harmless (e.g. log "
+        "deduplication). See csrc/common/process.h.");
   m.def("set_libtpu_version", &SetLibtpuVersion, pybind11::arg("version"));
   m.def("get_libtpu_version", &GetLibtpuVersionString);
   m.def("reset_libtpu_version_for_testing", &ResetLibtpuVersionForTesting);

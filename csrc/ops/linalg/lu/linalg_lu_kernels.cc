@@ -97,7 +97,7 @@ absl::StatusOr<MlirOpResults<2>> BuildComplexL2PivotedLuShlo(
   const int64_t n = a_shape[rank - 2];
   const int64_t row_dim = rank - 2;
   const int64_t col_dim = rank - 1;
-  Dimensions batch_dims(a_shape.begin(), a_shape.begin() + row_dim);
+  Dimensions batch_dims = CopyIntVector(a_shape.drop_back(2));
 
   auto make_shape_1d = [&](int64_t d) {  // REF_CAPTURE_OK=called locally
     Dimensions s = batch_dims;
@@ -343,8 +343,7 @@ absl::StatusOr<MlirOpResults<2>> LuDecompositionBuilder(mlir::MlirOp input) {
 
   const int n = a_shape[rank - 2];
   const int m = a_shape[rank - 1];
-  const int num_batch_dims = rank - 2;
-  Dimensions batch_dims(a_shape.begin(), a_shape.begin() + num_batch_dims);
+  Dimensions batch_dims = CopyIntVector(a_shape.drop_back(2));
   int64_t batch_count = 1;
   for (int64_t d : batch_dims) {
     batch_count *= d;
@@ -416,10 +415,10 @@ absl::Status ApplyPivotsInPlace(at::Tensor& tensor, const at::Tensor& pivots,
       << "expected pivots size to be <= " << size
       << " (the size of the matrix), got " << pivots.size(-1) << " and "
       << size;
-  Dimensions tensor_batch_dims(tensor.sizes().begin(),
-                               tensor.sizes().begin() + rank - 2);
-  Dimensions pivots_batch_dims(pivots.sizes().begin(),
-                               pivots.sizes().begin() + pivots.dim() - 1);
+  Dimensions tensor_batch_dims =
+      CopyIntVector(tensor.sizes().slice(0, rank - 2));
+  Dimensions pivots_batch_dims =
+      CopyIntVector(pivots.sizes().slice(0, pivots.dim() - 1));
   TT_RET_CHECK(tensor_batch_dims == pivots_batch_dims, error::kInvalidArgument)
       << "expected pivots and tensor to have the same batch dimensions, got "
       << ToString(tensor_batch_dims) << " and " << ToString(pivots_batch_dims);
@@ -471,8 +470,8 @@ std::tuple<at::Tensor&, at::Tensor&, at::Tensor&> AtenLinalgLuFactorExOut(
         const int n = a.size(a.dim() - 2);
         const int m = a.size(a.dim() - 1);
         const int num_batch_dims = a.dim() - 2;
-        Dimensions batch_dims(a.sizes().begin(),
-                              a.sizes().begin() + num_batch_dims);
+        Dimensions batch_dims =
+            CopyIntVector(a.sizes().slice(0, num_batch_dims));
         Dimensions pivot_dims = batch_dims;
         pivot_dims.push_back(std::min(n, m));
 
@@ -536,8 +535,8 @@ std::tuple<at::Tensor&, at::Tensor&, at::Tensor&> AtenLuUnpackOut(
         int64_t m = lu_data.size(-2);
         int64_t n = lu_data.size(-1);
         int64_t k = std::min(m, n);
-        Dimensions batch_dims(lu_data.sizes().begin(),
-                              lu_data.sizes().end() - 2);
+        Dimensions batch_dims =
+            CopyIntVector(lu_data.sizes().slice(0, lu_data.dim() - 2));
 
         if (unpack_pivots) {
           TT_THROW_IF_ERROR(ValidateOutDtype(p, lu_data.scalar_type(),

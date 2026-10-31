@@ -652,9 +652,10 @@ class InternalApiVisitor(ast.NodeVisitor):
         continue
 
       # 1. Internal module references, ops, or flags in strings, shell scripts, or markdown
+      # A flag is matched without its leading `--`, as listed in tt_apis.yaml.
       for m in re.finditer(
           r"\b((?:torch_tpu(?:\.google)?\._internal|torch\.tpu\._|torch\.ops\.tpu\._|torch\.ops\.torch_tpu)[a-zA-Z0-9_.]*)\b"
-          r"|(--torch_tpu_internal_[a-zA-Z0-9_]+)\b",
+          r"|--(torch_tpu_internal_[a-zA-Z0-9_]+)\b",
           line,
       ):
         sym = m.group(1) or m.group(2)

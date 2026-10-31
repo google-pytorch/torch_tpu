@@ -50,7 +50,9 @@ torch_tpu_cc_library(
     hdrs = ["cumprod.h"],
     deps = [
         "//csrc/common:aten_utils",
+        "//csrc/common:dimension_types",
         "//csrc/common:error_utils",
+        "//csrc/common:utils",
         "//csrc/ops:op_builder_utils",
         "//csrc/ops:scan_builder",
         "@com_google_absl//absl/status:statusor",

@@ -88,6 +88,7 @@ torch_tpu_cc_library(
     visibility = ["//visibility:private"],  # Internal use only.
     deps = [
         "//csrc/common:dimension_types",
+        "//csrc/common:utils",
         "//csrc/ops:op_builder_utils",
         "//shims/torch:aten_headers",
         "//shims/torch/c10/util:base_headers",
@@ -113,6 +114,7 @@ torch_tpu_cc_library(
         "//csrc/common:dtype",
         "//csrc/common:error_utils",
         "//csrc/common:fixed_size_span",
+        "//csrc/common:utils",
         "//csrc/eager:op_dispatcher",
         "//csrc/eager:tensor_to_buffer",
         "//csrc/ops:op_builder_utils",
@@ -201,6 +203,7 @@ torch_tpu_cc_library(
         "//csrc/common:dtype",
         "//csrc/common:error_utils",
         "//csrc/common:fixed_size_span",
+        "//csrc/common:utils",
         "//csrc/eager:device_buffer",
         "//csrc/eager:op_dispatcher",
         "//csrc/eager:tensor_to_buffer",

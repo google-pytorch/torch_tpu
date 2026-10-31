@@ -174,6 +174,9 @@ pytype_strict_library(
 pytype_strict_test(
     name = "inputs_test",
     srcs = ["inputs_test.py"],
+    tags = [
+        "nosan",  # PyTorch/SLEEF have data races under in-process multi-threading.
+    ],
     deps = [
         ":core_inputs",
         ":types",

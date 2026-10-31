@@ -30,7 +30,6 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
-#include "c10/util/SmallVector.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
@@ -655,7 +654,7 @@ absl::Status ValidateGroupedMmInputs(const at::Tensor& self,
   return absl::OkStatus();
 }
 
-absl::StatusOr<c10::SmallVector<int64_t, 3>> GetGroupedMmOutputSize(
+absl::StatusOr<Dimensions> GetGroupedMmOutputSize(
     const at::Tensor& self, const at::Tensor& mat2,
     const std::optional<at::Tensor>& offs) {
   const bool a_is_2d = self.dim() == 2;
@@ -677,7 +676,7 @@ absl::StatusOr<c10::SmallVector<int64_t, 3>> GetGroupedMmOutputSize(
            "tensors";
   }
 
-  c10::SmallVector<int64_t, 3> out_size;
+  Dimensions out_size;
   if (a_is_2d) {
     if (b_is_2d) {
       out_size = {offs->size(0), self.size(0), mat2.size(1)};
@@ -720,13 +719,12 @@ absl::StatusOr<DeviceBufferRef> GroupedMm(
 
   const bool has_offs = offs.has_value() && offs->defined();
 
-  TT_ASSIGN_OR_RETURN(auto out_size, GetGroupedMmOutputSize(self, mat2, offs));
+  TT_ASSIGN_OR_RETURN(Dimensions out_dims,
+                      GetGroupedMmOutputSize(self, mat2, offs));
 
   at::ScalarType target_dtype = out_dtype.value_or(self.scalar_type());
   TT_ASSIGN_OR_RETURN(mlir::ElementType output_elem_type,
                       ConvertTo<mlir::ElementType>(target_dtype));
-
-  Dimensions out_dims_vec(out_size.begin(), out_size.end());
 
   const auto current_precision = GetAndAddPrecisionTo(param_keys);
 
@@ -753,7 +751,7 @@ absl::StatusOr<DeviceBufferRef> GroupedMm(
       auto result_buffer,
       DispatchOp<kDynamicSize>(std::move(op_builder), inputs,
                                {.out_dtype = output_elem_type,
-                                .out_dims = out_dims_vec,
+                                .out_dims = out_dims,
                                 .op_param_cache_keys = std::move(param_keys)}));
   return result_buffer;
 }
@@ -769,7 +767,8 @@ absl::StatusOr<DeviceBufferRef> ScaledGroupedMm(
   const bool has_scale_result =
       scale_result.has_value() && scale_result->defined();
 
-  TT_ASSIGN_OR_RETURN(auto out_size, GetGroupedMmOutputSize(self, mat2, offs));
+  TT_ASSIGN_OR_RETURN(Dimensions out_dims,
+                      GetGroupedMmOutputSize(self, mat2, offs));
 
   const bool tensorwise = IsScalar(scale_a) && IsScalar(scale_b);
   const bool rowwise = IsRowwiseScales(self, mat2, scale_a, scale_b, offs);
@@ -793,7 +792,6 @@ absl::StatusOr<DeviceBufferRef> ScaledGroupedMm(
   TT_ASSIGN_OR_RETURN(mlir::ElementType output_elem_type,
                       ConvertTo<mlir::ElementType>(target_dtype));
 
-  Dimensions out_dims_vec(out_size.begin(), out_size.end());
   const auto current_precision = GetAndAddPrecisionTo(param_keys);
 
   std::vector<at::Tensor> inputs = {self, mat2, scale_a, scale_b};
@@ -830,7 +828,7 @@ absl::StatusOr<DeviceBufferRef> ScaledGroupedMm(
       auto result_buffer,
       DispatchOp<kDynamicSize>(std::move(op_builder), inputs,
                                {.out_dtype = output_elem_type,
-                                .out_dims = out_dims_vec,
+                                .out_dims = out_dims,
                                 .op_param_cache_keys = std::move(param_keys)}));
   return result_buffer;
 }

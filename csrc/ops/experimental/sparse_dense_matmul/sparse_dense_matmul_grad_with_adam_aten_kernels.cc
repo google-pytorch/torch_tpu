@@ -31,6 +31,7 @@
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
+#include "csrc/common/utils.h"
 #include "csrc/distributed/process_group_tpu.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/op_dispatcher.h"
@@ -346,9 +347,8 @@ AtenSparseDenseMatmulGradWithAdam(
             gains,        embedding_table,  momentum,
             velocity,     activations_grad, alpha_t};
 
-        Dimensions out_dims(embedding_table.sizes().begin(),
-                            embedding_table.sizes().end());
-        Dimensions vel_dims(velocity.sizes().begin(), velocity.sizes().end());
+        Dimensions out_dims = CopyIntVector(embedding_table.sizes());
+        Dimensions vel_dims = CopyIntVector(velocity.sizes());
 
         auto builder_fn = SparseDenseMatmulGradWithAdamBuilder(
             device_batch_size, max_ids_per_partition,

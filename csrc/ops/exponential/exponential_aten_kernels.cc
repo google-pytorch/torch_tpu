@@ -132,7 +132,7 @@ at::Tensor& AtenExponential_(at::Tensor& self, double lambd,
         TT_CHECK_THROW(self.is_floating_point(), error::kInvalidArgument)
             << "expected input tensor dtype to be a floating-point real type, "
                "got "
-            << torch_tpu::ToString(self.scalar_type());
+            << ToString(self.scalar_type());
 
         TT_ASSIGN_OR_THROW(mlir::ElementType output_dtype,
                            ConvertTo<mlir::ElementType>(self.scalar_type()));

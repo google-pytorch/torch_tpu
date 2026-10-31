@@ -56,6 +56,7 @@
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/python_context.h"
+#include "csrc/pjrt/pjrt_transfer.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
@@ -185,6 +186,7 @@ class StreamState {
       if (auto* snapshot_request =
               std::get_if<SnapshotRequest>(&ready_work_item)) {
         snapshot_request->snapshot_promise.Set(cancel_status);
+        snapshot_request->ok_callback_promise.Set(absl::OkStatus());
       }
     }
     ready_work_.clear();
@@ -203,7 +205,7 @@ class StreamState {
     }
     futures_.clear();
     last_device_output_.reset();
-    last_snapshot_future_ = xla::Future<void>(absl::OkStatus());
+    transfer_blocks_.clear();
   }
 
   // If a deferred op has no side effects, then as soon as all of its DataPtrs
@@ -370,6 +372,70 @@ class StreamState {
     }
   }
 
+  absl::StatusOr<DeviceBufferRef> ScheduleHostToDeviceTransfer(
+      HostToDeviceTransfer transfer) {
+    // Copy the transfer-blocking futures so that the transfer start can start
+    // without holding the mutex.
+    auto [error_map_promise, error_map_future] = xla::MakePromise<void>();
+    std::vector<xla::Future<void>> transfer_blocks;
+    {
+      absl::MutexLock lock(mu_);
+      PruneCompletedFutures(transfer_blocks_);
+      transfer_blocks = transfer_blocks_;
+      futures_.push_back(std::move(error_map_future));
+    }
+
+    absl::StatusOr<DeviceBufferRef> device_buffer_ref =
+        transfer.RunAfter(transfer_blocks);
+    if (!device_buffer_ref.ok()) {
+      error_map_promise.Set(
+          AdaptXlaError(device_buffer_ref.status(),
+                        /*context=*/"failed to copy buffer from host to "
+                                    "device"));
+    } else {
+      // Satisfy TorchTPU error formatting requirements.
+      device_buffer_ref->GetReadyFuture().OnReady(
+          [error_map_promise = std::move(error_map_promise)](
+              const absl::Status& status) mutable {
+            error_map_promise.Set(
+                AdaptXlaError(status,
+                              /*context=*/"failed to copy buffer from host to "
+                                          "device"));
+          });
+    }
+    return device_buffer_ref;
+  }
+
+  void ScheduleDeviceToHostTransfer(DeviceToHostTransfer transfer) {
+    // Copy the transfer-blocking futures so that the transfer start can start
+    // without holding the mutex.
+    std::vector<xla::Future<void>> transfer_blocks;
+    {
+      absl::MutexLock lock(mu_);
+      PruneCompletedFutures(transfer_blocks_);
+      transfer_blocks = transfer_blocks_;
+    }
+    xla::Future<void> transfer_future = transfer.RunAfter(transfer_blocks);
+    {
+      absl::MutexLock lock(mu_);
+      futures_.push_back(std::move(transfer_future));
+    }
+  }
+
+  void InsertStreamWait(EventSnapshot& snapshot) {
+    absl::MutexLock lock(mu_);
+    xla::Future<void> snapshot_ok_callback = snapshot.OkCallback();
+    // The next event will not be ready until the awaited snapshot is ready.
+    futures_.push_back(snapshot_ok_callback);  // intentional copy
+
+    // Any transfers on this stream must delay until the awaited snapshot is
+    // ready.
+    if (transfer_blocks_.size() + 1 > transfer_blocks_.capacity()) {
+      PruneCompletedFutures(transfer_blocks_);
+    }
+    transfer_blocks_.push_back(std::move(snapshot_ok_callback));
+  }
+
   void MarkActive(std::vector<xla::Future<void>>&& new_futures) {
     if (new_futures.empty()) {
       return;
@@ -506,65 +572,13 @@ class StreamState {
     }
   }
 
-  void PopNoOpWorkLocked(bool& is_no_op) ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
-    while (is_no_op && !ready_work_.empty()) {
-      auto& prev_work_block = ready_work_.back();
-      if (std::holds_alternative<SnapshotRequest>(prev_work_block)) {
-        // There has been no meaningful work since the last snapshot.
-        // We can reuse the previous snapshot promise.
-        return;
-      }
-      if (std::holds_alternative<CompiledExecution>(prev_work_block)) {
-        is_no_op = false;
-        return;
-      }
-      auto& prev_eager_execution = std::get<EagerExecution>(prev_work_block);
-      if (!prev_eager_execution.must_execute.empty()) {
-        is_no_op = false;
-        return;
-      }
-      // This may potentially miss nodes that are "must materialize" but already
-      // being handled by a previous snapshot.
-      // Ex: foo(); record_event(); bar(); record_event(must_materialize=[foo])
-      // foo will be materialized by the first event, but may still have
-      // is_materializing()==false when the second snapshot is created.
-      // If there is a placeholder here (which should never happen) it is
-      // retained for downstream error propagation.
-      if (std::any_of(prev_eager_execution.must_materialize.begin(),
-                      prev_eager_execution.must_materialize.end(),
-                      [](const SharedDeviceBufferList& node) {
-                        return !node->is_materializing();
-                      })) {
-        is_no_op = false;
-        return;
-      }
-      ready_work_.pop_back();
-    }
-  }
-
   xla::Future<std::shared_ptr<EventSnapshot>> RequestEventSnapshotLocked(
       std::vector<SharedDeviceBufferList> must_materialize,
       MaterializationReason reason, GraphSplitMode mode, EagerMode eager_mode)
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
     InsertGraphBreakLocked(std::move(must_materialize), reason, mode,
                            eager_mode, std::nullopt);
-    // Check if this event snapshot is a no-op.
-    // An event snapshot is meaningful only if it has futures to wait on,
-    // must-execute deferred ops, must_materialize deferred constants (which
-    // bypass insertion into deferred_ops_), or a compiled execution task which
-    // have been recorded since the last snapshot request.
     PruneCompletedFutures(futures_);
-    bool is_no_op = futures_.empty() && !last_device_output_.has_value();
-    PopNoOpWorkLocked(is_no_op);
-
-    if (is_no_op && !ready_work_.empty() &&
-        std::holds_alternative<SnapshotRequest>(ready_work_.back())) {
-      SnapshotRequest& last_snapshot_request =
-          std::get<SnapshotRequest>(ready_work_.back());
-      // When the most-recent real snapshot is created, the caller of this
-      // function will receive a shared_ptr copy of it.
-      return last_snapshot_request.snapshot_promise.future<>();
-    }
 
     // Explanation: synchronizing the last EventSnapshot should also await all
     // prior EventSnapshots. We achieve this by chaining a promise/future;
@@ -573,34 +587,20 @@ class StreamState {
     auto [snapshot_promise, snapshot_future] =
         xla::MakePromise<std::shared_ptr<EventSnapshot>>();
     auto [chaining_promise, chaining_future] = xla::MakePromise<void>();
-    snapshot_future.OnReady([chaining_promise = std::move(chaining_promise)](
-                                absl::StatusOr<std::shared_ptr<EventSnapshot>>
-                                    snapshot_or) mutable {
-      if (!snapshot_or.ok()) {
-        ReleaseNextSnapshot(std::move(chaining_promise));
-      } else {
-        (*snapshot_or)->OkCallback(std::move(chaining_promise));
-      }
-    });
-    if (!last_snapshot_future_.IsKnownReady()) {
-      futures_.push_back(std::move(last_snapshot_future_));
-    }
-    last_snapshot_future_ = std::move(chaining_future);
     SnapshotRequest new_snapshot_request{
         .futures = std::move(futures_),
         .last_device_output = std::exchange(last_device_output_, std::nullopt),
         .snapshot_promise = std::move(snapshot_promise),
-    };
+        .ok_callback_promise = std::move(chaining_promise)};
     ready_work_.push_back(std::move(new_snapshot_request));
-    futures_.clear();
+    futures_.push_back(std::move(chaining_future));
     return snapshot_future;
   }
 
   absl::Mutex mu_;
-  xla::Future<void> last_snapshot_future_ ABSL_GUARDED_BY(mu_) =
-      xla::Future<void>(absl::OkStatus());
   std::vector<xla::Future<void>> futures_ ABSL_GUARDED_BY(mu_);
   std::optional<DeviceBufferRef> last_device_output_ ABSL_GUARDED_BY(mu_);
+  std::vector<xla::Future<void>> transfer_blocks_ ABSL_GUARDED_BY(mu_);
 
   std::deque<DeferredOpEvent> deferred_ops_ ABSL_GUARDED_BY(mu_);
   std::vector<ReadyWork> ready_work_ ABSL_GUARDED_BY(mu_);
@@ -824,11 +824,21 @@ std::vector<StreamState* absl_nonnull> GetDeviceStreamStates(
   return GetStreamStates().GetDeviceState(device_index).GetAllStreamStates();
 }
 
+StreamState* absl_nonnull GetStreamFor(
+    const SharedDeviceBufferList& device_buffer_list) {
+  return GetOrCreateStreamState(device_buffer_list->device_index(),
+                                device_buffer_list->stream_id());
+}
+}  // namespace
+
+namespace internal {
+namespace {
 void MarkStreamActive(c10::DeviceIndex device_index, int64_t stream_id,
                       std::vector<xla::Future<void>>&& new_futures) {
   GetOrCreateStreamState(device_index, stream_id)
       ->MarkActive(std::move(new_futures));
 }
+}  // namespace
 
 void MarkStreamActive(c10::DeviceIndex device_index, int64_t stream_id,
                       xla::Future<void> future) {
@@ -838,13 +848,7 @@ void MarkStreamActive(c10::DeviceIndex device_index, int64_t stream_id,
   MarkStreamActive(device_index, stream_id, std::move(futures));
 }
 
-StreamState* absl_nonnull GetStreamFor(
-    const SharedDeviceBufferList& device_buffer_list) {
-  return GetOrCreateStreamState(device_buffer_list->device_index(),
-                                device_buffer_list->stream_id());
-}
-
-}  // namespace
+}  // namespace internal
 
 void RecordDeferredOpCreated(const SharedDeviceBufferList& device_buffer_list) {
   if (GetEagerMode() == EagerMode::kInternalCompileFxGraph) {
@@ -880,31 +884,23 @@ std::vector<ReadyWork> GetReadyWork(c10::DeviceIndex device_index,
   return ready_work;
 }
 
-void RecordAsyncHostToDevice(const DeviceBufferRef& device_buffer_ref) {
-  ABSL_CHECK_NE(  // CRASH_OK=no device transfers during FX trace
-      GetEagerMode(), EagerMode::kInternalCompileFxGraph);
-  // Satisfy TorchTPU error formatting requirements.
-  auto [error_map_promise, error_map_future] = xla::MakePromise<void>();
-  device_buffer_ref.GetReadyFuture().OnReady(
-      [error_map_promise =
-           std::move(error_map_promise)](const absl::Status& status) mutable {
-        error_map_promise.Set(
-            AdaptXlaError(status,
-                          /*context=*/"failed to copy buffer from host to "
-                                      "device"));
-      });
-  MarkStreamActive(device_buffer_ref.device_index(),
-                   device_buffer_ref.stream_id(), std::move(error_map_future));
+absl::StatusOr<DeviceBufferRef> ScheduleHostToDeviceTransfer(
+    HostToDeviceTransfer host_to_device_transfer) {
+  const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
+  return GetOrCreateStreamState(device_index, stream_id)
+      ->ScheduleHostToDeviceTransfer(std::move(host_to_device_transfer));
 }
 
-void RecordAsyncDeviceToHost(xla::Future<void> to_literal_future) {
-  ABSL_CHECK_NE(  // CRASH_OK=no device transfers during FX trace
-      GetEagerMode(), EagerMode::kInternalCompileFxGraph);
-  // TODO: should this be moved into the function signature?
-  // Is there ever a case where we would want to record an async d2h on a
-  // different stream than the current stream?
+void ScheduleDeviceToHostTransfer(
+    DeviceToHostTransfer device_to_host_transfer) {
   const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
-  MarkStreamActive(device_index, stream_id, std::move(to_literal_future));
+  GetOrCreateStreamState(device_index, stream_id)
+      ->ScheduleDeviceToHostTransfer(std::move(device_to_host_transfer));
+}
+
+void InsertStreamWait(c10::DeviceIndex device_index, c10::StreamId stream_id,
+                      EventSnapshot& snapshot) {
+  GetOrCreateStreamState(device_index, stream_id)->InsertStreamWait(snapshot);
 }
 
 std::vector<PendingEventSnapshot> RecordDeviceSnapshots(
@@ -955,8 +951,10 @@ xla::Future<std::shared_ptr<EventSnapshot>> EventSnapshot::Record(
                              eager_mode);
 }
 
-EventSnapshot::EventSnapshot(xla::Future<void> future)
+EventSnapshot::EventSnapshot(xla::Future<void> future,
+                             xla::Promise<void> ok_callback_promise)
     : future_(std::move(future)), completion_(std::make_shared<Completion>()) {
+  completion_->chain_promise = std::move(ok_callback_promise);
   auto callback = [completion = completion_](absl::Status status) {
     std::optional<xla::Promise<void>> chain_promise;
     {
@@ -1022,15 +1020,12 @@ absl::StatusOr<double> EventSnapshot::ElapsedTime(
       .count();
 }
 
-void EventSnapshot::OkCallback(xla::Promise<void>&& chain_promise) {
-  {
-    absl::MutexLock lock(completion_->mu);
-    if (!completion_->completed) {
-      completion_->chain_promise = std::move(chain_promise);
-      return;
-    }
+xla::Future<void> EventSnapshot::OkCallback() {
+  absl::MutexLock lock(completion_->mu);
+  if (completion_->completed || !completion_->chain_promise.has_value()) {
+    return absl::OkStatus();
   }
-  ReleaseNextSnapshot(std::move(chain_promise));
+  return completion_->chain_promise->future();
 }
 
 void ClearAllStreams() {

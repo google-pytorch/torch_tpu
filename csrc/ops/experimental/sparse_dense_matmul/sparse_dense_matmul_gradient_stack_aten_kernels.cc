@@ -158,7 +158,7 @@ at::Tensor AtenSparseDenseMatmulGradientStack(
     at::TensorList unstacked_gradients, int64_t stacked_batch_size,
     int64_t stacked_feature_dim) {
   TT_KERNEL(
-      torch_tpu::OpName::kSparseDenseMatmulGradientStack, param_keys,
+      OpName::kSparseDenseMatmulGradientStack, param_keys,
       (unstacked_gradients, stacked_batch_size, stacked_feature_dim), {
         TT_THROW_IF_ERROR(ValidateSparseDenseMatmulGradientStackInputs(
             unstacked_gradients, stacked_batch_size, stacked_feature_dim));
@@ -166,14 +166,13 @@ at::Tensor AtenSparseDenseMatmulGradientStack(
         std::vector<at::Tensor> inputs_vec(unstacked_gradients.begin(),
                                            unstacked_gradients.end());
 
-        torch_tpu::Dimensions out_dims = {stacked_batch_size,
-                                          stacked_feature_dim};
+        Dimensions out_dims = {stacked_batch_size, stacked_feature_dim};
 
         auto builder_fn = SparseDenseMatmulGradientStackBuilder(
             stacked_batch_size, stacked_feature_dim);
 
         TT_ASSIGN_OR_THROW(mlir::ElementType out_dtype,
-                           torch_tpu::ConvertTo<mlir::ElementType>(at::kFloat));
+                           ConvertTo<mlir::ElementType>(at::kFloat));
 
         TT_ASSIGN_OR_THROW(
             std::vector<int64_t> device_assignment,  // INT_VEC_OK
@@ -188,8 +187,8 @@ at::Tensor AtenSparseDenseMatmulGradientStack(
 
         TT_ASSIGN_OR_THROW(
             DeviceBufferRef result,
-            (torch_tpu::DispatchOp<torch_tpu::kDynamicSize, 1>(
-                std::move(builder_fn), inputs_vec, std::move(options))));
+            (DispatchOp<kDynamicSize, 1>(std::move(builder_fn), inputs_vec,
+                                         std::move(options))));
 
         return torch_tpu::MakeTensor(result);
       });

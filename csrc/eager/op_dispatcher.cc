@@ -45,6 +45,7 @@
 #include "csrc/common/error_utils.h"
 #include "csrc/common/shape.h"
 #include "csrc/common/to_string.h"
+#include "csrc/common/utils.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/eager_mode.h"
 #include "csrc/eager/events_queue.h"
@@ -130,12 +131,11 @@ absl::StatusOr<DeviceBufferRef> MakeBuffer(
     // Then asynchronously copy it to device as a materialized DeviceBufferRef.
     TT_ASSIGN_OR_RETURN(mlir::ElementType element_type,
                         ConvertTo<mlir::ElementType>(scalar_type));
+    auto transfer = HostToDeviceTransfer::FromBytesVector(
+        std::move(scalar_bytes), element_type,
+        /*dimensions=*/{});
     TT_ASSIGN_OR_RETURN(DeviceBufferRef buf_ref,
-                        HostToDeviceTransfer::FromBytesVector(
-                            std::move(scalar_bytes), element_type,
-                            /*dimensions=*/{})
-                            .Run());
-    RecordAsyncHostToDevice(buf_ref);
+                        ScheduleHostToDeviceTransfer(std::move(transfer)));
     // Bound the cache. Workloads that produce many distinct scalars (learning
     // rate schedules, step counters, interpolation coefficients) would
     // otherwise grow it without limit and leak one device buffer per value
@@ -328,8 +328,7 @@ absl::Status AssignBufferToOutput(const at::Tensor& output,
   TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Output tensors are always defined.
       output.defined(), error::kInvalidArgument)
       << "expected defined output tensor";
-  Dimensions logical_dims(result_buffer.dimensions().begin(),
-                          result_buffer.dimensions().end());
+  Dimensions logical_dims = CopyIntVector(result_buffer.dimensions());
   if (result_buffer.element_type() == mlir::ElementType::F4E2M1FN) {
     ABSL_CHECK(!logical_dims.empty());         // CRASH_OK
     ABSL_CHECK_EQ(logical_dims.back() % 2, 0)  // CRASH_OK

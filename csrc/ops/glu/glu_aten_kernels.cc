@@ -52,7 +52,7 @@ absl::StatusOr<mlir::MlirOp> BuildGluShlo(int64_t dim, mlir::MlirOp input) {
   const int64_t rank = shape.size();
 
   Indices start_indices(rank, 0);
-  Indices limit_indices(shape.begin(), shape.end());
+  Indices limit_indices = CopyIntVector(shape);
   Strides strides(rank, 1);
 
   const int64_t split_index = shape[dim] / 2;
@@ -106,7 +106,7 @@ absl::StatusOr<mlir::MlirOp> BuildGluBackwardShlo(int64_t dim,
   const int64_t rank = shape.size();
 
   Indices start_indices(rank, 0);
-  Indices limit_indices(shape.begin(), shape.end());
+  Indices limit_indices = CopyIntVector(shape);
   Strides strides(rank, 1);
 
   const int64_t split_index = shape[dim] / 2;

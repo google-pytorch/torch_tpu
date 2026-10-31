@@ -32,10 +32,11 @@ except ImportError:
   print("libtpu not found.")
   pass
 
-# Warn if tcmalloc is not the allocator of this process. Checked last so the
-# probe sees every library `import torch_tpu` pulls in, libtpu included.
-_tcmalloc_check.check_tcmalloc()
-
 from torch_tpu import _loader as _  # pylint: disable=g-import-not-at-top  # noqa: F401
+
+# Warn if tcmalloc is not the allocator of this process. Checked last so the
+# probe sees every library `import torch_tpu` pulls in, libtpu included, and so
+# `torch_tpu._internal.env` is ready for TorchTPU ancestor process detection.
+_tcmalloc_check.check_tcmalloc()
 
 # TODO: b/477401982 - Introduce a new flag module to hold all TorchTPU flags.

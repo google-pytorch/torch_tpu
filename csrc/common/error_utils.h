@@ -174,6 +174,16 @@ void CheckDeviceIsTpu(c10::optional<at::Device> device_opt,
 // TODO(wan): use a more robust mechanism to detect XLA OOM errors.
 [[nodiscard]] bool IsXlaOomError(const absl::Status& status);
 
+// Translates a low-level XLA OOM error to an error that is easier to understand
+// by a PyTorch user. If the status is not an XLA OOM error, returns it as is.
+//
+// `dtype` is the string representation of the element type of the tensor that
+// caused the XLA OOM error.
+// `dims` is the dimensions of the tensor that caused the XLA OOM error.
+absl::Status TranslateXlaTensorOomError(absl::Status status,
+                                        std::string_view dtype,
+                                        absl::Span<const int64_t> dims);
+
 // Sets the global sticky error state. Subsequent ops should fail if this is
 // set.
 void SetStickyError(absl::Status status);

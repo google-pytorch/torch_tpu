@@ -342,8 +342,8 @@ at::Tensor& AtenAddmmOut(const at::Tensor& self, const at::Tensor& mat1,
         TT_CHECK_THROW(out.scalar_type() == self.scalar_type(),
                        error::kInvalidArgument)
             << "expected input and out tensors to have the same dtype, got "
-            << torch_tpu::ToString(self.scalar_type()) << " vs "
-            << torch_tpu::ToString(out.scalar_type());
+            << ToString(self.scalar_type()) << " vs "
+            << ToString(out.scalar_type());
         TT_THROW_IF_ERROR(AddMmOut(self, mat1, mat2, std::move(promoted_beta),
                                    std::move(promoted_alpha),
                                    /*out_dtype=*/std::nullopt, param_keys,
@@ -367,8 +367,8 @@ at::Tensor& AtenAddmmActivationOut(const at::Tensor& self,
         TT_CHECK_THROW(out.scalar_type() == self.scalar_type(),
                        error::kInvalidArgument)
             << "expected input and out tensors to have the same dtype, got "
-            << torch_tpu::ToString(self.scalar_type()) << " vs "
-            << torch_tpu::ToString(out.scalar_type());
+            << ToString(self.scalar_type()) << " vs "
+            << ToString(out.scalar_type());
         TT_THROW_IF_ERROR(AddMmActivationOut(
             self, mat1, mat2, std::move(promoted_beta),
             std::move(promoted_alpha), use_gelu, param_keys, out));
@@ -404,8 +404,8 @@ at::Tensor& AtenAddmmDtypeOut(const at::Tensor& self, const at::Tensor& mat1,
       (self, mat1, mat2, out_dtype, promoted_beta, promoted_alpha, out), {
         TT_CHECK_THROW(out.scalar_type() == out_dtype, error::kInvalidArgument)
             << "expected out dtype to match out_dtype, got out dtype "
-            << torch_tpu::ToString(out.scalar_type()) << " and out_dtype "
-            << torch_tpu::ToString(out_dtype);
+            << ToString(out.scalar_type()) << " and out_dtype "
+            << ToString(out_dtype);
         TT_THROW_IF_ERROR(AddMmOut(self, mat1, mat2, std::move(promoted_beta),
                                    std::move(promoted_alpha), out_dtype,
                                    param_keys, out));

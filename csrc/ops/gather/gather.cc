@@ -26,6 +26,7 @@
 #include "absl/types/span.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/utils.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -185,8 +186,7 @@ mlir::MlirOp EmitBroadcastGatherDot(mlir::MlirOp self, int64_t dim,
       mlir::getElementType(self.getContext(), mlir::ElementType::I32);
   mlir::MlirOp base_i32 = stablehlo::ConvertElementType(plan.base_op, i32_type);
   const int64_t base_rank = plan.base_type.getRank();
-  Dimensions ind_shape(plan.base_type.getShape().begin(),
-                       plan.base_type.getShape().end());
+  Dimensions ind_shape = CopyIntVector(plan.base_type.getShape());
   ind_shape.push_back(vocab_len);
   Dimensions bcast_to_ind(base_rank);
   for (int64_t i = 0; i < base_rank; ++i) {
