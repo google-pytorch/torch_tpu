@@ -12103,6 +12103,134 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(run_module)
 
+  def test_int_mm_registered(self):
+    for name in ("aten::_int_mm", "aten::_int_mm.out"):
+      self.assertTrue(
+        torch._C._dispatch_has_kernel_for_dispatch_key(name, "PrivateUse1")
+      )
+
+  @parameterized.product(
+    shape=[
+      (1, 1, 1),
+      (1, 7, 9),
+      (5, 1, 3),
+      (3, 5, 1),
+      (3, 5, 7),
+      (16, 257, 65),
+      (128, 128, 128),
+      (0, 7, 5),
+      (4, 0, 5),
+      (4, 7, 0),
+      (0, 0, 0),
+    ],
+    use_out=[False, True],
+  )
+  def test_int_mm_exact(self, shape, use_out):
+    m, k, n = shape
+    lhs = torch.randint(-128, 128, (m, k), dtype=torch.int8)
+    rhs = torch.randint(-128, 128, (k, n), dtype=torch.int8)
+
+    def compute(device):
+      a, b = lhs.to(device), rhs.to(device)
+      if use_out:
+        out = torch.empty((m, n), dtype=torch.int32, device=device)
+        result = torch.ops.aten._int_mm.out(a, b, out=out)
+        self.assertIs(result, out)
+      else:
+        result = torch._int_mm(a, b)
+      self.assertEqual(result.dtype, torch.int32)
+      self.assertEqual(result.shape, (m, n))
+      self.assertEqual(result.device.type, torch.device(device).type)
+      return result
+
+    # The helper rejects explicit zero overrides. Its int32 default
+    # tolerances are both zero, so the comparison is exact.
+    self.assert_close_tpu_vs_cpu(compute)
+
+  @parameterized.product(lhs_value=[-128, -1, 0, 127], use_out=[False, True])
+  def test_int_mm_extreme_values(self, lhs_value, use_out):
+    def compute(device):
+      a = torch.full((3, 5), lhs_value, dtype=torch.int8, device=device)
+      b = torch.tensor([-128, -1, 0, 1, 127], dtype=torch.int8).to(device)
+      b = b.reshape(5, 1).expand(5, 7)
+      if use_out:
+        out = torch.empty((3, 7), dtype=torch.int32, device=device)
+        return torch.ops.aten._int_mm.out(a, b, out=out)
+      return torch._int_mm(a, b)
+
+    self.assert_close_tpu_vs_cpu(compute)
+
+  @parameterized.product(transpose=[False, True], use_out=[False, True])
+  def test_int_mm_non_contiguous(self, transpose, use_out):
+    lhs = torch.randint(-128, 128, (7, 6), dtype=torch.int8)
+    rhs = torch.randint(-128, 128, (5, 14), dtype=torch.int8)
+
+    def compute(device):
+      if transpose:
+        a = lhs[:, :3].to(device).t()
+        b = rhs[:, :7].to(device).t()
+      else:
+        a = lhs.to(device).t()[::2, :]
+        b = rhs.to(device).t()[::2, :]
+      self.assertFalse(a.is_contiguous())
+      self.assertFalse(b.is_contiguous())
+      if use_out:
+        out = torch.empty((3, 5), dtype=torch.int32, device=device)
+        return torch.ops.aten._int_mm.out(a, b, out=out)
+      return torch._int_mm(a, b)
+
+    self.assert_close_tpu_vs_cpu(compute)
+
+  @parameterized.parameters(False, True)
+  def test_int_mm_no_float_roundtrip(self, use_out):
+    def compute(device):
+      a = torch.full((1, 1041), 127, dtype=torch.int8, device=device)
+      b = torch.full((1041, 1), 127, dtype=torch.int8, device=device)
+      if use_out:
+        out = torch.empty((1, 1), dtype=torch.int32, device=device)
+        result = torch.ops.aten._int_mm.out(a, b, out=out)
+      else:
+        result = torch._int_mm(a, b)
+      self.assertEqual(result.cpu().item(), 16790289)
+      return result
+
+    self.assert_close_tpu_vs_cpu(compute)
+
+  @parameterized.parameters(False, True)
+  def test_int_mm_overflow_matches_cpu(self, use_out):
+    # Compare with the native CPU implementation; this does not define a
+    # portable overflow contract for all ATen backends.
+    def compute(device):
+      a = torch.full((1, 150000), 127, dtype=torch.int8, device=device)
+      b = torch.full((150000, 1), 127, dtype=torch.int8, device=device)
+      if use_out:
+        out = torch.empty((1, 1), dtype=torch.int32, device=device)
+        return torch.ops.aten._int_mm.out(a, b, out=out)
+      return torch._int_mm(a, b)
+
+    self.assert_close_tpu_vs_cpu(compute)
+
+  @parameterized.parameters(False, True)
+  def test_int_mm_compiled(self, use_out):
+    def functional(a, b):
+      return torch._int_mm(a, b)
+
+    def with_out(a, b, out):
+      return torch.ops.aten._int_mm.out(a, b, out=out)
+
+    def compute(device):
+      a = torch.full((1, 1041), 127, dtype=torch.int8, device=device)
+      b = torch.full((1041, 1), 127, dtype=torch.int8, device=device)
+      fn = with_out if use_out else functional
+      if torch.device(device).type == "tpu":
+        fn = torch.compile(fn, backend="tpu", fullgraph=True)
+      if use_out:
+        out = torch.empty((1, 1), dtype=torch.int32, device=device)
+        return fn(a, b, out)
+      return fn(a, b)
+
+    self.assert_close_tpu_vs_cpu(compute)
+
   @parameterized.product(
       input_dtype=[
           torch.float32,
