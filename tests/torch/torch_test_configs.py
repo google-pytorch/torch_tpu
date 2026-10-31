@@ -525,7 +525,6 @@ TEST_EXCLUSIONS: Final[
             "test_instancenorm_mixed_dtype_backward": "*",
             "test_invalid_reduction_strings": "*",
             "test_leaky_relu_inplace_with_neg_slope": "*",
-            "test_leaky_relu_inplace_with_zero_slope": "*",
             "test_linear_autograd": "*",
             "test_linear_cross_entropy_batch_invariance": "*",
             "test_linear_cross_entropy_linear_bias_chunked_matches_reference": (

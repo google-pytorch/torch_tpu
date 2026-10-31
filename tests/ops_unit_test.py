@@ -13480,6 +13480,38 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
           atol=1e-6,
       )
 
+  @parameterized.product(
+      dtype=[torch.float32, torch.bfloat16],
+      negative_slope=[0.0, 0.01, 0.2],
+      inplace=[False, True],
+  )
+  def test_leaky_relu_backward_at_zero(
+      self, dtype: torch.dtype, negative_slope: float, inplace: bool
+  ) -> None:
+    """Tests leaky_relu's gradient at 0, which is the negative slope.
+
+    The in-place op computes the gradient from its result, which is -0.0 for
+    every negative input when the slope is 0.
+
+    Args:
+      dtype: Input tensor data type.
+      negative_slope: The slope for negative inputs.
+      inplace: Whether to use the in-place op.
+    """
+
+    def compute(device: torch.device) -> torch.Tensor:
+      x = torch.tensor(
+          [-2.0, -0.0, 0.0, 2.0], dtype=dtype, device=device, requires_grad=True
+      )
+      if inplace:
+        y = torch.nn.functional.leaky_relu_(x.clone(), negative_slope)
+      else:
+        y = torch.nn.functional.leaky_relu(x, negative_slope)
+      y.backward(torch.arange(1.0, 5.0, dtype=dtype, device=device))
+      return x.grad
+
+    self.assert_close_tpu_vs_cpu(compute)
+
   def test_ceil_integral(self):
     for dtype in [torch.int32, torch.uint8]:
       x = torch.tensor([-2, -1, 0, 1, 2], dtype=dtype)
