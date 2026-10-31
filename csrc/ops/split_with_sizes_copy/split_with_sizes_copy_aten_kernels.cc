@@ -80,13 +80,17 @@ void AtenSplitWithSizesCopyOut(const at::Tensor& self,
               << "expected split_sizes to sum to " << num_cols
               << " (the input's size at dimension 1), got "
               << ToString(split_sizes);
+          // With no rows, every output is empty and there is nothing to copy.
+          if (num_rows == 0) {
+            return;
+          }
           TT_ASSIGN_OR_THROW(const mlir::ElementType dtype,
                              ConvertTo<mlir::ElementType>(self.scalar_type()));
           const at::Tensor flat_self = self.view(-1);
           int64_t start = 0;
           for (int64_t i = 0; i < out.size(); ++i) {
             const int64_t size = split_sizes[i];
-            if (num_rows > 0 && size > 0) {
+            if (size > 0) {
               auto op_builder = [num_rows, num_cols, start,
                                  size](mlir::MlirOp flat) {
                 const Indices stride = {1};

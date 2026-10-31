@@ -17367,10 +17367,11 @@ class MaskedSoftmaxErrorTest(et.ErrorTestBase):
     ):
       torch.split_with_sizes_copy(self_t, [2, 2], dim=0, out=out)
 
-  def test_split_with_sizes_copy_dim1_split_sizes_mismatch(self):
+  @parameterized.named_parameters(("two_rows", 2), ("zero_rows", 0))
+  def test_split_with_sizes_copy_dim1_split_sizes_mismatch(self, num_rows):
     out = [
-        torch.empty(2, 2, device=et.device()),
-        torch.empty(2, 3, device=et.device()),
+        torch.empty(num_rows, 2, device=et.device()),
+        torch.empty(num_rows, 3, device=et.device()),
     ]
     with et.assert_raises_message(
         RuntimeError,
@@ -17379,7 +17380,7 @@ class MaskedSoftmaxErrorTest(et.ErrorTestBase):
         message_reviewed_by="pgmoka",
     ):
       torch.split_with_sizes_copy(
-          torch.zeros(2, 6, device=et.device()), [2, 3], dim=1, out=out
+          torch.zeros(num_rows, 6, device=et.device()), [2, 3], dim=1, out=out
       )
 
   def test_select_scatter_errors(self):

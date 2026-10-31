@@ -6318,6 +6318,17 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assertEqual(count_aten_ops(2), count_aten_ops(16))
 
+  def test_split_with_sizes_copy_dim1_zero_rows(self):
+    def fn(device):
+      # Empty 1-d outputs, which still have to be resized to (0, size).
+      out = [torch.empty(0, device=device) for _ in range(2)]
+      torch.split_with_sizes_copy(
+          torch.zeros(0, 5, device=device), [2, 3], dim=1, out=out
+      )
+      return tuple(out)
+
+    self.assert_close_tpu_vs_cpu(fn)
+
   def test_split_with_sizes_copy_dim1_split_sizes_mismatch(self):
     def fn(device):
       out = [torch.empty(2, 2, device=device), torch.empty(2, 3, device=device)]
