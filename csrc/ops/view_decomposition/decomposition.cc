@@ -1219,6 +1219,14 @@ absl::Status RemoveExtraDim(StridedLayout& head_layout,
                             const StridedLayout& tail_layout,
                             ViewSequence& result,
                             absl::Span<ViewPrimitive> tail_sequence) {
+  if (std::holds_alternative<RealToRealBitcast>(tail_sequence.front())) {
+    const auto& bitcast = std::get<RealToRealBitcast>(tail_sequence.front());
+    ABSL_CHECK_EQ(  // CRASH_OK=Internal error on view decomposition.
+        TorchEquivalentBitwidth(bitcast.from_type),
+        TorchEquivalentBitwidth(bitcast.to_type));
+    tail_sequence.remove_prefix(1);
+  }
+  ABSL_CHECK(!tail_sequence.empty());  // CRASH_OK
   if (std::holds_alternative<ReshapePrimitive>(tail_sequence.front())) {
     // The head_layout may have an extra dimension, update the reshape
     // base_sizes to match.
