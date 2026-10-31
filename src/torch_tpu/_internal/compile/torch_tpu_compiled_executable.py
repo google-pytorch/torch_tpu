@@ -372,11 +372,6 @@ class TorchTpuCompiledExecutable(CompiledArtifact):
     self._fast_runner = None
 
   @property
-  def is_released(self) -> bool:
-    """Returns True if the executable has been released."""
-    return self._executable is None
-
-  @property
   def graph_module_debug_str(self) -> str | None:
     """The string representation of the FX graph module's code.
 
