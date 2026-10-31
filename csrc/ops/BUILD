@@ -624,6 +624,7 @@ torch_tpu_cc_library(
         "@tsl//tsl/platform:path",
         "@xla//xla/hlo/analysis:alias_info",
         "@xla//xla/hlo/ir:hlo",
+        "@xla//xla/hlo/ir:replica_group",
         "@xla//xla/hlo/pass:hlo_pass_pipeline",
         "@xla//xla/hlo/transforms/simplifiers:flatten_call_graph",
         "@xla//xla/hlo/transforms/simplifiers:hlo_dce",
