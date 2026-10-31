@@ -4197,6 +4197,46 @@ Device-side assertion tracking was not enabled by user.""",
     ):
       torch.nn.functional.max_pool2d(t, kernel_size=3, return_indices=True)
 
+  def test_max_unpool2d_indices_not_long(self):
+    pooled = torch.zeros((1, 1, 2, 2), device=et.device())
+    indices = torch.zeros((1, 1, 2, 2), device=et.device(), dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""max_unpool2d(): expected indices dtype to be Long, got int32""",
+        gpu="""elements in indices should be type int64 but got: Int""",
+    ):
+      torch.nn.functional.max_unpool2d(pooled, indices, 2)
+
+  def test_max_unpool2d_rank_too_low(self):
+    pooled = torch.zeros((2, 2), device=et.device())
+    indices = torch.zeros((2, 2), device=et.device(), dtype=torch.int64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""max_unpool2d(): expected input to be a 3-D or 4-D tensor, got 2-D tensor""",
+        gpu="""Input to max_unpooling2d should be a 3d or 4d Tensor, but got a tensor with 2 dimensions.""",
+    ):
+      torch.nn.functional.max_unpool2d(pooled, indices, 2)
+
+  def test_max_unpool2d_indices_shape_mismatch(self):
+    pooled = torch.zeros((1, 1, 2, 2), device=et.device())
+    indices = torch.zeros((1, 1, 1, 2), device=et.device(), dtype=torch.int64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""max_unpool2d(): expected indices to have the same shape as input [1, 1, 2, 2], got [1, 1, 1, 2]""",
+        gpu="""Expected shape of indices to be same as that of the input tensor ([1, 1, 2, 2]) but got indices tensor with shape: [1, 1, 1, 2]""",
+    ):
+      torch.nn.functional.max_unpool2d(pooled, indices, 2)
+
+  def test_max_unpool2d_empty_spatial_dim(self):
+    pooled = torch.zeros((1, 1, 0, 2), device=et.device())
+    indices = torch.zeros((1, 1, 0, 2), device=et.device(), dtype=torch.int64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""max_unpool2d(): expected input to have non-zero size for non-batch dimensions, got [1, 1, 0, 2] with dimension 2 being empty""",
+        gpu="""max_unpooling2d_forward_out_cuda(): Expected input to have non-zero size for non-batch dimensions, but got [1, 1, 0, 2] with dimension 2 being empty.""",
+    ):
+      torch.nn.functional.max_unpool2d(pooled, indices, (0, 4))
+
   def test_masked_scatter_invalid_mask_dtype(self):
     device = et.device()
     t = torch.randn(4, 4, device=device, dtype=torch.float32)

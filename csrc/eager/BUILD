@@ -876,6 +876,7 @@ torch_tpu_cc_library(
         "//csrc/ops/pooling:adaptive_max_pool_aten_kernels",
         "//csrc/ops/pooling:avg_pool_aten_kernels",
         "//csrc/ops/pooling:max_pool_aten_kernels",
+        "//csrc/ops/pooling:max_unpool_aten_kernels",
         "//csrc/ops/prelu:prelu_aten_kernels",
         "//csrc/ops/prod:prod_aten_kernels",
         "//csrc/ops/put:put_aten_kernels",

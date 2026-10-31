@@ -64,6 +64,39 @@ torch_tpu_cc_library(
 )
 
 torch_tpu_cc_library(
+    name = "max_unpool_aten_kernels",
+    srcs = ["max_unpool_aten_kernels.cc"],
+    hdrs = ["max_unpool_aten_kernels.h"],
+    deps = [
+        "//csrc/common:aten_utils",
+        "//csrc/common:cache_key",
+        "//csrc/common:dimension_types",
+        "//csrc/common:dtype",
+        "//csrc/common:error_utils",
+        "//csrc/common:fixed_size_span",
+        "//csrc/common:to_string",
+        "//csrc/common:utils",
+        "//csrc/eager:device_buffer",
+        "//csrc/eager:device_buffer_utils",
+        "//csrc/eager:op_dispatcher",
+        "//csrc/eager:tensor_to_buffer",
+        "//csrc/ops:op_builder_utils",
+        "//csrc/ops:op_names",
+        "//csrc/ops/macros:kernel",
+        "//csrc/ops/resize:resize_aten_kernels",
+        "//shims/torch:aten_headers",
+        "//shims/torch/c10/core:base_headers",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@llvm-project//mlir:IR",
+        "@stablehlo//:stablehlo_ops",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
+        "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
+        "@stablehlo//stablehlo/integrations/cpp/builder:stablehlo_builder",
+    ],
+)
+
+torch_tpu_cc_library(
     name = "pooling",
     srcs = ["pooling.cc"],
     hdrs = ["pooling.h"],
