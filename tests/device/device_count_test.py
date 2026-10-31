@@ -25,7 +25,9 @@ Each scenario runs in a freshly spawned process, since the device runtime can
 be initialized only once per process.
 """
 
+from collections.abc import Callable
 import dataclasses
+import functools
 import os
 import traceback
 from typing import Any
@@ -50,6 +52,29 @@ _VISIBLE_DEVICES_ENV_VARS = {
 }
 
 _WORKER_TIMEOUT_SECONDS = 300
+
+
+def _skip_on_tpu(reason: str) -> Callable[[Callable[..., Any]], Any]:
+  """Skips the decorated test with `reason` when testing TPU.
+
+  Unlike `absltest.skipIf`, this decides when the test runs rather than when
+  it is decorated, since the device type comes from a flag that isn't parsed
+  yet when the module is imported.
+
+  Args:
+    reason: Why the test doesn't pass on TPU yet.
+  """
+
+  def decorator(test_method: Callable[..., Any]) -> Callable[..., Any]:
+    @functools.wraps(test_method)
+    def wrapper(self, *args, **kwargs):
+      if _DEVICE_TYPE.value == "tpu":
+        self.skipTest(reason)
+      return test_method(self, *args, **kwargs)
+
+    return wrapper
+
+  return decorator
 
 
 @dataclasses.dataclass(frozen=True)
@@ -119,6 +144,29 @@ def _count_devices(
     conn.close()
 
 
+def _hold_device(conn: Any, device_type: str) -> None:
+  """Initializes the device runtime and holds a device until told to exit.
+
+  Runs in a spawned process. Sends `("ok", None)` over `conn` once the runtime
+  holds a device, or `("error", traceback)`, then waits for a message on `conn`
+  before exiting.
+
+  Args:
+    conn: A duplex connection to the test process.
+    device_type: "cuda" or "tpu".
+  """
+  try:
+    device = accelerator_test_utils.get_device(device_type)
+    (torch.ones(1, device=device) + 1).cpu()
+    conn.send(("ok", None))
+  except Exception:  # pylint: disable=broad-exception-caught
+    conn.send(("error", traceback.format_exc()))
+    conn.close()
+    return
+  conn.recv()
+  conn.close()
+
+
 # Not a `seed_test_utils` test class: those seed the device RNGs in `setUp()`,
 # which initializes the device runtime in the test process.
 class DeviceCountTest(
@@ -177,6 +225,12 @@ class DeviceCountTest(
       self.fail(f"The worker failed:\n{payload}")
     return payload
 
+  # TODO(b/577219302): fix and enable the test case.
+  @_skip_on_tpu(
+      "A single process uses only one TPU device by default once the TPU"
+      " runtime is initialized, so on a multi-chip worker the count changes"
+      " from the number of chips to 1.",
+  )
   def test_count_is_the_same_before_and_after_init(self):
     """Verifies that initializing the runtime doesn't change the count."""
     counts = self._run_worker(visible_devices_at_start=None)
@@ -197,16 +251,63 @@ class DeviceCountTest(
         visible_devices_at_start=None, visible_devices_before_init="0"
     )
 
-    self.assertGreater(
-        counts.before_init,
-        1,
-        "This test needs a host with multiple devices.",
-    )
+    # Telling the host's count apart from the visible count needs multiple
+    # devices, so this can't be checked on e.g. a single-chip TPU worker.
+    if counts.before_init <= 1:
+      self.skipTest("This test needs a host with multiple devices.")
     self.assertEqual(counts.after_env_change, 1)
     # Like PyTorch's `test_device_count_not_cached_pre_init`, this doesn't check
     # the count after init: CUDA can read `CUDA_VISIBLE_DEVICES` before the
     # change above (e.g. when the driver is loaded at process start), in which
     # case the count after init is still the host's device count.
+
+  def test_count_includes_devices_that_other_processes_hold(self):
+    """Verifies that devices other processes hold are still counted.
+
+    The count must not drop as other processes, e.g. the other workers of the
+    same job, initialize the runtime and take devices.
+    """
+    device_module = accelerator_test_utils.get_backend_module(self.device_type)
+    self.assertFalse(device_module.is_initialized())
+    count = device_module.device_count()
+    self.assertGreater(count, 0)
+
+    ctx = multiprocessing.get_context("spawn")
+    conn, child_conn = ctx.Pipe()
+    process = ctx.Process(
+        target=_hold_device, args=(child_conn, self.device_type)
+    )
+    # The worker inherits the visible devices of this process, e.g. the device
+    # that the test runner assigned to this test, so it doesn't take a device
+    # that another test is using.
+    process.start()
+    child_conn.close()
+    try:
+      if not conn.poll(_WORKER_TIMEOUT_SECONDS):
+        self.fail(
+            f"The worker sent no result within {_WORKER_TIMEOUT_SECONDS}s"
+            f" (exit code: {process.exitcode})."
+        )
+      status, payload = conn.recv()
+      if status != "ok":
+        self.fail(f"The worker failed:\n{payload}")
+
+      self.assertEqual(device_module.device_count(), count)
+      self.assertFalse(device_module.is_initialized())
+    finally:
+      try:
+        conn.send("exit")
+      except (BrokenPipeError, EOFError, OSError):
+        pass
+      conn.close()
+      process.join(_WORKER_TIMEOUT_SECONDS)
+      if process.is_alive():
+        process.kill()
+        process.join()
+
+
+def setUpModule():
+  annotations._internal_apis_allowed_for_testing = True  # pylint: disable=protected-access
 
 
 if __name__ == "__main__":

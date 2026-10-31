@@ -16,14 +16,17 @@
 #include "csrc/common/tpu_hardware.h"
 
 #include <dirent.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <fstream>
 #include <iterator>
 #include <memory>
@@ -36,6 +39,7 @@
 #include "absl/base/no_destructor.h"
 #include "absl/base/nullability.h"
 #include "absl/container/flat_hash_map.h"
+#include "absl/container/flat_hash_set.h"
 #include "absl/functional/function_ref.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/ascii.h"
@@ -43,6 +47,8 @@
 #include "absl/strings/numbers.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
+#include "absl/strings/str_split.h"
+#include "csrc/common/env_vars.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/utils.h"  // IWYU pragma: keep
 
@@ -224,6 +230,49 @@ enum class DirListing { kListed, kMissing, kUnlistable };
   return it != spec_map.end() ? it->second : nullptr;
 }
 
+// Returns whether `path` resolves to a character device that this process has
+// read and write access to.
+//
+// Sandboxes may put placeholders at the paths of devices they don't allocate
+// to the process. For example, a sandbox with fewer TPU chips than its host may
+// have empty, unreadable regular files at the `/dev/vfio/<group>` paths of the
+// other chips. Those are not usable, so they should not count as devices.
+//
+// This function does not open any node because only one process at a time can
+// open a VFIO group. Opening a node could fail or prevent the TPU runtime of
+// this or another process from claiming it.
+[[nodiscard]] bool IsAccessibleCharDevice(const std::string& path) {
+  struct stat st;
+  return stat(path.c_str(), &st) == 0 && S_ISCHR(st.st_mode) &&
+         faccessat(AT_FDCWD, path.c_str(), R_OK | W_OK, AT_EACCESS) == 0;
+}
+
+// Returns the number of TPU chips that `TPU_VISIBLE_DEVICES` makes visible to
+// this process, like `CUDA_VISIBLE_DEVICES` does for GPUs, or std::nullopt if
+// it doesn't restrict them: if it is unset, empty, or not a comma-separated
+// list of chip indices.
+//
+// Explicitly configured TPU device paths, which the TPU runtime prefers over
+// `TPU_VISIBLE_DEVICES`, are not taken into account.
+[[nodiscard]] std::optional<int64_t> GetVisibleChipCount() {
+  // Launchers may set the env var after this process starts but before the
+  // TPU runtime initializes, so it must not be memoized.
+  const char* const visible_devices =
+      std::getenv(kTpuVisibleDevicesEnvVar);  // GETENV_OK=must not memoize.
+  if (visible_devices == nullptr || visible_devices[0] == '\0') {
+    return std::nullopt;
+  }
+  absl::flat_hash_set<int64_t> chip_indices;
+  for (const std::string_view entry : absl::StrSplit(visible_devices, ',')) {
+    int64_t chip_index;
+    if (!absl::SimpleAtoi(entry, &chip_index) || chip_index < 0) {
+      return std::nullopt;
+    }
+    chip_indices.insert(chip_index);
+  }
+  return static_cast<int64_t>(chip_indices.size());
+}
+
 // Result of scanning PCI devices for VFIO-exposed TPUs.
 struct PciTpuScanResult {
   int64_t device_count = 0;
@@ -231,8 +280,9 @@ struct PciTpuScanResult {
 };
 
 // Scans PCI devices under `pci_devices_dir` for supported Google TPUs whose
-// IOMMU group is exposed under `vfio_dir`. Returns the count of VFIO-exposed
-// TPU devices and the `TpuSpec` of the first one found (or nullptr if none).
+// IOMMU group is exposed under `vfio_dir` as a character device that this
+// process can read and write. Returns the count of VFIO-exposed TPU devices and
+// the `TpuSpec` of the first one found (or nullptr if none).
 [[nodiscard]] PciTpuScanResult ScanPciTpus(std::string_view pci_devices_dir,
                                            std::string_view vfio_dir) {
   PciTpuScanResult result;
@@ -260,8 +310,7 @@ struct PciTpuScanResult {
     if (group_id.empty()) {
       continue;
     }
-    struct stat st;
-    if (stat(absl::StrCat(vfio_dir, "/", group_id).c_str(), &st) != 0) {
+    if (!IsAccessibleCharDevice(absl::StrCat(vfio_dir, "/", group_id))) {
       continue;
     }
     ++result.device_count;
@@ -442,6 +491,17 @@ const TpuSpec* absl_nullable TpuSpec::Get(std::string_view pci_devices_dir) {
 int64_t GetTpuDeviceCount(std::string_view pci_devices_dir,
                           std::string_view vfio_dir) {
   return ScanPciTpus(pci_devices_dir, vfio_dir).device_count;
+}
+
+int64_t GetVisibleTpuDeviceCount(std::string_view pci_devices_dir,
+                                 std::string_view vfio_dir) {
+  const PciTpuScanResult scan = ScanPciTpus(pci_devices_dir, vfio_dir);
+  const std::optional<int64_t> visible_chip_count = GetVisibleChipCount();
+  if (!visible_chip_count.has_value() || scan.spec == nullptr) {
+    return scan.device_count;
+  }
+  return std::min(scan.device_count,
+                  *visible_chip_count * scan.spec->devices_per_chip);
 }
 
 absl::StatusOr<std::optional<std::string>> GetTpuTopology(

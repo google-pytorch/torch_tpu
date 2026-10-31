@@ -203,6 +203,9 @@ TT_PYBIND11_MODULE(_hardware_backend, m) {
   m.def("get_tpu_device_count", &GetTpuDeviceCount,
         py::arg("pci_devices_dir") = "/sys/bus/pci/devices",
         py::arg("vfio_dir") = "/dev/vfio");
+  m.def("get_visible_tpu_device_count", &GetVisibleTpuDeviceCount,
+        py::arg("pci_devices_dir") = "/sys/bus/pci/devices",
+        py::arg("vfio_dir") = "/dev/vfio");
   m.def("get_tpu_topology", &PyGetTpuTopology,
         py::arg("world_size") = std::nullopt,
         py::arg("pci_devices_dir") = "/sys/bus/pci/devices",

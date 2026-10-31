@@ -807,10 +807,10 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
   def device_count(cls) -> int:  # This is in torch/cuda/__init__.py.
     """Returns the count of devices. This is implemented for *local* devices.
 
-    Before the TPU runtime is initialized, returns how many physical TPU PCI
-    devices are attached to this host without initializing PJRT. Once
-    initialized, returns how many addressable PJRT TPU devices this process's
-    runtime owns.
+    Before the TPU runtime is initialized, returns how many TPU PCI devices on
+    this host this process can access through VFIO, capped by
+    ``TPU_VISIBLE_DEVICES``, without initializing PJRT. Once initialized,
+    returns how many addressable PJRT TPU devices this process's runtime owns.
 
     .. warning::
         This API is experimental and subject to change in future releases.
@@ -819,7 +819,7 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
       if cls._public_module().is_initialized():
         cls._device_count = _device_ops_backend._get_device_count()  # pylint: disable=protected-access
       elif cls._device_type == "tpu":
-        return hardware.get_tpu_device_count()
+        return hardware.get_visible_tpu_device_count()
       else:
         # Fallback to init for other devices if needed.
         cls._device_count = _device_ops_backend._get_device_count()  # pylint: disable=protected-access

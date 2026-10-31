@@ -22,6 +22,7 @@
 
 #include <cerrno>
 #include <cstdint>
+#include <cstdlib>
 #include <fstream>
 #include <ios>
 #include <optional>
@@ -34,6 +35,7 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
 #include "absl/types/span.h"
+#include "csrc/common/env_vars.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/utils.h"  // IWYU pragma: keep
 #include "gtest/gtest.h"
@@ -44,6 +46,10 @@ namespace {
 // Scoped temporary directory mimicking /dev (including /dev/vfio,
 // /dev/vfio/devices and /dev/accel), /dev_borg, /proc/devices and
 // /sys/bus/pci/devices.
+//
+// Also unsets `TPU_VISIBLE_DEVICES`, which test runners may set to pin each
+// test to a TPU, for the lifetime of the object, unless set with
+// SetVisibleDevices().
 class ScopedFakeHardwareDir {
  public:
   ScopedFakeHardwareDir() {
@@ -60,9 +66,24 @@ class ScopedFakeHardwareDir {
     dev_borg_dir_ = absl::StrCat(root_, "/dev_borg");
     proc_devices_ = absl::StrCat(root_, "/proc_devices");
     pci_devices_dir_ = absl::StrCat(root_, "/pci_devices");
+    if (const char* const visible_devices = std::getenv(  // GETENV_OK=restored.
+            kTpuVisibleDevicesEnvVar);
+        visible_devices != nullptr) {
+      saved_visible_devices_ = visible_devices;
+    }
+    ABSL_CHECK_EQ(unsetenv(kTpuVisibleDevicesEnvVar), 0);
   }
 
-  ~ScopedFakeHardwareDir() { RemoveTree(root_); }
+  ~ScopedFakeHardwareDir() {
+    RemoveTree(root_);
+    if (saved_visible_devices_.has_value()) {
+      ABSL_CHECK_EQ(setenv(kTpuVisibleDevicesEnvVar,
+                           saved_visible_devices_->c_str(), /*overwrite=*/1),
+                    0);
+    } else {
+      ABSL_CHECK_EQ(unsetenv(kTpuVisibleDevicesEnvVar), 0);
+    }
+  }
 
   ScopedFakeHardwareDir(const ScopedFakeHardwareDir&) = delete;
   ScopedFakeHardwareDir& operator=(const ScopedFakeHardwareDir&) = delete;
@@ -116,11 +137,25 @@ class ScopedFakeHardwareDir {
     WriteFile(proc_devices_, contents);
   }
 
-  // Adds a VFIO group node for `iommu_group`.
-  void AddVfioGroup(std::string_view iommu_group) {
+  // Adds a VFIO group node for `iommu_group` that resolves to the real device
+  // node `target`, which defaults to /dev/null: a character device that any
+  // process can read and write.
+  void AddVfioGroup(std::string_view iommu_group,
+                    std::string_view target = "/dev/null") {
     MakeDir(dev_dir_);
     MakeDir(vfio_dir_);
-    WriteFile(absl::StrCat(vfio_dir_, "/", iommu_group), "");
+    AddLink(absl::StrCat(vfio_dir_, "/", iommu_group), target);
+  }
+
+  // Adds an empty regular file without any permissions at the VFIO group node
+  // path for `iommu_group`, like the placeholders that some sandboxes put at
+  // the paths of TPUs that they don't allocate to the process.
+  void AddVfioGroupPlaceholder(std::string_view iommu_group) {
+    MakeDir(dev_dir_);
+    MakeDir(vfio_dir_);
+    const std::string path = absl::StrCat(vfio_dir_, "/", iommu_group);
+    WriteFile(path, "");
+    ABSL_CHECK_EQ(chmod(path.c_str(), 0), 0);
   }
 
   // Creates the fake /dev/vfio/devices directory, which holds the VFIO
@@ -154,6 +189,14 @@ class ScopedFakeHardwareDir {
     const std::string accel_dir = absl::StrCat(dev_borg_dir_, "/accel");
     MakeDir(accel_dir);
     AddLink(absl::StrCat(accel_dir, "/", name), target);
+  }
+
+  // Sets `TPU_VISIBLE_DEVICES` to `visible_devices` until destruction.
+  void SetVisibleDevices(std::string_view visible_devices) {
+    ABSL_CHECK_EQ(
+        setenv(kTpuVisibleDevicesEnvVar, std::string(visible_devices).c_str(),
+               /*overwrite=*/1),
+        0);
   }
 
   // Adds a fake PCI device under `pci_devices_dir_`.
@@ -214,6 +257,7 @@ class ScopedFakeHardwareDir {
   std::string dev_borg_dir_;
   std::string proc_devices_;
   std::string pci_devices_dir_;
+  std::optional<std::string> saved_visible_devices_;
 };
 
 // Returns the major number of the character device `path`.
@@ -589,6 +633,84 @@ TEST(GetTpuDeviceCountAndTopologyTest,
       GetTpuTopology(/*world_size=*/1, fake.pci_devices_dir(), fake.vfio_dir());
   ASSERT_TRUE(topology.ok());
   EXPECT_EQ(*topology, "1,1,1");
+}
+
+TEST(GetTpuDeviceCountAndTopologyTest, IgnoresVfioGroupPlaceholders) {
+  ScopedFakeHardwareDir fake;
+  // A 1-chip sandbox on an 8-chip host has a real VFIO group node only
+  // for its own chip, and placeholders for the other chips.
+  for (int i = 0; i < 8; ++i) {
+    const std::string group = absl::StrCat(100 + i);
+    fake.AddPciDevice(absl::StrFormat("0000:00:%02x.0", i + 4), "0x1ae0",
+                      "0x0063", group, /*vfio_exposed=*/i == 5);
+    if (i != 5) {
+      fake.AddVfioGroupPlaceholder(group);
+    }
+  }
+  EXPECT_EQ(GetTpuDeviceCount(fake.pci_devices_dir(), fake.vfio_dir()), 1);
+  const absl::StatusOr<std::optional<std::string>> topology =
+      GetTpuTopology(std::nullopt, fake.pci_devices_dir(), fake.vfio_dir());
+  ASSERT_TRUE(topology.ok());
+  EXPECT_EQ(*topology, "1,1,1");
+}
+
+TEST(GetVisibleTpuDeviceCountTest, CapsCountAtVisibleChips) {
+  ScopedFakeHardwareDir fake;
+  for (int i = 0; i < 8; ++i) {
+    fake.AddPciDevice(absl::StrFormat("0000:00:%02x.0", i + 4), "0x1ae0",
+                      "0x0063", absl::StrCat(i));
+  }
+  EXPECT_EQ(GetVisibleTpuDeviceCount(fake.pci_devices_dir(), fake.vfio_dir()),
+            8);
+  fake.SetVisibleDevices("3");
+  EXPECT_EQ(GetVisibleTpuDeviceCount(fake.pci_devices_dir(), fake.vfio_dir()),
+            1);
+  fake.SetVisibleDevices("0,1,2,3");
+  EXPECT_EQ(GetVisibleTpuDeviceCount(fake.pci_devices_dir(), fake.vfio_dir()),
+            4);
+  // More visible chips than VFIO-exposed ones don't add devices.
+  fake.SetVisibleDevices("0,1,2,3,4,5,6,7,8,9");
+  EXPECT_EQ(GetVisibleTpuDeviceCount(fake.pci_devices_dir(), fake.vfio_dir()),
+            8);
+}
+
+TEST(GetVisibleTpuDeviceCountTest, DoesNotAffectHostCountOrTopology) {
+  ScopedFakeHardwareDir fake;
+  for (int i = 0; i < 4; ++i) {
+    fake.AddPciDevice(absl::StrFormat("0000:00:%02x.0", i + 4), "0x1ae0",
+                      "0x006f", absl::StrCat(i));
+  }
+  fake.SetVisibleDevices("3");
+  EXPECT_EQ(GetTpuDeviceCount(fake.pci_devices_dir(), fake.vfio_dir()), 4);
+  const absl::StatusOr<std::optional<std::string>> topology =
+      GetTpuTopology(std::nullopt, fake.pci_devices_dir(), fake.vfio_dir());
+  ASSERT_TRUE(topology.ok());
+  EXPECT_EQ(*topology, "2,2,1");
+}
+
+TEST(GetVisibleTpuDeviceCountTest, CountsAllDevicesOfVisibleChips) {
+  ScopedFakeHardwareDir fake;
+  // Each dual-core chip exposes 2 PCI functions with their own IOMMU groups.
+  fake.AddPciDevice("0000:10:01.0", "0x1ae0", "0x0076", "0");
+  fake.AddPciDevice("0000:10:01.1", "0x1ae0", "0x0076", "1");
+  fake.AddPciDevice("0000:11:01.0", "0x1ae0", "0x0076", "2");
+  fake.AddPciDevice("0000:11:01.1", "0x1ae0", "0x0076", "3");
+  fake.SetVisibleDevices("1");
+  EXPECT_EQ(GetVisibleTpuDeviceCount(fake.pci_devices_dir(), fake.vfio_dir()),
+            2);
+}
+
+TEST(GetVisibleTpuDeviceCountTest, IgnoresEmptyOrMalformedVisibleDevices) {
+  ScopedFakeHardwareDir fake;
+  fake.AddPciDevice("0000:00:04.0", "0x1ae0", "0x006f", "0");
+  fake.AddPciDevice("0000:00:05.0", "0x1ae0", "0x006f", "1");
+  for (const std::string_view visible_devices :
+       {"", "a", "0,-1", "0,,1", "0;1", "/dev/vfio/0"}) {
+    fake.SetVisibleDevices(visible_devices);
+    EXPECT_EQ(GetVisibleTpuDeviceCount(fake.pci_devices_dir(), fake.vfio_dir()),
+              2)
+        << "TPU_VISIBLE_DEVICES=" << visible_devices;
+  }
 }
 
 TEST(GetTpuDeviceCountAndTopologyTest,
