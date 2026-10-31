@@ -21,7 +21,6 @@
 #include <utility>
 #include <vector>
 
-#include "ATen/OpMathType.h"
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/ops/result_type.h"
 #include "absl/log/absl_log.h"
@@ -40,6 +39,7 @@
 #include "csrc/common/fixed_size_span.h"
 #include "csrc/common/to_string.h"
 #include "csrc/eager/device_buffer.h"
+#include "csrc/eager/eager_mode.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/binary.h"
@@ -326,39 +326,89 @@ absl::Status TernaryOpOut(const at::Tensor& self, const at::Tensor& other,
   TT_RETURN_IF_ERROR(
       ValidateOutDtype(out, expected_result_type, opts.allow_out_dtype_cast));
 
+  TT_ASSIGN_OR_RETURN(const Dimensions output_dims,
+                      InferSize(self.sizes(), other.sizes(), third.sizes()));
+  TT_RETURN_IF_ERROR(internal::ValidateInPlaceBroadcast(
+      out, {self, other, third}, output_dims));
+
+  at::ScalarType promoted_scalar_type = at::result_type(self, other);
+  if (opts.force_float_inputs &&
+      c10::isIntegralType(promoted_scalar_type, /*includeBool=*/true)) {
+    promoted_scalar_type = c10::get_default_dtype_as_scalartype();
+  }
+  TT_RETURN_IF_ERROR(ValidateNotLowPrecisionFloat(expected_result_type));
+  TT_RETURN_IF_ERROR(ValidateNotLowPrecisionFloat(out));
+  TT_ASSIGN_OR_RETURN(const auto promoted_dtype,
+                      internal::ToElementType(promoted_scalar_type));
+  TT_ASSIGN_OR_RETURN(const auto computation_dtype,
+                      InferComputationDtype(promoted_dtype));
+
+  const bool has_tpu_input =
+      IsPrivateUse1Device(self) || IsPrivateUse1Device(other);
+  auto normalize_input =
+      [promoted_scalar_type, promoted_dtype, computation_dtype,
+       has_tpu_input](const at::Tensor& tensor) -> absl::StatusOr<at::Tensor> {
+    if (has_tpu_input && tensor.device().is_cpu() && tensor.dim() == 0) {
+      auto scalar = tensor.item();
+      bool needs_host_cast = false;
+      if (scalar.type() == at::ScalarType::UInt64 &&
+          promoted_scalar_type != at::ScalarType::UInt64) {
+        TT_ASSIGN_OR_RETURN(
+            const bool fits_signed,
+            CanCastScalarWithoutOverflow(scalar, at::ScalarType::Long));
+        needs_host_cast = !fits_signed;
+      }
+      if (GetEagerMode() == EagerMode::kInternalCompileFxGraph) {
+        TT_ASSIGN_OR_RETURN(
+            const bool can_cast,
+            CanCastScalarWithoutOverflow(scalar, promoted_scalar_type));
+        needs_host_cast |= !can_cast;
+      }
+      if (needs_host_cast) {
+        // Preserve tensor-cast overflow and normalize large unsigned values
+        // before the helper's signed cache-key and diagnostic conversions.
+        scalar = tensor.to(promoted_scalar_type).item();
+      }
+      return PromoteScalar(std::move(scalar)).GetTensor(promoted_scalar_type);
+    }
+    if (!IsPrivateUse1Device(tensor) ||
+        tensor.scalar_type() == promoted_scalar_type ||
+        promoted_dtype == computation_dtype) {
+      return tensor;
+    }
+    // Preserve input rounding before widening. When the dtypes match,
+    // DispatchOpOut can cast directly without a separate conversion op.
+    return UnaryOp(tensor,
+                   [promoted_dtype](mlir::MlirOp input) {
+                     return CastIfNeeded(input, promoted_dtype);
+                   },
+                   {.op_name = OpName::kToCopy,
+                    .op_param_cache_keys = OpParamCacheKeys::Empty(),
+                    .out_dtype = promoted_dtype});
+  };
+  TT_ASSIGN_OR_RETURN(const auto normalized_self, normalize_input(self));
+  TT_ASSIGN_OR_RETURN(const auto normalized_other, normalize_input(other));
   TT_ASSIGN_OR_RETURN(auto tpu_tensors,
-                      internal::MoveCpuScalarsToTpu({self, other, third}));
+                      internal::MoveCpuScalarsToTpu(
+                          {normalized_self, normalized_other, third}));
   const at::Tensor& self_tpu = tpu_tensors[0];
   const at::Tensor& other_tpu = tpu_tensors[1];
   const at::Tensor& third_tpu = tpu_tensors[2];
 
-  TT_ASSIGN_OR_RETURN(
-      const Dimensions output_dims,
-      InferSize(self_tpu.sizes(), other_tpu.sizes(), third_tpu.sizes()));
-
-  TT_RETURN_IF_ERROR(internal::ValidateInPlaceBroadcast(
-      out, {self_tpu, other_tpu, third_tpu}, output_dims));
-
-  TT_RETURN_IF_ERROR(ValidateNotLowPrecisionFloat(expected_result_type));
-  TT_RETURN_IF_ERROR(ValidateNotLowPrecisionFloat(out));
-
-  at::ScalarType promoted_scalar_type = at::result_type(self_tpu, other_tpu);
-  if (opts.force_float_inputs) {
-    if (c10::isIntegralType(promoted_scalar_type, /*includeBool=*/true)) {
-      promoted_scalar_type = c10::get_default_dtype_as_scalartype();
-    }
-  }
-  TT_ASSIGN_OR_RETURN(mlir::ElementType promoted_dtype,
-                      internal::ToElementType(promoted_scalar_type));
-  TT_ASSIGN_OR_RETURN(mlir::ElementType computation_dtype,
-                      InferComputationDtype(promoted_dtype));
   TT_ASSIGN_OR_RETURN(const auto out_element_type,
                       ConvertTo<mlir::ElementType>(out.scalar_type()));
+  TT_ASSIGN_OR_RETURN(const auto result_element_type,
+                      internal::ToElementType(expected_result_type));
 
-  auto ternary_builder = [op_builder = std::move(op_builder)](
-                             FixedSizeSpan<mlir::MlirOp, 3> inputs) {
+  auto ternary_builder =
+      [op_builder = std::move(op_builder),
+       result_element_type](FixedSizeSpan<mlir::MlirOp, 3> inputs)
+      -> absl::StatusOr<mlir::MlirOp> {
     auto& [self_op, other_op, third_op] = inputs;
-    return op_builder(self_op, other_op, third_op);
+    TT_ASSIGN_OR_RETURN(auto result, op_builder(self_op, other_op, third_op));
+    // Round to the natural result dtype before DispatchOpOut casts to
+    // out.dtype.
+    return CastIfNeeded(result, result_element_type);
   };
   return DispatchOpOut<3>(
       std::move(ternary_builder), {self_tpu, other_tpu, third_tpu}, out,
@@ -372,6 +422,23 @@ absl::Status TernaryOpOut(const at::Tensor& self, const at::Tensor& other,
 }
 
 namespace {
+
+absl::StatusOr<at::ScalarType> GetOpMathScalarType(
+    at::ScalarType promoted_scalar_type) {
+  TT_ASSIGN_OR_RETURN(const auto promoted_dtype,
+                      internal::ToElementType(promoted_scalar_type));
+  TT_ASSIGN_OR_RETURN(const auto computation_dtype,
+                      InferComputationDtype(promoted_dtype));
+  // InferComputationDtype also preserves the supported unsigned integer types.
+  return ConvertTo<at::ScalarType>(computation_dtype);
+}
+
+absl::StatusOr<at::Tensor> GetOpMathAlphaTensor(
+    MaybePromotedScalar& promoted_alpha, at::ScalarType promoted_scalar_type) {
+  TT_ASSIGN_OR_RETURN(const auto opmath_type,
+                      GetOpMathScalarType(promoted_scalar_type));
+  return promoted_alpha.GetTensor(opmath_type);
+}
 
 // PyTorch operations that take an `alpha` scalar only support real
 // datatypes (Integer, Floating Point, or Boolean). We reject complex scalars
@@ -846,8 +913,9 @@ absl::Status SubHelperOut(const at::Tensor& a, const at::Tensor& b,
                        {.op_param_cache_keys = std::move(param_keys)});
   }
 
-  TT_ASSIGN_OR_RETURN(const at::Tensor alpha_tensor,
-                      promoted_alpha.GetTensor(promoted_scalar_type));
+  TT_ASSIGN_OR_RETURN(
+      const at::Tensor alpha_tensor,
+      GetOpMathAlphaTensor(promoted_alpha, promoted_scalar_type));
 
   auto op_builder = [](mlir::MlirOp a_op, mlir::MlirOp b_op,
                        mlir::MlirOp alpha_op) -> absl::StatusOr<mlir::MlirOp> {
@@ -878,8 +946,9 @@ absl::StatusOr<at::Tensor> AddReluScalarHelper(
     return out;
   }
 
-  TT_ASSIGN_OR_RETURN(const at::Tensor alpha_tensor,
-                      promoted_alpha.GetTensor(promoted_scalar_type));
+  TT_ASSIGN_OR_RETURN(
+      const at::Tensor alpha_tensor,
+      GetOpMathAlphaTensor(promoted_alpha, promoted_scalar_type));
 
   TT_RETURN_IF_ERROR(
       TernaryOpOut(self, other_tensor, alpha_tensor, out, BuildAlphaAddReluShlo,
@@ -1149,7 +1218,8 @@ at::Tensor& AtenAddOut(const at::Tensor& self, const at::Tensor& other,
   auto promoted_alpha = PromoteScalar(alpha).AvoidPromoting(ScalarValue::kOne);
   TT_KERNEL(OpName::kAddOut, param_keys, (self, other, promoted_alpha, out), {
     const at::ScalarType promoted_scalar_type = at::result_type(self, other);
-    const at::ScalarType opmath_type = at::toOpMathType(promoted_scalar_type);
+    TT_ASSIGN_OR_THROW(const auto opmath_type,
+                       GetOpMathScalarType(promoted_scalar_type));
     TT_THROW_IF_ERROR(
         ValidateAddAlphaInputs(promoted_scalar_type, alpha, opmath_type));
 
@@ -1197,8 +1267,9 @@ at::Tensor& AtenAddReluOut(const at::Tensor& self, const at::Tensor& other,
           return out;
         }
 
-        TT_ASSIGN_OR_THROW(const at::Tensor alpha_tensor,
-                           promoted_alpha.GetTensor(promoted_scalar_type));
+        TT_ASSIGN_OR_THROW(
+            const at::Tensor alpha_tensor,
+            GetOpMathAlphaTensor(promoted_alpha, promoted_scalar_type));
 
         TT_THROW_IF_ERROR(
             TernaryOpOut(self, other, alpha_tensor, out, BuildAlphaAddReluShlo,
@@ -1249,8 +1320,9 @@ at::Tensor AtenAddReluTensor(const at::Tensor& self, const at::Tensor& other,
       return out;
     }
 
-    TT_ASSIGN_OR_THROW(const at::Tensor alpha_tensor,
-                       promoted_alpha.GetTensor(promoted_scalar_type));
+    TT_ASSIGN_OR_THROW(
+        const at::Tensor alpha_tensor,
+        GetOpMathAlphaTensor(promoted_alpha, promoted_scalar_type));
 
     TT_THROW_IF_ERROR(
         TernaryOpOut(self, other, alpha_tensor, out, BuildAlphaAddReluShlo,
@@ -1292,8 +1364,9 @@ at::Tensor& AtenAddRelu_Tensor(at::Tensor& self, const at::Tensor& other,
           return self;
         }
 
-        TT_ASSIGN_OR_THROW(const at::Tensor alpha_tensor,
-                           promoted_alpha.GetTensor(promoted_scalar_type));
+        TT_ASSIGN_OR_THROW(
+            const at::Tensor alpha_tensor,
+            GetOpMathAlphaTensor(promoted_alpha, promoted_scalar_type));
         TT_THROW_IF_ERROR(
             TernaryOpOut(self, other, alpha_tensor, self, BuildAlphaAddReluShlo,
                          {.op_param_cache_keys = std::move(param_keys)}));
