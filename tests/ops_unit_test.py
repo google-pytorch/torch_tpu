@@ -1453,6 +1453,107 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         )
     )
 
+  @parameterized.product(
+      shape=[(2, 3, 6, 6), (3, 5, 7), (1, 2, 4, 6)],
+      kernel_size=[2, 3],
+      dtype=[torch.float32, torch.bfloat16, torch.float16],
+  )
+  def test_max_unpool2d(self, shape, kernel_size, dtype):
+    """max_unpool2d inverts max_pool2d(return_indices=True), batched or not."""
+    x = torch.randn(shape).to(dtype)
+    pooled, indices = torch.nn.functional.max_pool2d(
+        x.float(), kernel_size, return_indices=True
+    )
+    pooled = pooled.to(dtype)
+    output_size = shape[-2:]
+
+    def run(device):
+      functional = torch.nn.functional.max_unpool2d(
+          pooled.to(device), indices.to(device), kernel_size,
+          output_size=output_size
+      )
+      out = torch.empty(0, dtype=dtype, device=device)
+      torch._C._nn.max_unpool2d(
+          pooled.to(device), indices.to(device), output_size, out=out
+      )
+      return torch.stack([functional, out])
+
+    self.assert_close_tpu_vs_cpu(run)
+
+  def test_max_unpool2d_default_output_size(self):
+    """Without output_size the output volume is inferred from kernel/stride."""
+    x = torch.randn(2, 2, 8, 8)
+    pooled, indices = torch.nn.functional.max_pool2d(
+        x, kernel_size=2, stride=2, return_indices=True
+    )
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.nn.functional.max_unpool2d(
+            pooled.to(device), indices.to(device), kernel_size=2, stride=2
+        )
+    )
+
+  def test_max_unpool2d_backward(self):
+    """The gradient of max_unpool2d gathers grad_output at the indices."""
+    x = torch.randn(2, 3, 6, 6)
+    pooled, indices = torch.nn.functional.max_pool2d(
+        x, 2, return_indices=True
+    )
+
+    def run(device):
+      # Clone so the CPU and TPU runs get separate leaves.
+      p = pooled.clone().to(device).requires_grad_(True)
+      unpooled = torch.nn.functional.max_unpool2d(p, indices.to(device), 2)
+      weight = torch.arange(unpooled.numel(), dtype=torch.float32).reshape(
+          unpooled.shape
+      )
+      (unpooled * weight.to(device)).sum().backward()
+      return p.grad
+
+    self.assert_close_tpu_vs_cpu(run)
+    # The derivative is a gather of grad_output at the indices.
+    expected = (
+        torch.arange(indices.numel() * 4, dtype=torch.float32)
+        .reshape(x.shape)
+        .flatten(-2)
+        .gather(-1, indices.flatten(-2))
+        .view_as(indices)
+    )
+    utils.assert_close(run(torch.device("tpu")), expected)
+
+  def test_max_unpool2d_empty_batch(self):
+    pooled = torch.empty(0, 3, 2, 2)
+    indices = torch.empty(0, 3, 2, 2, dtype=torch.int64)
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.nn.functional.max_unpool2d(
+            pooled.to(device), indices.to(device), 2
+        )
+    )
+
+  @parameterized.product(
+      shape=[(2, 2, 4, 6, 6), (2, 4, 4, 4)],
+      dtype=[torch.float32, torch.bfloat16],
+  )
+  def test_max_unpool3d(self, shape, dtype):
+    """max_unpool3d inverts max_pool3d(return_indices=True), batched or not."""
+    x = torch.randn(shape).to(dtype)
+    pooled, indices = torch.nn.functional.max_pool3d(
+        x.float(), 2, return_indices=True
+    )
+    pooled = pooled.to(dtype)
+
+    def run(device):
+      functional = torch.nn.functional.max_unpool3d(
+          pooled.to(device), indices.to(device), 2, output_size=shape[-3:]
+      )
+      out = torch.empty(0, dtype=dtype, device=device)
+      torch._C._nn.max_unpool3d(
+          pooled.to(device), indices.to(device), shape[-3:], [2, 2, 2],
+          [0, 0, 0], out=out
+      )
+      return torch.stack([functional, out])
+
+    self.assert_close_tpu_vs_cpu(run)
+
   def test_max_pool1d_no_indices(self):
     """Tests nn.functional.max_pool1d without indices."""
     device = torch.device("tpu")
