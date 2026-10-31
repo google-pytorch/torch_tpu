@@ -7918,6 +7918,108 @@ Supported combinations for non-constant padding:
     ):
       torch.linalg.cholesky_ex(a, check_errors=True)
 
+  def test_linalg_cross_ndim_mismatch(self):
+    a = torch.ones(2, 3, device=et.device())
+    b = torch.ones(3, device=et.device())
+    out = torch.empty(2, 3, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_cross(): expected inputs to have the same number of dimensions, got 2 and 1""",
+        gpu="""linalg.cross: inputs must have the same number of dimensions.""",
+    ):
+      torch.linalg.cross(a, b, out=out)
+
+  def test_linalg_cross_zero_rank(self):
+    a = torch.tensor(1.0, device=et.device())
+    b = torch.tensor(2.0, device=et.device())
+    out = torch.empty((), device=et.device())
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""linalg_cross(): expected input tensor to have at least 1 dimension, got 0""",
+        gpu="""Dimension specified as -1 but tensor has no dimensions""",
+    ):
+      torch.linalg.cross(a, b, out=out)
+
+  def test_linalg_cross_dim_out_of_bounds(self):
+    a = torch.ones(2, 3, device=et.device())
+    b = torch.ones(2, 3, device=et.device())
+    out = torch.empty(2, 3, device=et.device())
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""linalg_cross(): expected dimension to be in range [-2, 1], got 2""",
+        gpu="""Dimension out of range (expected to be in range of [-2, 1], but got 2)""",
+    ):
+      torch.linalg.cross(a, b, dim=2, out=out)
+
+  def test_linalg_cross_dim_size_not_three(self):
+    a = torch.ones(2, 4, device=et.device())
+    b = torch.ones(2, 3, device=et.device())
+    out = torch.empty(2, 3, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_cross(): expected inputs dimension -1 to have length 3, got 4 and 3""",
+        gpu="""linalg.cross: inputs dimension -1 must have length 3. Got 4 and 3""",
+    ):
+      torch.linalg.cross(a, b, out=out)
+
+  def test_linalg_cross_input_dtype_mismatch(self):
+    a = torch.ones(3, dtype=torch.float32, device=et.device())
+    b = torch.ones(3, dtype=torch.float64, device=et.device())
+    out = torch.empty(3, dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_cross(): expected self and other to have the same dtype, got float32 and float64""",
+        gpu="""expected scalar type Float but found Double""",
+    ):
+      torch.linalg.cross(a, b, out=out)
+
+  def test_linalg_cross_out_dtype_mismatch(self):
+    a = torch.ones(3, dtype=torch.float32, device=et.device())
+    b = torch.ones(3, dtype=torch.float32, device=et.device())
+    out = torch.empty(3, dtype=torch.float64, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_cross(): expected the output dtype to be float32, got float64""",
+        gpu="""Expected out tensor to have dtype float, but got double instead""",
+    ):
+      torch.linalg.cross(a, b, out=out)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="bool",
+          dtype=torch.bool,
+          tpu_dtype="bool",
+          gpu_dtype="Bool",
+      ),
+      dict(
+          testcase_name="float8_e4m3fn",
+          dtype=torch.float8_e4m3fn,
+          tpu_dtype="float8_e4m3fn",
+          gpu_dtype="Float8_e4m3fn",
+      ),
+  )
+  def test_linalg_cross_unsupported_dtypes(self, dtype, tpu_dtype, gpu_dtype):
+    a = torch.zeros(3, dtype=dtype, device=et.device())
+    b = torch.zeros(3, dtype=dtype, device=et.device())
+    out = torch.empty(3, dtype=dtype, device=et.device())
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu=f"""linalg_cross(): not implemented for {tpu_dtype}""",
+        gpu=f""""cross" not implemented for '{gpu_dtype}'""",
+    ):
+      torch.linalg.cross(a, b, out=out)
+
+  def test_linalg_cross_broadcast_mismatch(self):
+    a = torch.ones(2, 3, device=et.device())
+    b = torch.ones(4, 3, device=et.device())
+    out = torch.empty(2, 3, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_cross(): the size of tensor a (2) must match the size of tensor b (4) at non-singleton dimension 0""",
+        gpu="""The size of tensor a (2) must match the size of tensor b (4) at non-singleton dimension 0""",
+    ):
+      torch.linalg.cross(a, b, out=out)
+
   def test_lu_unpack_data_rank_too_low(self):
     data = torch.ones(4, device=et.device())
     pivots = torch.ones(4, device=et.device(), dtype=torch.int32)
