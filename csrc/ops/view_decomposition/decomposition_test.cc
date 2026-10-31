@@ -914,5 +914,61 @@ TEST(DecomposeIntoViewSequence, EqualSizeRealViewBitcastsOnlyView) {
       << ToString(sequence);
 }
 
+TEST(DecomposeIntoViewSequence, TensorToScalarEqualSizedReal) {
+  const Dimensions contiguous_base_shape = {4, 5, 3};
+  const StridedLayout scalar_view_offset_0 = {
+      .strided_dims = {},
+      .storage_offset = 0,
+  };
+  const StridedLayout scalar_view_offset_7 = {
+      .strided_dims = {},
+      .storage_offset = 7,
+  };
+  DecompositionTest(contiguous_base_shape, scalar_view_offset_0,
+                    mlir::ElementType::PRED, mlir::ElementType::UI8);
+  DecompositionTest(contiguous_base_shape, scalar_view_offset_0,
+                    mlir::ElementType::I8, mlir::ElementType::UI8);
+  DecompositionTest(contiguous_base_shape, scalar_view_offset_7,
+                    mlir::ElementType::PRED, mlir::ElementType::UI8);
+  DecompositionTest(contiguous_base_shape, scalar_view_offset_7,
+                    mlir::ElementType::I8, mlir::ElementType::UI8);
+}
+
+TEST(DecomposeIntoViewSequence, TensorToTrivialDimsEqualSizedReal) {
+  const Dimensions contiguous_base_shape = {4, 5};
+  const StridedLayout view_layout = {
+      .strided_dims = {{.size = 1, .stride = 5}, {.size = 1, .stride = 1}},
+      .storage_offset = 3,
+  };
+  DecompositionTest(contiguous_base_shape, view_layout, mlir::ElementType::I32,
+                    mlir::ElementType::F32);
+}
+
+TEST(DecomposeIntoViewSequence, TensorToBroadcastEqualSizedReal) {
+  const Dimensions contiguous_base_shape = {10};
+  const StridedLayout view_layout = {
+      .strided_dims = {{.size = 5, .stride = 0}},
+      .storage_offset = 2,
+  };
+  DecompositionTest(contiguous_base_shape, view_layout, mlir::ElementType::I32,
+                    mlir::ElementType::F32);
+}
+
+TEST(DecomposeIntoViewSequence, TensorToStridedEqualSizedReal) {
+  const Dimensions contiguous_base_shape = {10};
+  const StridedLayout strided_view = {
+      .strided_dims = {{.size = 4, .stride = 2}},
+      .storage_offset = 1,
+  };
+  const StridedLayout strided_broadcast_view = {
+      .strided_dims = {{.size = 4, .stride = 2}, {.size = 5, .stride = 0}},
+      .storage_offset = 1,
+  };
+  DecompositionTest(contiguous_base_shape, strided_view, mlir::ElementType::I32,
+                    mlir::ElementType::F32);
+  DecompositionTest(contiguous_base_shape, strided_broadcast_view,
+                    mlir::ElementType::I32, mlir::ElementType::F32);
+}
+
 }  // namespace
 }  // namespace torch_tpu
