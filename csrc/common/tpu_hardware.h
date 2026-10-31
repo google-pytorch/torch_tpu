@@ -113,8 +113,12 @@ struct TpuSpec {
 };
 
 // Returns the number of supported Google TPU PCI devices under
-// `pci_devices_dir` whose IOMMU group is exposed under `vfio_dir`. Does not
-// initialize any TPU runtime.
+// `pci_devices_dir` whose IOMMU group is exposed under `vfio_dir` as a
+// character device that this process can read and write.
+//
+// This function does not initialize any TPU runtime and ignores placeholders at
+// TPU VFIO paths that a sandbox doesn't allocate to this process, such as
+// unreadable regular files.
 [[nodiscard]] int64_t GetTpuDeviceCount(
     std::string_view pci_devices_dir = "/sys/bus/pci/devices",
     std::string_view vfio_dir = "/dev/vfio");
