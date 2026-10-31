@@ -305,6 +305,24 @@ class SplitCompileTest(seed_test_utils.RepeatableTest):
     if num_fields == 2:
       utils.assert_close(out.diff.cpu(), (x - y).cpu())
 
+  @parameterized.named_parameters(
+      ("select", lambda t: t[1], torch.tensor([0, 2])),
+      ("float_select", lambda t: t[1], torch.tensor([0.0, 2.0])),
+      ("strided_slice", lambda t: t[1::2], torch.tensor([0, 2, 0, 3, 0, 4])),
+      ("transpose", lambda t: t.t(), torch.arange(6).reshape(2, 3)),
+  )
+  def test_cpu_view_argument_to_tpu_partition(self, view_fn, cpu_tensor):
+    # `view_fn(cpu_tensor)` runs in a CPU partition and its output, a view with
+    # a non-trivial layout, is an argument of the TPU partition.
+    def f(x):
+      return x * view_fn(cpu_tensor).to(x.device)
+
+    x = torch.arange(6.0, device="tpu").reshape(2, 3)
+    if view_fn(cpu_tensor).dim() == 2:
+      x = x.reshape(3, 2)
+    res = torch.compile(f, backend="tpu")(x)
+    utils.assert_close(res.cpu(), f(x.cpu()))
+
 
 class SplitCompileHermeticTest(seed_test_utils.RepeatableTest):
 
