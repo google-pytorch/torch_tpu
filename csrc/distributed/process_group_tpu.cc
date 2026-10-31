@@ -1772,7 +1772,7 @@ ProcessGroupTpu::ProcessGroupTpu(c10::intrusive_ptr<c10d::Store> store,
     auto values = store_->multiGet(keys);
     member_device_ids_.resize(size_);
     for (int64_t i = 0; i < size_; ++i) {
-      TT_CHECK_THROW(
+      TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=peers write their device ids
           absl::SimpleAtoi(
               std::string_view(reinterpret_cast<const char*>(values[i].data()),
                                values[i].size()),
