@@ -1348,9 +1348,9 @@ absl::StatusOr<NodeLocalStoreConfig> GetNodeLocalStore(int64_t world_size) {
   if (*local_world_size <= 1) {
     return NodeLocalStoreConfig{};
   }
-  TT_ASSIGN_OR_RETURN(const int slice_size,
-                      PjrtBackend::GetInstance().GetGlobalDeviceCount());
-  if (world_size != slice_size) {
+  TT_ASSIGN_OR_RETURN(const xla::PjRtClient* const pjrt_client,
+                      PjrtBackend::GetInstance().GetClient());
+  if (world_size != static_cast<int64_t>(pjrt_client->devices().size())) {
     // A job sharing the slice (TORCH_TPU_JOB_DEVICE_IDS) holds only part of
     // the host's devices, and its local ranks would meet the other job's in
     // the per-host store.

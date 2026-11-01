@@ -346,9 +346,13 @@ static absl::Status SetDefaultDeviceAssignment(
   // required by Pallas/Mosaic.
   // LINT.IfChange
   options.set_num_replicas(1);
+  TT_ASSIGN_OR_RETURN(const xla::PjRtClient* const pjrt_client,
+                      PjrtBackend::GetInstance().GetClient());
   TT_ASSIGN_OR_RETURN(const std::vector<int64_t> job_device_ids,  // INT_VEC_OK
                       PjrtBackend::GetInstance().GetJobDeviceIds());
-  if (static_cast<int>(job_device_ids.size()) != num_devices) {
+  // Compared with the slice, not num_devices: a single-process run on a
+  // multi-device host (WORLD_SIZE unset) uses one device of the slice.
+  if (job_device_ids.size() != pjrt_client->devices().size()) {
     // A job sharing the slice compiles for its own devices only, so its
     // programs never wait on the other job's processes.
     const int num_job_devices = job_device_ids.size();
@@ -369,8 +373,6 @@ static absl::Status SetDefaultDeviceAssignment(
                         PjrtBackend::GetInstance().GetGlobalDeviceId());
     da(0, 0) = global_device_id;
   } else {
-    TT_ASSIGN_OR_RETURN(const xla::PjRtClient* const pjrt_client,
-                        PjrtBackend::GetInstance().GetClient());
     for (int idx = 0; idx < num_devices; ++idx) {
       da(0, idx) = pjrt_client->devices()[idx]->global_device_id().value();
     }
