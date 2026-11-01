@@ -379,9 +379,6 @@ absl::StatusOr<std::vector<int64_t>>  // INT_VEC_OK
 PjrtBackend::GetJobDeviceIds() {
   TT_RETURN_IF_ERROR(EnsureInitialized());
   absl::ReaderMutexLock lock(mutex_);
-  if (client_ == nullptr) {
-    return TT_ERROR(error::kInternal) << "PjRt is not initialized";
-  }
   std::vector<int64_t> device_ids;  // INT_VEC_OK
   // Read on use, not at startup: a job learns its peers' devices only after
   // the runtime is up, and sets this before its first compiled program.
