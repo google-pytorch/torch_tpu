@@ -26,7 +26,9 @@ Tests cover:
 """
 
 import functools
+
 from absl.testing import absltest
+from absl.testing import parameterized
 import torch
 from torch.nested._internal import nested_tensor as nt_internal
 from torch_tpu._internal.utils import annotations
@@ -656,12 +658,14 @@ class JaggedTensorTest(seed_test_utils.RepeatableTest):
         torch.float64,
         torch.int64,
         torch.int32,
+        torch.int16,
+        torch.int8,
         torch.bool,
     ]:
       for pad_val in [0.0, 1.0, -1.0, float("-inf"), float("inf")]:
         if dtype == torch.bool:
           values = torch.tensor([True, False, True, True, False])
-        elif dtype in (torch.int64, torch.int32):
+        elif dtype in (torch.int64, torch.int32, torch.int16, torch.int8):
           values = torch.tensor([10, 20, 30, 40, 50], dtype=dtype)
         else:
           values = torch.tensor([1.5, -2.5, 3.5, -4.5, 5.5], dtype=dtype)
@@ -670,6 +674,167 @@ class JaggedTensorTest(seed_test_utils.RepeatableTest):
         self._assert_jagged_to_padded(
             values, offsets, max_lengths=[4], padding_value=pad_val
         )
+
+  @parameterized.product(
+      (
+          dict(
+              values_data=[[10, 20], [30, 40], [50, 60]],
+              values_shape=(3, 2),
+              offsets_data=[0, 2, 3],
+              max_lengths=[3],
+          ),
+          dict(
+              values_data=[],
+              values_shape=(0, 2),
+              offsets_data=[0, 0],
+              max_lengths=[2],
+          ),
+      ),
+      padding_value=(0.0, 7.0, float("inf"), float("-inf")),
+  )
+  def test_jagged_to_padded_dense_uint8_cpu_parity(
+      self, values_data, values_shape, offsets_data, max_lengths, padding_value
+  ):
+    """Verifies TPU matches CPU on non-empty and empty uint8 batches."""
+    values = torch.tensor(values_data, dtype=torch.uint8).reshape(values_shape)
+    offsets = torch.tensor(offsets_data, dtype=torch.int64)
+
+    self._assert_jagged_to_padded(
+        values, offsets, max_lengths=max_lengths, padding_value=padding_value
+    )
+
+  @parameterized.product(
+      (
+          dict(padding_value=0.0, expected_pad=0),
+          dict(padding_value=7.0, expected_pad=7),
+          dict(padding_value=float("-inf"), expected_pad=0),
+          dict(padding_value=float("nan"), expected_pad=0),
+      ),
+      dtype=(torch.uint8, torch.uint16, torch.uint32, torch.uint64),
+  )
+  def test_jagged_to_padded_dense_unsigned_int_padding(
+      self, dtype, padding_value, expected_pad
+  ):
+    """Verifies finite, -inf, and NaN clamping on unsigned int dtypes."""
+    values = torch.tensor([[10, 20], [30, 40], [50, 60]], dtype=dtype)
+    offsets = torch.tensor([0, 2, 3], dtype=torch.int64)
+
+    padded = torch.ops.aten._jagged_to_padded_dense_forward(
+        values.to("tpu"), [offsets.to("tpu")], [3], padding_value
+    )
+
+    self.assertEqual(padded.device.type, "tpu")
+    utils.assert_close(
+        padded.cpu(),
+        torch.tensor(
+            [
+                [[10, 20], [30, 40], [expected_pad, expected_pad]],
+                [
+                    [50, 60],
+                    [expected_pad, expected_pad],
+                    [expected_pad, expected_pad],
+                ],
+            ],
+            dtype=dtype,
+        ),
+    )
+
+  @parameterized.named_parameters(
+      dict(testcase_name="uint8", dtype=torch.uint8, expected_pad=255),
+      dict(testcase_name="uint16", dtype=torch.uint16, expected_pad=65535),
+      dict(
+          testcase_name="uint32",
+          dtype=torch.uint32,
+          expected_pad=4294967295,
+      ),
+      dict(
+          testcase_name="uint64",
+          dtype=torch.uint64,
+          expected_pad=18446744073709551615,
+      ),
+  )
+  def test_jagged_to_padded_dense_unsigned_int_pos_inf_padding(
+      self, dtype, expected_pad
+  ):
+    """Verifies +inf saturates to each unsigned int dtype's maximum value."""
+    values = torch.tensor([10, 20, 30], dtype=dtype)
+    offsets = torch.tensor([0, 2, 3], dtype=torch.int64)
+
+    padded = torch.ops.aten._jagged_to_padded_dense_forward(
+        values.to("tpu"), [offsets.to("tpu")], [3], float("inf")
+    )
+
+    self.assertEqual(padded.device.type, "tpu")
+    utils.assert_close(
+        padded.cpu(),
+        torch.tensor(
+            [[10, 20, expected_pad], [30, expected_pad, expected_pad]],
+            dtype=dtype,
+        ),
+    )
+
+  @parameterized.product(
+      (
+          dict(padding_value=0.0, expected_pad=0),
+          dict(padding_value=7.0, expected_pad=7),
+          dict(padding_value=float("-inf"), expected_pad=0),
+          dict(padding_value=float("nan"), expected_pad=0),
+      ),
+      dtype=(torch.uint8, torch.uint16, torch.uint32, torch.uint64),
+  )
+  def test_jagged_to_padded_dense_unsigned_int_empty_padding(
+      self, dtype, padding_value, expected_pad
+  ):
+    """Verifies empty unsigned int batches clamp finite, -inf, and NaN."""
+    empty_values = torch.empty((0, 2), dtype=dtype)
+    empty_offsets = torch.tensor([0, 0], dtype=torch.int64)
+
+    padded_empty = torch.ops.aten._jagged_to_padded_dense_forward(
+        empty_values.to("tpu"), [empty_offsets.to("tpu")], [2], padding_value
+    )
+
+    self.assertEqual(padded_empty.device.type, "tpu")
+    utils.assert_close(
+        padded_empty.cpu(),
+        torch.tensor(
+            [[[expected_pad, expected_pad], [expected_pad, expected_pad]]],
+            dtype=dtype,
+        ),
+    )
+
+  @parameterized.named_parameters(
+      dict(testcase_name="uint8", dtype=torch.uint8, expected_pad=255),
+      dict(testcase_name="uint16", dtype=torch.uint16, expected_pad=65535),
+      dict(
+          testcase_name="uint32",
+          dtype=torch.uint32,
+          expected_pad=4294967295,
+      ),
+      dict(
+          testcase_name="uint64",
+          dtype=torch.uint64,
+          expected_pad=18446744073709551615,
+      ),
+  )
+  def test_jagged_to_padded_dense_unsigned_int_empty_pos_inf_padding(
+      self, dtype, expected_pad
+  ):
+    """Verifies empty unsigned int batches saturate +inf to dtype max."""
+    empty_values = torch.empty((0, 2), dtype=dtype)
+    empty_offsets = torch.tensor([0, 0], dtype=torch.int64)
+
+    padded_empty = torch.ops.aten._jagged_to_padded_dense_forward(
+        empty_values.to("tpu"), [empty_offsets.to("tpu")], [2], float("inf")
+    )
+
+    self.assertEqual(padded_empty.device.type, "tpu")
+    utils.assert_close(
+        padded_empty.cpu(),
+        torch.tensor(
+            [[[expected_pad, expected_pad], [expected_pad, expected_pad]]],
+            dtype=dtype,
+        ),
+    )
 
   def test_jagged_to_padded_dense_truncation(self):
     """Tests jagged-to-padded truncation when actual sequence length > max_length."""
