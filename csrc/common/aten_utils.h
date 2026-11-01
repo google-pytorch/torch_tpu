@@ -34,6 +34,7 @@
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/to_string.h"
+#include "csrc/common/utils.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "torch/headeronly/core/DeviceType.h"
 #include "torch/headeronly/core/ScalarType.h"
@@ -96,7 +97,7 @@ inline absl::StatusOr<Dimensions> ConcreteSizeToDimensions(
   TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=callers only pass real tensors' sizes
       dims.has_value(), error::kInternal)
       << "expected concrete sizes, got symbolic sizes " << ToString(sym_dims);
-  return Dimensions(dims->begin(), dims->end());
+  return CopyIntVector(*dims);
 }
 
 // Verifies that result_dtype matches or can be safely cast to the out tensor's

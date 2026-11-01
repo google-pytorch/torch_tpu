@@ -1130,6 +1130,7 @@ torch_tpu_cc_library(
         ":dtype",
         ":error_utils",
         ":to_string",
+        ":utils",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
         "//shims/torch/c10/core:base_headers",
