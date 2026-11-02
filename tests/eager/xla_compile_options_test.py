@@ -79,7 +79,7 @@ class XlaCompileOptionsTest(
       _ = y.cpu()
 
     # Get HLO module config generated for matmul.
-    hlo_module_config: str = self._read_hlo_module_config("tt_jit_mm")
+    hlo_module_config: str = self._read_hlo_module_config("tt_jit_matmul")
     self.assertIn("\noptimization_level: EFFORT_O1\n", hlo_module_config)
 
 

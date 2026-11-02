@@ -61,13 +61,12 @@ torch_tpu_cc_library(
     deps = [
         "//csrc/common:error_utils",
         "//csrc/ops:op_builder_utils",
+        "//csrc/ops/matmul",
         "@com_google_absl//absl/status:statusor",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Support",
         "@stablehlo//:stablehlo_ops",
-        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
         "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
-        "@stablehlo//stablehlo/integrations/cpp/builder:stablehlo_builder",
     ],
 )
 

@@ -474,7 +474,6 @@ DYNAMISM_DENY_LISTS: DenyList = {
     "untriaged: unsupported view op or reshape": {
         "expand": ALL_MODES,  # view op - expand not yet supported
         "masked_scatter": ALL_MODES,  # unflatten ambiguous error
-        "matmul": ALL_MODES,  # reshapes in the structured delegate
         "slice": ALL_MODES,  # reshape reassociation not supported
         # enhance view op to detect squeeze
         "squeeze": ALL_MODES,
@@ -1096,7 +1095,7 @@ class MatmulDynamicOpInfo(DynamicOpInfo):
   def adapter_supports_op(op_info: core.OpInfo):
     """Method to declare ops supported by this adapter."""
 
-    matmul_ops = ["bmm", "bmm.dtype", "mm", "mm.dtype"]
+    matmul_ops = ["bmm", "bmm.dtype", "matmul", "mm", "mm.dtype"]
     return op_info.name in matmul_ops
 
   def _mark_dependent_arg_dynamic(

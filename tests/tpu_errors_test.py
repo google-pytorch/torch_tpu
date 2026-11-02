@@ -4963,6 +4963,18 @@ module {
           expected_msg="mm(): not implemented for float8_e4m3fn",
       ),
       dict(
+          testcase_name="float8_e4m3fn_matmul",
+          op_fn=lambda t: torch.matmul(t, t),
+          dtype=torch.float8_e4m3fn,
+          expected_msg="matmul(): not implemented for float8_e4m3fn",
+      ),
+      dict(
+          testcase_name="float8_e4m3fn_matmul_empty_k",
+          op_fn=lambda t: torch.matmul(t[:, :0], t[:0, :]),
+          dtype=torch.float8_e4m3fn,
+          expected_msg="matmul(): not implemented for float8_e4m3fn",
+      ),
+      dict(
           testcase_name="float8_e4m3fn_bmm",
           op_fn=lambda t: torch.bmm(t.unsqueeze(0), t.unsqueeze(0)),
           dtype=torch.float8_e4m3fn,
@@ -5079,6 +5091,109 @@ module {
         tpu=expected_msg,
     ):
       op_fn(t)
+
+  @et.why_tpu_only("aten.matmul_backward is not registered on CUDA.")
+  def test_matmul_backward_errors(self):
+    self_t = torch.ones(2, 3, 4, dtype=torch.float32, device=et.device())
+    other_t = torch.ones(4, 5, dtype=torch.float32, device=et.device())
+    grad_t = torch.ones(2, 3, 5, dtype=torch.float32, device=et.device())
+
+    self_cpu = torch.ones(2, 3, 4, dtype=torch.float32, device="cpu")
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""matmul_backward(): expected grad, self, and other to be on the same device, got tpu:0, cpu, and tpu:0""",
+        message_reviewed_by="cbasile",
+    ):
+      torch.ops.aten.matmul_backward(grad_t, self_cpu, other_t, [False, False])
+
+    grad_f16 = torch.ones(2, 3, 5, dtype=torch.float16, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""matmul_backward(): expected grad and self to have the same dtype, got float16 vs float32""",
+        message_reviewed_by="cbasile",
+    ):
+      torch.ops.aten.matmul_backward(grad_f16, self_t, other_t, [True, True])
+
+    grad_bad_shape = torch.ones(
+        2, 3, 6, dtype=torch.float32, device=et.device()
+    )
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""matmul_backward(): expected grad to have shape [2, 3, 5], got [2, 3, 6]""",
+        message_reviewed_by="cbasile",
+    ):
+      torch.ops.aten.matmul_backward(
+          grad_bad_shape, self_t, other_t, [True, True]
+      )
+
+    gs_bad_dtype = torch.empty(2, 3, 4, dtype=torch.float16, device=et.device())
+    go_ok = torch.empty(4, 5, dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""matmul_backward(): expected grad_self out tensor to have dtype float32, got float16""",
+        message_reviewed_by="cbasile",
+    ):
+      torch.ops.aten.matmul_backward.out(
+          grad_t, self_t, other_t, [True, True], out0=gs_bad_dtype, out1=go_ok
+      )
+
+    gs_ok = torch.empty(2, 3, 4, dtype=torch.float32, device=et.device())
+    go_bad_dtype = torch.empty(4, 5, dtype=torch.float16, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""matmul_backward(): expected grad_other out tensor to have dtype float32, got float16""",
+        message_reviewed_by="cbasile",
+    ):
+      torch.ops.aten.matmul_backward.out(
+          grad_t, self_t, other_t, [True, True], out0=gs_ok, out1=go_bad_dtype
+      )
+
+    gs_cpu = torch.empty(2, 3, 4, dtype=torch.float32, device="cpu")
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""matmul_backward(): expected grad_self out tensor to be on device tpu:0, got cpu""",
+    ):
+      torch.ops.aten.matmul_backward.out(
+          grad_t, self_t, other_t, [False, False], out0=gs_cpu, out1=go_ok
+      )
+
+    go_cpu = torch.empty(4, 5, dtype=torch.float32, device="cpu")
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""matmul_backward(): expected grad_other out tensor to be on device tpu:0, got cpu""",
+    ):
+      torch.ops.aten.matmul_backward.out(
+          grad_t, self_t, other_t, [False, False], out0=gs_ok, out1=go_cpu
+      )
+
+    grad_cpu = torch.ones(2, 3, 5, dtype=torch.float32, device="cpu")
+    other_cpu = torch.ones(4, 5, dtype=torch.float32, device="cpu")
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""matmul_backward(): expected grad_self out tensor to be on device cpu, got tpu:0""",
+    ):
+      torch.ops.aten.matmul_backward.out(
+          grad_cpu, self_cpu, other_cpu, [False, False], out0=gs_ok, out1=go_ok
+      )
+
+    grad_meta = torch.empty((2, 3, 5), dtype=torch.float32, device="meta")
+    self_meta = torch.empty((2, 3, 4), dtype=torch.float32, device="meta")
+    other_meta = torch.empty((4, 5), dtype=torch.float32, device="meta")
+    gs_cpu_empty = torch.empty(0, dtype=torch.float32, device="cpu")
+    go_meta = torch.empty(0, dtype=torch.float32, device="meta")
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""matmul_backward(): expected grad_self out tensor to be on device meta, got cpu""",
+    ):
+      torch.ops.aten.matmul_backward.out(
+          grad_meta,
+          self_meta,
+          other_meta,
+          [True, False],
+          out0=gs_cpu_empty,
+          out1=go_meta,
+      )
+    self.assertEqual(gs_cpu_empty.numel(), 0)
 
 
 class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):

@@ -3033,21 +3033,7 @@ class TestOps(op_testing.OpInfoTestBase):
     )
 
   def test_matmul(self):
-    self.do_test_op(
-        "matmul",
-        # TODO: TPU supports bool dtypes but not all CPU and GPU lowerings do.
-        # Due to how PyTorch decomposes this op, some cases bool dtype is
-        # supported and other cases it's not. This op is supposed to be
-        # delegated, but due to the same reason above, there are some funky
-        # lowering causing delegation to fail for us. This requires additional
-        # work to fix. For now, we just exclude bool dtypes.
-        # TODO: make matmul fail for integral dtypes to match GPU.
-        exclude_dtypes=(
-            torch.uint8,
-            torch.int8,
-            torch.int16,
-        ),
-    )
+    self.do_test_op("matmul")
 
   def test_multinomial(self):
     self.do_test_op(

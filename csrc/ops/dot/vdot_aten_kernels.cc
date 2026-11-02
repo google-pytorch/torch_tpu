@@ -26,12 +26,11 @@
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
-#include "csrc/ops/dot/dot.h"
 #include "csrc/ops/dot/dot_checks.h"
 #include "csrc/ops/macros/kernel.h"
+#include "csrc/ops/matmul/matmul.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/precision_context.h"
-#include "csrc/ops/unary.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 
@@ -41,8 +40,9 @@ namespace {
 
 absl::StatusOr<mlir::MlirOp> BuildVdotShlo(
     mlir::MlirOp lhs, mlir::MlirOp rhs, mlir::stablehlo::Precision precision) {
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp conjugated_lhs, BuildConjPhysicalShlo(lhs));
-  return BuildDotShlo(conjugated_lhs, rhs, precision);
+  return BuildMatmulShlo(
+      lhs, rhs, precision,
+      MatmulShloOptions{.conjugate_lhs = ConjugateMode::kConjugate});
 }
 
 absl::StatusOr<DeviceBufferRef> Vdot(const at::Tensor& lhs,
