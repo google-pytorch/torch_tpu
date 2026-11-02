@@ -21,6 +21,7 @@
 #include <functional>
 #include <numeric>
 #include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -30,6 +31,8 @@
 #include "ATen/ops/avg_pool1d_native.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/str_cat.h"
+#include "absl/strings/str_join.h"
 #include "c10/core/GradMode.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
@@ -38,6 +41,8 @@
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fake_tensor_utils.h"
 #include "csrc/common/fixed_size_span.h"
+#include "csrc/common/layout_utils.h"
+#include "csrc/common/shape.h"
 #include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
 #include "csrc/eager/device_buffer.h"
@@ -292,6 +297,91 @@ absl::StatusOr<mlir::MlirOp> BuildAvgPoolShlo(
   return CastIfNeeded(result, orig_dtype);
 }
 
+// Pads with zeros or slices the bounded non-spatial (batch and channel)
+// dimensions of the static `grad_output` to the static sizes of `input`. In
+// these dimensions, the two operands can have different upper bounds, or only
+// one of them can be bounded. Their runtime sizes are equal, and the elements
+// of `grad_output` past its runtime sizes are zero. Dimensions that are static
+// in both operands are left unchanged.
+mlir::MlirOp MatchNonSpatialSizes(mlir::MlirOp grad_output,
+                                  const StaticAtBounds& input,
+                                  const StaticAtBounds& static_grad_output,
+                                  int64_t spatial_dim_count) {
+  const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input.op);
+  const mlir::RankedTensorType grad_type = GetTensorTypeOrDie(grad_output);
+  const int64_t rank = grad_type.getRank();
+  if (rank != input_type.getRank() || rank < spatial_dim_count) {
+    return grad_output;
+  }
+  Dimensions pad_high(rank, 0);
+  Dimensions limit_indices(grad_type.getShape().begin(),
+                           grad_type.getShape().end());
+  bool needs_pad = false;
+  bool needs_slice = false;
+  for (int64_t dim = 0; dim < rank - spatial_dim_count; ++dim) {
+    if (!input.runtime_sizes[dim].has_value() &&
+        !static_grad_output.runtime_sizes[dim].has_value()) {
+      continue;
+    }
+    const int64_t grad_size = grad_type.getDimSize(dim);
+    const int64_t input_size = input_type.getDimSize(dim);
+    if (grad_size < input_size) {
+      pad_high[dim] = input_size - grad_size;
+      needs_pad = true;
+    } else if (grad_size > input_size) {
+      needs_slice = true;
+    }
+    // A padded dimension already has the input size, so the slice keeps it.
+    limit_indices[dim] = input_size;
+  }
+  if (needs_pad) {
+    mlir::MlirOp zero = MakeScalarConstant(grad_output.getBuilder(), 0,
+                                           grad_type.getElementType());
+    grad_output = mlir::stablehlo::Pad(grad_output, zero,
+                                       /*low=*/Dimensions(rank, 0), pad_high,
+                                       /*interior=*/Dimensions(rank, 0));
+  }
+  if (needs_slice) {
+    grad_output = mlir::stablehlo::Slice(grad_output,
+                                         /*start_indices=*/Dimensions(rank, 0),
+                                         limit_indices,
+                                         /*strides=*/Dimensions(rank, 1));
+  }
+  return grad_output;
+}
+
+// Checks that the divisor is constant if the input or grad_output has dynamic
+// spatial dimensions (`input_dynamic_dims` and `grad_output_dynamic_dims`). The
+// divisor of a window near the end of a dynamic spatial dimension depends on
+// its runtime size unless the divisor is constant.
+absl::Status ValidateDynamicSpatialDims(
+    const Dimensions& input_dynamic_dims,
+    const Dimensions& grad_output_dynamic_dims, bool ceil_mode,
+    bool count_include_pad, std::optional<int64_t> divisor_override) {
+  if (divisor_override.has_value() || (count_include_pad && !ceil_mode)) {
+    return absl::OkStatus();
+  }
+  // The dynamic spatial dimensions of each tensor that has any, e.g.
+  // {"[3] of the input", "[3] of grad_output"}.
+  std::vector<std::string> dynamic_dims;
+  if (!input_dynamic_dims.empty()) {
+    dynamic_dims.push_back(
+        absl::StrCat(ToString(input_dynamic_dims), " of the input"));
+  }
+  if (!grad_output_dynamic_dims.empty()) {
+    dynamic_dims.push_back(
+        absl::StrCat(ToString(grad_output_dynamic_dims), " of grad_output"));
+  }
+  TT_RET_CHECK(dynamic_dims.empty(), error::kPythonNotImplementedError)
+      << "expected static spatial dimensions of the input and grad_output or "
+         "a constant divisor (divisor_override, or count_include_pad=True "
+         "with ceil_mode=False), got dynamic spatial dimensions "
+      << absl::StrJoin(dynamic_dims, " and ")
+      << " with count_include_pad=" << (count_include_pad ? "True" : "False")
+      << " and ceil_mode=" << (ceil_mode ? "True" : "False");
+  return absl::OkStatus();
+}
+
 // Mathematically, average pooling is a linear transformation that can be
 // decomposed into two steps:
 // * A Convolution with a kernel consisting entirely of 1s.
@@ -390,6 +480,44 @@ absl::StatusOr<mlir::MlirOp> BuildAvgPoolBackwardShlo(
   TT_ASSIGN_OR_RETURN(input, CastIfNeeded(input, compute_dtype));
   auto& builder = grad_output.getBuilder();
 
+  // 0. Bounded dynamic dimensions come from dynamic shapes. Like
+  //    ConvolutionLike, run the backward on operands made static at their upper
+  //    bounds, and bound the result to the runtime sizes of the input. The
+  //    elements of grad_output past its runtime sizes are undefined, so zero
+  //    them. BuildAvgPoolBackwardGradInputNd doesn't check empty inputs, views
+  //    (non-contiguous, conjugate or offset tensors, or tensors whose sizes or
+  //    dtype differ from those of their buffers) or pending deferred buffers,
+  //    which can have other dynamic dimensions than their MLIR values (results
+  //    get them only when compiled), so check the divisor again for the bounded
+  //    spatial dimensions. Invalid ranks are rejected by CreateBatchInput
+  //    below.
+  const mlir::stablehlo::Dimensions input_dims = GetDimensions(input);
+  const StaticAtBounds static_input = MakeStaticAtBounds(input);
+  const StaticAtBounds static_grad_output = MakeStaticAtBounds(grad_output);
+  auto get_bounded_spatial_dims =
+      [spatial_dim_count](const StaticAtBounds& operand) {
+        const int64_t rank = operand.runtime_sizes.size();
+        Dimensions dims;
+        if (rank < spatial_dim_count) {
+          return dims;
+        }
+        for (int64_t dim = rank - spatial_dim_count; dim < rank; ++dim) {
+          if (operand.runtime_sizes[dim].has_value()) {
+            dims.push_back(dim);
+          }
+        }
+        return dims;
+      };
+  TT_RETURN_IF_ERROR(ValidateDynamicSpatialDims(
+      get_bounded_spatial_dims(static_input),
+      get_bounded_spatial_dims(static_grad_output), ceil_mode,
+      count_include_pad, divisor_override));
+  input = static_input.op;
+  grad_output = MatchNonSpatialSizes(
+      ZeroPastRuntimeSizes(static_grad_output.op,
+                           static_grad_output.runtime_sizes),
+      static_input, static_grad_output, spatial_dim_count);
+
   // 1. Create batch inputs for both input and grad_output
   TT_ASSIGN_OR_RETURN(auto batch_input_info,
                       CreateBatchInput(input, spatial_dim_count));
@@ -484,8 +612,10 @@ absl::StatusOr<mlir::MlirOp> BuildAvgPoolBackwardShlo(
       SliceBackwardResult(full_conv_result, init_value, input_type,
                           ceil_padding_pairs, num_dims, spatial_dim_count);
 
-  auto result = RemoveTrivialBatch(
-      sliced_grad, batch_input_info.original_dim_size, spatial_dim_count);
+  auto result = BoundFromDimensions(
+      RemoveTrivialBatch(sliced_grad, batch_input_info.original_dim_size,
+                         spatial_dim_count),
+      input_dims);
   return CastIfNeeded(result, orig_dtype);
 }
 
@@ -520,6 +650,34 @@ absl::Status ValidateAvgPool1dDtype(const at::Tensor& self) {
          "int16, int32, complex64), got "
       << torch_tpu::ToString(self.scalar_type());
   return absl::OkStatus();
+}
+
+// Returns the dynamic dimensions recorded on the device buffer of `tensor`
+// among its last `spatial_dim_count` dimensions. Like GetBuffer(), treats
+// `tensor` as a view of the buffer unless it's contiguous, not conjugate, at
+// offset zero, and its TPU layout has the sizes and element type of the
+// buffer. Returns none for a view, for a pending deferred buffer (the MLIR
+// value of its op can have other dynamic dimensions, e.g. if mark_dynamic()
+// didn't materialize it), or if `tensor` has fewer dimensions;
+// BuildAvgPoolBackwardShlo handles these cases.
+absl::StatusOr<Dimensions> GetDynamicSpatialDims(const at::Tensor& tensor,
+                                                 int64_t spatial_dim_count) {
+  TT_ASSIGN_OR_RETURN(DeviceBufferRef buffer_ref, GetBaseBuffer(tensor));
+  TT_ASSIGN_OR_RETURN(const TpuLayout tpu_layout, ResolveTpuLayout(tensor));
+  const int64_t first_spatial_dim = tensor.dim() - spatial_dim_count;
+  Dimensions dims;
+  if (first_spatial_dim < 0 || buffer_ref.is_deferred() || tensor.is_conj() ||
+      !tensor.is_contiguous() || tensor.storage_offset() != 0 ||
+      tpu_layout.sizes != buffer_ref.dimensions() ||
+      tpu_layout.element_type != buffer_ref.element_type()) {
+    return dims;
+  }
+  for (const BoundedDynamicDimension& dim : buffer_ref.dynamic_dimensions()) {
+    if (dim.dimension >= first_spatial_dim) {
+      dims.push_back(dim.dimension);
+    }
+  }
+  return dims;
 }
 
 }  // namespace
@@ -579,6 +737,17 @@ absl::StatusOr<at::Tensor> BuildAvgPoolBackwardGradInputNd(
                                       /*allow_out_dtype_cast=*/false));
   TT_ASSIGN_OR_RETURN(const auto output_dtype,
                       ConvertTo<mlir::ElementType>(grad_input.scalar_type()));
+  // An empty result isn't written to grad_input, so BuildAvgPoolBackwardShlo
+  // may never run for it. Don't reject it here either.
+  if (self.numel() != 0) {
+    TT_ASSIGN_OR_RETURN(const Dimensions input_dynamic_dims,
+                        GetDynamicSpatialDims(self, spatial_dim_count));
+    TT_ASSIGN_OR_RETURN(const Dimensions grad_output_dynamic_dims,
+                        GetDynamicSpatialDims(grad_output, spatial_dim_count));
+    TT_RETURN_IF_ERROR(ValidateDynamicSpatialDims(
+        input_dynamic_dims, grad_output_dynamic_dims, ceil_mode,
+        count_include_pad, divisor_override));
+  }
 
   auto op_builder = [kernel_size_vec = CopyIntVector(kernel_size),
                      stride_vec = CopyIntVector(stride),

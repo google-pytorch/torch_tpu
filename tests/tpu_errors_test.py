@@ -1390,6 +1390,63 @@ Please use clone() or contiguous() to copy the tensor before writing""",
         # cpu() is needed because the error is triggered inside the op builder.
         grad_weight.cpu()
 
+  @parameterized.named_parameters(
+      ("exclude_pad", True, False, False, False, False),
+      ("ceil_mode", True, True, True, False, False),
+      ("grad_output_only", False, False, False, False, False),
+      ("deferred_grad_output", True, False, False, True, False),
+      ("deferred", True, False, False, False, True),
+  )
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_avg_pool2d_backward_dynamic_spatial_dimension(
+      self,
+      mark_input: bool,
+      count_include_pad: bool,
+      ceil_mode: bool,
+      deferred_grad_output: bool,
+      deferred: bool,
+  ):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      grad_output = torch.ones(1, 2, 2, 4, device=et.device())
+      inp = torch.ones(1, 2, 4, 8, device=et.device())
+
+      # Mark the last spatial dimension of grad_output, and of the input if
+      # mark_input, as dynamic. Without a constant divisor, the backward
+      # rejects a dynamic spatial dimension in either of them.
+      dynamism.mark_dynamic(grad_output, 3, 2, 4)
+      dynamic_dims = "[3] of grad_output"
+      if mark_input:
+        dynamism.mark_dynamic(inp, 3, 2, 8)
+        dynamic_dims = "[3] of the input and [3] of grad_output"
+      if deferred_grad_output:
+        # The kernel doesn't see the dynamic dimensions of the result of a
+        # pending deferred op, so it rejects only those of the input.
+        grad_output = grad_output + 1
+        dynamic_dims = "[3] of the input"
+      if deferred:
+        # The kernel doesn't see the dynamic dimensions of the results of
+        # pending deferred ops, so the op builder rejects them.
+        grad_output = grad_output + 1
+        inp = inp + 1
+
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu=f"""avg_pool2d_backward(): expected static spatial dimensions of the input and grad_output or a constant divisor (divisor_override, or count_include_pad=True with ceil_mode=False), got dynamic spatial dimensions {dynamic_dims} with count_include_pad={count_include_pad} and ceil_mode={ceil_mode}""",
+      ):
+        grad_input = torch.ops.aten.avg_pool2d_backward(
+            grad_output,
+            inp,
+            kernel_size=[2, 2],
+            stride=[2, 2],
+            padding=[0, 0],
+            ceil_mode=ceil_mode,
+            count_include_pad=count_include_pad,
+            divisor_override=None,
+        )
+        # cpu() is needed because the error is triggered inside the op builder.
+        if deferred:
+          grad_input.cpu()
+
   @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
   def test_embedding_bag_dynamic_shape_arg(self):
     with self.subTest(arg="indices"):
