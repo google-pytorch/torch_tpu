@@ -26,10 +26,12 @@
 #include "ATen/core/TensorBody.h"
 #include "ATen/ops/ones.h"
 #include "absl/status/status.h"
+#include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
 #include "c10/core/DefaultDtype.h"
+#include "c10/util/Exception.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -46,7 +48,9 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/DialectRegistry.h"
+#include "mlir/IR/Location.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/IR/Value.h"
@@ -61,11 +65,15 @@
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "stablehlo/transforms/StablehloBroadcastLowering.h"
 #include "torch/headeronly/core/ScalarType.h"
+#include "xla/mlir/utils/error_util.h"
 
 namespace torch_tpu {
 namespace {
 
+using absl_testing::StatusIs;
 using testing::ElementsAre;
+using testing::EndsWith;
+using testing::HasSubstr;
 
 class OpBuilderUtilsBuilder {
  public:
@@ -462,6 +470,35 @@ TEST(BroadcastIfNeeded, StablehloDimsWithBoundOp) {
   EXPECT_EQ(result_type.getDimSize(1), 3);
 }
 
+// Expects that `status` is raised to Python as a `c10::Error`. In internal
+// builds, raising it also checks that its message follows the TorchTPU error
+// message guidelines (go/tt-error-guide), and aborts if it doesn't.
+void ExpectRaisedAsC10Error(const absl::Status& status) {
+  const TtError error(status,
+                      c10::SourceLocation{__func__, __FILE__, __LINE__});
+  EXPECT_THROW(TranslateToC10ErrorAndThrow(error), c10::Error);
+}
+
+TEST(ConsumeMlirDiagnostics, NoDiagnostic) {
+  mlir::MLIRContext context;
+  mlir::BaseScopedDiagnosticHandler diag_handler(&context);
+
+  EXPECT_EQ(ConsumeMlirDiagnostics(diag_handler),
+            "no MLIR diagnostic was reported");
+}
+
+TEST(ConsumeMlirDiagnostics, AdaptsDiagnostic) {
+  mlir::MLIRContext context;
+  mlir::BaseScopedDiagnosticHandler diag_handler(&context);
+  mlir::emitError(mlir::UnknownLoc::get(&context), "Something went wrong.");
+
+  const std::string message = ConsumeMlirDiagnostics(diag_handler);
+
+  // The trailing newline and period of the diagnostic are removed.
+  EXPECT_THAT(message, EndsWith("error: Something went wrong"));
+  EXPECT_TRUE(diag_handler.ok());  // The diagnostic was consumed.
+}
+
 TEST(BroadcastIfNeeded, Failure) {
   OpBuilderUtilsBuilder op_builder_utils_builder;
   mlir::MlirBuilder& builder = op_builder_utils_builder.get();
@@ -469,10 +506,10 @@ TEST(BroadcastIfNeeded, Failure) {
   mlir::MlirOp op = MakeConstant(builder, 5, op_builder.getI32Type(), {2});
   mlir::stablehlo::Dimensions target_shape = {{3}};
   auto result = BroadcastIfNeeded(op, target_shape);
-  ASSERT_FALSE(result.ok());
-  EXPECT_EQ(result.status().code(), error::kInvalidArgument);
-  EXPECT_THAT(result.status().message(),
-              testing::HasSubstr("failed to broadcast tensor: "));
+  EXPECT_THAT(result.status(),
+              StatusIs(error::kInvalidArgument,
+                       HasSubstr("failed to broadcast tensor: ")));
+  ExpectRaisedAsC10Error(result.status());
 }
 
 TEST(BroadcastIfNeeded, ExplicitBroadcastDims) {
@@ -564,10 +601,10 @@ TEST(BroadcastIfNeeded,
       MakeConstant(builder, 1.0f, op_builder.getF32Type(), {10, 4, 3});
 
   auto result = BroadcastIfNeeded(input_op, target_op, {0, 2});
-  ASSERT_FALSE(result.ok());
-  EXPECT_EQ(result.status().code(), error::kInvalidArgument);
-  EXPECT_THAT(result.status().message(),
-              testing::HasSubstr("cannot mix bounded and static dimensions"));
+  EXPECT_THAT(result.status(),
+              StatusIs(error::kInvalidArgument,
+                       HasSubstr("cannot mix bounded and static dimensions")));
+  ExpectRaisedAsC10Error(result.status());
 }
 
 TEST(BroadcastIfNeeded, ExplicitBroadcastDimsStaticInputToDynamicTarget) {
@@ -783,6 +820,44 @@ TEST(ApplyBroadcastIfNeeded, DynamicShape) {
   EXPECT_TRUE(bcast_op2_dims[0].boundOp.has_value());
   EXPECT_EQ(bcast_op2_dims[1].size, 4);
   EXPECT_FALSE(bcast_op2_dims[1].boundOp.has_value());
+}
+
+// Returns a [?, 3] tensor with upper bound 10 on dimension 0.
+mlir::MlirOp MakeBoundedTensor(mlir::MlirBuilder& builder) {
+  mlir::OpBuilder& op_builder = builder.getOpBuilder();
+  mlir::MlirOp size = MakeConstant(builder, 5, op_builder.getI32Type(), {});
+  mlir::MlirOp padded =
+      MakeConstant(builder, 1.0f, op_builder.getF32Type(), {10, 3});
+  return mlir::stablehlo::SetDimensionSize(padded, size, /*dim=*/0);
+}
+
+TEST(ApplyBroadcastIfNeeded, BoundedAndStaticDimensionsFailure) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::MlirBuilder& builder = op_builder_utils_builder.get();
+  mlir::MlirOp bounded = MakeBoundedTensor(builder);
+  mlir::MlirOp static_op =
+      MakeConstant(builder, 2.0f, builder.getOpBuilder().getF32Type(), {10, 3});
+
+  auto result = ApplyBroadcastIfNeeded(bounded, static_op);
+  EXPECT_THAT(result.status(),
+              StatusIs(error::kInvalidArgument,
+                       HasSubstr("cannot mix bounded and static dimensions")));
+  ExpectRaisedAsC10Error(result.status());
+}
+
+TEST(ApplyBroadcastIfNeeded, SpanBoundedAndStaticDimensionsFailure) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::MlirBuilder& builder = op_builder_utils_builder.get();
+  mlir::MlirOp bounded = MakeBoundedTensor(builder);
+  mlir::MlirOp static_op =
+      MakeConstant(builder, 2.0f, builder.getOpBuilder().getF32Type(), {10, 3});
+
+  auto result = ApplyBroadcastIfNeeded(
+      std::vector<mlir::MlirOp>{bounded, static_op});  // NOLINT
+  EXPECT_THAT(result.status(),
+              StatusIs(error::kInvalidArgument,
+                       HasSubstr("cannot mix bounded and static dimensions")));
+  ExpectRaisedAsC10Error(result.status());
 }
 
 TEST(GetNumElements, StaticShape) {
