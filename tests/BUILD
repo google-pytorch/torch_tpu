@@ -1305,7 +1305,7 @@ torch_tpu_py_test(
     main = "ops_test.py",
     nolocal = "slow test",
     platform = _GPU_GOLDEN_PLATFORM,
-    shard_count = 3,
+    shard_count = 6,
     deps = [
         ":dynamism_test_utils",
         ":op_testing",

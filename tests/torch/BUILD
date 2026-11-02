@@ -637,7 +637,7 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "nn_pooling_test",
-    shard_count = 4,
+    shard_count = 5,
     torch_test_module = "nn/test_pooling",
 )
 
@@ -681,6 +681,7 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "ao_sparsity_test",
+    shard_count = 3,
     torch_test_module = "test_ao_sparsity",
 )
 
@@ -756,7 +757,7 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "expanded_weights_test",
-    shard_count = 2,
+    shard_count = 4,
     torch_test_module = "test_expanded_weights",
 )
 
@@ -952,12 +953,13 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "shape_ops_test",
+    shard_count = 2,
     torch_test_module = "test_shape_ops",
 )
 
 torch_tpu_torch_test(
     name = "sort_and_select_test",
-    shard_count = 4,
+    shard_count = 6,
     torch_test_module = "test_sort_and_select",
 )
 
@@ -1044,6 +1046,7 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "utils_test",
+    shard_count = 4,
     torch_test_module = "test_utils",
 )
 
