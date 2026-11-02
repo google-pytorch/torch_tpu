@@ -32,7 +32,6 @@
 #include "csrc/eager/events_queue.h"
 #include "csrc/eager/split_traversal.h"
 #include "csrc/eager/structured_log_buffer.h"
-#include "xla/future.h"
 
 // When an aten op is dispatched, we always create a DeviceBufferList to contain
 // the result. This DeviceBufferList will contain a DeferredOp, which describes
@@ -131,7 +130,7 @@ void ShutDownMaterializationState();
 // and all work on the stream has been enqueued for materialization, the
 // snapshot is returned and can be queried or awaited to determine when the
 // materialization is complete.
-xla::Future<std::shared_ptr<EventSnapshot>> MaterializeStream(
+absl::StatusOr<EventSnapshot> MaterializeStream(
     c10::DeviceIndex device_index, c10::StreamId stream_id,
     MaterializationReason reason,
     GraphSplitMode mode = GraphSplitMode::kSplitGraph,
@@ -142,7 +141,7 @@ xla::Future<std::shared_ptr<EventSnapshot>> MaterializeStream(
 // and all work on the stream has been enqueued for materialization, the
 // snapshot is returned and can be queried or awaited to determine when the
 // materialization is complete.
-xla::Future<std::shared_ptr<EventSnapshot>> MaterializeCurrentStream(
+absl::StatusOr<EventSnapshot> MaterializeCurrentStream(
     MaterializationReason reason,
     GraphSplitMode mode = GraphSplitMode::kSplitGraph,
     absl::Span<const SharedDeviceBufferList> must_materialize = {});
@@ -152,7 +151,7 @@ xla::Future<std::shared_ptr<EventSnapshot>> MaterializeCurrentStream(
 // and all work on the device has been enqueued for materialization, one
 // snapshot is returned for each stream on the device, and each stream can be
 // queried or awaited to determine when the materialization is complete.
-std::vector<xla::Future<std::shared_ptr<EventSnapshot>>> MaterializeDevice(
+absl::StatusOr<std::vector<EventSnapshot>> MaterializeDevice(
     c10::DeviceIndex device_index, MaterializationReason reason,
     GraphSplitMode mode = GraphSplitMode::kSplitGraph,
     absl::Span<const SharedDeviceBufferList> must_materialize = {});

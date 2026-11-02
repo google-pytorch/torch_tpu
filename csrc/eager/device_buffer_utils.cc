@@ -161,10 +161,10 @@ absl::Status ExecuteCurrentStreamForDeferNever(
   const GraphSplitMode graph_split_mode = GraphSplitMode::kFullGraph;
   if (eager_mode == EagerMode::kDeferNeverAndLaunchBlocking) {
     // In DeferNeverAndLaunchBlocking, we do a full stream sync after every op.
-    auto snapshot_future =
-        MaterializeCurrentStream(reason, graph_split_mode, must_materialize);
-    TT_ASSIGN_OR_RETURN(auto snapshot, snapshot_future.Await());
-    TT_RETURN_IF_ERROR(snapshot->Synchronize());
+    TT_ASSIGN_OR_RETURN(
+        EventSnapshot snapshot,
+        MaterializeCurrentStream(reason, graph_split_mode, must_materialize));
+    TT_RETURN_IF_ERROR(snapshot.Synchronize());
     TT_RETURN_IF_ERROR(SyncAndReturnStickyError());
   } else {
     // In DeferNever, we don't block at all, we initiate and continue.

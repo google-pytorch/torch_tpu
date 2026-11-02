@@ -26,7 +26,6 @@
 #include <iterator>
 #include <memory>
 #include <optional>
-#include <ratio>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -180,13 +179,16 @@ class StreamState {
     repeated_ops_graph_breaks_suspended_ = false;
     repeated_ops_graph_break_requested_ = false;
     // Drop all unresolved SnapshotEvents and fail their promises.
-    absl::Status cancel_status = TT_ERROR(error::kCancelled)
+    // This error is only visible via a race condition where an Event is
+    // recorded by not yet processed by the MaterializationWorker when
+    // Clear() is called. Not tested as it would be inherently flaky.
+    absl::Status cancel_status = TT_ERROR(  // ERROR_COV_INFEASIBLE=see above
+                                     error::kCancelled)
                                  << "stream state was cleared";
     for (auto& ready_work_item : ready_work_) {
       if (auto* snapshot_request =
               std::get_if<SnapshotRequest>(&ready_work_item)) {
-        snapshot_request->snapshot_promise.Set(cancel_status);
-        snapshot_request->ok_callback_promise.Set(absl::OkStatus());
+        snapshot_request->snapshot_to_start.Start(cancel_status);
       }
     }
     ready_work_.clear();
@@ -342,11 +344,13 @@ class StreamState {
                            /*execution_task=*/std::nullopt);
   }
 
-  xla::Future<std::shared_ptr<EventSnapshot>> RequestEventSnapshot(
+  EventSnapshot RequestEventSnapshot(
+      c10::DeviceIndex device_index, c10::StreamId stream_id,
       std::vector<SharedDeviceBufferList> must_materialize,
       MaterializationReason reason, GraphSplitMode mode, EagerMode eager_mode) {
     absl::MutexLock lock(mu_);
-    return RequestEventSnapshotLocked(std::move(must_materialize), reason, mode,
+    return RequestEventSnapshotLocked(device_index, stream_id,
+                                      std::move(must_materialize), reason, mode,
                                       eager_mode);
   }
 
@@ -572,7 +576,8 @@ class StreamState {
     }
   }
 
-  xla::Future<std::shared_ptr<EventSnapshot>> RequestEventSnapshotLocked(
+  EventSnapshot RequestEventSnapshotLocked(
+      c10::DeviceIndex device_index, c10::StreamId stream_id,
       std::vector<SharedDeviceBufferList> must_materialize,
       MaterializationReason reason, GraphSplitMode mode, EagerMode eager_mode)
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
@@ -584,17 +589,14 @@ class StreamState {
     // prior EventSnapshots. We achieve this by chaining a promise/future;
     // each event snapshot will have a future that will be set by the prior
     // event snapshot.
-    auto [snapshot_promise, snapshot_future] =
-        xla::MakePromise<std::shared_ptr<EventSnapshot>>();
-    auto [chaining_promise, chaining_future] = xla::MakePromise<void>();
-    SnapshotRequest new_snapshot_request{
+    EventSnapshot new_snapshot(device_index, stream_id);
+    ready_work_.push_back(SnapshotRequest{
         .futures = std::move(futures_),
         .last_device_output = std::exchange(last_device_output_, std::nullopt),
-        .snapshot_promise = std::move(snapshot_promise),
-        .ok_callback_promise = std::move(chaining_promise)};
-    ready_work_.push_back(std::move(new_snapshot_request));
-    futures_.push_back(std::move(chaining_future));
-    return snapshot_future;
+        .snapshot_to_start = new_snapshot,  // intentional copy
+    });
+    futures_.push_back(new_snapshot.OkCallback());
+    return new_snapshot;
   }
 
   absl::Mutex mu_;
@@ -903,7 +905,7 @@ void InsertStreamWait(c10::DeviceIndex device_index, c10::StreamId stream_id,
   GetOrCreateStreamState(device_index, stream_id)->InsertStreamWait(snapshot);
 }
 
-std::vector<PendingEventSnapshot> RecordDeviceSnapshots(
+std::vector<EventSnapshot> RecordDeviceSnapshots(
     c10::DeviceIndex device_index,
     std::vector<SharedDeviceBufferList> must_materialize,
     MaterializationReason reason, GraphSplitMode mode) {
@@ -914,7 +916,7 @@ std::vector<PendingEventSnapshot> RecordDeviceSnapshots(
     return {};
   }
   auto device_streams = GetDeviceStreamStates(device_index);
-  std::vector<PendingEventSnapshot> snapshots;
+  std::vector<EventSnapshot> snapshots;
   snapshots.reserve(device_streams.size());
   for (c10::StreamId stream_id = 0; stream_id < device_streams.size();
        ++stream_id) {
@@ -926,106 +928,98 @@ std::vector<PendingEventSnapshot> RecordDeviceSnapshots(
         stream_must_materialize.push_back(std::move(node));
       }
     }
-    snapshots.push_back({
-        .device_index = device_index,
-        .stream_id = stream_id,
-        .snapshot_future = stream_state->RequestEventSnapshot(
-            std::move(stream_must_materialize), reason, mode, eager_mode),
-    });
+    snapshots.push_back(stream_state->RequestEventSnapshot(
+        device_index, stream_id, std::move(stream_must_materialize), reason,
+        mode, eager_mode));
   }
   return snapshots;
 }
 
-xla::Future<std::shared_ptr<EventSnapshot>> EventSnapshot::Record(
+absl::StatusOr<EventSnapshot> EventSnapshot::Record(
     c10::DeviceIndex device_index, c10::StreamId stream_id,
     std::vector<SharedDeviceBufferList> must_materialize,
     MaterializationReason reason, GraphSplitMode mode) {
   auto eager_mode = GetEagerMode();
-  if (eager_mode == EagerMode::kInternalCompileFxGraph) {
-    return xla::Future<std::shared_ptr<EventSnapshot>>(
-        TT_ERROR(error::kInvalidArgument)
-        << "cannot record EventSnapshot during an FX trace");
-  }
+  TT_RET_CHECK(eager_mode != EagerMode::kInternalCompileFxGraph,
+               error::kInvalidArgument)
+      << "cannot record EventSnapshot during an FX trace";
   return GetOrCreateStreamState(device_index, stream_id)
-      ->RequestEventSnapshot(std::move(must_materialize), reason, mode,
+      ->RequestEventSnapshot(device_index, stream_id,
+                             std::move(must_materialize), reason, mode,
                              eager_mode);
 }
 
-EventSnapshot::EventSnapshot(xla::Future<void> future,
-                             xla::Promise<void> ok_callback_promise)
-    : future_(std::move(future)), completion_(std::make_shared<Completion>()) {
-  completion_->chain_promise = std::move(ok_callback_promise);
-  auto callback = [completion = completion_](absl::Status status) {
-    std::optional<xla::Promise<void>> chain_promise;
-    {
-      absl::MutexLock lock(completion->mu);
-      completion->time = std::chrono::steady_clock::now();
-      completion->completed = true;
-      chain_promise = std::exchange(completion->chain_promise, std::nullopt);
+EventSnapshot::State::State() {
+  auto [start_promise, started_future] = xla::MakePromise<void>();
+  auto [completion_time_promise, completion_time_future] =
+      xla::MakePromise<std::chrono::steady_clock::time_point>();
+  auto [ok_callback_promise, ok_callback_future] = xla::MakePromise<void>();
+
+  promises_ = Promises{.start = std::move(start_promise),
+                       .completion_time = std::move(completion_time_promise),
+                       .ok_callback = std::move(ok_callback_promise)};
+  has_promises_ = true;
+
+  started_future_ = std::move(started_future);
+  completion_time_future_ = std::move(completion_time_future);
+  ok_callback_future_ = std::move(ok_callback_future);
+
+  completion_future_ = TT_ERROR(  // ERROR_COV_INFEASIBLE=prevents invalid
+                                  // initialization, unreachable from Python
+                           error::kFailedPrecondition)
+                       << "cannot await an event that is not started";
+}
+
+void EventSnapshot::State::Start(xla::Future<void> future) {
+  bool can_start = has_promises_.exchange(false);
+  ABSL_CHECK(can_start)  // CRASH_OK=called only once by MaterializationWorker
+      << "cannot signal an event has started more than once";
+  Promises promises = std::move(promises_.value());
+  completion_future_ = std::move(future);
+  if (completion_future_.IsReady()) {
+    absl::Status status = completion_future_.Await();
+    promises.start.Set(status);
+    if (status.ok()) {
+      promises.completion_time.Set(std::chrono::steady_clock::now());
+    } else {
+      promises.completion_time.Set(status);
     }
-    if (chain_promise.has_value()) {
-      ReleaseNextSnapshot(*std::move(chain_promise));
-    }
-  };
-  if (future_.IsReady()) {
-    // All prior work is already complete, so this new event is immediately
-    // complete.
-    callback(future_.Await());
-  } else {
-    // The completion time is recorded before the next snapshot is released, so
-    // the next snapshot cannot complete before this one has a time.
-    future_.OnReady(std::move(callback));
+    ReleaseNextSnapshot(std::move(promises.ok_callback));
+    return;
   }
+
+  completion_future_.OnReady(
+      [completion_time_promise = std::move(promises.completion_time),
+       ok_callback_promise =
+           std::move(promises.ok_callback)](absl::Status status) mutable {
+        if (status.ok()) {
+          completion_time_promise.Set(std::chrono::steady_clock::now());
+        } else {
+          completion_time_promise.Set(status);
+        }
+        ReleaseNextSnapshot(std::move(ok_callback_promise));
+      });
+  promises.start.Set(absl::OkStatus());
 }
 
 absl::Status EventSnapshot::Synchronize() const {
-  const absl::Status status = future_.Await();
-  {
-    // The callback on `future_` records the completion right after it.
-    absl::MutexLock lock(completion_->mu,
-                         absl::Condition(&completion_->completed));
-  }
-  // Surface the warnings rerouted from background threads.
+  TT_RETURN_IF_ERROR(state_->ok_callback_future().Await());
+  absl::Status completion_status = state_->completion_future().Await();
   SurfaceReroutedWarnings();
-  return status;
+  return completion_status;
 }
 
 absl::StatusOr<bool> EventSnapshot::Query() const {
-  return CompletionTime().has_value();
-}
-
-std::optional<std::chrono::steady_clock::time_point>
-EventSnapshot::CompletionTime() const {
-  absl::MutexLock lock(completion_->mu);
-  if (!completion_->completed) {
-    return std::nullopt;
+  if (!state_->ok_callback_future().IsReady()) {
+    return false;
   }
-  return completion_->time;
+  TT_RETURN_IF_ERROR(state_->completion_future().Await());
+  return true;
 }
 
-absl::StatusOr<double> EventSnapshot::ElapsedTime(
-    const EventSnapshot& end) const {
-  const std::optional<std::chrono::steady_clock::time_point> start_time =
-      CompletionTime();
-  const std::optional<std::chrono::steady_clock::time_point> end_time =
-      end.CompletionTime();
-  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=c10::Event::elapsedTime() raises its
-                 // own error unless both events have completed.
-      start_time.has_value() && end_time.has_value(),
-      error::kFailedPrecondition)
-      << "both events must be completed before calculating elapsed time";
-  TT_RETURN_IF_ERROR(future_.Await());
-  TT_RETURN_IF_ERROR(end.future_.Await());
-  return std::chrono::duration<double, std::milli>(*end_time - *start_time)
-      .count();
-}
-
-xla::Future<void> EventSnapshot::OkCallback() {
-  absl::MutexLock lock(completion_->mu);
-  if (completion_->completed || !completion_->chain_promise.has_value()) {
-    return absl::OkStatus();
-  }
-  return completion_->chain_promise->future();
+bool EventSnapshot::operator==(const EventSnapshot& other) const {
+  return device_index_ == other.device_index_ &&
+         stream_id_ == other.stream_id_ && state_.get() == other.state_.get();
 }
 
 void ClearAllStreams() {

@@ -16,14 +16,12 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "ATen/core/Generator.h"
-#include "absl/base/nullability.h"
-#include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/statusor.h"
 #include "absl/time/time.h"
@@ -66,22 +64,21 @@ namespace {
 // a status.
 class PyTpuEventBase {
  public:
-  explicit PyTpuEventBase(
-      absl_nonnull std::shared_ptr<EventSnapshot> event_snapshot)
+  explicit PyTpuEventBase(EventSnapshot event_snapshot)
       : event_snapshot_(std::move(event_snapshot)) {}
 
   // Block the calling thread until the event snapshot is complete.
-  void Synchronize() { TT_THROW_IF_ERROR(event_snapshot_->Synchronize()); }
+  void Synchronize() { TT_THROW_IF_ERROR(event_snapshot_.Synchronize()); }
 
   // Query whether the event snapshot has completed.
   bool Query() {
-    TT_ASSIGN_OR_THROW(bool is_ready, event_snapshot_->Query());
+    TT_ASSIGN_OR_THROW(bool is_ready, event_snapshot_.Query());
     return is_ready;
   }
 
  private:
   // The wrapped event snapshot.
-  absl_nonnull std::shared_ptr<EventSnapshot> event_snapshot_;
+  EventSnapshot event_snapshot_;
 };
 
 void PySynchronizeDevice(int device_index, bool wait) {
@@ -93,12 +90,13 @@ void PySynchronizeDevice(int device_index, bool wait) {
 
     impl->synchronizeDevice(device_index);
   } else {
-    auto stream_futures =
-        MaterializeDevice(device_index, MaterializationReason::kExplicitSync);
+    TT_ASSIGN_OR_THROW(
+        std::vector<EventSnapshot> device_snapshots,
+        MaterializeDevice(device_index, MaterializationReason::kExplicitSync));
     // Wait until each stream has enqueued its materialization task, but don't
     // wait for the materialization to complete.
-    for (auto& future : stream_futures) {
-      TT_THROW_IF_ERROR(future.Await().status());
+    for (const auto& snapshot : device_snapshots) {
+      TT_THROW_IF_ERROR(snapshot.BlockUntilStarted());
     }
   }
 }
@@ -123,9 +121,9 @@ PyTpuEventBase PyRecordEvent(std::optional<int> device_index,
     id = current_stream.id();
   }
   TT_ASSIGN_OR_THROW(
-      auto event_snapshot,
-      MaterializeStream(index, id, MaterializationReason::kExplicitSync)
-          .Await());
+      EventSnapshot event_snapshot,
+      MaterializeStream(index, id, MaterializationReason::kExplicitSync));
+  TT_THROW_IF_ERROR(event_snapshot.BlockUntilStarted());
   return PyTpuEventBase(std::move(event_snapshot));
 }
 

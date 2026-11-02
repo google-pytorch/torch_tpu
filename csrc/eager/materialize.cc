@@ -228,14 +228,10 @@ void ProcessSnapshotRequest(
         snapshot_request.futures.end(),
         std::make_move_iterator(materialization_futures.begin()),
         std::make_move_iterator(materialization_futures.end()));
-    auto snapshot = std::make_shared<EventSnapshot>(
-        xla::JoinFutures(snapshot_request.futures),
-        std::move(snapshot_request.ok_callback_promise));
-    snapshot_request.snapshot_promise.Set(std::move(snapshot));
+    snapshot_request.snapshot_to_start.Start(
+        xla::JoinFutures(snapshot_request.futures));
   } else {
-    snapshot_request.snapshot_promise.Set(std::make_shared<EventSnapshot>(
-        materialization_error,
-        std::move(snapshot_request.ok_callback_promise)));
+    snapshot_request.snapshot_to_start.Start(materialization_error);
     materialization_error = absl::OkStatus();
   }
   last_device_output.reset();
@@ -769,7 +765,7 @@ absl::StatusOr<std::vector<DeviceBufferRef>> EnqueueExecutable(
   return outputs;
 }
 
-xla::Future<std::shared_ptr<EventSnapshot>> MaterializeStream(
+absl::StatusOr<EventSnapshot> MaterializeStream(
     c10::DeviceIndex device_index, c10::StreamId stream_id,
     MaterializationReason reason, GraphSplitMode mode,
     absl::Span<const SharedDeviceBufferList> must_materialize) {
@@ -784,13 +780,15 @@ xla::Future<std::shared_ptr<EventSnapshot>> MaterializeStream(
   TT_ASSIGN_OR_RETURN(
       std::vector<SharedDeviceBufferList> must_materialize_vec,
       GetUniqueDeferredNodes(must_materialize, device_index, stream_id));
-  auto future = EventSnapshot::Record(
-      device_index, stream_id, std::move(must_materialize_vec), reason, mode);
+  TT_ASSIGN_OR_RETURN(
+      EventSnapshot snapshot,
+      EventSnapshot::Record(device_index, stream_id,
+                            std::move(must_materialize_vec), reason, mode));
   GetMaterializationWorker().EnqueueStream(device_index, stream_id);
-  return future;
+  return snapshot;
 }
 
-std::vector<xla::Future<std::shared_ptr<EventSnapshot>>> MaterializeDevice(
+absl::StatusOr<std::vector<EventSnapshot>> MaterializeDevice(
     c10::DeviceIndex device_index, MaterializationReason reason,
     GraphSplitMode mode,
     absl::Span<const SharedDeviceBufferList> must_materialize) {
@@ -808,23 +806,19 @@ std::vector<xla::Future<std::shared_ptr<EventSnapshot>>> MaterializeDevice(
     return {must_materialize_vec_or.status()};
   }
 
-  auto device_snapshot_futures = RecordDeviceSnapshots(
+  auto device_snapshots = RecordDeviceSnapshots(
       device_index, std::move(*must_materialize_vec_or), reason, mode);
 
-  std::vector<xla::Future<std::shared_ptr<EventSnapshot>>> snapshot_futures;
-  snapshot_futures.reserve(device_snapshot_futures.size());
-
   auto& materialization_worker = GetMaterializationWorker();
-  for (auto& pending_stream : device_snapshot_futures) {
-    materialization_worker.EnqueueStream(pending_stream.device_index,
-                                         pending_stream.stream_id);
-    snapshot_futures.push_back(std::move(pending_stream.snapshot_future));
+  for (auto& pending_stream : device_snapshots) {
+    materialization_worker.EnqueueStream(pending_stream.device_index(),
+                                         pending_stream.stream_id());
   }
 
-  return snapshot_futures;
+  return device_snapshots;
 }
 
-xla::Future<std::shared_ptr<EventSnapshot>> MaterializeCurrentStream(
+absl::StatusOr<EventSnapshot> MaterializeCurrentStream(
     MaterializationReason reason, GraphSplitMode mode,
     absl::Span<const SharedDeviceBufferList> must_materialize) {
   const auto [device_index, stream_id] = GetCurrentDeviceStreamId();

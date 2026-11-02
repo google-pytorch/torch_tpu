@@ -17,7 +17,6 @@
 #include "csrc/ops/copy_from/tpu_to_cpu.h"
 
 #include <cstdint>
-#include <memory>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -169,12 +168,11 @@ absl::Status CopyDeviceBufferRefToCpuPtrImpl(
 
   // Then wait for the copy (and materialization, if on the same stream) to
   // complete, returning any errors.
-  xla::Future<std::shared_ptr<EventSnapshot>> snapshot_future =
+  TT_ASSIGN_OR_RETURN(
+      EventSnapshot snapshot,
       MaterializeCurrentStream(MaterializationReason::kCpuTransfer,
-                               GraphSplitMode::kSplitGraph, must_materialize);
-  TT_ASSIGN_OR_RETURN(std::shared_ptr<EventSnapshot> snapshot,
-                      snapshot_future.Await());
-  TT_RETURN_IF_ERROR(snapshot->Synchronize());
+                               GraphSplitMode::kSplitGraph, must_materialize));
+  TT_RETURN_IF_ERROR(snapshot.Synchronize());
   return SyncAndReturnStickyError();
 }
 

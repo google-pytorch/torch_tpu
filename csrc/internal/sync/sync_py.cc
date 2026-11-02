@@ -29,6 +29,7 @@
 #include "csrc/common/error_utils.h"
 #include "csrc/common/pybind_error_utils.h"
 #include "csrc/eager/device_buffer.h"
+#include "csrc/eager/events_queue.h"
 #include "csrc/eager/materialize.h"
 #include "csrc/eager/split_traversal.h"
 #include "csrc/eager/structured_log_buffer.h"
@@ -319,10 +320,11 @@ void PySynchronizeDevice(bool wait) {
     // and then throwing away the events.
     // This ensures that all live nodes reach the is_materializing() state but
     // does not wait for them to complete (is_materialized()).
-    auto stream_futures =
-        MaterializeDevice(device_index, MaterializationReason::kExplicitSync);
-    for (auto& event_future : stream_futures) {
-      TT_THROW_IF_ERROR(event_future.Await());
+    TT_ASSIGN_OR_THROW(
+        std::vector<EventSnapshot> device_snapshots,
+        MaterializeDevice(device_index, MaterializationReason::kExplicitSync));
+    for (const auto& event_snapshot : device_snapshots) {
+      TT_THROW_IF_ERROR(event_snapshot.BlockUntilStarted());
     }
   }
 }

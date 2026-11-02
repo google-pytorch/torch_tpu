@@ -987,6 +987,7 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/base:nullability",
         "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/time",
         "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
         "@xla//xla/pjrt:pjrt_client",
     ],
