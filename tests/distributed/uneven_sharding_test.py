@@ -28,7 +28,15 @@ from tests import seed_test_utils
 from tests.distributed import distributed_utils
 
 _SHAPE_MISMATCH: Final[str] = "Tensor shape mismatch"
-_SFLAG_TIMEOUT: Final[str] = "Wait timeout on sflag"
+
+
+def _sflag_timeout_message() -> str:
+  version = utils.libtpu_version()
+  name = "instruction" if version is None or version >= (0, 0, 52) else "sflag"
+  return f"Wait timeout on {name}"
+
+
+_SFLAG_TIMEOUT: Final[str] = _sflag_timeout_message()
 _ZERO_ALL_GATHER_DIM: Final[str] = (
     "dimension size of operand at 'all_gather_dim' cannot be zero"
 )
