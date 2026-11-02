@@ -115,6 +115,12 @@ absl::Status ValidateGcdInputs(const at::Tensor& self, const at::Tensor& other,
                error::kInvalidArgument)
       << "expected the promoted input dtype to be an integer type, got "
       << ToString(common_dtype);
+  TT_RET_CHECK(common_dtype == at::kByte || common_dtype == at::kChar ||
+                   common_dtype == at::kShort || common_dtype == at::kInt ||
+                   common_dtype == at::kLong,
+               error::kInvalidArgument)
+      << "expected int8, uint8, int16, int32 or int64 inputs, got "
+      << ToString(common_dtype);
   return absl::OkStatus();
 }
 
@@ -155,7 +161,9 @@ absl::StatusOr<mlir::MlirOp> BuildGcdShlo(mlir::MlirOp a, mlir::MlirOp b) {
       return mlir::stablehlo::ConvertElementType(g, elem_type);
     }
     default:
-      return TT_ERROR(error::kInvalidArgument)
+      return TT_ERROR(  // ERROR_COV_INFEASIBLE=Input dtypes are validated by
+                        // the GCD and LCM kernels before calling this builder.
+                 error::kInvalidArgument)
              << "expected an int8, uint8, int16, int32 or int64 element type, "
              << "got " << ToString(elem_type);
   }

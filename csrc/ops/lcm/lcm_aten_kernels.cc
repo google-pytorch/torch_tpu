@@ -48,6 +48,12 @@ absl::Status ValidateLcmInputs(const at::Tensor& self, const at::Tensor& other,
                error::kInvalidArgument)
       << "expected the promoted input dtype to be an integer type, got "
       << ToString(common_dtype);
+  TT_RET_CHECK(common_dtype == at::kByte || common_dtype == at::kChar ||
+                   common_dtype == at::kShort || common_dtype == at::kInt ||
+                   common_dtype == at::kLong,
+               error::kInvalidArgument)
+      << "expected int8, uint8, int16, int32 or int64 inputs, got "
+      << ToString(common_dtype);
   return absl::OkStatus();
 }
 
