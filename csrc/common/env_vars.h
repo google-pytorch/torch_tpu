@@ -32,6 +32,18 @@
 
 namespace torch_tpu {
 
+namespace internal {
+
+// Records that GetEnvOnce() has memoized the value of the env var with the
+// given name. Thread-safe.
+void MarkEnvVarMemoized(std::string_view name);
+
+// Crashes if GetEnvOnce() has memoized the value of the env var with the given
+// name. Thread-safe.
+void CheckEnvVarNotMemoized(std::string_view name);
+
+}  // namespace internal
+
 // All environment variables read or written by torch_tpu.
 //
 // If an env var is not introduced by TorchTPU, please document the source.
@@ -359,19 +371,41 @@ inline constexpr auto kEnvVarToStage =
         // go/keep-sorted end
     });
 
-// Sets the environment variable with the given name to the given value.
+// Sets the environment variable with the given name to the given value. Use
+// this instead of setenv().
+//
+// Crashes if GetEnvOnce() has already memoized the env var, as the new value
+// would be silently ignored by GetEnvOnce(). If TorchTPU needs to change an env
+// var at runtime, read it with std::getenv() instead of GetEnvOnce().
 template <const char* name>
-void SetEnv(const std::string& value) {
+void SafeSetEnv(const std::string& value) {
   static_assert(kEnvVarToStage.contains(name),
                 "Unknown environment variable. All env vars used by TorchTPU "
                 "must be registered in kEnvVarToStage.");
-  setenv(name, value.c_str(), /*overwrite=*/1);
+  internal::CheckEnvVarNotMemoized(name);
+  setenv(name, value.c_str(),  // SETENV_OK=implementing SafeSetEnv().
+         /*overwrite=*/1);
+}
+
+// Unsets the environment variable with the given name. Use this instead of
+// unsetenv().
+//
+// Like SafeSetEnv(), crashes if GetEnvOnce() has already memoized the env var.
+template <const char* name>
+void SafeUnsetEnv() {
+  static_assert(kEnvVarToStage.contains(name),
+                "Unknown environment variable. All env vars used by TorchTPU "
+                "must be registered in kEnvVarToStage.");
+  internal::CheckEnvVarNotMemoized(name);
+  unsetenv(name);  // SETENV_OK=implementing SafeUnsetEnv().
 }
 
 // Returns the value of the environment variable with the given name, or
 // std::nullopt if it is not set.
 //
 // This function is memoized, so the environment variable is only read once.
+// Hence SafeSetEnv() and SafeUnsetEnv() crash if they're called on the env var
+// after this function.
 //
 // We make the name a template parameter so that different env vars are
 // memoized separately and the TT_WARN_ONCE() call works for each env var
@@ -392,6 +426,7 @@ template <const char* name>
   }
   static const absl::NoDestructor<std::optional<std::string>> env_var(
       [maybe_stage]() -> std::optional<std::string> {
+        internal::MarkEnvVarMemoized(name);
         const char* const env_var =  //
             std::getenv(name);       // GETENV_OK=implementing GetEnvOnce().
         if (env_var == nullptr) return std::nullopt;

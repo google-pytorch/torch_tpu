@@ -869,6 +869,32 @@ presubmit {
     check_delta_only: true  # Only check new/changed lines.
   }
 
+  # Prevent using setenv and unsetenv.
+  check_contents {
+    base {
+      id: "CheckSetenv"
+      disable_tags: "ROLLBACK_OF"  # Don't require for rollback CLs.
+    }
+    # The unescaped regex is:
+    #   \b(setenv|unsetenv)\(
+    prohibited_regexp: "\\b(setenv|unsetenv)\\("
+    suppression_regexp:
+      # Allow suppression with this marker.
+      "\\bSETENV_OK=.+|"
+      # Ignore occurrences in C++ and Python comments.
+      "(//|#).*\\b(setenv|unsetenv)\\("
+    failure_message:
+      "Please use SafeSetEnv<>() or SafeUnsetEnv<>() instead of setenv or "
+      "unsetenv. "
+      "They crash if the env var's value has already been memoized by "
+      "GetEnvOnce<>(), which would otherwise silently ignore the new value. "
+      "If TorchTPU needs to change an env var at runtime, read it with "
+      "std::getenv() instead of GetEnvOnce<>(). "
+      "If you have a legitimate reason to use setenv or unsetenv, add a "
+      "`// SETENV_OK=<reason>` comment on the same line."
+    check_delta_only: true  # Only check new/changed lines.
+  }
+
   # Prevent using getenv.
   check_contents {
     base {

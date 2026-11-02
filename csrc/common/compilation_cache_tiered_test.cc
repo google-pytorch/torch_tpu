@@ -57,12 +57,12 @@ class TieredCompilationCacheTest : public testing::Test {
     // Use a unique name so that entries from previous runs can't be hit.
     const std::string name = absl::StrCat("compilation_cache_tiered_test_",
                                           absl::ToUnixNanos(absl::Now()));
-    SetEnv<kTorchTpuTier2CompilationCacheEnvVar>(name);
-    SetEnv<kTorchTpuTier3CompilationCacheRootEnvVar>(
+    SafeSetEnv<kTorchTpuTier2CompilationCacheEnvVar>(name);
+    SafeSetEnv<kTorchTpuTier3CompilationCacheRootEnvVar>(
         absl::StrCat(testing::TempDir(), "/", name));
     // Unbounded dynamic kernels are only loaded from the registry when
     // auto-loading is enabled; the env var is read once per process.
-    SetEnv<kTorchTpuInternalUseUnboundedDynamicKernelsEnvVar>("1");
+    SafeSetEnv<kTorchTpuInternalUseUnboundedDynamicKernelsEnvVar>("1");
   }
 
   TieredCompilationCacheTest() {

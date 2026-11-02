@@ -18,7 +18,7 @@ The `torch_tpu._internal.env` module exposes the C++ `GetEnvOnce()` family for
 *reading* environment variables, and is what TorchTPU's Python code should use.
 
 This module covers the one case those readers cannot: *writing* a variable. The
-C++ `SetEnv()` calls `setenv()`, which updates the C-level environment but
+C++ `SafeSetEnv()` calls `setenv()`, which updates the C-level environment but
 leaves Python's `os.environ` mapping stale.
 
 Reads have no such excuse, so this module deliberately offers no plain getter.
@@ -40,10 +40,11 @@ _resolved_values: dict[str, str] = {}
 def set_str_env(name: str, value: str) -> None:
   """Sets an environment variable, overwriting any existing value.
 
-  Writes go through `os.environ` rather than the C++ `SetEnv()`, which would
-  leave Python's `os.environ` mapping stale. Assigning to `os.environ` also
-  updates the C-level environment, so C++ readers and child processes see the
-  new value -- unless a C++ reader has already memoized it via `GetEnvOnce()`.
+  Writes go through `os.environ` rather than the C++ `SafeSetEnv()`, which
+  would leave Python's `os.environ` mapping stale. Assigning to `os.environ`
+  also updates the C-level environment, so C++ readers and child processes see
+  the new value -- unless a C++ reader has already memoized it via
+  `GetEnvOnce()`.
 
   Args:
     name: The name of the environment variable.
@@ -66,7 +67,7 @@ def get_and_set_str_env_once(
   when this function returns.
 
   Unlike the readers in `torch_tpu._internal.env`, this function goes through
-  `os.environ` rather than C++. Writing via the C++ `SetEnv()` would leave
+  `os.environ` rather than C++. Writing via the C++ `SafeSetEnv()` would leave
   Python's `os.environ` mapping stale, and reading via `GetEnvOnce()` before
   writing would permanently memoize the pre-write value on the C++ side, which
   C++ readers of the same variable would then observe.

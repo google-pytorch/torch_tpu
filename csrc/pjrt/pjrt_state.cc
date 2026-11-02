@@ -166,7 +166,7 @@ void MaybeSkipMegascaleForLaterClients(
   if (!device_attributes.contains("slice_index")) {
     return;
   }
-  SetEnv<kSkipMegascalePjrtClientEnvVar>("true");
+  SafeSetEnv<kSkipMegascalePjrtClientEnvVar>("true");
   ABSL_LOG(INFO) << "TorchTPU owns the MegaScale PJRT client; set "
                  << kSkipMegascalePjrtClientEnvVar
                  << " so that later PJRT clients in this process skip "
