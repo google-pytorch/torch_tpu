@@ -61,7 +61,8 @@ absl::Status ValidateNativeMultiHeadAttentionInputs(
     const at::Tensor& query, const at::Tensor& key, const at::Tensor& value,
     int64_t embed_dim, int64_t num_head, const at::Tensor& qkv_weight,
     const at::Tensor& qkv_bias, const at::Tensor& proj_weight,
-    const at::Tensor& proj_bias, const std::optional<at::Tensor>& mask) {
+    const at::Tensor& proj_bias, const std::optional<at::Tensor>& mask,
+    const std::optional<int64_t> mask_type) {
   TT_RET_CHECK(embed_dim > 0, error::kInvalidArgument)
       << "expected embed_dim to be > 0, got " << embed_dim;
 
@@ -149,7 +150,16 @@ absl::Status ValidateNativeMultiHeadAttentionInputs(
     TT_RET_CHECK(mask_rank == 2 || mask_rank == 4, error::kInvalidArgument)
         << "expected mask to be a 2D or a 4D tensor, got " << mask_rank
         << "D tensor of shape " << ToString(mask->sizes());
+    // Mirror upstream `_masked_softmax`: a defined mask requires a mask_type of
+    // 0 (src_mask), 1 (src_key_padding_mask), or 2 (default_mask).
+    TT_RET_CHECK(mask_type.has_value(), error::kInvalidArgument)
+        << "expected mask_type to be defined when mask is provided, got None";
+    TT_RET_CHECK(*mask_type == 0 || *mask_type == 1 || *mask_type == 2,
+                 error::kInvalidArgument)
+        << "expected mask_type to be 0, 1, or 2, got " << *mask_type;
     if (mask_rank == 4) {
+      // A 4-D mask must match the [B, num_head, T, T] attention weights
+      // regardless of mask_type.
       TT_RET_CHECK(
           mask->size(0) == query.size(0) && mask->size(1) == num_head &&
               mask->size(2) == query.size(1) && mask->size(3) == key.size(1),
@@ -157,6 +167,20 @@ absl::Status ValidateNativeMultiHeadAttentionInputs(
           << "expected 4-D mask shape to be [" << query.size(0) << ", "
           << num_head << ", " << query.size(1) << ", " << key.size(1)
           << "], got " << mask->sizes();
+    } else {
+      // A 2-D mask is either a [T, T] src_mask (mask_type 0) or a [B, T]
+      // src_key_padding_mask (mask_type 1); default_mask (2) must be 4-D.
+      TT_RET_CHECK(*mask_type != 2, error::kInvalidArgument)
+          << "expected 4-D mask for mask_type 2, got 2-D tensor of shape "
+          << mask->sizes();
+      const int64_t expected_dim0 =
+          *mask_type == 0 ? query.size(1) : query.size(0);
+      TT_RET_CHECK(
+          mask->size(0) == expected_dim0 && mask->size(1) == key.size(1),
+          error::kInvalidArgument)
+          << "expected 2-D mask shape to be [" << expected_dim0 << ", "
+          << key.size(1) << "] for mask_type " << *mask_type << ", got "
+          << mask->sizes();
     }
   }
 
@@ -384,7 +408,7 @@ absl::StatusOr<MhaCoreTensors> BuildMhaCore(
                          mask_op, Dimensions{mask_shape[0], mask_shape[1]},
                          Dimensions{mask_shape[0], 1, 1, mask_shape[1]}));
       } else {
-        // mask_type == 0 (or default): Attention Mask [L, L] -> [1, 1, L, L]
+        // mask_type == 0: Attention Mask [L, L] -> [1, 1, L, L]
         TT_ASSIGN_OR_RETURN(
             mask_4d, ReshapeFromStaticDimensions(
                          mask_op, Dimensions{mask_shape[0], mask_shape[1]},
@@ -513,7 +537,7 @@ std::tuple<at::Tensor, at::Tensor> AtenNativeMultiHeadAttention(
         // Validate input tensor shapes, ranks, dimensions, and data types.
         TT_THROW_IF_ERROR(ValidateNativeMultiHeadAttentionInputs(
             query, key, value, embed_dim, num_head, qkv_weight, qkv_bias,
-            proj_weight, proj_bias, mask));
+            proj_weight, proj_bias, mask, mask_type));
 
         TT_ASSIGN_OR_THROW(mlir::ElementType query_dtype_mlir,
                            ConvertTo<mlir::ElementType>(query.scalar_type()));

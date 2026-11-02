@@ -66,7 +66,8 @@ void ValidateTransformerEncoderInputs(
     const at::Tensor& norm_weight_2, const at::Tensor& norm_bias_2,
     const at::Tensor& ffn_weight_1, const at::Tensor& ffn_bias_1,
     const at::Tensor& ffn_weight_2, const at::Tensor& ffn_bias_2,
-    const std::optional<at::Tensor>& mask) {
+    const std::optional<at::Tensor>& mask,
+    const std::optional<int64_t> mask_type) {
   TT_CHECK_THROW(src.dim() == 3, error::kInvalidArgument)
       << "expected 3-D src, got " << src.dim() << "-D tensor";
   TT_CHECK_THROW(src.size(2) == embed_dim, error::kInvalidArgument)
@@ -147,17 +148,35 @@ void ValidateTransformerEncoderInputs(
                    error::kInvalidArgument)
         << "expected mask dtype to be bool or floating-point, got "
         << ToString(mask->scalar_type());
+    // Mirror upstream `_masked_softmax`: a defined mask requires a mask_type of
+    // 0 (src_mask), 1 (src_key_padding_mask), or 2 (default_mask).
+    TT_CHECK_THROW(mask_type.has_value(), error::kInvalidArgument)
+        << "expected mask_type to be defined when mask is provided, got None";
+    TT_CHECK_THROW(*mask_type == 0 || *mask_type == 1 || *mask_type == 2,
+                   error::kInvalidArgument)
+        << "expected mask_type to be 0, 1, or 2, got " << *mask_type;
+    if (mask->dim() == 2) {
+      // A 2-D mask is either a [T, T] src_mask (mask_type 0) or a [B, T]
+      // src_key_padding_mask (mask_type 1); default_mask (2) must be 4-D.
+      TT_CHECK_THROW(*mask_type != 2, error::kInvalidArgument)
+          << "expected 4-D mask for mask_type 2, got 2-D tensor of shape "
+          << mask->sizes();
+      const int64_t seq_len = src.size(1);
+      const int64_t expected_dim0 = *mask_type == 0 ? seq_len : src.size(0);
+      TT_CHECK_THROW(mask->size(0) == expected_dim0 && mask->size(1) == seq_len,
+                     error::kInvalidArgument)
+          << "expected 2-D mask shape to be [" << expected_dim0 << ", "
+          << seq_len << "] for mask_type " << *mask_type << ", got "
+          << mask->sizes();
+    }
   }
 }
 
 absl::StatusOr<mlir::MlirOp> ReshapeMask2DShlo(
     mlir::MlirOp mask_val, const std::optional<int64_t> mask_type) {
-  const mlir::RankedTensorType mask_t = GetTensorTypeOrDie(mask_val);
-  const auto mask_shape = mask_t.getShape();
-  const bool is_key_padding =
-      (mask_type.has_value() && *mask_type == 1) ||
-      (!mask_type.has_value() && mask_shape[0] != mask_shape[1]);
-  if (is_key_padding) {
+  // `mask_type` is validated by `ValidateTransformerEncoderInputs`, so a 2-D
+  // mask is either a key-padding mask (1) or an attention mask (0).
+  if (mask_type == 1) {
     // Key-padding mask [B, T] -> [B, 1, 1, T]
     TT_ASSIGN_OR_RETURN(mask_val, Unsqueeze(mask_val, 1));
     return Unsqueeze(mask_val, 2);
@@ -433,7 +452,8 @@ at::Tensor AtenTransformerEncoderLayerFwd(
         ValidateTransformerEncoderInputs(
             src, embed_dim, num_heads, qkv_weight, qkv_bias, proj_weight,
             proj_bias, norm_weight_1, norm_bias_1, norm_weight_2, norm_bias_2,
-            ffn_weight_1, ffn_bias_1, ffn_weight_2, ffn_bias_2, mask);
+            ffn_weight_1, ffn_bias_1, ffn_weight_2, ffn_bias_2, mask,
+            mask_type);
 
         if (src.numel() == 0) {
           TT_ASSIGN_OR_THROW(
