@@ -18,6 +18,10 @@
 
 #include <memory>
 
+#include "csrc/mlir/passes/cancel_inverse_view_transposes/cancel_inverse_view_transposes.h"  // NOLINT(whitespace/line_length)
+#include "csrc/mlir/passes/canonicalize_gather_scatter_reductions/canonicalize_gather_scatter_reductions.h"  // NOLINT(whitespace/line_length)
+#include "csrc/mlir/passes/canonicalize_layouts_and_reshapes/canonicalize_layouts_and_reshapes.h"  // NOLINT(whitespace/line_length)
+#include "csrc/mlir/passes/canonicalize_slices/canonicalize_slices.h"  // NOLINT(whitespace/line_length)
 #include "csrc/mlir/passes/dummy_pass.h"
 #include "csrc/mlir/passes/fold_concat_softmax.h"
 #include "csrc/mlir/passes/guard_zero_operand_custom_calls.h"
@@ -38,19 +42,31 @@
 namespace torch_tpu {
 
 void RegisterTorchTpuPasses() {
+  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return createCancelInverseViewTransposesPass();
+  });
+  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return createCanonicalizeGatherScatterReductionsPass();
+  });
+  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return createCanonicalizeLayoutsAndReshapesPass();
+  });
+  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return createCanonicalizeSlicesPass();
+  });
   mlir::registerPass(
       []() -> std::unique_ptr<mlir::Pass> { return createDummyPass(); });
-  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
-    return createLowerSeparableGatherToDotPass();
-  });
-  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
-    return createReassociateNormWeightsPass();
-  });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return createFoldConcatSoftmaxPass();
   });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return createGuardZeroOperandCustomCallsPass();
+  });
+  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return createLowerSeparableGatherToDotPass();
+  });
+  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return createReassociateNormWeightsPass();
   });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return createUnguardZeroOperandCustomCallsPass();

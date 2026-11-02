@@ -148,6 +148,25 @@ inline constexpr char kTorchTpuInternalDisableInplaceBufferDonationEnvVar[] =
 // directory path).
 inline constexpr char kTorchTpuInternalDumpMlirPassesToEnvVar[] =
     "TORCH_TPU_INTERNAL_DUMP_MLIR_PASSES_TO";
+// If set to "0" or "false", disables canceling inverse view transposes in the
+// StableHLO pipeline. Default is "true".
+inline constexpr char
+    kTorchTpuInternalEnableCancelInverseViewTransposesEnvVar[] =
+        "TORCH_TPU_INTERNAL_ENABLE_CANCEL_INVERSE_VIEW_TRANSPOSES";
+// If set to "0" or "false", disables canonicalizing gather and scatter
+// reductions in the StableHLO pipeline. Default is "true".
+inline constexpr char
+    kTorchTpuInternalEnableCanonicalizeGatherScatterReductionsEnvVar[] =
+        "TORCH_TPU_INTERNAL_ENABLE_CANONICALIZE_GATHER_SCATTER_REDUCTIONS";
+// If set to "0" or "false", disables canonicalizing layouts and reshapes in
+// the StableHLO pipeline. Default is "true".
+inline constexpr char
+    kTorchTpuInternalEnableCanonicalizeLayoutsAndReshapesEnvVar[] =
+        "TORCH_TPU_INTERNAL_ENABLE_CANONICALIZE_LAYOUTS_AND_RESHAPES";
+// If set to "0" or "false", disables canonicalizing StableHLO slices.
+// Default is "true".
+inline constexpr char kTorchTpuInternalEnableCanonicalizeSlicesEnvVar[] =
+    "TORCH_TPU_INTERNAL_ENABLE_CANONICALIZE_SLICES";
 // If set to "0" or "false", disables reassociating normalization weights.
 // Default is "true".
 inline constexpr char kTorchTpuInternalEnableReassociateNormWeightsEnvVar[] =
@@ -332,6 +351,14 @@ inline constexpr auto kEnvVarToStage =
         {kTorchTpuInternalDisableInplaceBufferDonationEnvVar,
          SymbolStage::InternalApi()},
         {kTorchTpuInternalDumpMlirPassesToEnvVar, SymbolStage::InternalApi()},
+        {kTorchTpuInternalEnableCancelInverseViewTransposesEnvVar,
+         SymbolStage::InternalApi()},
+        {kTorchTpuInternalEnableCanonicalizeGatherScatterReductionsEnvVar,
+         SymbolStage::InternalApi()},
+        {kTorchTpuInternalEnableCanonicalizeLayoutsAndReshapesEnvVar,
+         SymbolStage::InternalApi()},
+        {kTorchTpuInternalEnableCanonicalizeSlicesEnvVar,
+         SymbolStage::InternalApi()},
         {kTorchTpuInternalEnableReassociateNormWeightsEnvVar,
          SymbolStage::InternalApi()},
         {kTorchTpuInternalHandshakeTimeoutSEnvVar, SymbolStage::InternalApi()},
