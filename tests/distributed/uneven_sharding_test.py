@@ -28,7 +28,7 @@ from tests import seed_test_utils
 from tests.distributed import distributed_utils
 
 _SHAPE_MISMATCH: Final[str] = "Tensor shape mismatch"
-_SFLAG_TIMEOUT: Final[str] = "Wait timeout on sflag"
+_SFLAG_TIMEOUT: Final[str] = "Wait timeout on (?:sflag|instruction)"
 _ZERO_ALL_GATHER_DIM: Final[str] = (
     "dimension size of operand at 'all_gather_dim' cannot be zero"
 )
