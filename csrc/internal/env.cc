@@ -46,6 +46,8 @@ std::optional<bool> PyGetBooleanEnvOnce(std::string_view name,
     value = GetBooleanEnvOnce<kTorchTpuAllowLegacyDeviceApisEnvVar>();
   } else if (name == kTorchTpuEnableDebugChecksEnvVar) {
     value = GetBooleanEnvOnce<kTorchTpuEnableDebugChecksEnvVar>();
+  } else if (name == kTorchTpuInternalEnableFoldConcatSoftmaxEnvVar) {
+    value = GetBooleanEnvOnce<kTorchTpuInternalEnableFoldConcatSoftmaxEnvVar>();
   } else if (name == kTorchTpuInternalEnableReassociateNormWeightsEnvVar) {
     value = GetBooleanEnvOnce<
         kTorchTpuInternalEnableReassociateNormWeightsEnvVar>();

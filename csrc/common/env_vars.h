@@ -152,6 +152,38 @@ inline constexpr char kTorchTpuInternalDisableInplaceBufferDonationEnvVar[] =
 // directory path).
 inline constexpr char kTorchTpuInternalDumpMlirPassesToEnvVar[] =
     "TORCH_TPU_INTERNAL_DUMP_MLIR_PASSES_TO";
+// If set to "0" or "false", disables canceling inverse view transposes in the
+// StableHLO pipeline. Default is "true".
+inline constexpr char
+    kTorchTpuInternalEnableCancelInverseViewTransposesEnvVar[] =
+        "TORCH_TPU_INTERNAL_ENABLE_CANCEL_INVERSE_VIEW_TRANSPOSES";
+// If set to "0" or "false", disables canonicalizing gather and scatter
+// reductions in the StableHLO pipeline. Default is "true".
+inline constexpr char
+    kTorchTpuInternalEnableCanonicalizeGatherScatterReductionsEnvVar[] =
+        "TORCH_TPU_INTERNAL_ENABLE_CANONICALIZE_GATHER_SCATTER_REDUCTIONS";
+// If set to "0" or "false", disables canonicalization of index arithmetic.
+// Default is "true".
+inline constexpr char
+    kTorchTpuInternalEnableCanonicalizeIndexArithmeticEnvVar[] =
+        "TORCH_TPU_INTERNAL_ENABLE_CANONICALIZE_INDEX_ARITHMETIC";
+// If set to "0" or "false", disables canonicalizing layouts and reshapes in
+// the StableHLO pipeline. Default is "true".
+inline constexpr char
+    kTorchTpuInternalEnableCanonicalizeLayoutsAndReshapesEnvVar[] =
+        "TORCH_TPU_INTERNAL_ENABLE_CANONICALIZE_LAYOUTS_AND_RESHAPES";
+// If set to "0" or "false", disables canonicalizing reductions.
+// Default is "true".
+inline constexpr char kTorchTpuInternalEnableCanonicalizeReductionsEnvVar[] =
+    "TORCH_TPU_INTERNAL_ENABLE_CANONICALIZE_REDUCTIONS";
+// If set to "0" or "false", disables canonicalizing StableHLO slices.
+// Default is "true".
+inline constexpr char kTorchTpuInternalEnableCanonicalizeSlicesEnvVar[] =
+    "TORCH_TPU_INTERNAL_ENABLE_CANONICALIZE_SLICES";
+// If set to "0" or "false", disables folding concatenated softmax ops.
+// Default is "true".
+inline constexpr char kTorchTpuInternalEnableFoldConcatSoftmaxEnvVar[] =
+    "TORCH_TPU_INTERNAL_ENABLE_FOLD_CONCAT_SOFTMAX";
 // If set to "0" or "false", disables reassociating normalization weights.
 // Default is "true".
 inline constexpr char kTorchTpuInternalEnableReassociateNormWeightsEnvVar[] =
@@ -338,6 +370,20 @@ inline constexpr auto kEnvVarToStage =
         {kTorchTpuInternalDisableInplaceBufferDonationEnvVar,
          SymbolStage::InternalApi()},
         {kTorchTpuInternalDumpMlirPassesToEnvVar, SymbolStage::InternalApi()},
+        {kTorchTpuInternalEnableCancelInverseViewTransposesEnvVar,
+         SymbolStage::InternalApi()},
+        {kTorchTpuInternalEnableCanonicalizeGatherScatterReductionsEnvVar,
+         SymbolStage::InternalApi()},
+        {kTorchTpuInternalEnableCanonicalizeIndexArithmeticEnvVar,
+         SymbolStage::InternalApi()},
+        {kTorchTpuInternalEnableCanonicalizeLayoutsAndReshapesEnvVar,
+         SymbolStage::InternalApi()},
+        {kTorchTpuInternalEnableCanonicalizeReductionsEnvVar,
+         SymbolStage::InternalApi()},
+        {kTorchTpuInternalEnableCanonicalizeSlicesEnvVar,
+         SymbolStage::InternalApi()},
+        {kTorchTpuInternalEnableFoldConcatSoftmaxEnvVar,
+         SymbolStage::InternalApi()},
         {kTorchTpuInternalEnableReassociateNormWeightsEnvVar,
          SymbolStage::InternalApi()},
         {kTorchTpuInternalHandshakeTimeoutSEnvVar, SymbolStage::InternalApi()},

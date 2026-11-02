@@ -55,6 +55,27 @@ torch_tpu_cc_library(
     ],
 )
 
+torch_tpu_cc_test(
+    name = "fold_concat_softmax_test",
+    srcs = ["fold_concat_softmax_test.cc"],
+    deps = [
+        ":fold_concat_softmax",
+        "//csrc/common:oss_test_main",
+        "//csrc/mlir:pipeline",
+        "@com_google_absl//absl/status:status_matchers",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Parser",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:Support",
+        "@stablehlo//:reference_api",
+        "@stablehlo//:reference_configuration",
+        "@stablehlo//:register",
+        "@stablehlo//:stablehlo_ops",
+    ],
+)
+
 torch_tpu_cc_library(
     name = "guard_zero_operand_custom_calls",
     srcs = ["guard_zero_operand_custom_calls.cc"],

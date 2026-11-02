@@ -24,9 +24,9 @@
 namespace torch_tpu {
 
 // Creates an MLIR pass that folds redundant shift-invariant softmax
-// pre-subtractions and partitions softmax across small-tail concatenations
-// (e.g. attention sinks) to avoid materializing unaligned concatenated
-// intermediate tensors.
+// pre-subtractions and partitions softmax across concatenations along the
+// reduction dimension when consumer slices are confined to operands,
+// avoiding materialization of unaligned concatenated intermediate tensors.
 std::unique_ptr<mlir::Pass> createFoldConcatSoftmaxPass();
 
 }  // namespace torch_tpu

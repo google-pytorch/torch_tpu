@@ -19,13 +19,17 @@
 #include <cstdint>
 #include <memory>
 
+#include "llvm/ADT/APFloat.h"
+#include "llvm/ADT/APInt.h"
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"  // NOLINT
 #include "mlir/IR/Block.h"
 #include "mlir/IR/Builders.h"
-#include "mlir/IR/BuiltinAttributes.h"
-#include "mlir/IR/BuiltinTypeInterfaces.h"
+#include "mlir/IR/BuiltinAttributes.h"      // NOLINT
+#include "mlir/IR/BuiltinTypeInterfaces.h"  // NOLINT
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Location.h"
 #include "mlir/IR/Operation.h"
@@ -34,7 +38,7 @@
 #include "mlir/IR/Types.h"
 #include "mlir/IR/Value.h"
 #include "mlir/IR/ValueRange.h"
-#include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"  // NOLINT
 #include "mlir/Pass/Pass.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Support/TypeID.h"
@@ -42,10 +46,6 @@
 
 namespace torch_tpu {
 namespace {
-
-// Maximum tail dimension size to partition; attention sinks typically
-// append a small number of sink tokens (e.g. <= 16).
-constexpr int64_t kMaxSmallTailConcatDimSize = 16;
 
 bool IsIdentityBroadcastDims(llvm::ArrayRef<int64_t> dims, int64_t rank) {
   if (static_cast<int64_t>(dims.size()) != rank) {
@@ -76,9 +76,34 @@ bool IsDropDimBroadcastDims(llvm::ArrayRef<int64_t> dims, int64_t rank,
   return true;
 }
 
+bool IsLosslessFloatWideningOrSame(mlir::Type narrow, mlir::Type wide) {
+  if (!mlir::isa<mlir::FloatType>(narrow) ||
+      !mlir::isa<mlir::FloatType>(wide)) {
+    return false;
+  }
+  if (narrow == wide) {
+    return true;
+  }
+  if (wide.isF32() && (narrow.isBF16() || narrow.isF16())) {
+    return true;
+  }
+  if (wide.isF64() && (narrow.isF32() || narrow.isBF16() || narrow.isF16())) {
+    return true;
+  }
+  return false;
+}
+
 mlir::Value StripOptionalConvert(mlir::Value val) {
-  if (auto conv = val.getDefiningOp<mlir::stablehlo::ConvertOp>()) {
-    return conv.getOperand();
+  while (auto conv = val.getDefiningOp<mlir::stablehlo::ConvertOp>()) {
+    auto in_type =
+        mlir::dyn_cast<mlir::RankedTensorType>(conv.getOperand().getType());
+    auto out_type = mlir::dyn_cast<mlir::RankedTensorType>(conv.getType());
+    if (!in_type || !out_type ||
+        !IsLosslessFloatWideningOrSame(in_type.getElementType(),
+                                       out_type.getElementType())) {
+      break;
+    }
+    val = conv.getOperand();
   }
   return val;
 }
@@ -98,6 +123,83 @@ mlir::Value StripOptionalFloatUpcast(mlir::Value val,
     return upcast.getOperand();
   }
   return val;
+}
+
+bool IsSplatFloatConstantValue(mlir::Value val, double target) {
+  while (true) {
+    if (auto resh = val.getDefiningOp<mlir::stablehlo::ReshapeOp>()) {
+      val = resh.getOperand();
+      continue;
+    }
+    if (auto bcast = val.getDefiningOp<mlir::stablehlo::BroadcastInDimOp>()) {
+      val = bcast.getOperand();
+      continue;
+    }
+    if (auto conv = val.getDefiningOp<mlir::stablehlo::ConvertOp>()) {
+      val = conv.getOperand();
+      continue;
+    }
+    break;
+  }
+  auto const_op = val.getDefiningOp<mlir::stablehlo::ConstantOp>();
+  if (!const_op) {
+    return false;
+  }
+  auto dense_attr =
+      mlir::dyn_cast<mlir::DenseElementsAttr>(const_op.getValue());
+  if (!dense_attr || !dense_attr.isSplat()) {
+    return false;
+  }
+  mlir::Type elem_type = dense_attr.getElementType();
+  if (mlir::isa<mlir::FloatType>(elem_type)) {
+    double v = dense_attr.getSplatValue<llvm::APFloat>().convertToDouble();
+    return v == target;
+  }
+  if (mlir::isa<mlir::IntegerType>(elem_type)) {
+    return dense_attr.getSplatValue<llvm::APInt>().getSExtValue() ==
+           static_cast<int64_t>(target);
+  }
+  return false;
+}
+
+bool IsNegativeInfinityConstant(mlir::Value val) {
+  while (true) {
+    if (auto resh = val.getDefiningOp<mlir::stablehlo::ReshapeOp>()) {
+      val = resh.getOperand();
+      continue;
+    }
+    if (auto bcast = val.getDefiningOp<mlir::stablehlo::BroadcastInDimOp>()) {
+      val = bcast.getOperand();
+      continue;
+    }
+    if (auto conv = val.getDefiningOp<mlir::stablehlo::ConvertOp>()) {
+      val = conv.getOperand();
+      continue;
+    }
+    break;
+  }
+  auto const_op = val.getDefiningOp<mlir::stablehlo::ConstantOp>();
+  if (!const_op) {
+    return false;
+  }
+  auto dense_attr =
+      mlir::dyn_cast<mlir::DenseElementsAttr>(const_op.getValue());
+  if (!dense_attr || !dense_attr.isSplat()) {
+    return false;
+  }
+  if (!mlir::isa<mlir::FloatType>(dense_attr.getElementType())) {
+    return false;
+  }
+  llvm::APFloat ap_val = dense_attr.getSplatValue<llvm::APFloat>();
+  return ap_val.isInfinity() && ap_val.isNegative();
+}
+
+bool IsZeroConstantTensor(mlir::Value val) {
+  return IsSplatFloatConstantValue(val, 0.0);
+}
+
+bool IsOneConstantTensor(mlir::Value val) {
+  return IsSplatFloatConstantValue(val, 1.0);
 }
 
 bool IsBinaryReduceBody(mlir::Region& region, bool is_max) {
@@ -129,73 +231,181 @@ bool IsBinaryReduceBody(mlir::Region& region, bool is_max) {
   return (lhs == arg0 && rhs == arg1) || (lhs == arg1 && rhs == arg0);
 }
 
-bool MatchSingleDimReduceOp(mlir::Value val, int64_t dim,
-                            mlir::Value& reduce_input, bool is_max,
-                            mlir::stablehlo::ReduceOp* out_reduce_op) {
+bool IsMaxWithTwoResultsReduceBody(mlir::Region& region) {
+  if (region.empty()) {
+    return false;
+  }
+  mlir::Block& block = region.front();
+  if (block.getNumArguments() != 4) {
+    return false;
+  }
+  auto ret_op =
+      mlir::dyn_cast<mlir::stablehlo::ReturnOp>(block.getTerminator());
+  if (!ret_op || ret_op.getOperands().size() != 2) {
+    return false;
+  }
+  mlir::Operation* max_op = ret_op.getOperands()[0].getDefiningOp();
+  if (!max_op || !mlir::isa<mlir::stablehlo::MaxOp>(max_op) ||
+      max_op->getNumOperands() != 2) {
+    return false;
+  }
+  mlir::Value arg0 = block.getArgument(0);
+  mlir::Value arg2 = block.getArgument(2);
+  mlir::Value lhs = max_op->getOperand(0);
+  mlir::Value rhs = max_op->getOperand(1);
+  return (lhs == arg0 && rhs == arg2) || (lhs == arg2 && rhs == arg0);
+}
+
+bool MatchSingleDimReduceOp(
+    mlir::Value val, int64_t dim, mlir::Value& reduce_input, bool is_max,
+    mlir::stablehlo::ReduceOp* out_reduce_op = nullptr) {
+  val = StripOptionalConvert(val);
   auto reduce_op = val.getDefiningOp<mlir::stablehlo::ReduceOp>();
-  if (!reduce_op || reduce_op.getNumResults() != 1 ||
-      reduce_op.getInputs().size() != 1 ||
-      reduce_op.getInitValues().size() != 1) {
+  if (!reduce_op) {
     return false;
   }
   llvm::ArrayRef<int64_t> dims = reduce_op.getDimensions();
-  if (dims.size() != 1 || dims[0] != dim ||
-      !IsBinaryReduceBody(reduce_op.getBody(), is_max)) {
+  if (dims.size() != 1 || dims[0] != dim) {
     return false;
   }
-  reduce_input = reduce_op.getInputs()[0];
-  if (out_reduce_op != nullptr) {
-    *out_reduce_op = reduce_op;
+  if (reduce_op.getNumResults() == 1 && reduce_op.getInputs().size() == 1 &&
+      reduce_op.getInitValues().size() == 1 &&
+      IsBinaryReduceBody(reduce_op.getBody(), is_max)) {
+    reduce_input = reduce_op.getInputs()[0];
+    if (out_reduce_op != nullptr) {
+      *out_reduce_op = reduce_op;
+    }
+    return true;
   }
-  return true;
+  if (is_max && reduce_op.getNumResults() == 2 &&
+      reduce_op.getInputs().size() == 2 &&
+      reduce_op.getInitValues().size() == 2 && val == reduce_op.getResult(0) &&
+      IsMaxWithTwoResultsReduceBody(reduce_op.getBody())) {
+    reduce_input = reduce_op.getInputs()[0];
+    if (out_reduce_op != nullptr) {
+      *out_reduce_op = reduce_op;
+    }
+    return true;
+  }
+  return false;
 }
 
-mlir::Value UnwrapIdentityBroadcastOperand(mlir::Value cur, int64_t rank,
-                                           int64_t dim) {
-  auto cur_type = mlir::dyn_cast<mlir::RankedTensorType>(cur.getType());
-  if (!cur_type || cur_type.getRank() != rank ||
-      cur_type.getDimSize(dim) != 1) {
-    return nullptr;
+bool IsBroadcastOrUnsqueezeAlongDim(mlir::RankedTensorType outer_type,
+                                    int64_t dim,
+                                    mlir::RankedTensorType cur_type) {
+  if (!cur_type || !cur_type.hasStaticShape()) {
+    return false;
   }
-  cur = StripOptionalConvert(cur);
-  auto reshape = cur.getDefiningOp<mlir::stablehlo::ReshapeOp>();
-  if (!reshape) {
-    return nullptr;
+  const int64_t rank = outer_type.getRank();
+  if (cur_type.getRank() == rank) {
+    for (int64_t i = 0; i < rank; ++i) {
+      if (i == dim) {
+        if (cur_type.getDimSize(i) != 1 &&
+            cur_type.getDimSize(i) != outer_type.getDimSize(i)) {
+          return false;
+        }
+      } else if (cur_type.getDimSize(i) != outer_type.getDimSize(i)) {
+        return false;
+      }
+    }
+    return true;
   }
-  cur = reshape.getOperand();
-  auto pre_reshape_type = mlir::dyn_cast<mlir::RankedTensorType>(cur.getType());
-  if (!pre_reshape_type || pre_reshape_type.getRank() != rank - 1) {
-    return nullptr;
+  if (cur_type.getRank() == rank - 1) {
+    int64_t idx = 0;
+    for (int64_t i = 0; i < rank; ++i) {
+      if (i == dim) {
+        continue;
+      }
+      if (cur_type.getDimSize(idx++) != outer_type.getDimSize(i)) {
+        return false;
+      }
+    }
+    return true;
   }
-  return StripOptionalConvert(cur);
+  return false;
+}
+
+mlir::Value PeelBroadcastAndUnsqueezeAlongDim(mlir::Value val,
+                                              mlir::RankedTensorType outer_type,
+                                              int64_t dim) {
+  const int64_t rank = outer_type.getRank();
+  while (true) {
+    if (auto conv = val.getDefiningOp<mlir::stablehlo::ConvertOp>()) {
+      auto in_type =
+          mlir::dyn_cast<mlir::RankedTensorType>(conv.getOperand().getType());
+      auto out_type = mlir::dyn_cast<mlir::RankedTensorType>(conv.getType());
+      if (!in_type || !out_type ||
+          !IsLosslessFloatWideningOrSame(in_type.getElementType(),
+                                         out_type.getElementType())) {
+        break;
+      }
+      val = conv.getOperand();
+      continue;
+    }
+    if (auto bcast = val.getDefiningOp<mlir::stablehlo::BroadcastInDimOp>()) {
+      auto bcast_type = mlir::dyn_cast<mlir::RankedTensorType>(bcast.getType());
+      auto in_type =
+          mlir::dyn_cast<mlir::RankedTensorType>(bcast.getOperand().getType());
+      if (!bcast_type || !in_type ||
+          !IsBroadcastOrUnsqueezeAlongDim(outer_type, dim, in_type)) {
+        break;
+      }
+      llvm::ArrayRef<int64_t> bdims = bcast.getBroadcastDimensions();
+      if (bcast_type.getRank() == rank && in_type.getRank() == rank - 1 &&
+          IsDropDimBroadcastDims(bdims, rank, dim)) {
+        val = bcast.getOperand();
+        continue;
+      }
+      if (IsIdentityBroadcastDims(bdims, bcast_type.getRank())) {
+        val = bcast.getOperand();
+        continue;
+      }
+      break;
+    }
+    if (auto resh = val.getDefiningOp<mlir::stablehlo::ReshapeOp>()) {
+      auto in_type =
+          mlir::dyn_cast<mlir::RankedTensorType>(resh.getOperand().getType());
+      if (in_type && IsBroadcastOrUnsqueezeAlongDim(outer_type, dim, in_type)) {
+        val = resh.getOperand();
+        continue;
+      }
+      break;
+    }
+    break;
+  }
+  return val;
 }
 
 bool MatchBroadcastedSingleDimReduce(
     mlir::Value val, int64_t dim, mlir::Value& reduce_input, bool is_max,
     mlir::stablehlo::ReduceOp* out_reduce_op = nullptr) {
   auto val_type = mlir::dyn_cast<mlir::RankedTensorType>(val.getType());
-  if (!val_type || dim < 0 || dim >= val_type.getRank()) {
+  if (!val_type || !val_type.hasStaticShape() || dim < 0 ||
+      dim >= val_type.getRank()) {
     return false;
   }
-  const int64_t rank = val_type.getRank();
-  auto bcast = StripOptionalConvert(val)
-                   .getDefiningOp<mlir::stablehlo::BroadcastInDimOp>();
-  if (!bcast) {
-    return false;
-  }
+  mlir::Value unwrapped = PeelBroadcastAndUnsqueezeAlongDim(val, val_type, dim);
+  return MatchSingleDimReduceOp(unwrapped, dim, reduce_input, is_max,
+                                out_reduce_op);
+}
 
-  mlir::Value cur = bcast.getOperand();
-  llvm::ArrayRef<int64_t> bcast_dims = bcast.getBroadcastDimensions();
-  if (IsDropDimBroadcastDims(bcast_dims, rank, dim)) {
-    return MatchSingleDimReduceOp(StripOptionalConvert(cur), dim, reduce_input,
-                                  is_max, out_reduce_op);
+bool MatchBroadcastedReciprocalSingleDimSum(
+    mlir::Value val, int64_t dim, mlir::Value& reduce_input,
+    mlir::stablehlo::ReduceOp* out_reduce_op = nullptr) {
+  auto val_type = mlir::dyn_cast<mlir::RankedTensorType>(val.getType());
+  if (!val_type || !val_type.hasStaticShape() || dim < 0 ||
+      dim >= val_type.getRank()) {
+    return false;
   }
-  if (IsIdentityBroadcastDims(bcast_dims, rank)) {
-    mlir::Value unwrapped = UnwrapIdentityBroadcastOperand(cur, rank, dim);
-    return unwrapped && MatchSingleDimReduceOp(unwrapped, dim, reduce_input,
-                                               is_max, out_reduce_op);
+  mlir::Value unwrapped = PeelBroadcastAndUnsqueezeAlongDim(val, val_type, dim);
+  auto div_op = unwrapped.getDefiningOp<mlir::stablehlo::DivOp>();
+  if (!div_op || !IsOneConstantTensor(div_op.getLhs())) {
+    return false;
   }
-  return false;
+  mlir::Value denom =
+      PeelBroadcastAndUnsqueezeAlongDim(div_op.getRhs(), val_type, dim);
+  return MatchSingleDimReduceOp(denom, dim, reduce_input, /*is_max=*/false,
+                                out_reduce_op);
 }
 
 void EraseTriviallyDeadOps(mlir::func::FuncOp func) {
@@ -203,13 +413,14 @@ void EraseTriviallyDeadOps(mlir::func::FuncOp func) {
   while (changed) {
     changed = false;
     llvm::SmallVector<mlir::Operation*> dead_ops;
-    func.walk([&](mlir::Operation* op) {  // REF_CAPTURE_OK=called synchronously
-      if (mlir::isOpTriviallyDead(op)) {
+    func.walk([&dead_ops](mlir::Operation* op) {
+      if (op->use_empty() && (mlir::isOpTriviallyDead(op) ||
+                              mlir::isa<mlir::stablehlo::ReduceOp>(op))) {
         dead_ops.push_back(op);
       }
     });
     for (auto it = dead_ops.rbegin(); it != dead_ops.rend(); ++it) {
-      if (mlir::isOpTriviallyDead(*it)) {
+      if ((*it)->use_empty()) {
         (*it)->erase();
         changed = true;
       }
@@ -277,6 +488,10 @@ bool TryFoldShiftInvariantPreSubtractionAlongDim(
       reduce2_in != x) {
     return false;
   }
+  if (reduce2_op.getInitValues().size() != 1 ||
+      !IsNegativeInfinityConstant(reduce2_op.getInitValues()[0])) {
+    return false;
+  }
 
   mlir::Type outer_elem_type = outer_type.getElementType();
   mlir::Value inner_val = StripOptionalFloatUpcast(x, outer_elem_type);
@@ -291,9 +506,14 @@ bool TryFoldShiftInvariantPreSubtractionAlongDim(
   }
 
   mlir::Value reduce1_in;
+  mlir::stablehlo::ReduceOp reduce1_op;
   if (!MatchBroadcastedSingleDimReduce(inner_sub.getRhs(), dim, reduce1_in,
-                                       /*is_max=*/true) ||
+                                       /*is_max=*/true, &reduce1_op) ||
       reduce1_in != base) {
+    return false;
+  }
+  if (reduce1_op.getInitValues().empty() ||
+      !IsNegativeInfinityConstant(reduce1_op.getInitValues()[0])) {
     return false;
   }
 
@@ -327,8 +547,8 @@ bool TryFoldShiftInvariantPreSubtractionAlongDim(
 // the downstream softmax and drop the redundant reduction.
 void FoldShiftInvariantPreSubtraction(mlir::func::FuncOp func) {
   llvm::SmallVector<mlir::stablehlo::SubtractOp> sub_ops;
-  func.walk([&]  // REF_CAPTURE_OK=called synchronously
-            (mlir::stablehlo::SubtractOp op) { sub_ops.push_back(op); });
+  func.walk(
+      [&sub_ops](mlir::stablehlo::SubtractOp op) { sub_ops.push_back(op); });
 
   for (mlir::stablehlo::SubtractOp shifted_outer : sub_ops) {
     auto outer_type =
@@ -402,10 +622,10 @@ void SimplifyConcatSliceUsers(mlir::stablehlo::ConcatenateOp concat_op,
   }
 }
 
-bool MatchSmallTailConcatInput(mlir::Value raw_in, int64_t dim,
-                               mlir::Value& lhs, mlir::Value& rhs,
-                               mlir::RankedTensorType& lhs_type,
-                               mlir::RankedTensorType& rhs_type) {
+bool MatchConcatInputAlongDim(mlir::Value raw_in, int64_t dim, mlir::Value& lhs,
+                              mlir::Value& rhs,
+                              mlir::RankedTensorType& lhs_type,
+                              mlir::RankedTensorType& rhs_type) {
   auto concat_op = raw_in.getDefiningOp<mlir::stablehlo::ConcatenateOp>();
   if (!concat_op || concat_op.getInputs().size() != 2 ||
       static_cast<int64_t>(concat_op.getDimension()) != dim) {
@@ -419,8 +639,7 @@ bool MatchSmallTailConcatInput(mlir::Value raw_in, int64_t dim,
       !rhs_type.hasStaticShape()) {
     return false;
   }
-  return lhs_type.getDimSize(dim) >= 1 && rhs_type.getDimSize(dim) >= 1 &&
-         rhs_type.getDimSize(dim) <= kMaxSmallTailConcatDimSize;
+  return lhs_type.getDimSize(dim) >= 1 && rhs_type.getDimSize(dim) >= 1;
 }
 
 mlir::stablehlo::ConvertOp GetSingleRankedConvertUser(mlir::Operation* op) {
@@ -435,17 +654,150 @@ mlir::stablehlo::ConvertOp GetSingleRankedConvertUser(mlir::Operation* op) {
   return nullptr;
 }
 
-void EmitPartitionedConcatSoftmax(mlir::stablehlo::DivOp div_op,
+bool IsConfinedSlice(mlir::Operation* op, int64_t dim, int64_t lhs_dim_size) {
+  auto slice = mlir::dyn_cast<mlir::stablehlo::SliceOp>(op);
+  if (!slice) {
+    return false;
+  }
+  llvm::ArrayRef<int64_t> start = slice.getStartIndices();
+  llvm::ArrayRef<int64_t> limit = slice.getLimitIndices();
+  if (dim < 0 || dim >= static_cast<int64_t>(start.size()) ||
+      dim >= static_cast<int64_t>(limit.size())) {
+    return false;
+  }
+  return limit[dim] <= lhs_dim_size || start[dim] >= lhs_dim_size;
+}
+
+bool MatchSoftmaxBackwardDataPattern(
+    mlir::Value val, int64_t dim, mlir::Value& probs_val, mlir::Value& grad_val,
+    mlir::stablehlo::DotGeneralOp& dot_op,
+    mlir::stablehlo::SubtractOp* out_sub_op = nullptr);
+
+bool AreTargetUsersConfinedOrBackwardConfined(mlir::Operation* target_op,
+                                              int64_t dim, int64_t lhs_dim_size,
+                                              bool allow_backward_pattern) {
+  if (target_op->use_empty()) {
+    return false;
+  }
+  for (mlir::Operation* user : target_op->getUsers()) {
+    if (IsConfinedSlice(user, dim, lhs_dim_size)) {
+      continue;
+    }
+    if (allow_backward_pattern) {
+      mlir::Value bwd_probs;
+      mlir::Value bwd_grad;
+      mlir::stablehlo::DotGeneralOp bwd_dot;
+      mlir::stablehlo::MulOp bwd_mul;
+      if (auto mul = mlir::dyn_cast<mlir::stablehlo::MulOp>(user)) {
+        if (MatchSoftmaxBackwardDataPattern(mul.getResult(), dim, bwd_probs,
+                                            bwd_grad, bwd_dot) &&
+            bwd_probs == target_op->getResult(0)) {
+          bwd_mul = mul;
+        }
+      } else if (auto dot =
+                     mlir::dyn_cast<mlir::stablehlo::DotGeneralOp>(user)) {
+        for (mlir::Operation* dot_user : dot->getUsers()) {
+          mlir::Operation* bcast_op = dot_user;
+          if (auto conv =
+                  mlir::dyn_cast<mlir::stablehlo::ConvertOp>(dot_user)) {
+            if (conv->hasOneUse()) {
+              bcast_op = *conv->user_begin();
+            }
+          }
+          auto bcast =
+              mlir::dyn_cast<mlir::stablehlo::BroadcastInDimOp>(bcast_op);
+          if (!bcast) {
+            continue;
+          }
+          for (mlir::Operation* bcast_user : bcast->getUsers()) {
+            auto sub = mlir::dyn_cast<mlir::stablehlo::SubtractOp>(bcast_user);
+            if (!sub) {
+              continue;
+            }
+            for (mlir::Operation* sub_user : sub->getUsers()) {
+              auto mul = mlir::dyn_cast<mlir::stablehlo::MulOp>(sub_user);
+              if (mul &&
+                  MatchSoftmaxBackwardDataPattern(
+                      mul.getResult(), dim, bwd_probs, bwd_grad, bwd_dot) &&
+                  bwd_probs == target_op->getResult(0)) {
+                bwd_mul = mul;
+                break;
+              }
+            }
+          }
+        }
+      }
+      if (bwd_mul) {
+        mlir::Operation* bwd_target = bwd_mul.getOperation();
+        if (auto conv = GetSingleRankedConvertUser(bwd_mul.getOperation())) {
+          bwd_target = conv.getOperation();
+        }
+        if (!bwd_target->use_empty()) {
+          bool all_bwd_users_confined = true;
+          for (mlir::Operation* bwd_user : bwd_target->getUsers()) {
+            if (!IsConfinedSlice(bwd_user, dim, lhs_dim_size)) {
+              all_bwd_users_confined = false;
+              break;
+            }
+          }
+          if (all_bwd_users_confined) {
+            continue;
+          }
+        }
+      }
+    }
+    return false;
+  }
+  return true;
+}
+
+bool HasOnlyExpectedConcatUsers(mlir::Value concat_val,
+                                llvm::ArrayRef<mlir::Operation*> expected_ops) {
+  auto concat_op = concat_val.getDefiningOp<mlir::stablehlo::ConcatenateOp>();
+  if (!concat_op) {
+    return false;
+  }
+  llvm::DenseSet<mlir::Operation*> expected_set(expected_ops.begin(),
+                                                expected_ops.end());
+  for (mlir::Operation* user : concat_op->getUsers()) {
+    if (auto conv = mlir::dyn_cast<mlir::stablehlo::ConvertOp>(user)) {
+      for (mlir::Operation* conv_user : conv->getUsers()) {
+        if (!expected_set.contains(conv_user)) {
+          return false;
+        }
+      }
+      continue;
+    }
+    if (!expected_set.contains(user)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+mlir::Value CreateScalarFloatConst(mlir::OpBuilder& builder, mlir::Location loc,
+                                   mlir::Type elem_type, double val) {
+  auto float_type = mlir::cast<mlir::FloatType>(elem_type);
+  llvm::APFloat ap_val(val);
+  bool loses_info = false;
+  ap_val.convert(float_type.getFloatSemantics(),
+                 llvm::APFloat::rmNearestTiesToEven, &loses_info);
+  auto scalar_type = mlir::RankedTensorType::get({}, float_type);
+  auto attr = mlir::DenseElementsAttr::get(scalar_type, ap_val);
+  return builder.create<mlir::stablehlo::ConstantOp>(loc, attr);
+}
+
+void EmitPartitionedConcatSoftmax(mlir::Operation* norm_op,
+                                  bool use_reciprocal_mul,
                                   mlir::Type comp_elem_type, int64_t dim,
                                   mlir::Value lhs, mlir::Value rhs,
                                   mlir::RankedTensorType lhs_type,
                                   mlir::RankedTensorType rhs_type,
                                   mlir::stablehlo::ReduceOp max_reduce_op,
                                   mlir::stablehlo::ReduceOp sum_reduce_op) {
-  mlir::stablehlo::ConvertOp convert_out =
-      GetSingleRankedConvertUser(div_op.getOperation());
+  mlir::stablehlo::ConvertOp convert_out = GetSingleRankedConvertUser(norm_op);
   mlir::Operation* target_op =
-      convert_out ? convert_out.getOperation() : div_op.getOperation();
+      convert_out ? convert_out.getOperation() : norm_op;
   mlir::OpBuilder builder(target_op);
   mlir::Location loc = target_op->getLoc();
 
@@ -496,15 +848,38 @@ void EmitPartitionedConcatSoftmax(mlir::stablehlo::DivOp div_op,
   mlir::Value sum_total =
       builder.create<mlir::stablehlo::AddOp>(loc, sum_lhs, sum_rhs);
 
-  mlir::Value bcast_sum_lhs = builder.create<mlir::stablehlo::BroadcastInDimOp>(
-      loc, lhs_comp_type, sum_total, non_dim_attr);
-  mlir::Value bcast_sum_rhs = builder.create<mlir::stablehlo::BroadcastInDimOp>(
-      loc, rhs_comp_type, sum_total, non_dim_attr);
+  mlir::Value final_lhs;
+  mlir::Value final_rhs;
+  if (use_reciprocal_mul) {
+    mlir::Value one_scalar =
+        CreateScalarFloatConst(builder, loc, comp_elem_type, 1.0);
+    mlir::Value one_reduced = builder.create<mlir::stablehlo::BroadcastInDimOp>(
+        loc, reduced_type, one_scalar, builder.getDenseI64ArrayAttr({}));
+    mlir::Value inv_sum_total =
+        builder.create<mlir::stablehlo::DivOp>(loc, one_reduced, sum_total);
+    mlir::Value bcast_inv_lhs =
+        builder.create<mlir::stablehlo::BroadcastInDimOp>(
+            loc, lhs_comp_type, inv_sum_total, non_dim_attr);
+    mlir::Value bcast_inv_rhs =
+        builder.create<mlir::stablehlo::BroadcastInDimOp>(
+            loc, rhs_comp_type, inv_sum_total, non_dim_attr);
+    final_lhs =
+        builder.create<mlir::stablehlo::MulOp>(loc, exp_lhs, bcast_inv_lhs);
+    final_rhs =
+        builder.create<mlir::stablehlo::MulOp>(loc, exp_rhs, bcast_inv_rhs);
+  } else {
+    mlir::Value bcast_sum_lhs =
+        builder.create<mlir::stablehlo::BroadcastInDimOp>(
+            loc, lhs_comp_type, sum_total, non_dim_attr);
+    mlir::Value bcast_sum_rhs =
+        builder.create<mlir::stablehlo::BroadcastInDimOp>(
+            loc, rhs_comp_type, sum_total, non_dim_attr);
+    final_lhs =
+        builder.create<mlir::stablehlo::DivOp>(loc, exp_lhs, bcast_sum_lhs);
+    final_rhs =
+        builder.create<mlir::stablehlo::DivOp>(loc, exp_rhs, bcast_sum_rhs);
+  }
 
-  mlir::Value final_lhs =
-      builder.create<mlir::stablehlo::DivOp>(loc, exp_lhs, bcast_sum_lhs);
-  mlir::Value final_rhs =
-      builder.create<mlir::stablehlo::DivOp>(loc, exp_rhs, bcast_sum_rhs);
   if (convert_out) {
     mlir::Type res_elem_type =
         mlir::cast<mlir::RankedTensorType>(convert_out.getType())
@@ -523,15 +898,25 @@ void EmitPartitionedConcatSoftmax(mlir::stablehlo::DivOp div_op,
   SimplifyConcatSliceUsers(new_concat, final_lhs, final_rhs, dim);
 }
 
-bool TryPartitionConcatSoftmaxAlongDim(mlir::stablehlo::DivOp div_op,
-                                       mlir::stablehlo::ExpOp exp_op,
-                                       mlir::stablehlo::SubtractOp shifted_op,
-                                       mlir::Type comp_elem_type, int64_t dim) {
+bool TryPartitionReciprocalConcatSoftmaxAlongDim(mlir::stablehlo::MulOp mul_op,
+                                                 mlir::stablehlo::ExpOp exp_op,
+                                                 mlir::Value inv_bcast_val,
+                                                 mlir::Type comp_elem_type,
+                                                 int64_t dim) {
+  auto shifted_op =
+      exp_op.getOperand().getDefiningOp<mlir::stablehlo::SubtractOp>();
+  if (!shifted_op) {
+    return false;
+  }
   mlir::Value sum_in;
   mlir::stablehlo::ReduceOp sum_reduce_op;
-  if (!MatchBroadcastedSingleDimReduce(div_op.getRhs(), dim, sum_in,
-                                       /*is_max=*/false, &sum_reduce_op) ||
+  if (!MatchBroadcastedReciprocalSingleDimSum(inv_bcast_val, dim, sum_in,
+                                              &sum_reduce_op) ||
       sum_in != exp_op.getResult()) {
+    return false;
+  }
+  if (sum_reduce_op.getInitValues().size() != 1 ||
+      !IsZeroConstantTensor(sum_reduce_op.getInitValues()[0])) {
     return false;
   }
 
@@ -543,59 +928,388 @@ bool TryPartitionConcatSoftmaxAlongDim(mlir::stablehlo::DivOp div_op,
       max_in != in_val) {
     return false;
   }
+  if (max_reduce_op.getInitValues().empty() ||
+      !IsNegativeInfinityConstant(max_reduce_op.getInitValues()[0])) {
+    return false;
+  }
 
   mlir::Value raw_in = StripOptionalFloatUpcast(in_val, comp_elem_type);
   mlir::Value lhs;
   mlir::Value rhs;
   mlir::RankedTensorType lhs_type;
   mlir::RankedTensorType rhs_type;
-  if (!MatchSmallTailConcatInput(raw_in, dim, lhs, rhs, lhs_type, rhs_type)) {
+  if (!MatchConcatInputAlongDim(raw_in, dim, lhs, rhs, lhs_type, rhs_type)) {
     return false;
   }
 
-  EmitPartitionedConcatSoftmax(div_op, comp_elem_type, dim, lhs, rhs, lhs_type,
-                               rhs_type, max_reduce_op, sum_reduce_op);
+  mlir::stablehlo::ConvertOp convert_out =
+      GetSingleRankedConvertUser(mul_op.getOperation());
+  mlir::Operation* target_op =
+      convert_out ? convert_out.getOperation() : mul_op.getOperation();
+  if (!AreTargetUsersConfinedOrBackwardConfined(
+          target_op, dim, lhs_type.getDimSize(dim),
+          /*allow_backward_pattern=*/true)) {
+    return false;
+  }
+  if (!HasOnlyExpectedConcatUsers(
+          raw_in, {max_reduce_op.getOperation(), shifted_op.getOperation()})) {
+    return false;
+  }
+
+  EmitPartitionedConcatSoftmax(mul_op.getOperation(),
+                               /*use_reciprocal_mul=*/true, comp_elem_type, dim,
+                               lhs, rhs, lhs_type, rhs_type, max_reduce_op,
+                               sum_reduce_op);
   return true;
 }
 
-void TryPartitionSmallTailConcatSoftmax(mlir::stablehlo::DivOp div_op) {
-  auto div_type = mlir::dyn_cast<mlir::RankedTensorType>(div_op.getType());
-  if (!div_type || !div_type.hasStaticShape() || div_type.getRank() < 1 ||
-      !mlir::isa<mlir::FloatType>(div_type.getElementType())) {
-    return;
+void PartitionReciprocalConcatSoftmax(mlir::func::FuncOp func) {
+  llvm::SmallVector<mlir::stablehlo::MulOp> mul_ops;
+  func.walk([&mul_ops](mlir::stablehlo::MulOp op) { mul_ops.push_back(op); });
+
+  for (mlir::stablehlo::MulOp mul_op : mul_ops) {
+    if (!mul_op || mul_op->use_empty()) {
+      continue;
+    }
+    auto mul_type = mlir::dyn_cast<mlir::RankedTensorType>(mul_op.getType());
+    if (!mul_type || !mul_type.hasStaticShape() || mul_type.getRank() < 1 ||
+        !mlir::isa<mlir::FloatType>(mul_type.getElementType())) {
+      continue;
+    }
+    auto try_operands = [&mul_op, &mul_type](mlir::Value cand_exp,
+                                             mlir::Value cand_inv) -> bool {
+      auto exp_op = cand_exp.getDefiningOp<mlir::stablehlo::ExpOp>();
+      if (!exp_op) {
+        return false;
+      }
+      for (int64_t dim = 0; dim < mul_type.getRank(); ++dim) {
+        if (TryPartitionReciprocalConcatSoftmaxAlongDim(
+                mul_op, exp_op, cand_inv, mul_type.getElementType(), dim)) {
+          return true;
+        }
+      }
+      return false;
+    };
+    if (!try_operands(mul_op.getLhs(), mul_op.getRhs())) {
+      try_operands(mul_op.getRhs(), mul_op.getLhs());
+    }
   }
-  auto exp_op = div_op.getLhs().getDefiningOp<mlir::stablehlo::ExpOp>();
-  if (!exp_op) {
-    return;
-  }
+  EraseTriviallyDeadOps(func);
+}
+
+bool TryPartitionDivConcatSoftmaxAlongDim(mlir::stablehlo::DivOp div_op,
+                                          mlir::stablehlo::ExpOp exp_op,
+                                          mlir::Type comp_elem_type,
+                                          int64_t dim) {
   auto shifted_op =
       exp_op.getOperand().getDefiningOp<mlir::stablehlo::SubtractOp>();
   if (!shifted_op) {
-    return;
+    return false;
   }
-  for (int64_t dim = 0; dim < div_type.getRank(); ++dim) {
-    if (TryPartitionConcatSoftmaxAlongDim(div_op, exp_op, shifted_op,
-                                          div_type.getElementType(), dim)) {
-      break;
-    }
+  mlir::Value sum_in;
+  mlir::stablehlo::ReduceOp sum_reduce_op;
+  if (!MatchBroadcastedSingleDimReduce(div_op.getRhs(), dim, sum_in,
+                                       /*is_max=*/false, &sum_reduce_op) ||
+      sum_in != exp_op.getResult()) {
+    return false;
   }
+  if (sum_reduce_op.getInitValues().size() != 1 ||
+      !IsZeroConstantTensor(sum_reduce_op.getInitValues()[0])) {
+    return false;
+  }
+
+  mlir::Value in_val = shifted_op.getLhs();
+  mlir::Value max_in;
+  mlir::stablehlo::ReduceOp max_reduce_op;
+  if (!MatchBroadcastedSingleDimReduce(shifted_op.getRhs(), dim, max_in,
+                                       /*is_max=*/true, &max_reduce_op) ||
+      max_in != in_val) {
+    return false;
+  }
+  if (max_reduce_op.getInitValues().empty() ||
+      !IsNegativeInfinityConstant(max_reduce_op.getInitValues()[0])) {
+    return false;
+  }
+
+  mlir::Value raw_in = StripOptionalFloatUpcast(in_val, comp_elem_type);
+  mlir::Value lhs;
+  mlir::Value rhs;
+  mlir::RankedTensorType lhs_type;
+  mlir::RankedTensorType rhs_type;
+  if (!MatchConcatInputAlongDim(raw_in, dim, lhs, rhs, lhs_type, rhs_type)) {
+    return false;
+  }
+
+  mlir::stablehlo::ConvertOp convert_out =
+      GetSingleRankedConvertUser(div_op.getOperation());
+  mlir::Operation* target_op =
+      convert_out ? convert_out.getOperation() : div_op.getOperation();
+  if (!AreTargetUsersConfinedOrBackwardConfined(
+          target_op, dim, lhs_type.getDimSize(dim),
+          /*allow_backward_pattern=*/true)) {
+    return false;
+  }
+  if (!HasOnlyExpectedConcatUsers(
+          raw_in, {max_reduce_op.getOperation(), shifted_op.getOperation()})) {
+    return false;
+  }
+
+  EmitPartitionedConcatSoftmax(div_op.getOperation(),
+                               /*use_reciprocal_mul=*/false, comp_elem_type,
+                               dim, lhs, rhs, lhs_type, rhs_type, max_reduce_op,
+                               sum_reduce_op);
+  return true;
 }
 
-// Partitions softmax computed over `concat(lhs, rhs)` where `rhs` is a small
-// tail (e.g. attention sinks) and only the `lhs` slice of probabilities is
-// used. Reductions are partitioned across `lhs` and `rhs` directly:
-//   max(concat(lhs, rhs)) = max(max(lhs), max(rhs))
-//   sum(exp(...)) = sum(exp(lhs - m)) + sum(exp(rhs - m))
-// allowing the `lhs` softmax to be evaluated without materializing the
-// concatenated intermediate tensor or intermediate activations.
-void PartitionSmallTailConcatSoftmax(mlir::func::FuncOp func) {
+void PartitionDivConcatSoftmax(mlir::func::FuncOp func) {
   llvm::SmallVector<mlir::stablehlo::DivOp> div_ops;
-  func.walk(
-      [&](mlir::stablehlo::DivOp op) {  // REF_CAPTURE_OK=called synchronously
-        div_ops.push_back(op);
-      });
+  func.walk([&div_ops](mlir::stablehlo::DivOp op) { div_ops.push_back(op); });
+
   for (mlir::stablehlo::DivOp div_op : div_ops) {
-    TryPartitionSmallTailConcatSoftmax(div_op);
+    if (!div_op || div_op->use_empty()) {
+      continue;
+    }
+    auto div_type = mlir::dyn_cast<mlir::RankedTensorType>(div_op.getType());
+    if (!div_type || !div_type.hasStaticShape() || div_type.getRank() < 1 ||
+        !mlir::isa<mlir::FloatType>(div_type.getElementType())) {
+      continue;
+    }
+    auto exp_op = div_op.getLhs().getDefiningOp<mlir::stablehlo::ExpOp>();
+    if (!exp_op) {
+      continue;
+    }
+    for (int64_t dim = 0; dim < div_type.getRank(); ++dim) {
+      if (TryPartitionDivConcatSoftmaxAlongDim(
+              div_op, exp_op, div_type.getElementType(), dim)) {
+        break;
+      }
+    }
+  }
+  EraseTriviallyDeadOps(func);
+}
+
+bool MatchSoftmaxBackwardDataPattern(mlir::Value val, int64_t dim,
+                                     mlir::Value& probs_val,
+                                     mlir::Value& grad_val,
+                                     mlir::stablehlo::DotGeneralOp& dot_op,
+                                     mlir::stablehlo::SubtractOp* out_sub_op) {
+  mlir::Value unwrapped = StripOptionalConvert(val);
+  auto mul_op = unwrapped.getDefiningOp<mlir::stablehlo::MulOp>();
+  if (!mul_op) {
+    return false;
+  }
+  auto mul_type = mlir::dyn_cast<mlir::RankedTensorType>(mul_op.getType());
+  if (!mul_type || !mul_type.hasStaticShape() || dim < 0 ||
+      dim >= mul_type.getRank()) {
+    return false;
+  }
+  const int64_t rank = mul_type.getRank();
+
+  auto try_match = [&mul_type, dim, rank, &probs_val, &grad_val, &dot_op,
+                    out_sub_op](mlir::Value cand_probs,
+                                mlir::Value cand_sub) -> bool {
+    auto sub_op = cand_sub.getDefiningOp<mlir::stablehlo::SubtractOp>();
+    if (!sub_op) {
+      return false;
+    }
+    mlir::Value cand_grad = sub_op.getLhs();
+    mlir::Value bcast_val =
+        PeelBroadcastAndUnsqueezeAlongDim(sub_op.getRhs(), mul_type, dim);
+    if (auto conv = bcast_val.getDefiningOp<mlir::stablehlo::ConvertOp>()) {
+      auto in_type =
+          mlir::dyn_cast<mlir::RankedTensorType>(conv.getOperand().getType());
+      auto out_type = mlir::dyn_cast<mlir::RankedTensorType>(conv.getType());
+      if (in_type && out_type &&
+          mlir::isa<mlir::FloatType>(in_type.getElementType()) &&
+          mlir::isa<mlir::FloatType>(out_type.getElementType())) {
+        bcast_val = conv.getOperand();
+      }
+    }
+    auto dg = bcast_val.getDefiningOp<mlir::stablehlo::DotGeneralOp>();
+    if (!dg) {
+      return false;
+    }
+    const auto& dnums = dg.getDotDimensionNumbers();
+    llvm::ArrayRef<int64_t> lhs_c = dnums.getLhsContractingDimensions();
+    llvm::ArrayRef<int64_t> rhs_c = dnums.getRhsContractingDimensions();
+    llvm::ArrayRef<int64_t> lhs_b = dnums.getLhsBatchingDimensions();
+    llvm::ArrayRef<int64_t> rhs_b = dnums.getRhsBatchingDimensions();
+    if (lhs_c.size() != 1 || rhs_c.size() != 1 || lhs_c[0] != dim ||
+        rhs_c[0] != dim || static_cast<int64_t>(lhs_b.size()) != rank - 1 ||
+        lhs_b != rhs_b || !IsDropDimBroadcastDims(lhs_b, rank, dim)) {
+      return false;
+    }
+    const bool operands_match =
+        (dg.getLhs() == cand_probs && dg.getRhs() == cand_grad) ||
+        (dg.getLhs() == cand_grad && dg.getRhs() == cand_probs);
+    if (!operands_match) {
+      return false;
+    }
+    probs_val = cand_probs;
+    grad_val = cand_grad;
+    dot_op = dg;
+    if (out_sub_op != nullptr) {
+      *out_sub_op = sub_op;
+    }
+    return true;
+  };
+
+  return try_match(mul_op.getLhs(), mul_op.getRhs()) ||
+         try_match(mul_op.getRhs(), mul_op.getLhs());
+}
+
+bool TryPartitionConcatSoftmaxBackwardOp(mlir::stablehlo::MulOp mul_op) {
+  auto mul_type = mlir::dyn_cast<mlir::RankedTensorType>(mul_op.getType());
+  if (!mul_type || !mul_type.hasStaticShape() || mul_type.getRank() < 1 ||
+      !mlir::isa<mlir::FloatType>(mul_type.getElementType())) {
+    return false;
+  }
+  mlir::Type comp_elem_type = mul_type.getElementType();
+
+  for (int64_t dim = 0; dim < mul_type.getRank(); ++dim) {
+    mlir::Value probs_val;
+    mlir::Value grad_val;
+    mlir::stablehlo::DotGeneralOp dot_op;
+    mlir::stablehlo::SubtractOp sub_op;
+    if (!MatchSoftmaxBackwardDataPattern(mul_op.getResult(), dim, probs_val,
+                                         grad_val, dot_op, &sub_op)) {
+      continue;
+    }
+    mlir::Value raw_probs = StripOptionalFloatUpcast(probs_val, comp_elem_type);
+    mlir::Value raw_grad = StripOptionalFloatUpcast(grad_val, comp_elem_type);
+    mlir::Value probs_lhs;
+    mlir::Value probs_rhs;
+    mlir::RankedTensorType lhs_type;
+    mlir::RankedTensorType rhs_type;
+    mlir::Value grad_lhs;
+    mlir::Value grad_rhs;
+    mlir::RankedTensorType grad_lhs_type;
+    mlir::RankedTensorType grad_rhs_type;
+    if (!MatchConcatInputAlongDim(raw_probs, dim, probs_lhs, probs_rhs,
+                                  lhs_type, rhs_type) ||
+        !MatchConcatInputAlongDim(raw_grad, dim, grad_lhs, grad_rhs,
+                                  grad_lhs_type, grad_rhs_type) ||
+        lhs_type.getShape() != grad_lhs_type.getShape() ||
+        rhs_type.getShape() != grad_rhs_type.getShape()) {
+      continue;
+    }
+
+    mlir::stablehlo::ConvertOp convert_out =
+        GetSingleRankedConvertUser(mul_op.getOperation());
+    mlir::Operation* target_op =
+        convert_out ? convert_out.getOperation() : mul_op.getOperation();
+    if (!AreTargetUsersConfinedOrBackwardConfined(
+            target_op, dim, lhs_type.getDimSize(dim),
+            /*allow_backward_pattern=*/false)) {
+      continue;
+    }
+    if (!HasOnlyExpectedConcatUsers(
+            raw_probs, {dot_op.getOperation(), mul_op.getOperation()}) ||
+        !HasOnlyExpectedConcatUsers(
+            raw_grad, {dot_op.getOperation(), sub_op.getOperation()})) {
+      continue;
+    }
+
+    mlir::OpBuilder builder(target_op);
+    mlir::Location loc = target_op->getLoc();
+
+    auto lhs_comp_type =
+        mlir::RankedTensorType::get(lhs_type.getShape(), comp_elem_type);
+    auto rhs_comp_type =
+        mlir::RankedTensorType::get(rhs_type.getShape(), comp_elem_type);
+    mlir::Value probs_lhs_comp =
+        ConvertIfNeeded(builder, loc, probs_lhs, lhs_comp_type);
+    mlir::Value probs_rhs_comp =
+        ConvertIfNeeded(builder, loc, probs_rhs, rhs_comp_type);
+    mlir::Value grad_lhs_comp =
+        ConvertIfNeeded(builder, loc, grad_lhs, lhs_comp_type);
+    mlir::Value grad_rhs_comp =
+        ConvertIfNeeded(builder, loc, grad_rhs, rhs_comp_type);
+
+    llvm::SmallVector<int64_t> reduced_shape;
+    llvm::SmallVector<int64_t> non_dim_axes;
+    BuildReducedShapeAndAxes(lhs_type, dim, reduced_shape, non_dim_axes);
+
+    auto dot_res_type =
+        mlir::dyn_cast<mlir::RankedTensorType>(dot_op.getType());
+    if (!dot_res_type) {
+      continue;
+    }
+    mlir::Type dot_elem_type = dot_res_type.getElementType();
+    auto dot_reduced_type =
+        mlir::RankedTensorType::get(reduced_shape, dot_elem_type);
+
+    mlir::Value dot_total;
+    if (IsZeroConstantTensor(grad_lhs)) {
+      dot_total = builder.create<mlir::stablehlo::DotGeneralOp>(
+          loc, dot_reduced_type, probs_rhs_comp, grad_rhs_comp,
+          dot_op.getDotDimensionNumbersAttr(), dot_op.getPrecisionConfigAttr(),
+          dot_op.getAlgorithmAttr());
+    } else if (IsZeroConstantTensor(grad_rhs)) {
+      dot_total = builder.create<mlir::stablehlo::DotGeneralOp>(
+          loc, dot_reduced_type, probs_lhs_comp, grad_lhs_comp,
+          dot_op.getDotDimensionNumbersAttr(), dot_op.getPrecisionConfigAttr(),
+          dot_op.getAlgorithmAttr());
+    } else {
+      mlir::Value dot_lhs = builder.create<mlir::stablehlo::DotGeneralOp>(
+          loc, dot_reduced_type, probs_lhs_comp, grad_lhs_comp,
+          dot_op.getDotDimensionNumbersAttr(), dot_op.getPrecisionConfigAttr(),
+          dot_op.getAlgorithmAttr());
+      mlir::Value dot_rhs = builder.create<mlir::stablehlo::DotGeneralOp>(
+          loc, dot_reduced_type, probs_rhs_comp, grad_rhs_comp,
+          dot_op.getDotDimensionNumbersAttr(), dot_op.getPrecisionConfigAttr(),
+          dot_op.getAlgorithmAttr());
+      dot_total = builder.create<mlir::stablehlo::AddOp>(loc, dot_lhs, dot_rhs);
+    }
+    dot_total = ConvertIfNeeded(
+        builder, loc, dot_total,
+        mlir::RankedTensorType::get(reduced_shape, comp_elem_type));
+
+    mlir::DenseI64ArrayAttr non_dim_attr =
+        builder.getDenseI64ArrayAttr(non_dim_axes);
+    mlir::Value bcast_dot_lhs =
+        builder.create<mlir::stablehlo::BroadcastInDimOp>(
+            loc, lhs_comp_type, dot_total, non_dim_attr);
+    mlir::Value bcast_dot_rhs =
+        builder.create<mlir::stablehlo::BroadcastInDimOp>(
+            loc, rhs_comp_type, dot_total, non_dim_attr);
+
+    mlir::Value dx_lhs = builder.create<mlir::stablehlo::MulOp>(
+        loc, probs_lhs_comp,
+        builder.create<mlir::stablehlo::SubtractOp>(loc, grad_lhs_comp,
+                                                    bcast_dot_lhs));
+    mlir::Value dx_rhs = builder.create<mlir::stablehlo::MulOp>(
+        loc, probs_rhs_comp,
+        builder.create<mlir::stablehlo::SubtractOp>(loc, grad_rhs_comp,
+                                                    bcast_dot_rhs));
+    if (convert_out) {
+      mlir::Type res_elem_type =
+          mlir::cast<mlir::RankedTensorType>(convert_out.getType())
+              .getElementType();
+      dx_lhs = builder.create<mlir::stablehlo::ConvertOp>(
+          loc, mlir::RankedTensorType::get(lhs_type.getShape(), res_elem_type),
+          dx_lhs);
+      dx_rhs = builder.create<mlir::stablehlo::ConvertOp>(
+          loc, mlir::RankedTensorType::get(rhs_type.getShape(), res_elem_type),
+          dx_rhs);
+    }
+
+    auto new_concat = builder.create<mlir::stablehlo::ConcatenateOp>(
+        loc, mlir::ValueRange{dx_lhs, dx_rhs}, dim);
+    target_op->replaceAllUsesWith(new_concat.getOperation());
+    SimplifyConcatSliceUsers(new_concat, dx_lhs, dx_rhs, dim);
+    return true;
+  }
+  return false;
+}
+
+void PartitionConcatSoftmaxBackward(mlir::func::FuncOp func) {
+  llvm::SmallVector<mlir::stablehlo::MulOp> mul_ops;
+  func.walk([&mul_ops](mlir::stablehlo::MulOp op) { mul_ops.push_back(op); });
+  for (mlir::stablehlo::MulOp mul_op : mul_ops) {
+    if (mul_op && !mul_op->use_empty()) {
+      TryPartitionConcatSoftmaxBackwardOp(mul_op);
+    }
   }
   EraseTriviallyDeadOps(func);
 }
@@ -608,13 +1322,15 @@ struct FoldConcatSoftmaxPass
   llvm::StringRef getArgument() const override { return "fold-concat-softmax"; }
   llvm::StringRef getDescription() const override {
     return "Folds shift-invariant softmax pre-subtractions and partitions "
-           "softmax across small tail concatenations.";
+           "softmax across concatenations along the reduction axis.";
   }
 
   void runOnOperation() override {
     mlir::func::FuncOp func = getOperation();
     FoldShiftInvariantPreSubtraction(func);
-    PartitionSmallTailConcatSoftmax(func);
+    PartitionReciprocalConcatSoftmax(func);
+    PartitionDivConcatSoftmax(func);
+    PartitionConcatSoftmaxBackward(func);
   }
 };
 
