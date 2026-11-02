@@ -219,6 +219,7 @@ pybind_extension(
         "//csrc/distributed:handshake",
         "//csrc/eager:device_buffer",
         "//csrc/eager:device_gen_impl",
+        "//csrc/eager:eager_mode",
         "//csrc/eager:tensor_to_buffer",
         "//csrc/internal/compile:compiled_mode",
         "//csrc/internal/compile:dispatch_scan",

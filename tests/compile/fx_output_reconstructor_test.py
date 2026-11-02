@@ -17,13 +17,16 @@
 import collections
 import pickle
 from typing import Any, Callable
+import unittest.mock
 
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
 from torch.utils import _pytree as pytree
+import torch_tpu._internal.compile._backend as _backend
 import torch_tpu._internal.compile.tpu_torch_compile as tpu_torch_compile
 from torch_tpu._internal.export import export as torch_tpu_export
+from torch_tpu._internal.utils import test_utils as utils
 from tests import seed_test_utils
 
 
@@ -353,6 +356,91 @@ module {
     self.assertIsNot(out0, out1)
     out1.add_(10.0)
     self.assertTrue(torch.equal(out0.cpu(), expected))
+
+  def test_compiled_runner_lazy_force_strides_materializes_on_demand(self):
+    x = torch.arange(16, dtype=torch.float32, device="tpu").reshape(4, 4)
+    expected_values = x.cpu() * 2.0
+    expected_view = expected_values.t()
+    _, spec = pytree.tree_flatten((expected_view, expected_view))
+    layout = self._make_layout(
+        shape=expected_view.shape,
+        stride=expected_view.stride(),
+        storage_offset=expected_view.storage_offset(),
+    )
+    reconstructor = tpu_torch_compile.FxOutputReconstructor(
+        [
+            # pylint: disable-next=protected-access
+            torch_tpu_export._DedupedTensorOutput(tensor_idx=0),
+            # pylint: disable-next=protected-access
+            torch_tpu_export._DedupedTensorOutput(tensor_idx=0),
+        ],
+        [layout],
+        spec,
+    )
+    runner = tpu_torch_compile.make_compiled_runner(
+        _compile_double_executable(x.shape), reconstruct_fn=reconstructor
+    )
+
+    unused_out, used_out = runner([x])
+    del unused_out
+    torch.accelerator.synchronize()
+
+    self.assertEqual(used_out.shape, expected_view.shape)
+    self.assertEqual(used_out.stride(), expected_view.stride())
+    utils.assert_close(used_out.cpu(), expected_values)
+    utils.assert_close((used_out + 1.0).cpu(), expected_values + 1.0)
+
+  def test_compile_canonicalizes_saved_backward_view_activations(self):
+    def fn(x, w):
+      h = torch.matmul(x, w).view(2, 6, 4, 8).transpose(1, 2)[:, :, 1:, :]
+      attn = torch.nn.functional.scaled_dot_product_attention(h, h, h)
+      merged = attn.transpose(1, 2).reshape(2, 5, 32)
+      return (merged * torch.sigmoid(merged)).sum()
+
+    saved_partitions = []
+    orig_partition = _backend._partition_with_saved_view_canonicalization
+
+    def partition_hook(joint_gm, joint_inputs, **kwargs):
+      fw_gm, bw_gm = orig_partition(joint_gm, joint_inputs, **kwargs)
+      saved_partitions.append((fw_gm, bw_gm))
+      return fw_gm, bw_gm
+
+    with unittest.mock.patch.object(
+        _backend,
+        "_partition_with_saved_view_canonicalization",
+        side_effect=partition_hook,
+    ):
+      x_cpu = torch.randn(2, 6, 32)
+      w_cpu = torch.randn(32, 32)
+      x_ref = x_cpu.to("tpu").requires_grad_(True)
+      w_ref = w_cpu.to("tpu").requires_grad_(True)
+      loss_ref = fn(x_ref, w_ref)
+      loss_ref.backward()
+
+      x_tpu = x_cpu.to("tpu").requires_grad_(True)
+      w_tpu = w_cpu.to("tpu").requires_grad_(True)
+      compiled_fn = torch.compile(fn, backend="tpu")
+      loss_tpu = compiled_fn(x_tpu, w_tpu)
+      loss_tpu.backward()
+
+    self.assertNotEmpty(saved_partitions)
+    fw_module, bw_module = saved_partitions[0]
+    fw_output_node = fw_module.graph.find_nodes(op="output")[0]
+    fw_outs = list(fw_output_node.args[0])
+    bw_placeholders = {
+        n.name: n for n in bw_module.graph.find_nodes(op="placeholder")
+    }
+
+    self.assertTrue(fw_outs[1].target == torch.ops.aten.clone.default)
+    bw_ph = bw_placeholders.get(
+        "transpose", bw_placeholders.get(fw_outs[1].name)
+    )
+    self.assertIsNotNone(bw_ph)
+    self.assertTrue(bw_ph.meta["val"].is_contiguous())
+
+    utils.assert_close(loss_tpu.cpu(), loss_ref.cpu(), atol=1e-4, rtol=1e-4)
+    utils.assert_close(x_tpu.grad.cpu(), x_ref.grad.cpu(), atol=1e-4, rtol=1e-4)
+    utils.assert_close(w_tpu.grad.cpu(), w_ref.grad.cpu(), atol=1e-4, rtol=1e-4)
 
 
 if __name__ == "__main__":

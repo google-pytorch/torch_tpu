@@ -30,6 +30,7 @@
 #include <variant>
 #include <vector>
 
+#include "absl/algorithm/container.h"
 #include "absl/base/no_destructor.h"
 #include "absl/base/nullability.h"
 #include "absl/base/thread_annotations.h"
@@ -250,6 +251,10 @@ class StreamState {
       if (compute_hash) {
         event.deferred_op_hash = deferred_op->Hash();
       }
+      event.is_force_strides =
+          deferred_op->op_name() == OpName::kForceStrides ||
+          absl::c_linear_search(deferred_op->op_context().op_call_chain(),
+                                ToString(OpName::kForceStrides));
       return event;
     }
 
@@ -266,6 +271,11 @@ class StreamState {
     // deferred op. This is used for heuristically detecting repeated ops, and
     // is not sufficient to serve as a cache key.
     size_t deferred_op_hash = 0;
+
+    // True when created by compiled-output `ForceStrides` reconstruction so a
+    // bare stream `synchronize()` does not eagerly materialize unused output
+    // views before the caller either reads or discards them.
+    bool is_force_strides = false;
   };
 
   void RecordDeferredOpCreated(
@@ -545,17 +555,44 @@ class StreamState {
     // Freeze the graph state at the time of the snapshot request.
     // All (non-constant) deferred ops created since the last snapshot must be
     // executed; any which have a current live Tensor reference must be
-    // materialized.
+    // materialized. When a bare stream synchronization (`kSynchronize` with
+    // empty `must_materialize`) runs immediately after compiled output
+    // reconstruction and all pending deferred ops are `ForceStrides` output
+    // view reconstructions, keep them deferred until a downstream op or
+    // explicit tensor materialization reads them.
+    const bool keep_only_force_strides_deferred =
+        (reason == MaterializationReason::kExplicitSync ||
+         reason == MaterializationReason::kCompileModeExecution ||
+         reason == MaterializationReason::kAutogradSync) &&
+        must_materialize.empty() && !deferred_ops_.empty() &&
+        std::any_of(deferred_ops_.begin(), deferred_ops_.end(),
+                    [](const DeferredOpEvent& deferred_op_event) {
+                      return deferred_op_event.is_force_strides &&
+                             deferred_op_event.lock() != nullptr;
+                    }) &&
+        std::all_of(deferred_ops_.begin(), deferred_ops_.end(),
+                    [](const DeferredOpEvent& deferred_op_event) {
+                      auto maybe_node = deferred_op_event.lock();
+                      return maybe_node == nullptr ||
+                             deferred_op_event.is_force_strides;
+                    });
     std::vector<SharedDeviceBufferList> must_execute;
-    for (const auto& deferred_op_event : deferred_ops_) {
-      auto maybe_node = deferred_op_event.lock();
-      if (!maybe_node) continue;
-      if (maybe_node->live_data_ptrs() > 0) {
-        must_materialize.push_back(maybe_node);
+    if (keep_only_force_strides_deferred) {
+      std::erase_if(deferred_ops_,
+                    [](const DeferredOpEvent& deferred_op_event) {
+                      return deferred_op_event.lock() == nullptr;
+                    });
+    } else {
+      for (const auto& deferred_op_event : deferred_ops_) {
+        auto maybe_node = deferred_op_event.lock();
+        if (!maybe_node) continue;
+        if (maybe_node->live_data_ptrs() > 0) {
+          must_materialize.push_back(maybe_node);
+        }
+        must_execute.push_back(std::move(maybe_node));
       }
-      must_execute.push_back(std::move(maybe_node));
+      deferred_ops_.clear();
     }
-    deferred_ops_.clear();
     // The queue is now empty; reset the repetition index to start scanning for
     // an existing or new pattern.
     repetition_i_ = 0;

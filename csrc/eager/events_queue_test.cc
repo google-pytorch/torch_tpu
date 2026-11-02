@@ -884,6 +884,43 @@ TEST_F(EventsQueueTest, NodeMatcherAcrossSmallAndLargeSpans) {
   }
 }
 
+TEST_F(EventsQueueTest, ForceStridesDeferredAcrossStreamSyncAndCompileTask) {
+  ClearAllStreams();
+  ScopedPythonContextCapturer capturer(OpName::kForceStrides);
+  Shape shape(Dimensions{8}, mlir::ElementType::F32);
+  const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto fs_refs,
+      DeviceBufferList::CreateDeferred(OpName::kForceStrides, DummyBuilder, {},
+                                       OpParamCacheKeys::Empty(), {shape}));
+  auto fs_ref = fs_refs[0];
+  auto fs_list = fs_ref.device_buffer_list();
+  RecordDeferredOpCreated(fs_list);
+  fs_list->IncrementLiveDataPtrs(fs_ref.index());
+
+  // Stream-wide sync and compiled execution tasks with no explicit
+  // must_materialize should leave standalone ForceStrides ops deferred.
+  (void)EventSnapshot::Record(device_index, stream_id, {},
+                              MaterializationReason::kExplicitSync);
+  (void)EventSnapshot::Record(device_index, stream_id, {},
+                              MaterializationReason::kCompileModeExecution);
+  auto ready_work = GetReadyWork(device_index, stream_id);
+  ASSERT_EQ(ready_work.size(), 2);
+  EXPECT_TRUE(std::holds_alternative<SnapshotRequest>(ready_work[0]));
+  EXPECT_TRUE(std::holds_alternative<SnapshotRequest>(ready_work[1]));
+
+  // Explicit tensor materialization executes the deferred ForceStrides op.
+  (void)EventSnapshot::Record(device_index, stream_id, {fs_list});
+  ready_work = GetReadyWork(device_index, stream_id);
+  ASSERT_EQ(ready_work.size(), 2);
+  ASSERT_TRUE(std::holds_alternative<EagerExecution>(ready_work[0]));
+  const auto& eager_execution = std::get<EagerExecution>(ready_work[0]);
+  EXPECT_THAT(eager_execution.must_execute, testing::ElementsAre(fs_list));
+  EXPECT_THAT(eager_execution.must_materialize, testing::Contains(fs_list));
+  EXPECT_TRUE(std::holds_alternative<SnapshotRequest>(ready_work[1]));
+}
+
 TEST_F(EventsQueueTest, CompletesLongSnapshotChainOnSmallStack) {
   ClearAllStreams();
   const auto [device_index, stream_id] = GetCurrentDeviceStreamId();

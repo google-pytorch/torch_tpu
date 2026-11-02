@@ -62,6 +62,7 @@
 #include "csrc/distributed/handshake.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/device_gen_impl.h"
+#include "csrc/eager/eager_mode.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/internal/compile/compiled_mode.h"
 #include "csrc/internal/compile/dispatch_scan.h"
@@ -1308,7 +1309,8 @@ bool IsPhysicallyContiguousLayout(at::IntArrayRef shape, at::IntArrayRef stride,
 
 at::Tensor ForceStrides(const at::Tensor& tensor,
                         const Dimensions& target_strides,
-                        int64_t target_storage_offset) {
+                        int64_t target_storage_offset,
+                        bool defer_materialization = false) {
   TT_CHECK_THROW(tensor.dim() == target_strides.size(), error::kInvalidArgument)
       << "target strides must have the same number of dimensions "
       << "as the tensor, got " << tensor.ndimension() << " and "
@@ -1342,6 +1344,20 @@ at::Tensor ForceStrides(const at::Tensor& tensor,
   TT_ASSIGN_OR_THROW(DeviceBufferRef contiguous_buffer, GetBuffer(tensor));
 
   ScopedPythonContextCapturer capturer(OpName::kForceStrides);
+  struct ScopedDeferMaterialization {
+    explicit ScopedDeferMaterialization(bool enable)
+        : active(enable && GetEagerMode() == EagerMode::kDeferAndFuse) {
+      if (active) {
+        PushContextState<EagerModeContextState>(EagerMode::kInternalDeferAll);
+      }
+    }
+    ~ScopedDeferMaterialization() {
+      if (active) {
+        PopContextState<EagerModeContextState>();
+      }
+    }
+    bool active = false;
+  } guard(defer_materialization);
   TT_ASSIGN_OR_THROW(at::Tensor view_tensor,
                      ContiguousToView(std::move(contiguous_buffer),
                                       target_strides, target_storage_offset));
@@ -1760,7 +1776,8 @@ class FxOutputReconstructor {
             at::IntArrayRef(layout.stride.data(), layout.stride.size()),
             layout.storage_offset);
       } else {
-        tensor = ForceStrides(tensor, layout.stride, layout.storage_offset);
+        tensor = ForceStrides(tensor, layout.stride, layout.storage_offset,
+                              /*defer_materialization=*/outputs_are_fresh_pjrt);
       }
     }
     return THPVariable_Wrap(std::move(tensor));
