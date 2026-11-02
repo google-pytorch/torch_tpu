@@ -19,10 +19,9 @@ from absl.testing import parameterized
 import torch
 from torch import distributed as dist
 import torch.distributed.tensor as dt
-import torch.multiprocessing as mp
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
-from tests import seed_test_utils
+from tests.distributed import continuous_test_utils
 from tests.distributed import distributed_utils
 
 
@@ -34,7 +33,8 @@ def _replicate_tensor(
     trailing_dim_size: int = 4,
 ) -> None:
   """Redistributes a tensor from shard to replicate."""
-  dist.init_process_group(backend="tpu_dist")
+  if not dist.is_initialized():
+    dist.init_process_group(backend="tpu_dist")
   rank = int(os.environ["RANK"])
   world_size = int(os.environ["WORLD_SIZE"])
   device_mesh = dt.init_device_mesh("tpu", (world_size,))
@@ -83,13 +83,14 @@ def _replicate_tensor(
     utils.assert_close(out, expected)
 
 
-class UnevenShardingTest(seed_test_utils.MultiProcessRepeatableTest):
-  _world_size = distributed_utils.get_tpu_device_count()
+class UnevenShardingTest(continuous_test_utils.TpuMultiProcContinuousTest):
+
+  world_size = distributed_utils.get_tpu_device_count()
   # Fewer rows than ranks, so the upper half of the ranks get empty shards.
-  _small_size = _world_size // 2
+  _small_size = world_size // 2
   # Not a multiple of the world size: with ceil-sized chunks of 2 rows, the
   # last quarter of the ranks get empty shards.
-  _uneven_size = _world_size * 3 // 2
+  _uneven_size = world_size * 3 // 2
 
   @parameterized.named_parameters(
       ("1d_eager_small", 1, False, _small_size),
@@ -102,9 +103,7 @@ class UnevenShardingTest(seed_test_utils.MultiProcessRepeatableTest):
       ("2d_compiled_uneven", 2, True, _uneven_size),
   )
   def test_replicate_tensor_with_shape(self, ndims, compiled, tensor_size):
-    distributed_utils.dist_run(
-        nproc_per_node=self._world_size,
-        fn=_replicate_tensor,
+    _replicate_tensor(
         tensor_size=tensor_size,
         compiled=compiled,
         ndims=ndims,
@@ -113,5 +112,4 @@ class UnevenShardingTest(seed_test_utils.MultiProcessRepeatableTest):
 
 
 if __name__ == "__main__":
-  mp.set_start_method("spawn")
   multiprocessing.handle_test_main(absltest.main)

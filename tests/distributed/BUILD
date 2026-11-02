@@ -802,7 +802,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "uneven_sharding_test",
     srcs = ["uneven_sharding_test.py"],
-    shard_count = 8,
+    shard_count = 2,
     tags = if_oss(
         ["exclusive"],
         [],
@@ -813,6 +813,7 @@ torch_tpu_py_test(
         REQUIRES_V5_MULTI_DEVICE,
     ],
     deps = [
+        ":continuous_test_utils",
         ":distributed_utils",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
@@ -820,7 +821,6 @@ torch_tpu_py_test(
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//src/torch_tpu/_internal/utils:test_utils",
-        "//tests:seed_test_utils",
     ],
 )
 
