@@ -15241,6 +15241,35 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
             v_mismatched,
         )
 
+  def test_add_wrapped_cpu_scalar_promotion(self):
+    def compute(device):
+      a_i64 = torch.tensor(1, dtype=torch.int64, device=device)
+      res_r = a_i64 + 16777217.0
+      res_l = 16777217.0 + a_i64
+
+      u8 = torch.tensor(255, dtype=torch.uint8, device=device)
+      out_i32 = torch.empty((), dtype=torch.int32, device=device)
+      torch.add(u8, 1, out=out_i32)
+
+      u8_alpha = torch.tensor(254, dtype=torch.uint8, device=device)
+      out_alpha = torch.empty((), dtype=torch.int32, device=device)
+      torch.add(u8_alpha, 1, alpha=2, out=out_alpha)
+      return res_r, res_l, out_i32, out_alpha
+
+    res_r, res_l, _, _ = compute("tpu")
+    self.assertEqual(res_r.dtype, torch.float32)
+    self.assertEqual(res_r.cpu().item(), 16777216.0)
+    self.assertEqual(res_l.cpu().item(), 16777216.0)
+    self.assert_close_tpu_vs_cpu(compute)
+
+    f16_tpu = torch.tensor([1.5, -2.0], dtype=torch.float16, device="tpu")
+    f16_cpu_0d = torch.tensor(0.5, dtype=torch.float16, device="cpu")
+    res_f16 = f16_tpu + f16_cpu_0d
+    self.assertEqual(res_f16.dtype, torch.float16)
+    utils.assert_close(
+        actual=res_f16.cpu(), expected=f16_tpu.cpu() + f16_cpu_0d
+    )
+
 
 class OpsCustomOpUnitTest(TorchTpuVsCpuTestBase):
   """Tests for custom ops."""
