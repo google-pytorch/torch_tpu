@@ -2399,6 +2399,26 @@ torch_tpu_py_test(
     ],
 )
 
+# Checks that the precompiled unbounded dynamic kernels serve the ops of
+# dynamic_ops_test.py.
+torch_tpu_py_test(
+    name = "dynamic_ops_test",
+    srcs = ["dynamic_ops_test.py"],
+    env = {"TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS": "1"},
+    main = "dynamic_ops_test.py",
+    run_on_accelerators = [
+        "requires-tpu-v6e",
+        "requires-tpu-v5lite",
+    ],
+    deps = [
+        ":op_testing",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+    ],
+)
+
 torch_tpu_py_test(
     name = "compilation_cache_stress_test",
     srcs = ["compilation_cache_stress_test.py"],
