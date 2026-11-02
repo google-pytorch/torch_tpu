@@ -1219,45 +1219,65 @@ absl::Status RemoveExtraDim(StridedLayout& head_layout,
                             const StridedLayout& tail_layout,
                             ViewSequence& result,
                             absl::Span<ViewPrimitive> tail_sequence) {
-  if (std::holds_alternative<ReshapePrimitive>(tail_sequence.front())) {
-    // The head_layout may have an extra dimension, update the reshape
-    // base_sizes to match.
-    ReshapePrimitive& reshape =
-        std::get<ReshapePrimitive>(tail_sequence.front());
-    reshape.base_sizes.clear();
-    reshape.base_sizes.reserve(head_layout.strided_dims.size());
-    for (const auto& dim : head_layout.strided_dims) {
-      reshape.base_sizes.push_back(dim.size);
-    }
+  // If the tail sequence is empty, the only way to remove the extra dimension
+  // is to add a reshape.
+  if (tail_sequence.empty()) {
+    result.push_back(ReshapePrimitive{
+        .base_sizes = GetSizes(head_layout),
+        .new_sizes = GetSizes(tail_layout),
+    });
     return absl::OkStatus();
   }
 
-  // Otherwise the tail sequence should be a single BroadcastPrimitive.
-  ABSL_CHECK(tail_sequence.size() == 1);  // CRASH_OK
-  BroadcastPrimitive& broadcast =
-      std::get<BroadcastPrimitive>(tail_sequence.front());
-
-  // Determine which dimensions in new_sizes are being inserted by the
-  // broadcast.
-  absl::InlinedVector<bool, 6> is_inserted_dim(broadcast.new_sizes.size(),
-                                               true);
-  for (auto dim : broadcast.broadcast_dimensions) {
-    is_inserted_dim[dim] = false;
+  // If the tail sequence starts with a reshape, we can merge the last-dimension
+  // squeeze into it.
+  if (auto* reshape = std::get_if<ReshapePrimitive>(&tail_sequence.front())) {
+    reshape->base_sizes = GetSizes(head_layout);
+    return absl::OkStatus();
   }
-  // Choose the lowest-index one arbitrarily.
-  int64_t first_inserted_dim = -1;
-  for (int64_t i = 0; i < is_inserted_dim.size(); ++i) {
-    if (is_inserted_dim[i]) {
-      first_inserted_dim = i;
-      break;
+
+  // If the tail sequence starts with a broadcast, we can merge the
+  // last-dimension squeeze into it as well.
+  if (auto* broadcast =
+          std::get_if<BroadcastPrimitive>(&tail_sequence.front())) {
+    // Determine which dimensions in new_sizes are being inserted by the
+    // broadcast.
+    absl::InlinedVector<bool, 6> is_inserted_dim(broadcast->new_sizes.size(),
+                                                 true);
+    for (auto dim : broadcast->broadcast_dimensions) {
+      is_inserted_dim[dim] = false;
     }
+    // Choose the lowest-index one arbitrarily.
+    int64_t first_inserted_dim = -1;
+    for (int64_t i = 0; i < is_inserted_dim.size(); ++i) {
+      if (is_inserted_dim[i]) {
+        first_inserted_dim = i;
+        break;
+      }
+    }
+    ABSL_CHECK_GE(first_inserted_dim, 0);  // CRASH_OK
+    // The extra dimension will be broadcasted to this.
+    // new_sizes is unchanged.
+    broadcast->broadcast_dimensions.push_back(first_inserted_dim);
+    broadcast->base_shape.push_back(head_layout.strided_dims.back().size);
+    return absl::OkStatus();
   }
-  ABSL_CHECK_GE(first_inserted_dim, 0);  // CRASH_OK
-  // The extra dimension will be broadcasted to this.
-  // new_sizes is unchanged.
-  broadcast.broadcast_dimensions.push_back(first_inserted_dim);
-  broadcast.base_shape.push_back(head_layout.strided_dims.back().size);
 
+  // If the tail sequence starts with a same-size real-to-real bitcast, then it
+  // doesn't change the shape, so we can ignore it.
+  if (const auto* bitcast =
+          std::get_if<RealToRealBitcast>(&tail_sequence.front());
+      bitcast != nullptr && TorchEquivalentBitwidth(bitcast->from_type) ==
+                                TorchEquivalentBitwidth(bitcast->to_type)) {
+    return RemoveExtraDim(head_layout, tail_layout, result,
+                          tail_sequence.subspan(1));
+  }
+
+  // If the tail sequence starts with anything else, we need to add a reshape.
+  result.push_back(ReshapePrimitive{
+      .base_sizes = GetSizes(head_layout),
+      .new_sizes = GetSizes(tail_layout),
+  });
   return absl::OkStatus();
 }
 
