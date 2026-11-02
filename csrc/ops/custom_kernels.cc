@@ -266,8 +266,6 @@ absl::Status AddTpuPartitioningPasses(xla::HloModule* module,
           .enableInsertExplicitCollectives = true
           /*shardy_options.enable_explicit_collectives()*/,
           .removeAllGatherReduceScatterForCMV1 = false,
-          .avoidReshardsOnNamedComputations = false
-          /*shardy_options.dedup_functions_fully()*/,
       },
       /*enableNativeNonFlatSupport=*/false);
 
