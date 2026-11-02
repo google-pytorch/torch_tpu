@@ -29,6 +29,7 @@
 #include "ATen/core/TensorBody.h"
 #include "absl/base/no_destructor.h"
 #include "absl/container/flat_hash_map.h"
+#include "absl/container/flat_hash_set.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
@@ -36,6 +37,7 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
+#include "c10/core/StorageImpl.h"
 #include "c10/util/Optional.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
@@ -55,6 +57,7 @@
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/resize/resize_aten_kernels.h"
 #include "csrc/pjrt/pjrt_transfer.h"
+#include "llvm/ADT/SmallVector.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "torch/headeronly/core/DeviceType.h"
@@ -226,17 +229,6 @@ bool IsEligibleDonor(const at::Tensor& in, const at::Tensor& out,
   return true;
 }
 
-void MarkDonatedAndAliases(size_t donated_idx,
-                           absl::Span<const at::Tensor> inputs,
-                           std::vector<bool>& input_donated) {
-  const at::Tensor& donated_in = inputs[donated_idx];
-  for (size_t k = 0; k < inputs.size(); ++k) {
-    if (inputs[k].is_alias_of(donated_in)) {
-      input_donated[k] = true;
-    }
-  }
-}
-
 }  // namespace
 
 namespace internal {
@@ -271,8 +263,8 @@ std::string EncodeParamCacheKey(const std::optional<PromotedScalar>& value) {
 //    write the result back to the base.
 // 4. Data type: donor element type must match the destination element type.
 // 5. Single donation constraint: In XLA / StableHLO, each device buffer can be
-//    donated to at most ONE output buffer. Once an input is donated, it and all
-//    its storage aliases (is_alias_of) are marked as donated to prevent any
+//    donated to at most ONE output buffer. Once an input storage is donated,
+//    its StorageImpl pointer is recorded in donated_storages to prevent any
 //    duplicate buffer donation across multiple outputs.
 // 6. Unique ownership constraint: donor must not share its DeviceBufferRef with
 //    other non-alias tensors (live_data_ptrs == 1), preventing donation from
@@ -288,23 +280,39 @@ void AutoDonateInPlaceBuffers(
     return;
   }
 
-  std::vector<bool> input_donated(inputs.size(), false);
+  absl::flat_hash_map<const c10::StorageImpl*, llvm::SmallVector<size_t, 1>>
+      storage_to_inputs;
+  storage_to_inputs.reserve(inputs.size());
+  for (size_t in_idx = 0; in_idx < inputs.size(); ++in_idx) {
+    const at::Tensor& in = inputs[in_idx];
+    if (in.defined() && in.has_storage() && in.storage()) {
+      storage_to_inputs[in.storage().unsafeGetStorageImpl()].push_back(in_idx);
+    }
+  }
+
+  absl::flat_hash_set<const c10::StorageImpl*> donated_storages;
+  donated_storages.reserve(outputs.size());
   for (size_t out_idx = 0; out_idx < outputs.size(); ++out_idx) {
     const at::Tensor& out = outputs[out_idx];
-    if (!out.defined()) {
+    if (!out.defined() || !out.has_storage() || !out.storage()) {
+      continue;
+    }
+    const c10::StorageImpl* out_storage = out.storage().unsafeGetStorageImpl();
+    if (!out_storage || donated_storages.contains(out_storage)) {
+      continue;
+    }
+    const auto it = storage_to_inputs.find(out_storage);
+    if (it == storage_to_inputs.end()) {
       continue;
     }
     const auto out_dtype = out_dtypes[out_idx];
     const at::IntArrayRef destination_dims(out_dims_list[out_idx].data(),
                                            out_dims_list[out_idx].size());
-    for (size_t in_idx = 0; in_idx < inputs.size(); ++in_idx) {
-      if (input_donated[in_idx]) {
-        continue;
-      }
+    for (const size_t in_idx : it->second) {
       if (IsEligibleDonor(inputs[in_idx], out, out_dtype, destination_dims)) {
         donated_indices.push_back(static_cast<int64_t>(in_idx));
         output_donated[out_idx] = true;
-        MarkDonatedAndAliases(in_idx, inputs, input_donated);
+        donated_storages.insert(out_storage);
         break;
       }
     }
