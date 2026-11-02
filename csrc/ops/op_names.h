@@ -532,6 +532,7 @@ enum class OpName {
   kLogSigmoidForwardOut,
   kLogSoftmaxBackwardDataOut,
   kLogSoftmaxOut,
+  kLogaddexpOut,
   kLogcumsumexp,
   kLogcumsumexpOut,
   kLogicalAndOut,
@@ -1912,6 +1913,8 @@ ToString(  // NOLINT(google-readability-function-size)
       return "_log_softmax_backward_data.out";
     case OpName::kLogSoftmaxOut:
       return "_log_softmax.out";
+    case OpName::kLogaddexpOut:
+      return "logaddexp.out";
     case OpName::kLogcumsumexp:
       return "_logcumsumexp";
     case OpName::kLogcumsumexpOut:

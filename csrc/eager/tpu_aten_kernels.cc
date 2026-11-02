@@ -156,6 +156,7 @@
 #include "csrc/ops/linalg/vector_norm/aten_vector_norm_kernels.h"
 #include "csrc/ops/linear/linear_aten_kernels.h"
 #include "csrc/ops/linspace/linspace_aten_kernels.h"
+#include "csrc/ops/logaddexp/logaddexp_aten_kernels.h"
 #include "csrc/ops/logcumsumexp/logcumsumexp_aten_kernels.h"
 #include "csrc/ops/logical/logical_aten_kernels.h"
 #include "csrc/ops/logit/logit_aten_kernels.h"
@@ -829,6 +830,7 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kLogSoftmaxBackwardDataOut>(m,
                                                  AtenLogSoftmaxBackwardDataOut);
   ImplStable<OpName::kLogSoftmaxOut>(m, AtenLogSoftmaxOut);
+  ImplStable<OpName::kLogaddexpOut>(m, AtenLogaddexpOut);
   ImplStable<OpName::kLogcumsumexp>(m, AtenLogcumsumexp);
   ImplStable<OpName::kLogcumsumexpOut>(m, AtenLogcumsumexpOut);
   ImplStable<OpName::kLogicalAndOut>(m, AtenLogicalAndOut);

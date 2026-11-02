@@ -246,7 +246,6 @@ UNREGISTERED_OPS = frozenset([
     'linalg_matrix_sqrth',
     'linalg_polar.out',
     'log_normal_',
-    'logaddexp.out',
     'logaddexp2.out',
     'logspace.out',
     'lstm_mps_backward',

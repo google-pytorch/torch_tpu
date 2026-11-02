@@ -12856,6 +12856,31 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(run)
 
+  def test_logaddexp(self):
+    inf = float("inf")
+    a_data = [0.0, 1.0, -1.0, 100.0, -100.0, inf, -inf, inf, float("nan")]
+    b_data = [0.0, -1.0, 1.0, -100.0, 100.0, inf, -inf, -inf, 1.0]
+
+    def compute(device):
+      a = torch.tensor(a_data, device=device)
+      b = torch.tensor(b_data, device=device)
+      out = torch.empty_like(a)
+      torch.logaddexp(a, b, out=out)
+      return torch.logaddexp(a, b), out
+
+    self.assert_close_tpu_vs_cpu(compute)
+
+  def test_logaddexp_broadcast_and_bfloat16(self):
+    def compute(device):
+      a = torch.arange(6.0, device=device).reshape(2, 3)
+      b = torch.tensor([0.5, -2.0, 3.0], device=device)
+      return (
+          torch.logaddexp(a, b),
+          torch.logaddexp(a.to(torch.bfloat16), b.to(torch.bfloat16)),
+      )
+
+    self.assert_close_tpu_vs_cpu(compute)
+
   def test_xlogy(self):
     x_data = [0.0, 0.0, 1.0, 0.0, 2.0, -1.0]
     y_data = [0.0, -1.0, float("nan"), float("nan"), 2.0, 3.0]

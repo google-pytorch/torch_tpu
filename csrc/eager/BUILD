@@ -852,6 +852,7 @@ torch_tpu_cc_library(
         "//csrc/ops/linalg/vector_norm:aten_vector_norm_kernels",
         "//csrc/ops/linear:linear_aten_kernels",
         "//csrc/ops/linspace:linspace_aten_kernels",
+        "//csrc/ops/logaddexp:logaddexp_aten_kernels",
         "//csrc/ops/logcumsumexp:logcumsumexp_aten_kernels",
         "//csrc/ops/logical:logical_aten_kernels",
         "//csrc/ops/logit:logit_aten_kernels",
