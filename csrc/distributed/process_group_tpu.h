@@ -26,6 +26,7 @@
 // "non-functional" ones, but as some point we may want to specialize.
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <exception>
@@ -48,6 +49,7 @@
 #include "absl/strings/str_format.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
+#include "c10/util/ArrayRef.h"
 #include "c10/util/intrusive_ptr.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/macro_utils.h"
@@ -200,6 +202,14 @@ class P2pSendQueue {
   bool shutdown_ ABSL_GUARDED_BY(mu_) = false;
   absl::flat_hash_map<int, std::unique_ptr<PeerChannel>> channels_
       ABSL_GUARDED_BY(mu_);
+};
+
+// Thread-safe cache for a per-PG nonce coordinated once via `store_` so
+// `/dev/shm` metadata keys cannot collide across process group lifecycles
+// under the same parent PID.
+struct AllToAllShmNonceCache {
+  absl::Mutex mu;
+  std::string value ABSL_GUARDED_BY(mu);
 };
 
 class ProcessGroupTpu : public c10d::Backend {
@@ -443,20 +453,9 @@ class ProcessGroupTpu : public c10d::Backend {
   absl::StatusOr<DeviceBufferRef> AllToAllBaseEqualSplits(at::Tensor& output,
                                                           at::Tensor& input);
 
-  // Handles all_to_all_single with non-uniform (uneven) split sizes along
-  // dimension 0. Computes input/output slice offsets, synchronizes remote
-  // destination offsets across ranks via store_, and dispatches the StableHLO
-  // ragged_all_to_all custom call.
-  //
-  // Args:
-  //   output: Pre-allocated destination tensor buffer.
-  //   input: Source tensor to scatter to peer ranks.
-  //   output_split_sizes: Number of elements received from each peer rank
-  //   (0..N-1). input_split_sizes: Number of elements sent to each peer rank
-  //   (0..N-1).
-  //
-  // Returns:
-  //   A DeviceBufferRef representing the collective output buffer on TPU.
+  // Dispatches `all_to_all_single` with uneven split sizes along dimension 0.
+  // Validates cross-rank splits and capacities, factors aligned 1D operands
+  // onto `(8, 128)` TPU tiles, and dispatches StableHLO `ragged_all_to_all`.
   absl::StatusOr<DeviceBufferRef> AllToAllBaseUnevenSplits(
       at::Tensor& output, at::Tensor& input,
       c10::IntArrayRef output_split_sizes, c10::IntArrayRef input_split_sizes);
@@ -513,6 +512,9 @@ class ProcessGroupTpu : public c10d::Backend {
   // Monotonic sequence counter for uneven all_to_all and all_to_all_single
   // offset coordination.
   std::atomic<uint64_t> alltoall_seq_{0};
+
+  // Per-PG nonce cache for `/dev/shm` uneven all-to-all metadata keys.
+  AllToAllShmNonceCache alltoall_shm_nonce_;
 
   // Identifies a two-sided P2P send or receive stream by peer rank and tag.
   struct P2pStreamKey {

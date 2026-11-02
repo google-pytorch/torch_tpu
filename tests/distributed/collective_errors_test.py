@@ -975,7 +975,7 @@ def run_all_to_all_single_send_recv_mismatch_error() -> None:
   input_split_sizes = [2] + [1] * (world_size - 1)
   output_split_sizes = [2, 2] + [1] * (world_size - 2)
   expected_msg = re.compile(
-      ".*send and recv slice size mismatch between rank.*"
+      ".*send and recv slice size mismatch (?:between peer rank|between rank).*"
   )
   with et.assert_raises_message(RuntimeError, tpu=expected_msg):
     torch.distributed.all_to_all_single(
@@ -984,22 +984,30 @@ def run_all_to_all_single_send_recv_mismatch_error() -> None:
 
 
 def run_all_to_all_single_asymmetric_cross_rank_buffer_error() -> None:
+  """Keeps output buffers symmetric so the input buffer check is reached.
+
+  Rank 0 sends 2 rows to every rank and ranks 1..N-1 send 1 row to every rank,
+  so every rank receives `[2] + [1] * (N - 1)` rows (pairwise consistent) while
+  the input capacity is asymmetric (`2 * N` rows on rank 0, `N` elsewhere).
+  Every rank passes an uneven output split vector, so every rank takes part in
+  the `c10d::Store` rendezvous and no rank is routed to the equal-splits path.
+  """
   rank = dist.get_rank()
   world_size = dist.get_world_size()
   if rank == 0:
-    local_size = world_size + 1
-    input_split_sizes = [2] + [1] * (world_size - 1)
-    output_split_sizes = [2] + [1] * (world_size - 1)
+    input_split_sizes = [2] * world_size
   else:
-    local_size = world_size + 2
-    input_split_sizes = [2, 2] + [1] * (world_size - 2)
-    output_split_sizes = [2, 2] + [1] * (world_size - 2)
-  input_tensor = torch.ones((local_size, 2), dtype=torch.float32, device="tpu")
+    input_split_sizes = [1] * world_size
+  output_split_sizes = [2] + [1] * (world_size - 1)
+  input_tensor = torch.ones(
+      (sum(input_split_sizes), 2), dtype=torch.float32, device="tpu"
+  )
   output_tensor = torch.empty(
-      (local_size, 2), dtype=torch.float32, device="tpu"
+      (sum(output_split_sizes), 2), dtype=torch.float32, device="tpu"
   )
   expected_msg = re.compile(
-      ".*asymmetric .*buffer sizes across ranks are not supported on TPU.*"
+      ".*asymmetric all_to_all_single buffer sizes across ranks .* are only"
+      " supported on TPU for 1D tensors.*"
   )
   with et.assert_raises_message(RuntimeError, tpu=expected_msg):
     torch.distributed.all_to_all_single(
@@ -1011,13 +1019,14 @@ def run_all_to_all_single_asymmetric_cross_rank_output_buffer_error() -> None:
   """Keeps input buffers symmetric so the output buffer check is reached."""
   rank = dist.get_rank()
   world_size = dist.get_world_size()
-  # Every rank allocates the same input capacity (world_size + 1), so the input
-  # buffer check passes and validation proceeds to the output buffer check.
+  # Every rank sends 2 rows to rank 0 and 1 row to ranks 1..N-1, keeping input
+  # capacity symmetric (world_size + 1) while rank 0 allocates 2 * world_size
+  # output rows and ranks 1..N-1 allocate world_size output rows.
   input_split_sizes = [2] + [1] * (world_size - 1)
   if rank == 0:
-    output_split_sizes = [2] + [1] * (world_size - 1)
+    output_split_sizes = [2] * world_size
   else:
-    output_split_sizes = [3] + [1] * (world_size - 1)
+    output_split_sizes = [1] * world_size
   input_tensor = torch.ones(
       (sum(input_split_sizes), 2), dtype=torch.float32, device="tpu"
   )
@@ -1025,7 +1034,8 @@ def run_all_to_all_single_asymmetric_cross_rank_output_buffer_error() -> None:
       (sum(output_split_sizes), 2), dtype=torch.float32, device="tpu"
   )
   expected_msg = re.compile(
-      ".*asymmetric output buffer sizes across ranks are not supported on TPU.*"
+      ".*asymmetric all_to_all_single buffer sizes across ranks .* are only"
+      " supported on TPU for 1D tensors.*"
   )
   with et.assert_raises_message(RuntimeError, tpu=expected_msg):
     torch.distributed.all_to_all_single(
@@ -1033,10 +1043,92 @@ def run_all_to_all_single_asymmetric_cross_rank_output_buffer_error() -> None:
     )
 
 
+def run_all_to_all_single_cross_rank_dtype_mismatch_error() -> None:
+  rank = dist.get_rank()
+  world_size = dist.get_world_size()
+  input_split_sizes = [2 if peer == rank else 1 for peer in range(world_size)]
+  output_split_sizes = [2 if peer == rank else 1 for peer in range(world_size)]
+  dtype = torch.bfloat16 if rank == 0 else torch.float32
+  input_tensor = torch.ones((world_size + 1,), dtype=dtype, device="tpu")
+  output_tensor = torch.empty((world_size + 1,), dtype=dtype, device="tpu")
+  expected_msg = re.compile(
+      ".*expected matching element dtype across ranks, got .*"
+  )
+  with et.assert_raises_message(RuntimeError, tpu=expected_msg):
+    torch.distributed.all_to_all_single(
+        output_tensor, input_tensor, output_split_sizes, input_split_sizes
+    )
+
+
+def run_all_to_all_single_cross_rank_shape_mismatch_error() -> None:
+  rank = dist.get_rank()
+  world_size = dist.get_world_size()
+  unit = 1024
+  input_split_sizes = [
+      2 * unit if peer == rank else unit for peer in range(world_size)
+  ]
+  output_split_sizes = [
+      2 * unit if peer == rank else unit for peer in range(world_size)
+  ]
+  total = sum(input_split_sizes)
+  shape = (total,) if rank == 0 else (total, 1)
+  input_tensor = torch.ones(shape, dtype=torch.bfloat16, device="tpu")
+  output_tensor = torch.empty(shape, dtype=torch.bfloat16, device="tpu")
+  expected_msg = re.compile(
+      ".*expected matching tensor rank and trailing dimensions across ranks"
+      " for all_to_all_single.*"
+  )
+  with et.assert_raises_message(RuntimeError, tpu=expected_msg):
+    torch.distributed.all_to_all_single(
+        output_tensor, input_tensor, output_split_sizes, input_split_sizes
+    )
+
+
+def run_all_to_all_single_unaligned_asymmetric_1d_buffer_error() -> None:
+  rank = dist.get_rank()
+  world_size = dist.get_world_size()
+  unit = 1024
+  matrix = [[unit for _ in range(world_size)] for _ in range(world_size)]
+  matrix[0][0] = 256
+  send_sizes = matrix[rank]
+  recv_sizes = [matrix[src][rank] for src in range(world_size)]
+  input_tensor = torch.ones(
+      (sum(send_sizes),), dtype=torch.bfloat16, device="tpu"
+  )
+  output_tensor = torch.empty(
+      (sum(recv_sizes),), dtype=torch.bfloat16, device="tpu"
+  )
+  expected_msg = re.compile(
+      ".*asymmetric all_to_all_single buffer sizes across ranks .* are only"
+      " supported on TPU for 1D tensors.*"
+  )
+  with et.assert_raises_message(RuntimeError, tpu=expected_msg):
+    torch.distributed.all_to_all_single(
+        output_tensor, input_tensor, recv_sizes, send_sizes
+    )
+
+
+def run_all_to_all_single_mismatched_tensor_sizes_empty_splits_error() -> None:
+  world_size = dist.get_world_size()
+  input_tensor = torch.ones((world_size, 2), dtype=torch.float32, device="tpu")
+  output_tensor = torch.empty(
+      (world_size * 2, 2), dtype=torch.float32, device="tpu"
+  )
+  expected_msg = re.compile(
+      ".*send and recv slice size mismatch (?:between peer rank|between rank).*"
+  )
+  with et.assert_raises_message(RuntimeError, tpu=expected_msg):
+    torch.distributed.all_to_all_single(output_tensor, input_tensor)
+
+
 def run_all_to_all_single_errors() -> None:
+  run_all_to_all_single_mismatched_tensor_sizes_empty_splits_error()
   run_all_to_all_single_send_recv_mismatch_error()
   run_all_to_all_single_asymmetric_cross_rank_buffer_error()
   run_all_to_all_single_asymmetric_cross_rank_output_buffer_error()
+  run_all_to_all_single_unaligned_asymmetric_1d_buffer_error()
+  run_all_to_all_single_cross_rank_dtype_mismatch_error()
+  run_all_to_all_single_cross_rank_shape_mismatch_error()
   run_all_to_all_single_negative_split_size_error()
   run_all_to_all_single_dtype_error()
   run_all_to_all_single_invalid_tensor_size_error()

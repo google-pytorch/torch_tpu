@@ -88,6 +88,7 @@ torch_tpu_cc_library(
         "//csrc/ops:op_names",
         "//csrc/ops/macros:kernel",
         "//csrc/pjrt:pjrt_state",
+        "//csrc/pjrt:pjrt_transfer",
         "//shims/torch",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
@@ -116,6 +117,7 @@ torch_tpu_cc_library(
         "@xla//xla:future",
         "@xla//xla:shape_util",
         "@xla//xla/pjrt:pjrt_client",
+        "@xla//xla/pjrt:pjrt_common",
         "@xla//xla/runtime:device_id",
     ],
     alwayslink = True,
@@ -307,6 +309,25 @@ torch_tpu_cc_library(
         "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
         "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
         "@stablehlo//stablehlo/integrations/cpp/builder:stablehlo_builder",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "alltoall_test",
+    srcs = ["alltoall_test.cc"],
+    requires_libtpu = True,
+    deps = [
+        ":alltoall",
+        ":types",
+        "//csrc/common:oss_test_main",
+        "//csrc/common:status_test_utils",
+        "//csrc/ops:op_builder_utils",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Support",
+        "@stablehlo//:register",
+        "@stablehlo//:stablehlo_ops",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
+        "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
     ],
 )
 

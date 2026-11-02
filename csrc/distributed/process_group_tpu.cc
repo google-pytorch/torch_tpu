@@ -26,6 +26,7 @@
 #include <cstring>
 #include <deque>
 #include <exception>
+#include <limits>
 #include <memory>
 #include <numeric>
 #include <optional>
@@ -67,6 +68,7 @@
 #include "absl/strings/str_split.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/synchronization/notification.h"
+#include "absl/time/clock.h"
 #include "absl/time/time.h"
 #include "absl/types/span.h"
 #include "c10/core/ScalarType.h"
@@ -75,11 +77,13 @@
 #include "c10/util/Exception.h"
 #include "c10/util/intrusive_ptr.h"
 #include "csrc/common/macro_utils.h"
+#include "csrc/eager/device_assignment.h"
 #include "torch/csrc/distributed/c10d/Backend.hpp"
 #include "torch/csrc/distributed/c10d/FileStore.hpp"
 #include "torch/csrc/distributed/c10d/PrefixStore.hpp"
 #include "torch/csrc/distributed/c10d/Store.hpp"
 #include "torch/csrc/distributed/c10d/Types.hpp"
+#include "xla/pjrt/pjrt_common.h"
 #if TT_TORCH_VERSION_GE(2, 14)
 #include "torch/csrc/distributed/c10d/Window.hpp"
 #endif
@@ -386,24 +390,26 @@ class TpuWork : public c10d::Work {
   friend class ::torch_tpu::ProcessGroupTpu;  // To allow changing op type.
 };
 
-// Returns the Work of a collective that produced `result_tensors`. During an FX
-// trace nothing runs on the device, so the Work is complete at once.
-c10::intrusive_ptr<c10d::Work> MakeCollectiveWork(
-    std::vector<at::Tensor> result_tensors, int rank, c10d::OpType op_type) {
+// Returns the Work of a collective that produced `result_tensors` backed by
+// explicit `buffers`. During an FX trace nothing runs on the device, so the
+// Work is complete at once.
+c10::intrusive_ptr<c10d::Work> MakeCollectiveWorkWithBuffers(
+    std::vector<at::Tensor> result_tensors,
+    std::vector<DeviceBufferRef> buffers, const int rank,
+    const c10d::OpType op_type) {
   const EagerMode eager_mode = GetEagerMode();
   if (eager_mode == EagerMode::kInternalCompileFxGraph ||
       result_tensors.empty()) {
     return c10::make_intrusive<TpuWork>(std::move(result_tensors), rank,
                                         op_type);
   }
-  TT_ASSIGN_OR_THROW(const std::vector<DeviceBufferRef> buffers,
-                     GetBaseBuffers(result_tensors));
   const DeviceStreamId stream = GetCurrentDeviceStreamId();
   if (!IsDeferNeverMode(eager_mode)) {
     // A deferred collective starts like any deferred op: at the next flush of
     // its stream, or when its Work needs its completion.
     return c10::make_intrusive<TpuWork>(std::move(result_tensors), rank,
-                                        op_type, stream, std::nullopt, buffers);
+                                        op_type, stream, std::nullopt,
+                                        std::move(buffers));
   }
   // The collective has started. Its completion is taken now: a later in-place
   // update donates the buffers that it wrote.
@@ -411,6 +417,23 @@ c10::intrusive_ptr<c10d::Work> MakeCollectiveWork(
                      MaterializeAndGetReadyFuture(buffers));
   return c10::make_intrusive<TpuWork>(std::move(result_tensors), rank, op_type,
                                       stream, std::move(completion));
+}
+
+// Returns the Work of a collective that produced `result_tensors`. During an FX
+// trace nothing runs on the device, so the Work is complete at once.
+c10::intrusive_ptr<c10d::Work> MakeCollectiveWork(
+    std::vector<at::Tensor> result_tensors, const int rank,
+    const c10d::OpType op_type) {
+  const EagerMode eager_mode = GetEagerMode();
+  if (eager_mode == EagerMode::kInternalCompileFxGraph ||
+      result_tensors.empty()) {
+    return c10::make_intrusive<TpuWork>(std::move(result_tensors), rank,
+                                        op_type);
+  }
+  TT_ASSIGN_OR_THROW(std::vector<DeviceBufferRef> buffers,
+                     GetBaseBuffers(result_tensors));
+  return MakeCollectiveWorkWithBuffers(std::move(result_tensors),
+                                       std::move(buffers), rank, op_type);
 }
 
 std::string DeviceBufferRefDebugString(const at::Tensor& input) {
@@ -513,19 +536,6 @@ absl::Status ValidateSplitSizesForAllToAllSingle(c10::IntArrayRef split_sizes,
   return absl::OkStatus();
 }
 
-bool IsEqualSplits(c10::IntArrayRef split_sizes) {
-  if (split_sizes.empty()) {
-    return true;
-  }
-  const int64_t first_size = split_sizes[0];
-  for (size_t i = 1; i < split_sizes.size(); ++i) {
-    if (split_sizes[i] != first_size) {
-      return false;
-    }
-  }
-  return true;
-}
-
 // Validates tensor list invariants for all-to-all: matching process group
 // sizes, matching dtypes, matching dimension counts, and matching trailing
 // feature dimensions (dim 1 onwards).
@@ -587,153 +597,338 @@ bool IsUniformAllToAll(const std::vector<at::Tensor>& output_tensors,
   return true;
 }
 
-// Offsets and slice sizes required for StableHLO ragged all-to-all custom
-// calls.
+// Converts `c10::elementSize()` byte counts into bit widths for
+// `Select1DRaggedAllToAllFactor`.
+constexpr int kBitsPerByte = 8;
+
+enum class RaggedBufferLayout {
+  kSymmetric,
+  kAsymmetric,
+};
+
+// Local offsets, slice sizes, and group-agreed attributes for uneven
+// `all_to_all_single`.
 struct RaggedAllToAllOffsets {
   std::vector<int32_t> input_offsets;
   std::vector<int32_t> send_sizes;
   std::vector<int32_t> output_offsets;
   std::vector<int32_t> recv_sizes;
+  int64_t flat_factor = 1;
+  RaggedBufferLayout buffer_layout = RaggedBufferLayout::kSymmetric;
+  bool uniform_equal_splits = false;
 };
 
-// Synchronizes destination output offsets across all ranks via c10d::Store.
-//
-// In the StableHLO ragged all-to-all custom call, each sender must supply
-// `output_offsets`, which defines the exact element offset on the destination
-// rank where the sender's data slice will land upon arrival. Because
-// destination offsets depend on the sum of slice sizes from all preceding ranks
-// (src < sender) arriving at that peer, ranks must exchange their local output
-// placement offsets so that rank `my_rank` can obtain `output_offsets[peer] =
-// peer_offsets[my_rank]`.
-//
-// Synchronization is performed synchronously on the host CPU at dispatch time,
-// before `DispatchOp` is called. Resolving `output_offsets` on the host allows:
-//   1. Baking offsets into `param_keys` (`OpParamCacheKeys`) for PJRT/XLA
-//      compilation cache lookups.
-//   2. Embedding offsets as `mlir::stablehlo::Constant` ops in the MLIR op
-//      builder.
-//
-// Note on Performance & Alternatives:
-//   Using `c10d::Store` introduces a synchronous host-side barrier on CPU
-//   threads across all nodes before kernel dispatch. An alternative design is
-//   to eliminate `c10d::Store` and compute `output_offsets` directly on TPU by
-//   emitting a 1-element-per-rank uniform `stablehlo::AllToAll` on
-//   `local_output_offsets` inside the MLIR graph. That would allow the entire
-//   offset exchange to run asynchronously over TPU Inter-Chip Interconnect
-//   (ICI) at sub-microsecond hardware speed.
-absl::StatusOr<std::vector<int32_t>> SynchronizeOutputOffsets(
-    c10d::Store* store, int my_rank, uint64_t seq,
-    absl::Span<const int32_t> local_output_offsets,
-    absl::Span<const int32_t> send_sizes, absl::Span<const int32_t> recv_sizes,
-    int32_t input_buffer_size, int32_t output_buffer_size) {
-  const size_t group_size = local_output_offsets.size();
-  std::vector<int32_t> output_offsets_vec(group_size, 0);
-  if (group_size <= 1) {
-    return output_offsets_vec;
+// Per-rank buffer metadata exchanged on the host to validate cross-rank splits
+// and agree on SPMD compilation attributes.
+struct RaggedAllToAllBufferInfo {
+  int32_t input_buffer_size = 0;
+  int32_t output_buffer_size = 0;
+  int64_t dispatch_input_size = 0;
+  int64_t dispatch_output_size = 0;
+  c10::ScalarType scalar_type = c10::ScalarType::Undefined;
+  int element_bitwidth = 0;
+  int32_t tensor_dim = 0;
+  uint64_t trailing_shape_fingerprint = 0;
+};
+
+struct SynchronizedRaggedAllToAllMetadata {
+  std::vector<int32_t> output_offsets;
+  int64_t group_gcd = 0;
+  RaggedBufferLayout buffer_layout = RaggedBufferLayout::kSymmetric;
+  bool uniform_equal_splits = false;
+};
+
+struct UnevenMetadataPayloadLayout {
+  size_t recv_sizes;
+  size_t send_sizes;
+  size_t in_cap;
+  size_t out_cap;
+  size_t local_gcd;
+  size_t scalar_type;
+  size_t tensor_dim;
+  size_t trailing_shape_fp_lo;
+  size_t trailing_shape_fp_hi;
+  size_t total_ints;
+};
+
+absl::StatusOr<std::vector<std::vector<uint8_t>>>
+ExchangeUnevenAllToAllPayloads(c10d::Store* store, int my_rank,
+                               size_t group_size, uint64_t seq,
+                               AllToAllShmNonceCache& shm_nonce_cache,
+                               const std::vector<uint8_t>& my_bytes);
+
+absl::StatusOr<int32_t> ValidateDimToInt32(const int64_t value,
+                                           const std::string_view label) {
+  // RaggedAllToAll metadata uses 32-bit offsets and counts, so reject sizes
+  // that would silently wrap before narrowing.
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Allocating >INT32_MAX elements per
+                 // rank exceeds test TPU HBM.
+      value >= 0 && value <= std::numeric_limits<int32_t>::max(),
+      error::kInvalidArgument)
+      << label << " (" << value << ") exceeds maximum supported int32_t size ("
+      << std::numeric_limits<int32_t>::max() << ")";
+  return static_cast<int32_t>(value);
+}
+
+bool PeerSplitsEqual(const absl::Span<const int32_t> splits,
+                     const int32_t expected_size) {
+  for (const int32_t split_size : splits) {
+    if (split_size != expected_size) {
+      return false;
+    }
   }
-  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Store is required for multi-rank
-                 // distributed setup.
+  return true;
+}
+
+absl::StatusOr<std::vector<int32_t>> BuildAllToAllSplitSizes(
+    const c10::IntArrayRef split_sizes, const int64_t total_dim0,
+    const size_t group_size) {
+  // PyTorch allows omitting one split vector while the other is uneven, so
+  // expand empty split lists into explicit uniform counts for validation.
+  if (split_sizes.empty()) {
+    TT_ASSIGN_OR_RETURN(
+        const int32_t chunk,
+        ValidateDimToInt32(total_dim0 / static_cast<int64_t>(group_size),
+                           "uniform split size"));
+    return std::vector<int32_t>(group_size, chunk);
+  }
+  std::vector<int32_t> result(group_size, 0);
+  for (size_t i = 0; i < group_size; ++i) {
+    TT_ASSIGN_OR_RETURN(result[i],
+                        ValidateDimToInt32(split_sizes[i], "split size"));
+  }
+  return result;
+}
+
+int RaggedAllToAllElementBitwidth(const c10::ScalarType scalar_type) {
+  // Bool, complex, quantized, and packed FP4 tensors do not map to contiguous
+  // 8-, 16-, or 32-bit `(8, 128)` TPU tiles, so return 0 to disable factoring.
+  if (scalar_type == c10::kBool || c10::isComplexType(scalar_type) ||
+      c10::isQIntType(scalar_type) || scalar_type == c10::kFloat4_e2m1fn_x2) {
+    return 0;
+  }
+  return static_cast<int>(c10::elementSize(scalar_type) * kBitsPerByte);
+}
+
+UnevenMetadataPayloadLayout MakeUnevenMetadataPayloadLayout(
+    const size_t group_size) {
+  return UnevenMetadataPayloadLayout{
+      .recv_sizes = 0,
+      .send_sizes = group_size,
+      .in_cap = 2 * group_size,
+      .out_cap = 2 * group_size + 1,
+      .local_gcd = 2 * group_size + 2,
+      .scalar_type = 2 * group_size + 3,
+      .tensor_dim = 2 * group_size + 4,
+      .trailing_shape_fp_lo = 2 * group_size + 5,
+      .trailing_shape_fp_hi = 2 * group_size + 6,
+      .total_ints = 2 * group_size + 7,
+  };
+}
+
+std::vector<uint8_t> SerializeUnevenMetadataPayload(
+    const UnevenMetadataPayloadLayout& layout,
+    const absl::Span<const int32_t> send_sizes,
+    const absl::Span<const int32_t> recv_sizes,
+    const RaggedAllToAllBufferInfo& buffer_info, const int64_t local_gcd) {
+  std::vector<int32_t> payload(layout.total_ints);
+  absl::c_copy(recv_sizes, payload.begin() + layout.recv_sizes);
+  absl::c_copy(send_sizes, payload.begin() + layout.send_sizes);
+  payload[layout.in_cap] = buffer_info.input_buffer_size;
+  payload[layout.out_cap] = buffer_info.output_buffer_size;
+  payload[layout.local_gcd] = static_cast<int32_t>(local_gcd);
+  payload[layout.scalar_type] = static_cast<int32_t>(buffer_info.scalar_type);
+  payload[layout.tensor_dim] = buffer_info.tensor_dim;
+  payload[layout.trailing_shape_fp_lo] = static_cast<int32_t>(
+      static_cast<uint32_t>(buffer_info.trailing_shape_fingerprint));
+  payload[layout.trailing_shape_fp_hi] = static_cast<int32_t>(
+      static_cast<uint32_t>(buffer_info.trailing_shape_fingerprint >> 32));
+
+  const auto* payload_bytes = reinterpret_cast<const uint8_t*>(payload.data());
+  return std::vector<uint8_t>(payload_bytes,
+                              payload_bytes + payload.size() * sizeof(int32_t));
+}
+
+absl::Status ValidateAndReducePeerPayload(
+    const size_t peer, const int my_rank, const size_t group_size,
+    const int32_t uniform_chunk, const UnevenMetadataPayloadLayout& layout,
+    const absl::Span<const uint8_t> peer_val,
+    const absl::Span<const int32_t> send_sizes,
+    const absl::Span<const int32_t> recv_sizes,
+    const RaggedAllToAllBufferInfo& buffer_info,
+    SynchronizedRaggedAllToAllMetadata& result) {
+  const size_t expected_payload_bytes = layout.total_ints * sizeof(int32_t);
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Peers exchange fixed-size payloads.
+      peer_val.size() == expected_payload_bytes, error::kInternal)
+      << "peer " << peer << " payload size mismatch: " << peer_val.size();
+  const absl::Span<const int32_t> peer_data(
+      reinterpret_cast<const int32_t*>(peer_val.data()), layout.total_ints);
+
+  // Verify both directions of the pairwise contract so every rank fails fast
+  // before dispatching mismatched RDMAs onto the TPU.
+  const int32_t peer_expected_recv = peer_data[layout.recv_sizes + my_rank];
+  TT_RET_CHECK(peer_expected_recv == send_sizes[peer], error::kInvalidArgument)
+      << "send and recv slice size mismatch between rank " << my_rank
+      << " and peer rank " << peer << ": rank " << my_rank << " sends "
+      << send_sizes[peer] << " elements, but peer rank " << peer
+      << " expects to receive " << peer_expected_recv;
+
+  const int32_t peer_send_to_me = peer_data[layout.send_sizes + my_rank];
+  TT_RET_CHECK(peer_send_to_me == recv_sizes[peer], error::kInvalidArgument)
+      << "send and recv slice size mismatch between peer rank " << peer
+      << " and rank " << my_rank << ": peer rank " << peer << " sends "
+      << peer_send_to_me << " elements, but rank " << my_rank
+      << " expects to receive " << recv_sizes[peer];
+
+  // PyTorch only validates input vs. output dtype on the local rank, so check
+  // cross-rank agreement here before emitting an SPMD collective.
+  const auto peer_scalar_type =
+      static_cast<c10::ScalarType>(peer_data[layout.scalar_type]);
+  TT_RET_CHECK(peer_scalar_type == buffer_info.scalar_type,
+               error::kInvalidArgument)
+      << "expected matching element dtype across ranks, got "
+      << ToString(buffer_info.scalar_type) << " on rank " << my_rank << " and "
+      << ToString(peer_scalar_type) << " on peer rank " << peer;
+
+  // All ranks must agree on tensor rank and trailing dimensions so every
+  // replica chooses the same 1D factoring factor and SPMD HLO shape.
+  const int32_t peer_tensor_dim = peer_data[layout.tensor_dim];
+  const uint64_t peer_trailing_fp =
+      (static_cast<uint64_t>(
+           static_cast<uint32_t>(peer_data[layout.trailing_shape_fp_hi]))
+       << 32) |
+      static_cast<uint64_t>(
+          static_cast<uint32_t>(peer_data[layout.trailing_shape_fp_lo]));
+  TT_RET_CHECK(peer_tensor_dim == buffer_info.tensor_dim &&
+                   peer_trailing_fp == buffer_info.trailing_shape_fingerprint,
+               error::kInvalidArgument)
+      << "expected matching tensor rank and trailing dimensions across ranks "
+         "for all_to_all_single, got rank "
+      << buffer_info.tensor_dim << " on rank " << my_rank << " and rank "
+      << peer_tensor_dim << " on peer rank " << peer;
+
+  // All ranks must agree on whether capacities are symmetric and whether every
+  // peer's splits are uniform so every replica selects the same collective op.
+  const int32_t peer_input_size = peer_data[layout.in_cap];
+  const int32_t peer_output_size = peer_data[layout.out_cap];
+  if (peer_input_size != buffer_info.input_buffer_size ||
+      peer_output_size != buffer_info.output_buffer_size) {
+    result.buffer_layout = RaggedBufferLayout::kAsymmetric;
+    result.uniform_equal_splits = false;
+  } else if (result.uniform_equal_splits &&
+             (!PeerSplitsEqual(peer_data.subspan(layout.send_sizes, group_size),
+                               uniform_chunk) ||
+              !PeerSplitsEqual(peer_data.subspan(layout.recv_sizes, group_size),
+                               uniform_chunk))) {
+    result.uniform_equal_splits = false;
+  }
+
+  // `ragged_all_to_all` writes rank `my_rank`'s slice into `peer`'s output
+  // buffer directly after slices received from ranks `0..my_rank - 1`.
+  result.output_offsets[peer] = absl::c_accumulate(
+      peer_data.subspan(layout.recv_sizes, my_rank), int32_t{0});
+  // Reduce `group_gcd` across every peer so all ranks pick the exact same 1D
+  // factoring factor and emit identical SPMD tensor ranks.
+  result.group_gcd = std::gcd(
+      result.group_gcd, static_cast<int64_t>(peer_data[layout.local_gcd]));
+  return absl::OkStatus();
+}
+
+// Validates pairwise split sizes and dtypes across ranks, reduces SPMD
+// compilation invariants (`group_gcd`, `uniform_equal_splits`, and
+// `buffer_layout`), and derives remote `output_offsets` from peer `recv_sizes`.
+absl::StatusOr<SynchronizedRaggedAllToAllMetadata>
+SynchronizeRaggedAllToAllMetadata(c10d::Store* const store, const int my_rank,
+                                  std::atomic<uint64_t>& seq_counter,
+                                  AllToAllShmNonceCache& shm_nonce_cache,
+                                  const absl::Span<const int32_t> send_sizes,
+                                  const absl::Span<const int32_t> recv_sizes,
+                                  const RaggedAllToAllBufferInfo& buffer_info,
+                                  const int64_t local_gcd) {
+  const size_t group_size = send_sizes.size();
+  SynchronizedRaggedAllToAllMetadata result{
+      .output_offsets = std::vector<int32_t>(group_size, 0),
+      .group_gcd = local_gcd,
+  };
+  // A single-rank group has no peers to validate or coordinate with.
+  if (group_size <= 1) {
+    return result;
+  }
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Store is required for multi-rank setup.
       store != nullptr, error::kInvalidArgument)
       << "c10d::Store is required for multi-rank uneven all-to-all";
-  std::string key_prefix = absl::StrCat("alltoall_offsets:", seq, ":");
-  std::string my_key = absl::StrCat(key_prefix, my_rank);
 
-  // 1. Publish local output offsets, recv_sizes, and buffer capacities to
-  // c10d::Store unconditionally first to prevent deadlocks in multiGet.
-  const size_t payload_ints = 2 * group_size + 2;
-  std::vector<int32_t> my_payload(payload_ints);
-  absl::c_copy(local_output_offsets, my_payload.begin());
-  absl::c_copy(recv_sizes, my_payload.begin() + group_size);
-  my_payload[2 * group_size] = input_buffer_size;
-  my_payload[2 * group_size + 1] = output_buffer_size;
+  const int64_t total_send_size = absl::c_accumulate(send_sizes, int64_t{0});
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Checked in ValidateSplitSizes.
+      total_send_size <= buffer_info.input_buffer_size, error::kInvalidArgument)
+      << "expected sum of send_sizes to be <= input buffer size, got "
+      << total_send_size << " and " << buffer_info.input_buffer_size;
+  const int64_t total_recv_size = absl::c_accumulate(recv_sizes, int64_t{0});
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Checked in ValidateSplitSizes.
+      total_recv_size <= buffer_info.output_buffer_size,
+      error::kInvalidArgument)
+      << "expected sum of recv_sizes to be <= output buffer size, got "
+      << total_recv_size << " and " << buffer_info.output_buffer_size;
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Buffer sizes fit in int32_t.
+      local_gcd >= 0 && local_gcd <= std::numeric_limits<int32_t>::max(),
+      error::kInternal)
+      << "1D all-to-all local gcd out of int32 range: " << local_gcd;
 
-  std::vector<uint8_t> my_bytes(payload_ints * sizeof(int32_t));
-  std::memcpy(my_bytes.data(), my_payload.data(), my_bytes.size());
-  store->set(my_key, my_bytes);
+  const uint64_t seq = seq_counter.fetch_add(1, std::memory_order_relaxed);
+  const UnevenMetadataPayloadLayout layout =
+      MakeUnevenMetadataPayloadLayout(group_size);
+  const std::vector<uint8_t> my_bytes = SerializeUnevenMetadataPayload(
+      layout, send_sizes, recv_sizes, buffer_info, local_gcd);
 
-  // 2. Fetch destination offsets and metadata from all peer ranks.
-  std::vector<std::string> peer_keys;
-  peer_keys.reserve(group_size);
-  for (size_t peer = 0; peer < group_size; ++peer) {
-    peer_keys.push_back(absl::StrCat(key_prefix, peer));
-  }
-  std::vector<std::vector<uint8_t>> peer_values = store->multiGet(peer_keys);
-  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=multiGet returns group_size values or
-                 // fails.
+  TT_ASSIGN_OR_RETURN(
+      const std::vector<std::vector<uint8_t>> peer_values,
+      ExchangeUnevenAllToAllPayloads(store, my_rank, group_size, seq,
+                                     shm_nonce_cache, my_bytes));
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Store exchange returns group_size rows.
       peer_values.size() == group_size, error::kInternal)
       << "expected " << group_size << " peer values, got "
       << peer_values.size();
 
-  // 3. Extract destination offsets, verify send/recv slice size agreement, and
-  // verify symmetric buffer capacities across all ranks.
-  const size_t expected_payload_bytes = payload_ints * sizeof(int32_t);
+  // Only non-empty, evenly divisible symmetric buffers can lower to the
+  // uniform `stablehlo.all_to_all` fast path.
+  const bool can_be_uniform_equal =
+      buffer_info.input_buffer_size > 0 &&
+      buffer_info.input_buffer_size == buffer_info.output_buffer_size &&
+      buffer_info.input_buffer_size % static_cast<int32_t>(group_size) == 0;
+  const int32_t uniform_chunk =
+      can_be_uniform_equal
+          ? buffer_info.input_buffer_size / static_cast<int32_t>(group_size)
+          : 0;
+  result.uniform_equal_splits = can_be_uniform_equal;
+
+  // Reduce across every peer (including `my_rank`) so all ranks compute the
+  // exact same `buffer_layout`, `uniform_equal_splits`, and `group_gcd`.
   for (size_t peer = 0; peer < group_size; ++peer) {
-    const auto& peer_val = peer_values[peer];
-    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Peers always exchange fixed size
-                   // payload.
-        peer_val.size() == expected_payload_bytes, error::kInternal)
-        << "peer " << peer << " payload size mismatch: " << peer_val.size();
-    const int32_t* peer_data =
-        reinterpret_cast<const int32_t*>(peer_val.data());
-
-    // Verify symmetric buffer capacities across ranks to prevent RDMA address
-    // divergence on TPU hardware.
-    const int32_t peer_input_size = peer_data[2 * group_size];
-    TT_RET_CHECK(peer_input_size == input_buffer_size, error::kInvalidArgument)
-        << "asymmetric input buffer sizes across ranks are not supported on "
-           "TPU. "
-        << "Rank " << my_rank << " has input buffer size " << input_buffer_size
-        << ", but peer rank " << peer << " has input buffer size "
-        << peer_input_size
-        << ". All ranks must allocate symmetric input buffer "
-        << "capacities; use padding if necessary";
-
-    const int32_t peer_output_size = peer_data[2 * group_size + 1];
-    TT_RET_CHECK(peer_output_size == output_buffer_size,
-                 error::kInvalidArgument)
-        << "asymmetric output buffer sizes across ranks are not supported on "
-           "TPU. "
-        << "Rank " << my_rank << " has output buffer size "
-        << output_buffer_size << ", but peer rank " << peer
-        << " has output buffer size " << peer_output_size
-        << ". All ranks must allocate symmetric output buffer "
-        << "capacities; use padding if necessary";
-
-    // Verify pairwise communication contract: peer's expected receive size from
-    // my_rank must match what my_rank is sending to peer.
-    const int32_t peer_expected_recv = peer_data[group_size + my_rank];
-    TT_RET_CHECK(peer_expected_recv == send_sizes[peer],
-                 error::kInvalidArgument)
-        << "send and recv slice size mismatch between rank " << my_rank
-        << " and peer rank " << peer << ": rank " << my_rank << " sends "
-        << send_sizes[peer] << " elements, but peer rank " << peer
-        << " expects to receive " << peer_expected_recv;
-
-    output_offsets_vec[peer] = peer_data[my_rank];
+    TT_RETURN_IF_ERROR(ValidateAndReducePeerPayload(
+        peer, my_rank, group_size, uniform_chunk, layout, peer_values[peer],
+        send_sizes, recv_sizes, buffer_info, result));
   }
-  return output_offsets_vec;
+  return result;
 }
 
-// Computes local input offsets via prefix sums over send_sizes, computes local
-// output slice offsets over recv_sizes, and coordinates with peer ranks via
-// SynchronizeOutputOffsets to obtain remote destination output offsets required
-// by the StableHLO ragged_all_to_all collective.
 absl::StatusOr<RaggedAllToAllOffsets> ComputeRaggedAllToAllOffsets(
-    c10d::Store* store, int rank, uint64_t seq,
-    absl::Span<const int32_t> send_sizes, absl::Span<const int32_t> recv_sizes,
-    int32_t input_buffer_size, int32_t output_buffer_size) {
+    c10d::Store* const store, const int rank,
+    std::atomic<uint64_t>& seq_counter, AllToAllShmNonceCache& shm_nonce_cache,
+    const absl::Span<const int32_t> send_sizes,
+    const absl::Span<const int32_t> recv_sizes,
+    const RaggedAllToAllBufferInfo& buffer_info) {
   const size_t group_size = send_sizes.size();
   RaggedAllToAllOffsets offsets{
       .input_offsets = std::vector<int32_t>(group_size, 0),
       .send_sizes = std::vector<int32_t>(send_sizes.begin(), send_sizes.end()),
-      .output_offsets = std::vector<int32_t>(group_size, 0),
       .recv_sizes = std::vector<int32_t>(recv_sizes.begin(), recv_sizes.end()),
   };
   std::vector<int32_t> local_output_offsets(group_size, 0);
   int32_t in_offset = 0;
   int32_t out_offset = 0;
-  // Compute local send buffer slice offsets (input_offsets) and local receive
-  // buffer placement offsets (local_output_offsets) via prefix sums.
+  // Accumulate prefix sums so each peer slice starts immediately after prior
+  // ranks. Include `local_output_offsets` in `local_gcd` so remote write
+  // offsets stay aligned to 1024-element tiles when 1D factoring is active.
   for (size_t i = 0; i < group_size; ++i) {
     offsets.input_offsets[i] = in_offset;
     in_offset += send_sizes[i];
@@ -741,18 +936,39 @@ absl::StatusOr<RaggedAllToAllOffsets> ComputeRaggedAllToAllOffsets(
     out_offset += recv_sizes[i];
   }
 
-  // Synchronize with all peer ranks to determine where outgoing slices land
-  // on remote destination buffers and verify symmetric buffer allocations.
-  TT_ASSIGN_OR_RETURN(offsets.output_offsets,
-                      SynchronizeOutputOffsets(
-                          store, rank, seq, local_output_offsets, send_sizes,
-                          recv_sizes, input_buffer_size, output_buffer_size));
+  const int64_t local_gcd = Compute1DRaggedAllToAllLocalGcd(
+      buffer_info.dispatch_input_size, buffer_info.dispatch_output_size,
+      offsets.input_offsets, send_sizes, local_output_offsets, recv_sizes);
+
+  TT_ASSIGN_OR_RETURN(SynchronizedRaggedAllToAllMetadata synchronized,
+                      SynchronizeRaggedAllToAllMetadata(
+                          store, rank, seq_counter, shm_nonce_cache, send_sizes,
+                          recv_sizes, buffer_info, local_gcd));
+  offsets.output_offsets = std::move(synchronized.output_offsets);
+  offsets.buffer_layout = synchronized.buffer_layout;
+  offsets.uniform_equal_splits = synchronized.uniform_equal_splits;
+  offsets.flat_factor = Select1DRaggedAllToAllFactor(
+      synchronized.group_gcd, buffer_info.element_bitwidth);
+
+  // Reject unfactored asymmetric buffers because differing per-rank capacities
+  // can diverge in XLA:TPU HBM layout padding, whereas 1024-element factored
+  // 3D shapes share identical `(8, 128)` tile strides across all ranks.
+  TT_RET_CHECK(synchronized.buffer_layout != RaggedBufferLayout::kAsymmetric ||
+                   offsets.flat_factor == k1DRaggedAllToAllTileElements,
+               error::kInvalidArgument)
+      << "asymmetric all_to_all_single buffer sizes across ranks (rank " << rank
+      << ": input " << buffer_info.input_buffer_size << ", output "
+      << buffer_info.output_buffer_size
+      << ") are only supported on TPU for 1D tensors whose sizes, split "
+         "sizes, and offsets on every rank are multiples of "
+      << k1DRaggedAllToAllTileElements << " elements";
   return offsets;
 }
 
 // Populates kernel cache parameter keys for ragged all-to-all collectives.
 absl::Status SetRaggedAllToAllParamKeys(OpParamCacheKeys& param_keys,
                                         const RaggedAllToAllOffsets& offsets) {
+  TT_RETURN_IF_ERROR(param_keys.SetParam("flat_factor", offsets.flat_factor));
   TT_RETURN_IF_ERROR(
       param_keys.SetParam("input_offsets", offsets.input_offsets));
   TT_RETURN_IF_ERROR(param_keys.SetParam("send_sizes", offsets.send_sizes));
@@ -1748,7 +1964,9 @@ struct NodeLocalStoreConfig {
 // default config (no local store, so every rank publishes on its own) when the
 // node layout (LOCAL_RANK and TORCH_TPU_DEVICES_PER_HOST) is unknown or the
 // store is unavailable.
-absl::StatusOr<NodeLocalStoreConfig> GetNodeLocalStore(int64_t world_size) {
+absl::StatusOr<NodeLocalStoreConfig> GetNodeLocalStore(
+    const int64_t world_size,
+    const std::optional<std::chrono::milliseconds> min_timeout = std::nullopt) {
   const std::optional<int64_t> local_rank =
       GetIntegerEnvOnce<kLocalRankEnvVar>();
   const std::optional<int64_t> local_world_size =
@@ -1789,11 +2007,142 @@ absl::StatusOr<NodeLocalStoreConfig> GetNodeLocalStore(int64_t world_size) {
   static absl::NoDestructor<c10::intrusive_ptr<c10d::FileStore>> shm_store(
       c10::make_intrusive<c10d::FileStore>(
           shm_path, static_cast<int>(*local_world_size)));
+  // Raise the cached FileStore timeout whenever a caller passes a larger
+  // timeout so later PGs or subgroups do not fail early on `/dev/shm` waits.
+  if (min_timeout.has_value()) {
+    static absl::NoDestructor<absl::Mutex> shm_timeout_mu;
+    absl::MutexLock lock(*shm_timeout_mu);
+    if (*min_timeout > (*shm_store)->getTimeout()) {
+      (*shm_store)->setTimeout(*min_timeout);
+    }
+  }
   return NodeLocalStoreConfig{
       .store = shm_store->get(),
       .local_rank = *local_rank,
       .local_world_size = *local_world_size,
   };
+}
+
+std::atomic<uint64_t> next_alltoall_shm_nonce{0};
+
+// Coordinates a per-PG nonce once over `store` so `/dev/shm` metadata keys
+// never collide across `destroy_process_group()`/`init_process_group()` cycles
+// or repeated launches sharing the same parent PID.
+absl::StatusOr<std::string> GetOrInitAllToAllShmNonce(
+    c10d::Store* const store, const int my_rank,
+    AllToAllShmNonceCache& shm_nonce_cache) {
+  {
+    absl::MutexLock lock(shm_nonce_cache.mu);
+    if (!shm_nonce_cache.value.empty()) {
+      return shm_nonce_cache.value;
+    }
+  }
+  constexpr std::string_view kNonceKey = "a2a_meta_shm_nonce";
+  std::string nonce;
+  if (my_rank == 0) {
+    nonce = absl::StrCat(
+        static_cast<int>(getpid()), "_", absl::GetCurrentTimeNanos(), "_",
+        next_alltoall_shm_nonce.fetch_add(1, std::memory_order_relaxed));
+    const std::vector<uint8_t> nonce_bytes(nonce.begin(), nonce.end());
+    TT_RETURN_IF_ERROR(CallStore("group_store set a2a_meta_shm_nonce",
+                                 [&] {  // REF_CAPTURE_OK=called synchronously
+                                   store->set(std::string(kNonceKey),
+                                              nonce_bytes);
+                                 }));
+  } else {
+    TT_ASSIGN_OR_RETURN(const std::vector<uint8_t> nonce_bytes,
+                        CallStore("group_store get a2a_meta_shm_nonce",
+                                  [&] {  // REF_CAPTURE_OK=called synchronously
+                                    return store->get(std::string(kNonceKey));
+                                  }));
+    nonce.assign(nonce_bytes.begin(), nonce_bytes.end());
+  }
+  absl::MutexLock lock(shm_nonce_cache.mu);
+  if (shm_nonce_cache.value.empty()) {
+    shm_nonce_cache.value = std::move(nonce);
+  }
+  return shm_nonce_cache.value;
+}
+
+std::vector<std::string> BuildPeerKeys(const std::string_view key_prefix,
+                                       const size_t group_size) {
+  std::vector<std::string> peer_keys;
+  peer_keys.reserve(group_size);
+  for (size_t peer = 0; peer < group_size; ++peer) {
+    peer_keys.push_back(absl::StrCat(key_prefix, peer));
+  }
+  return peer_keys;
+}
+
+absl::StatusOr<std::vector<std::vector<uint8_t>>> ExchangeViaStore(
+    c10d::Store* const store, const std::string_view store_label,
+    const std::string_view key_prefix, const int my_rank,
+    const size_t group_size, const std::vector<uint8_t>& my_bytes) {
+  const std::string my_key = absl::StrCat(key_prefix, my_rank);
+  const std::vector<std::string> peer_keys =
+      BuildPeerKeys(key_prefix, group_size);
+  // Publish this rank's payload before `multiGet` so peer fetches cannot
+  // deadlock waiting on an unwritten key.
+  TT_RETURN_IF_ERROR(CallStore(absl::StrCat(store_label, " set ", my_key),
+                               [&] {  // REF_CAPTURE_OK=called synchronously
+                                 store->set(my_key, my_bytes);
+                               }));
+  return CallStore(absl::StrCat(store_label, " multiGet a2a_meta"),
+                   [&] {  // REF_CAPTURE_OK=called synchronously
+                     return store->multiGet(peer_keys);
+                   });
+}
+
+// Selects the lowest-latency safe store path for uneven all-to-all host
+// validation: direct `/dev/shm` `FileStore` on single-host topologies,
+// `AllGatherViaNodeLocalStore` on multi-host world-sized groups, and the group
+// store otherwise.
+absl::StatusOr<std::vector<std::vector<uint8_t>>>
+ExchangeUnevenAllToAllPayloads(c10d::Store* const store, const int my_rank,
+                               const size_t group_size, const uint64_t seq,
+                               AllToAllShmNonceCache& shm_nonce_cache,
+                               const std::vector<uint8_t>& my_bytes) {
+  const int64_t global_world_size =
+      static_cast<int64_t>(GetGlobalRankToDeviceId().size());
+  if (global_world_size > 0) {
+    TT_ASSIGN_OR_RETURN(
+        const NodeLocalStoreConfig node_local,
+        GetNodeLocalStore(global_world_size,
+                          store != nullptr ? std::optional(store->getTimeout())
+                                           : std::nullopt));
+    if (node_local.store != nullptr && node_local.local_world_size > 1) {
+      const UnwrappedStoreChain unwrapped = UnwrapPrefixStoreChain(store);
+      TT_ASSIGN_OR_RETURN(
+          const std::string shm_nonce,
+          GetOrInitAllToAllShmNonce(store, my_rank, shm_nonce_cache));
+      const std::string key_prefix = absl::StrCat(
+          unwrapped.full_prefix, "/a2a_meta:", shm_nonce, ":", seq, ":");
+      // All world ranks share one host, so both world-sized groups and
+      // subgroups can exchange directly through `/dev/shm` without TCP traffic.
+      if (global_world_size == node_local.local_world_size) {
+        return ExchangeViaStore(node_local.store, "local_store", key_prefix,
+                                my_rank, group_size, my_bytes);
+      }
+      // On multi-host world-sized groups, aggregate per-host payloads through
+      // one node leader so cross-host store traffic scales as O(nodes).
+      if (unwrapped.root_store != nullptr &&
+          static_cast<int64_t>(group_size) == global_world_size) {
+        const std::string my_key = absl::StrCat(key_prefix, my_rank);
+        const std::vector<std::string> peer_keys =
+            BuildPeerKeys(key_prefix, group_size);
+        const std::string_view my_val(
+            reinterpret_cast<const char*>(my_bytes.data()), my_bytes.size());
+        return AllGatherViaNodeLocalStore(
+            unwrapped.root_store, node_local.store, node_local.local_rank,
+            node_local.local_world_size, my_key, my_val, peer_keys);
+      }
+    }
+  }
+  // Multi-host subgroups and setups without `/dev/shm` cannot assume peers
+  // share a host or span every node, so fall back to the group store.
+  const std::string key_prefix = absl::StrCat("a2a_meta:", seq, ":");
+  return ExchangeViaStore(store, "group_store", key_prefix, my_rank, group_size,
+                          my_bytes);
 }
 
 std::atomic<int64_t> next_subgroup_gather_id{0};
@@ -1923,8 +2272,11 @@ absl::Status ProcessGroupTpu::InitializeRankToDeviceMappings(
   for (int64_t r = 0; r < world_size; ++r) {
     peer_keys[r] = absl::StrFormat("world_topo:%d", r);
   }
-  TT_ASSIGN_OR_RETURN(const NodeLocalStoreConfig local,
-                      GetNodeLocalStore(world_size));
+  TT_ASSIGN_OR_RETURN(
+      const NodeLocalStoreConfig local,
+      GetNodeLocalStore(world_size, store_ != nullptr
+                                        ? std::optional(store_->getTimeout())
+                                        : std::nullopt));
   TT_ASSIGN_OR_RETURN(
       const std::vector<std::vector<uint8_t>> peer_values,
       AllGatherViaNodeLocalStore(
@@ -2208,8 +2560,11 @@ ProcessGroupTpu::ProcessGroupTpu(c10::intrusive_ptr<c10d::Store> store,
         DeviceGroupList(std::move(unique_subgroups), /*normalize=*/false);
   } else if (size_ == world_size ||
              dynamic_cast<c10d::PrefixStore*>(store_.get()) != nullptr) {
-    TT_ASSIGN_OR_THROW(const NodeLocalStoreConfig local,
-                       GetNodeLocalStore(world_size));
+    TT_ASSIGN_OR_THROW(
+        const NodeLocalStoreConfig local,
+        GetNodeLocalStore(world_size, store_ != nullptr
+                                          ? std::optional(store_->getTimeout())
+                                          : std::nullopt));
     const int64_t gather_id = next_subgroup_gather_id.fetch_add(1);
     TT_THROW_IF_ERROR(GatherSubgroupsViaNodeLocalStore(
         store_.get(), local.store, local.local_rank, local.local_world_size,
@@ -3024,11 +3379,15 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::alltoall_base(
               TT_THROW_IF_ERROR(ValidateSplitSizesForAllToAllSingle(
                   output_split_sizes, output, group_size));
 
-              const bool equal_input_splits = IsEqualSplits(input_split_sizes);
-              const bool equal_output_splits =
-                  IsEqualSplits(output_split_sizes);
+              // Take the equal-splits fast path only when both split lists are
+              // empty and shapes match. Explicit split lists or mismatched
+              // local shapes must validate pairwise peer contracts first.
+              const bool use_equal_splits_fast_path =
+                  output.sizes() == input.sizes() &&
+                  output_split_sizes.empty() && input_split_sizes.empty();
 
-              if (equal_input_splits && equal_output_splits) {
+              std::optional<DeviceBufferRef> zero_elem_buf;
+              if (use_equal_splits_fast_path) {
                 TT_ASSIGN_OR_THROW(DeviceBufferRef result_buf,
                                    AllToAllBaseEqualSplits(output, input));
                 TT_THROW_IF_ERROR(
@@ -3038,17 +3397,106 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::alltoall_base(
                     DeviceBufferRef result_buf,
                     AllToAllBaseUnevenSplits(output, input, output_split_sizes,
                                              input_split_sizes));
-                TT_THROW_IF_ERROR(
-                    AssignBufferToAtTensor(std::move(result_buf), output));
+                // A 0-element output was dispatched with a 1-tile dummy buffer
+                // whose shape differs from `output`. Keep that dummy buffer
+                // directly so async work tracking or sync materialization
+                // still executes the collective on this rank.
+                if (output.numel() > 0) {
+                  TT_THROW_IF_ERROR(
+                      AssignBufferToAtTensor(std::move(result_buf), output));
+                } else {
+                  zero_elem_buf = std::move(result_buf);
+                }
               }
 
               if (async) {
+                if (zero_elem_buf.has_value()) {
+                  return MakeCollectiveWorkWithBuffers(
+                      std::vector<at::Tensor>{output},
+                      std::vector<DeviceBufferRef>{*std::move(zero_elem_buf)},
+                      rank, c10d::OpType::ALLTOALL_BASE);
+                }
                 return MakeCollectiveWork(std::vector<at::Tensor>{output}, rank,
                                           c10d::OpType::ALLTOALL_BASE);
+              }
+              if (zero_elem_buf.has_value()) {
+                TT_THROW_IF_ERROR(Materialize(
+                    *zero_elem_buf, MaterializationReason::kDistributedOp));
               }
               return nullptr;
             });
 }
+
+namespace {
+
+// Materializes `tensor` into an allocated device buffer when its buffer or
+// underlying storage base is still an unmaterialized constant or empty op.
+absl::StatusOr<at::Tensor> MaterializeIfConstant(const at::Tensor& tensor) {
+  TT_ASSIGN_OR_RETURN(DeviceBufferRef buf, GetBuffer(tensor));
+  TT_ASSIGN_OR_RETURN(DeviceBufferRef base_buf, GetBaseBuffer(tensor));
+  // Skip materializing non-constant tensors so deferred ops on the stream do
+  // not flush unnecessarily.
+  if (!buf.is_constant() && !base_buf.is_constant()) {
+    return tensor;
+  }
+  TT_RETURN_IF_ERROR(Materialize(buf, MaterializationReason::kDistributedOp));
+  // Return `tensor` directly when `buf` is already its storage base so we do
+  // not wrap the base buffer in a second `c10::DataPtr`. For a view of a
+  // constant base, return `MakeTensor(buf)` so `DispatchOp` consumes the
+  // materialized slice instead of re-slicing the still-constant base.
+  if (buf.device_buffer_list() == base_buf.device_buffer_list() &&
+      buf.index() == base_buf.index()) {
+    return tensor;
+  }
+  return MakeTensor(std::move(buf));
+}
+
+// Substitutes a 1-tile dummy buffer when `tensor` has 0 rows along dim 0 so
+// XLA does not fold 0-element reshapes or reject output buffer aliasing in the
+// XLA:TPU backend.
+absl::StatusOr<at::Tensor> SubstituteZeroRowDispatchTensor(
+    const at::Tensor& tensor) {
+  if (tensor.size(0) != 0) {
+    return tensor;
+  }
+  Dimensions dummy_sizes = CopyIntVector(tensor.sizes());
+  // Use 1024 elements for 1D tensors so this rank keeps tile alignment with
+  // non-empty 1D peers during `(8, 128)` factoring.
+  dummy_sizes[0] = (tensor.dim() == 1) ? k1DRaggedAllToAllTileElements : 1;
+  return MakeEmptyTensor(dummy_sizes, tensor.scalar_type(), tensor.device());
+}
+
+absl::StatusOr<DeviceBufferRef> DispatchUnevenAllToAll(
+    const at::Tensor& materialized_input, const at::Tensor& materialized_output,
+    RaggedAllToAllOffsets offsets, const DeviceGroupList& replica_groups,
+    const DeviceAssignment& dev_assignment) {
+  TT_ASSIGN_OR_RETURN(auto param_keys,
+                      TT_MAKE_OP_PARAM_CACHE_KEYS(replica_groups));
+  TT_RETURN_IF_ERROR(SetRaggedAllToAllParamKeys(param_keys, offsets));
+
+  auto op_builder =
+      [device_groups = replica_groups,
+       offsets = std::move(offsets)](FixedSizeSpan<mlir::MlirOp, 2> inputs) {
+        auto& [in_op, out_op] = inputs;
+        return BuildDistributedAllToAllBaseUnevenSplitsShlo(
+            in_op, out_op, offsets.input_offsets, offsets.send_sizes,
+            offsets.output_offsets, offsets.recv_sizes, offsets.flat_factor,
+            device_groups);
+      };
+
+  TT_ASSIGN_OR_RETURN(
+      auto output_dtype,
+      ConvertTo<mlir::ElementType>(materialized_output.scalar_type()));
+  return DispatchOp<2>(std::move(op_builder),
+                       {materialized_input, materialized_output},
+                       {.out_dtype = output_dtype,
+                        .out_dims = materialized_output.sizes(),
+                        .op_param_cache_keys = std::move(param_keys),
+                        .split_mode = GetCollectiveSplitMode(),
+                        .device_assignment = dev_assignment});
+}
+
+}  // namespace
 
 absl::StatusOr<DeviceBufferRef> ProcessGroupTpu::AllToAllBaseEqualSplits(
     at::Tensor& output, at::Tensor& input) {
@@ -3080,9 +3528,6 @@ absl::StatusOr<DeviceBufferRef> ProcessGroupTpu::AllToAllBaseEqualSplits(
 absl::StatusOr<DeviceBufferRef> ProcessGroupTpu::AllToAllBaseUnevenSplits(
     at::Tensor& output, at::Tensor& input, c10::IntArrayRef output_split_sizes,
     c10::IntArrayRef input_split_sizes) {
-  // 1. Validate tensor shapes and rank compatibility.
-  // Both input and output must have identical dimension rank (e.g. both 2D),
-  // and all trailing feature dimensions (dim 1 onwards) must match exactly.
   auto& maybe_materialized_input_tensor = input;
   TT_RET_CHECK(output.dim() == input.dim(), error::kInvalidArgument)
       << "expected input and output tensors to have the same number of "
@@ -3093,82 +3538,65 @@ absl::StatusOr<DeviceBufferRef> ProcessGroupTpu::AllToAllBaseUnevenSplits(
       << input.sizes() << " and " << output.sizes();
 
   const size_t group_size = replica_groups_[0].size();
+  TT_ASSIGN_OR_RETURN(
+      const std::vector<int32_t> send_sizes,
+      BuildAllToAllSplitSizes(input_split_sizes, input.size(0), group_size));
+  TT_ASSIGN_OR_RETURN(
+      const std::vector<int32_t> recv_sizes,
+      BuildAllToAllSplitSizes(output_split_sizes, output.size(0), group_size));
+  TT_ASSIGN_OR_RETURN(const int32_t input_buffer_size,
+                      ValidateDimToInt32(input.size(0), "input dim 0"));
+  TT_ASSIGN_OR_RETURN(const int32_t output_buffer_size,
+                      ValidateDimToInt32(output.size(0), "output dim 0"));
 
-  // 2. Compute slice sizes for sending and receiving.
-  const bool uniform_input = input_split_sizes.empty();
-  const bool uniform_output = output_split_sizes.empty();
-  const int32_t uniform_input_size =
-      uniform_input ? static_cast<int32_t>(input.size(0) / group_size) : 0;
-  const int32_t uniform_output_size =
-      uniform_output ? static_cast<int32_t>(output.size(0) / group_size) : 0;
+  TT_ASSIGN_OR_RETURN(
+      at::Tensor dispatch_input,
+      SubstituteZeroRowDispatchTensor(maybe_materialized_input_tensor));
+  TT_ASSIGN_OR_RETURN(at::Tensor dispatch_output,
+                      SubstituteZeroRowDispatchTensor(output));
 
-  std::vector<int32_t> send_sizes(group_size, 0);
-  std::vector<int32_t> recv_sizes(group_size, 0);
-  for (size_t i = 0; i < group_size; ++i) {
-    send_sizes[i] = uniform_input ? uniform_input_size
-                                  : static_cast<int32_t>(input_split_sizes[i]);
-    recv_sizes[i] = uniform_output
-                        ? uniform_output_size
-                        : static_cast<int32_t>(output_split_sizes[i]);
+  // Only 1D tensors suffer degenerate rank-1 lane padding and qualify for
+  // `(8, 128)` tile factoring. Setting `element_bitwidth` to 0 for ND tensors
+  // keeps them unfactored.
+  const int element_bitwidth =
+      (dispatch_input.dim() == 1 && dispatch_output.dim() == 1)
+          ? RaggedAllToAllElementBitwidth(dispatch_input.scalar_type())
+          : 0;
+  const c10::IntArrayRef trailing_dims = input.sizes().slice(1);
+  const uint64_t trailing_shape_fp = Fingerprint(
+      absl::Span<const int64_t>(trailing_dims.data(), trailing_dims.size()));
+  const RaggedAllToAllBufferInfo buffer_info{
+      .input_buffer_size = input_buffer_size,
+      .output_buffer_size = output_buffer_size,
+      .dispatch_input_size = dispatch_input.size(0),
+      .dispatch_output_size = dispatch_output.size(0),
+      .scalar_type = dispatch_input.scalar_type(),
+      .element_bitwidth = element_bitwidth,
+      .tensor_dim = static_cast<int32_t>(input.dim()),
+      .trailing_shape_fingerprint = trailing_shape_fp,
+  };
+  TT_ASSIGN_OR_RETURN(
+      RaggedAllToAllOffsets offsets,
+      ComputeRaggedAllToAllOffsets(store_.get(), getRank(), alltoall_seq_,
+                                   alltoall_shm_nonce_, send_sizes, recv_sizes,
+                                   buffer_info));
+  // Delegate to `stablehlo.all_to_all` when explicit split lists turn out to
+  // be uniform across every rank, avoiding `ragged_all_to_all` overhead.
+  if (offsets.uniform_equal_splits && output.sizes() == input.sizes()) {
+    return AllToAllBaseEqualSplits(output, input);
   }
 
-  const int32_t input_buffer_size = static_cast<int32_t>(input.size(0));
-  const int32_t output_buffer_size = static_cast<int32_t>(output.size(0));
+  // Materialize constant or empty operands before dispatching the collective so
+  // `ProcessDeferredOpEvent` does not inline a TensorCore constant fill into
+  // `output` that races with incoming SparseCore RDMAs.
+  TT_ASSIGN_OR_RETURN(at::Tensor materialized_input,
+                      MaterializeIfConstant(dispatch_input));
+  TT_ASSIGN_OR_RETURN(at::Tensor materialized_output,
+                      MaterializeIfConstant(dispatch_output));
 
-  // 3. Compute cumulative slice offsets and synchronize remote destination
-  // output offsets across all ranks via c10d::Store.
-  TT_ASSIGN_OR_RETURN(
-      auto offsets,
-      ComputeRaggedAllToAllOffsets(
-          store_.get(), getRank(), alltoall_seq_.fetch_add(1), send_sizes,
-          recv_sizes, input_buffer_size, output_buffer_size));
-
-  TT_ASSIGN_OR_RETURN(auto param_keys,
-                      TT_MAKE_OP_PARAM_CACHE_KEYS(replica_groups_));
-  TT_RETURN_IF_ERROR(SetRaggedAllToAllParamKeys(param_keys, offsets));
-
-  // 4. Explicitly materialize both input and output before dispatching the
-  // collective.
-  //
-  // Constant/empty tensors (e.g. from `BuildFillUninitialized`,
-  // `torch.empty(..., device="tpu")`, or `torch.zeros(..., device="tpu")`) are
-  // marked `is_constant() == true` in TorchTPU's EventsQueue and are not split
-  // out by `OpSplitMode::kSplitBoth`; instead, `ProcessDeferredOpEvent` inlines
-  // them directly into the `ragged_all_to_all` HLO module. On TPU architectures
-  // with SparseCore (`compute_type = "tpu_embedding"`), XLA hoists
-  // `kSparseCoreBarrierStart` on the SparseCore sequencer while TensorCore
-  // concurrently executes the constant fill into `output` in HBM, racing with
-  // and overwriting incoming peer RDMAs. Materializing both buffers beforehand
-  // ensures the collective HLO module receives pre-allocated HLO parameters
-  // (`%arg0`, `%arg1`) with zero TensorCore constant-fill instructions.
-  TT_ASSIGN_OR_RETURN(std::vector<DeviceBufferRef> input_output_buffers,
-                      GetBuffers(std::array<at::Tensor, 2>{
-                          maybe_materialized_input_tensor, output}));
-  TT_RETURN_IF_ERROR(
-      Materialize(input_output_buffers, MaterializationReason::kDistributedOp));
-
-  // 5. Build the MLIR StableHLO custom call with device replica group
-  // attributes and MLIR constant metadata tensors.
-  auto op_builder =
-      [device_groups = replica_groups_,
-       offsets = std::move(offsets)](FixedSizeSpan<mlir::MlirOp, 2> inputs) {
-        auto& [input, output] = inputs;
-        return BuildDistributedAllToAllBaseUnevenSplitsShlo(
-            input, output, offsets.input_offsets, offsets.send_sizes,
-            offsets.output_offsets, offsets.recv_sizes, device_groups);
-      };
-
-  TT_ASSIGN_OR_RETURN(auto output_dtype,
-                      ConvertTo<mlir::ElementType>(output.scalar_type()));
-
-  // 6. Dispatch the custom call with input and output buffers.
-  return DispatchOp<2>(std::move(op_builder),
-                       {maybe_materialized_input_tensor, output},
-                       {.out_dtype = output_dtype,
-                        .out_dims = output.sizes(),
-                        .op_param_cache_keys = std::move(param_keys),
-                        .split_mode = GetCollectiveSplitMode(),
-                        .device_assignment = device_assignment()});
+  return DispatchUnevenAllToAll(materialized_input, materialized_output,
+                                std::move(offsets), replica_groups_,
+                                device_assignment());
 }
 
 // Dispatches the torch.distributed.all_to_all collective, supporting both

@@ -29,6 +29,9 @@ from torch_tpu._internal.distributed import multiprocessing
 from tests.distributed import continuous_test_utils
 from tests.distributed import distributed_utils
 
+# 1D ragged-all-to-all factors operands onto 1024-element (`8x128`) TPU tiles.
+_1D_FACTOR_UNIT = 1024
+
 
 class AllToAllSingleTestData:
   """Input and output data for all_to_all tests where data is dependent on rank and world_size."""
@@ -397,6 +400,249 @@ class AllToAllSingleCollectiveTest(
         matrix, dtype=torch.float32, extra_dims=(2, 4)
     )
     run_all_to_all_single(rank_data)
+
+  def test_uneven_splits_1d_factoring_and_asymmetric(self):
+    """Tests 1024-aligned 1D splits, asymmetric buffers, and subgroups."""
+    run_dist_all_to_all_single_1d_factoring_and_asymmetric_test()
+
+  def test_uneven_splits_large_asymmetric_zero_row_and_stream(self):
+    """Tests multi-MiB asymmetric buffers and a 0-row rank on a side stream."""
+    run_dist_all_to_all_single_large_asymmetric_zero_row_and_stream_test()
+
+
+def _fill_1d_step_input_and_expected(
+    matrix: list[list[int]],
+    rank: int,
+    step: int,
+    dtype: torch.dtype,
+) -> tuple[torch.Tensor, torch.Tensor]:
+  """Builds 1D CPU input and expected output tensors for one uneven step."""
+  group_size = len(matrix)
+  send_sizes = matrix[rank]
+  total_send = sum(send_sizes)
+  in_cpu = torch.empty(total_send, dtype=dtype)
+  offset = 0
+  for dst, count in enumerate(send_sizes):
+    if count > 0:
+      value = float((step + 1) * 100 + (rank + 1) * 10 + (dst + 1))
+      in_cpu[offset : offset + count] = value
+      offset += count
+
+  expected_parts = []
+  for src in range(group_size):
+    count = matrix[src][rank]
+    if count > 0:
+      value = float((step + 1) * 100 + (src + 1) * 10 + (rank + 1))
+      expected_parts.append(torch.full((count,), value, dtype=dtype))
+  if expected_parts:
+    expected = torch.cat(expected_parts)
+  else:
+    expected = torch.empty(0, dtype=dtype)
+  return in_cpu, expected
+
+
+def _run_uneven_1d_matrix_and_verify(
+    matrix: list[list[int]],
+    dtype: torch.dtype,
+    *,
+    extra_pad: int = 0,
+) -> None:
+  """Runs 1D uneven all_to_all_single (optionally on prefix-slice views)."""
+  rank = dist.get_rank()
+  world_size = dist.get_world_size()
+  send_sizes = matrix[rank]
+  recv_sizes = [matrix[src][rank] for src in range(world_size)]
+  total_send = sum(send_sizes)
+  total_recv = sum(recv_sizes)
+
+  in_backing = torch.full(
+      (total_send + extra_pad,), -3.0, dtype=dtype, device="tpu"
+  )
+  out_backing = torch.full(
+      (total_recv + extra_pad,), -7.0, dtype=dtype, device="tpu"
+  )
+  in_cpu, expected = _fill_1d_step_input_and_expected(
+      matrix, rank, step=0, dtype=dtype
+  )
+  if total_send > 0:
+    in_backing[:total_send].copy_(in_cpu.to("tpu"))
+
+  dist.all_to_all_single(
+      out_backing[:total_recv],
+      in_backing[:total_send],
+      output_split_sizes=recv_sizes,
+      input_split_sizes=send_sizes,
+  )
+
+  if total_recv > 0:
+    utils.assert_close(out_backing[:total_recv].cpu(), expected)
+
+  if extra_pad > 0:
+    utils.assert_close(
+        out_backing[total_recv:].cpu(),
+        torch.full((extra_pad,), -7.0, dtype=dtype),
+    )
+
+
+def run_dist_all_to_all_single_1d_factoring_and_asymmetric_test() -> None:
+  """Tests 1024-aligned 1D uneven splits, asymmetric buffers, and subgroups."""
+  rank = dist.get_rank()
+  world_size = dist.get_world_size()
+
+  # Test 1024-aligned 1D uneven splits (bfloat16 and float32) on prefix-slice
+  # views of larger backing buffers.
+  for dtype, scale in [
+      (torch.bfloat16, 1),
+      (torch.bfloat16, 2),
+      (torch.float32, 1),
+  ]:
+    chunk = _1D_FACTOR_UNIT * scale
+    matrix = [
+        [
+            (2 * chunk if j == (i + 1) % world_size else chunk)
+            for j in range(world_size)
+        ]
+        for i in range(world_size)
+    ]
+    _run_uneven_1d_matrix_and_verify(matrix, dtype, extra_pad=512)
+
+  # Test asymmetric cross-rank buffer sizes with varying capacities and
+  # 0-element ranks.
+  asymmetric_matrix = [
+      [_1D_FACTOR_UNIT * (src + 1) for _ in range(world_size)]
+      for src in range(world_size)
+  ]
+  _run_uneven_1d_matrix_and_verify(asymmetric_matrix, torch.bfloat16)
+
+  # Test gather (rank 0 receives `_1D_FACTOR_UNIT` from all ranks; peers
+  # receive 0) and scatter (rank 0 sends `_1D_FACTOR_UNIT` to all ranks; ranks
+  # 1..N-1 send 0).
+  owned_gather = [
+      [_1D_FACTOR_UNIT if dst == 0 else 0 for dst in range(world_size)]
+      for _ in range(world_size)
+  ]
+  owned_scatter = [
+      [_1D_FACTOR_UNIT if src == 0 else 0 for _ in range(world_size)]
+      for src in range(world_size)
+  ]
+  _run_uneven_1d_matrix_and_verify(owned_gather, torch.bfloat16, extra_pad=512)
+  _run_uneven_1d_matrix_and_verify(owned_scatter, torch.bfloat16, extra_pad=512)
+
+  # Exercise single-host `/dev/shm` metadata exchange on concurrent subgroups
+  # with distinct uneven split matrices so store prefixes stay isolated.
+  subgroup_size = world_size // 2
+  group_lo = dist.new_group(list(range(subgroup_size)))
+  group_hi = dist.new_group(list(range(subgroup_size, world_size)))
+  try:
+    if rank < subgroup_size:
+      my_group = group_lo
+      local_sub_rank = rank
+      sub_matrix = [
+          [
+              _1D_FACTOR_UNIT * (3 if dst == (src + 1) % subgroup_size else 1)
+              for dst in range(subgroup_size)
+          ]
+          for src in range(subgroup_size)
+      ]
+    else:
+      my_group = group_hi
+      local_sub_rank = rank - subgroup_size
+      sub_matrix = [
+          [
+              _1D_FACTOR_UNIT
+              * (
+                  2
+                  if dst in (
+                      (src + 1) % subgroup_size,
+                      (src + 2) % subgroup_size,
+                  )
+                  else 1
+              )
+              for dst in range(subgroup_size)
+          ]
+          for src in range(subgroup_size)
+      ]
+
+    sub_send = sub_matrix[local_sub_rank]
+    sub_recv = [sub_matrix[src][local_sub_rank] for src in range(subgroup_size)]
+    sub_in_cpu, expected_sub = _fill_1d_step_input_and_expected(
+        sub_matrix,
+        local_sub_rank,
+        10 if rank >= subgroup_size else 0,
+        torch.bfloat16,
+    )
+    sub_in = sub_in_cpu.to("tpu")
+    sub_out = torch.zeros(sum(sub_recv), dtype=torch.bfloat16, device="tpu")
+    dist.all_to_all_single(sub_out, sub_in, sub_recv, sub_send, group=my_group)
+    utils.assert_close(sub_out.cpu(), expected_sub)
+  finally:
+    dist.destroy_process_group(group_hi)
+    dist.destroy_process_group(group_lo)
+
+
+def run_dist_all_to_all_single_large_asymmetric_zero_row_and_stream_test() -> (
+    None
+):
+  """Tests multi-MiB asymmetric buffers with a 0-row rank on a side stream.
+
+  Allocates rank-dependent prior HBM buffers so stack bases differ across ranks,
+  dispatches on a non-default TPU stream, and sends 2 MiB chunks into a 16 MiB
+  rank-0 output buffer while the last rank holds a 0-element output buffer.
+  """
+  rank = dist.get_rank()
+  world_size = dist.get_world_size()
+  non_owner_rank = world_size - 1
+  owner_chunk_elems = 512 * _1D_FACTOR_UNIT
+
+  prior_hbm_padding = torch.ones(
+      (rank + 1) * 256 * _1D_FACTOR_UNIT,
+      dtype=torch.float32,
+      device="tpu",
+  )
+
+  matrix = []
+  for src in range(world_size):
+    row = []
+    for dst in range(world_size):
+      if dst == 0:
+        count = owner_chunk_elems
+      elif dst == non_owner_rank:
+        count = 0
+      else:
+        count = ((src + dst) % 2 + 1) * 128 * _1D_FACTOR_UNIT
+      row.append(count)
+    matrix.append(row)
+
+  send_sizes = matrix[rank]
+  recv_sizes = [matrix[src][rank] for src in range(world_size)]
+  total_send = sum(send_sizes)
+  total_recv = sum(recv_sizes)
+
+  in_buf = torch.zeros(total_send, dtype=torch.float32, device="tpu")
+  if total_recv > 0:
+    out_buf = torch.zeros(total_recv, dtype=torch.float32, device="tpu")
+  else:
+    out_buf = torch.empty((0,), dtype=torch.float32, device="tpu")
+
+  transfer_stream = torch.tpu.Stream()
+  for step in range(2):
+    in_cpu, expected_cpu = _fill_1d_step_input_and_expected(
+        matrix, rank, step, torch.float32
+    )
+    in_buf.copy_(in_cpu)
+    default_stream = torch.accelerator.current_stream()
+    transfer_stream.wait_stream(default_stream)
+    with torch.tpu.stream(transfer_stream):
+      dist.all_to_all_single(out_buf, in_buf, recv_sizes, send_sizes)
+    default_stream.wait_stream(transfer_stream)
+    if total_recv > 0:
+      utils.assert_close(out_buf.cpu(), expected_cpu)
+    else:
+      assert out_buf.numel() == 0, f"Expected empty output, got {out_buf.shape}"
+
+  # Keep the rank-dependent padding live until both collective steps finish so
+  # HBM stack bases remain asymmetric across ranks during execution.
+  del prior_hbm_padding  # Unused.
 
 
 class AllToAllTestData:

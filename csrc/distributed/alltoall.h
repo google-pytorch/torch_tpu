@@ -28,40 +28,45 @@
 
 namespace torch_tpu {
 
+// 1D ragged all-to-all factoring size: one `(8, 128)` TPU tile (1024 elements).
+inline constexpr int64_t k1DRaggedAllToAllTileElements = 1024;
+
 absl::StatusOr<mlir::MlirOp> BuildDistributedAllToAllBaseShlo(
     mlir::MlirOp input, const DeviceGroupList& device_groups);
 
-// Builds and emits a StableHLO ragged all-to-all custom call for
-// `all_to_all_single` with uneven / non-uniform split sizes across ranks.
+// Returns the greatest common divisor of all rank-local dimension-0 sizes and
+// offsets that take part in a 1D uneven all-to-all on this rank: the input
+// and output buffer sizes, the local input offsets, the send sizes, the local
+// output placement offsets, and the receive sizes. Zero-valued entries are
+// neutral.
+int64_t Compute1DRaggedAllToAllLocalGcd(
+    int64_t input_size, int64_t output_size,
+    absl::Span<const int32_t> input_offsets,
+    absl::Span<const int32_t> send_sizes,
+    absl::Span<const int32_t> local_output_offsets,
+    absl::Span<const int32_t> recv_sizes);
+
+// Selects the 1D factoring size (`k1DRaggedAllToAllTileElements = 1024` or 1)
+// for a group-wide `group_gcd` so that a flat `[N]` operand can be viewed as
+// `[N / 1024, 8, 128]` before `stablehlo.ragged_all_to_all`.
+int64_t Select1DRaggedAllToAllFactor(int64_t group_gcd, int element_bitwidth);
+
+// Builds StableHLO ops for `all_to_all_single` with uneven split sizes.
 //
-// Uneven all-to-all communicates non-uniform slices of `input` across devices
-// in `device_groups`, where each rank sends dynamic slice sizes specified by
-// `send_sizes` and receives dynamic slice sizes specified by `recv_sizes`.
-//
-// Args:
-//   input: The local input tensor containing slices to send to peer ranks.
-//   output: The output tensor providing shape, rank, and element type for the
-//     destination buffer where incoming slices will be written.
-//   input_offsets: Starting offsets (in elements along dimension 0) of each
-//     outgoing slice in `input`.
-//   send_sizes: Number of elements along dimension 0 to send to each peer rank.
-//   output_offsets: Starting offsets (in elements along dimension 0) in the
-//     destination rank's output buffer where this rank's sent slice should be
-//     placed.
-//   recv_sizes: Number of elements along dimension 0 to receive from each peer
-//     rank.
-//   device_groups: List of process group device IDs participating in the
-//     collective communication.
-//
-// Returns:
-//   An `mlir::MlirOp` representing the result of the ragged_all_to_all custom
-//   call operation, or an error status on failure.
+// Emits `input_offsets`, `send_sizes`, `output_offsets`, and `recv_sizes` as
+// compile-time `stablehlo.constant` vectors in global HBM. Keeping metadata
+// constant keeps the `ragged_all_to_all` temporary buffer as the sole
+// `HLO temp` allocation at byte offset 0 on every rank when buffer capacities
+// differ across ranks. When `flat_factor > 1` on 1D operands, reshapes `[N]`
+// to `[N / flat_factor, 8, 128]` and scales metadata by `flat_factor` so the
+// XLA:TPU backend avoids rank-1 lane padding.
 absl::StatusOr<mlir::MlirOp> BuildDistributedAllToAllBaseUnevenSplitsShlo(
     mlir::MlirOp input, mlir::MlirOp output,
     absl::Span<const int32_t> input_offsets,
     absl::Span<const int32_t> send_sizes,
     absl::Span<const int32_t> output_offsets,
-    absl::Span<const int32_t> recv_sizes, const DeviceGroupList& device_groups);
+    absl::Span<const int32_t> recv_sizes, int64_t flat_factor,
+    const DeviceGroupList& device_groups);
 
 absl::StatusOr<mlir::SmallVector<mlir::MlirOp>> BuildDistributedAllToAllShlo(
     absl::Span<mlir::MlirOp> inputs, const DeviceGroupList& device_groups);
