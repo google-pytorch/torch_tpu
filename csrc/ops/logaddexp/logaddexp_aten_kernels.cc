@@ -51,23 +51,25 @@ absl::StatusOr<mlir::MlirOp> BuildLogaddexpShlo(mlir::MlirOp self,
   TT_ASSIGN_OR_RETURN(const mlir::ElementType dtype,
                       ConvertTo<mlir::ElementType>(type));
 
+  // The stablehlo builders take MlirOp& and reject temporaries.
   mlir::MlirOp max = mlir::stablehlo::Max(self_, other_);
-  mlir::MlirOp neg_abs_diff = mlir::stablehlo::Neg(
-      mlir::stablehlo::Abs(mlir::stablehlo::Subtract(self_, other_)));
-  TT_ASSIGN_OR_RETURN(
-      mlir::MlirOp log1p,
-      BuildLog1pShlo(mlir::stablehlo::Exp(neg_abs_diff), dtype));
+  mlir::MlirOp diff = mlir::stablehlo::Subtract(self_, other_);
+  mlir::MlirOp abs_diff = mlir::stablehlo::Abs(diff);
+  mlir::MlirOp neg_abs_diff = mlir::stablehlo::Neg(abs_diff);
+  mlir::MlirOp exp_neg_abs_diff = mlir::stablehlo::Exp(neg_abs_diff);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp log1p,
+                      BuildLog1pShlo(exp_neg_abs_diff, dtype));
   mlir::MlirOp result = mlir::stablehlo::Add(max, log1p);
 
   mlir::MlirOp inf =
       MakeConstantLike(self_, std::numeric_limits<double>::infinity(), type);
+  mlir::MlirOp abs_self = mlir::stablehlo::Abs(self_);
   mlir::MlirOp self_is_inf = mlir::stablehlo::Compare(
-      mlir::stablehlo::Abs(self_), inf,
-      mlir::stablehlo::ComparisonDirection::EQ);
+      abs_self, inf, mlir::stablehlo::ComparisonDirection::EQ);
   mlir::MlirOp self_eq_other = mlir::stablehlo::Compare(
       self_, other_, mlir::stablehlo::ComparisonDirection::EQ);
-  return mlir::stablehlo::Select(
-      mlir::stablehlo::And(self_is_inf, self_eq_other), self_, result);
+  mlir::MlirOp both_inf = mlir::stablehlo::And(self_is_inf, self_eq_other);
+  return mlir::stablehlo::Select(both_inf, self_, result);
 }
 
 }  // namespace
