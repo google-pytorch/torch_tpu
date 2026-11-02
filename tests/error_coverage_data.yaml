@@ -257,7 +257,7 @@ csrc/ops/unfold/unfold_aten_kernels.cc: {remaining: 0, total: 3, infeasible: 0}
 csrc/ops/uniform/uniform.cc: {remaining: 0, total: 1, infeasible: 0}
 csrc/ops/uniform/uniform_aten_kernels.cc: {remaining: 0, total: 1, infeasible: 0}
 csrc/ops/unique/unique_aten_kernels.cc: {remaining: 0, total: 5, infeasible: 0}
-csrc/ops/unique_consecutive/unique_consecutive_aten_kernels.cc: {remaining: 0, total: 2, infeasible: 0}
+csrc/ops/unique_consecutive/unique_consecutive_aten_kernels.cc: {remaining: 0, total: 4, infeasible: 0}
 csrc/ops/upsample/upsample_aten_kernels.cc: {remaining: 0, total: 3, infeasible: 0}
 csrc/ops/upsample/upsample_bicubic2d_aa_aten_kernels.cc: {remaining: 0, total: 6, infeasible: 0}
 csrc/ops/upsample/upsample_bicubic2d_aten_kernels.cc: {remaining: 0, total: 3, infeasible: 0}
