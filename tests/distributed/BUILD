@@ -196,7 +196,6 @@ torch_tpu_py_test(
     timeout = "long",
     srcs = ["compile_cache_process_groups_test.py"],
     nopresubmit_oss = "TODO(b/568095515): Flaking in GitHub TPU v7 presubmit with START_SESSION failed.",
-    notap = "Temporarily disabled due to CI failures; will re-enable when fixed.",
     oss_presubmit_tpu_generation = tpu_gen(
         "v7",
         reason = "Only multi-core-per-chip TPU v7x has a non-identity rank-to-device mapping",
@@ -430,7 +429,6 @@ torch_tpu_py_test(
         "TPU_PREMAPPED_BUFFER_SIZE": "0",
     },
     nopresubmit_oss = "TODO(b/568095515): Flaking in GitHub TPU v7 presubmit with START_SESSION failed.",
-    notap = "Temporarily disabled due to CI failures; will re-enable when fixed.",
     oss_presubmit_tpu_generation = tpu_gen(
         "v7",
         reason = "Pallas mesh collective device order test for TPU v7",
@@ -636,7 +634,6 @@ torch_tpu_py_test(
     name = "subgroup_collectives_test",
     timeout = "long",
     srcs = ["subgroup_collectives_test.py"],
-    notap = "Temporarily disabled due to CI failures; will re-enable when fixed.",
     oss_presubmit_tpu_generation = tpu_gen(
         "v7",
         reason = "Only multi-core-per-chip TPU v7x has a non-identity rank-to-device mapping",
@@ -698,7 +695,6 @@ torch_tpu_py_test(
     timeout = "long",
     srcs = ["subgroup_launch_order_test.py"],
     nopresubmit_oss = "TODO(b/568095515): Flaking in GitHub TPU v7 presubmit with START_SESSION failed.",
-    notap = "Temporarily disabled due to CI failures; will re-enable when fixed.",
     oss_presubmit_tpu_generation = tpu_gen(
         "v7",
         reason = "Only multi-core-per-chip TPU v7x has a non-identity rank-to-device mapping",

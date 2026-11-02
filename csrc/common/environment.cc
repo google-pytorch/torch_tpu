@@ -205,12 +205,14 @@ void SelectVisibleDevice(std::string_view default_dev) {
 
 // Sets the libtpu host/process bounds environment variables and enables
 // concurrent libtpu loads across processes on the same host.
-void SetTpuBoundsEnv(const std::string& host_bounds,
-                     const std::string& chips_bounds) {
+// `chips_per_host_bounds` / `chips_per_process_bounds` is always a 3D chip grid
+// ("1,1,1") in single-device-per-process mode, whereas the optional 4th
+// TensorNode dimension belongs only on `host_bounds` / `process_bounds`.
+void SetTpuBoundsEnv(const std::string& host_bounds) {
   SetEnv<kTpuHostBoundsEnvVar>(host_bounds);
-  SetEnv<kTpuChipsPerHostBoundsEnvVar>(chips_bounds);
+  SetEnv<kTpuChipsPerHostBoundsEnvVar>("1,1,1");
   SetEnv<kTpuProcessBoundsEnvVar>(host_bounds);
-  SetEnv<kTpuChipsPerProcessBoundsEnvVar>(chips_bounds);
+  SetEnv<kTpuChipsPerProcessBoundsEnvVar>("1,1,1");
 
   // Avoid multi-process libtpu lock file collisions across distributed workers
   // or independent single-device processes on the same host, see b/487769788.
@@ -235,11 +237,7 @@ absl::Status InitializeDistributedEnvironment(
 
   SelectVisibleDevice(absl::StrCat(config.local_rank));
 
-  const std::vector<std::string> topology_dims =
-      absl::StrSplit(config.topology, ',');
-  const std::string chips_bounds =
-      (topology_dims.size() == 4) ? "1,1,1,1" : "1,1,1";
-  SetTpuBoundsEnv(config.topology, chips_bounds);
+  SetTpuBoundsEnv(config.topology);
 
   // The free slicebuilder port of this process.
   SetEnv<kTpuProcessPortEnvVar>(config.sb_port);
@@ -265,7 +263,7 @@ absl::Status InitializeSingleDeviceEnvironment(
     std::string_view pci_devices_dir) {
   SelectVisibleDevice("0");
   const std::string bounds(GetSingleDeviceTpuBoundsString(pci_devices_dir));
-  SetTpuBoundsEnv(bounds, bounds);
+  SetTpuBoundsEnv(bounds);
   return absl::OkStatus();
 }
 

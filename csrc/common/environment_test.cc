@@ -299,9 +299,11 @@ TEST(EnvironmentDeathTest,
         config.topology = "2,2,1,2";
 
         EXPECT_TRUE(InitializeDistributedEnvironment(config).ok());
-        EXPECT_STREQ(std::getenv(kTpuChipsPerHostBoundsEnvVar), "1,1,1,1");
-        EXPECT_STREQ(std::getenv(kTpuChipsPerProcessBoundsEnvVar), "1,1,1,1");
-        _exit(0);
+        EXPECT_STREQ(std::getenv(kTpuHostBoundsEnvVar), "2,2,1,2");
+        EXPECT_STREQ(std::getenv(kTpuProcessBoundsEnvVar), "2,2,1,2");
+        EXPECT_STREQ(std::getenv(kTpuChipsPerHostBoundsEnvVar), "1,1,1");
+        EXPECT_STREQ(std::getenv(kTpuChipsPerProcessBoundsEnvVar), "1,1,1");
+        _exit(testing::Test::HasFailure() ? 1 : 0);
       },
       ExitedWithCode(0), "");
 }
@@ -639,9 +641,9 @@ TEST(EnvironmentDeathTest, InitSingleDevEnv_SetsBoundsForAllSupportedTpuSpecs) {
         {
           EXPECT_TRUE(InitializeSingleDeviceEnvironment(pci.path()).ok());
           EXPECT_STREQ(std::getenv(kTpuHostBoundsEnvVar), "1,1,1,1");
-          EXPECT_STREQ(std::getenv(kTpuChipsPerHostBoundsEnvVar), "1,1,1,1");
+          EXPECT_STREQ(std::getenv(kTpuChipsPerHostBoundsEnvVar), "1,1,1");
           EXPECT_STREQ(std::getenv(kTpuProcessBoundsEnvVar), "1,1,1,1");
-          EXPECT_STREQ(std::getenv(kTpuChipsPerProcessBoundsEnvVar), "1,1,1,1");
+          EXPECT_STREQ(std::getenv(kTpuChipsPerProcessBoundsEnvVar), "1,1,1");
           _exit(testing::Test::HasFailure() ? 1 : 0);
         },
         ExitedWithCode(0), "")
