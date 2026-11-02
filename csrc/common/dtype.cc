@@ -175,6 +175,11 @@ absl::StatusOr<mlir::ElementType> ToElementType(
 #if TT_TORCH_VERSION_GE(2, 14)
     case at::ScalarType::BComplex32:
 #endif
+// Float8_e5m3fnu is not in the internal PyTorch snapshot; it was added
+// upstream in PyTorch 2.16 nightly (PR #201269).
+#if TT_HAS_FLOAT8_E5M3FNU
+    case at::ScalarType::Float8_e5m3fnu:
+#endif
       // These cases should never happen.
     // go/keep-sorted start
     case at::kBits16:
@@ -785,6 +790,9 @@ at::ScalarType ToAccumulateType(at::ScalarType type) {
     case at::ScalarType::Float8_e4m3fnuz:
     case at::ScalarType::Float8_e8m0fnu:
     case at::ScalarType::Float4_e2m1fn_x2:
+#if TT_HAS_FLOAT8_E5M3FNU
+    case at::ScalarType::Float8_e5m3fnu:
+#endif
       return at::ScalarType::Float;
 #if TT_TORCH_VERSION_GE(2, 14)
     case at::ScalarType::BComplex32:

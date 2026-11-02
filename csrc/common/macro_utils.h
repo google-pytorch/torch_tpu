@@ -90,6 +90,15 @@
   (TORCH_VERSION_MAJOR > (major) ||       \
    (TORCH_VERSION_MAJOR == (major) && TORCH_VERSION_MINOR >= (minor)))
 
+// True in an #if when PyTorch defines c10::ScalarType::Float8_e5m3fnu (requires
+// ScalarType.h). TT_TORCH_VERSION_GE(2, 16) && !TT_IS_INTERNAL_TORCH_TPU is not
+// enough because pinned OSS 2.16 nightly wheels still predate PR #201269.
+// TODO(b/579965801): Replace with TT_TORCH_VERSION_GE(2, 16) once all 2.16 pins
+// are updated.
+#define TT_COUNT_FLOAT8_TYPE_(_1, _2) +1
+#define TT_HAS_FLOAT8_E5M3FNU \
+  ((0 AT_FORALL_FLOAT8_TYPES(TT_COUNT_FLOAT8_TYPE_)) >= 6)
+
 namespace torch_tpu {
 namespace internal {
 

@@ -942,6 +942,7 @@ torch_tpu_cc_test(
     srcs = ["to_string_test.cc"],
     deps = [
         ":fake_symbol",
+        ":macro_utils",
         ":to_string",
         "//csrc/common:oss_test_main",
         "//shims/torch",
@@ -949,6 +950,7 @@ torch_tpu_cc_test(
         "//shims/torch:aten_headers",
         "//shims/torch/c10/core:base_headers",
         "//shims/torch/c10/util:base_headers",
+        "//shims/torch/torch/headeronly:torch_headeronly",
         "@com_google_absl//absl/strings",
     ],
 )
