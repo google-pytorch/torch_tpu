@@ -480,7 +480,7 @@ TEST_F(KilnE2eTest, PipelinedSum) {
             Store(acc, Zeros(acc.shape()));
             EmitPipeline(0, in.Dim(0) / kChunk, {std::move(input)},
                          /*outputs=*/{}, [&](const PipelineStep& s) {
-                           Store(acc, Load(acc) + Load(s.inputs[0]));
+                           Store(acc, Load(acc) + Load(s.inputs[0].ref));
                          });
             AsyncCopy(acc, out, AllocaDmaSemaphore()).Wait();
           }));
@@ -526,7 +526,8 @@ TEST_F(KilnE2eTest, PipelinedSumOfProducts) {
                 {{.hbm = a, .block_shape = {kRows, kCols}, .region = band},
                  {.hbm = b, .block_shape = {kRows, kCols}, .region = band}},
                 /*outputs=*/{}, [&](const PipelineStep& s) {
-                  Store(acc, Load(acc) + Load(s.inputs[0]) * Load(s.inputs[1]));
+                  Store(acc, Load(acc) +
+                                 Load(s.inputs[0].ref) * Load(s.inputs[1].ref));
                 });
             AsyncCopy(acc, out, AllocaDmaSemaphore()).Wait();
           }));
@@ -574,7 +575,7 @@ TEST_F(KilnE2eTest, PipelinedInputOutputStreaming) {
                 {{.hbm = in, .block_shape = {kChunk}, .region = chunk}},
                 {{.hbm = out, .block_shape = {kChunk}, .region = chunk}},
                 [&](const PipelineStep& s) {
-                  Store(s.outputs[0], Load(s.inputs[0]) * 2.0);
+                  Store(s.outputs[0].ref, Load(s.inputs[0].ref) * 2.0);
                 });
           }));
 
@@ -612,8 +613,8 @@ TEST_F(KilnE2eTest, PipelinedTwo2dOutputs) {
                 {{.hbm = out0, .block_shape = {kRows, kCols}, .region = band},
                  {.hbm = out1, .block_shape = {kRows, kCols}, .region = band}},
                 [&](const PipelineStep& s) {
-                  Store(s.outputs[0], Load(s.inputs[0]) * 2.0);
-                  Store(s.outputs[1], Load(s.inputs[0]) + 1.0);
+                  Store(s.outputs[0].ref, Load(s.inputs[0].ref) * 2.0);
+                  Store(s.outputs[1].ref, Load(s.inputs[0].ref) + 1.0);
                 });
           }));
 
@@ -632,6 +633,120 @@ TEST_F(KilnE2eTest, PipelinedTwo2dOutputs) {
                   [&](int64_t r, int64_t c) { return x(r, c) * 2.0f; }),
         Make2dF32(rows, kCols,
                   [&](int64_t r, int64_t c) { return x(r, c) + 1.0f; }));
+    RunAndCompare(serialized, {&input}, expected);
+  }
+}
+
+// One compiled kernel sums consecutive pairs of chunks of an HBM vector: each
+// output block accumulates over two steps.
+TEST_F(KilnE2eTest, PipelinedBlockPairSums) {
+  constexpr int64_t kChunk = 128;
+  auto chunk = [](Scalar i) {
+    return BlockRegion{.offsets = {i * kChunk}, .sizes = {kChunk}};
+  };
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      Kernel kernel,
+      CreateKernel(
+          GridSpec{.name = "pipelined_block_pairs_e2e"},
+          InSpec::Hbm(f32(kDynamic)), OutSpec::Hbm(f32(kDynamic)),
+          [&](Ref in, Ref out) {
+            EmitPipeline(
+                0, in.Dim(0) / kChunk,
+                {{.hbm = in, .block_shape = {kChunk}, .region = chunk}},
+                {{.hbm = out,
+                  .block_shape = {kChunk},
+                  .block_index = [](Scalar step) { return step / 2; },
+                  .region = chunk}},
+                [&](const PipelineStep& s) {
+                  Ref acc = s.outputs[0].ref;
+                  If(s.outputs[0].is_first_step,
+                     [&] { Store(acc, Zeros(acc.shape())); });
+                  Store(acc, Load(acc) + Load(s.inputs[0].ref));
+                });
+          }));
+
+  TT_ASSERT_OK_AND_ASSIGN(std::string serialized,
+                          VerifyAndSerialize(std::move(kernel)));
+
+  for (int64_t num_pairs : {1, 3}) {
+    SCOPED_TRACE(absl::StrCat("num_pairs=", num_pairs));
+    xla::Literal input = Make1dF32(2 * num_pairs * kChunk, [](int64_t i) {
+      return static_cast<float>(i % 17 - 8);
+    });
+    xla::Literal expected = Make1dF32(num_pairs * kChunk, [&](int64_t i) {
+      const int64_t pair = i / kChunk, lane = i % kChunk;
+      return input.Get<float>({2 * pair * kChunk + lane}) +
+             input.Get<float>({(2 * pair + 1) * kChunk + lane});
+    });
+    RunAndCompare(serialized, {&input}, expected);
+  }
+}
+
+// Output block indices need not increase by one: `reversed` visits pairs of
+// chunks from last to first, and `uneven` has a one-step first and last block
+// (`(step + 1) / 2`), so its blocks straddle the pairs.
+TEST_F(KilnE2eTest, PipelinedBlocksInAnyOrder) {
+  constexpr int64_t kChunk = 128;
+  auto chunk = [](Scalar i) {
+    return BlockRegion{.offsets = {i * kChunk}, .sizes = {kChunk}};
+  };
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      Kernel kernel,
+      CreateKernel(
+          GridSpec{.name = "pipelined_blocks_any_order_e2e"},
+          InSpec::Hbm(f32(kDynamic)), OutSpec::Hbm(f32(kDynamic)),
+          OutSpec::Hbm(f32(kDynamic)), [&](Ref in, Ref reversed, Ref uneven) {
+            const Scalar num_steps = in.Dim(0) / kChunk;
+            const Scalar last_pair = num_steps / 2 - 1;
+            EmitPipeline(
+                0, num_steps,
+                {{.hbm = in, .block_shape = {kChunk}, .region = chunk}},
+                {{.hbm = reversed,
+                  .block_shape = {kChunk},
+                  .block_index =
+                      [last_pair](Scalar step) { return last_pair - step / 2; },
+                  .region = chunk},
+                 {.hbm = uneven,
+                  .block_shape = {kChunk},
+                  .block_index = [](Scalar step) { return (step + 1) / 2; },
+                  .region = chunk}},
+                [&](const PipelineStep& s) {
+                  for (int o = 0; o < 2; ++o) {
+                    Ref acc = s.outputs[o].ref;
+                    If(s.outputs[o].is_first_step,
+                       [&] { Store(acc, Zeros(acc.shape())); });
+                    Store(acc, Load(acc) + Load(s.inputs[0].ref));
+                  }
+                });
+          }));
+
+  TT_ASSERT_OK_AND_ASSIGN(std::string serialized,
+                          VerifyAndSerialize(std::move(kernel)));
+
+  for (int64_t num_pairs : {1, 3}) {
+    SCOPED_TRACE(absl::StrCat("num_pairs=", num_pairs));
+    const int64_t num_steps = 2 * num_pairs;
+    xla::Literal input = Make1dF32(num_steps * kChunk, [](int64_t i) {
+      return static_cast<float>(i % 17 - 8);
+    });
+    // Element `lane` of input chunk `c`, or 0 outside the input.
+    auto in = [&](int64_t c, int64_t lane) {
+      return c >= 0 && c < num_steps ? input.Get<float>({c * kChunk + lane})
+                                     : 0.0f;
+    };
+    xla::Literal expected = xla::LiteralUtil::MakeTupleOwned(
+        Make1dF32(num_pairs * kChunk,
+                  [&](int64_t i) {
+                    const int64_t pair = num_pairs - 1 - i / kChunk;
+                    return in(2 * pair, i % kChunk) +
+                           in(2 * pair + 1, i % kChunk);
+                  }),
+        Make1dF32((num_pairs + 1) * kChunk, [&](int64_t i) {
+          const int64_t block = i / kChunk;
+          return in(2 * block - 1, i % kChunk) + in(2 * block, i % kChunk);
+        }));
     RunAndCompare(serialized, {&input}, expected);
   }
 }
