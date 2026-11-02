@@ -19603,6 +19603,21 @@ class MaskedSoftmaxErrorTest(et.ErrorTestBase):
     ):
       torch.gcd(a, b)
 
+  @parameterized.named_parameters(
+      ("uint16", torch.uint16, "uint16", "UInt16"),
+      ("uint32", torch.uint32, "uint32", "UInt32"),
+      ("uint64", torch.uint64, "uint64", "UInt64"),
+  )
+  def test_gcd_unsupported_unsigned_dtype(self, dtype, tpu_dtype, gpu_dtype):
+    a = torch.tensor([12, 0], device=et.device(), dtype=dtype)
+    b = torch.tensor([18, 0], device=et.device(), dtype=dtype)
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu=f""""gcd_cuda" not implemented for '{gpu_dtype}'""",
+        tpu=f"""gcd(): expected int8, uint8, int16, int32 or int64 inputs, got {tpu_dtype}""",
+    ):
+      torch.gcd(a, b)
+
   def test_gcd_invalid_out_cast(self):
     a = torch.tensor([1.0, 2.0], device=et.device(), dtype=torch.float32)
     b = torch.tensor([3.0, 4.0], device=et.device(), dtype=torch.float32)
@@ -19641,6 +19656,21 @@ class MaskedSoftmaxErrorTest(et.ErrorTestBase):
         RuntimeError,
         gpu=""""lcm_cuda" not implemented for 'ComplexFloat'""",
         tpu="""lcm(): expected the promoted input dtype to be an integer type, got complex64""",
+    ):
+      torch.lcm(a, b)
+
+  @parameterized.named_parameters(
+      ("uint16", torch.uint16, "uint16", "UInt16"),
+      ("uint32", torch.uint32, "uint32", "UInt32"),
+      ("uint64", torch.uint64, "uint64", "UInt64"),
+  )
+  def test_lcm_unsupported_unsigned_dtype(self, dtype, tpu_dtype, gpu_dtype):
+    a = torch.tensor([12, 0], device=et.device(), dtype=dtype)
+    b = torch.tensor([18, 0], device=et.device(), dtype=dtype)
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu=f""""lcm_cuda" not implemented for '{gpu_dtype}'""",
+        tpu=f"""lcm(): expected int8, uint8, int16, int32 or int64 inputs, got {tpu_dtype}""",
     ):
       torch.lcm(a, b)
 
