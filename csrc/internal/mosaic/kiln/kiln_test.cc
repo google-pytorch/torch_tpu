@@ -24,16 +24,20 @@
 
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
+#include "absl/strings/str_join.h"
 #include "csrc/common/error_utils.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
@@ -43,13 +47,17 @@
 namespace torch_tpu::kiln {
 namespace {
 
-using absl_testing::IsOk;
-using absl_testing::IsOkAndHolds;
-using absl_testing::StatusIs;
-using testing::ElementsAre;
-using testing::HasSubstr;
-using testing::IsEmpty;
-using testing::Matcher;
+using ::absl_testing::IsOk;
+using ::absl_testing::IsOkAndHolds;
+using ::absl_testing::StatusIs;
+using ::testing::Bool;
+using ::testing::Combine;
+using ::testing::ElementsAre;
+using ::testing::HasSubstr;
+using ::testing::IsEmpty;
+using ::testing::Matcher;
+using ::testing::TestParamInfo;
+using ::testing::TestWithParam;
 
 // Verifies that the kernel is valid and that its textual form matches
 // `pattern`, a FileCheck pattern
@@ -241,6 +249,58 @@ TEST(KilnTest, RefSliceRankCollapsing) {
     CHECK:         tpu.vector_store %[[OUT]][%{{.*}}, %{{.*}}], %[[V]]
   )"));
 }
+
+// Parameterized by whether each of the optional in, out and scratch specs is
+// present. A present spec becomes a kernel operand and its body parameter holds
+// a `Ref`; an absent one adds no operand and yields `std::nullopt`.
+class OptionalOperandsTest
+    : public TestWithParam<std::tuple<bool, bool, bool>> {};
+
+TEST_P(OptionalOperandsTest, OnlyPresentSpecsBecomeOperands) {
+  const auto [has_in, has_out, has_scratch] = GetParam();
+
+  // Returns `spec` if `present`, otherwise `std::nullopt`.
+  auto get_optional_spec = [](bool present, auto spec) {
+    return present ? std::make_optional(spec) : std::nullopt;
+  };
+
+  // Each operand has a distinct shape so the signature identifies which are
+  // present.
+  std::vector<std::string> args;
+  auto add_arg = [&](bool present, std::string_view shape) {
+    if (present) {
+      args.push_back(absl::StrCat("%arg", args.size(), ": memref<", shape,
+                                  ", #tpu.memory_space<vmem>>"));
+    }
+  };
+  add_arg(has_in, "8x128xf32");
+  add_arg(has_out, "16x128xf32");
+  add_arg(has_scratch, "32x128xf32");
+  const std::string pattern = absl::StrCat(
+      "CHECK-LABEL: func.func @optional_operands(", absl::StrJoin(args, ", "),
+      ")\nCHECK-SAME: scratch_operands = ", has_scratch ? 1 : 0);
+
+  EXPECT_THAT(
+      CreateKernel(GridSpec{.name = "optional_operands"},
+                   get_optional_spec(has_in, InSpec{f32(8, 128)}),
+                   get_optional_spec(has_out, OutSpec{f32(16, 128)}),
+                   get_optional_spec(has_scratch, ScratchSpec{f32(32, 128)}),
+                   [&](std::optional<Ref> in, std::optional<Ref> out,
+                       std::optional<Ref> scratch) {
+                     EXPECT_EQ(in.has_value(), has_in);
+                     EXPECT_EQ(out.has_value(), has_out);
+                     EXPECT_EQ(scratch.has_value(), has_scratch);
+                   }),
+      IsOkAndMatchesIr(pattern));
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    AllCombinations, OptionalOperandsTest, Combine(Bool(), Bool(), Bool()),
+    [](const TestParamInfo<OptionalOperandsTest::ParamType>& info) {
+      return absl::StrCat(std::get<0>(info.param) ? "In" : "NoIn",
+                          std::get<1>(info.param) ? "Out" : "NoOut",
+                          std::get<2>(info.param) ? "Scratch" : "NoScratch");
+    });
 
 TEST(KilnTest, LiteralOverloads) {
   absl::StatusOr<Kernel> kernel = CreateKernel(
