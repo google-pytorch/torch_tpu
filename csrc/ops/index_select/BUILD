@@ -55,8 +55,8 @@ torch_tpu_cc_library(
     srcs = ["index_select.cc"],
     hdrs = ["index_select.h"],
     deps = [
-        "//csrc/common:aten_utils",
         "//csrc/common:dimension_types",
+        "//csrc/common:utils",
         "//csrc/ops:op_builder_utils",
         "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/strings",
