@@ -11326,7 +11326,7 @@ Device-side assertion tracking was not enabled by user.""",
     out = torch.empty(2, device=et.device(), dtype=torch.float32)
     with et.assert_raises_message(
         NotImplementedError,
-        tpu=""""logaddexp" not implemented for 'int64'""",
+        tpu="""logaddexp(): "logaddexp" not implemented for 'int64'""",
         gpu=""""logaddexp_cuda" not implemented for 'Long'""",
     ):
       torch.ops.aten.logaddexp.out(x, x, out=out)
