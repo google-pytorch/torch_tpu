@@ -167,7 +167,7 @@ at::Tensor AtenLinalgSolveTriangular(const at::Tensor& a, const at::Tensor& b,
                 {.out_dtype = out_dtype,
                  .out_dims = CopyIntVector(b.sizes()),
                  .op_param_cache_keys = std::move(param_keys)}));
-        return MakeTensor(result_buffer);
+        return MakeTensor(std::move(result_buffer));
       });
 }
 

@@ -280,7 +280,7 @@ absl::StatusOr<at::Tensor> MakePlaceholder(absl::Span<const int64_t> sizes,
       DeviceBufferRef placeholder,
       DeviceBufferList::CreatePlaceholder(std::move(physical_sizes),
                                           tensor_element_type, is_pinned_host));
-  auto new_tensor = MakeTensor(placeholder);
+  auto new_tensor = MakeTensor(std::move(placeholder));
   new_tensor.set_requires_grad(requires_grad);
   return new_tensor;
 }
@@ -295,7 +295,7 @@ absl::StatusOr<at::Tensor> MakePlaceholder(Shape shape, bool requires_grad,
                                                dynamic_dim.lower_bound,
                                                dynamic_dim.upper_bound));
   }
-  auto new_tensor = MakeTensor(placeholder);
+  auto new_tensor = MakeTensor(std::move(placeholder));
   new_tensor.set_requires_grad(requires_grad);
   return new_tensor;
 }
@@ -687,7 +687,7 @@ std::vector<at::Tensor> ExecuteCompiledModelImpl(
   std::vector<at::Tensor> output_tensors;
   output_tensors.reserve(num_outputs);
   for (auto& result_buffer : result_buffer_refs) {
-    output_tensors.push_back(MakeTensor(result_buffer));
+    output_tensors.push_back(MakeTensor(std::move(result_buffer)));
   }
 
   return output_tensors;
@@ -752,7 +752,7 @@ absl::StatusOr<at::Tensor> MakeConstantTensor(const at::Tensor& cpu_tensor) {
       CreateConstantDeviceBufferRef(std::move(cpu_bytes_copy),
                                     std::move(dimensions), element_type));
 
-  return MakeTensor(buffer_ref);
+  return MakeTensor(std::move(buffer_ref));
 }
 
 absl::Status AssignConstantTensor(const at::Tensor& cpu_src_tensor,

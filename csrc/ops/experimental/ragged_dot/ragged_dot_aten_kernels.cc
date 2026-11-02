@@ -188,7 +188,7 @@ at::Tensor AtenRaggedDot(const at::Tensor& lhs, const at::Tensor& rhs,
   TT_KERNEL(OpName::kRaggedDot, param_keys, (lhs, rhs, group_sizes), {
     TT_ASSIGN_OR_THROW(auto result,
                        RaggedDotCommon(lhs, rhs, group_sizes, param_keys));
-    return MakeTensor(result);
+    return MakeTensor(std::move(result));
   });
 }
 
@@ -210,7 +210,7 @@ at::Tensor AtenRaggedDotWeightGrad(const at::Tensor& lhs,
               TT_ASSIGN_OR_THROW(
                   auto result, RaggedDotWeightGradCommon(
                                    lhs, grad_output, group_sizes, param_keys));
-              return MakeTensor(result);
+              return MakeTensor(std::move(result));
             });
 }
 

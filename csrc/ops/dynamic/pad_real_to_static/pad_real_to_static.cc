@@ -168,7 +168,7 @@ at::Tensor PadRealToStatic(const at::Tensor& input,
                                {.out_dtype = mlir_dtype,
                                 .out_dims = out_dims,
                                 .op_param_cache_keys = std::move(param_keys)}));
-        return MakeTensor(result_buf);
+        return MakeTensor(std::move(result_buf));
       });
 }
 

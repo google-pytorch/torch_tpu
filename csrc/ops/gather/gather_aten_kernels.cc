@@ -182,7 +182,7 @@ at::Tensor AtenGather(const at::Tensor& self, int64_t dim,
   TT_KERNEL(OpName::kGather, param_keys, (self, dim, index, sparse_grad), {
     TT_ASSIGN_OR_THROW(auto result, Gather(self, dim, index, sparse_grad,
                                            std::move(param_keys)));
-    return MakeTensor(result);
+    return MakeTensor(std::move(result));
   });
 }
 

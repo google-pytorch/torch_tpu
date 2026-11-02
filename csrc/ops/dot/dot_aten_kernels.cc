@@ -69,7 +69,7 @@ absl::StatusOr<DeviceBufferRef> Dot(const at::Tensor& lhs,
 at::Tensor AtenDot(const at::Tensor& lhs, const at::Tensor& rhs) {
   TT_KERNEL(OpName::kDot, param_keys, (lhs, rhs), {
     TT_ASSIGN_OR_THROW(auto result, Dot(lhs, rhs, std::move(param_keys)));
-    return MakeTensor(result);
+    return MakeTensor(std::move(result));
   });
 }
 

@@ -320,7 +320,8 @@ std::tuple<at::Tensor, at::Tensor> NllLossNdForwardWithTotalWeight(
                                  DispatchNllLossForwardBuffers(
                                      self, target, weight, reduction,
                                      ignore_index, std::move(param_keys)));
-              return {MakeTensor(output_bufs[0]), MakeTensor(output_bufs[1])};
+              return {MakeTensor(std::move(output_bufs[0])),
+                      MakeTensor(std::move(output_bufs[1]))};
             });
 }
 
@@ -342,7 +343,7 @@ at::Tensor NllLossBackwardKernel(const at::Tensor& grad_output,
                   DispatchNllLossBackwardBuffer(
                       grad_output, self, target, weight, reduction,
                       ignore_index, total_weight, std::move(param_keys)));
-              return MakeTensor(grad_input_buf);
+              return MakeTensor(std::move(grad_input_buf));
             });
 }
 
@@ -440,7 +441,8 @@ std::tuple<at::Tensor, at::Tensor> AtenNllLoss2dForward(
                                  DispatchNllLossForwardBuffers(
                                      self, target, weight, reduction,
                                      ignore_index, std::move(param_keys)));
-              return {MakeTensor(output_bufs[0]), MakeTensor(output_bufs[1])};
+              return {MakeTensor(std::move(output_bufs[0])),
+                      MakeTensor(std::move(output_bufs[1]))};
             });
 }
 
@@ -503,7 +505,7 @@ at::Tensor AtenNllLoss2dBackward(const at::Tensor& grad_output,
             DispatchNllLossBackwardBuffer(grad_output, self, target, weight,
                                           reduction, ignore_index, total_weight,
                                           std::move(param_keys)));
-        return MakeTensor(grad_input_buf);
+        return MakeTensor(std::move(grad_input_buf));
       });
 }
 

@@ -203,7 +203,7 @@ at::Tensor AllGatherDim(const at::Tensor& input, int64_t dim,
             DispatchCollectiveWithDim(input, group_size, std::move(output_dims),
                                       group_name, std::move(builder),
                                       std::move(param_keys)));
-        return MakeTensor(result);
+        return MakeTensor(std::move(result));
       });
 }
 
@@ -229,7 +229,7 @@ at::Tensor ReduceScatterDim(const at::Tensor& input, std::string_view reduce_op,
                   DispatchCollectiveWithDim(
                       input, group_size, std::move(output_dims), group_name,
                       std::move(builder), std::move(param_keys)));
-              return MakeTensor(result);
+              return MakeTensor(std::move(result));
             });
 }
 

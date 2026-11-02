@@ -124,7 +124,7 @@ at::Tensor AtenSelectScatter(const at::Tensor& self, const at::Tensor& src,
     if (self.numel() == 0) {
       TT_ASSIGN_OR_THROW(auto zero_buf, CreateZeroSizeDeviceBufferRef(
                                             input_sizes_vec, element_type));
-      return MakeTensor(zero_buf);
+      return MakeTensor(std::move(zero_buf));
     }
 
     auto op_builder = [input_sizes_vec, wrapped_dim,
@@ -140,7 +140,7 @@ at::Tensor AtenSelectScatter(const at::Tensor& self, const at::Tensor& src,
                        {.out_dtype = element_type,
                         .out_dims = input_sizes_vec,
                         .op_param_cache_keys = std::move(param_keys)})));
-    return MakeTensor(out_buf);
+    return MakeTensor(std::move(out_buf));
   });
 }
 

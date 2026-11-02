@@ -117,7 +117,7 @@ at::Tensor AtenChannelShuffle(const at::Tensor& self, int64_t groups) {
                        {.out_dtype = element_type,
                         .out_dims = CopyIntVector(self.sizes()),
                         .op_param_cache_keys = std::move(param_keys)})));
-    return MakeTensor(out_buf);
+    return MakeTensor(std::move(out_buf));
   });
 }
 

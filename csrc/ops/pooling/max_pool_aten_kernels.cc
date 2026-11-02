@@ -1033,7 +1033,7 @@ at::Tensor TpuMaxPool1d(const at::Tensor& self, at::IntArrayRef kernel_size,
                   BuildMaxPoolNd(self, kernel_size, stride, padding, dilation,
                                  ceil_mode, spatial_dim_count,
                                  std::move(param_keys)));
-              return MakeTensor(result_buf);
+              return MakeTensor(std::move(result_buf));
             });
 }
 
@@ -1053,7 +1053,7 @@ at::Tensor TpuMaxPool1dBackward(const at::Tensor& grad_output,
             BuildMaxPoolBackwardGradInputNd(
                 grad_output, self, kernel_size, stride, padding, dilation,
                 ceil_mode, spatial_dim_count, std::move(param_keys)));
-        return MakeTensor(grad_buf);
+        return MakeTensor(std::move(grad_buf));
       });
 }
 
@@ -1142,7 +1142,7 @@ at::Tensor TpuMaxPool2d(const at::Tensor& self, at::IntArrayRef kernel_size,
                   BuildMaxPoolNd(self, kernel_size, stride, padding, dilation,
                                  ceil_mode, spatial_dim_count,
                                  std::move(param_keys)));
-              return MakeTensor(result_buf);
+              return MakeTensor(std::move(result_buf));
             });
 }
 
@@ -1162,7 +1162,7 @@ at::Tensor TpuMaxPool2dBackward(const at::Tensor& grad_output,
             BuildMaxPoolBackwardGradInputNd(
                 grad_output, self, kernel_size, stride, padding, dilation,
                 ceil_mode, spatial_dim_count, std::move(param_keys)));
-        return MakeTensor(grad_buf);
+        return MakeTensor(std::move(grad_buf));
       });
 }
 
@@ -1252,7 +1252,7 @@ at::Tensor TpuMaxPool3d(const at::Tensor& self, at::IntArrayRef kernel_size,
                   BuildMaxPoolNd(self, kernel_size, stride, padding, dilation,
                                  ceil_mode, spatial_dim_count,
                                  std::move(param_keys)));
-              return MakeTensor(result_buf);
+              return MakeTensor(std::move(result_buf));
             });
 }
 
@@ -1272,7 +1272,7 @@ at::Tensor TpuMaxPool3dBackward(const at::Tensor& grad_output,
             BuildMaxPoolBackwardGradInputNd(
                 grad_output, self, kernel_size, stride, padding, dilation,
                 ceil_mode, spatial_dim_count, std::move(param_keys)));
-        return MakeTensor(grad_buf);
+        return MakeTensor(std::move(grad_buf));
       });
 }
 

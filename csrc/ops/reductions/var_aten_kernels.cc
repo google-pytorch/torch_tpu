@@ -196,7 +196,7 @@ at::Tensor AtenVar(const at::Tensor& self, c10::OptionalArrayRef<int64_t> dim,
                               {.out_dtype = scalar_dtype_mlir,
                                .out_dims = output_dims,
                                .op_param_cache_keys = std::move(param_keys)})));
-        return MakeTensor(result_bufs);
+        return MakeTensor(std::move(result_bufs));
       });
 }
 
@@ -391,7 +391,8 @@ std::tuple<at::Tensor, at::Tensor> AtenVarMeanCorrection(
                  .computation_dtype = computation_dtype,
                  .op_param_cache_keys = std::move(param_keys)})));
 
-        return std::make_tuple(MakeTensor(var_buf), MakeTensor(mean_buf));
+        return std::make_tuple(MakeTensor(std::move(var_buf)),
+                               MakeTensor(std::move(mean_buf)));
       });
 }
 

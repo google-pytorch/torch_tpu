@@ -832,7 +832,7 @@ at::Tensor CrossEntropyLossBackwardSelfKernel(
             auto grad_self_buf,
             (DispatchOp<kDynamicSize, 1>(std::move(op_builder), inputs,
                                          std::move(options))));
-        return MakeTensor(grad_self_buf);
+        return MakeTensor(std::move(grad_self_buf));
       });
 }
 
@@ -878,7 +878,7 @@ at::Tensor CrossEntropyLossBackwardTargetKernel(
             auto grad_target_buf,
             (DispatchOp<kDynamicSize, 1>(std::move(op_builder), inputs,
                                          std::move(options))));
-        return MakeTensor(grad_target_buf);
+        return MakeTensor(std::move(grad_target_buf));
       });
 }
 
@@ -991,7 +991,7 @@ at::Tensor AtenCrossEntropyLoss(const at::Tensor& self,
         TT_ASSIGN_OR_THROW(auto output_buf, (DispatchOp<kDynamicSize, 1>(
                                                 std::move(op_builder), inputs,
                                                 std::move(options))));
-        return MakeTensor(output_buf);
+        return MakeTensor(std::move(output_buf));
       });
 }
 

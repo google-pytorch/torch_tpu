@@ -419,11 +419,12 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenNativeGroupNormBackward(
                  .op_param_cache_keys = std::move(param_keys)})));
 
         // Return Results (handling masks and optional weight)
-        return {output_mask[0] ? MakeTensor(d_input_buf) : at::Tensor(),
-                (output_mask[1] && weight.has_value())
-                    ? MakeTensor(d_weight_buf)
-                    : at::Tensor(),
-                output_mask[2] ? MakeTensor(d_bias_buf) : at::Tensor()};
+        return {
+            output_mask[0] ? MakeTensor(std::move(d_input_buf)) : at::Tensor(),
+            (output_mask[1] && weight.has_value())
+                ? MakeTensor(std::move(d_weight_buf))
+                : at::Tensor(),
+            output_mask[2] ? MakeTensor(std::move(d_bias_buf)) : at::Tensor()};
       });
 }
 }  // namespace torch_tpu

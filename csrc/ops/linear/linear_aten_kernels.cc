@@ -515,7 +515,7 @@ at::Tensor AtenLinear(const at::Tensor& input, const at::Tensor& weight,
   TT_KERNEL(OpName::kLinear, param_keys, (input, weight, bias), {
     TT_ASSIGN_OR_THROW(auto result_buffer,
                        Linear(input, weight, bias, std::move(param_keys)));
-    return MakeTensor(result_buffer);
+    return MakeTensor(std::move(result_buffer));
   });
 }
 
@@ -543,12 +543,15 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenLinearBackward(
         TT_ASSIGN_OR_THROW(auto result_buffers,
                            LinearBackward(self, grad_output, weight,
                                           output_mask, std::move(param_keys)));
-        at::Tensor grad_input =
-            output_mask[0] ? MakeTensor(result_buffers[0]) : at::Tensor();
-        at::Tensor grad_weight =
-            output_mask[1] ? MakeTensor(result_buffers[1]) : at::Tensor();
-        at::Tensor grad_bias =
-            output_mask[2] ? MakeTensor(result_buffers[2]) : at::Tensor();
+        at::Tensor grad_input = output_mask[0]
+                                    ? MakeTensor(std::move(result_buffers[0]))
+                                    : at::Tensor();
+        at::Tensor grad_weight = output_mask[1]
+                                     ? MakeTensor(std::move(result_buffers[1]))
+                                     : at::Tensor();
+        at::Tensor grad_bias = output_mask[2]
+                                   ? MakeTensor(std::move(result_buffers[2]))
+                                   : at::Tensor();
         return std::make_tuple(std::move(grad_input), std::move(grad_weight),
                                std::move(grad_bias));
       });

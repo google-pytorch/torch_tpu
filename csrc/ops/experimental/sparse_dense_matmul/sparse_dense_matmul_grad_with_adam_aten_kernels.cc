@@ -389,8 +389,9 @@ AtenSparseDenseMatmulGradWithAdam(
           results[2].set_layout(*vel_buf.shape().layout());
         }
 
-        return std::make_tuple(MakeTensor(results[0]), MakeTensor(results[1]),
-                               MakeTensor(results[2]));
+        return std::make_tuple(MakeTensor(std::move(results[0])),
+                               MakeTensor(std::move(results[1])),
+                               MakeTensor(std::move(results[2])));
       });
 }
 

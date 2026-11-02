@@ -115,7 +115,7 @@ absl::StatusOr<at::Tensor> ToTpu(
           absl::MakeConstSpan(cpu.sizes().data(), cpu.sizes().size()))
           .Run());
   TT_RETURN_IF_ERROR(buffer.Synchronize());
-  return MakeTensor(buffer);
+  return MakeTensor(std::move(buffer));
 }
 
 // Returns the values of the TPU tensor `tpu` on the CPU.

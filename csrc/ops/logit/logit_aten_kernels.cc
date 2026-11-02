@@ -262,7 +262,7 @@ at::Tensor AtenLogit(const at::Tensor& self, std::optional<double> eps) {
         DeviceBufferRef result_buf,
         BuildLogitBuffer(self, promoted_eps, out_type, std::move(param_keys)));
 
-    return MakeTensor(result_buf);
+    return MakeTensor(std::move(result_buf));
   });
 }
 

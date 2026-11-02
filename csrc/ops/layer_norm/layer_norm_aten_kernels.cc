@@ -160,9 +160,10 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenNativeLayerNorm(
                  .out_dims_list = {output_dims, mean_rstd_buffer_shape,
                                    mean_rstd_buffer_shape},
                  .op_param_cache_keys = std::move(param_keys)})));
-        return {MakeTensor(output_buf),
-                MakeTensor(mean_buf).reshape(mean_rstd_tensor_shape),
-                MakeTensor(rstd_buf).reshape(mean_rstd_tensor_shape)};
+        return {
+            MakeTensor(std::move(output_buf)),
+            MakeTensor(std::move(mean_buf)).reshape(mean_rstd_tensor_shape),
+            MakeTensor(std::move(rstd_buf)).reshape(mean_rstd_tensor_shape)};
       });
 }
 
@@ -241,11 +242,14 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenLayerNormBackward(
                                    bias_grad_dims},
                  .op_param_cache_keys = std::move(param_keys)})));
 
-        return {grad_input_mask[0] ? MakeTensor(grad_input_buf) : at::Tensor(),
-                grad_input_mask[1] && has_weight ? MakeTensor(grad_weight_buf)
-                                                 : at::Tensor(),
-                grad_input_mask[2] && compute_dbeta ? MakeTensor(grad_bias_buf)
-                                                    : at::Tensor()};
+        return {grad_input_mask[0] ? MakeTensor(std::move(grad_input_buf))
+                                   : at::Tensor(),
+                grad_input_mask[1] && has_weight
+                    ? MakeTensor(std::move(grad_weight_buf))
+                    : at::Tensor(),
+                grad_input_mask[2] && compute_dbeta
+                    ? MakeTensor(std::move(grad_bias_buf))
+                    : at::Tensor()};
       });
 }
 

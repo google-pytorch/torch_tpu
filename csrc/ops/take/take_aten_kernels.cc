@@ -15,6 +15,7 @@
 #include "csrc/ops/take/take_aten_kernels.h"
 
 #include <cstdint>
+#include <utility>
 
 #include "ATen/core/TensorBody.h"
 #include "absl/status/status.h"
@@ -156,7 +157,7 @@ at::Tensor AtenTake(const at::Tensor& self, const at::Tensor& index) {
                       {.out_dtype = out_dtype,
                        .out_dims = index.sizes(),
                        .op_param_cache_keys = OpParamCacheKeys::Empty()}));
-    return MakeTensor(result);
+    return MakeTensor(std::move(result));
   });
 }
 

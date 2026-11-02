@@ -182,7 +182,7 @@ at::Tensor AtenStd(const at::Tensor& self, c10::OptionalArrayRef<int64_t> dim,
                                .out_dims = output_dims,
                                .computation_dtype = computation_dtype,
                                .op_param_cache_keys = std::move(param_keys)})));
-        return MakeTensor(result_bufs);
+        return MakeTensor(std::move(result_bufs));
       });
 }
 

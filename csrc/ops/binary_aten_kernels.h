@@ -131,7 +131,7 @@ absl::StatusOr<at::Tensor> BinaryOp(const at::Tensor& tensor,
   TT_ASSIGN_OR_RETURN(auto result_buf, internal::DispatchBinaryOp(
                                            tensor, other, std::move(op_builder),
                                            std::move(opts)));
-  return MakeTensor(result_buf);
+  return MakeTensor(std::move(result_buf));
 }
 
 template <typename OtherType>

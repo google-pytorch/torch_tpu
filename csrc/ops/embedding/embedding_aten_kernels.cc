@@ -213,7 +213,7 @@ at::Tensor DispatchEmbeddingSparseBackward(const at::Tensor& grad,
                            .op_param_cache_keys = std::move(pk)})));
     return MakeSparseCooTensor(
         /*sparse_dim=*/1, /*dense_dim=*/1, {num_weights, num_features},
-        MakeTensor(results[0]), MakeTensor(results[1]),
+        MakeTensor(std::move(results[0])), MakeTensor(std::move(results[1])),
         /*is_coalesced=*/false);
   }
 
@@ -233,9 +233,9 @@ at::Tensor DispatchEmbeddingSparseBackward(const at::Tensor& grad,
                         {.out_dtypes = out_dtypes,
                          .out_dims_list = out_dims_list,
                          .op_param_cache_keys = std::move(pk)})));
-  const at::Tensor compacted_indices = MakeTensor(pad_results[0]);
-  const at::Tensor compacted_values = MakeTensor(pad_results[1]);
-  const at::Tensor count_tensor = MakeTensor(pad_results[2]);
+  const at::Tensor compacted_indices = MakeTensor(std::move(pad_results[0]));
+  const at::Tensor compacted_values = MakeTensor(std::move(pad_results[1]));
+  const at::Tensor count_tensor = MakeTensor(std::move(pad_results[2]));
   TT_ASSIGN_OR_THROW(const int64_t valid_count,
                      ExtractValidCount(count_tensor));
   if (valid_count == 0) {
@@ -263,10 +263,11 @@ at::Tensor DispatchEmbeddingSparseBackward(const at::Tensor& grad,
                         {.out_dtypes = slice_dtypes,
                          .out_dims_list = slice_dims_list,
                          .op_param_cache_keys = std::move(slice_pk)})));
-  return MakeSparseCooTensor(
-      /*sparse_dim=*/1, /*dense_dim=*/1, {num_weights, num_features},
-      MakeTensor(slice_results[0]), MakeTensor(slice_results[1]),
-      /*is_coalesced=*/false);
+  return MakeSparseCooTensor(/*sparse_dim=*/1, /*dense_dim=*/1,
+                             {num_weights, num_features},
+                             MakeTensor(std::move(slice_results[0])),
+                             MakeTensor(std::move(slice_results[1])),
+                             /*is_coalesced=*/false);
 }
 
 }  // namespace
@@ -299,7 +300,7 @@ at::Tensor AtenEmbedding(const at::Tensor& weight, const at::Tensor& indices,
         TT_ASSIGN_OR_THROW(auto result,
                            BuildAndDispatchEmbedding(weight, indices, out_dims,
                                                      std::move(pk)));
-        return MakeTensor(result);
+        return MakeTensor(std::move(result));
       });
 }
 
@@ -394,8 +395,10 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor> AtenEmbeddingBag(
                                 .out_dims_list = out_dims_list,
                                 .op_param_cache_keys = std::move(pk)})));
 
-        return std::make_tuple(MakeTensor(results[0]), MakeTensor(results[1]),
-                               MakeTensor(results[2]), MakeTensor(results[3]));
+        return std::make_tuple(MakeTensor(std::move(results[0])),
+                               MakeTensor(std::move(results[1])),
+                               MakeTensor(std::move(results[2])),
+                               MakeTensor(std::move(results[3])));
       });
 }
 
@@ -468,7 +471,7 @@ at::Tensor AtenEmbeddingBagBackward(
                                  {.out_dtype = result_dtype,
                                   .out_dims = {indices.numel(), grad.size(-1)},
                                   .op_param_cache_keys = std::move(pk)})));
-          at::Tensor index_grad = MakeTensor(index_grad_buf);
+          at::Tensor index_grad = MakeTensor(std::move(index_grad_buf));
           TT_ASSIGN_OR_THROW(auto sparse_pk,
                              TT_MAKE_OP_PARAM_CACHE_KEYS(nw_val, padding_idx,
                                                          scale_grad_by_freq));
@@ -502,7 +505,7 @@ at::Tensor AtenEmbeddingBagBackward(
                                 .out_dims = {nw_val, grad.size(-1)},
                                 .op_param_cache_keys = std::move(pk)})));
 
-        return MakeTensor(results);
+        return MakeTensor(std::move(results));
       });
 }
 
@@ -534,7 +537,7 @@ at::Tensor AtenEmbeddingDenseBackward(const at::Tensor& grad_output,
                                .out_dims = {nw_val, grad_output.size(-1)},
                                .op_param_cache_keys = std::move(pk)})));
 
-        return MakeTensor(result);
+        return MakeTensor(std::move(result));
       });
 }
 
@@ -566,7 +569,7 @@ at::Tensor& AtenEmbeddingRenorm_(at::Tensor& self, const at::Tensor& indices,
                                .out_dims = out_dims,
                                .op_param_cache_keys = std::move(pk)})));
 
-        self.index_put_({indices}, MakeTensor(renorm_rows));
+        self.index_put_({indices}, MakeTensor(std::move(renorm_rows)));
         return self;
       });
 }

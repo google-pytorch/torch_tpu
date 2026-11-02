@@ -157,7 +157,7 @@ at::Tensor DynamicArange(const at::Tensor& start, const at::Tensor& end,
                           {.out_dtype = element_type,
                            .out_dims = out_dims,
                            .op_param_cache_keys = std::move(param_keys)}));
-        return MakeTensor(result_buf);
+        return MakeTensor(std::move(result_buf));
       });
 }
 

@@ -421,7 +421,8 @@ absl::StatusOr<std::tuple<at::Tensor, at::Tensor>> FlexAttentionFwdImpl(
                           {.out_dtypes = out_dtypes,
                            .out_dims_list = out_dims_list,
                            .op_param_cache_keys = std::move(param_keys)})));
-  return std::make_tuple(MakeTensor(results[0]), MakeTensor(results[1]));
+  return std::make_tuple(MakeTensor(std::move(results[0])),
+                         MakeTensor(std::move(results[1])));
 }
 
 }  // namespace

@@ -123,7 +123,7 @@ at::Tensor AtenIm2Col(const at::Tensor& self, at::IntArrayRef kernel_size,
                   DeviceBufferRef result,
                   AtenIm2Col(self, kernel_size, dilation, padding, stride,
                              std::move(param_keys)));
-              return MakeTensor(result);
+              return MakeTensor(std::move(result));
             });
 }
 
