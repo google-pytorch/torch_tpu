@@ -159,7 +159,6 @@ at::Tensor AtenEmptyStrided(c10::SymIntArrayRef size_sym,
 
         // Determine how much "storage" we require, in terms of the number of
         // elements.
-        int64_t max_index = 0;
         bool is_zero_sized = false;
         for (int64_t i = 0; i < final_sizes_vec.size(); ++i) {
           TT_CHECK_THROW(final_sizes_vec[i] >= 0, error::kInvalidArgument)
@@ -169,9 +168,18 @@ at::Tensor AtenEmptyStrided(c10::SymIntArrayRef size_sym,
               << "expected strides to be >= 0, got strides ["
               << absl::StrJoin(final_strides_vec, ", ") << "]";
           is_zero_sized |= final_sizes_vec[i] == 0;
-          max_index += (final_sizes_vec[i] - 1) * final_strides_vec[i];
         }
-        const int64_t element_count = is_zero_sized ? 0 : max_index + 1;
+        int64_t element_count = 0;
+        if (!is_zero_sized) {
+          int64_t max_index = 0;
+          for (int64_t i = 0; i < final_sizes_vec.size(); ++i) {
+            TT_ASSIGN_OR_THROW(
+                const int64_t dim_span,
+                SafeMultiply(final_sizes_vec[i] - 1, final_strides_vec[i]));
+            TT_ASSIGN_OR_THROW(max_index, SafeAdd(max_index, dim_span));
+          }
+          TT_ASSIGN_OR_THROW(element_count, SafeAdd(max_index, 1));
+        }
 
         // Create a 1D contiguous empty (really, deterministically filled)
         // tensor to act as this "storage".
