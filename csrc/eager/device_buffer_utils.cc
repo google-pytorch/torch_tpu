@@ -495,13 +495,14 @@ struct AsStridedInverseBuilderResult {
 };
 
 // Slices an MLIR input operand down to view_dimensions if its compiled type
-// shape differs.
+// shape (with bounded dynamic dimensions at their upper bounds) differs.
+//
+// A bounded dynamic dimension whose upper bound equals the view dimension is
+// kept as is: slicing it would turn it into a static dimension, which then
+// can't be combined with other bounded operands (e.g. in a broadcast).
 mlir::MlirOp SliceOperandIfNeeded(mlir::MlirOp input,
                                   const Dimensions& view_dimensions) {
-  auto type = GetTensorTypeOrDie(input);
-  bool should_slice =
-      type.getShape() !=
-      llvm::ArrayRef<int64_t>(view_dimensions.data(), view_dimensions.size());
+  const bool should_slice = GetStaticShape(input) != view_dimensions;
   if (should_slice) {
     Indices start_indices(view_dimensions.size(), 0);
     Strides strides(view_dimensions.size(), 1);
