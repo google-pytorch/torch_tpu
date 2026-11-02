@@ -357,12 +357,22 @@ TT_PYBIND11_MODULE(_device_ops_backend, m) {
   m.def(
       "_get_device_count",
       []() -> int {
+        TT_ASSIGN_OR_THROW(const int visible_device_count,
+                           PjrtBackend::GetInstance().GetVisibleDeviceCount());
+        return visible_device_count;
+      },
+      "Returns the number of TPU devices visible to this process. See "
+      "PjrtBackend::GetVisibleDeviceCount().");
+
+  m.def(
+      "_get_addressable_device_count",
+      []() -> int {
         TT_ASSIGN_OR_THROW(xla::PjRtClient* const client,
                            PjrtBackend::GetInstance().GetClient());
         return client->addressable_device_count();
       },
-      "Returns the number of devices visible to the PJRT client. This count "
-      "is equivalent to the addressable device count.");
+      "Returns the number of TPU devices this process's TPU runtime can use, "
+      "i.e. the PJRT addressable device count.");
 
   m.def(
       "_get_local_device_attributes", &PyGetLocalDeviceAttributes,

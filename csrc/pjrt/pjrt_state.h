@@ -112,6 +112,16 @@ class PjrtBackend {
   // Returns the global device count. Triggers lazy initialization if needed.
   absl::StatusOr<int> GetGlobalDeviceCount() ABSL_LOCKS_EXCLUDED(mutex_);
 
+  // Returns the number of TPU devices visible to this process, i.e. what
+  // GetVisibleTpuDeviceCount() returned when the runtime first started
+  // initializing, before TorchTPU restricted the runtime to the devices this
+  // process uses, or the addressable device count if that is larger. This is
+  // not how many devices this process can use: by default the runtime uses one
+  // of them. In distributed mode (WORLD_SIZE > 1), where each worker uses the
+  // device of its local rank, returns the addressable device count instead.
+  // Triggers lazy initialization if needed.
+  absl::StatusOr<int> GetVisibleDeviceCount() ABSL_LOCKS_EXCLUDED(mutex_);
+
   // Returns the global ID of the current device. Triggers lazy initialization
   // if needed.
   absl::StatusOr<int> GetGlobalDeviceId() ABSL_LOCKS_EXCLUDED(mutex_);
@@ -156,6 +166,9 @@ class PjrtBackend {
   PjRtDeviceType device_type_ ABSL_GUARDED_BY(mutex_) =
       PjRtDeviceType::kUnknown;
   int global_device_count_ ABSL_GUARDED_BY(mutex_) = 0;
+  int visible_device_count_ ABSL_GUARDED_BY(mutex_) = 0;
+  // GetVisibleTpuDeviceCount() at the first initialization. Kept by Shutdown().
+  std::optional<int64_t> first_visible_device_count_ ABSL_GUARDED_BY(mutex_);
   int global_device_id_ ABSL_GUARDED_BY(mutex_) = -1;
   PjRtInitializationOptions options_ ABSL_GUARDED_BY(mutex_) = {};
   bool init_attempted_ ABSL_GUARDED_BY(mutex_) = false;

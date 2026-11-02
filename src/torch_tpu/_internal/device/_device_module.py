@@ -84,12 +84,14 @@ class _DefaultGeneratorsProperty:
 
   Attributes:
     _cached_default_generators: A lazily-initialized tuple holding the default
-      `torch.Generator` instances for each TPU device. It contains exactly
-      `owner.device_count()` elements, ordered by device ordinal (i.e. element
-      at index `i` corresponds to device index `i`). Crossing the pybind11
-      boundary creates new Python wrapper objects on each call to
-      `_device_ops_backend.get_default_generator()`, so caching this tuple
-      ensures identity persistence (`torch.tpu.default_generators is
+      `torch.Generator` instances for each TPU device this process's runtime can
+      use, i.e. the addressable devices. Unlike CUDA, this can be fewer than
+      `owner.device_count()` elements, which counts all visible devices, since a
+      process uses only one TPU device by default. Elements are ordered by
+      device ordinal (i.e. element at index `i` corresponds to device index
+      `i`). Crossing the pybind11 boundary creates new Python wrapper objects on
+      each call to `_device_ops_backend.get_default_generator()`, so caching
+      this tuple ensures identity persistence (`torch.tpu.default_generators is
       torch.tpu.default_generators`) matching upstream PyTorch semantics.
   """
 
@@ -100,7 +102,8 @@ class _DefaultGeneratorsProperty:
     if owner is None:
       return ()
     _device_ops_backend._get_current_device_id()  # pylint: disable=protected-access
-    device_count = owner._public_module().device_count()  # pylint: disable=protected-access
+    # The device generators exist only for the addressable devices.
+    device_count = _device_ops_backend._get_addressable_device_count()  # pylint: disable=protected-access
     if (
         execution_mode.eager_mode
         == execution_mode.EagerMode._INTERNAL_COMPILE_FX_GRAPH
@@ -805,12 +808,19 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
       ),
   )
   def device_count(cls) -> int:  # This is in torch/cuda/__init__.py.
-    """Returns the count of devices. This is implemented for *local* devices.
+    """Returns the number of TPU devices visible to this process.
 
-    Before the TPU runtime is initialized, returns how many physical TPU PCI
-    devices are attached to this host without initializing PJRT. Once
-    initialized, returns how many addressable PJRT TPU devices this process's
-    runtime owns.
+    Like `torch.cuda.device_count()`, this counts the devices on this host that
+    this process can see, as restricted by ``TPU_VISIBLE_DEVICES``, and returns
+    the same count before and after the TPU runtime is initialized. Before
+    initialization, it counts the TPU PCI devices this process can access
+    through VFIO without initializing the runtime. Once initialized, it returns
+    that count, or the number of devices the runtime uses if that is larger,
+    e.g. at device paths the PCI scan misses. Unlike CUDA, a process uses only
+    one TPU device by default, even if it can see more, so device indices
+    other than the current one may not be usable. In distributed mode
+    (``WORLD_SIZE`` > 1), each worker uses only the device of its local rank,
+    and the count after initialization is the number of devices it uses.
 
     .. warning::
         This API is experimental and subject to change in future releases.
@@ -819,7 +829,7 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
       if cls._public_module().is_initialized():
         cls._device_count = _device_ops_backend._get_device_count()  # pylint: disable=protected-access
       elif cls._device_type == "tpu":
-        return hardware.get_tpu_device_count()
+        return hardware.get_visible_tpu_device_count()
       else:
         # Fallback to init for other devices if needed.
         cls._device_count = _device_ops_backend._get_device_count()  # pylint: disable=protected-access

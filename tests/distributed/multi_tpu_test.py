@@ -55,6 +55,10 @@ class MultiTpuTest(continuous_test_utils.TpuMultiProcContinuousTest):
             f" {torch.accelerator.device_count()}), got {this_device}"
         ),
     )
+    # Each worker uses only the device of its local rank. Counting only that
+    # device makes PyTorch's distributed code, e.g. DTensor's RNG, which picks
+    # the device index `rank % device_count()`, pick it.
+    self.assertEqual(torch.accelerator.device_count(), 1)
 
 
 if __name__ == "__main__":

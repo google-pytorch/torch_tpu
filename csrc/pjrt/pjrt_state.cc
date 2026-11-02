@@ -16,6 +16,7 @@
 
 #include "csrc/pjrt/pjrt_state.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <cstdlib>
@@ -41,6 +42,7 @@
 #include "csrc/common/env_vars.h"
 #include "csrc/common/environment.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/tpu_hardware.h"
 #include "csrc/common/utils.h"
 #include "csrc/distributed/slicebuilder/discovery.h"
 #include "csrc/pjrt/pjrt_client.h"
@@ -229,10 +231,21 @@ absl::Status PjrtBackend::InitializeInternal() {
 
   PjRtDeviceType device_type = PjRtDeviceType::kUnknown;
   std::string plugin_name;
+  int64_t visible_device_count = 0;
   if (options_.device_type == "tpu") {
     device_type = PjRtDeviceType::kTpu;
     plugin_name = kTpuPjrtName;
 
+    // Count the visible devices the way `torch.tpu.device_count()` does before
+    // initialization, so that the count doesn't change once the runtime is
+    // initialized. Do it before anything below restricts the runtime to the
+    // devices this process uses, e.g. by rewriting `TPU_VISIBLE_DEVICES`, and
+    // only once per process, since such a rewrite outlives Shutdown().
+    if (!first_visible_device_count_.has_value()) {
+      first_visible_device_count_ = GetVisibleTpuDeviceCount();
+    }
+    visible_device_count = *first_visible_device_count_;
+    ApplyTpuVisibleDevices();
     // When WORLD_SIZE is not set (or is 1), TorchTPU defaults to single-device
     // mode.
     const auto& world_size_or =
@@ -242,6 +255,11 @@ absl::Status PjrtBackend::InitializeInternal() {
       TT_RETURN_IF_ERROR(InitializeSingleDeviceEnvironment()).SetPrepend()
           << "failed to initialize single-device environment: ";
     } else {
+      // Each worker uses only the device that TorchTPU selects for its local
+      // rank, and PyTorch's distributed code picks a worker's device index as
+      // e.g. `rank % device_count()`, so count only the addressable devices,
+      // like launchers that set `CUDA_VISIBLE_DEVICES` to one GPU per rank.
+      visible_device_count = 0;
       TT_ASSIGN_OR_RETURN(auto config, GetDistributedWorkerConfiguration());
       TT_RETURN_IF_ERROR(InitializeDistributedEnvironment(config)).SetPrepend()
           << "failed to initialize distributed environment: ";
@@ -314,6 +332,10 @@ absl::Status PjrtBackend::InitializeInternal() {
   device_ = addressable_devices[0];
   device_type_ = device_type;
   global_device_count_ = world_size;
+  // The visible count can also be smaller if the PCI scan misses devices that
+  // the runtime finds, e.g. at explicitly configured device paths.
+  visible_device_count_ = static_cast<int>(std::max<int64_t>(
+      visible_device_count, static_cast<int64_t>(addressable_devices.size())));
   global_device_id_ = device_->global_device_id().value();
   return absl::OkStatus();
 }
@@ -370,6 +392,16 @@ absl::StatusOr<int> PjrtBackend::GetGlobalDeviceCount() {
     return TT_ERROR(error::kInternal) << "PjRt is not initialized";
   }
   return global_device_count_;
+}
+
+absl::StatusOr<int> PjrtBackend::GetVisibleDeviceCount() {
+  TT_RETURN_IF_ERROR(EnsureInitialized());
+  absl::ReaderMutexLock lock(mutex_);
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Only reachable if Shutdown() races
+                 // with a successful EnsureInitialized().
+      client_ != nullptr, error::kInternal)
+      << "PjRt client is not initialized";
+  return visible_device_count_;
 }
 
 absl::StatusOr<int> PjrtBackend::GetGlobalDeviceId() {
@@ -439,6 +471,7 @@ void PjrtBackend::Shutdown() {
   device_ = nullptr;
   device_type_ = PjRtDeviceType::kUnknown;
   global_device_count_ = 0;
+  visible_device_count_ = 0;
   init_attempted_ = false;
   init_status_ = absl::OkStatus();
   ABSL_VLOG(1) << "PjRt shut down.";

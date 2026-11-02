@@ -18,7 +18,7 @@
 # haifeng-jin
 # basioli-k
 
-load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_library", "torch_tpu_py_test")
+load("//build_files:build_defs.bzl", "if_oss", "torch_tpu_package_end", "torch_tpu_py_library", "torch_tpu_py_test")
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -133,10 +133,13 @@ torch_tpu_py_test(
     srcs = ["device_count_test.py"],
     args = ["--device_type=tpu"],
     main = "device_count_test.py",
-    # Excluded from TAP until `torch.tpu.device_count()` counts only the devices
-    # this process can use before the TPU runtime is initialized, as CUDA does.
-    notap = "Fails until torch.tpu.device_count() matches CUDA before init (b/577219302).",
-    tags = [
+    # The test's workers start with other visible devices than the test, e.g.
+    # all of them, so in OSS, where concurrent tests share the host's TPUs, it
+    # needs all of them.
+    tags = if_oss(
+        ["exclusive"],
+        [],
+    ) + [
         "requires-tpu-v5lite:8",
     ],
     deps = [
@@ -152,14 +155,21 @@ torch_tpu_py_test(
 
 # Like `device_count_test_tpu`, but on a worker that has one TPU chip. Forge
 # leaves placeholder device files for the host's other chips, which TorchTPU
-# counts before the TPU runtime is initialized.
+# must not count before the TPU runtime is initialized.
 torch_tpu_py_test(
     name = "device_count_test_tpu_single_chip",
     srcs = ["device_count_test.py"],
     args = ["--device_type=tpu"],
     main = "device_count_test.py",
-    notap = "Fails until torch.tpu.device_count() matches CUDA before init (b/577219302).",
-    tags = [
+    # See `device_count_test_tpu`. Bazel runs exclusive tests locally, so keep
+    # the test off the RBE runner, which has no TPUs, and on the TPU runners.
+    tags = if_oss(
+        [
+            "exclusive",
+            "no-remote-exec",
+        ],
+        [],
+    ) + [
         "requires-tpu-v5lite",
     ],
     deps = [

@@ -21,6 +21,7 @@ import unittest
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
+from torch_tpu._internal.device import _device_ops_backend
 from torch_tpu._internal.utils import utils
 from torch_tpu._internal.distributed import multiprocessing
 from tests import error_testing as et
@@ -45,6 +46,18 @@ _DROPOUT_INTERNAL_ASSERTION_ERROR_RE = re.compile(
 def setUpModule():
   """Called by absltest after flags are parsed and before tests are run."""
   et.set_up_module()
+
+
+def _usable_device_count() -> int:
+  """Returns how many devices this process can use.
+
+  On TPU, this can be fewer than `torch.accelerator.device_count()`, which
+  counts all the visible devices, since a process uses only one TPU device by
+  default.
+  """
+  if et.is_on_tpu():
+    return _device_ops_backend._get_addressable_device_count()  # pylint: disable=protected-access
+  return torch.accelerator.device_count()
 
 
 def _ensure_ao_ops_registered() -> None:
@@ -15775,12 +15788,12 @@ Device-side assertion tracking was not enabled by user.""",
       torch.accelerator.current_stream(f"{et.device().type}:8")
 
   @et.skip_if(
-      lambda: et.is_on_tpu() and torch.accelerator.device_count() >= 8,
+      lambda: et.is_on_tpu() and _usable_device_count() >= 8,
       "Error is raised only if the number of TPUs is < 8 due to TorchTPU"
       " hardcoded maximum device count: 8 TPUs.",
   )
   def test_current_stream_device_index_above_device_count(self):
-    actual_device_count = torch.accelerator.device_count()
+    actual_device_count = _usable_device_count()
 
     with et.assert_raises_message(
         RuntimeError,

@@ -70,6 +70,14 @@ namespace {
 
 constexpr int kMaxDevices = 8;
 
+// Returns whether `device_index` is below `torch.tpu.device_count()`, i.e. a
+// TPU device visible to this process, which it may not be able to use.
+[[nodiscard]] bool IsVisibleDeviceIndex(c10::DeviceIndex device_index) {
+  const absl::StatusOr<int> visible_device_count =
+      PjrtBackend::GetInstance().GetVisibleDeviceCount();
+  return visible_device_count.ok() && device_index < *visible_device_count;
+}
+
 void ValidateDeviceIndex(c10::DeviceIndex device_index) {
   // This error message should not be hit; it should be impossible for users to
   // construct a torch.device with a negative device index, which will fail
@@ -99,7 +107,11 @@ void ValidateDeviceIndex(c10::DeviceIndex device_index) {
       error::kInvalidArgument)
       << "device index " << static_cast<int>(device_index)
       << " is out of bounds of the number of addressable devices "
-      << addressable_device_count;
+      << addressable_device_count
+      << (IsVisibleDeviceIndex(device_index)
+              ? "; using a visible TPU device other than the ones this process "
+                "uses is not supported yet"
+              : "");
 }
 
 class TpuDeviceGuardImpl final : public c10::impl::DeviceGuardImplInterface {
@@ -128,6 +140,11 @@ class TpuDeviceGuardImpl final : public c10::impl::DeviceGuardImplInterface {
   // initializing the runtime first if needed (0 if initialization fails). If
   // the runtime isn't initialized and no TPU device is reachable (no TPU device
   // nodes and no custom device paths), returns 0 without initializing it.
+  //
+  // Unlike `torch.tpu.device_count()`, which counts the visible devices, this
+  // counts only the devices this process can use, since PyTorch uses it to
+  // size per-device state, e.g. the autograd engine's device threads, which
+  // switch to each device index below this count.
   c10::DeviceIndex deviceCount() const noexcept override;
   bool queryStream(const c10::Stream& stream) const override;
   void synchronizeStream(const c10::Stream& stream) const override;
