@@ -129,15 +129,19 @@ absl::StatusOr<std::vector<DeviceBufferRef>> PrepareCompiledModeArgumentsImpl(
     }
 
     // Using as_strided, restrict the base tensor to only the minimal contiguous
-    // block of data needed for the view to be valid.
-    TT_ASSIGN_OR_RETURN(
-        Dimensions base_sizes,
-        GetContiguousBaseShape(StridedLayout::FromTensor(argument_tensor)));
+    // block of data needed for the view to be valid, starting at the view's own
+    // storage offset so that the buffer shape does not depend on the offset
+    // (must match PyMakePlaceholderLike in tpu_torch_compile.cc, see
+    // https://github.com/google-pytorch/torch_tpu/issues/4409).
+    StridedLayout argument_layout = StridedLayout::FromTensor(argument_tensor);
+    const int64_t storage_offset = argument_layout.storage_offset;
+    argument_layout.storage_offset = 0;
+    TT_ASSIGN_OR_RETURN(Dimensions base_sizes,
+                        GetContiguousBaseShape(argument_layout));
     Strides base_strides = GetStrides(MakeContiguousBaseLayout(base_sizes));
 
     at::Tensor base_tensor =
-        argument_tensor.as_strided(base_sizes, base_strides,
-                                   /*storage_offset=*/0);
+        argument_tensor.as_strided(base_sizes, base_strides, storage_offset);
     TT_ASSIGN_OR_RETURN(DeviceBufferRef buffer_ref, GetBuffer(base_tensor),
                         _.SetPrepend()
                             << "failed to get buffer from argument tensor: "
