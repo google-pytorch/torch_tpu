@@ -31,8 +31,8 @@ from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
 
 # The prefix users are told to filter on, via
-# PYTHONWARNINGS="ignore:<TorchTpu/Performance/TcMalloc/".
-_DOCUMENTED_FILTER_PREFIX: Final[str] = "<TorchTpu/Performance/TcMalloc/"
+# PYTHONWARNINGS="ignore://TorchTpu/Performance/TcMalloc/".
+_DOCUMENTED_FILTER_PREFIX: Final[str] = "//TorchTpu/Performance/TcMalloc/"
 
 # A /proc/self/maps holding neither tcmalloc nor a sanitizer.
 _MAPS_WITHOUT_TCMALLOC: Final[str] = "7f000000 /usr/lib/libc.so.6\n"
@@ -129,9 +129,9 @@ class CheckTcmallocTest(seed_test_utils.RepeatableTest):
   def test_user_filter_takes_precedence_over_default_filters(self) -> None:
     with _no_tcmalloc(), warnings.catch_warnings(record=True) as caught:
       warnings.resetwarnings()
-      # Simulates PYTHONWARNINGS="always:<TorchTpu/Performance/".
+      # Simulates PYTHONWARNINGS="always://TorchTpu/Performance/".
       warnings.filterwarnings(
-          "always", message=re.escape("<TorchTpu/Performance/")
+          "always", message=re.escape("//TorchTpu/Performance/")
       )
       _tcmalloc_check.install_default_filters()
       _tcmalloc_check.check_tcmalloc()
@@ -140,10 +140,10 @@ class CheckTcmallocTest(seed_test_utils.RepeatableTest):
     self.assertLen(caught, 2)
 
   @parameterized.named_parameters(
-      ("tcmalloc_warning", "<TorchTpu/Performance/TcMalloc/"),
-      ("tcmalloc_warning_only", "<TorchTpu/Performance/TcMalloc/>"),
-      ("performance_warning", "<TorchTpu/Performance/"),
-      ("torch_tpu_warning", "<TorchTpu/"),
+      ("tcmalloc_warning", "//TorchTpu/Performance/TcMalloc/"),
+      ("tcmalloc_warning_only", "//TorchTpu/Performance/TcMalloc//"),
+      ("performance_warning", "//TorchTpu/Performance/"),
+      ("torch_tpu_warning", "//TorchTpu/"),
   )
   def test_warning_is_suppressed_by_ignore_filter(self, prefix: str) -> None:
     with _no_tcmalloc(), warnings.catch_warnings(record=True) as caught:
@@ -155,7 +155,7 @@ class CheckTcmallocTest(seed_test_utils.RepeatableTest):
 
   def test_warning_is_escalated_by_error_filter(self) -> None:
     with _no_tcmalloc(), warnings.catch_warnings():
-      warnings.filterwarnings("error", message="<TorchTpu/")
+      warnings.filterwarnings("error", message="//TorchTpu/")
       with (
           self.assertRaisesRegex(  # ASSERT_RAISES_OK=Verifies the error filter.
               UserWarning,

@@ -437,7 +437,7 @@ class DeprecatedFunctionsTest(seed_test_utils.RepeatableTest):
     self.assertTrue(issubclass(w[0].category, DeprecationWarning))
     self.assertEqual(
         str(w[0].message),
-        f"<TorchTpu/ApiStage/DeprecatedApi/> {function.__name__} is deprecated"
+        f"//TorchTpu/ApiStage/DeprecatedApi// {function.__name__} is deprecated"
         " as of TorchTPU 0.2.1 and will be removed in a future release: Use"
         f" {replacement} instead.",
     )

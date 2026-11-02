@@ -63,7 +63,7 @@ class NoTpuDeviceModuleTest(
     ].cell_contents = False
     with self.assertWarnsRegex(
         DeprecationWarning,
-        r"^<TorchTpu/ApiStage/DeprecatedApi/> get_device_name is deprecated as"
+        r"^//TorchTpu/ApiStage/DeprecatedApi// get_device_name is deprecated as"
         r" of TorchTPU 0\.2\.1 and will be removed in a future release: Use"
         r" torch\.tpu\.get_device_properties\(\)\.name instead, which mirrors"
         r" torch\.cuda\.get_device_properties\(\)\.name\.$",
@@ -117,7 +117,7 @@ class NoTpuDeviceModuleTest(
       props = torch.tpu.get_device_properties()
     with self.assertWarnsRegex(
         DeprecationWarning,
-        r"^<TorchTpu/ApiStage/DeprecatedApi/> multi_processor_count is"
+        r"^//TorchTpu/ApiStage/DeprecatedApi// multi_processor_count is"
         r" deprecated as of TorchTPU 0\.2\.1 and will be removed in a future"
         r" release: multi_processor_count is a CUDA concept with no TPU"
         r" equivalent\.$",
@@ -130,7 +130,7 @@ class NoTpuDeviceModuleTest(
       props = torch.tpu.get_device_properties()
     with self.assertWarnsRegex(
         DeprecationWarning,
-        r"^<TorchTpu/ApiStage/DeprecatedApi/> total_memory is deprecated as of"
+        r"^//TorchTpu/ApiStage/DeprecatedApi// total_memory is deprecated as of"
         r" TorchTPU 0\.2\.1 and will be removed in a future release: Use"
         r" torch\.tpu\.get_device_properties\(\)\.hbm_bytes_per_device"
         r" instead\.$",

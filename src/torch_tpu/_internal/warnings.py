@@ -32,10 +32,10 @@ message starts with a prefix naming its category in the following hierarchy:
 Prefix format
 -------------
 
-The prefix is `<`, the path of the category with every segment followed by
-`/`, then `> `. For example:
+The prefix is `//`, the path of the category with every segment followed by
+`/`, then `/ `. For example:
 
-  <TorchTpu/Performance/TcMalloc/> tcmalloc is not loaded; ...
+  //TorchTpu/Performance/TcMalloc// tcmalloc is not loaded; ...
 
 Filtering
 ---------
@@ -43,45 +43,44 @@ Filtering
 Python matches the message of a warning filter against the *start* of the
 warning message, so with this format:
 
-  * `<TorchTpu/Performance/` matches `Performance` and all its subcategories;
-  * `<TorchTpu/Performance/>` matches `Performance` only;
-  * `<TorchTpu/` matches all TorchTPU warnings.
+  * `//TorchTpu/Performance/` matches `Performance` and all its subcategories;
+  * `//TorchTpu/Performance//` matches `Performance` only;
+  * `//TorchTpu/` matches all TorchTPU warnings.
 
 That is, end the filter with `/` to select a category and its subcategories,
-or with `/>` to select just that category. Don't drop the trailing `/`:
-`<TorchTpu/Performance` would also match a future sibling category such as
+or with `//` to select just that category. Don't drop the trailing `/`:
+`//TorchTpu/Performance` would also match a future sibling category such as
 `PerformanceFoo`.
 
 The same filter text works in all the usual places:
 
   # In code.
   import warnings
-  warnings.filterwarnings("ignore", message="<TorchTpu/Performance/")
-  warnings.filterwarnings("error", message="<TorchTpu/")
+  warnings.filterwarnings("ignore", message="//TorchTpu/Performance/")
+  warnings.filterwarnings("error", message="//TorchTpu/")
 
   # From the environment or the command line. This needs no import, so it also
   # applies to warnings emitted while `import torch_tpu` is still running, such
-  # as the tcmalloc warning. Quote the filter, since `<` and `>` are special to
-  # the shell.
-  export PYTHONWARNINGS="ignore:<TorchTpu/Performance/"
-  python -W "ignore:<TorchTpu/Performance/TcMalloc/>" ...
-  pytest -W "error:<TorchTpu/" ...
+  # as the tcmalloc warning.
+  export PYTHONWARNINGS="ignore://TorchTpu/Performance/"
+  python -W "ignore://TorchTpu/Performance/TcMalloc//" ...
+  pytest -W "error://TorchTpu/" ...
 
   # In pytest configuration.
   [pytest]
   filterwarnings =
-      ignore:<TorchTpu/Performance/
+      ignore://TorchTpu/Performance/
 
 `PYTHONWARNINGS` takes a comma-separated list, so several filters can be
 combined:
 
-  PYTHONWARNINGS="ignore:<TorchTpu/Performance/,error:<TorchTpu/ApiStage/"
+  PYTHONWARNINGS="ignore://TorchTpu/Performance/,error://TorchTpu/ApiStage/"
 
 Design rationale
 ----------------
 
 The prefix format is chosen so that a filter is the same plain string
-everywhere, with no quoting or escaping beyond the shell:
+everywhere, with no quoting or escaping:
 
   * No `:`, `,`, or whitespace inside the path or a filter, since `-W` and
     `PYTHONWARNINGS` split filters on `:` and `,` and strip whitespace from
@@ -89,13 +88,15 @@ everywhere, with no quoting or escaping beyond the shell:
   * No regex metacharacters (e.g. `.`, `[`, `]`), since
     `warnings.filterwarnings` and pytest's `filterwarnings` ini option and mark
     treat the message as a regex, while `-W` and `PYTHONWARNINGS` treat it as
-    literal text. With `<`, `/`, and `>`, both readings agree.
+    literal text. With `/`, both readings agree.
+  * No `<` or `>`, since HTML-based log viewers strip `<...>` sequences as HTML
+    tags and `<` and `>` are shell redirection operators.
   * A `/` after every segment, including the last, so that a filter for a
     category can't match a sibling whose name it is a prefix of, and so that the
     most common filter, a category and its subcategories, is a single filter
     that keeps working when subcategories are added.
-  * The closing `>` marks the end of the path, so that a single category can be
-    selected exactly.
+  * A second trailing `/` (`//`) marks the end of the path, so that a single
+    category can be selected exactly.
 
 The categories and their prefixes are defined in C++ (csrc/common/warnings.h)
 and exposed here as module-level constants.
