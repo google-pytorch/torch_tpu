@@ -17262,6 +17262,33 @@ Got a.dtype()=Float8_e4m3fn, scale_a.dtype()=Float, scale_a.size()=[1], scale_a.
           too_many_bytes, dtype=torch.uint8, device="cpu", pin_memory=True
       )
 
+  def test_equal_device_mismatch(self):
+    t_dev = torch.tensor([1.0, 2.0], device=et.device())
+    t_cpu_same_size = torch.tensor([1.0, 2.0], device="cpu")
+    t_cpu_diff_size = torch.tensor([1.0, 2.0, 3.0], device="cpu")
+
+    for name, t_cpu in (
+        ("same_size", t_cpu_same_size),
+        ("different_size", t_cpu_diff_size),
+    ):
+      with self.subTest(f"{name}_dev_cpu"):
+        with et.assert_raises_message(
+            RuntimeError,
+            tpu="""equal(): expected tensor to be on tpu, got cpu""",
+            gpu="""Expected all tensors to be on the same device, but got other is on cpu, different from other tensors on cuda:0 (when checking argument in method wrapper_CUDA__equal)""",
+            message_reviewed_by="adivinpatel",
+        ):
+          torch.equal(t_dev, t_cpu)
+
+      with self.subTest(f"{name}_cpu_dev"):
+        with et.assert_raises_message(
+            RuntimeError,
+            tpu="""equal(): expected tensor to be on tpu, got cpu""",
+            gpu="""Expected all tensors to be on the same device, but got other is on cuda:0, different from other tensors on cpu (when checking argument in method wrapper_CUDA__equal)""",
+            message_reviewed_by="adivinpatel",
+        ):
+          torch.equal(t_cpu, t_dev)
+
 
 class InputPreprocessingErrorTest(et.ErrorTestBase):
 

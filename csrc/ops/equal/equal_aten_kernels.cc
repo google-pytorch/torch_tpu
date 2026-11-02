@@ -80,13 +80,13 @@ absl::StatusOr<mlir::MlirOp> BuildEqualShlo(mlir::MlirOp self_input,
 }  // namespace
 
 bool AtenEqual(const at::Tensor& self, const at::Tensor& other) {
-  if (self.sizes() != other.sizes()) {
-    return false;
-  }
-
-  bool result_scalar = false;
-
   TT_KERNEL(OpName::kEqual, param_keys, (self, other), {
+    TT_THROW_IF_ERROR(GetBaseBuffer(self).status());
+    TT_THROW_IF_ERROR(GetBaseBuffer(other).status());
+    if (self.sizes() != other.sizes()) {
+      return false;
+    }
+
     TT_ASSIGN_OR_THROW(
         const auto promoted_dtype,
         ConvertTo<mlir::ElementType>(at::result_type(self, other)));
@@ -106,12 +106,12 @@ bool AtenEqual(const at::Tensor& self, const at::Tensor& other) {
     TT_ASSIGN_OR_THROW(
         auto materialized_result_buf,
         MaterializeAndReturn(result, MaterializationReason::kScalarConversion));
+    bool result_scalar = false;
     TT_THROW_IF_ERROR(CopyDeviceBufferRefToCpuPtr(
         materialized_result_buf, &result_scalar,
         GetTransferSyncMode(/*non_blocking=*/false)));
+    return result_scalar;
   });
-
-  return result_scalar;
 }
 
 }  // namespace torch_tpu
