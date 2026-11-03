@@ -2074,6 +2074,29 @@ class StepperTypeTest(seed_test_utils.RepeatableTest):
       self.assertIs(got_cache_pos, stepper._decode_cache_positions[pos])
       self.assertIs(got_pos_ids, stepper._decode_position_ids[pos])
 
+  def test_early_init_head_shapes_heterogeneous(self):
+    class LayerCfg:
+
+      def __init__(self, num_key_value_heads, head_dim):
+        self.num_key_value_heads = num_key_value_heads
+        self.head_dim = head_dim
+
+    class HetCfg:
+      is_heterogeneous = True
+      per_layer_config = [LayerCfg(16, 256), LayerCfg(4, 512)]
+
+    class HomCfg:
+      is_heterogeneous = False
+
+    self.assertEqual(
+        decode._early_init_head_shapes(HomCfg(), 2, 16, 256),
+        (16, 256),
+    )
+    self.assertEqual(
+        decode._early_init_head_shapes(HetCfg(), 2, 16, 256),
+        ([16, 4], [256, 512]),
+    )
+
 
 if __name__ == "__main__":
   absltest.main()

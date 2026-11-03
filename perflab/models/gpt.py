@@ -128,6 +128,34 @@ def gpt_oss_20b_4_layers_training(ctx: context_lib.Context):
   return model, (), inputs, opt
 
 
+@registry_lib.register_benchmark(
+    stepper=step_lib.StepperType.DECODER_ONLY_DECODE,
+    presubmit=registry_lib.PresubmitPolicy.CPU_SMOKE_ONLY,
+    presubmit_reason=(
+        "GPT-OSS 20B uses too much memory to run on TPUs with smaller memory."
+    ),
+)
+def gpt_oss_20b_decode(ctx: context_lib.Context):
+  """Benchmark factory for GPT-OSS 20B decode."""
+  if model_helpers.is_presubmit_smoke(ctx):
+    batch_size = model_helpers.SMOKE_BATCH_SIZE
+    seq_len = model_helpers.SMOKE_SEQ_LEN
+    num_layers = 2
+  else:
+    batch_size = 4
+    seq_len = 4096
+    num_layers = None
+  model, inputs = _load_hf_gpt(
+      ctx,
+      "openai/gpt-oss-20b",
+      is_training=False,
+      seq_len=seq_len,
+      batch_size=batch_size,
+      num_layers=num_layers,
+  )
+  return model, (), inputs
+
+
 # --- GPT-OSS-120B ---
 
 
@@ -191,3 +219,29 @@ def gpt_oss_120b_2_layers_training(ctx: context_lib.Context):
       fused=True,
   )
   return model, (), inputs, opt
+
+
+@registry_lib.register_benchmark(
+    stepper=step_lib.StepperType.DECODER_ONLY_DECODE,
+    presubmit=registry_lib.PresubmitPolicy.CPU_SMOKE_ONLY,
+    presubmit_reason=(
+        "GPT-OSS 120B uses too much memory to run on TPUs with smaller memory."
+    ),
+)
+def gpt_oss_120b_4_layers_decode(ctx: context_lib.Context):
+  """Benchmark factory for GPT-OSS 120B (4 Layers) decode."""
+  if model_helpers.is_presubmit_smoke(ctx):
+    batch_size = model_helpers.SMOKE_BATCH_SIZE
+    seq_len = model_helpers.SMOKE_SEQ_LEN
+  else:
+    batch_size = 16
+    seq_len = 2048
+  model, inputs = _load_hf_gpt(
+      ctx,
+      "openai/gpt-oss-120b",
+      is_training=False,
+      seq_len=seq_len,
+      batch_size=batch_size,
+      num_layers=4,
+  )
+  return model, (), inputs

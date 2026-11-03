@@ -74,3 +74,24 @@ def nemotron_3_nano_30b_6_layers_forward(ctx: context_lib.Context):
       num_layers=6,
   )
   return model, (), inputs
+
+
+@registry_lib.register_benchmark(
+    stepper=step_lib.StepperType.DECODER_ONLY_DECODE,
+    presubmit=registry_lib.PresubmitPolicy.SKIP,
+    presubmit_reason=(
+        "Nemotron-3-Nano-30B uses too much memory to run on TPUs with smaller"
+        " memory."
+    ),
+)
+def nemotron_3_nano_30b_6_layers_decode(ctx: context_lib.Context):
+  """Benchmark factory for NVIDIA-Nemotron-3-Nano-30B-A3B-BF16 (6 Layers) decode."""
+  model, inputs = _load_hf_nemotron(
+      ctx,
+      "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
+      is_training=False,
+      seq_len=512,
+      batch_size=1,
+      num_layers=6,
+  )
+  return model, (), inputs

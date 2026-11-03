@@ -91,6 +91,31 @@ def starcoder2_3b_forward(ctx: context_lib.Context):
   return model, (), inputs
 
 
+@registry_lib.register_benchmark(
+    stepper=step_lib.StepperType.DECODER_ONLY_DECODE,
+    presubmit=registry_lib.PresubmitPolicy.RUN,
+)
+def starcoder2_3b_decode(ctx: context_lib.Context):
+  """Benchmark factory for StarCoder2-3B decode."""
+  if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
+    batch_size = 1
+    seq_len = 128
+    num_layers = 2
+  else:
+    batch_size = 1
+    seq_len = 2048
+    num_layers = None
+  model, inputs = _load_hf_causal_lm(
+      ctx,
+      "bigcode/starcoder2-3b",
+      is_training=False,
+      batch_size=batch_size,
+      seq_len=seq_len,
+      num_layers=num_layers,
+  )
+  return model, (), inputs
+
+
 # --- Phi-3 Mini 4K Instruct ---
 
 
@@ -148,3 +173,28 @@ def phi_3_mini_4k_instruct_training(ctx: context_lib.Context):
       fused=True,
   )
   return model, (), inputs, opt
+
+
+@registry_lib.register_benchmark(
+    stepper=step_lib.StepperType.DECODER_ONLY_DECODE,
+    presubmit=registry_lib.PresubmitPolicy.RUN,
+)
+def phi_3_mini_4k_instruct_decode(ctx: context_lib.Context):
+  """Benchmark factory for Phi-3-mini-4k-instruct decode."""
+  if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
+    batch_size = 1
+    seq_len = 128
+    num_layers = 2
+  else:
+    batch_size = 1
+    seq_len = 2048
+    num_layers = None
+  model, inputs = _load_hf_causal_lm(
+      ctx,
+      "microsoft/Phi-3-mini-4k-instruct",
+      is_training=False,
+      batch_size=batch_size,
+      seq_len=seq_len,
+      num_layers=num_layers,
+  )
+  return model, (), inputs

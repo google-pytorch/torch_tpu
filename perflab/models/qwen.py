@@ -195,6 +195,32 @@ def qwen3_1_7b_training(ctx: context_lib.Context):
   return model, (), inputs, opt
 
 
+@registry_lib.register_benchmark(
+    stepper=step_lib.StepperType.DECODER_ONLY_DECODE,
+    presubmit=registry_lib.PresubmitPolicy.RUN,
+)
+def qwen3_1_7b_decode(ctx: context_lib.Context):
+  """Benchmark factory for Qwen3-1.7B decode."""
+  if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
+    batch_size = 1
+    seq_len = 128
+    num_layers = 2
+  else:
+    batch_size = 4
+    seq_len = 2048
+    num_layers = None
+
+  model, inputs = _load_hf_qwen(
+      ctx,
+      "Qwen/Qwen3-1.7B",
+      is_training=False,
+      seq_len=seq_len,
+      batch_size=batch_size,
+      num_layers=num_layers,
+  )
+  return model, (), inputs
+
+
 # --- Qwen3 4B ---
 
 
@@ -256,6 +282,32 @@ def qwen3_4b_training(ctx: context_lib.Context):
   return model, (), inputs, opt
 
 
+@registry_lib.register_benchmark(
+    stepper=step_lib.StepperType.DECODER_ONLY_DECODE,
+    presubmit=registry_lib.PresubmitPolicy.RUN,
+)
+def qwen3_4b_decode(ctx: context_lib.Context):
+  """Benchmark factory for Qwen3-4B decode."""
+  if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
+    batch_size = 1
+    seq_len = 128
+    num_layers = 2
+  else:
+    batch_size = 2
+    seq_len = 1024
+    num_layers = None
+
+  model, inputs = _load_hf_qwen(
+      ctx,
+      "Qwen/Qwen3-4B",
+      is_training=False,
+      seq_len=seq_len,
+      batch_size=batch_size,
+      num_layers=num_layers,
+  )
+  return model, (), inputs
+
+
 # --- Qwen3 8B ---
 
 
@@ -265,6 +317,32 @@ def qwen3_4b_training(ctx: context_lib.Context):
 )
 def qwen3_8b_forward(ctx: context_lib.Context):
   """Benchmark factory for Qwen3-8B forward."""
+  if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
+    batch_size = 1
+    seq_len = 128
+    num_layers = 2
+  else:
+    batch_size = 1
+    seq_len = 512
+    num_layers = None
+
+  model, inputs = _load_hf_qwen(
+      ctx,
+      "Qwen/Qwen3-8B",
+      is_training=False,
+      seq_len=seq_len,
+      batch_size=batch_size,
+      num_layers=num_layers,
+  )
+  return model, (), inputs
+
+
+@registry_lib.register_benchmark(
+    stepper=step_lib.StepperType.DECODER_ONLY_DECODE,
+    presubmit=registry_lib.PresubmitPolicy.RUN,
+)
+def qwen3_8b_decode(ctx: context_lib.Context):
+  """Benchmark factory for Qwen3-8B decode."""
   if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
     batch_size = 1
     seq_len = 128
@@ -314,6 +392,32 @@ def qwen3_coder_30b_moe_forward(ctx: context_lib.Context):
   return model, (), inputs
 
 
+@registry_lib.register_benchmark(
+    stepper=step_lib.StepperType.DECODER_ONLY_DECODE,
+    presubmit=registry_lib.PresubmitPolicy.RUN,
+)
+def qwen3_coder_30b_moe_decode(ctx: context_lib.Context):
+  """Benchmark factory for Qwen3-Coder-30B-A3B decode."""
+  if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
+    batch_size = 1
+    seq_len = 128
+    num_layers = 2
+  else:
+    batch_size = 1
+    seq_len = 2048
+    num_layers = None
+
+  model, inputs = _load_hf_qwen(
+      ctx,
+      "Qwen/Qwen3-Coder-30B-A3B-Instruct",
+      is_training=False,
+      seq_len=seq_len,
+      batch_size=batch_size,
+      num_layers=num_layers,
+  )
+  return model, (), inputs
+
+
 # --- Qwen3.5-397B MoE (4 Layers) ---
 
 
@@ -326,6 +430,33 @@ def qwen3_coder_30b_moe_forward(ctx: context_lib.Context):
 )
 def qwen3_5_397b_4_layers_forward(ctx: context_lib.Context):
   """Benchmark factory for Qwen3.5-397B-A17B (4 Layers) MoE forward."""
+  if model_helpers.is_presubmit_smoke(ctx):
+    batch_size = model_helpers.SMOKE_BATCH_SIZE
+    seq_len = model_helpers.SMOKE_SEQ_LEN
+  else:
+    batch_size = 1
+    seq_len = 2048
+
+  model, inputs = _load_hf_qwen(
+      ctx,
+      "Qwen/Qwen3.5-397B-A17B",
+      is_training=False,
+      seq_len=seq_len,
+      batch_size=batch_size,
+      num_layers=4,
+  )
+  return model, (), inputs
+
+
+@registry_lib.register_benchmark(
+    stepper=step_lib.StepperType.DECODER_ONLY_DECODE,
+    presubmit=registry_lib.PresubmitPolicy.CPU_SMOKE_ONLY,
+    presubmit_reason=(
+        "Qwen3.5-397B uses too much memory to run on TPUs with smaller memory."
+    ),
+)
+def qwen3_5_397b_4_layers_decode(ctx: context_lib.Context):
+  """Benchmark factory for Qwen3.5-397B-A17B (4 Layers) MoE decode."""
   if model_helpers.is_presubmit_smoke(ctx):
     batch_size = model_helpers.SMOKE_BATCH_SIZE
     seq_len = model_helpers.SMOKE_SEQ_LEN

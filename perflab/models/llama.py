@@ -115,11 +115,35 @@ def llama_3_1_8b_forward(ctx: context_lib.Context):
 
 
 @registry_lib.register_benchmark(
+    stepper=step_lib.StepperType.DECODER_ONLY_DECODE,
+    presubmit=registry_lib.PresubmitPolicy.RUN,
+)
+def llama_3_1_8b_decode(ctx: context_lib.Context):
+  """Benchmark factory for Llama 3.1 8B decode."""
+  model, inputs = _load_hf_llama(
+      ctx, "meta-llama/Llama-3.1-8B", is_training=False
+  )
+  return model, (), inputs
+
+
+@registry_lib.register_benchmark(
     stepper=step_lib.StepperType.FORWARD,
     presubmit=registry_lib.PresubmitPolicy.RUN,
 )
 def llama_3_2_3b_forward(ctx: context_lib.Context):
   """Benchmark factory for Llama 3.2 3B forward."""
+  model, inputs = _load_hf_llama(
+      ctx, "meta-llama/Llama-3.2-3B", is_training=False
+  )
+  return model, (), inputs
+
+
+@registry_lib.register_benchmark(
+    stepper=step_lib.StepperType.DECODER_ONLY_DECODE,
+    presubmit=registry_lib.PresubmitPolicy.RUN,
+)
+def llama_3_2_3b_decode(ctx: context_lib.Context):
+  """Benchmark factory for Llama 3.2 3B decode."""
   model, inputs = _load_hf_llama(
       ctx, "meta-llama/Llama-3.2-3B", is_training=False
   )

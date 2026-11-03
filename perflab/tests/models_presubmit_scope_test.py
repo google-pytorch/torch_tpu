@@ -63,6 +63,12 @@ _LARGE_MODEL_CASES = (
         "loader_name": "_load_hf_gpt",
     },
     {
+        "testcase_name": "gpt_oss_20b_decode",
+        "factory": gpt.gpt_oss_20b_decode,
+        "module": gpt,
+        "loader_name": "_load_hf_gpt",
+    },
+    {
         "testcase_name": "gpt_oss_20b_4_layers_training",
         "factory": gpt.gpt_oss_20b_4_layers_training,
         "module": gpt,
@@ -75,6 +81,12 @@ _LARGE_MODEL_CASES = (
         "loader_name": "_load_hf_gpt",
     },
     {
+        "testcase_name": "gpt_oss_120b_4_layers_decode",
+        "factory": gpt.gpt_oss_120b_4_layers_decode,
+        "module": gpt,
+        "loader_name": "_load_hf_gpt",
+    },
+    {
         "testcase_name": "gpt_oss_120b_2_layers_training",
         "factory": gpt.gpt_oss_120b_2_layers_training,
         "module": gpt,
@@ -83,6 +95,12 @@ _LARGE_MODEL_CASES = (
     {
         "testcase_name": "qwen3_5_397b_4_layers_forward",
         "factory": qwen.qwen3_5_397b_4_layers_forward,
+        "module": qwen,
+        "loader_name": "_load_hf_qwen",
+    },
+    {
+        "testcase_name": "qwen3_5_397b_4_layers_decode",
+        "factory": qwen.qwen3_5_397b_4_layers_decode,
         "module": qwen,
         "loader_name": "_load_hf_qwen",
     },
