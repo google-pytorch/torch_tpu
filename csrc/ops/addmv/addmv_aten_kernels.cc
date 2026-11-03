@@ -158,7 +158,7 @@ absl::Status ValidateAddmvInputs(const at::Tensor& self, const at::Tensor& mat,
   TT_RET_CHECK(!IsBool(self), error::kInvalidArgument)
       << "the dtype of the first argument cannot be bool";
   TT_RET_CHECK(self.dim() <= 1, error::kInvalidArgument)
-      << "expected the first argument to be a vector or scalar (0D or 1D "
+      << "expected the first argument to be a scalar or vector (0D or 1D "
          "tensor), got "
       << self.dim() << "D tensor";
 
@@ -194,10 +194,9 @@ absl::Status ValidateAddmvInputs(const at::Tensor& self, const at::Tensor& mat,
   if (self.dim() == 1) {
     TT_RET_CHECK(self.size(0) == 1 || self.size(0) == mat.size(0),
                  error::kInvalidArgument)
-        << "expected arguments shapes " << ToString(self.sizes()) << ", "
+        << "expected argument shapes " << ToString(self.sizes()) << ", "
         << ToString(mat.sizes()) << ", " << ToString(vec.sizes())
-        << " to have compatible shapes, got " << self.size(0) << " vs "
-        << mat.size(0) << " which is not compatible";
+        << " to be compatible, got " << self.size(0) << " vs " << mat.size(0);
   }
 
   TT_RET_CHECK(mat.size(1) == vec.size(0), error::kInvalidArgument)

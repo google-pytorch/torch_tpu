@@ -6510,7 +6510,7 @@ Supported combinations for non-constant padding:
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""addmv(): expected the first argument to be a vector or scalar (0D or 1D tensor), got 2D tensor""",
+        tpu="""addmv(): expected the first argument to be a scalar or vector (0D or 1D tensor), got 2D tensor""",
         gpu="""vector + matrix @ vector expected, got 2, 2, 1""",
         message_reviewed_by="gunhyun",
     ):
@@ -6518,7 +6518,7 @@ Supported combinations for non-constant padding:
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""addmv(): expected the first argument to be a vector or scalar (0D or 1D tensor), got 2D tensor""",
+        tpu="""addmv(): expected the first argument to be a scalar or vector (0D or 1D tensor), got 2D tensor""",
         gpu="""vector + matrix @ vector expected, got 2, 2, 1""",
         message_reviewed_by="gunhyun",
     ):
@@ -6532,7 +6532,7 @@ Supported combinations for non-constant padding:
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""addmv(): expected arguments shapes [5], [2, 3], [3] to have compatible shapes, got 5 vs 2 which is not compatible""",
+        tpu="""addmv(): expected argument shapes [5], [2, 3], [3] to be compatible, got 5 vs 2""",
         gpu="""size mismatch, got input (5), mat (2x3), vec (3)""",
         message_reviewed_by="gunhyun",
     ):
@@ -6540,7 +6540,7 @@ Supported combinations for non-constant padding:
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""addmv(): expected arguments shapes [5], [2, 3], [3] to have compatible shapes, got 5 vs 2 which is not compatible""",
+        tpu="""addmv(): expected argument shapes [5], [2, 3], [3] to be compatible, got 5 vs 2""",
         gpu="""size mismatch, got input (5), mat (2x3), vec (3)""",
         message_reviewed_by="gunhyun",
     ):
