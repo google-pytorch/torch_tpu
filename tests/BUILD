@@ -1093,17 +1093,17 @@ torch_tpu_py_test(
     srcs = ["ops_test.py"],
     args = [
         "--check_symbolic_shapes",
-    ] + if_oss(
-        [_OSS_SAMPLE_LIMIT],
-        ["--max_samples_per_op_dtype=20"],
-    ),
+        # 5 samples per (op, variant, dtype) is enough to catch symbolic-shape
+        # specialization bugs while keeping heavy foreach ops within the TSAN
+        # timeout.
+        "--max_samples_per_op_dtype=5",
+    ],
     data = _GPU_GOLDENS_DATA,
     main = "ops_test.py",
     run_on_accelerators = [
         "requires-tpu-v5lite",
     ],
-    # The sweep takes ~30 minutes unsharded (2-4x longer under sanitizers).
-    shard_count = 20,
+    shard_count = 50,
     tags = _OSS_GOLDEN_TAGS,
     deps = [
         ":dynamism_test_utils",
