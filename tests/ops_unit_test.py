@@ -20528,12 +20528,12 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
 
     - Divisible shapes triggering std_avg_pool fast path in forward and
     backward.
-    - Non-divisible shapes triggering Gather/Scatter with variable window
-    lengths.
-    - Output size equal to input size (max_k == 1 no-op scaling fast path).
+    - Non-divisible shapes triggering BuildEinsumShlo (DotGeneral) with variable
+    window lengths.
+    - Output size equal to input size (identity scaling fast path).
     - Low-precision bfloat16 and float16 dtypes.
     - 3D adaptive pooling divisible and non-divisible shapes.
-    - Backward gradient checks for both fast-path and scatter paths.
+    - Backward gradient checks for both fast-path and einsum paths.
     """
     torch.manual_seed(42)
 
@@ -20548,7 +20548,7 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(run_divisible_2d)
 
-    # 2. Forward + Backward: max_k == 1 (out_size == in_size, identity scaling)
+    # 2. Forward + Backward: out_size == in_size (identity scaling)
     x_2d_same = torch.randn(2, 3, 5, 5, dtype=torch.float32, requires_grad=True)
 
     def run_same_size_2d(dev):
@@ -20559,7 +20559,7 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(run_same_size_2d)
 
-    # 3. Forward + Backward: Non-divisible shapes (GatherPool / ScatterAdd path)
+    # 3. Forward + Backward: Non-divisible shapes (BuildEinsumShlo path)
     x_2d_nondiv = torch.randn(
         2, 2, 7, 10, dtype=torch.float32, requires_grad=True
     )
@@ -20583,7 +20583,7 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
       out.backward(torch.ones_like(out))
       return out, x.grad
 
-    self.assert_close_tpu_vs_cpu(run_bf16_divisible_2d, rtol=2e-2, atol=2e-2)
+    self.assert_close_tpu_vs_cpu(run_bf16_divisible_2d)
 
     # 5. 3D Adaptive pooling: Divisible shape (fast path std_avg_pool)
     x_3d_div = torch.randn(
@@ -20647,6 +20647,123 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
       return out1, out2, out3, x_zero_batch.grad
 
     self.assert_close_tpu_vs_cpu(run_zero_output_3d)
+
+  def test_adaptive_avg_pool_low_precision_non_divisible(self):
+    """Regression test for b/579232937: bf16/fp16 non-divisible accumulation."""
+    torch.manual_seed(42)
+    for dtype in (torch.bfloat16, torch.float16):
+      # 2D non-divisible downsampling: (2, 4, 7, 11) -> (3, 5)
+      x2d = torch.randn(2, 4, 7, 11, dtype=dtype)
+      g2d = torch.randn(2, 4, 3, 5, dtype=dtype)
+
+      x2d_ref = x2d.float().requires_grad_(True)
+      out2d_ref = torch.nn.functional.adaptive_avg_pool2d(x2d_ref, (3, 5))
+      out2d_ref.backward(g2d.float())
+
+      x2d_tpu = x2d.to("tpu").requires_grad_(True)
+      out2d_tpu = torch.nn.functional.adaptive_avg_pool2d(x2d_tpu, (3, 5))
+      out2d_tpu.backward(g2d.to("tpu"))
+
+      self.assertEqual(out2d_tpu.cpu(), out2d_ref.to(dtype))
+      self.assertEqual(x2d_tpu.grad.cpu(), x2d_ref.grad.to(dtype))
+
+      # 2D adaptive upsampling (in_size < out_size) and single-axis identity:
+      # (1, 8, 4, 3) -> (5, 3)
+      x2d_up = torch.randn(1, 8, 4, 3, dtype=dtype)
+      g2d_up = torch.randn(1, 8, 5, 3, dtype=dtype)
+
+      x2d_up_ref = x2d_up.float().requires_grad_(True)
+      out2d_up_ref = torch.nn.functional.adaptive_avg_pool2d(x2d_up_ref, (5, 3))
+      out2d_up_ref.backward(g2d_up.float())
+
+      x2d_up_tpu = x2d_up.to("tpu").requires_grad_(True)
+      out2d_up_tpu = torch.nn.functional.adaptive_avg_pool2d(x2d_up_tpu, (5, 3))
+      out2d_up_tpu.backward(g2d_up.to("tpu"))
+
+      self.assertEqual(out2d_up_tpu.cpu(), out2d_up_ref.to(dtype))
+      self.assertEqual(x2d_up_tpu.grad.cpu(), x2d_up_ref.grad.to(dtype))
+
+      # 3D non-divisible downsampling: (2, 3, 5, 7, 9) -> (2, 3, 4)
+      x3d = torch.randn(2, 3, 5, 7, 9, dtype=dtype)
+      g3d = torch.randn(2, 3, 2, 3, 4, dtype=dtype)
+
+      x3d_ref = x3d.float().requires_grad_(True)
+      out3d_ref = torch.nn.functional.adaptive_avg_pool3d(x3d_ref, (2, 3, 4))
+      out3d_ref.backward(g3d.float())
+
+      x3d_tpu = x3d.to("tpu").requires_grad_(True)
+      out3d_tpu = torch.nn.functional.adaptive_avg_pool3d(x3d_tpu, (2, 3, 4))
+      out3d_tpu.backward(g3d.to("tpu"))
+
+      self.assertEqual(out3d_tpu.cpu(), out3d_ref.to(dtype))
+      self.assertEqual(x3d_tpu.grad.cpu(), x3d_ref.grad.to(dtype))
+
+  def test_adaptive_avg_pool2d_backward_large_non_divisible(self):
+    """Regression test for b/579233625: (16, 128, 97, 97) -> (6, 6) backward."""
+    torch.manual_seed(42)
+    for shape in ((4, 16, 97, 97), (16, 128, 97, 97)):
+      for dtype in (torch.float32, torch.bfloat16):
+        x_cpu = torch.randn(shape, dtype=dtype)
+        g_cpu = torch.randn((shape[0], shape[1], 6, 6), dtype=dtype)
+
+        x_ref = x_cpu.detach().clone().float().requires_grad_(True)
+        out_ref = torch.nn.functional.adaptive_avg_pool2d(x_ref, (6, 6))
+        out_ref.backward(g_cpu.float())
+
+        x_tpu = x_cpu.detach().clone().to("tpu").requires_grad_(True)
+        out_tpu = torch.nn.functional.adaptive_avg_pool2d(x_tpu, (6, 6))
+        out_tpu.backward(g_cpu.to("tpu"))
+
+        self.assertEqual(out_tpu.cpu(), out_ref.to(dtype))
+        self.assertEqual(x_tpu.grad.cpu(), x_ref.grad.to(dtype))
+
+    # Also verify compiled mode on (16, 128, 97, 97) -> (6, 6)
+    compiled_pool = torch.compile(
+        lambda x: torch.nn.functional.adaptive_avg_pool2d(x, (6, 6)),
+        backend="tpu",
+        fullgraph=True,
+    )
+    x_comp = torch.randn((16, 128, 97, 97), dtype=torch.bfloat16)
+    g_comp = torch.randn((16, 128, 6, 6), dtype=torch.bfloat16)
+    x_ref = x_comp.detach().clone().float().requires_grad_(True)
+    out_ref = torch.nn.functional.adaptive_avg_pool2d(x_ref, (6, 6))
+    out_ref.backward(g_comp.float())
+
+    x_tpu_comp = x_comp.detach().clone().to("tpu").requires_grad_(True)
+    out_tpu = compiled_pool(x_tpu_comp)
+    out_tpu.backward(g_comp.to("tpu"))
+    self.assertEqual(out_tpu.cpu(), out_ref.to(torch.bfloat16))
+    self.assertEqual(x_tpu_comp.grad.cpu(), x_ref.grad.to(torch.bfloat16))
+
+  def test_adaptive_avg_pool_large_spatial_and_grad_input_resize(self):
+    """Tests >4096 spatial axis einsum lowering and 3D .grad_input resize."""
+    torch.manual_seed(42)
+    x_cpu = torch.randn(1, 1, 4100, 4, dtype=torch.bfloat16)
+    g_cpu = torch.randn(1, 1, 7, 2, dtype=torch.bfloat16)
+
+    x_ref = x_cpu.float().requires_grad_(True)
+    out_ref = torch.nn.functional.adaptive_avg_pool2d(x_ref, (7, 2))
+    out_ref.backward(g_cpu.float())
+
+    x_tpu = x_cpu.to("tpu").requires_grad_(True)
+    out_tpu = torch.nn.functional.adaptive_avg_pool2d(x_tpu, (7, 2))
+    out_tpu.backward(g_cpu.to("tpu"))
+
+    self.assertEqual(out_tpu.cpu(), out_ref.to(torch.bfloat16))
+    self.assertEqual(x_tpu.grad.cpu(), x_ref.grad.to(torch.bfloat16))
+
+    # Also test aten.adaptive_avg_pool3d_backward.grad_input with empty grad_input
+    x3d_cpu = torch.randn(1, 2, 3, 4, 5, dtype=torch.float32)
+    g3d_cpu = torch.randn(1, 2, 2, 2, 2, dtype=torch.float32)
+    grad_in_cpu = torch.empty(0, dtype=torch.float32)
+    torch.ops.aten.adaptive_avg_pool3d_backward.grad_input(
+        g3d_cpu, x3d_cpu, grad_input=grad_in_cpu
+    )
+    grad_in_tpu = torch.empty(0, dtype=torch.float32, device="tpu")
+    torch.ops.aten.adaptive_avg_pool3d_backward.grad_input(
+        g3d_cpu.to("tpu"), x3d_cpu.to("tpu"), grad_input=grad_in_tpu
+    )
+    self.assertEqual(grad_in_tpu.cpu(), grad_in_cpu)
 
   def test_ldexp_large_exponent(self):
     def compute(device):
