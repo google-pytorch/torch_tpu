@@ -543,8 +543,9 @@ def get_skip_reason(
 ) -> str | None:
   """Returns why a case should be skipped, or None if it should run.
 
-  A case is skipped if it matches an entry in `known_failures.KNOWN_FAILURES`,
-  if `spec.skipped_run_modes` lists `mode`, or if, in presubmit scope, the
+  A case is skipped if it matches a known failure in
+  `known_failures.KNOWN_FAILURES` or `known_failures.LAYER_KNOWN_FAILURES`, if
+  `spec.skipped_run_modes` lists `mode`, or if, in presubmit scope, the
   benchmark's `PresubmitPolicy` keeps it out of this run.
   """
   failure_reason = known_failures.get_known_failure_reason(

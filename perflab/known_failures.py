@@ -12,10 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Perflab model benchmarks that are known to fail.
+"""Perflab benchmarks that are known to fail.
 
 Benchmark runners skip the executions that match an entry in `KNOWN_FAILURES`
-the same way as the run modes in `BenchmarkSpec.skipped_run_modes`:
+(model benchmarks) or `LAYER_KNOWN_FAILURES` (layer benchmarks) the same way
+as the run modes in `BenchmarkSpec.skipped_run_modes`:
 `torch_benchmark_test` and `torchax_benchmark_test` apply `--skip_behavior` to
 both (e.g. `--skip_behavior=run_skipped` runs only the skipped executions to
 check whether they still fail), and `distributed_runner` always skips them.
@@ -30,11 +31,16 @@ from perflab import target as target_lib
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class KnownFailure:
-  """A model benchmark known to fail under specific execution coordinates.
+  """A benchmark known to fail under specific execution coordinates.
+
+  Exactly one of `benchmark` and `benchmark_prefix` must be set.
 
   Attributes:
     benchmark: Registered `BenchmarkSpec.name` in `perflab/models` or
-      `perflab/distributed_models`.
+      `perflab/distributed_models`, matched exactly.
+    benchmark_prefix: Prefix of the `BenchmarkSpec.name`s of a benchmark family
+      (e.g. `layer_tanh_train_` for all shapes of a layer), matched with
+      `str.startswith`.
     framework: Framework (`TORCH` for TorchTPU/GPU or `TORCHAX` for TorchAX).
     device_kind: Optional device kind filter (e.g. `TPU` or `CUDA`). `None`
       matches all device kinds.
@@ -43,11 +49,25 @@ class KnownFailure:
     reason: Human-readable explanation of why the benchmark fails.
   """
 
-  benchmark: str
+  benchmark: str | None = None
+  benchmark_prefix: str | None = None
   framework: mode_lib.Framework
   device_kind: target_lib.DeviceKind | None = None
   run_modes: frozenset[common.RunMode] | None = None
   reason: str
+
+  def __post_init__(self):
+    if (self.benchmark is None) == (self.benchmark_prefix is None):
+      raise ValueError(
+          "Exactly one of `benchmark` and `benchmark_prefix` must be set, got"
+          f" benchmark={self.benchmark!r} and"
+          f" benchmark_prefix={self.benchmark_prefix!r}."
+      )
+
+  def _matches_name(self, benchmark: str) -> bool:
+    if self.benchmark_prefix is not None:
+      return benchmark.startswith(self.benchmark_prefix)
+    return benchmark == self.benchmark
 
   def matches(
       self,
@@ -58,7 +78,7 @@ class KnownFailure:
       run_mode: common.RunMode,
   ) -> bool:
     """Returns whether this entry applies to the given execution coordinates."""
-    if self.benchmark != benchmark or self.framework != framework:
+    if not self._matches_name(benchmark) or self.framework != framework:
       return False
     if self.device_kind is not None and self.device_kind != device_kind:
       return False
@@ -565,6 +585,13 @@ KNOWN_FAILURES: tuple[KnownFailure, ...] = (
     # copybara:uncomment_end
 )
 
+# Layer benchmarks that are known to fail.
+#
+# They are kept separate from `KNOWN_FAILURES` because `model_config_test`
+# requires every `KNOWN_FAILURES` entry to be a registered model benchmark.
+# Entries usually set `benchmark_prefix` to cover every shape of a layer family.
+LAYER_KNOWN_FAILURES: tuple[KnownFailure, ...] = ()
+
 
 def get_known_failure_reason(
     benchmark: str,
@@ -574,7 +601,7 @@ def get_known_failure_reason(
     run_mode: common.RunMode,
 ) -> str | None:
   """Returns the failure reason if the benchmark is known to fail, else None."""
-  for failure in KNOWN_FAILURES:
+  for failure in (*KNOWN_FAILURES, *LAYER_KNOWN_FAILURES):
     if failure.matches(
         benchmark,
         framework=framework,
