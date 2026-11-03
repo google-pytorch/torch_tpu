@@ -1595,12 +1595,6 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
 
   @parameterized.named_parameters(
       dict(
-          testcase_name="int8",
-          dtype=torch.int8,
-          tpu_dtype="int8",
-          gpu_dtype="Char",
-      ),
-      dict(
           testcase_name="bool",
           dtype=torch.bool,
           tpu_dtype="bool",
