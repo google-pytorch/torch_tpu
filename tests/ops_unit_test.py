@@ -1268,6 +1268,20 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
             utils.assert_close(l_tpu.cpu(), l_cpu)
             utils.assert_close(u_tpu.cpu(), u_cpu)
 
+  def test_linalg_lu_singular_matrices(self):
+    a_zero = torch.zeros(3, 3)
+    a_rank_def = torch.tensor(
+        [[1.0, 2.0, 3.0], [1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]
+    )
+    for a in [a_zero, a_rank_def]:
+
+      def test_fn(device, a=a):
+        a_dev = a.to(device)
+        p, l, u = torch.linalg.lu(a_dev)
+        return p @ l @ u
+
+      self.assert_close_tpu_vs_cpu(test_fn)
+
   def test_assert_close_partial_override(self):
     """Tests that utils.assert_close works with partial numeric overrides.
 
