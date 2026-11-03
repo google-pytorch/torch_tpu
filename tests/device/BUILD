@@ -133,9 +133,6 @@ torch_tpu_py_test(
     srcs = ["device_count_test.py"],
     args = ["--device_type=tpu"],
     main = "device_count_test.py",
-    # Excluded from TAP until `torch.tpu.device_count()` counts only the devices
-    # this process can use before the TPU runtime is initialized, as CUDA does.
-    notap = "Fails until torch.tpu.device_count() matches CUDA before init (b/577219302).",
     tags = [
         "requires-tpu-v5lite:8",
     ],
@@ -152,13 +149,12 @@ torch_tpu_py_test(
 
 # Like `device_count_test_tpu`, but on a worker that has one TPU chip. Forge
 # leaves placeholder device files for the host's other chips, which TorchTPU
-# counts before the TPU runtime is initialized.
+# must not count before the TPU runtime is initialized.
 torch_tpu_py_test(
     name = "device_count_test_tpu_single_chip",
     srcs = ["device_count_test.py"],
     args = ["--device_type=tpu"],
     main = "device_count_test.py",
-    notap = "Fails until torch.tpu.device_count() matches CUDA before init (b/577219302).",
     tags = [
         "requires-tpu-v5lite",
     ],

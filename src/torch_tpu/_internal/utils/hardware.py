@@ -106,12 +106,13 @@ def get_hbm_bytes_per_device() -> int | None:
     version="0.2.1", reason="Use torch.accelerator.device_count() instead."
 )
 def get_tpu_device_count() -> int:
-  """Returns how many physical TPU PCI devices are attached to this host.
+  """Returns how many TPU PCI devices on this host this process can access.
 
   Does not initialize the PJRT runtime. Counts the PCI devices in
   `/sys/bus/pci/devices` with Google's vendor ID and a TPU device ID in
   `TpuSpec.specs_by_pci_device_id()` whose IOMMU group is exposed under
-  `/dev/vfio`. Devices whose sysfs entries can't be read are skipped, and if
+  `/dev/vfio` as a character device that this process can read and write.
+  Devices whose sysfs entries can't be read are skipped, and if
   `/sys/bus/pci/devices` can't be read at all, this returns 0. The count does
   NOT include:
 
@@ -119,10 +120,14 @@ def get_tpu_device_count() -> int:
     future generations;
   - TPUs whose IOMMU group isn't exposed under `/dev/vfio`, which is normal in
     containers that expose only the VFIO groups allocated to them;
+  - TPUs whose `/dev/vfio` path holds a placeholder rather than a device node
+    this process can read and write, e.g. the empty, unreadable regular files
+    that sandboxes put at the paths of TPUs not allocated to them;
   - TPUs bound to a non-VFIO driver, e.g. reached through `/dev/accel*`.
 
-  So 0 doesn't mean the host has no TPUs. It's also not the number of devices
-  the PJRT runtime will use, which can be smaller.
+  So 0 doesn't mean the host has no TPUs. It can also differ from the number of
+  devices the PJRT runtime will use, e.g. if other runtime settings or process
+  bounds restrict them.
 
   Deprecated: code outside TorchTPU should call
   `torch.accelerator.device_count()` instead, which returns this count until the

@@ -807,10 +807,10 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
   def device_count(cls) -> int:  # This is in torch/cuda/__init__.py.
     """Returns the count of devices. This is implemented for *local* devices.
 
-    Before the TPU runtime is initialized, returns how many physical TPU PCI
-    devices are attached to this host without initializing PJRT. Once
-    initialized, returns how many addressable PJRT TPU devices this process's
-    runtime owns.
+    Before the TPU runtime is initialized, returns how many TPU PCI devices on
+    this host this process can access through VFIO, without initializing PJRT.
+    Once initialized, returns how many addressable PJRT TPU devices this
+    process's runtime owns.
 
     .. warning::
         This API is experimental and subject to change in future releases.

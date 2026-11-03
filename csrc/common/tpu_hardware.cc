@@ -16,6 +16,7 @@
 #include "csrc/common/tpu_hardware.h"
 
 #include <dirent.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
@@ -224,6 +225,23 @@ enum class DirListing { kListed, kMissing, kUnlistable };
   return it != spec_map.end() ? it->second : nullptr;
 }
 
+// Returns whether `path` resolves to a character device that this process has
+// read and write access to.
+//
+// Sandboxes may put placeholders at the paths of devices they don't allocate
+// to the process. For example, a sandbox with fewer TPU chips than its host may
+// have empty, unreadable regular files at the `/dev/vfio/<group>` paths of the
+// other chips. Those are not usable, so they should not count as devices.
+//
+// This function does not open any node because only one process at a time can
+// open a VFIO group. Opening a node could fail or prevent the TPU runtime of
+// this or another process from claiming it.
+[[nodiscard]] bool IsAccessibleCharDevice(const std::string& path) {
+  struct stat st;
+  return stat(path.c_str(), &st) == 0 && S_ISCHR(st.st_mode) &&
+         faccessat(AT_FDCWD, path.c_str(), R_OK | W_OK, AT_EACCESS) == 0;
+}
+
 // Result of scanning PCI devices for VFIO-exposed TPUs.
 struct PciTpuScanResult {
   int64_t device_count = 0;
@@ -231,8 +249,9 @@ struct PciTpuScanResult {
 };
 
 // Scans PCI devices under `pci_devices_dir` for supported Google TPUs whose
-// IOMMU group is exposed under `vfio_dir`. Returns the count of VFIO-exposed
-// TPU devices and the `TpuSpec` of the first one found (or nullptr if none).
+// IOMMU group is exposed under `vfio_dir` as a character device that this
+// process can read and write. Returns the count of VFIO-exposed TPU devices and
+// the `TpuSpec` of the first one found (or nullptr if none).
 [[nodiscard]] PciTpuScanResult ScanPciTpus(std::string_view pci_devices_dir,
                                            std::string_view vfio_dir) {
   PciTpuScanResult result;
@@ -260,8 +279,7 @@ struct PciTpuScanResult {
     if (group_id.empty()) {
       continue;
     }
-    struct stat st;
-    if (stat(absl::StrCat(vfio_dir, "/", group_id).c_str(), &st) != 0) {
+    if (!IsAccessibleCharDevice(absl::StrCat(vfio_dir, "/", group_id))) {
       continue;
     }
     ++result.device_count;

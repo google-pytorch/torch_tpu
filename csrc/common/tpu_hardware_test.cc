@@ -116,11 +116,25 @@ class ScopedFakeHardwareDir {
     WriteFile(proc_devices_, contents);
   }
 
-  // Adds a VFIO group node for `iommu_group`.
-  void AddVfioGroup(std::string_view iommu_group) {
+  // Adds a VFIO group node for `iommu_group` that resolves to the real device
+  // node `target`, which defaults to /dev/null: a character device that any
+  // process can read and write.
+  void AddVfioGroup(std::string_view iommu_group,
+                    std::string_view target = "/dev/null") {
     MakeDir(dev_dir_);
     MakeDir(vfio_dir_);
-    WriteFile(absl::StrCat(vfio_dir_, "/", iommu_group), "");
+    AddLink(absl::StrCat(vfio_dir_, "/", iommu_group), target);
+  }
+
+  // Adds an empty regular file without any permissions at the VFIO group node
+  // path for `iommu_group`, like the placeholders that some sandboxes put at
+  // the paths of TPUs that they don't allocate to the process.
+  void AddVfioGroupPlaceholder(std::string_view iommu_group) {
+    MakeDir(dev_dir_);
+    MakeDir(vfio_dir_);
+    const std::string path = absl::StrCat(vfio_dir_, "/", iommu_group);
+    WriteFile(path, "");
+    ABSL_CHECK_EQ(chmod(path.c_str(), 0), 0);
   }
 
   // Creates the fake /dev/vfio/devices directory, which holds the VFIO
@@ -587,6 +601,25 @@ TEST(GetTpuDeviceCountAndTopologyTest,
   EXPECT_EQ(GetTpuDeviceCount(fake.pci_devices_dir(), fake.vfio_dir()), 2);
   const absl::StatusOr<std::optional<std::string>> topology =
       GetTpuTopology(/*world_size=*/1, fake.pci_devices_dir(), fake.vfio_dir());
+  ASSERT_TRUE(topology.ok());
+  EXPECT_EQ(*topology, "1,1,1");
+}
+
+TEST(GetTpuDeviceCountAndTopologyTest, IgnoresVfioGroupPlaceholders) {
+  ScopedFakeHardwareDir fake;
+  // A 1-chip sandbox on an 8-chip host has a real VFIO group node only
+  // for its own chip, and placeholders for the other chips.
+  for (int i = 0; i < 8; ++i) {
+    const std::string group = absl::StrCat(100 + i);
+    fake.AddPciDevice(absl::StrFormat("0000:00:%02x.0", i + 4), "0x1ae0",
+                      "0x0063", group, /*vfio_exposed=*/i == 5);
+    if (i != 5) {
+      fake.AddVfioGroupPlaceholder(group);
+    }
+  }
+  EXPECT_EQ(GetTpuDeviceCount(fake.pci_devices_dir(), fake.vfio_dir()), 1);
+  const absl::StatusOr<std::optional<std::string>> topology =
+      GetTpuTopology(std::nullopt, fake.pci_devices_dir(), fake.vfio_dir());
   ASSERT_TRUE(topology.ok());
   EXPECT_EQ(*topology, "1,1,1");
 }
