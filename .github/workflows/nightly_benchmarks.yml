@@ -41,7 +41,7 @@ on:
 
   schedule:
     - cron: "0 0 * * *"           # Daily 00:00 UTC: full TPU + GPU baseline
-    - cron: "0 4,8,12,16,20 * * *" # Every 4h (except 00:00 UTC): fast compiled TPU lane
+    - cron: "0 4,8,12,16,20 * * *" # Every 4h (except 00:00 UTC): fast compiled TPU lane of the torch_* benchmarks
 
 permissions:
   contents: read
@@ -87,7 +87,10 @@ jobs:
     with:
       registry_file: "perflab/benchmark_registry.pbtxt"
       bap_ref: "ff212b97420bf479bd492d64e4b549534c22cd91"
-      benchmark_filter: ${{ inputs.benchmark_filter }}
+      # The 4-hourly lane runs only the torch_* benchmarks (the model shards
+      # and the distributed benchmarks), not the layer shards. The filter
+      # selects benchmarks whose names start with torch_.
+      benchmark_filter: ${{ inputs.benchmark_filter || ((github.event_name == 'schedule' && github.event.schedule != '0 0 * * *') && '^torch_.*' || '') }}
       environment_filter: ${{ inputs.environment_filter || 'tpu-v7' }}
       # experiment_ref is pinned to a commit SHA, so BAP would otherwise record
       # the SHA as the result's branch. When experiment_ref is unset, default
