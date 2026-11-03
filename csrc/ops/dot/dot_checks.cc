@@ -39,6 +39,17 @@ absl::Status ValidateIsVector(const at::Tensor& tensor,
   return absl::OkStatus();
 }
 
+absl::Status ValidateDotInputs(const at::Tensor& lhs, const at::Tensor& rhs) {
+  TT_RETURN_IF_ERROR(ValidateIsVector(lhs, "first"));
+  TT_RETURN_IF_ERROR(ValidateIsVector(rhs, "second"));
+
+  TT_RET_CHECK(lhs.size(0) == rhs.size(0), error::kInvalidArgument)
+      << "expected inputs to have the same shape, got " << ToString(lhs.sizes())
+      << " vs " << ToString(rhs.sizes());
+
+  return absl::OkStatus();
+}
+
 absl::StatusOr<mlir::ElementType> ValidateAndGetDotOutputType(
     const at::Tensor& lhs, const at::Tensor& rhs) {
   TT_RET_CHECK(lhs.scalar_type() == rhs.scalar_type(), error::kInvalidArgument)
