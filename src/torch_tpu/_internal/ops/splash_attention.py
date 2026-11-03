@@ -483,7 +483,9 @@ def _get_splash_op_names(**splash_kwargs):
   torch_fwd_fn.register_fake(
       # lse: (batch, num_q_heads, q_seq_len)
       lambda q, k, v, segment_ids=None: (
-          torch.empty_like(q),
+          # Kernel outputs are allocated via `torch.empty`,
+          # which are contiguous whatever the input strides.
+          torch.empty_like(q, memory_format=torch.contiguous_format),
           torch.empty(
               q.shape[0],
               q.shape[1],
@@ -543,9 +545,11 @@ def _get_splash_op_names(**splash_kwargs):
       logging.warning("Failed to register JAX composite: %s", e)
   torch_bwd_fn.register_fake(
       lambda q, k, v, out, lse, grad_out, segment_ids=None: (
-          torch.empty_like(q),
-          torch.empty_like(k),
-          torch.empty_like(v),
+          # Kernel outputs are allocated via `torch.empty`,
+          # which are contiguous whatever the input strides.
+          torch.empty_like(q, memory_format=torch.contiguous_format),
+          torch.empty_like(k, memory_format=torch.contiguous_format),
+          torch.empty_like(v, memory_format=torch.contiguous_format),
       )
   )
 
