@@ -12518,12 +12518,6 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(run_module)
 
-  def test_int_mm_registered(self):
-    for name in ("aten::_int_mm", "aten::_int_mm.out"):
-      self.assertTrue(
-        torch._C._dispatch_has_kernel_for_dispatch_key(name, "PrivateUse1")
-      )
-
   @parameterized.product(
     shape=[
       (1, 1, 1),

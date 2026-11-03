@@ -48,9 +48,9 @@ absl::Status ValidateIntMmInputs(const at::Tensor& self,
   TT_RETURN_IF_ERROR(ValidateIsMatrix(mat2, "mat2"));
   TT_RET_CHECK(self.size(1) == mat2.size(0), error::kInvalidArgument)
       << "expected the two arguments' 2D shapes to be compatible for matrix "
-         "multiplication, got ("
-      << self.size(0) << ", " << self.size(1) << ") and (" << mat2.size(0)
-      << ", " << mat2.size(1) << ")";
+         "multiplication, got ["
+      << self.size(0) << ", " << self.size(1) << "] and [" << mat2.size(0)
+      << ", " << mat2.size(1) << "]";
   TT_RET_CHECK(self.scalar_type() == at::kChar, error::kInvalidArgument)
       << "expected self dtype to be int8, got " << ToString(self.scalar_type());
   TT_RET_CHECK(mat2.scalar_type() == at::kChar, error::kInvalidArgument)
