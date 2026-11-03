@@ -44,6 +44,7 @@ from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.compile.debug import TpuCompileDebug
 from torch_tpu._internal.compile.fx_passes import detect_causal_mask
 from torch_tpu._internal.compile.fx_passes import fold_gqa
+from torch_tpu._internal.compile.fx_passes import invoke_subgraph_to_scan
 from torch_tpu._internal.compile.fx_passes import mark_activation_checkpoints
 from torch_tpu._internal.compile.fx_passes import mark_embedded_constants
 from torch_tpu._internal.compile.torch_tpu_compiled_executable import AsyncCompiledArtifact
@@ -561,6 +562,15 @@ class StaticCompiler(Compiler):
       `async_compiled=True`, otherwise `AsyncCompiledArtifact`), which can be
       called to execute the compiled graph on TPU.
     """  # fmt: skip
+    # Only chains of regions annotated by `nested_compile_region`. This runs
+    # before `decompose_auto_functionalized`, which would turn the calls of a
+    # region that mutates an input (`auto_functionalized_v2(invoke_subgraph)`
+    # on PyTorch 2.11) into in-place calls that cannot be rolled into a scan.
+    graph_transform_observer.GraphTransformObserver(
+        graph_module, "invoke_subgraph_to_scan"
+    ).apply_graph_pass(
+        lambda _: invoke_subgraph_to_scan.apply(graph_module, unroll=None)
+    )
     # Decompose auto functionalized ops, we need to explicitly do this because
     # the default behaviour inserts flatten and unflatten ops at the boundaries
     # which then blocks buffer donation.

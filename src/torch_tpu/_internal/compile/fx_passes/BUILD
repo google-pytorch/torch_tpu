@@ -41,6 +41,15 @@ torch_tpu_py_library(
 )
 
 torch_tpu_py_library(
+    name = "invoke_subgraph_to_scan",
+    srcs = ["invoke_subgraph_to_scan.py"],
+    deps = [
+        "//shims/absl_py/logging",
+        "//shims/torch:pytorch",
+    ],
+)
+
+torch_tpu_py_library(
     name = "mark_embedded_constants",
     srcs = ["mark_embedded_constants.py"],
     deps = [

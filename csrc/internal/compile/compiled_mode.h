@@ -90,6 +90,7 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> ExtractMlirFromGraph(
 // requested.
 struct CompileResult {
   absl_nullable std::shared_ptr<ContextedModule> module = nullptr;
+  // Null if compilation was not requested (`compile_executable`).
   SharedLoadedExecutableWithMetadata executable;
 };
 
@@ -166,6 +167,11 @@ struct TraverseAndCompileOptions {
   Indices donated_inputs;
   // Optional custom module name.
   std::optional<std::string> module_name = std::nullopt;
+  // Whether to XLA-compile the graph. If false, only the MLIR module is built
+  // (regardless of `build_mlir_module`) and the returned executable future
+  // resolves to an error. For subgraphs (e.g. scan bodies) whose MLIR is
+  // inlined into a parent module.
+  bool compile_executable = true;
 };
 
 // Traverses the graph from `result_tensors` back to `argument_tensors`,
