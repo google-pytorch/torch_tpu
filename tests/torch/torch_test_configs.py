@@ -307,6 +307,11 @@ TEST_EXCLUSIONS: Final[
             "test_python_export_plain_json",
         ],
     },
+    "profiler/test_trace_validator": {
+        "TestTraceValidatorE2EAgnosticDevice": [
+            "test_backward_seq_id_uniqueness",
+        ],
+    },
     "quantization/core/experimental/test_bits": {
         "TestBits": [
             "test_cat",
@@ -392,6 +397,23 @@ TEST_EXCLUSIONS: Final[
             "test_from_dlpack",
             "test_from_dlpack_dtype",
             "test_from_dlpack_noncontinguous",
+        ],
+        "TestTorchDlPackDevice": [
+            "test_automatically_select_in_creation",
+            "test_copy",
+            "test_dlpack_conversion_with_diff_streams",
+            "test_dlpack_conversion_with_diff_streams_narrow_precision",
+            "test_dlpack_conversion_with_streams",
+            "test_dlpack_conversion_with_streams_narrow_precision",
+            "test_dlpack_exchange_api",
+            "test_dlpack_exchange_api_sliced",
+            "test_dlpack_protocol_conversion",
+            "test_from_dlpack",
+            "test_from_dlpack_dtype",
+            "test_from_dlpack_noncontinguous",
+            "test_needs_copy_error",
+            "test_no_copy",
+            "test_readonly_wrapper_bare_capsule_is_valid",
         ],
     },
     "test_expanded_weights": {
