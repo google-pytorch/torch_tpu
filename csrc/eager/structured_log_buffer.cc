@@ -16,7 +16,6 @@
 
 #include "csrc/eager/structured_log_buffer.h"
 
-#include <cstdint>
 #include <deque>
 #include <memory>
 #include <utility>
@@ -53,10 +52,22 @@ void StructuredLogBuffer::Push(
 StructuredLogBuffer::DrainResult StructuredLogBuffer::Drain() {
   if (!enabled_) return {};
 
-  absl::MutexLock lock(mu_);
-  const int32_t dropped = dropped_since_last_drain_;
-  dropped_since_last_drain_ = 0;
-  return {.events = std::move(events_), .dropped_since_last_drain = dropped};
+  DrainResult result;
+  {
+    absl::MutexLock lock(mu_);
+    result = {.events = std::move(events_),
+              .dropped_since_last_drain = dropped_since_last_drain_};
+    dropped_since_last_drain_ = 0;
+  }
+  // No other thread can reach the drained events, so resolve the lazy payloads
+  // outside the lock, as they may wait for a compilation.
+  for (auto& event : result.events) {
+    if (event->lazy_mlir_payload) {
+      event->mlir_payload = std::move(event->lazy_mlir_payload)();
+      event->lazy_mlir_payload = nullptr;
+    }
+  }
+  return result;
 }
 
 }  // namespace torch_tpu

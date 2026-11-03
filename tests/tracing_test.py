@@ -48,6 +48,7 @@ _UNBOUNDED_DYNAMIC_KERNELS_ENABLED = os.environ.get(
 # pylint: disable=g-import-not-at-top
 from absl.testing import absltest
 import torch
+from torch_tpu._internal import dynamism
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal import tracing
@@ -259,6 +260,42 @@ class TracingTest(seed_test_utils.RepeatableTest):
         hits[-1], f"expected last event to be a cache hit; got {hits}"
     )
 
+  def test_static_kernel_type(self):
+    torch.tpu._clear_cache()  # pylint: disable=protected-access
+    a = torch.ones(24, 24, device="cpu").to(self._dev)
+    (a - a).cpu()
+    tracing._flush()
+
+    events = [
+        (meta, graph)
+        for meta, graph in _parse_artifacts(_read_latest_log())
+        if meta.get("name") == "torchtpu_eager_aten_graph"
+        and meta.get("op_name", "").startswith("torchtpu_eager/sub")
+    ]
+    self.assertNotEmpty(events)
+    meta, _ = events[-1]
+    self.assertFalse(meta["cache_hit"])
+    self.assertEqual(meta["kernel_type"], "static")
+    self.assertIn('"kernel_type":"static"', _read_latest_log())
+
+  def test_bounded_dynamic_kernel_type(self):
+    torch.tpu._clear_cache()  # pylint: disable=protected-access
+    x = torch.rand(5, 3).to(self._dev)
+    dynamism.mark_dynamic(x, 0, 2, 20)
+    torch.abs(x).cpu()
+    tracing._flush()
+
+    events = [
+        (meta, graph)
+        for meta, graph in _parse_artifacts(_read_latest_log())
+        if meta.get("name") == "torchtpu_eager_aten_graph"
+        and meta.get("op_name", "").startswith("torchtpu_eager/abs")
+    ]
+    self.assertNotEmpty(events)
+    meta, _ = events[-1]
+    self.assertFalse(meta["cache_hit"])
+    self.assertEqual(meta["kernel_type"], "bounded_dynamic")
+
   @unittest.skipUnless(
       _UNBOUNDED_DYNAMIC_KERNELS_ENABLED,
       "requires unbounded dynamic kernels to be enabled",
@@ -278,6 +315,22 @@ class TracingTest(seed_test_utils.RepeatableTest):
     self.assertIn("= nonzero(", miss_graph)
     self.assertTrue(hit_meta["cache_hit"])
     self.assertEmpty(hit_graph)
+    for meta in (miss_meta, hit_meta):
+      self.assertEqual(meta["kernel_type"], "unbounded_dynamic")
+    self.assertIn('"kernel_type":"unbounded_dynamic"', _read_latest_log())
+
+    # The batch is never lowered to StableHLO, so the HLO of the kernel is
+    # logged instead.
+    stablehlo = [
+        (meta, payload)
+        for meta, payload in _parse_artifacts(_read_latest_log())
+        if meta.get("name") == "torchtpu_eager_stablehlo"
+        and meta.get("op_name") == "torchtpu_eager/nonzero"
+    ]
+    (miss_meta, miss_ir), (_, hit_ir) = stablehlo[-2:]
+    self.assertFalse(miss_meta["cache_hit"])
+    self.assertIn("tpu_custom_call", miss_ir)
+    self.assertEmpty(hit_ir)
 
 
 if __name__ == "__main__":

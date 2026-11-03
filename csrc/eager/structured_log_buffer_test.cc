@@ -18,6 +18,7 @@
 
 #include <atomic>
 #include <memory>
+#include <string>
 #include <thread>  // NOLINT(build/c++11)
 #include <utility>
 #include <vector>
@@ -59,6 +60,19 @@ TEST_F(StructuredLogBufferTest, PushDrainRoundtrip) {
   EXPECT_EQ(result.events[0]->timestamp, absl::FromUnixMicros(42));
   EXPECT_EQ(result.dropped_since_last_drain, 0u);
   EXPECT_TRUE(buffer.Drain().events.empty());
+}
+
+TEST_F(StructuredLogBufferTest, DrainResolvesLazyMlirPayload) {
+  auto& buffer = StructuredLogBuffer::GetInstance();
+
+  auto event = std::make_unique<StructuredLogEvent>();
+  event->lazy_mlir_payload = [] { return std::string("HloModule m"); };
+  buffer.Push(std::move(event));
+
+  auto result = buffer.Drain();
+  ASSERT_EQ(result.events.size(), 1u);
+  EXPECT_EQ(result.events[0]->mlir_payload, "HloModule m");
+  EXPECT_FALSE(result.events[0]->lazy_mlir_payload);
 }
 
 TEST_F(StructuredLogBufferTest, DisabledBufferDropsEvents) {
