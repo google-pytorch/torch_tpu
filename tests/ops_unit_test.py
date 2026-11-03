@@ -15322,6 +15322,55 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         actual=res_f16.cpu(), expected=f16_tpu.cpu() + f16_cpu_0d
     )
 
+  def test_native_group_norm_backward_none_weight(self):
+    # Test native_group_norm_backward returns d_weight when weight is None
+    # and output_mask[1] is True (b/568063032).
+    x = torch.randn(2, 4, 8, 8, dtype=torch.float32)
+    y, mean, rstd = torch.ops.aten.native_group_norm(
+        x, None, None, 2, 4, 64, 2, 1e-5
+    )
+    go = torch.randn_like(y)
+
+    for mask in ([True, True, True], [False, True, False]):
+      with self.subTest(mask=mask):
+        try:
+          dx_cpu, dw_cpu, db_cpu = torch.ops.aten.native_group_norm_backward(
+              go, x, mean, rstd, None, 2, 4, 64, 2, mask
+          )
+        except RuntimeError:
+          # Upstream PyTorch prior to fixing weight=None in
+          # native_group_norm_backward crashed on CPU when gamma is undefined.
+          # The gradients with weight=None are identical to weight=ones(C).
+          dx_cpu, dw_cpu, db_cpu = torch.ops.aten.native_group_norm_backward(
+              go, x, mean, rstd, torch.ones(4), 2, 4, 64, 2, mask
+          )
+
+        dx_tpu, dw_tpu, db_tpu = torch.ops.aten.native_group_norm_backward(
+            go.to("tpu"),
+            x.to("tpu"),
+            mean.to("tpu"),
+            rstd.to("tpu"),
+            None,
+            2,
+            4,
+            64,
+            2,
+            mask,
+        )
+        self.assertIsNotNone(dw_tpu)
+        self.assertEqual(dw_tpu.shape, torch.Size([4]))
+        self.assert_close(golden_result=dw_cpu, torch_tpu_result=dw_tpu.cpu())
+        if mask[0]:
+          self.assertIsNotNone(dx_tpu)
+          self.assert_close(golden_result=dx_cpu, torch_tpu_result=dx_tpu.cpu())
+        else:
+          self.assertIsNone(dx_tpu)
+        if mask[2]:
+          self.assertIsNotNone(db_tpu)
+          self.assert_close(golden_result=db_cpu, torch_tpu_result=db_tpu.cpu())
+        else:
+          self.assertIsNone(db_tpu)
+
 
 class OpsCustomOpUnitTest(TorchTpuVsCpuTestBase):
   """Tests for custom ops."""
