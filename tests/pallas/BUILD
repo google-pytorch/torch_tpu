@@ -127,4 +127,20 @@ torch_tpu_py_test(
     ],
 )
 
+# The pallas_verify tests run on CPU: multi-chip kernels execute on virtual CPU
+# devices in TPU interpret mode, so they need no TPU.
+torch_tpu_py_test(
+    name = "pallas_verify_errors_test",
+    srcs = ["pallas_verify_errors_test.py"],
+    tags = [
+        "nosan",  # *san builds are low-value for error tests.
+    ],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//tests:seed_test_utils",
+    ],
+)
+
 torch_tpu_package_end()

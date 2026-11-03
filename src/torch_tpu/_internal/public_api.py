@@ -300,6 +300,37 @@ _PUBLIC_MODULES: Mapping[str, ModuleSpec] = {
         },
         doc="Public Pallas API for TorchTPU (`torch.tpu.pallas`).",
     ),
+    "torch.tpu.pallas.verifier": ModuleSpec(
+        exports={
+            # go/keep-sorted start
+            "FindingCategory": (
+                "torch_tpu._internal.pallas.verify.findings:FindingCategory"
+            ),
+            "Phase": "torch_tpu._internal.pallas.verify.findings:Phase",
+            "Severity": "torch_tpu._internal.pallas.verify.findings:Severity",
+            "VerificationError": (
+                "torch_tpu._internal.pallas.verify.findings:VerificationError"
+            ),
+            "VerificationFinding": (
+                "torch_tpu._internal.pallas.verify.findings:VerificationFinding"
+            ),
+            "VerificationMode": (
+                "torch_tpu._internal.pallas.verify.verifier:VerificationMode"
+            ),
+            "VerificationOptions": (
+                "torch_tpu._internal.pallas.verify.verifier:VerificationOptions"
+            ),
+            "VerificationReport": (
+                "torch_tpu._internal.pallas.verify.findings:VerificationReport"
+            ),
+            "verify": "torch_tpu._internal.pallas.verify.verifier:verify",
+            # go/keep-sorted end
+        },
+        doc=(
+            "Public Pallas verification API for TorchTPU"
+            " (`torch.tpu.pallas.verifier`)."
+        ),
+    ),
     "torch.tpu.profiler": ModuleSpec(
         exports={
             # go/keep-sorted start

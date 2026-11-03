@@ -131,7 +131,9 @@ class ApiRegistryTest(seed_test_utils.RepeatableTest):
     )
 
     # 3. Proxy dir and invalid attribute handling
-    self.assertEqual(dir(torch.tpu.pallas), ["get_pallas_mesh", "jax_op"])
+    self.assertEqual(
+        dir(torch.tpu.pallas), ["get_pallas_mesh", "jax_op", "verifier"]
+    )
     with self.assertRaises(  # ASSERT_RAISES_OK=Verifies proxy module raises AttributeError for non-existent attributes
         AttributeError
     ):

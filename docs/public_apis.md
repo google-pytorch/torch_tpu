@@ -200,6 +200,36 @@ process. Use it at your own risk. Using it triggers a one-time warning.
 *   `torch.tpu.optimizers.SingleTraceTrainer.params` (getter)
 *   `torch.tpu.pallas.get_pallas_mesh`
 *   `torch.tpu.pallas.jax_op`
+*   `torch.tpu.pallas.verifier.FindingCategory`
+*   `torch.tpu.pallas.verifier.FindingCategory.VERIFICATION_INCOMPLETE`
+*   `torch.tpu.pallas.verifier.Phase`
+*   `torch.tpu.pallas.verifier.Severity`
+*   `torch.tpu.pallas.verifier.Severity.ERROR`
+*   `torch.tpu.pallas.verifier.Severity.INFO`
+*   `torch.tpu.pallas.verifier.Severity.WARNING`
+*   `torch.tpu.pallas.verifier.VerificationError`
+*   `torch.tpu.pallas.verifier.VerificationError.report` (getter)
+*   `torch.tpu.pallas.verifier.VerificationFinding`
+*   `torch.tpu.pallas.verifier.VerificationFinding.category`
+*   `torch.tpu.pallas.verifier.VerificationFinding.format`
+*   `torch.tpu.pallas.verifier.VerificationFinding.message`
+*   `torch.tpu.pallas.verifier.VerificationFinding.op_name`
+*   `torch.tpu.pallas.verifier.VerificationFinding.phase`
+*   `torch.tpu.pallas.verifier.VerificationFinding.severity`
+*   `torch.tpu.pallas.verifier.VerificationFinding.source_location`
+*   `torch.tpu.pallas.verifier.VerificationMode`
+*   `torch.tpu.pallas.verifier.VerificationMode.FULL`
+*   `torch.tpu.pallas.verifier.VerificationMode.STATIC`
+*   `torch.tpu.pallas.verifier.VerificationOptions`
+*   `torch.tpu.pallas.verifier.VerificationReport`
+*   `torch.tpu.pallas.verifier.VerificationReport.checked_phases`
+*   `torch.tpu.pallas.verifier.VerificationReport.findings`
+*   `torch.tpu.pallas.verifier.VerificationReport.findings_by_category`
+*   `torch.tpu.pallas.verifier.VerificationReport.findings_by_severity`
+*   `torch.tpu.pallas.verifier.VerificationReport.passed` (getter)
+*   `torch.tpu.pallas.verifier.VerificationReport.raise_for_errors`
+*   `torch.tpu.pallas.verifier.VerificationReport.summary`
+*   `torch.tpu.pallas.verifier.verify`
 *   `torch.tpu.precision`
 *   `torch.tpu.profiler.TpuProfilerConfig`
 *   `torch.tpu.set_eager_mode`
