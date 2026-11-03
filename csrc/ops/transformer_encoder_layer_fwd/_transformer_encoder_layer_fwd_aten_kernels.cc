@@ -139,15 +139,17 @@ void ValidateTransformerEncoderInputs(
       << "expected 1-D ffn_bias_2 with size " << embed_dim << ", got "
       << ffn_bias_2.sizes();
 
-  if (mask.has_value() && mask->defined()) {
-    TT_CHECK_THROW(mask->dim() >= 2 && mask->dim() <= 4,
+  if (const auto sanitized_mask = SanitizeOptionalTensor(mask);
+      sanitized_mask.has_value()) {
+    TT_CHECK_THROW(sanitized_mask->dim() >= 2 && sanitized_mask->dim() <= 4,
                    error::kInvalidArgument)
-        << "expected 2-D, 3-D, or 4-D mask, got " << mask->dim() << "-D tensor";
-    TT_CHECK_THROW(mask->scalar_type() == at::kBool ||
-                       c10::isFloatingType(mask->scalar_type()),
+        << "expected 2-D, 3-D, or 4-D mask, got " << sanitized_mask->dim()
+        << "-D tensor";
+    TT_CHECK_THROW(sanitized_mask->scalar_type() == at::kBool ||
+                       c10::isFloatingType(sanitized_mask->scalar_type()),
                    error::kInvalidArgument)
         << "expected mask dtype to be bool or floating-point, got "
-        << ToString(mask->scalar_type());
+        << ToString(sanitized_mask->scalar_type());
     // Mirror upstream `_masked_softmax`: a defined mask requires a mask_type of
     // 0 (src_mask), 1 (src_key_padding_mask), or 2 (default_mask).
     TT_CHECK_THROW(mask_type.has_value(), error::kInvalidArgument)
@@ -155,19 +157,20 @@ void ValidateTransformerEncoderInputs(
     TT_CHECK_THROW(*mask_type == 0 || *mask_type == 1 || *mask_type == 2,
                    error::kInvalidArgument)
         << "expected mask_type to be 0, 1, or 2, got " << *mask_type;
-    if (mask->dim() == 2) {
+    if (sanitized_mask->dim() == 2) {
       // A 2-D mask is either a [T, T] src_mask (mask_type 0) or a [B, T]
       // src_key_padding_mask (mask_type 1); default_mask (2) must be 4-D.
       TT_CHECK_THROW(*mask_type != 2, error::kInvalidArgument)
           << "expected 4-D mask for mask_type 2, got 2-D tensor of shape "
-          << mask->sizes();
+          << sanitized_mask->sizes();
       const int64_t seq_len = src.size(1);
       const int64_t expected_dim0 = *mask_type == 0 ? seq_len : src.size(0);
-      TT_CHECK_THROW(mask->size(0) == expected_dim0 && mask->size(1) == seq_len,
+      TT_CHECK_THROW(sanitized_mask->size(0) == expected_dim0 &&
+                         sanitized_mask->size(1) == seq_len,
                      error::kInvalidArgument)
           << "expected 2-D mask shape to be [" << expected_dim0 << ", "
           << seq_len << "] for mask_type " << *mask_type << ", got "
-          << mask->sizes();
+          << sanitized_mask->sizes();
     }
   }
 }
@@ -462,14 +465,15 @@ at::Tensor AtenTransformerEncoderLayerFwd(
           return out;
         }
 
-        const bool has_mask = mask.has_value() && mask->defined();
+        const auto sanitized_mask = SanitizeOptionalTensor(mask);
+        const bool has_mask = sanitized_mask.has_value();
         std::vector<at::Tensor> inputs = {
             src,         qkv_weight,    qkv_bias,    proj_weight,
             proj_bias,   norm_weight_1, norm_bias_1, norm_weight_2,
             norm_bias_2, ffn_weight_1,  ffn_bias_1,  ffn_weight_2,
             ffn_bias_2};
         if (has_mask) {
-          inputs.push_back(*mask);
+          inputs.push_back(*sanitized_mask);
         }
 
         const c10::ScalarType out_type = InferOutputDtype(src);

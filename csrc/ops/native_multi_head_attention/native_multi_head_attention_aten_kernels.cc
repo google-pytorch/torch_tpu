@@ -145,11 +145,12 @@ absl::Status ValidateNativeMultiHeadAttentionInputs(
       << ToString(proj_weight.scalar_type()) << ", "
       << ToString(proj_bias.scalar_type());
 
-  if (mask.has_value() && mask->defined()) {
-    const int64_t mask_rank = mask->dim();
+  if (const auto sanitized_mask = SanitizeOptionalTensor(mask);
+      sanitized_mask.has_value()) {
+    const int64_t mask_rank = sanitized_mask->dim();
     TT_RET_CHECK(mask_rank == 2 || mask_rank == 4, error::kInvalidArgument)
         << "expected mask to be a 2D or a 4D tensor, got " << mask_rank
-        << "D tensor of shape " << ToString(mask->sizes());
+        << "D tensor of shape " << ToString(sanitized_mask->sizes());
     // Mirror upstream `_masked_softmax`: a defined mask requires a mask_type of
     // 0 (src_mask), 1 (src_key_padding_mask), or 2 (default_mask).
     TT_RET_CHECK(mask_type.has_value(), error::kInvalidArgument)
@@ -160,27 +161,28 @@ absl::Status ValidateNativeMultiHeadAttentionInputs(
     if (mask_rank == 4) {
       // A 4-D mask must match the [B, num_head, T, T] attention weights
       // regardless of mask_type.
-      TT_RET_CHECK(
-          mask->size(0) == query.size(0) && mask->size(1) == num_head &&
-              mask->size(2) == query.size(1) && mask->size(3) == key.size(1),
-          error::kInvalidArgument)
+      TT_RET_CHECK(sanitized_mask->size(0) == query.size(0) &&
+                       sanitized_mask->size(1) == num_head &&
+                       sanitized_mask->size(2) == query.size(1) &&
+                       sanitized_mask->size(3) == key.size(1),
+                   error::kInvalidArgument)
           << "expected 4-D mask shape to be [" << query.size(0) << ", "
           << num_head << ", " << query.size(1) << ", " << key.size(1)
-          << "], got " << mask->sizes();
+          << "], got " << sanitized_mask->sizes();
     } else {
       // A 2-D mask is either a [T, T] src_mask (mask_type 0) or a [B, T]
       // src_key_padding_mask (mask_type 1); default_mask (2) must be 4-D.
       TT_RET_CHECK(*mask_type != 2, error::kInvalidArgument)
           << "expected 4-D mask for mask_type 2, got 2-D tensor of shape "
-          << mask->sizes();
+          << sanitized_mask->sizes();
       const int64_t expected_dim0 =
           *mask_type == 0 ? query.size(1) : query.size(0);
-      TT_RET_CHECK(
-          mask->size(0) == expected_dim0 && mask->size(1) == key.size(1),
-          error::kInvalidArgument)
+      TT_RET_CHECK(sanitized_mask->size(0) == expected_dim0 &&
+                       sanitized_mask->size(1) == key.size(1),
+                   error::kInvalidArgument)
           << "expected 2-D mask shape to be [" << expected_dim0 << ", "
           << key.size(1) << "] for mask_type " << *mask_type << ", got "
-          << mask->sizes();
+          << sanitized_mask->sizes();
     }
   }
 
@@ -544,6 +546,8 @@ std::tuple<at::Tensor, at::Tensor> AtenNativeMultiHeadAttention(
 
         const Dimensions out_dims = {query.size(0), query.size(1), embed_dim};
         const auto current_precision = GetAndAddPrecisionTo(param_keys);
+        const auto sanitized_mask = SanitizeOptionalTensor(mask);
+        const bool has_mask = sanitized_mask.has_value();
 
         if (need_weights) {
           // Build and dispatch multi-head attention graph returning both output
@@ -565,7 +569,7 @@ std::tuple<at::Tensor, at::Tensor> AtenNativeMultiHeadAttention(
               average_attn_weights ? AttnWeightsReduction::kAverage
                                    : AttnWeightsReduction::kNone;
 
-          if (mask.has_value() && mask->defined()) {
+          if (has_mask) {
             const auto op_builder =
                 [embed_dim, num_head, weights_reduction, current_precision,
                  mask_type](FixedSizeSpan<mlir::MlirOp, 8> inputs)
@@ -583,7 +587,7 @@ std::tuple<at::Tensor, at::Tensor> AtenNativeMultiHeadAttention(
                 (DispatchOp<8, 2>(
                     std::move(op_builder),
                     {query, key, value, qkv_weight, qkv_bias, proj_weight,
-                     proj_bias, *mask},
+                     proj_bias, *sanitized_mask},
                     {.out_dtypes = out_dtypes,
                      .out_dims_list = out_dims_list,
                      .op_param_cache_keys = std::move(param_keys)})));
@@ -621,7 +625,7 @@ std::tuple<at::Tensor, at::Tensor> AtenNativeMultiHeadAttention(
         } else {
           // Build and dispatch multi-head attention graph returning output
           // only.
-          if (mask.has_value() && mask->defined()) {
+          if (has_mask) {
             const auto op_builder =
                 [embed_dim, num_head, current_precision,
                  mask_type](FixedSizeSpan<mlir::MlirOp, 8> inputs)
@@ -638,7 +642,7 @@ std::tuple<at::Tensor, at::Tensor> AtenNativeMultiHeadAttention(
                 (DispatchOp<8, 1>(
                     std::move(op_builder),
                     {query, key, value, qkv_weight, qkv_bias, proj_weight,
-                     proj_bias, *mask},
+                     proj_bias, *sanitized_mask},
                     {.out_dtype = query_dtype_mlir,
                      .out_dims = out_dims,
                      .op_param_cache_keys = std::move(param_keys)})));

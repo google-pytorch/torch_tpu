@@ -81,11 +81,12 @@ absl::StatusOr<at::Tensor> ResolveAuxiliaryTensorDevice(
 
 absl::StatusOr<c10::optional<at::Tensor>> ResolveAuxiliaryTensorDevice(
     const c10::optional<at::Tensor>& tensor) {
-  if (!tensor.has_value() || !tensor.value().defined()) {
+  const auto sanitized = SanitizeOptionalTensor(tensor);
+  if (!sanitized) {
     return tensor;
   }
   TT_ASSIGN_OR_RETURN(at::Tensor resolved_tensor,
-                      ResolveAuxiliaryTensorDevice(tensor.value()));
+                      ResolveAuxiliaryTensorDevice(*sanitized));
   return c10::make_optional(std::move(resolved_tensor));
 }
 
@@ -122,15 +123,16 @@ absl::Status ValidateSearchsortedInputs(
     }
   }
 
-  if (sorter.has_value() && sorter.value().defined()) {
-    TT_RET_CHECK(sorter.value().sizes() == sorted.sizes(),
+  const auto sanitized_sorter = SanitizeOptionalTensor(sorter);
+  if (sanitized_sorter) {
+    TT_RET_CHECK(sanitized_sorter->sizes() == sorted.sizes(),
                  error::kInvalidArgument)
         << "expected sorter and sorted_sequence to have the same shape, got "
-        << sorter.value().sizes() << " and " << sorted.sizes();
-    TT_RET_CHECK(sorter.value().scalar_type() == at::ScalarType::Long,
+        << sanitized_sorter->sizes() << " and " << sorted.sizes();
+    TT_RET_CHECK(sanitized_sorter->scalar_type() == at::ScalarType::Long,
                  error::kInvalidArgument)
         << "expected sorter to have Long dtype, got "
-        << sorter.value().scalar_type();
+        << sanitized_sorter->scalar_type();
   }
 
   return absl::OkStatus();
@@ -294,8 +296,11 @@ ReturnType SearchsortedTensorCommon(const at::Tensor& sorted_sequence,
 
   std::vector<at::Tensor> input_vec = {resolved_sorted, resolved_values};
   input_vec.reserve(3);
-  if (resolved_sorter.has_value() && resolved_sorter.value().defined()) {
-    input_vec.push_back(resolved_sorter.value());
+  const auto sanitized_resolved_sorter =
+      SanitizeOptionalTensor(resolved_sorter);
+  const bool has_sorter = sanitized_resolved_sorter.has_value();
+  if (has_sorter) {
+    input_vec.push_back(*sanitized_resolved_sorter);
   }
 
   int64_t seq_len = resolved_sorted.size(-1);
@@ -313,9 +318,7 @@ ReturnType SearchsortedTensorCommon(const at::Tensor& sorted_sequence,
   const bool is_float = at::isFloatingType(common_aten_type);
 
   auto build_shlo =
-      [is_right, out_mlir_type, seq_len, num_iters,
-       has_sorter =
-           (resolved_sorter.has_value() && resolved_sorter.value().defined()),
+      [is_right, out_mlir_type, seq_len, num_iters, has_sorter,
        common_elem_type,
        is_float](absl::Span<mlir::MlirOp const> inputs,
                  mlir::MlirBuilder& builder) -> absl::StatusOr<mlir::MlirOp> {

@@ -740,11 +740,13 @@ absl::Status ValidateCrossEntropyLoss(const at::Tensor& self,
       << label_smoothing;
 
   const int64_t n_classes = self.size(self.dim() == 1 ? 0 : 1);
-  if (weight.has_value() && weight->defined()) {
-    TT_RET_CHECK(weight->dim() == 1 && weight->numel() == n_classes,
-                 error::kInvalidArgument)
+  if (const auto sanitized_weight = SanitizeOptionalTensor(weight);
+      sanitized_weight.has_value()) {
+    TT_RET_CHECK(
+        sanitized_weight->dim() == 1 && sanitized_weight->numel() == n_classes,
+        error::kInvalidArgument)
         << "expected weight tensor to be 1D with size " << n_classes << ", got "
-        << ToString(weight->sizes());
+        << ToString(sanitized_weight->sizes());
   }
 
   const bool is_prob_target = (self.sizes() == target.sizes());
@@ -795,7 +797,8 @@ at::Tensor CrossEntropyLossBackwardSelfKernel(
             (self.sizes() == target.sizes())
                 ? CrossEntropyTargetMode::kProbabilities
                 : CrossEntropyTargetMode::kClassIndices;
-        const bool has_weight = weight.has_value() && weight->defined();
+        const auto sanitized_weight = SanitizeOptionalTensor(weight);
+        const bool has_weight = sanitized_weight.has_value();
 
         auto op_builder =
             [reduction, ignore_index, label_smoothing, target_mode, has_weight](
@@ -819,7 +822,7 @@ at::Tensor CrossEntropyLossBackwardSelfKernel(
 
         std::vector<at::Tensor> inputs = {grad_output, self, target};
         if (has_weight) {
-          inputs.push_back(weight.value());
+          inputs.push_back(*sanitized_weight);
         }
 
         DispatchOpOptions<1> options = {
@@ -843,7 +846,8 @@ at::Tensor CrossEntropyLossBackwardTargetKernel(
   TT_KERNEL(
       OpName::kCrossEntropyLossBackward, param_keys,
       (grad_output, self, weight, reduction, label_smoothing), {
-        const bool has_weight = weight.has_value() && weight->defined();
+        const auto sanitized_weight = SanitizeOptionalTensor(weight);
+        const bool has_weight = sanitized_weight.has_value();
         auto op_builder =
             [reduction, label_smoothing, has_weight](
                 absl::Span<const mlir::MlirOp> inputs,
@@ -865,7 +869,7 @@ at::Tensor CrossEntropyLossBackwardTargetKernel(
 
         std::vector<at::Tensor> inputs = {grad_output, self};
         if (has_weight) {
-          inputs.push_back(weight.value());
+          inputs.push_back(*sanitized_weight);
         }
 
         DispatchOpOptions<1> options = {
@@ -893,8 +897,9 @@ class CrossEntropyLossFunction
     at::AutoDispatchBelowAutograd guard;
     at::Tensor output = AtenCrossEntropyLoss(self, target, weight, reduction,
                                              ignore_index, label_smoothing);
+    const auto sanitized_weight = SanitizeOptionalTensor(weight);
     const at::Tensor weight_tensor =
-        (weight.has_value() && weight->defined()) ? *weight : at::Tensor();
+        sanitized_weight.has_value() ? *sanitized_weight : at::Tensor();
     ctx->save_for_backward({self, target, weight_tensor});
     ctx->saved_data["reduction"] = reduction;
     ctx->saved_data["ignore_index"] = ignore_index;
@@ -955,7 +960,8 @@ at::Tensor AtenCrossEntropyLoss(const at::Tensor& self,
             (self.sizes() == target.sizes())
                 ? CrossEntropyTargetMode::kProbabilities
                 : CrossEntropyTargetMode::kClassIndices;
-        const bool has_weight = weight.has_value() && weight->defined();
+        const auto sanitized_weight = SanitizeOptionalTensor(weight);
+        const bool has_weight = sanitized_weight.has_value();
 
         auto op_builder =
             [reduction, ignore_index, label_smoothing, target_mode, has_weight](
@@ -979,7 +985,7 @@ at::Tensor AtenCrossEntropyLoss(const at::Tensor& self,
 
         std::vector<at::Tensor> inputs = {self, target};
         if (has_weight) {
-          inputs.push_back(weight.value());
+          inputs.push_back(*sanitized_weight);
         }
 
         DispatchOpOptions<1> options = {
