@@ -54,18 +54,12 @@ _TEST_MODE = flags.DEFINE_enum_class(
 )
 
 
-class EnvTest(seed_test_utils.RepeatableTest):
+class EnvTest(seed_test_utils.MultiProcessRepeatableTest):
   """Worker test class running individual test cases in isolated subprocesses."""
 
   def setUp(self) -> None:
     if _TEST_MODE.value is None:
       self.skipTest("test_mode flag not provided.")
-    if _TEST_MODE.value in (
-        TestMode.HAS_TORCH_TPU_ANCESTOR_PROCESS_CHILD,
-        TestMode.HAS_TORCH_TPU_ANCESTOR_PROCESS_ROOT,
-    ):
-      self.seed_in_setup = False
-      self.synchronize_tensors_in_tear_down = False
     super().setUp()
 
   def test_has_torch_tpu_ancestor_process_child(self) -> None:

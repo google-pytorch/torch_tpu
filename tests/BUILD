@@ -298,6 +298,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "env_test",
     srcs = ["env_test.py"],
+    shard_count = 4,
     tags = [
         "requires-tpu-v5lite",
     ],
