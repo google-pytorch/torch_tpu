@@ -391,6 +391,40 @@ class TpuOnlyErrorTest(et.TpuOnlyErrorTestBase):
       x.index_put_([index], torch.ones(3, 3, device="tpu"))
       x.to("cpu")
 
+  @et.why_tpu_only(
+      "Deliberate divergence: PyTorch accepts a trailing `:` past the last"
+      " dimension for a single-element CPU value with accumulate=False through"
+      " its masked_fill fast path, while TorchTPU rejects it consistently."
+  )
+  def test_index_put_trailing_slice_exceeds_dims_with_cpu_scalar_value(self):
+    """Tests index_put_() with a trailing `:` and a single-element CPU value."""
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""index_put_(): too many indices for tensor of dimension 3""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.ops.aten.index_put_(
+          torch.zeros(2, 3, 4, device="tpu"),
+          [None, torch.ones(3, 4, dtype=torch.bool, device="tpu"), None],
+          torch.tensor(1.0),
+          False,
+      )
+
+  @et.why_tpu_only(
+      "PyTorch hits an internal assert in its index_put_ kernel for 0-d bool"
+      " masks with non-scalar values."
+  )
+  def test_index_put_0d_mask_with_non_broadcastable_values(self):
+    """Tests index_put_() with a lone 0-d mask and non-broadcastable values."""
+    x = torch.zeros(2, 3, device="tpu")
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""index_put_(): indices must be specified""",
+        message_reviewed_by="jihonggan",
+    ):
+      x.index_put_([torch.tensor(True)], torch.ones(2, 2, 3, device="tpu"))
+      x.to("cpu")
+
   @et.why_tpu_only("The behavior is undefined on CPU.")
   def test_index_put_with_assign_buffer_to_at_tensor_failure(self):
     """Tests that index_put() bubbles up the error from AssignBufferToAtTensor.

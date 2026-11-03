@@ -71,8 +71,8 @@ bool HasContiguousUnsqueezedStrides(
   return true;
 }
 
-}  // namespace
-
+// Checks that every defined tensor in `indices` has dtype bool, int32 or int64,
+// and is either on CPU or on the same device as `self`.
 absl::Status ValidateIndexDtypesAndDevices(
     const at::Tensor& self,
     const c10::List<std::optional<at::Tensor>>& indices) {
@@ -107,6 +107,55 @@ absl::Status ValidateIndexDtypesAndDevices(
   return absl::OkStatus();
 }
 
+}  // namespace
+
+absl::StatusOr<std::vector<IndexEntry>> ParseIndexEntries(
+    const at::Tensor& self,
+    const c10::List<std::optional<at::Tensor>>& indices) {
+  TT_RETURN_IF_ERROR(ValidateIndexDtypesAndDevices(self, indices));
+
+  std::vector<IndexEntry> parsed;
+  // The first dimension of `self` indexed by the current entry.
+  int64_t dim = 0;
+  for (std::optional<at::Tensor> index : indices) {
+    const bool is_slice = !index.has_value() || !index->defined();
+    if (is_slice || index->scalar_type() != c10::ScalarType::Bool) {
+      // A `:` slice or an integer index consumes one dimension of `self`.
+      TT_RET_CHECK(dim < self.dim(), error::kIndexError)
+          << "too many indices for tensor of dimension " << self.dim();
+      if (!is_slice) {
+        parsed.push_back({.tensor = *std::move(index),
+                          .indexed_dim = dim,
+                          .is_mask = false});
+      }
+      ++dim;
+      continue;
+    }
+
+    // A bool mask consumes `index->dim()` dimensions of `self` (a 0-d mask
+    // consumes none and inserts a new dimension at `dim`), whose sizes must
+    // match the shape of the mask.
+    for (int64_t mask_dim = 0; mask_dim < index->dim(); ++mask_dim) {
+      const int64_t self_dim = dim + mask_dim;
+      TT_RET_CHECK(
+          self_dim < self.dim() && index->size(mask_dim) == self.size(self_dim),
+          error::kIndexError)
+          << "expected the shape of the mask at index " << mask_dim
+          << " to match the shape of the indexed tensor at index " << self_dim
+          << ", got mask shape " << index->sizes()
+          << " and indexed tensor shape " << self.sizes();
+    }
+    const int64_t mask_dims = index->dim();
+    parsed.push_back(
+        {.tensor = *std::move(index), .indexed_dim = dim, .is_mask = true});
+    dim += mask_dims;
+  }
+
+  TT_RET_CHECK(!parsed.empty(), error::kInvalidArgument)
+      << "expected at least one index tensor to be defined, got 0";
+  return parsed;
+}
+
 // PyTorch's advanced indexing rules allow index tensors to be on CPU while the
 // indexed tensor is on a device (`dev_tensor[{cpu,dev}_tensor]`), so CPU index
 // tensors are copied to the device of the indexed tensor here. We use
@@ -124,20 +173,28 @@ absl::StatusOr<at::Tensor> MoveIndexToDevice(const at::Tensor& index,
                          /*tpu_device_index=*/device.index());
 }
 
-absl::Status ResolveNegativeIndices(std::vector<at::Tensor>& indices,
-                                    const at::IntArrayRef sizes,
-                                    const Indices& dimensions) {
+Indices GetIndexedDims(absl::Span<const IndexEntry> entries) {
+  Indices dims;
+  dims.reserve(entries.size());
+  for (const IndexEntry& entry : entries) {
+    dims.push_back(entry.indexed_dim);
+  }
+  return dims;
+}
+
+absl::Status ResolveNegativeIndices(absl::Span<IndexEntry> entries,
+                                    const at::IntArrayRef sizes) {
   std::vector<at::Tensor> indices_to_resolve;
   std::vector<at::Tensor> dim_size_tensors;
   Indices original_indices;
 
-  for (size_t i = 0; i < indices.size(); ++i) {
-    const at::Tensor& index = indices[i];
+  for (size_t i = 0; i < entries.size(); ++i) {
+    const at::Tensor& index = entries[i].tensor;
     if (index.scalar_type() == c10::ScalarType::Long ||
         index.scalar_type() == c10::ScalarType::Int) {
       indices_to_resolve.push_back(index);
 
-      const int64_t dim_size = sizes[dimensions[i]];
+      const int64_t dim_size = sizes[entries[i].indexed_dim];
       auto promoted_dim_size = PromoteScalar(at::Scalar(dim_size));
       TT_ASSIGN_OR_RETURN(at::Tensor dim_size_tensor,
                           promoted_dim_size.GetTensor(index.scalar_type()));
@@ -222,7 +279,7 @@ absl::Status ResolveNegativeIndices(std::vector<at::Tensor>& indices,
 
   for (size_t i = 0; i < num_resolutions; ++i) {
     size_t original_idx = original_indices[i];
-    indices[original_idx] = MakeTensor(std::move(result_bufs[i]));
+    entries[original_idx].tensor = MakeTensor(std::move(result_bufs[i]));
   }
 
   return absl::OkStatus();
