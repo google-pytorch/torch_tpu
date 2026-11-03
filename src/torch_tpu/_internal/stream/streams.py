@@ -83,6 +83,9 @@ def _parse_pinned(pinned: CorePinningMode | str | None) -> CorePinningMode:
   )
 
 
+@experimental(
+    'Stream() is experimental and may change or be removed without notice.'
+)
 class TpuStream(torch.Stream):
   """A stream of operations on a TPU device.
 
@@ -141,12 +144,12 @@ class TpuStream(torch.Stream):
       **kwargs,
   ):
     # pylint: disable=unused-argument
-    self.pinned: CorePinningMode = _parse_pinned(pinned)
+    self._pinned: CorePinningMode = _parse_pinned(pinned)
 
-    if self.pinned != CorePinningMode.UNPINNED:
+    if self._pinned != CorePinningMode.UNPINNED:
       # pylint: disable=protected-access
       _device_ops_backend._set_core_pinning_mode(
-          self.device_index, self.stream_id, self.pinned
+          self.device_index, self.stream_id, self._pinned
       )
 
   @experimental(
@@ -208,16 +211,19 @@ class TpuStream(torch.Stream):
       'is_sparse is experimental and may change or be removed without notice.'
   )
   def is_sparse(self) -> bool:
-    return self.pinned == CorePinningMode.SPARSE_CORE
+    return self._pinned == CorePinningMode.SPARSE_CORE
 
   @property
   @experimental(
       'is_dense is experimental and may change or be removed without notice.'
   )
   def is_dense(self) -> bool:
-    return self.pinned == CorePinningMode.TENSOR_CORE
+    return self._pinned == CorePinningMode.TENSOR_CORE
 
 
+@experimental(
+    'Event() is experimental and may change or be removed without notice.'
+)
 class TpuEvent(torch.Event):
   """Scoped completion marker for async TPU operations.
 
@@ -262,6 +268,16 @@ class TpuEvent(torch.Event):
         blocking=blocking,
         interprocess=interprocess,
     )
+
+  def __init__(
+      self,
+      enable_timing: bool = False,
+      blocking: bool = False,
+      interprocess: bool = False,
+      external: bool = False,
+      device=None,
+  ):
+    del enable_timing, blocking, interprocess, external, device
 
   @experimental(
       'record() is experimental and may change or be removed without notice.'

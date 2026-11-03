@@ -410,6 +410,8 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
 
   _device_type: str
 
+  Event = streams.TpuEvent  # pylint: disable=invalid-name
+  Stream = streams.TpuStream  # pylint: disable=invalid-name
   device = _DeviceContext  # pylint: disable=invalid-name
   device_of = _DeviceOfContext  # pylint: disable=invalid-name
   get_device_layout_if_materialized = (
@@ -838,43 +840,6 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
         This API is experimental and subject to change in future releases.
     """
     return TpuStreamContext(stream)
-
-  @classmethod
-  @experimental(
-      "Stream() is experimental and may change or be removed without notice."
-  )
-  def Stream(cls, device=None, priority=0, **kwargs):  # pylint: disable=invalid-name
-    """Device-level wrapper for TpuStream object.
-
-    .. warning::
-        This API is experimental and subject to change in future releases.
-    """
-    return streams.TpuStream(device=device, priority=priority, **kwargs)
-
-  @classmethod
-  @experimental(
-      "Event() is experimental and may change or be removed without notice."
-  )
-  def Event(  # pylint: disable=invalid-name
-      cls,
-      enable_timing: bool = False,
-      blocking: bool = False,
-      interprocess: bool = False,
-      external: bool = False,
-      device=None,
-  ) -> streams.TpuEvent:
-    """Device-level wrapper for TpuEvent object.
-
-    .. warning::
-        This API is experimental and subject to change in future releases.
-    """
-    return streams.TpuEvent(
-        enable_timing=enable_timing,
-        blocking=blocking,
-        interprocess=interprocess,
-        external=external,
-        device=device,
-    )
 
   @classmethod
   @annotations.internal_or_experimental(

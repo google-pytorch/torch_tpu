@@ -137,6 +137,14 @@ class NoTpuDeviceModuleTest(
     ):
       self.assertEqual(props.total_memory, tpu_spec.hbm_bytes_per_device)
 
+  def test_stream_is_type(self):
+    self.assertTrue(issubclass(torch.tpu.Stream, torch.Stream))
+    self.assertIsInstance(None, torch.tpu.Stream | None)
+
+  def test_event_is_type(self):
+    self.assertTrue(issubclass(torch.tpu.Event, torch.Event))
+    self.assertIsInstance(None, torch.tpu.Event | None)
+
 
 if __name__ == "__main__":
   absltest.main()
