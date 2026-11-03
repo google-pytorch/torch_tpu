@@ -44,6 +44,10 @@ For distributed training examples, refer to `examples/tensor_parallel/` and
 -   [fsdp/fsdp_to_simple_fsdp](fsdp/fsdp_to_simple_fsdp/README.md): Side-by-side
     comparison and migration guide from PyTorch FSDPv2 (`fully_shard`) to
     `SimpleFSDP` (`data_parallel`).
+-   [deepseek_v4_flash_base_inference](deepseek_v4_flash_base_inference/README.md):
+    Self-contained, OpenXLA-compliant DeepSeek-V4-Flash inference engine with
+    Multi-Head Latent Attention (MLA), 256 routed MoE experts with Sinkhorn
+    routing, and functional fallbacks.
 
 ## Benchmarking
 

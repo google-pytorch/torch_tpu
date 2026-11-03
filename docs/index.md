@@ -45,6 +45,7 @@ training and inference workloads from a single chip to multi-slice TPU pods.
 
     - [<!--mkdocs::octicons-arrow-right-24:--> FLUX Optimization](./case_studies_flux.md): Example demonstrating how to identify and apply multiple optimizations on FLUX.
     - [<!--mkdocs::octicons-arrow-right-24:--> Muse Glimmer 30B inference](./case_studies_muse_glimmer_30b_inference.md): Example of iterative decoding using real weights with static/dynamic KV cache.
+    - [<!--mkdocs::octicons-arrow-right-24:--> DeepSeek-V4-Flash inference](./case_studies_deepseek_v4_flash_base_inference.md): End-to-end zero-graph-break inference with MLA, MoE Sinkhorn routing, and functional fallbacks.
     - [<!--mkdocs::octicons-arrow-right-24:--> Muse Glimmer 30B training](./case_studies_muse_glimmer_30b_training.md): A training loop on a standalone implementation of Muse Glimmer 30B.
     - [<!--mkdocs::octicons-arrow-right-24:--> Using FSDP](./case_studies_fsdp.md): The recommended approach to using FSDP for TorchTPU.
 
