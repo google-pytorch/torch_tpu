@@ -57,7 +57,6 @@ torch_tpu_cc_library(
         "//csrc/common:dimension_types",
         "//csrc/common:error_utils",
         "//csrc/ops:op_builder_utils",
-        "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/status:statusor",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Support",

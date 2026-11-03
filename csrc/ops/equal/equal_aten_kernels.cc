@@ -16,7 +16,6 @@
 
 #include "csrc/ops/equal/equal_aten_kernels.h"
 
-#include <numeric>
 #include <utility>
 
 #include "ATen/core/TensorBody.h"
@@ -65,9 +64,7 @@ absl::StatusOr<mlir::MlirOp> BuildEqualShlo(mlir::MlirOp self_input,
       self_input, other_input, mlir::stablehlo::ComparisonDirection::EQ);
 
   // Reduce the comparison result to a scalar
-  const auto rank = GetTensorTypeOrDie(self_input).getRank();
-  Dimensions dims(rank);
-  std::iota(dims.begin(), dims.end(), 0);
+  const Dimensions dims = GetAllDimensions(self_input);
 
   return mlir::stablehlo::Reduce(
       builder, {compare_op}, {init_val},

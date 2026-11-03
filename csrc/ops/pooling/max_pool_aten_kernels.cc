@@ -691,10 +691,7 @@ absl::StatusOr<mlir::MlirOp> BuildMaxPoolWithIndicesBackwardShlo(
   mlir::MlirOp offsets = mlir::stablehlo::Reshape(offsets_flat, offset_shape);
 
   // Broadcast offsets tensor to match the indices shape
-  Dimensions broadcast_dims;
-  for (int64_t i = 0; i < indices_type.getRank(); ++i) {
-    broadcast_dims.push_back(i);
-  }
+  const Dimensions broadcast_dims = GetAllDimensions(batch_indices);
   mlir::MlirOp offsets_broadcasted =
       mlir::stablehlo::BroadcastInDim(indices_type, offsets, broadcast_dims);
 
