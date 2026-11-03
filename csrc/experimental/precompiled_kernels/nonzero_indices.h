@@ -41,7 +41,26 @@ namespace torch_tpu {
 //
 // Caller-checked arithmetic bounds: 1 <= M <= INT32_MAX,
 // 1 <= N <= INT32_MAX - 127, and 3 <= K <= min(M*N, INT32_MAX).
-UnboundedDynamicKernel GetNonzeroUnboundedDynamicKernel();
+UnboundedDynamicKernel GetNonzero2DUnboundedDynamicKernel();
+
+// Returns the rank-one counterpart of the kernel above, keyed under the
+// shapeless key of a 1-D F32 nonzero graph. Run through `Execute` with the
+// F32[N] input and the logical output shape S64[K,1], its executable returns
+// the indices of the input's nonzero elements in increasing order, with the
+// same predicate.
+//
+// Buffer contract (all payloads have no dynamic-metadata prefix):
+// - Input: F32[N]{0:T(1024)}, XLA's default layout for all but small N, and
+//   the only buffer the caller supplies.
+// - Output: S64[K,1]{0,1:T(1,128)}, allocated, donated and bitcast by `Execute`
+//   as above through the S32[R,128]{1,0:T(1,128)} view (R = 2 * ceil(K/128);
+//   rows [0, R/2) hold the low words, [R/2, R) hold zeroed high words).
+//   NB: requires K > 1 because the XLA default layout for S64[K,1] switches to
+//   {1,0:T(1,128)} when K == 1.
+//
+// Caller-checked arithmetic bounds: 2 <= N <= INT32_MAX - 127 and
+// 2 <= K <= N.
+UnboundedDynamicKernel GetNonzero1DUnboundedDynamicKernel();
 
 }  // namespace torch_tpu
 

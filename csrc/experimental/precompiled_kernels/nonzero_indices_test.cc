@@ -37,9 +37,11 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/numbers.h"
 #include "absl/strings/str_format.h"
+#include "absl/strings/str_join.h"
 #include "absl/strings/str_split.h"
 #include "absl/time/clock.h"
 #include "absl/time/time.h"
+#include "absl/types/span.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/compilation.h"
 #include "csrc/common/compilation_cache.h"
@@ -96,10 +98,10 @@ namespace {
 
 // Spread exactly K nonzeros across the input, including its last element.
 // Exercise NaN, infinity, negatives and subnormals; only signed zeros are zero.
-xla::Literal MakeInput(int64_t rows, int64_t cols, int64_t k) {
-  xla::Literal input(xla::ShapeUtil::MakeShape(xla::F32, {rows, cols}));
+xla::Literal MakeInput(absl::Span<const int64_t> dims, int64_t k) {
+  xla::Literal input(xla::ShapeUtil::MakeShape(xla::F32, dims));
   const float nonzeros[] = {INFINITY, -2.f, 1e-40f};
-  const int64_t size = rows * cols;
+  const int64_t size = input.element_count();
   for (int64_t i = 0; i < size; ++i) {
     bool selected = (i + 1) * k / size != i * k / size;
     input.data<float>()[i] = selected ? nonzeros[i % 3] : (i % 2 ? -0.f : 0.f);
@@ -114,16 +116,26 @@ xla::Literal ReferenceIndices(const xla::Literal& input) {
   for (int64_t i = 0; i < input.element_count(); ++i) {
     count += input.data<float>()[i] != 0.f;
   }
-  xla::Literal result(xla::ShapeUtil::MakeShape(xla::S64, {count, 2}));
-  const int64_t cols = input.shape().dimensions(1);
+  const absl::Span<const int64_t> dims = input.shape().dimensions();
+  const int64_t rank = dims.size();
+  xla::Literal result(xla::ShapeUtil::MakeShape(xla::S64, {count, rank}));
   for (int64_t i = 0, out = 0; i < input.element_count(); ++i) {
     if (input.data<float>()[i] != 0.f) {
-      result.Set<int64_t>({out, 0}, i / cols);
-      result.Set<int64_t>({out, 1}, i % cols);
+      int64_t rest = i;
+      for (int64_t d = rank - 1; d >= 0; --d) {
+        result.Set<int64_t>({out, d}, rest % dims[d]);
+        rest /= dims[d];
+      }
       ++out;
     }
   }
   return result;
+}
+
+// Returns the nonzero indices kernel for rank-`rank` inputs.
+UnboundedDynamicKernel NonzeroKernel(int64_t rank) {
+  return rank == 1 ? GetNonzero1DUnboundedDynamicKernel()
+                   : GetNonzero2DUnboundedDynamicKernel();
 }
 
 class NonzeroIndicesTest : public testing::Test {
@@ -139,26 +151,35 @@ class NonzeroIndicesTest : public testing::Test {
         memory_space_,
         client_->addressable_devices()[0]->default_memory_space());
 
-    UnboundedDynamicKernel nonzero = GetNonzeroUnboundedDynamicKernel();
+    TT_ASSERT_OK_AND_ASSIGN(executables_[1], Compile(NonzeroKernel(1)));
     const auto start = absl::Now();
-    TT_ASSERT_OK_AND_ASSIGN(
-        std::unique_ptr<xla::PjRtLoadedExecutable> loaded,
-        nonzero.build(*client_, std::make_unique<xla::CompileOptions>()));
-    TT_ASSERT_OK_AND_ASSIGN(
-        SharedLoadedExecutableWithMetadata executable,
-        LoadedExecutableWithMetadata::MakeShared(std::move(loaded),
-                                                 /*argument_indices=*/{},
-                                                 std::move(nonzero.metadata)));
-    executable_ = new SharedLoadedExecutableWithMetadata(std::move(executable));
+    TT_ASSERT_OK_AND_ASSIGN(executables_[2], Compile(NonzeroKernel(2)));
     compile_ms_ = absl::ToDoubleMilliseconds(absl::Now() - start);
   }
 
-  // Returns the single logical input, the F32[M,N] payload. The S64[K,2]
-  // destination and the S32[2] runtime shape metadata operands are synthesized
+  static absl::StatusOr<SharedLoadedExecutableWithMetadata*> Compile(
+      UnboundedDynamicKernel kernel) {
+    TT_ASSIGN_OR_RETURN(
+        std::unique_ptr<xla::PjRtLoadedExecutable> loaded,
+        kernel.build(*client_, std::make_unique<xla::CompileOptions>()));
+    TT_ASSIGN_OR_RETURN(
+        SharedLoadedExecutableWithMetadata executable,
+        LoadedExecutableWithMetadata::MakeShared(std::move(loaded),
+                                                 /*argument_indices=*/{},
+                                                 std::move(kernel.metadata)));
+    return new SharedLoadedExecutableWithMetadata(std::move(executable));
+  }
+
+  // Returns the single logical input, the F32 payload. The S64[K,rank]
+  // destination and the S32 runtime shape metadata operands are synthesized
   // by torch_tpu::Execute from the metadata bindings, not supplied here.
   static absl::StatusOr<std::vector<std::unique_ptr<xla::PjRtBuffer>>>
   PrepareOperands(const xla::Literal& input) {
-    const xla::Layout input_layout({1, 0}, {xla::Tile({8, 128})});
+    // The input layouts of the buffer contracts; see the headers.
+    const xla::Layout input_layout =
+        input.shape().dimensions().size() == 1
+            ? xla::Layout({0}, {xla::Tile({1024})})
+            : xla::Layout({1, 0}, {xla::Tile({8, 128})});
     TT_ASSIGN_OR_RETURN(
         auto input_buffer,
         client_->BufferFromHostBuffer(
@@ -173,6 +194,7 @@ class NonzeroIndicesTest : public testing::Test {
     return operands;
   }
 
+  // Runs the kernel for the input's rank, which is the output's column count.
   static absl::StatusOr<PjRtBufferPointers> ExecuteKernel(
       const std::vector<std::unique_ptr<xla::PjRtBuffer>>& operands,
       const Shape& logical_output_shape) {
@@ -181,24 +203,26 @@ class NonzeroIndicesTest : public testing::Test {
     for (const std::unique_ptr<xla::PjRtBuffer>& operand : operands) {
       argument_ptrs.push_back(operand.get());
     }
-    return Execute(*executable_, std::move(argument_ptrs),
-                   {logical_output_shape});
+    return Execute(*executables_[logical_output_shape.dimensions()[1]],
+                   std::move(argument_ptrs), {logical_output_shape});
   }
 
-  void CheckMosaicKernelCorrectness(int64_t rows, int64_t cols, int64_t k) {
-    SCOPED_TRACE(testing::Message() << rows << "x" << cols << " K=" << k);
-    ASSERT_GT(k, 2);
-    auto input = MakeInput(rows, cols, k);
+  void CheckMosaicKernelCorrectness(absl::Span<const int64_t> dims, int64_t k) {
+    SCOPED_TRACE(testing::Message()
+                 << "[" << absl::StrJoin(dims, "x") << "] K=" << k);
+    const int64_t rank = dims.size();
+    ASSERT_GT(k, rank);
+    auto input = MakeInput(dims, k);
     auto expected = ReferenceIndices(input);
     TT_ASSERT_OK_AND_ASSIGN(const xla::Layout layout,
-                            client_->GetDefaultLayout(xla::S64, {k, 2}));
+                            client_->GetDefaultLayout(xla::S64, {k, rank}));
     // The layout the kernel bitcasts its result to. XLA's default layout for
-    // S64[K,2] is {0,1:T(2,128)} only when K > 2 (for K <= 2 it is
-    // {1,0:T(2,128)}, which the kernel does not support).
-    EXPECT_EQ(layout, xla::Layout({0, 1}, {xla::Tile({2, 128})}));
+    // S64[K,rank] is {0,1:T(rank,128)} only when K > rank (otherwise it is
+    // {1,0:...}, which the kernel does not support).
+    EXPECT_EQ(layout, xla::Layout({0, 1}, {xla::Tile({rank, 128})}));
     TT_ASSERT_OK_AND_ASSIGN(auto buffers, PrepareOperands(input));
 
-    const Shape logical_output({k, 2}, mlir::ElementType::I64);
+    const Shape logical_output({k, rank}, mlir::ElementType::I64);
     TT_ASSERT_OK_AND_ASSIGN(const auto outputs,
                             ExecuteKernel(buffers, logical_output));
     ASSERT_EQ(outputs.size(), 1);
@@ -214,49 +238,83 @@ class NonzeroIndicesTest : public testing::Test {
 
   static inline xla::PjRtClient* client_ = nullptr;
   static inline xla::PjRtMemorySpace* memory_space_ = nullptr;
-  static inline SharedLoadedExecutableWithMetadata* executable_ = nullptr;
+  // The compiled kernels, indexed by input rank.
+  static inline SharedLoadedExecutableWithMetadata* executables_[3] = {};
+  // The compile time of the rank-two kernel, reported by the benchmark.
   static inline double compile_ms_ = 0.0;
 };
 
 TEST_F(NonzeroIndicesTest, ReusesExecutableAcrossShapesAndCounts) {
-  // {9, 1100} and {17, 3000} span several 1024-column tiles per row, with a
-  // masked last tile and a partial last row block.
-  const std::pair<int64_t, int64_t> shapes[] = {
-      {1, 3},    {3, 1},    {3, 7},     {9, 129},
-      {17, 257}, {9, 1100}, {17, 3000}, {1, 16385}};
-  for (auto [rows, cols] : shapes) {
-    const int64_t size = rows * cols;
-    const int64_t ks[] = {3, 127, 128, 129, 1023, 1024, 1025, size};
+  const Dimensions shapes[] = {
+      // {9, 1100} and {17, 3000} span several 1024-column tiles per row, with
+      // a masked last tile and a partial last row block.
+      {1, 3},
+      {3, 1},
+      {3, 7},
+      {9, 129},
+      {17, 257},
+      {9, 1100},
+      {17, 3000},
+      {1, 16385},
+      // 3000 ends in a masked tile; 16385 and 40000 span several scratch
+      // windows, the last of them partial.
+      {2},
+      {7},
+      {1024},
+      {1025},
+      {3000},
+      {16384},
+      {16385},
+      {40000}};
+  for (const Dimensions& dims : shapes) {
+    const int64_t rank = dims.size();
+    int64_t size = 1;
+    for (const int64_t d : dims) size *= d;
+    const int64_t ks[] = {2, 3, 127, 128, 129, 1023, 1024, 1025, size};
     for (int64_t k : ks) {
-      if (k <= size) CheckMosaicKernelCorrectness(rows, cols, k);
+      // The kernels require K > rank; see the headers.
+      if (k > rank && k <= size) CheckMosaicKernelCorrectness(dims, k);
     }
   }
 }
 
 TEST_F(NonzeroIndicesTest, UnboundedDynamicCacheServesKernel) {
   CompilationCache& cache = CompilationCache::GetInstance();
-  const CompilationCacheKey key = GetNonzeroUnboundedDynamicKernel().key;
 
-  const std::tuple<int64_t, int64_t, int64_t> cases[] = {
-      {3, 7, 5}, {17, 257, 44}, {17, 257, 4369}, {1, 16385, 1025}};
-  const xla::PjRtLoadedExecutable* registered = nullptr;
-  for (const auto [rows, cols, k] : cases) {
-    SCOPED_TRACE(testing::Message() << rows << "x" << cols << " K=" << k);
-    Shape input_shape({rows, cols}, mlir::ElementType::F32);
-    if (rows < 8) {
+  struct Case {
+    Dimensions dims;
+    int64_t k;
+  };
+  const Case cases[] = {
+      {{3, 7}, 5},
+      {{17, 257}, 44},
+      {{17, 257}, 4369},
+      {{1, 16385}, 1025},
+      // Large enough for XLA's default F32[N] layout to be T(1024).
+      {{1024}, 2},
+      {{3000}, 1025},
+      {{40000}, 777}};
+  // The executable that served the first case of each rank.
+  std::map<int64_t, const xla::PjRtLoadedExecutable*> registered;
+  for (const auto& [dims, k] : cases) {
+    SCOPED_TRACE(testing::Message()
+                 << "[" << absl::StrJoin(dims, "x") << "] K=" << k);
+    const int64_t rank = dims.size();
+    Shape input_shape(dims, mlir::ElementType::F32);
+    if (rank == 2 && dims[0] < 8) {
       // XLA's default compact tile height shrinks below 8 when rows < 5, while
       // `PrepareOperands` explicitly allocates `{1,0:T(8,128)}`.
       input_shape.set_layout(
           CustomLayout{.minor_to_major = {1, 0}, .tiles = {{8, 128}}});
     }
-    const Shape output_shape({k, 2}, mlir::ElementType::I64);
+    const Shape output_shape({k, rank}, mlir::ElementType::I64);
 
     const int64_t dynamic_hits_before =
         cache.GetCacheStats().num_unbounded_dynamic_hits;
     TT_ASSERT_OK_AND_ASSIGN(
         CompiledKernel kernel,
         cache.GetOrCompile(
-            key, {input_shape}, {output_shape},
+            NonzeroKernel(rank).key, {input_shape}, {output_shape},
             [](mlir::MLIRContext&)
                 -> absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> {
               return TT_ERROR(error::kInternal)
@@ -268,12 +326,11 @@ TEST_F(NonzeroIndicesTest, UnboundedDynamicCacheServesKernel) {
     TT_ASSERT_OK_AND_ASSIGN(SharedLoadedExecutableWithMetadata executable,
                             kernel.fixed_shape_kernel.get());
     ASSERT_TRUE(executable->unbounded_dynamic_execution_metadata().has_value());
-    if (registered == nullptr) {
-      registered = executable->GetLoadedExecutable();
-    }
-    EXPECT_EQ(executable->GetLoadedExecutable(), registered);
+    const xla::PjRtLoadedExecutable*& first = registered[rank];
+    if (first == nullptr) first = executable->GetLoadedExecutable();
+    EXPECT_EQ(executable->GetLoadedExecutable(), first);
 
-    const xla::Literal input = MakeInput(rows, cols, k);
+    const xla::Literal input = MakeInput(dims, k);
     TT_ASSERT_OK_AND_ASSIGN(const auto operands, PrepareOperands(input));
     TT_ASSERT_OK_AND_ASSIGN(
         const auto outputs,
@@ -289,7 +346,7 @@ TEST_F(NonzeroIndicesTest, UnboundedDynamicCacheServesKernel) {
 TEST_F(NonzeroIndicesTest, UnboundedDynamicCacheRejectsIncompatibleLayouts) {
   CompilationCache& cache = CompilationCache::GetInstance();
   const ShapelessKey nonzero_key =
-      GetNonzeroUnboundedDynamicKernel().key.graph_key().shapeless_key();
+      GetNonzero2DUnboundedDynamicKernel().key.graph_key().shapeless_key();
 
   const Shape valid_input({17, 257}, mlir::ElementType::F32);
   // 1. Default XLA layout for F32[3,7] is {1,0:T(4,128)}, not {1,0:T(8,128)}.
@@ -336,20 +393,14 @@ TEST_F(NonzeroIndicesTest, UnboundedDynamicCacheRejectsIncompatibleLayouts) {
   cache.EvictAll();
 }
 
-// Logical shapes of a nonzero call, as passed to the compatibility predicate.
+// Logical shapes of a nonzero call, as passed to the compatibility predicate
+// of the rank-`rank` kernel.
 struct NonzeroShapesCase {
+  int64_t rank;
   std::string_view name;
   std::vector<Shape> inputs;
   std::vector<Shape> outputs;
 };
-
-// The on-device layouts of the kernel's buffer contract; see nonzero_indices.h.
-CustomLayout NonzeroInputLayout() {
-  return CustomLayout{.minor_to_major = {1, 0}, .tiles = {{8, 128}}};
-}
-CustomLayout NonzeroOutputLayout() {
-  return CustomLayout{.minor_to_major = {0, 1}, .tiles = {{2, 128}}};
-}
 
 // Returns `shapes` with each shape's layout set to `layout`.
 std::vector<Shape> WithLayout(std::vector<Shape> shapes,
@@ -360,46 +411,54 @@ std::vector<Shape> WithLayout(std::vector<Shape> shapes,
   return shapes;
 }
 
-// Looks up the kernel registered under `key` for the shapes of `c`.
-const UnboundedDynamicKernel* FindKernel(const ShapelessKey& key,
-                                         const NonzeroShapesCase& c) {
+// Looks up the kernel registered for the shapes of `c`, under the key of the
+// rank-`c.rank` kernel.
+const UnboundedDynamicKernel* FindKernel(const NonzeroShapesCase& c) {
   return UnboundedDynamicKernelRegistry::GetInstance()
-      .FindUnboundedDynamicKernel(key, c.inputs, c.outputs);
+      .FindUnboundedDynamicKernel(
+          NonzeroKernel(c.rank).key.graph_key().shapeless_key(), c.inputs,
+          c.outputs);
 }
 
-// :kernel_registration, linked into this test, registers the kernel returned by
-// GetNonzeroUnboundedDynamicKernel() during static initialization.
+// :kernel_registration, linked into this test, registers the nonzero kernels
+// during static initialization.
 TEST(NonzeroRegistrationTest, KernelIsRegisteredUnderNonzeroCacheKey) {
-  const UnboundedDynamicKernel nonzero = GetNonzeroUnboundedDynamicKernel();
-  const UnboundedDynamicExecutionMetadata* metadata =
-      UnboundedDynamicKernelRegistry::GetInstance().GetUnboundedDynamicMetadata(
-          nonzero.key);
-  ASSERT_NE(metadata, nullptr);
-  EXPECT_EQ(metadata->pjrt_param_shapes, nonzero.metadata.pjrt_param_shapes);
+  for (const int64_t rank : {1, 2}) {
+    SCOPED_TRACE(testing::Message() << "rank " << rank);
+    const UnboundedDynamicKernel nonzero = NonzeroKernel(rank);
+    const UnboundedDynamicExecutionMetadata* metadata =
+        UnboundedDynamicKernelRegistry::GetInstance()
+            .GetUnboundedDynamicMetadata(nonzero.key);
+    ASSERT_NE(metadata, nullptr);
+    EXPECT_EQ(metadata->pjrt_param_shapes, nonzero.metadata.pjrt_param_shapes);
+  }
 }
 
-// The kernel serves any F32[M,N] input with an S64[K,2] output whose buffers
-// are in the layouts of its buffer contract.
+// Each kernel serves any F32 input of its rank with an S64[K,rank] output
+// whose buffers are in the layouts of its buffer contract.
 TEST(NonzeroRegistrationTest, FindsKernelForCompatibleShapes) {
-  const UnboundedDynamicKernel nonzero = GetNonzeroUnboundedDynamicKernel();
+  const CustomLayout input_2d{.minor_to_major = {1, 0}, .tiles = {{8, 128}}};
+  const CustomLayout output_2d{.minor_to_major = {0, 1}, .tiles = {{2, 128}}};
+  const CustomLayout input_1d{.minor_to_major = {0}, .tiles = {{1024}}};
+  const CustomLayout output_1d{.minor_to_major = {0, 1}, .tiles = {{1, 128}}};
   const NonzeroShapesCase cases[] = {
-      {"square",
-       {Shape({4, 4}, mlir::ElementType::F32)},
-       {Shape({5, 2}, mlir::ElementType::I64)}},
-      {"single row",
-       {Shape({1, 16385}, mlir::ElementType::F32)},
-       {Shape({1025, 2}, mlir::ElementType::I64)}},
-      {"single column",
-       {Shape({3, 1}, mlir::ElementType::F32)},
-       {Shape({3, 2}, mlir::ElementType::I64)}},
+      {2, "square",
+       WithLayout({Shape({4, 4}, mlir::ElementType::F32)}, input_2d),
+       WithLayout({Shape({5, 2}, mlir::ElementType::I64)}, output_2d)},
+      {2, "single row",
+       WithLayout({Shape({1, 16385}, mlir::ElementType::F32)}, input_2d),
+       WithLayout({Shape({1025, 2}, mlir::ElementType::I64)}, output_2d)},
+      {2, "single column",
+       WithLayout({Shape({3, 1}, mlir::ElementType::F32)}, input_2d),
+       WithLayout({Shape({3, 2}, mlir::ElementType::I64)}, output_2d)},
+      {1, "small input",
+       WithLayout({Shape({16}, mlir::ElementType::F32)}, input_1d),
+       WithLayout({Shape({2, 1}, mlir::ElementType::I64)}, output_1d)},
   };
   for (const NonzeroShapesCase& c : cases) {
     SCOPED_TRACE(c.name);
-    const UnboundedDynamicKernel* kernel =
-        FindKernel(nonzero.key.graph_key().shapeless_key(),
-                   {.name = c.name,
-                    .inputs = WithLayout(c.inputs, NonzeroInputLayout()),
-                    .outputs = WithLayout(c.outputs, NonzeroOutputLayout())});
+    const UnboundedDynamicKernel nonzero = NonzeroKernel(c.rank);
+    const UnboundedDynamicKernel* kernel = FindKernel(c);
     ASSERT_NE(kernel, nullptr);
     EXPECT_EQ(kernel->key, nonzero.key);
     EXPECT_EQ(kernel->build, nonzero.build);
@@ -407,62 +466,97 @@ TEST(NonzeroRegistrationTest, FindsKernelForCompatibleShapes) {
 }
 
 // Buffers without custom layouts resolve to the device's default layouts,
-// which match the buffer contract for these shapes.
+// which match the buffer contracts for these shapes.
 TEST(NonzeroRegistrationTest, FindsKernelForDefaultLayouts) {
-  const UnboundedDynamicKernel nonzero = GetNonzeroUnboundedDynamicKernel();
-  const UnboundedDynamicKernel* kernel =
-      FindKernel(nonzero.key.graph_key().shapeless_key(),
-                 {.name = "default layouts",
-                  .inputs = {Shape({17, 257}, mlir::ElementType::F32)},
-                  .outputs = {Shape({5, 2}, mlir::ElementType::I64)}});
-  ASSERT_NE(kernel, nullptr);
-  EXPECT_EQ(kernel->key, nonzero.key);
-}
-
-TEST(NonzeroRegistrationTest, RejectsIncompatibleShapes) {
-  const ShapelessKey nonzero_key =
-      GetNonzeroUnboundedDynamicKernel().key.graph_key().shapeless_key();
-  const Shape input({17, 257}, mlir::ElementType::F32);
-  const Shape output({5, 2}, mlir::ElementType::I64);
   const NonzeroShapesCase cases[] = {
-      {"rank-3 input", {Shape({2, 4, 4}, mlir::ElementType::F32)}, {output}},
-      {"rank-1 input", {Shape({16}, mlir::ElementType::F32)}, {output}},
-      {"BF16 input", {Shape({4, 4}, mlir::ElementType::BF16)}, {output}},
-      {"two inputs", {input, input}, {output}},
-      {"no outputs", {input}, {}},
-      {"I32 output", {input}, {Shape({5, 2}, mlir::ElementType::I32)}},
-      {"output not [K,2]", {input}, {Shape({5, 3}, mlir::ElementType::I64)}},
-      // The default layout of an S64[2,2] output is not the kernel's.
-      {"K == 2", {input}, {Shape({2, 2}, mlir::ElementType::I64)}},
+      {2,
+       "rank 2",
+       {Shape({17, 257}, mlir::ElementType::F32)},
+       {Shape({5, 2}, mlir::ElementType::I64)}},
+      {1,
+       "rank 1",
+       {Shape({3000}, mlir::ElementType::F32)},
+       {Shape({5, 1}, mlir::ElementType::I64)}},
   };
   for (const NonzeroShapesCase& c : cases) {
     SCOPED_TRACE(c.name);
-    EXPECT_EQ(FindKernel(nonzero_key, c), nullptr);
+    const UnboundedDynamicKernel* kernel = FindKernel(c);
+    ASSERT_NE(kernel, nullptr);
+    EXPECT_EQ(kernel->key, NonzeroKernel(c.rank).key);
+  }
+}
+
+TEST(NonzeroRegistrationTest, RejectsIncompatibleShapes) {
+  const Shape input_2d({17, 257}, mlir::ElementType::F32);
+  const Shape output_2d({5, 2}, mlir::ElementType::I64);
+  const Shape input_1d({3000}, mlir::ElementType::F32);
+  const Shape output_1d({5, 1}, mlir::ElementType::I64);
+  const NonzeroShapesCase cases[] = {
+      {2,
+       "rank-3 input",
+       {Shape({2, 4, 4}, mlir::ElementType::F32)},
+       {output_2d}},
+      {2, "rank-1 input", {Shape({16}, mlir::ElementType::F32)}, {output_2d}},
+      {1, "rank-2 input", {input_2d}, {output_2d}},
+      {2, "BF16 input", {Shape({4, 4}, mlir::ElementType::BF16)}, {output_2d}},
+      {1,
+       "BF16 rank-1 input",
+       {Shape({3000}, mlir::ElementType::BF16)},
+       {output_1d}},
+      {2, "two inputs", {input_2d, input_2d}, {output_2d}},
+      {2, "no outputs", {input_2d}, {}},
+      {2, "I32 output", {input_2d}, {Shape({5, 2}, mlir::ElementType::I32)}},
+      {2,
+       "output not [K,2]",
+       {input_2d},
+       {Shape({5, 3}, mlir::ElementType::I64)}},
+      {1, "output not [K,1]", {input_1d}, {output_2d}},
+      // The default layouts of S64[2,2] and S64[1,1] outputs are not the
+      // kernels'.
+      {2, "K == 2", {input_2d}, {Shape({2, 2}, mlir::ElementType::I64)}},
+      {1, "K == 1", {input_1d}, {Shape({1, 1}, mlir::ElementType::I64)}},
+  };
+  for (const NonzeroShapesCase& c : cases) {
+    SCOPED_TRACE(c.name);
+    EXPECT_EQ(FindKernel(c), nullptr);
   }
 }
 
 TEST(NonzeroRegistrationTest, RejectsIncompatibleLayouts) {
-  const ShapelessKey nonzero_key =
-      GetNonzeroUnboundedDynamicKernel().key.graph_key().shapeless_key();
-  const Shape input({17, 257}, mlir::ElementType::F32);
-  const Shape output({5, 2}, mlir::ElementType::I64);
+  const Shape input_2d({17, 257}, mlir::ElementType::F32);
+  const Shape output_2d({5, 2}, mlir::ElementType::I64);
+  const Shape input_1d({3000}, mlir::ElementType::F32);
+  const Shape output_1d({5, 1}, mlir::ElementType::I64);
   const NonzeroShapesCase cases[] = {
-      {"input tiled T(4,128)",
-       WithLayout({input},
+      {2,
+       "input tiled T(4,128)",
+       WithLayout({input_2d},
                   CustomLayout{.minor_to_major = {1, 0}, .tiles = {{4, 128}}}),
-       {output}},
-      {"transposed input",
-       WithLayout({input},
+       {output_2d}},
+      {2,
+       "transposed input",
+       WithLayout({input_2d},
                   CustomLayout{.minor_to_major = {0, 1}, .tiles = {{8, 128}}}),
-       {output}},
-      {"row-major output",
-       {input},
-       WithLayout({output},
+       {output_2d}},
+      {2,
+       "row-major output",
+       {input_2d},
+       WithLayout({output_2d},
                   CustomLayout{.minor_to_major = {1, 0}, .tiles = {{2, 128}}})},
+      {1,
+       "input tiled T(128)",
+       WithLayout({input_1d},
+                  CustomLayout{.minor_to_major = {0}, .tiles = {{128}}}),
+       {output_1d}},
+      // XLA's default layout for small F32[N] is T(128), not T(1024).
+      {1,
+       "small input in its default layout",
+       {Shape({16}, mlir::ElementType::F32)},
+       {output_1d}},
   };
   for (const NonzeroShapesCase& c : cases) {
     SCOPED_TRACE(c.name);
-    EXPECT_EQ(FindKernel(nonzero_key, c), nullptr);
+    EXPECT_EQ(FindKernel(c), nullptr);
   }
 }
 
@@ -618,9 +712,10 @@ TEST_F(NonzeroIndicesTest, Benchmark) {
   updated_csv << "# rows,cols,k,compile_ms,exec_us\n";
 
   for (const BenchmarkCase& s : kBenchmarkSweep) {
-    ASSERT_NO_FATAL_FAILURE(CheckMosaicKernelCorrectness(s.rows, s.cols, s.k));
+    ASSERT_NO_FATAL_FAILURE(
+        CheckMosaicKernelCorrectness({s.rows, s.cols}, s.k));
 
-    auto input = MakeInput(s.rows, s.cols, s.k);
+    auto input = MakeInput({s.rows, s.cols}, s.k);
     auto output_shape = xla::ShapeUtil::MakeShape(xla::S64, {s.k, 2});
     TT_ASSERT_OK_AND_ASSIGN(*output_shape.mutable_layout(),
                             client_->GetDefaultLayout(xla::S64, {s.k, 2}));
