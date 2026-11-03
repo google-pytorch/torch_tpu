@@ -135,6 +135,7 @@ pybind_extension(
         "//csrc/common:error_utils",
         "//csrc/common:layout_utils",
         "//csrc/common:pybind_error_utils",
+        "//csrc/eager:device_assignment",
         "//csrc/eager:device_buffer",
         "//csrc/eager:op_dispatcher",
         "//csrc/eager:tensor_to_buffer",

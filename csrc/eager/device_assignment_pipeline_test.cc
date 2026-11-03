@@ -28,9 +28,16 @@
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "c10/util/Exception.h"
+#include "csrc/common/cache_key.h"
+#include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/shape.h"
 #include "csrc/common/status_test_utils.h"
+#include "csrc/eager/device_assignment.h"
+#include "csrc/eager/device_buffer.h"
+#include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
+#include "csrc/ops/python_context.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "llvm/ADT/APInt.h"
@@ -49,6 +56,24 @@
 
 namespace torch_tpu {
 namespace {
+
+absl::StatusOr<DynamicMlirOpResults> DummyBuilder(
+    mlir::MlirBuilder& /*builder*/, absl::Span<mlir::MlirOp> /*inputs*/) {
+  return DynamicMlirOpResults{};
+}
+
+absl::StatusOr<SharedDeviceBufferList> MakeDeferredNode(
+    OpName op_name, DeviceAssignment device_assignment) {
+  ScopedPythonContextCapturer capturer(op_name);
+  const Shape shape(Dimensions{8}, mlir::ElementType::F32);
+  TT_ASSIGN_OR_RETURN(
+      std::vector<DeviceBufferRef> refs,
+      DeviceBufferList::CreateDeferred(
+          op_name, DummyBuilder, /*inputs=*/{}, OpParamCacheKeys::Empty(),
+          {shape}, OpSplitMode::kNone, /*donated_indices=*/{},
+          std::move(device_assignment)));
+  return refs[0].device_buffer_list();
+}
 
 std::vector<int64_t> ExtractDenseIntAttrValues(  // INT_VEC_OK
     mlir::Operation* op, std::string_view attr_name) {
@@ -1074,6 +1099,117 @@ TEST(DeviceAssignmentPipelineTest,
   // localizes to {2, 0, 3, 1} and slice 1 to {0, 2, 1, 3}.
   EXPECT_FALSE(SamePerSliceCommunicationPattern(rg_c_bad, /*group_size=*/4,
                                                 resolved_da_bad));
+}
+
+TEST(DeviceAssignmentPipelineTest,
+     ScansWithoutPallasKernelsResolveToWiderLayout) {
+  const std::vector<int64_t> subgroup_da = {5, 4, 7, 6};  // INT_VEC_OK
+  const std::vector<int64_t>                              // INT_VEC_OK
+      layout_da = {5, 4, 7, 6, 3, 2, 0, 1};
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      SharedDeviceBufferList fwd_scan,
+      MakeDeferredNode(OpName::kCustomKernel,
+                       DeviceAssignment(subgroup_da, layout_da,
+                                        /*contains_pallas_kernel=*/false)));
+  TT_ASSERT_OK_AND_ASSIGN(
+      SharedDeviceBufferList bwd_scan,
+      MakeDeferredNode(OpName::kCustomKernel,
+                       DeviceAssignment(layout_da, /*global=*/{},
+                                        /*contains_pallas_kernel=*/false)));
+
+  const std::vector<SharedDeviceBufferList> execution_order = {fwd_scan,
+                                                               bwd_scan};
+  TT_ASSERT_OK_AND_ASSIGN(const DeviceAssignment resolved_da,
+                          ResolveDeviceAssignmentForTraversal(execution_order));
+  EXPECT_EQ(resolved_da.local, layout_da);
+  EXPECT_TRUE(resolved_da.global.empty());
+  EXPECT_FALSE(resolved_da.contains_pallas_kernel);
+}
+
+TEST(DeviceAssignmentPipelineTest,
+     ResolveDeviceAssignmentForTraversalPopulatesGlobalUnlessPallasPresent) {
+  const std::vector<int64_t> subgroup_da = {5, 4, 7, 6};  // INT_VEC_OK
+  const std::vector<int64_t>                              // INT_VEC_OK
+      layout_da = {5, 4, 7, 6, 3, 2, 0, 1};
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      SharedDeviceBufferList collective_node,
+      MakeDeferredNode(OpName::kDistributedAllGather,
+                       DeviceAssignment(subgroup_da, layout_da,
+                                        /*contains_pallas_kernel=*/false)));
+
+  const std::vector<SharedDeviceBufferList> collective_only = {collective_node};
+  TT_ASSERT_OK_AND_ASSIGN(const DeviceAssignment collective_da,
+                          ResolveDeviceAssignmentForTraversal(collective_only));
+  EXPECT_EQ(collective_da.local, subgroup_da);
+  EXPECT_EQ(collective_da.global, layout_da);
+  EXPECT_FALSE(collective_da.contains_pallas_kernel);
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      SharedDeviceBufferList full_layout_node,
+      MakeDeferredNode(OpName::kDistributedAllGather,
+                       DeviceAssignment(layout_da, layout_da,
+                                        /*contains_pallas_kernel=*/false)));
+  TT_ASSERT_OK_AND_ASSIGN(
+      const DeviceAssignment full_layout_da,
+      ResolveDeviceAssignmentForTraversal({full_layout_node}));
+  EXPECT_EQ(full_layout_da.local, layout_da);
+  EXPECT_TRUE(full_layout_da.global.empty());
+  EXPECT_FALSE(full_layout_da.contains_pallas_kernel);
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      SharedDeviceBufferList pallas_node,
+      MakeDeferredNode(OpName::kCustomKernel,
+                       DeviceAssignment(subgroup_da, /*global=*/{},
+                                        /*contains_pallas_kernel=*/true)));
+  const std::vector<SharedDeviceBufferList> with_pallas = {collective_node,
+                                                           pallas_node};
+  TT_ASSERT_OK_AND_ASSIGN(const DeviceAssignment with_pallas_da,
+                          ResolveDeviceAssignmentForTraversal(with_pallas));
+  EXPECT_EQ(with_pallas_da.local, subgroup_da);
+  EXPECT_TRUE(with_pallas_da.global.empty());
+  EXPECT_TRUE(with_pallas_da.contains_pallas_kernel);
+}
+
+TEST(DeviceAssignmentPipelineTest,
+     ScanContainingPallasKernelAnchorsDeviceAssignmentAndThrowsOnConflict) {
+  const std::vector<int64_t> subgroup_da = {5, 4, 7, 6};  // INT_VEC_OK
+  const std::vector<int64_t>                              // INT_VEC_OK
+      layout_da = {5, 4, 7, 6, 3, 2, 0, 1};
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      SharedDeviceBufferList scan_with_pallas_1,
+      MakeDeferredNode(OpName::kCustomKernel,
+                       DeviceAssignment(subgroup_da, /*global=*/{},
+                                        /*contains_pallas_kernel=*/true)));
+  TT_ASSERT_OK_AND_ASSIGN(
+      SharedDeviceBufferList scan_with_pallas_2,
+      MakeDeferredNode(OpName::kCustomKernel,
+                       DeviceAssignment(layout_da, /*global=*/{},
+                                        /*contains_pallas_kernel=*/true)));
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      const DeviceAssignment single_scan_da,
+      ResolveDeviceAssignmentForTraversal({scan_with_pallas_1}));
+  EXPECT_EQ(single_scan_da.local, subgroup_da);
+  EXPECT_TRUE(single_scan_da.contains_pallas_kernel);
+
+  constexpr std::string_view kExpectedMessage =
+      "expected Pallas kernels and scans in the same program to have the same "
+      "device assignment, got ";
+  bool caught = false;
+  try {
+    (void)ResolveDeviceAssignmentForTraversal(
+        {scan_with_pallas_1, scan_with_pallas_2});
+  } catch (const c10::Error& e) {
+    caught = true;
+    EXPECT_THAT(e.what(), testing::HasSubstr(kExpectedMessage));
+  } catch (const torch_tpu::TtError& e) {
+    caught = true;
+    EXPECT_THAT(e.what(), testing::HasSubstr(kExpectedMessage));
+  }
+  EXPECT_TRUE(caught);
 }
 
 }  // namespace

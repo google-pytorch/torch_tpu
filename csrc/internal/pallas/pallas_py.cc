@@ -29,6 +29,7 @@
 #include "csrc/common/error_utils.h"
 #include "csrc/common/layout_utils.h"
 #include "csrc/common/pybind_error_utils.h"
+#include "csrc/eager/device_assignment.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
@@ -165,12 +166,15 @@ std::vector<at::Tensor> PyCallCustomKernel(
           output_dims_list.push_back(dims);
         }
 
+        const bool has_pallas_da = !device_assignment.empty();
         DispatchOpOptions<kDynamicSize> options{
             .out_dtypes = output_dtypes,
             .out_dims_list = output_dims_list,
             .computation_dtype = std::nullopt,
             .op_param_cache_keys = std::move(op_param_cache_keys),
-            .device_assignment = std::move(device_assignment)};
+            .device_assignment =
+                DeviceAssignment(std::move(device_assignment), /*global=*/{},
+                                 /*contains_pallas_kernel=*/has_pallas_da)};
 
         // Note that this DeferredOp needs its inputs to be marked with
         // jax.buffer_donor if they are leaf inputs to the MLIR module.

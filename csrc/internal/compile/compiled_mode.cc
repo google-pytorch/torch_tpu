@@ -51,8 +51,8 @@
 #include "csrc/common/error_utils.h"
 #include "csrc/common/shape.h"
 #include "csrc/common/to_string.h"
-#include "csrc/common/tpu_subslice_utils.h"
 #include "csrc/common/utils.h"
+#include "csrc/eager/device_assignment.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/device_buffer_utils.h"
 #include "csrc/eager/materialize.h"
@@ -507,7 +507,7 @@ absl::StatusOr<AsyncCompileResult> TraverseAndCompile(
             }),
         _ << "failed to build MLIR module");
     // BuildMlirModule() already resolved (and cached) the device assignment.
-    TT_ASSIGN_OR_RETURN(std::vector<int64_t> device_assignment,  // INT_VEC_OK
+    TT_ASSIGN_OR_RETURN(DeviceAssignment device_assignment,
                         traversal->ResolveDeviceAssignment());
     contexted_module.set_device_assignment(std::move(device_assignment));
     module = std::make_shared<ContextedModule>(std::move(contexted_module));

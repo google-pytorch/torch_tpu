@@ -35,6 +35,7 @@
 #include "absl/strings/str_join.h"
 #include "absl/types/span.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/eager/device_assignment.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/ops/op_names.h"
 #include "llvm/ADT/APInt.h"
@@ -210,14 +211,12 @@ void RewriteCustomCallBackendConfig(
               mlir::DictionaryAttr::get(op->getContext(), new_attrs));
 }
 
-// Resolves a program whose ops run on different device sets to the devices of
-// the ops' layouts (the world): each op's collectives are then tiled over every
-// group of its layout (see RewriteAndTileOperationForSubgroup). Returns
-// `mismatch` if an op's global devices differ from the others'.
-absl::StatusOr<std::vector<int64_t>>  // INT_VEC_OK
-ResolveGlobalDeviceAssignment(absl::Span<const OpDeviceAssignment> ops,
-                              absl::Span<const int64_t> pallas_da,
-                              absl::Status mismatch) {
+// Resolves the common global device assignment across `ops` (and `pallas_da`,
+// if non-empty). Returns `std::nullopt` if an op's global devices differ from
+// the others'.
+std::optional<std::vector<int64_t>>  // INT_VEC_OK
+TryResolveGlobalDeviceAssignment(absl::Span<const OpDeviceAssignment> ops,
+                                 absl::Span<const int64_t> pallas_da = {}) {
   std::vector<int64_t> resolved_da(pallas_da.begin(),  // INT_VEC_OK
                                    pallas_da.end());
   for (size_t i = 0; i < ops.size(); ++i) {
@@ -238,10 +237,38 @@ ResolveGlobalDeviceAssignment(absl::Span<const OpDeviceAssignment> ops,
                                     },
                                     i)
                     .ok()) {
-      return mismatch;
+      return std::nullopt;
     }
   }
   return resolved_da;
+}
+
+// Resolves a program whose ops run on different device sets to the devices of
+// the ops' layouts (the world): each op's collectives are then tiled over every
+// group of its layout (see RewriteAndTileOperationForSubgroup). Returns
+// `mismatch` if an op's global devices differ from the others'.
+absl::StatusOr<std::vector<int64_t>>  // INT_VEC_OK
+ResolveGlobalDeviceAssignment(absl::Span<const OpDeviceAssignment> ops,
+                              absl::Span<const int64_t> pallas_da,
+                              absl::Status mismatch) {
+  std::optional<std::vector<int64_t>> resolved_da =  // INT_VEC_OK
+      TryResolveGlobalDeviceAssignment(ops, pallas_da);
+  if (!resolved_da.has_value()) {
+    return mismatch;
+  }
+  return *std::move(resolved_da);
+}
+
+std::vector<int64_t>  // INT_VEC_OK
+ResolveGlobalDeviceAssignmentForTraversal(
+    absl::Span<const OpDeviceAssignment> ops,
+    absl::Span<const int64_t> local_da) {
+  std::optional<std::vector<int64_t>> layout_da =  // INT_VEC_OK
+      TryResolveGlobalDeviceAssignment(ops);
+  if (!layout_da.has_value() || layout_da->size() <= local_da.size()) {
+    return {};
+  }
+  return *std::move(layout_da);
 }
 
 // Tiles a 2D attribute of positions (`replica_groups` or
@@ -399,8 +426,7 @@ ResolveDeviceAssignment(absl::Span<const OpDeviceAssignment> ops,
   return resolved_da;
 }
 
-absl::StatusOr<std::vector<int64_t>>  // INT_VEC_OK
-ResolveDeviceAssignmentForTraversal(
+absl::StatusOr<DeviceAssignment> ResolveDeviceAssignmentForTraversal(
     absl::Span<const SharedDeviceBufferList> execution_order,
     absl::Span<const int64_t> pallas_device_assignment) {
   llvm::SmallVector<OpDeviceAssignment, 8> ops;
@@ -413,7 +439,7 @@ ResolveDeviceAssignmentForTraversal(
     if (!op) {
       continue;
     }
-    if (op->op_name() == OpName::kCustomKernel) {
+    if (op->contains_pallas_kernel() && !op->device_assignment().empty()) {
       pallas_ops.push_back(PallasDeviceAssignment{op->device_assignment()});
     } else {
       ops.push_back(OpDeviceAssignment{
@@ -423,7 +449,15 @@ ResolveDeviceAssignmentForTraversal(
       });
     }
   }
-  return ResolveDeviceAssignment(ops, pallas_ops);
+  TT_ASSIGN_OR_RETURN(std::vector<int64_t> local_da,  // INT_VEC_OK
+                      ResolveDeviceAssignment(ops, pallas_ops));
+  const bool contains_pallas_kernel = !pallas_ops.empty();
+  std::vector<int64_t> global_da =  // INT_VEC_OK
+      (!local_da.empty() && !contains_pallas_kernel)
+          ? ResolveGlobalDeviceAssignmentForTraversal(ops, local_da)
+          : std::vector<int64_t>{};  // INT_VEC_OK
+  return DeviceAssignment(std::move(local_da), std::move(global_da),
+                          contains_pallas_kernel);
 }
 
 absl::Status RewriteAndTileOperationForSubgroup(

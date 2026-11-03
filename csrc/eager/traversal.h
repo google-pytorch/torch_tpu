@@ -36,6 +36,7 @@
 #include "csrc/common/compilation_spec.h"
 #include "csrc/common/compile_options_key.h"
 #include "csrc/common/dimension_types.h"
+#include "csrc/eager/device_assignment.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/ops/python_context.h"
@@ -218,10 +219,9 @@ class Traversal {
       std::optional<CompilationCacheKey>* absl_nullable out_cache_key =
           nullptr) const;
 
-  // Resolves the device assignment for this graph from deferred ops.
-  // Returns an error if conflicting device assignments are found.
-  absl::StatusOr<std::vector<int64_t>>  // INT_VEC_OK
-  ResolveDeviceAssignment() const;
+  // Resolves the target device assignment across all deferred operations in
+  // `execution_order_`.
+  absl::StatusOr<DeviceAssignment> ResolveDeviceAssignment() const;
 
   // Resolves device assignment from ops in this traversal and applies it to
   // the given CompilationSpec, updating spec.xla_compile_options and
@@ -341,7 +341,7 @@ class Traversal {
   mutable std::optional<GraphKey> graph_key_;
 
   // The resolved device assignment for this Traversal; lazily computed.
-  mutable std::optional<std::vector<int64_t>> resolved_da_;  // INT_VEC_OK
+  mutable std::optional<DeviceAssignment> resolved_da_;
 
   // The acceptable dynamic bounds for each dimension in the traversal's
   // arguments.

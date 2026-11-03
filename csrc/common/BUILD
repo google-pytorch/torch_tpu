@@ -370,6 +370,7 @@ torch_tpu_cc_library(
         ":fingerprint_utils",
         ":shape",
         ":tpu_subslice_utils",
+        "//csrc/eager:device_assignment",
         "//csrc/mlir:pipeline",
         "//csrc/ops:op_builder_utils",
         "//csrc/pjrt:pjrt_state",

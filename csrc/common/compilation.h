@@ -35,6 +35,7 @@
 #include "csrc/common/compile_options_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/shape.h"
+#include "csrc/eager/device_assignment.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
@@ -269,13 +270,11 @@ class ContextedModule {
 
   // The resolved device assignment of the traced graph (empty if no op carries
   // one), which ops that embed this module (e.g. scans) must carry.
-  [[nodiscard]] const std::vector<int64_t>& device_assignment()  // INT_VEC_OK
-      const {
+  [[nodiscard]] const DeviceAssignment& device_assignment() const {
     return device_assignment_;
   }
 
-  void set_device_assignment(
-      std::vector<int64_t> device_assignment) {  // INT_VEC_OK
+  void set_device_assignment(DeviceAssignment device_assignment) {
     device_assignment_ = std::move(device_assignment);
   }
 
@@ -289,7 +288,7 @@ class ContextedModule {
   // The module. If the context is dropped, the module will be invalidated.
   mlir::OwningOpRef<mlir::ModuleOp> module_;
   // See device_assignment().
-  std::vector<int64_t> device_assignment_;  // INT_VEC_OK
+  DeviceAssignment device_assignment_;
 };
 
 // Lifts a MlirComputationBuilder into an ExecutableBuilder.
