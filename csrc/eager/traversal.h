@@ -209,8 +209,14 @@ class Traversal {
   //
   // If `out_cache_key` is non-null, it is reset on entry and populated with the
   // computed `CompilationCacheKey` for this compilation on success.
+  //
+  // `unbounded_kernel_policy` controls whether a compatible kernel from
+  // `UnboundedDynamicKernelRegistry` may be used instead of compiling the
+  // traversal; see `UnboundedKernelPolicy`. Only eager execution should
+  // pass `kAllow`.
   absl::StatusOr<CompiledKernel> Compile(
       const CompilationSpec& spec,
+      UnboundedKernelPolicy unbounded_kernel_policy,
       std::string* absl_nullable out_mlir_text = nullptr,
       bool use_stablehlo_bounds = false,
       absl::Span<const CustomLayout> argument_layouts = {},

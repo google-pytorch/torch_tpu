@@ -97,7 +97,8 @@ class TieredCompilationCacheTest : public testing::Test {
                      << "The traced computation must not be built when a "
                         "compatible unbounded dynamic kernel is registered.";
             },
-            std::make_unique<xla::CompileOptions>()));
+            std::make_unique<xla::CompileOptions>(),
+            UnboundedKernelPolicy::kAllow));
     return kernel.fixed_shape_kernel.get().status();
   }
 };

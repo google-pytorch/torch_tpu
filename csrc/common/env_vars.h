@@ -181,7 +181,8 @@ inline constexpr char kTorchTpuInternalStorageAwarePlaceholdersEnvVar[] =
 inline constexpr char kTorchTpuInternalTopmostPidEnvVar[] =
     "TORCH_TPU_INTERNAL_TOPMOST_PID";
 // If set to `"1"` or `"true"`, unbounded kernels are loaded instead of static
-// ones if a compatible one exists.
+// ones in eager execution if a compatible one exists. torch.compile always
+// compiles the traced graph.
 inline constexpr char kTorchTpuInternalUseUnboundedDynamicKernelsEnvVar[] =
     "TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS";
 // TorchTPU-internal XLA compiler option overrides, in the format of

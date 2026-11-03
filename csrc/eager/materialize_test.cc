@@ -462,7 +462,8 @@ TEST_F(MaterializeTest, CompiledExecutionPreservesPriorLastDeviceOutput) {
       Traversal::Create(std::vector<DeviceBufferRef>{unrecorded_op}));
   TT_ASSERT_OK_AND_ASSIGN(
       CompiledKernel kernel,
-      traversal->Compile(GetCompilationSpec(CompilationMode::kFastCompile)));
+      traversal->Compile(GetCompilationSpec(CompilationMode::kFastCompile),
+                         UnboundedKernelPolicy::kDisallow));
   TT_ASSERT_OK_AND_ASSIGN(SharedLoadedExecutableWithMetadata executable,
                           kernel.fixed_shape_kernel.get());
   TT_ASSERT_OK_AND_ASSIGN(

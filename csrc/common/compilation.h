@@ -119,6 +119,21 @@ struct UnboundedDynamicExecutionMetadata {
   CompatibilityFunc is_compatible = nullptr;
 };
 
+// Whether a `CompilationCache` miss may be served by a kernel from
+// `UnboundedDynamicKernelRegistry` instead of compiling the traced computation.
+//
+// Only eager execution may opt in: executables of unbounded dynamic kernels
+// rely on their `UnboundedDynamicExecutionMetadata` (argument routing and
+// output transforms applied at launch), which only the eager execution path
+// is guaranteed to preserve (e.g. torch.compile's serialized executables drop
+// it). The policy is passed by value with each request rather than kept as
+// shared state, so concurrent eager and torch.compile requests (which run with
+// the GIL released) cannot affect each other's lookups.
+enum class UnboundedKernelPolicy {
+  kDisallow,
+  kAllow,
+};
+
 class LoadedExecutableWithMetadata {
  public:
   static absl::StatusOr<SharedLoadedExecutableWithMetadata> MakeShared(

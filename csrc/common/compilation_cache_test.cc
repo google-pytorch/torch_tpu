@@ -203,9 +203,9 @@ TEST_F(CompilationCacheTest, GetOrCompileLogsOnMiss) {
           testing::HasSubstr("Dumping StableHLO module due to cache miss")));
 
   log.StartCapturingLogs();
-  auto result =
-      cache.GetOrCompile(key, input_shapes, /*output_shapes=*/{},
-                         std::move(builder), std::move(compile_options));
+  auto result = cache.GetOrCompile(
+      key, input_shapes, /*output_shapes=*/{}, std::move(builder),
+      std::move(compile_options), UnboundedKernelPolicy::kDisallow);
 
   // Clean up.
   cache.SetDumpOnCacheMissMode(initial_mode);
@@ -255,7 +255,8 @@ TEST_F(CompilationCacheInitTest, OptionsApplied) {
       key, /*input_shapes=*/{}, /*output_shapes=*/{},
       /*computation_builder=*/
       [](mlir::MLIRContext&) { return mlir::OwningOpRef<mlir::ModuleOp>(); },
-      /*compile_options=*/std::make_unique<xla::CompileOptions>());
+      /*compile_options=*/std::make_unique<xla::CompileOptions>(),
+      UnboundedKernelPolicy::kDisallow);
 
   ASSERT_FALSE(status_or.ok());
   EXPECT_EQ(status_or.status().code(), error::kFailedPrecondition);
@@ -301,18 +302,18 @@ TEST_F(CompilationCacheTest, AllowCacheModeDisabled) {
   // First compilation.
   TT_ASSERT_OK_AND_ASSIGN(
       auto result1,
-      cache.GetOrCompile(key, input_shapes, /*output_shapes=*/{},
-                         std::move(builder1),
-                         GetCompilationSpec(CompilationMode::kFastCompile)
-                             .xla_compile_options));
+      cache.GetOrCompile(
+          key, input_shapes, /*output_shapes=*/{}, std::move(builder1),
+          GetCompilationSpec(CompilationMode::kFastCompile).xla_compile_options,
+          UnboundedKernelPolicy::kDisallow));
   TT_ASSERT_OK_AND_ASSIGN(auto exec1, result1.fixed_shape_kernel.get());
 
   TT_ASSERT_OK_AND_ASSIGN(
       auto result2,
-      cache.GetOrCompile(key, input_shapes, /*output_shapes=*/{},
-                         std::move(builder2),
-                         GetCompilationSpec(CompilationMode::kFastCompile)
-                             .xla_compile_options));
+      cache.GetOrCompile(
+          key, input_shapes, /*output_shapes=*/{}, std::move(builder2),
+          GetCompilationSpec(CompilationMode::kFastCompile).xla_compile_options,
+          UnboundedKernelPolicy::kDisallow));
   TT_ASSERT_OK_AND_ASSIGN(auto exec2, result2.fixed_shape_kernel.get());
 
   // Verify they are different executables.
@@ -372,9 +373,10 @@ TEST_F(CompilationCacheTest, PeakMemoryReported) {
         GetCompilationSpec(CompilationMode::kFastCompile).xla_compile_options;
 
     auto key = DummyKey(i + 100);
-    TT_ASSERT_OK_AND_ASSIGN(auto result,
-                            cache.GetOrCompile(key, {}, {}, std::move(builder),
-                                               std::move(compile_options)));
+    TT_ASSERT_OK_AND_ASSIGN(
+        auto result, cache.GetOrCompile(key, {}, {}, std::move(builder),
+                                        std::move(compile_options),
+                                        UnboundedKernelPolicy::kDisallow));
     futures.push_back(std::move(result.fixed_shape_kernel));
   }
 
@@ -448,16 +450,18 @@ TEST_F(CompilationCacheTest, DynamicCacheLayoutMismatch) {
 
   TT_ASSERT_OK_AND_ASSIGN(
       auto result1,
-      cache.GetOrCompile(key1, input_shapes, output_shapes, make_builder(),
-                         GetCompilationSpec(CompilationMode::kFastCompile)
-                             .xla_compile_options));
+      cache.GetOrCompile(
+          key1, input_shapes, output_shapes, make_builder(),
+          GetCompilationSpec(CompilationMode::kFastCompile).xla_compile_options,
+          UnboundedKernelPolicy::kDisallow));
   TT_ASSERT_OK_AND_ASSIGN(auto exec1, result1.fixed_shape_kernel.get());
 
   TT_ASSERT_OK_AND_ASSIGN(
       auto result2,
-      cache.GetOrCompile(key2, input_shapes, output_shapes, make_builder(),
-                         GetCompilationSpec(CompilationMode::kFastCompile)
-                             .xla_compile_options));
+      cache.GetOrCompile(
+          key2, input_shapes, output_shapes, make_builder(),
+          GetCompilationSpec(CompilationMode::kFastCompile).xla_compile_options,
+          UnboundedKernelPolicy::kDisallow));
   TT_ASSERT_OK_AND_ASSIGN(auto exec2, result2.fixed_shape_kernel.get());
 
   EXPECT_NE(exec1, exec2);
@@ -517,7 +521,8 @@ TEST_F(CompilationCacheTest, UnboundedDynamicCache) {
       cache.GetOrCompile(
           test_key, {Shape(Dimensions({128, 128}), mlir::ElementType::F32)},
           {Shape(Dimensions({128, 128}), mlir::ElementType::F32)},
-          MustNotBeCalled, std::make_unique<xla::CompileOptions>()));
+          MustNotBeCalled, std::make_unique<xla::CompileOptions>(),
+          UnboundedKernelPolicy::kAllow));
   TT_ASSERT_OK_AND_ASSIGN(auto first_exec, first.fixed_shape_kernel.get());
   EXPECT_EQ(cache.GetCacheHits(), 0);
   EXPECT_EQ(cache.GetCacheMisses(), 1);
@@ -541,7 +546,8 @@ TEST_F(CompilationCacheTest, UnboundedDynamicCache) {
       cache.GetOrCompile(
           test_key, {Shape(Dimensions({256, 256}), mlir::ElementType::F32)},
           {Shape(Dimensions({256, 256}), mlir::ElementType::F32)},
-          MustNotBeCalled, std::make_unique<xla::CompileOptions>()));
+          MustNotBeCalled, std::make_unique<xla::CompileOptions>(),
+          UnboundedKernelPolicy::kAllow));
   TT_ASSERT_OK_AND_ASSIGN(auto second_exec, second.fixed_shape_kernel.get());
   EXPECT_EQ(second_exec->GetLoadedExecutable(),
             first_exec->GetLoadedExecutable());
@@ -564,6 +570,7 @@ struct UnboundedDynamicCacheMissTestCase {
   std::string test_name;
   bool auto_load = true;
   bool use_registered_key = true;
+  UnboundedKernelPolicy policy = UnboundedKernelPolicy::kAllow;
   Dimensions input_dims = Dimensions({128, 128});
   Dimensions output_dims = Dimensions({128, 128});
 };
@@ -584,10 +591,10 @@ TEST_P(UnboundedDynamicCacheMissTest, FallsBackToStaticPath) {
 
   TT_ASSERT_OK_AND_ASSIGN(
       CompiledKernel result,
-      cache.GetOrCompile(lookup_key,
-                         {Shape(param.input_dims, mlir::ElementType::F32)},
-                         {Shape(param.output_dims, mlir::ElementType::F32)},
-                         EmptyModule, std::make_unique<xla::CompileOptions>()));
+      cache.GetOrCompile(
+          lookup_key, {Shape(param.input_dims, mlir::ElementType::F32)},
+          {Shape(param.output_dims, mlir::ElementType::F32)}, EmptyModule,
+          std::make_unique<xla::CompileOptions>(), param.policy));
 
   EXPECT_FALSE(result.fixed_shape_kernel.get().ok());
   EXPECT_EQ(cache.GetCacheHits(), 0);
@@ -607,6 +614,10 @@ INSTANTIATE_TEST_SUITE_P(
             .auto_load = false,
         },
         {
+            .test_name = "DisallowedByPolicy",
+            .policy = UnboundedKernelPolicy::kDisallow,
+        },
+        {
             .test_name = "UnregisteredKey",
             .use_registered_key = false,
         },
@@ -622,6 +633,35 @@ INSTANTIATE_TEST_SUITE_P(
     [](const testing::TestParamInfo<UnboundedDynamicCacheMissTest::ParamType>&
            info) { return info.param.test_name; });
 
+TEST_F(CompilationCacheTest, UnboundedDynamicKernelDisallowedByDefault) {
+  CompilationCache& cache = CompilationCache::GetInstance();
+  CompilationCacheTestHelper::SetAutoLoadUnboundedDynamicKernels(cache, true);
+  const auto [key, test_key] = RegisterDummyKernelFor("defaultpolicykey");
+
+  // Callers that don't opt in (e.g. torch.compile) compile the traced
+  // computation even if a compatible kernel is registered.
+  bool builder_called = false;
+  TT_ASSERT_OK_AND_ASSIGN(
+      CompiledKernel result,
+      cache.GetOrCompile(
+          test_key, {Shape(Dimensions({128, 128}), mlir::ElementType::F32)},
+          {Shape(Dimensions({128, 128}), mlir::ElementType::F32)},
+          [&builder_called](mlir::MLIRContext& context) {
+            builder_called = true;
+            return EmptyModule(context);
+          },
+          std::make_unique<xla::CompileOptions>(),
+          UnboundedKernelPolicy::kDisallow));
+
+  EXPECT_TRUE(builder_called);
+  EXPECT_FALSE(result.fixed_shape_kernel.get().ok());
+  EXPECT_EQ(cache.GetCacheStats().num_unbounded_dynamic_hits, 0);
+  EXPECT_FALSE(
+      CompilationCacheTestHelper::GetUnboundedDynamicCacheEntryStats(cache, key)
+          .has_value());
+  CompilationCache::ShutDown();
+}
+
 TEST_F(CompilationCacheTest, UnboundedDynamicCacheEvictAll) {
   CompilationCache& cache = CompilationCache::GetInstance();
   CompilationCacheTestHelper::SetAutoLoadUnboundedDynamicKernels(cache, true);
@@ -633,7 +673,8 @@ TEST_F(CompilationCacheTest, UnboundedDynamicCacheEvictAll) {
       cache.GetOrCompile(
           test_key, {Shape(Dimensions({128, 128}), mlir::ElementType::F32)},
           {Shape(Dimensions({128, 128}), mlir::ElementType::F32)},
-          MustNotBeCalled, std::make_unique<xla::CompileOptions>()));
+          MustNotBeCalled, std::make_unique<xla::CompileOptions>(),
+          UnboundedKernelPolicy::kAllow));
   TT_ASSERT_OK_AND_ASSIGN(auto first_exec,
                           result_first.fixed_shape_kernel.get());
   EXPECT_EQ(cache.GetCacheMisses(), 1);
@@ -655,7 +696,8 @@ TEST_F(CompilationCacheTest, UnboundedDynamicCacheEvictAll) {
       cache.GetOrCompile(
           test_key, {Shape(Dimensions({128, 128}), mlir::ElementType::F32)},
           {Shape(Dimensions({128, 128}), mlir::ElementType::F32)},
-          MustNotBeCalled, std::make_unique<xla::CompileOptions>()));
+          MustNotBeCalled, std::make_unique<xla::CompileOptions>(),
+          UnboundedKernelPolicy::kAllow));
   TT_ASSERT_OK_AND_ASSIGN(auto rebuilt_exec,
                           result_rebuilt.fixed_shape_kernel.get());
   EXPECT_NE(rebuilt_exec->GetLoadedExecutable(),
@@ -684,7 +726,8 @@ TEST_F(CompilationCacheTest,
       cache.GetOrCompile(
           test_key, {Shape(Dimensions({128, 128}), mlir::ElementType::F32)},
           {Shape(Dimensions({128, 128}), mlir::ElementType::F32)},
-          MustNotBeCalled, std::make_unique<xla::CompileOptions>()));
+          MustNotBeCalled, std::make_unique<xla::CompileOptions>(),
+          UnboundedKernelPolicy::kAllow));
   EXPECT_FALSE(failed.fixed_shape_kernel.get().ok());
   EXPECT_EQ(cache.GetCacheHits(), 0);
   EXPECT_EQ(cache.GetCacheMisses(), 1);
@@ -700,7 +743,8 @@ TEST_F(CompilationCacheTest,
       cache.GetOrCompile(
           test_key, {Shape(Dimensions({128, 128}), mlir::ElementType::F32)},
           {Shape(Dimensions({128, 128}), mlir::ElementType::F32)}, EmptyModule,
-          std::make_unique<xla::CompileOptions>()));
+          std::make_unique<xla::CompileOptions>(),
+          UnboundedKernelPolicy::kAllow));
 
   EXPECT_FALSE(result.fixed_shape_kernel.get().ok());
   EXPECT_EQ(cache.GetCacheHits(), 0);

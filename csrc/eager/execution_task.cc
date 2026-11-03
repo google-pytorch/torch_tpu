@@ -297,7 +297,8 @@ absl::StatusOr<CompiledTraversal> VerifyAndCompileTraversal(
     tsl::profiler::TraceMe t("CompileTraversal");
     TT_ASSIGN_OR_RETURN(
         compiled_kernel,
-        traversal.Compile(compilation_spec, out_mlir_text,
+        traversal.Compile(compilation_spec, UnboundedKernelPolicy::kAllow,
+                          out_mlir_text,
                           /*use_stablehlo_bounds=*/false, argument_layouts,
                           /*donated_inputs=*/{}, /*module_name=*/std::nullopt,
                           &compilation_cache_key));

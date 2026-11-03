@@ -566,6 +566,7 @@ absl::StatusOr<CompilationCache::CacheLookupInternal>
 CompilationCache::GetOrCreateCacheEntry(
     const CompilationCacheKey& key, const std::vector<Shape>& input_shapes,
     const std::vector<Shape>& output_shapes,
+    const UnboundedKernelPolicy unbounded_kernel_policy,
     bool skip_dynamic_lookup_and_compilation) {
   if (!allow_cache_mode_) {
     ABSL_LOG(WARNING) << "CompilationCache is disabled. key: " << key;
@@ -586,16 +587,24 @@ CompilationCache::GetOrCreateCacheEntry(
   ABSL_VLOG(2) << "Compilation cache STATIC MISS #"
                << perf_stats_.num_cache_misses() << " for key: " << key;
 
-  // 2. Try the unbounded dynamic kernel registry: a compatible kernel is
-  // served from its existing entry or gets a pending entry created for it.
-  if (std::optional<CacheLookupInternal> cache_lookup =
-          GetOrCreateUnboundedDynamicCacheEntry(key, input_shapes,
-                                                output_shapes);
-      cache_lookup.has_value()) {
-    return *std::move(cache_lookup);
+  // 2. Try the unbounded dynamic kernel registry, if the caller allows it: a
+  // compatible kernel is served from its existing entry or gets a pending entry
+  // created for it. Unbounded dynamic entries live in their own tier-1 cache
+  // under the kernel's key, so requests that disallow them can never observe
+  // one through the static lookups above or below.
+  //
+  // Note that the static lookup above takes precedence: if a disallowing
+  // request (e.g. torch.compile) already created a static entry for this exact
+  // key, an allowing request is served the traced executable instead.
+  if (unbounded_kernel_policy == UnboundedKernelPolicy::kAllow) {
+    if (std::optional<CacheLookupInternal> cache_lookup =
+            GetOrCreateUnboundedDynamicCacheEntry(key, input_shapes,
+                                                  output_shapes);
+        cache_lookup.has_value()) {
+      return *std::move(cache_lookup);
+    }
+    ABSL_VLOG(2) << "Compilation cache UNBOUNDED DYNAMIC MISS for key: " << key;
   }
-
-  ABSL_VLOG(2) << "Compilation cache UNBOUNDED DYNAMIC MISS for key: " << key;
 
   // 3. Try to find a bounded dynamic cache entry. We hold on to the iterator to
   // avoid having to look up the shapeless key again later.
@@ -610,11 +619,13 @@ CompilationCache::GetOrCreateCacheEntry(
               key.compile_options_key()) {
         ABSL_VLOG(2) << "Compilation cache DYNAMIC HIT for key: " << key;
 
-        TT_ASSIGN_OR_RETURN(
-            auto cache_lookup,
-            GetOrCreateCacheEntry(
-                entry.middle_executable_key, input_shapes, output_shapes,
-                /*skip_dynamic_lookup_and_compilation=*/true));
+        // The registry is only consulted for the original request (step 2),
+        // so the middle executable is only looked up statically.
+        TT_ASSIGN_OR_RETURN(auto cache_lookup,
+                            GetOrCreateCacheEntry(
+                                entry.middle_executable_key, input_shapes,
+                                output_shapes, UnboundedKernelPolicy::kDisallow,
+                                /*skip_dynamic_lookup_and_compilation=*/true));
         cache_lookup.shape_dynamism_metadata = entry.shape_dynamism_metadata;
         return cache_lookup;
       }
@@ -754,10 +765,10 @@ CompilationCache::CreatePaddingKernel(
 
   TT_ASSIGN_OR_RETURN(
       CompiledKernel padding_kernel,
-      GetOrCompile(padding_cache_key, static_runtime_input_shapes,
-                   static_padded_input_shapes,
-                   std::move(padding_module_builder),
-                   std::move(compile_options)));
+      GetOrCompile(
+          padding_cache_key, static_runtime_input_shapes,
+          static_padded_input_shapes, std::move(padding_module_builder),
+          std::move(compile_options), UnboundedKernelPolicy::kDisallow));
   return std::move(padding_kernel.fixed_shape_kernel);
 }
 
@@ -819,8 +830,8 @@ CompilationCache::CreateSlicingKernel(
   TT_ASSIGN_OR_RETURN(
       CompiledKernel slice_kernel,
       GetOrCompile(slicing_cache_key, padded_output_shapes, output_shapes,
-                   std::move(slice_module_builder),
-                   std::move(compile_options)));
+                   std::move(slice_module_builder), std::move(compile_options),
+                   UnboundedKernelPolicy::kDisallow));
   return std::move(slice_kernel.fixed_shape_kernel);
 }
 
@@ -884,19 +895,21 @@ absl::StatusOr<CompiledKernel> CompilationCache::GetOrCompileImpl(
     MlirComputationBuilder computation_builder,
     const xla::CompileOptions& compile_options,
     absl_nullable std::unique_ptr<xla::CompileOptions> owned_compile_options,
+    const UnboundedKernelPolicy unbounded_kernel_policy,
     bool use_dynamic_adapters) {
   // Critical section for cache lookups and insertion.
-  TT_ASSIGN_OR_RETURN(auto cache_lookup,
-                      [&]  // REF_CAPTURE_OK=called synchronously
-                      () -> absl::StatusOr<CacheLookupInternal> {
-                        absl::MutexLock lock(cache_mutex_);
-                        perf_stats_.num_cache_reqs++;
-                        TT_ASSIGN_OR_RETURN(
-                            auto lookup, GetOrCreateCacheEntry(
-                                             key, input_shapes, output_shapes));
-                        lookup.dump_on_cache_miss = dump_on_cache_miss_;
-                        return lookup;
-                      }());
+  TT_ASSIGN_OR_RETURN(
+      auto cache_lookup,
+      [&]  // REF_CAPTURE_OK=called synchronously
+      () -> absl::StatusOr<CacheLookupInternal> {
+        absl::MutexLock lock(cache_mutex_);
+        perf_stats_.num_cache_reqs++;
+        TT_ASSIGN_OR_RETURN(
+            auto lookup, GetOrCreateCacheEntry(key, input_shapes, output_shapes,
+                                               unbounded_kernel_policy));
+        lookup.dump_on_cache_miss = dump_on_cache_miss_;
+        return lookup;
+      }());
 
   // Everything we are recovering from the cache is a shared pointer, so it
   // is safe to access them without the lock.
@@ -980,22 +993,27 @@ absl::StatusOr<CompiledKernel> CompilationCache::GetOrCompile(
     const CompilationCacheKey& key, const std::vector<Shape>& input_shapes,
     const std::vector<Shape>& output_shapes,
     MlirComputationBuilder computation_builder,
-    const xla::CompileOptions& compile_options, bool use_dynamic_adapters) {
+    const xla::CompileOptions& compile_options,
+    const UnboundedKernelPolicy unbounded_kernel_policy,
+    bool use_dynamic_adapters) {
   return GetOrCompileImpl(key, input_shapes, output_shapes,
                           std::move(computation_builder), compile_options,
                           /*owned_compile_options=*/nullptr,
-                          use_dynamic_adapters);
+                          unbounded_kernel_policy, use_dynamic_adapters);
 }
 
 absl::StatusOr<CompiledKernel> CompilationCache::GetOrCompile(
     const CompilationCacheKey& key, const std::vector<Shape>& input_shapes,
     const std::vector<Shape>& output_shapes,
     MlirComputationBuilder computation_builder,
-    UniqueCompileOptions compile_options, bool use_dynamic_adapters) {
+    UniqueCompileOptions compile_options,
+    const UnboundedKernelPolicy unbounded_kernel_policy,
+    bool use_dynamic_adapters) {
   const xla::CompileOptions& compile_options_ref = *compile_options;
   return GetOrCompileImpl(key, input_shapes, output_shapes,
                           std::move(computation_builder), compile_options_ref,
-                          std::move(compile_options), use_dynamic_adapters);
+                          std::move(compile_options), unbounded_kernel_policy,
+                          use_dynamic_adapters);
 }
 
 void CompilationCache::EnqueueCompilation(

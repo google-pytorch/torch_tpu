@@ -920,7 +920,8 @@ absl::StatusOr<CompileResult> CompileModuleWithCache(
       CompiledKernel compiled_kernel,
       CompilationCache::GetInstance().GetOrCompile(
           cache_key, input_shapes, output_shapes, std::move(builder),
-          std::move(compile_options), compile_dynamic_adapter));
+          std::move(compile_options), UnboundedKernelPolicy::kDisallow,
+          compile_dynamic_adapter));
 
   TT_ASSIGN_OR_RETURN(SharedLoadedExecutableWithMetadata executable,
                       compiled_kernel.fixed_shape_kernel.get(),
@@ -973,7 +974,8 @@ void PyPrecompilePadModule(const std::vector<TensorInfo>& tensor_info,
                      CompilationCache::GetInstance().GetOrCompile(
                          cache_key, runtime_input_shapes, padded_input_shapes,
                          std::move(pad_builder),
-                         std::move(compilation_spec.xla_compile_options)));
+                         std::move(compilation_spec.xla_compile_options),
+                         UnboundedKernelPolicy::kDisallow));
 }
 
 // Returns a CompileResult containing the executable and optionally the MLIR
@@ -1138,7 +1140,8 @@ void PyPrecompileSliceModule(
                      CompilationCache::GetInstance().GetOrCompile(
                          cache_key, inputs.input_shapes, inputs.output_shapes,
                          std::move(slice_builder),
-                         std::move(compilation_spec.xla_compile_options)));
+                         std::move(compilation_spec.xla_compile_options),
+                         UnboundedKernelPolicy::kDisallow));
 }
 
 // Returns a CompileResult containing the executable and optionally the MLIR
@@ -1214,6 +1217,13 @@ CompileResult PyGetOrCompileSliceModule(
 
 py::bytes PySerializeExecutable(
     const SharedLoadedExecutableWithMetadata& executable) {
+  // Only the PjRt executable is serialized, and `LoadSerializedExecutableImpl`
+  // cannot restore unbounded dynamic execution metadata.
+  TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=torch.compile never requests
+                   // unbounded dynamic kernels.
+      !executable->unbounded_dynamic_execution_metadata().has_value(),
+      error::kInternal)
+      << "cannot serialize an unbounded dynamic kernel executable";
   TT_ASSIGN_OR_THROW(const std::string serialized,
                      executable->GetExecutable()->SerializeExecutable(),
                      _.SetPrepend() << "failed to serialize executable: ");

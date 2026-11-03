@@ -485,9 +485,10 @@ absl::StatusOr<AsyncCompileResult> TraverseAndCompile(
       GetCompilationSpec(options.compilation_mode);
   TT_ASSIGN_OR_RETURN(
       auto compiled_kernel,
-      traversal->Compile(compilation_spec, nullptr,
-                         options.use_stablehlo_bounds, base_argument_layouts,
-                         unique_donated_inputs, options.module_name),
+      traversal->Compile(compilation_spec, UnboundedKernelPolicy::kDisallow,
+                         nullptr, options.use_stablehlo_bounds,
+                         base_argument_layouts, unique_donated_inputs,
+                         options.module_name),
       _.SetPrepend() << "failed to compile traversal: ");
 
   std::shared_ptr<ContextedModule> module = nullptr;

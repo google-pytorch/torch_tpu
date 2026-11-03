@@ -262,7 +262,7 @@ TEST_F(NonzeroIndicesTest, UnboundedDynamicCacheServesKernel) {
               return TT_ERROR(error::kInternal)
                      << "nonzero must be served by the registered kernel";
             },
-            xla::CompileOptions()));
+            xla::CompileOptions(), UnboundedKernelPolicy::kAllow));
     EXPECT_EQ(cache.GetCacheStats().num_unbounded_dynamic_hits,
               dynamic_hits_before + 1);
     TT_ASSERT_OK_AND_ASSIGN(SharedLoadedExecutableWithMetadata executable,
@@ -326,7 +326,7 @@ TEST_F(NonzeroIndicesTest, UnboundedDynamicCacheRejectsIncompatibleLayouts) {
               builder_called = true;
               return mlir::ModuleOp::create(mlir::UnknownLoc::get(&context));
             },
-            xla::CompileOptions()));
+            xla::CompileOptions(), UnboundedKernelPolicy::kAllow));
     EXPECT_TRUE(builder_called);
     EXPECT_FALSE(kernel.fixed_shape_kernel.get().ok());
     EXPECT_EQ(cache.GetCacheHits(), hits_before);

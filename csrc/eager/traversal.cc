@@ -962,8 +962,10 @@ std::optional<CompilationSpec> Traversal::MaybeUpdateSpecWithLayout(
 }
 
 absl::StatusOr<CompiledKernel> Traversal::Compile(
-    const CompilationSpec& spec, std::string* absl_nullable out_mlir_text,
-    bool use_stablehlo_bounds, absl::Span<const CustomLayout> argument_layouts,
+    const CompilationSpec& spec,
+    const UnboundedKernelPolicy unbounded_kernel_policy,
+    std::string* absl_nullable out_mlir_text, bool use_stablehlo_bounds,
+    absl::Span<const CustomLayout> argument_layouts,
     absl::Span<const int64_t> donated_inputs,
     std::optional<std::string_view> module_name,
     std::optional<CompilationCacheKey>* absl_nullable out_cache_key) const {
@@ -1019,12 +1021,13 @@ absl::StatusOr<CompiledKernel> Traversal::Compile(
         std::move(compilation_cache_key), argument_shapes, output_shapes,
         std::move(final_op_builder),
         std::move(mutable_compilation_spec->xla_compile_options),
+        unbounded_kernel_policy,
         /*use_dynamic_adapters=*/!use_stablehlo_bounds);
   }
   return CompilationCache::GetInstance().GetOrCompile(
       std::move(compilation_cache_key), argument_shapes, output_shapes,
       std::move(final_op_builder),
-      *effective_compilation_spec.xla_compile_options,
+      *effective_compilation_spec.xla_compile_options, unbounded_kernel_policy,
       /*use_dynamic_adapters=*/!use_stablehlo_bounds);
 }
 
