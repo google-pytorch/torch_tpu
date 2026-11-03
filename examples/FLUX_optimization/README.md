@@ -109,10 +109,11 @@ For the next session, the next are used when referring to dimensions:
 
 In `DoubleStreamBlock` (the double-stream attention block implemented by our
 FLUX implementation), both the image stream (`img_qkv`) and text stream
-(`txt_qkv`) project hidden states of shape `(B, L, 3 * H * D)` into query, key,
-and value tensors, and later merge attention heads back from `(B, H, L, D)` to
-`(B, L, H * D)`. This interaction causes inefficient copies to be created which
-significantly slow down our model.
+(`txt_qkv`) project hidden states of shape `(B, L, H * D)` into fused QKV
+tensors of shape `(B, L, 3 * H * D)`, unpack them into query, key, and value
+tensors of shape `(B, L, H, D)`, and later merge attention heads back from
+`(B, H, L, D)` to `(B, L, H * D)`. This interaction causes inefficient copies to
+be created which significantly slow down our model.
 
 #### Identifying issue
 
