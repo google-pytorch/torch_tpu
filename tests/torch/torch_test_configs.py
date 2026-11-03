@@ -56,6 +56,14 @@ OP_OVERRIDES: Final[
 #       "test_broadcast": "*",
 #       "test_bytes_to_scalar": { "dtypes": [torch.complex64] }
 #   }
+# TODO(b/579965801): Inline `[torch.float8_e5m3fnu]` once all 2.16 pins include
+# PR #201269.
+_FLOAT8_E5M3FNU_DTYPES: Final[Sequence[torch.dtype]] = (
+    (getattr(torch, "float8_e5m3fnu"),)
+    if hasattr(torch, "float8_e5m3fnu")
+    else ()
+)
+
 TEST_EXCLUSIONS: Final[
     Mapping[
         str,
@@ -320,12 +328,21 @@ TEST_EXCLUSIONS: Final[
     },
     "quantization/core/experimental/test_floatx": {
         "TestFloat4Dtype": [
+            "test_cast_raises_on_host",
             "test_float4_e2m1fn_x2",
         ],
-        "TestFloat8Dtype": [
-            "test_cast_round_trip",
-            "test_float8_e8m0fnu_rne_rounding",
-        ],
+        "TestFloat8Dtype": {
+            "test_cast_round_trip": "*",
+            "test_cat": {"dtypes": _FLOAT8_E5M3FNU_DTYPES},
+            "test_creation_with_zeros": {"dtypes": _FLOAT8_E5M3FNU_DTYPES},
+            "test_empty": {"dtypes": _FLOAT8_E5M3FNU_DTYPES},
+            "test_float8_e8m0fnu_rne_rounding": "*",
+            "test_save_load": {"dtypes": _FLOAT8_E5M3FNU_DTYPES},
+            "test_special_numbers": {"dtypes": _FLOAT8_E5M3FNU_DTYPES},
+            "test_to_string": {"dtypes": _FLOAT8_E5M3FNU_DTYPES},
+            "test_type_promotion_fails": {"dtypes": _FLOAT8_E5M3FNU_DTYPES},
+        },
+        "TestFloat8E5M3FNU": "*",
     },
     "test_accelerator": {
         "TestAccelerator": [
@@ -435,7 +452,9 @@ TEST_EXCLUSIONS: Final[
         "TestFakeTensorDevice": [
             "test_aten_set_data_multi_device",
             "test_conv_mismatched_device_error_matches_eager",
+            "test_gru",
             "test_index_put_error",
+            "test_lstm",
         ],
     },
     "test_indexing": {
