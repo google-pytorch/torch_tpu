@@ -133,11 +133,33 @@ absl::StatusOr<std::optional<std::string>> GetTpuTopology(
     std::string_view pci_devices_dir = "/sys/bus/pci/devices",
     std::string_view vfio_dir = "/dev/vfio");
 
-// Returns the single-device TPU bounds ({1, 1, 1, 1} for TPU generations with
-// multiple devices per chip without megacore, or {1, 1, 1} otherwise) for the
+// Returns the TPU bounds covering all devices of an `(x, y, z)` box of chips
+// (`{x, y, z, devices_per_chip}` when a chip exposes multiple devices without
+// megacore, or `{x, y, z}` otherwise).
+template <typename Bounds = TpuSpec::Topology>
+[[nodiscard]] Bounds MakeTpuChipBounds(int32_t x, int32_t y, int32_t z,
+                                       int32_t devices_per_chip) {
+  return devices_per_chip > 1 ? Bounds{x, y, z, devices_per_chip}
+                              : Bounds{x, y, z};
+}
+
+// Returns the TPU bounds of a single logical device (`{1, 1, 1, 1}` when a
+// chip exposes multiple devices without megacore, or `{1, 1, 1}` otherwise).
+template <typename Bounds = TpuSpec::Topology>
+[[nodiscard]] Bounds MakeSingleDeviceTpuBounds(int32_t devices_per_chip) {
+  return devices_per_chip > 1 ? Bounds{1, 1, 1, 1} : Bounds{1, 1, 1};
+}
+
+// Returns the single-device TPU bounds (`{1, 1, 1, 1}` for TPU generations with
+// multiple devices per chip without megacore, or `{1, 1, 1}` otherwise) for the
 // TPU generation attached under `pci_devices_dir`.
-[[nodiscard]] TpuSpec::Topology GetSingleDeviceTpuBounds(
-    std::string_view pci_devices_dir = "/sys/bus/pci/devices");
+template <typename Bounds = TpuSpec::Topology>
+[[nodiscard]] Bounds GetSingleDeviceTpuBounds(
+    std::string_view pci_devices_dir = "/sys/bus/pci/devices") {
+  const TpuSpec* absl_nullable const spec = TpuSpec::Get(pci_devices_dir);
+  return MakeSingleDeviceTpuBounds<Bounds>(
+      spec != nullptr ? static_cast<int32_t>(spec->devices_per_chip) : 1);
+}
 
 // Returns the comma-separated single-device TPU bounds string ("1,1,1,1" or
 // "1,1,1") for the TPU generation attached under `pci_devices_dir`.

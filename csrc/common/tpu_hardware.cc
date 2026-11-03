@@ -477,13 +477,6 @@ absl::StatusOr<std::optional<std::string>> GetTpuTopology(
   return absl::StrJoin(topology, ",");
 }
 
-TpuSpec::Topology GetSingleDeviceTpuBounds(std::string_view pci_devices_dir) {
-  const TpuSpec* absl_nullable const spec = TpuSpec::Get(pci_devices_dir);
-  return (spec != nullptr && spec->devices_per_chip > 1)
-             ? TpuSpec::Topology{1, 1, 1, 1}
-             : TpuSpec::Topology{1, 1, 1};
-}
-
 std::string GetSingleDeviceTpuBoundsString(std::string_view pci_devices_dir) {
   return absl::StrJoin(GetSingleDeviceTpuBounds(pci_devices_dir), ",");
 }

@@ -446,6 +446,7 @@ torch_tpu_cc_library(
     hdrs = ["tpu_subslice_utils.h"],
     deps = [
         ":error_utils",
+        ":tpu_hardware",
         "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/status:statusor",
         "@xla//xla/client:executable_build_options",

@@ -28,6 +28,7 @@
 #include "absl/log/absl_log.h"
 #include "absl/status/statusor.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/tpu_hardware.h"
 #include "xla/client/executable_build_options.h"
 #include "xla/pjrt/maybe_owning_mlir_module.h"
 #include "xla/pjrt/pjrt_client.h"
@@ -104,11 +105,13 @@ absl::StatusOr<std::optional<Subslice>> MaybeMakeSubslice(
     return std::nullopt;
   }
 
-  // torch_tpu runs one process per core with chips-per-host bounds 1,1,1 (see
-  // environment.cc), so the box is given as host bounds.
+  // torch_tpu runs one process per core with single-device chips-per-host
+  // bounds (see environment.cc), so the box of chips is given as host bounds.
   absl::StatusOr<std::unique_ptr<xla::PjRtTopologyDescription>>
       subslice_topology = topology->Subslice(
-          /*chips_per_host_bounds=*/{1, 1, 1}, /*host_bounds=*/box);
+          MakeSingleDeviceTpuBounds<xla::PjRtDeviceDimensions>(cores_per_chip),
+          MakeTpuChipBounds<xla::PjRtDeviceDimensions>(box[0], box[1], box[2],
+                                                       cores_per_chip));
   if (!subslice_topology.ok()) {
     ABSL_VLOG(1) << "Compiling for the full slice: no subslice of chips "
                  << box.ToString() << ": " << subslice_topology.status();

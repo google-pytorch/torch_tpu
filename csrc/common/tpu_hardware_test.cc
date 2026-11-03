@@ -684,9 +684,28 @@ TEST(GetSingleDeviceTpuBoundsTest,
     EXPECT_EQ(GetSingleDeviceTpuBounds(fake.pci_devices_dir()),
               (TpuSpec::Topology{1, 1, 1, 1}))
         << device_id;
+    EXPECT_EQ(
+        GetSingleDeviceTpuBounds<std::vector<int32_t>>(fake.pci_devices_dir()),
+        (std::vector<int32_t>{1, 1, 1, 1}))
+        << device_id;
     EXPECT_EQ(GetSingleDeviceTpuBoundsString(fake.pci_devices_dir()), "1,1,1,1")
         << device_id;
   }
+}
+
+TEST(MakeTpuBoundsTest, SingleDeviceBoundsMatchDevicesPerChip) {
+  EXPECT_EQ(MakeSingleDeviceTpuBounds(1), (TpuSpec::Topology{1, 1, 1}));
+  EXPECT_EQ(MakeSingleDeviceTpuBounds(2), (TpuSpec::Topology{1, 1, 1, 1}));
+  EXPECT_EQ(MakeSingleDeviceTpuBounds<std::vector<int32_t>>(2),
+            (std::vector<int32_t>{1, 1, 1, 1}));
+}
+
+TEST(MakeTpuBoundsTest, ChipBoundsMatchDevicesPerChip) {
+  EXPECT_EQ(MakeTpuChipBounds(1, 2, 1, 1), (TpuSpec::Topology{1, 2, 1}));
+  EXPECT_EQ(MakeTpuChipBounds(1, 2, 1, 2), (TpuSpec::Topology{1, 2, 1, 2}));
+  EXPECT_EQ(MakeTpuChipBounds(1, 1, 1, 2), (TpuSpec::Topology{1, 1, 1, 2}));
+  EXPECT_EQ(MakeTpuChipBounds<std::vector<int32_t>>(2, 2, 1, 2),
+            (std::vector<int32_t>{2, 2, 1, 2}));
 }
 
 }  // namespace
