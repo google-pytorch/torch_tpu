@@ -434,6 +434,29 @@ class ScanLoweringTest(seed_test_utils.RepeatableTest):
         msg="scan was unexpectedly unrolled: stablehlo.while not found",
     )
 
+  def test_body_is_not_compiled_on_its_own(self):
+    def fn(carry, x):
+      return carry + x, carry + x
+
+    x = torch.tensor([1.0, 2.0, 3.0, 4.0], device="tpu")
+    init = torch.tensor([0.0], device="tpu")
+    torch.compiler.reset()
+    with mock.patch.object(
+        tpu_torch_compile,
+        "traverse_and_compile",
+        wraps=tpu_torch_compile.traverse_and_compile,
+    ) as traverse:
+      out_carry, _ = _compile_and_run(scan, fn, init, x)
+
+    # The body's MLIR is built without an XLA compilation of its own.
+    body_builds = [
+        c
+        for c in traverse.call_args_list
+        if c.kwargs.get("compile_executable") is False
+    ]
+    self.assertLen(body_builds, 1)
+    utils.assert_close(out_carry.cpu(), torch.tensor([10.0]))
+
 
 def _body_with_custom_meta(custom=None):
   """Builds a one-op scan body, optionally with `custom` node metadata."""
