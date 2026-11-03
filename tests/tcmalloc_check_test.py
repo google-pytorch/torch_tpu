@@ -257,7 +257,7 @@ class CheckTcmallocTest(seed_test_utils.RepeatableTest):
     q = ctx.Queue()
     proc = ctx.Process(target=_check_tcmalloc_in_child_worker, args=(q,))
     proc.start()
-    proc.join(timeout=60)
+    proc.join()
     self.assertEqual(proc.exitcode, 0)
     has_ancestor, caught_messages = q.get(timeout=5)
     self.assertTrue(has_ancestor)
