@@ -70,6 +70,7 @@ torch_tpu_py_test(
         ":fallbacks",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//src/torch_tpu",
     ],
 )
 
