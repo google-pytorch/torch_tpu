@@ -144,6 +144,9 @@ Notes:
 
 *   When a PR is ready for another review, click on the "Re-request review"
     (spinning arrows) button next to a reviewer name to notify them.
+*   On PRs from some outside contributors' forked repos, the reviewers and the
+    assignee also need to approve the PR's workflow runs (see
+    [Approve Workflow Runs](#approve-workflow-runs)).
 *   We want the quality champion's review to be in the open so that external
     contributors can learn Google's coding standard.
 *   The bot-generated CL cannot be changed manually, but if you update the PR it
@@ -170,6 +173,39 @@ Earlier GitHub approvals don't carry over to new commits, and the internal CL
 needs approvals from two different Googlers to auto-submit. So when the PR
 author is external, the **Google domain expert** should also re-approve the
 updated PR on GitHub or the updated CL.
+
+### Approve Workflow Runs
+
+GitHub doesn't run workflows on PRs from some outside contributors' forked repos
+until a maintainer approves them. These include CI and the bot that tracks whose
+turn it is, so until the runs are approved, the PR's checks don't run, and
+reviews don't hand the turn back to the author. The PR's **reviewers and
+assignee** are responsible for approving the runs whenever the PR shows
+"Workflow(s) awaiting approval". This can happen:
+
+*   when the PR is opened or the author pushes new commits, and
+*   after anyone submits a review or a review comment on the PR.
+
+<!-- mdformat off(reason: GitHub renders an alert only if its marker is on its own line) -->
+
+> [!IMPORTANT]
+> Review the PR's changes before approving its runs. Approving runs the PR's
+> code, including any changes to `.github/workflows/` and other CI scripts, on
+> the repository's CI machines.
+
+<!-- mdformat on -->
+
+To approve the runs:
+
+1.  In the **Files changed** tab, check that the PR doesn't change
+    `.github/workflows/` or other CI scripts in a way that could misuse the
+    repository's secrets or CI machines.
+1.  In the **Conversation** tab, click **Approve and run** under "Workflow(s)
+    awaiting approval".
+
+Runs that aren't approved within 30 days expire: GitHub marks them as failed,
+and they can no longer be approved or re-run. To run the workflows again, the
+author needs to push a new commit (or a maintainer can close and reopen the PR).
 
 ## Proposing Major Changes and API Design
 
