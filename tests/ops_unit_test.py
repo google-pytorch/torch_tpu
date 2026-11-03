@@ -15371,6 +15371,20 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         else:
           self.assertIsNone(db_tpu)
 
+  @parameterized.named_parameters(
+      ("float32", torch.float32),
+      ("bfloat16", torch.bfloat16),
+      ("float16", torch.float16),
+      ("float64", torch.float64),
+  )
+  def test_digamma_negative_zero(self, dtype: torch.dtype):
+    # Test that digamma(-0.0) returns +inf and digamma(+0.0) returns -inf.
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.digamma(
+            to(torch.tensor([-0.0, 0.0], dtype=dtype), device=device)
+        )
+    )
+
 
 class OpsCustomOpUnitTest(TorchTpuVsCpuTestBase):
   """Tests for custom ops."""
