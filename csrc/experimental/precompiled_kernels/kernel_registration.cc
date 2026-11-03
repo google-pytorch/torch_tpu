@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-// Registers the nonzero indices kernel with the unbounded dynamic kernel
+// Registers the nonzero indices kernels with the unbounded dynamic kernel
 // registry when this library is loaded. Nothing references this file, so it is
 // built with `alwayslink = True`; link it only into TPU-only targets.
 
@@ -46,7 +46,7 @@ class UnboundedDynamicKernelRegistrar {
 // at static initialization time. Invoke at namespace scope in a library built
 // with `alwayslink = True`:
 //
-//   TT_REGISTER_DYNAMIC_KERNEL(GetNonzeroUnboundedDynamicKernel());
+//   TT_REGISTER_DYNAMIC_KERNEL(GetNonzero2DUnboundedDynamicKernel());
 //
 // `kernel` is an `UnboundedDynamicKernel`, registered under its `key`. Each
 // kernel defines its key next to its builder, e.g. with
@@ -63,7 +63,8 @@ class UnboundedDynamicKernelRegistrar {
   TT_REGISTER_DYNAMIC_KERNEL_CONCAT_(kUnboundedDynamicKernelRegistrar_, \
                                      __COUNTER__)((kernel))
 
-TT_REGISTER_DYNAMIC_KERNEL(GetNonzeroUnboundedDynamicKernel());
+TT_REGISTER_DYNAMIC_KERNEL(GetNonzero2DUnboundedDynamicKernel());
+TT_REGISTER_DYNAMIC_KERNEL(GetNonzero1DUnboundedDynamicKernel());
 
 }  // namespace
 }  // namespace torch_tpu
