@@ -34,7 +34,7 @@ torch_tpu_py_test(
     srcs = ["stream_test.py"],
     args = if_oss(
         [],
-        ["--deepsea_chip_config_name=torch"],
+        ["--deepsea_chip_config_name=mpmd"],
     ),
     tags = [
         # A device with SparseCore is required to allow for SparseCore pinning.
