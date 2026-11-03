@@ -15033,6 +15033,16 @@ Device-side assertion tracking was not enabled by user.""",
     ):
       torch.is_nonzero(torch.tensor([[]], device=et.device()))
 
+  def test_nonzero_cpu_out_tensor_with_no_nonzeros(self):
+    t = torch.zeros(2, 3, device=et.device())
+    out = torch.empty(0, 2, device="cpu", dtype=torch.int64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""nonzero(): expected the output tensor to be on tpu, got cpu""",
+        gpu="""Expected all tensors to be on the same device, but got self is on cuda:0, different from other tensors on cpu (when checking argument in method wrapper_CUDA_out_nonzero_out)""",
+    ):
+      torch.nonzero(t, out=out)
+
   def test_masked_select_cpu_out_tensor(self):
     """Masked select function fails when self and out have different devices."""
     t = torch.ones(5, device=et.device(), dtype=torch.float32)

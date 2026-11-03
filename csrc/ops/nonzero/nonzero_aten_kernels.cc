@@ -15,6 +15,7 @@
 #include "csrc/ops/nonzero/nonzero_aten_kernels.h"
 
 #include <cstdint>
+#include <optional>
 #include <utility>
 
 #include "ATen/core/ATen_fwd.h"
@@ -24,15 +25,20 @@
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
+#include "csrc/common/device_type.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/nonzero/nonzero.h"
+#include "csrc/ops/nullary_aten_kernels.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
+#include "csrc/ops/resize/resize_aten_kernels.h"
 #include "csrc/ops/unary_aten_kernels.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
 
@@ -85,6 +91,13 @@ absl::StatusOr<at::Tensor> AtenNonzeroHelper(const at::Tensor& self) {
   ABSL_VLOG(3) << "[AtenNonzeroHelper] num_non_zero_elements: "
                << num_non_zero_elements_value;
 
+  // No nonzeros: return an empty (0, rank) result rather than compiling an
+  // index graph per input shape.
+  if (num_non_zero_elements_value == 0) {
+    return AtenEfficientZeroTensor({0, self.dim()}, at::kLong, std::nullopt,
+                                   self.device(), std::nullopt);
+  }
+
   // Get the indices of the non-zero elements in the tensor as a tensor of
   // size (num_non_zero_elements, rank_of_input_tensor).
   TT_ASSIGN_OR_RETURN(auto result, Nonzero(self, num_non_zero_elements_value));
@@ -100,6 +113,16 @@ absl::Status AtenNonzeroOutHelper(const at::Tensor& self, at::Tensor& out) {
       num_non_zero_elements.cpu().item<int64_t>();
   ABSL_VLOG(3) << "[AtenNonzeroOutHelper] num_non_zero_elements: "
                << num_non_zero_elements_value;
+
+  // No nonzeros: validate `out` as `UnaryOpOut` would, then resize it to
+  // (0, rank) rather than compiling an index graph per input shape.
+  if (num_non_zero_elements_value == 0) {
+    TT_RET_CHECK(IsPrivateUse1Device(out), error::kInvalidArgument)
+        << "expected the output tensor to be on "
+        << GetPrivateUse1DeviceDebugName() << ", got " << out.device();
+    TT_RETURN_IF_ERROR(ValidateOutDtype(out, at::kLong));
+    return ResizeTensorIfShapeDiffers(out, {0, self.dim()});
+  }
 
   // Get the indices of the non-zero elements in the tensor as a tensor of
   // size (num_non_zero_elements, rank_of_input_tensor).

@@ -8111,8 +8111,8 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
   @parameterized.named_parameters(("functional", False), ("out", True))
   def test_nonzero_reuses_static_kernel_for_same_num_nonzero(self, use_out):
-    # nonzero compiles one static kernel per number of nonzero elements. That
-    # count is the leading extent of the output, which is already part of the
+    # nonzero compiles one static kernel per nonzero count K > 0 (K == 0 needs
+    # none). K is the leading extent of the output, which is already part of the
     # cache key, so the kernels must stay distinct without an op param cache
     # key for it.
     shape = (7, 11)  # Unused by other nonzero tests, so the cache starts cold.
@@ -8150,6 +8150,12 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     # depends on the input shape alone, so it is still a hit.
     _, misses = run_nonzero(make_input(num_nonzero=5, offset=0))
     self.assertEqual(misses, 1, "new count must not reuse the count-3 kernel")
+
+    # No nonzeros: the empty result needs no nonzero kernel. The warm-up builds
+    # the empty (0, 2) int64 tensor once so that only nonzero kernels count.
+    torch.nonzero(torch.zeros(1, 1, device="tpu"))
+    _, misses = run_nonzero(make_input(num_nonzero=0, offset=0))
+    self.assertEqual(misses, 0, "zero count must not compile a kernel")
 
   def test_normal_float_float_out(self):
     golden_result = torch.normal(
