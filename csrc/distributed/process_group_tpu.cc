@@ -667,6 +667,19 @@ ProcessGroupTpu::CrossHostSendBuffers(
           }
         });
   }
+  // Delete the consumed one-shot descriptor keys so the store doesn't grow
+  // unboundedly. A failed delete can't affect this transfer
+  // (descriptors are already read and copies enqueued), so only log it.
+  if (!descriptors.empty()) {
+    for (const std::string& key : descriptor_keys) {
+      try {
+        store_->deleteKey(key);
+      } catch (const std::exception& e) {
+        ABSL_LOG(WARNING) << "failed to delete P2P descriptor key " << key
+                          << " from the store: " << e.what();
+      }
+    }
+  }
   return all_sent_future;
 }
 

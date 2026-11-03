@@ -643,12 +643,35 @@ def _run_isend_irecv() -> None:
     send_work.wait()
 
 
+def _synchronized_store_num_keys(store: dist.Store) -> int:
+  """Returns `store.num_keys()` read while no rank can mutate the store.
+
+  The store is shared by all ranks, so an unsynchronized read can race with
+  another rank posting or deleting P2P descriptor keys. The leading barrier
+  ensures every rank has finished its preceding store operations; the trailing
+  barrier ensures no rank starts new ones until every rank has read the count.
+
+  Args:
+    store: The c10d store shared by all ranks.
+
+  Returns:
+    The number of keys in the store.
+  """
+  dist.barrier()
+  num_keys = store.num_keys()
+  dist.barrier()
+  return num_keys
+
+
 def _run_send_recv_same_tag() -> None:
   """Tests send and recv with the same tag across pairs and repeated calls."""
   rank = dist.get_rank()
   world_size = dist.get_world_size()
   if world_size < 2:
     return
+
+  store = dist.distributed_c10d._get_default_store()
+  num_keys_before = _synchronized_store_num_keys(store)
 
   # Reuse the same tag across different (src, dst) pairs, repeated transfers
   # between the same pair, reverse-direction transfers, and one-to-many sends.
@@ -683,6 +706,45 @@ def _run_send_recv_same_tag() -> None:
       torch.tpu.ops.recv([recv_buffer], src=0, tag=p2p_tag).wait()
       expected = torch.full(tensor_shape, tensor_value)
       utils.assert_close(recv_buffer.cpu(), expected)
+
+  num_keys_after = _synchronized_store_num_keys(store)
+  assert (
+      num_keys_after == num_keys_before
+  ), f"P2P transfers leaked {num_keys_after - num_keys_before} store keys"
+
+
+def _run_isend_irecv_does_not_leak_store_keys() -> None:
+  """Tests that repeated ring isend/irecv hand-offs do not grow the store."""
+  rank = dist.get_rank()
+  world_size = dist.get_world_size()
+  if world_size < 2:
+    return
+
+  store = dist.distributed_c10d._get_default_store()
+  dst_rank = (rank + 1) % world_size
+  src_rank = (rank - 1) % world_size
+  tensor_shape = (16, 16)
+  num_steps = 20
+
+  num_keys_before = _synchronized_store_num_keys(store)
+
+  for step in range(num_steps):
+    x = torch.full(tensor_shape, float(rank * 100 + step), device="tpu")
+    recv_buffer = torch.zeros(tensor_shape, device="tpu")
+    # Post the recv before the send so the upstream rank's send never waits on
+    # a receiver that hasn't published its descriptor yet (avoids deadlock).
+    recv_work = torch.tpu.ops.recv([recv_buffer], src=src_rank, tag=0)
+    send_work = torch.tpu.ops.send([x], dst=dst_rank, tag=0)
+    recv_work.wait()
+    send_work.wait()
+    expected = torch.full(tensor_shape, float(src_rank * 100 + step))
+    utils.assert_close(recv_buffer.cpu(), expected)
+
+  num_keys_after = _synchronized_store_num_keys(store)
+  assert num_keys_after == num_keys_before, (
+      f"{num_steps} ring isend/irecv steps leaked "
+      f"{num_keys_after - num_keys_before} store keys"
+  )
 
 
 def _run_collectives_with_non_uniform_deferred_ops() -> None:
@@ -1004,6 +1066,10 @@ class CollectiveOpsTest(continuous_test_utils.TpuMultiProcContinuousTest):
   @absltest.skipIf(_IS_TPU_V7, _SKIP_P2P_ON_TPU_V7_REASON)
   def test_send_recv_same_tag(self) -> None:
     _run_send_recv_same_tag()
+
+  @absltest.skipIf(_IS_TPU_V7, _SKIP_P2P_ON_TPU_V7_REASON)
+  def test_isend_irecv_does_not_leak_store_keys(self) -> None:
+    _run_isend_irecv_does_not_leak_store_keys()
 
 
 class ProcessExitTest(seed_test_utils.MultiProcessRepeatableTest):
