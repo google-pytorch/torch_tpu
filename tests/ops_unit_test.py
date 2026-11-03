@@ -12216,6 +12216,88 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     )
 
   @parameterized.product(
+      out_int32=[True, False],
+      right=[True, False],
+      dtype=[
+          torch.float16,
+          torch.bfloat16,
+          torch.float32,
+          torch.float64,
+      ],
+      boundaries_vals=[[], [1.0, 2.0, 4.0, 5.0]],
+  )
+  def test_bucketize_non_finite(self, out_int32, right, dtype, boundaries_vals):
+    input_cpu = torch.tensor(
+        [
+            [float("nan"), -float("nan"), float("-inf")],
+            [1.0, 2.5, float("inf")],
+        ],
+        dtype=dtype,
+    )
+    scalar_nan_cpu = torch.tensor(float("nan"), dtype=dtype)
+    empty_input_cpu = torch.empty((0, 3), dtype=dtype)
+    boundaries_cpu = torch.tensor(boundaries_vals, dtype=dtype)
+    out_dtype = torch.int32 if out_int32 else torch.int64
+
+    def run(device):
+      inp = input_cpu.to(device)
+      bounds = boundaries_cpu.to(device)
+      out = torch.empty_like(inp, dtype=out_dtype)
+      torch.bucketize(inp, bounds, out_int32=out_int32, right=right, out=out)
+      return (
+          torch.bucketize(inp, bounds, out_int32=out_int32, right=right),
+          out,
+          torch.bucketize(
+              scalar_nan_cpu.to(device),
+              bounds,
+              out_int32=out_int32,
+              right=right,
+          ),
+          torch.bucketize(
+              empty_input_cpu.to(device),
+              bounds,
+              out_int32=out_int32,
+              right=right,
+          ),
+      )
+
+    self.assert_close_tpu_vs_cpu(run)
+
+  @parameterized.product(
+      out_int32=[True, False],
+      right=[True, False],
+      boundaries_dtype=[
+          torch.int32,
+          torch.float16,
+          torch.bfloat16,
+          torch.float32,
+          torch.float64,
+      ],
+      boundaries_vals=[[], [1, 2, 4, 5]],
+  )
+  def test_bucketize_scalar_nan(
+      self, out_int32, right, boundaries_dtype, boundaries_vals
+  ):
+    boundaries_cpu = torch.tensor(boundaries_vals, dtype=boundaries_dtype)
+    mixed_input_cpu = torch.tensor([float("nan"), 2.5], dtype=torch.float32)
+
+    def run(device):
+      bounds = boundaries_cpu.to(device)
+      return (
+          torch.bucketize(
+              float("nan"), bounds, out_int32=out_int32, right=right
+          ),
+          torch.bucketize(
+              mixed_input_cpu.to(device),
+              bounds,
+              out_int32=out_int32,
+              right=right,
+          ),
+      )
+
+    self.assert_close_tpu_vs_cpu(run)
+
+  @parameterized.product(
       shape=[
           (4, 4),
           (10, 4),
