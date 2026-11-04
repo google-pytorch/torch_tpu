@@ -1033,6 +1033,115 @@ class MainTest(unittest.TestCase):
       self.assertIn(
           "--cqueryCommandOptions=--config=ci_tpu_v7_presubmit", call.args
       )
+      self.assertIn(
+          f"--cqueryExpression={run_bazel_diff._NON_WHEEL_CQUERY_EXPRESSION}",
+          call.args,
+      )
+
+  def test_calculate_mode_wheel_config_does_not_exclude_wheel_targets(self):
+    self._set_impacted_targets([])
+
+    self._run_main("--mode=calculate", bazel_config="wheel_test_cpu")
+
+    hash_calls = [
+        call
+        for call in run_bazel_diff.run_bazel_diff.call_args_list
+        if call.args[0] == "generate-hashes"
+    ]
+    self.assertEqual(len(hash_calls), 2)
+    for call in hash_calls:
+      self.assertIn("--cqueryCommandOptions=--config=wheel_test_cpu", call.args)
+      for arg in call.args:
+        self.assertFalse(
+            str(arg).startswith("--cqueryExpression="),
+            f"Unexpected --cqueryExpression passed for wheel config: {arg}",
+        )
+
+  def test_calculate_mode_wheel_flags_does_not_exclude_wheel_targets(self):
+    self._set_impacted_targets([])
+
+    self._run_main(
+        "--mode=calculate",
+        "--extra-bazel-flags=--test_wheel=true",
+        bazel_config="ci_cpu_presubmit",
+    )
+
+    hash_calls = [
+        call
+        for call in run_bazel_diff.run_bazel_diff.call_args_list
+        if call.args[0] == "generate-hashes"
+    ]
+    self.assertEqual(len(hash_calls), 2)
+    for call in hash_calls:
+      for arg in call.args:
+        self.assertFalse(
+            str(arg).startswith("--cqueryExpression="),
+            f"Unexpected --cqueryExpression passed for test_wheel flag: {arg}",
+        )
+
+  def test_is_wheel_config(self):
+    self.assertTrue(run_bazel_diff._is_wheel_config("wheel_test_cpu", ""))
+    self.assertTrue(run_bazel_diff._is_wheel_config("ci_wheel_build", ""))
+    self.assertTrue(
+        run_bazel_diff._is_wheel_config("ci_cpu_presubmit", "--test_wheel=true")
+    )
+    self.assertTrue(
+        run_bazel_diff._is_wheel_config(
+            "ci_cpu_presubmit", "--define=wheel_build=true"
+        )
+    )
+    self.assertFalse(run_bazel_diff._is_wheel_config("ci_cpu_presubmit", ""))
+    self.assertFalse(run_bazel_diff._is_wheel_config("ci_tpu_v5", ""))
+
+  def test_aligned_bazelrc_creates_and_cleans_up_when_missing(self):
+    user_rc = self.workspace / "user.bazelrc"
+    self.assertFalse(user_rc.exists())
+
+    with run_bazel_diff._aligned_bazelrc(self.workspace, "ci_cpu_presubmit"):
+      self.assertTrue(user_rc.exists())
+      content = user_rc.read_text(encoding="utf-8")
+      self.assertIn("common --config=ci_cpu_presubmit", content)
+      self.assertIn("common --repo_env=LLVM_VERSION=20", content)
+      self.assertIn("common --watchfs", content)
+      self.assertIn("common --bes_backend=", content)
+      self.assertIn("common --remote_upload_local_results=false", content)
+
+    self.assertFalse(user_rc.exists())
+
+  def test_aligned_bazelrc_preserves_and_restores_existing_content(self):
+    user_rc = self.workspace / "user.bazelrc"
+    user_rc.write_text("build --user_custom_flag=1\n", encoding="utf-8")
+
+    with run_bazel_diff._aligned_bazelrc(self.workspace, "ci_tpu_v5"):
+      self.assertTrue(user_rc.exists())
+      content = user_rc.read_text(encoding="utf-8")
+      self.assertIn("build --user_custom_flag=1\n", content)
+      self.assertIn("common --config=ci_tpu_v5", content)
+
+    self.assertTrue(user_rc.exists())
+    self.assertEqual(
+        user_rc.read_text(encoding="utf-8"), "build --user_custom_flag=1\n"
+    )
+
+  def test_aligned_bazelrc_restores_on_exception(self):
+    user_rc = self.workspace / "user.bazelrc"
+    user_rc.write_text("build --original\n", encoding="utf-8")
+
+    with self.assertRaises(RuntimeError):
+      with run_bazel_diff._aligned_bazelrc(self.workspace, "ci_cpu"):
+        raise RuntimeError("boom")
+
+    self.assertEqual(user_rc.read_text(encoding="utf-8"), "build --original\n")
+
+  def test_run_main_cleans_up_aligned_bazelrc(self):
+    self._set_impacted_targets([])
+    user_rc = self.workspace / "user.bazelrc"
+    self.assertFalse(user_rc.exists())
+
+    exit_code = self._run_main("--mode=calculate")
+
+    self.assertEqual(exit_code, 0)
+    self.assertFalse(user_rc.exists())
 
   def test_calculate_mode_reports_no_work_when_config_selects_no_test(self):
     """Impacted targets this config filters out must skip the runner."""

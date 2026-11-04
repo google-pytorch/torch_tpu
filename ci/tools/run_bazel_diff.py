@@ -21,6 +21,7 @@
 
 import argparse
 from collections.abc import Sequence
+import contextlib
 import dataclasses
 import enum
 import json
@@ -145,6 +146,19 @@ OPS_TEST_PATHS: Final[Sequence[str]] = (
 )
 _OPS_TEST_PATHS_REGEX: Final[re.Pattern[str]] = re.compile(
     r"^(" + "|".join(OPS_TEST_PATHS) + r")$"
+)
+
+# Outside wheel builds/tests, `//ci/wheel/...` tests are skipped as
+# `@platforms//:incompatible`, but `//...:all-targets` still matches
+# `//ci/wheel:remapped_pywrap_binaries`, `//ci/wheel:torch_tpu_wheel`, and
+# `//:torch_tpu_py_import` (whose default select branch points at
+# `//ci/wheel:torch_tpu_wheel`). Analyzing those targets transitions into all
+# 6 PyTorch versions in `@torch_tpu_glues` (~35k extra configured targets).
+# Excluding them while keeping `deps(...)` preserves all generating rules and
+# external target digests required by `bazel-diff`'s graph traversal.
+_NON_WHEEL_CQUERY_EXPRESSION: Final[str] = (
+    "deps(//...:all-targets - //ci/wheel/... - //:torch_tpu_py_import"
+    " - //:torch_tpu_py_import_unpacked_wheel)"
 )
 
 
@@ -544,6 +558,73 @@ def get_changed_files(base_sha: str, current_sha: str) -> Sequence[str]:
   return changed_files
 
 
+def _is_wheel_config(bazel_config: str, extra_bazel_flags: str) -> bool:
+  """Returns True if the config or flags target wheel builds/tests."""
+  return (
+      "wheel" in bazel_config
+      or "test_wheel" in extra_bazel_flags
+      or "wheel_build" in extra_bazel_flags
+  )
+
+
+@contextlib.contextmanager
+def _aligned_bazelrc(workspace_dir: pathlib.Path, bazel_config: str):
+  """Temporarily aligns Bazel options in user.bazelrc for bazel-diff.
+
+  `bazel-diff` invokes `bazel mod` without `--cqueryCommandOptions`, and Bazel
+  does not apply `build` flags from `.bazelrc` to `mod` or `query`. When
+  Starlark semantics (`--experimental_python_import_all_repositories`,
+  `--incompatible_default_to_explicit_init_py`, `--legacy_external_runfiles`),
+  `--repo_env` (`LLVM_VERSION`, `SYSROOT_DIST`), `--watchfs`, or `--config`
+  differ between `cquery` and `mod`, Skyframe invalidates `STARLARK_SEMANTICS`
+  and external repository rules (re-extracting `@llvm-raw` for ~75s and wiping
+  out the 200k+ configured target cache on every transition). Writing these
+  options under `common` in `user.bazelrc` (which `.bazelrc` imports last via
+  `try-import %workspace%/user.bazelrc` and `.gitignore` ignores across `git
+  checkout`) aligns `mod`, `cquery`, `query`, and `config_selects_tests` on a
+  single warm Skyframe cache without changing Bazel startup options.
+  """
+  user_bazelrc = workspace_dir / "user.bazelrc"
+  original_content: str | None = None
+  if user_bazelrc.exists():
+    original_content = user_bazelrc.read_text(encoding="utf-8")
+
+  lines = [
+      f"common --config={bazel_config}",
+      "common --repo_env=LLVM_VERSION=20",
+      "common --repo_env=SYSROOT_DIST=linux_glibc_2_31",
+      "common --watchfs",
+      "common --bes_backend=",
+      "common --remote_upload_local_results=false",
+      "common --action_env=BAZEL_CXXOPTS=-std=c++20",
+      "common --experimental_python_import_all_repositories=true",
+      "common --incompatible_disallow_empty_glob=false",
+      "common --incompatible_default_to_explicit_init_py=true",
+      "common --legacy_external_runfiles=false",
+      (
+          "common"
+          " --@rules_python//python/config_settings:precompile=force_disabled"
+      ),
+      "common --define=with_tpu_support=true",
+      "common --define WHEEL_VERSION_EXTRAS=",
+  ]
+  alignment_block = "\n".join(lines) + "\n"
+  if original_content is not None:
+    user_bazelrc.write_text(
+        original_content + "\n" + alignment_block, encoding="utf-8"
+    )
+  else:
+    user_bazelrc.write_text(alignment_block, encoding="utf-8")
+
+  try:
+    yield
+  finally:
+    if original_content is not None:
+      user_bazelrc.write_text(original_content, encoding="utf-8")
+    else:
+      user_bazelrc.unlink(missing_ok=True)
+
+
 def run_bazel_diff(
     *args: str | os.PathLike[str],
 ) -> subprocess.CompletedProcess[bytes]:
@@ -821,106 +902,113 @@ def main(argv: Sequence[str]) -> int:
   print(f"Computing impacted targets between {base_sha} and {current_sha}...")
 
   # Every mode hashes with the runner's own config, so the `calculate` job sees
-  # exactly the configured graph the test job will build.
-  cquery_args = (f"--cqueryCommandOptions=--config={opts.bazel_config}",)
+  # exactly the configured graph the test job will build. For non-wheel
+  # configs, prune multi-ABI wheel targets from the cquery expression so Bazel
+  # does not transition into all PyTorch glue versions.
+  cquery_args: list[str] = [
+      f"--cqueryCommandOptions=--config={opts.bazel_config}",
+  ]
+  if not _is_wheel_config(opts.bazel_config, opts.extra_bazel_flags):
+    cquery_args.append(f"--cqueryExpression={_NON_WHEEL_CQUERY_EXPRESSION}")
 
-  print("--- Generating Base Hashes ---")
-  print(f"PR detected. Fetching exact base SHA: {base_sha}")
-  subprocess.run(
-      ["git", "fetch", "--depth=1", "origin", base_sha],
-      stderr=subprocess.DEVNULL,
-      check=False,
-  )
-  subprocess.run(["git", "checkout", base_sha], check=True)
-  base_hashes = workspace_dir / "base_hashes.json"
-  try:
+  with _aligned_bazelrc(workspace_dir, opts.bazel_config):
+    print("--- Generating Base Hashes ---")
+    print(f"PR detected. Fetching exact base SHA: {base_sha}")
+    subprocess.run(
+        ["git", "fetch", "--depth=1", "origin", base_sha],
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    subprocess.run(["git", "checkout", base_sha], check=True)
+    base_hashes = workspace_dir / "base_hashes.json"
+    try:
+      run_bazel_diff(
+          "generate-hashes",
+          "-w",
+          workspace_dir,
+          base_hashes,
+          "--useCquery",
+          *cquery_args,
+      )
+    finally:
+      # Never leave the checkout parked on the base SHA; a later job step (or a
+      # local run) would otherwise operate on the wrong tree.
+      print(f"Checking out current SHA: {current_sha}")
+      subprocess.run(["git", "checkout", current_sha], check=True)
+
+    print("--- Generating PR Hashes ---")
+    pr_hashes = workspace_dir / "pr_hashes.json"
     run_bazel_diff(
         "generate-hashes",
         "-w",
         workspace_dir,
-        base_hashes,
+        pr_hashes,
         "--useCquery",
         *cquery_args,
     )
-  finally:
-    # Never leave the checkout parked on the base SHA; a later job step (or a
-    # local run) would otherwise operate on the wrong tree.
-    print(f"Checking out current SHA: {current_sha}")
-    subprocess.run(["git", "checkout", current_sha], check=True)
 
-  print("--- Generating PR Hashes ---")
-  pr_hashes = workspace_dir / "pr_hashes.json"
-  run_bazel_diff(
-      "generate-hashes",
-      "-w",
-      workspace_dir,
-      pr_hashes,
-      "--useCquery",
-      *cquery_args,
-  )
-
-  print("--- Determining Impacted Targets ---")
-  impacted_targets_file = workspace_dir / "impacted_targets.txt"
-  run_bazel_diff(
-      "get-impacted-targets",
-      "-sh",
-      base_hashes,
-      "-fh",
-      pr_hashes,
-      "-w",
-      workspace_dir,
-      "-o",
-      impacted_targets_file,
-  )
-
-  impacted_targets = read_targets_file(impacted_targets_file)
-
-  # When no files under OPS_TEST_PATHS were modified, query Bazel for all
-  # targets tagged "ops-test" and subtract them from the impacted target list.
-  # Their generated *_build_test targets remain in impacted_targets.txt so the
-  # test binaries are still compiled on every PR.
-  if not run_ops_tests and impacted_targets:
-    print(
-        "No operator lowering or OpInfo harness changes; dropping ops-test"
-        " targets."
+    print("--- Determining Impacted Targets ---")
+    impacted_targets_file = workspace_dir / "impacted_targets.txt"
+    run_bazel_diff(
+        "get-impacted-targets",
+        "-sh",
+        base_hashes,
+        "-fh",
+        pr_hashes,
+        "-w",
+        workspace_dir,
+        "-o",
+        impacted_targets_file,
     )
-    query_res = subprocess.run(
-        ["bazel", "query", r'attr(tags, "\bops-test\b", //tests/...)'],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    ops_test_targets = list(
-        filter(None, map(str.strip, query_res.stdout.splitlines()))
-    )
-    if ops_test_targets:
-      impacted_targets = filter_ops_test_targets(
-          impacted_targets, ops_test_targets
+
+    impacted_targets = read_targets_file(impacted_targets_file)
+
+    # When no files under OPS_TEST_PATHS were modified, query Bazel for all
+    # targets tagged "ops-test" and subtract them from the impacted target list.
+    # Their generated *_build_test targets remain in impacted_targets.txt so the
+    # test binaries are still compiled on every PR.
+    if not run_ops_tests and impacted_targets:
+      print(
+          "No operator lowering or OpInfo harness changes; dropping ops-test"
+          " targets."
       )
-      impacted_targets_file.write_text(
-          "\n".join(impacted_targets) + ("\n" if impacted_targets else ""),
-          encoding="utf-8",
+      query_res = subprocess.run(
+          ["bazel", "query", r'attr(tags, "\bops-test\b", //tests/...)'],
+          capture_output=True,
+          text=True,
+          check=True,
       )
+      ops_test_targets = list(
+          filter(None, map(str.strip, query_res.stdout.splitlines()))
+      )
+      if ops_test_targets:
+        impacted_targets = filter_ops_test_targets(
+            impacted_targets, ops_test_targets
+        )
+        impacted_targets_file.write_text(
+            "\n".join(impacted_targets) + ("\n" if impacted_targets else ""),
+            encoding="utf-8",
+        )
 
-  if impacted_targets:
-    print(f"Found {len(impacted_targets)} impacted target(s).")
-    print("--- Impacted Targets List ---")
-    for target in sorted(impacted_targets):
-      print(target)
-    print("-----------------------------")
+    if impacted_targets:
+      print(f"Found {len(impacted_targets)} impacted target(s).")
+      print("--- Impacted Targets List ---")
+      for target in sorted(impacted_targets):
+        print(target)
+      print("-----------------------------")
 
-  if mode == Mode.CALCULATE:
-    # bazel-diff reports source files, libraries and binaries alongside test
-    # rules, and this runner's config applies its own tag filters, so a
-    # non-empty target set does not mean this runner has work. Let Bazel decide
-    # with the runner's own config; any error raises and fails the job.
-    has_tests = bool(impacted_targets) and config_selects_tests(
-        opts.bazel_config, opts.extra_bazel_flags, impacted_targets_file
-    )
-    if not has_tests:
-      print(f"--config={opts.bazel_config} selects no impacted test.")
-    write_github_output(has_impacted_targets=has_tests, is_full_run=False)
-    return 0
+    if mode == Mode.CALCULATE:
+      # bazel-diff reports source files, libraries and binaries alongside test
+      # rules, and this runner's config applies its own tag filters, so a
+      # non-empty target set does not mean this runner has work. Let Bazel decide
+      # with the runner's own config; any error raises and fails the job.
+      has_tests = bool(impacted_targets) and config_selects_tests(
+          opts.bazel_config, opts.extra_bazel_flags, impacted_targets_file
+      )
+      if not has_tests:
+        print(f"--config={opts.bazel_config} selects no impacted test.")
+      write_github_output(has_impacted_targets=has_tests, is_full_run=False)
+      return 0
 
   if not impacted_targets:
     print("No tests impacted by these changes. Skipping Bazel entirely!")
