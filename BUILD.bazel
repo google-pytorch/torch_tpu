@@ -33,6 +33,7 @@ load(
     "SENTINEL_TORCH_VERSION",
 )
 load("//bazel:supported_python_versions.bzl", "SUPPORTED_PYTHON_VERSIONS")
+load("//build_files:rbe.bzl", "DEFAULT_RBE_REGION", "RBE_REGIONS")
 
 package(
     default_visibility = PACKAGE_DEFAULT_VISIBILITY,
@@ -126,13 +127,8 @@ config_setting(
 # The RBE region whose TPU worker pool RBE TPU tests ask for.
 string_flag(
     name = "_rbe_region",
-    build_setting_default = "us-west1",
-    values = [
-        "asia-southeast1",
-        "us-central1",
-        "us-east1",
-        "us-west1",
-    ],
+    build_setting_default = DEFAULT_RBE_REGION,
+    values = list(RBE_REGIONS),
     visibility = ["//visibility:public"],
 )
 
@@ -142,11 +138,7 @@ string_flag(
     name = "rbe_" + region.replace("-", "_"),
     flag_values = {":_rbe_region": region},
     visibility = ["//visibility:public"],
-) for region in [
-    "asia-southeast1",
-    "us-central1",
-    "us-east1",
-]]
+) for region in RBE_REGIONS if region != DEFAULT_RBE_REGION]
 
 # Hermetic TCMalloc shared library built from @com_google_tcmalloc//tcmalloc
 # for preloading into Python test and benchmark processes via LD_PRELOAD.

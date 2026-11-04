@@ -36,7 +36,8 @@ class _HandshakeE2ETestMixin(metaclass=parameterized.TestGeneratorMetaclass):
   own `TpuMultiProcContinuousTest` subclass with its own worker pool.
   """
 
-  world_size = 8
+  rank: int
+  world_size: int
   _handshake_stage: str
 
   @classmethod
@@ -55,7 +56,7 @@ class _HandshakeE2ETestMixin(metaclass=parameterized.TestGeneratorMetaclass):
       super()._spawn_processes(world_size)  # pyrefly: ignore[missing-attribute]
 
   def test_handshake_no_rank_divergence(self) -> None:
-    rank = self.rank  # pyrefly: ignore[missing-attribute]
+    rank = self.rank
     debugs: list[tpu_compile.TpuCompileDebug] = []
     x = torch.ones(4, device="tpu") * (rank + 1)
     y = torch.ones(4, device="tpu") * 2
@@ -80,7 +81,7 @@ class _HandshakeE2ETestMixin(metaclass=parameterized.TestGeneratorMetaclass):
     )
 
   def test_handshake_rank_divergence(self) -> None:
-    rank = self.rank  # pyrefly: ignore[missing-attribute]
+    rank = self.rank
     debugs: list[tpu_compile.TpuCompileDebug] = []
     x = torch.ones(4, device="tpu") * (rank + 1)
     y = torch.ones(4, device="tpu") * 2
@@ -111,7 +112,7 @@ class _HandshakeE2ETestMixin(metaclass=parameterized.TestGeneratorMetaclass):
     )
 
   def test_handshake_divergence_after_iteration(self) -> None:
-    rank = self.rank  # pyrefly: ignore[missing-attribute]
+    rank = self.rank
     x = torch.ones(4, device="tpu") * (rank + 1)
     y = torch.ones(4, device="tpu") * 2
 
@@ -147,7 +148,7 @@ class _HandshakeE2ETestMixin(metaclass=parameterized.TestGeneratorMetaclass):
           " which raised the exception will wait on the global barrier."
       )
 
-    rank = self.rank  # pyrefly: ignore[missing-attribute]
+    rank = self.rank
     x = torch.ones(4, device="tpu") * (rank + 1)
     y = torch.ones(4, device="tpu") * 2
 
@@ -173,7 +174,7 @@ class _HandshakeE2ETestMixin(metaclass=parameterized.TestGeneratorMetaclass):
   def test_handshake_uneven_executables_between_ranks(
       self, divergent_rank: int
   ) -> None:
-    rank = self.rank  # pyrefly: ignore[missing-attribute]
+    rank = self.rank
     debugs: list[tpu_compile.TpuCompileDebug] = []
     x = torch.ones(4, device="tpu") * (rank + 1)
     y = torch.ones(4, device="tpu") * 2
@@ -209,7 +210,7 @@ class _HandshakeE2ETestMixin(metaclass=parameterized.TestGeneratorMetaclass):
   def test_handshake_last_frame_on_divergent_rank_is_not_collective_test(
       self, divergent_rank: int
   ) -> None:
-    rank = self.rank  # pyrefly: ignore[missing-attribute]
+    rank = self.rank
     debugs: list[tpu_compile.TpuCompileDebug] = []
     x = torch.ones(4, device="tpu") * (rank + 1)
     y = torch.ones(4, device="tpu") * 2
@@ -279,7 +280,7 @@ class _HandshakeE2ETestMixin(metaclass=parameterized.TestGeneratorMetaclass):
   def test_handshake_separate_vs_composed_compiled_functions(
       self, divergent_rank: int
   ) -> None:
-    rank = self.rank  # pyrefly: ignore[missing-attribute]
+    rank = self.rank
     debugs: list[tpu_compile.TpuCompileDebug] = []
     x = torch.ones(4, device="tpu") * (rank + 1)
     y = torch.ones(4, device="tpu") * 2
@@ -337,7 +338,7 @@ class _HandshakeE2ETestMixin(metaclass=parameterized.TestGeneratorMetaclass):
       )
 
   def test_handshake_no_rank_divergence_async_compile(self) -> None:
-    rank = self.rank  # pyrefly: ignore[missing-attribute]
+    rank = self.rank
     world_size = self.world_size
     debugs: list[tpu_compile.TpuCompileDebug] = []
     x = torch.ones(4, device="tpu") * (rank + 1)
@@ -379,7 +380,7 @@ class _HandshakeE2ETestMixin(metaclass=parameterized.TestGeneratorMetaclass):
     )
 
   def test_handshake_divergence_after_iteration_async_compile(self) -> None:
-    rank = self.rank  # pyrefly: ignore[missing-attribute]
+    rank = self.rank
     world_size = self.world_size
     x = torch.ones(4, device="tpu") * (rank + 1)
     y = torch.ones(4, device="tpu") * 2
