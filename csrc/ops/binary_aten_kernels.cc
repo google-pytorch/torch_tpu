@@ -114,9 +114,16 @@ absl::StatusOr<DeviceBufferRef> DispatchBinaryOp(
     const at::Tensor& self, const at::Tensor& other,
     MlirBinaryOpBuilder bin_op_builder, BinaryOpOptions opts) {
   at::ScalarType promoted_scalar_type = at::result_type(self, other);
-  if (opts.force_float_inputs) {
-    if (c10::isIntegralType(promoted_scalar_type, /*includeBool=*/true)) {
-      promoted_scalar_type = c10::get_default_dtype_as_scalartype();
+  if (opts.force_float_inputs &&
+      c10::isIntegralType(promoted_scalar_type, /*includeBool=*/true)) {
+    promoted_scalar_type = c10::get_default_dtype_as_scalartype();
+    // When `opts.result_dtype` is unset, `output_dtype` defaults to
+    // `computation_dtype` (`promoted_scalar_type`) and is already hashed via
+    // `output_shapes_`. When `opts.result_dtype` overrides the output dtype,
+    // record `default_dtype` explicitly to avoid stale cache hits.
+    if (opts.result_dtype.has_value()) {
+      TT_RETURN_IF_ERROR(opts.op_param_cache_keys.SetParam(
+          "default_dtype", promoted_scalar_type));
     }
   }
 
@@ -161,9 +168,16 @@ absl::StatusOr<DeviceBufferRef> DispatchTernaryOp(
     const at::Tensor& self, const at::Tensor& other, const at::Tensor& third,
     MlirTernaryOpBuilder ternary_op_builder, TernaryOpOptions opts) {
   at::ScalarType promoted_scalar_type = at::result_type(self, other);
-  if (opts.force_float_inputs) {
-    if (c10::isIntegralType(promoted_scalar_type, /*includeBool=*/true)) {
-      promoted_scalar_type = c10::get_default_dtype_as_scalartype();
+  if (opts.force_float_inputs &&
+      c10::isIntegralType(promoted_scalar_type, /*includeBool=*/true)) {
+    promoted_scalar_type = c10::get_default_dtype_as_scalartype();
+    // When `opts.result_dtype` is unset, `output_dtype` defaults to
+    // `computation_dtype` (`promoted_scalar_type`) and is already hashed via
+    // `output_shapes_`. When `opts.result_dtype` overrides the output dtype,
+    // record `default_dtype` explicitly to avoid stale cache hits.
+    if (opts.result_dtype.has_value()) {
+      TT_RETURN_IF_ERROR(opts.op_param_cache_keys.SetParam(
+          "default_dtype", promoted_scalar_type));
     }
   }
 
@@ -246,6 +260,8 @@ absl::Status DispatchBinaryOpOut(const at::Tensor& self,
   if (opts.force_float_inputs &&
       c10::isIntegralType(promoted_scalar_type, /*includeBool=*/true)) {
     promoted_scalar_type = c10::get_default_dtype_as_scalartype();
+    TT_RETURN_IF_ERROR(opts.op_param_cache_keys.SetParam("default_dtype",
+                                                         promoted_scalar_type));
   }
 
   const at::ScalarType expected_result_type =
@@ -319,6 +335,8 @@ absl::Status TernaryOpOut(const at::Tensor& self, const at::Tensor& other,
   if (opts.force_float_inputs &&
       c10::isIntegralType(promoted_scalar_type, /*includeBool=*/true)) {
     promoted_scalar_type = c10::get_default_dtype_as_scalartype();
+    TT_RETURN_IF_ERROR(opts.op_param_cache_keys.SetParam("default_dtype",
+                                                         promoted_scalar_type));
   }
 
   const at::ScalarType expected_result_type =
@@ -472,8 +490,11 @@ absl::StatusOr<DivOpOptions> GetDivOpOptionsNoMode(const at::Tensor& self,
   // Integer and booleans will be converted to torch's default scalar type.
   if (c10::isIntegralType(self.scalar_type(), /*includeBool=*/true) &&
       c10::isIntegralType(GetScalarType(other), /*includeBool=*/true)) {
+    TT_ASSIGN_OR_RETURN(OpParamCacheKeys param_keys,
+                        *OpParamCacheKeysBuilder().SetParam("default_dtype",
+                                                            default_aten_type));
     return DivOpOptions{.op_builder = std::move(op_builder),
-                        .op_param_cache_keys = OpParamCacheKeys::Empty(),
+                        .op_param_cache_keys = std::move(param_keys),
                         .result_dtype = default_dtype};
   }
 

@@ -15337,6 +15337,75 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         )
     )
 
+  @parameterized.named_parameters(
+      ("div_out", lambda a, b, out: torch.div(a, b, out=out), [2, 2], [2]),
+      (
+          "div_out_mode_none",
+          lambda a, b, out: torch.div(a, b, rounding_mode=None, out=out),
+          [2, 2],
+          [2],
+      ),
+      (
+          "div_scalar_out",
+          lambda a, _, out: torch.div(a, 2, out=out),
+          [2, 2],
+          [2],
+      ),
+      (
+          "atan2_out",
+          lambda a, b, out: torch.atan2(a, b, out=out),
+          [256, 2048],
+          [100000000],
+      ),
+      ("ldexp_out", lambda a, b, out: torch.ldexp(a, b, out=out), [1, 1], [1]),
+      ("xlogy_out", lambda a, b, out: torch.xlogy(a, b, out=out), [8, 8], [8]),
+  )
+  def test_binary_float_out_default_dtype_cache_invalidation(
+      self,
+      op_fn: Callable[[torch.Tensor, torch.Tensor, torch.Tensor], Any],
+      rhs_f32: Sequence[int],
+      rhs_f64: Sequence[int],
+  ):
+    """Verifies .out HLO cache invalidation when default dtype changes."""
+    # 257 rounds to 256.0 in bfloat16 and 2049 rounds to 2048.0 in float16,
+    # while float32 preserves both values exactly.
+    a_cpu = torch.tensor([257, 2049], dtype=torch.int32)
+    b_cpu = torch.tensor(rhs_f32, dtype=torch.int32)
+    a_tpu, b_tpu = a_cpu.to("tpu"), b_cpu.to("tpu")
+    for default_dtype in (
+        torch.bfloat16,
+        torch.float32,
+        torch.float16,
+        torch.bfloat16,
+    ):
+      with set_default_dtype(default_dtype):
+        out_cpu = torch.empty_like(a_cpu, dtype=torch.float32)
+        out_tpu = torch.empty_like(a_tpu, dtype=torch.float32)
+        op_fn(a_cpu, b_cpu, out_cpu)
+        op_fn(a_tpu, b_tpu, out_tpu)
+        utils.assert_close(
+            actual=out_tpu.cpu(), expected=out_cpu, rtol=1e-6, atol=1e-6
+        )
+
+    # 100000001 rounds to 100000000.0 in float32, while float64 preserves it.
+    if (
+        not torch.tensor([1e100], dtype=torch.float64, device="tpu")
+        .isinf()
+        .any()
+    ):
+      a64_cpu = torch.tensor([100000001], dtype=torch.int64)
+      b64_cpu = torch.tensor(rhs_f64, dtype=torch.int64)
+      a64_tpu, b64_tpu = a64_cpu.to("tpu"), b64_cpu.to("tpu")
+      for default_dtype in (torch.float32, torch.float64, torch.float32):
+        with set_default_dtype(default_dtype):
+          out_cpu = torch.empty(1, dtype=torch.float64)
+          out_tpu = torch.empty(1, dtype=torch.float64, device="tpu")
+          op_fn(a64_cpu, b64_cpu, out_cpu)
+          op_fn(a64_tpu, b64_tpu, out_tpu)
+          utils.assert_close(
+              actual=out_tpu.cpu(), expected=out_cpu, rtol=1e-12, atol=1e-12
+          )
+
 
 class OpsCustomOpUnitTest(TorchTpuVsCpuTestBase):
   """Tests for custom ops."""
