@@ -17,6 +17,7 @@ import unittest
 from unittest import mock
 
 from absl.testing import absltest
+from torch import torch_version
 from torch_tpu._internal.utils import utils
 from tests import oss_utils
 from tests import seed_test_utils
@@ -37,7 +38,9 @@ class OssUtilsTest(seed_test_utils.RepeatableTest):
     mock_libtpu = mock.MagicMock()
     mock_libtpu.__version__ = '0.4.0'
     with mock.patch.dict(sys.modules, {'libtpu': mock_libtpu}):
-      self.assertEqual(utils.libtpu_version(), (0, 4, 0))
+      ver = utils.libtpu_version()
+      self.assertIsInstance(ver, torch_version.TorchVersion)
+      self.assertEqual(ver, torch_version.TorchVersion('0.4.0'))
 
   def test_libtpu_version_when_libtpu_unavailable(self):
     with mock.patch.dict(sys.modules, {'libtpu': None}):

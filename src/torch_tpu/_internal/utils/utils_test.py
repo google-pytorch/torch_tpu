@@ -14,10 +14,13 @@
 
 from collections.abc import Sequence
 import math
+import sys
 from typing import Any
 
 from absl.testing import absltest
+from absl.testing import parameterized
 import torch
+from torch import torch_version
 from torch_tpu._internal import dynamism
 from torch_tpu._internal.utils import test_fixtures
 from torch_tpu._internal.utils import test_utils
@@ -808,14 +811,96 @@ class AllTest(seed_test_utils.RepeatableTest):
     self.assertIsNone(utils.get_primary_tensor_output("non_tensor_string"))
     self.assertIsNone(utils.get_primary_tensor_output([]))
 
-  def test_get_torch_version(self):
+  def test_version_aliases(self):
+    self.assertIs(test_utils.parse_version, utils.parse_version)
     self.assertIs(test_utils.get_torch_version, utils.get_torch_version)
-    with absltest.mock.patch.object(torch, "__version__", "2.11.0+cpu"):
-      self.assertEqual(utils.get_torch_version(), (2, 11, 0))
-      self.assertLess(utils.get_torch_version(), (2, 12))
-    with absltest.mock.patch.object(torch, "__version__", "2.12.0.dev20260301"):
-      self.assertEqual(utils.get_torch_version(), (2, 12, 0))
-      self.assertGreaterEqual(utils.get_torch_version(), (2, 12))
+    self.assertIs(test_utils.libtpu_version, utils.libtpu_version)
+
+  @parameterized.named_parameters(
+      ("release", "0.0.41", "0.0.41"),
+      ("major_only", "2", "2"),
+      ("many_components", "1.2.3.4.5", "1.2.3.4.5"),
+      ("trailing_zero", "2.12.0", "2.12.0"),
+      ("leading_zeros", "01.002.0003", "1.2.3"),
+      ("leading_v", "v2.11.0", "2.11.0"),
+      ("uppercase_v", "V2.11.0", "2.11.0"),
+      ("surrounding_whitespace", "  2.11.0\n", "2.11.0"),
+      ("epoch", "1!2.11.0", "1!2.11.0"),
+      ("dev", "0.0.41.dev20260101", "0.0.41"),
+      ("alpha", "2.15.0a0", "2.15.0"),
+      ("beta", "2.15.0b1", "2.15.0"),
+      ("release_candidate", "2.15.0rc2", "2.15.0"),
+      ("alternate_pre_spelling", "2.15.0-preview.3", "2.15.0"),
+      ("post", "2.15.0.post1", "2.15.0"),
+      ("implicit_post", "2.15.0-1", "2.15.0"),
+      ("pre_post_dev", "2.15.0rc1.post2.dev3", "2.15.0"),
+      ("local", "2.11.0+cpu", "2.11.0"),
+      ("local_with_numeric_segments", "2.11.0+cu121.7", "2.11.0"),
+      ("pre_and_local", "2.15.0a0+google3", "2.15.0"),
+  )
+  def test_parse_version(self, version: str, expected: str):
+    ver = utils.parse_version(version)
+    self.assertIsInstance(ver, torch_version.TorchVersion)
+    self.assertEqual(ver, torch_version.TorchVersion(expected))
+    self.assertEqual(ver, expected)
+
+  @parameterized.named_parameters(
+      ("empty", ""),
+      ("whitespace", "   "),
+      ("non_numeric", "abc"),
+      ("trailing_dot", "2.11."),
+      ("leading_dot", ".2.11"),
+      ("empty_component", "2..11"),
+      ("non_numeric_component", "2.x.0"),
+      ("unknown_suffix", "2.11.0foo"),
+      ("empty_local", "2.11.0+"),
+      ("invalid_local", "2.11.0+cpu+cuda"),
+      ("negative", "-1.0"),
+      ("inner_whitespace", "2. 11"),
+  )
+  def test_parse_version_invalid(self, version: str):
+    with self.assertRaisesRegex(ValueError, "Invalid version"):
+      utils.parse_version(version)
+
+  @parameterized.named_parameters(
+      ("before", "2.0", True, False),
+      ("same_release", "2.12.0", False, True),
+      ("same_release_shorter", "2.12", False, True),
+      ("after", "3.0", False, True),
+  )
+  def test_parse_version_compares_with_tuple(
+      self, version: str, less_than: bool, greater_equal: bool
+  ):
+    ver = utils.parse_version(version)
+    self.assertIs(ver < (2, 12), less_than)
+    self.assertIs(ver >= (2, 12), greater_equal)
+
+  @parameterized.named_parameters(
+      ("local", "2.11.0+cpu", (2, 11, 0)),
+      ("dev", "2.12.0.dev20260301", (2, 12, 0)),
+      ("pre_and_local", "2.15.0a0+google3", (2, 15, 0)),
+  )
+  def test_get_torch_version(self, torch_ver: str, expected: tuple[int, ...]):
+    with absltest.mock.patch.object(torch, "__version__", torch_ver):
+      ver = utils.get_torch_version()
+    self.assertIsInstance(ver, torch_version.TorchVersion)
+    self.assertEqual(ver, expected)
+
+  @parameterized.named_parameters(
+      ("release", "0.0.51", (0, 0, 51)),
+      ("dev", "0.0.51.dev20260401", (0, 0, 51)),
+  )
+  def test_libtpu_version(self, libtpu_ver: str, expected: tuple[int, ...]):
+    mock_libtpu = absltest.mock.MagicMock()
+    mock_libtpu.__version__ = libtpu_ver
+    with absltest.mock.patch.dict(sys.modules, {"libtpu": mock_libtpu}):
+      ver = utils.libtpu_version()
+    self.assertIsInstance(ver, torch_version.TorchVersion)
+    self.assertEqual(ver, expected)
+
+  def test_libtpu_version_unavailable(self):
+    with absltest.mock.patch.dict(sys.modules, {"libtpu": None}):
+      self.assertIsNone(utils.libtpu_version())
 
 
 if __name__ == "__main__":
