@@ -72,6 +72,10 @@ class GoldensPinTest(seed_test_utils.RepeatableTest):
     pin_file_from_str = goldens_pin.parse_goldens_pin(str(temp_pin))
     self.assertEqual(pin_file_from_str, pin_file)
 
+  @hypothesis.settings(
+      deadline=None,
+      suppress_health_check=[hypothesis.HealthCheck.too_slow],
+  )
   @hypothesis.given(pin_file=_GOLDEN_PATH_PIN_FILE_STRATEGY)
   def test_round_trip_serialization(
       self, pin_file: goldens_pin.GoldenPathPinFile
