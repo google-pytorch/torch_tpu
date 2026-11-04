@@ -18,7 +18,6 @@
 
 #include <atomic>
 #include <cstdint>
-#include <cstdlib>
 #include <memory>
 #include <optional>
 #include <string>
@@ -233,6 +232,7 @@ absl::Status PjrtBackend::InitializeInternal() {
     device_type = PjRtDeviceType::kTpu;
     plugin_name = kTpuPjrtName;
 
+    ApplyTpuVisibleDevices();
     // When WORLD_SIZE is not set (or is 1), TorchTPU defaults to single-device
     // mode.
     const auto& world_size_or =

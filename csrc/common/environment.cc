@@ -18,7 +18,6 @@
 
 #include <cstddef>
 #include <cstdlib>
-#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -273,6 +272,10 @@ absl::Status InitializeSingleDeviceEnvironment(
   SetTpuBoundsEnv(bounds, bounds);
   return absl::OkStatus();
 }
+
+// In OSS, the libtpu shared library reads `TPU_VISIBLE_CHIPS` and
+// `TPU_VISIBLE_DEVICES` itself when it initializes.
+void ApplyTpuVisibleDevices() {}
 
 // In OSS, libtpu is loaded dynamically, so its absl flags (such as
 // --deepsea_hal_included_devicepaths) aren't linked into this process. Read
