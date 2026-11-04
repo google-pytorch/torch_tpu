@@ -43,6 +43,7 @@
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/eager/tpu_hooks.h"
+#include "csrc/internal/device/vmem_capacity.h"
 #include "csrc/pjrt/pjrt_state.h"
 #include "pybind11/chrono.h"
 #include "pybind11/gil.h"
@@ -368,6 +369,9 @@ TT_PYBIND11_MODULE(_device_ops_backend, m) {
       "_get_local_device_attributes", &PyGetLocalDeviceAttributes,
       "Returns explicitly needed attributes and properties of the current PJRT "
       "device.");
+
+  m.def("_get_vmem_capacity_bytes", &GetDeviceVmemCapacityBytes,
+        "Returns the VMEM capacity of the current device.");
 
   m.def(
       "_set_allow_cache",

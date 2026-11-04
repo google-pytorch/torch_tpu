@@ -18,7 +18,6 @@
 
 #include <cstdint>
 #include <numbers>
-#include <optional>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -37,6 +36,7 @@
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
+#include "csrc/internal/device/vmem_capacity.h"
 #include "csrc/internal/mosaic/kiln/kiln.h"
 #include "csrc/internal/mosaic/kiln/mlir/stablehlo_splice.h"
 #include "csrc/internal/mosaic/kiln_custom_call.h"
@@ -82,6 +82,10 @@ struct FlexAttnConfig {
 
 constexpr float kLog2e = std::numbers::log2e_v<float>;
 constexpr int64_t kLanes = 128;
+
+// Scoped VMEM limit, as in flash attention: half the capacity, to avoid
+// spilling. flex_attention.py sizes the tile against the same limit.
+int64_t VmemLimitBytes() { return GetDeviceVmemCapacityBytes() / 2; }
 
 constexpr int kBatchAxis = 0;
 constexpr int kHeadAxis = 1;
@@ -248,20 +252,24 @@ absl::StatusOr<kiln::Kernel> BuildFlexAttentionKernel(const FlexAttnConfig& c) {
           }
           const kiln::Tile s = *modded * kLog2e;
 
-          const kiln::Tile m_prev = kiln::Load(m_ref).Lanes(1);
-          const kiln::Tile l_prev = kiln::Load(l_ref).Lanes(1);
-          const kiln::Tile m_new = Max(m_prev, kiln::MaxReduce(s, 1));
+          // m and l stay lane-replicated [q_block, 128]: broadcasting a
+          // [q_block, 1] column across the kv_block lanes every step is
+          // costlier than repeating whole vregs.
+          const kiln::Tile m_prev = kiln::Load(m_ref);
+          const kiln::Tile l_prev = kiln::Load(l_ref);
+          const kiln::Tile m_new =
+              Max(m_prev, kiln::MaxReduce(s, 1).Lanes(kLanes));
           // Rows with no visible key yet have m == -inf; use 0 in the
           // exponents so they give exp2(-inf) = 0 rather than NaN.
           const kiln::Tile m_safe =
               Select(m_new == kiln::NInf(m_new.shape()), 0.0, m_new);
           const kiln::Tile alpha = Exp2(m_prev - m_safe);
-          const kiln::Tile p = Exp2(s - m_safe);
-          kiln::Store(acc_ref, kiln::Load(acc_ref) * alpha +
+          const kiln::Tile p = Exp2(s - m_safe.Lanes(c.kv_block));
+          kiln::Store(acc_ref, kiln::Load(acc_ref) * alpha.Lanes(c.v_dim) +
                                    kiln::Dot(p.AsType(c.dtype), v, pv_options));
-          kiln::Store(m_ref, m_new.Lanes(kLanes));
+          kiln::Store(m_ref, m_new);
           kiln::Store(l_ref,
-                      (l_prev * alpha + kiln::SumReduce(p, 1)).Lanes(kLanes));
+                      l_prev * alpha + kiln::SumReduce(p, 1).Lanes(kLanes));
         });
 
         // End of the row: normalize and emit out / lse.
@@ -400,7 +408,7 @@ absl::StatusOr<std::tuple<at::Tensor, at::Tensor>> FlexAttentionFwdImpl(
         auto custom_call,
         CreateKilnCustomCallOp(
             op_builder, builder.getLoc(), std::move(kernel), operands,
-            result_types, /*vmem_limit_bytes=*/std::nullopt,
+            result_types, VmemLimitBytes(),
             /*needs_hlo_passes=*/!config.score_mod_mlir.empty() ||
                 !config.mask_mod_mlir.empty()));
     DynamicMlirOpResults results;

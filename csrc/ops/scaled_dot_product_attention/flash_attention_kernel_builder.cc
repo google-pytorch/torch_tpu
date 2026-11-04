@@ -49,6 +49,7 @@
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
+#include "csrc/internal/device/vmem_capacity.h"
 #include "csrc/internal/mosaic/kiln/kiln.h"
 #include "csrc/internal/mosaic/kiln_custom_call.h"
 #include "csrc/ops/binary.h"
@@ -61,7 +62,6 @@
 #include "csrc/ops/scaled_dot_product_attention/flash_attention_kernel.h"
 #include "csrc/ops/scaled_dot_product_attention/helpers.h"
 #include "csrc/ops/view_decomposition/contiguous_to_view.h"
-#include "csrc/pjrt/pjrt_state.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/MathExtras.h"
@@ -78,31 +78,8 @@
 namespace torch_tpu {
 namespace {
 
-int64_t GetDeviceVmemLimitBytes() {
-  static const int64_t vmem_limit = []() -> int64_t {
-    // Default fallback: 16 MB
-    int64_t capacity = 16777216;
-    auto attrs_or = PjrtBackend::GetInstance().GetDeviceAttributes();
-    if (attrs_or.ok()) {
-      const std::string& device_kind = attrs_or->device_kind;
-      if (device_kind == "TPU v5e" || device_kind == "TPU v5 lite") {
-        capacity = 134217728;
-      } else if (device_kind == "TPU v6e" || device_kind == "TPU v6 lite") {
-        capacity = 134152192;
-      } else if (device_kind == "TPU v5" || device_kind == "TPU v5p") {
-        capacity = 67043328;
-      } else if (device_kind == "TPU7" || device_kind == "TPU7x" ||
-                 device_kind == "TPU 7" || device_kind == "TPU 7x" ||
-                 device_kind == "TPU8i" || device_kind == "TPU8t" ||
-                 device_kind == "TPU 8i" || device_kind == "TPU 8t") {
-        capacity = 67043328;
-      }
-    }
-    // Limit to 50% of capacity to avoid spilling.
-    return capacity / 2;
-  }();
-  return vmem_limit;
-}
+// Scoped VMEM limit for the kernels: half the capacity, to avoid spilling.
+int64_t GetVmemLimitBytes() { return GetDeviceVmemCapacityBytes() / 2; }
 
 // Minimum hardware tile size (hardware lane width).
 constexpr int64_t kMinHardwareTileSize = 128;
@@ -163,8 +140,7 @@ Tiling CreateTiling(int64_t q_seq_len, int64_t k_seq_len, int64_t head_dim,
                     bool is_f32, bool has_mask, bool is_backward,
                     bool has_dropout = false,
                     std::optional<int64_t> vmem_limit_override = std::nullopt) {
-  const int64_t vmem_limit =
-      vmem_limit_override.value_or(GetDeviceVmemLimitBytes());
+  const int64_t vmem_limit = vmem_limit_override.value_or(GetVmemLimitBytes());
 
   int64_t qt = GetInitialTileSize(q_seq_len);
   int64_t kt = GetInitialTileSize(k_seq_len);
@@ -532,7 +508,7 @@ CreateFlashAttentionKernelImpl(const at::Tensor& query, const at::Tensor& key,
         auto custom_call,
         CreateKilnCustomCallOp(builder.getOpBuilder(), builder.getLoc(),
                                std::move(kernel), operands, result_types,
-                               GetDeviceVmemLimitBytes()));
+                               GetVmemLimitBytes()));
 
     mlir::MlirOp out_padded(builder, custom_call.getResult(0));
     mlir::MlirOp out_sliced =
@@ -777,9 +753,9 @@ CreateFlashAttentionBackwardKernel(
     mlir::RankedTensorType value_type = GetTensorTypeOrDie(value_batch);
     TT_ASSIGN_OR_RETURN(
         auto dkv_custom_call,
-        CreateKilnCustomCallOp(
-            builder.getOpBuilder(), builder.getLoc(), std::move(dkv_kernel),
-            dkv_inputs, {key_type, value_type}, GetDeviceVmemLimitBytes()));
+        CreateKilnCustomCallOp(builder.getOpBuilder(), builder.getLoc(),
+                               std::move(dkv_kernel), dkv_inputs,
+                               {key_type, value_type}, GetVmemLimitBytes()));
 
     mlir::MlirOp out_batch =
         flatten_batch_dims(out_mlir, config.batch_size, rank - 3);
@@ -805,9 +781,9 @@ CreateFlashAttentionBackwardKernel(
                         CreateBackwardDqKernel(config, tiling));
     TT_ASSIGN_OR_RETURN(
         auto dq_custom_call,
-        CreateKilnCustomCallOp(
-            builder.getOpBuilder(), builder.getLoc(), std::move(dq_kernel),
-            dq_inputs, {query_batch.getType()}, GetDeviceVmemLimitBytes()));
+        CreateKilnCustomCallOp(builder.getOpBuilder(), builder.getLoc(),
+                               std::move(dq_kernel), dq_inputs,
+                               {query_batch.getType()}, GetVmemLimitBytes()));
 
     mlir::MlirOp grad_key_batch_padded(builder, dkv_custom_call.getResult(0));
     mlir::MlirOp grad_value_batch_padded(builder, dkv_custom_call.getResult(1));
