@@ -14,7 +14,7 @@
 
 """Tests ops on their static kernels, with unbounded dynamic kernels disabled.
 
-The static_ops_test target (see BUILD) runs these tests with
+The ops_unit_test_static target (see BUILD) runs these tests with
 TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS=0. The runtime reads the
 variable once per process, and with it enabled (the default) the precompiled
 unbounded dynamic kernels serve the ops they support instead of the static

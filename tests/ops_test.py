@@ -20,6 +20,7 @@ on GPU.
 
 import collections.abc
 import copy
+import functools
 import os
 import sys
 from typing import Any
@@ -61,6 +62,51 @@ def category(*names):
     return func
 
   return decorator
+
+
+# The attribute that `also_run_static` sets on the tests it marks.
+_ALSO_RUN_STATIC_ATTR = "also_run_static"
+
+_UNBOUNDED_DYNAMIC_KERNELS_ENV_VAR = (
+    "TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS"
+)
+
+
+def _unbounded_dynamic_kernels_disabled() -> bool:
+  """Returns whether the env var disables unbounded dynamic kernels.
+
+  Mirrors the runtime, which enables them unless the variable is "0" or "false".
+  """
+  value = os.environ.get(_UNBOUNDED_DYNAMIC_KERNELS_ENV_VAR, "")
+  return value.strip().lower() in ("0", "false")
+
+
+def _unbounded_dynamic_hits() -> int:
+  """Returns the number of lookups served by unbounded dynamic kernels."""
+  return torch.tpu._get_cache_stats().num_unbounded_dynamic_hits  # pylint: disable=protected-access
+
+
+def also_run_static(func):
+  """Also runs the test in ops_test_static, asserting no dynamic kernels ran."""
+
+  @functools.wraps(func)
+  def wrapper(self, *args, **kwargs):
+    if not _unbounded_dynamic_kernels_disabled():
+      return func(self, *args, **kwargs)
+
+    hits_before = _unbounded_dynamic_hits()
+    result = func(self, *args, **kwargs)
+    torch.accelerator.synchronize()
+    self.assertEqual(
+        _unbounded_dynamic_hits() - hits_before,
+        0,
+        "Lookups served by unbounded dynamic kernels, although"
+        f" {_UNBOUNDED_DYNAMIC_KERNELS_ENV_VAR} disables them.",
+    )
+    return result
+
+  setattr(wrapper, _ALSO_RUN_STATIC_ATTR, True)
+  return wrapper
 
 
 def _has_test_filter() -> bool:
@@ -1340,6 +1386,19 @@ class TestOps(op_testing.OpInfoTestBase):
   def setUp(self):
     super().setUp()
 
+    # With unbounded dynamic kernels disabled (the ops_test_static target), run
+    # only the tests marked with @also_run_static: the others run in the
+    # targets with them enabled.
+    method = getattr(self, self._testMethodName, None)
+    if _unbounded_dynamic_kernels_disabled() and not getattr(
+        method, _ALSO_RUN_STATIC_ATTR, False
+    ):
+      self.skipTest(
+          f"Skipping test because {_UNBOUNDED_DYNAMIC_KERNELS_ENV_VAR}"
+          " disables unbounded dynamic kernels, and the test is not marked"
+          " with @also_run_static."
+      )
+
     # Filter the tests by --test_categories only if --test_filter is not on
     # the bazel command line. If --test_filter is specified, we should respect
     # the user's intent and not apply any additional filtering based on
@@ -1348,7 +1407,6 @@ class TestOps(op_testing.OpInfoTestBase):
       exclusions = {c[1:] for c in _TEST_CATEGORIES.value if c.startswith("-")}
       inclusions = {c for c in _TEST_CATEGORIES.value if not c.startswith("-")}
 
-      method = getattr(self, self._testMethodName, None)
       test_categories = getattr(method, "categories", set())
 
       if any(cat in exclusions for cat in test_categories):
@@ -3201,6 +3259,7 @@ class TestOps(op_testing.OpInfoTestBase):
         exclude_dtypes=(_if_tpu_vs_gpu_compiled((torch.complex64,), ())),
     )
 
+  @also_run_static
   @category("nonzero")
   def test_nonzero(self):
     self.do_test_op(

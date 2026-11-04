@@ -593,6 +593,8 @@ torch_tpu_py_library(
 # * ops_test_dynamic_compiled: TPU vs GPU, bounds a dimension under torch.compile.
 # * ops_test_dynamic_compiled_grad: gradient on TPU vs GPU, bounds dimensions under torch.compile.
 # * ops_test_compiled: TPU vs GPU (torch.compile TpuBackend vs GPU inductor backend).
+# * ops_test_static: TPU vs GPU, with unbounded dynamic kernels disabled, for
+#   tests marked with @also_run_static only.
 
 # We chose to manually maintain the duplicate tests instead of using a for-loop to generate the
 # targets because:
@@ -902,6 +904,40 @@ torch_tpu_py_test(
         "noasan",  # This test times out in asan mode.
         "nomsan",  # This test times out in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.  # This test times out in tsan mode.
+        "ops-test",  # Heavy ops test: see run_bazel_diff.py for details.
+    ] + _OSS_GOLDEN_TAGS,
+    deps = [
+        ":dynamism_test_utils",
+        ":op_testing",
+        ":oss_utils",
+        ":quantize_utils",
+        "//csrc/eager:tpu_aten_kernels",
+        "//shims/absl_py/flags",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/utils:test_utils",
+    ],
+)
+
+# Runs only the ops_test tests marked with @also_run_static with dynamic kernels disabled.
+torch_tpu_py_test(
+    name = "ops_test_static",
+    timeout = "long",
+    srcs = ["ops_test.py"],
+    args = [
+        "--max_samples_per_op_dtype=10",
+    ],
+    data = _GPU_GOLDENS_DATA,
+    env = {"TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS": "0"},
+    main = "ops_test.py",
+    nopresubmit_oss = _WHEN_OSS_PRESUBMIT_OVERLOADED,
+    run_on_accelerators = [
+        "requires-tpu-v6e",
+        "requires-tpu-v5lite",
+    ],
+    shard_count = 1,  # Increase as more tests are marked with @also_run_static.
+    tags = [
         "ops-test",  # Heavy ops test: see run_bazel_diff.py for details.
     ] + _OSS_GOLDEN_TAGS,
     deps = [
@@ -2465,10 +2501,10 @@ torch_tpu_py_test(
 # TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS once per process, so these
 # tests need their own target with it disabled.
 torch_tpu_py_test(
-    name = "static_ops_test",
-    srcs = ["static_ops_test.py"],
+    name = "ops_unit_test_static",
+    srcs = ["ops_unit_test_static.py"],
     env = {"TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS": "0"},
-    main = "static_ops_test.py",
+    main = "ops_unit_test_static.py",
     run_on_accelerators = [
         "requires-tpu-v6e",
         "requires-tpu-v5lite",
