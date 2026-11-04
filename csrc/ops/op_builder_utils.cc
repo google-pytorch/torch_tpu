@@ -904,6 +904,44 @@ std::string ConsumeMlirDiagnostics(
   return AdaptExternalErrorMessage(status.message());
 }
 
+namespace {
+
+// StableHLO allows at most one bounded dim in a `broadcast_in_dim` result. If
+// broadcasting `input` to `shape` needs more, returns `input` made static at
+// its bounds: the broadcast helpers then broadcast it to the padded shape and
+// bound each result dim with `set_dimension_size`. Otherwise returns `input`.
+mlir::MlirOp StaticIfMultipleBoundedResultDims(
+    mlir::MlirOp input, const stablehlo::Dimensions& shape,
+    absl::Span<const int64_t> broadcast_dimensions) {
+  const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
+  const mlir::RankedTensorType output_type =
+      stablehlo::getRankedTensorType(shape, input_type.getElementType());
+  if (output_type.getNumDynamicDims() <= 1 ||
+      input_type.getNumDynamicDims() == 0 || input_type == output_type ||
+      input_type.getRank() > output_type.getRank() ||
+      (!broadcast_dimensions.empty() &&
+       static_cast<int64_t>(broadcast_dimensions.size()) !=
+           input_type.getRank())) {
+    return input;
+  }
+  // Keep bounded-to-static broadcasts as is, so that the helpers report them.
+  const stablehlo::Dimensions input_dims = GetDimensions(input);
+  const int64_t rank_diff = output_type.getRank() - input_type.getRank();
+  for (int64_t i = 0; i < input_type.getRank(); ++i) {
+    if (!input_type.isDynamicDim(i)) continue;
+    const int64_t output_dim =
+        broadcast_dimensions.empty() ? i + rank_diff : broadcast_dimensions[i];
+    if (!input_dims[i].boundOp.has_value() || output_dim < 0 ||
+        output_dim >= output_type.getRank() ||
+        !output_type.isDynamicDim(output_dim)) {
+      return input;
+    }
+  }
+  return MakeStaticAtBounds(input).op;
+}
+
+}  // namespace
+
 absl::StatusOr<mlir::MlirOp> BroadcastIfNeeded(
     mlir::MlirOp input, absl::Span<const int64_t> shape) {
   ABSL_VLOG(1) << "[BroadcastIfNeeded] input: " << input.ToString()
@@ -938,6 +976,7 @@ absl::StatusOr<mlir::MlirOp> BroadcastIfNeeded(
     mlir::MlirOp input, mlir::stablehlo::Dimensions shape,
     absl::Span<const int64_t> broadcast_dimensions) {
   mlir::BaseScopedDiagnosticHandler diag_handler(input.getValue().getContext());
+  input = StaticIfMultipleBoundedResultDims(input, shape, broadcast_dimensions);
   mlir::FailureOr<mlir::Value> broadcasted_value_or_fail;
   if (!broadcast_dimensions.empty()) {
     broadcasted_value_or_fail = mlir::stablehlo::broadcastIfNeeded(
@@ -959,6 +998,8 @@ absl::StatusOr<mlir::MlirOp> BroadcastIfNeeded(
   mlir::BaseScopedDiagnosticHandler diag_handler(
       target.getValue().getContext());
   mlir::stablehlo::Dimensions target_dims = GetDimensions(target);
+  input = StaticIfMultipleBoundedResultDims(input, target_dims,
+                                            broadcast_dimensions);
 
   mlir::FailureOr<mlir::Value> broadcasted_value_or_fail;
   if (!broadcast_dimensions.empty()) {
@@ -993,19 +1034,20 @@ absl::StatusOr<std::vector<mlir::MlirOp>> ApplyBroadcastIfNeeded(
       ops, [](const mlir::MlirOp& op) { return op.getValue(); });
   mlir::BaseScopedDiagnosticHandler diag_handler(values[0].getContext());
   mlir::MlirOp first_op = ops[0];
-  auto broadcasted_values_or_fail = mlir::stablehlo::numpyBroadcastIfNeeded(
-      first_op.getBuilder().getOpBuilder(), values);
-  TT_RET_CHECK(mlir::succeeded(broadcasted_values_or_fail),
-               error::kInvalidArgument)
+  const mlir::FailureOr<mlir::stablehlo::Dimensions> shape =
+      mlir::stablehlo::getNumpyBroadcastShape(
+          first_op.getBuilder().getOpBuilder().getInsertionPoint()->getLoc(),
+          values);
+  TT_RET_CHECK(mlir::succeeded(shape), error::kInvalidArgument)
       << "failed to broadcast tensors: "
       << ConsumeMlirDiagnostics(diag_handler);
-  mlir::SmallVector<mlir::Value> broadcasted_values =
-      std::move(*broadcasted_values_or_fail);
+  // Broadcast each op separately, which supports multiple bounded dims.
   std::vector<mlir::MlirOp> result;
   result.reserve(ops.size());
-  for (size_t i = 0; i < ops.size(); ++i) {
-    mlir::MlirOp op = ops[i];
-    result.emplace_back(op.getBuilder(), broadcasted_values[i]);
+  for (const mlir::MlirOp& op : ops) {
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp broadcasted,
+                        BroadcastIfNeeded(op, *shape));
+    result.push_back(broadcasted);
   }
   return result;
 }
@@ -1812,7 +1854,8 @@ absl::Status HandleExpandReshape(
         << " for output shape [" << absl::StrJoin(static_shape_after, ",")
         << "] is greater than the inferred bound of " << output_dyn_bound;
     output_dims[output_bound_dim] = {.size = output_dyn_bound,
-                                     .boundOp = op.getValue()};
+                                     .boundOp = op.getValue(),
+                                     .boundOpDim = inputIdx};
     ABSL_VLOG(3) << "[HandleExpandReshape] output_bound_dim: "
                  << output_bound_dim
                  << " output_dyn_bound: " << op_dims[inputIdx].size;
@@ -1870,11 +1913,61 @@ absl::Status HandleTransposeLikeReshape(
 
     // Transfer bounded dynamism from input to output.
     if (op_dims[i].boundOp.has_value()) {
-      output_dims[j] = {.size = op_dims[i].size, .boundOp = op.getValue()};
+      output_dims[j] = {
+          .size = op_dims[i].size, .boundOp = op.getValue(), .boundOpDim = i};
     }
   }
 
   return absl::OkStatus();
+}
+
+// Returns whether a reshape with result dimensions `output_dims` maps every
+// bounded dynamic dimension of the input (with dimensions `op_dims`) to a
+// single output dimension of the same size, i.e. only inserts, removes or moves
+// size-1 dimensions around the bounded dimensions (e.g.
+// [1, C, ?H, ?W] -> [C, ?H, ?W, 1]).
+bool PreservesBoundedDimensions(
+    const mlir::stablehlo::Dimensions& op_dims,
+    const mlir::SmallVector<mlir::stablehlo::DimensionInfo>& output_dims) {
+  const int64_t num_bounded_input_dims =
+      absl::c_count_if(op_dims, [](const mlir::stablehlo::DimensionInfo& dim) {
+        return dim.boundOp.has_value();
+      });
+  int64_t num_bounded_output_dims = 0;
+  for (const mlir::stablehlo::DimensionInfo& dim : output_dims) {
+    if (!dim.boundOp.has_value()) continue;
+    if (dim.boundOpDim < 0 || op_dims[dim.boundOpDim].size != dim.size) {
+      return false;
+    }
+    ++num_bounded_output_dims;
+  }
+  return num_bounded_output_dims == num_bounded_input_dims;
+}
+
+// Reshapes `op` to the bounded result dimensions `output_dims`, which must
+// satisfy `PreservesBoundedDimensions`.
+//
+// StableHLO `reshape` results may have at most one bounded dimension, so `op`
+// is made static at its bounds, reshaped statically, and bounded again with the
+// runtime sizes of `op`. Since every bounded dimension keeps its size and the
+// order of the non-size-1 dimensions is unchanged, the valid (unpadded) region
+// of `op` stays in place.
+mlir::MlirOp ReshapeAtBounds(
+    mlir::MlirOp op,
+    const mlir::SmallVector<mlir::stablehlo::DimensionInfo>& output_dims) {
+  StaticAtBounds static_op = MakeStaticAtBounds(op);
+  Dimensions shape_at_bounds;
+  shape_at_bounds.reserve(output_dims.size());
+  for (const mlir::stablehlo::DimensionInfo& dim : output_dims) {
+    shape_at_bounds.push_back(dim.size);
+  }
+  mlir::MlirOp result = mlir::stablehlo::Reshape(static_op.op, shape_at_bounds);
+  for (int64_t dim = 0; dim < static_cast<int64_t>(output_dims.size()); ++dim) {
+    if (!output_dims[dim].boundOp.has_value()) continue;
+    result = stablehlo::SetDimensionSize(
+        result, *static_op.runtime_sizes[output_dims[dim].boundOpDim], dim);
+  }
+  return result;
 }
 
 }  // namespace
@@ -2002,6 +2095,16 @@ absl::StatusOr<mlir::MlirOp> ReshapeFromStaticDimensions(
   } else if (reassociation.type == ReshapeType::kTransposeLike) {
     TT_RETURN_IF_ERROR(HandleTransposeLikeReshape(
         op, op_dims, static_shape_before, static_shape_after, output_dims));
+  }
+
+  // StableHLO `reshape` results may have at most one bounded dimension.
+  const int64_t num_bounded_output_dims = absl::c_count_if(
+      output_dims, [](const mlir::stablehlo::DimensionInfo& dim) {
+        return dim.boundOp.has_value();
+      });
+  if (num_bounded_output_dims > 1 &&
+      PreservesBoundedDimensions(op_dims, output_dims)) {
+    return ReshapeAtBounds(op, output_dims);
   }
 
   mlir::RankedTensorType dynamic_shape_after =
