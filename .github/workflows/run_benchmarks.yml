@@ -58,7 +58,6 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write
 
 jobs:
   build_wheel:
@@ -69,8 +68,6 @@ jobs:
       image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:dddf008479144c57182b56a6d00bfc1f38f8f2ef206e2bc26ff6c0a401ded47e"  # Tag infrastructure-public-image-083516c6af6a (built 2026-10-13)
       # Disable ipc isolation to prevent shm limit issues.
       options: --ipc=host
-    permissions:
-      contents: read
     outputs:
       gcs_wheel_path: ${{ steps.build.outputs.gcs_wheel_path }}
     steps:
@@ -90,6 +87,12 @@ jobs:
       !cancelled() &&
       (needs.build_wheel.result == 'success' ||
        needs.build_wheel.result == 'skipped')
+    permissions:
+      contents: read  # Required by run-benchmarks.yaml for actions/checkout.
+      # The reusable run-benchmarks.yaml workflow declares `pull-requests: write`
+      # at the workflow level (for its optional `post_pr_comment` feature), so
+      # GitHub Actions requires caller jobs to grant it.
+      pull-requests: write
     uses: google-ml-infra/bap/.github/workflows/run-benchmarks.yaml@ff212b97420bf479bd492d64e4b549534c22cd91 # main
     with:
       registry_file: "perflab/benchmark_registry.pbtxt"
