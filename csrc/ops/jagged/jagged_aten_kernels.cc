@@ -22,6 +22,7 @@
 #include <cstring>
 #include <limits>
 #include <optional>
+#include <type_traits>
 #include <utility>
 
 #include "ATen/core/ATen_fwd.h"
@@ -58,7 +59,6 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
-#include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
 
@@ -143,30 +143,73 @@ mlir::MlirOp CreateI64Constant(mlir::MlirBuilder& builder,
   return mlir::stablehlo::Constant(builder, mlir::makeConstant(data, type));
 }
 
+enum class InfinitySign { kNegative, kPositive };
+
+// Returns the extreme value (max for kPositive, lowest for kNegative) of an
+// integral or bool type T as an at::Scalar.
+template <typename T>
+  requires std::is_integral_v<T>
+at::Scalar GetIntegerBoundScalar(const InfinitySign sign) {
+  return sign == InfinitySign::kPositive ? std::numeric_limits<T>::max()
+                                         : std::numeric_limits<T>::lowest();
+}
+
 // Helper returning the extreme value scalar for infinite padding on
 // integral/bool types.
-at::Scalar GetInfinitePaddingScalar(at::ScalarType dtype, bool is_positive) {
+absl::StatusOr<at::Scalar> GetInfinitePaddingScalar(
+    const mlir::ElementType dtype, const InfinitySign sign) {
   switch (dtype) {
-    case at::kByte:
-      return is_positive ? std::numeric_limits<uint8_t>::max()
-                         : std::numeric_limits<uint8_t>::lowest();
-    case at::kChar:
-      return is_positive ? std::numeric_limits<int8_t>::max()
-                         : std::numeric_limits<int8_t>::lowest();
-    case at::kShort:
-      return is_positive ? std::numeric_limits<int16_t>::max()
-                         : std::numeric_limits<int16_t>::lowest();
-    case at::kInt:
-      return is_positive ? std::numeric_limits<int32_t>::max()
-                         : std::numeric_limits<int32_t>::lowest();
-    case at::kLong:
-      return is_positive ? std::numeric_limits<int64_t>::max()
-                         : std::numeric_limits<int64_t>::lowest();
-    case at::kBool:
-      return is_positive;
-    default:
-      return 0;
+    case mlir::ElementType::UI8:
+      return GetIntegerBoundScalar<uint8_t>(sign);
+    case mlir::ElementType::UI16:
+      return GetIntegerBoundScalar<uint16_t>(sign);
+    case mlir::ElementType::UI32:
+      return GetIntegerBoundScalar<uint32_t>(sign);
+    case mlir::ElementType::UI64:
+      return GetIntegerBoundScalar<uint64_t>(sign);
+    case mlir::ElementType::I8:
+      return GetIntegerBoundScalar<int8_t>(sign);
+    case mlir::ElementType::I16:
+      return GetIntegerBoundScalar<int16_t>(sign);
+    case mlir::ElementType::I32:
+      return GetIntegerBoundScalar<int32_t>(sign);
+    case mlir::ElementType::I64:
+      return GetIntegerBoundScalar<int64_t>(sign);
+    case mlir::ElementType::PRED:
+      return GetIntegerBoundScalar<bool>(sign);
+    // Deliberately no default case to catch new cases at compile time.
+    // go/keep-sorted start
+    case mlir::ElementType::BF16:
+    case mlir::ElementType::COMPLEXF32:
+    case mlir::ElementType::COMPLEXF64:
+    case mlir::ElementType::F16:
+    case mlir::ElementType::F32:
+    case mlir::ElementType::F4E2M1FN:
+    case mlir::ElementType::F64:
+    case mlir::ElementType::F6E2M3FN:
+    case mlir::ElementType::F6E3M2FN:
+    case mlir::ElementType::F8E3M4:
+    case mlir::ElementType::F8E4M3:
+    case mlir::ElementType::F8E4M3B11FNUZ:
+    case mlir::ElementType::F8E4M3FN:
+    case mlir::ElementType::F8E4M3FNUZ:
+    case mlir::ElementType::F8E5M2:
+    case mlir::ElementType::F8E5M2FNUZ:
+    case mlir::ElementType::F8E8M0FNU:
+    case mlir::ElementType::I2:
+    case mlir::ElementType::I4:
+    case mlir::ElementType::UI2:
+    case mlir::ElementType::UI4:
+      // go/keep-sorted end
+      break;
   }
+  return TT_ERROR(  // ERROR_COV_INFEASIBLE=Unreachable for valid ScalarType
+             error::kInvalidArgument)
+         << "expected an integral or boolean element type (ui8, ui16, ui32, "
+            "ui64, i8, i16, i32, i64, pred) for non-floating-point infinite "
+            "padding, got "
+         << ToShortString(dtype)
+         << "; specify a finite padding_value or use a supported element type";
 }
 
 // Normalizes the padding value. For integral and boolean types, non-finite
@@ -175,18 +218,19 @@ at::Scalar GetInfinitePaddingScalar(at::ScalarType dtype, bool is_positive) {
 // matching PyTorch's CUDA implementation in
 // `ATen/native/nested/NestedTensorUtils.h: _get_padding_value` and
 // `ATen/native/nested/cuda/NestedTensorTransformerFunctions.cu`.
-at::Scalar NormalizePaddingValue(const at::Tensor& values,
-                                 double padding_value) {
-  if (values.is_floating_point() || values.is_complex()) {
+absl::StatusOr<at::Scalar> NormalizePaddingValue(const mlir::ElementType dtype,
+                                                 const double padding_value) {
+  if (std::isfinite(padding_value) || mlir::IsFloat(dtype) ||
+      mlir::IsComplex(dtype)) {
     return at::Scalar(padding_value);
   }
   if (std::isinf(padding_value)) {
-    return GetInfinitePaddingScalar(values.scalar_type(), padding_value > 0);
+    return GetInfinitePaddingScalar(dtype, padding_value > 0
+                                               ? InfinitySign::kPositive
+                                               : InfinitySign::kNegative);
   }
-  if (std::isnan(padding_value)) {
-    return at::Scalar(0);
-  }
-  return at::Scalar(padding_value);
+  // Non-finite and non-infinite: padding_value is NaN.
+  return at::Scalar(0);
 }
 
 // Helper struct holding calculated index mappings for JaggedToPaddedDense.
@@ -349,7 +393,8 @@ absl::StatusOr<DeviceBufferRef> JaggedToPaddedDense(
 
   TT_ASSIGN_OR_RETURN(const auto output_dtype,
                       ConvertTo<mlir::ElementType>(values.scalar_type()));
-  const at::Scalar fill_scalar = NormalizePaddingValue(values, padding_value);
+  TT_ASSIGN_OR_RETURN(const at::Scalar fill_scalar,
+                      NormalizePaddingValue(output_dtype, padding_value));
 
   JaggedToPaddedIndices indices = ComputeJaggedToPaddedIndices(
       offsets_vec, batch_size, max_length, values.size(0));
