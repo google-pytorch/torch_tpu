@@ -200,7 +200,7 @@ void CompilationCache::EnsureInitialized() {
 CompilationCache::CompilationCache()
     : auto_load_unbounded_dynamic_kernels_(
           GetBooleanEnvOnce<kTorchTpuInternalUseUnboundedDynamicKernelsEnvVar>()
-              .value_or(false)) {}
+              .value_or(true)) {}
 
 CompilationCache::~CompilationCache() {
   ABSL_VLOG(1) << "CompilationCache shutting down.";

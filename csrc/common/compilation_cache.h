@@ -295,7 +295,8 @@ class CompilationCache {
   //
   // A static cache miss is served by a compatible kernel from
   // `UnboundedDynamicKernelRegistry` only if `unbounded_kernel_policy` is
-  // `kAllow` and TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS is set.
+  // `kAllow` and TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS is not
+  // disabled (it is enabled by default).
   absl::StatusOr<CompiledKernel> GetOrCompile(
       const CompilationCacheKey& key, const std::vector<Shape>& input_shapes,
       const std::vector<Shape>& output_shapes,
@@ -618,7 +619,7 @@ class CompilationCache {
   // `UnboundedDynamicKernelRegistry` loads that kernel instead of compiling
   // the traced computation, provided the request's
   // `UnboundedKernelPolicy` is `kAllow`. Initialized from
-  // TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS; false by default.
+  // TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS; true by default.
   bool auto_load_unbounded_dynamic_kernels_ ABSL_GUARDED_BY(cache_mutex_);
 
   // The current initialization options.

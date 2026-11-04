@@ -582,9 +582,8 @@ class UnboundedDynamicCacheMissTest
 TEST_P(UnboundedDynamicCacheMissTest, FallsBackToStaticPath) {
   const UnboundedDynamicCacheMissTestCase& param = GetParam();
   CompilationCache& cache = CompilationCache::GetInstance();
-  if (param.auto_load) {
-    CompilationCacheTestHelper::SetAutoLoadUnboundedDynamicKernels(cache, true);
-  }
+  CompilationCacheTestHelper::SetAutoLoadUnboundedDynamicKernels(
+      cache, param.auto_load);
   const auto [key, registered_lookup_key] = RegisterDummyKernelFor("dummykey");
   const CompilationCacheKey lookup_key =
       param.use_registered_key ? registered_lookup_key : DummyKey(999);
@@ -610,7 +609,7 @@ INSTANTIATE_TEST_SUITE_P(
     UnboundedDynamicCacheMissTests, UnboundedDynamicCacheMissTest,
     testing::ValuesIn<UnboundedDynamicCacheMissTestCase>({
         {
-            .test_name = "NotAutoLoadedByDefault",
+            .test_name = "AutoLoadDisabled",
             .auto_load = false,
         },
         {

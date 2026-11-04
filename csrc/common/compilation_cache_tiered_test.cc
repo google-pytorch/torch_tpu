@@ -60,9 +60,9 @@ class TieredCompilationCacheTest : public testing::Test {
     SafeSetEnv<kTorchTpuTier2CompilationCacheEnvVar>(name);
     SafeSetEnv<kTorchTpuTier3CompilationCacheRootEnvVar>(
         absl::StrCat(testing::TempDir(), "/", name));
-    // Unbounded dynamic kernels are only loaded from the registry when
-    // auto-loading is enabled; the env var is read once per process.
-    SafeSetEnv<kTorchTpuInternalUseUnboundedDynamicKernelsEnvVar>("1");
+    // Unbounded dynamic kernels are loaded from the registry by default
+    // (TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS is unset), which these
+    // tests rely on.
   }
 
   TieredCompilationCacheTest() {

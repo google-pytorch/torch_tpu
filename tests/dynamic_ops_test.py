@@ -14,9 +14,9 @@
 
 """Tests ops that precompiled unbounded dynamic kernels serve.
 
-The dynamic_ops_test target (see BUILD) runs these tests with
-TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS=1, and each checks that the
-op's registered unbounded dynamic kernel serves it, and that the TPU result
+Unbounded dynamic kernels are enabled by default
+(TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS), and each test checks that
+the op's registered unbounded dynamic kernel serves it, and that the TPU result
 matches the CPU one.
 """
 
@@ -57,8 +57,9 @@ class UnboundedDynamicKernelTestBase(op_testing.TorchTpuVsCpuTestBase):
     self.assertEqual(
         _unbounded_dynamic_hits() - hits_before,
         hits,
-        "Lookups served by unbounded dynamic kernels; is"
-        " TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS enabled?",
+        "Lookups served by unbounded dynamic kernels; was"
+        " TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS set to 0, or did"
+        " the kernel fail to build?",
     )
 
 

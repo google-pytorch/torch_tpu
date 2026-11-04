@@ -45,7 +45,6 @@
 #include "csrc/common/compilation_cache.h"
 #include "csrc/common/compile_options_key.h"
 #include "csrc/common/dimension_types.h"
-#include "csrc/common/env_vars.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/shape.h"
 #include "csrc/common/status_test_utils.h"
@@ -130,8 +129,6 @@ class NonzeroIndicesTest : public testing::Test {
  protected:
   static void SetUpTestSuite() {
     if (client_ != nullptr) return;
-
-    SafeSetEnv<kTorchTpuInternalUseUnboundedDynamicKernelsEnvVar>("1");
 
     TT_ASSERT_OK_AND_ASSIGN(client_, PjrtBackend::GetInstance().GetClient());
     ASSERT_FALSE(client_->addressable_devices().empty());
