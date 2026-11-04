@@ -26040,6 +26040,96 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
       ):
         utils.assert_close(r.cpu(), exp)
 
+  def test_activation_opmath_scalar_precision(self):
+    """Tests activation ops with floating-point scalars retain opmath precision."""
+    rtol, atol = 1e-4, 1e-6
+    x_data = torch.tensor(
+        [-5.5, -3.25, -3.0, -2.5, -2.125, -1.0, -0.5, 1.0, 2.5]
+    )
+    # Non-unit grad_output ensures backward scalar multiplication (e.g.,
+    # grad_output * negative_slope) diverges if the scalar is truncated early.
+    grad_data = torch.full_like(x_data, 2.75)
+
+    for dtype in [torch.bfloat16, torch.float16]:
+      grad_cpu = grad_data.to(dtype)
+      grad_tpu = grad_data.to(device="tpu", dtype=dtype)
+
+      # leaky_relu
+      self.assert_close_tpu_vs_cpu(
+          lambda device, d=dtype, x=x_data: torch.nn.functional.leaky_relu(
+              x.to(device=device, dtype=d), negative_slope=0.01
+          ),
+          rtol=rtol,
+          atol=atol,
+      )
+      self.assert_close_tpu_vs_cpu(
+          lambda device, d=dtype, x=x_data: torch.nn.functional.leaky_relu(
+              x.to(device=device, dtype=d), negative_slope=0.1
+          ),
+          rtol=rtol,
+          atol=atol,
+      )
+
+      # leaky_relu backward
+      x_cpu = x_data.clone().to(dtype).requires_grad_(True)
+      out_cpu = torch.nn.functional.leaky_relu(x_cpu, negative_slope=0.01)
+      out_cpu.backward(grad_cpu)
+
+      x_tpu = x_data.clone().to(device="tpu", dtype=dtype).requires_grad_(True)
+      out_tpu = torch.nn.functional.leaky_relu(x_tpu, negative_slope=0.01)
+      out_tpu.backward(grad_tpu)
+      utils.assert_close(out_tpu.cpu(), out_cpu, rtol=rtol, atol=atol)
+      utils.assert_close(x_tpu.grad.cpu(), x_cpu.grad, rtol=rtol, atol=atol)
+
+      # elu
+      self.assert_close_tpu_vs_cpu(
+          lambda device, d=dtype, x=x_data: torch.nn.functional.elu(
+              x.to(device=device, dtype=d), alpha=0.1
+          ),
+          rtol=rtol,
+          atol=atol,
+      )
+
+      # elu backward
+      x_cpu = x_data.clone().to(dtype).requires_grad_(True)
+      out_cpu = torch.nn.functional.elu(x_cpu, alpha=0.1)
+      out_cpu.backward(grad_cpu)
+
+      x_tpu = x_data.clone().to(device="tpu", dtype=dtype).requires_grad_(True)
+      out_tpu = torch.nn.functional.elu(x_tpu, alpha=0.1)
+      out_tpu.backward(grad_tpu)
+      utils.assert_close(out_tpu.cpu(), out_cpu, rtol=rtol, atol=atol)
+      utils.assert_close(x_tpu.grad.cpu(), x_cpu.grad, rtol=rtol, atol=atol)
+
+      # celu
+      self.assert_close_tpu_vs_cpu(
+          lambda device, d=dtype, x=x_data: torch.nn.functional.celu(
+              x.to(device=device, dtype=d), alpha=0.3
+          ),
+          rtol=rtol,
+          atol=atol,
+      )
+
+      # softplus
+      self.assert_close_tpu_vs_cpu(
+          lambda device, d=dtype, x=x_data: torch.nn.functional.softplus(
+              x.to(device=device, dtype=d), beta=0.6, threshold=20.0
+          ),
+          rtol=rtol,
+          atol=atol,
+      )
+
+      # softplus backward
+      x_cpu = x_data.clone().to(dtype).requires_grad_(True)
+      out_cpu = torch.nn.functional.softplus(x_cpu, beta=0.6, threshold=20.0)
+      out_cpu.backward(grad_cpu)
+
+      x_tpu = x_data.clone().to(device="tpu", dtype=dtype).requires_grad_(True)
+      out_tpu = torch.nn.functional.softplus(x_tpu, beta=0.6, threshold=20.0)
+      out_tpu.backward(grad_tpu)
+      utils.assert_close(out_tpu.cpu(), out_cpu, rtol=rtol, atol=atol)
+      utils.assert_close(x_tpu.grad.cpu(), x_cpu.grad, rtol=rtol, atol=atol)
+
 
 if __name__ == "__main__":
   absltest.main()
