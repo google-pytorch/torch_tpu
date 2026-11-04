@@ -1219,6 +1219,9 @@ torch_tpu_cc_library(
     name = "device_utils",
     hdrs = ["device_utils.h"],
     deps = [
+        ":error_utils",
+        "@com_google_absl//absl/algorithm:container",
+        "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
     ],
 )
@@ -1228,7 +1231,9 @@ torch_tpu_cc_test(
     srcs = ["device_utils_test.cc"],
     deps = [
         ":device_utils",
+        ":error_utils",
         "//csrc/common:oss_test_main",
+        "@com_google_absl//absl/status:status_matchers",
     ],
 )
 

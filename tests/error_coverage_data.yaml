@@ -20,6 +20,7 @@ csrc/common/compilation.cc: {remaining: 3, total: 3, infeasible: 0}
 csrc/common/compilation_cache.cc: {remaining: 1, total: 2, infeasible: 1}
 csrc/common/compilation_cache_utils.cc: {remaining: 1, total: 1, infeasible: 0}
 csrc/common/const_tensor.cc: {remaining: 0, total: 10, infeasible: 10}
+csrc/common/device_utils.h: {remaining: 0, total: 3, infeasible: 0}
 csrc/common/discovery.cc: {remaining: 1, total: 1, infeasible: 0}
 csrc/common/dtype.cc: {remaining: 4, total: 6, infeasible: 0}
 csrc/common/dynamism_utils.cc: {remaining: 1, total: 1, infeasible: 0}

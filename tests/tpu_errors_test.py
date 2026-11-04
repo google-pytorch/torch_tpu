@@ -5433,14 +5433,44 @@ def _init_process_group_in_fresh_process(local_rank: int) -> None:
   )
 
 
+# Environment variables that select the TPU device of a process.
+_DEVICE_ASSIGNMENT_ENV_VARS = (
+    "LOCAL_RANK",
+    "MASTER_ADDR",
+    "MASTER_PORT",
+    "RANK",
+    "TORCH_TPU_SLICEBUILDER_ADDRESSES",
+    "TORCH_TPU_TOPOLOGY",
+    "TPU_VISIBLE_DEVICES",
+    "WORLD_SIZE",
+)
+
+
+def _init_with_env_vars(
+    local_rank: int, env_vars: Mapping[str, str], expected_msg: str
+) -> None:
+  """Worker that asserts TPU initialization fails with `expected_msg`.
+
+  Each of `_DEVICE_ASSIGNMENT_ENV_VARS` is set to its entry in `env_vars`, or
+  unset. The error is checked here rather than in the parent process, so that
+  `tpu_errors_test_cov` records the error checks it covers.
+  """
+  del local_rank  # Unused.
+  multiprocessing.parse_absl_flags()
+  with _patch_env_vars(_DEVICE_ASSIGNMENT_ENV_VARS, env_vars):
+    with et.assert_raises_message(RuntimeError, tpu=expected_msg):
+      torch.ones(1, device="tpu")
+
+
 class InitializationErrorsTest(et.TpuOnlyErrorTestBase):
   """Tests that a failed TPU initialization is surfaced rather than swallowed.
 
   TPU initialization runs at most once per process and its status is sticky,
   so each test runs its TPU access in a freshly spawned worker. This process
   holds the TPU devices, so the worker cannot acquire them and its TPU
-  initialization fails. Seeding skips over the failure, so it is only raised
-  once the worker uses the TPU.
+  initialization fails, unless it already fails while selecting the worker's
+  device. Seeding skips over the failure, so it is only raised once the worker
+  uses the TPU.
   """
 
   def setUp(self):
@@ -5456,6 +5486,14 @@ class InitializationErrorsTest(et.TpuOnlyErrorTestBase):
         RuntimeError, """[TorchTPU] Failed to acquire a TPU device node"""
     ):
       mp.spawn(fn, args=args, nprocs=1, join=True)
+
+  def assert_worker_init_raises(
+      self, env_vars: Mapping[str, str], expected_msg: str
+  ) -> None:
+    """Asserts that TPU init in a fresh worker with `env_vars` fails."""
+    mp.spawn(
+        _init_with_env_vars, args=(env_vars, expected_msg), nprocs=1, join=True
+    )
 
   @et.why_tpu_only("TPU initialization can only fail on a TPU host.")
   def test_tpu_use_after_manual_seed_raises_tpu_init_failure(self):
@@ -5480,6 +5518,54 @@ class InitializationErrorsTest(et.TpuOnlyErrorTestBase):
     self.assert_worker_raises_tpu_init_failure(
         _init_process_group_in_fresh_process
     )
+
+  @et.why_tpu_only("TPU_VISIBLE_DEVICES only exists in libtpu.")
+  def test_malformed_tpu_visible_devices_raises(self):
+    env_vars = {
+        "TPU_VISIBLE_DEVICES": "invalid",
+    }
+    expected_msg = (
+        "ones(): failed to initialize single-device environment: expected"
+        " visible devices to be comma-separated integers >= 0, got 'invalid'"
+    )
+    self.assert_worker_init_raises(env_vars, expected_msg)
+
+  @et.why_tpu_only("TPU_VISIBLE_DEVICES only exists in libtpu.")
+  def test_too_few_tpu_visible_devices_raises(self):
+    env_vars = {
+        "WORLD_SIZE": "3",
+        "RANK": "2",
+        "LOCAL_RANK": "2",
+        "MASTER_ADDR": "localhost",
+        "MASTER_PORT": "12345",
+        "TORCH_TPU_SLICEBUILDER_ADDRESSES": (
+            "localhost:8070,localhost:8071,localhost:8072"
+        ),
+        "TORCH_TPU_TOPOLOGY": "1,1,1",
+        "TPU_VISIBLE_DEVICES": "4,5",
+    }
+    expected_msg = (
+        "ones(): failed to initialize distributed environment: local rank 2 has"
+        " no device in visible devices '4,5'"
+    )
+    self.assert_worker_init_raises(env_vars, expected_msg)
+
+  @et.why_tpu_only("TPU_VISIBLE_DEVICES only exists in libtpu.")
+  def test_negative_local_rank_raises(self):
+    env_vars = {
+        "WORLD_SIZE": "2",
+        "RANK": "0",
+        "LOCAL_RANK": "-1",
+        "MASTER_ADDR": "localhost",
+        "MASTER_PORT": "12345",
+        "TORCH_TPU_SLICEBUILDER_ADDRESSES": "localhost:8070,localhost:8071",
+        "TORCH_TPU_TOPOLOGY": "1,1,1",
+    }
+    expected_msg = (
+        "ones(): failed to initialize distributed environment: expected local"
+        " rank to be >= 0, got -1"
+    )
+    self.assert_worker_init_raises(env_vars, expected_msg)
 
 
 class ForkErrorsTest(et.TpuOnlyErrorTestBase):
