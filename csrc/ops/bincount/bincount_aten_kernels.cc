@@ -23,6 +23,7 @@
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
+#include "ATen/ops/aminmax.h"
 #include "ATen/ops/zeros.h"
 #include "absl/log/absl_check.h"
 #include "absl/status/statusor.h"
@@ -124,23 +125,42 @@ at::Tensor AtenBinCount(const at::Tensor& self,
         auto weights_ = SanitizeOptionalTensor(weights);
         int64_t minlength_val = minlength.guard_int(__FILE__, __LINE__);
 
+        TT_CHECK_THROW(minlength_val >= 0, error::kInvalidArgument)
+            << "minlength should be >= 0";
+
         TT_CHECK_THROW(self.dim() == 1, error::kInvalidArgument)
             << "unexpected dimension of input tensor: "
             << ToString(self.sizes());
+
+        TT_CHECK_THROW(IsInteger(self), error::kInvalidArgument)
+            << "bincount only supports 1-d non-negative integral inputs";
 
         // Shortcut optimization for empty input tensors.
         if (self.defined() && self.numel() == 0) {
           return at::zeros({minlength_val}, self.options().dtype(at::kLong));
         }
 
-        // Compute the maximum element in the input and move it to the CPU. This
-        // inevitably introduces a graph break because we need to know that
-        // value in order to pass it to the actual bincount computation and to
-        // properly size the output tensor of that computation.
-        at::Scalar max = self.max().cpu().item();
+        if (weights_) {
+          TT_CHECK_THROW(
+              weights_->dim() == 1 && weights_->size(0) == self.size(0),
+              error::kInvalidArgument)
+              << "weights should be 1-d and have the same length as input";
+        }
+
+        // Compute the minimum and maximum element in the input and move them to
+        // the CPU. This inevitably introduces a graph break because we need
+        // these values in order to validate non-negativity, to pass the number
+        // of bins to the actual bincount computation, and to properly size the
+        // output tensor of that computation.
+        auto [min_t, max_t] = at::aminmax(self);
+        int64_t min_val = min_t.cpu().item().toLong();
+        int64_t max_val = max_t.cpu().item().toLong();
+
+        TT_CHECK_THROW(min_val >= 0, error::kInvalidArgument)
+            << "bincount only supports 1-d non-negative integral inputs";
 
         // Compute the number of bins, i.e., the output size.
-        int64_t nbins = std::max(max.toLong() + 1, minlength_val);
+        int64_t nbins = std::max(max_val + 1, minlength_val);
 
         if (weights_) {
           // If weights are provided, PyTorch expects the computation/output
