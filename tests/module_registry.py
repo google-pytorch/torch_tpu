@@ -3311,9 +3311,10 @@ class TransformersProvider(BaseProvider):
 
     What this stage does:
       Locates `config.json` and the optional model directory across three
-      storage tiers in strict priority order: (1) the shared weights cache
-      (`{base_path}/transformers/{name}/config.json`), (2) bundled package
-      resources (`_FILES`), or (3) a GCS bucket download (`fetch_gcs_file`).
+      storage tiers: bundled package resources (`_FILES`, checked first when
+      `load_weights=False` to avoid remote filesystem I/O), the shared weights
+      cache (`{base_path}/transformers/{name}/config.json`), or a GCS bucket
+      download (`fetch_gcs_file`).
 
     Why this is needed as a separate stage:
       Separating file location discovery from JSON parsing and config
@@ -3324,16 +3325,15 @@ class TransformersProvider(BaseProvider):
       missing files with malformed config schemas.
 
     Example:
-      When loading `google/gemma-2-2b` in unit tests with `base_path=""` (no
-      shared weights cache mount) and `load_weights=False`, Stage 1 checks
-      `self.has_cache_dir` (False), locates `google/gemma-2-2b/config.json`
-      inside the bundled
-      `google/examples/huggingface_transformers/model_configs` package resource,
-      and yields the extracted path alongside `model_dir_or_repo_id=None`.
-      Conversely, during benchmark runs with `/path/to/weights` mounted, Stage 1
-      yields `/path/to/weights/transformers/google/gemma-2-2b/config.json` and
-      the cache directory as `model_dir_or_repo_id` so Stage 4 and Stage 5 can
-      load weights and tokenizers from the same directory.
+      When loading `google/gemma-2-2b` in unit tests with `load_weights=False`,
+      Stage 1 locates `google/gemma-2-2b/config.json` inside the bundled
+      `google/examples/huggingface_transformers/model_configs` package resource
+      without probing remote storage, and yields the extracted path alongside
+      `default_model_dir`. Conversely, when `load_weights=True` with
+      `/path/to/weights` mounted, Stage 1 yields
+      `/path/to/weights/transformers/google/gemma-2-2b/config.json` and the
+      cache directory as `model_dir_or_repo_id` so Stage 4 and Stage 5 can load
+      weights and tokenizers from the same directory.
 
     Args:
       name: Model identifier formatted as `{owner}/{model}`.
@@ -3349,6 +3349,16 @@ class TransformersProvider(BaseProvider):
     default_model_dir: epath.Path | None = None
     if self.has_cache_dir and self._base_path is not None:
       default_model_dir = self._base_path / name
+
+    if not load_weights:
+      traversable = self.in_tree_config(name)
+      if traversable is not None:
+        with resources.as_file(traversable) as local_file:
+          if local_file.exists():
+            yield epath.Path(local_file), default_model_dir
+            return
+
+    if default_model_dir is not None:
       cfg_file = default_model_dir / "config.json"
       if cfg_file.exists():
         yield cfg_file, default_model_dir
@@ -3359,13 +3369,6 @@ class TransformersProvider(BaseProvider):
           f"load_weights cannot be set to True for {name} when falling back"
           " to local configuration resources or GCS."
       )
-
-    traversable = self.in_tree_config(name)
-    if traversable is not None:
-      with resources.as_file(traversable) as local_file:
-        if local_file.exists():
-          yield epath.Path(local_file), default_model_dir
-          return
 
     dest_config = self.fetch_gcs_file(f"{name}/config.json")
     if dest_config is not None and dest_config.exists():
@@ -3520,7 +3523,11 @@ class TransformersProvider(BaseProvider):
     ) -> tuple[tuple[Any, ...], dict[str, Any]]:
       model_dir = (
           str(model_dir_or_repo_id)
-          if model_dir_or_repo_id is not None and model_dir_or_repo_id.exists()
+          if (
+              modality == Modality.VISION  # Only VISION uses model_dir.
+              and model_dir_or_repo_id is not None
+              and model_dir_or_repo_id.exists()
+          )
           else None
       )
       input_kwargs = transformers_inputs.generate_transformers_inputs(
