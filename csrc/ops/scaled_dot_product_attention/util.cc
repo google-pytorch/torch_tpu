@@ -117,7 +117,7 @@ std::optional<kiln::InSpec> AttnBiasSpec(const FlashAttnConfig& config,
   return kiln::InSpec{BiasBlockShape(config, tiling, dtype), bias_map};
 }
 
-kiln::Tile LoadBias(kiln::Ref bias_ref, const FlashAttnConfig& config,
+kiln::Tile LoadBias(kiln::VmemRef bias_ref, const FlashAttnConfig& config,
                     int64_t row_offset, int64_t rows, int64_t col_offset,
                     int64_t cols) {
   const bool q_bcast = llvm::is_contained(config.mask_broadcast_dims, 2);
@@ -185,7 +185,7 @@ kiln::Tile ApplyStructuredMask(kiln::Tile s, kiln::Scalar row_block,
 }
 
 kiln::Tile ComputeLogits(kiln::Tile q, kiln::Tile k,
-                         std::optional<kiln::Ref> bias_ref,
+                         std::optional<kiln::VmemRef> bias_ref,
                          kiln::Scalar row_block, kiln::Scalar col_block,
                          const FlashAttnConfig& config, const Tiling& tiling) {
   kiln::Tile s =
@@ -202,17 +202,17 @@ kiln::Tile ComputeLogits(kiln::Tile q, kiln::Tile k,
 kiln::Tile DropoutKeepMask(const FlashAttnConfig& config, const Tiling& tiling,
                            kiln::Scalar batch, kiln::Scalar q_head,
                            kiln::Scalar row_block, kiln::Scalar col_block,
-                           kiln::Ref seed_ref, int64_t row_offset,
+                           kiln::SmemRef seed_ref, int64_t row_offset,
                            int64_t col_offset, int64_t rows, int64_t cols) {
   const int64_t mask_rows = rows > 0 ? rows : tiling.qt;
   const int64_t mask_cols = cols > 0 ? cols : tiling.kt;
   const kiln::Shape i32_shape = kiln::i32(mask_rows, mask_cols);
 
   // 1. The Philox {seed_lo, seed_hi, offset_lo, offset_hi} words.
-  kiln::Scalar seed_lo = kiln::LoadScalar(seed_ref(0));
-  kiln::Scalar seed_hi = kiln::LoadScalar(seed_ref(1));
-  kiln::Scalar offset_lo = kiln::LoadScalar(seed_ref(2));
-  kiln::Scalar offset_hi = kiln::LoadScalar(seed_ref(3));
+  kiln::Scalar seed_lo = kiln::Load(seed_ref(0));
+  kiln::Scalar seed_hi = kiln::Load(seed_ref(1));
+  kiln::Scalar offset_lo = kiln::Load(seed_ref(2));
+  kiln::Scalar offset_hi = kiln::Load(seed_ref(3));
 
   // 2. Fold the stream identity into one word. This is scalar work, so it costs
   // once per tile rather than once per element, and we can afford to avalanche

@@ -49,8 +49,8 @@ TEST(DynamicMosaic, CopiesDifferentShapesWithOneExecutable) {
       kiln::CreateKernel(
           kiln::GridSpec{.name = "main"}, kiln::InSpec::Hbm(dynamic_2d),
           kiln::InSpec::Hbm(dynamic_2d), kiln::OutSpec::Hbm(dynamic_2d),
-          [](kiln::Ref src, kiln::Ref /*destination*/, kiln::Ref dst) {
-            kiln::Ref tile = kiln::AllocaVmem(kiln::f32(8, 128));
+          [](kiln::HbmRef src, kiln::HbmRef /*destination*/, kiln::HbmRef dst) {
+            kiln::VmemRef tile = kiln::AllocaVmem(kiln::f32(8, 128));
             kiln::Semaphore sem = kiln::AllocaDmaSemaphore();
             kiln::For(0, src.Dim(0), 8, [&](kiln::Scalar row) {
               kiln::For(0, src.Dim(1), 128, [&](kiln::Scalar col) {

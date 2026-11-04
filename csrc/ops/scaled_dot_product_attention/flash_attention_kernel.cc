@@ -43,16 +43,16 @@ struct SoftmaxState {
 
 // Kernel arguments that are shared by all sub-blocks of a grid step.
 struct KernelArgs {
-  std::optional<kiln::Ref> seed_ref;
-  kiln::Ref q_ref;
-  kiln::Ref k_ref;
-  kiln::Ref v_ref;
-  std::optional<kiln::Ref> bias_ref;
-  kiln::Ref o_ref;
-  std::optional<kiln::Ref> lse_ref;
-  kiln::Ref acc_ref;
-  kiln::Ref m_ref;
-  kiln::Ref l_ref;
+  std::optional<kiln::SmemRef> seed_ref;
+  kiln::VmemRef q_ref;
+  kiln::VmemRef k_ref;
+  kiln::VmemRef v_ref;
+  std::optional<kiln::VmemRef> bias_ref;
+  kiln::VmemRef o_ref;
+  std::optional<kiln::VmemRef> lse_ref;
+  kiln::VmemRef acc_ref;
+  kiln::VmemRef m_ref;
+  kiln::VmemRef l_ref;
   kiln::Scalar qi;
   kiln::Scalar ki;
 };
@@ -301,10 +301,11 @@ absl::StatusOr<kiln::Kernel> CreateKernel(const FlashAttnConfig& config,
           kiln::ScratchSpec{kiln::f32(qt, kLanes)},
           kiln::ScratchSpec{kiln::f32(qt, kLanes)},
           [&]  // REF_CAPTURE_OK=called synchronously
-          (std::optional<kiln::Ref> seed_ref, kiln::Ref q_ref, kiln::Ref k_ref,
-           kiln::Ref v_ref, std::optional<kiln::Ref> bias_ref, kiln::Ref o_ref,
-           std::optional<kiln::Ref> lse_ref, kiln::Ref acc_ref, kiln::Ref m_ref,
-           kiln::Ref l_ref) {
+          (std::optional<kiln::SmemRef> seed_ref, kiln::VmemRef q_ref,
+           kiln::VmemRef k_ref, kiln::VmemRef v_ref,
+           std::optional<kiln::VmemRef> bias_ref, kiln::VmemRef o_ref,
+           std::optional<kiln::VmemRef> lse_ref, kiln::VmemRef acc_ref,
+           kiln::VmemRef m_ref, kiln::VmemRef l_ref) {
             KernelArgs args{
                 .seed_ref = seed_ref,
                 .q_ref = q_ref,

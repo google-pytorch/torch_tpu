@@ -70,7 +70,7 @@ std::optional<kiln::InSpec> AttnBiasSpec(const FlashAttnConfig& config,
 
 // Loads the f32 (rows, cols) bias sub-block at (row_offset, col_offset),
 // broadcasting a size-1 query / key dim (see `BiasBlockShape`).
-kiln::Tile LoadBias(kiln::Ref bias_ref, const FlashAttnConfig& config,
+kiln::Tile LoadBias(kiln::VmemRef bias_ref, const FlashAttnConfig& config,
                     int64_t row_offset, int64_t rows, int64_t col_offset,
                     int64_t cols);
 
@@ -103,7 +103,7 @@ kiln::Tile ApplyStructuredMask(kiln::Tile s, kiln::Scalar row_block,
 //   s = (q @ k^T) * scale * log2(e) [+ bias * log2(e)]
 // with causal / sequence-padding masking applied. Returns an f32 (qt, kt) tile.
 kiln::Tile ComputeLogits(kiln::Tile q, kiln::Tile k,
-                         std::optional<kiln::Ref> bias_ref,
+                         std::optional<kiln::VmemRef> bias_ref,
                          kiln::Scalar row_block, kiln::Scalar col_block,
                          const FlashAttnConfig& config, const Tiling& tiling);
 
@@ -122,7 +122,7 @@ kiln::Tile ComputeLogits(kiln::Tile q, kiln::Tile k,
 kiln::Tile DropoutKeepMask(const FlashAttnConfig& config, const Tiling& tiling,
                            kiln::Scalar batch, kiln::Scalar q_head,
                            kiln::Scalar row_block, kiln::Scalar col_block,
-                           kiln::Ref seed_ref, int64_t row_offset = 0,
+                           kiln::SmemRef seed_ref, int64_t row_offset = 0,
                            int64_t col_offset = 0, int64_t rows = 0,
                            int64_t cols = 0);
 

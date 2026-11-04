@@ -100,18 +100,19 @@ kiln::Scalar TableRow(const FlexAttnConfig& c) {
 }
 
 // SMEM read: how many KV blocks this row attends to.
-kiln::Scalar NumListedBlocks(kiln::Ref kv_num_blocks, const FlexAttnConfig& c) {
-  return kiln::LoadScalar(kv_num_blocks(TableRow(c)));
+kiln::Scalar NumListedBlocks(kiln::SmemRef kv_num_blocks,
+                             const FlexAttnConfig& c) {
+  return kiln::Load(kv_num_blocks(TableRow(c)));
 }
 
 // SMEM read: the KV block to visit at grid step j, kv_indices[row, j]. Steps
 // past the end of the list (j >= n) repeat the last block so the pipeline
 // issues no new DMA; the body skips them.
-kiln::Scalar CurrentKvBlock(kiln::Ref kv_num_blocks, kiln::Ref kv_indices,
-                            const FlexAttnConfig& c) {
+kiln::Scalar CurrentKvBlock(kiln::SmemRef kv_num_blocks,
+                            kiln::SmemRef kv_indices, const FlexAttnConfig& c) {
   kiln::Scalar n = NumListedBlocks(kv_num_blocks, c);
   kiln::Scalar j = Min(kiln::ProgramId(kKvStepAxis), Max(n - 1, 0));
-  return kiln::LoadScalar(kv_indices(TableRow(c) * c.num_kv_blocks() + j));
+  return kiln::Load(kv_indices(TableRow(c) * c.num_kv_blocks() + j));
 }
 
 kiln::Scalar KvHead(const FlexAttnConfig& c) {
@@ -122,8 +123,8 @@ kiln::Scalar KvHead(const FlexAttnConfig& c) {
 // Applies the score / mask mods to the scores `s` (natural units) of the
 // current tile.
 absl::StatusOr<kiln::Tile> ApplyMods(const FlexAttnConfig& c,
-                                     kiln::Ref kv_num_blocks,
-                                     kiln::Ref kv_indices, kiln::Tile s) {
+                                     kiln::SmemRef kv_num_blocks,
+                                     kiln::SmemRef kv_indices, kiln::Tile s) {
   if (c.score_mod_mlir.empty() && c.mask_mod_mlir.empty()) return s;
   // The mods were traced at the full tile shape (see mod_to_mlir).
   const llvm::ArrayRef<int64_t> shape = s.dims();
@@ -217,9 +218,10 @@ absl::StatusOr<kiln::Kernel> BuildFlexAttentionKernel(const FlexAttnConfig& c) {
       kiln::ScratchSpec::Vmem(
           f32(c.q_block, c.v_dim)),  // acc: unnormalized out
       [&]                            // REF_CAPTURE_OK=called synchronously
-      (kiln::Ref kv_num_blocks, kiln::Ref kv_indices, kiln::Ref q_ref,
-       kiln::Ref k_ref, kiln::Ref v_ref, kiln::Ref out_ref, kiln::Ref lse_ref,
-       kiln::Ref m_ref, kiln::Ref l_ref, kiln::Ref acc_ref) {
+      (kiln::SmemRef kv_num_blocks, kiln::SmemRef kv_indices,
+       kiln::VmemRef q_ref, kiln::VmemRef k_ref, kiln::VmemRef v_ref,
+       kiln::VmemRef out_ref, kiln::VmemRef lse_ref, kiln::VmemRef m_ref,
+       kiln::VmemRef l_ref, kiln::VmemRef acc_ref) {
         const kiln::Scalar j = kiln::ProgramId(kKvStepAxis);
         const kiln::Scalar n = NumListedBlocks(kv_num_blocks, c);
 

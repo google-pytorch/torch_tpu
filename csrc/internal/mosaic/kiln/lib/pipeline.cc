@@ -44,15 +44,13 @@ constexpr int64_t kSlots = 2;
 
 // The VMEM slots of a pipelined HBM operand, with one DMA semaphore per slot.
 struct Slots {
-  Ref vmem;
+  VmemRef vmem;
   SemaphoreArray sems;
 };
 
 // Allocates the VMEM slots for blocks of `hbm` (a `{2, block_shape...}`
 // buffer), plus one DMA semaphore per slot.
-Slots AllocaSlots(const Ref& hbm, const Dimensions& block_shape) {
-  ABSL_CHECK(hbm.memory_space() == MemorySpace::kHbm)  // CRASH_OK
-      << "pipelined operands must live in HBM";
+Slots AllocaSlots(const HbmRef& hbm, const Dimensions& block_shape) {
   ABSL_CHECK_GE(hbm.rank(), 1)  // CRASH_OK
       << "pipelined HBM operands must be at least 1D";
   ABSL_CHECK_EQ(  // CRASH_OK
@@ -74,7 +72,7 @@ Slots AllocaSlots(const Ref& hbm, const Dimensions& block_shape) {
 }
 
 // The `region` of `hbm`.
-Ref HbmWindow(const Ref& hbm, const BlockRegion& region) {
+HbmRef HbmWindow(const HbmRef& hbm, const BlockRegion& region) {
   ABSL_CHECK(region.offsets.size() == region.sizes.size() &&  // CRASH_OK
              static_cast<int64_t>(region.sizes.size()) == hbm.rank())
       << "a block region needs one offset and one extent per dimension";
@@ -87,8 +85,9 @@ Ref HbmWindow(const Ref& hbm, const BlockRegion& region) {
 
 // The leading `sizes` part of slot `slot` of `vmem` (the whole slot when
 // `sizes` is the block shape).
-Ref SlotWindow(const Ref& vmem, Scalar slot, const Dimensions& block_shape,
-               llvm::ArrayRef<IndexArg> sizes) {
+VmemRef SlotWindow(const VmemRef& vmem, Scalar slot,
+                   const Dimensions& block_shape,
+                   llvm::ArrayRef<IndexArg> sizes) {
   if (block_shape.size() == 1) {
     const int32_t extent = static_cast<int32_t>(block_shape[0]);
     return vmem(Slice(slot * extent, sizes[0]));
@@ -100,7 +99,7 @@ Ref SlotWindow(const Ref& vmem, Scalar slot, const Dimensions& block_shape,
   return vmem.At(indexers);
 }
 
-Ref Slot(const Ref& vmem, Scalar slot, const Dimensions& block_shape) {
+VmemRef Slot(const VmemRef& vmem, Scalar slot, const Dimensions& block_shape) {
   llvm::SmallVector<IndexArg, 4> sizes(block_shape.begin(), block_shape.end());
   return SlotWindow(vmem, slot, block_shape, sizes);
 }
@@ -124,8 +123,9 @@ llvm::SmallVector<Slots, 4> AllocaSlots(
 AsyncCopyDescriptor Copy(const PipelineOperand& operand, const Slots& slots,
                          Scalar block, Scalar slot, Direction direction) {
   const BlockRegion region = operand.region(block);
-  Ref hbm = HbmWindow(operand.hbm, region);
-  Ref vmem = SlotWindow(slots.vmem, slot, operand.block_shape, region.sizes);
+  HbmRef hbm = HbmWindow(operand.hbm, region);
+  VmemRef vmem =
+      SlotWindow(slots.vmem, slot, operand.block_shape, region.sizes);
   return direction == Direction::kToVmem
              ? MakeAsyncCopy(hbm, vmem, slots.sems(slot))
              : MakeAsyncCopy(vmem, hbm, slots.sems(slot));

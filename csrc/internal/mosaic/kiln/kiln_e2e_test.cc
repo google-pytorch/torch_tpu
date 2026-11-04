@@ -179,7 +179,8 @@ TEST_F(KilnE2eTest, BlockwiseMatmulWithScratchAccumulator) {
           OutSpec{f32(kTm, kTn), IndexMap([] {
                     return IndexIndices{ProgramId(0), ProgramId(1)};
                   })},
-          ScratchSpec::Vmem(f32(kTm, kTn)), [](Ref a, Ref b, Ref out, Ref acc) {
+          ScratchSpec::Vmem(f32(kTm, kTn)),
+          [](VmemRef a, VmemRef b, VmemRef out, VmemRef acc) {
             Scalar kk = ProgramId(2);
             If(kk == 0, [&] { Store(acc, Zeros(acc.shape())); });
             Store(acc,
@@ -209,9 +210,8 @@ TEST_F(KilnE2eTest, BlockwiseMatmulWithScratchAccumulator) {
 TEST_F(KilnE2eTest, ScalarPrefetchGatherAndReduce) {
   constexpr int64_t kRows = 4, kTileRows = 8, kCols = 256, kChunk = 128;
 
-  IndexMap gathered = IndexMap([] {
-    return IndexIndices{LoadScalar(ScalarPrefetch(0)(ProgramId(0))), 0};
-  });
+  IndexMap gathered = IndexMap(
+      [] { return IndexIndices{Load(ScalarPrefetch(0)(ProgramId(0))), 0}; });
 
   TT_ASSERT_OK_AND_ASSIGN(
       Kernel kernel,
@@ -221,7 +221,7 @@ TEST_F(KilnE2eTest, ScalarPrefetchGatherAndReduce) {
                    OutSpec{f32(kTileRows, kChunk), IndexMap([] {
                              return IndexIndices{ProgramId(0), 0};
                            })},
-                   [](Ref /*indices*/, Ref rows, Ref out) {
+                   [](SmemRef /*indices*/, VmemRef rows, VmemRef out) {
                      Tile total = Zeros(out.shape());
                      for (int64_t c = 0; c < kCols; c += kChunk) {
                        total = total + Load(rows(all, Slice(c, kChunk)));
@@ -267,14 +267,14 @@ TEST_F(KilnE2eTest, SpliceStablehloIntoKernelBody) {
 
   TT_ASSERT_OK_AND_ASSIGN(
       Kernel kernel,
-      CreateKernel(GridSpec{.name = "splice_e2e", .grid = {1}},
-                   InSpec{f32(kRows, kCols)}, InSpec{f32(kRows, kCols)},
-                   OutSpec{f32(kRows, kCols)}, [&](Ref a, Ref b, Ref out) {
-                     TT_ASSERT_OK_AND_ASSIGN(
-                         Tile result,
-                         SpliceStablehlo(kModule, {Load(a), Load(b)}));
-                     Store(out, result);
-                   }));
+      CreateKernel(
+          GridSpec{.name = "splice_e2e", .grid = {1}},
+          InSpec{f32(kRows, kCols)}, InSpec{f32(kRows, kCols)},
+          OutSpec{f32(kRows, kCols)}, [&](VmemRef a, VmemRef b, VmemRef out) {
+            TT_ASSERT_OK_AND_ASSIGN(
+                Tile result, SpliceStablehlo(kModule, {Load(a), Load(b)}));
+            Store(out, result);
+          }));
 
   // Small exact values of both signs, so the comparison can be bit-exact.
   xla::Literal a = Make2dF32(kRows, kCols, [](int64_t r, int64_t c) {
@@ -308,7 +308,7 @@ TEST_F(KilnE2eTest, SpliceStablehloLegalizesChlo) {
       Kernel kernel,
       CreateKernel(GridSpec{.name = "splice_chlo_e2e", .grid = {1}},
                    InSpec{f32(kRows, kCols)}, OutSpec{f32(kRows, kCols)},
-                   [&](Ref a, Ref out) {
+                   [&](VmemRef a, VmemRef out) {
                      TT_ASSERT_OK_AND_ASSIGN(
                          Tile result, SpliceStablehlo(kModule, {Load(a)}));
                      Store(out, result);
@@ -332,7 +332,7 @@ TEST_F(KilnE2eTest, TileAndScalarControlFlowOperations) {
       Kernel kernel,
       CreateKernel(GridSpec{.name = "tile_scalar_e2e", .grid = {1}},
                    InSpec{f32(kRows, kCols)}, OutSpec{f32(kRows, kCols)},
-                   [](Ref in, Ref out) {
+                   [](VmemRef in, VmemRef out) {
                      Store(out, Load(in));
                      For(0, 4, [&](Scalar i) {
                        Store(out, Load(out) + i.AsType(f32));
@@ -358,9 +358,10 @@ TEST_F(KilnE2eTest, TileAndScalarControlFlowOperations) {
 TEST_F(KilnE2eTest, GridFreeKernelWithVmemOperands) {
   TT_ASSERT_OK_AND_ASSIGN(
       Kernel kernel,
-      CreateKernel(GridSpec{.name = "grid_free_vmem_e2e"},
-                   InSpec::Vmem(f32(8, 128)), OutSpec::Vmem(f32(8, 128)),
-                   [](Ref in, Ref out) { Store(out, Load(in) * 2.0); }));
+      CreateKernel(
+          GridSpec{.name = "grid_free_vmem_e2e"}, InSpec::Vmem(f32(8, 128)),
+          OutSpec::Vmem(f32(8, 128)),
+          [](VmemRef in, VmemRef out) { Store(out, Load(in) * 2.0); }));
   xla::Literal input = Make2dF32(8, 128, [](int64_t r, int64_t c) {
     return static_cast<float>(r * 128 + c);
   });
@@ -382,13 +383,14 @@ TEST_F(KilnE2eTest, GridKernelWithHbmAndDma) {
                    InSpec::Vmem(f32(kTileRows, kCols)),
                    OutSpec::Hbm(f32(kSteps * kTileRows, kCols)),
                    ScratchSpec::Vmem(f32(2, kTileRows, kCols)),
-                   [](Ref hbm_in, Ref vmem_bias, Ref hbm_out, Ref vmem_bufs) {
+                   [](HbmRef hbm_in, VmemRef vmem_bias, HbmRef hbm_out,
+                      VmemRef vmem_bufs) {
                      SemaphoreArray sems = AllocaDmaSemaphore({2});
                      Scalar step = ProgramId(0);
                      Scalar slot = step % 2;
                      Scalar row = MultipleOf(step * kTileRows, kTileRows);
 
-                     Ref buf = vmem_bufs(slot);
+                     VmemRef buf = vmem_bufs(slot);
                      Semaphore sem = sems(slot);
 
                      AsyncCopyDescriptor in_copy =
@@ -425,24 +427,24 @@ TEST_F(KilnE2eTest, DynamicHbmTiledLoopWithDma) {
 
   TT_ASSERT_OK_AND_ASSIGN(
       Kernel kernel,
-      CreateKernel(GridSpec{.name = "dynamic_hbm_scale_e2e"},
-                   InSpec::Hbm(f32(kDynamic, kCols)),
-                   OutSpec::Hbm(f32(kDynamic, kCols)),
-                   [](Ref hbm_in, Ref hbm_out) {
-                     Ref vmem_tile = AllocaVmem(f32(kTileRows, kCols));
-                     Semaphore sem = AllocaDmaSemaphore();
+      CreateKernel(
+          GridSpec{.name = "dynamic_hbm_scale_e2e"},
+          InSpec::Hbm(f32(kDynamic, kCols)), OutSpec::Hbm(f32(kDynamic, kCols)),
+          [](HbmRef hbm_in, HbmRef hbm_out) {
+            VmemRef vmem_tile = AllocaVmem(f32(kTileRows, kCols));
+            Semaphore sem = AllocaDmaSemaphore();
 
-                     Scalar rows = hbm_in.Dim(0);
-                     For(0, rows, kTileRows, [&](Scalar row_offset) {
-                       Scalar aligned = MultipleOf(row_offset, kTileRows);
-                       Ref in_slice = hbm_in(Slice(aligned, kTileRows), all);
-                       Ref out_slice = hbm_out(Slice(aligned, kTileRows), all);
+            Scalar rows = hbm_in.Dim(0);
+            For(0, rows, kTileRows, [&](Scalar row_offset) {
+              Scalar aligned = MultipleOf(row_offset, kTileRows);
+              HbmRef in_slice = hbm_in(Slice(aligned, kTileRows), all);
+              HbmRef out_slice = hbm_out(Slice(aligned, kTileRows), all);
 
-                       AsyncCopy(in_slice, vmem_tile, sem).Wait();
-                       Store(vmem_tile, Load(vmem_tile) * 2.0);
-                       AsyncCopy(vmem_tile, out_slice, sem).Wait();
-                     });
-                   }));
+              AsyncCopy(in_slice, vmem_tile, sem).Wait();
+              Store(vmem_tile, Load(vmem_tile) * 2.0);
+              AsyncCopy(vmem_tile, out_slice, sem).Wait();
+            });
+          }));
 
   EXPECT_THAT(kernel.Verify(), IsOk());
   TT_ASSERT_OK_AND_ASSIGN(std::string serialized,
@@ -471,7 +473,7 @@ TEST_F(KilnE2eTest, PipelinedSum) {
       CreateKernel(
           GridSpec{.name = "pipelined_sum_e2e"}, InSpec::Hbm(f32(kDynamic)),
           OutSpec::Hbm(f32(kChunk)), ScratchSpec::Vmem(f32(kChunk)),
-          [&](Ref in, Ref out, Ref acc) {
+          [&](HbmRef in, HbmRef out, VmemRef acc) {
             PipelineOperand input{
                 .hbm = in, .block_shape = {kChunk}, .region = [](Scalar step) {
                   return BlockRegion{.offsets = {step * kChunk},
@@ -519,7 +521,7 @@ TEST_F(KilnE2eTest, PipelinedSumOfProducts) {
           GridSpec{.name = "pipelined_sum_of_products_e2e"},
           InSpec::Hbm(f32(kDynamic, kCols)), InSpec::Hbm(f32(kDynamic, kCols)),
           OutSpec::Hbm(f32(kRows, kCols)), ScratchSpec::Vmem(f32(kRows, kCols)),
-          [&](Ref a, Ref b, Ref out, Ref acc) {
+          [&](HbmRef a, HbmRef b, HbmRef out, VmemRef acc) {
             Store(acc, Zeros(acc.shape()));
             EmitPipeline(
                 0, a.Dim(0) / kRows,
@@ -569,7 +571,7 @@ TEST_F(KilnE2eTest, PipelinedInputOutputStreaming) {
       CreateKernel(
           GridSpec{.name = "pipelined_io_streaming_e2e"},
           InSpec::Hbm(f32(kDynamic)), OutSpec::Hbm(f32(kDynamic)),
-          [&](Ref in, Ref out) {
+          [&](HbmRef in, HbmRef out) {
             EmitPipeline(
                 0, in.Dim(0) / kChunk,
                 {{.hbm = in, .block_shape = {kChunk}, .region = chunk}},
@@ -606,7 +608,8 @@ TEST_F(KilnE2eTest, PipelinedTwo2dOutputs) {
       CreateKernel(
           GridSpec{.name = "pipelined_two_2d_outputs_e2e"},
           InSpec::Hbm(f32(kDynamic, kCols)), OutSpec::Hbm(f32(kDynamic, kCols)),
-          OutSpec::Hbm(f32(kDynamic, kCols)), [&](Ref in, Ref out0, Ref out1) {
+          OutSpec::Hbm(f32(kDynamic, kCols)),
+          [&](HbmRef in, HbmRef out0, HbmRef out1) {
             EmitPipeline(
                 0, in.Dim(0) / kRows,
                 {{.hbm = in, .block_shape = {kRows, kCols}, .region = band}},
@@ -650,7 +653,7 @@ TEST_F(KilnE2eTest, PipelinedBlockPairSums) {
       CreateKernel(
           GridSpec{.name = "pipelined_block_pairs_e2e"},
           InSpec::Hbm(f32(kDynamic)), OutSpec::Hbm(f32(kDynamic)),
-          [&](Ref in, Ref out) {
+          [&](HbmRef in, HbmRef out) {
             EmitPipeline(
                 0, in.Dim(0) / kChunk,
                 {{.hbm = in, .block_shape = {kChunk}, .region = chunk}},
@@ -659,7 +662,7 @@ TEST_F(KilnE2eTest, PipelinedBlockPairSums) {
                   .block_index = [](Scalar step) { return step / 2; },
                   .region = chunk}},
                 [&](const PipelineStep& s) {
-                  Ref acc = s.outputs[0].ref;
+                  VmemRef acc = s.outputs[0].ref;
                   If(s.outputs[0].is_first_step,
                      [&] { Store(acc, Zeros(acc.shape())); });
                   Store(acc, Load(acc) + Load(s.inputs[0].ref));
@@ -697,7 +700,8 @@ TEST_F(KilnE2eTest, PipelinedBlocksInAnyOrder) {
       CreateKernel(
           GridSpec{.name = "pipelined_blocks_any_order_e2e"},
           InSpec::Hbm(f32(kDynamic)), OutSpec::Hbm(f32(kDynamic)),
-          OutSpec::Hbm(f32(kDynamic)), [&](Ref in, Ref reversed, Ref uneven) {
+          OutSpec::Hbm(f32(kDynamic)),
+          [&](HbmRef in, HbmRef reversed, HbmRef uneven) {
             const Scalar num_steps = in.Dim(0) / kChunk;
             const Scalar last_pair = num_steps / 2 - 1;
             EmitPipeline(
@@ -714,7 +718,7 @@ TEST_F(KilnE2eTest, PipelinedBlocksInAnyOrder) {
                   .region = chunk}},
                 [&](const PipelineStep& s) {
                   for (int o = 0; o < 2; ++o) {
-                    Ref acc = s.outputs[o].ref;
+                    VmemRef acc = s.outputs[o].ref;
                     If(s.outputs[o].is_first_step,
                        [&] { Store(acc, Zeros(acc.shape())); });
                     Store(acc, Load(acc) + Load(s.inputs[0].ref));
@@ -754,28 +758,30 @@ TEST_F(KilnE2eTest, PipelinedBlocksInAnyOrder) {
 TEST_F(KilnE2eTest, DynamicMemrefSliceSizesAndScopedDma) {
   TT_ASSERT_OK_AND_ASSIGN(
       Kernel kernel,
-      CreateKernel(
-          GridSpec{.name = "dynamic_slices_e2e"},
-          InSpec::Hbm(f32(kDynamic, kDynamic)),
-          OutSpec::Hbm(f32(kDynamic, kDynamic)), [](Ref hbm_in, Ref hbm_out) {
-            Scalar r = hbm_in.Dim(0);
-            Scalar c = hbm_in.Dim(1);
-            Scalar half_rows = MultipleOf((r >> 1), 8);
-            Scalar aligned_cols = MultipleOf(c, 128);
+      CreateKernel(GridSpec{.name = "dynamic_slices_e2e"},
+                   InSpec::Hbm(f32(kDynamic, kDynamic)),
+                   OutSpec::Hbm(f32(kDynamic, kDynamic)),
+                   [](HbmRef hbm_in, HbmRef hbm_out) {
+                     Scalar r = hbm_in.Dim(0);
+                     Scalar c = hbm_in.Dim(1);
+                     Scalar half_rows = MultipleOf((r >> 1), 8);
+                     Scalar aligned_cols = MultipleOf(c, 128);
 
-            Ref in_top = hbm_in(Slice(0, half_rows), Slice(0, aligned_cols));
-            Ref in_bottom =
-                hbm_in(Slice(half_rows, half_rows), Slice(0, aligned_cols));
-            Ref out_top = hbm_out(Slice(0, half_rows), Slice(0, aligned_cols));
-            Ref out_bottom =
-                hbm_out(Slice(half_rows, half_rows), Slice(0, aligned_cols));
+                     HbmRef in_top =
+                         hbm_in(Slice(0, half_rows), Slice(0, aligned_cols));
+                     HbmRef in_bottom = hbm_in(Slice(half_rows, half_rows),
+                                               Slice(0, aligned_cols));
+                     HbmRef out_top =
+                         hbm_out(Slice(0, half_rows), Slice(0, aligned_cols));
+                     HbmRef out_bottom = hbm_out(Slice(half_rows, half_rows),
+                                                 Slice(0, aligned_cols));
 
-            RunScoped([&] {
-              Semaphore sem = AllocaDmaSemaphore();
-              AsyncCopy(in_bottom, out_top, sem).Wait();
-              AsyncCopy(in_top, out_bottom, sem).Wait();
-            });
-          }));
+                     RunScoped([&] {
+                       Semaphore sem = AllocaDmaSemaphore();
+                       AsyncCopy(in_bottom, out_top, sem).Wait();
+                       AsyncCopy(in_top, out_bottom, sem).Wait();
+                     });
+                   }));
 
   EXPECT_THAT(kernel.Verify(), IsOk());
   TT_ASSERT_OK_AND_ASSIGN(std::string serialized,

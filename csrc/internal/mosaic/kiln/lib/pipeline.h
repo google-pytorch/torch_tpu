@@ -47,7 +47,7 @@ struct BlockRegion {
 // back in) and copies it out again. Consecutive distinct output blocks must
 // cover disjoint parts of `hbm`, as their copies out may overlap.
 struct PipelineOperand {
-  Ref hbm;
+  HbmRef hbm;
   Dimensions block_shape;
   // Outputs only for now.
   absl::AnyInvocable<Scalar(Scalar step) const> block_index = nullptr;
@@ -58,7 +58,7 @@ struct PipelineOperand {
 // One operand's block at one step of `EmitPipeline`.
 struct PipelineBlock {
   // Its VMEM buffer.
-  Ref ref;
+  VmemRef ref;
   // Its block index (i32): `block_index(step)`, or `step` by default.
   Scalar index;
   // Whether this step is the first / last of the block (bool `Scalar`s, i.e.

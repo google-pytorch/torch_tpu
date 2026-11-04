@@ -62,7 +62,6 @@ enum class NonzeroKernelId : int {
   kNonzeroKGreaterThan2 = 1,
 };
 
-using kiln::Ref;
 using kiln::Scalar;
 using kiln::Tile;
 
@@ -182,7 +181,7 @@ Tile Triangle() {
 class NonzeroKernel {
  public:
   // Allocate scratch and prebuild constant tiles inside `CreateKernel`.
-  NonzeroKernel(Ref x, Ref output)
+  NonzeroKernel(kiln::HbmRef x, kiln::HbmRef output)
       : x_(x),
         output_(output),
         stage_rows_(kiln::AllocaVmem(kiln::i32(2 * kSublanes, kLanes))),
@@ -210,7 +209,7 @@ class NonzeroKernel {
 
  private:
   // View `rows` 128-word storage rows of the S32 output at `q`.
-  Ref OutputRows(Scalar q, int64_t rows) {
+  kiln::HbmRef OutputRows(Scalar q, int64_t rows) {
     return output_(kiln::Slice(q, rows), kiln::Slice(0, kLanes));
   }
 
@@ -220,7 +219,7 @@ class NonzeroKernel {
     const Scalar half = rows >> 1;
     const Scalar end = rows - (half & (kZeroRows - 1));
     // Borrow a flush buffer as a zero source before any flush runs.
-    Ref zeros = packed_(0);
+    kiln::VmemRef zeros = packed_(0);
     kiln::Store(zeros, kiln::Zeros(kiln::i32(2 * kSublanes, kLanes)));
     kiln::For(half, end, kZeroRows, [this, &zeros](Scalar q) {
       kiln::SyncCopy(zeros, OutputRows(q, kZeroRows));
@@ -258,7 +257,7 @@ class NonzeroKernel {
           })},
           /*outputs=*/{}, [this, row](const kiln::PipelineStep& s) {
             const Window w = WideWindow(s.step);
-            const Ref block = s.inputs[0].ref;
+            const kiln::VmemRef block = s.inputs[0].ref;
             kiln::For(w.tiles, [this, &w, &block, row](Scalar tile_idx) {
               Append(
                   CompactTile(w, block, tile_idx, row & (kSublanes - 1), row));
@@ -288,7 +287,7 @@ class NonzeroKernel {
   }
 
   // Consume rows in logical order, independent of physical input tiling.
-  void ProcessBlock(const Window& w, Ref block, Scalar r0) {
+  void ProcessBlock(const Window& w, kiln::VmemRef block, Scalar r0) {
     kiln::For(kSublanes, [this, &w, &block, r0](Scalar r) {
       kiln::For(w.tiles, [this, &w, &block, r0, r](Scalar tile_idx) {
         Append(CompactTile(w, block, tile_idx, r, r0 + r));
@@ -297,7 +296,7 @@ class NonzeroKernel {
   }
 
   // Compact one 1024-column segment of row `row_in_block` of an input block.
-  Stream CompactTile(const Window& w, Ref block, Scalar tile_idx,
+  Stream CompactTile(const Window& w, kiln::VmemRef block, Scalar tile_idx,
                      Scalar row_in_block, Scalar row) {
     const Scalar offset = tile_idx * kTile;
     const Tile values = kiln::Load(block(kiln::Slice(row_in_block, 1),
@@ -361,7 +360,7 @@ class NonzeroKernel {
   // Stage up to 1024 pairs at `fill_ % 1024`; rows 8..15 hold overflow until
   // rows 0..7 flush.
   void Append(const Stream& stream) {
-    const Scalar fill = kiln::LoadScalar(fill_);
+    const Scalar fill = kiln::Load(fill_);
     const Scalar lane_offset = fill & (kLanes - 1);
     const Scalar stage_row = (fill >> kLaneShift) & (kSublanes - 1);
     const Tile rotated = stream.positions.Rotate(lane_offset, 1);
@@ -398,11 +397,11 @@ class NonzeroKernel {
 
   // Interleave 1024 staged (row, col) pairs to HBM and shift overflow down.
   void Flush(Scalar q) {
-    const Scalar flushes = kiln::LoadScalar(flush_count_);
+    const Scalar flushes = kiln::Load(flush_count_);
     const Scalar slot = flushes & (kSlots - 1);
     const kiln::AsyncCopyDescriptor copy = FlushCopy(slot, q);
     kiln::If(flushes >= kSlots, [&copy] { copy.Wait(); });
-    Ref packed = packed_(slot);
+    kiln::VmemRef packed = packed_(slot);
     for (int r = 0; r < kSublanes; ++r) {
       kiln::Store(packed(kiln::Slice(2 * r, 1)),
                   kiln::Load(stage_rows_(kiln::Slice(r, 1))));
@@ -411,7 +410,7 @@ class NonzeroKernel {
     }
     copy.Start();
     kiln::Store(flush_count_, flushes + 1);
-    for (Ref stage : {stage_rows_, stage_cols_}) {
+    for (kiln::VmemRef stage : {stage_rows_, stage_cols_}) {
       kiln::Store(stage(kiln::Slice(0, kSublanes)),
                   kiln::Load(stage(kiln::Slice(kSublanes, kSublanes))));
       kiln::Store(stage(kiln::Slice(kSublanes, kSublanes)),
@@ -421,11 +420,11 @@ class NonzeroKernel {
 
   // Drain in-flight flushes and write any remaining partial stage rows.
   void FinishOutput() {
-    const Scalar flushes = kiln::LoadScalar(flush_count_);
+    const Scalar flushes = kiln::Load(flush_count_);
     for (int s = 0; s < kSlots; ++s) {
       kiln::If(flushes > s, [this, s] { FlushCopy(s, kiln::I32(0)).Wait(); });
     }
-    const Scalar count = kiln::LoadScalar(fill_);
+    const Scalar count = kiln::Load(fill_);
     const Scalar q = (count >> kTileShift) << kSublaneShift;
     const Scalar rows = ((count & (kTile - 1)) + (kLanes - 1)) >> kLaneShift;
     kiln::For(rows, [this, q](Scalar r) {
@@ -436,15 +435,15 @@ class NonzeroKernel {
     });
   }
 
-  Ref x_;                            // HBM F32[M,N] input
-  Ref output_;                       // HBM S32 view of native S64 storage
-  Ref stage_rows_, stage_cols_;      // VMEM (16, 128) coordinate planes
-  Ref packed_;                       // VMEM (kSlots, 16, 128) flush slots
-  Ref fill_;                         // SMEM total appended coordinates
-  Ref flush_count_;                  // SMEM flushes issued
-  kiln::SemaphoreArray flush_sems_;  // Flush DMA completion per slot
-  Tile lane_, sublane_, pos_, tri_;  // Constant vectors
-  Scalar m_, n_;                     // Runtime input extents
+  kiln::HbmRef x_;                         // F32[M,N] input
+  kiln::HbmRef output_;                    // S32 view of native S64 storage
+  kiln::VmemRef stage_rows_, stage_cols_;  // (16, 128) coordinate planes
+  kiln::VmemRef packed_;                   // (kSlots, 16, 128) flush slots
+  kiln::SmemRef fill_;                     // Total appended coordinates
+  kiln::SmemRef flush_count_;              // Flushes issued
+  kiln::SemaphoreArray flush_sems_;        // Flush DMA completion per slot
+  Tile lane_, sublane_, pos_, tri_;        // Constant vectors
+  Scalar m_, n_;                           // Runtime input extents
 };
 
 // Define the Mosaic memrefs: input, private destination and aliased result.
@@ -456,7 +455,8 @@ absl::StatusOr<kiln::Kernel> BuildNonzeroIndices() {
                             kiln::InSpec::Hbm(kiln::f32(dynamic_2d)),
                             kiln::InSpec::Hbm(kiln::i32(dynamic_2d)),
                             kiln::OutSpec::Hbm(kiln::i32(dynamic_2d)),
-                            [](Ref input, Ref /*destination*/, Ref output) {
+                            [](kiln::HbmRef input, kiln::HbmRef /*destination*/,
+                               kiln::HbmRef output) {
                               // The result aliases the private destination;
                               // only the result is written.
                               NonzeroKernel(input, output).Build();

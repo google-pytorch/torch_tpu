@@ -224,13 +224,9 @@ Tile Load(VmemRef src);
 // an element: `Load(ref(i, j))`.
 Scalar Load(SmemRef src);
 
-// Same as `Load(VmemRef)`, checking that `src` is in VMEM when the kernel is
-// built.
-inline Tile Load(Ref src) { return Load(src.As<VmemRef>()); }
-
-// Same as `Load(SmemRef)`, checking that `src` is in SMEM when the kernel is
-// built.
-inline Scalar LoadScalar(Ref src) { return Load(src.As<SmemRef>()); }
+// HBM refs cannot be loaded from directly (use `AsyncCopy` / `SyncCopy`), and a
+// `Ref` must first be typed with `As<VmemRef>()` / `As<SmemRef>()`.
+void Load(Ref src) = delete;
 
 // TODO(willfroom): Add the "add" option.
 struct StoreOptions {
@@ -247,12 +243,11 @@ void Store(VmemRef dst, Tile value, const StoreOptions& options = {});
 // converted to the dtype of `dst`.
 void Store(SmemRef dst, Scalar value);
 
-// Same as the typed `Store` overloads, checking the memory space of `dst` when
-// the kernel is built.
-inline void Store(Ref dst, Tile value, const StoreOptions& options = {}) {
-  Store(dst.As<VmemRef>(), value, options);
-}
-inline void Store(Ref dst, Scalar value) { Store(dst.As<SmemRef>(), value); }
+// Tiles can only be stored to VMEM and scalars to SMEM. HBM refs cannot be
+// stored to directly (use `AsyncCopy` / `SyncCopy`), and a `Ref` must first be
+// typed with `As<VmemRef>()` / `As<SmemRef>()`.
+void Store(Ref dst, Tile value, const StoreOptions& options = {}) = delete;
+void Store(Ref dst, Scalar value) = delete;
 
 }  // namespace torch_tpu::kiln
 
