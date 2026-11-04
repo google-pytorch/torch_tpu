@@ -24,26 +24,10 @@ package(
 )
 
 torch_tpu_cc_library(
-    name = "linalg_cross",
-    srcs = ["linalg_cross.cc"],
-    hdrs = ["linalg_cross.h"],
-    deps = [
-        "//csrc/common:dimension_types",
-        "//csrc/common:error_utils",
-        "//csrc/ops:op_builder_utils",
-        "@com_google_absl//absl/status:statusor",
-        "@llvm-project//mlir:IR",
-        "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
-        "@stablehlo//stablehlo/integrations/cpp/builder:stablehlo_builder",
-    ],
-)
-
-torch_tpu_cc_library(
     name = "linalg_cross_kernels",
     srcs = ["linalg_cross_kernels.cc"],
     hdrs = ["linalg_cross_kernels.h"],
     deps = [
-        ":linalg_cross",
         "//csrc/common:aten_utils",
         "//csrc/common:cache_key",
         "//csrc/common:dimension_types",
@@ -58,8 +42,10 @@ torch_tpu_cc_library(
         "//shims/torch:aten_headers",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
+        "@llvm-project//mlir:IR",
         "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
         "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
+        "@stablehlo//stablehlo/integrations/cpp/builder:stablehlo_builder",
     ],
 )
 
