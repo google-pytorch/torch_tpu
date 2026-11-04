@@ -146,8 +146,8 @@ def _(mo):
     | :--- | :--- | :--- |
     | `torch.cuda.current_stream()` | `torch.accelerator.current_stream()` | Returns the active stream for a device. |
     | `torch.cuda.set_stream(stream)` | `torch.accelerator.set_stream(stream)` | Sets the active stream. |
-    | `torch.cuda.default_stream(device=None)` | `torch.tpu.default_stream(device=None)` | Returns the default `TpuStream` for the device. |
-    | `torch.cuda.stream(stream)` | `torch.tpu.stream(stream)` | Context manager that selects a given `TpuStream`. |
+    | `torch.cuda.default_stream(device=None)` | `torch.tpu.default_stream(device=None)` | Returns the default `torch.tpu.Stream` for the device. |
+    | `torch.cuda.stream(stream)` | `torch.tpu.stream(stream)` | Context manager that selects a given `torch.tpu.Stream`. |
     | `torch.cuda.synchronize()` | `torch.accelerator.synchronize()` | Waits for all pending work on the TPU device to complete. |
     | `torch.cuda.Stream` | `torch.tpu.Stream(device=None, priority=0, *, pinned=None)` | Subclasses `torch.Stream`. Supports `synchronize()`, `record_event()`, `wait_event()`, `wait_stream()`, and core pinning (`pinned="dense"` or `"sparse"`, queried via `is_dense` / `is_sparse`). |
     | `torch.cuda.Event` | `torch.tpu.Event(enable_timing=False)` | Subclasses `torch.Event`. Supports `record()`, `synchronize()`, `query()`, and `elapsed_time(end_event)`. |

@@ -51,6 +51,23 @@ class TpuStreamsTest(seed_test_utils.RepeatableTest):
       torch.accelerator.set_stream(default_acc_stream)
     self.assertEqual(torch.accelerator.current_stream(), default_acc_stream)
 
+  def test_stream_repr_identifies_the_stream(self):
+    """Distinct streams have distinct reprs that identify the stream."""
+    new_stream = torch.tpu.Stream()
+
+    self.assertEqual(
+        repr(new_stream),
+        f'<torch.tpu.Stream device=tpu:0 stream_id={new_stream.stream_id}>',
+    )
+    self.assertNotEqual(repr(new_stream), repr(torch.tpu.default_stream()))
+
+  def test_event_repr_uses_public_name(self):
+    """The event repr names the public class and the device."""
+    event = torch.tpu.Event()
+
+    self.assertEqual(repr(event), f'<torch.tpu.Event device={event.device}>')
+    self.assertEqual(event.device.type, 'tpu')
+
   def test_stream(self):
     """Tests basic usage of streams and events.
 

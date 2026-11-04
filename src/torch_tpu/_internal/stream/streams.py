@@ -203,8 +203,8 @@ class TpuStream(torch.Stream):
     """Returns the priority range for streams."""
     raise NotImplementedError(_NOT_IMPLEMENTED_STREAMS_MSG)
 
-  def __repr__(self):
-    return '<torch.tpu.TpuStream>'
+  def __repr__(self) -> str:
+    return f'<torch.tpu.Stream device={self.device} stream_id={self.stream_id}>'
 
   @property
   @experimental(
@@ -366,7 +366,7 @@ class TpuEvent(torch.Event):
     raise NotImplementedError(_NOT_IMPLEMENTED_STREAMS_MSG)
 
   def __repr__(self) -> str:
-    return '<torch.tpu.TpuEvent>'
+    return f'<torch.tpu.Event device={self.device}>'
 
 
 def synchronize(device: torch.device | str | int | None = None) -> None:
