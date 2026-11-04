@@ -10006,7 +10006,7 @@ Supported combinations for non-constant padding:
     with et.assert_raises_message(
         RuntimeError,
         tpu="""adaptive_avg_pool2d(): expected output_size to have 1 or 2 elements, got 0""",
-        gpu="""adaptive_avg_pool2d: output_size must be 2""",
+        gpu="""adaptive_avg_pool2d(): output_size must be 2""",
         message_reviewed_by="gunhyun",
     ):
       torch.ops.aten.adaptive_avg_pool2d.out(inp, [], out=out)
@@ -10014,7 +10014,7 @@ Supported combinations for non-constant padding:
     with et.assert_raises_message(
         RuntimeError,
         tpu="""adaptive_avg_pool2d(): expected output_size to have 1 or 2 elements, got 3""",
-        gpu="""adaptive_avg_pool2d: output_size must be 2""",
+        gpu="""adaptive_avg_pool2d(): output_size must be 2""",
         message_reviewed_by="gunhyun",
     ):
       torch.ops.aten.adaptive_avg_pool2d.out(inp, [1, 2, 3], out=out)
@@ -10043,7 +10043,7 @@ Supported combinations for non-constant padding:
     with et.assert_raises_message(
         RuntimeError,
         tpu="""adaptive_avg_pool2d_backward(): expected grad_output to have 4 dimensions, got 3""",
-        gpu="""adaptive_avg_pool2d_backward_out_cuda_template: Expected dimensions 4 for `gradOutput_` but got dimensions 3""",
+        gpu="""adaptive_avg_pool2d_backward(): Expected dimensions 4 for `grad_output` but got dimensions 3""",
         message_reviewed_by="gunhyun",
     ):
       torch.ops.aten._adaptive_avg_pool2d_backward(grad_3d, inp)
@@ -10056,14 +10056,14 @@ Supported combinations for non-constant padding:
     with et.assert_raises_message(
         RuntimeError,
         tpu="""adaptive_avg_pool3d(): expected input to be a 4-D or 5-D tensor, got 3-D tensor""",
-        gpu="""adaptive_avg_pool3d_cuda(): Expected 4D or 5D tensor, but got [10, 10, 10]""",
+        gpu="""adaptive_avg_pool3d(): Expected 4D or 5D tensor, but got [10, 10, 10]""",
     ):
       torch.ops.aten.adaptive_avg_pool3d.out(inp, tuple(out.shape), out=out)
 
     with et.assert_raises_message(
         RuntimeError,
         tpu="""adaptive_avg_pool3d(): expected input to be a 4-D or 5-D tensor, got 3-D tensor""",
-        gpu="""adaptive_avg_pool3d_cuda(): Expected 4D or 5D tensor, but got [10, 10, 10]""",
+        gpu="""adaptive_avg_pool3d(): Expected 4D or 5D tensor, but got [10, 10, 10]""",
     ):
       torch.ops.aten.adaptive_avg_pool3d(inp, tuple(out.shape))
 
@@ -10075,7 +10075,7 @@ Supported combinations for non-constant padding:
     with et.assert_raises_message(
         RuntimeError,
         tpu="""adaptive_avg_pool3d(): expected input to have non-zero size for non-batch dimensions, got [1, 0, 4, 4] with dimension 1 being empty""",
-        gpu="""adaptive_avg_pool3d_cuda(): Expected input to have non-zero size for non-batch dimensions, but input has sizes [1, 0, 4, 4] with dimension 1 being empty""",
+        gpu="""adaptive_avg_pool3d(): Expected input to have non-zero size for non-batch dimensions, but input has sizes [1, 0, 4, 4] with dimension 1 being empty""",
         message_reviewed_by="gunhyun",
     ):
       torch.ops.aten.adaptive_avg_pool3d.out(inp_empty_d, [2, 2, 2], out=out)
@@ -10083,7 +10083,7 @@ Supported combinations for non-constant padding:
     with et.assert_raises_message(
         RuntimeError,
         tpu="""adaptive_avg_pool3d(): expected input to have non-zero size for non-batch dimensions, got [1, 4, 4, 0] with dimension 3 being empty""",
-        gpu="""adaptive_avg_pool3d_cuda(): Expected input to have non-zero size for non-batch dimensions, but input has sizes [1, 4, 4, 0] with dimension 3 being empty""",
+        gpu="""adaptive_avg_pool3d(): Expected input to have non-zero size for non-batch dimensions, but input has sizes [1, 4, 4, 0] with dimension 3 being empty""",
         message_reviewed_by="gunhyun",
     ):
       torch.ops.aten.adaptive_avg_pool3d.out(inp_empty_w, [2, 2, 2], out=out)
@@ -10095,7 +10095,7 @@ Supported combinations for non-constant padding:
     with et.assert_raises_message(
         RuntimeError,
         tpu="""adaptive_avg_pool3d(): expected output_size to have 1 or 3 elements, got 0""",
-        gpu="""adaptive_avg_pool3d: internal error: output_size.size() must be 1 or 3""",
+        gpu="""adaptive_avg_pool3d(): output_size must be 3""",
         message_reviewed_by="gunhyun",
     ):
       torch.ops.aten.adaptive_avg_pool3d.out(inp, [], out=out)
@@ -10103,7 +10103,7 @@ Supported combinations for non-constant padding:
     with et.assert_raises_message(
         RuntimeError,
         tpu="""adaptive_avg_pool3d(): expected output_size to have 1 or 3 elements, got 2""",
-        gpu="""adaptive_avg_pool3d: internal error: output_size.size() must be 1 or 3""",
+        gpu="""adaptive_avg_pool3d(): output_size must be 3""",
         message_reviewed_by="gunhyun",
     ):
       torch.ops.aten.adaptive_avg_pool3d.out(inp, [1, 2], out=out)
@@ -10132,7 +10132,7 @@ Supported combinations for non-constant padding:
     with et.assert_raises_message(
         RuntimeError,
         tpu="""adaptive_avg_pool3d_backward(): expected grad_output to have 5 dimensions, got 4""",
-        gpu="""adaptive_avg_pool3d_backward_out_cuda_template: Expected dimensions 5 for `gradOutput_` but got dimensions 4""",
+        gpu="""adaptive_avg_pool3d_backward(): Expected dimensions 5 for `grad_output` but got dimensions 4""",
         message_reviewed_by="gunhyun",
     ):
       torch.ops.aten._adaptive_avg_pool3d_backward(grad_4d, inp)
