@@ -3174,6 +3174,398 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     )
     self.assertIs(qwen_omni_dict["enable_audio_output"], False)
 
+  def test_transformers_in_tree_config_skips_cache_stat_when_load_weights_false(
+      self,
+  ):
+    module_cache.clear_config_cache()
+    with tempfile.TemporaryDirectory() as temp_dir:
+      cache_dir = pathlib.Path(temp_dir) / "cache_weights"
+      (cache_dir / "transformers").mkdir(parents=True)
+      provider = module_registry.TransformersProvider(base_path=str(cache_dir))
+      gpath_cls = type(epath.Path(temp_dir))
+
+      orig_exists = gpath_cls.exists
+      cache_exists_calls: list[str] = []
+
+      def spy_exists(path_self: epath.Path) -> bool:
+        path_str = str(path_self)
+        if path_str.startswith(str(cache_dir)):
+          cache_exists_calls.append(path_str)
+        return orig_exists(path_self)
+
+      with mock.patch.object(
+          gpath_cls, "exists", autospec=True, side_effect=spy_exists
+      ):
+        spec = provider.get_module_spec(
+            "google/gemma-3-270m", load_weights=False
+        )
+        _, kwargs = spec.sample_inputs_factory()
+
+      self.assertIn("input_ids", kwargs)
+      self.assertEmpty(cache_exists_calls)
+
+  def test_transformers_cache_oserror_falls_back_to_gcs(self):
+    module_cache.clear_config_cache()
+    with tempfile.TemporaryDirectory() as temp_dir:
+      cache_dir = pathlib.Path(temp_dir) / "cache_weights"
+      model_name = "test-org/cache-timeout-bert"
+      model_cache_dir = cache_dir / "transformers" / model_name
+      model_cache_dir.mkdir(parents=True)
+      (model_cache_dir / "config.json").write_text("{}")
+
+      gcs_cfg_path = pathlib.Path(temp_dir) / "gcs_config.json"
+      gcs_cfg_path.write_text(
+          json.dumps({
+              "model_type": "bert",
+              "architectures": ["BertModel"],
+              "hidden_size": 32,
+              "num_attention_heads": 2,
+              "num_hidden_layers": 1,
+              "vocab_size": 100,
+          })
+      )
+
+      provider = module_registry.TransformersProvider(base_path=str(cache_dir))
+      gpath_cls = type(epath.Path(temp_dir))
+      orig_open = gpath_cls.open
+
+      def failing_cache_open(path_self: epath.Path, *args, **kwargs):
+        if str(path_self).startswith(str(cache_dir)):
+          raise OSError("DEADLINE_EXCEEDED: Curators look up failed")
+        return orig_open(path_self, *args, **kwargs)
+
+      with (
+          mock.patch.object(
+              gpath_cls, "open", autospec=True, side_effect=failing_cache_open
+          ),
+          mock.patch.object(
+              provider, "fetch_gcs_file", return_value=gcs_cfg_path
+          ) as mock_gcs,
+      ):
+        spec = provider.get_module_spec(model_name, load_weights=False)
+
+      self.assertEqual(spec.config.model_type, "bert")
+      mock_gcs.assert_called_once_with(f"{model_name}/config.json")
+
+  def test_diffusers_cache_load_config_skips_iterdir_and_falls_back_on_oserror(
+      self,
+  ):
+    module_cache.clear_config_cache()
+    with tempfile.TemporaryDirectory() as temp_dir:
+      cache_dir = pathlib.Path(temp_dir) / "cache_weights"
+      model_name = "test-diffuser-org/top-level-unet"
+      unet_dir = cache_dir / "diffusers" / model_name / "unet"
+      unet_dir.mkdir(parents=True)
+      unet_cfg = {
+          "_class_name": "UNet2DConditionModel",
+          "sample_size": 32,
+          "in_channels": 4,
+          "cross_attention_dim": 64,
+      }
+      (unet_dir / "config.json").write_text(json.dumps(unet_cfg))
+
+      provider = module_registry.DiffusersProvider(base_path=str(cache_dir))
+      gpath_cls = type(epath.Path(temp_dir))
+      with mock.patch.object(
+          gpath_cls,
+          "iterdir",
+          autospec=True,
+          side_effect=AssertionError("iterdir should not be called"),
+      ):
+        cfg, subfolder, _ = provider._load_config(
+            model_name, load_weights=False
+        )
+      self.assertEqual(subfolder, "unet")
+      self.assertEqual(cfg["_class_name"], "UNet2DConditionModel")
+
+      # Verify cache OSError falls back cleanly to GCS when load_weights=False.
+      module_cache.clear_config_cache()
+      gcs_dir = pathlib.Path(temp_dir) / "gcs_diffusers" / "unet"
+      gcs_dir.mkdir(parents=True)
+      gcs_cfg_file = gcs_dir / "config.json"
+      gcs_cfg_file.write_text(json.dumps(unet_cfg))
+
+      orig_exists = gpath_cls.exists
+
+      def failing_cache_exists(path_self: epath.Path) -> bool:
+        if str(path_self).startswith(str(cache_dir)):
+          raise OSError("DEADLINE_EXCEEDED: Curators look up failed")
+        return orig_exists(path_self)
+
+      def fake_fetch_gcs(rel_path: str):
+        if rel_path == f"{model_name}/unet/config.json":
+          return gcs_cfg_file
+        return None
+
+      with (
+          mock.patch.object(
+              gpath_cls,
+              "exists",
+              autospec=True,
+              side_effect=failing_cache_exists,
+          ),
+          mock.patch.object(
+              provider, "fetch_gcs_file", side_effect=fake_fetch_gcs
+          ),
+      ):
+        cfg_fallback, subfolder_fallback, _ = provider._load_config(
+            model_name, load_weights=False
+        )
+      self.assertEqual(subfolder_fallback, "unet")
+      self.assertEqual(cfg_fallback["_class_name"], "UNet2DConditionModel")
+
+  def test_diffusers_bundled_config_priority_and_nested_cache_fallback(self):
+    module_cache.clear_config_cache()
+    with tempfile.TemporaryDirectory() as temp_dir:
+      bundled_dir = pathlib.Path(temp_dir) / "bundled"
+      cache_dir = pathlib.Path(temp_dir) / "cache_weights"
+      model_name = "test-diffuser-org/bundled-priority-model"
+
+      # Set up bundled config with model_index.json resolving to 'unet'.
+      bundled_model_dir = bundled_dir / model_name
+      (bundled_model_dir / "unet").mkdir(parents=True)
+      bundled_index = {"unet": ["diffusers", "UNet2DConditionModel"]}
+      (bundled_model_dir / "model_index.json").write_text(
+          json.dumps(bundled_index)
+      )
+      bundled_cfg = {
+          "_class_name": "UNet2DConditionModel",
+          "sample_size": 64,
+          "source": "bundled",
+      }
+      (bundled_model_dir / "unet" / "config.json").write_text(
+          json.dumps(bundled_cfg)
+      )
+
+      # Set up cache config with different sample_size.
+      cache_unet_dir = cache_dir / "diffusers" / model_name / "unet"
+      cache_unet_dir.mkdir(parents=True)
+      cache_cfg = {
+          "_class_name": "UNet2DConditionModel",
+          "sample_size": 32,
+          "source": "cache",
+      }
+      (cache_unet_dir / "config.json").write_text(json.dumps(cache_cfg))
+
+      provider = module_registry.DiffusersProvider(base_path=str(cache_dir))
+      gpath_cls = type(epath.Path(temp_dir))
+
+      orig_exists = gpath_cls.exists
+
+      def failing_cache_exists(path_self: epath.Path) -> bool:
+        if str(path_self).startswith(str(cache_dir)):
+          raise AssertionError(
+              f"cache_dir was probed unexpectedly: {path_self}"
+          )
+        return orig_exists(path_self)
+
+      with (
+          mock.patch.object(provider, "_FILES", bundled_dir),
+          mock.patch.object(
+              gpath_cls,
+              "exists",
+              autospec=True,
+              side_effect=failing_cache_exists,
+          ),
+      ):
+        cfg, subfolder, _ = provider._load_config(
+            model_name, load_weights=False
+        )
+
+      self.assertEqual(subfolder, "unet")
+      self.assertEqual(cfg.get("source"), "bundled")
+      self.assertEqual(cfg.get("sample_size"), 64)
+
+      # When load_weights=True, verify bundled config is bypassed and cache_dir
+      # is loaded.
+      module_cache.clear_config_cache()
+      with mock.patch.object(provider, "_FILES", bundled_dir):
+        cfg_weights, subfolder_weights, _ = provider._load_config(
+            model_name, load_weights=True
+        )
+      self.assertEqual(subfolder_weights, "unet")
+      self.assertEqual(cfg_weights.get("source"), "cache")
+      self.assertEqual(cfg_weights.get("sample_size"), 32)
+
+      # Verify lazy nested <sub_dir>/transformer/config.json fallback when top
+      # level cache candidates miss.
+      module_cache.clear_config_cache()
+      nested_model_name = "test-diffuser-org/nested-cache-model"
+      nested_tf_dir = (
+          cache_dir
+          / "diffusers"
+          / nested_model_name
+          / "sub_pipeline"
+          / "transformer"
+      )
+      nested_tf_dir.mkdir(parents=True)
+      nested_cfg = {
+          "_class_name": "Transformer2DModel",
+          "sample_size": 16,
+          "source": "nested_cache",
+      }
+      (nested_tf_dir / "config.json").write_text(json.dumps(nested_cfg))
+
+      with mock.patch.object(provider, "_FILES", bundled_dir):
+        cfg_nested, subfolder_nested, _ = provider._load_config(
+            nested_model_name, load_weights=False
+        )
+      self.assertEqual(subfolder_nested, "sub_pipeline/transformer")
+      self.assertEqual(cfg_nested.get("source"), "nested_cache")
+      self.assertEqual(cfg_nested.get("sample_size"), 16)
+
+  def test_base_provider_default_cache_base_path_oserror_falls_back_gracefully(
+      self,
+  ):
+    gpath_cls = type(epath.Path("/unreachable/weights_cache"))
+    with flagsaver.flagsaver(weights_base_path="/unreachable/weights_cache"):
+      with mock.patch.object(
+          gpath_cls,
+          "exists",
+          autospec=True,
+          side_effect=OSError("DEADLINE_EXCEEDED"),
+      ):
+        registry = module_registry.ModuleRegistry()
+        self.assertFalse(registry._providers["transformers"].has_cache_dir)
+        self.assertIsNone(registry._providers["transformers"]._base_path)
+
+  def test_transformers_load_weights_true_propagates_oserror(self):
+    module_cache.clear_config_cache()
+    with tempfile.TemporaryDirectory() as temp_dir:
+      cache_dir = pathlib.Path(temp_dir) / "cache_weights"
+      model_name = "test-org/cache-oserror-bert"
+      model_cache_dir = cache_dir / "transformers" / model_name
+      model_cache_dir.mkdir(parents=True)
+      cfg_file = model_cache_dir / "config.json"
+      cfg_file.write_text("{}")
+
+      provider = module_registry.TransformersProvider(base_path=str(cache_dir))
+      gpath_cls = type(epath.Path(temp_dir))
+
+      orig_exists = gpath_cls.exists
+
+      def failing_cfg_exists(path_self: epath.Path) -> bool:
+        if str(path_self).startswith(str(model_cache_dir)):
+          raise OSError("Cache filesystem unavailable")
+        return orig_exists(path_self)
+
+      with mock.patch.object(
+          gpath_cls, "exists", autospec=True, side_effect=failing_cfg_exists
+      ):
+        with self.assertRaises(OSError):  # ASSERT_RAISES_OK=Cache stat error.
+          with provider._resolve_transformers_config_path(
+              model_name, load_weights=True
+          ):
+            pass
+
+      orig_open = gpath_cls.open
+
+      def failing_cfg_open(path_self: epath.Path, *args, **kwargs):
+        if str(path_self).startswith(str(model_cache_dir)):
+          raise OSError("Cache read error")
+        return orig_open(path_self, *args, **kwargs)
+
+      with mock.patch.object(
+          gpath_cls, "open", autospec=True, side_effect=failing_cfg_open
+      ):
+        with self.assertRaises(OSError):  # ASSERT_RAISES_OK=Cache read error.
+          provider.get_module_spec(model_name, load_weights=True)
+
+  def test_diffusers_load_weights_true_propagates_oserror(self):
+    module_cache.clear_config_cache()
+    with tempfile.TemporaryDirectory() as temp_dir:
+      cache_dir = pathlib.Path(temp_dir) / "cache_weights"
+      model_name = "test-diffuser-org/cache-oserror-unet"
+      model_cache_dir = cache_dir / "diffusers" / model_name
+      model_cache_dir.mkdir(parents=True)
+
+      provider = module_registry.DiffusersProvider(base_path=str(cache_dir))
+      gpath_cls = type(epath.Path(temp_dir))
+
+      orig_exists = gpath_cls.exists
+
+      def failing_diffusers_exists(path_self: epath.Path) -> bool:
+        if str(path_self).startswith(str(model_cache_dir)):
+          raise OSError("Diffusers cache filesystem unavailable")
+        return orig_exists(path_self)
+
+      with mock.patch.object(
+          gpath_cls,
+          "exists",
+          autospec=True,
+          side_effect=failing_diffusers_exists,
+      ):
+        with self.assertRaises(  # ASSERT_RAISES_OK=Diffusers stat error.
+            OSError
+        ):
+          provider._load_config(model_name, load_weights=True)
+
+  def test_base_provider_explicit_base_path_propagates_oserror(self):
+    gpath_cls = type(epath.Path("/unreachable/weights_cache"))
+    with mock.patch.object(
+        gpath_cls,
+        "exists",
+        autospec=True,
+        side_effect=OSError("Explicit base path filesystem unavailable"),
+    ):
+      with self.assertRaises(  # ASSERT_RAISES_OK=Explicit base path error.
+          OSError
+      ):
+        module_registry.TransformersProvider(
+            base_path="/unreachable/weights_cache"
+        )
+
+  def test_load_preprocessor_returns_none_on_oserror_or_missing_path(self):
+    module_cache.clear_config_cache()
+    with tempfile.TemporaryDirectory() as temp_dir:
+      cache_dir = pathlib.Path(temp_dir) / "cache_weights"
+      gpath_cls = type(epath.Path(temp_dir))
+
+      with mock.patch.object(
+          gpath_cls,
+          "exists",
+          autospec=True,
+          side_effect=OSError("Cache filesystem unreachable"),
+      ):
+        preprocessor = module_registry._load_transformers_preprocessor(
+            str(cache_dir), modality=module_registry.Modality.VISION
+        )
+        self.assertIsNone(preprocessor)
+
+      nonexistent_path = epath.Path(temp_dir) / "nonexistent_subfolder"
+      preprocessor = module_registry._load_transformers_preprocessor(
+          nonexistent_path, modality=module_registry.Modality.VISION
+      )
+      self.assertIsNone(preprocessor)
+
+  def test_transformers_vision_skips_cache_stat_when_load_weights_false(self):
+    module_cache.clear_config_cache()
+    with tempfile.TemporaryDirectory() as temp_dir:
+      cache_dir = pathlib.Path(temp_dir) / "cache_weights"
+      (cache_dir / "transformers").mkdir(parents=True)
+      provider = module_registry.TransformersProvider(base_path=str(cache_dir))
+      gpath_cls = type(epath.Path(temp_dir))
+
+      orig_exists = gpath_cls.exists
+      cache_exists_calls: list[str] = []
+
+      def spy_exists(path_self: epath.Path) -> bool:
+        path_str = str(path_self)
+        if path_str.startswith(str(cache_dir)):
+          cache_exists_calls.append(path_str)
+        return orig_exists(path_self)
+
+      with mock.patch.object(
+          gpath_cls, "exists", autospec=True, side_effect=spy_exists
+      ):
+        spec = provider.get_module_spec(
+            "google/vit-base-patch16-224", load_weights=False
+        )
+        _, kwargs = spec.sample_inputs_factory()
+
+      self.assertIn("pixel_values", kwargs)
+      self.assertEmpty(cache_exists_calls)
+
 
 if __name__ == "__main__":
   absltest.main()
