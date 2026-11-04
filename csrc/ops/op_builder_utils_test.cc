@@ -16,6 +16,7 @@
 
 #include "csrc/ops/op_builder_utils.h"
 
+#include <array>
 #include <cstdint>
 #include <iostream>
 #include <optional>
@@ -1113,6 +1114,103 @@ mlir::MlirOp MakeBoundedArg(mlir::func::FunctionBuilder& fb,
     op = mlir::stablehlo::SetDimensionSize(op, size, dim);
   }
   return op;
+}
+
+// Returns the bound of each dim of `op`, or -1 for static dims.
+Dimensions GetBounds(mlir::MlirOp op) {
+  Dimensions bounds;
+  for (const mlir::stablehlo::DimensionInfo& dim : GetDimensions(op)) {
+    bounds.push_back(dim.boundOp.has_value() ? dim.size : -1);
+  }
+  return bounds;
+}
+
+// Broadcasts to more than one bounded dim, e.g. an attention mask
+// [batch, 1, ?seq, ?seq] to [batch, heads, ?seq, ?seq].
+TEST(ApplyBroadcastIfNeeded, MultipleBoundedResultDimensions) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp mask = MakeBoundedArg(fb, {1, 1, 8, 8}, /*bound_dims=*/{2, 3});
+  mlir::MlirOp scale =
+      MakeConstant(fb, 2.0f, fb.getOpBuilder().getF32Type(), {1, 4, 1, 1});
+
+  using OpPair = std::array<mlir::MlirOp, 2>;
+  TT_ASSERT_OK_AND_ASSIGN(OpPair bcast, ApplyBroadcastIfNeeded(mask, scale));
+  mlir::func::Return(fb, {bcast[0], bcast[1]});
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+  EXPECT_THAT(GetBounds(bcast[0]), ElementsAre(-1, -1, 8, 8));
+  EXPECT_THAT(GetBounds(bcast[1]), ElementsAre(-1, -1, 8, 8));
+}
+
+// Same as above, through the overload that takes a span of ops.
+TEST(ApplyBroadcastIfNeeded, SpanMultipleBoundedResultDimensions) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp mask = MakeBoundedArg(fb, {1, 1, 8, 8}, /*bound_dims=*/{2, 3});
+  mlir::MlirOp scores = MakeBoundedArg(fb, {1, 2, 8, 8}, /*bound_dims=*/{2, 3});
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::vector<mlir::MlirOp> bcast,
+      ApplyBroadcastIfNeeded(std::vector<mlir::MlirOp>{mask, scores}));
+  mlir::func::Return(fb, {bcast[0], bcast[1]});
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+  EXPECT_THAT(GetBounds(bcast[0]), ElementsAre(-1, -1, 8, 8));
+  // `scores` already has the result shape, so it's returned unchanged.
+  EXPECT_EQ(bcast[1].getValue(), scores.getValue());
+}
+
+TEST(BroadcastIfNeeded, MultipleBoundedResultDimensions) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp mean = MakeBoundedArg(fb, {1, 1, 8, 8}, /*bound_dims=*/{2, 3});
+  mlir::MlirOp target = MakeBoundedArg(fb, {1, 4, 8, 8}, /*bound_dims=*/{2, 3});
+
+  TT_ASSERT_OK_AND_ASSIGN(mlir::MlirOp bcast, BroadcastIfNeeded(mean, target));
+  mlir::func::Return(fb, bcast);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+  EXPECT_THAT(GetBounds(bcast), ElementsAre(-1, -1, 8, 8));
+}
+
+TEST(BroadcastIfNeeded, ExplicitBroadcastDimsMultipleBoundedResultDimensions) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp input = MakeBoundedArg(fb, {8, 8}, /*bound_dims=*/{0, 1});
+  mlir::MlirOp target = MakeBoundedArg(fb, {8, 3, 8}, /*bound_dims=*/{0, 2});
+
+  TT_ASSERT_OK_AND_ASSIGN(mlir::MlirOp bcast,
+                          BroadcastIfNeeded(input, target, {0, 2}));
+  mlir::func::Return(fb, bcast);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+  EXPECT_THAT(GetBounds(bcast), ElementsAre(8, -1, 8));
+}
+
+// A bounded dim broadcast to a static dim is still an error.
+TEST(BroadcastIfNeeded, MultipleBoundedResultDimensionsBoundedToStaticFailure) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp input = MakeBoundedArg(fb, {4, 8}, /*bound_dims=*/{0});
+  mlir::MlirOp target = MakeBoundedArg(fb, {8, 4, 8}, /*bound_dims=*/{0, 2});
+
+  EXPECT_THAT(BroadcastIfNeeded(input, target, {1, 2}),
+              StatusIs(error::kInvalidArgument,
+                       HasSubstr("cannot mix bounded and static dimensions")));
 }
 
 TEST(GetStaticShape, ReturnsUpperBoundsForBoundedDims) {

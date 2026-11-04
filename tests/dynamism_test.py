@@ -1250,6 +1250,55 @@ class DynamismTest(seed_test_utils.RepeatableTest):
       act = compiled(small.to(self.device), w)
     utils.assert_close(act.to("cpu"), fn(small, args[1]))
 
+  def test_attention_mask_compiled_dynamic_seq_len(self):
+    # Like HF transformers, broadcasts a [batch, 1, seq, seq] mask to the
+    # [batch, heads, seq, seq] scores, i.e. to two bounded dims.
+    def fn(q, k, mask):
+      scores = q @ k.transpose(-1, -2)
+      keep = (mask[:, None, :, None] * mask[:, None, None, :]).bool()
+      return torch.where(keep, scores, torch.finfo(scores.dtype).min)
+
+    # Small integers keep the matmul exact on TPU.
+    def make_args(seq_len):
+      return [
+          torch.randint(-3, 4, (1, 2, seq_len, 4), dtype=torch.float32),
+          torch.randint(-3, 4, (1, 2, seq_len, 4), dtype=torch.float32),
+          torch.randint(0, 2, (1, seq_len), dtype=torch.int32),
+      ]
+
+    args = make_args(16)
+    expected = fn(*args)
+    q, k, mask = [a.to(self.device) for a in args]
+    torch._dynamo.mark_dynamic(q, 2, min=2, max=16)
+    torch._dynamo.mark_dynamic(k, 2, min=2, max=16)
+    torch._dynamo.mark_dynamic(mask, 1, min=2, max=16)
+    compiled = torch.compile(fn, backend="tpu", dynamic=None)
+    utils.assert_close(compiled(q, k, mask).to("cpu"), expected)
+    # A shorter sequence reuses the graph compiled for the bounded dims.
+    short = make_args(5)
+    with torch._dynamo.config.patch(error_on_recompile=True):
+      act = compiled(*[a.to(self.device) for a in short])
+    utils.assert_close(act.to("cpu"), fn(*short))
+
+  def test_channel_broadcast_compiled_two_dynamic_spatial_dims(self):
+    # Broadcasts [1, 1, H, W] to [1, C, H, W] with both H and W dynamic, like
+    # the mean in timm `LayerNorm2d`.
+    def fn(x):
+      return x - x[:, :1]
+
+    args = [torch.randn(1, 4, 16, 16)]
+    expected = fn(*args)
+    x = args[0].to(self.device)
+    torch._dynamo.mark_dynamic(x, 2, min=8, max=16)
+    torch._dynamo.mark_dynamic(x, 3, min=8, max=16)
+    compiled = torch.compile(fn, backend="tpu", dynamic=None)
+    utils.assert_close(compiled(x).to("cpu"), expected)
+    # A smaller image reuses the graph compiled for the bounded dims.
+    small = torch.randn(1, 4, 8, 12)
+    with torch._dynamo.config.patch(error_on_recompile=True):
+      act = compiled(small.to(self.device))
+    utils.assert_close(act.to("cpu"), fn(small))
+
 
 if __name__ == "__main__":
   absltest.main()

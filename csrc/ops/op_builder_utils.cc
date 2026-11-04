@@ -904,6 +904,44 @@ std::string ConsumeMlirDiagnostics(
   return AdaptExternalErrorMessage(status.message());
 }
 
+namespace {
+
+// StableHLO allows at most one bounded dim in a `broadcast_in_dim` result. If
+// broadcasting `input` to `shape` needs more, returns `input` made static at
+// its bounds: the broadcast helpers then broadcast it to the padded shape and
+// bound each result dim with `set_dimension_size`. Otherwise returns `input`.
+mlir::MlirOp StaticIfMultipleBoundedResultDims(
+    mlir::MlirOp input, const stablehlo::Dimensions& shape,
+    absl::Span<const int64_t> broadcast_dimensions) {
+  const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
+  const mlir::RankedTensorType output_type =
+      stablehlo::getRankedTensorType(shape, input_type.getElementType());
+  if (output_type.getNumDynamicDims() <= 1 ||
+      input_type.getNumDynamicDims() == 0 || input_type == output_type ||
+      input_type.getRank() > output_type.getRank() ||
+      (!broadcast_dimensions.empty() &&
+       static_cast<int64_t>(broadcast_dimensions.size()) !=
+           input_type.getRank())) {
+    return input;
+  }
+  // Keep bounded-to-static broadcasts as is, so that the helpers report them.
+  const stablehlo::Dimensions input_dims = GetDimensions(input);
+  const int64_t rank_diff = output_type.getRank() - input_type.getRank();
+  for (int64_t i = 0; i < input_type.getRank(); ++i) {
+    if (!input_type.isDynamicDim(i)) continue;
+    const int64_t output_dim =
+        broadcast_dimensions.empty() ? i + rank_diff : broadcast_dimensions[i];
+    if (!input_dims[i].boundOp.has_value() || output_dim < 0 ||
+        output_dim >= output_type.getRank() ||
+        !output_type.isDynamicDim(output_dim)) {
+      return input;
+    }
+  }
+  return MakeStaticAtBounds(input).op;
+}
+
+}  // namespace
+
 absl::StatusOr<mlir::MlirOp> BroadcastIfNeeded(
     mlir::MlirOp input, absl::Span<const int64_t> shape) {
   ABSL_VLOG(1) << "[BroadcastIfNeeded] input: " << input.ToString()
@@ -938,6 +976,7 @@ absl::StatusOr<mlir::MlirOp> BroadcastIfNeeded(
     mlir::MlirOp input, mlir::stablehlo::Dimensions shape,
     absl::Span<const int64_t> broadcast_dimensions) {
   mlir::BaseScopedDiagnosticHandler diag_handler(input.getValue().getContext());
+  input = StaticIfMultipleBoundedResultDims(input, shape, broadcast_dimensions);
   mlir::FailureOr<mlir::Value> broadcasted_value_or_fail;
   if (!broadcast_dimensions.empty()) {
     broadcasted_value_or_fail = mlir::stablehlo::broadcastIfNeeded(
@@ -959,6 +998,8 @@ absl::StatusOr<mlir::MlirOp> BroadcastIfNeeded(
   mlir::BaseScopedDiagnosticHandler diag_handler(
       target.getValue().getContext());
   mlir::stablehlo::Dimensions target_dims = GetDimensions(target);
+  input = StaticIfMultipleBoundedResultDims(input, target_dims,
+                                            broadcast_dimensions);
 
   mlir::FailureOr<mlir::Value> broadcasted_value_or_fail;
   if (!broadcast_dimensions.empty()) {
@@ -993,19 +1034,20 @@ absl::StatusOr<std::vector<mlir::MlirOp>> ApplyBroadcastIfNeeded(
       ops, [](const mlir::MlirOp& op) { return op.getValue(); });
   mlir::BaseScopedDiagnosticHandler diag_handler(values[0].getContext());
   mlir::MlirOp first_op = ops[0];
-  auto broadcasted_values_or_fail = mlir::stablehlo::numpyBroadcastIfNeeded(
-      first_op.getBuilder().getOpBuilder(), values);
-  TT_RET_CHECK(mlir::succeeded(broadcasted_values_or_fail),
-               error::kInvalidArgument)
+  const mlir::FailureOr<mlir::stablehlo::Dimensions> shape =
+      mlir::stablehlo::getNumpyBroadcastShape(
+          first_op.getBuilder().getOpBuilder().getInsertionPoint()->getLoc(),
+          values);
+  TT_RET_CHECK(mlir::succeeded(shape), error::kInvalidArgument)
       << "failed to broadcast tensors: "
       << ConsumeMlirDiagnostics(diag_handler);
-  mlir::SmallVector<mlir::Value> broadcasted_values =
-      std::move(*broadcasted_values_or_fail);
+  // Broadcast each op separately, which supports multiple bounded dims.
   std::vector<mlir::MlirOp> result;
   result.reserve(ops.size());
-  for (size_t i = 0; i < ops.size(); ++i) {
-    mlir::MlirOp op = ops[i];
-    result.emplace_back(op.getBuilder(), broadcasted_values[i]);
+  for (const mlir::MlirOp& op : ops) {
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp broadcasted,
+                        BroadcastIfNeeded(op, *shape));
+    result.push_back(broadcasted);
   }
   return result;
 }
