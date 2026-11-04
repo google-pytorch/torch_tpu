@@ -25372,6 +25372,137 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
 
       self.assert_close_tpu_vs_cpu(compute_f32_c64)
 
+  @parameterized.product(
+      dtype=[torch.bfloat16, torch.float16],
+      use_compiled=[False, True],
+      size=[1, 33, 129],
+  )
+  def test_alpha_opmath_add(self, dtype, use_compiled, size):
+    cases = [
+        # Alpha rounding near cancellation, then an exact-alpha multiply.
+        (0.1, 0.052978515625, -0.53125),
+        (
+            1.5,
+            -1.0,
+            0.66796875 if dtype == torch.bfloat16 else 0.66650390625,
+        ),
+        # Alpha exceeds fp16's range but the result is finite.
+        (65536.0, 1.0, 0.0009765625),
+    ]
+    for alpha, x_value, y_value in cases:
+      with self.subTest(alpha=alpha):
+        test_tensor_method_inplace = (
+            not use_compiled or utils.get_torch_version() >= (2, 12)
+        )
+
+        def add_variants(x, y, alpha=alpha):
+          out = torch.empty_like(x)
+          torch.add(x, y, alpha=alpha, out=out)
+          foreach_inplace = [x.clone()]
+          torch._foreach_add_(foreach_inplace, [y], alpha=alpha)
+          res = (
+              torch.add(x, y, alpha=alpha),
+              torch.ops.aten.add.Tensor(x, y, alpha=alpha),
+              torch.ops.aten.add_.Tensor(x.clone(), y, alpha=alpha),
+              out,
+              torch._foreach_add([x], [y], alpha=alpha)[0],
+              foreach_inplace[0],
+          )
+          # In PyTorch < 2.12, Dynamo's TensorVariable.method_add_ decomposes
+          # Tensor.add_(other, alpha=scalar) into torch.mul(other, alpha)
+          # followed by self.add_(result), which rounds (or overflows in fp16)
+          # the intermediate product to the input dtype before the addition.
+          if test_tensor_method_inplace:
+            return res + (x.clone().add_(y, alpha=alpha),)
+          return res
+
+        kernel = (
+            torch.compile(
+                add_variants, backend="tpu", fullgraph=True, dynamic=False
+            )
+            if use_compiled
+            else add_variants
+        )
+        x = torch.full((size,), x_value, dtype=dtype)
+        y = torch.full((size,), y_value, dtype=dtype)
+        # Ordinary CPU bf16/fp16 add rounds alpha differently; use FP32.
+        expected = (x.float() + alpha * y.float()).to(dtype)
+        for actual in kernel(x.to("tpu"), y.to("tpu")):
+          self.assertEqual(actual.dtype, dtype)
+          utils.assert_close(actual.cpu(), expected, rtol=0, atol=0)
+
+  @parameterized.product(
+      dtype=[torch.bfloat16, torch.float16],
+      use_compiled=[False, True],
+  )
+  def test_alpha_opmath_sub_add_relu(self, dtype, use_compiled):
+    alpha = 0.1
+
+    def variants(x, y):
+      sub_out = torch.empty_like(x)
+      torch.sub(x, y, alpha=alpha, out=sub_out)
+      relu_out = torch.empty_like(x)
+      torch.ops.aten._add_relu.out(-x, y, alpha=alpha, out=relu_out)
+      return (
+          torch.sub(x, y, alpha=alpha),
+          x.clone().sub_(y, alpha=alpha),
+          sub_out,
+          torch.rsub(y, x, alpha=alpha),
+          torch.ops.aten._add_relu.Tensor(-x, y, alpha=alpha),
+          torch.ops.aten._add_relu_.Tensor(-x, y, alpha=alpha),
+          relu_out,
+          torch.ops.aten._add_relu.Scalar(-x, 0.53125, alpha=alpha),
+          torch.ops.aten._add_relu_.Scalar(-x, 0.53125, alpha=alpha),
+      )
+
+    kernel = (
+        torch.compile(variants, backend="tpu", fullgraph=True, dynamic=False)
+        if use_compiled
+        else variants
+    )
+    x = torch.full((33,), 0.052978515625, dtype=dtype)
+    y = torch.full((33,), 0.53125, dtype=dtype)
+    expected_sub = (x.float() - alpha * y.float()).to(dtype)
+    # Flip the cancellation case so ReLU cannot mask the precision difference.
+    expected_relu = torch.relu(-x.float() + alpha * y.float()).to(dtype)
+    actuals = kernel(x.to("tpu"), y.to("tpu"))
+    for i, actual in enumerate(actuals):
+      expected = expected_sub if i < 4 else expected_relu
+      self.assertEqual(actual.dtype, dtype)
+      utils.assert_close(actual.cpu(), expected, rtol=0, atol=0)
+
+  @parameterized.product(
+      dtype=[torch.uint16, torch.uint32, torch.uint64],
+      use_compiled=[False, True],
+  )
+  def test_alpha_opmath_unsigned(self, dtype, use_compiled):
+    def variants(x, y):
+      out = torch.empty_like(x)
+      torch.add(x, y, alpha=2, out=out)
+      return (
+          torch.add(x, y, alpha=2),
+          x.clone().add_(y, alpha=2),
+          out,
+          torch.sub(x, y, alpha=2),
+      )
+
+    kernel = (
+        torch.compile(variants, backend="tpu", fullgraph=True, dynamic=False)
+        if use_compiled
+        else variants
+    )
+    x = torch.tensor([10, 20, 30], dtype=dtype)
+    y = torch.tensor([1, 2, 3], dtype=dtype)
+    expected_add = (x.to(torch.int64) + 2 * y.to(torch.int64)).to(dtype)
+    expected_sub = (x.to(torch.int64) - 2 * y.to(torch.int64)).to(dtype)
+    for actual, expected in zip(
+        kernel(x.to("tpu"), y.to("tpu")),
+        (expected_add, expected_add, expected_add, expected_sub),
+        strict=True,
+    ):
+      self.assertEqual(actual.dtype, dtype)
+      utils.assert_close(actual.cpu(), expected, rtol=0, atol=0)
+
   def test_add_float16_opmath_alpha(self):
     a = torch.zeros(2, dtype=torch.float16, device="tpu")
     b = torch.full((2,), 1e-4, dtype=torch.float16, device="tpu")

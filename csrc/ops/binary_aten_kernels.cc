@@ -21,7 +21,6 @@
 #include <utility>
 #include <vector>
 
-#include "ATen/OpMathType.h"
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/ops/result_type.h"
 #include "absl/log/absl_log.h"
@@ -844,8 +843,9 @@ absl::Status SubHelperOut(const at::Tensor& a, const at::Tensor& b,
                        {.op_param_cache_keys = std::move(param_keys)});
   }
 
-  TT_ASSIGN_OR_RETURN(const at::Tensor alpha_tensor,
-                      promoted_alpha.GetTensor(promoted_scalar_type));
+  TT_ASSIGN_OR_RETURN(
+      const at::Tensor alpha_tensor,
+      promoted_alpha.GetTensor(InferComputationDtype(promoted_scalar_type)));
 
   auto op_builder = [](mlir::MlirOp a_op, mlir::MlirOp b_op,
                        mlir::MlirOp alpha_op) -> absl::StatusOr<mlir::MlirOp> {
@@ -876,8 +876,9 @@ absl::StatusOr<at::Tensor> AddReluScalarHelper(
     return out;
   }
 
-  TT_ASSIGN_OR_RETURN(const at::Tensor alpha_tensor,
-                      promoted_alpha.GetTensor(promoted_scalar_type));
+  TT_ASSIGN_OR_RETURN(
+      const at::Tensor alpha_tensor,
+      promoted_alpha.GetTensor(InferComputationDtype(promoted_scalar_type)));
 
   TT_RETURN_IF_ERROR(
       TernaryOpOut(self, other_tensor, alpha_tensor, out, BuildAlphaAddReluShlo,
@@ -1147,7 +1148,8 @@ at::Tensor& AtenAddOut(const at::Tensor& self, const at::Tensor& other,
   auto promoted_alpha = PromoteScalar(alpha).AvoidPromoting(ScalarValue::kOne);
   TT_KERNEL(OpName::kAddOut, param_keys, (self, other, promoted_alpha, out), {
     const at::ScalarType promoted_scalar_type = at::result_type(self, other);
-    const at::ScalarType opmath_type = at::toOpMathType(promoted_scalar_type);
+    const at::ScalarType opmath_type =
+        InferComputationDtype(promoted_scalar_type);
     TT_THROW_IF_ERROR(
         ValidateAddAlphaInputs(promoted_scalar_type, alpha, opmath_type));
 
@@ -1196,7 +1198,8 @@ at::Tensor& AtenAddReluOut(const at::Tensor& self, const at::Tensor& other,
         }
 
         TT_ASSIGN_OR_THROW(const at::Tensor alpha_tensor,
-                           promoted_alpha.GetTensor(promoted_scalar_type));
+                           promoted_alpha.GetTensor(
+                               InferComputationDtype(promoted_scalar_type)));
 
         TT_THROW_IF_ERROR(
             TernaryOpOut(self, other, alpha_tensor, out, BuildAlphaAddReluShlo,
@@ -1247,8 +1250,9 @@ at::Tensor AtenAddReluTensor(const at::Tensor& self, const at::Tensor& other,
       return out;
     }
 
-    TT_ASSIGN_OR_THROW(const at::Tensor alpha_tensor,
-                       promoted_alpha.GetTensor(promoted_scalar_type));
+    TT_ASSIGN_OR_THROW(
+        const at::Tensor alpha_tensor,
+        promoted_alpha.GetTensor(InferComputationDtype(promoted_scalar_type)));
 
     TT_THROW_IF_ERROR(
         TernaryOpOut(self, other, alpha_tensor, out, BuildAlphaAddReluShlo,
@@ -1291,7 +1295,8 @@ at::Tensor& AtenAddRelu_Tensor(at::Tensor& self, const at::Tensor& other,
         }
 
         TT_ASSIGN_OR_THROW(const at::Tensor alpha_tensor,
-                           promoted_alpha.GetTensor(promoted_scalar_type));
+                           promoted_alpha.GetTensor(
+                               InferComputationDtype(promoted_scalar_type)));
         TT_THROW_IF_ERROR(
             TernaryOpOut(self, other, alpha_tensor, self, BuildAlphaAddReluShlo,
                          {.op_param_cache_keys = std::move(param_keys)}));
