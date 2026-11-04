@@ -61,7 +61,8 @@ Key rules are summarized below.
 
 The TorchTPU documentation is written as markdown files, which will be later
 processed by Jupytext. Narrative content should be written in markdown format
-within these files.
+within these files. Python code blocks within the Markdown files will be
+converted into executable Jupyter cells.
 
 ### Page title and headings
 
