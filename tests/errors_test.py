@@ -18955,6 +18955,91 @@ class UpsampleBilinear2dAaErrorTest(et.ErrorTestBase):
       # upon materialization:
       b[:8].sum().item()
 
+  def test_lu_unpack_invalid_inputs(self):
+    lu_data = torch.eye(3, device=et.device(), dtype=torch.float32)
+    lu_pivots = torch.tensor([1, 2, 3], device=et.device(), dtype=torch.int32)
+
+    with self.subTest("out_on_cpu"):
+      p = torch.empty((3, 3), device="cpu", dtype=torch.float32)
+      l = torch.empty((3, 3), device=et.device(), dtype=torch.float32)
+      u = torch.empty((3, 3), device=et.device(), dtype=torch.float32)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""lu_unpack(): expected all output tensors to be on tpu, got cpu, tpu:0, and tpu:0""",
+          gpu="""Expected all tensors to be on the same device, but got L is on cuda:0, different from other tensors on cpu (when checking argument in method wrapper_CUDA_lu_unpack_out_out)""",
+          message_reviewed_by="wan",
+      ):
+        torch.lu_unpack(lu_data, lu_pivots, out=(p, l, u))
+
+    with self.subTest("rank_too_low_when_unpack_false"):
+      data_1d = torch.ones(4, device=et.device(), dtype=torch.float32)
+      p = torch.empty((4, 4), device=et.device(), dtype=torch.float32)
+      l = torch.empty((4, 4), device=et.device(), dtype=torch.float32)
+      u = torch.empty((4, 4), device=et.device(), dtype=torch.float32)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""lu_unpack(): expected lu_data to have at least 2 dimensions, got 1""",
+          gpu="""torch.lu_unpack: Expected tensor with 2 or more dimensions. Got size: [4] instead""",
+          message_reviewed_by="wan",
+      ):
+        torch.lu_unpack(
+            data_1d,
+            lu_pivots,
+            unpack_data=False,
+            unpack_pivots=False,
+            out=(p, l, u),
+        )
+
+    with self.subTest("unused_out_dtype_mismatch"):
+      p = torch.empty((3, 3), device=et.device(), dtype=torch.float32)
+      l = torch.empty((3, 3), device=et.device(), dtype=torch.float64)
+      u = torch.empty((3, 3), device=et.device(), dtype=torch.float32)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""lu_unpack(): expected the output dtype to be float32, got float64""",
+          gpu="""Expected out tensor to have dtype float, but got double instead""",
+          message_reviewed_by="wan",
+      ):
+        torch.lu_unpack(
+            lu_data,
+            lu_pivots,
+            unpack_data=False,
+            unpack_pivots=True,
+            out=(p, l, u),
+        )
+
+    with self.subTest("pivots_wrong_dtype"):
+      bad_pivots = torch.tensor(
+          [1, 2, 3], device=et.device(), dtype=torch.int64
+      )
+      p = torch.empty((3, 3), device=et.device(), dtype=torch.float32)
+      l = torch.empty((3, 3), device=et.device(), dtype=torch.float32)
+      u = torch.empty((3, 3), device=et.device(), dtype=torch.float32)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""lu_unpack(): expected lu_pivots dtype to be int32, got int64""",
+          gpu="""torch.lu_unpack: LU_pivots is expected to be a contiguous tensor of torch.int32 dtype. Note: this function is intended to be used with the output produced by torch.linalg.lu_factor""",
+          message_reviewed_by="wan",
+      ):
+        torch.lu_unpack(lu_data, bad_pivots, out=(p, l, u))
+
+    with self.subTest("pivots_wrong_shape"):
+      err_type = RuntimeError if et.is_on_tpu() else ValueError
+      short_pivots = torch.tensor([1, 2], device=et.device(), dtype=torch.int32)
+      p = torch.empty((5, 5), device=et.device(), dtype=torch.float32)
+      l = torch.empty((5, 5), device=et.device(), dtype=torch.float32)
+      u = torch.empty((5, 5), device=et.device(), dtype=torch.float32)
+      with et.assert_raises_message(
+          err_type,
+          tpu="""lu_unpack(): expected lu_pivots to have shape [3], got [2]""",
+          gpu="""Expected LU_pivots to have shape [3] but got [2] instead.""",
+          message_reviewed_by="wan",
+      ):
+        torch.lu_unpack(lu_data, short_pivots, out=(p, l, u))
+      self.assertEqual(p.shape, (5, 5))
+      self.assertEqual(l.shape, (5, 5))
+      self.assertEqual(u.shape, (5, 5))
+
 
 if __name__ == "__main__":
   multiprocessing.handle_test_main(absltest.main)
