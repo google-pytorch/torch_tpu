@@ -509,6 +509,30 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> EmptyModule(
   return mlir::ModuleOp::create(mlir::UnknownLoc::get(&context));
 }
 
+TEST_F(CompilationCacheTest, ReportsStaticCacheHit) {
+  CompilationCache& cache = CompilationCache::GetInstance();
+  const CompilationCacheKey key = DummyKey(4242);
+
+  // The first lookup creates the entry, so it is a miss even though the
+  // module later fails to compile.
+  TT_ASSERT_OK_AND_ASSIGN(
+      CompiledKernel miss,
+      cache.GetOrCompile(key, {}, {}, EmptyModule,
+                         std::make_unique<xla::CompileOptions>(),
+                         UnboundedKernelPolicy::kDisallow));
+  EXPECT_FALSE(miss.cache_hit);
+
+  // The second lookup is served by that entry without building the module.
+  TT_ASSERT_OK_AND_ASSIGN(
+      CompiledKernel hit,
+      cache.GetOrCompile(key, {}, {}, MustNotBeCalled,
+                         std::make_unique<xla::CompileOptions>(),
+                         UnboundedKernelPolicy::kDisallow));
+  EXPECT_TRUE(hit.cache_hit);
+  EXPECT_EQ(hit.unbounded_dynamic_kernel, nullptr);
+  CompilationCache::ShutDown();
+}
+
 TEST_F(CompilationCacheTest, UnboundedDynamicCache) {
   CompilationCache& cache = CompilationCache::GetInstance();
   CompilationCacheTestHelper::SetAutoLoadUnboundedDynamicKernels(cache, true);
@@ -524,6 +548,9 @@ TEST_F(CompilationCacheTest, UnboundedDynamicCache) {
           MustNotBeCalled, std::make_unique<xla::CompileOptions>(),
           UnboundedKernelPolicy::kAllow));
   TT_ASSERT_OK_AND_ASSIGN(auto first_exec, first.fixed_shape_kernel.get());
+  EXPECT_FALSE(first.cache_hit);
+  ASSERT_NE(first.unbounded_dynamic_kernel, nullptr);
+  EXPECT_EQ(first.unbounded_dynamic_kernel->key, key);
   EXPECT_EQ(cache.GetCacheHits(), 0);
   EXPECT_EQ(cache.GetCacheMisses(), 1);
   EXPECT_EQ(cache.GetCacheStats().num_compilations, 1);
@@ -549,6 +576,8 @@ TEST_F(CompilationCacheTest, UnboundedDynamicCache) {
           MustNotBeCalled, std::make_unique<xla::CompileOptions>(),
           UnboundedKernelPolicy::kAllow));
   TT_ASSERT_OK_AND_ASSIGN(auto second_exec, second.fixed_shape_kernel.get());
+  EXPECT_TRUE(second.cache_hit);
+  EXPECT_EQ(second.unbounded_dynamic_kernel, first.unbounded_dynamic_kernel);
   EXPECT_EQ(second_exec->GetLoadedExecutable(),
             first_exec->GetLoadedExecutable());
   EXPECT_EQ(cache.GetCacheHits(), 1);
@@ -596,6 +625,7 @@ TEST_P(UnboundedDynamicCacheMissTest, FallsBackToStaticPath) {
           std::make_unique<xla::CompileOptions>(), param.policy));
 
   EXPECT_FALSE(result.fixed_shape_kernel.get().ok());
+  EXPECT_EQ(result.unbounded_dynamic_kernel, nullptr);
   EXPECT_EQ(cache.GetCacheHits(), 0);
   EXPECT_EQ(cache.GetCacheMisses(), 1);
   EXPECT_EQ(cache.GetCacheStats().num_unbounded_dynamic_hits, 0);
@@ -746,6 +776,7 @@ TEST_F(CompilationCacheTest,
           UnboundedKernelPolicy::kAllow));
 
   EXPECT_FALSE(result.fixed_shape_kernel.get().ok());
+  EXPECT_EQ(result.unbounded_dynamic_kernel, nullptr);
   EXPECT_EQ(cache.GetCacheHits(), 0);
   EXPECT_EQ(cache.GetCacheMisses(), 2);
   auto stats_after =

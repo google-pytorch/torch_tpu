@@ -377,9 +377,9 @@ class CompilationCache {
     std::optional<ShapeDynamismMetadata> shape_dynamism_metadata;
     bool needs_compilation = false;
     bool dump_on_cache_miss = false;
-    // Set when `needs_compilation` is true and the entry belongs to a
-    // registered unbounded dynamic kernel: the kernel is built instead of the
-    // traced computation. Points into the process-wide registry, which never
+    // Set when the entry belongs to a registered unbounded dynamic kernel; if
+    // `needs_compilation` is true, the kernel is built instead of the traced
+    // computation. Points into the process-wide registry, which never
     // frees or moves its kernels.
     const UnboundedDynamicKernel* absl_nullable unbounded_dynamic_kernel =
         nullptr;

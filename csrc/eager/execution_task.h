@@ -39,6 +39,14 @@
 
 namespace torch_tpu {
 
+// How the compiled kernel of an execution task was obtained, for TORCH_TRACE.
+struct CompilationTraceInfo {
+  // The traced StableHLO, if this request built it.
+  std::string mlir_text;
+  // See `CompiledKernel::cache_hit`.
+  bool cache_hit = false;
+};
+
 // To materialize a tensor's data, we need to execute it on-device.
 // This requires identifying the arguments to the executable, the MLIR for the
 // executable, both of which may only be available asynchronously due to async
@@ -70,10 +78,11 @@ class ExecutionTask {
   //   * Skip runtime argument layout validation for fixed-shape device-only
   //     traversals, whose compilation cache key already encodes the exact
   //     argument layouts.
+  //   * Fill `out_trace_info`, if not null.
   static absl::StatusOr<ExecutionTask> FromTraversal(
       absl_nonnull std::unique_ptr<Traversal> traversal,
       mlir::MLIRContext& mlir_context, const CompilationSpec& compilation_spec,
-      std::string* absl_nullable out_mlir_text = nullptr);
+      CompilationTraceInfo* absl_nullable out_trace_info = nullptr);
 
   // Creates an execution task from a pre-compiled executable.
   // This will set all outputs to the "pending materialization" state.

@@ -549,6 +549,7 @@ CompilationCache::GetOrCreateUnboundedDynamicCacheEntry(
   const SharedLoadedExecutableWithMetadataFuture& future =
       cache_lookup->executable_future;
   if (!IsFutureReady(future) || future.get().ok()) {
+    cache_lookup->unbounded_dynamic_kernel = dynamic_kernel;
     perf_stats_.num_unbounded_dynamic_hits++;
     return cache_lookup;
   }
@@ -919,11 +920,16 @@ absl::StatusOr<CompiledKernel> CompilationCache::GetOrCompileImpl(
   // xla::CompileOptions.
   if (!cache_lookup.needs_compilation &&
       !cache_lookup.shape_dynamism_metadata.has_value()) {
-    return CompiledKernel{.fixed_shape_kernel = cache_lookup.executable_future};
+    return CompiledKernel{
+        .fixed_shape_kernel = cache_lookup.executable_future,
+        .cache_hit = true,
+        .unbounded_dynamic_kernel = cache_lookup.unbounded_dynamic_kernel};
   }
 
-  CompiledKernel compiled_kernel{.fixed_shape_kernel =
-                                     cache_lookup.executable_future};
+  CompiledKernel compiled_kernel{
+      .fixed_shape_kernel = cache_lookup.executable_future,
+      .cache_hit = !cache_lookup.needs_compilation,
+      .unbounded_dynamic_kernel = cache_lookup.unbounded_dynamic_kernel};
   CompilationCacheKey storage_key = key;
   if (cache_lookup.shape_dynamism_metadata.has_value()) {
     // Create a key for the storage of the dynamic executable.

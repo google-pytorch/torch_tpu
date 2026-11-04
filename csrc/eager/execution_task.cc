@@ -179,13 +179,13 @@ std::unique_ptr<StructuredLogEvent> MaybeStartTraceEvent(
 }
 
 void FinalizePushTraceEvent(std::unique_ptr<StructuredLogEvent> event,
-                            std::string captured_mlir, bool compile_ok,
+                            CompilationTraceInfo trace_info, bool compile_ok,
                             std::string aten_graph_payload) {
   event->duration = absl::Now() - event->timestamp;
-  event->cache_hit = captured_mlir.empty();
-  if (!event->cache_hit || !compile_ok) {
+  event->cache_hit = compile_ok && trace_info.cache_hit;
+  if (!event->cache_hit) {
     event->aten_graph_payload = std::move(aten_graph_payload);
-    event->mlir_payload = std::move(captured_mlir);
+    event->mlir_payload = std::move(trace_info.mlir_text);
   }
   event->compile_failed = !compile_ok;
   event->chromium_payload = absl::StrCat(
@@ -290,14 +290,19 @@ std::vector<Shape> GetShapesFromDeviceBuffers(
 absl::StatusOr<ExecutionTask> ExecutionTask::FromTraversal(
     absl_nonnull std::unique_ptr<Traversal> traversal,
     mlir::MLIRContext& mlir_context, const CompilationSpec& compilation_spec,
-    std::string* absl_nullable out_mlir_text) {
+    CompilationTraceInfo* absl_nullable out_trace_info) {
   auto compiled_traversal_or = VerifyAndCompileTraversal(
-      *traversal, mlir_context, compilation_spec, out_mlir_text);
+      *traversal, mlir_context, compilation_spec,
+      out_trace_info != nullptr ? &out_trace_info->mlir_text : nullptr);
   if (!compiled_traversal_or.ok()) {
     for (const auto& output : traversal->outputs()) {
       output.device_buffer_list()->SetAsError(compiled_traversal_or.status());
     }
     return compiled_traversal_or.status();
+  }
+  if (out_trace_info != nullptr) {
+    out_trace_info->cache_hit =
+        compiled_traversal_or->compiled_kernel.cache_hit;
   }
 
   // Mark all outputs of the split as scheduled/materialized.
@@ -372,20 +377,20 @@ absl::StatusOr<ExecutionTask> ExecutionTask::FromTraversalWithLogging(
   if (!event) {
     return ExecutionTask::FromTraversal(std::move(traversal), mlir_context,
                                         compilation_spec,
-                                        /*out_mlir_text=*/nullptr);
+                                        /*out_trace_info=*/nullptr);
   }
 
   // Get the aten graph payload before moving the traversal.
   std::string aten_graph_payload = traversal->ReadableString(reason);
 
   // Try to build the execution task and capture the MLIR if possible.
-  std::string captured_mlir;
+  CompilationTraceInfo trace_info;
   auto execution_task_or = ExecutionTask::FromTraversal(
-      std::move(traversal), mlir_context, compilation_spec, &captured_mlir);
+      std::move(traversal), mlir_context, compilation_spec, &trace_info);
 
   // Whether or not the execution task was created successfully, finish the
   // trace event and return.
-  FinalizePushTraceEvent(std::move(event), std::move(captured_mlir),
+  FinalizePushTraceEvent(std::move(event), std::move(trace_info),
                          execution_task_or.ok(), std::move(aten_graph_payload));
   return execution_task_or;
 }

@@ -50,6 +50,7 @@
 namespace torch_tpu {
 
 class LoadedExecutableWithMetadata;
+struct UnboundedDynamicKernel;
 
 // TODO(basioli): Rename to something more descriptive.
 using SharedLoadedExecutableWithMetadata =
@@ -242,6 +243,13 @@ struct CompiledKernel {
   // TODO(b/563604764): Rename this field as it can also hold dynamic kernels.
   SharedLoadedExecutableWithMetadataFuture fixed_shape_kernel;
   std::optional<DynamicKernelAdapter> dynamic_kernel_adapter;
+  // Whether the tier-1 lookup found an existing entry, possibly in flight.
+  // Per-request view of `PerfStats::num_cache_hits`.
+  bool cache_hit = false;
+  // The registered unbounded dynamic kernel serving this request, if any.
+  // Per-request view of `PerfStats::num_unbounded_dynamic_hits`.
+  const UnboundedDynamicKernel* absl_nullable unbounded_dynamic_kernel =
+      nullptr;
 };
 
 // Builder function for a loaded executable.
