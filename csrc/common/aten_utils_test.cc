@@ -23,6 +23,7 @@
 #include "csrc/common/status_test_utils.h"
 #include "gtest/gtest.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
 namespace {
@@ -40,36 +41,67 @@ TEST(AtenUtilsTest, ConcreteSizeToDimensionsConvertsConcreteSizes) {
 }
 
 TEST(AtenUtilsTest, InferComputationDtypeFloatingPointAndComplex) {
+  EXPECT_EQ(InferComputationDtype(at::ScalarType::BFloat16),
+            at::ScalarType::Float);
   TT_ASSERT_OK_AND_ASSIGN(const mlir::ElementType bf16_comp,
                           InferComputationDtype(mlir::ElementType::BF16));
   EXPECT_EQ(bf16_comp, mlir::ElementType::F32);
 
+  EXPECT_EQ(InferComputationDtype(at::ScalarType::Half), at::ScalarType::Float);
   TT_ASSERT_OK_AND_ASSIGN(const mlir::ElementType f16_comp,
                           InferComputationDtype(mlir::ElementType::F16));
   EXPECT_EQ(f16_comp, mlir::ElementType::F32);
 
+  EXPECT_EQ(InferComputationDtype(at::ScalarType::Float),
+            at::ScalarType::Float);
   TT_ASSERT_OK_AND_ASSIGN(const mlir::ElementType f32_comp,
                           InferComputationDtype(mlir::ElementType::F32));
   EXPECT_EQ(f32_comp, mlir::ElementType::F32);
 
+  EXPECT_EQ(InferComputationDtype(at::ScalarType::Double),
+            at::ScalarType::Double);
   TT_ASSERT_OK_AND_ASSIGN(const mlir::ElementType f64_comp,
                           InferComputationDtype(mlir::ElementType::F64));
   EXPECT_EQ(f64_comp, mlir::ElementType::F64);
 
+  EXPECT_EQ(InferComputationDtype(at::ScalarType::Float4_e2m1fn_x2),
+            at::ScalarType::Float);
   TT_ASSERT_OK_AND_ASSIGN(const mlir::ElementType fp4_comp,
                           InferComputationDtype(mlir::ElementType::F4E2M1FN));
   EXPECT_EQ(fp4_comp, mlir::ElementType::F32);
 
+  EXPECT_EQ(InferComputationDtype(at::ScalarType::ComplexFloat),
+            at::ScalarType::ComplexFloat);
   TT_ASSERT_OK_AND_ASSIGN(const mlir::ElementType cf32_comp,
                           InferComputationDtype(mlir::ElementType::COMPLEXF32));
   EXPECT_EQ(cf32_comp, mlir::ElementType::COMPLEXF32);
 
+  EXPECT_EQ(InferComputationDtype(at::ScalarType::ComplexDouble),
+            at::ScalarType::ComplexDouble);
   TT_ASSERT_OK_AND_ASSIGN(const mlir::ElementType cf64_comp,
                           InferComputationDtype(mlir::ElementType::COMPLEXF64));
   EXPECT_EQ(cf64_comp, mlir::ElementType::COMPLEXF64);
 }
 
 TEST(AtenUtilsTest, InferComputationDtypeIntegralAndUnsigned) {
+  for (const at::ScalarType scalar_type : {
+           at::ScalarType::Bool,
+           at::ScalarType::Int2,
+           at::ScalarType::Int4,
+           at::ScalarType::Char,
+           at::ScalarType::Short,
+           at::ScalarType::Int,
+           at::ScalarType::Long,
+           at::ScalarType::UInt2,
+           at::ScalarType::UInt4,
+           at::ScalarType::Byte,
+           at::ScalarType::UInt16,
+           at::ScalarType::UInt32,
+           at::ScalarType::UInt64,
+       }) {
+    EXPECT_EQ(InferComputationDtype(scalar_type), scalar_type);
+  }
+
   for (const mlir::ElementType elem_type : {
            mlir::ElementType::PRED,
            mlir::ElementType::I2,

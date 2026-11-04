@@ -227,14 +227,6 @@ ACCURACY_OVERRIDES_VS_GPU = {
     "_foreach_acos": {
         torch.complex64: {"rtol": 5.2e-5, "atol": 6.7e-5},
     },
-    "_foreach_addcdiv": {
-        torch.bfloat16: {"rtol": 1.7e-2, "atol": 2.2e-2},
-        torch.float16: {"rtol": 1.2e-3, "atol": 3.3e-3},
-    },
-    "_foreach_addcmul": {
-        torch.bfloat16: {"rtol": 2.4e-2, "atol": 2.9e-2},
-        torch.float16: {"rtol": 3.1e-3, "atol": 3.8e-3},
-    },
     "_foreach_cos": {
         torch.complex64: {"rtol": 5.5e-6},
     },
@@ -2199,7 +2191,6 @@ class TestOps(op_testing.OpInfoTestBase):
 
   @category("foreach")
   def test_foreach_addcmul(self):
-    # TODO(b/494218929): Fix the high tolerance of 1e-2.
     self.do_test_op(
         "_foreach_addcmul",
         # TODO(b/485291373): fix _foreach_addcmul_() failing with complex

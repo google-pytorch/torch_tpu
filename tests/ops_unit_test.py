@@ -25576,6 +25576,339 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
             torch_tpu_result=x_eager.grad.cpu(),
         )
 
+  def test_foreach_opmath_scalar_precision(self):
+    """Tests foreach ops with floating-point scalars retain opmath precision."""
+
+    # Compare directly against the float32 opmath reference cast to out_dtype
+    # (matching CUDA opmath_t semantics; CPU's slow in-place fallback truncates
+    # scalars to self.dtype before mul_/div_).
+    def check_out_of_place(op, out_dtype, *tensor_lists, **kwargs):
+      actual = op(
+          *[[t.to("tpu") for t in tl] for tl in tensor_lists],
+          **kwargs,
+      )
+      expected_f32 = op(
+          *[[t.to(torch.float32) for t in tl] for tl in tensor_lists],
+          **kwargs,
+      )
+      self.assert_close(
+          golden_result=[t.to(out_dtype) for t in expected_f32],
+          torch_tpu_result=[t.cpu() for t in actual],
+          rtol=1e-4,
+          atol=1e-4,
+      )
+
+    def check_in_place(op, ref_op, out_dtype, xs, *other_lists, **kwargs):
+      bufs = [x.clone().to("tpu") for x in xs]
+      op(
+          bufs,
+          *[[t.to("tpu") for t in tl] for tl in other_lists],
+          **kwargs,
+      )
+      expected_f32 = ref_op(
+          [x.to(torch.float32) for x in xs],
+          *[[t.to(torch.float32) for t in tl] for tl in other_lists],
+          **kwargs,
+      )
+      self.assert_close(
+          golden_result=[t.to(out_dtype) for t in expected_f32],
+          torch_tpu_result=[t.cpu() for t in bufs],
+          rtol=1e-4,
+          atol=1e-4,
+      )
+
+    cases = [
+        # bfloat16: 1.00390625 (1 + 2^-8) truncates to 1.0 in bf16, and 257.0 /
+        # 259.0 truncate to 256.0 / 260.0 in bf16.
+        dict(
+            dtype=torch.bfloat16,
+            addc_self=[[-128.0, -256.0], [-128.0, -256.0]],
+            addc_t1=[[128.0, 256.0], [128.0, 256.0]],
+            addc_t2_mul=[[1.0, 1.0], [1.0, 1.0]],
+            addc_t2_div=[[1.0, 1.0], [1.0, 1.0]],
+            addc_scalar=1.00390625,
+            addc_scalars=[1.00390625, 1.005859375],
+            mul_self=[[0.75, 1.5], [0.75, 1.5]],
+            div_self=[[65536.0, 32768.0], [65536.0, 32768.0]],
+            muldiv_scalar=257.0,
+            muldiv_scalars=[257.0, 259.0],
+        ),
+        # float16 out-of-range scalars: 70000.0 and 80000.0 exceed float16 max
+        # (65504.0) and overflow to +inf if downcast before float32 opmath.
+        dict(
+            dtype=torch.float16,
+            addc_self=[[-35008.0, 0.0], [-35008.0, 0.0]],
+            addc_t1=[[1.0, 0.5], [1.0, 0.5]],
+            addc_t2_mul=[[0.5, 0.5], [0.5, 0.5]],
+            addc_t2_div=[[2.0, 2.0], [2.0, 2.0]],
+            addc_scalar=70000.0,
+            addc_scalars=[70000.0, 80000.0],
+            mul_self=[[0.5, 0.25], [0.5, 0.25]],
+            div_self=[[35008.0, 17504.0], [35008.0, 17504.0]],
+            muldiv_scalar=70000.0,
+            muldiv_scalars=[70000.0, 80000.0],
+        ),
+        # float16 in-range precision: 1.00048828125 (1 + 2^-11) truncates to
+        # 1.0 in f16, and 2049.0 / 2051.0 round to 2048.0 / 2052.0 in f16.
+        dict(
+            dtype=torch.float16,
+            addc_self=[[-2048.0, -4096.0], [-2048.0, -4096.0]],
+            addc_t1=[[2048.0, 4096.0], [2048.0, 4096.0]],
+            addc_t2_mul=[[1.0, 1.0], [1.0, 1.0]],
+            addc_t2_div=[[1.0, 1.0], [1.0, 1.0]],
+            addc_scalar=1.00048828125,
+            addc_scalars=[1.00048828125, 1.00146484375],
+            mul_self=[[0.75, 1.5], [0.75, 1.5]],
+            div_self=[[16384.0, 8192.0], [16384.0, 8192.0]],
+            muldiv_scalar=2049.0,
+            muldiv_scalars=[2049.0, 2051.0],
+        ),
+    ]
+
+    for case in cases:
+      dtype = case["dtype"]
+      t_self = [torch.tensor(v, dtype=dtype) for v in case["addc_self"]]
+      t1 = [torch.tensor(v, dtype=dtype) for v in case["addc_t1"]]
+      t2_mul = [torch.tensor(v, dtype=dtype) for v in case["addc_t2_mul"]]
+      t2_div = [torch.tensor(v, dtype=dtype) for v in case["addc_t2_div"]]
+      mul_self = [torch.tensor(v, dtype=dtype) for v in case["mul_self"]]
+      div_self = [torch.tensor(v, dtype=dtype) for v in case["div_self"]]
+
+      # _foreach_addcmul (out-of-place and in-place)
+      check_out_of_place(
+          torch._foreach_addcmul,
+          dtype,
+          t_self,
+          t1,
+          t2_mul,
+          value=case["addc_scalar"],
+      )
+      check_out_of_place(
+          torch._foreach_addcmul,
+          dtype,
+          t_self,
+          t1,
+          t2_mul,
+          scalars=case["addc_scalars"],
+      )
+      check_in_place(
+          torch._foreach_addcmul_,
+          torch._foreach_addcmul,
+          dtype,
+          t_self,
+          t1,
+          t2_mul,
+          value=case["addc_scalar"],
+      )
+      check_in_place(
+          torch._foreach_addcmul_,
+          torch._foreach_addcmul,
+          dtype,
+          t_self,
+          t1,
+          t2_mul,
+          scalars=case["addc_scalars"],
+      )
+
+      # _foreach_addcdiv (out-of-place and in-place)
+      check_out_of_place(
+          torch._foreach_addcdiv,
+          dtype,
+          t_self,
+          t1,
+          t2_div,
+          value=case["addc_scalar"],
+      )
+      check_out_of_place(
+          torch._foreach_addcdiv,
+          dtype,
+          t_self,
+          t1,
+          t2_div,
+          scalars=case["addc_scalars"],
+      )
+      check_in_place(
+          torch._foreach_addcdiv_,
+          torch._foreach_addcdiv,
+          dtype,
+          t_self,
+          t1,
+          t2_div,
+          value=case["addc_scalar"],
+      )
+      check_in_place(
+          torch._foreach_addcdiv_,
+          torch._foreach_addcdiv,
+          dtype,
+          t_self,
+          t1,
+          t2_div,
+          scalars=case["addc_scalars"],
+      )
+
+      # _foreach_mul (scalar and scalar list, out-of-place and in-place)
+      check_out_of_place(
+          torch._foreach_mul, dtype, mul_self, scalar=case["muldiv_scalar"]
+      )
+      check_out_of_place(
+          torch._foreach_mul, dtype, mul_self, scalars=case["muldiv_scalars"]
+      )
+      check_in_place(
+          torch._foreach_mul_,
+          torch._foreach_mul,
+          dtype,
+          mul_self,
+          scalar=case["muldiv_scalar"],
+      )
+      check_in_place(
+          torch._foreach_mul_,
+          torch._foreach_mul,
+          dtype,
+          mul_self,
+          scalars=case["muldiv_scalars"],
+      )
+
+      # _foreach_div (scalar and scalar list, out-of-place and in-place)
+      check_out_of_place(
+          torch._foreach_div, dtype, div_self, scalar=case["muldiv_scalar"]
+      )
+      check_out_of_place(
+          torch._foreach_div, dtype, div_self, scalars=case["muldiv_scalars"]
+      )
+      check_in_place(
+          torch._foreach_div_,
+          torch._foreach_div,
+          dtype,
+          div_self,
+          scalar=case["muldiv_scalar"],
+      )
+      check_in_place(
+          torch._foreach_div_,
+          torch._foreach_div,
+          dtype,
+          div_self,
+          scalars=case["muldiv_scalars"],
+      )
+
+    # Mixed integral / low-precision float division in BuildSafeIntegralDivision
+    # should also compute in float32 before casting to float16 (70000 overflows
+    # float16 if downcast prior to division).
+    check_out_of_place(
+        torch._foreach_div,
+        torch.float16,
+        [torch.tensor([70000, 35000], dtype=torch.int32)],
+        [torch.tensor([2.0, 2.0], dtype=torch.float16)],
+    )
+
+  def test_foreach_unsigned_int_dtypes(self):
+    """Tests foreach ops with unsigned int dtypes (uint16, uint32, uint64)."""
+    for dtype in [torch.uint16, torch.uint32, torch.uint64]:
+      t1_cpu = [
+          torch.tensor([10, 20], dtype=dtype),
+          torch.tensor([30, 40], dtype=dtype),
+      ]
+      t1_i64 = [t.to(torch.int64) for t in t1_cpu]
+      scalar = 2
+      scalars = [2, 3]
+
+      # _foreach_add / _foreach_add_
+      res = torch._foreach_add([t.to("tpu") for t in t1_cpu], scalar=scalar)
+      for r, exp in zip(res, [(t + scalar).to(dtype) for t in t1_i64]):
+        utils.assert_close(r.cpu(), exp)
+
+      res = torch._foreach_add([t.to("tpu") for t in t1_cpu], scalars=scalars)
+      for r, exp in zip(
+          res, [(t + s).to(dtype) for t, s in zip(t1_i64, scalars)]
+      ):
+        utils.assert_close(r.cpu(), exp)
+
+      inplace = [t.to("tpu") for t in t1_cpu]
+      torch._foreach_add_(inplace, scalar=scalar)
+      for r, exp in zip(inplace, [(t + scalar).to(dtype) for t in t1_i64]):
+        utils.assert_close(r.cpu(), exp)
+
+      inplace = [t.to("tpu") for t in t1_cpu]
+      torch._foreach_add_(inplace, scalars=scalars)
+      for r, exp in zip(
+          inplace, [(t + s).to(dtype) for t, s in zip(t1_i64, scalars)]
+      ):
+        utils.assert_close(r.cpu(), exp)
+
+      # _foreach_sub / _foreach_sub_
+      res = torch._foreach_sub([t.to("tpu") for t in t1_cpu], scalar=scalar)
+      for r, exp in zip(res, [(t - scalar).to(dtype) for t in t1_i64]):
+        utils.assert_close(r.cpu(), exp)
+
+      res = torch._foreach_sub([t.to("tpu") for t in t1_cpu], scalars=scalars)
+      for r, exp in zip(
+          res, [(t - s).to(dtype) for t, s in zip(t1_i64, scalars)]
+      ):
+        utils.assert_close(r.cpu(), exp)
+
+      inplace = [t.to("tpu") for t in t1_cpu]
+      torch._foreach_sub_(inplace, scalar=scalar)
+      for r, exp in zip(inplace, [(t - scalar).to(dtype) for t in t1_i64]):
+        utils.assert_close(r.cpu(), exp)
+
+      inplace = [t.to("tpu") for t in t1_cpu]
+      torch._foreach_sub_(inplace, scalars=scalars)
+      for r, exp in zip(
+          inplace, [(t - s).to(dtype) for t, s in zip(t1_i64, scalars)]
+      ):
+        utils.assert_close(r.cpu(), exp)
+
+      # _foreach_clamp_max / _foreach_clamp_max_
+      res = torch._foreach_clamp_max([t.to("tpu") for t in t1_cpu], scalar=25)
+      for r, exp in zip(res, [t.clamp_max(25).to(dtype) for t in t1_i64]):
+        utils.assert_close(r.cpu(), exp)
+
+      res = torch._foreach_clamp_max(
+          [t.to("tpu") for t in t1_cpu], scalars=[15, 35]
+      )
+      for r, exp in zip(
+          res, [t.clamp_max(s).to(dtype) for t, s in zip(t1_i64, [15, 35])]
+      ):
+        utils.assert_close(r.cpu(), exp)
+
+      inplace = [t.to("tpu") for t in t1_cpu]
+      torch._foreach_clamp_max_(inplace, scalar=25)
+      for r, exp in zip(inplace, [t.clamp_max(25).to(dtype) for t in t1_i64]):
+        utils.assert_close(r.cpu(), exp)
+
+      inplace = [t.to("tpu") for t in t1_cpu]
+      torch._foreach_clamp_max_(inplace, scalars=[15, 35])
+      for r, exp in zip(
+          inplace,
+          [t.clamp_max(s).to(dtype) for t, s in zip(t1_i64, [15, 35])],
+      ):
+        utils.assert_close(r.cpu(), exp)
+
+      # _foreach_clamp_min / _foreach_clamp_min_
+      res = torch._foreach_clamp_min([t.to("tpu") for t in t1_cpu], scalar=15)
+      for r, exp in zip(res, [t.clamp_min(15).to(dtype) for t in t1_i64]):
+        utils.assert_close(r.cpu(), exp)
+
+      res = torch._foreach_clamp_min(
+          [t.to("tpu") for t in t1_cpu], scalars=[15, 35]
+      )
+      for r, exp in zip(
+          res, [t.clamp_min(s).to(dtype) for t, s in zip(t1_i64, [15, 35])]
+      ):
+        utils.assert_close(r.cpu(), exp)
+
+      inplace = [t.to("tpu") for t in t1_cpu]
+      torch._foreach_clamp_min_(inplace, scalar=15)
+      for r, exp in zip(inplace, [t.clamp_min(15).to(dtype) for t in t1_i64]):
+        utils.assert_close(r.cpu(), exp)
+
+      inplace = [t.to("tpu") for t in t1_cpu]
+      torch._foreach_clamp_min_(inplace, scalars=[15, 35])
+      for r, exp in zip(
+          inplace,
+          [t.clamp_min(s).to(dtype) for t, s in zip(t1_i64, [15, 35])],
+      ):
+        utils.assert_close(r.cpu(), exp)
+
 
 if __name__ == "__main__":
   absltest.main()

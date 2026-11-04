@@ -1120,6 +1120,7 @@ torch_tpu_cc_test(
         "//csrc/common:oss_test_main",
         "//shims/torch/c10/core:base_headers",
         "//shims/torch/c10/util:base_headers",
+        "//shims/torch/torch/headeronly:torch_headeronly",
         "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
     ],
 )
