@@ -45,6 +45,7 @@
 #include "csrc/common/dtype.h"
 #include "csrc/common/environment.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/macro_utils.h"
 #include "csrc/common/tpu_hardware.h"
 #include "csrc/common/warnings.h"
 #include "csrc/eager/current_stream.h"
@@ -150,11 +151,19 @@ class TpuDeviceGuardImpl final : public c10::impl::DeviceGuardImplInterface {
   void synchronizeEvent(void* event) const override;
   double elapsedTime(void* event1, void* event2,
                      c10::DeviceIndex device_index) const override;
+#if TT_TORCH_VERSION_GE(2, 12)  // PyTorch 2.12 added isStreamCapturing.
+  bool isStreamCapturing(const c10::Stream& stream) const override;
+#endif
   // Not implemented: getStreamFromGlobalPool
   // Not implemented: getDeviceCapability
   // Not implemented: getStreamNativeHandle
-  // Not implemented: isStreamCapturing
   // Not implemented: recordDataPtrOnStream
+  // Not implemented: getStreamCaptureId, which identifies the graph capture in
+  //   progress on a stream. It intentionally returns 0, the ID of no capture:
+  //   copy-on-write storages record the ID of the capture that created them
+  //   only on CUDA, and reject the reads in a capture whose ID differs (see
+  //   c10/core/impl/COW.cpp), so a nonzero ID would reject every read of a
+  //   copy-on-write TPU storage during capture.
  private:
   void ValidateDevice(c10::Device d) const;
 };
@@ -380,6 +389,14 @@ double TpuDeviceGuardImpl::elapsedTime(
   absl::Duration duration = absl::FromChrono(end_time - start_time);
   return absl::ToDoubleMilliseconds(duration);
 }
+
+#if TT_TORCH_VERSION_GE(2, 12)
+bool TpuDeviceGuardImpl::isStreamCapturing(const c10::Stream& stream) const {
+  // A pure query: unlike the other methods, this does not validate the device,
+  // so that querying any stream neither raises nor initializes the runtime.
+  return IsStreamCapturing(stream.device_index(), stream.id());
+}
+#endif  // TT_TORCH_VERSION_GE(2, 12)
 
 C10_REGISTER_GUARD_IMPL(PrivateUse1, TpuDeviceGuardImpl);
 
