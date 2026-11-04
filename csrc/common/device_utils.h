@@ -17,8 +17,14 @@
 
 #include <string>
 #include <string_view>
+#include <vector>
 
+#include "absl/algorithm/container.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/numbers.h"
+#include "absl/strings/str_cat.h"
+#include "absl/strings/str_split.h"
+#include "csrc/common/error_utils.h"
 
 namespace torch_tpu {
 
@@ -39,13 +45,42 @@ namespace torch_tpu {
   return true;
 }
 
-// Returns `configured_devices` if it specifies a single device index, or
-// `default_device` otherwise.
-[[nodiscard]] inline std::string GetSingleDeviceOrDefault(
-    std::string_view configured_devices, std::string_view default_device) {
-  return IsSingleDeviceSpecified(configured_devices)
-             ? std::string(configured_devices)
-             : std::string(default_device);
+// Returns the visible device index assigned to this process with the given
+// local rank. It follows the rules below:
+//   1. Returns `local_rank` if `visible_devices` is empty, i.e. all devices
+//      are visible.
+//   2. If a single device is listed, returns that device for all ranks. A
+//      launcher that pins each process to its own device sets a different
+//      single device per process. If processes share the same single device,
+//      all but the first fail to acquire it at TPU initialization.
+//   3. If multiple devices are listed, returns the device at the
+//      `local_rank`-th index.
+// Returns error status on malformed inputs or out-of-bound ranks.
+inline absl::StatusOr<std::string> SelectLocalDevice(
+    const std::string_view visible_devices, const int local_rank) {
+  TT_RET_CHECK(local_rank >= 0, error::kInvalidArgument)
+      << "expected local rank to be >= 0, got " << local_rank;
+  if (visible_devices.empty()) {  // All devices are visible.
+    return absl::StrCat(local_rank);
+  }
+
+  const std::vector<std::string_view> devices =
+      absl::StrSplit(visible_devices, ',');
+  TT_RET_CHECK(absl::c_all_of(devices, IsSingleDeviceSpecified),
+               error::kInvalidArgument)
+      << "expected visible devices to be a list of comma-separated integers "
+         ">= 0, got '"
+      << visible_devices << "'";
+  if (devices.size() == 1) {
+    return std::string(devices[0]);
+  }
+
+  TT_RET_CHECK(local_rank < static_cast<int>(devices.size()),
+               error::kInvalidArgument)
+      << "local rank " << local_rank << " is out of range for visible devices '"
+      << visible_devices << "'";
+
+  return std::string(devices[local_rank]);
 }
 
 }  // namespace torch_tpu
