@@ -672,6 +672,7 @@ class DynamicOpInfo:
         BinaryElementwiseDynamicOpInfo,
         TernaryElementwiseDynamicOpInfo,
         ConvolutionDynamicOpInfo,
+        GluDynamicOpInfo,
     ]
     for adapter in adapters:
       if adapter.adapter_supports_op(op_info):
@@ -1168,6 +1169,28 @@ class ConvolutionDynamicOpInfo(DynamicOpInfo):
         dim
         for dim in super().dynamic_dimension_candidates(input_value, args)
         if dim != channel_dim
+    ]
+
+
+class GluDynamicOpInfo(DynamicOpInfo):
+  """A wrapper around glu OpInfos that keeps the split dimension static."""
+
+  @staticmethod
+  def adapter_supports_op(op_info: core.OpInfo) -> bool:
+    """Method to declare ops supported by this adapter."""
+    return op_info.name == "nn.functional.glu"
+
+  def dynamic_dimension_candidates(
+      self, input_value: torch.Tensor, args: Sequence[Any]
+  ) -> Sequence[int]:
+    """Returns dimensions of input_value excluding the split dimension."""
+    if input_value.ndim == 0:
+      return []
+    split_dim = (args[0] if args else -1) % input_value.ndim
+    return [
+        dim
+        for dim in super().dynamic_dimension_candidates(input_value, args)
+        if dim != split_dim
     ]
 
 

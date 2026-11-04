@@ -25542,6 +25542,88 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
         atol=1.0,
     )
 
+  @parameterized.named_parameters(
+      ("2d", (4, 6), (2, 6), 1),
+      ("3d", (4, 3, 6), (2, 3, 6), 2),
+  )
+  def test_glu_compiled_forward_bounded_dynamism(self, shape1, shape2, dim):
+    """Verifies torch.compile glu forward with bounded dynamism."""
+    compiled_glu_fwd = torch.compile(
+        lambda x: torch.nn.functional.glu(x, dim=dim),
+        backend="tpu",
+        options={"bounded_dynamism": True},
+    )
+    for shape in (shape1, shape2):
+      x_tpu = torch.randn(*shape, dtype=torch.float32, device="tpu")
+      torch._dynamo.mark_dynamic(x_tpu, 0, min=2, max=16)
+      y_tpu = compiled_glu_fwd(x_tpu)
+      self.assert_close(
+          golden_result=torch.nn.functional.glu(x_tpu.cpu(), dim=dim),
+          torch_tpu_result=y_tpu.cpu(),
+      )
+
+  @parameterized.named_parameters(
+      ("2d", (4, 6), (2, 6), 1),
+      ("3d", (4, 3, 6), (2, 3, 6), 2),
+  )
+  def test_glu_compiled_backward_bounded_dynamism(self, shape1, shape2, dim):
+    """Verifies torch.compile glu backward with bounded dynamism."""
+
+    @torch.compile(backend="tpu", options={"bounded_dynamism": True})
+    def compiled_glu_train(x):
+      return torch.nn.functional.glu(x, dim=dim)
+
+    for shape in (shape1, shape2):
+      x_train_cpu = torch.randn(*shape, dtype=torch.float32, requires_grad=True)
+      x_train_tpu = x_train_cpu.detach().clone().to("tpu").requires_grad_(True)
+      torch._dynamo.mark_dynamic(x_train_tpu, 0, min=2, max=16)
+      out_tpu = compiled_glu_train(x_train_tpu)
+      out_tpu.sum().backward()
+
+      out_cpu = torch.nn.functional.glu(x_train_cpu, dim=dim)
+      out_cpu.sum().backward()
+
+      self.assert_close(
+          golden_result=out_cpu,
+          torch_tpu_result=out_tpu.cpu(),
+      )
+      self.assert_close(
+          golden_result=x_train_cpu.grad,
+          torch_tpu_result=x_train_tpu.grad.cpu(),
+      )
+
+  @parameterized.named_parameters(
+      ("2d", (4, 6), (2, 6), 1),
+      ("3d", (4, 3, 6), (2, 3, 6), 2),
+  )
+  def test_glu_eager_bounded_dynamism(self, shape1, shape2, dim):
+    """Verifies eager nn.functional.glu under bounded dynamism."""
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      for shape in (shape1, shape2):
+        x_cpu = torch.randn(*shape, dtype=torch.float32, requires_grad=True)
+        x_eager = x_cpu.detach().clone().to("tpu").requires_grad_(True)
+        dynamism.mark_dynamic(
+            x_eager, dimension=0, lower_bound=2, upper_bound=16
+        )
+        y_eager = torch.nn.functional.glu(x_eager, dim=dim)
+        y_cpu = torch.nn.functional.glu(x_cpu, dim=dim)
+        self.assert_close(
+            golden_result=y_cpu,
+            torch_tpu_result=y_eager.cpu(),
+        )
+
+        grad_cpu = torch.randn_like(y_cpu)
+        grad_output = grad_cpu.detach().clone().to("tpu")
+        dynamism.mark_dynamic(
+            grad_output, dimension=0, lower_bound=2, upper_bound=16
+        )
+        y_eager.backward(grad_output)
+        y_cpu.backward(grad_cpu)
+        self.assert_close(
+            golden_result=x_cpu.grad,
+            torch_tpu_result=x_eager.grad.cpu(),
+        )
+
 
 if __name__ == "__main__":
   absltest.main()

@@ -145,7 +145,7 @@ csrc/ops/fused_adamw/fused_adamw_aten_kernels.cc: {remaining: 0, total: 7, infea
 csrc/ops/fused_sgd/fused_sgd_aten_kernels.cc: {remaining: 0, total: 4, infeasible: 0}
 csrc/ops/gather/gather.cc: {remaining: 0, total: 6, infeasible: 1}
 csrc/ops/gelu/gelu_aten_kernels.cc: {remaining: 0, total: 9, infeasible: 0}
-csrc/ops/glu/glu_aten_kernels.cc: {remaining: 0, total: 8, infeasible: 0}
+csrc/ops/glu/glu_aten_kernels.cc: {remaining: 0, total: 9, infeasible: 0}
 csrc/ops/grid_sampler/grid_sampler_aten_kernels.cc: {remaining: 4, total: 8, infeasible: 0}
 csrc/ops/group_norm/group_norm_aten_kernels.cc: {remaining: 0, total: 6, infeasible: 0}
 csrc/ops/grouped_mm/grouped_mm_aten_kernels.cc: {remaining: 0, total: 32, infeasible: 0}

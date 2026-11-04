@@ -1435,6 +1435,21 @@ Please use clone() or contiguous() to copy the tensor before writing""",
       ):
         torch.nn.functional.embedding_bag(indices, weight, offsets)
 
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_glu_dynamic_split_dim(self):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      x = torch.ones(2, 4, device=et.device())
+      dim = 1
+      dynamism.mark_dynamic(x, dim, 2, 8)
+
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu="""glu(): expected dimension 1 of input to have a static size, got dynamic size""",
+          message_reviewed_by="aarfaian",
+      ):
+        # cpu() is needed because the error is triggered inside the op builder.
+        torch.nn.functional.glu(x, dim=dim).cpu()
+
   @et.why_tpu_only(
       "On CPU/GPU, linear with bool input raises RuntimeError from matmul; on"
       " TPU, AtenLinear raises NotImplementedError."
