@@ -1212,5 +1212,315 @@ TEST(DeviceAssignmentPipelineTest,
   EXPECT_TRUE(caught);
 }
 
+TEST(DeviceAssignmentPipelineTest,
+     MixedSubgroupsResolveToLeastCommonDenominatorSubgroup) {
+  const std::vector<int64_t>  // INT_VEC_OK
+      tp_layout = {0, 1, 2, 3, 4, 5, 6, 7};
+  const std::vector<int64_t>  // INT_VEC_OK
+      cp_layout = {0, 2, 1, 3, 4, 6, 5, 7};
+  const std::vector<int64_t>  // INT_VEC_OK
+      dp_layout = {0, 4, 1, 5, 2, 6, 3, 7};
+
+  const std::vector<int64_t> stage_0_lcd = {0, 1, 2, 3};  // INT_VEC_OK
+  for (const std::vector<int64_t>& tp_da :                // INT_VEC_OK
+       {std::vector<int64_t>{0, 1},                       // INT_VEC_OK
+        std::vector<int64_t>{2, 3}}) {                    // INT_VEC_OK
+    for (const std::vector<int64_t>& cp_da :              // INT_VEC_OK
+         {std::vector<int64_t>{0, 2},                     // INT_VEC_OK
+          std::vector<int64_t>{1, 3}}) {                  // INT_VEC_OK
+      TT_ASSERT_OK_AND_ASSIGN(
+          const std::vector<int64_t> resolved_da,  // INT_VEC_OK
+          ResolveDeviceAssignment({
+              OpDeviceAssignment{OpName::kDistributedAllReduce, tp_da,
+                                 tp_layout},
+              OpDeviceAssignment{OpName::kDistributedAllGather, cp_da,
+                                 cp_layout},
+          }));
+      EXPECT_EQ(resolved_da, stage_0_lcd);
+    }
+  }
+
+  const std::vector<int64_t> tp_stage_1 = {4, 5};         // INT_VEC_OK
+  const std::vector<int64_t> cp_stage_1 = {4, 6};         // INT_VEC_OK
+  const std::vector<int64_t> stage_1_lcd = {4, 5, 6, 7};  // INT_VEC_OK
+  TT_ASSERT_OK_AND_ASSIGN(
+      const std::vector<int64_t> resolved_stage_1,  // INT_VEC_OK
+      ResolveDeviceAssignment({
+          OpDeviceAssignment{OpName::kDistributedAllReduce, tp_stage_1,
+                             tp_layout},
+          OpDeviceAssignment{OpName::kDistributedAllGather, cp_stage_1,
+                             cp_layout},
+      }));
+  EXPECT_EQ(resolved_stage_1, stage_1_lcd);
+
+  const std::vector<int64_t> dp_da = {0, 4};  // INT_VEC_OK
+  TT_ASSERT_OK_AND_ASSIGN(
+      const std::vector<int64_t> resolved_world,  // INT_VEC_OK
+      ResolveDeviceAssignment({
+          OpDeviceAssignment{OpName::kDistributedAllReduce, tp_stage_1,
+                             tp_layout},
+          OpDeviceAssignment{OpName::kDistributedAllGather, cp_stage_1,
+                             cp_layout},
+          OpDeviceAssignment{OpName::kDistributedAllReduce, dp_da, dp_layout},
+      }));
+  EXPECT_EQ(resolved_world, tp_layout);
+}
+
+TEST(DeviceAssignmentPipelineTest,
+     RewriteAndTileOperationForSubgroupTilesOverClosedSubgroupSubset) {
+  const std::vector<int64_t>  // INT_VEC_OK
+      tp_layout = {0, 1, 2, 3, 4, 5, 6, 7};
+  const std::vector<int64_t>  // INT_VEC_OK
+      cp_layout = {0, 2, 1, 3, 4, 6, 5, 7};
+
+  mlir::MLIRContext mlir_context;
+  mlir_context.loadDialect<mlir::stablehlo::StablehloDialect>();
+  mlir_context.loadDialect<mlir::func::FuncDialect>();
+
+  mlir::ModuleBuilder mb(mlir_context, "test_closed_subgroup_tiling");
+  mlir::func::FunctionBuilder fb(mb, "main");
+  auto tensor_type =
+      mlir::makeTensorType(mlir_context, {8}, mlir::ElementType::F32);
+  mlir::MlirOp arg = mlir::func::Argument(fb, tensor_type);
+  auto i64_type = mlir::IntegerType::get(&mlir_context, 64);
+
+  auto rg_attr = mlir::DenseIntElementsAttr::get(
+      mlir::RankedTensorType::get({1, 2}, i64_type),
+      llvm::ArrayRef<int64_t>({0, 1}));
+  auto st_attr = mlir::DenseIntElementsAttr::get(
+      mlir::RankedTensorType::get({2, 2}, i64_type),
+      llvm::ArrayRef<int64_t>({0, 1, 1, 0}));
+
+  mlir::MlirOp tp_op_s0 = mlir::stablehlo::Neg(arg);
+  mlir::Operation* raw_tp_s0 = tp_op_s0.getValue().getDefiningOp();
+  raw_tp_s0->setAttr("replica_groups", rg_attr);
+
+  mlir::MlirOp cp_op_s0 = mlir::stablehlo::Abs(tp_op_s0);
+  mlir::Operation* raw_cp_s0 = cp_op_s0.getValue().getDefiningOp();
+  raw_cp_s0->setAttr("replica_groups", rg_attr);
+  raw_cp_s0->setAttr("source_target_pairs", st_attr);
+
+  mlir::MlirOp tp_op_s1 = mlir::stablehlo::Neg(cp_op_s0);
+  mlir::Operation* raw_tp_s1 = tp_op_s1.getValue().getDefiningOp();
+  raw_tp_s1->setAttr("replica_groups", rg_attr);
+
+  mlir::MlirOp cp_op_s1 = mlir::stablehlo::Abs(tp_op_s1);
+  mlir::Operation* raw_cp_s1 = cp_op_s1.getValue().getDefiningOp();
+  raw_cp_s1->setAttr("replica_groups", rg_attr);
+
+  mlir::MlirOp bad_op = mlir::stablehlo::Neg(cp_op_s1);
+  mlir::Operation* raw_bad = bad_op.getValue().getDefiningOp();
+  raw_bad->setAttr("replica_groups", rg_attr);
+
+  mlir::func::Return(fb, {bad_op});
+  auto module = mb.build();
+
+  const std::vector<int64_t> op_tp_s0 = {0, 1};           // INT_VEC_OK
+  const std::vector<int64_t> op_cp_s0 = {0, 2};           // INT_VEC_OK
+  const std::vector<int64_t> resolved_s0 = {0, 1, 2, 3};  // INT_VEC_OK
+  ASSERT_TRUE(RewriteAndTileOperationForSubgroup(raw_tp_s0, op_tp_s0,
+                                                 resolved_s0, tp_layout)
+                  .ok());
+  ASSERT_TRUE(RewriteAndTileOperationForSubgroup(raw_cp_s0, op_cp_s0,
+                                                 resolved_s0, cp_layout)
+                  .ok());
+  EXPECT_THAT(ExtractDenseIntAttrValues(raw_tp_s0, "replica_groups"),
+              testing::ElementsAre(0, 1, 2, 3));
+  EXPECT_THAT(ExtractDenseIntAttrValues(raw_cp_s0, "replica_groups"),
+              testing::ElementsAre(0, 2, 1, 3));
+  EXPECT_THAT(ExtractDenseIntAttrValues(raw_cp_s0, "source_target_pairs"),
+              testing::ElementsAre(0, 2, 2, 0, 1, 3, 3, 1));
+
+  const std::vector<int64_t> op_tp_s1 = {4, 5};           // INT_VEC_OK
+  const std::vector<int64_t> op_cp_s1 = {4, 6};           // INT_VEC_OK
+  const std::vector<int64_t> resolved_s1 = {4, 5, 6, 7};  // INT_VEC_OK
+  ASSERT_TRUE(RewriteAndTileOperationForSubgroup(raw_tp_s1, op_tp_s1,
+                                                 resolved_s1, tp_layout)
+                  .ok());
+  ASSERT_TRUE(RewriteAndTileOperationForSubgroup(raw_cp_s1, op_cp_s1,
+                                                 resolved_s1, cp_layout)
+                  .ok());
+  EXPECT_THAT(ExtractDenseIntAttrValues(raw_tp_s1, "replica_groups"),
+              testing::ElementsAre(0, 1, 2, 3));
+  EXPECT_THAT(ExtractDenseIntAttrValues(raw_cp_s1, "replica_groups"),
+              testing::ElementsAre(0, 2, 1, 3));
+
+  const std::vector<int64_t> bad_resolved = {0, 1, 2, 4};  // INT_VEC_OK
+  const absl::Status status = RewriteAndTileOperationForSubgroup(
+      raw_bad, op_tp_s0, bad_resolved, tp_layout);
+  EXPECT_EQ(status.code(), error::kInvalidArgument);
+}
+
+TEST(DeviceAssignmentPipelineTest,
+     MiddleCaseSubgroupTraversalResolvesWiderCosetLayout) {
+  const std::vector<int64_t>  // INT_VEC_OK
+      tp_layout = {0, 1, 2, 3, 4, 5, 6, 7};
+  const std::vector<int64_t>  // INT_VEC_OK
+      dp_layout = {0, 4, 1, 5, 2, 6, 3, 7};
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      SharedDeviceBufferList tp_node,
+      MakeDeferredNode(OpName::kDistributedAllReduce,
+                       DeviceAssignment({0, 1}, tp_layout,
+                                        /*contains_pallas_kernel=*/false)));
+  TT_ASSERT_OK_AND_ASSIGN(
+      SharedDeviceBufferList dp_node,
+      MakeDeferredNode(OpName::kDistributedAllReduce,
+                       DeviceAssignment({0, 4}, dp_layout,
+                                        /*contains_pallas_kernel=*/false)));
+
+  const std::vector<SharedDeviceBufferList> execution_order = {tp_node,
+                                                               dp_node};
+  TT_ASSERT_OK_AND_ASSIGN(const DeviceAssignment resolved_da,
+                          ResolveDeviceAssignmentForTraversal(execution_order));
+  const std::vector<int64_t> expected_coset = {0, 1, 4, 5};  // INT_VEC_OK
+  EXPECT_EQ(resolved_da.local, expected_coset);
+
+  const std::vector<int64_t> expected_layout = {// INT_VEC_OK
+                                                0, 1, 4, 5, 2, 3, 6, 7};
+  EXPECT_EQ(resolved_da.global, expected_layout);
+  EXPECT_FALSE(resolved_da.contains_pallas_kernel);
+
+  mlir::MLIRContext mlir_context;
+  mlir_context.loadDialect<mlir::stablehlo::StablehloDialect>();
+  mlir_context.loadDialect<mlir::func::FuncDialect>();
+
+  mlir::ModuleBuilder mb(mlir_context, "test_chained_coset_tiling");
+  mlir::func::FunctionBuilder fb(mb, "main");
+  auto tensor_type =
+      mlir::makeTensorType(mlir_context, {8}, mlir::ElementType::F32);
+  mlir::MlirOp arg = mlir::func::Argument(fb, tensor_type);
+  auto i64_type = mlir::IntegerType::get(&mlir_context, 64);
+
+  auto rg_attr = mlir::DenseIntElementsAttr::get(
+      mlir::RankedTensorType::get({1, 2}, i64_type),
+      llvm::ArrayRef<int64_t>({0, 1}));
+
+  mlir::MlirOp tp_op = mlir::stablehlo::Neg(arg);
+  mlir::Operation* raw_tp = tp_op.getValue().getDefiningOp();
+  raw_tp->setAttr("replica_groups", rg_attr);
+
+  mlir::MlirOp dp_op = mlir::stablehlo::Abs(tp_op);
+  mlir::Operation* raw_dp = dp_op.getValue().getDefiningOp();
+  raw_dp->setAttr("replica_groups", rg_attr);
+
+  mlir::func::Return(fb, {dp_op});
+  auto module = mb.build();
+  mlir::func::FuncOp func_op = module->lookupSymbol<mlir::func::FuncOp>("main");
+
+  const std::vector<int64_t> op_tp = {0, 1};  // INT_VEC_OK
+  const std::vector<int64_t> op_dp = {0, 4};  // INT_VEC_OK
+  ASSERT_TRUE(RewriteAndTileOperationForSubgroup(raw_tp, op_tp,
+                                                 resolved_da.local, tp_layout)
+                  .ok());
+  ASSERT_TRUE(RewriteAndTileOperationForSubgroup(raw_dp, op_dp,
+                                                 resolved_da.local, dp_layout)
+                  .ok());
+
+  ASSERT_TRUE(RewriteAndTileOperationForSubgroup(func_op.getOperation(),
+                                                 resolved_da.local, tp_layout,
+                                                 resolved_da.global)
+                  .ok());
+
+  EXPECT_THAT(ExtractDenseIntAttrValues(raw_tp, "replica_groups"),
+              testing::ElementsAre(0, 1, 2, 3, 4, 5, 6, 7));
+  EXPECT_THAT(ExtractDenseIntAttrValues(raw_dp, "replica_groups"),
+              testing::ElementsAre(0, 4, 1, 5, 2, 6, 3, 7));
+}
+
+TEST(DeviceAssignmentPipelineTest,
+     MixedSubgroupsRejectMismatchedWorldsInvalidTilesAndTwistedCosets) {
+  const std::vector<int64_t> dev_0_1 = {0, 1};  // INT_VEC_OK
+  const std::vector<int64_t>                    // INT_VEC_OK
+      tp_layout = {0, 1, 2, 3, 4, 5, 6, 7};
+  const std::vector<int64_t> dev_0_2 = {0, 2};  // INT_VEC_OK
+  const std::vector<int64_t>                    // INT_VEC_OK
+      world_8b = {0, 2, 1, 3, 8, 10, 9, 11};
+
+  // Case 1: Conflicting global_device_assignment worlds.
+  const absl::StatusOr<std::vector<int64_t>> resolved_case1 =  // INT_VEC_OK
+      ResolveDeviceAssignment({
+          OpDeviceAssignment{OpName::kDistributedAllReduce, dev_0_1, tp_layout},
+          OpDeviceAssignment{OpName::kDistributedAllReduce, dev_0_2, world_8b},
+      });
+  EXPECT_FALSE(resolved_case1.ok());
+  EXPECT_EQ(resolved_case1.status().code(), error::kInvalidArgument);
+
+  // Case 2: Pallas anchor smaller than closed subgroup union.
+  const std::vector<int64_t>  // INT_VEC_OK
+      cp_layout = {0, 2, 1, 3, 4, 6, 5, 7};
+  const absl::StatusOr<std::vector<int64_t>> resolved_case2 =  // INT_VEC_OK
+      ResolveDeviceAssignment(
+          {
+              OpDeviceAssignment{OpName::kDistributedAllReduce, dev_0_1,
+                                 tp_layout},
+              OpDeviceAssignment{OpName::kDistributedAllGather, dev_0_2,
+                                 cp_layout},
+          },
+          {
+              PallasDeviceAssignment{dev_0_1},
+          });
+  EXPECT_FALSE(resolved_case2.ok());
+  EXPECT_EQ(resolved_case2.status().code(), error::kInvalidArgument);
+
+  // Case 3: op_da straddling tiles of global_da.
+  mlir::MLIRContext mlir_context;
+  mlir_context.loadDialect<mlir::stablehlo::StablehloDialect>();
+  mlir_context.loadDialect<mlir::func::FuncDialect>();
+  mlir::ModuleBuilder mb(mlir_context, "test_straddle_module");
+  mlir::func::FunctionBuilder fb(mb, "main");
+  auto tensor_type =
+      mlir::makeTensorType(mlir_context, {8}, mlir::ElementType::F32);
+  mlir::MlirOp arg = mlir::func::Argument(fb, tensor_type);
+  auto i64_type = mlir::IntegerType::get(&mlir_context, 64);
+  auto rg_attr = mlir::DenseIntElementsAttr::get(
+      mlir::RankedTensorType::get({1, 2}, i64_type),
+      llvm::ArrayRef<int64_t>({0, 1}));
+  mlir::MlirOp op = mlir::stablehlo::Neg(arg);
+  mlir::Operation* raw_op = op.getValue().getDefiningOp();
+  raw_op->setAttr("replica_groups", rg_attr);
+  mlir::func::Return(fb, {op});
+  auto module = mb.build();
+
+  const std::vector<int64_t> other_da = {2, 3};                // INT_VEC_OK
+  const std::vector<int64_t> half_world = {0, 1, 2, 3};        // INT_VEC_OK
+  const absl::StatusOr<std::vector<int64_t>> resolved_case3 =  // INT_VEC_OK
+      ResolveDeviceAssignment({
+          OpDeviceAssignment{OpName::kDistributedAllReduce, dev_0_2, tp_layout},
+          OpDeviceAssignment{OpName::kDistributedAllReduce, other_da,
+                             tp_layout},
+      });
+  EXPECT_FALSE(resolved_case3.ok());
+  EXPECT_EQ(resolved_case3.status().code(), error::kInvalidArgument);
+
+  const absl::Status tile_status = RewriteAndTileOperationForSubgroup(
+      raw_op, dev_0_2, half_world, tp_layout);
+  EXPECT_FALSE(tile_status.ok());
+  EXPECT_EQ(tile_status.code(), error::kInvalidArgument);
+
+  // Case 4: Non-isomorphic / twisted coset.
+  const std::vector<int64_t> twisted_dp_layout = {0, 4, 1, 5,  // INT_VEC_OK
+                                                  2, 7, 3, 6};
+  const std::vector<int64_t> dev_0_4 = {0, 4};  // INT_VEC_OK
+  TT_ASSERT_OK_AND_ASSIGN(
+      SharedDeviceBufferList tp_node,
+      MakeDeferredNode(OpName::kDistributedAllReduce,
+                       DeviceAssignment(dev_0_1, tp_layout,
+                                        /*contains_pallas_kernel=*/false)));
+  TT_ASSERT_OK_AND_ASSIGN(
+      SharedDeviceBufferList dp_node,
+      MakeDeferredNode(OpName::kDistributedAllReduce,
+                       DeviceAssignment(dev_0_4, twisted_dp_layout,
+                                        /*contains_pallas_kernel=*/false)));
+  const std::vector<SharedDeviceBufferList> execution_order = {tp_node,
+                                                               dp_node};
+  TT_ASSERT_OK_AND_ASSIGN(const DeviceAssignment resolved_da4,
+                          ResolveDeviceAssignmentForTraversal(execution_order));
+  const std::vector<int64_t> expected_local = {0, 1, 4, 5};  // INT_VEC_OK
+  EXPECT_EQ(resolved_da4.local, expected_local);
+  EXPECT_TRUE(resolved_da4.global.empty());
+  EXPECT_FALSE(resolved_da4.contains_pallas_kernel);
+}
+
 }  // namespace
 }  // namespace torch_tpu
