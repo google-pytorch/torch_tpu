@@ -16,16 +16,17 @@
 
 #include "csrc/ops/upsample/upsample_linear1d_aten_kernels.h"
 
-#include <algorithm>
 #include <cstdint>
 #include <optional>
 #include <utility>
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
+#include "ATen/native/UpSample.h"
+#include "absl/log/absl_check.h"
 #include "absl/status/statusor.h"
-#include "absl/types/span.h"
 #include "c10/core/ScalarType.h"
+#include "c10/util/string_view.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
@@ -33,297 +34,155 @@
 #include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
 #include "csrc/eager/op_dispatcher.h"
-#include "csrc/ops/binary.h"
+#include "csrc/ops/einsum/einsum_aten_kernels.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
+#include "csrc/ops/precision_context.h"
 #include "csrc/ops/resize/resize_aten_kernels.h"
-#include "llvm/ADT/ArrayRef.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Types.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
-#include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
 namespace {
 
-enum class AlignCorners : bool {
-  kNo = false,
-  kYes = true,
+static constexpr int64_t kLinearWidthDim = 2;
+
+enum class AlignCorners {
+  kNo,
+  kYes,
 };
 
-struct Linear1dGatherConfig {
-  mlir::stablehlo::GatherDimensionNumbersAttr gather_dimension_numbers;
-  Dimensions slice_sizes;
+enum class UpsampleDirection {
+  kForward,
+  kBackward,
 };
 
-struct Linear1dDimInfo {
-  mlir::MlirOp left_indices;
-  mlir::MlirOp right_indices;
-  mlir::MlirOp left_weight;
-  mlir::MlirOp right_weight;
-};
+// Inspired by `jax.image.scale` (`jax/_src/image/scale.py`),
+// builds the [out_size, in_size] 1D linear interpolation weight matrix
+//   A[out_idx, in_idx] =
+//       lambda0[out_idx] * (in_idx == index0[out_idx]) +
+//       lambda1[out_idx] * (in_idx == index1[out_idx])
+// directly in StableHLO from `Iota` and scalar splat constants.
+mlir::MlirOp BuildLinear1dInterpolationMatrix(mlir::MlirBuilder& builder,
+                                              const int64_t in_size,
+                                              const int64_t out_size,
+                                              const AlignCorners align_corners,
+                                              const std::optional<double> scale,
+                                              const mlir::Type calc_type) {
+  const bool align = align_corners == AlignCorners::kYes;
+  const double ratio =
+      calc_type.isF64()
+          ? at::native::area_pixel_compute_scale<double>(in_size, out_size,
+                                                         align, scale)
+          : static_cast<double>(at::native::area_pixel_compute_scale<float>(
+                in_size, out_size, align, scale));
 
-mlir::MlirOp Clamp(mlir::MlirOp min, mlir::MlirOp operand, mlir::MlirOp max) {
-  return mlir::stablehlo::Clamp(min, operand, max);
-}
+  const mlir::Type i32_type = builder.getOpBuilder().getI32Type();
+  const mlir::RankedTensorType weight_vec_type =
+      mlir::RankedTensorType::get({out_size}, calc_type);
+  const mlir::RankedTensorType index_mat_type =
+      mlir::RankedTensorType::get({out_size, in_size}, i32_type);
+  const mlir::RankedTensorType weight_mat_type =
+      mlir::RankedTensorType::get({out_size, in_size}, calc_type);
 
-mlir::MlirOp Gather(
-    mlir::MlirOp operand, mlir::MlirOp start_indices,
-    mlir::stablehlo::GatherDimensionNumbersAttr dimension_numbers,
-    llvm::ArrayRef<int64_t> slice_sizes, bool indices_are_sorted = false) {
-  return mlir::stablehlo::Gather(operand, start_indices, dimension_numbers,
-                                 slice_sizes, indices_are_sorted);
-}
-
-mlir::MlirOp Scatter(
-    mlir::MlirOp input, mlir::MlirOp scatter_indices, mlir::MlirOp updates,
-    const mlir::RegionBuilderCallback& update_computation,
-    mlir::stablehlo::ScatterDimensionNumbersAttr scatter_dimension_numbers,
-    bool indices_are_sorted = false) {
-  return mlir::stablehlo::Scatter(input, scatter_indices, updates,
-                                  update_computation, scatter_dimension_numbers,
-                                  indices_are_sorted)[0];
-}
-
-mlir::MlirOp Reshape(mlir::Type result_type, mlir::MlirOp operand) {
-  return mlir::stablehlo::Reshape(result_type, operand);
-}
-
-mlir::MlirOp BroadcastInDim(mlir::Type result_type, mlir::MlirOp operand,
-                            llvm::ArrayRef<int64_t> broadcast_dimensions) {
-  return mlir::stablehlo::BroadcastInDim(result_type, operand,
-                                         broadcast_dimensions);
-}
-
-Linear1dGatherConfig GetLinear1dGatherConfig(mlir::MlirOp input) {
-  const Dimensions input_shape =
-      CopyIntVector(GetTensorTypeOrDie(input).getShape());
-  Dimensions slice_sizes = input_shape;
-  slice_sizes[2] = 1;
-
-  const Dimensions offset_dims = {0, 1};
-  const Dimensions collapsed_slice_dims = {2};
-  const Dimensions start_index_map = {2};
-
-  const mlir::stablehlo::GatherDimensionNumbersAttr gather_dimension_numbers =
-      mlir::stablehlo::GatherDimensionNumbersAttr::get(
-          &input.getContext(),
-          /*offset_dims=*/AsArrayRef<int64_t>(offset_dims),
-          /*collapsed_slice_dims=*/AsArrayRef<int64_t>(collapsed_slice_dims),
-          /*operand_batching_dims=*/{},
-          /*start_indices_batching_dims=*/{},
-          /*start_index_map=*/AsArrayRef<int64_t>(start_index_map),
-          /*index_vector_dim=*/1);
-
-  return {gather_dimension_numbers, slice_sizes};
-}
-
-mlir::stablehlo::ScatterDimensionNumbersAttr GetLinear1dScatterConfig(
-    mlir::MlirOp grad_output) {
-  const Dimensions update_window_dims = {0, 1};
-  const Dimensions inserted_window_dims = {2};
-  const Dimensions scatter_dims_to_operand_dims = {2};
-
-  return mlir::stablehlo::ScatterDimensionNumbersAttr::get(
-      &grad_output.getContext(),
-      /*update_window_dims=*/AsArrayRef<int64_t>(update_window_dims),
-      /*inserted_window_dims=*/AsArrayRef<int64_t>(inserted_window_dims),
-      /*input_batching_dims=*/{},
-      /*scatter_indices_batching_dims=*/{},
-      /*scatter_dims_to_operand_dims=*/
-      AsArrayRef<int64_t>(scatter_dims_to_operand_dims),
-      /*index_vector_dim=*/1);
-}
-
-absl::StatusOr<mlir::MlirOp> ComputeLinear1dSourceIndex(
-    mlir::MlirBuilder& builder, int64_t out_size, int64_t in_size,
-    std::optional<double> scale_opt, AlignCorners align_corners,
-    mlir::Type calc_type) {
-  const auto iota_type = mlir::RankedTensorType::get({out_size}, calc_type);
-  const auto iota = mlir::stablehlo::Iota(builder, iota_type, 0);
-
-  if (align_corners == AlignCorners::kYes) {
-    const double stride = (out_size > 1) ? static_cast<double>(in_size - 1) /
-                                               static_cast<double>(out_size - 1)
-                                         : 0.0;
-    const auto stride_const = MakeConstantLike(iota, stride);
-    return BuildMulShlo(iota, stride_const);
+  mlir::MlirOp dst_idx =
+      mlir::stablehlo::Iota(builder, weight_vec_type, /*iotaDimension=*/0);
+  mlir::MlirOp ratio_vec = MakeConstant(builder, ratio, calc_type, out_size);
+  mlir::MlirOp zero_vec = MakeConstant(builder, 0.0, calc_type, out_size);
+  mlir::MlirOp one_vec = MakeConstant(builder, 1.0, calc_type, out_size);
+  mlir::MlirOp src_idx;
+  if (align) {
+    src_idx = mlir::stablehlo::Mul(dst_idx, ratio_vec);
+  } else {
+    mlir::MlirOp half_vec = MakeConstant(builder, 0.5, calc_type, out_size);
+    mlir::MlirOp centered = mlir::stablehlo::Add(dst_idx, half_vec);
+    mlir::MlirOp scaled = mlir::stablehlo::Mul(centered, ratio_vec);
+    mlir::MlirOp unshifted = mlir::stablehlo::Subtract(scaled, half_vec);
+    src_idx = mlir::stablehlo::Max(unshifted, zero_vec);
   }
 
-  const double scale =
-      (scale_opt.has_value() && *scale_opt > 0.0)
-          ? (1.0 / *scale_opt)
-          : (static_cast<double>(in_size) / static_cast<double>(out_size));
-  const auto half_const = MakeConstantLike(iota, 0.5);
-  TT_ASSIGN_OR_RETURN(const auto iota_plus_half,
-                      BuildAddShlo(iota, half_const));
+  const int64_t max_in_idx = in_size - 1;
+  mlir::MlirOp max_in_float = MakeConstant(
+      builder, static_cast<double>(max_in_idx), calc_type, out_size);
+  mlir::MlirOp floor_src = mlir::stablehlo::Floor(src_idx);
+  mlir::MlirOp idx0_float = mlir::stablehlo::Min(floor_src, max_in_float);
+  mlir::MlirOp frac = mlir::stablehlo::Subtract(src_idx, idx0_float);
+  mlir::MlirOp lambda1 = mlir::stablehlo::Clamp(zero_vec, frac, one_vec);
+  mlir::MlirOp lambda0 = mlir::stablehlo::Subtract(one_vec, lambda1);
 
-  const auto scale_const = MakeConstantLike(iota, scale);
-  TT_ASSIGN_OR_RETURN(const auto scaled,
-                      BuildMulShlo(iota_plus_half, scale_const));
-  TT_ASSIGN_OR_RETURN(const auto src_idx, BuildSubShlo(scaled, half_const));
+  mlir::MlirOp index0 =
+      mlir::stablehlo::ConvertElementType(idx0_float, i32_type);
+  mlir::MlirOp one_i32 = MakeConstant(builder, 1, i32_type, out_size);
+  mlir::MlirOp max_in_i32 =
+      MakeConstant(builder, max_in_idx, i32_type, out_size);
+  mlir::MlirOp index0_plus_one = mlir::stablehlo::Add(index0, one_i32);
+  mlir::MlirOp index1 = mlir::stablehlo::Min(index0_plus_one, max_in_i32);
 
-  const auto zero_const = MakeConstantLike(iota, 0.0);
-  return BuildMaximumShlo(src_idx, zero_const);
-}
+  mlir::MlirOp col_indices =
+      mlir::stablehlo::Iota(builder, index_mat_type, /*iotaDimension=*/1);
+  mlir::MlirOp zeros =
+      MakeConstant(builder, 0.0, calc_type, {out_size, in_size});
 
-absl::StatusOr<Linear1dDimInfo> ComputeLinear1dDimInfo(
-    mlir::MlirBuilder& builder, mlir::MlirOp src_idx, int64_t out_size,
-    int64_t in_size, mlir::Type calc_type) {
-  const auto idx_floor_calc = mlir::stablehlo::Floor(src_idx);
-  const auto one_calc = MakeConstantLike(src_idx, 1.0);
-
-  TT_ASSIGN_OR_RETURN(const auto idx_ceil_calc,
-                      BuildAddShlo(idx_floor_calc, one_calc));
-
-  TT_ASSIGN_OR_RETURN(const auto right_weight,
-                      BuildSubShlo(src_idx, idx_floor_calc));
-  TT_ASSIGN_OR_RETURN(const auto left_weight,
-                      BuildSubShlo(one_calc, right_weight));
-
-  const auto i32_type = builder.getOpBuilder().getI32Type();
-  const auto idx_floor_i32_unclamped =
-      mlir::stablehlo::ConvertElementType(idx_floor_calc, i32_type);
-  const auto idx_ceil_i32_unclamped =
-      mlir::stablehlo::ConvertElementType(idx_ceil_calc, i32_type);
-
-  const auto zero_i32 = MakeConstantLike(idx_floor_i32_unclamped, 0);
-  const auto max_idx_i32 = MakeConstantLike(idx_floor_i32_unclamped,
-                                            std::max<int64_t>(0, in_size - 1));
-
-  const auto idx_floor_i32 =
-      Clamp(zero_i32, idx_floor_i32_unclamped, max_idx_i32);
-  const auto idx_ceil_i32 =
-      Clamp(zero_i32, idx_ceil_i32_unclamped, max_idx_i32);
-
-  const auto index_tensor_type =
-      mlir::RankedTensorType::get({out_size, 1}, i32_type);
-  const auto left_indices = Reshape(index_tensor_type, idx_floor_i32);
-  const auto right_indices = Reshape(index_tensor_type, idx_ceil_i32);
-
-  return Linear1dDimInfo{left_indices, right_indices, left_weight,
-                         right_weight};
-}
-
-absl::StatusOr<mlir::MlirOp> BuildUpsampleLinear1dShlo(
-    mlir::MlirOp input, const Dimensions& output_shape,
-    AlignCorners align_corners, std::optional<double> scales,
-    mlir::Type calc_type) {
-  mlir::MlirBuilder& builder = input.getBuilder();
-  const Dimensions input_shape =
-      CopyIntVector(GetTensorTypeOrDie(input).getShape());
-
-  const int64_t in_width = input_shape[2];
-  const int64_t out_width = output_shape[2];
-  if (in_width == out_width) {
-    return input;
-  }
-  const auto element_type = GetTensorTypeOrDie(input).getElementType();
-
-  TT_ASSIGN_OR_RETURN(
-      const auto src_idx,
-      ComputeLinear1dSourceIndex(builder, out_width, in_width, scales,
-                                 align_corners, calc_type));
-
-  TT_ASSIGN_OR_RETURN(
-      const auto dim_info,
-      ComputeLinear1dDimInfo(builder, src_idx, out_width, in_width, calc_type));
-
-  const Linear1dGatherConfig gather_config = GetLinear1dGatherConfig(input);
-
-  const auto left_gathered = Gather(
-      input, dim_info.left_indices, gather_config.gather_dimension_numbers,
-      AsArrayRef<int64_t>(gather_config.slice_sizes),
-      /*indices_are_sorted=*/true);
-
-  const auto right_gathered = Gather(
-      input, dim_info.right_indices, gather_config.gather_dimension_numbers,
-      AsArrayRef<int64_t>(gather_config.slice_sizes),
-      /*indices_are_sorted=*/true);
-
-  const auto left_gathered_calc =
-      mlir::stablehlo::ConvertElementType(left_gathered, calc_type);
-  const auto right_gathered_calc =
-      mlir::stablehlo::ConvertElementType(right_gathered, calc_type);
-
-  const auto weight_broadcast_type =
-      mlir::RankedTensorType::get(AsArrayRef<int64_t>(output_shape), calc_type);
-  const auto left_weight_bcast =
-      BroadcastInDim(weight_broadcast_type, dim_info.left_weight, {2});
-  const auto right_weight_bcast =
-      BroadcastInDim(weight_broadcast_type, dim_info.right_weight, {2});
-
-  TT_ASSIGN_OR_RETURN(const auto left_term,
-                      BuildMulShlo(left_gathered_calc, left_weight_bcast));
-  TT_ASSIGN_OR_RETURN(const auto right_term,
-                      BuildMulShlo(right_gathered_calc, right_weight_bcast));
-
-  TT_ASSIGN_OR_RETURN(const auto interpolated,
-                      BuildAddShlo(left_term, right_term));
-
-  return mlir::stablehlo::ConvertElementType(interpolated, element_type);
-}
-
-absl::StatusOr<mlir::MlirOp> BuildUpsampleLinear1dBackwardShlo(
-    mlir::MlirOp grad_output, const Dimensions& grad_input_shape,
-    AlignCorners align_corners, std::optional<double> scales,
-    mlir::Type calc_type) {
-  mlir::MlirBuilder& builder = grad_output.getBuilder();
-  const Dimensions grad_output_shape =
-      CopyIntVector(GetTensorTypeOrDie(grad_output).getShape());
-
-  const int64_t in_width = grad_input_shape[2];
-  const int64_t out_width = grad_output_shape[2];
-  if (in_width == out_width) {
-    return grad_output;
-  }
-  const auto element_type = GetTensorTypeOrDie(grad_output).getElementType();
-
-  TT_ASSIGN_OR_RETURN(
-      const auto src_idx,
-      ComputeLinear1dSourceIndex(builder, out_width, in_width, scales,
-                                 align_corners, calc_type));
-
-  TT_ASSIGN_OR_RETURN(
-      const auto dim_info,
-      ComputeLinear1dDimInfo(builder, src_idx, out_width, in_width, calc_type));
-
-  const auto grad_output_calc =
-      mlir::stablehlo::ConvertElementType(grad_output, calc_type);
-
-  const auto weight_broadcast_type = mlir::RankedTensorType::get(
-      AsArrayRef<int64_t>(grad_output_shape), calc_type);
-  const auto left_weight_bcast =
-      BroadcastInDim(weight_broadcast_type, dim_info.left_weight, {2});
-  const auto right_weight_bcast =
-      BroadcastInDim(weight_broadcast_type, dim_info.right_weight, {2});
-
-  TT_ASSIGN_OR_RETURN(const auto left_update,
-                      BuildMulShlo(grad_output_calc, left_weight_bcast));
-  TT_ASSIGN_OR_RETURN(const auto right_update,
-                      BuildMulShlo(grad_output_calc, right_weight_bcast));
-
-  const auto grad_input_zeros = MakeConstant(
-      builder, 0.0, calc_type, AsArrayRef<int64_t>(grad_input_shape));
-
-  const auto scatter_dnums = GetLinear1dScatterConfig(grad_output);
-  const auto scatter_body = [calc_type](mlir::RegionBuilder& rb) {
-    mlir::stablehlo::buildReduceBody<mlir::stablehlo::AddOp>(
-        calc_type, rb.getRegion(), rb.getOpBuilder());
+  auto build_term = [col_indices, zeros, index_mat_type, weight_mat_type](
+                        mlir::MlirOp index_vec,
+                        mlir::MlirOp weight_vec) mutable {
+    mlir::MlirOp index_mat =
+        mlir::stablehlo::BroadcastInDim(index_mat_type, index_vec, {0});
+    mlir::MlirOp weight_mat =
+        mlir::stablehlo::BroadcastInDim(weight_mat_type, weight_vec, {0});
+    mlir::MlirOp is_tap = mlir::stablehlo::Compare(
+        col_indices, index_mat, mlir::stablehlo::ComparisonDirection::EQ);
+    return mlir::stablehlo::Select(is_tap, weight_mat, zeros);
   };
 
-  const auto grad_input_left =
-      Scatter(grad_input_zeros, dim_info.left_indices, left_update,
-              scatter_body, scatter_dnums, /*indices_are_sorted=*/true);
-  const auto grad_input_accum =
-      Scatter(grad_input_left, dim_info.right_indices, right_update,
-              scatter_body, scatter_dnums, /*indices_are_sorted=*/true);
+  mlir::MlirOp term0 = build_term(index0, lambda0);
+  mlir::MlirOp term1 = build_term(index1, lambda1);
+  return mlir::stablehlo::Add(term0, term1);
+}
 
-  return mlir::stablehlo::ConvertElementType(grad_input_accum, element_type);
+// Builds the 1D linear interpolation (or its adjoint when `direction` is
+// `UpsampleDirection::kBackward`) of 3D NCW `operand`. `in_w` and `out_w` are
+// always the forward input and output spatial sizes.
+absl::StatusOr<mlir::MlirOp> BuildLinear1d(
+    mlir::MlirOp operand, const int64_t in_w, const int64_t out_w,
+    const AlignCorners align_corners, const std::optional<double> scale,
+    const mlir::stablehlo::Precision precision,
+    const UpsampleDirection direction) {
+  ABSL_DCHECK_EQ(GetTensorTypeOrDie(operand).getRank(), 3);
+  if (in_w == out_w) {
+    return operand;
+  }
+
+  mlir::MlirBuilder& builder = operand.getBuilder();
+  const mlir::Type elem_type = GetTensorTypeOrDie(operand).getElementType();
+  // Matches ATen's `at::opmath_type<scalar_t>` (`ATen/OpMathType.h`) and
+  // `UpSampleKernel.cpp`, which promote narrow floating-point types (f16,
+  // bf16, f8) to f32 (and keep f64 as f64) for intermediate interpolation and
+  // backward gradient accumulation.
+  const mlir::Type calc_type = elem_type.isF64()
+                                   ? builder.getOpBuilder().getF64Type()
+                                   : builder.getOpBuilder().getF32Type();
+  mlir::MlirOp operand_calc =
+      elem_type == calc_type
+          ? operand
+          : mlir::stablehlo::ConvertElementType(operand, calc_type);
+
+  mlir::MlirOp matrix = BuildLinear1dInterpolationMatrix(
+      builder, in_w, out_w, align_corners, scale, calc_type);
+  const c10::string_view equation =
+      direction == UpsampleDirection::kBackward ? "nco,ow->ncw" : "ncw,ow->nco";
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp result,
+      BuildEinsumShlo({operand_calc, matrix}, equation, precision));
+
+  return elem_type == calc_type
+             ? result
+             : mlir::stablehlo::ConvertElementType(result, elem_type);
 }
 
 void CheckUpsampleLinear1dDtypes(const at::Tensor& tensor) {
@@ -403,6 +262,8 @@ void ValidateUpsampleLinear1dBackwardInputs(const at::Tensor& grad_output,
 
 }  // namespace
 
+// Lowers 1D linear interpolation as a matrix contraction along W:
+// Y = X * A_w^T.
 at::Tensor& AtenUpsampleLinear1dOut(const at::Tensor& self,
                                     at::IntArrayRef output_size,
                                     bool align_corners,
@@ -424,21 +285,20 @@ at::Tensor& AtenUpsampleLinear1dOut(const at::Tensor& self,
 
         TT_ASSIGN_OR_THROW(const auto element_type,
                            ConvertTo<mlir::ElementType>(self.scalar_type()));
-        const at::ScalarType real_dtype =
-            c10::toRealValueType(self.scalar_type());
+        const mlir::stablehlo::Precision precision =
+            GetAndAddPrecisionWithDefaultTo(
+                param_keys,
+                mlir::stablehlo::Precision::
+                    HIGHEST);  // EXPLICIT_PRECISION_OK=linear
 
+        const AlignCorners align =
+            align_corners ? AlignCorners::kYes : AlignCorners::kNo;
         const auto op_builder =
-            [out_shape = CopyIntVector(out.sizes()),
-             align_corners =
-                 align_corners ? AlignCorners::kYes : AlignCorners::kNo,
-             scales,
-             real_dtype](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
-          const mlir::Type calc_type =
-              (real_dtype == at::kDouble)
-                  ? input.getBuilder().getOpBuilder().getF64Type()
-                  : input.getBuilder().getOpBuilder().getF32Type();
-          return BuildUpsampleLinear1dShlo(input, out_shape, align_corners,
-                                           scales, calc_type);
+            [in_w = self.size(kLinearWidthDim),
+             out_w = out.size(kLinearWidthDim), align, scales,
+             precision](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
+          return BuildLinear1d(input, in_w, out_w, align, scales, precision,
+                               UpsampleDirection::kForward);
         };
 
         TT_THROW_IF_ERROR(
@@ -450,6 +310,8 @@ at::Tensor& AtenUpsampleLinear1dOut(const at::Tensor& self,
       });
 }
 
+// Lowers 1D linear interpolation backward as the adjoint matrix contraction
+// along W: dX = dY * A_w.
 at::Tensor& AtenUpsampleLinear1dBackwardGradInput(const at::Tensor& grad_output,
                                                   at::IntArrayRef output_size,
                                                   at::IntArrayRef input_size,
@@ -475,21 +337,20 @@ at::Tensor& AtenUpsampleLinear1dBackwardGradInput(const at::Tensor& grad_output,
         TT_ASSIGN_OR_THROW(
             const auto element_type,
             ConvertTo<mlir::ElementType>(grad_input.scalar_type()));
-        const at::ScalarType real_dtype =
-            c10::toRealValueType(grad_input.scalar_type());
+        const mlir::stablehlo::Precision precision =
+            GetAndAddPrecisionWithDefaultTo(
+                param_keys,
+                mlir::stablehlo::Precision::
+                    HIGHEST);  // EXPLICIT_PRECISION_OK=linear
 
+        const AlignCorners align =
+            align_corners ? AlignCorners::kYes : AlignCorners::kNo;
         const auto op_builder =
-            [grad_in_shape = CopyIntVector(grad_input.sizes()),
-             align_corners =
-                 align_corners ? AlignCorners::kYes : AlignCorners::kNo,
-             scales, real_dtype](
-                mlir::MlirOp grad_out) -> absl::StatusOr<mlir::MlirOp> {
-          const mlir::Type calc_type =
-              (real_dtype == at::kDouble)
-                  ? grad_out.getBuilder().getOpBuilder().getF64Type()
-                  : grad_out.getBuilder().getOpBuilder().getF32Type();
-          return BuildUpsampleLinear1dBackwardShlo(
-              grad_out, grad_in_shape, align_corners, scales, calc_type);
+            [in_w = grad_input.size(kLinearWidthDim),
+             out_w = grad_output.size(kLinearWidthDim), align, scales,
+             precision](mlir::MlirOp grad_out) -> absl::StatusOr<mlir::MlirOp> {
+          return BuildLinear1d(grad_out, in_w, out_w, align, scales, precision,
+                               UpsampleDirection::kBackward);
         };
 
         TT_THROW_IF_ERROR(
