@@ -353,7 +353,7 @@ jobs:
     env:
       PYTHON_VERSION: ${{ matrix.python_version }}
       BAZEL_CONFIG: ${{ matrix.tpu.bazel_config }}
-      TORCH_VERSION: "2.14.0"
+      TORCH_VERSION: "2.15.0"
     steps:
       - name: Checkout TorchTPU
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1

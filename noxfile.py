@@ -37,45 +37,35 @@ nox.options.sessions = ["lint"]
 os.environ.setdefault("UV_HTTP_RETRIES", "10")
 os.environ.setdefault("UV_HTTP_TIMEOUT", "120")
 
-# The indexes that may satisfy the `torch` dependency for each variant. The
-# `cpu` and `cuda` variants include PyTorch's RC test channels so release
-# candidates in WHEEL_TORCH_VERSIONS resolve alongside final releases. The
-# `local` variant installs no torch from an index at all: it uses the torch
-# wheel file in dist/local/ that the torch_tpu wheel was built against
-# (--config=local_torch builds).
-# TODO(b/571958437): The `/whl/test/cpu` and `/whl/test/cu130` entries (and the
-# multi-index `/whl/test/` handling in `_torch_index_args` below) are only
-# needed while PyTorch 2.15.0 is a release candidate. Remove them once PyTorch
-# 2.15.0 final is published to PyPI and `download.pytorch.org/whl/cpu`.
-_TORCH_INDEXES: Final[Mapping[str, Sequence[str]]] = {
-    "cpu": (
-        "https://download.pytorch.org/whl/cpu",
-        "https://download.pytorch.org/whl/test/cpu",  # TODO(b/571958437): Remove after 2.15.0 GA.
-    ),
-    "cuda": (
-        "https://download.pytorch.org/whl/test/cu130",  # TODO(b/571958437): Remove after 2.15.0 GA.
-    ),
-    "local": (),
-    "nightly": ("https://download.pytorch.org/whl/nightly/cpu",),
-    "nightly-pinned": ("https://download.pytorch.org/whl/nightly/cpu",),
+# The extra index URL (if any) that satisfies the `torch` dependency for each
+# variant. `cuda` resolves directly from PyPI, and `local` installs no torch
+# from an index at all: it uses the torch wheel file in dist/local/ that the
+# torch_tpu wheel was built against (--config=local_torch builds).
+_EXTRA_TORCH_PYPI_INDEXES: Final[Mapping[str, str | None]] = {
+    "cpu": "https://download.pytorch.org/whl/cpu",
+    "cuda": None,
+    "local": None,
+    "nightly": "https://download.pytorch.org/whl/nightly/cpu",
+    "nightly-pinned": "https://download.pytorch.org/whl/nightly/cpu",
 }
 
 
 def _torch_index_args(variant: str) -> Sequence[str]:
   """Return the `uv pip install` index arguments for a torch variant."""
-  indexes = _TORCH_INDEXES[variant]
-  if not indexes:
+  index = _EXTRA_TORCH_PYPI_INDEXES[variant]
+  if index is None:
     return ()
-  args: list[str] = []
-  for index in indexes:
-    args += ["--extra-index-url", index]
-  # --index-strategy unsafe-best-match lets the "+cpu" local build, RC test
-  # build, or newer nightly prerelease resolve across the PyTorch extra indexes
-  # while PyPI stays the primary index for non-torch runtime and PEP 517
-  # build-system dependencies (the PyTorch indexes carry setuptools>=78
-  # alongside an outdated packaging<24.2, which breaks source builds on 3.14t).
-  args += ["--index-strategy", "unsafe-best-match"]
-  return args
+  # --index-strategy unsafe-best-match lets the "+cpu" local build or newer
+  # nightly prerelease resolve from the PyTorch extra index while PyPI stays the
+  # primary index for non-torch runtime and PEP 517 build-system dependencies
+  # (the PyTorch indexes carry setuptools>=78 alongside an outdated
+  # packaging<24.2, which breaks source builds on 3.14t).
+  return (
+      "--extra-index-url",
+      index,
+      "--index-strategy",
+      "unsafe-best-match",
+  )
 
 
 # The lock the wheel's nightly glue is built against (see MODULE.bazel's
@@ -291,7 +281,8 @@ def smoke_test(session: nox.Session, device: str, torch_variant: str) -> None:
   Args:
     session: the nox session the checks run in.
     device: the accelerator the smoke test targets (`cpu` or `tpu`).
-    torch_variant: the torch build to install, a `_TORCH_INDEXES` key.
+    torch_variant: the torch build to install, a `_EXTRA_TORCH_PYPI_INDEXES`
+      key.
   """
   install_args: list[str] = list(_torch_index_args(torch_variant))
   if torch_variant == "local":
