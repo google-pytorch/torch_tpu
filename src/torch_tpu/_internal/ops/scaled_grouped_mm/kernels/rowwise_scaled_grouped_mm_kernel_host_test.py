@@ -377,7 +377,7 @@ class InterpretNumericsTest(seed_test_utils.RepeatableTest):
         tile_m=tile_m,
         tile_k=tile_k,
         tile_n=tile_n,
-        interpret=True,
+        interpret=pltpu.InterpretParams(),
     )
     np.testing.assert_array_equal(
         np.asarray(out),
@@ -408,7 +408,7 @@ class InterpretNumericsTest(seed_test_utils.RepeatableTest):
         tile_m=tile_m,
         tile_k=tile_k,
         tile_n=tile_n,
-        interpret=True,
+        interpret=pltpu.InterpretParams(),
     )
     self.assertEqual(out.shape, (num_rows, n))
     np.testing.assert_array_equal(
