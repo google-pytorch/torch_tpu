@@ -75,7 +75,7 @@ def get_wheel_dependencies(wheel_path, pyproject_path, is_local_torch):
   return expected_deps, actual_deps
 
 
-class WheelSingleSourceTest(absltest.TestCase):  # ABSLTEST_OK=Wheel test
+class WheelSingleSourceTest(absltest.TestCase):
 
   def test_single_metadata_file_in_wheel(self):
     metadata_files = get_wheel_metadata_files(os.environ["WHEEL_PATH"])

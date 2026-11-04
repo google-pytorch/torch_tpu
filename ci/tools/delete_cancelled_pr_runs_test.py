@@ -140,9 +140,7 @@ class _FakeGh:
     )
 
 
-class DeleteCancelledPrRunsTest(
-    unittest.TestCase  # UNITTEST_OK=CI utility script test without torch_tpu dependencies
-):
+class DeleteCancelledPrRunsTest(unittest.TestCase):
   """Validates workflow run cleanup for closed pull requests."""
 
   def setUp(self):

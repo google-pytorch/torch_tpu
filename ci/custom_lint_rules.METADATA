@@ -1202,6 +1202,7 @@ presubmit {
 # Checks for BUILD, BUILD.bazel and .bzl files.
 presubmit {
   path_regexp: "torch_tpu/.*(BUILD|BUILD\\.bazel|\\.bzl)"
+  path_expression_exclusion: "torch_tpu/oss/ci/..."
 
   # Prevent new uses of notest_oss.
   check_contents {
@@ -1481,6 +1482,7 @@ presubmit {
   path_expression: "....py"
   path_expression_exclusion: "torch_tpu/examples/..."
   path_expression_exclusion: "torch_tpu/google/prototypes/..."
+  path_expression_exclusion: "torch_tpu/oss/ci/..."
   check_contents {
     base {
       id: "CheckRelativeImports"
@@ -1506,6 +1508,7 @@ presubmit {
   # go/keep-sorted start
   path_expression_exclusion: "torch_tpu/_internal/performance/micro/..."
   path_expression_exclusion: "torch_tpu/google/..."
+  path_expression_exclusion: "torch_tpu/oss/ci/..."
   path_regexp_exclusion: ".*benchmark.*"
   path_regexp_exclusion: ".*example.*"
   path_regexp_exclusion: ".*test.*"
@@ -1595,6 +1598,7 @@ presubmit {
   # go/keep-sorted end
   path_expression_exclusion: "torch_tpu/examples/..."
   path_expression_exclusion: "torch_tpu/google/prototypes/..."
+  path_expression_exclusion: "torch_tpu/oss/ci/..."
   check_contents {
     base {
       id: "CheckPythonLogging"

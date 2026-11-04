@@ -29,9 +29,7 @@ if str(_REPO_ROOT) not in sys.path:
 from ci.tools import check_directory_layout
 
 
-class CheckDirectoryLayoutTest(
-    unittest.TestCase  # UNITTEST_OK=CI utility script test without torch_tpu dependencies
-):
+class CheckDirectoryLayoutTest(unittest.TestCase):
 
   def setUp(self):
     super().setUp()
