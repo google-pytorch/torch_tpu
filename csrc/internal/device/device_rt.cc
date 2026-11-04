@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "ATen/core/Generator.h"
+#include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/statusor.h"
 #include "absl/time/time.h"
@@ -128,15 +129,21 @@ PyTpuEventBase PyRecordEvent(std::optional<int> device_index,
   return PyTpuEventBase(std::move(event_snapshot));
 }
 
+// Returns the type name of the given Python object.
+const char* GetPyTypeName(py::handle h) {
+  return h.is_none() ? "None" : Py_TYPE(h.ptr())->tp_name;
+};
+
 // Returns the milliseconds from the completion of `start` to the completion of
 // `end`. torch.Event.elapsed_time() only accepts an end event of the exact type
 // torch.Event, so its subclasses reach the timing of the two events here.
 double PyEventElapsedTime(py::handle start, py::handle end) {
-  TT_CHECK_THROW(THPEvent_Check(start.ptr()) && THPEvent_Check(end.ptr()),
-                 error::kInvalidArgument)
-      << "expected start and end to be torch.Event objects, got "
-      << Py_TYPE(start.ptr())->tp_name << " and "
-      << Py_TYPE(end.ptr())->tp_name;
+  ABSL_CHECK(THPEvent_Check(start.ptr()))  // CRASH_OK
+      << "expected start to be a torch.Event object";
+
+  TT_CHECK_THROW(THPEvent_Check(end.ptr()), error::kInvalidArgument)
+      << "expected other to be a torch.Event object, got "
+      << GetPyTypeName(end);
   THPEvent* start_event = reinterpret_cast<THPEvent*>(start.ptr());
   THPEvent* end_event = reinterpret_cast<THPEvent*>(end.ptr());
   return start_event->event.elapsedTime(end_event->event);

@@ -65,6 +65,7 @@ pybind_extension(
     wrap_py_init = True,
     deps = [
         "@com_google_absl//absl/log:absl_log",
+        "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/time",
