@@ -28,6 +28,7 @@ import torch._dynamo.backends.registry as backend_registry
 from torch.fx.experimental.proxy_tensor import make_fx
 from torch_tpu import _loader
 from torch_tpu._internal import execution_mode
+from torch_tpu._internal import export as torch_tpu_export
 from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.compile import _backend
 from torch_tpu._internal.compile import compiler
@@ -1735,6 +1736,112 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
         comp(gm, [x, y], donated_inputs=[0] if donated_first else [])
         self.assertEqual(torch.tpu._get_cache_hits(), initial_hits + 1)
 
+  def test_static_compiler_writes_back_input_mutation(self):
+    def step(buf, x):
+      buf.add_(x)
+      return (x * 2,)
+
+    buf = torch.zeros(4, device=self.device)
+    x = torch.arange(4, dtype=torch.float32, device=self.device)
+    gm = make_fx(step)(buf.clone(), x)
+    compiled_executable = StaticCompiler()(gm, [buf, x])
+
+    # Each call adds x to buf again, like eager.
+    for calls in (1, 2):
+      (res,) = compiled_executable(buf, x)
+      utils.assert_close(res.cpu(), x.cpu() * 2)
+      utils.assert_close(buf.cpu(), x.cpu() * calls)
+
+  def test_static_compiler_writes_back_input_mutation_through_view(self):
+    def step(buf, x):
+      buf[1].add_(x)
+      buf.t()[0].mul_(2)
+      return (x + 1,)
+
+    buf = torch.ones(3, 4, device=self.device)
+    x = torch.arange(4, dtype=torch.float32, device=self.device)
+    expected = buf.cpu().clone()
+    step(expected, x.cpu())
+    gm = make_fx(step)(buf.clone(), x)
+    compiled_executable = StaticCompiler()(gm, [buf, x])
+
+    (res,) = compiled_executable(buf, x)
+    utils.assert_close(res.cpu(), x.cpu() + 1)
+    utils.assert_close(buf.cpu(), expected)
+
+  def test_static_compiler_writes_back_returned_input_mutation_once(self):
+    def step(buf, x):
+      return (buf.add_(x),)
+
+    buf = torch.zeros(4, device=self.device)
+    x = torch.ones(4, device=self.device)
+    gm = make_fx(step)(buf.clone(), x)
+
+    # The new value is one output, both returned and written back.
+    exported = torch_tpu_export.fx_to_mlir(
+        gm,
+        [tpu_torch_compile.placeholder_like(t) for t in (buf, x)],
+        write_back_mutated_inputs=True,
+    )
+    self.assertLen(exported.mlir_result_tensors, 1)
+
+    (res,) = StaticCompiler()(gm, [buf, x])(buf, x)
+    utils.assert_close(res.cpu(), x.cpu())
+    utils.assert_close(buf.cpu(), x.cpu())
+
+  def test_static_compiler_donated_input_mutation_is_written_back(self):
+    def step(buf, x):
+      buf.mul_(x)
+      return (x.sum(),)
+
+    buf = torch.full((8, 128), 3.0, device=self.device)
+    x = torch.full((8, 128), 2.0, device=self.device)
+    gm = make_fx(step)(buf.clone(), x)
+    debug = TpuCompileDebug()
+    compiled_executable = StaticCompiler(debug=debug)(
+        gm, [buf, x], donated_inputs=[0]
+    )
+
+    self.assertIn('jax.buffer_donor = true', debug.stablehlo_forward_text[0])
+    compiled_executable(buf, x)
+    utils.assert_close(buf.cpu(), torch.full((8, 128), 6.0))
+
+  def test_static_compiler_warns_on_input_mutation_with_dynamic_shapes(self):
+    def step(buf, x):
+      buf.mul_(x)
+      return (x.sum(),)
+
+    buf = torch.full((8, 128), 3.0, device=self.device)
+    x = torch.full((8, 128), 2.0, device=self.device)
+    gm = make_fx(step)(buf.clone(), x)
+
+    # Write-back is not supported with bounds yet: warn, keep the old output.
+    with self.assertLogs(level='WARNING') as logs:
+      compiled_executable = StaticCompiler(use_stablehlo_bounds=True)(
+          gm, [buf, x]
+      )
+    self.assertIn('write-back is not supported', '\n'.join(logs.output))
+    compiled_executable(buf, x)
+    utils.assert_close(buf.cpu(), torch.full((8, 128), 3.0))
+
+  def test_fx_to_mlir_without_input_mutation_is_unchanged(self):
+    def step(w, x):
+      return (x @ w, w.sum())
+
+    w = torch.randn(4, 4, device=self.device)
+    x = torch.randn(2, 4, device=self.device)
+    gm = make_fx(step)(w, x)
+
+    texts = []
+    for write_back in (False, True):
+      exported = torch_tpu_export.fx_to_mlir(
+          gm,
+          [tpu_torch_compile.placeholder_like(t) for t in (w, x)],
+          write_back_mutated_inputs=write_back,
+      )
+      texts.append(exported.serialize_text())
+    self.assertEqual(texts[0], texts[1])
+
   def test_static_compiler_auto_buffer_donation_with_mutable_custom_op(self):
     @torch.library.custom_op(
         'custom_tpu_test::table_update', mutates_args={'table'}
@@ -1855,13 +1962,8 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
     utils.assert_close(res[0].cpu(), expected_table)
     utils.assert_close(res[1].cpu(), expected_computed)
 
-    # Donated input 0 should be consumed
-    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=verify buffer donation
-        RuntimeError,
-        r'to_copy\(\): cannot start a device to host copy from a donated or'
-        r' deleted buffer',
-    ):
-      table.cpu()
+    # The donated input holds the value the graph wrote to it.
+    utils.assert_close(table.cpu(), expected_table)
 
     # Immutable inputs 1 and 2 must remain valid and un-donated
     utils.assert_close(pure_x.cpu(), pure_x_cpu)
@@ -1923,19 +2025,9 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
     utils.assert_close(res[0].cpu(), expected_t1)
     utils.assert_close(res[1].cpu(), expected_t2)
 
-    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=verify buffer donation
-        RuntimeError,
-        r'to_copy\(\): cannot start a device to host copy from a donated or'
-        r' deleted buffer',
-    ):
-      t1.cpu()
-
-    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=verify buffer donation
-        RuntimeError,
-        r'to_copy\(\): cannot start a device to host copy from a donated or'
-        r' deleted buffer',
-    ):
-      t2.cpu()
+    # The donated inputs hold the values the graph wrote to them.
+    utils.assert_close(t1.cpu(), expected_t1)
+    utils.assert_close(t2.cpu(), expected_t2)
 
   def test_static_compiler_custom_op_with_multiple_mutated_args(self):
     """Verifies custom ops with multiple mutated arguments (e.g.
@@ -2134,12 +2226,8 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
     res = async_artifact(table, grad)
     utils.assert_close(res.cpu(), expected)
 
-    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=verify buffer donation
-        RuntimeError,
-        r'to_copy\(\): cannot start a device to host copy from a donated or'
-        r' deleted buffer',
-    ):
-      table.cpu()
+    # The donated input holds the value the graph wrote to it.
+    utils.assert_close(table.cpu(), expected)
 
   def test_executable_layouts(self):
     with eager_mode_compile_fx_graph():
