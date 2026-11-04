@@ -274,6 +274,11 @@ A constructive review process relies on mutual respect for time and attention.
     [link to the relevant GitHub issue](https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/linking-a-pull-request-to-an-issue).
 *   **Shepherd your change**: Keep an eye on CI checks, address reviewer notes,
     and let us know if you get blocked or need to step away.
+*   **Let us assign owners and reviewers**: Please don't assign or request
+    specific people as assignees or reviewers of your issues and PRs unless you
+    have arranged this with them beforehand. A Google oncaller triages new
+    issues and PRs and assigns them to the people with the best matching
+    expertise, while balancing the load across the team.
 
 ## Reporting Security Vulnerabilities
 
