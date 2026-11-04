@@ -21,16 +21,21 @@
 #include <optional>
 #include <string_view>
 
+#include "absl/base/nullability.h"
 #include "absl/log/absl_check.h"
 #include "csrc/internal/mosaic/kiln/core/context.h"
 #include "csrc/internal/mosaic/kiln/core/index_arg.h"
 #include "csrc/internal/mosaic/kiln/core/scalar.h"
 #include "csrc/internal/mosaic/kiln/core/shape.h"
+#include "csrc/internal/mosaic/kiln/core/specs.h"
+#include "csrc/internal/mosaic/op_builders.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/Support/Casting.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/Types.h"
 #include "mlir/IR/Value.h"
 
 namespace torch_tpu::kiln::internal {
@@ -62,6 +67,19 @@ void ValidateConstantBound(const llvm::APInt& val, Signedness signedness,
 
 mlir::VectorType ToMlirVectorType(const Shape& shape) {
   return mlir::VectorType::get(shape.dims(), ToMlirType(shape.dtype()));
+}
+
+mlir::MemRefType ToMlirMemRefType(const Shape& shape, MemorySpace space,
+                                  mlir::MLIRContext* absl_nonnull ctx) {
+  mlir::Type elem_type = ToMlirType(shape.dtype(), ctx);
+  switch (space) {
+    case MemorySpace::kVmem:
+      return GetVmemMemRefType(ctx, shape.dims(), elem_type);
+    case MemorySpace::kSmem:
+      return GetSmemMemRefType(ctx, shape.dims(), elem_type);
+    case MemorySpace::kHbm:
+      return GetHbmMemRefType(ctx, shape.dims(), elem_type);
+  }
 }
 
 void ValidateI32IndexArg(const IndexArg& arg, IndexBounds bounds,

@@ -20,12 +20,15 @@
 #include <optional>
 #include <string_view>
 
+#include "absl/base/nullability.h"
 #include "csrc/internal/mosaic/kiln/core/context.h"
 #include "csrc/internal/mosaic/kiln/core/index_arg.h"
 #include "csrc/internal/mosaic/kiln/core/scalar.h"
 #include "csrc/internal/mosaic/kiln/core/shape.h"
+#include "csrc/internal/mosaic/kiln/core/specs.h"
 #include "llvm/Support/Casting.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Value.h"
 
 namespace torch_tpu::kiln::internal {
@@ -37,6 +40,10 @@ inline mlir::MemRefType MemRefTypeOf(const T& val) {
 
 // Get the mlir::VectorType corresponding to the given Shape.
 mlir::VectorType ToMlirVectorType(const Shape& shape);
+
+// Get the mlir::MemRefType corresponding to the given Shape and MemorySpace.
+mlir::MemRefType ToMlirMemRefType(const Shape& shape, MemorySpace space,
+                                  mlir::MLIRContext* absl_nonnull ctx);
 
 enum class IndexBounds {
   kNonNegative,

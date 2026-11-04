@@ -60,7 +60,7 @@ csrc/internal/device/device_rt.cc: {remaining: 5, total: 8, infeasible: 1}
 csrc/internal/dynamism/dynamism.cc: {remaining: 0, total: 1, infeasible: 0}
 csrc/internal/dynamism/dynamism_ops.cc: {remaining: 9, total: 10, infeasible: 0}
 csrc/internal/dynamism/dynamism_py.cc: {remaining: 2, total: 2, infeasible: 0}
-csrc/internal/mosaic/kiln/core/kernel.cc: {remaining: 8, total: 8, infeasible: 0}
+csrc/internal/mosaic/kiln/core/kernel.cc: {remaining: 7, total: 7, infeasible: 0}
 csrc/internal/mosaic/kiln/mlir/stablehlo_splice.cc: {remaining: 10, total: 11, infeasible: 1}
 csrc/internal/profiler/profiler_api.cc: {remaining: 5, total: 5, infeasible: 0}
 csrc/internal/profiler/tpu_profiler_plugin.cc: {remaining: 6, total: 6, infeasible: 0}
