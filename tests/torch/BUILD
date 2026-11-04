@@ -660,11 +660,6 @@ torch_tpu_torch_test(
 )
 
 torch_tpu_torch_test(
-    name = "profiler_trace_validator_test",
-    torch_test_module = "profiler/test_trace_validator",
-)
-
-torch_tpu_torch_test(
     name = "python_native_tensor_utils_test",
     notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "python_native/test_tensor_utils",

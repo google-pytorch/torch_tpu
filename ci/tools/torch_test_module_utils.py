@@ -177,6 +177,7 @@ _ACCELERATOR_SPECIFIC_TEST_MODULES: Final[frozenset[str]] = frozenset({
     "nn/attention/test_fa3",
     "nn/attention/test_fa4",
     "profiler/test_kineto",
+    "profiler/test_trace_validator",
     "python_native/test_rmsnorm_cutedsl",
     "test_cuda",
     "test_flop_counter",

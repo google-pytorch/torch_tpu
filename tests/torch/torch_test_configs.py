@@ -319,11 +319,6 @@ TEST_EXCLUSIONS: Final[
             "test_python_export_plain_json",
         ],
     },
-    "profiler/test_trace_validator": {
-        "TestTraceValidatorE2EAgnosticDevice": [
-            "test_backward_seq_id_uniqueness",
-        ],
-    },
     "quantization/core/experimental/test_bits": {
         "TestBits": [
             "test_cat",
