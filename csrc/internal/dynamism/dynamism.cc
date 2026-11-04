@@ -27,6 +27,7 @@
 #include "csrc/common/shape.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/eager_mode.h"
+#include "csrc/eager/graph_capture_state.h"
 #include "csrc/eager/materialize.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
@@ -45,9 +46,11 @@ absl::StatusOr<at::Tensor> MarkDynamic(const at::Tensor& tensor,
   TT_ASSIGN_OR_RETURN(DeviceBufferRef buffer_ref, GetBuffer(tensor));
 
   // Ensure the buffer has already been traversed before mutating its dynamic
-  // dimensions for subsequent consumers.
+  // dimensions for subsequent consumers. Nothing is materialized while the
+  // current thread captures a graph.
   if (!buffer_ref.is_placeholder() &&
-      GetEagerMode() != EagerMode::kInternalCompileFxGraph) {
+      GetEagerMode() != EagerMode::kInternalCompileFxGraph &&
+      !IsCurrentThreadCapturingGraph()) {
     TT_RETURN_IF_ERROR(
         Materialize(buffer_ref, MaterializationReason::kExplicitSync));
     TT_RETURN_IF_ERROR(buffer_ref.GetMaterializationFuture().Await());
@@ -89,7 +92,8 @@ absl::StatusOr<absl::Span<const BoundedDynamicDimension>> GetDynamismInfo(
   // If a constant is dynamic, it will already have been materialized
   // (see MarkDynamic above).
   if (!buffer_ref.is_placeholder() && !buffer_ref.is_constant() &&
-      GetEagerMode() != EagerMode::kInternalCompileFxGraph) {
+      GetEagerMode() != EagerMode::kInternalCompileFxGraph &&
+      !IsCurrentThreadCapturingGraph()) {
     TT_RETURN_IF_ERROR(
         Materialize(buffer_ref, MaterializationReason::kExplicitSync));
     TT_RETURN_IF_ERROR(buffer_ref.GetMaterializationFuture().Await());
