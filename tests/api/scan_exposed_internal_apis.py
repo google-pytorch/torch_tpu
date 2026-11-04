@@ -171,6 +171,10 @@ _INTERNAL_IMPLEMENTATION_ENV_VARS: frozenset[str] = frozenset({
     "TPU_VISIBLE_CHIPS",
 })
 
+# Cell magics whose body is shell, not Python. Jupytext generates them from
+# fenced `bash` and `sh` code blocks.
+_SHELL_CELL_MAGICS: frozenset[str] = frozenset({"%%bash", "%%sh", "%%shell"})
+
 
 def _is_torch_tpu_name(name: str) -> bool:
   """Returns whether `name` names a TorchTPU module or one of its members."""
@@ -731,7 +735,11 @@ def scan_file(
         if not cell_text.strip():
           continue
 
-        if cell.get("cell_type") == "code":
+        first_token = cell_text.split(maxsplit=1)[0]
+        if (
+            cell.get("cell_type") == "code"
+            and first_token not in _SHELL_CELL_MAGICS
+        ):
           clean_lines = [
               line if not line.strip().startswith(("%", "!")) else f"# {line}"
               for line in cell_text.splitlines()

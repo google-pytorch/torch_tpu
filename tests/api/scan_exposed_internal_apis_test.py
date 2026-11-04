@@ -192,6 +192,34 @@ class ScanExposedInternalApisTest(absltest.TestCase):  # ABSLTEST_OK=tool test
     self.assertIn("torch_tpu._internal.env", visitor.internal_py)
     self.assertIn("TORCH_TPU_INTERNAL_DEBUG", visitor.internal_envs)
 
+  def test_scan_file_scans_shell_cells_as_text(self):
+    notebook = {
+        "cells": [
+            {
+                "cell_type": "code",
+                "source": [
+                    "%%bash\n",
+                    "export TORCH_TPU_INTERNAL_DEBUG=1\n",
+                    "python -m torch_tpu._internal.launcher\n",
+                ],
+            },
+        ]
+    }
+    temp_dir = self.create_tempdir().full_path
+    nb_path = os.path.join(temp_dir, "shell_nb.ipynb")
+    with open(nb_path, "w", encoding="utf-8") as f:
+      json.dump(notebook, f)
+
+    visitor = scan_exposed_internal_apis.InternalApiVisitor(
+        rel_path="docs/notebooks/shell_nb.ipynb",
+        py_stages={},
+        env_stages={"TORCH_TPU_INTERNAL_DEBUG": Stage.INTERNAL},
+    )
+    scan_exposed_internal_apis.scan_file(nb_path, visitor)
+
+    self.assertIn("torch_tpu._internal.launcher", visitor.internal_py)
+    self.assertIn("TORCH_TPU_INTERNAL_DEBUG", visitor.internal_envs)
+
   def test_format_exposed_internal_apis_yaml_structure(self):
     internal_py = [
         scan_exposed_internal_apis.InternalApiEntry(
