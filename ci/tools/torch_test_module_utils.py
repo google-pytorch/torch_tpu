@@ -182,6 +182,7 @@ _ACCELERATOR_SPECIFIC_TEST_MODULES: Final[frozenset[str]] = frozenset({
     "test_flop_counter",
     "test_functionalization_of_rng_ops",
     "test_fx",
+    "test_fx_experimental",
     "test_gpu_trace",
     "test_jit_fuser_te",
     "test_jit_llga_fuser",

@@ -76,11 +76,6 @@ torch_tpu_torch_test(
 )
 
 torch_tpu_torch_test(
-    name = "distributed_checkpoint__experimental_staging_test",
-    torch_test_module = "distributed/checkpoint/_experimental/test_staging",
-)
-
-torch_tpu_torch_test(
     name = "distributed_fsdp_distributed_checkpoint_test",
     torch_test_module = "distributed/fsdp/test_distributed_checkpoint",
 )
@@ -781,11 +776,6 @@ torch_tpu_torch_test(
     notap = "b/563402379",  # NOTAP_OK=torch tests
     shard_count = 4,
     torch_test_module = "test_foreach",
-)
-
-torch_tpu_torch_test(
-    name = "fx_experimental_test",
-    torch_test_module = "test_fx_experimental",
 )
 
 torch_tpu_torch_test(
