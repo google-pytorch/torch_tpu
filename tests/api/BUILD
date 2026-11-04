@@ -33,6 +33,12 @@ package(
     default_visibility = ["//:__subpackages__"],
 )
 
+# Read by //src/torch_tpu/oss/tools:scan_external_api_uses.
+exports_files(
+    ["tt_apis.yaml"],
+    visibility = ["//src/torch_tpu/oss/tools:__pkg__"],
+)
+
 # Everything that the wheel ships, so that scan_tt_apis can import all of its
 # public modules.
 torch_tpu_py_library(
