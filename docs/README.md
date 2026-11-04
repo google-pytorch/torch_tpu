@@ -46,9 +46,10 @@ mkdocs serve
 The documentation is built from the markdown sources located in the `docs/`
 directory. These files serve as the single source of truth for TorchTPU
 documentation and tutorials. Jupyter notebooks (`.ipynb`) are generated from
-these files through [Jupytext](https://github.com/mwouts/jupytext). After
-editing one of these sources, regenerate the notebooks from the root of the
-repository:
+these files through [Jupytext](https://github.com/mwouts/jupytext). Plain
+markdown content will be converted into markdown cells, and code blocks will be
+converted into executable code cells in the notebooks. After editing one of
+these sources, regenerate the notebooks from the root of the repository:
 
 ```bash
 tools/generate_doc_notebooks.py
