@@ -24,7 +24,6 @@
 #include <tuple>
 #include <utility>
 
-#include "ATen/OpMathType.h"
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
 #include "absl/status/statusor.h"
@@ -177,7 +176,7 @@ at::Tensor AtenVar(const at::Tensor& self, c10::OptionalArrayRef<int64_t> dim,
 
         TT_ASSIGN_OR_THROW(
             at::Tensor correction_tensor,
-            promoted_correction.GetTensor(at::toOpMathType(scalar_dtype)));
+            promoted_correction.GetTensor(InferComputationDtype(scalar_dtype)));
         TT_ASSIGN_OR_THROW(int64_t reduction_size,
                            GetReductionFactor(self, dim));
         double correction_val = promoted_correction.scalar().toDouble();
@@ -227,7 +226,7 @@ at::Tensor& AtenVarOut(const at::Tensor& self,
 
         TT_ASSIGN_OR_THROW(
             at::Tensor correction_tensor,
-            promoted_correction.GetTensor(at::toOpMathType(scalar_dtype)));
+            promoted_correction.GetTensor(InferComputationDtype(scalar_dtype)));
         TT_ASSIGN_OR_THROW(const int64_t reduction_size,
                            GetReductionFactor(self, dim));
         double correction_val = promoted_correction.scalar().toDouble();
@@ -289,7 +288,7 @@ std::tuple<at::Tensor, at::Tensor> AtenVarMeanCorrection(
 
         TT_ASSIGN_OR_THROW(
             const at::Tensor correction_tensor,
-            promoted_correction.GetTensor(at::toOpMathType(scalar_dtype)));
+            promoted_correction.GetTensor(InferComputationDtype(scalar_dtype)));
         TT_ASSIGN_OR_THROW(const int64_t reduction_size,
                            GetReductionFactor(self, dim));
         double correction_val = promoted_correction.scalar().toDouble();

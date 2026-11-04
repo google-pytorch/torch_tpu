@@ -18,9 +18,9 @@
 
 #include <cstdint>
 
-#include "ATen/OpMathType.h"
 #include "absl/status/statusor.h"
 #include "c10/core/ScalarType.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/ops/op_builder_utils.h"
@@ -42,14 +42,10 @@ namespace {
 
 absl::StatusOr<mlir::MlirOp> LogN(mlir::MlirOp input_op, int32_t n,
                                   mlir::ElementType default_dtype) {
-  at::ScalarType default_scalar_type = ConvertTo<at::ScalarType>(default_dtype);
-  // Similarly to CUDA, Half and BFloat16 inputs are promoted to to Float for
+  // Similarly to CUDA, Half and BFloat16 inputs are promoted to Float for
   // the actual mathematical computation.
-  at::ScalarType computation_scalar_type =
-      at::toOpMathType(default_scalar_type);
-
-  TT_ASSIGN_OR_RETURN(mlir::ElementType computation_type,
-                      ConvertTo<mlir::ElementType>(computation_scalar_type));
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType computation_type,
+                      InferComputationDtype(default_dtype));
 
   TT_ASSIGN_OR_RETURN(mlir::MlirOp computation_input_op,
                       ConvertIfInteger(input_op, computation_type));
@@ -204,14 +200,10 @@ absl::StatusOr<mlir::MlirOp> BuildLiftFreshShlo(mlir::MlirOp input_op) {
 
 absl::StatusOr<mlir::MlirOp> BuildLogShlo(mlir::MlirOp input_op,
                                           mlir::ElementType default_dtype) {
-  at::ScalarType default_scalar_type = ConvertTo<at::ScalarType>(default_dtype);
-  // Similarly to CUDA, Half and BFloat16 inputs are promoted to to Float for
+  // Similarly to CUDA, Half and BFloat16 inputs are promoted to Float for
   // the actual mathematical computation.
-  at::ScalarType computation_scalar_type =
-      at::toOpMathType(default_scalar_type);
-
-  TT_ASSIGN_OR_RETURN(mlir::ElementType computation_type,
-                      ConvertTo<mlir::ElementType>(computation_scalar_type));
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType computation_type,
+                      InferComputationDtype(default_dtype));
 
   TT_ASSIGN_OR_RETURN(mlir::MlirOp computation_input_op,
                       ConvertIfInteger(input_op, computation_type));
@@ -225,14 +217,10 @@ absl::StatusOr<mlir::MlirOp> BuildLogShlo(mlir::MlirOp input_op,
 
 absl::StatusOr<mlir::MlirOp> BuildLog1pShlo(mlir::MlirOp input_op,
                                             mlir::ElementType default_dtype) {
-  at::ScalarType default_scalar_type = ConvertTo<at::ScalarType>(default_dtype);
-  // Similarly to CUDA, Half and BFloat16 inputs are promoted to to Float for
+  // Similarly to CUDA, Half and BFloat16 inputs are promoted to Float for
   // the actual mathematical computation.
-  at::ScalarType computation_scalar_type =
-      at::toOpMathType(default_scalar_type);
-
-  TT_ASSIGN_OR_RETURN(mlir::ElementType computation_type,
-                      ConvertTo<mlir::ElementType>(computation_scalar_type));
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType computation_type,
+                      InferComputationDtype(default_dtype));
 
   TT_ASSIGN_OR_RETURN(mlir::MlirOp computation_input_op,
                       ConvertIfInteger(input_op, computation_type));
@@ -250,7 +238,7 @@ absl::StatusOr<mlir::MlirOp> BuildTanhShlo(mlir::MlirOp input_op,
   // Half and BFloat16 inputs are promoted to Float for the actual
   // mathematical computation.
   at::ScalarType computation_scalar_type =
-      at::toOpMathType(default_scalar_type);
+      InferComputationDtype(default_scalar_type);
 
   TT_ASSIGN_OR_RETURN(mlir::ElementType computation_type,
                       ConvertTo<mlir::ElementType>(computation_scalar_type));
