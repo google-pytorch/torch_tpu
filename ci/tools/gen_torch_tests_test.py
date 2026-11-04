@@ -23,6 +23,7 @@ import unittest
 from unittest import mock
 
 from ci.tools import gen_torch_tests
+from ci.tools import torch_test_module_utils
 
 _SAMPLE_BUILD_FILE_TEMPLATE: Final[str] = textwrap.dedent(f"""\
     # Copyright 2026 Google LLC
@@ -102,6 +103,27 @@ class GenTorchTestsTest(unittest.TestCase):  # UNITTEST_OK=testing tools
             torch_test_module = "test_binary_ufuncs",
         )""")
     self.assertEqual(target_def, expected)
+
+  def test_torch_test_target_internal_disabled_module(self):
+    with mock.patch.dict(
+        torch_test_module_utils.INTERNAL_DISABLED_TEST_MODULES,
+        {"dynamo/test_debug_utils": "Reason."},
+    ):
+      target_def = gen_torch_tests.torch_test_target("dynamo/test_debug_utils")
+    expected = textwrap.dedent("""\
+        torch_tpu_torch_test(
+            name = "dynamo_debug_utils_test",
+            notap = if_oss(None, "Reason."),  # NOTAP_OK=torch tests
+            torch_test_module = "dynamo/test_debug_utils",
+        )""")
+    self.assertEqual(target_def, expected)
+
+  def test_disabled_test_modules_are_disjoint(self):
+    self.assertEqual(
+        torch_test_module_utils.DISABLED_TEST_MODULES
+        & torch_test_module_utils.INTERNAL_DISABLED_TEST_MODULES.keys(),
+        set(),
+    )
 
   def test_build_file_path_default_with_bazel_workspace_directory(self):
     workspace_dir = self.test_root / "workspace"

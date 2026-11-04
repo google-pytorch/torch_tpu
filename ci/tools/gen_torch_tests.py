@@ -33,6 +33,7 @@ The script exits with 0 on success, and non-zero on failure.
 
 import argparse
 from collections.abc import Sequence
+import json
 import os
 import pathlib
 import re
@@ -99,11 +100,18 @@ def torch_test_target(test_module: str) -> str:
   *dirs, basename = test_module.split("/")
   name = "_".join([*dirs, basename.removeprefix("test_"), "test"])
 
-  notap = (
-      '    notap = "b/563402379",  # NOTAP_OK=torch tests\n'
-      if test_module in torch_test_module_utils.DISABLED_TEST_MODULES
-      else ""
-  )
+  notap = ""
+  if test_module in torch_test_module_utils.DISABLED_TEST_MODULES:
+    notap = '    notap = "b/563402379",  # NOTAP_OK=torch tests\n'
+  elif reason := torch_test_module_utils.INTERNAL_DISABLED_TEST_MODULES.get(
+      test_module
+  ):
+    # Disable the test in Google3 only, but keep running it in OSS.
+    # JSON string literals are valid Starlark string literals.
+    notap = (
+        f"    notap = if_oss(None, {json.dumps(reason)}),"
+        "  # NOTAP_OK=torch tests\n"
+    )
 
   num_shards = torch_test_module_utils.TEST_MODULE_SHARDS.get(test_module)
   shard_count = f"    shard_count = {num_shards},\n" if num_shards else ""
@@ -214,11 +222,17 @@ def main(argv: Sequence[str] | None = None) -> int:
       set(device_generic_test_modules)
       & torch_test_module_utils.DISABLED_TEST_MODULES
   )
-  num_enabled = len(device_generic_test_modules) - num_disabled
+  num_internal_disabled = len(
+      set(device_generic_test_modules)
+      & torch_test_module_utils.INTERNAL_DISABLED_TEST_MODULES.keys()
+  )
+  num_enabled = (
+      len(device_generic_test_modules) - num_disabled - num_internal_disabled
+  )
   print(
       f"INFO: Successfully wrote {len(device_generic_test_modules)} test"
-      f" targets ({num_disabled} disabled, {num_enabled} enabled) to"
-      f" {build_file}.",
+      f" targets ({num_disabled} disabled, {num_internal_disabled} disabled in"
+      f" Google3 only, {num_enabled} enabled) to {build_file}.",
       file=sys.stderr,
   )
   return 0
