@@ -30,6 +30,7 @@
 #include "csrc/common/cache_key.h"
 #include "csrc/common/compilation.h"
 #include "csrc/common/compilation_spec.h"
+#include "csrc/common/interned_device_shape.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/traversal.h"
@@ -136,9 +137,10 @@ class ExecutionTask {
   absl::StatusOr<std::vector<xla::PjRtBuffer* absl_nullable>>
   GetArgumentBuffers();
 
-  // Finishes a materialization by setting the output nodes as materialized with
-  // the given results.
-  absl::Status SetOutputNodesAsMaterialized(PjRtBufferPointers results);
+  // Marks the output nodes as materialized with `results` and their compiled
+  // output shapes.
+  absl::Status SetOutputNodesAsMaterialized(
+      PjRtBufferPointers results, InternedDeviceShapeSpan output_device_shapes);
 
   // A human-readable name for the task. Debug use only.
   std::string name_;

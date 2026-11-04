@@ -42,6 +42,7 @@
 #include "csrc/common/dtype.h"
 #include "csrc/common/env_vars.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/interned_device_shape.h"
 #include "csrc/common/shape.h"
 #include "csrc/pjrt/pjrt_utils.h"
 #include "tsl/profiler/lib/traceme.h"
@@ -203,33 +204,48 @@ bool HloModuleContainsCollective(const xla::HloModule* hlo_module) {
 // Returns an error if an argument's on-device layout isn't the one the
 // executable was compiled for. For static parameters and arguments, PJRT only
 // checks an argument's size, so it would silently misread a same-size argument
-// with another layout.
+// with another layout. Each non-null `known_argument_shapes[i]` supplies
+// `argument_buffers[i]->on_device_shape()` without querying PJRT.
 absl::Status ValidateArgumentLayouts(
     const LoadedExecutableWithMetadata& executable,
-    absl::Span<xla::PjRtBuffer* const> argument_buffers) {
-  const std::vector<std::optional<xla::Shape>>& parameter_shapes =
+    absl::Span<xla::PjRtBuffer* const> argument_buffers,
+    const absl::Span<const xla::Shape* absl_nullable const>
+        known_argument_shapes) {
+  const InternedDeviceShapeSpan parameter_shapes =
       executable.parameter_device_shapes();
   for (size_t i = 0; i < argument_buffers.size() && i < parameter_shapes.size();
        ++i) {
-    // PJRT handles dynamic parameters and arguments itself.
-    if (argument_buffers[i] == nullptr || !parameter_shapes[i].has_value() ||
-        !argument_buffers[i]->on_device_shape().is_static()) {
+    const xla::Shape* const expected = parameter_shapes[i];
+    // PJRT checks dynamic parameters itself.
+    if (argument_buffers[i] == nullptr || expected == nullptr) {
       continue;
     }
-    const xla::Shape& expected = *parameter_shapes[i];
-    const xla::Shape& actual = argument_buffers[i]->on_device_shape();
+    const xla::Shape* const known_actual =
+        i < known_argument_shapes.size() ? known_argument_shapes[i] : nullptr;
+    // Equal pointers (the common case for interned shapes) guarantee equal
+    // shapes.
+    if (known_actual == expected) {
+      continue;
+    }
+    const xla::Shape& actual = known_actual != nullptr
+                                   ? *known_actual
+                                   : argument_buffers[i]->on_device_shape();
+    // PJRT checks dynamic arguments itself.
+    if (!actual.is_static()) {
+      continue;
+    }
     // An argument with other dimensions, e.g. a one-element array passed to a
     // scalar parameter, is reinterpreted on purpose. PJRT checks its size.
-    if (actual.dimensions() != expected.dimensions()) {
+    if (actual.dimensions() != expected->dimensions()) {
       continue;
     }
     // The dimension order and tiles determine where each element is stored.
     if (actual.layout().minor_to_major() !=
-            expected.layout().minor_to_major() ||
-        actual.layout().tiles() != expected.layout().tiles()) {
+            expected->layout().minor_to_major() ||
+        actual.layout().tiles() != expected->layout().tiles()) {
       return TT_ERROR(error::kInvalidArgument)
              << "expected argument " << i << " to have on-device layout "
-             << expected.layout().ToString()
+             << expected->layout().ToString()
              << ", which the program was compiled for, got "
              << actual.layout().ToString()
              << " (a tensor's layout can change after compilation, e.g. "
@@ -245,7 +261,8 @@ absl::StatusOr<PjRtBufferPointers> Execute(
     const SharedLoadedExecutableWithMetadata& executable,
     std::vector<xla::PjRtBuffer* absl_nullable> argument_buffers,
     absl::Span<const Shape> logical_output_shapes,
-    ArgumentLayoutValidation layout_validation) {
+    const ArgumentLayoutValidation layout_validation,
+    absl::Span<const xla::Shape* absl_nullable const> known_argument_shapes) {
   tsl::profiler::TraceMe trace("Execute");
   xla::ExecuteOptions execute_options{.strict_shape_checking = true};
 
@@ -264,9 +281,11 @@ absl::StatusOr<PjRtBufferPointers> Execute(
             *unbounded_dynamic_meta, argument_buffers, logical_output_shapes));
     argument_buffers = std::move(dynamic_args.full_args);
     ephemeral_buffers = std::move(dynamic_args.ephemeral_buffers);
+    known_argument_shapes = {};
   }
   if (layout_validation == ArgumentLayoutValidation::kValidate) {
-    TT_RETURN_IF_ERROR(ValidateArgumentLayouts(*executable, argument_buffers));
+    TT_RETURN_IF_ERROR(ValidateArgumentLayouts(*executable, argument_buffers,
+                                               known_argument_shapes));
   }
 
   if (ABSL_VLOG_IS_ON(8)) {
