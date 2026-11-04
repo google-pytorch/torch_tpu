@@ -38,6 +38,9 @@ absl::StatusOr<mlir::SmallVector<mlir::MlirOp>> BuildDistributedAllGatherShlo(
   ABSL_CHECK(!device_groups.empty())  // CRASH_OK
       << "[BuildDistributedAllGatherShlo]: device_groups is empty";
   const int group_size = device_groups[0].size();
+  // Virtual multi-host: the gather runs over the local slice's members only
+  // and its result is tiled back up to the logical group size.
+  const int64_t physical_group_size = PhysicalGroupSize(device_groups);
 
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
   // Inputs on all processes are expected to have the same shape and dtype.
@@ -61,11 +64,15 @@ absl::StatusOr<mlir::SmallVector<mlir::MlirOp>> BuildDistributedAllGatherShlo(
   output_shape[gather_dim] *= group_size;
   auto output_type =
       mlir::RankedTensorType::get(output_shape, input_element_type);
+  Dimensions physical_output_shape = CopyIntVector(input_shape);
+  physical_output_shape[gather_dim] *= physical_group_size;
+  auto physical_output_type =
+      mlir::RankedTensorType::get(physical_output_shape, input_element_type);
 
   auto& builder = input.getBuilder();
   auto gather_outputs = mlir::stablehlo::AllGather(
       builder,
-      /*resultType=*/output_type,
+      /*resultType=*/physical_output_type,
       /*operands=*/input,
       /*all_gather_dim=*/gather_dim,
       /*replica_groups=*/BuildReplicaGroupsAttr(builder, device_groups),
@@ -73,6 +80,11 @@ absl::StatusOr<mlir::SmallVector<mlir::MlirOp>> BuildDistributedAllGatherShlo(
       /*use_global_device_ids=*/true);
   ABSL_CHECK_EQ(gather_outputs.size(), 1);  // CRASH_OK
   auto gather_output = gather_outputs[0];
+  if (physical_group_size != group_size) {
+    mlir::SmallVector<mlir::MlirOp> tiles(group_size / physical_group_size,
+                                          gather_output);
+    gather_output = mlir::stablehlo::Concatenate(builder, tiles, gather_dim);
+  }
 
   switch (output_mode) {
     case AllGatherOutputMode::kConcat:

@@ -16,9 +16,14 @@
 
 #include "csrc/distributed/utils.h"
 
+#include <algorithm>
 #include <cstdint>
+#include <utility>
+#include <vector>
 
+#include "absl/log/absl_check.h"
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/context_manager.h"
 #include "csrc/common/context_states.h"
@@ -37,8 +42,76 @@
 
 namespace torch_tpu {
 
+absl::StatusOr<VirtualMultiHostFold> FoldVirtualMultiHostGroup(
+    const DeviceGroup& member_device_ids) {
+  const int64_t size = member_device_ids.size();
+  TT_RET_CHECK(size > 0, error::kInvalidArgument)
+      << "virtual multi-host: a process group without members cannot be "
+         "folded";
+  // The physical members are the longest duplicate-free prefix.
+  int64_t physical_size = 0;
+  for (; physical_size < size; ++physical_size) {
+    const int64_t id = member_device_ids[physical_size];
+    bool seen = false;
+    for (int64_t j = 0; j < physical_size && !seen; ++j) {
+      seen = member_device_ids[j] == id;
+    }
+    if (seen) break;
+  }
+  VirtualMultiHostFold result;
+  result.fold = size / physical_size;
+  // The rest of the group must repeat that prefix exactly, tile after tile.
+  bool tiled = size % physical_size == 0;
+  for (int64_t i = physical_size; tiled && i < size; ++i) {
+    tiled = member_device_ids[i] == member_device_ids[i % physical_size];
+  }
+  TT_RET_CHECK(tiled, error::kInvalidArgument)
+      << "virtual multi-host: the process group's member device ids "
+      << ToString(member_device_ids) << " are not the " << physical_size
+      << " devices "
+      << ToString(DeviceGroup(member_device_ids.begin(),
+                              member_device_ids.begin() + physical_size))
+      << " of one slice repeated per slice; only groups whose ranks visit the "
+         "slices in the same device order can be emulated";
+  result.physical_device_ids.assign(member_device_ids.begin(),
+                                    member_device_ids.begin() + physical_size);
+  return result;
+}
+
+DeviceGroup UniqueDeviceIds(const DeviceGroup& device_ids) {
+  DeviceGroup unique;
+  unique.reserve(device_ids.size());
+  for (int64_t id : device_ids) {
+    if (std::find(unique.begin(), unique.end(), id) == unique.end()) {
+      unique.push_back(id);
+    }
+  }
+  return unique;
+}
+
+DeviceGroupList FoldReplicaGroups(const DeviceGroupList& device_groups) {
+  const int64_t fold = device_groups.virtual_fold();
+  if (fold == 1) return device_groups;
+  std::vector<DeviceGroup> folded;
+  folded.reserve(device_groups.size());
+  for (const DeviceGroup& group : device_groups) {
+    ABSL_CHECK_EQ(group.size() % fold, 0)  // CRASH_OK
+        << "virtual multi-host: group " << ToString(group)
+        << " is not a multiple of the fold " << fold;
+    folded.emplace_back(group.begin(), group.begin() + group.size() / fold);
+  }
+  return DeviceGroupList(std::move(folded), /*normalize=*/false);
+}
+
+int64_t PhysicalGroupSize(const DeviceGroupList& device_groups) {
+  ABSL_CHECK(!device_groups.empty())  // CRASH_OK
+      << "[PhysicalGroupSize]: device_groups is empty";
+  return device_groups[0].size() / device_groups.virtual_fold();
+}
+
 mlir::DenseIntElementsAttr BuildReplicaGroupsAttr(
-    mlir::MlirBuilder& builder, const DeviceGroupList& device_groups) {
+    mlir::MlirBuilder& builder, const DeviceGroupList& logical_groups) {
+  const DeviceGroupList device_groups = FoldReplicaGroups(logical_groups);
   int64_t num_groups = device_groups.size();
   int64_t group_size = device_groups[0].size();
   auto tensor_type = mlir::makeTensorType(

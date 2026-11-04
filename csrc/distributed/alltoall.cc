@@ -48,7 +48,9 @@ absl::StatusOr<mlir::MlirOp> BuildDistributedAllToAllBaseShlo(
   // From PyTorch docs, all_to_all_single splits and concats on dimension 0
   const int64_t split_dimension = 0;
   const int64_t concat_dimension = 0;
-  const int64_t split_count = device_groups[0].size();
+  // Virtual multi-host: exchange among the local slice's members only (the
+  // input is split into as many chunks as there are physical members).
+  const int64_t split_count = PhysicalGroupSize(device_groups);
 
   auto replica_groups_attr = BuildReplicaGroupsAttr(builder, device_groups);
 

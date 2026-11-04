@@ -28,6 +28,7 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
+#include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 
 namespace torch_tpu {
 
@@ -38,6 +39,26 @@ absl::StatusOr<mlir::MlirOp> BuildRaggedAllToAllShlo(
     int64_t channel_id) {
   auto& builder = operand.getBuilder();
   mlir::OpBuilder& op_builder = builder.getOpBuilder();
+
+  // Virtual multi-host (distributed/utils.h): `replica_groups_attr` already
+  // holds the local slice's members, while the offset / size vectors are
+  // sized for the logical group. Keep one entry per physical member and send
+  // and receive nothing: the exchange is a placeholder of the right shape.
+  const int64_t physical_group_size =
+      replica_groups_attr.getType().getShape()[1];
+  const int64_t logical_group_size =
+      GetTensorTypeOrDie(input_offsets).getShape()[0];
+  if (logical_group_size > physical_group_size) {
+    const auto head = [physical_group_size](mlir::MlirOp sizes) {
+      return mlir::stablehlo::Slice(sizes, {0}, {physical_group_size}, {1});
+    };
+    input_offsets = head(input_offsets);
+    output_offsets = head(output_offsets);
+    send_sizes = head(send_sizes);
+    send_sizes = mlir::stablehlo::Subtract(send_sizes, send_sizes);
+    recv_sizes = head(recv_sizes);
+    recv_sizes = mlir::stablehlo::Subtract(recv_sizes, recv_sizes);
+  }
 
   mlir::NamedAttribute call_target_attr = op_builder.getNamedAttr(
       "call_target_name", op_builder.getStringAttr("ragged_all_to_all"));

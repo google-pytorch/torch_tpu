@@ -60,6 +60,16 @@ class DeviceGroupList {
 
   FingerprintType fingerprint() const { return fingerprint_; }
 
+  // Virtual multi-host (distributed/utils.h): the groups are the logical
+  // process-group ranks, `virtual_fold()` times more than the devices the
+  // collectives are compiled for. 1 for every regular process group.
+  int64_t virtual_fold() const { return virtual_fold_; }
+
+  // A copy of this list carrying `virtual_fold` (>= 1); the fingerprint covers
+  // the fold, so folded and unfolded groups never share a compilation cache
+  // entry.
+  DeviceGroupList WithVirtualFold(int64_t virtual_fold) const;
+
   size_t size() const { return groups_.size(); }
   bool empty() const { return groups_.empty(); }
 
@@ -79,8 +89,9 @@ class DeviceGroupList {
   // lexicographical order and deduplicated; when constructed with
   // `normalize = false`, preserves caller-provided order.
   std::vector<DeviceGroup> groups_;
-  // Fingerprint of `groups_`.
+  // Fingerprint of `groups_` (and of `virtual_fold_` when it is not 1).
   FingerprintType fingerprint_ = 0;
+  int64_t virtual_fold_ = 1;
 };
 
 std::ostream& operator<<(std::ostream& os, const DeviceGroupList& list);

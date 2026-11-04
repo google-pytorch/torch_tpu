@@ -51,6 +51,18 @@ absl::StatusOr<mlir::MlirOp> BuildDistributedReduceScatterShlo(
       << scatter_dim;
   ABSL_CHECK_EQ(output_shape[scatter_dim] % group_size, 0);  // CRASH_OK
   output_shape[scatter_dim] /= group_size;
+  // Virtual multi-host: scatter the local slice's share of the input over the
+  // local members only; the output keeps the logical shard shape.
+  const int64_t physical_group_size = PhysicalGroupSize(device_groups);
+  if (physical_group_size != group_size) {
+    Indices start_indices(input_type.getRank(), 0);
+    Indices limit_indices = CopyIntVector(input_type.getShape());
+    Indices stride_indices(input_type.getRank(), 1);
+    limit_indices[scatter_dim] =
+        output_shape[scatter_dim] * physical_group_size;
+    input = mlir::stablehlo::Slice(input, start_indices, limit_indices,
+                                   stride_indices);
+  }
 
   // For AVG, we perform a SUM reduction and then divide by the group size.
   c10d::ReduceOp::RedOpType effective_reduce_op_type =

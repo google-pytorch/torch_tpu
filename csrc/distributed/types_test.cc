@@ -67,5 +67,23 @@ TEST(DeviceGroupListTest, PreservesOrderWhenNormalizeIsFalse) {
   EXPECT_EQ(dgl.groups(), expected);
 }
 
+TEST(DeviceGroupListTest, VirtualFoldIsPartOfTheFingerprint) {
+  const DeviceGroupList dgl({{0, 1, 2, 3, 4, 5, 6, 7}});
+  EXPECT_EQ(dgl.virtual_fold(), 1);
+
+  const DeviceGroupList folded = dgl.WithVirtualFold(2);
+  EXPECT_EQ(folded.virtual_fold(), 2);
+  // The logical groups are untouched; only the fold (and so the fingerprint,
+  // the compilation cache key) differs.
+  EXPECT_EQ(folded.groups(), dgl.groups());
+  EXPECT_NE(Fingerprint(folded), Fingerprint(dgl));
+  EXPECT_NE(Fingerprint(folded), Fingerprint(dgl.WithVirtualFold(4)));
+  EXPECT_EQ(Fingerprint(dgl.WithVirtualFold(1)), Fingerprint(dgl));
+  EXPECT_EQ(Fingerprint(dgl.WithVirtualFold(2)), Fingerprint(folded));
+  // Folded lists do not compare equal to their unfolded original.
+  EXPECT_NE(folded, dgl);
+  EXPECT_EQ(folded.WithVirtualFold(1), dgl);
+}
+
 }  // namespace
 }  // namespace torch_tpu

@@ -122,14 +122,14 @@ GetDistributedWorkerConfiguration() {
 
   // Get the local port.
   std::string my_addr = addresses[slice_rank];
-  std::vector<std::string> my_parts = absl::StrSplit(my_addr, ':');
-  if (my_parts.size() != 2) {
+  auto last_colon = my_addr.rfind(':');
+  if (last_colon == std::string::npos || last_colon == my_addr.size() - 1) {
     return TT_ERROR(error::kFailedPrecondition)
            << "Invalid address format in "
            << kTorchTpuSlicebuilderAddressesEnvVar
            << " for current rank: " << my_addr;
   }
-  std::string sb_port = my_parts[1];
+  std::string sb_port = my_addr.substr(last_colon + 1);
 
   // Get the topology from the environment variables.
   TT_ASSIGN_OR_RETURN(std::string topology,
