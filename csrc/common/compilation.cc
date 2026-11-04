@@ -35,6 +35,7 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/escaping.h"
 #include "absl/strings/str_split.h"
+#include "absl/types/span.h"
 #include "csrc/common/compilation_spec.h"
 #include "csrc/common/compile_options_key.h"
 #include "csrc/common/context_manager.h"
@@ -44,6 +45,7 @@
 #include "csrc/common/error_utils.h"
 #include "csrc/common/excess_precision.h"
 #include "csrc/common/fingerprint_utils.h"
+#include "csrc/common/interned_device_shape.h"
 #include "csrc/common/shape.h"
 #include "csrc/common/tpu_subslice_utils.h"
 #include "csrc/mlir/pipeline.h"
@@ -98,45 +100,77 @@ constexpr std::string_view kOptimizationLevelOption = "xla_optimization_level";
 constexpr std::string_view kMemoryFittingLevelOption =
     "xla_memory_fitting_level";
 
-// For each argument buffer `executable` takes, returns the on-device shape it
-// was compiled for, or nullopt for dynamic parameters, which PJRT checks
-// itself. Works for tuple parameters, which take one buffer per element and
-// can't be nested, as PJRT only supports one level of tupled arguments.
-// Returns an empty vector if `executable` doesn't report them.
-std::vector<std::optional<xla::Shape>> GetStaticParameterDeviceShapes(
+// Combines flattened HLO entry-computation shapes with PJRT per-leaf layouts
+// and interns the static array entries. Dynamic, non-array, or layout-less
+// entries map to nullptr; returns an empty span on error or count mismatch.
+InternedDeviceShapeSpan InternDeviceShapesWithLayouts(
+    const absl::Span<const xla::Shape* absl_nonnull const> flat_hlo_shapes,
+    const absl::Span<const std::shared_ptr<const xla::PjRtLayout>> layouts) {
+  if (flat_hlo_shapes.size() != layouts.size()) {
+    return {};
+  }
+  std::vector<std::optional<xla::Shape>> shapes_with_layout(
+      flat_hlo_shapes.size());
+  std::vector<const xla::Shape* absl_nullable> shape_ptrs(
+      flat_hlo_shapes.size(), nullptr);
+  for (size_t i = 0; i < flat_hlo_shapes.size(); ++i) {
+    const xla::Shape& shape = *flat_hlo_shapes[i];
+    if (shape.IsArray() && shape.is_static() && layouts[i] != nullptr) {
+      shapes_with_layout[i] = shape;
+      *shapes_with_layout[i]->mutable_layout() = layouts[i]->xla_layout();
+      shape_ptrs[i] = &*shapes_with_layout[i];
+    }
+  }
+  return InternStaticDeviceShapes(shape_ptrs);
+}
+
+struct CompiledDeviceShapes {
+  InternedDeviceShapeSpan parameters;
+  InternedDeviceShapeSpan outputs;
+};
+
+// Extracts and interns the static on-device parameter and output shapes of
+// `executable` from its HLO entry computation and PJRT layouts.
+//
+// Both parameter and output shapes come from HLO rather than
+// `GetOutputShapes()`, because `PjRtCApiExecutable::GetOutputShapes()` rebuilds
+// shapes from dimension bounds and loses bounded-dynamic dimension flags.
+CompiledDeviceShapes GetCompiledDeviceShapes(
     const xla::PjRtLoadedExecutable& executable) {
-  absl::StatusOr<std::vector<std::shared_ptr<xla::HloModule>>> modules =
+  const absl::StatusOr<std::vector<std::shared_ptr<xla::HloModule>>> modules =
       executable.GetHloModules();
-  absl::StatusOr<std::vector<std::shared_ptr<const xla::PjRtLayout>>> layouts =
-      executable.GetParameterLayouts();
-  if (!modules.ok() || modules->size() != 1 || !layouts.ok()) {
+  if (!modules.ok() || modules->size() != 1) {
     return {};
   }
   const xla::ComputationLayout& entry =
       (*modules)[0]->entry_computation_layout();
-  // Make one shape per argument buffer, to match `layouts`.
-  //
-  // A program can take a tuple parameter, e.g. `(a, b, c)` when compiled with
-  // `parameter_is_tupled_arguments`. PJRT still takes a, b and c as 3 separate
-  // buffers and reports 3 layouts. So split tuples into their elements, the
-  // same way PJRT does (see xla::FlattenedParameterLayouts).
+
+  // Make one shape per leaf buffer to match PJRT's flat per-buffer layouts.
+  // For example, a program compiled with `parameter_is_tupled_arguments` has a
+  // single tuple parameter `(a, b, c)`, while PJRT takes 3 separate buffers and
+  // reports 3 layouts (see xla::FlattenedParameterLayouts).
   std::vector<const xla::Shape*> flat_parameter_shapes;
   for (int i = 0; i < entry.parameter_count(); ++i) {
     xla::ShapeUtil::FlattenTupleShape(entry.parameter_shape(i),
                                       flat_parameter_shapes);
   }
-  if (flat_parameter_shapes.size() != layouts->size()) {
-    return {};
-  }
-  std::vector<std::optional<xla::Shape>> result(layouts->size());
-  for (size_t i = 0; i < flat_parameter_shapes.size(); ++i) {
-    const xla::Shape& shape = *flat_parameter_shapes[i];
-    if (shape.IsArray() && shape.is_static() && (*layouts)[i] != nullptr) {
-      result[i] = shape;
-      *result[i]->mutable_layout() = (*layouts)[i]->xla_layout();
-    }
-  }
-  return result;
+  std::vector<const xla::Shape*> flat_output_shapes;
+  xla::ShapeUtil::FlattenTupleShape(entry.result_shape(), flat_output_shapes);
+
+  const absl::StatusOr<std::vector<std::shared_ptr<const xla::PjRtLayout>>>
+      parameter_layouts = executable.GetParameterLayouts();
+  const absl::StatusOr<std::vector<std::shared_ptr<const xla::PjRtLayout>>>
+      output_layouts = executable.GetOutputLayouts();
+
+  return CompiledDeviceShapes{
+      .parameters = parameter_layouts.ok()
+                        ? InternDeviceShapesWithLayouts(flat_parameter_shapes,
+                                                        *parameter_layouts)
+                        : InternedDeviceShapeSpan{},
+      .outputs = output_layouts.ok() ? InternDeviceShapesWithLayouts(
+                                           flat_output_shapes, *output_layouts)
+                                     : InternedDeviceShapeSpan{},
+  };
 }
 
 }  // namespace
@@ -188,13 +222,15 @@ LoadedExecutableWithMetadata::MakeShared(
     output_shapes.push_back(std::move(shape));
   }
 
-  std::vector<std::optional<xla::Shape>> parameter_device_shapes =
-      GetStaticParameterDeviceShapes(*executable);
+  const CompiledDeviceShapes device_shapes =
+      GetCompiledDeviceShapes(*executable);
+
   return std::shared_ptr<const LoadedExecutableWithMetadata>(
       new LoadedExecutableWithMetadata(
           std::move(executable), std::move(output_shapes),
-          std::move(parameter_device_shapes), std::move(argument_indices),
-          std::move(dynamic_execution_metadata), std::move(subslice_origin)));
+          device_shapes.parameters, device_shapes.outputs,
+          std::move(argument_indices), std::move(dynamic_execution_metadata),
+          std::move(subslice_origin)));
 }
 
 absl::StatusOr<SharedLoadedExecutableWithMetadata> Compile(
