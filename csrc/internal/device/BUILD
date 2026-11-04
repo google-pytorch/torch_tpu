@@ -18,7 +18,7 @@
 # cbasile-g
 # zhanyong-wan
 
-load("//build_files:build_defs.bzl", "torch_tpu_package_end")
+load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_end")
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -26,5 +26,15 @@ package(
 )
 
 exports_files(["device_rt.cc"])
+
+torch_tpu_cc_library(
+    name = "vmem_capacity",
+    srcs = ["vmem_capacity.cc"],
+    hdrs = ["vmem_capacity.h"],
+    deps = [
+        "//csrc/pjrt:pjrt_state",
+        "@com_google_absl//absl/status:statusor",
+    ],
+)
 
 torch_tpu_package_end()

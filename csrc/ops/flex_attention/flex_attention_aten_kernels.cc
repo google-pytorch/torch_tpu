@@ -18,7 +18,6 @@
 
 #include <cstdint>
 #include <numbers>
-#include <optional>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -37,6 +36,7 @@
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
+#include "csrc/internal/device/vmem_capacity.h"
 #include "csrc/internal/mosaic/kiln/kiln.h"
 #include "csrc/internal/mosaic/kiln/mlir/stablehlo_splice.h"
 #include "csrc/internal/mosaic/kiln_custom_call.h"
@@ -82,6 +82,10 @@ struct FlexAttnConfig {
 
 constexpr float kLog2e = std::numbers::log2e_v<float>;
 constexpr int64_t kLanes = 128;
+
+// Scoped VMEM limit, as in flash attention: half the capacity, to avoid
+// spilling.
+int64_t VmemLimitBytes() { return GetDeviceVmemCapacityBytes() / 2; }
 
 constexpr int kBatchAxis = 0;
 constexpr int kHeadAxis = 1;
@@ -404,7 +408,7 @@ absl::StatusOr<std::tuple<at::Tensor, at::Tensor>> FlexAttentionFwdImpl(
         auto custom_call,
         CreateKilnCustomCallOp(
             op_builder, builder.getLoc(), std::move(kernel), operands,
-            result_types, /*vmem_limit_bytes=*/std::nullopt,
+            result_types, VmemLimitBytes(),
             /*needs_hlo_passes=*/!config.score_mod_mlir.empty() ||
                 !config.mask_mod_mlir.empty()));
     DynamicMlirOpResults results;

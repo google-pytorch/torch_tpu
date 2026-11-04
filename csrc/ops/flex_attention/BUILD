@@ -34,6 +34,7 @@ torch_tpu_cc_library(
         "//csrc/eager:device_buffer",
         "//csrc/eager:op_dispatcher",
         "//csrc/eager:tensor_to_buffer",
+        "//csrc/internal/device:vmem_capacity",
         "//csrc/internal/mosaic:kiln_custom_call",
         "//csrc/internal/mosaic/kiln",
         "//csrc/internal/mosaic/kiln/mlir:stablehlo_splice",
