@@ -46,11 +46,11 @@
 #include "csrc/common/compilation.h"
 #include "csrc/common/compilation_spec.h"
 #include "csrc/common/dimension_types.h"
+#include "csrc/common/dtype.h"
 #include "csrc/common/dynamism_utils.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/layout_utils.h"
 #include "csrc/common/shape.h"
-#include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/materialization_heuristics.h"
@@ -232,6 +232,7 @@ absl::StatusOr<CompiledTraversal> VerifyAndCompileTraversal(
     TT_RETURN_IF_ERROR(PropagateBoundedDynamism(traversal, mlir_context));
   }
 
+#ifndef NDEBUG
   for (const auto& argument : traversal.arguments()) {
     if (argument.is_placeholder()) {
       return TT_ERROR(error::kInternal)
@@ -240,47 +241,8 @@ absl::StatusOr<CompiledTraversal> VerifyAndCompileTraversal(
                 "appear in compiled mode, which should never try to "
                 "materialize tensors.\n"
              << argument.DebugString();
-    } else if (argument.is_executing()) {
-      // Argument has had a PjRtBuffer already created for it, so we can
-      // check immediately to see if it is in a failed state.
-      auto buffer_or = argument.AwaitBuffer();
-      if (!buffer_or.ok()) {
-        // Don't prefix or suffix this here; if there is a chain of tasks and
-        // one of them fails, anything appended here gets duplicated over and
-        // over. Just let the original error flow down the chained tasks.
-        return buffer_or.status();
-      }
-    } else if (argument.is_materializing()) {
-      // Input has been pushed onto the execution thread, but has not yet been
-      // assigned a PjRtBuffer. We will recheck it once this task reaches the
-      // front of the execution queue (see GetArgumentBuffers).
-      continue;
-    } else if (const auto deferred_op = argument.deferred_op()) {
-      // Surface the cache key only in the ABSL_LOG, not in the TT_ERROR.
-      const CompilationCacheKey compilation_cache_key =
-          traversal.GetCacheKey(compilation_spec.compile_options_key,
-                                /*argument_layouts=*/{},
-                                /*donated_inputs=*/{});
-      ABSL_LOG(ERROR)
-          << "traversal (cache key: " << compilation_cache_key
-          << ") has deferred argument " << ToString(deferred_op->op_name())
-          << ToString(argument.dimensions())
-          << ".\nAll arguments must be set to pending materialization "
-             "before creating chained ExecutionTasks";
-      return TT_ERROR(error::kFailedPrecondition)
-             << "detected an out of order execution; an execution task "
-                "depends on an argument that is not scheduled for "
-                "materialization.\nIf you are using multiple streams, please "
-                "use torch.Events to coordinate cross-stream dependencies";
-    } else {
-      return TT_ERROR(error::kInternal)
-             << "traversal argument has an unknown state (not deferred, "
-                "placeholder, or materializing):\n"
-             << argument.DebugString();
     }
   }
-
-#ifndef NDEBUG
   // Check that the traversal has a valid set of outputs before we start
   // compiling.
   TT_RETURN_IF_ERROR(VerifyPerNodeOutputs(traversal.outputs()));
@@ -379,27 +341,16 @@ absl::StatusOr<ExecutionTask> ExecutionTask::FromExecutable(
     SharedLoadedExecutableWithMetadata executable,
     std::vector<DeviceBufferRef> arguments,
     std::vector<DeviceBufferRef> outputs, std::string_view task_name) {
+#ifndef NDEBUG
   for (const auto& argument : arguments) {
-    if (!argument.is_materializing()) {
-      if (argument.is_placeholder()) {
-        return TT_ERROR(error::kInternal)
-               << "ExecutionTask::FromExecutable was called on a placeholder "
-                  "tensor. This should never happen.\nkPlaceholder tensors "
-                  "should only appear at compile time, not at execution time.\n"
-               << argument.DebugString();
-      } else if (const auto deferred_op = argument.deferred_op()) {
-        return TT_ERROR(error::kInternal)
-               << "argument to task " << task_name << " has deferred input op"
-               << ToString(deferred_op->op_name());
-      } else {
-        return TT_ERROR(error::kInternal)
-               << "execution task argument has an unknown state (not deferred, "
-                  "placeholder, or materializing):\n"
-               << argument.DebugString();
-      }
+    if (argument.is_placeholder()) {
+      return TT_ERROR(error::kInternal)
+             << "ExecutionTask::FromExecutable was called on a placeholder "
+                "tensor. This should never happen.\nkPlaceholder tensors "
+                "should only appear at compile time, not at execution time.\n"
+             << argument.DebugString();
     }
   }
-#ifndef NDEBUG
   // Check that the outputs buffers are valid.
   TT_RETURN_IF_ERROR(VerifyPerNodeOutputs(outputs));
 #endif  // NDEBUG

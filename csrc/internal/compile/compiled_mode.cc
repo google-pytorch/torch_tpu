@@ -153,13 +153,10 @@ absl::StatusOr<std::vector<DeviceBufferRef>> PrepareCompiledModeArgumentsImpl(
   }
 
   // Materialize the argument buffers if any are still deferred.
-  // This has to block until all buffers start materialization, but not until
-  // they complete, so that the validation in ExecutionTask creation passes.
   if (has_deferred_or_placeholder) {
     TT_RETURN_IF_ERROR(Materialize(
         argument_buffer_refs, MaterializationReason::kCompileModeExecution,
-        GraphSplitMode::kSplitGraph,
-        MaterializationBlockMode::kBlockUntilStarted));
+        GraphSplitMode::kSplitGraph, MaterializationBlockMode::kNonBlocking));
   }
 
   // After materialization, each argument buffer will be a materialized,
@@ -255,13 +252,10 @@ absl::StatusOr<std::vector<DeviceBufferRef>> PrepareCompiledModeArgumentsImpl(
   }
 
   // Materialize the argument buffers if any are still deferred.
-  // This has to block until all buffers start materialization, but not until
-  // they complete, so that the validation in ExecutionTask creation passes.
   if (has_deferred_or_placeholder) {
     TT_RETURN_IF_ERROR(Materialize(
         argument_buffer_refs, MaterializationReason::kCompileModeExecution,
-        GraphSplitMode::kSplitGraph,
-        MaterializationBlockMode::kBlockUntilStarted));
+        GraphSplitMode::kSplitGraph, MaterializationBlockMode::kNonBlocking));
   }
   return argument_buffer_refs;
 }
