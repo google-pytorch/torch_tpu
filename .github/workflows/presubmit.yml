@@ -43,12 +43,12 @@ on:
         description: 'RBE region for the RBE presubmit'
         type: choice
         default: 'auto'
+        # TODO: b/567928058 - Re-add us-east1 and asia-southeast1 once they
+        # have 4-chip v5e pools.
         options:
           - 'auto'
           - 'us-west1'
           - 'us-central1'
-          - 'us-east1'
-          - 'asia-southeast1'
   pull_request:
     branches:
       - main
@@ -148,8 +148,8 @@ jobs:
             exit 1
           fi
 
-  # Runs CPU and single-chip TPU v5e presubmit tests on RBE. Runs on every
-  # same-repo PR, never on fork PRs, and on workflow_dispatch when
+  # Runs CPU, single-chip, and 4-chip TPU v5e presubmit tests on RBE. Runs on
+  # every same-repo PR, never on fork PRs, and on workflow_dispatch when
   # `run_rbe_presubmit` is set. Set the RBE_PRESUBMIT_ENABLED repo variable to
   # `false` during an RBE outage to skip RBE and run the fallback job instead.
   rbe_presubmit:
@@ -201,8 +201,6 @@ jobs:
           case "$region" in
             us-west1) instance="" ;;
             us-central1) instance="default_instance" ;;
-            us-east1) instance="default_instance_east1" ;;
-            asia-southeast1) instance="default_instance_asia_se1" ;;
             *)
               echo "Unsupported RBE region: $region" >&2
               exit 1
@@ -226,8 +224,8 @@ jobs:
           extra_bazel_flags: ${{ steps.rbe_region.outputs.extra_bazel_flags }}
           test_all: ${{ contains(github.event.pull_request.labels.*.name, 'ci:disable-bazel-diff') }}
 
-  # Runs the single-chip TPU v5e presubmit tests on the self-hosted 8-chip
-  # runner only when RBE itself is unavailable: RBE was skipped by the
+  # Runs the single-chip and 4-chip TPU v5e presubmit tests on the self-hosted
+  # 8-chip runner only when RBE itself is unavailable: RBE was skipped by the
   # RBE_PRESUBMIT_ENABLED kill switch, timed out (which GitHub reports as
   # `cancelled`), or exited with one of these Bazel infrastructure codes
   # (https://bazel.build/run/scripts#exit-codes):
