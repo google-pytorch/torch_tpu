@@ -383,6 +383,7 @@ class BaseBenchmarkTest(
         run_mode=mode,
         succeeded=succeeded,
         metrics=metrics or metrics_lib.PerformanceMetrics(),
+        microbenchmark_name=spec.microbenchmark_name,
     )
     if self.in_isolated_child:
       self.isolated_payload = data

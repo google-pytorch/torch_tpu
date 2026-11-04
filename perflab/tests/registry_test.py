@@ -98,6 +98,27 @@ class RegisterTest(seed_test_utils.RepeatableTest):
     spec = registry_lib.REGISTRY["_factory"]
     self.assertEqual(spec.stepper_kwargs, {})
     self.assertIsNone(spec.compile_config)
+    self.assertIsNone(spec.microbenchmark_name)
+
+  def test_register_with_microbenchmark_name(self):
+    registry_lib.register_benchmark(
+        stepper=step_lib.StepperType.FORWARD,
+        presubmit=_RUN,
+        microbenchmark_name="batch_size_1",
+    )(_factory)
+    spec = registry_lib.REGISTRY["_factory"]
+    self.assertEqual(spec.microbenchmark_name, "batch_size_1")
+
+  def test_add_benchmark_with_microbenchmark_name(self):
+    registry_lib.add_benchmark(
+        factory=_factory,
+        stepper=step_lib.StepperType.FORWARD,
+        name="linear_batch_size_1",
+        presubmit=_RUN,
+        microbenchmark_name="batch_size_1",
+    )
+    spec = registry_lib.REGISTRY["linear_batch_size_1"]
+    self.assertEqual(spec.microbenchmark_name, "batch_size_1")
 
   def test_register_with_compile_config(self):
     cfg = compile_lib.CompileConfig(

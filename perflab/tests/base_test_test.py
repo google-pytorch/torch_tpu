@@ -14,6 +14,7 @@
 
 """Tests for perflab/base_test.py."""
 
+import pickle
 import types
 import unittest
 from unittest import mock
@@ -32,12 +33,21 @@ from perflab import target as target_lib
 from tests import seed_test_utils
 
 _KNOWN_BAD = types.SimpleNamespace(
-    name="known_bad", skipped_run_modes=frozenset()
+    name="known_bad", skipped_run_modes=frozenset(), microbenchmark_name=None
 )
 _SKIPS_COMPILED = types.SimpleNamespace(
-    name="skips_compiled", skipped_run_modes=frozenset({"compiled"})
+    name="skips_compiled",
+    skipped_run_modes=frozenset({"compiled"}),
+    microbenchmark_name=None,
 )
-_HEALTHY = types.SimpleNamespace(name="healthy", skipped_run_modes=frozenset())
+_HEALTHY = types.SimpleNamespace(
+    name="healthy", skipped_run_modes=frozenset(), microbenchmark_name=None
+)
+_MICRO = types.SimpleNamespace(
+    name="layer_linear_eval_batch_size_1",
+    skipped_run_modes=frozenset(),
+    microbenchmark_name="batch_size_1",
+)
 
 
 class _FakeBenchmarkTest(base_test.BaseBenchmarkTest):
@@ -53,6 +63,7 @@ class _FakeBenchmarkTest(base_test.BaseBenchmarkTest):
       "known_bad_case": (_KNOWN_BAD, common.RunMode.COMPILED),
       "skipped_run_mode_case": (_SKIPS_COMPILED, common.RunMode.COMPILED),
       "healthy_case": (_HEALTHY, common.RunMode.COMPILED),
+      "micro_case": (_MICRO, common.RunMode.COMPILED),
   }
 
   def known_bad_case(self):
@@ -62,6 +73,9 @@ class _FakeBenchmarkTest(base_test.BaseBenchmarkTest):
     self.fail("a skipped case must not run")
 
   def healthy_case(self):
+    self.fail("a skipped case must not run")
+
+  def micro_case(self):
     self.fail("a skipped case must not run")
 
 
@@ -156,7 +170,11 @@ class BaseBenchmarkTestChildOutcomeTest(seed_test_utils.RepeatableTest):
     )
 
   def _run_with_child_outcome(
-      self, outcome: base_test.Outcome, detail: str | None, payload
+      self,
+      outcome: base_test.Outcome,
+      detail: str | None,
+      payload,
+      method_name: str = "healthy_case",
   ) -> unittest.TestResult:
     self.enter_context(
         mock.patch.object(
@@ -167,7 +185,7 @@ class BaseBenchmarkTestChildOutcomeTest(seed_test_utils.RepeatableTest):
         )
     )
     result = unittest.TestResult()  # UNITTEST_OK=result of a fake test case
-    _FakeBenchmarkTest("healthy_case").run(result)
+    _FakeBenchmarkTest(method_name).run(result)
     return result
 
   @parameterized.parameters(
@@ -182,6 +200,17 @@ class BaseBenchmarkTestChildOutcomeTest(seed_test_utils.RepeatableTest):
     self.assertEqual(data.platform, target_lib.Platform.V7_1X1X1)
     self.assertEqual(data.framework, mode_lib.Framework.TORCH)
     self.assertEqual(data.run_mode, common.RunMode.COMPILED)
+    self.assertFalse(data.succeeded)
+    self.assertIsNone(data.microbenchmark_name)
+
+  def test_child_that_died_is_exported_with_microbenchmark_name(self):
+    self._run_with_child_outcome(
+        base_test.Outcome.CRASHED, "child died", None, method_name="micro_case"
+    )
+
+    (data,) = self.exported
+    self.assertEqual(data.spec_name, "layer_linear_eval_batch_size_1")
+    self.assertEqual(data.microbenchmark_name, "batch_size_1")
     self.assertFalse(data.succeeded)
 
   @parameterized.parameters(
@@ -208,6 +237,39 @@ class BaseBenchmarkTestChildOutcomeTest(seed_test_utils.RepeatableTest):
 
     self.assertLen(result.skipped, 1)
     self.assertEmpty(self.exported)
+
+
+class BaseBenchmarkTestReportResultTest(seed_test_utils.RepeatableTest):
+  """What report_result exports, in process and from the isolated child."""
+
+  def setUp(self):
+    super().setUp()
+    self.exported = []
+    self.enter_context(
+        mock.patch.object(export_lib, "export", new=self.exported.append)
+    )
+
+  def test_in_process_result_carries_microbenchmark_name(self):
+    _FakeBenchmarkTest("micro_case").report_result(
+        _MICRO, common.RunMode.COMPILED, succeeded=True
+    )
+
+    (data,) = self.exported
+    self.assertEqual(data.spec_name, "layer_linear_eval_batch_size_1")
+    self.assertEqual(data.microbenchmark_name, "batch_size_1")
+    self.assertTrue(data.succeeded)
+
+  def test_isolated_child_payload_carries_microbenchmark_name(self):
+    test = _FakeBenchmarkTest("micro_case")
+    test.in_isolated_child = True
+
+    test.report_result(_MICRO, common.RunMode.COMPILED, succeeded=True)
+
+    self.assertEmpty(self.exported)
+    # The child pickles the payload to send it to the parent.
+    payload = pickle.loads(pickle.dumps(test.isolated_payload))
+    self.assertEqual(payload.spec_name, "layer_linear_eval_batch_size_1")
+    self.assertEqual(payload.microbenchmark_name, "batch_size_1")
 
 
 if __name__ == "__main__":

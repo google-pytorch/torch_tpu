@@ -78,6 +78,9 @@ class BenchmarkSpec:
   """Defines a benchmark.
 
   Run-scoped choices live elsewhere (see module docstring).
+
+  `microbenchmark_name` optionally identifies the sub-configuration (e.g. a
+  layer shape) and is exported with the results.
   """
 
   name: str
@@ -91,6 +94,9 @@ class BenchmarkSpec:
       default_factory=frozenset
   )
   presubmit_reason: str | None = None
+  microbenchmark_name: str | None = dataclasses.field(
+      default=None, kw_only=True
+  )
 
   def __post_init__(self):
     if not isinstance(self.presubmit, PresubmitPolicy):
@@ -126,6 +132,7 @@ def add_benchmark(
     *,
     presubmit: PresubmitPolicy,
     presubmit_reason: str | None = None,
+    microbenchmark_name: str | None = None,
 ) -> None:
   """Adds a benchmark spec to REGISTRY.
 
@@ -142,6 +149,9 @@ def add_benchmark(
     presubmit_reason: Why the benchmark does not run (everywhere) in presubmit
       scope. Required for `CPU_SMOKE_ONLY` and `SKIP`, and not allowed
       otherwise.
+    microbenchmark_name: Optional microbenchmark key exported with every result
+      of this benchmark (defaults to None). See
+      `BenchmarkSpec.microbenchmark_name`.
   """
   if stepper_kwargs is None:
     stepper_kwargs = {}
@@ -167,6 +177,7 @@ def add_benchmark(
       skipped_run_modes=skipped_run_modes,
       presubmit=presubmit,
       presubmit_reason=presubmit_reason,
+      microbenchmark_name=microbenchmark_name,
   )
 
 
@@ -179,6 +190,7 @@ def register_benchmark(
     *,
     presubmit: PresubmitPolicy,
     presubmit_reason: str | None = None,
+    microbenchmark_name: str | None = None,
 ) -> Callable[[Factory], Factory]:
   """Decorator to wrap a benchmark factory and add its spec to REGISTRY.
 
@@ -192,6 +204,9 @@ def register_benchmark(
     presubmit_reason: Why the benchmark does not run (everywhere) in presubmit
       scope. Required for `CPU_SMOKE_ONLY` and `SKIP`, and not allowed
       otherwise.
+    microbenchmark_name: Optional microbenchmark key exported with every result
+      of this benchmark (defaults to None). See
+      `BenchmarkSpec.microbenchmark_name`.
 
   Returns:
     A decorator that registers the factory function and returns it unchanged.
@@ -209,6 +224,7 @@ def register_benchmark(
         skipped_run_modes=skipped_run_modes,
         presubmit=presubmit,
         presubmit_reason=presubmit_reason,
+        microbenchmark_name=microbenchmark_name,
     )
     return factory
 

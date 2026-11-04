@@ -543,7 +543,9 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
     exported = []
     registry = {
         "broken": types.SimpleNamespace(
-            name="broken", skipped_run_modes=frozenset()
+            name="broken",
+            skipped_run_modes=frozenset(),
+            microbenchmark_name="batch_size_1",
         ),
         "healthy": types.SimpleNamespace(
             name="healthy", skipped_run_modes=frozenset()
@@ -577,8 +579,11 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
     self.assertEqual(fake_dist_run.ran, ["broken", "healthy"])
     # The failed target is reported once as FAILED to the export path.
     self.assertEqual(
-        [(d.spec_name, d.run_mode, d.succeeded) for d in exported],
-        [("broken", common.RunMode.EAGER_DEFAULT, False)],
+        [
+            (d.spec_name, d.run_mode, d.succeeded, d.microbenchmark_name)
+            for d in exported
+        ],
+        [("broken", common.RunMode.EAGER_DEFAULT, False, "batch_size_1")],
     )
     summary = "\n".join(logs.output)
     self.assertRegex(summary, r"broken_eager_default\s+FAILED")
@@ -809,7 +814,9 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
   def test_main_writes_test_xml_per_target(self):
     fake_dist_run = _FakeDistRun(failing_specs={"broken"})
     registry = {
-        name: types.SimpleNamespace(name=name, skipped_run_modes=frozenset())
+        name: types.SimpleNamespace(
+            name=name, skipped_run_modes=frozenset(), microbenchmark_name=None
+        )
         for name in ("broken", "healthy")
     }
 

@@ -374,6 +374,7 @@ def _export_benchmark_result(
           run_mode=mode,
           succeeded=succeeded,
           metrics=metrics,
+          microbenchmark_name=spec.microbenchmark_name,
       )
   )
 
