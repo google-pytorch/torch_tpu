@@ -40,6 +40,7 @@
 #include "csrc/ops/op_names.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Types.h"
 #include "mlir/Support/LLVM.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
@@ -129,7 +130,22 @@ absl::StatusOr<mlir::MlirOp> BuildCompareAllShlo(mlir::MlirOp self_op,
 
   TT_RET_CHECK(reduce_results.size() == 1, error::kInternal)
       << "expected 1 result from reduce op, got " << reduce_results.size();
-  return reduce_results[0];
+  mlir::MlirOp result_op = reduce_results[0];
+  if (IsFloatType(GetTensorTypeOrDie(self_op))) {
+    // PyTorch defines NaN inputs as falling into the upper-bound bucket
+    // `boundaries.size(0)`, whereas `boundary < NaN` / `boundary <= NaN`
+    // evaluate to false (0) above.
+    const mlir::Type out_mlir_type =
+        mlir::getElementType(builder.getContext(), out_dtype);
+    mlir::MlirOp num_boundaries = GetNumElements(boundaries_op, out_mlir_type);
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp num_boundaries_bcast,
+                        BroadcastIfNeeded(num_boundaries, result_op));
+    mlir::MlirOp is_nan = mlir::stablehlo::Compare(
+        self_op, self_op, mlir::stablehlo::ComparisonDirection::NE);
+    result_op =
+        mlir::stablehlo::Select(is_nan, num_boundaries_bcast, result_op);
+  }
+  return result_op;
 }
 
 absl::StatusOr<mlir::MlirOp> BuildBucketizeShlo(mlir::MlirOp self_op,
