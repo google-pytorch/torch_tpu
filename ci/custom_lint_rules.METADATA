@@ -669,6 +669,29 @@ presubmit {
     check_delta_only: true  # Only check new/changed lines.
   }
 
+  # Prefer InferComputationDtype() over at::toOpMathType().
+  check_contents {
+    base {
+      id: "CheckAtToOpMathType"
+      disable_tags: "ROLLBACK_OF"  # Don't require for rollback CLs.
+    }
+    prohibited_regexp: "\\bat::toOpMathType\\b"
+    suppression_regexp:
+      # Allow suppression with this marker.
+      "\\bAT_TO_OP_MATH_TYPE_OK=.+|"
+      # Ignore occurrences in comments.
+      "//.*\\bat::toOpMathType\\b"
+    failure_message:
+      "Please use `InferComputationDtype()` (defined in "
+      "csrc/common/aten_utils.h) instead of `at::toOpMathType()`. Upstream "
+      "`at::toOpMathType()` crashes with an internal assert on "
+      "unsigned/sub-byte integer types (UInt16, UInt32, UInt64, Int2, Int4, "
+      "UInt2, UInt4) and does not promote FP4 to F32 for XLA HLO. If you have "
+      "a legitimate reason to call `at::toOpMathType()` directly, add a "
+      "`// AT_TO_OP_MATH_TYPE_OK=<reason>` comment on the same line."
+    check_delta_only: true  # Only check new/changed lines.
+  }
+
   # Prevent using std::function in new code.
   check_contents {
     base {
