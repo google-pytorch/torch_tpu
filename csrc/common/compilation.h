@@ -34,6 +34,7 @@
 #include "csrc/common/compilation_spec.h"
 #include "csrc/common/compile_options_key.h"
 #include "csrc/common/dimension_types.h"
+#include "csrc/common/interned_device_shape.h"
 #include "csrc/common/shape.h"
 #include "csrc/eager/device_assignment.h"
 #include "csrc/ops/op_builder_utils.h"
@@ -150,7 +151,8 @@ class LoadedExecutableWithMetadata {
     return std::shared_ptr<const LoadedExecutableWithMetadata>(
         new LoadedExecutableWithMetadata(
             existing->executable_, existing->output_shapes_,
-            existing->parameter_device_shapes_, std::move(argument_indices),
+            existing->parameter_device_shapes_, existing->output_device_shapes_,
+            std::move(argument_indices),
             existing->unbounded_dynamic_execution_metadata_,
             existing->subslice_origin_));
   }
@@ -161,7 +163,8 @@ class LoadedExecutableWithMetadata {
     return std::shared_ptr<const LoadedExecutableWithMetadata>(
         new LoadedExecutableWithMetadata(
             existing->executable_, existing->output_shapes_,
-            existing->parameter_device_shapes_, existing->argument_indices_,
+            existing->parameter_device_shapes_, existing->output_device_shapes_,
+            existing->argument_indices_,
             std::move(unbounded_dynamic_execution_metadata),
             existing->subslice_origin_));
   }
@@ -175,13 +178,24 @@ class LoadedExecutableWithMetadata {
   }
 
   const std::vector<Shape>& output_shapes() const { return output_shapes_; }
-  // For each argument buffer the executable takes, the on-device shape it was
-  // compiled for, or nullopt for dynamic parameters. Tuple parameters take one
-  // buffer per element and can't be nested. Empty if the executable doesn't
-  // report them.
-  const std::vector<std::optional<xla::Shape>>& parameter_device_shapes()
-      const {
+  // For each flat argument buffer the executable takes, an interned pointer to
+  // the static on-device shape (including layout) it was compiled for, or
+  // nullptr for dynamic or non-array parameters. Tuple parameters take one
+  // buffer per element. Empty if the executable doesn't report them.
+  InternedDeviceShapeSpan parameter_device_shapes() const {
     return parameter_device_shapes_;
+  }
+  // For each flat output buffer the executable produces, an interned pointer to
+  // the static on-device shape (including layout) it was compiled to return, or
+  // nullptr for dynamic or non-array outputs. Empty if the executable doesn't
+  // report them or if an `output_transform` rewrites output buffers after
+  // execution.
+  InternedDeviceShapeSpan output_device_shapes() const {
+    if (unbounded_dynamic_execution_metadata_.has_value() &&
+        unbounded_dynamic_execution_metadata_->output_transform != nullptr) {
+      return {};
+    }
+    return output_device_shapes_;
   }
   const Indices& argument_indices() const { return argument_indices_; }
   const std::optional<UnboundedDynamicExecutionMetadata>&
@@ -200,14 +214,16 @@ class LoadedExecutableWithMetadata {
   LoadedExecutableWithMetadata(
       absl_nonnull std::shared_ptr<const xla::PjRtLoadedExecutable> executable,
       std::vector<Shape> output_shapes,
-      std::vector<std::optional<xla::Shape>> parameter_device_shapes,
+      InternedDeviceShapeSpan parameter_device_shapes,
+      InternedDeviceShapeSpan output_device_shapes,
       Indices argument_indices = {},
       std::optional<UnboundedDynamicExecutionMetadata>
           unbounded_dynamic_execution_metadata = std::nullopt,
       std::optional<xla::PjRtDeviceDimensions> subslice_origin = std::nullopt)
       : executable_(std::move(executable)),
         output_shapes_(std::move(output_shapes)),
-        parameter_device_shapes_(std::move(parameter_device_shapes)),
+        parameter_device_shapes_(parameter_device_shapes),
+        output_device_shapes_(output_device_shapes),
         argument_indices_(std::move(argument_indices)),
         unbounded_dynamic_execution_metadata_(
             std::move(unbounded_dynamic_execution_metadata)),
@@ -216,8 +232,10 @@ class LoadedExecutableWithMetadata {
   absl_nonnull std::shared_ptr<const xla::PjRtLoadedExecutable> executable_;
   // Cached output shapes for the executable.
   std::vector<Shape> output_shapes_;
-  // Cached on-device parameter shapes for the executable.
-  std::vector<std::optional<xla::Shape>> parameter_device_shapes_;
+  // Interned on-device parameter shapes (with layout) for the executable.
+  InternedDeviceShapeSpan parameter_device_shapes_;
+  // Interned on-device output shapes (with layout) for the executable.
+  InternedDeviceShapeSpan output_device_shapes_;
   Indices argument_indices_;
   std::optional<UnboundedDynamicExecutionMetadata>
       unbounded_dynamic_execution_metadata_;

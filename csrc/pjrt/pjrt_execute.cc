@@ -42,6 +42,7 @@
 #include "csrc/common/dtype.h"
 #include "csrc/common/env_vars.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/interned_device_shape.h"
 #include "csrc/common/shape.h"
 #include "csrc/pjrt/pjrt_utils.h"
 #include "tsl/profiler/lib/traceme.h"
@@ -207,12 +208,12 @@ bool HloModuleContainsCollective(const xla::HloModule* hlo_module) {
 absl::Status ValidateArgumentLayouts(
     const LoadedExecutableWithMetadata& executable,
     absl::Span<xla::PjRtBuffer* const> argument_buffers) {
-  const std::vector<std::optional<xla::Shape>>& parameter_shapes =
+  const InternedDeviceShapeSpan parameter_shapes =
       executable.parameter_device_shapes();
   for (size_t i = 0; i < argument_buffers.size() && i < parameter_shapes.size();
        ++i) {
     // PJRT handles dynamic parameters and arguments itself.
-    if (argument_buffers[i] == nullptr || !parameter_shapes[i].has_value() ||
+    if (argument_buffers[i] == nullptr || parameter_shapes[i] == nullptr ||
         !argument_buffers[i]->on_device_shape().is_static()) {
       continue;
     }
