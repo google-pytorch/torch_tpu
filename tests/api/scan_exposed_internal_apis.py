@@ -145,7 +145,6 @@ _TORCH_TPU_NAMESPACES: tuple[str, ...] = (
     "torch.tpu.",
     "torch_tpu.",
     "torch.ops.tpu.",
-    "torch.ops.torch_tpu.",
 )
 _ROOT_NAMESPACES: tuple[str, ...] = (
     "torch",
@@ -153,7 +152,6 @@ _ROOT_NAMESPACES: tuple[str, ...] = (
     "torch_tpu",
     "torch.ops",
     "torch.ops.tpu",
-    "torch.ops.torch_tpu",
 )
 
 # Internal implementation environment variables from csrc/common/env_vars.h
