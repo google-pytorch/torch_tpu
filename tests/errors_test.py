@@ -17568,6 +17568,58 @@ Got a.dtype()=Float8_e4m3fn, scale_a.dtype()=Float, scale_a.size()=[1], scale_a.
     ):
       untimed.elapsed_time(timed)
 
+  def test_to_copy_shell_dtype_cast_rejected(self):
+    """Tests that casting to/from shell dtypes via to() fails with NotImplementedError."""
+    with self.subTest("from_shell_dtype"):
+      t = torch.zeros(2, dtype=torch.uint8, device=et.device()).view(
+          torch.bits8
+      )
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu="""to_copy(): casting from bits8 to float32 is not supported: bits8 is a shell dtype with no defined conversions. Use .view() to reinterpret the bytes as a same-size integer dtype instead""",
+          gpu="""Casting from Bits8 to Float is not supported: Bits8 is a shell dtype with no defined conversions. Use .view() to reinterpret the bytes as a same-size integer dtype instead.""",
+          message_reviewed_by="wan",
+      ):
+        t.to(torch.float32)
+
+    with self.subTest("to_shell_dtype"):
+      t = torch.zeros(2, dtype=torch.float32, device=et.device())
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu="""to_copy(): casting from float32 to bits8 is not supported: bits8 is a shell dtype with no defined conversions. Use .view() to reinterpret the bytes as a same-size integer dtype instead""",
+          gpu="""Casting from Float to Bits8 is not supported: Bits8 is a shell dtype with no defined conversions. Use .view() to reinterpret the bytes as a same-size integer dtype instead.""",
+          message_reviewed_by="wan",
+      ):
+        t.to(torch.bits8)
+
+  def test_copy_shell_dtype_cast_rejected(self):
+    """Tests that copying to/from shell dtypes via copy_() fails with NotImplementedError."""
+    with self.subTest("from_shell_dtype"):
+      src = torch.zeros(2, dtype=torch.uint8, device=et.device()).view(
+          torch.bits8
+      )
+      dst = torch.zeros(2, dtype=torch.float32, device=et.device())
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu="""copy_(): casting from bits8 to float32 is not supported: bits8 is a shell dtype with no defined conversions. Use .view() to reinterpret the bytes as a same-size integer dtype instead""",
+          gpu="""Casting from Bits8 to Float is not supported: Bits8 is a shell dtype with no defined conversions. Use .view() to reinterpret the bytes as a same-size integer dtype instead.""",
+          message_reviewed_by="wan",
+      ):
+        dst.copy_(src)
+
+    with self.subTest("to_shell_dtype"):
+      src = torch.zeros(2, dtype=torch.float32, device=et.device())
+      dst = torch.zeros(2, dtype=torch.uint8, device=et.device()).view(
+          torch.bits8
+      )
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu="""copy_(): casting from float32 to bits8 is not supported: bits8 is a shell dtype with no defined conversions. Use .view() to reinterpret the bytes as a same-size integer dtype instead""",
+          gpu="""Casting from Float to Bits8 is not supported: Bits8 is a shell dtype with no defined conversions. Use .view() to reinterpret the bytes as a same-size integer dtype instead.""",
+          message_reviewed_by="wan",
+      ):
+        dst.copy_(src)
+
 
 class InputPreprocessingErrorTest(et.ErrorTestBase):
 

@@ -28,8 +28,11 @@
 #include "absl/status/status.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/macro_utils.h"
+#include "csrc/common/to_string.h"
 #include "csrc/eager/eager_mode.h"
 #include "csrc/ops/as_strided/as_strided_aten_kernels.h"
+#include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
 namespace {
@@ -110,7 +113,89 @@ absl::Status TransposeToRowMajorDest(at::Tensor& src, at::Tensor& dest) {
       RestrideTensor(dest, new_sizes, new_dest_strides, dest.storage_offset()));
   return absl::OkStatus();
 }
+
+[[nodiscard]] bool IsUncastableShellType(at::ScalarType t) {
+  switch (t) {
+#if TT_HAS_FLOAT8_E5M3FNU
+    // TODO(b/579965801): Remove guard once all 2.16 pins include PR #201269.
+    case at::ScalarType::Float8_e5m3fnu:
+#endif
+    // go/keep-sorted start
+    case at::ScalarType::Bits16:
+    case at::ScalarType::Bits1x8:
+    case at::ScalarType::Bits2x4:
+    case at::ScalarType::Bits4x2:
+    case at::ScalarType::Bits8:
+    case at::ScalarType::Int1:
+    case at::ScalarType::Int2:
+    case at::ScalarType::Int3:
+    case at::ScalarType::Int4:
+    case at::ScalarType::Int5:
+    case at::ScalarType::Int6:
+    case at::ScalarType::Int7:
+    case at::ScalarType::UInt1:
+    case at::ScalarType::UInt2:
+    case at::ScalarType::UInt3:
+    case at::ScalarType::UInt4:
+    case at::ScalarType::UInt5:
+    case at::ScalarType::UInt6:
+    case at::ScalarType::UInt7:
+      // go/keep-sorted end
+      return true;
+#if TT_TORCH_VERSION_GE(2, 14)
+    case at::ScalarType::BComplex32:
+#endif
+    // go/keep-sorted start
+    case at::ScalarType::BFloat16:
+    case at::ScalarType::Bool:
+    case at::ScalarType::Byte:
+    case at::ScalarType::Char:
+    case at::ScalarType::ComplexDouble:
+    case at::ScalarType::ComplexFloat:
+    case at::ScalarType::ComplexHalf:
+    case at::ScalarType::Double:
+    case at::ScalarType::Float4_e2m1fn_x2:
+    case at::ScalarType::Float8_e4m3fn:
+    case at::ScalarType::Float8_e4m3fnuz:
+    case at::ScalarType::Float8_e5m2:
+    case at::ScalarType::Float8_e5m2fnuz:
+    case at::ScalarType::Float8_e8m0fnu:
+    case at::ScalarType::Float:
+    case at::ScalarType::Half:
+    case at::ScalarType::Int:
+    case at::ScalarType::Long:
+    case at::ScalarType::NumOptions:
+    case at::ScalarType::QInt32:
+    case at::ScalarType::QInt8:
+    case at::ScalarType::QUInt2x4:
+    case at::ScalarType::QUInt4x2:
+    case at::ScalarType::QUInt8:
+    case at::ScalarType::Short:
+    case at::ScalarType::UInt16:
+    case at::ScalarType::UInt32:
+    case at::ScalarType::UInt64:
+    case at::ScalarType::Undefined:
+      // go/keep-sorted end
+      return false;
+      // Deliberately omitting the default case. We want the compiler to force
+      // us to handle all cases explicitly.
+  }
+}
+
 }  // namespace
+
+absl::Status ValidateShellDtypeCast(at::ScalarType src, at::ScalarType dst) {
+  if (src == dst ||
+      (!IsUncastableShellType(src) && !IsUncastableShellType(dst))) {
+    return absl::OkStatus();
+  }
+  const at::ScalarType shell = IsUncastableShellType(src) ? src : dst;
+  return TT_ERROR(error::kPythonNotImplementedError)
+         << "casting from " << ToString(src) << " to " << ToString(dst)
+         << " is not supported: " << ToString(shell)
+         << " is a shell dtype with no defined conversions. Use .view() to "
+            "reinterpret the bytes as a same-size integer dtype instead";
+}
 
 absl::Status BroadcastAndTranspose(at::Tensor& src, at::Tensor& dest) {
   TT_RETURN_IF_ERROR(BroadcastToDest(src, dest));
