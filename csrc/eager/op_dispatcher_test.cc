@@ -17,6 +17,7 @@
 #include "csrc/eager/op_dispatcher.h"
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -24,6 +25,7 @@
 #include <vector>
 
 #include "ATen/core/ATen_fwd.h"
+#include "ATen/ops/tensor.h"
 #include "absl/cleanup/cleanup.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -361,7 +363,59 @@ TEST(AutoDonateInPlaceBuffers, CannotDonateBufferMultipleTimes) {
   EXPECT_EQ(donated_aliased_inputs, Indices{0});
   EXPECT_EQ(output_donated, std::vector<uint8_t>({1, 0}));
 
+  // If the first input with the matching storage is an ineligible slice view
+  // and a later input with the same storage is eligible, the eligible input is
+  // selected.
+  at::Tensor cpu_in = at::ones({2, 3}, at::kFloat);
+  at::Tensor cpu_out = cpu_in;
+  at::Tensor cpu_slice = cpu_in.slice(/*dim=*/0, /*start=*/1);
+  Indices donated_after_slice_view;
+  output_donated = {0};
+  const std::array<absl::Span<const int64_t>, 1> slice_out_dims = {dims};
+  const std::array<mlir::ElementType, 1> slice_out_dtypes = {f32_type};
+  internal::AutoDonateInPlaceBuffers({cpu_out}, slice_out_dtypes,
+                                     slice_out_dims, {cpu_slice, cpu_in},
+                                     donated_after_slice_view, output_donated);
+  EXPECT_EQ(donated_after_slice_view, Indices{1});
+  EXPECT_EQ(output_donated, std::vector<uint8_t>({1}));
+
   SetEagerMode(EagerMode::kDeferAndFuse);
+}
+
+TEST(AutoDonateInPlaceBuffers, MultiTensorBatchWithSharedScalarInputs) {
+  constexpr auto f32_type = mlir::ElementType::F32;
+  absl::Cleanup restore_mode = [] { SetEagerMode(EagerMode::kDeferAndFuse); };
+  SetEagerMode(EagerMode::kDeferNever);
+
+  constexpr size_t kNumTensors = 256;
+  const std::array<int64_t, 2> dims = {4, 8};
+  at::Tensor shared_scalar = at::tensor(2.0f);
+
+  std::vector<at::Tensor> outputs;
+  outputs.reserve(kNumTensors);
+  std::vector<at::Tensor> inputs;
+  inputs.reserve(2 * kNumTensors);
+  std::vector<absl::Span<const int64_t>> out_dims_list(kNumTensors, dims);
+  std::vector<mlir::ElementType> out_dtypes(kNumTensors, f32_type);
+  Indices expected_donated;
+  expected_donated.reserve(kNumTensors);
+
+  for (size_t i = 0; i < kNumTensors; ++i) {
+    at::Tensor t = at::ones({4, 8}, at::kFloat);
+    outputs.push_back(t);
+    inputs.push_back(t);
+    expected_donated.push_back(static_cast<int64_t>(i));
+  }
+  for (size_t i = 0; i < kNumTensors; ++i) {
+    inputs.push_back(shared_scalar);
+  }
+
+  Indices donated;
+  std::vector<uint8_t> output_donated(kNumTensors, 0);
+  internal::AutoDonateInPlaceBuffers(outputs, out_dtypes, out_dims_list, inputs,
+                                     donated, output_donated);
+  EXPECT_EQ(donated, expected_donated);
+  EXPECT_EQ(output_donated, std::vector<uint8_t>(kNumTensors, 1));
 }
 
 TEST(AutoDonateInPlaceBuffers,
