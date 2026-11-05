@@ -89,15 +89,24 @@ kiln::Scalar BelowOrOnDiagonal(kiln::Scalar row_block, kiln::Scalar col_block,
 kiln::Scalar IntersectsDiagonal(kiln::Scalar row_block, kiln::Scalar col_block,
                                 const Tiling& tiling);
 
+// Whether `ApplyStructuredMask` masks out the logits of query rows past the end
+// of the query sequence.
+enum class QueryTailMasking {
+  kMask,
+  // For kernels whose per-row results are dropped for those rows anyway (e.g.
+  // the forward kernel, whose out-of-bounds output writes are discarded).
+  kSkip,
+};
+
 // Masks out logits above the diagonal (causal) and in the padded tail of
 // either sequence for the sub-block starting at (row_offset, col_offset)
 // within the (row_block, col_block) grid tile. Returns `s` untouched when no
 // masking is required.
-kiln::Tile ApplyStructuredMask(kiln::Tile s, kiln::Scalar row_block,
-                               kiln::Scalar col_block,
-                               const FlashAttnConfig& config,
-                               const Tiling& tiling, int64_t row_offset = 0,
-                               int64_t col_offset = 0);
+kiln::Tile ApplyStructuredMask(
+    kiln::Tile s, kiln::Scalar row_block, kiln::Scalar col_block,
+    const FlashAttnConfig& config, const Tiling& tiling, int64_t row_offset = 0,
+    int64_t col_offset = 0,
+    QueryTailMasking query_tail_masking = QueryTailMasking::kMask);
 
 // log2-scaled logits for one (q, k) tile pair:
 //   s = (q @ k^T) * scale * log2(e) [+ bias * log2(e)]

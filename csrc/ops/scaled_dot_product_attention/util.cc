@@ -148,8 +148,10 @@ kiln::Scalar IntersectsDiagonal(kiln::Scalar row_block, kiln::Scalar col_block,
 kiln::Tile ApplyStructuredMask(kiln::Tile s, kiln::Scalar row_block,
                                kiln::Scalar col_block,
                                const FlashAttnConfig& config, const Tiling& t,
-                               int64_t row_offset, int64_t col_offset) {
-  const bool ragged_q = config.q_sequence_length % t.qt != 0;
+                               int64_t row_offset, int64_t col_offset,
+                               QueryTailMasking query_tail_masking) {
+  const bool ragged_q = query_tail_masking == QueryTailMasking::kMask &&
+                        config.q_sequence_length % t.qt != 0;
   const bool ragged_kv = config.kv_sequence_length % t.kt != 0;
   if (!config.is_causal && !ragged_q && !ragged_kv) {
     return s;

@@ -450,7 +450,8 @@ CreateFlashAttentionKernelImpl(const at::Tensor& query, const at::Tensor& key,
             ? ReshapeMask(*attn_bias_mlir, config.batch_size)
             : mlir::MlirOp();
 
-    // Flatten batch dimensions of inputs.
+    // The sequences are not padded to a multiple of the tile sizes: the kernel
+    // handles the out-of-bounds tail of the last tile itself.
     mlir::MlirOp query_4d =
         flatten_batch_dims(query_mlir, config.batch_size, rank - 3);
     mlir::MlirOp key_4d =
@@ -458,18 +459,8 @@ CreateFlashAttentionKernelImpl(const at::Tensor& query, const at::Tensor& key,
     mlir::MlirOp value_4d =
         flatten_batch_dims(value_mlir, config.batch_size, rank - 3);
 
-    query_4d = PadSequenceDim(query_4d, 2, config.padded_q_sequence_length);
-    key_4d = PadSequenceDim(key_4d, 2, config.padded_kv_sequence_length);
-    value_4d = PadSequenceDim(value_4d, 2, config.padded_kv_sequence_length);
-
-    if (mask_mlir.isValid()) {
-      mask_mlir = PadBias(mask_mlir, config.padded_q_sequence_length,
-                          config.padded_kv_sequence_length);
-    }
-
     Dimensions out_dims_4d = {config.batch_size, config.num_heads,
-                              config.padded_q_sequence_length,
-                              config.vo_head_dim};
+                              config.q_sequence_length, config.vo_head_dim};
     auto out_type = mlir::RankedTensorType::get(
         out_dims_4d, GetTensorTypeOrDie(query_mlir).getElementType());
 
@@ -493,7 +484,7 @@ CreateFlashAttentionKernelImpl(const at::Tensor& query, const at::Tensor& key,
 
     mlir::SmallVector<mlir::Type, 2> result_types = {out_type};
     Dimensions lse_dims_4d = {config.batch_size, config.num_heads, 1,
-                              config.padded_q_sequence_length};
+                              config.q_sequence_length};
 
     if (config.return_lse) {
       // LSE is 4D [B, N, 1, S]
@@ -510,21 +501,16 @@ CreateFlashAttentionKernelImpl(const at::Tensor& query, const at::Tensor& key,
                                std::move(kernel), operands, result_types,
                                GetVmemLimitBytes()));
 
-    mlir::MlirOp out_padded(builder, custom_call.getResult(0));
-    mlir::MlirOp out_sliced =
-        SliceSequenceDim(out_padded, 2, config.q_sequence_length);
-
     DynamicMlirOpResults results;
-    results.push_back(unflatten_batch_dims(out_sliced, out_dims));
+    results.push_back(unflatten_batch_dims(
+        mlir::MlirOp(builder, custom_call.getResult(0)), out_dims));
 
     if (config.return_lse) {
-      mlir::MlirOp lse_padded(builder, custom_call.getResult(1));
-      mlir::MlirOp lse_sliced =
-          SliceSequenceDim(lse_padded, 3, config.q_sequence_length);
+      mlir::MlirOp lse(builder, custom_call.getResult(1));
       // The cuddnn implementation requires that the LSE is [B, N, S, 1]
       // TODO(willfroom): fold this into the kernel.
       mlir::MlirOp lse_transposed =
-          mlir::stablehlo::Transpose(lse_sliced, {0, 1, 3, 2});
+          mlir::stablehlo::Transpose(lse, {0, 1, 3, 2});
       results.push_back(unflatten_batch_dims(lse_transposed, lse_dims));
     }
 

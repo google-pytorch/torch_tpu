@@ -171,6 +171,7 @@ torch_tpu_cc_library(
         "//csrc/internal/mosaic/kiln",
         "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/status:statusor",
+        "@llvm-project//llvm:Support",
     ],
 )
 
