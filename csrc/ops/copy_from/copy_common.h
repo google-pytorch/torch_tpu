@@ -56,8 +56,9 @@ enum class TransferSyncMode {
 // Returns the synchronization mode of a host-to-device or device-to-host copy
 // based on the user-requested non-blocking mode and the current eager mode.
 //
-// If the eager mode is kInternalCompileFxGraph, the transfer will be
-// kIsolated, regardless of the value of `non_blocking`.
+// If the eager mode is kInternalCompileFxGraph and the current thread is not
+// capturing a graph, the transfer will be kIsolated, regardless of the value of
+// `non_blocking`.
 //
 // If the eager mode is kDeferNeverAndLaunchBlocking, the transfer will be
 // kEagerBlocking, regardless of the value of `non_blocking`.

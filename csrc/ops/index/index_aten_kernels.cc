@@ -82,7 +82,9 @@ absl::StatusOr<int64_t> GetNumNonZeroElements(const at::Tensor& mask) {
                                .op_param_cache_keys = OpParamCacheKeys::Empty(),
                                .out_dtype = mlir::ElementType::I64,
                                .out_dims = Dimensions()}));
-  return num_non_zero_elements.cpu().item<int64_t>();
+  // Unlike cpu(), item() invalidates a graph capture, as boolean mask indexing
+  // does on CUDA.
+  return num_non_zero_elements.item<int64_t>();
 }
 
 // Converts the parsed `entries` of `self` (see `ParseIndexEntries`) into

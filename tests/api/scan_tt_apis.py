@@ -871,14 +871,27 @@ def _probe_accelerator_callable(
     res = callable_obj(*pos_args, **kw_args)
     # For context-manager classes (e.g. torch.accelerator.device_index),
     # __init__ only stores arguments; enter and exit the context to exercise
-    # the underlying C++ accelerator hook.
+    # the underlying C++ accelerator hook. For Graph classes, call
+    # capture_begin() / capture_end() directly because Graph.__enter__() also
+    # calls empty_host_cache(), which emits an unrelated warning on TPU.
     if (
         isinstance(callable_obj, type)
         and hasattr(res, "__enter__")
         and hasattr(res, "__exit__")
     ):
-      with res:
-        pass
+      if hasattr(res, "capture_begin") and hasattr(res, "capture_end"):
+        # PyTorch 2.12 added torch._C._acceleratorGraph.
+        accelerator_graph = getattr(torch._C, "_acceleratorGraph", None)
+        if accelerator_graph is not None and isinstance(res, accelerator_graph):
+          with torch.Stream():
+            res.capture_begin()
+            res.capture_end()
+        else:
+          res.capture_begin()
+          res.capture_end()
+      else:
+        with res:
+          pass
     return res
 
   supported = True
