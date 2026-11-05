@@ -2377,18 +2377,16 @@ TT_PYBIND11_MODULE(tpu_torch_compile, m) {
         "Pops the current state of the enable_tracebacks context manager.");
   m.def("push_enable_tracebacks", &PyPushEnableTracebacks, py::arg("enabled"),
         "Pushes a new state onto the enable_tracebacks context manager.");
-  m.def("append_name_scope", &ScopedPythonContextCapturer::AppendNameScope,
-        py::arg("scope"),
+  m.def("append_name_scope", &PyAppendNameScope, py::arg("scope"),
         "Appends a single name scope to the active hierarchy on top of the "
-        "PythonContext capturer stack (pushing the extended hierarchy so "
-        "pop_name_scopes restores the previous one).");
-  m.def("push_name_scopes", &ScopedPythonContextCapturer::PushNameScopes,
-        py::arg("scopes"),
-        "Pushes a full name scope hierarchy onto the PythonContext capturer "
-        "stack, replacing the active hierarchy until popped.");
-  m.def("pop_name_scopes", &ScopedPythonContextCapturer::PopNameScopes,
-        "Pops the top name scope hierarchy from the PythonContext capturer "
-        "stack, restoring the previous hierarchy.");
+        "name scope stack (pushing the extended hierarchy so pop_name_scopes "
+        "restores the previous one).");
+  m.def("push_name_scopes", &PyPushNameScopes, py::arg("scopes"),
+        "Pushes a full name scope hierarchy onto the name scope stack, "
+        "replacing the active hierarchy until popped.");
+  m.def("pop_name_scopes", &PyPopNameScopes,
+        "Pops the top name scope hierarchy from the name scope stack, "
+        "restoring the previous hierarchy.");
   m.def("serialize_executable", PySerializeExecutable, py::arg("executable"),
         "Serializes a PjRtLoadedExecutable to bytes for caching.");
   m.def("load_serialized_executable", PyLoadSerializedExecutable,

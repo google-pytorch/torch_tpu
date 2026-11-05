@@ -24,7 +24,6 @@
 #include <utility>
 #include <vector>
 
-#include "absl/cleanup/cleanup.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
@@ -664,8 +663,7 @@ TEST_F(TraversalTest, NameScopesAttachToMlirLocationsWithoutChangingCacheKey) {
 
   std::vector<DeviceBufferRef> layer0_refs;
   {
-    ScopedPythonContextCapturer::PushNameScopes({"layers.0[Block]"});
-    absl::Cleanup pop = [] { ScopedPythonContextCapturer::PopNameScopes(); };
+    const NameScopeHierarchyGuard layer0_scope({"layers.0[Block]"});
     TT_ASSERT_OK_AND_ASSIGN(
         layer0_refs,
         DeviceBufferList::CreateDeferred(OpName::kNeg, NegBuilder, {input_ref},
@@ -676,8 +674,7 @@ TEST_F(TraversalTest, NameScopesAttachToMlirLocationsWithoutChangingCacheKey) {
 
   std::vector<DeviceBufferRef> layer1_refs;
   {
-    ScopedPythonContextCapturer::PushNameScopes({"layers.1[Block]"});
-    absl::Cleanup pop = [] { ScopedPythonContextCapturer::PopNameScopes(); };
+    const NameScopeHierarchyGuard layer1_scope({"layers.1[Block]"});
     TT_ASSERT_OK_AND_ASSIGN(
         layer1_refs,
         DeviceBufferList::CreateDeferred(OpName::kNeg, NegBuilder, {input_ref},

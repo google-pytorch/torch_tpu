@@ -17,9 +17,6 @@
 #include "csrc/ops/python_context.h"
 
 #include <memory>
-#include <string>
-#include <utility>
-#include <vector>
 
 #include "c10/util/ThreadLocalDebugInfo.h"
 #include "csrc/common/context_manager.h"
@@ -39,24 +36,6 @@ using ::testing::ElementsAre;
 using ::testing::HasSubstr;
 using ::testing::IsEmpty;
 using ::testing::Not;
-
-// RAII test helper that pushes or appends name scopes on construction via
-// `ScopedPythonContextCapturer` and pops them on destruction.
-class RaiiContextCapturer {
- public:
-  explicit RaiiContextCapturer(std::string scope) {
-    ScopedPythonContextCapturer::AppendNameScope(std::move(scope));
-  }
-
-  explicit RaiiContextCapturer(std::vector<std::string> scopes) {
-    ScopedPythonContextCapturer::PushNameScopes(std::move(scopes));
-  }
-
-  RaiiContextCapturer(const RaiiContextCapturer&) = delete;
-  RaiiContextCapturer& operator=(const RaiiContextCapturer&) = delete;
-
-  ~RaiiContextCapturer() { ScopedPythonContextCapturer::PopNameScopes(); }
-};
 
 TEST(CaptureCurrentPythonTrackback, CapturesPythonStack) {
   mlir::MLIRContext ctx;
@@ -233,11 +212,10 @@ TEST(GetOriginalOpName, ReturnsFirstOpNameWhenProviderIsAlive) {
 
 TEST(ScopedPythonContextCapturer, CapturesNameScopesAndFormatsMlirLocation) {
   mlir::MLIRContext ctx;
-  RaiiContextCapturer block_scope("layers.0[SimpleTransformerBlock]");
-  RaiiContextCapturer attn_scope("attn[SimpleAttention]");
-  // Duplicate nested scopes collapse into one while keeping PopNameScopes
-  // balanced.
-  RaiiContextCapturer dup_scope("attn[SimpleAttention]");
+  const NameScopeGuard block_scope("layers.0[SimpleTransformerBlock]");
+  const NameScopeGuard attn_scope("attn[SimpleAttention]");
+  // Duplicate nested scopes collapse into one while keeping the pops balanced.
+  const NameScopeGuard dup_scope("attn[SimpleAttention]");
 
   ScopedPythonContextCapturer capturer(OpName::kBmm);
   const PythonContext context = ScopedPythonContextCapturer::GetContext();
@@ -252,7 +230,7 @@ TEST(ScopedPythonContextCapturer, CapturesNameScopesAndFormatsMlirLocation) {
 }
 
 TEST(ScopedPythonContextCapturer, InternalConstantSuppressesActiveNameScopes) {
-  RaiiContextCapturer block_scope("layers.0[SimpleTransformerBlock]");
+  const NameScopeGuard block_scope("layers.0[SimpleTransformerBlock]");
 
   ScopedPythonContextCapturer capturer(OpName::kTorchTpuInternalConstant);
   EXPECT_THAT(ScopedPythonContextCapturer::GetContext().name_scopes(),
@@ -260,8 +238,8 @@ TEST(ScopedPythonContextCapturer, InternalConstantSuppressesActiveNameScopes) {
 }
 
 TEST(ScopedPythonContextCapturer, PushEmptyNameScopesIsolatesFromOuterScopes) {
-  RaiiContextCapturer block_scope("layers.0[SimpleTransformerBlock]");
-  RaiiContextCapturer clear_scopes(std::vector<std::string>{});
+  const NameScopeGuard block_scope("layers.0[SimpleTransformerBlock]");
+  const NameScopeHierarchyGuard clear_scopes({});
 
   ScopedPythonContextCapturer capturer(OpName::kBmm);
   EXPECT_THAT(ScopedPythonContextCapturer::GetContext().name_scopes(),
@@ -269,9 +247,9 @@ TEST(ScopedPythonContextCapturer, PushEmptyNameScopesIsolatesFromOuterScopes) {
 }
 
 TEST(ScopedPythonContextCapturer, PushNameScopesReplacesActiveHierarchy) {
-  RaiiContextCapturer outer_scope("outer_scope");
-  RaiiContextCapturer mlp_scopes(std::vector<std::string>{
-      "layers.0[SimpleTransformerBlock]", "mlp[SimpleMLP]"});
+  const NameScopeGuard outer_scope("outer_scope");
+  const NameScopeHierarchyGuard mlp_scopes(
+      {"layers.0[SimpleTransformerBlock]", "mlp[SimpleMLP]"});
 
   ScopedPythonContextCapturer capturer(OpName::kBmm);
   EXPECT_THAT(
@@ -282,7 +260,7 @@ TEST(ScopedPythonContextCapturer, PushNameScopesReplacesActiveHierarchy) {
 TEST(ScopedPythonContextCapturer, NameScopesRestoreViaDebugInfoGuard) {
   std::shared_ptr<c10::ThreadLocalDebugInfo> saved_debug_info;
   {
-    RaiiContextCapturer backward_scope("backward_phase");
+    const NameScopeGuard backward_scope("backward_phase");
     saved_debug_info = c10::ThreadLocalDebugInfo::current();
   }
   // Scope has been popped.

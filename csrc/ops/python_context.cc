@@ -325,7 +325,7 @@ std::optional<PythonContext> ScopedPythonContextCapturer::MaybeGetContext() {
   return PythonContext(op_names_, traceback_, GetActiveNameScopes(op_names_));
 }
 
-void ScopedPythonContextCapturer::AppendNameScope(std::string scope) {
+void PyAppendNameScope(std::string scope) {
   std::vector<std::string> scopes;
   if (const MaybeSharedNameScopes active = GetActiveNameScopes();
       active != nullptr) {
@@ -338,15 +338,25 @@ void ScopedPythonContextCapturer::AppendNameScope(std::string scope) {
       std::make_shared<const std::vector<std::string>>(std::move(scopes)));
 }
 
-void ScopedPythonContextCapturer::PushNameScopes(
-    std::vector<std::string> scopes) {
+void PyPushNameScopes(std::vector<std::string> scopes) {
   PushContextState<NameScopeContextState>(
       std::make_shared<const std::vector<std::string>>(std::move(scopes)));
 }
 
-void ScopedPythonContextCapturer::PopNameScopes() {
-  PopContextState<NameScopeContextState>();
+void PyPopNameScopes() { PopContextState<NameScopeContextState>(); }
+
+NameScopeGuard::NameScopeGuard(std::string scope) {
+  PyAppendNameScope(std::move(scope));
 }
+
+NameScopeGuard::~NameScopeGuard() { PyPopNameScopes(); }
+
+NameScopeHierarchyGuard::NameScopeHierarchyGuard(
+    std::vector<std::string> scopes) {
+  PyPushNameScopes(std::move(scopes));
+}
+
+NameScopeHierarchyGuard::~NameScopeHierarchyGuard() { PyPopNameScopes(); }
 
 thread_local  // CPP_THREAD_LOCAL_OK=needed only in the dispatching thread.
     std::vector<std::string>
