@@ -25,7 +25,9 @@ feature issue is in itself a valuable contribution.**
 
 For anything more complicated than trivial fixes, please open an issue first
 before writing code, to allow for discussion about the right shape of the
-solution and to make the issue discoverable and prevent duplicate work.
+solution and to make the issue discoverable and prevent duplicate work. Linking
+your PR to that issue also helps us prioritize its review (see
+[What We Expect From Contributors](#what-we-expect-from-contributors)).
 
 ### What Makes a Great Bug Report
 
@@ -278,6 +280,11 @@ A constructive review process relies on mutual respect for time and attention.
 *   **Clear context**: Explain what your change does and why it is needed. All
     non-trivial PRs must
     [link to the relevant GitHub issue](https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/linking-a-pull-request-to-an-issue).
+*   **Link your PR to an issue**: Even for small changes, we encourage you to
+    link your PR to the issue it addresses, e.g. with `Fixes #123` in the PR
+    description. We prioritize reviews by the priority of the linked issue, so
+    PRs that address higher-priority issues get more prompt attention, while PRs
+    without a linked issue are reviewed as time allows.
 *   **Shepherd your change**: Keep an eye on CI checks, address reviewer notes,
     and let us know if you get blocked or need to step away.
 *   **Let us assign owners and reviewers**: Please don't assign or request
