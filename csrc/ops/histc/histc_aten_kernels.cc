@@ -30,6 +30,7 @@
 #include "c10/core/ScalarType.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
+#include "csrc/common/device_type.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -50,10 +51,25 @@ namespace torch_tpu {
 
 namespace {
 
-absl::StatusOr<bool> lt(const at::Scalar& a, const at::Scalar& b) {
-  if (a.isFloatingPoint() && b.isFloatingPoint()) {
-    return a.to<double>() < b.to<double>();
-  }
+enum class BoundsMode {
+  kExplicit,
+  kFromInput,
+};
+
+absl::Status ValidateScalarBoundsTypes(const at::Scalar& min,
+                                       const at::Scalar& max) {
+  const bool min_valid =
+      min.isFloatingPoint() || min.isIntegral(/*includeBool=*/false);
+  const bool max_valid =
+      max.isFloatingPoint() || max.isIntegral(/*includeBool=*/false);
+  TT_RET_CHECK(min_valid && max_valid, error::kInvalidArgument)
+      << "expected min and max to be float or int type, got " << min.type()
+      << " and " << max.type();
+  return absl::OkStatus();
+}
+
+// Precondition: ValidateScalarBoundsTypes(a, b) succeeded.
+bool ScalarLt(const at::Scalar& a, const at::Scalar& b) {
   if (a.isIntegral(/*includeBool=*/false) &&
       b.isIntegral(/*includeBool=*/false)) {
     if (a.type() == c10::ScalarType::UInt64 &&
@@ -64,16 +80,18 @@ absl::StatusOr<bool> lt(const at::Scalar& a, const at::Scalar& b) {
         b.type() == c10::ScalarType::Long) {
       return a.to<int64_t>() < b.to<int64_t>();
     }
+    if (a.type() == c10::ScalarType::Long) {
+      const int64_t a_val = a.to<int64_t>();
+      return a_val < 0 || static_cast<uint64_t>(a_val) < b.to<uint64_t>();
+    }
+    const int64_t b_val = b.to<int64_t>();
+    return b_val >= 0 && a.to<uint64_t>() < static_cast<uint64_t>(b_val);
   }
-  return TT_ERROR(error::kInvalidArgument)
-         << "expected min and max to be float or int type, got " << a.type()
-         << " and " << b.type();
+  return a.to<double>() < b.to<double>();
 }
 
-absl::StatusOr<bool> eq(const at::Scalar& a, const at::Scalar& b) {
-  if (a.isFloatingPoint() && b.isFloatingPoint()) {
-    return a.to<double>() == b.to<double>();
-  }
+// Precondition: ValidateScalarBoundsTypes(a, b) succeeded.
+bool ScalarEq(const at::Scalar& a, const at::Scalar& b) {
   if (a.isIntegral(/*includeBool=*/false) &&
       b.isIntegral(/*includeBool=*/false)) {
     if (a.type() == c10::ScalarType::UInt64 &&
@@ -84,10 +102,29 @@ absl::StatusOr<bool> eq(const at::Scalar& a, const at::Scalar& b) {
         b.type() == c10::ScalarType::Long) {
       return a.to<int64_t>() == b.to<int64_t>();
     }
+    if (a.type() == c10::ScalarType::Long) {
+      const int64_t a_val = a.to<int64_t>();
+      return a_val >= 0 && static_cast<uint64_t>(a_val) == b.to<uint64_t>();
+    }
+    const int64_t b_val = b.to<int64_t>();
+    return b_val >= 0 && a.to<uint64_t>() == static_cast<uint64_t>(b_val);
   }
-  return TT_ERROR(error::kInvalidArgument)
-         << "expected min and max to be float or int type, got " << a.type()
-         << " and " << b.type();
+  return a.to<double>() == b.to<double>();
+}
+
+absl::Status ValidateScalarBoundsFinite(const at::Scalar& min,
+                                        const at::Scalar& max) {
+  if (min.isFloatingPoint() || max.isFloatingPoint()) {
+    const double min_val = min.to<double>();
+    const double max_val = max.to<double>();
+    TT_RET_CHECK(!(std::isinf(min_val) || std::isinf(max_val) ||
+                   std::isnan(min_val) || std::isnan(max_val)),
+                 error::kInvalidArgument)
+        << "expected min and max to be finite, got " << min << " and " << max
+        << ". Either make sure that the input data is finite, or provide valid "
+           "finite bounds";
+  }
+  return absl::OkStatus();
 }
 
 // Validates whether the given min and max values are valid. If min_prev
@@ -101,24 +138,15 @@ absl::Status ValidateBounds(
     const std::optional<at::Scalar>& max_prev = std::nullopt) {
   // The below code for bounds validation mirrors the logic in the PyTorch GPU
   // kernel implementation.
-
-  // Check for finite.
-  if (min.isFloatingPoint() && max.isFloatingPoint()) {
-    TT_RET_CHECK(
-        !(std::isinf(min.to<double>()) || std::isinf(max.to<double>()) ||
-          std::isnan(min.to<double>()) || std::isnan(max.to<double>())),
-        error::kInvalidArgument)
-        << "expected min and max to be finite, got " << min << " and " << max
-        << ". Either make sure that the input data is finite, or provide valid "
-           "finite bounds";
-  }
+  TT_RETURN_IF_ERROR(ValidateScalarBoundsTypes(min, max));
+  TT_RETURN_IF_ERROR(ValidateScalarBoundsFinite(min, max));
 
   // Check for overflows.
   if (min_prev.has_value() && max_prev.has_value()) {
+    TT_RETURN_IF_ERROR(ValidateScalarBoundsTypes(*min_prev, *max_prev));
     // If min_prev < max_prev and min > max, there's an overflow.
-    TT_ASSIGN_OR_RETURN(const bool min_prev_lt_max_prev,
-                        lt(*min_prev, *max_prev));
-    TT_ASSIGN_OR_RETURN(const bool max_lt_min, lt(max, min));
+    const bool min_prev_lt_max_prev = ScalarLt(*min_prev, *max_prev);
+    const bool max_lt_min = ScalarLt(max, min);
     TT_RET_CHECK(min_prev_lt_max_prev && max_lt_min, error::kInvalidArgument)
         << "expected min and max to be within the range of their data "
            "types, got min = "
@@ -128,18 +156,17 @@ absl::Status ValidateBounds(
   }
 
   // Check that min < max.
-  TT_ASSIGN_OR_RETURN(const bool min_lt_max, lt(min, max));
-  TT_RET_CHECK(min_lt_max, error::kInvalidArgument)
+  TT_RET_CHECK(ScalarLt(min, max), error::kInvalidArgument)
       << "expected min <= max, got " << min << " vs " << max;
 
   return absl::OkStatus();
 }
 
-absl::Status HistcHelperOut(const at::Tensor& self, const int64_t bins,
-                            const at::Scalar& min, const at::Scalar& max,
-                            PromotedScalar& promoted_min,
-                            PromotedScalar& promoted_max, at::Tensor& out,
-                            OpParamCacheKeys param_keys) {
+absl::Status ValidateHistcInputTensor(const at::Tensor& self) {
+  TT_RET_CHECK(IsPrivateUse1Device(self), error::kInvalidArgument)
+      << "expected tensor to be on " << GetPrivateUse1DeviceDebugName()
+      << ", got " << self.device();
+
   TT_RET_CHECK(!IsComplex(self), error::kInvalidArgument)
       << "expected the first argument not to be complex, got "
       << ToString(self.scalar_type());
@@ -148,29 +175,53 @@ absl::Status HistcHelperOut(const at::Tensor& self, const int64_t bins,
                error::kPythonNotImplementedError)
       << "not implemented for " << ToString(self.scalar_type());
 
-  TT_RETURN_IF_ERROR(
-      ValidateOutDtype(out, self.scalar_type(), /*allow_out_dtype_cast=*/true));
+  return absl::OkStatus();
+}
+
+absl::StatusOr<BoundsMode> ValidateHistcBinsAndBounds(const at::Tensor& self,
+                                                      const int64_t bins,
+                                                      const at::Scalar& min,
+                                                      const at::Scalar& max) {
+  TT_RET_CHECK(bins > 0, error::kInvalidArgument)
+      << "expected bins > 0, got " << bins;
+
+  TT_RETURN_IF_ERROR(ValidateScalarBoundsTypes(min, max));
+  const bool min_eq_max = ScalarEq(min, max);
+  if (!min_eq_max) {
+    // Validate the bounds provided as arguments to torch.histc.
+    TT_RETURN_IF_ERROR(ValidateBounds(min, max));
+    return BoundsMode::kExplicit;
+  }
+  if (self.numel() == 0) {
+    // On empty input with min == max, PyTorch adjusts to [min - 1, max + 1],
+    // which still requires min and max to be finite.
+    TT_RETURN_IF_ERROR(ValidateScalarBoundsFinite(min, max));
+    return BoundsMode::kExplicit;
+  }
+  return BoundsMode::kFromInput;
+}
+
+absl::Status HistcComputeIntoOut(const at::Tensor& self, const int64_t bins,
+                                 const at::Scalar& min, const at::Scalar& max,
+                                 const BoundsMode bounds_mode,
+                                 PromotedScalar& promoted_min,
+                                 PromotedScalar& promoted_max, at::Tensor& out,
+                                 OpParamCacheKeys param_keys) {
   const c10::ScalarType input_dtype = self.scalar_type();
   TT_ASSIGN_OR_RETURN(at::Tensor min_val, promoted_min.GetTensor(input_dtype));
   TT_ASSIGN_OR_RETURN(at::Tensor max_val, promoted_max.GetTensor(input_dtype));
 
-  const int64_t numel = self.numel();
-
   // If input is empty, return tensor of zeros.
-  if (numel == 0) {
+  if (self.numel() == 0) {
     TT_RETURN_IF_ERROR(ResizeTensorIfShapeDiffers(out, {bins}));
     out.zero_();
     return absl::OkStatus();
   }
 
-  TT_ASSIGN_OR_RETURN(auto mlir_input_dtype,
+  TT_ASSIGN_OR_RETURN(const auto mlir_input_dtype,
                       ConvertTo<mlir::ElementType>(input_dtype));
 
-  TT_ASSIGN_OR_RETURN(const bool min_eq_max, eq(min, max));
-  if (!(min_eq_max && numel > 0)) {
-    // Validate the bounds provided as arguments to torch.histc.
-    TT_RETURN_IF_ERROR(ValidateBounds(min, max));
-  } else {
+  if (bounds_mode == BoundsMode::kFromInput) {
     // Compute min/max from input data. This is done when min == max and
     // numel > 0, which happens when the min and max are not provided as
     // arguments to torch.histc and the input tensor is not empty. The
@@ -215,7 +266,7 @@ absl::Status HistcHelperOut(const at::Tensor& self, const int64_t bins,
   }
 
   // Perform the actual histogram computation.
-  TT_ASSIGN_OR_RETURN(auto mlir_out_dtype,
+  TT_ASSIGN_OR_RETURN(const auto mlir_out_dtype,
                       ConvertTo<mlir::ElementType>(out.scalar_type()));
   auto op_builder = [bins](FixedSizeSpan<mlir::MlirOp, 3> inputs)
       -> absl::StatusOr<mlir::MlirOp> {
@@ -239,11 +290,14 @@ at::Tensor AtenHistc(const at::Tensor& self, const int64_t bins,
   auto promoted_max = PromoteScalar(max);
   TT_KERNEL(
       OpName::kHistc, param_keys, (self, bins, promoted_min, promoted_max), {
-        c10::ScalarType out_dtype = self.scalar_type();
-        at::Tensor out = at::empty({bins}, self.options().dtype(out_dtype));
-        TT_THROW_IF_ERROR(HistcHelperOut(self, bins, min, max, promoted_min,
-                                         promoted_max, out,
-                                         std::move(param_keys)));
+        TT_THROW_IF_ERROR(ValidateHistcInputTensor(self));
+        TT_ASSIGN_OR_THROW(const BoundsMode bounds_mode,
+                           ValidateHistcBinsAndBounds(self, bins, min, max));
+        at::Tensor out =
+            at::empty({bins}, self.options().dtype(self.scalar_type()));
+        TT_THROW_IF_ERROR(HistcComputeIntoOut(self, bins, min, max, bounds_mode,
+                                              promoted_min, promoted_max, out,
+                                              std::move(param_keys)));
         return out;
       });
 }
@@ -253,13 +307,22 @@ at::Tensor& AtenHistcOut(const at::Tensor& self, const int64_t bins,
                          at::Tensor& out) {
   auto promoted_min = PromoteScalar(min);
   auto promoted_max = PromoteScalar(max);
-  TT_KERNEL(OpName::kHistcOut, param_keys,
-            (self, bins, promoted_min, promoted_max, out), {
-              TT_THROW_IF_ERROR(HistcHelperOut(self, bins, min, max,
-                                               promoted_min, promoted_max, out,
-                                               std::move(param_keys)));
-              return out;
-            });
+  TT_KERNEL(
+      OpName::kHistcOut, param_keys,
+      (self, bins, promoted_min, promoted_max, out), {
+        TT_THROW_IF_ERROR(ValidateHistcInputTensor(self));
+        TT_CHECK_THROW(IsPrivateUse1Device(out), error::kInvalidArgument)
+            << "expected out tensor to be on "
+            << GetPrivateUse1DeviceDebugName() << ", got " << out.device();
+        TT_THROW_IF_ERROR(ValidateOutDtype(out, self.scalar_type(),
+                                           /*allow_out_dtype_cast=*/false));
+        TT_ASSIGN_OR_THROW(const BoundsMode bounds_mode,
+                           ValidateHistcBinsAndBounds(self, bins, min, max));
+        TT_THROW_IF_ERROR(HistcComputeIntoOut(self, bins, min, max, bounds_mode,
+                                              promoted_min, promoted_max, out,
+                                              std::move(param_keys)));
+        return out;
+      });
 }
 
 }  // namespace torch_tpu

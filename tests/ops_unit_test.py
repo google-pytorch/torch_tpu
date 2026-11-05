@@ -4946,6 +4946,70 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     expected_tensor = torch.tensor(expected, dtype=dtype, device="tpu")
     self.assertEqual(tpu_result, expected_tensor)
 
+  def test_histc_mixed_int_float_bounds(self):
+    # Regression test for b/579088881: mixed int/float Python scalar bounds
+    # (including the default min=0 with float max).
+    for dtype in [torch.float32, torch.float64]:
+      for values in [[0.2, 0.5, 1.2], [-2.0, -0.5, 0.2, 1.8, 3.9], []]:
+        for min_val, max_val in [
+            (0, 1.5),
+            (-1.5, 0),
+            (1, 4.5),
+            (-3.5, 2),
+            (0, 0.0),
+            (0.0, 0),
+            (2, 2.0),
+            (2.0, 2),
+        ]:
+          self.assert_close_tpu_vs_cpu(
+              lambda device, dt=dtype, vals=values, mn=min_val, mx=max_val: (
+                  torch.histc(
+                      torch.tensor(vals, dtype=dt, device=device),
+                      bins=3,
+                      min=mn,
+                      max=mx,
+                  )
+              )
+          )
+
+          def compute_out(
+              device, dt=dtype, vals=values, mn=min_val, mx=max_val
+          ):
+            inp = torch.tensor(vals, dtype=dt, device=device)
+            out = torch.empty((0,), dtype=dt, device=device)
+            return torch.histc(inp, bins=3, min=mn, max=mx, out=out)
+
+          self.assert_close_tpu_vs_cpu(compute_out)
+
+    for int_dtype in [torch.int32, torch.int64]:
+      tpu_input = torch.tensor([1, 9, 1, 0, 6], dtype=int_dtype, device="tpu")
+      expected_tensor = torch.tensor(
+          [1, 2, 0, 0, 0, 0, 1, 0, 0, 1], dtype=int_dtype, device="tpu"
+      )
+      for min_val, max_val in [(0, 10.0), (0.0, 10)]:
+        self.assertEqual(
+            torch.histc(tpu_input, bins=10, min=min_val, max=max_val),
+            expected_tensor,
+        )
+
+  def test_histc_compiled_mixed_bounds_and_empty(self):
+    compiled_histc = torch.compile(
+        lambda x: torch.histc(x, bins=3, min=0, max=1.5),
+        backend="tpu",
+        fullgraph=True,
+    )
+    x_cpu = torch.tensor([0.2, 0.5, 1.2], dtype=torch.float32)
+    utils.assert_close(
+        compiled_histc(x_cpu.to("tpu")).cpu(),
+        torch.histc(x_cpu, bins=3, min=0, max=1.5),
+    )
+
+    x_empty_cpu = torch.empty((0,), dtype=torch.float32)
+    utils.assert_close(
+        compiled_histc(x_empty_cpu.to("tpu")).cpu(),
+        torch.histc(x_empty_cpu, bins=3, min=0, max=1.5),
+    )
+
   def test_lerp_complex128(self):
     # Regression test for b/451684563: lerp() supports complex128.
     # TODO(b/451684563): Switch to testing TPU-vs-GPU in ops_test.py once GPU
@@ -20201,22 +20265,21 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
     self.assertEqual(res.dtype, torch.int64)
     self.assertIs(res, out)
 
-  def test_histc_out_upcast_and_resizing(self):
-    device = torch.device("tpu")
+  def test_histc_out_resizing(self):
     x = torch.tensor([1.0, 2.0, 2.5, 3.0], dtype=torch.float32)
     bins = 4
-    min_val = 0.0
-    max_val = 4.0
-    expected = torch.histc(x, bins=bins, min=min_val, max=max_val).to(
-        torch.float64
-    )
-    inp = x.to(device)
-    out = torch.empty((0,), device=device, dtype=torch.float64)
-    res = torch.histc(inp, bins=bins, min=min_val, max=max_val, out=out)
-    self.assertEqual(out.shape, (bins,))
-    self.assertEqual(out.dtype, torch.float64)
-    utils.assert_close(res.cpu(), expected)
-    self.assertEqual(res.data_ptr(), out.data_ptr())
+    for initial_shape in [(0,), (10,)]:
+
+      def compute(device, shape=initial_shape):
+        inp = x.to(device)
+        out = torch.empty(shape, device=device, dtype=torch.float32)
+        res = torch.histc(inp, bins=bins, min=0, max=4.0, out=out)
+        self.assertEqual(out.shape, (bins,))
+        self.assertEqual(out.dtype, torch.float32)
+        self.assertIs(res, out)
+        return res
+
+      self.assert_close_tpu_vs_cpu(compute)
 
   def test_avg_pool2d_out_resizing(self):
     x = torch.randn(2, 3, 8, 8)
