@@ -40,6 +40,7 @@
 #include "csrc/eager/current_stream.h"
 #include "csrc/eager/device_gen_impl.h"
 #include "csrc/eager/events_queue.h"
+#include "csrc/eager/graph_capture_state.h"
 #include "csrc/eager/materialize.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
@@ -336,6 +337,9 @@ TT_PYBIND11_MODULE(_device_ops_backend, m) {
 
   m.def("_get_next_stream_id", &PyNextStreamId, py::arg("device_index"),
         "Returns the next available stream ID for the given device.");
+
+  m.def("_is_current_thread_capturing_graph", &IsCurrentThreadCapturingGraph,
+        "Returns whether the current thread is capturing a graph.");
 
   m.def(
       "_get_device_type",

@@ -226,11 +226,6 @@ ExtractArgumentLayoutsIfDifferentFromDefault(const Traversal& traversal) {
   return argument_layouts;
 }
 
-struct CompiledTraversal {
-  CompilationCacheKey compilation_cache_key;
-  CompiledKernel compiled_kernel;
-};
-
 // Returns the type of `compiled_kernel`, as served by the compilation cache.
 KernelType GetKernelType(const CompiledKernel& compiled_kernel) {
   if (compiled_kernel.unbounded_dynamic_kernel != nullptr) {
@@ -305,6 +300,13 @@ std::vector<Shape> GetShapesFromDeviceBuffers(
 }
 
 }  // namespace
+
+absl::StatusOr<CompiledTraversal> CompileCapturedTraversal(
+    Traversal& traversal, mlir::MLIRContext& mlir_context,
+    const CompilationSpec& compilation_spec) {
+  return VerifyAndCompileTraversal(traversal, mlir_context, compilation_spec,
+                                   /*out_mlir_text=*/nullptr);
+}
 
 absl::StatusOr<ExecutionTask> ExecutionTask::FromTraversal(
     absl_nonnull std::unique_ptr<Traversal> traversal,

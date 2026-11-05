@@ -49,6 +49,7 @@
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/eager_mode.h"
 #include "csrc/eager/events_queue.h"
+#include "csrc/eager/graph_capture_state.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
@@ -85,8 +86,12 @@ absl::StatusOr<DeviceBufferRef> MakeBuffer(
   // In eager modes (DeferNever, DeferAndFuse, or DeferAll) scalars are treated
   // as arguments to increase code reuse, as the benefit of constant folding
   // is not justified at the risk of over-specialization and recompilation.
+  // The scalars of a captured graph are constants too: the graph is compiled
+  // once, and a scalar argument would need a host-to-device copy during
+  // capture.
   const bool constant_mode =
-      GetEagerMode() == EagerMode::kInternalCompileFxGraph;
+      GetEagerMode() == EagerMode::kInternalCompileFxGraph ||
+      IsCurrentThreadCapturingGraph();
 
   if (!constant_mode) {
     // Variable execution mode: materialize the scalar to a DeviceBufferRef.
@@ -293,8 +298,11 @@ void AutoDonateInPlaceBuffers(
     absl::Span<const absl::Span<const int64_t>> out_dims_list,
     absl::Span<const at::Tensor> inputs, Indices& donated_indices,
     std::vector<uint8_t>& output_donated) {
+  // A captured graph must not donate the buffers of tensors that existed
+  // before capture (see internal::CreateDeferredDeviceBufferList).
   if (!donated_indices.empty() || !IsInplaceBufferDonationEnabled() ||
-      !SupportsInplaceBufferDonation(GetEagerMode())) {
+      !SupportsInplaceBufferDonation(GetEagerMode()) ||
+      IsCurrentThreadCapturingGraph()) {
     return;
   }
 
