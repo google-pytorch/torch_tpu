@@ -52,10 +52,12 @@
 #include "csrc/eager/device_buffer_utils.h"
 #include "csrc/eager/device_gen_impl.h"
 #include "csrc/eager/events_queue.h"
+#include "csrc/eager/graph_capture_state.h"
 #include "csrc/eager/host_allocator.h"
 #include "csrc/eager/materialize.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
+#include "csrc/eager/tpu_graph.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/pjrt/pjrt_state.h"
@@ -237,16 +239,22 @@ c10::Stream TpuDeviceGuardImpl::exchangeStream(c10::Stream s) const {
   //     because Z depends on Y, which has not yet been started.
   // By blocking on the exit from stream 2 until Y's materialization is queued,
   // Z's materialization cannot race its inputs, even if Y hasn't finished.
-  TT_ASSIGN_OR_THROW(EventSnapshot snapshot,
-                     MaterializeStream(s.device_index(), old_stream_id,
-                                       MaterializationReason::kExplicitSync));
-  TT_THROW_IF_ERROR(snapshot.BlockUntilStarted());
-  // Because we're dropping this snapshot without returning it to the user, any
-  // errors would be lost if we only chained the OkCallback. To ensure all
-  // errors are raised correctly we inject the full completion future into the
-  // stream so errors are picked up by the next snapshot.
-  internal::MarkStreamActive(s.device_index(), old_stream_id,
-                             snapshot.completion_future());
+  //
+  // The deferred ops on a stream that a thread is capturing a graph on belong
+  // to the graph, so they must not run.
+  if (!IsCurrentThreadCapturingGraph() &&
+      !IsStreamCapturedByAnotherThread(s.device_index(), old_stream_id)) {
+    TT_ASSIGN_OR_THROW(EventSnapshot snapshot,
+                       MaterializeStream(s.device_index(), old_stream_id,
+                                         MaterializationReason::kExplicitSync));
+    TT_THROW_IF_ERROR(snapshot.BlockUntilStarted());
+    // Because we're dropping this snapshot without returning it to the user,
+    // any errors would be lost if we only chained the OkCallback. To ensure all
+    // errors are raised correctly we inject the full completion future into the
+    // stream so errors are picked up by the next snapshot.
+    internal::MarkStreamActive(s.device_index(), old_stream_id,
+                               snapshot.completion_future());
+  }
   return c10::Stream(c10::Stream::UNSAFE, s.device(), old_stream_id);
 }
 
@@ -299,16 +307,36 @@ c10::Stream TpuDeviceGuardImpl::getDefaultStream(c10::Device d) const {
 void TpuDeviceGuardImpl::record(void** event, const c10::Stream& stream,
                                 const c10::DeviceIndex device_index,
                                 const c10::EventFlag flag) const {
-  if (*event != nullptr) {
-    this->destroyEvent(*event, device_index);
-  }
+  // Unlike a CUDA graph, a captured graph has no nodes that events could mark.
+  TT_CHECK_THROW(!IsCurrentThreadCapturingGraph(), error::kFailedPrecondition)
+      << "recording events while capturing a graph is not supported";
   TT_ASSIGN_OR_THROW(EventSnapshot snapshot,
                      MaterializeStream(stream.device_index(), stream.id(),
                                        MaterializationReason::kExplicitSync));
   TT_THROW_IF_ERROR(snapshot.BlockUntilStarted());
+  // The previous snapshot is destroyed only once the new one exists, so that
+  // the event remains valid if recording fails.
+  if (*event != nullptr) {
+    this->destroyEvent(*event, device_index);
+  }
   *event = new EventSnapshot(std::move(snapshot));
 }
 void TpuDeviceGuardImpl::block(void* event, const c10::Stream& stream) const {
+  // Events cannot be recorded while capturing a graph, so `event` marks work
+  // that capture does not record. Like CUDA, a stream being captured cannot
+  // depend on such work.
+  if (IsCurrentThreadCapturingGraph() &&
+      IsStreamCapturedByCurrentThread(stream.device_index(), stream.id())) {
+    TT_THROW_IF_ERROR(InvalidateCurrentThreadGraphCapture(
+        TT_ERROR(error::kFailedPrecondition)
+        << "cannot make a stream wait on an event while capturing a graph on "
+           "the stream"));
+  }
+  TT_CHECK_THROW(
+      !IsStreamCapturedByAnotherThread(stream.device_index(), stream.id()),
+      error::kFailedPrecondition)
+      << "cannot make a stream wait on an event while another thread is "
+         "capturing a graph on the stream";
   EventSnapshot* snapshot = reinterpret_cast<EventSnapshot*>(event);
   c10::DeviceIndex device_index = stream.device_index();
   c10::StreamId stream_id = stream.id();
@@ -316,11 +344,29 @@ void TpuDeviceGuardImpl::block(void* event, const c10::Stream& stream) const {
 }
 
 bool TpuDeviceGuardImpl::queryEvent(void* event) const {
+  // Like CUDA, which does not permit potentially synchronizing calls during
+  // graph capture.
+  if (IsCurrentThreadCapturingGraph()) {
+    TT_THROW_IF_ERROR(InvalidateCurrentThreadGraphCapture(
+        TT_ERROR(error::kFailedPrecondition)
+        << "cannot query events while capturing a graph"));
+  }
   EventSnapshot* snapshot = reinterpret_cast<EventSnapshot*>(event);
   TT_ASSIGN_OR_THROW(bool ready, snapshot->Query());
   return ready;
 }
 bool TpuDeviceGuardImpl::queryStream(const c10::Stream& stream) const {
+  // Like CUDA, which does not permit potentially synchronizing calls during
+  // graph capture.
+  if (IsCurrentThreadCapturingGraph()) {
+    TT_THROW_IF_ERROR(InvalidateCurrentThreadGraphCapture(
+        TT_ERROR(error::kFailedPrecondition)
+        << "cannot query streams while capturing a graph"));
+  }
+  TT_CHECK_THROW(
+      !IsStreamCapturedByAnotherThread(stream.device_index(), stream.id()),
+      error::kFailedPrecondition)
+      << "cannot query a stream that another thread is capturing a graph on";
   TT_WARN_ONCE(WarningCategory::kTorchTpu, "queryStream not yet implemented.");
   return true;
 }
@@ -348,6 +394,12 @@ void TpuDeviceGuardImpl::destroyEvent(
 }
 
 void TpuDeviceGuardImpl::synchronizeEvent(void* event) const {
+  // Like CUDA, which does not permit synchronizing calls during graph capture.
+  if (IsCurrentThreadCapturingGraph()) {
+    TT_THROW_IF_ERROR(InvalidateCurrentThreadGraphCapture(
+        TT_ERROR(error::kFailedPrecondition)
+        << "cannot synchronize events while capturing a graph"));
+  }
   EventSnapshot* snapshot = reinterpret_cast<EventSnapshot*>(event);
   TT_THROW_IF_ERROR(snapshot->Synchronize());
 }
@@ -405,6 +457,8 @@ struct TORCH_API TpuHooksInterface : public at::PrivateUse1HooksInterface {
         (IgnoreInCacheKey(storage, "Doesn't affect SHLO"),
          IgnoreInCacheKey(new_bytes, "Doesn't affect SHLO")),
         {
+          TT_THROW_IF_ERROR(
+              ValidateStorageResizableDuringGraphCapture(storage));
           const size_t current_bytes = storage.nbytes();
           TT_ASSIGN_OR_THROW(const DeviceBufferRef old_buffer_ref,
                              GetBaseBuffer(storage));
@@ -504,6 +558,7 @@ void CheckTpuDeviceNodesAfterInitialization() {
 
 absl::Status AddTpuHooks() {
   at::RegisterPrivateUse1HooksInterface(GetTpuHooks());
+  RegisterTpuGraphImpl();
 
   return absl::OkStatus();
 }

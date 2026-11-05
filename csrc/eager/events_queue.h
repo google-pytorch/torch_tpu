@@ -28,6 +28,7 @@
 #include "absl/base/nullability.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/types/span.h"
 #include "c10/core/Device.h"
 #include "c10/core/Stream.h"
 #include "csrc/common/cache_key.h"
@@ -36,8 +37,10 @@
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/eager_mode.h"
 #include "csrc/eager/execution_task.h"
+#include "csrc/eager/graph_capture_state.h"
 #include "csrc/eager/split_traversal.h"
 #include "csrc/eager/structured_log_buffer.h"
+#include "csrc/eager/traversal.h"
 #include "csrc/pjrt/pjrt_transfer.h"
 #include "xla/future.h"
 
@@ -330,6 +333,48 @@ absl::Status InsertGraphBreak(
     c10::DeviceIndex device_index, c10::StreamId stream_id,
     std::vector<SharedDeviceBufferList> must_materialize,
     MaterializationReason reason, GraphSplitMode mode);
+
+// Extracts all deferred ops recorded on `(device_index, stream_id)` since the
+// last stream synchronization and builds a sequence of Traversals producing
+// `must_materialize` (plus any side-effecting ops) with
+// `GraphSplitMode::kFullGraph` without enqueueing them on the materialization
+// worker. Used by `torch.accelerator.Graph`.
+std::vector<absl_nonnull std::unique_ptr<Traversal>> ExtractCapturedTraversals(
+    c10::DeviceIndex device_index, c10::StreamId stream_id,
+    absl::Span<const SharedDeviceBufferList> must_materialize);
+
+// Records that the thread owning `capture` is capturing a
+// `torch.accelerator.Graph` on the given stream, until
+// EndStreamGraphCapture(). Fails if a graph capture is already in progress on
+// that stream.
+absl::Status BeginStreamGraphCapture(
+    c10::DeviceIndex device_index, c10::StreamId stream_id,
+    absl_nonnull std::shared_ptr<const GraphCaptureState> capture);
+
+// Records that no thread is capturing a graph on the given stream anymore.
+void EndStreamGraphCapture(c10::DeviceIndex device_index,
+                           c10::StreamId stream_id);
+
+// Returns true if the current thread is capturing a `torch.accelerator.Graph`
+// on the given stream.
+[[nodiscard]] bool IsStreamCapturedByCurrentThread(
+    c10::DeviceIndex device_index, c10::StreamId stream_id);
+
+// Returns true if a thread other than the current one is capturing a
+// `torch.accelerator.Graph` on the given stream. Graph capture records the
+// operations of the capturing thread only, so the operations of other threads
+// on that stream would neither run nor be captured.
+[[nodiscard]] bool IsStreamCapturedByAnotherThread(
+    c10::DeviceIndex device_index, c10::StreamId stream_id);
+
+// Returns the error for running an operation on a stream that another thread is
+// capturing a `torch.accelerator.Graph` on.
+absl::Status StreamCapturedByAnotherThreadError();
+
+// Returns the error for using the contents of a tensor that a graph capture in
+// progress read or wrote: until the capture ends, they are only known to the
+// captured graph.
+absl::Status TensorAccessedByGraphCaptureError();
 
 void WriteBackMaterializationFutures(
     c10::DeviceIndex device_index, c10::StreamId stream_id,
