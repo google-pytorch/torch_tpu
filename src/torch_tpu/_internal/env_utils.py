@@ -29,8 +29,8 @@ directly and justify it with a `# PY_ENVIRON_OK=<reason>` comment, which the
 here would hide it from that check.
 """
 
+from collections.abc import Callable
 import os
-from typing import Callable
 
 # Maps an environment variable name to the value resolved for it by
 # get_and_set_str_env_once().

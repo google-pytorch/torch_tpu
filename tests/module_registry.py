@@ -31,7 +31,7 @@ inputs.
 # pylint: disable=g-import-not-at-top
 
 import abc
-from collections.abc import Callable, Mapping, MutableMapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, MutableMapping, Sequence
 import contextlib
 import copy
 import dataclasses
@@ -49,7 +49,7 @@ import pathlib
 import sys
 import tempfile
 import types
-from typing import Any, Iterator, overload
+from typing import Any, overload
 import uuid
 
 from absl import flags

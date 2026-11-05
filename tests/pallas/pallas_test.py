@@ -14,13 +14,14 @@
 
 """Tests for Pallas custom kernels."""
 
+from collections.abc import Sequence
 import enum
 import functools
 import os
 import pathlib
 import re
 import sys
-from typing import Optional, Sequence, Tuple, TypeAlias
+from typing import TypeAlias
 from unittest import mock
 import warnings
 from absl.testing import absltest
@@ -79,7 +80,7 @@ def add_subtract_vectors_kernel(x_ref, y_ref, oadd_ref, osub_ref):
 @pallas.jax_op("pallas::add_subtract_vectors")
 def add_subtract_vectors(
     x: jax.Array, y: jax.Array
-) -> Tuple[jax.Array, jax.Array]:
+) -> tuple[jax.Array, jax.Array]:
   dt = jax.ShapeDtypeStruct(x.shape, x.dtype)
   return pl.pallas_call(add_subtract_vectors_kernel, out_shape=(dt, dt))(x, y)
 
@@ -586,7 +587,7 @@ class TestPallasKernels(seed_test_utils.RepeatableTest):
     """Simulate kernel libraries like tokamax that wrap pallas kernels."""
 
     @pallas.jax_op("pallas::jax_test")
-    def wrapper(x: jax.Array, y: Optional[jax.Array]) -> jax.Array:
+    def wrapper(x: jax.Array, y: jax.Array | None) -> jax.Array:
       if y is None:
         return x
       return jax.numpy.add(x, y)
@@ -762,7 +763,7 @@ class TestPallasKernels(seed_test_utils.RepeatableTest):
     # Create the kernel in JAX. Do not jax.jit this, jax_op will do it later.
     def mul_and_add_scalars_jax_kernel(
         x: jax.Array, y: jax.Array
-    ) -> Tuple[jax.Array, jax.Array]:
+    ) -> tuple[jax.Array, jax.Array]:
       if x.ndim != 0 or y.ndim != 0:
         raise ValueError("Only scalars are supported.")
       return jax.numpy.multiply(x, y), jax.numpy.add(x, y)
@@ -777,7 +778,7 @@ class TestPallasKernels(seed_test_utils.RepeatableTest):
     # extract them from jax._src.interpreters.ad.primitive_jvps
     def mul_and_add_scalars_backward_jax_kernel(
         x: jax.Array, y: jax.Array, d_mul: jax.Array, d_add: jax.Array
-    ) -> Tuple[jax.Array, jax.Array]:
+    ) -> tuple[jax.Array, jax.Array]:
 
       def scalar_surrogate(x_local: jax.Array, y_local: jax.Array):
         output_mul, output_add = mul_and_add_scalars_jax_kernel(

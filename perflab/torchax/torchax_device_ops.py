@@ -14,7 +14,8 @@
 
 """TorchaxDeviceOps: the TorchAx (torch_xla2 / JAX) implementation of DeviceOps."""
 
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import jax
 from torch_tpu._internal.benchmarks import xprof_adapter

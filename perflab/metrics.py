@@ -15,8 +15,8 @@
 """Metrics and result classes for E2E benchmarks."""
 
 import abc
+from collections.abc import Mapping
 import dataclasses
-from typing import Mapping
 
 from perflab import workload as workload_lib
 

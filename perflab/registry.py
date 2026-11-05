@@ -33,9 +33,10 @@ Every benchmark must also declare how it runs in presubmit scope
 decision. The run scope itself is still chosen per invocation.
 """
 
+from collections.abc import Callable, Mapping
 import dataclasses
 import enum
-from typing import Any, Callable, Dict, Mapping, Tuple
+from typing import Any
 
 from perflab import compile as compile_lib
 from perflab import context as context_lib
@@ -44,7 +45,7 @@ from perflab import target as target_lib
 from perflab import workload as workload_lib
 
 # factory returns variable number of outputs (e.g., model, input_args, ...)
-Factory = Callable[..., Tuple[Any, ...]]
+Factory = Callable[..., tuple[Any, ...]]
 
 # Returns the workload that a benchmark runs at by default in a context (its
 # target and run scope). See `BenchmarkSpec.workload`.
@@ -195,7 +196,7 @@ class BenchmarkSpec:
       )
 
 
-REGISTRY: Dict[str, BenchmarkSpec] = {}
+REGISTRY: dict[str, BenchmarkSpec] = {}
 
 
 def add_benchmark(

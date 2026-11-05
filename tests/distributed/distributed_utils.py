@@ -14,9 +14,10 @@
 
 """Distributed testing utilities for TorchTPU."""
 
+from collections.abc import Callable
 import os
 import re
-from typing import Any, Callable
+from typing import Any
 
 from absl import logging
 import portpicker

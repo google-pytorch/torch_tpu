@@ -14,12 +14,12 @@
 
 """Utilities for measuring a torch step function."""
 
+from collections.abc import Iterator
 import contextlib
 import dataclasses
 import gc
 import random
 import time
-from typing import Iterator
 import urllib.parse
 
 from absl import flags

@@ -14,7 +14,8 @@
 
 """Adapter for SingleTraceTrainer binding StaticCompiler for benchmarks."""
 
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import torch
 from torch.utils import _pytree

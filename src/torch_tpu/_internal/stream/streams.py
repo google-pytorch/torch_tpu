@@ -14,7 +14,7 @@
 
 """Python interface for streams and events on TPU."""
 
-from typing import Optional, Self, TypeAlias
+from typing import Self, TypeAlias
 
 import torch
 from torch_tpu._internal.device import _device_ops_backend
@@ -113,7 +113,7 @@ class TpuStream(torch.Stream):
       cls,
       device=None,
       priority: int = 0,
-      stream_id: Optional[int] = None,
+      stream_id: int | None = None,
       *,
       pinned: CorePinningMode | str | None = None,
       **kwargs,
@@ -138,7 +138,7 @@ class TpuStream(torch.Stream):
       self,
       device=None,
       priority: int = 0,
-      stream_id: Optional[int] = None,
+      stream_id: int | None = None,
       *,
       pinned: CorePinningMode | str | None = None,
       **kwargs,
@@ -172,7 +172,7 @@ class TpuStream(torch.Stream):
       'record_event() is experimental and may change or be removed without'
       ' notice.'
   )
-  def record_event(self, event: Optional['TpuEvent'] = None) -> 'TpuEvent':
+  def record_event(self, event: 'TpuEvent | None' = None) -> 'TpuEvent':
     """Records an event on this stream."""
     if event is None:
       event = TpuEvent()

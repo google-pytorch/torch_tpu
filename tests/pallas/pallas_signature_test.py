@@ -18,7 +18,7 @@ from collections.abc import Sequence
 import dataclasses
 import enum
 import types
-from typing import Literal, Optional
+from typing import Literal
 
 from absl.testing import absltest
 import jax
@@ -217,7 +217,7 @@ class PallasSignatureTest(seed_test_utils.RepeatableTest):
     def optional_fn_1(x: jax.Array | None) -> jax.Array:
       return x
 
-    def optional_fn_2(x: Optional[jax.Array]) -> jax.Array:
+    def optional_fn_2(x: jax.Array | None) -> jax.Array:
       return x
 
     op1 = pallas.jax_op("test::optional_1", optional_fn_1)

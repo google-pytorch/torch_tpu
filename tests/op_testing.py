@@ -6537,7 +6537,7 @@ class TorchTpuTestBase(seed_test_utils.RepeatableTest, common_utils.TestCase):
     """
     self.symbolic_shapes_known_failures = known_failures
 
-  def skipTest(self, reason: typing.Any) -> typing.NoReturn:
+  def skipTest(self, reason: typing.Any) -> typing.Never:
     """Overrides TestCase.skipTest to bypass skips during dtype exclusion collection."""
     # Never skip tests when dumping dtype exclusions. Every test must run so
     # that its `do_test_op` calls can record its dtype exclusions, regardless of

@@ -14,10 +14,10 @@
 
 """Helper library for C++ style linter."""
 
+from collections.abc import Generator
 import os
 import pathlib
 import re
-from typing import Generator
 
 from tests import repo_paths
 

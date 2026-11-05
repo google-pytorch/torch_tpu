@@ -44,12 +44,13 @@ Why forkserver rather than subprocess or the other start methods:
      TestCase class does that without serializing the method's arguments.
 """
 
+from collections.abc import Mapping, Sequence
 import enum
 from multiprocessing import connection as mp_connection
 import os
 import sys
 import traceback
-from typing import Any, Mapping, Sequence
+from typing import Any
 import unittest
 
 from absl import flags

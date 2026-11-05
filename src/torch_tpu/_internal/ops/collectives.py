@@ -21,7 +21,6 @@ Under `torch.compile` the group size and name are traced as constants, so the
 compiled graph contains only the registered ops. Autograd is not supported.
 """
 
-from typing import Optional
 
 import torch
 import torch.distributed as dist
@@ -34,7 +33,7 @@ __all__ = [
 
 
 def _resolve_group(
-    group: Optional[dist.ProcessGroup],
+    group: dist.ProcessGroup | None,
 ) -> tuple[int, str]:
   group = dist.group.WORLD if group is None else group
   if group is None:
@@ -51,7 +50,7 @@ def _resolve_group(
 def all_gather_dim(
     input: torch.Tensor,  # pylint: disable=redefined-builtin
     dim: int,
-    group: Optional[dist.ProcessGroup] = None,
+    group: dist.ProcessGroup | None = None,
 ) -> torch.Tensor:
   """All-gathers `input` from every rank and concatenates along `dim`.
 
@@ -78,7 +77,7 @@ def all_gather_dim(
 def reduce_scatter_dim(
     input: torch.Tensor,  # pylint: disable=redefined-builtin
     dim: int,
-    group: Optional[dist.ProcessGroup] = None,
+    group: dist.ProcessGroup | None = None,
     reduce_op: str = "sum",
 ) -> torch.Tensor:
   """Reduces `input` across ranks and returns this rank's chunk along `dim`.

@@ -23,7 +23,7 @@ import atexit
 from collections.abc import Mapping
 import dataclasses
 import sys
-from typing import Any, Final, List
+from typing import Any, Final
 import torch
 from torch._dynamo.device_interface import DeviceInterface
 from torch_tpu._internal import env
@@ -886,7 +886,7 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
       "get_amp_supported_dtype() is experimental and may change or be removed "
       "without notice."
   )
-  def get_amp_supported_dtype(cls) -> List[torch.dtype]:  # Needed for AMP.
+  def get_amp_supported_dtype(cls) -> list[torch.dtype]:  # Needed for AMP.
     """Returns the list of supported dtypes for Automatic Mixed Precision (AMP).
 
     .. warning::

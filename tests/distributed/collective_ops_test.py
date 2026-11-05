@@ -21,9 +21,10 @@
   `distributed_utils.dist_run()`, which spawns N workers per test.
 """
 
+from collections.abc import Callable
 import os
 import time
-from typing import Any, Callable, List, Union
+from typing import Any
 
 from absl import logging
 from absl.testing import absltest
@@ -138,9 +139,9 @@ def _all_reduce_bitwise_input_fn(r, w):
 
 
 def _run_all_reduce(
-    input_fn: Callable[[int, int], List[Union[int, float]]],
+    input_fn: Callable[[int, int], list[int | float]],
     reduce_op: torch.distributed.ReduceOp,
-    expected: List[Union[int, float]],
+    expected: list[int | float],
     dtype: torch.dtype,
 ) -> None:
   """Tests all-reduce functionality."""

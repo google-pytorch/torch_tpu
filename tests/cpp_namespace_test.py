@@ -14,7 +14,7 @@
 
 """Tests that C++ namespaces in torch_tpu follow the namespace rules."""
 
-from typing import Generator
+from collections.abc import Generator
 
 from absl.testing import absltest
 from absl.testing import parameterized

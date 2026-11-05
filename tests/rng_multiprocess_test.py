@@ -17,9 +17,10 @@
 Tests TPU and CUDA backends in spawned child processes across devices.
 """
 
+from collections.abc import Callable
 import os
 import queue
-from typing import Any, Callable
+from typing import Any
 
 from absl import flags
 from absl.testing import absltest

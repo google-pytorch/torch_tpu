@@ -18,6 +18,7 @@ Supports both single-node multi-device (CUDA/TPU) and multi-node multi-host
 Borg executions.
 """
 
+from collections.abc import Sequence
 import enum
 import fnmatch
 import gc
@@ -28,7 +29,7 @@ import shutil
 import sys
 import tempfile
 import time
-from typing import NamedTuple, Sequence
+from typing import NamedTuple
 from xml.etree import ElementTree
 
 from absl import app

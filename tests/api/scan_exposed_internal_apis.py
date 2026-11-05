@@ -104,7 +104,7 @@ def _resolve_runtime_object(target_name: str) -> Any | None:
   return None
 
 
-class Stage(str, enum.Enum):
+class Stage(enum.StrEnum):
   """Lifecycle stages for TorchTPU APIs."""
 
   INTERNAL = "Internal"

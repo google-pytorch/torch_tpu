@@ -14,8 +14,9 @@
 
 """Tests for registry."""
 
+from collections.abc import Mapping, Sequence
 import dataclasses
-from typing import Any, Mapping, Sequence, Tuple
+from typing import Any
 
 from absl.testing import absltest
 from perflab import compile as compile_lib
@@ -29,7 +30,7 @@ from tests import seed_test_utils
 _RUN = registry_lib.PresubmitPolicy.RUN
 
 
-def _factory() -> Tuple[str, Sequence[Any], Mapping[str, Any], Any | None]:
+def _factory() -> tuple[str, Sequence[Any], Mapping[str, Any], Any | None]:
   return ("model", (), {}, None)
 
 

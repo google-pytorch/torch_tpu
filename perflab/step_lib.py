@@ -14,8 +14,9 @@
 
 """Stepper types and protocols for benchmarking."""
 
+from collections.abc import Callable
 import enum
-from typing import Any, Callable, Dict, Protocol, TypeAlias, TypeVar, runtime_checkable
+from typing import Any, Protocol, TypeAlias, TypeVar, runtime_checkable
 
 # The callable that is actually benchmarked. Nullary as all inputs/model are bound within the factory.
 StepFn: TypeAlias = Callable[[], Any]
@@ -82,7 +83,7 @@ class Stepper(Protocol):
 StepperT = TypeVar("StepperT", bound=Stepper)
 StepperFactory: TypeAlias = Callable[..., StepperT]
 
-STEPPERS: Dict[StepperType, Callable[..., Stepper]] = {}
+STEPPERS: dict[StepperType, Callable[..., Stepper]] = {}
 
 
 def register_stepper(name: StepperType):

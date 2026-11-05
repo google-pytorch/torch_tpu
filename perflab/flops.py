@@ -30,8 +30,8 @@ that the attention formula ignores causal masking, and that ops without a
 formula or a decomposition into ops with one (e.g. `_grouped_mm`) count zero.
 """
 
+from collections.abc import Mapping
 import dataclasses
-from typing import Mapping
 
 from absl import logging
 from torch.utils import flop_counter

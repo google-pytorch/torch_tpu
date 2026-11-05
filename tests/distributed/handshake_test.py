@@ -15,11 +15,12 @@
 """Tests for distributed handshake protocol using PyZMQ and asyncio."""
 
 import asyncio
+from collections.abc import Callable
 import os
 import select
 import threading
 import time
-from typing import Any, Callable
+from typing import Any
 from unittest import mock
 
 from absl.testing import absltest

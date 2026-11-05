@@ -23,7 +23,6 @@ import hashlib
 import math
 import sys
 import typing
-from typing import Optional
 
 from absl import logging
 # JAX imports
@@ -568,20 +567,20 @@ def splash_sdpa(
     k: torch.Tensor,
     v: torch.Tensor,
     *,
-    scale: Optional[float] = None,
+    scale: float | None = None,
     is_causal: bool = True,
-    local_window_size: Optional[int] = None,
-    segment_ids: Optional[torch.Tensor] = None,
+    local_window_size: int | None = None,
+    segment_ids: torch.Tensor | None = None,
     enable_gqa: bool = False,  # Kept for API compatibility
-    block_q: Optional[int] = None,
-    block_kv: Optional[int] = None,
-    block_dkv: Optional[int] = None,
-    block_kv_compute: Optional[int] = None,
-    block_q_dkv: Optional[int] = None,
-    block_kv_dkv: Optional[int] = None,
-    block_kv_dkv_compute: Optional[int] = None,
-    block_q_dq: Optional[int] = None,
-    block_kv_dq: Optional[int] = None,
+    block_q: int | None = None,
+    block_kv: int | None = None,
+    block_dkv: int | None = None,
+    block_kv_compute: int | None = None,
+    block_q_dkv: int | None = None,
+    block_kv_dkv: int | None = None,
+    block_kv_dkv_compute: int | None = None,
+    block_q_dq: int | None = None,
+    block_kv_dq: int | None = None,
     use_fused_bwd_kernel: bool = True,
     use_vmap_bwd: bool = True,
     q_layout: str = "HEAD_DIM_MINOR",

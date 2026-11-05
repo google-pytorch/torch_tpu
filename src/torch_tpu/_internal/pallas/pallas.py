@@ -19,6 +19,7 @@ of these APIs requires that your environment also has JAX/Pallas installed.
 """
 
 import collections.abc
+from collections.abc import Callable, Sequence
 import enum
 import functools
 import hashlib
@@ -28,7 +29,7 @@ import math
 import pathlib
 import types
 import typing
-from typing import Any, Callable, Sequence, Union, overload
+from typing import Any, Union, overload
 from absl import logging
 import frozendict
 import numpy as np

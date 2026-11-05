@@ -18,7 +18,7 @@ import abc
 import asyncio
 import atexit
 import collections.abc
-from collections.abc import Collection, Sequence
+from collections.abc import Collection, Coroutine, Sequence
 import concurrent.futures
 import contextlib
 import dataclasses
@@ -28,7 +28,7 @@ import queue
 import struct
 import threading
 import time
-from typing import Any, Coroutine, Final, TypeVar, cast
+from typing import Any, Final, TypeVar, cast
 
 from absl import logging
 import portpicker

@@ -18,7 +18,6 @@ import contextlib
 import os
 import pickle
 import re
-from typing import List
 from unittest import mock
 import warnings
 
@@ -83,9 +82,9 @@ class FunctionTest(seed_test_utils.RepeatableTest):
   def _run_and_compare(
       self,
       func,
-      inputs: List[torch.Tensor],
+      inputs: list[torch.Tensor],
       serializable: bool = False,
-  ) -> List[compile_lib.TpuCompileDebug]:
+  ) -> list[compile_lib.TpuCompileDebug]:
     """Runs the given function on CPU, TPU eager mode, and TPU compiled mode and compares the results.
 
     Args:
@@ -1507,9 +1506,9 @@ class ModuleTest(seed_test_utils.RepeatableTest):
   def _run_and_compare(
       self,
       module_class,
-      inputs: List[torch.Tensor],
+      inputs: list[torch.Tensor],
       serializable: bool = False,
-  ) -> List[compile_lib.TpuCompileDebug]:
+  ) -> list[compile_lib.TpuCompileDebug]:
     """Runs module on CPU, TPU eager mode, and TPU compiled mode.
 
     Args:

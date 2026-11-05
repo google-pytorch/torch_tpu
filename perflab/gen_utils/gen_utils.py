@@ -14,6 +14,7 @@
 
 """Generates benchmarks from models.csv."""
 
+from collections.abc import Callable, Iterator
 import csv
 import dataclasses
 import importlib
@@ -21,7 +22,7 @@ import io
 import os
 import pathlib
 import re
-from typing import Any, Callable, Iterator
+from typing import Any
 
 import torch
 from perflab import context as context_lib

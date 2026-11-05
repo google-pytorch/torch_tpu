@@ -15,8 +15,9 @@
 """Unit tests for C++ FxOutputReconstructor."""
 
 import collections
+from collections.abc import Callable
 import pickle
-from typing import Any, Callable
+from typing import Any
 
 from absl.testing import absltest
 from absl.testing import parameterized
