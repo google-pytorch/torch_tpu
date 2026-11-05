@@ -56,6 +56,13 @@ torch_tpu_cc_library(
         "//csrc/mlir/passes:guard_zero_operand_custom_calls",
         "//csrc/mlir/passes:lower_separable_gather_to_dot",
         "//csrc/mlir/passes:reassociate_norm_weights",
+        "//csrc/mlir/passes/cancel_inverse_view_transposes",  # NOLINT
+        "//csrc/mlir/passes/canonicalize_gather_scatter_reductions",  # NOLINT
+        "//csrc/mlir/passes/canonicalize_layouts_and_reshapes",  # NOLINT
+        "//csrc/mlir/passes/canonicalize_minor_interleave",  # NOLINT
+        "//csrc/mlir/passes/canonicalize_moe_gather_scatter",  # NOLINT
+        "//csrc/mlir/passes/canonicalize_reductions",  # NOLINT
+        "//csrc/mlir/passes/fold_dot_transposes",  # NOLINT
         "@com_google_absl//absl/status",
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:IR",
@@ -91,6 +98,13 @@ torch_tpu_cc_library(
         "//csrc/mlir/passes:guard_zero_operand_custom_calls",
         "//csrc/mlir/passes:lower_separable_gather_to_dot",
         "//csrc/mlir/passes:reassociate_norm_weights",
+        "//csrc/mlir/passes/cancel_inverse_view_transposes",  # NOLINT
+        "//csrc/mlir/passes/canonicalize_gather_scatter_reductions",  # NOLINT
+        "//csrc/mlir/passes/canonicalize_layouts_and_reshapes",  # NOLINT
+        "//csrc/mlir/passes/canonicalize_minor_interleave",  # NOLINT
+        "//csrc/mlir/passes/canonicalize_moe_gather_scatter",  # NOLINT
+        "//csrc/mlir/passes/canonicalize_reductions",  # NOLINT
+        "//csrc/mlir/passes/fold_dot_transposes",  # NOLINT
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Pass",
