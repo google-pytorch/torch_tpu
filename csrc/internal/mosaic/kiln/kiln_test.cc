@@ -1212,6 +1212,15 @@ TEST(KilnDeathTest, ScalarMismatchedTypesFail) {
 
         EXPECT_DEATH(f_in(0, 0, 0), "Too many slice indices");
         EXPECT_DEATH(f_in(0, Slice(0, 0)), "Slice size must be positive");
+        EXPECT_DEATH(Concat({}, 0), "Concat\\(\\) requires at least one tile");
+        EXPECT_DEATH(Concat({t_f, t_f}, 2),
+                     "Concat\\(\\) axis 2 out of bounds");
+        EXPECT_DEATH(Concat({t_f, t_i}, 0),
+                     "Concat\\(\\) requires all tiles to have the same dtype");
+        EXPECT_DEATH(Concat({t_f, Zeros(f32(32, 128, 1))}, 0),
+                     "Concat\\(\\) requires all tiles to have the same rank");
+        EXPECT_DEATH(Concat({t_f, Zeros(f32(8, 256))}, 0),
+                     "Concat\\(\\) dimension mismatch on axis 1");
         EXPECT_DEATH(Store(out, t_f, {.mask = t_i}),
                      "Masked Store\\(\\) requires an i1 mask tile");
 
@@ -2566,6 +2575,28 @@ TEST(KilnTest, IfReturnsValues) {
     CHECK:         }
     CHECK:         vector.broadcast %[[R]]#0 : f32 to vector<8x128xf32>
     CHECK:         arith.addf %[[R]]#1, %{{.*}} : vector<8x128xf32>
+  )"));
+}
+
+TEST(KilnTest, Concat) {
+  EXPECT_THAT(
+      CreateKernel(GridSpec{.name = "concat", .grid = {1}},
+                   InSpec{bf16(16, 128)}, OutSpec{bf16(32, 256)},
+                   [](VmemRef in, VmemRef out) {
+                     Tile x = Load(in);
+                     // Single-tile Concat is a no-op.
+                     Tile single = Concat({x}, 0);
+                     Tile rows = Concat({single, Zeros(bf16(16, 128))}, 0);
+                     Tile full = Concat({rows, Zeros(bf16(32, 128))}, 1);
+                     Store(out, full);
+                   }),
+      IsOkAndMatchesIr(R"(
+    CHECK-LABEL: func.func @concat
+    CHECK:         %[[X:.*]] = vector.load %{{.*}} : memref<16x128xbf16, #tpu.memory_space<vmem>>, vector<16x128xbf16>
+    CHECK-NOT:     tpu.concatenate %[[X]] in
+    CHECK:         %[[R:.*]] = tpu.concatenate %[[X]], %{{.*}} in 0 : vector<16x128xbf16>, vector<16x128xbf16> -> vector<32x128xbf16>
+    CHECK:         %[[C:.*]] = tpu.concatenate %[[R]], %{{.*}} in 1 : vector<32x128xbf16>, vector<32x128xbf16> -> vector<32x256xbf16>
+    CHECK:         tpu.vector_store %{{.*}}[{{.*}}], %[[C]]
   )"));
 }
 

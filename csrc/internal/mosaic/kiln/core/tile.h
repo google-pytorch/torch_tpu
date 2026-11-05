@@ -138,6 +138,10 @@ Tile Reciprocal(Tile t, ReciprocalMode mode = ReciprocalMode::kExact);
 Tile MaxReduce(Tile t, int axis);
 Tile SumReduce(Tile t, int axis);
 
+// Concatenates `tiles` along `axis` (`tpu.concatenate` / `jnp.concatenate`).
+// All tiles must share the same rank, dtype, and non-`axis` dimensions.
+Tile Concat(llvm::ArrayRef<Tile> tiles, int32_t axis);
+
 // 2-D transpose.
 Tile Transpose(Tile t);
 
