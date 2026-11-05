@@ -532,6 +532,40 @@ class CloneMutatedReturnedPlaceholdersTest(seed_test_utils.RepeatableTest):
 
     self.assertEqual(_cloned_placeholders(graph), set(buffers))
 
+  @parameterized.parameters(True, False)
+  def test_write_to_higher_order_op_result(self, assume_unknown_targets_write):
+    """Verifies that only the default mode counts it as writing the inputs."""
+    graph = Graph()
+    ws = graph.placeholder("ws")
+    h = graph.placeholder("h")
+    results = graph.call_function(
+        torch.ops.higher_order.scan, (graph.get_attr("body"), [h], [ws], [])
+    )
+    final = graph.call_function(operator.getitem, (results, 0))
+    _add_one_in_place(graph, final)
+    output = graph.output((final,))
+
+    mutated = clone_mutated_returned_placeholders._find_mutated_placeholders(  # pylint: disable=protected-access
+        graph, output, assume_unknown_targets_write
+    )
+
+    expected = {ws, h} if assume_unknown_targets_write else set()
+    self.assertEqual(mutated, expected)
+
+  def test_write_to_schemaless_result_without_assuming_writes(self):
+    """Verifies that a Python function's result still aliases its input."""
+    graph = Graph()
+    p = graph.placeholder("p")
+    result = graph.call_function(lambda t: t, (p,))
+    _add_one_in_place(graph, result)
+    output = graph.output(())
+
+    mutated = clone_mutated_returned_placeholders._find_mutated_placeholders(  # pylint: disable=protected-access
+        graph, output, assume_unknown_targets_write=False
+    )
+
+    self.assertEqual(mutated, {p})
+
 
 if __name__ == "__main__":
   absltest.main()

@@ -25,6 +25,7 @@ from absl.testing import absltest
 from absl.testing import parameterized
 import torch
 import torch._dynamo.backends.registry as backend_registry
+from torch._higher_order_ops.scan import scan
 from torch.fx.experimental.proxy_tensor import make_fx
 from torch_tpu import _loader
 from torch_tpu._internal import execution_mode
@@ -1840,6 +1841,32 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
           [tpu_torch_compile.placeholder_like(t) for t in (w, x)],
           write_back_mutated_inputs=write_back,
       )
+      texts.append(exported.serialize_text())
+    self.assertEqual(texts[0], texts[1])
+
+  def test_fx_to_mlir_with_write_to_scan_result_is_unchanged(self):
+    def step(ws, h):
+      def body(c, w):
+        n = c @ w
+        return n, n.sum()
+
+      h_n, ys = scan(body, h, ws)
+      h_n.mul_(0.5)
+      return (h_n, ys)
+
+    ws = torch.randn(4, 16, 16, device=self.device)
+    h = torch.randn(2, 16, device=self.device)
+    gm = make_fx(step)(ws.clone(), h.clone())
+
+    # The mul_ writes a new tensor, not ws or h, so neither gets an output.
+    texts = []
+    for write_back in (False, True):
+      exported = torch_tpu_export.fx_to_mlir(
+          gm,
+          [tpu_torch_compile.placeholder_like(t) for t in (ws, h)],
+          write_back_mutated_inputs=write_back,
+      )
+      self.assertLen(exported.mlir_result_tensors, 2)
       texts.append(exported.serialize_text())
     self.assertEqual(texts[0], texts[1])
 

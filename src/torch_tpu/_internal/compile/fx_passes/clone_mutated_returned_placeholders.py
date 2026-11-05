@@ -145,7 +145,9 @@ def _find_mutated_placeholders(
   as written too.
 
   With `assume_unknown_targets_write=False`, targets without a schema count
-  as aliasing their inputs but not writing them.
+  as aliasing their inputs but not writing them, and higher-order ops as
+  neither. Torch rejects a `scan` or `cond` whose output aliases an input, so
+  `scan(...)[0].mul_(2)` does not write the stacked weights `scan` reads.
   """
   mutated_inputs = set()
   # Only AOTAutograd sets `desc`. Graphs from make_fx or symbolic_trace, or
@@ -182,9 +184,13 @@ def _find_mutated_placeholders(
       # Other targets have no schema to read: higher-order ops such as
       # `auto_functionalized`, Python callables, `call_module` and `call_method`
       # nodes. For safety, assume they write to and alias all of their inputs.
-      aliases[node] = _aliased(aliases, node.all_input_nodes)
       if assume_unknown_targets_write:
+        aliases[node] = _aliased(aliases, node.all_input_nodes)
         mutated |= aliases[node]
+      elif not isinstance(
+          node.target, torch._ops.HigherOrderOperator  # pylint: disable=protected-access
+      ):
+        aliases[node] = _aliased(aliases, node.all_input_nodes)
   return mutated
 
 
