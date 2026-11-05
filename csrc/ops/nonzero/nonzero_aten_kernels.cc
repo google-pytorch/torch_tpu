@@ -85,9 +85,10 @@ absl::StatusOr<at::Tensor> AtenNonzeroHelper(const at::Tensor& self) {
   // Get number of non-zero elements in the tensor as a tensor of size 1.
   TT_ASSIGN_OR_RETURN(auto num_non_zero_elements, GetNumNonZeroElements(self));
   // Move `num_non_zero_elements` to the CPU. This transition is necessary to
-  // dispatch the nonzero op.
+  // dispatch the nonzero op. Unlike cpu(), item() invalidates a graph capture,
+  // as nonzero does on CUDA.
   const int64_t num_non_zero_elements_value =
-      num_non_zero_elements.cpu().item<int64_t>();
+      num_non_zero_elements.item<int64_t>();
   ABSL_VLOG(3) << "[AtenNonzeroHelper] num_non_zero_elements: "
                << num_non_zero_elements_value;
 
@@ -108,9 +109,10 @@ absl::Status AtenNonzeroOutHelper(const at::Tensor& self, at::Tensor& out) {
   // Get number of non-zero elements in the tensor as a tensor of size 1.
   TT_ASSIGN_OR_RETURN(auto num_non_zero_elements, GetNumNonZeroElements(self));
   // Move `num_non_zero_elements` to the CPU. This transition is necessary to
-  // dispatch the nonzero op.
+  // dispatch the nonzero op. Unlike cpu(), item() invalidates a graph capture,
+  // as nonzero does on CUDA.
   const int64_t num_non_zero_elements_value =
-      num_non_zero_elements.cpu().item<int64_t>();
+      num_non_zero_elements.item<int64_t>();
   ABSL_VLOG(3) << "[AtenNonzeroOutHelper] num_non_zero_elements: "
                << num_non_zero_elements_value;
 
