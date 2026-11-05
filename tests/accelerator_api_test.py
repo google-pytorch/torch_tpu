@@ -17,6 +17,8 @@
 from collections import OrderedDict
 import concurrent.futures
 import gc
+import os
+import threading
 import time
 from typing import TypeAlias
 
@@ -32,6 +34,7 @@ from torch_tpu._internal.utils import utils as tt_utils
 from tests import seed_test_utils
 
 EagerMode: TypeAlias = execution_mode.EagerMode
+_EagerMode: TypeAlias = execution_mode._EagerMode
 
 
 def setUpModule():
@@ -659,6 +662,64 @@ class AcceleratorMemoryTest(seed_test_utils.RepeatableTest):
 
     self.assertIsNone(torch.accelerator.empty_cache())
     self.assertIsNone(torch.accelerator.memory.empty_cache())
+
+  @parameterized.named_parameters(
+      ("defer_and_fuse", EagerMode.DEFER_AND_FUSE),
+      ("defer_never", EagerMode.DEFER_NEVER),
+  )
+  def test_distinct_scalars_do_not_accumulate_device_buffers(self, mode):
+    def add_distinct_scalars():
+      with execution_mode.set_eager_mode(mode):
+        t = torch.ones(8, device="tpu")
+        t_cpu = torch.ones(8)
+        gc.collect()
+        torch.accelerator.synchronize()
+        before = torch.accelerator.memory_stats()["allocation.all.current"]
+
+        # Each distinct Python scalar is materialized once as a device buffer.
+        # The scalars and all partial sums are exact in float32, so reading a
+        # wrong scalar buffer changes the result.
+        for i in range(4000):
+          scalar = (-1) ** i * (1.0 + i / 4096)
+          t = t + scalar
+          t_cpu = t_cpu + scalar
+        torch.accelerator.synchronize()
+        gc.collect()
+
+        after = torch.accelerator.memory_stats()["allocation.all.current"]
+        return t.cpu(), t_cpu, after - before
+
+    # Run in a new thread, which starts with an empty scalar buffer cache. The
+    # thread frees its cache on exit, so it takes both snapshots itself.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+      native_id = executor.submit(threading.get_native_id).result()
+      future = executor.submit(add_distinct_scalars)
+    # Before Python 3.13, the executor shutdown can return before the thread
+    # runs its C++ thread_local destructors, which free its cache. Wait until
+    # the thread is gone, so that the cache is freed before the next test.
+    while os.path.exists(f"/proc/self/task/{native_id}"):
+      time.sleep(0.001)
+    actual, expected, growth = future.result()
+    utils.assert_close(actual, expected)
+    # The cache keeps at most kMaxCachedScalarBuffers (1024, op_dispatcher.cc)
+    # buffers. Without a bound, it would keep all 4000.
+    self.assertLess(growth, 2048)
+
+  def test_queued_op_keeps_scalar_buffer_after_cache_clear(self):
+    with execution_mode.set_eager_mode(_EagerMode.INTERNAL_DEFER_ALL):
+      x = torch.ones(8, device="tpu")
+      y = x + 0.25
+      # Pass 2048 distinct scalars, twice kMaxCachedScalarBuffers (1024, in
+      # op_dispatcher.cc), so the cache is cleared at least once. Then only the
+      # queued add for y holds its 0.25 buffer.
+      for i in range(2048):
+        _ = x + (2.0 + i / 4096)
+      self.assertFalse(sync.is_materializing(y))
+      # 0.25 now misses the cache, so the graph gets a second 0.25 buffer.
+      z = y + 0.25
+      torch.accelerator.synchronize()
+    utils.assert_close(y.cpu(), torch.full((8,), 1.25))
+    utils.assert_close(z.cpu(), torch.full((8,), 1.5))
 
   @parameterized.named_parameters(
       ("top_level", torch.accelerator.get_memory_info),
