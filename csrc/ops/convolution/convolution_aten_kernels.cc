@@ -40,6 +40,7 @@
 #include "csrc/common/utils.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/eager_mode.h"
+#include "csrc/eager/graph_capture_state.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/convolution/convolution.h"
@@ -428,7 +429,8 @@ absl::StatusOr<DeviceBufferRefArray<3>> ConvolutionBackward(
   TT_ASSIGN_OR_RETURN(at::ScalarType promoted_dtype,
                       GetPromotedTypeBackward(grad_output, input, weight));
   const bool is_compile_fx_graph =
-      GetEagerMode() == EagerMode::kInternalCompileFxGraph;
+      GetEagerMode() == EagerMode::kInternalCompileFxGraph &&
+      !IsCurrentThreadCapturingGraph();
   if (!is_compile_fx_graph) {
     TT_RETURN_IF_ERROR(
         ValidateGradOutputShape(grad_output.sizes(), expected_out_dims));

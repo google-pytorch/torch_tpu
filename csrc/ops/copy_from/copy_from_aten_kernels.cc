@@ -19,10 +19,12 @@
 #include <string>
 #include <utility>
 
+#include "ATen/ExpandUtils.h"
 #include "ATen/SparseTensorImpl.h"
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
 #include "ATen/ops/empty.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "c10/core/Device.h"
 #include "c10/core/DispatchKey.h"
@@ -37,6 +39,8 @@
 #include "csrc/common/cache_key.h"
 #include "csrc/common/device_type.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/eager/device_buffer.h"
+#include "csrc/eager/graph_capture_state.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/copy_from/copy_common.h"
 #include "csrc/ops/copy_from/cpu_to_tpu.h"
@@ -188,6 +192,74 @@ void CopyTensorGrad(const at::Tensor& src, const at::Tensor& self_dest,
   CopyTensor(src.grad(), dest_grad, non_blocking);
 }
 
+// Returns the error of a copy between CPU and TPU tensors that a graph capture
+// cannot record because the CPU memory that the copy transfers is not pinned.
+absl::Status UnpinnedCopyWhileCapturingGraphError() {
+  return TT_ERROR(error::kFailedPrecondition)
+         << "cannot copy between CPU and TPU tensors while capturing a graph "
+            "unless the CPU tensor is pinned; use tensor.pin_memory() or "
+            "allocate the tensor with pin_memory=True";
+}
+
+// Copies `src`, a CPU tensor, to `dest`, a TPU tensor, while capturing a graph
+// on the current thread.
+//
+// Like a CUDA graph, the graph copies the contents that `src` has at replay
+// time, which requires `src` to be pinned. Like on CUDA, the copy transfers a
+// temporary CPU tensor, which is not pinned, instead of `src` if `src` is not
+// contiguous once broadcast to `dest`, or if the copy blocks and converts the
+// dtype, as blocking copies convert dtypes on the host. A blocking copy waits
+// for the transfer, which invalidates the capture.
+absl::Status CopyCpuToTpuWhileCapturingGraph(const at::Tensor& src,
+                                             const at::Tensor& dest,
+                                             const bool non_blocking) {
+  const at::Tensor broadcast_src = src.expand(dest.sizes());
+  if (!src.is_pinned() || !broadcast_src.is_contiguous() ||
+      (!non_blocking && src.scalar_type() != dest.scalar_type())) {
+    return UnpinnedCopyWhileCapturingGraphError();
+  }
+  if (!non_blocking) {
+    return InvalidateCurrentThreadGraphCapture(
+        TT_ERROR(error::kFailedPrecondition)
+        << "cannot copy a CPU tensor to a TPU tensor synchronously while "
+           "capturing a graph; use non_blocking=True");
+  }
+  TT_ASSIGN_OR_RETURN(
+      DeviceBufferRef host_input,
+      CreateCapturedHostInput(broadcast_src, dest.device().index()));
+  // Like on CUDA, the device converts the dtype of non-blocking copies.
+  return CopyTpuToTpu(MakeTensor(std::move(host_input), dest.device().index()),
+                      dest);
+}
+
+// Returns the error of copying `src`, a TPU tensor, to `dest`, a CPU tensor,
+// while capturing a graph on the current thread.
+//
+// Like on CUDA, the copy fails if the CPU memory that it transfers is not
+// pinned, which is the case if `dest` is not pinned or not contiguous, or if
+// the copy blocks and converts the dtype, as blocking copies convert dtypes on
+// the host. A blocking copy waits for the transfer, which invalidates the
+// capture. Unlike a CUDA graph, a graph cannot copy to a pinned CPU tensor.
+absl::Status CopyTpuToCpuWhileCapturingGraphError(const at::Tensor& src,
+                                                  const at::Tensor& dest,
+                                                  const bool non_blocking) {
+  (void)at::inferExpandGeometry(  // VOID_CAST_OK=validates broadcasting
+      src.sizes(), src.strides(), dest.sizes());
+  if (!dest.is_pinned() || !dest.is_contiguous() ||
+      (!non_blocking && src.scalar_type() != dest.scalar_type())) {
+    return UnpinnedCopyWhileCapturingGraphError();
+  }
+  if (non_blocking) {
+    return TT_ERROR(error::kFailedPrecondition)
+           << "copying a TPU tensor to a pinned CPU tensor without blocking "
+              "while capturing a graph is not supported";
+  }
+  return InvalidateCurrentThreadGraphCapture(
+      TT_ERROR(error::kFailedPrecondition)
+      << "cannot copy a TPU tensor to a CPU tensor synchronously while "
+         "capturing a graph");
+}
+
 }  // namespace
 
 at::Tensor CopyTensor(const at::Tensor& src, const at::Tensor& self_dest,
@@ -208,18 +280,44 @@ at::Tensor CopyTensor(const at::Tensor& src, const at::Tensor& self_dest,
       ValidateShellDtypeCast(src.scalar_type(), self_dest.scalar_type()));
 
   TT_ASSIGN_OR_THROW(CopyType to_copy_type, GetCopyType(src, self_dest));
+  const bool capturing = IsCurrentThreadCapturingGraph();
+  if (capturing && self_dest.numel() == 0 &&
+      (to_copy_type == CopyType::kCpuToTpu ||
+       to_copy_type == CopyType::kTpuToCpu)) {
+    // Like on CUDA, copying no elements does not access the device, even while
+    // capturing a graph, once broadcastability is validated.
+    (void)at::inferExpandGeometry(  // VOID_CAST_OK=validates broadcasting
+        src.sizes(), src.strides(), self_dest.sizes());
+    if (to_copy_type == CopyType::kTpuToCpu && !self_dest.has_storage()) {
+      at::Tensor empty_dest = at::empty(self_dest.sizes(), self_dest.options());
+      self_dest.unsafeGetTensorImpl()->set_storage_keep_dtype(
+          empty_dest.storage());
+    }
+    CopyTensorGrad(src, self_dest, to_copy_type, non_blocking);
+    return self_dest;
+  }
   const TransferSyncMode transfer_sync_mode = GetTransferSyncMode(non_blocking);
 
   switch (to_copy_type) {
     case CopyType::kCpuToTpu:
-      TT_THROW_IF_ERROR(CopyCpuToTpu(src, self_dest, transfer_sync_mode));
+      if (capturing) {
+        TT_THROW_IF_ERROR(
+            CopyCpuToTpuWhileCapturingGraph(src, self_dest, non_blocking));
+      } else {
+        TT_THROW_IF_ERROR(CopyCpuToTpu(src, self_dest, transfer_sync_mode));
+      }
       break;
     case CopyType::kTpuToTpu:
       TT_THROW_IF_ERROR(CopyTpuToTpu(src, self_dest));
       break;
     case CopyType::kTpuToCpu:
-      // CopyTpuToCpu handles broadcasting/dtype change via fallback CPU copy.
-      TT_THROW_IF_ERROR(CopyTpuToCpu(src, self_dest, transfer_sync_mode));
+      if (capturing) {
+        TT_THROW_IF_ERROR(
+            CopyTpuToCpuWhileCapturingGraphError(src, self_dest, non_blocking));
+      } else {
+        // CopyTpuToCpu handles broadcasting/dtype change via fallback CPU copy.
+        TT_THROW_IF_ERROR(CopyTpuToCpu(src, self_dest, transfer_sync_mode));
+      }
       break;
   }
 
@@ -255,6 +353,13 @@ at::Scalar AtenLocalScalarDense(const at::Tensor& self) {
   TT_KERNEL(OpName::kLocalScalarDense, _, (self), {
     TT_CHECK_THROW(self.numel() == 1, error::kInvalidArgument)
         << "expected the input tensor to have 1 element, got " << self.numel();
+    if (IsCurrentThreadCapturingGraph()) {
+      // Like on CUDA, reading the value waits for the device, which
+      // invalidates the capture.
+      TT_THROW_IF_ERROR(InvalidateCurrentThreadGraphCapture(
+          TT_ERROR(error::kFailedPrecondition)
+          << "cannot read the value of a tensor while capturing a graph"));
+    }
     at::Tensor cpu_tensor =
         self.to(at::TensorOptions().device(c10::kCPU).memory_format(
             at::MemoryFormat::Contiguous));

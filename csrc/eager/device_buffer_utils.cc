@@ -27,6 +27,7 @@
 #include <variant>
 #include <vector>
 
+#include "absl/base/optimization.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
@@ -46,6 +47,7 @@
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/eager_mode.h"
 #include "csrc/eager/events_queue.h"
+#include "csrc/eager/graph_capture_state.h"
 #include "csrc/eager/materialize.h"
 #include "csrc/eager/split_traversal.h"
 #include "csrc/eager/structured_log_buffer.h"
@@ -247,8 +249,36 @@ absl::Status DeferAndFuseDispatch(absl::Span<const DeviceBufferRef> results,
 
 namespace internal {
 
+namespace {
+
+// Returns an error if a thread other than the current one is capturing a graph
+// on the current stream, or on the stream of a deferred input. Graph capture
+// records the operations of the capturing thread only, and the deferred ops on
+// a stream being captured belong to the graph and never run on their own.
+absl::Status ValidateNoGraphCaptureOnAnotherThread(
+    absl::Span<const DeviceBufferRef> inputs) {
+  const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
+  if (ABSL_PREDICT_FALSE(
+          IsStreamCapturedByAnotherThread(device_index, stream_id))) {
+    return StreamCapturedByAnotherThreadError();
+  }
+  for (const DeviceBufferRef& input : inputs) {
+    if (ABSL_PREDICT_FALSE(input.is_deferred() &&
+                           (input.device_index() != device_index ||
+                            input.stream_id() != stream_id) &&
+                           IsStreamCapturedByAnotherThread(
+                               input.device_index(), input.stream_id()))) {
+      return TensorAccessedByGraphCaptureError();
+    }
+  }
+  return absl::OkStatus();
+}
+
+}  // namespace
+
 absl::StatusOr<std::vector<DeviceBufferRef>> CreateDeferredDeviceBufferList(
     DeferredOpParams&& params) {
+  TT_RETURN_IF_ERROR(ValidateNoGraphCaptureOnAnotherThread(params.inputs));
   ApplyComputationDtype(params);
 
   TT_ASSIGN_OR_RETURN(
@@ -277,7 +307,10 @@ absl::StatusOr<std::vector<DeviceBufferRef>> CreateDeferredDeviceBufferList(
       RecordDeferredOpCreated(results[0].device_buffer_list());
       break;
     case EagerMode::kInternalCompileFxGraph:
-      // Do not record the deferred op.
+      // Record the deferred op only when capturing a torch.accelerator.Graph.
+      if (IsCurrentThreadCapturingGraph()) {
+        RecordDeferredOpCreated(results[0].device_buffer_list());
+      }
       break;
   }
   return results;

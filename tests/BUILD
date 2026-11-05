@@ -1931,6 +1931,7 @@ torch_tpu_py_test(
         "//src/torch_tpu/_internal/compile:compiler",
         "//src/torch_tpu/_internal/compile:flex_attention",
         "//src/torch_tpu/_internal/compile:tpu_torch_compile",
+        "//src/torch_tpu/_internal/device:_device_ops_backend",
         "//src/torch_tpu/_internal/distributed",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//src/torch_tpu/_internal/dynamism",
@@ -2003,6 +2004,7 @@ torch_tpu_py_test(
         "//src/torch_tpu/_internal/compile:compiler",
         "//src/torch_tpu/_internal/compile:flex_attention",
         "//src/torch_tpu/_internal/compile:tpu_torch_compile",
+        "//src/torch_tpu/_internal/device:_device_ops_backend",
         "//src/torch_tpu/_internal/distributed",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//src/torch_tpu/_internal/dynamism",
@@ -2157,6 +2159,54 @@ torch_tpu_py_test(
     deps = [
         ":seed_test_utils",
         "//csrc/eager:tpu_aten_kernels",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "graph_test",
+    srcs = ["graph_test.py"],
+    main = "graph_test.py",
+    tags = ["requires-tpu-v5lite"],
+    deps = [
+        ":seed_test_utils",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/utils:test_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "graph_cuda_ref_test",
+    srcs = ["graph_cuda_ref_test.py"],
+    args = ["--backend=tpu"],
+    main = "graph_cuda_ref_test.py",
+    tags = ["requires-tpu-v5lite"],
+    deps = [
+        "//shims/absl_py/flags",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "graph_cuda_ref_test_cuda",
+    srcs = ["graph_cuda_ref_test.py"],
+    args = ["--backend=gpu"],
+    # Loading TorchTPU would make TPU the accelerator instead of CUDA.
+    autoload = False,
+    main = "graph_cuda_ref_test.py",
+    nolocal = "Skipping in local runs by default as it requires --config=cuda.",
+    tags = [
+        "nozapfhahn",  # Requires --config=cuda; excluded from Zapfhahn coverage.
+        _REQUIRES_GPU_FOR_NON_OPS_TEST,
+    ],
+    deps = [
+        "//shims/absl_py/flags",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//src/torch_tpu",

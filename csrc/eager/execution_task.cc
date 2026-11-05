@@ -59,7 +59,11 @@
 #include "csrc/ops/op_names.h"
 #include "csrc/pjrt/pjrt_execute.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/raw_ostream.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/OperationSupport.h"
+#include "mlir/IR/OwningOpRef.h"
 #include "tsl/profiler/lib/traceme.h"
 #include "xla/pjrt/pjrt_client.h"
 
@@ -218,11 +222,6 @@ ExtractArgumentLayoutsIfDifferentFromDefault(const Traversal& traversal) {
   return argument_layouts;
 }
 
-struct CompiledTraversal {
-  CompilationCacheKey compilation_cache_key;
-  CompiledKernel compiled_kernel;
-};
-
 absl::StatusOr<CompiledTraversal> VerifyAndCompileTraversal(
     Traversal& traversal, mlir::MLIRContext& mlir_context,
     const CompilationSpec& compilation_spec,
@@ -286,6 +285,28 @@ std::vector<Shape> GetShapesFromDeviceBuffers(
 }
 
 }  // namespace
+
+absl::StatusOr<CompiledTraversal> CompileCapturedTraversal(
+    Traversal& traversal, mlir::MLIRContext& mlir_context,
+    const CompilationSpec& compilation_spec,
+    std::string* absl_nullable out_mlir_text) {
+  TT_ASSIGN_OR_RETURN(
+      CompiledTraversal compiled,
+      VerifyAndCompileTraversal(traversal, mlir_context, compilation_spec,
+                                out_mlir_text));
+  if (out_mlir_text != nullptr && out_mlir_text->empty()) {
+    TT_ASSIGN_OR_RETURN(mlir::OwningOpRef<mlir::ModuleOp> module,
+                        traversal.BuildMlirModule(
+                            mlir_context, /*use_stablehlo_bounds=*/false));
+    mlir::OpPrintingFlags flags;
+    flags.elideLargeElementsAttrs(100);
+    std::string s;
+    llvm::raw_string_ostream os(s);
+    module->print(os, flags);
+    *out_mlir_text = os.str();
+  }
+  return compiled;
+}
 
 absl::StatusOr<ExecutionTask> ExecutionTask::FromTraversal(
     absl_nonnull std::unique_ptr<Traversal> traversal,
