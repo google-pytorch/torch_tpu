@@ -33,6 +33,7 @@
 #include "csrc/common/to_string.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/ops/macros/kernel.h"
+#include "csrc/ops/matmul/matmul.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/precision_context.h"
@@ -47,46 +48,13 @@ namespace {
 
 namespace stablehlo = mlir::stablehlo;
 
-// Matrix-vector dot product helper.
-mlir::MlirOp MatVecDot(mlir::MlirOp mat_op, mlir::MlirOp vec_op,
-                       mlir::ElementType out_dtype,
-                       mlir::stablehlo::Precision precision) {
-  const mlir::RankedTensorType mat_type = GetTensorTypeOrDie(mat_op);
-  const mlir::RankedTensorType vec_type = GetTensorTypeOrDie(vec_op);
-
-  // XLA doesn't support matmuls with i64, so we convert them to f64.
-  const bool is_any_i64 = mat_type.getElementType().isInteger(64) ||
-                          vec_type.getElementType().isInteger(64);
-  if (is_any_i64) {
-    mat_op = stablehlo::ConvertElementType(mat_op, mlir::ElementType::F64);
-    vec_op = stablehlo::ConvertElementType(vec_op, mlir::ElementType::F64);
-  }
-
-  // After matmul, we want the result back in the original type, so we specify
-  // the preferred element type to be the output type.
-  mlir::MlirOp mv_op = stablehlo::DotGeneral(
-      mat_op, vec_op,
-      /*dotDimsAttr=*/
-      stablehlo::DotDimensionNumbersAttr::get(
-          &mat_op.getContext(), /*lhs_batch_dimensions=*/{},
-          /*rhs_batch_dimensions=*/{}, /*lhs_contracting_dimensions=*/{1},
-          /*rhs_contracting_dimensions=*/{0}),
-      /*precisionConfig=*/
-      stablehlo::PrecisionConfigAttr::get(&mat_op.getContext(),
-                                          {precision, precision}));
-
-  // Cast the matmul result back to the original type right away. CPU behavior
-  // expects the computation to be lossy not precise.
-  if (is_any_i64) {
-    mv_op = stablehlo::ConvertElementType(mv_op, out_dtype);
-  }
-  return mv_op;
-}
-
 absl::StatusOr<mlir::MlirOp> BuildAddmvShloBetaZero(
     mlir::MlirOp mat_op, mlir::MlirOp vec_op, mlir::MlirOp alpha_op,
     mlir::ElementType out_dtype, mlir::stablehlo::Precision precision) {
-  auto mv_op = MatVecDot(mat_op, vec_op, out_dtype, precision);
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp mv_op,
+      BuildMatmulShlo(mat_op, vec_op, precision,
+                      MatmulShloOptions{.target_element_type = out_dtype}));
   TT_ASSIGN_OR_RETURN(auto broadcasted_alpha,
                       BroadcastIfNeeded(alpha_op, mv_op));
   return stablehlo::Mul(broadcasted_alpha, mv_op);
@@ -96,7 +64,10 @@ absl::StatusOr<mlir::MlirOp> BuildAddmvShlo(
     mlir::MlirOp self_op, mlir::MlirOp mat_op, mlir::MlirOp vec_op,
     mlir::MlirOp beta_op, mlir::MlirOp alpha_op, mlir::ElementType out_dtype,
     mlir::stablehlo::Precision precision) {
-  auto mv_op = MatVecDot(mat_op, vec_op, out_dtype, precision);
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp mv_op,
+      BuildMatmulShlo(mat_op, vec_op, precision,
+                      MatmulShloOptions{.target_element_type = out_dtype}));
 
   TT_ASSIGN_OR_RETURN(auto broadcasted_alpha,
                       BroadcastIfNeeded(alpha_op, mv_op));

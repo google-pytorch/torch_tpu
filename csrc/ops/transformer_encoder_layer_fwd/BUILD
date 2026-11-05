@@ -43,6 +43,7 @@ torch_tpu_cc_library(
         "//csrc/ops/gelu",
         "//csrc/ops/layer_norm",
         "//csrc/ops/macros:kernel",
+        "//csrc/ops/matmul",
         "//csrc/ops/softmax",
         "//shims/torch:aten_headers",
         "//shims/torch/c10/core:base_headers",

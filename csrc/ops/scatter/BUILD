@@ -68,6 +68,7 @@ torch_tpu_cc_library(
         "//csrc/common:utils",
         "//csrc/ops:op_builder_utils",
         "//csrc/ops/index_add",
+        "//csrc/ops/matmul",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/status:statusor",
