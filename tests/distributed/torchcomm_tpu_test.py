@@ -14,6 +14,7 @@
 
 """Unit tests for TorchTPU integration using TorchComm directly."""
 
+from collections.abc import Mapping
 import datetime
 from unittest import mock
 from absl.testing import absltest
@@ -25,7 +26,7 @@ from tests import seed_test_utils
 import torchcomms
 
 
-def _mock_int_env(values: dict[str, int]):
+def _mock_int_env(values: Mapping[str, int]):
   """Mocks env.get_int_env_once() so that it reports `values`.
 
   The real reader memoizes in C++, so it cannot be steered by patching the

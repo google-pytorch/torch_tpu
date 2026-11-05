@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from collections.abc import Sequence
 import math
 from absl.testing import absltest
 from absl.testing import parameterized
@@ -27,12 +28,12 @@ PAD_WIDTH = 8
 INT_MAX = 2**31 - 1
 
 
-def pad_length(arr: list[int]) -> list[int]:
+def pad_length(arr: Sequence[int]) -> Sequence[int]:
   """Pads the array to the nearest multiple of PAD_WIDTH."""
   pad_len = (PAD_WIDTH - len(arr)) % PAD_WIDTH
   assert 0 <= pad_len < PAD_WIDTH
   assert (len(arr) + pad_len) % PAD_WIDTH == 0
-  return arr + [INT_MAX] * pad_len
+  return [*arr, *([INT_MAX] * pad_len)]
 
 
 def round_up(x: int, y: int) -> int:
@@ -40,7 +41,9 @@ def round_up(x: int, y: int) -> int:
   return math.ceil(x / y) * y
 
 
-def build_csr(rows: list[list[int]]) -> tuple[torch.Tensor, torch.Tensor]:
+def build_csr(
+    rows: Sequence[Sequence[int]],
+) -> tuple[torch.Tensor, torch.Tensor]:
   """Builds CSR row_pointers and indices from a list of lists (COO format)."""
   row_ptrs_list = []
   indices_list = []

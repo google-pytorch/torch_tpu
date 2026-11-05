@@ -192,7 +192,7 @@ def named_scope(name: str) -> _NameScope:
   return _EagerNameScope(name)
 
 
-def _get_name_scopes(meta: Mapping[str, Any]) -> list[str]:
+def _get_name_scopes(meta: Mapping[str, Any]) -> Sequence[str]:
   """Returns the `named_scope` names in FX node metadata, outer first."""
   custom = meta.get("custom")
   if not isinstance(custom, Mapping):
@@ -219,7 +219,7 @@ def _common_prefix_len(a: Sequence[str], b: Sequence[str]) -> int:
 def compute_graph_name_scopes(
     graph: torch.fx.Graph,
     module_scopes: Callable[[torch.fx.Node], Sequence[tuple[str, str]]],
-) -> dict[torch.fx.Node, tuple[str, ...]]:
+) -> Mapping[torch.fx.Node, Sequence[str]]:
   """Computes the hierarchical name scopes of the op nodes of a graph.
 
   The scopes of a node are its module scopes interleaved with the

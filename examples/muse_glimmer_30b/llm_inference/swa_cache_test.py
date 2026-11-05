@@ -250,7 +250,7 @@ class _ModelTest(parameterized.TestCase):
       model: model_lib.MuseGlimmer30B,
       tokens: torch.Tensor,
       prefill_len: int,
-  ) -> list[torch.Tensor]:
+  ) -> Sequence[torch.Tensor]:
     """Last-token logits of every prefix, each from a fresh cache."""
     with torch.inference_mode():
       return [
@@ -265,7 +265,7 @@ class _ModelTest(parameterized.TestCase):
       prefill_len: int,
       cache: kv_cache.Cache | None = None,
       before_step: Callable[[kv_cache.Cache], None] | None = None,
-  ) -> tuple[list[torch.Tensor], kv_cache.Cache]:
+  ) -> tuple[Sequence[torch.Tensor], kv_cache.Cache]:
     """Prefills, then feeds the remaining tokens one at a time."""
     logits = []
     with torch.inference_mode():

@@ -60,7 +60,7 @@ class _FakePciDevice:
 
 def _fake_tpus(
     device_id: str, num_chips: int, devices_per_chip: int = 1
-) -> list[_FakePciDevice]:
+) -> Sequence[_FakePciDevice]:
   """Returns the VFIO-exposed PCI devices of `num_chips` TPU chips.
 
   Each chip has its own bus, with a PCI function and IOMMU group per device.

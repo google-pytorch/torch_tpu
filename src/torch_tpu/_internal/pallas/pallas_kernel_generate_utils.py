@@ -13,10 +13,13 @@
 # limitations under the License.
 
 """Utility functions for generating dynamic kernels exports from Pallas."""
+from collections.abc import Sequence
 
 
 def generate_embedded_file(
-    header_path: str, implementation_path: str, data: list[tuple[str, bytes]]
+    header_path: str,
+    implementation_path: str,
+    data: Sequence[tuple[str, bytes]],
 ):
   """Generates an embedded file with the given data.
 

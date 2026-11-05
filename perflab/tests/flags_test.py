@@ -14,6 +14,7 @@
 
 """Tests for perflab/flags.py."""
 
+from collections.abc import Sequence
 import copy
 import json
 import os
@@ -64,7 +65,7 @@ class CollectionFlagValuesTest(seed_test_utils.RepeatableTest):
     os.environ.pop(flags_lib.COLLECTION_ARGV_ENV_VAR, None)
 
   def _values_before_parsing(
-      self, argv: list[str]
+      self, argv: Sequence[str]
   ) -> tuple[context_lib.RunScope, bool]:
     # Unparsed flags, as when a benchmark binary collects its cases at import.
     import_time_flags = flags.FlagValues()
@@ -120,7 +121,7 @@ class CollectionFlagValuesTest(seed_test_utils.RepeatableTest):
           "argv": ["--run_scope=presubmit", "--fake_tensor_mode=false"],
       },
   )
-  def test_parses_argv_like_absl_before_parsing(self, argv: list[str]):
+  def test_parses_argv_like_absl_before_parsing(self, argv: Sequence[str]):
     self.assertEqual(
         self._values_before_parsing(argv),
         (context_lib.RunScope.PRESUBMIT, False),

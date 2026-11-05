@@ -14,7 +14,7 @@
 
 """Simple trainer library for compiling and running PyTorch training steps on TPU."""
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 import contextlib
 import dataclasses
 import inspect
@@ -77,13 +77,13 @@ def _declare_tracing_to_transformers():
 
 def _compute_loss(
     model: torch.nn.Module,
-    key_map: dict[str, str],
-    params: dict[str, torch.Tensor],
-    buffers: dict[str, torch.Tensor],
+    key_map: Mapping[str, str],
+    params: Mapping[str, torch.Tensor],
+    buffers: Mapping[str, torch.Tensor],
     inputs: Any,
     targets: Any,
     compute_loss_fn: Callable[..., torch.Tensor] | None = None,
-) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+) -> tuple[torch.Tensor, Mapping[str, torch.Tensor]]:
   """Computes loss for functional execution.
 
   If `compute_loss_fn` is set, the loss is `compute_loss_fn(model, args,
@@ -427,8 +427,8 @@ class SingleTraceTrainer:
       self._param_group = initial_params
 
   def _wrap_subclasses(
-      self, tensors: dict[str, torch.Tensor]
-  ) -> dict[str, torch.Tensor]:
+      self, tensors: Mapping[str, torch.Tensor]
+  ) -> Mapping[str, torch.Tensor]:
     """Rewraps plain local tensors of subclass params/buffers (by safe name)."""
     if not self._subclass_metas:
       return tensors
@@ -464,7 +464,7 @@ class SingleTraceTrainer:
   @_annotations.experimental(
       "params is experimental and may change or be removed without notice."
   )
-  def params(self) -> dict[str, torch.Tensor]:
+  def params(self) -> Mapping[str, torch.Tensor]:
     """Returns parameters with their original names.
 
     Tensor subclass parameters (e.g. DTensor) are returned rewrapped around
@@ -478,7 +478,7 @@ class SingleTraceTrainer:
     return {self._key_map[k]: v for k, v in self._wrap_subclasses(p).items()}
 
   @property
-  def _bufs(self) -> dict[str, torch.Tensor]:
+  def _bufs(self) -> Mapping[str, torch.Tensor]:
     """Returns buffers with their original names."""
     return {
         self._key_map[k]: v
@@ -487,11 +487,13 @@ class SingleTraceTrainer:
 
   def _subclass_grad_and_value(
       self,
-      params: dict[str, torch.Tensor],
-      bufs: dict[str, torch.Tensor],
+      params: Mapping[str, torch.Tensor],
+      bufs: Mapping[str, torch.Tensor],
       inputs: Any,
       targets: Any,
-  ) -> tuple[dict[str, torch.Tensor], torch.Tensor, dict[str, torch.Tensor]]:
+  ) -> tuple[
+      Mapping[str, torch.Tensor], torch.Tensor, Mapping[str, torch.Tensor]
+  ]:
     """Computes local grads, loss and buffers for models with subclass state.
 
     Runs inside the traced step. `params` and `bufs` hold plain local tensors;

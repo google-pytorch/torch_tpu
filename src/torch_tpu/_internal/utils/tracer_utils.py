@@ -17,7 +17,7 @@
 This module contains a pretty printer function and a tool to
 replay the collected data and modules on CPU to check for numerical differences.
 """
-from collections.abc import Sequence
+from collections.abc import Mapping, MutableSequence, Sequence
 import copy
 from typing import Any, TypeVar, cast
 import torch
@@ -38,10 +38,10 @@ def pformat_op_tracer(tracer: utils.OpTracer) -> str:
 
 def _pformat_value(
     prefix: str,
-    args: tuple[Any, ...] | None = None,
-    kwargs: dict[str, Any] | None = None,
+    args: Sequence[Any] | None = None,
+    kwargs: Mapping[str, Any] | None = None,
     output: Any | None = None,
-) -> list[str]:
+) -> Sequence[str]:
   """Pretty-formats the collected data from ActivationTracer.
 
   Args:
@@ -250,7 +250,7 @@ def replay_log(
 
 
 def _helper_pformat_module_header(
-    lines: list[str],
+    lines: MutableSequence[str],
     event: dict[str, Any],
     start_time: float,
     pre_event: dict[str, Any],
@@ -291,7 +291,7 @@ _TensorOrTensors = TypeVar(
 
 
 def _helper_render_delta(
-    lines: list[str],
+    lines: MutableSequence[str],
     output: _TensorOrTensors,
     cpu_output: _TensorOrTensors,
 ) -> None:

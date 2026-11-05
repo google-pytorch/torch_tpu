@@ -14,6 +14,7 @@
 
 """Tests for clone_mutated_returned_placeholders FX pass."""
 
+from collections.abc import Sequence, Set
 import operator
 from typing import Any
 
@@ -63,8 +64,8 @@ def _cloned_placeholders(graph: Graph) -> set[fx.Node]:
 
 
 def _get_readable_op_names(
-    ops: frozenset[torch._ops.OpOverload],
-) -> list[tuple[str, torch._ops.OpOverload]]:
+    ops: Set[torch._ops.OpOverload],
+) -> Sequence[tuple[str, torch._ops.OpOverload]]:
   """Returns `(name, op)` for each op, sorted by name.
 
   The name is the op's qualified name with dots replaced by underscores.
@@ -102,7 +103,7 @@ def _call_on_tensors(
 
 def _tensor_placeholders(
     graph: Graph, op: torch._ops.OpOverload
-) -> list[fx.Node]:
+) -> Sequence[fx.Node]:
   """Adds a placeholder for each tensor argument of `op`."""
   return [
       graph.placeholder(argument.name)

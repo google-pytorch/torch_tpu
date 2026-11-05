@@ -33,7 +33,7 @@ Every benchmark must also declare how it runs in presubmit scope
 decision. The run scope itself is still chosen per invocation.
 """
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Set
 import dataclasses
 import enum
 from typing import Any
@@ -206,7 +206,7 @@ def add_benchmark(
     dtype: target_lib.DType = target_lib.DType.BF16,
     compile_config: compile_lib.CompileConfig | None = None,
     name: str | None = None,
-    skipped_run_modes: frozenset[str] | set[str] | None = None,
+    skipped_run_modes: Set[str] | None = None,
     *,
     presubmit: PresubmitPolicy,
     workload: WorkloadFn | None,
@@ -274,7 +274,7 @@ def register_benchmark(
     stepper_kwargs: Mapping[str, Any] | None = None,
     dtype: target_lib.DType = target_lib.DType.BF16,
     compile_config: compile_lib.CompileConfig | None = None,
-    skipped_run_modes: frozenset[str] | set[str] | None = None,
+    skipped_run_modes: Set[str] | None = None,
     *,
     presubmit: PresubmitPolicy,
     workload: WorkloadFn | None,

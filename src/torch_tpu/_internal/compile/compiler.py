@@ -270,7 +270,7 @@ def _create_storage_aware_placeholders(
     example_inputs: Sequence[Any],
     bounds: Sequence[Any] | None = None,
     enabled: bool = True,
-) -> list[Any]:
+) -> Sequence[InputType]:
   """Creates placeholder arguments preserving shared storage and view relationships."""
   # Group tensor inputs by their underlying UntypedStorage identity.
   storage_groups = collections.defaultdict(list)

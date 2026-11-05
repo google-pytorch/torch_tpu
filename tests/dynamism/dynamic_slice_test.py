@@ -20,7 +20,7 @@ the pre-grad clone of returned dynamic views, and TPU end-to-end checks.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence, Set
 import sys
 from typing import Any, NamedTuple
 
@@ -108,7 +108,7 @@ def _capture_and_run_slice_pass(
 
 def _capture_dynamo_graph(
     fn: Callable[..., Any],
-    inputs: list[torch.Tensor],
+    inputs: Sequence[torch.Tensor],
 ) -> torch.fx.GraphModule:
   """Returns the Dynamo (pre-grad) graph of fn traced with dynamic shapes."""
   captured: list[torch.fx.GraphModule] = []
@@ -127,7 +127,7 @@ def _capture_dynamo_graph(
   return captured[0]
 
 
-def _dynamic_slice_nodes(gm: torch.fx.GraphModule) -> list[torch.fx.Node]:
+def _dynamic_slice_nodes(gm: torch.fx.GraphModule) -> Sequence[torch.fx.Node]:
   return list(
       gm.graph.find_nodes(
           op="call_function", target=torch.ops.tpu._dynamic_slice
@@ -135,7 +135,7 @@ def _dynamic_slice_nodes(gm: torch.fx.GraphModule) -> list[torch.fx.Node]:
   )
 
 
-def _transitive_placeholder_names(node: torch.fx.Node) -> set[str]:
+def _transitive_placeholder_names(node: torch.fx.Node) -> Set[str]:
   """Returns the names of all placeholders node transitively depends on."""
   names: set[str] = set()
   seen: set[torch.fx.Node] = set()
@@ -382,8 +382,8 @@ class ReplaceDynamicOutputBroadcastOpsPreGradPassTest(
   """CPU-only unit tests for the clone of returned dynamic slice views."""
 
   def _run_pass(
-      self, fn: Callable[..., Any], inputs: list[torch.Tensor]
-  ) -> tuple[torch.fx.GraphModule, list[torch.fx.Node]]:
+      self, fn: Callable[..., Any], inputs: Sequence[torch.Tensor]
+  ) -> tuple[torch.fx.GraphModule, Sequence[torch.fx.Node]]:
     gm = _capture_dynamo_graph(fn, inputs)
     view_ops_passes.ReplaceDynamicOutputBroadcastOpsPreGradPass()(gm)
     clones = list(

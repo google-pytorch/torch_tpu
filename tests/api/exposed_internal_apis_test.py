@@ -20,6 +20,7 @@ documentation, tutorials, or examples must be reflected in
 `exposed_internal_apis.yaml`, which requires approval from the API owners.
 """
 
+from collections.abc import Mapping, Sequence
 import os
 from typing import Any
 
@@ -42,7 +43,7 @@ the `exposed_internal_apis.yaml` owners listed in `{_OWNERS_PATH}`.
 
 def _parse_exposed_internal_apis_yaml(
     yaml_text: str,
-) -> dict[str, dict[str, Any]]:
+) -> Mapping[str, Mapping[str, Sequence[str]]]:
   """Parses `exposed_internal_apis.yaml` text into a dictionary of symbol -> attributes."""
   entries: dict[str, dict[str, Any]] = {}
   for line in yaml_text.splitlines():
@@ -57,9 +58,9 @@ def _parse_exposed_internal_apis_yaml(
 
 
 def _describe_diff(
-    expected: dict[str, dict[str, Any]],
-    actual: dict[str, dict[str, Any]],
-) -> list[str]:
+    expected: Mapping[str, Mapping[str, Sequence[str]]],
+    actual: Mapping[str, Mapping[str, Sequence[str]]],
+) -> Sequence[str]:
   """Returns human-readable lines describing differences between baseline and actual."""
   lines: list[str] = []
   added = sorted(actual.keys() - expected.keys())

@@ -16,6 +16,7 @@
 
 # pylint: disable=protected-access
 
+from collections.abc import Mapping, Sequence
 import contextlib
 import io
 import multiprocessing
@@ -38,7 +39,7 @@ from tests import seed_test_utils
 
 
 @contextlib.contextmanager
-def _mock_env(values: dict[str, str]):
+def _mock_env(values: Mapping[str, str]):
   """Makes the environment look exactly like `values` to the launcher."""
 
   def get_str_env_once(name, default_value=None):
@@ -62,7 +63,7 @@ def _mock_env(values: dict[str, str]):
 
 
 @contextlib.contextmanager
-def _attached_tpu(topology: tuple[int, ...]):
+def _attached_tpu(topology: Sequence[int]):
   """Makes the launcher see TPU devices of the given topology."""
   with (
       mock.patch.object(

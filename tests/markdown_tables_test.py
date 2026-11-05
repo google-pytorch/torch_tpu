@@ -21,6 +21,7 @@ renders such tables as garbage, so this test fails if any Markdown file
 published on GitHub contains it.
 """
 
+from collections.abc import Sequence
 import os
 import re
 
@@ -51,7 +52,7 @@ google/docs/tools/publish_notebook.py, fix the table in the Marimo notebook
 under docs/source/ and re-export it instead."""
 
 
-def _find_published_markdown_files(root: str) -> list[str]:
+def _find_published_markdown_files(root: str) -> Sequence[str]:
   """Returns the published Markdown files, relative to `root`."""
   paths = []
   for dirpath, dirnames, filenames in os.walk(root):
@@ -68,7 +69,7 @@ def _find_published_markdown_files(root: str) -> list[str]:
   return sorted(paths)
 
 
-def _find_multiline_table_rows(text: str) -> list[int]:
+def _find_multiline_table_rows(text: str) -> Sequence[int]:
   """Returns the 1-based line numbers of g3doc multi-line table rows."""
   lines = text.splitlines()
   in_fence = False

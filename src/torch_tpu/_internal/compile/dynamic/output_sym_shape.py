@@ -225,7 +225,9 @@ def _make_compiled_fn(base_fn: Any, param_names: Sequence[str]) -> Any:
   return lambda **kwargs: int(base_fn(*[kwargs[name] for name in param_names]))
 
 
-def _get_output_node_meta_val(graph_module: torch.fx.GraphModule) -> list[Any]:
+def _get_output_node_meta_val(
+    graph_module: torch.fx.GraphModule,
+) -> Sequence[Any]:
   """Reads output node.meta['val'] from a graph.
 
   Args:
@@ -264,7 +266,7 @@ def _get_output_node_meta_val(graph_module: torch.fx.GraphModule) -> list[Any]:
 def create_output_sym_shapes(
     graph_module: torch.fx.GraphModule,
     example_inputs: Sequence[torch.Tensor | int],
-) -> list[OutputSymShape]:
+) -> Sequence[OutputSymShape]:
   """Creates symbolic shape specifications for all output tensors of the graph.
 
   For each dynamic dimension of output tensor, it stores the expression and

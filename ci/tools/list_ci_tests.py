@@ -33,7 +33,7 @@ Example usage:
 """
 
 import argparse
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping, Sequence, Set
 import fnmatch
 import os
 import pathlib
@@ -177,7 +177,7 @@ def parse_bazelrc_tag_filters(
 
 
 def matches_tag_filters(
-    target_tags: set[str],
+    target_tags: Set[str],
     filter_list: Sequence[str],
 ) -> bool:
   """Evaluates whether a target's tags satisfy Bazel --test_tag_filters rules.
@@ -231,7 +231,7 @@ class TestTarget:
       self,
       name: str,
       package: str,
-      tags: set[str],
+      tags: Set[str],
       source_file: str,
   ):
     """Initializes a TestTarget instance.
@@ -313,7 +313,7 @@ _BAZELRC_CONFIG_LINE_RE = re.compile(
 )
 
 
-def parse_bazelrc_rbe_configs(bazelrc_path: pathlib.Path) -> frozenset[str]:
+def parse_bazelrc_rbe_configs(bazelrc_path: pathlib.Path) -> Set[str]:
   """Returns `rbe_test_execution` and the .bazelrc configs that include it directly."""
   rbe_configs = set()
   with open(bazelrc_path, "r", encoding="utf-8") as f:
@@ -334,7 +334,7 @@ _PRESUBMIT_TAG_MACHINE_TYPES = {
 }
 
 
-def resolve_rbe_target_machine_type(tags: set[str]) -> str:
+def resolve_rbe_target_machine_type(tags: Set[str]) -> str:
   """Returns 'CPU', or the TPU an RBE test runs on from its presubmit-v<N> tag."""
   if "requires-tpu" not in tags:
     return "CPU"
@@ -731,7 +731,7 @@ def find_bazel_binary(
   return downloaded
 
 
-def parse_bazel_query_xml(xml_content: str) -> list[TestTarget]:
+def parse_bazel_query_xml(xml_content: str) -> Sequence[TestTarget]:
   """Parses Bazel query XML output into TestTarget objects.
 
   Bazel query XML output format (relevant subsets):
@@ -814,7 +814,7 @@ def parse_bazel_query_xml(xml_content: str) -> list[TestTarget]:
 def discover_test_targets(
     repo_root: pathlib.Path,
     bazel_bin: pathlib.Path | None = None,
-) -> list[TestTarget]:
+) -> Sequence[TestTarget]:
   """Queries all test targets and tags defined in repo_root using Bazel query.
 
   Args:
@@ -856,7 +856,7 @@ def discover_test_targets(
 def filter_targets_by_patterns(
     targets: Sequence[TestTarget],
     patterns: Sequence[str],
-) -> tuple[list[TestTarget], list[str]]:
+) -> tuple[Sequence[TestTarget], Sequence[str]]:
   """Filters test targets down to those matching any of the given globs.
 
   Args:
@@ -892,7 +892,7 @@ def map_jobs_to_tests(
     targets: Sequence[TestTarget],
     ci_configs: Mapping[str, Sequence[str]],
     selected_jobs: Sequence[str] | None = None,
-) -> dict[str, list[TestTarget]]:
+) -> Mapping[str, Sequence[TestTarget]]:
   """Maps each CI job to the test targets it will execute.
 
   Args:
@@ -924,7 +924,7 @@ def map_test_to_jobs(
     targets: Sequence[TestTarget],
     ci_configs: Mapping[str, Sequence[str]],
     selected_jobs: Sequence[str] | None = None,
-) -> tuple[TestTarget | None, list[str]]:
+) -> tuple[TestTarget | None, Sequence[str]]:
   """Queries which CI jobs execute a specific test target.
 
   Args:
@@ -968,7 +968,7 @@ def map_test_to_jobs(
 def format_text_output(
     job_to_targets: Mapping[str, Sequence[TestTarget]],
     job_machines: Mapping[str, JobMachineInfo] | None = None,
-    rbe_jobs: frozenset[str] = frozenset(),
+    rbe_jobs: Set[str] = frozenset(),
 ) -> str:
   """Formats test targets grouped by CI job in human-readable text.
 

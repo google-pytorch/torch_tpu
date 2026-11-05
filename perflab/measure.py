@@ -14,7 +14,7 @@
 
 """Utilities for measuring a torch step function."""
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 import contextlib
 import dataclasses
 import gc
@@ -148,7 +148,7 @@ class XprofContext:
       *,
       host_trace_level: int,
       enable_python_tracer: bool,
-      kwargs: dict[str, str],
+      kwargs: Mapping[str, str],
   ):
     """Creates and starts a new XprofSession."""
     session = xprof_adapter.XprofSession()

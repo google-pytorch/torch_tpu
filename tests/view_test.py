@@ -168,7 +168,7 @@ class LayoutTest(seed_test_utils.RepeatableTest):
 
   def _assert_no_mutation_from_base(
       self,
-      base_shape: tuple[int, ...],
+      base_shape: Sequence[int],
       non_view_operation: Callable[[torch.Tensor], torch.Tensor],
   ):
     # Use zeros to easily identify if any elements are mutated
@@ -195,7 +195,7 @@ class LayoutTest(seed_test_utils.RepeatableTest):
 
   def _assert_same_mutation_from_view(
       self,
-      base_shape: tuple[int, ...],
+      base_shape: Sequence[int],
       view_operation: Callable[
           [torch.Tensor], torch.Tensor | Sequence[torch.Tensor]
       ],

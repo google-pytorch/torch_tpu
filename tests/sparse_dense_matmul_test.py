@@ -13,6 +13,7 @@
 # limitations under the License.
 
 
+from collections.abc import Mapping, MutableSequence, Sequence
 from typing import Any
 from absl.testing import absltest
 from absl.testing import parameterized
@@ -34,9 +35,9 @@ def preprocess_sparse_dense_matmul_input(
     suggested_coo_buffer_size: int = 128,
     batch_size: int = 16,
     combiner: str = "sum",
-    options: dict[str, Any] | None = None,
+    options: Mapping[str, Any] | None = None,
     table_name: str = "table_0",
-) -> dict[str, torch.Tensor]:
+) -> Mapping[str, torch.Tensor]:
   """Preprocesses sparse dense matmul input tensors for a table into CSR buffers and stats.
 
   Args:
@@ -449,7 +450,7 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
     )
     return row_pointers, embedding_ids, sample_ids, gains, embedding_table
 
-  def _get_updated_rows(self, vocab_size: int = 32) -> list[int]:
+  def _get_updated_rows(self, vocab_size: int = 32) -> Sequence[int]:
     num_sc = torch.tpu.get_device_properties().sparse_cores_per_device
     shard_size = vocab_size // num_sc
     logical_ids = [0, 1, 2, 3, 4, 6]
@@ -1658,7 +1659,7 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
       self.assertEqual(tpu_annotations.TpuLayout(*layout_tuple), t8_layout)
 
   def _compile_sgd(
-      self, device: torch.device, debugs: list[Any]
+      self, device: torch.device, debugs: MutableSequence[Any]
   ) -> tuple[Any, torch.Tensor]:
     """Returns a compiled SGD step on a table, and the table's initial value."""
     row_pointers, embedding_ids, sample_ids, gains, embedding_table = (

@@ -17,8 +17,7 @@
 import abc
 import asyncio
 import atexit
-import collections.abc
-from collections.abc import Collection, Coroutine, Sequence
+from collections.abc import Collection, Coroutine, ItemsView, Iterator, KeysView, Mapping, Sequence, ValuesView
 import concurrent.futures
 import contextlib
 import dataclasses
@@ -162,7 +161,7 @@ class RankCollectiveCounts:
   def __init__(
       self,
       pg_to_count: (
-          dict[ProcessGroupId, ProcessGroupCollectiveCount] | None
+          Mapping[ProcessGroupId, ProcessGroupCollectiveCount] | None
       ) = None,
   ) -> None:
     """Initializes RankCollectiveCounts.
@@ -208,7 +207,7 @@ class RankCollectiveCounts:
 
   def increment_pg_collective_counts(
       self,
-      pg_to_num_collectives: dict[ProcessGroupId, int],
+      pg_to_num_collectives: Mapping[ProcessGroupId, int],
   ) -> None:
     """Increments collective counts for multiple process groups.
 
@@ -281,17 +280,17 @@ class RankCollectiveCounts:
 
   def items(
       self,
-  ) -> collections.abc.ItemsView[ProcessGroupId, ProcessGroupCollectiveCount]:
+  ) -> ItemsView[ProcessGroupId, ProcessGroupCollectiveCount]:
     """Returns an iterator over (key, value) pairs of _pg_to_count."""
     return self._pg_to_count.items()
 
-  def keys(self) -> collections.abc.KeysView[ProcessGroupId]:
+  def keys(self) -> KeysView[ProcessGroupId]:
     """Returns an iterator over keys of _pg_to_count."""
     return self._pg_to_count.keys()
 
   def values(
       self,
-  ) -> collections.abc.ValuesView[ProcessGroupCollectiveCount]:
+  ) -> ValuesView[ProcessGroupCollectiveCount]:
     """Returns an iterator over values of _pg_to_count."""
     return self._pg_to_count.values()
 
@@ -326,7 +325,7 @@ class RankCollectiveCounts:
   def __len__(self) -> int:
     return len(self._pg_to_count)
 
-  def __iter__(self) -> collections.abc.Iterator[ProcessGroupId]:
+  def __iter__(self) -> Iterator[ProcessGroupId]:
     return iter(self._pg_to_count)
 
   def __eq__(self, other: object) -> bool:
@@ -353,7 +352,7 @@ class RankCollectiveCounts:
 
 
 def should_handshake(
-    pg_to_num_collectives: dict[ProcessGroupId, int],
+    pg_to_num_collectives: Mapping[ProcessGroupId, int],
 ) -> bool:
   """Checks whether a handshake should be performed for the given collective counts.
 
@@ -430,7 +429,7 @@ class CollectiveHandshakeRequest:
         )
 
   @functools.cached_property
-  def participating_ranks(self) -> list[int]:
+  def participating_ranks(self) -> Sequence[int]:
     """Ranks participating in the handshake.
 
     This is a sorted list containing unique rank integers of the process groups
@@ -669,7 +668,7 @@ class _CollectiveHandshakeConsensus:
 
   async def get_from_ranks(
       self, ranks: Collection[int]
-  ) -> list[_CollectiveHandshakeRequestZMQEnvelope]:
+  ) -> Sequence[_CollectiveHandshakeRequestZMQEnvelope]:
     """Awaits and returns requests from all specified ranks.
 
     Args:
@@ -865,7 +864,7 @@ def _validate_port_number(port: int) -> None:
 @contextlib.contextmanager
 def _log_zmq_duration_if_exception(
     op_name: str, timeout_s: float | None
-) -> collections.abc.Iterator[None]:
+) -> Iterator[None]:
   """Logs the duration of a ZMQ operation if it raises a ZMQError."""
   start_time = time.monotonic()
   try:
@@ -987,7 +986,7 @@ class _ZMQServer:
 
   async def recv_requests_batch(
       self,
-  ) -> list[_CollectiveHandshakeRequestZMQEnvelope]:
+  ) -> Sequence[_CollectiveHandshakeRequestZMQEnvelope]:
     """Awaits one request, then non-blockingly drains any additional ready messages.
 
     Returns:
@@ -1141,7 +1140,7 @@ class _HandshakeServer(_HandshakeBackend):
       return cast("_HandshakeServer", cls._instance)
 
   # LINT.IfChange(get_loop_tasks)
-  def _get_loop_tasks(self) -> list[asyncio.Task[Any]]:
+  def _get_loop_tasks(self) -> Sequence[asyncio.Task[None]]:
     """Returns all background loop tasks managed by the server."""
     return [self._listen_task, self._consensus_task]
 
@@ -1237,7 +1236,7 @@ class _HandshakeServer(_HandshakeBackend):
 
   async def _gather_handshake_messages(
       self,
-  ) -> tuple[dict[int, CollectiveHandshakeRequest], dict[int, bytes]]:
+  ) -> tuple[Mapping[int, CollectiveHandshakeRequest], Mapping[int, bytes]]:
     """Gathers requests and client IDs from all participating ranks for a handshake step."""
     first_envelope = await self._handshake_consensus.get_first_request()
     first_msg = first_envelope.request
@@ -1255,7 +1254,7 @@ class _HandshakeServer(_HandshakeBackend):
 
   async def _exhaust_ranks(
       self,
-      received_msgs: dict[int, CollectiveHandshakeRequest],
+      received_msgs: Mapping[int, CollectiveHandshakeRequest],
   ) -> None:
     """Exhausts queues for ranks that have collective count < max collective count."""
     # TODO(b/542976786): The handshake currently supports only the global

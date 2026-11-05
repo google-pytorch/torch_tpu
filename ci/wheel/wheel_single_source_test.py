@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from collections.abc import Sequence
 import email.message
 import email.parser
 import os
@@ -32,7 +33,7 @@ def normalize_req(req_string):
   )
 
 
-def get_wheel_metadata_files(wheel_path: str) -> list[str]:
+def get_wheel_metadata_files(wheel_path: str) -> Sequence[str]:
   """Returns all archive member paths containing 'METADATA'."""
   with zipfile.ZipFile(wheel_path, "r") as z:
     return [n for n in z.namelist() if "METADATA" in n]

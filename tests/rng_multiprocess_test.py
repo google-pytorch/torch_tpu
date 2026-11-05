@@ -17,7 +17,7 @@
 Tests TPU and CUDA backends in spawned child processes across devices.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 import os
 import queue
 from typing import Any
@@ -62,7 +62,7 @@ def _set_same_seed(backend_mod: Any, rank: int) -> None:
 
 def _gen_rand_tensors(
     backend_mod: Any, dev: torch.device, rank: int
-) -> list[list[float]]:
+) -> Sequence[Sequence[float]]:
   """Generates a stack of eager random tensors on dev as nested lists."""
   tensors = [torch.rand(10, device=dev).cpu().tolist() for _ in range(5)]
   return tensors
@@ -70,7 +70,7 @@ def _gen_rand_tensors(
 
 def _gen_compiled_rand(
     backend_mod: Any, dev: torch.device, rank: int
-) -> list[float]:
+) -> Sequence[float]:
   """Generates random output from a compiled function on dev as a list."""
   torch._inductor.config.compile_threads = 1
 

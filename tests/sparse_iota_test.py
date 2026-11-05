@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from collections.abc import Sequence
 from absl.testing import absltest
 from absl.testing import parameterized
 import numpy as np
@@ -23,10 +24,10 @@ PAD_WIDTH = 8
 
 
 def compute_expected_sparse_iota(
-    row_sizes: list[int],
+    row_sizes: Sequence[int],
     pad_size: int,
     pad_value: int,
-) -> list[int]:
+) -> Sequence[int]:
   """Computes the expected sparse_iota output on CPU."""
   expected_output = []
   offset = 0

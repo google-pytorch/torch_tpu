@@ -15,9 +15,8 @@
 """Unit tests for C++ FxOutputReconstructor."""
 
 import collections
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 import pickle
-from typing import Any
 
 from absl.testing import absltest
 from absl.testing import parameterized
@@ -28,7 +27,7 @@ from torch_tpu._internal.export import export as torch_tpu_export
 from tests import seed_test_utils
 
 
-def _compile_double_executable(shape: tuple[int, ...]):
+def _compile_double_executable(shape: Sequence[int]):
   """Compiles a PJRT executable computing `2 * x` for a float32 `shape`."""
   tensor_type = f"tensor<{'x'.join(map(str, shape))}xf32>"
   module = tpu_torch_compile.parse_mlir_text(f"""
@@ -312,7 +311,8 @@ module {
       ("generic_sequence", collections.UserList),
   )
   def test_compiled_runner_does_not_unbox_single_tensor_argument(
-      self, make_args: Callable[[list[Any]], Any]
+      self,
+      make_args: Callable[[Sequence[torch.Tensor]], Sequence[torch.Tensor]],
   ):
     x = torch.randn(4, 4, device="tpu")
     runner = tpu_torch_compile.make_compiled_runner(

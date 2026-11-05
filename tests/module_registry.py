@@ -738,7 +738,7 @@ class _ConfigWrapper:
   def __getstate__(self) -> dict[str, Any]:
     return {"_data": self._data}
 
-  def __setstate__(self, state: dict[str, Any]) -> None:
+  def __setstate__(self, state: Mapping[str, Any]) -> None:
     object.__setattr__(self, "_data", state["_data"])
 
   def __getattr__(self, name: str) -> Any:
@@ -1073,7 +1073,7 @@ class BaseProvider(abc.ABC):
     return None
 
   @abc.abstractmethod
-  def list_modules(self) -> list[str]:
+  def list_modules(self) -> Sequence[str]:
     """Lists the names of all models available from this provider.
 
     Returns:
@@ -1130,7 +1130,7 @@ class TorchvisionProvider(BaseProvider):
   def __init__(self, base_path: str | None = None):
     super().__init__(base_path=base_path, subdir="torchvision")
 
-  def list_modules(self) -> list[str]:
+  def list_modules(self) -> Sequence[str]:
     """Lists the names of all models available from this provider.
 
     Structured as {base_path}/torchvision/{model_name}/weights.pt
@@ -1219,7 +1219,7 @@ class TimmProvider(BaseProvider):
   def __init__(self, base_path: str | None = None):
     super().__init__(base_path=base_path, subdir="timm")
 
-  def list_modules(self) -> list[str]:
+  def list_modules(self) -> Sequence[str]:
     """Lists the names of all models available from this provider.
 
     Structured as {base_path}/timm/{model_name}/weights.pth
@@ -2381,7 +2381,7 @@ def _sanitize_common_config_dict_fields(
 
 
 def _sanitize_model_specific_config_dict(
-    config_dict: dict[str, Any],
+    config_dict: MutableMapping[str, Any],
     load_weights: bool = False,
 ) -> None:
   """Applies model-type-specific normalizations to a raw config dictionary."""
@@ -2555,7 +2555,7 @@ def _suppress_strict_dataclass_validation(
 
 
 def _resolve_sub_config_class(
-    sub_cls: Any, sub_dict: dict[str, Any]
+    sub_cls: Any, sub_dict: Mapping[str, Any]
 ) -> type[Any] | None:
   """Resolves the concrete config class for a sub-config entry."""
   if hasattr(sub_cls, "for_model") or getattr(sub_cls, "__name__", "") in (
@@ -2640,7 +2640,7 @@ def _instantiate_transformers_config_class(
 
 
 def _resolve_config_class(
-    model_type: str, config_dict: dict[str, Any]
+    model_type: str, config_dict: Mapping[str, Any]
 ) -> type[Any] | None:
   """Resolves the configuration class for a model type or architecture."""
   config_mapping = getattr(
@@ -3287,7 +3287,7 @@ class TransformersProvider(BaseProvider):
         return traversable
     return None
 
-  def list_modules(self) -> list[str]:
+  def list_modules(self) -> Sequence[str]:
     """Lists the names of all models available from this provider.
 
     Structured as {base_path}/transformers/{owner}/{model}/files
@@ -3561,8 +3561,8 @@ _DEFAULT_DIFFUSERS_SUBFOLDERS: tuple[str | None, ...] = (
 
 
 def _extract_diffusers_subfolder_candidates(
-    index_dict: dict[str, Any],
-) -> list[str]:
+    index_dict: Mapping[str, Any],
+) -> Sequence[str]:
   """Extracts prioritized candidate subfolders from diffusers model_index."""
   candidates = []
   for key in _DIFFUSERS_SUBFOLDER_PRIORITY:
@@ -3621,7 +3621,7 @@ class DiffusersProvider(BaseProvider):
   def __init__(self, base_path: str | None = None):
     super().__init__(base_path=base_path, subdir="diffusers")
 
-  def list_modules(self) -> list[str]:
+  def list_modules(self) -> Sequence[str]:
     """Lists the names of all models available from this provider.
 
     Structured as {base_path}/diffusers/{owner}/{model}/files
@@ -3642,7 +3642,7 @@ class DiffusersProvider(BaseProvider):
       name: str,
       subfolder: str | None = None,
       load_weights: bool = False,
-  ) -> tuple[Any, str | None, epath.Path | None]:
+  ) -> tuple[Mapping[str, Any], str | None, epath.Path | None]:
     base_path = self._base_path if self.has_cache_dir else None
 
     def _loader() -> module_cache.ConfigCacheEntry:
@@ -4479,11 +4479,11 @@ class ModuleRegistry:
     if _HAS_DIFFUSERS:
       self._providers["diffusers"] = DiffusersProvider(base_path=base_path)
 
-  def list_all_sources(self) -> list[str]:
+  def list_all_sources(self) -> Sequence[str]:
     """Returns a list of registered provider keys (e.g., 'torchvision')."""
     return list(self._providers.keys())
 
-  def list_all_modules(self) -> list[str]:
+  def list_all_modules(self) -> Sequence[str]:
     """Returns a unified list of all available modules across all providers.
 
     Returns:
@@ -4501,7 +4501,7 @@ class ModuleRegistry:
       raise ValueError(f"Source '{source}' not supported.")
     return self._providers[canonical_source]
 
-  def list_modules(self, source: str) -> list[str]:
+  def list_modules(self, source: str) -> Sequence[str]:
     """Lists available models for a specific source.
 
     Args:

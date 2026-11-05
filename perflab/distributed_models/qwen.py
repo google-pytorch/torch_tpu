@@ -14,6 +14,7 @@
 
 """Qwen model benchmark definitions for distributed benchmark harness."""
 
+from collections.abc import Mapping
 import math
 import re
 from typing import Any
@@ -79,7 +80,7 @@ def _warn_if_attn_dimensions_not_divisible(
 def _apply_tensor_parallel_plan(
     module: nn.Module,
     name_prefix: str = "",
-    tp_plan: dict[str, str] | None = None,
+    tp_plan: Mapping[str, str] | None = None,
     world_size: int = 1,
     rank: int = 0,
 ) -> None:

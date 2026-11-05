@@ -19,6 +19,7 @@ only the TensorBoard scalars that match a metric pattern of the benchmark, so a
 metric that no pattern matches never reaches the benchmark dashboards.
 """
 
+from collections.abc import Set
 import dataclasses
 import os
 import re
@@ -152,7 +153,7 @@ class _DeviceOps:
     return 0
 
 
-def _exported_metrics(count_flops: bool = False) -> set[str]:
+def _exported_metrics(count_flops: bool = False) -> Set[str]:
   """Returns the metrics that a successful GCP benchmark case exports.
 
   Args:

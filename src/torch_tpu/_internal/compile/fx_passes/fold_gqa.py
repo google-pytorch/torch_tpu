@@ -30,6 +30,7 @@ unexpanded key and value tensors so that head broadcast and backward reduction
 are folded directly on device MXU without memory materialization.
 """
 
+from collections.abc import Sequence
 import operator
 import torch
 from torch import fx
@@ -151,7 +152,7 @@ def _extract_repeat_kv_source(node: fx.Node) -> tuple[fx.Node, int] | None:
 def _detect_repeat_kv_backward_reduction(
     grad_consumer: fx.Node,
     expected_group_size: int | None = None,
-) -> tuple[fx.Node, list[fx.Node]] | None:
+) -> tuple[fx.Node, Sequence[fx.Node]] | None:
   """Detects autograd backward reduction of repeat_kv.
 
   Forward repeat_kv pattern:

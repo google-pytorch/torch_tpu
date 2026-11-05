@@ -14,13 +14,14 @@
 
 """Propagates SymInt placeholders to submodules that need them."""
 
+from collections.abc import Set
 from typing import Any
 from absl import logging
 import torch
 from torch_tpu._internal.compile.dynamic import sym_utils
 
 
-def _collect_free_symbols(val: Any) -> set[str]:
+def _collect_free_symbols(val: Any) -> Set[str]:
   """Extracts free symbol string names from a SymInt or Tensor metadata."""
   symbols = set()
   if isinstance(val, torch.SymInt):

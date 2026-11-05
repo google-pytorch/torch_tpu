@@ -22,7 +22,7 @@ underlying providers (Torchvision, TIMM, and Transformers). It ensures that:
     successfully with their generated sample inputs.
 """
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 import contextlib
 import copy
 import json
@@ -88,7 +88,7 @@ _TINY_LLAVA_CONFIG = {
 
 
 @contextlib.contextmanager
-def _recording_parameter_dtypes() -> Iterator[list[torch.dtype]]:
+def _recording_parameter_dtypes() -> Iterator[Sequence[torch.dtype]]:
   """Records the dtypes of the parameters registered within the context.
 
   Yields:
@@ -1046,7 +1046,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
 
   def _construct_tiny_transformers_model(
       self, config: dict[str, Any], *, dtype: torch.dtype | None = None
-  ) -> tuple[list[torch.dtype], torch.nn.Module]:
+  ) -> tuple[Sequence[torch.dtype], torch.nn.Module]:
     """Constructs a tiny model with random weights from the registry.
 
     Args:
@@ -1064,7 +1064,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
 
   def _construct_tiny_qwen3(
       self, *, dtype: torch.dtype | None = None, **config_overrides: Any
-  ) -> tuple[list[torch.dtype], torch.nn.Module]:
+  ) -> tuple[Sequence[torch.dtype], torch.nn.Module]:
     """Constructs a tiny Qwen3 model with random weights from the registry.
 
     Args:

@@ -69,6 +69,7 @@ and
 https://github.com/google-pytorch/torchtitan/blob/main/tests/unit_tests/test_flux_unbind.py).
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 import math
 from typing import cast
@@ -256,7 +257,7 @@ class EmbedNDRef(nn.Module):
       self,
       dim: int,
       theta: int = 10000,
-      axes_dim: tuple[int, ...] = (16, 56, 56),
+      axes_dim: Sequence[int] = (16, 56, 56),
   ):
     super().__init__()
     self.dim = dim
@@ -357,7 +358,7 @@ class EmbedND(nn.Module):
       self,
       dim: int,
       theta: int = 10000,
-      axes_dim: tuple[int, ...] = (16, 56, 56),
+      axes_dim: Sequence[int] = (16, 56, 56),
   ):
     super().__init__()
     self.dim = dim
@@ -650,7 +651,7 @@ def generate_baseline_inputs(
     txt_seq_len: int = 64,
     hidden_size: int = 512,
     num_heads: int = 8,
-    axes_dim: tuple[int, ...] = (16, 24, 24),
+    axes_dim: Sequence[int] = (16, 24, 24),
     device: str | torch.device = "cpu",
     dtype: torch.dtype = torch.float32,
     use_fused_rope: bool = False,

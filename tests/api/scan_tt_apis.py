@@ -57,7 +57,7 @@ tab of the Sponge link of `tt_apis_test`.
 
 import ast
 import collections
-from collections.abc import Sequence
+from collections.abc import Mapping, MutableMapping, Sequence
 import dataclasses
 import enum
 import importlib
@@ -802,7 +802,7 @@ class _CppWarningBridge:
       func: Any,
       types_tuple: Any,
       args: Sequence[Any] = (),
-      kwargs: dict[str, Any] | None = None,
+      kwargs: Mapping[str, Any] | None = None,
   ) -> Any:
     del func, types_tuple, kwargs
     runner = args[0]
@@ -827,7 +827,7 @@ def _invoke_with_cpp_warning_capture(callback: Any) -> Any:
 
 
 def _probe_accelerator_callable(
-    callable_obj: Any, probe_cache: dict[int, bool]
+    callable_obj: Any, probe_cache: MutableMapping[int, bool]
 ) -> bool:
   """Probes a `torch.accelerator` callable or class at runtime to check TPU support.
 
@@ -1200,7 +1200,9 @@ def find_duplicate_public_paths(apis: Sequence[ApiEntry]) -> list[list[str]]:
   return sorted(group for _, group in groups.values() if len(group) > 1)
 
 
-def find_duplicated_exports(apis: Sequence[ApiEntry]) -> list[list[str]]:
+def find_duplicated_exports(
+    apis: Sequence[ApiEntry],
+) -> Sequence[Sequence[str]]:
   """Returns the duplicate public paths that `tt_apis.yaml` tracks.
 
   These are the groups from `find_duplicate_public_paths` that include a path in
@@ -1251,7 +1253,7 @@ def _resolve_public_path(path: str) -> Any:
 
 def _assigned_self_attributes(
     function: Any,
-) -> list[tuple[str, str]]:
+) -> Sequence[tuple[str, str]]:
   """Returns the attributes that `function` assigns on its first argument.
 
   Covers `self.x = ...`, `self.x: T = ...`, `self.x += ...`, tuple and list
@@ -1322,7 +1324,7 @@ def _assigned_self_attributes(
 
 def find_public_instance_attributes_of_class(
     cls: type,
-) -> dict[str, str]:
+) -> Mapping[str, str]:
   """Returns the public instance attributes that a TorchTPU class assigns.
 
   Scans the methods (including property accessors) of `cls` and of its
@@ -1376,7 +1378,7 @@ def find_public_instance_attributes_of_class(
 
 def find_public_instance_attributes(
     apis: Sequence[ApiEntry],
-) -> list[tuple[str, str]]:
+) -> Sequence[tuple[str, str]]:
   """Returns the public instance attributes of public TorchTPU classes.
 
   The scanner discovers APIs with `dir`, which doesn't list instance
@@ -1930,7 +1932,7 @@ above, relative to the repository root."""
 
 def find_out_of_date_baseline_files(
     repository_root: str, all_items: Sequence[ApiEntry]
-) -> dict[str, str]:
+) -> Mapping[str, str]:
   """Returns the up-to-date `tt_apis.yaml` and `public_apis.md`, if they changed.
 
   Args:

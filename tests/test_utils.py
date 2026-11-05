@@ -14,7 +14,7 @@
 
 """Test utilities for TorchTPU tests, including locating and loading goldens data."""
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 import dataclasses
 import gzip
 import importlib.resources
@@ -192,7 +192,7 @@ def find_per_test_case_goldens_dir(
 def load_single_test_case_golden(
     test_case_name: str,
     per_test_case_dir: pathlib.Path,
-) -> dict[str, Any] | None:
+) -> Mapping[str, Any] | None:
   """Loads the plist pytree for a single test case, if present.
 
   Args:

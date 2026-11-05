@@ -21,7 +21,7 @@ upstream PyTorch activation checkpointing test suite directly on TPU in the
 future.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 import contextlib
 import copy
 import functools
@@ -70,9 +70,9 @@ def _count_ops(
     freq: int | None = None,
     freq_ge: int | None = None,
     op: Any = None,
-    freqs: list[int] | None = None,
-    freqs_ge: list[int] | None = None,
-    ops: list[Any] | None = None,
+    freqs: Sequence[int] | None = None,
+    freqs_ge: Sequence[int] | None = None,
+    ops: Sequence[Callable[..., Any]] | None = None,
 ) -> fx.GraphModule:
   # Provenance: test_activation_checkpointing.py::count_ops
   del args
@@ -185,7 +185,7 @@ class _TpuAotAutogradBackend:
   def __call__(
       self,
       gm: fx.GraphModule,
-      example_inputs: list[torch.Tensor],
+      example_inputs: Sequence[torch.Tensor],
       **kwargs: Any,
   ) -> Callable[..., Any]:
     backend_mod = torch_tpu_compile._backend  # pylint: disable=protected-access
@@ -1152,7 +1152,7 @@ class RematerializeACNodesPassTests(seed_test_utils.RepeatableTest):
       self,
       fn: Callable[..., Any],
       remat_using_tags_for_fwd_loss_bwd_graph: bool,
-      inputs: tuple[torch.Tensor, ...],
+      inputs: Sequence[torch.Tensor],
   ) -> tuple[Any, Any]:
     # Provenance: test_activation_checkpointing.py::RematerializeACNodesPassTests._compile_and_capture
     if isinstance(fn, nn.Module):

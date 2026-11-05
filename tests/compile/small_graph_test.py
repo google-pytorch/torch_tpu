@@ -14,6 +14,7 @@
 
 """Small graph test for TPU backend."""
 
+from collections.abc import Sequence
 import contextlib
 import os
 import pickle
@@ -1506,9 +1507,9 @@ class ModuleTest(seed_test_utils.RepeatableTest):
   def _run_and_compare(
       self,
       module_class,
-      inputs: list[torch.Tensor],
+      inputs: Sequence[torch.Tensor],
       serializable: bool = False,
-  ) -> list[compile_lib.TpuCompileDebug]:
+  ) -> Sequence[compile_lib.TpuCompileDebug]:
     """Runs module on CPU, TPU eager mode, and TPU compiled mode.
 
     Args:

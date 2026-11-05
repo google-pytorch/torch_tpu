@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from collections.abc import Mapping
 import functools
 from typing import Any
 from absl import logging
@@ -67,7 +68,7 @@ class _StandardTrainingStepper(common.BaseStepper):
     # `opt.step()` goes unnoticed.
     return loss
 
-  def get_params(self) -> dict[str, torch.Tensor]:
+  def get_params(self) -> Mapping[str, torch.Tensor]:
     """Returns the current model parameters."""
     if self._model is not None:
       return dict(self._model.named_parameters())
@@ -224,7 +225,7 @@ class SingleTraceTrainingStepper(common.BaseStepper):
   def _step_function(step_fn, inputs):
     return step_fn(inputs)
 
-  def get_params(self) -> dict[str, torch.Tensor]:
+  def get_params(self) -> Mapping[str, torch.Tensor]:
     """Returns the current model parameters from the trainer."""
     if self._trainer is not None:
       return self._trainer.params
@@ -312,7 +313,7 @@ class TrainingStepper:
       return self._single_trace_stepper._trainer
     return None
 
-  def get_params(self) -> dict[str, torch.Tensor]:
+  def get_params(self) -> Mapping[str, torch.Tensor]:
     """Returns the current model parameters from the active stepper."""
     return self._active_stepper.get_params()
 

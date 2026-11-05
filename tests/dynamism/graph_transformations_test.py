@@ -15,7 +15,7 @@
 """Unit tests for graph transformations."""
 
 from __future__ import annotations
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
 from absl.testing import absltest
 import torch
@@ -351,7 +351,7 @@ class GraphTransformationsTest(seed_test_utils.RepeatableTest):
 
   def _capture_dynamic_stride_view_graph(
       self, make_view: Callable[[int], torch.Tensor]
-  ) -> tuple[torch.fx.GraphModule, list[Any], int]:
+  ) -> tuple[torch.fx.GraphModule, Sequence[Any], int]:
     """Captures the graph compiled for a view input with dynamic strides.
 
     Compiles `x + 1` for views of bases with two sequence lengths. The sizes
@@ -399,7 +399,7 @@ class GraphTransformationsTest(seed_test_utils.RepeatableTest):
   def _check_input_dynamic_view_pass_metadata(
       self,
       make_view: Callable[[int], torch.Tensor],
-      expected_view_ops: list[torch._ops.OpOverload],
+      expected_view_ops: Sequence[torch._ops.OpOverload],
   ) -> None:
     """Checks that every inserted view node carries metadata and compiles."""
     graph_module, example_inputs, view_index = (
