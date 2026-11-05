@@ -39,6 +39,7 @@
 #include "csrc/ops/gelu/gelu.h"
 #include "csrc/ops/layer_norm/layer_norm.h"
 #include "csrc/ops/macros/kernel.h"
+#include "csrc/ops/matmul/matmul.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/precision_context.h"
@@ -258,18 +259,15 @@ absl::StatusOr<mlir::MlirOp> BuildMultiheadAttentionShlo(
     const int64_t D, const int64_t nH, const int64_t d_k,
     const mlir::ElementType comp_dtype,
     const mlir::stablehlo::Precision precision, mlir::MlirBuilder& builder) {
-  mlir::MLIRContext& ctx = builder.getContext();
-  const auto precision_config =
-      mlir::stablehlo::PrecisionConfigAttr::get(&ctx, {precision, precision});
-
   // 1. QKV Linear Projection: x_op @ qkv_weight_op.T + qkv_bias_op
-  const auto qkv_dot_dims = mlir::stablehlo::DotDimensionNumbersAttr::get(
-      &ctx, /*lhs_batching_dimensions=*/{},
-      /*rhs_batching_dimensions=*/{},
-      /*lhs_contracting_dimensions=*/{2},
-      /*rhs_contracting_dimensions=*/{1});
-  mlir::MlirOp qkv_mat = mlir::stablehlo::DotGeneral(
-      x_op, qkv_weight_op, qkv_dot_dims, precision_config, comp_dtype);
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp qkv_mat,
+      BuildTypedDotGeneral(x_op, qkv_weight_op,
+                           /*lhs_batching_dims=*/{},
+                           /*rhs_batching_dims=*/{},
+                           /*lhs_contracting_dims=*/{2},
+                           /*rhs_contracting_dims=*/{1}, precision,
+                           /*preferred_element_type=*/comp_dtype));
   TT_ASSIGN_OR_RETURN(mlir::MlirOp qkv_bias_bcast,
                       BroadcastIfNeeded(qkv_bias_op, qkv_mat));
   mlir::MlirOp qkv_op = mlir::stablehlo::Add(qkv_mat, qkv_bias_bcast);
@@ -333,13 +331,14 @@ absl::StatusOr<mlir::MlirOp> BuildMultiheadAttentionShlo(
   mlir::MlirOp q_scaled = mlir::stablehlo::Mul(q_trans, scale_bcast);
 
   // 3. Attention Logits: q_scaled @ k_trans.T -> [B, nH, T, T]
-  const auto attn_dot_dims = mlir::stablehlo::DotDimensionNumbersAttr::get(
-      &ctx, /*lhs_batching_dimensions=*/{0, 1},
-      /*rhs_batching_dimensions=*/{0, 1},
-      /*lhs_contracting_dimensions=*/{3},
-      /*rhs_contracting_dimensions=*/{3});
-  mlir::MlirOp attn_logits = mlir::stablehlo::DotGeneral(
-      q_scaled, k_trans, attn_dot_dims, precision_config, comp_dtype);
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp attn_logits,
+      BuildTypedDotGeneral(q_scaled, k_trans,
+                           /*lhs_batching_dims=*/{0, 1},
+                           /*rhs_batching_dims=*/{0, 1},
+                           /*lhs_contracting_dims=*/{3},
+                           /*rhs_contracting_dims=*/{3}, precision,
+                           /*preferred_element_type=*/comp_dtype));
 
   // Mask handling
   if (mask_op.has_value()) {
@@ -353,13 +352,14 @@ absl::StatusOr<mlir::MlirOp> BuildMultiheadAttentionShlo(
                       BuildSoftmaxShlo(attn_logits, -1, SoftmaxMode::kSoftmax));
 
   // 4. Attention Output: attn_weights @ v_trans -> [B, nH, T, d_k]
-  const auto v_dot_dims = mlir::stablehlo::DotDimensionNumbersAttr::get(
-      &ctx, /*lhs_batching_dimensions=*/{0, 1},
-      /*rhs_batching_dimensions=*/{0, 1},
-      /*lhs_contracting_dimensions=*/{3},
-      /*rhs_contracting_dimensions=*/{2});
-  mlir::MlirOp attn_out_4d = mlir::stablehlo::DotGeneral(
-      attn_weights, v_trans, v_dot_dims, precision_config, comp_dtype);
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp attn_out_4d,
+      BuildTypedDotGeneral(attn_weights, v_trans,
+                           /*lhs_batching_dims=*/{0, 1},
+                           /*rhs_batching_dims=*/{0, 1},
+                           /*lhs_contracting_dims=*/{3},
+                           /*rhs_contracting_dims=*/{2}, precision,
+                           /*preferred_element_type=*/comp_dtype));
 
   // 5. Reshape & Permute back: [B, nH, T, d_k] -> [B, T, nH, d_k] -> [B, T, D]
   mlir::MlirOp attn_out_perm =
@@ -370,13 +370,14 @@ absl::StatusOr<mlir::MlirOp> BuildMultiheadAttentionShlo(
                                   {B_dummy, T_dummy, D}));
 
   // 6. Output Projection: attn_out_3d @ proj_weight_op.T + proj_bias_op
-  const auto proj_dot_dims = mlir::stablehlo::DotDimensionNumbersAttr::get(
-      &ctx, /*lhs_batching_dimensions=*/{},
-      /*rhs_batching_dimensions=*/{},
-      /*lhs_contracting_dimensions=*/{2},
-      /*rhs_contracting_dimensions=*/{1});
-  mlir::MlirOp proj_mat = mlir::stablehlo::DotGeneral(
-      attn_out_3d, proj_weight_op, proj_dot_dims, precision_config, comp_dtype);
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp proj_mat,
+      BuildTypedDotGeneral(attn_out_3d, proj_weight_op,
+                           /*lhs_batching_dims=*/{},
+                           /*rhs_batching_dims=*/{},
+                           /*lhs_contracting_dims=*/{2},
+                           /*rhs_contracting_dims=*/{1}, precision,
+                           /*preferred_element_type=*/comp_dtype));
   TT_ASSIGN_OR_RETURN(mlir::MlirOp proj_bias_bcast,
                       BroadcastIfNeeded(proj_bias_op, proj_mat));
   mlir::MlirOp proj_out = mlir::stablehlo::Add(proj_mat, proj_bias_bcast);
@@ -390,19 +391,16 @@ absl::StatusOr<mlir::MlirOp> BuildFeedForwardShlo(
     mlir::MlirOp x_op, mlir::MlirOp ffn_weight_1_op, mlir::MlirOp ffn_bias_1_op,
     mlir::MlirOp ffn_weight_2_op, mlir::MlirOp ffn_bias_2_op,
     const Activation activation, const mlir::ElementType comp_dtype,
-    const mlir::stablehlo::Precision precision, mlir::MlirBuilder& builder) {
-  mlir::MLIRContext& ctx = builder.getContext();
-  const auto precision_config =
-      mlir::stablehlo::PrecisionConfigAttr::get(&ctx, {precision, precision});
-
+    const mlir::stablehlo::Precision precision) {
   // 1. FFN Linear 1: x_op @ ffn_weight_1_op.T + ffn_bias_1_op
-  const auto ffn1_dot_dims = mlir::stablehlo::DotDimensionNumbersAttr::get(
-      &ctx, /*lhs_batching_dimensions=*/{},
-      /*rhs_batching_dimensions=*/{},
-      /*lhs_contracting_dimensions=*/{2},
-      /*rhs_contracting_dimensions=*/{1});
-  mlir::MlirOp ffn1_mat = mlir::stablehlo::DotGeneral(
-      x_op, ffn_weight_1_op, ffn1_dot_dims, precision_config, comp_dtype);
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp ffn1_mat,
+      BuildTypedDotGeneral(x_op, ffn_weight_1_op,
+                           /*lhs_batching_dims=*/{},
+                           /*rhs_batching_dims=*/{},
+                           /*lhs_contracting_dims=*/{2},
+                           /*rhs_contracting_dims=*/{1}, precision,
+                           /*preferred_element_type=*/comp_dtype));
   TT_ASSIGN_OR_RETURN(mlir::MlirOp ffn1_bias_bcast,
                       BroadcastIfNeeded(ffn_bias_1_op, ffn1_mat));
   mlir::MlirOp ffn1_out = mlir::stablehlo::Add(ffn1_mat, ffn1_bias_bcast);
@@ -418,13 +416,14 @@ absl::StatusOr<mlir::MlirOp> BuildFeedForwardShlo(
   }
 
   // 3. FFN Linear 2: ffn1_act @ ffn_weight_2_op.T + ffn_bias_2_op
-  const auto ffn2_dot_dims = mlir::stablehlo::DotDimensionNumbersAttr::get(
-      &ctx, /*lhs_batching_dimensions=*/{},
-      /*rhs_batching_dimensions=*/{},
-      /*lhs_contracting_dimensions=*/{2},
-      /*rhs_contracting_dimensions=*/{1});
-  mlir::MlirOp ffn2_mat = mlir::stablehlo::DotGeneral(
-      ffn1_act, ffn_weight_2_op, ffn2_dot_dims, precision_config, comp_dtype);
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp ffn2_mat,
+      BuildTypedDotGeneral(ffn1_act, ffn_weight_2_op,
+                           /*lhs_batching_dims=*/{},
+                           /*rhs_batching_dims=*/{},
+                           /*lhs_contracting_dims=*/{2},
+                           /*rhs_contracting_dims=*/{1}, precision,
+                           /*preferred_element_type=*/comp_dtype));
   TT_ASSIGN_OR_RETURN(mlir::MlirOp ffn2_bias_bcast,
                       BroadcastIfNeeded(ffn_bias_2_op, ffn2_mat));
   mlir::MlirOp ffn2_out = mlir::stablehlo::Add(ffn2_mat, ffn2_bias_bcast);
@@ -574,7 +573,7 @@ at::Tensor AtenTransformerEncoderLayerFwd(
                   x_op, ffn_weight_1_op, ffn_bias_1_op, ffn_weight_2_op,
                   ffn_bias_2_op,
                   use_gelu ? Activation::kGelu : Activation::kRelu, comp_dtype,
-                  precision, builder));
+                  precision));
 
           // 6. Second residual connection & optional Post-LN 2
           x_op = mlir::stablehlo::Add(pre_ffn_res, ffn2_out);

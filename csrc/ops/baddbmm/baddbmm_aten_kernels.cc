@@ -140,6 +140,9 @@ absl::StatusOr<mlir::MlirOp> BuildBaddbmmShlo(
   }
 
   // Case 2: beta is not zero. self_op is guaranteed to have a value.
+  if (GetElementTypeOrDie(*self_op) != out_dtype) {
+    *self_op = mlir::stablehlo::ConvertElementType(*self_op, out_dtype);
+  }
 
   // Case 2a: alpha is zero. Baddbmm result is just beta * self.
   if (alpha.IsZero()) {
