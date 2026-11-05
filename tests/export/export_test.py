@@ -15,6 +15,7 @@
 """Small graph test for TPU backend."""
 
 import os
+from unittest import mock
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
@@ -483,6 +484,42 @@ class ExportTest(seed_test_utils.RepeatableTest):
     # StableHLO.
     self.assertIn(b"ML\xefR", mlir_portable_artifact)
     self.assertIn(b"StableHLO_v1.", mlir_portable_artifact)
+
+  def test_fx_to_mlir_skips_compilation_by_default(self):
+    sample_input = (
+        torch.tensor([0.1, 0.2, 0.3, 0.4, 0.5]),
+        torch.tensor([0.4, 0.5, 0.6, 0.7, 0.6]),
+    )
+    exported = torch.export.export(SimpleModule(), args=sample_input)
+    tpu_compile = torch_tpu_export.tpu_torch_compile
+    with (
+        mock.patch.object(
+            tpu_compile,
+            "traverse_and_compile",
+            wraps=tpu_compile.traverse_and_compile,
+        ) as mock_traverse_and_compile,
+        mock.patch.object(
+            tpu_compile,
+            "build_mlir",
+            wraps=tpu_compile.build_mlir,
+        ) as mock_build_mlir,
+    ):
+      exported_mlir = torch_tpu_export.exported_to_mlir(exported)
+      self.assertIsNotNone(exported_mlir.module)
+      self.assertIsNone(exported_mlir.executable)
+      mock_traverse_and_compile.assert_not_called()
+      mock_build_mlir.assert_called_once()
+
+      mock_build_mlir.reset_mock()
+      gm = torch.fx.symbolic_trace(SimpleNN()).to("tpu")
+      x = tpu_compile.placeholder([8], torch.float32, False)
+      no_mlir = torch_tpu_export.fx_to_mlir(
+          gm, args=[x], build_mlir_module=False
+      )
+      self.assertIsNone(no_mlir.module)
+      self.assertIsNone(no_mlir.executable)
+      mock_traverse_and_compile.assert_not_called()
+      mock_build_mlir.assert_not_called()
 
 
 if __name__ == "__main__":

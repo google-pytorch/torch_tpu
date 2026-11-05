@@ -54,6 +54,7 @@
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/fingerprint_utils.h"
 #include "csrc/common/pybind_error_utils.h"
 #include "csrc/common/shape.h"
 #include "csrc/common/to_string.h"
@@ -64,6 +65,7 @@
 #include "csrc/eager/device_gen_impl.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/internal/compile/compiled_mode.h"
+#include "csrc/internal/compile/dispatch_invoke_subgraph.h"
 #include "csrc/internal/compile/dispatch_scan.h"
 #include "csrc/internal/dynamism/dynamism_ops.h"
 #include "csrc/ops/op_builder_utils.h"
@@ -395,16 +397,20 @@ std::vector<std::optional<PyLayout>> PyGetOutputLayoutsFromMetadata(
 // result_tensors and taking argument_tensors as inputs.
 std::shared_ptr<ContextedModule> PyBuildMlir(
     const std::vector<at::Tensor>& result_tensors,
-    const std::vector<at::Tensor>& argument_tensors,
-    bool use_stablehlo_bounds) {  // INT_VEC_OK
+    const std::vector<at::Tensor>& argument_tensors, bool use_stablehlo_bounds,
+    const std::vector<int64_t>& donated_inputs = {},  // INT_VEC_OK
+    const std::optional<std::string>& module_name = std::nullopt) {
+  DeviceAssignment device_assignment;
   TT_ASSIGN_OR_THROW(
       ContextedModule module,
-      ContextedModule::Make([&]  // REF_CAPTURE_OK=called synchronously
-                            (mlir::MLIRContext& context) {
-                              return ExtractMlirFromGraph(
-                                  context, argument_tensors, result_tensors,
-                                  use_stablehlo_bounds);
-                            }));
+      ContextedModule::Make(
+          [&]  // REF_CAPTURE_OK=called synchronously
+          (mlir::MLIRContext& context) {
+            return ExtractMlirFromGraph(
+                context, argument_tensors, result_tensors, use_stablehlo_bounds,
+                CopyIntVector(donated_inputs), module_name, &device_assignment);
+          }));
+  module.set_device_assignment(std::move(device_assignment));
 
   mlir::BaseScopedDiagnosticHandler diag_handler(&module.context());
   if (failed(mlir::verify(module.get()))) {
@@ -1282,6 +1288,28 @@ bool PyIsConstantTensor(const at::Tensor& tensor) {
   auto deferred_op = buffer_ref_or->deferred_op();
   return deferred_op != nullptr &&
          deferred_op->op_name() == OpName::kTorchTpuInternalConstant;
+}
+
+std::optional<uint64_t> PyConstantTensorFingerprint(const at::Tensor& tensor) {
+  if (!tensor.defined() ||
+      tensor.device().type() != GetPrivateUse1DeviceType()) {
+    return std::nullopt;
+  }
+  const absl::StatusOr<DeviceBufferRef> buffer_ref = GetBuffer(tensor);
+  if (!buffer_ref.ok()) {
+    return std::nullopt;
+  }
+  const std::shared_ptr<DeferredOp> deferred_op = buffer_ref->deferred_op();
+  if (deferred_op == nullptr ||
+      deferred_op->op_name() != OpName::kTorchTpuInternalConstant) {
+    return std::nullopt;
+  }
+  FingerprintType fp = deferred_op->op_param_cache_keys().size();
+  for (const auto& [key, val] : deferred_op->op_param_cache_keys()) {
+    fp = tsl::FingerprintCat64(fp, Fingerprint(key));
+    fp = tsl::FingerprintCat64(fp, val);
+  }
+  return fp;
 }
 
 // Returns whether `storage_offset` is zero and every element of a tensor with
@@ -2308,6 +2336,8 @@ TT_PYBIND11_MODULE(tpu_torch_compile, m) {
 
   m.def("build_mlir", PyBuildMlir, py::arg("result_tensors"),
         py::arg("argument_tensors"), py::arg("use_stablehlo_bounds") = false,
+        py::arg("donated_inputs") = std::vector<int64_t>{},  // INT_VEC_OK
+        py::arg("module_name") = std::nullopt,
         "Builds an MLIR module from the graph.");
   // Returns: PjRtLoadedExecutable
   m.def("compile_mlir", PyCompileMlir, py::arg("module"),
@@ -2403,6 +2433,10 @@ TT_PYBIND11_MODULE(tpu_torch_compile, m) {
   m.def("is_constant_tensor", PyIsConstantTensor, py::arg("tensor"),
         "Returns whether the tensor is a constant TPU tensor created by "
         "make_constant_tensor.");
+  m.def("constant_tensor_fingerprint", PyConstantTensorFingerprint,
+        py::arg("tensor"),
+        "Returns a content fingerprint for a constant TPU tensor, or None "
+        "otherwise.");
   m.def("assign_constant_tensor", PyAssignConstantTensor,
         py::arg("cpu_src_tensor"), py::arg("tpu_dst_tensor"),
         "Updates a TPU tensor to be a tensor with the constant value of the "
@@ -2455,6 +2489,11 @@ TT_PYBIND11_MODULE(tpu_torch_compile, m) {
         py::arg("inputs"), py::arg("body_module"), py::arg("scan_direction"),
         py::arg("dim"), py::arg("num_scan_inputs"),
         "Creates a deferred associative scan operation and returns the output "
+        "tensors.");
+  m.def("create_invoke_subgraph_op", &PyCreateInvokeSubgraphOp,
+        py::arg("inputs"), py::arg("subgraph_module"),
+        py::arg("identifier") = "",
+        "Creates a deferred invoke_subgraph operation and returns the output "
         "tensors.");
 }
 
