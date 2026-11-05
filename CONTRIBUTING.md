@@ -206,8 +206,10 @@ To approve the runs:
 1.  In the **Files changed** tab, check that the PR doesn't change
     `.github/workflows/` or other CI scripts in a way that could misuse the
     repository's secrets or CI machines.
-1.  In the **Conversation** tab, click **Approve and run** under "Workflow(s)
+1.  In the **Conversation** tab, click **Approve workflows to run** next to "Workflow(s)
     awaiting approval".
+
+    <img src="docs/developers/images/ci_workflow_approval.png" alt="Approve CI workflows" width="600px">
 
 Runs that aren't approved within 30 days expire: GitHub marks them as failed,
 and they can no longer be approved or re-run. To run the workflows again, the
