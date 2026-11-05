@@ -17,6 +17,7 @@
 #include "csrc/eager/device_gen_impl.h"
 
 #include <cstdint>
+#include <cstring>
 #include <deque>
 #include <optional>
 #include <string>
@@ -32,6 +33,7 @@
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/synchronization/mutex.h"
 #include "c10/core/Device.h"
 #include "c10/core/DeviceGuard.h"
 #include "c10/core/DispatchKey.h"
@@ -52,6 +54,7 @@
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/eager_mode.h"
 #include "csrc/eager/events_queue.h"
+#include "csrc/eager/graph_capture_state.h"
 #include "csrc/eager/materialize.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/structured_log_buffer.h"
@@ -179,7 +182,7 @@ absl::Status InitDefaultGenerator(DeviceGeneratorImpl* gen_impl,
     failure_msg.clear();
     return TT_ERROR(error::kInternal) << err;
   }
-  return gen_impl->state_->WriteStateToDevice(seed, 0);
+  return gen_impl->GetState()->WriteStateToDevice(seed, 0);
 }
 
 // A singleton that holds one generator per device. The generators are lazily
@@ -264,6 +267,11 @@ absl::Status DeviceGeneratorState::MaybeMaterializeDeviceStateTensor(
     // materialization is possible.
     return absl::OkStatus();
   }
+  if (IsCurrentThreadCapturingGraph()) {
+    // Likewise, nothing can be materialized while the current thread captures
+    // a graph: only the replays of the graph compute the state.
+    return absl::OkStatus();
+  }
 
   // Materialize if:
   // - force_materialization is true, or
@@ -272,18 +280,26 @@ absl::Status DeviceGeneratorState::MaybeMaterializeDeviceStateTensor(
   // TODO(b/551978063): this should also materialize in kDeferNever or
   // kDeferNeverAndLaunchBlocking modes, but this breaks excess precision
   // functionality currently.
-  const bool should_materialize =
-      force_materialization ||
-      (++materialize_state_counter_ >= kMaterializationThreshold &&
-       eager_mode != EagerMode::kInternalDeferAll);
+  const std::optional<at::Tensor> state_tensor =
+      [this, force_materialization, eager_mode]() -> std::optional<at::Tensor> {
+    absl::MutexLock lock(mu_);
+    const bool should_materialize =
+        force_materialization ||
+        (++materialize_state_counter_ >= kMaterializationThreshold &&
+         eager_mode != EagerMode::kInternalDeferAll);
 
-  if (!should_materialize) {
+    if (!should_materialize) {
+      return std::nullopt;
+    }
+
+    // Do a materialization, and block on it if we're in launch blocking mode.
+    materialize_state_counter_ = 0;
+    return device_state_tensor_;
+  }();
+  if (!state_tensor.has_value()) {
     return absl::OkStatus();
   }
-
-  // Do a materialization, and block on it if we're in launch blocking mode.
-  materialize_state_counter_ = 0;
-  TT_ASSIGN_OR_RETURN(DeviceBufferRef buf, GetBuffer(device_state_tensor_));
+  TT_ASSIGN_OR_RETURN(DeviceBufferRef buf, GetBuffer(*state_tensor));
   TT_RETURN_IF_ERROR(Materialize(buf, MaterializationReason::kExplicitSync));
   if (eager_mode == EagerMode::kDeferNeverAndLaunchBlocking) {
     TT_RETURN_IF_ERROR(buf.Synchronize());
@@ -293,22 +309,40 @@ absl::Status DeviceGeneratorState::MaybeMaterializeDeviceStateTensor(
 
 absl::Status DeviceGeneratorState::SetDeviceStateTensor(
     at::Tensor device_state_tensor) {
-  device_state_tensor_ = std::move(device_state_tensor);
+  return SetDeviceStateTensor(std::move(device_state_tensor), seed());
+}
+
+absl::Status DeviceGeneratorState::SetDeviceStateTensor(
+    at::Tensor device_state_tensor, const std::optional<uint64_t> seed) {
+  const at::Tensor existing_tensor = DeviceStateTensor();
+  if (existing_tensor.defined()) {
+    TT_ASSIGN_OR_RETURN(DeviceBufferRef buf, GetBuffer(device_state_tensor));
+    TT_RETURN_IF_ERROR(AssignBufferToAtTensor(std::move(buf), existing_tensor));
+    absl::MutexLock lock(mu_);
+    seed_ = seed;
+  } else {
+    absl::MutexLock lock(mu_);
+    device_state_tensor_ = std::move(device_state_tensor);
+    seed_ = seed;
+  }
   TT_RETURN_IF_ERROR(MaybeMaterializeDeviceStateTensor());
   return absl::OkStatus();
 }
 
 absl::Status DeviceGeneratorState::WriteStateToDevice(uint64_t seed,
                                                       uint64_t offset) {
-  TT_ASSIGN_OR_RETURN(
-      auto new_rng_state,
-      CreateDeviceRngStateTensor(device_state_tensor_.device(), seed, offset));
-  return SetDeviceStateTensor(std::move(new_rng_state));
+  const c10::Device device = DeviceStateTensor().device();
+  TT_ASSIGN_OR_RETURN(auto new_rng_state,
+                      CreateDeviceRngStateTensor(device, seed, offset));
+  return SetDeviceStateTensor(std::move(new_rng_state), seed);
 }
 
 c10::intrusive_ptr<DeviceGeneratorState> DeviceGeneratorState::clone() const {
-  auto new_state =
-      c10::make_intrusive<DeviceGeneratorState>(device_state_tensor_.clone());
+  auto new_state = [this] {
+    absl::MutexLock lock(mu_);
+    return c10::make_intrusive<DeviceGeneratorState>(
+        device_state_tensor_.clone(), seed_);
+  }();
   TT_THROW_IF_ERROR(new_state->MaybeMaterializeDeviceStateTensor(
       /*force_materialization=*/true));
   return new_state;
@@ -479,12 +513,34 @@ absl::Status DeviceGeneratorImplBase::AdvanceDeviceStateTensor(
 // EagerModeDeviceGeneratorImpl (non-export mode)
 // ============================================================================
 
+namespace {
+
+// Reads element `index` (0 = seed, 1 = offset) of a {seed, offset} uint64
+// device RNG state tensor without signed int64 overflow.
+uint64_t ReadDeviceStateElement(const at::Tensor& state_tensor,
+                                const int64_t index) {
+  c10::impl::ExcludeDispatchKeyGuard guard(c10::DispatchKey::Python);
+  at::Tensor cpu_state = state_tensor.view(at::kByte).to(at::kCPU).contiguous();
+  uint64_t value = 0;
+  std::memcpy(&value,
+              static_cast<const uint8_t*>(cpu_state.const_data_ptr()) +
+                  index * sizeof(value),
+              sizeof(value));
+  return value;
+}
+
+}  // namespace
+
 EagerModeDeviceGeneratorImpl::EagerModeDeviceGeneratorImpl(
     const c10::DeviceIndex device_index)
     : DeviceGeneratorImplBase(device_index) {
+  TT_CHECK_THROW(!IsCurrentThreadCapturingGraph(), error::kFailedPrecondition)
+      << "cannot construct a new generator while capturing a graph";
+  const c10::DeviceGuard device_guard(this->device());
   TT_ASSIGN_OR_THROW(auto tensor,
                      CreateDeviceRngStateTensor(this->device(), 0, 0));
-  state_ = c10::make_intrusive<DeviceGeneratorState>(std::move(tensor));
+  state_ = c10::make_intrusive<DeviceGeneratorState>(std::move(tensor),
+                                                     /*seed=*/0);
 }
 
 EagerModeDeviceGeneratorImpl::EagerModeDeviceGeneratorImpl(
@@ -496,38 +552,62 @@ EagerModeDeviceGeneratorImpl::EagerModeDeviceGeneratorImpl(
     const c10::DeviceIndex device_index, at::Tensor rng_state)
     : DeviceGeneratorImplBase(device_index) {
   if (ValidateDeviceStateTensor(rng_state).ok()) {
-    state_ = c10::make_intrusive<DeviceGeneratorState>(std::move(rng_state));
+    state_ = c10::make_intrusive<DeviceGeneratorState>(std::move(rng_state),
+                                                       std::nullopt);
   } else {
+    TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=C++-only constructor overload.
+        !IsCurrentThreadCapturingGraph(), error::kFailedPrecondition)
+        << "cannot construct a new generator while capturing a graph";
+    const c10::DeviceGuard device_guard(this->device());
     TT_ASSIGN_OR_THROW(auto tensor,
                        CreateDeviceRngStateTensor(this->device(), 0, 0));
-    state_ = c10::make_intrusive<DeviceGeneratorState>(std::move(tensor));
+    state_ = c10::make_intrusive<DeviceGeneratorState>(std::move(tensor),
+                                                       /*seed=*/0);
     set_state(*rng_state.to(at::kCPU).view(at::kByte).unsafeGetTensorImpl());
   }
 }
 
 at::Tensor EagerModeDeviceGeneratorImpl::DeviceStateTensor() const {
-  return state_->DeviceStateTensor();
+  return GetState()->DeviceStateTensor();
 }
 
 absl::Status EagerModeDeviceGeneratorImpl::SetDeviceStateTensor(at::Tensor t) {
   TT_RETURN_IF_ERROR(ValidateDeviceStateTensor(t));
-  return state_->SetDeviceStateTensor(std::move(t));
+  return GetState()->SetDeviceStateTensor(std::move(t));
 }
 
 void EagerModeDeviceGeneratorImpl::set_current_seed(uint64_t seed) {
   // set_current_seed() is invoked by PyTorch and behaves like an op.
-  TT_KERNEL(OpName::kRngSetSeed, _,
-            (IgnoreInCacheKey(seed, "delegates to WriteStateToDevice")),
-            { TT_THROW_IF_ERROR(state_->WriteStateToDevice(seed, 0)); });
+  TT_KERNEL(
+      OpName::kRngSetSeed, _,
+      (IgnoreInCacheKey(seed, "delegates to WriteStateToDevice")), {
+        const c10::DeviceGuard device_guard(device());
+        c10::intrusive_ptr<DeviceGeneratorState> state = GetState();
+        if (IsCurrentThreadCapturingGraph()) {
+          // Like on CUDA, setting the current seed is a no-op during
+          // capture, which keeps the offset. Writing the state would
+          // make every replay restart from the same state.
+          TT_CHECK_THROW(state->seed() == seed, error::kFailedPrecondition)
+              << "cannot set the seed of a generator while capturing a "
+                 "graph, except to its current seed";
+          return;
+        }
+        TT_THROW_IF_ERROR(state->WriteStateToDevice(seed, 0));
+      });
 }
 
 void EagerModeDeviceGeneratorImpl::set_offset(uint64_t offset) {
   // set_offset() is invoked by PyTorch and behaves like an op.
   TT_KERNEL(OpName::kRngSetOffset, _,
             (IgnoreInCacheKey(offset, "delegates to UpdateRngOffset()")), {
-              TT_ASSIGN_OR_THROW(
-                  auto rng_state_buffer,
-                  UpdateDeviceRngOffset(state_->DeviceStateTensor(), offset));
+              TT_CHECK_THROW(!IsCurrentThreadCapturingGraph(),
+                             error::kFailedPrecondition)
+                  << "cannot set the offset of a generator while capturing a "
+                     "graph";
+              const c10::DeviceGuard device_guard(device());
+              TT_ASSIGN_OR_THROW(auto rng_state_buffer,
+                                 UpdateDeviceRngOffset(
+                                     GetState()->DeviceStateTensor(), offset));
               auto new_rng_state = MakeTensor(std::move(rng_state_buffer),
                                               this->device().index());
               TT_THROW_IF_ERROR(ValidateDeviceStateTensor(new_rng_state));
@@ -536,18 +616,34 @@ void EagerModeDeviceGeneratorImpl::set_offset(uint64_t offset) {
 }
 
 uint64_t EagerModeDeviceGeneratorImpl::get_offset() const {
-  return state_->DeviceStateTensor()[1].item<int64_t>();
+  TT_CHECK_THROW(!IsCurrentThreadCapturingGraph(), error::kFailedPrecondition)
+      << "cannot read the offset of a generator while capturing a graph";
+  const c10::DeviceGuard device_guard(device());
+  return ReadDeviceStateElement(GetState()->DeviceStateTensor(), /*index=*/1);
 }
 
 uint64_t EagerModeDeviceGeneratorImpl::current_seed() const {
-  return state_->DeviceStateTensor()[0].item<int64_t>();
+  const c10::intrusive_ptr<DeviceGeneratorState> state = GetState();
+  if (IsCurrentThreadCapturingGraph()) {
+    // The device state tensor cannot be read during capture.
+    const std::optional<uint64_t> seed = state->seed();
+    TT_CHECK_THROW(seed.has_value(), error::kFailedPrecondition)
+        << "cannot read the seed of this generator while capturing a graph "
+           "because only the device has it";
+    return *seed;
+  }
+  const c10::DeviceGuard device_guard(device());
+  return ReadDeviceStateElement(state->DeviceStateTensor(), /*index=*/0);
 }
 
 uint64_t EagerModeDeviceGeneratorImpl::seed() {
   // seed() is invoked by PyTorch and behaves like an op.
   TT_KERNEL(OpName::kRngSeed, _, (), {
+    TT_CHECK_THROW(!IsCurrentThreadCapturingGraph(), error::kFailedPrecondition)
+        << "cannot seed a generator randomly while capturing a graph";
+    const c10::DeviceGuard device_guard(device());
     auto random = c10::detail::getNonDeterministicRandom(false);
-    TT_THROW_IF_ERROR(state_->WriteStateToDevice(random, 0));
+    TT_THROW_IF_ERROR(GetState()->WriteStateToDevice(random, 0));
     return random;
   });
 }
@@ -555,8 +651,14 @@ uint64_t EagerModeDeviceGeneratorImpl::seed() {
 c10::intrusive_ptr<c10::TensorImpl> EagerModeDeviceGeneratorImpl::get_state()
     const {
   ABSL_VLOG(1) << "[get_state]";
+  // Unlike on CUDA, the offset is only on the device, which cannot be read
+  // during capture.
+  TT_CHECK_THROW(!IsCurrentThreadCapturingGraph(), error::kFailedPrecondition)
+      << "cannot read the state of a generator while capturing a graph";
+  const c10::DeviceGuard device_guard(device());
   c10::impl::ExcludeDispatchKeyGuard guard(c10::DispatchKey::Python);
-  return state_->DeviceStateTensor()
+  return GetState()
+      ->DeviceStateTensor()
       .view(at::kByte)
       .to(at::kCPU)
       .getIntrusivePtr();
@@ -566,6 +668,11 @@ void EagerModeDeviceGeneratorImpl::set_state(
     const c10::TensorImpl& new_state_impl) {
   ABSL_VLOG(1) << "[EagerModeDeviceGeneratorImpl::set_state]"
                << new_state_impl.dtype();
+  // Unlike on CUDA, the offset is on the device, so a captured graph would
+  // restore it on every replay.
+  TT_CHECK_THROW(!IsCurrentThreadCapturingGraph(), error::kFailedPrecondition)
+      << "cannot set the state of a generator while capturing a graph";
+  const c10::DeviceGuard device_guard(device());
   c10::impl::ExcludeDispatchKeyGuard guard(c10::DispatchKey::Python);
 
   auto impl_ptr = c10::intrusive_ptr<c10::TensorImpl>::reclaim_copy(
@@ -582,28 +689,38 @@ void EagerModeDeviceGeneratorImpl::set_state(
   TT_CHECK_THROW(new_state.sizes() == c10::IntArrayRef({16}),
                  error::kFailedPrecondition)
       << "expect rng state to be shape (16,), got " << new_state.sizes();
+  // The state is {seed, offset}.
+  uint64_t seed = 0;
+  std::memcpy(&seed, new_state.const_data_ptr(), sizeof(seed));
   at::Tensor state_tensor = new_state.view(at::kUInt64).to(device());
   TT_THROW_IF_ERROR(ValidateDeviceStateTensor(state_tensor));
-  TT_THROW_IF_ERROR(SetDeviceStateTensor(std::move(state_tensor)));
+  TT_THROW_IF_ERROR(
+      GetState()->SetDeviceStateTensor(std::move(state_tensor), seed));
 }
 
 c10::intrusive_ptr<c10::GeneratorImpl>
 EagerModeDeviceGeneratorImpl::graphsafe_get_state() const {
   return c10::make_intrusive<EagerModeDeviceGeneratorImpl>(device().index(),
-                                                           state_);
+                                                           GetState());
 }
 
 void EagerModeDeviceGeneratorImpl::graphsafe_set_state(
     const c10::intrusive_ptr<c10::GeneratorImpl>& state) {
   if (const auto* eager_other =
           dynamic_cast<const EagerModeDeviceGeneratorImpl*>(state.get())) {
-    state_ = eager_other->state_;
+    c10::intrusive_ptr<DeviceGeneratorState> other_state =
+        eager_other->GetState();
+    absl::MutexLock lock(state_mu_);
+    state_ = std::move(other_state);
     return;
   }
   if (const auto* base_other =
           dynamic_cast<const DeviceGeneratorImplBase*>(state.get())) {
     at::Tensor state_tensor = base_other->DeviceStateTensor();
-    TT_THROW_IF_ERROR(SetDeviceStateTensor(std::move(state_tensor)));
+    TT_THROW_IF_ERROR(ValidateDeviceStateTensor(state_tensor));
+    // Only the device has the seed of the other generator.
+    TT_THROW_IF_ERROR(GetState()->SetDeviceStateTensor(std::move(state_tensor),
+                                                       std::nullopt));
     return;
   }
   TT_CHECK_THROW(false, error::kInvalidArgument)
@@ -614,7 +731,8 @@ DeviceGeneratorImplBase* EagerModeDeviceGeneratorImpl::clone_impl() const {
   // Ensure state tensor cloning occurs in the generator's device context.
   c10::DeviceGuard guard(device());
   c10::impl::ExcludeDispatchKeyGuard no_python_guard(c10::DispatchKey::Python);
-  return new EagerModeDeviceGeneratorImpl(device().index(), state_->clone());
+  return new EagerModeDeviceGeneratorImpl(device().index(),
+                                          GetState()->clone());
 }
 
 // ============================================================================

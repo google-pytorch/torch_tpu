@@ -27,6 +27,7 @@
 #include "csrc/common/shape.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/eager_mode.h"
+#include "csrc/eager/graph_capture_state.h"
 #include "csrc/eager/materialize.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
@@ -40,6 +41,11 @@ absl::StatusOr<at::Tensor> MarkDynamic(const at::Tensor& tensor,
                << tensor.sizes() << " on dimension " << dimension
                << " lower_bound " << lower_bound << " upper_bound "
                << upper_bound;
+  if (GetEagerMode() != EagerMode::kInternalCompileFxGraph &&
+      IsCurrentThreadCapturingGraph()) {
+    return TT_ERROR(error::kFailedPrecondition)
+           << "cannot mark a tensor dynamic while capturing a graph";
+  }
   TT_ASSIGN_OR_RETURN(DeviceBufferRef base_buffer_ref, GetBaseBuffer(tensor));
 
   TT_ASSIGN_OR_RETURN(DeviceBufferRef buffer_ref, GetBuffer(tensor));
@@ -82,14 +88,15 @@ absl::StatusOr<at::Tensor> MarkDynamic(const at::Tensor& tensor,
 
 absl::StatusOr<absl::Span<const BoundedDynamicDimension>> GetDynamismInfo(
     const at::Tensor& tensor) {
-  TT_ASSIGN_OR_RETURN(DeviceBufferRef buffer_ref, GetBaseBuffer(tensor));
+  TT_ASSIGN_OR_RETURN(DeviceBufferRef buffer_ref, PeekBaseBuffer(tensor));
   // We need a materialized buffer to check for dynamism.
   // However, constants are usually never materialized (or dynamic).
   // If a constant is not dynamic, we will leave it deferred.
   // If a constant is dynamic, it will already have been materialized
   // (see MarkDynamic above).
   if (!buffer_ref.is_placeholder() && !buffer_ref.is_constant() &&
-      GetEagerMode() != EagerMode::kInternalCompileFxGraph) {
+      GetEagerMode() != EagerMode::kInternalCompileFxGraph &&
+      !IsCurrentThreadCapturingGraph()) {
     TT_RETURN_IF_ERROR(
         Materialize(buffer_ref, MaterializationReason::kExplicitSync));
     TT_RETURN_IF_ERROR(buffer_ref.GetMaterializationFuture().Await());

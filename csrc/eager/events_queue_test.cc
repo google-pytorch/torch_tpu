@@ -18,6 +18,7 @@
 
 #include <memory>
 #include <string>
+#include <thread>  // NOLINT(build/c++11)
 #include <utility>
 #include <variant>
 #include <vector>
@@ -44,6 +45,7 @@
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/eager/tpu_hooks.h"
+#include "csrc/eager/traversal.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/python_context.h"
@@ -1341,6 +1343,17 @@ TEST(RepeatedOpsTest, ResetDropsSuspendedGraphBreak) {
   EXPECT_FALSE(ResumeRepeatedOpsGraphBreaks(device_index, stream_id));
 }
 
+// Reserves the given stream for a graph capture and begins the capture, as
+// TpuGraphImpl::capture_begin() does.
+bool TryBeginStreamGraphCapture(const c10::DeviceIndex device_index,
+                                const c10::StreamId stream_id) {
+  if (!TryReserveStreamGraphCapture(device_index, stream_id)) {
+    return false;
+  }
+  ActivateStreamGraphCapture(device_index, stream_id);
+  return true;
+}
+
 TEST(StreamGraphCaptureTest, BeginsAndEnds) {
   const c10::StreamId stream_id = NextStreamId(/*device_index=*/0);
   EXPECT_FALSE(IsStreamCapturing(/*device_index=*/0, stream_id));
@@ -1418,6 +1431,51 @@ TEST(StreamGraphCaptureTest, QueriesAboutUnknownStreamsReturnFalse) {
   EXPECT_FALSE(IsStreamCapturing(/*device_index=*/100, stream_id));
 }
 
+TEST(StreamGraphCaptureTest, ReservedStreamsAreNotCapturingYet) {
+  const c10::StreamId stream_id = NextStreamId(/*device_index=*/0);
+  ASSERT_TRUE(TryReserveStreamGraphCapture(/*device_index=*/0, stream_id));
+  const absl::Cleanup end_capture = [stream_id] {
+    EndStreamGraphCapture(/*device_index=*/0, stream_id);
+  };
+  EXPECT_FALSE(IsStreamCapturing(/*device_index=*/0, stream_id));
+  EXPECT_FALSE(IsStreamCapturedByCurrentThread(/*device_index=*/0, stream_id));
+  EXPECT_FALSE(TryReserveStreamGraphCapture(/*device_index=*/0, stream_id));
+
+  // Other threads cannot use a reserved stream.
+  EXPECT_FALSE(IsStreamCapturedByAnotherThread(/*device_index=*/0, stream_id));
+  std::thread([stream_id] {
+    EXPECT_TRUE(IsStreamCapturedByAnotherThread(/*device_index=*/0, stream_id));
+  }).join();
+
+  ActivateStreamGraphCapture(/*device_index=*/0, stream_id);
+  EXPECT_TRUE(IsStreamCapturing(/*device_index=*/0, stream_id));
+  EXPECT_TRUE(IsStreamCapturedByCurrentThread(/*device_index=*/0, stream_id));
+}
+
+TEST(StreamGraphCaptureTest, RecordsWhetherTheOwnerThreadExited) {
+  const c10::StreamId stream_id = NextStreamId(/*device_index=*/0);
+  ASSERT_TRUE(TryBeginStreamGraphCapture(/*device_index=*/0, stream_id));
+  absl::Cleanup end_capture = [stream_id] {
+    EndStreamGraphCapture(/*device_index=*/0, stream_id);
+  };
+  // Only the owner thread records that it exits.
+  std::thread([stream_id] {
+    MarkStreamGraphCaptureOwnerExited(/*device_index=*/0, stream_id);
+  }).join();
+  EXPECT_FALSE(HasStreamGraphCaptureOwnerExited(/*device_index=*/0, stream_id));
+
+  MarkStreamGraphCaptureOwnerExited(/*device_index=*/0, stream_id);
+  EXPECT_TRUE(HasStreamGraphCaptureOwnerExited(/*device_index=*/0, stream_id));
+  EXPECT_TRUE(IsStreamCapturing(/*device_index=*/0, stream_id));
+  // A thread created later can get the id of the exited owner thread, like the
+  // current thread here, so no thread owns the capture anymore.
+  EXPECT_FALSE(IsStreamCapturedByCurrentThread(/*device_index=*/0, stream_id));
+  EXPECT_TRUE(IsStreamCapturedByAnotherThread(/*device_index=*/0, stream_id));
+
+  std::move(end_capture).Invoke();
+  EXPECT_FALSE(HasStreamGraphCaptureOwnerExited(/*device_index=*/0, stream_id));
+}
+
 #if TT_TORCH_VERSION_GE(2, 12)  // PyTorch 2.12 added Stream::is_capturing().
 TEST(StreamGraphCaptureTest, StreamsReportCapture) {
   // Links the TPU device guard, which c10::Stream::is_capturing() calls.
@@ -1436,6 +1494,113 @@ TEST(StreamGraphCaptureTest, StreamsReportCapture) {
   EXPECT_FALSE(stream.is_capturing());
 }
 #endif  // TT_TORCH_VERSION_GE(2, 12)
+
+TEST(StreamGraphCaptureTest, TracksCaptureOwnerThread) {
+  const c10::StreamId stream_id = NextStreamId(/*device_index=*/0);
+  EXPECT_FALSE(IsStreamCapturedByCurrentThread(/*device_index=*/0, stream_id));
+
+  ASSERT_TRUE(TryBeginStreamGraphCapture(/*device_index=*/0, stream_id));
+  absl::Cleanup end_capture = [stream_id] {
+    EndStreamGraphCapture(/*device_index=*/0, stream_id);
+  };
+  EXPECT_TRUE(IsStreamCapturedByCurrentThread(/*device_index=*/0, stream_id));
+  EXPECT_FALSE(
+      IsStreamCapturedByCurrentThread(/*device_index=*/0, /*stream_id=*/0));
+  EXPECT_FALSE(IsStreamCapturedByCurrentThread(/*device_index=*/0,
+                                               /*stream_id=*/1'000'000'000));
+  EXPECT_FALSE(IsStreamCapturedByCurrentThread(/*device_index=*/1, stream_id));
+
+  std::thread([stream_id] {
+    EXPECT_FALSE(
+        IsStreamCapturedByCurrentThread(/*device_index=*/0, stream_id));
+  }).join();
+
+  std::move(end_capture).Invoke();
+  EXPECT_FALSE(IsStreamCapturedByCurrentThread(/*device_index=*/0, stream_id));
+}
+
+TEST(StreamGraphCaptureTest, InvalidatesAndRetainsFirstCaptureError) {
+  const c10::StreamId stream_id = NextStreamId(/*device_index=*/0);
+  InvalidateStreamGraphCapture(/*device_index=*/0, stream_id,
+                               TT_ERROR(error::kInternal) << "ignored");
+  EXPECT_TRUE(GetStreamGraphCaptureError(/*device_index=*/0, stream_id).ok());
+  EXPECT_TRUE(GetStreamGraphCaptureError(/*device_index=*/0,
+                                         /*stream_id=*/1'000'000'000)
+                  .ok());
+
+  ASSERT_TRUE(TryBeginStreamGraphCapture(/*device_index=*/0, stream_id));
+  absl::Cleanup end_capture = [stream_id] {
+    EndStreamGraphCapture(/*device_index=*/0, stream_id);
+  };
+  const absl::Status first_error = TT_ERROR(error::kInternal) << "first";
+  const absl::Status second_error = TT_ERROR(error::kInternal) << "second";
+  InvalidateStreamGraphCapture(/*device_index=*/0, stream_id, first_error);
+  InvalidateStreamGraphCapture(/*device_index=*/0, stream_id, second_error);
+
+  EXPECT_TRUE(IsStreamCapturing(/*device_index=*/0, stream_id));
+  EXPECT_TRUE(IsStreamCapturedByCurrentThread(/*device_index=*/0, stream_id));
+  EXPECT_EQ(GetStreamGraphCaptureError(/*device_index=*/0, stream_id),
+            first_error);
+
+  std::move(end_capture).Invoke();
+  EXPECT_TRUE(GetStreamGraphCaptureError(/*device_index=*/0, stream_id).ok());
+
+  // Clearing all streams also ends capture and resets its error.
+  ASSERT_TRUE(TryBeginStreamGraphCapture(/*device_index=*/0, stream_id));
+  InvalidateStreamGraphCapture(/*device_index=*/0, stream_id, first_error);
+  ClearAllStreams();
+  EXPECT_FALSE(IsStreamCapturing(/*device_index=*/0, stream_id));
+  EXPECT_FALSE(IsStreamCapturedByCurrentThread(/*device_index=*/0, stream_id));
+  EXPECT_TRUE(GetStreamGraphCaptureError(/*device_index=*/0, stream_id).ok());
+}
+
+TEST_F(EventsQueueTest, ExtractsCapturedTraversalsAsFullGraph) {
+  ClearAllStreams();
+  ScopedPythonContextCapturer capturer(OpName::kEmpty);
+  const c10::StreamId stream_id = NextStreamId(/*device_index=*/0);
+  const StreamId prev_stream_id =
+      ExchangeCurrentStreamId(/*device_index=*/0, stream_id);
+  const absl::Cleanup restore_stream = [prev_stream_id] {
+    ExchangeCurrentStreamId(/*device_index=*/0, prev_stream_id);
+  };
+
+  const Shape shape(Dimensions{8}, mlir::ElementType::F32);
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::vector<DeviceBufferRef> refs_a,
+      DeviceBufferList::CreateDeferred(OpName::kAdd, DummyBuilder, {},
+                                       OpParamCacheKeys::Empty(), {shape}));
+  const DeviceBufferRef ref_a = refs_a[0];
+  RecordDeferredOpCreated(ref_a.device_buffer_list());
+
+  {
+    TT_ASSERT_OK_AND_ASSIGN(
+        std::vector<DeviceBufferRef> dead_refs,
+        DeviceBufferList::CreateDeferred(OpName::kAdd, DummyBuilder, {},
+                                         OpParamCacheKeys::Empty(), {shape}));
+    RecordDeferredOpCreated(dead_refs[0].device_buffer_list());
+  }
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::vector<DeviceBufferRef> refs_b,
+      DeviceBufferList::CreateDeferred(OpName::kAdd, DummyBuilder, {ref_a},
+                                       OpParamCacheKeys::Empty(), {shape}));
+  const DeviceBufferRef ref_b = refs_b[0];
+  RecordDeferredOpCreated(ref_b.device_buffer_list());
+
+  const std::vector<SharedDeviceBufferList> must_materialize = {
+      ref_b.device_buffer_list()};
+  std::vector<std::unique_ptr<Traversal>> traversals =
+      ExtractCapturedTraversals(/*device_index=*/0, stream_id,
+                                must_materialize);
+  ASSERT_EQ(traversals.size(), 1);
+  EXPECT_THAT(traversals[0]->execution_order(),
+              testing::ElementsAre(ref_a.device_buffer_list(),
+                                   ref_b.device_buffer_list()));
+  EXPECT_THAT(traversals[0]->outputs(), testing::ElementsAre(ref_b));
+  EXPECT_TRUE(GetReadyWork(/*device_index=*/0, stream_id).empty());
+  EXPECT_TRUE(
+      ExtractCapturedTraversals(/*device_index=*/0, stream_id, {}).empty());
+}
 
 }  // namespace
 
