@@ -19,6 +19,7 @@ import dataclasses
 import enum
 import types
 from typing import Literal
+from unittest import mock
 
 from absl.testing import absltest
 import jax
@@ -450,6 +451,96 @@ class PallasSignatureTest(seed_test_utils.RepeatableTest):
         ValueError, "The return annotation is invalid"
     ):
       pallas.jax_op("test::fn_return_invalid_union", fn_return_invalid_union)
+
+  def test_abstract_mesh_multi_axis_partition_spec_and_negative_donate_argnums(
+      self,
+  ):
+    abstract_mesh = jax.sharding.AbstractMesh((2, 2), ("dp", "tp"))
+    pspec = jax.sharding.PartitionSpec(("dp", "tp"), None)
+
+    def sharded_pair_fn(
+        x: jax.Array, y: jax.Array
+    ) -> tuple[jax.Array, jax.Array]:
+      return x + y, x - y
+
+    op = pallas.jax_op(
+        "test::sharded_pair_abstract_mesh",
+        sharded_pair_fn,
+        donate_argnums=(-1,),
+        mesh=abstract_mesh,
+        input_partition_specs=(pspec, pspec),
+        output_partition_specs=pspec,
+    )
+    self.assertEqual(op._init_fn._donate_argnums_set, {1})
+
+    with torch._subclasses.fake_tensor.FakeTensorMode():
+      fake_x = torch.empty((4, 8), dtype=torch.float32, device="tpu")
+      fake_y = torch.empty((4, 8), dtype=torch.float32, device="tpu")
+      out_sum, out_diff = op(fake_x, fake_y)
+      self.assertEqual(out_sum.shape, (4, 8))
+      self.assertEqual(out_diff.shape, (4, 8))
+
+    cpu_x = torch.ones((4, 8), dtype=torch.float32)
+    cpu_y = torch.ones((4, 8), dtype=torch.float32)
+    with (
+        mock.patch.object(
+            pallas.pallas.tpu_torch_pallas, "register_custom_kernel"
+        ),
+        mock.patch.object(
+            pallas.pallas.tpu_torch_pallas,
+            "lookup_custom_kernel",
+            return_value=True,
+        ),
+        mock.patch.object(
+            pallas.pallas.tpu_torch_pallas,
+            "call_custom_kernel",
+            side_effect=lambda *_, output_shapes, **__: list(output_shapes),
+        ) as mock_call,
+    ):
+      op._init_fn(cpu_x, cpu_y)
+      self.assertEqual(mock_call.call_args.kwargs["device_assignment"], [])
+      self.assertEqual(mock_call.call_args.kwargs["donate_argnums"], [1])
+
+      concrete_mesh = jax.make_mesh(
+          (1,),
+          ("dp",),
+          axis_types=(jax.sharding.AxisType.Explicit,),
+          devices=jax.devices()[:1],
+      )
+      concrete_pspec = jax.sharding.PartitionSpec("dp", None)
+      concrete_op = pallas.jax_op(
+          "test::sharded_pair_concrete_mesh",
+          sharded_pair_fn,
+          donate_argnums=(-2,),
+          mesh=concrete_mesh,
+          input_partition_specs=(concrete_pspec, concrete_pspec),
+          output_partition_specs=concrete_pspec,
+      )
+      concrete_op._init_fn(cpu_x, cpu_y)
+      self.assertEqual(
+          mock_call.call_args.kwargs["device_assignment"],
+          [int(jax.devices()[0].id)],
+      )
+      self.assertEqual(mock_call.call_args.kwargs["donate_argnums"], [0])
+
+      dup_mesh = types.SimpleNamespace(
+          size=1,
+          devices=types.SimpleNamespace(
+              flat=[types.SimpleNamespace(id=0), types.SimpleNamespace(id=0)]
+          ),
+      )
+      with (
+          mock.patch.object(
+              torch.distributed, "is_initialized", return_value=True
+          ),
+          mock.patch.object(
+              torch.distributed, "get_world_size", return_value=2
+          ),
+          self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing duplicate mesh device IDs
+              ValueError, "Pallas kernel mesh device ids must be unique"
+          ),
+      ):
+        pallas.pallas._validate_pallas_mesh_size(mesh=dup_mesh)
 
 
 if __name__ == "__main__":
