@@ -70,6 +70,7 @@ torch_tpu_cc_library(
         "//csrc/ops/linalg/qr:qr_lib",
         "//csrc/ops/linalg/vector_norm:pnorm",
         "//csrc/ops/macros:kernel",
+        "//csrc/ops/matmul",
         "//csrc/ops/reductions",
         "//csrc/ops/reductions:sum",
         "//csrc/ops/resize:resize_aten_kernels",

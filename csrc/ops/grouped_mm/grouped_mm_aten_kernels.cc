@@ -42,6 +42,7 @@
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/index_select/index_select.h"
 #include "csrc/ops/macros/kernel.h"
+#include "csrc/ops/matmul/matmul.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/precision_context.h"
@@ -306,21 +307,14 @@ mlir::MlirOp BuildRaggedDot2d3d(mlir::MlirOp self_op, mlir::MlirOp mat2_op,
                                dimension_numbers, precision_config);
 }
 
-mlir::MlirOp BuildBatchedDot3d3d(mlir::MlirOp self_op, mlir::MlirOp mat2_op,
-                                 bool transpose_mat2,
-                                 mlir::stablehlo::Precision precision) {
-  auto precision_config = mlir::stablehlo::PrecisionConfigAttr::get(
-      &self_op.getContext(), {precision, precision});
-  const int64_t rhs_contracting_dim = transpose_mat2 ? 2 : 1;
-  const mlir::stablehlo::DotDimensionNumbersAttr dot_dimension_numbers =
-      mlir::stablehlo::DotDimensionNumbersAttr::get(
-          &self_op.getContext(),
-          /*lhs_batch_dimensions=*/{0},
-          /*rhs_batch_dimensions=*/{0},
-          /*lhs_contracting_dimensions=*/{2},
-          /*rhs_contracting_dimensions=*/{rhs_contracting_dim});
-  return mlir::stablehlo::DotGeneral(self_op, mat2_op, dot_dimension_numbers,
-                                     precision_config);
+absl::StatusOr<mlir::MlirOp> BuildBatchedDot3d3d(
+    mlir::MlirOp self_op, mlir::MlirOp mat2_op, bool transpose_mat2,
+    mlir::stablehlo::Precision precision) {
+  const MatrixTranspose transpose_rhs = transpose_mat2
+                                            ? MatrixTranspose::kTransposeLastTwo
+                                            : MatrixTranspose::kNone;
+  return BuildMatmulShlo(self_op, mat2_op, precision,
+                         MatmulShloOptions{.transpose_rhs = transpose_rhs});
 }
 
 // XLA:TPU's grouped matmul (Gmm) kernel tiles the ragged token dimension by
@@ -519,7 +513,8 @@ absl::StatusOr<mlir::MlirOp> BuildGroupedMmShlo(
   } else {
     // Case 4 (3D x 3D without offs): fallback to standard batched matrix
     // multiplication (DotGeneral).
-    result = BuildBatchedDot3d3d(self_op, mat2_op, transpose_mat2, precision);
+    TT_ASSIGN_OR_RETURN(result, BuildBatchedDot3d3d(self_op, mat2_op,
+                                                    transpose_mat2, precision));
   }
   if (comp_dtype != out_dtype) {
     result = mlir::stablehlo::ConvertElementType(result, out_dtype);

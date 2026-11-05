@@ -60,6 +60,7 @@
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/gather/gather.h"
 #include "csrc/ops/macros/kernel.h"
+#include "csrc/ops/matmul/matmul.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/precision_context.h"
@@ -814,41 +815,6 @@ absl::StatusOr<mlir::MlirOp> BuildExtractDiagonalShlo(mlir::MlirOp op,
   return Squeeze(gather_res, {dim2});
 }
 
-// Emits `stablehlo.dot_general` with `i64 -> f64 -> i64` emulation (since XLA
-// does not natively support `i64` DotGeneral on MXU/VPU) and configurable
-// precision.
-mlir::MlirOp BuildDotGeneral(mlir::MlirOp lhs, mlir::MlirOp rhs,
-                             absl::Span<const int64_t> lhs_batch_dims,
-                             absl::Span<const int64_t> rhs_batch_dims,
-                             absl::Span<const int64_t> lhs_contract_dims,
-                             absl::Span<const int64_t> rhs_contract_dims,
-                             mlir::stablehlo::Precision precision) {
-  const mlir::RankedTensorType lhs_type = GetTensorTypeOrDie(lhs);
-  const mlir::Type orig_elem_type = lhs_type.getElementType();
-  const bool is_i64 = orig_elem_type.isInteger(64);
-  mlir::stablehlo::Precision effective_precision = precision;
-  if (is_i64) {
-    const mlir::Type f64_type =
-        mlir::getElementType(lhs.getContext(), mlir::ElementType::F64);
-    lhs = mlir::stablehlo::ConvertElementType(lhs, f64_type);
-    rhs = mlir::stablehlo::ConvertElementType(rhs, f64_type);
-    effective_precision =
-        mlir::stablehlo::Precision::HIGHEST;  // EXPLICIT_PRECISION_OK=i64
-  }
-
-  const auto dot_dims = mlir::stablehlo::DotDimensionNumbersAttr::get(
-      &lhs.getContext(), AsArrayRef(lhs_batch_dims), AsArrayRef(rhs_batch_dims),
-      AsArrayRef(lhs_contract_dims), AsArrayRef(rhs_contract_dims));
-  const auto precision_config = mlir::stablehlo::PrecisionConfigAttr::get(
-      &lhs.getContext(), {effective_precision, effective_precision});
-  mlir::MlirOp dot_result =
-      mlir::stablehlo::DotGeneral(lhs, rhs, dot_dims, precision_config);
-  if (is_i64) {
-    return mlir::stablehlo::ConvertElementType(dot_result, orig_elem_type);
-  }
-  return dot_result;
-}
-
 absl::Status ExtractOperandDiagonals(const ParsedEinsum& parsed,
                                      std::vector<mlir::MlirOp>& ops) {
   for (size_t i = 0; i < ops.size(); ++i) {
@@ -1028,9 +994,11 @@ absl::Status ExecuteContractionStep(const ContractionStep& step,
     MaybeSwapFinalDotGeneralOperands(parsed.rhs_labels, lhs_op, rhs_op, cls,
                                      out_labels);
   }
-  mlir::MlirOp step_result =
-      BuildDotGeneral(lhs_op, rhs_op, cls.lhs_batch_dims, cls.rhs_batch_dims,
-                      cls.lhs_contract_dims, cls.rhs_contract_dims, precision);
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp step_result,
+      BuildTypedDotGeneral(lhs_op, rhs_op, cls.lhs_batch_dims,
+                           cls.rhs_batch_dims, cls.lhs_contract_dims,
+                           cls.rhs_contract_dims, precision));
 
   if (parsed.has_path) {
     ops.push_back(step_result);

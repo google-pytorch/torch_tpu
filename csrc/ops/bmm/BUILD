@@ -28,13 +28,14 @@ torch_tpu_cc_library(
     srcs = ["bmm.cc"],
     hdrs = ["bmm.h"],
     deps = [
+        "//csrc/common:error_utils",
         "//csrc/ops:op_builder_utils",
+        "//csrc/ops/matmul",
         "@com_google_absl//absl/status:statusor",
         "@llvm-project//mlir:IR",
         "@stablehlo//:stablehlo_ops",
         "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
         "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
-        "@stablehlo//stablehlo/integrations/cpp/builder:stablehlo_builder",
     ],
 )
 

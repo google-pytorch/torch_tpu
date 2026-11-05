@@ -44,6 +44,7 @@ torch_tpu_cc_library(
         "//csrc/ops:unary",
         "//csrc/ops/gelu",
         "//csrc/ops/macros:kernel",
+        "//csrc/ops/matmul",
         "//shims/torch:aten_headers",
         "//shims/torch/c10/core:base_headers",
         "//shims/torch/torch/headeronly:torch_headeronly",
