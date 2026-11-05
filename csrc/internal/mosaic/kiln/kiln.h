@@ -52,7 +52,7 @@
 //   * Scalar
 //     <-> scalar (SMEM / grid index) values
 //   * If / For / RunScoped
-//     <-> pl.when / lax.fori_loop / pl.run_scoped
+//     <-> pl.when / lax.cond / lax.fori_loop / pl.run_scoped
 //   * AsyncCopy / MakeAsyncCopy
 //     <-> pltpu.async_copy / pltpu.make_async_copy
 //   * SyncCopy

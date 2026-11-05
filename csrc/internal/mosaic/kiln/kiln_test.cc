@@ -1178,6 +1178,20 @@ TEST(KilnDeathTest, ScalarMismatchedTypesFail) {
         EXPECT_DEATH(!s_i, "! requires a bool operand");
         EXPECT_DEATH(If(s_i, [] {}),
                      "If\\(\\) condition must be a bool scalar");
+        EXPECT_DEATH(If(
+                         I32(0) == I32(1), [&] { return Load(f_in); },
+                         [&] { return Load(i_in); }),
+                     "If\\(\\) else-branch result 0 changed shape");
+        EXPECT_DEATH(
+            If(
+                I32(0) == I32(1), [&] { return s_i; }, [&] { return s_f; }),
+            "If\\(\\) else-branch result 0 changed dtype: expected i32, got "
+            "f32");
+        EXPECT_DEATH(
+            If(
+                I32(0) == I32(1), [&] { return std::tuple{s_i, Load(f_in)}; },
+                [&] { return std::tuple{s_i, Zeros(f32(8, 128))}; }),
+            "If\\(\\) else-branch result 1 changed shape");
         EXPECT_DEATH(Select(s_i, s_i, s_i), "Select\\(\\) mask must be bool");
         EXPECT_DEATH(For(s_f, [](Scalar) {}),
                      "IndexArg requires an integer scalar");
@@ -2513,6 +2527,45 @@ TEST(KilnTest, EmitPipelineContraction) {
     CHECK:             scf.if
     CHECK:               tpu.wait_dma
     CHECK:             tpu.wait_dma
+  )"));
+}
+
+TEST(KilnTest, IfReturnsValues) {
+  EXPECT_THAT(
+      CreateKernel(
+          GridSpec{.name = "if_returns_values", .grid = {2}},
+          InSpec{f32(8, 128)}, OutSpec{f32(8, 128)},
+          [](VmemRef in, VmemRef out) {
+            Scalar cond = ProgramId(0) == 0;
+            // `absl::FunctionRef<void()>` binds to the void overload.
+            absl::FunctionRef<void()> noop = +[]() {};
+            If(cond, noop, noop);
+            Scalar scale =
+                If(cond, [] { return F32(2.0f); }, [] { return F32(0.5f); });
+            auto [offset, val] = If(
+                cond, [&] { return std::tuple{F32(1.0f), Load(in) * scale}; },
+                [&] { return std::tuple{F32(-1.0f), Zeros(f32(8, 128))}; });
+            Store(out, val + offset);
+          }),
+      IsOkAndMatchesIr(R"(
+    CHECK-LABEL: func.func @if_returns_values
+    CHECK:         scf.if %{{.*}} {
+    CHECK:         } else {
+    CHECK:         }
+    CHECK:         %[[SCALE:.*]] = scf.if %{{.*}} -> (f32) {
+    CHECK:           scf.yield %{{.*}} : f32
+    CHECK:         } else {
+    CHECK:           scf.yield %{{.*}} : f32
+    CHECK:         }
+    CHECK:         %[[R:.*]]:2 = scf.if %{{.*}} -> (f32, vector<8x128xf32>) {
+    CHECK:           vector.load
+    CHECK:           %[[MUL:.*]] = arith.mulf
+    CHECK:           scf.yield %{{.*}}, %[[MUL]] : f32, vector<8x128xf32>
+    CHECK:         } else {
+    CHECK:           scf.yield %{{.*}}, %{{.*}} : f32, vector<8x128xf32>
+    CHECK:         }
+    CHECK:         vector.broadcast %[[R]]#0 : f32 to vector<8x128xf32>
+    CHECK:         arith.addf %[[R]]#1, %{{.*}} : vector<8x128xf32>
   )"));
 }
 
