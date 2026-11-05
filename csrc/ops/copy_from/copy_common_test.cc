@@ -16,12 +16,16 @@
 
 #include "csrc/ops/copy_from/copy_common.h"
 
+#include <memory>
 #include <string_view>
+#include <utility>
 #include <vector>
 
+#include "absl/cleanup/cleanup.h"
 #include "absl/status/status.h"
 #include "csrc/common/macro_utils.h"
 #include "csrc/eager/eager_mode.h"
+#include "csrc/eager/graph_capture_state.h"
 #include "gtest/gtest.h"
 #include "torch/headeronly/core/ScalarType.h"
 
@@ -59,6 +63,26 @@ TEST(GetTransferSyncModeTest, InternalCompileFxGraph) {
             TransferSyncMode::kIsolated);
   EXPECT_EQ(GetTransferSyncMode(/*non_blocking=*/false),
             TransferSyncMode::kIsolated);
+}
+
+TEST(GetTransferSyncModeTest, InternalCompileFxGraphWhileCapturingGraph) {
+  SetEagerMode(EagerMode::kInternalCompileFxGraph);
+  auto capture = std::make_shared<GraphCaptureState>();
+  GraphCaptureState* const raw_capture = capture.get();
+  PushCurrentThreadGraphCapture(std::move(capture));
+  const absl::Cleanup reset_capture = [] { PopCurrentThreadGraphCapture(); };
+
+  // Before activation, the thread is not yet recording into the graph.
+  EXPECT_EQ(GetTransferSyncMode(/*non_blocking=*/true),
+            TransferSyncMode::kIsolated);
+  EXPECT_EQ(GetTransferSyncMode(/*non_blocking=*/false),
+            TransferSyncMode::kIsolated);
+
+  raw_capture->Activate();
+  EXPECT_EQ(GetTransferSyncMode(/*non_blocking=*/true),
+            TransferSyncMode::kEagerNonBlocking);
+  EXPECT_EQ(GetTransferSyncMode(/*non_blocking=*/false),
+            TransferSyncMode::kEagerBlocking);
 }
 
 TEST(GetTransferSyncModeTest, DeferNeverAndLaunchBlocking) {

@@ -19,6 +19,7 @@ from collections.abc import Mapping, Sequence
 import contextlib
 import os
 import re
+import threading
 from typing import Any, TypeAlias
 from unittest import mock
 from absl.testing import absltest
@@ -5722,6 +5723,391 @@ class FlexAttentionErrorsTest(et.TpuOnlyErrorTestBase):
           v,
           self._causal_mask(),
           score_mod=lambda score, b, h, q_idx, kv_idx: score.sum(-1),
+      )
+
+
+@absltest.skipIf(
+    utils.get_torch_version() < (2, 12),
+    "torch.accelerator.Graph requires PyTorch >= 2.12.",
+)
+class TpuGraphErrorsTest(et.TpuOnlyErrorTestBase):
+  """Tests error messages for torch.accelerator.Graph on TPU."""
+
+  def _device(self) -> torch.device:
+    return torch.device("tpu", torch.accelerator.current_device_index())
+
+  def _assert_other_thread_raises(self, fn, expected_msg: str) -> None:
+    caught: list[BaseException] = []
+
+    def run():
+      try:
+        fn()
+      except BaseException as exc:  # pylint: disable=broad-except
+        caught.append(exc)
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join(timeout=60)
+    self.assertFalse(thread.is_alive(), "background thread hung")
+    self.assertLen(caught, 1)
+    with et.assert_raises_message(RuntimeError, tpu=expected_msg):
+      raise caught[0]
+
+  @et.why_tpu_only("CUDA does not implement torch.accelerator.Graph.")
+  def test_graph_lifecycle_errors(self):
+    device = self._device()
+    stream = torch.Stream(device=device)
+    other_stream = torch.Stream(device=device)
+    x = torch.tensor([1.0, 2.0], device=device)
+
+    g = torch.accelerator.Graph()
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""graphs must be captured on a non-default stream (after capture, they can be replayed on the default stream)""",
+    ):
+      g.capture_begin()
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""capture_end() called without a matching capture_begin()""",
+    ):
+      g.capture_end()
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""capture_end() must be called before instantiate()""",
+    ):
+      g.instantiate()
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""cannot replay a graph without a preceding successful capture""",
+    ):
+      g.replay()
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""pool() called without a preceding successful capture""",
+    ):
+      g.pool()
+
+    with stream:
+      g.capture_begin()
+      try:
+        with et.assert_raises_message(
+            RuntimeError,
+            tpu="""graph capture is already in progress""",
+        ):
+          g.capture_begin()
+        with et.assert_raises_message(
+            RuntimeError,
+            tpu="""nested graph capture on the same thread is not supported""",
+        ):
+          torch.accelerator.Graph().capture_begin()
+        with other_stream:
+          with et.assert_raises_message(
+              RuntimeError,
+              tpu="""capture must end on the same device and stream it began on""",
+          ):
+            g.capture_end()
+        self._assert_other_thread_raises(
+            g.capture_end,
+            "capture must end on the thread it began on",
+        )
+        _ = x + 1.0
+      finally:
+        g.capture_end()
+
+    with stream:
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""this Graph instance already owns a captured graph; call reset() or create a new Graph instance before capturing again""",
+      ):
+        g.capture_begin()
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""instantiate() is intended to be called explicitly only when keep_graph=True""",
+    ):
+      g.instantiate()
+
+  @et.why_tpu_only("CUDA does not implement torch.accelerator.Graph.")
+  def test_replay_storage_resized_errors(self):
+    device = self._device()
+    stream = torch.Stream(device=device)
+
+    x_in = torch.tensor([1.0, 2.0], device=device)
+    g_in = torch.accelerator.Graph()
+    with stream, g_in:
+      _ = x_in + 1.0
+    x_in.resize_(4)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""cannot replay a graph because an input tensor storage was resized from 8 to 16 bytes after capture""",
+    ):
+      g_in.replay()
+
+    x_out = torch.tensor([1.0, 2.0], device=device)
+    g_out = torch.accelerator.Graph()
+    with stream, g_out:
+      y_out = x_out + 1.0
+    y_out.resize_(4)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""cannot replay a graph because an output tensor storage was resized from 8 to 16 bytes after capture""",
+    ):
+      g_out.replay()
+
+  @et.why_tpu_only("CUDA does not implement torch.accelerator.Graph.")
+  def test_invalidating_operations_during_capture(self):
+    device = self._device()
+    stream = torch.Stream(device=device)
+    x = torch.tensor([1.0, 2.0], device=device)
+    scalar = torch.tensor(1.0, device=device)
+    event = torch.Event(device=device)
+    event.record()
+
+    other_graph = torch.accelerator.Graph()
+    with stream, other_graph:
+      _ = x * 2.0
+
+    @torch.compile(backend="tpu", fullgraph=True)
+    def compiled_fn(t):
+      return t + 1.0
+
+    _ = compiled_fn(x)
+    torch.accelerator.synchronize()
+
+    cases = (
+        (
+            torch.accelerator.synchronize,
+            (
+                "cannot materialize tensors or synchronize streams while"
+                " capturing a graph"
+            ),
+            (
+                "cannot materialize tensors or synchronize streams while"
+                " capturing a graph"
+            ),
+        ),
+        (
+            lambda: compiled_fn(x),
+            (
+                "execute(): cannot run compiled executables while capturing a"
+                " graph"
+            ),
+            "cannot run compiled executables while capturing a graph",
+        ),
+        (
+            other_graph.replay,
+            "cannot replay a graph while capturing a graph",
+            "cannot replay a graph while capturing a graph",
+        ),
+        (
+            lambda: stream.wait_event(event),
+            (
+                "cannot make a stream wait on an event while capturing a graph"
+                " on the stream"
+            ),
+            (
+                "cannot make a stream wait on an event while capturing a graph"
+                " on the stream"
+            ),
+        ),
+        (
+            event.query,
+            "cannot query events while capturing a graph",
+            "cannot query events while capturing a graph",
+        ),
+        (
+            stream.query,
+            "cannot query streams while capturing a graph",
+            "cannot query streams while capturing a graph",
+        ),
+        (
+            event.synchronize,
+            "cannot synchronize events while capturing a graph",
+            "cannot synchronize events while capturing a graph",
+        ),
+        (
+            scalar.item,
+            (
+                "local_scalar_dense(): cannot read the value of a tensor while"
+                " capturing a graph"
+            ),
+            "cannot read the value of a tensor while capturing a graph",
+        ),
+    )
+
+    for call, call_msg, cause_msg in cases:
+      g = torch.accelerator.Graph()
+      with stream:
+        g.capture_begin()
+        ended = False
+        try:
+          with et.assert_raises_message(RuntimeError, tpu=call_msg):
+            call()
+          ended = True
+          with et.assert_raises_message(
+              RuntimeError,
+              tpu=f"""graph capture failed because of an earlier error during capture: {cause_msg}""",
+          ):
+            g.capture_end()
+        finally:
+          if not ended:
+            try:
+              g.capture_end()
+            except RuntimeError:
+              # Ignore capture_end() failure during cleanup so the assertion
+              # failure from `call()` propagates cleanly.
+              pass
+
+  @et.why_tpu_only("CUDA does not implement torch.accelerator.Graph.")
+  def test_non_invalidating_errors_during_capture(self):
+    device = self._device()
+    device_idx = torch.accelerator.current_device_index()
+    stream = torch.Stream(device=device)
+    other_stream = torch.Stream(device=device)
+    x = torch.ones(2, device=device)
+
+    generator = torch.tpu.default_generators[device_idx]
+
+    g = torch.accelerator.Graph()
+    with stream, g:
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""recording events while capturing a graph is not supported""",
+      ):
+        torch.Event(device=device).record()
+
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""storage(): cannot allocate an untyped storage while capturing a graph""",
+      ):
+        torch.UntypedStorage(16, device=device)
+
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""resize_(): cannot resize a tensor storage created before graph capture while capturing a graph""",
+      ):
+        x.resize_(4)
+
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""untyped_storage_resize_(): cannot resize a tensor storage created before graph capture while capturing a graph""",
+      ):
+        x.untyped_storage().resize_(16)
+
+      with other_stream:
+        with et.assert_raises_message(
+            RuntimeError,
+            tpu=f"""empty(): operations captured into a graph must run on the stream the capture began on (device {stream.device_index}, stream {stream.stream_id}), but an operation ran on device {other_stream.device_index}, stream {other_stream.stream_id}""",
+        ):
+          _ = x.neg()
+
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""copy_(): copying between CPU and TPU tensors while capturing a graph is not supported""",
+      ):
+        x.copy_(torch.zeros(2), non_blocking=True)
+
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""uniform_(): random number generation is not supported while capturing a graph""",
+      ):
+        x.uniform_()
+
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""set_offset(): cannot set the offset of a generator while capturing a graph""",
+      ):
+        generator.set_offset(0)
+
+      _ = x + 1.0
+
+  @et.why_tpu_only("CUDA does not implement torch.accelerator.Graph.")
+  def test_other_thread_errors_during_capture(self):
+    device = self._device()
+    stream = torch.Stream(device=device)
+    x = torch.tensor([1.0, 2.0], device=device)
+    w = torch.tensor([3.0, 4.0], device=device)
+    event = torch.Event(device=device)
+    event.record()
+
+    other_graph = torch.accelerator.Graph()
+    with stream, other_graph:
+      _ = w.neg()
+
+    def run_op_on_capture_stream():
+      with stream:
+        _ = w.neg()
+
+    def capture_on_capture_stream():
+      with stream:
+        torch.accelerator.Graph().capture_begin()
+
+    def replay_on_capture_stream():
+      with stream:
+        other_graph.replay()
+
+    g = torch.accelerator.Graph()
+    with stream, g:
+      y = x.neg()
+      # The placeholder that stands for `x` holds the error of the operation
+      # that installed it.
+      self._assert_other_thread_raises(
+          x.cpu,
+          "neg(): cannot use a tensor accessed by a graph capture in progress",
+      )
+      self._assert_other_thread_raises(
+          y.cpu,
+          (
+              "to_copy(): cannot use a tensor accessed by a graph capture in"
+              " progress"
+          ),
+      )
+      self._assert_other_thread_raises(
+          y.neg,
+          "neg(): cannot use a tensor accessed by a graph capture in progress",
+      )
+      self._assert_other_thread_raises(
+          run_op_on_capture_stream,
+          (
+              "empty(): cannot run operations on a stream that another thread"
+              " is capturing a graph on"
+          ),
+      )
+      self._assert_other_thread_raises(
+          capture_on_capture_stream,
+          (
+              "cannot capture a graph on a stream that another thread is"
+              " capturing a graph on"
+          ),
+      )
+      self._assert_other_thread_raises(
+          replay_on_capture_stream,
+          (
+              "cannot run operations on a stream that another thread is"
+              " capturing a graph on"
+          ),
+      )
+      self._assert_other_thread_raises(
+          stream.synchronize,
+          (
+              "cannot synchronize a stream that another thread is capturing a"
+              " graph on"
+          ),
+      )
+      self._assert_other_thread_raises(
+          lambda: stream.wait_event(event),
+          (
+              "cannot make a stream wait on an event while another thread is"
+              " capturing a graph on the stream"
+          ),
+      )
+      self._assert_other_thread_raises(
+          stream.query,
+          "cannot query a stream that another thread is capturing a graph on",
       )
 
 
