@@ -142,58 +142,21 @@ torch_tpu_cc_test(
     ],
 )
 
-[torch_tpu_cc_test(
-    name = "nonzero_indices_test_" + gen,
+torch_tpu_cc_test(
+    name = "nonzero_indices_test",
     srcs = ["nonzero_indices_test.cc"],
-    data = ["testdata/nonzero_xla_baseline_" + gen + ".csv"],
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
-    nopresubmit = nopresubmit,
-    tags = [chip],
+    tags = ["requires-tpu-v5lite"],
     deps = [
-        ":kernel_registration",  # buildcleaner: keep
         ":nonzero_indices",
-        "//csrc/common:cache_key",
         "//csrc/common:compilation",
-        "//csrc/common:compilation_cache",
-        "//csrc/common:compile_options_key",
         "//csrc/common:dimension_types",
-        "//csrc/common:error_utils",
         "//csrc/common:oss_test_main",
         "//csrc/common:shape",
-        "//csrc/common:status_test_utils",
-        "//csrc/common:unbounded_dynamic_kernel_registry",
-        "//csrc/ops/nonzero",
-        "//csrc/pjrt:pjrt_execute",
-        "//csrc/pjrt:pjrt_state",
-        "@com_google_absl//absl/flags:flag",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/status:statusor",
-        "@com_google_absl//absl/strings",
-        "@com_google_absl//absl/strings:str_format",
-        "@com_google_absl//absl/time",
-        "@com_google_absl//absl/types:span",
-        "@llvm-project//mlir:FuncDialect",
-        "@llvm-project//mlir:IR",
         "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
-        "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
-        "@xla//xla:literal",
-        "@xla//xla:shape_layout",
-        "@xla//xla:shape_util",
-        "@xla//xla:xla_data_proto_cc",
-        "@xla//xla/hlo/builder:xla_computation",
-        "@xla//xla/hlo/ir:hlo",
-        "@xla//xla/hlo/translate/mhlo_to_hlo:mlir_hlo_to_hlo",
-        "@xla//xla/pjrt:pjrt_client",
-        "@xla//xla/pjrt:pjrt_executable",
-        "@xla//xla/service:computation_layout",
     ],
-) for gen, chip, nopresubmit in [
-    ("v5", "requires-tpu-v5p", None),
-    ("v5e", "requires-tpu-v5lite", None),
-    ("v6", "requires-tpu-v6e", "Avoid long Forge queue."),
-    ("v7", "requires-tpu-v7x", "Avoid long Forge queue."),
-]]
+)
 
 torch_tpu_package_end()

@@ -12,13 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests ops that precompiled unbounded dynamic kernels serve.
-
-Unbounded dynamic kernels are enabled by default
-(TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS), and each test checks that
-the op's registered unbounded dynamic kernel serves it, and that the TPU result
-matches the CPU one.
-"""
+"""Tests ops served by precompiled unbounded dynamic kernels."""
 
 from collections.abc import Callable
 import math
@@ -29,53 +23,147 @@ import torch
 from tests import op_testing
 
 
-def _unbounded_dynamic_hits() -> int:
-  """Returns the number of lookups served by registered dynamic kernels."""
-  return torch.tpu._get_cache_stats().num_unbounded_dynamic_hits  # pylint: disable=protected-access
-
-
 class UnboundedDynamicKernelTestBase(op_testing.TorchTpuVsCpuTestBase):
-  """Base class for tests of ops that unbounded dynamic kernels serve."""
+  """Base class for tests of ops served by unbounded dynamic kernels."""
 
-  def assert_close_tpu_vs_cpu_with_dynamic_kernel(
+  def run_and_check_cache(
       self,
-      tensor_from_device: Callable[[torch.device], torch.Tensor],
-      *,
-      hits: int = 1,
-  ) -> None:
-    """Checks the TPU result against the CPU one, and the kernels that ran.
+      op: Callable[..., torch.Tensor],
+      *inputs: torch.Tensor,
+      served: bool,
+      static_compilations: int = 1,
+  ) -> tuple[list[torch.Tensor], torch.Tensor]:
+    """Checks `op(*inputs)` on TPU vs CPU, input preservation, and cache stats.
 
-    Args:
-      tensor_from_device: Returns the op's result on the given device.
-      hits: The number of lookups that registered unbounded dynamic kernels must
-        serve on TPU.
+    Expects 1 unbounded dynamic hit and 0 compilations if `served`, else 0
+    dynamic hits and `static_compilations` cache misses and compilations.
     """
-    hits_before = _unbounded_dynamic_hits()
-    self.assert_close_tpu_vs_cpu(tensor_from_device)
+    tpu_inputs = [x.to("tpu") for x in inputs]
     torch.accelerator.synchronize()
 
-    self.assertEqual(
-        _unbounded_dynamic_hits() - hits_before,
-        hits,
-        "Lookups served by unbounded dynamic kernels; was"
-        " TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS set to 0, or did"
-        " the kernel fail to build?",
+    before = torch.tpu._get_cache_stats()  # pylint: disable=protected-access
+    result = op(*tpu_inputs)
+    torch.accelerator.synchronize()
+    after = torch.tpu._get_cache_stats()  # pylint: disable=protected-access
+
+    self.assert_close(golden_result=op(*inputs), torch_tpu_result=result.cpu())
+
+    # Check input has not been modified
+    for x, x_tpu in zip(inputs, tpu_inputs):
+      self.assertTrue(
+          torch.equal(
+              x_tpu.cpu().flatten().view(torch.uint8),
+              x.flatten().view(torch.uint8),
+          ),
+          "The op modified its input.",
+      )
+
+    hits = after.num_unbounded_dynamic_hits - before.num_unbounded_dynamic_hits
+    compilations = after.num_compilations - before.num_compilations
+    misses = (after.num_cache_reqs - after.num_cache_hits) - (
+        before.num_cache_reqs - before.num_cache_hits
     )
+    expected_compilations = 0 if served else static_compilations
+    self.assertEqual(hits, 1 if served else 0, "unbounded dynamic hits")
+    self.assertEqual(compilations, expected_compilations, "compilations")
+    self.assertEqual(misses, expected_compilations, "cache misses")
+    return tpu_inputs, result
+
+
+_ALL_NONZERO = -1
+
+
+def _nonzero_case(
+    shape: tuple[int, ...], k: int, dtype: torch.dtype = torch.float32
+) -> tuple[str, torch.Tensor]:
+  """Returns a (name, input) case with `k` (or `_ALL_NONZERO`) nonzeros."""
+  size = math.prod(shape)
+  suffix = "all_nonzero" if k == _ALL_NONZERO else f"k{k}"
+  name = f"{'x'.join(map(str, shape))}_{suffix}"
+  k = size if k == _ALL_NONZERO else k
+  i = torch.arange(size)
+  selected = (i + 1) * k // size != i * k // size
+  if dtype == torch.float32:
+    # Spread inf/-2/subnormal/NaN nonzeros across +0.0 and -0.0 zeros.
+    x = torch.where(
+        selected,
+        torch.tensor([math.inf, -2.0, 1e-40])[i % 3],
+        torch.tensor([0.0, -0.0])[i % 2],
+    )
+    if k:
+      x[-1] = math.nan
+  else:
+    x = selected.to(dtype)
+    name += "_" + str(dtype).removeprefix("torch.")
+  return name, x.reshape(shape)
+
+
+_NONZERO_SERVED_CASES = (
+    # Partial row block narrower than a 128-lane tile.
+    _nonzero_case((5, 5), 3),
+    _nonzero_case((5, 5), _ALL_NONZERO),
+    # Several 1024-column tiles per row, the last one masked.
+    _nonzero_case((9, 1100), 3),
+    _nonzero_case((9, 1100), _ALL_NONZERO),
+    # Rows wider than the kernel's 16384-column scratch window.
+    _nonzero_case((5, 16385), 3),
+    _nonzero_case((5, 16385), _ALL_NONZERO),
+    # Around the kernel's 128-pair storage rows and 1024-pair flushes.
+    _nonzero_case((9, 129), 127),
+    _nonzero_case((9, 129), 128),
+    _nonzero_case((9, 129), 129),
+    _nonzero_case((9, 129), 1023),
+    _nonzero_case((9, 129), 1024),
+    _nonzero_case((9, 129), 1025),
+)
+
+_NONZERO_NOT_SERVED_CASES = (
+    # Default input layout isn't {1,0:T(8,128)} for M < 5 or N in {1, 3}.
+    _nonzero_case((3, 7), 5),
+    _nonzero_case((5, 1), 5),
+    _nonzero_case((5, 3), 5),
+    # K = 0 skips the index graph; K <= 2 uses row-major S64[K,2] layout.
+    _nonzero_case((17, 257), 0),
+    _nonzero_case((17, 257), 1),
+    _nonzero_case((17, 257), 2),
+    # Not 2-D F32.
+    _nonzero_case((16,), 5),
+    _nonzero_case((2, 4, 4), 5),
+    _nonzero_case((17, 257), 5, torch.bfloat16),
+)
 
 
 class DynamicOpsTest(UnboundedDynamicKernelTestBase):
-  """Tests ops that precompiled unbounded dynamic kernels serve."""
 
-  # The 2-D F32 shapes of the nonzero OpInfo samples that ops_test.py runs:
-  # (S, S) with S = 5.
-  @parameterized.product(shape=((5, 5), (5, 1025)), dtype=(torch.float32,))
-  def test_nonzero(self, shape: tuple[int, ...], dtype: torch.dtype):
-    # Both zeros and nonzeros. The kernel requires more than two nonzeros (see
-    # nonzero_indices.h), so unlike the OpInfo samples, none is all zeros.
-    x = torch.arange(1, math.prod(shape) + 1, dtype=dtype).reshape(shape)
-    x[x % 3 == 0] = 0
-    self.assert_close_tpu_vs_cpu_with_dynamic_kernel(
-        lambda device: torch.nonzero(x.to(device))
+  @parameterized.named_parameters(*_NONZERO_SERVED_CASES)
+  def test_nonzero_served(self, x: torch.Tensor):
+    # Warm up the dynamic index kernel and this shape's static count graph
+    # (CPU-to-TPU copies avoid fusing constant ops into either graph).
+    torch.nonzero(torch.ones(8, 128).to("tpu"))
+    torch.nonzero(torch.zeros_like(x).to("tpu"))
+
+    (x_tpu,), result = self.run_and_check_cache(torch.nonzero, x, served=True)
+
+    # (minor_to_major, tiles, element_size_in_bits); see nonzero_indices.h.
+    self.assertEqual(
+        torch.tpu.get_device_layout_if_materialized(x_tpu),
+        ([1, 0], [[8, 128]], 0),
+    )
+    self.assertEqual(
+        torch.tpu.get_device_layout_if_materialized(result),
+        ([0, 1], [[2, 128]], 0),
+    )
+
+  @parameterized.named_parameters(*_NONZERO_NOT_SERVED_CASES)
+  def test_nonzero_not_served(self, x: torch.Tensor):
+    torch.tpu._clear_cache()  # pylint: disable=protected-access
+    torch.nonzero(torch.zeros_like(x).to("tpu"))  # Warm up the count graph.
+
+    self.run_and_check_cache(
+        torch.nonzero,
+        x,
+        served=False,
+        static_compilations=1 if x.count_nonzero() else 0,
     )
 
 
