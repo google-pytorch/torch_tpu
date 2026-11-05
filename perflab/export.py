@@ -18,8 +18,10 @@ import dataclasses
 
 from torch_tpu._internal.benchmarks import export_adapter
 from perflab import common
+from perflab import known_failures
 from perflab import metrics as metrics_lib
 from perflab import mode as mode_lib
+from perflab import registry as registry_lib
 from perflab import target as target_lib
 
 # The metric that a batch sweep case that ran out of device memory exports, with
@@ -76,6 +78,65 @@ class BenchmarkData:
   skipped: bool = False
 
 
+def _microbenchmark_name(
+    spec: registry_lib.BenchmarkSpec, batch_size: int | None
+) -> str | None:
+  """Returns the key that a case exports its results under, if any.
+
+  Args:
+    spec: The benchmark of the case; its `microbenchmark_name` keys all of its
+      results.
+    batch_size: The batch size of a batch sweep case, which also keys its
+      results (`bs<N>`), or None.
+  """
+  if batch_size is None:
+    return spec.microbenchmark_name
+  key = batch_size_key(batch_size)
+  return (
+      f"{spec.microbenchmark_name}_{key}" if spec.microbenchmark_name else key
+  )
+
+
+def make_benchmark_data(
+    spec: registry_lib.BenchmarkSpec,
+    *,
+    platform: target_lib.Platform,
+    framework: mode_lib.Framework,
+    run_mode: common.RunMode,
+    succeeded: bool,
+    metrics: metrics_lib.MetricsInterface | None = None,
+    batch_size: int | None = None,
+    out_of_memory: bool = False,
+    skipped: bool = False,
+) -> BenchmarkData:
+  """Returns the record of a case of `spec`, keyed by its microbenchmark name.
+
+  Args:
+    spec: The benchmark of the case.
+    platform: The hardware platform the case ran on.
+    framework: The execution framework.
+    run_mode: The execution run mode.
+    succeeded: Whether the case succeeded.
+    metrics: The metrics of the case, if it measured any.
+    batch_size: The batch size of a batch sweep case, which extends the
+      microbenchmark name of `spec` (`batch_size_key`), or None.
+    out_of_memory: See `BenchmarkData.out_of_memory`.
+    skipped: See `BenchmarkData.skipped`.
+  """
+  return BenchmarkData(
+      spec_name=spec.name,
+      platform=platform,
+      framework=framework,
+      run_mode=run_mode,
+      succeeded=succeeded,
+      metrics=metrics or metrics_lib.PerformanceMetrics(),
+      microbenchmark_name=_microbenchmark_name(spec, batch_size),
+      batch_size=batch_size,
+      out_of_memory=out_of_memory,
+      skipped=skipped,
+  )
+
+
 def export(data: BenchmarkData) -> None:
   """Exports benchmark results to MLCompass via export_adapter.
 
@@ -127,4 +188,39 @@ def export_skip(
       platform=platform.value,
       framework=framework.value,
       run_mode=run_mode.value,
+  )
+
+
+def export_known_failure_skip(
+    *,
+    spec_name: str,
+    platform: target_lib.Platform,
+    framework: mode_lib.Framework,
+    run_mode: common.RunMode,
+) -> None:
+  """Exports a skip record for a skipped case if it is a known failure.
+
+  The record lets dashboards drop the last failure of a benchmark that became
+  a known failure. Cases skipped for other reasons are not recorded, as most of
+  them never ran.
+
+  Args:
+    spec_name: The name of the skipped benchmark spec.
+    platform: The hardware platform the case was skipped on.
+    framework: The execution framework.
+    run_mode: The skipped run mode.
+  """
+  failure_reason = known_failures.get_known_failure_reason(
+      spec_name,
+      framework=framework,
+      device_kind=target_lib.make_target(platform).device_kind,
+      run_mode=run_mode,
+  )
+  if failure_reason is None:
+    return
+  export_skip(
+      spec_name=spec_name,
+      platform=platform,
+      framework=framework,
+      run_mode=run_mode,
   )

@@ -46,9 +46,7 @@ from perflab import discovery as discovery_lib
 from perflab import distributed_models
 from perflab import export as export_lib
 from perflab import flags as flags_lib
-from perflab import known_failures
 from perflab import measure as measure_lib
-from perflab import metrics as metrics_lib
 from perflab import mode as mode_lib
 from perflab import registry as registry_lib
 from perflab import step_lib
@@ -103,24 +101,6 @@ def _get_skip_reason(
     return f"Run mode {mode.value} is not supported on {device_kind.value}"
   return cases.get_skip_reason(
       spec, mode, framework=_FRAMEWORK, device_kind=device_kind
-  )
-
-
-def _is_known_failure(
-    spec: registry_lib.BenchmarkSpec,
-    mode: common.RunMode,
-    device_kind: target_lib.DeviceKind,
-) -> bool:
-  """Returns whether `spec` runs in `mode` on `device_kind` but is known to fail."""
-  return (
-      mode in mode_lib.modes_for(_FRAMEWORK, device_kind)
-      and known_failures.get_known_failure_reason(
-          spec.name,
-          framework=_FRAMEWORK,
-          device_kind=device_kind,
-          run_mode=mode,
-      )
-      is not None
   )
 
 
@@ -360,27 +340,6 @@ def _cleanup_distributed_worker_state(
   logging.info("Rank %s inter-test state cleanup completed.", rank)
 
 
-def _export_benchmark_result(
-    spec: registry_lib.BenchmarkSpec,
-    platform: target_lib.Platform,
-    mode: common.RunMode,
-    succeeded: bool,
-    metrics: metrics_lib.PerformanceMetrics,
-) -> None:
-  """Exports benchmark outcome and metrics to output storage."""
-  export_lib.export(
-      export_lib.BenchmarkData(
-          spec_name=spec.name,
-          platform=platform,
-          framework=_FRAMEWORK,
-          run_mode=mode,
-          succeeded=succeeded,
-          metrics=metrics,
-          microbenchmark_name=spec.microbenchmark_name,
-      )
-  )
-
-
 def _run_single_target_task(
     spec_name: str,
     mode_value: str,
@@ -509,8 +468,15 @@ def _run_single_target_task(
         raise AssertionError(
             f"Invalid metrics measured on rank {rank}: {metrics}"
         )
-      _export_benchmark_result(
-          spec, target.platform, mode, succeeded=True, metrics=metrics
+      export_lib.export(
+          export_lib.make_benchmark_data(
+              spec,
+              platform=target.platform,
+              framework=_FRAMEWORK,
+              run_mode=mode,
+              succeeded=True,
+              metrics=metrics,
+          )
       )
 
   except target_lib.UnsupportedBenchmark as e:
@@ -630,8 +596,12 @@ def main(argv: Sequence[str]) -> None:
     results.append(
         _TargetResult(target_name, TargetStatus.SKIPPED, skip_reason)
     )
-    if exports_skips and _is_known_failure(spec, mode, target.device_kind):
-      export_lib.export_skip(
+    # Like base_test, which never generates cases for the modes a platform does
+    # not run, record known failures only in the modes the platform runs.
+    if exports_skips and mode in mode_lib.modes_for(
+        _FRAMEWORK, target.device_kind
+    ):
+      export_lib.export_known_failure_skip(
           spec_name=spec.name,
           platform=platform,
           framework=_FRAMEWORK,
@@ -699,12 +669,14 @@ def main(argv: Sequence[str]) -> None:
       # are still visible on dashboards. Only node 0 exports to avoid duplicate
       # records in multi-host runs.
       if node_rank == 0:
-        _export_benchmark_result(
-            spec,
-            platform,
-            mode,
-            succeeded=False,
-            metrics=metrics_lib.PerformanceMetrics(),
+        export_lib.export(
+            export_lib.make_benchmark_data(
+                spec,
+                platform=platform,
+                framework=_FRAMEWORK,
+                run_mode=mode,
+                succeeded=False,
+            )
         )
     else:
       duration = time.monotonic() - start
