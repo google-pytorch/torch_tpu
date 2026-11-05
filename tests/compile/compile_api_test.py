@@ -1769,7 +1769,7 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
     utils.assert_close(res.cpu(), x.cpu() + 1)
     utils.assert_close(buf.cpu(), expected)
 
-  def test_static_compiler_writes_back_returned_input_mutation_once(self):
+  def test_static_compiler_writes_back_returned_input_mutation(self):
     def step(buf, x):
       return (buf.add_(x),)
 
@@ -1777,13 +1777,14 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
     x = torch.ones(4, device=self.device)
     gm = make_fx(step)(buf.clone(), x)
 
-    # The new value is one output, both returned and written back.
+    # The returned value and the written-back value get separate outputs, so
+    # the result and buf never share a buffer.
     exported = torch_tpu_export.fx_to_mlir(
         gm,
         [tpu_torch_compile.placeholder_like(t) for t in (buf, x)],
         write_back_mutated_inputs=True,
     )
-    self.assertLen(exported.mlir_result_tensors, 1)
+    self.assertLen(exported.mlir_result_tensors, 2)
 
     (res,) = StaticCompiler()(gm, [buf, x])(buf, x)
     utils.assert_close(res.cpu(), x.cpu())
@@ -1841,6 +1842,123 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
       )
       texts.append(exported.serialize_text())
     self.assertEqual(texts[0], texts[1])
+
+  def test_fx_to_mlir_under_inference_mode(self):
+    def step(w, x):
+      return (x * w + 1,)
+
+    w = torch.randn(2, 4, device=self.device)
+    x = torch.randn(2, 4, device=self.device)
+    gm = make_fx(step)(w, x)
+
+    # Inference tensors have no version counter, so reading one would raise.
+    with torch.inference_mode():
+      for write_back in (False, True):
+        torch_tpu_export.fx_to_mlir(
+            gm,
+            [tpu_torch_compile.placeholder_like(t) for t in (w, x)],
+            write_back_mutated_inputs=write_back,
+        )
+      (res,) = StaticCompiler()(gm, [w, x])(w, x)
+    utils.assert_close(res.cpu(), x.cpu() * w.cpu() + 1)
+
+  def test_static_compiler_writes_back_raw_library_op_mutation(self):
+    lib = torch.library.Library('custom_tpu_test_raw', 'DEF')  # pylint: disable=unused-variable
+    lib.define('add_into(Tensor(a!) t, Tensor u) -> ()')
+    # The PR text claims writes hidden in custom ops are caught; this pins it.
+    def add_into(t, u):
+      t.add_(u)
+
+    lib.impl('add_into', add_into, 'CompositeExplicitAutograd')
+    lib.impl('add_into', lambda t, u: None, 'Meta')
+
+    def step(buf, x):
+      torch.ops.custom_tpu_test_raw.add_into(buf, x)
+      return (x * 2,)
+
+    buf = torch.zeros(4, device=self.device)
+    x = torch.arange(4, dtype=torch.float32, device=self.device)
+    gm = make_fx(step)(buf.clone(), x)
+    compiled_executable = StaticCompiler()(gm, [buf, x])
+    for calls in (1, 2):
+      compiled_executable(buf, x)
+      utils.assert_close(buf.cpu(), x.cpu() * calls)
+
+  def test_static_compiler_inputs_written_from_one_source_stay_separate(self):
+    def step(a, b, c):
+      a.copy_(c)
+      b.copy_(c)
+      return (c * 2,)
+
+    a = torch.zeros(8, 128, device=self.device)
+    b = torch.zeros(8, 128, device=self.device)
+    c = torch.zeros(8, 128, device=self.device)
+    gm = make_fx(step)(a.clone(), b.clone(), c)
+    compiled_executable = StaticCompiler()(gm, [a, b, c], donated_inputs=[0])
+
+    # If a and b shared one buffer, donating a on call 2 would delete b's.
+    for value in (1.0, 2.0):
+      c = torch.full((8, 128), value, device=self.device)
+      compiled_executable(a, b, c)
+      utils.assert_close(a.cpu(), c.cpu())
+      utils.assert_close(b.cpu(), c.cpu())
+
+  def test_static_compiler_returned_written_input_does_not_share_result(self):
+    def step(buf, x):
+      return (buf.add_(x),)
+
+    buf = torch.zeros(8, 128, device=self.device)
+    x = torch.ones(8, 128, device=self.device)
+    gm = make_fx(step)(buf.clone(), x)
+    compiled_executable = StaticCompiler()(gm, [buf, x], donated_inputs=[0])
+
+    (first,) = compiled_executable(buf, x)
+    (second,) = compiled_executable(buf, x)
+    # Call 2 donates buf; the result of call 1 must survive it. The donation
+    # lands when call 2 finishes, so wait for it before reading.
+    torch.accelerator.synchronize()
+    utils.assert_close(first.cpu(), x.cpu())
+    utils.assert_close(second.cpu(), x.cpu() * 2)
+    utils.assert_close(buf.cpu(), x.cpu() * 2)
+
+  def test_static_compiler_writes_back_unsqueezed_input(self):
+    def step(buf, x):
+      buf.unsqueeze_(0).add_(x)
+      return (x * 2,)
+
+    buf = torch.zeros(4, device=self.device)
+    x = torch.arange(4, dtype=torch.float32, device=self.device)
+    gm = make_fx(step)(buf.clone(), x)
+    compiled_executable = StaticCompiler()(gm, [buf, x])
+
+    # Only a size-1 dim changed, so the (1, 4) value fits back into buf.
+    for calls in (1, 2):
+      compiled_executable(buf, x)
+      utils.assert_close(buf.cpu(), x.cpu() * calls)
+
+  @parameterized.named_parameters(
+      ('resize_same_numel', lambda buf: buf.resize_(2, 2).add_(1)),
+      ('as_strided', lambda buf: buf.as_strided_((2,), (2,)).add_(1)),
+      ('resize_larger', lambda buf: buf.resize_(8).fill_(1)),
+  )
+  def test_static_compiler_drops_shape_changing_input_write(self, write):
+    def step(buf, x):
+      write(buf)
+      return (x * 2,)
+
+    buf = torch.zeros(4, device=self.device)
+    x = torch.arange(4, dtype=torch.float32, device=self.device)
+    gm = make_fx(step)(buf.clone(), x)
+
+    # The new value does not fit back into a (4,) tensor: warn, and drop the
+    # write as before, instead of raising on every call.
+    with self.assertLogs(level='WARNING') as logs:
+      compiled_executable = StaticCompiler()(gm, [buf, x])
+    self.assertIn("changed the input's shape", '\n'.join(logs.output))
+    for _ in range(2):
+      (res,) = compiled_executable(buf, x)
+      utils.assert_close(res.cpu(), x.cpu() * 2)
+    utils.assert_close(buf.cpu(), torch.zeros(4))
 
   def test_static_compiler_auto_buffer_donation_with_mutable_custom_op(self):
     @torch.library.custom_op(

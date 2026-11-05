@@ -537,23 +537,61 @@ def _add_mutated_input_outputs(
     new_values: The final value of each written input.
     input_indices: The position of each written input in the arguments.
     result_tensors: The executable outputs. Updated in place; a value that is
-      already an output is not added again.
+      already an output is added as a copy.
     reconstruct_fn: Builds the FX graph outputs from the executable outputs.
 
   Returns:
     A reconstruct function that also writes the new values into the inputs.
   """
-  index_by_key = {
-      _TensorDedupeKey.from_tensor(t): i for i, t in enumerate(result_tensors)
-  }
+  keys = {_TensorDedupeKey.from_tensor(t) for t in result_tensors}
   output_indices = []
   for value in new_values:
     key = _TensorDedupeKey.from_tensor(value)
-    if key not in index_by_key:
-      index_by_key[key] = len(result_tensors)
-      result_tensors.append(value)
-    output_indices.append(index_by_key[key])
+    if key in keys:
+      # Sharing an output would leave two live tensors on one buffer after the
+      # copy back, e.g. `return (buf.add_(x),)`: the result and `buf`.
+      # Donating `buf` on the next call would then delete the result.
+      value = value.clone()
+      key = _TensorDedupeKey.from_tensor(value)
+    keys.add(key)
+    output_indices.append(len(result_tensors))
+    result_tensors.append(value)
   return _MutatedInputWriter(reconstruct_fn, input_indices, output_indices)
+
+
+def _find_written_inputs(
+    args: Sequence[Any],
+    versions_before: Sequence[int | None],
+    shapes_before: Sequence[torch.Size | None],
+) -> tuple[list[int], list[torch.Tensor]]:
+  """Returns the inputs that the eager run wrote to, and their new values.
+
+  An input counts as written if its version moved, including through a view.
+  A new value with a different shape is reshaped back when only size-1 dims
+  differ (`buf.unsqueeze_(0)`). Other shape changes (`resize_`, `t_` on a
+  non-square tensor) cannot be copied into the caller's tensor, so that write
+  is dropped with a warning, as before write-back existed.
+  """
+  indices, values = [], []
+  for i, (x, version, shape) in enumerate(
+      zip(args, versions_before, shapes_before)
+  ):
+    if version is None or x._version == version:
+      continue
+    if x.shape != shape:
+      if [d for d in x.shape if d != 1] != [d for d in shape if d != 1]:
+        logging.warning(
+            "In-place write to graph input %d is dropped: it changed the"
+            " input's shape from %s to %s, which write-back cannot copy.",
+            i,
+            list(shape),
+            list(x.shape),
+        )
+        continue
+      x = x.reshape(shape)
+    indices.append(i)
+    values.append(x)
+  return indices, values
 
 
 @annotations.forbid_in_torch_compile(
@@ -691,11 +729,19 @@ def fx_to_mlir(
             else (x.clone() if isinstance(x, torch.Tensor) else x)
             for x in args
         ]
-        # An in-place op bumps a tensor's version, including through a view.
-        versions_before_run = [
-            x._version if isinstance(x, torch.Tensor) else None
-            for x in mapped_args
-        ]
+        if write_back_mutated_inputs:
+          # An in-place op bumps a tensor's version, including through a view.
+          # Inference tensors have no version counter.
+          versions_before_run = [
+              x._version
+              if isinstance(x, torch.Tensor) and not x.is_inference()
+              else None
+              for x in mapped_args
+          ]
+          shapes_before_run = [
+              x.shape if isinstance(x, torch.Tensor) else None
+              for x in mapped_args
+          ]
         with xprof_adapter.TraceMe("EagerLikeFxInterpreter.run"):
           fx_outputs = EagerLikeFxInterpreter(module).run(*mapped_args)
 
@@ -708,23 +754,21 @@ def fx_to_mlir(
             module, fx_outputs, dynamic_outputs=dynamic_outputs
         )
 
-        mutated_inputs = [
-            i
-            for i, (x, version) in enumerate(
-                zip(mapped_args, versions_before_run)
-            )
-            if version is not None and x._version != version
-        ]
-        if mutated_inputs and write_back_mutated_inputs:
-          if use_stablehlo_bounds or any(deduped_dynamic_outputs):
+        if write_back_mutated_inputs:
+          mutated_inputs, new_values = _find_written_inputs(
+              mapped_args, versions_before_run, shapes_before_run
+          )
+          if mutated_inputs and (
+              use_stablehlo_bounds or any(deduped_dynamic_outputs)
+          ):
             logging.warning(
                 "In-place writes to graph inputs %s are dropped: write-back"
                 " is not supported with dynamic shapes.",
                 mutated_inputs,
             )
-          else:
+          elif mutated_inputs:
             reconstruct_fx_outputs_fn = _add_mutated_input_outputs(
-                [mapped_args[i] for i in mutated_inputs],
+                new_values,
                 mutated_inputs,
                 result_tensors,
                 reconstruct_fx_outputs_fn,
