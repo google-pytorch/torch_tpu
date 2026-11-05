@@ -32,6 +32,32 @@ namespace torch_tpu {
 
 namespace stablehlo = mlir::stablehlo;
 
+namespace {
+
+bool IsConstantNegativeHalf(mlir::MlirOp op) {
+  mlir::Value val = op.getValue();
+  while (auto bcast = val.getDefiningOp<mlir::stablehlo::BroadcastInDimOp>()) {
+    val = bcast.getOperand();
+  }
+  auto const_op = val.getDefiningOp<mlir::stablehlo::ConstantOp>();
+  if (!const_op) {
+    return false;
+  }
+  auto attr = mlir::dyn_cast<mlir::DenseElementsAttr>(const_op.getValue());
+  if (!attr || attr.empty()) {
+    return false;
+  }
+  if (!mlir::isa<mlir::FloatType>(attr.getElementType())) {
+    return false;
+  }
+  if (attr.isSplat() || attr.getNumElements() == 1) {
+    return attr.getValues<float>()[0] == -0.5f;
+  }
+  return false;
+}
+
+}  // namespace
+
 absl::StatusOr<mlir::MlirOp> BuildAddShlo(mlir::MlirOp lhs_op,
                                           mlir::MlirOp rhs_op) {
   TT_ASSIGN_OR_RETURN((auto [lhs, rhs]),
@@ -120,6 +146,22 @@ absl::StatusOr<mlir::MlirOp> BuildPowShlo(mlir::MlirOp base_op,
   if (IsBooleanType(base_type) && IsBooleanType(exp_type)) {
     broadcasted_exp_op = stablehlo::Not(broadcasted_exp_op);
     return stablehlo::Or(broadcasted_base_op, broadcasted_exp_op);
+  }
+
+  // COST_MODEL: PowOp(x, -0.5) requires transcendentals
+  // (exp(log(x) * -0.5)). Routing to Rsqrt(Add(x, +0.0)) uses the hardware
+  // MXU rsqrt reciprocal square root unit directly, delivering higher
+  // throughput and matching PyTorch IEEE 754 non-negative semantics
+  // (+0.0/-0.0 -> +inf, negative -> NaN).
+  if (IsConstantNegativeHalf(broadcasted_exp_op)) {
+    mlir::MlirOp float_base = broadcasted_base_op;
+    if (!GetTensorTypeOrDie(float_base).getElementType().isFloat()) {
+      float_base =
+          stablehlo::ConvertElementType(float_base, exp_type.getElementType());
+    }
+    mlir::MlirOp pos_zero = MakeConstantLike(float_base, 0.0);
+    mlir::MlirOp x_plus_zero = stablehlo::Add(float_base, pos_zero);
+    return stablehlo::Rsqrt(x_plus_zero);
   }
 
   // Implements PyTorch powi reference semantics for integer exponentiation with
