@@ -2816,9 +2816,6 @@ class TestOps(op_testing.OpInfoTestBase):
         # TODO(b/553658275): support data sampling of integral and
         # half-precision float dtypes for SVD-based linear algebra ops.
         exclude_dtypes=INTEGRAL_DTYPES + (torch.half, torch.bfloat16),
-        # ApplyPivotsInPlace in linalg_lu_kernels.cc calls .item() in C++ loop,
-        # which fails placeholder tensor materialization in compiled mode.
-        skip_if=lambda variant, op_input: op_testing.is_compiled_mode(),
     )
 
   def test_linalg_lu_solve(self):
@@ -2827,9 +2824,6 @@ class TestOps(op_testing.OpInfoTestBase):
         # TODO(b/553658275): support data sampling of integral and
         # half-precision float dtypes for SVD-based linear algebra ops.
         exclude_dtypes=INTEGRAL_DTYPES + (torch.half, torch.bfloat16),
-        # ApplyPivotsInPlace in linalg_lu_kernels.cc calls .item() in C++ loop,
-        # which fails placeholder tensor materialization in compiled mode.
-        skip_if=lambda variant, op_input: op_testing.is_compiled_mode(),
     )
 
   def test_linalg_solve_ex(self):
@@ -2839,9 +2833,6 @@ class TestOps(op_testing.OpInfoTestBase):
         # half-precision float dtypes for SVD-based linear algebra ops.
         exclude_dtypes=INTEGRAL_DTYPES
         + (torch.half, torch.bfloat16, torch.float64),
-        # ApplyPivotsInPlace in linalg_lu_kernels.cc calls .item() in C++ loop,
-        # which fails placeholder tensor materialization in compiled mode.
-        skip_if=lambda variant, op_input: op_testing.is_compiled_mode(),
     )
 
   def test_linalg_svd(self):
@@ -2879,12 +2870,7 @@ class TestOps(op_testing.OpInfoTestBase):
             torch.float64,
             torch.complex128,
         ),
-        # ApplyPivotsInPlace in linalg_lu_kernels.cc calls .item() in C++ loop,
-        # which fails placeholder tensor materialization in compiled mode.
-        skip_if=lambda variant, op_input: (
-            _linalg_lu_without_pivot_gpu(variant, op_input)
-            or op_testing.is_compiled_mode()
-        ),
+        skip_if=_linalg_lu_without_pivot_gpu,
     )
 
   def test_linalg_inv_ex_out(self):
