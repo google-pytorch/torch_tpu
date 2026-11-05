@@ -32,6 +32,7 @@
 
 #include "absl/base/no_destructor.h"
 #include "absl/base/nullability.h"
+#include "absl/base/optimization.h"
 #include "absl/base/thread_annotations.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
@@ -50,8 +51,11 @@
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/eager_mode.h"
 #include "csrc/eager/execution_task.h"
+#include "csrc/eager/graph_capture_state.h"
 #include "csrc/eager/split_traversal.h"
 #include "csrc/eager/structured_log_buffer.h"
+#include "csrc/eager/traversal.h"
+#include "csrc/eager/traversal_utils.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/python_context.h"
@@ -359,6 +363,57 @@ class StreamState {
     return std::move(ready_work_);
   }
 
+  std::vector<SharedDeviceBufferList> ExtractDeferredOps() {
+    absl::MutexLock lock(mu_);
+    std::vector<SharedDeviceBufferList> must_execute;
+    must_execute.reserve(deferred_ops_.size());
+    for (const auto& deferred_op_event : deferred_ops_) {
+      auto maybe_node = deferred_op_event.lock();
+      if (!maybe_node) continue;
+      must_execute.push_back(std::move(maybe_node));
+    }
+    deferred_ops_.clear();
+    repetition_i_ = 0;
+    repeated_ops_graph_breaks_suspended_ = false;
+    repeated_ops_graph_break_requested_ = false;
+    return must_execute;
+  }
+
+  // Records that the thread owning `capture` is capturing a graph on this
+  // stream. Returns false, and records nothing, if a graph capture is already
+  // in progress on this stream.
+  [[nodiscard]] bool TryBeginGraphCapture(
+      absl_nonnull std::shared_ptr<const GraphCaptureState> capture)
+      ABSL_LOCKS_EXCLUDED(mu_) {
+    absl::MutexLock lock(mu_);
+    if (graph_capture_ != nullptr) {
+      return false;
+    }
+    graph_capture_ = std::move(capture);
+    is_capturing_graph_.store(true, std::memory_order_release);
+    return true;
+  }
+  // Records that no thread is capturing a graph on this stream.
+  void EndGraphCapture() ABSL_LOCKS_EXCLUDED(mu_) {
+    absl_nullable std::shared_ptr<const GraphCaptureState> old_capture;
+    {
+      absl::MutexLock lock(mu_);
+      is_capturing_graph_.store(false, std::memory_order_release);
+      old_capture = std::move(graph_capture_);
+    }
+  }
+  // Returns true if a thread other than the current one is capturing a graph
+  // on this stream.
+  bool IsCapturedByAnotherThread() const ABSL_LOCKS_EXCLUDED(mu_) {
+    if (ABSL_PREDICT_TRUE(
+            !is_capturing_graph_.load(std::memory_order_acquire))) {
+      return false;
+    }
+    const GraphCaptureState* const current = GetCurrentThreadGraphCapture();
+    absl::MutexLock lock(mu_);
+    return graph_capture_ != nullptr && graph_capture_.get() != current;
+  }
+
   // Returns the core pinning mode of this events queue.
   CorePinningMode core_pinning_mode() const { return core_pinning_mode_; }
   // Sets the device pinning mode of this events queue.
@@ -599,7 +654,7 @@ class StreamState {
     return new_snapshot;
   }
 
-  absl::Mutex mu_;
+  mutable absl::Mutex mu_;
   std::vector<xla::Future<void>> futures_ ABSL_GUARDED_BY(mu_);
   std::optional<DeviceBufferRef> last_device_output_ ABSL_GUARDED_BY(mu_);
   std::vector<xla::Future<void>> transfer_blocks_ ABSL_GUARDED_BY(mu_);
@@ -623,6 +678,9 @@ class StreamState {
   bool repeated_ops_graph_break_requested_ ABSL_GUARDED_BY(mu_) = false;
 
   std::atomic<CorePinningMode> core_pinning_mode_ = CorePinningMode::kUnpinned;
+  std::atomic<bool> is_capturing_graph_{false};
+  absl_nullable std::shared_ptr<const GraphCaptureState> graph_capture_
+      ABSL_GUARDED_BY(mu_);
 };
 StreamState::CheckLastRepeatedSequenceResult
 StreamState::CheckLastRepeatedSequence(size_t new_hash)
@@ -853,7 +911,8 @@ void MarkStreamActive(c10::DeviceIndex device_index, int64_t stream_id,
 }  // namespace internal
 
 void RecordDeferredOpCreated(const SharedDeviceBufferList& device_buffer_list) {
-  if (GetEagerMode() == EagerMode::kInternalCompileFxGraph) {
+  if (GetEagerMode() == EagerMode::kInternalCompileFxGraph &&
+      !IsCurrentThreadCapturingGraph()) {
     // In FX trace mode, nothing happens on device, so we don't add anything to
     // any stream.
     return;
@@ -889,6 +948,10 @@ std::vector<ReadyWork> GetReadyWork(c10::DeviceIndex device_index,
 absl::StatusOr<DeviceBufferRef> ScheduleHostToDeviceTransfer(
     HostToDeviceTransfer host_to_device_transfer) {
   const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
+  if (ABSL_PREDICT_FALSE(
+          IsStreamCapturedByAnotherThread(device_index, stream_id))) {
+    return StreamCapturedByAnotherThreadError();
+  }
   return GetOrCreateStreamState(device_index, stream_id)
       ->ScheduleHostToDeviceTransfer(std::move(host_to_device_transfer));
 }
@@ -921,6 +984,11 @@ std::vector<EventSnapshot> RecordDeviceSnapshots(
   for (c10::StreamId stream_id = 0; stream_id < device_streams.size();
        ++stream_id) {
     auto* stream_state = device_streams[stream_id];
+    // The deferred ops on a stream that another thread is capturing a graph on
+    // belong to the graph, so they must not run.
+    if (stream_state->IsCapturedByAnotherThread()) {
+      continue;
+    }
     std::vector<SharedDeviceBufferList> stream_must_materialize;
     for (auto& node : must_materialize) {
       if (node != nullptr && node->device_index() == device_index &&
@@ -1087,6 +1155,58 @@ absl::Status InsertGraphBreak(
   GetOrCreateStreamState(device_index, stream_id)
       ->InsertGraphBreak(std::move(must_materialize), reason, mode, eager_mode);
   return absl::OkStatus();
+}
+
+std::vector<absl_nonnull std::unique_ptr<Traversal>> ExtractCapturedTraversals(
+    c10::DeviceIndex device_index, c10::StreamId stream_id,
+    absl::Span<const SharedDeviceBufferList> must_materialize) {
+  StreamState* stream_state = GetOrCreateStreamState(device_index, stream_id);
+  std::vector<SharedDeviceBufferList> must_execute =
+      stream_state->ExtractDeferredOps();
+  if (must_execute.empty() && must_materialize.empty()) {
+    return {};
+  }
+  return PrepareTraversals(
+      std::move(must_execute), must_materialize,
+      PrepareTraversalsOptions{
+          .graph_split_mode = GraphSplitMode::kFullGraph,
+          .core_pinning_mode = stream_state->core_pinning_mode(),
+          .skinny_sparse_core_offload_mode = GetSkinnySparseCoreOffloadMode(),
+      });
+}
+
+absl::Status BeginStreamGraphCapture(
+    c10::DeviceIndex device_index, c10::StreamId stream_id,
+    absl_nonnull std::shared_ptr<const GraphCaptureState> capture) {
+  TT_RET_CHECK(GetOrCreateStreamState(device_index, stream_id)
+                   ->TryBeginGraphCapture(std::move(capture)),
+               error::kFailedPrecondition)
+      << "cannot capture a graph on a stream that another thread is capturing "
+         "a graph on";
+  return absl::OkStatus();
+}
+
+void EndStreamGraphCapture(c10::DeviceIndex device_index,
+                           c10::StreamId stream_id) {
+  GetOrCreateStreamState(device_index, stream_id)->EndGraphCapture();
+}
+
+bool IsStreamCapturedByAnotherThread(c10::DeviceIndex device_index,
+                                     c10::StreamId stream_id) {
+  // The default stream cannot be captured.
+  return stream_id != 0 && GetOrCreateStreamState(device_index, stream_id)
+                               ->IsCapturedByAnotherThread();
+}
+
+absl::Status StreamCapturedByAnotherThreadError() {
+  return TT_ERROR(error::kFailedPrecondition)
+         << "cannot run operations on a stream that another thread is "
+            "capturing a graph on";
+}
+
+absl::Status TensorAccessedByGraphCaptureError() {
+  return TT_ERROR(error::kFailedPrecondition)
+         << "cannot use a tensor accessed by a graph capture in progress";
 }
 
 void WriteBackMaterializationFutures(

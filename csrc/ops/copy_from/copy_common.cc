@@ -31,6 +31,7 @@
 #include "csrc/common/macro_utils.h"
 #include "csrc/common/to_string.h"
 #include "csrc/eager/eager_mode.h"
+#include "csrc/eager/graph_capture_state.h"
 #include "csrc/ops/as_strided/as_strided_aten_kernels.h"
 #include "torch/headeronly/core/ScalarType.h"
 
@@ -205,7 +206,8 @@ absl::Status BroadcastAndTranspose(at::Tensor& src, at::Tensor& dest) {
 
 TransferSyncMode GetTransferSyncMode(bool non_blocking) {
   const EagerMode eager_mode = GetEagerMode();
-  if (eager_mode == EagerMode::kInternalCompileFxGraph) {
+  if (eager_mode == EagerMode::kInternalCompileFxGraph &&
+      !IsCurrentThreadCapturingGraph()) {
     return TransferSyncMode::kIsolated;
   }
   if (eager_mode == EagerMode::kDeferNeverAndLaunchBlocking) {

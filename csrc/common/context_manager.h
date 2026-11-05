@@ -63,6 +63,7 @@ using ContextManagerState = std::variant<
     CustomCompilerOptionsContextState,  // for `custom_compiler_options`
     EagerModeContextState,              // for `eager_mode`
     EnableTracebacksContextState,       // for `enable_tracebacks`
+    GraphCaptureContextState,           // for `torch.accelerator.Graph`
     IsSpmdSafeContextState,             // for `spmd_safe`
     LayoutContextState,                 // for `layout`
     NameScopeContextState,              // for `name_scope`
