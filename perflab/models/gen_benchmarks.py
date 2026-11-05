@@ -19,7 +19,6 @@ import functools
 import itertools
 
 import torch
-from perflab import common
 from perflab import context as context_lib
 from perflab import flags as flags_lib
 from perflab import mode as mode_lib
@@ -27,13 +26,6 @@ from perflab import registry as registry_lib
 from perflab import step_lib
 from perflab import workload as workload_lib
 from perflab.gen_utils import gen_utils
-
-# The run modes that only TPUs and GPUs run. The FakeTensorMode CPU smoke test
-# runs `eager_default`, the only run mode of CPU targets (`mode.modes_for`).
-_ACCELERATOR_ONLY_RUN_MODES = frozenset({
-    common.RunMode.COMPILED.value,
-    common.RunMode.EAGER_OPTIMIZED.value,
-})
 
 # Generated benchmarks that the FakeTensorMode CPU smoke test
 # (`--fake_tensor_mode`) cannot run, with the reason. Every other generated
@@ -158,14 +150,9 @@ def _register_gen_benchmarks():
     ):
       continue
     extra_config = model_gen_spec.get_extra_config(is_training, suffix="gen")
-    skipped_run_modes = extra_config.skipped_run_modes
-    if fake_tensor_mode and _ACCELERATOR_ONLY_RUN_MODES - skipped_run_modes:
-      # The smoke test only builds the benchmark and takes a step, so it also
-      # checks the benchmarks that skip `eager_default` but run on accelerators
-      # in another mode.
-      skipped_run_modes = skipped_run_modes - {
-          common.RunMode.EAGER_DEFAULT.value
-      }
+    skipped_run_modes = mode_lib.smoke_skipped_run_modes(
+        extra_config.skipped_run_modes, fake_tensor_mode=fake_tensor_mode
+    )
     step_kwargs = extra_config.step_kwargs
     model_load_fn = extra_config.model_load_fn
 

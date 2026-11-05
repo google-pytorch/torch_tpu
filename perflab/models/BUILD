@@ -52,7 +52,6 @@ torch_tpu_py_library(
     ],
     allow_multiple_srcs = True,
     deps = [
-        "//perflab:common",
         "//perflab:context",
         "//perflab:flags",
         "//perflab:mode",

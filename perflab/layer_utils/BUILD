@@ -45,4 +45,23 @@ torch_tpu_py_library(
     ],
 )
 
+torch_tpu_py_library(
+    name = "registration",
+    srcs = ["registration.py"],
+    deps = [
+        ":builders",
+        ":configs",
+        "//perflab:common",
+        "//perflab:compile",
+        "//perflab:context",
+        "//perflab:flags",
+        "//perflab:mode",
+        "//perflab:registry",
+        "//perflab:step_lib",
+        "//perflab:target",
+        "//perflab:torch_device_ops",
+        "//shims/torch:pytorch",
+    ],
+)
+
 torch_tpu_package_end()
