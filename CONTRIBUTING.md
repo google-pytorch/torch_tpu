@@ -113,9 +113,14 @@ same changes proposed in the PR.
 
     *   The **author** will be the bot.
     *   The **original author** will be the (external) PR author.
-    *   The **reviewer** will be the Googler assigned to the PR (the quality
-        champion), who's responsible for approving the Google-internal CL.
-    *   The Google domain expert and all other reviewers will be **CC**-ed.
+    *   The **reviewers** will be the Googler assigned to the PR (the quality
+        champion), whose approval of the Google-internal CL is required, and the
+        Google domain expert.
+    *   When the PR author is external, the CL needs approvals from **two
+        different Googlers** to be submitted. If the domain expert approved an
+        older version of the PR (before the author's later changes), they need
+        to **approve the CL too** (or re-approve the latest version of the PR on
+        GitHub).
     *   As long as the quality champion has approved the PR, anyone is allowed
         to apply the `pull ready` label in case the quality champion forgets to
         do so.
@@ -126,11 +131,12 @@ same changes proposed in the PR.
 
     1.  **Patch the CL into a workspace**, iterate there, get approval from the
         quality champion, submit it, add a comment on the original PR with the
-        commit SHA, and manually close the PR.
+        commit SHA, and manually close the PR. (The patched CL is authored by
+        the domain expert, so only the quality champion's approval is needed.)
     1.  **Make changes to the PR's branch** (exact instructions to be
         documented), let the bot update the CL, iterate until the CL is ready,
-        and get approval from the quality champion. The CL will auto submit, and
-        the original PR will auto close.
+        and get approval from the quality champion (and the domain expert, as
+        above). The CL will auto submit, and the original PR will auto close.
 1.  In rare cases, the internal testing of the CL may reveal an issue that
     requires a big change to the PR's design. The Google domain expert should
     work with the external contributor to address it, possibly via a new PR.
@@ -171,8 +177,8 @@ re-approve importing the PR via Copybara:
 
 Earlier GitHub approvals don't carry over to new commits, and the internal CL
 needs approvals from two different Googlers to auto-submit. So when the PR
-author is external, the **Google domain expert** should also re-approve the
-updated PR on GitHub or the updated CL.
+author is external, the **Google domain expert** (also a reviewer of the CL)
+needs to approve the updated CL too, or re-approve the updated PR on GitHub.
 
 ### Approve Workflow Runs
 
