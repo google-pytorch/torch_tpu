@@ -15,10 +15,10 @@
 """Tests ops on their static kernels, with unbounded dynamic kernels disabled.
 
 The ops_unit_test_static target (see BUILD) runs these tests with
-TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS=0. The runtime reads the
-variable once per process, and with it enabled (the default) the precompiled
-unbounded dynamic kernels serve the ops they support instead of the static
-kernels, e.g. those nonzero compiles per nonzero count.
+TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS=none. The runtime reads the
+variable once per process, and by default the precompiled unbounded dynamic
+kernels that are enabled by default serve the ops they support instead of the
+static kernels, e.g. those nonzero compiles per nonzero count.
 """
 
 from absl.testing import absltest

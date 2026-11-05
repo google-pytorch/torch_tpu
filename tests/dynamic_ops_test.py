@@ -14,10 +14,10 @@
 
 """Tests ops that precompiled unbounded dynamic kernels serve.
 
-Unbounded dynamic kernels are enabled by default
-(TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS), and each test checks that
-the op's registered unbounded dynamic kernel serves it, and that the TPU result
-matches the CPU one.
+Unbounded dynamic kernels that are enabled by default load unless
+TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS is "none", and each test checks
+that the op's registered unbounded dynamic kernel serves it, and that the TPU
+result matches the CPU one.
 """
 
 from collections.abc import Callable
@@ -58,8 +58,8 @@ class UnboundedDynamicKernelTestBase(op_testing.TorchTpuVsCpuTestBase):
         _unbounded_dynamic_hits() - hits_before,
         hits,
         "Lookups served by unbounded dynamic kernels; was"
-        " TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS set to 0, or did"
-        " the kernel fail to build?",
+        " TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS set to none (or left"
+        " at default for an opt-in kernel), or did the kernel fail to build?",
     )
 
 

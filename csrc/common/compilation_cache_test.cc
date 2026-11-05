@@ -90,10 +90,10 @@ class CompilationCacheTestHelper {
   // Overrides the value read from
   // TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS, which is memoized and
   // thus cannot be toggled per test.
-  static void SetAutoLoadUnboundedDynamicKernels(CompilationCache& cache,
-                                                 const bool enable) {
+  static void SetUnboundedDynamicKernelMode(
+      CompilationCache& cache, const UnboundedDynamicKernelMode mode) {
     absl::MutexLock lock(cache.cache_mutex_);
-    cache.auto_load_unbounded_dynamic_kernels_ = enable;
+    cache.unbounded_dynamic_kernel_mode_ = mode;
   }
 };
 
@@ -480,11 +480,12 @@ struct DummyKernelKeys {
 // The registry is process-wide and append-only, so each test uses its own name.
 DummyKernelKeys RegisterDummyKernelFor(
     std::string_view name,
-    UnboundedDynamicKernel::BuildFn build = CreateDummyExecutable) {
+    UnboundedDynamicKernel::BuildFn build = CreateDummyExecutable,
+    const DummyKernelLoading loading = DummyKernelLoading::kEnabledByDefault) {
   CompilationCacheKey kernel_key(
       GraphKey(ShapelessKey(Fingerprint(name)), DimensionsKey({})),
       CompileOptionsKey({}));
-  RegisterDummyKernel(kernel_key, build);
+  RegisterDummyKernel(kernel_key, build, loading);
   CompilationCacheKey lookup_key(
       GraphKey(kernel_key.graph_key().shapeless_key(),
                DimensionsKey({1, 2, 3})),
@@ -535,7 +536,6 @@ TEST_F(CompilationCacheTest, ReportsStaticCacheHit) {
 
 TEST_F(CompilationCacheTest, UnboundedDynamicCache) {
   CompilationCache& cache = CompilationCache::GetInstance();
-  CompilationCacheTestHelper::SetAutoLoadUnboundedDynamicKernels(cache, true);
   const auto [key, test_key] = RegisterDummyKernelFor("dummykey");
 
   // The first compatible lookup misses tier-1, finds the kernel in the registry
@@ -597,7 +597,8 @@ TEST_F(CompilationCacheTest, UnboundedDynamicCache) {
 
 struct UnboundedDynamicCacheMissTestCase {
   std::string test_name;
-  bool auto_load = true;
+  UnboundedDynamicKernelMode mode = UnboundedDynamicKernelMode::kDefault;
+  DummyKernelLoading loading = DummyKernelLoading::kEnabledByDefault;
   bool use_registered_key = true;
   UnboundedKernelPolicy policy = UnboundedKernelPolicy::kAllow;
   Dimensions input_dims = Dimensions({128, 128});
@@ -611,9 +612,13 @@ class UnboundedDynamicCacheMissTest
 TEST_P(UnboundedDynamicCacheMissTest, FallsBackToStaticPath) {
   const UnboundedDynamicCacheMissTestCase& param = GetParam();
   CompilationCache& cache = CompilationCache::GetInstance();
-  CompilationCacheTestHelper::SetAutoLoadUnboundedDynamicKernels(
-      cache, param.auto_load);
-  const auto [key, registered_lookup_key] = RegisterDummyKernelFor("dummykey");
+  CompilationCacheTestHelper::SetUnboundedDynamicKernelMode(cache, param.mode);
+  // Kernels of different `loading` need different keys, since re-registering a
+  // key keeps its first registration.
+  const auto [key, registered_lookup_key] = RegisterDummyKernelFor(
+      param.loading == DummyKernelLoading::kEnabledByDefault ? "dummykey"
+                                                             : "optinkey",
+      CreateDummyExecutable, param.loading);
   const CompilationCacheKey lookup_key =
       param.use_registered_key ? registered_lookup_key : DummyKey(999);
 
@@ -639,8 +644,12 @@ INSTANTIATE_TEST_SUITE_P(
     UnboundedDynamicCacheMissTests, UnboundedDynamicCacheMissTest,
     testing::ValuesIn<UnboundedDynamicCacheMissTestCase>({
         {
-            .test_name = "AutoLoadDisabled",
-            .auto_load = false,
+            .test_name = "ModeNone",
+            .mode = UnboundedDynamicKernelMode::kNone,
+        },
+        {
+            .test_name = "OptInKernelInDefaultMode",
+            .loading = DummyKernelLoading::kOptIn,
         },
         {
             .test_name = "DisallowedByPolicy",
@@ -662,9 +671,38 @@ INSTANTIATE_TEST_SUITE_P(
     [](const testing::TestParamInfo<UnboundedDynamicCacheMissTest::ParamType>&
            info) { return info.param.test_name; });
 
+TEST_F(CompilationCacheTest, UnboundedDynamicKernelModeOnlyGatesNewEntries) {
+  CompilationCache& cache = CompilationCache::GetInstance();
+  const auto [key, test_key] = RegisterDummyKernelFor(
+      "optinmodekey", CreateDummyExecutable, DummyKernelLoading::kOptIn);
+  const auto get_or_compile = [&cache, &test_key] {
+    return cache.GetOrCompile(
+        test_key, {Shape(Dimensions({128, 128}), mlir::ElementType::F32)},
+        {Shape(Dimensions({128, 128}), mlir::ElementType::F32)},
+        MustNotBeCalled, std::make_unique<xla::CompileOptions>(),
+        UnboundedKernelPolicy::kAllow);
+  };
+
+  // `kAll` loads the opt-in kernel.
+  CompilationCacheTestHelper::SetUnboundedDynamicKernelMode(
+      cache, UnboundedDynamicKernelMode::kAll);
+  TT_ASSERT_OK_AND_ASSIGN(CompiledKernel first, get_or_compile());
+  TT_ASSERT_OK_AND_ASSIGN(auto first_exec, first.fixed_shape_kernel.get());
+
+  // The mode only gates creating the kernel's entry, so the existing entry is
+  // still served once the mode no longer enables the kernel.
+  CompilationCacheTestHelper::SetUnboundedDynamicKernelMode(
+      cache, UnboundedDynamicKernelMode::kNone);
+  TT_ASSERT_OK_AND_ASSIGN(CompiledKernel second, get_or_compile());
+  TT_ASSERT_OK_AND_ASSIGN(auto second_exec, second.fixed_shape_kernel.get());
+  EXPECT_EQ(second_exec, first_exec);
+  EXPECT_EQ(cache.GetCacheStats().num_unbounded_dynamic_hits, 2);
+  EXPECT_EQ(cache.GetCacheStats().num_compilations, 1);
+  CompilationCache::ShutDown();
+}
+
 TEST_F(CompilationCacheTest, UnboundedDynamicKernelDisallowedByDefault) {
   CompilationCache& cache = CompilationCache::GetInstance();
-  CompilationCacheTestHelper::SetAutoLoadUnboundedDynamicKernels(cache, true);
   const auto [key, test_key] = RegisterDummyKernelFor("defaultpolicykey");
 
   // Callers that don't opt in (e.g. torch.compile) compile the traced
@@ -693,7 +731,6 @@ TEST_F(CompilationCacheTest, UnboundedDynamicKernelDisallowedByDefault) {
 
 TEST_F(CompilationCacheTest, UnboundedDynamicCacheEvictAll) {
   CompilationCache& cache = CompilationCache::GetInstance();
-  CompilationCacheTestHelper::SetAutoLoadUnboundedDynamicKernels(cache, true);
   const auto [key, test_key] = RegisterDummyKernelFor("dummykey");
 
   // First lookup creates the unbounded dynamic entry and builds the kernel.
@@ -744,7 +781,6 @@ TEST_F(CompilationCacheTest, UnboundedDynamicCacheEvictAll) {
 TEST_F(CompilationCacheTest,
        UnboundedDynamicKernelFailedEntryFallsBackToStaticPath) {
   CompilationCache& cache = CompilationCache::GetInstance();
-  CompilationCacheTestHelper::SetAutoLoadUnboundedDynamicKernels(cache, true);
   const auto [key, test_key] =
       RegisterDummyKernelFor("failingkey", CreateFailingExecutable);
 

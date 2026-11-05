@@ -1424,6 +1424,7 @@ torch_tpu_cc_library(
         ":tpu_subslice_utils",
         ":unbounded_dynamic_kernel_registry",
         ":utils",
+        ":warnings",
         "//csrc/common:contain",
         "//csrc/internal/dynamism:dynamism_ops",
         "//csrc/ops:op_builder_utils",

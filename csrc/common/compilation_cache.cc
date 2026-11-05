@@ -70,6 +70,7 @@
 #include "csrc/common/tpu_subslice_utils.h"
 #include "csrc/common/unbounded_dynamic_kernel_registry.h"
 #include "csrc/common/utils.h"
+#include "csrc/common/warnings.h"
 #include "csrc/internal/dynamism/dynamism_ops.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/pjrt/pjrt_state.h"
@@ -107,6 +108,28 @@ bool IsFutureReady(const SharedLoadedExecutableWithMetadataFuture& future) {
 }
 
 int GetNumCpus() { return sysconf(_SC_NPROCESSORS_ONLN); }
+
+// Reads TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS, treating an unset or,
+// after a warning, an invalid value as "default".
+UnboundedDynamicKernelMode GetUnboundedDynamicKernelModeFromEnv() {
+  const std::string value =
+      GetEnvOnce<kTorchTpuInternalUseUnboundedDynamicKernelsEnvVar>().value_or(
+          "default");
+  if (value == "none") {
+    return UnboundedDynamicKernelMode::kNone;
+  }
+  if (value == "all") {
+    return UnboundedDynamicKernelMode::kAll;
+  }
+  if (value != "default") {
+    TT_WARN_ONCE(WarningCategory::kCorrectness,
+                 "ignoring environment variable ",
+                 kTorchTpuInternalUseUnboundedDynamicKernelsEnvVar,
+                 ": expected one of \"none\", \"default\" or \"all\", got \"",
+                 value, "\"");
+  }
+  return UnboundedDynamicKernelMode::kDefault;
+}
 
 }  // namespace
 
@@ -198,9 +221,7 @@ void CompilationCache::EnsureInitialized() {
 }
 
 CompilationCache::CompilationCache()
-    : auto_load_unbounded_dynamic_kernels_(
-          GetBooleanEnvOnce<kTorchTpuInternalUseUnboundedDynamicKernelsEnvVar>()
-              .value_or(true)) {}
+    : unbounded_dynamic_kernel_mode_(GetUnboundedDynamicKernelModeFromEnv()) {}
 
 CompilationCache::~CompilationCache() {
   ABSL_VLOG(1) << "CompilationCache shutting down.";
@@ -518,9 +539,6 @@ std::optional<CompilationCache::CacheLookupInternal>
 CompilationCache::GetOrCreateUnboundedDynamicCacheEntry(
     const CompilationCacheKey& key, absl::Span<const Shape> input_shapes,
     absl::Span<const Shape> output_shapes) {
-  if (!auto_load_unbounded_dynamic_kernels_) {
-    return std::nullopt;
-  }
   const UnboundedDynamicKernel* dynamic_kernel =
       UnboundedDynamicKernelRegistry::GetInstance().FindUnboundedDynamicKernel(
           key.graph_key().shapeless_key(), input_shapes, output_shapes);
@@ -532,7 +550,12 @@ CompilationCache::GetOrCreateUnboundedDynamicCacheEntry(
   std::optional<CacheLookupInternal> cache_lookup =
       GetCacheEntry(dynamic_key, CacheEntryKind::kUnboundedDynamic);
   if (!cache_lookup.has_value()) {
-    if (cache_only_mode_) {
+    const bool mode_enables_kernel =
+        unbounded_dynamic_kernel_mode_ == UnboundedDynamicKernelMode::kAll ||
+        (unbounded_dynamic_kernel_mode_ ==
+             UnboundedDynamicKernelMode::kDefault &&
+         dynamic_kernel->enabled_by_default);
+    if (cache_only_mode_ || !mode_enables_kernel) {
       return std::nullopt;
     }
     ABSL_VLOG(2) << "Creating an unbounded dynamic cache entry for key: "

@@ -180,9 +180,11 @@ inline constexpr char kTorchTpuInternalStorageAwarePlaceholdersEnvVar[] =
 // detect that they have a TorchTPU ancestor process.
 inline constexpr char kTorchTpuInternalTopmostPidEnvVar[] =
     "TORCH_TPU_INTERNAL_TOPMOST_PID";
-// Defaults to true: compatible unbounded dynamic kernels are loaded instead of
-// compiling static ones in eager execution. torch.compile always compiles the
-// traced graph. Set to `"0"` or `"false"` to disable.
+// Selects which unbounded dynamic kernels are loaded instead of compiling
+// static ones in eager execution: "default" (or unset) loads the ones enabled
+// by default, e.g. nonzero; "all" loads all of them; "none" disables them.
+// Other values, including the legacy "0"/"1", are ignored with a warning and
+// treated as "default". torch.compile always compiles the traced graph.
 inline constexpr char kTorchTpuInternalUseUnboundedDynamicKernelsEnvVar[] =
     "TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS";
 // TorchTPU-internal XLA compiler option overrides, in the format of
