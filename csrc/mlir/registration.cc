@@ -18,6 +18,9 @@
 
 #include <memory>
 
+#include "csrc/mlir/passes/cancel_inverse_view_transposes/cancel_inverse_view_transposes.h"  // NOLINT
+#include "csrc/mlir/passes/canonicalize_gather_scatter_reductions/canonicalize_gather_scatter_reductions.h"  // NOLINT
+#include "csrc/mlir/passes/canonicalize_layouts_and_reshapes/canonicalize_layouts_and_reshapes.h"  // NOLINT
 #include "csrc/mlir/passes/dummy_pass.h"
 #include "csrc/mlir/passes/fold_concat_softmax.h"
 #include "csrc/mlir/passes/guard_zero_operand_custom_calls.h"
@@ -40,6 +43,15 @@ namespace torch_tpu {
 void RegisterTorchTpuPasses() {
   mlir::registerPass(
       []() -> std::unique_ptr<mlir::Pass> { return createDummyPass(); });
+  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return createCancelInverseViewTransposesPass();
+  });
+  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return createCanonicalizeGatherScatterReductionsPass();
+  });
+  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return createCanonicalizeLayoutsAndReshapesPass();
+  });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return createLowerSeparableGatherToDotPass();
   });
