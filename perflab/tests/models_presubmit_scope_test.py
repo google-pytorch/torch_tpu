@@ -142,7 +142,11 @@ class LargeModelPresubmitScopeTest(seed_test_utils.RepeatableTest):
     with mock.patch.object(
         module, loader_name, return_value=(torch.nn.Linear(1, 1), {})
     ) as load:
-      factory(_cpu_presubmit_context())
+      factory(
+          registry_lib.resolve_context(
+              registry_lib.REGISTRY[factory.__name__], _cpu_presubmit_context()
+          )
+      )
     load.assert_called_once()
 
 

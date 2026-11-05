@@ -22,6 +22,7 @@ from perflab import model_helpers
 from perflab import registry as registry_lib
 from perflab import step_lib
 from perflab import torch_device_ops
+from perflab import workload as workload_lib
 
 
 def _load_hf_vjepa2(
@@ -69,10 +70,13 @@ def _load_hf_vjepa2(
     presubmit_reason=(
         "V-JEPA2 ViT-G uses too much memory to run on TPUs with smaller memory."
     ),
+    workload=registry_lib.scoped_workload(full=workload_lib.Workload(1)),
 )
 def vjepa2_vitg_forward(ctx: context_lib.Context):
   """Benchmark factory for V-JEPA2 ViT-G (facebook/vjepa2-vitg-fpc64-384) forward."""
   model, inputs = _load_hf_vjepa2(
-      ctx, "facebook/vjepa2-vitg-fpc64-384", batch_size=1
+      ctx,
+      "facebook/vjepa2-vitg-fpc64-384",
+      batch_size=ctx.require_workload().batch_size,
   )
   return model, (), inputs

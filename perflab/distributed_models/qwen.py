@@ -29,6 +29,7 @@ from perflab import registry as registry_lib
 from perflab import step_lib
 from perflab import target as target_lib
 from perflab import torch_device_ops
+from perflab import workload as workload_lib
 from perflab.model_utils import ragged_moe
 from tests import module_registry
 from transformers.models.qwen3_5_moe import modeling_qwen3_5_moe
@@ -328,13 +329,12 @@ def _load_qwen3_5_397b(
   world_size = torch.distributed.get_world_size()
   rank = torch.distributed.get_rank()
 
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
   if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
-    batch_size = 1
-    seq_len = 128
     num_hidden_layers = 2
   else:
-    batch_size = 1
-    seq_len = 2048
     num_hidden_layers = 60
 
   dtype = torch_device_ops.get_torch_dtype(ctx.dtype)
@@ -370,6 +370,10 @@ def _load_qwen3_5_397b(
     ),
     skipped_run_modes={"eager_default", "eager_optimized"},
     presubmit=registry_lib.PresubmitPolicy.RUN,
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(1, 2048),
+        presubmit=workload_lib.Workload(1, 128),
+    ),
 )
 def qwen3_5_397b_a17b_forward(
     ctx: context_lib.Context,

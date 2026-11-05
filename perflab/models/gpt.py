@@ -21,6 +21,7 @@ from perflab import model_helpers
 from perflab import registry as registry_lib
 from perflab import step_lib
 from perflab import torch_device_ops
+from perflab import workload as workload_lib
 
 
 def _load_hf_gpt(
@@ -73,16 +74,21 @@ def _load_hf_gpt(
     presubmit_reason=(
         "GPT-OSS 20B uses too much memory to run on TPUs with smaller memory."
     ),
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(4, 4096),
+        presubmit=workload_lib.Workload(
+            model_helpers.SMOKE_BATCH_SIZE, model_helpers.SMOKE_SEQ_LEN
+        ),
+    ),
 )
 def gpt_oss_20b_forward(ctx: context_lib.Context):
   """Benchmark factory for GPT-OSS 20B forward."""
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
   if model_helpers.is_presubmit_smoke(ctx):
-    batch_size = model_helpers.SMOKE_BATCH_SIZE
-    seq_len = model_helpers.SMOKE_SEQ_LEN
     num_layers = 2
   else:
-    batch_size = 4
-    seq_len = 4096
     num_layers = None
   model, inputs = _load_hf_gpt(
       ctx,
@@ -102,15 +108,18 @@ def gpt_oss_20b_forward(ctx: context_lib.Context):
         "GPT-OSS 20B training uses too much memory to run on TPUs with"
         " smaller memory."
     ),
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(1, 1024),
+        presubmit=workload_lib.Workload(
+            model_helpers.SMOKE_BATCH_SIZE, model_helpers.SMOKE_SEQ_LEN
+        ),
+    ),
 )
 def gpt_oss_20b_4_layers_training(ctx: context_lib.Context):
   """Benchmark factory for GPT-OSS 20B (4 Layers) training."""
-  if model_helpers.is_presubmit_smoke(ctx):
-    batch_size = model_helpers.SMOKE_BATCH_SIZE
-    seq_len = model_helpers.SMOKE_SEQ_LEN
-  else:
-    batch_size = 1
-    seq_len = 1024
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
   model, inputs = _load_hf_gpt(
       ctx,
       "openai/gpt-oss-20b",
@@ -134,16 +143,21 @@ def gpt_oss_20b_4_layers_training(ctx: context_lib.Context):
     presubmit_reason=(
         "GPT-OSS 20B uses too much memory to run on TPUs with smaller memory."
     ),
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(4, 4096),
+        presubmit=workload_lib.Workload(
+            model_helpers.SMOKE_BATCH_SIZE, model_helpers.SMOKE_SEQ_LEN
+        ),
+    ),
 )
 def gpt_oss_20b_decode(ctx: context_lib.Context):
   """Benchmark factory for GPT-OSS 20B decode."""
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
   if model_helpers.is_presubmit_smoke(ctx):
-    batch_size = model_helpers.SMOKE_BATCH_SIZE
-    seq_len = model_helpers.SMOKE_SEQ_LEN
     num_layers = 2
   else:
-    batch_size = 4
-    seq_len = 4096
     num_layers = None
   model, inputs = _load_hf_gpt(
       ctx,
@@ -165,15 +179,18 @@ def gpt_oss_20b_decode(ctx: context_lib.Context):
     presubmit_reason=(
         "GPT-OSS 120B uses too much memory to run on TPUs with smaller memory."
     ),
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(16, 2048),
+        presubmit=workload_lib.Workload(
+            model_helpers.SMOKE_BATCH_SIZE, model_helpers.SMOKE_SEQ_LEN
+        ),
+    ),
 )
 def gpt_oss_120b_4_layers_forward(ctx: context_lib.Context):
   """Benchmark factory for GPT-OSS 120B (4 Layers) forward."""
-  if model_helpers.is_presubmit_smoke(ctx):
-    batch_size = model_helpers.SMOKE_BATCH_SIZE
-    seq_len = model_helpers.SMOKE_SEQ_LEN
-  else:
-    batch_size = 16
-    seq_len = 2048
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
   model, inputs = _load_hf_gpt(
       ctx,
       "openai/gpt-oss-120b",
@@ -192,15 +209,18 @@ def gpt_oss_120b_4_layers_forward(ctx: context_lib.Context):
         "GPT-OSS 120B training uses too much memory to run on TPUs with"
         " smaller memory."
     ),
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(1, 512),
+        presubmit=workload_lib.Workload(
+            model_helpers.SMOKE_BATCH_SIZE, model_helpers.SMOKE_SEQ_LEN
+        ),
+    ),
 )
 def gpt_oss_120b_2_layers_training(ctx: context_lib.Context):
   """Benchmark factory for GPT-OSS 120B (2 Layers) training."""
-  if model_helpers.is_presubmit_smoke(ctx):
-    batch_size = model_helpers.SMOKE_BATCH_SIZE
-    seq_len = model_helpers.SMOKE_SEQ_LEN
-  else:
-    batch_size = 1
-    seq_len = 512
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
   model, inputs = _load_hf_gpt(
       ctx,
       "openai/gpt-oss-120b",
@@ -227,15 +247,18 @@ def gpt_oss_120b_2_layers_training(ctx: context_lib.Context):
     presubmit_reason=(
         "GPT-OSS 120B uses too much memory to run on TPUs with smaller memory."
     ),
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(16, 2048),
+        presubmit=workload_lib.Workload(
+            model_helpers.SMOKE_BATCH_SIZE, model_helpers.SMOKE_SEQ_LEN
+        ),
+    ),
 )
 def gpt_oss_120b_4_layers_decode(ctx: context_lib.Context):
   """Benchmark factory for GPT-OSS 120B (4 Layers) decode."""
-  if model_helpers.is_presubmit_smoke(ctx):
-    batch_size = model_helpers.SMOKE_BATCH_SIZE
-    seq_len = model_helpers.SMOKE_SEQ_LEN
-  else:
-    batch_size = 16
-    seq_len = 2048
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
   model, inputs = _load_hf_gpt(
       ctx,
       "openai/gpt-oss-120b",

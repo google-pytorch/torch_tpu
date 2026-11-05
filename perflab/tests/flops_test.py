@@ -26,6 +26,7 @@ from perflab import step_lib
 from perflab import steps
 from perflab import target as target_lib
 from perflab import torch_device_ops
+from perflab import workload as workload_lib
 from tests import seed_test_utils
 
 # Registers the steppers that the benchmark specs below resolve.
@@ -39,6 +40,8 @@ _PRESUBMIT_BATCH = 2
 
 
 def _batch_size(ctx: context_lib.Context) -> int:
+  if ctx.workload is not None:
+    return ctx.workload.batch_size
   if ctx.run_scope is context_lib.RunScope.PRESUBMIT:
     return _PRESUBMIT_BATCH
   return _FULL_BATCH
@@ -113,6 +116,15 @@ class CountStepFlopsTest(seed_test_utils.RepeatableTest):
     )
     self.assertIsNotNone(flop_count)
     self.assertEqual(flop_count.total, _forward_flops(_PRESUBMIT_BATCH))
+
+  def test_counts_at_the_workload_of_the_measured_case(self):
+    flop_count = flops_lib.count_step_flops(
+        _spec(_mlp_forward, step_lib.StepperType.FORWARD),
+        context_lib.RunScope.FULL,
+        workload=workload_lib.Workload(8),
+    )
+    self.assertIsNotNone(flop_count)
+    self.assertEqual(flop_count.total, _forward_flops(8))
 
   def test_builds_a_fake_cpu_copy(self):
     seen = {}

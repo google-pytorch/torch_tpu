@@ -450,8 +450,11 @@ def _run_single_target_task(
 
     # Harness setup
     device_ops = torch_device_ops.TorchDeviceOps(target)
-    ctx = context_lib.Context(
-        target=target, run_scope=context_lib.RUN_SCOPE.value
+    ctx = registry_lib.resolve_context(
+        spec,
+        context_lib.Context(
+            target=target, run_scope=context_lib.RUN_SCOPE.value
+        ),
     )
 
     with mode_lib.run_mode_context(mode, target):

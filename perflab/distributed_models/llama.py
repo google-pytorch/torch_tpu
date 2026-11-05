@@ -31,6 +31,7 @@ from perflab import registry as registry_lib
 from perflab import step_lib
 from perflab import target as target_lib
 from perflab import torch_device_ops
+from perflab import workload as workload_lib
 
 
 def _init_model_weights(model: torch.nn.Module) -> None:
@@ -62,12 +63,9 @@ def _load_meta_llama(
   Returns:
     A tuple of (model, example_inputs) ready for execution.
   """
-  if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
-    batch_size = 1
-    seq_len = 128
-  else:
-    batch_size = 1
-    seq_len = 2048
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
 
   if model_name == "Llama-3.2-8B":
     args = llama_model.ModelArgs(
@@ -150,6 +148,10 @@ def _load_meta_llama(
 @registry_lib.register_benchmark(
     stepper=step_lib.StepperType.FORWARD,
     presubmit=registry_lib.PresubmitPolicy.RUN,
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(1, 2048),
+        presubmit=workload_lib.Workload(1, 128),
+    ),
 )
 def meta_llama_8b_forward(ctx: context_lib.Context):
   """Benchmark factory for Meta Llama 3.2 8B forward across single-host and multi-host slices."""

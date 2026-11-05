@@ -139,8 +139,11 @@ class TorchaxBenchmarkTest(
 
     target = target_lib.make_target(_PLATFORM, dtype=spec.dtype)
     device_ops = torchax_device_ops.TorchaxDeviceOps(target)
-    ctx = context_lib.Context(
-        target=target, run_scope=context_lib.RUN_SCOPE.value
+    ctx = registry_lib.resolve_context(
+        spec,
+        context_lib.Context(
+            target=target, run_scope=context_lib.RUN_SCOPE.value
+        ),
     )
 
     reset_state()

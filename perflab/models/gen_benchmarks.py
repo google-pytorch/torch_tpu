@@ -25,6 +25,7 @@ from perflab import flags as flags_lib
 from perflab import mode as mode_lib
 from perflab import registry as registry_lib
 from perflab import step_lib
+from perflab import workload as workload_lib
 from perflab.gen_utils import gen_utils
 
 # The run modes that only TPUs and GPUs run. The FakeTensorMode CPU smoke test
@@ -108,7 +109,6 @@ def _make_factory(
     model_id: str,
     is_training: bool,
     model_load_fn: gen_utils.ModelLoadFn,
-    full_scope_batch_size: int,
     allow_data_dependent_outputs: bool = False,
 ):
   """Creates a benchmark factory for a given model."""
@@ -116,9 +116,7 @@ def _make_factory(
   def factory(ctx: context_lib.Context):
     if allow_data_dependent_outputs:
       mode_lib.allow_data_dependent_fake_outputs()
-    model, inputs = model_load_fn(
-        ctx, model_id, is_training, full_scope_batch_size
-    )
+    model, inputs = model_load_fn(ctx, model_id, is_training)
     if is_training:
       opt = torch.optim.AdamW(
           model.parameters(),
@@ -176,7 +174,6 @@ def _register_gen_benchmarks():
             model_gen_spec.model_id,
             is_training,
             model_load_fn,
-            extra_config.full_scope_batch_size,
             allow_data_dependent_outputs=(
                 name in _FAKE_TENSOR_MODE_DATA_DEPENDENT
             ),
@@ -187,6 +184,12 @@ def _register_gen_benchmarks():
         skipped_run_modes=skipped_run_modes,
         presubmit=registry_lib.PresubmitPolicy.CPU_SMOKE_ONLY,
         presubmit_reason=_PRESUBMIT_REASON,
+        # Batch only: the input generator decides the sequence length of each
+        # model (see `load_model.default_load_model`).
+        workload=registry_lib.scoped_workload(
+            full=workload_lib.Workload(extra_config.full_scope_batch_size),
+            presubmit=workload_lib.Workload(1),
+        ),
     )
 
 

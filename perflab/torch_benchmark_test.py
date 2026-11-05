@@ -58,6 +58,7 @@ from perflab import step_lib
 from perflab import steps
 from perflab import target as target_lib
 from perflab import torch_device_ops
+from perflab import workload as workload_lib
 
 # This binary IS the torch run. Not a flag -- see module docstring.
 _FRAMEWORK = mode_lib.Framework.TORCH
@@ -83,6 +84,18 @@ def _make_run_step(
   Seeding lives here before construction so deterministic init is a harness
   guarantee. Everything the runner shouldn't know about is closed over rather
   than passed through.
+
+  Args:
+    spec: The benchmark to build.
+    ctx: The context to build the benchmark for, with its resolved workload.
+    mode: The run mode to build the benchmark for.
+
+  Returns:
+    The stepper of the benchmark.
+
+  Raises:
+    ValueError: In the FakeTensorMode CPU smoke test, if the factory did not
+      build its inputs at the workload of the context.
   """
   common.seed_rngs()
   runner = step_lib.resolve_stepper(spec.stepper, **spec.stepper_kwargs)
@@ -92,6 +105,15 @@ def _make_run_step(
     with fake_memory.TensorMemoryTracker() as tracker:
       benchmark_args = spec.factory(ctx)
     fake_memory.check_construction_peak(tracker, name=spec.name)
+    # The smoke test builds every benchmark, so it also checks that each builds
+    # its inputs at the workload that the harness exports.
+    if ctx.workload is not None:
+      mismatch = workload_lib.check_built_inputs(ctx.workload, benchmark_args)
+      if mismatch is not None:
+        raise ValueError(
+            f"Benchmark {spec.name} did not build its inputs at its workload:"
+            f" {mismatch}. Build them from `ctx.require_workload()`."
+        )
   else:
     benchmark_args = spec.factory(ctx)
   common.prepare_inputs(benchmark_args[0], benchmark_args[1:])
@@ -162,8 +184,11 @@ class BenchmarkTest(
 
     target = target_lib.make_target(_PLATFORM, dtype=spec.dtype)
     device_ops = torch_device_ops.TorchDeviceOps(target)
-    ctx = context_lib.Context(
-        target=target, run_scope=context_lib.RUN_SCOPE.value
+    ctx = registry_lib.resolve_context(
+        spec,
+        context_lib.Context(
+            target=target, run_scope=context_lib.RUN_SCOPE.value
+        ),
     )
 
     reset_state(target, device_ops.device, mode)
@@ -211,7 +236,9 @@ class BenchmarkTest(
     if flags_lib.COUNT_FLOPS.value:
       # After measuring and outside the run mode, so that counting changes
       # neither the measured times nor the state of the measured device.
-      flop_count = flops_lib.count_step_flops(spec, ctx.run_scope)
+      flop_count = flops_lib.count_step_flops(
+          spec, ctx.run_scope, workload=ctx.workload
+      )
       if flop_count is not None:
         metrics.model_flops_per_step = float(flop_count.total)
         metrics.peak_flops_per_second = target_lib.peak_flops_per_device(target)

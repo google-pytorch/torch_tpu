@@ -162,6 +162,7 @@ torch_tpu_py_library(
         ":registry",
         ":step_lib",
         ":target",
+        ":workload",
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
     ],
@@ -170,6 +171,12 @@ torch_tpu_py_library(
 torch_tpu_py_library(
     name = "metrics",
     srcs = ["metrics.py"],
+)
+
+pytype_strict_library(
+    # PY_LIBRARY_OK=Decouple from torch_tpu to avoid C++ dependency in coverage tests.
+    name = "workload",
+    srcs = ["workload.py"],
 )
 
 torch_tpu_py_library(
@@ -229,8 +236,10 @@ torch_tpu_py_library(
     srcs = ["registry.py"],
     deps = [
         ":compile",
+        ":context",
         ":step_lib",
         ":target",
+        ":workload",
     ],
 )
 
@@ -269,6 +278,7 @@ torch_tpu_py_library(
     srcs = ["context.py"],
     deps = [
         ":target",
+        ":workload",
         "//shims/absl_py/flags",
     ],
 )
@@ -365,6 +375,7 @@ torch_tpu_py_test(
         ":step_lib",
         ":target",
         ":torch_device_ops",
+        ":workload",
         "//perflab/models",
         "//perflab/steps",
         "//shims/absl_py/logging",
@@ -437,6 +448,7 @@ torch_tpu_py_test(
         ":step_lib",
         ":target",
         ":torch_device_ops",
+        ":workload",
         "//perflab/models",
         "//perflab/steps",
         "//shims/absl_py/logging",
@@ -508,6 +520,7 @@ torch_tpu_py_test(
         ":step_lib",
         ":target",
         ":torch_device_ops",
+        ":workload",
         "//perflab/models",
         "//perflab/steps",
         "//shims/absl_py/logging",
@@ -577,6 +590,7 @@ torch_tpu_py_test(
         ":step_lib",
         ":target",
         ":torch_device_ops",
+        ":workload",
         "//perflab/models",
         "//perflab/steps",
         "//shims/absl_py/logging",
@@ -683,6 +697,7 @@ torch_tpu_py_test(
         ":step_lib",
         ":target",
         ":torch_device_ops",
+        ":workload",
         "//perflab/models",
         "//perflab/steps",
         "//shims/absl_py/logging",
@@ -743,6 +758,7 @@ torch_tpu_py_test(
         ":step_lib",
         ":target",
         ":torch_device_ops",
+        ":workload",
         "//perflab/models",
         "//perflab/steps",
         "//shims/absl_py/logging",

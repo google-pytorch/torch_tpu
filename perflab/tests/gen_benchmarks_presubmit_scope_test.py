@@ -230,7 +230,7 @@ class GenBenchmarksPresubmitScopeTest(seed_test_utils.RepeatableTest):
         self.assertIn(name, model_ids)
         self.assertTrue(gen_benchmarks.has_in_tree_config(model_ids[name]))
 
-    fake_load_fn = lambda ctx, model_id, is_training, batch_size: (
+    fake_load_fn = lambda ctx, model_id, is_training: (
         torch.nn.Linear(2, 2),
         {},
     )
@@ -239,7 +239,7 @@ class GenBenchmarksPresubmitScopeTest(seed_test_utils.RepeatableTest):
         run_scope=context_lib.RunScope.PRESUBMIT,
     )
     default_factory = gen_benchmarks._make_factory(  # pylint: disable=protected-access
-        "fake/model", False, fake_load_fn, 1
+        "fake/model", False, fake_load_fn
     )
     with mode_lib.fake_tensor_context():
       default_factory(ctx)
@@ -250,7 +250,6 @@ class GenBenchmarksPresubmitScopeTest(seed_test_utils.RepeatableTest):
         "fake/model",
         False,
         fake_load_fn,
-        1,
         allow_data_dependent_outputs=True,
     )
     with mode_lib.fake_tensor_context():

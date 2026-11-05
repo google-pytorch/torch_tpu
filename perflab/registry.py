@@ -38,11 +38,37 @@ import enum
 from typing import Any, Callable, Dict, Mapping, Tuple
 
 from perflab import compile as compile_lib
+from perflab import context as context_lib
 from perflab import step_lib
 from perflab import target as target_lib
+from perflab import workload as workload_lib
 
 # factory returns variable number of outputs (e.g., model, input_args, ...)
 Factory = Callable[..., Tuple[Any, ...]]
+
+# Returns the workload that a benchmark runs at by default in a context (its
+# target and run scope). See `BenchmarkSpec.workload`.
+WorkloadFn = Callable[[context_lib.Context], workload_lib.Workload]
+
+
+def scoped_workload(
+    full: workload_lib.Workload,
+    presubmit: workload_lib.Workload | None = None,
+) -> WorkloadFn:
+  """Returns a `WorkloadFn` with one workload per run scope.
+
+  Args:
+    full: The workload in the full run scope.
+    presubmit: The workload in the presubmit run scope; defaults to `full`.
+  """
+  presubmit = full if presubmit is None else presubmit
+
+  def workload_fn(ctx: context_lib.Context) -> workload_lib.Workload:
+    if ctx.run_scope is context_lib.RunScope.PRESUBMIT:
+      return presubmit
+    return full
+
+  return workload_fn
 
 
 class PresubmitPolicy(enum.Enum):
@@ -81,6 +107,13 @@ class BenchmarkSpec:
 
   `microbenchmark_name` optionally identifies the sub-configuration (e.g. a
   layer shape) and is exported with the results.
+
+  Attributes:
+    workload: Returns the workload that the benchmark runs at by default, e.g.
+      `scoped_workload(full=Workload(16, 2048), presubmit=Workload(1, 128))`.
+      The harness passes the workload of each case to the factory as
+      `Context.workload` and exports its throughput. None for a benchmark
+      without a batch, e.g. a host-overhead benchmark.
   """
 
   name: str
@@ -94,6 +127,7 @@ class BenchmarkSpec:
       default_factory=frozenset
   )
   presubmit_reason: str | None = None
+  workload: WorkloadFn | None = None
   microbenchmark_name: str | None = dataclasses.field(
       default=None, kw_only=True
   )
@@ -131,6 +165,7 @@ def add_benchmark(
     skipped_run_modes: frozenset[str] | set[str] | None = None,
     *,
     presubmit: PresubmitPolicy,
+    workload: WorkloadFn | None,
     presubmit_reason: str | None = None,
     microbenchmark_name: str | None = None,
 ) -> None:
@@ -149,6 +184,8 @@ def add_benchmark(
     presubmit_reason: Why the benchmark does not run (everywhere) in presubmit
       scope. Required for `CPU_SMOKE_ONLY` and `SKIP`, and not allowed
       otherwise.
+    workload: The workload that the benchmark runs at by default, or None for a
+      benchmark without a batch (see `BenchmarkSpec.workload`). Required.
     microbenchmark_name: Optional microbenchmark key exported with every result
       of this benchmark (defaults to None). See
       `BenchmarkSpec.microbenchmark_name`.
@@ -177,6 +214,7 @@ def add_benchmark(
       skipped_run_modes=skipped_run_modes,
       presubmit=presubmit,
       presubmit_reason=presubmit_reason,
+      workload=workload,
       microbenchmark_name=microbenchmark_name,
   )
 
@@ -189,6 +227,7 @@ def register_benchmark(
     skipped_run_modes: frozenset[str] | set[str] | None = None,
     *,
     presubmit: PresubmitPolicy,
+    workload: WorkloadFn | None,
     presubmit_reason: str | None = None,
     microbenchmark_name: str | None = None,
 ) -> Callable[[Factory], Factory]:
@@ -204,6 +243,8 @@ def register_benchmark(
     presubmit_reason: Why the benchmark does not run (everywhere) in presubmit
       scope. Required for `CPU_SMOKE_ONLY` and `SKIP`, and not allowed
       otherwise.
+    workload: The workload that the benchmark runs at by default, or None for a
+      benchmark without a batch (see `BenchmarkSpec.workload`). Required.
     microbenchmark_name: Optional microbenchmark key exported with every result
       of this benchmark (defaults to None). See
       `BenchmarkSpec.microbenchmark_name`.
@@ -224,8 +265,60 @@ def register_benchmark(
         skipped_run_modes=skipped_run_modes,
         presubmit=presubmit,
         presubmit_reason=presubmit_reason,
+        workload=workload,
         microbenchmark_name=microbenchmark_name,
     )
     return factory
 
   return deco
+
+
+def resolve_workload(
+    spec: BenchmarkSpec,
+    ctx: context_lib.Context,
+    batch_size: int | None = None,
+) -> workload_lib.Workload | None:
+  """Returns the workload of a case of a benchmark.
+
+  Args:
+    spec: The benchmark.
+    ctx: The context of the case; its own workload is ignored.
+    batch_size: Another batch size to run the benchmark at (e.g. that of a batch
+      sweep case), or None for the default workload of the benchmark.
+
+  Returns:
+    The default workload of the benchmark in `ctx`, at `batch_size` if set, or
+    None if the benchmark declares no workload.
+
+  Raises:
+    ValueError: If `batch_size` is set for a benchmark without a workload.
+  """
+  if spec.workload is None:
+    if batch_size is not None:
+      raise ValueError(
+          f"Benchmark {spec.name} declares no workload, so it cannot run at"
+          f" batch size {batch_size}"
+      )
+    return None
+  workload = spec.workload(ctx)
+  return (
+      workload if batch_size is None else workload.with_batch_size(batch_size)
+  )
+
+
+def resolve_context(
+    spec: BenchmarkSpec,
+    ctx: context_lib.Context,
+    batch_size: int | None = None,
+) -> context_lib.Context:
+  """Returns `ctx` with the workload of a case of a benchmark.
+
+  Args:
+    spec: The benchmark.
+    ctx: The context of the case.
+    batch_size: Another batch size to run the benchmark at (e.g. that of a batch
+      sweep case), or None for the default workload of the benchmark.
+  """
+  return dataclasses.replace(
+      ctx, workload=resolve_workload(spec, ctx, batch_size)
+  )

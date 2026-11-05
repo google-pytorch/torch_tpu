@@ -22,6 +22,7 @@ from perflab import model_helpers
 from perflab import registry as registry_lib
 from perflab import step_lib
 from perflab import torch_device_ops
+from perflab import workload as workload_lib
 
 
 def _load_hf_causal_lm(
@@ -69,16 +70,19 @@ def _load_hf_causal_lm(
 @registry_lib.register_benchmark(
     stepper=step_lib.StepperType.FORWARD,
     presubmit=registry_lib.PresubmitPolicy.RUN,
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(1, 2048),
+        presubmit=workload_lib.Workload(1, 128),
+    ),
 )
 def starcoder2_3b_forward(ctx: context_lib.Context):
   """Benchmark factory for StarCoder2-3B forward."""
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
   if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
-    batch_size = 1
-    seq_len = 128
     num_layers = 2
   else:
-    batch_size = 1
-    seq_len = 2048
     num_layers = None
   model, inputs = _load_hf_causal_lm(
       ctx,
@@ -94,16 +98,19 @@ def starcoder2_3b_forward(ctx: context_lib.Context):
 @registry_lib.register_benchmark(
     stepper=step_lib.StepperType.DECODER_ONLY_DECODE,
     presubmit=registry_lib.PresubmitPolicy.RUN,
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(1, 2048),
+        presubmit=workload_lib.Workload(1, 128),
+    ),
 )
 def starcoder2_3b_decode(ctx: context_lib.Context):
   """Benchmark factory for StarCoder2-3B decode."""
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
   if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
-    batch_size = 1
-    seq_len = 128
     num_layers = 2
   else:
-    batch_size = 1
-    seq_len = 2048
     num_layers = None
   model, inputs = _load_hf_causal_lm(
       ctx,
@@ -122,16 +129,19 @@ def starcoder2_3b_decode(ctx: context_lib.Context):
 @registry_lib.register_benchmark(
     stepper=step_lib.StepperType.FORWARD,
     presubmit=registry_lib.PresubmitPolicy.RUN,
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(1, 2048),
+        presubmit=workload_lib.Workload(1, 128),
+    ),
 )
 def phi_3_mini_4k_instruct_forward(ctx: context_lib.Context):
   """Benchmark factory for Phi-3-mini-4k-instruct forward."""
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
   if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
-    batch_size = 1
-    seq_len = 128
     num_layers = 2
   else:
-    batch_size = 1
-    seq_len = 2048
     num_layers = None
   model, inputs = _load_hf_causal_lm(
       ctx,
@@ -147,16 +157,19 @@ def phi_3_mini_4k_instruct_forward(ctx: context_lib.Context):
 @registry_lib.register_benchmark(
     stepper=step_lib.StepperType.TRAINING,
     presubmit=registry_lib.PresubmitPolicy.RUN,
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(1, 2048),
+        presubmit=workload_lib.Workload(1, 128),
+    ),
 )
 def phi_3_mini_4k_instruct_training(ctx: context_lib.Context):
   """Benchmark factory for Phi-3-mini-4k-instruct training."""
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
   if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
-    batch_size = 1
-    seq_len = 128
     num_layers = 2
   else:
-    batch_size = 1
-    seq_len = 2048
     num_layers = None
   model, inputs = _load_hf_causal_lm(
       ctx,
@@ -178,16 +191,19 @@ def phi_3_mini_4k_instruct_training(ctx: context_lib.Context):
 @registry_lib.register_benchmark(
     stepper=step_lib.StepperType.DECODER_ONLY_DECODE,
     presubmit=registry_lib.PresubmitPolicy.RUN,
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(1, 2048),
+        presubmit=workload_lib.Workload(1, 128),
+    ),
 )
 def phi_3_mini_4k_instruct_decode(ctx: context_lib.Context):
   """Benchmark factory for Phi-3-mini-4k-instruct decode."""
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
   if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
-    batch_size = 1
-    seq_len = 128
     num_layers = 2
   else:
-    batch_size = 1
-    seq_len = 2048
     num_layers = None
   model, inputs = _load_hf_causal_lm(
       ctx,
