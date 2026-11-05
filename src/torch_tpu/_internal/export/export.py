@@ -28,6 +28,7 @@ import torch.export
 import torch.utils._pytree as pytree
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal.compile import tpu_torch_compile
+from torch_tpu._internal.compile.fx_passes import clone_mutated_returned_placeholders
 from torch_tpu._internal.profiler import named_scope
 from torch_tpu._internal.utils import annotations
 from torch_tpu._internal.benchmarks import xprof_adapter
@@ -559,24 +560,46 @@ def _add_mutated_input_outputs(
   return _MutatedInputWriter(reconstruct_fn, input_indices, output_indices)
 
 
+def _schema_written_inputs(module: torch.fx.GraphModule) -> set[int]:
+  """Returns the positions of the inputs that an op schema says it writes.
+
+  This sees writes that leave the version counter alone, e.g. a raw
+  `torch.library` op with a `Tensor(a!)` argument, or any write to an
+  inference tensor. Targets without a schema are not counted: a
+  higher-order op would otherwise mark every input it reads as written.
+  """
+  graph = module.graph
+  output = next(n for n in reversed(graph.nodes) if n.op == "output")
+  mutated = clone_mutated_returned_placeholders._find_mutated_placeholders(  # pylint: disable=protected-access
+      graph, output, assume_unknown_targets_write=False
+  )
+  placeholders = [n for n in graph.nodes if n.op == "placeholder"]
+  return {i for i, n in enumerate(placeholders) if n in mutated}
+
+
 def _find_written_inputs(
+    module: torch.fx.GraphModule,
     args: Sequence[Any],
     versions_before: Sequence[int | None],
     shapes_before: Sequence[torch.Size | None],
 ) -> tuple[list[int], list[torch.Tensor]]:
   """Returns the inputs that the eager run wrote to, and their new values.
 
-  An input counts as written if its version moved, including through a view.
+  An input counts as written if its version moved or an op schema writes it.
   A new value with a different shape is reshaped back when only size-1 dims
   differ (`buf.unsqueeze_(0)`). Other shape changes (`resize_`, `t_` on a
   non-square tensor) cannot be copied into the caller's tensor, so that write
   is dropped with a warning, as before write-back existed.
   """
+  schema_written = _schema_written_inputs(module)
   indices, values = [], []
   for i, (x, version, shape) in enumerate(
       zip(args, versions_before, shapes_before)
   ):
-    if version is None or x._version == version:
+    if shape is None:
+      continue
+    version_moved = version is not None and x._version != version
+    if not version_moved and i not in schema_written:
       continue
     if x.shape != shape:
       if [d for d in x.shape if d != 1] != [d for d in shape if d != 1]:
@@ -756,7 +779,7 @@ def fx_to_mlir(
 
         if write_back_mutated_inputs:
           mutated_inputs, new_values = _find_written_inputs(
-              mapped_args, versions_before_run, shapes_before_run
+              module, mapped_args, versions_before_run, shapes_before_run
           )
           if mutated_inputs and (
               use_stablehlo_bounds or any(deduped_dynamic_outputs)

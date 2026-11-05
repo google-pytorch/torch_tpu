@@ -131,7 +131,9 @@ def _track_op_overload(
 
 
 def _find_mutated_placeholders(
-    graph: torch.fx.Graph, output_node: torch.fx.Node
+    graph: torch.fx.Graph,
+    output_node: torch.fx.Node,
+    assume_unknown_targets_write: bool = True,
 ) -> set[torch.fx.Node]:
   """Returns the placeholders whose storage may be written to.
 
@@ -141,6 +143,9 @@ def _find_mutated_placeholders(
   assumed to write to all of their inputs and to return aliases of them.
   Inputs that AOTAutograd copies a new value into after the graph runs count
   as written too.
+
+  With `assume_unknown_targets_write=False`, targets without a schema count
+  as aliasing their inputs but not writing them.
   """
   mutated_inputs = set()
   # Only AOTAutograd sets `desc`. Graphs from make_fx or symbolic_trace, or
@@ -178,7 +183,8 @@ def _find_mutated_placeholders(
       # `auto_functionalized`, Python callables, `call_module` and `call_method`
       # nodes. For safety, assume they write to and alias all of their inputs.
       aliases[node] = _aliased(aliases, node.all_input_nodes)
-      mutated |= aliases[node]
+      if assume_unknown_targets_write:
+        mutated |= aliases[node]
   return mutated
 
 

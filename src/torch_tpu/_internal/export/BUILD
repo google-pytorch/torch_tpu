@@ -57,6 +57,7 @@ torch_tpu_py_library(
         "//shims/torch:pytorch",
         "//src/torch_tpu/_internal/benchmarks:xprof_adapter",
         "//src/torch_tpu/_internal/compile:tpu_torch_compile",
+        "//src/torch_tpu/_internal/compile/fx_passes:clone_mutated_returned_placeholders",
         "//src/torch_tpu/_internal/execution_mode",
         "//src/torch_tpu/_internal/profiler:named_scope",
         "//src/torch_tpu/_internal/utils:annotations",

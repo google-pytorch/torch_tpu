@@ -1862,6 +1862,23 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
       (res,) = StaticCompiler()(gm, [w, x])(w, x)
     utils.assert_close(res.cpu(), x.cpu() * w.cpu() + 1)
 
+  def test_static_compiler_writes_back_input_mutation_under_inference_mode(
+      self,
+  ):
+    def step(buf, x):
+      buf.add_(x)
+      return (x * 2,)
+
+    buf = torch.zeros(4, device=self.device)
+    x = torch.arange(4, dtype=torch.float32, device=self.device)
+    gm = make_fx(step)(buf.clone(), x)
+
+    # No version counter here: the add_ schema is what marks buf as written.
+    with torch.inference_mode():
+      compiled_executable = StaticCompiler()(gm, [buf, x])
+      compiled_executable(buf, x)
+    utils.assert_close(buf.cpu(), x.cpu())
+
   def test_static_compiler_writes_back_raw_library_op_mutation(self):
     lib = torch.library.Library('custom_tpu_test_raw', 'DEF')  # pylint: disable=unused-variable
     lib.define('add_into(Tensor(a!) t, Tensor u) -> ()')
@@ -1883,6 +1900,26 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
     for calls in (1, 2):
       compiled_executable(buf, x)
       utils.assert_close(buf.cpu(), x.cpu() * calls)
+
+  def test_static_compiler_writes_back_write_with_restored_version(self):
+    # Dynamo emits this pattern for `_unsafe_preserve_version_counter`: the
+    # add_ is real, but the version counter is put back afterwards.
+    graph = torch.fx.Graph()
+    buf_node = graph.placeholder('buf')
+    x_node = graph.placeholder('x')
+    version = graph.call_function(getattr, (buf_node, '_version'))
+    graph.call_function(torch.ops.aten.add_.Tensor, (buf_node, x_node))
+    graph.call_function(
+        torch._C._autograd._unsafe_set_version_counter,  # pylint: disable=protected-access
+        ((buf_node,), (version,)),
+    )
+    graph.output((graph.call_function(torch.ops.aten.mul.Tensor, (x_node, 2)),))
+    gm = torch.fx.GraphModule(torch.nn.Module(), graph)
+
+    buf = torch.zeros(4, device=self.device)
+    x = torch.arange(4, dtype=torch.float32, device=self.device)
+    StaticCompiler()(gm, [buf, x])(buf, x)
+    utils.assert_close(buf.cpu(), x.cpu())
 
   def test_static_compiler_inputs_written_from_one_source_stay_separate(self):
     def step(a, b, c):
