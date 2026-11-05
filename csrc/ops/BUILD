@@ -387,7 +387,6 @@ torch_tpu_cc_library(
         "//csrc/eager:current_stream",
         "//csrc/eager:eager_mode",
         "//csrc/eager:events_queue",
-        "//csrc/eager:materialize",
         "//csrc/eager:structured_log_buffer",
         "//csrc/eager:tensor_to_buffer",
         "//csrc/ops/macros:kernel",

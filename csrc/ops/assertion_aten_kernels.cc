@@ -30,7 +30,6 @@
 #include "csrc/eager/current_stream.h"
 #include "csrc/eager/eager_mode.h"
 #include "csrc/eager/events_queue.h"
-#include "csrc/eager/materialize.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/macros/kernel.h"
@@ -83,8 +82,7 @@ void ScheduleAsyncAssertionCheck(const at::Tensor& self,
 
   // Start materialization of `self` on TPU, but don't wait for it to complete.
   auto materialized_buf_or =
-      MaterializeAndReturn(self, MaterializationReason::kCpuTransfer,
-                           MaterializationBlockMode::kNonBlocking);
+      MaterializeAndReturn(self, MaterializationReason::kCpuTransfer);
   if (!materialized_buf_or.ok()) {
     internal::MarkStreamActive(device_index, stream_id,
                                materialized_buf_or.status());

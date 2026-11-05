@@ -203,7 +203,6 @@ TEST_F(EventsQueueTest, ClearsBuffersAfterMaterialization) {
   auto materialization_status =
       Materialize(ref, MaterializationReason::kExplicitSync);
   ASSERT_TRUE(materialization_status.ok());
-  ASSERT_TRUE(ref.is_materializing());
   auto await_status = ref.AwaitBuffer();
   ASSERT_TRUE(await_status.ok());
   ASSERT_TRUE(ref.is_materialized());

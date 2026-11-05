@@ -39,7 +39,6 @@ torch_tpu_cc_library(
         "//csrc/eager:device_buffer",
         "//csrc/eager:eager_mode",
         "//csrc/eager:materialize",
-        "//csrc/eager:split_traversal",
         "//csrc/eager:structured_log_buffer",
         "//csrc/eager:tensor_to_buffer",
         "//shims/torch:aten_headers",

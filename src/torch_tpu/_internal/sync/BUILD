@@ -73,7 +73,6 @@ pybind_extension(
         "//csrc/eager:device_buffer",
         "//csrc/eager:events_queue",
         "//csrc/eager:materialize",
-        "//csrc/eager:split_traversal",
         "//csrc/eager:structured_log_buffer",
         "//csrc/eager:tensor_to_buffer",
         "//csrc/internal/sync:sync_cc",

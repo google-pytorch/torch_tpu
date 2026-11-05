@@ -98,7 +98,6 @@
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/materialize.h"
 #include "csrc/eager/op_dispatcher.h"
-#include "csrc/eager/split_traversal.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/macros/kernel.h"
@@ -2325,10 +2324,8 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::gather(
             empty_buffers.push_back(std::move(empty_buffer));
             allgather_outputs.push_back(std::move(tensor));
           }
-          TT_THROW_IF_ERROR(
-              Materialize(empty_buffers, MaterializationReason::kDistributedOp,
-                          GraphSplitMode::kSplitGraph,
-                          MaterializationBlockMode::kNonBlocking));
+          TT_THROW_IF_ERROR(Materialize(empty_buffers,
+                                        MaterializationReason::kDistributedOp));
         }
 
         c10d::AllgatherOptions allgather_opts;

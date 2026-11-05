@@ -56,7 +56,6 @@
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/device_buffer_utils.h"
 #include "csrc/eager/materialize.h"
-#include "csrc/eager/split_traversal.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/eager/traversal.h"
@@ -155,8 +154,7 @@ absl::StatusOr<std::vector<DeviceBufferRef>> PrepareCompiledModeArgumentsImpl(
   // Materialize the argument buffers if any are still deferred.
   if (has_deferred_or_placeholder) {
     TT_RETURN_IF_ERROR(Materialize(
-        argument_buffer_refs, MaterializationReason::kCompileModeExecution,
-        GraphSplitMode::kSplitGraph, MaterializationBlockMode::kNonBlocking));
+        argument_buffer_refs, MaterializationReason::kCompileModeExecution));
   }
 
   // After materialization, each argument buffer will be a materialized,
@@ -254,8 +252,7 @@ absl::StatusOr<std::vector<DeviceBufferRef>> PrepareCompiledModeArgumentsImpl(
   // Materialize the argument buffers if any are still deferred.
   if (has_deferred_or_placeholder) {
     TT_RETURN_IF_ERROR(Materialize(
-        argument_buffer_refs, MaterializationReason::kCompileModeExecution,
-        GraphSplitMode::kSplitGraph, MaterializationBlockMode::kNonBlocking));
+        argument_buffer_refs, MaterializationReason::kCompileModeExecution));
   }
   return argument_buffer_refs;
 }

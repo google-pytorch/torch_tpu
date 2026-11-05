@@ -46,7 +46,6 @@
 #include "csrc/eager/eager_mode.h"
 #include "csrc/eager/events_queue.h"
 #include "csrc/eager/execution_task.h"
-#include "csrc/eager/split_traversal.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/eager/tpu_hooks.h"
@@ -109,7 +108,7 @@ TEST_F(MaterializeTest, MaterializedZeroSizeBufferSuccess) {
   EXPECT_TRUE(ref.is_deferred());
   EXPECT_EQ(Materialize(ref, MaterializationReason::kExplicitSync),
             absl::OkStatus());
-  EXPECT_TRUE(ref.is_materializing());
+  EXPECT_TRUE(ref.AwaitBuffer().ok());
 }
 
 TEST_F(MaterializeTest, CompilerOptionsPropagateToMaterializeThread) {
@@ -146,6 +145,7 @@ TEST_F(MaterializeTest, CompilerOptionsPropagateToMaterializeThread) {
   // 3. Synchronously materialize/compile the buffer.
   ASSERT_EQ(Materialize(ref, MaterializationReason::kExplicitSync),
             absl::OkStatus());
+  EXPECT_TRUE(ref.AwaitBuffer().ok());
 
   // 4. Verify the compiled executable fingerprint in cache matches our
   // overridden key.
@@ -195,9 +195,7 @@ TEST_F(MaterializeTest, OutOfOrderUnexecutedDeferred) {
   // Try to materialize the dependent buffer in the background.
   // This will fail on synchronization when the execution thread detects that
   // the deferred buffer wasn't materialized first.
-  Materialize(depends_on_deferred, MaterializationReason::kExplicitSync,
-              GraphSplitMode::kSplitGraph,
-              MaterializationBlockMode::kNonBlocking)
+  Materialize(depends_on_deferred, MaterializationReason::kExplicitSync)
       .IgnoreError();
   auto finished_status = depends_on_deferred.Synchronize();
   EXPECT_EQ(finished_status.code(), error::kFailedPrecondition);
@@ -240,9 +238,7 @@ TEST_F(MaterializeTest, OutOfOrderUnexecutedPending) {
   // Try to materialize the dependent buffer. This will fail on synchronization
   // when the execution thread detects that the pending buffer wasn't
   // materialized first.
-  Materialize(depends_on_pending, MaterializationReason::kExplicitSync,
-              GraphSplitMode::kSplitGraph,
-              MaterializationBlockMode::kNonBlocking)
+  Materialize(depends_on_pending, MaterializationReason::kExplicitSync)
       .IgnoreError();
   auto finished_status = depends_on_pending.Synchronize();
   EXPECT_EQ(finished_status.code(), error::kFailedPrecondition);
