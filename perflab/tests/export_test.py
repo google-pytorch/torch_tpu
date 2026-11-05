@@ -139,6 +139,88 @@ class ExportTest(seed_test_utils.RepeatableTest):
         run_mode="eager_optimized",
     )
 
+  @mock.patch.object(export_adapter, "export_benchmark_results")
+  def test_export_batch_sweep_case(self, mock_export_benchmark_results):
+    perf_metrics = metrics_lib.PerformanceMetrics(
+        e2e_wall_time_seconds=3.0, post_warmup_step_time_seconds=0.5
+    )
+    export_lib.export(
+        export_lib.BenchmarkData(
+            spec_name="test_model",
+            platform=target_lib.Platform.V7_1X1X1,
+            framework=mode_lib.Framework.TORCH,
+            run_mode=common.RunMode.COMPILED,
+            succeeded=True,
+            metrics=perf_metrics,
+            microbenchmark_name=export_lib.batch_size_key(16),
+            batch_size=16,
+        )
+    )
+    mock_export_benchmark_results.assert_called_once_with(
+        spec_name="test_model",
+        platform="v7_1x1x1",
+        framework="torch",
+        run_mode="compiled",
+        metrics=perf_metrics.metric_map(),
+        succeeded=True,
+        wall_time=3.0,
+        microbenchmark_name="bs16",
+    )
+
+  @mock.patch.object(export_adapter, "export_benchmark_results")
+  def test_export_out_of_memory(self, mock_export_benchmark_results):
+    export_lib.export(
+        export_lib.BenchmarkData(
+            spec_name="test_model",
+            platform=target_lib.Platform.B200_1,
+            framework=mode_lib.Framework.TORCH,
+            run_mode=common.RunMode.COMPILED,
+            succeeded=True,
+            metrics=metrics_lib.PerformanceMetrics(),
+            microbenchmark_name=export_lib.batch_size_key(64),
+            batch_size=64,
+            out_of_memory=True,
+        )
+    )
+    mock_export_benchmark_results.assert_called_once_with(
+        spec_name="test_model",
+        platform="b200_1",
+        framework="torch",
+        run_mode="compiled",
+        metrics={"out_of_memory": 1.0, "batch_size": 64.0},
+        succeeded=True,
+        wall_time=None,
+        microbenchmark_name="bs64",
+    )
+
+  @mock.patch.object(export_adapter, "export_benchmark_results")
+  def test_export_skipped_after_out_of_memory(
+      self, mock_export_benchmark_results
+  ):
+    export_lib.export(
+        export_lib.BenchmarkData(
+            spec_name="test_model",
+            platform=target_lib.Platform.B200_1,
+            framework=mode_lib.Framework.TORCH,
+            run_mode=common.RunMode.COMPILED,
+            succeeded=True,
+            metrics=metrics_lib.PerformanceMetrics(),
+            microbenchmark_name=export_lib.batch_size_key(128),
+            batch_size=128,
+            skipped=True,
+        )
+    )
+    mock_export_benchmark_results.assert_called_once_with(
+        spec_name="test_model",
+        platform="b200_1",
+        framework="torch",
+        run_mode="compiled",
+        metrics={"skipped": 1.0, "batch_size": 128.0},
+        succeeded=True,
+        wall_time=None,
+        microbenchmark_name="bs128",
+    )
+
 
 if __name__ == "__main__":
   absltest.main()

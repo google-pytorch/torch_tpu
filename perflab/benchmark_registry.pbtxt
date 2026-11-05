@@ -44,6 +44,7 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
@@ -102,6 +103,7 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
@@ -160,6 +162,7 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
@@ -218,6 +221,7 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
@@ -276,6 +280,7 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
@@ -334,6 +339,7 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
@@ -392,6 +398,7 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
@@ -450,6 +457,7 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
@@ -508,6 +516,7 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
@@ -566,6 +575,7 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
@@ -624,6 +634,7 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
@@ -682,6 +693,7 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
@@ -740,6 +752,7 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
@@ -798,6 +811,7 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
@@ -856,6 +870,7 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
@@ -914,6 +929,7 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
@@ -971,6 +987,7 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
@@ -1023,6 +1040,7 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
@@ -1075,6 +1093,7 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }

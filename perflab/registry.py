@@ -92,6 +92,47 @@ class PresubmitPolicy(enum.Enum):
   SKIP = "skip"
 
 
+@dataclasses.dataclass(frozen=True)
+class BatchSweep:
+  """How a benchmark runs in the batch sweep (`--batch_sweep`).
+
+  The batch sweep measures a benchmark at more batch sizes than its default
+  workload's, in each run mode, e.g. to find the batch size with the best
+  throughput on each platform. Each case builds the benchmark at its workload
+  with another batch size (`Context.workload`), so only benchmarks that declare
+  a workload are swept.
+
+  Attributes:
+    enabled: Whether the batch sweep measures the benchmark.
+    batch_sizes: The batch sizes to measure the benchmark at, or None for those
+      of `--batch_sweep_sizes`.
+    reason: Why the batch sweep does not measure the benchmark. Required if and
+      only if it is not enabled.
+  """
+
+  enabled: bool = True
+  batch_sizes: tuple[int, ...] | None = None
+  reason: str | None = None
+
+  def __post_init__(self):
+    if self.enabled == bool(self.reason):
+      raise ValueError(
+          "BatchSweep requires a reason if and only if it is disabled, got"
+          f" enabled={self.enabled}, reason={self.reason!r}"
+      )
+    if self.batch_sizes is not None:
+      if not self.batch_sizes or any(b < 1 for b in self.batch_sizes):
+        raise ValueError(
+            "BatchSweep.batch_sizes must be positive batch sizes, got"
+            f" {self.batch_sizes!r}"
+        )
+
+  @classmethod
+  def disabled(cls, reason: str) -> "BatchSweep":
+    """Returns a BatchSweep that does not measure the benchmark, and why."""
+    return cls(enabled=False, reason=reason)
+
+
 # Policies that keep a benchmark out of all or part of presubmit, and so must
 # say why.
 _POLICIES_WITH_REASON = frozenset(
@@ -114,6 +155,7 @@ class BenchmarkSpec:
       The harness passes the workload of each case to the factory as
       `Context.workload` and exports its throughput. None for a benchmark
       without a batch, e.g. a host-overhead benchmark.
+    batch_sweep: How the benchmark runs in the batch sweep.
   """
 
   name: str
@@ -128,6 +170,7 @@ class BenchmarkSpec:
   )
   presubmit_reason: str | None = None
   workload: WorkloadFn | None = None
+  batch_sweep: BatchSweep = dataclasses.field(default_factory=BatchSweep)
   microbenchmark_name: str | None = dataclasses.field(
       default=None, kw_only=True
   )
@@ -167,6 +210,7 @@ def add_benchmark(
     presubmit: PresubmitPolicy,
     workload: WorkloadFn | None,
     presubmit_reason: str | None = None,
+    batch_sweep: BatchSweep | None = None,
     microbenchmark_name: str | None = None,
 ) -> None:
   """Adds a benchmark spec to REGISTRY.
@@ -186,12 +230,16 @@ def add_benchmark(
       otherwise.
     workload: The workload that the benchmark runs at by default, or None for a
       benchmark without a batch (see `BenchmarkSpec.workload`). Required.
+    batch_sweep: How the benchmark runs in the batch sweep. Defaults to
+      measuring it at the batch sizes of `--batch_sweep_sizes`.
     microbenchmark_name: Optional microbenchmark key exported with every result
       of this benchmark (defaults to None). See
       `BenchmarkSpec.microbenchmark_name`.
   """
   if stepper_kwargs is None:
     stepper_kwargs = {}
+  if batch_sweep is None:
+    batch_sweep = BatchSweep()
 
   if skipped_run_modes is None:
     skipped_run_modes = frozenset()
@@ -215,6 +263,7 @@ def add_benchmark(
       presubmit=presubmit,
       presubmit_reason=presubmit_reason,
       workload=workload,
+      batch_sweep=batch_sweep,
       microbenchmark_name=microbenchmark_name,
   )
 
@@ -229,6 +278,7 @@ def register_benchmark(
     presubmit: PresubmitPolicy,
     workload: WorkloadFn | None,
     presubmit_reason: str | None = None,
+    batch_sweep: BatchSweep | None = None,
     microbenchmark_name: str | None = None,
 ) -> Callable[[Factory], Factory]:
   """Decorator to wrap a benchmark factory and add its spec to REGISTRY.
@@ -245,6 +295,8 @@ def register_benchmark(
       otherwise.
     workload: The workload that the benchmark runs at by default, or None for a
       benchmark without a batch (see `BenchmarkSpec.workload`). Required.
+    batch_sweep: How the benchmark runs in the batch sweep. Defaults to
+      measuring it at the batch sizes of `--batch_sweep_sizes`.
     microbenchmark_name: Optional microbenchmark key exported with every result
       of this benchmark (defaults to None). See
       `BenchmarkSpec.microbenchmark_name`.
@@ -266,6 +318,7 @@ def register_benchmark(
         presubmit=presubmit,
         presubmit_reason=presubmit_reason,
         workload=workload,
+        batch_sweep=batch_sweep,
         microbenchmark_name=microbenchmark_name,
     )
     return factory

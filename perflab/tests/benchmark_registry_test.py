@@ -25,6 +25,7 @@ import re
 
 from absl.testing import absltest
 from absl.testing import flagsaver
+from perflab import export as export_lib
 from perflab import measure as measure_lib
 from perflab import target as target_lib
 from perflab import workload as workload_lib
@@ -35,8 +36,14 @@ _REGISTRY_PATH = "perflab/benchmark_registry.pbtxt"
 _TORCH_BENCHMARK_SCRIPT = "perflab/torch_benchmark_test.py"
 _DISTRIBUTED_RUNNER_SCRIPT = "perflab/distributed_runner.py"
 
-# The OSS export adapter writes these next to the metrics of a benchmark case.
-_STATUS_METRICS = ("wall_time", "succeeded", "skipped")
+# The OSS export adapter writes these next to the metrics of a benchmark case,
+# and a batch sweep case that runs out of memory exports `out_of_memory`.
+_STATUS_METRICS = (
+    "wall_time",
+    "succeeded",
+    "skipped",
+    export_lib.OUT_OF_MEMORY_METRIC,
+)
 
 # An example test name, under which the OSS export adapter writes the metrics
 # of a case: torch_tpu/<platform>/<benchmark>/<run mode>/<framework>.

@@ -227,6 +227,36 @@ class RegisterTest(seed_test_utils.RepeatableTest):
     self.assertEmpty(registry_lib.REGISTRY)
 
 
+class BatchSweepTest(seed_test_utils.RepeatableTest):
+
+  def test_defaults_to_sweeping_at_the_flag_batch_sizes(self):
+    batch_sweep = registry_lib.BatchSweep()
+    self.assertTrue(batch_sweep.enabled)
+    self.assertIsNone(batch_sweep.batch_sizes)
+    self.assertIsNone(batch_sweep.reason)
+
+  def test_disabled_requires_a_reason(self):
+    self.assertEqual(
+        registry_lib.BatchSweep.disabled("packed").reason, "packed"
+    )
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=benchmark
+        ValueError, "reason"
+    ):
+      registry_lib.BatchSweep(enabled=False)
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=benchmark
+        ValueError, "reason"
+    ):
+      registry_lib.BatchSweep(reason="not disabled")
+
+  def test_batch_sizes_must_be_positive(self):
+    for batch_sizes in ((), (0, 2), (-1,)):
+      with self.subTest(batch_sizes=batch_sizes):
+        with self.assertRaisesRegex(  # ASSERT_RAISES_OK=benchmark
+            ValueError, "batch_sizes"
+        ):
+          registry_lib.BatchSweep(batch_sizes=batch_sizes)
+
+
 def _ctx(
     run_scope: context_lib.RunScope = context_lib.RunScope.FULL,
 ) -> context_lib.Context:

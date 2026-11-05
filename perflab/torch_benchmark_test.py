@@ -30,6 +30,9 @@ Environment & Flags:
   --count_flops        after measuring each case, count the model FLOPs of a
                        step on a fake CPU copy and export TFLOP/s and MFU
                                                                (default: false)
+  --batch_sweep        in addition to the default cases, measure each benchmark
+                       in each run mode at the other batch sizes of
+                       --batch_sweep_sizes                  (default: false)
 """
 
 import contextlib
@@ -71,7 +74,11 @@ failures = discovery_lib.import_submodules(models)
 failures += discovery_lib.import_submodules(steps)
 
 
-_CASES = list(cases.get_cases(_PLATFORM, _FRAMEWORK))
+_BATCH_SWEEP, _ = flags_lib.batch_sweep_flag_values()
+# A batch sweep runs the default cases and adds cases at more batch sizes.
+_CASES: list[cases.Case] = list(cases.get_cases(_PLATFORM, _FRAMEWORK))
+if _BATCH_SWEEP:
+  _CASES += cases.get_batch_sweep_cases(_PLATFORM, _FRAMEWORK)
 
 
 def _make_run_step(
@@ -168,8 +175,19 @@ class BenchmarkTest(
 
   @parameterized.named_parameters(*_CASES)
   def test_benchmark(
-      self, spec: registry_lib.BenchmarkSpec, mode: common.RunMode
+      self,
+      spec: registry_lib.BenchmarkSpec,
+      mode: common.RunMode,
+      batch_size: int | None = None,
   ):
+    """Measures a benchmark in a run mode.
+
+    Args:
+      spec: The benchmark.
+      mode: The run mode.
+      batch_size: The batch size of a batch sweep case, or None to measure the
+        benchmark at its own batch size.
+    """
     skip_reason = cases.get_skip_reason(
         spec,
         mode,
@@ -190,6 +208,15 @@ class BenchmarkTest(
       self._dry_run_test()
       return
 
+    # Batch sizes above one that ran out of memory; the parent skips them
+    # before starting a child, so this only applies to in-process runs.
+    out_of_memory_reason = base_test.get_out_of_memory_skip_reason(
+        spec.name, mode, batch_size
+    )
+    if batch_size is not None and out_of_memory_reason is not None:
+      self.report_out_of_memory_skip(spec, mode, batch_size)
+      self.skipTest(out_of_memory_reason)
+
     target = target_lib.make_target(_PLATFORM, dtype=spec.dtype)
     device_ops = torch_device_ops.TorchDeviceOps(target)
     ctx = registry_lib.resolve_context(
@@ -197,6 +224,7 @@ class BenchmarkTest(
         context_lib.Context(
             target=target, run_scope=context_lib.RUN_SCOPE.value
         ),
+        batch_size,
     )
 
     reset_state(target, device_ops.device, mode)
@@ -206,22 +234,38 @@ class BenchmarkTest(
         and flags_lib.SKIP_BEHAVIOR.value == "assert_raise"
     ):
       with self.assertRaises(Exception):  # ASSERT_RAISES_OK=benchmark
-        self._run_and_measure(spec, mode, target, device_ops, ctx)
+        self._run_and_measure(spec, mode, target, device_ops, ctx, batch_size)
       return
 
     try:
-      metrics = self._run_and_measure(spec, mode, target, device_ops, ctx)
+      metrics = self._run_and_measure(
+          spec, mode, target, device_ops, ctx, batch_size
+      )
     except unittest.SkipTest:
       raise
-    except Exception:
-      self.report_result(spec, mode, succeeded=False)
+    except Exception as e:
+      if batch_size is not None and common.is_out_of_memory(e):
+        # The batch size bounds what fits, rather than failing the sweep.
+        self.report_out_of_memory(spec, mode, batch_size)
+        self.skipTest(
+            f"{spec.name} ran out of device memory at batch size"
+            f" {batch_size}: {e}"
+        )
+      self.report_result(spec, mode, succeeded=False, batch_size=batch_size)
       raise
 
-    self.report_result(spec, mode, succeeded=True, metrics=metrics)
+    self.report_result(
+        spec, mode, succeeded=True, metrics=metrics, batch_size=batch_size
+    )
 
   def _run_and_measure(
-      self, spec, mode, target, device_ops, ctx
+      self, spec, mode, target, device_ops, ctx, batch_size
   ) -> metrics_lib.PerformanceMetrics:
+    case_name = (
+        f"{spec.name}_{mode.value}"
+        if batch_size is None
+        else cases.batch_sweep_case_name(spec.name, batch_size, mode)
+    )
     try:
       with (
           mode_lib.run_mode_context(mode, target),
@@ -235,7 +279,7 @@ class BenchmarkTest(
         metrics = measure_lib.measure(
             run_step,
             device_ops,
-            name=f"{spec.name}_{mode.value}",
+            name=case_name,
             enable_xprof=flags_lib.ENABLE_XPROF.value,
         )
     except target_lib.UnsupportedBenchmark as e:
@@ -251,11 +295,9 @@ class BenchmarkTest(
       if flop_count is not None:
         metrics.model_flops_per_step = float(flop_count.total)
         metrics.peak_flops_per_second = target_lib.peak_flops_per_device(target)
-        flops_lib.check_utilization(
-            f"{spec.name}_{mode.value}", metrics.metric_map()
-        )
+        flops_lib.check_utilization(case_name, metrics.metric_map())
 
-    logging.info("Metrics for %s_%s:\n%s", spec.name, mode.value, metrics)
+    logging.info("Metrics for %s:\n%s", case_name, metrics)
     self._assert_measured(metrics)
     return metrics
 

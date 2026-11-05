@@ -22,6 +22,20 @@ from perflab import metrics as metrics_lib
 from perflab import mode as mode_lib
 from perflab import target as target_lib
 
+# The metric that a batch sweep case that ran out of device memory exports, with
+# its `batch_size`, instead of its performance metrics.
+OUT_OF_MEMORY_METRIC = "out_of_memory"
+
+# The metric that a batch sweep case that was not run exports, with its
+# `batch_size`, because a smaller batch size of its benchmark ran out of device
+# memory. Like the skip records of `export_skip`, but keyed by the batch size.
+SKIPPED_METRIC = "skipped"
+
+
+def batch_size_key(batch_size: int) -> str:
+  """Returns the microbenchmark name of a batch sweep case, e.g. `bs16`."""
+  return f"bs{batch_size}"
+
 
 @dataclasses.dataclass
 class BenchmarkData:
@@ -37,7 +51,17 @@ class BenchmarkData:
     succeeded: Whether the benchmark run succeeded.
     metrics: The benchmark metrics collected during the run.
     microbenchmark_name: The name of the microbenchmark if the benchmark is
-      composed of multiple microbenchmarks.
+      composed of multiple microbenchmarks. Batch sweep cases use their batch
+      size (`batch_size_key`).
+    batch_size: The batch size of a batch sweep case, or None.
+    out_of_memory: Whether the batch sweep case ran out of device memory at
+      `batch_size`. It then exports `OUT_OF_MEMORY_METRIC` and its batch size
+      instead of its metrics, and counts as succeeded: running out of memory
+      bounds the batch sizes that a benchmark fits, it is not a failure.
+    skipped: Whether the batch sweep case was not run, because a smaller batch
+      size of the benchmark ran out of device memory. It then exports
+      `SKIPPED_METRIC` and its batch size instead of its metrics, so that an
+      assumed out of memory is not exported as a measured one.
   """
 
   spec_name: str
@@ -47,6 +71,9 @@ class BenchmarkData:
   succeeded: bool
   metrics: metrics_lib.MetricsInterface
   microbenchmark_name: str | None = None
+  batch_size: int | None = None
+  out_of_memory: bool = False
+  skipped: bool = False
 
 
 def export(data: BenchmarkData) -> None:
@@ -55,14 +82,24 @@ def export(data: BenchmarkData) -> None:
   Args:
     data: The benchmark data to export.
   """
+  if data.out_of_memory or data.skipped:
+    metrics = {
+        OUT_OF_MEMORY_METRIC if data.out_of_memory else SKIPPED_METRIC: 1.0
+    }
+    if data.batch_size is not None:
+      metrics["batch_size"] = float(data.batch_size)
+    wall_time = None
+  else:
+    metrics = data.metrics.metric_map()
+    wall_time = data.metrics.e2e_wall_time_seconds
   export_adapter.export_benchmark_results(
       spec_name=data.spec_name,
       platform=data.platform.value,
       framework=data.framework.value,
       run_mode=data.run_mode.value,
-      metrics=data.metrics.metric_map(),
+      metrics=metrics,
       succeeded=data.succeeded,
-      wall_time=data.metrics.e2e_wall_time_seconds,
+      wall_time=wall_time,
       microbenchmark_name=data.microbenchmark_name,
   )
 

@@ -295,6 +295,7 @@ torch_tpu_py_library(
         ":known_failures",
         ":mode",
         ":registry",
+        ":step_lib",
         ":target",
         "//shims/absl_py/flags",
         "//shims/absl_py/logging",

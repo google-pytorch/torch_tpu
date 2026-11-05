@@ -80,6 +80,68 @@ SUBPROCESS_TIMEOUT_SECONDS = 900.0
 
 CaseParams = cases.CaseParams
 
+# The smallest batch size at which each benchmark ran out of device memory in
+# this process's batch sweep, by benchmark name and run mode (memory use differs
+# between run modes). Batch sweep cases at larger batch sizes are skipped,
+# assuming that memory use grows with the batch size.
+_out_of_memory_batch_sizes: dict[tuple[str, common.RunMode], int] = {}
+
+
+def note_out_of_memory(
+    spec_name: str, mode: common.RunMode, batch_size: int
+) -> None:
+  """Records that a benchmark ran out of device memory at a batch size.
+
+  Args:
+    spec_name: The name of the benchmark.
+    mode: The run mode of the case that ran out of memory.
+    batch_size: The batch size that ran out of memory.
+  """
+  key = (spec_name, mode)
+  current = _out_of_memory_batch_sizes.get(key)
+  if current is None or batch_size < current:
+    _out_of_memory_batch_sizes[key] = batch_size
+
+
+def get_out_of_memory_skip_reason(
+    spec_name: str, mode: common.RunMode, batch_size: int | None
+) -> str | None:
+  """Returns why a batch sweep case is skipped as too large, or None.
+
+  Args:
+    spec_name: The name of the benchmark.
+    mode: The run mode of the case.
+    batch_size: The batch size of the case, or None if it is not a batch sweep
+      case.
+  """
+  if batch_size is None:
+    return None
+  out_of_memory_batch_size = _out_of_memory_batch_sizes.get((spec_name, mode))
+  if out_of_memory_batch_size is None or batch_size < out_of_memory_batch_size:
+    return None
+  return (
+      f"Benchmark {spec_name} ran out of device memory in run mode"
+      f" {mode.value} at batch size {out_of_memory_batch_size}, so batch size"
+      f" {batch_size} is not run"
+  )
+
+
+def _microbenchmark_name(
+    spec: registry_lib.BenchmarkSpec, batch_size: int | None
+) -> str | None:
+  """Returns the key that a case exports its results under, if any.
+
+  Args:
+    spec: The benchmark of the case; its `microbenchmark_name` keys all of its
+      results.
+    batch_size: The batch size of a batch sweep case, which also keys its
+      results (`bs<N>`), or None.
+  """
+  keys = [spec.microbenchmark_name]
+  if batch_size is not None:
+    keys.append(export_lib.batch_size_key(batch_size))
+  return "_".join(k for k in keys if k) or None
+
 
 class Outcome(enum.Enum):
   """How an isolated test method finished."""
@@ -253,9 +315,10 @@ class BaseBenchmarkTest(
   Attributes:
     framework: The framework this binary measures; set by the subclass.
     platform: The platform the binary targets; set by the subclass.
-    case_params: (spec, mode) behind each generated test method name, from
-      case_params(); set by the subclass. Lets the parent export a failed record
-      for a child that died before it could report.
+    case_params: (spec, mode), plus the batch size of a batch sweep case, behind
+      each generated test method name, from case_params(); set by the subclass.
+      Lets the parent export a failed record for a child that died before it
+      could report.
     in_isolated_child: True while the method runs inside the child process.
     isolated_payload: Set by the test method in the child; exported by the
       parent. Must be picklable.
@@ -292,7 +355,7 @@ class BaseBenchmarkTest(
     params = self.case_params.get(self._testMethodName)
     if params is None:
       return None
-    spec, mode = params
+    spec, mode, _ = cases.unpack_case_params(params)
     if (
         self.framework == mode_lib.Framework.TORCHAX
         and spec.stepper == step_lib.StepperType.DECODER_ONLY_DECODE
@@ -338,11 +401,22 @@ class BaseBenchmarkTest(
 
     result.startTest(self)
     try:
-      skip_reason = self._get_parent_skip_reason()
-      if skip_reason is not None:
-        self.report_skip(*self.case_params[self._testMethodName])
-        _record(result, self, Outcome.SKIPPED, skip_reason)
-        return result
+      params = self.case_params.get(self._testMethodName)
+      if params is not None:
+        spec, mode, batch_size = cases.unpack_case_params(params)
+        skip_reason = self._get_parent_skip_reason()
+        if skip_reason is not None:
+          self.report_skip(spec, mode)
+          _record(result, self, Outcome.SKIPPED, skip_reason)
+          return result
+        if batch_size is not None:
+          skip_reason = get_out_of_memory_skip_reason(
+              spec.name, mode, batch_size
+          )
+          if skip_reason is not None:
+            self.report_out_of_memory_skip(spec, mode, batch_size)
+            _record(result, self, Outcome.SKIPPED, skip_reason)
+            return result
 
       outcome, detail, payload = run_isolated(
           self.__class__,
@@ -351,13 +425,16 @@ class BaseBenchmarkTest(
       )
       if payload is not None:
         export_lib.export(payload)
+        if getattr(payload, "out_of_memory", False):
+          note_out_of_memory(
+              payload.spec_name, payload.run_mode, payload.batch_size
+          )
       elif outcome in (Outcome.CRASHED, Outcome.TIMED_OUT):
         # No payload: the case was skipped, failed before measuring, or the
         # child died. Only the last has no record of its own yet.
-        params = self.case_params.get(self._testMethodName)
         if params is not None:
-          spec, mode = params
-          self.report_result(spec, mode, succeeded=False)
+          spec, mode, batch_size = cases.unpack_case_params(params)
+          self.report_result(spec, mode, succeeded=False, batch_size=batch_size)
       _record(result, self, outcome, detail)
     finally:
       result.stopTest(self)
@@ -374,21 +451,99 @@ class BaseBenchmarkTest(
       *,
       succeeded: bool,
       metrics: metrics_lib.MetricsInterface | None = None,
+      batch_size: int | None = None,
   ) -> None:
-    """Exports the case's result, or hands it to the parent to export."""
-    data = export_lib.BenchmarkData(
+    """Exports the case's result, or hands it to the parent to export.
+
+    Args:
+      spec: The benchmark of the case.
+      mode: The run mode of the case.
+      succeeded: Whether the case succeeded.
+      metrics: The metrics of the case, if it measured any.
+      batch_size: The batch size of a batch sweep case, which keys its results.
+    """
+    self._report(
+        export_lib.BenchmarkData(
+            spec_name=spec.name,
+            platform=self.platform,
+            framework=self.framework,
+            run_mode=mode,
+            succeeded=succeeded,
+            metrics=metrics or metrics_lib.PerformanceMetrics(),
+            microbenchmark_name=_microbenchmark_name(spec, batch_size),
+            batch_size=batch_size,
+        )
+    )
+
+  def report_out_of_memory(
+      self,
+      spec: registry_lib.BenchmarkSpec,
+      mode: common.RunMode,
+      batch_size: int,
+  ) -> None:
+    """Exports that a batch sweep case ran out of device memory.
+
+    The parent then skips the larger batch sizes of the benchmark.
+
+    Args:
+      spec: The benchmark of the case.
+      mode: The run mode of the case.
+      batch_size: The batch size that ran out of memory.
+    """
+    self._report(
+        self._batch_sweep_record(spec, mode, batch_size, out_of_memory=True)
+    )
+
+  def report_out_of_memory_skip(
+      self,
+      spec: registry_lib.BenchmarkSpec,
+      mode: common.RunMode,
+      batch_size: int,
+  ) -> None:
+    """Exports that a batch sweep case was skipped after an out of memory.
+
+    A smaller batch size of the benchmark ran out of device memory in the run
+    mode, so the case is not run. It is exported as skipped rather than as out
+    of memory, which it was not measured to be.
+
+    Args:
+      spec: The benchmark of the case.
+      mode: The run mode of the case.
+      batch_size: The batch size of the case.
+    """
+    self._report(self._batch_sweep_record(spec, mode, batch_size, skipped=True))
+
+  def _batch_sweep_record(
+      self,
+      spec: registry_lib.BenchmarkSpec,
+      mode: common.RunMode,
+      batch_size: int,
+      *,
+      out_of_memory: bool = False,
+      skipped: bool = False,
+  ) -> export_lib.BenchmarkData:
+    """Returns the record of a batch sweep case that measured no metrics."""
+    return export_lib.BenchmarkData(
         spec_name=spec.name,
         platform=self.platform,
         framework=self.framework,
         run_mode=mode,
-        succeeded=succeeded,
-        metrics=metrics or metrics_lib.PerformanceMetrics(),
-        microbenchmark_name=spec.microbenchmark_name,
+        succeeded=True,
+        metrics=metrics_lib.PerformanceMetrics(),
+        microbenchmark_name=_microbenchmark_name(spec, batch_size),
+        batch_size=batch_size,
+        out_of_memory=out_of_memory,
+        skipped=skipped,
     )
+
+  def _report(self, data: export_lib.BenchmarkData) -> None:
+    """Exports `data`, or hands it to the parent process to export."""
     if self.in_isolated_child:
       self.isolated_payload = data
-    else:
-      export_lib.export(data)
+      return
+    export_lib.export(data)
+    if data.out_of_memory and data.batch_size is not None:
+      note_out_of_memory(data.spec_name, data.run_mode, data.batch_size)
 
   def report_skip(
       self, spec: registry_lib.BenchmarkSpec, mode: common.RunMode
