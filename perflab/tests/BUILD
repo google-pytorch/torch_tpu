@@ -510,6 +510,19 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "layer_utils_test",
+    srcs = ["layer_utils_test.py"],
+    deps = [
+        "//perflab/layer_utils:builders",
+        "//perflab/layer_utils:configs",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
     name = "distributed_runner_test",
     srcs = ["distributed_runner_test.py"],
     deps = [
