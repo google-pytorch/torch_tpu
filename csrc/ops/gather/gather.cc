@@ -27,6 +27,7 @@
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/utils.h"
+#include "csrc/ops/matmul/matmul.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -176,11 +177,10 @@ std::optional<BroadcastGatherPlan> MatchBroadcastGatherIndex(
   return plan;
 }
 
-mlir::MlirOp EmitBroadcastGatherDot(mlir::MlirOp self, int64_t dim,
-                                    int64_t rank, int64_t vocab_len,
-                                    mlir::Type computation_type,
-                                    mlir::Type original_element_type,
-                                    const BroadcastGatherPlan& plan) {
+absl::StatusOr<mlir::MlirOp> EmitBroadcastGatherDot(
+    mlir::MlirOp self, int64_t dim, int64_t rank, int64_t vocab_len,
+    mlir::Type computation_type, mlir::Type original_element_type,
+    const BroadcastGatherPlan& plan) {
   mlir::MlirBuilder& builder = self.getBuilder();
   const mlir::Type i32_type =
       mlir::getElementType(self.getContext(), mlir::ElementType::I32);
@@ -200,25 +200,25 @@ mlir::MlirOp EmitBroadcastGatherDot(mlir::MlirOp self, int64_t dim,
   mlir::MlirOp mask = stablehlo::Compare(idx_expanded, iota_p,
                                          stablehlo::ComparisonDirection::EQ);
   mlir::MlirOp weights = stablehlo::ConvertElementType(mask, computation_type);
-  auto dot_dims = stablehlo::DotDimensionNumbersAttr::get(
-      &self.getContext(),
-      /*lhsBatchingDimensions=*/plan.batch_dims,
-      /*rhsBatchingDimensions=*/plan.rhs_batch_dims,
-      /*lhsContractingDimensions=*/{dim},
-      /*rhsContractingDimensions=*/{base_rank});
-  mlir::ArrayAttr precision_config;
-  if (computation_type.isF32()) {
-    const mlir::stablehlo::Precision precisions[2] = {
-        mlir::stablehlo::Precision::
-            HIGHEST,  // EXPLICIT_PRECISION_OK=f32_gather
-        mlir::stablehlo::Precision::
-            DEFAULT,  // EXPLICIT_PRECISION_OK=one_hot_rhs
-    };
-    precision_config =
-        stablehlo::PrecisionConfigAttr::get(&self.getContext(), precisions);
-  }
-  mlir::MlirOp dot_out = stablehlo::DotGeneral(
-      self, weights, dot_dims, /*precisionConfig=*/precision_config);
+  const MatmulPrecisionPair precision =
+      computation_type.isF32()
+          ? MatmulPrecisionPair{
+                mlir::stablehlo::Precision::
+                    HIGHEST,  // EXPLICIT_PRECISION_OK=f32_gather
+                mlir::stablehlo::Precision::
+                    DEFAULT,  // EXPLICIT_PRECISION_OK=one_hot_rhs
+            }
+          : MatmulPrecisionPair{
+                mlir::stablehlo::Precision::
+                    DEFAULT,  // EXPLICIT_PRECISION_OK=default
+            };
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp dot_out,
+      BuildTypedDotGeneral(self, weights,
+                           /*lhs_batching=*/plan.batch_dims,
+                           /*rhs_batching=*/plan.rhs_batch_dims,
+                           /*lhs_contracting=*/{dim},
+                           /*rhs_contracting=*/{base_rank}, precision));
   Dimensions dot_out_axes;
   dot_out_axes.insert(dot_out_axes.end(), plan.batch_dims.begin(),
                       plan.batch_dims.end());

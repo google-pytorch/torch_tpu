@@ -30,6 +30,7 @@
 #include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
 #include "csrc/ops/index_add/index_add.h"
+#include "csrc/ops/matmul/matmul.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -241,13 +242,11 @@ std::optional<BroadcastScatterPlan> MatchBroadcastScatterIndex(
   return plan;
 }
 
-mlir::MlirOp EmitBroadcastScatterDot(mlir::MlirOp self,
-                                     mlir::RankedTensorType self_type,
-                                     int64_t dim, mlir::MlirOp src,
-                                     mlir::RankedTensorType src_type,
-                                     mlir::Type fast_comp_type,
-                                     mlir::Type original_element_type,
-                                     const BroadcastScatterPlan& plan) {
+absl::StatusOr<mlir::MlirOp> EmitBroadcastScatterDot(
+    mlir::MlirOp self, mlir::RankedTensorType self_type, int64_t dim,
+    mlir::MlirOp src, mlir::RankedTensorType src_type,
+    mlir::Type fast_comp_type, mlir::Type original_element_type,
+    const BroadcastScatterPlan& plan) {
   mlir::MlirBuilder& fast_builder = self.getBuilder();
   const int64_t rank = self_type.getRank();
   const int64_t target_len = self_type.getDimSize(dim);
@@ -279,25 +278,26 @@ mlir::MlirOp EmitBroadcastScatterDot(mlir::MlirOp self,
       idx_expanded, iota_p, mlir::stablehlo::ComparisonDirection::EQ);
   mlir::MlirOp weights =
       mlir::stablehlo::ConvertElementType(mask, fast_comp_type);
-  auto dot_dims = mlir::stablehlo::DotDimensionNumbersAttr::get(
-      &self.getContext(),
-      /*lhsBatchingDimensions=*/plan.batch_dims,
-      /*rhsBatchingDimensions=*/plan.rhs_batch_dims,
-      /*lhsContractingDimensions=*/{dim},
-      /*rhsContractingDimensions=*/{plan.base_scatter_dim});
-  mlir::ArrayAttr precision_config;
-  if (fast_comp_type.isF32()) {
-    const mlir::stablehlo::Precision precisions[2] = {
-        mlir::stablehlo::Precision::
-            HIGHEST,  // EXPLICIT_PRECISION_OK=f32_scatter
-        mlir::stablehlo::Precision::
-            DEFAULT,  // EXPLICIT_PRECISION_OK=one_hot_rhs
-    };
-    precision_config = mlir::stablehlo::PrecisionConfigAttr::get(
-        &self.getContext(), precisions);
-  }
-  mlir::MlirOp dot_out = mlir::stablehlo::DotGeneral(
-      src_conv, weights, dot_dims, /*precisionConfig=*/precision_config);
+  const MatmulPrecisionPair precision =
+      fast_comp_type.isF32()
+          ? MatmulPrecisionPair{
+                mlir::stablehlo::Precision::
+                    HIGHEST,  // EXPLICIT_PRECISION_OK=f32_scatter
+                mlir::stablehlo::Precision::
+                    DEFAULT,  // EXPLICIT_PRECISION_OK=one_hot_rhs
+            }
+          : MatmulPrecisionPair{
+                mlir::stablehlo::Precision::
+                    DEFAULT,  // EXPLICIT_PRECISION_OK=default
+            };
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp dot_out,
+      BuildTypedDotGeneral(src_conv, weights,
+                           /*lhs_batching=*/plan.batch_dims,
+                           /*rhs_batching=*/plan.rhs_batch_dims,
+                           /*lhs_contracting=*/{dim},
+                           /*rhs_contracting=*/{plan.base_scatter_dim},
+                           precision));
   Dimensions dot_out_axes;
   dot_out_axes.insert(dot_out_axes.end(), plan.batch_dims.begin(),
                       plan.batch_dims.end());

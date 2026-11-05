@@ -40,6 +40,7 @@ torch_tpu_cc_library(
         "//csrc/ops:precision_context",
         "//csrc/ops/gather",
         "//csrc/ops/macros:kernel",
+        "//csrc/ops/matmul",
         "//csrc/ops/reductions",
         "//csrc/ops/reductions:sum",
         "//shims/torch:aten_headers",

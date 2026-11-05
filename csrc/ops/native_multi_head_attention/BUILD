@@ -41,6 +41,7 @@ torch_tpu_cc_library(
         "//csrc/ops:op_names",
         "//csrc/ops:precision_context",
         "//csrc/ops/macros:kernel",
+        "//csrc/ops/matmul",
         "//csrc/ops/reductions",
         "//csrc/ops/reductions:sum",
         "//csrc/ops/softmax",
