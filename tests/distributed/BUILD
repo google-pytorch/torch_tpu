@@ -1178,4 +1178,18 @@ torch_tpu_py_test(
     ],
 )
 
+torch_tpu_py_test(
+    name = "largest_common_spanning_subgraph_test",
+    srcs = ["largest_common_spanning_subgraph_test.py"],
+    env = {"TORCH_TPU_ENABLE_DEBUG_CHECKS": "1"},
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/distributed:largest_common_spanning_subgraph",
+        "//tests:seed_test_utils",
+    ],
+)
+
 torch_tpu_package_end()
