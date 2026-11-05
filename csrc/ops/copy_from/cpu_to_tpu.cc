@@ -173,7 +173,6 @@ absl::Status CopyCpuToTpu(const at::Tensor& src, const at::Tensor& dest,
         EventSnapshot snapshot,
         MaterializeCurrentStream(MaterializationReason::kCpuTransfer));
     TT_RETURN_IF_ERROR(snapshot.Synchronize());
-    TT_RETURN_IF_ERROR(SyncAndReturnStickyError());
   }
   return absl::OkStatus();
 }

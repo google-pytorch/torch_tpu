@@ -383,11 +383,6 @@ template <int kArity, int kNumOutputs = 1>
 absl::StatusOr<DeviceBufferRefArray<kNumOutputs>> DispatchOp(
     NAryMlirOpBuilder<kArity, kNumOutputs> op_builder,
     const OpInputs<kArity>& inputs, DispatchOpOptions<kNumOutputs> options) {
-  // Check for sticky errors.
-  if (ABSL_PREDICT_FALSE(HasStickyError())) {
-    return GetStickyError();
-  }
-
   // Get the op name from the active TT_KERNEL() context.
   const std::optional<OpName> maybe_ctx_op_name =
       internal::OpNameStack::MaybeTop();

@@ -2392,27 +2392,21 @@ Please use clone() or contiguous() to copy the tensor before writing""",
   def test_synchronize_surfaces_async_assertion(self):
     false_cond = torch.tensor(False, device=et.device())
     torch.ops.aten._assert_async.msg(false_cond, "async assertion failure")
-    try:
-      with et.assert_raises_message(
-          RuntimeError,
-          tpu=re.compile(r".*async assertion failure.*", re.DOTALL),
-      ):
-        torch.accelerator.synchronize()
-    finally:
-      tt_testing.clear_sticky_error()
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(r".*async assertion failure.*", re.DOTALL),
+    ):
+      torch.accelerator.synchronize()
 
   @et.why_tpu_only("CUDA errors synchronously due to CUDA_LAUNCH_BLOCKING=1.")
   def test_accelerator_synchronize_surfaces_async_assertion(self):
     false_cond = torch.tensor(False, device=et.device())
     torch.ops.aten._assert_async.msg(false_cond, "async assertion failure")
-    try:
-      with et.assert_raises_message(
-          RuntimeError,
-          tpu=re.compile(r".*async assertion failure.*", re.DOTALL),
-      ):
-        torch.accelerator.synchronize()
-    finally:
-      tt_testing.clear_sticky_error()
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(r".*async assertion failure.*", re.DOTALL),
+    ):
+      torch.accelerator.synchronize()
 
   @et.why_tpu_only("Sync materialization status checks are TPU-specific.")
   def test_is_materializing_tensor_not_on_tpu(self):

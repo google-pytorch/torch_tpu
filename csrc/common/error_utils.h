@@ -19,7 +19,6 @@
 
 // Utilities for reporting errors in C++ code.
 
-#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -183,56 +182,6 @@ void CheckDeviceIsTpu(c10::optional<at::Device> device_opt,
 absl::Status TranslateXlaTensorOomError(absl::Status status,
                                         std::string_view dtype,
                                         absl::Span<const int64_t> dims);
-
-// Sets the global sticky error state. Subsequent ops should fail if this is
-// set.
-void SetStickyError(absl::Status status);
-
-// Gets the global sticky error state.
-absl::Status GetStickyError();
-
-namespace internal {
-extern std::atomic<bool> g_has_sticky_error;
-}  // namespace internal
-
-// Returns true if the global sticky error state is set.
-[[nodiscard]] inline bool HasStickyError() {
-  // This check runs on the critical path of every op dispatch. We use
-  // std::memory_order_relaxed because HasStickyError() acts only as a fast
-  // boolean gate and does not read any error payload:
-  // 1. In the common case (no error), no shared data is read, avoiding any need
-  //    for acquire semantics or memory fences.
-  // 2. In the rare case of an assertion failure, the caller immediately enters
-  //    the slow path via GetStickyError(), which acquires g_sticky_error_mutex.
-  //    Acquiring the mutex establishes full acquire-release synchronization
-  //    with the mutex release in SetStickyError(), guaranteeing that the
-  //    complete absl::Status payload is observed.
-  // 3. g_has_sticky_error is a monotonic latch (false -> true); hardware cache
-  //    coherence propagates the write to all cores within nanoseconds without
-  //    requiring pipeline-stalling load-acquire instructions (e.g., `ldar` on
-  //    ARM).
-  return internal::g_has_sticky_error.load(std::memory_order_relaxed);
-}
-
-// Clears the global sticky error state. Used for testing.
-void ClearStickyError();
-
-// Increments the count of pending asynchronous assertion checks.
-void IncrementPendingAssertionChecks();
-
-// Decrements the count of pending asynchronous assertion checks.
-void DecrementPendingAssertionChecks();
-
-// Blocks until all pending asynchronous assertion checks have completed.
-void WaitForPendingAssertionChecks();
-
-// Blocks until all pending asynchronous assertion checks have completed, and
-// throws a C++ exception if any sticky error has been recorded.
-void SyncAndCheckStickyError();
-
-// Blocks until all pending asynchronous assertion checks have completed, and
-// returns the error status if any was recorded.
-absl::Status SyncAndReturnStickyError();
 
 // Adapts an external error from OpenXLA to comply to TorchTPU error guidelines.
 //

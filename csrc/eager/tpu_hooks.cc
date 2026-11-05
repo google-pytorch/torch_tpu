@@ -344,7 +344,6 @@ void TpuDeviceGuardImpl::synchronizeStream(const c10::Stream& stream) const {
                      MaterializeStream(stream.device_index(), stream.id(),
                                        MaterializationReason::kExplicitSync));
   TT_THROW_IF_ERROR(snapshot.Synchronize());
-  SyncAndCheckStickyError();
 }
 void TpuDeviceGuardImpl::synchronizeDevice(
     c10::DeviceIndex device_index) const {
@@ -354,7 +353,6 @@ void TpuDeviceGuardImpl::synchronizeDevice(
   for (const auto& snapshot : snapshots) {
     TT_THROW_IF_ERROR(snapshot.Synchronize());
   }
-  SyncAndCheckStickyError();
 }
 void TpuDeviceGuardImpl::destroyEvent(
     void* event, const c10::DeviceIndex device_index) const noexcept {

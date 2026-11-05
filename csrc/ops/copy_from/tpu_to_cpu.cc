@@ -171,8 +171,7 @@ absl::Status CopyDeviceBufferRefToCpuPtrImpl(
       EventSnapshot snapshot,
       MaterializeCurrentStream(MaterializationReason::kCpuTransfer,
                                GraphSplitMode::kSplitGraph, must_materialize));
-  TT_RETURN_IF_ERROR(snapshot.Synchronize());
-  return SyncAndReturnStickyError();
+  return snapshot.Synchronize();
 }
 
 // Materializes the base buffer of src, and copies it byte-for-byte into dest's

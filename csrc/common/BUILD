@@ -265,7 +265,6 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
-        "@com_google_absl//absl/synchronization",
         "@com_google_absl//absl/types:span",
         "@com_googlesource_code_re2//:re2",
         "@xla//xla:xla_data_proto_cc",

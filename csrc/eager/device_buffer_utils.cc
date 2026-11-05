@@ -164,8 +164,7 @@ absl::Status ExecuteCurrentStreamForDeferNever(
     TT_ASSIGN_OR_RETURN(
         EventSnapshot snapshot,
         MaterializeCurrentStream(reason, graph_split_mode, must_materialize));
-    TT_RETURN_IF_ERROR(snapshot.Synchronize());
-    return SyncAndReturnStickyError();
+    return snapshot.Synchronize();
   }
   // In DeferNever, we don't block at all, we initiate and continue.
   return EagerlyExecuteCurrentStream(reason, graph_split_mode,
