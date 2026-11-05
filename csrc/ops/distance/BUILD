@@ -45,6 +45,7 @@ torch_tpu_cc_library(
         "//csrc/ops/index_select",
         "//csrc/ops/linalg/vector_norm:pnorm",
         "//csrc/ops/macros:kernel",
+        "//csrc/ops/matmul",
         "//csrc/ops/reductions",
         "//csrc/ops/reductions:sum",
         "//shims/torch:aten_headers",

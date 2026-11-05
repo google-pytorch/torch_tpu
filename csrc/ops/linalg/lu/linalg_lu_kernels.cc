@@ -55,6 +55,7 @@
 #include "csrc/ops/copy_from/copy_from_aten_kernels.h"
 #include "csrc/ops/linalg/solve_triangular/linalg_solve_triangular_kernels.h"
 #include "csrc/ops/macros/kernel.h"
+#include "csrc/ops/matmul/matmul.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/resize/resize_aten_kernels.h"
@@ -108,8 +109,6 @@ absl::StatusOr<MlirOpResults<2>> BuildComplexL2PivotedLuShlo(
 
   Dimensions batch_dim_indices(row_dim);
   std::iota(batch_dim_indices.begin(), batch_dim_indices.end(), 0);
-  Dimensions batch_and_row_dims = batch_dim_indices;
-  batch_and_row_dims.push_back(row_dim);
   Dimensions batch_and_col_dims = batch_dim_indices;
   batch_and_col_dims.push_back(col_dim);
   const Dimensions slice_strides(rank, 1);
@@ -234,7 +233,6 @@ absl::StatusOr<MlirOpResults<2>> BuildComplexL2PivotedLuShlo(
     a = mlir::stablehlo::Select(is_k_row, row_piv_2d, swapped_piv);
 
     if (k + 1 < n) {
-      const int64_t rem = n - k - 1;
       Dimensions akk_starts(rank, 0);
       akk_starts[row_dim] = k;
       akk_starts[col_dim] = k;
@@ -285,17 +283,13 @@ absl::StatusOr<MlirOpResults<2>> BuildComplexL2PivotedLuShlo(
       trail_limits[col_dim] = n;
       mlir::MlirOp trail_sub =
           mlir::stablehlo::Slice(a, trail_starts, trail_limits, slice_strides);
-      auto trail_type = GetTensorTypeOrDie(trail_sub);
 
-      mlir::MlirOp l_col_1d =
-          mlir::stablehlo::Reshape(l_col, make_shape_1d(rem));
-      mlir::MlirOp u_row_1d =
-          mlir::stablehlo::Reshape(u_row, make_shape_1d(rem));
-      mlir::MlirOp l_bcast = mlir::stablehlo::BroadcastInDim(
-          trail_type, l_col_1d, batch_and_row_dims);
-      mlir::MlirOp u_bcast = mlir::stablehlo::BroadcastInDim(
-          trail_type, u_row_1d, batch_and_col_dims);
-      mlir::MlirOp outer = mlir::stablehlo::Mul(l_bcast, u_bcast);
+      TT_ASSIGN_OR_RETURN(
+          mlir::MlirOp outer,
+          BuildMatmulShlo(
+              l_col, u_row,
+              mlir::stablehlo::Precision::
+                  HIGHEST));  // EXPLICIT_PRECISION_OK=lu_schur_complement
       mlir::MlirOp updated_trail = mlir::stablehlo::Subtract(trail_sub, outer);
 
       mlir::MlirOp bottom_rows = updated_trail;

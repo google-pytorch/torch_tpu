@@ -44,6 +44,7 @@ torch_tpu_cc_library(
         "//csrc/ops/copy_from:copy_from_aten_kernels",
         "//csrc/ops/linalg/solve_triangular:linalg_solve_triangular_kernels",
         "//csrc/ops/macros:kernel",
+        "//csrc/ops/matmul",
         "//csrc/ops/resize:resize_aten_kernels",
         "//shims/torch:aten",
         "//shims/torch:aten_headers",

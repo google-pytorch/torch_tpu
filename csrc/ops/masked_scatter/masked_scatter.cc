@@ -24,6 +24,7 @@
 #include "csrc/common/utils.h"
 #include "csrc/ops/cumsum/cumsum.h"
 #include "csrc/ops/index_select/index_select.h"
+#include "csrc/ops/matmul/matmul.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "mlir/IR/Builders.h"
@@ -232,25 +233,18 @@ absl::StatusOr<mlir::MlirOp> BuildMaskedScatterShlo(mlir::MlirOp input,
         indices_2d, iota_2d, mlir::stablehlo::ComparisonDirection::EQ);
     mlir::MlirOp indicator =
         mlir::stablehlo::ConvertElementType(eq_mask, elem_type);
-    auto dot_dims = mlir::stablehlo::DotDimensionNumbersAttr::get(
-        &builder.getContext(),
-        /*lhs_batching_dimensions=*/{},
-        /*rhs_batching_dimensions=*/{},
-        /*lhs_contracting_dimensions=*/{1},
-        /*rhs_contracting_dimensions=*/{0});
-    mlir::ArrayAttr precision_config;
-    if (elem_type.isF16() || elem_type.isF32()) {
-      const mlir::stablehlo::Precision precisions[2] = {
-          mlir::stablehlo::Precision::
-              HIGHEST,  // EXPLICIT_PRECISION_OK=one_hot_lhs
-          mlir::stablehlo::Precision::
-              HIGHEST,  // EXPLICIT_PRECISION_OK=exact_row_gather
-      };
-      precision_config = mlir::stablehlo::PrecisionConfigAttr::get(
-          &builder.getContext(), precisions);
-    }
-    gathered_rows = mlir::stablehlo::DotGeneral(
-        indicator, source_rows, dot_dims, /*precisionConfig=*/precision_config);
+    const mlir::stablehlo::Precision precision =
+        (elem_type.isF16() || elem_type.isF32())
+            ? mlir::stablehlo::Precision::
+                  HIGHEST  // EXPLICIT_PRECISION_OK=exact_row_gather
+            : mlir::stablehlo::Precision::
+                  DEFAULT;  // EXPLICIT_PRECISION_OK=default
+    TT_ASSIGN_OR_RETURN(gathered_rows, BuildTypedDotGeneral(
+                                           indicator, source_rows,
+                                           /*lhs_batching=*/{},
+                                           /*rhs_batching=*/{},
+                                           /*lhs_contracting=*/{1},
+                                           /*rhs_contracting=*/{0}, precision));
   } else {
     gathered_rows = BuildIndexSelectShlo(source_rows, 0, source_row_indices);
   }

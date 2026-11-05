@@ -39,6 +39,7 @@
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/macros/kernel.h"
+#include "csrc/ops/matmul/matmul.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/precision_context.h"
@@ -197,51 +198,13 @@ absl::StatusOr<mlir::MlirOp> BuildDotGeneral(
     absl::Span<const int64_t> rhs_batching = {},
     mlir::stablehlo::Precision precision =
         mlir::stablehlo::Precision::DEFAULT) {  // EXPLICIT_PRECISION_OK=default
-  mlir::MlirBuilder& builder = lhs.getBuilder();
-  mlir::MLIRContext& ctx = builder.getContext();
-
-  // Configure contracting and batching dimensions for StableHLO DotGeneral.
-  auto dot_dimension_numbers = mlir::stablehlo::DotDimensionNumbersAttr::get(
-      &ctx, lhs_batching, rhs_batching, lhs_contracting, rhs_contracting);
-
-  auto precision_config_attr =
-      mlir::stablehlo::PrecisionConfigAttr::get(&ctx, {precision, precision});
-
   const auto lhs_type = GetTensorTypeOrDie(lhs);
-  const auto rhs_type = GetTensorTypeOrDie(rhs);
-  const auto lhs_shape = lhs_type.getShape();
-  const auto rhs_shape = rhs_type.getShape();
-
-  // Compute output dimensions: batch dims followed by non-contracting dims.
-  Dimensions result_shape;
-  for (int64_t dim : lhs_batching) {
-    result_shape.push_back(lhs_shape[dim]);
-  }
-  for (int64_t i = 0; i < lhs_type.getRank(); ++i) {
-    if (absl::c_find(lhs_batching, i) != lhs_batching.end() ||
-        absl::c_find(lhs_contracting, i) != lhs_contracting.end()) {
-      continue;
-    }
-    result_shape.push_back(lhs_shape[i]);
-  }
-  for (int64_t i = 0; i < rhs_type.getRank(); ++i) {
-    if (absl::c_find(rhs_batching, i) != rhs_batching.end() ||
-        absl::c_find(rhs_contracting, i) != rhs_contracting.end()) {
-      continue;
-    }
-    result_shape.push_back(rhs_shape[i]);
-  }
-
-  // Infer computation dtype (e.g. promote f16/bf16 to f32 during GEMM).
   TT_ASSIGN_OR_RETURN(mlir::ElementType lhs_elem_type,
                       ConvertTo<mlir::ElementType>(lhs_type.getElementType()));
   TT_ASSIGN_OR_RETURN(auto comp_dtype, InferComputationDtype(lhs_elem_type));
-
-  auto result_type = mlir::RankedTensorType::get(
-      result_shape, mlir::getElementType(ctx, comp_dtype));
-
-  return mlir::stablehlo::DotGeneral(
-      result_type, lhs, rhs, dot_dimension_numbers, precision_config_attr);
+  return BuildTypedDotGeneral(lhs, rhs, lhs_batching, rhs_batching,
+                              lhs_contracting, rhs_contracting, precision,
+                              /*preferred_element_type=*/comp_dtype);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildGemmNt(mlir::MlirOp input,

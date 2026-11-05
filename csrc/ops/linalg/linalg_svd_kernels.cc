@@ -48,6 +48,7 @@
 #include "csrc/ops/linalg/qr/qr_lib.h"
 #include "csrc/ops/linalg/vector_norm/pnorm.h"
 #include "csrc/ops/macros/kernel.h"
+#include "csrc/ops/matmul/matmul.h"
 #include "csrc/ops/nullary_aten_kernels.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
@@ -111,20 +112,9 @@ absl::StatusOr<mlir::MlirOp> BuildConjugateTransposeShlo(mlir::MlirOp op) {
 
 absl::StatusOr<mlir::MlirOp> BuildMatMulShlo(mlir::MlirOp lhs,
                                              mlir::MlirOp rhs) {
-  // Batch dimensions should be the same for both lhs and rhs.
-  const Indices all_dims = GetAllDimensions(lhs);
-  const auto batch_dims = llvm::ArrayRef<int64_t>(all_dims).drop_back(2);
-  const int64_t lhs_rank = GetTensorTypeOrDie(lhs).getRank();
-  const int64_t rhs_rank = GetTensorTypeOrDie(rhs).getRank();
-
-  const auto dot_dims = mlir::stablehlo::DotDimensionNumbersAttr::get(
-      &lhs.getContext(),
-      /*lhs_batching_dimensions=*/batch_dims,
-      /*rhs_batching_dimensions=*/batch_dims,
-      /*lhs_contracting_dimensions=*/{lhs_rank - 1},
-      /*rhs_contracting_dimensions=*/{rhs_rank - 2});
-
-  return mlir::stablehlo::DotGeneral(lhs, rhs, dot_dims);
+  return BuildMatmulShlo(
+      lhs, rhs,
+      mlir::stablehlo::Precision::DEFAULT);  // EXPLICIT_PRECISION_OK=SVD
 }
 
 mlir::stablehlo::CustomCallOp BuildCustomCallOp(

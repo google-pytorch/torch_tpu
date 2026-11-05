@@ -59,6 +59,7 @@ torch_tpu_cc_library(
         "//csrc/ops:op_builder_utils",
         "//csrc/ops/cumsum",
         "//csrc/ops/index_select",
+        "//csrc/ops/matmul",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/types:span",
         "@llvm-project//llvm:Support",
