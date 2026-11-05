@@ -28,13 +28,10 @@ torch_tpu_cc_library(
     srcs = ["dot.cc"],
     hdrs = ["dot.h"],
     deps = [
-        "//csrc/ops:op_builder_utils",
+        "//csrc/ops/matmul",
         "@com_google_absl//absl/status:statusor",
-        "@llvm-project//mlir:IR",
         "@stablehlo//:stablehlo_ops",
-        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
         "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
-        "@stablehlo//stablehlo/integrations/cpp/builder:stablehlo_builder",
     ],
 )
 
@@ -84,7 +81,6 @@ torch_tpu_cc_library(
     srcs = ["vdot_aten_kernels.cc"],
     hdrs = ["vdot_aten_kernels.h"],
     deps = [
-        ":dot",
         ":dot_checks",
         "//csrc/common:cache_key",
         "//csrc/common:error_utils",
@@ -95,8 +91,8 @@ torch_tpu_cc_library(
         "//csrc/eager:tensor_to_buffer",
         "//csrc/ops:op_names",
         "//csrc/ops:precision_context",
-        "//csrc/ops:unary",
         "//csrc/ops/macros:kernel",
+        "//csrc/ops/matmul",
         "//shims/torch:aten_headers",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",

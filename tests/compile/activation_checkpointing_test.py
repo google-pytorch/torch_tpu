@@ -701,10 +701,9 @@ class ActivationCheckpointingTest(seed_test_utils.RepeatableTest):
     bwd_mlir = debug.stablehlo_backward_text[0]
     self.assertEqual(bwd_mlir.count("stablehlo.optimization_barrier"), 2)
     self.assertEqual(bwd_mlir.count("chlo.erf"), 2)
-    # 8 backward aten.mm ops lower to 8 stablehlo.dot_general ops in MLIR; XLA
-    # HLO additionally lowers the 2 recomputed aten.addmm ops to 2 dot( ops
-    # (8 + 2 = 10 total dot( ops in HLO).
-    self.assertEqual(bwd_mlir.count("stablehlo.dot_general"), 8)
+    # 8 backward aten.mm ops and 2 recomputed aten.addmm ops lower to
+    # 10 stablehlo.dot_general ops in MLIR and 10 dot( ops in HLO.
+    self.assertEqual(bwd_mlir.count("stablehlo.dot_general"), 10)
     self._assert_hlo_cse_idempotent(
         expected_barriers=2, expected_erfs=2, expected_dots=10
     )
@@ -733,9 +732,9 @@ class ActivationCheckpointingTest(seed_test_utils.RepeatableTest):
     self.assertNotIn("stablehlo.optimization_barrier", no_barrier_mlir)
     self.assertEqual(no_barrier_mlir.count("chlo.erf"), 2)
 
-    # 2. With barriers enabled, all 4 `chlo.erf` ops and 15 HLO `dot(` ops
-    #    (4 forward addmm + 3 recomputed addmm + 8 backward mm) survive both
-    #    MLIR CSE and XLA `HloCSE`.
+    # 2. With barriers enabled, all 4 `chlo.erf` ops and 15 `dot_general` / HLO
+    #    `dot(` ops (4 forward addmm + 3 recomputed addmm + 8 backward mm)
+    #    survive both MLIR CSE and XLA `HloCSE`.
     torch._dynamo.reset()
     debug = self._run_and_verify_tpu_model(
         _TwoLayerCheckpointedMLP(use_checkpoint=True),
@@ -746,7 +745,7 @@ class ActivationCheckpointingTest(seed_test_utils.RepeatableTest):
     fused_mlir = debug.stablehlo_forward_text[0]
     self.assertEqual(fused_mlir.count("stablehlo.optimization_barrier"), 2)
     self.assertEqual(fused_mlir.count("chlo.erf"), 4)
-    self.assertEqual(fused_mlir.count("stablehlo.dot_general"), 8)
+    self.assertEqual(fused_mlir.count("stablehlo.dot_general"), 15)
     self._assert_hlo_cse_idempotent(
         expected_barriers=2, expected_erfs=4, expected_dots=15
     )
@@ -794,7 +793,7 @@ class ActivationCheckpointingTest(seed_test_utils.RepeatableTest):
     fused_mlir = debug.stablehlo_forward_text[0]
     self.assertEqual(fused_mlir.count("stablehlo.optimization_barrier"), 2)
     self.assertEqual(fused_mlir.count("chlo.erf"), 4)
-    self.assertEqual(fused_mlir.count("stablehlo.dot_general"), 8)
+    self.assertEqual(fused_mlir.count("stablehlo.dot_general"), 15)
     self._assert_hlo_cse_idempotent(
         expected_barriers=2, expected_erfs=4, expected_dots=15
     )

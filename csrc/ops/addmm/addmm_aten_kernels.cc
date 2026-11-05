@@ -38,6 +38,7 @@
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/gelu/gelu.h"
 #include "csrc/ops/macros/kernel.h"
+#include "csrc/ops/matmul/matmul.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/precision_context.h"
@@ -60,30 +61,12 @@ absl::StatusOr<mlir::MlirOp> BuildAddmmShlo(
     mlir::MlirOp self_op, mlir::MlirOp mat1_op, mlir::MlirOp mat2_op,
     std::optional<mlir::MlirOp> beta_op, mlir::MlirOp alpha_op,
     mlir::ElementType out_dtype, mlir::stablehlo::Precision precision) {
-  const mlir::RankedTensorType mat1_type = GetTensorTypeOrDie(mat1_op);
-  const mlir::RankedTensorType mat2_type = GetTensorTypeOrDie(mat2_op);
-
-  // TODO: XLA doesn't support matmuls with i64, so we convert them to f64.
-  const bool is_any_i64 = mat1_type.getElementType().isInteger(64) ||
-                          mat2_type.getElementType().isInteger(64);
-  if (is_any_i64) {
-    mat1_op = stablehlo::ConvertElementType(mat1_op, mlir::ElementType::F64);
-    mat2_op = stablehlo::ConvertElementType(mat2_op, mlir::ElementType::F64);
-  }
-
-  const auto precision_config = mlir::stablehlo::PrecisionConfigAttr::get(
-      &self_op.getContext(), {precision, precision});
-
   TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
                       InferComputationDtype(out_dtype));
-
-  mlir::MlirOp dot_result = stablehlo::Dot(
-      mat1_op, mat2_op, precision_config,
-      is_any_i64 ? std::nullopt
-                 : std::optional<mlir::ElementType>(compute_dtype));
-  if (is_any_i64) {
-    dot_result = stablehlo::ConvertElementType(dot_result, compute_dtype);
-  }
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp dot_result,
+      BuildMatmulShlo(mat1_op, mat2_op, precision,
+                      MatmulShloOptions{.target_element_type = compute_dtype}));
 
   alpha_op = stablehlo::ConvertElementType(alpha_op, compute_dtype);
   TT_ASSIGN_OR_RETURN(mlir::MlirOp alpha_tensor,
