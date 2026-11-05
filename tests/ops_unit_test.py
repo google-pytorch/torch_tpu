@@ -11276,12 +11276,13 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       dtype=[torch.float32, torch.bfloat16],
       rank=[3, 4],
       dim=[-2, -1],
+      b=[1, 2],
   )
   def test_gather_multidim_broadcast_index(
-      self, dtype: torch.dtype, rank: int, dim: int
+      self, dtype: torch.dtype, rank: int, dim: int, b: int
   ):
     """gather with a multi-dimensional broadcast index matches CPU."""
-    b, h, q, v, k = 2, 4, 8, 12, 6
+    h, q, v, k = 4, 8, 12, 6
     torch.manual_seed(42)
     lead_shape = (h,) if rank == 3 else (b, h)
     if dim == -1:
@@ -11382,7 +11383,23 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         tpu_torch_compile.build_mlir([gathered], [base_idx, x])
     )
     self.assertIn("stablehlo.dot_general", gather_mlir)
+    self.assertIn("stablehlo.select", gather_mlir)
+    self.assertIn("contracting_dims = [2] x [1]", gather_mlir)
     self.assertNotIn("stablehlo.gather", gather_mlir)
+
+    x_4d = torch.ones(1, h, q, v, device="cpu").to("tpu")
+    base_idx_4d = base_idx.reshape(1, 1, q, k)
+    with execution_mode.set_eager_mode(
+        execution_mode.EagerMode._INTERNAL_COMPILE_FX_GRAPH
+    ):
+      idx_4d = base_idx_4d.expand(1, h, q, k)
+      gathered_4d = torch.gather(x_4d, -1, idx_4d)
+    gather_4d_mlir = tpu_torch_compile.serialize_mlir_text(
+        tpu_torch_compile.build_mlir([gathered_4d], [base_idx_4d, x_4d])
+    )
+    self.assertIn("stablehlo.dot_general", gather_4d_mlir)
+    self.assertIn("tensor<8x12x8xi32>", gather_4d_mlir)
+    self.assertNotIn("tensor<1x8x12x8xi32>", gather_4d_mlir)
 
     with execution_mode.set_eager_mode(
         execution_mode.EagerMode._INTERNAL_COMPILE_FX_GRAPH
