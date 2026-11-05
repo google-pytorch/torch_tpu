@@ -22845,6 +22845,300 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
       with self.subTest(f"{name}_grad"):
         utils.assert_close(compiled, eager, rtol=1e-2, atol=1e-2)
 
+  @parameterized.parameters(
+      (1, 8, 2, 512, 80, "causal"),
+      (1, 8, 2, 1760, 80, "none"),
+      (2, 8, 2, 512, 80, "causal"),
+      (1, 8, 2, 1760, 80, "causal"),
+      (1, 8, 2, 2048, 64, "zero_where"),
+      (1, 8, 2, 1022, 64, "zero_where"),
+  )
+  def test_sdpa_repeat_kv_causal_where_and_unaligned(
+      self,
+      batch_size: int,
+      num_head_q: int,
+      num_head_kv: int,
+      seq_len: int,
+      head_dim: int,
+      mask_kind: str,
+  ) -> None:
+    """Tests GQA repeat_kv unwrapping, zero/causal where masks, and padding."""
+    torch.manual_seed(4321)
+    q = torch.randn(batch_size, num_head_q, seq_len, head_dim)
+    k = torch.randn(batch_size, num_head_kv, seq_len, head_dim)
+    v = torch.randn(batch_size, num_head_kv, seq_len, head_dim)
+    rep = num_head_q // num_head_kv
+
+    def fn(
+        q_in: torch.Tensor, k_in: torch.Tensor, v_in: torch.Tensor
+    ) -> torch.Tensor:
+      k_rep = (
+          k_in[:, :, None, :, :]
+          .expand(batch_size, num_head_kv, rep, seq_len, head_dim)
+          .reshape(batch_size, num_head_q, seq_len, head_dim)
+      )
+      v_rep = (
+          v_in[:, :, None, :, :]
+          .expand(batch_size, num_head_kv, rep, seq_len, head_dim)
+          .reshape(batch_size, num_head_q, seq_len, head_dim)
+      )
+      mask = None
+      if mask_kind == "causal":
+        idx = torch.arange(seq_len, device=q_in.device)
+        mask = torch.where(idx[:, None] >= idx[None, :], 0.0, float("-inf")).to(
+            q_in.dtype
+        )[None, None, :, :]
+      elif mask_kind == "zero_where":
+        idx = torch.arange(seq_len, device=q_in.device).reshape(
+            1, 1, seq_len, 1
+        )
+        pred = (
+            (idx >= 0)
+            .reshape(seq_len)[None, None, :, None]
+            .expand(1, 1, seq_len, seq_len)
+        )
+        mask = torch.where(pred, 0.0, float("-inf")).to(q_in.dtype)
+      return torch.nn.functional.scaled_dot_product_attention(
+          q_in, k_rep, v_rep, attn_mask=mask
+      )
+
+    out_cpu = fn(q.float(), k.float(), v.float())
+    q_ph = tpu_torch_compile.placeholder_like(q.to(dtype=torch.bfloat16))
+    k_ph = tpu_torch_compile.placeholder_like(k.to(dtype=torch.bfloat16))
+    v_ph = tpu_torch_compile.placeholder_like(v.to(dtype=torch.bfloat16))
+    with execution_mode.set_eager_mode(
+        execution_mode.EagerMode._INTERNAL_COMPILE_FX_GRAPH
+    ):
+      out_ph = fn(q_ph, k_ph, v_ph)
+    compile_result = tpu_torch_compile.traverse_and_compile(
+        [out_ph],
+        [q_ph, k_ph, v_ph],
+        build_mlir_module=True,
+    )
+    self.assertNotIn(
+        "stablehlo.select",
+        tpu_torch_compile.serialize_mlir_text(compile_result.module),
+    )
+    out_tpu = tpu_torch_compile.execute(
+        compile_result.executable,
+        [
+            q.to("tpu", dtype=torch.bfloat16),
+            k.to("tpu", dtype=torch.bfloat16),
+            v.to("tpu", dtype=torch.bfloat16),
+        ],
+        [
+            tpu_torch_compile.OutputShape(
+                [batch_size, num_head_q, seq_len, head_dim]
+            )
+        ],
+    )[0]
+    self.assert_close(
+        golden_result=out_cpu,
+        torch_tpu_result=out_tpu.cpu().float(),
+        rtol=2e-2,
+        atol=2e-2,
+    )
+
+  @parameterized.product(
+      head_dim=[64, 128],
+      is_causal=[False, True],
+      num_head_kv=[2, 4],
+  )
+  def test_sdpa_subtiling_s2048(
+      self, head_dim: int, is_causal: bool, num_head_kv: int
+  ) -> None:
+    """Tests S=2048 forward/backward accuracy across MHA/GQA and backends."""
+    batch_size, num_head_q, seq_len = 2, 4, 2048
+    torch.manual_seed(0)
+    q = torch.randn(
+        batch_size, num_head_q, seq_len, head_dim, dtype=torch.bfloat16
+    )
+    k = torch.randn(
+        batch_size, num_head_kv, seq_len, head_dim, dtype=torch.bfloat16
+    )
+    v = torch.randn(
+        batch_size, num_head_kv, seq_len, head_dim, dtype=torch.bfloat16
+    )
+    grad_out = torch.randn(
+        batch_size, num_head_q, seq_len, head_dim, dtype=torch.bfloat16
+    )
+    enable_gqa = num_head_q != num_head_kv
+
+    q_cpu = q.detach().float().requires_grad_(True)
+    k_cpu = k.detach().float().requires_grad_(True)
+    v_cpu = v.detach().float().requires_grad_(True)
+    out_cpu = torch.nn.functional.scaled_dot_product_attention(
+        q_cpu, k_cpu, v_cpu, is_causal=is_causal, enable_gqa=enable_gqa
+    )
+    out_cpu.backward(grad_out.float())
+    cpu_results = (out_cpu.detach(), q_cpu.grad, k_cpu.grad, v_cpu.grad)
+
+    for backend in (torch.nn.attention.SDPBackend.FLASH_ATTENTION,):
+      q_tpu = q.to(device="tpu").requires_grad_(True)
+      k_tpu = k.to(device="tpu").requires_grad_(True)
+      v_tpu = v.to(device="tpu").requires_grad_(True)
+      with torch.nn.attention.sdpa_kernel(backend):
+        out_tpu = torch.nn.functional.scaled_dot_product_attention(
+            q_tpu, k_tpu, v_tpu, is_causal=is_causal, enable_gqa=enable_gqa
+        )
+        out_tpu.backward(grad_out.to(device="tpu"))
+      tpu_results = (
+          out_tpu.detach().cpu().float(),
+          q_tpu.grad.cpu().float(),
+          k_tpu.grad.cpu().float(),
+          v_tpu.grad.cpu().float(),
+      )
+      for name, cpu_val, tpu_val in zip(
+          ("out", "q_grad", "k_grad", "v_grad"), cpu_results, tpu_results
+      ):
+        with self.subTest(f"{backend}_{name}"):
+          self.assert_close(
+              golden_result=cpu_val,
+              torch_tpu_result=tpu_val,
+              rtol=2e-2,
+              atol=2e-2,
+              preamble=f"close check failed for {backend}_{name}",
+          )
+
+  @parameterized.parameters(2048, 1536)
+  def test_sdpa_causal_square_tiling_invariant(self, seq_len: int) -> None:
+    """Verifies that causal SDPA preserves square qt == kt tiling for
+
+    S=2048 and S=1536.
+    """
+    import base64
+
+    batch_size, num_heads, head_dim = 1, 4, 640
+    torch.manual_seed(0)
+    q = torch.randn(
+        batch_size, num_heads, seq_len, head_dim, dtype=torch.float32
+    )
+    k = torch.randn(
+        batch_size, num_heads, seq_len, head_dim, dtype=torch.float32
+    )
+    v = torch.randn(
+        batch_size, num_heads, seq_len, head_dim, dtype=torch.float32
+    )
+    q_ph = tpu_torch_compile.placeholder_like(q)
+    k_ph = tpu_torch_compile.placeholder_like(k)
+    v_ph = tpu_torch_compile.placeholder_like(v)
+    with execution_mode.set_eager_mode(
+        execution_mode.EagerMode._INTERNAL_COMPILE_FX_GRAPH
+    ):
+      out_ph = torch.nn.functional.scaled_dot_product_attention(
+          q_ph, k_ph, v_ph, is_causal=True
+      )
+    compile_result = tpu_torch_compile.traverse_and_compile(
+        [out_ph],
+        [q_ph, k_ph, v_ph],
+        build_mlir_module=True,
+    )
+    module_str = tpu_torch_compile.serialize_mlir_text(compile_result.module)
+    body_match = re.search(r"(bW9kdWxl[A-Za-z0-9+/=]+)", module_str)
+    self.assertIsNotNone(
+        body_match, f"Failed to find custom call body in:\n{module_str}"
+    )
+    body_text = base64.b64decode(body_match.group(1)).decode(
+        "utf-8", errors="replace"
+    )
+    tile_dims = [int(m) for m in re.findall(r"memref<1x1x(\d+)x", body_text)]
+    self.assertGreaterEqual(
+        len(tile_dims),
+        2,
+        f"Failed to extract tile dimensions from body:\n{body_text}",
+    )
+    qt, kt = tile_dims[0], tile_dims[1]
+    self.assertEqual(
+        qt,
+        kt,
+        f"Expected qt == kt for causal S={seq_len}, got qt={qt}, kt={kt}",
+    )
+
+  def test_sdpa_mask_folding_rules(self) -> None:
+    """Tests that soft -1000 and narrowing converts do not fold, but all-zero
+
+    folds.
+    """
+    batch_size, num_heads, seq_len, head_dim = 1, 4, 512, 64
+    torch.manual_seed(0)
+    q = torch.randn(
+        batch_size, num_heads, seq_len, head_dim, dtype=torch.bfloat16
+    )
+    k = torch.randn(
+        batch_size, num_heads, seq_len, head_dim, dtype=torch.bfloat16
+    )
+    v = torch.randn(
+        batch_size, num_heads, seq_len, head_dim, dtype=torch.bfloat16
+    )
+    q_ph = tpu_torch_compile.placeholder_like(q)
+    k_ph = tpu_torch_compile.placeholder_like(k)
+    v_ph = tpu_torch_compile.placeholder_like(v)
+
+    # 1. Soft negative bias (-1000.0) must NOT fold to causal.
+    def fn_soft(q_in, k_in, v_in):
+      idx = torch.arange(seq_len, device=q_in.device)
+      mask = torch.where(idx[:, None] >= idx[None, :], 0.0, -1000.0).to(
+          q_in.dtype
+      )[None, None, :, :]
+      return torch.nn.functional.scaled_dot_product_attention(
+          q_in, k_in, v_in, attn_mask=mask
+      )
+
+    with execution_mode.set_eager_mode(
+        execution_mode.EagerMode._INTERNAL_COMPILE_FX_GRAPH
+    ):
+      out_soft = fn_soft(q_ph, k_ph, v_ph)
+    res_soft = tpu_torch_compile.traverse_and_compile(
+        [out_soft], [q_ph, k_ph, v_ph], build_mlir_module=True
+    )
+    self.assertIn(
+        "stablehlo.select",
+        tpu_torch_compile.serialize_mlir_text(res_soft.module),
+    )
+
+    # 2. Narrowing convert (e.g. to int16) must NOT fold to causal.
+    def fn_narrowing(q_in, k_in, v_in):
+      idx_i16 = torch.arange(seq_len, device=q_in.device).to(torch.int16)
+      mask = torch.where(
+          idx_i16[:, None] >= idx_i16[None, :], 0.0, float("-inf")
+      ).to(q_in.dtype)[None, None, :, :]
+      return torch.nn.functional.scaled_dot_product_attention(
+          q_in, k_in, v_in, attn_mask=mask
+      )
+
+    with execution_mode.set_eager_mode(
+        execution_mode.EagerMode._INTERNAL_COMPILE_FX_GRAPH
+    ):
+      out_narr = fn_narrowing(q_ph, k_ph, v_ph)
+    res_narr = tpu_torch_compile.traverse_and_compile(
+        [out_narr], [q_ph, k_ph, v_ph], build_mlir_module=True
+    )
+    self.assertIn(
+        "stablehlo.select",
+        tpu_torch_compile.serialize_mlir_text(res_narr.module),
+    )
+
+    # 3. All-zero mask folds unconditionally.
+    def fn_all_zero(q_in, k_in, v_in):
+      mask = torch.zeros(
+          1, 1, seq_len, seq_len, dtype=q_in.dtype, device=q_in.device
+      )
+      return torch.nn.functional.scaled_dot_product_attention(
+          q_in, k_in, v_in, attn_mask=mask
+      )
+
+    with execution_mode.set_eager_mode(
+        execution_mode.EagerMode._INTERNAL_COMPILE_FX_GRAPH
+    ):
+      out_zero = fn_all_zero(q_ph, k_ph, v_ph)
+    res_zero = tpu_torch_compile.traverse_and_compile(
+        [out_zero], [q_ph, k_ph, v_ph], build_mlir_module=True
+    )
+    self.assertNotIn(
+        "stablehlo.select",
+        tpu_torch_compile.serialize_mlir_text(res_zero.module),
+    )
+
   def test_pointwise_op_dtype_promotion(self):
     """Ensure that pointwise ops promote as expected.
 
