@@ -16,6 +16,7 @@ from absl.testing import absltest
 from absl.testing import parameterized
 import torch
 from torch._subclasses import fake_tensor
+from torch_tpu._internal.device import _device_ops_backend
 from torch_tpu._internal.utils import annotations
 from tests import seed_test_utils
 
@@ -184,8 +185,11 @@ class RngTest(seed_test_utils.RepeatableTest):
   def test_default_generators_is_tuple(self):
     self.assertIsInstance(torch.tpu.default_generators, tuple)
     self.assertGreater(torch.accelerator.device_count(), 0)
+    # Generators exist only for addressable devices, which can be fewer than
+    # the visible ones.
     self.assertLen(
-        torch.tpu.default_generators, torch.accelerator.device_count()
+        torch.tpu.default_generators,
+        _device_ops_backend._get_addressable_device_count(),  # pylint: disable=protected-access
     )
     self.assertIsInstance(torch.tpu.default_generators[0], torch.Generator)
 

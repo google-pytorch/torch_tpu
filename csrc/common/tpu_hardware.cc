@@ -22,9 +22,11 @@
 #include <sys/sysmacros.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <fstream>
 #include <iterator>
 #include <memory>
@@ -44,6 +46,8 @@
 #include "absl/strings/numbers.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
+#include "absl/strings/str_split.h"
+#include "csrc/common/env_vars.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/utils.h"  // IWYU pragma: keep
 
@@ -240,6 +244,27 @@ enum class DirListing { kListed, kMissing, kUnlistable };
   struct stat st;
   return stat(path.c_str(), &st) == 0 && S_ISCHR(st.st_mode) &&
          faccessat(AT_FDCWD, path.c_str(), R_OK | W_OK, AT_EACCESS) == 0;
+}
+
+// Returns the number of indices in `TPU_VISIBLE_DEVICES`, or std::nullopt if it
+// is unset, empty, or not a comma-separated list of non-negative indices.
+[[nodiscard]] std::optional<int64_t> GetVisibleDeviceIndexCount() {
+  // Not memoized: launchers may set it after the process starts.
+  const char* const visible_devices =
+      std::getenv(kTpuVisibleDevicesEnvVar);  // GETENV_OK=must not memoize.
+  if (visible_devices == nullptr || visible_devices[0] == '\0') {
+    return std::nullopt;
+  }
+
+  int64_t device_index_count = 0;
+  for (const std::string_view entry : absl::StrSplit(visible_devices, ',')) {
+    int64_t device_index = 0;
+    if (!absl::SimpleAtoi(entry, &device_index) || device_index < 0) {
+      return std::nullopt;
+    }
+    ++device_index_count;
+  }
+  return device_index_count;
 }
 
 // Result of scanning PCI devices for VFIO-exposed TPUs.
@@ -460,6 +485,17 @@ const TpuSpec* absl_nullable TpuSpec::Get(std::string_view pci_devices_dir) {
 int64_t GetTpuDeviceCount(std::string_view pci_devices_dir,
                           std::string_view vfio_dir) {
   return ScanPciTpus(pci_devices_dir, vfio_dir).device_count;
+}
+
+int64_t GetVisibleTpuDeviceCount(std::string_view pci_devices_dir,
+                                 std::string_view vfio_dir) {
+  const int64_t device_count = GetTpuDeviceCount(pci_devices_dir, vfio_dir);
+  const std::optional<int64_t> visible_device_index_count =
+      GetVisibleDeviceIndexCount();
+  if (!visible_device_index_count.has_value()) {
+    return device_count;
+  }
+  return std::min(device_count, *visible_device_index_count);
 }
 
 absl::StatusOr<std::optional<std::string>> GetTpuTopology(

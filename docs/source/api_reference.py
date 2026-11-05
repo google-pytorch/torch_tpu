@@ -324,7 +324,7 @@ def _(mo):
 
     | Environment Variable | Description |
     | :--- | :--- |
-    | `TPU_VISIBLE_DEVICES` | Comma-separated TPU chip indices visible to the current process (analogous to `CUDA_VISIBLE_DEVICES`). |
+    | `TPU_VISIBLE_DEVICES` | Comma-separated TPU device indices visible to the current process (analogous to `CUDA_VISIBLE_DEVICES`). Each index is one TensorCore on one chip. |
     | `RANK` | Global rank of the current process in a distributed job. |
     | `LOCAL_RANK` | Host-local rank of the current process. |
     | `WORLD_SIZE` | Total number of processes in the distributed job. |

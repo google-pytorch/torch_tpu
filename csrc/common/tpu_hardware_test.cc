@@ -16,6 +16,7 @@
 #include "csrc/common/tpu_hardware.h"
 
 #include <ftw.h>
+#include <stdlib.h>
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
 #include <unistd.h>
@@ -34,6 +35,7 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
 #include "absl/types/span.h"
+#include "csrc/common/env_vars.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/utils.h"  // IWYU pragma: keep
 #include "gtest/gtest.h"
@@ -647,6 +649,59 @@ TEST(GetTpuDeviceCountAndTopologyTest,
   ASSERT_FALSE(topology.ok());
   EXPECT_EQ(topology.status().code(), error::kInvalidArgument);
   EXPECT_EQ(topology.status().message(), "No TPU topology found for count: 3");
+}
+
+// Returns GetVisibleTpuDeviceCount() for the devices in `fake` with
+// `TPU_VISIBLE_DEVICES` set to `visible_devices`, or unset if std::nullopt.
+int64_t GetVisibleTpuDeviceCountWith(
+    const ScopedFakeHardwareDir& fake,
+    const std::optional<std::string>& visible_devices) {
+  if (visible_devices.has_value()) {
+    ABSL_CHECK_EQ(setenv(kTpuVisibleDevicesEnvVar, visible_devices->c_str(),
+                         /*overwrite=*/1),
+                  0);
+  } else {
+    ABSL_CHECK_EQ(unsetenv(kTpuVisibleDevicesEnvVar), 0);
+  }
+  const int64_t count =
+      GetVisibleTpuDeviceCount(fake.pci_devices_dir(), fake.vfio_dir());
+  ABSL_CHECK_EQ(unsetenv(kTpuVisibleDevicesEnvVar), 0);
+  return count;
+}
+
+TEST(GetVisibleTpuDeviceCountTest, CapsCountAtListedDevices) {
+  ScopedFakeHardwareDir fake;
+  for (int i = 0; i < 8; ++i) {
+    fake.AddPciDevice(absl::StrFormat("0000:00:%02x.0", i + 4), "0x1ae0",
+                      "0x0063", absl::StrCat(i));
+  }
+  EXPECT_EQ(GetVisibleTpuDeviceCountWith(fake, std::nullopt), 8);
+  EXPECT_EQ(GetVisibleTpuDeviceCountWith(fake, "3"), 1);
+  EXPECT_EQ(GetVisibleTpuDeviceCountWith(fake, "0,1,2,3"), 4);
+  // Extra indices don't add devices.
+  EXPECT_EQ(GetVisibleTpuDeviceCountWith(fake, "0,1,2,3,4,5,6,7,8,9"), 8);
+}
+
+TEST(GetVisibleTpuDeviceCountTest, CountsOneDevicePerIndexOnMultiDeviceChips) {
+  ScopedFakeHardwareDir fake;
+  // 2 chips with 2 TensorCores (PCI functions) each. An index is a TensorCore.
+  fake.AddPciDevice("0000:10:01.0", "0x1ae0", "0x0076", "0");
+  fake.AddPciDevice("0000:10:01.1", "0x1ae0", "0x0076", "1");
+  fake.AddPciDevice("0000:11:01.0", "0x1ae0", "0x0076", "2");
+  fake.AddPciDevice("0000:11:01.1", "0x1ae0", "0x0076", "3");
+  EXPECT_EQ(GetVisibleTpuDeviceCountWith(fake, "2"), 1);
+  EXPECT_EQ(GetVisibleTpuDeviceCountWith(fake, "0,1,2"), 3);
+}
+
+TEST(GetVisibleTpuDeviceCountTest, IgnoresEmptyOrMalformedVisibleDevices) {
+  ScopedFakeHardwareDir fake;
+  fake.AddPciDevice("0000:00:04.0", "0x1ae0", "0x006f", "0");
+  fake.AddPciDevice("0000:00:05.0", "0x1ae0", "0x006f", "1");
+  for (const char* const visible_devices :
+       {"", "a", "0,-1", "0,,1", "0;1", "/dev/vfio/0"}) {
+    EXPECT_EQ(GetVisibleTpuDeviceCountWith(fake, visible_devices), 2)
+        << "TPU_VISIBLE_DEVICES=" << visible_devices;
+  }
 }
 
 TEST(GetSingleDeviceTpuBoundsTest, Returns3DBoundsWhenNoSupportedTpuIsPresent) {

@@ -123,6 +123,14 @@ struct TpuSpec {
     std::string_view pci_devices_dir = "/sys/bus/pci/devices",
     std::string_view vfio_dir = "/dev/vfio");
 
+// Returns GetTpuDeviceCount() capped by the number of indices in
+// `TPU_VISIBLE_DEVICES`, like `CUDA_VISIBLE_DEVICES`. Each index is one device,
+// i.e. one TensorCore on chips with several, such as TPU v7. Reads the env var
+// on every call.
+[[nodiscard]] int64_t GetVisibleTpuDeviceCount(
+    std::string_view pci_devices_dir = "/sys/bus/pci/devices",
+    std::string_view vfio_dir = "/dev/vfio");
+
 // Returns the comma-separated topology string (e.g. "2,2,1") for the
 // VFIO-exposed TPU devices, or std::nullopt if no VFIO-exposed TPU device is
 // found. Returns an InvalidArgumentError if a TPU is found but no topology is

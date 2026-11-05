@@ -256,6 +256,17 @@ class TpuTopologyMockTest(seed_test_utils.RepeatableTest):
         expected_spec=hardware.TpuSpec.V5E,
     )
 
+  def test_visible_count_counts_only_visible_devices(self):
+    self._set_up_pci_fs(_fake_tpus("0x0063", 8))
+    with mock.patch.dict(os.environ, {"TPU_VISIBLE_DEVICES": "0,1,2,3"}):
+      self.assertEqual(hardware.get_visible_tpu_device_count(), 4)
+      # The host's count and topology don't depend on TPU_VISIBLE_DEVICES.
+      self.assertEqual(hardware.get_tpu_device_count(), 8)
+      self.assertEqual(
+          hardware.get_tpu_topology(),
+          ",".join(map(str, hardware.TpuSpec.V5E.topologies[8])),
+      )
+
   def test_ignores_non_tpu_pci_devices(self):
     self._run_mock_test(
         [
@@ -346,6 +357,17 @@ class TpuTopologyMockTest(seed_test_utils.RepeatableTest):
             "get_tpu_device_count",
             functools.partial(
                 hardware._hardware_backend.get_tpu_device_count,
+                pci_devices_dir=os.fspath(pci_devices_dir),
+                vfio_dir=os.fspath(vfio_dir),
+            ),
+        )
+    )
+    self.enter_context(
+        mock.patch.object(
+            hardware._hardware_backend,
+            "get_visible_tpu_device_count",
+            functools.partial(
+                hardware._hardware_backend.get_visible_tpu_device_count,
                 pci_devices_dir=os.fspath(pci_devices_dir),
                 vfio_dir=os.fspath(vfio_dir),
             ),

@@ -18,7 +18,7 @@
 # haifeng-jin
 # basioli-k
 
-load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_library", "torch_tpu_py_test")
+load("//build_files:build_defs.bzl", "if_oss", "torch_tpu_package_end", "torch_tpu_py_library", "torch_tpu_py_test")
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -133,7 +133,12 @@ torch_tpu_py_test(
     srcs = ["device_count_test.py"],
     args = ["--device_type=tpu"],
     main = "device_count_test.py",
-    tags = [
+    # OSS CI runs tests in parallel, one TPU each. This test's subprocesses use
+    # other TPUs too, so it must run alone.
+    tags = if_oss(
+        ["exclusive"],
+        [],
+    ) + [
         "requires-tpu-v5lite:8",
     ],
     deps = [
@@ -155,7 +160,16 @@ torch_tpu_py_test(
     srcs = ["device_count_test.py"],
     args = ["--device_type=tpu"],
     main = "device_count_test.py",
-    tags = [
+    # OSS CI runs single-chip tests in its RBE workers without TPUs,
+    # where exclusive tests run locally. Use `no-remote-exec` to move
+    # the test to the 8-chip runner.
+    tags = if_oss(
+        [
+            "exclusive",
+            "no-remote-exec",
+        ],
+        [],
+    ) + [
         "requires-tpu-v5lite",
     ],
     deps = [

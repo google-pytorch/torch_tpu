@@ -112,6 +112,11 @@ class PjrtBackend {
   // Returns the global device count. Triggers lazy initialization if needed.
   absl::StatusOr<int> GetGlobalDeviceCount() ABSL_LOCKS_EXCLUDED(mutex_);
 
+  // Returns GetVisibleTpuDeviceCount() at initialization, or the addressable
+  // device count if larger. In distributed mode (WORLD_SIZE > 1), returns PJRT
+  // addressable device count. Triggers lazy initialization if needed.
+  absl::StatusOr<int> GetVisibleDeviceCount() ABSL_LOCKS_EXCLUDED(mutex_);
+
   // Returns the global ID of the current device. Triggers lazy initialization
   // if needed.
   absl::StatusOr<int> GetGlobalDeviceId() ABSL_LOCKS_EXCLUDED(mutex_);
@@ -156,6 +161,7 @@ class PjrtBackend {
   PjRtDeviceType device_type_ ABSL_GUARDED_BY(mutex_) =
       PjRtDeviceType::kUnknown;
   int global_device_count_ ABSL_GUARDED_BY(mutex_) = 0;
+  int visible_device_count_ ABSL_GUARDED_BY(mutex_) = 0;
   int global_device_id_ ABSL_GUARDED_BY(mutex_) = -1;
   PjRtInitializationOptions options_ ABSL_GUARDED_BY(mutex_) = {};
   bool init_attempted_ ABSL_GUARDED_BY(mutex_) = false;

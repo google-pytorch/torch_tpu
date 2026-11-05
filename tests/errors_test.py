@@ -21,6 +21,7 @@ import unittest
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
+from torch_tpu._internal.device import _device_ops_backend
 from torch_tpu._internal.utils import utils
 from torch_tpu._internal.distributed import multiprocessing
 from tests import error_testing as et
@@ -45,6 +46,17 @@ _DROPOUT_INTERNAL_ASSERTION_ERROR_RE = re.compile(
 def setUpModule():
   """Called by absltest after flags are parsed and before tests are run."""
   et.set_up_module()
+
+
+def _usable_device_count() -> int:
+  """Returns the number of devices this process uses."""
+  if et.is_on_tpu():
+    # On TPU, this is the PJRT addressable device count, which can be smaller
+    # than `torch.accelerator.device_count()`.
+    return _device_ops_backend._get_addressable_device_count()  # pylint: disable=protected-access
+
+  # On GPU, all visible devices are usable.
+  return torch.accelerator.device_count()
 
 
 def _ensure_ao_ops_registered() -> None:
@@ -15870,16 +15882,22 @@ Supported combinations for non-constant padding:
       torch.accelerator.current_stream(f"{et.device().type}:8")
 
   @et.skip_if(
-      lambda: et.is_on_tpu() and torch.accelerator.device_count() >= 8,
+      lambda: et.is_on_tpu() and _usable_device_count() >= 8,
       "Error is raised only if the number of TPUs is < 8 due to TorchTPU"
       " hardcoded maximum device count: 8 TPUs.",
   )
   def test_current_stream_device_index_above_device_count(self):
-    actual_device_count = torch.accelerator.device_count()
+    actual_device_count = _usable_device_count()
+    unsupported_hint = (
+        ". Using a visible TPU device other than the ones this process uses is"
+        " not supported yet"
+        if actual_device_count < torch.accelerator.device_count()
+        else ""
+    )
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu=f"""device index {actual_device_count} is out of bounds of the number of addressable devices {actual_device_count}""",
+        tpu=f"""device index {actual_device_count} is out of bounds of the number of addressable devices {actual_device_count}{unsupported_hint}""",
         gpu=f"""Device index value {actual_device_count} is out of index range [0, {actual_device_count})""",
     ):
       torch.accelerator.current_stream(

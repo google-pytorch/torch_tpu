@@ -16,6 +16,7 @@
 
 #include "csrc/pjrt/pjrt_state.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -40,6 +41,7 @@
 #include "csrc/common/env_vars.h"
 #include "csrc/common/environment.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/tpu_hardware.h"
 #include "csrc/common/utils.h"
 #include "csrc/distributed/slicebuilder/discovery.h"
 #include "csrc/pjrt/pjrt_client.h"
@@ -228,6 +230,7 @@ absl::Status PjrtBackend::InitializeInternal() {
 
   PjRtDeviceType device_type = PjRtDeviceType::kUnknown;
   std::string plugin_name;
+  int64_t visible_device_count = 0;
   if (options_.device_type == "tpu") {
     device_type = PjRtDeviceType::kTpu;
     plugin_name = kTpuPjrtName;
@@ -239,9 +242,14 @@ absl::Status PjrtBackend::InitializeInternal() {
         GetRequiredIntegerEnvOnce<int, kWorldSizeEnvVar>();
     const bool single_device = !world_size_or.ok() || *world_size_or == 1;
     if (single_device) {
+      // Count before the runtime is restricted to one device (in OSS, by
+      // rewriting `TPU_VISIBLE_DEVICES`), so `device_count()` doesn't change.
+      visible_device_count = GetVisibleTpuDeviceCount();
       TT_RETURN_IF_ERROR(InitializeSingleDeviceEnvironment()).SetPrepend()
           << "failed to initialize single-device environment: ";
     } else {
+      // A worker uses only its own device, and PyTorch picks device
+      // `rank % device_count()`, so count only addressable devices.
       TT_ASSIGN_OR_RETURN(auto config, GetDistributedWorkerConfiguration());
       TT_RETURN_IF_ERROR(InitializeDistributedEnvironment(config)).SetPrepend()
           << "failed to initialize distributed environment: ";
@@ -314,6 +322,8 @@ absl::Status PjrtBackend::InitializeInternal() {
   device_ = addressable_devices[0];
   device_type_ = device_type;
   global_device_count_ = world_size;
+  visible_device_count_ = static_cast<int>(std::max<int64_t>(
+      visible_device_count, static_cast<int64_t>(addressable_devices.size())));
   global_device_id_ = device_->global_device_id().value();
   return absl::OkStatus();
 }
@@ -370,6 +380,16 @@ absl::StatusOr<int> PjrtBackend::GetGlobalDeviceCount() {
     return TT_ERROR(error::kInternal) << "PjRt is not initialized";
   }
   return global_device_count_;
+}
+
+absl::StatusOr<int> PjrtBackend::GetVisibleDeviceCount() {
+  TT_RETURN_IF_ERROR(EnsureInitialized());
+  absl::ReaderMutexLock lock(mutex_);
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Only reachable if Shutdown() races
+                 // with a successful EnsureInitialized().
+      client_ != nullptr, error::kInternal)
+      << "PjRt client is not initialized";
+  return visible_device_count_;
 }
 
 absl::StatusOr<int> PjrtBackend::GetGlobalDeviceId() {
@@ -439,6 +459,7 @@ void PjrtBackend::Shutdown() {
   device_ = nullptr;
   device_type_ = PjRtDeviceType::kUnknown;
   global_device_count_ = 0;
+  visible_device_count_ = 0;
   init_attempted_ = false;
   init_status_ = absl::OkStatus();
   ABSL_VLOG(1) << "PjRt shut down.";

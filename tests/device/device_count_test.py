@@ -25,9 +25,7 @@ Each scenario runs in a freshly spawned process, since the device runtime can
 be initialized only once per process.
 """
 
-from collections.abc import Callable
 import dataclasses
-import functools
 import os
 import traceback
 from typing import Any
@@ -52,30 +50,6 @@ _VISIBLE_DEVICES_ENV_VARS = {
 }
 
 _WORKER_TIMEOUT_SECONDS = 300
-
-
-# TODO(b/577219302): remove the decorator after enabling all test cases.
-def _skip_on_tpu(reason: str) -> Callable[[Callable[..., Any]], Any]:
-  """Skips the decorated test with `reason` when testing TPU.
-
-  Unlike `absltest.skipIf`, this decides when the test runs rather than when
-  it is decorated, since the device type comes from a flag that isn't parsed
-  yet when the module is imported.
-
-  Args:
-    reason: Why the test doesn't pass on TPU yet.
-  """
-
-  def decorator(test_method: Callable[..., Any]) -> Callable[..., Any]:
-    @functools.wraps(test_method)
-    def wrapper(self, *args, **kwargs):
-      if _DEVICE_TYPE.value == "tpu":
-        self.skipTest(reason)
-      return test_method(self, *args, **kwargs)
-
-    return wrapper
-
-  return decorator
 
 
 @dataclasses.dataclass(frozen=True)
@@ -226,12 +200,6 @@ class DeviceCountTest(
       self.fail(f"The worker failed:\n{payload}")
     return payload
 
-  # TODO(b/577219302): fix and enable the test case.
-  @_skip_on_tpu(
-      "A single process uses only one TPU device by default once the TPU"
-      " runtime is initialized, so on a multi-chip worker the count changes"
-      " from the number of chips to 1.",
-  )
   def test_count_is_the_same_before_and_after_init(self):
     """Verifies that initializing the runtime doesn't change the count."""
     counts = self._run_worker(visible_devices_at_start=None)
@@ -239,10 +207,6 @@ class DeviceCountTest(
     self.assertGreater(counts.before_init, 0)
     self.assertEqual(counts.before_init, counts.after_init)
 
-  # TODO(b/577219302): fix and enable the test case.
-  @_skip_on_tpu(
-      "The count before initialization ignores TPU_VISIBLE_DEVICES.",
-  )
   def test_count_before_init_respects_visible_devices(self):
     """Verifies the count before init applies the visible devices variable."""
     counts = self._run_worker(visible_devices_at_start="0")
@@ -250,21 +214,16 @@ class DeviceCountTest(
     self.assertEqual(counts.before_init, 1)
     self.assertEqual(counts.after_init, 1)
 
-  # TODO(b/577219302): fix and enable the test case.
-  @_skip_on_tpu(
-      "The count before initialization ignores TPU_VISIBLE_DEVICES.",
-  )
   def test_count_is_not_cached_before_init(self):
     """Verifies the count follows visible devices changes made before init."""
     counts = self._run_worker(
         visible_devices_at_start=None, visible_devices_before_init="0"
     )
 
-    self.assertGreater(
-        counts.before_init,
-        1,
-        "This test needs a host with multiple devices.",
-    )
+    # With one device, the count is always 1 with or without the env change.
+    if counts.before_init <= 1:
+      self.skipTest("This test needs a host with multiple devices.")
+
     self.assertEqual(counts.after_env_change, 1)
     # Like PyTorch's `test_device_count_not_cached_pre_init`, this doesn't check
     # the count after init: CUDA can read `CUDA_VISIBLE_DEVICES` before the

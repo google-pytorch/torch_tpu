@@ -55,6 +55,9 @@ class MultiTpuTest(continuous_test_utils.TpuMultiProcContinuousTest):
             f" {torch.accelerator.device_count()}), got {this_device}"
         ),
     )
+    # A worker uses only its own device, and PyTorch picks device
+    # `rank % device_count()`, so the count must be 1.
+    self.assertEqual(torch.accelerator.device_count(), 1)
 
 
 if __name__ == "__main__":

@@ -63,6 +63,7 @@ torch_tpu_cc_library(
         "//csrc/common:env_vars",
         "//csrc/common:environment",
         "//csrc/common:error_utils",
+        "//csrc/common:tpu_hardware",
         "//csrc/common:utils",
         "//csrc/distributed/slicebuilder:discovery",
         "@com_google_absl//absl/base:core_headers",

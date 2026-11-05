@@ -28,6 +28,7 @@ import torch
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal import sync
 from torch_tpu._internal import testing as tt_testing
+from torch_tpu._internal.device import _device_ops_backend
 from torch_tpu._internal.utils import annotations
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.utils import utils as tt_utils
@@ -40,6 +41,11 @@ _EagerMode: TypeAlias = execution_mode._EagerMode
 def setUpModule():
   # Compare torch.accelerator APIs with the internal torch.tpu APIs they use.
   annotations._internal_apis_allowed_for_testing = True  # pylint: disable=protected-access
+
+
+def _usable_device_count() -> int:
+  """Returns the number of devices this process uses (PJRT addressable)."""
+  return _device_ops_backend._get_addressable_device_count()  # pylint: disable=protected-access
 
 
 class AcceleratorDeviceTest(seed_test_utils.RepeatableTest):
@@ -78,6 +84,7 @@ class AcceleratorDeviceTest(seed_test_utils.RepeatableTest):
     self.assertIsInstance(count, int)
     self.assertGreater(count, 0)
     self.assertEqual(count, torch.tpu.device_count())
+    self.assertGreaterEqual(count, _usable_device_count())
 
   def test_current_device_index(self):
     idx = torch.accelerator.current_device_index()
@@ -100,7 +107,7 @@ class AcceleratorDeviceTest(seed_test_utils.RepeatableTest):
         torch.accelerator.set_device_index(valid_device)
         self.assertEqual(torch.accelerator.current_device_index(), 0)
 
-    if torch.accelerator.device_count() > 1:
+    if _usable_device_count() > 1:
       for device_one in (1, "tpu:1", torch.device("tpu", 1)):
         with self.subTest(device_one=device_one):
           torch.accelerator.set_device_index(device_one)
@@ -136,10 +143,13 @@ class AcceleratorDeviceTest(seed_test_utils.RepeatableTest):
         ):
           torch.accelerator.set_device_index(wrong_type)
 
-    # Out-of-range device index raises RuntimeError.
-    out_of_range = torch.accelerator.device_count()
-    with self.assertRaises(  # ASSERT_RAISES_OK=PyTorch accelerator API contract check
-        RuntimeError
+    # The first unusable index raises, with a hint if the device is visible.
+    out_of_range = _usable_device_count()
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=PyTorch accelerator API contract check
+        RuntimeError,
+        "is not supported yet"
+        if out_of_range < torch.accelerator.device_count()
+        else "",
     ):
       torch.accelerator.set_device_index(out_of_range)
 
@@ -175,7 +185,7 @@ class AcceleratorDeviceTest(seed_test_utils.RepeatableTest):
 
     # If multiple devices are available, verify switching and restoration
     # including when an exception occurs inside the block.
-    if torch.accelerator.device_count() > 1:
+    if _usable_device_count() > 1:
       with torch.accelerator.device_index(0):
         self.assertEqual(torch.accelerator.current_device_index(), 0)
         with torch.accelerator.device_index(1):
@@ -197,7 +207,7 @@ class AcceleratorDeviceTest(seed_test_utils.RepeatableTest):
       torch.accelerator.device_index(device=0)  # pytype: disable=wrong-keyword-args
 
     # Negative or out-of-range device index raises RuntimeError on context entry.
-    for bad_index in (-1, torch.accelerator.device_count()):
+    for bad_index in (-1, _usable_device_count()):
       with self.subTest(bad_index=bad_index):
         with self.assertRaises(  # ASSERT_RAISES_OK=PyTorch accelerator API contract check
             RuntimeError
@@ -214,7 +224,7 @@ class AcceleratorDeviceTest(seed_test_utils.RepeatableTest):
     tensor caused subsequent ops to be recorded on device 0's events queue while
     their inputs lived on device N's queue, which raced during materialization.
     """
-    num_devices = torch.accelerator.device_count()
+    num_devices = _usable_device_count()
     if num_devices < 2:
       self.skipTest(
           "Requires multiple devices to verify device index metadata."
@@ -387,7 +397,7 @@ class AcceleratorStreamAndSyncTest(seed_test_utils.RepeatableTest):
           torch.accelerator.current_stream(wrong_type)
 
     # Out-of-range or negative index raises RuntimeError.
-    for bad_index in (-1, torch.accelerator.device_count(), 100):
+    for bad_index in (-1, _usable_device_count(), 100):
       with self.subTest(bad_index=bad_index):
         with self.assertRaises(  # ASSERT_RAISES_OK=PyTorch accelerator API contract check
             RuntimeError
@@ -1044,7 +1054,7 @@ class AcceleratorRandomTest(seed_test_utils.RepeatableTest):
     with self.assertRaises(  # ASSERT_RAISES_OK=PyTorch accelerator API contract check
         RuntimeError
     ):
-      torch.accelerator.random.initial_seed(torch.accelerator.device_count())
+      torch.accelerator.random.initial_seed(_usable_device_count())
 
   def test_get_rng_state(self):
     torch.manual_seed(42)
@@ -1090,10 +1100,17 @@ class AcceleratorRandomTest(seed_test_utils.RepeatableTest):
     with self.assertRaises(  # ASSERT_RAISES_OK=PyTorch accelerator API contract check
         RuntimeError
     ):
-      torch.accelerator.random.get_rng_state(torch.accelerator.device_count())
+      torch.accelerator.random.get_rng_state(_usable_device_count())
 
   def test_get_rng_state_all(self):
     torch.manual_seed(2026)
+    if _usable_device_count() < torch.accelerator.device_count():
+      # TODO(b/555281188): Generators exist only for addressable devices.
+      with self.assertRaisesRegex(  # ASSERT_RAISES_OK=TPU runtime limitation
+          RuntimeError, "expected device_index between 0 and"
+      ):
+        torch.accelerator.random.get_rng_state_all()
+      return
     all_states = torch.accelerator.random.get_rng_state_all()
     self.assertIsInstance(all_states, list)
     self.assertLen(all_states, torch.accelerator.device_count())

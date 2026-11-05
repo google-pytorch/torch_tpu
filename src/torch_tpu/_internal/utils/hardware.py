@@ -130,13 +130,25 @@ def get_tpu_device_count() -> int:
   bounds restrict them.
 
   Deprecated: code outside TorchTPU should call
-  `torch.accelerator.device_count()` instead, which returns this count until the
-  TPU runtime is initialized, and the runtime's device count afterwards.
+  `torch.accelerator.device_count()` instead, which returns this count capped by
+  `TPU_VISIBLE_DEVICES`.
 
   Returns:
     The integer number of TPU devices detected.
   """
   return _hardware_backend.get_tpu_device_count()
+
+
+def get_visible_tpu_device_count() -> int:
+  """Returns `get_tpu_device_count()` capped by `TPU_VISIBLE_DEVICES`.
+
+  Each index in `TPU_VISIBLE_DEVICES` is one device, i.e. one TensorCore on
+  chips with several, such as TPU v7. Doesn't initialize the TPU runtime.
+
+  Returns:
+    The number of TPU devices visible to this process.
+  """
+  return _hardware_backend.get_visible_tpu_device_count()
 
 
 @annotations.deprecated(

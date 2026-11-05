@@ -64,7 +64,7 @@ def get_tpu_device_count(default: int = 4) -> int:
 
   Call this in the parent process, which does not initialize the TPU runtime:
   once it is initialized, e.g. in a worker, `torch.accelerator.device_count()`
-  only counts the devices visible to that process.
+  only counts the devices that worker uses.
 
   Args:
     default: Fallback device count to return when no TPU devices are detected
