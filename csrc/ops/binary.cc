@@ -24,6 +24,7 @@
 #include "mlir/Support/DebugStringHelper.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "stablehlo/integrations/cpp/builder/ChloBuilder.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 
@@ -177,6 +178,13 @@ absl::StatusOr<mlir::MlirOp> BuildRemainderShlo(mlir::MlirOp lhs_op,
   TT_ASSIGN_OR_RETURN(rhs, CastIfNeeded(rhs, comp_dtype));
 
   mlir::MlirOp rem_op = stablehlo::Rem(lhs, rhs);
+  if (mlir::IsFloat(comp_dtype)) {
+    mlir::MlirOp is_inf_rhs = mlir::chlo::IsInf(rhs);
+    mlir::MlirOp is_finite_lhs = stablehlo::IsFinite(lhs);
+    mlir::MlirOp is_inf_rhs_and_finite_lhs =
+        stablehlo::And(is_inf_rhs, is_finite_lhs);
+    rem_op = stablehlo::Select(is_inf_rhs_and_finite_lhs, lhs, rem_op);
+  }
   mlir::MlirOp zero_op = MakeConstantLike(rem_op, 0);
   mlir::MlirOp rem_ne_zero =
       stablehlo::Compare(rem_op, zero_op, stablehlo::ComparisonDirection::NE);

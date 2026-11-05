@@ -26141,6 +26141,71 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
       utils.assert_close(out_tpu.cpu(), out_cpu, rtol=rtol, atol=atol)
       utils.assert_close(x_tpu.grad.cpu(), x_cpu.grad, rtol=rtol, atol=atol)
 
+  def test_remainder_infinite_divisor(self):
+    for dtype in (
+        torch.float32,
+        torch.float64,
+        torch.bfloat16,
+        torch.float16,
+    ):
+      with self.subTest(dtype=dtype):
+
+        def compute(device):
+          a = torch.tensor(
+              [
+                  3.0,
+                  -3.0,
+                  3.0,
+                  -3.0,
+                  0.0,
+                  -0.0,
+                  0.0,
+                  -0.0,
+                  float("inf"),
+                  float("inf"),
+                  float("-inf"),
+                  float("-inf"),
+                  float("nan"),
+                  float("nan"),
+              ],
+              dtype=dtype,
+              device=device,
+          )
+          b = torch.tensor(
+              [
+                  float("inf"),
+                  float("inf"),
+                  float("-inf"),
+                  float("-inf"),
+                  float("inf"),
+                  float("-inf"),
+                  float("-inf"),
+                  float("inf"),
+                  float("inf"),
+                  float("-inf"),
+                  float("inf"),
+                  float("-inf"),
+                  float("inf"),
+                  float("-inf"),
+              ],
+              dtype=dtype,
+              device=device,
+          )
+          out = torch.empty_like(a)
+          torch.remainder(a, b, out=out)
+          res_inf = torch.remainder(a, float("inf"))
+          res_neginf = torch.remainder(a, float("-inf"))
+          res_scalar = torch.remainder(3.0, b)
+          return (
+              torch.remainder(a, b),
+              out,
+              res_inf,
+              res_neginf,
+              res_scalar,
+          )
+
+        self.assert_close_tpu_vs_cpu(compute)
+
 
 if __name__ == "__main__":
   absltest.main()
