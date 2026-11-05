@@ -411,6 +411,10 @@ REGISTRATION_OVERRIDES = frozenset([
     '_has_compatible_shallow_copy_type',
     '_masked_softmax.out',
     '_masked_softmax_backward.out',
+    # _safe_softmax is registered to lower directly to a single fused StableHLO
+    # softmax kernel with -inf row guarding instead of the composite
+    # softmax + isneginf + all + where_out decomposition.
+    '_safe_softmax',
     '_scaled_dot_product_cudnn_attention',
     '_scaled_dot_product_cudnn_attention_backward',
     '_scaled_dot_product_fused_attention_overrideable',

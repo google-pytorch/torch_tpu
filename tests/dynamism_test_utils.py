@@ -613,11 +613,6 @@ DYNAMISM_DENY_LISTS: DenyList = {
         # Calls getNumElements() and static scale checks on bounded operands.
         "torch._scaled_mm": {EAGER, COMPILE},
         "torch._scaled_mm_v2": {EAGER, COMPILE},
-        # stablehlo.reshape allows at most one bounded dimension. This fails
-        # when dims 0 and 2 are both dynamic, which happens in compile mode
-        # because dims marked in earlier subtests stay dynamic.
-        # TODO: b/566327707 - Remove once marked dims no longer carry over.
-        "torch.ops.aten._safe_softmax.default": {COMPILE, COMPILE_GRAD},
     },
     # TODO: b/449736443 - Avoid Tensor.resize_() graph break in _addmm_dtype_wrapper.
     "the test wrapper calls Tensor.resize_(), which graph-breaks in Dynamo": {
