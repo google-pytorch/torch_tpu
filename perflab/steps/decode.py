@@ -503,7 +503,11 @@ def _reset_static_attention_layer(layer: Any, prompt_len: int) -> None:
 
 class DecodeStepper(common.BaseStepper):
 
-  def __init__(self, output_tokens: int = 16, dynamism: bool = False):
+  def __init__(
+      self,
+      output_tokens: int = step_lib.DEFAULT_DECODE_OUTPUT_TOKENS,
+      dynamism: bool = False,
+  ):
     super().__init__()
     self.output_tokens = output_tokens
     self.dynamism = dynamism
@@ -1032,7 +1036,7 @@ class DecodeStepper(common.BaseStepper):
 
 @step_lib.register_stepper(step_lib.StepperType.DECODER_ONLY_DECODE)
 def decode(
-    output_tokens: int = 16,
+    output_tokens: int = step_lib.DEFAULT_DECODE_OUTPUT_TOKENS,
     dynamism: bool = False,
 ) -> step_lib.Stepper:
   """Stateful decode step: prefill, reset, and decode iterations."""

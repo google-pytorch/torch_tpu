@@ -63,6 +63,7 @@ torch_tpu_py_test(
     deps = [
         "//perflab:measure",
         "//perflab:target",
+        "//perflab:workload",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:flagsaver",
         "//src/torch_tpu",
@@ -466,6 +467,8 @@ torch_tpu_py_test(
     name = "workload_test",
     srcs = ["workload_test.py"],
     deps = [
+        "//perflab:metrics",
+        "//perflab:step_lib",
         "//perflab:workload",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",

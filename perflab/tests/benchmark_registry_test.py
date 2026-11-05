@@ -27,6 +27,7 @@ from absl.testing import absltest
 from absl.testing import flagsaver
 from perflab import measure as measure_lib
 from perflab import target as target_lib
+from perflab import workload as workload_lib
 from tests import repo_paths
 from tests import seed_test_utils
 
@@ -157,6 +158,12 @@ def _exported_metrics(count_flops: bool = False) -> set[str]:
     metrics = measure_lib.measure(
         _Stepper(), _DeviceOps(), name="registry_test", enable_xprof=False
     )
+  # As the benchmark binaries set it for a case whose workload is known.
+  metrics.step_work = workload_lib.StepWork(
+      workload=workload_lib.Workload(batch_size=2, seq_len=8),
+      samples_per_step=2,
+      tokens_per_step=16,
+  )
   if count_flops:
     # As torch_benchmark_test sets them for a counted case on a device whose
     # peak FLOP/s are known.

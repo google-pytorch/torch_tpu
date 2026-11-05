@@ -22,16 +22,19 @@ The workload is a parameter of a benchmark, like its stepper: each benchmark
 declares the `Workload` it runs at by default (`BenchmarkSpec.workload`), the
 harness resolves the workload of each case (the default, or another batch size
 in a batch sweep) and passes it to the factory as `Context.workload`, and the
-factory builds its inputs from it. The harness thus knows the work of each step
-without inspecting the inputs.
+factory builds its inputs from it. The harness then knows the work of each step
+without inspecting the inputs: `step_work` scales the workload by the number of
+forward passes of a step of the benchmark's stepper.
 
-This module deliberately does not import torch, so that libraries that do not
-need torch can depend on it.
+This module deliberately does not import torch, so that metrics can depend on it
+without depending on torch.
 """
 
 from collections.abc import Iterator, Mapping, Sequence
 import dataclasses
 from typing import Any
+
+from perflab import step_lib
 
 # The input keyword arguments that hold the token ids or embeddings of a token
 # based model. Their first two dimensions are the batch and sequence dimensions.
@@ -72,6 +75,62 @@ class Workload:
     if self.seq_len is None:
       raise ValueError(f"workload {self} declares no seq_len")
     return self.seq_len
+
+
+@dataclasses.dataclass(frozen=True)
+class StepWork:
+  """The work that one benchmark step does, per process.
+
+  Attributes:
+    workload: The inputs of one forward pass of the step.
+    samples_per_step: The samples that one step processes, or None if a sample
+      count is not meaningful for the step (decode).
+    tokens_per_step: The tokens that one step processes (prefill and training)
+      or generates (decode), or None if the workload declares no tokens.
+  """
+
+  workload: Workload
+  samples_per_step: int | None
+  tokens_per_step: int | None
+
+
+def step_work(
+    workload: Workload,
+    stepper: step_lib.StepperType,
+    stepper_kwargs: Mapping[str, Any],
+) -> StepWork:
+  """Returns the work that one step of a benchmark does.
+
+  Args:
+    workload: The inputs of one forward pass of the benchmark.
+    stepper: The benchmark's stepper type.
+    stepper_kwargs: The benchmark's stepper keyword arguments.
+  """
+  if stepper is step_lib.StepperType.DECODER_ONLY_DECODE:
+    # A decode step generates `output_tokens` tokens for every sequence of the
+    # batch; `seq_len` is the length of the unmeasured prefill.
+    output_tokens = stepper_kwargs.get(
+        "output_tokens", step_lib.DEFAULT_DECODE_OUTPUT_TOKENS
+    )
+    return StepWork(
+        workload=workload,
+        samples_per_step=None,
+        tokens_per_step=workload.batch_size * output_tokens,
+    )
+  passes = 1
+  if stepper in (
+      step_lib.StepperType.TRAINING,
+      step_lib.StepperType.SINGLE_TRACE_TRAINING,
+  ):
+    passes = stepper_kwargs.get("accum_steps", step_lib.DEFAULT_ACCUM_STEPS)
+  samples = workload.batch_size * passes
+  return StepWork(
+      workload=workload,
+      samples_per_step=samples,
+      tokens_per_step=(
+          None if workload.seq_len is None else samples * workload.seq_len
+      ),
+  )
 
 
 def _iter_leaves(tree: Any) -> Iterator[Any]:

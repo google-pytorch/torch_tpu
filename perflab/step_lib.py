@@ -40,6 +40,16 @@ class StepperType(enum.Enum):
   DECODER_ONLY_DECODE = "decoder_only_decode"
 
 
+# The default number of micro-batches that a training step runs before its
+# optimizer step (`accum_steps` of the TRAINING and SINGLE_TRACE_TRAINING
+# steppers).
+DEFAULT_ACCUM_STEPS = 1
+
+# The default number of tokens that a DECODER_ONLY_DECODE step decodes per
+# sequence (`output_tokens` of the decode stepper).
+DEFAULT_DECODE_OUTPUT_TOKENS = 16
+
+
 # Basic stepper functionality, single step fn and compile hook.
 @runtime_checkable
 class Stepper(Protocol):

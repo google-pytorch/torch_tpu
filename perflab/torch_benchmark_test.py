@@ -78,7 +78,7 @@ def _make_run_step(
     spec: registry_lib.BenchmarkSpec,
     ctx: context_lib.Context,
     mode: common.RunMode,
-) -> step_lib.Stepper:
+) -> tuple[step_lib.Stepper, workload_lib.StepWork | None]:
   """Collapse every axis into one bound zero-arg callable.
 
   Seeding lives here before construction so deterministic init is a harness
@@ -91,7 +91,8 @@ def _make_run_step(
     mode: The run mode to build the benchmark for.
 
   Returns:
-    The stepper of the benchmark.
+    The stepper of the benchmark and the work of one of its steps, or None if
+    the benchmark declares no workload.
 
   Raises:
     ValueError: In the FakeTensorMode CPU smoke test, if the factory did not
@@ -123,7 +124,14 @@ def _make_run_step(
     compile_config = spec.compile_config or compile_lib.CompileConfig()
     runner.compile(compile_config, ctx.target)
 
-  return runner
+  step_work = (
+      None
+      if ctx.workload is None
+      else workload_lib.step_work(
+          ctx.workload, spec.stepper, spec.stepper_kwargs
+      )
+  )
+  return runner, step_work
 
 
 def reset_state(
@@ -223,7 +231,7 @@ class BenchmarkTest(
               else contextlib.nullcontext()
           ),
       ):
-        run_step = _make_run_step(spec, ctx, mode)
+        run_step, step_work = _make_run_step(spec, ctx, mode)
         metrics = measure_lib.measure(
             run_step,
             device_ops,
@@ -232,6 +240,7 @@ class BenchmarkTest(
         )
     except target_lib.UnsupportedBenchmark as e:
       self.skipTest(f"{spec.name}: {e}")
+    metrics.step_work = step_work
 
     if flags_lib.COUNT_FLOPS.value:
       # After measuring and outside the run mode, so that counting changes

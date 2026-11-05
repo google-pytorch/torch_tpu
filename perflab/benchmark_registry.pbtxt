@@ -44,6 +44,14 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/device_mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/model_flops_per_step$" unit: "flops" stats { stat: LAST_VALUE } }
@@ -94,6 +102,14 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/device_mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/model_flops_per_step$" unit: "flops" stats { stat: LAST_VALUE } }
@@ -144,6 +160,14 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/device_mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/model_flops_per_step$" unit: "flops" stats { stat: LAST_VALUE } }
@@ -194,6 +218,14 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/device_mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/model_flops_per_step$" unit: "flops" stats { stat: LAST_VALUE } }
@@ -244,6 +276,14 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/device_mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/model_flops_per_step$" unit: "flops" stats { stat: LAST_VALUE } }
@@ -294,6 +334,14 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/device_mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/model_flops_per_step$" unit: "flops" stats { stat: LAST_VALUE } }
@@ -344,6 +392,14 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/device_mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/model_flops_per_step$" unit: "flops" stats { stat: LAST_VALUE } }
@@ -394,6 +450,14 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/device_mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/model_flops_per_step$" unit: "flops" stats { stat: LAST_VALUE } }
@@ -444,6 +508,14 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/device_mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/model_flops_per_step$" unit: "flops" stats { stat: LAST_VALUE } }
@@ -494,6 +566,14 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/device_mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/model_flops_per_step$" unit: "flops" stats { stat: LAST_VALUE } }
@@ -544,6 +624,14 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/device_mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/model_flops_per_step$" unit: "flops" stats { stat: LAST_VALUE } }
@@ -594,6 +682,14 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/device_mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/model_flops_per_step$" unit: "flops" stats { stat: LAST_VALUE } }
@@ -644,6 +740,14 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/device_mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/model_flops_per_step$" unit: "flops" stats { stat: LAST_VALUE } }
@@ -694,6 +798,14 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/device_mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/model_flops_per_step$" unit: "flops" stats { stat: LAST_VALUE } }
@@ -744,6 +856,14 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/device_mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/model_flops_per_step$" unit: "flops" stats { stat: LAST_VALUE } }
@@ -794,6 +914,14 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/device_mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/model_flops_per_step$" unit: "flops" stats { stat: LAST_VALUE } }
@@ -843,6 +971,14 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
 }
 
 benchmarks {
@@ -887,6 +1023,14 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
 }
 
 benchmarks {
@@ -931,4 +1075,12 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
 }

@@ -54,6 +54,7 @@ from perflab import step_lib
 from perflab import steps
 from perflab import target as target_lib
 from perflab import torch_device_ops
+from perflab import workload as workload_lib
 from tests.distributed import distributed_utils
 
 discovery_lib.import_submodules(distributed_models)
@@ -463,6 +464,14 @@ def _run_single_target_task(
       logging.info("Rank %s calling spec.factory...", rank)
       factory_res = spec.factory(ctx)
       logging.info("Rank %s spec.factory returned.", rank)
+      # Per process: the throughput of the slice is that of all its ranks.
+      step_work = (
+          None
+          if ctx.workload is None
+          else workload_lib.step_work(
+              ctx.workload, spec.stepper, spec.stepper_kwargs
+          )
+      )
       stepper = step_lib.resolve_stepper(spec.stepper, **spec.stepper_kwargs)
       stepper.init_with_benchmark_args(*factory_res)
 
@@ -479,6 +488,7 @@ def _run_single_target_task(
           name=f"{spec.name}_{mode.value}",
           enable_xprof=flags_lib.ENABLE_XPROF.value,
       )
+      metrics.step_work = step_work
       logging.info(
           "Metrics for %s_%s on rank %s: %s",
           spec.name,

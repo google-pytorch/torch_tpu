@@ -26,7 +26,11 @@ from perflab.steps import common
 class _StandardTrainingStepper(common.BaseStepper):
   """Standard training stepper for eager and fallback execution."""
 
-  def __init__(self, accum_steps: int = 1, compute_loss=loss_lib.real_loss):
+  def __init__(
+      self,
+      accum_steps: int = step_lib.DEFAULT_ACCUM_STEPS,
+      compute_loss=loss_lib.real_loss,
+  ):
     super().__init__()
     self._accum_steps = accum_steps
     self._compute_loss = compute_loss
@@ -159,7 +163,11 @@ def _to_single_trace_optimizer(
 class SingleTraceTrainingStepper(common.BaseStepper):
   """Training stepper using SingleTraceTrainer under the hood."""
 
-  def __init__(self, accum_steps: int = 1, compute_loss=loss_lib.real_loss):
+  def __init__(
+      self,
+      accum_steps: int = step_lib.DEFAULT_ACCUM_STEPS,
+      compute_loss=loss_lib.real_loss,
+  ):
     super().__init__()
     if accum_steps != 1:
       raise ValueError(
@@ -243,7 +251,7 @@ class TrainingStepper:
 
   def __init__(
       self,
-      accum_steps: int = 1,
+      accum_steps: int = step_lib.DEFAULT_ACCUM_STEPS,
       compute_loss=loss_lib.real_loss,
       use_single_trace: bool = True,
   ):
@@ -338,7 +346,7 @@ class TrainingStepper:
 
 @step_lib.register_stepper(step_lib.StepperType.TRAINING)
 def training(
-    accum_steps: int = 1,
+    accum_steps: int = step_lib.DEFAULT_ACCUM_STEPS,
     compute_loss=loss_lib.real_loss,
     use_single_trace: bool = True,
 ) -> step_lib.Stepper:
@@ -373,7 +381,7 @@ def training(
 
 @step_lib.register_stepper(step_lib.StepperType.SINGLE_TRACE_TRAINING)
 def single_trace_training(
-    accum_steps: int = 1,
+    accum_steps: int = step_lib.DEFAULT_ACCUM_STEPS,
     compute_loss=loss_lib.real_loss,
 ) -> step_lib.Stepper:
   """Forward+backward over accum_steps micro-batches, then one optimizer step.

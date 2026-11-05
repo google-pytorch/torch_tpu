@@ -171,12 +171,14 @@ torch_tpu_py_library(
 torch_tpu_py_library(
     name = "metrics",
     srcs = ["metrics.py"],
+    deps = [":workload"],
 )
 
 pytype_strict_library(
     # PY_LIBRARY_OK=Decouple from torch_tpu to avoid C++ dependency in coverage tests.
     name = "workload",
     srcs = ["workload.py"],
+    deps = [":step_lib"],
 )
 
 torch_tpu_py_library(
@@ -637,6 +639,7 @@ torch_tpu_py_library(
         ":step_lib",
         ":target",
         ":torch_device_ops",
+        ":workload",
         "//perflab/distributed_models",
         "//perflab/steps",
         "//shims/absl_py:app",
