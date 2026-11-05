@@ -154,15 +154,17 @@ absl::Status MaskedSoftmaxInternalOut(const at::Tensor& self,
   TT_ASSIGN_OR_RETURN(const int64_t resolved_mask_type,
                       ValidateMaskedSoftmaxInputs(self, mask, mask_type));
 
+  // Match CUDA's masked_softmax_cuda (aten/src/ATen/native/cuda/SoftMax.cu),
+  // which wraps and validates dim before checking for 0-element inputs.
+  const int64_t default_dim = self.dim() > 0 ? self.dim() - 1 : 0;
+  const int64_t unwrapped_dim = dim.value_or(default_dim);
+  const int64_t input_rank = self.dim() == 0 ? 1 : self.dim();
+  TT_ASSIGN_OR_RETURN(const int64_t wrapped_dim,
+                      SafeWrapDim(unwrapped_dim, input_rank));
+
   if (self.numel() == 0) {
     return ResizeTensorIfShapeDiffers(out, self.sizes());
   }
-
-  const int64_t default_dim = self.dim() > 0 ? self.dim() - 1 : 0;
-  const int64_t dim_val = dim.value_or(default_dim);
-  const int64_t input_rank = self.dim() == 0 ? 1 : self.dim();
-  TT_ASSIGN_OR_RETURN(const int64_t wrapped_dim,
-                      SafeWrapDim(dim_val, input_rank));
 
   TT_ASSIGN_OR_RETURN(const mlir::ElementType computation_dtype,
                       ConvertTo<mlir::ElementType>(self.scalar_type()));
@@ -193,15 +195,18 @@ absl::Status MaskedSoftmaxBackwardInternalOut(const at::Tensor& grad_output,
   TT_RETURN_IF_ERROR(
       ValidateMaskedSoftmaxBackwardInputs(grad_output, output, mask));
 
+  // Match CUDA's masked_softmax_backward_cuda
+  // (aten/src/ATen/native/cuda/SoftMax.cu), which short-circuits on 0-element
+  // grad_output before wrapping dim.
   if (grad_output.numel() == 0) {
     return ResizeTensorIfShapeDiffers(grad_input, output.sizes());
   }
 
   const int64_t default_dim = output.dim() > 0 ? output.dim() - 1 : 0;
-  const int64_t dim_val = dim.value_or(default_dim);
+  const int64_t unwrapped_dim = dim.value_or(default_dim);
   const int64_t input_rank = output.dim() == 0 ? 1 : output.dim();
   TT_ASSIGN_OR_RETURN(const int64_t wrapped_dim,
-                      SafeWrapDim(dim_val, input_rank));
+                      SafeWrapDim(unwrapped_dim, input_rank));
 
   const auto precision = GetAndAddPrecisionTo(param_keys);
   TT_ASSIGN_OR_RETURN(const mlir::ElementType computation_dtype,

@@ -25286,6 +25286,215 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
         utils.assert_close(actual=tpu_comp_sm.cpu(), expected=cpu_sm)
         utils.assert_close(actual=tpu_comp_lsm.cpu(), expected=cpu_lsm)
 
+  @parameterized.product(
+      dtype=[torch.float32, torch.bfloat16, torch.float16],
+      dim=[0, -1],
+  )
+  def test_softmax_zero_dim_scalar_out_and_backward(
+      self, dtype: torch.dtype, dim: int
+  ):
+    def test_fn(device: str):
+      input_scalar = torch.tensor(3.5, dtype=dtype, device=device)
+      grad_scalar = torch.tensor(2.0, dtype=dtype, device=device)
+
+      softmax_output = torch.softmax(input_scalar, dim=dim)
+      log_softmax_output = torch.log_softmax(input_scalar, dim=dim)
+
+      softmax_out = torch.empty((), dtype=dtype, device=device)
+      torch.ops.aten._softmax.out(input_scalar, dim, False, out=softmax_out)
+
+      log_softmax_out = torch.empty((), dtype=dtype, device=device)
+      torch.ops.aten._log_softmax.out(
+          input_scalar, dim, False, out=log_softmax_out
+      )
+
+      softmax_grad_input = torch.empty((), dtype=dtype, device=device)
+      torch.ops.aten._softmax_backward_data.out(
+          grad_scalar,
+          softmax_out,
+          dim,
+          dtype,
+          grad_input=softmax_grad_input,
+      )
+
+      log_softmax_grad_input = torch.empty((), dtype=dtype, device=device)
+      torch.ops.aten._log_softmax_backward_data.out(
+          grad_scalar,
+          log_softmax_out,
+          dim,
+          dtype,
+          out=log_softmax_grad_input,
+      )
+
+      if dtype in (torch.bfloat16, torch.float16):
+        softmax_half_to_float_out = torch.empty(
+            (), dtype=torch.float32, device=device
+        )
+        log_softmax_half_to_float_out = torch.empty(
+            (), dtype=torch.float32, device=device
+        )
+        if device == "cpu":
+          # CPU _softmax/_log_softmax reject half_to_float=True directly
+          # (aten/src/ATen/native/SoftMax.cpp); cast to float32 first on CPU.
+          float_input_scalar = input_scalar.float()
+          torch.ops.aten._softmax.out(
+              float_input_scalar, dim, False, out=softmax_half_to_float_out
+          )
+          torch.ops.aten._log_softmax.out(
+              float_input_scalar, dim, False, out=log_softmax_half_to_float_out
+          )
+        else:
+          torch.ops.aten._softmax.out(
+              input_scalar, dim, True, out=softmax_half_to_float_out
+          )
+          torch.ops.aten._log_softmax.out(
+              input_scalar, dim, True, out=log_softmax_half_to_float_out
+          )
+        return (
+            softmax_output,
+            log_softmax_output,
+            softmax_out,
+            log_softmax_out,
+            softmax_grad_input,
+            log_softmax_grad_input,
+            softmax_half_to_float_out,
+            log_softmax_half_to_float_out,
+        )
+
+      return (
+          softmax_output,
+          log_softmax_output,
+          softmax_out,
+          log_softmax_out,
+          softmax_grad_input,
+          log_softmax_grad_input,
+      )
+
+    self.assert_close_tpu_vs_cpu(test_fn)
+
+  @parameterized.product(
+      dtype=[torch.float32, torch.bfloat16, torch.float16],
+      mask_value=[False, True],
+      dim=[None, 0, -1],
+  )
+  def test_masked_softmax_zero_dim_scalar(
+      self, dtype: torch.dtype, mask_value: bool, dim: int | None
+  ):
+    def test_fn(device: str):
+      input_scalar = torch.tensor(3.14, dtype=dtype, device=device)
+      grad_scalar = torch.tensor(1.5, dtype=dtype, device=device)
+      mask_scalar = torch.tensor(mask_value, dtype=torch.bool, device=device)
+
+      forward_output = torch.ops.aten._masked_softmax(
+          input_scalar, mask_scalar, dim=dim, mask_type=2
+      )
+      forward_out = torch.empty((), dtype=dtype, device=device)
+      torch.ops.aten._masked_softmax.out(
+          input_scalar, mask_scalar, dim=dim, mask_type=2, out=forward_out
+      )
+
+      grad_input = torch.ops.aten._masked_softmax_backward(
+          grad_scalar, forward_output, mask_scalar, dim=dim
+      )
+      grad_input_out = torch.empty((), dtype=dtype, device=device)
+      torch.ops.aten._masked_softmax_backward.out(
+          grad_scalar, forward_output, mask_scalar, dim=dim, out=grad_input_out
+      )
+      if device == "cpu":
+        # Upstream CPU masked_softmax_backward_cpu allocates grad_input after
+        # reshaping 0-D inputs to (1,) (aten/src/ATen/native/SoftMax.cpp),
+        # whereas CUDA and TPU preserve the 0-D scalar shape ().
+        grad_input = grad_input.reshape(())
+        grad_input_out = grad_input_out.reshape(())
+      else:
+        self.assertEqual(grad_input.shape, ())
+        self.assertEqual(grad_input_out.shape, ())
+
+      return forward_output, forward_out, grad_input, grad_input_out
+
+    self.assert_close_tpu_vs_cpu(test_fn)
+
+  @parameterized.product(
+      dtype=[torch.float32, torch.bfloat16],
+  )
+  def test_masked_softmax_empty_tensor(self, dtype: torch.dtype):
+    def test_fn(device: str):
+      results = []
+      for shape, dims in (((0, 3), (None, 1, -1)), ((3, 0), (0, -2))):
+        input_tensor = torch.empty(shape, dtype=dtype, device=device)
+        mask = torch.empty(shape, dtype=torch.bool, device=device)
+        for dim in dims:
+          forward_output = torch.ops.aten._masked_softmax(
+              input_tensor, mask, dim=dim, mask_type=2
+          )
+          forward_out = torch.empty((2, 2), dtype=dtype, device=device)
+          torch.ops.aten._masked_softmax.out(
+              input_tensor, mask, dim=dim, mask_type=2, out=forward_out
+          )
+          grad_input = torch.ops.aten._masked_softmax_backward(
+              input_tensor, forward_output, mask, dim=dim
+          )
+          grad_input_out = torch.empty((2, 2), dtype=dtype, device=device)
+          torch.ops.aten._masked_softmax_backward.out(
+              input_tensor,
+              forward_output,
+              mask,
+              dim=dim,
+              out=grad_input_out,
+          )
+          results.extend(
+              (forward_output, forward_out, grad_input, grad_input_out)
+          )
+      return tuple(results)
+
+    self.assert_close_tpu_vs_cpu(test_fn)
+
+  @parameterized.product(
+      dtype=[torch.float32, torch.bfloat16],
+      shape_and_dim=[
+          ((0, 3), 0),
+          ((0, 3), -2),
+          ((3, 0), 1),
+          ((3, 0), -1),
+          ((3, 0), None),
+      ],
+  )
+  def test_masked_softmax_empty_reduction_dim(
+      self,
+      dtype: torch.dtype,
+      shape_and_dim: tuple[tuple[int, int], int | None],
+  ):
+    # Upstream CPU masked_softmax_cpu / masked_softmax_backward_cpu divide
+    # GRAIN_SIZE / dim_size unconditionally (aten/src/ATen/native/SoftMax.cpp)
+    # and crash with SIGFPE when size(dim) == 0, so verify empty reduction
+    # dimensions against an expected empty CPU tensor directly.
+    shape, dim = shape_and_dim
+    expected_empty = torch.empty(shape, dtype=dtype)
+    tpu_input = expected_empty.to("tpu")
+    tpu_mask = torch.empty(shape, dtype=torch.bool, device="tpu")
+
+    forward_output = torch.ops.aten._masked_softmax(
+        tpu_input, tpu_mask, dim=dim, mask_type=2
+    )
+    utils.assert_close(actual=forward_output.cpu(), expected=expected_empty)
+
+    forward_out = torch.empty((2, 2), dtype=dtype, device="tpu")
+    torch.ops.aten._masked_softmax.out(
+        tpu_input, tpu_mask, dim=dim, mask_type=2, out=forward_out
+    )
+    utils.assert_close(actual=forward_out.cpu(), expected=expected_empty)
+
+    grad_input = torch.ops.aten._masked_softmax_backward(
+        tpu_input, forward_output, tpu_mask, dim=dim
+    )
+    utils.assert_close(actual=grad_input.cpu(), expected=expected_empty)
+
+    grad_input_out = torch.empty((2, 2), dtype=dtype, device="tpu")
+    torch.ops.aten._masked_softmax_backward.out(
+        tpu_input, forward_output, tpu_mask, dim=dim, out=grad_input_out
+    )
+    utils.assert_close(actual=grad_input_out.cpu(), expected=expected_empty)
+
   def test_softmax_dynamic_reduction_dim(self):
     for dtype in (torch.float32, torch.bfloat16):
       for dim in (0, 1, -1):
