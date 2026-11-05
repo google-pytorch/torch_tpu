@@ -4275,6 +4275,20 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     ):
       torch.nn.functional.max_pool2d(t, kernel_size=3, return_indices=True)
 
+  def test_max_unpool2d_non_floating_point_input(self):
+    indices = torch.zeros((1, 1, 2, 2), device=et.device(), dtype=torch.int64)
+    for dtype, tpu_dtype in (
+        (torch.bool, "bool"),
+        (torch.int32, "int32"),
+        (torch.float8_e4m3fn, "float8_e4m3fn"),
+    ):
+      pooled = torch.empty((1, 1, 2, 2), device=et.device(), dtype=dtype)
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu=f"""max_unpool2d(): not implemented for {tpu_dtype}""",
+      ):
+        torch.nn.functional.max_unpool2d(pooled, indices, 2)
+
   def test_max_unpool2d_indices_not_long(self):
     pooled = torch.zeros((1, 1, 2, 2), device=et.device())
     indices = torch.zeros((1, 1, 2, 2), device=et.device(), dtype=torch.int32)
