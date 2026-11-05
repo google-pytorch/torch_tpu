@@ -14907,6 +14907,548 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         ),
     )
 
+  @parameterized.named_parameters(
+      ("float32", torch.float32),
+      ("bfloat16", torch.bfloat16),
+      ("float16", torch.float16),
+  )
+  def test_matmul_all_rank_combinations(self, dtype):
+    shapes = [
+        ((4,), (4,)),
+        ((3, 4), (4,)),
+        ((4,), (4, 5)),
+        ((3, 4), (4, 5)),
+        ((2, 3, 4), (4,)),
+        ((4,), (2, 4, 5)),
+        ((2, 3, 4), (4, 5)),
+        ((3, 4), (2, 4, 5)),
+        ((2, 3, 4), (2, 4, 5)),
+        ((1, 3, 4), (2, 4, 5)),
+        ((2, 3, 4), (1, 4, 5)),
+        ((2, 1, 3, 4), (1, 5, 4, 6)),
+        ((2, 3, 4, 5), (5, 6)),
+        ((4, 5), (2, 3, 5, 6)),
+    ]
+    tol = 2e-2 if dtype in (torch.bfloat16, torch.float16) else 1e-4
+    old_precision = torch.get_float32_matmul_precision()
+    torch.set_float32_matmul_precision("highest")
+    try:
+      for lhs_shape, rhs_shape in shapes:
+        with self.subTest(lhs_shape=lhs_shape, rhs_shape=rhs_shape):
+          lhs_cpu = torch.randn(lhs_shape, dtype=dtype)
+          rhs_cpu = torch.randn(rhs_shape, dtype=dtype)
+          out_shape = torch.matmul(lhs_cpu, rhs_cpu).shape
+          grad_cpu = torch.randn(out_shape, dtype=dtype)
+
+          def compute(
+              device,
+              lhs_cpu=lhs_cpu,
+              rhs_cpu=rhs_cpu,
+              grad_cpu=grad_cpu,
+          ):
+            lhs = to(lhs_cpu.clone(), device).requires_grad_(True)
+            rhs = to(rhs_cpu.clone(), device).requires_grad_(True)
+            grad = to(grad_cpu.clone(), device)
+            out = torch.matmul(lhs, rhs)
+            out.backward(grad)
+            return out, lhs.grad, rhs.grad
+
+          self.assert_close_tpu_vs_cpu(compute, atol=tol, rtol=tol)
+    finally:
+      torch.set_float32_matmul_precision(old_precision)
+
+  @parameterized.named_parameters(
+      ("complex64", torch.complex64),
+      ("complex128", torch.complex128),
+  )
+  def test_matmul_complex(self, dtype):
+    shapes = [
+        ((4,), (4,)),
+        ((3, 4), (4,)),
+        ((4,), (4, 5)),
+        ((3, 4), (4, 5)),
+        ((2, 3, 4), (4,)),
+        ((4,), (2, 4, 5)),
+        ((2, 3, 4), (4, 5)),
+        ((3, 4), (2, 4, 5)),
+        ((2, 3, 4), (2, 4, 5)),
+        ((1, 3, 4), (2, 4, 5)),
+        ((2, 1, 3, 4), (1, 2, 4, 5)),
+    ]
+    old_precision = torch.get_float32_matmul_precision()
+    torch.set_float32_matmul_precision("highest")
+    try:
+      for lhs_shape, rhs_shape in shapes:
+        with self.subTest(lhs_shape=lhs_shape, rhs_shape=rhs_shape):
+          lhs_cpu = torch.randn(lhs_shape, dtype=dtype)
+          rhs_cpu = torch.randn(rhs_shape, dtype=dtype)
+          out_shape = torch.matmul(lhs_cpu, rhs_cpu).shape
+          grad_cpu = torch.randn(out_shape, dtype=dtype)
+
+          def compute(
+              device,
+              lhs_cpu=lhs_cpu,
+              rhs_cpu=rhs_cpu,
+              grad_cpu=grad_cpu,
+          ):
+            lhs = to(lhs_cpu.clone(), device).requires_grad_(True)
+            rhs = to(rhs_cpu.clone(), device).requires_grad_(True)
+            grad = to(grad_cpu.clone(), device)
+            out = torch.matmul(lhs, rhs)
+            out.backward(grad)
+            return out, lhs.grad, rhs.grad
+
+          self.assert_close_tpu_vs_cpu(compute, atol=1e-4, rtol=1e-4)
+    finally:
+      torch.set_float32_matmul_precision(old_precision)
+
+  def test_matmul_symbolic_fake_tensor_no_specialization(self):
+    # 1. 3D x 2D with requires_grad=True on weight (folded path)
+    x = torch.randn(2, 7, 4, device="tpu", requires_grad=True)
+    w = torch.randn(4, 5, device="tpu", requires_grad=True)
+    specialized = run_with_dynamic_dims(
+        torch.matmul,
+        [(x, (True, True, False)), (w, (False, False))],
+    )
+    self.assertEmpty(specialized)
+
+    # 2. 3D x 3D outer product with requires_grad=False (should_fold check)
+    freqs = torch.randn(1, 9, 1, device="tpu")
+    inv_freq = torch.randn(1, 1, 8, device="tpu")
+    specialized = run_with_dynamic_dims(
+        torch.matmul,
+        [(freqs, (False, True, False)), (inv_freq, (False, False, False))],
+        no_grad=True,
+    )
+    self.assertEmpty(specialized)
+
+  def test_matmul_zero_sized(self):
+    shapes = [
+        ((0,), (0,)),
+        ((3, 0), (0,)),
+        ((0, 4), (4,)),
+        ((0,), (0, 5)),
+        ((4,), (4, 0)),
+        ((2, 0, 4), (4, 5)),
+        ((2, 3, 0), (0, 5)),
+        ((0, 3, 4), (1, 4, 5)),
+    ]
+    for lhs_shape, rhs_shape in shapes:
+      with self.subTest(lhs_shape=lhs_shape, rhs_shape=rhs_shape):
+        lhs_cpu = torch.randn(lhs_shape, dtype=torch.float32)
+        rhs_cpu = torch.randn(rhs_shape, dtype=torch.float32)
+        out_shape = torch.matmul(lhs_cpu, rhs_cpu).shape
+        grad_cpu = torch.randn(out_shape, dtype=torch.float32)
+
+        def compute(
+            device,
+            lhs_cpu=lhs_cpu,
+            rhs_cpu=rhs_cpu,
+            grad_cpu=grad_cpu,
+        ):
+          lhs = to(lhs_cpu.clone(), device).requires_grad_(True)
+          rhs = to(rhs_cpu.clone(), device).requires_grad_(True)
+          grad = to(grad_cpu.clone(), device)
+          out = torch.matmul(lhs, rhs)
+          out.backward(grad)
+          return out, lhs.grad, rhs.grad
+
+        self.assert_close_tpu_vs_cpu(compute)
+
+  def test_matmul_out_and_backward_out(self):
+    old_precision = torch.get_float32_matmul_precision()
+    torch.set_float32_matmul_precision("highest")
+    try:
+      lhs_cpu = torch.randn(2, 3, 4, dtype=torch.float32)
+      rhs_cpu = torch.randn(4, 5, dtype=torch.float32)
+      grad_cpu = torch.randn(2, 3, 5, dtype=torch.float32)
+
+      # 1. Pre-allocated and resized out tensor for torch.matmul
+      def run_matmul_out(device):
+        lhs = to(lhs_cpu, device)
+        rhs = to(rhs_cpu, device)
+        out_pre = torch.empty(2, 3, 5, dtype=torch.float32, device=device)
+        res_pre = torch.matmul(lhs, rhs, out=out_pre)
+        self.assertIs(res_pre, out_pre)
+
+        out_resize = torch.empty(0, dtype=torch.float32, device=device)
+        res_resize = torch.matmul(lhs, rhs, out=out_resize)
+        self.assertIs(res_resize, out_resize)
+        return out_pre, out_resize
+
+      self.assert_close_tpu_vs_cpu(run_matmul_out, atol=1e-4, rtol=1e-4)
+
+      # 2. aten.matmul_backward and aten.matmul_backward.out with masks
+      lhs_tpu = to(lhs_cpu, "tpu")
+      rhs_tpu = to(rhs_cpu, "tpu")
+      grad_tpu = to(grad_cpu, "tpu")
+
+      lhs_ref = lhs_cpu.clone().requires_grad_(True)
+      rhs_ref = rhs_cpu.clone().requires_grad_(True)
+      torch.matmul(lhs_ref, rhs_ref).backward(grad_cpu)
+
+      for mask in (
+          [True, True],
+          [True, False],
+          [False, True],
+          [False, False],
+      ):
+        with self.subTest(mask=mask):
+          gs, go = torch.ops.aten.matmul_backward(
+              grad_tpu, lhs_tpu, rhs_tpu, mask
+          )
+          if mask[0]:
+            utils.assert_close(gs.cpu(), lhs_ref.grad, atol=1e-4, rtol=1e-4)
+          else:
+            self.assertIsNone(gs)
+          if mask[1]:
+            utils.assert_close(go.cpu(), rhs_ref.grad, atol=1e-4, rtol=1e-4)
+          else:
+            self.assertIsNone(go)
+
+          gs_out = torch.empty(0, dtype=torch.float32, device="tpu")
+          go_out = torch.empty(0, dtype=torch.float32, device="tpu")
+          res_gs, res_go = torch.ops.aten.matmul_backward.out(
+              grad_tpu, lhs_tpu, rhs_tpu, mask, out0=gs_out, out1=go_out
+          )
+          self.assertIs(res_gs, gs_out)
+          self.assertIs(res_go, go_out)
+          if mask[0]:
+            utils.assert_close(gs_out.cpu(), lhs_ref.grad, atol=1e-4, rtol=1e-4)
+          if mask[1]:
+            utils.assert_close(go_out.cpu(), rhs_ref.grad, atol=1e-4, rtol=1e-4)
+    finally:
+      torch.set_float32_matmul_precision(old_precision)
+
+  def test_matmul_non_contiguous_and_higher_order_grad(self):
+    old_precision = torch.get_float32_matmul_precision()
+    torch.set_float32_matmul_precision("highest")
+    try:
+      lhs_base = torch.randn(2, 4, 3, dtype=torch.float32)
+      rhs_base = torch.randn(2, 5, 4, dtype=torch.float32)
+
+      def run_non_contiguous_and_double_backward(device):
+        lhs = (
+            to(lhs_base.clone(), device).transpose(-2, -1).requires_grad_(True)
+        )
+        rhs = (
+            to(rhs_base.clone(), device).transpose(-2, -1).requires_grad_(True)
+        )
+        out = torch.matmul(lhs, rhs)
+        grad_lhs, grad_rhs = torch.autograd.grad(
+            out.sum(), (lhs, rhs), create_graph=True
+        )
+        loss2 = (grad_lhs * 2.0).sum() + (grad_rhs * 3.0).sum()
+        gg_lhs, gg_rhs = torch.autograd.grad(loss2, (lhs, rhs))
+        return out, grad_lhs, grad_rhs, gg_lhs, gg_rhs
+
+      self.assert_close_tpu_vs_cpu(
+          run_non_contiguous_and_double_backward, atol=1e-4, rtol=1e-4
+      )
+    finally:
+      torch.set_float32_matmul_precision(old_precision)
+
+  def test_baddbmm_dtype_accumulation_precision(self):
+    for in_dtype in (torch.bfloat16, torch.float16):
+      # Construct inputs in in_dtype whose dot product requires fp32 mantissa
+      # precision (e.g., 1 + 2^-6 multiplied by 1 + 2^-6 has a 2^-12 term that
+      # is truncated if accumulated or rounded to bf16 before casting to fp32).
+      self_cpu = torch.full((2, 4, 4), 1.0 + 2**-6, dtype=in_dtype)
+      b1_cpu = torch.full((2, 4, 16), 1.0 + 2**-6, dtype=in_dtype)
+      b2_cpu = torch.full((2, 16, 4), 1.0 + 2**-6, dtype=in_dtype)
+      self_tpu = self_cpu.to("tpu")
+      b1_tpu = b1_cpu.to("tpu")
+      b2_tpu = b2_cpu.to("tpu")
+
+      for beta in (0.0, 1.0, 2.5):
+        for alpha in (0.0, 1.0, 1.5):
+          with self.subTest(in_dtype=in_dtype, beta=beta, alpha=alpha):
+            expected = torch.baddbmm(
+                self_cpu.float(),
+                b1_cpu.float(),
+                b2_cpu.float(),
+                beta=beta,
+                alpha=alpha,
+            )
+            actual = torch.ops.aten.baddbmm.dtype(
+                self_tpu,
+                b1_tpu,
+                b2_tpu,
+                torch.float32,
+                beta=beta,
+                alpha=alpha,
+            )
+            self.assertEqual(actual.dtype, torch.float32)
+            utils.assert_close(actual.cpu(), expected, atol=1e-5, rtol=1e-5)
+
+            out_tpu = torch.empty_like(actual)
+            res_out = torch.ops.aten.baddbmm.dtype_out(
+                self_tpu,
+                b1_tpu,
+                b2_tpu,
+                torch.float32,
+                beta=beta,
+                alpha=alpha,
+                out=out_tpu,
+            )
+            self.assertIs(res_out, out_tpu)
+            utils.assert_close(out_tpu.cpu(), expected, atol=1e-5, rtol=1e-5)
+
+  def test_matmul_selective_autograd_saved_tensors_and_inplace(self):
+    old_precision = torch.get_float32_matmul_precision()
+    torch.set_float32_matmul_precision("highest")
+    try:
+      # 1. self.requires_grad=True, other.requires_grad=False:
+      # Mutating `self` in-place after forward must not corrupt grad_self.
+      lhs_cpu = torch.randn(2, 3, 4, dtype=torch.float32, requires_grad=True)
+      rhs_cpu = torch.randn(2, 4, 5, dtype=torch.float32, requires_grad=False)
+      out_cpu = torch.matmul(lhs_cpu, rhs_cpu)
+      out_cpu.sum().backward()
+
+      lhs_tpu = lhs_cpu.detach().clone().to("tpu").requires_grad_(True)
+      rhs_tpu = rhs_cpu.detach().clone().to("tpu").requires_grad_(False)
+      out_tpu = torch.matmul(lhs_tpu, rhs_tpu)
+      lhs_tpu.data.zero_()
+      out_tpu.sum().backward()
+      utils.assert_close(lhs_tpu.grad.cpu(), lhs_cpu.grad, atol=1e-4, rtol=1e-4)
+
+      # 2. self.requires_grad=False, other.requires_grad=True:
+      # Mutating `other` in-place after forward must not corrupt grad_other.
+      lhs2_cpu = torch.randn(2, 3, 4, dtype=torch.float32, requires_grad=False)
+      rhs2_cpu = torch.randn(2, 4, 5, dtype=torch.float32, requires_grad=True)
+      out2_cpu = torch.matmul(lhs2_cpu, rhs2_cpu)
+      out2_cpu.sum().backward()
+
+      lhs2_tpu = lhs2_cpu.detach().clone().to("tpu").requires_grad_(False)
+      rhs2_tpu = rhs2_cpu.detach().clone().to("tpu").requires_grad_(True)
+      out2_tpu = torch.matmul(lhs2_tpu, rhs2_tpu)
+      rhs2_tpu.data.zero_()
+      out2_tpu.sum().backward()
+      utils.assert_close(
+          rhs2_tpu.grad.cpu(), rhs2_cpu.grad, atol=1e-4, rtol=1e-4
+      )
+
+      # 3. In matmul_backward with mask=[True, False] and only grad requiring
+      # grad, `self` is only needed for shape/dtype metadata; mutating `self`
+      # in-place after matmul_backward must not corrupt grad.grad.
+      grad_tpu = torch.randn(
+          2, 3, 5, dtype=torch.float32, device="tpu", requires_grad=True
+      )
+      s_tpu = torch.randn(
+          2, 3, 4, dtype=torch.float32, device="tpu", requires_grad=False
+      )
+      o_tpu = torch.randn(
+          2, 4, 5, dtype=torch.float32, device="tpu", requires_grad=False
+      )
+      o_ref = o_tpu.cpu()
+      gs_tpu, go_tpu = torch.ops.aten.matmul_backward(
+          grad_tpu, s_tpu, o_tpu, [True, False]
+      )
+      self.assertIsNone(go_tpu)
+      s_tpu.zero_()
+      gs_tpu.sum().backward()
+      expected_gg = torch.matmul(
+          torch.ones(2, 3, 4, dtype=torch.float32), o_ref
+      )
+      utils.assert_close(grad_tpu.grad.cpu(), expected_gg, atol=1e-4, rtol=1e-4)
+
+      # 4. Mixed static + bounded-dynamic shapes in single-gradient backward
+      # and double-backward:
+      # 4a: dynamic `x` (requires_grad=False) @ static `w` (requires_grad=True).
+      x_dyn_cpu = torch.randn(4, 3, dtype=torch.float32, requires_grad=False)
+      w_stat_cpu = torch.randn(3, 5, dtype=torch.float32, requires_grad=True)
+      go_a_cpu = torch.randn(4, 5, dtype=torch.float32)
+      torch.matmul(x_dyn_cpu, w_stat_cpu).backward(go_a_cpu)
+
+      x_dyn_tpu = x_dyn_cpu.to("tpu")
+      dynamism.mark_dynamic(
+          x_dyn_tpu, dimension=0, lower_bound=2, upper_bound=8
+      )
+      go_a_tpu = go_a_cpu.to("tpu")
+      dynamism.mark_dynamic(go_a_tpu, dimension=0, lower_bound=2, upper_bound=8)
+      w_stat_tpu = w_stat_cpu.detach().clone().to("tpu").requires_grad_(True)
+      torch.matmul(x_dyn_tpu, w_stat_tpu).backward(go_a_tpu)
+      utils.assert_close(
+          w_stat_tpu.grad.cpu(), w_stat_cpu.grad, atol=1e-4, rtol=1e-4
+      )
+
+      # 4b: static `x` (requires_grad=True) @ dynamic `w` (requires_grad=False).
+      x_stat_cpu = torch.randn(4, 3, dtype=torch.float32, requires_grad=True)
+      w_dyn_cpu = torch.randn(3, 5, dtype=torch.float32, requires_grad=False)
+      go_b_cpu = torch.randn(4, 5, dtype=torch.float32)
+      torch.matmul(x_stat_cpu, w_dyn_cpu).backward(go_b_cpu)
+
+      x_stat_tpu = x_stat_cpu.detach().clone().to("tpu").requires_grad_(True)
+      w_dyn_tpu = w_dyn_cpu.to("tpu")
+      dynamism.mark_dynamic(
+          w_dyn_tpu, dimension=1, lower_bound=2, upper_bound=8
+      )
+      go_b_tpu = go_b_cpu.to("tpu")
+      dynamism.mark_dynamic(go_b_tpu, dimension=1, lower_bound=2, upper_bound=8)
+      torch.matmul(x_stat_tpu, w_dyn_tpu).backward(go_b_tpu)
+      utils.assert_close(
+          x_stat_tpu.grad.cpu(), x_stat_cpu.grad, atol=1e-4, rtol=1e-4
+      )
+
+      # 4c: static `x` (requires_grad=True) @ static `w` (requires_grad=False),
+      # backward called with a bounded-dynamic `grad_output` tensor.
+      x_s2_cpu = torch.randn(4, 3, dtype=torch.float32, requires_grad=True)
+      w_s2_cpu = torch.randn(3, 5, dtype=torch.float32, requires_grad=False)
+      go_dyn_cpu = torch.randn(4, 5, dtype=torch.float32)
+      torch.matmul(x_s2_cpu, w_s2_cpu).backward(go_dyn_cpu)
+
+      x_s2_tpu = x_s2_cpu.detach().clone().to("tpu").requires_grad_(True)
+      w_s2_tpu = w_s2_cpu.to("tpu")
+      out_s2_tpu = torch.matmul(x_s2_tpu, w_s2_tpu)
+      go_dyn_tpu = go_dyn_cpu.to("tpu")
+      dynamism.mark_dynamic(
+          go_dyn_tpu, dimension=0, lower_bound=2, upper_bound=8
+      )
+      out_s2_tpu.backward(go_dyn_tpu)
+      utils.assert_close(
+          x_s2_tpu.grad.cpu(), x_s2_cpu.grad, atol=1e-4, rtol=1e-4
+      )
+
+      # 4d: create_graph=True double-backward with mixed dynamic `x` and
+      # static `w`.
+      x_db_cpu = torch.randn(4, 3, dtype=torch.float32, requires_grad=True)
+      w_db_cpu = torch.randn(3, 5, dtype=torch.float32, requires_grad=True)
+      go_db_cpu = torch.randn(4, 5, dtype=torch.float32)
+      gw_cpu = torch.autograd.grad(
+          torch.matmul(x_db_cpu, w_db_cpu),
+          w_db_cpu,
+          grad_outputs=go_db_cpu,
+          create_graph=True,
+      )[0]
+      gg_x_cpu = torch.autograd.grad(gw_cpu.sum(), x_db_cpu)[0]
+
+      x_db_tpu_base = x_db_cpu.detach().clone().to("tpu")
+      dynamism.mark_dynamic(
+          x_db_tpu_base, dimension=0, lower_bound=2, upper_bound=8
+      )
+      go_db_tpu = go_db_cpu.to("tpu")
+      dynamism.mark_dynamic(
+          go_db_tpu, dimension=0, lower_bound=2, upper_bound=8
+      )
+      x_db_tpu = x_db_tpu_base.requires_grad_(True)
+      w_db_tpu = w_db_cpu.detach().clone().to("tpu").requires_grad_(True)
+      gw_tpu = torch.autograd.grad(
+          torch.matmul(x_db_tpu, w_db_tpu),
+          w_db_tpu,
+          grad_outputs=go_db_tpu,
+          create_graph=True,
+      )[0]
+      gg_x_tpu = torch.autograd.grad(gw_tpu.sum(), x_db_tpu)[0]
+      utils.assert_close(gg_x_tpu.cpu(), gg_x_cpu, atol=1e-4, rtol=1e-4)
+    finally:
+      torch.set_float32_matmul_precision(old_precision)
+
+  def test_matmul_grad_fn_name_and_single_output_double_backward(self):
+    old_precision = torch.get_float32_matmul_precision()
+    torch.set_float32_matmul_precision("highest")
+    try:
+      lhs = torch.randn(
+          2, 3, 4, dtype=torch.float32, device="tpu", requires_grad=True
+      )
+      rhs = torch.randn(
+          2, 4, 5, dtype=torch.float32, device="tpu", requires_grad=True
+      )
+      out = torch.matmul(lhs, rhs)
+      self.assertEqual(out.grad_fn.name(), "MatmulBackward0")
+
+      grad_lhs = torch.autograd.grad(out.sum(), lhs, create_graph=True)[0]
+      self.assertIsNotNone(grad_lhs.grad_fn)
+      self.assertEqual(grad_lhs.grad_fn.name(), "MatmulBackwardBackward0")
+      gg_rhs = torch.autograd.grad(grad_lhs.sum(), rhs, retain_graph=True)[0]
+      expected_gg_rhs = torch.matmul(
+          torch.ones(2, 3, 4, dtype=torch.float32).transpose(-2, -1),
+          torch.ones(2, 3, 5, dtype=torch.float32),
+      )
+      utils.assert_close(gg_rhs.cpu(), expected_gg_rhs, atol=1e-4, rtol=1e-4)
+
+      grad_rhs = torch.autograd.grad(out.sum(), rhs, create_graph=True)[0]
+      self.assertIsNotNone(grad_rhs.grad_fn)
+      self.assertEqual(grad_rhs.grad_fn.name(), "MatmulBackwardBackward0")
+      gg_lhs = torch.autograd.grad(grad_rhs.sum(), lhs)[0]
+      expected_gg_lhs = torch.matmul(
+          torch.ones(2, 3, 5, dtype=torch.float32),
+          torch.ones(2, 4, 5, dtype=torch.float32).transpose(-2, -1),
+      )
+      utils.assert_close(gg_lhs.cpu(), expected_gg_lhs, atol=1e-4, rtol=1e-4)
+    finally:
+      torch.set_float32_matmul_precision(old_precision)
+
+  def test_matmul_backward_meta_undefined_grad_inputs(self):
+    grad_meta = torch.empty((2, 3, 5), dtype=torch.float32, device="meta")
+    self_meta = torch.empty((2, 3, 4), dtype=torch.float32, device="meta")
+    other_meta = torch.empty((4, 5), dtype=torch.float32, device="meta")
+
+    for mask in ([True, True], [True, False], [False, True], [False, False]):
+      with self.subTest(mask=mask):
+        gs_out = torch.empty(0, dtype=torch.float32, device="meta")
+        go_out = torch.empty(0, dtype=torch.float32, device="meta")
+        gs, go = torch.ops.aten.matmul_backward.out(
+            grad_meta,
+            self_meta,
+            other_meta,
+            mask,
+            out0=gs_out,
+            out1=go_out,
+        )
+        self.assertIs(gs, gs_out)
+        self.assertIs(go, go_out)
+        if mask[0]:
+          self.assertEqual(gs.device.type, "meta")
+          self.assertEqual(tuple(gs.shape), (2, 3, 4))
+          self.assertEqual(gs.dtype, torch.float32)
+        else:
+          self.assertEqual(gs.numel(), 0)
+        if mask[1]:
+          self.assertEqual(go.device.type, "meta")
+          self.assertEqual(tuple(go.shape), (4, 5))
+          self.assertEqual(go.dtype, torch.float32)
+        else:
+          self.assertEqual(go.numel(), 0)
+
+  def test_matmul_out_no_grad_parameter_and_transposed_view_backward(self):
+    old_precision = torch.get_float32_matmul_precision()
+    torch.set_float32_matmul_precision("highest")
+    try:
+      a_cpu = torch.randn(2, 3, dtype=torch.float32)
+      b_cpu = torch.randn(3, 4, dtype=torch.float32)
+      param = torch.nn.Parameter(
+          torch.zeros(2, 4, dtype=torch.float32, device="tpu")
+      )
+      old_version = param._version
+      with torch.no_grad():
+        res = torch.matmul(a_cpu.to("tpu"), b_cpu.to("tpu"), out=param)
+      self.assertIs(res, param)
+      self.assertTrue(param.requires_grad)
+      self.assertIsNone(param.grad_fn)
+      self.assertGreater(param._version, old_version)
+      utils.assert_close(
+          param.detach().cpu(), torch.matmul(a_cpu, b_cpu), atol=1e-4, rtol=1e-4
+      )
+
+      x_ref = torch.randn(2, 5, 4, dtype=torch.float32, requires_grad=True)
+      w_ref = torch.randn(6, 4, dtype=torch.float32, requires_grad=True)
+      y_ref = torch.matmul(x_ref, w_ref.t())
+      grad_out_cpu = torch.randn_like(y_ref)
+      y_ref.backward(grad_out_cpu)
+
+      x_tpu = x_ref.detach().to("tpu").requires_grad_(True)
+      w_tpu = w_ref.detach().to("tpu").requires_grad_(True)
+      y_tpu = torch.matmul(x_tpu, w_tpu.t())
+      y_tpu.backward(grad_out_cpu.to("tpu"))
+
+      utils.assert_close(
+          y_tpu.detach().cpu(), y_ref.detach(), atol=1e-4, rtol=1e-4
+      )
+      utils.assert_close(x_tpu.grad.cpu(), x_ref.grad, atol=1e-4, rtol=1e-4)
+      utils.assert_close(w_tpu.grad.cpu(), w_ref.grad, atol=1e-4, rtol=1e-4)
+    finally:
+      torch.set_float32_matmul_precision(old_precision)
+
   def test_linear_shapes_and_bias(self):
     cases = [
         # 1D input x 2D weight

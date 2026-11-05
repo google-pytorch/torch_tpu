@@ -163,6 +163,7 @@
 #include "csrc/ops/masked_fill/masked_fill_aten_kernels.h"  // IWYU pragma: keep for AtenMaskedFill
 #include "csrc/ops/masked_scatter/masked_scatter_aten_kernels.h"
 #include "csrc/ops/masked_select/masked_select_aten_kernels.h"
+#include "csrc/ops/matmul/matmul_aten_kernels.h"
 #include "csrc/ops/min_max/min_max_aten_kernels.h"
 #include "csrc/ops/mm/mm_aten_kernels.h"
 #include "csrc/ops/mse_loss/mse_loss_aten_kernels.h"
@@ -857,6 +858,10 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kMaskedSoftmaxBackwardOut>(m,
                                                 AtenMaskedSoftmaxBackwardOut);
   ImplStable<OpName::kMaskedSoftmaxOut>(m, AtenMaskedSoftmaxOut);
+  ImplStable<OpName::kMatmul>(m, AtenMatmul);
+  ImplStable<OpName::kMatmulBackward>(m, AtenMatmulBackward);
+  ImplStable<OpName::kMatmulBackwardOut>(m, AtenMatmulBackwardOut);
+  ImplStable<OpName::kMatmulOut>(m, AtenMatmulOut);
   ImplStable<OpName::kMax>(m, AtenMax);
   ImplStable<OpName::kMaxDimMax>(m, AtenMaxDimMax);
   ImplStable<OpName::kMaxPool2dWithIndicesBackwardGradInput>(
@@ -1269,6 +1274,9 @@ TORCH_LIBRARY_IMPL(aten, AutogradPrivateUse1, m) {
   ImplStable<OpName::kFftRfft>(m, AtenFftRfft);
   ImplStable<OpName::kFftRfftOut>(m, AtenFftRfftOut);
   ImplStable<OpName::kLinear>(m, AtenLinearAutograd);
+  ImplStable<OpName::kMatmul>(m, AtenMatmulAutograd);
+  ImplStable<OpName::kMatmulBackward>(m, AtenMatmulBackwardAutograd);
+  ImplStable<OpName::kMatmulOut>(m, AtenMatmulOutAutograd);
   ImplStable<OpName::kNllLossNd>(m, AtenNllLossNdAutograd);
   ImplStable<OpName::kRepeatInterleaveSelfInt>(
       m, AtenRepeatInterleaveSelfIntAutograd);
@@ -1526,6 +1534,8 @@ TORCH_LIBRARY_IMPL(aten, Meta, m) {
   ImplStable<OpName::kFusedAdagradFunctional>(m, MetaFusedAdagradFunctional);
   ImplStable<OpName::kFusedAdagradFunctionalTensorLr>(
       m, MetaFusedAdagradFunctionalTensorLr);
+  ImplStable<OpName::kMatmulBackward>(m, MetaMatmulBackward);
+  ImplStable<OpName::kMatmulBackwardOut>(m, MetaMatmulBackwardOut);
 }
 
 // Registers meta implementations for torch.ops.tpu ops.
