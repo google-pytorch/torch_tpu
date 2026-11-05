@@ -32,6 +32,7 @@
 #include "llvm/ADT/APInt.h"
 #include "llvm/Support/Casting.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/MLIRContext.h"
@@ -124,6 +125,17 @@ mlir::Value UnwrapOptionalScalar(const std::optional<Scalar>& s) {
 mlir::Value OptionalI32Value(const std::optional<IndexArg>& arg,
                              std::string_view name) {
   return UnwrapOptionalScalar(OptionalI32Scalar(arg, name));
+}
+
+mlir::Value ToIndex(mlir::ImplicitLocOpBuilder& b, const IndexArg& arg) {
+  if (arg.IsInt()) {
+    return mlir::arith::ConstantOp::create(b, b.getIndexAttr(arg.AsInt()));
+  }
+  const Scalar s = arg.ToScalar();
+  if (s.dtype().IsUnsigned()) {
+    return mlir::arith::IndexCastUIOp::create(b, b.getIndexType(), unwrap(s));
+  }
+  return mlir::arith::IndexCastOp::create(b, b.getIndexType(), unwrap(s));
 }
 
 }  // namespace torch_tpu::kiln::internal

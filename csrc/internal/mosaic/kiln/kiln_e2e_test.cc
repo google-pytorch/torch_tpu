@@ -20,6 +20,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -804,6 +805,76 @@ TEST_F(KilnE2eTest, DynamicMemrefSliceSizesAndScopedDma) {
     });
     RunAndCompare(serialized, {&input}, expected);
   }
+}
+
+TEST_F(KilnE2eTest, WindowedLoadConcatAndValueIf) {
+  // Tests partial non-tile-aligned `Load`, `Concat` along both sublane and lane
+  // axes, and value-returning `If` (a tuple of a `Scalar` and a `Tile`) on BF16
+  // and F32 tiles.
+  constexpr int64_t kRows = 128;
+  constexpr int64_t kCols = 256;
+  constexpr int64_t kValidRows = 19;
+  constexpr int64_t kValidCols = 144;
+
+  IndexMap row_block_map([] { return IndexIndices{ProgramId(0), 0}; });
+  TT_ASSERT_OK_AND_ASSIGN(
+      Kernel kernel,
+      CreateKernel(
+          GridSpec{.name = "clamped_load_e2e", .grid = {2}},
+          InSpec{bf16(kRows, kCols), row_block_map},
+          InSpec{bf16(1, kCols), IndexMap([] { return IndexIndices{0, 0}; })},
+          OutSpec{f32(kRows, kCols), row_block_map},
+          [&](VmemRef x_ref, VmemRef bias_ref, VmemRef out_ref) {
+            Scalar pid = ProgramId(0);
+            auto [scale, x] = If(
+                pid == 1,
+                [&] {
+                  Tile head = Load(x_ref, {0, 0}, {kValidRows, kCols});
+                  return std::tuple{
+                      F32(2.0f),
+                      Concat({head, Zeros(bf16(kRows - kValidRows, kCols))},
+                             0)};
+                },
+                [&] { return std::tuple{F32(1.0f), Load(x_ref)}; });
+            Tile b = Load(bias_ref, {0, 0}, {1, kValidCols})
+                         .AsType(f32)
+                         .BroadcastTo({kRows, kValidCols});
+            Tile b_padded =
+                Concat({b, Zeros(f32(kRows, kCols - kValidCols))}, 1);
+            Store(out_ref, x.AsType(f32) * scale + b_padded);
+          }));
+
+  xla::Literal x_in(xla::ShapeUtil::MakeShape(xla::BF16, {2 * kRows, kCols}));
+  for (int64_t r = 0; r < 2 * kRows; ++r) {
+    for (int64_t c = 0; c < kCols; ++c) {
+      x_in.Set<xla::bfloat16>(
+          {r, c}, static_cast<xla::bfloat16>(static_cast<float>((r + c) % 13)));
+    }
+  }
+  xla::Literal bias_in(xla::ShapeUtil::MakeShape(xla::BF16, {1, kCols}));
+  for (int64_t c = 0; c < kCols; ++c) {
+    // Put a poison-like sentinel in the tail [kValidCols, kCols) to verify
+    // that the clamped load + zero concat masks it out.
+    const float v = (c < kValidCols) ? static_cast<float>(c % 7 + 1) : 1000.0f;
+    bias_in.Set<xla::bfloat16>({0, c}, static_cast<xla::bfloat16>(v));
+  }
+
+  xla::Literal expected =
+      Make2dF32(2 * kRows, kCols, [&](int64_t r, int64_t c) {
+        const bool in_ragged_tail = (r >= kRows + kValidRows);
+        const float xv =
+            in_ragged_tail
+                ? 0.0f
+                : static_cast<float>(x_in.Get<xla::bfloat16>({r, c}));
+        const float scale = (r >= kRows) ? 2.0f : 1.0f;
+        const float bv =
+            (c < kValidCols)
+                ? static_cast<float>(bias_in.Get<xla::bfloat16>({0, c}))
+                : 0.0f;
+        return xv * scale + bv;
+      });
+
+  RunAndCompare(std::move(kernel), {&x_in, &bias_in}, expected);
 }
 
 }  // namespace

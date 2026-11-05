@@ -45,8 +45,8 @@
 //         memory space is only known at runtime
 //   * ref(0, 0) / ref(0, Slice(c, kChunk), all)
 //     <-> ref slicing; emits tpu::MemRefSlice / Squeeze
-//   * Load(ref) / Store(ref, value) (a Tile for VMEM, a Scalar for SMEM)
-//     <-> ref[...] / ref[...] = value
+//   * Load(ref) / Load(ref, offsets, sizes) / Store(ref, value)
+//     <-> ref[...] / ref[...] = value (a Tile for VMEM, a Scalar for SMEM)
 //   * Tile
 //     <-> a jax.Array value inside the kernel
 //   * Scalar

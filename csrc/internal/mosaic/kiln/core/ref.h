@@ -220,6 +220,14 @@ class Ref final : public internal::RefBase {
 // first to load a window: `Load(ref(0, Slice(c, kChunk)))`.
 Tile Load(VmemRef src);
 
+// Loads a static `sizes` window at `offsets` from `src`, a VMEM ref with a
+// static shape (`vector.load`). Unlike `Load(src(Slice(...)))`, `sizes` need
+// not be multiples of the memref tile dimensions; out-of-bounds lanes/sublanes
+// of the trailing VREGs are masked off in hardware. Along trailing tiled
+// dimensions, `offsets` must be aligned to the memref tile dimensions.
+Tile Load(VmemRef src, llvm::ArrayRef<IndexArg> offsets,
+          llvm::ArrayRef<int64_t> sizes);
+
 // Loads `src`, a 0-D SMEM ref, as a scalar (`memref.load`). Index first to load
 // an element: `Load(ref(i, j))`.
 Scalar Load(SmemRef src);
@@ -227,6 +235,8 @@ Scalar Load(SmemRef src);
 // HBM refs cannot be loaded from directly (use `AsyncCopy` / `SyncCopy`), and a
 // `Ref` must first be typed with `As<VmemRef>()` / `As<SmemRef>()`.
 void Load(Ref src) = delete;
+void Load(Ref src, llvm::ArrayRef<IndexArg> offsets,
+          llvm::ArrayRef<int64_t> sizes) = delete;
 
 // TODO(willfroom): Add the "add" option.
 struct StoreOptions {

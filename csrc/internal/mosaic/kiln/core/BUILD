@@ -152,6 +152,7 @@ torch_tpu_cc_library(
         ":context",
         ":dtype",
         ":index_arg",
+        ":mlir_utils",
         ":scalar",
         ":shape",
         ":tile",

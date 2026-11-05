@@ -26,6 +26,7 @@
 #include "csrc/internal/mosaic/kiln/core/context.h"
 #include "csrc/internal/mosaic/kiln/core/dtype.h"
 #include "csrc/internal/mosaic/kiln/core/index_arg.h"
+#include "csrc/internal/mosaic/kiln/core/mlir_utils.h"
 #include "csrc/internal/mosaic/kiln/core/scalar.h"
 #include "csrc/internal/mosaic/kiln/core/shape.h"
 #include "csrc/internal/mosaic/kiln/core/tile.h"
@@ -47,19 +48,6 @@
 
 namespace torch_tpu::kiln {
 namespace {
-
-mlir::Value ToIndex(mlir::ImplicitLocOpBuilder& b, const IndexArg& arg) {
-  if (arg.IsInt()) {
-    return mlir::arith::ConstantOp::create(b, b.getIndexAttr(arg.AsInt()));
-  }
-  Scalar s = arg.ToScalar();
-  if (s.dtype().IsUnsigned()) {
-    return mlir::arith::IndexCastUIOp::create(b, b.getIndexType(),
-                                              internal::unwrap(s));
-  }
-  return mlir::arith::IndexCastOp::create(b, b.getIndexType(),
-                                          internal::unwrap(s));
-}
 
 void ValidateLoopStep(const IndexArg& step) {
   if (step.IsInt()) {
@@ -217,8 +205,9 @@ void For(IndexArg lower, IndexArg upper, IndexArg step,
          absl::FunctionRef<void(Scalar)> body) {
   ValidateLoopStep(step);
   mlir::ImplicitLocOpBuilder& b = internal::CurrentBuilder();
-  auto for_op = mlir::scf::ForOp::create(b, ToIndex(b, lower),
-                                         ToIndex(b, upper), ToIndex(b, step));
+  auto for_op = mlir::scf::ForOp::create(b, internal::ToIndex(b, lower),
+                                         internal::ToIndex(b, upper),
+                                         internal::ToIndex(b, step));
   mlir::OpBuilder::InsertionGuard guard(b);
   b.setInsertionPointToStart(for_op.getBody());
   mlir::Value iv = mlir::arith::IndexCastOp::create(b, b.getI32Type(),
@@ -232,7 +221,8 @@ void For(IndexArg lower, IndexArg upper, IndexArg step,
   const ControlFlowValues init = Load(vars);
   mlir::ImplicitLocOpBuilder& b = internal::CurrentBuilder();
   auto for_op = mlir::scf::ForOp::create(
-      b, ToIndex(b, lower), ToIndex(b, upper), ToIndex(b, step), Unwrap(init));
+      b, internal::ToIndex(b, lower), internal::ToIndex(b, upper),
+      internal::ToIndex(b, step), Unwrap(init));
   {
     mlir::OpBuilder::InsertionGuard guard(b);
     mlir::Block* block = for_op.getBody();

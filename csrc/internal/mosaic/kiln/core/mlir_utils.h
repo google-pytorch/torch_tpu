@@ -27,6 +27,7 @@
 #include "csrc/internal/mosaic/kiln/core/shape.h"
 #include "csrc/internal/mosaic/kiln/core/specs.h"
 #include "llvm/Support/Casting.h"
+#include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Value.h"
@@ -70,6 +71,10 @@ mlir::Value UnwrapOptionalScalar(const std::optional<Scalar>& s);
 
 mlir::Value OptionalI32Value(const std::optional<IndexArg>& arg,
                              std::string_view name);
+
+// Converts `arg` to an `index`-typed mlir::Value: an `arith.constant` for
+// integer literals, otherwise an `arith.index_cast[ui]` of the Scalar.
+mlir::Value ToIndex(mlir::ImplicitLocOpBuilder& b, const IndexArg& arg);
 
 }  // namespace torch_tpu::kiln::internal
 

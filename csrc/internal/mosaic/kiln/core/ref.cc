@@ -142,6 +142,40 @@ Tile Load(VmemRef src) {
       src.dtype());
 }
 
+Tile Load(VmemRef src, llvm::ArrayRef<IndexArg> offsets,
+          llvm::ArrayRef<int64_t> sizes) {
+  ABSL_CHECK(src.HasStaticShape())  // CRASH_OK
+      << "Load() requires a Ref with a static shape";
+  const int64_t rank = src.rank();
+  ABSL_CHECK_EQ(static_cast<int64_t>(offsets.size()), rank)  // CRASH_OK
+      << "Load() requires one offset per ref dimension";
+  ABSL_CHECK_EQ(static_cast<int64_t>(sizes.size()), rank)  // CRASH_OK
+      << "Load() requires one size per ref dimension";
+
+  mlir::ImplicitLocOpBuilder& b = internal::CurrentBuilder();
+  const llvm::ArrayRef<int64_t> src_dims = src.dims();
+  llvm::SmallVector<mlir::Value, 4> indices;
+  indices.reserve(rank);
+  for (int64_t d = 0; d < rank; ++d) {
+    ABSL_CHECK_GT(sizes[d], 0)  // CRASH_OK
+        << "Load() size must be positive";
+    ABSL_CHECK_LE(sizes[d], src_dims[d])  // CRASH_OK
+        << "Load() size must not exceed dimension size";
+    internal::ValidateI32IndexArg(
+        offsets[d], internal::IndexBounds::kNonNegative, "Load offset");
+    if (offsets[d].IsInt()) {
+      ABSL_CHECK_LE(offsets[d].AsInt(), src_dims[d] - sizes[d])  // CRASH_OK
+          << "Load() offset + size must not exceed dimension size";
+    }
+    indices.push_back(internal::ToIndex(b, offsets[d]));
+  }
+  return internal::wrap<Tile>(
+      vector::LoadOp::create(
+          b, internal::ToMlirVectorType(Shape(sizes, src.dtype())),
+          internal::unwrap(src), indices),
+      src.dtype());
+}
+
 Scalar Load(SmemRef src) {
   ABSL_CHECK_EQ(src.rank(), 0)  // CRASH_OK
       << "Load() of a Scalar requires a 0-D ref";

@@ -1212,6 +1212,14 @@ TEST(KilnDeathTest, ScalarMismatchedTypesFail) {
 
         EXPECT_DEATH(f_in(0, 0, 0), "Too many slice indices");
         EXPECT_DEATH(f_in(0, Slice(0, 0)), "Slice size must be positive");
+        EXPECT_DEATH(Load(f_in, {0}, {8, 128}),
+                     "Load\\(\\) requires one offset per ref dimension");
+        EXPECT_DEATH(Load(f_in, {0, 0}, {8}),
+                     "Load\\(\\) requires one size per ref dimension");
+        EXPECT_DEATH(Load(f_in, {0, 0}, {0, 128}),
+                     "Load\\(\\) size must be positive");
+        EXPECT_DEATH(Load(f_in, {24, 0}, {16, 128}),
+                     "Load\\(\\) offset \\+ size must not exceed dimension");
         EXPECT_DEATH(Concat({}, 0), "Concat\\(\\) requires at least one tile");
         EXPECT_DEATH(Concat({t_f, t_f}, 2),
                      "Concat\\(\\) axis 2 out of bounds");
@@ -2597,6 +2605,39 @@ TEST(KilnTest, Concat) {
     CHECK:         %[[R:.*]] = tpu.concatenate %[[X]], %{{.*}} in 0 : vector<16x128xbf16>, vector<16x128xbf16> -> vector<32x128xbf16>
     CHECK:         %[[C:.*]] = tpu.concatenate %[[R]], %{{.*}} in 1 : vector<32x128xbf16>, vector<32x128xbf16> -> vector<32x256xbf16>
     CHECK:         tpu.vector_store %{{.*}}[{{.*}}], %[[C]]
+  )"));
+}
+
+TEST(KilnTest, WindowedLoad) {
+  EXPECT_THAT(CreateKernel(GridSpec{.name = "windowed_load", .grid = {1}},
+                           InSpec{bf16(128, 256)}, OutSpec{bf16(19, 100)},
+                           [](VmemRef in, VmemRef out) {
+                             // The window starts at a tile-aligned offset, but
+                             // its sizes are not multiples of the (16, 128)
+                             // bf16 tiling.
+                             Store(out, Load(in, {16, 128}, {19, 100}));
+                           }),
+              IsOkAndMatchesIr(R"(
+    CHECK-LABEL: func.func @windowed_load
+    CHECK-DAG:     %[[R:.*]] = arith.constant 16 : index
+    CHECK-DAG:     %[[C:.*]] = arith.constant 128 : index
+    CHECK:         %[[W:.*]] = vector.load %{{.*}}[%[[R]], %[[C]]] : memref<128x256xbf16, #tpu.memory_space<vmem>>, vector<19x100xbf16>
+    CHECK:         tpu.vector_store %{{.*}}[{{.*}}], %[[W]]
+  )"));
+}
+
+TEST(KilnTest, WindowedLoadDynamicOffset) {
+  EXPECT_THAT(
+      CreateKernel(GridSpec{.name = "windowed_load_dynamic", .grid = {1}},
+                   InSpec{bf16(128, 256)}, OutSpec{bf16(16, 128)},
+                   [](VmemRef in, VmemRef out) {
+                     Store(out, Load(in, {ProgramId(0) * 16, 0}, {16, 128}));
+                   }),
+      IsOkAndMatchesIr(R"(
+    CHECK-LABEL: func.func @windowed_load_dynamic
+    CHECK:         %[[R:.*]] = arith.index_cast %{{.*}} : i32 to index
+    CHECK:         %[[W:.*]] = vector.load %{{.*}}[%[[R]], %{{.*}}] : memref<128x256xbf16, #tpu.memory_space<vmem>>, vector<16x128xbf16>
+    CHECK:         tpu.vector_store %{{.*}}[{{.*}}], %[[W]]
   )"));
 }
 
