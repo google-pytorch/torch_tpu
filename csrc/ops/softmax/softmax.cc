@@ -44,15 +44,12 @@ absl::StatusOr<mlir::MlirOp> BuildBroadcastedMaxShlo(mlir::MlirOp input_op,
                                                      int64_t dim) {
   mlir::MlirBuilder& builder = input_op.getBuilder();
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input_op);
-  auto scalar_type =
-      mlir::RankedTensorType::get({}, input_type.getElementType());
-  TT_ASSIGN_OR_RETURN(mlir::DenseElementsAttr min_finite_value,
-                      GetVerifiedMinFiniteValue(builder, scalar_type));
-  mlir::MlirOp min_finite_const =
-      mlir::stablehlo::Constant(builder, min_finite_value);
+  mlir::MlirOp neg_inf =
+      MakeScalarConstant(builder, -std::numeric_limits<double>::infinity(),
+                         input_type.getElementType());
 
   mlir::SmallVector<mlir::MlirOp> max_val_reduced = mlir::stablehlo::Reduce(
-      builder, {input_op}, {min_finite_const},
+      builder, {input_op}, {neg_inf},
       [&input_type](mlir::RegionBuilder& rb) {
         // Scalar Max Region
         mlir::stablehlo::buildReduceBody<mlir::stablehlo::MaxOp>(
@@ -75,6 +72,18 @@ absl::StatusOr<mlir::MlirOp> BuildSoftmaxShlo(mlir::MlirOp input_op,
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input_op);
   mlir::MlirBuilder& builder = input_op.getBuilder();
   if (input_type.getRank() == 0) {
+    if (softmax_mode == SoftmaxMode::kSafeSoftmax) {
+      mlir::MlirOp neg_inf =
+          MakeScalarConstant(builder, -std::numeric_limits<double>::infinity(),
+                             input_type.getElementType());
+      mlir::MlirOp is_neg_inf = mlir::stablehlo::Compare(
+          input_op, neg_inf, mlir::stablehlo::ComparisonDirection::EQ);
+      mlir::MlirOp zero =
+          MakeScalarConstant(builder, 0.0, input_type.getElementType());
+      mlir::MlirOp one =
+          MakeScalarConstant(builder, 1.0, input_type.getElementType());
+      return mlir::stablehlo::Select(is_neg_inf, zero, one);
+    }
     return MakeScalarConstant(builder,
                               softmax_mode == SoftmaxMode::kSoftmax ? 1.0 : 0.0,
                               input_type.getElementType());
@@ -96,34 +105,37 @@ absl::StatusOr<mlir::MlirOp> BuildSoftmaxShlo(mlir::MlirOp input_op,
 
   TT_ASSIGN_OR_RETURN(mlir::MlirOp max_val_broadcasted,
                       BuildBroadcastedMaxShlo(input_op, dim));
-  mlir::MlirOp shifted_op =
-      mlir::stablehlo::Subtract(input_op, max_val_broadcasted);
+  mlir::MlirOp max_val = max_val_broadcasted;
+  mlir::MlirOp is_row_all_neg_inf;
+  if (softmax_mode == SoftmaxMode::kSafeSoftmax) {
+    mlir::MlirOp neg_inf = MakeConstantLike(
+        max_val_broadcasted, -std::numeric_limits<double>::infinity());
+    is_row_all_neg_inf = mlir::stablehlo::Compare(
+        max_val_broadcasted, neg_inf, mlir::stablehlo::ComparisonDirection::EQ);
+    mlir::MlirOp zero_const = MakeConstantLike(max_val_broadcasted, 0.0);
+    max_val = mlir::stablehlo::Select(is_row_all_neg_inf, zero_const,
+                                      max_val_broadcasted);
+  }
+  mlir::MlirOp shifted_op = mlir::stablehlo::Subtract(input_op, max_val);
   mlir::MlirOp exp_op = mlir::stablehlo::Exp(shifted_op);
 
   TT_ASSIGN_OR_RETURN(mlir::MlirOp sum_op, BuildSumShlo(exp_op, {dim}));
   TT_ASSIGN_OR_RETURN(mlir::MlirOp unsqueezed_sum_op, Unsqueeze(sum_op, dim));
 
   mlir::MlirOp result;
-  if (input_type.isDynamicDim(dim)) {
-    TT_ASSIGN_OR_RETURN(mlir::MlirOp sum_exp_broadcasted_op,
-                        BroadcastIfNeeded(unsqueezed_sum_op, input_op));
-    if (softmax_mode == SoftmaxMode::kLogSoftmax) {
-      mlir::MlirOp log_op = mlir::stablehlo::Log(sum_exp_broadcasted_op);
-      result = mlir::stablehlo::Subtract(shifted_op, log_op);
-    } else {
-      result = mlir::stablehlo::Div(exp_op, sum_exp_broadcasted_op);
-    }
-  } else if (softmax_mode == SoftmaxMode::kLogSoftmax) {
+  if (softmax_mode == SoftmaxMode::kLogSoftmax) {
     mlir::MlirOp log_op = mlir::stablehlo::Log(unsqueezed_sum_op);
     TT_ASSIGN_OR_RETURN(mlir::MlirOp log_broadcasted,
                         BroadcastIfNeeded(log_op, input_op));
     result = mlir::stablehlo::Subtract(shifted_op, log_broadcasted);
   } else {
-    mlir::MlirOp one_op = MakeConstantLike(unsqueezed_sum_op, 1.0);
-    mlir::MlirOp inv_sum_op = mlir::stablehlo::Div(one_op, unsqueezed_sum_op);
-    TT_ASSIGN_OR_RETURN(mlir::MlirOp inv_sum_broadcasted,
-                        BroadcastIfNeeded(inv_sum_op, input_op));
-    result = mlir::stablehlo::Mul(exp_op, inv_sum_broadcasted);
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp sum_exp_broadcasted_op,
+                        BroadcastIfNeeded(unsqueezed_sum_op, input_op));
+    result = mlir::stablehlo::Div(exp_op, sum_exp_broadcasted_op);
+    if (softmax_mode == SoftmaxMode::kSafeSoftmax) {
+      mlir::MlirOp zero = MakeConstantLike(result, 0.0);
+      result = mlir::stablehlo::Select(is_row_all_neg_inf, zero, result);
+    }
   }
 
   return CastIfNeeded(result, orig_element_type);
