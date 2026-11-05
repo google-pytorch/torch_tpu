@@ -87,15 +87,27 @@ class DeviceGeneratorState : public c10::intrusive_ptr_target {
   static constexpr int kMaterializationThreshold = 4;
 
   DeviceGeneratorState() = default;
-  explicit DeviceGeneratorState(at::Tensor device_state_tensor)
-      : device_state_tensor_(std::move(device_state_tensor)) {}
+  // `seed` is the seed in `device_state_tensor`, or std::nullopt if unknown.
+  DeviceGeneratorState(at::Tensor device_state_tensor,
+                       std::optional<uint64_t> seed)
+      : device_state_tensor_(std::move(device_state_tensor)), seed_(seed) {}
 
   c10::intrusive_ptr<DeviceGeneratorState> clone() const;
 
   at::Tensor DeviceStateTensor() const { return device_state_tensor_; }
 
-  // Sets the device-resident RNG state tensor.
+  // Returns the seed in the device state tensor if it is known without reading
+  // the device, or std::nullopt otherwise.
+  std::optional<uint64_t> seed() const { return seed_; }
+
+  // Sets the device-resident RNG state tensor, which must have the same seed as
+  // the current one.
   absl::Status SetDeviceStateTensor(at::Tensor device_state_tensor);
+
+  // Sets the device-resident RNG state tensor, whose seed is `seed`, or unknown
+  // if `seed` is std::nullopt.
+  absl::Status SetDeviceStateTensor(at::Tensor device_state_tensor,
+                                    std::optional<uint64_t> seed);
 
   // Writes seed and offset to device state tensor.
   absl::Status WriteStateToDevice(uint64_t seed, uint64_t offset);
@@ -116,6 +128,9 @@ class DeviceGeneratorState : public c10::intrusive_ptr_target {
 
   // 1D uint64 tensor of 2 elements: {seed, offset}
   at::Tensor device_state_tensor_ = at::Tensor();
+
+  // The seed in `device_state_tensor_`, or std::nullopt if unknown.
+  std::optional<uint64_t> seed_;
 
   // Counter to throttle materialization of RNG state updates.
   int materialize_state_counter_ = 0;

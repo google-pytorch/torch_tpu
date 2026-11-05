@@ -17,6 +17,7 @@
 #include "csrc/eager/device_gen_impl.h"
 
 #include <cstdint>
+#include <cstring>
 #include <deque>
 #include <optional>
 #include <string>
@@ -51,6 +52,7 @@
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/eager_mode.h"
 #include "csrc/eager/events_queue.h"
+#include "csrc/eager/graph_capture_state.h"
 #include "csrc/eager/materialize.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/split_traversal.h"
@@ -299,7 +301,19 @@ absl::Status DeviceGeneratorState::MaybeMaterializeDeviceStateTensor(
 
 absl::Status DeviceGeneratorState::SetDeviceStateTensor(
     at::Tensor device_state_tensor) {
-  device_state_tensor_ = std::move(device_state_tensor);
+  return SetDeviceStateTensor(std::move(device_state_tensor), seed_);
+}
+
+absl::Status DeviceGeneratorState::SetDeviceStateTensor(
+    at::Tensor device_state_tensor, const std::optional<uint64_t> seed) {
+  if (device_state_tensor_.defined()) {
+    TT_ASSIGN_OR_RETURN(DeviceBufferRef buf, GetBuffer(device_state_tensor));
+    TT_RETURN_IF_ERROR(
+        AssignBufferToAtTensor(std::move(buf), device_state_tensor_));
+  } else {
+    device_state_tensor_ = std::move(device_state_tensor);
+  }
+  seed_ = seed;
   TT_RETURN_IF_ERROR(MaybeMaterializeDeviceStateTensor());
   return absl::OkStatus();
 }
@@ -309,12 +323,12 @@ absl::Status DeviceGeneratorState::WriteStateToDevice(uint64_t seed,
   TT_ASSIGN_OR_RETURN(
       auto new_rng_state,
       CreateDeviceRngStateTensor(device_state_tensor_.device(), seed, offset));
-  return SetDeviceStateTensor(std::move(new_rng_state));
+  return SetDeviceStateTensor(std::move(new_rng_state), seed);
 }
 
 c10::intrusive_ptr<DeviceGeneratorState> DeviceGeneratorState::clone() const {
-  auto new_state =
-      c10::make_intrusive<DeviceGeneratorState>(device_state_tensor_.clone());
+  auto new_state = c10::make_intrusive<DeviceGeneratorState>(
+      device_state_tensor_.clone(), seed_);
   TT_THROW_IF_ERROR(new_state->MaybeMaterializeDeviceStateTensor(
       /*force_materialization=*/true));
   return new_state;
@@ -391,7 +405,8 @@ at::Generator& DeviceGenerators::GetDefaultGenerator(at::DeviceIndex idx) {
                << static_cast<int>(idx);
   idx = NormalizeDeviceIndex(idx);
 
-  if (GetEagerMode() == EagerMode::kInternalCompileFxGraph) {
+  if (GetEagerMode() == EagerMode::kInternalCompileFxGraph &&
+      !IsCurrentThreadCapturingGraph()) {
     const auto it = GetExportModeDefaultGenerators().find(idx);
     TT_CHECK_THROW(it != GetExportModeDefaultGenerators().end(),
                    error::kFailedPrecondition)
@@ -487,9 +502,12 @@ absl::Status DeviceGeneratorImplBase::AdvanceDeviceStateTensor(
 EagerModeDeviceGeneratorImpl::EagerModeDeviceGeneratorImpl(
     const c10::DeviceIndex device_index)
     : DeviceGeneratorImplBase(device_index) {
+  TT_CHECK_THROW(!IsCurrentThreadCapturingGraph(), error::kFailedPrecondition)
+      << "cannot construct a new generator while capturing a graph";
   TT_ASSIGN_OR_THROW(auto tensor,
                      CreateDeviceRngStateTensor(this->device(), 0, 0));
-  state_ = c10::make_intrusive<DeviceGeneratorState>(std::move(tensor));
+  state_ = c10::make_intrusive<DeviceGeneratorState>(std::move(tensor),
+                                                     /*seed=*/0);
 }
 
 EagerModeDeviceGeneratorImpl::EagerModeDeviceGeneratorImpl(
@@ -501,11 +519,16 @@ EagerModeDeviceGeneratorImpl::EagerModeDeviceGeneratorImpl(
     const c10::DeviceIndex device_index, at::Tensor rng_state)
     : DeviceGeneratorImplBase(device_index) {
   if (ValidateDeviceStateTensor(rng_state).ok()) {
-    state_ = c10::make_intrusive<DeviceGeneratorState>(std::move(rng_state));
+    state_ = c10::make_intrusive<DeviceGeneratorState>(std::move(rng_state),
+                                                       std::nullopt);
   } else {
+    TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=C++-only constructor overload.
+        !IsCurrentThreadCapturingGraph(), error::kFailedPrecondition)
+        << "cannot construct a new generator while capturing a graph";
     TT_ASSIGN_OR_THROW(auto tensor,
                        CreateDeviceRngStateTensor(this->device(), 0, 0));
-    state_ = c10::make_intrusive<DeviceGeneratorState>(std::move(tensor));
+    state_ = c10::make_intrusive<DeviceGeneratorState>(std::move(tensor),
+                                                       /*seed=*/0);
     set_state(*rng_state.to(at::kCPU).view(at::kByte).unsafeGetTensorImpl());
   }
 }
@@ -521,15 +544,30 @@ absl::Status EagerModeDeviceGeneratorImpl::SetDeviceStateTensor(at::Tensor t) {
 
 void EagerModeDeviceGeneratorImpl::set_current_seed(uint64_t seed) {
   // set_current_seed() is invoked by PyTorch and behaves like an op.
-  TT_KERNEL(OpName::kRngSetSeed, _,
-            (IgnoreInCacheKey(seed, "delegates to WriteStateToDevice")),
-            { TT_THROW_IF_ERROR(state_->WriteStateToDevice(seed, 0)); });
+  TT_KERNEL(
+      OpName::kRngSetSeed, _,
+      (IgnoreInCacheKey(seed, "delegates to WriteStateToDevice")), {
+        if (IsCurrentThreadCapturingGraph()) {
+          // Like on CUDA, setting the current seed is a no-op during
+          // capture, which keeps the offset. Writing the state would
+          // make every replay restart from the same state.
+          TT_CHECK_THROW(state_->seed() == seed, error::kFailedPrecondition)
+              << "cannot set the seed of a generator while capturing a "
+                 "graph, except to its current seed";
+          return;
+        }
+        TT_THROW_IF_ERROR(state_->WriteStateToDevice(seed, 0));
+      });
 }
 
 void EagerModeDeviceGeneratorImpl::set_offset(uint64_t offset) {
   // set_offset() is invoked by PyTorch and behaves like an op.
   TT_KERNEL(OpName::kRngSetOffset, _,
             (IgnoreInCacheKey(offset, "delegates to UpdateRngOffset()")), {
+              TT_CHECK_THROW(!IsCurrentThreadCapturingGraph(),
+                             error::kFailedPrecondition)
+                  << "cannot set the offset of a generator while capturing a "
+                     "graph";
               TT_ASSIGN_OR_THROW(
                   auto rng_state_buffer,
                   UpdateDeviceRngOffset(state_->DeviceStateTensor(), offset));
@@ -541,16 +579,28 @@ void EagerModeDeviceGeneratorImpl::set_offset(uint64_t offset) {
 }
 
 uint64_t EagerModeDeviceGeneratorImpl::get_offset() const {
+  TT_CHECK_THROW(!IsCurrentThreadCapturingGraph(), error::kFailedPrecondition)
+      << "cannot read the offset of a generator while capturing a graph";
   return state_->DeviceStateTensor()[1].item<int64_t>();
 }
 
 uint64_t EagerModeDeviceGeneratorImpl::current_seed() const {
+  if (IsCurrentThreadCapturingGraph()) {
+    // The device state tensor cannot be read during capture.
+    const std::optional<uint64_t> seed = state_->seed();
+    TT_CHECK_THROW(seed.has_value(), error::kFailedPrecondition)
+        << "cannot read the seed of this generator while capturing a graph "
+           "because only the device has it";
+    return *seed;
+  }
   return state_->DeviceStateTensor()[0].item<int64_t>();
 }
 
 uint64_t EagerModeDeviceGeneratorImpl::seed() {
   // seed() is invoked by PyTorch and behaves like an op.
   TT_KERNEL(OpName::kRngSeed, _, (), {
+    TT_CHECK_THROW(!IsCurrentThreadCapturingGraph(), error::kFailedPrecondition)
+        << "cannot seed a generator randomly while capturing a graph";
     auto random = c10::detail::getNonDeterministicRandom(false);
     TT_THROW_IF_ERROR(state_->WriteStateToDevice(random, 0));
     return random;
@@ -560,6 +610,10 @@ uint64_t EagerModeDeviceGeneratorImpl::seed() {
 c10::intrusive_ptr<c10::TensorImpl> EagerModeDeviceGeneratorImpl::get_state()
     const {
   ABSL_VLOG(1) << "[get_state]";
+  // Unlike on CUDA, the offset is only on the device, which cannot be read
+  // during capture.
+  TT_CHECK_THROW(!IsCurrentThreadCapturingGraph(), error::kFailedPrecondition)
+      << "cannot read the state of a generator while capturing a graph";
   c10::impl::ExcludeDispatchKeyGuard guard(c10::DispatchKey::Python);
   return state_->DeviceStateTensor()
       .view(at::kByte)
@@ -571,6 +625,10 @@ void EagerModeDeviceGeneratorImpl::set_state(
     const c10::TensorImpl& new_state_impl) {
   ABSL_VLOG(1) << "[EagerModeDeviceGeneratorImpl::set_state]"
                << new_state_impl.dtype();
+  // Unlike on CUDA, the offset is on the device, so a captured graph would
+  // restore it on every replay.
+  TT_CHECK_THROW(!IsCurrentThreadCapturingGraph(), error::kFailedPrecondition)
+      << "cannot set the state of a generator while capturing a graph";
   c10::impl::ExcludeDispatchKeyGuard guard(c10::DispatchKey::Python);
 
   auto impl_ptr = c10::intrusive_ptr<c10::TensorImpl>::reclaim_copy(
@@ -587,9 +645,13 @@ void EagerModeDeviceGeneratorImpl::set_state(
   TT_CHECK_THROW(new_state.sizes() == c10::IntArrayRef({16}),
                  error::kFailedPrecondition)
       << "expect rng state to be shape (16,), got " << new_state.sizes();
+  // The state is {seed, offset}.
+  uint64_t seed = 0;
+  std::memcpy(&seed, new_state.const_data_ptr(), sizeof(seed));
   at::Tensor state_tensor = new_state.view(at::kUInt64).to(device());
   TT_THROW_IF_ERROR(ValidateDeviceStateTensor(state_tensor));
-  TT_THROW_IF_ERROR(SetDeviceStateTensor(std::move(state_tensor)));
+  TT_THROW_IF_ERROR(
+      state_->SetDeviceStateTensor(std::move(state_tensor), seed));
 }
 
 c10::intrusive_ptr<c10::GeneratorImpl>
@@ -608,7 +670,10 @@ void EagerModeDeviceGeneratorImpl::graphsafe_set_state(
   if (const auto* base_other =
           dynamic_cast<const DeviceGeneratorImplBase*>(state.get())) {
     at::Tensor state_tensor = base_other->DeviceStateTensor();
-    TT_THROW_IF_ERROR(SetDeviceStateTensor(std::move(state_tensor)));
+    TT_THROW_IF_ERROR(ValidateDeviceStateTensor(state_tensor));
+    // Only the device has the seed of the other generator.
+    TT_THROW_IF_ERROR(
+        state_->SetDeviceStateTensor(std::move(state_tensor), std::nullopt));
     return;
   }
   TT_CHECK_THROW(false, error::kInvalidArgument)
