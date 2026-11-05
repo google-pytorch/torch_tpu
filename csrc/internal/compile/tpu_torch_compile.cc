@@ -54,6 +54,7 @@
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/fingerprint_utils.h"
 #include "csrc/common/pybind_error_utils.h"
 #include "csrc/common/shape.h"
 #include "csrc/common/to_string.h"
@@ -64,6 +65,7 @@
 #include "csrc/eager/device_gen_impl.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/internal/compile/compiled_mode.h"
+#include "csrc/internal/compile/dispatch_invoke_subgraph.h"
 #include "csrc/internal/compile/dispatch_scan.h"
 #include "csrc/internal/dynamism/dynamism_ops.h"
 #include "csrc/ops/op_builder_utils.h"
@@ -1284,6 +1286,28 @@ bool PyIsConstantTensor(const at::Tensor& tensor) {
          deferred_op->op_name() == OpName::kTorchTpuInternalConstant;
 }
 
+std::optional<uint64_t> PyConstantTensorFingerprint(const at::Tensor& tensor) {
+  if (!tensor.defined() ||
+      tensor.device().type() != GetPrivateUse1DeviceType()) {
+    return std::nullopt;
+  }
+  const absl::StatusOr<DeviceBufferRef> buffer_ref = GetBuffer(tensor);
+  if (!buffer_ref.ok()) {
+    return std::nullopt;
+  }
+  const std::shared_ptr<DeferredOp> deferred_op = buffer_ref->deferred_op();
+  if (deferred_op == nullptr ||
+      deferred_op->op_name() != OpName::kTorchTpuInternalConstant) {
+    return std::nullopt;
+  }
+  FingerprintType fp = deferred_op->op_param_cache_keys().size();
+  for (const auto& [key, val] : deferred_op->op_param_cache_keys()) {
+    fp = tsl::FingerprintCat64(fp, Fingerprint(key));
+    fp = tsl::FingerprintCat64(fp, val);
+  }
+  return fp;
+}
+
 // Returns whether `storage_offset` is zero and every element of a tensor with
 // the given layout maps to the same memory offset as in the standard contiguous
 // layout of `shape`, i.e. the strides differ at most along size-1 dimensions
@@ -2403,6 +2427,10 @@ TT_PYBIND11_MODULE(tpu_torch_compile, m) {
   m.def("is_constant_tensor", PyIsConstantTensor, py::arg("tensor"),
         "Returns whether the tensor is a constant TPU tensor created by "
         "make_constant_tensor.");
+  m.def("constant_tensor_fingerprint", PyConstantTensorFingerprint,
+        py::arg("tensor"),
+        "Returns a content fingerprint for a constant TPU tensor, or None "
+        "otherwise.");
   m.def("assign_constant_tensor", PyAssignConstantTensor,
         py::arg("cpu_src_tensor"), py::arg("tpu_dst_tensor"),
         "Updates a TPU tensor to be a tensor with the constant value of the "
@@ -2455,6 +2483,11 @@ TT_PYBIND11_MODULE(tpu_torch_compile, m) {
         py::arg("inputs"), py::arg("body_module"), py::arg("scan_direction"),
         py::arg("dim"), py::arg("num_scan_inputs"),
         "Creates a deferred associative scan operation and returns the output "
+        "tensors.");
+  m.def("create_invoke_subgraph_op", &PyCreateInvokeSubgraphOp,
+        py::arg("inputs"), py::arg("subgraph_module"),
+        py::arg("identifier") = "",
+        "Creates a deferred invoke_subgraph operation and returns the output "
         "tensors.");
 }
 

@@ -133,6 +133,31 @@ def _ensure_ao_ops_registered() -> None:
     )
 
 
+def _make_invoke_subgraph_mlir(
+    arg_types: Sequence[str],
+    result_types: Sequence[str] | None = None,
+    *,
+    func_name: str = "main",
+) -> str:
+  """Builds a minimal MLIR module for testing create_invoke_subgraph_op."""
+  args = ", ".join(f"%arg{i}: {t}" for i, t in enumerate(arg_types))
+  arg_names = ", ".join(f"%arg{i}" for i in range(len(arg_types)))
+  ret_types = arg_types if result_types is None else result_types
+  ret_sig = ", ".join(ret_types)
+  if result_types is None:
+    body = f"return {arg_names} : {ret_sig}"
+  else:
+    arg_sig = ", ".join(arg_types)
+    body = (
+        f"%0 = stablehlo.custom_call @dummy({arg_names})"
+        f" : ({arg_sig}) -> {ret_sig}\n    return %0 : {ret_sig}"
+    )
+  return (
+      f"module {{\n  func.func @{func_name}({args}) -> ({ret_sig})"
+      f" {{\n    {body}\n  }}\n}}"
+  )
+
+
 class TpuOnlyErrorTest(et.TpuOnlyErrorTestBase):
   """Tests error messages on TPU."""
 
@@ -2627,6 +2652,274 @@ module {
         tpu="""compile_mlir(): failed to convert MLIR type to XLA shape""",
     ):
       tpu_torch_compile.compile_mlir(module, argument_layouts=[[1, 0]])
+
+  @et.why_tpu_only("For testing TPU compile API validation.")
+  def test_create_invoke_subgraph_op_null_module(self):
+    x = torch.ones(2, 3, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""create_invoke_subgraph_op(): subgraph_module must not be null""",
+    ):
+      tpu_torch_compile.create_invoke_subgraph_op([x], None)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="missing_main",
+          arg_types=("tensor<2x3xf32>",),
+          func_name="not_main",
+          input_shape=(2, 3),
+          expected_msg=(
+              "create_invoke_subgraph_op(): subgraph_module must define a"
+              " @main function"
+          ),
+      ),
+      dict(
+          testcase_name="input_count_mismatch",
+          arg_types=("tensor<2x3xf32>", "tensor<2x3xf32>"),
+          input_shape=(2, 3),
+          expected_msg="create_invoke_subgraph_op(): expected 2 inputs, got 1",
+      ),
+      dict(
+          testcase_name="unsupported_dtype",
+          arg_types=("tensor<2xi17>",),
+          input_shape=(2,),
+          expected_msg=(
+              "create_invoke_subgraph_op(): unsupported MLIR type: i17"
+          ),
+      ),
+      dict(
+          testcase_name="arg_unranked",
+          arg_types=("tensor<*xf32>",),
+          input_shape=(2,),
+          expected_msg=(
+              "create_invoke_subgraph_op(): subgraph_module @main argument 0"
+              " must be a ranked tensor type"
+          ),
+      ),
+      dict(
+          testcase_name="arg_unbounded",
+          arg_types=("tensor<?xf32>",),
+          input_shape=(2,),
+          expected_msg=(
+              "create_invoke_subgraph_op(): subgraph_module @main argument 0"
+              " has unbounded dynamic dimensions, which are not supported"
+          ),
+      ),
+      dict(
+          testcase_name="arg_partial_unbounded",
+          arg_types=(
+              "tensor<2x?xf32, #stablehlo.type_extensions<bounds = [?, ?]>>",
+          ),
+          input_shape=(2, 3),
+          expected_msg=(
+              "create_invoke_subgraph_op(): subgraph_module @main argument 0"
+              " has an unbounded dynamic dimension at axis 1"
+          ),
+      ),
+      dict(
+          testcase_name="arg_small_bound",
+          arg_types=(
+              "tensor<?xf32, #stablehlo.type_extensions<bounds = [1]>>",
+          ),
+          input_shape=(1,),
+          expected_msg=(
+              "create_invoke_subgraph_op(): expected subgraph_module @main"
+              " argument 0 bounded dynamic dimension upper bound at axis 0 to"
+              " be >= 2, got 1"
+          ),
+      ),
+      dict(
+          testcase_name="result_unranked",
+          arg_types=("tensor<2xf32>",),
+          result_types=("tensor<*xf32>",),
+          input_shape=(2,),
+          expected_msg=(
+              "create_invoke_subgraph_op(): subgraph_module @main result 0"
+              " must be a ranked tensor type"
+          ),
+      ),
+      dict(
+          testcase_name="result_unbounded",
+          arg_types=("tensor<2xf32>",),
+          result_types=("tensor<?xf32>",),
+          input_shape=(2,),
+          expected_msg=(
+              "create_invoke_subgraph_op(): subgraph_module @main result 0"
+              " has dynamic dimensions, which are not supported"
+          ),
+      ),
+      dict(
+          testcase_name="result_bounded_dynamic",
+          arg_types=("tensor<2xf32>",),
+          result_types=(
+              "tensor<?xf32, #stablehlo.type_extensions<bounds = [2]>>",
+          ),
+          input_shape=(2,),
+          expected_msg=(
+              "create_invoke_subgraph_op(): subgraph_module @main result 0"
+              " has dynamic dimensions, which are not supported"
+          ),
+      ),
+  )
+  @et.why_tpu_only("For testing TPU compile API validation.")
+  def test_create_invoke_subgraph_op_module_validation(
+      self,
+      arg_types: Sequence[str],
+      input_shape: tuple[int, ...],
+      expected_msg: str,
+      result_types: Sequence[str] | None = None,
+      func_name: str = "main",
+  ):
+    mlir_text = _make_invoke_subgraph_mlir(
+        arg_types, result_types, func_name=func_name
+    )
+    module = tpu_torch_compile.parse_mlir_text(mlir_text)
+    x = torch.ones(input_shape, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(RuntimeError, tpu=expected_msg):
+      tpu_torch_compile.create_invoke_subgraph_op([x], module)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="cpu_tensor",
+          arg_type="tensor<2x3xf32>",
+          input_shape=(2, 3),
+          device="cpu",
+          expected_msg=(
+              "create_invoke_subgraph_op(): expected tensor to be on tpu,"
+              " got cpu"
+          ),
+      ),
+      dict(
+          testcase_name="bad_dtype",
+          arg_type="tensor<2x3xf32>",
+          input_shape=(2, 3),
+          dtype=torch.int32,
+          expected_msg=(
+              "create_invoke_subgraph_op(): expected input 0 dtype to be"
+              " float32, got int32"
+          ),
+      ),
+      dict(
+          testcase_name="bad_rank",
+          arg_type="tensor<2x3xf32>",
+          input_shape=(6,),
+          expected_msg=(
+              "create_invoke_subgraph_op(): expected input 0 rank to be 2,"
+              " got 1"
+          ),
+      ),
+      dict(
+          testcase_name="bad_shape",
+          arg_type="tensor<2x3xf32>",
+          input_shape=(3, 2),
+          expected_msg=(
+              "create_invoke_subgraph_op(): expected input 0 shape to be"
+              " [2, 3], got [3, 2]"
+          ),
+      ),
+      dict(
+          testcase_name="bad_static_dim",
+          arg_type=(
+              "tensor<?x3xf32, #stablehlo.type_extensions<bounds = [4, ?]>>"
+          ),
+          input_shape=(2, 2),
+          expected_msg=(
+              "create_invoke_subgraph_op(): expected input 0 dimension 1 to"
+              " be 3, got 2"
+          ),
+      ),
+      dict(
+          testcase_name="exceeds_bound",
+          arg_type=(
+              "tensor<?x3xf32, #stablehlo.type_extensions<bounds = [4, ?]>>"
+          ),
+          input_shape=(5, 3),
+          expected_msg=(
+              "create_invoke_subgraph_op(): expected input 0 dimension 0 to"
+              " be at most 4, got 5"
+          ),
+      ),
+      dict(
+          testcase_name="dyn_for_static",
+          arg_type="tensor<2x3xf32>",
+          input_shape=(2, 3),
+          dynamic_spec=(0, 2, 3),
+          expected_msg=(
+              "create_invoke_subgraph_op(): expected input 0 shape to be"
+              " static [2, 3], got dynamic shape"
+          ),
+      ),
+      dict(
+          testcase_name="dyn_on_static_axis",
+          arg_type=(
+              "tensor<?x3xf32, #stablehlo.type_extensions<bounds = [4, ?]>>"
+          ),
+          input_shape=(2, 3),
+          dynamic_spec=(1, 2, 5),
+          expected_msg=(
+              "create_invoke_subgraph_op(): expected input 0 dimension 1 to"
+              " be static 3, got dynamic dimension with upper bound 5"
+          ),
+      ),
+      dict(
+          testcase_name="dyn_exceeds_bound",
+          arg_type=(
+              "tensor<?x3xf32, #stablehlo.type_extensions<bounds = [4, ?]>>"
+          ),
+          input_shape=(2, 3),
+          dynamic_spec=(0, 2, 5),
+          expected_msg=(
+              "create_invoke_subgraph_op(): expected input 0 dimension 0 to"
+              " be at most 4, got 5"
+          ),
+      ),
+  )
+  @et.why_tpu_only("For testing TPU compile API validation.")
+  def test_create_invoke_subgraph_op_input_validation(
+      self,
+      arg_type: str,
+      input_shape: tuple[int, ...],
+      expected_msg: str,
+      dtype: torch.dtype = torch.float32,
+      device: str | None = None,
+      dynamic_spec: tuple[int, int, int] | None = None,
+  ):
+    module = tpu_torch_compile.parse_mlir_text(
+        _make_invoke_subgraph_mlir((arg_type,))
+    )
+    x = torch.ones(
+        input_shape,
+        device=et.device() if device is None else device,
+        dtype=dtype,
+    )
+    if dynamic_spec is not None:
+      dim, lower_bound, upper_bound = dynamic_spec
+      dynamism.mark_dynamic(
+          x,
+          dimension=dim,
+          lower_bound=lower_bound,
+          upper_bound=upper_bound,
+      )
+    with et.assert_raises_message(RuntimeError, tpu=expected_msg):
+      tpu_torch_compile.create_invoke_subgraph_op([x], module)
+
+  @et.why_tpu_only("For testing TPU compile API lowering validation.")
+  def test_create_invoke_subgraph_op_lowering_dynamic_input_to_static_subgraph(
+      self,
+  ):
+    module = tpu_torch_compile.parse_mlir_text(
+        _make_invoke_subgraph_mlir(("tensor<4xf32>",))
+    )
+    with execution_mode.set_eager_mode(EagerMode._INTERNAL_COMPILE_FX_GRAPH):
+      x = tpu_torch_compile.placeholder([4], torch.float32, False)
+      size = tpu_torch_compile.placeholder([], torch.int32, False)
+      x_dyn = torch.ops.tpu._set_dimension_logical_size(x, 0, size)
+      out = tpu_torch_compile.create_invoke_subgraph_op([x_dyn], module)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""create_invoke_subgraph_op(): input 0 MLIR type tensor<?xf32, #stablehlo.bounds<4>> is incompatible with subgraph_module @main argument type tensor<4xf32>; the subgraph was exported with a static or smaller-bounded shape, but this input is dynamic""",
+    ):
+      tpu_torch_compile.build_mlir(out, [x, size])
 
   # PyTorch CPU does not raise an error when 1D g size does not match the size
   # of weight in the normalization dimension. TPU validates this strictly to
