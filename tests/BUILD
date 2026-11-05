@@ -575,8 +575,10 @@ torch_tpu_py_library(
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
         "//shims/torch:testing_internal",
+        "//src/torch_tpu/_internal/compile/dynamic:symbol_bounds",
         "//src/torch_tpu/_internal/dynamism",
         "//src/torch_tpu/_internal/utils",
+        "@pypi//sympy",
     ],
 )
 

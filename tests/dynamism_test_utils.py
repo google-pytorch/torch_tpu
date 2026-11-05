@@ -21,18 +21,24 @@ Handles the following details for per-op unit testing:
   - Mark dependent args as dynamic.
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 import dataclasses
 import enum
 import itertools
 from typing import Any
 
 from absl import logging
+import sympy
 import torch
+from torch._dynamo import source as dynamo_source
+from torch._subclasses import fake_tensor
+from torch.fx.experimental import symbolic_shapes
 from torch.testing._internal import common_methods_invocations
 from torch.testing._internal.opinfo import core
 from torch.utils import _pytree
+from torch.utils._sympy import numbers as sympy_numbers
 from torch_tpu._internal import dynamism
+from torch_tpu._internal.compile.dynamic import symbol_bounds
 from torch_tpu._internal.utils import utils
 
 
@@ -52,11 +58,11 @@ ALL_MODES = frozenset(DynamismMode)
 
 @dataclasses.dataclass(frozen=True, order=True)
 class TensorDim:
-  """Identifies a 0-based dimension on a specific tensor in `input_value`.
+  """Identifies a 0-based dimension on an input tensor.
 
   Attributes:
-    tensor_index: Non-negative 0-based index of the tensor in `input_value` (`0`
-      when `input_value` is a single `Tensor`).
+    tensor_index: Non-negative 0-based index of the tensor in
+      `_collect_tensors`.
     dim: Non-negative 0-based dimension index on that tensor.
   """
 
@@ -81,11 +87,15 @@ class DynamicMarkingPlan:
     label: Identifier used in subtest names and `--dynamism_plan_filter` (e.g.,
       `"t0d0"`, `"t0d0_t0d1"`).
     tensor_dims: Strictly ascending, duplicate-free `TensorDim` targets to mark
-      dynamic.
+      dynamic on the primary input.
+    coupled_dims: Validated dimensions across all input tensors to mark dynamic
+      together when executing this plan. Empty when adapter-specific marking is
+      used (e.g., foreach ops).
   """
 
   label: str
   tensor_dims: tuple[TensorDim, ...] = ()
+  coupled_dims: tuple[TensorDim, ...] = ()
 
   def __post_init__(self) -> None:
     if any(td.tensor_index < 0 or td.dim < 0 for td in self.tensor_dims) or any(
@@ -95,6 +105,238 @@ class DynamicMarkingPlan:
           "tensor_dims must be non-negative and strictly ascending without"
           f" duplicates, got {self.tensor_dims}."
       )
+
+
+@dataclasses.dataclass(frozen=True)
+class _OpArgs:
+  """Bundles an operator's inputs."""
+
+  input_value: Any
+  args: tuple[Any, ...] = ()
+  kwargs: Mapping[str, Any] = dataclasses.field(default_factory=dict)
+
+
+def _normalize_kwargs(
+    kwargs: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+  """Returns `kwargs` sorted by key without `out` for deterministic traversal."""
+  if not kwargs:
+    return {}
+  return {k: kwargs[k] for k in sorted(kwargs) if k != "out"}
+
+
+def _collect_tensors(op_args: _OpArgs) -> list[torch.Tensor]:
+  """Returns all `torch.Tensor`s in `op_args` (excluding `out` in `kwargs`)."""
+  norm_kwargs = _normalize_kwargs(op_args.kwargs)
+  return [
+      x
+      for x in _pytree.tree_leaves(
+          (op_args.input_value, op_args.args, norm_kwargs)
+      )
+      if isinstance(x, torch.Tensor)
+  ]
+
+
+# Exceptions indicating `FakeTensorMode` cannot trace the op at all.
+_UNTRACEABLE_FAKE_OP_EXCEPTIONS = (
+    fake_tensor.DataDependentOutputException,
+    fake_tensor.UnsupportedFakeTensorException,
+    symbolic_shapes.GuardOnDataDependentSymNode,
+    NotImplementedError,
+)
+
+
+def _make_fake_inputs(
+    fake_mode: fake_tensor.FakeTensorMode,
+    op_args: _OpArgs,
+    *,
+    mode: DynamismMode,
+    dynamic_dims: set[TensorDim],
+) -> tuple[_OpArgs, dict[TensorDim, sympy.Basic]]:
+  """Converts `op_args` to symbolic `FakeTensor`s.
+
+  Args:
+    fake_mode: Active `FakeTensorMode` bound to a `ShapeEnv`.
+    op_args: Operator inputs.
+    mode: Dynamism execution mode.
+    dynamic_dims: Set of `TensorDim`s to mark dynamic.
+
+  Returns:
+    A `(fake_op_args, initial_syms)` pair with the converted `_OpArgs` and a
+    map from each symbolic `TensorDim` to its initial symbol.
+  """
+  initial_syms: dict[TensorDim, sympy.Basic] = {}
+  tensor_indices = itertools.count()
+
+  def to_fake(obj: Any) -> Any:
+    if not isinstance(obj, torch.Tensor):
+      return obj
+    tensor_idx = next(tensor_indices)
+    # Match `op_testing.to(..., "tpu")`, which materializes each tensor into an
+    # independent non-view copy while preserving dense non-overlapping strides.
+    detached = obj.detach().to(device=obj.device, copy=True)
+
+    # Mark requested dimensions with size >= 2 as dynamic.
+    dyn_sizes = [
+        symbolic_shapes.DimDynamic.DYNAMIC
+        if sz >= 2 and TensorDim(tensor_idx, d) in dynamic_dims
+        else symbolic_shapes.DimDynamic.STATIC
+        for d, sz in enumerate(detached.shape)
+    ]
+    fake = fake_mode.from_tensor(
+        detached,
+        source=dynamo_source.LocalSource(f"t{tensor_idx}"),
+        symbolic_context=symbolic_shapes.StatelessSymbolicContext(
+            dynamic_sizes=dyn_sizes
+        ),
+    )
+    if obj.requires_grad:
+      fake.requires_grad_(True)
+
+    # Record the initial symbol allocated for each dynamic dimension.
+    for d, s in enumerate(fake.size()):
+      if isinstance(s, torch.SymInt):
+        initial_syms[TensorDim(tensor_idx, d)] = s.node.expr
+    return fake
+
+  # Traverse inputs in the exact order used by `_collect_tensors`.
+  fake_input, fake_args, fake_kwargs = _pytree.tree_map(
+      to_fake,
+      (op_args.input_value, op_args.args, _normalize_kwargs(op_args.kwargs)),
+  )
+
+  # Enable gradients on differentiable primary inputs in `COMPILE_GRAD`.
+  if mode == DynamismMode.COMPILE_GRAD:
+    for t in _pytree.tree_leaves(fake_input):
+      if (
+          isinstance(t, torch.Tensor)
+          and (t.is_floating_point() or t.is_complex())
+          and t.numel() > 0
+      ):
+        t.requires_grad_(True)
+
+  # Convert `out` buffers separately as static FakeTensors so `tensor_indices`
+  # stays aligned with `_collect_tensors` (which excludes `out`).
+  if "out" in op_args.kwargs:
+    fake_kwargs["out"] = _pytree.tree_map(
+        lambda x: fake_mode.from_tensor(
+            x.detach().to(device=x.device, copy=True), static_shapes=True
+        )
+        if isinstance(x, torch.Tensor)
+        else x,
+        op_args.kwargs["out"],
+    )
+  return _OpArgs(fake_input, fake_args, fake_kwargs), initial_syms
+
+
+def _run_fake_backward(result: Any, fake_input: Any) -> None:
+  """Runs backward from differentiable `result` tensors to `fake_input`."""
+  grad_inputs = [
+      t
+      for t in _pytree.tree_leaves(fake_input)
+      if isinstance(t, torch.Tensor) and t.requires_grad
+  ]
+  outputs = [
+      t
+      for t in _pytree.tree_leaves(result)
+      if isinstance(t, torch.Tensor) and t.requires_grad
+  ]
+  if grad_inputs and outputs:
+    torch.autograd.grad(
+        outputs,
+        grad_inputs,
+        grad_outputs=[torch.ones_like(t) for t in outputs],
+        allow_unused=True,
+    )
+
+
+def _run_fake_op(
+    op_func: Callable[..., Any],
+    op_args: _OpArgs,
+    *,
+    mode: DynamismMode,
+    dynamic_dims: set[TensorDim],
+) -> tuple[symbolic_shapes.ShapeEnv, dict[TensorDim, sympy.Basic]]:
+  """Traces `op_func` (and backward in `COMPILE_GRAD`) on `FakeTensor`s.
+
+  Args:
+    op_func: Callable for the active op variant.
+    op_args: Operator inputs (`input_value`, `args`, `kwargs`).
+    mode: Dynamism execution mode (`EAGER`, `COMPILE`, or `COMPILE_GRAD`).
+    dynamic_dims: Set of `TensorDim`s to mark dynamic.
+
+  Returns:
+    A `(shape_env, initial_syms)` pair with the populated `ShapeEnv` and a map
+    from each symbolic `TensorDim` to its initial symbol.
+  """
+  # Disable duck-shaping so equal-sized dims start with distinct symbols.
+  shape_env = symbolic_shapes.ShapeEnv(duck_shape=False)
+  fake_mode = fake_tensor.FakeTensorMode(
+      shape_env=shape_env, allow_non_fake_inputs=True
+  )
+
+  # Convert inputs to FakeTensors with symbols on `dynamic_dims`.
+  fake_op_args, initial_syms = _make_fake_inputs(
+      fake_mode,
+      op_args,
+      mode=mode,
+      dynamic_dims=dynamic_dims,
+  )
+
+  # Run the op symbolically to record unifications and guards on `shape_env`.
+  with fake_mode:
+    result = op_func(
+        fake_op_args.input_value, *fake_op_args.args, **fake_op_args.kwargs
+    )
+    if mode in (DynamismMode.COMPILE, DynamismMode.COMPILE_GRAD):
+      # Mirror AOTAutograd's output stride/contiguity guards.
+      for out_t in _pytree.tree_leaves(
+          (result, fake_op_args.kwargs.get("out"))
+      ):
+        if isinstance(out_t, torch.Tensor):
+          torch._prims_common.suggest_memory_format(out_t)  # pylint: disable=protected-access
+    if mode == DynamismMode.COMPILE_GRAD:
+      # Also trace backward to capture autograd shape constraints.
+      _run_fake_backward(result, fake_op_args.input_value)
+
+  return shape_env, initial_syms
+
+
+def _satisfies_upper_bound_guards(
+    shape_env: symbolic_shapes.ShapeEnv,
+    canonical_syms: set[sympy.Symbol],
+    mode: DynamismMode,
+) -> bool:
+  """Returns True if mode-specific upper bounds satisfy `shape_env` guards."""
+  if mode == DynamismMode.EAGER:
+    eager_ub: dict[str, int] = {}
+    for sym in canonical_syms:
+      sz = int(shape_env.backed_var_to_val[sym])
+      vr_upper = shape_env.var_to_range[sym].upper
+      # Reject if eager's `sz + 10` bound exceeds the symbol's max range.
+      if not sympy_numbers.is_infinite(vr_upper) and sz + 10 > int(vr_upper):
+        return False
+      eager_ub[str(sym)] = sz + 10
+    return symbol_bounds.find_violated_guard(shape_env, eager_ub) is None
+
+  bucket_ub: dict[str, int] = {}
+  fallback_ub: dict[str, int] = {}
+  for sym in canonical_syms:
+    sz = int(shape_env.backed_var_to_val[sym])
+    vr_upper = shape_env.var_to_range[sym].upper
+    finite_ub = None if sympy_numbers.is_infinite(vr_upper) else int(vr_upper)
+    bucket_ub[str(sym)] = (
+        finite_ub if finite_ub is not None else -(-sz // 128) * 128
+    )
+    fallback_ub[str(sym)] = (
+        finite_ub
+        if finite_ub is not None
+        else symbol_bounds.get_fallback_upper_bound(sz)
+    )
+  return (
+      symbol_bounds.find_violated_guard(shape_env, bucket_ub) is None
+      or symbol_bounds.find_violated_guard(shape_env, fallback_ub) is None
+  )
 
 
 def _mark_tensor_dynamic(
@@ -741,6 +983,273 @@ class DynamicOpInfo:
         for dim in self.dynamic_dimension_candidates(canonical_input, args)
     ]
 
+  def _static_tensor_indices(
+      self, primary_tensor_idx: int, num_tensors: int
+  ) -> frozenset[int]:
+    """Returns tensor indices in `_collect_tensors` that must stay static."""
+    del primary_tensor_idx, num_tensors
+    return frozenset()
+
+  def _is_valid_coupled_plan(
+      self,
+      op_func: Callable[..., Any],
+      op_args: _OpArgs,
+      coupled: Sequence[TensorDim],
+      mode: DynamismMode,
+  ) -> bool:
+    """Returns True if `coupled` stays dynamic and satisfies shape guards.
+
+    Args:
+      op_func: Callable for the active op variant.
+      op_args: Operator inputs.
+      coupled: `TensorDim`s to mark dynamic together for validation.
+      mode: Dynamism execution mode.
+
+    Returns:
+      `True` if tracing succeeds with every dimension in `coupled` remaining
+      unspecialized and satisfying mode-specific upper-bound guards.
+    """
+    # Eager mode only supports one dynamic dimension per tensor.
+    if mode == DynamismMode.EAGER and len(
+        {c.tensor_index for c in coupled}
+    ) < len(coupled):
+      logging.debug(
+          "[DynamicOpInfo] Rejected %s (%s) in %s: >1 dynamic dim on tensor",
+          self.op_info.name,
+          coupled,
+          mode,
+      )
+      return False
+
+    # Trace the op with only `coupled` marked dynamic.
+    try:
+      shape_env, initial_syms = _run_fake_op(
+          op_func,
+          op_args,
+          mode=mode,
+          dynamic_dims=set(coupled),
+      )
+    except _UNTRACEABLE_FAKE_OP_EXCEPTIONS:
+      raise
+    except Exception as e:  # pylint: disable=broad-except
+      # Reject if symbolic tracing fails on this dynamic marking.
+      logging.debug(
+          "[DynamicOpInfo] Rejected %s (%s) in %s: %s",
+          self.op_info.name,
+          coupled,
+          mode,
+          e,
+      )
+      return False
+
+    # Verify every marked dimension remains an unspecialized symbol.
+    canonical_syms: set[sympy.Symbol] = set()
+    for c in coupled:
+      canonical_sym = shape_env.replace(initial_syms[c])
+      if (
+          not isinstance(canonical_sym, sympy.Symbol)
+          or shape_env.var_to_range[canonical_sym].is_singleton()
+      ):
+        logging.debug(
+            "[DynamicOpInfo] Rejected %s (%s) in %s: %s specialized to %s",
+            self.op_info.name,
+            coupled,
+            mode,
+            c,
+            canonical_sym,
+        )
+        return False
+      canonical_syms.add(canonical_sym)
+
+    # Verify mode-specific upper bounds satisfy all shape guards.
+    if not _satisfies_upper_bound_guards(shape_env, canonical_syms, mode):
+      logging.debug(
+          "[DynamicOpInfo] Rejected %s (%s) in %s: upper-bound guards failed",
+          self.op_info.name,
+          coupled,
+          mode,
+      )
+      return False
+
+    return True
+
+  def _discover_coupled_dims(
+      self,
+      candidates: Sequence[TensorDim],
+      tensors: Sequence[torch.Tensor],
+      op_args: _OpArgs,
+      op_func: Callable[..., Any],
+      mode: DynamismMode,
+  ) -> dict[TensorDim, tuple[TensorDim, ...]]:
+    """Discovers coupled tensor dimensions for each candidate.
+
+    Uses `FakeTensorMode` and `ShapeEnv` symbolic tracing to deduce which input
+    tensor dimensions must be marked dynamic together. It does this by:
+      1. Assigns a distinct symbol to every eligible dimension (`size >= 2`)
+         across all non-static input tensors.
+      2. Traces the op symbolically via so `ShapeEnv` records
+         equality constraints and unifies symbols across coupled dimensions.
+      3. Groups dimensions whose initial symbols resolve to the same canonical
+         symbol, skipping candidates that specialized to a constant or
+         arithmetic expression.
+      4. If joint tracing fails (e.g., when an op cannot have all dimensions
+         dynamic simultaneously), falls back to proposing each candidate on its
+         own for individual validation.
+
+    Args:
+      candidates: Candidate `TensorDim`s on the primary input tensor.
+      tensors: All input tensors of the op.
+      op_args: Operator inputs (`input_value`, `args`, `kwargs`).
+      op_func: Callable for the active op variant.
+      mode: Dynamism execution mode (`EAGER`, `COMPILE`, or `COMPILE_GRAD`).
+
+    Returns:
+      Mapping from each unspecialized candidate `TensorDim` to the sorted tuple
+      of coupled `TensorDim`s across all input tensors.
+    """
+    # Identify secondary tensors that must stay static (e.g., index tensors).
+    primary_tensor_idx = candidates[0].tensor_index
+    static_tensor_indices = self._static_tensor_indices(
+        primary_tensor_idx, len(tensors)
+    )
+
+    # Give every eligible dimension a distinct symbol so the op's meta kernel
+    # reveals exact 1-to-1 coupled dimension equivalence classes.
+    primary_dynamic = set(candidates)
+    secondary_dynamic = {
+        TensorDim(tensor_idx, d)
+        for tensor_idx, t in enumerate(tensors)
+        if tensor_idx != primary_tensor_idx
+        and tensor_idx not in static_tensor_indices
+        for d, sz in enumerate(t.shape)
+        if sz >= 2
+    }
+    pass1_dynamic = primary_dynamic | secondary_dynamic
+
+    proposed_by_candidate: dict[TensorDim, tuple[TensorDim, ...]] = {}
+    try:
+      shape_env, initial_syms = _run_fake_op(
+          op_func,
+          op_args,
+          mode=mode,
+          dynamic_dims=pass1_dynamic,
+      )
+      logging.debug(
+          "[DynamicOpInfo] Discovery trace for %s in %s: initial_syms=%s,"
+          " replacements=%s",
+          self.op_info.name,
+          mode,
+          initial_syms,
+          shape_env.replacements,
+      )
+
+      # Associate each candidate with the set of coupled dimensions.
+      # TODO: Extend symbolic discovery to support algebraic
+      # dimension constraints (e.g., s1 = s0 + k or s2 = s0 * s1) and symbolic
+      # SymInt scalar arguments.
+      for candidate in candidates:
+        primary_sym = initial_syms[candidate]
+        canonical_sym = shape_env.replace(primary_sym)
+        # Skip candidates that specialized to a constant or arithmetic expr.
+        if not isinstance(canonical_sym, sympy.Symbol):
+          continue
+        proposed_by_candidate[candidate] = tuple(
+            td
+            for td, sym in sorted(initial_syms.items())
+            if shape_env.replace(sym) == canonical_sym
+        )
+    except _UNTRACEABLE_FAKE_OP_EXCEPTIONS:
+      raise
+    except Exception as e:  # pylint: disable=broad-except
+      # Joint dynamic tracing failed (e.g., reshape s0 * s1 == K); fall back to
+      # validating each candidate dimension individually.
+      logging.debug(
+          "[DynamicOpInfo] Joint discovery failed on %s in %s (%s); probing"
+          " single dims",
+          self.op_info.name,
+          mode,
+          e,
+      )
+      for candidate in candidates:
+        proposed_by_candidate[candidate] = (candidate,)
+
+    logging.debug(
+        "[DynamicOpInfo] Discovered coupled dims for %s in %s: %s",
+        self.op_info.name,
+        mode,
+        proposed_by_candidate,
+    )
+    return proposed_by_candidate
+
+  def _validate_coupled_plans(
+      self,
+      candidates: Sequence[TensorDim],
+      proposed_by_candidate: Mapping[TensorDim, tuple[TensorDim, ...]],
+      op_args: _OpArgs,
+      op_func: Callable[..., Any],
+      mode: DynamismMode,
+  ) -> tuple[DynamicMarkingPlan, ...]:
+    """Validates coupled marking plans.
+
+    Args:
+      candidates: Candidate `TensorDim`s on the primary input tensor.
+      proposed_by_candidate: Mapping from each candidate to the coupled
+        `TensorDim` group.
+      op_args: Operator inputs (`input_value`, `args`, `kwargs`).
+      op_func: Callable for the active op variant.
+      mode: Dynamism execution mode (`EAGER`, `COMPILE`, or `COMPILE_GRAD`).
+
+    Returns:
+      Validated single-dimension plans, plus a combined multi-dimension plan in
+      compiled modes when valid.
+    """
+    valid_plans: list[DynamicMarkingPlan] = []
+    seen_coupled: set[tuple[TensorDim, ...]] = set()
+
+    # Validate each candidate's coupled group, skipping duplicate markings.
+    for candidate in candidates:
+      proposed = proposed_by_candidate.get(candidate)
+      if not proposed or proposed in seen_coupled:
+        continue
+      if not self._is_valid_coupled_plan(op_func, op_args, proposed, mode):
+        continue
+      seen_coupled.add(proposed)
+      valid_plans.append(
+          DynamicMarkingPlan(
+              label=_format_plan_label((candidate,)),
+              tensor_dims=(candidate,),
+              coupled_dims=proposed,
+          )
+      )
+
+    # In compiled modes, also try marking all valid candidates together.
+    if (
+        mode in (DynamismMode.COMPILE, DynamismMode.COMPILE_GRAD)
+        and len(valid_plans) >= 2
+    ):
+      merged_coupled = tuple(
+          sorted({c for plan in valid_plans for c in plan.coupled_dims})
+      )
+      if merged_coupled not in seen_coupled and self._is_valid_coupled_plan(
+          op_func, op_args, merged_coupled, mode
+      ):
+        merged_dims = tuple(plan.tensor_dims[0] for plan in valid_plans)
+        valid_plans.append(
+            DynamicMarkingPlan(
+                label=_format_plan_label(merged_dims),
+                tensor_dims=merged_dims,
+                coupled_dims=merged_coupled,
+            )
+        )
+
+    logging.debug(
+        "[DynamicOpInfo] Validated plans for %s in %s: %s",
+        self.op_info.name,
+        mode,
+        valid_plans,
+    )
+    return tuple(valid_plans)
+
   def generate_exhaustive_marking_plans(
       self,
       input_value: torch.Tensor | Sequence[torch.Tensor],
@@ -1181,6 +1690,12 @@ class ConvolutionDynamicOpInfo(DynamicOpInfo):
 
     return op_info.name in ConvolutionDynamicOpInfo.convolution_ops
 
+  def _static_tensor_indices(
+      self, primary_tensor_idx: int, num_tensors: int
+  ) -> frozenset[int]:
+    """Keeps convolution weights and biases static as required by StableHLO."""
+    return frozenset(i for i in range(num_tensors) if i != primary_tensor_idx)
+
   def dynamic_dimension_candidates(
       self, input_value: torch.Tensor, args: Sequence[Any]
   ) -> Sequence[int]:
@@ -1189,6 +1704,8 @@ class ConvolutionDynamicOpInfo(DynamicOpInfo):
     The input channels must match the static weight, so convolutions don't
     support bounded channel dimensions.
     """
+    if not args or not isinstance(args[0], torch.Tensor):
+      return ()
     # An unbatched input has one dimension less than the weight in args[0].
     channel_dim = 1 if input_value.ndim == args[0].ndim else 0
     return [
