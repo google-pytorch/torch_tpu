@@ -40,6 +40,7 @@
 #include "csrc/ops/index_select/index_select.h"
 #include "csrc/ops/linalg/vector_norm/pnorm.h"
 #include "csrc/ops/macros/kernel.h"
+#include "csrc/ops/matmul/matmul.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/reductions/reductions.h"
@@ -123,6 +124,44 @@ mlir::MlirOp BroadcastCdistInput(mlir::MlirOp op,
   return mlir::stablehlo::BroadcastInDim(target_bcast_type, op, bcast_dims);
 }
 
+absl::StatusOr<mlir::MlirOp> BuildCdistEuclideanMmShlo(
+    mlir::MlirOp x1_op, mlir::MlirOp x2_op, mlir::ElementType out_type) {
+  const mlir::RankedTensorType x1_type = GetTensorTypeOrDie(x1_op);
+  const mlir::RankedTensorType x2_type = GetTensorTypeOrDie(x2_op);
+  mlir::MlirOp x1_sq = mlir::stablehlo::Mul(x1_op, x1_op);
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp x1_norm_sq,
+      BuildSumShlo(x1_sq, {x1_type.getRank() - 1}, ReductionMode::kKeepDims));
+  mlir::MlirOp x2_sq = mlir::stablehlo::Mul(x2_op, x2_op);
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp x2_norm_sq_1d,
+      BuildSumShlo(x2_sq, {x2_type.getRank() - 1}, ReductionMode::kDropDims));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp x2_norm_sq,
+                      Unsqueeze(x2_norm_sq_1d, x2_type.getRank() - 2));
+  MatmulShloOptions mm_opts;
+  mm_opts.transpose_rhs = MatrixTranspose::kTransposeLastTwo;
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp dot,
+      BuildMatmulShlo(
+          x1_op, x2_op,
+          MatmulPrecisionPair{mlir::stablehlo::Precision::
+                                  HIGHEST},  // EXPLICIT_PRECISION_OK=cdist_mm
+          mm_opts));
+  const llvm::ArrayRef<int64_t> out_shape = GetTensorTypeOrDie(dot).getShape();
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp x1_norm_bcast,
+                      BroadcastIfNeeded(x1_norm_sq, out_shape));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp x2_norm_bcast,
+                      BroadcastIfNeeded(x2_norm_sq, out_shape));
+  mlir::MlirOp two = MakeConstantLike(dot, 2.0);
+  mlir::MlirOp two_dot = mlir::stablehlo::Mul(dot, two);
+  mlir::MlirOp sum_norms = mlir::stablehlo::Add(x1_norm_bcast, x2_norm_bcast);
+  mlir::MlirOp sq_dist = mlir::stablehlo::Subtract(sum_norms, two_dot);
+  mlir::MlirOp zero = MakeConstantLike(sq_dist, 0.0);
+  mlir::MlirOp clamped = mlir::stablehlo::Max(sq_dist, zero);
+  mlir::MlirOp res = mlir::stablehlo::Sqrt(clamped);
+  return CastIfNeeded(res, out_type);
+}
+
 // Computes the p-norm distance of the difference between each pair of row
 // vectors in x1 and x2.
 // x1 shape: (B..., R1, C)
@@ -139,6 +178,13 @@ absl::StatusOr<mlir::MlirOp> BuildCdistForwardShlo(
   TT_ASSIGN_OR_RETURN(x2_op, CastIfNeeded(x2_op, compute_dtype));
 
   const mlir::RankedTensorType x1_type = GetTensorTypeOrDie(x1_op);
+  const mlir::RankedTensorType x2_type = GetTensorTypeOrDie(x2_op);
+  if (p == 2.0 && c > 0 && x1_type.hasStaticShape() &&
+      x2_type.hasStaticShape() &&
+      (compute_mode == 1 || (compute_mode == 0 && (r1 > 25 || r2 > 25)))) {
+    return BuildCdistEuclideanMmShlo(x1_op, x2_op, out_type);
+  }
+
   const mlir::Type element_type = x1_type.getElementType();
 
   // Define the target shape for the difference tensor: (B_common..., R1, R2, C)

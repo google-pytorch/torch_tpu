@@ -34,11 +34,13 @@
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/linalg/vector_norm/pnorm.h"
 #include "csrc/ops/macros/kernel.h"
+#include "csrc/ops/matmul/matmul.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/reductions/reductions.h"
 #include "csrc/ops/reductions/sum.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
@@ -148,10 +150,31 @@ absl::StatusOr<MlirOpResults<2>> BuildWeightNormBackwardShlo(
 
   // Step 1: Compute inner product per_dim_sums = sum(grad_w * v) over the
   // reduction dimensions.
-  auto gw_v = mlir::stablehlo::Mul(grad_w_op, v_op);
-  TT_ASSIGN_OR_RETURN(
-      auto per_dim_sums,
-      BuildSumShlo(gw_v, reduce_dims, reduction_mode, element_type));
+  mlir::MlirOp per_dim_sums;
+  const mlir::RankedTensorType g_calc_type = GetTensorTypeOrDie(g_op);
+  if (v_calc_type.hasStaticShape() &&
+      GetTensorTypeOrDie(grad_w_op).hasStaticShape() &&
+      g_calc_type.hasStaticShape()) {
+    const Dimensions batch_dims =
+        (g_rank == 0) ? Dimensions{} : Dimensions{dim};
+    TT_ASSIGN_OR_RETURN(
+        per_dim_sums,
+        BuildTypedDotGeneral(
+            grad_w_op, v_op, /*lhs_batching=*/batch_dims,
+            /*rhs_batching=*/batch_dims, /*lhs_contracting=*/reduce_dims,
+            /*rhs_contracting=*/reduce_dims,
+            mlir::stablehlo::Precision::
+                HIGHEST,  // EXPLICIT_PRECISION_OK=weight_norm_bwd
+            element_type));
+    if (reduction_mode == ReductionMode::kKeepDims) {
+      per_dim_sums = mlir::stablehlo::Reshape(g_calc_type, per_dim_sums);
+    }
+  } else {
+    auto gw_v = mlir::stablehlo::Mul(grad_w_op, v_op);
+    TT_ASSIGN_OR_RETURN(
+        per_dim_sums,
+        BuildSumShlo(gw_v, reduce_dims, reduction_mode, element_type));
+  }
 
   // Align shapes with g_op (e.g., if g is [C, 1, 1] but per_dim_sums is [C]).
   TT_ASSIGN_OR_RETURN(auto per_dim_sums_aligned,

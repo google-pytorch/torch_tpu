@@ -48,6 +48,7 @@
 #include "csrc/ops/dropout/dropout.h"
 #include "csrc/ops/lstm/lstm_common.h"
 #include "csrc/ops/macros/kernel.h"
+#include "csrc/ops/matmul/matmul.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/precision_context.h"
@@ -557,13 +558,14 @@ inline mlir::MlirOp MixedPrecisionDotGeneral(
           ? rhs
           : mlir::stablehlo::ConvertElementType(rhs, target_dtype);
 
-  mlir::MLIRContext& ctx = lhs_op.getContext();
-  mlir::stablehlo::Precision precisions[2] = {precision, precision};
-  auto precision_config =
-      mlir::stablehlo::PrecisionConfigAttr::get(&ctx, precisions);
-
-  return mlir::stablehlo::DotGeneral(lhs_op, rhs_op, dot_dims, precision_config,
-                                     GetElementTypeEnum(acc_dtype));
+  TT_ASSIGN_OR_THROW(
+      const mlir::MlirOp dot,
+      BuildTypedDotGeneral(lhs_op, rhs_op, dot_dims.getLhsBatchingDimensions(),
+                           dot_dims.getRhsBatchingDimensions(),
+                           dot_dims.getLhsContractingDimensions(),
+                           dot_dims.getRhsContractingDimensions(), precision,
+                           GetElementTypeEnum(acc_dtype)));
+  return dot;
 }
 
 inline mlir::MlirOp MixedPrecisionDotGeneral(

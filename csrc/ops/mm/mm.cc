@@ -16,27 +16,19 @@
 
 #include "csrc/ops/mm/mm.h"
 
-#include <cstdint>
-
 #include "absl/status/statusor.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/ops/matmul/matmul.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "mlir/IR/BuiltinTypes.h"
-#include "mlir/IR/MLIRContext.h"
 #include "mlir/Support/DebugStringHelper.h"
 #include "stablehlo/dialect/StablehloOps.h"
-#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
-#include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 
 namespace torch_tpu {
 
-namespace stablehlo = mlir::stablehlo;
-
 absl::StatusOr<mlir::MlirOp> BuildMmShlo(mlir::MlirOp lhs, mlir::MlirOp rhs,
                                          mlir::stablehlo::Precision precision) {
-  mlir::MlirBuilder& builder = lhs.getBuilder();
-  mlir::MLIRContext& ctx = builder.getContext();
   const mlir::RankedTensorType lhs_tensor_type = GetTensorTypeOrDie(lhs);
   auto lhs_shape = lhs_tensor_type.getShape();
   TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Rank constraint is checked before Mlir
@@ -68,38 +60,7 @@ absl::StatusOr<mlir::MlirOp> BuildMmShlo(mlir::MlirOp lhs, mlir::MlirOp rhs,
          "got "
       << lhs_shape[1] << " and " << rhs_shape[0];
 
-  // XLA doesn't support matmul with i64, so we convert them to f64.
-  const bool is_any_i64 = lhs_tensor_type.getElementType().isInteger(64) ||
-                          rhs_tensor_type.getElementType().isInteger(64);
-  if (is_any_i64) {
-    lhs = stablehlo::ConvertElementType(lhs, mlir::ElementType::F64);
-    rhs = stablehlo::ConvertElementType(rhs, mlir::ElementType::F64);
-  }
-
-  // Explanation: (m , n) @ (n, p) -> (m, p)
-  // n is a contracting dimension, m and p are result dimensions.
-  // There are no batch dimensions (like (b, m, n) @ (b, n, p) -> (b, m, p))).
-  int64_t lhs_contracting_dimensions[1] = {1};
-  int64_t rhs_contracting_dimensions[1] = {0};
-  stablehlo::DotDimensionNumbersAttr dot_dimension_numbers =
-      stablehlo::DotDimensionNumbersAttr::get(
-          &ctx, /*lhs_batching_dimensions=*/{}, /*rhs_batching_dimensions=*/{},
-          lhs_contracting_dimensions, rhs_contracting_dimensions);
-
-  // TODO(bawilson): Enable precision config once StableHLO lowering is fixed.
-  // Update: Enabling precision config via context manager.
-  stablehlo::Precision precisions[2] = {precision, precision};
-  auto precision_config_attr =
-      stablehlo::PrecisionConfigAttr::get(&ctx, precisions);
-
-  // NB: deliberately using DotGeneral instead of Dot because Dot is scheduled
-  // for removal from StableHLO.
-  auto dot_result =
-      stablehlo::DotGeneral(lhs, rhs, dot_dimension_numbers,
-                            /*precision_config=*/precision_config_attr);
-  return is_any_i64 ? stablehlo::ConvertElementType(dot_result,
-                                                    dot_general_element_type)
-                    : dot_result;
+  return BuildMatmulShlo(lhs, rhs, precision);
 }
 
 }  // namespace torch_tpu

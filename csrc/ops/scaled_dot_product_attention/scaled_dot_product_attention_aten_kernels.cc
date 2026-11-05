@@ -77,7 +77,7 @@ bool HasDynamicShape(const at::Tensor& tensor) {
   if (!tensor.has_storage()) {
     return false;
   }
-  const absl::StatusOr<DeviceBufferRef> buf = GetBuffer(tensor);
+  const absl::StatusOr<DeviceBufferRef> buf = GetBaseBuffer(tensor);
   return buf.ok() && (!buf->dynamic_dimensions().empty() ||
                       buf->on_device_shape_is_dynamic());
 }
