@@ -184,6 +184,12 @@ class TpuStream(torch.Stream):
   )
   def query(self) -> bool:
     """Checks if all work submitted on this stream has been completed."""
+    # pylint: disable=protected-access
+    if (
+        _device_ops_backend._is_current_thread_capturing_graph()
+        or self.is_capturing()
+    ):
+      return super().query()
     raise NotImplementedError(_NOT_IMPLEMENTED_STREAMS_MSG)
 
   @experimental(

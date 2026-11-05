@@ -383,6 +383,7 @@ torch_tpu_cc_library(
         "//csrc/eager:current_stream",
         "//csrc/eager:eager_mode",
         "//csrc/eager:events_queue",
+        "//csrc/eager:graph_capture_state",
         "//csrc/eager:structured_log_buffer",
         "//csrc/eager:tensor_to_buffer",
         "//csrc/ops/macros:kernel",
@@ -390,6 +391,7 @@ torch_tpu_cc_library(
         "//shims/torch:aten_headers",
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
         "@xla//xla:future",
     ],
 )

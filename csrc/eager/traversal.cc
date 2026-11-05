@@ -961,6 +961,44 @@ std::optional<CompilationSpec> Traversal::MaybeUpdateSpecWithLayout(
   return mutable_compilation_spec;
 }
 
+absl::Status Traversal::ValidateArgumentLayouts(
+    absl::Span<const CustomLayout> argument_layouts) const {
+  if (!argument_layouts.empty()) {
+    TT_RET_CHECK(arguments_.size() == argument_layouts.size(),
+                 error::kInvalidArgument)
+        << "expected the size of argument layouts to be equal to "
+        << arguments_.size() << " (number of arguments), got "
+        << argument_layouts.size();
+  }
+  return absl::OkStatus();
+}
+
+absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>>
+Traversal::BuildAnnotatedMlirModule(
+    mlir::MLIRContext& mlir_context, bool use_stablehlo_bounds,
+    absl::Span<const CustomLayout> argument_layouts,
+    absl::Span<const int64_t> donated_inputs,
+    std::optional<std::string_view> module_name) const {
+  TT_ASSIGN_OR_RETURN(mlir::OwningOpRef<mlir::ModuleOp> module,
+                      BuildMlirModule(mlir_context, use_stablehlo_bounds,
+                                      donated_inputs, module_name));
+  AnnotateArgumentLayouts(*module, arguments_, argument_layouts);
+  AnnotateOutputLayouts(*module, outputs_);
+  return module;
+}
+
+absl::StatusOr<std::string> Traversal::BuildMlirText(
+    mlir::MLIRContext& mlir_context,
+    absl::Span<const CustomLayout> argument_layouts) const {
+  TT_RETURN_IF_ERROR(ValidateArgumentLayouts(argument_layouts));
+  TT_ASSIGN_OR_RETURN(
+      mlir::OwningOpRef<mlir::ModuleOp> module,
+      BuildAnnotatedMlirModule(mlir_context, /*use_stablehlo_bounds=*/false,
+                               argument_layouts, /*donated_inputs=*/{},
+                               /*module_name=*/std::nullopt));
+  return MlirModuleToString(*module);
+}
+
 absl::StatusOr<CompiledKernel> Traversal::Compile(
     const CompilationSpec& spec,
     const UnboundedKernelPolicy unbounded_kernel_policy,
@@ -975,13 +1013,7 @@ absl::StatusOr<CompiledKernel> Traversal::Compile(
   }
   TT_ASSIGN_OR_RETURN(const DeviceAssignment resolved_da,
                       ResolveDeviceAssignment());
-  if (!argument_layouts.empty()) {
-    TT_RET_CHECK(arguments_.size() == argument_layouts.size(),
-                 error::kInvalidArgument)
-        << "expected the size of argument layouts to be equal to "
-        << arguments_.size() << " (number of arguments), got "
-        << argument_layouts.size();
-  }
+  TT_RETURN_IF_ERROR(ValidateArgumentLayouts(argument_layouts));
 
   // Prepare a computation builder closure to be called on a cache miss.  Okay
   // to capture this here since CompilationCache::GetOrCompile() will call this
@@ -990,11 +1022,10 @@ absl::StatusOr<CompiledKernel> Traversal::Compile(
       [this, use_stablehlo_bounds, donated_inputs, argument_layouts,
        module_name, out_mlir_text](mlir::MLIRContext& mlir_context)
       -> absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> {
-    TT_ASSIGN_OR_RETURN(auto module,
-                        BuildMlirModule(mlir_context, use_stablehlo_bounds,
-                                        donated_inputs, module_name));
-    AnnotateArgumentLayouts(*module, arguments_, argument_layouts);
-    AnnotateOutputLayouts(*module, outputs_);
+    TT_ASSIGN_OR_RETURN(mlir::OwningOpRef<mlir::ModuleOp> module,
+                        BuildAnnotatedMlirModule(
+                            mlir_context, use_stablehlo_bounds,
+                            argument_layouts, donated_inputs, module_name));
     if (out_mlir_text != nullptr) {
       *out_mlir_text = MlirModuleToString(*module);
     }

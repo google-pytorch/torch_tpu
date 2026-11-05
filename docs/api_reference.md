@@ -126,6 +126,7 @@ TPU `Stream` or `Event` objects directly or configuring TPU core pinning.
 | `torch.cuda.synchronize()` | `torch.accelerator.synchronize()` | Waits for all pending work on the TPU device to complete. |
 | `torch.cuda.Stream` | `torch.tpu.Stream(device=None, priority=0, *, pinned=None)` | Subclasses `torch.Stream`. Supports `synchronize()`, `record_event()`, `wait_event()`, `wait_stream()`, and core pinning (`pinned="dense"` or `"sparse"`, queried via `is_dense` / `is_sparse`). |
 | `torch.cuda.Event` | `torch.tpu.Event(enable_timing=False)` | Subclasses `torch.Event`. Supports `record()`, `synchronize()`, `query()`, and `elapsed_time(end_event)`. |
+| `torch.cuda.CUDAGraph` | `torch.accelerator.Graph` *(PyTorch >= 2.12)* | Captures a side-stream sequence of TPU ops for repeated replay via `capture_begin()`, `capture_end()`, `replay()`, `reset()`, `instantiate()`, `pool()`, `enable_debug_mode()`, and `debug_dump()`. |
 <!-- mdformat on -->
 
 The `torch.accelerator` APIs in this table require PyTorch 2.11 or later. In the

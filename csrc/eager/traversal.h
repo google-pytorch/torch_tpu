@@ -198,6 +198,12 @@ class Traversal {
       absl::Span<const int64_t> donated_inputs = {},
       std::optional<std::string_view> module_name = std::nullopt) const;
 
+  // Builds the MLIR module for the Traversal, annotates argument and output
+  // layouts, and returns its textual representation.
+  absl::StatusOr<std::string> BuildMlirText(
+      mlir::MLIRContext& mlir_context,
+      absl::Span<const CustomLayout> argument_layouts = {}) const;
+
   // Compiles the Traversal into a CompiledKernel. For static graphs, this will
   // be a single executable future. For bounded dynamic graphs, this will
   // in addition contain futures for dynamic adapters (unless
@@ -311,6 +317,17 @@ class Traversal {
 
   // Validates that the traversal is sound.
   absl::Status Validate() const;
+
+  // Validates that non-empty `argument_layouts` matches `arguments_.size()`.
+  absl::Status ValidateArgumentLayouts(
+      absl::Span<const CustomLayout> argument_layouts) const;
+
+  // Builds the MLIR module and applies argument and output layout annotations.
+  absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> BuildAnnotatedMlirModule(
+      mlir::MLIRContext& mlir_context, bool use_stablehlo_bounds,
+      absl::Span<const CustomLayout> argument_layouts,
+      absl::Span<const int64_t> donated_inputs,
+      std::optional<std::string_view> module_name) const;
 
   // Applies a pre-resolved device assignment (and any SparseCore replica
   // overrides) to the given CompilationSpec, updating

@@ -37,6 +37,7 @@
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
 #include "csrc/common/to_string.h"
+#include "csrc/eager/graph_capture_state.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/a_min_max/a_min_max.h"
@@ -150,6 +151,15 @@ at::Tensor AtenBinCount(const at::Tensor& self,
               << "expected input and weights lengths to match, got "
               << self.size(0) << " vs " << weights_->size(0);
         }
+
+        // `DispatchOp<1>` + `CopyDeviceBufferRefToCpuPtr` would otherwise
+        // materialize the min/max reduction and invalidate the capture; fail
+        // without invalidating capture before recording ops for CUDA parity.
+        TT_CHECK_THROW(!IsCurrentThreadCapturingGraph(),
+                       error::kFailedPrecondition)
+            << "cannot run bincount while capturing a graph because output "
+               "size "
+               "depends on tensor values";
 
         // Compute the minimum and maximum element in the input using a single
         // fused TPU kernel and copy directly into a stack buffer. This avoids
