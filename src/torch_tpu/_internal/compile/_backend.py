@@ -50,13 +50,13 @@ from torch._dynamo import guards as dynamo_guards
 from torch._dynamo import source as dynamo_source
 from torch._dynamo.backends import registry
 from torch._dynamo.backends.common import aot_autograd
+from torch._functorch import partitioners as _functorch_partitioners
 from torch._functorch._aot_autograd import autograd_cache as _autograd_cache
 from torch._functorch._aot_autograd import descriptors as _aot_descriptors
 from torch._functorch._aot_autograd import graph_compile as _graph_compile
 from torch._functorch._aot_autograd.schemas import AOTAutogradCacheInfo
 from torch._functorch._aot_autograd.schemas import SerializableAOTDispatchCompiler
 import torch._functorch.config as functorch_config
-from torch._functorch.partitioners import min_cut_rematerialization_partition
 import torch.compiler.config as compiler_config
 from torch.utils import _python_dispatch
 from torch.utils import _pytree
@@ -164,6 +164,77 @@ def _is_view_node(node: torch.fx.Node) -> bool:
       torch.ops.aten, "index_select", None
   )
   return is_unsafe_view or is_index_select
+
+
+def _is_ac_region_boundary(node: torch.fx.Node) -> bool:
+  """Returns True if `node` is a recomputable op feeding a later AC region."""
+  if not _functorch_partitioners.must_recompute(node):
+    return False
+  node_ac_id = node.meta.get("ac_graph_id")
+  if node_ac_id is None:
+    return False
+  return any(
+      _functorch_partitioners.must_recompute(user)
+      and user.meta.get("ac_graph_id") is not None
+      and user.meta["ac_graph_id"] > node_ac_id
+      for user in node.users
+  )
+
+
+def _propagate_must_save_through_views(
+    joint_module: torch.fx.GraphModule,
+) -> None:
+  """Propagates `MUST_SAVE` backward through view ops to non-view producers.
+
+  In `solve_min_cut`, `ban_recomputation_if_allowed` returns `False` for view
+  ops (`op_types.is_view(node)`), while any producer still tagged with a
+  recompute policy (`PREFER_RECOMPUTE` or `MUST_RECOMPUTE`) receives an
+  infinite-capacity edge to `"sink"` and skips adding edges to its users. When
+  a checkpointed region's boundary output (or a user-tagged `MUST_SAVE` node)
+  is a view op—such as the trailing `aten.view` of a 3D `nn.Linear` in
+  PyTorch < 2.15—`cleanup_recompute_tags` only marks the trailing view node
+  `MUST_SAVE`, leaving its `node_in` with no incoming edges from `"source"` in
+  the min-cut graph so the boundary is never saved. Propagating `MUST_SAVE`
+  backward through `op_types.is_view` chains within the checkpoint region
+  ensures the underlying non-view producer is banned from recomputation in
+  `solve_min_cut`.
+  """
+  if not _functorch_partitioners.has_recomputable_ops(joint_module):
+    return
+  joint_module.graph.eliminate_dead_code()
+  op_types = _functorch_partitioners.get_default_op_list()
+  must_save = torch.utils.checkpoint.CheckpointPolicy.MUST_SAVE
+  for node in reversed(joint_module.graph.nodes):
+    if op_types.is_view(node) and (
+        node.meta.get("recompute") == must_save or _is_ac_region_boundary(node)
+    ):
+      node.meta["recompute"] = must_save
+      node_ac_id = node.meta.get("ac_graph_id")
+      for inp in node.all_input_nodes:
+        if (
+            _functorch_partitioners.must_recompute(inp)
+            and inp.meta.get("ac_graph_id") == node_ac_id
+        ):
+          inp.meta["recompute"] = must_save
+
+
+def min_cut_rematerialization_partition(
+    joint_module: torch.fx.GraphModule,
+    _joint_inputs: Any,
+    compiler: str = "inductor",  # pylint: disable=redefined-outer-name
+    *,
+    num_fwd_outputs: int,
+    static_lifetime_input_indices: list[int] | None = None,
+) -> tuple[torch.fx.GraphModule, torch.fx.GraphModule]:
+  """Wraps PyTorch's `min_cut_rematerialization_partition` for TorchTPU."""
+  _propagate_must_save_through_views(joint_module)
+  return _functorch_partitioners.min_cut_rematerialization_partition(
+      joint_module,
+      _joint_inputs,
+      compiler=compiler,
+      num_fwd_outputs=num_fwd_outputs,
+      static_lifetime_input_indices=static_lifetime_input_indices,
+  )
 
 
 def _extract_tensor_node(node: torch.fx.Node) -> torch.fx.Node | None:
