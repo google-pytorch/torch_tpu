@@ -119,6 +119,7 @@ torch_tpu_cc_library(
         "//csrc/eager:tensor_to_buffer",
         "//csrc/ops:op_builder_utils",
         "//csrc/ops:precision_context",
+        "//csrc/ops/matmul",
         "//csrc/ops/view_decomposition:contiguous_to_view",
         "//shims/torch:aten_headers",
         "@com_google_absl//absl/algorithm:container",

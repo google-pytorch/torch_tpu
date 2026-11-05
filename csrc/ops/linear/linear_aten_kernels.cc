@@ -52,6 +52,7 @@
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/macros/kernel.h"
+#include "csrc/ops/matmul/matmul.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/precision_context.h"
@@ -74,46 +75,10 @@
 namespace torch_tpu {
 namespace {
 
-// Builds a StableHLO `dot_general` operation with the given contracting
-// dimensions and precision config. Casts 64-bit integer inputs to `f64` before
-// the dot product and back to `i64` afterwards to work around XLA TPU backend
-// precision/performance limitations on `i64` dot products.
-mlir::MlirOp BuildDotGeneral(mlir::MlirOp lhs, mlir::MlirOp rhs,
-                             absl::Span<const int64_t> lhs_contracting,
-                             absl::Span<const int64_t> rhs_contracting,
-                             mlir::stablehlo::Precision precision) {
-  const mlir::RankedTensorType lhs_type = GetTensorTypeOrDie(lhs);
-  const mlir::RankedTensorType rhs_type = GetTensorTypeOrDie(rhs);
-  const bool is_any_i64 = lhs_type.getElementType().isInteger(64) ||
-                          rhs_type.getElementType().isInteger(64);
-  if (is_any_i64) {
-    lhs = mlir::stablehlo::ConvertElementType(lhs, mlir::ElementType::F64);
-    rhs = mlir::stablehlo::ConvertElementType(rhs, mlir::ElementType::F64);
-  }
-
-  auto dot_dimension_numbers = mlir::stablehlo::DotDimensionNumbersAttr::get(
-      &lhs.getContext(),
-      /*lhs_batching_dimensions=*/{},
-      /*rhs_batching_dimensions=*/{},
-      /*lhs_contracting_dimensions=*/AsArrayRef(lhs_contracting),
-      /*rhs_contracting_dimensions=*/AsArrayRef(rhs_contracting));
-  const mlir::stablehlo::Precision precisions[2] = {precision, precision};
-  auto precision_config =
-      mlir::stablehlo::PrecisionConfigAttr::get(&lhs.getContext(), precisions);
-
-  mlir::MlirOp dot_result = mlir::stablehlo::DotGeneral(
-      lhs, rhs, dot_dimension_numbers, precision_config);
-  if (is_any_i64) {
-    return mlir::stablehlo::ConvertElementType(dot_result,
-                                               mlir::ElementType::I64);
-  }
-  return dot_result;
-}
-
 // Builds the StableHLO graph for `aten::linear`: y = input @ weight^T + bias.
 // Supports arbitrary input rank >= 1 and 1D or 2D weight without intermediate
 // reshapes by contracting `input`'s last dimension with `weight`'s last
-// dimension directly via `stablehlo.dot_general`.
+// dimension directly via `BuildTypedDotGeneral`.
 absl::StatusOr<mlir::MlirOp> BuildLinearShlo(
     mlir::MlirOp input, mlir::MlirOp weight, std::optional<mlir::MlirOp> bias,
     mlir::stablehlo::Precision precision) {
@@ -122,8 +87,10 @@ absl::StatusOr<mlir::MlirOp> BuildLinearShlo(
   const int64_t lhs_contracting[1] = {input_rank - 1};
   const int64_t rhs_contracting[1] = {weight_rank - 1};
 
-  mlir::MlirOp dot_result = BuildDotGeneral(input, weight, lhs_contracting,
-                                            rhs_contracting, precision);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp dot_result,
+                      BuildTypedDotGeneral(input, weight, /*lhs_batching=*/{},
+                                           /*rhs_batching=*/{}, lhs_contracting,
+                                           rhs_contracting, precision));
   if (bias.has_value()) {
     TT_ASSIGN_OR_RETURN(auto broadcasted,
                         ApplyBroadcastIfNeeded(dot_result, *bias));
@@ -149,10 +116,14 @@ absl::StatusOr<mlir::MlirOp> BuildGradInputShlo(
   if (weight_rank == 2) {
     const int64_t lhs_contracting[1] = {input_rank - 1};
     const int64_t rhs_contracting[1] = {0};
-    return BuildDotGeneral(grad_output, w_for_grad_input, lhs_contracting,
-                           rhs_contracting, precision);
+    return BuildTypedDotGeneral(grad_output, w_for_grad_input,
+                                /*lhs_batching=*/{}, /*rhs_batching=*/{},
+                                lhs_contracting, rhs_contracting, precision);
   }
-  return BuildDotGeneral(grad_output, w_for_grad_input, {}, {}, precision);
+  return BuildTypedDotGeneral(grad_output, w_for_grad_input,
+                              /*lhs_batching=*/{}, /*rhs_batching=*/{},
+                              /*lhs_contracting=*/{}, /*rhs_contracting=*/{},
+                              precision);
 }
 
 // Builds the StableHLO graph for `aten::linear_backward`.
@@ -191,8 +162,11 @@ absl::StatusOr<MlirOpResults<3>> BuildLinearBackwardShlo(
                         MaybeConjPhysicalShlo(input, is_complex));
     Dimensions contracting_dims(input_rank - 1);
     std::iota(contracting_dims.begin(), contracting_dims.end(), 0);
-    results[1] = BuildDotGeneral(grad_output, x_for_grad_weight,
-                                 contracting_dims, contracting_dims, precision);
+    TT_ASSIGN_OR_RETURN(
+        results[1],
+        BuildTypedDotGeneral(grad_output, x_for_grad_weight,
+                             /*lhs_batching=*/{}, /*rhs_batching=*/{},
+                             contracting_dims, contracting_dims, precision));
   } else {
     TT_ASSIGN_OR_RETURN(results[1],
                         MakeZeroSizedTensor(builder, output_mlir_type));
