@@ -16,7 +16,11 @@
 # benawilson
 # ghpvnist
 
-load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_end")
+load(
+    "//build_files:build_defs.bzl",
+    "torch_tpu_cc_library",
+    "torch_tpu_package_end",
+)
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -38,6 +42,9 @@ torch_tpu_cc_library(
         "//csrc/eager:tensor_to_buffer",
         "//csrc/ops:op_builder_utils",
         "//csrc/ops:op_names",
+        "//csrc/ops/a_min_max:a_min_max",
+        "//csrc/ops/copy_from:copy_common",
+        "//csrc/ops/copy_from:tpu_to_cpu",
         "//csrc/ops/macros:kernel",
         "//shims/torch:aten_headers",
         "//shims/torch/c10/core:base_headers",

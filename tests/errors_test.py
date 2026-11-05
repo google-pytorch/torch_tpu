@@ -8925,7 +8925,10 @@ Supported combinations for non-constant padding:
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""bincount(): unexpected dimension of input tensor: [2, 2, 2]""",
+        tpu=(
+            "bincount(): expected one-dimensional input tensor, got"
+            " 3-dimensional"
+        ),
         gpu="""bincount only supports 1-d non-negative integral inputs.""",
     ):
       torch.bincount(t)
@@ -8935,7 +8938,7 @@ Supported combinations for non-constant padding:
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""bincount(): minlength should be >= 0""",
+        tpu="""bincount(): expected non-negative minlength, got -1""",
         gpu="""minlength should be >= 0""",
     ):
       torch.bincount(t, minlength=-1)
@@ -8961,8 +8964,8 @@ Supported combinations for non-constant padding:
     with et.assert_raises_message(
         RuntimeError,
         tpu=(
-            "bincount(): weights should be 1-d and have the same length as"
-            " input"
+            "bincount(): expected one-dimensional weights, got"
+            " 2-dimensional"
         ),
         gpu="""weights should be 1-d and have the same length as input""",
     ):
@@ -8975,8 +8978,8 @@ Supported combinations for non-constant padding:
     with et.assert_raises_message(
         RuntimeError,
         tpu=(
-            "bincount(): weights should be 1-d and have the same length as"
-            " input"
+            "bincount(): expected input and weights lengths to match, got 2 and"
+            " 5"
         ),
         gpu="""weights should be 1-d and have the same length as input""",
     ):
@@ -8988,8 +8991,8 @@ Supported combinations for non-constant padding:
     with et.assert_raises_message(
         RuntimeError,
         tpu=(
-            "bincount(): bincount only supports 1-d non-negative integral"
-            " inputs"
+            "bincount(): expected non-negative inputs, but got a minimum value"
+            " of -1"
         ),
         gpu="""bincount only supports 1-d non-negative integral inputs.""",
     ):
