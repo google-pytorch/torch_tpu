@@ -37,6 +37,7 @@ import dataclasses
 import functools
 import hashlib
 import operator
+import os
 import pathlib
 import re
 import threading
@@ -284,12 +285,17 @@ def _process_group_cache_key_tag(graph_module: torch.fx.GraphModule) -> str:
 
   Cached executables embed the devices of the groups their collectives use, but
   graphs name groups by creation order, which does not determine their members.
+  A job sharing the slice (TORCH_TPU_JOB_DEVICE_IDS) also compiles its programs
+  without collectives for its own devices, so its devices tag every key.
   """
   groups = process_group_utils.get_process_groups(graph_module)
-  return ";".join(
+  tags = [
       f"{name}:{','.join(map(str, device_mesh.get_device_assignment(pg)))}"
       for name, pg in sorted(groups.items())
-  )
+  ]
+  if job_devices := os.environ.get("TORCH_TPU_JOB_DEVICE_IDS"):
+    tags.append(f"job:{job_devices}")
+  return ";".join(tags)
 
 
 def _layouts_key(

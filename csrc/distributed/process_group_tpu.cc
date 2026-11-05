@@ -1361,6 +1361,14 @@ absl::StatusOr<NodeLocalStoreConfig> GetNodeLocalStore(int64_t world_size) {
   if (*local_world_size <= 1) {
     return NodeLocalStoreConfig{};
   }
+  TT_ASSIGN_OR_RETURN(const xla::PjRtClient* const pjrt_client,
+                      PjrtBackend::GetInstance().GetClient());
+  if (world_size != static_cast<int64_t>(pjrt_client->devices().size())) {
+    // A job sharing the slice (TORCH_TPU_JOB_DEVICE_IDS) holds only part of
+    // the host's devices, and its local ranks would meet the other job's in
+    // the per-host store.
+    return NodeLocalStoreConfig{};
+  }
   TT_RET_CHECK(*local_rank >= 0 && *local_rank < *local_world_size,
                error::kInvalidArgument)
       << absl::StrFormat(
@@ -1751,7 +1759,12 @@ ProcessGroupTpu::ProcessGroupTpu(c10::intrusive_ptr<c10d::Store> store,
   TT_ASSIGN_OR_THROW(const xla::PjRtClient* const pjrt_client,
                      PjrtBackend::GetInstance().GetClient());
 
-  const int64_t world_size = pjrt_client->devices().size();
+  const int64_t slice_size = pjrt_client->devices().size();
+  TT_ASSIGN_OR_THROW(  // INT_VEC_OK
+      const std::vector<int64_t> job_device_ids,
+      PjrtBackend::GetInstance().GetJobDeviceIds());
+  // The whole slice unless TORCH_TPU_JOB_DEVICE_IDS gives this job a part.
+  const int64_t world_size = job_device_ids.size();
 
   // Addressable device "assigned" to this process/rank:
   TT_CHECK_THROW(pjrt_client->addressable_devices().size() == 1,
@@ -1759,6 +1772,29 @@ ProcessGroupTpu::ProcessGroupTpu(c10::intrusive_ptr<c10d::Store> store,
       << "expected exactly one TPU device per PyTorch process";
   addressable_device_id_ =
       pjrt_client->addressable_devices()[0]->global_device_id().value();
+
+  if (world_size != slice_size && group_size == slice_size) {
+    // A slice-wide group of a job sharing the slice: only send/recv between
+    // jobs, so it records peer devices and leaves the job's world untouched.
+    store_->set(absl::StrFormat("p2p_device:%d", rank),
+                std::to_string(addressable_device_id_));
+    std::vector<std::string> keys(size_);
+    for (int64_t i = 0; i < size_; ++i) {
+      keys[i] = absl::StrFormat("p2p_device:%d", i);
+    }
+    auto values = store_->multiGet(keys);
+    member_device_ids_.resize(size_);
+    for (int64_t i = 0; i < size_; ++i) {
+      TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=peers write their device ids
+          absl::SimpleAtoi(
+              std::string_view(reinterpret_cast<const char*>(values[i].data()),
+                               values[i].size()),
+              &member_device_ids_[i]),
+          error::kInternal)
+          << "Failed to parse peer device id of rank " << i;
+    }
+    return;
+  }
 
   // We support creating "flat" process groups, as well as "2D+ mesh" process
   // (sub)groups. The (sub)group size must evenly divide the world size, i.e.
