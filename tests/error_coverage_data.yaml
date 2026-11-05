@@ -21,7 +21,7 @@ csrc/common/compilation_cache.cc: {remaining: 1, total: 2, infeasible: 1}
 csrc/common/compilation_cache_utils.cc: {remaining: 1, total: 1, infeasible: 0}
 csrc/common/const_tensor.cc: {remaining: 0, total: 10, infeasible: 10}
 csrc/common/discovery.cc: {remaining: 1, total: 1, infeasible: 0}
-csrc/common/dtype.cc: {remaining: 4, total: 6, infeasible: 0}
+csrc/common/dtype.cc: {remaining: 3, total: 6, infeasible: 0}
 csrc/common/dynamism_utils.cc: {remaining: 1, total: 1, infeasible: 0}
 csrc/common/environment.cc: {remaining: 2, total: 2, infeasible: 0}
 csrc/common/error_utils.cc: {remaining: 5, total: 10, infeasible: 1}
@@ -54,6 +54,7 @@ csrc/eager/tpu_hooks.cc: {remaining: 2, total: 4, infeasible: 0}
 csrc/eager/traversal.cc: {remaining: 10, total: 13, infeasible: 1}
 csrc/experimental/batch_transfer/batch_transfer.cc: {remaining: 21, total: 21, infeasible: 0}
 csrc/internal/compile/compiled_mode.cc: {remaining: 8, total: 13, infeasible: 1}
+csrc/internal/compile/dispatch_invoke_subgraph.cc: {remaining: 0, total: 27, infeasible: 10}
 csrc/internal/compile/dispatch_scan.cc: {remaining: 0, total: 19, infeasible: 19}
 csrc/internal/compile/tpu_torch_compile.cc: {remaining: 4, total: 20, infeasible: 0}
 csrc/internal/device/device_rt.cc: {remaining: 5, total: 8, infeasible: 1}
