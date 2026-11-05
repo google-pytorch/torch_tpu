@@ -6717,6 +6717,115 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         golden_result=z.to("cpu"), torch_tpu_result=z_again.to("cpu")
     )
 
+  @parameterized.product(
+      p=[0.2, 0.8],
+      dtype=[torch.bfloat16, torch.float16, torch.float32],
+  )
+  def test_dropout_dtypes_and_grad(self, p, dtype):
+    tpu_device = torch.device("tpu")
+    ones_in = torch.ones(200, 200, dtype=dtype, device=tpu_device)
+    out = torch.nn.functional.dropout(ones_in, p=p, training=True)
+    self.assertAlmostEqual(out.float().mean().item(), 1.0, delta=0.05)
+
+    x = torch.ones(50, 50, dtype=dtype, device=tpu_device, requires_grad=True)
+    grad_out = torch.randn(50, 50, device=tpu_device).to(dtype)
+    y = torch.nn.functional.dropout(x, p=p, training=True)
+    y.backward(grad_out)
+    keep_mask = (y != 0).to(dtype)
+    expected_grad = grad_out * keep_mask / (1.0 - p)
+    self.assert_close(
+        golden_result=expected_grad.cpu(),
+        torch_tpu_result=x.grad.cpu(),
+    )
+
+  @parameterized.parameters(0.0, 1.0)
+  def test_dropout_boundary_probabilities(self, p):
+    tpu_device = torch.device("tpu")
+    x = torch.randn(10, 10, dtype=torch.float32, device=tpu_device)
+    out, mask = torch.ops.aten.native_dropout(x, p, True)
+    if p == 0.0:
+      self.assert_close(golden_result=x.cpu(), torch_tpu_result=out.cpu())
+      self.assertTrue(torch.all(mask).item())
+    else:
+      self.assert_close(
+          golden_result=torch.zeros_like(x).cpu(),
+          torch_tpu_result=out.cpu(),
+      )
+      self.assertFalse(torch.any(mask).item())
+
+  @parameterized.named_parameters(
+      ("ui32_small_tail", 1e-4),
+      ("ui32_high_tail", 1.0 - 1e-3),
+      ("float_fallback", 1e-9),
+  )
+  def test_dropout_tail_probabilities(self, p):
+    tpu_device = torch.device("tpu")
+    x = torch.ones(500, 500, dtype=torch.float32, device=tpu_device)
+    out = torch.nn.functional.dropout(x, p=p, training=True)
+    if p == 1e-4:
+      dropped_count = (out == 0).sum().item()
+      self.assertGreaterEqual(dropped_count, 5)
+      self.assertLessEqual(dropped_count, 60)
+    elif p == 1.0 - 1e-3:
+      kept_count = (out != 0).sum().item()
+      self.assertGreaterEqual(kept_count, 150)
+      self.assertLessEqual(kept_count, 350)
+    else:
+      self.assertEqual(out.shape, (500, 500))
+      self.assertEqual(out.dtype, torch.float32)
+
+  def test_dropout_complex(self):
+    tpu_device = torch.device("tpu")
+    z = torch.complex(
+        torch.full((100, 100), 2.0, device=tpu_device),
+        torch.full((100, 100), -3.0, device=tpu_device),
+    )
+    out, mask = torch.ops.aten.native_dropout(z, 0.5, True)
+    self.assertAlmostEqual(out.real.mean().item(), 2.0, delta=0.15)
+    self.assertAlmostEqual(out.imag.mean().item(), -3.0, delta=0.2)
+    real_nonzero = out.real != 0
+    imag_nonzero = out.imag != 0
+    self.assertTrue(torch.equal(real_nonzero, imag_nonzero))
+    self.assertTrue(torch.equal(real_nonzero, mask))
+
+  @parameterized.parameters(((),), ((0,),), ((0, 8),))
+  def test_dropout_empty_and_scalar(self, shape):
+    tpu_device = torch.device("tpu")
+    x = torch.ones(shape, device=tpu_device)
+    out = torch.nn.functional.dropout(x, p=0.5, training=True)
+    self.assertEqual(out.shape, torch.Size(shape))
+    if x.numel() == 0:
+      self.assertEqual(out.numel(), 0)
+    else:
+      self.assertTrue(
+          out.item() == 0.0 or math.isclose(out.item(), 2.0, rel_tol=1e-3)
+      )
+
+  def test_dropout_mask_barrier_and_dtype(self):
+    tpu_device = torch.device("tpu")
+    x = torch.ones(32, 32, dtype=torch.float32, device=tpu_device)
+    out, mask = torch.ops.aten.native_dropout(x, p=0.2, train=True)
+    self.assertEqual(mask.dtype, torch.bool)
+    self.assertEqual(out.dtype, torch.float32)
+
+    debugs = []
+
+    def fn(inp):
+      return torch.ops.aten.native_dropout(inp, 0.2, True)
+
+    compiled_fn = torch.compile(
+        fn, backend="tpu", options={"debug_callback": debugs.append}
+    )
+    c_out, c_mask = compiled_fn(x)
+    self.assertEqual(c_mask.dtype, torch.bool)
+    self.assertEqual(c_out.dtype, torch.float32)
+    self.assertTrue(debugs)
+    self.assertTrue(debugs[0].stablehlo_forward_text)
+    mlir_text = debugs[0].stablehlo_forward_text[0]
+    self.assertIsNotNone(mlir_text)
+    self.assertIn("stablehlo.optimization_barrier", mlir_text)
+    self.assertIn("tensor<32x32xi1>", mlir_text)
+
   def test_exponential(self):
     """Tests the exponential_ op."""
     tpu_device = torch.device("tpu")
