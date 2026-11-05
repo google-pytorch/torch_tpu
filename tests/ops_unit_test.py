@@ -19390,6 +19390,1060 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(test_fn, rtol=1e-2, atol=1e-2)
 
+  def test_conv_pointwise_patchify_dot_general(self):
+    """Verifies unpadded pointwise and patchify conv lowers to DotGeneral."""
+    x_tpu = torch.randn(2, 4, 8, 8, device="tpu")
+    w_pw_tpu = torch.randn(6, 4, 1, 1, device="tpu")
+    b_tpu = torch.randn(6, device="tpu")
+    w_patch_tpu = torch.randn(6, 4, 2, 2, device="tpu")
+
+    x_1d_tpu = torch.randn(2, 4, 16, device="tpu")
+    w_1d_pw_tpu = torch.randn(3, 4, 1, device="tpu")
+    b_1d_tpu = torch.randn(3, device="tpu")
+    w_1d_patch_tpu = torch.randn(3, 4, 4, device="tpu")
+
+    x_3d_tpu = torch.randn(2, 3, 6, 6, 4, device="tpu")
+    w_3d_pw_tpu = torch.randn(4, 3, 1, 1, 1, device="tpu")
+    b_3d_tpu = torch.randn(4, device="tpu")
+    w_3d_patch_tpu = torch.randn(4, 3, 2, 3, 1, device="tpu")
+    torch.accelerator.synchronize()
+
+    # 1D Pointwise forward IR
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      out_1d_pw = torch.nn.functional.conv1d(
+          x_1d_tpu, w_1d_pw_tpu, b_1d_tpu, stride=1, padding=0
+      )
+    mlir_1d_pw = tpu_torch_compile.serialize_mlir_text(
+        tpu_torch_compile.build_mlir(
+            [out_1d_pw], [x_1d_tpu, w_1d_pw_tpu, b_1d_tpu]
+        )
+    )
+    self.assertIn("stablehlo.dot_general", mlir_1d_pw)
+    self.assertNotIn("stablehlo.convolution", mlir_1d_pw)
+
+    # 1D Patchify forward IR
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      out_1d_patch = torch.nn.functional.conv1d(
+          x_1d_tpu, w_1d_patch_tpu, b_1d_tpu, stride=4, padding=0
+      )
+    mlir_1d_patch = tpu_torch_compile.serialize_mlir_text(
+        tpu_torch_compile.build_mlir(
+            [out_1d_patch], [x_1d_tpu, w_1d_patch_tpu, b_1d_tpu]
+        )
+    )
+    self.assertIn("stablehlo.dot_general", mlir_1d_patch)
+    self.assertNotIn("stablehlo.convolution", mlir_1d_patch)
+
+    # 2D Pointwise forward IR
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      out_pw = torch.nn.functional.conv2d(
+          x_tpu, w_pw_tpu, b_tpu, stride=1, padding=0
+      )
+    mlir_pw = tpu_torch_compile.serialize_mlir_text(
+        tpu_torch_compile.build_mlir([out_pw], [x_tpu, w_pw_tpu, b_tpu])
+    )
+    self.assertIn("stablehlo.dot_general", mlir_pw)
+    self.assertNotIn("stablehlo.convolution", mlir_pw)
+
+    # 2D Patchify forward IR
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      out_patch = torch.nn.functional.conv2d(
+          x_tpu, w_patch_tpu, b_tpu, stride=2, padding=0
+      )
+    mlir_patch = tpu_torch_compile.serialize_mlir_text(
+        tpu_torch_compile.build_mlir([out_patch], [x_tpu, w_patch_tpu, b_tpu])
+    )
+    self.assertIn("stablehlo.dot_general", mlir_patch)
+    self.assertNotIn("stablehlo.convolution", mlir_patch)
+
+    # 3D Pointwise forward IR
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      out_3d_pw = torch.nn.functional.conv3d(
+          x_3d_tpu, w_3d_pw_tpu, b_3d_tpu, stride=1, padding=0
+      )
+    mlir_3d_pw = tpu_torch_compile.serialize_mlir_text(
+        tpu_torch_compile.build_mlir(
+            [out_3d_pw], [x_3d_tpu, w_3d_pw_tpu, b_3d_tpu]
+        )
+    )
+    self.assertIn("stablehlo.dot_general", mlir_3d_pw)
+    self.assertNotIn("stablehlo.convolution", mlir_3d_pw)
+
+    # 3D Patchify forward IR
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      out_3d_patch = torch.nn.functional.conv3d(
+          x_3d_tpu, w_3d_patch_tpu, b_3d_tpu, stride=(2, 3, 1), padding=0
+      )
+    mlir_3d_patch = tpu_torch_compile.serialize_mlir_text(
+        tpu_torch_compile.build_mlir(
+            [out_3d_patch], [x_3d_tpu, w_3d_patch_tpu, b_3d_tpu]
+        )
+    )
+    self.assertIn("stablehlo.dot_general", mlir_3d_patch)
+    self.assertNotIn("stablehlo.convolution", mlir_3d_patch)
+
+    # 2D Pointwise forward IR with bias=None
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      out_pw_nobias = torch.nn.functional.conv2d(
+          x_tpu, w_pw_tpu, bias=None, stride=1, padding=0
+      )
+    mlir_pw_nobias = tpu_torch_compile.serialize_mlir_text(
+        tpu_torch_compile.build_mlir([out_pw_nobias], [x_tpu, w_pw_tpu])
+    )
+    self.assertIn("stablehlo.dot_general", mlir_pw_nobias)
+    self.assertNotIn("stablehlo.convolution", mlir_pw_nobias)
+
+    # 2D Patchify forward IR with bias=None
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      out_patch_nobias = torch.nn.functional.conv2d(
+          x_tpu, w_patch_tpu, bias=None, stride=2, padding=0
+      )
+    mlir_patch_nobias = tpu_torch_compile.serialize_mlir_text(
+        tpu_torch_compile.build_mlir([out_patch_nobias], [x_tpu, w_patch_tpu])
+    )
+    self.assertIn("stablehlo.dot_general", mlir_patch_nobias)
+    self.assertNotIn("stablehlo.convolution", mlir_patch_nobias)
+
+    # 1D Backward IR: pointwise
+    torch.accelerator.synchronize()
+    grad_1d_pw = torch.randn(2, 3, 16, device="tpu")
+    torch.accelerator.synchronize()
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      grads_1d_pw = torch.ops.aten.convolution_backward(
+          grad_1d_pw,
+          x_1d_tpu,
+          w_1d_pw_tpu,
+          [b_1d_tpu.shape[0]],
+          [1],
+          [0],
+          [1],
+          False,
+          [0],
+          1,
+          [True, True, True],
+      )
+    mlir_bw_1d_pw = tpu_torch_compile.serialize_mlir_text(
+        tpu_torch_compile.build_mlir(
+            list(grads_1d_pw), [grad_1d_pw, x_1d_tpu, w_1d_pw_tpu]
+        )
+    )
+    self.assertIn("stablehlo.dot_general", mlir_bw_1d_pw)
+    self.assertNotIn("stablehlo.convolution", mlir_bw_1d_pw)
+
+    # 2D Backward IR: pointwise
+    torch.accelerator.synchronize()
+    grad_pw = torch.randn(2, 6, 8, 8, device="tpu")
+    torch.accelerator.synchronize()
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      grads_pw = torch.ops.aten.convolution_backward(
+          grad_pw,
+          x_tpu,
+          w_pw_tpu,
+          [b_tpu.shape[0]],
+          [1, 1],
+          [0, 0],
+          [1, 1],
+          False,
+          [0, 0],
+          1,
+          [True, True, True],
+      )
+    mlir_bw_pw = tpu_torch_compile.serialize_mlir_text(
+        tpu_torch_compile.build_mlir(list(grads_pw), [grad_pw, x_tpu, w_pw_tpu])
+    )
+    self.assertIn("stablehlo.dot_general", mlir_bw_pw)
+    self.assertNotIn("stablehlo.convolution", mlir_bw_pw)
+
+    # 2D Backward IR: patchify
+    torch.accelerator.synchronize()
+    grad_patch = torch.randn(2, 6, 4, 4, device="tpu")
+    torch.accelerator.synchronize()
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      grads_patch = torch.ops.aten.convolution_backward(
+          grad_patch,
+          x_tpu,
+          w_patch_tpu,
+          [b_tpu.shape[0]],
+          [2, 2],
+          [0, 0],
+          [1, 1],
+          False,
+          [0, 0],
+          1,
+          [True, True, True],
+      )
+    mlir_bw_patch = tpu_torch_compile.serialize_mlir_text(
+        tpu_torch_compile.build_mlir(
+            list(grads_patch), [grad_patch, x_tpu, w_patch_tpu]
+        )
+    )
+    self.assertIn("stablehlo.dot_general", mlir_bw_patch)
+    self.assertNotIn("stablehlo.convolution", mlir_bw_patch)
+
+    # 3D Backward IR: patchify
+    torch.accelerator.synchronize()
+    grad_3d_patch_ir = torch.randn(2, 4, 3, 2, 4, device="tpu")
+    torch.accelerator.synchronize()
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      grads_3d_patch = torch.ops.aten.convolution_backward(
+          grad_3d_patch_ir,
+          x_3d_tpu,
+          w_3d_patch_tpu,
+          [b_3d_tpu.shape[0]],
+          [2, 3, 1],
+          [0, 0, 0],
+          [1, 1, 1],
+          False,
+          [0, 0, 0],
+          1,
+          [True, True, True],
+      )
+    mlir_bw_3d_patch = tpu_torch_compile.serialize_mlir_text(
+        tpu_torch_compile.build_mlir(
+            list(grads_3d_patch), [grad_3d_patch_ir, x_3d_tpu, w_3d_patch_tpu]
+        )
+    )
+    self.assertIn("stablehlo.dot_general", mlir_bw_3d_patch)
+    self.assertNotIn("stablehlo.convolution", mlir_bw_3d_patch)
+
+    # Numerics checks: 1D, 2D, 3D Pointwise & Patchify
+    for dtype in (torch.float32, torch.bfloat16, torch.float16):
+      atol = 5e-2 if dtype in (torch.bfloat16, torch.float16) else 1e-4
+      rtol = 5e-2 if dtype in (torch.bfloat16, torch.float16) else 1e-4
+
+      # 1D Pointwise
+      x_1d = torch.randn(2, 4, 16, dtype=dtype)
+      w_1d = torch.randn(3, 4, 1, dtype=dtype)
+      b_1d = torch.randn(3, dtype=dtype)
+      grad_1d_pw = torch.randn(2, 3, 16, dtype=dtype)
+
+      def fn_1d_pw(dev, x=x_1d, w=w_1d, b=b_1d, g=grad_1d_pw):
+        x_dev = x.to(dev).detach().requires_grad_(True)
+        w_dev = w.to(dev).detach().requires_grad_(True)
+        b_dev = b.to(dev).detach().requires_grad_(True)
+        y = torch.nn.functional.conv1d(x_dev, w_dev, b_dev, stride=1, padding=0)
+        y.backward(g.to(dev))
+        return y, x_dev.grad, w_dev.grad, b_dev.grad
+
+      # 1D Patchify (stride=4, kernel=4)
+      w_1d_patch = torch.randn(3, 4, 4, dtype=dtype)
+      grad_1d_patch = torch.randn(2, 3, 4, dtype=dtype)
+
+      def fn_1d_patch(dev, x=x_1d, w=w_1d_patch, b=b_1d, g=grad_1d_patch):
+        x_dev = x.to(dev).detach().requires_grad_(True)
+        w_dev = w.to(dev).detach().requires_grad_(True)
+        b_dev = b.to(dev).detach().requires_grad_(True)
+        y = torch.nn.functional.conv1d(x_dev, w_dev, b_dev, stride=4, padding=0)
+        y.backward(g.to(dev))
+        return y, x_dev.grad, w_dev.grad, b_dev.grad
+
+      # 2D Pointwise
+      x_2d = torch.randn(2, 4, 8, 8, dtype=dtype)
+      w_2d = torch.randn(6, 4, 1, 1, dtype=dtype)
+      b_2d = torch.randn(6, dtype=dtype)
+      grad_2d_pw = torch.randn(2, 6, 8, 8, dtype=dtype)
+
+      def fn_2d_pw(dev, x=x_2d, w=w_2d, b=b_2d, g=grad_2d_pw):
+        x_dev = x.to(dev).detach().requires_grad_(True)
+        w_dev = w.to(dev).detach().requires_grad_(True)
+        b_dev = b.to(dev).detach().requires_grad_(True)
+        y = torch.nn.functional.conv2d(x_dev, w_dev, b_dev, stride=1, padding=0)
+        y.backward(g.to(dev))
+        return y, x_dev.grad, w_dev.grad, b_dev.grad
+
+      # 2D Patchify (stride=2, kernel=2)
+      w_2d_patch = torch.randn(6, 4, 2, 2, dtype=dtype)
+      grad_2d_patch = torch.randn(2, 6, 4, 4, dtype=dtype)
+
+      def fn_2d_patch(dev, x=x_2d, w=w_2d_patch, b=b_2d, g=grad_2d_patch):
+        x_dev = x.to(dev).detach().requires_grad_(True)
+        w_dev = w.to(dev).detach().requires_grad_(True)
+        b_dev = b.to(dev).detach().requires_grad_(True)
+        y = torch.nn.functional.conv2d(x_dev, w_dev, b_dev, stride=2, padding=0)
+        y.backward(g.to(dev))
+        return y, x_dev.grad, w_dev.grad, b_dev.grad
+
+      # 3D Pointwise
+      x_3d = torch.randn(2, 3, 4, 4, 4, dtype=dtype)
+      w_3d = torch.randn(4, 3, 1, 1, 1, dtype=dtype)
+      b_3d = torch.randn(4, dtype=dtype)
+      grad_3d_pw = torch.randn(2, 4, 4, 4, 4, dtype=dtype)
+
+      def fn_3d_pw(dev, x=x_3d, w=w_3d, b=b_3d, g=grad_3d_pw):
+        x_dev = x.to(dev).detach().requires_grad_(True)
+        w_dev = w.to(dev).detach().requires_grad_(True)
+        b_dev = b.to(dev).detach().requires_grad_(True)
+        y = torch.nn.functional.conv3d(x_dev, w_dev, b_dev, stride=1, padding=0)
+        y.backward(g.to(dev))
+        return y, x_dev.grad, w_dev.grad, b_dev.grad
+
+      # 3D Patchify (stride=(2, 3, 1), kernel=(2, 3, 1))
+      # Distinct spatial and patch sizes across axes:
+      # N=2, C_in=3, C_out=4, D=6, H=6, W=4, K=(2, 3, 1) -> P=(3, 2, 4)
+      x_3d_patch = torch.randn(2, 3, 6, 6, 4, dtype=dtype)
+      w_3d_patch = torch.randn(4, 3, 2, 3, 1, dtype=dtype)
+      grad_3d_patch = torch.randn(2, 4, 3, 2, 4, dtype=dtype)
+
+      def fn_3d_patch(dev, x=x_3d_patch, w=w_3d_patch, b=b_3d, g=grad_3d_patch):
+        x_dev = x.to(dev).detach().requires_grad_(True)
+        w_dev = w.to(dev).detach().requires_grad_(True)
+        b_dev = b.to(dev).detach().requires_grad_(True)
+        y = torch.nn.functional.conv3d(
+            x_dev, w_dev, b_dev, stride=(2, 3, 1), padding=0
+        )
+        y.backward(g.to(dev))
+        return y, x_dev.grad, w_dev.grad, b_dev.grad
+
+      orig_prec = torch.get_float32_matmul_precision()
+      try:
+        if dtype == torch.float32:
+          torch.set_float32_matmul_precision("highest")
+        self.assert_close_tpu_vs_cpu(fn_1d_pw, rtol=rtol, atol=atol)
+        self.assert_close_tpu_vs_cpu(fn_1d_patch, rtol=rtol, atol=atol)
+        self.assert_close_tpu_vs_cpu(fn_2d_pw, rtol=rtol, atol=atol)
+        self.assert_close_tpu_vs_cpu(fn_2d_patch, rtol=rtol, atol=atol)
+        self.assert_close_tpu_vs_cpu(fn_3d_pw, rtol=rtol, atol=atol)
+        self.assert_close_tpu_vs_cpu(fn_3d_patch, rtol=rtol, atol=atol)
+      finally:
+        torch.set_float32_matmul_precision(orig_prec)
+
+    # Numerics checks with bias=None: pointwise and patchify
+    orig_prec = torch.get_float32_matmul_precision()
+    try:
+      torch.set_float32_matmul_precision("highest")
+      for s_nb, w_nb in [(1, w_pw_tpu), (2, w_patch_tpu)]:
+        w_nb_cpu = w_nb.cpu()
+
+        def fn_nobias(dev, s_val=s_nb, w_val=w_nb_cpu):
+          x_dev = x_tpu.cpu().to(dev).detach().requires_grad_(True)
+          w_dev = w_val.to(dev).detach().requires_grad_(True)
+          y = torch.nn.functional.conv2d(
+              x_dev, w_dev, bias=None, stride=s_val, padding=0
+          )
+          y.backward(torch.ones_like(y))
+          return y, x_dev.grad, w_dev.grad
+
+        self.assert_close_tpu_vs_cpu(fn_nobias, rtol=1e-4, atol=1e-4)
+    finally:
+      torch.set_float32_matmul_precision(orig_prec)
+
+    # Zero-sized batch edge cases (forward and backward on pointwise/patchify)
+    x_zero = torch.randn(0, 4, 8, 8)
+    w_zero_pw = torch.randn(6, 4, 1, 1)
+    w_zero_patch = torch.randn(6, 4, 2, 2)
+    b_zero = torch.randn(6)
+
+    for s_z, w_z in [(1, w_zero_pw), (2, w_zero_patch)]:
+
+      def fn_zero(dev, s_val=s_z, w_val=w_z):
+        x_dev = x_zero.to(dev).detach().requires_grad_(True)
+        w_dev = w_val.to(dev).detach().requires_grad_(True)
+        b_dev = b_zero.to(dev).detach().requires_grad_(True)
+        y = torch.nn.functional.conv2d(
+            x_dev, w_dev, b_dev, stride=s_val, padding=0
+        )
+        y.backward(torch.ones_like(y))
+        return y, x_dev.grad, w_dev.grad, b_dev.grad
+
+      self.assert_close_tpu_vs_cpu(fn_zero, rtol=1e-4, atol=1e-4)
+
+    # (1) torch.compile forward & backward (grad_input, grad_weight, grad_bias)
+    # numerical equivalence for 1D, 2D, 3D pointwise and patchify convolutions.
+    @torch.compile(backend="tpu", dynamic=False)
+    def compile_conv1d(x, w, b, s):
+      return torch.nn.functional.conv1d(x, w, b, stride=s, padding=0)
+
+    for s, w_t, w_c in [
+        (1, w_1d_pw_tpu, w_1d_pw_tpu.cpu()),
+        (4, w_1d_patch_tpu, w_1d_patch_tpu.cpu()),
+    ]:
+      x_t = x_1d_tpu.detach().clone().requires_grad_(True)
+      w_t = w_t.detach().clone().requires_grad_(True)
+      b_t = b_1d_tpu.detach().clone().requires_grad_(True)
+      out_t = compile_conv1d(x_t, w_t, b_t, s)
+      g_out = torch.randn_like(out_t)
+      out_t.backward(g_out)
+
+      x_c = x_1d_tpu.cpu().detach().clone().requires_grad_(True)
+      w_c = w_c.detach().clone().requires_grad_(True)
+      b_c = b_1d_tpu.cpu().detach().clone().requires_grad_(True)
+      out_c = torch.nn.functional.conv1d(x_c, w_c, b_c, stride=s, padding=0)
+      out_c.backward(g_out.cpu())
+
+      utils.assert_close(
+          actual=out_t.cpu(), expected=out_c, rtol=3e-2, atol=3e-2
+      )
+      utils.assert_close(
+          actual=x_t.grad.cpu(), expected=x_c.grad, rtol=3e-2, atol=3e-2
+      )
+      utils.assert_close(
+          actual=w_t.grad.cpu(), expected=w_c.grad, rtol=3e-2, atol=3e-2
+      )
+      utils.assert_close(
+          actual=b_t.grad.cpu(), expected=b_c.grad, rtol=3e-2, atol=3e-2
+      )
+
+    @torch.compile(backend="tpu", dynamic=False)
+    def compile_conv2d(x, w, b, s):
+      return torch.nn.functional.conv2d(x, w, b, stride=s, padding=0)
+
+    for s, w_t, w_c in [
+        (1, w_pw_tpu, w_pw_tpu.cpu()),
+        (2, w_patch_tpu, w_patch_tpu.cpu()),
+    ]:
+      x_t = x_tpu.detach().clone().requires_grad_(True)
+      w_t = w_t.detach().clone().requires_grad_(True)
+      b_t = b_tpu.detach().clone().requires_grad_(True)
+      out_t = compile_conv2d(x_t, w_t, b_t, s)
+      g_out = torch.randn_like(out_t)
+      out_t.backward(g_out)
+
+      x_c = x_tpu.cpu().detach().clone().requires_grad_(True)
+      w_c = w_c.detach().clone().requires_grad_(True)
+      b_c = b_tpu.cpu().detach().clone().requires_grad_(True)
+      out_c = torch.nn.functional.conv2d(x_c, w_c, b_c, stride=s, padding=0)
+      out_c.backward(g_out.cpu())
+
+      utils.assert_close(
+          actual=out_t.cpu(), expected=out_c, rtol=3e-2, atol=3e-2
+      )
+      utils.assert_close(
+          actual=x_t.grad.cpu(), expected=x_c.grad, rtol=3e-2, atol=3e-2
+      )
+      utils.assert_close(
+          actual=w_t.grad.cpu(), expected=w_c.grad, rtol=3e-2, atol=3e-2
+      )
+      utils.assert_close(
+          actual=b_t.grad.cpu(), expected=b_c.grad, rtol=3e-2, atol=3e-2
+      )
+
+    @torch.compile(backend="tpu", dynamic=False)
+    def compile_conv3d(x, w, b, s):
+      return torch.nn.functional.conv3d(x, w, b, stride=s, padding=0)
+
+    for s, w_t, w_c in [
+        (1, w_3d_pw_tpu, w_3d_pw_tpu.cpu()),
+        ((2, 3, 1), w_3d_patch_tpu, w_3d_patch_tpu.cpu()),
+    ]:
+      x_t = x_3d_tpu.detach().clone().requires_grad_(True)
+      w_t = w_t.detach().clone().requires_grad_(True)
+      b_t = b_3d_tpu.detach().clone().requires_grad_(True)
+      out_t = compile_conv3d(x_t, w_t, b_t, s)
+      g_out = torch.randn_like(out_t)
+      out_t.backward(g_out)
+
+      x_c = x_3d_tpu.cpu().detach().clone().requires_grad_(True)
+      w_c = w_c.detach().clone().requires_grad_(True)
+      b_c = b_3d_tpu.cpu().detach().clone().requires_grad_(True)
+      out_c = torch.nn.functional.conv3d(x_c, w_c, b_c, stride=s, padding=0)
+      out_c.backward(g_out.cpu())
+
+      utils.assert_close(
+          actual=out_t.cpu(), expected=out_c, rtol=3e-2, atol=3e-2
+      )
+      utils.assert_close(
+          actual=x_t.grad.cpu(), expected=x_c.grad, rtol=3e-2, atol=3e-2
+      )
+      utils.assert_close(
+          actual=w_t.grad.cpu(), expected=w_c.grad, rtol=3e-2, atol=3e-2
+      )
+      utils.assert_close(
+          actual=b_t.grad.cpu(), expected=b_c.grad, rtol=3e-2, atol=3e-2
+      )
+
+    # Mutation test: verify precision propagation into PrecisionConfigAttr.
+    orig_prec = torch.get_float32_matmul_precision()
+    try:
+      torch.set_float32_matmul_precision("highest")
+      with execution_mode.set_eager_mode(
+          execution_mode.EagerMode.DEFER_AND_FUSE
+      ):
+        out_high = torch.nn.functional.conv2d(
+            x_tpu, w_pw_tpu, b_tpu, stride=1, padding=0
+        )
+      mlir_high = tpu_torch_compile.serialize_mlir_text(
+          tpu_torch_compile.build_mlir([out_high], [x_tpu, w_pw_tpu, b_tpu])
+      )
+      self.assertIn("precision = [HIGHEST, HIGHEST]", mlir_high)
+      self.assertIn("stablehlo.dot_general", mlir_high)
+
+      # Also verify torch.compile runs under highest matmul precision with
+      # forward and backward verified against CPU reference at 1e-4 tolerance.
+      @torch.compile(backend="tpu", dynamic=False)
+      def compile_conv2d_high(x, w, b, s):
+        return torch.nn.functional.conv2d(x, w, b, stride=s, padding=0)
+
+      x_high_t = x_tpu.detach().clone().requires_grad_(True)
+      w_high_t = w_pw_tpu.detach().clone().requires_grad_(True)
+      b_high_t = b_tpu.detach().clone().requires_grad_(True)
+      out_high_compile = compile_conv2d_high(x_high_t, w_high_t, b_high_t, 1)
+      g_high = torch.randn_like(out_high_compile)
+      out_high_compile.backward(g_high)
+
+      x_high_c = x_tpu.cpu().detach().clone().requires_grad_(True)
+      w_high_c = w_pw_tpu.cpu().detach().clone().requires_grad_(True)
+      b_high_c = b_tpu.cpu().detach().clone().requires_grad_(True)
+      out_high_ref = torch.nn.functional.conv2d(
+          x_high_c, w_high_c, b_high_c, stride=1, padding=0
+      )
+      out_high_ref.backward(g_high.cpu())
+
+      utils.assert_close(
+          actual=out_high_compile.cpu(),
+          expected=out_high_ref,
+          rtol=1e-4,
+          atol=1e-4,
+      )
+      utils.assert_close(
+          actual=x_high_t.grad.cpu(),
+          expected=x_high_c.grad,
+          rtol=1e-4,
+          atol=1e-4,
+      )
+      utils.assert_close(
+          actual=w_high_t.grad.cpu(),
+          expected=w_high_c.grad,
+          rtol=1e-4,
+          atol=1e-4,
+      )
+      utils.assert_close(
+          actual=b_high_t.grad.cpu(),
+          expected=b_high_c.grad,
+          rtol=1e-4,
+          atol=1e-4,
+      )
+    finally:
+      torch.set_float32_matmul_precision(orig_prec)
+
+    # (2) torch.compile with torch._dynamo.mark_dynamic on batch and spatial
+    # dimensions falling back cleanly to ConvolutionLike.
+    @torch.compile(backend="tpu", options={"bounded_dynamism": True})
+    def compile_dyn_conv(x, w, b, s):
+      return torch.nn.functional.conv2d(x, w, b, stride=s, padding=0)
+
+    for s_dyn, w_dyn_ref in [(1, w_pw_tpu), (2, w_patch_tpu)]:
+      x_dyn_cpu = torch.randn(4, 4, 8, 8, requires_grad=True)
+      w_dyn_cpu = w_dyn_ref.cpu().detach().clone().requires_grad_(True)
+      b_dyn_cpu = b_tpu.cpu().detach().clone().requires_grad_(True)
+
+      x_dyn_tpu = x_dyn_cpu.detach().clone().to("tpu").requires_grad_(True)
+      w_dyn_tpu = w_dyn_ref.detach().clone().requires_grad_(True)
+      b_dyn_tpu = b_tpu.detach().clone().requires_grad_(True)
+
+      torch._dynamo.mark_dynamic(x_dyn_tpu, 0, min=2, max=16)
+      torch._dynamo.mark_dynamic(x_dyn_tpu, 2, min=4, max=16)
+      torch._dynamo.mark_dynamic(x_dyn_tpu, 3, min=4, max=16)
+
+      out_dyn_tpu = compile_dyn_conv(x_dyn_tpu, w_dyn_tpu, b_dyn_tpu, s_dyn)
+      out_dyn_cpu = torch.nn.functional.conv2d(
+          x_dyn_cpu, w_dyn_cpu, b_dyn_cpu, stride=s_dyn, padding=0
+      )
+      utils.assert_close(
+          actual=out_dyn_tpu.cpu(), expected=out_dyn_cpu, rtol=3e-2, atol=3e-2
+      )
+
+      g_dyn = torch.randn_like(out_dyn_tpu)
+      out_dyn_tpu.backward(g_dyn)
+      out_dyn_cpu.backward(g_dyn.cpu())
+      utils.assert_close(
+          actual=x_dyn_tpu.grad.cpu(),
+          expected=x_dyn_cpu.grad,
+          rtol=3e-2,
+          atol=3e-2,
+      )
+      utils.assert_close(
+          actual=w_dyn_tpu.grad.cpu(),
+          expected=w_dyn_cpu.grad,
+          rtol=3e-2,
+          atol=3e-2,
+      )
+      utils.assert_close(
+          actual=b_dyn_tpu.grad.cpu(),
+          expected=b_dyn_cpu.grad,
+          rtol=3e-2,
+          atol=3e-2,
+      )
+
+    # Verify dynamic batch or spatial dims emit stablehlo.convolution in IR.
+    x_dyn_ir = dynamism.mark_dynamic(
+        torch.randn(4, 4, 8, 8, device="tpu"), 0, 2, 8
+    )
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      out_dyn_ir = torch.nn.functional.conv2d(
+          x_dyn_ir, w_pw_tpu, b_tpu, stride=1, padding=0
+      )
+    mlir_dyn_ir = tpu_torch_compile.serialize_mlir_text(
+        tpu_torch_compile.build_mlir([out_dyn_ir], [x_dyn_ir, w_pw_tpu, b_tpu])
+    )
+    self.assertIn("stablehlo.convolution", mlir_dyn_ir)
+    self.assertNotIn("stablehlo.dot_general", mlir_dyn_ir)
+
+    # Verify dynamic grad_output in aten.convolution_backward falls back to
+    # ConvolutionLike (emitting stablehlo.convolution, not dot_general).
+    x_dyn_4 = dynamism.mark_dynamic(
+        torch.randn(4, 4, 8, 8, device="tpu"), 0, 2, 4
+    )
+    grad_dyn = dynamism.mark_dynamic(
+        torch.randn(4, 6, 8, 8, device="tpu"), 0, 2, 4
+    )
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      grads_dyn = torch.ops.aten.convolution_backward(
+          grad_dyn,
+          x_dyn_4,
+          w_pw_tpu,
+          [b_tpu.shape[0]],
+          [1, 1],
+          [0, 0],
+          [1, 1],
+          False,
+          [0, 0],
+          1,
+          [True, True, True],
+      )
+    mlir_bw_dyn = tpu_torch_compile.serialize_mlir_text(
+        tpu_torch_compile.build_mlir(
+            list(grads_dyn[:2]), [grad_dyn, x_dyn_4, w_pw_tpu]
+        )
+    )
+    self.assertIn("stablehlo.convolution", mlir_bw_dyn)
+    self.assertNotIn("stablehlo.dot_general", mlir_bw_dyn)
+
+    # Patchify backward with dynamic grad_output
+    grad_patch_dyn = dynamism.mark_dynamic(
+        torch.randn(4, 6, 4, 4, device="tpu"), 0, 2, 4
+    )
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      grads_patch_dyn = torch.ops.aten.convolution_backward(
+          grad_patch_dyn,
+          x_dyn_4,
+          w_patch_tpu,
+          [b_tpu.shape[0]],
+          [2, 2],
+          [0, 0],
+          [1, 1],
+          False,
+          [0, 0],
+          1,
+          [True, True, True],
+      )
+    mlir_bw_patch_dyn = tpu_torch_compile.serialize_mlir_text(
+        tpu_torch_compile.build_mlir(
+            list(grads_patch_dyn[:2]),
+            [grad_patch_dyn, x_dyn_4, w_patch_tpu],
+        )
+    )
+    self.assertIn("stablehlo.convolution", mlir_bw_patch_dyn)
+    self.assertNotIn("stablehlo.dot_general", mlir_bw_patch_dyn)
+
+    # (3) Fast path rejection boundaries: verify stablehlo.convolution is
+    # emitted and matches CPU in forward and backward.
+    rejection_cases = [
+        # (name, x_shape, w_shape, stride, padding, dilation, groups)
+        ("not_divisible", (2, 4, 7, 7), (6, 4, 2, 2), 2, 0, 1, 1),
+        ("padding", (2, 4, 8, 8), (6, 4, 1, 1), 1, 1, 1, 1),
+        ("dilation", (2, 4, 8, 8), (6, 4, 1, 1), 1, 0, 2, 1),
+        ("groups", (2, 4, 8, 8), (6, 2, 1, 1), 1, 0, 1, 2),
+        ("stride_neq_kernel", (2, 4, 8, 8), (6, 4, 2, 2), 1, 0, 1, 1),
+    ]
+    orig_prec = torch.get_float32_matmul_precision()
+    try:
+      torch.set_float32_matmul_precision("highest")
+      for _, x_shp, w_shp, strd, pad, dil, grp in rejection_cases:
+        x_rej = torch.randn(*x_shp, device="tpu")
+        w_rej = torch.randn(*w_shp, device="tpu")
+        b_rej = torch.randn(w_shp[0], device="tpu")
+        torch.accelerator.synchronize()
+
+        with execution_mode.set_eager_mode(
+            execution_mode.EagerMode.DEFER_AND_FUSE
+        ):
+          out_rej = torch.nn.functional.conv2d(
+              x_rej,
+              w_rej,
+              b_rej,
+              stride=strd,
+              padding=pad,
+              dilation=dil,
+              groups=grp,
+          )
+        mlir_rej = tpu_torch_compile.serialize_mlir_text(
+            tpu_torch_compile.build_mlir([out_rej], [x_rej, w_rej, b_rej])
+        )
+        self.assertIn("stablehlo.convolution", mlir_rej)
+        self.assertNotIn("stablehlo.dot_general", mlir_rej)
+
+        x_c_rej = torch.randn(*x_shp)
+        w_c_rej = torch.randn(*w_shp)
+        b_c_rej = torch.randn(w_shp[0])
+
+        def fn_rej(
+            dev,
+            xc=x_c_rej,
+            wc=w_c_rej,
+            bc=b_c_rej,
+            s=strd,
+            p=pad,
+            d=dil,
+            g=grp,
+        ):
+          x_d = xc.to(dev).detach().requires_grad_(True)
+          w_d = wc.to(dev).detach().requires_grad_(True)
+          b_d = bc.to(dev).detach().requires_grad_(True)
+          y = torch.nn.functional.conv2d(
+              x_d, w_d, b_d, stride=s, padding=p, dilation=d, groups=g
+          )
+          y.backward(torch.ones_like(y))
+          return y, x_d.grad, w_d.grad, b_d.grad
+
+        self.assert_close_tpu_vs_cpu(fn_rej, rtol=1e-4, atol=1e-4)
+    finally:
+      torch.set_float32_matmul_precision(orig_prec)
+
+    # (4) Transposed conv: verify stablehlo.convolution is emitted and
+    # gradients match CPU for pointwise and patchify strides (C_in != C_out).
+    for k_t, s_t in [((1, 1), 1), ((2, 2), 2)]:
+      x_trans = torch.randn(2, 4, 8, 8)
+      w_trans = torch.randn(4, 6, *k_t)
+      b_trans = torch.randn(6)
+
+      torch.accelerator.synchronize()
+      x_trans_tpu = x_trans.to("tpu")
+      w_trans_tpu = w_trans.to("tpu")
+      b_trans_tpu = b_trans.to("tpu")
+      torch.accelerator.synchronize()
+
+      with execution_mode.set_eager_mode(
+          execution_mode.EagerMode.DEFER_AND_FUSE
+      ):
+        out_trans = torch.nn.functional.conv_transpose2d(
+            x_trans_tpu, w_trans_tpu, b_trans_tpu, stride=s_t, padding=0
+        )
+      mlir_trans_fw = tpu_torch_compile.serialize_mlir_text(
+          tpu_torch_compile.build_mlir(
+              [out_trans], [x_trans_tpu, w_trans_tpu, b_trans_tpu]
+          )
+      )
+      self.assertIn("stablehlo.convolution", mlir_trans_fw)
+      self.assertNotIn("stablehlo.dot_general", mlir_trans_fw)
+
+      # Backward IR for conv_transpose2d
+      torch.accelerator.synchronize()
+      x_trans_bw = x_trans.to("tpu")
+      w_trans_bw = w_trans.to("tpu")
+      grad_trans_ir = torch.randn(
+          2, 6, 8 if s_t == 1 else 16, 8 if s_t == 1 else 16, device="tpu"
+      )
+      torch.accelerator.synchronize()
+      with execution_mode.set_eager_mode(
+          execution_mode.EagerMode.DEFER_AND_FUSE
+      ):
+        grads_trans = torch.ops.aten.convolution_backward(
+            grad_trans_ir,
+            x_trans_bw,
+            w_trans_bw,
+            [b_trans.shape[0]],
+            [s_t, s_t],
+            [0, 0],
+            [1, 1],
+            True,
+            [0, 0],
+            1,
+            [True, True, True],
+        )
+      mlir_trans_bw = tpu_torch_compile.serialize_mlir_text(
+          tpu_torch_compile.build_mlir(
+              list(grads_trans[:2]), [grad_trans_ir, x_trans_bw, w_trans_bw]
+          )
+      )
+      self.assertIn("stablehlo.convolution", mlir_trans_bw)
+      self.assertNotIn("stablehlo.dot_general", mlir_trans_bw)
+
+      def fn_trans(
+          dev,
+          xc=x_trans,
+          wc=w_trans,
+          bc=b_trans,
+          s_val=s_t,
+      ):
+        x_d = xc.to(dev).detach().requires_grad_(True)
+        w_d = wc.to(dev).detach().requires_grad_(True)
+        b_d = bc.to(dev).detach().requires_grad_(True)
+        y = torch.nn.functional.conv_transpose2d(
+            x_d, w_d, b_d, stride=s_val, padding=0
+        )
+        y.backward(torch.ones_like(y))
+        return y, x_d.grad, w_d.grad, b_d.grad
+
+      self.assert_close_tpu_vs_cpu(fn_trans, rtol=3e-2, atol=3e-2)
+
+  def test_sdpa_bwd_rowsum_and_mask_sinking(self):
+    """Verifies SDPA bwd O*dO rowsum, mask hoisting/sinking, and GQA."""
+    batch, q_heads, kv_heads, d_head = 1, 2, 2, 64
+    seq_q, seq_kv = 8, 16
+
+    q_tpu = torch.randn(
+        batch, q_heads, seq_q, d_head, dtype=torch.float32, device="tpu"
+    )
+    k_tpu = torch.randn(
+        batch, kv_heads, seq_kv, d_head, dtype=torch.float32, device="tpu"
+    )
+    v_tpu = torch.randn(
+        batch, kv_heads, seq_kv, d_head, dtype=torch.float32, device="tpu"
+    )
+    torch.accelerator.synchronize()
+
+    out_fwd, lse_fwd, _, _, _, _, seed, offset, _ = (
+        torch.ops.aten._scaled_dot_product_fused_attention_overrideable(
+            q_tpu, k_tpu, v_tpu
+        )
+    )
+    grad_out_tpu = torch.randn_like(out_fwd)
+    torch.accelerator.synchronize()
+
+    # 1. Backward IR: verify reduction is over head_dim (64), not seq_kv (16)
+    cum_q = torch.zeros(batch + 1, dtype=torch.int32, device="tpu")
+    cum_k = torch.zeros(batch + 1, dtype=torch.int32, device="tpu")
+    empty_bias = torch.empty(0, dtype=torch.float32, device="tpu")
+
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      sdpa_bwd_fn = getattr(
+          torch.ops.aten,
+          "_scaled_dot_product_fused_attention_overrideable_backward",
+      )
+      grads = sdpa_bwd_fn(
+          grad_out_tpu,
+          q_tpu,
+          k_tpu,
+          v_tpu,
+          empty_bias,
+          [True, True, True, False],
+          out_fwd,
+          lse_fwd,
+          cum_q,
+          cum_k,
+          seq_q,
+          seq_kv,
+          0.0,
+          False,
+          seed,
+          offset,
+      )
+    mlir_bwd = tpu_torch_compile.serialize_mlir_text(
+        tpu_torch_compile.build_mlir(
+            list(grads[:3]),
+            [grad_out_tpu, q_tpu, k_tpu, v_tpu, out_fwd, lse_fwd],
+        )
+    )
+    # Reduced tensor for rowsum (O * dO) must be [1, 2, 8, 64], not
+    # [1, 2, 8, 16]
+    self.assertIn(
+        "applies stablehlo.add across dimensions = [3] :"
+        " (tensor<1x2x8x64xf32>, tensor<f32>) -> tensor<1x2x8xf32>",
+        mlir_bwd,
+    )
+    self.assertNotIn(
+        "applies stablehlo.add across dimensions = [3] :"
+        " (tensor<1x2x8x16xf32>, tensor<f32>) -> tensor<1x2x8xf32>",
+        mlir_bwd,
+    )
+
+    # 2. Forward mask select sinking IR: select is sunk to [1, 2, 8, 64]
+    mask_tpu = torch.zeros(seq_q, seq_kv, dtype=torch.float32, device="tpu")
+    mask_tpu[2, :] = float("-inf")
+    torch.accelerator.synchronize()
+
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      out_mask, lse_mask, _, _, _, _, _, _, _ = (
+          torch.ops.aten._scaled_dot_product_fused_attention_overrideable(
+              q_tpu, k_tpu, v_tpu, attn_bias=mask_tpu
+          )
+      )
+    mlir_fwd = tpu_torch_compile.serialize_mlir_text(
+        tpu_torch_compile.build_mlir(
+            [out_mask, lse_mask], [q_tpu, k_tpu, v_tpu, mask_tpu]
+        )
+    )
+    # Select must operate on [1, 2, 8, 64] (out_4d), not [1, 2, 8, 16] (softmax)
+    self.assertIn("tensor<1x2x8x64xi1>, tensor<1x2x8x64xf32>", mlir_fwd)
+    self.assertNotIn("tensor<1x2x8x16xi1>, tensor<1x2x8x16xf32>", mlir_fwd)
+
+    # Masked row 2 must be exact 0.0 and no NaNs
+    self.assertTrue(torch.all(out_mask[:, :, 2, :] == 0.0))
+    self.assertFalse(torch.isnan(out_mask).any())
+
+    # 3. Numerics parity vs CPU: bwd gradients, causal, and GQA
+    def fn_sdpa_bwd(dev):
+      q = q_tpu.to(dev).detach().requires_grad_(True)
+      k = k_tpu.to(dev).detach().requires_grad_(True)
+      v = v_tpu.to(dev).detach().requires_grad_(True)
+      backend = (
+          torch.nn.attention.SDPBackend.MATH
+          if dev == "cpu"
+          else torch.nn.attention.SDPBackend.OVERRIDEABLE
+      )
+      with torch.nn.attention.sdpa_kernel(backend):
+        out = torch.nn.functional.scaled_dot_product_attention(
+            q, k, v, is_causal=False
+        )
+      out.backward(grad_out_tpu.to(dev))
+      return out, q.grad, k.grad, v.grad
+
+    # Float32 CPU parity under highest matmul precision with default tolerances.
+    orig_prec = torch.get_float32_matmul_precision()
+    try:
+      torch.set_float32_matmul_precision("highest")
+      self.assert_close_tpu_vs_cpu(fn_sdpa_bwd)
+
+      # GQA backward with 128-aligned and unaligned sequence lengths.
+      for q_len, kv_len in [(128, 128), (64, 64)]:
+        q_gqa = torch.randn(1, 4, q_len, 64)
+        k_gqa = torch.randn(1, 2, kv_len, 64)
+        v_gqa = torch.randn(1, 2, kv_len, 64)
+        g_gqa = torch.randn(1, 4, q_len, 64)
+
+        def fn_gqa(dev, q=q_gqa, k=k_gqa, v=v_gqa, g=g_gqa):
+          q_dev = q.to(dev).detach().requires_grad_(True)
+          k_dev = k.to(dev).detach().requires_grad_(True)
+          v_dev = v.to(dev).detach().requires_grad_(True)
+          backend = (
+              torch.nn.attention.SDPBackend.MATH
+              if dev == "cpu"
+              else torch.nn.attention.SDPBackend.OVERRIDEABLE
+          )
+          with torch.nn.attention.sdpa_kernel(backend):
+            out = torch.nn.functional.scaled_dot_product_attention(
+                q_dev, k_dev, v_dev, enable_gqa=True
+            )
+          out.backward(g.to(dev))
+          return out, q_dev.grad, k_dev.grad, v_dev.grad
+
+        self.assert_close_tpu_vs_cpu(fn_gqa)
+
+      # Backward parity with an attn_mask containing an all -inf row.
+      mask_all_inf = torch.zeros(seq_q, seq_kv, dtype=torch.float32)
+      mask_all_inf[2, :] = float("-inf")
+
+      def fn_sdpa_bwd_mask(dev):
+        q = q_tpu.to(dev).detach().requires_grad_(True)
+        k = k_tpu.to(dev).detach().requires_grad_(True)
+        v = v_tpu.to(dev).detach().requires_grad_(True)
+        m = mask_all_inf.to(dev)
+        backend = (
+            torch.nn.attention.SDPBackend.MATH
+            if dev == "cpu"
+            else torch.nn.attention.SDPBackend.OVERRIDEABLE
+        )
+        with torch.nn.attention.sdpa_kernel(backend):
+          out = torch.nn.functional.scaled_dot_product_attention(
+              q, k, v, attn_mask=m, is_causal=False
+          )
+        out.backward(grad_out_tpu.to(dev))
+        return out, q.grad, k.grad, v.grad
+
+      self.assert_close_tpu_vs_cpu(fn_sdpa_bwd_mask)
+
+      # 0D scalar mask in forward: verifies flat_mask_rank == 0 does not crash.
+      out_scalar_mask, _, _, _, _, _, _, _, _ = (
+          torch.ops.aten._scaled_dot_product_fused_attention_overrideable(
+              q_tpu, k_tpu, v_tpu, attn_bias=torch.tensor(-1.0, device="tpu")
+          )
+      )
+      self.assertFalse(torch.isnan(out_scalar_mask).any())
+
+      # Backward parity with bfloat16 inputs (SdpaPromotionType::kSoftmaxOnly).
+      q_bf16 = q_tpu.to(torch.bfloat16)
+      k_bf16 = k_tpu.to(torch.bfloat16)
+      v_bf16 = v_tpu.to(torch.bfloat16)
+      g_bf16 = grad_out_tpu.to(torch.bfloat16)
+
+      def fn_sdpa_bwd_bf16(dev):
+        q = q_bf16.to(dev).detach().requires_grad_(True)
+        k = k_bf16.to(dev).detach().requires_grad_(True)
+        v = v_bf16.to(dev).detach().requires_grad_(True)
+        backend = (
+            torch.nn.attention.SDPBackend.MATH
+            if dev == "cpu"
+            else torch.nn.attention.SDPBackend.OVERRIDEABLE
+        )
+        with torch.nn.attention.sdpa_kernel(backend):
+          out = torch.nn.functional.scaled_dot_product_attention(
+              q, k, v, is_causal=False
+          )
+        out.backward(g_bf16.to(dev))
+        return out, q.grad, k.grad, v.grad
+
+      self.assert_close_tpu_vs_cpu(fn_sdpa_bwd_bf16, rtol=2e-2, atol=2e-2)
+
+      # Forward mask hoisting/sinking and backward O * dO row sum under compile.
+      @torch.compile(backend="tpu", dynamic=False)
+      def compile_sdpa(q, k, v, m):
+        return torch.nn.functional.scaled_dot_product_attention(
+            q, k, v, attn_mask=m, is_causal=False
+        )
+
+      q_c = torch.randn(1, 2, 8, 64, requires_grad=True)
+      k_c = torch.randn(1, 2, 16, 64, requires_grad=True)
+      v_c = torch.randn(1, 2, 16, 64, requires_grad=True)
+      m_c = torch.zeros(8, 16)
+      m_c[2, :] = float("-inf")
+
+      q_c_tpu = q_c.detach().clone().to("tpu").requires_grad_(True)
+      k_c_tpu = k_c.detach().clone().to("tpu").requires_grad_(True)
+      v_c_tpu = v_c.detach().clone().to("tpu").requires_grad_(True)
+      m_c_tpu = m_c.to("tpu")
+
+      out_c_tpu = compile_sdpa(q_c_tpu, k_c_tpu, v_c_tpu, m_c_tpu)
+      out_c_cpu = torch.nn.functional.scaled_dot_product_attention(
+          q_c, k_c, v_c, attn_mask=m_c, is_causal=False
+      )
+      utils.assert_close(actual=out_c_tpu.cpu(), expected=out_c_cpu)
+      g_c = torch.randn_like(out_c_tpu)
+      out_c_tpu.backward(g_c)
+      out_c_cpu.backward(g_c.cpu())
+      utils.assert_close(actual=q_c_tpu.grad.cpu(), expected=q_c.grad)
+      utils.assert_close(actual=k_c_tpu.grad.cpu(), expected=k_c.grad)
+      utils.assert_close(actual=v_c_tpu.grad.cpu(), expected=v_c.grad)
+
+      # Dynamic GQA backward with dynamism.mark_dynamic.
+      q_dyn_cpu = torch.randn(1, 4, 16, 64, requires_grad=True)
+      k_dyn_cpu = torch.randn(1, 2, 16, 64, requires_grad=True)
+      v_dyn_cpu = torch.randn(1, 2, 16, 64, requires_grad=True)
+      q_dyn = q_dyn_cpu.detach().clone().to("tpu")
+      k_dyn = k_dyn_cpu.detach().clone().to("tpu")
+      v_dyn = v_dyn_cpu.detach().clone().to("tpu")
+      dynamism.mark_dynamic(q_dyn, 2, 8, 32)
+      dynamism.mark_dynamic(k_dyn, 2, 8, 32)
+      dynamism.mark_dynamic(v_dyn, 2, 8, 32)
+      q_dyn.requires_grad_(True)
+      k_dyn.requires_grad_(True)
+      v_dyn.requires_grad_(True)
+      with torch.nn.attention.sdpa_kernel(
+          torch.nn.attention.SDPBackend.OVERRIDEABLE
+      ):
+        out_dyn = torch.nn.functional.scaled_dot_product_attention(
+            q_dyn, k_dyn, v_dyn, enable_gqa=True
+        )
+      g_dyn_cpu = torch.randn_like(q_dyn_cpu)
+      g_dyn = g_dyn_cpu.to("tpu")
+      dynamism.mark_dynamic(g_dyn, 2, 8, 32)
+      out_dyn.backward(g_dyn)
+
+      with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
+        out_dyn_ref = torch.nn.functional.scaled_dot_product_attention(
+            q_dyn_cpu, k_dyn_cpu, v_dyn_cpu, enable_gqa=True
+        )
+      out_dyn_ref.backward(g_dyn_cpu)
+
+      self.assertEqual(q_dyn.grad.shape, (1, 4, 16, 64))
+      self.assertEqual(k_dyn.grad.shape, (1, 2, 16, 64))
+      self.assertEqual(v_dyn.grad.shape, (1, 2, 16, 64))
+      utils.assert_close(actual=out_dyn.cpu(), expected=out_dyn_ref)
+      utils.assert_close(actual=q_dyn.grad.cpu(), expected=q_dyn_cpu.grad)
+      utils.assert_close(actual=k_dyn.grad.cpu(), expected=k_dyn_cpu.grad)
+      utils.assert_close(actual=v_dyn.grad.cpu(), expected=v_dyn_cpu.grad)
+    finally:
+      torch.set_float32_matmul_precision(orig_prec)
+
   @parameterized.named_parameters(
       (
           "conv1d_bfloat16",
