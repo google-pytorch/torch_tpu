@@ -367,9 +367,11 @@ TEST_F(MaterializeTest, SnapshotAwaitsPriorTensorCoreOutputs) {
   for (const int64_t size : {8, 64, 65536}) {
     TT_ASSERT_OK_AND_ASSIGN(DeviceBufferRef ref,
                             CreateIotaOp(/*record_on_stream=*/true, size));
-    InsertGraphBreak(device_index, stream_id, {ref.device_buffer_list()},
-                     MaterializationReason::kExplicitSync,
-                     GraphSplitMode::kSplitGraph);
+    ASSERT_TRUE(InsertGraphBreak(device_index, stream_id,
+                                 {ref.device_buffer_list()},
+                                 MaterializationReason::kExplicitSync,
+                                 GraphSplitMode::kSplitGraph)
+                    .ok());
     refs.push_back(std::move(ref));
   }
 

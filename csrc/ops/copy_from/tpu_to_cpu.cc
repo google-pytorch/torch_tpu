@@ -128,8 +128,7 @@ absl::Status CopyDeviceBufferRefToCpuPtrImpl(
                                               dst_pinned_ptr)
            : DeviceToHostTransfer::IntoBytes(src_buffer_ref, dest_ptr));
   if (transfer_sync_mode == TransferSyncMode::kIsolated) {
-    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=not reachable from Python
-        src_buffer_ref.is_materializing(), error::kFailedPrecondition)
+    TT_RET_CHECK(src_buffer_ref.is_materializing(), error::kFailedPrecondition)
         << "cannot materialize a tensor during a stream-isolated copy, "
            "materialization requires an active stream";
     return transfer.Run().Await();
@@ -216,7 +215,7 @@ absl::Status CopyTpuToCpuWithTpuConversion(
   if (!src_base_buf.is_materializing() &&
       (src_base_buf.device_index() != curr_device_index ||
        src_base_buf.stream_id() != curr_stream_id)) {
-    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=not reachable from Python
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=forced materialize on stream exit
         transfer_sync_mode != TransferSyncMode::kIsolated,
         error::kFailedPrecondition)
         << "cannot materialize a tensor during a stream-isolated copy, "

@@ -1072,15 +1072,21 @@ CompilationMode GetCompilationMode(EagerMode eager_mode) {
   };
 }
 
-void InsertGraphBreak(c10::DeviceIndex device_index, c10::StreamId stream_id,
-                      std::vector<SharedDeviceBufferList> must_materialize,
-                      MaterializationReason reason, GraphSplitMode mode) {
-  auto eager_mode = GetEagerMode();
+absl::Status InsertGraphBreak(
+    c10::DeviceIndex device_index, c10::StreamId stream_id,
+    std::vector<SharedDeviceBufferList> must_materialize,
+    MaterializationReason reason, GraphSplitMode mode) {
+  const EagerMode eager_mode = GetEagerMode();
   if (eager_mode == EagerMode::kInternalCompileFxGraph) {
-    return;
+    return TT_ERROR(  // ERROR_COV_INFEASIBLE=hits error in tpu_to_cpu first
+               error::kFailedPrecondition)
+           << "cannot materialize tensors during an FX trace.\nData-dependent "
+              "ops must have graph breaks inserted in the FX graph before "
+              "tracing";
   }
   GetOrCreateStreamState(device_index, stream_id)
       ->InsertGraphBreak(std::move(must_materialize), reason, mode, eager_mode);
+  return absl::OkStatus();
 }
 
 void WriteBackMaterializationFutures(

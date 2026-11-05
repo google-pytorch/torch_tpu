@@ -323,9 +323,13 @@ std::vector<ReadyWork> GetReadyWork(c10::DeviceIndex device_index,
 void SetCorePinningMode(c10::DeviceIndex device_index, c10::StreamId stream_id,
                         CorePinningMode pinned);
 
-void InsertGraphBreak(c10::DeviceIndex device_index, c10::StreamId stream_id,
-                      std::vector<SharedDeviceBufferList> must_materialize,
-                      MaterializationReason reason, GraphSplitMode mode);
+// Indicates that the current stream of unexecuted DeferredOps should be split
+// here and queued for async eager background materialization.
+// Returns an error if the current execution mode is kInternalCompileFxGraph.
+absl::Status InsertGraphBreak(
+    c10::DeviceIndex device_index, c10::StreamId stream_id,
+    std::vector<SharedDeviceBufferList> must_materialize,
+    MaterializationReason reason, GraphSplitMode mode);
 
 void WriteBackMaterializationFutures(
     c10::DeviceIndex device_index, c10::StreamId stream_id,

@@ -681,8 +681,9 @@ absl::Status MaterializeSpan(absl::Span<const T> items,
     TT_ASSIGN_OR_RETURN(
         std::vector<SharedDeviceBufferList> nodes_on_stream,
         GetUniqueDeferredNodes(items, node->device_index(), node->stream_id()));
-    InsertGraphBreak(node->device_index(), node->stream_id(),
-                     std::move(nodes_on_stream), reason, graph_split_mode);
+    TT_RETURN_IF_ERROR(InsertGraphBreak(node->device_index(), node->stream_id(),
+                                        std::move(nodes_on_stream), reason,
+                                        graph_split_mode));
     xla::Future<void> started_future = GetMaterializationWorker().EnqueueStream(
         node->device_index(), node->stream_id());
     if (block_mode == MaterializationBlockMode::kBlockUntilStarted) {
@@ -826,22 +827,25 @@ absl::StatusOr<EventSnapshot> MaterializeCurrentStream(
                            must_materialize);
 }
 
-void EagerlyExecuteStream(
+absl::Status EagerlyExecuteStream(
     c10::DeviceIndex device_index, c10::StreamId stream_id,
     MaterializationReason reason, GraphSplitMode mode,
     absl::Span<const SharedDeviceBufferList> must_materialize) {
-  InsertGraphBreak(device_index, stream_id,
-                   std::vector<SharedDeviceBufferList>(must_materialize.begin(),
-                                                       must_materialize.end()),
-                   reason, mode);
+  TT_RETURN_IF_ERROR(
+      InsertGraphBreak(device_index, stream_id,
+                       std::vector<SharedDeviceBufferList>(
+                           must_materialize.begin(), must_materialize.end()),
+                       reason, mode));
   GetMaterializationWorker().EnqueueStream(device_index, stream_id);
+  return absl::OkStatus();
 }
 
-void EagerlyExecuteCurrentStream(
+absl::Status EagerlyExecuteCurrentStream(
     MaterializationReason reason, GraphSplitMode mode,
     absl::Span<const SharedDeviceBufferList> must_materialize) {
   const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
-  EagerlyExecuteStream(device_index, stream_id, reason, mode, must_materialize);
+  return EagerlyExecuteStream(device_index, stream_id, reason, mode,
+                              must_materialize);
 }
 
 }  // namespace torch_tpu

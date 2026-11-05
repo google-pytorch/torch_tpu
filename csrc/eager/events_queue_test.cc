@@ -94,8 +94,10 @@ TEST_F(EventsQueueTest, GetsLiveDeferredBuffers) {
   // Both a and b are live and unsynced and will be materialized on the next
   // stream materialization or device materialization.
   const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
-  InsertGraphBreak(device_index, stream_id, {}, MaterializationReason::kUnknown,
-                   GraphSplitMode::kSplitGraph);
+  ASSERT_TRUE(InsertGraphBreak(device_index, stream_id, {},
+                               MaterializationReason::kUnknown,
+                               GraphSplitMode::kSplitGraph)
+                  .ok());
   auto ready_work = GetReadyWork(device_index, stream_id);
 
   ASSERT_EQ(ready_work.size(), 1);
@@ -118,8 +120,10 @@ TEST_F(EventsQueueTest, IgnoresPlaceholderBuffers) {
 
   // The placeholder does not need to be synced.
   const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
-  InsertGraphBreak(device_index, stream_id, {}, MaterializationReason::kUnknown,
-                   GraphSplitMode::kSplitGraph);
+  ASSERT_TRUE(InsertGraphBreak(device_index, stream_id, {},
+                               MaterializationReason::kUnknown,
+                               GraphSplitMode::kSplitGraph)
+                  .ok());
   auto ready_work = GetReadyWork(device_index, stream_id);
   EXPECT_TRUE(ready_work.empty());
 }
@@ -136,8 +140,10 @@ TEST_F(EventsQueueTest, IgnoresEmptyBuffers) {
 
   // The empty buffer does not need to be synced.
   const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
-  InsertGraphBreak(device_index, stream_id, {}, MaterializationReason::kUnknown,
-                   GraphSplitMode::kSplitGraph);
+  ASSERT_TRUE(InsertGraphBreak(device_index, stream_id, {},
+                               MaterializationReason::kUnknown,
+                               GraphSplitMode::kSplitGraph)
+                  .ok());
   auto ready_work = GetReadyWork(device_index, stream_id);
 
   EXPECT_TRUE(ready_work.empty());
@@ -157,8 +163,10 @@ TEST_F(EventsQueueTest, IgnoresAlreadyMaterializedBuffers) {
 
   // The placeholder does not need to be synced.
   const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
-  InsertGraphBreak(device_index, stream_id, {}, MaterializationReason::kUnknown,
-                   GraphSplitMode::kSplitGraph);
+  ASSERT_TRUE(InsertGraphBreak(device_index, stream_id, {},
+                               MaterializationReason::kUnknown,
+                               GraphSplitMode::kSplitGraph)
+                  .ok());
   auto ready_work = GetReadyWork(device_index, stream_id);
 
   EXPECT_TRUE(ready_work.empty());
@@ -202,8 +210,10 @@ TEST_F(EventsQueueTest, ClearsBuffersAfterMaterialization) {
 
   // We don't need to sync the buffer anymore.
   const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
-  InsertGraphBreak(device_index, stream_id, {}, MaterializationReason::kUnknown,
-                   GraphSplitMode::kSplitGraph);
+  ASSERT_TRUE(InsertGraphBreak(device_index, stream_id, {},
+                               MaterializationReason::kUnknown,
+                               GraphSplitMode::kSplitGraph)
+                  .ok());
   auto ready_work = GetReadyWork(device_index, stream_id);
 
   EXPECT_TRUE(ready_work.empty());
@@ -226,8 +236,10 @@ TEST_F(EventsQueueTest, StopsTrackingAfterClearEventsQueue) {
   ClearAllStreams();
 
   // The buffer is no longer tracked.
-  InsertGraphBreak(device_index, stream_id, {}, MaterializationReason::kUnknown,
-                   GraphSplitMode::kSplitGraph);
+  ASSERT_TRUE(InsertGraphBreak(device_index, stream_id, {},
+                               MaterializationReason::kUnknown,
+                               GraphSplitMode::kSplitGraph)
+                  .ok());
   auto ready_work1 = GetReadyWork(device_index, stream_id);
 
   EXPECT_TRUE(ready_work1.empty());
@@ -235,8 +247,10 @@ TEST_F(EventsQueueTest, StopsTrackingAfterClearEventsQueue) {
   // Create a second data pointer to the same buffer.
   ref.device_buffer_list()->IncrementLiveDataPtrs(ref.index());
 
-  InsertGraphBreak(device_index, stream_id, {}, MaterializationReason::kUnknown,
-                   GraphSplitMode::kSplitGraph);
+  ASSERT_TRUE(InsertGraphBreak(device_index, stream_id, {},
+                               MaterializationReason::kUnknown,
+                               GraphSplitMode::kSplitGraph)
+                  .ok());
   // The buffer is live, but the DeferredOp was cleared and so does not need
   // to be materialized.
   auto ready_work2 = GetReadyWork(device_index, stream_id);
@@ -282,9 +296,10 @@ TEST_F(EventsQueueTest, DeadCodeEliminated) {
 
   const auto device_index = list_d->device_index();
   const auto stream_id = list_d->stream_id();
-  InsertGraphBreak(device_index, stream_id, {list_d},
-                   MaterializationReason::kUnknown,
-                   GraphSplitMode::kSplitGraph);
+  ASSERT_TRUE(InsertGraphBreak(device_index, stream_id, {list_d},
+                               MaterializationReason::kUnknown,
+                               GraphSplitMode::kSplitGraph)
+                  .ok());
   auto ready_work = GetReadyWork(device_index, stream_id);
 
   ASSERT_EQ(ready_work.size(), 1);
@@ -342,9 +357,10 @@ TEST_F(EventsQueueTest, DeadSideEffectsRetained) {
 
   const auto device_index = list_d->device_index();
   const auto stream_id = list_d->stream_id();
-  InsertGraphBreak(device_index, stream_id, {list_d},
-                   MaterializationReason::kUnknown,
-                   GraphSplitMode::kSplitGraph);
+  ASSERT_TRUE(InsertGraphBreak(device_index, stream_id, {list_d},
+                               MaterializationReason::kUnknown,
+                               GraphSplitMode::kSplitGraph)
+                  .ok());
   auto ready_work = GetReadyWork(device_index, stream_id);
   ASSERT_EQ(ready_work.size(), 1);
   ASSERT_TRUE(std::holds_alternative<EagerExecution>(ready_work[0]));
@@ -385,9 +401,10 @@ TEST_F(EventsQueueTest, MaterializationIgnoresUnusedEmptyOps) {
 
   const auto device_index = non_empty_list->device_index();
   const auto stream_id = non_empty_list->stream_id();
-  InsertGraphBreak(device_index, stream_id, {non_empty_list},
-                   MaterializationReason::kUnknown,
-                   GraphSplitMode::kSplitGraph);
+  ASSERT_TRUE(InsertGraphBreak(device_index, stream_id, {non_empty_list},
+                               MaterializationReason::kUnknown,
+                               GraphSplitMode::kSplitGraph)
+                  .ok());
   auto ready_work = GetReadyWork(device_index, stream_id);
   ASSERT_EQ(ready_work.size(), 1);
   ASSERT_TRUE(std::holds_alternative<EagerExecution>(ready_work[0]));
@@ -543,9 +560,10 @@ TEST_F(EventsQueueTest, StreamsMaterializeSeparately) {
   ExchangeCurrentStreamId(device_index, default_stream_id);
 
   // Ask for a plan to materialize the stream for c (but not a or b)
-  InsertGraphBreak(device_index, non_default_stream_id, {},
-                   MaterializationReason::kUnknown,
-                   GraphSplitMode::kSplitGraph);
+  ASSERT_TRUE(InsertGraphBreak(device_index, non_default_stream_id, {},
+                               MaterializationReason::kUnknown,
+                               GraphSplitMode::kSplitGraph)
+                  .ok());
   auto ready_work = GetReadyWork(device_index, non_default_stream_id);
   ASSERT_EQ(ready_work.size(), 1);
   ASSERT_TRUE(std::holds_alternative<EagerExecution>(ready_work[0]));
@@ -611,8 +629,10 @@ TEST_F(EventsQueueTest, StreamMustMaterializeEmptyTensors) {
   const auto stream_id = empty_list->stream_id();
 
   // A normal stream materialization does not materialize the empty tensor.
-  InsertGraphBreak(device_index, stream_id, {}, MaterializationReason::kUnknown,
-                   GraphSplitMode::kSplitGraph);
+  ASSERT_TRUE(InsertGraphBreak(device_index, stream_id, {},
+                               MaterializationReason::kUnknown,
+                               GraphSplitMode::kSplitGraph)
+                  .ok());
   auto ready_work = GetReadyWork(device_index, stream_id);
 
   EXPECT_TRUE(ready_work.empty());
@@ -725,9 +745,10 @@ TEST_F(EventsQueueTest, MultipleEagerExecutionsPulled) {
   auto list_a = ref_a.device_buffer_list();
   RecordDeferredOpCreated(list_a);
 
-  InsertGraphBreak(list_a->device_index(), list_a->stream_id(), {list_a},
-                   MaterializationReason::kUnknown,
-                   GraphSplitMode::kSplitGraph);
+  ASSERT_TRUE(InsertGraphBreak(list_a->device_index(), list_a->stream_id(),
+                               {list_a}, MaterializationReason::kUnknown,
+                               GraphSplitMode::kSplitGraph)
+                  .ok());
 
   TT_ASSERT_OK_AND_ASSIGN(auto refs_b, DeviceBufferList::CreateDeferred(
                                            OpName::kAdd, DummyBuilder, {},
@@ -810,9 +831,10 @@ TEST_F(EventsQueueTest, SingleOpFastPathAndExtraConstantFallback) {
   auto list_single = ref_single.device_buffer_list();
   RecordDeferredOpCreated(list_single);
 
-  InsertGraphBreak(device_index, stream_id, {list_single},
-                   MaterializationReason::kUnknown,
-                   GraphSplitMode::kSplitGraph);
+  ASSERT_TRUE(InsertGraphBreak(device_index, stream_id, {list_single},
+                               MaterializationReason::kUnknown,
+                               GraphSplitMode::kSplitGraph)
+                  .ok());
   auto ready_work = GetReadyWork(device_index, stream_id);
   ASSERT_EQ(ready_work.size(), 1);
   ASSERT_TRUE(std::holds_alternative<EagerExecution>(ready_work[0]));
@@ -840,9 +862,10 @@ TEST_F(EventsQueueTest, SingleOpFastPathAndExtraConstantFallback) {
   auto empty_list = empty_ref.device_buffer_list();
   RecordDeferredOpCreated(empty_list);
 
-  InsertGraphBreak(device_index, stream_id, {list_op, empty_list},
-                   MaterializationReason::kUnknown,
-                   GraphSplitMode::kSplitGraph);
+  ASSERT_TRUE(InsertGraphBreak(device_index, stream_id, {list_op, empty_list},
+                               MaterializationReason::kUnknown,
+                               GraphSplitMode::kSplitGraph)
+                  .ok());
   ready_work = GetReadyWork(device_index, stream_id);
   ASSERT_EQ(ready_work.size(), 1);
   ASSERT_TRUE(std::holds_alternative<EagerExecution>(ready_work[0]));
@@ -1086,6 +1109,20 @@ TEST_F(EventsQueueTest, CompletedTimeOnError) {
   EXPECT_EQ(snapshot.CompletionTime().status().code(), error::kAborted);
 }
 
+TEST_F(EventsQueueTest, InsertGraphBreakDuringFxTrace) {
+  ClearAllStreams();
+  const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
+  const EagerMode original_eager_mode = GetEagerMode();
+  SetEagerMode(EagerMode::kInternalCompileFxGraph);
+  absl::Cleanup cleanup = [original_eager_mode] {
+    SetEagerMode(original_eager_mode);
+  };
+  absl::Status status = InsertGraphBreak(device_index, stream_id, {},
+                                         MaterializationReason::kCpuTransfer,
+                                         GraphSplitMode::kFullGraph);
+  EXPECT_EQ(status.code(), error::kFailedPrecondition);
+}
+
 TEST(CompilationModeTest, GetCompilationMode) {
   EXPECT_EQ(GetCompilationMode(EagerMode::kInternalDeferAll),
             CompilationMode::kFastRuntime);
@@ -1252,8 +1289,10 @@ TEST(RepeatedOpsTest, GraphBreakEndsSuspension) {
 
   // A graph break satisfies the requested graph break and ends the suspension,
   // so the next repetition is reported right away.
-  InsertGraphBreak(device_index, stream_id, {}, MaterializationReason::kUnknown,
-                   GraphSplitMode::kSplitGraph);
+  ASSERT_TRUE(InsertGraphBreak(device_index, stream_id, {},
+                               MaterializationReason::kUnknown,
+                               GraphSplitMode::kSplitGraph)
+                  .ok());
   // Take the graph break's work off the stream, as the ops cannot be executed.
   EXPECT_EQ(GetReadyWork(device_index, stream_id).size(), 1);
   EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list_a));

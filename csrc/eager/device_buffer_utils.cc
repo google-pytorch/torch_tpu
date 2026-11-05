@@ -165,12 +165,11 @@ absl::Status ExecuteCurrentStreamForDeferNever(
         EventSnapshot snapshot,
         MaterializeCurrentStream(reason, graph_split_mode, must_materialize));
     TT_RETURN_IF_ERROR(snapshot.Synchronize());
-    TT_RETURN_IF_ERROR(SyncAndReturnStickyError());
-  } else {
-    // In DeferNever, we don't block at all, we initiate and continue.
-    EagerlyExecuteCurrentStream(reason, graph_split_mode, must_materialize);
+    return SyncAndReturnStickyError();
   }
-  return absl::OkStatus();
+  // In DeferNever, we don't block at all, we initiate and continue.
+  return EagerlyExecuteCurrentStream(reason, graph_split_mode,
+                                     must_materialize);
 }
 
 // Handles post-op creation events for the kDeferNever and
@@ -233,9 +232,9 @@ absl::Status DeferAndFuseDispatch(absl::Span<const DeviceBufferRef> results,
     if (RecordDeferredOpAndDetectRepetition(device_buffer_list)) {
       // Start a background materialization of the current stream; don't
       // wait for it to complete.
-      (void)EagerlyExecuteCurrentStream(
+      TT_RETURN_IF_ERROR(EagerlyExecuteCurrentStream(
           MaterializationReason::kRepeatedOpDetection,
-          GetRepeatedOpsGraphSplitMode());
+          GetRepeatedOpsGraphSplitMode()));
     }
   } else {
     RecordDeferredOpCreated(device_buffer_list);
@@ -298,9 +297,10 @@ absl::Status RunPostponedMaterialization() {
       if (ResumeRepeatedOpsGraphBreaks(device_index, stream_id)) {
         // Start a background materialization of the current stream; don't
         // wait for it to complete.
-        EagerlyExecuteStream(device_index, stream_id,
-                             MaterializationReason::kRepeatedOpDetection,
-                             GetRepeatedOpsGraphSplitMode());
+        TT_RETURN_IF_ERROR(
+            EagerlyExecuteStream(device_index, stream_id,
+                                 MaterializationReason::kRepeatedOpDetection,
+                                 GetRepeatedOpsGraphSplitMode()));
       }
       return absl::OkStatus();
     }

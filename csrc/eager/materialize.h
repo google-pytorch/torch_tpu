@@ -156,13 +156,13 @@ absl::StatusOr<std::vector<EventSnapshot>> MaterializeDevice(
     GraphSplitMode mode = GraphSplitMode::kSplitGraph,
     absl::Span<const SharedDeviceBufferList> must_materialize = {});
 
-void EagerlyExecuteStream(
+absl::Status EagerlyExecuteStream(
     c10::DeviceIndex device_index, c10::StreamId stream_id,
     MaterializationReason reason,
     GraphSplitMode mode = GraphSplitMode::kSplitGraph,
     absl::Span<const SharedDeviceBufferList> must_materialize = {});
 
-void EagerlyExecuteCurrentStream(
+absl::Status EagerlyExecuteCurrentStream(
     MaterializationReason reason,
     GraphSplitMode mode = GraphSplitMode::kSplitGraph,
     absl::Span<const SharedDeviceBufferList> must_materialize = {});

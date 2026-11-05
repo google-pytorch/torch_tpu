@@ -4765,6 +4765,19 @@ module {
       with execution_mode.set_eager_mode(EagerMode._INTERNAL_COMPILE_FX_GRAPH):
         _ = torch.Event(device="tpu").record()
 
+  @et.why_tpu_only("TorchTPU specific eager mode")
+  def test_data_dependent_op_during_fx_trace(self):
+    x = torch.arange(4, device="tpu")
+    mask = torch.tensor(
+        [True, False, True, False], dtype=torch.bool, device="tpu"
+    )
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""masked_select(): cannot materialize a tensor during a stream-isolated copy, materialization requires an active stream""",
+    ):
+      with execution_mode.set_eager_mode(EagerMode._INTERNAL_COMPILE_FX_GRAPH):
+        _ = torch.masked_select(x, mask)
+
   @et.why_tpu_only(
       "PyTorch CUDA nll_loss_forward does not validate integer reduction"
       " values."
