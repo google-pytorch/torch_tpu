@@ -290,24 +290,21 @@ std::tuple<at::Tensor, at::Tensor> AtenSparseDenseMatmulGradWithAdagrad(
             std::vector<int64_t> device_assignment,  // INT_VEC_OK
             GetWorldDeviceAssignment());
 
+        TT_ASSIGN_OR_THROW(const DeviceBufferRef table_buf,
+                           GetBuffer(embedding_table));
+        TT_ASSIGN_OR_THROW(const DeviceBufferRef acc_buf,
+                           GetBuffer(accumulator));
         TT_ASSIGN_OR_THROW(
             auto results,
             (DispatchOp<8, 2>(
                 builder_fn, inputs,
                 {.out_dtypes = {out_dtype, acc_dtype},
                  .out_dims_list = {out_dims, acc_dims},
+                 .out_layouts = {table_buf.shape().layout(),
+                                 acc_buf.shape().layout()},
                  .op_param_cache_keys = std::move(param_keys),
                  .donated_indices = {4, 5},
                  .device_assignment = std::move(device_assignment)})));
-        TT_ASSIGN_OR_THROW(const auto table_buf, GetBuffer(embedding_table));
-        if (table_buf.shape().layout().has_value()) {
-          results[0].set_layout(*table_buf.shape().layout());
-        }
-        TT_ASSIGN_OR_THROW(const DeviceBufferRef acc_buf,
-                           GetBuffer(accumulator));
-        if (acc_buf.shape().layout().has_value()) {
-          results[1].set_layout(*acc_buf.shape().layout());
-        }
 
         return std::make_tuple(torch_tpu::MakeTensor(std::move(results[0])),
                                torch_tpu::MakeTensor(std::move(results[1])));

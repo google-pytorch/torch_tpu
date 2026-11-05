@@ -116,6 +116,7 @@ struct DispatchOpOptions {
   const FixedSizeSpan<const mlir::ElementType, kNumOutputs>& out_dtypes;
   const FixedSizeSpan<const absl::Span<const int64_t>, kNumOutputs>&
       out_dims_list;
+  std::array<std::optional<CustomLayout>, kNumOutputs> out_layouts = {};
   // If specified, cast all op inputs to the given dtype before the provided
   // `op_builder` is applied. This is useful to simplify certain ops that need
   // to perform a computation on a dtype that is uplifted from the dtypes of all
@@ -163,6 +164,7 @@ struct DispatchOpOptions<1> {
   std::optional<OpName> op_name = std::nullopt;
   const mlir::ElementType& out_dtype;
   const absl::Span<const int64_t>& out_dims;
+  std::optional<CustomLayout> out_layout = std::nullopt;
   std::optional<mlir::ElementType> computation_dtype;
   OpParamCacheKeys op_param_cache_keys;
   OpSplitMode split_mode = OpSplitMode::kNone;
@@ -351,6 +353,9 @@ DeferredOpParams MakeDeferredOpParams(
   if constexpr (kNumOutputs == 1) {
     params.output_shapes = {
         Shape(CopyIntVector(options.out_dims), options.out_dtype)};
+    if (options.out_layout.has_value()) {
+      params.output_shapes[0].set_layout(std::move(*options.out_layout));
+    }
   } else {
     // kNumOutputs > 1
     const auto& out_dtypes = options.out_dtypes;
@@ -364,6 +369,12 @@ DeferredOpParams MakeDeferredOpParams(
     for (int i = 0; i < num_outputs; ++i) {
       params.output_shapes.emplace_back(CopyIntVector(out_dims_list[i]),
                                         out_dtypes[i]);
+      if constexpr (kNumOutputs != kDynamicSize) {
+        if (options.out_layouts[i].has_value()) {
+          params.output_shapes[i].set_layout(
+              std::move(*options.out_layouts[i]));
+        }
+      }
     }
   }
 

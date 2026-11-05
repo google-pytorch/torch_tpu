@@ -53,6 +53,11 @@
 namespace torch_tpu {
 namespace {
 
+using ::testing::ElementsAre;
+using ::testing::Eq;
+using ::testing::Optional;
+using ::testing::Property;
+
 TEST(PromoteScalar, Single) {
   at::Scalar s(1.0);
   auto ps = PromoteScalar(s);
@@ -147,6 +152,56 @@ TEST(OpDispatcher, OutputCastingWithoutComputationDtype) {
   // The output should have been casted to BF16
   auto res_type = GetTensorTypeOrDie(wrapped_results[0]);
   EXPECT_EQ(res_type.getElementType(), bf16_mlir_type);
+}
+
+TEST(MakeDeferredOpParams, SetsOutputLayout) {
+  const CustomLayout layout = {
+      .minor_to_major = {1, 0},
+      .tiles = {Indices({8})},
+  };
+  constexpr mlir::ElementType f32_type = mlir::ElementType::F32;
+  const std::array<int64_t, 2> dims = {16, 8};
+  DispatchOpOptions<1> options = {
+      .out_dtype = f32_type,
+      .out_dims = dims,
+      .out_layout = layout,
+      .op_param_cache_keys = OpParamCacheKeys::Empty(),
+  };
+
+  const internal::DeferredOpParams params =
+      internal::MakeDeferredOpParams<1, 1>(
+          OpName::kAdd, [](mlir::MlirOp input) { return input; },
+          /*inputs_vec=*/{}, options);
+
+  EXPECT_THAT(params.output_shapes,
+              ElementsAre(Property(&Shape::layout, Optional(layout))));
+}
+
+TEST(MakeDeferredOpParams, SetsOutputLayouts) {
+  const CustomLayout layout = {
+      .minor_to_major = {1, 0},
+      .tiles = {Indices({8})},
+  };
+  constexpr mlir::ElementType f32_type = mlir::ElementType::F32;
+  const std::array<int64_t, 2> dims = {16, 8};
+  const std::array<mlir::ElementType, 2> out_dtypes = {f32_type, f32_type};
+  const std::array<absl::Span<const int64_t>, 2> out_dims_list = {dims, dims};
+  DispatchOpOptions<2> options = {
+      .out_dtypes = out_dtypes,
+      .out_dims_list = out_dims_list,
+      .out_layouts = {layout, std::nullopt},
+      .op_param_cache_keys = OpParamCacheKeys::Empty(),
+  };
+
+  const internal::DeferredOpParams params =
+      internal::MakeDeferredOpParams<1, 2>(
+          OpName::kFusedAdamw,
+          [](mlir::MlirOp input) { return MlirOpResults<2>{input, input}; },
+          /*inputs_vec=*/{}, options);
+
+  EXPECT_THAT(params.output_shapes,
+              ElementsAre(Property(&Shape::layout, Optional(layout)),
+                          Property(&Shape::layout, Eq(std::nullopt))));
 }
 
 void AutoDonateInPlaceBuffer(const at::Tensor& out,
@@ -485,7 +540,7 @@ TEST(AutoDonateInPlaceBuffers,
   internal::AutoDonateInPlaceBuffers({t0, t1, t2}, out_dtypes, out_dims_list,
                                      {t0, t1, t2}, donated_all, output_donated);
   EXPECT_EQ(donated_all, (Indices{0, 1, 2}));
-  EXPECT_THAT(output_donated, testing::ElementsAre(1, 1, 1));
+  EXPECT_THAT(output_donated, ElementsAre(1, 1, 1));
 
   TT_ASSERT_OK_AND_ASSIGN(
       auto step2_refs,

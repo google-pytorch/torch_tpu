@@ -21,6 +21,7 @@ import torch
 from torch._dynamo import testing as dynamo_testing
 from torch._subclasses import fake_tensor
 from torch.fx.experimental import symbolic_shapes
+from torch_tpu._internal import execution_mode
 from torch_tpu._internal.compile import tpu_torch_compile
 import torch_tpu._internal.device_utils.annotations as tpu_annotations
 from tests import op_testing
@@ -1562,6 +1563,11 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
   def test_sparse_dense_matmul_grad_preserves_t8_layout_on_tpu(
       self, compile_op
   ):
+    self.enter_context(
+        execution_mode.set_eager_mode(
+            execution_mode.EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING
+        )
+    )
     device = torch.device("tpu")
     row_pointers, embedding_ids, sample_ids, gains, embedding_table = (
         self._get_inputs(device)
