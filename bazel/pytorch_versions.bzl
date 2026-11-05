@@ -52,6 +52,20 @@ EXTRA_PYTORCH_VERSIONS = [
 # the extras -- one thin glue `.so` each.
 WHEEL_TORCH_VERSIONS = [DEFAULT_TORCH_VERSION] + EXTRA_PYTORCH_VERSIONS
 
+# Per-Python-version overrides for WHEEL_TORCH_VERSIONS (keyed by major.minor,
+# applying to both regular and free-threaded "t" builds).
+#
+# PyTorch < 2.15.0 does not support Python 3.15 (torch.compile raises on 3.15+,
+# and no cp315 CUDA wheels exist on PyPI). Moreover, requirements_3_15.txt locks
+# torch==2.15.0 in the default pip hub, so building the default 2.11.0 glue on
+# Python 3.15 would compile 2.15.0 headers into a mislabeled _2_11_0.so glue.
+# Python 3.15 / 3.15t wheels therefore ship only glues >= 2.15.0.
+WHEEL_TORCH_VERSIONS_BY_PYTHON = {
+    "3.15": [
+        "2.15.0",
+    ],
+}
+
 # The release version the PyTorch nightly channel currently leads up to. The
 # nightly glue is one more glue like any other -- named by this version (glue
 # package glue_2_16_0, config setting //:torch_2_16_0, artifacts like

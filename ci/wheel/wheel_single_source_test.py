@@ -23,13 +23,12 @@ from absl.testing import absltest
 
 
 def normalize_req(req_string):
-  """Strips spaces, parentheses, and quotes to normalize dependency strings."""
+  """Strips spaces and parentheses and normalizes quotes in dependency strings."""
   return (
       req_string.replace(" ", "")
       .replace("(", "")
       .replace(")", "")
-      .replace('"', "")
-      .replace("'", "")
+      .replace('"', "'")
   )
 
 
@@ -49,7 +48,9 @@ def read_wheel_metadata(wheel_path: str) -> email.message.Message:
       raise FileNotFoundError(
           "Could not find .dist-info/METADATA file in wheel."
       )
-    return email.parser.BytesParser().parsebytes(z.read(metadata_files[0]))
+    return email.parser.Parser().parsestr(
+        z.read(metadata_files[0]).decode("utf-8")
+    )
 
 
 def get_wheel_dependencies(wheel_path, pyproject_path, is_local_torch):
@@ -68,8 +69,7 @@ def get_wheel_dependencies(wheel_path, pyproject_path, is_local_torch):
   # 2. Extract actual dependencies from the wheel.
   msg = read_wheel_metadata(wheel_path)
   actual_deps = {
-      normalize_req(req.split(";")[0])
-      for req in msg.get_all("Requires-Dist") or ()
+      normalize_req(req) for req in msg.get_all("Requires-Dist") or ()
   }
 
   return expected_deps, actual_deps

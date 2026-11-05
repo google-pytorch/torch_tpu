@@ -22,14 +22,15 @@ license = "Apache-2.0"
 license-files = ["LICENSE"]
 # LINT.IfChange(requires_python)
 requires-python = ">=3.11"
-# LINT.ThenChange(
-#     bazel/supported_python_versions.bzl:supported_python_versions,
-#     README.md:python_version_support,
-#     ../docs/developers/python_support_policy.md:python_version_support,
-# )
 
 dependencies = [
-    "torch>=2.11.0",
+    "torch>=2.11.0; python_version < '3.15'",
+    "torch>=2.15.0; python_version >= '3.15'",
+    # LINT.ThenChange(
+    #     bazel/supported_python_versions.bzl:supported_python_versions,
+    #     README.md:python_version_support,
+    #     ../docs/developers/python_support_policy.md:python_version_support,
+    # )
     "numpy>=2",
     "absl-py>=2",
     # DO NOT change the minimum libtpu version without approval from TorchTPU
@@ -90,11 +91,13 @@ benchmark = [
 ]
 
 examples = [
-    "datasets>=4.8",
+    "datasets>=4.8; python_version < '3.15'",
+    "datasets>=5.0.0; python_version >= '3.15'",
     "einops>=0.8.2",
     "pillow>=11",
     "tqdm>=4",
-    "huggingface-hub>=0.34",
+    "huggingface-hub>=0.34; python_version < '3.15'",
+    "huggingface-hub>=1.19.0; python_version >= '3.15'",
     "transformers>=5.16.1",
     "diffusers>=0.37",
     "peft>=0.18",

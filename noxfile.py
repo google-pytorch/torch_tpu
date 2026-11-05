@@ -28,6 +28,7 @@ Details on configuration can be found at: https://nox.thea.codes/
 from collections.abc import Mapping, Sequence
 import os
 import pathlib
+import sys
 from typing import Final
 
 import nox
@@ -181,10 +182,18 @@ def _load_pytorch_versions() -> Mapping[str, object]:
   return namespace
 
 
+def _version_key(version: str) -> Sequence[int]:
+  """Parse a dotted version string into an integer tuple for comparisons."""
+  return tuple(map(int, version.split(".")))
+
+
 _PYTORCH_VERSIONS: Final[Mapping[str, object]] = _load_pytorch_versions()
 _WHEEL_TORCH_VERSIONS: Final[Sequence[str]] = _PYTORCH_VERSIONS[
     "WHEEL_TORCH_VERSIONS"
 ]
+_WHEEL_TORCH_VERSIONS_BY_PYTHON: Final[Mapping[str, Sequence[str]]] = (
+    _PYTORCH_VERSIONS["WHEEL_TORCH_VERSIONS_BY_PYTHON"]
+)
 _EXTRA_PYTORCH_VERSIONS: Final[Sequence[str]] = _PYTORCH_VERSIONS[
     "EXTRA_PYTORCH_VERSIONS"
 ]
@@ -197,19 +206,19 @@ _INTERMEDIATE_PATCH_VERSIONS: Final[Sequence[str]] = _PYTORCH_VERSIONS[
 # after _newest_supported_torch() moves to a newer release.
 _TESTED_TORCH_VERSIONS: Final[Sequence[str]] = sorted(
     {*_EXTRA_PYTORCH_VERSIONS, *_INTERMEDIATE_PATCH_VERSIONS},
-    key=lambda v: tuple(map(int, v.split("."))),
+    key=_version_key,
 )
 # Every released PyTorch version the wheel supports: the default version plus
 # every version in _TESTED_TORCH_VERSIONS.
 _ALL_RELEASED_TORCH_VERSIONS: Final[Sequence[str]] = sorted(
     {*_WHEEL_TORCH_VERSIONS, *_INTERMEDIATE_PATCH_VERSIONS},
-    key=lambda v: tuple(map(int, v.split("."))),
+    key=_version_key,
 )
 
 
 def _newest_supported_torch() -> str:
   """Return the newest PyTorch version the wheel ships a glue for."""
-  return max(_WHEEL_TORCH_VERSIONS, key=lambda v: tuple(map(int, v.split("."))))
+  return max(_WHEEL_TORCH_VERSIONS, key=_version_key)
 
 
 def _dist_wheel(session: nox.Session) -> pathlib.Path:
@@ -340,6 +349,31 @@ def wheel_test(session: nox.Session) -> None:
   )
 
 
+def _session_python_version(session: nox.Session) -> str:
+  """Return the major.minor(t) Python version string for `session`."""
+  if isinstance(session.python, str):
+    return session.python
+  return (
+      os.environ.get("PYTHON_VERSION")
+      or f"{sys.version_info.major}.{sys.version_info.minor}"
+  )
+
+
+def _skip_if_torch_unsupported_on_python(
+    session: nox.Session, torch_version: str
+) -> None:
+  """Skip the session if `torch_version` does not support the active Python."""
+  python_version = _session_python_version(session).removesuffix("t")
+  py_torch_versions = _WHEEL_TORCH_VERSIONS_BY_PYTHON.get(python_version)
+  if py_torch_versions:
+    min_torch = min(py_torch_versions, key=_version_key)
+    if _version_key(torch_version) < _version_key(min_torch):
+      session.skip(
+          f"PyTorch {torch_version} does not support Python {python_version}"
+          f" (requires >= {min_torch})"
+      )
+
+
 @nox.session
 @nox.parametrize("torch_version", _TESTED_TORCH_VERSIONS)
 def intermediate_patch_abi(session: nox.Session, torch_version: str) -> None:
@@ -359,6 +393,7 @@ def intermediate_patch_abi(session: nox.Session, torch_version: str) -> None:
     session: the nox session the checks run in.
     torch_version: the intermediate PyTorch release to install and test.
   """
+  _skip_if_torch_unsupported_on_python(session, torch_version)
   _install_and_run_smoke_tests(
       session,
       "cpu",
@@ -382,6 +417,7 @@ def tpu_smoke_all_versions(session: nox.Session, torch_version: str) -> None:
     session: the nox session the checks run in.
     torch_version: the PyTorch release to install and test.
   """
+  _skip_if_torch_unsupported_on_python(session, torch_version)
   _install_and_run_smoke_tests(
       session,
       "tpu",
@@ -408,6 +444,7 @@ def cpu_smoke_all_versions(
     torch_variant: the torch build to install (`cpu` or `cuda`).
     torch_version: the PyTorch release to install and test.
   """
+  _skip_if_torch_unsupported_on_python(session, torch_version)
   torch_spec = (
       f"torch=={torch_version}+cpu"
       if torch_variant == "cpu"
@@ -424,13 +461,7 @@ def cpu_smoke_all_versions(
 @nox.session
 def dep_upper_bounds(session: nox.Session) -> None:
   """Run smoke tests against dependency upper bounds from requirements_<ver>_latest.txt."""
-  # The default fallback version should match the latest version in
-  # bazel/supported_python_versions.bzl.
-  python_version = (
-      session.python
-      if isinstance(session.python, str)
-      else os.environ.get("PYTHON_VERSION", "3.14")
-  )
+  python_version = _session_python_version(session)
   version_und = python_version.replace(".", "_")
   req_file = (
       pathlib.Path(__file__).parent

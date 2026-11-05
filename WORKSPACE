@@ -105,6 +105,7 @@ python_init_repositories(
         "3.12": "//requirements:requirements_3_12.txt",
         "3.13": "//requirements:requirements_3_13.txt",
         "3.14": "//requirements:requirements_3_14.txt",
+        "3.15": "//requirements:requirements_3_15.txt",
     },
 )
 

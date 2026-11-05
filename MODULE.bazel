@@ -8,7 +8,9 @@ SUPPORTED_PYTHON_VERSIONS = [
     "3.12",
     "3.13",
     "3.14",
+    "3.15",
     "3.14t",
+    "3.15t",
 ]
 
 # rules_python's python.toolchain and pip.parse key off the major.minor CPython
@@ -45,7 +47,7 @@ bazel_dep(name = "abseil-cpp", version = "20260526.0", repo_name = "com_google_a
 bazel_dep(name = "bazel_skylib", version = "1.9.0")
 bazel_dep(name = "curl", version = "8.11.0")
 bazel_dep(name = "rules_cc", version = "0.2.25")
-bazel_dep(name = "rules_python", version = "2.4.5")
+bazel_dep(name = "rules_python", version = "2.4.6")
 bazel_dep(name = "rules_shell", version = "0.8.0")
 bazel_dep(name = "rules_testing", version = "0.7.0")
 bazel_dep(name = "rules_proto", version = "7.1.0")
