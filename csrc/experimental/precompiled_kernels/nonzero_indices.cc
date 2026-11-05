@@ -625,6 +625,7 @@ UnboundedDynamicKernel GetNonzeroUnboundedDynamicKernel() {
       .key = MakeUnboundedDynamicKernelCacheKey(
           NonZeroCacheKey(),
           static_cast<int>(NonzeroKernelId::kNonzeroKGreaterThan2)),
+      .enabled_by_default = true,
   };
 }
 

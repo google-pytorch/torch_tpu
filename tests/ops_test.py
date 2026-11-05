@@ -75,10 +75,9 @@ _UNBOUNDED_DYNAMIC_KERNELS_ENV_VAR = (
 def _unbounded_dynamic_kernels_disabled() -> bool:
   """Returns whether the env var disables unbounded dynamic kernels.
 
-  Mirrors the runtime, which enables them unless the variable is "0" or "false".
+  Mirrors the runtime, which disables them only if the variable is "none".
   """
-  value = os.environ.get(_UNBOUNDED_DYNAMIC_KERNELS_ENV_VAR, "")
-  return value.strip().lower() in ("0", "false")
+  return os.environ.get(_UNBOUNDED_DYNAMIC_KERNELS_ENV_VAR, "") == "none"
 
 
 def _unbounded_dynamic_hits() -> int:
