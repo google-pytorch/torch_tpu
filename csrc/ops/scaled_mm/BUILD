@@ -42,6 +42,7 @@ torch_tpu_cc_library(
         "//csrc/ops:op_names",
         "//csrc/ops:precision_context",
         "//csrc/ops/macros:kernel",
+        "//csrc/ops/matmul",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
         "//shims/torch/c10/core:base_headers",
