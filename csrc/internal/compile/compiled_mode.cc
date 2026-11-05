@@ -297,7 +297,10 @@ absl::StatusOr<at::Tensor> MakePlaceholder(Shape shape, bool requires_grad,
 
 absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> ExtractMlirFromGraph(
     mlir::MLIRContext& mlir_context, const std::vector<at::Tensor>& arg_tensors,
-    const std::vector<at::Tensor>& result_tensors, bool use_stablehlo_bounds) {
+    const std::vector<at::Tensor>& result_tensors, bool use_stablehlo_bounds,
+    const Indices& donated_inputs,
+    const std::optional<std::string>& module_name,
+    DeviceAssignment* absl_nullable device_assignment) {
   // Use artificial python context for compiled mode to that modules have better
   // names when dumped. Currently this will always point to `_export_to_fx`, and
   // can be improved in the future, but it is useful for distinguishing torch
@@ -348,7 +351,12 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> ExtractMlirFromGraph(
       << "failed to validate and reorder inputs: ";
   TT_ASSIGN_OR_RETURN(
       mlir::OwningOpRef<mlir::ModuleOp> mlir_module,
-      traversal->BuildMlirModule(mlir_context, use_stablehlo_bounds));
+      traversal->BuildMlirModule(mlir_context, use_stablehlo_bounds,
+                                 donated_inputs, module_name));
+  if (device_assignment != nullptr) {
+    TT_ASSIGN_OR_RETURN(*device_assignment,
+                        traversal->ResolveDeviceAssignment());
+  }
 
   return mlir_module;
 }

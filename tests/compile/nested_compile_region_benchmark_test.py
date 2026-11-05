@@ -23,11 +23,17 @@ from absl import flags
 from absl import logging
 from absl.testing import absltest
 import torch
+from torch._dynamo.package import DynamoCache
+from torch._dynamo.precompile_context import PrecompileContext
+from torch._dynamo.utils import counters
+from torch._functorch._aot_autograd import autograd_cache
+from torch._inductor.codecache import FxGraphCache
+from torch._inductor.codecache import PyCodeCache
+from torch._inductor.utils import clear_caches
+from torch.compiler._cache import CacheArtifactManager
 import torch.fx
 import torch_tpu  # pylint: disable=unused-import  # noqa: F401
-from torch_tpu._internal import compile as compile_lib
 from torch_tpu._internal import testing as tt_testing
-from torch_tpu._internal.compile import _backend
 from torch_tpu._internal.compile import nested_compile_region
 from torch_tpu._internal.utils import test_utils as utils
 from tests import seed_test_utils
@@ -159,14 +165,17 @@ class TimingBackendWrapper:
     return 0.0
 
   def __call__(
-      self, gm: torch.fx.GraphModule, example_inputs: Sequence[Any]
+      self,
+      gm: torch.fx.GraphModule,
+      example_inputs: Sequence[Any],
+      **kwargs: Any,
   ) -> Any:
     entry_time = time.perf_counter()
     if self.first_backend_entry_time is None:
       self.first_backend_entry_time = entry_time
 
     t0 = time.perf_counter()
-    compiled_runner = self.inner_backend(gm, example_inputs)
+    compiled_runner = self.inner_backend(gm, example_inputs, **kwargs)
     t1 = time.perf_counter()
     self.xla_compile_time += t1 - t0
     return compiled_runner
@@ -174,13 +183,24 @@ class TimingBackendWrapper:
 
 def reset_all_caches() -> None:
   """Hermetically clears all Dynamo, TorchTPU, and regional compilation caches."""
+  if (
+      hasattr(torch.fx, "traceback")
+      and getattr(torch.fx.traceback, "current_meta", None) is not None
+  ):
+    torch.fx.traceback.current_meta.clear()
   tt_testing.reset_eager_state()
   torch.compiler.reset()
+  torch.tpu._clear_cache()  # pylint: disable=protected-access
   torch._dynamo.reset()
-  compile_lib.clear_cache()
+  DynamoCache.clear()
+  PrecompileContext.clear()
+  counters.clear()
+  autograd_cache.AOTAutogradCache.clear()
+  CacheArtifactManager.clear()
+  PyCodeCache.cache_clear(purge=True)
+  FxGraphCache.clear()
+  clear_caches()
   nested_compile_region.clear_cache()
-  if hasattr(torch, "tpu") and hasattr(torch.tpu, "_clear_cache"):
-    torch.tpu._clear_cache()
   if torch.accelerator.is_available():
     torch.accelerator.synchronize()
 
@@ -211,10 +231,7 @@ def run_benchmark_trial(
   reset_all_caches()
 
   torch.manual_seed(seed)
-  if config_id == 1:
-    layer_cls = TransformerLayer
-  else:
-    layer_cls = NestedTransformerLayer
+  layer_cls = TransformerLayer if config_id == 1 else NestedTransformerLayer
 
   model = TransformerEncoder(layer_cls, num_layers, dim, num_heads, ffn_dim).to(
       "tpu"
@@ -224,8 +241,9 @@ def run_benchmark_trial(
   torch.manual_seed(seed + 999)
   x = torch.randn(batch_size, seq_len, dim, device="tpu")
 
-  raw_backend = _backend.TpuBackend(debug=True)
-  timing_wrapper = TimingBackendWrapper(raw_backend)
+  # Disable AOTAutogradCache bundled artifact serialization so repeated trials
+  # measure cold compilation instead of hitting cached compilation artifacts.
+  timing_wrapper = TimingBackendWrapper(torch._dynamo.lookup_backend("tpu"))
 
   # Prepare Dynamo patch configuration based on config_id
   patch_kwargs: dict[str, Any] = {}
@@ -241,7 +259,9 @@ def run_benchmark_trial(
       patch_kwargs["enable_invoke_subgraph_regional_compile"] = True
 
   with torch.no_grad(), torch._dynamo.config.patch(patch_kwargs):
-    compiled_model = torch.compile(model, backend=timing_wrapper)
+    compiled_model = torch.compile(
+        model, backend=timing_wrapper, options={"serializable": False}
+    )
 
     if torch.accelerator.is_available():
       torch.accelerator.synchronize()
@@ -286,7 +306,11 @@ class NestedCompileRegionBenchmarkTest(seed_test_utils.RepeatableTest):
 
   def setUp(self):
     super().setUp()
-    tt_testing.reset_eager_state()
+    reset_all_caches()
+
+  def tearDown(self):
+    reset_all_caches()
+    super().tearDown()
 
   def test_nested_compile_region_compilation_benchmark(self):
     num_layers = FLAGS.num_layers
@@ -342,8 +366,9 @@ class NestedCompileRegionBenchmarkTest(seed_test_utils.RepeatableTest):
         if config_id in (1, 2):
           self.assertEmpty(nested_compile_region._NESTED_REGION_COMPILE_CACHE)
         elif config_id == 3:
-          self.assertNotEmpty(
-              nested_compile_region._NESTED_REGION_COMPILE_CACHE
+          self.assertLen(
+              nested_compile_region._NESTED_REGION_COMPILE_CACHE,
+              1 if num_layers > 0 else 0,
           )
           logging.info(
               "[%s] Regional compile cache entries: %d",
