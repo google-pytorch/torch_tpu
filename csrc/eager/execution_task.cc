@@ -218,11 +218,6 @@ ExtractArgumentLayoutsIfDifferentFromDefault(const Traversal& traversal) {
   return argument_layouts;
 }
 
-struct CompiledTraversal {
-  CompilationCacheKey compilation_cache_key;
-  CompiledKernel compiled_kernel;
-};
-
 absl::StatusOr<CompiledTraversal> VerifyAndCompileTraversal(
     Traversal& traversal, mlir::MLIRContext& mlir_context,
     const CompilationSpec& compilation_spec,
@@ -286,6 +281,13 @@ std::vector<Shape> GetShapesFromDeviceBuffers(
 }
 
 }  // namespace
+
+absl::StatusOr<CompiledTraversal> CompileCapturedTraversal(
+    Traversal& traversal, mlir::MLIRContext& mlir_context,
+    const CompilationSpec& compilation_spec) {
+  return VerifyAndCompileTraversal(traversal, mlir_context, compilation_spec,
+                                   /*out_mlir_text=*/nullptr);
+}
 
 absl::StatusOr<ExecutionTask> ExecutionTask::FromTraversal(
     absl_nonnull std::unique_ptr<Traversal> traversal,

@@ -72,6 +72,13 @@ enum class TracebackMode {
 // The state of the `enable_tracebacks` context manager.
 using EnableTracebacksContextState = std::optional<TracebackMode>;
 
+class GraphCaptureState;
+
+// The state of an in-progress `torch.accelerator.Graph` capture on the current
+// Python dispatch thread.
+using GraphCaptureContextState =
+    absl_nonnull std::shared_ptr<GraphCaptureState>;
+
 // The state of the `spmd_safe` context manager.
 using IsSpmdSafeContextState = bool;
 
