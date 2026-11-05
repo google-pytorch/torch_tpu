@@ -8035,7 +8035,7 @@ Supported combinations for non-constant padding:
     with et.assert_raises_message(
         RuntimeError,
         tpu="""linalg_cross(): expected self and other to have the same dtype, got float32 and float64""",
-        gpu="""expected scalar type Float but found Double""",
+        gpu="""Found dtype Double but expected Float""",
     ):
       torch.linalg.cross(a, b, out=out)
 
@@ -8071,7 +8071,7 @@ Supported combinations for non-constant padding:
     with et.assert_raises_message(
         NotImplementedError,
         tpu=f"""linalg_cross(): not implemented for {tpu_dtype}""",
-        gpu=f""""cross" not implemented for '{gpu_dtype}'""",
+        gpu=f""""cross_cuda" not implemented for '{gpu_dtype}'""",
     ):
       torch.linalg.cross(a, b, out=out)
 
