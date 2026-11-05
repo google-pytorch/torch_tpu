@@ -51,6 +51,7 @@ dev = [
     "etils[epath]>=1.14",
     "expecttest>=0.3",
     "jax >= 0.9.2",
+    "ortools>=9.15",
     "transformers>=5.16.1",
 ]
 
