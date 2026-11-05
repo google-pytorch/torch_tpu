@@ -51,6 +51,7 @@
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/eager_mode.h"
 #include "csrc/eager/events_queue.h"
+#include "csrc/eager/graph_capture_state.h"
 #include "csrc/eager/materialize.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/split_traversal.h"
@@ -391,6 +392,8 @@ at::Generator& DeviceGenerators::GetDefaultGenerator(at::DeviceIndex idx) {
                << static_cast<int>(idx);
   idx = NormalizeDeviceIndex(idx);
 
+  TT_CHECK_THROW(!IsCurrentThreadCapturingGraph(), error::kFailedPrecondition)
+      << "random number generation is not supported while capturing a graph";
   if (GetEagerMode() == EagerMode::kInternalCompileFxGraph) {
     const auto it = GetExportModeDefaultGenerators().find(idx);
     TT_CHECK_THROW(it != GetExportModeDefaultGenerators().end(),
@@ -530,6 +533,10 @@ void EagerModeDeviceGeneratorImpl::set_offset(uint64_t offset) {
   // set_offset() is invoked by PyTorch and behaves like an op.
   TT_KERNEL(OpName::kRngSetOffset, _,
             (IgnoreInCacheKey(offset, "delegates to UpdateRngOffset()")), {
+              TT_CHECK_THROW(!IsCurrentThreadCapturingGraph(),
+                             error::kFailedPrecondition)
+                  << "cannot set the offset of a generator while capturing a "
+                     "graph";
               TT_ASSIGN_OR_THROW(
                   auto rng_state_buffer,
                   UpdateDeviceRngOffset(state_->DeviceStateTensor(), offset));

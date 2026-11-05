@@ -37,6 +37,7 @@
 #include "csrc/common/cache_key.h"
 #include "csrc/common/device_type.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/eager/graph_capture_state.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/copy_from/copy_common.h"
 #include "csrc/ops/copy_from/cpu_to_tpu.h"
@@ -208,6 +209,12 @@ at::Tensor CopyTensor(const at::Tensor& src, const at::Tensor& self_dest,
       ValidateShellDtypeCast(src.scalar_type(), self_dest.scalar_type()));
 
   TT_ASSIGN_OR_THROW(CopyType to_copy_type, GetCopyType(src, self_dest));
+  // A graph capture cannot record copies between CPU and TPU tensors.
+  TT_CHECK_THROW(
+      !IsCurrentThreadCapturingGraph() || to_copy_type == CopyType::kTpuToTpu,
+      error::kFailedPrecondition)
+      << "copying between CPU and TPU tensors while capturing a graph is not "
+         "supported";
   const TransferSyncMode transfer_sync_mode = GetTransferSyncMode(non_blocking);
 
   switch (to_copy_type) {
@@ -255,6 +262,13 @@ at::Scalar AtenLocalScalarDense(const at::Tensor& self) {
   TT_KERNEL(OpName::kLocalScalarDense, _, (self), {
     TT_CHECK_THROW(self.numel() == 1, error::kInvalidArgument)
         << "expected the input tensor to have 1 element, got " << self.numel();
+    if (IsCurrentThreadCapturingGraph()) {
+      // Like on CUDA, reading the value waits for the device, which
+      // invalidates the capture.
+      TT_THROW_IF_ERROR(InvalidateCurrentThreadGraphCapture(
+          TT_ERROR(error::kFailedPrecondition)
+          << "cannot read the value of a tensor while capturing a graph"));
+    }
     at::Tensor cpu_tensor =
         self.to(at::TensorOptions().device(c10::kCPU).memory_format(
             at::MemoryFormat::Contiguous));
