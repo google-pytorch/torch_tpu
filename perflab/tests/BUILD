@@ -407,6 +407,35 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "torch_base_test_test",
+    srcs = ["torch_base_test_test.py"],
+    tags = [
+        # perflab/torch_base_test.py depends on perflab/base_test.py, which
+        # matches *_test.py, so the wheel test site packages leave it out.
+        "wheel_test_excluded",
+    ],
+    deps = [
+        "//perflab:common",
+        "//perflab:context",
+        "//perflab:discovery",
+        "//perflab:export",
+        "//perflab:flags",
+        "//perflab:measure",
+        "//perflab:mode",
+        "//perflab:registry",
+        "//perflab:step_lib",
+        "//perflab:target",
+        "//perflab:torch_base_test",
+        "//perflab/steps",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:flagsaver",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
     name = "compile_test",
     srcs = ["compile_test.py"],
     deps = [
