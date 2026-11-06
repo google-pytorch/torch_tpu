@@ -517,10 +517,12 @@ def get_changed_files(base_sha: str, current_sha: str) -> Sequence[str]:
       stderr=subprocess.DEVNULL,
       check=False,
   )
-  changed_files_out = subprocess.check_output(
+  changed_files_out = subprocess.run(
       ["git", "diff", "--name-only", base_sha, current_sha],
+      capture_output=True,
       text=True,
-  )
+      check=True,
+  ).stdout
   changed_files = list(
       filter(None, map(str.strip, changed_files_out.splitlines()))
   )
@@ -557,6 +559,16 @@ def run_bazel_diff(
   return subprocess.run(cmd, check=True)
 
 
+def _bazel_analysis_command(bazel_config: str) -> list[str]:
+  """Builds the `bazel cquery` command used for full-repo analysis checks."""
+  cmd = ["bazel", "cquery"]
+  if bazel_config:
+    cmd.append(f"--config={bazel_config}")
+  cmd.extend(["--output=label", "/..."])
+  cmd[-1] = "/" + cmd[-1]
+  return cmd
+
+
 def _run_bazel_analysis_check(bazel_config: str) -> int:
   """Analyzes every target the way bazel-diff's `generate-hashes` does.
 
@@ -574,10 +586,7 @@ def _run_bazel_analysis_check(bazel_config: str) -> int:
   Returns:
     The exit code of the `bazel cquery` command.
   """
-  cmd = ["bazel", "cquery"]
-  if bazel_config:
-    cmd.append(f"--config={bazel_config}")
-  cmd.extend(["--output=label", "//..."])
+  cmd = _bazel_analysis_command(bazel_config)
   print("--- Analyzing All Targets (as bazel-diff does) ---")
   sys.stdout.flush()
   # Only failures matter; the label of every configured target is noise.
@@ -589,6 +598,18 @@ def _run_bazel_analysis_check(bazel_config: str) -> int:
         " would break bazel-diff for all subsequent PRs."
     )
   return res.returncode
+
+
+def _bazel_command(
+    subcommand: str,
+    bazel_config: str,
+    extra_bazel_flags: str,
+    target_args: Sequence[str],
+) -> str:
+  """Builds a `bazel <subcommand>` shell command string (e.g. build or test)."""
+  target_str = " ".join(shlex.quote(arg) for arg in target_args)
+  config_flag = f"--config={shlex.quote(bazel_config)} " if bazel_config else ""
+  return f"bazel {subcommand} {config_flag}{extra_bazel_flags} {target_str}"
 
 
 def _run_bazel_test(
@@ -618,16 +639,18 @@ def _run_bazel_test(
     The exit code of the Bazel build/test commands (0 if successful, or if exit
     code 4 'no tests found' is returned and `allow_no_tests` is set).
   """
-  target_str = " ".join(shlex.quote(arg) for arg in target_args)
-  config_flag = f"--config={shlex.quote(bazel_config)} " if bazel_config else ""
-  build_cmd = f"bazel build {config_flag}{extra_bazel_flags} {target_str}"
+  build_cmd = _bazel_command(
+      "build", bazel_config, extra_bazel_flags, target_args
+  )
   sys.stdout.flush()
   build_res = subprocess.run(["bash", "-c", build_cmd], check=False)
   if build_res.returncode != 0:
     print(f"Bazel build failed with exit code {build_res.returncode}.")
     return build_res.returncode
 
-  test_cmd = f"bazel test {config_flag}{extra_bazel_flags} {target_str}"
+  test_cmd = _bazel_command(
+      "test", bazel_config, extra_bazel_flags, target_args
+  )
   sys.stdout.flush()
   res = subprocess.run(["bash", "-c", test_cmd], check=False)
   if res.returncode == 4 and allow_no_tests:
