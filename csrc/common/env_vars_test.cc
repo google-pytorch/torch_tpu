@@ -248,5 +248,32 @@ TEST(EnvVarsDeathTest, UnsetEnvAfterGetIntegerEnvOnceCrashes) {
       "NODE_RANK.*GetEnvOnce");
 }
 
+TEST(EnvVarsTest, GetEnvSinceResetForTestingMemoizesUntilNextReset) {
+  setenv(kNodeRankEnvVar, "1", 1);
+  ResetEnvCacheForTesting();
+  EXPECT_TRUE(EnvCacheWasResetForTesting());
+  EXPECT_EQ(GetEnvSinceResetForTesting(kNodeRankEnvVar), "1");
+
+  setenv(kNodeRankEnvVar, "2", 1);
+  EXPECT_EQ(GetEnvSinceResetForTesting(kNodeRankEnvVar), "1");
+
+  ResetEnvCacheForTesting();
+  EXPECT_EQ(GetEnvSinceResetForTesting(kNodeRankEnvVar), "2");
+
+  unsetenv(kNodeRankEnvVar);
+  ResetEnvCacheForTesting();
+  EXPECT_EQ(GetEnvSinceResetForTesting(kNodeRankEnvVar), std::nullopt);
+}
+
+TEST(EnvVarsTest, ResetEnvCacheForTestingDoesNotResetGetEnvOnce) {
+  setenv(kMasterAddrEnvVar, "worker0", 1);
+  EXPECT_EQ(GetEnvOnce<kMasterAddrEnvVar>(), "worker0");
+
+  setenv(kMasterAddrEnvVar, "worker1", 1);
+  ResetEnvCacheForTesting();
+  EXPECT_EQ(GetEnvOnce<kMasterAddrEnvVar>(), "worker0");
+  EXPECT_EQ(GetEnvSinceResetForTesting(kMasterAddrEnvVar), "worker1");
+}
+
 }  // namespace
 }  // namespace torch_tpu

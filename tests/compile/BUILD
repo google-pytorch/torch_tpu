@@ -414,6 +414,7 @@ torch_tpu_py_test(
         "//src/torch_tpu/_internal/device_utils:annotations",
         "//src/torch_tpu/_internal/execution_mode",
         "//src/torch_tpu/_internal/utils:test_utils",
+        "//tests:env_test_utils",
         "//tests:seed_test_utils",
     ],
 )

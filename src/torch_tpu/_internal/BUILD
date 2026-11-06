@@ -73,7 +73,9 @@ pybind_extension(
     ],
     wrap_py_init = True,
     deps = [
+        "//csrc/common:env_vars",
         "//csrc/common:error_utils",
+        "//csrc/common:libtpu_version",
         "//csrc/common:pybind_error_utils",
         "//csrc/common:tpu_hardware",
         "//csrc/common:warnings",
