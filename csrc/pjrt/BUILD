@@ -152,6 +152,7 @@ torch_tpu_cc_library(
         "//csrc/common:dtype",
         "//csrc/common:env_vars",
         "//csrc/common:error_utils",
+        "//csrc/common:interned_device_shape",
         "//csrc/common:shape",
         "//shims/torch:torch_headers",
         "@com_google_absl//absl/base:nullability",
