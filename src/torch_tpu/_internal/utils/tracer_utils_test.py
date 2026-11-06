@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import collections
+
 from absl import logging
 from absl.testing import absltest
 import torch
@@ -20,6 +22,21 @@ from torch_tpu._internal.utils import test_utils
 from torch_tpu._internal.utils import tracer_utils
 from torch_tpu._internal.utils import utils
 from tests import seed_test_utils
+
+
+class _ModelOutput(collections.OrderedDict):
+  """Stand-in for HuggingFace ModelOutput, which subclasses OrderedDict."""
+
+
+class _MappingOutputModule(torch.nn.Module):
+  """Returns a mapping, like HuggingFace models do."""
+
+  def __init__(self):
+    super().__init__()
+    self.linear = torch.nn.Linear(10, 2)
+
+  def forward(self, x: torch.Tensor) -> _ModelOutput:
+    return _ModelOutput(logits=self.linear(x), num_items=x.shape[0])
 
 
 class AllTest(seed_test_utils.RepeatableTest):
@@ -200,6 +217,26 @@ class AllTest(seed_test_utils.RepeatableTest):
     self.assertIn(utils.get_tensor_summary(arg), formatted_data)
     self.assertIn("|  Output:", formatted_data)
     self.assertIn("+- Linear END", formatted_data)
+
+  def test_pformat_activation_tracer_on_mapping_output(self):
+    """Tests that each entry of a mapping output is formatted by key."""
+    # Arrange
+    model = _MappingOutputModule()
+    arg = torch.randn(1, 10)
+
+    # Act
+    with utils.ActivationTracer(model) as tracer:
+      output = model(arg)
+    formatted_data = tracer_utils.pformat_activation_tracer(tracer)
+    logging.info("Formatted Data: \n%s", formatted_data)
+
+    # Assert
+    self.assertIn(
+        "|  Output[logits]: " + utils.get_tensor_summary(output["logits"]),
+        formatted_data,
+    )
+    self.assertIn("|  Output[num_items]: int", formatted_data)
+    self.assertNotIn("|  Output:    _ModelOutput", formatted_data)
 
   def test_replay_on_linear_with_no_change_has_same_output(self):
     """Tests replay on a simple module with no change."""

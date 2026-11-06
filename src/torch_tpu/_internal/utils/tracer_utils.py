@@ -17,7 +17,7 @@
 This module contains a pretty printer function and a tool to
 replay the collected data and modules on CPU to check for numerical differences.
 """
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 import copy
 from typing import Any, TypeVar, cast
 import torch
@@ -88,11 +88,15 @@ def _pformat_value(
   for key, value in kwargs.items():
     _pformat_arg(key, value)
 
-  # Return values are frequently tensors, tuples, or lists of tensors.
-  # TODO: Support HuggingFace ModelOutput types.
+  # Return values are frequently tensors, tuples, or lists of tensors, or
+  # mappings such as dicts and HuggingFace ModelOutput (an OrderedDict
+  # subclass).
   if isinstance(output, (list, tuple)):
     for idx, item in enumerate(output):
       _pformat_outputs(idx, item)
+  elif isinstance(output, Mapping):
+    for key, item in output.items():
+      _pformat_outputs(key, item)
   else:
     _pformat_output(output)
 
