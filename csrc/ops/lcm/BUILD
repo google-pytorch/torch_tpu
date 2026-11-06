@@ -35,6 +35,7 @@ torch_tpu_cc_library(
         "//csrc/ops:binary_aten_kernels",
         "//csrc/ops:op_builder_utils",
         "//csrc/ops:op_names",
+        "//csrc/ops/gcd:gcd_aten_kernels",
         "//csrc/ops/macros:kernel",
         "//shims/torch:aten_headers",
         "//shims/torch/c10/core:base_headers",
