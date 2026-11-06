@@ -99,8 +99,8 @@ std::vector<uint8_t> UnpackFp4(const uint8_t* absl_nonnull host_data,
 
 void ValidateFp4Dimensions(absl::Span<const int64_t> dimensions) {
   ABSL_CHECK(!dimensions.empty())  // CRASH_OK
-      << "expected float4_e2m1fn_x2 tensors to be at least 1-dimensional, got "
-         "0-dimensional";
+      << "expected float4_e2m1fn_x2 tensors to be at least 1D, got "
+         "0D";
   ABSL_CHECK_EQ(dimensions.back() % 2, 0)  // CRASH_OK
       << "expected even size in the last dimension for float4_e2m1fn_x2 "
          "tensors, got "

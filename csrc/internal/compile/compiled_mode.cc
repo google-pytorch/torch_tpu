@@ -268,7 +268,7 @@ absl::StatusOr<at::Tensor> MakePlaceholder(absl::Span<const int64_t> sizes,
   Dimensions physical_sizes = CopyIntVector(sizes);
   if (dtype == at::kFloat4_e2m1fn_x2) {
     TT_RET_CHECK(!physical_sizes.empty(), error::kInvalidArgument)
-        << "expected float4_e2m1fn_x2 tensors to be at least 1-dimensional";
+        << "tensors of float4_e2m1fn_x2 dtype must be at least 1D";
     physical_sizes.back() *= 2;
   }
   TT_ASSIGN_OR_RETURN(

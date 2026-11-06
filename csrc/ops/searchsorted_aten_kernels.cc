@@ -112,7 +112,7 @@ absl::Status ValidateSearchsortedInputs(
 
   if (sorted.dim() != 1) {
     TT_RET_CHECK(sorted.dim() == values.dim(), error::kInvalidArgument)
-        << "expected sorted_sequence to be 1-dimensional or have the same "
+        << "expected sorted_sequence to be 1D or have the same "
            "number of dimensions as values, got "
         << sorted.dim() << " and " << values.dim();
     for (int64_t i = 0; i < sorted.dim() - 1; ++i) {

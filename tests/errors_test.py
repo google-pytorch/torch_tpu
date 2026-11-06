@@ -874,7 +874,7 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     with et.assert_raises_message(
         RuntimeError,
         gpu="""Expected 3-dimensional tensor, but got 2-dimensional tensor for argument #1 'log_probs' (while checking arguments for ctc_loss_gpu)""",
-        tpu="""_ctc_loss(): expected log_probs to be 3-D, got 2-D""",
+        tpu="""_ctc_loss(): expected log_probs to be 3D, got 2D""",
         message_reviewed_by="wan",
     ):
       torch.ops.aten._ctc_loss.Tensor(
@@ -891,7 +891,7 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     with et.assert_raises_message(
         RuntimeError,
         gpu="""Expected 1 to 2 dimensions, but got 3-dimensional tensor for argument #2 'targets' (while checking arguments for ctc_loss_gpu)""",
-        tpu="""_ctc_loss(): expected targets to be 1-D or 2-D, got 3-D""",
+        tpu="""_ctc_loss(): expected targets to be 1D or 2D, got 3D""",
         message_reviewed_by="wan",
     ):
       torch.ops.aten._ctc_loss.Tensor(
@@ -908,7 +908,7 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     with et.assert_raises_message(
         RuntimeError,
         gpu="""Expected 1 to 2 dimensions, but got 3-dimensional tensor for argument #2 'targets' (while checking arguments for ctc_loss_gpu)""",
-        tpu="""ctc_loss(): expected targets to be 1-D or 2-D, got 3-D""",
+        tpu="""ctc_loss(): expected targets to be 1D or 2D, got 3D""",
         message_reviewed_by="gunhyun",
     ):
       torch.ops.aten.ctc_loss.Tensor(
@@ -923,7 +923,7 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     with et.assert_raises_message(
         RuntimeError,
         gpu="""Expected 1 to 2 dimensions, but got 3-dimensional tensor for argument #2 'targets' (while checking arguments for ctc_loss_gpu)""",
-        tpu="""ctc_loss(): expected targets to be 1-D or 2-D, got 3-D""",
+        tpu="""ctc_loss(): expected targets to be 1D or 2D, got 3D""",
         message_reviewed_by="gunhyun",
     ):
       torch.ctc_loss(log_probs, targets, [5, 5], [3, 3], 0, 0, False)
@@ -975,7 +975,7 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     with et.assert_raises_message(
         err_type,
         gpu="""Dimension out of range (expected to be in range of [-2, 1], but got 2)""",
-        tpu="""ctc_loss_backward(): expected log_probs to be 3-D, got 2-D""",
+        tpu="""ctc_loss_backward(): expected log_probs to be 3D, got 2D""",
     ):
       torch.ops.aten._ctc_loss_backward.Tensor(
           grad_out,
@@ -1216,7 +1216,7 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
       )
 
   def test_index_fill_index_invalid_rank(self):
-    tpu_err = """index_fill_(): expected index to be at most 1-D, got 2-D"""
+    tpu_err = """index_fill_(): expected index to be at most 1D, got 2D"""
     gpu_err = """Index has to be a vector/scalar"""
     t = torch.ones(2, 2, device=et.device())
     index = torch.tensor([[0]], device=et.device(), dtype=torch.long)
@@ -1269,7 +1269,7 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
   def test_index_fill_value_tensor_not_0d(self):
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""index_fill_(): expected value to be a 0-D tensor, got 1-D tensor""",
+        tpu="""index_fill_(): expected value to be a 0D tensor, got 1D tensor""",
         gpu="""index_fill_ only supports a 0-dimensional value tensor, but got tensor with 1 dimension(s).""",
     ):
       t = torch.ones(2, 2, device=et.device())
@@ -1295,7 +1295,7 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
         RuntimeError,
         gpu="""fill_ only supports 0-dimension value tensor but got tensor with"""
         f""" {len(shape)} dimensions.""",
-        tpu=f"fill_(): expected value to be a 0-D tensor, got {len(shape)}-D",
+        tpu=f"fill_(): expected value to be a 0D tensor, got {len(shape)}D",
     ):
       torch.fill(t, value)
 
@@ -3286,7 +3286,7 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     mat1 = torch.ones(2, 2, device=et.device(), dtype=torch.float32)
     mat2 = torch.ones(2, 2, device=et.device(), dtype=torch.float32)
 
-    tpu_msg = """addmm(): expected input tensor to have at most as many dimensions as the product of mat1 @ mat2, got 3-D input and 2-D product of mat1 @ mat2"""
+    tpu_msg = """addmm(): expected input tensor to have at most as many dimensions as the product of mat1 @ mat2, got 3D input and 2D product of mat1 @ mat2"""
 
     with et.assert_raises_message(
         RuntimeError,
@@ -3579,7 +3579,7 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     with et.assert_raises_message(
         RuntimeError,
         gpu="""addmm: self must be a matrix, got 1-D tensor""",
-        tpu="""addmm_activation(): expected mat1 to be a matrix, got 1-D tensor""",
+        tpu="""addmm_activation(): expected mat1 to be a matrix, got 1D tensor""",
     ):
       torch.ops.aten._addmm_activation.out(
           input_, mat1, mat2, beta=1.0, alpha=1.0, use_gelu=False, out=out
@@ -3609,7 +3609,7 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     with et.assert_raises_message(
         RuntimeError,
         gpu="""addmm: mat2 must be a matrix, got 3-D tensor""",
-        tpu="""addmm_activation(): expected mat2 to be a matrix, got 3-D tensor""",
+        tpu="""addmm_activation(): expected mat2 to be a matrix, got 3D tensor""",
     ):
       torch.ops.aten._addmm_activation.out(
           input_, mat1, mat2, beta=1.0, alpha=1.0, use_gelu=False, out=out
@@ -10071,7 +10071,7 @@ Supported combinations for non-constant padding:
     # adaptive_avg_pool2d expects 3-D or 4-D input.
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""adaptive_avg_pool2d(): expected input to be a 3-D or 4-D tensor, got 2-D tensor""",
+        tpu="""adaptive_avg_pool2d(): expected input to be a 3D or 4D tensor, got 2D tensor""",
         gpu="""adaptive_avg_pool2d(): Expected 3D or 4D tensor, but got [10, 10]""",
     ):
       torch.ops.aten.adaptive_avg_pool2d.out(inp, tuple(out.shape), out=out)
@@ -10153,14 +10153,14 @@ Supported combinations for non-constant padding:
     # adaptive_avg_pool3d expects 4-D or 5-D input.
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""adaptive_avg_pool3d(): expected input to be a 4-D or 5-D tensor, got 3-D tensor""",
+        tpu="""adaptive_avg_pool3d(): expected input to be a 4D or 5D tensor, got 3D tensor""",
         gpu="""adaptive_avg_pool3d(): Expected 4D or 5D tensor, but got [10, 10, 10]""",
     ):
       torch.ops.aten.adaptive_avg_pool3d.out(inp, tuple(out.shape), out=out)
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""adaptive_avg_pool3d(): expected input to be a 4-D or 5-D tensor, got 3-D tensor""",
+        tpu="""adaptive_avg_pool3d(): expected input to be a 4D or 5D tensor, got 3D tensor""",
         gpu="""adaptive_avg_pool3d(): Expected 4D or 5D tensor, but got [10, 10, 10]""",
     ):
       torch.ops.aten.adaptive_avg_pool3d(inp, tuple(out.shape))
@@ -12704,7 +12704,7 @@ Supported combinations for non-constant padding:
     v = torch.tensor([2])
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""searchsorted(): expected sorted_sequence to be 1-dimensional or have the same number of dimensions as values, got 2 and 1""",
+        tpu="""searchsorted(): expected sorted_sequence to be 1D or have the same number of dimensions as values, got 2 and 1""",
         gpu="""torch.searchsorted(): boundaries tensor should be 1 dimension or the first N-1 dimensions of boundaries tensor and input value tensor must match, but we got boundaries tensor [2, 2] and input value tensor [1]""",
         message_reviewed_by="adivinpatel",
     ):
@@ -13182,7 +13182,7 @@ Supported combinations for non-constant padding:
     proj_bias = torch.ones(8, device=device)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""native_multi_head_attention(): expected 3-D query, got 2-D tensor""",
+        tpu="""native_multi_head_attention(): expected 3D query, got 2D tensor""",
         gpu="""expected 3-D `query`, got 2-D tensor""",
     ):
       torch.ops.aten._native_multi_head_attention(
@@ -13218,7 +13218,7 @@ Supported combinations for non-constant padding:
     proj_bias = torch.ones(8, device=device)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""native_multi_head_attention(): expected 3-D key, got 2-D tensor""",
+        tpu="""native_multi_head_attention(): expected 3D key, got 2D tensor""",
         gpu="""expected 3-D `key`, got 2-D tensor""",
     ):
       torch.ops.aten._native_multi_head_attention(
@@ -13236,7 +13236,7 @@ Supported combinations for non-constant padding:
     proj_bias = torch.ones(8, device=device)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""native_multi_head_attention(): expected 3-D value, got 2-D tensor""",
+        tpu="""native_multi_head_attention(): expected 3D value, got 2D tensor""",
         gpu="""expected 3-D `value`, got 2-D tensor""",
     ):
       torch.ops.aten._native_multi_head_attention(
@@ -13272,7 +13272,7 @@ Supported combinations for non-constant padding:
     proj_bias = torch.ones(8, device=device)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""native_multi_head_attention(): expected 2-D qkv_weight, got 1-D tensor""",
+        tpu="""native_multi_head_attention(): expected 2D qkv_weight, got 1D tensor""",
         gpu="""expected 2-D `qkv_weight`, got 1-D tensor""",
     ):
       torch.ops.aten._native_multi_head_attention(
@@ -13326,7 +13326,7 @@ Supported combinations for non-constant padding:
     proj_bias = torch.ones(8, device=device)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""native_multi_head_attention(): expected 1-D qkv_bias, got 2-D tensor""",
+        tpu="""native_multi_head_attention(): expected 1D qkv_bias, got 2D tensor""",
         gpu="""expected 1-D `qkv_bias`, got 2-D tensor""",
     ):
       torch.ops.aten._native_multi_head_attention(
@@ -13382,7 +13382,7 @@ Supported combinations for non-constant padding:
     proj_bias = torch.ones(8, device=device)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""native_multi_head_attention(): expected 2-D proj_weight, got 1-D tensor""",
+        tpu="""native_multi_head_attention(): expected 2D proj_weight, got 1D tensor""",
         gpu="""addmm: mat2 must be a matrix, got 1-D tensor""",
     ):
       torch.ops.aten._native_multi_head_attention(
@@ -13455,7 +13455,7 @@ Supported combinations for non-constant padding:
     mask = torch.ones(2, 2, 4, 8, dtype=torch.bool, device=device)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""native_multi_head_attention(): expected 4-D mask shape to be [2, 2, 4, 4], got [2, 2, 4, 8]""",
+        tpu="""native_multi_head_attention(): expected 4D mask shape to be [2, 2, 4, 4], got [2, 2, 4, 8]""",
         gpu="""Mask shape should match input. mask: [2, 2, 4, 8] input: [2, 2, 4, 4]""",
     ):
       torch.ops.aten._native_multi_head_attention(
@@ -13582,7 +13582,7 @@ Supported combinations for non-constant padding:
     mask = torch.zeros(1, 4, dtype=torch.bool, device=device)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""native_multi_head_attention(): expected 2-D mask shape to be [4, 4] for mask_type 0, got [1, 4]""",
+        tpu="""native_multi_head_attention(): expected 2D mask shape to be [4, 4] for mask_type 0, got [1, 4]""",
         gpu="""Mask shape should match input. mask: [1, 4] input: [2, 2, 4, 4]""",
         message_reviewed_by="adivinpatel",
     ):
@@ -13615,7 +13615,7 @@ Supported combinations for non-constant padding:
     mask = torch.zeros(4, 4, dtype=torch.bool, device=device)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""native_multi_head_attention(): expected 2-D mask shape to be [2, 4] for mask_type 1, got [4, 4]""",
+        tpu="""native_multi_head_attention(): expected 2D mask shape to be [2, 4] for mask_type 1, got [4, 4]""",
         gpu="""Mask shape should match input. mask: [4, 4] input: [2, 2, 4, 4]""",
         message_reviewed_by="adivinpatel",
     ):
@@ -13648,7 +13648,7 @@ Supported combinations for non-constant padding:
     mask = torch.zeros(4, 4, dtype=torch.bool, device=device)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""native_multi_head_attention(): expected 4-D mask for mask_type 2, got 2-D tensor of shape [4, 4]""",
+        tpu="""native_multi_head_attention(): expected 4D mask for mask_type 2, got 2D tensor of shape [4, 4]""",
         gpu="""Mask shape should match input. mask: [4, 4] input: [2, 2, 4, 4]""",
         message_reviewed_by="adivinpatel",
     ):
@@ -13812,7 +13812,7 @@ Supported combinations for non-constant padding:
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""transformer_encoder_layer_fwd(): expected 3-D src, got 2-D tensor""",
+        tpu="""transformer_encoder_layer_fwd(): expected 3D src, got 2D tensor""",
         gpu="""expected 3-D `query`, got 2-D tensor""",
     ):
       torch._transformer_encoder_layer_fwd(
@@ -13992,7 +13992,7 @@ Supported combinations for non-constant padding:
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""transformer_encoder_layer_fwd(): expected 2-D qkv_weight, got 3-D tensor""",
+        tpu="""transformer_encoder_layer_fwd(): expected 2D qkv_weight, got 3D tensor""",
         gpu="""expected 2-D `qkv_weight`, got 3-D tensor""",
     ):
       torch._transformer_encoder_layer_fwd(
@@ -14037,7 +14037,7 @@ Supported combinations for non-constant padding:
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""transformer_encoder_layer_fwd(): expected 1-D qkv_bias, got 2-D tensor""",
+        tpu="""transformer_encoder_layer_fwd(): expected 1D qkv_bias, got 2D tensor""",
         gpu="""expected 1-D `qkv_bias`, got 2-D tensor""",
     ):
       torch._transformer_encoder_layer_fwd(
@@ -14127,7 +14127,7 @@ Supported combinations for non-constant padding:
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""transformer_encoder_layer_fwd(): expected 2-D proj_weight, got 1-D tensor""",
+        tpu="""transformer_encoder_layer_fwd(): expected 2D proj_weight, got 1D tensor""",
         gpu="""addmm: mat2 must be a matrix, got 1-D tensor""",
     ):
       torch._transformer_encoder_layer_fwd(
@@ -14262,7 +14262,7 @@ Supported combinations for non-constant padding:
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""transformer_encoder_layer_fwd(): expected 1-D norm_weight_1 with size 16, got [32]""",
+        tpu="""transformer_encoder_layer_fwd(): expected 1D norm_weight_1 with size 16, got [32]""",
         gpu="""Expected weight to be of same shape as normalized_shape, but got weight of shape [32] and normalized_shape = [16]""",
     ):
       torch._transformer_encoder_layer_fwd(
@@ -14307,7 +14307,7 @@ Supported combinations for non-constant padding:
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""transformer_encoder_layer_fwd(): expected 1-D norm_bias_1 with size 16, got [32]""",
+        tpu="""transformer_encoder_layer_fwd(): expected 1D norm_bias_1 with size 16, got [32]""",
         gpu="""Expected bias to be of same shape as normalized_shape, but got bias of shape [32] and normalized_shape = [16]""",
     ):
       torch._transformer_encoder_layer_fwd(
@@ -14352,7 +14352,7 @@ Supported combinations for non-constant padding:
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""transformer_encoder_layer_fwd(): expected 1-D norm_weight_2 with size 16, got [32]""",
+        tpu="""transformer_encoder_layer_fwd(): expected 1D norm_weight_2 with size 16, got [32]""",
         gpu="""Expected weight to be of same shape as normalized_shape, but got weight of shape [32] and normalized_shape = [16]""",
     ):
       torch._transformer_encoder_layer_fwd(
@@ -14397,7 +14397,7 @@ Supported combinations for non-constant padding:
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""transformer_encoder_layer_fwd(): expected 1-D norm_bias_2 with size 16, got [32]""",
+        tpu="""transformer_encoder_layer_fwd(): expected 1D norm_bias_2 with size 16, got [32]""",
         gpu="""Expected bias to be of same shape as normalized_shape, but got bias of shape [32] and normalized_shape = [16]""",
     ):
       torch._transformer_encoder_layer_fwd(
@@ -14442,7 +14442,7 @@ Supported combinations for non-constant padding:
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""transformer_encoder_layer_fwd(): expected 2-D ffn_weight_1, got 1-D tensor""",
+        tpu="""transformer_encoder_layer_fwd(): expected 2D ffn_weight_1, got 1D tensor""",
         gpu="""2d weights expected""",
     ):
       torch._transformer_encoder_layer_fwd(
@@ -14532,7 +14532,7 @@ Supported combinations for non-constant padding:
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""transformer_encoder_layer_fwd(): expected 1-D ffn_bias_1 with size 32, got [16]""",
+        tpu="""transformer_encoder_layer_fwd(): expected 1D ffn_bias_1 with size 32, got [16]""",
         gpu="""The expanded size of the tensor (32) must match the existing size (16) at non-singleton dimension 1.  Target sizes: [16, 32].  Tensor sizes: [16]""",
     ):
       torch._transformer_encoder_layer_fwd(
@@ -14622,7 +14622,7 @@ Supported combinations for non-constant padding:
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""transformer_encoder_layer_fwd(): expected 1-D ffn_bias_2 with size 16, got [32]""",
+        tpu="""transformer_encoder_layer_fwd(): expected 1D ffn_bias_2 with size 16, got [32]""",
         gpu="""The expanded size of the tensor (16) must match the existing size (32) at non-singleton dimension 1.  Target sizes: [16, 16].  Tensor sizes: [32]""",
     ):
       torch._transformer_encoder_layer_fwd(
@@ -14668,7 +14668,7 @@ Supported combinations for non-constant padding:
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""transformer_encoder_layer_fwd(): expected 2-D, 3-D, or 4-D mask, got 1-D tensor""",
+        tpu="""transformer_encoder_layer_fwd(): expected 2D, 3D, or 4D mask, got 1D tensor""",
         gpu="""Mask Type should be defined""",
     ):
       torch._transformer_encoder_layer_fwd(
@@ -14861,7 +14861,7 @@ Supported combinations for non-constant padding:
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""transformer_encoder_layer_fwd(): expected 2-D mask shape to be [8, 8] for mask_type 0, got [1, 8]""",
+        tpu="""transformer_encoder_layer_fwd(): expected 2D mask shape to be [8, 8] for mask_type 0, got [1, 8]""",
         gpu="""Mask shape should match input. mask: [1, 8] input: [2, 4, 8, 8]""",
         message_reviewed_by="adivinpatel",
     ):
@@ -14913,7 +14913,7 @@ Supported combinations for non-constant padding:
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""transformer_encoder_layer_fwd(): expected 2-D mask shape to be [2, 8] for mask_type 1, got [8, 8]""",
+        tpu="""transformer_encoder_layer_fwd(): expected 2D mask shape to be [2, 8] for mask_type 1, got [8, 8]""",
         gpu="""Mask shape should match input. mask: [8, 8] input: [2, 4, 8, 8]""",
         message_reviewed_by="adivinpatel",
     ):
@@ -14963,7 +14963,7 @@ Supported combinations for non-constant padding:
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""transformer_encoder_layer_fwd(): expected 4-D mask for mask_type 2, got 2-D tensor of shape [8, 8]""",
+        tpu="""transformer_encoder_layer_fwd(): expected 4D mask for mask_type 2, got 2D tensor of shape [8, 8]""",
         gpu="""Mask shape should match input. mask: [8, 8] input: [2, 4, 8, 8]""",
         message_reviewed_by="adivinpatel",
     ):
@@ -18434,7 +18434,7 @@ class MaskedSoftmaxErrorTest(et.ErrorTestBase):
     src_0d = torch.tensor(2.0, device=et.device())
     with et.assert_raises_message(
         IndexError,
-        tpu="""select_scatter(): expected tensor to be at least 1-dimensional, got 0-dimensional""",
+        tpu="""select_scatter(): expected tensor to be at least 1D, got 0D""",
         gpu="""select() cannot be applied to a 0-dim tensor.""",
         message_reviewed_by="cbasile",
     ):
@@ -18481,7 +18481,7 @@ class MaskedSoftmaxErrorTest(et.ErrorTestBase):
     out_0d = torch.empty((), dtype=torch.float32, device=et.device())
     with et.assert_raises_message(
         IndexError,
-        tpu="""select_scatter(): expected tensor to be at least 1-dimensional, got 0-dimensional""",
+        tpu="""select_scatter(): expected tensor to be at least 1D, got 0D""",
         gpu="""select() cannot be applied to a 0-dim tensor.""",
         message_reviewed_by="cbasile",
     ):
@@ -18524,7 +18524,7 @@ class MaskedSoftmaxErrorTest(et.ErrorTestBase):
     self_0d = torch.tensor(1.0, device=et.device())
     with et.assert_raises_message(
         IndexError,
-        tpu="""slice_scatter(): expected tensor to be at least 1-dimensional, got 0-dimensional""",
+        tpu="""slice_scatter(): expected tensor to be at least 1D, got 0D""",
         gpu="""slice() cannot be applied to a 0-dim tensor.""",
         message_reviewed_by="cbasile",
     ):
@@ -18575,7 +18575,7 @@ class MaskedSoftmaxErrorTest(et.ErrorTestBase):
     out_0d = torch.empty((), dtype=torch.float32, device=et.device())
     with et.assert_raises_message(
         IndexError,
-        tpu="""slice_scatter(): expected tensor to be at least 1-dimensional, got 0-dimensional""",
+        tpu="""slice_scatter(): expected tensor to be at least 1D, got 0D""",
         gpu="""slice() cannot be applied to a 0-dim tensor.""",
         message_reviewed_by="cbasile",
     ):

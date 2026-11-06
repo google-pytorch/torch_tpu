@@ -630,7 +630,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     step = torch.tensor(1, device=device, dtype=torch.int32)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""dynamic_arange(): expected a 0-dimensional tensor for start, got 1-dimensional tensor""",
+        tpu="""dynamic_arange(): expected a 0D tensor for start, got 1D tensor""",
     ):
       torch.ops.tpu._dynamic_arange(start, end, step, 5, torch.int32)
 
@@ -643,7 +643,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     step = torch.tensor(1, device=device, dtype=torch.int32)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""dynamic_arange(): expected a 0-dimensional tensor for end, got 1-dimensional tensor""",
+        tpu="""dynamic_arange(): expected a 0D tensor for end, got 1D tensor""",
     ):
       torch.ops.tpu._dynamic_arange(start, end, step, 5, torch.int32)
 
@@ -656,7 +656,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     step = torch.tensor([1], device=device, dtype=torch.int32)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""dynamic_arange(): expected a 0-dimensional tensor for step, got 1-dimensional tensor""",
+        tpu="""dynamic_arange(): expected a 0D tensor for step, got 1D tensor""",
     ):
       torch.ops.tpu._dynamic_arange(start, end, step, 5, torch.int32)
 
@@ -717,7 +717,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     is_dynamic = [True, False]
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""dynamic_broadcast(): expected shape tensor at index 0 to be a 0-D (scalar) tensor, got 1-D tensor""",
+        tpu="""dynamic_broadcast(): expected shape tensor at index 0 to be a 0D (scalar) tensor, got 1D tensor""",
     ):
       torch.ops.tpu._dynamic_broadcast(
           x, shape, broadcast_dims, static_shape, is_dynamic
@@ -833,7 +833,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     slice_sizes = [1, 2]
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""dynamic_slice(): expected start_indices tensor at index 0 to be a 0-D (scalar) tensor, got 1-D tensor""",
+        tpu="""dynamic_slice(): expected start_indices tensor at index 0 to be a 0D (scalar) tensor, got 1D tensor""",
     ):
       torch.ops.tpu._dynamic_slice(x, start_indices, slice_sizes)
 
@@ -1861,7 +1861,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     size = torch.tensor([5], device=et.device(), dtype=torch.int32)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""set_dimension_logical_size(): expected a 0-dimensional tensor for size, got 1-dimensional tensor""",
+        tpu="""set_dimension_logical_size(): expected a 0D tensor for size, got 1D tensor""",
         message_reviewed_by="wan",
     ):
       torch.ops.tpu._set_dimension_logical_size(inp, 0, size)
@@ -1921,7 +1921,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     is_dynamic = [False, False]
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""dynamic_reshape(): expected shape tensor at index 0 to be a 0-D (scalar) tensor, got 1-D tensor""",
+        tpu="""dynamic_reshape(): expected shape tensor at index 0 to be a 0D (scalar) tensor, got 1D tensor""",
     ):
       torch.ops.tpu._dynamic_reshape(inp, shape, static_shape, is_dynamic)
 
@@ -2001,7 +2001,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     is_dynamic = [False, False]
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""pad_real_to_static(): expected runtime_shape tensor at index 0 to be a 0-D (scalar) tensor, got 1-D tensor""",
+        tpu="""pad_real_to_static(): expected runtime_shape tensor at index 0 to be a 0D (scalar) tensor, got 1D tensor""",
     ):
       torch.ops.tpu._pad_real_to_static(
           inp, runtime_shape, static_shape, is_dynamic
@@ -2740,7 +2740,7 @@ module {
     grad_out = torch.randn(2, device=et.device())
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""ctc_loss_backward(): expected targets to be 1-D or 2-D, got 3-D""",
+        tpu="""ctc_loss_backward(): expected targets to be 1D or 2D, got 3D""",
     ):
       torch.ops.aten._ctc_loss_backward.Tensor(
           grad_out,
@@ -3756,7 +3756,7 @@ module {
     with self.subTest("mul_sparse_non_scalar"):
       with et.assert_raises_message(
           RuntimeError,
-          tpu="""mul(): only multiplication of a sparse tensor with a 0-dim scalar tensor is supported on TPU""",
+          tpu="""mul(): only multiplication of a sparse tensor with a 0D scalar tensor is supported on TPU""",
           message_reviewed_by="wan",
       ):
         torch.mul(sp, dense)
@@ -4246,7 +4246,7 @@ module {
     proj_bias = torch.ones(8, 1, device=et.device())
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""native_multi_head_attention(): expected 1-D proj_bias, got 2-D tensor""",
+        tpu="""native_multi_head_attention(): expected 1D proj_bias, got 2D tensor""",
     ):
       torch.ops.aten._native_multi_head_attention(
           query, key, value, 8, 2, qkv_weight, qkv_bias, proj_weight, proj_bias
@@ -4303,7 +4303,7 @@ module {
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""transformer_encoder_layer_fwd(): expected 1-D proj_bias, got 2-D tensor""",
+        tpu="""transformer_encoder_layer_fwd(): expected 1D proj_bias, got 2D tensor""",
     ):
       torch._transformer_encoder_layer_fwd(
           src,
@@ -5632,7 +5632,7 @@ class FlexAttentionErrorsTest(et.TpuOnlyErrorTestBase):
   def test_inputs_must_be_4d(self):
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""flex_attention_fwd(): expected 4-D q, k and v, got 3-D, 3-D and 3-D""",
+        tpu="""flex_attention_fwd(): expected 4D q, k and v, got 3D, 3D and 3D""",
     ):
       self._fwd(q_shape=(1, 256, 128))
 
@@ -5697,7 +5697,7 @@ class FlexAttentionErrorsTest(et.TpuOnlyErrorTestBase):
   def test_kv_num_blocks_size(self):
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""flex_attention_fwd(): expected kv_num_blocks to be 1-D with 2 entries, got [3]""",
+        tpu="""flex_attention_fwd(): expected kv_num_blocks to be 1D with 2 entries, got [3]""",
     ):
       self._fwd(
           kv_num_blocks=torch.ones(3, dtype=torch.int32, device=et.device())
@@ -5707,7 +5707,7 @@ class FlexAttentionErrorsTest(et.TpuOnlyErrorTestBase):
   def test_kv_indices_size(self):
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""flex_attention_fwd(): expected kv_indices to be 1-D with 4 entries, got [3]""",
+        tpu="""flex_attention_fwd(): expected kv_indices to be 1D with 4 entries, got [3]""",
     ):
       self._fwd(
           kv_indices=torch.zeros(3, dtype=torch.int32, device=et.device())

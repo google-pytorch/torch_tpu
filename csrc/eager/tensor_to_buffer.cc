@@ -675,8 +675,8 @@ absl::StatusOr<at::Tensor> MakeEmptyMemoryFormat(
   Dimensions xla_sizes = CopyIntVector(size);
   if (dtype == mlir::ElementType::F4E2M1FN) {
     TT_RET_CHECK(!xla_sizes.empty(), error::kInvalidArgument)
-        << "expected float4_e2m1fn_x2 tensors to be at least 1-dimensional, "
-           "got 0-dimensional";
+        << "expected float4_e2m1fn_x2 tensors to be at least 1D, "
+           "got 0D";
     // A PyTorch tensor of shape [..., N] of dtype float4_e2m1fn_x2 represents
     // N container elements (each 1 byte), which contain 2N packed FP4 values.
     // On the TPU/XLA side, FP4 elements are represented as unpacked 1-byte

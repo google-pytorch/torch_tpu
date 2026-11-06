@@ -1643,6 +1643,52 @@ TEST_F(ErrorMessageGuidelinesDeathTest, ContainsNonNegative) {
                 "not contain \"non-negative\""));
 }
 
+TEST_F(ErrorMessageGuidelinesDeathTest, NumericDimensionalityNotWrittenAsND) {
+  EXPECT_DEATH(ThrowWithMessage("expected a 5-dimensional tensor"),
+               HasSubstr("Replace '5-dimensional' with '5D'"));
+  EXPECT_DEATH(ThrowWithMessage("expected a 5 dimensional tensor"),
+               HasSubstr("Replace '5 dimensional' with '5D'"));
+  EXPECT_DEATH(ThrowWithMessage("expected a 5-Dimensional tensor"),
+               HasSubstr("Replace '5-Dimensional' with '5D'"));
+  EXPECT_DEATH(ThrowWithMessage("expected a 5-dimension tensor"),
+               HasSubstr("Replace '5-dimension' with '5D'"));
+  EXPECT_DEATH(ThrowWithMessage("expected a 0-dim tensor"),
+               HasSubstr("Replace '0-dim' with '0D'"));
+  EXPECT_DEATH(ThrowWithMessage("expected a 5-d tensor"),
+               HasSubstr("Replace '5-d' with '5D'"));
+  EXPECT_DEATH(ThrowWithMessage("expected a 5-D tensor"),
+               HasSubstr("Replace '5-D' with '5D'"));
+  EXPECT_DEATH(ThrowWithMessage("expected a 5d tensor"),
+               HasSubstr("Replace '5d' with '5D'"));
+  EXPECT_DEATH(ThrowWithMessage("input must be 12-D"),
+               HasSubstr("Replace '12-D' with '12D'"));
+  EXPECT_DEATH(ThrowWithMessage("2-D input is not supported"),
+               HasSubstr("Replace '2-D' with '2D'"));
+  EXPECT_DEATH(ThrowWithMessage("input is not supported (2-D)"),
+               HasSubstr("Replace '2-D' with '2D'"));
+  // All the violations are listed.
+  EXPECT_DEATH(ThrowWithMessage("expected 1-D or 2-d tensor, got 3d"),
+               HasSubstr("Replace '1-D' with '1D', '2-d' with '2D', '3d' "
+                         "with '3D'"));
+}
+
+TEST_F(ErrorMessageGuidelinesDeathTest,
+       NumericDimensionalityNotWrittenAsNDOnContextPrefix) {
+  EXPECT_DEATH(
+      ThrowWithMessage("failed to reshape 2-D tensor: dimension size negative"),
+      HasSubstr("Replace '2-D' with '2D'"));
+}
+
+TEST_F(ErrorMessageGuidelinesDeathTest,
+       SymbolicDimensionalityNotWrittenAsHyphenatedD) {
+  EXPECT_DEATH(ThrowWithMessage("expected an n-d tensor"),
+               HasSubstr("Replace 'n-d' with 'n-D'"));
+  EXPECT_DEATH(ThrowWithMessage("expected an N-dimensional tensor"),
+               HasSubstr("Replace 'N-dimensional' with 'N-D'"));
+  EXPECT_DEATH(ThrowWithMessage("expected a k-dim tensor"),
+               HasSubstr("Replace 'k-dim' with 'k-D'"));
+}
+
 TEST_F(ErrorMessageGuidelinesDeathTest, MultipleViolations) {
   EXPECT_DEATH(ThrowWithMessage("Dimension size negative with f32"),
                AllOf(HasSubstr("start with a lowercase"),
@@ -1669,6 +1715,24 @@ TEST_F(ErrorMessageGuidelinesPassTest, StableHloTypeNameOnXlaError) {
                    /* context= */ "the task has failed",
                    /* xla_error_message= */ "the dtype cannot be f32"),
                c10::Error);
+}
+
+TEST_F(ErrorMessageGuidelinesPassTest, DimensionalityOnXlaError) {
+  // The XLA compiler error is not under our control, so its dimensionality
+  // format is not checked.
+  EXPECT_THROW(ThrowWithContextForXlaError(
+                   /* context= */ "failed to compile 2D convolution",
+                   /* xla_error_message= */ "expected 2-dimensional input"),
+               c10::Error);
+}
+
+TEST_F(ErrorMessageGuidelinesDeathTest,
+       NumericDimensionalityNotWrittenAsNDBeforeXlaError) {
+  EXPECT_DEATH(ThrowWithContextForXlaError(
+                   /* context= */ "failed to compile 2-D convolution",
+                   /* xla_error_message= */ "error"),
+               HasSubstr("After removing the XLA compiler error: The error "
+                         "message must write the dimensionality"));
 }
 
 TEST_F(ErrorMessageGuidelinesPassTest, NonAlphaNumTrailingCharOnXlaError) {
@@ -1758,6 +1822,54 @@ TEST_F(ErrorMessageGuidelinesPassTest, NonNegativeInsideIdentifier) {
   // Identifiers (e.g. variable or function names) are not flagged.
   EXPECT_THROW(ThrowWithMessage("is_nonnegative must be true"), c10::Error);
   EXPECT_THROW(ThrowWithMessage("non_negative_slope must be set"), c10::Error);
+}
+
+TEST_F(ErrorMessageGuidelinesPassTest, NumericDimensionalityWrittenAsND) {
+  EXPECT_THROW(ThrowWithMessage("expected 0D or 1D tensor, got 5D"),
+               c10::Error);
+  EXPECT_THROW(ThrowWithMessage("expected a 12D tensor, got 2D"), c10::Error);
+  EXPECT_THROW(ThrowWithMessage("failed to reshape 2D tensor: dimension size "
+                                "negative"),
+               c10::Error);
+}
+
+TEST_F(ErrorMessageGuidelinesPassTest, SymbolicDimensionalityWrittenAsND) {
+  EXPECT_THROW(ThrowWithMessage("expected an n-D tensor, got 0D"), c10::Error);
+  EXPECT_THROW(ThrowWithMessage("expected an N-D tensor, got 0D"), c10::Error);
+  EXPECT_THROW(ThrowWithMessage("expected a (k+1)-D tensor, got 0D"),
+               c10::Error);
+  // `nD` isn't rejected, since it can't be told apart from words such as
+  // "ID".
+  EXPECT_THROW(ThrowWithMessage("expected an nD tensor, got 0D"), c10::Error);
+  EXPECT_THROW(ThrowWithMessage("invalid device ID"), c10::Error);
+}
+
+TEST_F(ErrorMessageGuidelinesPassTest, DimensionalityLookalikesAreAllowed) {
+  // Op names, identifiers and class names.
+  EXPECT_THROW(ThrowWithMessage("conv3d is not supported"), c10::Error);
+  EXPECT_THROW(ThrowWithMessage("avg_pool2d is not supported"), c10::Error);
+  EXPECT_THROW(ThrowWithMessage("torch.nn.Conv2d is not supported"),
+               c10::Error);
+  EXPECT_THROW(ThrowWithMessage("upsample_bilinear2d is not supported"),
+               c10::Error);
+  EXPECT_THROW(ThrowWithMessage("aten::max_pool3d_with_indices is not "
+                                "supported"),
+               c10::Error);
+  EXPECT_THROW(ThrowWithMessage("channels_last_3d is not supported"),
+               c10::Error);
+  EXPECT_THROW(ThrowWithMessage("c10d::Store is required"), c10::Error);
+  // Counts of dimensions.
+  EXPECT_THROW(ThrowWithMessage("expected 5 dims, got 3 dimensions"),
+               c10::Error);
+  EXPECT_THROW(ThrowWithMessage("the tensor has 5 dim"), c10::Error);
+  // Hex numbers, decimals, durations in paths, and words.
+  EXPECT_THROW(ThrowWithMessage("invalid value 0x5d"), c10::Error);
+  EXPECT_THROW(ThrowWithMessage("invalid value 1.5d"), c10::Error);
+  EXPECT_THROW(ThrowWithMessage("cannot open /tmp/is-d/ttl=1d/cache"),
+               c10::Error);
+  EXPECT_THROW(ThrowWithMessage("the 5 days limit was exceeded"), c10::Error);
+  EXPECT_THROW(ThrowWithMessage("a dimensional mismatch was found"),
+               c10::Error);
 }
 
 TEST_F(ErrorMessageGuidelinesPassTest, StartsWithNonLetter) {

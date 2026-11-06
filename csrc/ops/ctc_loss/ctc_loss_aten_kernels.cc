@@ -87,7 +87,7 @@ absl::StatusOr<int64_t> GetMaxTargetLength(const at::Tensor& targets,
                                            const at::Tensor& target_lengths) {
   TT_RET_CHECK(targets.dim() == 1 || targets.dim() == 2,
                error::kInvalidArgument)
-      << "expected targets to be 1-D or 2-D, got " << targets.dim() << "-D";
+      << "expected targets to be 1D or 2D, got " << targets.dim() << "D";
   if (targets.dim() == 2) {
     return targets.size(1);
   }
@@ -115,7 +115,7 @@ absl::StatusOr<int64_t> GetMaxTargetLength(const at::Tensor& targets,
   TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=PyTorch dispatcher decomposes targets
                  // first
       targets.dim() == 1 || targets.dim() == 2, error::kInvalidArgument)
-      << "expected targets to be 1-D or 2-D, got " << targets.dim() << "-D";
+      << "expected targets to be 1D or 2D, got " << targets.dim() << "D";
   if (targets.dim() == 2) {
     return targets.size(1);
   }
@@ -655,7 +655,7 @@ absl::StatusOr<std::vector<mlir::MlirOp>> BuildCtcLossShlo(
   if (targets_type.getRank() == 1) {
     TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Always provided by callers
         max_target_length.has_value(), error::kInvalidArgument)
-        << "max_target_length must be provided when targets is 1-D";
+        << "max_target_length must be provided when targets is 1D";
     const int64_t N = target_lengths_type.getNumElements();
     const int64_t S = *max_target_length;
     TT_ASSIGN_OR_RETURN(
@@ -1438,11 +1438,10 @@ std::tuple<at::Tensor, at::Tensor> AtenCtcLossTensor(
       {
         ValidateLogProbsDtype(log_probs);
         TT_CHECK_THROW(log_probs.dim() == 3, error::kInvalidArgument)
-            << "expected log_probs to be 3-D, got " << log_probs.dim() << "-D";
+            << "expected log_probs to be 3D, got " << log_probs.dim() << "D";
         TT_CHECK_THROW(targets.dim() == 1 || targets.dim() == 2,
                        error::kInvalidArgument)
-            << "expected targets to be 1-D or 2-D, got " << targets.dim()
-            << "-D";
+            << "expected targets to be 1D or 2D, got " << targets.dim() << "D";
 
         const int64_t batch_size = log_probs.size(1);
         TT_CHECK_THROW(input_lengths.numel() == batch_size,
@@ -1770,11 +1769,10 @@ at::Tensor AtenCtcLossBackwardTensor(
         const int64_t n = log_probs.size(1);
 
         TT_CHECK_THROW(log_probs.dim() == 3, error::kInvalidArgument)
-            << "expected log_probs to be 3-D, got " << log_probs.dim() << "-D";
+            << "expected log_probs to be 3D, got " << log_probs.dim() << "D";
         TT_CHECK_THROW(targets.dim() == 1 || targets.dim() == 2,
                        error::kInvalidArgument)
-            << "expected targets to be 1-D or 2-D, got " << targets.dim()
-            << "-D";
+            << "expected targets to be 1D or 2D, got " << targets.dim() << "D";
 
         TT_CHECK_THROW(input_lengths.numel() == n, error::kInvalidArgument)
             << "expected input_lengths to have batch_size (" << n

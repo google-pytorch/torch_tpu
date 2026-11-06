@@ -336,6 +336,74 @@ std::optional<std::string> ValidateNoStableHloTypeName(
   return std::nullopt;
 }
 
+// Validates that the message writes the dimensionality of tensors as "<N>D"
+// when it's a number (e.g. "0D", "5D"), and as "<n>-D" when it's a single
+// letter (e.g. "n-D", "N-D").
+//
+// Pre-conditions: The error message must not be empty.
+//
+// Examples:
+//     [good] expected a 5D tensor, got 2D
+//     [good] expected an n-D tensor, got 0D
+//      [bad] expected a 5-dimensional tensor (use "5D")
+//      [bad] expected a 5-D tensor (use "5D")
+//      [bad] expected a 5d tensor (use "5D")
+//      [bad] expected an n-dimensional tensor (use "n-D")
+//
+// To avoid false positives, the dimensionality must be a standalone token:
+// it must be at the start of the message, or preceded by whitespace, an opening
+// bracket, a quote or a comma. Hence op names and identifiers (e.g. "conv3d",
+// "avg_pool2d", "c10d"), hex numbers (e.g. "0x5d"), decimals (e.g. "1.5d") and
+// paths (e.g. "ttl=1d") are not matched. Counts of dimensions (e.g. "5 dims",
+// "5 dimensions") are not matched either.
+//
+// "nD" isn't rejected in favor of "n-D", since it can't be told apart from
+// words such as "ID". Similarly, "n dimensional" isn't rejected, since it can't
+// be told apart from phrases such as "a dimensional mismatch".
+std::optional<std::string> ValidateDimensionalityFormat(
+    const std::string_view message) {
+  ABSL_CHECK(  // CRASH_OK
+      !message.empty())
+      << kErrorMessageCheckPreconditionViolated;
+
+  // Captures (1) the whole bad dimensionality token, and either (2) its number
+  // or (3) its letter.
+  static const LazyRE2 kBadDimensionalityPattern = {
+      // Start of a standalone token.
+      R"((?:^|[\s(\[{'"`,]))"
+      R"(()"
+      // Number: 5-d, 5-D, 5-dim, 5-dimension, 5-dimensional, 5 dimensional, 5d.
+      R"((\d+)(?:-[dD]|-(?i:dim|dimension|dimensional)| (?i:dimensional)|d))"
+      R"(|)"
+      // Letter: n-d, n-dim, n-dimension, n-dimensional.
+      R"(([A-Za-z])-(?:d|(?i:dim|dimension|dimensional)))"
+      R"()\b)"};
+  ABSL_CHECK(kBadDimensionalityPattern->ok())  // CRASH_OK
+      << kErrorMessageCheckPreconditionViolated;
+
+  std::vector<std::string> replacements;
+  std::string_view input = message;
+  std::string_view token;
+  std::optional<std::string_view> number;
+  std::optional<std::string_view> letter;
+  while (RE2::FindAndConsume(&input, *kBadDimensionalityPattern, &token,
+                             &number, &letter)) {
+    replacements.push_back(
+        number.has_value()
+            ? absl::StrCat("'", token, "' with '", *number, "D'")
+            : absl::StrCat("'", token, "' with '", *letter, "-D'"));
+  }
+
+  if (!replacements.empty()) {
+    return absl::StrCat(
+        "The error message must write the dimensionality of tensors as "
+        "'<N>D' if it's a number (e.g. '5D'), or as '<n>-D' if it's a letter "
+        "(e.g. 'n-D'). Replace ",
+        absl::StrJoin(replacements, ", "), ".");
+  }
+  return std::nullopt;
+}
+
 // Validates that the XLA compiler error sentinel is preceded
 // by a non-empty context and has no surrounding spaces.
 //
@@ -498,6 +566,13 @@ class ErrorFormatChecker {
     // project might contain StableHLO type names, but we don't have control
     // over it.)
     CheckNoStableHloTypeName(to_check);
+
+    // The dimensionality format applies to the whole TorchTPU part of the
+    // message, including the context prefixes. (The XLA compiler error is not
+    // under our control.)
+    if (!to_check.empty()) {
+      AppendIfViolation(ValidateDimensionalityFormat(to_check));
+    }
 
     const std::string_view no_context_prefixes =
         RemoveAllContextPrefixes(to_check);

@@ -69,7 +69,7 @@ void ValidateTransformerEncoderInputs(
     const std::optional<at::Tensor>& mask,
     const std::optional<int64_t> mask_type) {
   TT_CHECK_THROW(src.dim() == 3, error::kInvalidArgument)
-      << "expected 3-D src, got " << src.dim() << "-D tensor";
+      << "expected 3D src, got " << src.dim() << "D tensor";
   TT_CHECK_THROW(src.size(2) == embed_dim, error::kInvalidArgument)
       << "expected last dimension of src to match embed_dim " << embed_dim
       << ", got " << src.size(2);
@@ -77,19 +77,19 @@ void ValidateTransformerEncoderInputs(
       << "expected embed_dim to divide cleanly by num_heads, got "
       << "embed_dim " << embed_dim << " and num_heads " << num_heads;
   TT_CHECK_THROW(qkv_weight.dim() == 2, error::kInvalidArgument)
-      << "expected 2-D qkv_weight, got " << qkv_weight.dim() << "-D tensor";
+      << "expected 2D qkv_weight, got " << qkv_weight.dim() << "D tensor";
   TT_CHECK_THROW(
       qkv_weight.size(0) == 3 * embed_dim && qkv_weight.size(1) == embed_dim,
       error::kInvalidArgument)
       << "expected qkv_weight shape [" << 3 * embed_dim << ", " << embed_dim
       << "], got [" << qkv_weight.size(0) << ", " << qkv_weight.size(1) << "]";
   TT_CHECK_THROW(qkv_bias.dim() == 1, error::kInvalidArgument)
-      << "expected 1-D qkv_bias, got " << qkv_bias.dim() << "-D tensor";
+      << "expected 1D qkv_bias, got " << qkv_bias.dim() << "D tensor";
   TT_CHECK_THROW(qkv_bias.size(0) == 3 * embed_dim, error::kInvalidArgument)
       << "expected qkv_bias size " << 3 * embed_dim << ", got "
       << qkv_bias.size(0);
   TT_CHECK_THROW(proj_weight.dim() == 2, error::kInvalidArgument)
-      << "expected 2-D proj_weight, got " << proj_weight.dim() << "-D tensor";
+      << "expected 2D proj_weight, got " << proj_weight.dim() << "D tensor";
   TT_CHECK_THROW(
       proj_weight.size(0) == embed_dim && proj_weight.size(1) == embed_dim,
       error::kInvalidArgument)
@@ -97,37 +97,37 @@ void ValidateTransformerEncoderInputs(
       << "], got [" << proj_weight.size(0) << ", " << proj_weight.size(1)
       << "]";
   TT_CHECK_THROW(proj_bias.dim() == 1, error::kInvalidArgument)
-      << "expected 1-D proj_bias, got " << proj_bias.dim() << "-D tensor";
+      << "expected 1D proj_bias, got " << proj_bias.dim() << "D tensor";
   TT_CHECK_THROW(proj_bias.size(0) == embed_dim, error::kInvalidArgument)
       << "expected proj_bias size " << embed_dim << ", got "
       << proj_bias.size(0);
 
   TT_CHECK_THROW(norm_weight_1.dim() == 1 && norm_weight_1.size(0) == embed_dim,
                  error::kInvalidArgument)
-      << "expected 1-D norm_weight_1 with size " << embed_dim << ", got "
+      << "expected 1D norm_weight_1 with size " << embed_dim << ", got "
       << norm_weight_1.sizes();
   TT_CHECK_THROW(norm_bias_1.dim() == 1 && norm_bias_1.size(0) == embed_dim,
                  error::kInvalidArgument)
-      << "expected 1-D norm_bias_1 with size " << embed_dim << ", got "
+      << "expected 1D norm_bias_1 with size " << embed_dim << ", got "
       << norm_bias_1.sizes();
   TT_CHECK_THROW(norm_weight_2.dim() == 1 && norm_weight_2.size(0) == embed_dim,
                  error::kInvalidArgument)
-      << "expected 1-D norm_weight_2 with size " << embed_dim << ", got "
+      << "expected 1D norm_weight_2 with size " << embed_dim << ", got "
       << norm_weight_2.sizes();
   TT_CHECK_THROW(norm_bias_2.dim() == 1 && norm_bias_2.size(0) == embed_dim,
                  error::kInvalidArgument)
-      << "expected 1-D norm_bias_2 with size " << embed_dim << ", got "
+      << "expected 1D norm_bias_2 with size " << embed_dim << ", got "
       << norm_bias_2.sizes();
 
   TT_CHECK_THROW(ffn_weight_1.dim() == 2, error::kInvalidArgument)
-      << "expected 2-D ffn_weight_1, got " << ffn_weight_1.dim() << "-D tensor";
+      << "expected 2D ffn_weight_1, got " << ffn_weight_1.dim() << "D tensor";
   const int64_t d_ff = ffn_weight_1.size(0);
   TT_CHECK_THROW(ffn_weight_1.size(1) == embed_dim, error::kInvalidArgument)
       << "expected ffn_weight_1 second dim to be " << embed_dim << ", got "
       << ffn_weight_1.size(1);
   TT_CHECK_THROW(ffn_bias_1.dim() == 1 && ffn_bias_1.size(0) == d_ff,
                  error::kInvalidArgument)
-      << "expected 1-D ffn_bias_1 with size " << d_ff << ", got "
+      << "expected 1D ffn_bias_1 with size " << d_ff << ", got "
       << ffn_bias_1.sizes();
   TT_CHECK_THROW(ffn_weight_2.dim() == 2 && ffn_weight_2.size(0) == embed_dim &&
                      ffn_weight_2.size(1) == d_ff,
@@ -136,15 +136,15 @@ void ValidateTransformerEncoderInputs(
       << "], got " << ffn_weight_2.sizes();
   TT_CHECK_THROW(ffn_bias_2.dim() == 1 && ffn_bias_2.size(0) == embed_dim,
                  error::kInvalidArgument)
-      << "expected 1-D ffn_bias_2 with size " << embed_dim << ", got "
+      << "expected 1D ffn_bias_2 with size " << embed_dim << ", got "
       << ffn_bias_2.sizes();
 
   if (const auto sanitized_mask = SanitizeOptionalTensor(mask);
       sanitized_mask.has_value()) {
     TT_CHECK_THROW(sanitized_mask->dim() >= 2 && sanitized_mask->dim() <= 4,
                    error::kInvalidArgument)
-        << "expected 2-D, 3-D, or 4-D mask, got " << sanitized_mask->dim()
-        << "-D tensor";
+        << "expected 2D, 3D, or 4D mask, got " << sanitized_mask->dim()
+        << "D tensor";
     TT_CHECK_THROW(sanitized_mask->scalar_type() == at::kBool ||
                        c10::isFloatingType(sanitized_mask->scalar_type()),
                    error::kInvalidArgument)
@@ -161,14 +161,14 @@ void ValidateTransformerEncoderInputs(
       // A 2-D mask is either a [T, T] src_mask (mask_type 0) or a [B, T]
       // src_key_padding_mask (mask_type 1); default_mask (2) must be 4-D.
       TT_CHECK_THROW(*mask_type != 2, error::kInvalidArgument)
-          << "expected 4-D mask for mask_type 2, got 2-D tensor of shape "
+          << "expected 4D mask for mask_type 2, got 2D tensor of shape "
           << sanitized_mask->sizes();
       const int64_t seq_len = src.size(1);
       const int64_t expected_dim0 = *mask_type == 0 ? seq_len : src.size(0);
       TT_CHECK_THROW(sanitized_mask->size(0) == expected_dim0 &&
                          sanitized_mask->size(1) == seq_len,
                      error::kInvalidArgument)
-          << "expected 2-D mask shape to be [" << expected_dim0 << ", "
+          << "expected 2D mask shape to be [" << expected_dim0 << ", "
           << seq_len << "] for mask_type " << *mask_type << ", got "
           << sanitized_mask->sizes();
     }

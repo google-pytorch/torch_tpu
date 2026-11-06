@@ -67,17 +67,17 @@ absl::Status ValidateNativeMultiHeadAttentionInputs(
       << "expected embed_dim to be > 0, got " << embed_dim;
 
   TT_RET_CHECK(query.dim() == 3, error::kInvalidArgument)
-      << "expected 3-D query, got " << query.dim() << "-D tensor";
+      << "expected 3D query, got " << query.dim() << "D tensor";
 
   TT_RET_CHECK(query.size(2) == embed_dim, error::kInvalidArgument)
       << "expected embed_dim to match the last dim of query (" << query.size(2)
       << "), got " << embed_dim;
 
   TT_RET_CHECK(key.dim() == 3, error::kInvalidArgument)
-      << "expected 3-D key, got " << key.dim() << "-D tensor";
+      << "expected 3D key, got " << key.dim() << "D tensor";
 
   TT_RET_CHECK(value.dim() == 3, error::kInvalidArgument)
-      << "expected 3-D value, got " << value.dim() << "-D tensor";
+      << "expected 3D value, got " << value.dim() << "D tensor";
 
   TT_RET_CHECK(query.sizes() == key.sizes() && key.sizes() == value.sizes(),
                error::kInvalidArgument)
@@ -86,7 +86,7 @@ absl::Status ValidateNativeMultiHeadAttentionInputs(
       << ToString(value.sizes());
 
   TT_RET_CHECK(qkv_weight.dim() == 2, error::kInvalidArgument)
-      << "expected 2-D qkv_weight, got " << qkv_weight.dim() << "-D tensor";
+      << "expected 2D qkv_weight, got " << qkv_weight.dim() << "D tensor";
 
   TT_RET_CHECK(qkv_weight.size(0) == 3 * embed_dim, error::kInvalidArgument)
       << "expected qkv_weight first dim to be 3x embed_dim (" << (3 * embed_dim)
@@ -97,7 +97,7 @@ absl::Status ValidateNativeMultiHeadAttentionInputs(
       << "), got " << qkv_weight.size(1);
 
   TT_RET_CHECK(qkv_bias.dim() == 1, error::kInvalidArgument)
-      << "expected 1-D qkv_bias, got " << qkv_bias.dim() << "-D tensor";
+      << "expected 1D qkv_bias, got " << qkv_bias.dim() << "D tensor";
 
   TT_RET_CHECK(qkv_bias.size(0) == 3 * embed_dim, error::kInvalidArgument)
       << "expected qkv_bias first dim to be 3x embed_dim (" << (3 * embed_dim)
@@ -111,7 +111,7 @@ absl::Status ValidateNativeMultiHeadAttentionInputs(
       << ", which is not divisible by " << num_head;
 
   TT_RET_CHECK(proj_weight.dim() == 2, error::kInvalidArgument)
-      << "expected 2-D proj_weight, got " << proj_weight.dim() << "-D tensor";
+      << "expected 2D proj_weight, got " << proj_weight.dim() << "D tensor";
 
   TT_RET_CHECK(proj_weight.size(0) == embed_dim, error::kInvalidArgument)
       << "expected proj_weight first dim to be embed_dim (" << embed_dim
@@ -122,7 +122,7 @@ absl::Status ValidateNativeMultiHeadAttentionInputs(
       << "), got " << proj_weight.size(1);
 
   TT_RET_CHECK(proj_bias.dim() == 1, error::kInvalidArgument)
-      << "expected 1-D proj_bias, got " << proj_bias.dim() << "-D tensor";
+      << "expected 1D proj_bias, got " << proj_bias.dim() << "D tensor";
 
   TT_RET_CHECK(proj_bias.size(0) == embed_dim, error::kInvalidArgument)
       << "expected proj_bias first dim to be embed_dim (" << embed_dim
@@ -166,21 +166,21 @@ absl::Status ValidateNativeMultiHeadAttentionInputs(
                        sanitized_mask->size(2) == query.size(1) &&
                        sanitized_mask->size(3) == key.size(1),
                    error::kInvalidArgument)
-          << "expected 4-D mask shape to be [" << query.size(0) << ", "
+          << "expected 4D mask shape to be [" << query.size(0) << ", "
           << num_head << ", " << query.size(1) << ", " << key.size(1)
           << "], got " << sanitized_mask->sizes();
     } else {
       // A 2-D mask is either a [T, T] src_mask (mask_type 0) or a [B, T]
       // src_key_padding_mask (mask_type 1); default_mask (2) must be 4-D.
       TT_RET_CHECK(*mask_type != 2, error::kInvalidArgument)
-          << "expected 4-D mask for mask_type 2, got 2-D tensor of shape "
+          << "expected 4D mask for mask_type 2, got 2D tensor of shape "
           << sanitized_mask->sizes();
       const int64_t expected_dim0 =
           *mask_type == 0 ? query.size(1) : query.size(0);
       TT_RET_CHECK(sanitized_mask->size(0) == expected_dim0 &&
                        sanitized_mask->size(1) == key.size(1),
                    error::kInvalidArgument)
-          << "expected 2-D mask shape to be [" << expected_dim0 << ", "
+          << "expected 2D mask shape to be [" << expected_dim0 << ", "
           << key.size(1) << "] for mask_type " << *mask_type << ", got "
           << sanitized_mask->sizes();
     }

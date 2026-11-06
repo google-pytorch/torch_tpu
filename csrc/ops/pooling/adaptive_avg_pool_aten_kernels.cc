@@ -379,8 +379,8 @@ absl::Status ValidateAdaptiveAvgPool2dInputs(const at::Tensor& self) {
   TT_RET_CHECK(
       num_dims == spatial_dim_count + 1 || num_dims == spatial_dim_count + 2,
       error::kInvalidArgument)
-      << "expected input to be a " << spatial_dim_count + 1 << "-D or "
-      << spatial_dim_count + 2 << "-D tensor, got " << num_dims << "-D tensor";
+      << "expected input to be a " << spatial_dim_count + 1 << "D or "
+      << spatial_dim_count + 2 << "D tensor, got " << num_dims << "D tensor";
 
   for (int64_t i = num_dims - spatial_dim_count; i < num_dims; ++i) {
     TT_RET_CHECK(self.size(i) > 0, error::kInvalidArgument)
@@ -529,8 +529,8 @@ absl::Status ValidateAdaptiveAvgPool3dInputs(const at::Tensor& self) {
   TT_RET_CHECK(
       num_dims == spatial_dim_count + 1 || num_dims == spatial_dim_count + 2,
       error::kInvalidArgument)
-      << "expected input to be a " << spatial_dim_count + 1 << "-D or "
-      << spatial_dim_count + 2 << "-D tensor, got " << num_dims << "-D tensor";
+      << "expected input to be a " << spatial_dim_count + 1 << "D or "
+      << spatial_dim_count + 2 << "D tensor, got " << num_dims << "D tensor";
 
   for (int64_t i = 1; i < num_dims; ++i) {
     TT_RET_CHECK(self.size(i) > 0, error::kInvalidArgument)

@@ -311,8 +311,8 @@ absl::StatusOr<FlexAttnConfig> MakeConfig(
     std::string_view mask_mod_mlir) {
   TT_RET_CHECK(q.dim() == 4 && k.dim() == 4 && v.dim() == 4,
                error::kInvalidArgument)
-      << "expected 4-D q, k and v, got " << q.dim() << "-D, " << k.dim()
-      << "-D and " << v.dim() << "-D";
+      << "expected 4D q, k and v, got " << q.dim() << "D, " << k.dim()
+      << "D and " << v.dim() << "D";
   TT_RET_CHECK(
       q.scalar_type() == k.scalar_type() && q.scalar_type() == v.scalar_type(),
       error::kInvalidArgument)
@@ -364,12 +364,12 @@ absl::StatusOr<FlexAttnConfig> MakeConfig(
       << "block mask tables must be int32";
   TT_RET_CHECK(kv_num_blocks.dim() == 1 && kv_num_blocks.size(0) == table_rows,
                error::kInvalidArgument)
-      << "expected kv_num_blocks to be 1-D with " << table_rows
+      << "expected kv_num_blocks to be 1D with " << table_rows
       << " entries, got " << kv_num_blocks.sizes();
   TT_RET_CHECK(kv_indices.dim() == 1 &&
                    kv_indices.size(0) == table_rows * c.num_kv_blocks(),
                error::kInvalidArgument)
-      << "expected kv_indices to be 1-D with " << table_rows * c.num_kv_blocks()
+      << "expected kv_indices to be 1D with " << table_rows * c.num_kv_blocks()
       << " entries, got " << kv_indices.sizes();
   return c;
 }

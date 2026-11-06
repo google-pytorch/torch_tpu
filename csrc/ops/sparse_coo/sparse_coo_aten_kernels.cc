@@ -521,7 +521,7 @@ at::Tensor& MulOutSparseImpl(const at::Tensor& self, const at::Tensor& other,
   TT_CHECK_THROW((self_is_sparse && !other_is_sparse && other.dim() == 0) ||
                      (!self_is_sparse && self.dim() == 0 && other_is_sparse),
                  error::kPythonNotImplementedError)
-      << "only multiplication of a sparse tensor with a 0-dim scalar tensor is "
+      << "only multiplication of a sparse tensor with a 0D scalar tensor is "
          "supported on TPU";
   const at::Tensor& sp = self_is_sparse ? self : other;
   const at::Tensor& scalar = self_is_sparse ? other : self;

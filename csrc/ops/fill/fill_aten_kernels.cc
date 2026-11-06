@@ -54,8 +54,8 @@ absl::Status FillTensorHelper(at::Tensor& self, const at::Tensor& fill_value,
 
   int64_t fill_value_dims_size = fill_value.sizes().size();
   TT_RET_CHECK(fill_value_dims_size == 0, error::kInvalidArgument)
-      << "expected value to be a 0-D tensor, got " << fill_value_dims_size
-      << "-D";
+      << "expected value to be a 0D tensor, got " << fill_value_dims_size
+      << "D";
 
   auto op_builder =
       [sizes = CopyIntVector(self.sizes()), out_mlir_element_type](

@@ -117,8 +117,8 @@ absl::Status ValidateInputBroadcast(const at::Tensor& self,
   }
   TT_RET_CHECK(self.dim() <= output_dims_vec.size(), error::kInvalidArgument)
       << "expected input tensor to have at most as many dimensions as the"
-      << " product of mat1 @ mat2, got " << self.dim() << "-D input and "
-      << output_dims_vec.size() << "-D product of mat1 @ mat2";
+      << " product of mat1 @ mat2, got " << self.dim() << "D input and "
+      << output_dims_vec.size() << "D product of mat1 @ mat2";
   absl::StatusOr<Dimensions> broadcast_shape =
       InferSize(self.sizes(), output_dims_vec);
   TT_RET_CHECK(broadcast_shape.ok() && *broadcast_shape == output_dims_vec,
@@ -167,9 +167,9 @@ absl::StatusOr<mlir::ElementType> ValidateAddmmInputsAndGetOutputDtype(
                error::kPythonNotImplementedError)
       << "complex dtypes are not yet supported";
   TT_RET_CHECK(mat1.dim() == 2, error::kInvalidArgument)
-      << "expected mat1 to be a matrix, got " << mat1.dim() << "-D tensor";
+      << "expected mat1 to be a matrix, got " << mat1.dim() << "D tensor";
   TT_RET_CHECK(mat2.dim() == 2, error::kInvalidArgument)
-      << "expected mat2 to be a matrix, got " << mat2.dim() << "-D tensor";
+      << "expected mat2 to be a matrix, got " << mat2.dim() << "D tensor";
   TT_RET_CHECK(mat1.size(1) == mat2.size(0), error::kInvalidArgument)
       << "expected size 1 of mat1 to be same as size 0 of mat2, got "
       << mat1.size(1) << " and " << mat2.size(0) << " respectively";
