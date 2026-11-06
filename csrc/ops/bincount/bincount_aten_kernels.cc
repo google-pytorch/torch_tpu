@@ -128,14 +128,13 @@ at::Tensor AtenBinCount(const at::Tensor& self,
         int64_t minlength_val = minlength.guard_int(__FILE__, __LINE__);
 
         TT_CHECK_THROW(minlength_val >= 0, error::kInvalidArgument)
-            << "expected non-negative minlength, got " << minlength_val;
+            << "expected minlength to be >= 0, got " << minlength_val;
 
         TT_CHECK_THROW(self.dim() == 1, error::kInvalidArgument)
-            << "expected one-dimensional input tensor, got " << self.dim()
-            << "-dimensional";
+            << "expected 1D input tensor, got " << self.dim() << "D";
 
-        TT_CHECK_THROW(IsInteger(self), error::kInvalidArgument)
-            << "bincount only supports 1-d non-negative integral inputs";
+        TT_CHECK_THROW(IsInteger(self), error::kPythonNotImplementedError)
+            << "expected integral inputs, got " << ToString(self.scalar_type());
 
         // Shortcut optimization for empty input tensors.
         if (self.defined() && self.numel() == 0) {
@@ -144,12 +143,11 @@ at::Tensor AtenBinCount(const at::Tensor& self,
 
         if (weights_) {
           TT_CHECK_THROW(weights_->dim() == 1, error::kInvalidArgument)
-              << "expected one-dimensional weights, got " << weights_->dim()
-              << "-dimensional";
+              << "expected 1D weights, got " << weights_->dim() << "D";
           TT_CHECK_THROW(weights_->size(0) == self.size(0),
                          error::kInvalidArgument)
               << "expected input and weights lengths to match, got "
-              << self.size(0) << " and " << weights_->size(0);
+              << self.size(0) << " vs " << weights_->size(0);
         }
 
         // Compute the minimum and maximum element in the input using a single
@@ -187,8 +185,7 @@ at::Tensor AtenBinCount(const at::Tensor& self,
         int64_t max_val = min_max_vals[1];
 
         TT_CHECK_THROW(min_val >= 0, error::kInvalidArgument)
-            << "expected non-negative inputs, but got a minimum value of "
-            << min_val;
+            << "expected inputs to be >= 0, got a minimum value of " << min_val;
 
         // Compute the number of bins, i.e., the output size.
         int64_t nbins = std::max(max_val + 1, minlength_val);
