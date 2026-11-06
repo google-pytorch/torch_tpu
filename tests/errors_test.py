@@ -9057,10 +9057,7 @@ Supported combinations for non-constant padding:
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu=(
-            "bincount(): expected one-dimensional input tensor, got"
-            " 3-dimensional"
-        ),
+        tpu="""bincount(): expected 1D input tensor, got 3D""",
         gpu="""bincount only supports 1-d non-negative integral inputs.""",
     ):
       torch.bincount(t)
@@ -9070,21 +9067,17 @@ Supported combinations for non-constant padding:
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""bincount(): expected non-negative minlength, got -1""",
+        tpu="""bincount(): expected minlength to be >= 0, got -1""",
         gpu="""minlength should be >= 0""",
     ):
       torch.bincount(t, minlength=-1)
 
   def test_bincount_non_integral_input(self):
     t = torch.tensor([1.0, 2.0], device=et.device(), dtype=torch.float32)
-    err_type = RuntimeError if et.is_on_tpu() else NotImplementedError
 
     with et.assert_raises_message(
-        err_type,
-        tpu=(
-            "bincount(): bincount only supports 1-d non-negative integral"
-            " inputs"
-        ),
+        NotImplementedError,
+        tpu="""bincount(): expected integral inputs, got float32""",
         gpu=""""bincount_cuda" not implemented for 'Float'""",
     ):
       torch.bincount(t)
@@ -9095,10 +9088,7 @@ Supported combinations for non-constant padding:
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu=(
-            "bincount(): expected one-dimensional weights, got"
-            " 2-dimensional"
-        ),
+        tpu="""bincount(): expected 1D weights, got 2D""",
         gpu="""weights should be 1-d and have the same length as input""",
     ):
       torch.bincount(t, weights=weights)
@@ -9109,10 +9099,7 @@ Supported combinations for non-constant padding:
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu=(
-            "bincount(): expected input and weights lengths to match, got 2 and"
-            " 5"
-        ),
+        tpu="""bincount(): expected input and weights lengths to match, got 2 vs 5""",
         gpu="""weights should be 1-d and have the same length as input""",
     ):
       torch.bincount(t, weights=weights)
@@ -9122,10 +9109,7 @@ Supported combinations for non-constant padding:
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu=(
-            "bincount(): expected non-negative inputs, but got a minimum value"
-            " of -1"
-        ),
+        tpu="""bincount(): expected inputs to be >= 0, got a minimum value of -1""",
         gpu="""bincount only supports 1-d non-negative integral inputs.""",
     ):
       torch.bincount(t)
