@@ -747,6 +747,96 @@ torch_tpu_py_test(
     ],
 )
 
+_TORCH_LAYER_BENCHMARK_DEPS = [
+    ":base_test",
+    ":cases",
+    ":common",
+    ":discovery",
+    ":mode",
+    ":registry",
+    ":target",
+    ":torch_base_test",
+    "//shims/absl_py/testing:absltest",
+    "//shims/absl_py/testing:parameterized",
+    "//src/torch_tpu",
+    "//src/torch_tpu/_internal/distributed:multiprocessing",
+    "//perflab/layers",
+    "//perflab/steps",
+]
+
+# CPU smoke of the layer benchmarks that runs in the TorchTPU `.opt` presubmit,
+# like `torch_benchmark_cpu_smoke_test`: every layer benchmark runs one forward
+# or train step on CPU under FakeTensorMode.
+torch_tpu_py_test(
+    name = "torch_layer_benchmark_cpu_smoke_test",
+    timeout = "long",
+    srcs = ["torch_layer_benchmark_test.py"],
+    args = [
+        "--run_scope=presubmit",
+        "--min_warmup_steps=1",
+        "--max_warmup_steps=1",
+        "--post_warmup_steps=0",
+        "--fake_tensor_mode",
+        "--norun_in_subprocess",
+    ],
+    env = {
+        "BENCHMARK_PLATFORM": "cpu",
+    },
+    main = "torch_layer_benchmark_test.py",
+    notest_oss = True,  # Not yet verified in OSS.  # NOTEST_OSS_OK=out of scope for the CPU smoke stack
+    # Grows as layer families land.
+    shard_count = 2,
+    tags = [
+        "nofastbuild",  # Runs in the .opt presubmit.
+        "nosan",  # *san tests provide no benefit for benchmarks.
+    ],
+    use_tcmalloc = True,
+    deps = _TORCH_LAYER_BENCHMARK_DEPS,
+)
+
+torch_tpu_py_test(
+    name = "torch_layer_benchmark_full",
+    timeout = "eternal",
+    srcs = ["torch_layer_benchmark_test.py"],
+    env = {
+        "BENCHMARK_PLATFORM": "v7_1x1x1",
+    },
+    main = "torch_layer_benchmark_test.py",
+    notap = "Intended to be run with nightly benchmark suite",
+    shard_count = 50,
+    tags = [
+        "nofastbuild",  # Benchmark.
+        "requires-accel-hbm",
+        "requires-net:external",
+        "requires-tpu-v7x",
+    ],
+    use_tcmalloc = True,
+    deps = _TORCH_LAYER_BENCHMARK_DEPS,
+)
+
+# buildozer: disable=forbidden-tag-requires-gpu
+torch_tpu_py_test(
+    name = "torch_layer_benchmark_full_cuda",
+    timeout = "long",
+    srcs = ["torch_layer_benchmark_test.py"],
+    env = {
+        "BENCHMARK_PLATFORM": "b200_1",
+    },
+    exec_properties = {
+        "cpp_link.mem": "16g",
+    },
+    main = "torch_layer_benchmark_test.py",
+    notap = "Intended to be run with nightly benchmark suite",
+    shard_count = 50,
+    tags = [
+        "nofastbuild",  # Benchmark.
+        "requires-accel-hbm",
+        "requires-gpu-sm100-full",
+        "requires-net:external",
+    ],
+    deps = _TORCH_LAYER_BENCHMARK_DEPS,
+)
+
 _DISTRIBUTED_RUNNER_DATA = [
     "//shims/model_configs:google_model_configs_data",
     "//perflab/huggingface_transformers:model_configs_data",
