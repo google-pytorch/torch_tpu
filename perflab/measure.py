@@ -45,6 +45,18 @@ XPROF_STEPS = flags.DEFINE_integer(  # PYTHON_FLAG_OK=benchmark
     "Number of steps to collect xprof for after warmup.",
     lower_bound=0,
 )
+POST_WARMUP_REWARM_MAX_STEPS = flags.DEFINE_integer(  # PYTHON_FLAG_OK=benchmark
+    "post_warmup_rewarm_max_steps",
+    10,
+    "Maximum number of untimed steps run between the pre-measurement garbage"
+    " collection and peak-memory reset and the timed post-warmup steps. They"
+    " stop as soon as two consecutive steps take within 5% of the same time.",
+    lower_bound=0,
+)
+
+# The re-warm ends once a step takes within this fraction of the time of the
+# step before it.
+_REWARM_TOLERANCE = 0.05
 
 
 def _do_post_warmup() -> bool:
@@ -449,6 +461,7 @@ def _post_warmup_run(
     name: str,
     enable_xprof: bool = False,
     profiling_time: _ProfilingTime | None = None,
+    rewarm: bool = False,
 ) -> metrics.PostWarmupRunResult:
   """Runs the model once after the warmup is complete.
 
@@ -459,6 +472,8 @@ def _post_warmup_run(
     enable_xprof: Whether to enable xprof profiling.
     profiling_time: If set, accumulates the wall time of the profiled steps,
       including starting and ending their xprof session.
+    rewarm: Whether to run untimed steps before the timed ones until the step
+      time settles, at most --post_warmup_rewarm_max_steps of them.
 
   Returns:
     A PostWarmupRunResult instance containing the average step time and peak
@@ -519,6 +534,23 @@ def _post_warmup_run(
     return device_elapsed
 
   with gc_disabled():
+    # Any pause in the step stream, such as the garbage collection and the
+    # peak-memory reset above, lets the host's caches lose the step's working
+    # set: host-bound steps then run up to ~2x slower for a few steps. Run
+    # untimed steps until the step time settles, so that the timed steps start
+    # warm. They count towards the peak memory, as the timed steps do.
+    rewarm_steps = 0
+    previous_elapsed = None
+    while rewarm and rewarm_steps < POST_WARMUP_REWARM_MAX_STEPS.value:
+      elapsed = _run_single_step(compile_count_before)
+      rewarm_steps += 1
+      if (
+          previous_elapsed is not None
+          and abs(elapsed - previous_elapsed)
+          <= _REWARM_TOLERANCE * previous_elapsed
+      ):
+        break
+      previous_elapsed = elapsed
     for step in range(POST_WARMUP_STEPS.value):
       timings[step] = _run_single_step(compile_count_before)
 
@@ -572,6 +604,7 @@ def _post_warmup_run(
         device_ops, xspace, XPROF_STEPS.value
     )
 
+  logging.info("Post Warmup re-warm steps for %s: %d", name, rewarm_steps)
   logging.info("Post Warmup Timings for %s: %s", name, timings)
   if enable_xprof and not device_ops.supports_event_device_time():
     logging.info("Post Warmup Xprof Timings for %s: %s", name, xprof_timings)
@@ -609,19 +642,17 @@ def measure(
 
   stepper.pre_warmup_init()
 
-  result_kwargs |= dataclasses.asdict(
-      _warmup_run(
-          stepper,
-          device_ops,
-          name=name,
-          enable_xprof=enable_xprof,
-          profiling_time=profiling_time,
-      )
-  )
-
-  if _do_post_warmup():
+  # Collect once, then freeze the survivors (the model, its inputs, the
+  # imported modules, ...). They live through the measurement, and leaving
+  # them out of the later collections keeps the post-warmup collection from
+  # traversing the whole heap. That traversal takes ~0.4s, evicts the host's
+  # caches and pauses the step stream, which made the first timed steps of
+  # host-bound models up to ~2.5x slower than the last warmup steps.
+  gc.collect()
+  gc.freeze()
+  try:
     result_kwargs |= dataclasses.asdict(
-        _post_warmup_run(
+        _warmup_run(
             stepper,
             device_ops,
             name=name,
@@ -629,6 +660,20 @@ def measure(
             profiling_time=profiling_time,
         )
     )
+
+    if _do_post_warmup():
+      result_kwargs |= dataclasses.asdict(
+          _post_warmup_run(
+              stepper,
+              device_ops,
+              name=name,
+              enable_xprof=enable_xprof,
+              profiling_time=profiling_time,
+              rewarm=True,
+          )
+      )
+  finally:
+    gc.unfreeze()
 
   return metrics.PerformanceMetrics(
       e2e_wall_time_seconds=(
