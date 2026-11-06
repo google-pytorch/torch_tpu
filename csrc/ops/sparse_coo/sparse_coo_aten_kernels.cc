@@ -579,8 +579,7 @@ at::Tensor& MulOutSparseImpl(const at::Tensor& self, const at::Tensor& other,
 
 at::Tensor& NegOutSparseImpl(const at::Tensor& self, OpParamCacheKeys pk,
                              at::Tensor& out) {
-  TT_CHECK_THROW(self.scalar_type() != at::ScalarType::Bool,
-                 error::kInvalidArgument)
+  TT_CHECK_THROW(!IsBool(self), error::kInvalidArgument)
       << "expected non-bool tensor for negation, got " << self.scalar_type();
   if (self._nnz() == 0) {
     if (!out.is_same(self)) {
@@ -625,9 +624,7 @@ at::Tensor& NegOutSparseImpl(const at::Tensor& self, OpParamCacheKeys pk,
 }
 
 void CheckSubNotBool(const at::Tensor& self, const at::Tensor& other) {
-  TT_CHECK_THROW(self.scalar_type() != at::ScalarType::Bool &&
-                     other.scalar_type() != at::ScalarType::Bool,
-                 error::kInvalidArgument)
+  TT_CHECK_THROW(!IsBool(self) && !IsBool(other), error::kInvalidArgument)
       << "expected non-bool tensors for subtraction, got " << self.scalar_type()
       << " and " << other.scalar_type();
 }

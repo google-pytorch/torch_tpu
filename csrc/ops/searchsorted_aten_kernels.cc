@@ -96,7 +96,7 @@ absl::Status ValidateSearchsortedInputs(
   // Reject booleans for non-empty inputs to keep consistent with CUDA impl,
   // which short-circuits and returns success for empty inputs before
   // dispatching on the input dtype.
-  TT_RET_CHECK(values.numel() == 0 || values.scalar_type() != at::kBool,
+  TT_RET_CHECK(values.numel() == 0 || !IsBool(values),
                error::kPythonNotImplementedError)
       << "not implemented for " << ToString(values.scalar_type());
   TT_RET_CHECK(sorted.dim() != 0, error::kInvalidArgument)

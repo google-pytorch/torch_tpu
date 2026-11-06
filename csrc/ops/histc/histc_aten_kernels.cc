@@ -144,9 +144,8 @@ absl::Status HistcHelperOut(const at::Tensor& self, const int64_t bins,
       << "expected the first argument not to be complex, got "
       << ToString(self.scalar_type());
 
-  TT_RET_CHECK(
-      self.scalar_type() != at::kBFloat16 && self.scalar_type() != at::kBool,
-      error::kPythonNotImplementedError)
+  TT_RET_CHECK(self.scalar_type() != at::kBFloat16 && !IsBool(self),
+               error::kPythonNotImplementedError)
       << "not implemented for " << ToString(self.scalar_type());
 
   TT_RETURN_IF_ERROR(

@@ -29,6 +29,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "c10/core/ScalarType.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -183,8 +184,7 @@ at::Tensor& AtenArangeStartOut(const at::Scalar& start, const at::Scalar& end,
       OpName::kArangeStartOut, param_keys,
       (start_promoted, end_promoted, step_promoted, out), {
         const at::ScalarType output_dtype = out.scalar_type();
-        TT_CHECK_THROW(output_dtype != at::kBool,
-                       error::kPythonNotImplementedError)
+        TT_CHECK_THROW(!IsBool(output_dtype), error::kPythonNotImplementedError)
             << "not implemented for " << ToString(output_dtype);
         const at::ScalarType acc_dtype = ToAccumulateType(output_dtype);
 

@@ -78,8 +78,7 @@ at::Tensor& AtenCumsumOut(const at::Tensor& self, int64_t dim,
 
     // PyTorch does not support boolean cumulative scans for non-empty tensors
     // with dim > 0.
-    TT_CHECK_THROW(out.scalar_type() != at::ScalarType::Bool,
-                   error::kPythonNotImplementedError)
+    TT_CHECK_THROW(!IsBool(out), error::kPythonNotImplementedError)
         << "invalid output dtype bool";
 
     TT_ASSIGN_OR_THROW(const mlir::ElementType out_mlir_type,
