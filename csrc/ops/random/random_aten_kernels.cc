@@ -35,6 +35,7 @@
 #include "c10/core/ScalarType.h"
 #include "c10/core/ScalarTypeToTypeMeta.h"
 #include "c10/util/Optional.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
@@ -85,7 +86,7 @@ absl::StatusOr<int64_t> ComputeToValue(at::ScalarType dtype) {
                          ? std::numeric_limits<int64_t>::max()
                          : static_cast<int64_t>(scalar_t_max);
         });
-  } else if (at::isIntegralType(dtype, /*includeBool=*/true)) {
+  } else if (IsIntegral(dtype)) {
     AT_DISPATCH_V2(dtype, "random_integral_to_value_calc",
                    AT_WRAP([&] {  // REF_CAPTURE_OK=called locally
                      if constexpr (std::is_same_v<scalar_t, bool>) {
