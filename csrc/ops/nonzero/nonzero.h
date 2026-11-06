@@ -31,6 +31,10 @@ absl::StatusOr<mlir::MlirOp> BuildNonzeroGetOutputSizeShlo(
 absl::StatusOr<mlir::MlirOp> BuildNonzeroShlo(int64_t output_size,
                                               mlir::MlirOp input);
 
+absl::StatusOr<mlir::MlirOp> BuildNonzeroStaticShlo(int64_t size,
+                                                    int64_t fill_value,
+                                                    mlir::MlirOp input);
+
 }  // namespace torch_tpu
 
 #endif  // TORCH_TPU_CSRC_OPS_NONZERO_NONZERO_H_

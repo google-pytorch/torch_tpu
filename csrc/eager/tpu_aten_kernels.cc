@@ -929,6 +929,8 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kNllLossNd>(m, AtenNllLossNd);
   ImplStable<OpName::kNonzero>(m, AtenNonzero);
   ImplStable<OpName::kNonzeroOut>(m, AtenNonzeroOut);
+  ImplStable<OpName::kNonzeroStatic>(m, AtenNonzeroStatic);
+  ImplStable<OpName::kNonzeroStaticOut>(m, AtenNonzeroStaticOut);
   ImplStable<OpName::kNormDtypeOut>(m, AtenNormDtypeOut);
   ImplStable<OpName::kNormOut>(m, AtenNormOut);
   ImplStable<OpName::kNormalFloatTensor>(m, AtenNormalFloatTensor);

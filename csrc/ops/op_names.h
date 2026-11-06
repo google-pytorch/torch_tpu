@@ -645,6 +645,8 @@ enum class OpName {
   kNonzero,
   kNonzeroOut,
   kNonzeroSize,
+  kNonzeroStatic,
+  kNonzeroStaticOut,
   kNormDtypeOut,
   kNormOut,
   kNormalFloatTensor,
@@ -2138,6 +2140,10 @@ ToString(  // NOLINT(google-readability-function-size)
       return "nonzero.out";
     case OpName::kNonzeroSize:
       return "nonzero_size";
+    case OpName::kNonzeroStatic:
+      return "nonzero_static";
+    case OpName::kNonzeroStaticOut:
+      return "nonzero_static.out";
     case OpName::kNormDtypeOut:
       return "norm.dtype_out";
     case OpName::kNormOut:

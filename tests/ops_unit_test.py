@@ -8105,6 +8105,57 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         ),
     )
 
+  def test_nonzero_static(self):
+    # Note: nonzero_static is not yet enabled in ops_test.py, and upstream
+    # OpInfo("nonzero_static") sets supports_out=False and omits custom
+    # fill_value.
+    # Empty and 0-D scalar edge cases
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.nonzero_static(
+            torch.tensor([], device=device), size=2, fill_value=-1
+        )
+    )
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.nonzero_static(
+            torch.tensor(1, device=device), size=1
+        )
+    )
+
+    # Truncation (size < nnz) and float32 padding (size > nnz) with fill_value
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.nonzero_static(
+            torch.tensor([[0, 1, 2], [0, -1, 3]], device=device), size=2
+        )
+    )
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.nonzero_static(
+            torch.tensor(
+                [0.0, -0.0, 1.5, float("nan"), float("inf")],
+                dtype=torch.float32,
+                device=device,
+            ),
+            size=5,
+            fill_value=99,
+        )
+    )
+
+    # out= variant: matching shape and dynamic resize
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.nonzero_static(
+            torch.tensor([[1, 0, 3, 0]], device=device),
+            size=3,
+            fill_value=42,
+            out=torch.empty(3, 2, dtype=torch.int64, device=device),
+        )
+    )
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.nonzero_static(
+            torch.tensor([[1, 2, 3, 0]], device=device),
+            size=3,
+            out=torch.empty(0, 0, dtype=torch.int64, device=device),
+        )
+    )
+
   @parameterized.parameters(torch.float32, torch.float16)
   def test_nonzero_subnormal(self, dtype):
     # TPU float comparators flush subnormals to zero, unlike CPU and CUDA.

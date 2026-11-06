@@ -304,8 +304,6 @@ UNREGISTERED_OPS = frozenset([
     'nansum.out',
     'narrow_copy.out',
     'nextafter.out',
-    'nonzero_static',
-    'nonzero_static.out',
     'ormqr',
     'ormqr.out',
     'poisson',

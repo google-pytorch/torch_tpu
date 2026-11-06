@@ -5030,6 +5030,32 @@ module {
     ):
       op_fn(t)
 
+  @et.why_tpu_only(
+      "CUDA nonzero.out omits assert_no_overlap(out, self) and silently"
+      " produces garbage, whereas CPU and TPU enforce it."
+  )
+  def test_nonzero_out_input_memory_overlap(self):
+    t = torch.tensor([[1, 0], [0, 2]], device=et.device(), dtype=torch.int64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.nonzero(t, out=t)
+
+  @et.why_tpu_only(
+      "CUDA nonzero_static.out omits assert_no_overlap(out, self) and silently"
+      " produces garbage, whereas CPU and TPU enforce it."
+  )
+  def test_nonzero_static_out_input_memory_overlap(self):
+    t = torch.tensor([[1, 0], [0, 2]], device=et.device(), dtype=torch.int64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.nonzero_static(t, size=2, out=t)
+
 
 class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):
 

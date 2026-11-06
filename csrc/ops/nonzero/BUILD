@@ -42,7 +42,7 @@ torch_tpu_cc_library(
         "//csrc/ops/resize:resize_aten_kernels",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
-        "//shims/torch/torch/headeronly:torch_headeronly",
+        "//shims/torch/c10/core:base_headers",
         "@com_google_absl//absl/functional:bind_front",
         "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/status",

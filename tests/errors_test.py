@@ -15176,6 +15176,82 @@ Supported combinations for non-constant padding:
     ):
       torch.nonzero(t, out=out)
 
+  def test_nonzero_out_invalid_dtype(self):
+    t = torch.zeros(2, 3, device=et.device())
+    out = torch.empty(0, 2, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""nonzero(): expected the output dtype to be int64, got float32""",
+        gpu="""Expected object of scalar type Long as out, but got float""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.nonzero(t, out=out)
+
+  def test_nonzero_out_internal_memory_overlap(self):
+    t = torch.tensor([1, 0, 2], device=et.device())
+    out = torch.empty(1, 1, device=et.device(), dtype=torch.int64).expand(2, 1)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""unsupported operation: more than one element of the written-to tensor refers to a single memory location. Please clone() the tensor before performing the operation.""",
+        gpu="""unsupported operation: more than one element of the written-to tensor refers to a single memory location. Please clone() the tensor before performing the operation.""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.nonzero(t, out=out)
+
+  def test_nonzero_static_cpu_out_tensor(self):
+    t = torch.zeros(2, 3, device=et.device())
+    out = torch.empty(2, 2, device="cpu", dtype=torch.int64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""nonzero_static(): expected the output tensor to be on tpu, got cpu""",
+        gpu="""Expected all tensors to be on the same device, but got self is on cuda:0, different from other tensors on cpu (when checking argument in method wrapper_CUDA_out_nonzero_static_out)""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.nonzero_static(t, size=2, out=out)
+
+  def test_nonzero_static_negative_size(self):
+    t = torch.tensor([1, 0, 2], device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""nonzero_static(): expected 'size' to be non-negative, got -1""",
+        gpu="""nonzero_static: 'size' must be an non-negative integer""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.nonzero_static(t, size=-1)
+
+  def test_nonzero_static_out_negative_size(self):
+    t = torch.tensor([1, 0, 2], device=et.device())
+    out = torch.empty(0, 1, device=et.device(), dtype=torch.int64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""nonzero_static(): expected 'size' to be non-negative, got -1""",
+        gpu="""nonzero_static: 'size' must be an non-negative integer""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.nonzero_static(t, size=-1, out=out)
+
+  def test_nonzero_static_out_invalid_dtype(self):
+    t = torch.tensor([1, 0, 2], device=et.device())
+    out = torch.empty(2, 1, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""nonzero_static(): expected the output dtype to be int64, got float32""",
+        gpu="""nonzero_static: Expected out tensor to have scalar type Long but got float""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.nonzero_static(t, size=2, out=out)
+
+  def test_nonzero_static_out_internal_memory_overlap(self):
+    t = torch.tensor([1, 0, 2], device=et.device())
+    out = torch.empty(1, 1, device=et.device(), dtype=torch.int64).expand(2, 1)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""unsupported operation: more than one element of the written-to tensor refers to a single memory location. Please clone() the tensor before performing the operation.""",
+        gpu="""unsupported operation: more than one element of the written-to tensor refers to a single memory location. Please clone() the tensor before performing the operation.""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.nonzero_static(t, size=2, out=out)
+
   def test_masked_select_cpu_out_tensor(self):
     """Masked select function fails when self and out have different devices."""
     t = torch.ones(5, device=et.device(), dtype=torch.float32)
