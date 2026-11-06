@@ -360,22 +360,23 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor> AtenEmbeddingBag(
         }
         int64_t emb_dim = weight.size(1);
 
-        bool has_psw =
-            per_sample_weights.has_value() && per_sample_weights->defined();
+        const std::optional<at::Tensor> psw =
+            SanitizeOptionalTensor(per_sample_weights);
+        const bool has_psw = psw.has_value();
 
         auto builder_fn = [scale_grad_by_freq, mode, sparse,
                            include_last_offset, padding_idx,
                            has_psw](absl::Span<mlir::MlirOp> inputs,
                                     mlir::MlirBuilder& builder) {
-          std::optional<mlir::MlirOp> psw;
-          if (has_psw) psw = inputs[3];
+          std::optional<mlir::MlirOp> psw_op;
+          if (has_psw) psw_op = inputs[3];
           return BuildEmbeddingBagShlo(inputs[0], inputs[1], inputs[2],
-                                       scale_grad_by_freq, mode, sparse, psw,
+                                       scale_grad_by_freq, mode, sparse, psw_op,
                                        include_last_offset, padding_idx);
         };
 
         std::vector<at::Tensor> inputs = {weight, indices, offsets};
-        if (has_psw) inputs.push_back(*per_sample_weights);
+        if (has_psw) inputs.push_back(*psw);
 
         std::array<mlir::ElementType, 4> out_dtypes = {weight_dtype, i64_dtype,
                                                        i64_dtype, i64_dtype};
@@ -441,8 +442,9 @@ at::Tensor AtenEmbeddingBagBackward(
           TT_THROW_IF_ERROR(ValidateEmbeddingBagMaxBackwardDtype(grad, mode));
         }
 
-        bool has_psw =
-            per_sample_weights.has_value() && per_sample_weights->defined();
+        const std::optional<at::Tensor> psw =
+            SanitizeOptionalTensor(per_sample_weights);
+        const bool has_psw = psw.has_value();
         int64_t nw_val = num_weights.expect_int();
 
         if (sparse) {
@@ -454,15 +456,15 @@ at::Tensor AtenEmbeddingBagBackward(
           auto index_grad_builder_fn = [mode, padding_idx, has_psw](
                                            absl::Span<mlir::MlirOp> inputs,
                                            mlir::MlirBuilder& builder) {
-            std::optional<mlir::MlirOp> psw;
-            if (has_psw) psw = inputs[5];
+            std::optional<mlir::MlirOp> psw_op;
+            if (has_psw) psw_op = inputs[5];
             return BuildEmbeddingBagSparseBackwardIndexGradShlo(
                 inputs[0], inputs[1], inputs[2], inputs[3], inputs[4], mode,
-                psw, padding_idx);
+                psw_op, padding_idx);
           };
           std::vector<at::Tensor> inputs = {grad, indices, offsets, offset2bag,
                                             bag_size};
-          if (has_psw) inputs.push_back(*per_sample_weights);
+          if (has_psw) inputs.push_back(*psw);
           TT_ASSIGN_OR_THROW(auto result_dtype,
                              ConvertTo<mlir::ElementType>(grad.scalar_type()));
           TT_ASSIGN_OR_THROW(auto index_grad_buf,
@@ -483,17 +485,17 @@ at::Tensor AtenEmbeddingBagBackward(
         auto builder_fn =
             [nw_val, scale_grad_by_freq, mode, sparse, padding_idx, has_psw](
                 absl::Span<mlir::MlirOp> inputs, mlir::MlirBuilder& builder) {
-              std::optional<mlir::MlirOp> psw;
-              if (has_psw) psw = inputs[6];
+              std::optional<mlir::MlirOp> psw_op;
+              if (has_psw) psw_op = inputs[6];
               return BuildEmbeddingBagBackwardShlo(
                   inputs[0], inputs[1], inputs[2], inputs[3], inputs[4],
                   inputs[5], at::SymInt(nw_val), scale_grad_by_freq, mode,
-                  sparse, psw, padding_idx);
+                  sparse, psw_op, padding_idx);
             };
 
         std::vector<at::Tensor> inputs = {grad,       indices,  offsets,
                                           offset2bag, bag_size, max_indices};
-        if (has_psw) inputs.push_back(*per_sample_weights);
+        if (has_psw) inputs.push_back(*psw);
 
         TT_ASSIGN_OR_THROW(auto result_dtype,
                            ConvertTo<mlir::ElementType>(grad.scalar_type()));
