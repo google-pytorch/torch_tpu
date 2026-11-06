@@ -7017,10 +7017,32 @@ Supported combinations for non-constant padding:
     batch2 = torch.ones(1, 3, 2, dtype=torch.half, device=et.device())
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""baddbmm(): expected input dtypes to be the same, got: self=float32, batch1=float32, batch2=float16""",
+        tpu="""baddbmm(): expected input dtypes to be the same, got float32 (self) vs float32 (batch1) vs float16 (batch2)""",
         gpu="""expected scalar type Float but found Half""",
     ):
       torch.baddbmm(input_tensor, batch1, batch2)
+
+  def test_baddbmm_dtype_mismatched_batch1_batch2_dtypes(self):
+    input_tensor = torch.ones(1, 2, 2, dtype=torch.float32, device=et.device())
+    batch1 = torch.ones(1, 2, 3, dtype=torch.bfloat16, device=et.device())
+    batch2 = torch.ones(1, 3, 2, dtype=torch.float16, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""baddbmm(): expected batch1 and batch2 to have the same dtype, got bfloat16 vs float16""",
+        gpu="""batch1 and batch2 must have the same dtype""",
+    ):
+      torch.baddbmm(input_tensor, batch1, batch2, out_dtype=torch.float32)
+
+  def test_baddbmm_dtype_mismatched_self_dtype(self):
+    input_tensor = torch.ones(1, 2, 2, dtype=torch.float16, device=et.device())
+    batch1 = torch.ones(1, 2, 3, dtype=torch.bfloat16, device=et.device())
+    batch2 = torch.ones(1, 3, 2, dtype=torch.bfloat16, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""baddbmm(): expected self dtype to match either out_dtype (float32) or batch1 dtype (bfloat16), got float16""",
+        gpu="""self dtype must match either out_dtype or batch1 dtype""",
+    ):
+      torch.baddbmm(input_tensor, batch1, batch2, out_dtype=torch.float32)
 
   def test_baddbmm_not_batch_of_matrices(self):
     input_tensor = torch.ones(1, 1, 1, device=et.device())
@@ -7070,6 +7092,23 @@ Supported combinations for non-constant padding:
         gpu="""Expected size for first two dimensions of batch2 tensor to be: [1, 3] but got: [1, 4].""",
     ):
       torch.baddbmm(input_tensor, batch1, batch2, out=out)
+
+  @parameterized.named_parameters(
+      dict(testcase_name="beta_zero", beta=0.0),
+      dict(testcase_name="beta_one", beta=1.0),
+  )
+  def test_baddbmm_out_non_broadcastable_self(self, beta: float):
+    input_tensor = torch.ones(5, 5, device=et.device())
+    batch1 = torch.ones(2, 3, 4, device=et.device())
+    batch2 = torch.ones(2, 4, 6, device=et.device())
+    out = torch.empty(2, 3, 6, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""baddbmm(): expected self shape to be broadcastable to output shape [2, 3, 6], got [5, 5]""",
+        gpu="""The expanded size of the tensor (6) must match the existing size (5) at non-singleton dimension 2.  Target sizes: [2, 3, 6].  Tensor sizes: [5, 5]""",
+    ):
+      torch.baddbmm(input_tensor, batch1, batch2, beta=beta, out=out)
 
   @_parameterize_convolution_fwd_bwd(
       forward={

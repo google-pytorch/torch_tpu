@@ -26366,6 +26366,54 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
     self.assertEqual(torch.signbit(actual_pos), torch.signbit(expected_pos))
     self.assertEqual(torch.signbit(actual_neg), torch.signbit(expected_neg))
 
+  def test_baddbmm_out_dtype_float32_from_low_precision(self):
+    for mat_dtype in (torch.bfloat16, torch.float16):
+      for self_dtype in (mat_dtype, torch.float32):
+        for self_shape in ((2, 3, 4), (3, 4)):
+          for beta, alpha in ((1.0, 1.0), (0.0, 2.0), (2.0, 0.0), (2.0, 3.0)):
+            with self.subTest(
+                mat_dtype=mat_dtype,
+                self_dtype=self_dtype,
+                self_shape=self_shape,
+                beta=beta,
+                alpha=alpha,
+            ):
+              s_cpu = torch.arange(
+                  1, 1 + math.prod(self_shape), dtype=self_dtype
+              ).reshape(self_shape)
+              b1_cpu = torch.arange(151, 181, dtype=mat_dtype).reshape(2, 3, 5)
+              b2_cpu = torch.arange(181, 221, dtype=mat_dtype).reshape(2, 5, 4)
+              expected = beta * s_cpu.float() + alpha * torch.bmm(
+                  b1_cpu.float(), b2_cpu.float()
+              )
+
+              s_tpu = s_cpu.to("tpu")
+              b1_tpu = b1_cpu.to("tpu")
+              b2_tpu = b2_cpu.to("tpu")
+              res = torch.baddbmm(
+                  s_tpu,
+                  b1_tpu,
+                  b2_tpu,
+                  beta=beta,
+                  alpha=alpha,
+                  out_dtype=torch.float32,
+              )
+              self.assertEqual(res.dtype, torch.float32)
+              utils.assert_close(res.cpu(), expected)
+
+              out_tpu = torch.empty(2, 3, 4, dtype=torch.float32, device="tpu")
+              torch.baddbmm(
+                  s_tpu,
+                  b1_tpu,
+                  b2_tpu,
+                  beta=beta,
+                  alpha=alpha,
+                  out_dtype=torch.float32,
+                  out=out_tpu,
+              )
+              self.assertEqual(out_tpu.dtype, torch.float32)
+              utils.assert_close(out_tpu.cpu(), expected)
+
 
 if __name__ == "__main__":
   absltest.main()
