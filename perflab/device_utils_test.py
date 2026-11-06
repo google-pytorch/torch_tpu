@@ -14,6 +14,9 @@
 
 """Tests for device_utils."""
 
+import dataclasses
+import json
+import types
 from unittest import mock
 
 from absl.testing import absltest
@@ -23,6 +26,141 @@ from torch_tpu._internal.benchmarks import xprof_adapter
 from perflab import device_utils
 from tests import oss_utils
 from tests import seed_test_utils
+
+_MB = 1024 * 1024
+_PS_PER_S = 1000000000000
+
+
+# Plain value types mirroring the XSpace proto fields that device_utils reads.
+# Unlike MagicMock trees, reading any other field raises AttributeError.
+@dataclasses.dataclass(frozen=True, slots=True)
+class _XEvent:
+  duration_ps: int
+  offset_ps: int = 0
+  metadata_id: int | None = None
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _XLine:
+  name: str
+  events: list[_XEvent]
+  timestamp_ns: int = 0
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _XEventMetadata:
+  name: str
+  display_name: str = ''
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _XPlane:
+  name: str
+  lines: list[_XLine]
+  event_metadata: dict[int, _XEventMetadata] = dataclasses.field(
+      default_factory=dict
+  )
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _XSpace:
+  planes: list[_XPlane]
+
+
+def _make_plane(name, durations_ps, offsets_ps=None):
+  if offsets_ps is None:
+    offsets_ps = list(range(len(durations_ps)))
+  events = [
+      _XEvent(duration_ps=d, offset_ps=o)
+      for o, d in zip(offsets_ps, durations_ps)
+  ]
+  return _XPlane(name=name, lines=[_XLine('XLA Modules:...', events)])
+
+
+def _make_host_plane(step_windows_ps, timestamp_ns=100):
+  """Returns a host plane with a `post_warmup_step` TraceMe per window."""
+  events = [
+      _XEvent(duration_ps=d, offset_ps=o, metadata_id=1)
+      for o, d in step_windows_ps
+  ]
+  return _XPlane(
+      name='/host:CPU',
+      lines=[_XLine('Thread 1', events, timestamp_ns=timestamp_ns)],
+      event_metadata={
+          1: _XEventMetadata(
+              name='post_warmup_step',
+              display_name='post_warmup_step#step_num=0#',
+          )
+      },
+  )
+
+
+def _make_device_plane(name, events_ps, timestamp_ns=100):
+  """Returns a device plane with XLA module events at (offset, duration)."""
+  events = [_XEvent(duration_ps=d, offset_ps=o) for o, d in events_ps]
+  return _XPlane(
+      name=name,
+      lines=[_XLine('XLA Modules:...', events, timestamp_ns=timestamp_ns)],
+  )
+
+
+def _xprof_client(xspaces_by_host=None, peak_bytes=None):
+  """Returns an autospecced XProf client serving the given profile data."""
+  client = mock.create_autospec(xprof_adapter.XprofAnalysisClient)
+  xspaces_by_host = xspaces_by_host or {}
+  client.get_hosts.return_value = list(xspaces_by_host)
+  client.get_xspace.side_effect = lambda session_id, host: xspaces_by_host.get(
+      host
+  )
+  if peak_bytes is not None:
+    profile = {
+        'memoryProfilePerAllocator': {
+            '0': {
+                'profileSummary': {'peakStats': {'peakBytesInUse': peak_bytes}}
+            }
+        }
+    }
+    client.get_profile_data.return_value = (
+        'application/json',
+        json.dumps(profile).encode('utf-8'),
+    )
+  else:
+    client.get_profile_data.return_value = ('application/json', b'')
+  return client
+
+
+class _FakeCudaMemory:
+  """Stateful stand-in for the torch.cuda.memory peak-tracking counters."""
+
+  def __init__(self):
+    self.allocated = 0
+    self.peak = 0
+
+  def allocate(self, num_bytes):
+    self.allocated += num_bytes
+    self.peak = max(self.peak, self.allocated)
+
+  def free(self, num_bytes):
+    self.allocated -= num_bytes
+
+  def max_memory_allocated(self):
+    return self.peak
+
+  def reset_max_memory_allocated(self):
+    self.peak = self.allocated
+
+
+class _FakeJaxDevice:
+  """Stateful stand-in for a jax.Device's memory statistics."""
+
+  def __init__(self, stats):
+    self._stats = stats
+
+  def memory_stats(self):
+    return None if self._stats is None else dict(self._stats)
+
+  def reset_memory_stats(self):
+    self._stats['peak_bytes_in_use'] = self._stats['bytes_in_use']
 
 
 class DeviceUtilsTest(seed_test_utils.RepeatableTest):
@@ -50,120 +188,43 @@ class DeviceUtilsTest(seed_test_utils.RepeatableTest):
     self.assertGreater(peak_mem, 0.0)
 
   def test_get_max_total_device_time_success(self):
-    mock_client = mock.create_autospec(xprof_adapter.XprofAnalysisClient)
-    mock_client.get_hosts.return_value = ['host1', 'host2']
+    client = _xprof_client({
+        'host1': _XSpace([_make_plane('/device:0', [1 * _PS_PER_S])]),
+        'host2': _XSpace([_make_plane('/device:1', [2 * _PS_PER_S])]),
+    })
 
-    # Mock XSpace structure
-    mock_event1 = mock.MagicMock()
-    mock_event1.duration_ps = 1000000000000  # 1 second
-
-    mock_event2 = mock.MagicMock()
-    mock_event2.duration_ps = 2000000000000  # 2 seconds
-
-    mock_line1 = mock.MagicMock()
-    mock_line1.name = 'XLA Modules:...'
-    mock_line1.events = [mock_event1]
-
-    mock_line2 = mock.MagicMock()
-    mock_line2.name = 'XLA Modules:...'
-    mock_line2.events = [mock_event2]
-
-    mock_plane1 = mock.MagicMock()
-    mock_plane1.name = '/device:0'
-    mock_plane1.lines = [mock_line1]
-
-    mock_plane2 = mock.MagicMock()
-    mock_plane2.name = '/device:1'
-    mock_plane2.lines = [mock_line2]
-
-    mock_xspace1 = mock.MagicMock()
-    mock_xspace1.planes = [mock_plane1]
-
-    mock_xspace2 = mock.MagicMock()
-    mock_xspace2.planes = [mock_plane2]
-
-    def get_xspace_side_effect(session_id, host):
-      del session_id  # Unused
-      if host == 'host1':
-        return mock_xspace1
-      elif host == 'host2':
-        return mock_xspace2
-      return None
-
-    mock_client.get_xspace.side_effect = get_xspace_side_effect
-
-    # Call the function
     max_time = device_utils.get_max_total_device_time(
-        session_id='session_123', client=mock_client
+        session_id='session_123', client=client
     )
 
     # We expect max of 1s and 2s, which is 2s.
     self.assertEqual(max_time, 2.0)
 
   def test_get_max_total_device_time_sums_every_event(self):
-    mock_client = mock.create_autospec(xprof_adapter.XprofAnalysisClient)
-    mock_client.get_hosts.return_value = ['host1']
-
     # A single step frequently executes more than one XLA module (forward,
     # backward, optimizer, ...), so the event count is not the step count and
     # events must never be truncated to a step count.
     durations_ps = [
-        1000000000000,  # 1s
-        1000000000000,  # 1s
-        2000000000000,  # 2s
-        3000000000000,  # 3s
+        1 * _PS_PER_S,
+        1 * _PS_PER_S,
+        2 * _PS_PER_S,
+        3 * _PS_PER_S,
     ]
-    mock_events = []
-    for i, duration_ps in enumerate(durations_ps):
-      mock_event = mock.MagicMock()
-      mock_event.offset_ps = (i + 1) * 1000
-      mock_event.duration_ps = duration_ps
-      mock_events.append(mock_event)
-
-    mock_line = mock.MagicMock()
-    mock_line.name = 'XLA Modules:...'
-    mock_line.events = mock_events
-
-    mock_plane = mock.MagicMock()
-    mock_plane.name = '/device:0'
-    mock_plane.lines = [mock_line]
-
-    mock_xspace = mock.MagicMock()
-    mock_xspace.planes = [mock_plane]
-
-    mock_client.get_xspace.return_value = mock_xspace
+    client = _xprof_client({
+        'host1': _XSpace([
+            _make_plane(
+                '/device:0', durations_ps, offsets_ps=[1000, 2000, 3000, 4000]
+            )
+        ])
+    })
 
     total_time = device_utils.get_max_total_device_time(
-        session_id='session_123', client=mock_client
+        session_id='session_123', client=client
     )
     self.assertEqual(total_time, 7.0)
 
-  def _make_xspace(self, planes):
-    mock_xspace = mock.MagicMock()
-    mock_xspace.planes = planes
-    return mock_xspace
-
-  def _make_plane(self, name, durations_ps, offsets_ps=None):
-    if offsets_ps is None:
-      offsets_ps = list(range(len(durations_ps)))
-    events = []
-    for offset_ps, duration_ps in zip(offsets_ps, durations_ps):
-      event = mock.MagicMock()
-      event.offset_ps = offset_ps
-      event.duration_ps = duration_ps
-      events.append(event)
-    line = mock.MagicMock()
-    line.name = 'XLA Modules:...'
-    line.events = events
-    plane = mock.MagicMock()
-    plane.name = name
-    plane.lines = [line]
-    return plane
-
   def test_get_total_device_time_from_xspace(self):
-    xspace = self._make_xspace(
-        [self._make_plane('/device:0', [1000000000000, 2000000000000])]
-    )
+    xspace = _XSpace([_make_plane('/device:0', [1 * _PS_PER_S, 2 * _PS_PER_S])])
     self.assertEqual(
         device_utils.get_total_device_time_from_xspace(xspace), 3.0
     )
@@ -175,14 +236,14 @@ class DeviceUtilsTest(seed_test_utils.RepeatableTest):
     # emits a tiny prologue module plus the main module per step, so 2 profiled
     # steps produce 4 events. Truncating to the step count would report only
     # the last 2 events and halve the measured device time.
-    xspace = self._make_xspace([
-        self._make_plane(
+    xspace = _XSpace([
+        _make_plane(
             '/device:0',
             durations_ps=[
-                1000000000000,  # step 1, module A
-                1000000000000,  # step 1, module B
-                2000000000000,  # step 2, module A
-                3000000000000,  # step 2, module B
+                1 * _PS_PER_S,  # step 1, module A
+                1 * _PS_PER_S,  # step 1, module B
+                2 * _PS_PER_S,  # step 2, module A
+                3 * _PS_PER_S,  # step 2, module B
             ],
             offsets_ps=[1000, 2000, 3000, 4000],
         )
@@ -198,10 +259,10 @@ class DeviceUtilsTest(seed_test_utils.RepeatableTest):
     # 3 events over 2 steps means the capture window does not line up with the
     # measured steps. The total is still reported in full, but a warning flags
     # the trace as suspect.
-    xspace = self._make_xspace([
-        self._make_plane(
+    xspace = _XSpace([
+        _make_plane(
             '/device:0',
-            durations_ps=[1000000000000, 2000000000000, 3000000000000],
+            durations_ps=[1 * _PS_PER_S, 2 * _PS_PER_S, 3 * _PS_PER_S],
         )
     ])
     with self.assertLogs(level='WARNING') as logs:
@@ -212,18 +273,18 @@ class DeviceUtilsTest(seed_test_utils.RepeatableTest):
     self.assertRegex('\n'.join(logs.output), 'not a multiple')
 
   def test_get_total_device_time_from_xspace_takes_max_over_local_devices(self):
-    xspace = self._make_xspace([
-        self._make_plane('/device:0', [1000000000000]),
-        self._make_plane('/device:1', [4000000000000]),
+    xspace = _XSpace([
+        _make_plane('/device:0', [1 * _PS_PER_S]),
+        _make_plane('/device:1', [4 * _PS_PER_S]),
     ])
     self.assertEqual(
         device_utils.get_total_device_time_from_xspace(xspace), 4.0
     )
 
   def test_get_total_device_time_from_xspace_ignores_non_device_planes(self):
-    host_plane = self._make_plane('/host:CPU', [9000000000000])
-    device_plane = self._make_plane('/device:0', [1000000000000])
-    xspace = self._make_xspace([host_plane, device_plane])
+    host_plane = _make_plane('/host:CPU', [9 * _PS_PER_S])
+    device_plane = _make_plane('/device:0', [1 * _PS_PER_S])
+    xspace = _XSpace([host_plane, device_plane])
     self.assertEqual(
         device_utils.get_total_device_time_from_xspace(xspace), 1.0
     )
@@ -232,16 +293,9 @@ class DeviceUtilsTest(seed_test_utils.RepeatableTest):
     self.assertEqual(device_utils.get_total_device_time_from_xspace(None), -1.0)
 
   def test_get_total_device_time_from_xspace_no_xla_modules(self):
-    plane = mock.MagicMock()
-    plane.name = '/device:0'
-    other_line = mock.MagicMock()
-    other_line.name = 'Steps'
-    other_line.events = []
-    plane.lines = [other_line]
+    plane = _XPlane(name='/device:0', lines=[_XLine(name='Steps', events=[])])
     self.assertEqual(
-        device_utils.get_total_device_time_from_xspace(
-            self._make_xspace([plane])
-        ),
+        device_utils.get_total_device_time_from_xspace(_XSpace([plane])),
         -1.0,
     )
 
@@ -256,37 +310,28 @@ class DeviceUtilsTest(seed_test_utils.RepeatableTest):
         ),
         -1.0,
     )
-    mock_client = mock.create_autospec(xprof_adapter.XprofAnalysisClient)
     self.assertEqual(
         device_utils.get_max_total_device_time(
-            session_id=None, client=mock_client
+            session_id=None, client=_xprof_client()
         ),
         -1.0,
     )
 
   def test_get_max_total_device_time_no_hosts(self):
-    mock_client = mock.create_autospec(xprof_adapter.XprofAnalysisClient)
-    mock_client.get_hosts.return_value = []
     self.assertEqual(
         device_utils.get_max_total_device_time(
-            session_id='session_123', client=mock_client
+            session_id='session_123', client=_xprof_client()
         ),
         -1.0,
     )
 
   def test_get_max_total_device_time_no_devices(self):
-    mock_client = mock.create_autospec(xprof_adapter.XprofAnalysisClient)
-    mock_client.get_hosts.return_value = ['host1']
-
-    mock_plane = mock.MagicMock()
-    mock_plane.name = '/cpu:0'  # Not a device
-    mock_xspace = mock.MagicMock()
-    mock_xspace.planes = [mock_plane]
-    mock_client.get_xspace.return_value = mock_xspace
-
+    client = _xprof_client(
+        {'host1': _XSpace([_XPlane(name='/cpu:0', lines=[])])}
+    )
     self.assertEqual(
         device_utils.get_max_total_device_time(
-            session_id='session_123', client=mock_client
+            session_id='session_123', client=client
         ),
         -1.0,
     )
@@ -336,124 +381,153 @@ class DeviceUtilsTest(seed_test_utils.RepeatableTest):
       self.assertEqual(device_utils.get_peak_memory_hbm('tpu'), 0.0)
 
   def test_get_peak_memory_hbm_tpu_fallback_when_accelerator_raises(self):
+    client = _xprof_client(peak_bytes=96 * _MB)
     with mock.patch.object(
         torch.accelerator,
         'max_memory_allocated',
         side_effect=RuntimeError('Accelerator query failed'),
-    ), mock.patch.object(
-        device_utils, '_get_peak_hbm_memory_mb', return_value=123.45
-    ) as mock_fallback:
+    ):
       result = device_utils.get_peak_memory_hbm(
-          'tpu', session_id='s1', xprof_client=mock.MagicMock()
+          'tpu', session_id='s1', xprof_client=client
       )
-      self.assertEqual(result, 123.45)
-      mock_fallback.assert_called_once()
+    self.assertEqual(result, 96.0)
 
   def test_get_peak_memory_hbm_tpu_fallback_without_accelerator_api(self):
-    with mock.patch.object(
-        torch, 'accelerator', create=True, spec=[]
-    ), mock.patch.object(
-        device_utils, '_get_peak_hbm_memory_mb', return_value=99.0
-    ) as mock_fallback:
+    client = _xprof_client(peak_bytes=99 * _MB)
+    with mock.patch.object(torch, 'accelerator', create=True, spec=[]):
       result = device_utils.get_peak_memory_hbm(
-          'tpu', session_id='s1', xprof_client=mock.MagicMock()
+          'tpu', session_id='s1', xprof_client=client
       )
-      self.assertEqual(result, 99.0)
-      mock_fallback.assert_called_once()
+    self.assertEqual(result, 99.0)
 
-  def test_get_peak_memory_hbm_cuda(self):
-    with mock.patch.object(
-        torch.cuda.memory, 'max_memory_allocated', return_value=64 * 1024 * 1024
-    ):
-      self.assertEqual(device_utils.get_peak_memory_hbm('cuda'), 64.0)
+  def test_get_peak_memory_hbm_tpu_fallback_without_session(self):
+    with mock.patch.object(torch, 'accelerator', create=True, spec=[]):
+      self.assertEqual(device_utils.get_peak_memory_hbm('tpu'), -1.0)
+
+  def test_get_peak_memory_hbm_tpu_fallback_empty_profile(self):
+    with mock.patch.object(torch, 'accelerator', create=True, spec=[]):
+      result = device_utils.get_peak_memory_hbm(
+          'tpu', session_id='s1', xprof_client=_xprof_client()
+      )
+    self.assertEqual(result, -1.0)
 
   def test_get_peak_memory_hbm_cpu(self):
     mem = device_utils.get_peak_memory_hbm('cpu')
     self.assertGreater(mem, 0.0)
 
   def test_get_peak_memory_hbm_jax(self):
-    mock_dev_unsupported = mock.MagicMock()
-    mock_dev_unsupported.memory_stats.return_value = None
-    with mock.patch(
-        'jax.local_devices', return_value=[mock_dev_unsupported]
-    ), mock.patch.object(
-        device_utils, '_get_peak_hbm_memory_mb', return_value=42.0
-    ) as mock_fallback:
-      self.assertEqual(device_utils.get_peak_memory_hbm('jax'), 42.0)
-      self.assertEqual(mock_fallback.call_count, 1)
+    client = _xprof_client(peak_bytes=42 * _MB)
 
-    mock_dev_tpu = mock.MagicMock()
-    mock_dev_tpu.memory_stats.return_value = {
-        'peak_bytes_in_use': 256 * 1024 * 1024
-    }
-    with mock.patch('jax.local_devices', return_value=[mock_dev_tpu]):
-      self.assertEqual(device_utils.get_peak_memory_hbm('jax'), 256.0)
+    def peak_mb(device, **kwargs):
+      with mock.patch('jax.local_devices', return_value=[device]):
+        return device_utils.get_peak_memory_hbm('jax', **kwargs)
 
-    mock_dev_with_reserved = mock.MagicMock()
-    mock_dev_with_reserved.memory_stats.return_value = {
-        'peak_bytes_in_use': 256 * 1024 * 1024,
-        'peak_bytes_reserved': 512 * 1024 * 1024,
-    }
-    with mock.patch('jax.local_devices', return_value=[mock_dev_with_reserved]):
-      self.assertEqual(device_utils.get_peak_memory_hbm('jax'), 768.0)
-
-    mock_dev_peak_allocated = mock.MagicMock()
-    mock_dev_peak_allocated.memory_stats.return_value = {
-        'peak_allocated_bytes': 1024 * 1024 * 1024,
-        'peak_bytes_in_use': 256 * 1024 * 1024,
-        'peak_bytes_reserved': 512 * 1024 * 1024,
-    }
-    with mock.patch(
-        'jax.local_devices', return_value=[mock_dev_peak_allocated]
-    ):
-      self.assertEqual(device_utils.get_peak_memory_hbm('jax'), 1024.0)
-
-    mock_dev_bytes_only = mock.MagicMock()
-    mock_dev_bytes_only.memory_stats.return_value = {
-        'bytes_in_use': 128 * 1024 * 1024,
-        'bytes_reserved': 64 * 1024 * 1024,
-    }
-    with mock.patch('jax.local_devices', return_value=[mock_dev_bytes_only]):
-      self.assertEqual(device_utils.get_peak_memory_hbm('jax'), 192.0)
-
-    mock_dev_neg = mock.MagicMock()
-    mock_dev_neg.memory_stats.return_value = {'peak_bytes_in_use': -1}
-    with mock.patch(
-        'jax.local_devices', return_value=[mock_dev_neg]
-    ), mock.patch.object(
-        device_utils, '_get_peak_hbm_memory_mb', return_value=42.0
-    ):
-      self.assertEqual(device_utils.get_peak_memory_hbm('jax'), 42.0)
-
+    # Devices without memory stats fall back to the XProf memory profile.
+    self.assertEqual(
+        peak_mb(_FakeJaxDevice(None), session_id='s1', xprof_client=client),
+        42.0,
+    )
+    self.assertEqual(
+        peak_mb(_FakeJaxDevice({'peak_bytes_in_use': 256 * _MB})), 256.0
+    )
+    # Compiled XLA executable stack reservations count towards the peak.
+    self.assertEqual(
+        peak_mb(
+            _FakeJaxDevice({
+                'peak_bytes_in_use': 256 * _MB,
+                'peak_bytes_reserved': 512 * _MB,
+            })
+        ),
+        768.0,
+    )
+    # peak_allocated_bytes takes precedence when reported.
+    self.assertEqual(
+        peak_mb(
+            _FakeJaxDevice({
+                'peak_allocated_bytes': 1024 * _MB,
+                'peak_bytes_in_use': 256 * _MB,
+                'peak_bytes_reserved': 512 * _MB,
+            })
+        ),
+        1024.0,
+    )
+    self.assertEqual(
+        peak_mb(
+            _FakeJaxDevice(
+                {'bytes_in_use': 128 * _MB, 'bytes_reserved': 64 * _MB}
+            )
+        ),
+        192.0,
+    )
+    # A negative peak is invalid, so bytes_in_use is used instead.
+    self.assertEqual(
+        peak_mb(
+            _FakeJaxDevice({'peak_bytes_in_use': -1, 'bytes_in_use': 8 * _MB})
+        ),
+        8.0,
+    )
+    self.assertEqual(
+        peak_mb(
+            _FakeJaxDevice({'peak_bytes_in_use': -1}),
+            session_id='s1',
+            xprof_client=client,
+        ),
+        42.0,
+    )
     with mock.patch(
         'jax.local_devices', side_effect=RuntimeError('JAX unavailable')
-    ), mock.patch.object(
-        device_utils, '_get_peak_hbm_memory_mb', return_value=42.0
     ):
-      self.assertEqual(device_utils.get_peak_memory_hbm('jax'), 42.0)
+      self.assertEqual(
+          device_utils.get_peak_memory_hbm(
+              'jax', session_id='s1', xprof_client=client
+          ),
+          42.0,
+      )
 
   def test_get_peak_memory_hbm_unsupported_device(self):
     with self.assertRaises(ValueError):  # ASSERT_RAISES_OK=benchmark
       device_utils.get_peak_memory_hbm('unsupported_device')
 
-  def test_reset_peak_memory_stats_cuda(self):
+  def test_cuda_peak_memory_reset_and_query(self):
+    # There is no CUDA device under test, so the CUDA allocator counters are
+    # replaced by a stateful fake.
+    fake = _FakeCudaMemory()
     with mock.patch.object(
-        torch.cuda.memory, 'reset_max_memory_allocated'
-    ) as mock_reset:
-      device_utils.reset_peak_memory_stats('cuda')
-      mock_reset.assert_called_once()
+        torch.cuda.memory, 'max_memory_allocated', fake.max_memory_allocated
+    ), mock.patch.object(
+        torch.cuda.memory,
+        'reset_max_memory_allocated',
+        fake.reset_max_memory_allocated,
+    ):
+      fake.allocate(64 * _MB)
+      fake.free(48 * _MB)
+      self.assertEqual(device_utils.get_peak_memory_hbm('cuda'), 64.0)
 
-  def test_reset_peak_memory_stats_cpu_and_jax(self):
-    device_utils.reset_peak_memory_stats('cpu')
-    mock_dev = mock.MagicMock()
-    with mock.patch('jax.local_devices', return_value=[mock_dev]):
+      device_utils.reset_peak_memory_stats('cuda')
+      self.assertEqual(device_utils.get_peak_memory_hbm('cuda'), 16.0)
+
+  def test_jax_peak_memory_reset_and_query(self):
+    devices = [
+        _FakeJaxDevice(
+            {'peak_bytes_in_use': 256 * _MB, 'bytes_in_use': 32 * _MB}
+        ),
+        _FakeJaxDevice(
+            {'peak_bytes_in_use': 512 * _MB, 'bytes_in_use': 64 * _MB}
+        ),
+    ]
+    with mock.patch('jax.local_devices', return_value=devices):
+      self.assertEqual(device_utils.get_peak_memory_hbm('jax'), 256.0)
+
       device_utils.reset_peak_memory_stats('jax')
-      mock_dev.reset_memory_stats.assert_called_once()
+
+      self.assertEqual(device_utils.get_peak_memory_hbm('jax'), 32.0)
+    # Every local device is reset, not just the one that is queried.
+    self.assertEqual(devices[1].memory_stats()['peak_bytes_in_use'], 64 * _MB)
 
   def test_configure_inductor_for_benchmarks(self):
     from torch._inductor.codegen.triton import TritonOverrides  # pylint: disable=g-import-not-at-top
 
-    fake_masking_utils = mock.MagicMock()
+    fake_masking_utils = types.ModuleType('masking_utils')
     with mock.patch('importlib.import_module', return_value=fake_masking_utils):
       device_utils.configure_inductor_for_benchmarks()
     self.assertEqual(torch._inductor.config.compile_threads, 1)
@@ -461,17 +535,29 @@ class DeviceUtilsTest(seed_test_utils.RepeatableTest):
     self.assertIn('tl.float32', TritonOverrides.isnan('x'))
     self.assertFalse(fake_masking_utils.is_tracing(torch.zeros(1)))
 
-  def test_torch_compile_cuda_calls_configure_inductor(self):
-    def dummy_fn(x):
+  def test_torch_compile_cpu_configures_inductor_and_forwards_fullgraph(self):
+    # The test sandbox has no C++ compiler, so inductor codegen cannot run.
+    # Dynamo rejects a graph break under fullgraph=True while tracing, before
+    # the backend is invoked, which makes fullgraph observable without codegen.
+    # TODO(wan): revisit DECISION (b/568593385): backend='inductor' itself is
+    # not asserted, since that needs a working C++ toolchain under test.
+    def add_one_with_graph_break(x):
+      torch._dynamo.graph_break()
       return x + 1
 
-    with mock.patch.object(
-        device_utils, 'configure_inductor_for_benchmarks'
-    ) as mock_cfg, mock.patch('torch.compile', return_value='WRAPPED') as tc:
-      out = device_utils.torch_compile(dummy_fn, 'cuda', fullgraph=True)
-    self.assertEqual(out, 'WRAPPED')
-    mock_cfg.assert_called_once()
-    tc.assert_called_once_with(dummy_fn, backend='inductor', fullgraph=True)
+    torch._dynamo.reset()
+    with torch._inductor.config.patch(compile_threads=4):
+      compiled = device_utils.torch_compile(
+          add_one_with_graph_break, 'cpu', fullgraph=True
+      )
+      # Inductor is configured for benchmarking before compiling.
+      self.assertEqual(torch._inductor.config.compile_threads, 1)
+    self.assertIs(
+        torch._dynamo.eval_frame.innermost_fn(compiled),
+        add_one_with_graph_break,
+    )
+    with self.assertRaises(torch._dynamo.exc.Unsupported):
+      compiled(torch.arange(4.0))
 
   def test_collect_tensors_on_keeps_only_tensors_on_the_device(self):
     tpu_a = torch.ones(2, device='tpu')
@@ -505,53 +591,18 @@ class DeviceUtilsTest(seed_test_utils.RepeatableTest):
   def test_get_total_device_time_from_xspace_filters_post_warmup_step_windows(
       self,
   ):
-    # Host plane has two `post_warmup_step` TraceMe events:
-    #   step 0: [1000, 3500]
-    #   step 1: [6000, 8500]
-    # Inter-step `post_warmup_hook` runs in [4000, 5500] and after step 1.
-    host_event_0 = mock.MagicMock(
-        metadata_id=1, offset_ps=1000, duration_ps=2500
-    )
-    host_event_1 = mock.MagicMock(
-        metadata_id=1, offset_ps=6000, duration_ps=2500
-    )
-    host_line = mock.MagicMock(
-        name='Thread 1',
-        timestamp_ns=100,
-        events=[host_event_0, host_event_1],
-    )
-    meta = mock.MagicMock()
-    meta.name = 'post_warmup_step'
-    meta.display_name = 'post_warmup_step#step_num=0#'
-    host_plane = mock.MagicMock()
-    host_plane.name = '/host:CPU'
-    host_plane.event_metadata = {1: meta}
-    host_plane.lines = [host_line]
-
+    # Two post_warmup_step host TraceMes: [1000, 3500] and [6000, 8500].
+    host_plane = _make_host_plane([(1000, 2500), (6000, 2500)])
     # Device plane has:
-    #   - step 0 module (offset 1500, duration 1_000_000_000_000 ps = 1s)
-    #   - post_warmup_hook cache-reset module (offset 4500, duration 0.5s)
-    #   - step 1 module (offset 6500, duration 2_000_000_000_000 ps = 2s)
-    dev_events = []
-    for offset_ps, duration_ps in (
-        (1500, 1_000),
-        (4500, 500),
-        (6500, 2_000),
-    ):
-      ev = mock.MagicMock(offset_ps=offset_ps, duration_ps=duration_ps)
-      dev_events.append(ev)
-    dev_line = mock.MagicMock(
-        name='XLA Modules:...',
-        timestamp_ns=100,
-        events=dev_events,
+    #   - step 0 module (offset 1500, duration 1000 ps)
+    #   - post_warmup_hook cache-reset module (offset 4500, duration 500 ps)
+    #   - step 1 module (offset 6500, duration 2000 ps)
+    dev_plane = _make_device_plane(
+        '/device:TPU:0', [(1500, 1_000), (4500, 500), (6500, 2_000)]
     )
-    dev_plane = mock.MagicMock()
-    dev_plane.name = '/device:TPU:0'
-    dev_plane.lines = [dev_line]
 
-    xspace = self._make_xspace([host_plane, dev_plane])
     total = device_utils.get_total_device_time_from_xspace(
-        xspace, expected_steps=2
+        _XSpace(planes=[host_plane, dev_plane]), expected_steps=2
     )
     # Only step 0 (1000 ps) and step 1 (2000 ps) modules are summed; the
     # interstep hook module (500 ps) is excluded.
@@ -560,53 +611,26 @@ class DeviceUtilsTest(seed_test_utils.RepeatableTest):
   def test_get_total_device_time_from_xspace_excludes_non_overlapping_plane(
       self,
   ):
-    host_event = mock.MagicMock(metadata_id=1, offset_ps=1000, duration_ps=2500)
-    host_line = mock.MagicMock(
-        name='Thread 1',
-        timestamp_ns=100,
-        events=[host_event],
-    )
-    meta = mock.MagicMock()
-    meta.name = 'post_warmup_step'
-    meta.display_name = 'post_warmup_step#step_num=0#'
-    host_plane = mock.MagicMock()
-    host_plane.name = '/host:CPU'
-    host_plane.event_metadata = {1: meta}
-    host_plane.lines = [host_line]
-
+    host_plane = _make_host_plane([(1000, 2500)])
     # Active device plane has a 1000 ps module in step window [1000, 3500].
-    active_event = mock.MagicMock(offset_ps=1500, duration_ps=1000)
-    active_line = mock.MagicMock(
-        name='XLA Modules:...',
-        timestamp_ns=100,
-        events=[active_event],
-    )
-    active_plane = mock.MagicMock()
-    active_plane.name = '/device:TPU:0'
-    active_plane.lines = [active_line]
-
+    active_plane = _make_device_plane('/device:TPU:0', [(1500, 1000)])
     # Auxiliary device plane has a longer 5000 ps module entirely outside the
     # step window. It must not fall back to all module time and be selected as
     # max device time.
-    aux_event = mock.MagicMock(offset_ps=5000, duration_ps=5000)
-    aux_line = mock.MagicMock(
-        name='XLA Modules:...',
-        timestamp_ns=100,
-        events=[aux_event],
-    )
-    aux_plane = mock.MagicMock()
-    aux_plane.name = '/device:TPU:1'
-    aux_plane.lines = [aux_line]
+    aux_plane = _make_device_plane('/device:TPU:1', [(5000, 5000)])
 
-    xspace = self._make_xspace([host_plane, active_plane, aux_plane])
-    total = device_utils.get_total_device_time_from_xspace(xspace)
+    total = device_utils.get_total_device_time_from_xspace(
+        _XSpace(planes=[host_plane, active_plane, aux_plane])
+    )
     self.assertAlmostEqual(total, 1_000 / 1e12, places=18)
 
     # When no device plane overlaps the step window,
     # get_total_device_time_from_xspace returns -1.0.
-    xspace_no_overlap = self._make_xspace([host_plane, aux_plane])
     self.assertEqual(
-        device_utils.get_total_device_time_from_xspace(xspace_no_overlap), -1.0
+        device_utils.get_total_device_time_from_xspace(
+            _XSpace(planes=[host_plane, aux_plane])
+        ),
+        -1.0,
     )
 
 
