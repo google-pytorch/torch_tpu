@@ -9634,6 +9634,66 @@ Supported combinations for non-constant padding:
           mean=torch.tensor([1], device=device, dtype=torch.int32), std=1.0
       )
 
+  def test_normal_errors_complex_mean_real_out(self):
+    device = et.device()
+    mean_1d = torch.ones(4, dtype=torch.complex64, device=device)
+    out_tf = torch.empty(1, dtype=torch.float32, device=device)
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu="""result type ComplexFloat can't be cast to the desired output type Float""",
+        tpu="""normal(): result type complex64 can't be cast to the desired output type float32""",
+    ):
+      torch.normal(mean_1d, 1.0, out=out_tf)
+    if et.is_on_tpu():
+      self.assertEqual(out_tf.shape, (1,))
+
+    mean_2d = torch.ones((2, 3), dtype=torch.complex64, device=device)
+    std_2d = torch.ones((2, 3), dtype=torch.float32, device=device)
+    out_tt = torch.empty(1, dtype=torch.float32, device=device)
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu="""result type ComplexFloat can't be cast to the desired output type Float""",
+        tpu="""normal(): result type complex64 can't be cast to the desired output type float32""",
+    ):
+      torch.normal(mean_2d, std_2d, out=out_tt)
+    if et.is_on_tpu():
+      self.assertEqual(out_tt.shape, (1,))
+
+  def test_normal_errors_invalid_out_dtype_no_premature_resize(self):
+    device = et.device()
+    mean = torch.zeros(4, dtype=torch.float32, device=device)
+    std = torch.ones(4, dtype=torch.float32, device=device)
+
+    out_ft = torch.empty(1, dtype=torch.int32, device=device)
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu=""""normal_kernel_cuda" not implemented for 'Int'""",
+        tpu="""normal(): expected the out tensor to be floating point or complex type, got int32""",
+    ):
+      torch.normal(0.0, std, out=out_ft)
+    if et.is_on_tpu():
+      self.assertEqual(out_ft.shape, (1,))
+
+    out_tf = torch.empty(1, dtype=torch.int32, device=device)
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu=""""normal_kernel_cuda" not implemented for 'Int'""",
+        tpu="""normal(): expected the out tensor to be floating point or complex type, got int32""",
+    ):
+      torch.normal(mean, 1.0, out=out_tf)
+    if et.is_on_tpu():
+      self.assertEqual(out_tf.shape, (1,))
+
+    out_tt = torch.empty(1, dtype=torch.int32, device=device)
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu=""""normal_kernel_cuda" not implemented for 'Int'""",
+        tpu="""normal(): expected the out tensor to be floating point or complex type, got int32""",
+    ):
+      torch.normal(mean, std, out=out_tt)
+    if et.is_on_tpu():
+      self.assertEqual(out_tt.shape, (1,))
+
   def test_histc_complex(self):
     t = torch.tensor([1, 2], device=et.device(), dtype=torch.complex64)
     bins = 10
