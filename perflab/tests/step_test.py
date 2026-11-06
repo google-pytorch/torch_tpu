@@ -255,6 +255,20 @@ class StepperTypeTest(seed_test_utils.RepeatableTest):
     with self.assertRaises(TypeError):  # ASSERT_RAISES_OK=benchmark
       stepper.init_with_benchmark_args(_mlp(), (torch.randn(2, 4),), {})
 
+  def test_training_get_params_strips_torch_compile_prefix(self):
+    model = _mlp()
+    stepper = step_lib.resolve_stepper(
+        step_lib.StepperType.TRAINING, use_single_trace=False
+    )
+    opt = torch.optim.SGD(model.parameters(), lr=0.0)
+    stepper.init_with_benchmark_args(
+        torch.compile(model, backend="eager"), (torch.randn(2, 4),), {}, opt
+    )
+    params = stepper.get_params()
+    self.assertEqual(list(params), [n for n, _ in model.named_parameters()])
+    for name, param in model.named_parameters():
+      self.assertIs(params[name], param)
+
   def test_compute_loss_override_is_used(self):
     my_loss = mock.MagicMock(return_value=torch.tensor(1.0, requires_grad=True))
 
