@@ -138,8 +138,8 @@ absl::StatusOr<mlir::MlirOp> BuildIndexShlo(
                      // non-negative, and distinct.
           j >= indexed_dims.size() || i < indexed_dims[j],
           error::kInvalidArgument)
-          << "[BuildIndexShlo]: indexed dimensions must be increasing, "
-             "non-negative and distinct";
+          << "[BuildIndexShlo]: indexed dimensions must be >= 0, increasing, "
+             "and distinct";
       // If the indexed dimensions are consecutive, the indexed dimensions will
       // be inserted at the position of the first indexed dimension. Otherwise,
       // they will be inserted at the beginning of the output tensor shape.

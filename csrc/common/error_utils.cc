@@ -281,6 +281,32 @@ std::optional<std::string> ValidateExpectedGotFormat(
   return std::nullopt;
 }
 
+// Validates that the message doesn't use the phrase "non-negative" (or its
+// variants "nonnegative" and "non negative", case-insensitive). Conditions
+// must be stated with ">= 0" instead, e.g. "expected dim to be >= 0, got -1".
+//
+// Only whole words are matched, so identifiers such as "is_nonnegative" or
+// "non_negative_slope" are not flagged.
+//
+// Pre-conditions: The error message must not be empty.
+std::optional<std::string> ValidateNoNonNegative(
+    const std::string_view message) {
+  ABSL_CHECK(  // CRASH_OK
+      !message.empty())
+      << kErrorMessageCheckPreconditionViolated;
+
+  static const LazyRE2 kNonNegativePattern = {R"((?i)(\bnon[-\s]?negative\b))"};
+
+  std::string match;
+  if (RE2::PartialMatch(message, *kNonNegativePattern, &match)) {
+    return absl::StrCat(
+        "The error message must not contain \"non-negative\" (found \"", match,
+        "\"). Use \">= 0\" instead, in the format \"expected <X> to be >= 0, "
+        "got <value>\", e.g. \"expected dim to be >= 0, got -1\".");
+  }
+  return std::nullopt;
+}
+
 // Validates that the message shows the given dtype by its official PyTorch
 // name, as opposed to its StableHLO/XLA type name:
 //     - "float32" vs. "f32"
@@ -548,6 +574,11 @@ class ErrorFormatChecker {
     // - Context prefixes must be removed so that we can enforce that it
     //   starts with `expected` if applicable.
     AppendIfViolation(ValidateExpectedGotFormat(trimmed));
+
+    // Only relevant on TorchTPU error messages, like the check above: the
+    // condition (e.g. "expected dim to be >= 0, got -1") is stated in the core
+    // message, whereas XLA compiler errors are not under our control.
+    AppendIfViolation(ValidateNoNonNegative(trimmed));
   }
 
   // If `violation` is set, records it, prefixed by the current context.

@@ -404,8 +404,7 @@ absl::StatusOr<at::Tensor> AdaptiveAvgPool2dHelper(
   const int64_t out_w =
       output_size.size() == 2 ? output_size[1].expect_int() : out_h;
   TT_RET_CHECK(out_h >= 0 && out_w >= 0, error::kInvalidArgument)
-      << "expected output_size elements to be non-negative, got "
-      << output_size;
+      << "expected output_size elements to be >= 0, got " << output_size;
 
   TT_RETURN_IF_ERROR(ValidateAdaptiveAvgPool2dInputs(self));
 
@@ -519,8 +518,8 @@ absl::StatusOr<Dimensions> ValidateAdaptiveAvgPool3dOutputSize(
   const int64_t out_w =
       output_size.size() == 3 ? output_size[2].expect_int() : out_d;
   TT_RET_CHECK(out_d >= 0 && out_h >= 0 && out_w >= 0, error::kInvalidArgument)
-      << "expected output_size elements to be non-negative, got [" << out_d
-      << ", " << out_h << ", " << out_w << "]";
+      << "expected output_size elements to be >= 0, got [" << out_d << ", "
+      << out_h << ", " << out_w << "]";
   return Dimensions{out_d, out_h, out_w};
 }
 

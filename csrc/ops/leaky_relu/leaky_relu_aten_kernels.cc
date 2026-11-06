@@ -174,7 +174,7 @@ absl::Status LeakyReluBackwardScalarHelper(const at::Tensor& grad_output,
                                            at::Tensor& grad_input) {
   TT_RET_CHECK(!self_is_result || negative_slope.scalar().toDouble() >= 0,
                error::kInvalidArgument)
-      << "expected non-negative slopes for self_is_result=true, got "
+      << "expected slopes to be >= 0 for self_is_result=true, got "
       << negative_slope.scalar().toDouble();
   TT_ASSIGN_OR_RETURN(at::Tensor negative_slope_tensor,
                       negative_slope.GetTensor(

@@ -4354,7 +4354,7 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""linspace(): expected non-negative steps, got -1""",
+        tpu="""linspace(): expected steps to be >= 0, got -1""",
         gpu="""number of steps must be non-negative""",
     ):
       torch.linspace(0, 10, -1, device=et.device(), out=out)
@@ -5541,7 +5541,7 @@ Supported combinations for non-constant padding:
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""adaptive_max_pool2d(): expected output size to be non-negative, got [-1, 2]""",
+        tpu="""adaptive_max_pool2d(): expected output size to be >= 0, got [-1, 2]""",
         gpu="""numel: integer multiplication overflow""",
     ):
       torch.ops.aten.adaptive_max_pool2d.out(
@@ -6630,7 +6630,7 @@ Supported combinations for non-constant padding:
     out = torch.empty_like(t)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""polygamma(): expected n to be non-negative, got -1""",
+        tpu="""polygamma(): expected n to be >= 0, got -1""",
         gpu="""polygamma(n, x) does not support negative n.""",
         message_reviewed_by="gunhyun",
     ):
@@ -7600,7 +7600,7 @@ Supported combinations for non-constant padding:
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu=f"""{tpu_fn}(): expected padding to be non-negative, got [-1, 0]""",
+        tpu=f"""{tpu_fn}(): expected padding to be >= 0, got [-1, 0]""",
         gpu="""negative padding is not supported""",
         message_reviewed_by="gunhyun",
     ):
@@ -7616,7 +7616,7 @@ Supported combinations for non-constant padding:
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu=f"""{tpu_fn}(): expected output_padding to be non-negative, got [-1, 0]""",
+        tpu=f"""{tpu_fn}(): expected output_padding to be >= 0, got [-1, 0]""",
         gpu="""negative output_padding is not supported""",
         message_reviewed_by="gunhyun",
     ):
@@ -10119,7 +10119,7 @@ Supported combinations for non-constant padding:
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""adaptive_avg_pool2d(): expected output_size elements to be non-negative, got [-1, 2]""",
+        tpu="""adaptive_avg_pool2d(): expected output_size elements to be >= 0, got [-1, 2]""",
         gpu="""numel: integer multiplication overflow""",
         message_reviewed_by="gunhyun",
     ):
@@ -10208,7 +10208,7 @@ Supported combinations for non-constant padding:
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""adaptive_avg_pool3d(): expected output_size elements to be non-negative, got [-1, 2, 2]""",
+        tpu="""adaptive_avg_pool3d(): expected output_size elements to be >= 0, got [-1, 2, 2]""",
         gpu="""numel: integer multiplication overflow""",
         message_reviewed_by="gunhyun",
     ):
@@ -15213,7 +15213,7 @@ Supported combinations for non-constant padding:
     t = torch.tensor([1, 0, 2], device=et.device())
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""nonzero_static(): expected 'size' to be non-negative, got -1""",
+        tpu="""nonzero_static(): expected 'size' to be >= 0, got -1""",
         gpu="""nonzero_static: 'size' must be an non-negative integer""",
         message_reviewed_by="adivinpatel",
     ):
@@ -15224,7 +15224,7 @@ Supported combinations for non-constant padding:
     out = torch.empty(0, 1, device=et.device(), dtype=torch.int64)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""nonzero_static(): expected 'size' to be non-negative, got -1""",
+        tpu="""nonzero_static(): expected 'size' to be >= 0, got -1""",
         gpu="""nonzero_static: 'size' must be an non-negative integer""",
         message_reviewed_by="adivinpatel",
     ):
@@ -16467,7 +16467,7 @@ Supported combinations for non-constant padding:
     t = torch.ones(2, device=et.device())
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""length must be non-negative""",
+        tpu="""expected length to be >= 0, got -1""",
         gpu="""narrow(): length must be non-negative.""",
     ):
       torch.ops.aten.constant_pad_nd(t, [-3, 0], 0.0)

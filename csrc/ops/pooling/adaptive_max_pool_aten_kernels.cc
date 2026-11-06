@@ -398,8 +398,8 @@ absl::StatusOr<AdaptiveMaxPoolBuffers> AdaptiveMaxPool2dHelper(
   const int64_t out_w = output_size[1];
 
   TT_RET_CHECK(out_h >= 0 && out_w >= 0, error::kInvalidArgument)
-      << "expected output size to be non-negative, got [" << out_h << ", "
-      << out_w << "]";
+      << "expected output size to be >= 0, got [" << out_h << ", " << out_w
+      << "]";
 
   const int64_t in_h = self.size(ndim - 2);
   const int64_t in_w = self.size(ndim - 1);

@@ -82,7 +82,7 @@ void ValidateDeviceIndex(c10::DeviceIndex device_index) {
   // construct a torch.device with a negative device index, which will fail
   // before this point.
   TT_CHECK_THROW(device_index >= 0, error::kInvalidArgument)
-      << "device index must be non-negative, got "
+      << "expected device index to be >= 0, got "
       << static_cast<int>(device_index);
 
   TT_CHECK_THROW(device_index < kMaxDevices, error::kInvalidArgument)

@@ -119,7 +119,7 @@ absl::Status ValidateNonzeroOutTensor(const at::Tensor& self,
 
 absl::Status ValidateNonzeroStaticSize(const int64_t size_int) {
   TT_RET_CHECK(size_int >= 0, error::kInvalidArgument)
-      << "expected 'size' to be non-negative, got " << size_int;
+      << "expected 'size' to be >= 0, got " << size_int;
   return absl::OkStatus();
 }
 

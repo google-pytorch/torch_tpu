@@ -1616,6 +1616,26 @@ TEST_F(ErrorMessageGuidelinesDeathTest, InvalidExpectedGotFormat) {
       HasSubstr("expected ..., got ..."));
 }
 
+TEST_F(ErrorMessageGuidelinesDeathTest, ContainsNonNegative) {
+  EXPECT_DEATH(ThrowWithMessage("expected dim to be non-negative, got -1"),
+               AllOf(HasSubstr("must not contain \"non-negative\""),
+                     HasSubstr("expected dim to be >= 0, got -1")));
+  // Case-insensitive.
+  EXPECT_DEATH(ThrowWithMessage("the dim must be Non-Negative"),
+               HasSubstr("must not contain \"non-negative\""));
+  // Alternative spellings.
+  EXPECT_DEATH(ThrowWithMessage("expected dim to be nonnegative, got -1"),
+               HasSubstr("must not contain \"non-negative\""));
+  EXPECT_DEATH(ThrowWithMessage("expected dim to be non negative, got -1"),
+               HasSubstr("must not contain \"non-negative\""));
+  // After context prefix.
+  EXPECT_DEATH(
+      ThrowWithMessage(
+          "failed to materialize: expected dim to be non-negative, got -1"),
+      HasSubstr("After removing all context prefixes: The error message must "
+                "not contain \"non-negative\""));
+}
+
 TEST_F(ErrorMessageGuidelinesDeathTest, MultipleViolations) {
   EXPECT_DEATH(ThrowWithMessage("Dimension size negative with f32"),
                AllOf(HasSubstr("start with a lowercase"),
@@ -1698,6 +1718,39 @@ TEST_F(ErrorMessageGuidelinesPassTest, ExpectedGotFormat) {
           "failed to materialize: failed to run executable: expected 3D "
           "tensor, got 2D"),
       c10::Error);
+}
+
+TEST_F(ErrorMessageGuidelinesPassTest, GreaterThanOrEqualToZero) {
+  EXPECT_THROW(ThrowWithMessage("expected dim to be >= 0, got -1"), c10::Error);
+  // After context prefix.
+  EXPECT_THROW(ThrowWithMessage(
+                   "failed to materialize: expected dim to be >= 0, got -1"),
+               c10::Error);
+}
+
+TEST_F(ErrorMessageGuidelinesPassTest, NonNegativeOnXlaError) {
+  // The XLA compiler error is not under our control, so it may contain
+  // "non-negative".
+  EXPECT_THROW(ThrowWithContextForXlaError(
+                   /* context= */ "the task has failed",
+                   /* xla_error_message= */ "the dim must be non-negative"),
+               c10::Error);
+}
+
+TEST_F(ErrorMessageGuidelinesDeathTest, NonNegativeBeforeXlaError) {
+  // The TorchTPU part of the message is checked, even if an XLA compiler error
+  // follows.
+  EXPECT_DEATH(ThrowWithContextForXlaError(
+                   /* context= */ "the dim must be non-negative",
+                   /* xla_error_message= */ "error"),
+               HasSubstr("After removing the XLA compiler error: The error "
+                         "message must not contain \"non-negative\""));
+}
+
+TEST_F(ErrorMessageGuidelinesPassTest, NonNegativeInsideIdentifier) {
+  // Identifiers (e.g. variable or function names) are not flagged.
+  EXPECT_THROW(ThrowWithMessage("is_nonnegative must be true"), c10::Error);
+  EXPECT_THROW(ThrowWithMessage("non_negative_slope must be set"), c10::Error);
 }
 
 TEST_F(ErrorMessageGuidelinesPassTest, StartsWithNonLetter) {

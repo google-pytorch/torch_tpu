@@ -1314,7 +1314,8 @@ at::Tensor ForceStrides(const at::Tensor& tensor,
       << "as the tensor, got " << tensor.ndimension() << " and "
       << target_strides.size();
   TT_CHECK_THROW(target_storage_offset >= 0, error::kInvalidArgument)
-      << "target_storage_offset must be non-negative";
+      << "expected target_storage_offset to be >= 0, got "
+      << target_storage_offset;
 
   const at::IntArrayRef target_strides_ref(target_strides.data(),
                                            target_strides.size());

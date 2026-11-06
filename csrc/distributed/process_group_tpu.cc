@@ -266,7 +266,7 @@ absl::Status ValidateSplitSizesForAllToAllSingle(c10::IntArrayRef split_sizes,
 
     for (int64_t size : split_sizes) {
       TT_RET_CHECK(size >= 0, error::kInvalidArgument)
-          << "expected split sizes to be non-negative, got " << size;
+          << "expected split sizes to be >= 0, got " << size;
     }
 
     const int64_t split_sizes_sum = absl::c_accumulate(split_sizes, 0L);
