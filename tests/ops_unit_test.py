@@ -44,6 +44,7 @@ from torch.fx.experimental import symbolic_shapes
 from torch.fx.experimental.proxy_tensor import make_fx
 from torch.nn.attention import flex_attention
 from torch.testing._internal import common_methods_invocations
+from torch.utils import _python_dispatch
 from torch_tpu._internal import dynamism
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal import sync
@@ -21720,19 +21721,34 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
           torch.nn.attention.SDPBackend.OVERRIDEABLE,
       ),
       (
+          "at_tile_boundary",
+          (128, 128, 64),
+          torch.nn.attention.SDPBackend.OVERRIDEABLE,
+      ),
+      (
+          "single_split_tile_non_multiple",
+          (197, 197, 64),
+          torch.nn.attention.SDPBackend.OVERRIDEABLE,
+      ),
+      (
+          "at_split_tile_boundary",
+          (256, 256, 64),
+          torch.nn.attention.SDPBackend.OVERRIDEABLE,
+      ),
+      (
+          "above_split_tile_boundary",
+          (512, 512, 64),
+          torch.nn.attention.SDPBackend.CUDNN_ATTENTION,
+      ),
+      (
           "short_q_only",
           (1, 1024, 128),
-          torch.nn.attention.SDPBackend.CUDNN_ATTENTION,
+          torch.nn.attention.SDPBackend.OVERRIDEABLE,
       ),
       (
           "short_kv_only",
-          (256, 64, 64),
-          torch.nn.attention.SDPBackend.CUDNN_ATTENTION,
-      ),
-      (
-          "at_tile_boundary",
-          (128, 128, 64),
-          torch.nn.attention.SDPBackend.CUDNN_ATTENTION,
+          (1024, 64, 64),
+          torch.nn.attention.SDPBackend.OVERRIDEABLE,
       ),
       (
           "long",
@@ -21765,6 +21781,86 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
           torch._fused_sdp_choice(q, k, v),
           torch.nn.attention.SDPBackend.CUDNN_ATTENTION.value,
       )
+
+  def test_sdpa_backend_choice_memory_roofline_guard(self):
+    fused_overrideable = (
+        torch.ops.aten._scaled_dot_product_fused_attention_overrideable.default
+    )
+    cudnn_attention = torch.ops.aten._scaled_dot_product_cudnn_attention.default
+
+    class _CaptureDispatchedOps(_python_dispatch.TorchDispatchMode):
+
+      def __init__(self):
+        super().__init__()
+        self.ops = []
+
+      def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+        self.ops.append(func)
+        return func(*args, **(kwargs or {}))
+
+    def dispatched_ops(q, k, v, *, enable_gqa=False):
+      with _CaptureDispatchedOps() as cap:
+        torch.nn.functional.scaled_dot_product_attention(
+            q, k, v, enable_gqa=enable_gqa
+        )
+      return cap.ops
+
+    with fake_tensor.FakeTensorMode():
+      # Case 1 (128K GQA single-token decode): OVERRIDEABLE
+      q1 = torch.randn(8, 32, 1, 64, dtype=torch.bfloat16, device="tpu")
+      k1 = torch.randn(8, 8, 131072, 64, dtype=torch.bfloat16, device="tpu")
+      v1 = torch.randn(8, 8, 131072, 64, dtype=torch.bfloat16, device="tpu")
+      ops1 = dispatched_ops(q1, k1, v1, enable_gqa=True)
+      self.assertIn(fused_overrideable, ops1)
+      self.assertNotIn(cudnn_attention, ops1)
+
+      # Case 2 (128K GQA multi-query prefill exceeding VMEM limit):
+      # CUDNN_ATTENTION
+      q2 = torch.randn(8, 32, 32, 128, dtype=torch.bfloat16, device="tpu")
+      k2 = torch.randn(8, 8, 131072, 128, dtype=torch.bfloat16, device="tpu")
+      v2 = torch.randn(8, 8, 131072, 128, dtype=torch.bfloat16, device="tpu")
+      ops2 = dispatched_ops(q2, k2, v2, enable_gqa=True)
+      self.assertIn(cudnn_attention, ops2)
+      self.assertNotIn(fused_overrideable, ops2)
+
+      # Case 3a & 3b (exact requires_grad discriminator on identical shape)
+      q3 = torch.randn(16, 32, 16, 128, dtype=torch.bfloat16, device="tpu")
+      k3 = torch.randn(16, 8, 8192, 128, dtype=torch.bfloat16, device="tpu")
+      v3 = torch.randn(16, 8, 8192, 128, dtype=torch.bfloat16, device="tpu")
+      ops3_eval = dispatched_ops(q3, k3, v3, enable_gqa=True)
+      self.assertIn(fused_overrideable, ops3_eval)
+      self.assertNotIn(cudnn_attention, ops3_eval)
+
+      q3_train = torch.randn(
+          16,
+          32,
+          16,
+          128,
+          dtype=torch.bfloat16,
+          device="tpu",
+          requires_grad=True,
+      )
+      k3_train = torch.randn(
+          16,
+          8,
+          8192,
+          128,
+          dtype=torch.bfloat16,
+          device="tpu",
+          requires_grad=True,
+      )
+      v3_train = torch.randn(
+          16,
+          8,
+          8192,
+          128,
+          dtype=torch.bfloat16,
+          device="tpu",
+          requires_grad=True,
+      )
+      ops3_train = dispatched_ops(q3_train, k3_train, v3_train, enable_gqa=True)
+      self.assertIn(cudnn_attention, ops3_train)
+      self.assertNotIn(fused_overrideable, ops3_train)
 
   @parameterized.product(
       backend=[
@@ -22212,14 +22308,37 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
         )
 
   @parameterized.named_parameters(
-      ("flash_bfloat16", 128, 4, 4, torch.bfloat16, False),
-      ("math_float32_mha", 24, 4, 4, torch.float32, False),
-      ("math_float32_gqa", 24, 4, 2, torch.float32, True),
+      (
+          "flash_bfloat16",
+          128,
+          4,
+          4,
+          torch.bfloat16,
+          False,
+          torch.nn.attention.SDPBackend.FLASH_ATTENTION,
+      ),
+      (
+          "overrideable_bfloat16",
+          128,
+          4,
+          4,
+          torch.bfloat16,
+          False,
+          None,
+      ),
+      ("math_float32_mha", 24, 4, 4, torch.float32, False, None),
+      ("math_float32_gqa", 24, 4, 2, torch.float32, True, None),
   )
   def test_scaled_dot_product_attention_scaling_precision(
-      self, head_dim, num_heads_q, num_heads_kv, dtype, enable_gqa
+      self,
+      head_dim,
+      num_heads_q,
+      num_heads_kv,
+      dtype,
+      enable_gqa,
+      tpu_backend,
   ):
-    """Tests FlashAttention LSE forward/backward consistency and F32 post-dot scaling."""
+    """Tests FlashAttention/SHLO bfloat16 precision and F32 post-dot scaling."""
     batch_size, seq_len = 2, 128
     torch.manual_seed(42)
     q_init = torch.randn(
@@ -22239,9 +22358,15 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
       q = to(q_init.clone(), device=device).requires_grad_(True)
       k = to(k_init.clone(), device=device).requires_grad_(True)
       v = to(v_init.clone(), device=device).requires_grad_(True)
-      out = torch.nn.functional.scaled_dot_product_attention(
-          q, k, v, is_causal=True, enable_gqa=enable_gqa
+      kernel_ctx = (
+          torch.nn.attention.sdpa_kernel(tpu_backend)
+          if torch.device(device).type != "cpu" and tpu_backend is not None
+          else contextlib.nullcontext()
       )
+      with kernel_ctx:
+        out = torch.nn.functional.scaled_dot_product_attention(
+            q, k, v, is_causal=True, enable_gqa=enable_gqa
+        )
       out.backward(to(grad_out, device=device))
       return out, q.grad, k.grad, v.grad
 

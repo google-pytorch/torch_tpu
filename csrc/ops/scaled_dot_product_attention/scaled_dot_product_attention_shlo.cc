@@ -820,6 +820,17 @@ BuildScaledDotProductAttentionBackward(absl::Span<mlir::MlirOp> inputs,
   return std::array<mlir::MlirOp, 3>{grad_query, grad_key, grad_value};
 }
 
+// Reduced-precision floats (F16/BF16 and narrower) execute natively in single-
+// pass MXU precision; XLA's online-softmax Mosaic lowering rejects non-DEFAULT
+// contract precision on non-F32 operands (matching CreateFlashAttnConfig).
+mlir::stablehlo::Precision GetSdpaDotPrecision(
+    const mlir::ElementType element_type, OpParamCacheKeys& param_keys) {
+  if (XlaEquivalentBitwidth(element_type) < 32) {
+    return mlir::stablehlo::Precision::DEFAULT;  // EXPLICIT_PRECISION_OK=sdpa
+  }
+  return GetAndAddPrecisionTo(param_keys);
+}
+
 }  // namespace
 
 absl::StatusOr<FusedAttentionResults> ScaledDotProductFusedAttentionShlo(
@@ -834,7 +845,8 @@ absl::StatusOr<FusedAttentionResults> ScaledDotProductFusedAttentionShlo(
   Dimensions out_dims = CopyIntVector(query.sizes().slice(0, rank - 1));
   out_dims.push_back(value.sizes().back());
   Dimensions lse_dims = CopyIntVector(query.sizes().slice(0, rank - 1));
-  const mlir::stablehlo::Precision precision = GetAndAddPrecisionTo(param_keys);
+  const mlir::stablehlo::Precision precision =
+      GetSdpaDotPrecision(out_dtype, param_keys);
   auto op_builder =
       [is_causal, scale, allow_half_precision_reduction_math, precision](
           absl::Span<mlir::MlirOp> inputs,
@@ -887,7 +899,8 @@ ScaledDotProductFusedAttentionShloBackward(
   const int64_t seq_len_q = query.size(rank - 2);
   const int64_t seq_len_kv = key.size(rank - 2);
   const int64_t head_dim = query.size(rank - 1);
-  const mlir::stablehlo::Precision precision = GetAndAddPrecisionTo(param_keys);
+  const mlir::stablehlo::Precision precision =
+      GetSdpaDotPrecision(out_dtype, param_keys);
 
   auto op_builder =
       [rank, batch_size, is_causal, scale, num_head_q, num_head_kv, seq_len_q,

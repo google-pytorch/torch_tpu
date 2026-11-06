@@ -22,7 +22,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
-#include <string>
 #include <string_view>
 #include <tuple>
 #include <utility>
@@ -76,25 +75,30 @@
 #include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
+
+int64_t GetFlashDeviceVmemLimitBytes() {
+  return GetDeviceVmemCapacityBytes() / 2;
+}
+
 namespace {
 
 // Scoped VMEM limit for the kernels: half the capacity, to avoid spilling.
-int64_t GetVmemLimitBytes() { return GetDeviceVmemCapacityBytes() / 2; }
+int64_t GetVmemLimitBytes() { return GetFlashDeviceVmemLimitBytes(); }
 
-// Minimum hardware tile size (hardware lane width).
-constexpr int64_t kMinHardwareTileSize = 128;
-// Minimum tile size for the > 256 heuristic.
-constexpr int64_t kMinHeuristicTileSize = 256;
+// TPU MXU/VPU hardware lane width.
+constexpr int64_t kMinHardwareTileSize = kFlashMinHardwareTileSize;
+// Minimum block size produced by CreateTiling's loop.
+constexpr int64_t kMinHeuristicTileSize = kFlashMinSplitTileSize;
 
 int64_t RoundUpToTileSize(int64_t seq_len, int64_t tile_size) {
   return llvm::divideCeil(seq_len, tile_size) * tile_size;
 }
 
 int64_t GetInitialTileSize(int64_t seq_len) {
-  if (seq_len <= 128) {
+  if (seq_len <= kMinHardwareTileSize) {
     return kMinHardwareTileSize;
   }
-  if (seq_len <= 256) {
+  if (seq_len <= kMinHeuristicTileSize) {
     return kMinHeuristicTileSize;
   }
   return RoundUpToTileSize(seq_len, kMinHeuristicTileSize);
