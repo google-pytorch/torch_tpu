@@ -16,17 +16,28 @@
 
 #include "csrc/common/layout_utils.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
+#include <numeric>
 #include <optional>
 #include <utility>
 #include <vector>
 
+#include "ATen/ExpandUtils.h"
+#include "ATen/core/ATen_fwd.h"
+#include "ATen/core/TensorBase.h"
 #include "ATen/core/TensorBody.h"
+#include "absl/algorithm/container.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "c10/core/MemoryFormat.h"
 #include "c10/core/ScalarType.h"
+#include "c10/util/ArrayRef.h"
+#include "c10/util/DimVector.h"
+#include "c10/util/SmallVector.h"
+#include "c10/util/strides.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -35,6 +46,7 @@
 #include "csrc/common/utils.h"
 #include "csrc/pjrt/pjrt_state.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "torch/headeronly/core/MemoryFormat.h"
 #include "xla/layout.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/util.h"
@@ -192,6 +204,190 @@ ExtractCustomLayoutIfDifferentFromDefault(const Shape& shape) {
     result.tiles.clear();
   }
   return result;
+}
+
+namespace {
+
+std::optional<Strides> TrySameShapeBinaryOpStrides(
+    const at::TensorBase& self, const at::TensorBase& other,
+    at::IntArrayRef out_sizes_ref) {
+  if (self.sizes() != out_sizes_ref || other.sizes() != out_sizes_ref) {
+    return std::nullopt;
+  }
+  if (self.is_contiguous() && other.is_contiguous() &&
+      !self.is_contiguous(at::MemoryFormat::ChannelsLast)) {
+    return CopyIntVector(c10::contiguous_strides(out_sizes_ref));
+  }
+  if (self.is_contiguous(at::MemoryFormat::ChannelsLast) &&
+      other.is_contiguous(at::MemoryFormat::ChannelsLast) &&
+      !self.is_contiguous()) {
+    return CopyIntVector(c10::get_channels_last_strides_2d(out_sizes_ref));
+  }
+  if (self.is_non_overlapping_and_dense() &&
+      other.is_non_overlapping_and_dense() &&
+      self.strides() == other.strides()) {
+    return CopyIntVector(self.strides());
+  }
+  return std::nullopt;
+}
+
+Strides ComputeOperandByteStrides(const at::TensorBase& t, size_t ndim,
+                                  absl::Span<const int64_t> out_sizes) {
+  Strides s(ndim, 0);
+  const at::IntArrayRef orig_sizes = t.sizes();
+  const at::IntArrayRef orig_strides = t.strides();
+  const int64_t elem_size = static_cast<int64_t>(t.element_size());
+  const size_t offset = ndim - orig_sizes.size();
+  for (size_t i = 0; i < orig_sizes.size(); ++i) {
+    if (orig_sizes[i] == 1 && out_sizes[offset + i] != 1) {
+      s[offset + i] = 0;
+    } else {
+      s[offset + i] = orig_strides[i] * elem_size;
+    }
+  }
+  return s;
+}
+
+int CompareTensorIteratorDims(size_t dim0, size_t dim1,
+                              const std::array<Strides, 2>& op_strides,
+                              absl::Span<const int64_t> out_sizes) {
+  for (const Strides& strides : op_strides) {
+    const int64_t stride0 = strides[dim0];
+    const int64_t stride1 = strides[dim1];
+    if (stride0 == 0 || stride1 == 0) {
+      continue;
+    }
+    if (stride0 < stride1) {
+      return -1;
+    }
+    if (stride0 > stride1) {
+      return 1;
+    }
+    if (out_sizes[dim0] > out_sizes[dim1]) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+c10::SmallVector<size_t, 5> ComputeTensorIteratorDimPerm(
+    size_t ndim, const std::array<Strides, 2>& op_strides,
+    absl::Span<const int64_t> out_sizes) {
+  c10::SmallVector<size_t, 5> perm(ndim);
+  std::iota(perm.rbegin(), perm.rend(), 0);
+  for (size_t i = 1; i < ndim; ++i) {
+    size_t dim1 = i;
+    for (size_t j = 1; j <= i; ++j) {
+      const size_t dim0 = i - j;
+      const int comparison = CompareTensorIteratorDims(perm[dim0], perm[dim1],
+                                                       op_strides, out_sizes);
+      if (comparison > 0) {
+        std::swap(perm[dim0], perm[dim1]);
+        dim1 = dim0;
+      } else if (comparison < 0) {
+        break;
+      }
+    }
+  }
+  return perm;
+}
+
+Strides StridesFromDimPerm(const c10::SmallVector<size_t, 5>& perm,
+                           absl::Span<const int64_t> out_sizes,
+                           at::IntArrayRef out_sizes_ref) {
+  const size_t ndim = perm.size();
+  bool inverted = true;
+  for (size_t j = 0; j < ndim; ++j) {
+    if (perm[j] != ndim - j - 1) {
+      inverted = false;
+      break;
+    }
+  }
+  if (inverted) {
+    return CopyIntVector(c10::contiguous_strides(out_sizes_ref));
+  }
+
+  Strides out_strides(ndim);
+  int64_t next_stride = 1;
+  for (size_t i = 0; i < ndim; ++i) {
+    const size_t idx = perm[i];
+    out_strides[idx] = next_stride;
+    if (out_sizes[idx] > 1) {
+      next_stride *= out_sizes[idx];
+    }
+  }
+  return out_strides;
+}
+
+// Fast paths of `BinaryOpStrides` that mirror the dense-operand shortcuts in
+// `at::TensorIterator`: a scalar operand adopts the other operand's layout,
+// same-shape operands share a layout, and empty or all-contiguous outputs are
+// contiguous. Returns `std::nullopt` when the general stride-permutation
+// algorithm is needed.
+std::optional<Strides> TryBinaryOpStridesFastPath(
+    const at::TensorBase& self, const at::TensorBase& other,
+    absl::Span<const int64_t> out_sizes, at::IntArrayRef out_sizes_ref) {
+  if (other.dim() == 0 && self.sizes() == out_sizes_ref) {
+    return EmptyLikeStrides(self);
+  }
+  if (self.dim() == 0 && other.sizes() == out_sizes_ref) {
+    return EmptyLikeStrides(other);
+  }
+  if (const auto same_shape_strides =
+          TrySameShapeBinaryOpStrides(self, other, out_sizes_ref)) {
+    return same_shape_strides;
+  }
+  const bool both_contiguous =
+      self.is_contiguous() && other.is_contiguous() &&
+      !self.is_contiguous(at::MemoryFormat::ChannelsLast) &&
+      !other.is_contiguous(at::MemoryFormat::ChannelsLast);
+  if (absl::c_contains(out_sizes, 0) || both_contiguous) {
+    return CopyIntVector(c10::contiguous_strides(out_sizes_ref));
+  }
+  return std::nullopt;
+}
+
+}  // namespace
+
+Strides EmptyLikeStrides(const at::TensorBase& tensor) {
+  if (tensor.is_non_overlapping_and_dense()) {
+    return CopyIntVector(tensor.strides());
+  }
+  return CopyIntVector(
+      at::infer_dense_strides(tensor.sizes(), tensor.strides()));
+}
+
+Strides BinaryOpStrides(const at::TensorBase& self, const at::TensorBase& other,
+                        absl::Span<const int64_t> out_sizes) {
+  const size_t ndim = out_sizes.size();
+  if (ndim == 0) {
+    return {};
+  }
+  if (ndim == 1) {
+    return {1};
+  }
+  const at::IntArrayRef out_sizes_ref(out_sizes.data(), out_sizes.size());
+  if (const auto fast_path =
+          TryBinaryOpStridesFastPath(self, other, out_sizes, out_sizes_ref)) {
+    return *fast_path;
+  }
+
+  const std::array<Strides, 2> op_strides = {
+      ComputeOperandByteStrides(self, ndim, out_sizes),
+      ComputeOperandByteStrides(other, ndim, out_sizes)};
+  const auto perm = ComputeTensorIteratorDimPerm(ndim, op_strides, out_sizes);
+  return StridesFromDimPerm(perm, out_sizes, out_sizes_ref);
+}
+
+Strides SuggestMemoryFormatStrides(const at::TensorBase& tensor) {
+  switch (tensor.suggest_memory_format()) {
+    case at::MemoryFormat::ChannelsLast:
+      return CopyIntVector(c10::get_channels_last_strides_2d(tensor.sizes()));
+    case at::MemoryFormat::ChannelsLast3d:
+      return CopyIntVector(c10::get_channels_last_strides_3d(tensor.sizes()));
+    default:
+      return CopyIntVector(c10::contiguous_strides(tensor.sizes()));
+  }
 }
 
 }  // namespace torch_tpu

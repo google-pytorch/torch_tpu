@@ -17,8 +17,10 @@
 #ifndef TORCH_TPU_CSRC_OPS_BINARY_ATEN_KERNELS_H_
 #define TORCH_TPU_CSRC_OPS_BINARY_ATEN_KERNELS_H_
 
+#include <cstdint>
 #include <optional>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 
 #include "ATen/core/ATen_fwd.h"
@@ -30,12 +32,14 @@
 #include "c10/core/ScalarType.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
+#include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/layout_utils.h"
 #include "csrc/eager/device_buffer.h"
-#include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
+#include "csrc/ops/view_decomposition/contiguous_to_view.h"  // NOLINT
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "torch/headeronly/core/ScalarType.h"
 
@@ -131,7 +135,14 @@ absl::StatusOr<at::Tensor> BinaryOp(const at::Tensor& tensor,
   TT_ASSIGN_OR_RETURN(auto result_buf, internal::DispatchBinaryOp(
                                            tensor, other, std::move(op_builder),
                                            std::move(opts)));
-  return MakeTensor(std::move(result_buf));
+  Strides target_strides;
+  if constexpr (std::is_same_v<std::decay_t<OtherType>, at::Tensor>) {
+    target_strides = BinaryOpStrides(tensor, other, result_buf.dimensions());
+  } else {
+    target_strides = EmptyLikeStrides(tensor);
+  }
+  return ContiguousToView(std::move(result_buf), target_strides,
+                          /*target_storage_offset=*/0);
 }
 
 template <typename OtherType>

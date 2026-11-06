@@ -24401,6 +24401,125 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
             atol=1e-4,
         )
 
+  @parameterized.named_parameters(
+      ("transposed", "transposed"),
+      ("sliced", "sliced"),
+      ("expanded", "expanded"),
+      ("channels_last", "channels_last"),
+      ("empty_transposed", "empty_transposed"),
+  )
+  def test_non_out_functional_ops_strides_match_meta(self, layout: str) -> None:
+    """Tests that non-.out functional ops match Meta (FakeTensor) strides."""
+    torch.manual_seed(0)
+    base_shape = {
+        "transposed": (4, 3, 5),
+        "sliced": (4, 6, 8),
+        "expanded": (1, 3, 5),
+        "channels_last": (2, 3, 4, 5),
+        "empty_transposed": (4, 0, 5),
+    }[layout]
+    leaf_x = torch.randn(base_shape, dtype=torch.float32)
+    leaf_y = torch.randn(base_shape, dtype=torch.float32).abs() + 1.0
+    leaf_exp = torch.randint(-2, 3, base_shape, dtype=torch.int32)
+
+    def to_strided(leaf: torch.Tensor, device: str) -> torch.Tensor:
+      t = leaf.to(device)
+      if layout in ("transposed", "empty_transposed"):
+        return t.transpose(0, 2)
+      if layout == "sliced":
+        return t[:, ::2, :5]
+      if layout == "expanded":
+        return t.expand(4, 3, 5)
+      return t.to(memory_format=torch.channels_last)
+
+    def run_deterministic_ops(device: str) -> dict[str, torch.Tensor]:
+      x = to_strided(leaf_x, device)
+      y = to_strided(leaf_y, device)
+      y_contig = y.contiguous()
+      exp = to_strided(leaf_exp, device)
+      exp_contig = exp.contiguous()
+      exp_bcast = torch.ones(
+          (1,) * (x.ndim - 1) + (x.shape[-1],),
+          device=device,
+          dtype=torch.int32,
+      )
+      mask = x > 0
+      return {
+          "relu": torch.relu(x),
+          "gelu": torch.nn.functional.gelu(x),
+          "hardswish": torch.nn.functional.hardswish(x),
+          "isnan": torch.isnan(x),
+          "angle": torch.angle(x),
+          "logcumsumexp": torch.logcumsumexp(x, dim=-1),
+          "floor_divide_same": torch.floor_divide(x, y),
+          "floor_divide_scalar": torch.floor_divide(x, 2.0),
+          "floor_divide_int_mixed": torch.floor_divide(exp, exp_bcast + 2),
+          "ldexp_same": torch.ldexp(x, exp),
+          "ldexp_mixed": torch.ldexp(x, exp_contig),
+          "ldexp_bcast": torch.ldexp(x, exp_bcast),
+          "remainder_scalar_tensor": torch.ops.aten.remainder.Scalar_Tensor(
+              5.0, y
+          ),
+          "silu_backward_same": torch.ops.aten.silu_backward(y, x),
+          "silu_backward_mixed": torch.ops.aten.silu_backward(y_contig, x),
+          "hardswish_backward_same": torch.ops.aten.hardswish_backward(y, x),
+          "hardswish_backward_mixed": torch.ops.aten.hardswish_backward(
+              y_contig, x
+          ),
+          "native_dropout_backward": torch.ops.aten.native_dropout_backward(
+              y, mask, 1.25
+          ),
+      }
+
+    tpu_outs = run_deterministic_ops("tpu")
+    with fake_tensor.FakeTensorMode(allow_non_fake_inputs=True):
+      meta_outs = run_deterministic_ops("tpu")
+    cpu_outs = run_deterministic_ops("cpu")
+
+    for name, tpu_out in tpu_outs.items():
+      with self.subTest(f"{name}_stride"):
+        self.assertEqual(tpu_out.stride(), meta_outs[name].stride())
+      with self.subTest(f"{name}_values"):
+        self.assert_close(
+            golden_result=cpu_outs[name],
+            torch_tpu_result=tpu_out.cpu(),
+            rtol=1e-2,
+            atol=1e-2,
+        )
+
+    for p, train in ((0.0, True), (0.5, False), (0.5, True), (1.0, True)):
+      with self.subTest(f"native_dropout_p={p}_train={train}"):
+        x_tpu = to_strided(leaf_x, "tpu")
+        out_tpu, mask_tpu = torch.ops.aten.native_dropout(x_tpu, p, train)
+        with fake_tensor.FakeTensorMode(allow_non_fake_inputs=True):
+          x_meta = to_strided(leaf_x, "tpu")
+          out_meta, mask_meta = torch.ops.aten.native_dropout(x_meta, p, train)
+        self.assertEqual(out_tpu.stride(), out_meta.stride())
+        self.assertEqual(mask_tpu.stride(), mask_meta.stride())
+
+  def test_compiled_view_after_non_out_ops_on_strided_input(self) -> None:
+    """Tests that compiled views after non-.out ops on strided inputs work."""
+
+    def fn(x_base: torch.Tensor, y_base: torch.Tensor) -> torch.Tensor:
+      x = x_base.transpose(0, 1)
+      y = (y_base.abs() + 1.0).transpose(0, 1)
+      h = torch.relu(x)
+      h = torch.nn.functional.gelu(h)
+      h = torch.nn.functional.hardswish(h)
+      h = torch.nn.functional.dropout(h, p=0.25, training=True)
+      q = torch.floor_divide(x.detach(), y.detach())
+      return (h + q).transpose(0, 1).view(-1)
+
+    x_base = torch.randn(16, 8, device="tpu", requires_grad=True)
+    y_base = torch.randn(16, 8, device="tpu")
+    compiled_fn = torch.compile(fn, dynamic=False, backend="tpu")
+    out = compiled_fn(x_base, y_base)
+    out.sum().backward()
+    torch.accelerator.synchronize()
+    self.assertEqual(out.shape, (128,))
+    self.assertIsNotNone(x_base.grad)
+    self.assertEqual(x_base.grad.shape, (16, 8))
+
 
 class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
   """Tests for the op_testing framework itself."""

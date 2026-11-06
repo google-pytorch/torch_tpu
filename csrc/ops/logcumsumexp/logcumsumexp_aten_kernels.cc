@@ -49,6 +49,7 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
+#include "torch/headeronly/core/MemoryFormat.h"
 
 namespace torch_tpu {
 namespace {
@@ -166,12 +167,15 @@ at::Tensor AtenLogcumsumexp(const at::Tensor& self, const int64_t dim) {
     TT_ASSIGN_OR_THROW(const int64_t normalized_dim,
                        SafeWrapDim(dim, self.dim()));
 
+    // PyTorch's meta_logcumsumexp allocates the output with
+    // `memory_format=torch.contiguous_format`.
     TT_ASSIGN_OR_THROW(
         at::Tensor result,
         UnaryOp(self,
                 absl::bind_front(BuildLogcumsumexpShlo, normalized_dim,
                                  /*out_dtype=*/std::nullopt),
-                {.op_param_cache_keys = std::move(param_keys)}));
+                {.op_param_cache_keys = std::move(param_keys),
+                 .memory_format = at::MemoryFormat::Contiguous}));
     return result;
   });
 }
