@@ -12,7 +12,29 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests error handling on TPU only."""
+"""Tests error handling on TPU only.
+
+Tests for ensuring the quality of TorchTPU error messages for behaviors and
+constraints that only apply to TPU (with no GPU counterpart). They should
+internally call `et.assert_raises_message()`, specifying the expected TPU error
+message.
+
+Tests that belong in this file should have all of the following properties:
+
+- It tests the quality of a user-facing error message.
+- It tests an error condition that only occurs or is only relevant on TPU
+  (e.g. unsupported TPU operations, TorchTPU-specific API calls, etc).
+- It must be decorated with `@et.why_tpu_only("reason")` explaining why the test
+  only applies to TPU and cannot be verified on GPU.
+
+Tests that don't belong in this file:
+
+- Errors that crash or raise on GPU.
+- Framework mechanism and execution flow tests (e.g. compilation caching) where
+  error raising is incidental.
+- Internal utility or test harness tests.
+- Anything whose main focus isn't the actual error message contract.
+"""
 
 import collections
 from collections.abc import Mapping, Sequence
