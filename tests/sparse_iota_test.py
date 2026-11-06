@@ -105,3 +105,4 @@ class SparseIotaTest(op_testing.TorchTpuTestBase):
 
 if __name__ == "__main__":
   absltest.main()
+# DO NOT SUBMIT: smoke test fork PR presubmits.

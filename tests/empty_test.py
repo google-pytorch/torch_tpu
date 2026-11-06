@@ -83,3 +83,4 @@ class EmptyTest(seed_test_utils.RepeatableTest):
 
 if __name__ == "__main__":
   absltest.main()
+# DO NOT SUBMIT: smoke test fork PR presubmits.
