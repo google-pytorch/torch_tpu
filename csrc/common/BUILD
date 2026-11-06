@@ -118,6 +118,7 @@ torch_tpu_cc_test(
     srcs = ["version_test.cc"],
     deps = [
         ":error_utils",
+        ":status_test_utils",
         ":version",
         "//csrc/common:oss_test_main",
         "@com_google_absl//absl/status:status_matchers",

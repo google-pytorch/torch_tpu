@@ -307,6 +307,7 @@ torch_tpu_py_test(
         ":subprocess_test_utils",
         "//shims/absl_py/flags",
         "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu:_loader",

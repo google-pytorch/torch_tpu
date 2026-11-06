@@ -4606,27 +4606,40 @@ module {
     ):
       torch.ops.ao.reload(y, torch.device("tpu", 1))
 
+  @parameterized.named_parameters(
+      ("non_numeric", "not_a_version"),
+      ("double_dot", "1..2"),
+      ("invalid_suffix", "1.0.0-invalid"),
+  )
   @et.why_tpu_only("libtpu only present for TPU devices.")
-  def test_invalid_libtpu_version(self):
+  def test_invalid_libtpu_version(self, version: str):
     env.reset_libtpu_version_for_testing()
     self.addCleanup(env.reset_libtpu_version_for_testing)
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""set_libtpu_version(): expected version string to be of the format <major>[.<minor>[.<patch>]][.dev<build>][<suffix>], got '1.2.3.4.dev20260914'""",
+        tpu=f"""set_libtpu_version(): expected a valid PEP 440 version string, got '{version}'""",
     ):
-      env.set_libtpu_version("1.2.3.4.dev20260914")
+      env.set_libtpu_version(version)
 
+  @parameterized.named_parameters(
+      ("release_component", "99999999999.0.0", "99999999999"),
+      (
+          "dev_component",
+          "0.0.50.dev99999999999999999999",
+          "99999999999999999999",
+      ),
+  )
   @et.why_tpu_only("libtpu only present for TPU devices.")
-  def test_overflowing_libtpu_version(self):
+  def test_overflowing_libtpu_version(self, version: str, component: str):
     env.reset_libtpu_version_for_testing()
     self.addCleanup(env.reset_libtpu_version_for_testing)
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""set_libtpu_version(): version component '99999999999' overflows in '99999999999.0.0'""",
+        tpu=f"""set_libtpu_version(): version component '{component}' overflows in '{version}'""",
     ):
-      env.set_libtpu_version("99999999999.0.0")
+      env.set_libtpu_version(version)
 
   @et.why_tpu_only("libtpu only present for TPU devices.")
   def test_reset_different_libtpu_version(self):
