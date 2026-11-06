@@ -573,8 +573,8 @@ DYNAMISM_DENY_LISTS: DenyList = {
         "logcumsumexp": ALL_MODES,
         # SliceOp::build fails return type inference on bounded hidden slices.
         "lstm.input": ALL_MODES,
-        # Slicing a dynamic dimension is not supported in eager lowering.
-        "lu_unpack": {EAGER},
+        # Slicing a dynamic dimension is not supported in lu_unpack lowering.
+        "lu_unpack": ALL_MODES,
         # Queries static dim size (slice size -9223372036854775808).
         "nn.functional.adaptive_max_pool2d": ALL_MODES,
         # avg_pool2d_backward SliceBackwardResult queries static input shape;
