@@ -360,6 +360,58 @@ class FactoryTest(seed_test_utils.RepeatableTest):
       self._factory(training=False)(_ctx(target_lib.Platform.CPU))
     allow.assert_not_called()
 
+  def test_cpu_builds_with_layer_args_by_default(self):
+    factory = self._factory(training=False)
+
+    _, builder = self._run_with_inner(
+        factory, target_lib.Platform.CPU, torch.nn.Identity()
+    )
+
+    builder.assert_called_once_with(
+        _linear_args(_CONFIGS[0]), "cpu", torch.bfloat16, False
+    )
+
+  def test_cpu_layer_args_replace_layer_args_only_on_cpu(self):
+    cpu_args = builders.LayerArgs(model_name="cpu stand-in", batch_size=1)
+    to_cpu_args = mock.Mock(return_value=cpu_args)
+    factory = self._factory(training=True, cpu_layer_args=to_cpu_args)
+
+    to_cpu_args.assert_called_once_with(_CONFIGS[0])
+    for platform, device, expected_args in (
+        (target_lib.Platform.CPU, "cpu", cpu_args),
+        (target_lib.Platform.V7_1X1X1, "tpu", _linear_args(_CONFIGS[0])),
+        (target_lib.Platform.B200_1, "cuda", _linear_args(_CONFIGS[0])),
+    ):
+      with self.subTest(platform=platform):
+        _, builder = self._run_with_inner(
+            factory, platform, torch.nn.Identity()
+        )
+
+        builder.assert_called_once_with(
+            expected_args, device, torch.bfloat16, True
+        )
+
+  def test_cpu_layer_args_keep_names(self):
+    registration.add_layer_sweep(
+        "linear",
+        _CONFIGS[:1],
+        _linear_args,
+        steps=frozenset({_Step.EVAL}),
+        cpu_layer_args=lambda _: builders.LayerArgs(
+            model_name="cpu stand-in", batch_size=1
+        ),
+    )
+
+    self.assertCountEqual(
+        registry_lib.REGISTRY, [f"layer_linear_eval_{_NAME_0}"]
+    )
+    self.assertEqual(
+        registry_lib.REGISTRY[
+            f"layer_linear_eval_{_NAME_0}"
+        ].microbenchmark_name,
+        _NAME_0,
+    )
+
   def _run_with_inner(
       self,
       factory: registry_lib.Factory,

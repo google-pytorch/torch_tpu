@@ -112,11 +112,20 @@ class _SdpaKernelWrapper(torch.nn.Module):
 
 def _make_factory(
     layer_args: builders.LayerArgs,
+    cpu_layer_args: builders.LayerArgs,
     step: Step,
     device_kinds: frozenset[target_lib.DeviceKind],
     data_dependent: bool,
 ) -> registry_lib.Factory:
-  """Returns a benchmark factory that builds the layer for `layer_args`."""
+  """Returns a benchmark factory that builds the layer for `layer_args`.
+
+  Args:
+    layer_args: The builder args of the layer on accelerators.
+    cpu_layer_args: The builder args of the layer on the CPU.
+    step: The step that the benchmark takes.
+    device_kinds: The accelerator kinds the layer runs on.
+    data_dependent: Whether the layer reads data-dependent values.
+  """
   is_training = step is Step.TRAIN
 
   def factory(ctx: context_lib.Context) -> tuple[Any, ...]:
@@ -132,7 +141,9 @@ def _make_factory(
     if data_dependent:
       mode_lib.allow_data_dependent_fake_outputs()
     model_and_input = builders.ml_layer_model_builder(
-        layer_args,
+        cpu_layer_args
+        if ctx.device_kind == target_lib.DeviceKind.CPU
+        else layer_args,
         # A device string, as in the other perflab factories:
         # `torch.device("tpu")` only parses once the TPU backend is registered.
         ctx.device_kind.value,
@@ -162,6 +173,7 @@ def add_layer_sweep(
     run_modes: frozenset[common.RunMode] = ALL_RUN_MODES,
     device_kinds: frozenset[target_lib.DeviceKind] = ACCELERATOR_KINDS,
     data_dependent: bool = False,
+    cpu_layer_args: Callable[[_ConfigT], builders.LayerArgs] | None = None,
 ) -> None:
   """Registers a benchmark for each config and step of a layer.
 
@@ -184,6 +196,12 @@ def add_layer_sweep(
     data_dependent: Whether the layer reads data-dependent values, e.g. the
       output size of `torch.unique`. The FakeTensorMode CPU smoke test then
       returns placeholders for them.
+    cpu_layer_args: Returns the builder args for a config on the CPU, if they
+      differ from `to_layer_args`. This lets CPU runs, such as the
+      FakeTensorMode CPU smoke test, build and step a layer whose kernels exist
+      only on accelerators with a CPU stand-in, e.g. another SDPA backend. The
+      benchmark and microbenchmark names still come from the config. Defaults to
+      `to_layer_args`.
 
   Raises:
     ValueError: If `steps`, `run_modes` or `device_kinds` is empty or has
@@ -209,10 +227,19 @@ def add_layer_sweep(
   for config in configs:
     microbenchmark_name = configs_lib.microbenchmark_name(config)
     layer_args = to_layer_args(config)
+    layer_args_on_cpu = (
+        layer_args if cpu_layer_args is None else cpu_layer_args(config)
+    )
     # In `Step` order, so that registration order does not depend on set order.
     for step in (s for s in Step if s in steps):
       registry_lib.add_benchmark(
-          factory=_make_factory(layer_args, step, device_kinds, data_dependent),
+          factory=_make_factory(
+              layer_args,
+              layer_args_on_cpu,
+              step,
+              device_kinds,
+              data_dependent,
+          ),
           stepper=(
               step_lib.StepperType.TRAINING
               if step is Step.TRAIN
