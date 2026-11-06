@@ -34,6 +34,10 @@ package(
     default_visibility = ["//:__subpackages__"],
 )
 
+exports_files([
+    "pallas_communication_test.py",
+])
+
 torch_tpu_py_test(
     name = "pallas_test",
     srcs = ["pallas_test.py"],
