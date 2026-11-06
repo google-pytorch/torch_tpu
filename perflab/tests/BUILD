@@ -161,6 +161,7 @@ torch_tpu_py_test(
         "//perflab:mode",
         "//perflab:target",
         "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:flagsaver",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/benchmarks:export_adapter",
         "//tests:seed_test_utils",
@@ -411,11 +412,12 @@ torch_tpu_py_test(
     srcs = ["compile_test.py"],
     deps = [
         "//perflab:compile",
-        "//perflab:device_utils",
         "//perflab:target",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
+        "//src/torch_tpu/_internal/compile",
+        "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
     ],
 )
