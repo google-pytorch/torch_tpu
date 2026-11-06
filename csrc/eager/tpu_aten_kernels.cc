@@ -895,6 +895,7 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kNativeBatchNormOut>(m, AtenNativeBatchNormOut);
   ImplStable<OpName::kNativeDropout>(m, AtenDropout);
   ImplStable<OpName::kNativeDropoutBackward>(m, AtenNativeDropoutBackward);
+  ImplStable<OpName::kNativeGroupNorm>(m, AtenNativeGroupNorm);
   ImplStable<OpName::kNativeGroupNormBackward>(m, AtenNativeGroupNormBackward);
   ImplStable<OpName::kNativeLayerNorm>(m, AtenNativeLayerNorm);
   ImplStable<OpName::kNativeLayerNormBackward>(m, AtenLayerNormBackward);
