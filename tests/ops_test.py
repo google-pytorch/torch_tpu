@@ -30,7 +30,6 @@ from absl.testing import absltest
 import torch
 from torch.nn import attention
 from torch_tpu._internal.utils import test_utils
-from tests import dynamism_test_utils
 from tests import op_testing
 from tests import oss_utils
 from tests import quantize_utils
@@ -1413,11 +1412,6 @@ class TestOps(op_testing.OpInfoTestBase):
         if op_testing.is_compiled_mode()
         else ACCURACY_OVERRIDES_VS_GPU,
         grad_gpu_overrides=ACCURACY_OVERRIDES_GRAD_VS_GPU,
-    )
-    self.set_dynamism_handlers(
-        dynamism_test_utils.verify_op_supports_dynamism,
-        dynamism_test_utils.mark_input_dynamic,
-        dynamism_test_utils.generate_exhaustive_input_marking_plans,
     )
     self.set_symbolic_shapes_known_failures(SYMBOLIC_SHAPES_KNOWN_FAILURES)
 
