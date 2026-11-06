@@ -170,6 +170,7 @@ csrc/ops/layer_norm/layer_norm_aten_kernels.cc: {remaining: 0, total: 3, infeasi
 csrc/ops/lcm/lcm_aten_kernels.cc: {remaining: 0, total: 1, infeasible: 0}
 csrc/ops/leaky_relu/leaky_relu_aten_kernels.cc: {remaining: 4, total: 7, infeasible: 0}
 csrc/ops/lerp/lerp_aten_kernels.cc: {remaining: 0, total: 1, infeasible: 0}
+csrc/ops/linalg/cross/linalg_cross_kernels.cc: {remaining: 0, total: 5, infeasible: 0}
 csrc/ops/linalg/linalg_kernels.cc: {remaining: 0, total: 4, infeasible: 0}
 csrc/ops/linalg/linalg_svd_kernels.cc: {remaining: 0, total: 5, infeasible: 1}
 csrc/ops/linalg/lu/linalg_lu_kernels.cc: {remaining: 0, total: 16, infeasible: 2}
