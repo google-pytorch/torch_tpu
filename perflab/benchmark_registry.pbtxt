@@ -954,7 +954,7 @@ benchmarks {
     action: "./user_repo/.github/actions/run-benchmark"
     action_inputs { key: "script" value: "perflab/torch_layer_benchmark_test.py" }
     action_inputs { key: "runtime_flags" value: "--run_scope=full" }
-    action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=8,TEST_SHARD_INDEX=0" }
+    action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=8,TEST_SHARD_INDEX=0,TORCH_LOGS=graph_code,TESTBRIDGE_TEST_ONLY=*sdpa*flash_attention_compiled" }
   }
 
   environment_configs {
@@ -1008,7 +1008,7 @@ benchmarks {
     action: "./user_repo/.github/actions/run-benchmark"
     action_inputs { key: "script" value: "perflab/torch_layer_benchmark_test.py" }
     action_inputs { key: "runtime_flags" value: "--run_scope=full" }
-    action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=8,TEST_SHARD_INDEX=1" }
+    action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=8,TEST_SHARD_INDEX=1,TORCH_LOGS=graph_code,TESTBRIDGE_TEST_ONLY=*sdpa*flash_attention_compiled" }
   }
 
   environment_configs {
@@ -1062,7 +1062,7 @@ benchmarks {
     action: "./user_repo/.github/actions/run-benchmark"
     action_inputs { key: "script" value: "perflab/torch_layer_benchmark_test.py" }
     action_inputs { key: "runtime_flags" value: "--run_scope=full" }
-    action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=8,TEST_SHARD_INDEX=2" }
+    action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=8,TEST_SHARD_INDEX=2,TORCH_LOGS=graph_code,TESTBRIDGE_TEST_ONLY=*sdpa*flash_attention_compiled" }
   }
 
   environment_configs {
@@ -1116,7 +1116,7 @@ benchmarks {
     action: "./user_repo/.github/actions/run-benchmark"
     action_inputs { key: "script" value: "perflab/torch_layer_benchmark_test.py" }
     action_inputs { key: "runtime_flags" value: "--run_scope=full" }
-    action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=8,TEST_SHARD_INDEX=3" }
+    action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=8,TEST_SHARD_INDEX=3,TORCH_LOGS=graph_code,TESTBRIDGE_TEST_ONLY=*sdpa*flash_attention_compiled" }
   }
 
   environment_configs {
@@ -1170,7 +1170,7 @@ benchmarks {
     action: "./user_repo/.github/actions/run-benchmark"
     action_inputs { key: "script" value: "perflab/torch_layer_benchmark_test.py" }
     action_inputs { key: "runtime_flags" value: "--run_scope=full" }
-    action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=8,TEST_SHARD_INDEX=4" }
+    action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=8,TEST_SHARD_INDEX=4,TORCH_LOGS=graph_code,TESTBRIDGE_TEST_ONLY=*sdpa*flash_attention_compiled" }
   }
 
   environment_configs {
@@ -1224,7 +1224,7 @@ benchmarks {
     action: "./user_repo/.github/actions/run-benchmark"
     action_inputs { key: "script" value: "perflab/torch_layer_benchmark_test.py" }
     action_inputs { key: "runtime_flags" value: "--run_scope=full" }
-    action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=8,TEST_SHARD_INDEX=5" }
+    action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=8,TEST_SHARD_INDEX=5,TORCH_LOGS=graph_code,TESTBRIDGE_TEST_ONLY=*sdpa*flash_attention_compiled" }
   }
 
   environment_configs {
@@ -1278,7 +1278,7 @@ benchmarks {
     action: "./user_repo/.github/actions/run-benchmark"
     action_inputs { key: "script" value: "perflab/torch_layer_benchmark_test.py" }
     action_inputs { key: "runtime_flags" value: "--run_scope=full" }
-    action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=8,TEST_SHARD_INDEX=6" }
+    action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=8,TEST_SHARD_INDEX=6,TORCH_LOGS=graph_code,TESTBRIDGE_TEST_ONLY=*sdpa*flash_attention_compiled" }
   }
 
   environment_configs {
@@ -1332,7 +1332,7 @@ benchmarks {
     action: "./user_repo/.github/actions/run-benchmark"
     action_inputs { key: "script" value: "perflab/torch_layer_benchmark_test.py" }
     action_inputs { key: "runtime_flags" value: "--run_scope=full" }
-    action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=8,TEST_SHARD_INDEX=7" }
+    action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=8,TEST_SHARD_INDEX=7,TORCH_LOGS=graph_code,TESTBRIDGE_TEST_ONLY=*sdpa*flash_attention_compiled" }
   }
 
   environment_configs {
