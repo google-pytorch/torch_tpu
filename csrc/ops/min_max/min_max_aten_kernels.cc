@@ -73,6 +73,24 @@ absl::StatusOr<DeviceBufferRef> DispatchUnaryMinMax(
 
 namespace {
 
+absl::Status ValidateNotZeroElementTensor(const at::Tensor& tensor) {
+  TT_RET_CHECK(tensor.numel() > 0, error::kInvalidArgument)
+      << "the dim argument must be specified when the input tensor has "
+         "0 elements";
+
+  return absl::OkStatus();
+}
+
+absl::Status ValidateNonZeroReductionDim(const at::Tensor& tensor,
+                                         int64_t normalized_dim) {
+  if (tensor.dim() > 0) {
+    TT_RET_CHECK(tensor.size(normalized_dim) > 0, error::kPythonIndexError)
+        << "expected reduction dim " << normalized_dim
+        << " to have non-zero size, got 0";
+  }
+  return absl::OkStatus();
+}
+
 absl::StatusOr<std::tuple<at::Tensor, at::Tensor>> AtenMinMaxDim(
     const at::Tensor& self, int64_t dim, bool keep_dim, MinMaxOp min_max_op,
     OpParamCacheKeys& op_param_cache_keys, at::Tensor& value,
@@ -86,6 +104,7 @@ absl::StatusOr<std::tuple<at::Tensor, at::Tensor>> AtenMinMaxDim(
 
   TT_ASSIGN_OR_RETURN(const int64_t normalized_dim,
                       SafeWrapDim(dim, self.dim()));
+  TT_RETURN_IF_ERROR(ValidateNonZeroReductionDim(self, normalized_dim));
 
   Dimensions output_dims = CopyIntVector(at::meta::get_reduction_shape(
       self, {dim}, keep_dim, /*allow_empty_dims=*/false));
@@ -114,14 +133,6 @@ absl::StatusOr<std::tuple<at::Tensor, at::Tensor>> AtenMinMaxDim(
       })));
 
   return {{value, indices}};
-}
-
-absl::Status ValidateNotZeroElementTensor(const at::Tensor& tensor) {
-  TT_RET_CHECK(tensor.numel() > 0, error::kInvalidArgument)
-      << "the dim argument must be specified when the input tensor has "
-         "0 elements";
-
-  return absl::OkStatus();
 }
 
 absl::Status UnaryMinMax(const at::Tensor& self, MinMaxOp op, at::Tensor& out) {
@@ -164,6 +175,10 @@ absl::Status ArgMinMax(const at::Tensor& self, c10::optional<int64_t> dim,
       << ", got " << out.device();
   TT_RETURN_IF_ERROR(
       ValidateOutDtype(out, at::kLong, /*allow_out_dtype_cast=*/false));
+  TT_RET_CHECK(!IsComplex(self) && !IsBool(self), error::kInvalidArgument)
+      << "expected the input dtype to be neither complex nor bool, got "
+      << ToString(self.scalar_type());
+  TT_RETURN_IF_ERROR(ValidateNotLowPrecisionFloat(self));
 
   at::Tensor input_tensor = self;
   c10::optional<int64_t> wrapped_dim_opt;
@@ -171,21 +186,13 @@ absl::Status ArgMinMax(const at::Tensor& self, c10::optional<int64_t> dim,
   if (dim) {
     TT_ASSIGN_OR_RETURN(int64_t wrapped_dim,
                         SafeWrapDim(dim.value(), self.dim()));
+    TT_RETURN_IF_ERROR(ValidateNonZeroReductionDim(self, wrapped_dim));
     out_shape = at::meta::get_reduction_shape(self, {wrapped_dim}, keep_dim);
     wrapped_dim_opt = wrapped_dim;
   } else {
+    TT_RETURN_IF_ERROR(ValidateNotZeroElementTensor(self));
     out_shape = keep_dim ? c10::DimVector(self.dim(), 1) : c10::DimVector();
   }
-
-  // native PyTorch works for complex and bool dtypes only when the input
-  // dimension corresponding to the wrapped dimension is 1. All other cases are
-  // not supported. Hence, this check is after the above logic to handle the
-  // special case where the input dimension corresponding to the wrapped
-  // dimension is 1.
-  TT_RET_CHECK(!IsComplex(self) && !IsBool(self), error::kInvalidArgument)
-      << "expected the input dtype to be neither complex nor bool, got "
-      << ToString(self.scalar_type());
-  TT_RETURN_IF_ERROR(ValidateNotLowPrecisionFloat(self));
 
   Dimensions out_dims = CopyIntVector(out_shape);
 

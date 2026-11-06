@@ -6498,6 +6498,64 @@ Supported combinations for non-constant padding:
     ):
       op(tensor, dim=0)
 
+  @parameterized.named_parameters(
+      {"testcase_name": "amin", "op_name": "amin", "op": torch.amin},
+      {"testcase_name": "amax", "op_name": "amax", "op": torch.amax},
+  )
+  def test_amin_amax_input_with_zero_elements(self, op_name: str, op: Any):
+    tensor = torch.empty(2, 0, device=et.device(), dtype=torch.float32)
+    out = _get_aminmax_outputs(op, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""{op_name}(): the dim argument must be specified when the input tensor has 0 elements""",
+        gpu=f"""{op_name}(): Expected reduction dim to be specified for input.numel() == 0. Specify the reduction dim with the 'dim' argument.""",
+    ):
+      op(tensor, dim=(), out=out)
+
+  def test_aminmax_input_with_zero_elements(self):
+    tensor = torch.empty(2, 0, device=et.device(), dtype=torch.float32)
+    out = _get_aminmax_outputs(
+        torch.aminmax, device=et.device(), dtype=torch.float32
+    )
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""aminmax(): the dim argument must be specified when the input tensor has 0 elements""",
+        gpu="""aminmax(): cannot compute aminmax over an empty dimension as the operation has no identity.""",
+    ):
+      torch.aminmax(tensor, out=out)
+
+  @parameterized.named_parameters(
+      {
+          "testcase_name": "amin",
+          "op_name": "amin",
+          "op": torch.amin,
+          "gpu_prefix": "amin()",
+      },
+      {
+          "testcase_name": "amax",
+          "op_name": "amax",
+          "op": torch.amax,
+          "gpu_prefix": "amax()",
+      },
+      {
+          "testcase_name": "aminmax",
+          "op_name": "aminmax",
+          "op": torch.aminmax,
+          "gpu_prefix": "aminmax",
+      },
+  )
+  def test_amin_amax_aminmax_empty_reduction_dim(
+      self, op_name: str, op: Any, gpu_prefix: str
+  ):
+    tensor = torch.empty(2, 0, device=et.device(), dtype=torch.float32)
+    out = _get_aminmax_outputs(op, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        IndexError,
+        tpu=f"""{op_name}(): expected reduction dim 1 to have non-zero size, got 0""",
+        gpu=f"""{gpu_prefix}: Expected reduction dim 1 to have non-zero size.""",
+    ):
+      op(tensor, dim=1, out=out)
+
   def test_complex_int(self):
     real = torch.ones(5, device=et.device(), dtype=torch.float32)
     img = torch.ones(5, device=et.device(), dtype=torch.float32)
@@ -7795,6 +7853,50 @@ Supported combinations for non-constant padding:
       test_with(torch.bool, tpu="""bool""", gpu="""bool""")
     with self.subTest(dtype=torch.complex64):
       test_with(torch.complex64, tpu="""complex64""", gpu="""complex""")
+
+  @parameterized.named_parameters(
+      {"testcase_name": "min", "op": torch.min, "op_name": "min"},
+      {"testcase_name": "max", "op": torch.max, "op_name": "max"},
+  )
+  def test_min_max_dim_empty_reduction_dim(self, op, op_name: str):
+    inp = torch.empty(2, 0, device=et.device(), dtype=torch.float32)
+    values = torch.empty(2, device=et.device(), dtype=torch.float32)
+    indices = torch.empty(2, device=et.device(), dtype=torch.int64)
+    with et.assert_raises_message(
+        IndexError,
+        tpu=f"""{op_name}(): expected reduction dim 1 to have non-zero size, got 0""",
+        gpu=f"""{op_name}(): Expected reduction dim 1 to have non-zero size.""",
+    ):
+      op(inp, 1, out=(values, indices))
+
+  @parameterized.named_parameters(
+      {"testcase_name": "argmin", "op": torch.argmin, "op_name": "argmin"},
+      {"testcase_name": "argmax", "op": torch.argmax, "op_name": "argmax"},
+  )
+  def test_argmin_argmax_input_with_zero_elements(self, op, op_name: str):
+    inp = torch.empty(2, 0, device=et.device(), dtype=torch.float32)
+    out = torch.empty((), device=et.device(), dtype=torch.int64)
+    err_type = IndexError if et.is_on_gpu() else RuntimeError
+    with et.assert_raises_message(
+        err_type,
+        tpu=f"""{op_name}(): the dim argument must be specified when the input tensor has 0 elements""",
+        gpu=f"""{op_name}(): Expected reduction dim to be specified for input.numel() == 0.""",
+    ):
+      op(inp, out=out)
+
+  @parameterized.named_parameters(
+      {"testcase_name": "argmin", "op": torch.argmin, "op_name": "argmin"},
+      {"testcase_name": "argmax", "op": torch.argmax, "op_name": "argmax"},
+  )
+  def test_argmin_argmax_empty_reduction_dim(self, op, op_name: str):
+    inp = torch.empty(2, 0, device=et.device(), dtype=torch.float32)
+    out = torch.empty(2, device=et.device(), dtype=torch.int64)
+    with et.assert_raises_message(
+        IndexError,
+        tpu=f"""{op_name}(): expected reduction dim 1 to have non-zero size, got 0""",
+        gpu=f"""{op_name}(): Expected reduction dim 1 to have non-zero size.""",
+    ):
+      op(inp, dim=1, out=out)
 
   def test_mm_output_dtype_mismatch(self):
     lhs = torch.ones(3, 4, device=et.device(), dtype=torch.float32)

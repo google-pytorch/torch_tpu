@@ -15273,6 +15273,40 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     utils.assert_close(torch.argmax(x_tpu, dim=0), torch.argmax(x_cpu, dim=0))
     utils.assert_close(torch.argmin(x_tpu, dim=0), torch.argmin(x_cpu, dim=0))
 
+  def test_min_max_non_reduced_empty_dim_out(self):
+    # Verify that reducing along a non-empty dimension (dim=0, size=2) when
+    # another unreduced dimension is empty (dim=1, size=0) succeeds and returns
+    # empty tensors of shape (0,) for .out variants.
+    x_cpu = torch.empty(2, 0, dtype=torch.float32)
+    x_tpu = to(x_cpu, "tpu")
+    for op in (torch.max, torch.min):
+      v_cpu, i_cpu = torch.empty(0), torch.empty(0, dtype=torch.int64)
+      v_tpu = torch.empty(0, device="tpu")
+      i_tpu = torch.empty(0, dtype=torch.int64, device="tpu")
+      op(x_cpu, dim=0, out=(v_cpu, i_cpu))
+      op(x_tpu, dim=0, out=(v_tpu, i_tpu))
+      utils.assert_close(v_tpu, v_cpu)
+      utils.assert_close(i_tpu, i_cpu)
+    for op in (torch.argmax, torch.argmin):
+      out_cpu = torch.empty(0, dtype=torch.int64)
+      out_tpu = torch.empty(0, dtype=torch.int64, device="tpu")
+      op(x_cpu, dim=0, out=out_cpu)
+      op(x_tpu, dim=0, out=out_tpu)
+      utils.assert_close(out_tpu, out_cpu)
+    for op in (torch.amax, torch.amin):
+      out_cpu = torch.empty(0, dtype=torch.float32)
+      out_tpu = torch.empty(0, dtype=torch.float32, device="tpu")
+      op(x_cpu, dim=0, out=out_cpu)
+      op(x_tpu, dim=0, out=out_tpu)
+      utils.assert_close(out_tpu, out_cpu)
+    mn_cpu, mx_cpu = torch.empty(0), torch.empty(0)
+    mn_tpu = torch.empty(0, device="tpu")
+    mx_tpu = torch.empty(0, device="tpu")
+    torch.aminmax(x_cpu, dim=0, out=(mn_cpu, mx_cpu))
+    torch.aminmax(x_tpu, dim=0, out=(mn_tpu, mx_tpu))
+    utils.assert_close(mn_tpu, mn_cpu)
+    utils.assert_close(mx_tpu, mx_cpu)
+
   def test_max_pool2d_with_indices_nan_selected_index(self):
     # Verify both values and selected_index for max_pool2d_with_indices on NaN windows.
     pool_in = torch.tensor(
