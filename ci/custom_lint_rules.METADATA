@@ -1346,7 +1346,7 @@ presubmit {
     }
     prohibited_regexp: "\\b(py_library|pytype_library|pytype_strict_library)\\("
     match_multi_line: true
-    suppression_regexp: "\\b(py_library|pytype_library|pytype_strict_library)\\(\\n\\s*# PY_LIBRARY_OK=.+"
+    suppression_regexp: "\\b(py_library|pytype_library|pytype_strict_library)\\((.*# PY_LIBRARY_OK=.+|\\n\\s*# PY_LIBRARY_OK=.+)"
     failure_message:
       "Please use torch_tpu_py_library instead of py_library, pytype_library, "
       "or pytype_strict_library. For example:\n"
@@ -1359,8 +1359,8 @@ presubmit {
       "\n"
       "This enforces best practices. "
       "If you have a legitimate reason to bypass this check, add "
-      "a comment `# PY_LIBRARY_OK=<reason>` on the first line "
-      "after the `py_library(`, etc, line, e.g.\n"
+      "a comment `# PY_LIBRARY_OK=<reason>` on the same line as "
+      "(or the first line after) the `py_library(`, etc, line, e.g.\n"
       "  py_library(\n"
       "    # PY_LIBRARY_OK=<reason>\n"
       "    name = \"foo\",\n"
