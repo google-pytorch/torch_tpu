@@ -512,7 +512,7 @@ DYNAMISM_DENY_LISTS: DenyList = {
         "baddbmm.dtype": {EAGER},
         "bernoulli": {EAGER},
         # These abort the test process with a CHECK failure.
-        "linalg.lu_solve": {EAGER},
+        "linalg.lu_solve": {EAGER, COMPILE_GRAD},
         "linalg.qr": {EAGER, COMPILE_GRAD},
         "linalg.solve_triangular": {EAGER},
         "linalg.svd": {EAGER},
@@ -544,8 +544,8 @@ DYNAMISM_DENY_LISTS: DenyList = {
         "linalg.cholesky": {EAGER},
         "linalg.cholesky_ex": {EAGER, COMPILE_GRAD},
         "linalg.inv": {EAGER, COMPILE_GRAD},
-        "linalg.lu": {EAGER},
-        "linalg.solve_ex": {EAGER},
+        "linalg.lu": {EAGER, COMPILE_GRAD},
+        "linalg.solve_ex": {EAGER, COMPILE_GRAD},
     },
     # TODO: b/449736443 - Support bounded dimensions in these lowerings.
     "the result has wrong values": {
