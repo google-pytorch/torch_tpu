@@ -29,7 +29,9 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "c10/core/ScalarType.h"
+#include "c10/core/SymIntArrayRef.h"
 #include "csrc/common/device_type.h"
+#include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/to_string.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
@@ -56,7 +58,22 @@ inline at::ScalarType GetScalarType(at::ScalarType scalar_type) {
 // Otherwise, returns the current default scalar dtype.
 [[nodiscard]] c10::ScalarType InferOutputDtype(const at::Tensor& self);
 
-// Return PyTorch's computation dtype for a given input dtype.
+// Returns the TorchTPU computation (opmath) dtype for `input_dtype`.
+//
+// Always use `InferComputationDtype` instead of calling `at::toOpMathType`
+// directly:
+// 1. Upstream `at::toOpMathType` switches over
+//    `AT_ALL_SCALAR_TYPES_WITH_COMPLEX`, which omits unsigned integer types
+//    (`UInt16`, `UInt32`, `UInt64`) and sub-byte integer types (`Int2`, `Int4`,
+//    `UInt2`, `UInt4`) and crashes with `TORCH_INTERNAL_ASSERT(false,
+//    "Unrecognized ScalarType: ...")` on those dtypes.
+// 2. Upstream `at::toOpMathType` leaves `Float4_e2m1fn_x2` unchanged, whereas
+//    XLA HLO arithmetic requires promoting it to `Float` (`f32`).
+// 3. Routing both `at::ScalarType` and `mlir::ElementType` through
+//    `InferComputationDtype` provides a single source of truth across ATen
+//    scalar/tensor preparation and StableHLO lowering.
+[[nodiscard]] at::ScalarType InferComputationDtype(at::ScalarType input_dtype);
+
 absl::StatusOr<mlir::ElementType> InferComputationDtype(
     mlir::ElementType input_dtype);
 
@@ -67,6 +84,19 @@ inline absl::Status ValidateIsMatrix(const at::Tensor& tensor,
       << " argument to be a 2D tensor (matrix), got " << tensor.dim()
       << "D of shape " << ToString(tensor.sizes());
   return absl::OkStatus();
+}
+
+// Converts sizes that are expected to be concrete, such as the sizes of a real
+// (non-fake) tensor, to `Dimensions`. Returns an error if any size is symbolic,
+// as in the FakeTensors that torch.compile traces with.
+inline absl::StatusOr<Dimensions> ConcreteSizeToDimensions(
+    c10::SymIntArrayRef sym_dims) {
+  const std::optional<at::IntArrayRef> dims =
+      c10::asIntArrayRefSlowOpt(sym_dims);
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=callers only pass real tensors' sizes
+      dims.has_value(), error::kInternal)
+      << "expected concrete sizes, got symbolic sizes " << ToString(sym_dims);
+  return Dimensions(dims->begin(), dims->end());
 }
 
 // Verifies that result_dtype matches or can be safely cast to the out tensor's

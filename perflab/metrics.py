@@ -15,8 +15,10 @@
 """Metrics and result classes for E2E benchmarks."""
 
 import abc
+from collections.abc import Mapping
 import dataclasses
-from typing import Mapping
+
+from perflab import workload as workload_lib
 
 
 def _seconds_to_ms(value: float) -> float:
@@ -109,6 +111,14 @@ class PerformanceMetrics(MetricsInterface):
       xprof). An unavailable device time is not exported.
     peak_host_compilation_memory_mb: The peak host memory used by compilation in
       the process, or None if it was not measured. Only exported if measured.
+    model_flops_per_step: The model FLOPs of one benchmark step (see
+      perflab/flops.py), or None if they were not counted. Only exported, with
+      the achieved TFLOP/s derived from it, if counted.
+    peak_flops_per_second: The peak FLOP/s of the device for the benchmark's
+      dtype, or None if unknown. The model FLOPs utilization (MFU) is only
+      exported if both it and `model_flops_per_step` are known.
+    step_work: The work of one step (see perflab/workload.py), or None if it is
+      unknown. Only exported, with the throughput derived from it, if known.
   """
 
   num_warmup_steps: int = 0
@@ -120,6 +130,51 @@ class PerformanceMetrics(MetricsInterface):
   post_warmup_run_session_xprof_url: str | None = None
   average_post_warmup_device_time_seconds: float = -1.0
   peak_host_compilation_memory_mb: float | None = None
+  model_flops_per_step: float | None = None
+  peak_flops_per_second: float | None = None
+  step_work: workload_lib.StepWork | None = None
+
+  def _throughput_metrics(self) -> Mapping[str, float]:
+    """Returns the workload and the throughput from the wall and device times.
+
+    Throughput is per process: samples or tokens per second of one device.
+    """
+    if self.step_work is None:
+      return {}
+    res = {"batch_size": float(self.step_work.workload.batch_size)}
+    if self.step_work.workload.seq_len is not None:
+      res["seq_len"] = float(self.step_work.workload.seq_len)
+    for unit, per_step in (
+        ("samples", self.step_work.samples_per_step),
+        ("tokens", self.step_work.tokens_per_step),
+    ):
+      if per_step is None:
+        continue
+      res[f"{unit}_per_step"] = float(per_step)
+      for prefix, step_time in (
+          ("", self.post_warmup_step_time_seconds),
+          ("device_", self.average_post_warmup_device_time_seconds),
+      ):
+        if step_time > 0:
+          res[f"{prefix}{unit}_per_second"] = per_step / step_time
+    return res
+
+  def _flops_metrics(self) -> Mapping[str, float]:
+    """Returns the FLOPs metrics, from the wall and the device step times."""
+    if self.model_flops_per_step is None:
+      return {}
+    res = {"model_flops_per_step": self.model_flops_per_step}
+    for prefix, step_time in (
+        ("", self.post_warmup_step_time_seconds),
+        ("device_", self.average_post_warmup_device_time_seconds),
+    ):
+      if step_time <= 0:
+        continue
+      flops_per_second = self.model_flops_per_step / step_time
+      res[f"{prefix}achieved_tflops_per_second"] = flops_per_second / 1e12
+      if self.peak_flops_per_second:
+        res[f"{prefix}mfu"] = flops_per_second / self.peak_flops_per_second
+    return res
 
   def metric_map(self) -> Mapping[str, float]:
     """Returns a map of metrics to be exported to MLCompass."""
@@ -147,6 +202,8 @@ class PerformanceMetrics(MetricsInterface):
       res["peak_host_compilation_memory_mb"] = (
           self.peak_host_compilation_memory_mb
       )
+    res |= self._flops_metrics()
+    res |= self._throughput_metrics()
     return res
 
 

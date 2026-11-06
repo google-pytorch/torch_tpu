@@ -140,6 +140,7 @@ class ScanExposedInternalApisTest(absltest.TestCase):  # ABSLTEST_OK=tool test
       # Overview
       Run `python -m torch_tpu._internal.distributed.launchers.singlehost_wrapper`
       Also inspect `TORCH_TPU_INTERNAL_XLA_OPTIONS` and `XLA_FLAGS`.
+      python train.py --torch_tpu_internal_mlir_tracebacks=true
     """)
     env_stages = {
         "TORCH_TPU_INTERNAL_XLA_OPTIONS": Stage.INTERNAL,
@@ -147,7 +148,7 @@ class ScanExposedInternalApisTest(absltest.TestCase):  # ABSLTEST_OK=tool test
     }
     visitor = scan_exposed_internal_apis.InternalApiVisitor(
         rel_path="docs/doc.py",
-        py_stages={},
+        py_stages={"torch_tpu_internal_mlir_tracebacks": Stage.INTERNAL},
         env_stages=env_stages,
     )
     visitor.scan_text(source)
@@ -156,6 +157,7 @@ class ScanExposedInternalApisTest(absltest.TestCase):  # ABSLTEST_OK=tool test
         "torch_tpu._internal.distributed.launchers.singlehost_wrapper",
         visitor.internal_py,
     )
+    self.assertIn("torch_tpu_internal_mlir_tracebacks", visitor.internal_py)
     self.assertIn("TORCH_TPU_INTERNAL_XLA_OPTIONS", visitor.internal_envs)
     # Public XLA_FLAGS should not be tracked as an internal violation
     self.assertNotIn("XLA_FLAGS", visitor.internal_envs)

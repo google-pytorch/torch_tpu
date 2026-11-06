@@ -73,9 +73,9 @@ def _set_private_use1_test_configs(test_module: str) -> None:
   # Resolve the base's device type ("tpu") up front so every generated class
   # has "TPU" suffix.
   base.setUpClass()
-  # TODO(b/523293280): extend test configs with TPU-specific overrides.
   base.set_test_configs(
-      test_exclusions=torch_test_configs.TEST_EXCLUSIONS.get(test_module)
+      op_overrides=torch_test_configs.OP_OVERRIDES.get(test_module),
+      test_exclusions=torch_test_configs.TEST_EXCLUSIONS.get(test_module),
   )
 
 

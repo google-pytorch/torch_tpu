@@ -51,7 +51,9 @@ namespace torch_tpu {
 namespace {
 
 using absl_testing::StatusIs;
+using testing::Contains;
 using testing::ElementsAre;
+using testing::Pair;
 
 // Initializes the TPU PjRt client once per test suite.
 class TpuClientTest : public testing::Test {
@@ -71,18 +73,32 @@ UniqueCompileOptions GetCompileOptions(const CompilationMode mode) {
   return GetCompilationSpec(mode).xla_compile_options;
 }
 
-TEST_F(MakeCompilerOptionsTest, DefaultToO1ForEagerMode) {
+TEST_F(MakeCompilerOptionsTest, DefaultOptionsInEagerMode) {
   UniqueCompileOptions options =
       GetCompileOptions(CompilationMode::kFastCompile);
   EXPECT_EQ(options->executable_build_options.optimization_level(),
             xla::ExecutionOptions::EFFORT_O1);
+  EXPECT_THAT(options->env_option_overrides,
+              Contains(Pair("xla_tpu_autofdo",
+                            xla::CompileOptions::OptionOverride(false))));
+  EXPECT_THAT(options->env_option_overrides,
+              Contains(Pair("xla_tpu_vmem_scavenging_mode",
+                            xla::CompileOptions::OptionOverride(
+                                "SAFE_IFF_KERNEL_REQUIRED"))));
 }
 
-TEST_F(MakeCompilerOptionsTest, DefaultToUnsetForTorchCompileMode) {
+TEST_F(MakeCompilerOptionsTest, DefaultOptionsInTorchCompileMode) {
   UniqueCompileOptions options =
       GetCompileOptions(CompilationMode::kFastRuntime);
   EXPECT_EQ(options->executable_build_options.optimization_level(),
             xla::ExecutionOptions::EFFORT_UNKNOWN);
+  EXPECT_THAT(options->env_option_overrides,
+              Contains(Pair("xla_tpu_autofdo",
+                            xla::CompileOptions::OptionOverride(false))));
+  EXPECT_THAT(options->env_option_overrides,
+              Contains(Pair("xla_tpu_vmem_scavenging_mode",
+                            xla::CompileOptions::OptionOverride(
+                                "SAFE_IFF_KERNEL_REQUIRED"))));
 }
 
 TEST_F(MakeCompilerOptionsTest, CompilerOptionOverrides) {

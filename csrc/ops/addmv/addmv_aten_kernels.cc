@@ -158,8 +158,8 @@ absl::Status ValidateAddmvInputs(const at::Tensor& self, const at::Tensor& mat,
   TT_RET_CHECK(!IsBool(self), error::kInvalidArgument)
       << "the dtype of the first argument cannot be bool";
 
-  TT_RET_CHECK(mat.numel() == 0 || (mat.scalar_type() != at::kInt &&
-                                    mat.scalar_type() != at::kLong),
+  TT_RET_CHECK(mat.numel() == 0 || !c10::isIntegralType(mat.scalar_type(),
+                                                        /*includeBool=*/false),
                error::kPythonNotImplementedError)
       << "not implemented for " << ToString(mat.scalar_type());
 

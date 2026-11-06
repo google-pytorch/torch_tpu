@@ -104,7 +104,7 @@ def _resolve_runtime_object(target_name: str) -> Any | None:
   return None
 
 
-class Stage(str, enum.Enum):
+class Stage(enum.StrEnum):
   """Lifecycle stages for TorchTPU APIs."""
 
   INTERNAL = "Internal"
@@ -145,7 +145,6 @@ _TORCH_TPU_NAMESPACES: tuple[str, ...] = (
     "torch.tpu.",
     "torch_tpu.",
     "torch.ops.tpu.",
-    "torch.ops.torch_tpu.",
 )
 _ROOT_NAMESPACES: tuple[str, ...] = (
     "torch",
@@ -153,7 +152,6 @@ _ROOT_NAMESPACES: tuple[str, ...] = (
     "torch_tpu",
     "torch.ops",
     "torch.ops.tpu",
-    "torch.ops.torch_tpu",
 )
 
 # Internal implementation environment variables from csrc/common/env_vars.h
@@ -652,9 +650,10 @@ class InternalApiVisitor(ast.NodeVisitor):
         continue
 
       # 1. Internal module references, ops, or flags in strings, shell scripts, or markdown
+      # A flag is matched without its leading `--`, as listed in tt_apis.yaml.
       for m in re.finditer(
           r"\b((?:torch_tpu(?:\.google)?\._internal|torch\.tpu\._|torch\.ops\.tpu\._|torch\.ops\.torch_tpu)[a-zA-Z0-9_.]*)\b"
-          r"|(--torch_tpu_internal_[a-zA-Z0-9_]+)\b",
+          r"|--(torch_tpu_internal_[a-zA-Z0-9_]+)\b",
           line,
       ):
         sym = m.group(1) or m.group(2)

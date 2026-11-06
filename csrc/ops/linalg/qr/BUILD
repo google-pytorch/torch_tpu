@@ -35,7 +35,7 @@ torch_tpu_cc_library(
         "//csrc/common:dtype",
         "//csrc/common:error_utils",
         "//csrc/common:fixed_size_span",
-        "//csrc/eager:device_buffer",
+        "//csrc/common:utils",
         "//csrc/eager:op_dispatcher",
         "//csrc/eager:tensor_to_buffer",
         "//csrc/ops:op_builder_utils",
@@ -59,6 +59,7 @@ torch_tpu_cc_library(
     deps = [
         "//csrc/common:dimension_types",
         "//csrc/common:error_utils",
+        "//csrc/common:utils",
         "//csrc/ops:op_builder_utils",
         "//csrc/ops/eye:eye_lib",
         "//shims/torch:aten_headers",

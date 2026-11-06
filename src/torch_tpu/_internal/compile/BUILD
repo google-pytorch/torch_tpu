@@ -62,7 +62,6 @@ torch_tpu_py_library(
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
         "//src/torch_tpu/_internal:env",
-        "//src/torch_tpu/_internal/benchmarks:xprof_adapter",
         "//src/torch_tpu/_internal/compile/fx_passes:clone_mutated_returned_placeholders",
         "//src/torch_tpu/_internal/compile/fx_passes:force_collectives_output",
         "//src/torch_tpu/_internal/compile/fx_passes:mark_embedded_constants",
@@ -111,6 +110,16 @@ torch_tpu_py_library(
     name = "flex_attention_redirect",
     srcs = ["flex_attention_redirect.py"],
     deps = ["//shims/torch:pytorch"],
+)
+
+torch_tpu_py_library(
+    name = "flex_attention",
+    srcs = ["flex_attention.py"],
+    deps = [
+        ":tpu_torch_compile",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu/_internal/execution_mode",
+    ],
 )
 
 torch_tpu_py_library(

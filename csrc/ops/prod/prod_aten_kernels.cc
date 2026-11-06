@@ -22,7 +22,6 @@
 #include "ATen/core/ScalarType.h"
 #include "absl/functional/bind_front.h"
 #include "absl/status/statusor.h"
-#include "c10/core/ScalarType.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/device_type.h"
@@ -42,7 +41,6 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
-#include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
 namespace {
@@ -53,7 +51,7 @@ at::ScalarType InferProdDtype(at::ScalarType input_dtype,
     // If the user specifies a dtype, use it.
     return dtype.value();
   }
-  if (c10::isIntegralType(input_dtype, /*include_bool=*/true)) {
+  if (IsIntegral(input_dtype)) {
     return c10::ScalarType::Long;
   }
   // Otherwise, the output type is the same as the input type.

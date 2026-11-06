@@ -436,14 +436,14 @@ MomentumMode GetMomentumMode(at::TensorList momentum_buffer_list) {
 // Determines whether gradient unscaling is enabled based on scale tensor
 // presence.
 GradScaleMode GetGradScaleMode(const std::optional<at::Tensor>& grad_scale) {
-  return (grad_scale.has_value() && grad_scale->defined())
+  return SanitizeOptionalTensor(grad_scale).has_value()
              ? GradScaleMode::kEnabled
              : GradScaleMode::kDisabled;
 }
 
 // Determines whether inf/nan checking and conditional reversion is enabled.
 FoundInfMode GetFoundInfMode(const std::optional<at::Tensor>& found_inf) {
-  return (found_inf.has_value() && found_inf->defined())
+  return SanitizeOptionalTensor(found_inf).has_value()
              ? FoundInfMode::kEnabled
              : FoundInfMode::kDisabled;
 }

@@ -78,8 +78,10 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenNativeLayerNorm(
       (input, normalized_shape, weight_opt, bias_opt, eps), {
         TT_THROW_IF_ERROR(ValidateInputs(input, normalized_shape));
 
-        const bool has_weight = weight_opt.has_value() && weight_opt->defined();
-        const bool has_bias = bias_opt.has_value() && bias_opt->defined();
+        const auto sanitized_weight = SanitizeOptionalTensor(weight_opt);
+        const auto sanitized_bias = SanitizeOptionalTensor(bias_opt);
+        const bool has_weight = sanitized_weight.has_value();
+        const bool has_bias = sanitized_bias.has_value();
         const size_t normalized_shape_dims = normalized_shape.size();
 
         auto op_builder = [has_weight, has_bias, normalized_shape_dims, eps](
@@ -145,10 +147,10 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenNativeLayerNorm(
         // Build inputs for the op.
         std::vector<at::Tensor> inputs = {input};
         if (has_weight) {
-          inputs.push_back(weight_opt.value());
+          inputs.push_back(*sanitized_weight);
         }
         if (has_bias) {
-          inputs.push_back(bias_opt.value());
+          inputs.push_back(*sanitized_bias);
         }
         const auto elem_dtype = output_dtype;
         const auto stats_elem_dtype = stats_dtype;
@@ -186,8 +188,10 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenLayerNormBackward(
         // Note that bias is not an input to the backward compute.
         // We just need to know if it was present, in order to compute dbeta
         // from dy.
-        const bool compute_dbeta = bias_opt.has_value() && bias_opt->defined();
-        const bool has_weight = weight_opt.has_value() && weight_opt->defined();
+        const auto sanitized_bias = SanitizeOptionalTensor(bias_opt);
+        const auto sanitized_weight = SanitizeOptionalTensor(weight_opt);
+        const bool compute_dbeta = sanitized_bias.has_value();
+        const bool has_weight = sanitized_weight.has_value();
 
         Dimensions normalized_shape_vec = CopyIntVector(normalized_shape);
         auto op_builder = [has_weight, compute_dbeta, normalized_shape_vec](
@@ -230,7 +234,7 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenLayerNormBackward(
         // Build inputs for the op.
         std::vector<at::Tensor> inputs = {dY, x, mean, rstd};
         if (has_weight) {
-          inputs.push_back(weight_opt.value());
+          inputs.push_back(*sanitized_weight);
         }
 
         TT_ASSIGN_OR_THROW(

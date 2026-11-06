@@ -111,6 +111,7 @@
 #include "csrc/ops/fake_quantize/fused_moving_avg_obs_fq_helper_aten_kernels.h"
 #include "csrc/ops/fft/fft_aten_kernels.h"
 #include "csrc/ops/fill/fill_aten_kernels.h"
+#include "csrc/ops/flex_attention/flex_attention_aten_kernels.h"
 #include "csrc/ops/flip/flip_aten_kernels.h"
 #include "csrc/ops/fmax/fmax_aten_kernels.h"
 #include "csrc/ops/fmin/fmin_aten_kernels.h"
@@ -146,6 +147,7 @@
 #include "csrc/ops/lcm/lcm_aten_kernels.h"
 #include "csrc/ops/leaky_relu/leaky_relu_aten_kernels.h"
 #include "csrc/ops/lerp/lerp_aten_kernels.h"
+#include "csrc/ops/linalg/cholesky/linalg_cholesky_kernels.h"
 #include "csrc/ops/linalg/linalg_kernels.h"
 #include "csrc/ops/linalg/linalg_svd_kernels.h"
 #include "csrc/ops/linalg/lu/linalg_lu_kernels.h"
@@ -798,6 +800,7 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kLerpScalarOut>(m, AtenLerpScalarOut);
   ImplStable<OpName::kLerpTensorOut>(m, AtenLerpTensorOut);
   ImplStable<OpName::kLgammaOut>(m, AtenLgammaOut);
+  ImplStable<OpName::kLinalgCholeskyExL>(m, AtenLinalgCholeskyExL);
   ImplStable<OpName::kLinalgInvExInverse>(m, AtenLinalgInvExInverse);
   ImplStable<OpName::kLinalgLuFactorExOut>(m, AtenLinalgLuFactorExOut);
   ImplStable<OpName::kLinalgLuOut>(m, AtenLinalgLuOut);
@@ -926,6 +929,8 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kNllLossNd>(m, AtenNllLossNd);
   ImplStable<OpName::kNonzero>(m, AtenNonzero);
   ImplStable<OpName::kNonzeroOut>(m, AtenNonzeroOut);
+  ImplStable<OpName::kNonzeroStatic>(m, AtenNonzeroStatic);
+  ImplStable<OpName::kNonzeroStaticOut>(m, AtenNonzeroStaticOut);
   ImplStable<OpName::kNormDtypeOut>(m, AtenNormDtypeOut);
   ImplStable<OpName::kNormOut>(m, AtenNormOut);
   ImplStable<OpName::kNormalFloatTensor>(m, AtenNormalFloatTensor);
@@ -1244,6 +1249,7 @@ TORCH_LIBRARY_IMPL(aten, AutogradPrivateUse1, m) {
   // All entries should be registered via ImplStable as we don't want to
   // generate a warning for standard aten ops.
   // go/keep-sorted start
+  ImplStable<OpName::kAvgPool1d>(m, AtenAvgPool1dAutograd);
   ImplStable<OpName::kCrossEntropyLoss>(m, AtenCrossEntropyLossAutograd);
   // TODO(b/513607161): remove CtcLossPublic overrides once upstream PyTorch bug
   // is fixed.
@@ -1303,6 +1309,11 @@ TORCH_LIBRARY(tpu, m) {
       "int[] kernel_size, int[] stride, int[] padding, int[] dilation, "
       "bool ceil_mode) -> Tensor");
   m.def("_ragged_dot(Tensor lhs, Tensor rhs, Tensor group_sizes) -> Tensor");
+  m.def(
+      "_flex_attention_fwd(Tensor q, Tensor k, Tensor v, "
+      "Tensor kv_num_blocks, Tensor kv_indices, int mask_batch, "
+      "int mask_heads, int q_block, int kv_block, float scale, "
+      "str score_mod_mlir, str mask_mod_mlir) -> (Tensor, Tensor)");
   m.def(
       "_ragged_dot.out(Tensor lhs, Tensor rhs, Tensor group_sizes, *, "
       "Tensor(a!) out) -> Tensor(a!)");
@@ -1754,6 +1765,7 @@ TORCH_LIBRARY_IMPL(tpu, PrivateUse1, m) {
   // ImplDeprecated to mark their API stages.
   ImplInternal<OpName::kDistributedSend>(m, TorchTpuSend);
   ImplInternal<OpName::kDistributedRecv>(m, TorchTpuRecv);
+  ImplInternal<OpName::kFlexAttentionFwd>(m, FlexAttentionFwd);
   ImplInternal<OpName::kMaxPool1d>(m, TpuMaxPool1d);
   ImplInternal<OpName::kMaxPool1dBackward>(m, TpuMaxPool1dBackward);
   ImplInternal<OpName::kMaxPool2d>(m, TpuMaxPool2d);

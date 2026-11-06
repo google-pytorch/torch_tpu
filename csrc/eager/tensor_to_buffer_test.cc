@@ -24,6 +24,7 @@
 #include "ATen/core/ATen_fwd.h"
 #include "absl/cleanup/cleanup.h"
 #include "absl/types/span.h"
+#include "c10/core/Storage.h"
 #include "c10/core/TensorImpl.h"
 #include "c10/util/intrusive_ptr.h"
 #include "csrc/common/dimension_types.h"
@@ -246,15 +247,23 @@ TEST(TensorToBufferTest, GetBuffersDonatedAliased) {
       absl::MakeCleanup([prev_mode]() { SetEagerMode(prev_mode); });
   constexpr auto f32_type = mlir::ElementType::F32;
 
-  // Create one buffer with three tensors: one contiguous, and two strided
-  // in the same way.
+  // Create one buffer with three aliased tensors sharing the same storage:
+  // one contiguous, and two strided in the same way.
   TT_ASSERT_OK_AND_ASSIGN(auto base_buffer,
                           CreateEmptyDeviceBufferRef({2, 3}, f32_type));
   at::Tensor tensor_a = MakeTensor(base_buffer);
-  at::Tensor tensor_b = MakeTensor(base_buffer);
+  auto make_alias = [](const at::Tensor& src) {
+    at::Tensor alias(c10::make_intrusive<c10::TensorImpl>(
+        c10::Storage(src.storage()), src.key_set(), src.dtype()));
+    alias.unsafeGetTensorImpl()->set_sizes_contiguous(src.sizes());
+    return alias;
+  };
+  at::Tensor tensor_b = make_alias(tensor_a);
   tensor_b.t_();
-  at::Tensor tensor_c = MakeTensor(base_buffer);
+  at::Tensor tensor_c = make_alias(tensor_a);
   tensor_c.t_();
+  ASSERT_TRUE(tensor_a.is_alias_of(tensor_b));
+  ASSERT_TRUE(tensor_a.is_alias_of(tensor_c));
   std::vector<at::Tensor> tensors = {tensor_a, tensor_b, tensor_c};
 
   // Indicate that all tensors should be donated.

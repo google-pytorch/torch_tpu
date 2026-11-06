@@ -73,6 +73,59 @@ class CopyTest(seed_test_utils.RepeatableTest):
     )
     self.assertEqual(y.stride(), y_cpu.stride())
 
+  def test_cpu_to_tpu_non_blocking_dangling_paged(self):
+    device = torch.device('tpu')
+
+    def _dangling_transfer(device):
+      """Starts a transfer and drops the tensor being copied out of on host."""
+      x = torch.arange(1024, dtype=torch.int32, device='cpu')
+      return x.to(device, non_blocking=True)
+
+    tpu_values = [_dangling_transfer(device) for _ in range(1024)]
+    torch.accelerator.synchronize()
+
+    cpu_values = [t.to('cpu', non_blocking=True) for t in tpu_values]
+    torch.accelerator.synchronize()
+
+    expected = torch.arange(1024, dtype=torch.int32, device='cpu')
+    for cpu_tensor in cpu_values:
+      utils.assert_close(cpu_tensor, expected)
+
+  def test_cpu_to_tpu_non_blocking_dangling_pinned(self):
+    device = torch.device('tpu')
+
+    def _dangling_transfer(device):
+      """Starts a transfer and drops the tensor being copied out of on host."""
+      x = torch.arange(1024, dtype=torch.int32, device='cpu').pin_memory(device)
+      return x.to(device, non_blocking=True)
+
+    tpu_values = [_dangling_transfer(device) for _ in range(1024)]
+    torch.accelerator.synchronize()
+
+    cpu_values = [t.to('cpu', non_blocking=True) for t in tpu_values]
+    torch.accelerator.synchronize()
+
+    expected = torch.arange(1024, dtype=torch.int32, device='cpu')
+    for cpu_tensor in cpu_values:
+      utils.assert_close(cpu_tensor, expected)
+
+  def test_tpu_to_cpu_drop_pinned_host(self):
+    device = torch.device('tpu')
+    x = torch.arange(1024, dtype=torch.int32, device=device)
+
+    def _cancelled_transfer(x):
+      # Start a transfer to pinned host memory...
+      y = torch.empty_like(x, device='cpu').pin_memory(x.device)
+      y.copy_(x, non_blocking=True)
+      # ...but delete the destination tensor before the transfer completes.
+      del y
+
+    for _ in range(1024):
+      _cancelled_transfer(x)
+
+    # We can't observe that the transfers complete but we shouldn't crash here.
+    torch.accelerator.synchronize()
+
 
 if __name__ == '__main__':
   absltest.main()

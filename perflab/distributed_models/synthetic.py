@@ -263,6 +263,8 @@ def _register_synthetic_distributed_benchmarks() -> None:
         skipped_run_modes=_EAGER_RUN_MODES,
         presubmit=presubmit,
         presubmit_reason=presubmit_reason,
+        # Measures host overhead; has no batch.
+        workload=None,
     )
     registry_lib.add_benchmark(
         factory=_make_fsdp_training_factory(n),
@@ -278,6 +280,8 @@ def _register_synthetic_distributed_benchmarks() -> None:
         skipped_run_modes=_EAGER_RUN_MODES,
         presubmit=presubmit,
         presubmit_reason=presubmit_reason,
+        # Measures host overhead; has no batch.
+        workload=None,
     )
 
 

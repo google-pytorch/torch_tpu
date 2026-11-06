@@ -17,6 +17,8 @@
 #ifndef TORCH_TPU_CSRC_COMMON_ENVIRONMENT_H_
 #define TORCH_TPU_CSRC_COMMON_ENVIRONMENT_H_
 
+#include <string_view>
+
 #include "absl/status/status.h"
 #include "csrc/distributed/slicebuilder/discovery.h"
 
@@ -27,8 +29,15 @@ namespace torch_tpu {
 absl::Status InitializeDistributedEnvironment(
     const DistributedWorkerConfiguration& config);
 
-// Configures the local environment for single-device execution.
-absl::Status InitializeSingleDeviceEnvironment();
+// Configures the local environment for single-device execution, including
+// single-device visibility and topology/bounds settings.
+absl::Status InitializeSingleDeviceEnvironment(
+    std::string_view pci_devices_dir = "/sys/bus/pci/devices");
+
+// Makes the TPU runtime use only the chips listed in `TPU_VISIBLE_DEVICES`, if
+// it is set and no device paths or included devices are configured otherwise.
+// Call it before initializing the TPU runtime.
+void ApplyTpuVisibleDevices();
 
 // Returns whether the TPU device paths that libtpu should use are configured
 // explicitly. Such paths may name device nodes outside of the default

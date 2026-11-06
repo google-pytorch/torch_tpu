@@ -22,6 +22,8 @@ underlying providers (Torchvision, TIMM, and Transformers). It ensures that:
     successfully with their generated sample inputs.
 """
 
+from collections.abc import Iterator
+import contextlib
 import copy
 import json
 import pathlib
@@ -29,6 +31,7 @@ import tempfile
 import threading
 import time
 import types
+from typing import Any
 from unittest import mock
 
 from absl.testing import absltest
@@ -43,10 +46,62 @@ from tests import module_cache
 from tests import module_registry
 from tests import seed_test_utils
 from tests import transformers_inputs
+import transformers
 
 _GOLDFISH_IMG_PATH = (
     epath.resource_path("torch_tpu") / "tests/compile/data/goldfish.jpg"
 )
+
+
+_TINY_QWEN3_CONFIG = {
+    "model_type": "qwen3",
+    "architectures": ["Qwen3ForCausalLM"],
+    "hidden_size": 16,
+    "intermediate_size": 32,
+    "num_hidden_layers": 1,
+    "num_attention_heads": 2,
+    "num_key_value_heads": 1,
+    "head_dim": 8,
+    "vocab_size": 64,
+    "max_position_embeddings": 64,
+}
+
+# Sets a dtype only on `text_config`.
+_TINY_LLAVA_CONFIG = {
+    "model_type": "llava",
+    "architectures": ["LlavaForConditionalGeneration"],
+    "text_config": {
+        **_TINY_QWEN3_CONFIG,
+        "architectures": None,
+        "torch_dtype": "bfloat16",
+    },
+    "vision_config": {
+        "model_type": "clip_vision_model",
+        "hidden_size": 16,
+        "intermediate_size": 32,
+        "num_hidden_layers": 2,
+        "num_attention_heads": 2,
+        "image_size": 8,
+        "patch_size": 4,
+    },
+}
+
+
+@contextlib.contextmanager
+def _recording_parameter_dtypes() -> Iterator[list[torch.dtype]]:
+  """Records the dtypes of the parameters registered within the context.
+
+  Yields:
+    The dtypes of the parameters in the order they were registered.
+  """
+  registered_dtypes = []
+  handle = torch.nn.modules.module.register_module_parameter_registration_hook(
+      lambda module, name, param: registered_dtypes.append(param.dtype)
+  )
+  try:
+    yield registered_dtypes
+  finally:
+    handle.remove()
 
 
 class ModuleRegistryTest(seed_test_utils.RepeatableTest):
@@ -858,7 +913,8 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
       mock_bucket.blob.return_value = mock_blob
       mock_blob.exists.return_value = True
 
-      def fake_download(filename):
+      def fake_download(filename, timeout=None):
+        del timeout  # Unused.
         pathlib.Path(filename).write_bytes(b'{"model_type": "bert"}')
 
       mock_blob.download_to_filename.side_effect = fake_download
@@ -875,6 +931,9 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
       mock_client.bucket.assert_called_once_with("torchtpu-test")
       mock_bucket.blob.assert_called_once_with(
           "weights/transformers/test/config.json"
+      )
+      mock_blob.download_to_filename.assert_called_once_with(
+          mock.ANY, timeout=module_registry._GCS_DOWNLOAD_TIMEOUT_SECONDS
       )
 
   def test_download_gcs_blob_not_found(self):
@@ -957,6 +1016,369 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
           self.assertIn("input_ids", kwargs)
           self.assertIn("attention_mask", kwargs)
           self.assertTrue(mock_dl.called)
+
+  def _get_tiny_transformers_module_spec(
+      self, config: dict[str, Any]
+  ) -> module_registry.ModuleSpec:
+    """Returns the module spec of a tiny model with random weights.
+
+    Args:
+      config: The model config.
+
+    Returns:
+      The module spec of the model.
+    """
+    # Each call writes its own config under the same model name.
+    module_cache.clear_config_cache()
+    with tempfile.TemporaryDirectory() as temp_dir:
+      with mock.patch("tempfile.gettempdir", return_value=temp_dir):
+        provider = module_registry.TransformersProvider(base_path="")
+        model_name = "test-org/tiny-model"
+        cache_dir = (
+            pathlib.Path(temp_dir)
+            / "torch_tpu_cache"
+            / "transformers"
+            / model_name
+        )
+        cache_dir.mkdir(parents=True)
+        (cache_dir / "config.json").write_text(json.dumps(config))
+        return provider.get_module_spec(model_name)
+
+  def _construct_tiny_transformers_model(
+      self, config: dict[str, Any], *, dtype: torch.dtype | None = None
+  ) -> tuple[list[torch.dtype], torch.nn.Module]:
+    """Constructs a tiny model with random weights from the registry.
+
+    Args:
+      config: The model config.
+      dtype: The dtype to pass to the module factory.
+
+    Returns:
+      The dtypes of the parameters in the order they were registered during
+      construction, and the constructed model.
+    """
+    module_spec = self._get_tiny_transformers_module_spec(config)
+    with _recording_parameter_dtypes() as registered_dtypes:
+      model = module_spec.module_factory(dtype=dtype)
+    return registered_dtypes, model
+
+  def _construct_tiny_qwen3(
+      self, *, dtype: torch.dtype | None = None, **config_overrides: Any
+  ) -> tuple[list[torch.dtype], torch.nn.Module]:
+    """Constructs a tiny Qwen3 model with random weights from the registry.
+
+    Args:
+      dtype: The dtype to pass to the module factory.
+      **config_overrides: Entries to add to the model config.
+
+    Returns:
+      The dtypes of the parameters in the order they were registered during
+      construction, and the constructed model.
+    """
+    return self._construct_tiny_transformers_model(
+        {**_TINY_QWEN3_CONFIG, **config_overrides}, dtype=dtype
+    )
+
+  def test_transformers_dtype_overrides_config_dtype(self):
+    for config_overrides, dtype in (
+        ({"torch_dtype": "bfloat16"}, torch.float32),
+        ({"torch_dtype": "float32"}, torch.bfloat16),
+        ({}, torch.bfloat16),
+    ):
+      with self.subTest(config_overrides=config_overrides, dtype=dtype):
+        registered_dtypes, model = self._construct_tiny_qwen3(
+            dtype=dtype, **config_overrides
+        )
+
+        self.assertNotEmpty(registered_dtypes)
+        self.assertEqual(set(registered_dtypes), {dtype})
+        self.assertEqual({p.dtype for p in model.parameters()}, {dtype})
+        self.assertEqual(torch.get_default_dtype(), torch.float32)
+
+  def test_transformers_dtype_leaves_module_spec_config_unchanged(self):
+    # `_from_config` writes its dtype to the config, which later calls without
+    # a `dtype` would otherwise construct in.
+    module_spec = self._get_tiny_transformers_module_spec(_TINY_QWEN3_CONFIG)
+
+    module_spec.module_factory(dtype=torch.bfloat16)
+    model = module_spec.module_factory()
+
+    self.assertEqual({p.dtype for p in model.parameters()}, {torch.float32})
+
+  def test_transformers_config_without_dtype_constructs_in_default_dtype(self):
+    # Some callers construct the model under their run dtype as the default
+    # dtype instead of passing a `dtype`.
+    module_spec = self._get_tiny_transformers_module_spec(_TINY_QWEN3_CONFIG)
+    original_dtype = torch.get_default_dtype()
+    torch.set_default_dtype(torch.bfloat16)
+    try:
+      model = module_spec.module_factory()
+    finally:
+      torch.set_default_dtype(original_dtype)
+
+    self.assertEqual({p.dtype for p in model.parameters()}, {torch.bfloat16})
+
+  def test_transformers_module_factory_leaves_sub_config_dtype_unchanged(self):
+    # Without a `dtype`, the model is constructed in the `text_config` dtype,
+    # which `_from_config` would otherwise write to the root config and the
+    # other sub-configs of the module spec.
+    module_spec = self._get_tiny_transformers_module_spec(_TINY_LLAVA_CONFIG)
+    expected_config = module_spec.config.to_dict()
+
+    model = module_spec.module_factory()
+
+    self.assertEqual({p.dtype for p in model.parameters()}, {torch.bfloat16})
+    self.assertEqual(module_spec.config.to_dict(), expected_config)
+
+  def test_transformers_constructs_in_dtype_on_meta_device(self):
+    # Benchmarks construct models on the meta device and materialize them on
+    # the TPU later, so the meta parameters must already have the run dtype.
+    module_spec = self._get_tiny_transformers_module_spec(_TINY_QWEN3_CONFIG)
+
+    with _recording_parameter_dtypes() as registered_dtypes:
+      with torch.device("meta"):
+        model = module_spec.module_factory(dtype=torch.bfloat16)
+
+    self.assertNotEmpty(registered_dtypes)
+    self.assertEqual(set(registered_dtypes), {torch.bfloat16})
+    self.assertEqual({p.device.type for p in model.parameters()}, {"meta"})
+    self.assertEqual({p.dtype for p in model.parameters()}, {torch.bfloat16})
+
+  def test_transformers_tapas_disables_relative_position_embeddings(self):
+    # The relative position embeddings per table cell call `Tensor.item()`,
+    # which fails on the meta device. The module spec config disables them, so
+    # that models constructed from a copy of it do too.
+    module_spec = self._get_tiny_transformers_module_spec({
+        "model_type": "tapas",
+        "architectures": ["TapasModel"],
+        "hidden_size": 16,
+        "intermediate_size": 32,
+        "num_hidden_layers": 1,
+        "num_attention_heads": 2,
+        "vocab_size": 64,
+        "max_position_embeddings": 64,
+    })
+    expected_config = module_spec.config.to_dict()
+
+    with torch.device("meta"):
+      model = module_spec.module_factory()
+    module_spec.sample_inputs_factory(None, "meta")
+
+    self.assertFalse(model.config.reset_position_index_per_cell)
+    self.assertFalse(model.config.init_cell_selection_weights_to_zero)
+    # Generating inputs leaves the module spec config unchanged.
+    self.assertEqual(module_spec.config.to_dict(), expected_config)
+
+  def test_default_dtype_sets_and_restores_default_dtype(self):
+    with module_registry._default_dtype(torch.bfloat16):
+      self.assertEqual(torch.get_default_dtype(), torch.bfloat16)
+
+    self.assertEqual(torch.get_default_dtype(), torch.float32)
+
+  def test_default_dtype_restores_default_dtype_on_error(self):
+    with self.assertRaises(  # ASSERT_RAISES_OK=Test infrastructure cleanup.
+        RuntimeError
+    ):
+      with module_registry._default_dtype(torch.bfloat16):
+        raise RuntimeError("construction failed")
+
+    self.assertEqual(torch.get_default_dtype(), torch.float32)
+
+  def test_default_dtype_leaves_default_dtype_for_none_and_non_floating(self):
+    for dtype in (None, torch.int8):
+      with self.subTest(dtype=dtype):
+        with module_registry._default_dtype(dtype):
+          self.assertEqual(torch.get_default_dtype(), torch.float32)
+
+  def test_transformers_constructs_class_without_from_config_in_dtype(self):
+    # E.g. `AutoModel*` classes named in `architectures` have `from_config`
+    # but not `_from_config`, and other classes may have neither.
+
+    class _ModelWithFromConfig(torch.nn.Module):
+
+      def __init__(self, config: Any):
+        del config  # Unused.
+        super().__init__()
+        self.linear = torch.nn.Linear(2, 2)
+
+      @classmethod
+      def from_config(cls, config: Any) -> "_ModelWithFromConfig":
+        return cls(config)
+
+    class _ModelWithoutFromConfig(torch.nn.Module):
+
+      def __init__(self, config: Any):
+        del config  # Unused.
+        super().__init__()
+        self.linear = torch.nn.Linear(2, 2)
+
+    for model_cls in (_ModelWithFromConfig, _ModelWithoutFromConfig):
+      with self.subTest(model_cls=model_cls.__name__):
+        with _recording_parameter_dtypes() as registered_dtypes:
+          model = module_registry._instantiate_transformers_model(
+              model_cls, transformers.PretrainedConfig(), torch.bfloat16
+          )
+
+        self.assertNotEmpty(registered_dtypes)
+        self.assertEqual(set(registered_dtypes), {torch.bfloat16})
+        self.assertEqual(
+            {p.dtype for p in model.parameters()}, {torch.bfloat16}
+        )
+        self.assertEqual(torch.get_default_dtype(), torch.float32)
+
+  def test_transformers_non_floating_dtype_raises(self):
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Test infrastructure input.
+        ValueError, "floating point"
+    ):
+      self._construct_tiny_qwen3(dtype=torch.int8)
+
+  def test_transformers_composite_model_constructs_in_dtype(self):
+    # Composite models construct their sub-models through
+    # `AutoModel.from_config(sub_config)`, which constructs in the sub-config
+    # dtype.
+    registered_dtypes, model = self._construct_tiny_transformers_model(
+        {
+            **_TINY_LLAVA_CONFIG,
+            "vision_config": {
+                **_TINY_LLAVA_CONFIG["vision_config"],
+                "torch_dtype": "bfloat16",
+            },
+        },
+        dtype=torch.float32,
+    )
+
+    self.assertNotEmpty(registered_dtypes)
+    self.assertEqual(set(registered_dtypes), {torch.float32})
+    self.assertEqual({p.dtype for p in model.parameters()}, {torch.float32})
+
+  def test_transformers_initializes_random_weights_in_bfloat16(self):
+    # Configs without a dtype initialize their random weights directly in the
+    # benchmark dtype, e.g. with `trunc_normal_` for ViT-style models.
+    registered_dtypes, model = self._construct_tiny_transformers_model(
+        {
+            "model_type": "dinov2",
+            "architectures": ["Dinov2Model"],
+            "hidden_size": 16,
+            "num_hidden_layers": 1,
+            "num_attention_heads": 2,
+            "image_size": 8,
+            "patch_size": 4,
+        },
+        dtype=torch.bfloat16,
+    )
+
+    self.assertNotEmpty(registered_dtypes)
+    self.assertEqual(set(registered_dtypes), {torch.bfloat16})
+    for name, param in model.named_parameters():
+      with self.subTest(name=name):
+        self.assertEqual(param.dtype, torch.bfloat16)
+        self.assertTrue(torch.isfinite(param).all())
+
+  def test_transformers_pretrained_loads_in_dtype(self):
+    with tempfile.TemporaryDirectory() as temp_dir:
+      model_dir = pathlib.Path(temp_dir) / "transformers" / "test-org" / "tiny"
+      model_dir.mkdir(parents=True)
+      (model_dir / "config.json").write_text(
+          json.dumps({**_TINY_QWEN3_CONFIG, "torch_dtype": "bfloat16"})
+      )
+      provider = module_registry.TransformersProvider(base_path=temp_dir)
+
+      for spec_kwargs, dtype, expected_dtype in (
+          ({}, None, torch.bfloat16),
+          ({}, torch.float32, torch.float32),
+          ({"torch_dtype": torch.float16}, None, torch.float16),
+          ({"torch_dtype": torch.float16}, torch.float32, torch.float32),
+      ):
+        with self.subTest(spec_kwargs=spec_kwargs, dtype=dtype):
+          with mock.patch.object(
+              transformers.AutoModelForCausalLM, "from_pretrained"
+          ) as mock_from_pretrained:
+            module_spec = provider.get_module_spec(
+                "test-org/tiny", load_weights=True, **spec_kwargs
+            )
+            module_spec.module_factory(dtype=dtype)
+
+          mock_from_pretrained.assert_called_once_with(
+              str(model_dir),
+              low_cpu_mem_usage=True,
+              ignore_mismatched_sizes=True,
+              dtype=expected_dtype,
+          )
+
+  def _assert_module_factory_matches_cast(
+      self, module_spec: module_registry.ModuleSpec, dtype: torch.dtype
+  ) -> None:
+    """Asserts that `module_factory(dtype=dtype)` matches a cast afterwards.
+
+    Args:
+      module_spec: The module spec of a provider that casts after construction.
+      dtype: The dtype to pass to the module factory.
+    """
+    torch.manual_seed(0)
+    model = module_spec.module_factory(dtype=dtype)
+    torch.manual_seed(0)
+    expected_model = module_spec.module_factory().to(dtype)
+
+    self.assertEqual({p.dtype for p in model.parameters()}, {dtype})
+    state_dict = model.state_dict()
+    expected_state_dict = expected_model.state_dict()
+    self.assertEqual(state_dict.keys(), expected_state_dict.keys())
+    for name, tensor in state_dict.items():
+      with self.subTest(name=name):
+        self.assertTrue(torch.equal(tensor, expected_state_dict[name]))
+
+  def test_torchvision_module_factory_casts_to_dtype(self):
+    module_spec = self.module_registry.get_module_spec(
+        "torchvision", "mobilenet_v3_small"
+    )
+
+    self._assert_module_factory_matches_cast(module_spec, torch.bfloat16)
+
+  def test_timm_module_factory_casts_to_dtype(self):
+    # Values that TIMM computes at construction and that are not parameters
+    # (e.g. stochastic depth rates) must not depend on `dtype` either.
+    module_spec = self.module_registry.get_module_spec(
+        "timm", "mobilenetv3_small_050"
+    )
+
+    self._assert_module_factory_matches_cast(module_spec, torch.bfloat16)
+
+  def test_diffusers_module_factory_casts_to_dtype(self):
+    def tiny_unet_config(config):
+      del config  # Unused.
+      return {
+          "_class_name": "UNet2DConditionModel",
+          "block_out_channels": [32, 64],
+          "layers_per_block": 1,
+          "sample_size": 8,
+          "in_channels": 4,
+          "out_channels": 4,
+          "down_block_types": ["DownBlock2D", "CrossAttnDownBlock2D"],
+          "up_block_types": ["CrossAttnUpBlock2D", "UpBlock2D"],
+          "cross_attention_dim": 32,
+      }
+
+    module_spec = self.module_registry.get_module_spec(
+        "diffusers",
+        "stabilityai/stable-diffusion-xl-base-1.0",
+        subfolder="unet",
+        modify_config_hook=tiny_unet_config,
+    )
+
+    for dtype, expected_registered_dtype, expected_dtype in (
+        (None, torch.float32, torch.bfloat16),
+        (torch.bfloat16, torch.bfloat16, torch.bfloat16),
+        (torch.float32, torch.float32, torch.float32),
+    ):
+      with self.subTest(dtype=dtype):
+        with _recording_parameter_dtypes() as registered_dtypes:
+          model = module_spec.module_factory(dtype=dtype)
+
+        self.assertNotEmpty(registered_dtypes)
+        self.assertEqual(set(registered_dtypes), {expected_registered_dtype})
+        self.assertEqual(
+            {p.dtype for p in model.parameters()}, {expected_dtype}
+        )
 
   def test_transformers_get_module_spec_uses_cached_gcs_config(self):
     with tempfile.TemporaryDirectory() as temp_dir:

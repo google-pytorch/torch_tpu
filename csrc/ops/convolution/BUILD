@@ -76,6 +76,7 @@ torch_tpu_cc_library(
         "//csrc/common:error_utils",
         "//csrc/common:fixed_size_span",
         "//csrc/common:to_string",
+        "//csrc/common:utils",
         "//csrc/eager:device_buffer",
         "//csrc/eager:eager_mode",
         "//csrc/eager:op_dispatcher",

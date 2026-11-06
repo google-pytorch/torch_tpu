@@ -21,6 +21,7 @@ from perflab import model_helpers
 from perflab import registry as registry_lib
 from perflab import step_lib
 from perflab import torch_device_ops
+from perflab import workload as workload_lib
 from perflab.model_utils import ragged_moe
 
 
@@ -34,13 +35,27 @@ def _load_hf_gemma(
 ) -> tuple[torch.nn.Module, dict[str, Any]]:
   """Loads the HuggingFace Gemma model and generates sample inputs for benchmarking."""
 
+  def _truncate_layers(cfg: Any, n: int) -> None:
+    orig_layers = getattr(cfg, "num_hidden_layers", None)
+    orig_shared = getattr(cfg, "num_kv_shared_layers", None)
+    if (
+        isinstance(orig_layers, int)
+        and isinstance(orig_shared, int)
+        and orig_shared > 0
+    ):
+      first_shared = orig_layers - orig_shared
+      cfg.num_kv_shared_layers = max(0, n - first_shared)
+    if hasattr(cfg, "num_hidden_layers"):
+      cfg.num_hidden_layers = n
+    if getattr(cfg, "layer_types", None) is not None:
+      cfg.layer_types = cfg.layer_types[:n]
+
   def _modify_config_hook(config: Any) -> Any:
     setattr(config, "use_cache", False)
     if num_layers:
-      if hasattr(config, "text_config"):
-        config.text_config.num_hidden_layers = num_layers
-      if hasattr(config, "num_hidden_layers"):
-        config.num_hidden_layers = num_layers
+      if hasattr(config, "text_config") and config.text_config is not None:
+        _truncate_layers(config.text_config, num_layers)
+      _truncate_layers(config, num_layers)
     return config
 
   dtype = torch_device_ops.get_torch_dtype(ctx.dtype)
@@ -63,16 +78,19 @@ def _load_hf_gemma(
 @registry_lib.register_benchmark(
     stepper=step_lib.StepperType.FORWARD,
     presubmit=registry_lib.PresubmitPolicy.RUN,
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(16, 2048),
+        presubmit=workload_lib.Workload(1, 128),
+    ),
 )
 def gemma_3_270m_forward(ctx: context_lib.Context):
   """Benchmark factory for Gemma-3 270M forward."""
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
   if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
-    batch_size = 1
-    seq_len = 128
     num_layers = 6
   else:
-    batch_size = 16
-    seq_len = 2048
     num_layers = None
 
   model, inputs = _load_hf_gemma(
@@ -89,16 +107,19 @@ def gemma_3_270m_forward(ctx: context_lib.Context):
 @registry_lib.register_benchmark(
     stepper=step_lib.StepperType.TRAINING,
     presubmit=registry_lib.PresubmitPolicy.RUN,
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(4, 2048),
+        presubmit=workload_lib.Workload(1, 128),
+    ),
 )
 def gemma_3_270m_training(ctx: context_lib.Context):
   """Benchmark factory for Gemma-3 270M training."""
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
   if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
-    batch_size = 1
-    seq_len = 128
     num_layers = 6
   else:
-    batch_size = 4
-    seq_len = 2048
     num_layers = None
 
   model, inputs = _load_hf_gemma(
@@ -116,6 +137,35 @@ def gemma_3_270m_training(ctx: context_lib.Context):
       fused=True,
   )
   return model, (), inputs, opt
+
+
+@registry_lib.register_benchmark(
+    stepper=step_lib.StepperType.DECODER_ONLY_DECODE,
+    presubmit=registry_lib.PresubmitPolicy.RUN,
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(16, 2048),
+        presubmit=workload_lib.Workload(1, 128),
+    ),
+)
+def gemma_3_270m_decode(ctx: context_lib.Context):
+  """Benchmark factory for Gemma-3 270M decode."""
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
+  if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
+    num_layers = 6
+  else:
+    num_layers = None
+
+  model, inputs = _load_hf_gemma(
+      ctx,
+      "google/gemma-3-270m",
+      is_training=False,
+      seq_len=seq_len,
+      batch_size=batch_size,
+      num_layers=num_layers,
+  )
+  return model, (), inputs
 
 
 # --- Gemma 2 2B ---
@@ -124,16 +174,19 @@ def gemma_3_270m_training(ctx: context_lib.Context):
 @registry_lib.register_benchmark(
     stepper=step_lib.StepperType.FORWARD,
     presubmit=registry_lib.PresubmitPolicy.RUN,
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(2, 2048),
+        presubmit=workload_lib.Workload(1, 128),
+    ),
 )
 def gemma_2_2b_forward(ctx: context_lib.Context):
   """Benchmark factory for Gemma-2 2B forward."""
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
   if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
-    batch_size = 1
-    seq_len = 128
     num_layers = 2
   else:
-    batch_size = 2
-    seq_len = 2048
     num_layers = None
 
   model, inputs = _load_hf_gemma(
@@ -150,16 +203,19 @@ def gemma_2_2b_forward(ctx: context_lib.Context):
 @registry_lib.register_benchmark(
     stepper=step_lib.StepperType.TRAINING,
     presubmit=registry_lib.PresubmitPolicy.RUN,
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(2, 2048),
+        presubmit=workload_lib.Workload(1, 128),
+    ),
 )
 def gemma_2_2b_training(ctx: context_lib.Context):
   """Benchmark factory for Gemma-2 2B training."""
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
   if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
-    batch_size = 1
-    seq_len = 128
     num_layers = 2
   else:
-    batch_size = 2
-    seq_len = 2048
     num_layers = None
 
   model, inputs = _load_hf_gemma(
@@ -179,21 +235,51 @@ def gemma_2_2b_training(ctx: context_lib.Context):
   return model, (), inputs, opt
 
 
+@registry_lib.register_benchmark(
+    stepper=step_lib.StepperType.DECODER_ONLY_DECODE,
+    presubmit=registry_lib.PresubmitPolicy.RUN,
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(2, 2048),
+        presubmit=workload_lib.Workload(1, 128),
+    ),
+)
+def gemma_2_2b_decode(ctx: context_lib.Context):
+  """Benchmark factory for Gemma-2 2B decode."""
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
+  if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
+    num_layers = 2
+  else:
+    num_layers = None
+
+  model, inputs = _load_hf_gemma(
+      ctx,
+      "google/gemma-2-2b",
+      is_training=False,
+      batch_size=batch_size,
+      seq_len=seq_len,
+      num_layers=num_layers,
+  )
+  return model, (), inputs
+
+
 # --- Gemma 4 31B (6 Layers) ---
 
 
 @registry_lib.register_benchmark(
     stepper=step_lib.StepperType.FORWARD,
     presubmit=registry_lib.PresubmitPolicy.RUN,
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(2, 1024),
+        presubmit=workload_lib.Workload(1, 128),
+    ),
 )
 def gemma_4_31b_6_layers_forward(ctx: context_lib.Context):
   """Benchmark factory for Gemma-4 31B 6 layers forward."""
-  if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
-    batch_size = 1
-    seq_len = 128
-  else:
-    batch_size = 2
-    seq_len = 1024
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
   model, inputs = _load_hf_gemma(
       ctx,
       "google/gemma-4-31b",
@@ -212,15 +298,18 @@ def gemma_4_31b_6_layers_forward(ctx: context_lib.Context):
         "Gemma 4 31B training uses too much memory to run on TPUs with"
         " smaller memory."
     ),
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(2, 1024),
+        presubmit=workload_lib.Workload(
+            model_helpers.SMOKE_BATCH_SIZE, model_helpers.SMOKE_SEQ_LEN
+        ),
+    ),
 )
 def gemma_4_31b_6_layers_training(ctx: context_lib.Context):
   """Benchmark factory for Gemma-4 31B 6 layers training."""
-  if model_helpers.is_presubmit_smoke(ctx):
-    batch_size = model_helpers.SMOKE_BATCH_SIZE
-    seq_len = model_helpers.SMOKE_SEQ_LEN
-  else:
-    batch_size = 2
-    seq_len = 1024
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
   model, inputs = _load_hf_gemma(
       ctx,
       "google/gemma-4-31b",
@@ -238,23 +327,50 @@ def gemma_4_31b_6_layers_training(ctx: context_lib.Context):
   return model, (), inputs, opt
 
 
+@registry_lib.register_benchmark(
+    stepper=step_lib.StepperType.DECODER_ONLY_DECODE,
+    presubmit=registry_lib.PresubmitPolicy.RUN,
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(2, 1024),
+        presubmit=workload_lib.Workload(1, 128),
+    ),
+)
+def gemma_4_31b_6_layers_decode(ctx: context_lib.Context):
+  """Benchmark factory for Gemma-4 31B 6 layers decode."""
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
+  model, inputs = _load_hf_gemma(
+      ctx,
+      "google/gemma-4-31b",
+      is_training=False,
+      seq_len=seq_len,
+      batch_size=batch_size,
+      num_layers=6,
+  )
+  return model, (), inputs
+
+
 # --- Gemma 4 E2B ---
 
 
 @registry_lib.register_benchmark(
     stepper=step_lib.StepperType.FORWARD,
     presubmit=registry_lib.PresubmitPolicy.RUN,
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(2, 1024),
+        presubmit=workload_lib.Workload(1, 128),
+    ),
 )
 def gemma_4_e2b_forward(ctx: context_lib.Context):
   """Benchmark factory for Gemma-4 E2B forward."""
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
   if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
-    batch_size = 1
-    seq_len = 128
     # Covers the all the sliding window attention + full attention layers.
     num_layers = 5
   else:
-    batch_size = 2
-    seq_len = 1024
     num_layers = None
   model, inputs = _load_hf_gemma(
       ctx,
@@ -274,18 +390,23 @@ def gemma_4_e2b_forward(ctx: context_lib.Context):
         "Gemma 4 E2B training uses too much memory to run on TPUs with"
         " smaller memory."
     ),
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(2, 1024),
+        presubmit=workload_lib.Workload(
+            model_helpers.SMOKE_BATCH_SIZE, model_helpers.SMOKE_SEQ_LEN
+        ),
+    ),
 )
 def gemma_4_e2b_training(ctx: context_lib.Context):
   """Benchmark factory for Gemma-4 E2B training."""
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
   if model_helpers.is_presubmit_smoke(ctx):
-    batch_size = model_helpers.SMOKE_BATCH_SIZE
-    seq_len = model_helpers.SMOKE_SEQ_LEN
     # Layers 0-4 cover both the sliding-window and full-attention layer types;
     # the KV-shared layers are not built.
     num_layers = 5
   else:
-    batch_size = 2
-    seq_len = 1024
     num_layers = None
   model, inputs = _load_hf_gemma(
       ctx,
@@ -304,21 +425,51 @@ def gemma_4_e2b_training(ctx: context_lib.Context):
   return model, (), inputs, opt
 
 
+@registry_lib.register_benchmark(
+    stepper=step_lib.StepperType.DECODER_ONLY_DECODE,
+    presubmit=registry_lib.PresubmitPolicy.RUN,
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(2, 1024),
+        presubmit=workload_lib.Workload(1, 128),
+    ),
+)
+def gemma_4_e2b_decode(ctx: context_lib.Context):
+  """Benchmark factory for Gemma-4 E2B decode."""
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
+  if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
+    # Covers the all the sliding window attention + full attention layers.
+    num_layers = 5
+  else:
+    num_layers = None
+  model, inputs = _load_hf_gemma(
+      ctx,
+      "google/gemma-4-e2b",
+      is_training=False,
+      seq_len=seq_len,
+      batch_size=batch_size,
+      num_layers=num_layers,
+  )
+  return model, (), inputs
+
+
 # --- Gemma 4 26B A4B Ragged MoE ---
 
 
 @registry_lib.register_benchmark(
     stepper=step_lib.StepperType.FORWARD,
     presubmit=registry_lib.PresubmitPolicy.RUN,
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(2, 2048),
+        presubmit=workload_lib.Workload(1, 128),
+    ),
 )
 def gemma_4_26b_a4b_6_layers_forward(ctx: context_lib.Context):
   """Benchmark factory for Gemma-4 26B-A4B Ragged MoE forward."""
-  if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
-    batch_size = 1
-    seq_len = 128
-  else:
-    batch_size = 2
-    seq_len = 2048
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
   model, inputs = _load_hf_gemma(
       ctx,
       "google/gemma-4-26B-A4B",
@@ -337,15 +488,18 @@ def gemma_4_26b_a4b_6_layers_forward(ctx: context_lib.Context):
         "Gemma 4 26B-A4B training uses too much memory to run on TPUs with"
         " smaller memory."
     ),
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(2, 2048),
+        presubmit=workload_lib.Workload(
+            model_helpers.SMOKE_BATCH_SIZE, model_helpers.SMOKE_SEQ_LEN
+        ),
+    ),
 )
 def gemma_4_26b_a4b_6_layers_training(ctx: context_lib.Context):
   """Benchmark factory for Gemma-4 26B-A4B Ragged MoE training."""
-  if model_helpers.is_presubmit_smoke(ctx):
-    batch_size = model_helpers.SMOKE_BATCH_SIZE
-    seq_len = model_helpers.SMOKE_SEQ_LEN
-  else:
-    batch_size = 2
-    seq_len = 2048
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
   model, inputs = _load_hf_gemma(
       ctx,
       "google/gemma-4-26B-A4B",
@@ -361,6 +515,30 @@ def gemma_4_26b_a4b_6_layers_training(ctx: context_lib.Context):
       fused=True,
   )
   return model, (), inputs, opt
+
+
+@registry_lib.register_benchmark(
+    stepper=step_lib.StepperType.DECODER_ONLY_DECODE,
+    presubmit=registry_lib.PresubmitPolicy.RUN,
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(2, 2048),
+        presubmit=workload_lib.Workload(1, 128),
+    ),
+)
+def gemma_4_26b_a4b_6_layers_decode(ctx: context_lib.Context):
+  """Benchmark factory for Gemma-4 26B-A4B Ragged MoE decode."""
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
+  model, inputs = _load_hf_gemma(
+      ctx,
+      "google/gemma-4-26B-A4B",
+      is_training=False,
+      batch_size=batch_size,
+      seq_len=seq_len,
+      num_layers=6,
+  )
+  return model, (), inputs
 
 
 # --- Gemma 4 26B A4B with ragged-dot experts (12 Layers) ---
@@ -401,7 +579,9 @@ def _load_hf_gemma_ragged_moe(
   with torch.device(ctx.device_kind.value):
     for layer in model.model.language_model.layers:
       if getattr(layer, "enable_moe_block", False):
-        layer.experts = ragged_moe.RaggedExpertsGemma4(text_config).to(dtype)
+        # Free the HuggingFace experts before allocating their replacement.
+        layer.experts = None
+        layer.experts = ragged_moe.RaggedExpertsGemma4(text_config, dtype=dtype)
   # Randomly initialized weights overflow in bfloat16 without rescaling.
   model.apply(model_helpers.init_small_random_weights)
   # Gemma 4 takes `mm_token_type_ids` only with image inputs.
@@ -412,16 +592,46 @@ def _load_hf_gemma_ragged_moe(
 @registry_lib.register_benchmark(
     stepper=step_lib.StepperType.FORWARD,
     presubmit=registry_lib.PresubmitPolicy.RUN,
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(2, 2048),
+        presubmit=workload_lib.Workload(1, 128),
+    ),
 )
 def gemma_4_26b_a4b_ragged_moe_12_layers_forward(ctx: context_lib.Context):
   """Benchmark factory for Gemma-4 26B-A4B (12 layers) ragged-dot MoE forward."""
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
   if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
-    batch_size = 1
-    seq_len = 128
     num_layers = 2
   else:
-    batch_size = 2
-    seq_len = 2048
+    num_layers = 12
+  model, inputs = _load_hf_gemma_ragged_moe(
+      ctx,
+      "google/gemma-4-26B-A4B",
+      seq_len=seq_len,
+      batch_size=batch_size,
+      num_layers=num_layers,
+  )
+  return model, (), inputs
+
+
+@registry_lib.register_benchmark(
+    stepper=step_lib.StepperType.DECODER_ONLY_DECODE,
+    presubmit=registry_lib.PresubmitPolicy.RUN,
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(2, 2048),
+        presubmit=workload_lib.Workload(1, 128),
+    ),
+)
+def gemma_4_26b_a4b_ragged_moe_12_layers_decode(ctx: context_lib.Context):
+  """Benchmark factory for Gemma-4 26B-A4B (12 layers) ragged-dot MoE decode."""
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
+  if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
+    num_layers = 2
+  else:
     num_layers = 12
   model, inputs = _load_hf_gemma_ragged_moe(
       ctx,

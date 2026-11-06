@@ -31,7 +31,7 @@ test only runs in OSS, and fails unless PyTorch is the newest supported release.
 
 import difflib
 import os
-from typing import Any, Dict, FrozenSet, List, Tuple
+from typing import Any
 
 from absl.testing import absltest
 import torch
@@ -71,14 +71,14 @@ approval from the `tt_apis.yaml` owners listed in `{_OWNERS_PATH}`.
 # TODO(wan): Move these APIs under `torch.tpu` or make them internal, then
 # delete this list.
 # pylint: disable=line-too-long
-_LEGACY_PUBLIC_PATHS: FrozenSet[str] = frozenset({
+_LEGACY_PUBLIC_PATHS: frozenset[str] = frozenset({
     # go/keep-sorted start
     # go/keep-sorted end
 })
 # pylint: enable=line-too-long
 
 # Maps (category, API name) to the API's attributes.
-_ApiMap = Dict[Tuple[str, str], Dict[str, Any]]
+_ApiMap = dict[tuple[str, str], dict[str, Any]]
 
 
 def _parse_tt_apis_yaml(yaml_text: str) -> _ApiMap:
@@ -105,7 +105,7 @@ def _parse_tt_apis_yaml(yaml_text: str) -> _ApiMap:
   return apis
 
 
-def _format_api(key: Tuple[str, str], attributes: Dict[str, Any]) -> str:
+def _format_api(key: tuple[str, str], attributes: dict[str, Any]) -> str:
   category, name = key
   details = ", ".join(
       f"{field}: {value}"
@@ -115,9 +115,9 @@ def _format_api(key: Tuple[str, str], attributes: Dict[str, Any]) -> str:
   return f"{name} [{category}] ({details})"
 
 
-def _describe_diff(expected: _ApiMap, actual: _ApiMap) -> List[str]:
+def _describe_diff(expected: _ApiMap, actual: _ApiMap) -> list[str]:
   """Returns human-readable lines describing differences between API maps."""
-  lines: List[str] = []
+  lines: list[str] = []
   added = sorted(actual.keys() - expected.keys())
   removed = sorted(expected.keys() - actual.keys())
   modified = sorted(
@@ -158,7 +158,7 @@ def _read_from_runfiles(relative_path: str) -> str:
 # `initial_seed`).
 class TtApisTest(seed_test_utils.RepeatableTest):
 
-  public_python_apis: List[scan_tt_apis.ApiEntry]
+  public_python_apis: list[scan_tt_apis.ApiEntry]
 
   @classmethod
   def setUpClass(cls) -> None:
@@ -240,7 +240,7 @@ class TtApisTest(seed_test_utils.RepeatableTest):
         scan_tt_apis.split_property_accessor(api.name)[0]
         for api in self.public_python_apis
     }
-    lines: List[str] = []
+    lines: list[str] = []
     outside = sorted(
         path
         for path in paths - _LEGACY_PUBLIC_PATHS
@@ -278,7 +278,7 @@ class TtApisTest(seed_test_utils.RepeatableTest):
         for (category, name), attributes in baseline.items()
         if category == scan_tt_apis.DUPLICATED_EXPORT_CATEGORY
     }
-    lines: List[str] = []
+    lines: list[str] = []
     duplicates = sorted(groups - tracked)
     if duplicates:
       lines.append(

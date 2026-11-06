@@ -15,7 +15,6 @@
 #include "csrc/ops/min_max/min_max.h"
 
 #include <cstdint>
-#include <numeric>
 
 #include "absl/status/statusor.h"
 #include "c10/util/Optional.h"
@@ -146,15 +145,8 @@ absl::StatusOr<MinMaxOutputs> RestoreReducedDims(mlir::MlirOp original_input,
                                                  MinMaxOutputs outputs,
                                                  int64_t reduction_dim,
                                                  bool was_flattened) {
-  const mlir::RankedTensorType original_type =
-      GetTensorTypeOrDie(original_input);
-  llvm::SmallVector<int64_t> dims;
-  if (was_flattened) {
-    dims.resize(original_type.getRank());
-    std::iota(dims.begin(), dims.end(), 0);
-  } else {
-    dims.push_back(reduction_dim);
-  }
+  const Dimensions dims = was_flattened ? GetAllDimensions(original_input)
+                                        : Dimensions{reduction_dim};
   outputs.values = BuildKeepDimsShlo(original_input, outputs.values, dims);
   outputs.indices = BuildKeepDimsShlo(original_input, outputs.indices, dims);
   return outputs;

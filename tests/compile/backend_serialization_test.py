@@ -16,6 +16,8 @@
 
 import copy
 import gc
+import glob
+import os
 import pickle
 import random
 import tempfile
@@ -25,6 +27,7 @@ import torch
 from torch._dynamo.backends import registry
 from torch._dynamo.functional_export import dynamo_graph_capture_for_export
 from torch._dynamo.utils import counters
+from torch._functorch import config as functorch_config
 from torch._functorch._aot_autograd.aot_autograd_result import (
     deserialize_bundled_cache_entry,
 )
@@ -109,6 +112,24 @@ class BackendSerializationTest(seed_test_utils.RepeatableTest):
 
         second_run = self._compile_simple_with_registered_backend()
         self.assertEqual(second_run.get("autograd_cache_hit"), 1)
+
+  def test_fallback_key_entry_stays_in_memory(self):
+    # With no torch cache key (autograd cache disabled) the backend builds the
+    # bundled entry under its own `torchtpu_` key, which torch never looks up:
+    # `.serialize()` must still round-trip and nothing may be written to the
+    # local AOTAutogradCache (google-pytorch/torch_tpu#4892).
+    def simple(x, y):
+      return x + y, x * y
+
+    inputs = [torch.randn(4, 4), torch.randn(4, 4)]
+    with tempfile.TemporaryDirectory() as cache_dir:
+      with temporary_cache_dir(cache_dir), functorch_config.patch(
+          enable_autograd_cache=False
+      ):
+        self.check_serialization(simple, inputs)
+      self.assertEmpty(
+          glob.glob(os.path.join(cache_dir, "aotautograd", "*", "*"))
+      )
 
   def test_int_scalar_input(self):
     def simple(x, y):

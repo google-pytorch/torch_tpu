@@ -14,7 +14,7 @@
 
 """Python interface for streams and events on TPU."""
 
-from typing import Optional, Self, TypeAlias
+from typing import Self, TypeAlias
 
 import torch
 from torch_tpu._internal.device import _device_ops_backend
@@ -83,6 +83,9 @@ def _parse_pinned(pinned: CorePinningMode | str | None) -> CorePinningMode:
   )
 
 
+@experimental(
+    'Stream() is experimental and may change or be removed without notice.'
+)
 class TpuStream(torch.Stream):
   """A stream of operations on a TPU device.
 
@@ -110,7 +113,7 @@ class TpuStream(torch.Stream):
       cls,
       device=None,
       priority: int = 0,
-      stream_id: Optional[int] = None,
+      stream_id: int | None = None,
       *,
       pinned: CorePinningMode | str | None = None,
       **kwargs,
@@ -135,18 +138,18 @@ class TpuStream(torch.Stream):
       self,
       device=None,
       priority: int = 0,
-      stream_id: Optional[int] = None,
+      stream_id: int | None = None,
       *,
       pinned: CorePinningMode | str | None = None,
       **kwargs,
   ):
     # pylint: disable=unused-argument
-    self.pinned: CorePinningMode = _parse_pinned(pinned)
+    self._pinned: CorePinningMode = _parse_pinned(pinned)
 
-    if self.pinned != CorePinningMode.UNPINNED:
+    if self._pinned != CorePinningMode.UNPINNED:
       # pylint: disable=protected-access
       _device_ops_backend._set_core_pinning_mode(
-          self.device_index, self.stream_id, self.pinned
+          self.device_index, self.stream_id, self._pinned
       )
 
   @experimental(
@@ -162,14 +165,14 @@ class TpuStream(torch.Stream):
       ' notice.'
   )
   def wait_stream(self, stream: Self) -> None:  # pylint: disable=unused-argument
-    """Synchronizes with another stream."""
+    """Makes all future work submitted to the stream wait for another stream."""
     self.wait_event(stream.record_event())
 
   @experimental(
       'record_event() is experimental and may change or be removed without'
       ' notice.'
   )
-  def record_event(self, event: Optional['TpuEvent'] = None) -> 'TpuEvent':
+  def record_event(self, event: 'TpuEvent | None' = None) -> 'TpuEvent':
     """Records an event on this stream."""
     if event is None:
       event = TpuEvent()
@@ -200,24 +203,27 @@ class TpuStream(torch.Stream):
     """Returns the priority range for streams."""
     raise NotImplementedError(_NOT_IMPLEMENTED_STREAMS_MSG)
 
-  def __repr__(self):
-    return '<torch.tpu.TpuStream>'
+  def __repr__(self) -> str:
+    return f'<torch.tpu.Stream device={self.device} stream_id={self.stream_id}>'
 
   @property
   @experimental(
       'is_sparse is experimental and may change or be removed without notice.'
   )
   def is_sparse(self) -> bool:
-    return self.pinned == CorePinningMode.SPARSE_CORE
+    return self._pinned == CorePinningMode.SPARSE_CORE
 
   @property
   @experimental(
       'is_dense is experimental and may change or be removed without notice.'
   )
   def is_dense(self) -> bool:
-    return self.pinned == CorePinningMode.TENSOR_CORE
+    return self._pinned == CorePinningMode.TENSOR_CORE
 
 
+@experimental(
+    'Event() is experimental and may change or be removed without notice.'
+)
 class TpuEvent(torch.Event):
   """Scoped completion marker for async TPU operations.
 
@@ -234,9 +240,9 @@ class TpuEvent(torch.Event):
     - ``synchronize()`` blocks until the snapshotted futures complete.
     - ``query()`` checks whether the snapshotted futures have completed.
     - ``elapsed_time()`` measures the time between two events completing.
+    - ``wait(stream)`` causes `stream` to wait for this event before continuing.
 
   Not yet implemented:
-    - ``wait(stream)`` requires multi-stream support.
     - ``ipc_handle()`` / ``from_ipc_handle()`` require IPC event support.
 
   TODO: b/452051142 - Explore if and how to make better use of streams.
@@ -263,6 +269,16 @@ class TpuEvent(torch.Event):
         interprocess=interprocess,
     )
 
+  def __init__(
+      self,
+      enable_timing: bool = False,
+      blocking: bool = False,
+      interprocess: bool = False,
+      external: bool = False,
+      device=None,
+  ):
+    del enable_timing, blocking, interprocess, external, device
+
   @experimental(
       'record() is experimental and may change or be removed without notice.'
   )
@@ -278,19 +294,15 @@ class TpuEvent(torch.Event):
   @experimental(
       'wait() is experimental and may change or be removed without notice.'
   )
-  def wait(self, stream: torch.Stream | None = None) -> None:  # pylint: disable=unused-argument
-    """No-op placeholder for CUDA stream-wait semantics.
+  def wait(self, stream: torch.Stream | None = None) -> None:
+    """Inserts a cross-stream ordering dependency on stream to this event.
 
-    In CUDA, this inserts a device-side dependency so future work on ``stream``
-    waits for this event without blocking the CPU. torch_tpu does not yet
-    support multi-stream execution, so this is currently a no-op. For CPU-side
-    blocking, use :meth:`synchronize`.
+    Future work on ``stream`` will wait for this event without blocking the CPU.
 
     Args:
-      stream: Ignored. Present for CUDA API compatibility.
+      stream: the stream that should wait for this event.
     """
-    # TODO(bawilson): actually support asynchronous waiting
-    return
+    return super().wait(stream)
 
   @experimental(
       'query() is experimental and may change or be removed without notice.'
@@ -354,7 +366,7 @@ class TpuEvent(torch.Event):
     raise NotImplementedError(_NOT_IMPLEMENTED_STREAMS_MSG)
 
   def __repr__(self) -> str:
-    return '<torch.tpu.TpuEvent>'
+    return f'<torch.tpu.Event device={self.device}>'
 
 
 def synchronize(device: torch.device | str | int | None = None) -> None:

@@ -36,7 +36,8 @@ The same instructions are available in the user guide linked above.
 
 TorchTPU's Python version support policy matches
 [PyTorch's Release Compatibility Matrix](https://github.com/pytorch/pytorch/blob/main/RELEASE.md#release-compatibility-matrix).
-Currently, **Python 3.11+** is supported. See the
+Currently, **Python 3.11–3.15** is supported (including free-threaded 3.14t and
+3.15t builds, with Python 3.15 requiring PyTorch >= 2.15). See the
 [Python Version Support Policy](docs/developers/python_support_policy.md) for
 more details.
 

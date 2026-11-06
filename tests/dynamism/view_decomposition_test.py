@@ -802,6 +802,64 @@ class ViewDecompositionTest(seed_test_utils.RepeatableTest):
         self.assertEqual(node_view_ops[0][1][0], slice_op[0])
         self.assertEqual(self.guards_after, self.guards_before)
 
+  def test_zero_dim_view_with_storage_offset_is_not_decomposed(self):
+    """Tests that 0-d views with a storage offset are passed through as is."""
+    cases = [
+        torch.tensor([0, 1]).select(0, 1),
+        torch.arange(6.0).view(2, 3)[1, 2],
+    ]
+    for view in cases:
+      with self.subTest(view=view):
+        self.assertEqual(view.shape, ())
+        self.assertNotEqual(view.storage_offset(), 0)
+        self.assertIsNone(view_decomposition.decompose_into_view_sequence(view))
+        self.assertIs(view_decomposition.get_base_tensor(view), view)
+
+  def test_delinearize_storage_offset_zero_dims(self):
+    """Tests that a non-zero offset over zero dims raises, and 0 returns []."""
+    with self.assertRaises(  # ASSERT_RAISES_OK=internal signal.
+        NotImplementedError
+    ):
+      view_decomposition._delinearize_storage_offset(1, [])
+    self.assertEqual(view_decomposition._delinearize_storage_offset(0, []), [])
+
+  def test_zero_dim_tensor_without_offset_is_contiguous(self):
+    """Tests that a 0-d tensor at offset 0 goes through the contiguous path."""
+    scalar = torch.arange(3.0)[0]
+    self.assertIsNone(view_decomposition.decompose_into_view_sequence(scalar))
+    self.assertIs(view_decomposition.get_base_tensor(scalar), scalar)
+
+  def test_decompose_base_exceeding_storage_raises(self):
+    """Tests that views whose inferred base exceeds their storage raise."""
+    cases = [
+        # [::2, None] on a 9-element buffer infers a [5, 2] base.
+        torch.arange(9.0)[::2, None],
+        # The reporter's original counterexample: diagonal of a reshaped
+        # tensor, whose stride-sorted and unit-free bases both exceed
+        # the 4-element storage.
+        torch.arange(4).reshape(2, 2, 1).diagonal(0, 0, 1),
+    ]
+    for view in cases:
+      with self.subTest(view=view):
+        with self.assertRaises(  # ASSERT_RAISES_OK=internal signal.
+            NotImplementedError
+        ):
+          view_decomposition.decompose_into_view_sequence(view)
+        with self.assertRaises(  # ASSERT_RAISES_OK=internal signal.
+            NotImplementedError
+        ):
+          view_decomposition.get_base_tensor(view)
+
+  def test_decompose_strided_slice_trailing_unit_dim_fits_storage(self):
+    """Tests that the same view decomposes when the base fits the storage."""
+    # Same shape and strides as the 9-element case, one more element of
+    # storage: the [5, 2] base fits and the decomposition still works.
+    self._assert_view_replay(
+        torch.arange(10.0)[::2, None],
+        expected_base_shape=[5, 2],
+        expected_view_ops=[("slice", (1, 0, 1, 1))],
+    )
+
 
 def _storage_numel(tensor: torch.Tensor) -> int:
   return tensor.untyped_storage().nbytes() // tensor.element_size()

@@ -419,25 +419,6 @@ class WindowTpuTest(continuous_test_utils.TpuMultiProcContinuousTest):
     """Verifies two-stage lifecycle: empty new_window, tensor_register, and tensor_deregister."""
     _run_window_explicit_register_lifecycle_test()
 
-
-class WindowSignalWaitTest(continuous_test_utils.TpuMultiProcContinuousTest):
-  """Isolated test class for win.signal / win.wait_signal.
-
-  Kept in its own test class to provide a fresh c10d store and process group,
-  avoiding key collisions with RMA P2P peer transfers.
-  """
-
-  world_size = 8
-
-  @classmethod
-  def setUpClass(cls):
-    if not hasattr(dist, "_supports_window"):
-      raise absltest.SkipTest(
-          "c10d::Window RMA is not supported in this PyTorch version "
-          f"({torch.__version__}); requires PyTorch >= 2.14."
-      )
-    super().setUpClass()
-
   def test_window_signal_wait(self):
     """Verifies win.signal paired with win.wait_signal across peer ranks."""
     _run_window_signal_wait_test()

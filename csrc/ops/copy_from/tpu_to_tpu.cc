@@ -52,8 +52,7 @@ absl::StatusOr<mlir::MlirOp> SliceFP4(mlir::MlirOp input) {
   auto rank = input_type.getRank();
 
   const Indices start_indices(rank, 0);
-  Indices limit_indices(input_type.getShape().begin(),
-                        input_type.getShape().end());
+  Indices limit_indices = CopyIntVector(input_type.getShape());
   if (rank > 0) {
     ABSL_DCHECK_EQ(limit_indices.back() % 2, 0)
         << "Expected even last dimension for FP4, got " << limit_indices.back();

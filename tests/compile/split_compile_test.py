@@ -140,6 +140,69 @@ class SplitCompileTest(seed_test_utils.RepeatableTest):
     utils.assert_close(res_add.cpu(), expected)
     utils.assert_close(res_weight.cpu(), expected)
 
+  def test_compiled_forward_does_not_copy_saved_weights(self):
+    """Verifies that a compiled forward holds no copies of the weights."""
+    # Two 16 MiB weights: 4096 * 1024 * 4 bytes each.
+    model = torch.nn.Sequential(
+        torch.nn.Linear(1024, 4096, bias=False),
+        torch.nn.SiLU(),
+        torch.nn.Linear(4096, 1024, bias=False),
+    ).to("tpu")
+    x = torch.randn(8, 1024, device="tpu", requires_grad=True)
+    compiled = torch.compile(
+        model, backend="tpu", options={"serializable": False}
+    )
+    # Compiles the forward and backward and allocates the gradients.
+    compiled(x).sum().backward()
+
+    gc.collect()
+    torch.accelerator.synchronize()
+    mem_before = torch.accelerator.memory_allocated()
+    y = compiled(x)
+    torch.accelerator.synchronize()
+    mem_held = torch.accelerator.memory_allocated() - mem_before
+    y.sum().backward()
+
+    # Backward needs both weights. The activations it needs and `y` take
+    # less than 1 MiB, and copies of the weights would add 32 MiB.
+    self.assertLess(mem_held, 5 * 1024 * 1024)  # < 5 MiB
+
+  def test_compiled_forward_copies_buffer_it_updates(self):
+    """Verifies backward after a forward that reads and then updates a buffer.
+
+    The forward returns the buffer for backward, and AOTAutograd copies the
+    new value into it after the forward runs. Unlike the weights in the test
+    above, the buffer has to be returned as a copy.
+    """
+
+    class ScaleThenUpdate(torch.nn.Module):
+
+      def __init__(self):
+        super().__init__()
+        self.register_buffer("scale", torch.ones(4))
+
+      def forward(self, x):
+        # Backward needs `scale + 1`. Eager autograd saves the sum, so the
+        # update below is allowed, but the min-cut partitioner saves `scale`
+        # itself and recomputes the sum in backward.
+        y = x * (self.scale + 1)
+        self.scale.add_(1)
+        return y
+
+    model = ScaleThenUpdate()
+    tpu_model = ScaleThenUpdate().to("tpu")
+    x = torch.randn(2, 4, requires_grad=True)
+    tpu_x = x.detach().to("tpu").requires_grad_()
+    compiled = torch.compile(
+        tpu_model, backend="tpu", options={"serializable": False}
+    )
+
+    model(x).sum().backward()
+    compiled(tpu_x).sum().backward()
+
+    utils.assert_close(tpu_x.grad.cpu(), x.grad)
+    utils.assert_close(tpu_model.scale.cpu(), model.scale)
+
   def test_compiling_get_attr_constant_does_not_copy_it(self):
     """Verifies that compiling a graph does not duplicate `get_attr` constants."""
     # 128 MiB parameter: 1024 * 32768 * 4 bytes = 134,217,728 bytes.

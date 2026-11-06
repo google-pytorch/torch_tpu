@@ -28,7 +28,6 @@ This module implements FSDP manually using explicit collective operations:
 """
 
 import math
-from typing import Optional
 
 import torch
 from torch import distributed as dist
@@ -51,7 +50,7 @@ class ManualFSDPLinear(nn.Module):
       self,
       in_features: int,
       out_features: int,
-      group: Optional[dist.ProcessGroup] = None,
+      group: dist.ProcessGroup | None = None,
   ):
     super().__init__()
     self.in_features = in_features
@@ -110,7 +109,7 @@ class ManualSimpleNN(nn.Module):
       self,
       in_features: int,
       out_features: int,
-      group: Optional[dist.ProcessGroup] = None,
+      group: dist.ProcessGroup | None = None,
   ):
     super().__init__()
     self.linear1 = ManualFSDPLinear(

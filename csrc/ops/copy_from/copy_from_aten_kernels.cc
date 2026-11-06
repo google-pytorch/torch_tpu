@@ -204,21 +204,15 @@ at::Tensor CopyTensor(const at::Tensor& src, const at::Tensor& self_dest,
     return self_dest;
   }
 
+  TT_THROW_IF_ERROR(
+      ValidateShellDtypeCast(src.scalar_type(), self_dest.scalar_type()));
+
   TT_ASSIGN_OR_THROW(CopyType to_copy_type, GetCopyType(src, self_dest));
   const TransferSyncMode transfer_sync_mode = GetTransferSyncMode(non_blocking);
 
   switch (to_copy_type) {
     case CopyType::kCpuToTpu:
-      if (src.sizes() != self_dest.sizes()) {
-        // Broadcast CPU to TPU: copy to temp TPU then broadcast TPU to TPU.
-        TT_ASSIGN_OR_THROW(at::Tensor temp_tpu,
-                           MakeEmptyTensor(src.sizes(), self_dest.scalar_type(),
-                                           self_dest.device()));
-        TT_THROW_IF_ERROR(CopyCpuToTpu(src, temp_tpu, transfer_sync_mode));
-        TT_THROW_IF_ERROR(CopyTpuToTpu(temp_tpu, self_dest));
-      } else {
-        TT_THROW_IF_ERROR(CopyCpuToTpu(src, self_dest, transfer_sync_mode));
-      }
+      TT_THROW_IF_ERROR(CopyCpuToTpu(src, self_dest, transfer_sync_mode));
       break;
     case CopyType::kTpuToTpu:
       TT_THROW_IF_ERROR(CopyTpuToTpu(src, self_dest));

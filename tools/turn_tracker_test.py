@@ -15,6 +15,7 @@
 
 """Unit tests for turn_tracker.py."""
 
+import io
 import json
 import os
 import tempfile
@@ -98,6 +99,34 @@ class TurnTrackerTest(unittest.TestCase):  # UNITTEST_OK=standalone
     }
     changes = determine_label_changes("issues", payload)
     self.assertEqual(changes.add, (ASSIGNEE_LABEL,))
+
+  def test_issue_assigned_switches_to_assignee(self):
+    payload = {
+        "action": "assigned",
+        "issue": self._make_issue(
+            author="alice",
+            assignee="charlie",
+            labels=[{"name": REQUESTER_LABEL}],
+        ),
+        "sender": {"login": "bob"},
+    }
+    changes = determine_label_changes("issues", payload)
+    self.assertEqual(changes.add, (ASSIGNEE_LABEL,))
+    self.assertEqual(changes.remove, (REQUESTER_LABEL,))
+
+  def test_issue_unassigned_switches_to_assignee(self):
+    payload = {
+        "action": "unassigned",
+        "issue": self._make_issue(
+            author="alice",
+            assignee=None,
+            labels=[{"name": REQUESTER_LABEL}],
+        ),
+        "sender": {"login": "bob"},
+    }
+    changes = determine_label_changes("issues", payload)
+    self.assertEqual(changes.add, (ASSIGNEE_LABEL,))
+    self.assertEqual(changes.remove, (REQUESTER_LABEL,))
 
   def test_issue_opened_already_has_assignee_label(self):
     payload = {
@@ -211,6 +240,76 @@ class TurnTrackerTest(unittest.TestCase):  # UNITTEST_OK=standalone
     changes = determine_label_changes("pull_request_target", payload)
     self.assertEqual(changes.add, (REVIEWERS_LABEL,))
     self.assertEqual(changes.remove, (REQUESTER_LABEL,))
+
+  def test_pr_review_request_removed_switches_to_reviewers(self):
+    payload = {
+        "action": "review_request_removed",
+        "pull_request": self._make_issue(
+            author="alice",
+            assignee="bob",
+            labels=[{"name": REQUESTER_LABEL}],
+        ),
+        "sender": {"login": "bob"},
+    }
+    changes = determine_label_changes("pull_request_target", payload)
+    self.assertEqual(changes.add, (REVIEWERS_LABEL,))
+    self.assertEqual(changes.remove, (REQUESTER_LABEL,))
+
+  def test_pr_assigned_switches_to_reviewers(self):
+    payload = {
+        "action": "assigned",
+        "pull_request": self._make_issue(
+            author="alice",
+            assignee="bob",
+            labels=[{"name": REQUESTER_LABEL}],
+        ),
+        "sender": {"login": "bob"},
+    }
+    changes = determine_label_changes("pull_request_target", payload)
+    self.assertEqual(changes.add, (REVIEWERS_LABEL,))
+    self.assertEqual(changes.remove, (REQUESTER_LABEL,))
+
+  def test_pr_unassigned_switches_to_reviewers(self):
+    payload = {
+        "action": "unassigned",
+        "pull_request": self._make_issue(
+            author="alice",
+            assignee=None,
+            labels=[{"name": REQUESTER_LABEL}],
+        ),
+        "sender": {"login": "bob"},
+    }
+    changes = determine_label_changes("pull_request_target", payload)
+    self.assertEqual(changes.add, (REVIEWERS_LABEL,))
+    self.assertEqual(changes.remove, (REQUESTER_LABEL,))
+
+  def test_pr_responder_turn_removes_legacy_assignee_label(self):
+    payload = {
+        "action": "review_request_removed",
+        "pull_request": self._make_issue(
+            author="alice",
+            assignee="bob",
+            labels=[{"name": REVIEWERS_LABEL}, {"name": ASSIGNEE_LABEL}],
+        ),
+        "sender": {"login": "bob"},
+    }
+    changes = determine_label_changes("pull_request_target", payload)
+    self.assertEqual(changes.add, ())
+    self.assertEqual(changes.remove, (ASSIGNEE_LABEL,))
+
+  def test_pr_requester_turn_removes_legacy_assignee_label(self):
+    payload = {
+        "action": "submitted",
+        "pull_request": self._make_issue(
+            author="alice",
+            assignee="bob",
+            labels=[{"name": ASSIGNEE_LABEL}],
+        ),
+        "sender": {"login": "bob"},
+    }
+    changes = determine_label_changes("pull_request_review", payload)
+    self.assertEqual(changes.add, (REQUESTER_LABEL,))
+    self.assertEqual(changes.remove, (ASSIGNEE_LABEL,))
 
   def test_pr_review_by_unassigned_reviewer_switches_to_requester(self):
     payload = {
@@ -360,6 +459,40 @@ class TurnTrackerTest(unittest.TestCase):  # UNITTEST_OK=standalone
     changes = determine_label_changes("pull_request_review_comment", payload)
     self.assertEqual(changes.add, (REVIEWERS_LABEL,))
     self.assertEqual(changes.remove, (REQUESTER_LABEL,))
+
+  def test_pr_op_in_reviewers_still_switches_to_reviewers(self):
+    payload = {
+        "action": "created",
+        "pull_request": self._make_issue(
+            author="alice",
+            assignee="bob",
+            labels=[{"name": REQUESTER_LABEL}],
+        ),
+        "sender": {"login": "alice"},
+    }
+    changes = determine_label_changes(
+        "pull_request_review_comment",
+        payload,
+        reviewers=frozenset({"alice", "bob"}),
+    )
+    self.assertEqual(changes.add, (REVIEWERS_LABEL,))
+    self.assertEqual(changes.remove, (REQUESTER_LABEL,))
+
+  def test_self_assigned_pr_comment_ignored(self):
+    payload = {
+        "action": "created",
+        "pull_request": self._make_issue(
+            author="alice",
+            assignee="alice",
+            labels=[{"name": REVIEWERS_LABEL}],
+        ),
+        "sender": {"login": "alice"},
+    }
+    changes = determine_label_changes(
+        "pull_request_review_comment", payload, reviewers=frozenset({"alice"})
+    )
+    self.assertEqual(changes.add, ())
+    self.assertEqual(changes.remove, ())
 
   def test_closed_issue_comment_ignored(self):
     payload = {
@@ -630,9 +763,17 @@ class WorkflowRunRelayTest(unittest.TestCase):  # UNITTEST_OK=standalone
   HEAD_SHA = "abc123"
 
   def _make_opener(self, pulls):
-    body = json.dumps(pulls).encode("utf-8")
-    opener = mock.MagicMock()
-    opener.return_value.__enter__.return_value.read.return_value = body
+    self.requests = []
+    responses = iter([
+        {"items": [{"number": pr["number"]} for pr in pulls]},
+        *pulls,
+    ])
+
+    def opener(req, timeout=None):
+      del timeout
+      self.requests.append(req)
+      return io.BytesIO(json.dumps(next(responses)).encode("utf-8"))
+
     return opener
 
   def _make_run_payload(self, event="pull_request_review", actor="bob"):
@@ -666,16 +807,38 @@ class WorkflowRunRelayTest(unittest.TestCase):  # UNITTEST_OK=standalone
         opener=opener,
     )
 
-    req = opener.call_args[0][0]
-    self.assertEqual(req.get_method(), "GET")
-    self.assertIn(f"/commits/{self.HEAD_SHA}/pulls", req.full_url)
-    self.assertEqual(req.headers["Authorization"], "Bearer tok")
+    self.assertEqual(len(self.requests), 2)
+    self.assertEqual(self.requests[0].get_method(), "GET")
+    self.assertEqual(
+        self.requests[0].full_url,
+        "https://api.github.com/search/issues?q=repo%3Agoogle-pytorch"
+        f"%2Ftorch_tpu+type%3Apr+state%3Aopen+{self.HEAD_SHA}",
+    )
+    self.assertEqual(self.requests[0].headers["Authorization"], "Bearer tok")
+    self.assertEqual(
+        self.requests[1].full_url,
+        "https://api.github.com/repos/google-pytorch/torch_tpu/pulls/7",
+    )
     self.assertEqual(len(events), 1)
     event_name, payload = events[0]
     self.assertEqual(event_name, "pull_request_review")
     self.assertEqual(payload["action"], "submitted")
     self.assertEqual(payload["sender"]["login"], "bob")
     self.assertEqual(payload["pull_request"]["number"], 7)
+
+  def test_returns_empty_when_search_finds_no_prs(self):
+    opener = self._make_opener([])
+
+    events = resolve_workflow_run(
+        "https://api.github.com",
+        "o/r",
+        "tok",
+        self._make_run_payload(),
+        opener=opener,
+    )
+
+    self.assertEqual(events, [])
+    self.assertEqual(len(self.requests), 1)
 
   def test_review_comment_maps_to_created(self):
     opener = self._make_opener([self._make_pr()])
@@ -714,7 +877,7 @@ class WorkflowRunRelayTest(unittest.TestCase):  # UNITTEST_OK=standalone
         opener=opener,
     )
     self.assertEqual(events, [])
-    opener.assert_not_called()
+    self.assertEqual(self.requests, [])
 
   def test_rebuilt_event_flips_turn(self):
     _, payload = resolve_workflow_run(
@@ -758,6 +921,19 @@ class FetchPrReviewersTest(unittest.TestCase):  # UNITTEST_OK=standalone
             "https://api.github.com/repos/o/r/pulls/42/reviews?per_page=100",
         ],
     )
+
+  def test_ignores_pending_reviews(self):
+    opener = self._make_opener(
+        requested={"users": []},
+        reviews=[
+            {"user": {"login": "erin"}, "state": "PENDING"},
+            {"user": {"login": "dana"}, "state": "COMMENTED"},
+        ],
+    )
+    reviewers = fetch_pr_reviewers(
+        "https://api.github.com", "o/r", "tok", 42, opener=opener
+    )
+    self.assertEqual(reviewers, frozenset({"dana"}))
 
   def test_empty_when_no_reviewers(self):
     opener = self._make_opener(requested={"users": []}, reviews=[])

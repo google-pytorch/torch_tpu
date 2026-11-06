@@ -52,6 +52,7 @@ pybind_extension(
         "//csrc/common:dimension_types",
         "//csrc/common:error_utils",
         "//csrc/common:pybind_error_utils",
+        "//csrc/common:utils",
         "//csrc/experimental/batch_transfer",
         "//shims/torch:aten",
         "//shims/torch:aten_headers",

@@ -16,7 +16,11 @@
 # zhanyong-wan
 # jonathan1920
 
-load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_end")
+load(
+    "//build_files:build_defs.bzl",
+    "torch_tpu_cc_library",
+    "torch_tpu_package_end",
+)
 
 licenses(["notice"])
 
@@ -33,24 +37,21 @@ torch_tpu_cc_library(
         "//csrc/common:device_type",
         "//csrc/common:dimension_types",
         "//csrc/common:error_utils",
+        "//csrc/common:layout_utils",
         "//csrc/eager:device_buffer",
         "//csrc/eager:structured_log_buffer",
         "//csrc/eager:tensor_to_buffer",
+        "//csrc/pjrt:pjrt_transfer",
         "//shims/torch:aten_headers",
         "//shims/torch/torch/headeronly:torch_headeronly",
         "@com_google_absl//absl/cleanup",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:absl_log",
-        "@com_google_absl//absl/log:die_if_null",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@xla//xla:future",
         "@xla//xla:shape_util",
         "@xla//xla/pjrt:pjrt_client",
-        "@xla//xla/pjrt/c:pjrt_c_api_hdrs",
-        "@xla//xla/pjrt/c:pjrt_c_api_raw_buffer_extension_hdrs",
-        "@xla//xla/pjrt/c:pjrt_c_api_raw_buffer_external",
-        "@xla//xla/pjrt/c_api_client:pjrt_c_api_client",
     ],
 )
 

@@ -14,8 +14,8 @@
 
 """Export adapter for OSS."""
 
+from collections.abc import Mapping
 import os
-from typing import Mapping
 
 from absl import logging
 from tensorboardX import writer

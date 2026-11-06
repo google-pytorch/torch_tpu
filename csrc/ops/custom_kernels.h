@@ -79,6 +79,19 @@ absl::StatusOr<DynamicMlirOpResults> BuildSpecializedMlirKernel(
     mlir::MlirBuilder& builder, mlir::ModuleOp custom_kernel,
     absl::Span<mlir::MlirOp> inputs);
 
+namespace internal {
+
+// Strips residual sharding attributes from `module`: the module-level
+// `mhlo.spmd_parameters_shardings` and `mhlo.spmd_output_sharding` attributes,
+// and the MHLO and Shardy `mhlo.sharding` and `sdy.sharding` attributes on all
+// operations, function arguments, and function results, as well as Shardy
+// `sdy.sharding_rule` attributes on operations.
+//
+// Exposed for unit testing only; not part of the public API.
+void RemoveShardingAnnotations(mlir::ModuleOp module);
+
+}  // namespace internal
+
 }  // namespace torch_tpu
 
 #endif  // TORCH_TPU_CSRC_OPS_CUSTOM_KERNELS_H_

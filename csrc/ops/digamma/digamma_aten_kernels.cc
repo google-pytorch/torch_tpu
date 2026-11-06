@@ -39,18 +39,25 @@ namespace torch_tpu {
 absl::StatusOr<mlir::MlirOp> BuildDigammaShlo(mlir::MlirOp input_op,
                                               mlir::ElementType out_mlir_type) {
   TT_ASSIGN_OR_RETURN(mlir::MlirOp op,
-                      ::torch_tpu::ConvertIfInteger(input_op, out_mlir_type));
+                      ConvertIfInteger(input_op, out_mlir_type));
   mlir::MlirOp digamma_op = mlir::chlo::Digamma(op);
 
   auto zero_cst = MakeConstantLike(op, 0.0);
   auto is_zero = mlir::stablehlo::Compare(
       op, zero_cst, mlir::stablehlo::ComparisonDirection::EQ);
+  auto is_neg = mlir::stablehlo::Compare(
+      op, zero_cst, mlir::stablehlo::ComparisonDirection::LT,
+      mlir::stablehlo::ComparisonTypeAttr::get(
+          &op.getContext(), mlir::stablehlo::ComparisonType::TOTALORDER));
 
+  auto posinf_cst =
+      MakeConstantLike(op, std::numeric_limits<double>::infinity());
   auto neginf_cst =
       MakeConstantLike(op, -std::numeric_limits<double>::infinity());
 
-  // Return -inf if input is 0, else return digamma(input)
-  return mlir::stablehlo::Select(is_zero, neginf_cst, digamma_op);
+  // Return +inf if input is -0.0, -inf if input is +0.0, else digamma(input).
+  auto zero_result = mlir::stablehlo::Select(is_neg, posinf_cst, neginf_cst);
+  return mlir::stablehlo::Select(is_zero, zero_result, digamma_op);
 }
 
 at::Tensor& AtenDigammaOut(const at::Tensor& self, at::Tensor& out) {

@@ -26,7 +26,6 @@
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
 #include "absl/status/statusor.h"
-#include "c10/core/ScalarType.h"
 #include "c10/util/BFloat16.h"
 #include "c10/util/Half.h"
 #include "csrc/common/aten_utils.h"
@@ -44,7 +43,6 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
-#include "torch/headeronly/core/ScalarType.h"
 #include "torch/headeronly/util/BFloat16.h"
 #include "torch/headeronly/util/Half.h"
 
@@ -53,7 +51,7 @@ namespace {
 
 constexpr double kPi = 3.14159265358979323846;
 
-std::vector<double> ComputeCotDerivativeCoeffs(int n) {
+std::vector<double> ComputeCotDerivativeCoeffs(int64_t n) {
   if (n == 0) return {0.0, 1.0};
 
   std::vector<double> prev = ComputeCotDerivativeCoeffs(n - 1);
@@ -63,7 +61,7 @@ std::vector<double> ComputeCotDerivativeCoeffs(int n) {
   if (prev.size() > 2) {
     coeffs[1] = -2.0 * prev[2];
   }
-  for (int k = 2; k <= n + 1; ++k) {
+  for (int64_t k = 2; k <= n + 1; ++k) {
     double term1 = 0.0;
     if (k + 1 < prev.size()) {
       term1 = -(k + 1) * prev[k + 1];
@@ -293,17 +291,20 @@ absl::StatusOr<mlir::MlirOp> BuildZeta(mlir::MlirOp x, mlir::MlirOp q,
 // Reference: xla/hlo/builder/lib/math.cc:Polygamma
 absl::StatusOr<mlir::MlirOp> BuildPolygammaShlo(
     mlir::MlirOp self_op, int64_t n, mlir::ElementType out_mlir_type) {
-  mlir::ElementType input_dtype = GetElementTypeOrDie(self_op);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp op,
+                      ConvertIfInteger(self_op, out_mlir_type));
+
+  if (n == 0) {  // Digamma
+    return BuildDigammaShlo(op, out_mlir_type);
+  }
+
+  mlir::ElementType input_dtype = GetElementTypeOrDie(op);
   TT_ASSIGN_OR_RETURN(mlir::ElementType computation_type,
                       InferComputationDtype(input_dtype));
 
-  mlir::MlirOp input_op = self_op;
+  mlir::MlirOp input_op = op;
   if (input_dtype != computation_type) {
-    input_op = mlir::stablehlo::ConvertElementType(self_op, computation_type);
-  }
-
-  if (n == 0) {  // Digamma
-    return BuildDigammaShlo(self_op, out_mlir_type);
+    input_op = mlir::stablehlo::ConvertElementType(op, computation_type);
   }
 
   mlir::MlirBuilder& builder = input_op.getBuilder();
@@ -419,20 +420,14 @@ at::Tensor& AtenPolygammaOut(int64_t n, const at::Tensor& self,
         << "expected the input dtype not to be complex, got "
         << ToString(self.scalar_type());
 
-    auto computation_type = self.scalar_type();
-    if (c10::isIntegralType(computation_type, /*includeBool=*/true)) {
-      computation_type = at::ScalarType::Float;
-    }
     // Enforce safe type promotion (casting to integer outputs is not safe)
     TT_CHECK_THROW(out.is_floating_point() || out.is_complex(),
                    error::kInvalidArgument)
         << "expected the output dtype to be floating point or complex, got "
         << ToString(out.scalar_type());
 
-    TT_ASSIGN_OR_THROW(auto out_dtype,
-                       ConvertTo<mlir::ElementType>(out.scalar_type()));
-    TT_ASSIGN_OR_THROW(auto computation_mlir_type,
-                       ConvertTo<mlir::ElementType>(computation_type));
+    TT_ASSIGN_OR_THROW(const auto out_dtype,
+                       ConvertTo<mlir::ElementType>(InferOutputDtype(self)));
 
     auto op_builder =
         [n, out_dtype](mlir::MlirOp self_op) -> absl::StatusOr<mlir::MlirOp> {
@@ -441,8 +436,7 @@ at::Tensor& AtenPolygammaOut(int64_t n, const at::Tensor& self,
 
     TT_THROW_IF_ERROR(UnaryOpOut(self, out, std::move(op_builder),
                                  {.op_param_cache_keys = std::move(param_keys),
-                                  .out_dtype = out_dtype,
-                                  .computation_dtype = computation_mlir_type}));
+                                  .out_dtype = out_dtype}));
     return out;
   });
 }

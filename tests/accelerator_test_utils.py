@@ -18,6 +18,7 @@ from typing import Any, Final
 
 import torch
 import torch_tpu  # pylint: disable=unused-import  # ruff: ignore[unused-import]
+from torch_tpu._internal.utils import hardware
 from tests import oss_utils
 
 # Default device cap applied to multi-chip TPU tests in OSS presubmit
@@ -39,16 +40,16 @@ def get_tpu_device_count(default: int = 0) -> int:
   hosts. In internal Google3 environments, the cap is not applied and the full
   device count is returned.
 
-  Because `torch.tpu.device_count()` queries `hardware.get_tpu_device_count()`
-  when PJRT is not yet initialized and queries the active PJRT client when it
-  is initialized, this helper works in both single-process tests and
-  multi-process (`mp.spawn`) parent runners.
+  Queries `hardware.get_tpu_device_count()` rather than
+  `torch.tpu.device_count()` so that the host's physical chip count is returned
+  even when PJRT has already been initialized in single-device mode (e.g. via
+  `SeededTest.setUp()`).
 
   Args:
     default: Fallback device count to return when no TPU devices are detected
       (e.g. on CPU-only runners where emulated devices are used).
   """
-  count = torch.tpu.device_count()
+  count = hardware.get_tpu_device_count()
   if count == 0:
     return default
   if oss_utils.is_oss():

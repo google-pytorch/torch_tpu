@@ -1295,9 +1295,6 @@ def _build_lxmert_text_inputs(
 def _build_tapas_text_inputs(
     ctx: InputContext, input_kwargs: dict[str, Any]
 ) -> None:
-  ctx.config.reset_position_index_per_cell = False
-  ctx.config.init_cell_selection_weights_to_zero = False
-
   seq_len = input_kwargs["input_ids"].shape[1]
   token_type_ids_tensor = ctx.zeros((ctx.batch_size, seq_len, 7))
   token_type_ids_tensor[:, :, 0] = 1  # segment

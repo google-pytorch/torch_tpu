@@ -28,6 +28,7 @@ import torch.export
 import torch.utils._pytree as pytree
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal.compile import tpu_torch_compile
+from torch_tpu._internal.profiler import named_scope
 from torch_tpu._internal.utils import annotations
 from torch_tpu._internal.benchmarks import xprof_adapter
 
@@ -151,18 +152,17 @@ _DYNAMO_ROOT_RE = re.compile(r"^[LG]\[['\"]([^'\"]+)['\"]\]")
 _SUBSCRIPT_RE = re.compile(r"\[['\"]?([^'\"\]]+)['\"]?\]")
 
 
-def _extract_node_name_scopes(node: torch.fx.Node) -> list[str]:
-  """Extracts hierarchical module name scopes from FX node metadata.
+def _module_scope_entries(node: torch.fx.Node) -> list[tuple[str, str]]:
+  """Returns the `nn_module_stack` keys and name scopes of a node's modules.
 
   Args:
-    node: The FX node, whose `nn_module_stack` (or `fwd_nn_module_stack` for
-      backward nodes) metadata lists its enclosing modules.
+    node: The FX node.
 
   Returns:
-    One scope per enclosing module from outer to inner, each formatted as the
-    module path relative to its parent module followed by the module class
-    name, e.g. `["layers.0[TransformerBlock]", "attn[Attention]"]`. The root
-    module is omitted so that ops directly in it stay unscoped.
+    A `(key, scope)` pair per enclosing module from outer to inner, where
+    `scope` is formatted as described in `_extract_node_name_scopes`, and `key`
+    identifies the module call (e.g. Dynamo suffixes the keys of repeated calls
+    of a module with `@<n>`).
   """
   nn_stack = node.meta.get("nn_module_stack") or node.meta.get(
       "fwd_nn_module_stack"
@@ -170,9 +170,9 @@ def _extract_node_name_scopes(node: torch.fx.Node) -> list[str]:
   if not isinstance(nn_stack, Mapping):
     return []
 
-  scopes: list[str] = []
+  entries: list[tuple[str, str]] = []
   prev_path = ""
-  for value in nn_stack.values():
+  for key, value in nn_stack.items():
     if not isinstance(value, tuple) or len(value) < 2:
       continue
     fqn, mod_cls = value[0], value[1]
@@ -197,8 +197,24 @@ def _extract_node_name_scopes(node: torch.fx.Node) -> list[str]:
     )
     cls_name = cls_name.rsplit(".", 1)[-1]
     clean_name = rel_path.replace("/", "_")
-    scopes.append(f"{clean_name}[{cls_name}]")
-  return scopes
+    entries.append((str(key), f"{clean_name}[{cls_name}]"))
+  return entries
+
+
+def _extract_node_name_scopes(node: torch.fx.Node) -> list[str]:
+  """Extracts hierarchical module name scopes from FX node metadata.
+
+  Args:
+    node: The FX node, whose `nn_module_stack` (or `fwd_nn_module_stack` for
+      backward nodes) metadata lists its enclosing modules.
+
+  Returns:
+    One scope per enclosing module from outer to inner, each formatted as the
+    module path relative to its parent module followed by the module class
+    name, e.g. `["layers.0[TransformerBlock]", "attn[Attention]"]`. The root
+    module is omitted so that ops directly in it stay unscoped.
+  """
+  return [scope for _, scope in _module_scope_entries(node)]
 
 
 class EagerLikeFxInterpreter(torch.fx.Interpreter):
@@ -215,6 +231,9 @@ class EagerLikeFxInterpreter(torch.fx.Interpreter):
   ):
     super().__init__(module)
     self.state_dict = module.state_dict()
+    self._name_scopes = named_scope.compute_graph_name_scopes(
+        module.graph, _module_scope_entries
+    )
 
   def _set_func_code_to_node_source_locations(self, func, node):
     """Update the function's code locations to the node's source locations.
@@ -263,8 +282,8 @@ class EagerLikeFxInterpreter(torch.fx.Interpreter):
       return super(EagerLikeFxInterpreter, self).run_node(node)
 
     self._set_func_code_to_node_source_locations(dispatch_fx_node, node)
-    # Prefix the names of the node's ops with its module scopes.
-    tpu_torch_compile.push_name_scopes(_extract_node_name_scopes(node))
+    # Prefix the names of the node's ops with its module and named scopes.
+    tpu_torch_compile.push_name_scopes(list(self._name_scopes.get(node, ())))
     try:
       return dispatch_fx_node(node)
     finally:
@@ -490,6 +509,16 @@ def enable_tracebacks(value: bool | None = True):
     tpu_torch_compile.pop_enable_tracebacks()
 
 
+@contextlib.contextmanager
+def _isolated_fx_name_scopes():
+  """Isolates fx_to_mlir from ambient eager name scopes on the caller thread."""
+  tpu_torch_compile.push_name_scopes([])
+  try:
+    yield
+  finally:
+    tpu_torch_compile.pop_name_scopes()
+
+
 # TODO(cnchan): change build_mlir_module default to False after migrating all
 # test usages with the new traverse_and_compile API.
 def fx_to_mlir(
@@ -541,7 +570,7 @@ def fx_to_mlir(
     else:
       internal_layouts = []
 
-    with _fx_to_mlir_lock:
+    with _fx_to_mlir_lock, _isolated_fx_name_scopes():
       # Run the module through the EagerLikeFxInterpreter with MLIR location
       # tracebacks enabled by default so that the MLIR we generate has file
       # location info.

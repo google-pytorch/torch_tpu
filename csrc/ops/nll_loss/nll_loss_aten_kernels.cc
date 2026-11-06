@@ -30,6 +30,7 @@
 #include "absl/types/span.h"
 #include "c10/core/GradMode.h"
 #include "c10/util/Optional.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
@@ -68,7 +69,7 @@ absl::Status ValidateNllLossCommon(const at::Tensor& self,
                error::kInvalidArgument)
       << "expected reduction to be one of ['none', 'mean', 'sum'], got "
       << reduction;
-  if (weight.has_value() && weight->defined() && self.dim() >= 1) {
+  if (weight.has_value() && self.dim() >= 1) {
     const int64_t n_classes = self.size(self.dim() == 1 ? 0 : 1);
     TT_RET_CHECK(weight->dim() == 1 && weight->numel() == n_classes,
                  error::kInvalidArgument)
@@ -150,7 +151,7 @@ absl::StatusOr<std::array<DeviceBufferRef, 2>> DispatchNllLossForwardBuffers(
       .op_param_cache_keys = std::move(param_keys),
   };
 
-  const bool has_weight = weight.has_value() && weight->defined();
+  const bool has_weight = weight.has_value();
   auto op_builder = [reduction, ignore_index, has_weight](
                         absl::Span<const mlir::MlirOp> inputs,
                         mlir::MlirBuilder& builder) {
@@ -166,7 +167,7 @@ absl::StatusOr<std::array<DeviceBufferRef, 2>> DispatchNllLossForwardBuffers(
 
   std::vector<at::Tensor> inputs = {self, target};
   if (has_weight) {
-    inputs.push_back(weight.value());
+    inputs.push_back(*weight);
   }
 
   return DispatchOp<kDynamicSize, 2>(std::move(op_builder), inputs,
@@ -199,7 +200,7 @@ absl::Status DispatchNllLossForwardOut(const at::Tensor& self,
       .op_param_cache_keys = std::move(param_keys),
   };
 
-  const bool has_weight = weight.has_value() && weight->defined();
+  const bool has_weight = weight.has_value();
   auto op_builder = [reduction, ignore_index, has_weight](
                         absl::Span<const mlir::MlirOp> inputs,
                         mlir::MlirBuilder& builder) {
@@ -215,7 +216,7 @@ absl::Status DispatchNllLossForwardOut(const at::Tensor& self,
 
   std::vector<at::Tensor> inputs = {self, target};
   if (has_weight) {
-    inputs.push_back(weight.value());
+    inputs.push_back(*weight);
   }
 
   OpOutputs<2> outputs = {output, total_weight};
@@ -228,7 +229,7 @@ absl::StatusOr<DeviceBufferRef> DispatchNllLossBackwardBuffer(
     const at::Tensor& target, const c10::optional<at::Tensor>& weight,
     int64_t reduction, int64_t ignore_index, const at::Tensor& total_weight,
     OpParamCacheKeys param_keys) {
-  const bool has_weight = weight.has_value() && weight->defined();
+  const bool has_weight = weight.has_value();
   auto op_builder =
       [reduction, ignore_index, has_weight](
           absl::Span<const mlir::MlirOp> inputs,
@@ -252,7 +253,7 @@ absl::StatusOr<DeviceBufferRef> DispatchNllLossBackwardBuffer(
 
   std::vector<at::Tensor> inputs = {grad_output, self, target, total_weight};
   if (has_weight) {
-    inputs.push_back(weight.value());
+    inputs.push_back(*weight);
   }
 
   DispatchOpOptions<1> options = {
@@ -270,7 +271,7 @@ absl::Status DispatchNllLossBackwardOut(
     const at::Tensor& target, const c10::optional<at::Tensor>& weight,
     int64_t reduction, int64_t ignore_index, const at::Tensor& total_weight,
     at::Tensor& grad_input, OpParamCacheKeys param_keys) {
-  const bool has_weight = weight.has_value() && weight->defined();
+  const bool has_weight = weight.has_value();
   auto op_builder =
       [reduction, ignore_index, has_weight](
           absl::Span<const mlir::MlirOp> inputs,
@@ -294,7 +295,7 @@ absl::Status DispatchNllLossBackwardOut(
 
   std::vector<at::Tensor> inputs = {grad_output, self, target, total_weight};
   if (has_weight) {
-    inputs.push_back(weight.value());
+    inputs.push_back(*weight);
   }
 
   DispatchOpOptions<1> options = {
@@ -313,12 +314,14 @@ std::tuple<at::Tensor, at::Tensor> NllLossNdForwardWithTotalWeight(
     int64_t ignore_index) {
   TT_KERNEL(OpName::kNllLossNd, param_keys,
             (self, target, weight, reduction, ignore_index), {
-              TT_THROW_IF_ERROR(
-                  ValidateNllLossCommon(self, target, weight, reduction));
+              const std::optional<at::Tensor> sanitized_weight =
+                  SanitizeOptionalTensor(weight);
+              TT_THROW_IF_ERROR(ValidateNllLossCommon(
+                  self, target, sanitized_weight, reduction));
               TT_THROW_IF_ERROR(ValidateNllLossNdShapes(self, target));
               TT_ASSIGN_OR_THROW(auto output_bufs,
                                  DispatchNllLossForwardBuffers(
-                                     self, target, weight, reduction,
+                                     self, target, sanitized_weight, reduction,
                                      ignore_index, std::move(param_keys)));
               return {MakeTensor(std::move(output_bufs[0])),
                       MakeTensor(std::move(output_bufs[1]))};
@@ -335,13 +338,15 @@ at::Tensor NllLossBackwardKernel(const at::Tensor& grad_output,
             (grad_output, self, target, weight, reduction, ignore_index,
              total_weight),
             {
-              TT_THROW_IF_ERROR(
-                  ValidateNllLossCommon(self, target, weight, reduction));
+              const std::optional<at::Tensor> sanitized_weight =
+                  SanitizeOptionalTensor(weight);
+              TT_THROW_IF_ERROR(ValidateNllLossCommon(
+                  self, target, sanitized_weight, reduction));
               TT_THROW_IF_ERROR(ValidateNllLossNdShapes(self, target));
               TT_ASSIGN_OR_THROW(
                   auto grad_input_buf,
                   DispatchNllLossBackwardBuffer(
-                      grad_output, self, target, weight, reduction,
+                      grad_output, self, target, sanitized_weight, reduction,
                       ignore_index, total_weight, std::move(param_keys)));
               return MakeTensor(std::move(grad_input_buf));
             });
@@ -357,7 +362,7 @@ class NllLossNdFunction : public torch::autograd::Function<NllLossNdFunction> {
     auto [output, total_weight] = NllLossNdForwardWithTotalWeight(
         self, target, weight, reduction, ignore_index);
     const at::Tensor weight_tensor =
-        (weight.has_value() && weight->defined()) ? *weight : at::Tensor();
+        SanitizeOptionalTensor(weight).value_or(at::Tensor());
     ctx->save_for_backward({self, target, weight_tensor, total_weight});
     ctx->saved_data["reduction"] = reduction;
     ctx->saved_data["ignore_index"] = ignore_index;
@@ -376,8 +381,7 @@ class NllLossNdFunction : public torch::autograd::Function<NllLossNdFunction> {
     const int64_t ignore_index = ctx->saved_data["ignore_index"].toInt();
 
     const c10::optional<at::Tensor> weight =
-        weight_tensor.defined() ? c10::optional<at::Tensor>(weight_tensor)
-                                : c10::nullopt;
+        SanitizeOptionalTensor(weight_tensor);
     at::Tensor grad_self;  // UNINITIALIZED_TENSOR_OK=Assigned conditionally or
                            // returned as undefined gradient.
     if (ctx->needs_input_grad(0)) {
@@ -393,9 +397,11 @@ class NllLossNdFunction : public torch::autograd::Function<NllLossNdFunction> {
 bool IsFakeOrFunctorchLossInputs(const at::Tensor& self,
                                  const at::Tensor& target,
                                  const c10::optional<at::Tensor>& weight) {
+  const std::optional<at::Tensor> sanitized_weight =
+      SanitizeOptionalTensor(weight);
   return IsFakeOrFunctorchTensor(self) || IsFakeOrFunctorchTensor(target) ||
-         (weight.has_value() && weight->defined() &&
-          IsFakeOrFunctorchTensor(*weight));
+         (sanitized_weight.has_value() &&
+          IsFakeOrFunctorchTensor(*sanitized_weight));
 }
 
 bool IsSupportedLossFloatType(at::ScalarType scalar_type) {
@@ -418,12 +424,14 @@ std::tuple<at::Tensor&, at::Tensor&> AtenNllLossForwardOut(
   TT_KERNEL(
       OpName::kNllLossForwardOut, param_keys,
       (self, target, weight, reduction, ignore_index, output, total_weight), {
+        const std::optional<at::Tensor> sanitized_weight =
+            SanitizeOptionalTensor(weight);
         TT_THROW_IF_ERROR(
-            ValidateNllLossCommon(self, target, weight, reduction));
+            ValidateNllLossCommon(self, target, sanitized_weight, reduction));
         TT_THROW_IF_ERROR(ValidateNllLoss1dOr2dShapes(self, target));
         TT_THROW_IF_ERROR(DispatchNllLossForwardOut(
-            self, target, weight, reduction, ignore_index, output, total_weight,
-            std::move(param_keys)));
+            self, target, sanitized_weight, reduction, ignore_index, output,
+            total_weight, std::move(param_keys)));
         return std::tie(output, total_weight);
       });
 }
@@ -434,12 +442,14 @@ std::tuple<at::Tensor, at::Tensor> AtenNllLoss2dForward(
     int64_t ignore_index) {
   TT_KERNEL(OpName::kNllLoss2dForward, param_keys,
             (self, target, weight, reduction, ignore_index), {
-              TT_THROW_IF_ERROR(
-                  ValidateNllLossCommon(self, target, weight, reduction));
+              const std::optional<at::Tensor> sanitized_weight =
+                  SanitizeOptionalTensor(weight);
+              TT_THROW_IF_ERROR(ValidateNllLossCommon(
+                  self, target, sanitized_weight, reduction));
               TT_THROW_IF_ERROR(ValidateNllLoss2dForwardShapes(self, target));
               TT_ASSIGN_OR_THROW(auto output_bufs,
                                  DispatchNllLossForwardBuffers(
-                                     self, target, weight, reduction,
+                                     self, target, sanitized_weight, reduction,
                                      ignore_index, std::move(param_keys)));
               return {MakeTensor(std::move(output_bufs[0])),
                       MakeTensor(std::move(output_bufs[1]))};
@@ -453,12 +463,14 @@ std::tuple<at::Tensor&, at::Tensor&> AtenNllLoss2dForwardOut(
   TT_KERNEL(
       OpName::kNllLoss2dForwardOut, param_keys,
       (self, target, weight, reduction, ignore_index, output, total_weight), {
+        const std::optional<at::Tensor> sanitized_weight =
+            SanitizeOptionalTensor(weight);
         TT_THROW_IF_ERROR(
-            ValidateNllLossCommon(self, target, weight, reduction));
+            ValidateNllLossCommon(self, target, sanitized_weight, reduction));
         TT_THROW_IF_ERROR(ValidateNllLoss2dForwardShapes(self, target));
         TT_THROW_IF_ERROR(DispatchNllLossForwardOut(
-            self, target, weight, reduction, ignore_index, output, total_weight,
-            std::move(param_keys)));
+            self, target, sanitized_weight, reduction, ignore_index, output,
+            total_weight, std::move(param_keys)));
         return std::tie(output, total_weight);
       });
 }
@@ -468,18 +480,21 @@ at::Tensor& AtenNllLossBackwardGradInput(
     const at::Tensor& target, const c10::optional<at::Tensor>& weight,
     int64_t reduction, int64_t ignore_index, const at::Tensor& total_weight,
     at::Tensor& grad_input) {
-  TT_KERNEL(OpName::kNllLossBackwardGradInput, param_keys,
-            (grad_output, self, target, weight, reduction, ignore_index,
-             total_weight, grad_input),
-            {
-              TT_THROW_IF_ERROR(
-                  ValidateNllLossCommon(self, target, weight, reduction));
-              TT_THROW_IF_ERROR(ValidateNllLoss1dOr2dShapes(self, target));
-              TT_THROW_IF_ERROR(DispatchNllLossBackwardOut(
-                  grad_output, self, target, weight, reduction, ignore_index,
-                  total_weight, grad_input, std::move(param_keys)));
-              return grad_input;
-            });
+  TT_KERNEL(
+      OpName::kNllLossBackwardGradInput, param_keys,
+      (grad_output, self, target, weight, reduction, ignore_index, total_weight,
+       grad_input),
+      {
+        const std::optional<at::Tensor> sanitized_weight =
+            SanitizeOptionalTensor(weight);
+        TT_THROW_IF_ERROR(
+            ValidateNllLossCommon(self, target, sanitized_weight, reduction));
+        TT_THROW_IF_ERROR(ValidateNllLoss1dOr2dShapes(self, target));
+        TT_THROW_IF_ERROR(DispatchNllLossBackwardOut(
+            grad_output, self, target, sanitized_weight, reduction,
+            ignore_index, total_weight, grad_input, std::move(param_keys)));
+        return grad_input;
+      });
 }
 
 at::Tensor AtenNllLoss2dBackward(const at::Tensor& grad_output,
@@ -488,35 +503,9 @@ at::Tensor AtenNllLoss2dBackward(const at::Tensor& grad_output,
                                  const c10::optional<at::Tensor>& weight,
                                  int64_t reduction, int64_t ignore_index,
                                  const at::Tensor& total_weight) {
-  TT_KERNEL(
-      OpName::kNllLoss2dBackward, param_keys,
-      (grad_output, self, target, weight, reduction, ignore_index,
-       total_weight),
-      {
-        TT_CHECK_THROW(self.dim() == 4, error::kInvalidArgument)
-            << "expected input to be a 4D tensor, got " << self.dim() << "D";
-        TT_CHECK_THROW(target.dim() == 3, error::kInvalidArgument)
-            << "expected target to be a 3D tensor, got " << target.dim() << "D";
-        TT_THROW_IF_ERROR(
-            ValidateNllLossCommon(self, target, weight, reduction));
-        TT_THROW_IF_ERROR(ValidateNllLoss2dForwardShapes(self, target));
-        TT_ASSIGN_OR_THROW(
-            auto grad_input_buf,
-            DispatchNllLossBackwardBuffer(grad_output, self, target, weight,
-                                          reduction, ignore_index, total_weight,
-                                          std::move(param_keys)));
-        return MakeTensor(std::move(grad_input_buf));
-      });
-}
-
-at::Tensor& AtenNllLoss2dBackwardGradInput(
-    const at::Tensor& grad_output, const at::Tensor& self,
-    const at::Tensor& target, const c10::optional<at::Tensor>& weight,
-    int64_t reduction, int64_t ignore_index, const at::Tensor& total_weight,
-    at::Tensor& grad_input) {
-  TT_KERNEL(OpName::kNllLoss2dBackwardGradInput, param_keys,
+  TT_KERNEL(OpName::kNllLoss2dBackward, param_keys,
             (grad_output, self, target, weight, reduction, ignore_index,
-             total_weight, grad_input),
+             total_weight),
             {
               TT_CHECK_THROW(self.dim() == 4, error::kInvalidArgument)
                   << "expected input to be a 4D tensor, got " << self.dim()
@@ -524,14 +513,44 @@ at::Tensor& AtenNllLoss2dBackwardGradInput(
               TT_CHECK_THROW(target.dim() == 3, error::kInvalidArgument)
                   << "expected target to be a 3D tensor, got " << target.dim()
                   << "D";
-              TT_THROW_IF_ERROR(
-                  ValidateNllLossCommon(self, target, weight, reduction));
+              const std::optional<at::Tensor> sanitized_weight =
+                  SanitizeOptionalTensor(weight);
+              TT_THROW_IF_ERROR(ValidateNllLossCommon(
+                  self, target, sanitized_weight, reduction));
               TT_THROW_IF_ERROR(ValidateNllLoss2dForwardShapes(self, target));
-              TT_THROW_IF_ERROR(DispatchNllLossBackwardOut(
-                  grad_output, self, target, weight, reduction, ignore_index,
-                  total_weight, grad_input, std::move(param_keys)));
-              return grad_input;
+              TT_ASSIGN_OR_THROW(
+                  auto grad_input_buf,
+                  DispatchNllLossBackwardBuffer(
+                      grad_output, self, target, sanitized_weight, reduction,
+                      ignore_index, total_weight, std::move(param_keys)));
+              return MakeTensor(std::move(grad_input_buf));
             });
+}
+
+at::Tensor& AtenNllLoss2dBackwardGradInput(
+    const at::Tensor& grad_output, const at::Tensor& self,
+    const at::Tensor& target, const c10::optional<at::Tensor>& weight,
+    int64_t reduction, int64_t ignore_index, const at::Tensor& total_weight,
+    at::Tensor& grad_input) {
+  TT_KERNEL(
+      OpName::kNllLoss2dBackwardGradInput, param_keys,
+      (grad_output, self, target, weight, reduction, ignore_index, total_weight,
+       grad_input),
+      {
+        TT_CHECK_THROW(self.dim() == 4, error::kInvalidArgument)
+            << "expected input to be a 4D tensor, got " << self.dim() << "D";
+        TT_CHECK_THROW(target.dim() == 3, error::kInvalidArgument)
+            << "expected target to be a 3D tensor, got " << target.dim() << "D";
+        const std::optional<at::Tensor> sanitized_weight =
+            SanitizeOptionalTensor(weight);
+        TT_THROW_IF_ERROR(
+            ValidateNllLossCommon(self, target, sanitized_weight, reduction));
+        TT_THROW_IF_ERROR(ValidateNllLoss2dForwardShapes(self, target));
+        TT_THROW_IF_ERROR(DispatchNllLossBackwardOut(
+            grad_output, self, target, sanitized_weight, reduction,
+            ignore_index, total_weight, grad_input, std::move(param_keys)));
+        return grad_input;
+      });
 }
 
 at::Tensor AtenNllLossNd(const at::Tensor& self, const at::Tensor& target,

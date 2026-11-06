@@ -14,8 +14,9 @@
 
 """Stepper types and protocols for benchmarking."""
 
+from collections.abc import Callable
 import enum
-from typing import Any, Callable, Dict, Protocol, TypeAlias, TypeVar, runtime_checkable
+from typing import Any, Protocol, TypeAlias, TypeVar, runtime_checkable
 
 # The callable that is actually benchmarked. Nullary as all inputs/model are bound within the factory.
 StepFn: TypeAlias = Callable[[], Any]
@@ -38,6 +39,16 @@ class StepperType(enum.Enum):
   # For decoder-only models (e.g. LLama) that have a distinct prefill and decode step.
   # This stepper facilitates an unmeasured prefill, followed by `n` measured decode steps.
   DECODER_ONLY_DECODE = "decoder_only_decode"
+
+
+# The default number of micro-batches that a training step runs before its
+# optimizer step (`accum_steps` of the TRAINING and SINGLE_TRACE_TRAINING
+# steppers).
+DEFAULT_ACCUM_STEPS = 1
+
+# The default number of tokens that a DECODER_ONLY_DECODE step decodes per
+# sequence (`output_tokens` of the decode stepper).
+DEFAULT_DECODE_OUTPUT_TOKENS = 16
 
 
 # Basic stepper functionality, single step fn and compile hook.
@@ -72,7 +83,7 @@ class Stepper(Protocol):
 StepperT = TypeVar("StepperT", bound=Stepper)
 StepperFactory: TypeAlias = Callable[..., StepperT]
 
-STEPPERS: Dict[StepperType, Callable[..., Stepper]] = {}
+STEPPERS: dict[StepperType, Callable[..., Stepper]] = {}
 
 
 def register_stepper(name: StepperType):

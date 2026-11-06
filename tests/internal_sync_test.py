@@ -18,6 +18,7 @@ import os
 import re
 import tempfile
 import textwrap
+import time
 from typing import TypeAlias
 
 from absl.testing import absltest
@@ -40,6 +41,22 @@ class InternalSyncTest(absltest.TestCase):  # ABSLTEST_OK=Internal sync test
   def tearDown(self):
     execution_mode.eager_mode = self.old_eager_mode
     super().tearDown()
+
+  def _wait_until_materializing(
+      self,
+      tensors: list[torch.Tensor],
+      timeout_seconds: float = 30.0,
+      poll_frequency_seconds: float = 0.1,
+  ):
+    all_materializing = all(sync.is_materializing(tensor) for tensor in tensors)
+    time_slept = 0.0
+    while not all_materializing and time_slept < timeout_seconds:
+      time.sleep(poll_frequency_seconds)
+      time_slept += poll_frequency_seconds
+      all_materializing = all(
+          sync.is_materializing(tensor) for tensor in tensors
+      )
+    self.assertTrue(all_materializing)
 
   @contextlib.contextmanager
   def undeclared_outputs_dir(self) -> Iterator[str]:
@@ -74,10 +91,9 @@ class InternalSyncTest(absltest.TestCase):  # ABSLTEST_OK=Internal sync test
 
     sync.synchronize(y, wait=False)
 
-    # The entire stream begins materializing, but may not be ready yet.
-    self.assertTrue(sync.is_materializing(x))
-    self.assertTrue(sync.is_materializing(y))
-    self.assertTrue(sync.is_materializing(z))
+    # Everything is materializing, but will not report it until the worker
+    # thread processes them.
+    self._wait_until_materializing([x, y, z])
 
   def test_sync_no_wait_list(self):
     x = torch.ones(10, device=torch.device("tpu"))
@@ -91,9 +107,9 @@ class InternalSyncTest(absltest.TestCase):  # ABSLTEST_OK=Internal sync test
 
     sync.synchronize([x, y, z], wait=False)
 
-    # Everything is materialized, but may or may not be ready.
-    for tensor in [x, y, z]:
-      self.assertTrue(sync.is_materializing(tensor))
+    # Everything is materializing, but will not report it until the worker
+    # thread processes them.
+    self._wait_until_materializing([x, y, z])
 
   def test_sync_and_wait_tensor(self):
     x = torch.ones(10, device=torch.device("tpu"))
@@ -157,10 +173,9 @@ class InternalSyncTest(absltest.TestCase):  # ABSLTEST_OK=Internal sync test
 
     sync.synchronize(wait=False)
 
-    # Everything is materialized, but may not be ready.
-    self.assertTrue(sync.is_materializing(x))
-    self.assertTrue(sync.is_materializing(y))
-    self.assertTrue(sync.is_materializing(z))
+    # Everything is materializing, but will not report it until the worker
+    # thread processes them.
+    self._wait_until_materializing([x, y, z])
 
   def test_sync_and_wait_all_materialized(self):
     x = torch.ones(10, device=torch.device("tpu"))
@@ -373,10 +388,9 @@ class InternalSyncTest(absltest.TestCase):  # ABSLTEST_OK=Internal sync test
     # Single-tensor synchronize on wrapper subclass
     sync.synchronize(dt_wrapper, wait=False)
 
-    # The entire stream is now materializing.
-    self.assertTrue(sync.is_materializing(dt_wrapper))
-    self.assertTrue(sync.is_materializing(x))
-    self.assertTrue(sync.is_materializing(elem_wrapper))
+    # The entire stream is materializing, but will not report it until the
+    # worker thread processes them.
+    self._wait_until_materializing([dt_wrapper, x, elem_wrapper])
 
     # Sequence synchronize on list of wrapper subclasses
     sync.synchronize([dt_wrapper, elem_wrapper], wait=True)

@@ -26,7 +26,7 @@ line), which is convenient for a shell `for` loop.
 """
 
 import argparse
-from collections.abc import Sequence, Set
+from collections.abc import Mapping, Sequence, Set
 import pathlib
 from typing import Final
 
@@ -44,12 +44,19 @@ _KNOWN_NAMES: Final[Set[str]] = frozenset({
 })
 
 
-def read_value(name: str, bzl_path: pathlib.Path = _BZL_PATH) -> Sequence[str]:
+def read_value(
+    name: str,
+    bzl_path: pathlib.Path = _BZL_PATH,
+    python_version: str | None = None,
+) -> Sequence[str]:
   """Reads the value bound to `name` in the canonical `.bzl` file.
 
   Args:
     name: the constant to read, one of `_KNOWN_NAMES`.
     bzl_path: the data-only `.bzl` file to read it from.
+    python_version: optional Python version (e.g. `"3.15"` or `"3.15t"`) used to
+      resolve per-Python-version overrides from `WHEEL_TORCH_VERSIONS_BY_PYTHON`
+      when reading `DEFAULT_TORCH_VERSION` or `WHEEL_TORCH_VERSIONS`.
 
   Returns:
     The value as a sequence of strings. A scalar (e.g.
@@ -60,7 +67,17 @@ def read_value(name: str, bzl_path: pathlib.Path = _BZL_PATH) -> Sequence[str]:
     TypeError: if the value bound to `name` is not a string or a list.
   """
   namespace: dict[str, object] = {}
-  exec(compile(bzl_path.read_text(), str(bzl_path), "exec"), namespace)  # pylint: disable=exec-used
+  exec(compile(bzl_path.read_text(), str(bzl_path), "exec"), namespace)
+  if python_version is not None:
+    py_key = python_version.removesuffix("t")
+    by_python = namespace.get("WHEEL_TORCH_VERSIONS_BY_PYTHON", {})
+    if isinstance(by_python, Mapping) and py_key in by_python:
+      py_versions = by_python[py_key]
+      if isinstance(py_versions, list) and py_versions:
+        if name == "WHEEL_TORCH_VERSIONS":
+          return tuple(py_versions)
+        if name == "DEFAULT_TORCH_VERSION":
+          return (str(py_versions[0]),)
   value = namespace[name]
   if isinstance(value, str):
     return (value,)
@@ -78,9 +95,17 @@ def main() -> None:
       choices=sorted(_KNOWN_NAMES),
       help="Which value to print (default: EXTRA_PYTORCH_VERSIONS).",
   )
+  parser.add_argument(
+      "--python-version",
+      default=None,
+      help=(
+          "Optional Python version (e.g. 3.15) to apply"
+          " WHEEL_TORCH_VERSIONS_BY_PYTHON overrides."
+      ),
+  )
   args = parser.parse_args()
 
-  for line in read_value(args.name):
+  for line in read_value(args.name, python_version=args.python_version):
     print(line)
 
 

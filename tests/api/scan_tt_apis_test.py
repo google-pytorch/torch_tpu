@@ -36,9 +36,7 @@ import typing_extensions
 Stage = annotations.Stage
 
 
-def _public_api(
-    name: str, stage: typing.Optional[Stage] = None
-) -> scan_tt_apis.ApiEntry:
+def _public_api(name: str, stage: Stage | None = None) -> scan_tt_apis.ApiEntry:
   return scan_tt_apis.ApiEntry(
       name=name, category="Public Python API", stage=stage, defined_in="runtime"
   )

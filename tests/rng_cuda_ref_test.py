@@ -12,10 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from collections.abc import Callable
 import functools
 import struct
 import threading
-from typing import Any, Callable
+from typing import Any
 import unittest
 
 from absl import flags

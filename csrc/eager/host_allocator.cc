@@ -23,6 +23,7 @@
 #include "absl/base/no_destructor.h"
 #include "absl/base/thread_annotations.h"
 #include "absl/container/flat_hash_map.h"
+#include "absl/status/status.h"
 #include "absl/synchronization/mutex.h"
 #include "c10/core/Allocator.h"
 #include "c10/core/Device.h"
@@ -32,6 +33,7 @@
 #include "csrc/common/warnings.h"
 #include "csrc/pjrt/pjrt_state.h"
 #include "torch/headeronly/core/DeviceType.h"
+#include "xla/future.h"
 #include "xla/pjrt/host_memory_allocator.h"
 
 namespace torch_tpu {
@@ -54,7 +56,9 @@ class TpuPinnedAllocator final : public at::HostAllocator {
     void* raw_ptr = data.get();
     {
       absl::MutexLock lock(mutex_);
-      pinned_ptrs_.emplace(raw_ptr, std::move(data));
+      RefCountedOwnedPtr& ref_counted_ptr = pinned_ptrs_[raw_ptr];
+      ref_counted_ptr.owned_ptr = std::move(data);
+      ref_counted_ptr.ref_count = 1;
     }
 
     return {raw_ptr, raw_ptr, &DeleteTpuPinnedBufferStatic,
@@ -94,22 +98,52 @@ class TpuPinnedAllocator final : public at::HostAllocator {
     return pinned_ptrs_.contains(ptr);
   }
 
-  void free_ptr(void* ptr) {
-    if (ptr) {
-      decltype(pinned_ptrs_)::node_type data;
-      {
-        absl::MutexLock lock(mutex_);
-        data = pinned_ptrs_.extract(ptr);
+  bool HoldPinnedPointerUntil(const void* ptr,
+                              const xla::Future<void>& future) {
+    if (!ptr) {
+      return false;
+    }
+    {
+      absl::MutexLock lock(mutex_);
+      auto it = pinned_ptrs_.find(ptr);
+      if (it == pinned_ptrs_.end()) {
+        return false;
       }
+      it->second.ref_count++;
+    }
+    future.OnReady([ptr](absl::Status status) {
+      status.IgnoreError();  // IGNORE_ERROR_OK=must free even on a failure
+      DeleteTpuPinnedBufferStatic(const_cast<void*>(ptr));
+    });
+    return true;
+  }
+
+  void free_ptr(void* ptr) {
+    if (!ptr) {
+      return;
+    }
+    absl::MutexLock lock(mutex_);
+    auto it = pinned_ptrs_.find(ptr);
+    if (it == pinned_ptrs_.end()) {
+      return;
+    }
+    it->second.ref_count--;
+    if (it->second.ref_count == 0) {
+      pinned_ptrs_.erase(it);
     }
   }
 
  private:
   static void DeleteTpuPinnedBufferStatic(void* ptr);
 
+  struct RefCountedOwnedPtr {
+    xla::HostMemoryAllocator::OwnedPtr owned_ptr;
+    int ref_count = 0;
+  };
+
   absl::Mutex mutex_;
-  absl::flat_hash_map<const void*, xla::HostMemoryAllocator::OwnedPtr>
-      pinned_ptrs_ ABSL_GUARDED_BY(mutex_);
+  absl::flat_hash_map<const void*, RefCountedOwnedPtr> pinned_ptrs_
+      ABSL_GUARDED_BY(mutex_);
 };
 
 TpuPinnedAllocator& GetTpuPinnedAllocatorInternal() {
@@ -128,6 +162,13 @@ at::HostAllocator* GetTpuPinnedAllocator() {
 
 bool IsTpuPinnedPtr(const void* ptr) {
   return GetTpuPinnedAllocatorInternal().is_pinned_ptr(ptr);
+}
+
+bool HoldPinnedPointerUntil(const void* ptr, const xla::Future<void>& future) {
+  if (ptr == nullptr || !future.IsValid()) {
+    return false;
+  }
+  return GetTpuPinnedAllocatorInternal().HoldPinnedPointerUntil(ptr, future);
 }
 
 }  // namespace torch_tpu

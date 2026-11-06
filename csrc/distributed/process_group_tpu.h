@@ -32,13 +32,17 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "ATen/core/TensorBody.h"
 #include "ATen/core/ivalue_inl.h"
+#include "absl/base/thread_annotations.h"
+#include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_format.h"
+#include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
 #include "c10/util/intrusive_ptr.h"
 #include "csrc/common/macro_utils.h"
@@ -439,6 +443,28 @@ class ProcessGroupTpu : public c10d::Backend {
   // Monotonic sequence counter for uneven all_to_all and all_to_all_single
   // offset coordination.
   std::atomic<uint64_t> alltoall_seq_{0};
+
+  // Identifies a two-sided P2P send or receive stream by peer rank and tag.
+  struct P2pStreamKey {
+    int peer_rank = 0;
+    int tag = 0;
+
+    friend bool operator==(const P2pStreamKey&, const P2pStreamKey&) = default;
+
+    template <typename H>
+    friend H AbslHashValue(H h, const P2pStreamKey& key) {
+      return H::combine(std::move(h), key.peer_rank, key.tag);
+    }
+  };
+
+  // Per-(peer_rank, tag) tensor sequence counters for two-sided P2P send/recv
+  // so repeated transfers with the same (src, dst, tag) use distinct store
+  // keys.
+  absl::Mutex p2p_seq_mu_;
+  absl::flat_hash_map<P2pStreamKey, int64_t> send_seq_
+      ABSL_GUARDED_BY(p2p_seq_mu_);
+  absl::flat_hash_map<P2pStreamKey, int64_t> recv_seq_
+      ABSL_GUARDED_BY(p2p_seq_mu_);
 };
 
 }  // namespace torch_tpu

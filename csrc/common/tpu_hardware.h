@@ -16,9 +16,163 @@
 #ifndef TORCH_TPU_CSRC_COMMON_TPU_HARDWARE_H_
 #define TORCH_TPU_CSRC_COMMON_TPU_HARDWARE_H_
 
+#include <cstdint>
+#include <optional>
+#include <string>
 #include <string_view>
+#include <vector>
+
+#include "absl/base/nullability.h"
+#include "absl/container/flat_hash_map.h"
+#include "absl/status/statusor.h"
 
 namespace torch_tpu {
+
+// SparseCore specs of a TPU generation.
+//
+// SparseCores are TPU processors specialized for sparse operations such as
+// embedding lookups.
+struct SparseCoreSpec {
+  // Number of SparseCores per TPU device. On generations that expose each
+  // TensorCore of a chip as a separate device (e.g. TPU v7), this counts the
+  // SparseCores of one device, not of the chip.
+  int64_t sparse_cores_per_device = 0;
+  // SIMD width (number of vector lanes) of each SparseCore.
+  int64_t simd_width = 0;
+
+  bool operator==(const SparseCoreSpec& other) const = default;
+};
+
+// Specs of a TPU generation that TorchTPU supports.
+//
+// TorchTPU doesn't run on TPU v4 and older generations, so they have no
+// constants on `TpuSpec`.
+struct TpuSpec {
+  using Topology = std::vector<int64_t>;  // INT_VEC_OK
+  using TopologyMap = absl::flat_hash_map<int64_t, Topology>;
+
+  // Human-readable name of the generation, as returned by
+  // `torch.tpu.get_device_properties().name`.
+  std::string name;
+  // Number of separately-addressable devices the chip exposes to the runtime,
+  // used as the divisor that turns a per-chip quantity into what one device
+  // sees. This is megacore-aware (not the physical TensorCore count): 1 for
+  // single-core chips (v5e, v6e, v8t) and megacore chips (v5p) that fuse their
+  // two physical cores into one addressable device, and 2 for dual-core chips
+  // without megacore (v7, v8i).
+  int64_t devices_per_chip = 1;
+  // Physical HBM capacity per chip, in bytes.
+  int64_t hbm_bytes_per_chip = 0;
+  // Peak dense bf16 compute per chip, in FLOP/s.
+  int64_t bf16_flops_per_chip = 0;
+  // Topology dimensions of each number of devices that a host can use.
+  TopologyMap topologies;
+  // SparseCore specs of the generation, or std::nullopt if it has no
+  // SparseCores.
+  std::optional<SparseCoreSpec> sparse_core_spec;
+
+  // Physical HBM capacity, in bytes, visible to a single device.
+  [[nodiscard]] int64_t hbm_bytes_per_device() const {
+    return hbm_bytes_per_chip / devices_per_chip;
+  }
+
+  // Peak dense bf16 compute, in FLOP/s, for a single device.
+  [[nodiscard]] int64_t bf16_flops_per_device() const {
+    return bf16_flops_per_chip / devices_per_chip;
+  }
+
+  // Returns the topology dimensions for `world_size` (or for the number of
+  // VFIO-exposed TPU devices if `world_size` is std::nullopt), or an
+  // InvalidArgumentError if no topology is defined for that device count.
+  absl::StatusOr<Topology> GetTopology(
+      std::optional<int64_t> world_size = std::nullopt,
+      std::string_view pci_devices_dir = "/sys/bus/pci/devices",
+      std::string_view vfio_dir = "/dev/vfio") const;
+
+  bool operator==(const TpuSpec& other) const = default;
+
+  static const TpuSpec& V5p();
+  static const TpuSpec& V5e();
+  static const TpuSpec& V6e();
+  static const TpuSpec& V7();
+  static const TpuSpec& V8i();
+  static const TpuSpec& V8t();
+
+  // Returns the mapping from PCI device ID (e.g. "0x0076") to the
+  // corresponding `TpuSpec`.
+  [[nodiscard]] static const absl::flat_hash_map<std::string,
+                                                 const TpuSpec* absl_nonnull>&
+  SpecsByPciDeviceId();
+
+  // Returns the `TpuSpec` of the attached TPU device by scanning PCI devices
+  // under `pci_devices_dir` for a Google TPU, or nullptr if no supported TPU is
+  // found. Does not require VFIO exposure and does not initialize any TPU
+  // runtime.
+  [[nodiscard]] static const TpuSpec* absl_nullable Get(
+      std::string_view pci_devices_dir = "/sys/bus/pci/devices");
+};
+
+// Returns the number of supported Google TPU PCI devices under
+// `pci_devices_dir` whose IOMMU group is exposed under `vfio_dir` as a
+// character device that this process can read and write.
+//
+// This function does not initialize any TPU runtime and ignores placeholders at
+// TPU VFIO paths that a sandbox doesn't allocate to this process, such as
+// unreadable regular files.
+[[nodiscard]] int64_t GetTpuDeviceCount(
+    std::string_view pci_devices_dir = "/sys/bus/pci/devices",
+    std::string_view vfio_dir = "/dev/vfio");
+
+// Returns GetTpuDeviceCount() capped by the number of indices in
+// `TPU_VISIBLE_DEVICES`, like `CUDA_VISIBLE_DEVICES`. Each index is one device,
+// i.e. one TensorCore on chips with several, such as TPU v7. Reads the env var
+// on every call.
+[[nodiscard]] int64_t GetVisibleTpuDeviceCount(
+    std::string_view pci_devices_dir = "/sys/bus/pci/devices",
+    std::string_view vfio_dir = "/dev/vfio");
+
+// Returns the comma-separated topology string (e.g. "2,2,1") for the
+// VFIO-exposed TPU devices, or std::nullopt if no VFIO-exposed TPU device is
+// found. Returns an InvalidArgumentError if a TPU is found but no topology is
+// defined for `world_size` (or the detected device count when `world_size` is
+// std::nullopt).
+absl::StatusOr<std::optional<std::string>> GetTpuTopology(
+    std::optional<int64_t> world_size = std::nullopt,
+    std::string_view pci_devices_dir = "/sys/bus/pci/devices",
+    std::string_view vfio_dir = "/dev/vfio");
+
+// Returns the TPU bounds covering all devices of an `(x, y, z)` box of chips
+// (`{x, y, z, devices_per_chip}` when a chip exposes multiple devices without
+// megacore, or `{x, y, z}` otherwise).
+template <typename Bounds = TpuSpec::Topology>
+[[nodiscard]] Bounds MakeTpuChipBounds(int32_t x, int32_t y, int32_t z,
+                                       int32_t devices_per_chip) {
+  return devices_per_chip > 1 ? Bounds{x, y, z, devices_per_chip}
+                              : Bounds{x, y, z};
+}
+
+// Returns the TPU bounds of a single logical device (`{1, 1, 1, 1}` when a
+// chip exposes multiple devices without megacore, or `{1, 1, 1}` otherwise).
+template <typename Bounds = TpuSpec::Topology>
+[[nodiscard]] Bounds MakeSingleDeviceTpuBounds(int32_t devices_per_chip) {
+  return devices_per_chip > 1 ? Bounds{1, 1, 1, 1} : Bounds{1, 1, 1};
+}
+
+// Returns the single-device TPU bounds (`{1, 1, 1, 1}` for TPU generations with
+// multiple devices per chip without megacore, or `{1, 1, 1}` otherwise) for the
+// TPU generation attached under `pci_devices_dir`.
+template <typename Bounds = TpuSpec::Topology>
+[[nodiscard]] Bounds GetSingleDeviceTpuBounds(
+    std::string_view pci_devices_dir = "/sys/bus/pci/devices") {
+  const TpuSpec* absl_nullable const spec = TpuSpec::Get(pci_devices_dir);
+  return MakeSingleDeviceTpuBounds<Bounds>(
+      spec != nullptr ? static_cast<int32_t>(spec->devices_per_chip) : 1);
+}
+
+// Returns the comma-separated single-device TPU bounds string ("1,1,1,1" or
+// "1,1,1") for the TPU generation attached under `pci_devices_dir`.
+[[nodiscard]] std::string GetSingleDeviceTpuBoundsString(
+    std::string_view pci_devices_dir = "/sys/bus/pci/devices");
 
 // Returns whether any device node through which libtpu could reach a TPU
 // exists:

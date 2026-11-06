@@ -20,7 +20,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
-#include <memory>
 #include <ratio>
 #include <string>
 #include <utility>
@@ -29,52 +28,31 @@
 #include "ATen/core/TensorBody.h"
 #include "absl/cleanup/cleanup.h"
 #include "absl/log/absl_log.h"
-#include "absl/log/die_if_null.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "csrc/common/device_type.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/layout_utils.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
+#include "csrc/pjrt/pjrt_transfer.h"
 #include "torch/headeronly/core/DeviceType.h"
 #include "xla/future.h"
 #include "xla/layout.h"
-#include "xla/pjrt/c/pjrt_c_api.h"
-#include "xla/pjrt/c/pjrt_c_api_raw_buffer_extension.h"
-#include "xla/pjrt/c/pjrt_c_api_raw_buffer_external.h"
-#include "xla/pjrt/c_api_client/pjrt_c_api_client.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
 
 namespace torch_tpu {
 
-struct RawBufferHolder {
-  const PJRT_Api* c_api;
-  const PJRT_RawBuffer_Extension* extension;
-  PJRT_RawBuffer* buffer;
-
-  RawBufferHolder(const PJRT_Api* api, const PJRT_RawBuffer_Extension* ext,
-                  PJRT_RawBuffer* buf)
-      : c_api(api), extension(ext), buffer(buf) {}
-
-  ~RawBufferHolder() {
-    if (buffer) {
-      pjrt::PjRtCApiRawBuffer_Destroy(c_api, extension, buffer);
-    }
-  }
-};
-
 void TransferFuture::Await() {
   // Ensure resources are always cleared, even if an exception is thrown.
   auto cleanup = absl::MakeCleanup([this] {
     futures_.clear();
     tensors_.clear();
-    c_api_holds_.clear();
-    holds_.clear();
   });
 
   // Measure the latency spent waiting for asynchronous device-to-host transfers
@@ -107,11 +85,6 @@ void TransferFuture::AndThen(TransferFuture other) {
   tensors_.insert(tensors_.end(),
                   std::make_move_iterator(other.tensors_.begin()),
                   std::make_move_iterator(other.tensors_.end()));
-  c_api_holds_.insert(c_api_holds_.end(),
-                      std::make_move_iterator(other.c_api_holds_.begin()),
-                      std::make_move_iterator(other.c_api_holds_.end()));
-  holds_.insert(holds_.end(), std::make_move_iterator(other.holds_.begin()),
-                std::make_move_iterator(other.holds_.end()));
 }
 
 void TransferFuture::AndThen(std::vector<xla::Future<>> other_futures,
@@ -122,30 +95,6 @@ void TransferFuture::AndThen(std::vector<xla::Future<>> other_futures,
   tensors_.insert(tensors_.end(),
                   std::make_move_iterator(other_tensors.begin()),
                   std::make_move_iterator(other_tensors.end()));
-}
-
-void TransferFuture::AndThen(
-    std::vector<xla::Future<>> other_futures,
-    std::vector<std::shared_ptr<RawBufferHolder>> other_c_api_holds,
-    std::vector<std::shared_ptr<void>> other_holds) {
-  futures_.insert(futures_.end(),
-                  std::make_move_iterator(other_futures.begin()),
-                  std::make_move_iterator(other_futures.end()));
-  c_api_holds_.insert(c_api_holds_.end(),
-                      std::make_move_iterator(other_c_api_holds.begin()),
-                      std::make_move_iterator(other_c_api_holds.end()));
-  holds_.insert(holds_.end(), std::make_move_iterator(other_holds.begin()),
-                std::make_move_iterator(other_holds.end()));
-}
-
-void TransferFuture::AndThen(std::vector<xla::Future<>> other_futures,
-                             std::shared_ptr<RawBufferHolder> other_c_api_hold,
-                             std::shared_ptr<void> other_hold) {
-  futures_.insert(futures_.end(),
-                  std::make_move_iterator(other_futures.begin()),
-                  std::make_move_iterator(other_futures.end()));
-  if (other_c_api_hold) c_api_holds_.push_back(std::move(other_c_api_hold));
-  if (other_hold) holds_.push_back(std::move(other_hold));
 }
 
 namespace {
@@ -192,6 +141,21 @@ absl::StatusOr<int64_t> GetSizePerMajorDim(const xla::Shape& shape,
     return size_per_major_dim;
   }
   return 0;
+}
+
+absl::Status ValidateContiguousBase(const at::Tensor& tpu_tensor) {
+  TT_ASSIGN_OR_RETURN(DeviceBufferRef base_buffer_ref,
+                      GetBaseBuffer(tpu_tensor));
+  TT_ASSIGN_OR_RETURN(const TpuLayout tpu_layout, ResolveTpuLayout(tpu_tensor));
+  TT_RET_CHECK(!tpu_tensor.is_conj() && !tpu_tensor.is_neg() &&
+                   tpu_tensor.is_contiguous() &&
+                   tpu_tensor.storage_offset() == 0 &&
+                   tpu_layout.sizes == base_buffer_ref.dimensions() &&
+                   tpu_layout.element_type == base_buffer_ref.element_type(),
+               error::kInvalidArgument)
+      << "destination TPU tensor must be a contiguous base tensor (non-base "
+         "views are not supported by BatchTransferH2D)";
+  return absl::OkStatus();
 }
 
 absl::StatusOr<DeviceBufferRef> GetPjrtBuffer(const at::Tensor& tpu_tensor,
@@ -272,27 +236,7 @@ BatchTransferD2H(  // NOLINT(readability-function-cognitive-complexity)
   TT_ASSIGN_OR_RETURN(int64_t physical_size,
                       first_buffer->GetOnDeviceSizeInBytes());
 
-  // Step 5: Retrieve PJRT C API and Raw Buffer Extension.
-  const PJRT_Api* c_api = nullptr;
-  const PJRT_RawBuffer_Extension* extension = nullptr;
-  xla::PjRtCApiBuffer* first_capi_buffer =
-      dynamic_cast<xla::PjRtCApiBuffer*>(first_buffer);
-
-  TT_RET_CHECK(first_capi_buffer != nullptr, error::kInvalidArgument)
-      << "first_buffer must be a PjRtCApiBuffer";
-  c_api = ABSL_DIE_IF_NULL(first_capi_buffer)->pjrt_c_api();
-  TT_RET_CHECK(c_api != nullptr, error::kInternal) << "PJRT C API not found";
-  xla::PjRtCApiClient* capi_client = dynamic_cast<xla::PjRtCApiClient*>(
-      ABSL_DIE_IF_NULL(first_capi_buffer)->client());
-  TT_RET_CHECK(capi_client != nullptr, error::kInternal)
-      << "Failed to cast client to PjRtCApiClient";
-  extension = ABSL_DIE_IF_NULL(capi_client)
-                  ->FindExtension<PJRT_RawBuffer_Extension>(
-                      PJRT_Extension_Type::PJRT_Extension_Type_RawBuffer);
-  TT_RET_CHECK(extension != nullptr, error::kInternal)
-      << "RawBuffer extension not found in PjRtCApiClient";
-
-  // Step 6: Handle 2D tiling if applicable to calculate bytes per major
+  // Step 5: Handle 2D tiling if applicable to calculate bytes per major
   // dimension.
   auto pjrt_layout = first_buffer->layout();
   const xla::Layout* xla_layout = nullptr;
@@ -308,11 +252,8 @@ BatchTransferD2H(  // NOLINT(readability-function-cognitive-complexity)
 
   std::vector<xla::Future<>> batch_futures;
   batch_futures.reserve(n);
-  std::vector<std::shared_ptr<RawBufferHolder>> batch_c_api_holds;
-  std::vector<std::shared_ptr<void>> batch_holds;
-  batch_c_api_holds.reserve(n);
 
-  // Step 7: Loop over all tensors in the batch and issue copies.
+  // Step 6: Loop over all tensors in the batch and issue copies.
   for (size_t layer_idx = 0; layer_idx < n; ++layer_idx) {
     const at::Tensor& src = src_arrs[layer_idx];
     const at::Tensor& dst = dst_arrs[layer_idx];
@@ -323,44 +264,34 @@ BatchTransferD2H(  // NOLINT(readability-function-cognitive-complexity)
     size_t dst_size = dst.nbytes();
     uint8_t* dst_data = reinterpret_cast<uint8_t*>(dst.data_ptr());
 
-    // Step 7a: Materialize current tensor.
+    // Step 6a: Materialize current tensor and prepare raw DMA buffer.
     auto start_mat_loop = std::chrono::high_resolution_clock::now();
-    xla::PjRtBuffer* src_buffer = nullptr;
-    TT_ASSIGN_OR_RETURN(DeviceBufferRef src_buffer_ref,
-                        GetPjrtBuffer(src, src_buffer));
-    TT_RET_CHECK(src_buffer->on_device_shape() == shape,
-                 error::kInvalidArgument)
-        << "Tensor at index " << layer_idx << " has shape "
-        << src_buffer->on_device_shape().ToString()
-        << " which is different from expected shape " << shape.ToString();
-    // The raw PJRT copy API does not chain on buffer readiness, so we must wait
-    // here for the producing computation to commit its result before issuing
-    // the DMA.
-    TT_RETURN_IF_ERROR(src_buffer->GetReadyFuture().Await());
+    xla::PjRtBuffer* src_buffer = first_buffer;
+    DeviceBufferRef src_buffer_ref = first_buffer_ref;
+    if (layer_idx > 0) {
+      TT_ASSIGN_OR_RETURN(src_buffer_ref, GetPjrtBuffer(src, src_buffer));
+      TT_RET_CHECK(src_buffer->on_device_shape() == shape,
+                   error::kInvalidArgument)
+          << "Tensor at index " << layer_idx << " has shape "
+          << src_buffer->on_device_shape().ToString()
+          << " which is different from expected shape " << shape.ToString();
+    }
+    TT_ASSIGN_OR_RETURN(
+        PreparedRawDmaBuffer raw_buffer,
+        PreparedRawDmaBuffer::Prepare(std::move(src_buffer_ref)));
     materialize_ms +=
         std::chrono::duration<double, std::milli>(
             std::chrono::high_resolution_clock::now() - start_mat_loop)
             .count();
 
-    // Step 7b: Create raw alias of the buffer using PJRT C API.
+    // Step 6b: Issue DMA copy (Full or Partial).
     auto start_issue = std::chrono::high_resolution_clock::now();
-    PJRT_RawBuffer* c_raw_buffer = nullptr;
-
-    xla::PjRtCApiBuffer* capi_buffer =
-        static_cast<xla::PjRtCApiBuffer*>(src_buffer);
-    TT_ASSIGN_OR_RETURN(c_raw_buffer,
-                        pjrt::PjRtCApiBuffer_CreateRawAliasOfBuffer(
-                            c_api, extension, capi_buffer->c_buffer()));
-    batch_c_api_holds.push_back(
-        std::make_shared<RawBufferHolder>(c_api, extension, c_raw_buffer));
-
-    // Step 7c: Issue DMA copy (Full or Partial).
     if (!is_partial) {
       TT_RET_CHECK(dst_size >= physical_size, error::kInvalidArgument)
           << "Destination buffer too small for raw copy";
-      xla::Future<> future = pjrt::PjRtCApiRawBuffer_CopyRawDeviceToHost(
-          c_api, extension, c_raw_buffer, dst_data, 0,
-          physical_size);  // NOLINT
+      TT_ASSIGN_OR_RETURN(
+          xla::Future<> future,
+          raw_buffer.CopyDtoH(dst_data, /*offset=*/0, physical_size));
       batch_futures.push_back(std::move(future));
     } else {
       for (size_t j = 0; j < src_offsets_major_dim.size(); ++j) {
@@ -387,9 +318,9 @@ BatchTransferD2H(  // NOLINT(readability-function-cognitive-complexity)
             << "Copy range exceeds destination buffer size";
 
         uint8_t* dst_ptr = dst_data + dst_offset;
-        xla::Future<> future = pjrt::PjRtCApiRawBuffer_CopyRawDeviceToHost(
-            c_api, extension, c_raw_buffer, dst_ptr, src_offset,
-            size_to_copy);  // NOLINT
+        TT_ASSIGN_OR_RETURN(
+            xla::Future<> future,
+            raw_buffer.CopyDtoH(dst_ptr, src_offset, size_to_copy));
         batch_futures.push_back(std::move(future));
       }
     }
@@ -397,20 +328,15 @@ BatchTransferD2H(  // NOLINT(readability-function-cognitive-complexity)
         std::chrono::duration<double, std::milli>(
             std::chrono::high_resolution_clock::now() - start_issue)
             .count();
-    // Keep the DeviceBufferRef alive until the transfer completes.
-    batch_holds.push_back(
-        std::make_shared<DeviceBufferRef>(std::move(src_buffer_ref)));
   }
 
-  // Step 8: Aggregate futures and keep tensors alive.
+  // Step 7: Aggregate futures and keep tensors alive.
   std::vector<at::Tensor> all_tensors;
   all_tensors.reserve(src_arrs.size() + dst_arrs.size());
   all_tensors.insert(all_tensors.end(), src_arrs.begin(), src_arrs.end());
   all_tensors.insert(all_tensors.end(), dst_arrs.begin(), dst_arrs.end());
 
-  acc.AndThen(std::move(batch_futures), std::move(batch_c_api_holds),
-              std::move(batch_holds));
-  acc.AndThen(std::vector<xla::Future<>>{}, std::move(all_tensors));
+  acc.AndThen(std::move(batch_futures), std::move(all_tensors));
 
   // Tag the TransferFuture to measure raw_copy_wait_ms later during the Await()
   // call.
@@ -437,6 +363,7 @@ BatchTransferH2D(  // NOLINT(readability-function-cognitive-complexity)
   if (src_arrs.empty()) return acc;
 
   // Extract metadata from the first tensor.
+  TT_RETURN_IF_ERROR(ValidateContiguousBase(dst_arrs[0]));
   xla::PjRtBuffer* first_buffer = nullptr;
   TT_ASSIGN_OR_RETURN(DeviceBufferRef first_buffer_ref,
                       GetPjrtBuffer(dst_arrs[0], first_buffer));
@@ -468,25 +395,6 @@ BatchTransferH2D(  // NOLINT(readability-function-cognitive-complexity)
   TT_ASSIGN_OR_RETURN(int64_t physical_size,
                       first_buffer->GetOnDeviceSizeInBytes());
 
-  const PJRT_Api* c_api = nullptr;
-  const PJRT_RawBuffer_Extension* extension = nullptr;
-  xla::PjRtCApiBuffer* first_capi_buffer =
-      dynamic_cast<xla::PjRtCApiBuffer*>(first_buffer);
-
-  TT_RET_CHECK(first_capi_buffer != nullptr, error::kInvalidArgument)
-      << "first_buffer must be a PjRtCApiBuffer";
-  c_api = ABSL_DIE_IF_NULL(first_capi_buffer)->pjrt_c_api();
-  TT_RET_CHECK(c_api != nullptr, error::kInternal) << "PJRT C API not found";
-  xla::PjRtCApiClient* capi_client = dynamic_cast<xla::PjRtCApiClient*>(
-      ABSL_DIE_IF_NULL(first_capi_buffer)->client());
-  TT_RET_CHECK(capi_client != nullptr, error::kInternal)
-      << "Failed to cast client to PjRtCApiClient";
-  extension = ABSL_DIE_IF_NULL(capi_client)
-                  ->FindExtension<PJRT_RawBuffer_Extension>(
-                      PJRT_Extension_Type::PJRT_Extension_Type_RawBuffer);
-  TT_RET_CHECK(extension != nullptr, error::kInternal)
-      << "RawBuffer extension not found in PjRtCApiClient";
-
   auto pjrt_layout = first_buffer->layout();
   const xla::Layout* xla_layout = nullptr;
   if (pjrt_layout) {
@@ -501,9 +409,6 @@ BatchTransferH2D(  // NOLINT(readability-function-cognitive-complexity)
 
   std::vector<xla::Future<>> batch_futures;
   batch_futures.reserve(n);
-  std::vector<std::shared_ptr<RawBufferHolder>> batch_c_api_holds;
-  std::vector<std::shared_ptr<void>> batch_holds;
-  batch_c_api_holds.reserve(n);
 
   for (size_t layer_idx = 0; layer_idx < n; ++layer_idx) {
     const at::Tensor& src = src_arrs[layer_idx];
@@ -515,34 +420,27 @@ BatchTransferH2D(  // NOLINT(readability-function-cognitive-complexity)
     size_t src_size = src.nbytes();
     const uint8_t* src_data = reinterpret_cast<const uint8_t*>(src.data_ptr());
 
-    xla::PjRtBuffer* dst_buffer = nullptr;
-    TT_ASSIGN_OR_RETURN(DeviceBufferRef dst_buffer_ref,
-                        GetPjrtBuffer(dst, dst_buffer));
-    TT_RET_CHECK(dst_buffer->on_device_shape() == shape,
-                 error::kInvalidArgument)
-        << "Tensor at index " << layer_idx << " has shape "
-        << dst_buffer->on_device_shape().ToString()
-        << " which is different from expected shape " << shape.ToString();
-    // The raw PJRT copy API does not chain on buffer readiness; the destination
-    // buffer's ready future signals that it is safe to write into.
-    TT_RETURN_IF_ERROR(dst_buffer->GetReadyFuture().Await());
-
-    PJRT_RawBuffer* c_raw_buffer = nullptr;
-
-    xla::PjRtCApiBuffer* capi_buffer =
-        static_cast<xla::PjRtCApiBuffer*>(dst_buffer);
-    TT_ASSIGN_OR_RETURN(c_raw_buffer,
-                        pjrt::PjRtCApiBuffer_CreateRawAliasOfBuffer(
-                            c_api, extension, capi_buffer->c_buffer()));
-    batch_c_api_holds.push_back(
-        std::make_shared<RawBufferHolder>(c_api, extension, c_raw_buffer));
+    xla::PjRtBuffer* dst_buffer = first_buffer;
+    DeviceBufferRef dst_buffer_ref = first_buffer_ref;
+    if (layer_idx > 0) {
+      TT_RETURN_IF_ERROR(ValidateContiguousBase(dst));
+      TT_ASSIGN_OR_RETURN(dst_buffer_ref, GetPjrtBuffer(dst, dst_buffer));
+      TT_RET_CHECK(dst_buffer->on_device_shape() == shape,
+                   error::kInvalidArgument)
+          << "Tensor at index " << layer_idx << " has shape "
+          << dst_buffer->on_device_shape().ToString()
+          << " which is different from expected shape " << shape.ToString();
+    }
+    TT_ASSIGN_OR_RETURN(
+        PreparedRawDmaBuffer raw_buffer,
+        PreparedRawDmaBuffer::Prepare(std::move(dst_buffer_ref)));
 
     if (!is_partial) {
       TT_RET_CHECK(src_size >= physical_size, error::kInvalidArgument)
           << "Source buffer too small for raw copy";
-      xla::Future<> future = pjrt::PjRtCApiRawBuffer_CopyRawHostToDevice(
-          c_api, extension, c_raw_buffer, src_data, 0,
-          physical_size);  // NOLINT
+      TT_ASSIGN_OR_RETURN(
+          xla::Future<> future,
+          raw_buffer.CopyHtoD(src_data, /*offset=*/0, physical_size));
       batch_futures.push_back(std::move(future));
     } else {
       for (size_t j = 0; j < src_offsets_major_dim.size(); ++j) {
@@ -569,9 +467,9 @@ BatchTransferH2D(  // NOLINT(readability-function-cognitive-complexity)
             << "Copy range exceeds destination buffer size";
 
         const uint8_t* src_ptr = src_data + src_offset;
-        xla::Future<> future = pjrt::PjRtCApiRawBuffer_CopyRawHostToDevice(
-            c_api, extension, c_raw_buffer, src_ptr, dst_offset,
-            size_to_copy);  // NOLINT
+        TT_ASSIGN_OR_RETURN(
+            xla::Future<> future,
+            raw_buffer.CopyHtoD(src_ptr, dst_offset, size_to_copy));
         batch_futures.push_back(std::move(future));
       }
     }
@@ -583,9 +481,7 @@ BatchTransferH2D(  // NOLINT(readability-function-cognitive-complexity)
   all_tensors.insert(all_tensors.end(), src_arrs.begin(), src_arrs.end());
   all_tensors.insert(all_tensors.end(), dst_arrs.begin(), dst_arrs.end());
 
-  acc.AndThen(std::move(batch_futures), std::move(batch_c_api_holds),
-              std::move(batch_holds));
-  acc.AndThen(std::vector<xla::Future<>>{}, std::move(all_tensors));
+  acc.AndThen(std::move(batch_futures), std::move(all_tensors));
 
   return acc;
 }

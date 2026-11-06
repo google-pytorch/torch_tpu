@@ -46,6 +46,7 @@
 #include "absl/types/span.h"
 #include "c10/core/Device.h"
 #include "c10/core/Stream.h"
+#include "csrc/common/cache_key.h"
 #include "csrc/common/compilation.h"
 #include "csrc/common/context_manager.h"
 #include "csrc/common/error_utils.h"
@@ -62,6 +63,7 @@
 #include "csrc/eager/traversal_utils.h"
 #include "mlir/IR/MLIRContext.h"
 #include "xla/future.h"
+#include "xla/pjrt/pjrt_client.h"
 
 namespace torch_tpu {
 namespace {
@@ -73,7 +75,6 @@ namespace {
 struct MaterializationTask {
   c10::DeviceIndex device_index;
   c10::StreamId stream_id;
-  xla::Promise<void> started_promise;
 };
 
 // Checks that all must_materialize nodes in the task have started
@@ -96,17 +97,42 @@ absl::Status VerifyMustMaterialize(
   return first_missing_node_error;
 }
 
-// Appends ready futures for an ExecutionTask's outputs to `futures`.
+enum class DeviceOutputTracking {
+  kDeferToSnapshot,
+  kRecordReadyFuture,
+};
+
+// Returns a ready future for `ref`, treating a buffer already deleted or
+// donated to a subsequent execution as complete on device.
+xla::Future<void> GetSnapshotDeviceReadyFuture(const DeviceBufferRef& ref) {
+  xla::Future<void> ready = ref.GetReadyFuture();
+  if (ready.IsKnownReady() && !ready.Await().ok() &&
+      ref.GetMaterializationFuture().IsKnownReady()) {
+    if (const auto buf = ref.AwaitBuffer(); buf.ok() && (*buf)->IsDeleted()) {
+      return xla::Future<void>(absl::OkStatus());
+    }
+  }
+  return ready;
+}
+
+// Appends futures for an ExecutionTask's outputs to `futures` and updates
+// `last_device_output` when `output_tracking == kDeferToSnapshot`.
 //
 // All device-resident outputs of a single PjRtLoadedExecutable::Execute call
-// share the same underlying TPU execution completion event, while pinned-host
-// outputs additionally wait on their individual D2H transfer events.
-// Registering GetReadyFuture() on every output of a 400+ output compiled step
-// allocates 400+ promises, runs 400+ OnReady callbacks on execute_thread_, and
-// registers 400+ PJRT_Event_OnReady callbacks on the same TPU completion event.
-// Instead, await all pinned-host outputs plus the last non-pinned-host output.
-void AppendExecutionTaskReadyFutures(const ExecutionTask& execution_task,
-                                     std::vector<xla::Future<void>>& futures) {
+// share the same underlying TPU completion event, while pinned-host outputs
+// additionally wait on their individual D2H transfer events. Because TensorCore
+// executions on `execute_thread_` are enqueued onto a single in-order PJRT
+// device queue, awaiting the latest TensorCore output at EventSnapshot time is
+// sufficient for device completion, while `GetMaterializationFuture()` still
+// surfaces compilation and synchronous enqueue errors without registering a
+// `PJRT_Event_OnReady` callback on every op. Standalone SparseCore programs
+// (`CorePinningMode::kSparseCore`, which run on a separate hardware queue when
+// `!TcControl()`) and `CompiledExecution` tasks record `GetReadyFuture()`
+// directly without overwriting `last_device_output`.
+void AppendExecutionTaskReadyFutures(
+    const ExecutionTask& execution_task, DeviceOutputTracking output_tracking,
+    std::vector<xla::Future<void>>& futures,
+    std::optional<DeviceBufferRef>& last_device_output) {
   const DeviceBufferRef* representative_device_output = nullptr;
   for (const DeviceBufferRef& output : execution_task.outputs()) {
     if (output.is_pinned_host()) {
@@ -116,7 +142,13 @@ void AppendExecutionTaskReadyFutures(const ExecutionTask& execution_task,
     }
   }
   if (representative_device_output != nullptr) {
-    futures.push_back(representative_device_output->GetReadyFuture());
+    if (output_tracking == DeviceOutputTracking::kDeferToSnapshot) {
+      futures.push_back(
+          representative_device_output->GetMaterializationFuture());
+      last_device_output = *representative_device_output;
+    } else {
+      futures.push_back(representative_device_output->GetReadyFuture());
+    }
   }
 }
 
@@ -131,6 +163,7 @@ void ProcessEagerExecution(
     EagerExecution eager_execution, mlir::MLIRContext& mlir_context,
     std::vector<ExecutionTask>& flattened_execution_tasks,
     std::vector<xla::Future<void>>& materialization_futures,
+    std::optional<DeviceBufferRef>& last_device_output,
     absl::Status& materialization_error) {
   PrepareTraversalsOptions options{
       .graph_split_mode = eager_execution.settings.graph_split_mode,
@@ -155,7 +188,13 @@ void ProcessEagerExecution(
     materialization_error = tasks_result.first_error;
   }
   for (auto& execution_task : tasks_result.execution_tasks) {
-    AppendExecutionTaskReadyFutures(execution_task, materialization_futures);
+    const DeviceOutputTracking output_tracking =
+        execution_task.core_pinning_mode() == CorePinningMode::kSparseCore
+            ? DeviceOutputTracking::kRecordReadyFuture
+            : DeviceOutputTracking::kDeferToSnapshot;
+    AppendExecutionTaskReadyFutures(execution_task, output_tracking,
+                                    materialization_futures,
+                                    last_device_output);
     flattened_execution_tasks.push_back(std::move(execution_task));
   }
 }
@@ -163,28 +202,38 @@ void ProcessEagerExecution(
 void ProcessCompiledExecution(
     CompiledExecution compiled_execution,
     std::vector<ExecutionTask>& flattened_execution_tasks,
-    std::vector<xla::Future<void>>& materialization_futures) {
-  AppendExecutionTaskReadyFutures(compiled_execution, materialization_futures);
+    std::vector<xla::Future<void>>& materialization_futures,
+    std::optional<DeviceBufferRef>& last_device_output) {
+  AppendExecutionTaskReadyFutures(compiled_execution,
+                                  DeviceOutputTracking::kRecordReadyFuture,
+                                  materialization_futures, last_device_output);
   flattened_execution_tasks.push_back(std::move(compiled_execution));
 }
 
 void ProcessSnapshotRequest(
     SnapshotRequest snapshot_request,
     std::vector<xla::Future<void>>& materialization_futures,
+    std::optional<DeviceBufferRef>& last_device_output,
     absl::Status& materialization_error) {
+  const std::optional<DeviceBufferRef>& latest_output =
+      last_device_output.has_value() ? last_device_output
+                                     : snapshot_request.last_device_output;
   if (materialization_error.ok()) {
+    if (latest_output.has_value()) {
+      snapshot_request.futures.push_back(
+          GetSnapshotDeviceReadyFuture(*latest_output));
+    }
     snapshot_request.futures.insert(
         snapshot_request.futures.end(),
         std::make_move_iterator(materialization_futures.begin()),
         std::make_move_iterator(materialization_futures.end()));
-    auto snapshot = std::make_shared<EventSnapshot>(
+    snapshot_request.snapshot_to_start.Start(
         xla::JoinFutures(snapshot_request.futures));
-    snapshot_request.snapshot_promise.Set(std::move(snapshot));
   } else {
-    snapshot_request.snapshot_promise.Set(
-        std::make_shared<EventSnapshot>(materialization_error));
+    snapshot_request.snapshot_to_start.Start(materialization_error);
     materialization_error = absl::OkStatus();
   }
+  last_device_output.reset();
   snapshot_request.futures.clear();
   materialization_futures.clear();
 }
@@ -193,20 +242,21 @@ void ProcessReadyWorkItem(
     ReadyWork ready_work_item, mlir::MLIRContext& mlir_context,
     std::vector<ExecutionTask>& flattened_execution_tasks,
     std::vector<xla::Future<void>>& materialization_futures,
+    std::optional<DeviceBufferRef>& last_device_output,
     absl::Status& materialization_error) {
   if (auto* eager_execution = std::get_if<EagerExecution>(&ready_work_item)) {
     ProcessEagerExecution(std::move(*eager_execution), mlir_context,
                           flattened_execution_tasks, materialization_futures,
-                          materialization_error);
+                          last_device_output, materialization_error);
   } else if (auto* compiled_execution =
                  std::get_if<CompiledExecution>(&ready_work_item)) {
     ProcessCompiledExecution(std::move(*compiled_execution),
-                             flattened_execution_tasks,
-                             materialization_futures);
+                             flattened_execution_tasks, materialization_futures,
+                             last_device_output);
   } else {
     auto& snapshot_request = std::get<SnapshotRequest>(ready_work_item);
     ProcessSnapshotRequest(std::move(snapshot_request), materialization_futures,
-                           materialization_error);
+                           last_device_output, materialization_error);
   }
 }
 
@@ -219,12 +269,13 @@ std::vector<ExecutionTask> ProcessMaterializationTask(
                << task.device_index;
   std::vector<ExecutionTask> flattened_execution_tasks;
   std::vector<xla::Future<void>> materialization_futures;
+  std::optional<DeviceBufferRef> last_device_output;
   absl::Status materialization_error = absl::OkStatus();
   auto ready_work = GetReadyWork(task.device_index, task.stream_id);
   for (auto& ready_work_item : ready_work) {
     ProcessReadyWorkItem(std::move(ready_work_item), mlir_context,
                          flattened_execution_tasks, materialization_futures,
-                         materialization_error);
+                         last_device_output, materialization_error);
   }
 
   ABSL_VLOG(2) << "[MaterializationWorker] Created "
@@ -236,12 +287,12 @@ std::vector<ExecutionTask> ProcessMaterializationTask(
   if (!materialization_error.ok()) {
     materialization_futures.push_back(xla::Future<void>(materialization_error));
   }
-  if (!materialization_futures.empty()) {
+  if (!materialization_futures.empty() || last_device_output.has_value()) {
     WriteBackMaterializationFutures(task.device_index, task.stream_id,
-                                    std::move(materialization_futures));
+                                    std::move(materialization_futures),
+                                    std::move(last_device_output));
   }
 
-  task.started_promise.Set(materialization_error);
   return flattened_execution_tasks;
 }
 
@@ -312,18 +363,15 @@ class MaterializationWorker {
     }
   }
 
-  xla::Future<void> EnqueueStream(const c10::DeviceIndex device_index,
-                                  const c10::StreamId stream_id) {
+  void EnqueueStream(const c10::DeviceIndex device_index,
+                     const c10::StreamId stream_id) {
     ABSL_VLOG(1) << "[MaterializationWorker] Enqueuing stream " << stream_id
                  << " on device " << device_index << " for materialization";
     absl::MutexLock lock(materialize_mu_);
     // Check shutdown state after acquiring the lock to avoid a time-of-check/
     // time-of-use error relative to Shutdown().
     if (shutdown_.load()) {
-      return xla::Future<void>(
-          TT_ERROR(error::kCancelled)  // ERROR_COV_INFEASIBLE=unreachable
-                                       // from Python
-          << "MaterializationWorker is shutting down");
+      return;
     }
 
     // If multiple materialization tasks are pushed to the same stream
@@ -335,16 +383,12 @@ class MaterializationWorker {
           std::get<MaterializationTask>(materialize_tasks_.back());
       if (prev_task.device_index == device_index &&
           prev_task.stream_id == stream_id) {
-        return prev_task.started_promise.future();
+        return;
       }
     }
 
     // Either the queue is empty or the previous task is on a different stream.
-    // Create a new materialization task with a new start promise/future.
-    auto [started_promise, started_future] = xla::MakePromise<void>();
-    materialize_tasks_.push(MaterializationTask(device_index, stream_id,
-                                                std::move(started_promise)));
-    return started_future;
+    materialize_tasks_.push(MaterializationTask(device_index, stream_id));
   }
 
   // Dequeues a materialization task or a shutdown signal.
@@ -582,8 +626,7 @@ absl::StatusOr<std::vector<SharedDeviceBufferList>> GetUniqueDeferredNodes(
 template <typename T>
 absl::Status MaterializeSpan(absl::Span<const T> items,
                              MaterializationReason reason,
-                             GraphSplitMode graph_split_mode,
-                             MaterializationBlockMode block_mode) {
+                             GraphSplitMode graph_split_mode) {
   if (items.empty()) {
     return absl::OkStatus();
   }
@@ -595,7 +638,6 @@ absl::Status MaterializeSpan(absl::Span<const T> items,
     c10::StreamId stream_id;
   };
   absl::InlinedVector<DeviceStreamId, 2> device_stream_ids;
-  std::vector<xla::Future<void>> started_futures;
   for (const T& item : items) {
     const SharedDeviceBufferList& node = GetDeviceBufferList(item);
     // Check if this node needs to be materialized.
@@ -628,19 +670,14 @@ absl::Status MaterializeSpan(absl::Span<const T> items,
     TT_ASSIGN_OR_RETURN(
         std::vector<SharedDeviceBufferList> nodes_on_stream,
         GetUniqueDeferredNodes(items, node->device_index(), node->stream_id()));
-    InsertGraphBreak(node->device_index(), node->stream_id(),
-                     std::move(nodes_on_stream), reason, graph_split_mode);
-    xla::Future<void> started_future = GetMaterializationWorker().EnqueueStream(
-        node->device_index(), node->stream_id());
-    if (block_mode == MaterializationBlockMode::kBlockUntilStarted) {
-      started_futures.push_back(started_future);
-    }
+    TT_RETURN_IF_ERROR(InsertGraphBreak(node->device_index(), node->stream_id(),
+                                        std::move(nodes_on_stream), reason,
+                                        graph_split_mode));
+    GetMaterializationWorker().EnqueueStream(node->device_index(),
+                                             node->stream_id());
     // Record that we enqueued this stream.
     device_stream_ids.push_back(DeviceStreamId{
         .device_index = node->device_index(), .stream_id = node->stream_id()});
-  }
-  if (block_mode == MaterializationBlockMode::kBlockUntilStarted) {
-    TT_RETURN_IF_ERROR(xla::JoinFutures(started_futures).Await());
   }
   return absl::OkStatus();
 }
@@ -651,23 +688,14 @@ void ShutDownMaterializationState() { GetMaterializationWorker().Shutdown(); }
 
 absl::Status Materialize(absl::Span<const SharedDeviceBufferList> nodes,
                          MaterializationReason reason,
-                         GraphSplitMode graph_split_mode,
-                         MaterializationBlockMode block_mode) {
-  return MaterializeSpan(nodes, reason, graph_split_mode, block_mode);
+                         GraphSplitMode graph_split_mode) {
+  return MaterializeSpan(nodes, reason, graph_split_mode);
 }
 
 absl::Status Materialize(absl::Span<const DeviceBufferRef> buffer_refs,
                          MaterializationReason reason,
                          GraphSplitMode graph_split_mode) {
-  return Materialize(buffer_refs, reason, graph_split_mode,
-                     MaterializationBlockMode::kBlockUntilStarted);
-}
-
-absl::Status Materialize(absl::Span<const DeviceBufferRef> buffer_refs,
-                         MaterializationReason reason,
-                         GraphSplitMode graph_split_mode,
-                         MaterializationBlockMode block_mode) {
-  return MaterializeSpan(buffer_refs, reason, graph_split_mode, block_mode);
+  return MaterializeSpan(buffer_refs, reason, graph_split_mode);
 }
 
 absl::StatusOr<std::vector<DeviceBufferRef>> EnqueueExecutable(
@@ -683,9 +711,9 @@ absl::StatusOr<std::vector<DeviceBufferRef>> EnqueueExecutable(
   outputs.reserve(output_shapes.size());
   for (const auto& shape : output_shapes) {
     // Create pending buffer lists to hold the results.
-    TT_ASSIGN_OR_RETURN(
-        DeviceBufferRef output_ref,
-        DeviceBufferList::CreatePending(shape, device_index, stream_id));
+    TT_ASSIGN_OR_RETURN(DeviceBufferRef output_ref,
+                        DeviceBufferList::CreatePendingExecution(
+                            shape, device_index, stream_id));
     outputs.push_back(std::move(output_ref));
   }
 
@@ -712,7 +740,7 @@ absl::StatusOr<std::vector<DeviceBufferRef>> EnqueueExecutable(
   return outputs;
 }
 
-xla::Future<std::shared_ptr<EventSnapshot>> MaterializeStream(
+absl::StatusOr<EventSnapshot> MaterializeStream(
     c10::DeviceIndex device_index, c10::StreamId stream_id,
     MaterializationReason reason, GraphSplitMode mode,
     absl::Span<const SharedDeviceBufferList> must_materialize) {
@@ -727,13 +755,15 @@ xla::Future<std::shared_ptr<EventSnapshot>> MaterializeStream(
   TT_ASSIGN_OR_RETURN(
       std::vector<SharedDeviceBufferList> must_materialize_vec,
       GetUniqueDeferredNodes(must_materialize, device_index, stream_id));
-  auto future = EventSnapshot::Record(
-      device_index, stream_id, std::move(must_materialize_vec), reason, mode);
+  TT_ASSIGN_OR_RETURN(
+      EventSnapshot snapshot,
+      EventSnapshot::Record(device_index, stream_id,
+                            std::move(must_materialize_vec), reason, mode));
   GetMaterializationWorker().EnqueueStream(device_index, stream_id);
-  return future;
+  return snapshot;
 }
 
-std::vector<xla::Future<std::shared_ptr<EventSnapshot>>> MaterializeDevice(
+absl::StatusOr<std::vector<EventSnapshot>> MaterializeDevice(
     c10::DeviceIndex device_index, MaterializationReason reason,
     GraphSplitMode mode,
     absl::Span<const SharedDeviceBufferList> must_materialize) {
@@ -751,23 +781,19 @@ std::vector<xla::Future<std::shared_ptr<EventSnapshot>>> MaterializeDevice(
     return {must_materialize_vec_or.status()};
   }
 
-  auto device_snapshot_futures = RecordDeviceSnapshots(
+  auto device_snapshots = RecordDeviceSnapshots(
       device_index, std::move(*must_materialize_vec_or), reason, mode);
 
-  std::vector<xla::Future<std::shared_ptr<EventSnapshot>>> snapshot_futures;
-  snapshot_futures.reserve(device_snapshot_futures.size());
-
   auto& materialization_worker = GetMaterializationWorker();
-  for (auto& pending_stream : device_snapshot_futures) {
-    materialization_worker.EnqueueStream(pending_stream.device_index,
-                                         pending_stream.stream_id);
-    snapshot_futures.push_back(std::move(pending_stream.snapshot_future));
+  for (auto& pending_stream : device_snapshots) {
+    materialization_worker.EnqueueStream(pending_stream.device_index(),
+                                         pending_stream.stream_id());
   }
 
-  return snapshot_futures;
+  return device_snapshots;
 }
 
-xla::Future<std::shared_ptr<EventSnapshot>> MaterializeCurrentStream(
+absl::StatusOr<EventSnapshot> MaterializeCurrentStream(
     MaterializationReason reason, GraphSplitMode mode,
     absl::Span<const SharedDeviceBufferList> must_materialize) {
   const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
@@ -775,22 +801,25 @@ xla::Future<std::shared_ptr<EventSnapshot>> MaterializeCurrentStream(
                            must_materialize);
 }
 
-void EagerlyExecuteStream(
+absl::Status EagerlyExecuteStream(
     c10::DeviceIndex device_index, c10::StreamId stream_id,
     MaterializationReason reason, GraphSplitMode mode,
     absl::Span<const SharedDeviceBufferList> must_materialize) {
-  InsertGraphBreak(device_index, stream_id,
-                   std::vector<SharedDeviceBufferList>(must_materialize.begin(),
-                                                       must_materialize.end()),
-                   reason, mode);
+  TT_RETURN_IF_ERROR(
+      InsertGraphBreak(device_index, stream_id,
+                       std::vector<SharedDeviceBufferList>(
+                           must_materialize.begin(), must_materialize.end()),
+                       reason, mode));
   GetMaterializationWorker().EnqueueStream(device_index, stream_id);
+  return absl::OkStatus();
 }
 
-void EagerlyExecuteCurrentStream(
+absl::Status EagerlyExecuteCurrentStream(
     MaterializationReason reason, GraphSplitMode mode,
     absl::Span<const SharedDeviceBufferList> must_materialize) {
   const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
-  EagerlyExecuteStream(device_index, stream_id, reason, mode, must_materialize);
+  return EagerlyExecuteStream(device_index, stream_id, reason, mode,
+                              must_materialize);
 }
 
 }  // namespace torch_tpu

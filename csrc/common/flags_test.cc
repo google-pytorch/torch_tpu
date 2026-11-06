@@ -26,6 +26,10 @@ ABSL_FLAG(int, test_int_flag, 42, "Test int flag");
 ABSL_FLAG(std::string, test_string_flag, "default", "Test string flag");
 ABSL_FLAG(int, multi_test_flag_1, 10, "Multi test flag 1");
 ABSL_FLAG(int, multi_test_flag_2, 20, "Multi test flag 2");
+ABSL_FLAG(int, safe_set_before_get_flag, 1, "Safe set before get flag");
+ABSL_FLAG(int, safe_set_after_get_flag, 1, "Safe set after get flag");
+ABSL_FLAG(int, safe_set_read_flag, 1, "Flag read by GetFlagOnce");
+ABSL_FLAG(int, safe_set_other_flag, 1, "Flag not read by GetFlagOnce");
 
 namespace torch_tpu {
 namespace {
@@ -62,6 +66,26 @@ TEST(FlagsTest, HandlesMultipleFlagsOfSameType) {
 
   EXPECT_EQ((GetFlagOnce<int, &FLAGS_multi_test_flag_1>()), 10);
   EXPECT_EQ((GetFlagOnce<int, &FLAGS_multi_test_flag_2>()), 20);
+}
+
+TEST(FlagsTest, SafeSetFlagBeforeGetFlagOnceSucceeds) {
+  SafeSetFlag(&FLAGS_safe_set_before_get_flag, 2);
+  EXPECT_EQ((GetFlagOnce<int, &FLAGS_safe_set_before_get_flag>()), 2);
+}
+
+TEST(FlagsTest, SafeSetFlagOnFlagNotReadByGetFlagOnceSucceeds) {
+  EXPECT_EQ((GetFlagOnce<int, &FLAGS_safe_set_read_flag>()), 1);
+  SafeSetFlag(&FLAGS_safe_set_other_flag, 2);
+  EXPECT_EQ(absl::GetFlag(FLAGS_safe_set_other_flag), 2);
+}
+
+TEST(FlagsDeathTest, SafeSetFlagAfterGetFlagOnceCrashes) {
+  EXPECT_DEATH(
+      {
+        (GetFlagOnce<int, &FLAGS_safe_set_after_get_flag>());
+        SafeSetFlag(&FLAGS_safe_set_after_get_flag, 2);
+      },
+      "safe_set_after_get_flag.*GetFlagOnce");
 }
 
 }  // namespace

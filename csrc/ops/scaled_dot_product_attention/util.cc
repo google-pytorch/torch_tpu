@@ -46,20 +46,6 @@ T Fmix32(T h) {
   return h.AsType(kiln::i32);
 }
 
-kiln::Scalar BelowOrOnDiagonal(kiln::Scalar row_block, kiln::Scalar col_block,
-                               int64_t qt, int64_t kt,
-                               std::optional<int64_t> sliding_window_size) {
-  kiln::Scalar cond = (row_block + 1) * qt - 1 >= col_block * kt;
-  if (!sliding_window_size.has_value()) {
-    return cond;
-  }
-  // Keep only tiles whose top-right corner `(first_row, last_col)` is within
-  // the sliding window (`first_row - last_col < sliding_window_size`).
-  kiln::Scalar first_row = row_block * qt;
-  kiln::Scalar last_col = (col_block + 1) * kt - 1;
-  return cond & ((first_row - last_col) < *sliding_window_size);
-}
-
 }  // namespace
 
 absl::Status ValidateFlashAttnConfig(const FlashAttnConfig& config,
@@ -95,14 +81,11 @@ kiln::IndexMap KvBlockIndexMap(const FlashAttnConfig& config,
                                const Tiling& tiling) {
   const int64_t head_group = config.num_heads / config.kv_num_heads;
   return kiln::IndexMap([head_group, is_causal = config.is_causal,
-                         sliding_window_size = config.sliding_window_size,
-                         qt = tiling.qt,
-                         kt = tiling.kt]() -> kiln::IndexIndices {
+                         tiling]() -> kiln::IndexIndices {
     kiln::Scalar kv_head = kiln::ProgramId(1) / head_group;
     kiln::Scalar kv_block = kiln::ProgramId(3);
     if (is_causal) {
-      kv_block = Select(BelowOrOnDiagonal(kiln::ProgramId(2), kv_block, qt, kt,
-                                          sliding_window_size),
+      kv_block = Select(BelowOrOnDiagonal(kiln::ProgramId(2), kv_block, tiling),
                         kv_block, 0);
     }
     return {kiln::ProgramId(0), kv_head, kv_block, 0};
@@ -134,7 +117,7 @@ std::optional<kiln::InSpec> AttnBiasSpec(const FlashAttnConfig& config,
   return kiln::InSpec{BiasBlockShape(config, tiling, dtype), bias_map};
 }
 
-kiln::Tile LoadBias(kiln::Ref bias_ref, const FlashAttnConfig& config,
+kiln::Tile LoadBias(kiln::VmemRef bias_ref, const FlashAttnConfig& config,
                     int64_t row_offset, int64_t rows, int64_t col_offset,
                     int64_t cols) {
   const bool q_bcast = llvm::is_contained(config.mask_broadcast_dims, 2);
@@ -143,7 +126,7 @@ kiln::Tile LoadBias(kiln::Ref bias_ref, const FlashAttnConfig& config,
       q_bcast ? kiln::Slice(0, 1) : kiln::Slice(row_offset, rows);
   const kiln::SliceDim col_slice =
       kv_bcast ? kiln::Slice(0, 1) : kiln::Slice(col_offset, cols);
-  kiln::Tile bias(bias_ref(0, 0, row_slice, col_slice));
+  kiln::Tile bias = kiln::Load(bias_ref(0, 0, row_slice, col_slice));
   return bias.AsType(kiln::f32).BroadcastTo({rows, cols});
 }
 
@@ -153,31 +136,22 @@ bool NeedsPadMask(const FlashAttnConfig& config, const Tiling& tiling) {
 }
 
 kiln::Scalar BelowOrOnDiagonal(kiln::Scalar row_block, kiln::Scalar col_block,
-                               const FlashAttnConfig& config, const Tiling& t) {
-  return BelowOrOnDiagonal(row_block, col_block, t.qt, t.kt,
-                           config.sliding_window_size);
+                               const Tiling& t) {
+  return (row_block + 1) * t.qt - 1 >= col_block * t.kt;
 }
 
 kiln::Scalar IntersectsDiagonal(kiln::Scalar row_block, kiln::Scalar col_block,
-                                const FlashAttnConfig& config,
                                 const Tiling& t) {
-  kiln::Scalar cond = (col_block + 1) * t.kt - 1 > row_block * t.qt;
-  if (!config.sliding_window_size.has_value()) {
-    return cond;
-  }
-  // Also apply element-wise masking when the tile straddles the lower boundary
-  // of the sliding window (its bottom-left corner `(last_row, first_col)` has
-  // `last_row - first_col >= sliding_window_size`).
-  kiln::Scalar last_row = (row_block + 1) * t.qt - 1;
-  kiln::Scalar first_col = col_block * t.kt;
-  return cond | ((last_row - first_col) >= *config.sliding_window_size);
+  return (col_block + 1) * t.kt - 1 > row_block * t.qt;
 }
 
 kiln::Tile ApplyStructuredMask(kiln::Tile s, kiln::Scalar row_block,
                                kiln::Scalar col_block,
                                const FlashAttnConfig& config, const Tiling& t,
-                               int64_t row_offset, int64_t col_offset) {
-  const bool ragged_q = config.q_sequence_length % t.qt != 0;
+                               int64_t row_offset, int64_t col_offset,
+                               QueryTailMasking query_tail_masking) {
+  const bool ragged_q = query_tail_masking == QueryTailMasking::kMask &&
+                        config.q_sequence_length % t.qt != 0;
   const bool ragged_kv = config.kv_sequence_length % t.kt != 0;
   if (!config.is_causal && !ragged_q && !ragged_kv) {
     return s;
@@ -202,9 +176,6 @@ kiln::Tile ApplyStructuredMask(kiln::Tile s, kiln::Scalar row_block,
   };
   if (config.is_causal) {
     also(row >= col);
-    if (config.sliding_window_size.has_value()) {
-      also((row - col) < *config.sliding_window_size);
-    }
   }
   if (ragged_q) {
     also(row < config.q_sequence_length);
@@ -216,7 +187,7 @@ kiln::Tile ApplyStructuredMask(kiln::Tile s, kiln::Scalar row_block,
 }
 
 kiln::Tile ComputeLogits(kiln::Tile q, kiln::Tile k,
-                         std::optional<kiln::Ref> bias_ref,
+                         std::optional<kiln::VmemRef> bias_ref,
                          kiln::Scalar row_block, kiln::Scalar col_block,
                          const FlashAttnConfig& config, const Tiling& tiling) {
   kiln::Tile s =
@@ -233,17 +204,17 @@ kiln::Tile ComputeLogits(kiln::Tile q, kiln::Tile k,
 kiln::Tile DropoutKeepMask(const FlashAttnConfig& config, const Tiling& tiling,
                            kiln::Scalar batch, kiln::Scalar q_head,
                            kiln::Scalar row_block, kiln::Scalar col_block,
-                           kiln::Ref seed_ref, int64_t row_offset,
+                           kiln::SmemRef seed_ref, int64_t row_offset,
                            int64_t col_offset, int64_t rows, int64_t cols) {
   const int64_t mask_rows = rows > 0 ? rows : tiling.qt;
   const int64_t mask_cols = cols > 0 ? cols : tiling.kt;
   const kiln::Shape i32_shape = kiln::i32(mask_rows, mask_cols);
 
   // 1. The Philox {seed_lo, seed_hi, offset_lo, offset_hi} words.
-  kiln::Scalar seed_lo(seed_ref(0));
-  kiln::Scalar seed_hi(seed_ref(1));
-  kiln::Scalar offset_lo(seed_ref(2));
-  kiln::Scalar offset_hi(seed_ref(3));
+  kiln::Scalar seed_lo = kiln::Load(seed_ref(0));
+  kiln::Scalar seed_hi = kiln::Load(seed_ref(1));
+  kiln::Scalar offset_lo = kiln::Load(seed_ref(2));
+  kiln::Scalar offset_hi = kiln::Load(seed_ref(3));
 
   // 2. Fold the stream identity into one word. This is scalar work, so it costs
   // once per tile rather than once per element, and we can afford to avalanche

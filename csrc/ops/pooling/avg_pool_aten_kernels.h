@@ -65,6 +65,16 @@ at::Tensor& AtenAvgPool1dOut(const at::Tensor& self,
                              bool ceil_mode, bool count_include_pad,
                              at::Tensor& out);
 
+// AutogradPrivateUse1 kernel for avg_pool1d. Upstream avg_pool1d is
+// CompositeImplicitAutograd. Because the PrivateUse1 kernel AtenAvgPool1d
+// replaces that decomposition, outputs would otherwise not be connected to the
+// autograd graph.
+at::Tensor AtenAvgPool1dAutograd(const at::Tensor& self,
+                                 at::IntArrayRef kernel_size,
+                                 at::IntArrayRef stride,
+                                 at::IntArrayRef padding, bool ceil_mode,
+                                 bool count_include_pad);
+
 at::Tensor& AtenAvgPool2dOut(const at::Tensor& self,
                              at::IntArrayRef kernel_size,
                              at::IntArrayRef stride, at::IntArrayRef padding,

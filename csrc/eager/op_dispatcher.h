@@ -41,11 +41,6 @@
 #include "csrc/eager/device_assignment.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/device_buffer_utils.h"
-#include "csrc/eager/eager_mode.h"
-#include "csrc/eager/events_queue.h"
-#include "csrc/eager/materialize.h"
-#include "csrc/eager/split_traversal.h"
-#include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
@@ -121,6 +116,7 @@ struct DispatchOpOptions {
   const FixedSizeSpan<const mlir::ElementType, kNumOutputs>& out_dtypes;
   const FixedSizeSpan<const absl::Span<const int64_t>, kNumOutputs>&
       out_dims_list;
+  std::array<std::optional<CustomLayout>, kNumOutputs> out_layouts = {};
   // If specified, cast all op inputs to the given dtype before the provided
   // `op_builder` is applied. This is useful to simplify certain ops that need
   // to perform a computation on a dtype that is uplifted from the dtypes of all
@@ -130,6 +126,11 @@ struct DispatchOpOptions {
   OpSplitMode split_mode = OpSplitMode::kNone;
   Indices donated_indices = {};
   DeviceAssignment device_assignment = {};
+  // Set by DispatchOpOut when it has automatically donated input buffers to the
+  // outputs (see AutoDonateInPlaceBuffers). The bases of the donated inputs are
+  // then donated to any views created for them, and the op is created with
+  // materialization disallowed (see DeferredOpParams::allow_materialization).
+  // Kernels should not set this directly.
   bool autodonated = false;
 };
 
@@ -147,6 +148,11 @@ struct DispatchOpOptions<kDynamicSize> {
   OpSplitMode split_mode = OpSplitMode::kNone;
   Indices donated_indices = {};
   DeviceAssignment device_assignment = {};
+  // Set by DispatchOpOut when it has automatically donated input buffers to the
+  // outputs (see AutoDonateInPlaceBuffers). The bases of the donated inputs are
+  // then donated to any views created for them, and the op is created with
+  // materialization disallowed (see DeferredOpParams::allow_materialization).
+  // Kernels should not set this directly.
   bool autodonated = false;
 };
 
@@ -158,11 +164,17 @@ struct DispatchOpOptions<1> {
   std::optional<OpName> op_name = std::nullopt;
   const mlir::ElementType& out_dtype;
   const absl::Span<const int64_t>& out_dims;
+  std::optional<CustomLayout> out_layout = std::nullopt;
   std::optional<mlir::ElementType> computation_dtype;
   OpParamCacheKeys op_param_cache_keys;
   OpSplitMode split_mode = OpSplitMode::kNone;
   Indices donated_indices = {};
   DeviceAssignment device_assignment = {};
+  // Set by DispatchOpOut when it has automatically donated input buffers to the
+  // outputs (see AutoDonateInPlaceBuffers). The bases of the donated inputs are
+  // then donated to any views created for them, and the op is created with
+  // materialization disallowed (see DeferredOpParams::allow_materialization).
+  // Kernels should not set this directly.
   bool autodonated = false;
 };
 
@@ -341,6 +353,9 @@ DeferredOpParams MakeDeferredOpParams(
   if constexpr (kNumOutputs == 1) {
     params.output_shapes = {
         Shape(CopyIntVector(options.out_dims), options.out_dtype)};
+    if (options.out_layout.has_value()) {
+      params.output_shapes[0].set_layout(std::move(*options.out_layout));
+    }
   } else {
     // kNumOutputs > 1
     const auto& out_dtypes = options.out_dtypes;
@@ -354,6 +369,12 @@ DeferredOpParams MakeDeferredOpParams(
     for (int i = 0; i < num_outputs; ++i) {
       params.output_shapes.emplace_back(CopyIntVector(out_dims_list[i]),
                                         out_dtypes[i]);
+      if constexpr (kNumOutputs != kDynamicSize) {
+        if (options.out_layouts[i].has_value()) {
+          params.output_shapes[i].set_layout(
+              std::move(*options.out_layouts[i]));
+        }
+      }
     }
   }
 
@@ -373,11 +394,6 @@ template <int kArity, int kNumOutputs = 1>
 absl::StatusOr<DeviceBufferRefArray<kNumOutputs>> DispatchOp(
     NAryMlirOpBuilder<kArity, kNumOutputs> op_builder,
     const OpInputs<kArity>& inputs, DispatchOpOptions<kNumOutputs> options) {
-  // Check for sticky errors.
-  if (ABSL_PREDICT_FALSE(HasStickyError())) {
-    return GetStickyError();
-  }
-
   // Get the op name from the active TT_KERNEL() context.
   const std::optional<OpName> maybe_ctx_op_name =
       internal::OpNameStack::MaybeTop();
@@ -450,6 +466,15 @@ absl::StatusOr<DeviceBufferRefArray<kNumOutputs>> DispatchOp(
 // `donated_indices` is not explicitly specified in `options`. After
 // dispatching, resizes each output (if its shape differs) and assigns the
 // resulting device buffer to that output tensor.
+//
+// Until an output is assigned its new buffer, it still references the input
+// buffer donated to the op (and to any view and write-back ops created for
+// it). A graph break before then would either materialize the donated buffer
+// as a separate graph output, defeating the donation, or consume a donated
+// buffer that a later op of the dispatch still reads. Autodonating dispatches
+// therefore create their ops with materialization disallowed (see
+// DeferredOpParams::allow_materialization), and run the postponed eager
+// materialization once all outputs have been assigned.
 template <int kArity, int kNumOutputs = 1>
 absl::Status DispatchOpOut(NAryMlirOpBuilder<kArity, kNumOutputs> op_builder,
                            const OpInputs<kArity>& inputs,
@@ -490,16 +515,7 @@ absl::Status DispatchOpOut(NAryMlirOpBuilder<kArity, kNumOutputs> op_builder,
         outputs_span, absl::MakeSpan(result_bufs), output_donated));
   }
   if (autodonated) {
-    if (GetEagerMode() == EagerMode::kDeferNeverAndLaunchBlocking) {
-      auto snapshot_future = MaterializeCurrentStream(
-          MaterializationReason::kDebugMode, GraphSplitMode::kFullGraph);
-      TT_ASSIGN_OR_RETURN(auto snapshot, snapshot_future.Await());
-      TT_RETURN_IF_ERROR(snapshot->Synchronize());
-      TT_RETURN_IF_ERROR(SyncAndReturnStickyError());
-    } else {
-      EagerlyExecuteCurrentStream(MaterializationReason::kDebugMode,
-                                  GraphSplitMode::kFullGraph);
-    }
+    TT_RETURN_IF_ERROR(internal::RunPostponedMaterialization());
   }
   return absl::OkStatus();
 }
@@ -521,7 +537,8 @@ absl::Status DispatchOpOut(NAryMlirOpBuilder<kArity, kNumOutputs> op_builder,
 //    buffer. This prevents compiler specialization on the value, meaning that
 //    the executable can be reused in the future even if the scalar value
 //    changes. To prevent redundant host-to-device transfers, created
-//    DeviceBufferRefs are cached and reused.
+//    DeviceBufferRefs are cached and reused, up to 1024 per thread
+//    (kMaxCachedScalarBuffers in op_dispatcher.cc).
 [[deprecated("Use PromoteScalar() instead.")]]
 absl::StatusOr<at::Tensor> MakeTensor(
     const at::Scalar& scalar,

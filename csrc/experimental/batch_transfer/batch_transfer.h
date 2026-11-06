@@ -17,7 +17,6 @@
 #ifndef TORCH_TPU_CSRC_EXPERIMENTAL_BATCH_TRANSFER_BATCH_TRANSFER_H_
 #define TORCH_TPU_CSRC_EXPERIMENTAL_BATCH_TRANSFER_BATCH_TRANSFER_H_
 
-#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -30,8 +29,6 @@
 
 namespace torch_tpu {
 
-struct RawBufferHolder;
-
 class TransferFuture {
  public:
   TransferFuture() = default;
@@ -43,21 +40,11 @@ class TransferFuture {
   void AndThen(std::vector<xla::Future<>> other_futures,
                std::vector<at::Tensor> other_tensors);
 
-  void AndThen(std::vector<xla::Future<>> other_futures,
-               std::vector<std::shared_ptr<RawBufferHolder>> other_c_api_holds,
-               std::vector<std::shared_ptr<void>> other_holds);
-
-  void AndThen(std::vector<xla::Future<>> other_futures,
-               std::shared_ptr<RawBufferHolder> other_c_api_hold,
-               std::shared_ptr<void> other_hold);
-
   void SetTag(std::string tag) { tag_ = std::move(tag); }
   const std::string& GetTag() const { return tag_; }
 
  private:
   std::vector<xla::Future<>> futures_;
-  std::vector<std::shared_ptr<RawBufferHolder>> c_api_holds_;
-  std::vector<std::shared_ptr<void>> holds_;
   std::vector<at::Tensor> tensors_;
   std::string tag_;
 };

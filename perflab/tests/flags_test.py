@@ -15,6 +15,7 @@
 """Tests for perflab/flags.py."""
 
 import copy
+import json
 import os
 import sys
 from unittest import mock
@@ -55,6 +56,12 @@ class FakeTensorModeValidatorTest(seed_test_utils.RepeatableTest):
 
 
 class CollectionFlagValuesTest(seed_test_utils.RepeatableTest):
+
+  def setUp(self):
+    super().setUp()
+    # Collecting cases records the command line in the environment.
+    self.enter_context(mock.patch.dict(os.environ))
+    os.environ.pop(flags_lib.COLLECTION_ARGV_ENV_VAR, None)
 
   def _values_before_parsing(
       self, argv: list[str]
@@ -118,6 +125,92 @@ class CollectionFlagValuesTest(seed_test_utils.RepeatableTest):
         self._values_before_parsing(argv),
         (context_lib.RunScope.PRESUBMIT, False),
     )
+
+
+class BatchSweepFlagsTest(seed_test_utils.RepeatableTest):
+
+  def setUp(self):
+    super().setUp()
+    # Collecting cases records the command line in the environment.
+    self.enter_context(mock.patch.dict(os.environ))
+    os.environ.pop(flags_lib.COLLECTION_ARGV_ENV_VAR, None)
+
+  def _values_before_parsing(
+      self, argv: list[str]
+  ) -> tuple[bool, tuple[int, ...]]:
+    import_time_flags = flags.FlagValues()
+    for flag in (flags_lib.BATCH_SWEEP, flags_lib.BATCH_SWEEP_SIZES):
+      import_time_flags[flag.name] = copy.deepcopy(flags.FLAGS[flag.name])
+    with (
+        mock.patch.object(flags, "FLAGS", import_time_flags),
+        mock.patch.object(sys, "argv", ["prog", *argv]),
+    ):
+      return flags_lib.batch_sweep_flag_values()
+
+  def _record_argv(self, pid: int, argv: list[str]) -> None:
+    os.environ[flags_lib.COLLECTION_ARGV_ENV_VAR] = json.dumps(
+        {"pid": pid, "argv": ["prog", *argv]}
+    )
+
+  def test_records_argv_for_child_processes(self):
+    self._values_before_parsing(["--batch_sweep"])
+    self.assertEqual(
+        json.loads(os.environ[flags_lib.COLLECTION_ARGV_ENV_VAR]),
+        {"pid": os.getpid(), "argv": ["prog", "--batch_sweep"]},
+    )
+
+  def test_child_process_reads_recorded_argv(self):
+    # As in the forkserver of a benchmark binary run with --batch_sweep, whose
+    # own command line lacks the flag.
+    self._record_argv(os.getppid(), ["--batch_sweep", "--batch_sweep_sizes=8"])
+    self.assertEqual(self._values_before_parsing([]), (True, (8,)))
+
+  def test_ignores_argv_recorded_by_another_process(self):
+    self._record_argv(os.getpid(), ["--batch_sweep"])
+    self.assertEqual(
+        self._values_before_parsing(["--batch_sweep_sizes=2"]), (False, (2,))
+    )
+
+  def test_defaults_before_parsing(self):
+    self.assertEqual(
+        self._values_before_parsing([]),
+        (False, (1, 2, 4, 8, 16, 32, 64, 128)),
+    )
+
+  def test_reads_argv_before_parsing(self):
+    self.assertEqual(
+        self._values_before_parsing(
+            ["--batch_sweep", "--batch_sweep_sizes=16,4,4"]
+        ),
+        (True, (4, 16)),
+    )
+
+  def test_reads_parsed_flags(self):
+    with flagsaver.flagsaver(
+        (flags_lib.BATCH_SWEEP, True), (flags_lib.BATCH_SWEEP_SIZES, ["2"])
+    ):
+      self.assertEqual(flags_lib.batch_sweep_flag_values(), (True, (2,)))
+
+  def test_batch_sweep_requires_full_scope(self):
+    with flagsaver.flagsaver(
+        (context_lib.RUN_SCOPE, context_lib.RunScope.FULL),
+        (flags_lib.BATCH_SWEEP, True),
+    ):
+      self.assertTrue(flags_lib.BATCH_SWEEP.value)
+    with self.assertRaisesRegex(
+        flags.IllegalFlagValueError, "batch_sweep is only valid"
+    ):
+      with flagsaver.flagsaver(
+          (context_lib.RUN_SCOPE, context_lib.RunScope.PRESUBMIT),
+          (flags_lib.BATCH_SWEEP, True),
+      ):
+        pass
+
+  @parameterized.parameters(["0"], ["-4", "8"], ["x"])
+  def test_batch_sweep_sizes_must_be_positive_integers(self, *values: str):
+    with self.assertRaises(flags.IllegalFlagValueError):
+      with flagsaver.flagsaver((flags_lib.BATCH_SWEEP_SIZES, list(values))):
+        pass
 
 
 if __name__ == "__main__":

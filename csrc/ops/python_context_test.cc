@@ -16,7 +16,9 @@
 
 #include "csrc/ops/python_context.h"
 
-#include "absl/cleanup/cleanup.h"
+#include <memory>
+
+#include "c10/util/ThreadLocalDebugInfo.h"
 #include "csrc/common/context_manager.h"
 #include "csrc/common/context_states.h"
 #include "csrc/ops/op_names.h"
@@ -30,9 +32,10 @@
 namespace torch_tpu {
 namespace {
 
-using testing::ElementsAre;
-using testing::HasSubstr;
-using testing::Not;
+using ::testing::ElementsAre;
+using ::testing::HasSubstr;
+using ::testing::IsEmpty;
+using ::testing::Not;
 
 TEST(CaptureCurrentPythonTrackback, CapturesPythonStack) {
   mlir::MLIRContext ctx;
@@ -209,12 +212,13 @@ TEST(GetOriginalOpName, ReturnsFirstOpNameWhenProviderIsAlive) {
 
 TEST(ScopedPythonContextCapturer, CapturesNameScopesAndFormatsMlirLocation) {
   mlir::MLIRContext ctx;
-  ScopedPythonContextCapturer::PushNameScopes(
-      {"layers.0[SimpleTransformerBlock]", "attn[SimpleAttention]"});
-  absl::Cleanup pop_attn = [] { ScopedPythonContextCapturer::PopNameScopes(); };
-  ScopedPythonContextCapturer capturer(OpName::kBmm);
+  const NameScopeGuard block_scope("layers.0[SimpleTransformerBlock]");
+  const NameScopeGuard attn_scope("attn[SimpleAttention]");
+  // Duplicate nested scopes collapse into one while keeping the pops balanced.
+  const NameScopeGuard dup_scope("attn[SimpleAttention]");
 
-  const auto context = ScopedPythonContextCapturer::GetContext();
+  ScopedPythonContextCapturer capturer(OpName::kBmm);
+  const PythonContext context = ScopedPythonContextCapturer::GetContext();
   EXPECT_THAT(
       context.name_scopes(),
       ElementsAre("layers.0[SimpleTransformerBlock]", "attn[SimpleAttention]"));
@@ -223,13 +227,60 @@ TEST(ScopedPythonContextCapturer, CapturesNameScopesAndFormatsMlirLocation) {
   EXPECT_THAT(mlir::debugString(loc),
               HasSubstr("layers.0[SimpleTransformerBlock]/"
                         "attn[SimpleAttention]/bmm/bmm"));
+}
 
-  ScopedPythonContextCapturer::PushNameScopes(
+TEST(ScopedPythonContextCapturer, InternalConstantSuppressesActiveNameScopes) {
+  const NameScopeGuard block_scope("layers.0[SimpleTransformerBlock]");
+
+  ScopedPythonContextCapturer capturer(OpName::kTorchTpuInternalConstant);
+  EXPECT_THAT(ScopedPythonContextCapturer::GetContext().name_scopes(),
+              IsEmpty());
+}
+
+TEST(ScopedPythonContextCapturer, PushEmptyNameScopesIsolatesFromOuterScopes) {
+  const NameScopeGuard block_scope("layers.0[SimpleTransformerBlock]");
+  const NameScopeHierarchyGuard clear_scopes({});
+
+  ScopedPythonContextCapturer capturer(OpName::kBmm);
+  EXPECT_THAT(ScopedPythonContextCapturer::GetContext().name_scopes(),
+              IsEmpty());
+}
+
+TEST(ScopedPythonContextCapturer, PushNameScopesReplacesActiveHierarchy) {
+  const NameScopeGuard outer_scope("outer_scope");
+  const NameScopeHierarchyGuard mlp_scopes(
       {"layers.0[SimpleTransformerBlock]", "mlp[SimpleMLP]"});
-  absl::Cleanup pop_mlp = [] { ScopedPythonContextCapturer::PopNameScopes(); };
+
+  ScopedPythonContextCapturer capturer(OpName::kBmm);
   EXPECT_THAT(
       ScopedPythonContextCapturer::GetContext().name_scopes(),
       ElementsAre("layers.0[SimpleTransformerBlock]", "mlp[SimpleMLP]"));
+}
+
+TEST(ScopedPythonContextCapturer, NameScopesRestoreViaDebugInfoGuard) {
+  std::shared_ptr<c10::ThreadLocalDebugInfo> saved_debug_info;
+  {
+    const NameScopeGuard backward_scope("backward_phase");
+    saved_debug_info = c10::ThreadLocalDebugInfo::current();
+  }
+  // Scope has been popped.
+  PythonContext unguarded_context;
+  {
+    ScopedPythonContextCapturer capturer(OpName::kAdd);
+    unguarded_context = ScopedPythonContextCapturer::GetContext();
+  }
+  // Restoring saved_debug_info via DebugInfoGuard (as PyTorch's C++ autograd
+  // engine does when dispatching backward tasks) restores the backward
+  // caller's name scopes.
+  PythonContext guarded_context;
+  {
+    c10::DebugInfoGuard guard(saved_debug_info);
+    ScopedPythonContextCapturer capturer(OpName::kMul);
+    guarded_context = ScopedPythonContextCapturer::GetContext();
+  }
+
+  EXPECT_THAT(unguarded_context.name_scopes(), IsEmpty());
+  EXPECT_THAT(guarded_context.name_scopes(), ElementsAre("backward_phase"));
 }
 
 }  // namespace

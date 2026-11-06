@@ -25,6 +25,7 @@
 #include <utility>
 #include <vector>
 
+#include "absl/algorithm/container.h"
 #include "absl/base/nullability.h"
 #include "absl/flags/flag.h"
 #include "absl/log/absl_check.h"
@@ -32,6 +33,7 @@
 #include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
+#include "absl/types/span.h"
 #include "csrc/common/context_manager.h"
 #include "csrc/common/context_states.h"
 #include "csrc/common/flags.h"
@@ -205,8 +207,21 @@ std::string MakeNameScopeOpStringFromCallChain(
                       op_str);
 }
 
-MaybeSharedNameScopes GetActiveNameScopes() {
-  return GetContextState<NameScopeContextState>().value_or(nullptr);
+MaybeSharedNameScopes GetActiveNameScopes(
+    absl::Span<const std::string> op_names = {}) {
+  MaybeSharedNameScopes active =
+      GetContextState<NameScopeContextState>().value_or(nullptr);
+  if (active == nullptr || active->empty()) {
+    return nullptr;
+  }
+  // Embedded constants (`kTorchTpuInternalConstant`) are module-level tensor
+  // attributes created once per GraphModule attribute and shared across uses,
+  // so they should not capture thread-local name scopes.
+  if (!op_names.empty() &&
+      op_names.back() == ToBaseName(OpName::kTorchTpuInternalConstant)) {
+    return nullptr;
+  }
+  return active;
 }
 
 }  // namespace
@@ -302,23 +317,46 @@ PythonContext ScopedPythonContextCapturer::GetContext() {
          "ScopedPythonContextCapturer is alive. This is a torch_tpu bug. Make "
          "sure a ScopedPythonContextCapturer object is defined "
          "somewhere up the stack. See go/catto-design for details.";
-  return PythonContext(op_names_, traceback_, GetActiveNameScopes());
+  return PythonContext(op_names_, traceback_, GetActiveNameScopes(op_names_));
 }
 
 std::optional<PythonContext> ScopedPythonContextCapturer::MaybeGetContext() {
   if (op_names_.empty()) return std::nullopt;
-  return PythonContext(op_names_, traceback_, GetActiveNameScopes());
+  return PythonContext(op_names_, traceback_, GetActiveNameScopes(op_names_));
 }
 
-void ScopedPythonContextCapturer::PushNameScopes(
-    std::vector<std::string> scopes) {
+void PyAppendNameScope(std::string scope) {
+  std::vector<std::string> scopes;
+  if (const MaybeSharedNameScopes active = GetActiveNameScopes();
+      active != nullptr) {
+    scopes = *active;
+  }
+  if (!absl::c_linear_search(scopes, scope)) {
+    scopes.push_back(std::move(scope));
+  }
   PushContextState<NameScopeContextState>(
       std::make_shared<const std::vector<std::string>>(std::move(scopes)));
 }
 
-void ScopedPythonContextCapturer::PopNameScopes() {
-  PopContextState<NameScopeContextState>();
+void PyPushNameScopes(std::vector<std::string> scopes) {
+  PushContextState<NameScopeContextState>(
+      std::make_shared<const std::vector<std::string>>(std::move(scopes)));
 }
+
+void PyPopNameScopes() { PopContextState<NameScopeContextState>(); }
+
+NameScopeGuard::NameScopeGuard(std::string scope) {
+  PyAppendNameScope(std::move(scope));
+}
+
+NameScopeGuard::~NameScopeGuard() { PyPopNameScopes(); }
+
+NameScopeHierarchyGuard::NameScopeHierarchyGuard(
+    std::vector<std::string> scopes) {
+  PyPushNameScopes(std::move(scopes));
+}
+
+NameScopeHierarchyGuard::~NameScopeHierarchyGuard() { PyPopNameScopes(); }
 
 thread_local  // CPP_THREAD_LOCAL_OK=needed only in the dispatching thread.
     std::vector<std::string>

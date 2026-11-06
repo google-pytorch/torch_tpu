@@ -16,11 +16,19 @@
 #include "csrc/common/tpu_hardware.h"
 
 #include <dirent.h>
+#include <fcntl.h>
+#include <limits.h>
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
+#include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
+#include <cstddef>
+#include <cstdint>
+#include <cstdlib>
 #include <fstream>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <string>
@@ -28,14 +36,25 @@
 #include <vector>
 
 #include "absl/algorithm/container.h"
+#include "absl/base/no_destructor.h"
+#include "absl/base/nullability.h"
+#include "absl/container/flat_hash_map.h"
 #include "absl/functional/function_ref.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/ascii.h"
 #include "absl/strings/match.h"
 #include "absl/strings/numbers.h"
 #include "absl/strings/str_cat.h"
+#include "absl/strings/str_join.h"
+#include "absl/strings/str_split.h"
+#include "csrc/common/env_vars.h"
+#include "csrc/common/error_utils.h"
+#include "csrc/common/utils.h"  // IWYU pragma: keep
 
 namespace torch_tpu {
 namespace {
+
+constexpr std::string_view kGooglePciVendorId = "0x1ae0";
 
 // The result of listing a directory.
 enum class DirListing { kListed, kMissing, kUnlistable };
@@ -156,7 +175,347 @@ enum class DirListing { kListed, kMissing, kUnlistable };
       });
 }
 
+// Reads the entire contents of `path` and returns it with leading and trailing
+// ASCII whitespace stripped, or std::nullopt if `path` cannot be opened or
+// read.
+[[nodiscard]] std::optional<std::string> ReadTrimmedFile(
+    std::string_view path) {
+  std::ifstream file{std::string(path)};
+  if (!file.is_open()) {
+    return std::nullopt;
+  }
+  std::string contents((std::istreambuf_iterator<char>(file)),
+                       std::istreambuf_iterator<char>());
+  if (file.bad()) {
+    return std::nullopt;
+  }
+  return std::string(absl::StripAsciiWhitespace(contents));
+}
+
+// Returns the full paths of all entries in `pci_devices_dir` (excluding "." and
+// "..") in lexicographical order, or an empty vector if `pci_devices_dir` does
+// not exist or cannot be listed.
+[[nodiscard]] std::vector<std::string> ListSortedPciDevicePaths(
+    std::string_view pci_devices_dir) {
+  std::vector<std::string> paths;
+  (void)ForEachDirEntry(  // VOID_CAST_OK=missing/unlistable dir yields empty
+      pci_devices_dir,
+      [&](std::string_view name) {  // REF_CAPTURE_OK=called synchronously
+        if (IsRealEntryName(name)) {
+          paths.push_back(absl::StrCat(pci_devices_dir, "/", name));
+        }
+      });
+  absl::c_sort(paths);
+  return paths;
+}
+
+// Returns the `TpuSpec` matching the sysfs PCI device directory `device_path`
+// if its `vendor` file matches Google's PCI vendor ID and its `device` file
+// matches a supported TPU PCI device ID, or nullptr otherwise.
+[[nodiscard]] const TpuSpec* absl_nullable MatchSupportedTpuDevice(
+    std::string_view device_path) {
+  const std::optional<std::string> vendor_id =
+      ReadTrimmedFile(absl::StrCat(device_path, "/vendor"));
+  if (!vendor_id.has_value() || *vendor_id != kGooglePciVendorId) {
+    return nullptr;
+  }
+  const std::optional<std::string> device_id =
+      ReadTrimmedFile(absl::StrCat(device_path, "/device"));
+  if (!device_id.has_value()) {
+    return nullptr;
+  }
+  const auto& spec_map = TpuSpec::SpecsByPciDeviceId();
+  const auto it = spec_map.find(*device_id);
+  return it != spec_map.end() ? it->second : nullptr;
+}
+
+// Returns whether `path` resolves to a character device that this process has
+// read and write access to.
+//
+// Sandboxes may put placeholders at the paths of devices they don't allocate
+// to the process. For example, a sandbox with fewer TPU chips than its host may
+// have empty, unreadable regular files at the `/dev/vfio/<group>` paths of the
+// other chips. Those are not usable, so they should not count as devices.
+//
+// This function does not open any node because only one process at a time can
+// open a VFIO group. Opening a node could fail or prevent the TPU runtime of
+// this or another process from claiming it.
+[[nodiscard]] bool IsAccessibleCharDevice(const std::string& path) {
+  struct stat st;
+  return stat(path.c_str(), &st) == 0 && S_ISCHR(st.st_mode) &&
+         faccessat(AT_FDCWD, path.c_str(), R_OK | W_OK, AT_EACCESS) == 0;
+}
+
+// Returns the number of indices in `TPU_VISIBLE_DEVICES`, or std::nullopt if it
+// is unset, empty, or not a comma-separated list of non-negative indices.
+[[nodiscard]] std::optional<int64_t> GetVisibleDeviceIndexCount() {
+  // Not memoized: launchers may set it after the process starts.
+  const char* const visible_devices =
+      std::getenv(kTpuVisibleDevicesEnvVar);  // GETENV_OK=must not memoize.
+  if (visible_devices == nullptr || visible_devices[0] == '\0') {
+    return std::nullopt;
+  }
+
+  int64_t device_index_count = 0;
+  for (const std::string_view entry : absl::StrSplit(visible_devices, ',')) {
+    int64_t device_index = 0;
+    if (!absl::SimpleAtoi(entry, &device_index) || device_index < 0) {
+      return std::nullopt;
+    }
+    ++device_index_count;
+  }
+  return device_index_count;
+}
+
+// Result of scanning PCI devices for VFIO-exposed TPUs.
+struct PciTpuScanResult {
+  int64_t device_count = 0;
+  const TpuSpec* absl_nullable spec = nullptr;
+};
+
+// Scans PCI devices under `pci_devices_dir` for supported Google TPUs whose
+// IOMMU group is exposed under `vfio_dir` as a character device that this
+// process can read and write. Returns the count of VFIO-exposed TPU devices and
+// the `TpuSpec` of the first one found (or nullptr if none).
+[[nodiscard]] PciTpuScanResult ScanPciTpus(std::string_view pci_devices_dir,
+                                           std::string_view vfio_dir) {
+  PciTpuScanResult result;
+  for (const std::string& device_path :
+       ListSortedPciDevicePaths(pci_devices_dir)) {
+    const TpuSpec* absl_nullable const spec =
+        MatchSupportedTpuDevice(device_path);
+    if (spec == nullptr) {
+      continue;
+    }
+    // Some devices have multiple TensorCores sharing the same bus.
+    // We count only those that are exposed via VFIO.
+    char link_buf[PATH_MAX];
+    const ssize_t len =
+        readlink(absl::StrCat(device_path, "/iommu_group").c_str(), link_buf,
+                 sizeof(link_buf));
+    if (len <= 0 || static_cast<size_t>(len) >= sizeof(link_buf)) {
+      continue;
+    }
+    const std::string_view group_target(link_buf, static_cast<size_t>(len));
+    const size_t slash_pos = group_target.rfind('/');
+    const std::string_view group_id = slash_pos == std::string_view::npos
+                                          ? group_target
+                                          : group_target.substr(slash_pos + 1);
+    if (group_id.empty()) {
+      continue;
+    }
+    if (!IsAccessibleCharDevice(absl::StrCat(vfio_dir, "/", group_id))) {
+      continue;
+    }
+    ++result.device_count;
+    if (result.spec == nullptr) {
+      result.spec = spec;
+    }
+  }
+  return result;
+}
+
 }  // namespace
+
+absl::StatusOr<TpuSpec::Topology> TpuSpec::GetTopology(
+    std::optional<int64_t> world_size, std::string_view pci_devices_dir,
+    std::string_view vfio_dir) const {
+  const int64_t count = world_size.has_value()
+                            ? *world_size
+                            : GetTpuDeviceCount(pci_devices_dir, vfio_dir);
+  const auto it = topologies.find(count);
+  // torchtpu_agents' engine_compatibility_check.py matches this message.
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=covered in tpu_hardware_test.
+      it != topologies.end(), error::kInvalidArgument)
+      << "No TPU topology found for count: " << count;
+  return it->second;
+}
+
+// HBM and bf16 FLOP/s sources:
+// - v5e, v5p, v6e, v7: https://cloud.google.com/tpu/docs/{v5e,v5p,v6e,tpu7x}
+// - v8i, v8t: `hbm_capacity_bytes` and `bf16_ops_per_second` (per TensorCore)
+//   times TensorCores per chip in
+//   https://github.com/jax-ml/jax/blob/main/jax/_src/tpu_info.py
+// SparseCore specs come from `SparseCoreInfo` in
+// https://github.com/jax-ml/jax/blob/main/jax/_src/tpu_info.py.
+const TpuSpec& TpuSpec::V5p() {
+  static const absl::NoDestructor<TpuSpec> kSpec(TpuSpec{
+      .name = "TPU v5p",
+      .devices_per_chip = 1,
+      .hbm_bytes_per_chip = 95LL * 1024 * 1024 * 1024,
+      .bf16_flops_per_chip = 459'000'000'000'000LL,
+      .topologies =
+          {
+              {1, {1, 1, 1}},
+              {2, {1, 2, 1}},
+              {4, {2, 2, 1}},
+              {8, {2, 2, 2}},
+          },
+      .sparse_core_spec =
+          SparseCoreSpec{.sparse_cores_per_device = 4, .simd_width = 8},
+  });
+  return *kSpec;
+}
+
+const TpuSpec& TpuSpec::V5e() {
+  static const absl::NoDestructor<TpuSpec> kSpec(TpuSpec{
+      .name = "TPU v5e",
+      .devices_per_chip = 1,
+      .hbm_bytes_per_chip = 16LL * 1024 * 1024 * 1024,
+      .bf16_flops_per_chip = 197'000'000'000'000LL,
+      .topologies =
+          {
+              {1, {1, 1, 1}},
+              {4, {2, 2, 1}},
+              // TPU v5e (8-chip) topology differs between environments:
+              // - Cloud TPU VMs: The physical hardware interconnect is wired as
+              //   a 2D mesh (2x4):
+              //   https://docs.cloud.google.com/tpu/docs/v5e#tpu-v5e-config
+              // - Internal test environments: A virtual 3D cube mapping (2x2x2)
+              //   is used to prevent coordinate collisions during local
+              //   discovery in the absence of physical wrap cabling.
+              {8, TT_IS_INTERNAL_TORCH_TPU ? Topology{2, 2, 2}
+                                           : Topology{2, 4, 1}},
+          },
+      .sparse_core_spec = std::nullopt,
+  });
+  return *kSpec;
+}
+
+const TpuSpec& TpuSpec::V6e() {
+  static const absl::NoDestructor<TpuSpec> kSpec(TpuSpec{
+      .name = "TPU v6e",
+      .devices_per_chip = 1,
+      .hbm_bytes_per_chip = 32LL * 1024 * 1024 * 1024,
+      .bf16_flops_per_chip = 918'000'000'000'000LL,
+      .topologies =
+          {
+              {1, {1, 1, 1}},
+              {4, {2, 2, 1}},
+              {8, {2, 4, 1}},
+          },
+      .sparse_core_spec =
+          SparseCoreSpec{.sparse_cores_per_device = 2, .simd_width = 8},
+  });
+  return *kSpec;
+}
+
+const TpuSpec& TpuSpec::V7() {
+  static const absl::NoDestructor<TpuSpec> kSpec(TpuSpec{
+      .name = "TPU v7",
+      .devices_per_chip = 2,
+      .hbm_bytes_per_chip = 192LL * 1024 * 1024 * 1024,
+      .bf16_flops_per_chip = 2'307'000'000'000'000LL,
+      .topologies =
+          {
+              {2, {1, 1, 1, 2}},
+              {4, {1, 2, 1, 2}},
+              {8, {2, 2, 1, 2}},
+          },
+      .sparse_core_spec =
+          SparseCoreSpec{.sparse_cores_per_device = 2, .simd_width = 16},
+  });
+  return *kSpec;
+}
+
+const TpuSpec& TpuSpec::V8i() {
+  static const absl::NoDestructor<TpuSpec> kSpec(TpuSpec{
+      .name = "TPU v8i",
+      .devices_per_chip = 2,
+      .hbm_bytes_per_chip = 309'000'000'000LL,
+      .bf16_flops_per_chip = 1'101'000'000'000'000LL,
+      .topologies =
+          {
+              {2, {1, 1, 1, 2}},
+              {4, {2, 1, 1, 2}},
+              {8, {4, 1, 1, 2}},
+          },
+      .sparse_core_spec =
+          SparseCoreSpec{.sparse_cores_per_device = 1, .simd_width = 16},
+  });
+  return *kSpec;
+}
+
+const TpuSpec& TpuSpec::V8t() {
+  static const absl::NoDestructor<TpuSpec> kSpec(TpuSpec{
+      .name = "TPU v8t",
+      .devices_per_chip = 1,
+      .hbm_bytes_per_chip = 231'000'000'000LL,
+      .bf16_flops_per_chip = 996'100'000'000'000LL,
+      .topologies =
+          {
+              {1, {1, 1, 1}},
+              {2, {1, 2, 1}},
+              {4, {2, 2, 1}},
+          },
+      .sparse_core_spec =
+          SparseCoreSpec{.sparse_cores_per_device = 2, .simd_width = 16},
+  });
+  return *kSpec;
+}
+
+const absl::flat_hash_map<std::string, const TpuSpec* absl_nonnull>&
+TpuSpec::SpecsByPciDeviceId() {
+  // Verified IDs from util/platforminfo/pci_ids.h.
+  static const absl::NoDestructor<
+      absl::flat_hash_map<std::string, const TpuSpec* absl_nonnull>>
+      kMap({
+          {"0x0062", &TpuSpec::V5p()},
+          {"0x0063", &TpuSpec::V5e()},
+          {"0x006f", &TpuSpec::V6e()},
+          {"0x0076", &TpuSpec::V7()},
+          {"0x007c", &TpuSpec::V8t()},
+          {"0x0083", &TpuSpec::V8i()},
+      });
+  return *kMap;
+}
+
+const TpuSpec* absl_nullable TpuSpec::Get(std::string_view pci_devices_dir) {
+  for (const std::string& device_path :
+       ListSortedPciDevicePaths(pci_devices_dir)) {
+    if (const TpuSpec* absl_nullable const spec =
+            MatchSupportedTpuDevice(device_path);
+        spec != nullptr) {
+      return spec;
+    }
+  }
+  return nullptr;
+}
+
+int64_t GetTpuDeviceCount(std::string_view pci_devices_dir,
+                          std::string_view vfio_dir) {
+  return ScanPciTpus(pci_devices_dir, vfio_dir).device_count;
+}
+
+int64_t GetVisibleTpuDeviceCount(std::string_view pci_devices_dir,
+                                 std::string_view vfio_dir) {
+  const int64_t device_count = GetTpuDeviceCount(pci_devices_dir, vfio_dir);
+  const std::optional<int64_t> visible_device_index_count =
+      GetVisibleDeviceIndexCount();
+  if (!visible_device_index_count.has_value()) {
+    return device_count;
+  }
+  return std::min(device_count, *visible_device_index_count);
+}
+
+absl::StatusOr<std::optional<std::string>> GetTpuTopology(
+    std::optional<int64_t> world_size, std::string_view pci_devices_dir,
+    std::string_view vfio_dir) {
+  const PciTpuScanResult scan = ScanPciTpus(pci_devices_dir, vfio_dir);
+  if (scan.spec == nullptr) {
+    return std::nullopt;
+  }
+  const int64_t target_count =
+      world_size.has_value() ? *world_size : scan.device_count;
+  TT_ASSIGN_OR_RETURN(
+      const TpuSpec::Topology topology,
+      scan.spec->GetTopology(target_count, pci_devices_dir, vfio_dir));
+  return absl::StrJoin(topology, ",");
+}
+
+std::string GetSingleDeviceTpuBoundsString(std::string_view pci_devices_dir) {
+  return absl::StrJoin(GetSingleDeviceTpuBounds(pci_devices_dir), ",");
+}
 
 bool HasTpuDeviceNodes(std::string_view dev_dir, std::string_view dev_borg_dir,
                        std::string_view proc_devices) {

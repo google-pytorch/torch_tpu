@@ -14,8 +14,8 @@
 
 """Utilities for testing StableHLO compilation speed."""
 
+from collections.abc import Callable
 import time
-from typing import Callable
 
 from absl import flags
 from absl import logging

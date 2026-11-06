@@ -175,6 +175,40 @@ class ModuleCacheTest(seed_test_utils.RepeatableTest):
     cached_factory.clear()
     self.assertFalse(cached_factory.is_cached)
 
+  def test_cached_module_factory_caches_a_template_for_each_dtype(self):
+    def _factory(dtype: torch.dtype | None = None) -> DummyModel:
+      model = DummyModel()
+      return model if dtype is None else model.to(dtype)
+
+    factory = mock.Mock(side_effect=_factory)
+    cached_factory = module_cache.ModuleFactoryCache(factory)
+
+    default_models = [cached_factory(), cached_factory()]
+    bfloat16_models = [
+        cached_factory(dtype=torch.bfloat16),
+        cached_factory(dtype=torch.bfloat16),
+    ]
+    with torch.device("meta"):
+      meta_model = cached_factory(dtype=torch.bfloat16)
+
+    self.assertEqual(
+        factory.call_args_list,
+        [
+            mock.call(),
+            mock.call(dtype=torch.bfloat16),
+            mock.call(dtype=torch.bfloat16),
+        ],
+    )
+    for model in default_models:
+      self.assertEqual(model.fc1.weight.dtype, torch.float32)
+    for model in bfloat16_models:
+      self.assertEqual(model.fc1.weight.dtype, torch.bfloat16)
+    self.assertEqual(meta_model.fc1.weight.dtype, torch.bfloat16)
+    self.assertEqual(meta_model.fc1.weight.device.type, "meta")
+
+    cached_factory.clear()
+    self.assertFalse(cached_factory.is_cached)
+
   def test_cached_module_factory_scope(self):
     spec = types.SimpleNamespace(module_factory=DummyModel)
     with module_cache.cached_module_factory_scope(spec) as wrapped_spec:

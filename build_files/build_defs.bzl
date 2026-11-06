@@ -18,6 +18,7 @@ load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("@rules_cc//cc:cc_test.bzl", "cc_test")
 load("@rules_python//python:py_test.bzl", "py_test")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load(
     "@xla//third_party/py/rules_pywrap:pywrap.default.bzl",
     "use_pywrap_rules",
@@ -862,8 +863,7 @@ def torch_tpu_cc_test(
 
         add_rbe_exec_properties(sh_test_kwargs, effective_tags, result.tpu_generation)
 
-        # buildifier: disable=native-sh-test
-        native.sh_test(
+        sh_test(
             name = name,
             size = size,
             timeout = timeout,

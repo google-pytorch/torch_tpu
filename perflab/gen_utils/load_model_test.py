@@ -24,6 +24,7 @@ from torch import nn
 from perflab import context as context_lib
 from perflab import model_helpers
 from perflab import target as target_lib
+from perflab import workload as workload_lib
 from perflab.gen_utils import load_model
 from tests import seed_test_utils
 
@@ -49,7 +50,9 @@ def _deberta_config(
 def _fake_registry(model: nn.Module, inputs: dict[str, Any]) -> Any:
   """Returns a module registry whose only module spec yields `model`."""
   module_spec = types.SimpleNamespace(
-      module_factory=lambda: model,
+      module_factory=lambda dtype=None: (
+          model.to(dtype=dtype) if dtype is not None else model
+      ),
       sample_inputs_factory=lambda shape, device: (None, dict(inputs)),
   )
   return types.SimpleNamespace(
@@ -79,7 +82,7 @@ def _fake_time_series_registry(config: types.SimpleNamespace) -> Any:
     del args, kwargs  # Unused.
     hooked_config = modify_config_hook(config)
     return types.SimpleNamespace(
-        module_factory=lambda: _FakeTimeSeriesModel(hooked_config),
+        module_factory=lambda dtype=None: _FakeTimeSeriesModel(hooked_config),
         sample_inputs_factory=lambda shape, device: (
             None,
             {
@@ -112,7 +115,7 @@ def _fake_text_registry(config: types.SimpleNamespace) -> Any:
     del args, kwargs  # Unused.
     hooked_config = modify_config_hook(config)
     return types.SimpleNamespace(
-        module_factory=lambda: _FakeTextModel(hooked_config),
+        module_factory=lambda dtype=None: _FakeTextModel(hooked_config),
         sample_inputs_factory=lambda shape, device: (
             None,
             {"input_ids": torch.zeros(shape, dtype=torch.long)},
@@ -129,6 +132,7 @@ class LoadModelTest(seed_test_utils.RepeatableTest):
     self.ctx = context_lib.Context(
         target=target_lib.make_target(platform=target_lib.Platform.CPU),
         run_scope=context_lib.RunScope.PRESUBMIT,
+        workload=workload_lib.Workload(1),
     )
     self.inputs = {
         "input_ids": torch.randint(0, 10, (1, 128)),
@@ -187,16 +191,52 @@ class LoadModelTest(seed_test_utils.RepeatableTest):
     self.assertIsNone(model.config.problem_type)
     self.assertNotIn("labels", inputs)
 
+  def _load_tapas(
+      self, model: nn.Module, is_training: bool
+  ) -> tuple[nn.Module, dict[str, Any]]:
+    with mock.patch.object(
+        model_helpers,
+        "get_module_registry",
+        return_value=_fake_registry(model, self.inputs),
+    ):
+      return load_model.tapas_load_model(
+          self.ctx, "google/tapas-base-finetuned-sqa", is_training=is_training
+      )
+
+  def test_tapas_load_model_training_generates_binary_cell_selection_labels(
+      self,
+  ):
+    _, inputs = self._load_tapas(
+        _FakeTextModel(types.SimpleNamespace(vocab_size=30522)),
+        is_training=True,
+    )
+
+    self.assertEqual(inputs["labels"].shape, (1, 128))
+    self.assertEqual(inputs["labels"].dtype, torch.long)
+    self.assertFalse(inputs["labels"].requires_grad)
+    self.assertTrue(
+        torch.all((inputs["labels"] == 0) | (inputs["labels"] == 1))
+    )
+
+  def test_tapas_load_model_inference_omits_labels(self):
+    _, inputs = self._load_tapas(
+        _FakeTextModel(types.SimpleNamespace(vocab_size=30522)),
+        is_training=False,
+    )
+
+    self.assertNotIn("labels", inputs)
+
   def _load_time_series(
       self,
       context_length: int,
       run_scope: context_lib.RunScope = context_lib.RunScope.FULL,
-      full_scope_batch_size: int = 1,
+      batch_size: int = 1,
       **config_kwargs: int,
   ) -> tuple[nn.Module, dict[str, Any]]:
     ctx = context_lib.Context(
         target=target_lib.make_target(platform=target_lib.Platform.CPU),
         run_scope=run_scope,
+        workload=workload_lib.Workload(batch_size),
     )
     config = types.SimpleNamespace(
         context_length=context_length, **config_kwargs
@@ -210,24 +250,21 @@ class LoadModelTest(seed_test_utils.RepeatableTest):
           ctx,
           "fake/time_series_model",
           is_training=False,
-          full_scope_batch_size=full_scope_batch_size,
       )
 
-  def test_full_scope_batch_size_used(self):
-    _, inputs = self._load_time_series(
-        context_length=512, full_scope_batch_size=8
-    )
+  def test_workload_batch_size_used(self):
+    _, inputs = self._load_time_series(context_length=512, batch_size=8)
 
     self.assertEqual(inputs["past_values"].shape, (8, 512))
 
-  def test_presubmit_ignores_full_scope_batch_size(self):
+  def test_presubmit_uses_shorter_sequences(self):
     _, inputs = self._load_time_series(
         context_length=512,
         run_scope=context_lib.RunScope.PRESUBMIT,
-        full_scope_batch_size=8,
+        batch_size=2,
     )
 
-    self.assertEqual(inputs["past_values"].shape, (1, 128))
+    self.assertEqual(inputs["past_values"].shape, (2, 128))
 
   def test_context_length_capped_at_seq_len(self):
     model, inputs = self._load_time_series(context_length=16384)
@@ -270,6 +307,7 @@ class LoadModelTest(seed_test_utils.RepeatableTest):
     ctx = context_lib.Context(
         target=target_lib.make_target(platform=target_lib.Platform.CPU),
         run_scope=run_scope,
+        workload=workload_lib.Workload(1),
     )
     with mock.patch.object(
         model_helpers,

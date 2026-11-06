@@ -27,6 +27,7 @@ import torch
 import torch.distributed as dist
 from torch.fx.experimental.proxy_tensor import make_fx
 import torch.multiprocessing as mp
+from torch.nn.attention import flex_attention
 from torch.testing._internal.distributed import fake_pg
 from torch.tpu import distributed  # pyrefly: ignore[missing-import]
 from torch.utils import _pytree as pytree
@@ -36,6 +37,7 @@ from torch_tpu._internal import env_utils
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal import pallas
 from torch_tpu._internal import testing as tt_testing
+from torch_tpu._internal.compile import flex_attention as tpu_flex_attention
 from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.compile.compiler import StaticCompiler
 from torch_tpu._internal.distributed import distributed as internal_distributed
@@ -356,6 +358,73 @@ class TpuOnlyErrorTest(et.TpuOnlyErrorTestBase):
       )
       t.to("cpu")
 
+  @parameterized.parameters("cpu", "tpu")
+  @et.why_tpu_only(
+      "PyTorch still accepts uint8 indices as a deprecated mask, while TorchTPU"
+      " rejects them like masked_fill, masked_select and masked_scatter."
+  )
+  def test_index_uint8_indices(self, index_device):
+    """Tests that index() rejects uint8 index tensors."""
+    x = torch.zeros(4, 3, device="tpu")
+    index = torch.tensor([1, 0, 1, 1], dtype=torch.uint8, device=index_device)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""index(): expected index tensors to have dtype bool, int32, or int64, got uint8 at index 0; indexing with uint8 tensors is deprecated in PyTorch and not supported in TorchTPU, use bool tensors instead""",
+        message_reviewed_by="jihonggan",
+    ):
+      x[index].to("cpu")
+
+  @parameterized.parameters("cpu", "tpu")
+  @et.why_tpu_only(
+      "PyTorch still accepts uint8 indices as a deprecated mask, while TorchTPU"
+      " rejects them like masked_fill, masked_select and masked_scatter."
+  )
+  def test_index_put_uint8_indices(self, index_device):
+    """Tests that index_put_() rejects uint8 index tensors."""
+    x = torch.zeros(4, 3, device="tpu")
+    index = torch.tensor([1, 0, 1, 1], dtype=torch.uint8, device=index_device)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""index_put_(): expected index tensors to have dtype bool, int32, or int64, got uint8 at index 0; indexing with uint8 tensors is deprecated in PyTorch and not supported in TorchTPU, use bool tensors instead""",
+        message_reviewed_by="jihonggan",
+    ):
+      x.index_put_([index], torch.ones(3, 3, device="tpu"))
+      x.to("cpu")
+
+  @et.why_tpu_only(
+      "Deliberate divergence: PyTorch accepts a trailing `:` past the last"
+      " dimension for a single-element CPU value with accumulate=False through"
+      " its masked_fill fast path, while TorchTPU rejects it consistently."
+  )
+  def test_index_put_trailing_slice_exceeds_dims_with_cpu_scalar_value(self):
+    """Tests index_put_() with a trailing `:` and a single-element CPU value."""
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""index_put_(): too many indices for tensor of dimension 3""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.ops.aten.index_put_(
+          torch.zeros(2, 3, 4, device="tpu"),
+          [None, torch.ones(3, 4, dtype=torch.bool, device="tpu"), None],
+          torch.tensor(1.0),
+          False,
+      )
+
+  @et.why_tpu_only(
+      "PyTorch hits an internal assert in its index_put_ kernel for 0-d bool"
+      " masks with non-scalar values."
+  )
+  def test_index_put_0d_mask_with_non_broadcastable_values(self):
+    """Tests index_put_() with a lone 0-d mask and non-broadcastable values."""
+    x = torch.zeros(2, 3, device="tpu")
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""index_put_(): indices must be specified""",
+        message_reviewed_by="jihonggan",
+    ):
+      x.index_put_([torch.tensor(True)], torch.ones(2, 2, 3, device="tpu"))
+      x.to("cpu")
+
   @et.why_tpu_only("The behavior is undefined on CPU.")
   def test_index_put_with_assign_buffer_to_at_tensor_failure(self):
     """Tests that index_put() bubbles up the error from AssignBufferToAtTensor.
@@ -402,39 +471,27 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     ):
       torch.index_copy(self_tensor, 0, index, source, out=t)
 
-  @et.why_tpu_only("Testing TPU OOM behavior.")
-  def test_mm_with_oom_result(self):
-    """Tests that mm with a large result that OOMs fails with expected error."""
-
-    # Each input tensor is 4 MB.
-    t1 = torch.ones(2**20, 1, device=et.device(), dtype=torch.float32)
-    t2 = torch.ones(1, 2**20, device=et.device(), dtype=torch.float32)
-    # The result tensor would need 4 TB, which is impossible to allocate.
-    t3 = torch.mm(t1, t2)
-    # Error message format from XLA varies. Known examples:
-    # ```
-    #   failed to compile MLIR module -- the XLA compiler failed with: e1000:
-    #   CompileTimeHbmOom: Ran out of memory on HBM, the total memory required
-    #   for HLO temporaries (4.00T) exceeds available HBM (15.75G). HLO module:
-    #   tt_jit_mm.
-    # ```
-    # ```
-    #   failed to compile MLIR module -- the XLA compiler failed with:
-    #   allocation (size=4398046511104) would exceed memory (size=17179869184)
-    #   :: %s2 = inlined_call_operand.hbm
-    #   [shape: f32[1048576,1048576], index: 2, kind: output, shape index: {}]
-    #   /* operand 2 */ :: broadcast_multiply_fusion
-    # ```
-    # Regex will match either of these.
+  @et.why_tpu_only(
+      "PyTorch CUDA _mm_dtype_cuda indexes self.size(0) and mat2.size(1)"
+      " before check_mm_shapes, raising IndexError instead of RuntimeError."
+  )
+  def test_mm_dtype_not_a_matrix_rank_below_2(self):
+    matrix_tensor = torch.ones(4, 4, device=et.device())
+    scalar_tensor = torch.tensor(1.0, device=et.device())
+    vector_tensor = torch.ones(4, device=et.device())
     with et.assert_raises_message(
         RuntimeError,
-        tpu=re.compile(
-            r""".*failed to compile MLIR module.+the XLA compiler failed with:.+(exceeds available HBM|allocation.+would exceed memory).*""",
-            re.DOTALL,
-        ),
+        tpu="""mm(): expected the first argument to be a 2D tensor (matrix), got 0D of shape []""",
+        message_reviewed_by="gunhyun",
     ):
-      t3.to("cpu")
-    tt_testing.reset_eager_state()
+      torch.ops.aten.mm.dtype(scalar_tensor, matrix_tensor, torch.float32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""mm(): expected the second argument to be a 2D tensor (matrix), got 1D of shape [4]""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.ops.aten.mm.dtype(matrix_tensor, vector_tensor, torch.float32)
 
   @et.why_tpu_only("TODO: support complex32 on TPU.")
   def test_dtype_complex32_unsupported(self):
@@ -528,6 +585,18 @@ Please use clone() or contiguous() to copy the tensor before writing""",
         tpu=f"""{op_name}(): scalar comparison is not supported for float4_e2m1fn_x2""",
     ):
       op(fp4, 1)
+
+  @et.why_tpu_only(
+      "ResolveTpuLayout packed-dimension contiguity check is TPU-specific."
+  )
+  def test_fp4_non_contiguous_packed_dim_view_raises(self):
+    """Tests that a float4_e2m1fn_x2 view with non-contiguous packed dim fails."""
+    x = torch.empty((2, 4), dtype=torch.float4_e2m1fn_x2, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""to_copy(): expected packed dimension to be contiguous (stride 1) for float4_e2m1fn_x2 view, got strides [4, 2]""",
+    ):
+      x[:, ::2].cpu()
 
   @et.why_tpu_only("TODO: investigate why this is TPU-only.")
   def test_histc_bounds_unsupported_dtype(self):
@@ -1366,38 +1435,20 @@ Please use clone() or contiguous() to copy the tensor before writing""",
       ):
         torch.nn.functional.embedding_bag(indices, weight, offsets)
 
-  @et.why_tpu_only("Testing TPU AtenEmbedding kernel error validation.")
-  def test_embedding_errors(self):
-    with self.subTest("weight_dim"):
-      weight = torch.ones(10, device=et.device())
-      indices = torch.zeros(1, dtype=torch.int64, device=et.device())
-      with et.assert_raises_message(
-          RuntimeError,
-          tpu="""embedding(): expected weight to be 2-D, got [10]""",
-          message_reviewed_by="wan",
-      ):
-        torch.ops.aten.embedding(weight, indices)
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_glu_dynamic_split_dim(self):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      x = torch.ones(2, 4, device=et.device())
+      dim = 1
+      dynamism.mark_dynamic(x, dim, 2, 8)
 
-    with self.subTest("indices_dtype"):
-      weight = torch.ones(10, 4, device=et.device())
-      indices = torch.zeros(1, dtype=torch.float32, device=et.device())
       with et.assert_raises_message(
-          RuntimeError,
-          tpu="""embedding(): expected indices to be int64 or int32, got float32""",
-          message_reviewed_by="wan",
+          NotImplementedError,
+          tpu="""glu(): expected dimension 1 of input to have a static size, got dynamic size""",
+          message_reviewed_by="aarfaian",
       ):
-        torch.ops.aten.embedding(weight, indices)
-
-    with self.subTest("out_dtype"):
-      weight = torch.ones(10, 4, dtype=torch.float32, device=et.device())
-      indices = torch.zeros(1, dtype=torch.int64, device=et.device())
-      out = torch.empty(1, 4, dtype=torch.float64, device=et.device())
-      with et.assert_raises_message(
-          RuntimeError,
-          tpu="""embedding(): expected out tensor to have dtype float32, got float64""",
-          message_reviewed_by="wan",
-      ):
-        torch.ops.aten.embedding.out(weight, indices, out=out)
+        # cpu() is needed because the error is triggered inside the op builder.
+        torch.nn.functional.glu(x, dim=dim).cpu()
 
   @et.why_tpu_only(
       "On CPU/GPU, linear with bool input raises RuntimeError from matmul; on"
@@ -1660,25 +1711,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
       torch.ops.aten._scaled_dot_product_fused_attention_overrideable(
           query, key, value, attn_bias=attn_bias
       )[0].cpu()
-
-  @et.why_tpu_only(
-      "1D attn_mask for sliding window is a TPU-specific implementation."
-  )
-  def test_scaled_dot_product_attention_empty_1d_attn_mask(self):
-    def make_tensor():
-      # seq_len > 256 is the smallest shape that dispatches to FlashAttention.
-      return torch.empty(1, 1, 257, 8, device=et.device())
-
-    q, k, v = make_tensor(), make_tensor(), make_tensor()
-    attn_mask = torch.empty(0, dtype=torch.bool, device=et.device())
-
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""scaled_dot_product_cudnn_attention(): expected sliding_window_size to be positive, got 0""",
-    ):
-      torch.nn.functional.scaled_dot_product_attention(
-          q, k, v, attn_mask=attn_mask
-      ).cpu()
 
   @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
   def test_mark_dynamic_multiple_dimensions_failure(self):
@@ -2356,31 +2388,25 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     ):
       tpu_torch_compile.execute(compile_result.executable, [ph])
 
-  @et.why_tpu_only("Asynchronous device assertions are TPU-only.")
+  @et.why_tpu_only("CUDA errors synchronously due to CUDA_LAUNCH_BLOCKING=1.")
   def test_synchronize_surfaces_async_assertion(self):
     false_cond = torch.tensor(False, device=et.device())
     torch.ops.aten._assert_async.msg(false_cond, "async assertion failure")
-    try:
-      with et.assert_raises_message(
-          RuntimeError,
-          tpu=re.compile(r".*async assertion failure.*", re.DOTALL),
-      ):
-        torch.accelerator.synchronize()
-    finally:
-      tt_testing.clear_sticky_error()
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(r".*async assertion failure.*", re.DOTALL),
+    ):
+      torch.accelerator.synchronize()
 
-  @et.why_tpu_only("Asynchronous device assertions are TPU-only.")
+  @et.why_tpu_only("CUDA errors synchronously due to CUDA_LAUNCH_BLOCKING=1.")
   def test_accelerator_synchronize_surfaces_async_assertion(self):
     false_cond = torch.tensor(False, device=et.device())
     torch.ops.aten._assert_async.msg(false_cond, "async assertion failure")
-    try:
-      with et.assert_raises_message(
-          RuntimeError,
-          tpu=re.compile(r".*async assertion failure.*", re.DOTALL),
-      ):
-        torch.accelerator.synchronize()
-    finally:
-      tt_testing.clear_sticky_error()
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(r".*async assertion failure.*", re.DOTALL),
+    ):
+      torch.accelerator.synchronize()
 
   @et.why_tpu_only("Sync materialization status checks are TPU-specific.")
   def test_is_materializing_tensor_not_on_tpu(self):
@@ -2403,6 +2429,50 @@ Please use clone() or contiguous() to copy the tensor before writing""",
         message_reviewed_by="adivinpatel",
     ):
       sync.is_materialized(x)
+
+  @et.why_tpu_only("Sync computation graph queries are TPU-specific.")
+  def test_computation_mlir_empty_tensors(self):
+    """Tests computation_mlir throws when tensors list is empty."""
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""_get_computation_mlir(): the tensor list must not be empty""",
+        message_reviewed_by="wan",
+    ):
+      sync.computation_mlir()
+
+  @et.why_tpu_only("Sync computation graph queries are TPU-specific.")
+  def test_computation_graphviz_empty_tensors(self):
+    """Tests computation_graphviz throws when tensors list is empty."""
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""_get_computation_graphviz(): the tensor list must not be empty""",
+        message_reviewed_by="wan",
+    ):
+      sync.computation_graphviz()
+
+  @et.why_tpu_only("Sync computation graph queries are TPU-specific.")
+  def test_computation_mlir_placeholder_tensor(self):
+    """Tests computation_mlir throws on a placeholder tensor."""
+    with execution_mode.set_eager_mode(EagerMode._INTERNAL_COMPILE_FX_GRAPH):
+      x = tpu_torch_compile.placeholder([4, 4], torch.float32, False)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""_get_computation_mlir(): the tensors must not be placeholders""",
+        message_reviewed_by="wan",
+    ):
+      sync.computation_mlir(x)
+
+  @et.why_tpu_only("Sync computation graph queries are TPU-specific.")
+  def test_computation_graphviz_placeholder_tensor(self):
+    """Tests computation_graphviz throws on a placeholder tensor."""
+    with execution_mode.set_eager_mode(EagerMode._INTERNAL_COMPILE_FX_GRAPH):
+      x = tpu_torch_compile.placeholder([4, 4], torch.float32, False)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""_get_computation_graphviz(): the tensors must not be placeholders""",
+        message_reviewed_by="wan",
+    ):
+      sync.computation_graphviz(x)
 
   @et.why_tpu_only("TODO: investigate why this is TPU-only.")
   def test_execute_output_shapes_rank_mismatch(self):
@@ -2747,70 +2817,6 @@ module {
         tpu="""expected local device index 0, got 1: accessing RNG state of a non-current TPU device is not supported""",
     ):
       torch.tpu.set_rng_state(torch.zeros(16, dtype=torch.uint8), 1)
-
-  # TODO(marcosyukio): check if this test passes on CUDA with CC >= 8.9.
-  @et.why_tpu_only(
-      "TPU enforces scale orientation ([M, 1] / [1, N]); CPU has no equivalent"
-      " check (it rejects all non-scalar scales outright)."
-  )
-  def test_scaled_mm_invalid_scale_a_orientation(self):
-    """Tests that scaled_mm rejects a 2-D row-wise scale_a with wrong orientation.
-
-    TPU-only: scale_a must be [M, 1] (per-row); a [1, M] scale is rejected so a
-    transposed scale is a clean error rather than a silent wrong-axis broadcast.
-    There is no comparable CPU error to assert -- CPU has no scale-orientation
-    check; it rejects all non-scalar scales outright (covered by
-    test_scaled_mm_invalid_scale_a_size in errors_test.py).
-    """
-    device = et.device()
-    # Generate in F32 and cast to FP8 to avoid randn failure on TPU!
-    mat1 = torch.randn(16, 16, dtype=torch.float32, device=device).to(
-        torch.float8_e4m3fn
-    )
-    mat2 = torch.randn(16, 32, dtype=torch.float32, device=device).to(
-        torch.float8_e4m3fn
-    )
-    # scale_a should be [16, 1]; [1, 16] is the wrong orientation.
-    scale_a = torch.ones(1, 16, dtype=torch.float32, device=device)
-    scale_b = torch.tensor([1.0], dtype=torch.float32, device=device)
-
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""scaled_mm(): expected row-wise scale_a to have shape [16, 1], got [1, 16]""",
-    ):
-      torch._scaled_mm(mat1, mat2, scale_a, scale_b)
-
-  # TODO(marcosyukio): check if this test passes on CUDA with CC >= 8.9.
-  @et.why_tpu_only(
-      "TPU enforces scale orientation ([M, 1] / [1, N]); CPU has no equivalent"
-      " check (it rejects all non-scalar scales outright)."
-  )
-  def test_scaled_mm_invalid_scale_b_orientation(self):
-    """Tests that scaled_mm rejects a 2-D per-channel scale_b with wrong orientation.
-
-    TPU-only: scale_b must be [1, N] (per-output-channel); a [N, 1] scale is
-    rejected so a transposed scale is a clean error rather than a silent
-    wrong-axis broadcast. There is no comparable CPU error to assert -- CPU has
-    no scale-orientation check; it rejects all non-scalar scales outright
-    (covered by test_scaled_mm_invalid_scale_b_size in errors_test.py).
-    """
-    device = et.device()
-    # Generate in F32 and cast to FP8 to avoid randn failure on TPU!
-    mat1 = torch.randn(16, 16, dtype=torch.float32, device=device).to(
-        torch.float8_e4m3fn
-    )
-    mat2 = torch.randn(16, 32, dtype=torch.float32, device=device).to(
-        torch.float8_e4m3fn
-    )
-    # scale_b should be [1, 32]; [32, 1] is the wrong orientation.
-    scale_a = torch.tensor([1.0], dtype=torch.float32, device=device)
-    scale_b = torch.ones(32, 1, dtype=torch.float32, device=device)
-
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""scaled_mm(): expected per-channel scale_b to have shape [1, 32], got [32, 1]""",
-    ):
-      torch._scaled_mm(mat1, mat2, scale_a, scale_b)
 
   @et.why_tpu_only("TODO: make the behavior consistent with CPU.")
   def test_pdist_backward_negative_p(self):
@@ -4653,327 +4659,6 @@ module {
     with et.assert_raises_message(exception, tpu=expected_error):
       getattr(torch.ops.tpu, op)(x, *args, "0")
 
-  def _default_lstm_input_args(self):
-    device = et.device()
-    x = torch.randn(10, 3, 16, device=device)
-    h0 = torch.randn(1, 3, 32, device=device)
-    c0 = torch.randn(1, 3, 32, device=device)
-    w_ih = torch.randn(128, 16, device=device)
-    w_hh = torch.randn(128, 32, device=device)
-    b_ih = torch.randn(128, device=device)
-    b_hh = torch.randn(128, device=device)
-    params = [w_ih, w_hh, b_ih, b_hh]
-    return x, [h0, c0], params
-
-  @et.why_tpu_only("torch.ops.aten.lstm.input error validations on TPU")
-  def test_lstm_input_invalid_input_dim(self):
-    _, hx, params = self._default_lstm_input_args()
-    x_2d = torch.randn(10, 3, device=et.device())
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""lstm(): expected input to be a 3D tensor, got 2D""",
-    ):
-      torch.ops.aten.lstm.input(
-          x_2d, hx, params, True, 1, 0.0, False, False, False
-      )
-
-  @et.why_tpu_only("torch.ops.aten.lstm.input error validations on TPU")
-  def test_lstm_input_invalid_hx_size(self):
-    x, hx, params = self._default_lstm_input_args()
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""lstm(): expected hx to contain exactly 2 tensors (h_0, c_0), got 1""",
-    ):
-      torch.ops.aten.lstm.input(
-          x, [hx[0]], params, True, 1, 0.0, False, False, False
-      )
-
-  @et.why_tpu_only("torch.ops.aten.lstm.input error validations on TPU")
-  def test_lstm_input_zero_seq_len(self):
-    _, hx, params = self._default_lstm_input_args()
-    x_zero_seq = torch.randn(0, 3, 16, device=et.device())
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""lstm(): expected sequence length to be larger than 0 in RNN, got 0""",
-    ):
-      torch.ops.aten.lstm.input(
-          x_zero_seq, hx, params, True, 1, 0.0, False, False, False
-      )
-
-  @et.why_tpu_only("torch.ops.aten.lstm.input error validations on TPU")
-  def test_lstm_input_zero_batch_size(self):
-    _, hx, params = self._default_lstm_input_args()
-    x_zero_batch = torch.randn(10, 0, 16, device=et.device())
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""lstm(): expected batch size > 0 in RNN, got 0""",
-    ):
-      torch.ops.aten.lstm.input(
-          x_zero_batch, hx, params, True, 1, 0.0, False, False, False
-      )
-
-  @et.why_tpu_only("torch.ops.aten.lstm.input error validations on TPU")
-  def test_lstm_input_zero_num_layers(self):
-    x, hx, params = self._default_lstm_input_args()
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""lstm(): expected num_layers > 0 in RNN, got 0""",
-    ):
-      torch.ops.aten.lstm.input(
-          x, hx, params, True, 0, 0.0, False, False, False
-      )
-
-  @et.why_tpu_only("torch.ops.aten.lstm.input error validations on TPU")
-  def test_lstm_input_invalid_dropout(self):
-    x, hx, params = self._default_lstm_input_args()
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""lstm(): expected dropout to be in range [0, 1], got -0.5""",
-    ):
-      torch.ops.aten.lstm.input(
-          x, hx, params, True, 1, -0.5, False, False, False
-      )
-
-  @et.why_tpu_only("torch.ops.aten.lstm.input error validations on TPU")
-  def test_lstm_input_h0_layer_mismatch(self):
-    x, hx, params = self._default_lstm_input_args()
-    h0_bad_layers = torch.randn(2, 3, 32, device=et.device())
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""lstm(): expected h_0 size(0) to match num_layers * num_directions (1), got 2""",
-    ):
-      torch.ops.aten.lstm.input(
-          x, [h0_bad_layers, hx[1]], params, True, 1, 0.0, False, False, False
-      )
-
-  @et.why_tpu_only("torch.ops.aten.lstm.input error validations on TPU")
-  def test_lstm_input_h0_batch_mismatch(self):
-    x, hx, params = self._default_lstm_input_args()
-    h0_bad_batch = torch.randn(1, 4, 32, device=et.device())
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""lstm(): expected h_0 size(1) to match batch (3), got 4""",
-    ):
-      torch.ops.aten.lstm.input(
-          x, [h0_bad_batch, hx[1]], params, True, 1, 0.0, False, False, False
-      )
-
-  @et.why_tpu_only("torch.ops.aten.lstm.input error validations on TPU")
-  def test_lstm_input_c0_layer_mismatch(self):
-    x, hx, params = self._default_lstm_input_args()
-    c0_bad_layers = torch.randn(2, 3, 32, device=et.device())
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""lstm(): expected c_0 size(0) to match num_layers * num_directions (1), got 2""",
-    ):
-      torch.ops.aten.lstm.input(
-          x, [hx[0], c0_bad_layers], params, True, 1, 0.0, False, False, False
-      )
-
-  @et.why_tpu_only("torch.ops.aten.lstm.input error validations on TPU")
-  def test_lstm_input_c0_batch_mismatch(self):
-    x, hx, params = self._default_lstm_input_args()
-    c0_bad_batch = torch.randn(1, 4, 32, device=et.device())
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""lstm(): expected c_0 size(1) to match batch (3), got 4""",
-    ):
-      torch.ops.aten.lstm.input(
-          x, [hx[0], c0_bad_batch], params, True, 1, 0.0, False, False, False
-      )
-
-  @et.why_tpu_only("torch.ops.aten.lstm.input error validations on TPU")
-  def test_lstm_input_h0_out_size_exceeds_c0(self):
-    x, _, params = self._default_lstm_input_args()
-    h0_large_out = torch.randn(1, 3, 64, device=et.device())
-    c0 = torch.randn(1, 3, 32, device=et.device())
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""lstm(): h_0 size(2) (64) cannot exceed c_0 size(2) (32)""",
-    ):
-      torch.ops.aten.lstm.input(
-          x, [h0_large_out, c0], params, True, 1, 0.0, False, False, False
-      )
-
-  @et.why_tpu_only("torch.ops.aten.lstm.input error validations on TPU")
-  def test_lstm_input_params_count_mismatch(self):
-    x, hx, params = self._default_lstm_input_args()
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""lstm(): expected 4 parameters, got 3""",
-    ):
-      torch.ops.aten.lstm.input(
-          x, hx, params[:3], True, 1, 0.0, False, False, False
-      )
-
-  def _default_gru_input_args(self):
-    device = et.device()
-    x = torch.randn(10, 3, 16, device=device)
-    h0 = torch.randn(1, 3, 32, device=device)
-    w_ih = torch.randn(96, 16, device=device)
-    w_hh = torch.randn(96, 32, device=device)
-    b_ih = torch.randn(96, device=device)
-    b_hh = torch.randn(96, device=device)
-    params = [w_ih, w_hh, b_ih, b_hh]
-    return x, h0, params
-
-  @et.why_tpu_only("torch.ops.aten.gru.input error validations on TPU")
-  def test_gru_input_invalid_input_dim(self):
-    """Verifies that non-3D input tensor raises RuntimeError.
-
-    What is being tested:
-      - Passing a 2D tensor of shape [10, 3] as input x instead of expected 3D
-      tensor.
-
-    Expected result:
-      - RuntimeError: 'gru(): expected input to be a 3D tensor, got 2D'
-    """
-    _, hx, params = self._default_gru_input_args()
-    x_2d = torch.randn(10, 3, device=et.device())
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""gru(): expected input to be a 3D tensor, got 2D""",
-    ):
-      torch.ops.aten.gru.input(
-          x_2d, hx, params, True, 1, 0.0, False, False, False
-      )
-
-  @et.why_tpu_only("torch.ops.aten.gru.input error validations on TPU")
-  def test_gru_input_zero_seq_len(self):
-    """Verifies that sequence length of zero raises RuntimeError.
-
-    What is being tested:
-      - Passing an input tensor with seq_len=0 (shape [0, 3, 16]).
-
-    Expected result:
-      - RuntimeError: 'gru(): expected sequence length to be larger than 0 in
-      RNN, got 0'
-    """
-    _, hx, params = self._default_gru_input_args()
-    x_zero_seq = torch.randn(0, 3, 16, device=et.device())
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""gru(): expected sequence length to be larger than 0 in RNN, got 0""",
-    ):
-      torch.ops.aten.gru.input(
-          x_zero_seq, hx, params, True, 1, 0.0, False, False, False
-      )
-
-  @et.why_tpu_only("torch.ops.aten.gru.input error validations on TPU")
-  def test_gru_input_zero_batch_size(self):
-    """Verifies that batch size of zero raises RuntimeError.
-
-    What is being tested:
-      - Passing an input tensor with batch_size=0 (shape [10, 0, 16]).
-
-    Expected result:
-      - RuntimeError: 'gru(): expected batch size > 0 in RNN, got 0'
-    """
-    _, hx, params = self._default_gru_input_args()
-    x_zero_batch = torch.randn(10, 0, 16, device=et.device())
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""gru(): expected batch size > 0 in RNN, got 0""",
-    ):
-      torch.ops.aten.gru.input(
-          x_zero_batch, hx, params, True, 1, 0.0, False, False, False
-      )
-
-  @et.why_tpu_only("torch.ops.aten.gru.input error validations on TPU")
-  def test_gru_input_zero_num_layers(self):
-    """Verifies that num_layers=0 raises RuntimeError.
-
-    What is being tested:
-      - Passing num_layers=0 to aten.gru.input.
-
-    Expected result:
-      - RuntimeError: 'gru(): expected num_layers > 0 in RNN, got 0'
-    """
-    x, hx, params = self._default_gru_input_args()
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""gru(): expected num_layers > 0 in RNN, got 0""",
-    ):
-      torch.ops.aten.gru.input(x, hx, params, True, 0, 0.0, False, False, False)
-
-  @et.why_tpu_only("torch.ops.aten.gru.input error validations on TPU")
-  def test_gru_input_invalid_dropout(self):
-    """Verifies that dropout probability out of range [0, 1] raises RuntimeError.
-
-    What is being tested:
-      - Passing dropout=2.0 (outside [0, 1]).
-
-    Expected result:
-      - RuntimeError: 'gru(): expected dropout to be in range [0, 1], got 2'
-    """
-    x, hx, params = self._default_gru_input_args()
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""gru(): expected dropout to be in range [0, 1], got 2""",
-    ):
-      torch.ops.aten.gru.input(x, hx, params, True, 1, 2.0, False, False, False)
-
-  @et.why_tpu_only("torch.ops.aten.gru.input error validations on TPU")
-  def test_gru_input_hx_layer_mismatch(self):
-    """Verifies that layer count mismatch between hx and num_layers raises RuntimeError.
-
-    What is being tested:
-      - Passing hx with size(0)=2 when num_layers * num_directions = 1.
-
-    Expected result:
-      - RuntimeError: 'gru(): expected hx size(0) to match num_layers *
-      num_directions (1), got 2'
-    """
-    x, _, params = self._default_gru_input_args()
-    hx_bad_layers = torch.randn(2, 3, 32, device=et.device())
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""gru(): expected hx size(0) to match num_layers * num_directions (1), got 2""",
-    ):
-      torch.ops.aten.gru.input(
-          x, hx_bad_layers, params, True, 1, 0.0, False, False, False
-      )
-
-  @et.why_tpu_only("torch.ops.aten.gru.input error validations on TPU")
-  def test_gru_input_hx_batch_mismatch(self):
-    """Verifies that batch mismatch between hx and input x raises RuntimeError.
-
-    What is being tested:
-      - Passing hx with batch=4 when input x has batch=3.
-
-    Expected result:
-      - RuntimeError: 'gru(): expected hx size(1) to match batch (3), got 4'
-    """
-    x, _, params = self._default_gru_input_args()
-    hx_bad_batch = torch.randn(1, 4, 32, device=et.device())
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""gru(): expected hx size(1) to match batch (3), got 4""",
-    ):
-      torch.ops.aten.gru.input(
-          x, hx_bad_batch, params, True, 1, 0.0, False, False, False
-      )
-
-  @et.why_tpu_only("torch.ops.aten.gru.input error validations on TPU")
-  def test_gru_input_params_count_mismatch(self):
-    """Verifies that parameter count mismatch raises RuntimeError.
-
-    What is being tested:
-      - Providing 3 parameter tensors instead of 4 for a single-layer biased
-      GRU.
-
-    Expected result:
-      - RuntimeError: 'gru(): expected 4 parameters, got 3'
-    """
-    x, hx, params = self._default_gru_input_args()
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""gru(): expected 4 parameters, got 3""",
-    ):
-      torch.ops.aten.gru.input(
-          x, hx, params[:3], True, 1, 0.0, False, False, False
-      )
-
   @et.why_tpu_only("ao.reload is implemented for device=tpu.")
   def test_reload_cpu_tensor(self):
     _ensure_ao_ops_registered()
@@ -5074,6 +4759,19 @@ module {
       with execution_mode.set_eager_mode(EagerMode._INTERNAL_COMPILE_FX_GRAPH):
         _ = torch.Event(device="tpu").record()
 
+  @et.why_tpu_only("TorchTPU specific eager mode")
+  def test_data_dependent_op_during_fx_trace(self):
+    x = torch.arange(4, device="tpu")
+    mask = torch.tensor(
+        [True, False, True, False], dtype=torch.bool, device="tpu"
+    )
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""masked_select(): cannot materialize a tensor during a stream-isolated copy, materialization requires an active stream""",
+    ):
+      with execution_mode.set_eager_mode(EagerMode._INTERNAL_COMPILE_FX_GRAPH):
+        _ = torch.masked_select(x, mask)
+
   @et.why_tpu_only(
       "PyTorch CUDA nll_loss_forward does not validate integer reduction"
       " values."
@@ -5086,77 +4784,6 @@ module {
         tpu="""nll_loss_nd(): expected reduction to be one of ['none', 'mean', 'sum'], got 3""",
     ):
       torch.ops.aten.nll_loss_nd(t, target, None, 3, -100)
-
-  @et.why_tpu_only(
-      "torch.tpu.Event is a TorchTPU class; errors_test.py covers torch.Event."
-  )
-  def test_tpu_event_elapsed_time_untimed_event(self):
-    timed = torch.tpu.Event(enable_timing=True)
-    untimed = torch.tpu.Event()
-    timed.record()
-    untimed.record()
-
-    with et.assert_raises_message(
-        ValueError,
-        tpu="""Both events must be created with argument 'enable_timing=True'.""",
-    ):
-      timed.elapsed_time(untimed)
-    with et.assert_raises_message(
-        ValueError,
-        tpu="""Both events must be created with argument 'enable_timing=True'.""",
-    ):
-      untimed.elapsed_time(timed)
-
-  @et.why_tpu_only(
-      "torch.tpu.Event is a TorchTPU class; errors_test.py covers torch.Event."
-  )
-  def test_tpu_event_elapsed_time_unrecorded_event(self):
-    recorded = torch.tpu.Event(enable_timing=True)
-    unrecorded = torch.tpu.Event(enable_timing=True)
-    recorded.record()
-
-    with et.assert_raises_message(
-        ValueError,
-        tpu="""Both events must be recorded before calculating elapsed time.""",
-    ):
-      recorded.elapsed_time(unrecorded)
-    with et.assert_raises_message(
-        ValueError,
-        tpu="""Both events must be recorded before calculating elapsed time.""",
-    ):
-      unrecorded.elapsed_time(recorded)
-
-  @et.why_tpu_only("torch.tpu.Event is a TorchTPU class.")
-  def test_tpu_event_elapsed_time_non_event(self):
-    event = torch.tpu.Event(enable_timing=True)
-
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""_event_elapsed_time(): expected start and end to be torch.Event objects, got TpuEvent and NoneType""",
-    ):
-      event.elapsed_time(None)
-
-  @et.why_tpu_only(
-      "errors_test.py runs on GPU with CUDA_LAUNCH_BLOCKING=1, so events cannot"
-      " be kept pending there reliably."
-  )
-  def test_tpu_event_elapsed_time_pending_event(self):
-    # A large device-to-host copy keeps the events recorded after it pending.
-    size = 8192 * 8192
-    t_tpu = torch.ones(size, device="tpu", dtype=torch.float32)
-    t_cpu = torch.empty(size, device="cpu", pin_memory=True)
-    start = torch.tpu.Event(enable_timing=True)
-    end = torch.tpu.Event(enable_timing=True)
-    t_cpu.copy_(t_tpu, non_blocking=True)
-    start.record()
-    end.record()
-
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""Both events must be completed before calculating elapsed time.""",
-    ):
-      start.elapsed_time(end)
-    end.synchronize()
 
   @et.why_tpu_only("torch.tpu.allow_excess_precision is TPU-specific.")
   def test_allow_excess_precision_after_compilation(self):
@@ -5402,6 +5029,32 @@ module {
         tpu=expected_msg,
     ):
       op_fn(t)
+
+  @et.why_tpu_only(
+      "CUDA nonzero.out omits assert_no_overlap(out, self) and silently"
+      " produces garbage, whereas CPU and TPU enforce it."
+  )
+  def test_nonzero_out_input_memory_overlap(self):
+    t = torch.tensor([[1, 0], [0, 2]], device=et.device(), dtype=torch.int64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.nonzero(t, out=t)
+
+  @et.why_tpu_only(
+      "CUDA nonzero_static.out omits assert_no_overlap(out, self) and silently"
+      " produces garbage, whereas CPU and TPU enforce it."
+  )
+  def test_nonzero_static_out_input_memory_overlap(self):
+    t = torch.tensor([[1, 0], [0, 2]], device=et.device(), dtype=torch.int64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.nonzero_static(t, size=2, out=t)
 
 
 class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):
@@ -5934,6 +5587,162 @@ class ForkErrorsTest(et.TpuOnlyErrorTestBase):
         torch.tpu._init_runtime_options()
       torch.tpu._shutdown_runtime()
     self.assertFalse(torch.tpu._is_in_bad_fork())
+
+
+class FlexAttentionErrorsTest(et.TpuOnlyErrorTestBase):
+  """Tests the input checks of the flex_attention kernel wrapper."""
+
+  def _inputs(self, seq):
+    return (torch.randn(1, 1, seq, 128, device=et.device()) for _ in range(3))
+
+  @et.why_tpu_only("The flex_attention Kiln kernel only exists on TPU.")
+  def test_non_tile_aligned_sequence(self):
+    q, k, v = self._inputs(1024)
+    block_mask = flex_attention.create_block_mask(
+        flex_attention.noop_mask, 1, 1, 1024, 1024, device="cpu"
+    )
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""flex_attention_fwd(): sequence lengths must be multiples of the block sizes (got q_len=1000, kv_len=1024, q_block=128, kv_block=128)""",
+    ):
+      tpu_flex_attention.flex_attention_fwd(q[:, :, :1000], k, v, block_mask)
+
+  def _fwd(self, q_shape=(1, 1, 256, 128), k_shape=None, **overrides):
+    """Calls the op directly with valid arguments, except for `overrides`."""
+    q = torch.randn(q_shape, device=et.device())
+    k = torch.randn(k_shape or q_shape, device=et.device())
+    args = dict(
+        q=q,
+        k=k,
+        v=torch.randn(k_shape or q_shape, device=et.device()),
+        kv_num_blocks=torch.ones(2, dtype=torch.int32, device=et.device()),
+        kv_indices=torch.zeros(4, dtype=torch.int32, device=et.device()),
+        mask_batch=1,
+        mask_heads=1,
+        q_block=128,
+        kv_block=128,
+        scale=1.0,
+        score_mod_mlir="",
+        mask_mod_mlir="",
+    )
+    args.update(overrides)
+    return torch.ops.tpu._flex_attention_fwd(*args.values())
+
+  @et.why_tpu_only("The flex_attention Kiln kernel only exists on TPU.")
+  def test_inputs_must_be_4d(self):
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""flex_attention_fwd(): expected 4-D q, k and v, got 3-D, 3-D and 3-D""",
+    ):
+      self._fwd(q_shape=(1, 256, 128))
+
+  @et.why_tpu_only("The flex_attention Kiln kernel only exists on TPU.")
+  def test_inputs_must_share_a_dtype(self):
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""flex_attention_fwd(): expected q, k and v to share a dtype, got Float, Float and BFloat16""",
+    ):
+      self._fwd(
+          v=torch.randn(
+              1, 1, 256, 128, dtype=torch.bfloat16, device=et.device()
+          )
+      )
+
+  @et.why_tpu_only("The flex_attention Kiln kernel only exists on TPU.")
+  def test_inconsistent_shapes(self):
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""flex_attention_fwd(): expected consistent q, k and v shapes, got [1, 1, 256, 128], [1, 1, 256, 64] and [1, 1, 256, 64]""",
+    ):
+      self._fwd(k_shape=(1, 1, 256, 64))
+
+  @et.why_tpu_only("The flex_attention Kiln kernel only exists on TPU.")
+  def test_q_heads_must_be_a_multiple_of_kv_heads(self):
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""flex_attention_fwd(): q_heads must be a multiple of kv_heads""",
+    ):
+      self._fwd(q_shape=(1, 3, 256, 128), k_shape=(1, 2, 256, 128))
+
+  @et.why_tpu_only("The flex_attention Kiln kernel only exists on TPU.")
+  def test_block_mask_dims_must_match_q(self):
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""flex_attention_fwd(): block mask batch/head dims must be 1 or match q""",
+    ):
+      self._fwd(mask_batch=2)
+
+  @et.why_tpu_only("The flex_attention Kiln kernel only exists on TPU.")
+  def test_unsupported_dtype(self):
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""flex_attention_fwd(): expected bfloat16 or float32 inputs, got Half""",
+    ):
+      self._fwd(**{
+          name: torch.randn(1, 1, 256, 128, device=et.device()).half()
+          for name in ("q", "k", "v")
+      })
+
+  @et.why_tpu_only("The flex_attention Kiln kernel only exists on TPU.")
+  def test_block_tables_must_be_int32(self):
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""flex_attention_fwd(): block mask tables must be int32""",
+    ):
+      self._fwd(
+          kv_num_blocks=torch.ones(2, dtype=torch.int64, device=et.device())
+      )
+
+  @et.why_tpu_only("The flex_attention Kiln kernel only exists on TPU.")
+  def test_kv_num_blocks_size(self):
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""flex_attention_fwd(): expected kv_num_blocks to be 1-D with 2 entries, got [3]""",
+    ):
+      self._fwd(
+          kv_num_blocks=torch.ones(3, dtype=torch.int32, device=et.device())
+      )
+
+  @et.why_tpu_only("The flex_attention Kiln kernel only exists on TPU.")
+  def test_kv_indices_size(self):
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""flex_attention_fwd(): expected kv_indices to be 1-D with 4 entries, got [3]""",
+    ):
+      self._fwd(
+          kv_indices=torch.zeros(3, dtype=torch.int32, device=et.device())
+      )
+
+  def _causal_mask(self):
+    return flex_attention.create_block_mask(
+        lambda b, h, q_idx, kv_idx: q_idx >= kv_idx, 1, 1, 1024, 1024, "cpu"
+    )
+
+  @et.why_tpu_only("The flex_attention Kiln kernel only exists on TPU.")
+  def test_mask_mod_must_return_bool(self):
+    q, k, v = self._inputs(1024)
+    block_mask = self._causal_mask()
+    block_mask.mask_mod = lambda b, h, q_idx, kv_idx: q_idx - kv_idx
+    with et.assert_raises_message(
+        TypeError,
+        tpu="""expected mask_mod to return torch.bool, got torch.int32""",
+    ):
+      tpu_flex_attention.flex_attention_fwd(q, k, v, block_mask)
+
+  @et.why_tpu_only("The flex_attention Kiln kernel only exists on TPU.")
+  def test_score_mod_must_keep_the_tile_shape(self):
+    q, k, v = self._inputs(1024)
+    with et.assert_raises_message(
+        ValueError,
+        tpu="""expected score_mod to return shape [128, 128], got [128]""",
+    ):
+      tpu_flex_attention.flex_attention_fwd(
+          q,
+          k,
+          v,
+          self._causal_mask(),
+          score_mod=lambda score, b, h, q_idx, kv_idx: score.sum(-1),
+      )
 
 
 if __name__ == "__main__":

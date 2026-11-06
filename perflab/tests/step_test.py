@@ -618,6 +618,64 @@ class StepperTypeTest(seed_test_utils.RepeatableTest):
         "Expected training params to change after single trace training step.",
     )
 
+  def _assert_gradient_only_step(self, stepper, model):
+    """Steps twice and checks that grads are set and params are unchanged."""
+    before = {
+        name: p.detach().cpu().clone() for name, p in model.named_parameters()
+    }
+    stepper.get_step_fn()()
+    first = {
+        name: p.grad.detach().cpu().clone()
+        for name, p in model.named_parameters()
+    }
+    stepper.get_step_fn()()
+    after = stepper.get_params()
+    for name, p in model.named_parameters():
+      self.assertTrue(torch.equal(before[name], after[name].cpu()), name)
+      self.assertGreater(torch.norm(first[name]).item(), 0.0, name)
+      # Grads are recomputed, not accumulated, on every step.
+      test_utils.assert_close(p.grad.cpu(), first[name])
+
+  def test_single_trace_training_without_optimizer_is_gradient_only(self):
+    ops = self._ops()
+    model = _mlp(seed=99).to(ops.device)
+    stepper = step_lib.resolve_stepper(
+        step_lib.StepperType.SINGLE_TRACE_TRAINING
+    )
+    x = torch.randn(4, 4, device=ops.device)
+    stepper.init_with_benchmark_args(model, (x,), {}, None)
+    self.assertIsNone(stepper._trainer._optimizer)
+    self._assert_gradient_only_step(stepper, model)
+
+  def test_training_stepper_without_optimizer_dispatch_eager(self):
+    ops = self._ops()
+    model = _mlp(seed=42).to(ops.device)
+    stepper = step_lib.resolve_stepper(
+        step_lib.StepperType.TRAINING, compute_loss=mock_grad_probe
+    )
+    x = torch.randn(4, 4, device=ops.device)
+    stepper.init_with_benchmark_args(model, (x,), {}, None)
+    self._assert_gradient_only_step(stepper, model)
+    self.assertIsNone(stepper._trainer)
+
+  def test_training_stepper_without_optimizer_dispatch_compiled(self):
+    ops = self._ops()
+    model = _mlp(seed=42).to(ops.device)
+    stepper = step_lib.resolve_stepper(step_lib.StepperType.TRAINING)
+    x = torch.randn(4, 4, device=ops.device)
+    stepper.init_with_benchmark_args(model, (x,), {}, None)
+    target = target_lib.make_target(platform=target_lib.Platform.V5E_1X1)
+    compile_config = compile_lib.CompileConfig(
+        scope=compile_lib.Scope.STEP, dynamic=False
+    )
+    stepper.compile(compile_config, target)
+    # The single-trace path is kept (no fallback) and runs without an
+    # optimizer.
+    self.assertIsNotNone(stepper._trainer)
+    self.assertIsNone(stepper._trainer._optimizer)
+    self._assert_gradient_only_step(stepper, model)
+    self.assertIsNotNone(stepper._trainer)  # No fallback while stepping.
+
   def test_training_stepper_composite_dispatch_eager(self):
     ops = self._ops()
     model = _mlp(seed=42).to(ops.device)
@@ -2073,6 +2131,29 @@ class StepperTypeTest(seed_test_utils.RepeatableTest):
     ):
       self.assertIs(got_cache_pos, stepper._decode_cache_positions[pos])
       self.assertIs(got_pos_ids, stepper._decode_position_ids[pos])
+
+  def test_early_init_head_shapes_heterogeneous(self):
+    class LayerCfg:
+
+      def __init__(self, num_key_value_heads, head_dim):
+        self.num_key_value_heads = num_key_value_heads
+        self.head_dim = head_dim
+
+    class HetCfg:
+      is_heterogeneous = True
+      per_layer_config = [LayerCfg(16, 256), LayerCfg(4, 512)]
+
+    class HomCfg:
+      is_heterogeneous = False
+
+    self.assertEqual(
+        decode._early_init_head_shapes(HomCfg(), 2, 16, 256),
+        (16, 256),
+    )
+    self.assertEqual(
+        decode._early_init_head_shapes(HetCfg(), 2, 16, 256),
+        ([16, 4], [256, 512]),
+    )
 
 
 if __name__ == "__main__":

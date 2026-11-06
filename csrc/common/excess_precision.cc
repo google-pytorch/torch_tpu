@@ -164,7 +164,7 @@ bool GetAllowExcessPrecision() {
         // xla::DebugOptions always provides a value for
         // xla_allow_excess_precision (defaulting to true), making it impossible
         // to distinguish between a user-set value and XLA's internal default.
-        const auto& xla_flags = GetEnvOnce<kXlaFlagsEnvVar>();
+        const auto& xla_flags = ExpandAndGetXlaFlagsEnvVarOnce();
         if (xla_flags.has_value() &&
             xla_flags->find("xla_allow_excess_precision") !=
                 std::string::npos) {

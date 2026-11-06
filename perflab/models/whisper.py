@@ -22,6 +22,7 @@ from perflab import model_helpers
 from perflab import registry as registry_lib
 from perflab import step_lib
 from perflab import torch_device_ops
+from perflab import workload as workload_lib
 
 
 def _load_hf_whisper(
@@ -55,7 +56,7 @@ def _load_hf_whisper(
   device_str = ctx.device_kind.value
 
   with torch.device(device_str):
-    model = module_spec.module_factory().to(dtype=dtype)
+    model = module_spec.module_factory(dtype=dtype)
 
   if is_training:
     model.train()
@@ -90,16 +91,19 @@ def _load_hf_whisper(
 @registry_lib.register_benchmark(
     stepper=step_lib.StepperType.FORWARD,
     presubmit=registry_lib.PresubmitPolicy.RUN,
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(16, 448),
+        presubmit=workload_lib.Workload(1, 64),
+    ),
 )
 def whisper_large_v3_forward(ctx: context_lib.Context):
   """Benchmark factory for Whisper-Large-v3 forward."""
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
   if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
-    batch_size = 1
-    seq_len = 64
     num_layers = 2
   else:
-    batch_size = 16
-    seq_len = 448
     num_layers = None
 
   model, inputs = _load_hf_whisper(
@@ -116,15 +120,16 @@ def whisper_large_v3_forward(ctx: context_lib.Context):
 @registry_lib.register_benchmark(
     stepper=step_lib.StepperType.FORWARD,
     presubmit=registry_lib.PresubmitPolicy.RUN,
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(16, 448),
+        presubmit=workload_lib.Workload(1, 64),
+    ),
 )
 def whisper_base_forward(ctx: context_lib.Context):
   """Benchmark factory for Whisper-Base forward."""
-  if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
-    batch_size = 1
-    seq_len = 64
-  else:
-    batch_size = 16
-    seq_len = 448
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
 
   model, inputs = _load_hf_whisper(
       ctx,

@@ -32,7 +32,6 @@
 #include "csrc/common/error_utils.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/materialize.h"
-#include "csrc/eager/split_traversal.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/eager/traversal.h"
@@ -118,9 +117,7 @@ absl::Status SynchronizeTensorsImpl(TensorSpan tensors) {
 
   if (has_deferred_or_placeholder) {
     TT_RETURN_IF_ERROR(
-        Materialize(buffer_refs, MaterializationReason::kExplicitSync,
-                    GraphSplitMode::kSplitGraph,
-                    MaterializationBlockMode::kBlockUntilStarted));
+        Materialize(buffer_refs, MaterializationReason::kExplicitSync));
   }
 
   return AwaitUniqueDeviceBufferLists(buffer_refs);
@@ -157,13 +154,12 @@ namespace {
 absl::StatusOr<absl_nonnull std::unique_ptr<Traversal>> GetTraversal(
     absl::Span<const DeviceBufferRef> buffer_refs) {
   TT_RET_CHECK(!buffer_refs.empty(), error::kInvalidArgument)
-      << "tensors must not be empty";
+      << "the tensor list must not be empty";
   absl::flat_hash_set<const DeviceBufferList*> nodes_to_traverse_set;
   std::vector<SharedDeviceBufferList> nodes_to_traverse;
   for (const DeviceBufferRef& buffer_ref : buffer_refs) {
     TT_RET_CHECK(!buffer_ref.is_placeholder(), error::kInternal)
-        << "[GetTraversal] was called on a placeholder tensor. This should "
-           "never happen.";
+        << "the tensors must not be placeholders";
     if (nodes_to_traverse_set.insert(buffer_ref.device_buffer_list().get())
             .second) {
       nodes_to_traverse.push_back(buffer_ref.device_buffer_list());

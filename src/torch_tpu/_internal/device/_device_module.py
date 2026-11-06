@@ -23,7 +23,7 @@ import atexit
 from collections.abc import Mapping
 import dataclasses
 import sys
-from typing import Any, Final, List
+from typing import Any, Final
 import torch
 from torch._dynamo.device_interface import DeviceInterface
 from torch_tpu._internal import env
@@ -83,14 +83,12 @@ class _DefaultGeneratorsProperty:
   overrides.
 
   Attributes:
-    _cached_default_generators: A lazily-initialized tuple holding the default
-      `torch.Generator` instances for each TPU device. It contains exactly
-      `owner.device_count()` elements, ordered by device ordinal (i.e. element
-      at index `i` corresponds to device index `i`). Crossing the pybind11
-      boundary creates new Python wrapper objects on each call to
-      `_device_ops_backend.get_default_generator()`, so caching this tuple
-      ensures identity persistence (`torch.tpu.default_generators is
-      torch.tpu.default_generators`) matching upstream PyTorch semantics.
+    _cached_default_generators: A lazily-initialized tuple of the default
+      `torch.Generator` of each addressable device, indexed by device index. It
+      can be shorter than `owner.device_count()`, which counts visible devices.
+      Each `_device_ops_backend.get_default_generator()` call returns a new
+      Python wrapper, so the cache keeps `torch.tpu.default_generators` the same
+      object, as in upstream PyTorch.
   """
 
   def __init__(self):
@@ -100,7 +98,8 @@ class _DefaultGeneratorsProperty:
     if owner is None:
       return ()
     _device_ops_backend._get_current_device_id()  # pylint: disable=protected-access
-    device_count = owner._public_module().device_count()  # pylint: disable=protected-access
+    # Generators exist only for addressable devices.
+    device_count = _device_ops_backend._get_addressable_device_count()  # pylint: disable=protected-access
     if (
         execution_mode.eager_mode
         == execution_mode.EagerMode._INTERNAL_COMPILE_FX_GRAPH
@@ -410,6 +409,8 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
 
   _device_type: str
 
+  Event = streams.TpuEvent  # pylint: disable=invalid-name
+  Stream = streams.TpuStream  # pylint: disable=invalid-name
   device = _DeviceContext  # pylint: disable=invalid-name
   device_of = _DeviceOfContext  # pylint: disable=invalid-name
   get_device_layout_if_materialized = (
@@ -805,12 +806,12 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
       ),
   )
   def device_count(cls) -> int:  # This is in torch/cuda/__init__.py.
-    """Returns the count of devices. This is implemented for *local* devices.
+    """Returns the number of TPU devices visible to this process.
 
-    Before the TPU runtime is initialized, returns how many physical TPU PCI
-    devices are attached to this host without initializing PJRT. Once
-    initialized, returns how many addressable PJRT TPU devices this process's
-    runtime owns.
+    Like `torch.cuda.device_count()`, it is capped by ``TPU_VISIBLE_DEVICES``
+    and doesn't change when the TPU runtime is initialized. A process uses only
+    one device, so other device indices aren't usable yet. In distributed mode
+    (``WORLD_SIZE`` > 1), it is 1 once initialized: the worker's own device.
 
     .. warning::
         This API is experimental and subject to change in future releases.
@@ -819,7 +820,7 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
       if cls._public_module().is_initialized():
         cls._device_count = _device_ops_backend._get_device_count()  # pylint: disable=protected-access
       elif cls._device_type == "tpu":
-        return hardware.get_tpu_device_count()
+        return hardware.get_visible_tpu_device_count()
       else:
         # Fallback to init for other devices if needed.
         cls._device_count = _device_ops_backend._get_device_count()  # pylint: disable=protected-access
@@ -838,43 +839,6 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
         This API is experimental and subject to change in future releases.
     """
     return TpuStreamContext(stream)
-
-  @classmethod
-  @experimental(
-      "Stream() is experimental and may change or be removed without notice."
-  )
-  def Stream(cls, device=None, priority=0, **kwargs):  # pylint: disable=invalid-name
-    """Device-level wrapper for TpuStream object.
-
-    .. warning::
-        This API is experimental and subject to change in future releases.
-    """
-    return streams.TpuStream(device=device, priority=priority, **kwargs)
-
-  @classmethod
-  @experimental(
-      "Event() is experimental and may change or be removed without notice."
-  )
-  def Event(  # pylint: disable=invalid-name
-      cls,
-      enable_timing: bool = False,
-      blocking: bool = False,
-      interprocess: bool = False,
-      external: bool = False,
-      device=None,
-  ) -> streams.TpuEvent:
-    """Device-level wrapper for TpuEvent object.
-
-    .. warning::
-        This API is experimental and subject to change in future releases.
-    """
-    return streams.TpuEvent(
-        enable_timing=enable_timing,
-        blocking=blocking,
-        interprocess=interprocess,
-        external=external,
-        device=device,
-    )
 
   @classmethod
   @annotations.internal_or_experimental(
@@ -921,7 +885,7 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
       "get_amp_supported_dtype() is experimental and may change or be removed "
       "without notice."
   )
-  def get_amp_supported_dtype(cls) -> List[torch.dtype]:  # Needed for AMP.
+  def get_amp_supported_dtype(cls) -> list[torch.dtype]:  # Needed for AMP.
     """Returns the list of supported dtypes for Automatic Mixed Precision (AMP).
 
     .. warning::

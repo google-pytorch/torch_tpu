@@ -17,7 +17,6 @@
 #include "csrc/ops/copy_from/tpu_to_cpu.h"
 
 #include <cstdint>
-#include <memory>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -29,8 +28,6 @@
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
-#include "absl/strings/str_join.h"
-#include "absl/types/span.h"
 #include "c10/core/DeviceGuard.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
@@ -59,33 +56,6 @@
 namespace torch_tpu {
 
 namespace {
-
-// Translates a low-level XLA OOM error to an error that is easier to understand
-// by a pytorch user. If the status is not an XLA OOM error, returns it as is.
-//
-// `elem_type` is the element type of the tensor that caused the XLA OOM error.
-// `dims` is the dimensions of the tensor that caused the XLA OOM error.
-static absl::Status TranslateXlaTensorOomError(absl::Status status,
-                                               at::ScalarType elem_type,
-                                               absl::Span<const int64_t> dims) {
-  if (status.ok()) {
-    return status;
-  }
-
-  TT_ASSIGN_OR_RETURN(  // ERROR_COV_INFEASIBLE=All PyTorch dtypes are supported
-                        // by mlir::ElementType.
-      const auto dtype, ConvertTo<mlir::ElementType>(elem_type));
-  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=IsXlaOomError doesn't match format of
-                 // compile-time OOM errors
-      !IsXlaOomError(status), error::kResourceExhausted)
-      << "the TPU ran out of memory while awaiting the materialization of "
-         "value "
-      << ToString(dtype) << "[" << absl::StrJoin(dims, ", ") << "]:\n"
-      << status.message();
-
-  // From this point, we know that the given status is not an XLA OOM error.
-  return status;
-}
 
 // Ideal case: both src and dest are contiguous, tensors of the same shape and
 // dtype, and src's storage buffer has exactly the right amount of data to copy
@@ -135,9 +105,11 @@ bool CanCopyStorageDirect(const at::Tensor& src, const at::Tensor& dest,
 }
 
 // Materializes src_buffer_ref and copies it directly into dest_ptr.
+// If non-blocking, also tries to hold the pinned pointer until the copy
+// completes.
 absl::Status CopyDeviceBufferRefToCpuPtrImpl(
     const DeviceBufferRef& src_buffer_ref, void* dest_ptr,
-    TransferSyncMode transfer_sync_mode) {
+    const void* dst_pinned_ptr, TransferSyncMode transfer_sync_mode) {
   if (src_buffer_ref.size_bytes() == 0) {
     // Copying nothing is a no-op.
     return absl::OkStatus();
@@ -150,45 +122,54 @@ absl::Status CopyDeviceBufferRefToCpuPtrImpl(
          "depends on a placeholder. \nPlaceholder tensors should only "
          "appear in compiled mode, which should never try to "
          "materialize tensors";
-
+  auto transfer =
+      (dst_pinned_ptr != nullptr
+           ? DeviceToHostTransfer::IntoTensor(src_buffer_ref, dest_ptr,
+                                              dst_pinned_ptr)
+           : DeviceToHostTransfer::IntoBytes(src_buffer_ref, dest_ptr));
   if (transfer_sync_mode == TransferSyncMode::kIsolated) {
-    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=not reachable from Python
-        src_buffer_ref.is_materializing(), error::kFailedPrecondition)
+    TT_RET_CHECK(src_buffer_ref.is_materializing(), error::kFailedPrecondition)
         << "cannot materialize a tensor during a stream-isolated copy, "
            "materialization requires an active stream";
-    xla::Future<> future = TpuMemcpyDtoHDirect(src_buffer_ref, dest_ptr);
-    return future.Await();
+    return transfer.Run().Await();
   }
 
   if (transfer_sync_mode == TransferSyncMode::kEagerNonBlocking) {
     // Start a background materialization of src_buffer_ref (unless it's already
     // started), then start a non-blocking copy and record it on the stream.
-    TT_RETURN_IF_ERROR(TranslateXlaTensorOomError(
-        Materialize(src_buffer_ref, MaterializationReason::kCpuTransfer,
-                    GraphSplitMode::kSplitGraph,
-                    MaterializationBlockMode::kNonBlocking),
-        ConvertTo<at::ScalarType>(src_buffer_ref.element_type()),
-        src_buffer_ref.dimensions()));
-    xla::Future<> future = TpuMemcpyDtoHDirect(src_buffer_ref, dest_ptr);
-    RecordAsyncDeviceToHost(std::move(future));
+    TT_RETURN_IF_ERROR(
+        Materialize(src_buffer_ref, MaterializationReason::kCpuTransfer));
+    ScheduleDeviceToHostTransfer(std::move(transfer));
     return absl::OkStatus();
   }
 
-  // In eager blocking mode, start a full stream materialization (ensuring that
-  // the copied buffer will be materialized), and then block until the event
-  // snapshot is complete. This will await both the materialization and the
-  // copy.
-  xla::Future<> future = TpuMemcpyDtoHDirect(src_buffer_ref, dest_ptr);
-  RecordAsyncDeviceToHost(std::move(future));
-  std::vector<SharedDeviceBufferList> must_materialize = {
-      src_buffer_ref.device_buffer_list()};
-  xla::Future<std::shared_ptr<EventSnapshot>> snapshot_future =
+  // Ensure that src_buffer_ref is materialized.
+  std::vector<SharedDeviceBufferList> must_materialize;
+  const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
+  if (src_buffer_ref.device_index() == device_index &&
+      src_buffer_ref.stream_id() == stream_id) {
+    // The source buffer is on the same stream as the transfer. We can start the
+    // materialization in the background and sync on the materialization and
+    // transfer simultaneously.
+    must_materialize.push_back(src_buffer_ref.device_buffer_list());
+  } else {
+    // The source buffer is on a different stream. Materialize that stream and
+    // block until it completes, then block on the transfer afterward.
+    TT_RETURN_IF_ERROR(
+        Materialize(src_buffer_ref, MaterializationReason::kCpuTransfer));
+    TT_RETURN_IF_ERROR(src_buffer_ref.Synchronize());
+  }
+
+  // Schedule the copy from TPU to CPU.
+  ScheduleDeviceToHostTransfer(std::move(transfer));
+
+  // Then wait for the copy (and materialization, if on the same stream) to
+  // complete, returning any errors.
+  TT_ASSIGN_OR_RETURN(
+      EventSnapshot snapshot,
       MaterializeCurrentStream(MaterializationReason::kCpuTransfer,
-                               GraphSplitMode::kSplitGraph, must_materialize);
-  TT_ASSIGN_OR_RETURN(std::shared_ptr<EventSnapshot> snapshot,
-                      snapshot_future.Await());
-  TT_RETURN_IF_ERROR(snapshot->Synchronize());
-  return SyncAndReturnStickyError();
+                               GraphSplitMode::kSplitGraph, must_materialize));
+  return snapshot.Synchronize();
 }
 
 // Materializes the base buffer of src, and copies it byte-for-byte into dest's
@@ -199,8 +180,12 @@ absl::Status CopyTpuToCpuStorageDirect(const at::Tensor& src,
                                        TransferSyncMode transfer_sync_mode) {
   TT_ASSIGN_OR_RETURN(DeviceBufferRef base_buf, GetBaseBuffer(src));
   ABSL_DCHECK(CanCopyStorageDirect(src, dest, base_buf.element_type()));
+  const void* dst_pinned_ptr =
+      (transfer_sync_mode == TransferSyncMode::kEagerNonBlocking
+           ? dest.storage().data_ptr().get()
+           : nullptr);
   return CopyDeviceBufferRefToCpuPtrImpl(base_buf, dest.data_ptr(),
-                                         transfer_sync_mode);
+                                         dst_pinned_ptr, transfer_sync_mode);
 }
 
 // Converts a TPU source tensor into a contiguous DeviceBufferRef with the same
@@ -216,30 +201,6 @@ absl::Status CopyTpuToCpuWithTpuConversion(
          "tensor has "
       << src.dim() << " dimensions, destination tensor has " << dest.dim()
       << " dimensions";
-  // Ensure the base buffer will materialize before we do any further work on
-  // the current stream that depends on it.
-  // If the base buffer is on this stream, this is guaranteed; no explicit
-  // materialization is needed.
-  // But if it's on another stream, we need to force that stream to sync and
-  // execute the base before any views or copies we do here.
-  TT_ASSIGN_OR_RETURN(DeviceBufferRef src_base_buf, GetBaseBuffer(src));
-  const auto [curr_device_index, curr_stream_id] = GetCurrentDeviceStreamId();
-  if (!src_base_buf.is_materializing() &&
-      (src_base_buf.device_index() != curr_device_index ||
-       src_base_buf.stream_id() != curr_stream_id)) {
-    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=not reachable from Python
-        transfer_sync_mode != TransferSyncMode::kIsolated,
-        error::kFailedPrecondition)
-        << "cannot materialize a tensor during a stream-isolated copy, "
-           "materialization requires an active stream";
-    tsl::profiler::TraceMe trace_mat("CopyTpuToCpu::MaterializeBase");
-    TT_RETURN_IF_ERROR(TranslateXlaTensorOomError(
-        Materialize(src_base_buf, MaterializationReason::kCpuTransfer,
-                    GraphSplitMode::kSplitGraph,
-                    MaterializationBlockMode::kBlockUntilStarted),
-        ConvertTo<at::ScalarType>(src_base_buf.element_type()),
-        src_base_buf.dimensions()));
-  }
 
   // Broadcast src to dest, if needed.
   // Transpose src and dest so that dest is contiguous, if needed.
@@ -280,8 +241,12 @@ absl::Status CopyTpuToCpuWithTpuConversion(
   // is unchanged.
   TT_ASSIGN_OR_RETURN(DeviceBufferRef converted_src_buf,
                       GetBuffer(converted_src));
+  const void* dst_pinned_ptr =
+      (transfer_sync_mode == TransferSyncMode::kEagerNonBlocking
+           ? dest.storage().data_ptr().get()
+           : nullptr);
   return CopyDeviceBufferRefToCpuPtrImpl(converted_src_buf, dest.data_ptr(),
-                                         transfer_sync_mode);
+                                         dst_pinned_ptr, transfer_sync_mode);
 }
 
 // PJRT can only asynchronously copy from a TPU tensor into contiguous CPU
@@ -413,8 +378,8 @@ absl::Status CopyTpuToCpu(const at::Tensor& src, const at::Tensor& dest,
 absl::Status CopyDeviceBufferRefToCpuPtr(const DeviceBufferRef& src_buffer_ref,
                                          void* dest_ptr,
                                          TransferSyncMode transfer_sync_mode) {
-  return CopyDeviceBufferRefToCpuPtrImpl(src_buffer_ref, dest_ptr,
-                                         transfer_sync_mode);
+  return CopyDeviceBufferRefToCpuPtrImpl(
+      src_buffer_ref, dest_ptr, /*dst_pinned_ptr=*/nullptr, transfer_sync_mode);
 }
 
 absl::StatusOr<at::Tensor> CopyDeviceBufferRefToCpuTensor(
@@ -439,14 +404,18 @@ absl::StatusOr<at::Tensor> CopyDeviceBufferRefToCpuTensor(
     fp4_adjusted_dims.back() /= 2;
     contiguous_dims = fp4_adjusted_dims;
   }
+  auto options = at::TensorOptions()
+                     .dtype(src_scalar_type)
+                     .device(at::DeviceType::CPU)
+                     .memory_format(at::MemoryFormat::Contiguous);
+  if (transfer_sync_mode == TransferSyncMode::kEagerNonBlocking) {
+    options = options.pinned_memory(true);
+  }
 
-  at::Tensor dest = at::empty(contiguous_dims,
-                              at::TensorOptions()
-                                  .dtype(src_scalar_type)
-                                  .device(at::DeviceType::CPU)
-                                  .memory_format(at::MemoryFormat::Contiguous));
+  at::Tensor dest = at::empty(contiguous_dims, options);
   TT_RETURN_IF_ERROR(CopyDeviceBufferRefToCpuPtrImpl(
-      src_buffer_ref, dest.data_ptr(), transfer_sync_mode));
+      src_buffer_ref, dest.data_ptr(), dest.storage().data_ptr().get(),
+      transfer_sync_mode));
   return dest;
 }
 

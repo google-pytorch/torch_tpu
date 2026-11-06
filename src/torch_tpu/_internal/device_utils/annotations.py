@@ -15,7 +15,6 @@
 """API for providing XLA specific annotations on torch tensors."""
 
 import dataclasses
-from typing import List
 import torch
 from torch_tpu._internal.device_utils import annotations_py
 from torch_tpu._internal.utils import annotations as api_annotations
@@ -37,8 +36,8 @@ class TpuLayout:
       type.
   """
 
-  minor_to_major: List[int]
-  tiles: List[List[int]] = field(default_factory=list)
+  minor_to_major: list[int]
+  tiles: list[list[int]] = field(default_factory=list)
   element_size_in_bits: int = 0
 
   __tt_api_stages__ = {

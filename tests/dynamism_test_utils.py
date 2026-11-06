@@ -21,30 +21,322 @@ Handles the following details for per-op unit testing:
   - Mark dependent args as dynamic.
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+import dataclasses
 import enum
-import random
+import itertools
 from typing import Any
 
 from absl import logging
+import sympy
 import torch
+from torch._dynamo import source as dynamo_source
+from torch._subclasses import fake_tensor
+from torch.fx.experimental import symbolic_shapes
 from torch.testing._internal import common_methods_invocations
 from torch.testing._internal.opinfo import core
 from torch.utils import _pytree
+from torch.utils._sympy import numbers as sympy_numbers
 from torch_tpu._internal import dynamism
+from torch_tpu._internal.compile.dynamic import symbol_bounds
 from torch_tpu._internal.utils import utils
 
 
 class DynamismMode(enum.Enum):
   """Mode of dynamism testing."""
 
-  EAGER = "eager"
+  EAGER = "eager"  # Dynamic backward is not supported in eager mode.
   COMPILE = "compile"
+  COMPILE_GRAD = "compile_grad"
 
 
 EAGER = DynamismMode.EAGER
 COMPILE = DynamismMode.COMPILE
-ALL_MODES = frozenset({DynamismMode.EAGER, DynamismMode.COMPILE})
+COMPILE_GRAD = DynamismMode.COMPILE_GRAD
+ALL_MODES = frozenset(DynamismMode)
+
+
+@dataclasses.dataclass(frozen=True, order=True)
+class TensorDim:
+  """Identifies a 0-based dimension on an input tensor.
+
+  Attributes:
+    tensor_index: Non-negative 0-based index of the tensor in
+      `_collect_tensors`.
+    dim: Non-negative 0-based dimension index on that tensor.
+  """
+
+  tensor_index: int
+  dim: int
+
+
+def _format_plan_label(tensor_dims: Sequence[TensorDim]) -> str:
+  """Formats a deterministic `DynamicMarkingPlan.label` for `tensor_dims`."""
+  if not tensor_dims:
+    raise ValueError("tensor_dims must be non-empty to format a plan label.")
+  return "_".join(
+      f"t{target.tensor_index}d{target.dim}" for target in tensor_dims
+  )
+
+
+@dataclasses.dataclass(frozen=True)
+class DynamicMarkingPlan:
+  """A deterministic plan describing which tensor dimensions to mark dynamic.
+
+  Attributes:
+    label: Identifier used in subtest names and `--dynamism_plan_filter` (e.g.,
+      `"t0d0"`, `"t0d0_t0d1"`).
+    tensor_dims: Strictly ascending, duplicate-free `TensorDim` targets to mark
+      dynamic on the primary input.
+    coupled_dims: Validated dimensions across all input tensors to mark dynamic
+      together when executing this plan. Empty when adapter-specific marking is
+      used (e.g., foreach ops).
+  """
+
+  label: str
+  tensor_dims: tuple[TensorDim, ...] = ()
+  coupled_dims: tuple[TensorDim, ...] = ()
+
+  def __post_init__(self) -> None:
+    if any(td.tensor_index < 0 or td.dim < 0 for td in self.tensor_dims) or any(
+        a >= b for a, b in itertools.pairwise(self.tensor_dims)
+    ):
+      raise ValueError(
+          "tensor_dims must be non-negative and strictly ascending without"
+          f" duplicates, got {self.tensor_dims}."
+      )
+
+
+@dataclasses.dataclass(frozen=True)
+class _OpArgs:
+  """Bundles an operator's inputs."""
+
+  input_value: Any
+  args: tuple[Any, ...] = ()
+  kwargs: Mapping[str, Any] = dataclasses.field(default_factory=dict)
+
+
+def _normalize_kwargs(
+    kwargs: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+  """Returns `kwargs` sorted by key without `out` for deterministic traversal."""
+  if not kwargs:
+    return {}
+  return {k: kwargs[k] for k in sorted(kwargs) if k != "out"}
+
+
+def _collect_tensors(op_args: _OpArgs) -> list[torch.Tensor]:
+  """Returns all `torch.Tensor`s in `op_args` (excluding `out` in `kwargs`)."""
+  norm_kwargs = _normalize_kwargs(op_args.kwargs)
+  return [
+      x
+      for x in _pytree.tree_leaves(
+          (op_args.input_value, op_args.args, norm_kwargs)
+      )
+      if isinstance(x, torch.Tensor)
+  ]
+
+
+# Exceptions indicating `FakeTensorMode` cannot trace the op at all.
+_UNTRACEABLE_FAKE_OP_EXCEPTIONS = (
+    fake_tensor.DataDependentOutputException,
+    fake_tensor.UnsupportedFakeTensorException,
+    symbolic_shapes.GuardOnDataDependentSymNode,
+    NotImplementedError,
+)
+
+
+def _make_fake_inputs(
+    fake_mode: fake_tensor.FakeTensorMode,
+    op_args: _OpArgs,
+    *,
+    mode: DynamismMode,
+    dynamic_dims: set[TensorDim],
+) -> tuple[_OpArgs, dict[TensorDim, sympy.Basic]]:
+  """Converts `op_args` to symbolic `FakeTensor`s.
+
+  Args:
+    fake_mode: Active `FakeTensorMode` bound to a `ShapeEnv`.
+    op_args: Operator inputs.
+    mode: Dynamism execution mode.
+    dynamic_dims: Set of `TensorDim`s to mark dynamic.
+
+  Returns:
+    A `(fake_op_args, initial_syms)` pair with the converted `_OpArgs` and a
+    map from each symbolic `TensorDim` to its initial symbol.
+  """
+  initial_syms: dict[TensorDim, sympy.Basic] = {}
+  tensor_indices = itertools.count()
+
+  def to_fake(obj: Any) -> Any:
+    if not isinstance(obj, torch.Tensor):
+      return obj
+    tensor_idx = next(tensor_indices)
+    # Match `op_testing.to(..., "tpu")`, which materializes each tensor into an
+    # independent non-view copy while preserving dense non-overlapping strides.
+    detached = obj.detach().to(device=obj.device, copy=True)
+
+    # Mark requested dimensions with size >= 2 as dynamic.
+    dyn_sizes = [
+        symbolic_shapes.DimDynamic.DYNAMIC
+        if sz >= 2 and TensorDim(tensor_idx, d) in dynamic_dims
+        else symbolic_shapes.DimDynamic.STATIC
+        for d, sz in enumerate(detached.shape)
+    ]
+    fake = fake_mode.from_tensor(
+        detached,
+        source=dynamo_source.LocalSource(f"t{tensor_idx}"),
+        symbolic_context=symbolic_shapes.StatelessSymbolicContext(
+            dynamic_sizes=dyn_sizes
+        ),
+    )
+    if obj.requires_grad:
+      fake.requires_grad_(True)
+
+    # Record the initial symbol allocated for each dynamic dimension.
+    for d, s in enumerate(fake.size()):
+      if isinstance(s, torch.SymInt):
+        initial_syms[TensorDim(tensor_idx, d)] = s.node.expr
+    return fake
+
+  # Traverse inputs in the exact order used by `_collect_tensors`.
+  fake_input, fake_args, fake_kwargs = _pytree.tree_map(
+      to_fake,
+      (op_args.input_value, op_args.args, _normalize_kwargs(op_args.kwargs)),
+  )
+
+  # Enable gradients on differentiable primary inputs in `COMPILE_GRAD`.
+  if mode == DynamismMode.COMPILE_GRAD:
+    for t in _pytree.tree_leaves(fake_input):
+      if (
+          isinstance(t, torch.Tensor)
+          and (t.is_floating_point() or t.is_complex())
+          and t.numel() > 0
+      ):
+        t.requires_grad_(True)
+
+  # Convert `out` buffers separately as static FakeTensors so `tensor_indices`
+  # stays aligned with `_collect_tensors` (which excludes `out`).
+  if "out" in op_args.kwargs:
+    fake_kwargs["out"] = _pytree.tree_map(
+        lambda x: fake_mode.from_tensor(
+            x.detach().to(device=x.device, copy=True), static_shapes=True
+        )
+        if isinstance(x, torch.Tensor)
+        else x,
+        op_args.kwargs["out"],
+    )
+  return _OpArgs(fake_input, fake_args, fake_kwargs), initial_syms
+
+
+def _run_fake_backward(result: Any, fake_input: Any) -> None:
+  """Runs backward from differentiable `result` tensors to `fake_input`."""
+  grad_inputs = [
+      t
+      for t in _pytree.tree_leaves(fake_input)
+      if isinstance(t, torch.Tensor) and t.requires_grad
+  ]
+  outputs = [
+      t
+      for t in _pytree.tree_leaves(result)
+      if isinstance(t, torch.Tensor) and t.requires_grad
+  ]
+  if grad_inputs and outputs:
+    torch.autograd.grad(
+        outputs,
+        grad_inputs,
+        grad_outputs=[torch.ones_like(t) for t in outputs],
+        allow_unused=True,
+    )
+
+
+def _run_fake_op(
+    op_func: Callable[..., Any],
+    op_args: _OpArgs,
+    *,
+    mode: DynamismMode,
+    dynamic_dims: set[TensorDim],
+) -> tuple[symbolic_shapes.ShapeEnv, dict[TensorDim, sympy.Basic]]:
+  """Traces `op_func` (and backward in `COMPILE_GRAD`) on `FakeTensor`s.
+
+  Args:
+    op_func: Callable for the active op variant.
+    op_args: Operator inputs (`input_value`, `args`, `kwargs`).
+    mode: Dynamism execution mode (`EAGER`, `COMPILE`, or `COMPILE_GRAD`).
+    dynamic_dims: Set of `TensorDim`s to mark dynamic.
+
+  Returns:
+    A `(shape_env, initial_syms)` pair with the populated `ShapeEnv` and a map
+    from each symbolic `TensorDim` to its initial symbol.
+  """
+  # Disable duck-shaping so equal-sized dims start with distinct symbols.
+  shape_env = symbolic_shapes.ShapeEnv(duck_shape=False)
+  fake_mode = fake_tensor.FakeTensorMode(
+      shape_env=shape_env, allow_non_fake_inputs=True
+  )
+
+  # Convert inputs to FakeTensors with symbols on `dynamic_dims`.
+  fake_op_args, initial_syms = _make_fake_inputs(
+      fake_mode,
+      op_args,
+      mode=mode,
+      dynamic_dims=dynamic_dims,
+  )
+
+  # Run the op symbolically to record unifications and guards on `shape_env`.
+  with fake_mode:
+    result = op_func(
+        fake_op_args.input_value, *fake_op_args.args, **fake_op_args.kwargs
+    )
+    if mode in (DynamismMode.COMPILE, DynamismMode.COMPILE_GRAD):
+      # Mirror AOTAutograd's output stride/contiguity guards.
+      for out_t in _pytree.tree_leaves(
+          (result, fake_op_args.kwargs.get("out"))
+      ):
+        if isinstance(out_t, torch.Tensor):
+          torch._prims_common.suggest_memory_format(out_t)  # pylint: disable=protected-access
+    if mode == DynamismMode.COMPILE_GRAD:
+      # Also trace backward to capture autograd shape constraints.
+      _run_fake_backward(result, fake_op_args.input_value)
+
+  return shape_env, initial_syms
+
+
+def _satisfies_upper_bound_guards(
+    shape_env: symbolic_shapes.ShapeEnv,
+    canonical_syms: set[sympy.Symbol],
+    mode: DynamismMode,
+) -> bool:
+  """Returns True if mode-specific upper bounds satisfy `shape_env` guards."""
+  if mode == DynamismMode.EAGER:
+    eager_ub: dict[str, int] = {}
+    for sym in canonical_syms:
+      sz = int(shape_env.backed_var_to_val[sym])
+      vr_upper = shape_env.var_to_range[sym].upper
+      # Reject if eager's `sz + 10` bound exceeds the symbol's max range.
+      if not sympy_numbers.is_infinite(vr_upper) and sz + 10 > int(vr_upper):
+        return False
+      eager_ub[str(sym)] = sz + 10
+    return symbol_bounds.find_violated_guard(shape_env, eager_ub) is None
+
+  bucket_ub: dict[str, int] = {}
+  fallback_ub: dict[str, int] = {}
+  for sym in canonical_syms:
+    sz = int(shape_env.backed_var_to_val[sym])
+    vr_upper = shape_env.var_to_range[sym].upper
+    finite_ub = None if sympy_numbers.is_infinite(vr_upper) else int(vr_upper)
+    bucket_ub[str(sym)] = (
+        finite_ub if finite_ub is not None else -(-sz // 128) * 128
+    )
+    fallback_ub[str(sym)] = (
+        finite_ub
+        if finite_ub is not None
+        else symbol_bounds.get_fallback_upper_bound(sz)
+    )
+  return (
+      symbol_bounds.find_violated_guard(shape_env, bucket_ub) is None
+      or symbol_bounds.find_violated_guard(shape_env, fallback_ub) is None
+  )
 
 
 def _mark_tensor_dynamic(
@@ -62,7 +354,7 @@ def _mark_tensor_dynamic(
         lower_bound=lower_bound,
         upper_bound=upper_bound,
     )
-  elif mode == DynamismMode.COMPILE:
+  elif mode in (DynamismMode.COMPILE, DynamismMode.COMPILE_GRAD):
     torch._dynamo.mark_dynamic(
         tensor,
         dimension,
@@ -93,32 +385,65 @@ def _get_dynamic_dimension_candidates(
 
 def _get_canonical_input_value(
     op_info: core.OpInfo,
-    input_value: torch.Tensor | Sequence[torch.Tensor],
-) -> torch.Tensor:
-  """Returns the canonical input value for the given input.
+    input_value: torch.Tensor | Sequence[Any],
+) -> tuple[int, Any]:
+  """Returns `(tensor_index, canonical_value)` for the given `input_value`.
 
-  For most ops, this is a noop, but for foreach ops, returns a "canonical" input
-  tensor that is used to check if test case is valid for dynamism. This should
-  be expanded in the future to handle other cases.
+  When `input_value` is a list or tuple, selects the first element that is
+  eligible for dynamism (falling back to element `0` if non-empty) and returns
+  its 0-based index alongside the value. When `input_value` is a single
+  `Tensor` (or an empty/non-sequence input), returns `(0, input_value)`.
 
   Args:
     op_info: The op to be tested.
-    input_value: The primary input value to for the op test.
+    input_value: The primary input value for the op test.
 
   Returns:
-    The canonical input value for the given input.
+    A `(tensor_index, canonical_value)` tuple, where `tensor_index` is the
+    0-based index into `input_value` (`0` when `input_value` is a single
+    `Tensor`).
   """
-
   if isinstance(input_value, (list, tuple)):
-    # Scan for valid input values
-    valid_inputs = [
-        v for v in input_value if not _should_skip_input_marking(op_info, v)
-    ]
-    if valid_inputs:
-      return valid_inputs[0]
+    for i, v in enumerate(input_value):
+      if not _should_skip_input_marking(op_info, v):
+        return i, v
     if input_value:
-      return input_value[0]
-  return input_value
+      return 0, input_value[0]
+  return 0, input_value
+
+
+def _resolve_input_tensor(
+    input_value: torch.Tensor | Sequence[torch.Tensor],
+    tensor_index: int,
+) -> torch.Tensor:
+  """Resolves the target `Tensor` in `input_value` from `tensor_index`.
+
+  Args:
+    input_value: Single `Tensor` or sequence of `Tensor`s passed to the op.
+    tensor_index: 0-based index into `input_value` (`0` when `input_value` is a
+      single `Tensor`).
+
+  Returns:
+    The resolved `torch.Tensor`.
+
+  Raises:
+    IndexError: If `input_value` is a single `Tensor` and `tensor_index != 0`,
+      or `tensor_index` is out of range for a sequence `input_value`.
+    TypeError: If the resolved element is not a `torch.Tensor`.
+  """
+  if isinstance(input_value, torch.Tensor):
+    if tensor_index != 0:
+      raise IndexError(
+          f"tensor_index must be 0 for a single Tensor, got {tensor_index}."
+      )
+    return input_value
+  tensor = input_value[tensor_index]
+  if not isinstance(tensor, torch.Tensor):
+    raise TypeError(
+        f"Expected torch.Tensor at input_value[{tensor_index}], got"
+        f" {type(tensor).__name__}."
+    )
+  return tensor
 
 
 def _should_skip_input_marking(
@@ -162,150 +487,315 @@ def _should_skip_input_marking(
   return None
 
 
-# Mode-aware deny list mapping op names to the set of DynamismMode(s) for which they are excluded.
-untriaged_ops_deny_list: dict[
-    str, set[DynamismMode] | frozenset[DynamismMode]
-] = {
-    "angle": {COMPILE},  # Dynamo error
-    "bincount": ALL_MODES,  # MLIR assertion failure (bounds length vs rank)
-    "bmm": {COMPILE},  # numerical mismatch under dynamic compile
-    "clamp_min": ALL_MODES,  # dynamic triage (invalid result)
-    "conj_physical": ALL_MODES,  # identity operation for i64 and f64 fails
-    "diagonal": ALL_MODES,  # materialization failure (negative dimension size)
-    "eq": ALL_MODES,  # dynamic triage (invalid result)
-    "expand": ALL_MODES,  # view op - expand not yet supported
-    "expm1": ALL_MODES,  # dynamic triage (result differ)
-    "fft.rfft": ALL_MODES,  # expected all dimensions to be static
-    "fft.irfft": ALL_MODES,  # expected all dimensions to be static
-    "fft.ifft": ALL_MODES,  # expected all dimensions to be static
-    "fft.fft": ALL_MODES,  # expected all dimensions to be static
-    "flip": ALL_MODES,  # dynamic triage (invalid result)
-    "floor_divide": ALL_MODES,  # currently failing dynamism tests
-    "full_like": {COMPILE},  # buffer dimension mismatch
-    "index_add": ALL_MODES,  # invalid bound length (likely bad tensor copy)
-    "index_copy": ALL_MODES,  # invalid bound length (likely bad tensor copy)
-    "index_put": ALL_MODES,  # garbage data
-    "index_select": ALL_MODES,  # invalid gather
-    "isinf": {COMPILE},  # buffer dimension mismatch
-    "isin": ALL_MODES,  # materialization failure (negative dimension size)
-    "kron": ALL_MODES,  # dynamic triage (invalid result)
-    "ldexp": ALL_MODES,  # dynamic shape value permutation mismatch
-    "linalg.lu_factor_ex": (
-        ALL_MODES
-    ),  # materialization failure (negative dim size)
-    "logical_and": ALL_MODES,  # dynamic triage (invalid result)
-    "masked_scatter": ALL_MODES,  # unflatten ambiguous error
-    "matmul": ALL_MODES,  # reshapes in the structured delegate
-    "mm": {COMPILE},  # numerical mismatch under dynamic compile
-    "maximum": ALL_MODES,  # dynamic triage (invalid result)
-    "ne": ALL_MODES,  # dynamic triage (invalid result)
-    "neg": ALL_MODES,  # dynamic triage (invalid result)
-    "nn.functional.adaptive_avg_pool2d": ALL_MODES,  # sort op fails to infer
-    "nn.functional.batch_norm": ALL_MODES,  # dynamic triage (xla error)
-    "nn.functional.embedding": ALL_MODES,  # crash in shard 27
-    "nn.functional.embedding_bag": ALL_MODES,  # invalid gather
-    "nn.functional.grid_sample": ALL_MODES,  #
-    "nn.functional.hardswish": ALL_MODES,  # dynamic triage (adjust tolerance)
-    "nn.functional.interpolate": ALL_MODES,  # gather with dynamic slice size
-    "nn.functional.leaky_relu": ALL_MODES,  # dynamic triage (invalid result)
-    "nn.functional.max_pool1d": (
-        ALL_MODES
-    ),  # MLIR assertion failure (bounds length vs rank)
-    "nn.functional.max_pool2d": (
-        ALL_MODES
-    ),  # crash (negative dim size in compiled_mode.cc)
-    "nn.functional.max_pool3d": ALL_MODES,  # crash (Aborted)
-    "nn.functional.mse_loss": ALL_MODES,  # binop LHS / RHS mismatch
-    "nn.functional.nll_loss": (
-        ALL_MODES
-    ),  # numerical mismatch or failure in some shards
-    "nn.functional.pdist": (
-        ALL_MODES
-    ),  # inlined vector size fail (likely using bound)
-    "nn.functional.relu": ALL_MODES,  # dynamic triage (tolerance)
-    # Also on `compiled_deny_list` in op_testing.py, where compiled results
-    # mismatch CPU even with static shapes.
-    "nn.functional.scaled_dot_product_attention": {COMPILE},
-    "nn.functional.upsample_bilinear": ALL_MODES,  # MLIR gather out of bounds
-    "nn.functional.upsample_nearest": ALL_MODES,  # MLIR gather build failure
-    "normal": ALL_MODES,  # OK
-    "ones_like": {COMPILE},  # buffer dimension mismatch
-    "pow": ALL_MODES,  # dynamic triage (invalid result)
-    "remainder": ALL_MODES,  # dynamic triage (invalid result)
-    "round": ALL_MODES,  # dynamic triage (invalid result)
-    "sgn": ALL_MODES,  # dynamic triage (invalid result)
-    "searchsorted": ALL_MODES,  # expected last dim to be static
-    "sign": ALL_MODES,  # dynamic triage (invalid result)
-    "sinh": ALL_MODES,  # dynamic triage (invalid result)
-    "slice": ALL_MODES,  # reshape reassociation not supported
-    "squeeze": (
-        ALL_MODES
-    ),  # unsupported view op - enhance view op to detect squeeze
-    "squeeze_copy": ALL_MODES,  # unsupported view op
-    "std": {COMPILE},  # shape mismatch on out under dynamic compile
-    "sub": ALL_MODES,  # dynamic triage (invalid result)
-    "sum": ALL_MODES,  # return i64, which has lowering issues
-    "take": ALL_MODES,  # dynamic triage (invalid result)
-    "tan": ALL_MODES,  # dynamic triage (invalid result)
-    "to": ALL_MODES,  # fails numerics (?)
-    "tril": ALL_MODES,  # bad broadcast
-    "triu": ALL_MODES,  # bad broadcast, iota-like
-    "trunc": ALL_MODES,  # dynamic triage (invalid result)
-    "unique": ALL_MODES,  # dynamic shape operator / invalid TPU shape
-    "unique_consecutive": (
-        ALL_MODES
-    ),  # dynamic shape operator / invalid TPU shape
-    "var": ALL_MODES,  # dynamic triage (invalid result)
-    "var_mean": {COMPILE},  # reshape lowering failure in compile mode
-    "vdot": ALL_MODES,  # MLIR assertion failure (bounds length vs rank)
-    "view_as_complex": ALL_MODES,  # crash (Aborted)
-    "view_as_real": ALL_MODES,  # OK
-    "xlogy": ALL_MODES,  # dynamic triage (invalid result)
-    "zeros_like": {COMPILE},  # buffer dimension mismatch
-}
+DenyList = dict[str, dict[str, set[DynamismMode] | frozenset[DynamismMode]]]
 
-# Mode-aware deny lists of triaged ops, keyed by the reason for the skip. Add
-# newly triaged ops here instead of to `untriaged_ops_deny_list`.
-# TODO: b/449736443 - Support bounded dimensions in these lowerings.
-triaged_ops_deny_lists: dict[
-    str, dict[str, set[DynamismMode] | frozenset[DynamismMode]]
-] = {
+# Mode-aware deny lists for bounded dynamism op tests, keyed by the reason for
+# the skip. The reason is included in the skip message.
+#
+# Policy: every entry is a known bug in a lowering, XLA or TorchTPU, or a gap
+# in the dynamism test harness. The goal is to drive this to empty, so remove
+# entries as soon as the underlying issue is fixed. Add new entries under a
+# diagnosed reason, with a bug where possible. Use an "untriaged: " prefix only
+# when the root cause is unknown.
+#
+# Do not disable dynamism for an op in its test (ops_test.py); add it here.
+# For ops where dynamism is out of scope by design, use
+# `DYNAMISM_NOT_APPLICABLE_OPS` instead.
+#
+# TODO: b/449736443 - Fix the underlying issues and remove every entry, so that
+# DYNAMISM_DENY_LISTS is empty.
+DYNAMISM_DENY_LISTS: DenyList = {
+    # TODO: b/449736443 - Support bounded dimensions in these lowerings.
     "the lowering broadcasts a bounded input to a static shape": {
+        "atanh": {COMPILE_GRAD},
         "baddbmm": {EAGER},
+        "baddbmm.dtype": {EAGER},
         "bernoulli": {EAGER},
         # These abort the test process with a CHECK failure.
         "linalg.lu_solve": {EAGER},
-        "linalg.qr": {EAGER},
+        "linalg.qr": {EAGER, COMPILE_GRAD},
         "linalg.solve_triangular": {EAGER},
         "linalg.svd": {EAGER},
         "linalg.svdvals": {EAGER},
     },
+    # TODO: b/449736443 - Support bounded dimensions in these lowerings.
     "the lowering emits an op without bounded shape support": {
         # _upsample_bicubic2d_aa and _upsample_bilinear2d_aa lower via 1D gathers with static output sizes.
         "_upsample_bicubic2d_aa": ALL_MODES,
         "_upsample_bilinear2d_aa": ALL_MODES,
+        # embedding_renorm_ uses static BroadcastInDim and Scatter shapes.
+        "embedding_renorm_": ALL_MODES,
         # cross_entropy_loss lowers via gather/scatter and static element count
         # queries, and requires synchronized target/weight dynamic marking.
         "nn.functional.cross_entropy": ALL_MODES,
-        "sort": {EAGER},  # stablehlo.iota must be static
+        # digamma backward lowers via polygamma, triggering a static-shape
+        # getNumElements() assertion in BroadcastInDimOp_ReplaceWithReshape.
+        "digamma": {COMPILE_GRAD},
+        "sort": {EAGER, COMPILE_GRAD},  # stablehlo.iota must be static
         # stablehlo.reshape allows at most one bounded dimension. This fails
         # when dims 0 and 2 are both dynamic, which happens in compile mode
         # because dims marked in earlier subtests stay dynamic.
         # TODO: b/566327707 - Remove once marked dims no longer carry over.
-        "torch.ops.aten._safe_softmax.default": {COMPILE},
+        "torch.ops.aten._safe_softmax.default": {COMPILE, COMPILE_GRAD},
     },
+    # TODO: b/449736443 - Support bounded dimensions in these lowerings.
     "linalg decompositions do not support bounded dimensions": {
         "geqrf": {EAGER},  # Aborts the test process with a CHECK failure.
-        "linalg.inv": {EAGER},
+        "linalg.cholesky": {EAGER},
+        "linalg.cholesky_ex": {EAGER, COMPILE_GRAD},
+        "linalg.inv": {EAGER, COMPILE_GRAD},
         "linalg.lu": {EAGER},
         "linalg.solve_ex": {EAGER},
     },
+    # TODO: b/449736443 - Support bounded dimensions in these lowerings.
     "the result has wrong values": {
         # TODO: b/566327914 - With dim 0 bounded, the result matches the
         # transposed golden output.
         "nn.functional.hardtanh": {EAGER},
     },
+    "the op may work, but requires mark_dynamic test support": {
+        # Needs matmul-style marking.
+        "_addmm_activation": ALL_MODES,
+        "addmm": ALL_MODES,
+        "addmm.dtype": ALL_MODES,
+        "addmv": ALL_MODES,
+        "baddbmm": {COMPILE_GRAD},
+        "baddbmm.dtype": {COMPILE, COMPILE_GRAD},
+        "dot": ALL_MODES,
+        "linalg.solve_triangular": {COMPILE_GRAD},  # A, B have dim dependency
+        "native_layer_norm": ALL_MODES,  # input/weight/bias have dim dependency
+        "_weight_norm_interface": ALL_MODES,  # v and g have dim dependency
+        "_weight_norm_interface_backward": (
+            ALL_MODES
+        ),  # grad_w, saved_v, saved_g, saved_norms have dim dependency
+        "lu_unpack": ALL_MODES,  # data, pivots have dim dependency
+        # Can only mark the concatenated dim dynamic for cat-like ops.
+        "cat": ALL_MODES,
+        "stack": ALL_MODES,
+        # col2im column dimension L must match static output_size/kernel_size.
+        "col2im": ALL_MODES,
+        # Per-channel observer/fake-quant buffers must match channel axis size.
+        "_fused_moving_avg_obs_fq_helper": ALL_MODES,
+        # RNN input, hidden state, and flat weight list have coupled dimensions.
+        "gru.input": ALL_MODES,
+        "lstm.input": ALL_MODES,
+        # TODO(amainz): Bounded dynamism requires synchronized scale/operand
+        # dimension marking and dynamic scale reshape support.
+        "torch._scaled_mm": ALL_MODES,
+        # TODO(amainz): Bounded dynamism requires synchronized group offset,
+        # scale, and operand dimension marking.
+        "_grouped_mm": ALL_MODES,
+        "torch._scaled_grouped_mm": ALL_MODES,
+        # TODO: segment_reduce and jagged ops require length/offset dimension
+        # matching under dynamism.
+        "_jagged_to_padded_dense_forward": ALL_MODES,
+        "_padded_dense_to_jagged_forward": ALL_MODES,
+        "_segment_reduce": ALL_MODES,
+    },
+    # TODO: b/449736443 - [XLA] Crash in complex rewriter.
+    "XLA crashes in the complex rewriter": {
+        "polar": ALL_MODES,
+    },
+    # TODO: b/449736443 - Reshape support for bounded dynamism needed.
+    "the op may lower to a reshape, which is not supported with dynamism": {
+        # transposes and permutes can lower to a reshape sometimes (1x3->3x1)
+        "t": ALL_MODES,
+    },
+    # TODO: b/449736443 - incompatible buffer shapes at dimension 0.
+    "reductions hit incompatible buffer shapes at dimension 0": {
+        "all": ALL_MODES,
+        "any": ALL_MODES,
+    },
+    "sparse COO ops are not supported": {
+        "sparse_coo_add": ALL_MODES,
+        "sparse_coo_add_dense_sparse": ALL_MODES,
+        "sparse_coo_clone": ALL_MODES,
+        "sparse_coo_coalesce": ALL_MODES,
+        "sparse_coo_copy_": ALL_MODES,
+        "sparse_coo_empty_like": ALL_MODES,
+        "sparse_coo_mul": ALL_MODES,
+        "sparse_coo_neg": ALL_MODES,
+        "sparse_coo_sub": ALL_MODES,
+        "sparse_coo_sub_dense_sparse": ALL_MODES,
+        "sparse_coo_to_dense": ALL_MODES,
+        "sparse_coo_zero_": ALL_MODES,
+    },
+    "untriaged: invalid result": {
+        # TODO: fix clamp() returning enormous errors or nans when dynamism is
+        # enabled.
+        "clamp": ALL_MODES,
+        "clamp_min": ALL_MODES,
+        "eq": ALL_MODES,
+        "flip": ALL_MODES,
+        "index_put": ALL_MODES,  # garbage data
+        "kron": ALL_MODES,
+        "logical_and": ALL_MODES,
+        "maximum": ALL_MODES,
+        "ne": ALL_MODES,
+        "neg": ALL_MODES,
+        "nn.functional.leaky_relu": ALL_MODES,
+        "pow": ALL_MODES,
+        "remainder": ALL_MODES,
+        "round": ALL_MODES,
+        "sgn": ALL_MODES,
+        "sign": ALL_MODES,
+        "sinh": ALL_MODES,
+        "sub": ALL_MODES,
+        "take": ALL_MODES,
+        "tan": ALL_MODES,
+        "trunc": ALL_MODES,
+        "var": ALL_MODES,
+        "xlogy": ALL_MODES,
+    },
+    "untriaged: numerical mismatch": {
+        "asin": {COMPILE_GRAD},  # float16 compiled backward tolerance
+        "atan": {COMPILE_GRAD},  # float16 compiled backward tolerance
+        "bmm": {COMPILE, COMPILE_GRAD},  # under dynamic compile
+        "bmm.dtype": {COMPILE, COMPILE_GRAD},  # under dynamic compile
+        "conj_physical": ALL_MODES,  # identity operation for i64 and f64 fails
+        "erf": {COMPILE_GRAD},  # float16 compiled backward tolerance
+        "erfinv": {COMPILE_GRAD},  # bfloat16 compiled backward tolerance
+        "exp2": {COMPILE_GRAD},  # float16 compiled backward tolerance
+        "expm1": ALL_MODES,  # result differs
+        "mm": {COMPILE, COMPILE_GRAD},  # under dynamic compile
+        "mm.dtype": {COMPILE, COMPILE_GRAD},  # under dynamic compile
+        "nn.functional.hardswish": ALL_MODES,  # adjust tolerance
+        "nn.functional.nll_loss": ALL_MODES,  # or failure in some shards
+        "nn.functional.relu": ALL_MODES,  # tolerance
+        # Also on `compiled_deny_list` in op_testing.py, where compiled results
+        # mismatch CPU even with static shapes.
+        "nn.functional.scaled_dot_product_attention": {COMPILE, COMPILE_GRAD},
+        "tanh": {COMPILE_GRAD},  # float16/bfloat16 compiled backward tolerance
+        "to": ALL_MODES,  # fails numerics (?)
+    },
+    "untriaged: buffer dimension mismatch": {
+        "fill": {COMPILE_GRAD},  # backward emits zeros_like
+        "full_like": {COMPILE, COMPILE_GRAD},
+        "isinf": {COMPILE, COMPILE_GRAD},
+        "ones_like": {COMPILE, COMPILE_GRAD},
+        "zeros_like": {COMPILE, COMPILE_GRAD},
+    },
+    "untriaged: MLIR assertion failure (bounds length vs rank)": {
+        "bincount": ALL_MODES,
+        "nn.functional.max_pool1d": ALL_MODES,
+        "vdot": ALL_MODES,
+    },
+    "untriaged: materialization failure (negative dimension size)": {
+        "diagonal": ALL_MODES,
+        "isin": ALL_MODES,
+        "linalg.lu_factor_ex": ALL_MODES,
+    },
+    "untriaged: expected all dimensions to be static": {
+        "fft.fft": ALL_MODES,
+        "fft.ifft": ALL_MODES,
+        "fft.irfft": ALL_MODES,
+        "fft.rfft": ALL_MODES,
+        "searchsorted": ALL_MODES,  # expected last dim to be static
+    },
+    "untriaged: invalid bound length": {
+        "index_add": ALL_MODES,  # likely bad tensor copy
+        "index_copy": ALL_MODES,  # likely bad tensor copy
+        "nn.functional.pdist": ALL_MODES,  # inlined vector size fail
+    },
+    "untriaged: invalid gather": {
+        "index_select": ALL_MODES,
+        "nn.functional.embedding_bag": ALL_MODES,
+        "nn.functional.interpolate": (
+            ALL_MODES
+        ),  # gather with dynamic slice size
+        "nn.functional.upsample_bilinear": ALL_MODES,  # gather out of bounds
+        "nn.functional.upsample_nearest": ALL_MODES,  # gather build failure
+    },
+    "untriaged: crash": {
+        "nn.functional.embedding": ALL_MODES,  # crash in shard 27
+        # negative dim size in compiled_mode.cc
+        "nn.functional.max_pool2d": ALL_MODES,
+        "nn.functional.max_pool3d": ALL_MODES,  # Aborted
+        "view_as_complex": ALL_MODES,  # Aborted
+    },
+    "untriaged: unsupported view op or reshape": {
+        "expand": ALL_MODES,  # view op - expand not yet supported
+        "masked_scatter": ALL_MODES,  # unflatten ambiguous error
+        "matmul": ALL_MODES,  # reshapes in the structured delegate
+        "slice": ALL_MODES,  # reshape reassociation not supported
+        # enhance view op to detect squeeze
+        "squeeze": ALL_MODES,
+        "squeeze_copy": ALL_MODES,
+        "var_mean": {
+            COMPILE,
+            COMPILE_GRAD,
+        },  # reshape lowering failure in compile mode
+    },
+    "untriaged: shape mismatch": {
+        "ldexp": ALL_MODES,  # dynamic shape value permutation mismatch
+        "nn.functional.logsigmoid": {COMPILE_GRAD},  # inferred bound [0]
+        "nn.functional.mse_loss": ALL_MODES,  # binop LHS / RHS mismatch
+        "std": {
+            COMPILE,
+            COMPILE_GRAD,
+        },  # shape mismatch on out under dynamic compile
+    },
+    "untriaged: data-dependent output shape (invalid TPU shape)": {
+        "unique": ALL_MODES,
+        "unique_consecutive": ALL_MODES,
+    },
+    # TODO(b/488338235): dynamism is flaky.
+    "untriaged: flaky": {
+        "_foreach_addcdiv": ALL_MODES,
+    },
+    "untriaged: unknown failure": {
+        "_native_multi_head_attention": ALL_MODES,
+        "_thnn_fused_gru_cell": ALL_MODES,
+        "_thnn_fused_lstm_cell": ALL_MODES,
+        "_transformer_encoder_layer_fwd": ALL_MODES,
+        "angle": {COMPILE, COMPILE_GRAD},  # Dynamo error
+        "bernoulli": {COMPILE_GRAD},  # Dynamo no_dispatch error
+        "floor_divide": ALL_MODES,
+        # Eager mode is triaged under "the lowering broadcasts a bounded input
+        # to a static shape".
+        "linalg.svd": {COMPILE, COMPILE_GRAD},
+        "linalg.svdvals": {COMPILE, COMPILE_GRAD},
+        "nn.functional.adaptive_avg_pool2d": (
+            ALL_MODES
+        ),  # sort op fails to infer
+        "nn.functional.batch_norm": ALL_MODES,  # xla error
+        "nn.functional.grid_sample": ALL_MODES,
+        "normal": ALL_MODES,
+        "split_with_sizes_copy": ALL_MODES,  # b/483055194
+        "sum": ALL_MODES,  # return i64, which has lowering issues
+        "torch._scaled_grouped_mm_v2": ALL_MODES,
+        "view_as_real": ALL_MODES,
+    },
 }
+
+# Mode-aware lists of ops for which bounded dynamism is out of scope by design,
+# keyed by the reason. The reason is included in the skip message.
+#
+# Policy: unlike `DYNAMISM_DENY_LISTS`, these entries are not bugs and are not
+# expected to be removed. Each entry requires a justification of why dynamism
+# does not apply to the op, so this should rarely change.
+DYNAMISM_NOT_APPLICABLE_OPS: DenyList = {
+    "fused optimizers update fixed-shape parameters and optimizer states in place": {
+        "_fused_adagrad_": ALL_MODES,
+        "_fused_adagrad_.tensor_lr": ALL_MODES,
+        "_fused_adam_": ALL_MODES,
+        "_fused_adam_.tensor_lr": ALL_MODES,
+        "_fused_adamw_": ALL_MODES,
+        "_fused_adamw_.tensor_lr": ALL_MODES,
+        "_fused_sgd_": ALL_MODES,
+        "_fused_sgd_.tensor_lr": ALL_MODES,
+    },
+}
+
+
+def _find_reason(
+    deny_lists: DenyList, op_name: str, mode: DynamismMode
+) -> str | None:
+  """Returns the first reason in `deny_lists` that excludes `op_name` in `mode`."""
+  for reason, ops in deny_lists.items():
+    if mode in ops.get(op_name, ()):
+      return reason
+  return None
 
 
 def verify_op_supports_dynamism(
@@ -329,16 +819,18 @@ def verify_op_supports_dynamism(
     None if the op+input is supported, or an skipTest message if not.
   """
   op = op_info
-  if op.name in untriaged_ops_deny_list:
-    denied_modes = untriaged_ops_deny_list[op.name]
-    if mode in denied_modes:
-      return f"Op {op.name} is not supported in {mode.value} dynamism mode."
-  for reason, deny_list in triaged_ops_deny_lists.items():
-    if mode in deny_list.get(op.name, ()):
-      return (
-          f"Op {op.name} is not supported in {mode.value} dynamism mode:"
-          f" {reason}."
-      )
+  reason = _find_reason(DYNAMISM_NOT_APPLICABLE_OPS, op.name, mode)
+  if reason is not None:
+    return (
+        f"Dynamism is not applicable to {op.name} in {mode.value} mode:"
+        f" {reason}."
+    )
+  reason = _find_reason(DYNAMISM_DENY_LISTS, op.name, mode)
+  if reason is not None:
+    return (
+        f"Op {op.name} is not supported in {mode.value} dynamism mode:"
+        f" {reason}."
+    )
 
   ### [TEST INFRA TASKS] ###
   # The following indicate changes needed in this file to increase coverage.
@@ -359,45 +851,12 @@ def verify_op_supports_dynamism(
 
   # The loop above sees no values in an empty input, e.g. the shape `()` passed
   # to `torch.empty`, so also check the input that `mark_dynamic` will mark.
-  canonical_input = _get_canonical_input_value(op, input_value)
+  _, canonical_input = _get_canonical_input_value(op, input_value)
   skip_input = _should_skip_input_marking(op, canonical_input)
   if skip_input:
     return skip_input
-  if not DynamicOpInfo.get(op).dynamic_dimension_candidates(
-      input_value if op.name == "einsum" else canonical_input, args
-  ):
+  if not DynamicOpInfo.get(op).get_candidate_dims(input_value, args):
     return "No valid input dimensions to mark dynamic."
-
-  require_mark_dynamic_support = [
-      # Needs matmul-style marking
-      "addmm",
-      "addmv",
-      "dot",
-      "native_layer_norm",  # input/weight/bias have dim dependency
-      "lu_unpack",  # data, pivots have dim dependency
-      # Can only mark the concatenated dim dynamic for cat-like ops.
-      "cat",
-      "stack",
-  ]
-  if op.name in require_mark_dynamic_support:
-    return f"{op.name} op may work, but requires mark_dynamic test support."
-
-  ### [XLA BUGS] ###
-  # TODO: b/449736443 - [XLA] Crash in complex rewriter.
-  if op.name in ["polar"]:
-    return f"{op.name} op is not supported."
-
-  ### [VIEW OP BUGS] ###
-  # TODO: b/449736443 - Reshape support for bounded dynamism needed.
-  # transposes and permutes can lower to a reshape sometimes (1x3->3x1)
-  if op.name in ["t", "t_"]:
-    return f"{op.name} op uses a reshape that is not supported with dynamism."
-
-  ### [TORCHTPU INFRA BUGS] ###
-  # TODO: b/449736443 - incompatible buffer shapes at dimension 0;
-  reduction_deny_list = ["all", "any"]
-  if op.name in reduction_deny_list:
-    return f"reduction op {op.name} is not supported with dynamism."
 
   # Valid testcase!
   return None
@@ -478,6 +937,7 @@ class DynamicOpInfo:
         BinaryElementwiseDynamicOpInfo,
         TernaryElementwiseDynamicOpInfo,
         ConvolutionDynamicOpInfo,
+        GluDynamicOpInfo,
     ]
     for adapter in adapters:
       if adapter.adapter_supports_op(op_info):
@@ -491,44 +951,433 @@ class DynamicOpInfo:
     del args  # Unused.
     return _get_dynamic_dimension_candidates(input_value)
 
-  def mark_dynamic(
+  def get_candidate_dims(
       self,
-      seed: int,
-      input_value: torch.Tensor,
+      input_value: torch.Tensor | Sequence[torch.Tensor],
+      args: Sequence[Any],
+  ) -> Sequence[TensorDim]:
+    """Returns candidate `TensorDim`s on the canonical input tensor.
+
+    Note that this method only discovers candidate dimensions on a single
+    primary tensor, not independently across every tensor in a sequence
+    or in `args`.
+
+    Args:
+      input_value: First positional argument passed to the op — either a single
+        `Tensor` or, for ops whose first parameter is a tensor list (such as
+        foreach ops or `einsum`), a `Sequence[Tensor]`. When `input_value` is a
+        sequence, this base implementation selects the first dynamism-eligible
+        tensor via `_get_canonical_input_value`.
+      args: Remaining positional op arguments, including any secondary operand
+        tensors and non-tensor parameters.
+
+    Returns:
+      Strictly ascending `TensorDim` candidates (each with dimension size >= 2)
+      identifying both the selected tensor and its 0-based dimension index.
+    """
+    tensor_index, canonical_input = _get_canonical_input_value(
+        self.op_info, input_value
+    )
+    return [
+        TensorDim(tensor_index=tensor_index, dim=dim)
+        for dim in self.dynamic_dimension_candidates(canonical_input, args)
+    ]
+
+  def _static_tensor_indices(
+      self, primary_tensor_idx: int, num_tensors: int
+  ) -> frozenset[int]:
+    """Returns tensor indices in `_collect_tensors` that must stay static."""
+    del primary_tensor_idx, num_tensors
+    return frozenset()
+
+  def _is_valid_coupled_plan(
+      self,
+      op_func: Callable[..., Any],
+      op_args: _OpArgs,
+      coupled: Sequence[TensorDim],
+      mode: DynamismMode,
+  ) -> bool:
+    """Returns True if `coupled` stays dynamic and satisfies shape guards.
+
+    Args:
+      op_func: Callable for the active op variant.
+      op_args: Operator inputs.
+      coupled: `TensorDim`s to mark dynamic together for validation.
+      mode: Dynamism execution mode.
+
+    Returns:
+      `True` if tracing succeeds with every dimension in `coupled` remaining
+      unspecialized and satisfying mode-specific upper-bound guards.
+    """
+    # Eager mode only supports one dynamic dimension per tensor.
+    if mode == DynamismMode.EAGER and len(
+        {c.tensor_index for c in coupled}
+    ) < len(coupled):
+      logging.debug(
+          "[DynamicOpInfo] Rejected %s (%s) in %s: >1 dynamic dim on tensor",
+          self.op_info.name,
+          coupled,
+          mode,
+      )
+      return False
+
+    # Trace the op with only `coupled` marked dynamic.
+    try:
+      shape_env, initial_syms = _run_fake_op(
+          op_func,
+          op_args,
+          mode=mode,
+          dynamic_dims=set(coupled),
+      )
+    except _UNTRACEABLE_FAKE_OP_EXCEPTIONS:
+      raise
+    except Exception as e:  # pylint: disable=broad-except
+      # Reject if symbolic tracing fails on this dynamic marking.
+      logging.debug(
+          "[DynamicOpInfo] Rejected %s (%s) in %s: %s",
+          self.op_info.name,
+          coupled,
+          mode,
+          e,
+      )
+      return False
+
+    # Verify every marked dimension remains an unspecialized symbol.
+    canonical_syms: set[sympy.Symbol] = set()
+    for c in coupled:
+      canonical_sym = shape_env.replace(initial_syms[c])
+      if (
+          not isinstance(canonical_sym, sympy.Symbol)
+          or shape_env.var_to_range[canonical_sym].is_singleton()
+      ):
+        logging.debug(
+            "[DynamicOpInfo] Rejected %s (%s) in %s: %s specialized to %s",
+            self.op_info.name,
+            coupled,
+            mode,
+            c,
+            canonical_sym,
+        )
+        return False
+      canonical_syms.add(canonical_sym)
+
+    # Verify mode-specific upper bounds satisfy all shape guards.
+    if not _satisfies_upper_bound_guards(shape_env, canonical_syms, mode):
+      logging.debug(
+          "[DynamicOpInfo] Rejected %s (%s) in %s: upper-bound guards failed",
+          self.op_info.name,
+          coupled,
+          mode,
+      )
+      return False
+
+    return True
+
+  def _discover_coupled_dims(
+      self,
+      candidates: Sequence[TensorDim],
+      tensors: Sequence[torch.Tensor],
+      op_args: _OpArgs,
+      op_func: Callable[..., Any],
+      mode: DynamismMode,
+  ) -> dict[TensorDim, tuple[TensorDim, ...]]:
+    """Discovers coupled tensor dimensions for each candidate.
+
+    Uses `FakeTensorMode` and `ShapeEnv` symbolic tracing to deduce which input
+    tensor dimensions must be marked dynamic together. It does this by:
+      1. Assigns a distinct symbol to every eligible dimension (`size >= 2`)
+         across all non-static input tensors.
+      2. Traces the op symbolically via so `ShapeEnv` records
+         equality constraints and unifies symbols across coupled dimensions.
+      3. Groups dimensions whose initial symbols resolve to the same canonical
+         symbol, skipping candidates that specialized to a constant or
+         arithmetic expression.
+      4. If joint tracing fails (e.g., when an op cannot have all dimensions
+         dynamic simultaneously), falls back to proposing each candidate on its
+         own for individual validation.
+
+    Args:
+      candidates: Candidate `TensorDim`s on the primary input tensor.
+      tensors: All input tensors of the op.
+      op_args: Operator inputs (`input_value`, `args`, `kwargs`).
+      op_func: Callable for the active op variant.
+      mode: Dynamism execution mode (`EAGER`, `COMPILE`, or `COMPILE_GRAD`).
+
+    Returns:
+      Mapping from each unspecialized candidate `TensorDim` to the sorted tuple
+      of coupled `TensorDim`s across all input tensors.
+    """
+    # Identify secondary tensors that must stay static (e.g., index tensors).
+    primary_tensor_idx = candidates[0].tensor_index
+    static_tensor_indices = self._static_tensor_indices(
+        primary_tensor_idx, len(tensors)
+    )
+
+    # Give every eligible dimension a distinct symbol so the op's meta kernel
+    # reveals exact 1-to-1 coupled dimension equivalence classes.
+    primary_dynamic = set(candidates)
+    secondary_dynamic = {
+        TensorDim(tensor_idx, d)
+        for tensor_idx, t in enumerate(tensors)
+        if tensor_idx != primary_tensor_idx
+        and tensor_idx not in static_tensor_indices
+        for d, sz in enumerate(t.shape)
+        if sz >= 2
+    }
+    pass1_dynamic = primary_dynamic | secondary_dynamic
+
+    proposed_by_candidate: dict[TensorDim, tuple[TensorDim, ...]] = {}
+    try:
+      shape_env, initial_syms = _run_fake_op(
+          op_func,
+          op_args,
+          mode=mode,
+          dynamic_dims=pass1_dynamic,
+      )
+      logging.debug(
+          "[DynamicOpInfo] Discovery trace for %s in %s: initial_syms=%s,"
+          " replacements=%s",
+          self.op_info.name,
+          mode,
+          initial_syms,
+          shape_env.replacements,
+      )
+
+      # Associate each candidate with the set of coupled dimensions.
+      # TODO: Extend symbolic discovery to support algebraic
+      # dimension constraints (e.g., s1 = s0 + k or s2 = s0 * s1) and symbolic
+      # SymInt scalar arguments.
+      for candidate in candidates:
+        primary_sym = initial_syms[candidate]
+        canonical_sym = shape_env.replace(primary_sym)
+        # Skip candidates that specialized to a constant or arithmetic expr.
+        if not isinstance(canonical_sym, sympy.Symbol):
+          continue
+        proposed_by_candidate[candidate] = tuple(
+            td
+            for td, sym in sorted(initial_syms.items())
+            if shape_env.replace(sym) == canonical_sym
+        )
+    except _UNTRACEABLE_FAKE_OP_EXCEPTIONS:
+      raise
+    except Exception as e:  # pylint: disable=broad-except
+      # Joint dynamic tracing failed (e.g., reshape s0 * s1 == K); fall back to
+      # validating each candidate dimension individually.
+      logging.debug(
+          "[DynamicOpInfo] Joint discovery failed on %s in %s (%s); probing"
+          " single dims",
+          self.op_info.name,
+          mode,
+          e,
+      )
+      for candidate in candidates:
+        proposed_by_candidate[candidate] = (candidate,)
+
+    logging.debug(
+        "[DynamicOpInfo] Discovered coupled dims for %s in %s: %s",
+        self.op_info.name,
+        mode,
+        proposed_by_candidate,
+    )
+    return proposed_by_candidate
+
+  def _validate_coupled_plans(
+      self,
+      candidates: Sequence[TensorDim],
+      proposed_by_candidate: Mapping[TensorDim, tuple[TensorDim, ...]],
+      op_args: _OpArgs,
+      op_func: Callable[..., Any],
+      mode: DynamismMode,
+  ) -> tuple[DynamicMarkingPlan, ...]:
+    """Validates coupled marking plans.
+
+    Args:
+      candidates: Candidate `TensorDim`s on the primary input tensor.
+      proposed_by_candidate: Mapping from each candidate to the coupled
+        `TensorDim` group.
+      op_args: Operator inputs (`input_value`, `args`, `kwargs`).
+      op_func: Callable for the active op variant.
+      mode: Dynamism execution mode (`EAGER`, `COMPILE`, or `COMPILE_GRAD`).
+
+    Returns:
+      Validated single-dimension plans, plus a combined multi-dimension plan in
+      compiled modes when valid.
+    """
+    valid_plans: list[DynamicMarkingPlan] = []
+    seen_coupled: set[tuple[TensorDim, ...]] = set()
+
+    # Validate each candidate's coupled group, skipping duplicate markings.
+    for candidate in candidates:
+      proposed = proposed_by_candidate.get(candidate)
+      if not proposed or proposed in seen_coupled:
+        continue
+      if not self._is_valid_coupled_plan(op_func, op_args, proposed, mode):
+        continue
+      seen_coupled.add(proposed)
+      valid_plans.append(
+          DynamicMarkingPlan(
+              label=_format_plan_label((candidate,)),
+              tensor_dims=(candidate,),
+              coupled_dims=proposed,
+          )
+      )
+
+    # In compiled modes, also try marking all valid candidates together.
+    if (
+        mode in (DynamismMode.COMPILE, DynamismMode.COMPILE_GRAD)
+        and len(valid_plans) >= 2
+    ):
+      merged_coupled = tuple(
+          sorted({c for plan in valid_plans for c in plan.coupled_dims})
+      )
+      if merged_coupled not in seen_coupled and self._is_valid_coupled_plan(
+          op_func, op_args, merged_coupled, mode
+      ):
+        merged_dims = tuple(plan.tensor_dims[0] for plan in valid_plans)
+        valid_plans.append(
+            DynamicMarkingPlan(
+                label=_format_plan_label(merged_dims),
+                tensor_dims=merged_dims,
+                coupled_dims=merged_coupled,
+            )
+        )
+
+    logging.debug(
+        "[DynamicOpInfo] Validated plans for %s in %s: %s",
+        self.op_info.name,
+        mode,
+        valid_plans,
+    )
+    return tuple(valid_plans)
+
+  def generate_exhaustive_marking_plans(
+      self,
+      input_value: torch.Tensor | Sequence[torch.Tensor],
+      args: Sequence[Any],
+      mode: DynamismMode = DynamismMode.EAGER,
+  ) -> Sequence[DynamicMarkingPlan]:
+    """Generates all valid dynamic marking plans for the canonical input tensor.
+
+    Plans record both the selected tensor index and 0-based dimension indices on
+    that tensor. Dimensions on secondary tensors or subsequent tensors in a
+    sequence are not swept as separate plans yet.
+
+    Args:
+      input_value: First positional argument passed to the op.
+      args: Remaining positional arguments passed to the op.
+      mode: Dynamism execution mode (`EAGER`, `COMPILE`, or `COMPILE_GRAD`).
+        Simultaneous multi-dimension plans are only emitted in compiled modes.
+
+    Returns:
+      A sequence of `DynamicMarkingPlan` instances targeting the canonical
+      primary input tensor: one single-dimension plan (`"t{i}d{d}"`) per
+      `TensorDim` returned by `get_candidate_dims`, plus a combined
+      multi-dimension plan (`"t{i}d{d0}_t{i}d{d1}..."`) when `mode` is `COMPILE`
+      or `COMPILE_GRAD` and at least two candidate dimensions exist. Returns
+      `()` if no dimensions on the canonical input tensor can be marked dynamic.
+    """
+    candidates = list(self.get_candidate_dims(input_value, args))
+    if not candidates:
+      return ()
+    plans = [
+        DynamicMarkingPlan(
+            label=_format_plan_label((candidate,)),
+            tensor_dims=(candidate,),
+        )
+        for candidate in candidates
+    ]
+    # Eager `dynamism.mark_dynamic` only supports one dynamic dimension per
+    # tensor, so simultaneous multi-dimension plans are restricted to compiled
+    # modes.
+    if (
+        mode in (DynamismMode.COMPILE, DynamismMode.COMPILE_GRAD)
+        and len(candidates) >= 2
+    ):
+      dims_tuple = tuple(candidates)
+      plans.append(
+          DynamicMarkingPlan(
+              label=_format_plan_label(dims_tuple),
+              tensor_dims=dims_tuple,
+          )
+      )
+    return tuple(plans)
+
+  def _mark_single_dim(
+      self,
+      target: TensorDim,
+      input_value: torch.Tensor | Sequence[torch.Tensor],
       args: Sequence[Any],
       mode: DynamismMode = DynamismMode.EAGER,
       kwargs: Mapping[str, Any] | None = None,
-  ):
-    """Mark the op as dynamic."""
+  ) -> None:
+    """Marks `target` in `input_value` and coupled dimensions on dependent args.
 
-    logging.debug(
-        "[DynamicOpInfo] mark_dynamic(%s, %s, %s, mode=%s)",
-        self.op_info.name,
-        utils.InputMetadata(input_value),
-        utils.InputMetadata(args),
-        mode,
-    )
-
-    # Allow picking a list value from input_value for ops like cat, etc.
-    input_value = _get_canonical_input_value(self.op_info, input_value)
-    candidates = self.dynamic_dimension_candidates(input_value, args)
-    random.seed(seed)
-    idx = random.choice(candidates)
-    input_value_str = utils.get_tensor_summary(input_value, data=False)
-    ub = input_value.shape[idx] + 10
+    Args:
+      target: `TensorDim` identifying which tensor in `input_value` and which
+        0-based dimension on that tensor to mark dynamic.
+      input_value: Primary tensor or sequence of tensors passed to the op.
+      args: Additional positional arguments whose corresponding dimensions
+        should also be marked dynamic.
+      mode: Dynamism execution mode (`EAGER` or `COMPILE`).
+      kwargs: Optional keyword arguments passed to the op (used by adapters such
+        as `SdpaDynamicOpInfo` to mark keyword tensor arguments).
+    """
+    target_tensor = _resolve_input_tensor(input_value, target.tensor_index)
+    idx = target.dim
+    input_value_str = utils.get_tensor_summary(target_tensor, data=False)
+    ub = target_tensor.shape[idx] + 10
     print(
         f">>>> Marking dim {idx} dynamic [<={ub}] in {input_value_str}"
         f" (mode={mode.value})",
         flush=True,
     )
-
-    # Mark input_value as dynamic.
-    _mark_tensor_dynamic(input_value, idx, 2, ub, mode=mode)
-
-    # Mark any dependent args as dynamic.
+    _mark_tensor_dynamic(target_tensor, idx, 2, ub, mode=mode)
     self._mark_dependent_arg_dynamic(
-        args, input_value, idx, ub, mode=mode, kwargs=kwargs
+        args, target_tensor, idx, ub, mode=mode, kwargs=kwargs
     )
+
+  def mark_dynamic(
+      self,
+      input_value: torch.Tensor | Sequence[torch.Tensor],
+      args: Sequence[Any],
+      mode: DynamismMode = DynamismMode.EAGER,
+      kwargs: Mapping[str, Any] | None = None,
+      plan: DynamicMarkingPlan | None = None,
+  ) -> None:
+    """Marks the op dynamic per `plan`, or on the first candidate dim if `None`.
+
+    Args:
+      input_value: Primary tensor or sequence of tensors passed to the op.
+      args: Additional positional arguments passed to the op.
+      mode: Dynamism execution mode (`EAGER` or `COMPILE`).
+      kwargs: Optional keyword arguments passed to the op.
+      plan: Explicit `DynamicMarkingPlan` specifying which dimensions to mark
+        dynamic. When `None`, marks the first candidate `TensorDim`.
+
+    Raises:
+      ValueError: If `plan is None` and no candidate dynamic dimensions exist.
+    """
+    if plan is None:
+      candidates = list(self.get_candidate_dims(input_value, args))
+      if not candidates:
+        raise ValueError(
+            f"No dynamic marking plans available for {self.op_info.name}."
+        )
+      chosen = candidates[0]
+      plan = DynamicMarkingPlan(
+          label=_format_plan_label((chosen,)),
+          tensor_dims=(chosen,),
+      )
+    logging.debug(
+        "[DynamicOpInfo] mark_dynamic(%s, plan=%s, %s, %s, mode=%s)",
+        self.op_info.name,
+        plan.label,
+        utils.InputMetadata(input_value),
+        utils.InputMetadata(args),
+        mode,
+    )
+    for target in plan.tensor_dims:
+      self._mark_single_dim(target, input_value, args, mode=mode, kwargs=kwargs)
 
   def _mark_dependent_arg_dynamic(
       self,
@@ -558,7 +1407,10 @@ class BinaryElementwiseDynamicOpInfo(DynamicOpInfo):
     """Method to declare ops supported by this adapter."""
 
     additional_binary_ops = [
+        "__lshift__",
+        "__rshift__",
         "_log_softmax_backward_data",
+        "_masked_softmax",
         "_softmax_backward_data",
         "equal",
     ]
@@ -587,6 +1439,7 @@ class TernaryElementwiseDynamicOpInfo(DynamicOpInfo):
   """A wrapper around OpInfo that supports bounded dynamism."""
 
   ternary_elementwise_ops = {
+      "_masked_softmax_backward",
       "addcdiv",
       "addcmul",
       "clamp",
@@ -632,16 +1485,56 @@ class ForEachDynamicOpInfo(DynamicOpInfo):
 
     return isinstance(op_info, core.ForeachFuncInfo)
 
+  def generate_exhaustive_marking_plans(
+      self,
+      input_value: torch.Tensor | Sequence[torch.Tensor],
+      args: Sequence[Any],
+      mode: DynamismMode = DynamismMode.EAGER,
+  ) -> Sequence[DynamicMarkingPlan]:
+    """Overrides `DynamicOpInfo.generate_exhaustive_marking_plans` for foreach.
+
+    Foreach ops operate on heterogeneous tensor lists and delegate per-element
+    dimension selection to `ForEachDynamicOpInfo.mark_dynamic`, so this override
+    emits at most one `"foreach"` sentinel plan while keeping the base class
+    method name and `Sequence[DynamicMarkingPlan]` return type for polymorphic
+    dispatch via `DynamicOpInfo.get(op_info)`.
+
+    Args:
+      input_value: Sequence of primary input tensors passed to the foreach op.
+      args: Additional positional arguments (scalars or sequences of tensors).
+      mode: Dynamism execution mode (`EAGER` or `COMPILE`), accepted to match
+        the `DynamicOpInfo` base signature.
+
+    Returns:
+      `(DynamicMarkingPlan(label="foreach"),)` if `input_value` has at least one
+      candidate dynamic dimension, or `()` otherwise.
+    """
+    del mode  # Unused; accepted to match DynamicOpInfo base signature.
+    if not self.get_candidate_dims(input_value, args):
+      return ()
+    return (DynamicMarkingPlan(label="foreach"),)
+
   def mark_dynamic(
       self,
-      seed: int,
       input_value: torch.Tensor | Sequence[torch.Tensor],
       args: Sequence[Any],
       mode: DynamismMode = DynamismMode.EAGER,
       kwargs: Mapping[str, Any] | None = None,
+      plan: DynamicMarkingPlan | None = None,
   ):
-    """Mark the op as dynamic, handling for list types."""
-    del kwargs
+    """Overrides `DynamicOpInfo.mark_dynamic` for foreach tensor-list inputs.
+
+    Args:
+      input_value: Sequence of primary input tensors passed to the foreach op.
+      args: Additional positional arguments (scalar or per-element tensor
+        sequences).
+      mode: Dynamism execution mode (`EAGER` or `COMPILE`).
+      kwargs: Optional keyword arguments, accepted to match the `DynamicOpInfo`
+        base signature for polymorphic dispatch via `DynamicOpInfo.get`.
+      plan: Optional `DynamicMarkingPlan` (e.g., the `"foreach"` sentinel plan),
+        accepted to match the `DynamicOpInfo` base signature.
+    """
+    del kwargs, plan  # Unused; accepted to match DynamicOpInfo base signature.
     # Split the inputs into their logical units for marking dynamic.
     # Options are:
     #   - foreach_add(list, [scalar|tensor])
@@ -671,14 +1564,14 @@ class ForEachDynamicOpInfo(DynamicOpInfo):
           or not isinstance(args, (list, tuple))
           or not isinstance(args[0], (list, tuple))
       ):
-        super().mark_dynamic(seed, value, [], mode=mode)
+        super().mark_dynamic(value, [], mode=mode)
         continue
 
       # Binary ops expect len(args) == 1
       if self.op_info.name in foreach_binops:
         rhs_vals = args[0]
         BinaryElementwiseDynamicOpInfo(self.op_info).mark_dynamic(
-            seed, value, (rhs_vals[idx],), mode=mode
+            value, (rhs_vals[idx],), mode=mode
         )
         continue
 
@@ -691,7 +1584,6 @@ class ForEachDynamicOpInfo(DynamicOpInfo):
         rhs_vals = args[0] if len(args) >= 1 else None
         ehs_vals = args[1] if len(args) >= 2 else None
         TernaryElementwiseDynamicOpInfo(self.op_info).mark_dynamic(
-            seed,
             value,
             (rhs_vals[idx], ehs_vals[idx]),  # pyrefly: ignore[unsupported-operation]
             mode=mode,
@@ -699,7 +1591,7 @@ class ForEachDynamicOpInfo(DynamicOpInfo):
         continue
 
       # Not binary or ternary, no dependent args.
-      super().mark_dynamic(seed, value, [], mode=mode)
+      super().mark_dynamic(value, [], mode=mode)
       logging.debug(
           "[ForEachDynamicOpInfo] no dependent args %s",
           utils.InputMetadata(args),
@@ -713,7 +1605,7 @@ class MatmulDynamicOpInfo(DynamicOpInfo):
   def adapter_supports_op(op_info: core.OpInfo):
     """Method to declare ops supported by this adapter."""
 
-    matmul_ops = ["bmm", "mm"]
+    matmul_ops = ["bmm", "bmm.dtype", "mm", "mm.dtype"]
     return op_info.name in matmul_ops
 
   def _mark_dependent_arg_dynamic(
@@ -798,6 +1690,12 @@ class ConvolutionDynamicOpInfo(DynamicOpInfo):
 
     return op_info.name in ConvolutionDynamicOpInfo.convolution_ops
 
+  def _static_tensor_indices(
+      self, primary_tensor_idx: int, num_tensors: int
+  ) -> frozenset[int]:
+    """Keeps convolution weights and biases static as required by StableHLO."""
+    return frozenset(i for i in range(num_tensors) if i != primary_tensor_idx)
+
   def dynamic_dimension_candidates(
       self, input_value: torch.Tensor, args: Sequence[Any]
   ) -> Sequence[int]:
@@ -806,12 +1704,36 @@ class ConvolutionDynamicOpInfo(DynamicOpInfo):
     The input channels must match the static weight, so convolutions don't
     support bounded channel dimensions.
     """
+    if not args or not isinstance(args[0], torch.Tensor):
+      return ()
     # An unbatched input has one dimension less than the weight in args[0].
     channel_dim = 1 if input_value.ndim == args[0].ndim else 0
     return [
         dim
         for dim in super().dynamic_dimension_candidates(input_value, args)
         if dim != channel_dim
+    ]
+
+
+class GluDynamicOpInfo(DynamicOpInfo):
+  """A wrapper around glu OpInfos that keeps the split dimension static."""
+
+  @staticmethod
+  def adapter_supports_op(op_info: core.OpInfo) -> bool:
+    """Method to declare ops supported by this adapter."""
+    return op_info.name == "nn.functional.glu"
+
+  def dynamic_dimension_candidates(
+      self, input_value: torch.Tensor, args: Sequence[Any]
+  ) -> Sequence[int]:
+    """Returns dimensions of input_value excluding the split dimension."""
+    if input_value.ndim == 0:
+      return []
+    split_dim = (args[0] if args else -1) % input_value.ndim
+    return [
+        dim
+        for dim in super().dynamic_dimension_candidates(input_value, args)
+        if dim != split_dim
     ]
 
 
@@ -937,12 +1859,27 @@ class EinsumDynamicOpInfo(DynamicOpInfo):
 
     return operand_labels, rhs_labels
 
-  def dynamic_dimension_candidates(
+  def get_candidate_dims(
       self,
       input_value: torch.Tensor | Sequence[torch.Tensor],
       args: Sequence[Any],
-  ) -> Sequence[int]:
-    """Returns the dimensions of the first operand that can be marked dynamic."""
+  ) -> Sequence[TensorDim]:
+    """Returns candidate `TensorDim`s on `einsum`'s first operand.
+
+    Overrides `DynamicOpInfo.get_candidate_dims` to inspect the full operand
+    sequence when checking Einstein-label constraints instead of collapsing
+    `input_value` via `_get_canonical_input_value`.
+
+    Args:
+      input_value: Single operand tensor or sequence of operand tensors passed
+        to `torch.einsum`.
+      args: Positional arguments where `args[0]` is the einsum equation string.
+
+    Returns:
+      Strictly ascending `TensorDim` candidates on the first operand
+      (`tensor_index=0`) that can be safely marked dynamic along with matching
+      label dimensions on subsequent operands.
+    """
     tensors: list[torch.Tensor] = (
         [input_value]
         if isinstance(input_value, torch.Tensor)
@@ -954,11 +1891,11 @@ class EinsumDynamicOpInfo(DynamicOpInfo):
         or not args
         or not isinstance(args[0], str)
     ):
-      return []
+      return ()
 
     operand_labels, rhs_labels = self._parse_einsum_labels(tensors, args[0])
     if not operand_labels or len(operand_labels[0]) != tensors[0].ndim:
-      return []
+      return ()
 
     any_requires_grad = any(t.requires_grad for t in tensors)
     if any_requires_grad:
@@ -966,7 +1903,7 @@ class EinsumDynamicOpInfo(DynamicOpInfo):
       # zeros tensor in backward, and uncontracted single-operand dimensions
       # summed out in forward use static expand in backward.
       if any(len(set(lbls)) != len(lbls) for lbls in operand_labels):
-        return []
+        return ()
       for k, t_k in enumerate(tensors):
         if not t_k.requires_grad:
           continue
@@ -977,11 +1914,11 @@ class EinsumDynamicOpInfo(DynamicOpInfo):
               lbl in operand_labels[j] for j in range(len(tensors)) if j != k
           )
           if not in_bwd_lhs:
-            return []
+            return ()
 
     first_tensor = tensors[0]
     first_labels = operand_labels[0]
-    candidates = []
+    candidates: list[TensorDim] = []
     for d, sz in enumerate(first_tensor.shape):
       if sz <= 1:
         continue
@@ -989,43 +1926,57 @@ class EinsumDynamicOpInfo(DynamicOpInfo):
       # Repeated labels with size > 1 use stablehlo.iota in forward.
       if any(lbls.count(lbl) > 1 for lbls in operand_labels):
         continue
-      candidates.append(d)
+      candidates.append(TensorDim(tensor_index=0, dim=d))
     return candidates
 
-  def mark_dynamic(
+  def _mark_single_dim(
       self,
-      seed: int,
+      target: TensorDim,
       input_value: torch.Tensor | Sequence[torch.Tensor],
       args: Sequence[Any],
       mode: DynamismMode = DynamismMode.EAGER,
       kwargs: Mapping[str, Any] | None = None,
   ) -> None:
-    """Marks a chosen dimension of the first operand and matching label dims dynamic."""
+    """Marks `target` and matching Einstein-label dims on other operands.
+
+    Args:
+      target: `TensorDim` identifying which einsum operand in `input_value` and
+        which 0-based dimension on that operand to mark dynamic.
+      input_value: Single operand tensor or sequence of operand tensors passed
+        to `torch.einsum`.
+      args: Positional arguments where `args[0]` is the einsum equation string.
+      mode: Dynamism execution mode (`EAGER` or `COMPILE`).
+      kwargs: Optional keyword arguments, accepted to match the
+        `DynamicOpInfo._mark_single_dim` signature.
+    """
     del kwargs
+    target_tensor = _resolve_input_tensor(input_value, target.tensor_index)
+    target_tensor_idx = target.tensor_index
+    idx = target.dim
     tensors: list[torch.Tensor] = (
         [input_value]
         if isinstance(input_value, torch.Tensor)
         else list(input_value)
     )
-    candidates = self.dynamic_dimension_candidates(tensors, args)
-    random.seed(seed)
-    idx = random.choice(candidates)
-    first_tensor = tensors[0]
-    ub = first_tensor.shape[idx] + 10
-    first_tensor_str = utils.get_tensor_summary(first_tensor, data=False)
+    ub = target_tensor.shape[idx] + 10
+    target_tensor_str = utils.get_tensor_summary(target_tensor, data=False)
     print(
-        f">>>> Marking dim {idx} dynamic [<={ub}] in {first_tensor_str}"
+        f">>>> Marking dim {idx} dynamic [<={ub}] in {target_tensor_str}"
         f" (mode={mode.value})",
         flush=True,
     )
-    _mark_tensor_dynamic(first_tensor, idx, 2, ub, mode=mode)
+    _mark_tensor_dynamic(target_tensor, idx, 2, ub, mode=mode)
 
     operand_labels, _ = self._parse_einsum_labels(tensors, args[0])
-    target_label = operand_labels[0][idx]
-    for t_k, lbls_k in zip(tensors[1:], operand_labels[1:], strict=True):
+    target_label = operand_labels[target_tensor_idx][idx]
+    for k, (t_k, lbls_k) in enumerate(
+        zip(tensors, operand_labels, strict=True)
+    ):
+      if k == target_tensor_idx:
+        continue
       if target_label in lbls_k:
         d_k = lbls_k.index(target_label)
-        if t_k.shape[d_k] == first_tensor.shape[idx] and t_k.shape[d_k] > 1:
+        if t_k.shape[d_k] == target_tensor.shape[idx] and t_k.shape[d_k] > 1:
           print(
               f">>>> Marking dependent arg dim {d_k} dynamic [<={ub}] in"
               f" {utils.InputMetadata(t_k)} (mode={mode.value})",
@@ -1034,30 +1985,57 @@ class EinsumDynamicOpInfo(DynamicOpInfo):
           _mark_tensor_dynamic(t_k, d_k, 2, ub, mode=mode)
 
 
+def generate_exhaustive_input_marking_plans(
+    op_info: core.OpInfo,
+    input_value: torch.Tensor | Sequence[torch.Tensor],
+    args: Sequence[Any],
+    mode: DynamismMode = DynamismMode.EAGER,
+) -> Sequence[DynamicMarkingPlan]:
+  """Generates all valid dynamic marking plans for an op sample.
+
+  Args:
+    op_info: The `OpInfo` descriptor for the operator under test.
+    input_value: Primary tensor or sequence of tensors passed to the op.
+    args: Additional positional arguments passed to the op.
+    mode: Dynamism execution mode (`EAGER` or `COMPILE`).
+
+  Returns:
+    A sequence of `DynamicMarkingPlan` instances for the sample, or `()` if no
+    dimensions can be marked dynamic.
+  """
+  return DynamicOpInfo.get(op_info).generate_exhaustive_marking_plans(
+      input_value,
+      args,
+      mode=mode,
+  )
+
+
 def mark_input_dynamic(
-    seed: int,
     op_info: core.OpInfo,
     input_value: torch.Tensor | Sequence[torch.Tensor],
     args: Sequence[Any],
     mode: DynamismMode = DynamismMode.EAGER,
     kwargs: Mapping[str, Any] | None = None,
-):
+    plan: DynamicMarkingPlan | None = None,
+) -> None:
   """Mark an arg tensor as dynamic.
 
   Args:
-    seed: The seed to use for random choice of the dimension to mark dynamic.
     op_info: The op to be tested.
     input_value: The primary input value to for the op test.
     args: The additional args to the op test.
     mode: The dynamism mode (EAGER or COMPILE).
     kwargs: The keyword arguments to the op test.
+    plan: Optional deterministic marking plan to apply. When `None`, marks the
+      first candidate dimension.
   """
 
   dynamic_op_info = DynamicOpInfo.get(op_info)
+  plan_suffix = f" (plan={plan.label})" if plan is not None else ""
   print(
-      ">>> Marking input dynamic using"
+      f">>> Marking input dynamic{plan_suffix} using"
       f" {type(dynamic_op_info)} (mode={mode.value})"
   )
   dynamic_op_info.mark_dynamic(
-      seed, input_value, args, mode=mode, kwargs=kwargs
+      input_value, args, mode=mode, kwargs=kwargs, plan=plan
   )

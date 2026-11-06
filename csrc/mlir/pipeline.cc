@@ -23,6 +23,7 @@
 #include "csrc/common/error_utils.h"
 #include "csrc/mlir/instrumentation.h"
 #include "csrc/mlir/passes/fold_concat_softmax.h"
+#include "csrc/mlir/passes/guard_zero_operand_custom_calls.h"
 #include "csrc/mlir/passes/lower_separable_gather_to_dot.h"
 #include "csrc/mlir/passes/reassociate_norm_weights.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -37,12 +38,25 @@
 namespace torch_tpu {
 namespace {
 
-void AddCleanupPasses(mlir::PassManager& pm) {
-  pm.addPass(mlir::createCSEPass());
-  pm.addNestedPass<mlir::func::FuncOp>(mlir::createCanonicalizerPass());
+// Adds the standard MLIR CSE pass, bracketed by passes that keep distinct
+// zero-operand custom calls (e.g. the `AllocateBuffer` calls that JAX emits for
+// `lax.empty` in Pallas kernels) from being merged. The guard is only active
+// around CSE so that every other pass (notably the canonicalizer) still sees
+// those calls as side-effect free and can DCE unused ones. See
+// passes/guard_zero_operand_custom_calls.cc.
+void AddZeroOperandCustomCallSafeCsePasses(mlir::OpPassManager& func_pm) {
+  func_pm.addPass(createGuardZeroOperandCustomCallsPass());
+  func_pm.addPass(mlir::createCSEPass());
+  func_pm.addPass(createUnguardZeroOperandCustomCallsPass());
 }
 
-void AddShloPasses(mlir::PassManager& pm) {
+void AddCleanupPasses(mlir::OpPassManager& pm) {
+  mlir::OpPassManager& func_pm = pm.nest<mlir::func::FuncOp>();
+  AddZeroOperandCustomCallSafeCsePasses(func_pm);
+  func_pm.addPass(mlir::createCanonicalizerPass());
+}
+
+void AddShloPasses(mlir::OpPassManager& pm) {
   if (GetBooleanEnvOnce<kTorchTpuInternalEnableReassociateNormWeightsEnvVar>()
           .value_or(true)) {
     pm.addNestedPass<mlir::func::FuncOp>(createReassociateNormWeightsPass());
@@ -55,7 +69,7 @@ void AddShloPasses(mlir::PassManager& pm) {
 
 }  // namespace
 
-void AddTorchTpuOptimizationPasses(mlir::PassManager& pm) {
+void AddTorchTpuOptimizationPasses(mlir::OpPassManager& pm) {
   AddCleanupPasses(pm);
   AddShloPasses(pm);
   AddCleanupPasses(pm);

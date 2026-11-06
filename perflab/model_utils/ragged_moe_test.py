@@ -160,6 +160,14 @@ class RaggedExpertsGemma4Test(seed_test_utils.RepeatableTest):
         expected[t] += top_k_weights[t, k] * (h @ experts.down[e])
     test_utils.assert_close(output, expected, rtol=1e-4, atol=1e-5)
 
+  def test_constructs_parameters_in_requested_dtype(self):
+    experts = ragged_moe.RaggedExpertsGemma4(
+        config=self.config, dtype=torch.bfloat16
+    )
+    self.assertEqual(experts.up.dtype, torch.bfloat16)
+    self.assertEqual(experts.gate.dtype, torch.bfloat16)
+    self.assertEqual(experts.down.dtype, torch.bfloat16)
+
   def test_missing_ragged_dot_impl_raises(self):
     experts = ragged_moe.RaggedExpertsGemma4(config=self.config)
     experts.ragged_dot_impl = None

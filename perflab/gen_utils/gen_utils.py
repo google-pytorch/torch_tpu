@@ -14,6 +14,7 @@
 
 """Generates benchmarks from models.csv."""
 
+from collections.abc import Callable, Iterator
 import csv
 import dataclasses
 import importlib
@@ -21,15 +22,16 @@ import io
 import os
 import pathlib
 import re
-from typing import Any, Callable, Iterator
+from typing import Any
 
 import torch
 from perflab import context as context_lib
 from perflab.gen_utils import load_model
 
-# Called as `model_load_fn(ctx, model_id, is_training, full_scope_batch_size)`.
+# Called as `model_load_fn(ctx, model_id, is_training)`; builds the inputs at the
+# batch size of `ctx.require_workload()`.
 ModelLoadFn = Callable[
-    [context_lib.Context, str, bool, int],
+    [context_lib.Context, str, bool],
     tuple[torch.nn.Module, dict[str, Any]],
 ]
 
@@ -1059,7 +1061,6 @@ _GEN_MODEL_CONFIGS_RAW: dict[str, dict[str, Any]] = {
     "lightglue_superpoint_forward_gen": {
         "skipped_run_modes": {
             "compiled",
-            "eager_optimized",
         },
     },
     "lightglue_superpoint_train_gen": {
@@ -1830,12 +1831,18 @@ _GEN_MODEL_CONFIGS_RAW: dict[str, dict[str, Any]] = {
             "eager_optimized",
         },
     },
+    "tapas_base_finetuned_sqa_train_gen": {
+        "model_load_fn": load_model.tapas_load_model,
+    },
     "tapas_base_finetuned_wtq_train_gen": {
         "skipped_run_modes": {
             "compiled",
             "eager_default",
             "eager_optimized",
         },
+    },
+    "tapas_large_finetuned_sqa_train_gen": {
+        "model_load_fn": load_model.tapas_load_model,
     },
     "text2vec_base_chinese_paraphrase_train_gen": {
         "skipped_run_modes": {

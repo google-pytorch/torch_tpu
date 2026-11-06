@@ -91,6 +91,9 @@ torch_tpu_py_library(
 torch_tpu_py_library(
     name = "_tcmalloc_check",
     srcs = ["_tcmalloc_check.py"],
+    deps = [
+        "//src/torch_tpu/_internal:env",
+    ],
 )
 
 py_library_providing_imports_info(

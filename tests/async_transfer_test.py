@@ -399,7 +399,7 @@ class AsyncTransferTest(seed_test_utils.RepeatableTest):
     tpu_tensor = cpu_tensor.to('tpu', non_blocking=True)
 
     # 3. Synchronize
-    # (Should wait for the H2D future registered via RecordAsyncHostToDevice)
+    # (Should wait for the H2D future registered via ScheduleHostToDeviceTransfer)
     torch.accelerator.synchronize()
 
     # 4. Modify the host tensor immediately after synchronize
@@ -454,6 +454,101 @@ class AsyncTransferTest(seed_test_utils.RepeatableTest):
         mean_val,
         1.0,
         'torch.accelerator.synchronize() failed to wait for H2D transfer.',
+    )
+
+  def test_event_wait_delays_host_to_device_transfer(self):
+    """Verifies that inserting a stream wait delays H2D transfer."""
+    device = torch.device('tpu')
+
+    # 1 byte of data on host, to be transferred to TPU.
+    cpu_src = torch.ones(1, dtype=torch.uint8, device='cpu').pin_memory()
+    tpu_dst = torch.empty(1, dtype=torch.uint8, device=device)
+
+    work_stream = torch.tpu.Stream()
+    transfer_stream = torch.tpu.Stream()
+
+    # Start a bunch of work on the work stream, then take an event at the end
+    with torch.tpu.stream(work_stream):
+      x = torch.zeros(1024, 1024, dtype=torch.int32, device=device)
+      for _ in range(1000):
+        x.add_(1)
+      work_event = torch.tpu.Event(enable_timing=True)
+      work_event.record(work_stream)
+
+    # Start a nonblocking H2D transfer, but make it wait for the work event.
+    with torch.tpu.stream(transfer_stream):
+      transfer_stream.wait_event(work_event)
+      tpu_dst.copy_(cpu_src, non_blocking=True)
+      transfer_event = torch.tpu.Event(enable_timing=True)
+      transfer_event.record(transfer_stream)
+
+    # The transfer event should not immediately be ready.
+    self.assertFalse(transfer_event.query())
+
+    # The work event should be ready before the transfer event; equivalently,
+    # there should be no point where the transfer event is complete but the
+    # work event is not.
+    transfer_done = transfer_event.query()
+    work_done = work_event.query()
+    while not (transfer_done and work_done):
+      transfer_done = transfer_event.query()
+      work_done = work_event.query()
+      self.assertFalse(transfer_done and not work_done)
+      time.sleep(0.01)  # 10ms sleep
+
+    # The elapsed time between the work event and the transfer event should not
+    # be negative.
+    self.assertGreaterEqual(
+        work_event.elapsed_time(transfer_event),
+        0,
+    )
+
+  def test_event_wait_delays_device_to_host_transfer(self):
+    """Verifies that inserting a stream wait delays D2H transfer."""
+    device = torch.device('tpu')
+
+    # 1 byte of data on TPU, to be transferred to host.
+    tpu_src = torch.ones(1, dtype=torch.uint8, device=device)
+    # Pinned memory to copy into.
+    cpu_dst = torch.empty(1, dtype=torch.uint8, device='cpu').pin_memory(device)
+
+    work_stream = torch.tpu.Stream()
+    transfer_stream = torch.tpu.Stream()
+
+    # Start a bunch of work on the work stream, then take an event at the end
+    with torch.tpu.stream(work_stream):
+      x = torch.zeros(1024, 1024, dtype=torch.int32, device=device)
+      for _ in range(1000):
+        x.add_(1)
+      work_event = torch.tpu.Event(enable_timing=True)
+      work_event.record(work_stream)
+
+    # Start a nonblocking D2H transfer, but make it wait for the work event.
+    with torch.tpu.stream(transfer_stream):
+      transfer_stream.wait_event(work_event)
+      cpu_dst.copy_(tpu_src, non_blocking=True)
+      transfer_event = torch.tpu.Event(enable_timing=True)
+      transfer_event.record(transfer_stream)
+
+    # The transfer event should not immediately be ready.
+    self.assertFalse(transfer_event.query())
+
+    # The work event should be ready before the transfer event; equivalently,
+    # there should be no point where the transfer event is complete but the
+    # work event is not.
+    transfer_done = transfer_event.query()
+    work_done = work_event.query()
+    while not (transfer_done and work_done):
+      transfer_done = transfer_event.query()
+      work_done = work_event.query()
+      self.assertFalse(transfer_done and not work_done)
+      time.sleep(0.01)  # 10ms sleep
+
+    # The elapsed time between the work event and the transfer event should not
+    # be negative.
+    self.assertGreaterEqual(
+        work_event.elapsed_time(transfer_event),
+        0,
     )
 
 

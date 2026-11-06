@@ -62,6 +62,7 @@
 #include "absl/strings/str_format.h"
 #include "absl/strings/str_join.h"
 #include "absl/strings/str_split.h"
+#include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
 #include "c10/core/ScalarType.h"
 #include "c10/core/TensorOptions.h"
@@ -97,7 +98,6 @@
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/materialize.h"
 #include "csrc/eager/op_dispatcher.h"
-#include "csrc/eager/split_traversal.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/macros/kernel.h"
@@ -233,7 +233,7 @@ absl::StatusOr<ReduceScatterShapeMode> ValidateReduceScatterInputTensorShape(
   ABSL_VLOG(1) << "ValidateReduceScatterInputTensorShape: stack_mode_dims: "
                << ToString(stack_mode_dims);
 
-  Dimensions actual_input_dims{input.sizes().begin(), input.sizes().end()};
+  Dimensions actual_input_dims = CopyIntVector(input.sizes());
   ABSL_VLOG(1) << "ValidateReduceScatterInputTensorShape: actual_input_dims: "
                << ToString(actual_input_dims);
 
@@ -665,6 +665,19 @@ ProcessGroupTpu::CrossHostSendBuffers(
             all_sent_future->markCompleted(c10::IValue());
           }
         });
+  }
+  // Delete the consumed one-shot descriptor keys so the store doesn't grow
+  // unboundedly. A failed delete can't affect this transfer
+  // (descriptors are already read and copies enqueued), so only log it.
+  if (!descriptors.empty()) {
+    for (const std::string& key : descriptor_keys) {
+      try {
+        store_->deleteKey(key);
+      } catch (const std::exception& e) {
+        ABSL_LOG(WARNING) << "failed to delete P2P descriptor key " << key
+                          << " from the store: " << e.what();
+      }
+    }
   }
   return all_sent_future;
 }
@@ -1958,8 +1971,7 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::experimental_send(
 
   int64_t src_device_id = addressable_device_id_;
   int64_t dst_device_id = member_device_ids_[dst_rank];
-  for (size_t i = 0; i < tensors.size(); ++i) {
-    const auto& tensor = tensors[i];
+  for (const auto& tensor : tensors) {
     // Extract the underlying hardware buffer from the tensor.
     TT_ASSIGN_OR_THROW(
         const DeviceBufferRef device_buffer,
@@ -1968,8 +1980,13 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::experimental_send(
                        device_buffer.AwaitBuffer());
 
     pjrt_buffers.push_back(pjrt_buffer);
+    int64_t seq;
+    {
+      absl::MutexLock lock(p2p_seq_mu_);
+      seq = send_seq_[{dst_rank, tag}]++;
+    }
     transfer_keys.push_back(
-        GetCrossHostTransferKey(src_device_id, dst_device_id, tag, i));
+        GetCrossHostTransferKey(src_device_id, dst_device_id, tag, seq));
   }
 
   // Initiate the cross-host send logic, which will block until
@@ -1991,14 +2008,18 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::experimental_recv(
 
   int64_t src_device_id = member_device_ids_[src_rank];
   int64_t dst_device_id = addressable_device_id_;
-  for (size_t i = 0; i < tensors.size(); ++i) {
-    const auto& tensor = tensors[i];
+  for (const auto& tensor : tensors) {
     TT_ASSIGN_OR_THROW(auto xla_dtype,
                        ConvertTo<xla::PrimitiveType>(tensor.scalar_type()));
     xla::Shape xla_shape = xla::ShapeUtil::MakeShape(xla_dtype, tensor.sizes());
     recv_shapes.push_back(std::move(xla_shape));
+    int64_t seq;
+    {
+      absl::MutexLock lock(p2p_seq_mu_);
+      seq = recv_seq_[{src_rank, tag}]++;
+    }
     transfer_keys.push_back(
-        GetCrossHostTransferKey(src_device_id, dst_device_id, tag, i));
+        GetCrossHostTransferKey(src_device_id, dst_device_id, tag, seq));
   }
 
   // Initiate the receive process. This creates placeholder buffers and
@@ -2303,10 +2324,8 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::gather(
             empty_buffers.push_back(std::move(empty_buffer));
             allgather_outputs.push_back(std::move(tensor));
           }
-          TT_THROW_IF_ERROR(
-              Materialize(empty_buffers, MaterializationReason::kDistributedOp,
-                          GraphSplitMode::kSplitGraph,
-                          MaterializationBlockMode::kNonBlocking));
+          TT_THROW_IF_ERROR(Materialize(empty_buffers,
+                                        MaterializationReason::kDistributedOp));
         }
 
         c10d::AllgatherOptions allgather_opts;

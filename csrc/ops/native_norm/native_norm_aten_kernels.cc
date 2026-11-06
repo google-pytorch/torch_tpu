@@ -27,6 +27,7 @@
 #include "c10/core/DefaultDtype.h"
 #include "c10/core/ScalarType.h"
 #include "c10/util/OptionalArrayRef.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
@@ -57,8 +58,7 @@ absl::StatusOr<at::Tensor> PNorm(const at::Tensor& self,
                                  OpParamCacheKeys op_cache_keys) {
   c10::ScalarType out_dtype =
       dtype.value_or(c10::toRealValueType(self.scalar_type()));
-  if (!dtype.has_value() &&
-      c10::isIntegralType(out_dtype, /*includeBool=*/true)) {
+  if (!dtype.has_value() && IsIntegral(out_dtype)) {
     out_dtype = c10::get_default_dtype_as_scalartype();
   }
 
@@ -102,7 +102,7 @@ at::Tensor AtenNativeNormScalar(const at::Tensor& self, const at::Scalar& p) {
   TT_KERNEL(OpName::kNativeNorm, op_cache_keys, (self, promoted_ord), {
     if (promoted_ord.IsZero()) {
       at::ScalarType out_dtype = c10::toRealValueType(self.scalar_type());
-      if (c10::isIntegralType(out_dtype, /*includeBool=*/true)) {
+      if (IsIntegral(out_dtype)) {
         out_dtype = c10::get_default_dtype_as_scalartype();
       }
       return at::sum(self.ne(0), at::IntArrayRef{}, /*keepdim=*/false,
@@ -131,8 +131,7 @@ at::Tensor AtenNativeNormScalarOptDimDtype(
               if (promoted_ord.IsZero()) {
                 at::ScalarType out_dtype =
                     dtype.value_or(c10::toRealValueType(self.scalar_type()));
-                if (!dtype.has_value() &&
-                    c10::isIntegralType(out_dtype, /*includeBool=*/true)) {
+                if (!dtype.has_value() && IsIntegral(out_dtype)) {
                   out_dtype = c10::get_default_dtype_as_scalartype();
                 }
                 return at::sum(self.ne(0), dim, keepdim, out_dtype);

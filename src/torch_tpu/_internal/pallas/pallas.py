@@ -19,6 +19,7 @@ of these APIs requires that your environment also has JAX/Pallas installed.
 """
 
 import collections.abc
+from collections.abc import Callable, Sequence
 import enum
 import functools
 import hashlib
@@ -28,7 +29,7 @@ import math
 import pathlib
 import types
 import typing
-from typing import Any, Callable, Sequence, Union, overload
+from typing import Any, Union, overload
 from absl import logging
 import frozendict
 import numpy as np
@@ -125,10 +126,15 @@ __all__ = [
 def _convert_shape(shape, mesh, partition_spec, op):
   """Converts a shape based on a mesh and partition specification."""
   if mesh is not None and partition_spec is not None:
-    axis_to_index = {axis: index for index, axis in enumerate(mesh.axis_names)}
+    mesh_shape = mesh.shape
     ans = tuple(
         [
-            op(s, mesh.devices.shape[axis_to_index[name]])
+            op(
+                s,
+                math.prod(mesh_shape[ax] for ax in name)
+                if isinstance(name, tuple)
+                else mesh_shape[name],
+            )
             if name is not None
             else s
             for s, name in zip(shape, partition_spec)
@@ -219,8 +225,12 @@ def jax_placeholders(
 
 def torch_placeholder(
     array: jax.core.ShapedArray | None,
-    mesh: jax.sharding.Mesh | None = None,
-    partition_spec: tuple[str | None, ...] | None = None,
+    mesh: jax.sharding.Mesh | jax.sharding.AbstractMesh | None = None,
+    partition_spec: (
+        tuple[str | tuple[str, ...] | None, ...]
+        | jax.sharding.PartitionSpec
+        | None
+    ) = None,
     device: torch.device | str = "tpu",
 ) -> torch.Tensor | None:
   """Converts a jax output to a torch tensor for return type.
@@ -278,6 +288,8 @@ def _normalize_output_partition_specs(
   """Normalizes output partition specs across output leaves."""
   if output_specs is None:
     return None
+  if isinstance(output_specs, jax.sharding.PartitionSpec):
+    return [output_specs] * num_outputs
   if (
       isinstance(output_specs, tuple)
       and len(output_specs) > 0
@@ -953,7 +965,7 @@ class JaxCallable:
       name: str,
       jit_fn: Any,
       trace_key: str,
-      mesh: jax.sharding.Mesh | None = None,
+      mesh: jax.sharding.Mesh | jax.sharding.AbstractMesh | None = None,
       input_partition_specs: tuple[tuple[str, ...], ...] | None = None,
       output_partition_specs: tuple[tuple[str, ...], ...] | None = None,
       static_argnums: tuple[int, ...] = (),
@@ -1065,7 +1077,11 @@ class JaxCallable:
     self._param_name_to_idx = {
         p.name: idx for idx, p in enumerate(self._orig_params)
     }
-    self._donate_argnums_set = set(self.donate_argnums)
+    num_orig_params = len(self._orig_params)
+    self._donate_argnums_set = {
+        idx + num_orig_params if idx < 0 and num_orig_params > 0 else idx
+        for idx in self.donate_argnums
+    }
 
     logging.debug("Creating JAX callable: %s", self)
 
@@ -1345,7 +1361,8 @@ class JaxCallable:
     device_assignment: list[int] = []
     if self.mesh is not None:
       _validate_pallas_mesh_size(mesh=self.mesh)
-      device_assignment = [int(d.id) for d in self.mesh.devices.flat]
+      if not isinstance(self.mesh, jax.sharding.AbstractMesh):
+        device_assignment = [int(d.id) for d in self.mesh.devices.flat]
 
     results = tpu_torch_pallas.call_custom_kernel(
         self.name,
@@ -1365,7 +1382,7 @@ class JaxCallable:
 
 def _validate_pallas_mesh_size(
     *,
-    mesh: jax.sharding.Mesh | None = None,
+    mesh: jax.sharding.Mesh | jax.sharding.AbstractMesh | None = None,
     mesh_shape: Sequence[int] | None = None,
     process_group: dist.ProcessGroup | None = None,
 ) -> None:
@@ -1391,11 +1408,12 @@ def _validate_pallas_mesh_size(
           f"Pallas kernel mesh size ({mesh.size}) must not exceed world size"
           f" ({world_size})."
       )
-    device_ids = [int(d.id) for d in mesh.devices.flat]
-    if len(set(device_ids)) != len(device_ids):
-      raise ValueError(
-          f"Pallas kernel mesh device ids must be unique. Got {device_ids}."
-      )
+    if not isinstance(mesh, jax.sharding.AbstractMesh):
+      device_ids = [int(d.id) for d in mesh.devices.flat]
+      if len(set(device_ids)) != len(device_ids):
+        raise ValueError(
+            f"Pallas kernel mesh device ids must be unique. Got {device_ids}."
+        )
 
 
 @overload
@@ -1405,7 +1423,7 @@ def custom_jax_kernel(
     static_argnums: tuple[int, ...] = (),
     donate_argnums: list[int] | None = None,
     input_output_aliases: dict[int, int] | None = None,
-    mesh: jax.sharding.Mesh | None = None,
+    mesh: jax.sharding.Mesh | jax.sharding.AbstractMesh | None = None,
     input_partition_specs: tuple[tuple[str, ...], ...] | None = None,
     output_partition_specs: tuple[tuple[str, ...], ...] | None = None,
     *,
@@ -1422,7 +1440,7 @@ def custom_jax_kernel(
     static_argnums: tuple[int, ...] = (),
     donate_argnums: list[int] | None = None,
     input_output_aliases: dict[int, int] | None = None,
-    mesh: jax.sharding.Mesh | None = None,
+    mesh: jax.sharding.Mesh | jax.sharding.AbstractMesh | None = None,
     input_partition_specs: tuple[tuple[str, ...], ...] | None = None,
     output_partition_specs: tuple[tuple[str, ...], ...] | None = None,
     *,
@@ -1438,7 +1456,7 @@ def custom_jax_kernel(
     static_argnums=(),
     donate_argnums=None,
     input_output_aliases=None,
-    mesh: jax.sharding.Mesh | None = None,
+    mesh: jax.sharding.Mesh | jax.sharding.AbstractMesh | None = None,
     input_partition_specs=None,
     output_partition_specs=None,
     *,
@@ -1553,7 +1571,7 @@ def jax_op(
     /,
     *,
     donate_argnums: Sequence[int] | None = None,
-    mesh: jax.sharding.Mesh | None = None,
+    mesh: jax.sharding.Mesh | jax.sharding.AbstractMesh | None = None,
     input_partition_specs: tuple[tuple[str, ...], ...] | None = None,
     output_partition_specs: tuple[tuple[str, ...], ...] | None = None,
 ) -> Callable[[Callable[..., Any]], CustomOpDef]:
@@ -1567,7 +1585,7 @@ def jax_op(
     /,
     *,
     donate_argnums: Sequence[int] | None = None,
-    mesh: jax.sharding.Mesh | None = None,
+    mesh: jax.sharding.Mesh | jax.sharding.AbstractMesh | None = None,
     input_partition_specs: tuple[tuple[str, ...], ...] | None = None,
     output_partition_specs: tuple[tuple[str, ...], ...] | None = None,
 ) -> CustomOpDef:
@@ -1583,7 +1601,7 @@ def jax_op(
     /,
     *,
     donate_argnums=None,
-    mesh: jax.sharding.Mesh | None = None,
+    mesh: jax.sharding.Mesh | jax.sharding.AbstractMesh | None = None,
     input_partition_specs=None,
     output_partition_specs=None,
 ):
@@ -1672,14 +1690,29 @@ def jax_op(
       jax_args, jax_kwargs = wrapped_fn._get_jax_placeholders(
           norm_args, norm_kwargs
       )
-      with jax._src.config.export_ignore_forward_compatibility(True):
-        lowered = wrapped_fn.exported(*jax_args, **jax_kwargs)
+      if (
+          isinstance(mesh, jax.sharding.AbstractMesh)
+          and mesh.abstract_device is None
+      ):
+        out_struct = jax.eval_shape(wrapped_fn.jit_fn, *jax_args, **jax_kwargs)
+        out_leaves, out_tree = jax.tree.flatten(out_struct)
+        out_avals = [
+            jax.core.ShapedArray(leaf.shape, leaf.dtype)
+            if hasattr(leaf, "shape") and hasattr(leaf, "dtype")
+            else leaf
+            for leaf in out_leaves
+        ]
+      else:
+        with jax._src.config.export_ignore_forward_compatibility(True):
+          lowered = wrapped_fn.exported(*jax_args, **jax_kwargs)
+        out_avals = lowered.out_avals
+        out_tree = lowered.out_tree
       specs = _normalize_output_partition_specs(
-          output_partition_specs, len(lowered.out_avals)
-      ) or [None] * len(lowered.out_avals)
-      unflattened = lowered.out_tree.unflatten(
+          output_partition_specs, len(out_avals)
+      ) or [None] * len(out_avals)
+      unflattened = out_tree.unflatten(
           torch_placeholder(aval, mesh=mesh, partition_spec=spec, device=dev)
-          for aval, spec in zip(lowered.out_avals, specs)
+          for aval, spec in zip(out_avals, specs)
       )
       # pylint: enable=protected-access
       return unflattened

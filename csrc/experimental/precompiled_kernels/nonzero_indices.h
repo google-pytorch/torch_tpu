@@ -17,23 +17,16 @@
 #ifndef TORCH_TPU_CSRC_EXPERIMENTAL_PRECOMPILED_KERNELS_NONZERO_INDICES_H_
 #define TORCH_TPU_CSRC_EXPERIMENTAL_PRECOMPILED_KERNELS_NONZERO_INDICES_H_
 
-#include <cstdint>
-#include <memory>
-
-#include "absl/status/statusor.h"
-#include "csrc/common/cache_key.h"
-#include "csrc/common/compilation.h"
-#include "csrc/common/compilation_spec.h"
-#include "xla/pjrt/pjrt_client.h"
-#include "xla/pjrt/pjrt_executable.h"
+#include "csrc/common/unbounded_dynamic_kernel_registry.h"
 
 namespace torch_tpu {
 
-// Builds and compiles the Mosaic nonzero kernel. Run through `Execute` with the
-// F32[M,N] input and the logical output shape S64[K,2], the executable returns
-// the (row, column) coordinates of the input's nonzero elements, ordered by
-// row, then column. The predicate excludes only +0.0 and -0.0, matching
-// torch.nonzero.
+// Returns the Mosaic nonzero indices kernel, keyed for registration with
+// `UnboundedDynamicKernelRegistry` under the shapeless key of a 2-D F32 nonzero
+// graph. Run through `Execute` with the F32[M,N] input and the logical output
+// shape S64[K,2], its executable returns the (row, column) coordinates of the
+// input's nonzero elements, ordered by row, then column. The predicate
+// excludes only +0.0 and -0.0, matching torch.nonzero.
 //
 // Buffer contract (all payloads have no dynamic-metadata prefix):
 // - Input: F32[M,N]{1,0:T(8,128)}, the only buffer the caller supplies.
@@ -48,21 +41,7 @@ namespace torch_tpu {
 //
 // Caller-checked arithmetic bounds: 1 <= M <= INT32_MAX,
 // 1 <= N <= INT32_MAX - 127, and 3 <= K <= min(M*N, INT32_MAX).
-//
-// Matches the LoadedExecutableBuilder signature, so it can be passed directly
-// to CompilationCache::AddUnboundedDynamicCacheEntry. The kernel's build
-// options and argument layouts are set on top of `compile_options`.
-absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>>
-BuildNonzeroIndicesExecutable(xla::PjRtClient& client,
-                              UniqueCompileOptions compile_options);
-
-// Returns the UnboundedDynamicExecutionMetadata for the nonzero indices
-// kernel.
-UnboundedDynamicExecutionMetadata MakeNonzeroDynamicMetadata();
-
-// Returns the CompilationCacheKey which uses the ShapelessKey a nonzero graph
-// would be lowered to.
-CompilationCacheKey NonZeroCacheKey();
+UnboundedDynamicKernel GetNonzeroUnboundedDynamicKernel();
 
 }  // namespace torch_tpu
 

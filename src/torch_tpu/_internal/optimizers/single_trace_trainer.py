@@ -14,12 +14,13 @@
 
 """Simple trainer library for compiling and running PyTorch training steps on TPU."""
 
+from collections.abc import Callable, Sequence
 import contextlib
 import dataclasses
 import inspect
 import sys
 import typing
-from typing import Any, Callable, Sequence
+from typing import Any
 
 import torch
 import torch.func as func

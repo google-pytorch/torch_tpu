@@ -25,12 +25,14 @@ import warnings
 from absl.testing import absltest
 from absl.testing import parameterized
 from torch_tpu import _tcmalloc_check
+from torch_tpu._internal import env
 from torch_tpu._internal import warnings as warning_categories
+from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
 
 # The prefix users are told to filter on, via
-# PYTHONWARNINGS="ignore:<TorchTpu/Performance/TcMalloc/".
-_DOCUMENTED_FILTER_PREFIX: Final[str] = "<TorchTpu/Performance/TcMalloc/"
+# PYTHONWARNINGS="ignore://TorchTpu/Performance/TcMalloc/".
+_DOCUMENTED_FILTER_PREFIX: Final[str] = "//TorchTpu/Performance/TcMalloc/"
 
 # A /proc/self/maps holding neither tcmalloc nor a sanitizer.
 _MAPS_WITHOUT_TCMALLOC: Final[str] = "7f000000 /usr/lib/libc.so.6\n"
@@ -50,6 +52,16 @@ def _no_tcmalloc() -> Iterator[None]:
       ),
   ):
     yield
+
+
+def _check_tcmalloc_in_child_worker(q) -> None:
+  """Worker function executed in a spawned child process."""
+  with _no_tcmalloc(), warnings.catch_warnings(record=True) as caught:
+    warnings.simplefilter("always")
+    _tcmalloc_check.check_tcmalloc()
+  q.put(
+      (env.has_torch_tpu_ancestor_process(), [str(w.message) for w in caught])
+  )
 
 
 class CheckTcmallocTest(seed_test_utils.RepeatableTest):
@@ -117,9 +129,9 @@ class CheckTcmallocTest(seed_test_utils.RepeatableTest):
   def test_user_filter_takes_precedence_over_default_filters(self) -> None:
     with _no_tcmalloc(), warnings.catch_warnings(record=True) as caught:
       warnings.resetwarnings()
-      # Simulates PYTHONWARNINGS="always:<TorchTpu/Performance/".
+      # Simulates PYTHONWARNINGS="always://TorchTpu/Performance/".
       warnings.filterwarnings(
-          "always", message=re.escape("<TorchTpu/Performance/")
+          "always", message=re.escape("//TorchTpu/Performance/")
       )
       _tcmalloc_check.install_default_filters()
       _tcmalloc_check.check_tcmalloc()
@@ -128,10 +140,10 @@ class CheckTcmallocTest(seed_test_utils.RepeatableTest):
     self.assertLen(caught, 2)
 
   @parameterized.named_parameters(
-      ("tcmalloc_warning", "<TorchTpu/Performance/TcMalloc/"),
-      ("tcmalloc_warning_only", "<TorchTpu/Performance/TcMalloc/>"),
-      ("performance_warning", "<TorchTpu/Performance/"),
-      ("torch_tpu_warning", "<TorchTpu/"),
+      ("tcmalloc_warning", "//TorchTpu/Performance/TcMalloc/"),
+      ("tcmalloc_warning_only", "//TorchTpu/Performance/TcMalloc//"),
+      ("performance_warning", "//TorchTpu/Performance/"),
+      ("torch_tpu_warning", "//TorchTpu/"),
   )
   def test_warning_is_suppressed_by_ignore_filter(self, prefix: str) -> None:
     with _no_tcmalloc(), warnings.catch_warnings(record=True) as caught:
@@ -143,7 +155,7 @@ class CheckTcmallocTest(seed_test_utils.RepeatableTest):
 
   def test_warning_is_escalated_by_error_filter(self) -> None:
     with _no_tcmalloc(), warnings.catch_warnings():
-      warnings.filterwarnings("error", message="<TorchTpu/")
+      warnings.filterwarnings("error", message="//TorchTpu/")
       with (
           self.assertRaisesRegex(  # ASSERT_RAISES_OK=Verifies the error filter.
               UserWarning,
@@ -223,6 +235,34 @@ class CheckTcmallocTest(seed_test_utils.RepeatableTest):
         [w for w in caught if _DOCUMENTED_FILTER_PREFIX in str(w.message)]
     )
 
+  def test_does_not_warn_when_has_torch_tpu_ancestor_process(self) -> None:
+    with (
+        _no_tcmalloc(),
+        mock.patch.object(
+            env,
+            "has_torch_tpu_ancestor_process",
+            autospec=True,
+            return_value=True,
+        ),
+        warnings.catch_warnings(record=True) as caught,
+    ):
+      warnings.simplefilter("always")
+      _tcmalloc_check.check_tcmalloc()
+
+    self.assertEmpty(caught)
+
+  def test_does_not_warn_in_spawned_child_process(self) -> None:
+    self.assertFalse(env.has_torch_tpu_ancestor_process())
+    ctx = multiprocessing.get_context("spawn")
+    q = ctx.Queue()
+    proc = ctx.Process(target=_check_tcmalloc_in_child_worker, args=(q,))
+    proc.start()
+    proc.join()
+    self.assertEqual(proc.exitcode, 0)
+    has_ancestor, caught_messages = q.get(timeout=5)
+    self.assertTrue(has_ancestor)
+    self.assertEmpty(caught_messages)
+
 
 if __name__ == "__main__":
-  absltest.main()
+  multiprocessing.handle_test_main(absltest.main)

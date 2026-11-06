@@ -281,11 +281,12 @@ Tile Splat(Scalar scalar, llvm::ArrayRef<int64_t> shape) {
       internal::EmitBroadcast(internal::unwrap(scalar), shape), scalar.dtype());
 }
 
-Tile Reciprocal(Tile t, bool approx) {
-  ABSL_CHECK(t.dtype().IsFloat());  // CRASH_OK
+Tile Reciprocal(Tile t, ReciprocalMode mode) {
+  ABSL_CHECK(t.dtype().IsFloat())  // CRASH_OK
+      << "Reciprocal() requires a floating-point tile";
   return internal::wrap<Tile>(
       tpu::ReciprocalOp::create(internal::CurrentBuilder(), internal::unwrap(t),
-                                approx,
+                                /*approx=*/mode == ReciprocalMode::kApprox,
                                 /*full_range=*/false),
       t.dtype());
 }
@@ -311,6 +312,48 @@ Tile SumReduce(Tile t, int axis) {
   mlir::ImplicitLocOpBuilder& b = internal::CurrentBuilder();
   return Reduce(t, axis, vector::CombiningKind::ADD,
                 internal::LiteralToAttr(b, t.dtype(), 0.0));
+}
+
+Tile Concat(llvm::ArrayRef<Tile> tiles, const int32_t axis) {
+  ABSL_CHECK(!tiles.empty())  // CRASH_OK
+      << "Concat() requires at least one tile";
+  const Tile& first = tiles.front();
+  const int64_t rank = first.rank();
+  ABSL_CHECK(axis >= 0 && axis < rank)  // CRASH_OK
+      << "Concat() axis " << axis << " out of bounds for rank " << rank;
+  if (tiles.size() == 1) {
+    return first;
+  }
+  const DType dtype = first.dtype();
+  const llvm::ArrayRef<int64_t> first_dims = first.dims();
+  int64_t concat_dim_size = 0;
+  llvm::SmallVector<mlir::Value, 4> operands;
+  operands.reserve(tiles.size());
+  for (const Tile& tile : tiles) {
+    ABSL_CHECK_EQ(tile.dtype(), dtype)  // CRASH_OK
+        << "Concat() requires all tiles to have the same dtype (" << dtype
+        << " vs " << tile.dtype() << ")";
+    ABSL_CHECK_EQ(tile.rank(), rank)  // CRASH_OK
+        << "Concat() requires all tiles to have the same rank (" << rank
+        << " vs " << tile.rank() << ")";
+    const llvm::ArrayRef<int64_t> dims = tile.dims();
+    for (int64_t d = 0; d < rank; ++d) {
+      if (d == axis) continue;
+      ABSL_CHECK_EQ(dims[d], first_dims[d])  // CRASH_OK
+          << "Concat() dimension mismatch on axis " << d << " ("
+          << first_dims[d] << " vs " << dims[d] << ")";
+    }
+    concat_dim_size += dims[axis];
+    operands.push_back(internal::unwrap(tile));
+  }
+  Dimensions out_dims(first_dims);
+  out_dims[axis] = concat_dim_size;
+  mlir::ImplicitLocOpBuilder& b = internal::CurrentBuilder();
+  return internal::wrap<Tile>(
+      tpu::ConcatenateOp::create(
+          b, internal::ToMlirVectorType(Shape(out_dims, dtype)), operands,
+          static_cast<uint32_t>(axis)),
+      dtype);
 }
 
 Tile Transpose(Tile t) {

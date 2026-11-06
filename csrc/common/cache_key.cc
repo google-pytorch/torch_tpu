@@ -273,13 +273,13 @@ absl::StatusOr<OpParamCacheKeys> OpParamCacheKeys::Builder::operator*() {
 }
 
 std::string CompilationCacheKey::CompactFormat() const {
-  if (id_key_.empty()) {
+  if (id_key_ < 0) {
     return absl::StrFormat(
         "%016x_%016x_%016x", graph_key_.shapeless_key().key(),
         graph_key_.dimensions_key().key(), compile_options_key_.key());
   }
   return absl::StrFormat(
-      "%016x_%016x_%016x_%s", graph_key_.shapeless_key().key(),
+      "%016x_%016x_%016x_%08x", graph_key_.shapeless_key().key(),
       graph_key_.dimensions_key().key(), compile_options_key_.key(), id_key_);
 }
 

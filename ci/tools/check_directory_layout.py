@@ -15,9 +15,10 @@
 """Validates that repository directory layout matches the expected manifests."""
 
 import argparse
+from collections.abc import Iterable
 import pathlib
 import sys
-from typing import Final, Iterable
+from typing import Final
 
 # TODO(b/554114867): Implement symlink-based src folder setup and remove this manifest check.
 

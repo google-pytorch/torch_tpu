@@ -893,6 +893,17 @@ absl::StatusOr<mlir::MlirOp> ConvolutionLike(
                                 static_lhs.runtime_sizes);
 }
 
+std::string ConsumeMlirDiagnostics(
+    mlir::BaseScopedDiagnosticHandler& diag_handler) {
+  // A non-OK status is always UNKNOWN with the diagnostics as its message, so
+  // the status code carries no information.
+  const absl::Status status = diag_handler.ConsumeStatus();
+  if (status.ok()) {
+    return "no MLIR diagnostic was reported";
+  }
+  return AdaptExternalErrorMessage(status.message());
+}
+
 absl::StatusOr<mlir::MlirOp> BroadcastIfNeeded(
     mlir::MlirOp input, absl::Span<const int64_t> shape) {
   ABSL_VLOG(1) << "[BroadcastIfNeeded] input: " << input.ToString()
@@ -938,8 +949,7 @@ absl::StatusOr<mlir::MlirOp> BroadcastIfNeeded(
   }
   TT_RET_CHECK(mlir::succeeded(broadcasted_value_or_fail),
                error::kInvalidArgument)
-      << "failed to broadcast tensor: "
-      << diag_handler.ConsumeStatus().message();
+      << "failed to broadcast tensor: " << ConsumeMlirDiagnostics(diag_handler);
   return mlir::MlirOp(input.getBuilder(), *broadcasted_value_or_fail);
 }
 
@@ -962,8 +972,7 @@ absl::StatusOr<mlir::MlirOp> BroadcastIfNeeded(
 
   TT_RET_CHECK(mlir::succeeded(broadcasted_value_or_fail),
                error::kInvalidArgument)
-      << "failed to broadcast tensor: "
-      << diag_handler.ConsumeStatus().message();
+      << "failed to broadcast tensor: " << ConsumeMlirDiagnostics(diag_handler);
   return mlir::MlirOp(input.getBuilder(), *broadcasted_value_or_fail);
 }
 
@@ -989,7 +998,7 @@ absl::StatusOr<std::vector<mlir::MlirOp>> ApplyBroadcastIfNeeded(
   TT_RET_CHECK(mlir::succeeded(broadcasted_values_or_fail),
                error::kInvalidArgument)
       << "failed to broadcast tensors: "
-      << diag_handler.ConsumeStatus().message();
+      << ConsumeMlirDiagnostics(diag_handler);
   mlir::SmallVector<mlir::Value> broadcasted_values =
       std::move(*broadcasted_values_or_fail);
   std::vector<mlir::MlirOp> result;
@@ -1212,8 +1221,7 @@ std::string BuildModuleNameFromPyContext(
   }
 
   os << "_";
-  mlir::Location location =
-      torch_tpu::MakeMlirLocation(mlir_context, *python_context);
+  mlir::Location location = MakeMlirLocation(mlir_context, *python_context);
 
   // Traverse the location from the current frame up through callee frames
   // until we hit a viable user frame of the form
@@ -1546,8 +1554,7 @@ absl::StatusOr<mlir::MlirOp> BuildMaybeSlice(mlir::MlirOp op, int64_t dimension,
   }
 
   auto input_tensor_type = GetTensorTypeOrDie(op);
-  Dimensions input_shape(input_tensor_type.getShape().begin(),
-                         input_tensor_type.getShape().end());
+  Dimensions input_shape = CopyIntVector(input_tensor_type.getShape());
 
   TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Current usages are guaranteed to be
                  // within range.

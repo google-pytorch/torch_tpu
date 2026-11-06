@@ -161,6 +161,80 @@ class AnnotationsTest(
     test_utils.assert_close(add_one(x).cpu(), expected + 1.0)
     self.assertLen(debugs, 2)
 
+  def test_copy_from_cpu_keeps_layout(self):
+    device = torch.device("tpu")
+    # Column-major, which takes as many bytes as the default row-major layout.
+    layout = tpu_annotations.TpuLayout(minor_to_major=[0, 1], tiles=[[8, 128]])
+    expected = torch.arange(128 * 128, dtype=torch.float32).reshape(128, 128)
+    with tpu_annotations.LayoutContext(layout):
+      x = torch.zeros_like(expected).to(device)
+
+    # Like load_state_dict, copy_ from the CPU keeps `x`'s layout.
+    x.copy_(expected)
+    test_utils.assert_close(x.cpu(), expected)
+    x_layout = tpu_torch_compile.get_device_layout_if_materialized(x)
+    self.assertEqual(tpu_annotations.TpuLayout(*x_layout), layout)
+
+    # An active LayoutContext decides the layout instead.
+    row_major = tpu_annotations.TpuLayout(
+        minor_to_major=[1, 0], tiles=[[8, 128]]
+    )
+    with tpu_annotations.LayoutContext(row_major):
+      x.copy_(expected)
+    test_utils.assert_close(x.cpu(), expected)
+    x_layout = tpu_torch_compile.get_device_layout_if_materialized(x)
+    self.assertEqual(tpu_annotations.TpuLayout(*x_layout), row_major)
+
+  def test_copy_from_cpu_keeps_default_layout(self):
+    device = torch.device("tpu")
+    # A 128x128 tensor's default layout is row-major, {1,0:T(8,128)}.
+    default_layout = tpu_annotations.TpuLayout(
+        minor_to_major=[1, 0], tiles=[[8, 128]]
+    )
+    expected = torch.arange(128 * 128, dtype=torch.float32).reshape(128, 128)
+    x = torch.zeros_like(expected).to(device)
+
+    x.copy_(expected)
+    test_utils.assert_close(x.cpu(), expected)
+    x_layout = tpu_torch_compile.get_device_layout_if_materialized(x)
+    self.assertEqual(tpu_annotations.TpuLayout(*x_layout), default_layout)
+
+  def test_copy_from_cpu_keeps_bfloat16_layout(self):
+    device = torch.device("tpu")
+    # Column-major. The (2, 1) tiles pack pairs of bfloat16 values into 32-bit
+    # words.
+    layout = tpu_annotations.TpuLayout(
+        minor_to_major=[0, 1], tiles=[[16, 128], [2, 1]]
+    )
+    expected = (
+        torch.arange(128 * 128, dtype=torch.float32)
+        .reshape(128, 128)
+        .to(torch.bfloat16)
+    )
+    with tpu_annotations.LayoutContext(layout):
+      x = torch.zeros_like(expected).to(device)
+
+    x.copy_(expected)
+    test_utils.assert_close(x.cpu(), expected)
+    x_layout = tpu_torch_compile.get_device_layout_if_materialized(x)
+    self.assertEqual(tpu_annotations.TpuLayout(*x_layout), layout)
+
+  def test_copy_from_cpu_keeps_layout_when_converting_source(self):
+    device = torch.device("tpu")
+    # Column-major, which takes as many bytes as the default row-major layout.
+    layout = tpu_annotations.TpuLayout(minor_to_major=[0, 1], tiles=[[8, 128]])
+    expected = torch.arange(128 * 128, dtype=torch.float32).reshape(128, 128)
+    with tpu_annotations.LayoutContext(layout):
+      x = torch.zeros_like(expected).to(device)
+
+    # copy_ first converts a source in another dtype, or that isn't contiguous.
+    for src in (expected.double(), expected.t()):
+      with self.subTest(dtype=src.dtype, contiguous=src.is_contiguous()):
+        x.copy_(src)
+        test_utils.assert_close(x.cpu(), src.float())
+        x_layout = tpu_torch_compile.get_device_layout_if_materialized(x)
+        self.assertEqual(tpu_annotations.TpuLayout(*x_layout), layout)
+
   def test_compiled_program_recompiles_after_copy_resets_layout(self):
     device = torch.device("tpu")
     # Column-major, which takes as many bytes as the default row-major layout.
@@ -185,9 +259,9 @@ class AnnotationsTest(
     test_utils.assert_close(add_one(x).cpu(), expected + 1.0)
     self.assertLen(debugs, 1)
 
-    # Like load_state_dict, copy_ gives `x` the default layout, so the next call
-    # compiles a program for it.
-    x.copy_(expected)
+    # Copying from a default-layout TPU tensor gives `x` the default layout, so
+    # the next call compiles a program for it.
+    x.copy_(expected.to(device))
     test_utils.assert_close(add_one(x).cpu(), expected + 1.0)
     self.assertLen(debugs, 2)
 

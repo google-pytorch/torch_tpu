@@ -14,7 +14,7 @@
 
 """Execution modes for each framework and target kind."""
 
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence, Set
 import contextlib
 import enum
 import functools
@@ -174,6 +174,34 @@ def modes_for(
       common.RunMode.EAGER_DEFAULT,
       common.RunMode.COMPILED,
   ]
+
+
+# The run modes that only TPUs and GPUs run. CPU targets, including the
+# FakeTensorMode CPU smoke test, run only `eager_default` (`modes_for`).
+_ACCELERATOR_ONLY_RUN_MODES = frozenset({
+    common.RunMode.EAGER_OPTIMIZED.value,
+    common.RunMode.COMPILED.value,
+})
+
+
+def smoke_skipped_run_modes(
+    skipped_run_modes: Set[str], *, fake_tensor_mode: bool
+) -> frozenset[str]:
+  """Returns the run modes that a benchmark skips in this run.
+
+  The FakeTensorMode CPU smoke test only builds a benchmark and takes a step,
+  in `eager_default`. So under `--fake_tensor_mode`, a benchmark that skips
+  `eager_default` but runs on accelerators in another mode does not skip
+  `eager_default`, and the smoke test checks it too.
+
+  Args:
+    skipped_run_modes: The run modes that the benchmark skips on accelerators.
+    fake_tensor_mode: Whether this run is the FakeTensorMode CPU smoke test.
+  """
+  skipped = frozenset(skipped_run_modes)
+  if fake_tensor_mode and _ACCELERATOR_ONLY_RUN_MODES - skipped:
+    return skipped - {common.RunMode.EAGER_DEFAULT.value}
+  return skipped
 
 
 @contextlib.contextmanager

@@ -154,7 +154,7 @@ void ParseTupleLayout(const py::tuple& t, CustomLayout& cl,
   if (t.size() >= 2 && !t[1].is_none()) {
     auto tiles = t[1].cast<std::vector<std::vector<int64_t>>>();  // INT_VEC_OK
     for (const auto& tile : tiles) {
-      cl.tiles.push_back(Indices(tile.begin(), tile.end()));
+      cl.tiles.push_back(CopyIntVector(tile));
     }
   }
   if (t.size() >= 3 && !t[2].is_none()) {
@@ -182,7 +182,7 @@ CustomLayout ParseCustomLayout(const py::object& obj, const at::Tensor& tensor,
         << "expected valid layout for argument " << arg_index << ", got layout "
         << ToString(minor_to_major) << " for shape "
         << ToString(tensor.sizes());
-    cl.minor_to_major = Indices(minor_to_major.begin(), minor_to_major.end());
+    cl.minor_to_major = CopyIntVector(minor_to_major);
   }
 
   return cl;
@@ -243,9 +243,18 @@ at::Tensor PyMakePlaceholderLike(const at::Tensor& arg_tensor,
   // First, we get a base shape for the contiguous base tensor.
   // This is the smallest amount of data necessary to back the view.
   // If arg_tensor is already contiguous, then this will just be its shape.
-  TT_ASSIGN_OR_THROW(
-      const Dimensions minimal_base_sizes,
-      GetContiguousBaseShape(StridedLayout::FromTensor(arg_tensor)));
+  //
+  // The base starts at the view's own storage offset, not at the start of the
+  // storage: otherwise the executable's parameter shape would depend on the
+  // offset (e.g. x[32:64] would need a [64, ...] base), and an executable
+  // compiled for one slice would be reused for another slice with a different
+  // offset and get a buffer of the wrong size (RuntimeProgramInputMismatch,
+  // https://github.com/google-pytorch/torch_tpu/issues/4409). This must match
+  // PrepareCompiledModeArgumentsImpl in compiled_mode.cc.
+  StridedLayout arg_layout = StridedLayout::FromTensor(arg_tensor);
+  arg_layout.storage_offset = 0;
+  TT_ASSIGN_OR_THROW(const Dimensions minimal_base_sizes,
+                     GetContiguousBaseShape(arg_layout));
 
   // Then, we create a contiguous placeholder tensor with this shape.
   TT_ASSIGN_OR_THROW(
@@ -272,7 +281,7 @@ at::Tensor PyMakePlaceholderLike(const at::Tensor& arg_tensor,
     // the original view, and preserve the requires_grad property.
     view_tensor =
         base_tensor.as_strided(arg_tensor.sizes(), arg_tensor.strides(),
-                               arg_tensor.sym_storage_offset().expect_int());
+                               /*storage_offset=*/0);
   }
 
   if (arg_tensor.requires_grad()) {
@@ -629,7 +638,7 @@ TraverseAndCompileOptions ConvertTraverseAndCompileOptions(
       .use_stablehlo_bounds = use_stablehlo_bounds,
       .argument_layouts = ConvertArgumentLayouts(
           argument_tensors, std::move(argument_layouts_opt)),
-      .donated_inputs = Indices(donated_inputs.begin(), donated_inputs.end()),
+      .donated_inputs = CopyIntVector(donated_inputs),
       .module_name = module_name,
   };
 }
@@ -911,7 +920,8 @@ absl::StatusOr<CompileResult> CompileModuleWithCache(
       CompiledKernel compiled_kernel,
       CompilationCache::GetInstance().GetOrCompile(
           cache_key, input_shapes, output_shapes, std::move(builder),
-          std::move(compile_options), compile_dynamic_adapter));
+          std::move(compile_options), UnboundedKernelPolicy::kDisallow,
+          compile_dynamic_adapter));
 
   TT_ASSIGN_OR_RETURN(SharedLoadedExecutableWithMetadata executable,
                       compiled_kernel.fixed_shape_kernel.get(),
@@ -964,7 +974,8 @@ void PyPrecompilePadModule(const std::vector<TensorInfo>& tensor_info,
                      CompilationCache::GetInstance().GetOrCompile(
                          cache_key, runtime_input_shapes, padded_input_shapes,
                          std::move(pad_builder),
-                         std::move(compilation_spec.xla_compile_options)));
+                         std::move(compilation_spec.xla_compile_options),
+                         UnboundedKernelPolicy::kDisallow));
 }
 
 // Returns a CompileResult containing the executable and optionally the MLIR
@@ -1129,7 +1140,8 @@ void PyPrecompileSliceModule(
                      CompilationCache::GetInstance().GetOrCompile(
                          cache_key, inputs.input_shapes, inputs.output_shapes,
                          std::move(slice_builder),
-                         std::move(compilation_spec.xla_compile_options)));
+                         std::move(compilation_spec.xla_compile_options),
+                         UnboundedKernelPolicy::kDisallow));
 }
 
 // Returns a CompileResult containing the executable and optionally the MLIR
@@ -1205,6 +1217,13 @@ CompileResult PyGetOrCompileSliceModule(
 
 py::bytes PySerializeExecutable(
     const SharedLoadedExecutableWithMetadata& executable) {
+  // Only the PjRt executable is serialized, and `LoadSerializedExecutableImpl`
+  // cannot restore unbounded dynamic execution metadata.
+  TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=torch.compile never requests
+                   // unbounded dynamic kernels.
+      !executable->unbounded_dynamic_execution_metadata().has_value(),
+      error::kInternal)
+      << "cannot serialize an unbounded dynamic kernel executable";
   TT_ASSIGN_OR_THROW(const std::string serialized,
                      executable->GetExecutable()->SerializeExecutable(),
                      _.SetPrepend() << "failed to serialize executable: ");
@@ -2358,13 +2377,16 @@ TT_PYBIND11_MODULE(tpu_torch_compile, m) {
         "Pops the current state of the enable_tracebacks context manager.");
   m.def("push_enable_tracebacks", &PyPushEnableTracebacks, py::arg("enabled"),
         "Pushes a new state onto the enable_tracebacks context manager.");
-  m.def("push_name_scopes", &ScopedPythonContextCapturer::PushNameScopes,
-        py::arg("scopes"),
-        "Pushes a full name scope hierarchy onto the PythonContext capturer "
-        "stack, replacing the active hierarchy until popped.");
-  m.def("pop_name_scopes", &ScopedPythonContextCapturer::PopNameScopes,
-        "Pops the top name scope hierarchy from the PythonContext capturer "
-        "stack, restoring the previous hierarchy.");
+  m.def("append_name_scope", &PyAppendNameScope, py::arg("scope"),
+        "Appends a single name scope to the active hierarchy on top of the "
+        "name scope stack (pushing the extended hierarchy so pop_name_scopes "
+        "restores the previous one).");
+  m.def("push_name_scopes", &PyPushNameScopes, py::arg("scopes"),
+        "Pushes a full name scope hierarchy onto the name scope stack, "
+        "replacing the active hierarchy until popped.");
+  m.def("pop_name_scopes", &PyPopNameScopes,
+        "Pops the top name scope hierarchy from the name scope stack, "
+        "restoring the previous hierarchy.");
   m.def("serialize_executable", PySerializeExecutable, py::arg("executable"),
         "Serializes a PjRtLoadedExecutable to bytes for caching.");
   m.def("load_serialized_executable", PyLoadSerializedExecutable,

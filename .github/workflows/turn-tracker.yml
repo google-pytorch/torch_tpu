@@ -16,13 +16,20 @@ name: Turn Tracker
 
 "on":
   issues:
-    types: [opened, reopened, transferred]
+    types: [opened, reopened, transferred, assigned, unassigned]
   issue_comment:
     types: [created]
   # `pull_request_target` grants a write token to label PRs from forks.
   # Safe because `actions/checkout` checks out `main`, never PR code.
   pull_request_target:  # zizmor: ignore[dangerous-triggers]
-    types: [opened, reopened, ready_for_review, review_requested]
+    types:
+      - opened
+      - reopened
+      - ready_for_review
+      - review_requested
+      - review_request_removed
+      - assigned
+      - unassigned
   # Review events on PRs from forks only get a read-only token, so
   # `turn-tracker-pr-review.yml` runs on them as a no-op and this workflow
   # handles its completion with a write token.

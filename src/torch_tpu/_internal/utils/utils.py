@@ -15,13 +15,13 @@
 """Tools and helper routines common to all examples and benchmarks."""
 
 import collections
-from collections.abc import MutableSequence
+from collections.abc import Callable, MutableSequence, Sequence
 import contextlib
 import functools
 import os
 import sys
 import time
-from typing import Any, Callable, Sequence, TextIO, TypeAlias
+from typing import Any, TextIO, TypeAlias
 
 import torch
 from torch.utils import _pytree

@@ -14,7 +14,8 @@
 
 """Detects and eliminates redundant causal attention masks in SDPA ops."""
 
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 import torch
 import torch.fx
 from torch.utils import _pytree

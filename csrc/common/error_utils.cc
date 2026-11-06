@@ -21,7 +21,6 @@
 
 #include <algorithm>
 #include <array>
-#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -39,10 +38,6 @@
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
-#include "absl/base/const_init.h"
-#include "absl/base/no_destructor.h"
-#include "absl/base/optimization.h"
-#include "absl/base/thread_annotations.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/numeric/int128.h"
@@ -54,7 +49,6 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
 #include "absl/strings/substitute.h"
-#include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
 #include "c10/core/Device.h"
 #include "c10/core/DeviceGuard.h"
@@ -739,76 +733,19 @@ bool IsXlaOomError(const absl::Status& status) {
           absl::StrContains(status.message(), "allocation_size"));
 }
 
-namespace internal {
-// Aligned to 64 bytes (cache-line size) to prevent false sharing with other
-// frequently mutated global variables on the hot dispatch path.
-alignas(64) std::atomic<bool> g_has_sticky_error{false};
-}  // namespace internal
-
-namespace {
-absl::Mutex g_sticky_error_mutex(absl::kConstInit);
-absl::NoDestructor<absl::Status> g_sticky_error
-    ABSL_GUARDED_BY(g_sticky_error_mutex){absl::OkStatus()};
-
-absl::Mutex g_assertion_mutex(absl::kConstInit);
-absl::CondVar g_assertion_cv;
-int64_t g_pending_assertions ABSL_GUARDED_BY(g_assertion_mutex) = 0;
-}  // namespace
-
-void SetStickyError(absl::Status status) {
+absl::Status TranslateXlaTensorOomError(absl::Status status,
+                                        std::string_view dtype,
+                                        absl::Span<const int64_t> dims) {
   if (status.ok()) {
-    return;
+    return status;
   }
-  absl::MutexLock lock(g_sticky_error_mutex);
-  if (g_sticky_error->ok()) {
-    *g_sticky_error = std::move(status);
-    internal::g_has_sticky_error.store(true, std::memory_order_release);
-  }
-}
 
-absl::Status GetStickyError() {
-  absl::MutexLock lock(g_sticky_error_mutex);
-  return *g_sticky_error;
-}
+  TT_RET_CHECK(!IsXlaOomError(status), error::kResourceExhausted)
+      << "the TPU ran out of memory while allocating tensor " << dtype << "["
+      << absl::StrJoin(dims, ", ") << "]";
 
-void IncrementPendingAssertionChecks() {
-  absl::MutexLock lock(g_assertion_mutex);
-  ++g_pending_assertions;
-}
-
-void DecrementPendingAssertionChecks() {
-  absl::MutexLock lock(g_assertion_mutex);
-  ABSL_CHECK_GT(g_pending_assertions, 0);  // CRASH_OK
-  --g_pending_assertions;
-  if (g_pending_assertions == 0) {
-    g_assertion_cv.SignalAll();
-  }
-}
-
-void WaitForPendingAssertionChecks() {
-  absl::MutexLock lock(g_assertion_mutex);
-  while (g_pending_assertions > 0) {
-    g_assertion_cv.Wait(&g_assertion_mutex);
-  }
-}
-
-absl::Status SyncAndReturnStickyError() {
-  WaitForPendingAssertionChecks();
-  if (ABSL_PREDICT_FALSE(HasStickyError())) {
-    return GetStickyError();
-  }
-  return absl::OkStatus();
-}
-
-void SyncAndCheckStickyError() {
-  TT_THROW_IF_ERROR(SyncAndReturnStickyError());
-}
-
-void ClearStickyError() {
-  WaitForPendingAssertionChecks();
-  absl::MutexLock lock(g_sticky_error_mutex);
-  *g_sticky_error = absl::OkStatus();
-  internal::g_has_sticky_error.store(false, std::memory_order_release);
+  // From this point, we know that the given status is not an XLA OOM error.
+  return status;
 }
 
 absl::Status AdaptXlaError(const absl::Status& status,
@@ -1070,7 +1007,15 @@ void TranslateToC10ErrorAndThrow(const TtError& e) {
     case error::kPythonNotImplementedError:
       throw  // Translates to Python NotImplementedError.
           c10::NotImplementedError(e.thrown_from(), message);
+    case error::kResourceExhausted:
+      throw  // Translates to Python torch.OutOfMemoryError.
+          c10::OutOfMemoryError(e.thrown_from(), message);
     default:
+      // Fallback: unhandled error codes translate to c10::Error (Python
+      // RuntimeError). If a status code corresponds to a dedicated PyTorch
+      // exception type (e.g. c10::OutOfMemoryError, c10::IndexError, or
+      // c10::ValueError), add an explicit case above instead of relying on
+      // this default fallback.
       throw  // Translates to Python RuntimeError.
           c10::Error(e.thrown_from(), message);
   }

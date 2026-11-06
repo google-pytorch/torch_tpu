@@ -26,7 +26,9 @@ pass.
 
 import collections
 from collections.abc import Iterator
+import math
 import operator
+from typing import Final
 import torch
 from torch import fx
 from torch.utils import checkpoint
@@ -49,6 +51,11 @@ _IGNORED_REMAT_TARGETS = frozenset({
     *checkpoint.SAC_IGNORED_OPS,
 })
 
+# Metadata key stamped on synthetic 2D flatten and unflatten `aten.view` nodes
+# created by `apply()` so they are never confused with user or autograd
+# `aten.view` ops that happen to share the same local graph topology.
+_BARRIER_VIEW_META_KEY: Final[str] = "_tpu_barrier_view"
+
 
 def _is_getitem(node: fx.Node) -> bool:
   """Returns True if `node` is an `operator.getitem` call."""
@@ -61,6 +68,68 @@ def _is_barrier_getitem(node: fx.Node) -> bool:
       _is_getitem(node)
       and isinstance(node.args[0], fx.Node)
       and node.args[0].target is _OPTIMIZATION_BARRIER_OP
+  )
+
+
+def _is_aten_view(node: fx.Node) -> bool:
+  """Returns True if `node` is an `aten.view.default` call."""
+  return (
+      node.op == "call_function" and node.target is torch.ops.aten.view.default
+  )
+
+
+def _is_barrier_flatten_view(node: fx.Node) -> bool:
+  """Returns True if `node` flattens an input solely for a barrier."""
+  return (
+      node.meta.get(_BARRIER_VIEW_META_KEY, False)
+      and _is_aten_view(node)
+      and bool(node.users)
+      and all(user.target is _OPTIMIZATION_BARRIER_OP for user in node.users)
+  )
+
+
+def _is_barrier_unflatten_view(node: fx.Node) -> bool:
+  """Returns True if `node` unflattens a 2D-flattened barrier `getitem`."""
+  if not (
+      node.meta.get(_BARRIER_VIEW_META_KEY, False)
+      and _is_aten_view(node)
+      and bool(node.args)
+      and isinstance(node.args[0], fx.Node)
+      and _is_barrier_getitem(node.args[0])
+  ):
+    return False
+  getitem_node = node.args[0]
+  barrier_node = getitem_node.args[0]
+  slot = getitem_node.args[1]
+  if not (
+      isinstance(barrier_node, fx.Node)
+      and bool(barrier_node.args)
+      and isinstance(barrier_node.args[0], (list, tuple))
+      and isinstance(slot, int)
+      and 0 <= slot < len(barrier_node.args[0])
+  ):
+    return False
+  gated_inp = barrier_node.args[0][slot]
+  return (
+      isinstance(gated_inp, fx.Node)
+      and _is_barrier_flatten_view(gated_inp)
+      and bool(gated_inp.args)
+      and isinstance(gated_inp.args[0], fx.Node)
+      and "val" in gated_inp.args[0].meta
+      and "val" in node.meta
+      and gated_inp.args[0].meta["val"].shape == node.meta["val"].shape
+  )
+
+
+def _can_flatten_for_barrier(val: torch.Tensor) -> bool:
+  """Returns True if `val` can be zero-copy flattened to 2D across a barrier."""
+  return (
+      val.layout is torch.strided
+      and val.ndim >= 3
+      and all(isinstance(d, int) for d in val.shape)
+      and all(isinstance(s, int) for s in val.stride())
+      and val.numel() > 0
+      and val.is_contiguous()
   )
 
 
@@ -80,9 +149,10 @@ def _is_bwd_op(node: fx.Node) -> bool:
 
   In AOTAutograd-lowered FX graphs, all tensor operations are `call_function`
   nodes (as opposed to `placeholder` inputs, `get_attr` attributes, and the
-  `output` return node). Tuple projections (`operator.getitem`) and optimization
-  barriers are excluded because they are structural tuple-unpacking and barrier
-  plumbing nodes rather than backward compute ops.
+  `output` return node). Tuple projections (`operator.getitem`), optimization
+  barriers, and barrier 2D flatten/unflatten views are excluded because they are
+  structural tuple-unpacking and barrier plumbing nodes rather than backward
+  compute ops.
 
   Args:
     node: The FX Node to inspect.
@@ -94,6 +164,8 @@ def _is_bwd_op(node: fx.Node) -> bool:
       node.op == "call_function"
       and not _is_remat_node(node)
       and node.target not in (operator.getitem, _OPTIMIZATION_BARRIER_OP)
+      and not _is_barrier_flatten_view(node)
+      and not _is_barrier_unflatten_view(node)
       and node.meta.get("autograd_backward", False)
   )
 
@@ -129,18 +201,19 @@ def _iter_with_tuple_getitems(node: fx.Node) -> Iterator[fx.Node]:
 
 
 def _is_barrier_input_tensor(node: fx.Node) -> bool:
-  """Returns True if `node` produces a non-scalar tensor to gate by a barrier.
+  """Returns True if `node` produces a non-empty, non-scalar tensor for barrier.
 
-  Excludes module attributes, zero-input factory ops, existing barriers, and
-  scalar tensors (such as the scalar `1.0` backward loss seed, which would
-  become opaque to XLA constant folding if routed through a barrier).
+  Excludes module attributes, zero-input factory ops, existing barriers,
+  zero-element tensors (which have 0-byte device buffers), and scalar tensors
+  (such as the scalar `1.0` backward loss seed, which would become opaque to XLA
+  constant folding if routed through a barrier).
 
   Args:
     node: The FX Node to inspect.
 
   Returns:
-    True if `node` produces a non-scalar tensor that should be routed through
-    an optimization barrier.
+    True if `node` produces a non-empty, non-scalar tensor that should be routed
+    through an optimization barrier.
 
   Raises:
     ValueError: If `node` does not have `"val"` metadata populated.
@@ -151,9 +224,15 @@ def _is_barrier_input_tensor(node: fx.Node) -> bool:
   # an AOTAutograd graph (`get_attr` nodes are registered constant buffers).
   if node.op not in ("placeholder", "call_function"):
     return False
-  # Exclude optimization barriers and their tuple unpackings so running the pass
-  # multiple times does not wrap already-gated inputs in nested barriers.
-  if node.target is _OPTIMIZATION_BARRIER_OP or _is_barrier_getitem(node):
+  # Exclude optimization barriers, their tuple unpackings, and their 2D
+  # flatten/unflatten views so running the pass multiple times does not wrap
+  # already-gated inputs in nested barriers.
+  if (
+      node.target is _OPTIMIZATION_BARRIER_OP
+      or _is_barrier_getitem(node)
+      or _is_barrier_flatten_view(node)
+      or _is_barrier_unflatten_view(node)
+  ):
     return False
   # Exclude 0-input factory ops (such as `aten.ones`, `aten.full`, or
   # `aten.arange`) whose outputs depend only on literal arguments.
@@ -164,7 +243,11 @@ def _is_barrier_input_tensor(node: fx.Node) -> bool:
         f"Expected FX node {node.name!r} to have 'val' metadata populated."
     )
   val = node.meta["val"]
-  return isinstance(val, torch.Tensor) and val.ndim > 0
+  return (
+      isinstance(val, torch.Tensor)
+      and val.ndim > 0
+      and not any(isinstance(d, int) and d == 0 for d in val.shape)
+  )
 
 
 def _group_remat_nodes_by_region(
@@ -477,27 +560,75 @@ def apply(gm_or_graph: fx.GraphModule | fx.Graph) -> None:
         for k in ("autograd_backward", "stack_trace", "nn_module_stack")
         if k in entry_node.meta
     }
+    # Flatten contiguous >= 3D inputs (such as `[B, S, D]` activations) to 2D
+    # before the barrier and unflatten back after `getitem`. Keeping barrier
+    # operands <= 2D allows XLA `AlgebraicSimplifier` to cancel adjacent
+    # `unflatten -> flatten` reshapes before 2D matmuls instead of folding 3D
+    # barrier outputs into multi-contracting 3D `dot`s (which trigger mismatched
+    # `{1, 2, 0}` layout assignment and deferred SparseCore transposes on TPU
+    # v7x), while 3D consumers still receive a zero-copy bitcast of the 2D
+    # barrier output.
+    plumbing_nodes: set[fx.Node] = set()
     with graph.inserting_before(entry_node):
+      gated_inputs: list[fx.Node] = []
+      for inp in barrier_inputs:
+        val = inp.meta["val"]
+        if _can_flatten_for_barrier(val):
+          flat_shape = [math.prod(val.shape[:-1]), val.shape[-1]]
+          flat_inp = graph.call_function(
+              torch.ops.aten.view.default, (inp, flat_shape)
+          )
+          flat_inp.meta.update(copied_meta)
+          flat_inp.meta["val"] = val.view(flat_shape)
+          flat_inp.meta[_BARRIER_VIEW_META_KEY] = True
+          node_order[flat_inp] = entry_idx
+          plumbing_nodes.add(flat_inp)
+          gated_inputs.append(flat_inp)
+        else:
+          gated_inputs.append(inp)
+
       barrier_node = graph.call_function(
           _OPTIMIZATION_BARRIER_OP,
-          (barrier_inputs,),
+          (gated_inputs,),
       )
       barrier_node.meta.update(copied_meta)
-      barrier_node.meta["val"] = [inp.meta["val"] for inp in barrier_inputs]
+      barrier_node.meta["val"] = [inp.meta["val"] for inp in gated_inputs]
       node_order[barrier_node] = entry_idx
-      getitem_nodes = []
-      for idx, inp in enumerate(barrier_inputs):
+      plumbing_nodes.add(barrier_node)
+
+      getitem_nodes: list[fx.Node] = []
+      for idx, gated_inp in enumerate(gated_inputs):
         getitem_node = graph.call_function(
             operator.getitem, (barrier_node, idx)
         )
         getitem_node.meta.update(copied_meta)
-        getitem_node.meta["val"] = inp.meta["val"]
+        getitem_node.meta["val"] = gated_inp.meta["val"]
         node_order[getitem_node] = entry_idx
+        plumbing_nodes.add(getitem_node)
         getitem_nodes.append(getitem_node)
+
+      replacement_nodes: list[fx.Node] = []
+      for inp, gated_inp, getitem_node in zip(
+          barrier_inputs, gated_inputs, getitem_nodes, strict=True
+      ):
+        if gated_inp is not inp:
+          orig_val = inp.meta["val"]
+          unflat_node = graph.call_function(
+              torch.ops.aten.view.default,
+              (getitem_node, list(orig_val.shape)),
+          )
+          unflat_node.meta.update(copied_meta)
+          unflat_node.meta["val"] = orig_val
+          unflat_node.meta[_BARRIER_VIEW_META_KEY] = True
+          node_order[unflat_node] = entry_idx
+          plumbing_nodes.add(unflat_node)
+          replacement_nodes.append(unflat_node)
+        else:
+          replacement_nodes.append(getitem_node)
 
     def _should_rewire_user(user: fx.Node) -> bool:
       # pylint: disable=cell-var-from-loop
-      if user is barrier_node:
+      if user in plumbing_nodes:
         return False
       if user in region_nodes:
         return True
@@ -506,9 +637,11 @@ def apply(gm_or_graph: fx.GraphModule | fx.Graph) -> None:
       # directly consuming a remat node.
       return entry_idx <= node_order[user] < next_remat_min and _is_bwd_op(user)
 
-    for inp, getitem_node in zip(barrier_inputs, getitem_nodes, strict=True):
+    for inp, replacement_node in zip(
+        barrier_inputs, replacement_nodes, strict=True
+    ):
       inp.replace_all_uses_with(
-          getitem_node,
+          replacement_node,
           delete_user_cb=_should_rewire_user,
       )
 

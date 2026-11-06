@@ -21,6 +21,7 @@ import torch
 from torch._dynamo import testing as dynamo_testing
 from torch._subclasses import fake_tensor
 from torch.fx.experimental import symbolic_shapes
+from torch_tpu._internal import execution_mode
 from torch_tpu._internal.compile import tpu_torch_compile
 import torch_tpu._internal.device_utils.annotations as tpu_annotations
 from tests import op_testing
@@ -1562,6 +1563,11 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
   def test_sparse_dense_matmul_grad_preserves_t8_layout_on_tpu(
       self, compile_op
   ):
+    self.enter_context(
+        execution_mode.set_eager_mode(
+            execution_mode.EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING
+        )
+    )
     device = torch.device("tpu")
     row_pointers, embedding_ids, sample_ids, gains, embedding_table = (
         self._get_inputs(device)
@@ -1698,6 +1704,21 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
 
     return sgd, embedding_table.cpu()
 
+  def test_compiled_op_reuses_program_after_copy_from_cpu(self):
+    device = torch.device("tpu")
+    t8_layout = tpu_annotations.TpuLayout(minor_to_major=[1, 0], tiles=[[8]])
+    debugs = []
+    sgd, initial_table = self._compile_sgd(device, debugs)
+    with tpu_annotations.LayoutContext(t8_layout):
+      table = initial_table.to(device)
+    expected = sgd(table).cpu()
+
+    # Like load_state_dict, copy_ from the CPU keeps the table's SparseCore
+    # layout, so the next call reuses the first program.
+    table.copy_(initial_table)
+    self.assert_close(golden_result=expected, torch_tpu_result=sgd(table).cpu())
+    self.assertLen(debugs, 1)
+
   def test_compiled_op_recompiles_when_table_loses_t8_layout(self):
     device = torch.device("tpu")
     t8_layout = tpu_annotations.TpuLayout(minor_to_major=[1, 0], tiles=[[8]])
@@ -1712,10 +1733,10 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
     expected = sgd(t8_table()).cpu()
     self.assertLen(debugs, 1)
 
-    # Like load_state_dict, copy_ gives a table the default layout, so the next
-    # call compiles a program for it.
+    # Copying from a default-layout TPU tensor gives the table the default
+    # layout, so the next call compiles a program for it.
     table = t8_table()
-    table.copy_(initial_table)
+    table.copy_(initial_table.to(device))
     self.assert_close(golden_result=expected, torch_tpu_result=sgd(table).cpu())
     self.assertLen(debugs, 2)
 

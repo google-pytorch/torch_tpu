@@ -15,11 +15,12 @@
 """Tests for distributed handshake protocol using PyZMQ and asyncio."""
 
 import asyncio
+from collections.abc import Callable
 import os
 import select
 import threading
 import time
-from typing import Any, Callable
+from typing import Any
 from unittest import mock
 
 from absl.testing import absltest
@@ -565,7 +566,7 @@ class GetValidatedHandshakePortTest(seed_test_utils.RepeatableTest):
     """Tests that default handshake port is returned."""
     with mock.patch.object(portpicker, "is_port_free", return_value=True):
       port = handshake._get_validated_port(is_coordinator)
-      self.assertEqual(port, 36423)
+      self.assertEqual(port, 21423)
 
   @parameterized.parameters(
       True,  # is_coordinator

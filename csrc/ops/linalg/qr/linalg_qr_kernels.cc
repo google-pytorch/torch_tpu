@@ -34,7 +34,7 @@
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
-#include "csrc/eager/device_buffer.h"
+#include "csrc/common/utils.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/linalg/qr/qr_lib.h"
@@ -86,7 +86,7 @@ ReturnType DispatchGeqrf(const at::Tensor& self,
   TT_RETURN_IF_ERROR(ValidateGeqrfInputs(self));
   const int64_t m = self.size(self.dim() - 2);
   const int64_t n = self.size(self.dim() - 1);
-  Dimensions tau_dims(self.sizes().begin(), self.sizes().end() - 2);
+  Dimensions tau_dims = CopyIntVector(self.sizes().slice(0, self.dim() - 2));
   tau_dims.push_back(std::min(m, n));
 
   auto op_builder =
@@ -156,8 +156,8 @@ absl::StatusOr<QrDims> ComputeQrDims(const at::Tensor& self,
   const int64_t n = self.size(self.dim() - 1);
   const int64_t k = std::min(m, n);
 
-  Dimensions q_dims(self.sizes().begin(), self.sizes().end() - 2);
-  Dimensions r_dims(self.sizes().begin(), self.sizes().end() - 2);
+  Dimensions q_dims = CopyIntVector(self.sizes().slice(0, self.dim() - 2));
+  Dimensions r_dims = CopyIntVector(self.sizes().slice(0, self.dim() - 2));
   if (mode == "reduced") {
     q_dims.push_back(m);
     q_dims.push_back(k);

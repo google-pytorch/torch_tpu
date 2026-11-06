@@ -67,6 +67,7 @@ torch_tpu_py_test(
         ":continuous_test_utils",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//shims/torch:testing_internal",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//tests:seed_test_utils",
@@ -316,7 +317,7 @@ torch_tpu_py_test(
     env = {
         "TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT": "/tmp/collective_ops_test",
     },
-    shard_count = 12,
+    shard_count = if_oss(16, 4),
     tags = if_oss(
         ["exclusive"],
         [],
@@ -327,6 +328,7 @@ torch_tpu_py_test(
         "notsan",  # TODO(b/497035517): fix the timeout in test_broadcast_objects.
     ],
     deps = [
+        ":continuous_test_utils",
         ":distributed_utils",
         "//shims/absl_py/logging",
         "//shims/absl_py/testing:absltest",
@@ -348,7 +350,7 @@ torch_tpu_py_test(
         "TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT": "gs://torchtpu-shared/collective_ops_remote_cache_test",
     },
     main = "collective_ops_test.py",
-    shard_count = 12,
+    shard_count = 6,
     tags = if_oss(
         [
             "exclusive",
@@ -365,6 +367,7 @@ torch_tpu_py_test(
         "requires-net:external",  # Needs remote file access.
     ],
     deps = [
+        ":continuous_test_utils",
         ":distributed_utils",
         "//shims/absl_py/logging",
         "//shims/absl_py/testing:absltest",
@@ -528,7 +531,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "alltoall_collective_test",
     srcs = ["alltoall_collective_test.py"],
-    shard_count = 8,
+    shard_count = 2,
     tags = if_oss(
         ["exclusive"],
         [],
@@ -540,6 +543,7 @@ torch_tpu_py_test(
         "requires-accel-hbm",
     ],
     deps = [
+        ":continuous_test_utils",
         ":distributed_utils",
         "//shims/absl_py/logging",
         "//shims/absl_py/testing:absltest",
@@ -547,7 +551,6 @@ torch_tpu_py_test(
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//src/torch_tpu/_internal/utils:test_utils",
-        "//tests:seed_test_utils",
     ],
 )
 
@@ -747,9 +750,9 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
-    name = "uneven_sharding_test",
+    name = "uneven_sharding_errors_test",
     timeout = "long",
-    srcs = ["uneven_sharding_test.py"],
+    srcs = ["uneven_sharding_errors_test.py"],
     args = if_oss(
         [],
         [
@@ -777,10 +780,8 @@ torch_tpu_py_test(
         ["exclusive"],
         [],
     ) + [
-        "noasan",  # Disabled due to b/497035517.
-        "nomsan",  # Disabled due to b/516945438.
-        "notsan",  # Disabled due to b/497035517.
         REQUIRES_V5_MULTI_DEVICE,
+        "nosan",  # *san has low value for error tests.
     ],
     deps = [
         ":distributed_utils",
@@ -791,6 +792,31 @@ torch_tpu_py_test(
         "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "uneven_sharding_test",
+    srcs = ["uneven_sharding_test.py"],
+    shard_count = 2,
+    tags = if_oss(
+        ["exclusive"],
+        [],
+    ) + [
+        "noasan",  # Disabled due to b/497035517.
+        "nomsan",  # Disabled due to b/516945438.
+        "notsan",  # Disabled due to b/497035517.
+        REQUIRES_V5_MULTI_DEVICE,
+    ],
+    deps = [
+        ":continuous_test_utils",
+        ":distributed_utils",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/distributed:multiprocessing",
+        "//src/torch_tpu/_internal/utils:test_utils",
     ],
 )
 
@@ -1097,7 +1123,6 @@ torch_tpu_py_test(
     srcs = ["window_tpu_test.py"],
     autoload = True,
     notest_oss = True,  # NOTEST_OSS_OK=Requires PJRT RawBuffer extension not yet exported in OSS libtpu.
-    shard_count = 2,
     tags = if_oss(
         ["exclusive"],
         [],

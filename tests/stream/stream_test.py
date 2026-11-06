@@ -51,6 +51,23 @@ class TpuStreamsTest(seed_test_utils.RepeatableTest):
       torch.accelerator.set_stream(default_acc_stream)
     self.assertEqual(torch.accelerator.current_stream(), default_acc_stream)
 
+  def test_stream_repr_identifies_the_stream(self):
+    """Distinct streams have distinct reprs that identify the stream."""
+    new_stream = torch.tpu.Stream()
+
+    self.assertEqual(
+        repr(new_stream),
+        f'<torch.tpu.Stream device=tpu:0 stream_id={new_stream.stream_id}>',
+    )
+    self.assertNotEqual(repr(new_stream), repr(torch.tpu.default_stream()))
+
+  def test_event_repr_uses_public_name(self):
+    """The event repr names the public class and the device."""
+    event = torch.tpu.Event()
+
+    self.assertEqual(repr(event), f'<torch.tpu.Event device={event.device}>')
+    self.assertEqual(event.device.type, 'tpu')
+
   def test_stream(self):
     """Tests basic usage of streams and events.
 
@@ -350,8 +367,11 @@ class TpuStreamsTest(seed_test_utils.RepeatableTest):
     x = torch.ones(1, device='cpu').to('tpu')
     y = torch.ones(1, device='cpu').to('tpu')
     with torch.tpu.stream(new_stream):
-      actual = (x + y).item()
-    self.assertEqual(actual, 2)
+      z = x + y
+      event = new_stream.record_event()
+    event.synchronize()
+    self.assertTrue(event.query())
+    self.assertEqual(z.item(), 2)
 
   def test_stream_pinned_to_tensor_core(self):
     """Tests that a stream can be pinned to a dense core."""
@@ -666,6 +686,42 @@ class EventElapsedTimeTest(seed_test_utils.RepeatableTest):
         elapsed_ms, 0.0, (time.perf_counter() - host_start) * 1000
     )
     utils.assert_close(y.to('cpu'), torch.full((8, 8), 2.0))
+
+  def test_elapsed_time_reflects_host_time(self):
+    # Record two events with host delay but no device-side work between them.
+    start = torch.tpu.Event(enable_timing=True)
+    end = torch.tpu.Event(enable_timing=True)
+    start.record()
+    time.sleep(1)
+    end.record()
+    end.synchronize()
+
+    # The elapsed time should reflect the delay inserted by the host.
+    device_time_ms = start.elapsed_time(end)
+    self.assertGreater(device_time_ms, 990)  # 1% tolerance
+
+  def test_errors_preserved_after_stream_exit(self):
+    new_stream = torch.tpu.Stream()
+    with torch.tpu.stream(new_stream):
+      # This will fail to compile due to a compile-time OOM (it would require
+      # 4 petabytes of HBM).
+      x = torch.ones((1024, 1024, 1024, 1024, 1024), device='tpu')
+
+    # Exit the stream, and wait on host. Errors will not be raised here.
+    time.sleep(1)
+
+    # The next sync will pick up the error.
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=tests error timing
+        RuntimeError, 'out of memory'
+    ):
+      torch.accelerator.synchronize()
+
+    # Attempting to use the value will also propagate the error.
+    y = (x + 1)[0, 0, 0, 0, 0]
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=tests error timing
+        RuntimeError, 'out of memory'
+    ):
+      y.item()
 
 
 if __name__ == '__main__':

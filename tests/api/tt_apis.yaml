@@ -175,6 +175,36 @@ torch.tpu.optimizers.SingleTraceTrainer.param_group getter: {category: Public Py
 torch.tpu.optimizers.SingleTraceTrainer.params getter: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.pallas.get_pallas_mesh: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.pallas.jax_op: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.FindingCategory: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.FindingCategory.VERIFICATION_INCOMPLETE: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.Phase: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.Severity: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.Severity.ERROR: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.Severity.INFO: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.Severity.WARNING: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.VerificationError: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.VerificationError.report getter: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.VerificationFinding: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.VerificationFinding.category: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.VerificationFinding.format: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.VerificationFinding.message: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.VerificationFinding.op_name: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.VerificationFinding.phase: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.VerificationFinding.severity: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.VerificationFinding.source_location: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.VerificationMode: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.VerificationMode.FULL: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.VerificationMode.STATIC: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.VerificationOptions: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.VerificationReport: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.VerificationReport.checked_phases: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.VerificationReport.findings: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.VerificationReport.findings_by_category: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.VerificationReport.findings_by_severity: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.VerificationReport.passed getter: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.VerificationReport.raise_for_errors: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.VerificationReport.summary: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.verify: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.precision: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.profiler.TpuProfilerConfig: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.set_device: {category: Public Python API, defined_in: runtime, prefer: torch.accelerator.set_device_index, stage: Internal}
@@ -215,7 +245,7 @@ TORCH_TPU_INTERNAL_MATERIALIZE_COLLECTIVE_TENSORS: {category: Environment Variab
 TORCH_TPU_INTERNAL_SKINNY_SC_OFFLOAD: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Internal}
 TORCH_TPU_INTERNAL_SPLIT_RNG_STATE_UPDATE: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Internal}
 TORCH_TPU_INTERNAL_STORAGE_AWARE_PLACEHOLDERS: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Internal}
-TORCH_TPU_INTERNAL_TIER3_COMPILATION_CACHE_LOCAL_BACKUP_TASK: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Internal}
+TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Internal}
 TORCH_TPU_INTERNAL_XLA_OPTIONS: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Internal}
 TORCH_TPU_LAUNCH_BLOCKING: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Experimental}
 TORCH_TPU_PROFILER_OUTPUT_DIR: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Experimental}

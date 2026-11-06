@@ -16,6 +16,9 @@
 
 #include "csrc/eager/materialize.h"
 
+#include <cstdint>
+#include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -24,12 +27,15 @@
 #include "absl/cleanup/cleanup.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/time/clock.h"
+#include "absl/time/time.h"
 #include "absl/types/span.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/compilation.h"
 #include "csrc/common/compilation_cache.h"
 #include "csrc/common/compilation_spec.h"
 #include "csrc/common/compile_options_key.h"
+#include "csrc/common/context_states.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/shape.h"
@@ -37,11 +43,13 @@
 #include "csrc/eager/current_stream.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/device_buffer_utils.h"
+#include "csrc/eager/eager_mode.h"
 #include "csrc/eager/events_queue.h"
-#include "csrc/eager/split_traversal.h"
+#include "csrc/eager/execution_task.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/eager/tpu_hooks.h"
+#include "csrc/eager/traversal.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/python_context.h"
@@ -51,6 +59,8 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
+#include "xla/future.h"
+#include "xla/pjrt/pjrt_client.h"
 
 namespace torch_tpu {
 namespace {
@@ -77,6 +87,9 @@ class MaterializeTest : public testing::Test {
     CompilationCache::ShutDown();
     PjrtBackend::GetInstance().Shutdown();
   }
+
+  void SetUp() override { ClearAllStreams(); }
+  void TearDown() override { ClearAllStreams(); }
 };
 
 TEST_F(MaterializeTest, EmptyListNoOpSuccess) {
@@ -95,7 +108,7 @@ TEST_F(MaterializeTest, MaterializedZeroSizeBufferSuccess) {
   EXPECT_TRUE(ref.is_deferred());
   EXPECT_EQ(Materialize(ref, MaterializationReason::kExplicitSync),
             absl::OkStatus());
-  EXPECT_TRUE(ref.is_materializing());
+  EXPECT_TRUE(ref.AwaitBuffer().ok());
 }
 
 TEST_F(MaterializeTest, CompilerOptionsPropagateToMaterializeThread) {
@@ -132,6 +145,7 @@ TEST_F(MaterializeTest, CompilerOptionsPropagateToMaterializeThread) {
   // 3. Synchronously materialize/compile the buffer.
   ASSERT_EQ(Materialize(ref, MaterializationReason::kExplicitSync),
             absl::OkStatus());
+  EXPECT_TRUE(ref.AwaitBuffer().ok());
 
   // 4. Verify the compiled executable fingerprint in cache matches our
   // overridden key.
@@ -181,9 +195,7 @@ TEST_F(MaterializeTest, OutOfOrderUnexecutedDeferred) {
   // Try to materialize the dependent buffer in the background.
   // This will fail on synchronization when the execution thread detects that
   // the deferred buffer wasn't materialized first.
-  Materialize(depends_on_deferred, MaterializationReason::kExplicitSync,
-              GraphSplitMode::kSplitGraph,
-              MaterializationBlockMode::kNonBlocking)
+  Materialize(depends_on_deferred, MaterializationReason::kExplicitSync)
       .IgnoreError();
   auto finished_status = depends_on_deferred.Synchronize();
   EXPECT_EQ(finished_status.code(), error::kFailedPrecondition);
@@ -196,7 +208,7 @@ TEST_F(MaterializeTest, OutOfOrderUnexecutedPending) {
   // Create a buffer in the pending state.
   const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
   TT_ASSERT_OK_AND_ASSIGN(DeviceBufferRef pending_buffer,
-                          DeviceBufferList::CreatePending(
+                          DeviceBufferList::CreatePendingExecution(
                               Shape{Dimensions{10}, mlir::ElementType::F32},
                               device_index, stream_id));
 
@@ -226,15 +238,279 @@ TEST_F(MaterializeTest, OutOfOrderUnexecutedPending) {
   // Try to materialize the dependent buffer. This will fail on synchronization
   // when the execution thread detects that the pending buffer wasn't
   // materialized first.
-  Materialize(depends_on_pending, MaterializationReason::kExplicitSync,
-              GraphSplitMode::kSplitGraph,
-              MaterializationBlockMode::kNonBlocking)
+  Materialize(depends_on_pending, MaterializationReason::kExplicitSync)
       .IgnoreError();
   auto finished_status = depends_on_pending.Synchronize();
   EXPECT_EQ(finished_status.code(), error::kFailedPrecondition);
   EXPECT_NE(
       finished_status.message().find("detected an out of order execution"),
       std::string::npos);
+}
+
+// Creates a deferred op that fills an 8-element F32 tensor, handling its
+// creation as dictated by the current eager mode.
+absl::StatusOr<DeviceBufferRef> CreateFillOp(const bool allow_materialization) {
+  internal::DeferredOpParams params{
+      .op_name = OpName::kAdd,
+      .op_builder = [](mlir::MlirBuilder& builder, absl::Span<mlir::MlirOp>)
+          -> absl::StatusOr<DynamicMlirOpResults> {
+        return DynamicMlirOpResults{
+            BuildFillUninitialized(builder, mlir::ElementType::F32, {8})};
+      },
+      .op_param_cache_keys = OpParamCacheKeys::Empty(),
+      .output_shapes = {Shape(Dimensions{8}, mlir::ElementType::F32)},
+      .allow_materialization = allow_materialization,
+  };
+  TT_ASSIGN_OR_RETURN(
+      std::vector<DeviceBufferRef> refs,
+      internal::CreateDeferredDeviceBufferList(std::move(params)));
+  TT_RET_CHECK(refs.size() == 1, error::kInternal)
+      << "expected 1 output, got " << refs.size();
+  return std::move(refs[0]);
+}
+
+// Waits until `ref` is no longer deferred, i.e. until its materialization has
+// started. Returns false if it is still deferred after `timeout`.
+bool WaitUntilNotDeferred(const DeviceBufferRef& ref,
+                          const absl::Duration timeout) {
+  const absl::Time deadline = absl::Now() + timeout;
+  while (ref.is_deferred()) {
+    if (absl::Now() > deadline) {
+      return false;
+    }
+    absl::SleepFor(absl::Milliseconds(1));
+  }
+  return true;
+}
+
+TEST_F(MaterializeTest, RunPostponedMaterializationExecutesOpsInDeferNever) {
+  ClearAllStreams();
+  const ScopedPythonContextCapturer capturer(OpName::kAdd);
+  const EagerMode prev_mode = GetEagerMode();
+  SetEagerMode(EagerMode::kDeferNever);
+  absl::Cleanup cleanup_mode = [prev_mode] { SetEagerMode(prev_mode); };
+
+  TT_ASSERT_OK_AND_ASSIGN(const DeviceBufferRef ref,
+                          CreateFillOp(/*allow_materialization=*/false));
+  EXPECT_TRUE(ref.is_deferred());
+
+  // Running the postponed materialization executes the op.
+  ASSERT_EQ(internal::RunPostponedMaterialization(), absl::OkStatus());
+  ASSERT_TRUE(WaitUntilNotDeferred(ref, absl::Minutes(1)));
+  EXPECT_EQ(ref.Synchronize(), absl::OkStatus());
+}
+
+TEST_F(MaterializeTest,
+       RunPostponedMaterializationInsertsRepeatedOpsGraphBreakInDeferAndFuse) {
+  ClearAllStreams();
+  const ScopedPythonContextCapturer capturer(OpName::kAdd);
+  const EagerMode prev_mode = GetEagerMode();
+  SetEagerMode(EagerMode::kDeferAndFuse);
+  absl::Cleanup cleanup_mode = [prev_mode] { SetEagerMode(prev_mode); };
+
+  // Create four copies of an op with materialization disallowed: the repeated
+  // ops heuristic requests a graph break on the fourth one, which must be
+  // postponed.
+  std::vector<DeviceBufferRef> refs;
+  refs.reserve(4);
+  for (int i = 0; i < 4; ++i) {
+    TT_ASSERT_OK_AND_ASSIGN(DeviceBufferRef ref,
+                            CreateFillOp(/*allow_materialization=*/false));
+    refs.push_back(std::move(ref));
+  }
+
+  // Sleep for 100ms. This is enough that a background materialization should
+  // have started if there was a materialization attempt.
+  absl::SleepFor(absl::Milliseconds(100));
+  for (const DeviceBufferRef& ref : refs) {
+    EXPECT_TRUE(ref.is_deferred());
+  }
+
+  // Running the postponed materialization inserts the requested graph break,
+  // which executes all the ops.
+  ASSERT_EQ(internal::RunPostponedMaterialization(), absl::OkStatus());
+  for (const DeviceBufferRef& ref : refs) {
+    ASSERT_TRUE(WaitUntilNotDeferred(ref, absl::Minutes(1)));
+    EXPECT_EQ(ref.Synchronize(), absl::OkStatus());
+  }
+}
+
+absl::StatusOr<DeviceBufferRef> CreateIotaOp(const bool record_on_stream = true,
+                                             const int64_t size = 8) {
+  const ScopedPythonContextCapturer capturer(OpName::kAdd);
+  TT_ASSIGN_OR_RETURN(
+      std::vector<DeviceBufferRef> refs,
+      DeviceBufferList::CreateDeferred(
+          OpName::kAdd,
+          [size](mlir::MlirBuilder& builder, absl::Span<mlir::MlirOp>)
+              -> absl::StatusOr<DynamicMlirOpResults> {
+            const auto out_type = mlir::makeTensorType(
+                builder.getContext(), {size}, mlir::ElementType::F32);
+            return DynamicMlirOpResults{
+                mlir::stablehlo::Iota(builder, out_type, /*iota_dimension=*/0)};
+          },
+          /*inputs=*/{}, OpParamCacheKeys::Empty(),
+          {Shape(Dimensions{size}, mlir::ElementType::F32)}));
+  if (record_on_stream) {
+    RecordDeferredOpCreated(refs[0].device_buffer_list());
+  }
+  return std::move(refs[0]);
+}
+
+TEST_F(MaterializeTest, SnapshotAwaitsPriorTensorCoreOutputs) {
+  const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
+  std::vector<DeviceBufferRef> refs;
+  for (const int64_t size : {8, 64, 65536}) {
+    TT_ASSERT_OK_AND_ASSIGN(DeviceBufferRef ref,
+                            CreateIotaOp(/*record_on_stream=*/true, size));
+    ASSERT_TRUE(InsertGraphBreak(device_index, stream_id,
+                                 {ref.device_buffer_list()},
+                                 MaterializationReason::kExplicitSync,
+                                 GraphSplitMode::kSplitGraph)
+                    .ok());
+    refs.push_back(std::move(ref));
+  }
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      EventSnapshot snapshot,
+      MaterializeCurrentStream(MaterializationReason::kExplicitSync,
+                               GraphSplitMode::kSplitGraph));
+  ASSERT_EQ(snapshot.Synchronize(), absl::OkStatus());
+  TT_ASSERT_OK_AND_ASSIGN(const bool completed, snapshot.Query());
+  EXPECT_TRUE(completed);
+
+  for (const DeviceBufferRef& ref : refs) {
+    TT_ASSERT_OK_AND_ASSIGN(xla::PjRtBuffer* const pjrt_buf, ref.AwaitBuffer());
+    xla::Future<void> ready = pjrt_buf->GetReadyFuture();
+    EXPECT_TRUE(ready.IsKnownReady());
+    EXPECT_EQ(ready.Await(), absl::OkStatus());
+  }
+}
+
+TEST_F(MaterializeTest,
+       SnapshotAwaitsLastDeviceOutputAcrossBatchesAndClearAllStreams) {
+  TT_ASSERT_OK_AND_ASSIGN(const DeviceBufferRef ref1,
+                          CreateIotaOp(/*record_on_stream=*/true, 65536));
+  ASSERT_EQ(Materialize(ref1, MaterializationReason::kExplicitSync),
+            absl::OkStatus());
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      EventSnapshot snapshot,
+      MaterializeCurrentStream(MaterializationReason::kExplicitSync,
+                               GraphSplitMode::kSplitGraph));
+  ASSERT_EQ(snapshot.Synchronize(), absl::OkStatus());
+  TT_ASSERT_OK_AND_ASSIGN(xla::PjRtBuffer* const pjrt_buf1, ref1.AwaitBuffer());
+  EXPECT_TRUE(pjrt_buf1->GetReadyFuture().IsKnownReady());
+  EXPECT_EQ(pjrt_buf1->GetReadyFuture().Await(), absl::OkStatus());
+
+  // Verify ClearAllStreams() drops StreamState's cached output ref.
+  TT_ASSERT_OK_AND_ASSIGN(DeviceBufferRef tmp_ref, CreateIotaOp());
+  std::optional<DeviceBufferRef> ref2 = std::move(tmp_ref);
+  const DeviceBufferRef::Weak weak_ref2 = ref2->weak();
+  ASSERT_EQ(Materialize(*ref2, MaterializationReason::kExplicitSync),
+            absl::OkStatus());
+  ASSERT_EQ(ref2->Synchronize(), absl::OkStatus());
+  ref2.reset();
+  EXPECT_FALSE(weak_ref2.expired());
+
+  ClearAllStreams();
+  // `execute_thread_` may still briefly hold its ExecutionTask copy of `ref2`.
+  const absl::Time deadline = absl::Now() + absl::Seconds(10);
+  while (!weak_ref2.expired() && absl::Now() < deadline) {
+    absl::SleepFor(absl::Milliseconds(1));
+  }
+  EXPECT_TRUE(weak_ref2.expired());
+  TT_ASSERT_OK_AND_ASSIGN(
+      EventSnapshot post_clear_snapshot,
+      MaterializeCurrentStream(MaterializationReason::kExplicitSync,
+                               GraphSplitMode::kSplitGraph));
+  ASSERT_EQ(post_clear_snapshot.Synchronize(), absl::OkStatus());
+}
+
+TEST_F(MaterializeTest, DeletedLastDeviceOutputResolvesSnapshotOk) {
+  TT_ASSERT_OK_AND_ASSIGN(const DeviceBufferRef ref, CreateIotaOp());
+  ASSERT_EQ(Materialize(ref, MaterializationReason::kExplicitSync),
+            absl::OkStatus());
+  TT_ASSERT_OK_AND_ASSIGN(xla::PjRtBuffer* const pjrt_buf, ref.AwaitBuffer());
+  ASSERT_EQ(pjrt_buf->GetReadyFuture().Await(), absl::OkStatus());
+  pjrt_buf->Delete();
+  ASSERT_FALSE(pjrt_buf->GetReadyFuture().Await().ok());
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      EventSnapshot snapshot,
+      MaterializeCurrentStream(MaterializationReason::kExplicitSync,
+                               GraphSplitMode::kSplitGraph));
+  EXPECT_EQ(snapshot.Synchronize(), absl::OkStatus());
+}
+
+TEST_F(MaterializeTest, CompiledExecutionPreservesPriorLastDeviceOutput) {
+  TT_ASSERT_OK_AND_ASSIGN(DeviceBufferRef tmp_tc, CreateIotaOp());
+  std::optional<DeviceBufferRef> ref_tc = std::move(tmp_tc);
+  const DeviceBufferRef::Weak weak_tc = ref_tc->weak();
+  ASSERT_EQ(Materialize(*ref_tc, MaterializationReason::kExplicitSync),
+            absl::OkStatus());
+  ASSERT_EQ(ref_tc->Synchronize(), absl::OkStatus());
+  ref_tc.reset();
+  ASSERT_FALSE(weak_tc.expired());
+
+  TT_ASSERT_OK_AND_ASSIGN(const DeviceBufferRef unrecorded_op,
+                          CreateIotaOp(/*record_on_stream=*/false));
+  TT_ASSERT_OK_AND_ASSIGN(
+      const auto traversal,
+      Traversal::Create(std::vector<DeviceBufferRef>{unrecorded_op}));
+  TT_ASSERT_OK_AND_ASSIGN(
+      CompiledKernel kernel,
+      traversal->Compile(GetCompilationSpec(CompilationMode::kFastCompile),
+                         UnboundedKernelPolicy::kDisallow));
+  TT_ASSERT_OK_AND_ASSIGN(SharedLoadedExecutableWithMetadata executable,
+                          kernel.fixed_shape_kernel.get());
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::vector<DeviceBufferRef> compiled_outputs,
+      EnqueueExecutable(std::move(executable), /*arguments=*/{},
+                        {Shape(Dimensions{8}, mlir::ElementType::F32)},
+                        "test_compiled"));
+  ASSERT_EQ(compiled_outputs[0].Synchronize(), absl::OkStatus());
+  EXPECT_FALSE(weak_tc.expired());
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      EventSnapshot snapshot,
+      MaterializeCurrentStream(MaterializationReason::kExplicitSync,
+                               GraphSplitMode::kSplitGraph));
+  ASSERT_EQ(snapshot.Synchronize(), absl::OkStatus());
+  EXPECT_TRUE(weak_tc.expired());
+}
+
+TEST_F(MaterializeTest, ExecutionTaskPreservesTraversalCorePinningMode) {
+  const auto mlir_context = MakeMlirContext();
+  const CompilationSpec spec =
+      GetCompilationSpec(CompilationMode::kFastCompile);
+
+  TT_ASSERT_OK_AND_ASSIGN(const DeviceBufferRef unpinned_op,
+                          CreateIotaOp(/*record_on_stream=*/false));
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto unpinned_traversal,
+      Traversal::Create(std::vector<DeviceBufferRef>{unpinned_op}));
+  TT_ASSERT_OK_AND_ASSIGN(
+      ExecutionTask unpinned_task,
+      ExecutionTask::FromTraversal(std::move(unpinned_traversal), *mlir_context,
+                                   spec));
+  EXPECT_EQ(unpinned_task.core_pinning_mode(), CorePinningMode::kUnpinned);
+  ASSERT_EQ(unpinned_task.Run(), absl::OkStatus());
+  ASSERT_EQ(unpinned_op.Synchronize(), absl::OkStatus());
+
+  TT_ASSERT_OK_AND_ASSIGN(const DeviceBufferRef pinned_op,
+                          CreateIotaOp(/*record_on_stream=*/false));
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto pinned_traversal,
+      Traversal::Create(std::vector<DeviceBufferRef>{pinned_op}));
+  pinned_traversal->SetCorePinningMode(CorePinningMode::kTensorCore);
+  TT_ASSERT_OK_AND_ASSIGN(
+      ExecutionTask pinned_task,
+      ExecutionTask::FromTraversal(std::move(pinned_traversal), *mlir_context,
+                                   spec));
+  EXPECT_EQ(pinned_task.core_pinning_mode(), CorePinningMode::kTensorCore);
+  ASSERT_EQ(pinned_task.Run(), absl::OkStatus());
+  ASSERT_EQ(pinned_op.Synchronize(), absl::OkStatus());
 }
 
 class PinnedHostPropagationTest : public testing::Test {

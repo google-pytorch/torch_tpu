@@ -14,6 +14,7 @@
 
 """Unit tests for error_coverage_lib, which don't need a TPU."""
 
+from collections.abc import Sequence
 import os
 from unittest import mock
 
@@ -305,8 +306,8 @@ class CoverageDataTest(absltest.TestCase):  # ABSLTEST_OK=No RNG used.
 
   def test_load_reads_the_stats_of_each_file(self):
     path = self._write(
-        "csrc/a.cc: {infeasible: 0, remaining: 1, total: 2}\n"
-        "csrc/b.cc: {infeasible: 1, remaining: 0, total: 1}\n"
+        "csrc/a.cc: {remaining: 1, total: 2, infeasible: 0}\n"
+        "csrc/b.cc: {remaining: 0, total: 1, infeasible: 1}\n"
     )
 
     self.assertEqual(
@@ -356,9 +357,219 @@ class CoverageDataTest(absltest.TestCase):  # ABSLTEST_OK=No RNG used.
             "csrc/b.cc": {"total": 2, "remaining": 1, "infeasible": 0},
             "csrc/a.cc": {"total": 1, "remaining": 0, "infeasible": 1},
         }),
-        "csrc/a.cc: {infeasible: 1, remaining: 0, total: 1}\n"
-        "csrc/b.cc: {infeasible: 0, remaining: 1, total: 2}\n",
+        "csrc/a.cc: {remaining: 0, total: 1, infeasible: 1}\n"
+        "csrc/b.cc: {remaining: 1, total: 2, infeasible: 0}\n",
     )
+
+
+def _coverage(
+    path: str,
+    locs: Sequence[int],
+    covered: Sequence[int] = (),
+    infeasible: Sequence[int] = (),
+) -> error_coverage_lib.CoverageForFile:
+  return error_coverage_lib.CoverageForFile(
+      path,
+      locs=list(locs),
+      covered_locs=list(covered),
+      infeasible_locs=list(infeasible),
+  )
+
+
+def _stats(infeasible: int, remaining: int, total: int) -> dict[str, int]:
+  return {"infeasible": infeasible, "remaining": remaining, "total": total}
+
+
+class CheckCoverageTest(absltest.TestCase):  # ABSLTEST_OK=No RNG used.
+
+  def test_passes_when_the_baseline_matches(self):
+    result = error_coverage_lib.check_coverage(
+        {"csrc/a.cc": _stats(infeasible=1, remaining=1, total=3)},
+        [_coverage("csrc/a.cc", [1, 2, 3], covered=[1], infeasible=[3])],
+    )
+
+    self.assertEqual(result.regressions, [])
+    self.assertEqual(result.outdated, [])
+    self.assertEqual(result.infeasible_but_covered, [])
+    self.assertEqual(result.warnings, [])
+
+  def test_reports_a_regression_with_the_before_and_after_counts(self):
+    result = error_coverage_lib.check_coverage(
+        {"csrc/a.cc": _stats(infeasible=0, remaining=1, total=3)},
+        [_coverage("csrc/a.cc", [1, 2, 3], covered=[1])],
+    )
+
+    [regression] = result.regressions
+    self.assertIn("csrc/a.cc has an error coverage regression", regression)
+    self.assertIn("Before, 1 such macros", regression)
+    self.assertIn("2 such macros in the file are uncovered", regression)
+    self.assertIn("csrc/a.cc:2: TO BE COVERED", regression)
+    self.assertEqual(result.outdated, [])
+
+  def test_reports_uncovered_macros_in_a_file_missing_from_the_baseline(self):
+    result = error_coverage_lib.check_coverage(
+        {}, [_coverage("csrc/new.cc", [5, 9], covered=[5])]
+    )
+
+    [regression] = result.regressions
+    self.assertIn("csrc/new.cc has an error coverage regression", regression)
+    self.assertIn("may be newly added", regression)
+    self.assertIn("csrc/new.cc:9: TO BE COVERED", regression)
+    self.assertEqual(result.outdated, [])
+
+  def test_reports_an_outdated_baseline_when_coverage_improved(self):
+    result = error_coverage_lib.check_coverage(
+        {"csrc/a.cc": _stats(infeasible=0, remaining=3, total=3)},
+        [_coverage("csrc/a.cc", [1, 2, 3], covered=[1, 2])],
+    )
+
+    self.assertEqual(result.regressions, [])
+    [outdated] = result.outdated
+    self.assertIn("csrc/a.cc", outdated)
+    self.assertIn("expects 3 uncovered error macros", outdated)
+    self.assertIn("only 1", outdated)
+    self.assertIn("Lower its `remaining` from 3 to 1", outdated)
+
+  def test_reports_an_outdated_entry_for_a_gone_file(self):
+    result = error_coverage_lib.check_coverage(
+        {
+            "csrc/gone.cc": _stats(infeasible=0, remaining=2, total=4),
+            "csrc/gone_and_covered.cc": _stats(
+                infeasible=1, remaining=0, total=4
+            ),
+        },
+        [],
+    )
+
+    self.assertEqual(result.regressions, [])
+    self.assertLen(result.outdated, 2)
+    self.assertIn("csrc/gone.cc", result.outdated[0])
+    self.assertIn("Delete its entry", result.outdated[0])
+    self.assertIn("csrc/gone_and_covered.cc", result.outdated[1])
+    self.assertIn("Delete its entry", result.outdated[1])
+
+  def test_reports_an_outdated_entry_for_a_file_without_macros_to_cover(self):
+    # get_per_file_coverage() omits files with no error macros to cover.
+    file_to_locs = {
+        "csrc/a.cc": [
+            error_coverage_lib.ErrorMacroLine(10, True, "TT_RETURN_IF_ERROR")
+        ]
+    }
+    actual = error_coverage_lib.get_per_file_coverage(file_to_locs, set())
+
+    result = error_coverage_lib.check_coverage(
+        {"csrc/a.cc": _stats(infeasible=0, remaining=0, total=1)}, actual
+    )
+
+    [outdated] = result.outdated
+    self.assertIn("csrc/a.cc", outdated)
+    self.assertIn("Delete its entry", outdated)
+
+  def test_reports_infeasible_macros_that_are_covered(self):
+    result = error_coverage_lib.check_coverage(
+        {"csrc/a.cc": _stats(infeasible=2, remaining=0, total=3)},
+        [_coverage("csrc/a.cc", [1, 2, 3], covered=[1, 2], infeasible=[2, 3])],
+    )
+
+    self.assertEqual(result.regressions, [])
+    self.assertEqual(result.outdated, [])
+    [infeasible_but_covered] = result.infeasible_but_covered
+    self.assertIn("csrc/a.cc:2", infeasible_but_covered)
+    self.assertNotIn("csrc/a.cc:3", infeasible_but_covered)
+
+  def test_only_warns_about_a_covered_file_missing_from_the_baseline(self):
+    result = error_coverage_lib.check_coverage(
+        {}, [_coverage("csrc/new.cc", [5], covered=[5])]
+    )
+
+    self.assertEqual(result.regressions, [])
+    self.assertEqual(result.outdated, [])
+    [warning] = result.warnings
+    self.assertIn("csrc/new.cc", warning)
+
+  def test_only_warns_about_total_and_infeasible_drift(self):
+    result = error_coverage_lib.check_coverage(
+        {"csrc/a.cc": _stats(infeasible=2, remaining=1, total=9)},
+        [_coverage("csrc/a.cc", [1, 2, 3], covered=[1], infeasible=[3])],
+    )
+
+    self.assertEqual(result.regressions, [])
+    self.assertEqual(result.outdated, [])
+    [warning] = result.warnings
+    self.assertIn("csrc/a.cc", warning)
+    self.assertIn("total=9, infeasible=2", warning)
+    self.assertIn("total=3, infeasible=1", warning)
+
+
+class FailureMessageTest(absltest.TestCase):  # ABSLTEST_OK=No RNG used.
+
+  _G3_REPO_ROOT = os.path.join("/runfiles", repo_paths.G3_REPO_PATH)
+  _OSS_REPO_ROOT = "/runfiles/_main"
+
+  def _result(
+      self,
+      regressions: Sequence[str] = (),
+      outdated: Sequence[str] = (),
+      infeasible_but_covered: Sequence[str] = (),
+      warnings: Sequence[str] = (),
+  ) -> error_coverage_lib.CoverageCheckResult:
+    return error_coverage_lib.CoverageCheckResult(
+        regressions=list(regressions),
+        outdated=list(outdated),
+        infeasible_but_covered=list(infeasible_but_covered),
+        warnings=list(warnings),
+    )
+
+  def test_is_none_without_failures(self):
+    result = self._result(warnings=["just a warning"])
+
+    self.assertIsNone(
+        error_coverage_lib.failure_message(result, self._OSS_REPO_ROOT)
+    )
+
+  def test_explains_regressions(self):
+    result = self._result(regressions=["REGRESSION IN csrc/a.cc"])
+
+    message = error_coverage_lib.failure_message(result, self._OSS_REPO_ROOT)
+
+    self.assertIn("REGRESSION IN csrc/a.cc", message)
+    self.assertIn("tests/errors_test.py", message)
+    self.assertIn("ERROR_COV_INFEASIBLE", message)
+
+  def test_explains_infeasible_macros_that_are_covered(self):
+    result = self._result(infeasible_but_covered=["csrc/a.cc:2"])
+
+    message = error_coverage_lib.failure_message(result, self._OSS_REPO_ROOT)
+
+    self.assertIn("csrc/a.cc:2", message)
+    self.assertIn("remove the ERROR_COV_INFEASIBLE comment", message)
+    self.assertIn(error_coverage_lib.COVERAGE_DATA_PATH, message)
+
+  def test_explains_how_to_update_an_outdated_baseline_in_google3(self):
+    result = self._result(outdated=["OUTDATED csrc/a.cc"])
+
+    message = error_coverage_lib.failure_message(result, self._G3_REPO_ROOT)
+
+    self.assertIn("OUTDATED csrc/a.cc", message)
+    self.assertIn(error_coverage_lib.COVERAGE_DATA_PATH, message)
+    self.assertIn(
+        f"blaze run -c opt //{repo_paths.G3_REPO_PATH}/google/tools:"
+        "update_error_coverage_data",
+        message,
+    )
+    self.assertNotIn("bazel test", message)
+
+  def test_explains_how_to_update_an_outdated_baseline_in_oss(self):
+    result = self._result(outdated=["OUTDATED csrc/a.cc"])
+
+    message = error_coverage_lib.failure_message(result, self._OSS_REPO_ROOT)
+
+    self.assertIn("OUTDATED csrc/a.cc", message)
+    self.assertIn(
+        error_coverage_lib.update_command(self._OSS_REPO_ROOT), message
+    )
+    self.assertIn("BEGIN_YAML", message)
+    self.assertNotIn("google/tools", message)
 
 
 class UpdateCommandTest(absltest.TestCase):  # ABSLTEST_OK=No RNG used.

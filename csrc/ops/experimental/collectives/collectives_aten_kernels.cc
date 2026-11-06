@@ -23,6 +23,7 @@
 #include <utility>
 #include <vector>
 
+#include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
 #include "ATen/core/ivalue_inl.h"
 #include "ATen/ops/empty.h"
@@ -30,13 +31,17 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_join.h"
+#include "c10/core/SymInt.h"
+#include "c10/core/SymIntArrayRef.h"
+#include "c10/util/DimVector.h"
 #include "c10/util/intrusive_ptr.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
+#include "csrc/common/const_tensor.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/to_string.h"
-#include "csrc/common/utils.h"
 #include "csrc/distributed/allgather.h"
 #include "csrc/distributed/process_group_tpu.h"
 #include "csrc/distributed/reduce_scatter.h"
@@ -63,19 +68,24 @@ namespace {
 struct CollectiveShape {
   // The collective dimension, normalized to [0, input.dim()).
   int64_t dim = 0;
-  Dimensions output_shape;
+  // Symbolic if the input is a FakeTensor with symbolic sizes.
+  c10::SymDimVector output_shape;
 };
 
-absl::StatusOr<CollectiveShape> ValidateArgs(const at::Tensor& input,
+// Takes ConstTensor so that the validation doesn't specialize the symbolic
+// shapes of the FakeTensors that torch.compile traces with.
+absl::StatusOr<CollectiveShape> ValidateArgs(const ConstTensor& input,
                                              int64_t dim, int64_t group_size) {
-  const int64_t rank = input.dim();
+  TT_ASSIGN_OR_RETURN(const int64_t rank, input.dim());
   TT_RET_CHECK(rank > 0, error::kInvalidArgument)
       << "expected input to have at least 1 dimension, got 0";
   TT_ASSIGN_OR_RETURN(const int64_t wrapped_dim, SafeWrapDim(dim, rank));
   TT_RET_CHECK(group_size > 0, error::kInvalidArgument)
       << "expected group_size to be > 0, got " << group_size;
-  return CollectiveShape{.dim = wrapped_dim,
-                         .output_shape = CopyIntVector(input.sizes())};
+  TT_ASSIGN_OR_RETURN(const c10::SymIntArrayRef sizes, input.sym_sizes());
+  return CollectiveShape{
+      .dim = wrapped_dim,
+      .output_shape = c10::SymDimVector(sizes.begin(), sizes.end())};
 }
 
 absl::StatusOr<CollectiveShape> AllGatherShape(const at::Tensor& input,
@@ -92,7 +102,8 @@ absl::StatusOr<CollectiveShape> ReduceScatterShape(const at::Tensor& input,
                                                    int64_t group_size) {
   TT_ASSIGN_OR_RETURN(CollectiveShape shape,
                       ValidateArgs(input, dim, group_size));
-  int64_t& size = shape.output_shape[shape.dim];
+  c10::SymInt& size = shape.output_shape[shape.dim];
+  // For a symbolic size, this adds a divisibility guard but doesn't specialize.
   TT_RET_CHECK(size % group_size == 0, error::kInvalidArgument)
       << "expected the size of dim " << shape.dim
       << " to be divisible by group_size " << group_size << ", got " << size;
@@ -185,11 +196,13 @@ at::Tensor AllGatherDim(const at::Tensor& input, int64_t dim,
                                             AllGatherOutputMode::kConcat, dim));
           return outputs[0];
         };
+        TT_ASSIGN_OR_THROW(Dimensions output_dims,
+                           ConcreteSizeToDimensions(shape.output_shape));
         TT_ASSIGN_OR_THROW(
             auto result,
-            DispatchCollectiveWithDim(
-                input, group_size, std::move(shape.output_shape), group_name,
-                std::move(builder), std::move(param_keys)));
+            DispatchCollectiveWithDim(input, group_size, std::move(output_dims),
+                                      group_name, std::move(builder),
+                                      std::move(param_keys)));
         return MakeTensor(std::move(result));
       });
 }
@@ -209,11 +222,13 @@ at::Tensor ReduceScatterDim(const at::Tensor& input, std::string_view reduce_op,
                 return BuildDistributedReduceScatterShlo(input_op, op,
                                                          device_groups, dim);
               };
+              TT_ASSIGN_OR_THROW(Dimensions output_dims,
+                                 ConcreteSizeToDimensions(shape.output_shape));
               TT_ASSIGN_OR_THROW(
                   auto result,
                   DispatchCollectiveWithDim(
-                      input, group_size, std::move(shape.output_shape),
-                      group_name, std::move(builder), std::move(param_keys)));
+                      input, group_size, std::move(output_dims), group_name,
+                      std::move(builder), std::move(param_keys)));
               return MakeTensor(std::move(result));
             });
 }
@@ -222,7 +237,7 @@ at::Tensor MetaAllGatherDim(const at::Tensor& input, int64_t dim,
                             int64_t group_size,
                             std::string_view /*group_name*/) {
   TT_ASSIGN_OR_THROW(auto shape, AllGatherShape(input, dim, group_size));
-  return at::empty(shape.output_shape, input.options());
+  return at::empty_symint(shape.output_shape, input.options());
 }
 
 at::Tensor MetaReduceScatterDim(const at::Tensor& input,
@@ -231,7 +246,7 @@ at::Tensor MetaReduceScatterDim(const at::Tensor& input,
                                 std::string_view /*group_name*/) {
   TT_THROW_IF_ERROR(ParseReduceOp(reduce_op, input.scalar_type()).status());
   TT_ASSIGN_OR_THROW(auto shape, ReduceScatterShape(input, dim, group_size));
-  return at::empty(shape.output_shape, input.options());
+  return at::empty_symint(shape.output_shape, input.options());
 }
 
 }  // namespace torch_tpu

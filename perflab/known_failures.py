@@ -221,6 +221,161 @@ KNOWN_FAILURES: tuple[KnownFailure, ...] = (
         framework=mode_lib.Framework.TORCHAX,
         reason="host OOM while moving the model to the device",
     ),
+    # Compiled run modes re-enabled by cl/1007476058 that fail on v7_1x1x1
+    # under `jax.jit`: data-dependent shapes or values, or TorchAX ops that do
+    # not support the call.
+    KnownFailure(
+        benchmark="awesome_fb_model_forward_gen",
+        framework=mode_lib.Framework.TORCHAX,
+        device_kind=target_lib.DeviceKind.TPU,
+        run_modes=frozenset({common.RunMode.COMPILED}),
+        reason=(
+            "torch.unique_consecutive() on a traced EOS count in"
+            " modeling_bart.py"
+        ),
+    ),
+    KnownFailure(
+        benchmark="awesome_fb_model_train_gen",
+        framework=mode_lib.Framework.TORCHAX,
+        device_kind=target_lib.DeviceKind.TPU,
+        run_modes=frozenset({common.RunMode.COMPILED}),
+        reason=(
+            "torch.unique_consecutive() on a traced EOS count in"
+            " modeling_bart.py"
+        ),
+    ),
+    KnownFailure(
+        benchmark="bart_large_mnli_train_gen",
+        framework=mode_lib.Framework.TORCHAX,
+        device_kind=target_lib.DeviceKind.TPU,
+        run_modes=frozenset({common.RunMode.COMPILED}),
+        reason=(
+            "torch.unique_consecutive() on a traced EOS count in"
+            " modeling_bart.py"
+        ),
+    ),
+    KnownFailure(
+        benchmark="granite_speech_3_3_2b_forward_gen",
+        framework=mode_lib.Framework.TORCHAX,
+        device_kind=target_lib.DeviceKind.TPU,
+        run_modes=frozenset({common.RunMode.COMPILED}),
+        reason=(
+            "boolean indexing of inputs_embeds with a traced mask in"
+            " modeling_granite_speech.py"
+        ),
+    ),
+    KnownFailure(
+        benchmark="qwen3_5_9b_forward_gen",
+        framework=mode_lib.Framework.TORCHAX,
+        device_kind=target_lib.DeviceKind.TPU,
+        run_modes=frozenset({common.RunMode.COMPILED}),
+        reason="Tensor.copy_() into a TorchAX View fails in jaten._aten_copy",
+    ),
+    KnownFailure(
+        benchmark="rtdetr_r101vd_coco_o365_forward_gen",
+        framework=mode_lib.Framework.TORCHAX,
+        device_kind=target_lib.DeviceKind.TPU,
+        run_modes=frozenset({common.RunMode.COMPILED}),
+        reason=(
+            "TorchAX tensor constructors reject torch.arange(end=...) without"
+            " start"
+        ),
+    ),
+    KnownFailure(
+        benchmark="tapas_base_finetuned_sqa_forward_gen",
+        framework=mode_lib.Framework.TORCHAX,
+        device_kind=target_lib.DeviceKind.TPU,
+        run_modes=frozenset({common.RunMode.COMPILED}),
+        reason=(
+            "int() on a traced num_segments in modeling_tapas.py"
+            " _segment_reduce()"
+        ),
+    ),
+    KnownFailure(
+        benchmark="tapas_base_finetuned_sqa_train_gen",
+        framework=mode_lib.Framework.TORCHAX,
+        device_kind=target_lib.DeviceKind.TPU,
+        run_modes=frozenset({common.RunMode.COMPILED}),
+        reason=(
+            "int() on a traced num_segments in modeling_tapas.py"
+            " _segment_reduce()"
+        ),
+    ),
+    KnownFailure(
+        benchmark="tapas_base_finetuned_wtq_forward_gen",
+        framework=mode_lib.Framework.TORCHAX,
+        device_kind=target_lib.DeviceKind.TPU,
+        run_modes=frozenset({common.RunMode.COMPILED}),
+        reason=(
+            "int() on a traced num_segments in modeling_tapas.py"
+            " _segment_reduce()"
+        ),
+    ),
+    KnownFailure(
+        benchmark="tapas_large_finetuned_sqa_forward_gen",
+        framework=mode_lib.Framework.TORCHAX,
+        device_kind=target_lib.DeviceKind.TPU,
+        run_modes=frozenset({common.RunMode.COMPILED}),
+        reason=(
+            "int() on a traced num_segments in modeling_tapas.py"
+            " _segment_reduce()"
+        ),
+    ),
+    KnownFailure(
+        benchmark="tapas_large_finetuned_sqa_train_gen",
+        framework=mode_lib.Framework.TORCHAX,
+        device_kind=target_lib.DeviceKind.TPU,
+        run_modes=frozenset({common.RunMode.COMPILED}),
+        reason=(
+            "int() on a traced num_segments in modeling_tapas.py"
+            " _segment_reduce()"
+        ),
+    ),
+    # XLA:TPU VMEM buffer coloring failure under `jax.jit` on v7_1x1x1.
+    KnownFailure(
+        benchmark="tiny_doc_qa_vision_encoder_decoder_forward_gen",
+        framework=mode_lib.Framework.TORCHAX,
+        device_kind=target_lib.DeviceKind.TPU,
+        run_modes=frozenset({common.RunMode.COMPILED}),
+        reason=(
+            "XLA:TPU VMEM buffer coloring failure (Too many buffers are"
+            " colored in the alternate memory)"
+        ),
+    ),
+    # Run modes re-enabled by cl/1007476058 that fail past the single warmup
+    # step of its audit.
+    KnownFailure(
+        benchmark="bge_multilingual_gemma2_train_gen",
+        framework=mode_lib.Framework.TORCH,
+        device_kind=target_lib.DeviceKind.TPU,
+        run_modes=frozenset(
+            {common.RunMode.EAGER_DEFAULT, common.RunMode.EAGER_OPTIMIZED}
+        ),
+        reason="HBM OOM during the training warmup on v7_1x1x1",
+    ),
+    KnownFailure(
+        benchmark="hf_seamless_m4t_medium_train_gen",
+        framework=mode_lib.Framework.TORCH,
+        device_kind=target_lib.DeviceKind.TPU,
+        run_modes=frozenset({
+            common.RunMode.COMPILED,
+            common.RunMode.EAGER_DEFAULT,
+            common.RunMode.EAGER_OPTIMIZED,
+        }),
+        reason=(
+            "config layerdrop randomly skips layers in training, so new graphs"
+            " compile after warmup"
+        ),
+    ),
+    KnownFailure(
+        benchmark="qwen3_5_9b_train_gen",
+        framework=mode_lib.Framework.TORCH,
+        device_kind=target_lib.DeviceKind.TPU,
+        run_modes=frozenset(
+            {common.RunMode.EAGER_DEFAULT, common.RunMode.EAGER_OPTIMIZED}
+        ),
+        reason="HBM OOM during the training warmup on v7_1x1x1",
+    ),
     # TODO(b/571695076): Remove once the 4096 parameter training step compiles
     # within the subprocess timeout.
     KnownFailure(
@@ -230,6 +385,18 @@ KNOWN_FAILURES: tuple[KnownFailure, ...] = (
         run_modes=frozenset({common.RunMode.COMPILED}),
         reason=(
             "Inductor compilation of the training step exceeds the 900 s"
+            " subprocess timeout on b200_1"
+        ),
+    ),
+    # Inductor compilation of the forward step exceeds the 900 s subprocess
+    # timeout on b200_1.
+    KnownFailure(
+        benchmark="qwen3_5_9b_forward_gen",
+        framework=mode_lib.Framework.TORCH,
+        device_kind=target_lib.DeviceKind.CUDA,
+        run_modes=frozenset({common.RunMode.COMPILED}),
+        reason=(
+            "Inductor compilation of the forward step exceeds the 900 s"
             " subprocess timeout on b200_1"
         ),
     ),

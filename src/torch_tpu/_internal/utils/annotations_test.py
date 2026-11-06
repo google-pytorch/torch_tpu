@@ -870,7 +870,7 @@ class AnnotationsTest(seed_test_utils.RepeatableTest):
     self.assertTrue(issubclass(w[0].category, UserWarning))
     self.assertEqual(
         str(w[0].message),
-        "<TorchTpu/ApiStage/InternalApi/> sample_func is internal to TorchTPU"
+        "//TorchTpu/ApiStage/InternalApi// sample_func is internal to TorchTPU"
         " and may change or be removed without notice. Use torch.public_func"
         " instead.",
     )
@@ -896,7 +896,7 @@ class AnnotationsTest(seed_test_utils.RepeatableTest):
     self.assertLen(w, 1)
     self.assertEqual(
         str(w[0].message),
-        "<TorchTpu/ApiStage/InternalApi/> sample_func is internal to TorchTPU"
+        "//TorchTpu/ApiStage/InternalApi// sample_func is internal to TorchTPU"
         " and may change or be removed without notice.",
     )
 

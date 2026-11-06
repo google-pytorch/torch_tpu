@@ -15,10 +15,11 @@
 """Test utilities for torch_tpu."""
 
 import collections
+from collections.abc import Callable
 import enum
 import math
 import re
-from typing import Any, Callable, TypeAlias
+from typing import Any, TypeAlias
 
 import numpy as np
 import torch

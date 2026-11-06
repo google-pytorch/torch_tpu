@@ -114,4 +114,12 @@ bool IsDefaultDeviceLayout(const CustomLayout& layout,
   return true;
 }
 
+absl::StatusOr<xla::Layout> GetDefaultDeviceLayout(
+    const mlir::ElementType element_type,
+    const absl::Span<const int64_t> dimensions) {
+  TT_ASSIGN_OR_RETURN(xla::PjRtClient* const client, GetPjRtClient());
+  return client->GetDefaultLayout(ConvertTo<xla::PrimitiveType>(element_type),
+                                  dimensions);
+}
+
 }  // namespace torch_tpu

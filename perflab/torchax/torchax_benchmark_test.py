@@ -44,6 +44,7 @@ from perflab import models
 from perflab import registry as registry_lib
 from perflab import step_lib
 from perflab import target as target_lib
+from perflab import workload as workload_lib
 from perflab.torchax import torchax_device_ops
 from perflab.torchax import torchax_step
 
@@ -72,18 +73,26 @@ def _make_run_step(
     spec: registry_lib.BenchmarkSpec,
     ctx: context_lib.Context,
     mode: common.RunMode,
-) -> step_lib.Stepper:
+) -> tuple[step_lib.Stepper, workload_lib.StepWork | None]:
+  """Builds the stepper of a benchmark and the work of one of its steps."""
   common.seed_rngs()
   runner = torchax_step.resolve_torchax_stepper(
       spec.stepper, **spec.stepper_kwargs
   )
   runner.init_with_benchmark_args(spec, ctx)
+  step_work = (
+      None
+      if ctx.workload is None
+      else workload_lib.step_work(
+          ctx.workload, spec.stepper, spec.stepper_kwargs
+      )
+  )
 
   if common.is_torch_compile(mode):
     compile_config = spec.compile_config or compile_lib.CompileConfig()
     runner.compile(compile_config, ctx.target)
 
-  return runner
+  return runner, step_work
 
 
 def reset_state() -> None:
@@ -139,8 +148,11 @@ class TorchaxBenchmarkTest(
 
     target = target_lib.make_target(_PLATFORM, dtype=spec.dtype)
     device_ops = torchax_device_ops.TorchaxDeviceOps(target)
-    ctx = context_lib.Context(
-        target=target, run_scope=context_lib.RUN_SCOPE.value
+    ctx = registry_lib.resolve_context(
+        spec,
+        context_lib.Context(
+            target=target, run_scope=context_lib.RUN_SCOPE.value
+        ),
     )
 
     reset_state()
@@ -167,7 +179,7 @@ class TorchaxBenchmarkTest(
       self, spec, mode, device_ops, ctx
   ) -> metrics_lib.PerformanceMetrics:
     try:
-      run_step = _make_run_step(spec, ctx, mode)
+      run_step, step_work = _make_run_step(spec, ctx, mode)
       metrics = measure_lib.measure(
           run_step,
           device_ops,
@@ -176,6 +188,7 @@ class TorchaxBenchmarkTest(
       )
     except target_lib.UnsupportedBenchmark as e:
       self.skipTest(f"{spec.name}: {e}")
+    metrics.step_work = step_work
 
     logging.info("Metrics for %s_%s:\n%s", spec.name, mode.value, metrics)
     self._assert_measured(metrics)

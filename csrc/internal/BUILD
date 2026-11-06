@@ -39,6 +39,7 @@ torch_tpu_cc_library(
         "//csrc/common:env_vars",
         "//csrc/common:error_utils",
         "//csrc/common:libtpu_version",
+        "//csrc/common:process",
         "//csrc/common:pybind_error_utils",
         "//csrc/common:utils",
         "//shims/pybind11",
@@ -69,7 +70,6 @@ torch_tpu_cc_library(
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
         "//shims/torch/c10/util:base_headers",
-        "@com_google_absl//absl/flags:flag",
         "@xla//xla/pjrt:pjrt_client",
     ],
 )

@@ -40,6 +40,7 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/FuncBuilder.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
+#include "xla/pjrt/mlir_to_hlo.h"
 
 namespace torch_tpu {
 namespace {
@@ -98,6 +99,48 @@ module @kernel_cumsum {
 }
 )";
 
+// A module whose module attributes, function arguments, results, and operations
+// carry MHLO and Shardy sharding annotations (including a Shardy sharding
+// rule), plus an unrelated argument attribute that must be preserved.
+constexpr std::string_view kShardingAnnotatedModule = R"(
+module @kernel_sharded_add attributes {
+    mhlo.spmd_output_sharding = "{replicated}",
+    mhlo.spmd_parameters_shardings = ["{replicated}", "{replicated}"]} {
+  sdy.mesh @mesh = <["x"=2]>
+  func.func public @main(
+      %arg0: tensor<8xf32> {sdy.sharding = #sdy.sharding<@mesh, [{"x"}]>},
+      %arg1: tensor<8xf32> {mhlo.sharding = "{replicated}", tt.keep = 1 : i32})
+      -> (tensor<8xf32> {sdy.sharding = #sdy.sharding<@mesh, [{"x"}]>},
+          tensor<8xf32> {mhlo.sharding = "{replicated}"}) {
+    %0 = stablehlo.add %arg0, %arg1 {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}]>]>, sdy.sharding_rule = #sdy.op_sharding_rule<([i], [i])->([i]) {i=8}>} : tensor<8xf32>
+    %1 = stablehlo.multiply %arg0, %arg1 {mhlo.sharding = "{replicated}"} : tensor<8xf32>
+    return %0, %1 : tensor<8xf32>, tensor<8xf32>
+  }
+}
+)";
+
+// Expects that no sharding attributes remain on `module`, or on any of its
+// functions, function arguments, function results, or operations.
+void ExpectNoShardingAttributes(mlir::ModuleOp module) {
+  EXPECT_FALSE(module->hasAttr("mhlo.spmd_parameters_shardings"));
+  EXPECT_FALSE(module->hasAttr("mhlo.spmd_output_sharding"));
+  module->walk([](mlir::Operation* op) {
+    EXPECT_FALSE(op->hasAttr("mhlo.sharding"));
+    EXPECT_FALSE(op->hasAttr("sdy.sharding"));
+    EXPECT_FALSE(op->hasAttr("sdy.sharding_rule"));
+    if (auto func_op = mlir::dyn_cast<mlir::func::FuncOp>(op)) {
+      for (unsigned i = 0; i < func_op.getNumArguments(); ++i) {
+        EXPECT_FALSE(func_op.getArgAttr(i, "mhlo.sharding"));
+        EXPECT_FALSE(func_op.getArgAttr(i, "sdy.sharding"));
+      }
+      for (unsigned i = 0; i < func_op.getNumResults(); ++i) {
+        EXPECT_FALSE(func_op.getResultAttr(i, "mhlo.sharding"));
+        EXPECT_FALSE(func_op.getResultAttr(i, "sdy.sharding"));
+      }
+    }
+  });
+}
+
 class CustomKernelRegistryTest : public testing::Test {
  protected:
   static void SetUpTestSuite() {
@@ -152,23 +195,45 @@ TEST_F(CustomKernelRegistryTest, RegisterAndCallMlirKernel) {
 
   // Check that no residual sharding attributes remain on the module, functions,
   // function arguments, function results, or operations.
-  EXPECT_FALSE((*module)->hasAttr("mhlo.spmd_parameters_shardings"));
-  EXPECT_FALSE((*module)->hasAttr("mhlo.spmd_output_sharding"));
-  module->walk([&](mlir::func::FuncOp func_op) {
-    for (unsigned i = 0; i < func_op.getNumArguments(); ++i) {
-      EXPECT_FALSE(func_op.getArgAttr(i, "mhlo.sharding"));
-      EXPECT_FALSE(func_op.getArgAttr(i, "sdy.sharding"));
-    }
-    for (unsigned i = 0; i < func_op.getNumResults(); ++i) {
-      EXPECT_FALSE(func_op.getResultAttr(i, "mhlo.sharding"));
-      EXPECT_FALSE(func_op.getResultAttr(i, "sdy.sharding"));
-    }
-  });
-  module->walk([&](mlir::Operation* op) {
-    EXPECT_FALSE(op->hasAttr("mhlo.sharding"));
-    EXPECT_FALSE(op->hasAttr("sdy.sharding"));
-    EXPECT_FALSE(op->hasAttr("sdy.sharding_rule"));
-  });
+  ExpectNoShardingAttributes(*module);
+}
+
+TEST(RemoveShardingAnnotationsTest, StripsAllShardingAnnotations) {
+  mlir::MLIRContext context;
+  TT_ASSERT_OK_AND_ASSIGN(
+      mlir::OwningOpRef<mlir::ModuleOp> module,
+      xla::ParseMlirModuleString(kShardingAnnotatedModule, context));
+
+  // Sanity check that the input carries sharding annotations on the module,
+  // ops, function arguments, and function results, so the checks below are not
+  // vacuous.
+  ASSERT_TRUE((*module)->hasAttr("mhlo.spmd_parameters_shardings"));
+  ASSERT_TRUE((*module)->hasAttr("mhlo.spmd_output_sharding"));
+  auto main_func = module->lookupSymbol<mlir::func::FuncOp>("main");
+  ASSERT_TRUE(main_func);
+  ASSERT_TRUE(main_func.getArgAttr(0, "sdy.sharding"));
+  ASSERT_TRUE(main_func.getArgAttr(1, "mhlo.sharding"));
+  ASSERT_TRUE(main_func.getResultAttr(0, "sdy.sharding"));
+  ASSERT_TRUE(main_func.getResultAttr(1, "mhlo.sharding"));
+  int num_annotated_ops = 0;
+  int num_ops_with_sharding_rule = 0;
+  module->walk(
+      [&num_annotated_ops, &num_ops_with_sharding_rule](mlir::Operation* op) {
+        if (op->hasAttr("sdy.sharding") || op->hasAttr("mhlo.sharding")) {
+          ++num_annotated_ops;
+        }
+        if (op->hasAttr("sdy.sharding_rule")) {
+          ++num_ops_with_sharding_rule;
+        }
+      });
+  ASSERT_EQ(num_annotated_ops, 2);
+  ASSERT_EQ(num_ops_with_sharding_rule, 1);
+
+  internal::RemoveShardingAnnotations(*module);
+
+  ExpectNoShardingAttributes(*module);
+  // Unrelated attributes are preserved.
+  EXPECT_TRUE(main_func.getArgAttr(1, "tt.keep"));
 }
 
 TEST_F(CustomKernelRegistryTest, RegisterAndCallKernelWithHelperFunction) {

@@ -23,7 +23,7 @@ from collections.abc import Callable, Iterator
 import contextlib
 import copy
 import threading
-from typing import Any, Generic, NamedTuple, TypeVar
+from typing import Any, Generic, NamedTuple, Protocol, TypeVar, cast
 
 from absl import logging
 from etils import epath
@@ -203,6 +203,13 @@ def _detach_non_leaf_tensors(model: torch.nn.Module) -> None:
           mapping[k] = v.detach()
 
 
+class ModuleFactory(Protocol):
+  """Constructs a model, optionally in a given dtype."""
+
+  def __call__(self, dtype: torch.dtype | None = None) -> torch.nn.Module:
+    ...
+
+
 class ModuleFactoryCache:
   """Caches an untouched CPU template model to avoid redundant module_factory() loads.
 
@@ -211,12 +218,20 @@ class ModuleFactoryCache:
   pristine CPU template, preserving tied weights while isolating all parameters,
   buffers, submodules, and configs. Falls back to calling the underlying
   `module_factory` if `copy.deepcopy` fails.
+
+  Like `ModuleSpec.module_factory`, `__call__()` accepts an optional `dtype`,
+  which is passed to the underlying `module_factory`. A separate template is
+  cached for each `dtype` that is requested.
   """
 
-  def __init__(self, orig_factory: Callable[[], Any], seed: int = 42):
+  def __init__(
+      self,
+      orig_factory: Callable[[], Any] | ModuleFactory,
+      seed: int = 42,
+  ):
     self._orig_factory = orig_factory
     self._seed = seed
-    self._pristine_cpu_model: Any | None = None
+    self._pristine_cpu_models: dict[torch.dtype | None, Any] = {}
     self._load_count: int = 0
 
   @property
@@ -224,49 +239,55 @@ class ModuleFactoryCache:
     """Returns the number of times the underlying module_factory was invoked."""
     return self._load_count
 
-  def _instantiate(self) -> Any:
+  def _instantiate(self, dtype: torch.dtype | None) -> Any:
     torch.manual_seed(self._seed)
     with torch.no_grad():
       self._load_count += 1
-      return self._orig_factory()
+      # Factories that predate the `dtype` argument take no arguments.
+      if dtype is None:
+        return self._orig_factory()
+      return cast(ModuleFactory, self._orig_factory)(dtype=dtype)
 
-  def preload(self) -> None:
-    """Instantiates and caches the pristine CPU model template if not yet loaded."""
-    if self._pristine_cpu_model is not None:
+  def preload(self, dtype: torch.dtype | None = None) -> None:
+    """Instantiates and caches the pristine CPU model template if not yet loaded.
+
+    Args:
+      dtype: The dtype to pass to the underlying `module_factory`.
+    """
+    if dtype in self._pristine_cpu_models:
       return
     with torch.device("cpu"):
-      model = self._instantiate()
+      model = self._instantiate(dtype)
     if isinstance(model, torch.nn.Module):
       _detach_non_leaf_tensors(model)
     if getattr(model, "config", None) is not None:
       with contextlib.suppress(Exception):
         model.config = copy.deepcopy(model.config)
-    self._pristine_cpu_model = model
+    self._pristine_cpu_models[dtype] = model
 
-  def __call__(self) -> Any:
+  def __call__(self, dtype: torch.dtype | None = None) -> Any:
     # Meta-device callers need a meta model; never serve or cache it from CPU.
     if torch.get_default_device().type == "meta":
-      return self._instantiate()
-    if self._pristine_cpu_model is None:
-      self.preload()
+      return self._instantiate(dtype)
+    self.preload(dtype)
     try:
-      return copy.deepcopy(self._pristine_cpu_model)
+      return copy.deepcopy(self._pristine_cpu_models[dtype])
     except Exception as copy_err:  # pylint: disable=broad-exception-caught
       logging.warning(
           "Failed to deepcopy cached CPU model (%s); falling back to"
           " calling original module_factory().",
           copy_err,
       )
-      return self._instantiate()
+      return self._instantiate(dtype)
 
   @property
   def is_cached(self) -> bool:
     """Returns True if a pristine CPU model template is currently cached."""
-    return self._pristine_cpu_model is not None
+    return bool(self._pristine_cpu_models)
 
   def clear(self) -> None:
-    """Releases the cached pristine CPU model reference."""
-    self._pristine_cpu_model = None
+    """Releases the cached pristine CPU model references."""
+    self._pristine_cpu_models.clear()
 
 
 def cache_module_factory(

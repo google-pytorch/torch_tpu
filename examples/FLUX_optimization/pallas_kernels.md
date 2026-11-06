@@ -144,9 +144,9 @@ Softmax `logsumexp` residual (`save_residuals=True`) and passes it directly into
 the backward kernel.
 
 Continuing inside `_make_splash_attention_fn` in
-[`splash_attention.py`](splash_attention.py), we build `splash_kernel` and
-define the batch-level forward (`splash_fn`) and backward (`splash_bwd_fn`)
-functions. Note that:
+[`splash_attention.py`](splash_attention.py), we compute the static host NumPy
+`MaskInfo` metadata and define the batch-level forward (`splash_fn`) and
+backward (`splash_bwd_fn`) functions. Note that:
 
 -   The `jax.Array` type annotations are used strictly by
     `torch.tpu.pallas.jax_op` to inspect the function signature and infer the
@@ -157,19 +157,28 @@ functions. Note that:
 
 ```python
 # Inside _make_splash_attention_fn(...) in splash_attention.py:
-if is_mqa:
-  splash_kernel = splash_attention_kernel.make_splash_mqa(
-      mask=multi_head_mask,
+fwd_mask_info, _mask_function = splash_attention_mask_info.process_mask(
+    multi_head_mask,
+    (block_sizes.block_q, block_sizes.block_kv),
+    head_shards=1,
+    q_seq_shards=1,
+)
+dq_mask_info = None
+dkv_mask_info = None
+if block_sizes.has_backward_blocks:
+  if not use_fused_bwd_kernel:
+    dq_mask_info, _ = splash_attention_mask_info.process_mask(
+        multi_head_mask,
+        (block_sizes.block_q_dq, block_sizes.block_kv_dq),
+        head_shards=1,
+        q_seq_shards=1,
+    )
+  dkv_mask_info, _ = splash_attention_mask_info.process_mask_dkv(
+      multi_head_mask,
+      (block_sizes.block_q_dkv, block_sizes.block_kv_dkv),
       head_shards=1,
       q_seq_shards=1,
-      block_sizes=block_sizes,
-  )
-else:
-  splash_kernel = splash_attention_kernel.make_splash_mha(
-      mask=multi_head_mask,
-      head_shards=1,
-      q_seq_shards=1,
-      block_sizes=block_sizes,
+      shrink_grid=not use_fused_bwd_kernel,
   )
 
 def _single_fwd_with_lse(q_b, k_b, v_b):

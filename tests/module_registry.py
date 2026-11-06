@@ -31,7 +31,7 @@ inputs.
 # pylint: disable=g-import-not-at-top
 
 import abc
-from collections.abc import Callable, Mapping, MutableMapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, MutableMapping, Sequence
 import contextlib
 import copy
 import dataclasses
@@ -49,7 +49,7 @@ import pathlib
 import sys
 import tempfile
 import types
-from typing import Any, Iterator, overload
+from typing import Any, overload
 import uuid
 
 from absl import flags
@@ -655,6 +655,11 @@ _GCS_WEIGHTS_PREFIX = flags.DEFINE_string(
     "Prefix within the GCS bucket where weights and configs are stored.",
 )
 
+# Per-request HTTP timeout for GCS downloads, so an unreachable GCS endpoint
+# fails fast and falls back instead of stalling the caller on the library's
+# default 60s timeout.
+_GCS_DOWNLOAD_TIMEOUT_SECONDS = 15
+
 
 def _download_gcs_blob(
     bucket_name: str,
@@ -680,7 +685,9 @@ def _download_gcs_blob(
     client = storage.Client()
     bucket = client.bucket(bucket_name)
     blob = bucket.blob(blob_name)
-    blob.download_to_filename(str(temp_dest))
+    blob.download_to_filename(
+        str(temp_dest), timeout=_GCS_DOWNLOAD_TIMEOUT_SECONDS
+    )
     temp_dest.replace(dest_path)
     logging.info(
         "Successfully downloaded gs://%s/%s to %s",
@@ -919,11 +926,19 @@ class Modality(enum.Enum):
   VISION = "vision"
 
 
+ModuleFactory = module_cache.ModuleFactory
+
+
 class ModuleSpec:
   """A specification container for a PyTorch model and its inputs.
 
   Attributes:
-    module_factory: A callable that returns an instantiated `torch.nn.Module`.
+    module_factory: A `ModuleFactory` that returns an instantiated
+      `torch.nn.Module`. It accepts an optional `dtype` (`torch.dtype`).
+      Transformers and Diffusers models are constructed in it, while Torchvision
+      and TIMM models are constructed in the default dtype and cast to it. If
+      `dtype` is None, the provider chooses the dtype (e.g. the config dtype of
+      a Transformers model).
     sample_inputs_factory: A callable that generates compatible input tensors.
       It accepts optional `shape` (Sequence) and `device` (str) arguments and
       returns a tuple containing `(args, kwargs)` for the model's forward pass.
@@ -937,7 +952,7 @@ class ModuleSpec:
 
   def __init__(
       self,
-      module_factory: Callable[[], torch.nn.Module],
+      module_factory: ModuleFactory,
       sample_inputs_factory: Callable[
           [Sequence[int] | None, str | None],
           tuple[tuple[Any, ...], dict[str, Any]],
@@ -955,6 +970,32 @@ class ModuleSpec:
     )
     self.config = config
     self.modality = modality
+
+
+def _cast_after_construction(
+    create_module: Callable[[], torch.nn.Module],
+) -> ModuleFactory:
+  """Returns a module factory that casts the constructed model to `dtype`.
+
+  Unlike Transformers and Diffusers models, Torchvision and TIMM models are
+  constructed in the default dtype and cast to `dtype` afterwards. Their
+  constructors take no dtype, and constructing them under another default dtype
+  would also change values computed at construction that are not parameters
+  (e.g. TIMM's stochastic depth rates from `torch.linspace`). The models are
+  small, so the float32 copy before the cast costs little memory.
+
+  Args:
+    create_module: Constructs the model in the default dtype.
+
+  Returns:
+    The module factory.
+  """
+
+  def module_factory(dtype: torch.dtype | None = None) -> torch.nn.Module:
+    model = create_module()
+    return model if dtype is None else model.to(dtype)
+
+  return module_factory
 
 
 class BaseProvider(abc.ABC):
@@ -1135,7 +1176,7 @@ class TorchvisionProvider(BaseProvider):
           {},
       )
 
-    def _module_factory():
+    def _create_module():
       if load_weights and self._base_path:
         local_checkpoint = None
         local_dir = self._base_path / name
@@ -1166,7 +1207,7 @@ class TorchvisionProvider(BaseProvider):
       return _create_torchvision_model(name)
 
     return ModuleSpec(
-        _module_factory,
+        _cast_after_construction(_create_module),
         _torchvision_input_factory,
         modality=Modality.VISION,
     )
@@ -1242,7 +1283,7 @@ class TimmProvider(BaseProvider):
     if config and modify_config_hook is not None:
       config = modify_config_hook(config)
 
-    def _module_factory():
+    def _create_module():
       if load_weights and self._base_path:
         local_checkpoint = self._base_path / name / f"{name}.pth"
         safetensors_checkpoint = self._base_path / name / "model.safetensors"
@@ -1286,7 +1327,7 @@ class TimmProvider(BaseProvider):
       return None
 
     return ModuleSpec(
-        _module_factory,
+        _cast_after_construction(_create_module),
         _input_factory,
         _preprocessor_factory,
         config,
@@ -1730,6 +1771,28 @@ def _get_num_channels(config: Any, default_channels: int = 3) -> int:
         min_val=1,
     )
   return val
+
+
+@contextlib.contextmanager
+def _default_dtype(dtype: torch.dtype | None) -> Iterator[None]:
+  """Sets the default floating point dtype within the context.
+
+  Args:
+    dtype: The dtype to construct floating point tensors in. None and
+      non-floating point dtypes leave the default dtype unchanged.
+
+  Yields:
+    None.
+  """
+  if dtype is None or not dtype.is_floating_point:
+    yield
+    return
+  original_dtype = torch.get_default_dtype()
+  torch.set_default_dtype(dtype)
+  try:
+    yield
+  finally:
+    torch.set_default_dtype(original_dtype)
 
 
 def _extract_target_dtype(config: Any) -> torch.dtype:
@@ -3092,17 +3155,17 @@ def _apply_model_patches(
 def _instantiate_transformers_model(
     model_cls: type[torch.nn.Module],
     config: Any,
-    target_dtype: torch.dtype,
+    dtype: torch.dtype | None,
 ) -> torch.nn.Module:
   """Stage 4: Deterministically instantiates and patches the resolved model.
 
   What this stage does:
     Unwraps the sanitized `config` (and extracts `config.get_text_config()` when
     `model_cls` expects the inner text sub-config of a composite multimodal
-    config), constructs the model in `target_dtype` via
-    `model_cls._from_config(target_cfg, dtype=target_dtype)`, casts any
-    remaining floating-point parameters/buffers to `target_dtype`, and applies
-    post-instantiation runtime hooks via `_apply_model_patches`.
+    config), constructs the model in `dtype` via
+    `model_cls._from_config(target_cfg, dtype=dtype)`, casts any remaining
+    floating-point parameters/buffers to it, and applies post-instantiation
+    runtime hooks via `_apply_model_patches`.
 
   Why this is needed as a separate stage:
     Model construction must be deferred inside `ModuleSpec.module_factory` so
@@ -3130,11 +3193,18 @@ def _instantiate_transformers_model(
   Args:
     model_cls: The resolved `torch.nn.Module` class from Stage 3.
     config: The sanitized `_ConfigWrapper` or `PretrainedConfig` from Stage 2.
-    target_dtype: Target `torch.dtype` extracted from `config`.
+    dtype: The dtype to construct the model in. If None, the model is
+      constructed in the config dtype, or in the default dtype if the config has
+      none.
 
   Returns:
     The instantiated and patched `torch.nn.Module`.
+
+  Raises:
+    ValueError: If `dtype` is not a floating point dtype.
   """
+  if dtype is not None and not dtype.is_floating_point:
+    raise ValueError(f"dtype must be a floating point dtype, got {dtype}.")
   raw_cfg = config.unwrap() if isinstance(config, _ConfigWrapper) else config
   target_cfg = raw_cfg
 
@@ -3148,30 +3218,33 @@ def _instantiate_transformers_model(
       and hasattr(raw_cfg, "get_text_config")
   ):
     target_cfg = raw_cfg.get_text_config()
+  # `_from_config` writes the dtype to the config and its sub-configs. Keep
+  # the config of the module spec, which later calls and the input factory
+  # read, unchanged.
+  target_cfg = copy.deepcopy(target_cfg)
 
-  if hasattr(model_cls, "_from_config") and callable(
-      getattr(model_cls, "_from_config")
-  ):
-    # Build the model directly in `target_dtype`. Without an explicit dtype,
+  if callable(getattr(model_cls, "_from_config", None)):
+    # Build the model directly in `dtype`, which `_from_config` also sets as
+    # the default dtype during construction. Without an explicit dtype,
     # `_from_config` uses the root config's dtype for the whole model. Some
     # configs set a dtype only on a sub-config (e.g. Qwen3.5-397B-A17B sets it
     # only on `text_config`), so the root dtype is None and the model is built
     # in float32 and then cast, which doubles peak memory.
-    from_config_kwargs = (
-        {"dtype": target_dtype} if target_dtype != torch.float32 else {}
-    )
+    from_config_kwargs = {} if dtype is None else {"dtype": dtype}
     # pyrefly: ignore[missing-attribute]
     model = model_cls._from_config(target_cfg, **from_config_kwargs)
-  elif hasattr(model_cls, "from_config") and callable(
-      getattr(model_cls, "from_config")
-  ):
-    # pyrefly: ignore[missing-attribute]
-    model = model_cls.from_config(target_cfg)
   else:
-    model = model_cls(target_cfg)
+    # Classes without `_from_config` (e.g. `AutoModel*` classes named in
+    # `architectures`) take no dtype, so construct them under it.
+    with _default_dtype(dtype):
+      if callable(getattr(model_cls, "from_config", None)):
+        # pyrefly: ignore[missing-attribute]
+        model = model_cls.from_config(target_cfg)
+      else:
+        model = model_cls(target_cfg)
 
-  if model is not None and target_dtype != torch.float32:
-    model = model.to(dtype=target_dtype)  # pyrefly: ignore[missing-attribute]
+  if model is not None and dtype is not None:
+    model = model.to(dtype=dtype)  # pyrefly: ignore[missing-attribute]
   patched = _apply_model_patches(model, config)
   assert patched is not None
   return patched
@@ -3383,8 +3456,19 @@ class TransformersProvider(BaseProvider):
     if not load_weights and config.get("model_type", "") == "vits":
       config.use_stochastic_duration_prediction = False
 
+    # TAPAS's relative position embeddings per table cell call `Tensor.item()`,
+    # which fails on the meta device. Set these on the config here rather than
+    # in the input factory, since models are constructed from a copy of it.
+    if not load_weights and config.get("model_type", "") == "tapas":
+      config.reset_position_index_per_cell = False
+      config.init_cell_selection_weights_to_zero = False
+
     modality = _determine_modality(config)
+    # `_extract_target_dtype` returns float32 also for configs without a dtype,
+    # which Transformers constructs in the default dtype. Some callers set it to
+    # their run dtype, so don't override it with float32.
     target_dtype = _extract_target_dtype(config)
+    config_dtype = None if target_dtype == torch.float32 else target_dtype
 
     if load_weights:
       if modality == Modality.CAUSAL_LM:
@@ -3401,17 +3485,30 @@ class TransformersProvider(BaseProvider):
 
       kwargs.setdefault("low_cpu_mem_usage", True)
       kwargs.setdefault("ignore_mismatched_sizes", True)
-      if target_dtype != torch.float32:
-        kwargs.setdefault("torch_dtype", target_dtype)
-      model_fn = lambda: model_cls.from_pretrained(
-          str(model_dir_or_repo_id), **kwargs
-      )
+      # `torch_dtype` is deprecated in favor of `dtype`, which takes precedence
+      # in `from_pretrained`. Keep a caller's `torch_dtype` over `config_dtype`.
+      if "torch_dtype" in kwargs:
+        kwargs.setdefault("dtype", kwargs.pop("torch_dtype"))
+      if config_dtype is not None:
+        kwargs.setdefault("dtype", config_dtype)
+      # Pyrefly cannot narrow `model_cls`, which is assigned in branches above,
+      # inside the closure.
+      from_pretrained = model_cls.from_pretrained
+
+      def model_fn(dtype: torch.dtype | None = None) -> torch.nn.Module:
+        pretrained_kwargs = (
+            kwargs if dtype is None else {**kwargs, "dtype": dtype}
+        )
+        return from_pretrained(str(model_dir_or_repo_id), **pretrained_kwargs)
+
     else:
       # Stage 3 & Stage 4: Resolve model class and instantiate model.
-      model_cls = _resolve_transformers_model_class(config, modality)
-      model_fn = lambda: _instantiate_transformers_model(
-          model_cls, config, target_dtype
-      )
+      resolved_cls = _resolve_transformers_model_class(config, modality)
+
+      def model_fn(dtype: torch.dtype | None = None) -> torch.nn.Module:
+        return _instantiate_transformers_model(
+            resolved_cls, config, config_dtype if dtype is None else dtype
+        )
 
     # Stage 5: Preprocessor factory.
     preprocessor_fn = lambda: _load_transformers_preprocessor(
@@ -3712,11 +3809,12 @@ class DiffusersProvider(BaseProvider):
     if config_dict.get("encoder_hid_dim_type") == "ip_image_proj":
       config_dict["encoder_hid_dim_type"] = None
 
-    def _module_factory():
+    def _module_factory(dtype: torch.dtype | None = None) -> torch.nn.Module:
+      cast_dtype = d_type if dtype is None else dtype
       if load_weights:
         return auto_model.AutoModel.from_pretrained(
             str(model_path),
-            torch_dtype=d_type,
+            torch_dtype=cast_dtype,
             subfolder=subfolder,
         )
       else:
@@ -3730,10 +3828,13 @@ class DiffusersProvider(BaseProvider):
             head_val = config_dict.pop("num_attention_heads")
             if "attention_head_dim" not in config_dict:
               config_dict["attention_head_dim"] = head_val
-        model = model_cls.from_config(config_dict)
+        # Without an explicit `dtype`, keep constructing in the default dtype,
+        # which keeps the random weights unchanged.
+        with _default_dtype(dtype):
+          model = model_cls.from_config(config_dict)
         if isinstance(model, tuple):
           model = model[0]
-        return model.to(d_type)
+        return model.to(cast_dtype)
 
     def _input_factory(shape=None, device="cpu"):
       g = torch.Generator(device="cpu").manual_seed(42)

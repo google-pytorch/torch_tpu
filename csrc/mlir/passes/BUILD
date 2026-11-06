@@ -56,6 +56,39 @@ torch_tpu_cc_library(
 )
 
 torch_tpu_cc_library(
+    name = "guard_zero_operand_custom_calls",
+    srcs = ["guard_zero_operand_custom_calls.cc"],
+    hdrs = ["guard_zero_operand_custom_calls.h"],
+    deps = [
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:Support",
+        "@stablehlo//:stablehlo_ops",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "guard_zero_operand_custom_calls_test",
+    srcs = ["guard_zero_operand_custom_calls_test.cc"],
+    deps = [
+        ":guard_zero_operand_custom_calls",
+        "//csrc/common:oss_test_main",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Parser",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:SideEffectInterfaces",
+        "@llvm-project//mlir:Support",
+        "@llvm-project//mlir:Transforms",
+        "@stablehlo//:register",
+        "@stablehlo//:stablehlo_ops",
+    ],
+)
+
+torch_tpu_cc_library(
     name = "lower_separable_gather_to_dot",
     srcs = ["lower_separable_gather_to_dot.cc"],
     hdrs = ["lower_separable_gather_to_dot.h"],

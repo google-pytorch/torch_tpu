@@ -14,7 +14,7 @@
 
 """Optimizer mapping and utilities for TorchAX."""
 
-from typing import Callable
+from collections.abc import Callable
 
 import optax
 import torch

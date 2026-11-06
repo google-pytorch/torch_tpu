@@ -242,6 +242,7 @@ enum class OpName {
   kFill_Scalar,
   kFill_Tensor,
   kFlatten,
+  kFlexAttentionFwd,
   kFlip,
   kFloorDivide,
   kFloorDivideOut,
@@ -505,6 +506,7 @@ enum class OpName {
   kLerpTensorOut,
   kLgammaOut,
   kLiftFreshOut,
+  kLinalgCholeskyExL,
   kLinalgInvExInverse,
   kLinalgLuFactorExOut,
   kLinalgLuOut,
@@ -643,6 +645,8 @@ enum class OpName {
   kNonzero,
   kNonzeroOut,
   kNonzeroSize,
+  kNonzeroStatic,
+  kNonzeroStaticOut,
   kNormDtypeOut,
   kNormOut,
   kNormalFloatTensor,
@@ -1330,6 +1334,8 @@ ToString(  // NOLINT(google-readability-function-size)
       return "fill_.Tensor";
     case OpName::kFlatten:
       return "flatten";
+    case OpName::kFlexAttentionFwd:
+      return "_flex_attention_fwd";
     case OpName::kFlip:
       return "flip";
     case OpName::kFloorDivide:
@@ -1856,6 +1862,8 @@ ToString(  // NOLINT(google-readability-function-size)
       return "lgamma.out";
     case OpName::kLiftFreshOut:
       return "liftfresh.out";
+    case OpName::kLinalgCholeskyExL:
+      return "linalg_cholesky_ex.L";
     case OpName::kLinalgInvExInverse:
       return "linalg_inv_ex.inverse";
     case OpName::kLinalgLuFactorExOut:
@@ -2132,6 +2140,10 @@ ToString(  // NOLINT(google-readability-function-size)
       return "nonzero.out";
     case OpName::kNonzeroSize:
       return "nonzero_size";
+    case OpName::kNonzeroStatic:
+      return "nonzero_static";
+    case OpName::kNonzeroStaticOut:
+      return "nonzero_static.out";
     case OpName::kNormDtypeOut:
       return "norm.dtype_out";
     case OpName::kNormOut:

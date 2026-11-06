@@ -49,7 +49,9 @@ torch_tpu_cc_library(
     srcs = ["cummin.cc"],
     hdrs = ["cummin.h"],
     deps = [
+        "//csrc/common:dimension_types",
         "//csrc/common:error_utils",
+        "//csrc/common:utils",
         "//csrc/ops:op_builder_utils",
         "//csrc/ops:scan_builder",
         "@com_google_absl//absl/status:statusor",

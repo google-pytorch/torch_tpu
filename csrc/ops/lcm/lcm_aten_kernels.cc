@@ -19,7 +19,6 @@
 #include <cstdint>
 
 #include "ATen/core/ATen_fwd.h"
-#include "ATen/core/TensorBody.h"
 #include "ATen/ops/result_type.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"

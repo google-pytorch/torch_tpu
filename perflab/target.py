@@ -21,10 +21,10 @@ This is to avoid loading PyTorch/JAX here which can conflict to hold device
 lockfiles.
 """
 
+from collections.abc import Mapping
 import dataclasses
 import enum
 import os
-from typing import Mapping
 
 dataclass = dataclasses.dataclass
 
@@ -238,3 +238,34 @@ def make_target(
       platform_spec=spec,
       dtype=dtype,
   )
+
+
+# The peak dense bfloat16 matmul FLOP/s of one device, by `Topology.chip`. A
+# device is what one benchmark process drives. A v7 chip has two TensorCores,
+# each a device with its own HBM, so a v7 device has half of the 2,307 TFLOP/s
+# of the chip. A v5p chip runs its two TensorCores as one (megacore) device.
+_PEAK_BF16_FLOPS_PER_DEVICE: Mapping[str, float] = {
+    "b200": 2250e12,
+    "v5e": 197e12,
+    "v5p": 459e12,
+    "v6e": 918e12,
+    "v7": 2307e12 / 2,
+}
+
+
+def peak_flops_per_device(target: Target) -> float | None:
+  """Returns the peak dense matmul FLOP/s of one device of `target`.
+
+  This is the denominator of model FLOPs utilization (MFU). Only bfloat16 peaks
+  are known; the float32 peak of a device depends on settings such as TF32 on
+  GPUs and the matmul precision on TPUs.
+
+  Args:
+    target: The target of the benchmark run.
+
+  Returns:
+    The peak FLOP/s, or None if it is unknown for the chip or dtype of `target`.
+  """
+  if target.dtype is not DType.BF16:
+    return None
+  return _PEAK_BF16_FLOPS_PER_DEVICE.get(target.platform_spec.topology.chip)

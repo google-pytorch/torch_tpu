@@ -25,6 +25,7 @@ from torch import nn
 from torch._dynamo.package import DynamoCache
 from torch._dynamo.precompile_context import PrecompileContext
 from torch._dynamo.utils import counters
+from torch._functorch import config as functorch_config
 from torch._functorch._aot_autograd import autograd_cache
 from torch._inductor.codecache import FxGraphCache
 from torch._inductor.codecache import PyCodeCache
@@ -270,6 +271,35 @@ class AsyncCompileTest(seed_test_utils.RepeatableTest):
       out2 = compiled(*shape2)
       test_utils.assert_close(out1.cpu(), (shape1[0] + 1.0).cpu())
       test_utils.assert_close(out2.cpu(), (shape2[0] + 1.0).cpu())
+
+  def test_async_compile_without_torch_cache_key_does_not_block(self):
+    # With torch's autograd cache disabled the backend builds the bundled entry
+    # under its own fallback key; building it must not resolve the compile.
+    barrier = CompileBarrier()
+    model = SimpleModel().to("tpu")
+    x = (torch.randn(4, 16, device="tpu"),)
+    with mock.patch.object(
+        tpu_compiler_mod.StaticCompiler,
+        "_compile",
+        barrier.intercept_compile(tpu_compiler_mod.StaticCompiler._compile),
+    ), functorch_config.patch(enable_autograd_cache=False):
+      compiled = torch.compile(
+          torch.no_grad()(model),
+          backend="tpu",
+          fullgraph=True,
+          dynamic=False,
+          options={"async_compile": True},
+      )
+      with self.assertRaises(  # ASSERT_RAISES_OK=AsyncCompilationSubmitted warmup signal.
+          tpu_compile.AsyncCompilationSubmitted
+      ) as cm:
+        compiled(*x)
+      art = cm.exception.artifact
+      self.assertTrue(barrier.wait_for_compile_start(0))
+      self.assertFalse(art.is_resolved)
+      barrier.release_all()
+      self.assertEqual(tpu_compile.resolve_compilations([art]), 1)
+      test_utils.assert_close(compiled(*x).cpu(), (x[0] + 1.0).cpu())
 
   def test_async_compile_zero_premature_resolution_canary(self):
     """Ensures no PyTorch or backend wrapper triggers premature artifact resolution."""

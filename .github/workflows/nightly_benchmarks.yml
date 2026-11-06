@@ -32,7 +32,7 @@ on:
         description: "JSON string of metadata to append to the benchmark result. Overwrites static metadata from the registry but is overwritten by dynamic metadata from the workload."
         required: false
         type: string
-        default: "{}"
+        default: ""
       experiment_ref:
         description: "Git ref (SHA, branch, or tag) of the user repository to run benchmarks against."
         required: false
@@ -89,7 +89,11 @@ jobs:
       bap_ref: "ff212b97420bf479bd492d64e4b549534c22cd91"
       benchmark_filter: ${{ inputs.benchmark_filter }}
       environment_filter: ${{ inputs.environment_filter || 'tpu-v7' }}
-      custom_metadata: ${{ inputs.custom_metadata || '{}' }}
+      # experiment_ref is pinned to a commit SHA, so BAP would otherwise record
+      # the SHA as the result's branch. When experiment_ref is unset, default
+      # custom_metadata to the workflow branch so MLCompass ingest reads
+      # metadata["branch"] without labelling ad-hoc experiment_ref runs.
+      custom_metadata: ${{ inputs.custom_metadata || (!inputs.experiment_ref && format('{{"branch":"{0}"}}', github.ref_name)) || '{}' }}
       experiment_ref: ${{ needs.build_wheel.outputs.resolved_sha }}
       publish_metrics: true
       pub_sub_gcp_project_id: "ml-oss-benchmarking-production"
@@ -118,7 +122,11 @@ jobs:
       bap_ref: "ff212b97420bf479bd492d64e4b549534c22cd91"
       benchmark_filter: ${{ inputs.benchmark_filter }}
       environment_filter: ${{ inputs.environment_filter || 'gpu-b200' }}
-      custom_metadata: ${{ inputs.custom_metadata || '{}' }}
+      # experiment_ref is pinned to a commit SHA, so BAP would otherwise record
+      # the SHA as the result's branch. When experiment_ref is unset, default
+      # custom_metadata to the workflow branch so MLCompass ingest reads
+      # metadata["branch"] without labelling ad-hoc experiment_ref runs.
+      custom_metadata: ${{ inputs.custom_metadata || (!inputs.experiment_ref && format('{{"branch":"{0}"}}', github.ref_name)) || '{}' }}
       experiment_ref: ${{ needs.build_wheel.outputs.resolved_sha }}
       publish_metrics: true
       pub_sub_gcp_project_id: "ml-oss-benchmarking-production"

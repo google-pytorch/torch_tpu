@@ -250,7 +250,47 @@ ReshapeThenTranspose BuildTailNoBroadcast(
   return result;
 }
 
-absl::InlinedVector<ViewPrimitive, 2> BuildTail(StridedLayout& tail_layout) {
+// If both the base and view element types are real (non-complex) and the view
+// element type has the same or a larger bitwidth than the base element type,
+// adds a real-to-real bitcast to the front of the tail decomposition and
+// updates tail_layout and tail_dtype in-place to the layout and element type
+// before the bitcast.
+// Putting a smaller-to-larger or equal-sized bitcast in the tail rather than
+// the head ensures that the base tensor is sliced down to the view window
+// before being bitcast.
+void BuildTailBitcast(absl::InlinedVector<ViewPrimitive, 3>& tail,
+                      StridedLayout& tail_layout,
+                      const mlir::ElementType contiguous_base_dtype,
+                      mlir::ElementType& tail_dtype) {
+  if (tail_dtype == contiguous_base_dtype || IsComplex(contiguous_base_dtype) ||
+      IsComplex(tail_dtype)) {
+    return;
+  }
+  const int64_t head_bitwidth = TorchEquivalentBitwidth(contiguous_base_dtype);
+  const int64_t tail_bitwidth = TorchEquivalentBitwidth(tail_dtype);
+  if (head_bitwidth > tail_bitwidth) {
+    return;
+  }
+
+  if (tail_bitwidth > head_bitwidth) {
+    const int64_t size_ratio = tail_bitwidth / head_bitwidth;
+    tail_layout.storage_offset *= size_ratio;
+    for (auto& dim : tail_layout.strided_dims) {
+      dim.stride *= size_ratio;
+    }
+    tail_layout.strided_dims.push_back(
+        StridedDimension{.size = size_ratio, .stride = 1});
+  }
+  tail.insert(tail.begin(), RealToRealBitcast{
+                                .from_type = contiguous_base_dtype,
+                                .to_type = tail_dtype,
+                            });
+  tail_dtype = contiguous_base_dtype;
+}
+
+absl::InlinedVector<ViewPrimitive, 3> BuildTail(
+    StridedLayout& tail_layout, const mlir::ElementType contiguous_base_dtype,
+    mlir::ElementType& tail_dtype) {
   bool needs_broadcast = false;
   // We want the layout before the tail to be row-major, with no
   // size-1 or stride=0 dimensions; this requires a sort to order by stride
@@ -268,16 +308,13 @@ absl::InlinedVector<ViewPrimitive, 2> BuildTail(StridedLayout& tail_layout) {
 
   // If we need a broadcast, then we can use the BroadcastInDim primitive to
   // handle the reshape, transpose, and expand at the same time.
-  absl::InlinedVector<ViewPrimitive, 2> tail;
+  absl::InlinedVector<ViewPrimitive, 3> tail;
   if (needs_broadcast) {
     tail.push_back(BuildTailBroadcast(tail_layout, sorted_dimensions));
-    return tail;
-  }
-
-  // If the tail layout is already row-major (ignoring size-1 dimensions) then
-  // we don't need a transpose, we can just unsqueeze (reshape) size-1
-  // dimensions into their final positions.
-  if (IsRowMajorIgnoringTrivialDimensions(tail_layout)) {
+  } else if (IsRowMajorIgnoringTrivialDimensions(tail_layout)) {
+    // If the tail layout is already row-major (ignoring size-1 dimensions) then
+    // we don't need a transpose, we can just unsqueeze (reshape) size-1
+    // dimensions into their final positions.
     ReshapePrimitive reshape;
     reshape.new_sizes.reserve(tail_layout.strided_dims.size());
     absl::InlinedVector<StridedDimension, 3> pre_tail_strided_dims;
@@ -295,14 +332,16 @@ absl::InlinedVector<ViewPrimitive, 2> BuildTail(StridedLayout& tail_layout) {
     }
 
     tail.push_back(std::move(reshape));
-    return tail;
+  } else {
+    // If we don't need a broadcast, but we do need a transpose, then we use a
+    // reshape and transpose, both of which are invertible by in-place
+    // mutations.
+    auto [reshape, transpose] =
+        BuildTailNoBroadcast(tail_layout, sorted_dimensions);
+    tail = {std::move(reshape), std::move(transpose)};
   }
 
-  // If we don't need a broadcast, but we do need a transpose, then we use a
-  // reshape and transpose, both of which are invertible by in-place mutations.
-  auto [reshape, transpose] =
-      BuildTailNoBroadcast(tail_layout, sorted_dimensions);
-  tail = {std::move(reshape), std::move(transpose)};
+  BuildTailBitcast(tail, tail_layout, contiguous_base_dtype, tail_dtype);
   return tail;
 }
 
@@ -1180,45 +1219,65 @@ absl::Status RemoveExtraDim(StridedLayout& head_layout,
                             const StridedLayout& tail_layout,
                             ViewSequence& result,
                             absl::Span<ViewPrimitive> tail_sequence) {
-  if (std::holds_alternative<ReshapePrimitive>(tail_sequence.front())) {
-    // The head_layout may have an extra dimension, update the reshape
-    // base_sizes to match.
-    ReshapePrimitive& reshape =
-        std::get<ReshapePrimitive>(tail_sequence.front());
-    reshape.base_sizes.clear();
-    reshape.base_sizes.reserve(head_layout.strided_dims.size());
-    for (const auto& dim : head_layout.strided_dims) {
-      reshape.base_sizes.push_back(dim.size);
-    }
+  // If the tail sequence is empty, the only way to remove the extra dimension
+  // is to add a reshape.
+  if (tail_sequence.empty()) {
+    result.push_back(ReshapePrimitive{
+        .base_sizes = GetSizes(head_layout),
+        .new_sizes = GetSizes(tail_layout),
+    });
     return absl::OkStatus();
   }
 
-  // Otherwise the tail sequence should be a single BroadcastPrimitive.
-  ABSL_CHECK(tail_sequence.size() == 1);  // CRASH_OK
-  BroadcastPrimitive& broadcast =
-      std::get<BroadcastPrimitive>(tail_sequence.front());
-
-  // Determine which dimensions in new_sizes are being inserted by the
-  // broadcast.
-  absl::InlinedVector<bool, 6> is_inserted_dim(broadcast.new_sizes.size(),
-                                               true);
-  for (auto dim : broadcast.broadcast_dimensions) {
-    is_inserted_dim[dim] = false;
+  // If the tail sequence starts with a reshape, we can merge the last-dimension
+  // squeeze into it.
+  if (auto* reshape = std::get_if<ReshapePrimitive>(&tail_sequence.front())) {
+    reshape->base_sizes = GetSizes(head_layout);
+    return absl::OkStatus();
   }
-  // Choose the lowest-index one arbitrarily.
-  int64_t first_inserted_dim = -1;
-  for (int64_t i = 0; i < is_inserted_dim.size(); ++i) {
-    if (is_inserted_dim[i]) {
-      first_inserted_dim = i;
-      break;
+
+  // If the tail sequence starts with a broadcast, we can merge the
+  // last-dimension squeeze into it as well.
+  if (auto* broadcast =
+          std::get_if<BroadcastPrimitive>(&tail_sequence.front())) {
+    // Determine which dimensions in new_sizes are being inserted by the
+    // broadcast.
+    absl::InlinedVector<bool, 6> is_inserted_dim(broadcast->new_sizes.size(),
+                                                 true);
+    for (auto dim : broadcast->broadcast_dimensions) {
+      is_inserted_dim[dim] = false;
     }
+    // Choose the lowest-index one arbitrarily.
+    int64_t first_inserted_dim = -1;
+    for (int64_t i = 0; i < is_inserted_dim.size(); ++i) {
+      if (is_inserted_dim[i]) {
+        first_inserted_dim = i;
+        break;
+      }
+    }
+    ABSL_CHECK_GE(first_inserted_dim, 0);  // CRASH_OK
+    // The extra dimension will be broadcasted to this.
+    // new_sizes is unchanged.
+    broadcast->broadcast_dimensions.push_back(first_inserted_dim);
+    broadcast->base_shape.push_back(head_layout.strided_dims.back().size);
+    return absl::OkStatus();
   }
-  ABSL_CHECK_GE(first_inserted_dim, 0);  // CRASH_OK
-  // The extra dimension will be broadcasted to this.
-  // new_sizes is unchanged.
-  broadcast.broadcast_dimensions.push_back(first_inserted_dim);
-  broadcast.base_shape.push_back(head_layout.strided_dims.back().size);
 
+  // If the tail sequence starts with a same-size real-to-real bitcast, then it
+  // doesn't change the shape, so we can ignore it.
+  if (const auto* bitcast =
+          std::get_if<RealToRealBitcast>(&tail_sequence.front());
+      bitcast != nullptr && TorchEquivalentBitwidth(bitcast->from_type) ==
+                                TorchEquivalentBitwidth(bitcast->to_type)) {
+    return RemoveExtraDim(head_layout, tail_layout, result,
+                          tail_sequence.subspan(1));
+  }
+
+  // If the tail sequence starts with anything else, we need to add a reshape.
+  result.push_back(ReshapePrimitive{
+      .base_sizes = GetSizes(head_layout),
+      .new_sizes = GetSizes(tail_layout),
+  });
   return absl::OkStatus();
 }
 
@@ -1249,7 +1308,7 @@ absl::StatusOr<ViewSequence> DecomposeIntoViewSequence(
                          view_layout, view_dtype);
 
   // Work backwards, find the layout shape we need to reshape and slice to,
-  // and note the last three operations necessary to achieve the view layout.
+  // and note the last operations necessary to achieve the view layout.
   // Make a copy of tail_layout and update it as we solve for the tail ops.
   ABSL_VLOG(3) << "[DecomposeIntoViewSequence] Base shape: "
                << ToString(contiguous_base_shape)
@@ -1258,15 +1317,17 @@ absl::StatusOr<ViewSequence> DecomposeIntoViewSequence(
   ViewSequence result_sequence;
 
   StridedLayout tail_layout = view_layout;
-  auto tail_sequence = BuildTail(tail_layout);
+  mlir::ElementType tail_dtype = view_dtype;
+  auto tail_sequence =
+      BuildTail(tail_layout, contiguous_base_dtype, tail_dtype);
   ABSL_VLOG(3) << "[DecomposeIntoViewSequence] Built tail sequence: "
                << ToString(tail_sequence);
 
   StridedLayout head_layout = MakeContiguousBaseLayout(contiguous_base_shape);
 
-  // Shortcut: if the output is purely some combination of unsqueeze,
-  // transpose, and expand, then we're done.
-  if (head_layout == tail_layout && contiguous_base_dtype == view_dtype) {
+  // Shortcut: if the output is purely some combination of (real-to-real)
+  // bitcast, unsqueeze, transpose, and expand, then we're done.
+  if (head_layout == tail_layout && contiguous_base_dtype == tail_dtype) {
     ViewSequence result;
     for (auto& primitive : tail_sequence) {
       result.push_back(std::move(primitive));
@@ -1281,7 +1342,7 @@ absl::StatusOr<ViewSequence> DecomposeIntoViewSequence(
   // the right size and data type to cover the view window.
   TT_ASSIGN_OR_RETURN(
       (auto [result, view_widths]),
-      BuildHead(head_layout, contiguous_base_dtype, tail_layout, view_dtype));
+      BuildHead(head_layout, contiguous_base_dtype, tail_layout, tail_dtype));
   ABSL_VLOG(3) << "[DecomposeIntoViewSequence] Built head sequence: "
                << ToString(result)
                << " with view widths: " << ToString(view_widths);

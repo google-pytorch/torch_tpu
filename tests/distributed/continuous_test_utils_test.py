@@ -14,13 +14,16 @@
 
 """Tests for `continuous_test_utils`."""
 
+import os
 from typing import Final
 import unittest
+from unittest import mock
 
 from absl.testing import absltest
 import torch
 from torch import distributed as dist
 import torch.multiprocessing as mp
+from torch.testing._internal import common_distributed
 from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
 from tests.distributed import continuous_test_utils
@@ -110,6 +113,49 @@ class TpuMultiProcContinuousTestTest(
     self.assertIsInstance(
         test_instance, seed_test_utils.MultiProcessRepeatableTest
     )
+
+
+class _TimeoutHarness(continuous_test_utils.TpuMultiProcContinuousTest):
+  """Harness whose class fixtures are called directly; spawns no workers."""
+
+  world_size = 1
+
+  def noop(self) -> None:
+    pass
+
+
+class TpuMultiProcContinuousTestTimeoutTest(
+    seed_test_utils.MultiProcessRepeatableTest
+):
+  """Checks the harness's per-test-case worker timeout."""
+
+  def _harness_wait_timeout(self) -> int:
+    """Returns the timeout the harness would use to wait on workers."""
+    return common_distributed.get_timeout(_TimeoutHarness("noop").id())
+
+  def _set_up_class_with_env(self, **env: str) -> None:
+    """Runs `_TimeoutHarness.setUpClass()` with only `env` timeout variables."""
+    self.addCleanup(_TimeoutHarness.doClassCleanups)
+    with mock.patch.dict(os.environ):
+      os.environ.pop("DISTRIBUTED_TESTS_DEFAULT_TIMEOUT", None)
+      os.environ.update(env)
+      _TimeoutHarness.setUpClass()
+
+  def test_harness_timeout_is_effectively_unlimited(self) -> None:
+    upstream_timeout = self._harness_wait_timeout()
+    self._set_up_class_with_env()
+    self.assertEqual(self._harness_wait_timeout(), 100_000)
+    # The override is scoped to the class.
+    _TimeoutHarness.doClassCleanups()
+    self.assertEqual(self._harness_wait_timeout(), upstream_timeout)
+
+  def test_distributed_tests_default_timeout_raises(self) -> None:
+    upstream_timeout = self._harness_wait_timeout()
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Test helper error.
+        ValueError, "DISTRIBUTED_TESTS_DEFAULT_TIMEOUT"
+    ):
+      self._set_up_class_with_env(DISTRIBUTED_TESTS_DEFAULT_TIMEOUT="900")
+    self.assertEqual(self._harness_wait_timeout(), upstream_timeout)
 
 
 if __name__ == "__main__":

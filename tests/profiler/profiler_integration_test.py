@@ -24,7 +24,9 @@ from absl.testing import absltest
 from absl.testing import parameterized
 import torch
 from torch.autograd import profiler
+from torch_tpu._internal import execution_mode
 from torch_tpu._internal import sync as tpu_sync
+from torch_tpu._internal.profiler import named_scope
 from torch_tpu._internal.profiler.profiler_config import TpuProfilerConfig
 from tests import seed_test_utils
 
@@ -157,6 +159,51 @@ def _get_profiler_options_bytes(xspace: xplane_pb2.XSpace) -> bytes:
       if metadata and metadata.name == "profile_options":
         return stat.bytes_value
   return b""
+
+
+def _device_tf_ops(xspace: xplane_pb2.XSpace) -> set[str]:
+  """Returns the `tf_op` stat (Framework Name Scope) of TPU device events.
+
+  On TPU the stat is attached to the event metadata of each HLO op (shared by
+  all occurrences of the op), so both the per-event and the per-metadata stats
+  are inspected.
+  """
+  tf_ops = set()
+  for plane in xspace.planes:
+    if "TPU" not in plane.name or plane.name.startswith("/host"):
+      continue
+    tf_op_ids = {
+        stat_id
+        for stat_id, metadata in plane.stat_metadata.items()
+        if metadata.name == "tf_op"
+    }
+    if not tf_op_ids:
+      continue
+
+    def stat_value(stat):
+      if stat.HasField("ref_value"):
+        return plane.stat_metadata[stat.ref_value].name
+      return stat.str_value
+
+    for metadata in plane.event_metadata.values():
+      for stat in metadata.stats:
+        if stat.metadata_id in tf_op_ids:
+          tf_ops.add(stat_value(stat))
+    for line in plane.lines:
+      for event in line.events:
+        for stat in event.stats:
+          if stat.metadata_id in tf_op_ids:
+            tf_ops.add(stat_value(stat))
+  return tf_ops
+
+
+def _describe_xspace(xspace: xplane_pb2.XSpace) -> str:
+  """Summarizes plane names and their stat names, for assertion messages."""
+  parts = []
+  for plane in xspace.planes:
+    stat_names = sorted({m.name for m in plane.stat_metadata.values()})
+    parts.append(f"{plane.name}: {stat_names[:40]}")
+  return "\n".join(parts)
 
 
 class ProfilerIntegrationTest(seed_test_utils.RepeatableTest):
@@ -624,6 +671,122 @@ class ProfilerIntegrationTest(seed_test_utils.RepeatableTest):
         b"q_proj[Linear]",
     ):
       self.assertIn(scope, content)
+
+  def test_named_scope_in_xprof(self):
+    """Checks that `named_scope` annotations reach the XProf trace."""
+
+    @named_scope.named_scope("rope")
+    def apply_rope(x: torch.Tensor, freqs: torch.Tensor) -> torch.Tensor:
+      return torch.matmul(x, freqs)
+
+    class ScopedAttention(torch.nn.Module):
+
+      def __init__(self, d_model: int):
+        super().__init__()
+        self.q_proj = torch.nn.Linear(d_model, d_model, bias=False)
+        self.k_proj = torch.nn.Linear(d_model, d_model, bias=False)
+        self.v_proj = torch.nn.Linear(d_model, d_model, bias=False)
+        self.out_proj = torch.nn.Linear(d_model, d_model, bias=False)
+        self.register_buffer("freqs", torch.eye(d_model))
+
+      def forward(self, x: torch.Tensor) -> torch.Tensor:
+        with named_scope.named_scope("qkv_proj"):
+          q = apply_rope(self.q_proj(x), self.freqs)
+          k = apply_rope(self.k_proj(x), self.freqs)
+          v = self.v_proj(x)
+        with named_scope.named_scope("sdpa"):
+          scores = torch.matmul(q, k.transpose(-2, -1))
+          probs = torch.softmax(scores, dim=-1)
+          attn_out = torch.matmul(probs, v)
+        return self.out_proj(attn_out)
+
+    class ScopedBlock(torch.nn.Module):
+
+      def __init__(self, d_model: int):
+        super().__init__()
+        self.attn = ScopedAttention(d_model)
+
+      def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.attn(x)
+
+    device = torch.device("tpu")
+    d_model = 192
+    model = ScopedBlock(d_model).to(device)
+    compiled_model = torch.compile(model, backend="tpu")
+    x = torch.randn((4, 64, d_model), device=device, requires_grad=True)
+
+    def train_step():
+      out = compiled_model(x)
+      # Default eager mode (DEFER_NEVER): each op is compiled on its own.
+      with named_scope.named_scope("eager_loss"):
+        loss = (out * out).sum()
+      loss.backward()
+      tpu_sync.synchronize(loss)
+      # DEFER_AND_FUSE: the scoped ops are fused into one executable.
+      with execution_mode.set_eager_mode(
+          execution_mode.EagerMode.DEFER_AND_FUSE
+      ):
+        with named_scope.named_scope("eager_fused"):
+          fused = (out.detach() + 1) * 2
+        tpu_sync.synchronize(fused)
+      torch.accelerator.synchronize()
+
+    # Compile both the initial gradient creation and the gradient accumulation
+    # before tracing.
+    for _ in range(2):
+      train_step()
+
+    output_dir = pathlib.Path(self.create_tempdir("named_scopes").full_path)
+
+    _cleanup_profile_dir()
+
+    with torch.profiler.profile(
+        activities=[
+            torch.profiler.ProfilerActivity.CPU,
+            torch.profiler.ProfilerActivity.TPU,  # type: ignore
+        ],
+        on_trace_ready=torch.profiler.tensorboard_trace_handler(output_dir),
+    ) as prof:
+      for _ in range(2):
+        train_step()
+        prof.step()
+
+    self._get_and_copy_xplane(output_dir / "xplane.pb")
+
+    # Verify the outer-to-inner `/`-joined scope hierarchy in the `tf_op` stat
+    # (XProf's Framework Name Scope, stored as `<op_name>:<op_type>`) of the
+    # TPU device events, not merely in the HLO module proto that the XPlane
+    # also carries.
+    xplane_bytes = (output_dir / "xplane.pb").read_bytes()
+    xspace = xplane_pb2.XSpace()
+    xspace.ParseFromString(xplane_bytes)
+    tf_ops = _device_tf_ops(xspace)
+    self.assertNotEmpty(tf_ops, _describe_xspace(xspace))
+    self.assertContainsSubset(
+        (
+            "attn[ScopedAttention]/qkv_proj/q_proj[Linear]/mm/mm:",
+            "attn[ScopedAttention]/qkv_proj/k_proj[Linear]/mm/mm:",
+            "attn[ScopedAttention]/qkv_proj/v_proj[Linear]/mm/mm:",
+            "attn[ScopedAttention]/qkv_proj/rope/mm/mm:",
+            "attn[ScopedAttention]/sdpa/bmm/bmm:",
+            "attn[ScopedAttention]/sdpa/softmax/softmax:",
+            "attn[ScopedAttention]/out_proj[Linear]/mm/mm:",
+            # Default eager mode (DEFER_NEVER).
+            "eager_loss/mul/mul:",
+            "eager_loss/sum/sum:",
+            # DEFER_AND_FUSE: the fusion carries the scope of its root op.
+            "eager_fused/mul/mul:",
+        ),
+        tf_ops,
+    )
+    # Backward ops keep their scopes in the HLO metadata, but XLA may fuse them
+    # into a fusion whose device event reports the root op's `tf_op` only, so
+    # the backward softmax is checked in the embedded HLO module instead.
+    # (`named_scope_test` asserts the backward StableHLO before fusion.)
+    self.assertIn(
+        b"attn[ScopedAttention]/sdpa/softmax_backward_data/softmax_backward_data",
+        xplane_bytes,
+    )
 
   def test_tpu_profiler_config_override(self):
     """Verifies that TPU-specific profiler options are correctly applied."""

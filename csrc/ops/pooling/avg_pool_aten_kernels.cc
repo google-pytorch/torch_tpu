@@ -25,14 +25,18 @@
 #include <vector>
 
 #include "ATen/core/ATen_fwd.h"
+#include "ATen/core/LegacyTypeDispatch.h"
 #include "ATen/core/TensorBody.h"
+#include "ATen/ops/avg_pool1d_native.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "c10/core/GradMode.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/fake_tensor_utils.h"
 #include "csrc/common/fixed_size_span.h"
 #include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
@@ -215,11 +219,9 @@ absl::StatusOr<mlir::MlirOp> BuildAvgPoolShlo(
     Dimensions stride, Dimensions padding, bool ceil_mode,
     bool count_include_pad, std::optional<int64_t> divisor_override) {
   const mlir::ElementType orig_dtype = GetElementTypeOrDie(input);
-  if (spatial_dim_count == k3dSpatialDimCount) {
-    TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
-                        InferComputationDtype(orig_dtype));
-    TT_ASSIGN_OR_RETURN(input, CastIfNeeded(input, compute_dtype));
-  }
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
+                      InferComputationDtype(orig_dtype));
+  TT_ASSIGN_OR_RETURN(input, CastIfNeeded(input, compute_dtype));
   auto& builder = input.getBuilder();
 
   // 1. Create a batch input by normalizing the input tensor
@@ -287,10 +289,7 @@ absl::StatusOr<mlir::MlirOp> BuildAvgPoolShlo(
 
   auto result =
       RemoveTrivialBatch(final_output, original_dim_size, spatial_dim_count);
-  if (spatial_dim_count == k3dSpatialDimCount) {
-    return CastIfNeeded(result, orig_dtype);
-  }
-  return result;
+  return CastIfNeeded(result, orig_dtype);
 }
 
 // Mathematically, average pooling is a linear transformation that can be
@@ -385,12 +384,10 @@ absl::StatusOr<mlir::MlirOp> BuildAvgPoolBackwardShlo(
     const Dimensions& padding, bool ceil_mode, bool count_include_pad,
     std::optional<int64_t> divisor_override) {
   const mlir::ElementType orig_dtype = GetElementTypeOrDie(grad_output);
-  if (spatial_dim_count == k3dSpatialDimCount) {
-    TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
-                        InferComputationDtype(orig_dtype));
-    TT_ASSIGN_OR_RETURN(grad_output, CastIfNeeded(grad_output, compute_dtype));
-    TT_ASSIGN_OR_RETURN(input, CastIfNeeded(input, compute_dtype));
-  }
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
+                      InferComputationDtype(orig_dtype));
+  TT_ASSIGN_OR_RETURN(grad_output, CastIfNeeded(grad_output, compute_dtype));
+  TT_ASSIGN_OR_RETURN(input, CastIfNeeded(input, compute_dtype));
   auto& builder = grad_output.getBuilder();
 
   // 1. Create batch inputs for both input and grad_output
@@ -489,10 +486,7 @@ absl::StatusOr<mlir::MlirOp> BuildAvgPoolBackwardShlo(
 
   auto result = RemoveTrivialBatch(
       sliced_grad, batch_input_info.original_dim_size, spatial_dim_count);
-  if (spatial_dim_count == k3dSpatialDimCount) {
-    return CastIfNeeded(result, orig_dtype);
-  }
-  return result;
+  return CastIfNeeded(result, orig_dtype);
 }
 
 auto GetAvgPoolOpBuilder(at::IntArrayRef kernel_size, at::IntArrayRef stride,
@@ -514,7 +508,7 @@ auto GetAvgPoolOpBuilder(at::IntArrayRef kernel_size, at::IntArrayRef stride,
 absl::Status ValidateAvgPool1dDtype(const at::Tensor& self) {
   TT_RET_CHECK(self.numel() == 0 || self.scalar_type() != at::ScalarType::Long,
                error::kPythonNotImplementedError)
-      << "not implemented for " << torch_tpu::ToString(self.scalar_type());
+      << "not implemented for " << ToString(self.scalar_type());
   TT_RET_CHECK(self.scalar_type() != at::ScalarType::Short &&
                    self.scalar_type() != at::ScalarType::Int &&
                    self.scalar_type() != at::ScalarType::Char &&
@@ -524,7 +518,7 @@ absl::Status ValidateAvgPool1dDtype(const at::Tensor& self) {
                error::kInvalidArgument)
       << "expected input dtype to be none of (bool, uint8, int8, "
          "int16, int32, complex64), got "
-      << torch_tpu::ToString(self.scalar_type());
+      << ToString(self.scalar_type());
   return absl::OkStatus();
 }
 
@@ -654,6 +648,25 @@ at::Tensor& AtenAvgPool1dOut(const at::Tensor& self,
       });
 }
 
+at::Tensor AtenAvgPool1dAutograd(const at::Tensor& self,
+                                 at::IntArrayRef kernel_size,
+                                 at::IntArrayRef stride,
+                                 at::IntArrayRef padding, bool ceil_mode,
+                                 bool count_include_pad) {
+  // Differentiation (reverse or forward mode), FakeTensors and functorch
+  // transforms use the upstream decomposition (unsqueeze, avg_pool2d,
+  // squeeze), whose ops have derivative formulas. Other calls use the direct
+  // 1D kernel.
+  if (IsFakeOrFunctorchTensor(self) || self._fw_grad(/*level=*/0).defined() ||
+      (c10::GradMode::is_enabled() && self.requires_grad())) {
+    return at::native::avg_pool1d(self, kernel_size, stride, padding, ceil_mode,
+                                  count_include_pad);
+  }
+  at::AutoDispatchBelowAutograd guard;
+  return AtenAvgPool1d(self, kernel_size, stride, padding, ceil_mode,
+                       count_include_pad);
+}
+
 at::Tensor& AtenAvgPool2dOut(const at::Tensor& self,
                              at::IntArrayRef kernel_size,
                              at::IntArrayRef stride, at::IntArrayRef padding,
@@ -668,8 +681,7 @@ at::Tensor& AtenAvgPool2dOut(const at::Tensor& self,
         TT_CHECK_THROW(
             self.numel() == 0 || self.scalar_type() != at::ScalarType::Long,
             error::kPythonNotImplementedError)
-            << "not implemented for "
-            << torch_tpu::ToString(self.scalar_type());
+            << "not implemented for " << ToString(self.scalar_type());
         TT_CHECK_THROW(self.scalar_type() != at::ScalarType::Bool &&
                            self.scalar_type() != at::ScalarType::Short &&
                            self.scalar_type() != at::ScalarType::Int &&
@@ -679,7 +691,7 @@ at::Tensor& AtenAvgPool2dOut(const at::Tensor& self,
                        error::kInvalidArgument)
             << "expected input dtype to be none of (bool, uint8, int8, int16, "
                "int32, complex64), got "
-            << torch_tpu::ToString(self.scalar_type());
+            << ToString(self.scalar_type());
 
         TT_ASSIGN_OR_THROW(
             auto result,
@@ -703,8 +715,7 @@ at::Tensor& AtenAvgPool3dOut(const at::Tensor& self,
       {
         TT_CHECK_THROW(self.scalar_type() != at::ScalarType::Long,
                        error::kPythonNotImplementedError)
-            << "not implemented for "
-            << torch_tpu::ToString(self.scalar_type());
+            << "not implemented for " << ToString(self.scalar_type());
         TT_CHECK_THROW(self.scalar_type() != at::ScalarType::Bool &&
                            self.scalar_type() != at::ScalarType::Byte &&
                            self.scalar_type() != at::ScalarType::Char &&
@@ -715,7 +726,7 @@ at::Tensor& AtenAvgPool3dOut(const at::Tensor& self,
                        error::kInvalidArgument)
             << "expected input dtype to be none of (bool, uint8, int8, "
                "int16, int32, complex64), got "
-            << torch_tpu::ToString(self.scalar_type());
+            << ToString(self.scalar_type());
 
         TT_ASSIGN_OR_THROW(
             auto result,

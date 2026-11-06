@@ -32,6 +32,10 @@ namespace torch_tpu {
 // If transfer_sync_mode is kEagerNonBlocking, this will return without blocking
 // the caller if possible; however if dest is non-dense, a blocking copy will be
 // required.
+// If dest is in pinned memory, the destination buffer will be kept
+// alive until the copy completes; if dest is not in pinned memory, the caller
+// must ensure that the destination buffer is not dropped before the copy
+// completes.
 absl::Status CopyTpuToCpu(const at::Tensor& src, const at::Tensor& dest,
                           TransferSyncMode transfer_sync_mode);
 
@@ -40,7 +44,9 @@ absl::StatusOr<at::Tensor> CopyDeviceBufferRefToCpuTensor(
     const DeviceBufferRef& src_buffer_ref, TransferSyncMode transfer_sync_mode);
 
 // Writes the values of src_buffer_ref (on TPU) to the given CPU pointer.
-// The caller is responsible for allocating sufficient memory for dest_ptr.
+// The caller is responsible for allocating sufficient memory for dest_ptr, and
+// for ensuring that the pointer is not dropped before the copy completes if
+// using eager non-blocking mode.
 absl::Status CopyDeviceBufferRefToCpuPtr(const DeviceBufferRef& src_buffer_ref,
                                          void* dest_ptr,
                                          TransferSyncMode transfer_sync_mode);

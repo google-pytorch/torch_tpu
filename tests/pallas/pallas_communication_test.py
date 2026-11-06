@@ -21,6 +21,7 @@ from absl.testing import absltest
 import jax
 from jax.experimental import pallas as pl
 from jax.experimental.pallas import tpu as pltpu
+from jax.experimental.pallas import tpu_sc as plsc
 import torch
 from torch import distributed as dist
 from torch_tpu._internal import pallas
@@ -421,6 +422,149 @@ def _test_pallas_axis_index_rank_equivalence():
   utils.assert_close(y, torch.full_like(x, rank))
 
 
+def _test_sparsecore_vector_subcore_dma(
+    test_case: continuous_test_utils.TpuMultiProcContinuousTest,
+):
+  if torch.tpu.get_device_properties().sparse_cores_per_device == 0:
+    test_case.skipTest("SparseCore is not supported on this TPU device.")
+
+  device = torch.device("tpu")
+  rank = dist.get_rank()
+  world_size = dist.get_world_size()
+
+  @pallas.jax_op("test_pallas_comm::sc_async_dma_add")
+  def sc_async_dma_add(x: jax.Array, y: jax.Array) -> jax.Array:
+    mesh = plsc.VectorSubcoreMesh(
+        core_axis_name="core",
+        subcore_axis_name="subcore",
+        num_cores=1,
+        num_subcores=1,
+    )
+
+    @pl.kernel(
+        out_type=jax.ShapeDtypeStruct(x.shape, x.dtype),
+        mesh=mesh,
+        scratch_types=[
+            pltpu.VMEM(x.shape, x.dtype),
+            pltpu.VMEM(y.shape, y.dtype),
+            pltpu.VMEM(x.shape, x.dtype),
+            pltpu.SemaphoreType.DMA(()),
+        ],
+    )
+    def kernel(
+        x_hbm_ref,
+        y_hbm_ref,
+        o_hbm_ref,
+        x_vmem_ref,
+        y_vmem_ref,
+        o_vmem_ref,
+        dma_sem,
+    ):
+      pltpu.async_copy(x_hbm_ref, x_vmem_ref, dma_sem).wait()
+      pltpu.async_copy(y_hbm_ref, y_vmem_ref, dma_sem).wait()
+      o_vmem_ref[...] = x_vmem_ref[...] + y_vmem_ref[...]
+      pltpu.async_copy(o_vmem_ref, o_hbm_ref, sem=None).wait()
+
+    return kernel(x, y)
+
+  num_lanes = plsc.get_sparse_core_info().num_lanes
+  x = torch.arange(num_lanes, dtype=torch.float32, device=device) + float(
+      rank * 100
+  )
+  y = torch.arange(num_lanes, dtype=torch.float32, device=device) * 2.0
+  expected = x + y
+  actual = sc_async_dma_add(x, y)
+  logging.info("rank = %d/%d, actual = %s", rank, world_size, actual.cpu())
+  utils.assert_close(actual, expected)
+
+  dist.all_reduce(actual)
+  rank_offset_sum = sum(r * 100.0 for r in range(world_size))
+  expected_reduced = (
+      torch.arange(num_lanes, dtype=torch.float32, device=device)
+      * (3.0 * world_size)
+      + rank_offset_sum
+  )
+  utils.assert_close(actual, expected_reduced)
+
+
+def _test_sparsecore_vector_subcore_remote_dma(
+    test_case: continuous_test_utils.TpuMultiProcContinuousTest,
+):
+  if torch.tpu.get_device_properties().sparse_cores_per_device == 0:
+    test_case.skipTest("SparseCore is not supported on this TPU device.")
+
+  device = torch.device("tpu")
+  rank = dist.get_rank()
+  world_size = dist.get_world_size()
+
+  pallas_mesh = pallas.get_default_pallas_mesh()
+
+  def sc_remote_copy_jax(x_global: jax.Array) -> jax.Array:
+    sc_mesh = plsc.VectorSubcoreMesh(
+        core_axis_name="core",
+        subcore_axis_name="subcore",
+    )
+
+    def shard_kernel(x_local: jax.Array) -> jax.Array:
+      @pl.kernel(
+          out_type=jax.ShapeDtypeStruct(x_local.shape, x_local.dtype),
+          mesh=sc_mesh,
+          scratch_types=[
+              pltpu.SemaphoreType.DMA(()),
+              pltpu.SemaphoreType.DMA(()),
+          ],
+      )
+      def rcopy_kernel(x_hbm_ref, o_hbm_ref, send_sem, recv_sem):
+        core_id = jax.lax.axis_index("core")
+        subcore_id = jax.lax.axis_index("subcore")
+        my_rank = jax.lax.axis_index("rank")
+        num_ranks = jax.lax.axis_size("rank")
+        next_rank = jax.lax.rem(my_rank + 1, num_ranks)
+
+        @pl.when((core_id == 0) & (subcore_id == 0))
+        def _():
+          desc = pltpu.make_async_remote_copy(
+              src_ref=x_hbm_ref,
+              dst_ref=o_hbm_ref,
+              send_sem=send_sem,
+              recv_sem=recv_sem,
+              device_id={"rank": next_rank},
+          )
+          desc.start()
+          desc.wait()
+
+      return rcopy_kernel(x_local)
+
+    return jax.shard_map(
+        shard_kernel,
+        in_specs=(P("rank"),),
+        out_specs=P("rank"),
+        mesh=pallas_mesh,
+        check_vma=False,
+    )(x_global)
+
+  sc_remote_copy = pallas.jax_op(
+      "test_pallas_comm::sc_remote_copy",
+      sc_remote_copy_jax,
+      mesh=pallas_mesh,
+      input_partition_specs=[P("rank")],
+      output_partition_specs=[P("rank")],
+  )
+  num_lanes = plsc.get_sparse_core_info().num_lanes
+  x = torch.arange(num_lanes, dtype=torch.float32, device=device) + float(
+      rank * 100
+  )
+  actual = sc_remote_copy(x)
+  prev_rank = (rank - 1) % world_size
+  expected = torch.arange(
+      num_lanes, dtype=torch.float32, device=device
+  ) + float(prev_rank * 100)
+  logging.info(
+      "rank = %d/%d, rcopy actual = %s", rank, world_size, actual.cpu()
+  )
+  utils.assert_close(actual, expected)
+
+
 class TestPallasCommunicationKernels(
     continuous_test_utils.TpuMultiProcContinuousTest
 ):
@@ -449,6 +593,12 @@ class TestPallasCommunicationKernels(
 
   def test_pallas_axis_index_rank_equivalence(self):
     _test_pallas_axis_index_rank_equivalence()
+
+  def test_sparsecore_vector_subcore_dma(self):
+    _test_sparsecore_vector_subcore_dma(self)
+
+  def test_sparsecore_vector_subcore_remote_dma(self):
+    _test_sparsecore_vector_subcore_remote_dma(self)
 
 
 if __name__ == "__main__":

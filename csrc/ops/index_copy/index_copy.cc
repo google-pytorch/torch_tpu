@@ -63,13 +63,8 @@ mlir::MlirOp BuildIndexCopyShlo(mlir::MlirOp self, int64_t dim,
     source = mlir::stablehlo::ConvertElementType(source, computation_type);
   }
 
-  Dimensions all_other_dims;
-  all_other_dims.reserve(self_type.getRank() - 1);
-  for (int i = 0; i < self_type.getRank(); ++i) {
-    if (i != dim) {
-      all_other_dims.push_back(i);
-    }
-  }
+  const Dimensions all_other_dims =
+      GetBatchDimensions(self_type.getRank(), dim);
 
   index = mlir::stablehlo::Reshape(index, {index_type.getDimSize(0), 1});
   stablehlo::ScatterDimensionNumbersAttr scatter_dimension_numbers =

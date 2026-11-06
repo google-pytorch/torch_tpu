@@ -222,6 +222,33 @@ class TestUtilsTest(seed_test_utils.RepeatableTest):
       ):
         test_utils.load_golden_files("ops_test_gpu_golden")
 
+  def test_find_per_test_case_goldens_dir(self):
+    temp_dir = pathlib.Path(self.create_tempdir().full_path)
+    per_test_case_dir = temp_dir / "ops_test_gpu_golden_per_test_case"
+    per_test_case_dir.mkdir()
+
+    found = test_utils.find_per_test_case_goldens_dir(
+        "ops_test_gpu_golden_per_test_case", candidate_dirs=[temp_dir]
+    )
+    self.assertEqual(found, per_test_case_dir)
+
+    missing = test_utils.find_per_test_case_goldens_dir(
+        "nonexistent", candidate_dirs=[temp_dir]
+    )
+    self.assertIsNone(missing)
+
+  def test_load_single_test_case_golden(self):
+    temp_dir = pathlib.Path(self.create_tempdir().full_path)
+    test_case_data = {"variant": "base"}
+    with open(temp_dir / "test_sin.plist", "wb") as f:
+      plistlib.dump(test_case_data, f, fmt=plistlib.FMT_BINARY)
+
+    loaded = test_utils.load_single_test_case_golden("test_sin", temp_dir)
+    self.assertEqual(loaded, test_case_data)
+
+    missing = test_utils.load_single_test_case_golden("test_cos", temp_dir)
+    self.assertIsNone(missing)
+
 
 if __name__ == "__main__":
   absltest.main()

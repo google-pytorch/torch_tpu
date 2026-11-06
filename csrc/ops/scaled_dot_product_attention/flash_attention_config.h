@@ -47,7 +47,6 @@ struct FlashAttnConfig {
   bool has_attn_bias;
   float dropout_rate = 0.0f;
   std::optional<kiln::ContractPrecision> precision = std::nullopt;
-  std::optional<int64_t> sliding_window_size = std::nullopt;
 };
 
 struct Tiling {

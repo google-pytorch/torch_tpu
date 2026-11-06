@@ -21,6 +21,7 @@
 #include "absl/types/span.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/utils.h"
 #include "csrc/ops/cumsum/cumsum.h"
 #include "csrc/ops/index_select/index_select.h"
 #include "csrc/ops/op_builder_utils.h"
@@ -83,7 +84,7 @@ mlir::MlirOp NarrowTrailingBroadcastMask(mlir::MlirOp mask) {
   const int64_t mask_rank = mask_shape.size();
 
   Dimensions start_indices(mask_rank, 0);
-  Dimensions limit_indices(mask_shape.begin(), mask_shape.end());
+  Dimensions limit_indices = CopyIntVector(mask_shape);
   Strides strides(mask_rank, 1);
   bool narrowed = false;
 
@@ -160,7 +161,7 @@ absl::StatusOr<mlir::MlirOp> BuildMaskedScatterShlo(mlir::MlirOp input,
 
   // 2. Reshape the input into rows and the mask into one element per row,
   // broadcasting the mask only along the dimensions that are not folded.
-  Dimensions row_mask_shape(input_shape.begin(), input_shape.end());
+  Dimensions row_mask_shape = CopyIntVector(input_shape);
   for (int64_t i = rank - input_partition.num_folded_trailing_dims; i < rank;
        ++i) {
     row_mask_shape[i] = 1;

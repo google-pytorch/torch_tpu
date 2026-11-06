@@ -41,6 +41,7 @@ torch_tpu_cc_library(
         "//csrc/internal/mosaic/kiln/core:specs",
         "//csrc/internal/mosaic/kiln/core:tile",
         "//csrc/internal/mosaic/kiln/core:value_base",
+        "//csrc/internal/mosaic/kiln/lib:pipeline",
     ],
 )
 
@@ -73,6 +74,7 @@ torch_tpu_cc_test(
         "//csrc/common:oss_test_main",
         "//csrc/common:status_test_utils",
         "//csrc/experimental/precompiled_kernels:kernel_test_utils",
+        "//csrc/internal/mosaic/kiln/mlir:stablehlo_splice",
         "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",

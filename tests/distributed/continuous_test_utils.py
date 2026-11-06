@@ -30,10 +30,11 @@ keeps them, and their process group, alive across the class's tests:
 harness.
 """
 
+from collections.abc import Callable
 import functools
 import os
 import types
-from typing import Any, Callable
+from typing import Any
 import unittest
 from unittest import mock
 
@@ -52,6 +53,10 @@ from tests.distributed import distributed_utils
 _PARENT_DRAINS_COMPLETION_QUEUES = hasattr(
     common_distributed, "retrieve_result_from_completion_queue"
 )
+
+# Per-test-case worker timeout. A large number, so effectively unlimited; the
+# BUILD target's `timeout`/`size` bounds the whole test instead.
+_TEST_CASE_TIMEOUT_SEC = 100_000
 
 
 class _ReportSkipsQueue:
@@ -93,6 +98,28 @@ class TpuMultiProcContinuousTest(
   @classmethod
   def backend_str(cls) -> str:
     return "tpu_dist"
+
+  @classmethod
+  def setUpClass(cls) -> None:
+    # Upstream waits on workers (per test case and at teardown) for
+    # `common_distributed.TIMEOUT_DEFAULT` seconds. Blaze has no per-test-case
+    # timeout, so we effectively disable this one and let the BUILD target's
+    # `timeout`/`size` bound the whole test. We also disallow
+    # `DISTRIBUTED_TESTS_DEFAULT_TIMEOUT`, which would otherwise be ignored.
+    #
+    # `TIMEOUT_DEFAULT` is a module global, so `enterClassContext()` restores it
+    # once this class is done (after `tearDownClass()`, which also uses it).
+    if "DISTRIBUTED_TESTS_DEFAULT_TIMEOUT" in os.environ:
+      raise ValueError(
+          f"{cls.__name__} ignores `DISTRIBUTED_TESTS_DEFAULT_TIMEOUT`; set the"
+          " BUILD target's `timeout`/`size` instead."
+      )
+    cls.enterClassContext(
+        mock.patch.object(
+            common_distributed, "TIMEOUT_DEFAULT", _TEST_CASE_TIMEOUT_SEC
+        )
+    )
+    super().setUpClass()
 
   def setUp(self) -> None:
     # `common_utils.TestCase.setUp()` seeds the torch RNGs, which initializes
@@ -146,8 +173,18 @@ class TpuMultiProcContinuousTest(
       base_seed = cls.choose_seed() if seed is None else seed
       seed_test_utils.seed_rngs(base_seed + cls.rank)
 
+    # Workers call test methods directly, so `SeededTest.setUp()`, which resets
+    # Dynamo and lifts its recompile limit, only runs in the parent. Do the same
+    # here: otherwise every compiled program of earlier tests stays in the
+    # worker's Dynamo caches, and code objects shared across tests (such as the
+    # wrapper of every `spmd_safe` function) hit the recompile limit, which is
+    # a hard failure under `fullgraph=True`.
+    torch._dynamo.reset()  # pylint: disable=protected-access
     try:
-      with mock.patch.object(common_utils, "set_rng_seed", seed_rngs_for_rank):
+      with (
+          mock.patch.object(common_utils, "set_rng_seed", seed_rngs_for_rank),
+          torch._dynamo.utils.disable_cache_limit(),  # pylint: disable=protected-access
+      ):
         super()._run_test_given_id(test_id, **kwargs)
     finally:
       # Fence between tests: no rank reports completion (and thus starts the

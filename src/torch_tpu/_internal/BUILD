@@ -51,10 +51,12 @@ pybind_extension(
         "//csrc/common:env_vars",
         "//csrc/common:error_utils",
         "//csrc/common:libtpu_version",
+        "//csrc/common:process",
         "//csrc/common:pybind_error_utils",
         "//csrc/common:utils",
         "//shims/torch:torch_headers",
         "@com_google_absl//absl/log:absl_log",
+        "@com_google_absl//absl/strings",
     ],
 )
 
@@ -87,7 +89,6 @@ pybind_extension(
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
         "//shims/torch/c10/util:base_headers",
-        "@com_google_absl//absl/flags:flag",
         "@xla//xla/pjrt:pjrt_client",
     ],
 )
@@ -144,6 +145,8 @@ torch_tpu_py_library(
         "//src/torch_tpu/_internal/optimizers:single_trace_trainer",  # build_cleaner: keep
         "//src/torch_tpu/_internal/pallas:mesh",  # build_cleaner: keep
         "//src/torch_tpu/_internal/pallas:pallas_lib",  # build_cleaner: keep
+        "//src/torch_tpu/_internal/pallas/verify:findings",  # build_cleaner: keep
+        "//src/torch_tpu/_internal/pallas/verify:verifier",  # build_cleaner: keep
         "//src/torch_tpu/_internal/profiler:profiler_config",  # build_cleaner: keep
         "//src/torch_tpu/_internal/utils:annotations",
     ],

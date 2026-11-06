@@ -46,27 +46,73 @@
 namespace torch_tpu {
 namespace {
 
-absl::StatusOr<mlir::MlirOp> BuildGluShlo(int64_t dim, mlir::MlirOp input) {
-  mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
-  auto shape = input_type.getShape();
-  const int64_t rank = shape.size();
+struct GluHalves {
+  mlir::MlirOp first_half;
+  mlir::MlirOp second_half;
+};
 
-  Indices start_indices(rank, 0);
-  Indices limit_indices(shape.begin(), shape.end());
-  Strides strides(rank, 1);
+// Slices input along dim into two halves. For dynamic inputs, uses
+// DynamicSlice and propagates dynamic dimension sizes.
+// GENERIC: capability stablehlo::Slice requires static shapes; dynamic shapes
+// require DynamicSlice.
+absl::StatusOr<GluHalves> SplitGluHalves(int64_t dim, mlir::MlirOp input) {
+  mlir::MlirBuilder& builder = input.getBuilder();
+  const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
+  const int64_t rank = input_type.getRank();
 
-  const int64_t split_index = shape[dim] / 2;
+  if (input_type.hasStaticShape()) {
+    auto shape = input_type.getShape();
+    Indices start_indices(rank, 0);
+    Indices limit_indices = CopyIntVector(shape);
+    Strides strides(rank, 1);
+    const int64_t split_index = shape[dim] / 2;
 
-  // First half
-  limit_indices[dim] = split_index;
+    limit_indices[dim] = split_index;
+    mlir::MlirOp first_half =
+        mlir::stablehlo::Slice(input, start_indices, limit_indices, strides);
+
+    start_indices[dim] = split_index;
+    limit_indices[dim] = shape[dim];
+    mlir::MlirOp second_half =
+        mlir::stablehlo::Slice(input, start_indices, limit_indices, strides);
+    return GluHalves{first_half, second_half};
+  }
+
+  TT_RET_CHECK(!input_type.isDynamicDim(dim), error::kPythonNotImplementedError)
+      << "expected dimension " << dim
+      << " of input to have a static size, got dynamic size";
+
+  Dimensions slice_shape = GetStaticShape(input);
+  const int64_t split_index = slice_shape[dim] / 2;
+  slice_shape[dim] = split_index;
+
+  const mlir::IntegerType i32 = builder.getOpBuilder().getI32Type();
+  mlir::MlirOp zero = MakeScalarConstant(builder, 0, i32);
+  mlir::MlirOp split_op = MakeScalarConstant(builder, split_index, i32);
+
+  llvm::SmallVector<mlir::MlirOp, 4> first_start(rank, zero);
+  llvm::SmallVector<mlir::MlirOp, 4> second_start(rank, zero);
+  second_start[dim] = split_op;
+
   mlir::MlirOp first_half =
-      mlir::stablehlo::Slice(input, start_indices, limit_indices, strides);
-
-  // Second half
-  start_indices[dim] = split_index;
-  limit_indices[dim] = shape[dim];
+      mlir::stablehlo::DynamicSlice(input, first_start, slice_shape);
   mlir::MlirOp second_half =
-      mlir::stablehlo::Slice(input, start_indices, limit_indices, strides);
+      mlir::stablehlo::DynamicSlice(input, second_start, slice_shape);
+
+  for (int64_t i = 0; i < rank; ++i) {
+    if (i != dim && input_type.isDynamicDim(i)) {
+      mlir::MlirOp dim_size = mlir::stablehlo::GetDimensionSize(input, i);
+      first_half = mlir::stablehlo::SetDimensionSize(first_half, dim_size, i);
+      second_half = mlir::stablehlo::SetDimensionSize(second_half, dim_size, i);
+    }
+  }
+  return GluHalves{first_half, second_half};
+}
+
+absl::StatusOr<mlir::MlirOp> BuildGluShlo(int64_t dim, mlir::MlirOp input) {
+  TT_ASSIGN_OR_RETURN(GluHalves halves, SplitGluHalves(dim, input));
+  mlir::MlirOp first_half = halves.first_half;
+  mlir::MlirOp second_half = halves.second_half;
 
   mlir::MlirOp neg = mlir::stablehlo::Neg(second_half);
   mlir::MlirOp exp = mlir::stablehlo::Exp(neg);
@@ -96,29 +142,15 @@ absl::Status ValidateIsFloatingPoint(const at::Tensor& tensor,
 //   dX1 = dY * sigmoid(X2)
 //   dX2 = dY * X1 * d(sigmoid(X2))/dX2
 //       = dY * X1 * sigmoid(X2) * (1.0 - sigmoid(X2))
-// Finally, dX is assembled by padding and adding dX1 & dX2 to the full shape.
+// Finally, dX is assembled by concatenating dX1 and dX2 along dim.
 absl::StatusOr<mlir::MlirOp> BuildGluBackwardShlo(int64_t dim,
                                                   mlir::MlirOp grad_output,
                                                   mlir::MlirOp self) {
   mlir::MlirBuilder& builder = self.getBuilder();
-  mlir::RankedTensorType self_type = GetTensorTypeOrDie(self);
-  auto shape = self_type.getShape();
-  const int64_t rank = shape.size();
 
-  Indices start_indices(rank, 0);
-  Indices limit_indices(shape.begin(), shape.end());
-  Strides strides(rank, 1);
-
-  const int64_t split_index = shape[dim] / 2;
-
-  limit_indices[dim] = split_index;
-  mlir::MlirOp first_half =
-      mlir::stablehlo::Slice(self, start_indices, limit_indices, strides);
-
-  start_indices[dim] = split_index;
-  limit_indices[dim] = shape[dim];
-  mlir::MlirOp second_half =
-      mlir::stablehlo::Slice(self, start_indices, limit_indices, strides);
+  TT_ASSIGN_OR_RETURN(GluHalves halves, SplitGluHalves(dim, self));
+  mlir::MlirOp first_half = halves.first_half;
+  mlir::MlirOp second_half = halves.second_half;
 
   mlir::MlirOp neg = mlir::stablehlo::Neg(second_half);
   mlir::MlirOp exp = mlir::stablehlo::Exp(neg);
@@ -137,25 +169,7 @@ absl::StatusOr<mlir::MlirOp> BuildGluBackwardShlo(int64_t dim,
   mlir::MlirOp dx1_first_half = mlir::stablehlo::Mul(dx1, first_half);
   mlir::MlirOp dx2 = mlir::stablehlo::Mul(dx1_first_half, one_minus_sigmoid);
 
-  // Assemble dX by padding dX1 and dX2 to the full shape and adding them.
-  Indices interior_padding(rank, 0);
-  Indices low_padding_dx1(rank, 0);
-  Indices high_padding_dx1(rank, 0);
-  high_padding_dx1[dim] = split_index;
-
-  Indices low_padding_dx2(rank, 0);
-  Indices high_padding_dx2(rank, 0);
-  low_padding_dx2[dim] = split_index;
-
-  mlir::MlirOp zero =
-      MakeScalarConstant(builder, 0.0, self_type.getElementType());
-  mlir::MlirOp padded_dx1 = mlir::stablehlo::Pad(
-      dx1, zero, low_padding_dx1, high_padding_dx1, interior_padding);
-  mlir::MlirOp padded_dx2 = mlir::stablehlo::Pad(
-      dx2, zero, low_padding_dx2, high_padding_dx2, interior_padding);
-
-  mlir::MlirOp result = mlir::stablehlo::Add(padded_dx1, padded_dx2);
-  return result;
+  return mlir::stablehlo::Concatenate(builder, {dx1, dx2}, dim);
 }
 
 absl::Status BuildGluBackwardOut(const at::Tensor& grad_output,

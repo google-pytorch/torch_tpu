@@ -49,6 +49,7 @@ torch_tpu_py_test(
     name = "model_test",
     srcs = ["model_test.py"],
     tags = [
+        "nomsan",  # TODO(b/507536079): 3p 'py/torch' error: use-of-uninitialized-value in reduced_float_type_copy
         "requires-tpu-v5lite",
     ],
     deps = [

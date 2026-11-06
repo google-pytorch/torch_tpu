@@ -39,7 +39,6 @@ from __future__ import annotations
 import collections
 import dataclasses
 import math
-from typing import Optional, Tuple
 
 from absl import logging
 import numpy as np
@@ -53,7 +52,7 @@ class _DeviceStub:
   """Duck-types the subset of jax.Device that mesh_utils touches."""
 
   id: int
-  coords: Tuple[int, int, int]
+  coords: tuple[int, int, int]
   core_on_chip: int
   device_kind: str
   platform: str
@@ -89,8 +88,8 @@ def _gather_global_device_info(device_type: str) -> list[_DeviceStub]:
 
 
 def _infer_dcn_mesh_shape(
-    mesh_shape: Tuple[int, ...], num_slices: int
-) -> Tuple[int, ...]:
+    mesh_shape: tuple[int, ...], num_slices: int
+) -> tuple[int, ...]:
   """Picks the logical axis along which to split the mesh across slices.
 
   The split goes on the outermost non-trivial axis. `mesh_shape` is ordered by
@@ -150,8 +149,8 @@ def _infer_dcn_mesh_shape(
 
 def _validate_multi_slice(
     infos: list[_DeviceStub],
-    mesh_shape: Tuple[int, ...],
-    dcn_mesh_shape: Tuple[int, ...],
+    mesh_shape: tuple[int, ...],
+    dcn_mesh_shape: tuple[int, ...],
 ) -> None:
   """Validates a multi-slice request against the observed device topology.
 
@@ -223,9 +222,9 @@ __all__ = ["topology_aware_mesh", "get_device_assignment"]
 
 def topology_aware_mesh(
     device_type: str,
-    mesh_shape: Tuple[int, ...],
+    mesh_shape: tuple[int, ...],
     *,
-    dcn_mesh_shape: Optional[Tuple[int, ...]] = None,
+    dcn_mesh_shape: tuple[int, ...] | None = None,
     allow_split_physical_axes: bool = False,
     contiguous_submeshes: bool = False,
 ) -> torch.Tensor:
@@ -331,14 +330,17 @@ def topology_aware_mesh(
           "A multi-slice layout was requested "
           f"(dcn_mesh_shape={tuple(dcn_mesh_shape)}), but the PJRT devices do "
           "not expose a 'slice_index' attribute. That attribute is published "
-          "only by the MegaScale PJRT client, which the TPU plugin installs "
-          "when --megascale_port >= 0 and SKIP_MEGASCALE_PJRT_CLIENT is "
-          "unset; do not set it at launch, TorchTPU sets it itself after "
-          "creating its client. libtpu sets --megascale_port to "
-          "MEGASCALE_PORT once MEGASCALE_COORDINATOR_ADDRESS, "
-          "MEGASCALE_SLICE_ID and MEGASCALE_NUM_SLICES are set. Give the "
-          "coordinator address a port, e.g. <MASTER_ADDR>:8080, since libtpu "
-          "otherwise appends each process's own MEGASCALE_PORT."
+          "only by the MegaScale PJRT client, which TorchTPU skips when the "
+          "world is a single slice, i.e. when WORLD_SIZE is no larger than "
+          "the number of addresses in TORCH_TPU_SLICEBUILDER_ADDRESSES. "
+          "Otherwise the TPU plugin installs it when --megascale_port >= 0 "
+          "and SKIP_MEGASCALE_PJRT_CLIENT is unset; do not set it at launch, "
+          "TorchTPU sets it itself after creating its client. libtpu sets "
+          "--megascale_port to MEGASCALE_PORT once "
+          "MEGASCALE_COORDINATOR_ADDRESS, MEGASCALE_SLICE_ID and "
+          "MEGASCALE_NUM_SLICES are set. Give the coordinator address a port, "
+          "e.g. <MASTER_ADDR>:8080, since libtpu otherwise appends each "
+          "process's own MEGASCALE_PORT."
       )
     if dcn_mesh_shape is None:
       dcn_mesh_shape = _infer_dcn_mesh_shape(mesh_shape, num_slices)
@@ -367,7 +369,7 @@ def topology_aware_mesh(
 
 
 def get_device_assignment(
-    pg: Optional[dist.ProcessGroup] = None,
+    pg: dist.ProcessGroup | None = None,
 ) -> list[int]:
   """Returns physical device assignment for the given process group.
 

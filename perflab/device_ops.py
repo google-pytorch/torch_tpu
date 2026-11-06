@@ -19,7 +19,8 @@ sure that everything framework specific is handled by the backend and not by
 the measuring utilities.
 """
 
-from typing import Any, Callable, Protocol, runtime_checkable
+from collections.abc import Callable
+from typing import Any, Protocol, runtime_checkable
 
 
 @runtime_checkable

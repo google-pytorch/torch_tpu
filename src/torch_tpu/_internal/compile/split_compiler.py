@@ -52,7 +52,6 @@ from torch_tpu._internal.distributed import collective_ops
 from torch_tpu._internal.distributed import handshake
 from torch_tpu._internal.distributed import process_group_utils
 from torch_tpu._internal.distributed import spmd_util
-from torch_tpu._internal.benchmarks import xprof_adapter
 
 ProcessGroupId = handshake.ProcessGroupId
 RankCollectiveCounts = handshake.RankCollectiveCounts
@@ -90,7 +89,7 @@ def _submit_handshake(
       dist.is_initialized()
   ), "Distributed backend must be initialized when submitting a handshake."
 
-  with xprof_adapter.TraceMe("split_compiler._submit_handshake"):
+  with torch.profiler.record_function("split_compiler._submit_handshake"):
     with _RANK_COLLECTIVE_COUNTS_LOCK:
       _RANK_COLLECTIVE_COUNTS.increment_pg_collective_counts(
           pg_to_num_collectives

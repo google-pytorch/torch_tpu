@@ -14,19 +14,21 @@
 
 """Tests for Pallas custom kernels."""
 
+from collections.abc import Sequence
 import enum
 import functools
 import os
 import pathlib
 import re
 import sys
-from typing import Optional, Sequence, Tuple, TypeAlias
+from typing import TypeAlias
 from unittest import mock
 import warnings
 from absl.testing import absltest
 import jax
 from jax.experimental import pallas as pl
 import jax.numpy as jnp
+import numpy as np
 from packaging import version
 import torch
 import torch._library.custom_ops as torch_custom_ops
@@ -35,6 +37,7 @@ from torch_tpu._internal import compile as tpu_compile
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal import pallas
 from torch_tpu._internal import testing as tt_testing
+from torch_tpu._internal.ops import splash_attention
 from torch_tpu._internal.pallas import _compat
 from torch_tpu._internal.utils import test_utils
 from torch_tpu._internal.utils import utils
@@ -77,7 +80,7 @@ def add_subtract_vectors_kernel(x_ref, y_ref, oadd_ref, osub_ref):
 @pallas.jax_op("pallas::add_subtract_vectors")
 def add_subtract_vectors(
     x: jax.Array, y: jax.Array
-) -> Tuple[jax.Array, jax.Array]:
+) -> tuple[jax.Array, jax.Array]:
   dt = jax.ShapeDtypeStruct(x.shape, x.dtype)
   return pl.pallas_call(add_subtract_vectors_kernel, out_shape=(dt, dt))(x, y)
 
@@ -584,7 +587,7 @@ class TestPallasKernels(seed_test_utils.RepeatableTest):
     """Simulate kernel libraries like tokamax that wrap pallas kernels."""
 
     @pallas.jax_op("pallas::jax_test")
-    def wrapper(x: jax.Array, y: Optional[jax.Array]) -> jax.Array:
+    def wrapper(x: jax.Array, y: jax.Array | None) -> jax.Array:
       if y is None:
         return x
       return jax.numpy.add(x, y)
@@ -760,7 +763,7 @@ class TestPallasKernels(seed_test_utils.RepeatableTest):
     # Create the kernel in JAX. Do not jax.jit this, jax_op will do it later.
     def mul_and_add_scalars_jax_kernel(
         x: jax.Array, y: jax.Array
-    ) -> Tuple[jax.Array, jax.Array]:
+    ) -> tuple[jax.Array, jax.Array]:
       if x.ndim != 0 or y.ndim != 0:
         raise ValueError("Only scalars are supported.")
       return jax.numpy.multiply(x, y), jax.numpy.add(x, y)
@@ -775,7 +778,7 @@ class TestPallasKernels(seed_test_utils.RepeatableTest):
     # extract them from jax._src.interpreters.ad.primitive_jvps
     def mul_and_add_scalars_backward_jax_kernel(
         x: jax.Array, y: jax.Array, d_mul: jax.Array, d_add: jax.Array
-    ) -> Tuple[jax.Array, jax.Array]:
+    ) -> tuple[jax.Array, jax.Array]:
 
       def scalar_surrogate(x_local: jax.Array, y_local: jax.Array):
         output_mul, output_add = mul_and_add_scalars_jax_kernel(
@@ -1234,7 +1237,7 @@ class TestPallasCompat(seed_test_utils.RepeatableTest):
         self.assertTrue(issubclass(w[0].category, DeprecationWarning))
         self.assertEqual(
             str(w[0].message),
-            "<TorchTpu/ApiStage/DeprecatedApi/> test message",
+            "//TorchTpu/ApiStage/DeprecatedApi// test message",
         )
         self.assertIn("pallas_test.py", w[0].filename)
     else:
@@ -1252,7 +1255,7 @@ class TestPallasCompat(seed_test_utils.RepeatableTest):
         self.assertTrue(issubclass(w[0].category, DeprecationWarning))
         self.assertEqual(
             str(w[0].message),
-            "<TorchTpu/ApiStage/DeprecatedApi/> test message",
+            "//TorchTpu/ApiStage/DeprecatedApi// test message",
         )
         self.assertIn("pallas_test.py", w[0].filename)
 
@@ -1816,6 +1819,203 @@ class TestPallasMesh(seed_test_utils.RepeatableTest):
         "Use torch.tpu.pallas.get_pallas_mesh instead.",
         str(deprecations[0].message),
     )
+
+
+class TestSplashAttention(seed_test_utils.RepeatableTest):
+
+  def _assert_host_numpy_mask_info(self, mask_info):
+    self.assertIsNotNone(mask_info)
+    for field in (
+        mask_info.data_next,
+        mask_info.mask_next,
+        mask_info.block_mask,
+        mask_info.partial_mask_blocks,
+        mask_info.q_sequence,
+    ):
+      if field is not None:
+        self.assertIsInstance(field, np.ndarray)
+        self.assertNotIsInstance(field, jax.Array)
+
+  def test_make_splash_attention_fn_uses_host_numpy_masks(self):
+    """Mask creation stays on host NumPy without eager JAX TPU staging."""
+    kernel_lib = splash_attention.splash_attention_kernel
+    mask_lib = splash_attention.splash_attention_mask
+    block_sizes = kernel_lib.BlockSizes(
+        block_q=128,
+        block_kv=128,
+        block_kv_compute=128,
+        block_q_dkv=128,
+        block_kv_dkv=128,
+        block_kv_dkv_compute=128,
+        block_q_dq=128,
+        block_kv_dq=128,
+        use_fused_bwd_kernel=False,
+    )
+    local_mask = mask_lib.MultiHeadMask(
+        masks=(
+            mask_lib.LocalMask(shape=(256, 256), window_size=(64, 0), offset=0),
+        )
+        * 4
+    )
+    # Create a dense mask with mixed True/False tiles so partial_mask_blocks
+    # is populated and downcast to int8 on host.
+    q_idx = np.arange(256)[:, None]
+    kv_idx = np.arange(256)[None, :]
+    dense_bool = (q_idx >= kv_idx) & ((q_idx - kv_idx) <= 48)
+    numpy_mask = mask_lib.MultiHeadMask(
+        masks=(mask_lib.NumpyMask(dense_bool),) * 4
+    )
+
+    with mock.patch.object(
+        jnp,
+        "array",
+        side_effect=AssertionError("eager jnp.array should not run"),
+    ):
+      fwd_info, dq_info, dkv_info, mask_fn = (
+          splash_attention._make_numpy_splash_mask_infos(
+              local_mask, block_sizes
+          )
+      )
+      self.assertIsNotNone(mask_fn)
+      self._assert_host_numpy_mask_info(fwd_info)
+      self._assert_host_numpy_mask_info(dq_info)
+      self._assert_host_numpy_mask_info(dkv_info)
+
+      np_fwd, np_dq, np_dkv, np_mask_fn = (
+          splash_attention._make_numpy_splash_mask_infos(
+              numpy_mask, block_sizes
+          )
+      )
+      self.assertIsNone(np_mask_fn)
+      self._assert_host_numpy_mask_info(np_fwd)
+      self._assert_host_numpy_mask_info(np_dq)
+      self._assert_host_numpy_mask_info(np_dkv)
+      self.assertIsNotNone(np_fwd.partial_mask_blocks)
+      self.assertEqual(np_fwd.partial_mask_blocks.dtype, np.int8)
+
+    for kwargs in (
+        dict(
+            seq_len=256,
+            n_heads=4,
+            n_kv_heads=4,
+            local_window_size=64,
+            use_fused_bwd_kernel=False,
+            block_q=128,
+            block_kv=128,
+            block_kv_compute=128,
+            block_q_dkv=128,
+            block_kv_dkv=128,
+            block_kv_dkv_compute=128,
+            block_q_dq=128,
+            block_kv_dq=128,
+        ),
+        dict(
+            seq_len=256,
+            n_heads=4,
+            n_kv_heads=1,
+            is_causal=True,
+            use_fused_bwd_kernel=True,
+            block_q=128,
+            block_kv=128,
+            block_kv_compute=128,
+            block_q_dkv=128,
+            block_kv_dkv=128,
+            block_kv_dkv_compute=128,
+        ),
+        dict(
+            seq_len=256,
+            n_heads=4,
+            n_kv_heads=4,
+            is_causal=False,
+            use_fused_bwd_kernel=True,
+            block_q=128,
+            block_kv=128,
+            block_kv_compute=128,
+            block_q_dkv=128,
+            block_kv_dkv=128,
+            block_kv_dkv_compute=128,
+        ),
+    ):
+      q_spec = jax.ShapeDtypeStruct((2, 4, 256, 128), jnp.float32)
+      kv_shape = (
+          (2, 256, 128)
+          if kwargs["n_kv_heads"] == 1
+          else (2, kwargs["n_kv_heads"], 256, 128)
+      )
+      kv_spec = jax.ShapeDtypeStruct(kv_shape, jnp.float32)
+      lse_spec = jax.ShapeDtypeStruct((2, 4, 256), jnp.float32)
+      with jax.transfer_guard("disallow"):
+        fwd_fn, bwd_fn = splash_attention._make_splash_attention_fn(**kwargs)
+        fwd_exp = jax.export.export(fwd_fn, platforms=["tpu"])(
+            q_spec, kv_spec, kv_spec
+        )
+        bwd_exp = jax.export.export(bwd_fn, platforms=["tpu"])(
+            q_spec, kv_spec, kv_spec, q_spec, lse_spec, q_spec
+        )
+      self.assertEqual(
+          [a.shape for a in fwd_exp.out_avals], [q_spec.shape, lse_spec.shape]
+      )
+      self.assertEqual(
+          [a.shape for a in bwd_exp.out_avals],
+          [q_spec.shape, kv_spec.shape, kv_spec.shape],
+      )
+
+  def test_splash_sdpa_concurrent_with_async_tpu_ops(self):
+    """Uncached splash_sdpa fwd+bwd succeeds alongside async PyTorch TPU ops."""
+    bsz, n_heads, seq_len, head_dim = 2, 4, 256, 128
+    window_size = 64
+
+    q_cpu = torch.randn(bsz, n_heads, seq_len, head_dim, dtype=torch.float32)
+    k_cpu = torch.randn(bsz, n_heads, seq_len, head_dim, dtype=torch.float32)
+    v_cpu = torch.randn(bsz, n_heads, seq_len, head_dim, dtype=torch.float32)
+
+    q_ref = q_cpu.clone().requires_grad_(True)
+    k_ref = k_cpu.clone().requires_grad_(True)
+    v_ref = v_cpu.clone().requires_grad_(True)
+    idx = torch.arange(seq_len)
+    attn_mask = (idx[:, None] >= idx[None, :]) & (
+        (idx[:, None] - idx[None, :]) <= window_size
+    )
+    out_ref = torch.nn.functional.scaled_dot_product_attention(
+        q_ref, k_ref, v_ref, attn_mask=attn_mask
+    )
+    out_ref.sum().backward()
+
+    q_tpu = q_cpu.to("tpu").detach().requires_grad_(True)
+    k_tpu = k_cpu.to("tpu").detach().requires_grad_(True)
+    v_tpu = v_cpu.to("tpu").detach().requires_grad_(True)
+
+    # Enqueue unsynchronized PyTorch TPU ops immediately before uncached
+    # splash_sdpa lowering + jax.export runs.
+    bg = torch.ones((512, 512), dtype=torch.float32, device="tpu")
+    for _ in range(8):
+      bg = bg + 1.0
+
+    out_tpu = torch.tpu.ops.splash_sdpa(
+        q_tpu,
+        k_tpu,
+        v_tpu,
+        is_causal=True,
+        local_window_size=window_size,
+        block_q=128,
+        block_kv=128,
+        block_dkv=128,
+        block_kv_compute=128,
+        block_q_dkv=128,
+        block_kv_dkv=128,
+        block_kv_dkv_compute=128,
+        use_fused_bwd_kernel=False,
+    )
+    out_tpu.sum().backward()
+
+    test_utils.assert_close(bg.cpu(), torch.full((512, 512), 9.0))
+    test_utils.assert_close(out_tpu.cpu(), out_ref, rtol=1e-2, atol=1e-2)
+    self.assertIsNotNone(q_tpu.grad)
+    self.assertIsNotNone(k_tpu.grad)
+    self.assertIsNotNone(v_tpu.grad)
+    test_utils.assert_close(q_tpu.grad.cpu(), q_ref.grad, rtol=1e-2, atol=1e-2)
+    test_utils.assert_close(k_tpu.grad.cpu(), k_ref.grad, rtol=1e-2, atol=1e-2)
+    test_utils.assert_close(v_tpu.grad.cpu(), v_ref.grad, rtol=1e-2, atol=1e-2)
 
 
 if __name__ == "__main__":

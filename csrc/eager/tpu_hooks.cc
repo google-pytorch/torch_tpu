@@ -16,10 +16,12 @@
 
 #include "csrc/eager/tpu_hooks.h"
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <memory>
+#include <optional>
 #include <utility>
+#include <vector>
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/Generator.h"
@@ -29,6 +31,7 @@
 #include "absl/base/nullability.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
+#include "absl/time/time.h"
 #include "c10/core/Allocator.h"
 #include "c10/core/Device.h"
 #include "c10/core/ScalarType.h"
@@ -67,6 +70,13 @@ namespace {
 
 constexpr int kMaxDevices = 8;
 
+// Returns whether `device_index` is below `torch.tpu.device_count()`.
+[[nodiscard]] bool IsVisibleDeviceIndex(c10::DeviceIndex device_index) {
+  const absl::StatusOr<int> visible_device_count =
+      PjrtBackend::GetInstance().GetVisibleDeviceCount();
+  return visible_device_count.ok() && device_index < *visible_device_count;
+}
+
 void ValidateDeviceIndex(c10::DeviceIndex device_index) {
   // This error message should not be hit; it should be impossible for users to
   // construct a torch.device with a negative device index, which will fail
@@ -96,7 +106,11 @@ void ValidateDeviceIndex(c10::DeviceIndex device_index) {
       error::kInvalidArgument)
       << "device index " << static_cast<int>(device_index)
       << " is out of bounds of the number of addressable devices "
-      << addressable_device_count;
+      << addressable_device_count
+      << (IsVisibleDeviceIndex(device_index)
+              ? ". Using a visible TPU device other than the ones this process "
+                "uses is not supported yet"
+              : "");
 }
 
 class TpuDeviceGuardImpl final : public c10::impl::DeviceGuardImplInterface {
@@ -113,8 +127,7 @@ class TpuDeviceGuardImpl final : public c10::impl::DeviceGuardImplInterface {
   c10::Stream getNewStream(c10::Device d, int priority) const override;
   c10::Stream getDefaultStream(c10::Device d) const override;
   c10::Stream exchangeStream(c10::Stream s) const override;
-  // All `void* event` values are actually `std::shared_ptr<EventSnapshot>*`;
-  // this is a pointer to a shared pointer to an EventSnapshot.
+  // All `void* event` values are actually `EventSnapshot*`.
   void destroyEvent(void* event,
                     c10::DeviceIndex device_index) const noexcept override;
   void record(void** event, const c10::Stream& stream,
@@ -126,6 +139,10 @@ class TpuDeviceGuardImpl final : public c10::impl::DeviceGuardImplInterface {
   // initializing the runtime first if needed (0 if initialization fails). If
   // the runtime isn't initialized and no TPU device is reachable (no TPU device
   // nodes and no custom device paths), returns 0 without initializing it.
+  //
+  // Unlike `torch.tpu.device_count()`, counts only addressable devices, since
+  // PyTorch sizes per-device state with it, e.g. the autograd engine sets each
+  // device index below it on a thread of its own.
   c10::DeviceIndex deviceCount() const noexcept override;
   bool queryStream(const c10::Stream& stream) const override;
   void synchronizeStream(const c10::Stream& stream) const override;
@@ -160,7 +177,8 @@ void TpuDeviceGuardImpl::ValidateDevice(c10::Device d) const {
   // This error message should not be hit; if the device is not tpu, then it
   // should fail before calling this DeviceGuardImpl (such as in the
   // torch.accelerator submodule).
-  TT_CHECK_THROW(d.type() == type(), error::kInvalidArgument)
+  TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=see comment above
+      d.type() == type(), error::kInvalidArgument)
       << "TpuDeviceGuardImpl: invalid device type " << d.type();
   ValidateDeviceIndex(d.index());
 }
@@ -234,9 +252,16 @@ c10::Stream TpuDeviceGuardImpl::exchangeStream(c10::Stream s) const {
   //     because Z depends on Y, which has not yet been started.
   // By blocking on the exit from stream 2 until Y's materialization is queued,
   // Z's materialization cannot race its inputs, even if Y hasn't finished.
-  TT_THROW_IF_ERROR(MaterializeStream(s.device_index(), old_stream_id,
-                                      MaterializationReason::kExplicitSync)
-                        .Await());
+  TT_ASSIGN_OR_THROW(EventSnapshot snapshot,
+                     MaterializeStream(s.device_index(), old_stream_id,
+                                       MaterializationReason::kExplicitSync));
+  TT_THROW_IF_ERROR(snapshot.BlockUntilStarted());
+  // Because we're dropping this snapshot without returning it to the user, any
+  // errors would be lost if we only chained the OkCallback. To ensure all
+  // errors are raised correctly we inject the full completion future into the
+  // stream so errors are picked up by the next snapshot.
+  internal::MarkStreamActive(s.device_index(), old_stream_id,
+                             snapshot.completion_future());
   return c10::Stream(c10::Stream::UNSAFE, s.device(), old_stream_id);
 }
 
@@ -292,20 +317,22 @@ void TpuDeviceGuardImpl::record(void** event, const c10::Stream& stream,
   if (*event != nullptr) {
     this->destroyEvent(*event, device_index);
   }
-  TT_ASSIGN_OR_THROW(auto shared_event,
+  TT_ASSIGN_OR_THROW(EventSnapshot snapshot,
                      MaterializeStream(stream.device_index(), stream.id(),
-                                       MaterializationReason::kExplicitSync)
-                         .Await());
-  *event = new std::shared_ptr<EventSnapshot>(std::move(shared_event));
+                                       MaterializationReason::kExplicitSync));
+  TT_THROW_IF_ERROR(snapshot.BlockUntilStarted());
+  *event = new EventSnapshot(std::move(snapshot));
 }
 void TpuDeviceGuardImpl::block(void* event, const c10::Stream& stream) const {
-  TT_WARN_ONCE(WarningCategory::kTorchTpu,
-               "Asynchronous stream waiting is not yet implemented.");
+  EventSnapshot* snapshot = reinterpret_cast<EventSnapshot*>(event);
+  c10::DeviceIndex device_index = stream.device_index();
+  c10::StreamId stream_id = stream.id();
+  InsertStreamWait(device_index, stream_id, *snapshot);
 }
+
 bool TpuDeviceGuardImpl::queryEvent(void* event) const {
-  std::shared_ptr<EventSnapshot>* snapshot =
-      reinterpret_cast<std::shared_ptr<EventSnapshot>*>(event);
-  TT_ASSIGN_OR_THROW(bool ready, (*snapshot)->Query());
+  EventSnapshot* snapshot = reinterpret_cast<EventSnapshot*>(event);
+  TT_ASSIGN_OR_THROW(bool ready, snapshot->Query());
   return ready;
 }
 bool TpuDeviceGuardImpl::queryStream(const c10::Stream& stream) const {
@@ -313,46 +340,45 @@ bool TpuDeviceGuardImpl::queryStream(const c10::Stream& stream) const {
   return true;
 }
 void TpuDeviceGuardImpl::synchronizeStream(const c10::Stream& stream) const {
-  TT_ASSIGN_OR_THROW(auto event,
+  TT_ASSIGN_OR_THROW(EventSnapshot snapshot,
                      MaterializeStream(stream.device_index(), stream.id(),
-                                       MaterializationReason::kExplicitSync)
-                         .Await());
-  TT_THROW_IF_ERROR(event->Synchronize());
-  SyncAndCheckStickyError();
+                                       MaterializationReason::kExplicitSync));
+  TT_THROW_IF_ERROR(snapshot.Synchronize());
 }
 void TpuDeviceGuardImpl::synchronizeDevice(
     c10::DeviceIndex device_index) const {
-  auto event_futures =
-      MaterializeDevice(device_index, MaterializationReason::kExplicitSync);
-  for (const auto& event_future : event_futures) {
-    TT_ASSIGN_OR_THROW(auto event, event_future.Await());
-    TT_THROW_IF_ERROR(event->Synchronize());
+  TT_ASSIGN_OR_THROW(
+      std::vector<EventSnapshot> snapshots,
+      MaterializeDevice(device_index, MaterializationReason::kExplicitSync));
+  for (const auto& snapshot : snapshots) {
+    TT_THROW_IF_ERROR(snapshot.Synchronize());
   }
-  SyncAndCheckStickyError();
 }
 void TpuDeviceGuardImpl::destroyEvent(
     void* event, const c10::DeviceIndex device_index) const noexcept {
-  std::shared_ptr<EventSnapshot>* snapshot =
-      reinterpret_cast<std::shared_ptr<EventSnapshot>*>(event);
+  EventSnapshot* snapshot = reinterpret_cast<EventSnapshot*>(event);
   delete snapshot;
 }
 
 void TpuDeviceGuardImpl::synchronizeEvent(void* event) const {
-  // TODO(bawilson): also materialize deferred ops before this event on the
-  // event's stream.
-  std::shared_ptr<EventSnapshot>* snapshot =
-      reinterpret_cast<std::shared_ptr<EventSnapshot>*>(event);
-  TT_THROW_IF_ERROR((*snapshot)->Synchronize());
+  EventSnapshot* snapshot = reinterpret_cast<EventSnapshot*>(event);
+  TT_THROW_IF_ERROR(snapshot->Synchronize());
 }
 
 double TpuDeviceGuardImpl::elapsedTime(
     void* event1, void* event2, const c10::DeviceIndex device_index) const {
-  std::shared_ptr<EventSnapshot>* start =
-      reinterpret_cast<std::shared_ptr<EventSnapshot>*>(event1);
-  std::shared_ptr<EventSnapshot>* end =
-      reinterpret_cast<std::shared_ptr<EventSnapshot>*>(event2);
-  TT_ASSIGN_OR_THROW(double elapsed_ms, (*start)->ElapsedTime(**end));
-  return elapsed_ms;
+  EventSnapshot* start = reinterpret_cast<EventSnapshot*>(event1);
+  EventSnapshot* end = reinterpret_cast<EventSnapshot*>(event2);
+  TT_ASSIGN_OR_THROW(bool start_ready, start->Query());
+  TT_ASSIGN_OR_THROW(bool end_ready, end->Query());
+  TT_CHECK_THROW(start_ready && end_ready, error::kFailedPrecondition)
+      << "both events must be completed before calculating elapsed time";
+  TT_ASSIGN_OR_THROW(std::chrono::steady_clock::time_point start_time,
+                     start->CompletionTime());
+  TT_ASSIGN_OR_THROW(std::chrono::steady_clock::time_point end_time,
+                     end->CompletionTime());
+  absl::Duration duration = absl::FromChrono(end_time - start_time);
+  return absl::ToDoubleMilliseconds(duration);
 }
 
 C10_REGISTER_GUARD_IMPL(PrivateUse1, TpuDeviceGuardImpl);

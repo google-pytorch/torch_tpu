@@ -63,7 +63,6 @@ def _py_dist_info_rule_impl(ctx):
     entry_points_symlink_path = dist_info_dirname + "/entry_points.txt"
 
     runfiles = ctx.runfiles(
-        files = [entry_points_staging_file, metadata_staging_file],
         root_symlinks = {
             metadata_symlink_path: metadata_staging_file,
             entry_points_symlink_path: entry_points_staging_file,

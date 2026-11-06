@@ -16,15 +16,13 @@
 
 #include "csrc/eager/events_queue.h"
 
-#include <chrono>
 #include <memory>
-#include <ratio>
 #include <string>
-#include <thread>
 #include <utility>
 #include <variant>
 #include <vector>
 
+#include "absl/cleanup/cleanup.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
@@ -96,8 +94,10 @@ TEST_F(EventsQueueTest, GetsLiveDeferredBuffers) {
   // Both a and b are live and unsynced and will be materialized on the next
   // stream materialization or device materialization.
   const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
-  InsertGraphBreak(device_index, stream_id, {}, MaterializationReason::kUnknown,
-                   GraphSplitMode::kSplitGraph);
+  ASSERT_TRUE(InsertGraphBreak(device_index, stream_id, {},
+                               MaterializationReason::kUnknown,
+                               GraphSplitMode::kSplitGraph)
+                  .ok());
   auto ready_work = GetReadyWork(device_index, stream_id);
 
   ASSERT_EQ(ready_work.size(), 1);
@@ -120,8 +120,10 @@ TEST_F(EventsQueueTest, IgnoresPlaceholderBuffers) {
 
   // The placeholder does not need to be synced.
   const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
-  InsertGraphBreak(device_index, stream_id, {}, MaterializationReason::kUnknown,
-                   GraphSplitMode::kSplitGraph);
+  ASSERT_TRUE(InsertGraphBreak(device_index, stream_id, {},
+                               MaterializationReason::kUnknown,
+                               GraphSplitMode::kSplitGraph)
+                  .ok());
   auto ready_work = GetReadyWork(device_index, stream_id);
   EXPECT_TRUE(ready_work.empty());
 }
@@ -138,8 +140,10 @@ TEST_F(EventsQueueTest, IgnoresEmptyBuffers) {
 
   // The empty buffer does not need to be synced.
   const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
-  InsertGraphBreak(device_index, stream_id, {}, MaterializationReason::kUnknown,
-                   GraphSplitMode::kSplitGraph);
+  ASSERT_TRUE(InsertGraphBreak(device_index, stream_id, {},
+                               MaterializationReason::kUnknown,
+                               GraphSplitMode::kSplitGraph)
+                  .ok());
   auto ready_work = GetReadyWork(device_index, stream_id);
 
   EXPECT_TRUE(ready_work.empty());
@@ -151,16 +155,18 @@ TEST_F(EventsQueueTest, IgnoresAlreadyMaterializedBuffers) {
 
   // Create a fully-materialized buffer (filled with zeros) and record its
   // DataPtr creation.
-  TT_ASSERT_OK_AND_ASSIGN(auto ref,
-                          TpuMallocAndMemcpyHtoD(/*host_data=*/nullptr,
-                                                 mlir::ElementType::UI8, {1}));
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto ref,
+      HostToDeviceTransfer::FromZeroes(mlir::ElementType::UI8, {1}).Run());
   ASSERT_TRUE(ref.Synchronize().ok()) << ref.Synchronize();
   ref.device_buffer_list()->IncrementLiveDataPtrs(ref.index());
 
   // The placeholder does not need to be synced.
   const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
-  InsertGraphBreak(device_index, stream_id, {}, MaterializationReason::kUnknown,
-                   GraphSplitMode::kSplitGraph);
+  ASSERT_TRUE(InsertGraphBreak(device_index, stream_id, {},
+                               MaterializationReason::kUnknown,
+                               GraphSplitMode::kSplitGraph)
+                  .ok());
   auto ready_work = GetReadyWork(device_index, stream_id);
 
   EXPECT_TRUE(ready_work.empty());
@@ -171,9 +177,9 @@ TEST_F(EventsQueueTest, ClearsBuffersAfterMaterialization) {
   ScopedPythonContextCapturer capturer(OpName::kEmpty);
   Shape shape(Dimensions{1}, mlir::ElementType::UI8);
 
-  TT_ASSERT_OK_AND_ASSIGN(auto input_ref,
-                          TpuMallocAndMemcpyHtoD(/*host_data=*/nullptr,
-                                                 mlir::ElementType::UI8, {1}));
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto input_ref,
+      HostToDeviceTransfer::FromZeroes(mlir::ElementType::UI8, {1}).Run());
   ASSERT_TRUE(input_ref.Synchronize().ok()) << input_ref.Synchronize();
   input_ref.device_buffer_list()->IncrementLiveDataPtrs(input_ref.index());
 
@@ -197,15 +203,16 @@ TEST_F(EventsQueueTest, ClearsBuffersAfterMaterialization) {
   auto materialization_status =
       Materialize(ref, MaterializationReason::kExplicitSync);
   ASSERT_TRUE(materialization_status.ok());
-  ASSERT_TRUE(ref.is_materializing());
   auto await_status = ref.AwaitBuffer();
   ASSERT_TRUE(await_status.ok());
   ASSERT_TRUE(ref.is_materialized());
 
   // We don't need to sync the buffer anymore.
   const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
-  InsertGraphBreak(device_index, stream_id, {}, MaterializationReason::kUnknown,
-                   GraphSplitMode::kSplitGraph);
+  ASSERT_TRUE(InsertGraphBreak(device_index, stream_id, {},
+                               MaterializationReason::kUnknown,
+                               GraphSplitMode::kSplitGraph)
+                  .ok());
   auto ready_work = GetReadyWork(device_index, stream_id);
 
   EXPECT_TRUE(ready_work.empty());
@@ -228,8 +235,10 @@ TEST_F(EventsQueueTest, StopsTrackingAfterClearEventsQueue) {
   ClearAllStreams();
 
   // The buffer is no longer tracked.
-  InsertGraphBreak(device_index, stream_id, {}, MaterializationReason::kUnknown,
-                   GraphSplitMode::kSplitGraph);
+  ASSERT_TRUE(InsertGraphBreak(device_index, stream_id, {},
+                               MaterializationReason::kUnknown,
+                               GraphSplitMode::kSplitGraph)
+                  .ok());
   auto ready_work1 = GetReadyWork(device_index, stream_id);
 
   EXPECT_TRUE(ready_work1.empty());
@@ -237,8 +246,10 @@ TEST_F(EventsQueueTest, StopsTrackingAfterClearEventsQueue) {
   // Create a second data pointer to the same buffer.
   ref.device_buffer_list()->IncrementLiveDataPtrs(ref.index());
 
-  InsertGraphBreak(device_index, stream_id, {}, MaterializationReason::kUnknown,
-                   GraphSplitMode::kSplitGraph);
+  ASSERT_TRUE(InsertGraphBreak(device_index, stream_id, {},
+                               MaterializationReason::kUnknown,
+                               GraphSplitMode::kSplitGraph)
+                  .ok());
   // The buffer is live, but the DeferredOp was cleared and so does not need
   // to be materialized.
   auto ready_work2 = GetReadyWork(device_index, stream_id);
@@ -284,9 +295,10 @@ TEST_F(EventsQueueTest, DeadCodeEliminated) {
 
   const auto device_index = list_d->device_index();
   const auto stream_id = list_d->stream_id();
-  InsertGraphBreak(device_index, stream_id, {list_d},
-                   MaterializationReason::kUnknown,
-                   GraphSplitMode::kSplitGraph);
+  ASSERT_TRUE(InsertGraphBreak(device_index, stream_id, {list_d},
+                               MaterializationReason::kUnknown,
+                               GraphSplitMode::kSplitGraph)
+                  .ok());
   auto ready_work = GetReadyWork(device_index, stream_id);
 
   ASSERT_EQ(ready_work.size(), 1);
@@ -344,9 +356,10 @@ TEST_F(EventsQueueTest, DeadSideEffectsRetained) {
 
   const auto device_index = list_d->device_index();
   const auto stream_id = list_d->stream_id();
-  InsertGraphBreak(device_index, stream_id, {list_d},
-                   MaterializationReason::kUnknown,
-                   GraphSplitMode::kSplitGraph);
+  ASSERT_TRUE(InsertGraphBreak(device_index, stream_id, {list_d},
+                               MaterializationReason::kUnknown,
+                               GraphSplitMode::kSplitGraph)
+                  .ok());
   auto ready_work = GetReadyWork(device_index, stream_id);
   ASSERT_EQ(ready_work.size(), 1);
   ASSERT_TRUE(std::holds_alternative<EagerExecution>(ready_work[0]));
@@ -387,9 +400,10 @@ TEST_F(EventsQueueTest, MaterializationIgnoresUnusedEmptyOps) {
 
   const auto device_index = non_empty_list->device_index();
   const auto stream_id = non_empty_list->stream_id();
-  InsertGraphBreak(device_index, stream_id, {non_empty_list},
-                   MaterializationReason::kUnknown,
-                   GraphSplitMode::kSplitGraph);
+  ASSERT_TRUE(InsertGraphBreak(device_index, stream_id, {non_empty_list},
+                               MaterializationReason::kUnknown,
+                               GraphSplitMode::kSplitGraph)
+                  .ok());
   auto ready_work = GetReadyWork(device_index, stream_id);
   ASSERT_EQ(ready_work.size(), 1);
   ASSERT_TRUE(std::holds_alternative<EagerExecution>(ready_work[0]));
@@ -440,7 +454,7 @@ TEST_F(EventsQueueTest, PrepareDeviceTraversals) {
   ASSERT_EQ(pending_stream_snapshots.size(), 1);
 
   auto ready_work =
-      GetReadyWork(device_index, pending_stream_snapshots[0].stream_id);
+      GetReadyWork(device_index, pending_stream_snapshots[0].stream_id());
   ASSERT_EQ(ready_work.size(), 2);
   ASSERT_TRUE(std::holds_alternative<EagerExecution>(ready_work[0]));
   const auto& eager_execution = std::get<EagerExecution>(ready_work[0]);
@@ -545,9 +559,10 @@ TEST_F(EventsQueueTest, StreamsMaterializeSeparately) {
   ExchangeCurrentStreamId(device_index, default_stream_id);
 
   // Ask for a plan to materialize the stream for c (but not a or b)
-  InsertGraphBreak(device_index, non_default_stream_id, {},
-                   MaterializationReason::kUnknown,
-                   GraphSplitMode::kSplitGraph);
+  ASSERT_TRUE(InsertGraphBreak(device_index, non_default_stream_id, {},
+                               MaterializationReason::kUnknown,
+                               GraphSplitMode::kSplitGraph)
+                  .ok());
   auto ready_work = GetReadyWork(device_index, non_default_stream_id);
   ASSERT_EQ(ready_work.size(), 1);
   ASSERT_TRUE(std::holds_alternative<EagerExecution>(ready_work[0]));
@@ -565,7 +580,7 @@ TEST_F(EventsQueueTest, RetainsFailedCompletedFutures) {
                                   << "Fake error");
   ASSERT_TRUE(failed_future.IsReady());
 
-  RecordAsyncDeviceToHost(std::move(failed_future));
+  internal::MarkStreamActive(device_index, stream_id, std::move(failed_future));
 
   (void)EventSnapshot::Record(device_index, stream_id);
   auto ready_work = GetReadyWork(device_index, stream_id);
@@ -585,7 +600,7 @@ TEST_F(EventsQueueTest, PrunesSuccessfulCompletedFutures) {
   xla::Future<void> ok_future(absl::OkStatus());
   ASSERT_TRUE(ok_future.IsReady());
 
-  RecordAsyncDeviceToHost(std::move(ok_future));
+  internal::MarkStreamActive(device_index, stream_id, std::move(ok_future));
 
   (void)EventSnapshot::Record(device_index, stream_id);
   auto ready_work = GetReadyWork(device_index, stream_id);
@@ -613,8 +628,10 @@ TEST_F(EventsQueueTest, StreamMustMaterializeEmptyTensors) {
   const auto stream_id = empty_list->stream_id();
 
   // A normal stream materialization does not materialize the empty tensor.
-  InsertGraphBreak(device_index, stream_id, {}, MaterializationReason::kUnknown,
-                   GraphSplitMode::kSplitGraph);
+  ASSERT_TRUE(InsertGraphBreak(device_index, stream_id, {},
+                               MaterializationReason::kUnknown,
+                               GraphSplitMode::kSplitGraph)
+                  .ok());
   auto ready_work = GetReadyWork(device_index, stream_id);
 
   EXPECT_TRUE(ready_work.empty());
@@ -727,9 +744,10 @@ TEST_F(EventsQueueTest, MultipleEagerExecutionsPulled) {
   auto list_a = ref_a.device_buffer_list();
   RecordDeferredOpCreated(list_a);
 
-  InsertGraphBreak(list_a->device_index(), list_a->stream_id(), {list_a},
-                   MaterializationReason::kUnknown,
-                   GraphSplitMode::kSplitGraph);
+  ASSERT_TRUE(InsertGraphBreak(list_a->device_index(), list_a->stream_id(),
+                               {list_a}, MaterializationReason::kUnknown,
+                               GraphSplitMode::kSplitGraph)
+                  .ok());
 
   TT_ASSERT_OK_AND_ASSIGN(auto refs_b, DeviceBufferList::CreateDeferred(
                                            OpName::kAdd, DummyBuilder, {},
@@ -812,9 +830,10 @@ TEST_F(EventsQueueTest, SingleOpFastPathAndExtraConstantFallback) {
   auto list_single = ref_single.device_buffer_list();
   RecordDeferredOpCreated(list_single);
 
-  InsertGraphBreak(device_index, stream_id, {list_single},
-                   MaterializationReason::kUnknown,
-                   GraphSplitMode::kSplitGraph);
+  ASSERT_TRUE(InsertGraphBreak(device_index, stream_id, {list_single},
+                               MaterializationReason::kUnknown,
+                               GraphSplitMode::kSplitGraph)
+                  .ok());
   auto ready_work = GetReadyWork(device_index, stream_id);
   ASSERT_EQ(ready_work.size(), 1);
   ASSERT_TRUE(std::holds_alternative<EagerExecution>(ready_work[0]));
@@ -842,9 +861,10 @@ TEST_F(EventsQueueTest, SingleOpFastPathAndExtraConstantFallback) {
   auto empty_list = empty_ref.device_buffer_list();
   RecordDeferredOpCreated(empty_list);
 
-  InsertGraphBreak(device_index, stream_id, {list_op, empty_list},
-                   MaterializationReason::kUnknown,
-                   GraphSplitMode::kSplitGraph);
+  ASSERT_TRUE(InsertGraphBreak(device_index, stream_id, {list_op, empty_list},
+                               MaterializationReason::kUnknown,
+                               GraphSplitMode::kSplitGraph)
+                  .ok());
   ready_work = GetReadyWork(device_index, stream_id);
   ASSERT_EQ(ready_work.size(), 1);
   ASSERT_TRUE(std::holds_alternative<EagerExecution>(ready_work[0]));
@@ -886,313 +906,220 @@ TEST_F(EventsQueueTest, NodeMatcherAcrossSmallAndLargeSpans) {
   }
 }
 
-TEST_F(EventsQueueTest, GraphBreakRetainsNoOpEagerExecution) {
-  ClearAllStreams();
-  ScopedPythonContextCapturer capturer(OpName::kEmpty);
-  Shape shape(Dimensions{8}, mlir::ElementType::F32);
-  const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
-  // Create an already-pending DeviceBufferList.
-  TT_ASSERT_OK_AND_ASSIGN(
-      auto pending_ref,
-      DeviceBufferList::CreatePending(shape, device_index, stream_id));
-
-  // Insert a graph break with this as "must materialize".
-  InsertGraphBreak(device_index, stream_id, {pending_ref.device_buffer_list()},
-                   MaterializationReason::kUnknown,
-                   GraphSplitMode::kSplitGraph);
-
-  // Add some real work and a second graph break.
-  TT_ASSERT_OK_AND_ASSIGN(auto refs_a, DeviceBufferList::CreateDeferred(
-                                           OpName::kAdd, DummyBuilder, {},
-                                           OpParamCacheKeys::Empty(), {shape}));
-  auto ref_a = refs_a[0];
-  RecordDeferredOpCreated(ref_a.device_buffer_list());
-  InsertGraphBreak(device_index, stream_id, {}, MaterializationReason::kUnknown,
-                   GraphSplitMode::kSplitGraph);
-
-  auto ready_work = GetReadyWork(device_index, stream_id);
-  ASSERT_EQ(ready_work.size(), 2);
-  ASSERT_TRUE(std::holds_alternative<EagerExecution>(ready_work[0]));
-
-  // The first EagerExecution has no must_execute and the must_materialize
-  // contains the pending DeviceBufferList.
-  const auto& eager_execution = std::get<EagerExecution>(ready_work[0]);
-  EXPECT_TRUE(eager_execution.must_execute.empty());
-  EXPECT_THAT(eager_execution.must_materialize,
-              testing::ElementsAre(pending_ref.device_buffer_list()));
-
-  // The second EagerExecution has the real work.
-  ASSERT_TRUE(std::holds_alternative<EagerExecution>(ready_work[1]));
-  const auto& eager_execution2 = std::get<EagerExecution>(ready_work[1]);
-  EXPECT_THAT(eager_execution2.must_execute,
-              testing::ElementsAre(ref_a.device_buffer_list()));
-  EXPECT_TRUE(eager_execution2.must_materialize.empty());
-}
-
-TEST_F(EventsQueueTest, EventSnapshotDropsTrailingNoOpEagerExecution) {
-  ClearAllStreams();
-  ScopedPythonContextCapturer capturer(OpName::kEmpty);
-  Shape shape(Dimensions{8}, mlir::ElementType::F32);
-  const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
-  // Create an already-pending DeviceBufferList.
-  TT_ASSERT_OK_AND_ASSIGN(
-      auto pending_ref,
-      DeviceBufferList::CreatePending(shape, device_index, stream_id));
-
-  // Insert a graph break with this as "must materialize".
-  InsertGraphBreak(device_index, stream_id, {pending_ref.device_buffer_list()},
-                   MaterializationReason::kUnknown,
-                   GraphSplitMode::kSplitGraph);
-
-  // Add some real work and a second graph break.
-  TT_ASSERT_OK_AND_ASSIGN(auto refs_a, DeviceBufferList::CreateDeferred(
-                                           OpName::kAdd, DummyBuilder, {},
-                                           OpParamCacheKeys::Empty(), {shape}));
-  auto ref_a = refs_a[0];
-  RecordDeferredOpCreated(ref_a.device_buffer_list());
-  InsertGraphBreak(device_index, stream_id, {}, MaterializationReason::kUnknown,
-                   GraphSplitMode::kSplitGraph);
-
-  // Add the already-pending DeviceBufferList graph break again.
-  InsertGraphBreak(device_index, stream_id, {pending_ref.device_buffer_list()},
-                   MaterializationReason::kUnknown,
-                   GraphSplitMode::kSplitGraph);
-
-  // Record an event snapshot.
-  (void)EventSnapshot::Record(device_index, stream_id);
-
-  auto ready_work = GetReadyWork(device_index, stream_id);
-
-  // When the snapshot is recorded, it will drop the second no-op graph break.
-  // But it will stop popping when it hits a non-no-op EagerExecution.
-  // This will retain the first no-op graph break.
-  ASSERT_EQ(ready_work.size(), 3);
-  ASSERT_TRUE(std::holds_alternative<EagerExecution>(ready_work[0]));
-
-  // The first EagerExecution has no must_execute and the must_materialize
-  // contains the pending DeviceBufferList.
-  const auto& eager_execution = std::get<EagerExecution>(ready_work[0]);
-  EXPECT_TRUE(eager_execution.must_execute.empty());
-  EXPECT_THAT(eager_execution.must_materialize,
-              testing::ElementsAre(pending_ref.device_buffer_list()));
-
-  // The second EagerExecution has the real work.
-  ASSERT_TRUE(std::holds_alternative<EagerExecution>(ready_work[1]));
-  const auto& eager_execution2 = std::get<EagerExecution>(ready_work[1]);
-  EXPECT_THAT(eager_execution2.must_execute,
-              testing::ElementsAre(ref_a.device_buffer_list()));
-  EXPECT_TRUE(eager_execution2.must_materialize.empty());
-
-  // After the second eager execution is the snapshot request; the second
-  // no-op graph break is dropped.
-  ASSERT_TRUE(std::holds_alternative<SnapshotRequest>(ready_work[2]));
-}
-
-TEST_F(EventsQueueTest, DroppedNoOpExecutionsAllowSnapshotReuse) {
-  ClearAllStreams();
-  ScopedPythonContextCapturer capturer(OpName::kEmpty);
-  Shape shape(Dimensions{8}, mlir::ElementType::F32);
-  const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
-
-  // Create a future we control and push it to the events queue.
-  auto [promise, future] = xla::MakePromise<void>();
-  RecordAsyncDeviceToHost(std::move(future));
-
-  // Record a snapshot. This will contain the above future.
-  auto snapshot_future = EventSnapshot::Record(device_index, stream_id);
-
-  // Create an already-pending DeviceBufferList.
-  TT_ASSERT_OK_AND_ASSIGN(
-      auto pending_ref,
-      DeviceBufferList::CreatePending(shape, device_index, stream_id));
-
-  // Insert a graph break with this as "must materialize".
-  InsertGraphBreak(device_index, stream_id, {pending_ref.device_buffer_list()},
-                   MaterializationReason::kUnknown,
-                   GraphSplitMode::kSplitGraph);
-
-  // Record a second snapshot.
-  auto snapshot_future2 = EventSnapshot::Record(device_index, stream_id);
-
-  auto ready_work = GetReadyWork(device_index, stream_id);
-
-  // Pushing the second snapshot request will drop the no-op EagerExecution
-  // and reuse the first snapshot's future.
-  EXPECT_EQ(ready_work.size(), 1);
-  EXPECT_TRUE(std::holds_alternative<SnapshotRequest>(ready_work[0]));
-  auto& snapshot_request = std::get<SnapshotRequest>(ready_work[0]);
-  EXPECT_EQ(snapshot_request.futures.size(), 1);
-
-  // When a snapshot is created, it is shared between the original request and
-  // the second request after the no-op.
-  std::shared_ptr<EventSnapshot> snapshot =
-      std::make_shared<EventSnapshot>(std::move(snapshot_request.futures[0]));
-  snapshot_request.snapshot_promise.Set(std::move(snapshot));
-  ASSERT_TRUE(snapshot_future.IsReady());
-  ASSERT_TRUE(snapshot_future2.IsReady());
-  TT_ASSERT_OK_AND_ASSIGN(auto snapshot_1, snapshot_future.Await());
-  TT_ASSERT_OK_AND_ASSIGN(auto snapshot_2, snapshot_future.Await());
-  EXPECT_EQ(snapshot_1, snapshot_2);
-
-  // Completing the original future completes the snapshot for both.
-  promise.Set(absl::OkStatus());
-  TT_ASSERT_OK_AND_ASSIGN(bool completed, snapshot_1->Query());
-  EXPECT_TRUE(completed);
-  TT_ASSERT_OK_AND_ASSIGN(completed, snapshot_2->Query());
-  EXPECT_TRUE(completed);
-}
-
-// Returns `duration` in milliseconds, the unit of EventSnapshot::ElapsedTime.
-double ToMilliseconds(std::chrono::steady_clock::duration duration) {
-  return std::chrono::duration<double, std::milli>(duration).count();
-}
-
-TEST(EventSnapshotTest, ElapsedTimeMeasuresCompletionTimes) {
-  auto [start_promise, start_future] = xla::MakePromise<void>();
-  auto [end_promise, end_future] = xla::MakePromise<void>();
-  EventSnapshot start(std::move(start_future));
-  EventSnapshot end(std::move(end_future));
-  EXPECT_EQ(start.ElapsedTime(end).status().code(), error::kFailedPrecondition);
-
-  const auto before_start = std::chrono::steady_clock::now();
-  start_promise.Set();
-  const auto after_start = std::chrono::steady_clock::now();
-  std::this_thread::sleep_for(std::chrono::milliseconds(20));
-  EXPECT_EQ(start.ElapsedTime(end).status().code(), error::kFailedPrecondition);
-  const auto before_end = std::chrono::steady_clock::now();
-  end_promise.Set();
-  const auto after_end = std::chrono::steady_clock::now();
-
-  TT_ASSERT_OK_AND_ASSIGN(double elapsed_ms, start.ElapsedTime(end));
-  EXPECT_GE(elapsed_ms, ToMilliseconds(before_end - after_start));
-  EXPECT_LE(elapsed_ms, ToMilliseconds(after_end - before_start));
-  TT_ASSERT_OK_AND_ASSIGN(double reverse_ms, end.ElapsedTime(start));
-  EXPECT_EQ(reverse_ms, -elapsed_ms);
-}
-
-TEST(EventSnapshotTest, ElapsedTimeExcludesWorkPendingAtStart) {
-  // The start event is recorded while earlier work is pending, and the end
-  // event captures later work. As in the events queue, the start event also
-  // releases the end event.
-  auto [earlier_promise, earlier_future] = xla::MakePromise<void>();
-  EventSnapshot start(std::move(earlier_future));
-  auto [chain_promise, chain_future] = xla::MakePromise<void>();
-  start.OkCallback(std::move(chain_promise));
-  auto [later_promise, later_future] = xla::MakePromise<void>();
-  EventSnapshot end(xla::JoinFutures({later_future, chain_future}));
-  std::this_thread::sleep_for(std::chrono::milliseconds(20));
-
-  const auto before_earlier = std::chrono::steady_clock::now();
-  earlier_promise.Set();
-  const auto after_earlier = std::chrono::steady_clock::now();
-  TT_ASSERT_OK_AND_ASSIGN(bool end_ready, end.Query());
-  ASSERT_FALSE(end_ready);
-  std::this_thread::sleep_for(std::chrono::milliseconds(20));
-  const auto before_later = std::chrono::steady_clock::now();
-  later_promise.Set();
-  const auto after_later = std::chrono::steady_clock::now();
-
-  // The time between recording the start event and `before_earlier` does not
-  // count.
-  TT_ASSERT_OK_AND_ASSIGN(double elapsed_ms, start.ElapsedTime(end));
-  EXPECT_GE(elapsed_ms, ToMilliseconds(before_later - after_earlier));
-  EXPECT_LE(elapsed_ms, ToMilliseconds(after_later - before_earlier));
-}
-
-TEST(EventSnapshotTest, ElapsedTimeIsNonNegativeForChainedPendingEvents) {
-  // Two events recorded back to back while earlier work is pending: the second
-  // event completes when the first event's completion callback releases it, so
-  // the first event must be stamped before that callback runs.
-  auto [work_promise, work_future] = xla::MakePromise<void>();
-  EventSnapshot start(std::move(work_future));
-  auto [chain_promise, chain_future] = xla::MakePromise<void>();
-  start.OkCallback(std::move(chain_promise));
-  EventSnapshot end(std::move(chain_future));
-  TT_ASSERT_OK_AND_ASSIGN(bool end_ready, end.Query());
-  ASSERT_FALSE(end_ready);
-
-  work_promise.Set();
-  TT_ASSERT_OK_AND_ASSIGN(end_ready, end.Query());
-  ASSERT_TRUE(end_ready);
-  TT_ASSERT_OK_AND_ASSIGN(double elapsed_ms, start.ElapsedTime(end));
-  EXPECT_GE(elapsed_ms, 0.0);
-}
-
-TEST(EventSnapshotTest, ElapsedTimeReturnsEventError) {
-  EventSnapshot ok_event{xla::Future<void>(absl::OkStatus())};
-  EventSnapshot failed_event{
-      xla::Future<void>(TT_ERROR(error::kInvalidArgument) << "fake error")};
-  EXPECT_EQ(ok_event.ElapsedTime(failed_event).status().code(),
-            error::kInvalidArgument);
-}
-
-TEST_F(EventsQueueTest, HandleNoOpSnapshotsEfficiently) {
+TEST_F(EventsQueueTest, CompletesLongSnapshotChainOnSmallStack) {
   ClearAllStreams();
   const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
 
   // Create a small amount of "work" which will complete when we choose.
-  auto [transfer_promise, transfer_future] = xla::MakePromise<void>();
-  RecordAsyncDeviceToHost(std::move(transfer_future));
-
-  // Record 9999 snapshots without starting their materialization.
-  // On the 10000th snapshot, start the materialization for these 10,000.
-  std::vector<xla::Future<std::shared_ptr<EventSnapshot>>> snapshot_futures;
-  snapshot_futures.reserve(30000);
-  for (int i = 0; i < 9999; ++i) {
-    snapshot_futures.push_back(EventSnapshot::Record(device_index, stream_id));
+  auto [promise, future] = xla::MakePromise<void>();
+  internal::MarkStreamActive(device_index, stream_id, std::move(future));
+  std::vector<EventSnapshot> snapshots;
+  for (int i = 0; i < 20000; ++i) {
+    TT_ASSERT_OK_AND_ASSIGN(
+        auto snapshot,
+        MaterializeCurrentStream(MaterializationReason::kExplicitSync));
+    snapshots.push_back(std::move(snapshot));
   }
-  snapshot_futures.push_back(MaterializeStream(
-      device_index, stream_id, MaterializationReason::kUnknown));
-  ASSERT_TRUE(snapshot_futures.back().Await().ok());
+  TT_ASSERT_OK_AND_ASSIGN(bool completed, snapshots.back().Query());
+  ASSERT_FALSE(completed);
 
-  // Push another 20,000 snapshot requests.
-  for (int i = 10000; i < 30000; ++i) {
-    snapshot_futures.push_back(MaterializeStream(
-        device_index, stream_id, MaterializationReason::kUnknown));
-  }
-  ASSERT_TRUE(snapshot_futures.back().Await().ok());
-
-  // Snapshots [0, 9999] are all the same EventSnapshot; snapshot 0 is created
-  // to hold the transfer future, and then snapshots [1, 9999] are copies of it.
-  TT_ASSERT_OK_AND_ASSIGN(std::shared_ptr<EventSnapshot> snapshot_0,
-                          snapshot_futures[0].Await());
-  TT_ASSERT_OK_AND_ASSIGN(bool completed, snapshot_0->Query());
-  EXPECT_FALSE(completed);
-  for (int i = 1; i < 9999; ++i) {
-    TT_ASSERT_OK_AND_ASSIGN(std::shared_ptr<EventSnapshot> snapshot_i,
-                            snapshot_futures[i].Await());
-    EXPECT_EQ(snapshot_0, snapshot_i);
-  }
-
-  // Snapshots [10000, 29999] are all shared_ptrs to different EventSnapshot
-  // objects, but all these EventSnapshot objects have the same backing XLA
-  // future.
-  for (int i = 10000; i < 30000; ++i) {
-    TT_ASSERT_OK_AND_ASSIGN(std::shared_ptr<EventSnapshot> snapshot_i,
-                            snapshot_futures[i].Await());
-    EXPECT_NE(snapshot_0, snapshot_i);
-  }
-
-  // At this point we have at 30k futures to EventSnapshot, of which there are
-  // 20,001 distinct EventSnapshots, with only 2 distinct XLA futures (chained).
-
-  // Complete the transfer and synchronize the first snapshot, which should
-  // complete all snapshots.
+  // The runtime completes device work on threads with 1 MiB stacks.
   std::unique_ptr<tsl::Thread> thread(tsl::Env::Default()->StartThread(
       tsl::ThreadOptions{.stack_size = 1 << 20}, "complete_transfer",
-      [promise = std::move(transfer_promise)]() mutable { promise.Set(); }));
+      [&promise] { promise.Set(); }));
   thread.reset();
-  ASSERT_TRUE(snapshot_0->Synchronize().ok());
-  TT_ASSERT_OK_AND_ASSIGN(completed, snapshot_0->Query());
-  EXPECT_TRUE(completed);
+  EXPECT_TRUE(snapshots.back().Synchronize().ok());
+}
 
-  // All other snapshots must now also be complete.
-  for (int i = 1; i < 30000; ++i) {
-    TT_ASSERT_OK_AND_ASSIGN(std::shared_ptr<EventSnapshot> snapshot_i,
-                            snapshot_futures[i].Await());
-    TT_ASSERT_OK_AND_ASSIGN(completed, snapshot_i->Query());
-    EXPECT_TRUE(completed);
-  }
+TEST_F(EventsQueueTest, OkCallbackReturnsOkAfterError) {
+  ClearAllStreams();
+  const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
+
+  // Create a small amount of "work" which will complete when we choose.
+  auto [promise, future] = xla::MakePromise<void>();
+  internal::MarkStreamActive(device_index, stream_id, future);
+
+  // Start an EventSnapshot with the future and get the OK callback from it.
+  EventSnapshot snapshot(device_index, stream_id);
+  snapshot.Start(std::move(future));
+  auto ok_callback = snapshot.OkCallback();
+  ASSERT_TRUE(ok_callback.IsValid());
+
+  // The snapshot is not done, so the OK callback is not done.
+  EXPECT_FALSE(ok_callback.IsReady());
+
+  // The event snapshot fails.
+  promise.Set(TT_ERROR(error::kAborted) << "test error");
+
+  // Awaiting the snapshot gives the failure.
+  auto error = snapshot.Synchronize();
+  EXPECT_EQ(error.code(), error::kAborted);
+
+  // But the OK callback is done and OK.
+  ASSERT_TRUE(ok_callback.IsReady());
+  EXPECT_TRUE(ok_callback.Await().ok());
+}
+
+TEST_F(EventsQueueTest, InsertedWaitBlocksHostToDeviceTransfer) {
+  ClearAllStreams();
+  const auto [device_index, default_stream_id] = GetCurrentDeviceStreamId();
+
+  // Create a small amount of "work" which will complete when we choose.
+  auto [promise, future] = xla::MakePromise<void>();
+  internal::MarkStreamActive(device_index, default_stream_id,
+                             std::move(future));
+
+  // Get an EventSnapshot for the default stream after this "work".
+  TT_ASSERT_OK_AND_ASSIGN(EventSnapshot snapshot,
+                          MaterializeStream(device_index, default_stream_id,
+                                            MaterializationReason::kUnknown));
+
+  // Insert a stream wait for the snapshot in a different stream.
+  const auto other_stream_id = NextStreamId(device_index);
+  ExchangeCurrentStreamId(device_index, other_stream_id);
+  absl::Cleanup cleanup = [device_index, default_stream_id] {
+    ExchangeCurrentStreamId(device_index, default_stream_id);
+  };
+  InsertStreamWait(device_index, other_stream_id, snapshot);
+
+  // Schedule a transfer on the other stream.
+  auto h2d_transfer =
+      HostToDeviceTransfer::FromZeroes(mlir::ElementType::UI8, {});
+  TT_ASSERT_OK_AND_ASSIGN(
+      DeviceBufferRef transferred_ref,
+      ScheduleHostToDeviceTransfer(std::move(h2d_transfer)));
+
+  // The transfer is not yet started.
+  EXPECT_TRUE(transferred_ref.is_transferring());
+  EXPECT_FALSE(transferred_ref.is_materialized());
+
+  // Complete the work for the default stream.
+  promise.Set(absl::OkStatus());
+
+  // The transfer will then start and complete.
+  EXPECT_TRUE(transferred_ref.Synchronize().ok());
+  EXPECT_FALSE(transferred_ref.is_transferring());
+  EXPECT_TRUE(transferred_ref.is_materialized());
+}
+
+TEST_F(EventsQueueTest, InsertedWaitBlocksDeviceToHostTransfer) {
+  ClearAllStreams();
+  const auto [device_index, default_stream_id] = GetCurrentDeviceStreamId();
+
+  // Create a fully-materialized DeviceBufferRef.
+  std::vector<char> data = {0x01};
+  TT_ASSERT_OK_AND_ASSIGN(
+      DeviceBufferRef constant_ref,
+      CreateConstantDeviceBufferRef(std::move(data), Dimensions(),
+                                    mlir::ElementType::UI8));
+  ASSERT_TRUE(Materialize(constant_ref, MaterializationReason::kUnknown).ok());
+  ASSERT_TRUE(constant_ref.Synchronize().ok());
+
+  // Create a small amount of "work" which will complete when we choose.
+  auto [promise, future] = xla::MakePromise<void>();
+  internal::MarkStreamActive(device_index, default_stream_id,
+                             std::move(future));
+
+  // Get an EventSnapshot for the default stream after this "work".
+  TT_ASSERT_OK_AND_ASSIGN(EventSnapshot snapshot,
+                          MaterializeStream(device_index, default_stream_id,
+                                            MaterializationReason::kUnknown));
+
+  // Insert a stream wait for the snapshot in a different stream.
+  const auto other_stream_id = NextStreamId(device_index);
+  ExchangeCurrentStreamId(device_index, other_stream_id);
+  absl::Cleanup cleanup = [device_index, default_stream_id] {
+    ExchangeCurrentStreamId(device_index, default_stream_id);
+  };
+  InsertStreamWait(device_index, other_stream_id, snapshot);
+
+  // Schedule a transfer on the other stream.
+  std::vector<char> dst = {0x00};
+  auto d2h_transfer = DeviceToHostTransfer::IntoBytes(constant_ref, dst.data());
+  ScheduleDeviceToHostTransfer(std::move(d2h_transfer));
+  TT_ASSERT_OK_AND_ASSIGN(EventSnapshot d2h_snapshot,
+                          MaterializeStream(device_index, other_stream_id,
+                                            MaterializationReason::kUnknown));
+
+  // The transfer is not yet started.
+  TT_ASSERT_OK_AND_ASSIGN(bool completed, d2h_snapshot.Query());
+  ASSERT_FALSE(completed);
+  EXPECT_EQ(dst[0], 0x00);
+
+  // Complete the work for the default stream.
+  promise.Set(absl::OkStatus());
+
+  // The transfer will then start and complete.
+  ASSERT_TRUE(d2h_snapshot.Synchronize().ok());
+  EXPECT_EQ(dst[0], 0x01);
+}
+
+TEST_F(EventsQueueTest, CompletedTime) {
+  ClearAllStreams();
+  const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
+
+  // Create a small amount of "work" which will complete when we choose.
+  auto [promise, future] = xla::MakePromise<void>();
+  internal::MarkStreamActive(device_index, stream_id, std::move(future));
+
+  // Request the snapshot.
+  TT_ASSERT_OK_AND_ASSIGN(EventSnapshot snapshot,
+                          EventSnapshot::Record(device_index, stream_id));
+
+  // Start the snapshot; the completion time is still not set, as the work
+  // is not yet complete.
+  auto ready_work = GetReadyWork(device_index, stream_id);
+  ASSERT_EQ(ready_work.size(), 1);
+  EXPECT_TRUE(std::holds_alternative<SnapshotRequest>(ready_work[0]));
+  auto& snapshot_request = std::get<SnapshotRequest>(ready_work[0]);
+  ASSERT_EQ(snapshot_request.futures.size(), 1);
+  snapshot_request.snapshot_to_start.Start(
+      std::move(snapshot_request.futures[0]));
+
+  // Complete the work; the completion time is now set.
+  promise.Set(absl::OkStatus());
+  EXPECT_TRUE(snapshot.CompletionTime().ok());
+}
+
+TEST_F(EventsQueueTest, CompletedTimeOnError) {
+  ClearAllStreams();
+  const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
+
+  // Create a small amount of "work" which will complete when we choose.
+  auto [promise, future] = xla::MakePromise<void>();
+  internal::MarkStreamActive(device_index, stream_id, std::move(future));
+
+  // Request the snapshot.
+  TT_ASSERT_OK_AND_ASSIGN(EventSnapshot snapshot,
+                          EventSnapshot::Record(device_index, stream_id));
+
+  // Start the snapshot; the completion time is still not set, as the work
+  // is not yet complete.
+  auto ready_work = GetReadyWork(device_index, stream_id);
+  ASSERT_EQ(ready_work.size(), 1);
+  EXPECT_TRUE(std::holds_alternative<SnapshotRequest>(ready_work[0]));
+  auto& snapshot_request = std::get<SnapshotRequest>(ready_work[0]);
+  ASSERT_EQ(snapshot_request.futures.size(), 1);
+  snapshot_request.snapshot_to_start.Start(
+      std::move(snapshot_request.futures[0]));
+
+  // The work fails. The error is passed to the completion time.
+  promise.Set(TT_ERROR(error::kAborted) << "test error");
+  EXPECT_EQ(snapshot.CompletionTime().status().code(), error::kAborted);
+}
+
+TEST_F(EventsQueueTest, InsertGraphBreakDuringFxTrace) {
+  ClearAllStreams();
+  const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
+  const EagerMode original_eager_mode = GetEagerMode();
+  SetEagerMode(EagerMode::kInternalCompileFxGraph);
+  absl::Cleanup cleanup = [original_eager_mode] {
+    SetEagerMode(original_eager_mode);
+  };
+  absl::Status status = InsertGraphBreak(device_index, stream_id, {},
+                                         MaterializationReason::kCpuTransfer,
+                                         GraphSplitMode::kFullGraph);
+  EXPECT_EQ(status.code(), error::kFailedPrecondition);
 }
 
 TEST(CompilationModeTest, GetCompilationMode) {
@@ -1296,6 +1223,117 @@ TEST(RepeatedOpsTest, DoesNotDetectRepetitionsOverSnapshots) {
   EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list_c));
   EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list_a));
   EXPECT_TRUE(RecordDeferredOpAndDetectRepetition(list_b));
+}
+
+TEST(RepeatedOpsTest, ReportsSuspendedGraphBreakOnResume) {
+  ClearAllStreams();
+  ScopedPythonContextCapturer capturer(OpName::kEmpty);
+  Shape shape(Dimensions{8}, mlir::ElementType::F32);
+  const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
+
+  // Create two lists for two different OpNames.
+  TT_ASSERT_OK_AND_ASSIGN(auto refs_a, DeviceBufferList::CreateDeferred(
+                                           OpName::kAdd, DummyBuilder, {},
+                                           OpParamCacheKeys::Empty(), {shape}));
+  auto list_a = refs_a[0].device_buffer_list();
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto refs_b,
+      DeviceBufferList::CreateDeferred(OpName::kBaddbmmDtype, DummyBuilder, {},
+                                       OpParamCacheKeys::Empty(), {shape}));
+  auto list_b = refs_b[0].device_buffer_list();
+
+  // There is nothing to report before graph breaks are ever suspended.
+  EXPECT_FALSE(ResumeRepeatedOpsGraphBreaks(device_index, stream_id));
+
+  // Push (abab), suspending graph breaks before the op that completes the
+  // second repetition: the repetition is detected, but not reported.
+  EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list_a));
+  EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list_b));
+  EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list_a));
+  SuspendRepeatedOpsGraphBreaks(list_b);
+  EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list_b));
+
+  // The requested graph break is reported once, on resume.
+  EXPECT_TRUE(ResumeRepeatedOpsGraphBreaks(device_index, stream_id));
+  EXPECT_FALSE(ResumeRepeatedOpsGraphBreaks(device_index, stream_id));
+
+  // Once resumed, the next repetition is reported right away.
+  EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list_a));
+  EXPECT_TRUE(RecordDeferredOpAndDetectRepetition(list_b));
+}
+
+TEST(RepeatedOpsTest, GraphBreakEndsSuspension) {
+  ClearAllStreams();
+  ScopedPythonContextCapturer capturer(OpName::kEmpty);
+  Shape shape(Dimensions{8}, mlir::ElementType::F32);
+  const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
+
+  // Create two lists for two different OpNames.
+  TT_ASSERT_OK_AND_ASSIGN(auto refs_a, DeviceBufferList::CreateDeferred(
+                                           OpName::kAdd, DummyBuilder, {},
+                                           OpParamCacheKeys::Empty(), {shape}));
+  auto list_a = refs_a[0].device_buffer_list();
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto refs_b,
+      DeviceBufferList::CreateDeferred(OpName::kBaddbmmDtype, DummyBuilder, {},
+                                       OpParamCacheKeys::Empty(), {shape}));
+  auto list_b = refs_b[0].device_buffer_list();
+
+  // The suspension also covers the ops recorded after the op that started it.
+  SuspendRepeatedOpsGraphBreaks(list_a);
+  EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list_a));
+  EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list_b));
+  EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list_a));
+  EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list_b));
+
+  // A graph break satisfies the requested graph break and ends the suspension,
+  // so the next repetition is reported right away.
+  ASSERT_TRUE(InsertGraphBreak(device_index, stream_id, {},
+                               MaterializationReason::kUnknown,
+                               GraphSplitMode::kSplitGraph)
+                  .ok());
+  // Take the graph break's work off the stream, as the ops cannot be executed.
+  EXPECT_EQ(GetReadyWork(device_index, stream_id).size(), 1);
+  EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list_a));
+  EXPECT_TRUE(RecordDeferredOpAndDetectRepetition(list_b));
+  EXPECT_FALSE(ResumeRepeatedOpsGraphBreaks(device_index, stream_id));
+}
+
+TEST(RepeatedOpsTest, ResetDropsSuspendedGraphBreak) {
+  ClearAllStreams();
+  ScopedPythonContextCapturer capturer(OpName::kEmpty);
+  Shape shape(Dimensions{8}, mlir::ElementType::F32);
+  const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
+
+  TT_ASSERT_OK_AND_ASSIGN(auto refs, DeviceBufferList::CreateDeferred(
+                                         OpName::kAdd, DummyBuilder, {},
+                                         OpParamCacheKeys::Empty(), {shape}));
+  auto list = refs[0].device_buffer_list();
+
+  // Push (aaaa) while graph breaks are suspended, so that a graph break is
+  // requested.
+  SuspendRepeatedOpsGraphBreaks(list);
+  for (int i = 0; i < 4; ++i) {
+    EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list));
+  }
+  EXPECT_TRUE(ResumeRepeatedOpsGraphBreaks(device_index, stream_id));
+
+  // Push (aa) while graph breaks are suspended, completing another repetition.
+  // Resetting the heuristic drops the requested graph break.
+  SuspendRepeatedOpsGraphBreaks(list);
+  for (int i = 0; i < 2; ++i) {
+    EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list));
+  }
+  ResetRepeatedOpsHeuristicState();
+  EXPECT_FALSE(ResumeRepeatedOpsGraphBreaks(device_index, stream_id));
+
+  // So does clearing the streams.
+  SuspendRepeatedOpsGraphBreaks(list);
+  for (int i = 0; i < 4; ++i) {
+    EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list));
+  }
+  ClearAllStreams();
+  EXPECT_FALSE(ResumeRepeatedOpsGraphBreaks(device_index, stream_id));
 }
 }  // namespace
 

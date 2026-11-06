@@ -18,7 +18,6 @@ import contextlib
 import os
 import pickle
 import re
-from typing import List
 from unittest import mock
 import warnings
 
@@ -83,9 +82,9 @@ class FunctionTest(seed_test_utils.RepeatableTest):
   def _run_and_compare(
       self,
       func,
-      inputs: List[torch.Tensor],
+      inputs: list[torch.Tensor],
       serializable: bool = False,
-  ) -> List[compile_lib.TpuCompileDebug]:
+  ) -> list[compile_lib.TpuCompileDebug]:
     """Runs the given function on CPU, TPU eager mode, and TPU compiled mode and compares the results.
 
     Args:
@@ -206,6 +205,28 @@ class FunctionTest(seed_test_utils.RepeatableTest):
         self.assertLen(debugs, 1)
         self.assertNotEmpty(debugs[0].stablehlo_forward_text)
         self.assertNotIn("f64", debugs[0].stablehlo_forward_text[0])
+
+  def test_compiled_fn_reused_across_views_with_different_offsets(self):
+    # https://github.com/google-pytorch/torch_tpu/issues/4409: one executable is
+    # reused for views of the same base at different storage offsets, so its
+    # parameter shape must not depend on the offset.
+    def fn(z):
+      return (z * 2.0 + 1.0).sin() * z
+
+    compiled = torch.compile(fn, backend="tpu", fullgraph=True)
+    for requires_grad in (False, True):
+      with self.subTest(requires_grad=requires_grad):
+        base_cpu = torch.randn(96, 64, requires_grad=requires_grad)
+        base_tpu = base_cpu.detach().to("tpu").requires_grad_(requires_grad)
+        for i in range(3):
+          out_cpu = fn(base_cpu[i * 32 : (i + 1) * 32])
+          out_tpu = compiled(base_tpu[i * 32 : (i + 1) * 32])
+          utils.assert_close(out_tpu.detach().cpu(), out_cpu.detach())
+          if requires_grad:
+            out_cpu.sum().backward()
+            out_tpu.sum().backward()
+        if requires_grad:
+          utils.assert_close(base_tpu.grad.cpu(), base_cpu.grad)
 
   @absltest.skip("b/546708345")
   def test_cpu_tensor_copy_to_tpu(self):
@@ -1485,9 +1506,9 @@ class ModuleTest(seed_test_utils.RepeatableTest):
   def _run_and_compare(
       self,
       module_class,
-      inputs: List[torch.Tensor],
+      inputs: list[torch.Tensor],
       serializable: bool = False,
-  ) -> List[compile_lib.TpuCompileDebug]:
+  ) -> list[compile_lib.TpuCompileDebug]:
     """Runs module on CPU, TPU eager mode, and TPU compiled mode.
 
     Args:

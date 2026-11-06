@@ -33,6 +33,7 @@
 #include "csrc/internal/mosaic/kiln/core/dtype.h"
 #include "csrc/internal/mosaic/kiln/core/index_arg.h"
 #include "csrc/internal/mosaic/kiln/core/index_map.h"
+#include "csrc/internal/mosaic/kiln/core/mlir_utils.h"
 #include "csrc/internal/mosaic/kiln/core/ref.h"
 #include "csrc/internal/mosaic/kiln/core/scalar.h"
 #include "csrc/internal/mosaic/kiln/core/shape.h"
@@ -109,7 +110,7 @@ struct KernelScope {
   const KernelSpec& spec;
   internal::BuilderScope builder_scope;
   llvm::SmallVector<Scalar, 4> program_ids;
-  llvm::SmallVector<Ref, 2> scalar_prefetch;
+  llvm::SmallVector<SmemRef, 2> scalar_prefetch;
   llvm::SmallVector<Ref, 8> inputs;
   llvm::SmallVector<Ref, 4> outputs;
   llvm::SmallVector<Ref, 4> scratch;
@@ -125,19 +126,6 @@ KernelScope& CurrentScope() {
   ABSL_CHECK(KernelScope::tls_scope != nullptr)  // CRASH_OK
       << "Kiln operations may only be called inside BuildKernel()";
   return *KernelScope::tls_scope;
-}
-
-mlir::MemRefType BlockType(mlir::MLIRContext* ctx, const Shape& shape,
-                           MemorySpace space) {
-  mlir::Type elem_type = internal::ToMlirType(shape.dtype(), ctx);
-  switch (space) {
-    case MemorySpace::kVmem:
-      return GetVmemMemRefType(ctx, shape.dims(), elem_type);
-    case MemorySpace::kSmem:
-      return GetSmemMemRefType(ctx, shape.dims(), elem_type);
-    case MemorySpace::kHbm:
-      return GetHbmMemRefType(ctx, shape.dims(), elem_type);
-  }
 }
 
 torch_tpu::DimensionSemantics ToMlirDimensionSemantics(DimensionSemantics s) {
@@ -190,8 +178,8 @@ absl::Status SetGridAttributes(mlir::ImplicitLocOpBuilder& b,
                                llvm::ArrayRef<mlir::Type> prefetch_types) {
   const int64_t grid_rank = spec.grid.grid.size();
   if (grid_rank == 0) {
-    for (const BlockSpec& s :
-         llvm::concat<const BlockSpec>(spec.in_specs, spec.out_specs)) {
+    for (const KernelSpec::Block& s :
+         llvm::concat<const KernelSpec::Block>(spec.in_specs, spec.out_specs)) {
       if (s.map.has_mapping()) {
         return TT_ERROR(error::kInvalidArgument)
                << "index_map windowing requires a non-empty grid";
@@ -214,8 +202,8 @@ absl::Status SetGridAttributes(mlir::ImplicitLocOpBuilder& b,
 
   int64_t index_map_idx = 0;
   llvm::SmallVector<mlir::Attribute> window_params;
-  for (const BlockSpec& s :
-       llvm::concat<const BlockSpec>(spec.in_specs, spec.out_specs)) {
+  for (const KernelSpec::Block& s :
+       llvm::concat<const KernelSpec::Block>(spec.in_specs, spec.out_specs)) {
     if (s.space == MemorySpace::kHbm) {
       if (s.map.has_mapping()) {
         return TT_ERROR(error::kInvalidArgument)
@@ -311,7 +299,7 @@ int64_t NumPrograms(int axis) {
 }
 int GridRank() { return CurrentScope().spec.grid.grid.size(); }
 
-Ref ScalarPrefetch(int i) {
+SmemRef ScalarPrefetch(int i) {
   return GetAt(CurrentScope().scalar_prefetch, i, "ScalarPrefetch");
 }
 Ref In(int i) { return GetAt(CurrentScope().inputs, i, "In"); }
@@ -325,12 +313,6 @@ absl::StatusOr<Kernel> BuildKernel(const KernelSpec& spec,
       spec.grid.dimension_semantics.size() != grid_rank) {
     return TT_ERROR(error::kInvalidArgument)
            << "dimension_semantics must have one entry per grid axis";
-  }
-  for (const ScratchSpec& s : spec.scratch) {
-    if (s.space == MemorySpace::kHbm) {
-      return TT_ERROR(error::kInvalidArgument)
-             << "Scratch operands cannot use HBM memory space";
-    }
   }
 
   auto impl = std::make_unique<Kernel::Impl>();
@@ -348,17 +330,16 @@ absl::StatusOr<Kernel> BuildKernel(const KernelSpec& spec,
   llvm::SmallVector<mlir::Type> prefetch_types;
   for (const ScalarPrefetchSpec& p : spec.scalar_prefetch) {
     prefetch_types.push_back(
-        GetSmemMemRefType(context, p.shape.dims(),
-                          internal::ToMlirType(p.shape.dtype(), context)));
+        internal::ToMlirMemRefType(p.shape, MemorySpace::kSmem, context));
   }
   llvm::SmallVector<mlir::Type> arg_types(grid_rank, i32_type);
   arg_types.append(prefetch_types);
-  for (const BlockSpec& s :
-       llvm::concat<const BlockSpec>(spec.in_specs, spec.out_specs)) {
-    arg_types.push_back(BlockType(context, s.shape, s.space));
+  for (const KernelSpec::Block& s :
+       llvm::concat<const KernelSpec::Block>(spec.in_specs, spec.out_specs)) {
+    arg_types.push_back(internal::ToMlirMemRefType(s.shape, s.space, context));
   }
-  for (const ScratchSpec& s : spec.scratch) {
-    arg_types.push_back(BlockType(context, s.shape, s.space));
+  for (const KernelSpec::ScratchBuffer& s : spec.scratch) {
+    arg_types.push_back(internal::ToMlirMemRefType(s.shape, s.space, context));
   }
 
   auto fn = mlir::func::FuncOp::create(b, spec.grid.name,

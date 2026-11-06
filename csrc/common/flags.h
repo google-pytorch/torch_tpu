@@ -19,14 +19,30 @@
 
 #include "absl/base/no_destructor.h"
 #include "absl/base/nullability.h"
+#include "absl/flags/commandlineflag.h"
 #include "absl/flags/flag.h"
 
 namespace torch_tpu {
 
+namespace internal {
+
+// Records that GetFlagOnce() has memoized the value of the flag identified by
+// `flag_handle`. Thread-safe.
+void MarkFlagMemoized(const absl::CommandLineFlag& flag_handle);
+
+// Crashes if GetFlagOnce() has memoized the value of the flag identified by
+// `flag_handle`. Thread-safe.
+void CheckFlagNotMemoized(const absl::CommandLineFlag& flag_handle);
+
+}  // namespace internal
+
 // Returns the value of the flag at the time of the first call to this function
-// for the given flag, and caches the result for subsequent calls. Hence
-// absl::SetFlag() calls after the first call to this function won't affect the
-// returned value of this function. Thread-safe.
+// for the given flag, and caches the result for subsequent calls. Thread-safe.
+//
+// Since the value is memoized, the flag must not be changed after the first
+// call to this function: SafeSetFlag() crashes if it's called on a flag that
+// has been read via GetFlagOnce(). If a flag needs to be changed at runtime,
+// read it with absl::GetFlag() instead.
 //
 // Example:
 //   ABSL_FLAG(int, torch_tpu_internal_foo, 10, "Test flag");
@@ -34,9 +50,23 @@ namespace torch_tpu {
 //   const int foo = GetFlagOnce<int, &FLAGS_torch_tpu_internal_foo>();
 template <typename T, const absl::Flag<T>* absl_nonnull flag_ptr>
 const T& GetFlagOnce() {
-  static const absl::NoDestructor<T>    //
-      value(absl::GetFlag(*flag_ptr));  // GET_FLAG_OK=implementing GetFlagOnce.
+  static const absl::NoDestructor<T> value([] {
+    internal::MarkFlagMemoized(absl::GetFlagReflectionHandle(*flag_ptr));
+    return absl::GetFlag(*flag_ptr);  // GET_FLAG_OK=implementing GetFlagOnce.
+  }());
   return *value;
+}
+
+// Like absl::SetFlag(), but crashes if GetFlagOnce() has already been called on
+// the flag, as the new value would be silently ignored by GetFlagOnce(). Use
+// this instead of absl::SetFlag().
+//
+// Example:
+//   SafeSetFlag(&FLAGS_torch_tpu_internal_foo, 20);
+template <typename T, typename V>
+void SafeSetFlag(absl::Flag<T>* absl_nonnull flag, const V& value) {
+  internal::CheckFlagNotMemoized(absl::GetFlagReflectionHandle(*flag));
+  absl::SetFlag(flag, value);  // SET_FLAG_OK=implementing SafeSetFlag.
 }
 
 }  // namespace torch_tpu

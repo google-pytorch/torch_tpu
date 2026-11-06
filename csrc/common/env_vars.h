@@ -32,6 +32,18 @@
 
 namespace torch_tpu {
 
+namespace internal {
+
+// Records that GetEnvOnce() has memoized the value of the env var with the
+// given name. Thread-safe.
+void MarkEnvVarMemoized(std::string_view name);
+
+// Crashes if GetEnvOnce() has memoized the value of the env var with the given
+// name. Thread-safe.
+void CheckEnvVarNotMemoized(std::string_view name);
+
+}  // namespace internal
+
 // All environment variables read or written by torch_tpu.
 //
 // If an env var is not introduced by TorchTPU, please document the source.
@@ -122,8 +134,7 @@ inline constexpr char kTorchTpuHandshakePortEnvVar[] =
 inline constexpr char kTorchTpuInternalDetectRepeatedOpsEnvVar[] =
     "TORCH_TPU_INTERNAL_DETECT_REPEATED_OPS";
 // If set to "1" or "true", disables input buffer donation for in-place ATen
-// operations in DeferNever eager mode. Default is false (buffer donation is
-// enabled).
+// operations in eager mode. Default is false (buffer donation is enabled).
 inline constexpr char kTorchTpuInternalDisableInplaceBufferDonationEnvVar[] =
     "TORCH_TPU_INTERNAL_DISABLE_INPLACE_BUFFER_DONATION";
 // Specifies where to dump optimization pass IR artifacts (e.g. "print" or a
@@ -163,15 +174,17 @@ inline constexpr char kTorchTpuInternalSplitRngStateUpdate[] =
 // placeholders are always enabled.
 inline constexpr char kTorchTpuInternalStorageAwarePlaceholdersEnvVar[] =
     "TORCH_TPU_INTERNAL_STORAGE_AWARE_PLACEHOLDERS";
-// If unset or set to "1", schedule local compilation right away as a backup to
-// tier-3 compilation cache read (whichever succeeds first will unblock
-// execution). If set to "0", local compilation is done only after tier-3
-// compilation cache read fails.
-//
-// This env var is only used when the tier-3 compilation cache is enabled.
-inline constexpr char
-    kTorchTpuInternalTier3CompilationCacheLocalBackupTaskEnvVar[] =
-        "TORCH_TPU_INTERNAL_TIER3_COMPILATION_CACHE_LOCAL_BACKUP_TASK";
+// The PID of the earliest TorchTPU process in the current process' lineage (see
+// csrc/common/process.h). Set by a TorchTPU process that has no TorchTPU
+// ancestor process and inherited by its descendant processes so they can
+// detect that they have a TorchTPU ancestor process.
+inline constexpr char kTorchTpuInternalTopmostPidEnvVar[] =
+    "TORCH_TPU_INTERNAL_TOPMOST_PID";
+// Defaults to true: compatible unbounded dynamic kernels are loaded instead of
+// compiling static ones in eager execution. torch.compile always compiles the
+// traced graph. Set to `"0"` or `"false"` to disable.
+inline constexpr char kTorchTpuInternalUseUnboundedDynamicKernelsEnvVar[] =
+    "TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS";
 // TorchTPU-internal XLA compiler option overrides, in the format of
 // "key1=value1 key2=value2 ...". It is used to update `xla::CompileOptions`
 // through `env_option_overrides`, and takes precedence over `debug_options` set
@@ -320,7 +333,9 @@ inline constexpr auto kEnvVarToStage =
         {kTorchTpuInternalSplitRngStateUpdate, SymbolStage::InternalApi()},
         {kTorchTpuInternalStorageAwarePlaceholdersEnvVar,
          SymbolStage::InternalApi()},
-        {kTorchTpuInternalTier3CompilationCacheLocalBackupTaskEnvVar,
+        {kTorchTpuInternalTopmostPidEnvVar,
+         SymbolStage::InternalImplementation()},
+        {kTorchTpuInternalUseUnboundedDynamicKernelsEnvVar,
          SymbolStage::InternalApi()},
         {kTorchTpuInternalXlaOptionsEnvVar, SymbolStage::InternalApi()},
         {kTorchTpuLaunchBlockingEnvVar, SymbolStage::Experimental()},
@@ -357,19 +372,41 @@ inline constexpr auto kEnvVarToStage =
         // go/keep-sorted end
     });
 
-// Sets the environment variable with the given name to the given value.
+// Sets the environment variable with the given name to the given value. Use
+// this instead of setenv().
+//
+// Crashes if GetEnvOnce() has already memoized the env var, as the new value
+// would be silently ignored by GetEnvOnce(). If TorchTPU needs to change an env
+// var at runtime, read it with std::getenv() instead of GetEnvOnce().
 template <const char* name>
-void SetEnv(const std::string& value) {
+void SafeSetEnv(const std::string& value) {
   static_assert(kEnvVarToStage.contains(name),
                 "Unknown environment variable. All env vars used by TorchTPU "
                 "must be registered in kEnvVarToStage.");
-  setenv(name, value.c_str(), /*overwrite=*/1);
+  internal::CheckEnvVarNotMemoized(name);
+  setenv(name, value.c_str(),  // SETENV_OK=implementing SafeSetEnv().
+         /*overwrite=*/1);
+}
+
+// Unsets the environment variable with the given name. Use this instead of
+// unsetenv().
+//
+// Like SafeSetEnv(), crashes if GetEnvOnce() has already memoized the env var.
+template <const char* name>
+void SafeUnsetEnv() {
+  static_assert(kEnvVarToStage.contains(name),
+                "Unknown environment variable. All env vars used by TorchTPU "
+                "must be registered in kEnvVarToStage.");
+  internal::CheckEnvVarNotMemoized(name);
+  unsetenv(name);  // SETENV_OK=implementing SafeUnsetEnv().
 }
 
 // Returns the value of the environment variable with the given name, or
 // std::nullopt if it is not set.
 //
 // This function is memoized, so the environment variable is only read once.
+// Hence SafeSetEnv() and SafeUnsetEnv() crash if they're called on the env var
+// after this function.
 //
 // We make the name a template parameter so that different env vars are
 // memoized separately and the TT_WARN_ONCE() call works for each env var
@@ -390,6 +427,7 @@ template <const char* name>
   }
   static const absl::NoDestructor<std::optional<std::string>> env_var(
       [maybe_stage]() -> std::optional<std::string> {
+        internal::MarkEnvVarMemoized(name);
         const char* const env_var =  //
             std::getenv(name);       // GETENV_OK=implementing GetEnvOnce().
         if (env_var == nullptr) return std::nullopt;
@@ -467,6 +505,25 @@ template <typename IntType, const char* name>
   }();
   return value;
 }
+
+// Ensures that the rank is expanded in environment variables that depend on it.
+// It may overwrite the env vars when called for the first time, and has no
+// effect on subsequent calls.
+void EnsureRankIsExpandedInEnvVars();
+
+// Returns the value of the XLA_FLAGS env var, with the "${RANK}" placeholder
+// expanded to the current rank.
+//
+// Returns std::nullopt if the env var is not set.
+[[nodiscard]] const std::optional<std::string>&
+ExpandAndGetXlaFlagsEnvVarOnce();
+
+// Returns the value of the LIBTPU_INIT_ARGS env var, with the "${RANK}"
+// placeholder expanded to the current rank.
+//
+// Returns std::nullopt if the env var is not set.
+[[nodiscard]] const std::optional<std::string>&
+ExpandAndGetLibtpuInitArgsEnvVarOnce();
 
 }  // namespace torch_tpu
 

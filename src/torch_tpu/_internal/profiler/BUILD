@@ -37,6 +37,15 @@ package(
 )
 
 torch_tpu_py_library(
+    name = "named_scope",
+    srcs = ["named_scope.py"],
+    deps = [
+        "//shims/torch:pytorch",
+        "//src/torch_tpu/_internal/compile:tpu_torch_compile",
+    ],
+)
+
+torch_tpu_py_library(
     name = "profiler_config",
     srcs = ["profiler_config.py"],
     deps = [

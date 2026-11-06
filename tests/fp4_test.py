@@ -220,6 +220,176 @@ class FP4Test(seed_test_utils.RepeatableTest):
     utils.assert_close(eq_res, expected_eq)
     utils.assert_close(ne_res, expected_ne)
 
+  def test_fp4_scaled_mm(self):
+    device = torch.device("tpu")
+    scale_a = torch.ones((1,), dtype=torch.float32, device=device)
+    scale_b = torch.ones((1,), dtype=torch.float32, device=device)
+
+    # 1. Transposed column-major b = b_raw.t() created via .to(fp4) on TPU
+    a = torch.randn(128, 128, dtype=torch.bfloat16, device=device).to(
+        torch.float4_e2m1fn_x2
+    )
+    b_raw = torch.randn(128, 128, dtype=torch.bfloat16, device=device).to(
+        torch.float4_e2m1fn_x2
+    )
+    b_t = b_raw.t()
+    out_t = torch._scaled_mm(a, b_t, scale_a, scale_b, out_dtype=torch.bfloat16)
+    expected_t = (
+        torch.matmul(a.to(torch.float32), b_raw.to(torch.float32).t())
+        * scale_a
+        * scale_b
+    ).to(torch.bfloat16)
+    self.assertEqual(out_t.shape, torch.Size([128, 128]))
+    self.assertEqual(out_t.dtype, torch.bfloat16)
+    utils.assert_close(
+        out_t.to(torch.float32),
+        expected_t.to(torch.float32),
+        atol=1e-2,
+        rtol=1e-2,
+    )
+
+    # 2. H2D-packed CPU float4_e2m1fn_x2 tensors (2 FP4 values/byte)
+    a_cpu = quantize_utils.quantize_to_float4_e2m1fn_x2(
+        torch.randn(64, 64, dtype=torch.float32)
+    )[:32]
+    b_raw_cpu = quantize_utils.quantize_to_float4_e2m1fn_x2(
+        torch.randn(64, 64, dtype=torch.float32)
+    )[:32]
+    a_h2d = a_cpu.to(device)
+    b_h2d = b_raw_cpu.to(device).t()
+    out_h2d = torch._scaled_mm(
+        a_h2d, b_h2d, scale_a, scale_b, out_dtype=torch.bfloat16
+    )
+    expected_h2d = torch.matmul(
+        quantize_utils.decode_sub_byte_tensor(a_cpu),
+        quantize_utils.decode_sub_byte_tensor(b_raw_cpu).t(),
+    ).to(torch.bfloat16)
+    utils.assert_close(
+        out_h2d.cpu().to(torch.float32),
+        expected_h2d.to(torch.float32),
+        atol=1e-2,
+        rtol=1e-2,
+    )
+
+    # 3. torch.compile
+    compiled_fn = torch.compile(
+        lambda x, y, sa, sb: torch._scaled_mm(
+            x, y, sa, sb, out_dtype=torch.bfloat16
+        ),
+        backend="tpu",
+    )
+    compiled_out = compiled_fn(a_h2d, b_h2d, scale_a, scale_b)
+    utils.assert_close(
+        compiled_out.cpu().to(torch.float32),
+        expected_h2d.to(torch.float32),
+        atol=1e-2,
+        rtol=1e-2,
+    )
+
+  def test_fp4_scaled_mm_variants(self):
+    device = torch.device("tpu")
+    m, k_packed, n = 32, 32, 32
+    a_cpu = quantize_utils.quantize_to_float4_e2m1fn_x2(
+        torch.randn(2 * m, k_packed, dtype=torch.float32)
+    )[:m]
+    b_raw_cpu = quantize_utils.quantize_to_float4_e2m1fn_x2(
+        torch.randn(2 * n, k_packed, dtype=torch.float32)
+    )[:n]
+    a_f32 = quantize_utils.decode_sub_byte_tensor(a_cpu)
+    b_raw_f32 = quantize_utils.decode_sub_byte_tensor(b_raw_cpu)
+    a = a_cpu.to(device)
+    b = b_raw_cpu.to(device).t()
+    scale_a = torch.tensor([1.5], dtype=torch.float32, device=device)
+    scale_b = torch.tensor([2.0], dtype=torch.float32, device=device)
+
+    # _scaled_mm.out producing float4_e2m1fn_x2 and growing a non-empty out=
+    out_fp4 = torch.empty((4, 4), dtype=torch.float4_e2m1fn_x2, device=device)
+    torch.ops.aten._scaled_mm.out(
+        a,
+        b,
+        scale_a,
+        scale_b,
+        out_dtype=torch.float4_e2m1fn_x2,
+        out=out_fp4,
+    )
+    self.assertEqual(out_fp4.shape, torch.Size([m, n // 2]))
+
+    # _scaled_mm_v2 and _scaled_mm_v2.out with TensorWise and BlockWise1x32 (2*K)
+    out_v2 = torch._scaled_mm_v2(
+        a,
+        b,
+        [scale_a],
+        [0],
+        [0],
+        [scale_b],
+        [0],
+        [0],
+        None,
+        torch.bfloat16,
+    )
+    out_v2_buf = torch.empty((4, 4), dtype=torch.bfloat16, device=device)
+    torch.ops.aten._scaled_mm_v2.out(
+        a,
+        b,
+        [scale_a],
+        [0],
+        [0],
+        [scale_b],
+        [0],
+        [0],
+        None,
+        torch.bfloat16,
+        out=out_v2_buf,
+    )
+    expected_bf16 = (
+        torch.matmul(a_f32, b_raw_f32.t()) * scale_a.cpu() * scale_b.cpu()
+    ).to(torch.bfloat16)
+    utils.assert_close(
+        out_v2.cpu().to(torch.float32),
+        expected_bf16.to(torch.float32),
+        atol=1e-2,
+        rtol=1e-2,
+    )
+    utils.assert_close(
+        out_v2_buf.cpu().to(torch.float32),
+        expected_bf16.to(torch.float32),
+        atol=1e-2,
+        rtol=1e-2,
+    )
+
+    # BlockWise1x32 with 2*K unpacked FP4 elements (k_unpacked = 64 -> 2 blocks)
+    scale_a_bw = torch.ones((m, 2), dtype=torch.float8_e8m0fnu, device=device)
+    scale_b_bw = torch.ones((2, n), dtype=torch.float8_e8m0fnu, device=device)
+    out_bw = torch._scaled_mm_v2(
+        a,
+        b,
+        [scale_a_bw],
+        [3],
+        [0],
+        [scale_b_bw],
+        [3],
+        [0],
+        None,
+        torch.bfloat16,
+    )
+    expected_bw = torch.matmul(a_f32, b_raw_f32.t()).to(torch.bfloat16)
+    utils.assert_close(
+        out_bw.cpu().to(torch.float32),
+        expected_bw.to(torch.float32),
+        atol=1e-2,
+        rtol=1e-2,
+    )
+
+    # Transposed (N, 1) FP4 tensor view has packed_dim = 0
+    unit_t = (
+        torch.zeros((4, 1), dtype=torch.uint8)
+        .view(torch.float4_e2m1fn_x2)
+        .to(device)
+        .t()
+    )
+    self.assertEqual(unit_t.shape, torch.Size([1, 4]))
+    self.assertTrue(torch.equal(unit_t, unit_t))
+
 
 if __name__ == "__main__":
   absltest.main()

@@ -39,9 +39,7 @@ _CHECK_WHEEL_DIFF_SCRIPT: Final[pathlib.Path] = (
 )
 
 
-class ResolveBaseShaTest(  #
-    unittest.TestCase  # UNITTEST_OK=avoid circular dependency on bazel-diff
-):
+class ResolveBaseShaTest(unittest.TestCase):
   """Validates base SHA resolution across Git commit graphs."""
 
   def setUp(self):

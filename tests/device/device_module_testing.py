@@ -208,6 +208,7 @@ class DeviceModuleBase(
     self.assertIsNotNone(stats)
     self.assertGreaterEqual(stats.num_cache_reqs, 0)
     self.assertGreaterEqual(stats.num_cache_hits, 0)
+    self.assertGreaterEqual(stats.num_unbounded_dynamic_hits, 0)
     self.assertFalse(stats.peak_compilation_host_memory_bytes)
     self.assertIsInstance(stats.per_entry_stats, list)
 
@@ -311,6 +312,15 @@ class DeviceModuleBase(
       self.assertIsInstance(attrs["core_on_chip"], int)
     if "slice_index" in attrs:
       self.assertIsInstance(attrs["slice_index"], int)
+
+  def test_get_vmem_capacity_bytes(self):
+    """Tests the VMEM capacity is a plausible size."""
+    tensor = torch.zeros(1, device=torch.accelerator.current_accelerator())
+    _ = tensor.item()  # Materialize to trigger initialization
+
+    capacity = _device_ops_backend._get_vmem_capacity_bytes()
+    self.assertIsInstance(capacity, int)
+    self.assertGreaterEqual(capacity, 16 * 1024 * 1024)
 
 
 # pylint: enable=protected-access

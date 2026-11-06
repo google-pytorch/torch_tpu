@@ -16,6 +16,7 @@
 
 #include "csrc/ops/addcmul/addcmul_aten_kernels.h"
 
+#include <optional>
 #include <utility>
 
 #include "ATen/core/ATen_fwd.h"
@@ -42,10 +43,12 @@
 namespace torch_tpu {
 namespace {
 
+// Returns the StableHLO op for addcmul (self + value * tensor1 * tensor2),
+// skipping multiplication by value when value is std::nullopt (value is 1).
 absl::StatusOr<mlir::MlirOp> BuildAddcmulShlo(mlir::MlirOp self,
                                               mlir::MlirOp tensor1,
                                               mlir::MlirOp tensor2,
-                                              mlir::MlirOp value,
+                                              std::optional<mlir::MlirOp> value,
                                               mlir::ElementType promoted_dtype,
                                               mlir::ElementType out_dtype) {
   TT_ASSIGN_OR_RETURN(mlir::ElementType compute_dtype,
@@ -54,11 +57,14 @@ absl::StatusOr<mlir::MlirOp> BuildAddcmulShlo(mlir::MlirOp self,
   TT_ASSIGN_OR_RETURN(self, CastIfNeeded(self, compute_dtype));
   TT_ASSIGN_OR_RETURN(tensor1, CastIfNeeded(tensor1, compute_dtype));
   TT_ASSIGN_OR_RETURN(tensor2, CastIfNeeded(tensor2, compute_dtype));
-  TT_ASSIGN_OR_RETURN(value, CastIfNeeded(value, compute_dtype));
 
   TT_ASSIGN_OR_RETURN(mlir::MlirOp mul, BuildMulShlo(tensor1, tensor2));
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp value_mul, BuildMulShlo(value, mul));
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp result, BuildAddShlo(self, value_mul));
+  if (value.has_value()) {
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp value_op,
+                        CastIfNeeded(*value, compute_dtype));
+    TT_ASSIGN_OR_RETURN(mul, BuildMulShlo(value_op, mul));
+  }
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp result, BuildAddShlo(self, mul));
   return CastIfNeeded(result, out_dtype);
 }
 
@@ -67,9 +73,10 @@ absl::StatusOr<mlir::MlirOp> BuildAddcmulShlo(mlir::MlirOp self,
 at::Tensor& AtenAddcmulOut(const at::Tensor& self, const at::Tensor& tensor1,
                            const at::Tensor& tensor2, const at::Scalar& value,
                            at::Tensor& out) {
-  auto promoted_value = PromoteScalar(value);
+  auto promoted_value = PromoteScalar(value).AvoidPromoting(ScalarValue::kOne);
   TT_KERNEL(
-      OpName::kAddcmulOut, _, (self, tensor1, tensor2, promoted_value, out), {
+      OpName::kAddcmulOut, param_keys,
+      (self, tensor1, tensor2, promoted_value, out), {
         TT_CHECK_THROW(IsPrivateUse1Device(out), error::kInvalidArgument)
             << "expected out tensor to be on "
             << GetPrivateUse1DeviceDebugName() << ", got " << out.device();
@@ -91,8 +98,7 @@ at::Tensor& AtenAddcmulOut(const at::Tensor& self, const at::Tensor& tensor1,
         const at::ScalarType promoted_type = at::native::result_type(
             at::ITensorListRef({self, tensor1, tensor2}));
 
-        TT_CHECK_THROW(promoted_type != at::ScalarType::Bool,
-                       error::kInvalidArgument)
+        TT_CHECK_THROW(!IsBool(promoted_type), error::kInvalidArgument)
             << "expected result type not to be bool, "
             << "got input: " << ToString(self.scalar_type())
             << ", tensor1: " << ToString(tensor1.scalar_type())
@@ -110,13 +116,32 @@ at::Tensor& AtenAddcmulOut(const at::Tensor& self, const at::Tensor& tensor1,
             << "value cannot be converted to type " << ToString(acc_type)
             << " without overflow";
 
-        TT_ASSIGN_OR_THROW(at::Tensor value_tensor,
-                           promoted_value.GetTensor(acc_type));
-
         TT_ASSIGN_OR_THROW(mlir::ElementType promoted_dtype,
                            ConvertTo<mlir::ElementType>(promoted_type));
         TT_ASSIGN_OR_THROW(mlir::ElementType out_dtype,
                            ConvertTo<mlir::ElementType>(out.scalar_type()));
+
+        // When value is 1, AvoidPromoting excludes it from promotion; dispatch
+        // with 3 tensor inputs without scaling by value.
+        if (promoted_value.IsOne()) {
+          auto op_builder = [promoted_dtype,
+                             out_dtype](FixedSizeSpan<mlir::MlirOp, 3> inputs)
+              -> absl::StatusOr<mlir::MlirOp> {
+            auto& [self_op, tensor1_op, tensor2_op] = inputs;
+            return BuildAddcmulShlo(self_op, tensor1_op, tensor2_op,
+                                    std::nullopt, promoted_dtype, out_dtype);
+          };
+
+          TT_THROW_IF_ERROR(DispatchOpOut<3>(
+              std::move(op_builder), {self, tensor1, tensor2}, out,
+              {.out_dtype = out_dtype,
+               .out_dims = expected_size,
+               .op_param_cache_keys = std::move(param_keys)}));
+          return out;
+        }
+
+        TT_ASSIGN_OR_THROW(at::Tensor value_tensor,
+                           promoted_value.GetTensor(acc_type));
 
         // Build the op.
         auto op_builder = [promoted_dtype,
@@ -131,7 +156,7 @@ at::Tensor& AtenAddcmulOut(const at::Tensor& self, const at::Tensor& tensor1,
             std::move(op_builder), {self, tensor1, tensor2, value_tensor}, out,
             {.out_dtype = out_dtype,
              .out_dims = expected_size,
-             .op_param_cache_keys = OpParamCacheKeys::Empty()}));
+             .op_param_cache_keys = std::move(param_keys)}));
         return out;
       });
 }

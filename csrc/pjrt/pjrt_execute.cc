@@ -44,7 +44,6 @@
 #include "csrc/common/error_utils.h"
 #include "csrc/common/shape.h"
 #include "csrc/pjrt/pjrt_utils.h"
-#include "llvm/ADT/STLExtras.h"
 #include "tsl/profiler/lib/traceme.h"
 #include "xla/future.h"
 #include "xla/hlo/ir/hlo_computation.h"
@@ -245,7 +244,8 @@ absl::Status ValidateArgumentLayouts(
 absl::StatusOr<PjRtBufferPointers> Execute(
     const SharedLoadedExecutableWithMetadata& executable,
     std::vector<xla::PjRtBuffer* absl_nullable> argument_buffers,
-    absl::Span<const Shape> logical_output_shapes) {
+    absl::Span<const Shape> logical_output_shapes,
+    ArgumentLayoutValidation layout_validation) {
   tsl::profiler::TraceMe trace("Execute");
   xla::ExecuteOptions execute_options{.strict_shape_checking = true};
 
@@ -265,11 +265,9 @@ absl::StatusOr<PjRtBufferPointers> Execute(
     argument_buffers = std::move(dynamic_args.full_args);
     ephemeral_buffers = std::move(dynamic_args.ephemeral_buffers);
   }
-  TT_RETURN_IF_ERROR(ValidateArgumentLayouts(*executable, argument_buffers));
-
-  std::vector<std::vector<xla::PjRtBuffer*>> execution_arguments;
-  execution_arguments.reserve(1);
-  execution_arguments.push_back(std::move(argument_buffers));
+  if (layout_validation == ArgumentLayoutValidation::kValidate) {
+    TT_RETURN_IF_ERROR(ValidateArgumentLayouts(*executable, argument_buffers));
+  }
 
   if (ABSL_VLOG_IS_ON(8)) {
     TT_ASSIGN_OR_RETURN(const auto hlo_modules,
@@ -301,7 +299,8 @@ absl::StatusOr<PjRtBufferPointers> Execute(
       std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>>
           results_per_device,
       AdaptXlaError(executable->GetLoadedExecutable()->Execute(
-                        execution_arguments, execute_options, returned_futures),
+                        absl::MakeConstSpan(&argument_buffers, 1),
+                        execute_options, returned_futures),
                     /* context= */ "failed to run executable"));
 
   if (!ephemeral_buffers.empty()) {
@@ -319,11 +318,7 @@ absl::StatusOr<PjRtBufferPointers> Execute(
       !results_per_device.empty(), error::kInternal)
       << "xla execution did not return any results";
 
-  PjRtBufferPointers result_pointers;
-  result_pointers.reserve(results_per_device[0].size());
-  for (auto&& [i, result] : llvm::enumerate(results_per_device[0])) {
-    result_pointers.push_back(std::move(result));
-  }
+  PjRtBufferPointers result_pointers = std::move(results_per_device[0]);
 
   if (unbounded_dynamic_meta && unbounded_dynamic_meta->output_transform) {
     TT_ASSIGN_OR_RETURN(result_pointers,

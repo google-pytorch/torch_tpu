@@ -11,9 +11,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from collections.abc import Callable
 import dataclasses
 import pickle
-from typing import Any, Callable
+from typing import Any
 
 from absl.testing import absltest
 import torch

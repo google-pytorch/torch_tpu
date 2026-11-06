@@ -62,6 +62,18 @@ absl::Status ValidateMmOutInputs(const at::Tensor& lhs, const at::Tensor& rhs,
            "got out_dtype "
         << ToString(out_scalar_type) << " vs out tensor dtype "
         << ToString(out.scalar_type());
+    TT_RET_CHECK(out_scalar_type == lhs.scalar_type() ||
+                     (out_scalar_type == at::kFloat &&
+                      (lhs.scalar_type() == at::kHalf ||
+                       lhs.scalar_type() == at::kBFloat16)) ||
+                     (c10::isFloat8Type(lhs.scalar_type()) &&
+                      (out_scalar_type == at::kBFloat16 ||
+                       out_scalar_type == at::kFloat)),
+                 error::kInvalidArgument)
+        << "expected out_dtype to be the same as input dtype, float32 for "
+           "float16/bfloat16 inputs, or bfloat16/float32 for float8 inputs, "
+           "got "
+        << ToString(out_scalar_type);
   } else {
     // For mm, the inputs and output should have the same dtype
     TT_RET_CHECK(out.scalar_type() == lhs.scalar_type(),
@@ -87,9 +99,6 @@ absl::Status ValidateMmOutInputs(const at::Tensor& lhs, const at::Tensor& rhs,
                    c10::isComplexType(lhs.scalar_type()),
                error::kPythonNotImplementedError)
       << "not implemented for " << ToString(lhs.scalar_type());
-  if (!out_dtype.has_value()) {
-    TT_RETURN_IF_ERROR(ValidateNotLowPrecisionFloat(lhs));
-  }
   TT_RETURN_IF_ERROR(ValidateNotLowPrecisionFloat(out));
 
   return absl::OkStatus();
@@ -135,6 +144,8 @@ absl::Status Mm(const at::Tensor& lhs, const at::Tensor& rhs, at::Tensor& out,
 at::Tensor AtenMmDtype(const at::Tensor& lhs, const at::Tensor& rhs,
                        at::ScalarType out_dtype) {
   TT_KERNEL(OpName::kMmDtype, param_keys, (lhs, rhs, out_dtype), {
+    TT_THROW_IF_ERROR(ValidateIsMatrix(lhs, /* arg_name= */ "first"));
+    TT_THROW_IF_ERROR(ValidateIsMatrix(rhs, /* arg_name= */ "second"));
     int64_t output_dims[2] = {lhs.size(0), rhs.size(1)};
     TT_ASSIGN_OR_THROW(at::Tensor out,
                        MakeEmptyTensor(output_dims, out_dtype, lhs.device()));

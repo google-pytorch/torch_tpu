@@ -415,6 +415,10 @@ static absl::StatusOr<bool> SetTpuOptions(xla::CompileOptions& options) {
             // Important: keep the keys sorted alphabetically - the override
             // merging logic relies on this.
             // go/keep-sorted start
+            // Avoid overheads associated with fingerprinting XLA inputs to
+            // attempt looking up feedback-directed optimization profile data
+            // that is unlikely to be available.
+            {"xla_tpu_autofdo", false},
             {"xla_tpu_vmem_scavenging_mode",
              std::string("SAFE_IFF_KERNEL_REQUIRED")},
             // go/keep-sorted end
@@ -434,11 +438,6 @@ static CompilerOptionOverrides MakeCompilerOptionOverrides(
     // Use O1 for the eager mode and the default optimization level (O2) for
     // the torch.compile mode.
     overrides[std::string(kOptimizationLevelOption)] = "O1";
-    // We want lowering parameters to be chosen according to the optimization
-    // level, rather than being pulled out of the autofdo database.
-    // TODO(b/456145756): Remove this once we figure out the interaction
-    // between autofdo and optimization level.
-    overrides["xla_tpu_autofdo"] = "false";
   }
   UpdateMap(overrides, GetCompilerOptionOverridesFromEnvVar());
   // When merging the overrides, the active Python context overrides takes the
@@ -560,9 +559,9 @@ absl::Status ApplyCompilerOptionOverrides(
       // different order will yield different keys, but it is an acceptable
       // trade-off.
       // LINT.IfChange(xla_flags_fingerprint)
-      Fingerprint(GetEnvOnce<kXlaFlagsEnvVar>().value_or("")),
+      Fingerprint(ExpandAndGetXlaFlagsEnvVarOnce().value_or("")),
       // LINT.ThenChange()
-      Fingerprint(GetEnvOnce<kLibtpuInitArgsEnvVar>().value_or("")),
+      Fingerprint(ExpandAndGetLibtpuInitArgsEnvVarOnce().value_or("")),
       Fingerprint(options)));
 }
 // LINT.ThenChange()

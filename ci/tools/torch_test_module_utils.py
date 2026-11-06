@@ -45,12 +45,9 @@ DISABLED_TEST_MODULES: Final[frozenset[str]] = frozenset({
     "dynamo/test_aot_autograd",
     "dynamo/test_dynamo_decompositions",
     "dynamo/test_dynamo_ops",
-    "export/test_converter",
     "export/test_hop",
     "export/test_opinfo_schema",
-    "export/test_passes",
     "export/test_torchbind",
-    "functorch/dim/test_split",
     "functorch/test_control_flow",
     "functorch/test_ops",
     "functorch/test_vmap",
@@ -60,24 +57,19 @@ DISABLED_TEST_MODULES: Final[frozenset[str]] = frozenset({
     "inductor/test_compiled_optimizers",
     "inductor/test_custom_lowering",
     "inductor/test_decompose_mem_bound_mm",
-    "inductor/test_flex_attention",
     "inductor/test_flex_decoding",
     "inductor/test_fp8",
-    "inductor/test_fused_attention",
     "inductor/test_inductor_scheduler",
     "inductor/test_torchinductor_codegen_dynamic_shapes",
     "inductor/test_torchinductor_opinfo",
     "inductor/test_unbacked_symints",
     "lazy/test_ts_opinfo",
-    "nn/test_lazy_modules",
     "profiler/test_memory_profiler",
     "python_native/test_tensor_utils",
-    "test_autograd",
     "test_binary_ufuncs",
     "test_complex",
     "test_decomp",
     "test_foreach",
-    "test_fx",
     "test_linalg",
     "test_masked",
     "test_maskedtensor",
@@ -85,12 +77,9 @@ DISABLED_TEST_MODULES: Final[frozenset[str]] = frozenset({
     "test_modules",
     "test_multiprocessing",
     "test_nestedtensor",
-    "test_nn",
     "test_ops",
     "test_ops_fwd_gradients",
     "test_ops_gradients",
-    "test_ops_jit",
-    "test_ops_unbacked",
     "test_overrides",
     "test_reductions",
     "test_scatter_gather_ops",
@@ -101,7 +90,6 @@ DISABLED_TEST_MODULES: Final[frozenset[str]] = frozenset({
     "test_spectral_ops",
     "test_stateless_rng",
     "test_tensor_creation_ops",
-    "test_torch",
     "test_unary_ufuncs",
     # go/keep-sorted end
 })
@@ -130,11 +118,10 @@ TEST_MODULE_SHARDS: Final[Mapping[str, int]] = {
     "test_meta": 30,
     "test_modules": 2,
     "test_nestedtensor": 5,
-    "test_nn": 2,
+    "test_nn": 10,
     "test_ops": 50,
     "test_ops_fwd_gradients": 5,
     "test_ops_gradients": 20,
-    "test_ops_jit": 6,
     "test_optim": 2,
     "test_overrides": 15,
     "test_reductions": 2,
@@ -142,7 +129,7 @@ TEST_MODULE_SHARDS: Final[Mapping[str, int]] = {
     "test_sort_and_select": 4,
     "test_tensor_creation_ops": 8,
     "test_testing": 4,
-    "test_torch": 8,
+    "test_torch": 4,
     "test_type_promotion": 4,
     "test_unary_ufuncs": 50,
     "test_view_ops": 4,
@@ -190,16 +177,20 @@ _ACCELERATOR_SPECIFIC_TEST_MODULES: Final[frozenset[str]] = frozenset({
     "nn/attention/test_fa3",
     "nn/attention/test_fa4",
     "profiler/test_kineto",
+    "profiler/test_trace_validator",
     "python_native/test_rmsnorm_cutedsl",
     "test_cuda",
     "test_flop_counter",
     "test_functionalization_of_rng_ops",
+    "test_fx",
+    "test_fx_experimental",
     "test_gpu_trace",
     "test_jit_fuser_te",
     "test_jit_llga_fuser",
     "test_jiterator",
     "test_mkldnn",
     "test_mps",
+    "test_ops_unbacked",
     "test_varlen_attention",
     "test_xpu",
     "xpu/test_conv",
@@ -231,6 +222,16 @@ _UNRUNNABLE_TEST_MODULES: Final[frozenset[str]] = frozenset({
     # go/keep-sorted end
 })
 
+# Test modules for PyTorch features unsupported by TorchTPU.
+_UNSUPPORTED_TEST_MODULES: Final[frozenset[str]] = frozenset({
+    # go/keep-sorted start
+    # Tests OpInfo operators with TorchScript, which is deprecated in PyTorch.
+    "test_ops_jit",
+    # go/keep-sorted end
+})
+
 EXCLUDED_TEST_MODULES: Final[frozenset[str]] = (
-    _ACCELERATOR_SPECIFIC_TEST_MODULES | _UNRUNNABLE_TEST_MODULES
+    _ACCELERATOR_SPECIFIC_TEST_MODULES
+    | _UNSUPPORTED_TEST_MODULES
+    | _UNRUNNABLE_TEST_MODULES
 )

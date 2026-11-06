@@ -566,6 +566,8 @@ presubmit {
     suppression_regexp:
       # Allow suppression with this marker.
       "\\bLEADING_COLONS_OK\\b|"
+      # Allow leading colons on using declarations at namespace scope.
+      "^using\\b|"
       # Ignore occurrences in comments.
       "//.*::(absl|absl_testing|std|proto2|testing|llvm|mlir|pjrt|xla)::"
     failure_message:
@@ -664,6 +666,29 @@ presubmit {
       "vectors, which is a common case for tensor dimensions. "
       "If you have a legitimate reason to use `at::infer_size()`, add a "
       "`// AT_INFER_SIZE_OK` comment on the same line as the call."
+    check_delta_only: true  # Only check new/changed lines.
+  }
+
+  # Prefer InferComputationDtype() over at::toOpMathType().
+  check_contents {
+    base {
+      id: "CheckAtToOpMathType"
+      disable_tags: "ROLLBACK_OF"  # Don't require for rollback CLs.
+    }
+    prohibited_regexp: "\\bat::toOpMathType\\b"
+    suppression_regexp:
+      # Allow suppression with this marker.
+      "\\bAT_TO_OP_MATH_TYPE_OK=.+|"
+      # Ignore occurrences in comments.
+      "//.*\\bat::toOpMathType\\b"
+    failure_message:
+      "Please use `InferComputationDtype()` (defined in "
+      "csrc/common/aten_utils.h) instead of `at::toOpMathType()`. Upstream "
+      "`at::toOpMathType()` crashes with an internal assert on "
+      "unsigned/sub-byte integer types (UInt16, UInt32, UInt64, Int2, Int4, "
+      "UInt2, UInt4) and does not promote FP4 to F32 for XLA HLO. If you have "
+      "a legitimate reason to call `at::toOpMathType()` directly, add a "
+      "`// AT_TO_OP_MATH_TYPE_OK=<reason>` comment on the same line."
     check_delta_only: true  # Only check new/changed lines.
   }
 
@@ -867,6 +892,32 @@ presubmit {
     check_delta_only: true  # Only check new/changed lines.
   }
 
+  # Prevent using setenv and unsetenv.
+  check_contents {
+    base {
+      id: "CheckSetenv"
+      disable_tags: "ROLLBACK_OF"  # Don't require for rollback CLs.
+    }
+    # The unescaped regex is:
+    #   \b(setenv|unsetenv)\(
+    prohibited_regexp: "\\b(setenv|unsetenv)\\("
+    suppression_regexp:
+      # Allow suppression with this marker.
+      "\\bSETENV_OK=.+|"
+      # Ignore occurrences in C++ and Python comments.
+      "(//|#).*\\b(setenv|unsetenv)\\("
+    failure_message:
+      "Please use SafeSetEnv<>() or SafeUnsetEnv<>() instead of setenv or "
+      "unsetenv. "
+      "They crash if the env var's value has already been memoized by "
+      "GetEnvOnce<>(), which would otherwise silently ignore the new value. "
+      "If TorchTPU needs to change an env var at runtime, read it with "
+      "std::getenv() instead of GetEnvOnce<>(). "
+      "If you have a legitimate reason to use setenv or unsetenv, add a "
+      "`// SETENV_OK=<reason>` comment on the same line."
+    check_delta_only: true  # Only check new/changed lines.
+  }
+
   # Prevent using getenv.
   check_contents {
     base {
@@ -906,6 +957,29 @@ presubmit {
       "program (this is consistent with PyTorch). "
       "If you have a legitimate reason to use absl::GetFlag, add a "
       "`// GET_FLAG_OK=<reason>` comment on the same line as absl::GetFlag()."
+    check_delta_only: true  # Only check new/changed lines.
+  }
+
+  # Prevent using absl::SetFlag.
+  check_contents {
+    base {
+      id: "CheckSetFlag"
+      disable_tags: "ROLLBACK_OF"  # Don't require for rollback CLs.
+    }
+    prohibited_regexp: "\\babsl::SetFlag\\("
+    suppression_regexp:
+      # Allow suppression with this marker.
+      "\\bSET_FLAG_OK=.+|"
+      # Ignore occurrences in comments.
+      "//.*\\babsl::SetFlag\\("
+    failure_message:
+      "Please use SafeSetFlag() instead of absl::SetFlag. "
+      "SafeSetFlag() crashes if the flag's value has already been memoized by "
+      "GetFlagOnce<>(), which would otherwise silently ignore the new value. "
+      "If a flag needs to be changed at runtime, read it with absl::GetFlag() "
+      "instead of GetFlagOnce<>(). "
+      "If you have a legitimate reason to use absl::SetFlag, add a "
+      "`// SET_FLAG_OK=<reason>` comment on the same line as absl::SetFlag()."
     check_delta_only: true  # Only check new/changed lines.
   }
 
@@ -1151,6 +1225,7 @@ presubmit {
 # Checks for BUILD, BUILD.bazel and .bzl files.
 presubmit {
   path_regexp: "torch_tpu/.*(BUILD|BUILD\\.bazel|\\.bzl)"
+  path_expression_exclusion: "torch_tpu/oss/ci/..."
 
   # Prevent new uses of notest_oss.
   check_contents {
@@ -1430,6 +1505,7 @@ presubmit {
   path_expression: "....py"
   path_expression_exclusion: "torch_tpu/examples/..."
   path_expression_exclusion: "torch_tpu/google/prototypes/..."
+  path_expression_exclusion: "torch_tpu/oss/ci/..."
   check_contents {
     base {
       id: "CheckRelativeImports"
@@ -1455,6 +1531,7 @@ presubmit {
   # go/keep-sorted start
   path_expression_exclusion: "torch_tpu/_internal/performance/micro/..."
   path_expression_exclusion: "torch_tpu/google/..."
+  path_expression_exclusion: "torch_tpu/oss/ci/..."
   path_regexp_exclusion: ".*benchmark.*"
   path_regexp_exclusion: ".*example.*"
   path_regexp_exclusion: ".*test.*"
@@ -1544,6 +1621,7 @@ presubmit {
   # go/keep-sorted end
   path_expression_exclusion: "torch_tpu/examples/..."
   path_expression_exclusion: "torch_tpu/google/prototypes/..."
+  path_expression_exclusion: "torch_tpu/oss/ci/..."
   check_contents {
     base {
       id: "CheckPythonLogging"

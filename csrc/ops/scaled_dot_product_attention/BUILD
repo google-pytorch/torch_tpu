@@ -88,6 +88,7 @@ torch_tpu_cc_library(
     visibility = ["//visibility:private"],  # Internal use only.
     deps = [
         "//csrc/common:dimension_types",
+        "//csrc/common:utils",
         "//csrc/ops:op_builder_utils",
         "//shims/torch:aten_headers",
         "//shims/torch/c10/util:base_headers",
@@ -113,6 +114,7 @@ torch_tpu_cc_library(
         "//csrc/common:dtype",
         "//csrc/common:error_utils",
         "//csrc/common:fixed_size_span",
+        "//csrc/common:utils",
         "//csrc/eager:op_dispatcher",
         "//csrc/eager:tensor_to_buffer",
         "//csrc/ops:op_builder_utils",
@@ -169,6 +171,7 @@ torch_tpu_cc_library(
         "//csrc/internal/mosaic/kiln",
         "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/status:statusor",
+        "@llvm-project//llvm:Support",
     ],
 )
 
@@ -201,9 +204,11 @@ torch_tpu_cc_library(
         "//csrc/common:dtype",
         "//csrc/common:error_utils",
         "//csrc/common:fixed_size_span",
+        "//csrc/common:utils",
         "//csrc/eager:device_buffer",
         "//csrc/eager:op_dispatcher",
         "//csrc/eager:tensor_to_buffer",
+        "//csrc/internal/device:vmem_capacity",
         "//csrc/internal/mosaic:kiln_custom_call",
         "//csrc/internal/mosaic/kiln",
         "//csrc/ops:binary",
@@ -213,7 +218,6 @@ torch_tpu_cc_library(
         "//csrc/ops/reductions",
         "//csrc/ops/reductions:sum",
         "//csrc/ops/view_decomposition:contiguous_to_view",
-        "//csrc/pjrt:pjrt_state",
         "//shims/torch:aten_headers",
         "//shims/torch/c10/core:base_headers",
         "//shims/torch/c10/util:base_headers",

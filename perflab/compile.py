@@ -27,8 +27,9 @@ Supports two compilation scopes:
       region in one torch.compile.
 """
 
+from collections.abc import Callable
 import dataclasses
-from typing import Any, Callable
+from typing import Any
 import torch
 from perflab import target as target_lib
 from perflab.steps import common

@@ -26,88 +26,12 @@ device and the world size.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Set
-import dataclasses
+from collections.abc import Set
 import os
-import pathlib
-from typing import ClassVar, Final
+from typing import Final
 
-import immutabledict
+from torch_tpu._internal.utils import _hardware_backend
 from torch_tpu._internal.utils import annotations
-
-# Google's PCI vendor ID (found in /sys/bus/pci/devices/*/vendor)
-_GOOGLE_PCI_VENDOR_ID: Final[str] = "0x1ae0"
-
-# Directory with an entry per PCI device of the host.
-_PCI_DEVICES_DIR: Final[pathlib.Path] = pathlib.Path("/sys/bus/pci/devices")
-
-# Directory with a node per IOMMU group that VFIO exposes to user space.
-_VFIO_DIR: Final[pathlib.Path] = pathlib.Path("/dev/vfio")
-
-# TPU topology maps represent the logical mesh of TPU chips as (X, Y, Z)
-# dimensions. For example, (2, 2, 1) indicates a 2x2x1 mesh of 4 chips.
-# The keys are the number of TPU devices, and the values are the topology
-# dimensions. Generations that expose each TensorCore of a chip as a separate
-# device (TPU v7 and TPU v8i) have a trailing cores-per-chip dimension, e.g.
-# (1, 2, 1, 2) for the 4 devices of a 1x2x1 mesh of 2 chips.
-_V5P_TOPOLOGY: Final[Mapping[int, tuple[int, ...]]] = (
-    immutabledict.immutabledict({
-        1: (1, 1, 1),
-        2: (1, 2, 1),
-        4: (2, 2, 1),
-        8: (2, 2, 2),
-    })
-)
-
-_V5E_TOPOLOGY: Final[Mapping[int, tuple[int, ...]]] = (
-    immutabledict.immutabledict({
-        1: (1, 1, 1),
-        4: (2, 2, 1),
-        # TPU v5e (8-chip) topology differs between environments:
-        # - Cloud TPU VMs: The physical hardware interconnect is wired as a 2D mesh
-        #   (2x4):
-        #   https://docs.cloud.google.com/tpu/docs/v5e#tpu-v5e-config
-        # - Internal test environments: A virtual 3D cube mapping (2x2x2) is used to
-        #   prevent coordinate collisions during local discovery in the absence of
-        #   physical wrap cabling.
-        # copybara:uncomment 8: (2, 2, 2),
-        8: (2, 4, 1),  # copybara:comment(oss-only)
-    })
-)
-
-_V6E_TOPOLOGY: Final[Mapping[int, tuple[int, ...]]] = (
-    immutabledict.immutabledict({
-        1: (1, 1, 1),
-        4: (2, 2, 1),
-        8: (2, 4, 1),
-    })
-)
-
-_V7_TOPOLOGY: Final[Mapping[int, tuple[int, ...]]] = (
-    immutabledict.immutabledict({
-        2: (1, 1, 1, 2),
-        4: (1, 2, 1, 2),
-        8: (2, 2, 1, 2),
-    })
-)
-
-_V8I_TOPOLOGY: Final[Mapping[int, tuple[int, ...]]] = (
-    immutabledict.immutabledict({
-        2: (1, 1, 1, 2),
-        4: (2, 1, 1, 2),
-        8: (4, 1, 1, 2),
-    })
-)
-
-# TPU v8t has one TensorCore per chip, unlike TPU v7 and TPU v8i, so its
-# topologies have no trailing cores-per-chip dimension.
-_V8T_TOPOLOGY: Final[Mapping[int, tuple[int, ...]]] = (
-    immutabledict.immutabledict({
-        1: (1, 1, 1),
-        2: (1, 2, 1),
-        4: (2, 2, 1),
-    })
-)
 
 # GPU device names
 _NVIDIA_GPU_DEVICES: Final[Set[str]] = frozenset([
@@ -116,185 +40,8 @@ _NVIDIA_GPU_DEVICES: Final[Set[str]] = frozenset([
     "/dev/dxg",  # WSL2
 ])
 
-
-@dataclasses.dataclass(frozen=True)
-class SparseCoreSpec:
-  """SparseCore specs of a TPU generation.
-
-  SparseCores are TPU processors specialized for sparse operations such as
-  embedding lookups.
-
-  Attributes:
-    sparse_cores_per_device: Number of SparseCores per TPU device. On
-      generations that expose each TensorCore of a chip as a separate device
-      (e.g. TPU v7), this counts the SparseCores of one device, not of the chip.
-    simd_width: SIMD width (number of vector lanes) of each SparseCore.
-  """
-
-  sparse_cores_per_device: int
-  simd_width: int
-
-
-@dataclasses.dataclass(frozen=True)
-class TpuSpec:
-  """Specs of a TPU generation that TorchTPU supports.
-
-  TorchTPU doesn't run on TPU v4 and older generations, so they have no
-  constants on `TpuSpec`.
-
-  Attributes:
-    name: Human-readable name of the generation, as returned by
-      `torch.tpu.get_device_properties().name`.
-    devices_per_chip: Number of separately-addressable devices the chip exposes
-      to the runtime, used as the divisor that turns a per-chip quantity into
-      what one device sees. This is megacore-aware (not the physical TensorCore
-      count): 1 for single-core chips (v5e, v6e, v8t) and megacore chips (v5p)
-      that fuse their two physical cores into one addressable device, and 2 for
-      dual-core chips without megacore (v7, v8i).
-    hbm_bytes_per_chip: Physical HBM capacity per chip, in bytes. On chips that
-      expose several devices (v7, v8i), this HBM is shared across the devices;
-      it is reported per chip (the published physical capacity), not divided per
-      exposed device.
-    bf16_flops_per_chip: Peak dense bf16 compute per chip, in FLOP/s. Stored as
-      the published per-chip figure (easy to check against the docs); the
-      per-device value is derived via `devices_per_chip`.
-    topologies: Topology dimensions of each number of devices that a host can
-      use (see the TPU topology maps above).
-    sparse_core_spec: SparseCore specs of the generation, or None if it has no
-      SparseCores.
-  """
-
-  name: str
-  devices_per_chip: int
-  hbm_bytes_per_chip: int
-  bf16_flops_per_chip: int
-  topologies: Mapping[int, tuple[int, ...]]
-  sparse_core_spec: SparseCoreSpec | None = None
-
-  V5P: ClassVar[TpuSpec]
-  V5E: ClassVar[TpuSpec]
-  V6E: ClassVar[TpuSpec]
-  V7: ClassVar[TpuSpec]
-  V8I: ClassVar[TpuSpec]
-  V8T: ClassVar[TpuSpec]
-
-  @property
-  def hbm_bytes_per_device(self) -> int:
-    """Physical HBM capacity, in bytes, visible to a single device.
-
-    The per-chip capacity divided by the chip's exposed device count — what one
-    device can actually address (e.g. ~96 GB per device on a 192 GB v7 chip).
-    The divisor is `devices_per_chip`, so this equals `hbm_bytes_per_chip`
-    except where a generation exposes more than one device (v7, v8i).
-    """
-    return self.hbm_bytes_per_chip // self.devices_per_chip
-
-  @property
-  def bf16_flops_per_device(self) -> int:
-    """Peak dense bf16 compute, in FLOP/s, for a single device.
-
-    The published per-chip peak divided by the chip's exposed device count. This
-    is the correct denominator for per-device MFU (each rank drives one exposed
-    device). The divisor is `devices_per_chip`, so this equals
-    `bf16_flops_per_chip` except where a generation exposes more than one device
-    (v7, v8i).
-    """
-    return self.bf16_flops_per_chip // self.devices_per_chip
-
-  def topology(self, world_size: int | None = None) -> tuple[int, ...]:
-    """Returns the topology of TPU devices of this generation.
-
-    Args:
-      world_size: The number of devices to return the topology of. Defaults to
-        the number of TPU devices that VFIO exposes on this host. Allows
-        sub-slicing only on a single host, in supported topologies.
-
-    Returns:
-      The topology dimensions, like (2, 2, 1) or (1, 2, 1, 2).
-
-    Raises:
-      RuntimeError: If the generation has no topology for `world_size` devices.
-    """
-    if world_size is None:
-      world_size, _ = _scan_pci_tpus()
-    if world_size not in self.topologies:
-      # torchtpu_agents' engine_compatibility_check.py matches this message.
-      raise RuntimeError(f"No TPU topology found for count: {world_size}")
-    return self.topologies[world_size]
-
-
-# HBM and bf16 FLOP/s sources:
-# - v5e, v5p, v6e, v7: https://cloud.google.com/tpu/docs/{v5e,v5p,v6e,tpu7x}
-# - v8i, v8t: `hbm_capacity_bytes` and `bf16_ops_per_second` (per TensorCore)
-#   times TensorCores per chip in
-#   https://github.com/jax-ml/jax/blob/main/jax/_src/tpu_info.py
-# SparseCore specs come from `SparseCoreInfo` in
-# https://github.com/jax-ml/jax/blob/main/jax/_src/tpu_info.py.
-# The C++ counterpart, `torch_tpu::TpuDeviceSupportsSparseCore()`, checks the
-# device kind of the initialized PJRT device instead. It lists the generations
-# without SparseCores, so unlike `TpuSpec`, it assumes that generations it
-# doesn't know have SparseCores. Keep both in sync when adding TPU generations.
-TpuSpec.V5P = TpuSpec(
-    name="TPU v5p",
-    devices_per_chip=1,
-    hbm_bytes_per_chip=95 * 1024**3,
-    bf16_flops_per_chip=459 * 10**12,
-    topologies=_V5P_TOPOLOGY,
-    sparse_core_spec=SparseCoreSpec(sparse_cores_per_device=4, simd_width=8),
-)
-TpuSpec.V5E = TpuSpec(
-    name="TPU v5e",
-    devices_per_chip=1,
-    hbm_bytes_per_chip=16 * 1024**3,
-    bf16_flops_per_chip=197 * 10**12,
-    topologies=_V5E_TOPOLOGY,
-    sparse_core_spec=None,
-)
-TpuSpec.V6E = TpuSpec(
-    name="TPU v6e",
-    devices_per_chip=1,
-    hbm_bytes_per_chip=32 * 1024**3,
-    bf16_flops_per_chip=918 * 10**12,
-    topologies=_V6E_TOPOLOGY,
-    sparse_core_spec=SparseCoreSpec(sparse_cores_per_device=2, simd_width=8),
-)
-TpuSpec.V7 = TpuSpec(
-    name="TPU v7",
-    devices_per_chip=2,
-    hbm_bytes_per_chip=192 * 1024**3,
-    bf16_flops_per_chip=2307 * 10**12,
-    topologies=_V7_TOPOLOGY,
-    sparse_core_spec=SparseCoreSpec(sparse_cores_per_device=2, simd_width=16),
-)
-TpuSpec.V8I = TpuSpec(
-    name="TPU v8i",
-    devices_per_chip=2,
-    hbm_bytes_per_chip=309 * 10**9,
-    bf16_flops_per_chip=1101 * 10**12,
-    topologies=_V8I_TOPOLOGY,
-    sparse_core_spec=SparseCoreSpec(sparse_cores_per_device=1, simd_width=16),
-)
-TpuSpec.V8T = TpuSpec(
-    name="TPU v8t",
-    devices_per_chip=1,
-    hbm_bytes_per_chip=231 * 10**9,
-    bf16_flops_per_chip=9961 * 10**11,
-    topologies=_V8T_TOPOLOGY,
-    sparse_core_spec=SparseCoreSpec(sparse_cores_per_device=2, simd_width=16),
-)
-
-# The `TpuSpec` of each TPU PCI device ID. Verified IDs from
-# util/platforminfo/pci_ids.h.
-_TPU_SPEC_BY_PCI_DEVICE_ID: Final[Mapping[str, TpuSpec]] = (
-    immutabledict.immutabledict({
-        "0x0062": TpuSpec.V5P,
-        "0x0063": TpuSpec.V5E,
-        "0x006f": TpuSpec.V6E,
-        "0x0076": TpuSpec.V7,
-        "0x007c": TpuSpec.V8T,
-        "0x0083": TpuSpec.V8I,
-    })
-)
+SparseCoreSpec = _hardware_backend.SparseCoreSpec
+TpuSpec = _hardware_backend.TpuSpec
 
 
 def get_tpu_spec() -> TpuSpec | None:
@@ -308,20 +55,7 @@ def get_tpu_spec() -> TpuSpec | None:
     The `TpuSpec` of the attached TPU device, or None if no TPU generation that
     TorchTPU supports is attached.
   """
-  try:
-    for device_path in _PCI_DEVICES_DIR.iterdir():
-      try:
-        vendor_id = (device_path / "vendor").read_text().strip()
-        if vendor_id != _GOOGLE_PCI_VENDOR_ID:
-          continue
-        device_id = (device_path / "device").read_text().strip()
-        if device_id in _TPU_SPEC_BY_PCI_DEVICE_ID:
-          return _TPU_SPEC_BY_PCI_DEVICE_ID[device_id]
-      except (OSError, IOError):
-        continue
-  except (OSError, IOError):
-    pass
-  return None
+  return _hardware_backend.get_tpu_spec()
 
 
 @annotations.deprecated(
@@ -368,78 +102,53 @@ def get_hbm_bytes_per_device() -> int | None:
   return None if tpu_spec is None else tpu_spec.hbm_bytes_per_device
 
 
-def _scan_pci_tpus() -> tuple[int, TpuSpec | None]:
-  """Scans PCI bus for TPU devices.
-
-  Returns:
-    A tuple of (count, tpu_spec). `count` is the number of TPU devices exposed
-    via VFIO. `tpu_spec` is the `TpuSpec` of the first of them, or None if VFIO
-    exposes no TPU device.
-  """
-  count = 0
-  first_tpu_spec = None
-
-  try:
-    for device_path in _PCI_DEVICES_DIR.iterdir():
-      try:
-        vendor_id = (device_path / "vendor").read_text().strip()
-        if vendor_id != _GOOGLE_PCI_VENDOR_ID:
-          continue
-
-        device_id = (device_path / "device").read_text().strip()
-
-        tpu_spec = _TPU_SPEC_BY_PCI_DEVICE_ID.get(device_id)
-        if tpu_spec is not None:
-          # Some devices have multiple tensorcores sharing the same bus.
-          # We count only those that are exposed via VFIO.
-          try:
-            group_id = (device_path / "iommu_group").readlink().name
-            (_VFIO_DIR / group_id).stat()
-          except (OSError, IOError):
-            continue
-
-          count += 1
-          if first_tpu_spec is None:
-            first_tpu_spec = tpu_spec
-      except (OSError, IOError):
-        continue
-  except (OSError, IOError):
-    pass
-
-  return count, first_tpu_spec
-
-
 @annotations.deprecated(
     version="0.2.1", reason="Use torch.accelerator.device_count() instead."
 )
 def get_tpu_device_count() -> int:
-  """Returns how many physical TPU PCI devices are attached to this host.
+  """Returns how many TPU PCI devices on this host this process can access.
 
   Does not initialize the PJRT runtime. Counts the PCI devices in
   `/sys/bus/pci/devices` with Google's vendor ID and a TPU device ID in
-  `_TPU_SPEC_BY_PCI_DEVICE_ID` whose IOMMU group is exposed under `/dev/vfio`.
+  `TpuSpec.specs_by_pci_device_id()` whose IOMMU group is exposed under
+  `/dev/vfio` as a character device that this process can read and write.
   Devices whose sysfs entries can't be read are skipped, and if
   `/sys/bus/pci/devices` can't be read at all, this returns 0. The count does
   NOT include:
 
-  - TPUs whose PCI device ID isn't in `_TPU_SPEC_BY_PCI_DEVICE_ID`, e.g. future
-    generations;
+  - TPUs whose PCI device ID isn't in `TpuSpec.specs_by_pci_device_id()`, e.g.
+    future generations;
   - TPUs whose IOMMU group isn't exposed under `/dev/vfio`, which is normal in
     containers that expose only the VFIO groups allocated to them;
+  - TPUs whose `/dev/vfio` path holds a placeholder rather than a device node
+    this process can read and write, e.g. the empty, unreadable regular files
+    that sandboxes put at the paths of TPUs not allocated to them;
   - TPUs bound to a non-VFIO driver, e.g. reached through `/dev/accel*`.
 
-  So 0 doesn't mean the host has no TPUs. It's also not the number of devices
-  the PJRT runtime will use, which can be smaller.
+  So 0 doesn't mean the host has no TPUs. It can also differ from the number of
+  devices the PJRT runtime will use, e.g. if other runtime settings or process
+  bounds restrict them.
 
   Deprecated: code outside TorchTPU should call
-  `torch.accelerator.device_count()` instead, which returns this count until the
-  TPU runtime is initialized, and the runtime's device count afterwards.
+  `torch.accelerator.device_count()` instead, which returns this count capped by
+  `TPU_VISIBLE_DEVICES`.
 
   Returns:
     The integer number of TPU devices detected.
   """
-  count, _ = _scan_pci_tpus()
-  return count
+  return _hardware_backend.get_tpu_device_count()
+
+
+def get_visible_tpu_device_count() -> int:
+  """Returns `get_tpu_device_count()` capped by `TPU_VISIBLE_DEVICES`.
+
+  Each index in `TPU_VISIBLE_DEVICES` is one device, i.e. one TensorCore on
+  chips with several, such as TPU v7. Doesn't initialize the TPU runtime.
+
+  Returns:
+    The number of TPU devices visible to this process.
+  """
+  return _hardware_backend.get_visible_tpu_device_count()
 
 
 @annotations.deprecated(
@@ -466,11 +175,7 @@ def get_tpu_topology(world_size: int | None = None) -> str | None:
     RuntimeError: If a TPU device is detected but no topology is found for the
       `target_count` (either `world_size` or the auto-detected count).
   """
-  count, tpu_spec = _scan_pci_tpus()
-  if tpu_spec is None:
-    return None
-  topology = tpu_spec.topology(count if world_size is None else world_size)
-  return ",".join(map(str, topology))
+  return _hardware_backend.get_tpu_topology(world_size)
 
 
 def has_nvidia_gpu() -> bool:

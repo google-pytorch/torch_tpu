@@ -34,6 +34,10 @@ package(
     default_visibility = ["//:__subpackages__"],
 )
 
+exports_files([
+    "pallas_communication_test.py",
+])
+
 torch_tpu_py_test(
     name = "pallas_test",
     srcs = ["pallas_test.py"],
@@ -51,12 +55,14 @@ torch_tpu_py_test(
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/compile",
         "//src/torch_tpu/_internal/execution_mode",
+        "//src/torch_tpu/_internal/ops:splash_attention",
         "//src/torch_tpu/_internal/pallas",
         "//src/torch_tpu/_internal/pallas:pallas_compat",
         "//src/torch_tpu/_internal/utils",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
         "@pypi//jax",
+        "@pypi//numpy",
         "@pypi//packaging",
     ],
 )
@@ -122,6 +128,22 @@ torch_tpu_py_test(
         "//tests/distributed:continuous_test_utils",
         "//tests/distributed:distributed_utils",
         "@pypi//jax",
+    ],
+)
+
+# The pallas_verify tests run on CPU: multi-chip kernels execute on virtual CPU
+# devices in TPU interpret mode, so they need no TPU.
+torch_tpu_py_test(
+    name = "pallas_verify_errors_test",
+    srcs = ["pallas_verify_errors_test.py"],
+    tags = [
+        "nosan",  # *san builds are low-value for error tests.
+    ],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//tests:seed_test_utils",
     ],
 )
 

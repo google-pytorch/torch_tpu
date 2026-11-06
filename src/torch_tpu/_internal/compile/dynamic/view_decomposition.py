@@ -265,6 +265,13 @@ def _delinearize_storage_offset(
   if storage_offset == 0:
     return [0] * num_dims
 
+  if num_dims == 0:
+    # A non-zero offset can't be distributed over zero dimensions.
+    raise NotImplementedError(
+        "Unsupported view decomposition: cannot delinearize storage"
+        f" offset {_fmt_sym(storage_offset)} over a 0-d base."
+    )
+
   # Fast path when all values are concrete integers
   if isinstance(storage_offset, int) and all(
       isinstance(s, int) for s in base_strides
@@ -641,6 +648,10 @@ def _decompose_layout(
 
   Returns:
     A tuple of (base_shape, slice_ops, perm_list).
+
+  Raises:
+    NotImplementedError: If the base of the unit-free layout also exceeds the
+      view's storage.
   """
   shape = list(val.shape)
   strides = list(val.stride())
@@ -661,6 +672,21 @@ def _decompose_layout(
   base_shape, slice_ops = _build_body(
       phys_shape, phys_strides, storage_offset, compute_slice_ops
   )
+  if math.prod(_hint(d) for d in base_shape) > _hint(storage_numel):
+    # TODO: lizliang - Decompose these once strided slices are supported.
+    # The fallback moves size-1 dims innermost, but their layout can still
+    # imply a base larger than the storage, e.g. a step-2 slice followed by
+    # a trailing size-1 dim: [::2, None] on a 9-element buffer infers a
+    # [5, 2] base. Decline the decomposition like other unsupported
+    # layouts instead of returning a base that get_base_tensor cannot
+    # materialize from the real storage.
+    raise NotImplementedError(
+        "Unsupported view decomposition: inferred base shape"
+        f" {base_shape} requires"
+        f" {math.prod(_hint(d) for d in base_shape)} elements, which"
+        f" exceeds the view's storage size of {_hint(storage_numel)}"
+        " elements."
+    )
   return base_shape, slice_ops, perm_list
 
 
@@ -686,6 +712,19 @@ def decompose_into_view_sequence(
   ), f"Expected tensor or tensor-typed fx.Node, got {type(node_or_val)}"
 
   if _is_contiguous_tensor(val):
+    return None
+
+  if val.ndim == 0:
+    # TODO: lizliang - Decompose 0-d views once `select` is supported.
+    # A scalar carries no layout to decompose, and slice/permute ops
+    # cannot express selecting the element at a non-zero storage offset
+    # from a 1-d base (a slice of it would have shape (1,), not ()).
+    # Leave the input alone, as with contiguous layouts.
+    logging.debug(
+        "decompose_into_view_sequence: leaving 0-d tensor with storage"
+        " offset %s alone",
+        _fmt_sym(val.storage_offset()),
+    )
     return None
 
   shape = list(val.shape)
@@ -717,6 +756,12 @@ def get_base_tensor(tensor: torch.Tensor) -> torch.Tensor:
       tensor, torch.Tensor
   ), f"Expected torch.Tensor, got {type(tensor)}"
   if _is_contiguous_tensor(tensor):
+    return tensor
+
+  if tensor.ndim == 0:
+    # Mirrors decompose_into_view_sequence: a scalar is its own base,
+    # since no slice/permute sequence over a wider base can reproduce
+    # a 0-d result at a non-zero storage offset.
     return tensor
 
   base_shape, _, _ = _decompose_layout(tensor, compute_slice_ops=False)

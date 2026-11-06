@@ -16,9 +16,9 @@
 
 #include "csrc/pjrt/pjrt_state.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
-#include <cstdlib>
 #include <memory>
 #include <optional>
 #include <string>
@@ -34,8 +34,6 @@
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
-#include "absl/strings/match.h"
-#include "absl/strings/str_replace.h"
 #include "absl/synchronization/mutex.h"
 #include "csrc/common/contain.h"
 #include "csrc/common/device_type.h"
@@ -43,6 +41,7 @@
 #include "csrc/common/env_vars.h"
 #include "csrc/common/environment.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/tpu_hardware.h"
 #include "csrc/common/utils.h"
 #include "csrc/distributed/slicebuilder/discovery.h"
 #include "csrc/pjrt/pjrt_client.h"
@@ -62,15 +61,6 @@
 
 namespace torch_tpu {
 namespace {
-
-template <const char* env_var_name>
-void TryExpandRankInEnvVar(std::string_view rank) {
-  const char* env_val = std::getenv(env_var_name);  // GETENV_OK=Expanding rank.
-  if (env_val == nullptr || !absl::StrContains(env_val, "${RANK}")) return;
-  std::string new_val(env_val);
-  absl::StrReplaceAll({{"${RANK}", rank}}, &new_val);
-  SetEnv<env_var_name>(new_val);
-}
 
 // Creates a PluginTracer instance to collect TPU profile metrics.
 // Returns nullptr in environments where libtpu is statically linked to prevent
@@ -177,7 +167,7 @@ void MaybeSkipMegascaleForLaterClients(
   if (!device_attributes.contains("slice_index")) {
     return;
   }
-  SetEnv<kSkipMegascalePjrtClientEnvVar>("true");
+  SafeSetEnv<kSkipMegascalePjrtClientEnvVar>("true");
   ABSL_LOG(INFO) << "TorchTPU owns the MegaScale PJRT client; set "
                  << kSkipMegascalePjrtClientEnvVar
                  << " so that later PJRT clients in this process skip "
@@ -236,21 +226,30 @@ absl::Status PjrtBackend::EnsureInitialized() {
 absl::Status PjrtBackend::InitializeInternal() {
   // Expand ${RANK} to the actual rank in relevant environment variables.
   // Required for dumping debug information separately per rank.
-  const char* rank_val =
-      std::getenv(kRankEnvVar);  // GETENV_OK=Getting rank for expansion.
-  std::string rank = rank_val != nullptr ? rank_val : "0";
-  TryExpandRankInEnvVar<kXlaFlagsEnvVar>(rank);
-  TryExpandRankInEnvVar<kLibtpuInitArgsEnvVar>(rank);
+  EnsureRankIsExpandedInEnvVars();
 
   PjRtDeviceType device_type = PjRtDeviceType::kUnknown;
   std::string plugin_name;
+  int64_t visible_device_count = 0;
   if (options_.device_type == "tpu") {
     device_type = PjRtDeviceType::kTpu;
     plugin_name = kTpuPjrtName;
 
-    if (const auto& world_size_or =
-            GetRequiredIntegerEnvOnce<int, kWorldSizeEnvVar>();
-        world_size_or.ok()) {
+    ApplyTpuVisibleDevices();
+    // When WORLD_SIZE is not set (or is 1), TorchTPU defaults to single-device
+    // mode.
+    const auto& world_size_or =
+        GetRequiredIntegerEnvOnce<int, kWorldSizeEnvVar>();
+    const bool single_device = !world_size_or.ok() || *world_size_or == 1;
+    if (single_device) {
+      // Count before the runtime is restricted to one device (in OSS, by
+      // rewriting `TPU_VISIBLE_DEVICES`), so `device_count()` doesn't change.
+      visible_device_count = GetVisibleTpuDeviceCount();
+      TT_RETURN_IF_ERROR(InitializeSingleDeviceEnvironment()).SetPrepend()
+          << "failed to initialize single-device environment: ";
+    } else {
+      // A worker uses only its own device, and PyTorch picks device
+      // `rank % device_count()`, so count only addressable devices.
       TT_ASSIGN_OR_RETURN(auto config, GetDistributedWorkerConfiguration());
       TT_RETURN_IF_ERROR(InitializeDistributedEnvironment(config)).SetPrepend()
           << "failed to initialize distributed environment: ";
@@ -323,6 +322,8 @@ absl::Status PjrtBackend::InitializeInternal() {
   device_ = addressable_devices[0];
   device_type_ = device_type;
   global_device_count_ = world_size;
+  visible_device_count_ = static_cast<int>(std::max<int64_t>(
+      visible_device_count, static_cast<int64_t>(addressable_devices.size())));
   global_device_id_ = device_->global_device_id().value();
   return absl::OkStatus();
 }
@@ -379,6 +380,16 @@ absl::StatusOr<int> PjrtBackend::GetGlobalDeviceCount() {
     return TT_ERROR(error::kInternal) << "PjRt is not initialized";
   }
   return global_device_count_;
+}
+
+absl::StatusOr<int> PjrtBackend::GetVisibleDeviceCount() {
+  TT_RETURN_IF_ERROR(EnsureInitialized());
+  absl::ReaderMutexLock lock(mutex_);
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Only reachable if Shutdown() races
+                 // with a successful EnsureInitialized().
+      client_ != nullptr, error::kInternal)
+      << "PjRt client is not initialized";
+  return visible_device_count_;
 }
 
 absl::StatusOr<int> PjrtBackend::GetGlobalDeviceId() {
@@ -448,6 +459,7 @@ void PjrtBackend::Shutdown() {
   device_ = nullptr;
   device_type_ = PjRtDeviceType::kUnknown;
   global_device_count_ = 0;
+  visible_device_count_ = 0;
   init_attempted_ = false;
   init_status_ = absl::OkStatus();
   ABSL_VLOG(1) << "PjRt shut down.";

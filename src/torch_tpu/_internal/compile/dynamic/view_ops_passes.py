@@ -292,26 +292,17 @@ class HandleSliceLikeOpsPass:
           args=(val_scalar, shape_tensors, [], static_shape, is_dynamic),
       )
 
-  def _prepare_slice_operand(
+  def _bound_dynamic_dims(
       self,
       graph_module: torch.fx.GraphModule,
       node: torch.fx.Node,
       inp: torch.fx.Node,
       inp_val: Any,
-      dim: int,
-      start: int | torch.SymInt,
-      slice_extent: int,
-  ) -> torch.fx.Node:
-    """Returns inp prepared as the operand of a bound-sized _dynamic_slice.
+  ) -> tuple[torch.fx.Node, list[int]]:
+    """Bounds every dynamic dim of inp to its static upper bound.
 
-    Every dynamic dim of inp is first bounded to its static upper bound, so
-    the slice window is taken from the padded buffer instead of being clamped
-    against the runtime size. XLA still clamps dynamic_slice starts to
-    [0, operand_dim - slice_size], so when upper_bound(start) + slice_extent
-    exceeds upper_bound(inp_dim) inp is also right-padded along dim with a
-    zero block of the missing extent. Only that case materializes a padded
-    copy of inp (e.g. sliding-window masks `m[:, -q_len:]` with independent
-    kv/q bounds); start-0 slices never pad.
+    Returns the bounded node (inp itself when it has no dynamic dim) and the
+    static upper-bound shape of inp.
     """
     curr = inp
     ub_shape = [
@@ -334,6 +325,30 @@ class HandleSliceLikeOpsPass:
         curr.meta = inp.meta.copy()
         if isinstance(inp_val, torch.Tensor):
           curr.meta["val"] = inp_val.new_empty(ub_shape)
+    return curr, ub_shape
+
+  def _prepare_slice_operand(
+      self,
+      graph_module: torch.fx.GraphModule,
+      node: torch.fx.Node,
+      inp: torch.fx.Node,
+      inp_val: Any,
+      dim: int,
+      start: int | torch.SymInt,
+      slice_extent: int,
+  ) -> torch.fx.Node:
+    """Returns inp prepared as the operand of a bound-sized _dynamic_slice.
+
+    Every dynamic dim of inp is first bounded to its static upper bound, so
+    the slice window is taken from the padded buffer instead of being clamped
+    against the runtime size. XLA still clamps dynamic_slice starts to
+    [0, operand_dim - slice_size], so when upper_bound(start) + slice_extent
+    exceeds upper_bound(inp_dim) inp is also right-padded along dim with a
+    zero block of the missing extent. Only that case materializes a padded
+    copy of inp (e.g. sliding-window masks `m[:, -q_len:]` with independent
+    kv/q bounds); start-0 slices never pad.
+    """
+    curr, ub_shape = self._bound_dynamic_dims(graph_module, node, inp, inp_val)
 
     inp_dim_ub = ub_shape[dim]
     start_ub = max(0, self._transform_context.get_upper_bound(start))
@@ -363,6 +378,74 @@ class HandleSliceLikeOpsPass:
             [ub + extra if d == dim else ub for d, ub in enumerate(ub_shape)]
         )
     return padded
+
+  def _prepare_slice_gradient(
+      self,
+      graph_module: torch.fx.GraphModule,
+      node: torch.fx.Node,
+      grad: torch.fx.Node,
+      grad_val: Any,
+      dim: int,
+      window: int,
+  ) -> torch.fx.Node:
+    """Returns grad prepared as the static gradient operand of slice_backward.
+
+    The slice_backward lowering embeds its gradient with static geometry, so
+    every dynamic dim of grad is bounded to its static upper bound like the
+    operand of _prepare_slice_operand. The elements past the runtime size
+    along dim are undefined and would leak into the gradient of the sliced
+    input, so they are zeroed, and the bound along dim is cut to `window`
+    elements when it exceeds the window (a bucket capacity above the size of
+    the sliced input).
+    """
+    if not sym_utils.has_dynamic_shape(grad_val):
+      return grad
+    curr, ub_shape = self._bound_dynamic_dims(
+        graph_module, node, grad, grad_val
+    )
+    if sym_utils.is_symint(grad_val.shape[dim]):
+      size_tensor = self._transform_context.ensure_tensor(
+          graph_module, grad_val.shape[dim], node, dtype=torch.int32
+      )
+      zero = self._transform_context.ensure_tensor(
+          graph_module, 0, node, dtype=grad_val.dtype
+      )
+      mask_shape = [ub if d == dim else 1 for d, ub in enumerate(ub_shape)]
+      # E.g. a [s, 8] grad with runtime s = 3 bounded to 4 rows: positions is
+      # [0, 1, 2, 3], in_window is positions < 3 = [T, T, T, F] viewed as
+      # [4, 1], so the where keeps rows 0-2 of grad and zeroes row 3.
+      with graph_module.graph.inserting_before(node):
+        positions = graph_module.graph.call_function(
+            torch.ops.aten.arange.default,
+            args=(ub_shape[dim],),
+            kwargs={
+                "dtype": torch.int32,
+                "device": sym_utils.get_target_device(node),
+            },
+        )
+        in_window = graph_module.graph.call_function(
+            torch.ops.aten.lt.Tensor, args=(positions, size_tensor)
+        )
+        in_window = graph_module.graph.call_function(
+            torch.ops.aten.view.default, args=(in_window, mask_shape)
+        )
+        curr = graph_module.graph.call_function(
+            torch.ops.aten.where.self, args=(in_window, curr, zero)
+        )
+        curr.meta = grad.meta.copy()
+        if isinstance(grad_val, torch.Tensor):
+          curr.meta["val"] = grad_val.new_empty(ub_shape)
+    if ub_shape[dim] > window:
+      with graph_module.graph.inserting_before(node):
+        curr = graph_module.graph.call_function(
+            torch.ops.aten.slice.Tensor, args=(curr, dim, 0, window)
+        )
+        curr.meta = grad.meta.copy()
+        if isinstance(grad_val, torch.Tensor):
+          curr.meta["val"] = grad_val.new_empty(
+              [window if d == dim else ub for d, ub in enumerate(ub_shape)]
+          )
+    return curr
 
   def _dynamic_output_dim_sizes(
       self, graph_module: torch.fx.GraphModule, node: torch.fx.Node
@@ -561,9 +644,12 @@ class HandleSliceLikeOpsPass:
   ) -> None:
     """Lowers slice_backward with dynamic input sizes / parameters.
 
-    Negative static starts are normalized against the (possibly symbolic)
-    input size; a start that stays symbolic is rejected because the lowering
-    needs a static offset for the gradient window.
+    Negative static starts and ends are normalized against the (possibly
+    symbolic) input size; a start that stays symbolic is rejected because the
+    lowering needs a static offset for the gradient window. The window ends
+    at the user-provided/ShapeEnv upper bound of `end` (like the start in
+    _prepare_slice_operand) and the gradient is embedded as a static operand
+    of that window (see _prepare_slice_gradient).
     """
     grad_output, input_sizes = node.args[0], node.args[1]
     dim, start, end, step = self._extract_slice_args(node, offset=1)
@@ -592,8 +678,22 @@ class HandleSliceLikeOpsPass:
     input_sizes_upper = [
         self._transform_context.get_upper_bound(s) for s in input_sizes  # pyrefly: ignore[not-iterable]
     ]
-    end_upper = self._transform_context.get_upper_bound(end)
     step_upper = self._transform_context.get_upper_bound(step)
+    if isinstance(input_sizes, Sequence):
+      end = self._normalize_index(end, input_sizes[dim])
+    end_upper = self._transform_context.get_upper_bound(end)
+    # `get_upper_bound` uses the aligned bucket capacity, which can exceed the
+    # user-provided range in ShapeEnv (`int_oo` when unbounded).
+    user_end_ub = self._transform_context.get_user_upper_bound(end)
+    if isinstance(user_end_ub, int):
+      end_upper = min(end_upper, user_end_ub)
+    window = max(0, min(end_upper, input_sizes_upper[dim]) - start)
+    # Gradient elements covering the window along dim (ceil(window / step)).
+    grad_window = -(-window // step_upper)
+    grad_val = _get_node_val(grad_output)
+    fitted_grad = self._prepare_slice_gradient(
+        graph_module, node, grad_output, grad_val, dim, grad_window
+    )
 
     dynamic_dim_sizes: list[tuple[int, torch.fx.Node]] = []
     for d, s in enumerate(input_sizes):  # pyrefly: ignore[not-iterable]
@@ -607,11 +707,11 @@ class HandleSliceLikeOpsPass:
       new_slice_bwd_node = graph_module.graph.call_function(
           torch.ops.aten.slice_backward.default,
           args=(
-              grad_output,
+              fitted_grad,
               input_sizes_upper,
               dim,
               start,
-              end_upper,
+              start + window,
               step_upper,
           ),
       )

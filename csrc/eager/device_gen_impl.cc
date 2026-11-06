@@ -53,7 +53,6 @@
 #include "csrc/eager/events_queue.h"
 #include "csrc/eager/materialize.h"
 #include "csrc/eager/op_dispatcher.h"
-#include "csrc/eager/split_traversal.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/macros/kernel.h"
@@ -146,12 +145,10 @@ absl::StatusOr<at::Tensor> CreateDeviceRngStateTensor(c10::Device device,
   std::vector<uint8_t> host_data_bytes(
       reinterpret_cast<const uint8_t*>(host_data),
       reinterpret_cast<const uint8_t*>(host_data) + sizeof(host_data));
-  const void* host_data_ptr = host_data_bytes.data();
-  TT_ASSIGN_OR_RETURN(
-      auto rng_state_buffer,
-      TpuMallocAndMemcpyHtoD(host_data_ptr, mlir::ElementType::UI64, {2},
-                             /*backing_data=*/std::move(host_data_bytes)));
-  RecordAsyncHostToDevice(rng_state_buffer);
+  auto transfer = HostToDeviceTransfer::FromBytesVector(
+      std::move(host_data_bytes), mlir::ElementType::UI64, /*dimensions=*/{2});
+  TT_ASSIGN_OR_RETURN(auto rng_state_buffer,
+                      ScheduleHostToDeviceTransfer(std::move(transfer)));
   return MakeTensor(std::move(rng_state_buffer), device.index());
 }
 
@@ -286,14 +283,8 @@ absl::Status DeviceGeneratorState::MaybeMaterializeDeviceStateTensor(
   // Do a materialization, and block on it if we're in launch blocking mode.
   materialize_state_counter_ = 0;
   TT_ASSIGN_OR_RETURN(DeviceBufferRef buf, GetBuffer(device_state_tensor_));
-  const bool should_block =
-      eager_mode == EagerMode::kDeferNeverAndLaunchBlocking;
-  const MaterializationBlockMode block_mode =
-      should_block ? MaterializationBlockMode::kBlockUntilStarted
-                   : MaterializationBlockMode::kNonBlocking;
-  TT_RETURN_IF_ERROR(Materialize(buf, MaterializationReason::kExplicitSync,
-                                 GraphSplitMode::kSplitGraph, block_mode));
-  if (should_block) {
+  TT_RETURN_IF_ERROR(Materialize(buf, MaterializationReason::kExplicitSync));
+  if (eager_mode == EagerMode::kDeferNeverAndLaunchBlocking) {
     TT_RETURN_IF_ERROR(buf.Synchronize());
   }
   return absl::OkStatus();

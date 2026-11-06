@@ -14,10 +14,73 @@
 
 """Overrides for upstream PyTorch Meta kernel registrations on TPU."""
 
+from collections.abc import Callable
+import inspect
+from typing import Any
+
 import torch
+from torch import _decomp
 from torch import _meta_registrations
+from torch._decomp import decompositions
+from torch._subclasses import fake_tensor
 
 _meta_lib: torch.library.Library | None = None
+
+
+@decompositions.out_wrapper(exact_dtype=True)
+def _addmm_dtype_meta(
+    self: torch.Tensor,
+    mat1: torch.Tensor,
+    mat2: torch.Tensor,
+    out_dtype: torch.dtype,
+    beta: Any = 1,
+    alpha: Any = 1,
+):
+  if not self.is_floating_point() and not self.is_complex():
+    beta = int(beta)
+    alpha = int(alpha)
+  out = alpha * torch.mm(mat1, mat2, out_dtype=out_dtype)
+  if beta == 0:
+    return out
+  return out + beta * self.to(out_dtype).expand_as(out)
+
+
+# Expose the replacement decomposition on `torch._decomp.decompositions` so
+# `FakeTensorMode` (`torch_decomp_decompositions`) recognizes it on both
+# static and symbolic shape paths.
+_addmm_dtype_meta.__module__ = decompositions.__name__
+setattr(decompositions, _addmm_dtype_meta.__name__, _addmm_dtype_meta)
+
+
+# TODO: Remove once minimum supported PyTorch includes
+# https://github.com/pytorch/pytorch/pull/179634 and
+# https://github.com/pytorch/pytorch/pull/195594 (PyTorch 2.12+).
+def _patch_addmm_dtype_meta(meta_lib: torch.library.Library) -> None:
+  """Patches `aten.addmm.dtype` and `aten.addmm.dtype_out` Meta/decompositions."""
+  # pylint: disable=protected-access
+  meta_key = torch._C.DispatchKey.Meta
+  op_to_fn: tuple[tuple[Any, Callable[..., Any]], ...] = (
+      (torch.ops.aten.addmm.dtype, _addmm_dtype_meta),
+      (torch.ops.aten.addmm.dtype_out, _addmm_dtype_meta),
+  )
+  patched = False
+  for op, fn in op_to_fn:
+    existing = _decomp.decomposition_table.get(op)
+    if (
+        existing is not None
+        and "out_dtype" in inspect.signature(existing).parameters
+    ):
+      continue
+    _decomp.decomposition_table[op] = fn
+    if op in _decomp.pre_autograd_decomposition_table:
+      _decomp.pre_autograd_decomposition_table[op] = fn
+    op.py_kernels.pop(meta_key, None)
+    meta_lib.impl(op, fn, allow_override=True)
+    op.py_impl(meta_key)(fn)
+    patched = True
+  if patched:
+    fake_tensor.torch_decomp_decompositions.cache_clear()
+  # pylint: enable=protected-access
 
 
 # TODO: Remove once PyTorch includes https://github.com/pytorch/pytorch/pull/194271
@@ -86,3 +149,4 @@ def register() -> None:
     return
   _meta_lib = torch.library.Library("aten", "IMPL", "Meta")
   _patch_sdpa_meta(_meta_lib)
+  _patch_addmm_dtype_meta(_meta_lib)

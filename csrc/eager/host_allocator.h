@@ -18,6 +18,7 @@
 #define TORCH_TPU_CSRC_EAGER_HOST_ALLOCATOR_H_
 
 #include "ATen/core/CachingHostAllocator.h"
+#include "xla/future.h"
 
 namespace torch_tpu {
 
@@ -30,6 +31,13 @@ at::HostAllocator* GetTpuPinnedAllocator();
 // Returns true if the given pointer was allocated by the Tpu pinned memory
 // allocator.
 bool IsTpuPinnedPtr(const void* ptr);
+
+// If the pointer is pinned using the TPU pinned host memory allocator, this
+// instructs the allocator to keep the pointer alive until the future
+// completes.
+// Returns false if the pointer is not pinned using the TPU pinned host memory
+// allocator, or true if the future was successfully registered.
+bool HoldPinnedPointerUntil(const void* ptr, const xla::Future<void>& future);
 
 }  // namespace torch_tpu
 

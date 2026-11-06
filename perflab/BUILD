@@ -153,8 +153,32 @@ torch_tpu_py_library(
 )
 
 torch_tpu_py_library(
+    name = "flops",
+    srcs = ["flops.py"],
+    deps = [
+        ":common",
+        ":context",
+        ":mode",
+        ":registry",
+        ":step_lib",
+        ":target",
+        ":workload",
+        "//shims/absl_py/logging",
+        "//shims/torch:pytorch",
+    ],
+)
+
+torch_tpu_py_library(
     name = "metrics",
     srcs = ["metrics.py"],
+    deps = [":workload"],
+)
+
+pytype_strict_library(
+    # PY_LIBRARY_OK=Decouple from torch_tpu to avoid C++ dependency in coverage tests.
+    name = "workload",
+    srcs = ["workload.py"],
+    deps = [":step_lib"],
 )
 
 torch_tpu_py_library(
@@ -214,8 +238,10 @@ torch_tpu_py_library(
     srcs = ["registry.py"],
     deps = [
         ":compile",
+        ":context",
         ":step_lib",
         ":target",
+        ":workload",
     ],
 )
 
@@ -254,6 +280,7 @@ torch_tpu_py_library(
     srcs = ["context.py"],
     deps = [
         ":target",
+        ":workload",
         "//shims/absl_py/flags",
     ],
 )
@@ -268,6 +295,7 @@ torch_tpu_py_library(
         ":known_failures",
         ":mode",
         ":registry",
+        ":step_lib",
         ":target",
         "//shims/absl_py/flags",
         "//shims/absl_py/logging",
@@ -329,17 +357,11 @@ torch_tpu_py_test(
         "requires-net:external",
         "requires-tpu-v5lite",
     ],
-    # The torchtitan dep (via models:qwen3_8) exceeds the Forge input file limit
-    # with precompiled .pyc inputs.
-    use_precompile = False,
     use_tcmalloc = True,
-    deps = if_oss(
-        [],
-        [
-            "//perflab/models:muse_glimmer",
-            "//perflab/models:qwen3_8",
-        ],
-    ) + [
+    # Do not depend on perflab/models:muse_glimmer or :qwen3_8 here: torchtitan
+    # calls torch.cuda.is_available() at import time, which poisons every
+    # forked benchmark child on GPU (b200) runs of this target.
+    deps = [
         ":base_test",
         ":cases",
         ":common",
@@ -348,6 +370,7 @@ torch_tpu_py_test(
         ":discovery",
         ":fake_memory",
         ":flags",
+        ":flops",
         ":measure",
         ":metrics",
         ":mode",
@@ -355,6 +378,7 @@ torch_tpu_py_test(
         ":step_lib",
         ":target",
         ":torch_device_ops",
+        ":workload",
         "//perflab/models",
         "//perflab/steps",
         "//shims/absl_py/logging",
@@ -419,6 +443,7 @@ torch_tpu_py_test(
         ":discovery",
         ":fake_memory",
         ":flags",
+        ":flops",
         ":measure",
         ":metrics",
         ":mode",
@@ -426,6 +451,7 @@ torch_tpu_py_test(
         ":step_lib",
         ":target",
         ":torch_device_ops",
+        ":workload",
         "//perflab/models",
         "//perflab/steps",
         "//shims/absl_py/logging",
@@ -489,6 +515,7 @@ torch_tpu_py_test(
         ":discovery",
         ":fake_memory",
         ":flags",
+        ":flops",
         ":measure",
         ":metrics",
         ":mode",
@@ -496,6 +523,7 @@ torch_tpu_py_test(
         ":step_lib",
         ":target",
         ":torch_device_ops",
+        ":workload",
         "//perflab/models",
         "//perflab/steps",
         "//shims/absl_py/logging",
@@ -557,6 +585,7 @@ torch_tpu_py_test(
         ":discovery",
         ":fake_memory",
         ":flags",
+        ":flops",
         ":measure",
         ":metrics",
         ":mode",
@@ -564,6 +593,7 @@ torch_tpu_py_test(
         ":step_lib",
         ":target",
         ":torch_device_ops",
+        ":workload",
         "//perflab/models",
         "//perflab/steps",
         "//shims/absl_py/logging",
@@ -610,6 +640,7 @@ torch_tpu_py_library(
         ":step_lib",
         ":target",
         ":torch_device_ops",
+        ":workload",
         "//perflab/distributed_models",
         "//perflab/steps",
         "//shims/absl_py:app",
@@ -662,6 +693,7 @@ torch_tpu_py_test(
         ":discovery",
         ":fake_memory",
         ":flags",
+        ":flops",
         ":measure",
         ":metrics",
         ":mode",
@@ -669,6 +701,7 @@ torch_tpu_py_test(
         ":step_lib",
         ":target",
         ":torch_device_ops",
+        ":workload",
         "//perflab/models",
         "//perflab/steps",
         "//shims/absl_py/logging",
@@ -721,6 +754,7 @@ torch_tpu_py_test(
         ":discovery",
         ":fake_memory",
         ":flags",
+        ":flops",
         ":measure",
         ":metrics",
         ":mode",
@@ -728,6 +762,7 @@ torch_tpu_py_test(
         ":step_lib",
         ":target",
         ":torch_device_ops",
+        ":workload",
         "//perflab/models",
         "//perflab/steps",
         "//shims/absl_py/logging",

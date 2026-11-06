@@ -30,6 +30,10 @@ torch_tpu_py_library(
     name = "torch_test_configs",
     testonly = True,
     srcs = ["torch_test_configs.py"],
+    deps = [
+        "//shims/torch:pytorch",
+        "//shims/torch:testing_internal",
+    ],
 )
 
 pytype_strict_binary(
@@ -68,11 +72,6 @@ torch_tpu_torch_test(
 torch_tpu_torch_test(
     name = "distributed__composable_fsdp_fully_shard_comm_test",
     torch_test_module = "distributed/_composable/fsdp/test_fully_shard_comm",
-)
-
-torch_tpu_torch_test(
-    name = "distributed_checkpoint__experimental_staging_test",
-    torch_test_module = "distributed/checkpoint/_experimental/test_staging",
 )
 
 torch_tpu_torch_test(
@@ -367,7 +366,6 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "export_converter_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "export/test_converter",
 )
 
@@ -385,7 +383,6 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "export_passes_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "export/test_passes",
 )
 
@@ -402,7 +399,6 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "functorch_dim_split_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "functorch/dim/test_split",
 )
 
@@ -504,7 +500,6 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "inductor_flex_attention_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "inductor/test_flex_attention",
 )
 
@@ -522,7 +517,6 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "inductor_fused_attention_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "inductor/test_fused_attention",
 )
 
@@ -623,7 +617,6 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "nn_lazy_modules_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "nn/test_lazy_modules",
 )
 
@@ -666,11 +659,6 @@ torch_tpu_torch_test(
 )
 
 torch_tpu_torch_test(
-    name = "profiler_trace_validator_test",
-    torch_test_module = "profiler/test_trace_validator",
-)
-
-torch_tpu_torch_test(
     name = "python_native_tensor_utils_test",
     notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "python_native/test_tensor_utils",
@@ -703,7 +691,6 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "autograd_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "test_autograd",
 )
 
@@ -786,17 +773,6 @@ torch_tpu_torch_test(
 )
 
 torch_tpu_torch_test(
-    name = "fx_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
-    torch_test_module = "test_fx",
-)
-
-torch_tpu_torch_test(
-    name = "fx_experimental_test",
-    torch_test_module = "test_fx_experimental",
-)
-
-torch_tpu_torch_test(
     name = "indexing_test",
     shard_count = 8,
     torch_test_module = "test_indexing",
@@ -865,8 +841,7 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "nn_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
-    shard_count = 2,
+    shard_count = 10,
     torch_test_module = "test_nn",
 )
 
@@ -899,19 +874,6 @@ torch_tpu_torch_test(
     notap = "b/563402379",  # NOTAP_OK=torch tests
     shard_count = 20,
     torch_test_module = "test_ops_gradients",
-)
-
-torch_tpu_torch_test(
-    name = "ops_jit_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
-    shard_count = 6,
-    torch_test_module = "test_ops_jit",
-)
-
-torch_tpu_torch_test(
-    name = "ops_unbacked_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
-    torch_test_module = "test_ops_unbacked",
 )
 
 torch_tpu_torch_test(
@@ -1058,8 +1020,7 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "torch_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
-    shard_count = 8,
+    shard_count = 4,
     torch_test_module = "test_torch",
 )
 

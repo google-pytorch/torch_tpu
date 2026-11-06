@@ -1006,7 +1006,7 @@ TEST(GetEnableDebugChecks, IsDisabledInDefaultEagerMode) {
 TEST(GetEnableDebugChecksDeathTest, CanBeEnabledByEnvVar) {
   EXPECT_EXIT(
       {
-        SetEnv<kTorchTpuEnableDebugChecksEnvVar>("1");
+        SafeSetEnv<kTorchTpuEnableDebugChecksEnvVar>("1");
         exit(GetEnableDebugChecks());
       },
       testing::ExitedWithCode(1), "");
@@ -1015,7 +1015,7 @@ TEST(GetEnableDebugChecksDeathTest, CanBeEnabledByEnvVar) {
 TEST(GetEnableDebugChecksDeathTest, CanBeDisabledByEnvVar) {
   EXPECT_EXIT(
       {
-        SetEnv<kTorchTpuEnableDebugChecksEnvVar>("0");
+        SafeSetEnv<kTorchTpuEnableDebugChecksEnvVar>("0");
         exit(GetEnableDebugChecks());
       },
       testing::ExitedWithCode(0), "");
@@ -1025,7 +1025,7 @@ TEST(GetEnableDebugChecksDeathTest, CanBeEnabledByEnvVarInDebugMode) {
   EXPECT_EXIT(
       {
         SetEagerMode(EagerMode::kDeferNeverAndLaunchBlocking);
-        SetEnv<kTorchTpuEnableDebugChecksEnvVar>("1");
+        SafeSetEnv<kTorchTpuEnableDebugChecksEnvVar>("1");
         exit(GetEnableDebugChecks());
       },
       testing::ExitedWithCode(1), "");
@@ -1035,7 +1035,7 @@ TEST(GetEnableDebugChecksDeathTest, CanBeDisabledByEnvVarInDebugMode) {
   EXPECT_EXIT(
       {
         SetEagerMode(EagerMode::kDeferNeverAndLaunchBlocking);
-        SetEnv<kTorchTpuEnableDebugChecksEnvVar>("0");
+        SafeSetEnv<kTorchTpuEnableDebugChecksEnvVar>("0");
         exit(GetEnableDebugChecks());
       },
       testing::ExitedWithCode(0), "");
@@ -1777,6 +1777,37 @@ TEST(ErrorUtilsTest, GetRequiredIntegerEnvOnceReturnsValueWhenSet) {
   TT_ASSERT_OK_AND_ASSIGN(const auto val,
                           (GetRequiredIntegerEnvOnce<int, kWorldSizeEnvVar>()));
   EXPECT_EQ(val, 8);
+}
+
+TEST(TranslateXlaTensorOomError, ReturnsOkStatusUnchanged) {
+  EXPECT_EQ(TranslateXlaTensorOomError(absl::OkStatus(), "float32", {2, 3}),
+            absl::OkStatus());
+}
+
+TEST(TranslateXlaTensorOomError, TranslatesResourceExhaustedError) {
+  const absl::Status status = TranslateXlaTensorOomError(
+      absl::Status(error::kResourceExhausted, "Out of memory"), "float32",
+      {100000, 300000});
+  EXPECT_EQ(status.code(), error::kResourceExhausted);
+  EXPECT_THAT(status.message(),
+              HasSubstr("the TPU ran out of memory while allocating tensor "
+                        "float32[100000, 300000]"));
+}
+
+TEST(TranslateXlaTensorOomError, TranslatesInternalErrorWithAllocationSize) {
+  const absl::Status status = TranslateXlaTensorOomError(
+      absl::Status(error::kInternal, "Failed with allocation_size=1234"),
+      "bfloat16", {4, 8});
+  EXPECT_EQ(status.code(), error::kResourceExhausted);
+  EXPECT_THAT(
+      status.message(),
+      HasSubstr(
+          "the TPU ran out of memory while allocating tensor bfloat16[4, 8]"));
+}
+
+TEST(TranslateXlaTensorOomError, ReturnsNonOomErrorUnchanged) {
+  const absl::Status original(error::kInvalidArgument, "some other error");
+  EXPECT_EQ(TranslateXlaTensorOomError(original, "float32", {2, 3}), original);
 }
 
 }  // namespace

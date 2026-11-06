@@ -79,9 +79,8 @@ Scalar Semaphore::Read() const {
 void Semaphore::Signal(IndexArg amount, SemaphoreSignalOptions options) const {
   ABSL_CHECK(!is_dma())  // CRASH_OK
       << "Semaphore::Signal() requires a regular semaphore (AllocaSemaphore())";
-  mlir::Value amt = internal::ToValidatedI32Value(amount,
-                                                  /*require_positive=*/true,
-                                                  "Semaphore::Signal() amount");
+  mlir::Value amt = internal::ToValidatedI32Value(
+      amount, internal::IndexBounds::kPositive, "Semaphore::Signal() amount");
   mlir::ImplicitLocOpBuilder& b = internal::CurrentBuilder();
   tpu::SemaphoreSignalOp::create(
       b, internal::unwrap(*this), amt,
@@ -96,7 +95,7 @@ void Semaphore::Wait(IndexArg amount) const {
   ABSL_CHECK(!is_dma())  // CRASH_OK
       << "Semaphore::Wait() requires a regular semaphore (AllocaSemaphore())";
   mlir::Value amt = internal::ToValidatedI32Value(
-      amount, /*require_positive=*/true, "Semaphore::Wait() amount");
+      amount, internal::IndexBounds::kPositive, "Semaphore::Wait() amount");
   mlir::ImplicitLocOpBuilder& b = internal::CurrentBuilder();
   tpu::SemaphoreWaitOp::create(b, internal::unwrap(*this), amt);
 }

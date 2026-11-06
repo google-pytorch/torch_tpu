@@ -42,6 +42,7 @@ import torch._dynamo.backends.registry as backend_registry
 from torch._dynamo.device_interface import get_interface_for_device
 from torch._dynamo.device_interface import register_interface_for_device
 from torch.utils import _pytree as pytree
+from torch_tpu._internal import env
 from torch_tpu._internal import public_api
 from torch_tpu._internal.compile import _backend
 from torch_tpu._internal.device import _device_module
@@ -167,15 +168,11 @@ def _set_libtpu_version() -> None:
   except importlib.metadata.PackageNotFoundError:
     pass
 
-  from torch_tpu._internal import env  # pylint: disable=g-import-not-at-top
-
   env.set_libtpu_version(version)
 
 
 def _warn_if_unoptimized() -> None:
   """Warns if TorchTPU is running in OSS with an unoptimized build."""
-  from torch_tpu._internal import env  # pylint: disable=g-import-not-at-top
-
   if not env.IS_INTERNAL_TORCH_TPU and not env.TORCH_TPU_IS_OPTIMIZED_BUILD:
     from torch_tpu._internal import warnings  # pylint: disable=g-import-not-at-top
     from torch_tpu._internal.utils import tt_warnings  # pylint: disable=g-import-not-at-top

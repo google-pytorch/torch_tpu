@@ -20,7 +20,6 @@
 #include <optional>
 #include <utility>
 
-#include "absl/algorithm/container.h"
 #include "absl/status/statusor.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
@@ -50,8 +49,7 @@ absl::StatusOr<TopKOutputs> BuildTopKShlo(
   mlir::MlirOp sort_input = input_op;
   Dimensions permutation;
   if (need_transpose) {
-    permutation.resize(rank);
-    absl::c_iota(permutation, 0);
+    permutation = GetAllDimensions(input_op);
     std::swap(permutation[canonical_dim], permutation[rank - 1]);
 
     sort_input = stablehlo::Transpose(sort_input, permutation);

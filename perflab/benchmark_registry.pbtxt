@@ -9,7 +9,7 @@ benchmarks {
   workload {
     action: "./user_repo/.github/actions/run-benchmark"
     action_inputs { key: "script" value: "perflab/torch_benchmark_test.py" }
-    action_inputs { key: "runtime_flags" value: "--run_scope=full" }
+    action_inputs { key: "runtime_flags" value: "--run_scope=full --count_flops" }
     action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=16,TEST_SHARD_INDEX=0" }
   }
 
@@ -44,6 +44,20 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/model_flops_per_step$" unit: "flops" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/achieved_tflops_per_second$" unit: "tflops" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_achieved_tflops_per_second$" unit: "tflops" stats { stat: LAST_VALUE } }
 }
 
 benchmarks {
@@ -54,7 +68,7 @@ benchmarks {
   workload {
     action: "./user_repo/.github/actions/run-benchmark"
     action_inputs { key: "script" value: "perflab/torch_benchmark_test.py" }
-    action_inputs { key: "runtime_flags" value: "--run_scope=full" }
+    action_inputs { key: "runtime_flags" value: "--run_scope=full --count_flops" }
     action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=16,TEST_SHARD_INDEX=1" }
   }
 
@@ -89,6 +103,20 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/model_flops_per_step$" unit: "flops" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/achieved_tflops_per_second$" unit: "tflops" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_achieved_tflops_per_second$" unit: "tflops" stats { stat: LAST_VALUE } }
 }
 
 benchmarks {
@@ -99,7 +127,7 @@ benchmarks {
   workload {
     action: "./user_repo/.github/actions/run-benchmark"
     action_inputs { key: "script" value: "perflab/torch_benchmark_test.py" }
-    action_inputs { key: "runtime_flags" value: "--run_scope=full" }
+    action_inputs { key: "runtime_flags" value: "--run_scope=full --count_flops" }
     action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=16,TEST_SHARD_INDEX=2" }
   }
 
@@ -134,6 +162,20 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/model_flops_per_step$" unit: "flops" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/achieved_tflops_per_second$" unit: "tflops" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_achieved_tflops_per_second$" unit: "tflops" stats { stat: LAST_VALUE } }
 }
 
 benchmarks {
@@ -144,7 +186,7 @@ benchmarks {
   workload {
     action: "./user_repo/.github/actions/run-benchmark"
     action_inputs { key: "script" value: "perflab/torch_benchmark_test.py" }
-    action_inputs { key: "runtime_flags" value: "--run_scope=full" }
+    action_inputs { key: "runtime_flags" value: "--run_scope=full --count_flops" }
     action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=16,TEST_SHARD_INDEX=3" }
   }
 
@@ -179,6 +221,20 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/model_flops_per_step$" unit: "flops" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/achieved_tflops_per_second$" unit: "tflops" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_achieved_tflops_per_second$" unit: "tflops" stats { stat: LAST_VALUE } }
 }
 
 benchmarks {
@@ -189,7 +245,7 @@ benchmarks {
   workload {
     action: "./user_repo/.github/actions/run-benchmark"
     action_inputs { key: "script" value: "perflab/torch_benchmark_test.py" }
-    action_inputs { key: "runtime_flags" value: "--run_scope=full" }
+    action_inputs { key: "runtime_flags" value: "--run_scope=full --count_flops" }
     action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=16,TEST_SHARD_INDEX=4" }
   }
 
@@ -224,6 +280,20 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/model_flops_per_step$" unit: "flops" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/achieved_tflops_per_second$" unit: "tflops" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_achieved_tflops_per_second$" unit: "tflops" stats { stat: LAST_VALUE } }
 }
 
 benchmarks {
@@ -234,7 +304,7 @@ benchmarks {
   workload {
     action: "./user_repo/.github/actions/run-benchmark"
     action_inputs { key: "script" value: "perflab/torch_benchmark_test.py" }
-    action_inputs { key: "runtime_flags" value: "--run_scope=full" }
+    action_inputs { key: "runtime_flags" value: "--run_scope=full --count_flops" }
     action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=16,TEST_SHARD_INDEX=5" }
   }
 
@@ -269,6 +339,20 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/model_flops_per_step$" unit: "flops" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/achieved_tflops_per_second$" unit: "tflops" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_achieved_tflops_per_second$" unit: "tflops" stats { stat: LAST_VALUE } }
 }
 
 benchmarks {
@@ -279,7 +363,7 @@ benchmarks {
   workload {
     action: "./user_repo/.github/actions/run-benchmark"
     action_inputs { key: "script" value: "perflab/torch_benchmark_test.py" }
-    action_inputs { key: "runtime_flags" value: "--run_scope=full" }
+    action_inputs { key: "runtime_flags" value: "--run_scope=full --count_flops" }
     action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=16,TEST_SHARD_INDEX=6" }
   }
 
@@ -314,6 +398,20 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/model_flops_per_step$" unit: "flops" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/achieved_tflops_per_second$" unit: "tflops" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_achieved_tflops_per_second$" unit: "tflops" stats { stat: LAST_VALUE } }
 }
 
 benchmarks {
@@ -324,7 +422,7 @@ benchmarks {
   workload {
     action: "./user_repo/.github/actions/run-benchmark"
     action_inputs { key: "script" value: "perflab/torch_benchmark_test.py" }
-    action_inputs { key: "runtime_flags" value: "--run_scope=full" }
+    action_inputs { key: "runtime_flags" value: "--run_scope=full --count_flops" }
     action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=16,TEST_SHARD_INDEX=7" }
   }
 
@@ -359,6 +457,20 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/model_flops_per_step$" unit: "flops" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/achieved_tflops_per_second$" unit: "tflops" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_achieved_tflops_per_second$" unit: "tflops" stats { stat: LAST_VALUE } }
 }
 
 benchmarks {
@@ -369,7 +481,7 @@ benchmarks {
   workload {
     action: "./user_repo/.github/actions/run-benchmark"
     action_inputs { key: "script" value: "perflab/torch_benchmark_test.py" }
-    action_inputs { key: "runtime_flags" value: "--run_scope=full" }
+    action_inputs { key: "runtime_flags" value: "--run_scope=full --count_flops" }
     action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=16,TEST_SHARD_INDEX=8" }
   }
 
@@ -404,6 +516,20 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/model_flops_per_step$" unit: "flops" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/achieved_tflops_per_second$" unit: "tflops" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_achieved_tflops_per_second$" unit: "tflops" stats { stat: LAST_VALUE } }
 }
 
 benchmarks {
@@ -414,7 +540,7 @@ benchmarks {
   workload {
     action: "./user_repo/.github/actions/run-benchmark"
     action_inputs { key: "script" value: "perflab/torch_benchmark_test.py" }
-    action_inputs { key: "runtime_flags" value: "--run_scope=full" }
+    action_inputs { key: "runtime_flags" value: "--run_scope=full --count_flops" }
     action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=16,TEST_SHARD_INDEX=9" }
   }
 
@@ -449,6 +575,20 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/model_flops_per_step$" unit: "flops" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/achieved_tflops_per_second$" unit: "tflops" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_achieved_tflops_per_second$" unit: "tflops" stats { stat: LAST_VALUE } }
 }
 
 benchmarks {
@@ -459,7 +599,7 @@ benchmarks {
   workload {
     action: "./user_repo/.github/actions/run-benchmark"
     action_inputs { key: "script" value: "perflab/torch_benchmark_test.py" }
-    action_inputs { key: "runtime_flags" value: "--run_scope=full" }
+    action_inputs { key: "runtime_flags" value: "--run_scope=full --count_flops" }
     action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=16,TEST_SHARD_INDEX=10" }
   }
 
@@ -494,6 +634,20 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/model_flops_per_step$" unit: "flops" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/achieved_tflops_per_second$" unit: "tflops" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_achieved_tflops_per_second$" unit: "tflops" stats { stat: LAST_VALUE } }
 }
 
 benchmarks {
@@ -504,7 +658,7 @@ benchmarks {
   workload {
     action: "./user_repo/.github/actions/run-benchmark"
     action_inputs { key: "script" value: "perflab/torch_benchmark_test.py" }
-    action_inputs { key: "runtime_flags" value: "--run_scope=full" }
+    action_inputs { key: "runtime_flags" value: "--run_scope=full --count_flops" }
     action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=16,TEST_SHARD_INDEX=11" }
   }
 
@@ -539,6 +693,20 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/model_flops_per_step$" unit: "flops" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/achieved_tflops_per_second$" unit: "tflops" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_achieved_tflops_per_second$" unit: "tflops" stats { stat: LAST_VALUE } }
 }
 
 benchmarks {
@@ -549,7 +717,7 @@ benchmarks {
   workload {
     action: "./user_repo/.github/actions/run-benchmark"
     action_inputs { key: "script" value: "perflab/torch_benchmark_test.py" }
-    action_inputs { key: "runtime_flags" value: "--run_scope=full" }
+    action_inputs { key: "runtime_flags" value: "--run_scope=full --count_flops" }
     action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=16,TEST_SHARD_INDEX=12" }
   }
 
@@ -584,6 +752,20 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/model_flops_per_step$" unit: "flops" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/achieved_tflops_per_second$" unit: "tflops" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_achieved_tflops_per_second$" unit: "tflops" stats { stat: LAST_VALUE } }
 }
 
 benchmarks {
@@ -594,7 +776,7 @@ benchmarks {
   workload {
     action: "./user_repo/.github/actions/run-benchmark"
     action_inputs { key: "script" value: "perflab/torch_benchmark_test.py" }
-    action_inputs { key: "runtime_flags" value: "--run_scope=full" }
+    action_inputs { key: "runtime_flags" value: "--run_scope=full --count_flops" }
     action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=16,TEST_SHARD_INDEX=13" }
   }
 
@@ -629,6 +811,20 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/model_flops_per_step$" unit: "flops" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/achieved_tflops_per_second$" unit: "tflops" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_achieved_tflops_per_second$" unit: "tflops" stats { stat: LAST_VALUE } }
 }
 
 benchmarks {
@@ -639,7 +835,7 @@ benchmarks {
   workload {
     action: "./user_repo/.github/actions/run-benchmark"
     action_inputs { key: "script" value: "perflab/torch_benchmark_test.py" }
-    action_inputs { key: "runtime_flags" value: "--run_scope=full" }
+    action_inputs { key: "runtime_flags" value: "--run_scope=full --count_flops" }
     action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=16,TEST_SHARD_INDEX=14" }
   }
 
@@ -674,6 +870,20 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/model_flops_per_step$" unit: "flops" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/achieved_tflops_per_second$" unit: "tflops" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_achieved_tflops_per_second$" unit: "tflops" stats { stat: LAST_VALUE } }
 }
 
 benchmarks {
@@ -684,7 +894,7 @@ benchmarks {
   workload {
     action: "./user_repo/.github/actions/run-benchmark"
     action_inputs { key: "script" value: "perflab/torch_benchmark_test.py" }
-    action_inputs { key: "runtime_flags" value: "--run_scope=full" }
+    action_inputs { key: "runtime_flags" value: "--run_scope=full --count_flops" }
     action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=16,TEST_SHARD_INDEX=15" }
   }
 
@@ -719,6 +929,20 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/model_flops_per_step$" unit: "flops" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/achieved_tflops_per_second$" unit: "tflops" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_achieved_tflops_per_second$" unit: "tflops" stats { stat: LAST_VALUE } }
 }
 
 benchmarks {
@@ -763,6 +987,15 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
 }
 
 benchmarks {
@@ -807,6 +1040,15 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
 }
 
 benchmarks {
@@ -851,4 +1093,13 @@ benchmarks {
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
 }

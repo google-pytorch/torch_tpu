@@ -25,7 +25,9 @@ feature issue is in itself a valuable contribution.**
 
 For anything more complicated than trivial fixes, please open an issue first
 before writing code, to allow for discussion about the right shape of the
-solution and to make the issue discoverable and prevent duplicate work.
+solution and to make the issue discoverable and prevent duplicate work. Linking
+your PR to that issue also helps us prioritize its review (see
+[What We Expect From Contributors](#what-we-expect-from-contributors)).
 
 ### What Makes a Great Bug Report
 
@@ -113,9 +115,14 @@ same changes proposed in the PR.
 
     *   The **author** will be the bot.
     *   The **original author** will be the (external) PR author.
-    *   The **reviewer** will be the Googler assigned to the PR (the quality
-        champion), who's responsible for approving the Google-internal CL.
-    *   The Google domain expert and all other reviewers will be **CC**-ed.
+    *   The **reviewers** will be the Googler assigned to the PR (the quality
+        champion), whose approval of the Google-internal CL is required, and the
+        Google domain expert.
+    *   When the PR author is external, the CL needs approvals from **two
+        different Googlers** to be submitted. If the domain expert approved an
+        older version of the PR (before the author's later changes), they need
+        to **approve the CL too** (or re-approve the latest version of the PR on
+        GitHub).
     *   As long as the quality champion has approved the PR, anyone is allowed
         to apply the `pull ready` label in case the quality champion forgets to
         do so.
@@ -126,27 +133,89 @@ same changes proposed in the PR.
 
     1.  **Patch the CL into a workspace**, iterate there, get approval from the
         quality champion, submit it, add a comment on the original PR with the
-        commit SHA, and manually close the PR.
+        commit SHA, and manually close the PR. (The patched CL is authored by
+        the domain expert, so only the quality champion's approval is needed.)
     1.  **Make changes to the PR's branch** (exact instructions to be
         documented), let the bot update the CL, iterate until the CL is ready,
-        and get approval from the quality champion. The CL will auto submit, and
-        the original PR will auto close.
+        and get approval from the quality champion (and the domain expert, as
+        above). The CL will auto submit, and the original PR will auto close.
 1.  In rare cases, the internal testing of the CL may reveal an issue that
     requires a big change to the PR's design. The Google domain expert should
     work with the external contributor to address it, possibly via a new PR.
 
-    *   If more changes are made to the original PR, a Google engineer will need
-        to re-approve the PR for the changes to propagate to the CL.
+    *   If more changes are made to the original PR, the Google quality champion
+        will need to re-approve the Copybara import (see
+        [Re-approve the Import After PR Updates](#re-approve-the-import-after-pr-updates))
+        for the changes to propagate to the CL.
 
 Notes:
 
 *   When a PR is ready for another review, click on the "Re-request review"
     (spinning arrows) button next to a reviewer name to notify them.
+*   On PRs from some outside contributors' forked repos, the reviewers and the
+    assignee also need to approve the PR's workflow runs (see
+    [Approve Workflow Runs](#approve-workflow-runs)).
 *   We want the quality champion's review to be in the open so that external
     contributors can learn Google's coding standard.
 *   The bot-generated CL cannot be changed manually, but if you update the PR it
-    is connected to, the bot will update it automatically, or the CL can be
-    patched into a new workspace controlled by an internal user.
+    is connected to, the bot will update it automatically (once the quality
+    champion re-approves the import), or the CL can be patched into a new
+    workspace controlled by an internal user.
+
+### Re-approve the Import After PR Updates
+
+After the author updates a PR, the **Google quality champion** needs to
+re-approve importing the PR via Copybara:
+
+1.  In the PR's checks section, click the **Details** link of an
+    `import/copybara` check that shows "Waiting for internal safe review
+    approval". There may be one or two such checks; approving either one is
+    sufficient. The link points to a Google-internal page, so it is not
+    accessible to external contributors.
+
+    <img src="docs/developers/images/copybara_import_approval.png" alt="Pending import/copybara checks" width="600px">
+1.  On the safe-review page that opens, vote **Code-Review+2** to approve the
+    import.
+
+Earlier GitHub approvals don't carry over to new commits, and the internal CL
+needs approvals from two different Googlers to auto-submit. So when the PR
+author is external, the **Google domain expert** (also a reviewer of the CL)
+needs to approve the updated CL too, or re-approve the updated PR on GitHub.
+
+### Approve Workflow Runs
+
+GitHub doesn't run workflows on PRs from some outside contributors' forked repos
+until a maintainer approves them. These include CI and the bot that tracks whose
+turn it is, so until the runs are approved, the PR's checks don't run, and
+reviews don't hand the turn back to the author. The PR's **reviewers and
+assignee** are responsible for approving the runs whenever the PR shows
+"Workflow(s) awaiting approval". This can happen:
+
+*   when the PR is opened or the author pushes new commits, and
+*   after anyone submits a review or a review comment on the PR.
+
+<!-- mdformat off(reason: GitHub renders an alert only if its marker is on its own line) -->
+
+> [!IMPORTANT]
+> Review the PR's changes before approving its runs. Approving runs the PR's
+> code, including any changes to `.github/workflows/` and other CI scripts, on
+> the repository's CI machines.
+
+<!-- mdformat on -->
+
+To approve the runs:
+
+1.  In the **Files changed** tab, check that the PR doesn't change
+    `.github/workflows/` or other CI scripts in a way that could misuse the
+    repository's secrets or CI machines.
+1.  In the **Conversation** tab, click **Approve workflows to run** next to
+    "Workflow(s) awaiting approval".
+
+    <img src="docs/developers/images/ci_workflow_approval.png" alt="Approve CI workflows" width="600px">
+
+Runs that aren't approved within 30 days expire: GitHub marks them as failed,
+and they can no longer be approved or re-run. To run the workflows again, the
+author needs to push a new commit (or a maintainer can close and reopen the PR).
 
 ## Proposing Major Changes and API Design
 
@@ -211,10 +280,20 @@ A constructive review process relies on mutual respect for time and attention.
 *   **Small, focused PRs**: Submit pull requests that do one thing well. A
     concise 100-line diff gets reviewed far faster than a 1,000-line rewrite.
 *   **Clear context**: Explain what your change does and why it is needed. All
-    non-trivial PRs must link to the relevant GitHub issue
-    [using keywords](https://docs.github.com/en/get-started/writing-on-github/working-with-advanced-formatting/using-keywords-in-issues-and-pull-requests).
+    non-trivial PRs must
+    [link to the relevant GitHub issue](https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/linking-a-pull-request-to-an-issue).
+*   **Link your PR to an issue**: Even for small changes, we encourage you to
+    link your PR to the issue it addresses, e.g. with `Fixes #123` in the PR
+    description. We prioritize reviews by the priority of the linked issue, so
+    PRs that address higher-priority issues get more prompt attention, while PRs
+    without a linked issue are reviewed as time allows.
 *   **Shepherd your change**: Keep an eye on CI checks, address reviewer notes,
     and let us know if you get blocked or need to step away.
+*   **Let us assign owners and reviewers**: Please don't assign or request
+    specific people as assignees or reviewers of your issues and PRs unless you
+    have arranged this with them beforehand. A Google oncaller triages new
+    issues and PRs and assigns them to the people with the best matching
+    expertise, while balancing the load across the team.
 
 ## Reporting Security Vulnerabilities
 

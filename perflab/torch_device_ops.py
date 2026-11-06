@@ -15,7 +15,8 @@
 """TorchDeviceOps: the torch implementation of the DeviceOps protocol."""
 
 import collections
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import torch
 from torch_tpu._internal.benchmarks import xprof_adapter

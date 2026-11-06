@@ -29,6 +29,7 @@ torch_tpu_cc_library(
     hdrs = ["xlogy_aten_kernels.h"],
     deps = [
         "//csrc/common:cache_key",
+        "//csrc/common:device_type",
         "//csrc/common:dtype",
         "//csrc/common:error_utils",
         "//csrc/common:to_string",
@@ -40,6 +41,7 @@ torch_tpu_cc_library(
         "//csrc/ops/macros:kernel",
         "//shims/torch:aten_headers",
         "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/types:span",
         "@stablehlo//:stablehlo_ops",
         "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
         "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",

@@ -74,28 +74,40 @@ absl::StatusOr<mlir::MlirOp> BuildAddmmShlo(
   const auto precision_config = mlir::stablehlo::PrecisionConfigAttr::get(
       &self_op.getContext(), {precision, precision});
 
-  mlir::MlirOp dot_result = stablehlo::Dot(mat1_op, mat2_op, precision_config);
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
+                      InferComputationDtype(out_dtype));
+
+  mlir::MlirOp dot_result = stablehlo::Dot(
+      mat1_op, mat2_op, precision_config,
+      is_any_i64 ? std::nullopt
+                 : std::optional<mlir::ElementType>(compute_dtype));
   if (is_any_i64) {
-    dot_result = stablehlo::ConvertElementType(dot_result, out_dtype);
+    dot_result = stablehlo::ConvertElementType(dot_result, compute_dtype);
   }
 
+  alpha_op = stablehlo::ConvertElementType(alpha_op, compute_dtype);
   TT_ASSIGN_OR_RETURN(mlir::MlirOp alpha_tensor,
                       BroadcastIfNeeded(alpha_op, dot_result));
   mlir::MlirOp scaled_dot_result = stablehlo::Mul(dot_result, alpha_tensor);
 
   if (!beta_op.has_value()) {
-    return scaled_dot_result;
+    return stablehlo::ConvertElementType(scaled_dot_result, out_dtype);
   }
 
+  self_op = stablehlo::ConvertElementType(self_op, compute_dtype);
+  mlir::MlirOp beta_op_converted =
+      stablehlo::ConvertElementType(*beta_op, compute_dtype);
   TT_ASSIGN_OR_RETURN(mlir::MlirOp beta_tensor,
-                      BroadcastIfNeeded(*beta_op, self_op));
+                      BroadcastIfNeeded(beta_op_converted, self_op));
   mlir::MlirOp scaled_input_result = stablehlo::Mul(self_op, beta_tensor);
 
   TT_ASSIGN_OR_RETURN(
       (auto [bcast_scaled_input_result, bcast_scaled_dot_result]),
       ApplyBroadcastIfNeeded(scaled_input_result, scaled_dot_result));
 
-  return stablehlo::Add(bcast_scaled_input_result, bcast_scaled_dot_result);
+  mlir::MlirOp add_result =
+      stablehlo::Add(bcast_scaled_input_result, bcast_scaled_dot_result);
+  return stablehlo::ConvertElementType(add_result, out_dtype);
 }
 
 absl::Status ValidateInputBroadcast(const at::Tensor& self,
@@ -122,17 +134,28 @@ absl::Status ValidateInputBroadcast(const at::Tensor& self,
 absl::StatusOr<mlir::ElementType> ValidateAddmmInputsAndGetOutputDtype(
     const at::Tensor& self, const at::Tensor& mat1, const at::Tensor& mat2,
     const MaybePromotedScalar& beta, const PromotedScalar& alpha,
-    at::ScalarType out_scalar_type) {
+    std::optional<at::ScalarType> out_dtype) {
+  const at::ScalarType out_scalar_type = out_dtype.value_or(self.scalar_type());
   TT_RET_CHECK(self.scalar_type() != at::kBool &&
                    mat1.scalar_type() != at::kBool &&
-                   mat2.scalar_type() != at::kBool &&
-                   beta.scalar().type() != at::kBool &&
-                   alpha.scalar().type() != at::kBool,
+                   mat2.scalar_type() != at::kBool,
                error::kInvalidArgument)
       << "boolean dtypes are not supported";
+  TT_RET_CHECK(mat1.scalar_type() == mat2.scalar_type(),
+               error::kInvalidArgument)
+      << "expected mat1 and mat2 to have the same dtype, got "
+      << ToString(mat1.scalar_type()) << " and "
+      << ToString(mat2.scalar_type());
+  if (!out_dtype.has_value()) {
+    TT_RET_CHECK(self.scalar_type() == mat1.scalar_type(),
+                 error::kInvalidArgument)
+        << "expected self and mat1 to have the same dtype, got "
+        << ToString(self.scalar_type()) << " and "
+        << ToString(mat1.scalar_type());
+  }
   TT_RET_CHECK(
       mat1.numel() == 0 || mat2.numel() == 0 ||
-          (mat1.scalar_type() != at::kInt && mat1.scalar_type() != at::kLong),
+          !c10::isIntegralType(mat1.scalar_type(), /*includeBool=*/false),
       error::kPythonNotImplementedError)
       << "not implemented for " << ToString(mat1.scalar_type());
   TT_RETURN_IF_ERROR(ValidateNotLowPrecisionFloat(out_scalar_type));
@@ -143,14 +166,11 @@ absl::StatusOr<mlir::ElementType> ValidateAddmmInputsAndGetOutputDtype(
                    alpha.scalar().type() != at::kComplexDouble,
                error::kPythonNotImplementedError)
       << "complex dtypes are not yet supported";
-  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=PyTorch prevents non-matrix mat1.
-      mat1.dim() == 2, error::kInvalidArgument)
+  TT_RET_CHECK(mat1.dim() == 2, error::kInvalidArgument)
       << "expected mat1 to be a matrix, got " << mat1.dim() << "-D tensor";
-  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=PyTorch prevents non-matrix mat2.
-      mat2.dim() == 2, error::kInvalidArgument)
+  TT_RET_CHECK(mat2.dim() == 2, error::kInvalidArgument)
       << "expected mat2 to be a matrix, got " << mat2.dim() << "-D tensor";
-  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=PyTorch prevents mismatch.
-      mat1.size(1) == mat2.size(0), error::kInvalidArgument)
+  TT_RET_CHECK(mat1.size(1) == mat2.size(0), error::kInvalidArgument)
       << "expected size 1 of mat1 to be same as size 0 of mat2, got "
       << mat1.size(1) << " and " << mat2.size(0) << " respectively";
 
@@ -161,19 +181,39 @@ absl::StatusOr<mlir::ElementType> ValidateAddmmInputsAndGetOutputDtype(
                       _.SetOverride()
                           << "TorchTPU does not yet support the output dtype "
                           << ToString(out_scalar_type));
+  if (out_dtype.has_value()) {
+    TT_RET_CHECK(out_scalar_type == mat1.scalar_type() ||
+                     (out_scalar_type == at::kFloat &&
+                      (mat1.scalar_type() == at::kHalf ||
+                       mat1.scalar_type() == at::kBFloat16)),
+                 error::kInvalidArgument)
+        << "expected out_dtype to be the same as input dtype or float32 for "
+           "float16/bfloat16 inputs, got "
+        << ToString(out_scalar_type);
+    TT_RET_CHECK(self.scalar_type() == out_scalar_type ||
+                     self.scalar_type() == mat1.scalar_type(),
+                 error::kInvalidArgument)
+        << "expected self dtype to match either out_dtype ("
+        << ToString(out_scalar_type) << ") or mat1 dtype ("
+        << ToString(mat1.scalar_type()) << "), got "
+        << ToString(self.scalar_type());
+  }
   return output_dtype_mlir;
 }
 
 template <typename ReturnType, typename Dispatch4, typename Dispatch5>
 ReturnType DispatchAddmm(const at::Tensor& self, const at::Tensor& mat1,
                          const at::Tensor& mat2, MaybePromotedScalar beta,
-                         PromotedScalar alpha, at::ScalarType out_scalar_type,
+                         PromotedScalar alpha,
+                         std::optional<at::ScalarType> out_dtype,
                          OpParamCacheKeys& param_keys,
                          std::optional<bool> use_gelu, Dispatch4&& dispatch4,
                          Dispatch5&& dispatch5) {
   TT_ASSIGN_OR_RETURN(mlir::ElementType output_dtype_mlir,
                       ValidateAddmmInputsAndGetOutputDtype(
-                          self, mat1, mat2, beta, alpha, out_scalar_type));
+                          self, mat1, mat2, beta, alpha, out_dtype));
+  const at::ScalarType out_scalar_type = out_dtype.value_or(self.scalar_type());
+  const at::ScalarType compute_scalar_type = ToAccumulateType(out_scalar_type);
   Dimensions output_dims_vec = {mat1.size(0), mat2.size(1)};
   const auto current_precision = GetAndAddPrecisionTo(param_keys);
 
@@ -191,7 +231,7 @@ ReturnType DispatchAddmm(const at::Tensor& self, const at::Tensor& mat1,
 
   if (beta.ValueMatchesExclude()) {
     TT_ASSIGN_OR_RETURN(const at::Tensor alpha_tensor,
-                        alpha.GetTensor(out_scalar_type));
+                        alpha.GetTensor(compute_scalar_type));
     auto op_builder = [output_dtype_mlir, current_precision, apply_activation](
                           FixedSizeSpan<mlir::MlirOp, 4> inputs_op)
         -> absl::StatusOr<mlir::MlirOp> {
@@ -210,9 +250,9 @@ ReturnType DispatchAddmm(const at::Tensor& self, const at::Tensor& mat1,
   }
 
   TT_ASSIGN_OR_RETURN(const at::Tensor beta_tensor,
-                      beta.GetTensor(out_scalar_type));
+                      beta.GetTensor(compute_scalar_type));
   TT_ASSIGN_OR_RETURN(const at::Tensor alpha_tensor,
-                      alpha.GetTensor(out_scalar_type));
+                      alpha.GetTensor(compute_scalar_type));
   auto op_builder = [output_dtype_mlir, current_precision,
                      apply_activation](FixedSizeSpan<mlir::MlirOp, 5> inputs_op)
       -> absl::StatusOr<mlir::MlirOp> {
@@ -254,10 +294,11 @@ absl::StatusOr<DeviceBufferRef> AddMm(
 
 absl::Status AddMmOut(const at::Tensor& self, const at::Tensor& mat1,
                       const at::Tensor& mat2, MaybePromotedScalar beta,
-                      PromotedScalar alpha, at::ScalarType out_scalar_type,
+                      PromotedScalar alpha,
+                      std::optional<at::ScalarType> out_dtype,
                       OpParamCacheKeys& param_keys, at::Tensor& out) {
   return DispatchAddmm<absl::Status>(
-      self, mat1, mat2, std::move(beta), std::move(alpha), out_scalar_type,
+      self, mat1, mat2, std::move(beta), std::move(alpha), out_dtype,
       param_keys, /*use_gelu=*/std::nullopt,
       [&]  // REF_CAPTURE_OK=called synchronously
       (auto op_builder, const at::Tensor& alpha_tensor, auto options) {
@@ -277,11 +318,11 @@ absl::Status AddMmOut(const at::Tensor& self, const at::Tensor& mat1,
 absl::Status AddMmActivationOut(const at::Tensor& self, const at::Tensor& mat1,
                                 const at::Tensor& mat2,
                                 MaybePromotedScalar beta, PromotedScalar alpha,
-                                bool use_gelu, at::ScalarType out_scalar_type,
-                                OpParamCacheKeys& param_keys, at::Tensor& out) {
+                                bool use_gelu, OpParamCacheKeys& param_keys,
+                                at::Tensor& out) {
   return DispatchAddmm<absl::Status>(
-      self, mat1, mat2, std::move(beta), std::move(alpha), out_scalar_type,
-      param_keys, use_gelu,
+      self, mat1, mat2, std::move(beta), std::move(alpha),
+      /*out_dtype=*/std::nullopt, param_keys, use_gelu,
       [&]  // REF_CAPTURE_OK=called synchronously
       (auto op_builder, const at::Tensor& alpha_tensor, auto options) {
         return DispatchOpOut<4>(std::move(op_builder),
@@ -311,11 +352,12 @@ at::Tensor& AtenAddmmOut(const at::Tensor& self, const at::Tensor& mat1,
         TT_CHECK_THROW(out.scalar_type() == self.scalar_type(),
                        error::kInvalidArgument)
             << "expected input and out tensors to have the same dtype, got "
-            << torch_tpu::ToString(self.scalar_type()) << " vs "
-            << torch_tpu::ToString(out.scalar_type());
+            << ToString(self.scalar_type()) << " vs "
+            << ToString(out.scalar_type());
         TT_THROW_IF_ERROR(AddMmOut(self, mat1, mat2, std::move(promoted_beta),
-                                   std::move(promoted_alpha), out.scalar_type(),
-                                   param_keys, out));
+                                   std::move(promoted_alpha),
+                                   /*out_dtype=*/std::nullopt, param_keys,
+                                   out));
         return out;
       });
 }
@@ -335,12 +377,11 @@ at::Tensor& AtenAddmmActivationOut(const at::Tensor& self,
         TT_CHECK_THROW(out.scalar_type() == self.scalar_type(),
                        error::kInvalidArgument)
             << "expected input and out tensors to have the same dtype, got "
-            << torch_tpu::ToString(self.scalar_type()) << " vs "
-            << torch_tpu::ToString(out.scalar_type());
-        TT_THROW_IF_ERROR(
-            AddMmActivationOut(self, mat1, mat2, std::move(promoted_beta),
-                               std::move(promoted_alpha), use_gelu,
-                               out.scalar_type(), param_keys, out));
+            << ToString(self.scalar_type()) << " vs "
+            << ToString(out.scalar_type());
+        TT_THROW_IF_ERROR(AddMmActivationOut(
+            self, mat1, mat2, std::move(promoted_beta),
+            std::move(promoted_alpha), use_gelu, param_keys, out));
         return out;
       });
 }
@@ -373,8 +414,8 @@ at::Tensor& AtenAddmmDtypeOut(const at::Tensor& self, const at::Tensor& mat1,
       (self, mat1, mat2, out_dtype, promoted_beta, promoted_alpha, out), {
         TT_CHECK_THROW(out.scalar_type() == out_dtype, error::kInvalidArgument)
             << "expected out dtype to match out_dtype, got out dtype "
-            << torch_tpu::ToString(out.scalar_type()) << " and out_dtype "
-            << torch_tpu::ToString(out_dtype);
+            << ToString(out.scalar_type()) << " and out_dtype "
+            << ToString(out_dtype);
         TT_THROW_IF_ERROR(AddMmOut(self, mat1, mat2, std::move(promoted_beta),
                                    std::move(promoted_alpha), out_dtype,
                                    param_keys, out));

@@ -16,6 +16,7 @@
 
 #include "csrc/ops/scaled_dot_product_attention/flash_attention_kernel.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <limits>
 #include <optional>
@@ -26,6 +27,7 @@
 #include "csrc/internal/mosaic/kiln/kiln.h"
 #include "csrc/ops/scaled_dot_product_attention/flash_attention_config.h"
 #include "csrc/ops/scaled_dot_product_attention/util.h"
+#include "llvm/ADT/STLExtras.h"
 
 namespace torch_tpu {
 
@@ -43,16 +45,16 @@ struct SoftmaxState {
 
 // Kernel arguments that are shared by all sub-blocks of a grid step.
 struct KernelArgs {
-  std::optional<kiln::Ref> seed_ref;
-  kiln::Ref q_ref;
-  kiln::Ref k_ref;
-  kiln::Ref v_ref;
-  std::optional<kiln::Ref> bias_ref;
-  kiln::Ref o_ref;
-  std::optional<kiln::Ref> lse_ref;
-  kiln::Ref acc_ref;
-  kiln::Ref m_ref;
-  kiln::Ref l_ref;
+  std::optional<kiln::SmemRef> seed_ref;
+  kiln::VmemRef q_ref;
+  kiln::VmemRef k_ref;
+  kiln::VmemRef v_ref;
+  std::optional<kiln::VmemRef> bias_ref;
+  kiln::VmemRef o_ref;
+  std::optional<kiln::VmemRef> lse_ref;
+  kiln::VmemRef acc_ref;
+  kiln::VmemRef m_ref;
+  kiln::VmemRef l_ref;
   kiln::Scalar qi;
   kiln::Scalar ki;
 };
@@ -67,9 +69,10 @@ kiln::IndexIndices LseBlockIndexMap() {
 
 void InitSoftmaxScratch(const FlashAttnConfig& config, const Tiling& tiling,
                         const KernelArgs& args) {
-  args.acc_ref() = kiln::Zeros(kiln::f32(tiling.qt, config.vo_head_dim));
-  args.l_ref() = kiln::Zeros(kiln::f32(tiling.qt, kLanes));
-  args.m_ref() = kiln::NInf(kiln::f32(tiling.qt, kLanes));
+  kiln::Store(args.acc_ref,
+              kiln::Zeros(kiln::f32(tiling.qt, config.vo_head_dim)));
+  kiln::Store(args.l_ref, kiln::Zeros(kiln::f32(tiling.qt, kLanes)));
+  kiln::Store(args.m_ref, kiln::NInf(kiln::f32(tiling.qt, kLanes)));
 }
 
 kiln::Tile ApplyDropoutToProbabilities(const FlashAttnConfig& config,
@@ -93,14 +96,149 @@ void StoreNormalizedOutput(const FlashAttnConfig& config,
   const int64_t rows = state.acc.dims()[0];
   kiln::Tile is_zero_l = state.l == 0.0f;
   kiln::Tile safe_l = Select(is_zero_l, 1.0f, state.l);
-  args.o_ref(0, 0, kiln::Slice(row_offset, rows), kiln::all) =
+  kiln::SliceDim row_slice = kiln::Slice(row_offset, rows);
+  kiln::Tile out =
       state.acc * kiln::Reciprocal(safe_l).Lanes(config.vo_head_dim);
+  kiln::Store(args.o_ref(0, 0, row_slice, kiln::all), out);
   if (args.lse_ref) {
     kiln::Tile lse =
         Select(is_zero_l, kiln::NInf(state.l.shape()), state.m + Log2(safe_l));
-    (*args.lse_ref)(0, 0, kiln::all, kiln::Slice(row_offset, rows)) =
-        kiln::Transpose(lse.Lanes(1));
+    kiln::Tile lse_row = kiln::Transpose(lse.Lanes(1));
+    kiln::Store((*args.lse_ref)(0, 0, kiln::all, row_slice), lse_row);
   }
+}
+
+// Loads a [rows, cols] sub-block starting at `row_offset` from `ref`
+// ([1, 1, block_rows, cols]). Because unaligned sequence inputs are not padded
+// in VMEM, the last grid block (`block_idx == num_blocks - 1`) only has
+// `seq_len % block_rows` valid rows; clamping the `vector.load` to the valid
+// tail and zero-padding in VREGs avoids reading past the end of VMEM (and
+// zeroes out-of-bounds V rows so 0 * NaN cannot poison the accumulator).
+kiln::Tile LoadClampedRows(kiln::VmemRef ref, kiln::Scalar block_idx,
+                           const int64_t num_blocks, const int64_t seq_len,
+                           const int64_t row_offset, const int64_t rows) {
+  const int64_t block_rows = ref.dims()[2];
+  const int64_t cols = ref.dims()[3];
+  const int64_t tail = seq_len % block_rows;
+  auto load_full = [&] {  // REF_CAPTURE_OK=called synchronously
+    return kiln::Load(ref(0, 0, kiln::Slice(row_offset, rows), kiln::all));
+  };
+  if (tail == 0 || row_offset + rows <= tail) {
+    return load_full();
+  }
+  const int64_t valid_rows = std::max<int64_t>(0, tail - row_offset);
+  auto load_tail = [&] {  // REF_CAPTURE_OK=called synchronously
+    if (valid_rows == 0) {
+      return kiln::Zeros(ref.dtype()(rows, cols));
+    }
+    kiln::Tile part =
+        kiln::Load(ref(0, 0), {row_offset, 0}, {valid_rows, cols});
+    return kiln::Concat(
+        {part, kiln::Zeros(ref.dtype()(rows - valid_rows, cols))},
+        /*axis=*/0);
+  };
+  if (num_blocks == 1) {
+    return load_tail();
+  }
+  return kiln::If(block_idx == num_blocks - 1, load_tail, load_full);
+}
+
+enum class TailKind {
+  kFull,
+  kRagged,
+};
+
+// Loads the f32 [rows, cols] bias sub-block at (row_offset, col_offset),
+// clamping ragged non-broadcast Q/KV dimensions on the final block so that
+// unpadded VMEM bias buffers are never read out of bounds.
+kiln::Tile LoadClampedBias(kiln::VmemRef bias_ref,
+                           const FlashAttnConfig& config, const Tiling& tiling,
+                           const KernelArgs& args, const int64_t row_offset,
+                           const int64_t rows, const int64_t col_offset,
+                           const int64_t cols) {
+  const bool q_bcast = llvm::is_contained(config.mask_broadcast_dims, 2);
+  const bool kv_bcast = llvm::is_contained(config.mask_broadcast_dims, 3);
+  const int64_t num_q_blocks = config.padded_q_sequence_length / tiling.qt;
+  const int64_t num_kv_blocks = config.padded_kv_sequence_length / tiling.kt;
+  const int64_t q_tail = q_bcast ? 0 : (config.q_sequence_length % tiling.qt);
+  const int64_t kv_tail =
+      kv_bcast ? 0 : (config.kv_sequence_length % tiling.kt);
+  const bool clamp_q = q_tail != 0 && row_offset + rows > q_tail;
+  const bool clamp_kv = kv_tail != 0 && col_offset + cols > kv_tail;
+  if (!clamp_q && !clamp_kv) {
+    return LoadBias(bias_ref, config, row_offset, rows, col_offset, cols);
+  }
+
+  auto emit_tile = [&]  // REF_CAPTURE_OK=called inline
+      (const TailKind q_kind, const TailKind kv_kind) -> kiln::Tile {
+    if (q_kind == TailKind::kFull && kv_kind == TailKind::kFull) {
+      return LoadBias(bias_ref, config, row_offset, rows, col_offset, cols);
+    }
+    const int64_t load_rows =
+        q_bcast ? 1
+                : (q_kind == TailKind::kRagged
+                       ? std::max<int64_t>(0, q_tail - row_offset)
+                       : rows);
+    const int64_t load_cols =
+        kv_bcast ? 1
+                 : (kv_kind == TailKind::kRagged
+                        ? std::max<int64_t>(0, kv_tail - col_offset)
+                        : cols);
+    if (load_rows == 0 || load_cols == 0) {
+      return kiln::Zeros(kiln::f32(rows, cols));
+    }
+    const int64_t b_row_off = q_bcast ? 0 : row_offset;
+    const int64_t b_col_off = kv_bcast ? 0 : col_offset;
+    const int64_t valid_q = q_bcast ? rows : load_rows;
+    const int64_t valid_kv = kv_bcast ? cols : load_cols;
+    kiln::Tile bias = kiln::Load(bias_ref(0, 0), {b_row_off, b_col_off},
+                                 {load_rows, load_cols})
+                          .AsType(kiln::f32)
+                          .BroadcastTo({valid_q, valid_kv});
+    if (valid_q < rows) {
+      bias =
+          kiln::Concat({bias, kiln::Zeros(kiln::f32(rows - valid_q, valid_kv))},
+                       /*axis=*/0);
+    }
+    if (valid_kv < cols) {
+      bias = kiln::Concat({bias, kiln::Zeros(kiln::f32(rows, cols - valid_kv))},
+                          /*axis=*/1);
+    }
+    return bias;
+  };
+
+  auto emit_for_q = [&]  // REF_CAPTURE_OK=called inline
+      (const TailKind q_kind) -> kiln::Tile {
+    if (!clamp_kv) {
+      return emit_tile(q_kind, TailKind::kFull);
+    }
+    if (num_kv_blocks == 1) {
+      return emit_tile(q_kind, TailKind::kRagged);
+    }
+    return kiln::If(
+        args.ki == num_kv_blocks - 1,
+        [&] {  // REF_CAPTURE_OK=called synchronously
+          return emit_tile(q_kind, TailKind::kRagged);
+        },
+        [&] {  // REF_CAPTURE_OK=called synchronously
+          return emit_tile(q_kind, TailKind::kFull);
+        });
+  };
+
+  if (!clamp_q) {
+    return emit_for_q(TailKind::kFull);
+  }
+  if (num_q_blocks == 1) {
+    return emit_for_q(TailKind::kRagged);
+  }
+  return kiln::If(
+      args.qi == num_q_blocks - 1,
+      [&] {  // REF_CAPTURE_OK=called synchronously
+        return emit_for_q(TailKind::kRagged);
+      },
+      [&] {  // REF_CAPTURE_OK=called synchronously
+        return emit_for_q(TailKind::kFull);
+      });
 }
 
 // Folds the [rows, kc] logits sub-block at (row_offset, col_offset) of the
@@ -112,31 +250,34 @@ SoftmaxState UpdateSoftmaxState(const FlashAttnConfig& config,
                                 const std::optional<SoftmaxState>& prev) {
   const int64_t kc = tiling.kc;
   const int64_t d_vo = config.vo_head_dim;
+  const int64_t num_kv_blocks = config.padded_kv_sequence_length / tiling.kt;
   kiln::DType dt = config.element_type;
 
-  kiln::Tile k(args.k_ref(0, 0, kiln::Slice(col_offset, kc), kiln::all));
+  kiln::Tile k = LoadClampedRows(args.k_ref, args.ki, num_kv_blocks,
+                                 config.kv_sequence_length, col_offset, kc);
   kiln::Tile s =
       kiln::Dot(q, k, {.transpose_rhs = true, .precision = config.precision}) *
       (config.scale * kLog2e);
   if (args.bias_ref) {
-    kiln::Tile bias =
-        LoadBias(*args.bias_ref, config, row_offset, rows, col_offset, kc);
+    kiln::Tile bias = LoadClampedBias(*args.bias_ref, config, tiling, args,
+                                      row_offset, rows, col_offset, kc);
     s += bias * kLog2e;
   }
   if (apply_masking) {
     s = ApplyStructuredMask(s, args.qi, args.ki, config, tiling, row_offset,
-                            col_offset);
+                            col_offset, QueryTailMasking::kSkip);
   }
 
   kiln::Tile mij = kiln::MaxReduce(s, 1).Lanes(kLanes);
-  if (args.bias_ref || config.sliding_window_size.has_value()) {
+  if (args.bias_ref) {
     // Clamping mij instead of sij ensures that when a row is entirely masked
     // out with -inf, sij - mij evaluates to (-inf) - (<large negative finite>)
     // = -inf, so exp2(-inf) = 0.0 naturally without any vector compare or
     // select on p in the inner loop.
     mij = Max(mij, std::numeric_limits<float>::lowest());
   }
-  kiln::Tile v(args.v_ref(0, 0, kiln::Slice(col_offset, kc), kiln::all));
+  kiln::Tile v = LoadClampedRows(args.v_ref, args.ki, num_kv_blocks,
+                                 config.kv_sequence_length, col_offset, kc);
 
   if (!prev.has_value()) {
     kiln::Tile p = Exp2(s - mij.Lanes(kc));
@@ -163,9 +304,9 @@ SoftmaxState UpdateSoftmaxState(const FlashAttnConfig& config,
 SoftmaxState LoadSoftmaxState(const KernelArgs& args, int64_t row_offset,
                               int64_t num_rows) {
   return SoftmaxState{
-      .m = kiln::Tile(args.m_ref(kiln::Slice(row_offset, num_rows), kiln::all)),
-      .l = kiln::Tile(args.l_ref(kiln::Slice(row_offset, num_rows), kiln::all)),
-      .acc = kiln::Tile(
+      .m = kiln::Load(args.m_ref(kiln::Slice(row_offset, num_rows), kiln::all)),
+      .l = kiln::Load(args.l_ref(kiln::Slice(row_offset, num_rows), kiln::all)),
+      .acc = kiln::Load(
           args.acc_ref(kiln::Slice(row_offset, num_rows), kiln::all)),
   };
 }
@@ -173,9 +314,10 @@ SoftmaxState LoadSoftmaxState(const KernelArgs& args, int64_t row_offset,
 void StoreSoftmaxState(const KernelArgs& args, const SoftmaxState& state,
                        int64_t row_offset) {
   const int64_t num_rows = state.acc.dims()[0];
-  args.m_ref(kiln::Slice(row_offset, num_rows), kiln::all) = state.m;
-  args.l_ref(kiln::Slice(row_offset, num_rows), kiln::all) = state.l;
-  args.acc_ref(kiln::Slice(row_offset, num_rows), kiln::all) = state.acc;
+  kiln::SliceDim row_slice = kiln::Slice(row_offset, num_rows);
+  kiln::Store(args.m_ref(row_slice, kiln::all), state.m);
+  kiln::Store(args.l_ref(row_slice, kiln::all), state.l);
+  kiln::Store(args.acc_ref(row_slice, kiln::all), state.acc);
 }
 
 // Processes a single [band_rows, kt] query band across its active KV
@@ -183,9 +325,12 @@ void StoreSoftmaxState(const KernelArgs& args, const SoftmaxState& state,
 void EmitQueryBand(const FlashAttnConfig& config, const Tiling& tiling,
                    const KernelArgs& args, int64_t row_offset,
                    int64_t band_rows, int64_t num_kv_subblocks,
-                   bool single_kv_step, bool has_padding,
+                   bool single_kv_step, bool ragged_kv,
                    bool square_causal_diag_block, bool intersects_causal_diag) {
-  kiln::Tile q(args.q_ref(0, 0, kiln::Slice(row_offset, band_rows), kiln::all));
+  const int64_t num_q_blocks = config.padded_q_sequence_length / tiling.qt;
+  kiln::Tile q =
+      LoadClampedRows(args.q_ref, args.qi, num_q_blocks,
+                      config.q_sequence_length, row_offset, band_rows);
 
   std::optional<SoftmaxState> state =
       single_kv_step
@@ -196,7 +341,7 @@ void EmitQueryBand(const FlashAttnConfig& config, const Tiling& tiling,
     const bool apply_causal_mask = square_causal_diag_block
                                        ? (kv_sub == num_kv_subblocks - 1)
                                        : intersects_causal_diag;
-    const bool apply_masking = has_padding || apply_causal_mask;
+    const bool apply_masking = ragged_kv || apply_causal_mask;
     state = UpdateSoftmaxState(config, tiling, args, q, row_offset, band_rows,
                                kv_sub * tiling.kc, apply_masking, state);
   }
@@ -211,13 +356,12 @@ void EmitQueryBand(const FlashAttnConfig& config, const Tiling& tiling,
 // Processes the [qt, kt] grid tile as a static grid of [band_rows, kc]
 // sub-blocks.
 void EmitGridStep(const FlashAttnConfig& config, const Tiling& tiling,
-                  const KernelArgs& args, bool single_kv_step, bool has_padding,
+                  const KernelArgs& args, bool single_kv_step, bool ragged_kv,
                   bool intersects_causal_diag) {
   const int64_t qt = tiling.qt;
   const int64_t kt = tiling.kt;
   const int64_t kc = tiling.kc;
-  const bool square_causal_diag_block = intersects_causal_diag && qt == kt &&
-                                        !config.sliding_window_size.has_value();
+  const bool square_causal_diag_block = intersects_causal_diag && qt == kt;
   const int64_t band_rows = square_causal_diag_block ? kc : qt;
   const int64_t num_bands = qt / band_rows;
 
@@ -225,7 +369,7 @@ void EmitGridStep(const FlashAttnConfig& config, const Tiling& tiling,
     const int64_t num_kv_subblocks =
         square_causal_diag_block ? (band + 1) : (kt / kc);
     EmitQueryBand(config, tiling, args, band * band_rows, band_rows,
-                  num_kv_subblocks, single_kv_step, has_padding,
+                  num_kv_subblocks, single_kv_step, ragged_kv,
                   square_causal_diag_block, intersects_causal_diag);
   }
 }
@@ -251,10 +395,12 @@ absl::StatusOr<kiln::Kernel> CreateKernel(const FlashAttnConfig& config,
   const int64_t kt = normalized_tiling.kt;
   const int64_t d_qk = config.qk_head_dim;
   const int64_t d_vo = config.vo_head_dim;
+  // The grid covers the sequences rounded up to whole tiles.
   const int64_t num_q_blocks = config.padded_q_sequence_length / qt;
   const int64_t num_kv_blocks = config.padded_kv_sequence_length / kt;
   const bool single_kv_step = num_kv_blocks == 1 && !config.is_causal;
-  const bool has_padding = NeedsPadMask(config, normalized_tiling);
+  // Out-of-bounds query rows are discarded when writing the output.
+  const bool ragged_kv = config.kv_sequence_length % kt != 0;
   kiln::DType dt = config.element_type;
 
   // ---------------------------------------------------------------------------
@@ -295,10 +441,11 @@ absl::StatusOr<kiln::Kernel> CreateKernel(const FlashAttnConfig& config,
           kiln::ScratchSpec{kiln::f32(qt, kLanes)},
           kiln::ScratchSpec{kiln::f32(qt, kLanes)},
           [&]  // REF_CAPTURE_OK=called synchronously
-          (std::optional<kiln::Ref> seed_ref, kiln::Ref q_ref, kiln::Ref k_ref,
-           kiln::Ref v_ref, std::optional<kiln::Ref> bias_ref, kiln::Ref o_ref,
-           std::optional<kiln::Ref> lse_ref, kiln::Ref acc_ref, kiln::Ref m_ref,
-           kiln::Ref l_ref) {
+          (std::optional<kiln::SmemRef> seed_ref, kiln::VmemRef q_ref,
+           kiln::VmemRef k_ref, kiln::VmemRef v_ref,
+           std::optional<kiln::VmemRef> bias_ref, kiln::VmemRef o_ref,
+           std::optional<kiln::VmemRef> lse_ref, kiln::VmemRef acc_ref,
+           kiln::VmemRef m_ref, kiln::VmemRef l_ref) {
             KernelArgs args{
                 .seed_ref = seed_ref,
                 .q_ref = q_ref,
@@ -314,54 +461,39 @@ absl::StatusOr<kiln::Kernel> CreateKernel(const FlashAttnConfig& config,
                 .ki = kiln::ProgramId(3),
             };
 
-            auto emit_causal_step = [&] {  // REF_CAPTURE_OK=called locally
+            if (config.is_causal) {
               kiln::If(
-                  IntersectsDiagonal(args.qi, args.ki, config,
-                                     normalized_tiling),
+                  BelowOrOnDiagonal(args.qi, args.ki, normalized_tiling),
                   [&] {  // REF_CAPTURE_OK=called synchronously
-                    EmitGridStep(config, normalized_tiling, args,
-                                 single_kv_step, has_padding,
-                                 /*intersects_causal_diag=*/true);
-                  },
-                  [&] {  // REF_CAPTURE_OK=called synchronously
-                    EmitGridStep(config, normalized_tiling, args,
-                                 single_kv_step, has_padding,
-                                 /*intersects_causal_diag=*/false);
-                  });
-            };
-
-            if (config.is_causal && !config.sliding_window_size.has_value()) {
-              kiln::If(BelowOrOnDiagonal(args.qi, args.ki, config,
-                                         normalized_tiling),
-                       [&] {  // REF_CAPTURE_OK=called synchronously
-                         if (!single_kv_step) {
-                           kiln::If(
-                               args.ki == 0,
+                    if (!single_kv_step) {
+                      kiln::If(args.ki == 0,
                                [&] {  // REF_CAPTURE_OK=called synchronously
                                  InitSoftmaxScratch(config, normalized_tiling,
                                                     args);
                                });
-                         }
-                         emit_causal_step();
-                       });
+                    }
+                    kiln::If(
+                        IntersectsDiagonal(args.qi, args.ki, normalized_tiling),
+                        [&] {  // REF_CAPTURE_OK=called synchronously
+                          EmitGridStep(config, normalized_tiling, args,
+                                       single_kv_step, ragged_kv,
+                                       /*intersects_causal_diag=*/true);
+                        },
+                        [&] {  // REF_CAPTURE_OK=called synchronously
+                          EmitGridStep(config, normalized_tiling, args,
+                                       single_kv_step, ragged_kv,
+                                       /*intersects_causal_diag=*/false);
+                        });
+                  });
             } else {
-              // Scratch accumulators are reused across `qi` and reset at
-              // `ki == 0`. With a sliding window, `ki == 0` can be outside the
-              // window and skipped, so reset before the causal guard.
               if (!single_kv_step) {
                 kiln::If(args.ki == 0,
                          [&] {  // REF_CAPTURE_OK=called synchronously
                            InitSoftmaxScratch(config, normalized_tiling, args);
                          });
               }
-              if (config.is_causal) {
-                kiln::If(BelowOrOnDiagonal(args.qi, args.ki, config,
-                                           normalized_tiling),
-                         emit_causal_step);
-              } else {
-                EmitGridStep(config, normalized_tiling, args, single_kv_step,
-                             has_padding, /*intersects_causal_diag=*/false);
-              }
+              EmitGridStep(config, normalized_tiling, args, single_kv_step,
+                           ragged_kv, /*intersects_causal_diag=*/false);
             }
 
             if (!single_kv_step) {
@@ -370,9 +502,9 @@ absl::StatusOr<kiln::Kernel> CreateKernel(const FlashAttnConfig& config,
                          StoreNormalizedOutput(
                              config, args,
                              SoftmaxState{
-                                 .m = kiln::Tile(args.m_ref),
-                                 .l = kiln::Tile(args.l_ref),
-                                 .acc = kiln::Tile(args.acc_ref),
+                                 .m = kiln::Load(args.m_ref),
+                                 .l = kiln::Load(args.l_ref),
+                                 .acc = kiln::Load(args.acc_ref),
                              },
                              /*row_offset=*/0);
                        });

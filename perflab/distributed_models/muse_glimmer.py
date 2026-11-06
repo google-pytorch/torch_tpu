@@ -35,6 +35,7 @@ from perflab import registry as registry_lib
 from perflab import step_lib
 from perflab import target as target_lib
 from perflab import torch_device_ops
+from perflab import workload as workload_lib
 from perflab.model_utils import torchtitan_batching
 from perflab.model_utils import torchtitan_muse_glimmer
 from torchtitan.experiments.graph_trainer import simple_fsdp
@@ -55,6 +56,16 @@ _SUPPORTED_PLATFORMS: frozenset[target_lib.Platform] = frozenset({
 # e.g. v7_2x2x1 has 8 processes x 1 x 2048 = 16,384 tokens/step and b200_4 has
 # 4 processes x 2 x 2048 = 16,384 tokens/step).
 _FULL_SEQ_LEN = 2048
+
+
+def _workload(ctx: context_lib.Context) -> workload_lib.Workload:
+  """Returns the workload: packed sequences per process (2 per chip)."""
+  seq_len = (
+      128 if ctx.run_scope is context_lib.RunScope.PRESUBMIT else _FULL_SEQ_LEN
+  )
+  return workload_lib.Workload(
+      torchtitan_batching.batch_size_for_target(ctx.target), seq_len
+  )
 
 
 def build_model(
@@ -122,6 +133,7 @@ def build_model(
         "eager_defer_never_and_launch_blocking",
     },
     presubmit=registry_lib.PresubmitPolicy.RUN,
+    workload=_workload,
 )
 def muse_glimmer_30b_4_layers_simple_fsdp_training(
     ctx: context_lib.Context,
@@ -145,17 +157,17 @@ def muse_glimmer_30b_4_layers_simple_fsdp_training(
   world_size = torch.distributed.get_world_size()
   rank = torch.distributed.get_rank()
 
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
   if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
-    seq_len = 128
     num_layers = 2
     flavor = "debugmodel"
   else:
-    seq_len = _FULL_SEQ_LEN
     num_layers = 4
     flavor = "30B"
 
   device_str = ctx.device_kind.value
-  batch_size = torchtitan_batching.batch_size_for_target(ctx.target)
   tokens_per_step = world_size * batch_size * seq_len
   config = torchtitan_muse_glimmer.text_config(flavor, num_layers, seq_len)
   logging.info(

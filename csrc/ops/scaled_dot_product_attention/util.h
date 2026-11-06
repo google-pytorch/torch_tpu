@@ -70,7 +70,7 @@ std::optional<kiln::InSpec> AttnBiasSpec(const FlashAttnConfig& config,
 
 // Loads the f32 (rows, cols) bias sub-block at (row_offset, col_offset),
 // broadcasting a size-1 query / key dim (see `BiasBlockShape`).
-kiln::Tile LoadBias(kiln::Ref bias_ref, const FlashAttnConfig& config,
+kiln::Tile LoadBias(kiln::VmemRef bias_ref, const FlashAttnConfig& config,
                     int64_t row_offset, int64_t rows, int64_t col_offset,
                     int64_t cols);
 
@@ -79,35 +79,40 @@ kiln::Tile LoadBias(kiln::Ref bias_ref, const FlashAttnConfig& config,
 bool NeedsPadMask(const FlashAttnConfig& config, const Tiling& tiling);
 
 // True when the (row_block, col_block) tile pair touches or lies below the
-// diagonal (and within `config.sliding_window_size` when set), i.e. the tile
-// contributes to a causal softmax.
+// diagonal, i.e. the tile contributes to a causal softmax.
 kiln::Scalar BelowOrOnDiagonal(kiln::Scalar row_block, kiln::Scalar col_block,
-                               const FlashAttnConfig& config,
                                const Tiling& tiling);
 
 // True when the (row_block, col_block) tile contains at least one element
-// strictly above the diagonal (or outside `config.sliding_window_size` when
-// set), i.e. whether a causal mask needs to be applied to it. Tiles strictly
-// inside the valid region need no masking.
+// strictly above the diagonal, i.e. whether a causal mask needs to be applied
+// to it. Tiles strictly below the diagonal need no masking.
 kiln::Scalar IntersectsDiagonal(kiln::Scalar row_block, kiln::Scalar col_block,
-                                const FlashAttnConfig& config,
                                 const Tiling& tiling);
 
-// Masks out logits above the diagonal (causal), outside the sliding window, and
-// in the padded tail of either sequence for the sub-block starting at
-// (row_offset, col_offset) within the (row_block, col_block) grid tile. Returns
-// `s` untouched when no masking is required.
-kiln::Tile ApplyStructuredMask(kiln::Tile s, kiln::Scalar row_block,
-                               kiln::Scalar col_block,
-                               const FlashAttnConfig& config,
-                               const Tiling& tiling, int64_t row_offset = 0,
-                               int64_t col_offset = 0);
+// Whether `ApplyStructuredMask` masks out the logits of query rows past the end
+// of the query sequence.
+enum class QueryTailMasking {
+  kMask,
+  // For kernels whose per-row results are dropped for those rows anyway (e.g.
+  // the forward kernel, whose out-of-bounds output writes are discarded).
+  kSkip,
+};
+
+// Masks out logits above the diagonal (causal) and in the padded tail of
+// either sequence for the sub-block starting at (row_offset, col_offset)
+// within the (row_block, col_block) grid tile. Returns `s` untouched when no
+// masking is required.
+kiln::Tile ApplyStructuredMask(
+    kiln::Tile s, kiln::Scalar row_block, kiln::Scalar col_block,
+    const FlashAttnConfig& config, const Tiling& tiling, int64_t row_offset = 0,
+    int64_t col_offset = 0,
+    QueryTailMasking query_tail_masking = QueryTailMasking::kMask);
 
 // log2-scaled logits for one (q, k) tile pair:
 //   s = (q @ k^T) * scale * log2(e) [+ bias * log2(e)]
 // with causal / sequence-padding masking applied. Returns an f32 (qt, kt) tile.
 kiln::Tile ComputeLogits(kiln::Tile q, kiln::Tile k,
-                         std::optional<kiln::Ref> bias_ref,
+                         std::optional<kiln::VmemRef> bias_ref,
                          kiln::Scalar row_block, kiln::Scalar col_block,
                          const FlashAttnConfig& config, const Tiling& tiling);
 
@@ -126,7 +131,7 @@ kiln::Tile ComputeLogits(kiln::Tile q, kiln::Tile k,
 kiln::Tile DropoutKeepMask(const FlashAttnConfig& config, const Tiling& tiling,
                            kiln::Scalar batch, kiln::Scalar q_head,
                            kiln::Scalar row_block, kiln::Scalar col_block,
-                           kiln::Ref seed_ref, int64_t row_offset = 0,
+                           kiln::SmemRef seed_ref, int64_t row_offset = 0,
                            int64_t col_offset = 0, int64_t rows = 0,
                            int64_t cols = 0);
 

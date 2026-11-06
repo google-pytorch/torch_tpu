@@ -309,9 +309,7 @@ absl::StatusOr<FingerprintType> EncodeParamCacheKey(at::Scalar value);
 [[nodiscard]] inline FingerprintType EncodeParamCacheKey(const double value) {
   static_assert(sizeof(double) <= sizeof(FingerprintType),
                 "double must be small enough to fit in a FingerprintType.");
-  // Normalize -0.0 to 0.0.
-  const double normalized_value = (value == 0.0) ? 0.0 : value;
-  return absl::bit_cast<FingerprintType>(normalized_value);
+  return absl::bit_cast<FingerprintType>(value);
 }
 template <typename T, typename = std::enable_if_t<std::is_integral_v<T>>>
 [[nodiscard]] inline FingerprintType EncodeParamCacheKey(const T value) {
@@ -861,7 +859,7 @@ class CompilationCacheKey {
 
   // Creates a CompilationCacheKey from the given components.
   CompilationCacheKey(GraphKey graph_key, CompileOptionsKey compile_options_key,
-                      std::string id_key = "")
+                      int id_key = -1)
       : graph_key_(graph_key),
         compile_options_key_(compile_options_key),
         id_key_(id_key) {}
@@ -887,7 +885,7 @@ class CompilationCacheKey {
     return compile_options_key_;
   }
 
-  [[nodiscard]] std::string_view id_key() const { return id_key_; }
+  [[nodiscard]] int id_key() const { return id_key_; }
 
  private:
   // The fingerprint of all graph properties.
@@ -896,8 +894,8 @@ class CompilationCacheKey {
   CompileOptionsKey compile_options_key_;
   // Optional id to help identify the cache entry.
   // e.g. In the case of multiple different dynamic kernels that share a
-  // graph_key but are optimized for different sizes.
-  std::string id_key_ = "";
+  // graph_key but are optimized for different sizes. -1 means no id.
+  int id_key_ = -1;
 };
 
 // Formats a compilation cache key as a human-readable string.

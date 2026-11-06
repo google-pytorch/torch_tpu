@@ -18,11 +18,16 @@
 #define TORCH_TPU_CSRC_COMMON_LAYOUT_UTILS_H_
 
 #include <cstdint>
+#include <optional>
+#include <vector>
 
 #include "ATen/core/TensorBody.h"
 #include "absl/status/statusor.h"
+#include "absl/types/span.h"
 #include "csrc/common/dimension_types.h"
+#include "csrc/common/shape.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "xla/layout.h"
 
 namespace torch_tpu {
 
@@ -50,6 +55,20 @@ struct TpuLayout {
 // configurations to expose them as unpacked 1-byte elements with doubled
 // physical dimensions, adjusting sizes, strides, and offsets accordingly.
 absl::StatusOr<TpuLayout> ResolveTpuLayout(const at::Tensor& tensor);
+
+// Resolves the on-device `xla::Layout` for each `Shape` in `shapes`: starts
+// from `PjRtClient::GetDefaultLayout` for the shape's dtype and dimensions, and
+// applies any overrides from `shape.layout()` (custom tiles are ignored for
+// dynamic on-device shapes).
+absl::StatusOr<std::vector<xla::Layout>> ResolveXlaLayouts(
+    absl::Span<const Shape> shapes);
+
+// Returns `shape.layout()` if it differs from the device's default layout for
+// `shape`, or `std::nullopt` if `shape` uses the default layout. For dynamic
+// on-device shapes whose `minor_to_major` differs from the default, tiles are
+// omitted from the returned `CustomLayout`.
+absl::StatusOr<std::optional<CustomLayout>>
+ExtractCustomLayoutIfDifferentFromDefault(const Shape& shape);
 
 }  // namespace torch_tpu
 

@@ -18,7 +18,7 @@ import abc
 import asyncio
 import atexit
 import collections.abc
-from collections.abc import Collection, Sequence
+from collections.abc import Collection, Coroutine, Sequence
 import concurrent.futures
 import contextlib
 import dataclasses
@@ -28,7 +28,7 @@ import queue
 import struct
 import threading
 import time
-from typing import Any, Coroutine, Final, TypeVar, cast
+from typing import Any, Final, TypeVar, cast
 
 from absl import logging
 import portpicker
@@ -46,7 +46,11 @@ unset_fake_temporarily = fake_tensor.unset_fake_temporarily
 _T = TypeVar("_T")
 
 _COORDINATOR_RANK = 0  # Default coordinator rank, can be overridden.
-_DEFAULT_HANDSHAKE_PORT: Final[int] = 36423
+# Unassigned IANA user port below Linux ephemeral ports (32768-60999),
+# Kubernetes NodePorts (30000-32767), SGLang server/NCCL ports (30000+,
+# 22000-29999), and torch.distributed MASTER_PORT (29500), and above Ray worker
+# ports (10002-19999).
+_DEFAULT_HANDSHAKE_PORT: Final[int] = 21423
 
 
 def _get_handshake_timeout_s() -> int:

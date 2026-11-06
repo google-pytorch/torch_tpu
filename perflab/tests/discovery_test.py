@@ -86,6 +86,7 @@ class DiscoveryTest(seed_test_utils.RepeatableTest):
               @registry_lib.register_benchmark(
                   stepper=step_lib.StepperType.FORWARD,
                   presubmit=registry_lib.PresubmitPolicy.RUN,
+                  workload=None,
               )
               def discovered_probe():
                 return ("m", (), {}, None)

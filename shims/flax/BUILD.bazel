@@ -1,0 +1,36 @@
+# Copyright 2025 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Domain experts for this package:
+# pganssle-google
+# zhanyong-wan
+
+load("@rules_python//python:py_library.bzl", "py_library")
+load("//:visibility.bzl", "PACKAGE_DEFAULT_VISIBILITY")
+
+package(default_visibility = PACKAGE_DEFAULT_VISIBILITY)
+
+# flax (including flax.nnx) is part of the flax package.
+# Mark incompatible on Python 3.15 because its transitive dependencies
+# (tensorstore, uvloop) do not yet publish Python 3.15 wheels on PyPI, so
+# flax is excluded via requirements/overrides_3_15.txt.
+py_library(
+    # PY_LIBRARY_OK=OSS dependency shim with target_compatible_with over Python version
+    name = "flax",
+    target_compatible_with = select({
+        "@rules_python//python/config_settings:is_python_3.15": ["@platforms//:incompatible"],
+        "//conditions:default": [],
+    }),
+    deps = ["@pypi//flax"],
+)

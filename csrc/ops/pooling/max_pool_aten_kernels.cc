@@ -103,8 +103,7 @@ mlir::MlirOp CreatePoolIndicesIota(const mlir::RankedTensorType& input_shape,
   for (size_t i = 0; i < spatial_dims.size(); ++i) {
     broadcast_dims.push_back(2 + i);
   }
-  llvm::SmallVector<int64_t> target_shape(input_shape.getShape().begin(),
-                                          input_shape.getShape().end());
+  Dimensions target_shape = CopyIntVector(input_shape.getShape());
   mlir::RankedTensorType target_tensor_type =
       mlir::RankedTensorType::get(target_shape, element_type);
   mlir::MlirOp iota_broadcast = mlir::stablehlo::BroadcastInDim(
@@ -414,8 +413,7 @@ UncoveredTailSliceInfo SliceUncoveredSpatialTail(
   };
 
   Dimensions slice_starts(total_num_dims, 0);
-  Dimensions slice_limits(input_shape.getShape().begin(),
-                          input_shape.getShape().end());
+  Dimensions slice_limits = CopyIntVector(input_shape.getShape());
   Dimensions slice_strides(total_num_dims, 1);
 
   for (int64_t i = 0; i < spatial_dim_count; ++i) {
@@ -693,10 +691,7 @@ absl::StatusOr<mlir::MlirOp> BuildMaxPoolWithIndicesBackwardShlo(
   mlir::MlirOp offsets = mlir::stablehlo::Reshape(offsets_flat, offset_shape);
 
   // Broadcast offsets tensor to match the indices shape
-  Dimensions broadcast_dims;
-  for (int64_t i = 0; i < indices_type.getRank(); ++i) {
-    broadcast_dims.push_back(i);
-  }
+  const Dimensions broadcast_dims = GetAllDimensions(batch_indices);
   mlir::MlirOp offsets_broadcasted =
       mlir::stablehlo::BroadcastInDim(indices_type, offsets, broadcast_dims);
 

@@ -16,12 +16,19 @@
 
 #include "csrc/common/environment.h"
 
+#include <ftw.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
+#include <string>
+#include <string_view>
 
+#include "absl/log/absl_check.h"
 #include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
 #include "csrc/common/env_vars.h"
 #include "csrc/distributed/slicebuilder/discovery.h"
 #include "gtest/gtest.h"
@@ -30,6 +37,40 @@ namespace torch_tpu {
 namespace {
 
 using testing::ExitedWithCode;
+
+class ScopedFakePciDir {
+ public:
+  ScopedFakePciDir() {
+    std::string tmpl = absl::StrCat(testing::TempDir(), "/fake_pci_XXXXXX");
+    char* const created = mkdtemp(tmpl.data());
+    ABSL_CHECK(created != nullptr);
+    dir_ = created;
+  }
+
+  ~ScopedFakePciDir() {
+    nftw(
+        dir_.c_str(),
+        [](const char* fpath, const struct stat*, int, struct FTW*) {
+          return remove(fpath);
+        },
+        /*nopenfd=*/16, FTW_DEPTH | FTW_PHYS);
+  }
+
+  ScopedFakePciDir(const ScopedFakePciDir&) = delete;
+  ScopedFakePciDir& operator=(const ScopedFakePciDir&) = delete;
+
+  const std::string& path() const { return dir_; }
+
+  void AddTpuDevice(std::string_view slot, std::string_view device_id) {
+    const std::string dev_dir = absl::StrCat(dir_, "/", slot);
+    ABSL_CHECK_EQ(mkdir(dev_dir.c_str(), 0700), 0);
+    std::ofstream(absl::StrCat(dev_dir, "/vendor")) << "0x1ae0\n";
+    std::ofstream(absl::StrCat(dev_dir, "/device")) << device_id << "\n";
+  }
+
+ private:
+  std::string dir_;
+};
 
 TEST(EnvironmentDeathTest,
      InitializeDistributedEnvironment_PopulatesSlicebuilderAddresses) {
@@ -44,13 +85,13 @@ TEST(EnvironmentDeathTest,
         config.sb_addrs = "host0:1234,host1:1234";
         config.topology = "1,1,1";
 
-        EXPECT_TRUE(InitializeDistributedEnvironment(config).ok());
+        ABSL_CHECK_OK(InitializeDistributedEnvironment(config));
         const char* addrs = std::getenv(kTpuProcessAddressesEnvVar);
-        ASSERT_NE(addrs, nullptr);
-        EXPECT_STREQ(addrs, "host0:1234,host1:1234");
+        ABSL_CHECK_NE(addrs, nullptr);
+        ABSL_CHECK_STREQ(addrs, "host0:1234,host1:1234");
         const char* port = std::getenv(kTpuProcessPortEnvVar);
-        ASSERT_NE(port, nullptr);
-        EXPECT_STREQ(port, "1234");
+        ABSL_CHECK_NE(port, nullptr);
+        ABSL_CHECK_STREQ(port, "1234");
         _exit(0);
       },
       ExitedWithCode(0), "");
@@ -69,13 +110,13 @@ TEST(EnvironmentDeathTest,
         config.sb_addrs = "host0:5678";
         config.topology = "1,1,1";
 
-        EXPECT_TRUE(InitializeDistributedEnvironment(config).ok());
+        ABSL_CHECK_OK(InitializeDistributedEnvironment(config));
         const char* addrs = std::getenv(kTpuProcessAddressesEnvVar);
-        ASSERT_NE(addrs, nullptr);
-        EXPECT_STREQ(addrs, "host0:5678");
+        ABSL_CHECK_NE(addrs, nullptr);
+        ABSL_CHECK_STREQ(addrs, "host0:5678");
         const char* port = std::getenv(kTpuProcessPortEnvVar);
-        ASSERT_NE(port, nullptr);
-        EXPECT_STREQ(port, "5678");
+        ABSL_CHECK_NE(port, nullptr);
+        ABSL_CHECK_STREQ(port, "5678");
         _exit(0);
       },
       ExitedWithCode(0), "");
@@ -92,10 +133,10 @@ TEST(EnvironmentDeathTest, InitializeDistributedEnvironment_ResolvesBnsPort) {
         config.sb_addrs = "localhost:1234";
         config.topology = "1,1,1";
 
-        EXPECT_TRUE(InitializeDistributedEnvironment(config).ok());
+        ABSL_CHECK_OK(InitializeDistributedEnvironment(config));
         const char* port = std::getenv(kTpuProcessPortEnvVar);
-        ASSERT_NE(port, nullptr);
-        EXPECT_STREQ(port, "1234");
+        ABSL_CHECK_NE(port, nullptr);
+        ABSL_CHECK_STREQ(port, "1234");
         _exit(0);
       },
       ExitedWithCode(0), "");
@@ -112,7 +153,7 @@ TEST(EnvironmentDeathTest,
         config.sb_addrs = "";
         config.topology = "1,1,1";
 
-        EXPECT_FALSE(InitializeDistributedEnvironment(config).ok());
+        ABSL_CHECK(!InitializeDistributedEnvironment(config).ok());
         _exit(0);
       },
       ExitedWithCode(0), "");
@@ -129,7 +170,7 @@ TEST(EnvironmentDeathTest,
         config.sb_addrs = "localhost:1234";
         config.topology = "1,1,1";
 
-        EXPECT_FALSE(InitializeDistributedEnvironment(config).ok());
+        ABSL_CHECK(!InitializeDistributedEnvironment(config).ok());
         _exit(0);
       },
       ExitedWithCode(0), "");
@@ -148,13 +189,13 @@ TEST(EnvironmentDeathTest,
         config.sb_addrs = "localhost:1234";
         config.topology = "1,1,1";
 
-        EXPECT_TRUE(InitializeDistributedEnvironment(config).ok());
+        ABSL_CHECK_OK(InitializeDistributedEnvironment(config));
         const char* val = std::getenv(kLibtpuInitArgsEnvVar);
-        ASSERT_NE(val, nullptr);
-        EXPECT_STREQ(val,
-                     "--xla_tpu_use_enhanced_launch_barrier=false "
-                     "--slicebuilder_use_insecure_grpc=true "
-                     "--undefok=slicebuilder_use_insecure_grpc");
+        ABSL_CHECK_NE(val, nullptr);
+        ABSL_CHECK_STREQ(val,
+                         "--xla_tpu_use_enhanced_launch_barrier=false "
+                         "--slicebuilder_use_insecure_grpc=true "
+                         "--undefok=slicebuilder_use_insecure_grpc");
         _exit(0);
       },
       ExitedWithCode(0), "");
@@ -178,7 +219,7 @@ DistributedWorkerConfiguration LocalhostConfig() {
 // "libtpu_init_args=<value>" for EXPECT_EXIT to match.
 void InitAndPrintLibtpuInitArgs(const char* const libtpu_init_args) {
   setenv(kLibtpuInitArgsEnvVar, libtpu_init_args, 1);
-  if (!InitializeDistributedEnvironment(LocalhostConfig()).ok()) _exit(1);
+  ABSL_CHECK_OK(InitializeDistributedEnvironment(LocalhostConfig()));
   const char* const args = std::getenv(kLibtpuInitArgsEnvVar);
   std::fprintf(stderr, "libtpu_init_args=%s\n", args ? args : "unset");
   _exit(0);
@@ -228,13 +269,14 @@ TEST(EnvironmentDeathTest,
         config.sb_addrs = "localhost:1234";
         config.topology = "1,1,1";
 
-        EXPECT_TRUE(InitializeDistributedEnvironment(config).ok());
-        EXPECT_STREQ(std::getenv(kAllowMultipleLibtpuLoadEnvVar), "1");
-        EXPECT_STREQ(std::getenv(kTpuProcessAddressesEnvVar), "localhost:1234");
-        EXPECT_STREQ(std::getenv(kTpuHostBoundsEnvVar), "1,1,1");
-        EXPECT_STREQ(std::getenv(kTpuChipsPerHostBoundsEnvVar), "1,1,1");
-        EXPECT_STREQ(std::getenv(kTpuProcessBoundsEnvVar), "1,1,1");
-        EXPECT_STREQ(std::getenv(kTpuChipsPerProcessBoundsEnvVar), "1,1,1");
+        ABSL_CHECK_OK(InitializeDistributedEnvironment(config));
+        ABSL_CHECK_STREQ(std::getenv(kAllowMultipleLibtpuLoadEnvVar), "1");
+        ABSL_CHECK_STREQ(std::getenv(kTpuProcessAddressesEnvVar),
+                         "localhost:1234");
+        ABSL_CHECK_STREQ(std::getenv(kTpuHostBoundsEnvVar), "1,1,1");
+        ABSL_CHECK_STREQ(std::getenv(kTpuChipsPerHostBoundsEnvVar), "1,1,1");
+        ABSL_CHECK_STREQ(std::getenv(kTpuProcessBoundsEnvVar), "1,1,1");
+        ABSL_CHECK_STREQ(std::getenv(kTpuChipsPerProcessBoundsEnvVar), "1,1,1");
         _exit(0);
       },
       ExitedWithCode(0), "");
@@ -257,9 +299,10 @@ TEST(EnvironmentDeathTest,
         config.sb_addrs = "localhost:1234";
         config.topology = "2,2,1,2";
 
-        EXPECT_TRUE(InitializeDistributedEnvironment(config).ok());
-        EXPECT_STREQ(std::getenv(kTpuChipsPerHostBoundsEnvVar), "1,1,1,1");
-        EXPECT_STREQ(std::getenv(kTpuChipsPerProcessBoundsEnvVar), "1,1,1,1");
+        ABSL_CHECK_OK(InitializeDistributedEnvironment(config));
+        ABSL_CHECK_STREQ(std::getenv(kTpuChipsPerHostBoundsEnvVar), "1,1,1,1");
+        ABSL_CHECK_STREQ(std::getenv(kTpuChipsPerProcessBoundsEnvVar),
+                         "1,1,1,1");
         _exit(0);
       },
       ExitedWithCode(0), "");
@@ -277,8 +320,9 @@ TEST(EnvironmentDeathTest,
         config.sb_addrs = "new_address";
         config.topology = "1,1,1";
 
-        EXPECT_TRUE(InitializeDistributedEnvironment(config).ok());
-        EXPECT_STREQ(std::getenv(kTpuProcessAddressesEnvVar), "new_address");
+        ABSL_CHECK_OK(InitializeDistributedEnvironment(config));
+        ABSL_CHECK_STREQ(std::getenv(kTpuProcessAddressesEnvVar),
+                         "new_address");
         _exit(0);
       },
       ExitedWithCode(0), "");
@@ -303,8 +347,8 @@ TEST(EnvironmentDeathTest,
         config.sb_addrs = "host0:1234,host1:1234";
         config.topology = "1,1,1";
 
-        EXPECT_TRUE(InitializeDistributedEnvironment(config).ok());
-        EXPECT_STREQ(std::getenv(kCloudTpuTaskIdEnvVar), "1");
+        ABSL_CHECK_OK(InitializeDistributedEnvironment(config));
+        ABSL_CHECK_STREQ(std::getenv(kCloudTpuTaskIdEnvVar), "1");
         _exit(0);
       },
       ExitedWithCode(0), "");
@@ -332,7 +376,7 @@ DistributedWorkerConfiguration MultisliceConfig(const int local_rank) {
 // prints the resulting MegaScale ports to stderr as
 // "ports=<MEGASCALE_PORT>,<MEGASCALE_DEBUG_PORT>" for EXPECT_EXIT to match.
 void InitAndPrintMegascalePorts(const DistributedWorkerConfiguration& config) {
-  if (!InitializeDistributedEnvironment(config).ok()) _exit(1);
+  ABSL_CHECK_OK(InitializeDistributedEnvironment(config));
   const char* const port = std::getenv(kMegascalePortEnvVar);
   const char* const debug_port = std::getenv(kMegascaleDebugPortEnvVar);
   std::fprintf(stderr, "ports=%s,%s\n", port ? port : "unset",
@@ -359,6 +403,29 @@ TEST(EnvironmentDeathTest, InitDistEnvLeavesMegascalePortsUnsetForSingleSlice) {
               "ports=unset,unset");
 }
 
+// Runs InitializeDistributedEnvironment(config) in a death test child and
+// prints the resulting SKIP_MEGASCALE_PJRT_CLIENT to stderr as
+// "skip=<SKIP_MEGASCALE_PJRT_CLIENT>" for EXPECT_EXIT to match.
+void InitAndPrintSkipMegascale(const DistributedWorkerConfiguration& config) {
+  unsetenv(kSkipMegascalePjrtClientEnvVar);
+  ABSL_CHECK_OK(InitializeDistributedEnvironment(config));
+  const char* const skip = std::getenv(kSkipMegascalePjrtClientEnvVar);
+  std::fprintf(stderr, "skip=%s\n", skip ? skip : "unset");
+  _exit(0);
+}
+
+TEST(EnvironmentDeathTest, InitDistEnvSkipsMegascaleClientForSingleSlice) {
+  DistributedWorkerConfiguration config = MultisliceConfig(/*local_rank=*/3);
+  config.world_size = 8;
+  EXPECT_EXIT(InitAndPrintSkipMegascale(config), ExitedWithCode(0),
+              "skip=true");
+}
+
+TEST(EnvironmentDeathTest, InitDistEnvKeepsMegascaleClientForMultislice) {
+  EXPECT_EXIT(InitAndPrintSkipMegascale(MultisliceConfig(/*local_rank=*/3)),
+              ExitedWithCode(0), "skip=unset");
+}
+
 TEST(EnvironmentDeathTest,
      InitDistEnv_FallsBackOnMalformedTpuVisibleDevicesEnvVar) {
   EXPECT_EXIT(
@@ -370,13 +437,13 @@ TEST(EnvironmentDeathTest,
         config.sb_port = "1234";
         config.sb_addrs = "localhost:1234";
         config.topology = "1,1,1";
-        EXPECT_TRUE(InitializeDistributedEnvironment(config).ok());
+        ABSL_CHECK_OK(InitializeDistributedEnvironment(config));
         const char* val = std::getenv(kTpuVisibleDevicesEnvVar);
-        EXPECT_NE(val, nullptr);
-        EXPECT_STREQ(val, "1");
+        ABSL_CHECK_NE(val, nullptr);
+        ABSL_CHECK_STREQ(val, "1");
         const char* chips_val = std::getenv(kTpuVisibleChipsEnvVar);
-        EXPECT_NE(chips_val, nullptr);
-        EXPECT_STREQ(chips_val, "1");
+        ABSL_CHECK_NE(chips_val, nullptr);
+        ABSL_CHECK_STREQ(chips_val, "1");
         _exit(0);
       },
       ExitedWithCode(0), "");
@@ -393,13 +460,13 @@ TEST(EnvironmentDeathTest,
         config.sb_port = "1234";
         config.sb_addrs = "localhost:1234";
         config.topology = "1,1,1";
-        EXPECT_TRUE(InitializeDistributedEnvironment(config).ok());
+        ABSL_CHECK_OK(InitializeDistributedEnvironment(config));
         const char* val = std::getenv(kTpuVisibleDevicesEnvVar);
-        EXPECT_NE(val, nullptr);
-        EXPECT_STREQ(val, "2");
+        ABSL_CHECK_NE(val, nullptr);
+        ABSL_CHECK_STREQ(val, "2");
         const char* chips_val = std::getenv(kTpuVisibleChipsEnvVar);
-        EXPECT_NE(chips_val, nullptr);
-        EXPECT_STREQ(chips_val, "2");
+        ABSL_CHECK_NE(chips_val, nullptr);
+        ABSL_CHECK_STREQ(chips_val, "2");
         _exit(0);
       },
       ExitedWithCode(0), "");
@@ -417,9 +484,9 @@ TEST(EnvironmentDeathTest,
         config.sb_addrs = "localhost:1234";
         config.topology = "1,1,1";
 
-        EXPECT_TRUE(InitializeDistributedEnvironment(config).ok());
-        EXPECT_STREQ(std::getenv(kTpuVisibleDevicesEnvVar), "3");
-        EXPECT_STREQ(std::getenv(kTpuVisibleChipsEnvVar), "3");
+        ABSL_CHECK_OK(InitializeDistributedEnvironment(config));
+        ABSL_CHECK_STREQ(std::getenv(kTpuVisibleDevicesEnvVar), "3");
+        ABSL_CHECK_STREQ(std::getenv(kTpuVisibleChipsEnvVar), "3");
         _exit(0);
       },
       ExitedWithCode(0), "");
@@ -437,9 +504,9 @@ TEST(EnvironmentDeathTest,
         config.sb_addrs = "localhost:1234";
         config.topology = "1,1,1";
 
-        EXPECT_TRUE(InitializeDistributedEnvironment(config).ok());
-        EXPECT_STREQ(std::getenv(kTpuVisibleDevicesEnvVar), "1");
-        EXPECT_STREQ(std::getenv(kTpuVisibleChipsEnvVar), "1");
+        ABSL_CHECK_OK(InitializeDistributedEnvironment(config));
+        ABSL_CHECK_STREQ(std::getenv(kTpuVisibleDevicesEnvVar), "1");
+        ABSL_CHECK_STREQ(std::getenv(kTpuVisibleChipsEnvVar), "1");
         _exit(0);
       },
       ExitedWithCode(0), "");
@@ -458,9 +525,9 @@ TEST(EnvironmentDeathTest,
         config.sb_addrs = "localhost:1234";
         config.topology = "1,1,1";
 
-        EXPECT_TRUE(InitializeDistributedEnvironment(config).ok());
-        EXPECT_STREQ(std::getenv(kTpuVisibleDevicesEnvVar), "0");
-        EXPECT_STREQ(std::getenv(kTpuVisibleChipsEnvVar), "0");
+        ABSL_CHECK_OK(InitializeDistributedEnvironment(config));
+        ABSL_CHECK_STREQ(std::getenv(kTpuVisibleDevicesEnvVar), "0");
+        ABSL_CHECK_STREQ(std::getenv(kTpuVisibleChipsEnvVar), "0");
         _exit(0);
       },
       ExitedWithCode(0), "");
@@ -468,12 +535,25 @@ TEST(EnvironmentDeathTest,
 
 TEST(EnvironmentDeathTest,
      InitSingleDevEnv_RespectsExistingSingleTpuVisibleDevicesEnvVar) {
+  ScopedFakePciDir pci;
   EXPECT_EXIT(
       {
+        unsetenv(kAllowMultipleLibtpuLoadEnvVar);
+        unsetenv(kTorchTpuTopologyEnvVar);
+        unsetenv(kTpuHostBoundsEnvVar);
+        unsetenv(kTpuChipsPerHostBoundsEnvVar);
+        unsetenv(kTpuProcessBoundsEnvVar);
+        unsetenv(kTpuChipsPerProcessBoundsEnvVar);
         setenv(kTpuVisibleDevicesEnvVar, "3", 1);
-        EXPECT_TRUE(InitializeSingleDeviceEnvironment().ok());
-        EXPECT_STREQ(std::getenv(kTpuVisibleDevicesEnvVar), "3");
-        EXPECT_STREQ(std::getenv(kTpuVisibleChipsEnvVar), "3");
+        ABSL_CHECK_OK(InitializeSingleDeviceEnvironment(pci.path()));
+        ABSL_CHECK_STREQ(std::getenv(kTpuVisibleDevicesEnvVar), "3");
+        ABSL_CHECK_STREQ(std::getenv(kTpuVisibleChipsEnvVar), "3");
+        ABSL_CHECK_EQ(std::getenv(kTorchTpuTopologyEnvVar), nullptr);
+        ABSL_CHECK_STREQ(std::getenv(kTpuHostBoundsEnvVar), "1,1,1");
+        ABSL_CHECK_STREQ(std::getenv(kTpuChipsPerHostBoundsEnvVar), "1,1,1");
+        ABSL_CHECK_STREQ(std::getenv(kTpuProcessBoundsEnvVar), "1,1,1");
+        ABSL_CHECK_STREQ(std::getenv(kTpuChipsPerProcessBoundsEnvVar), "1,1,1");
+        ABSL_CHECK_STREQ(std::getenv(kAllowMultipleLibtpuLoadEnvVar), "1");
         _exit(0);
       },
       ExitedWithCode(0), "");
@@ -481,12 +561,18 @@ TEST(EnvironmentDeathTest,
 
 TEST(EnvironmentDeathTest,
      InitSingleDevEnv_OverwritesMultiDeviceTpuVisibleDevicesEnvVar) {
+  ScopedFakePciDir pci;
   EXPECT_EXIT(
       {
         setenv(kTpuVisibleDevicesEnvVar, "0,1", 1);
-        EXPECT_TRUE(InitializeSingleDeviceEnvironment().ok());
-        EXPECT_STREQ(std::getenv(kTpuVisibleDevicesEnvVar), "0");
-        EXPECT_STREQ(std::getenv(kTpuVisibleChipsEnvVar), "0");
+        ABSL_CHECK_OK(InitializeSingleDeviceEnvironment(pci.path()));
+        ABSL_CHECK_STREQ(std::getenv(kTpuVisibleDevicesEnvVar), "0");
+        ABSL_CHECK_STREQ(std::getenv(kTpuVisibleChipsEnvVar), "0");
+        ABSL_CHECK_STREQ(std::getenv(kTpuHostBoundsEnvVar), "1,1,1");
+        ABSL_CHECK_STREQ(std::getenv(kTpuChipsPerHostBoundsEnvVar), "1,1,1");
+        ABSL_CHECK_STREQ(std::getenv(kTpuProcessBoundsEnvVar), "1,1,1");
+        ABSL_CHECK_STREQ(std::getenv(kTpuChipsPerProcessBoundsEnvVar), "1,1,1");
+        ABSL_CHECK_STREQ(std::getenv(kAllowMultipleLibtpuLoadEnvVar), "1");
         _exit(0);
       },
       ExitedWithCode(0), "");
@@ -494,12 +580,13 @@ TEST(EnvironmentDeathTest,
 
 TEST(EnvironmentDeathTest,
      InitSingleDevEnv_FallsBackOnMalformedTpuVisibleDevicesEnvVar) {
+  ScopedFakePciDir pci;
   EXPECT_EXIT(
       {
         setenv(kTpuVisibleDevicesEnvVar, "invalid_dev", 1);
-        EXPECT_TRUE(InitializeSingleDeviceEnvironment().ok());
-        EXPECT_STREQ(std::getenv(kTpuVisibleDevicesEnvVar), "0");
-        EXPECT_STREQ(std::getenv(kTpuVisibleChipsEnvVar), "0");
+        ABSL_CHECK_OK(InitializeSingleDeviceEnvironment(pci.path()));
+        ABSL_CHECK_STREQ(std::getenv(kTpuVisibleDevicesEnvVar), "0");
+        ABSL_CHECK_STREQ(std::getenv(kTpuVisibleChipsEnvVar), "0");
         _exit(0);
       },
       ExitedWithCode(0), "");
@@ -507,16 +594,65 @@ TEST(EnvironmentDeathTest,
 
 TEST(EnvironmentDeathTest,
      InitSingleDevEnv_OverwritesExistingTpuVisibleChipsEnvVar) {
+  ScopedFakePciDir pci;
   EXPECT_EXIT(
       {
+        unsetenv(kAllowMultipleLibtpuLoadEnvVar);
+        unsetenv(kTorchTpuTopologyEnvVar);
+        unsetenv(kTpuHostBoundsEnvVar);
+        unsetenv(kTpuChipsPerHostBoundsEnvVar);
+        unsetenv(kTpuProcessBoundsEnvVar);
+        unsetenv(kTpuChipsPerProcessBoundsEnvVar);
         setenv(kTpuVisibleChipsEnvVar, "2", 1);
         unsetenv(kTpuVisibleDevicesEnvVar);
-        EXPECT_TRUE(InitializeSingleDeviceEnvironment().ok());
-        EXPECT_STREQ(std::getenv(kTpuVisibleDevicesEnvVar), "0");
-        EXPECT_STREQ(std::getenv(kTpuVisibleChipsEnvVar), "0");
+        ABSL_CHECK_OK(InitializeSingleDeviceEnvironment(pci.path()));
+        ABSL_CHECK_STREQ(std::getenv(kTpuVisibleDevicesEnvVar), "0");
+        ABSL_CHECK_STREQ(std::getenv(kTpuVisibleChipsEnvVar), "0");
+        ABSL_CHECK_EQ(std::getenv(kTorchTpuTopologyEnvVar), nullptr);
+        ABSL_CHECK_STREQ(std::getenv(kTpuHostBoundsEnvVar), "1,1,1");
+        ABSL_CHECK_STREQ(std::getenv(kTpuChipsPerHostBoundsEnvVar), "1,1,1");
+        ABSL_CHECK_STREQ(std::getenv(kTpuProcessBoundsEnvVar), "1,1,1");
+        ABSL_CHECK_STREQ(std::getenv(kTpuChipsPerProcessBoundsEnvVar), "1,1,1");
+        ABSL_CHECK_STREQ(std::getenv(kAllowMultipleLibtpuLoadEnvVar), "1");
         _exit(0);
       },
       ExitedWithCode(0), "");
+}
+
+TEST(EnvironmentDeathTest, InitSingleDevEnv_SetsBoundsForAllSupportedTpuSpecs) {
+  for (std::string_view device_id : {"0x0062", "0x0063", "0x006f", "0x007c"}) {
+    ScopedFakePciDir pci;
+    pci.AddTpuDevice("0000:00:04.0", device_id);
+    EXPECT_EXIT(
+        {
+          ABSL_CHECK_OK(InitializeSingleDeviceEnvironment(pci.path()));
+          ABSL_CHECK_STREQ(std::getenv(kTpuHostBoundsEnvVar), "1,1,1");
+          ABSL_CHECK_STREQ(std::getenv(kTpuChipsPerHostBoundsEnvVar), "1,1,1");
+          ABSL_CHECK_STREQ(std::getenv(kTpuProcessBoundsEnvVar), "1,1,1");
+          ABSL_CHECK_STREQ(std::getenv(kTpuChipsPerProcessBoundsEnvVar),
+                           "1,1,1");
+          _exit(0);
+        },
+        ExitedWithCode(0), "")
+        << device_id;
+  }
+  for (std::string_view device_id : {"0x0076", "0x0083"}) {
+    ScopedFakePciDir pci;
+    pci.AddTpuDevice("0000:00:04.0", device_id);
+    EXPECT_EXIT(
+        {
+          ABSL_CHECK_OK(InitializeSingleDeviceEnvironment(pci.path()));
+          ABSL_CHECK_STREQ(std::getenv(kTpuHostBoundsEnvVar), "1,1,1,1");
+          ABSL_CHECK_STREQ(std::getenv(kTpuChipsPerHostBoundsEnvVar),
+                           "1,1,1,1");
+          ABSL_CHECK_STREQ(std::getenv(kTpuProcessBoundsEnvVar), "1,1,1,1");
+          ABSL_CHECK_STREQ(std::getenv(kTpuChipsPerProcessBoundsEnvVar),
+                           "1,1,1,1");
+          _exit(0);
+        },
+        ExitedWithCode(0), "")
+        << device_id;
+  }
 }
 
 // Unsets the env vars read by HasCustomTpuDevicePaths().

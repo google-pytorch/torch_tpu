@@ -18,7 +18,6 @@
 #include <optional>
 
 #include "ATen/WrapDimUtils.h"
-#include "absl/algorithm/container.h"
 #include "absl/log/absl_log.h"
 #include "absl/strings/str_cat.h"
 #include "csrc/ops/op_builder_utils.h"
@@ -82,7 +81,7 @@ mlir::MlirOp BuildProdShlo(std::optional<int64_t> dim, ReductionMode mode,
 
   int64_t rank = input_tensor_type.getRank();
 
-  llvm::SmallVector<int64_t> dims;
+  Dimensions dims;
   if (dim.has_value()) {
     // If dim is provided, then reduce only the specified dimension.
     int64_t normalized_dim =
@@ -91,8 +90,7 @@ mlir::MlirOp BuildProdShlo(std::optional<int64_t> dim, ReductionMode mode,
   } else {
     // If dim is not provided, then reduce all dimensions.
     // This is the default behavior of torch.prod.
-    dims.resize(rank);
-    absl::c_iota(dims, 0);
+    dims = GetAllDimensions(converted_input);
   }
 
   mlir::MlirOp result_op = stablehlo::Reduce(builder, {converted_input},
