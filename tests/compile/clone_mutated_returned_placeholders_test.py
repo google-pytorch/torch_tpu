@@ -222,6 +222,35 @@ class CloneMutatedReturnedPlaceholdersTest(seed_test_utils.RepeatableTest):
     # Verify that the generated code was recompiled to invoke clone
     self.assertIn("clone", gm.code)
 
+  @parameterized.named_parameters(
+      ("same", {"spmd_safe": True}, {"spmd_safe": True}, {"spmd_safe": True}),
+      (
+          "shared_subset",
+          {"spmd_safe": True, "stream": 1},
+          {"spmd_safe": True, "stream": 2},
+          {"spmd_safe": True},
+      ),
+      ("disjoint", {"spmd_safe": True}, {"other": 1}, None),
+      ("partially_unannotated", {"spmd_safe": True}, None, None),
+  )
+  def test_clone_takes_custom_metadata_shared_by_its_users(
+      self, first_custom, second_custom, expected_custom
+  ):
+    graph = Graph()
+    p_buf = graph.placeholder("buf")
+    p_buf.meta["val"] = torch.empty((4,), dtype=torch.float32)
+    first = graph.call_function(aten.add.Tensor, (p_buf, 1.0))
+    second = graph.call_function(aten.add_.Scalar, (p_buf, 1.0))
+    for node, custom in ((first, first_custom), (second, second_custom)):
+      if custom is not None:
+        node.meta["custom"] = custom
+    graph.output((first, second, p_buf))
+
+    clone_mutated_returned_placeholders.apply(graph)
+
+    (clone,) = [n for n in graph.nodes if n.target == aten.clone.default]
+    self.assertEqual(clone.meta.get("custom"), expected_custom)
+
   def test_apply_on_graph_directly(self):
     """Verifies that apply() works directly on a raw torch.fx.Graph instance."""
     graph = Graph()
