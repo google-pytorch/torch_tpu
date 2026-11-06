@@ -1002,6 +1002,7 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kRshiftTensor>(m, AtenRshiftTensor);
   ImplStable<OpName::kRsqrtOut>(m, AtenRsqrtOut);
   ImplStable<OpName::kRsubTensor>(m, AtenRsubTensor);
+  ImplStable<OpName::kSafeSoftmax>(m, AtenSafeSoftmax);
   ImplStable<OpName::kScaledDotProductFlashAttention>(
       m, AtenScaledDotProductFlashAttention);
   ImplStable<OpName::kScaledDotProductFlashAttentionBackward>(

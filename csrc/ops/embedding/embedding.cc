@@ -910,9 +910,57 @@ absl::StatusOr<mlir::MlirOp> BuildEmbeddingDenseBackwardShlo(
   }
 
   TT_ASSIGN_OR_RETURN(auto scatter_indices, Unsqueeze(flattened_indices, 1));
-  auto grad_weights =
-      BuildSimpleScatter(builder, initial_grad_weights, scatter_indices,
-                         formatted_grad_output, HasWindow::kYes);
+  mlir::MlirOp grad_weights;
+  constexpr int64_t kMaxDenseElements = 1LL << 26;
+  if (!scale_grad_by_freq && num_weights_value <= 128 &&
+      num_indices >= 4 * num_weights_value &&
+      num_weights_value * num_indices * embedding_dim <= kMaxDenseElements) {
+    // COST_MODEL: Dense reduction for small-table embedding backward avoids
+    // TPU scatter serialization, bounded to intermediate <= 2^26 elements
+    // (<= 256MB for 32-bit types) to prevent excessive memory usage.
+    mlir::MlirOp iota_v = mlir::stablehlo::Iota(
+        builder,
+        makeTensorType(builder.getContext(), {num_weights_value, 1, 1},
+                       GetTensorTypeOrDie(flattened_indices).getElementType()),
+        /*iota_dimension=*/0);
+    mlir::MlirOp indices_3d =
+        mlir::stablehlo::Reshape(flattened_indices, {1, num_indices, 1});
+    TT_ASSIGN_OR_RETURN(auto broadcasted_idx,
+                        ApplyBroadcastIfNeeded(iota_v, indices_3d));
+    mlir::MlirOp is_match =
+        mlir::stablehlo::Compare(broadcasted_idx[0], broadcasted_idx[1],
+                                 mlir::stablehlo::ComparisonDirection::EQ);
+
+    mlir::MlirOp grad_3d = mlir::stablehlo::Reshape(
+        formatted_grad_output, {1, num_indices, embedding_dim});
+    TT_ASSIGN_OR_RETURN(
+        is_match, BroadcastIfNeeded(is_match, {num_weights_value, num_indices,
+                                               embedding_dim}));
+    TT_ASSIGN_OR_RETURN(
+        grad_3d, BroadcastIfNeeded(
+                     grad_3d, {num_weights_value, num_indices, embedding_dim}));
+    mlir::MlirOp zeros =
+        MakeConstant(builder, 0.0, accumulation_element_type,
+                     {num_weights_value, num_indices, embedding_dim});
+    mlir::MlirOp masked_grad =
+        mlir::stablehlo::Select(is_match, grad_3d, zeros);
+
+    mlir::DenseElementsAttr zero_attr = mlir::DenseElementsAttr::get(
+        mlir::RankedTensorType::get({}, accumulation_element_type),
+        builder.getOpBuilder().getZeroAttr(accumulation_element_type));
+    mlir::MlirOp init_val = mlir::stablehlo::Constant(builder, zero_attr);
+    auto reduce_builder = [accumulation_element_type](mlir::RegionBuilder& rb) {
+      mlir::stablehlo::buildReduceBody<mlir::stablehlo::AddOp>(
+          accumulation_element_type, rb.getRegion(), rb.getOpBuilder());
+    };
+    auto reduced = mlir::stablehlo::Reduce(builder, {masked_grad}, {init_val},
+                                           reduce_builder, {1});
+    grad_weights = reduced[0];
+  } else {
+    grad_weights =
+        BuildSimpleScatter(builder, initial_grad_weights, scatter_indices,
+                           formatted_grad_output, HasWindow::kYes);
+  }
 
   if (scale_grad_by_freq) {
     auto initial_count_weights = mlir::stablehlo::Constant(

@@ -63,6 +63,41 @@ mlir::MlirOp BuildIndexCopyShlo(mlir::MlirOp self, int64_t dim,
     source = mlir::stablehlo::ConvertElementType(source, computation_type);
   }
 
+  if (index_type.getRank() == 1 && index_type.getDimSize(0) == 1 &&
+      self_type.hasStaticShape() && !self_type.isDynamicDim(dim)) {
+    const int64_t self_rank = self_type.getRank();
+    const int64_t dim_size = self_type.getDimSize(dim);
+    mlir::MlirBuilder& builder = self.getBuilder();
+    mlir::MlirOp idx_scalar = stablehlo::Reshape(index, {});
+    idx_scalar =
+        stablehlo::ConvertElementType(idx_scalar, mlir::ElementType::I64);
+
+    mlir::MlirOp dim_size_op =
+        MakeScalarConstant(builder, dim_size, mlir::ElementType::I64);
+    mlir::MlirOp zero = MakeScalarConstant(builder, 0, mlir::ElementType::I64);
+    mlir::MlirOp dim_minus_1 =
+        MakeScalarConstant(builder, dim_size - 1, mlir::ElementType::I64);
+
+    mlir::MlirOp is_neg = stablehlo::Compare(
+        idx_scalar, zero, stablehlo::ComparisonDirection::LT);
+    mlir::MlirOp add_op = stablehlo::Add(idx_scalar, dim_size_op);
+    mlir::MlirOp wrapped_idx = stablehlo::Select(is_neg, add_op, idx_scalar);
+    mlir::MlirOp max_idx = stablehlo::Max(wrapped_idx, zero);
+    mlir::MlirOp clamped_idx = stablehlo::Min(max_idx, dim_minus_1);
+
+    std::vector<mlir::MlirOp> start_indices;
+    start_indices.reserve(self_rank);
+    for (int64_t i = 0; i < self_rank; ++i) {
+      if (i == dim) {
+        start_indices.push_back(clamped_idx);
+      } else {
+        start_indices.push_back(
+            MakeScalarConstant(builder, 0, mlir::ElementType::I64));
+      }
+    }
+    return mlir::stablehlo::DynamicUpdateSlice(self, source, start_indices);
+  }
+
   const Dimensions all_other_dims =
       GetBatchDimensions(self_type.getRank(), dim);
 

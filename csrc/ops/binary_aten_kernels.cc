@@ -1843,6 +1843,36 @@ at::Tensor& AtenPowTensorScalarOut(const at::Tensor& self,
           return out;
         }
 
+        // COST_MODEL: PowOp(x, -0.5) requires transcendentals
+        // (exp(log(x) * -0.5)). Routing to Rsqrt(Add(x, +0.0)) uses the
+        // hardware MXU rsqrt reciprocal square root unit directly, delivering
+        // higher throughput and matching PyTorch IEEE 754 non-negative
+        // semantics
+        // (+0.0/-0.0 -> +inf, negative -> NaN).
+        if (exponent.isFloatingPoint() && exponent.toDouble() == -0.5) {
+          const at::ScalarType result_type = at::result_type(self, exponent);
+          TT_ASSIGN_OR_THROW(const auto result_element_type,
+                             ConvertTo<mlir::ElementType>(result_type));
+          TT_THROW_IF_ERROR(
+              param_keys.SetParam("result_dtype", result_element_type));
+          // Mark promoted_exponent as used to satisfy TT_KERNEL verification.
+          TT_ASSIGN_OR_THROW(const at::Tensor unused_tensor,
+                             promoted_exponent.GetTensor(result_type));
+          (void)unused_tensor;
+          auto op_builder =
+              [](mlir::MlirOp base_op) -> absl::StatusOr<mlir::MlirOp> {
+            mlir::MlirOp pos_zero = MakeConstantLike(base_op, 0.0);
+            mlir::MlirOp x_plus_zero = stablehlo::Add(base_op, pos_zero);
+            return stablehlo::Rsqrt(x_plus_zero);
+          };
+          TT_THROW_IF_ERROR(
+              UnaryOpOut(self, out, std::move(op_builder),
+                         {.op_param_cache_keys = std::move(param_keys),
+                          .out_dtype = result_element_type,
+                          .computation_dtype = result_element_type}));
+          return out;
+        }
+
         TT_THROW_IF_ERROR(ValidatePowInputs(self, exponent));
         const at::ScalarType result_type = at::result_type(self, exponent);
         TT_ASSIGN_OR_THROW(const at::Tensor exponent_tensor,
