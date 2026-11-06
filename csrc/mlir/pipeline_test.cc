@@ -16,15 +16,26 @@
 
 #include "csrc/mlir/pipeline.h"
 
+#include <cstdlib>
+#include <memory>
+
 #include "absl/status/status_matchers.h"
+#include "csrc/common/env_vars.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/mlir/registration.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
+#include "mlir/Parser/Parser.h"
+#include "mlir/Pass/Pass.h"
+#include "mlir/Pass/PassRegistry.h"
+#include "stablehlo/dialect/Register.h"
+#include "stablehlo/dialect/StablehloOps.h"
 
 // IR-level tests of the optimization pipeline are lit tests run through
 // `torch-tpu-optimization-pipeline`. This file only covers the C++ entry
@@ -35,6 +46,21 @@ namespace {
 
 using absl_testing::StatusIs;
 using testing::HasSubstr;
+
+void InitContext(mlir::MLIRContext& context) {
+  mlir::DialectRegistry registry;
+  mlir::stablehlo::registerAllDialects(registry);
+  registry.insert<mlir::func::FuncDialect>();
+  context.appendDialectRegistry(registry);
+  context.loadAllAvailableDialects();
+}
+
+template <typename OpTy>
+int CountOps(mlir::ModuleOp module) {
+  int count = 0;
+  module.walk([&count](OpTy) { ++count; });
+  return count;
+}
 
 TEST(PipelineTest, RunOptimizationPassesFailsOnInvalidModule) {
   mlir::MLIRContext context;
@@ -56,6 +82,198 @@ TEST(PipelineTest, RunOptimizationPassesFailsOnInvalidModule) {
       RunTorchTpuOptimizationPasses(*module, &context),
       StatusIs(error::kInternal,
                HasSubstr("Failed to run custom MLIR optimization passes")));
+}
+
+TEST(PipelineTest,
+     RunOptimizationPassesCancelsInverseTransposesAndFoldsCleanup) {
+  static constexpr const char* kIr = R"mlir(
+module {
+  func.func @main(%x: tensor<1x4x8x16xf32>) -> tensor<1x4x8x8xf32> {
+    %t1 = stablehlo.transpose %x, dims = [2, 1, 3, 0]
+        : (tensor<1x4x8x16xf32>) -> tensor<8x4x16x1xf32>
+    %sl = stablehlo.slice %t1 [0:8, 0:4, 8:16, 0:1]
+        : (tensor<8x4x16x1xf32>) -> tensor<8x4x8x1xf32>
+    %t2 = stablehlo.transpose %sl, dims = [3, 1, 0, 2]
+        : (tensor<8x4x8x1xf32>) -> tensor<1x4x8x8xf32>
+    return %t2 : tensor<1x4x8x8xf32>
+  }
+}
+)mlir";
+
+  mlir::MLIRContext context;
+  InitContext(context);
+  mlir::OwningOpRef<mlir::ModuleOp> module =
+      mlir::parseSourceString<mlir::ModuleOp>(kIr, &context);
+  ASSERT_TRUE(module);
+
+  ASSERT_THAT(RunTorchTpuOptimizationPasses(*module, &context),
+              absl_testing::IsOk());
+
+  // CancelInverseViewTransposesPass runs inside AddShloPasses, replacing t2
+  // with a slice on %x. The trailing AddCleanupPasses then cleans up residual
+  // reshapes and removes dead t1 TransposeOp.
+  EXPECT_EQ(CountOps<mlir::stablehlo::TransposeOp>(*module), 0);
+  EXPECT_EQ(CountOps<mlir::stablehlo::SliceOp>(*module), 1);
+}
+
+TEST(PipelineTest, RegisterTorchTpuPassesFindsCancelInverseViewTransposes) {
+  RegisterTorchTpuPasses();
+  const mlir::PassInfo* info =
+      mlir::PassInfo::lookup("torch-tpu-cancel-inverse-view-transposes");
+  ASSERT_NE(info, nullptr);
+  EXPECT_EQ(info->getPassArgument(),
+            "torch-tpu-cancel-inverse-view-transposes");
+  EXPECT_FALSE(info->getPassDescription().empty());
+
+  mlir::OpPassManager func_pm(mlir::func::FuncOp::getOperationName());
+  EXPECT_TRUE(mlir::succeeded(mlir::parsePassPipeline(
+      "torch-tpu-cancel-inverse-view-transposes", func_pm)));
+  ASSERT_FALSE(func_pm.empty());
+  EXPECT_EQ(func_pm.getPasses().begin()->getArgument(),
+            "torch-tpu-cancel-inverse-view-transposes");
+}
+
+TEST(PipelineDeathTest, CancelInverseViewTransposesDisabledByEnvVar) {
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  EXPECT_EXIT(
+      {
+        static constexpr const char* kIr = R"mlir(
+module {
+  func.func @main(%x: tensor<1x4x8x16xf32>) -> tensor<1x4x8x8xf32> {
+    %t1 = stablehlo.transpose %x, dims = [2, 1, 3, 0]
+        : (tensor<1x4x8x16xf32>) -> tensor<8x4x16x1xf32>
+    %sl = stablehlo.slice %t1 [0:8, 0:4, 8:16, 0:1]
+        : (tensor<8x4x16x1xf32>) -> tensor<8x4x8x1xf32>
+    %t2 = stablehlo.transpose %sl, dims = [3, 1, 0, 2]
+        : (tensor<8x4x8x1xf32>) -> tensor<1x4x8x8xf32>
+    return %t2 : tensor<1x4x8x8xf32>
+  }
+}
+)mlir";
+
+        setenv(kTorchTpuInternalEnableCancelInverseViewTransposesEnvVar, "0",
+               1);
+        mlir::MLIRContext context;
+        mlir::DialectRegistry registry;
+        mlir::stablehlo::registerAllDialects(registry);
+        registry.insert<mlir::func::FuncDialect>();
+        context.appendDialectRegistry(registry);
+        context.loadAllAvailableDialects();
+
+        mlir::OwningOpRef<mlir::ModuleOp> module =
+            mlir::parseSourceString<mlir::ModuleOp>(kIr, &context);
+        if (!module) {
+          std::exit(1);
+        }
+        if (!RunTorchTpuOptimizationPasses(*module, &context).ok()) {
+          std::exit(2);
+        }
+        int transpose_count = 0;
+        module->walk([&](mlir::stablehlo::TransposeOp) { ++transpose_count; });
+        if (transpose_count == 0) {
+          std::exit(3);
+        }
+        std::exit(0);
+      },
+      testing::ExitedWithCode(0), "");
+}
+
+TEST(PipelineTest, RegisterTorchTpuPassesFindsFoldDotTransposes) {
+  RegisterTorchTpuPasses();
+  const mlir::PassInfo* info =
+      mlir::PassInfo::lookup("torch-tpu-fold-dot-transposes");
+  ASSERT_NE(info, nullptr);
+  EXPECT_EQ(info->getPassArgument(), "torch-tpu-fold-dot-transposes");
+  EXPECT_FALSE(info->getPassDescription().empty());
+
+  mlir::OpPassManager func_pm(mlir::func::FuncOp::getOperationName());
+  EXPECT_TRUE(mlir::succeeded(
+      mlir::parsePassPipeline("torch-tpu-fold-dot-transposes", func_pm)));
+  ASSERT_FALSE(func_pm.empty());
+  EXPECT_EQ(func_pm.getPasses().begin()->getArgument(),
+            "torch-tpu-fold-dot-transposes");
+}
+
+TEST(PipelineTest, RunOptimizationPassesFoldsDotTransposes) {
+  static constexpr const char* kIr = R"mlir(
+module {
+  func.func @main(
+      %dy: tensor<2x2x4x128xf32>,
+      %w: tensor<256x128xf32>) -> tensor<2x4x128xf32> {
+    %t = stablehlo.transpose %dy, dims = [1, 2, 0, 3]
+        : (tensor<2x2x4x128xf32>) -> tensor<2x4x2x128xf32>
+    %r = stablehlo.reshape %t : (tensor<2x4x2x128xf32>) -> tensor<8x256xf32>
+    %dot = "stablehlo.dot_general"(%r, %w) {
+        dot_dimension_numbers = #stablehlo.dot<
+            lhs_contracting_dimensions = [1],
+            rhs_contracting_dimensions = [0]>
+    } : (tensor<8x256xf32>, tensor<256x128xf32>) -> tensor<8x128xf32>
+    %out = stablehlo.reshape %dot : (tensor<8x128xf32>) -> tensor<2x4x128xf32>
+    return %out : tensor<2x4x128xf32>
+  }
+}
+)mlir";
+
+  mlir::MLIRContext context;
+  InitContext(context);
+  mlir::OwningOpRef<mlir::ModuleOp> module =
+      mlir::parseSourceString<mlir::ModuleOp>(kIr, &context);
+  ASSERT_TRUE(module);
+
+  ASSERT_THAT(RunTorchTpuOptimizationPasses(*module, &context),
+              absl_testing::IsOk());
+
+  EXPECT_EQ(CountOps<mlir::stablehlo::TransposeOp>(*module), 0);
+  EXPECT_EQ(CountOps<mlir::stablehlo::DotGeneralOp>(*module), 1);
+}
+
+TEST(PipelineDeathTest, FoldDotTransposesDisabledByEnvVar) {
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  EXPECT_EXIT(
+      {
+        static constexpr const char* kIr = R"mlir(
+module {
+  func.func @main(
+      %dy: tensor<2x2x4x128xf32>,
+      %w: tensor<256x128xf32>) -> tensor<2x4x128xf32> {
+    %t = stablehlo.transpose %dy, dims = [1, 2, 0, 3]
+        : (tensor<2x2x4x128xf32>) -> tensor<2x4x2x128xf32>
+    %r = stablehlo.reshape %t : (tensor<2x4x2x128xf32>) -> tensor<8x256xf32>
+    %dot = "stablehlo.dot_general"(%r, %w) {
+        dot_dimension_numbers = #stablehlo.dot<
+            lhs_contracting_dimensions = [1],
+            rhs_contracting_dimensions = [0]>
+    } : (tensor<8x256xf32>, tensor<256x128xf32>) -> tensor<8x128xf32>
+    %out = stablehlo.reshape %dot : (tensor<8x128xf32>) -> tensor<2x4x128xf32>
+    return %out : tensor<2x4x128xf32>
+  }
+}
+)mlir";
+
+        setenv(kTorchTpuInternalEnableFoldDotTransposesEnvVar, "0", 1);
+        mlir::MLIRContext context;
+        mlir::DialectRegistry registry;
+        mlir::stablehlo::registerAllDialects(registry);
+        registry.insert<mlir::func::FuncDialect>();
+        context.appendDialectRegistry(registry);
+        context.loadAllAvailableDialects();
+
+        mlir::OwningOpRef<mlir::ModuleOp> module =
+            mlir::parseSourceString<mlir::ModuleOp>(kIr, &context);
+        if (!module) {
+          std::exit(1);
+        }
+        if (!RunTorchTpuOptimizationPasses(*module, &context).ok()) {
+          std::exit(2);
+        }
+        int transpose_count = 0;
+        module->walk([&](mlir::stablehlo::TransposeOp) { ++transpose_count; });
+        if (transpose_count == 0) {
+          std::exit(3);
+        }
+        std::exit(0);
+      },
+      testing::ExitedWithCode(0), "");
 }
 
 }  // namespace
