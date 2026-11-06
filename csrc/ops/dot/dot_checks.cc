@@ -58,9 +58,9 @@ absl::StatusOr<mlir::ElementType> ValidateAndGetDotOutputType(
   at::ScalarType output_scalar_type = lhs.scalar_type();
   TT_RET_CHECK(!IsBool(output_scalar_type), error::kInvalidArgument)
       << "the input dtypes cannot be bool";
-  TT_RET_CHECK(c10::isFloatingType(output_scalar_type) ||
-                   c10::isComplexType(output_scalar_type),
-               error::kPythonNotImplementedError)
+  TT_RET_CHECK(
+      c10::isFloatingType(output_scalar_type) || IsComplex(output_scalar_type),
+      error::kPythonNotImplementedError)
       << "not implemented for " << ToString(output_scalar_type);
   TT_RETURN_IF_ERROR(ValidateNotLowPrecisionFloat(output_scalar_type));
 

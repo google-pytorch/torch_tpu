@@ -1269,7 +1269,7 @@ at::Tensor CastGradToTargetDtype(at::Tensor grad_k,
   if (grad_k.scalar_type() == target_dtype) {
     return grad_k;
   }
-  if (grad_k.is_complex() && !c10::isComplexType(target_dtype)) {
+  if (grad_k.is_complex() && !IsComplex(target_dtype)) {
     grad_k = at::real(grad_k);
   }
   if (grad_k.scalar_type() != target_dtype) {

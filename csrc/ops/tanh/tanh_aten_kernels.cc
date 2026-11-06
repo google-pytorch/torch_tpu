@@ -22,6 +22,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "c10/core/ScalarType.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/to_string.h"
@@ -32,6 +33,7 @@
 #include "csrc/ops/unary.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
+#include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
 
@@ -66,9 +68,8 @@ absl::StatusOr<mlir::MlirOp> BuildTanhBackwardGradInputShlo(
 absl::Status ValidateTanhBackwardInputs(const at::Tensor& grad_output,
                                         const at::Tensor& output) {
   const c10::ScalarType promoted_type = at::result_type(grad_output, output);
-  TT_RET_CHECK(
-      c10::isFloatingType(promoted_type) || c10::isComplexType(promoted_type),
-      error::kPythonNotImplementedError)
+  TT_RET_CHECK(c10::isFloatingType(promoted_type) || IsComplex(promoted_type),
+               error::kPythonNotImplementedError)
       << "not implemented for " << ToString(promoted_type);
   return absl::OkStatus();
 }
