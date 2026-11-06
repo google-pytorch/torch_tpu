@@ -47,6 +47,27 @@ torch_tpu_cc_library(
 )
 
 torch_tpu_cc_library(
+    name = "cross_host_descriptor_store",
+    hdrs = ["cross_host_descriptor_store.h"],
+    deps = [
+        "//shims/torch:torch_headers",
+        "//shims/torch/c10/util:base_headers",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "cross_host_descriptor_store_test",
+    srcs = ["cross_host_descriptor_store_test.cc"],
+    deps = [
+        ":cross_host_descriptor_store",
+        "//csrc/common:oss_test_main",
+        "//shims/torch",
+        "//shims/torch:torch_headers",
+        "//shims/torch/c10/util:base_headers",
+    ],
+)
+
+torch_tpu_cc_library(
     name = "process_group_tpu",
     srcs = ["process_group_tpu.cc"],
     hdrs = ["process_group_tpu.h"],
@@ -54,6 +75,7 @@ torch_tpu_cc_library(
         ":allgather",
         ":allreduce",
         ":alltoall",
+        ":cross_host_descriptor_store",
         ":reduce_scatter",
         ":types",
         ":utils",
