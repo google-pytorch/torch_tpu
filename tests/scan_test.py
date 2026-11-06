@@ -434,6 +434,27 @@ class ScanLoweringTest(seed_test_utils.RepeatableTest):
         msg="scan was unexpectedly unrolled: stablehlo.while not found",
     )
 
+  def test_scan_body_is_not_compiled_on_its_own(self):
+    # The body is inlined into the enclosing program, so compiling the graph
+    # should compile one executable, not a second one for the body.
+    def fn(init, xs):
+      return scan(lambda carry, x: (carry + x, carry * x), init, xs)
+
+    device = torch.device("tpu")
+    init = torch.zeros(4, device=device)
+    xs = torch.ones(3, 4, device=device)
+    torch.compiler.reset()
+    with mock.patch.object(
+        tpu_torch_compile,
+        "traverse_and_compile",
+        wraps=tpu_torch_compile.traverse_and_compile,
+    ) as traverse_and_compile:
+      carry, ys = _compile_and_run(fn, init, xs)
+
+    self.assertEqual(traverse_and_compile.call_count, 1)
+    utils.assert_close(carry.cpu(), torch.full((4,), 3.0))
+    utils.assert_close(ys.cpu(), torch.arange(3.0).unsqueeze(1).expand(3, 4))
+
 
 def _body_with_custom_meta(custom=None):
   """Builds a one-op scan body, optionally with `custom` node metadata."""
