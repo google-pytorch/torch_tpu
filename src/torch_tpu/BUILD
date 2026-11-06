@@ -47,6 +47,11 @@ license(
 
 exports_files(["LICENSE"])
 
+exports_files(
+    ["custom_lint_rules.METADATA"],
+    visibility = ["//ci/tools:__pkg__"],
+)
+
 py_dist_info(
     name = "torch_tpu_dist_info",
     package_name = "torch_tpu",

@@ -12,8 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# This workflow enforces license headers, commit message validation, and code linting checks
-# (C++ clang-format and Python ruff) on Pull Requests.
+# This workflow enforces license headers, commit message validation, custom
+# convention checks, CI tool unit tests, and code linting checks (C++
+# clang-format and Python ruff) on Pull Requests.
 
 name: "Lint checks"
 
@@ -83,9 +84,22 @@ jobs:
     steps:
       - name: "Check out PR HEAD"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
 
       - name: "Fetch Base Commit"
-        run: git fetch --no-tags --depth=1 origin ${{ github.event.pull_request.base.sha || 'main' }}
+        if: github.event_name == 'pull_request'
+        shell: "bash"
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ -n "${HEAD_SHA}" ] && ! git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null; then
+            git fetch --no-tags origin "${HEAD_SHA}"
+          fi
+          if [ -n "${BASE_SHA}" ] && ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+            git fetch --no-tags origin "${BASE_SHA}"
+          fi
 
       # uv is a blazing-fast, single-binary replacement for pip, pipx, and virtualenv written in
       # Rust.
@@ -104,6 +118,7 @@ jobs:
       - name: "Run code linting checks via Nox"
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: uvx nox -s lint
 
       - name: "Run actionlint via Nox"
