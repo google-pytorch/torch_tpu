@@ -72,18 +72,26 @@ class ScopedFakePciDir {
   std::string dir_;
 };
 
+// Returns a configuration of a single-process job with a fake slice builder.
+[[nodiscard]] DistributedWorkerConfiguration GetDefaultDistWorkerConfig() {
+  return {
+      .rank = 0,
+      .local_rank = 0,
+      .world_size = 0,
+      .sb_addrs = "localhost:1234",
+      .sb_port = "1234",
+      .topology = "1,1,1",
+  };
+}
+
 TEST(EnvironmentDeathTest,
      InitializeDistributedEnvironment_PopulatesSlicebuilderAddresses) {
   EXPECT_EXIT(
       {
         unsetenv(kTpuProcessAddressesEnvVar);
         unsetenv(kTpuProcessPortEnvVar);
-        DistributedWorkerConfiguration config{};
-        config.rank = 0;
-        config.local_rank = 0;
-        config.sb_port = "1234";
+        DistributedWorkerConfiguration config = GetDefaultDistWorkerConfig();
         config.sb_addrs = "host0:1234,host1:1234";
-        config.topology = "1,1,1";
 
         ABSL_CHECK_OK(InitializeDistributedEnvironment(config));
         const char* addrs = std::getenv(kTpuProcessAddressesEnvVar);
@@ -103,12 +111,9 @@ TEST(EnvironmentDeathTest,
       {
         unsetenv(kTpuProcessAddressesEnvVar);
         unsetenv(kTpuProcessPortEnvVar);
-        DistributedWorkerConfiguration config{};
-        config.rank = 0;
-        config.local_rank = 0;
-        config.sb_port = "5678";
+        DistributedWorkerConfiguration config = GetDefaultDistWorkerConfig();
         config.sb_addrs = "host0:5678";
-        config.topology = "1,1,1";
+        config.sb_port = "5678";
 
         ABSL_CHECK_OK(InitializeDistributedEnvironment(config));
         const char* addrs = std::getenv(kTpuProcessAddressesEnvVar);
@@ -126,14 +131,8 @@ TEST(EnvironmentDeathTest, InitializeDistributedEnvironment_ResolvesBnsPort) {
   EXPECT_EXIT(
       {
         unsetenv(kTpuProcessPortEnvVar);
-        DistributedWorkerConfiguration config{};
-        config.rank = 0;
-        config.local_rank = 0;
-        config.sb_port = "1234";
-        config.sb_addrs = "localhost:1234";
-        config.topology = "1,1,1";
-
-        ABSL_CHECK_OK(InitializeDistributedEnvironment(config));
+        ABSL_CHECK_OK(
+            InitializeDistributedEnvironment(GetDefaultDistWorkerConfig()));
         const char* port = std::getenv(kTpuProcessPortEnvVar);
         ABSL_CHECK_NE(port, nullptr);
         ABSL_CHECK_STREQ(port, "1234");
@@ -146,12 +145,8 @@ TEST(EnvironmentDeathTest,
      InitializeDistributedEnvironment_FailsOnEmptySlicebuilderAddresses) {
   EXPECT_EXIT(
       {
-        DistributedWorkerConfiguration config{};
-        config.rank = 0;
-        config.local_rank = 0;
-        config.sb_port = "1234";
+        DistributedWorkerConfiguration config = GetDefaultDistWorkerConfig();
         config.sb_addrs = "";
-        config.topology = "1,1,1";
 
         ABSL_CHECK(!InitializeDistributedEnvironment(config).ok());
         _exit(0);
@@ -163,12 +158,8 @@ TEST(EnvironmentDeathTest,
      InitializeDistributedEnvironment_FailsOnNegativeRank) {
   EXPECT_EXIT(
       {
-        DistributedWorkerConfiguration config{};
+        DistributedWorkerConfiguration config = GetDefaultDistWorkerConfig();
         config.rank = -1;
-        config.local_rank = 0;
-        config.sb_port = "1234";
-        config.sb_addrs = "localhost:1234";
-        config.topology = "1,1,1";
 
         ABSL_CHECK(!InitializeDistributedEnvironment(config).ok());
         _exit(0);
@@ -182,14 +173,8 @@ TEST(EnvironmentDeathTest,
       {
         setenv(kLibtpuInitArgsEnvVar,
                "--xla_tpu_use_enhanced_launch_barrier=true", 1);
-        DistributedWorkerConfiguration config{};
-        config.rank = 0;
-        config.local_rank = 0;
-        config.sb_port = "1234";
-        config.sb_addrs = "localhost:1234";
-        config.topology = "1,1,1";
-
-        ABSL_CHECK_OK(InitializeDistributedEnvironment(config));
+        ABSL_CHECK_OK(
+            InitializeDistributedEnvironment(GetDefaultDistWorkerConfig()));
         const char* val = std::getenv(kLibtpuInitArgsEnvVar);
         ABSL_CHECK_NE(val, nullptr);
         ABSL_CHECK_STREQ(val,
@@ -201,25 +186,13 @@ TEST(EnvironmentDeathTest,
       ExitedWithCode(0), "");
 }
 
-// Returns the configuration of a single-process job whose SliceBuilder address
-// is `localhost:1234`.
-DistributedWorkerConfiguration LocalhostConfig() {
-  DistributedWorkerConfiguration config{};
-  config.rank = 0;
-  config.local_rank = 0;
-  config.sb_port = "1234";
-  config.sb_addrs = "localhost:1234";
-  config.topology = "1,1,1";
-  return config;
-}
-
-// Runs InitializeDistributedEnvironment(LocalhostConfig()) with
+// Runs InitializeDistributedEnvironment(GetDefaultDistWorkerConfig()) with
 // `LIBTPU_INIT_ARGS` set to `libtpu_init_args` in a death test child and
 // prints the resulting `LIBTPU_INIT_ARGS` to stderr as
 // "libtpu_init_args=<value>" for EXPECT_EXIT to match.
 void InitAndPrintLibtpuInitArgs(const char* const libtpu_init_args) {
   setenv(kLibtpuInitArgsEnvVar, libtpu_init_args, 1);
-  ABSL_CHECK_OK(InitializeDistributedEnvironment(LocalhostConfig()));
+  ABSL_CHECK_OK(InitializeDistributedEnvironment(GetDefaultDistWorkerConfig()));
   const char* const args = std::getenv(kLibtpuInitArgsEnvVar);
   std::fprintf(stderr, "libtpu_init_args=%s\n", args ? args : "unset");
   _exit(0);
@@ -262,14 +235,8 @@ TEST(EnvironmentDeathTest,
         unsetenv(kTpuChipsPerHostBoundsEnvVar);
         unsetenv(kTpuProcessBoundsEnvVar);
         unsetenv(kTpuChipsPerProcessBoundsEnvVar);
-        DistributedWorkerConfiguration config{};
-        config.rank = 0;
-        config.local_rank = 0;
-        config.sb_port = "1234";
-        config.sb_addrs = "localhost:1234";
-        config.topology = "1,1,1";
-
-        ABSL_CHECK_OK(InitializeDistributedEnvironment(config));
+        ABSL_CHECK_OK(
+            InitializeDistributedEnvironment(GetDefaultDistWorkerConfig()));
         ABSL_CHECK_STREQ(std::getenv(kAllowMultipleLibtpuLoadEnvVar), "1");
         ABSL_CHECK_STREQ(std::getenv(kTpuProcessAddressesEnvVar),
                          "localhost:1234");
@@ -292,11 +259,7 @@ TEST(EnvironmentDeathTest,
         unsetenv(kTpuChipsPerHostBoundsEnvVar);
         unsetenv(kTpuProcessBoundsEnvVar);
         unsetenv(kTpuChipsPerProcessBoundsEnvVar);
-        DistributedWorkerConfiguration config{};
-        config.rank = 0;
-        config.local_rank = 0;
-        config.sb_port = "1234";
-        config.sb_addrs = "localhost:1234";
+        DistributedWorkerConfiguration config = GetDefaultDistWorkerConfig();
         config.topology = "2,2,1,2";
 
         ABSL_CHECK_OK(InitializeDistributedEnvironment(config));
@@ -313,12 +276,8 @@ TEST(EnvironmentDeathTest,
   EXPECT_EXIT(
       {
         setenv(kTpuProcessAddressesEnvVar, "old_address", 1);
-        DistributedWorkerConfiguration config{};
-        config.rank = 0;
-        config.local_rank = 0;
-        config.sb_port = "1234";
+        DistributedWorkerConfiguration config = GetDefaultDistWorkerConfig();
         config.sb_addrs = "new_address";
-        config.topology = "1,1,1";
 
         ABSL_CHECK_OK(InitializeDistributedEnvironment(config));
         ABSL_CHECK_STREQ(std::getenv(kTpuProcessAddressesEnvVar),
@@ -340,12 +299,9 @@ TEST(EnvironmentDeathTest,
         unsetenv(kTpuChipsPerProcessBoundsEnvVar);
         unsetenv(kCloudTpuTaskIdEnvVar);
 
-        DistributedWorkerConfiguration config{};
+        DistributedWorkerConfiguration config = GetDefaultDistWorkerConfig();
         config.rank = 5;
-        config.local_rank = 0;
-        config.sb_port = "1234";
         config.sb_addrs = "host0:1234,host1:1234";
-        config.topology = "1,1,1";
 
         ABSL_CHECK_OK(InitializeDistributedEnvironment(config));
         ABSL_CHECK_STREQ(std::getenv(kCloudTpuTaskIdEnvVar), "1");
@@ -361,15 +317,16 @@ constexpr char kTwoHostSliceAddresses[] =
 
 // Returns the configuration of local rank `local_rank` on the first host of
 // the second slice in a job of two `kTwoHostSliceAddresses` slices.
-DistributedWorkerConfiguration MultisliceConfig(const int local_rank) {
-  DistributedWorkerConfiguration config{};
-  config.rank = 8 + local_rank;
-  config.local_rank = local_rank;
-  config.world_size = 16;
-  config.sb_port = "8070";
-  config.sb_addrs = kTwoHostSliceAddresses;
-  config.topology = "1,1,1";
-  return config;
+[[nodiscard]] DistributedWorkerConfiguration MultisliceConfig(
+    const int local_rank) {
+  return {
+      .rank = 8 + local_rank,
+      .local_rank = local_rank,
+      .world_size = 16,
+      .sb_addrs = kTwoHostSliceAddresses,
+      .sb_port = "8070",
+      .topology = "1,1,1",
+  };
 }
 
 // Runs InitializeDistributedEnvironment(config) in a death test child and
@@ -431,12 +388,8 @@ TEST(EnvironmentDeathTest,
   EXPECT_EXIT(
       {
         setenv(kTpuVisibleDevicesEnvVar, "invalid_dev", 1);
-        DistributedWorkerConfiguration config{};
-        config.rank = 0;
+        DistributedWorkerConfiguration config = GetDefaultDistWorkerConfig();
         config.local_rank = 1;
-        config.sb_port = "1234";
-        config.sb_addrs = "localhost:1234";
-        config.topology = "1,1,1";
         ABSL_CHECK_OK(InitializeDistributedEnvironment(config));
         const char* val = std::getenv(kTpuVisibleDevicesEnvVar);
         ABSL_CHECK_NE(val, nullptr);
@@ -454,12 +407,8 @@ TEST(EnvironmentDeathTest,
   EXPECT_EXIT(
       {
         setenv(kTpuVisibleDevicesEnvVar, "-5", 1);
-        DistributedWorkerConfiguration config{};
-        config.rank = 0;
+        DistributedWorkerConfiguration config = GetDefaultDistWorkerConfig();
         config.local_rank = 2;
-        config.sb_port = "1234";
-        config.sb_addrs = "localhost:1234";
-        config.topology = "1,1,1";
         ABSL_CHECK_OK(InitializeDistributedEnvironment(config));
         const char* val = std::getenv(kTpuVisibleDevicesEnvVar);
         ABSL_CHECK_NE(val, nullptr);
@@ -477,14 +426,8 @@ TEST(EnvironmentDeathTest,
   EXPECT_EXIT(
       {
         setenv(kTpuVisibleDevicesEnvVar, "3", 1);
-        DistributedWorkerConfiguration config{};
-        config.rank = 0;
-        config.local_rank = 0;
-        config.sb_port = "1234";
-        config.sb_addrs = "localhost:1234";
-        config.topology = "1,1,1";
-
-        ABSL_CHECK_OK(InitializeDistributedEnvironment(config));
+        ABSL_CHECK_OK(
+            InitializeDistributedEnvironment(GetDefaultDistWorkerConfig()));
         ABSL_CHECK_STREQ(std::getenv(kTpuVisibleDevicesEnvVar), "3");
         ABSL_CHECK_STREQ(std::getenv(kTpuVisibleChipsEnvVar), "3");
         _exit(0);
@@ -497,12 +440,8 @@ TEST(EnvironmentDeathTest,
   EXPECT_EXIT(
       {
         setenv(kTpuVisibleDevicesEnvVar, "0,1,2,3", 1);
-        DistributedWorkerConfiguration config{};
-        config.rank = 0;
+        DistributedWorkerConfiguration config = GetDefaultDistWorkerConfig();
         config.local_rank = 1;
-        config.sb_port = "1234";
-        config.sb_addrs = "localhost:1234";
-        config.topology = "1,1,1";
 
         ABSL_CHECK_OK(InitializeDistributedEnvironment(config));
         ABSL_CHECK_STREQ(std::getenv(kTpuVisibleDevicesEnvVar), "1");
@@ -518,14 +457,8 @@ TEST(EnvironmentDeathTest,
       {
         setenv(kTpuVisibleChipsEnvVar, "0,1,2,3", 1);
         unsetenv(kTpuVisibleDevicesEnvVar);
-        DistributedWorkerConfiguration config{};
-        config.rank = 0;
-        config.local_rank = 0;
-        config.sb_port = "1234";
-        config.sb_addrs = "localhost:1234";
-        config.topology = "1,1,1";
-
-        ABSL_CHECK_OK(InitializeDistributedEnvironment(config));
+        ABSL_CHECK_OK(
+            InitializeDistributedEnvironment(GetDefaultDistWorkerConfig()));
         ABSL_CHECK_STREQ(std::getenv(kTpuVisibleDevicesEnvVar), "0");
         ABSL_CHECK_STREQ(std::getenv(kTpuVisibleChipsEnvVar), "0");
         _exit(0);
