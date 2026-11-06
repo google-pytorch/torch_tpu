@@ -691,7 +691,7 @@ internal_target(
     name = "distributed_synthetic_test",
     timeout = "long",
     srcs = ["distributed_synthetic_test.py"],
-    shard_count = 2,
+    shard_count = 3,
     tags = ["requires-mem:28g"],
     # Avoids TOO_MANY_INPUT_FILES from torchtitan's sources.
     use_precompile = False,
