@@ -372,8 +372,6 @@ _OUT_DTYPE_CAST_KNOWN_FAILURES: Final[set[str]] = {
     "baddbmm.dtype",
     "bitwise_not",
     "bmm.dtype",
-    # TODO: Remove "histc" once find_cast_pairs avoids real->complex pairs.
-    "histc",
     "index_reduce",
     "lerp",
     "mm.dtype",

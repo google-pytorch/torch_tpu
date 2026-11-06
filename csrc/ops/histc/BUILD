@@ -31,6 +31,7 @@ torch_tpu_cc_library(
         ":histc",
         "//csrc/common:aten_utils",
         "//csrc/common:cache_key",
+        "//csrc/common:device_type",
         "//csrc/common:dimension_types",
         "//csrc/common:dtype",
         "//csrc/common:error_utils",
