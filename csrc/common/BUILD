@@ -225,6 +225,22 @@ torch_tpu_cc_library(
 )
 
 torch_tpu_cc_library(
+    name = "interned_device_shape",
+    srcs = ["interned_device_shape.cc"],
+    hdrs = ["interned_device_shape.h"],
+    deps = [
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/base:no_destructor",
+        "@com_google_absl//absl/base:nullability",
+        "@com_google_absl//absl/container:flat_hash_set",
+        "@com_google_absl//absl/container:node_hash_set",
+        "@com_google_absl//absl/synchronization",
+        "@com_google_absl//absl/types:span",
+        "@xla//xla:shape_util",
+    ],
+)
+
+torch_tpu_cc_library(
     name = "status_builder",
     srcs = ["status_builder.cc"],
     hdrs = ["status_builder.h"],
@@ -374,6 +390,7 @@ torch_tpu_cc_library(
         ":error_utils",
         ":excess_precision",
         ":fingerprint_utils",
+        ":interned_device_shape",
         ":shape",
         ":tpu_subslice_utils",
         "//csrc/eager:device_assignment",
@@ -1631,15 +1648,19 @@ torch_tpu_cc_test(
         ":compilation_test_helper",
         ":error_utils",
         ":excess_precision",
+        ":interned_device_shape",
         ":mlir_test_modules",
+        ":shape",
         ":status_test_utils",
         "//csrc/common:oss_test_main",
         "//csrc/pjrt:pjrt_state",
         "//shims/torch:torch_headers",
+        "@com_google_absl//absl/base:nullability",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/types:span",
         "@xla//xla:shape_util",
         "@xla//xla:xla_data_proto_cc",
         "@xla//xla:xla_proto_cc",

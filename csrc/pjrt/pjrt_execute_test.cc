@@ -16,6 +16,7 @@
 
 #include "csrc/pjrt/pjrt_execute.h"
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -23,18 +24,22 @@
 #include <vector>
 
 #include "absl/base/nullability.h"
+#include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "csrc/common/compilation.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/interned_device_shape.h"
 #include "csrc/common/mlir_test_modules.h"
 #include "csrc/common/shape.h"
 #include "csrc/common/status_test_utils.h"
+#include "csrc/pjrt/counting_pjrt_buffer_test_util.h"
 #include "csrc/pjrt/pjrt_state.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "xla/future.h"
 #include "xla/hlo/builder/xla_builder.h"
 #include "xla/hlo/builder/xla_computation.h"
 #include "xla/hlo/ir/hlo_computation.h"
@@ -271,11 +276,13 @@ TEST_F(PjrtExecuteTest,
 TEST_F(PjrtExecuteTest,
        Execute_ArgumentLayoutValidation_ValidatesOrSkipsAsRequested) {
   xla::XlaBuilder builder("layout_validation_test");
-  xla::Shape default_layout_shape =
+  const xla::Shape default_layout_shape =
       xla::ShapeUtil::MakeShapeWithDenseLayout(xla::F32, /*dimensions=*/{8, 8},
                                                /*minor_to_major=*/{1, 0});
-  xla::XlaOp p0 = xla::Parameter(&builder, 0, default_layout_shape, "input_0");
-  TT_ASSERT_OK_AND_ASSIGN(xla::XlaComputation computation, builder.Build(p0));
+  const xla::XlaOp p0 =
+      xla::Parameter(&builder, 0, default_layout_shape, "input_0");
+  TT_ASSERT_OK_AND_ASSIGN(const xla::XlaComputation computation,
+                          builder.Build(p0));
 
   xla::CompileOptions compile_options;
   compile_options.argument_layouts = {default_layout_shape};
@@ -284,12 +291,12 @@ TEST_F(PjrtExecuteTest,
       client_->CompileAndLoad(computation, compile_options));
 
   TT_ASSERT_OK_AND_ASSIGN(
-      SharedLoadedExecutableWithMetadata executable,
+      const SharedLoadedExecutableWithMetadata executable,
       LoadedExecutableWithMetadata::MakeShared(std::move(loaded_exec),
                                                /*argument_indices=*/{}));
 
   // Create an input buffer with a transposed on-device layout ({0, 1}).
-  xla::Shape transposed_layout_shape =
+  const xla::Shape transposed_layout_shape =
       xla::ShapeUtil::MakeShapeWithDenseLayout(xla::F32, /*dimensions=*/{8, 8},
                                                /*minor_to_major=*/{0, 1});
   const std::vector<float> host_input(64, 1.0f);
@@ -320,6 +327,336 @@ TEST_F(PjrtExecuteTest,
                                   /*logical_output_shapes=*/{logical_shape},
                                   ArgumentLayoutValidation::kSkip));
   EXPECT_EQ(skipped_result.size(), 1);
+}
+
+TEST_F(PjrtExecuteTest,
+       Execute_ArgumentLayoutValidation_QueriesOnDeviceShapeOncePerBuffer) {
+  xla::XlaBuilder builder("layout_validation_count_test");
+  const xla::Shape default_layout_shape =
+      xla::ShapeUtil::MakeShapeWithDenseLayout(xla::F32, /*dimensions=*/{8, 8},
+                                               /*minor_to_major=*/{1, 0});
+  const xla::XlaOp p0 =
+      xla::Parameter(&builder, 0, default_layout_shape, "input_0");
+  TT_ASSERT_OK_AND_ASSIGN(const xla::XlaComputation computation,
+                          builder.Build(p0));
+
+  xla::CompileOptions compile_options;
+  compile_options.argument_layouts = {default_layout_shape};
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<xla::PjRtLoadedExecutable> loaded_exec,
+      client_->CompileAndLoad(computation, compile_options));
+  TT_ASSERT_OK_AND_ASSIGN(
+      const SharedLoadedExecutableWithMetadata executable,
+      LoadedExecutableWithMetadata::MakeShared(std::move(loaded_exec),
+                                               /*argument_indices=*/{}));
+
+  const xla::Shape transposed_layout_shape =
+      xla::ShapeUtil::MakeShapeWithDenseLayout(xla::F32, /*dimensions=*/{8, 8},
+                                               /*minor_to_major=*/{0, 1});
+  const std::vector<float> host_input(64, 1.0f);
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<xla::PjRtBuffer> raw_input_buf,
+      client_->BufferFromHostBuffer(
+          host_input.data(), xla::F32, /*dims=*/{8, 8},
+          /*byte_strides=*/std::nullopt,
+          xla::PjRtClient::HostBufferSemantics::kImmutableOnlyDuringCall,
+          /*on_done_with_host_buffer=*/nullptr, memory_space_,
+          &transposed_layout_shape.layout()));
+
+  const auto on_device_shape_calls = std::make_shared<std::atomic<int>>(0);
+  CountingPjRtBuffer counting_buf(std::move(raw_input_buf),
+                                  on_device_shape_calls);
+  const Shape logical_shape({8, 8}, mlir::ElementType::F32);
+
+  EXPECT_THAT(
+      Execute(executable, {&counting_buf},
+              /*logical_output_shapes=*/{logical_shape},
+              ArgumentLayoutValidation::kValidate),
+      StatusIs(error::kInvalidArgument,
+               HasSubstr("expected argument 0 to have on-device layout")));
+  EXPECT_EQ(on_device_shape_calls->load(), 1);
+}
+
+TEST_F(PjrtExecuteTest,
+       Execute_KnownArgumentShapes_ValidatesFastAndSlowPathsWithoutQuerying) {
+  xla::XlaBuilder builder("known_argument_shapes_test");
+  const xla::Shape default_layout_shape =
+      xla::ShapeUtil::MakeShapeWithDenseLayout(xla::F32, /*dimensions=*/{8, 8},
+                                               /*minor_to_major=*/{1, 0});
+  const xla::XlaOp p0 =
+      xla::Parameter(&builder, 0, default_layout_shape, "input_0");
+  TT_ASSERT_OK_AND_ASSIGN(const xla::XlaComputation computation,
+                          builder.Build(p0));
+
+  xla::CompileOptions compile_options;
+  compile_options.argument_layouts = {default_layout_shape};
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<xla::PjRtLoadedExecutable> loaded_exec,
+      client_->CompileAndLoad(computation, compile_options));
+  TT_ASSERT_OK_AND_ASSIGN(const SharedLoadedExecutableWithMetadata executable,
+                          LoadedExecutableWithMetadata::MakeShared(
+                              std::make_unique<CountingPjRtLoadedExecutable>(
+                                  std::move(loaded_exec)),
+                              /*argument_indices=*/{}));
+  ASSERT_EQ(executable->parameter_device_shapes().size(), 1);
+  const xla::Shape* const interned_param_shape =
+      executable->parameter_device_shapes()[0];
+  ASSERT_NE(interned_param_shape, nullptr);
+
+  const std::vector<float> host_input(64, 1.0f);
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<xla::PjRtBuffer> raw_input_buf,
+      client_->BufferFromHostBuffer(
+          host_input.data(), xla::F32, /*dims=*/{8, 8},
+          /*byte_strides=*/std::nullopt,
+          xla::PjRtClient::HostBufferSemantics::kImmutableOnlyDuringCall,
+          /*on_done_with_host_buffer=*/nullptr, memory_space_,
+          /*device_layout=*/nullptr));
+
+  const auto on_device_shape_calls = std::make_shared<std::atomic<int>>(0);
+  CountingPjRtBuffer counting_buf(std::move(raw_input_buf),
+                                  on_device_shape_calls);
+  const Shape logical_shape({8, 8}, mlir::ElementType::F32);
+
+  // 1. Exact interned pointer hits the O(1) pointer-equality fast path.
+  TT_ASSERT_OK_AND_ASSIGN(
+      PjRtBufferPointers fast_outputs,
+      Execute(executable, {&counting_buf},
+              /*logical_output_shapes=*/{logical_shape},
+              ArgumentLayoutValidation::kValidate,
+              executable->parameter_device_shapes().as_span()));
+  ASSERT_EQ(fast_outputs.size(), 1);
+  ASSERT_EQ(fast_outputs[0]->GetReadyFuture().Await(), absl::OkStatus());
+  EXPECT_EQ(on_device_shape_calls->load(), 0);
+
+  // 2. Non-interned copy with distinct address exercises the slow-path layout
+  // comparison without querying `counting_buf.on_device_shape()`.
+  const xla::Shape uninterned_copy = *interned_param_shape;
+  ASSERT_NE(&uninterned_copy, interned_param_shape);
+  TT_ASSERT_OK_AND_ASSIGN(
+      PjRtBufferPointers slow_outputs,
+      Execute(executable, {&counting_buf},
+              /*logical_output_shapes=*/{logical_shape},
+              ArgumentLayoutValidation::kValidate, {&uninterned_copy}));
+  ASSERT_EQ(slow_outputs.size(), 1);
+  ASSERT_EQ(slow_outputs[0]->GetReadyFuture().Await(), absl::OkStatus());
+  EXPECT_EQ(on_device_shape_calls->load(), 0);
+
+  // 3. Mismatched layout in `known_argument_shapes` is rejected without
+  // querying `counting_buf.on_device_shape()`.
+  xla::Shape mismatched_known_shape = *interned_param_shape;
+  *mismatched_known_shape.mutable_layout() =
+      xla::Layout({0, 1}, {xla::Tile({8, 128})});
+  const InternedDeviceShapeSpan mismatched_interned =
+      InternStaticDeviceShapes({&mismatched_known_shape});
+  EXPECT_THAT(
+      Execute(executable, {&counting_buf},
+              /*logical_output_shapes=*/{logical_shape},
+              ArgumentLayoutValidation::kValidate,
+              mismatched_interned.as_span()),
+      StatusIs(error::kInvalidArgument,
+               HasSubstr("expected argument 0 to have on-device layout")));
+  EXPECT_EQ(on_device_shape_calls->load(), 0);
+}
+
+TEST_F(PjrtExecuteTest,
+       Execute_KnownArgumentShapes_AllowsDimensionMismatchAndPartialSpans) {
+  // 1. Partial `known_argument_shapes` on a 2-argument executable: arg 0 uses
+  // its known shape (0 calls) while arg 1 falls back to `on_device_shape()` (1
+  // call).
+  xla::XlaBuilder two_arg_builder("partial_known_shapes");
+  const xla::Shape arg_shape = xla::ShapeUtil::MakeShapeWithDenseLayout(
+      xla::F32, /*dimensions=*/{8, 8}, /*minor_to_major=*/{1, 0});
+  const xla::XlaOp p0 = xla::Parameter(&two_arg_builder, 0, arg_shape, "p0");
+  const xla::XlaOp p1 = xla::Parameter(&two_arg_builder, 1, arg_shape, "p1");
+  TT_ASSERT_OK_AND_ASSIGN(const xla::XlaComputation two_arg_comp,
+                          two_arg_builder.Build(xla::Add(p0, p1)));
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<xla::PjRtLoadedExecutable> raw_two_arg,
+      client_->CompileAndLoad(two_arg_comp, xla::CompileOptions()));
+  TT_ASSERT_OK_AND_ASSIGN(const SharedLoadedExecutableWithMetadata two_arg_exec,
+                          LoadedExecutableWithMetadata::MakeShared(
+                              std::make_unique<CountingPjRtLoadedExecutable>(
+                                  std::move(raw_two_arg))));
+
+  const std::vector<float> host_input(64, 2.0f);
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<xla::PjRtBuffer> raw_buf0,
+      client_->BufferFromHostBuffer(
+          host_input.data(), xla::F32, /*dims=*/{8, 8},
+          /*byte_strides=*/std::nullopt,
+          xla::PjRtClient::HostBufferSemantics::kImmutableOnlyDuringCall,
+          /*on_done_with_host_buffer=*/nullptr, memory_space_,
+          /*device_layout=*/nullptr));
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<xla::PjRtBuffer> raw_buf1,
+      client_->BufferFromHostBuffer(
+          host_input.data(), xla::F32, /*dims=*/{8, 8},
+          /*byte_strides=*/std::nullopt,
+          xla::PjRtClient::HostBufferSemantics::kImmutableOnlyDuringCall,
+          /*on_done_with_host_buffer=*/nullptr, memory_space_,
+          /*device_layout=*/nullptr));
+
+  const auto calls0 = std::make_shared<std::atomic<int>>(0);
+  const auto calls1 = std::make_shared<std::atomic<int>>(0);
+  CountingPjRtBuffer buf0(std::move(raw_buf0), calls0);
+  CountingPjRtBuffer buf1(std::move(raw_buf1), calls1);
+  const Shape logical_shape({8, 8}, mlir::ElementType::F32);
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      PjRtBufferPointers partial_outputs,
+      Execute(two_arg_exec, {&buf0, &buf1}, {logical_shape},
+              ArgumentLayoutValidation::kValidate,
+              {two_arg_exec->parameter_device_shapes()[0]}));
+  ASSERT_EQ(partial_outputs.size(), 1);
+  ASSERT_EQ(partial_outputs[0]->GetReadyFuture().Await(), absl::OkStatus());
+  EXPECT_EQ(calls0->load(), 0);
+  EXPECT_EQ(calls1->load(), 1);
+
+  // 2. A real one-element `f32[1]` buffer passed to a scalar `f32[]` parameter
+  // (e.g. FlashAttention's RNG seed) has different dimensions (`{1}` vs `{}`)
+  // and `minor_to_major` (`{0}` vs `{}`). Passing its true interned on-device
+  // shape skips the layout comparison without querying `on_device_shape()`.
+  xla::XlaBuilder scalar_builder("scalar_param_reinterpretation");
+  const xla::Shape scalar_shape = xla::ShapeUtil::MakeShape(xla::F32, {});
+  const xla::XlaOp scalar_param =
+      xla::Parameter(&scalar_builder, 0, scalar_shape, "seed");
+  TT_ASSERT_OK_AND_ASSIGN(
+      const xla::XlaComputation scalar_comp,
+      scalar_builder.Build(xla::Add(scalar_param, scalar_param)));
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<xla::PjRtLoadedExecutable> raw_scalar_exec,
+      client_->CompileAndLoad(scalar_comp, xla::CompileOptions()));
+  TT_ASSERT_OK_AND_ASSIGN(const SharedLoadedExecutableWithMetadata scalar_exec,
+                          LoadedExecutableWithMetadata::MakeShared(
+                              std::make_unique<CountingPjRtLoadedExecutable>(
+                                  std::move(raw_scalar_exec))));
+
+  const float seed_val = 7.0f;
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<xla::PjRtBuffer> raw_one_elem_buf,
+      client_->BufferFromHostBuffer(
+          &seed_val, xla::F32, /*dims=*/{1},
+          /*byte_strides=*/std::nullopt,
+          xla::PjRtClient::HostBufferSemantics::kImmutableOnlyDuringCall,
+          /*on_done_with_host_buffer=*/nullptr, memory_space_,
+          /*device_layout=*/nullptr));
+  const xla::Shape true_one_elem_shape = raw_one_elem_buf->on_device_shape();
+  const InternedDeviceShapeSpan interned_one_elem =
+      InternStaticDeviceShapes({&true_one_elem_shape});
+
+  const auto one_elem_calls = std::make_shared<std::atomic<int>>(0);
+  CountingPjRtBuffer one_elem_buf(std::move(raw_one_elem_buf), one_elem_calls);
+  const Shape scalar_logical_shape({}, mlir::ElementType::F32);
+  TT_ASSERT_OK_AND_ASSIGN(
+      PjRtBufferPointers reinterpreted_outputs,
+      Execute(scalar_exec, {&one_elem_buf}, {scalar_logical_shape},
+              ArgumentLayoutValidation::kValidate,
+              interned_one_elem.as_span()));
+  ASSERT_EQ(reinterpreted_outputs.size(), 1);
+  TT_ASSERT_OK_AND_ASSIGN(std::shared_ptr<xla::Literal> scalar_literal,
+                          reinterpreted_outputs[0]->ToLiteral().Await());
+  EXPECT_THAT(scalar_literal->data<float>(), ElementsAre(14.0f));
+  EXPECT_EQ(one_elem_calls->load(), 0);
+}
+
+TEST_F(PjrtExecuteTest, Execute_WithTupledArguments_UsesKnownArgumentShapes) {
+  constexpr int kNumArguments = 2001;
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<xla::PjRtLoadedExecutable> loaded_executable,
+      CompileAndLoadMlirModule(*client_,
+                               MakeSumOfArgumentsModule(kNumArguments),
+                               xla::CompileOptions()));
+  TT_ASSERT_OK_AND_ASSIGN(const SharedLoadedExecutableWithMetadata executable,
+                          LoadedExecutableWithMetadata::MakeShared(
+                              std::make_unique<CountingPjRtLoadedExecutable>(
+                                  std::move(loaded_executable))));
+  ASSERT_EQ(executable->parameter_device_shapes().size(), kNumArguments);
+
+  const auto on_device_shape_calls = std::make_shared<std::atomic<int>>(0);
+  std::vector<std::unique_ptr<CountingPjRtBuffer>> inputs;
+  std::vector<xla::PjRtBuffer*> arguments;
+  inputs.reserve(kNumArguments);
+  arguments.reserve(kNumArguments);
+  for (int i = 0; i < kNumArguments; ++i) {
+    TT_ASSERT_OK_AND_ASSIGN(std::unique_ptr<xla::PjRtBuffer> raw_input,
+                            MakeFilledBuffer(*client_, memory_space_, 1.0f));
+    auto counting = std::make_unique<CountingPjRtBuffer>(std::move(raw_input),
+                                                         on_device_shape_calls);
+    arguments.push_back(counting.get());
+    inputs.push_back(std::move(counting));
+  }
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      PjRtBufferPointers outputs,
+      Execute(executable, std::move(arguments), /*logical_output_shapes=*/{},
+              ArgumentLayoutValidation::kValidate,
+              executable->parameter_device_shapes().as_span()));
+  ASSERT_EQ(outputs.size(), 1);
+  ASSERT_EQ(outputs[0]->GetReadyFuture().Await(), absl::OkStatus());
+  EXPECT_EQ(on_device_shape_calls->load(), 0);
+}
+
+TEST_F(PjrtExecuteTest,
+       Execute_WithDynamicExecutionMetadata_ResetsKnownArgumentShapes) {
+  // Physical param 0 is S32[2] metadata; physical param 1 is the logical input
+  // f32[8, 8] compiled for default layout {1, 0}.
+  xla::XlaBuilder builder("dynamic_resets_known_shapes");
+  const xla::Shape meta_shape =
+      xla::ShapeUtil::MakeShapeWithDenseLayout(xla::S32, {2}, {0});
+  const xla::Shape data_shape =
+      xla::ShapeUtil::MakeShapeWithDenseLayout(xla::F32, {8, 8}, {1, 0});
+  xla::Parameter(&builder, 0, meta_shape, "meta_s32");
+  const xla::XlaOp p1 = xla::Parameter(&builder, 1, data_shape, "input_0");
+  TT_ASSERT_OK_AND_ASSIGN(const xla::XlaComputation computation,
+                          builder.Build(p1));
+
+  xla::CompileOptions compile_options;
+  compile_options.argument_layouts = {meta_shape, data_shape};
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<xla::PjRtLoadedExecutable> loaded_exec,
+      client_->CompileAndLoad(computation, compile_options));
+
+  UnboundedDynamicExecutionMetadata dynamic_meta;
+  dynamic_meta.logical_input_to_pjrt_param = {1};
+  dynamic_meta.pjrt_param_shapes = {meta_shape, data_shape};
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      const SharedLoadedExecutableWithMetadata executable,
+      LoadedExecutableWithMetadata::MakeShared(
+          std::make_unique<CountingPjRtLoadedExecutable>(
+              std::move(loaded_exec)),
+          /*argument_indices=*/{}, std::move(dynamic_meta)));
+
+  // Supply a logical input buffer in transposed layout {0, 1}, while passing a
+  // `known_argument_shapes` span claiming default layout. Because `Execute`
+  // clears `known_argument_shapes` after remapping arguments, layout validation
+  // queries `counting_buf.on_device_shape()` and rejects physical argument 1.
+  const xla::Shape transposed_shape =
+      xla::ShapeUtil::MakeShapeWithDenseLayout(xla::F32, {8, 8}, {0, 1});
+  const std::vector<float> host_input(64, 1.0f);
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<xla::PjRtBuffer> raw_mismatched_buf,
+      client_->BufferFromHostBuffer(
+          host_input.data(), xla::F32, /*dims=*/{8, 8},
+          /*byte_strides=*/std::nullopt,
+          xla::PjRtClient::HostBufferSemantics::kImmutableOnlyDuringCall,
+          /*on_done_with_host_buffer=*/nullptr, memory_space_,
+          &transposed_shape.layout()));
+
+  const auto on_device_shape_calls = std::make_shared<std::atomic<int>>(0);
+  CountingPjRtBuffer counting_buf(std::move(raw_mismatched_buf),
+                                  on_device_shape_calls);
+  const Shape logical_shape({8, 8}, mlir::ElementType::F32);
+
+  EXPECT_THAT(
+      Execute(executable, {&counting_buf},
+              /*logical_output_shapes=*/{logical_shape},
+              ArgumentLayoutValidation::kValidate,
+              executable->parameter_device_shapes().as_span()),
+      StatusIs(error::kInvalidArgument,
+               HasSubstr("expected argument 1 to have on-device layout")));
+  EXPECT_EQ(on_device_shape_calls->load(), 1);
 }
 
 }  // namespace
