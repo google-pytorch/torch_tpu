@@ -100,6 +100,22 @@ mlir::ElementType GetDefaultMlirDType() {
   return *default_dtype;
 }
 
+// Returns an f32 function argument of `shape` with `bound_dims` made bounded
+// dynamic by set_dimension_size with runtime size arguments.
+mlir::MlirOp MakeBoundedArg(mlir::func::FunctionBuilder& fb,
+                            const Dimensions& shape,
+                            absl::Span<const int64_t> bound_dims) {
+  mlir::OpBuilder& op_builder = fb.getOpBuilder();
+  mlir::MlirOp op = mlir::func::Argument(
+      fb, mlir::RankedTensorType::get(shape, op_builder.getF32Type()));
+  for (int64_t dim : bound_dims) {
+    mlir::MlirOp size = mlir::func::Argument(
+        fb, mlir::RankedTensorType::get({}, op_builder.getI32Type()));
+    op = mlir::stablehlo::SetDimensionSize(op, size, dim);
+  }
+  return op;
+}
+
 // TODO(b/433265252): add tests for broadcasting on MlirOps.
 
 TEST(OpBuilderUtils, ConvertIfIntegers_TwoOperands_Int) {
@@ -1099,22 +1115,6 @@ TEST(DynamicReshapeFromStaticDimensions, ErrorNonTransposeLikeReshape) {
           "reshape reassociation not supported for same sized reshapes"));
 }
 
-// Returns an f32 function argument of `shape` with `bound_dims` made bounded
-// dynamic by set_dimension_size with runtime size arguments.
-mlir::MlirOp MakeBoundedArg(mlir::func::FunctionBuilder& fb,
-                            const Dimensions& shape,
-                            absl::Span<const int64_t> bound_dims) {
-  mlir::OpBuilder& op_builder = fb.getOpBuilder();
-  mlir::MlirOp op = mlir::func::Argument(
-      fb, mlir::RankedTensorType::get(shape, op_builder.getF32Type()));
-  for (int64_t dim : bound_dims) {
-    mlir::MlirOp size = mlir::func::Argument(
-        fb, mlir::RankedTensorType::get({}, op_builder.getI32Type()));
-    op = mlir::stablehlo::SetDimensionSize(op, size, dim);
-  }
-  return op;
-}
-
 TEST(GetStaticShape, ReturnsUpperBoundsForBoundedDims) {
   OpBuilderUtilsBuilder op_builder_utils_builder;
   mlir::func::FunctionBuilder fb(op_builder_utils_builder.get(), "main");
@@ -1718,22 +1718,6 @@ TEST(OpBuilderUtils, Squeeze_PreservesBoundedDynamism) {
   EXPECT_TRUE(dims[1].boundOp.has_value());
 }
 
-// Returns an f32 function argument of the given shape, where `bounded_dims`
-// are made bounded dynamic by set_dimension_size with runtime size arguments.
-mlir::MlirOp MakeBoundedArgument(mlir::func::FunctionBuilder& fb,
-                                 const Dimensions& shape,
-                                 const Dimensions& bounded_dims) {
-  mlir::OpBuilder& op_builder = fb.getOpBuilder();
-  mlir::MlirOp arg = mlir::func::Argument(
-      fb, mlir::RankedTensorType::get(shape, op_builder.getF32Type()));
-  for (int64_t dim : bounded_dims) {
-    mlir::MlirOp size = mlir::func::Argument(
-        fb, mlir::RankedTensorType::get({}, op_builder.getI32Type()));
-    arg = mlir::stablehlo::SetDimensionSize(arg, size, dim);
-  }
-  return arg;
-}
-
 // A convolution of operands and result with configurable dimension numbers and
 // optional result_dims. Operand shapes are the bounds of their bounded
 // dimensions.
@@ -1802,8 +1786,8 @@ absl::StatusOr<mlir::MlirOp> CallConvolutionLike(
   }
   std::optional<mlir::stablehlo::Dimensions> result_dims;
   if (!params.result_shape.empty()) {
-    result_dims = GetDimensions(MakeBoundedArgument(
-        fb, params.result_shape, params.result_bounded_dims));
+    result_dims = GetDimensions(
+        MakeBoundedArg(fb, params.result_shape, params.result_bounded_dims));
   }
   return ConvolutionLike(
       result_type, lhs, rhs, dimension_numbers, params.feature_group_count,
@@ -1822,8 +1806,8 @@ TEST(ConvolutionLike, StaticOperandsUseResultType) {
       .padding = {2, 2},
       .feature_group_count = 4,
   };
-  const mlir::MlirOp lhs = MakeBoundedArgument(fb, params.lhs_shape, {});
-  const mlir::MlirOp rhs = MakeBoundedArgument(fb, params.rhs_shape, {});
+  const mlir::MlirOp lhs = MakeBoundedArg(fb, params.lhs_shape, {});
+  const mlir::MlirOp rhs = MakeBoundedArg(fb, params.rhs_shape, {});
   const auto result_type =
       mlir::RankedTensorType::get({1, 4, 10}, fb.getOpBuilder().getF32Type());
 
@@ -1847,8 +1831,8 @@ TEST(ConvolutionLike, StaticOperandsUseStaticResultDims) {
       .feature_group_count = 4,
       .result_shape = {1, 4, 10},
   };
-  const mlir::MlirOp lhs = MakeBoundedArgument(fb, params.lhs_shape, {});
-  const mlir::MlirOp rhs = MakeBoundedArgument(fb, params.rhs_shape, {});
+  const mlir::MlirOp lhs = MakeBoundedArg(fb, params.lhs_shape, {});
+  const mlir::MlirOp rhs = MakeBoundedArg(fb, params.rhs_shape, {});
   const auto placeholder_result_type =
       mlir::RankedTensorType::get({1, 1, 1}, fb.getOpBuilder().getF32Type());
 
@@ -1871,9 +1855,9 @@ TEST_P(ConvolutionLikeBoundedTest, BoundsResultOfStaticConvolution) {
   mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
   mlir::func::FunctionBuilder fb(mb, "main");
   const mlir::MlirOp lhs =
-      MakeBoundedArgument(fb, params.lhs_shape, params.lhs_bounded_dims);
+      MakeBoundedArg(fb, params.lhs_shape, params.lhs_bounded_dims);
   const mlir::MlirOp rhs =
-      MakeBoundedArgument(fb, params.rhs_shape, params.rhs_bounded_dims);
+      MakeBoundedArg(fb, params.rhs_shape, params.rhs_bounded_dims);
   // Only the element type of the result type is used for bounded operands.
   const auto result_type = mlir::RankedTensorType::get(
       Dimensions(params.lhs_shape.size(), 1), fb.getOpBuilder().getF32Type());
@@ -2093,8 +2077,8 @@ TEST(ConvolutionLike, MismatchedResultDimsReturnsNotImplementedError) {
       .result_bounded_dims = {2},
   };
   const mlir::MlirOp lhs =
-      MakeBoundedArgument(fb, params.lhs_shape, params.lhs_bounded_dims);
-  const mlir::MlirOp rhs = MakeBoundedArgument(fb, params.rhs_shape, {});
+      MakeBoundedArg(fb, params.lhs_shape, params.lhs_bounded_dims);
+  const mlir::MlirOp rhs = MakeBoundedArg(fb, params.rhs_shape, {});
   const auto result_type =
       mlir::RankedTensorType::get({1, 1, 1}, fb.getOpBuilder().getF32Type());
 
@@ -2123,9 +2107,9 @@ TEST_P(ConvolutionLikeUnsupportedTest, ReturnsNotImplementedError) {
   mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
   mlir::func::FunctionBuilder fb(mb, "main");
   const mlir::MlirOp lhs =
-      MakeBoundedArgument(fb, params.lhs_shape, params.lhs_bounded_dims);
+      MakeBoundedArg(fb, params.lhs_shape, params.lhs_bounded_dims);
   const mlir::MlirOp rhs =
-      MakeBoundedArgument(fb, params.rhs_shape, params.rhs_bounded_dims);
+      MakeBoundedArg(fb, params.rhs_shape, params.rhs_bounded_dims);
   const auto result_type = mlir::RankedTensorType::get(
       Dimensions(params.lhs_shape.size(), 1), fb.getOpBuilder().getF32Type());
 
