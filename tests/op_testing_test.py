@@ -1090,6 +1090,51 @@ class CoupledDimDiscoveryTest(seed_test_utils.RepeatableTest):
         )
     )
 
+  def test_generate_exhaustive_marking_plans(self):
+    baddbmm_op = op_testing._get_op("baddbmm")
+    self_t = torch.ones(2, 3, 5)
+    batch1 = torch.ones(2, 3, 4)
+    batch2 = torch.ones(2, 4, 5)
+    plans = dynamism_test_utils.generate_exhaustive_input_marking_plans(
+        baddbmm_op,
+        self_t,
+        (batch1, batch2),
+        mode=dynamism_test_utils.DynamismMode.COMPILE,
+        kwargs={},
+    )
+    t0d0 = dynamism_test_utils.TensorDim(0, 0)
+    t0d1 = dynamism_test_utils.TensorDim(0, 1)
+    t0d2 = dynamism_test_utils.TensorDim(0, 2)
+    t1d0 = dynamism_test_utils.TensorDim(1, 0)
+    t1d1 = dynamism_test_utils.TensorDim(1, 1)
+    t2d0 = dynamism_test_utils.TensorDim(2, 0)
+    t2d2 = dynamism_test_utils.TensorDim(2, 2)
+    self.assertEqual(
+        plans,
+        (
+            dynamism_test_utils.DynamicMarkingPlan(
+                label="t0d0",
+                tensor_dims=(t0d0,),
+                coupled_dims=(t0d0, t1d0, t2d0),
+            ),
+            dynamism_test_utils.DynamicMarkingPlan(
+                label="t0d1",
+                tensor_dims=(t0d1,),
+                coupled_dims=(t0d1, t1d1),
+            ),
+            dynamism_test_utils.DynamicMarkingPlan(
+                label="t0d2",
+                tensor_dims=(t0d2,),
+                coupled_dims=(t0d2, t2d2),
+            ),
+            dynamism_test_utils.DynamicMarkingPlan(
+                label="t0d0_t0d1_t0d2",
+                tensor_dims=(t0d0, t0d1, t0d2),
+                coupled_dims=(t0d0, t0d1, t0d2, t1d0, t1d1, t2d0, t2d2),
+            ),
+        ),
+    )
+
 
 if __name__ == "__main__":
   absltest.main()

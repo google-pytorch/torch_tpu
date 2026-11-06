@@ -7129,6 +7129,7 @@ class OpInfoTestBase(TorchTpuTestBase):
         device_op_input.input_value,
         device_op_input.args,
         mode=dynamism_mode,
+        kwargs=device_op_input.kwargs,
     )
     if skip is not None:
       self.skipTest(skip)
@@ -7690,6 +7691,8 @@ class OpInfoTestBase(TorchTpuTestBase):
           variant=variant,
           compute_grad=compute_grad,
           use_compiled=use_compiled,
+          golden_result=golden_result,
+          out_dtype_override=out_dtype_override,
       )
       if dynamism_skip is not None:
         self._subtests_run += 1
@@ -7734,6 +7737,8 @@ class OpInfoTestBase(TorchTpuTestBase):
       variant: OpVariant = OpVariant.BASE,
       compute_grad: bool = False,
       use_compiled: bool,
+      golden_result: Any = None,
+      out_dtype_override: torch.dtype | None = None,
   ) -> tuple[str | None, Sequence[DynamicMarkingPlan | None]]:
     """Resolves dynamism skip reason and marking plans for a sample.
 
@@ -7744,6 +7749,10 @@ class OpInfoTestBase(TorchTpuTestBase):
       variant: The `OpVariant` being evaluated.
       compute_grad: Whether gradient computation is active.
       use_compiled: Whether the test is running under `torch.compile`.
+      golden_result: Expected output value for the sample, used to synthesize
+        zero-element `out` placeholders when analyzing `OpVariant.OUT` plans.
+      out_dtype_override: Optional `out` tensor dtype override for
+        `OpVariant.OUT` casting tests.
 
     Returns:
       A `(skip_reason, plans)` tuple:
@@ -7771,17 +7780,36 @@ class OpInfoTestBase(TorchTpuTestBase):
         use_compiled=use_compiled, compute_grad=compute_grad
     )
     skip = self.dynamism_filter_fn(
-        op, input_value, golden_input.args, mode=dynamism_mode
+        op,
+        input_value,
+        golden_input.args,
+        mode=dynamism_mode,
+        kwargs=golden_input.kwargs,
     )
     if skip is not None:
       return skip, ()
 
+    plan_kwargs = golden_input.kwargs
+    if (
+        variant == OpVariant.OUT
+        and "out" not in plan_kwargs
+        and golden_result is not None
+        and not isinstance(golden_result, Exception)
+    ):
+      plan_kwargs = {
+          **plan_kwargs,
+          "out": _prepare_zero_element_out_tensors(
+              golden_result, out_dtype_override=out_dtype_override
+          ),
+      }
     plans = list(
         self.dynamism_generate_plans_fn(
             op,
             input_value,
             golden_input.args,
             mode=dynamism_mode,
+            kwargs=plan_kwargs,
+            op_func=_op_func(op, variant, torch.device("tpu")),
         )
     )
     if not plans:
