@@ -12567,11 +12567,6 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       full_matrices=[True, False],
   )
   def test_linalg_svd_float64(self, shape, full_matrices):
-    if len(shape) == 2:
-      # TODO: b/582610661 - Re-enable once XLA TPU layout assignment hang is fixed.
-      self.skipTest(
-          "Disabled due to XLA TPU layout assignment hang on 2D float64 SVD."
-      )
     input_tensor = torch.randn(shape, dtype=torch.float64)
     self._test_svd_helper(input_tensor, full_matrices=full_matrices)
 
@@ -12598,10 +12593,6 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
   @parameterized.parameters(
       {"some": True},
       {"some": False},
-  )
-  # TODO: b/582610661 - Re-enable once XLA TPU layout assignment hang is fixed.
-  @unittest.skip(
-      "Disabled due to XLA TPU layout assignment hang on 2D float64 SVD."
   )
   def test_torch_legacy_svd(self, some):
     input_tensor = torch.randn(5, 3, dtype=torch.float64)
@@ -12749,10 +12740,6 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     input_tensor = torch.eye(5, dtype=torch.float32)
     self._test_svd_helper(input_tensor, full_matrices=True)
 
-  # TODO: b/582610661 - Re-enable once XLA TPU layout assignment hang is fixed.
-  @unittest.skip(
-      "Disabled due to XLA TPU layout assignment hang on 2D float64 SVD."
-  )
   def test_linalg_svd_ill_conditioned(self):
     dtype = torch.float64
     u_rand = torch.randn(5, 5, dtype=dtype)
@@ -12769,10 +12756,6 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
           (4, 4),
       ],
       zero_dims=[1, 2],
-  )
-  # TODO: b/582610661 - Re-enable once XLA TPU layout assignment hang is fixed.
-  @unittest.skip(
-      "Disabled due to XLA TPU layout assignment hang on 2D float64 SVD."
   )
   def test_linalg_svd_rank_deficient(self, shape, zero_dims):
     input_tensor = torch.randn(shape, dtype=torch.float64)
@@ -12807,18 +12790,10 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
           (2, 1000),  # Large wide, QR preprocess
       ]
   )
-  # TODO: b/582610661 - Re-enable once XLA TPU layout assignment hang is fixed.
-  @unittest.skip(
-      "Disabled due to XLA TPU layout assignment hang on 2D float64 SVD."
-  )
   def test_linalg_svd_large(self, shape):
     input_tensor = torch.randn(shape, dtype=torch.float64)
     self._test_svd_helper(input_tensor, full_matrices=False)
 
-  # TODO: b/582610661 - Re-enable once XLA TPU layout assignment hang is fixed.
-  @unittest.skip(
-      "Disabled due to XLA TPU layout assignment hang on 2D float64 SVD."
-  )
   def test_linalg_svd_out(self):
     dtype = torch.float64
     shape = (5, 3)
@@ -12837,10 +12812,6 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(run)
 
-  # TODO: b/582610661 - Re-enable once XLA TPU layout assignment hang is fixed.
-  @unittest.skip(
-      "Disabled due to XLA TPU layout assignment hang on 2D float64 SVD."
-  )
   def test_linalg_svd_variants(self):
     dtype = torch.float64
     shape = (5, 3)
