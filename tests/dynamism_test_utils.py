@@ -441,19 +441,18 @@ def _resolve_input_tensor(
   return tensor
 
 
-def _check_tensor_supported_for_dynamism(
-    op_info: core.OpInfo, tensor: torch.Tensor
+def verify_dtype_supports_dynamism(
+    op_info: core.OpInfo, dtype: torch.dtype
 ) -> None | str:
-  """Verifies that `tensor` has no dtype or shape hazards for dynamism.
+  """Verifies that `dtype` is supported for `op_info` under dynamism.
 
   Args:
     op_info: The op to be tested.
-    tensor: An input tensor passed to the op (either primary or secondary).
+    dtype: The input dtype to check.
 
   Returns:
-    None if `tensor` is safe for dynamism testing, or a skip reason string.
+    None if `dtype` is supported for dynamism testing, or a skip reason string.
   """
-  dtype = tensor.dtype
   # TODO: b/449736443 - [XLA] Crash in complex rewriter.
   if dtype in (torch.complex64, torch.complex128):
     return f"{op_info.name} op is not supported with dtype {dtype}."
@@ -466,6 +465,24 @@ def _check_tensor_supported_for_dynamism(
       and dtype == torch.int64
   ):
     return f"{op_info.name} does not support int64 under dynamism."
+  return None
+
+
+def _check_tensor_supported_for_dynamism(
+    op_info: core.OpInfo, tensor: torch.Tensor
+) -> None | str:
+  """Verifies that `tensor` has no dtype or shape hazards for dynamism.
+
+  Args:
+    op_info: The op to be tested.
+    tensor: An input tensor passed to the op (either primary or secondary).
+
+  Returns:
+    None if `tensor` is safe for dynamism testing, or a skip reason string.
+  """
+  skip_dtype = verify_dtype_supports_dynamism(op_info, tensor.dtype)
+  if skip_dtype is not None:
+    return skip_dtype
   # TODO: b/449736443 - Empty tensor handling needs reworking.
   if tensor.numel() == 0:
     return "Empty tensors are currently not supported."
@@ -532,6 +549,8 @@ DYNAMISM_DENY_LISTS: DenyList = {
     "the lowering emits an op without bounded shape support": {
         # Backward broadcast fails with mixed bounded and static dimensions.
         "_foreach_lerp": {COMPILE_GRAD},
+        # Calls getNumElements() on a dynamic shaped type.
+        "_foreach_norm": {EAGER, COMPILE_GRAD},
         # BuildMlirModule fails to inline MLIR functions on bounded inputs.
         "_fused_moving_avg_obs_fq_helper": ALL_MODES,
         # XLA ragged-dot does not support propagating bounded dimensions.
@@ -543,6 +562,12 @@ DYNAMISM_DENY_LISTS: DenyList = {
         "_upsample_bilinear2d_aa": ALL_MODES,
         # Calls getNumElements() in BroadcastInDimOp_ReplaceWithReshape.
         "_weight_norm_interface": {COMPILE, COMPILE_GRAD},
+        # ViewPrimitiveShlo does not support slicing a dynamic dimension.
+        "as_strided": ALL_MODES,
+        # BuildMlirModule fails to inline MLIR functions on bounded inputs;
+        # EAGER mode is triaged under "the lowering broadcasts a bounded input
+        # to a static shape".
+        "cdist": {COMPILE_GRAD},
         # stablehlo.broadcast_in_dim requires static or single-bounded shape.
         "constant_pad_nd": ALL_MODES,
         # cummax_helper and cummin_helper emit static stablehlo.iota and query
@@ -562,10 +587,16 @@ DYNAMISM_DENY_LISTS: DenyList = {
         "dot": ALL_MODES,
         # embedding_renorm_ uses static BroadcastInDim and Scatter shapes.
         "embedding_renorm_": ALL_MODES,
+        # BuildFmaxShlo and BuildFminShlo emit NaN CompareOp on integer tensors,
+        # triggering a static-shape assertion in CompareOpCanon.
+        "fmax": {EAGER},
+        "fmin": {EAGER},
         # Checks index.size(d) <= input.size(d) against INT64_MIN.
         "gather": ALL_MODES,
         # Compiled backward loses grad_fn when hidden size is dynamic.
         "gru.input": {COMPILE_GRAD},
+        # BuildMlirModule fails to inline MLIR functions on bounded inputs.
+        "index_fill": ALL_MODES,
         # stablehlo.broadcast_in_dim allows at most one bounded dimension, which
         # fails when multiple dimensions are marked dynamic in compile mode.
         "lcm": {COMPILE, COMPILE_GRAD},
@@ -573,8 +604,13 @@ DYNAMISM_DENY_LISTS: DenyList = {
         "logcumsumexp": ALL_MODES,
         # SliceOp::build fails return type inference on bounded hidden slices.
         "lstm.input": ALL_MODES,
-        # Slicing a dynamic dimension is not supported in eager lowering.
-        "lu_unpack": {EAGER},
+        # Slicing a dynamic dimension is not supported in ViewPrimitiveShlo.
+        "lu_unpack": {EAGER, COMPILE_GRAD},
+        # Backward pass calls local_scalar_dense on a placeholder tensor.
+        "mean": {COMPILE_GRAD},
+        # CreateBatchInput unsqueezes 4D inputs to 5D without updating 4-element
+        # bounds.
+        "nn.functional.adaptive_avg_pool3d": {EAGER, COMPILE_GRAD},
         # Queries static dim size (slice size -9223372036854775808).
         "nn.functional.adaptive_max_pool2d": ALL_MODES,
         # avg_pool2d_backward SliceBackwardResult queries static input shape;
@@ -603,6 +639,9 @@ DYNAMISM_DENY_LISTS: DenyList = {
         "norm": {EAGER, COMPILE},
         # Calls getNumElements() on a dynamic shaped type.
         "polygamma": ALL_MODES,
+        # Variable repeats fail MLIR function inlining in Cumsum/ScanOp (eager),
+        # and uniform repeats reshape across bounded dimensions (compile).
+        "repeat_interleave": ALL_MODES,
         # Queries static input shape (limit index -9223372036854775808).
         "scatter": {EAGER, COMPILE},
         # AtenSelectScatter checks static src shape against padded self slice.
@@ -618,6 +657,8 @@ DYNAMISM_DENY_LISTS: DenyList = {
         # because dims marked in earlier subtests stay dynamic.
         # TODO: b/566327707 - Remove once marked dims no longer carry over.
         "torch.ops.aten._safe_softmax.default": {COMPILE, COMPILE_GRAD},
+        # View decomposition reshape reassociation fails on bounded dimensions.
+        "unfold": ALL_MODES,
     },
     # TODO: b/449736443 - Avoid Tensor.resize_() graph break in _addmm_dtype_wrapper.
     "the test wrapper calls Tensor.resize_(), which graph-breaks in Dynamo": {
@@ -688,6 +729,7 @@ DYNAMISM_DENY_LISTS: DenyList = {
         "tril": {COMPILE},
         "triu": {COMPILE},
         "where": {COMPILE, COMPILE_GRAD},
+        "zero_": {COMPILE},
     },
     # Avoid HBM OOM when compiling 3D spatial <=128 buckets.
     "XLA runs out of HBM compiling multi-dim <=128 bounded shapes": {
@@ -916,25 +958,16 @@ def _find_reason(
 
 def verify_op_supports_dynamism(
     op_info: core.OpInfo,
-    input_value: torch.Tensor,
-    args: Sequence[Any],
     mode: DynamismMode = DynamismMode.EAGER,
-    kwargs: Mapping[str, Any] | None = None,
 ) -> None | str:
-  """Checks if an op+input is supported with dynamism.
-
-  Most skip reasons are bugs in lowering or XLA that will be fixed over time,
-  enabling more coverage as we go.
+  """Checks if an op is supported in `mode` with dynamism.
 
   Args:
     op_info: The op to be tested.
-    input_value: The primary input value to for the op test.
-    args: The additional args to the op test.
-    mode: The active dynamism mode (EAGER or COMPILE).
-    kwargs: Optional keyword arguments passed to the op test.
+    mode: The active dynamism mode (EAGER, COMPILE, or COMPILE_GRAD).
 
   Returns:
-    None if the op+input is supported, or an skipTest message if not.
+    None if the op is supported in `mode`, or a skipTest message if not.
   """
   op = op_info
   reason = _find_reason(DYNAMISM_NOT_APPLICABLE_OPS, op.name, mode)
@@ -949,9 +982,27 @@ def verify_op_supports_dynamism(
         f"Op {op.name} is not supported in {mode.value} dynamism mode:"
         f" {reason}."
     )
+  return None
 
-  ### [TEST INFRA TASKS] ###
-  # The following indicate changes needed in this file to increase coverage.
+
+def verify_sample_supports_dynamism(
+    op_info: core.OpInfo,
+    input_value: torch.Tensor,
+    args: Sequence[Any],
+    kwargs: Mapping[str, Any] | None = None,
+) -> None | str:
+  """Checks if a sample input is supported with dynamism.
+
+  Args:
+    op_info: The op to be tested.
+    input_value: The primary input value for the op test.
+    args: The additional args to the op test.
+    kwargs: Optional keyword arguments passed to the op test.
+
+  Returns:
+    None if the sample is supported, or a skipTest message if not.
+  """
+  op = op_info
 
   # Verify all input tensors are supported with dynamism. Here we use
   # _pytree.tree_flatten to recursively inspect input_value, args, and kwargs,
