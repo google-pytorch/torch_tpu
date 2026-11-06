@@ -48,7 +48,7 @@ bash ./launch_multihost.sh
 
 If you haven't set up your cluster yet, first complete the **Before we begin**
 section in
-[Get started with TorchTPU on GKE](../../../docs/markdown/1_basics_3_get_started_on_gke.md).
+[Get started with TorchTPU on GKE](../../../docs/get_started_on_gke.md).
 
 #### Single-Host (4 Chips / 8 TPU Cores)
 
@@ -62,7 +62,7 @@ bash ./launch_singlehost.sh
 
 To submit it, follow the **Single host, multiple chips (4 chips / 8 devices on
 one host)** section in
-[Get started with TorchTPU on GKE](../../../docs/markdown/1_basics_3_get_started_on_gke.md).
+[Get started with TorchTPU on GKE](../../../docs/get_started_on_gke.md).
 
 #### Multi-Host (64 Chips / 128 TPU Cores)
 
@@ -77,7 +77,7 @@ bash ./launch_multihost.sh
 
 To submit it, follow the **Multiple hosts (64 chips / 128 devices across 16
 hosts)** section in
-[Get started with TorchTPU on GKE](../../../docs/markdown/1_basics_3_get_started_on_gke.md).
+[Get started with TorchTPU on GKE](../../../docs/get_started_on_gke.md).
 
 ## Files in This Directory
 
