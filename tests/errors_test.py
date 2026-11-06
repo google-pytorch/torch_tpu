@@ -12,7 +12,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests error handling on TPU vs on GPU."""
+"""Tests error handling on TPU vs on GPU.
+
+Tests for ensuring quality and parity of TorchTPU error messages w.r.t. GPU.
+They should internally call `et.assert_raises_message()`, specifying the
+expected TPU and GPU error messages side-by-side.
+
+Tests that belong in this file should have all of the following properties:
+
+- It should test a user-facing error message, in which the error message
+  quality is important.
+- Running it on GPU should raise an error (or abort execution) that is related
+  to the testing subject. If the GPU execution crashes or aborts the process
+  rather than cleanly raising an exception, it should be decorated with
+  `@et.gpu_crashes_or_raises`.
+
+Tests that don't belong in this file:
+
+- Internal utility tests.
+- Functionality focused tests.
+- Anything whose main focus isn't the actual error message.
+"""
 
 import re
 from typing import Any
