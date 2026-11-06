@@ -26,21 +26,17 @@ modules it runs, collects its cases, and parameterizes a subclass of
 `BaseTorchBenchmarkTest` over them.
 """
 
+from collections.abc import Iterator
 import contextlib
-from typing import Sequence
-import unittest
-from absl import logging
 import torch
 from perflab import base_test
-from perflab import cases
 from perflab import common
 from perflab import compile as compile_lib
 from perflab import context as context_lib
-from perflab import discovery as discovery_lib
+from perflab import device_ops as device_ops_lib
 from perflab import fake_memory
 from perflab import flags as flags_lib
 from perflab import flops as flops_lib
-from perflab import measure as measure_lib
 from perflab import metrics as metrics_lib
 from perflab import mode as mode_lib
 from perflab import registry as registry_lib
@@ -129,158 +125,69 @@ def reset_state(
 class BaseTorchBenchmarkTest(base_test.BaseBenchmarkTest):
   """Runs and reports one torch benchmark case per test method.
 
-  A binary subclasses this together with the `TestCase` of absl's
-  `parameterized` module, sets the `framework`, `platform`, and `case_params`
-  attributes of `base_test.BaseBenchmarkTest` and `import_failures`, and defines
-  a test method parameterized over its cases that calls `run_case`.
+  Implements the framework hooks of `base_test.BaseBenchmarkTest` for torch. A
+  binary subclasses this together with the `TestCase` of absl's `parameterized`
+  module, sets the `framework`, `platform`, `case_params`, and `import_failures`
+  attributes of `base_test.BaseBenchmarkTest`, and defines a test method
+  parameterized over its cases that calls `run_case`.
 
   This is a `TestCase` base class with a test method of its own,
   `test_benchmark_imports`. Import this module rather than the class, so
   that test loaders do not collect the class itself.
-
-  Attributes:
-    import_failures: The benchmark modules that the binary failed to import;
-      `test_benchmark_imports` fails if there are any.
   """
 
-  import_failures: Sequence[discovery_lib.ImportFailure] = ()
+  def make_device_ops(
+      self, target: target_lib.Target
+  ) -> torch_device_ops.TorchDeviceOps:
+    return torch_device_ops.TorchDeviceOps(target)
 
-  def test_benchmark_imports(self):
-    if self.import_failures:
-      self.fail(
-          "benchmark module(s) failed to import:\n  "
-          + "\n  ".join(str(f) for f in self.import_failures)
-      )
-
-  def run_case(
+  def make_run_step(
       self,
       spec: registry_lib.BenchmarkSpec,
+      ctx: context_lib.Context,
       mode: common.RunMode,
-      batch_size: int | None = None,
+  ) -> tuple[step_lib.Stepper, workload_lib.StepWork | None]:
+    return make_run_step(spec, ctx, mode)
+
+  def reset_state(
+      self,
+      target: target_lib.Target,
+      device_ops: device_ops_lib.DeviceOps,
+      mode: common.RunMode,
   ) -> None:
-    """Runs, measures, and reports the case of `spec` in run mode `mode`.
-
-    Args:
-      spec: The benchmark to run.
-      mode: The run mode to run it in.
-      batch_size: The batch size of a batch sweep case, or None to measure the
-        benchmark at its own batch size.
-    """
-    skip_reason = cases.get_skip_reason(
-        spec,
-        mode,
-        framework=self.framework,
-        device_kind=target_lib.make_target(self.platform).device_kind,
-    )
-
-    if skip_reason is not None and flags_lib.SKIP_BEHAVIOR.value == "skip":
-      self.report_skip(spec, mode)
-      self.skipTest(skip_reason)
-    if skip_reason is None and flags_lib.SKIP_BEHAVIOR.value == "run_skipped":
-      self.skipTest(
-          f"Benchmark {spec.name} is not skipped for run mode {mode.value},"
-          " skipping due to skip_behavior=run_skipped"
-      )
-
-    if flags_lib.DRY_RUN.value:
-      self._dry_run_test()
-      return
-
-    # Batch sizes above one that ran out of memory; the parent skips them
-    # before starting a child, so this only applies to in-process runs.
-    out_of_memory_reason = base_test.get_out_of_memory_skip_reason(
-        spec.name, mode, batch_size
-    )
-    if batch_size is not None and out_of_memory_reason is not None:
-      self.report_out_of_memory_skip(spec, mode, batch_size)
-      self.skipTest(out_of_memory_reason)
-
-    target = target_lib.make_target(self.platform, dtype=spec.dtype)
-    device_ops = torch_device_ops.TorchDeviceOps(target)
-    ctx = registry_lib.resolve_context(
-        spec,
-        context_lib.Context(
-            target=target, run_scope=context_lib.RUN_SCOPE.value
-        ),
-        batch_size,
-    )
-
+    assert isinstance(device_ops, torch_device_ops.TorchDeviceOps)
     reset_state(target, device_ops.device, mode)
 
-    if (
-        skip_reason is not None
-        and flags_lib.SKIP_BEHAVIOR.value == "assert_raise"
+  @contextlib.contextmanager
+  def run_context(
+      self, mode: common.RunMode, target: target_lib.Target
+  ) -> Iterator[None]:
+    with (
+        mode_lib.run_mode_context(mode, target),
+        (
+            mode_lib.fake_tensor_context()
+            if mode_lib.fake_tensor_smoke_enabled()
+            else contextlib.nullcontext()
+        ),
     ):
-      with self.assertRaises(Exception):  # ASSERT_RAISES_OK=benchmark
-        self._run_and_measure(spec, mode, target, device_ops, ctx, batch_size)
+      yield
+
+  def after_measure(
+      self,
+      spec: registry_lib.BenchmarkSpec,
+      ctx: context_lib.Context,
+      target: target_lib.Target,
+      case_name: str,
+      metrics: metrics_lib.PerformanceMetrics,
+  ) -> None:
+    if not flags_lib.COUNT_FLOPS.value:
       return
-
-    try:
-      metrics = self._run_and_measure(
-          spec, mode, target, device_ops, ctx, batch_size
-      )
-    except unittest.SkipTest:
-      raise
-    except Exception as e:
-      if batch_size is not None and common.is_out_of_memory(e):
-        # The batch size bounds what fits, rather than failing the sweep.
-        self.report_out_of_memory(spec, mode, batch_size)
-        self.skipTest(
-            f"{spec.name} ran out of device memory at batch size"
-            f" {batch_size}: {e}"
-        )
-      self.report_result(spec, mode, succeeded=False, batch_size=batch_size)
-      raise
-
-    self.report_result(
-        spec, mode, succeeded=True, metrics=metrics, batch_size=batch_size
+    # After measuring and outside the run mode, so that counting changes
+    # neither the measured times nor the state of the measured device.
+    flop_count = flops_lib.count_step_flops(
+        spec, ctx.run_scope, workload=ctx.workload
     )
-
-  def _run_and_measure(
-      self, spec, mode, target, device_ops, ctx, batch_size
-  ) -> metrics_lib.PerformanceMetrics:
-    case_name = (
-        f"{spec.name}_{mode.value}"
-        if batch_size is None
-        else cases.batch_sweep_case_name(spec.name, batch_size, mode)
-    )
-    try:
-      with (
-          mode_lib.run_mode_context(mode, target),
-          (
-              mode_lib.fake_tensor_context()
-              if mode_lib.fake_tensor_smoke_enabled()
-              else contextlib.nullcontext()
-          ),
-      ):
-        run_step, step_work = make_run_step(spec, ctx, mode)
-        metrics = measure_lib.measure(
-            run_step,
-            device_ops,
-            name=case_name,
-            enable_xprof=flags_lib.ENABLE_XPROF.value,
-        )
-    except target_lib.UnsupportedBenchmark as e:
-      self.skipTest(f"{spec.name}: {e}")
-    metrics.step_work = step_work
-
-    if flags_lib.COUNT_FLOPS.value:
-      # After measuring and outside the run mode, so that counting changes
-      # neither the measured times nor the state of the measured device.
-      flop_count = flops_lib.count_step_flops(
-          spec, ctx.run_scope, workload=ctx.workload
-      )
-      if flop_count is not None:
-        metrics.model_flops_per_step = float(flop_count.total)
-        metrics.peak_flops_per_second = target_lib.peak_flops_per_device(target)
-        flops_lib.check_utilization(case_name, metrics.metric_map())
-
-    logging.info("Metrics for %s:\n%s", case_name, metrics)
-    self._assert_measured(metrics)
-    return metrics
-
-  def _assert_measured(self, metrics: metrics_lib.PerformanceMetrics) -> None:
-    self.assertGreater(metrics.e2e_wall_time_seconds, 0.0)
-    self.assertGreater(metrics.first_step_time_seconds, 0.0)
-    if measure_lib.POST_WARMUP_STEPS.value > 0:
-      self.assertGreater(metrics.post_warmup_step_time_seconds, 0.0)
+    if flop_count is not None:
+      metrics.model_flops_per_step = float(flop_count.total)
+      metrics.peak_flops_per_second = target_lib.peak_flops_per_device(target)
+      flops_lib.check_utilization(case_name, metrics.metric_map())

@@ -45,6 +45,7 @@ Why forkserver rather than subprocess or the other start methods:
 """
 
 from collections.abc import Mapping, Sequence
+import contextlib
 import enum
 from multiprocessing import connection as mp_connection
 import os
@@ -59,14 +60,19 @@ from absl.testing import absltest
 from torch_tpu._internal.distributed import multiprocessing
 from perflab import cases
 from perflab import common
+from perflab import context as context_lib
+from perflab import device_ops as device_ops_lib
+from perflab import discovery as discovery_lib
 from perflab import export as export_lib
 from perflab import flags as flags_lib
 from perflab import known_failures
+from perflab import measure as measure_lib
 from perflab import metrics as metrics_lib
 from perflab import mode as mode_lib
 from perflab import registry as registry_lib
 from perflab import step_lib
 from perflab import target as target_lib
+from perflab import workload as workload_lib
 
 _DRY_RUN_OUTPUT_FILE = "test_targets.txt"
 
@@ -313,6 +319,17 @@ class BaseBenchmarkTest(
   Allows running every test method in its own child process. A test case that
   crashes the device is contained to that case.
 
+  A binary subclasses this together with the `TestCase` of absl's
+  `parameterized` module, sets the `framework`, `platform`, `case_params`, and
+  `import_failures` attributes, implements the framework hooks
+  (`make_device_ops`, `make_run_step`, `reset_state`, and optionally
+  `run_context` and `after_measure`), and defines a test method parameterized
+  over its cases that calls `run_case`.
+
+  This is a `TestCase` base class with a test method of its own,
+  `test_benchmark_imports`. Import this module rather than the class, so that
+  test loaders do not collect the class itself.
+
   Attributes:
     framework: The framework this binary measures; set by the subclass.
     platform: The platform the binary targets; set by the subclass.
@@ -320,6 +337,8 @@ class BaseBenchmarkTest(
       each generated test method name, from case_params(); set by the subclass.
       Lets the parent export a failed record for a child that died before it
       could report.
+    import_failures: The benchmark modules that the binary failed to import;
+      `test_benchmark_imports` fails if there are any.
     in_isolated_child: True while the method runs inside the child process.
     isolated_payload: Set by the test method in the child; exported by the
       parent. Must be picklable.
@@ -328,6 +347,7 @@ class BaseBenchmarkTest(
   framework: mode_lib.Framework
   platform: target_lib.Platform
   case_params: Mapping[str, CaseParams] = {}
+  import_failures: Sequence[discovery_lib.ImportFailure] = ()
   in_isolated_child: bool = False
   isolated_payload: Any = None
 
@@ -336,6 +356,13 @@ class BaseBenchmarkTest(
     log_counter = getattr(logging, "_log_counter_per_token", None)
     if log_counter is not None:
       log_counter.clear()
+
+  def test_benchmark_imports(self):
+    if self.import_failures:
+      self.fail(
+          "benchmark module(s) failed to import:\n  "
+          + "\n  ".join(str(f) for f in self.import_failures)
+      )
 
   def should_isolate(self) -> bool:
     # Dry runs only append to a file in TEST_UNDECLARED_OUTPUTS_DIR; keep
@@ -587,3 +614,176 @@ class BaseBenchmarkTest(
     os.makedirs(os.path.dirname(txt_path), exist_ok=True)
     with open(txt_path, mode="a", encoding="utf-8") as f:
       f.write(self._testMethodName + "\n")
+
+  def make_device_ops(
+      self, target: target_lib.Target
+  ) -> device_ops_lib.DeviceOps:
+    """Returns the device operations that measure the cases on `target`."""
+    raise NotImplementedError
+
+  def make_run_step(
+      self,
+      spec: registry_lib.BenchmarkSpec,
+      ctx: context_lib.Context,
+      mode: common.RunMode,
+  ) -> tuple[step_lib.Stepper, workload_lib.StepWork | None]:
+    """Builds the stepper of a benchmark and the work of one of its steps.
+
+    Called inside `run_context`.
+
+    Args:
+      spec: The benchmark to build.
+      ctx: The context to build the benchmark for, with its resolved workload.
+      mode: The run mode to build the benchmark for.
+
+    Returns:
+      The stepper of the benchmark and the work of one of its steps, or None if
+      the benchmark declares no workload.
+    """
+    raise NotImplementedError
+
+  def reset_state(
+      self,
+      target: target_lib.Target,
+      device_ops: device_ops_lib.DeviceOps,
+      mode: common.RunMode,
+  ) -> None:
+    """Resets framework and hardware compilation/runtime state before a case."""
+    raise NotImplementedError
+
+  def run_context(
+      self, mode: common.RunMode, target: target_lib.Target
+  ) -> contextlib.AbstractContextManager[Any]:
+    """Returns the context to build and measure a case in."""
+    del mode, target  # Unused.
+    return contextlib.nullcontext()
+
+  def after_measure(
+      self,
+      spec: registry_lib.BenchmarkSpec,
+      ctx: context_lib.Context,
+      target: target_lib.Target,
+      case_name: str,
+      metrics: metrics_lib.PerformanceMetrics,
+  ) -> None:
+    """Adds to the metrics of a measured case, outside `run_context`."""
+    del spec, ctx, target, case_name, metrics  # Unused.
+
+  def run_case(
+      self,
+      spec: registry_lib.BenchmarkSpec,
+      mode: common.RunMode,
+      batch_size: int | None = None,
+  ) -> None:
+    """Runs, measures, and reports the case of `spec` in run mode `mode`.
+
+    Args:
+      spec: The benchmark to run.
+      mode: The run mode to run it in.
+      batch_size: The batch size of a batch sweep case, or None to measure the
+        benchmark at its own batch size.
+    """
+    skip_reason = cases.get_skip_reason(
+        spec,
+        mode,
+        framework=self.framework,
+        device_kind=target_lib.make_target(self.platform).device_kind,
+    )
+
+    if skip_reason is not None and flags_lib.SKIP_BEHAVIOR.value == "skip":
+      self.report_skip(spec, mode)
+      self.skipTest(skip_reason)
+    if skip_reason is None and flags_lib.SKIP_BEHAVIOR.value == "run_skipped":
+      self.skipTest(
+          f"Benchmark {spec.name} is not skipped for run mode {mode.value},"
+          " skipping due to skip_behavior=run_skipped"
+      )
+
+    if flags_lib.DRY_RUN.value:
+      self._dry_run_test()
+      return
+
+    # Batch sizes above one that ran out of memory; the parent skips them
+    # before starting a child, so this only applies to in-process runs.
+    out_of_memory_reason = get_out_of_memory_skip_reason(
+        spec.name, mode, batch_size
+    )
+    if batch_size is not None and out_of_memory_reason is not None:
+      self.report_out_of_memory_skip(spec, mode, batch_size)
+      self.skipTest(out_of_memory_reason)
+
+    target = target_lib.make_target(self.platform, dtype=spec.dtype)
+    device_ops = self.make_device_ops(target)
+    ctx = registry_lib.resolve_context(
+        spec,
+        context_lib.Context(
+            target=target, run_scope=context_lib.RUN_SCOPE.value
+        ),
+        batch_size,
+    )
+
+    self.reset_state(target, device_ops, mode)
+
+    if (
+        skip_reason is not None
+        and flags_lib.SKIP_BEHAVIOR.value == "assert_raise"
+    ):
+      with self.assertRaises(Exception):  # ASSERT_RAISES_OK=benchmark
+        self._run_and_measure(spec, mode, target, device_ops, ctx, batch_size)
+      return
+
+    try:
+      metrics = self._run_and_measure(
+          spec, mode, target, device_ops, ctx, batch_size
+      )
+    except unittest.SkipTest:
+      raise
+    except Exception as e:
+      if batch_size is not None and common.is_out_of_memory(e):
+        # The batch size bounds what fits, rather than failing the sweep.
+        self.report_out_of_memory(spec, mode, batch_size)
+        self.skipTest(
+            f"{spec.name} ran out of device memory at batch size"
+            f" {batch_size}: {e}"
+        )
+      self.report_result(spec, mode, succeeded=False, batch_size=batch_size)
+      raise
+
+    self.report_result(
+        spec, mode, succeeded=True, metrics=metrics, batch_size=batch_size
+    )
+
+  def _run_and_measure(
+      self, spec, mode, target, device_ops, ctx, batch_size
+  ) -> metrics_lib.PerformanceMetrics:
+    case_name = (
+        f"{spec.name}_{mode.value}"
+        if batch_size is None
+        else cases.batch_sweep_case_name(spec.name, batch_size, mode)
+    )
+    try:
+      with self.run_context(mode, target):
+        run_step, step_work = self.make_run_step(spec, ctx, mode)
+        metrics = measure_lib.measure(
+            run_step,
+            device_ops,
+            name=case_name,
+            enable_xprof=flags_lib.ENABLE_XPROF.value,
+        )
+    except target_lib.UnsupportedBenchmark as e:
+      self.skipTest(f"{spec.name}: {e}")
+    metrics.step_work = step_work
+
+    # After measuring and outside the run context, so that it changes neither
+    # the measured times nor the state of the measured device.
+    self.after_measure(spec, ctx, target, case_name, metrics)
+
+    logging.info("Metrics for %s:\n%s", case_name, metrics)
+    self._assert_measured(metrics)
+    return metrics
+
+  def _assert_measured(self, metrics: metrics_lib.PerformanceMetrics) -> None:
+    self.assertGreater(metrics.e2e_wall_time_seconds, 0.0)
+    self.assertGreater(metrics.first_step_time_seconds, 0.0)
+    if measure_lib.POST_WARMUP_STEPS.value > 0:
+      self.assertGreater(metrics.post_warmup_step_time_seconds, 0.0)

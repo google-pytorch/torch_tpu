@@ -14,6 +14,9 @@
 
 """Tests for perflab/base_test.py."""
 
+from collections.abc import Sequence
+import contextlib
+import os
 import pickle
 import types
 import unittest
@@ -24,9 +27,12 @@ from absl.testing import flagsaver
 from absl.testing import parameterized
 from perflab import base_test
 from perflab import common
+from perflab import device_ops as device_ops_lib
+from perflab import discovery as discovery_lib
 from perflab import export as export_lib
 from perflab import flags as flags_lib
 from perflab import known_failures
+from perflab import measure as measure_lib
 from perflab import metrics as metrics_lib
 from perflab import mode as mode_lib
 from perflab import registry as registry_lib
@@ -67,6 +73,8 @@ class _FakeBenchmarkTest(base_test.BaseBenchmarkTest):
       "healthy_case": (_HEALTHY, common.RunMode.COMPILED),
       "micro_case": (_MICRO, common.RunMode.COMPILED),
   }
+  # Keeps the test loader from collecting the inherited imports test.
+  test_benchmark_imports = None
 
   def known_bad_case(self):
     self.fail("a skipped case must not run")
@@ -274,6 +282,231 @@ class BaseBenchmarkTestReportResultTest(seed_test_utils.RepeatableTest):
     self.assertEqual(payload.microbenchmark_name, "batch_size_1")
 
 
+def _run_case_spec(
+    name: str, skipped_run_modes: frozenset[str] = frozenset()
+) -> registry_lib.BenchmarkSpec:
+  return registry_lib.BenchmarkSpec(
+      name=name,
+      factory=lambda ctx: None,
+      stepper=step_lib.StepperType.FORWARD,
+      presubmit=registry_lib.PresubmitPolicy.RUN,
+      dtype=target_lib.DType.FP32,
+      skipped_run_modes=skipped_run_modes,
+  )
+
+
+_MEASURED_SPEC = _run_case_spec("measured")
+_FAILING_SPEC = _run_case_spec("failing")
+_UNSUPPORTED_SPEC = _run_case_spec("unsupported")
+_SKIPPED_SPEC = _run_case_spec(
+    "skipped", skipped_run_modes=frozenset({common.RunMode.EAGER_DEFAULT.value})
+)
+
+
+def _fake_run_case_test_class(
+    calls: list[str],
+    failures: Sequence[discovery_lib.ImportFailure] = (),
+) -> type[base_test.BaseBenchmarkTest]:
+  """Returns a test class that runs `run_case` with recording hooks.
+
+  The class is built here rather than at module level so that the test loader
+  does not run the `test_benchmark_imports` method it inherits.
+
+  Args:
+    calls: The list that the hooks append the names of their calls to.
+    failures: The import failures that the class reports.
+  """
+
+  class FakeRunCaseTest(base_test.BaseBenchmarkTest):
+    framework = mode_lib.Framework.TORCH
+    platform = target_lib.Platform.CPU
+    import_failures = tuple(failures)
+
+    def make_device_ops(self, target):
+      calls.append("make_device_ops")
+      return mock.create_autospec(device_ops_lib.DeviceOps, instance=True)
+
+    def reset_state(self, target, device_ops, mode):
+      calls.append("reset_state")
+
+    @contextlib.contextmanager
+    def run_context(self, mode, target):
+      calls.append("enter_run_context")
+      yield
+      calls.append("exit_run_context")
+
+    def make_run_step(self, spec, ctx, mode):
+      calls.append("make_run_step")
+      if spec.name == "failing":
+        raise RuntimeError("simulated build failure")
+      if spec.name == "unsupported":
+        raise target_lib.UnsupportedBenchmark("simulated unsupported target")
+      return mock.create_autospec(step_lib.Stepper, instance=True), None
+
+    def after_measure(self, spec, ctx, target, case_name, metrics):
+      calls.append(f"after_measure:{case_name}")
+
+    def measured_case(self):
+      self.run_case(_MEASURED_SPEC, common.RunMode.EAGER_DEFAULT)
+
+    def failing_case(self):
+      self.run_case(_FAILING_SPEC, common.RunMode.EAGER_DEFAULT)
+
+    def unsupported_case(self):
+      self.run_case(_UNSUPPORTED_SPEC, common.RunMode.EAGER_DEFAULT)
+
+    def skipped_case(self):
+      self.run_case(_SKIPPED_SPEC, common.RunMode.EAGER_DEFAULT)
+
+  return FakeRunCaseTest
+
+
+class BaseBenchmarkTestRunCaseTest(seed_test_utils.RepeatableTest):
+  """How run_case drives the hooks of a subclass and reports the case."""
+
+  def setUp(self):
+    super().setUp()
+    self.enter_context(
+        flagsaver.flagsaver(
+            (flags_lib.RUN_IN_SUBPROCESS, False),
+            (flags_lib.SKIP_BEHAVIOR, "skip"),
+            (flags_lib.DRY_RUN, False),
+            (measure_lib.POST_WARMUP_STEPS, 0),
+        )
+    )
+    self.exported = []
+    self.enter_context(
+        mock.patch.object(export_lib, "export", new=self.exported.append)
+    )
+    self.mock_export_skip = self.enter_context(
+        mock.patch.object(export_lib, "export_skip", autospec=True)
+    )
+    self.mock_measure = self.enter_context(
+        mock.patch.object(
+            measure_lib,
+            "measure",
+            autospec=True,
+            return_value=metrics_lib.PerformanceMetrics(
+                e2e_wall_time_seconds=2.0, first_step_time_seconds=1.0
+            ),
+        )
+    )
+    self.calls = []
+
+  def _run(
+      self,
+      method_name: str,
+      failures: Sequence[discovery_lib.ImportFailure] = (),
+  ) -> unittest.TestResult:
+    result = unittest.TestResult()  # UNITTEST_OK=result of a fake test case
+    _fake_run_case_test_class(self.calls, failures)(method_name).run(result)
+    return result
+
+  def test_measured_case_is_exported_as_succeeded(self):
+    result = self._run("measured_case")
+
+    self.assertTrue(result.wasSuccessful())
+    self.assertEmpty(result.skipped)
+    self.assertEqual(
+        self.calls,
+        [
+            "make_device_ops",
+            "reset_state",
+            "enter_run_context",
+            "make_run_step",
+            "exit_run_context",
+            "after_measure:measured_eager_default",
+        ],
+    )
+    self.assertEqual(
+        self.mock_measure.call_args.kwargs["name"], "measured_eager_default"
+    )
+    (data,) = self.exported
+    self.assertEqual(data.spec_name, "measured")
+    self.assertEqual(data.platform, target_lib.Platform.CPU)
+    self.assertEqual(data.framework, mode_lib.Framework.TORCH)
+    self.assertEqual(data.run_mode, common.RunMode.EAGER_DEFAULT)
+    self.assertTrue(data.succeeded)
+    self.assertEqual(data.metrics.e2e_wall_time_seconds, 2.0)
+
+  def test_unmeasured_case_fails(self):
+    self.mock_measure.return_value = metrics_lib.PerformanceMetrics()
+
+    result = self._run("measured_case")
+
+    self.assertLen(result.failures, 1)
+
+  def test_failed_case_is_exported_as_failed(self):
+    result = self._run("failing_case")
+
+    self.assertLen(result.errors, 1)
+    self.assertIn("simulated build failure", result.errors[0][1])
+    (data,) = self.exported
+    self.assertEqual(data.spec_name, "failing")
+    self.assertFalse(data.succeeded)
+
+  def test_unsupported_case_is_skipped(self):
+    result = self._run("unsupported_case")
+
+    self.assertEmpty(result.errors)
+    self.assertLen(result.skipped, 1)
+    self.assertIn("simulated unsupported target", result.skipped[0][1])
+    self.assertEmpty(self.exported)
+
+  def test_skipped_case_is_not_run(self):
+    result = self._run("skipped_case")
+
+    self.assertLen(result.skipped, 1)
+    self.assertEmpty(self.calls)
+    self.assertEmpty(self.exported)
+    self.mock_export_skip.assert_not_called()
+
+  def test_run_skipped_behavior_skips_cases_that_are_not_skipped(self):
+    with flagsaver.flagsaver((flags_lib.SKIP_BEHAVIOR, "run_skipped")):
+      result = self._run("measured_case")
+
+    self.assertLen(result.skipped, 1)
+    self.assertEmpty(self.calls)
+
+  def test_assert_raise_behavior_expects_skipped_case_to_raise(self):
+    with flagsaver.flagsaver((flags_lib.SKIP_BEHAVIOR, "assert_raise")):
+      result = self._run("skipped_case")
+
+    # The skipped case measures fine, so assertRaises fails.
+    self.assertLen(result.failures, 1)
+    self.assertEmpty(self.exported)
+
+  def test_dry_run_writes_the_test_method_name(self):
+    output_dir = self.create_tempdir().full_path
+    self.enter_context(
+        mock.patch.dict(os.environ, {"TEST_UNDECLARED_OUTPUTS_DIR": output_dir})
+    )
+
+    with flagsaver.flagsaver((flags_lib.DRY_RUN, True)):
+      result = self._run("measured_case")
+
+    self.assertTrue(result.wasSuccessful())
+    self.assertEmpty(self.calls)
+    self.assertEmpty(self.exported)
+    with open(os.path.join(output_dir, "test_targets.txt")) as f:
+      self.assertEqual(f.read(), "measured_case\n")
+
+  def test_import_failures_fail_the_imports_test(self):
+    failure = discovery_lib.ImportFailure(
+        module="perflab.models.broken", error=ImportError("no module")
+    )
+
+    result = self._run("test_benchmark_imports", failures=[failure])
+
+    self.assertLen(result.failures, 1)
+    self.assertIn("perflab.models.broken", result.failures[0][1])
+
+  def test_imports_test_passes_without_import_failures(self):
+    result = self._run("test_benchmark_imports")
+
+    self.assertTrue(result.wasSuccessful())
+
+
 _SWEPT = types.SimpleNamespace(
     name="swept",
     skipped_run_modes=frozenset(),
@@ -296,6 +529,8 @@ class _FakeBatchSweepTest(base_test.BaseBenchmarkTest):
       "bs8_case": (_SWEPT, _COMPILED, 8),
       "eager_bs8_case": (_SWEPT, _EAGER, 8),
   }
+  # Keeps the test loader from collecting the inherited imports test.
+  test_benchmark_imports = None
 
   def bs2_case(self):
     self.fail("the child process is replaced")
