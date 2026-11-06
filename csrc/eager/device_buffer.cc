@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <memory>
@@ -43,6 +44,7 @@
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fingerprint_utils.h"
+#include "csrc/common/interned_device_shape.h"
 #include "csrc/common/shape.h"
 #include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
@@ -156,7 +158,8 @@ absl::Status DeviceBufferList::Data::SetMaterializationError(
 }
 
 absl::Status DeviceBufferList::Data::SetMaterializationStarted(
-    std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers) {
+    std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers,
+    const InternedDeviceShapeSpan interned_device_shapes) {
   TT_RETURN_IF_ERROR(SetAsPendingMaterialization());
 
   const bool already_started = materialization_started_.exchange(true);
@@ -168,8 +171,8 @@ absl::Status DeviceBufferList::Data::SetMaterializationStarted(
   TT_ASSIGN_OR_RETURN(auto client,
                       PjrtBackend::GetInstance().GetSharedClient());
 
-  materialized_buffers_ =
-      MaterializedData(std::move(client), std::move(buffers));
+  materialized_buffers_ = MaterializedData(
+      std::move(client), std::move(buffers), interned_device_shapes);
   materialization_promise_.Set(absl::OkStatus());
 
   return absl::OkStatus();
@@ -557,12 +560,17 @@ void CheckBufferShape(const Shape& at_shape, const xla::PjRtBuffer& buffer) {
 }  // namespace
 
 void DeviceBufferList::CheckMaterialization(
-    absl::Span<const absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers)
-    const {
+    absl::Span<const absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers,
+    const InternedDeviceShapeSpan interned_device_shapes) const {
   ABSL_CHECK_EQ(shapes_.size(), buffers.size())  // CRASH_OK
       << "Expected " << shapes_.size()
       << " materialized PjRtBuffers for this DeviceBufferList, got "
       << buffers.size() << ".";
+  ABSL_CHECK(interned_device_shapes.empty() ||  // CRASH_OK
+             interned_device_shapes.size() == buffers.size())
+      << "Expected empty or " << buffers.size()
+      << " interned device shapes for this DeviceBufferList, got "
+      << interned_device_shapes.size() << ".";
 
   for (size_t i = 0; i < shapes_.size(); ++i) {
     ABSL_CHECK(!buffers[i]->IsDeleted())  // CRASH_OK
@@ -584,14 +592,24 @@ void DeviceBufferList::CheckMaterialization(
            "this DeviceBufferList ("
         << ToString(shapes_[i].dtype()) << ") for buffer " << i << ", got "
         << ToString(actual_element_type) << ".";
+
+    if (!interned_device_shapes.empty() &&
+        interned_device_shapes[i] != nullptr) {
+      const xla::Shape& known = *interned_device_shapes[i];
+      ABSL_DCHECK(known.IsArray() && known.is_static() && known.has_layout());
+      ABSL_DCHECK_EQ(known.element_type(), buffers[i]->element_type());
+      ABSL_DCHECK(known.dimensions() == buffers[i]->dimensions());
+    }
   }
 }
 
 absl::Status DeviceBufferList::SetAsMaterialized(
-    std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers) {
-  CheckMaterialization(buffers);
+    std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers,
+    const InternedDeviceShapeSpan interned_device_shapes) {
+  CheckMaterialization(buffers, interned_device_shapes);
   ABSL_VLOG(1) << "[SetAsMaterialized] Setting as materialized";
-  return data_.SetMaterializationStarted(std::move(buffers));
+  return data_.SetMaterializationStarted(std::move(buffers),
+                                         interned_device_shapes);
 }
 
 void DeviceBufferList::SetAsError(absl::Status error) {
@@ -749,6 +767,10 @@ absl::Status DeviceBufferRef::Synchronize() const {
 absl::StatusOr<xla::PjRtBuffer* absl_nonnull> DeviceBufferRef::AwaitBuffer()
     const {
   return device_buffer_list_->AwaitBuffer(index_);
+}
+
+const xla::Shape* absl_nullable DeviceBufferRef::known_device_shape() const {
+  return device_buffer_list_->known_device_shape(index_);
 }
 
 xla::Future<void> DeviceBufferRef::GetMaterializationFuture() const {
