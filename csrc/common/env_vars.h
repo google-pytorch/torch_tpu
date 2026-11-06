@@ -148,6 +148,34 @@ inline constexpr char kTorchTpuInternalDisableInplaceBufferDonationEnvVar[] =
 // directory path).
 inline constexpr char kTorchTpuInternalDumpMlirPassesToEnvVar[] =
     "TORCH_TPU_INTERNAL_DUMP_MLIR_PASSES_TO";
+// If set to "0" or "false", disables canceling inverse view transposes in the
+// StableHLO pipeline. Default is "true".
+inline constexpr char
+    kTorchTpuInternalEnableCancelInverseViewTransposesEnvVar[] =
+        "TORCH_TPU_INTERNAL_ENABLE_CANCEL_INVERSE_VIEW_TRANSPOSES";
+// If set to "0" or "false", disables hoisting gathers and folding scatter
+// reductions. Default is "true".
+inline constexpr char
+    kTorchTpuInternalEnableCanonicalizeGatherScatterReductionsEnvVar[] =
+        "TORCH_TPU_INTERNAL_ENABLE_CANONICALIZE_GATHER_SCATTER_REDUCTIONS";
+// If set to "0" or "false", disables sinking projection reshapes and unwrapping
+// GQA broadcasts. Default is "true".
+inline constexpr char
+    kTorchTpuInternalEnableCanonicalizeLayoutsAndReshapesEnvVar[] =
+        "TORCH_TPU_INTERNAL_ENABLE_CANONICALIZE_LAYOUTS_AND_RESHAPES";
+// If set to "0" or "false", disables canonicalizing minor-dimension
+// interleaving in the StableHLO pipeline. Default is "true".
+inline constexpr char
+    kTorchTpuInternalEnableCanonicalizeMinorInterleaveEnvVar[] =
+        "TORCH_TPU_INTERNAL_ENABLE_CANONICALIZE_MINOR_INTERLEAVE";
+// If set to "0" or "false", disables canonicalizing reductions in the StableHLO
+// pipeline. Default is "true".
+inline constexpr char kTorchTpuInternalEnableCanonicalizeReductionsEnvVar[] =
+    "TORCH_TPU_INTERNAL_ENABLE_CANONICALIZE_REDUCTIONS";
+// If set to "0" or "false", disables folding dot transposes in the StableHLO
+// pipeline. Default is "true".
+inline constexpr char kTorchTpuInternalEnableFoldDotTransposesEnvVar[] =
+    "TORCH_TPU_INTERNAL_ENABLE_FOLD_DOT_TRANSPOSES";
 // If set to "0" or "false", disables reassociating normalization weights.
 // Default is "true".
 inline constexpr char kTorchTpuInternalEnableReassociateNormWeightsEnvVar[] =
@@ -332,6 +360,18 @@ inline constexpr auto kEnvVarToStage =
         {kTorchTpuInternalDisableInplaceBufferDonationEnvVar,
          SymbolStage::InternalApi()},
         {kTorchTpuInternalDumpMlirPassesToEnvVar, SymbolStage::InternalApi()},
+        {kTorchTpuInternalEnableCancelInverseViewTransposesEnvVar,
+         SymbolStage::InternalApi()},
+        {kTorchTpuInternalEnableCanonicalizeGatherScatterReductionsEnvVar,
+         SymbolStage::InternalApi()},
+        {kTorchTpuInternalEnableCanonicalizeLayoutsAndReshapesEnvVar,
+         SymbolStage::InternalApi()},
+        {kTorchTpuInternalEnableCanonicalizeMinorInterleaveEnvVar,
+         SymbolStage::InternalApi()},
+        {kTorchTpuInternalEnableCanonicalizeReductionsEnvVar,
+         SymbolStage::InternalApi()},
+        {kTorchTpuInternalEnableFoldDotTransposesEnvVar,
+         SymbolStage::InternalApi()},
         {kTorchTpuInternalEnableReassociateNormWeightsEnvVar,
          SymbolStage::InternalApi()},
         {kTorchTpuInternalHandshakeTimeoutSEnvVar, SymbolStage::InternalApi()},
