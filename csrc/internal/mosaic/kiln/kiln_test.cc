@@ -1006,9 +1006,9 @@ TEST(KilnTest, TileReciprocal) {
     CHECK-LABEL: func.func @tile_reciprocal(
     CHECK-SAME:    %{{.*}}: i32, %[[IN:arg[0-9]+]]: memref<32x128xf32, #tpu.memory_space<vmem>>, %[[OUT:arg[0-9]+]]: memref<32x128xf32, #tpu.memory_space<vmem>>)
     CHECK:         %[[V:.*]] = vector.load %[[IN]]
-    CHECK:         %[[EXACT0:.*]] = tpu.reciprocal %[[V]] {full_range = false} : vector<32x128xf32> -> vector<32x128xf32>
-    CHECK:         %[[EXACT1:.*]] = tpu.reciprocal %[[V]] {full_range = false} : vector<32x128xf32> -> vector<32x128xf32>
-    CHECK:         %[[APPROX:.*]] = tpu.reciprocal %[[V]] {approx = true, full_range = false} : vector<32x128xf32> -> vector<32x128xf32>
+    CHECK:         %[[EXACT0:.*]] = tpu.reciprocal %[[V]] {{[{<]}}full_range = false{{[}>]}} : vector<32x128xf32> -> vector<32x128xf32>
+    CHECK:         %[[EXACT1:.*]] = tpu.reciprocal %[[V]] {{[{<]}}full_range = false{{[}>]}} : vector<32x128xf32> -> vector<32x128xf32>
+    CHECK:         %[[APPROX:.*]] = tpu.reciprocal %[[V]] {{[{<]}}approx = true, full_range = false{{[}>]}} : vector<32x128xf32> -> vector<32x128xf32>
     CHECK:         %[[SUM0:.*]] = arith.addf %[[EXACT0]], %[[EXACT1]] : vector<32x128xf32>
     CHECK:         %[[SUM1:.*]] = arith.addf %[[SUM0]], %[[APPROX]] : vector<32x128xf32>
     CHECK:         tpu.vector_store %[[OUT]][%{{.*}}, %{{.*}}], %[[SUM1]]
@@ -1044,7 +1044,7 @@ TEST(KilnTest, RotateGatherExtractBitcastAndMaskedStore) {
     CHECK:         %[[LANE:.*]] = vector.extract %[[GATHERED]][0, 0] : f32 from vector<1x128xf32>
     CHECK:         %[[LANE_BITS:.*]] = arith.bitcast %[[LANE]] : f32 to i32
     CHECK:         %[[ROW_BITS:.*]] = arith.bitcast %[[ROW0]] : vector<1x128xf32> to vector<1x128xi32>
-    CHECK:         %[[IOTA:.*]] = tpu.iota {dimensions = array<i32: 1>} : vector<1x128xi32>
+    CHECK:         %[[IOTA:.*]] = tpu.iota {{[{<]}}dimensions = {{(array<i32: 1>|\[1\])}}{{[}>]}} : vector<1x128xi32>
     CHECK:         %[[C127:.*]] = arith.constant 127 : i32
     CHECK:         %[[LANE_ID:.*]] = arith.andi %[[STEP]], %[[C127]] : i32
     CHECK:         %[[LANE_ID_V:.*]] = vector.broadcast %[[LANE_ID]] : i32 to vector<1x128xi32>
@@ -1514,7 +1514,7 @@ TEST(KilnTest, SimplifiedOverloadsAndBounds) {
     CHECK:         tpu.memref_slice %[[IN]][%{{.*}}, %[[ZERO]]] : memref<32x128xf32, #tpu.memory_space<vmem>> -> memref<32x64xf32, #tpu.memory_space<vmem>>
 
     // Tile modulo with a Tile or Literal on either side.
-    CHECK:         %[[IOTA:.*]] = tpu.iota {dimensions = array<i32: 1>} : vector<32x128xi32>
+    CHECK:         %[[IOTA:.*]] = tpu.iota {{[{<]}}dimensions = {{(array<i32: 1>|\[1\])}}{{[}>]}} : vector<32x128xi32>
     CHECK:         %[[C4:.*]] = arith.constant dense<4> : vector<32x128xi32>
     CHECK:         %[[MOD1:.*]] = arith.remsi %[[IOTA]], %[[C4]] : vector<32x128xi32>
     CHECK:         %[[PLUS1:.*]] = arith.addi %[[IOTA]], %{{.*}} : vector<32x128xi32>
@@ -2065,16 +2065,16 @@ TEST(KilnTest, DmaOperations) {
     CHECK:         %[[SEND_SEM:.*]] = tpu.sem_alloc : memref<!tpu.dma_semaphore, #tpu.memory_space<semaphore_mem>>
     CHECK:         %[[RECV_SEM:.*]] = tpu.sem_alloc : memref<!tpu.dma_semaphore, #tpu.memory_space<semaphore_mem>>
     CHECK:         tpu.enqueue_dma source(%[[HBM]] : {{.*}}) target(%[[VMEM]] : {{.*}}) target_semaphore(%[[SEM]] : {{.*}})
-    CHECK:         tpu.wait_dma source(%[[HBM]] : {{.*}}) target(%[[VMEM]] : {{.*}}) target_semaphore(%[[SEM]] : {{.*}}) {wait_target = true}
-    CHECK:         tpu.enqueue_dma source(%[[VMEM]] : {{.*}}) target(%[[HBM]] : {{.*}}) target_semaphore(%[[SEM]] : {{.*}}) {priority = 1 : i32}
-    CHECK:         tpu.wait_dma source(%[[VMEM]] : {{.*}}) target(%[[HBM]] : {{.*}}) target_semaphore(%[[SEM]] : {{.*}}) {priority = 1 : i32, wait_target = true}
+    CHECK:         tpu.wait_dma source(%[[HBM]] : {{.*}}) target(%[[VMEM]] : {{.*}}) target_semaphore(%[[SEM]] : {{.*}}) {{[{<]}}wait_target = true{{[}>]}}
+    CHECK:         tpu.enqueue_dma source(%[[VMEM]] : {{.*}}) target(%[[HBM]] : {{.*}}) target_semaphore(%[[SEM]] : {{.*}}) {{[{<]}}priority = 1{{( : i32)?}}{{[}>]}}
+    CHECK:         tpu.wait_dma source(%[[VMEM]] : {{.*}}) target(%[[HBM]] : {{.*}}) target_semaphore(%[[SEM]] : {{.*}}) {{[{<]}}priority = 1{{( : i32)?}}, wait_target = true{{[}>]}}
     CHECK:         tpu.enqueue_dma source(%[[HBM]] : {{.*}}) target(%[[VMEM]] : {{.*}}) source_semaphore(%[[SEND_SEM]] : {{.*}}) target_semaphore(%[[RECV_SEM]] : {{.*}}) device_id(%[[DEV]])
-    CHECK:         tpu.wait_dma source(%[[HBM]] : {{.*}}) target(%[[VMEM]] : {{.*}}) source_semaphore(%[[SEND_SEM]] : {{.*}}) target_semaphore(%[[RECV_SEM]] : {{.*}}) device_id(%[[DEV]]) {wait_target = false}
-    CHECK:         tpu.wait_dma source(%[[HBM]] : {{.*}}) target(%[[VMEM]] : {{.*}}) source_semaphore(%[[SEND_SEM]] : {{.*}}) target_semaphore(%[[RECV_SEM]] : {{.*}}) device_id(%[[DEV]]) {wait_target = true}
+    CHECK:         tpu.wait_dma source(%[[HBM]] : {{.*}}) target(%[[VMEM]] : {{.*}}) source_semaphore(%[[SEND_SEM]] : {{.*}}) target_semaphore(%[[RECV_SEM]] : {{.*}}) device_id(%[[DEV]]) {{[{<]}}wait_target = false{{[}>]}}
+    CHECK:         tpu.wait_dma source(%[[HBM]] : {{.*}}) target(%[[VMEM]] : {{.*}}) source_semaphore(%[[SEND_SEM]] : {{.*}}) target_semaphore(%[[RECV_SEM]] : {{.*}}) device_id(%[[DEV]]) {{[{<]}}wait_target = true{{[}>]}}
     CHECK:         %[[CORE0:.*]] = arith.constant 0 : i32
     CHECK:         tpu.enqueue_dma source(%[[HBM]] : {{.*}}) target(%[[VMEM]] : {{.*}}) source_semaphore(%[[SEND_SEM]] : {{.*}}) target_semaphore(%[[RECV_SEM]] : {{.*}}) device_id(%[[DEV]]) core_id(%[[CORE0]])
-    CHECK:         tpu.wait_dma source(%[[HBM]] : {{.*}}) target(%[[VMEM]] : {{.*}}) source_semaphore(%[[SEND_SEM]] : {{.*}}) target_semaphore(%[[RECV_SEM]] : {{.*}}) device_id(%[[DEV]]) core_id(%[[CORE0]]) {wait_target = false}
-    CHECK:         tpu.wait_dma source(%[[HBM]] : {{.*}}) target(%[[VMEM]] : {{.*}}) source_semaphore(%[[SEND_SEM]] : {{.*}}) target_semaphore(%[[RECV_SEM]] : {{.*}}) device_id(%[[DEV]]) core_id(%[[CORE0]]) {wait_target = true}
+    CHECK:         tpu.wait_dma source(%[[HBM]] : {{.*}}) target(%[[VMEM]] : {{.*}}) source_semaphore(%[[SEND_SEM]] : {{.*}}) target_semaphore(%[[RECV_SEM]] : {{.*}}) device_id(%[[DEV]]) core_id(%[[CORE0]]) {{[{<]}}wait_target = false{{[}>]}}
+    CHECK:         tpu.wait_dma source(%[[HBM]] : {{.*}}) target(%[[VMEM]] : {{.*}}) source_semaphore(%[[SEND_SEM]] : {{.*}}) target_semaphore(%[[RECV_SEM]] : {{.*}}) device_id(%[[DEV]]) core_id(%[[CORE0]]) {{[{<]}}wait_target = true{{[}>]}}
     CHECK:         %[[REG_SEM:.*]] = tpu.sem_alloc : memref<!tpu.semaphore, #tpu.memory_space<semaphore_mem>>
     CHECK:         tpu.enqueue_dma source(%[[HBM]] : {{.*}}) target(%[[VMEM]] : {{.*}}) target_semaphore(%[[REG_SEM]] : {{.*}})
     CHECK:         %[[WAIT_AMT:.*]] = arith.constant 1 : i32
@@ -2135,12 +2135,12 @@ TEST(KilnTest, UnboundedDynamicDma) {
     CHECK:           %[[IN_TILE:.*]] = tpu.memref_slice %[[HBM_IN]][%[[ALIGNED_R]], %{{.*}}] : memref<?x128xf32, #tpu.memory_space<hbm>> -> memref<8x128xf32, #tpu.memory_space<hbm>>
     CHECK:           %[[OUT_TILE:.*]] = tpu.memref_slice %[[HBM_OUT]][%[[ALIGNED_R]], %{{.*}}] : memref<?x128xf32, #tpu.memory_space<hbm>> -> memref<8x128xf32, #tpu.memory_space<hbm>>
     CHECK:           tpu.enqueue_dma source(%[[IN_TILE]] : {{.*}}) target(%[[VMEM_BUF]] : {{.*}}) target_semaphore(%[[IN_SEM]] : {{.*}})
-    CHECK:           tpu.wait_dma source(%[[IN_TILE]] : {{.*}}) target(%[[VMEM_BUF]] : {{.*}}) target_semaphore(%[[IN_SEM]] : {{.*}}) {wait_target = true}
+    CHECK:           tpu.wait_dma source(%[[IN_TILE]] : {{.*}}) target(%[[VMEM_BUF]] : {{.*}}) target_semaphore(%[[IN_SEM]] : {{.*}}) {{[{<]}}wait_target = true{{[}>]}}
     CHECK:           %[[V:.*]] = vector.load %[[VMEM_BUF]]
     CHECK:           %[[V_PLUS_1:.*]] = arith.addf %[[V]], %{{.*}} : vector<8x128xf32>
     CHECK:           tpu.vector_store %[[VMEM_BUF]][%{{.*}}, %{{.*}}], %[[V_PLUS_1]]
     CHECK:           tpu.enqueue_dma source(%[[VMEM_BUF]] : {{.*}}) target(%[[OUT_TILE]] : {{.*}}) target_semaphore(%[[OUT_SEM]] : {{.*}})
-    CHECK:           tpu.wait_dma source(%[[VMEM_BUF]] : {{.*}}) target(%[[OUT_TILE]] : {{.*}}) target_semaphore(%[[OUT_SEM]] : {{.*}}) {wait_target = true}
+    CHECK:           tpu.wait_dma source(%[[VMEM_BUF]] : {{.*}}) target(%[[OUT_TILE]] : {{.*}}) target_semaphore(%[[OUT_SEM]] : {{.*}}) {{[{<]}}wait_target = true{{[}>]}}
     CHECK:         }
   )"));
 }
