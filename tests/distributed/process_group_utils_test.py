@@ -14,6 +14,7 @@
 
 """Unit tests for process_group_utils."""
 
+from collections.abc import Sequence
 import operator
 
 from absl.testing import absltest
@@ -417,6 +418,54 @@ class ProcessGroupIdTest(seed_test_utils.RepeatableTest):
     wire = ProcessGroupId(range(16)).to_wire()
     self.assertIs(
         ProcessGroupId.from_wire(wire), ProcessGroupId.from_wire(wire)
+    )
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="single_rank",
+          ranks=[0],
+          world_size=None,
+          expected="ProcessGroupId(ranks=(0,))",
+      ),
+      dict(
+          testcase_name="single_rank_with_world_size",
+          ranks=[3],
+          world_size=8,
+          expected="ProcessGroupId(ranks=(3,), world_size=8)",
+      ),
+      dict(
+          testcase_name="contiguous",
+          ranks=[2, 3, 4, 5],
+          world_size=None,
+          expected="ProcessGroupId(ranks=range(2, 6))",
+      ),
+      dict(
+          testcase_name="contiguous_with_world_size",
+          ranks=range(4096),
+          world_size=4096,
+          expected="ProcessGroupId(ranks=range(0, 4096), world_size=4096)",
+      ),
+      dict(
+          testcase_name="non_contiguous",
+          ranks=[0, 2, 5],
+          world_size=None,
+          expected="ProcessGroupId(ranks=(0, 2, 5))",
+      ),
+      dict(
+          testcase_name="non_contiguous_with_world_size",
+          ranks=[1, 3],
+          world_size=4,
+          expected="ProcessGroupId(ranks=(1, 3), world_size=4)",
+      ),
+  )
+  def test_repr(
+      self,
+      ranks: Sequence[int],
+      world_size: int | None,
+      expected: str,
+  ) -> None:
+    self.assertEqual(
+        repr(ProcessGroupId(ranks, world_size=world_size)), expected
     )
 
 
