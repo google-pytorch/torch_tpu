@@ -384,38 +384,27 @@ TEST(EnvironmentDeathTest, InitDistEnvKeepsMegascaleClientForMultislice) {
 }
 
 TEST(EnvironmentDeathTest,
-     InitDistEnv_FallsBackOnMalformedTpuVisibleDevicesEnvVar) {
+     InitDistEnv_FailsOnMalformedTpuVisibleDevicesEnvVar) {
   EXPECT_EXIT(
       {
         setenv(kTpuVisibleDevicesEnvVar, "invalid_dev", 1);
         DistributedWorkerConfiguration config = GetDefaultDistWorkerConfig();
         config.local_rank = 1;
-        ABSL_CHECK_OK(InitializeDistributedEnvironment(config));
-        const char* val = std::getenv(kTpuVisibleDevicesEnvVar);
-        ABSL_CHECK_NE(val, nullptr);
-        ABSL_CHECK_STREQ(val, "1");
-        const char* chips_val = std::getenv(kTpuVisibleChipsEnvVar);
-        ABSL_CHECK_NE(chips_val, nullptr);
-        ABSL_CHECK_STREQ(chips_val, "1");
+        ABSL_CHECK(
+            absl::IsInvalidArgument(InitializeDistributedEnvironment(config)));
         _exit(0);
       },
       ExitedWithCode(0), "");
 }
 
-TEST(EnvironmentDeathTest,
-     InitDistEnv_FallsBackOnNegativeTpuVisibleDevicesEnvVar) {
+TEST(EnvironmentDeathTest, InitDistEnv_FailsOnNegativeTpuVisibleDevicesEnvVar) {
   EXPECT_EXIT(
       {
         setenv(kTpuVisibleDevicesEnvVar, "-5", 1);
         DistributedWorkerConfiguration config = GetDefaultDistWorkerConfig();
         config.local_rank = 2;
-        ABSL_CHECK_OK(InitializeDistributedEnvironment(config));
-        const char* val = std::getenv(kTpuVisibleDevicesEnvVar);
-        ABSL_CHECK_NE(val, nullptr);
-        ABSL_CHECK_STREQ(val, "2");
-        const char* chips_val = std::getenv(kTpuVisibleChipsEnvVar);
-        ABSL_CHECK_NE(chips_val, nullptr);
-        ABSL_CHECK_STREQ(chips_val, "2");
+        ABSL_CHECK(
+            absl::IsInvalidArgument(InitializeDistributedEnvironment(config)));
         _exit(0);
       },
       ExitedWithCode(0), "");
@@ -439,13 +428,27 @@ TEST(EnvironmentDeathTest,
      InitDistEnv_OverwritesMultiDeviceTpuVisibleDevicesEnvVar) {
   EXPECT_EXIT(
       {
-        setenv(kTpuVisibleDevicesEnvVar, "0,1,2,3", 1);
+        setenv(kTpuVisibleDevicesEnvVar, "4,5,6,7", 1);
         DistributedWorkerConfiguration config = GetDefaultDistWorkerConfig();
         config.local_rank = 1;
 
         ABSL_CHECK_OK(InitializeDistributedEnvironment(config));
-        ABSL_CHECK_STREQ(std::getenv(kTpuVisibleDevicesEnvVar), "1");
-        ABSL_CHECK_STREQ(std::getenv(kTpuVisibleChipsEnvVar), "1");
+        ABSL_CHECK_STREQ(std::getenv(kTpuVisibleDevicesEnvVar), "5");
+        ABSL_CHECK_STREQ(std::getenv(kTpuVisibleChipsEnvVar), "5");
+        _exit(0);
+      },
+      ExitedWithCode(0), "");
+}
+
+TEST(EnvironmentDeathTest,
+     InitDistEnv_FailsIfTooFewDevicesInTpuVisibleDevicesEnvVar) {
+  EXPECT_EXIT(
+      {
+        setenv(kTpuVisibleDevicesEnvVar, "4,5", 1);
+        DistributedWorkerConfiguration config = GetDefaultDistWorkerConfig();
+        config.local_rank = 2;
+        ABSL_CHECK(
+            absl::IsInvalidArgument(InitializeDistributedEnvironment(config)));
         _exit(0);
       },
       ExitedWithCode(0), "");
@@ -497,10 +500,10 @@ TEST(EnvironmentDeathTest,
   ScopedFakePciDir pci;
   EXPECT_EXIT(
       {
-        setenv(kTpuVisibleDevicesEnvVar, "0,1", 1);
+        setenv(kTpuVisibleDevicesEnvVar, "4,5", 1);
         ABSL_CHECK_OK(InitializeSingleDeviceEnvironment(pci.path()));
-        ABSL_CHECK_STREQ(std::getenv(kTpuVisibleDevicesEnvVar), "0");
-        ABSL_CHECK_STREQ(std::getenv(kTpuVisibleChipsEnvVar), "0");
+        ABSL_CHECK_STREQ(std::getenv(kTpuVisibleDevicesEnvVar), "4");
+        ABSL_CHECK_STREQ(std::getenv(kTpuVisibleChipsEnvVar), "4");
         ABSL_CHECK_STREQ(std::getenv(kTpuHostBoundsEnvVar), "1,1,1");
         ABSL_CHECK_STREQ(std::getenv(kTpuChipsPerHostBoundsEnvVar), "1,1,1");
         ABSL_CHECK_STREQ(std::getenv(kTpuProcessBoundsEnvVar), "1,1,1");
@@ -512,14 +515,13 @@ TEST(EnvironmentDeathTest,
 }
 
 TEST(EnvironmentDeathTest,
-     InitSingleDevEnv_FallsBackOnMalformedTpuVisibleDevicesEnvVar) {
+     InitSingleDevEnv_FailsOnMalformedTpuVisibleDevicesEnvVar) {
   ScopedFakePciDir pci;
   EXPECT_EXIT(
       {
         setenv(kTpuVisibleDevicesEnvVar, "invalid_dev", 1);
-        ABSL_CHECK_OK(InitializeSingleDeviceEnvironment(pci.path()));
-        ABSL_CHECK_STREQ(std::getenv(kTpuVisibleDevicesEnvVar), "0");
-        ABSL_CHECK_STREQ(std::getenv(kTpuVisibleChipsEnvVar), "0");
+        ABSL_CHECK(absl::IsInvalidArgument(
+            InitializeSingleDeviceEnvironment(pci.path())));
         _exit(0);
       },
       ExitedWithCode(0), "");

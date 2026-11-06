@@ -188,18 +188,25 @@ void EnsureUndefokFlag(std::string_view flag_name,
   });
 }
 
-// TPU_VISIBLE_DEVICES is our source of truth for device visibility.
-// Because libtpu prioritizes TPU_VISIBLE_CHIPS over TPU_VISIBLE_DEVICES when
-// non-empty, we explicitly overwrite TPU_VISIBLE_CHIPS to match
-// TPU_VISIBLE_DEVICES so that external settings do not override device
-// selection.
-void SelectVisibleDevice(std::string_view default_dev) {
+// Restricts `TPU_VISIBLE_DEVICES` to the device of the process with local rank
+// `local_rank`.
+absl::Status SelectVisibleDevice(const int local_rank) {
   const char* const visible_devices =
-      std::getenv(kTpuVisibleDevicesEnvVar);  // GETENV_OK=env var is set below.
-  const std::string target_dev = GetSingleDeviceOrDefault(
-      visible_devices != nullptr ? visible_devices : "", default_dev);
-  SafeSetEnv<kTpuVisibleDevicesEnvVar>(target_dev);
-  SafeSetEnv<kTpuVisibleChipsEnvVar>(target_dev);
+      std::getenv(kTpuVisibleDevicesEnvVar);  // GETENV_OK=env var set below.
+  TT_ASSIGN_OR_RETURN(
+      const std::string device,
+      SelectLocalDevice(visible_devices != nullptr ? visible_devices : "",
+                        local_rank));
+
+  // TPU_VISIBLE_DEVICES is our source of truth for device visibility. Because
+  // libtpu prioritizes TPU_VISIBLE_CHIPS over TPU_VISIBLE_DEVICES when
+  // non-empty, we explicitly overwrite TPU_VISIBLE_CHIPS to match
+  // TPU_VISIBLE_DEVICES so that external settings do not override device
+  // selection.
+  SafeSetEnv<kTpuVisibleDevicesEnvVar>(device);
+  SafeSetEnv<kTpuVisibleChipsEnvVar>(device);
+
+  return absl::OkStatus();
 }
 
 // Sets the libtpu host/process bounds environment variables and enables
@@ -233,7 +240,7 @@ absl::Status InitializeDistributedEnvironment(
   const int slice_rank = config.rank % static_cast<int>(addresses.size());
   SafeSetEnv<kCloudTpuTaskIdEnvVar>(absl::StrCat(slice_rank));
 
-  SelectVisibleDevice(absl::StrCat(config.local_rank));
+  TT_RETURN_IF_ERROR(SelectVisibleDevice(config.local_rank));
 
   const std::vector<std::string> topology_dims =
       absl::StrSplit(config.topology, ',');
@@ -268,7 +275,7 @@ absl::Status InitializeDistributedEnvironment(
 
 absl::Status InitializeSingleDeviceEnvironment(
     std::string_view pci_devices_dir) {
-  SelectVisibleDevice("0");
+  TT_RETURN_IF_ERROR(SelectVisibleDevice(/*local_rank=*/0));
   const std::string bounds(GetSingleDeviceTpuBoundsString(pci_devices_dir));
   SetTpuBoundsEnv(bounds, bounds);
   return absl::OkStatus();
