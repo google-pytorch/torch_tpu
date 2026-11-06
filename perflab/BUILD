@@ -382,7 +382,7 @@ torch_tpu_py_test(
     },
     nolocal = "user requested to run this manually",
     notest_oss = True,  # requires huggingface configs from internal infra  # NOTEST_OSS_OK=benchmarks run nightly
-    shard_count = 10,
+    shard_count = 30,
     tags = [
         "benchmark-smoke",
         "nofastbuild",  # Benchmark.
