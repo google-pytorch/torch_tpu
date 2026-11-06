@@ -45,6 +45,7 @@ struct CompilationTraceInfo {
   std::string mlir_text;
   // See `CompiledKernel::cache_hit`.
   bool cache_hit = false;
+  KernelType kernel_type = KernelType::kStatic;
 };
 
 // To materialize a tensor's data, we need to execute it on-device.

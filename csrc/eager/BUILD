@@ -468,7 +468,9 @@ torch_tpu_cc_library(
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:IR",
         "@tsl//tsl/profiler/lib:traceme",
+        "@xla//xla/hlo/ir:hlo",
         "@xla//xla/pjrt:pjrt_client",
+        "@xla//xla/pjrt:pjrt_executable",
     ],
 )
 
@@ -629,6 +631,7 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/base:no_destructor",
         "@com_google_absl//absl/base:nullability",
+        "@com_google_absl//absl/functional:any_invocable",
         "@com_google_absl//absl/synchronization",
         "@com_google_absl//absl/time",
     ],

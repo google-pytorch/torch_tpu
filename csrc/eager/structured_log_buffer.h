@@ -21,16 +21,41 @@
 #include <cstdint>
 #include <deque>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 
 #include "absl/base/no_destructor.h"
 #include "absl/base/nullability.h"
 #include "absl/base/thread_annotations.h"
+#include "absl/functional/any_invocable.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/time/time.h"
 
 namespace torch_tpu {
+
+// The type of the kernel that serves an eager batch.
+enum class KernelType {
+  // A static executable, compiled for the batch's shapes.
+  kStatic,
+  // A bounded dynamic executable, compiled for the shapes' upper bounds and run
+  // with dynamic kernel adapters.
+  kBoundedDynamic,
+  // A precompiled kernel from `UnboundedDynamicKernelRegistry`.
+  kUnboundedDynamic,
+};
+
+constexpr std::string_view ToString(KernelType type) {
+  switch (type) {
+    case KernelType::kStatic:
+      return "static";
+    case KernelType::kBoundedDynamic:
+      return "bounded_dynamic";
+    case KernelType::kUnboundedDynamic:
+      return "unbounded_dynamic";
+  }
+  return "unknown";
+}
 
 // Represents the reason for an op materialization event.
 enum class MaterializationReason {
@@ -95,12 +120,17 @@ struct StructuredLogEvent {
   // StableHLO MLIR text with #loc debug info. Populated on cache miss;
   // empty on cache hit.
   std::string mlir_payload = "";
+  // If set, `Drain` replaces `mlir_payload` with its result, for IR that only
+  // exists once an asynchronous compilation is done.
+  absl::AnyInvocable<std::string() &&> lazy_mlir_payload;
   // Why this materialization was triggered.
   MaterializationReason reason = MaterializationReason::kUnknown;
   // Pre-serialized JSON for the chromium_event payload.
   std::string chromium_payload = "";
   // True if compilation failed.
   bool compile_failed = false;
+  // The type of the kernel that serves the batch, unless compilation failed.
+  std::optional<KernelType> kernel_type;
 };
 
 // A global thread-safe buffer for collecting structured log events.
@@ -125,7 +155,7 @@ class StructuredLogBuffer {
 
   // Thread-safe drain: returns all buffered events plus the count of
   // events dropped due to overflow since the previous Drain(), then
-  // clears both.
+  // clears both. May block on the compilations of lazy payloads.
   DrainResult Drain();
 
   // Overrides the enable state for testing.

@@ -61,7 +61,9 @@
 #include "llvm/ADT/STLExtras.h"
 #include "mlir/IR/MLIRContext.h"
 #include "tsl/profiler/lib/traceme.h"
+#include "xla/hlo/ir/hlo_module.h"
 #include "xla/pjrt/pjrt_client.h"
+#include "xla/pjrt/pjrt_executable.h"
 
 namespace torch_tpu {
 
@@ -183,6 +185,9 @@ void FinalizePushTraceEvent(std::unique_ptr<StructuredLogEvent> event,
                             std::string aten_graph_payload) {
   event->duration = absl::Now() - event->timestamp;
   event->cache_hit = compile_ok && trace_info.cache_hit;
+  if (compile_ok) {
+    event->kernel_type = trace_info.kernel_type;
+  }
   if (!event->cache_hit) {
     event->aten_graph_payload = std::move(aten_graph_payload);
     event->mlir_payload = std::move(trace_info.mlir_text);
@@ -195,7 +200,12 @@ void FinalizePushTraceEvent(std::unique_ptr<StructuredLogEvent> event,
       R"(,"cat":"torchtpu_eager","pid":)", getpid(),
       R"(,"tid":0,"args":{"cache_hit":)", event->cache_hit ? "true" : "false",
       R"(,"compile_failed":)", event->compile_failed ? "true" : "false",
-      R"(,"reason":")", absl::CEscape(ToString(event->reason)), R"("}})");
+      R"(,"reason":")", absl::CEscape(ToString(event->reason)), R"(")",
+      event->kernel_type.has_value()
+          ? absl::StrCat(R"(,"kernel_type":")", ToString(*event->kernel_type),
+                         R"(")")
+          : "",
+      R"(}})");
   StructuredLogBuffer::GetInstance().Push(std::move(event));
 }
 
@@ -222,6 +232,17 @@ struct CompiledTraversal {
   CompilationCacheKey compilation_cache_key;
   CompiledKernel compiled_kernel;
 };
+
+// Returns the type of `compiled_kernel`, as served by the compilation cache.
+KernelType GetKernelType(const CompiledKernel& compiled_kernel) {
+  if (compiled_kernel.unbounded_dynamic_kernel != nullptr) {
+    return KernelType::kUnboundedDynamic;
+  }
+  if (compiled_kernel.dynamic_kernel_adapter.has_value()) {
+    return KernelType::kBoundedDynamic;
+  }
+  return KernelType::kStatic;
+}
 
 absl::StatusOr<CompiledTraversal> VerifyAndCompileTraversal(
     Traversal& traversal, mlir::MLIRContext& mlir_context,
@@ -303,6 +324,8 @@ absl::StatusOr<ExecutionTask> ExecutionTask::FromTraversal(
   if (out_trace_info != nullptr) {
     out_trace_info->cache_hit =
         compiled_traversal_or->compiled_kernel.cache_hit;
+    out_trace_info->kernel_type =
+        GetKernelType(compiled_traversal_or->compiled_kernel);
   }
 
   // Mark all outputs of the split as scheduled/materialized.
@@ -387,6 +410,30 @@ absl::StatusOr<ExecutionTask> ExecutionTask::FromTraversalWithLogging(
   CompilationTraceInfo trace_info;
   auto execution_task_or = ExecutionTask::FromTraversal(
       std::move(traversal), mlir_context, compilation_spec, &trace_info);
+
+  // An unbounded dynamic kernel replaces the batch, which is never lowered to
+  // StableHLO, so log the HLO of the kernel once it is compiled.
+  if (execution_task_or.ok() &&
+      trace_info.kernel_type == KernelType::kUnboundedDynamic &&
+      !trace_info.cache_hit) {
+    event->lazy_mlir_payload =
+        [executable = execution_task_or->compiled_kernel_.fixed_shape_kernel]()
+        -> std::string {
+      const absl::StatusOr<SharedLoadedExecutableWithMetadata>& loaded =
+          executable.get();
+      if (!loaded.ok()) return absl::StrCat("// ", loaded.status().ToString());
+      absl::StatusOr<std::vector<std::shared_ptr<xla::HloModule>>> modules =
+          (*loaded)->GetExecutable()->GetHloModules();
+      if (!modules.ok()) {
+        return absl::StrCat("// ", modules.status().ToString());
+      }
+      std::string text;
+      for (const std::shared_ptr<xla::HloModule>& module : *modules) {
+        absl::StrAppend(&text, module->ToString());
+      }
+      return text;
+    };
+  }
 
   // Whether or not the execution task was created successfully, finish the
   // trace event and return.
