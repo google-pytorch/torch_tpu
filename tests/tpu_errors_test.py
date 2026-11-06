@@ -163,7 +163,6 @@ class TpuOnlyErrorTest(et.TpuOnlyErrorTestBase):
     with et.assert_raises_message(
         NotImplementedError,
         tpu="""fill_(): complex128 dtype is not supported""",
-        message_reviewed_by="wan",
     ):
       t = torch.empty((2, 2), dtype=torch.complex128, device=et.device())
       t.fill_(1.0)
@@ -370,7 +369,6 @@ class TpuOnlyErrorTest(et.TpuOnlyErrorTestBase):
     with et.assert_raises_message(
         RuntimeError,
         tpu="""index(): expected index tensors to have dtype bool, int32, or int64, got uint8 at index 0; indexing with uint8 tensors is deprecated in PyTorch and not supported in TorchTPU, use bool tensors instead""",
-        message_reviewed_by="jihonggan",
     ):
       x[index].to("cpu")
 
@@ -386,7 +384,6 @@ class TpuOnlyErrorTest(et.TpuOnlyErrorTestBase):
     with et.assert_raises_message(
         RuntimeError,
         tpu="""index_put_(): expected index tensors to have dtype bool, int32, or int64, got uint8 at index 0; indexing with uint8 tensors is deprecated in PyTorch and not supported in TorchTPU, use bool tensors instead""",
-        message_reviewed_by="jihonggan",
     ):
       x.index_put_([index], torch.ones(3, 3, device="tpu"))
       x.to("cpu")
@@ -401,7 +398,6 @@ class TpuOnlyErrorTest(et.TpuOnlyErrorTestBase):
     with et.assert_raises_message(
         IndexError,
         tpu="""index_put_(): too many indices for tensor of dimension 3""",
-        message_reviewed_by="jihonggan",
     ):
       torch.ops.aten.index_put_(
           torch.zeros(2, 3, 4, device="tpu"),
@@ -420,7 +416,6 @@ class TpuOnlyErrorTest(et.TpuOnlyErrorTestBase):
     with et.assert_raises_message(
         RuntimeError,
         tpu="""index_put_(): indices must be specified""",
-        message_reviewed_by="jihonggan",
     ):
       x.index_put_([torch.tensor(True)], torch.ones(2, 2, 3, device="tpu"))
       x.to("cpu")
@@ -482,14 +477,12 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     with et.assert_raises_message(
         RuntimeError,
         tpu="""mm(): expected the first argument to be a 2D tensor (matrix), got 0D of shape []""",
-        message_reviewed_by="gunhyun",
     ):
       torch.ops.aten.mm.dtype(scalar_tensor, matrix_tensor, torch.float32)
 
     with et.assert_raises_message(
         RuntimeError,
         tpu="""mm(): expected the second argument to be a 2D tensor (matrix), got 1D of shape [4]""",
-        message_reviewed_by="gunhyun",
     ):
       torch.ops.aten.mm.dtype(matrix_tensor, vector_tensor, torch.float32)
 
@@ -498,7 +491,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     with et.assert_raises_message(
         RuntimeError,
         tpu="""empty(): TorchTPU does not yet support dtype complex32""",
-        message_reviewed_by="wan",
     ):
       torch.empty(2, dtype=torch.complex32, device="tpu")
 
@@ -507,7 +499,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     with et.assert_raises_message(
         RuntimeError,
         tpu="""empty_strided(): TorchTPU does not yet support dtype complex32""",
-        message_reviewed_by="wan",
     ):
       torch.empty_strided((2,), (1,), dtype=torch.complex32, device="tpu")
 
@@ -912,7 +903,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     with et.assert_raises_message(
         RuntimeError,
         tpu="""set_(): expected the number of bytes required by the given arguments to be <= 32 (actual storage size), got 64""",
-        message_reviewed_by="wan",
     ):
       t.set_(source.untyped_storage(), storage_offset=0, size=[16], stride=[1])
 
@@ -1139,7 +1129,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     with et.assert_raises_message(
         NotImplementedError,
         tpu="""index(): indexing with more than one bool tensor is not yet supported""",
-        message_reviewed_by="wan",
     ):
       torch.ops.aten.index(inp, indices)
 
@@ -1152,7 +1141,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     with et.assert_raises_message(
         NotImplementedError,
         tpu="""gather(): sparse_grad is not yet supported""",
-        message_reviewed_by="wan",
     ):
       torch.gather(inp, dim, index, sparse_grad=True)
 
@@ -1165,7 +1153,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     with et.assert_raises_message(
         RuntimeError,
         tpu="""copy_from(): expected at least one of the inputs to be on 'tpu' device, got 'cpu' (source) and 'cpu' (destination)""",
-        message_reviewed_by="wan",
     ):
       # Dispatch to `_copy_from()` TPU kernel with CPU inputs.
       # Otherwise, can't reach the error.
@@ -1180,7 +1167,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     with et.assert_raises_message(
         RuntimeError,
         tpu="""local_scalar_dense(): expected the input tensor to have 1 element, got 2""",
-        message_reviewed_by="wan",
     ):
       torch.ops.aten._local_scalar_dense(inp)
 
@@ -1402,7 +1388,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
       with et.assert_raises_message(
           RuntimeError,
           tpu="""embedding_bag_forward_only(): expected all dimensions of the indices tensor to be static, got 1 dynamic dimension in the underlying tensor behind a view of shape [100]""",
-          message_reviewed_by="wan",
       ):
         torch.nn.functional.embedding_bag(indices, weight)
 
@@ -1416,7 +1401,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
       with et.assert_raises_message(
           RuntimeError,
           tpu="""embedding_bag_forward_only(): expected all dimensions of the weight tensor to be static, got 1 dynamic dimension within shape [10, 10 (up to 20)]""",
-          message_reviewed_by="wan",
       ):
         torch.nn.functional.embedding_bag(indices, weight)
 
@@ -1431,7 +1415,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
       with et.assert_raises_message(
           RuntimeError,
           tpu="""embedding_bag_forward_only(): expected all dimensions of the offsets tensor to be static, got 1 dynamic dimension within shape [10 (up to 20)]""",
-          message_reviewed_by="wan",
       ):
         torch.nn.functional.embedding_bag(indices, weight, offsets)
 
@@ -1445,7 +1428,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
       with et.assert_raises_message(
           NotImplementedError,
           tpu="""glu(): expected dimension 1 of input to have a static size, got dynamic size""",
-          message_reviewed_by="aarfaian",
       ):
         # cpu() is needed because the error is triggered inside the op builder.
         torch.nn.functional.glu(x, dim=dim).cpu()
@@ -1537,7 +1519,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     with et.assert_raises_message(
         RuntimeError,
         tpu="""grid_sampler_2d(): expected the interpolation mode to be 0 (bilinear), 1 (nearest), or 2 (bicubic), got 3""",
-        message_reviewed_by="wan",
     ):
       interpolation_mode = 3
       torch.grid_sampler(inp, grid, interpolation_mode, 0, False)
@@ -1587,7 +1568,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
         RuntimeError,
         tpu="""elu_backward(): expected the grad output dtype to be floating"""
         f""" point, got {tpu_dtype_str}""",
-        message_reviewed_by="wan",
     ):
       torch.ops.aten.elu_backward(
           grad_output, alpha, scale, input_scale, is_result, self_or_result
@@ -1603,7 +1583,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     with et.assert_raises_message(
         RuntimeError,
         tpu="""fft_r2c(): expected all dimensions of the input tensor to be static, got 1 dynamic dimension within shape [10 (up to 20)]""",
-        message_reviewed_by="wan",
     ):
       torch.fft.rfftn(inp)
 
@@ -1722,7 +1701,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     with et.assert_raises_message(
         RuntimeError,
         tpu="""mark_dynamic(): cannot mark dimension 1 as dynamic, because dimension 0 is already marked as dynamic (multiple dynamic dimensions in one tensor is not yet supported)""",
-        message_reviewed_by="wan",
     ):
       # Try to mark dimension 1 as dynamic too.
       dynamism.mark_dynamic(inp, 1, 5, 20)
@@ -1734,14 +1712,12 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     with et.assert_raises_message(
         IndexError,
         tpu="""mark_dynamic(): expected dimension to be >= 0, got -1""",
-        message_reviewed_by="wan",
     ):
       dynamism.mark_dynamic(x, -1, 2, 10)
 
     with et.assert_raises_message(
         IndexError,
         tpu="""mark_dynamic(): expected dimension to be < 1 (the tensor's number of dimensions), got 3""",
-        message_reviewed_by="wan",
     ):
       dynamism.mark_dynamic(x, 3, 2, 10)
 
@@ -1752,7 +1728,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     with et.assert_raises_message(
         RuntimeError,
         tpu="""mark_dynamic(): expected lower_bound to be >= 2 as 0/1-sized dimensions are processed with particular assumptions (e.g. no-data, broadcastable), got 1""",
-        message_reviewed_by="wan",
     ):
       dynamism.mark_dynamic(x, 0, 1, 10)
 
@@ -1763,7 +1738,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     with et.assert_raises_message(
         RuntimeError,
         tpu="""mark_dynamic(): expected lower_bound <= upper_bound, got 2 vs 1""",
-        message_reviewed_by="wan",
     ):
       dynamism.mark_dynamic(x, 0, 2, 1)
 
@@ -1774,7 +1748,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     with et.assert_raises_message(
         IndexError,
         tpu="""mark_dynamic(): expected the size range [lower, upper] for dimension 0 to contain its size (10), got [2, 9]""",
-        message_reviewed_by="wan",
     ):
       dynamism.mark_dynamic(x, 0, 2, 9)
 
@@ -1839,7 +1812,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     with et.assert_raises_message(
         RuntimeError,
         tpu="""resize_(): non-contiguous memory formats are not yet supported""",
-        message_reviewed_by="wan",
     ):
       t.resize_((1, 2, 3, 4), memory_format=torch.channels_last)
 
@@ -1851,7 +1823,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     with et.assert_raises_message(
         NotImplementedError,
         tpu="""threshold_backward(): expected the input dtype to be non-bool and non-complex, got bool""",
-        message_reviewed_by="gunhyun",
     ):
       torch.ops.aten.threshold_backward(grad_output, self_tensor, 0.5)
 
@@ -1862,7 +1833,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     with et.assert_raises_message(
         RuntimeError,
         tpu="""set_dimension_logical_size(): expected a 0D tensor for size, got 1D tensor""",
-        message_reviewed_by="wan",
     ):
       torch.ops.tpu._set_dimension_logical_size(inp, 0, size)
 
@@ -1873,7 +1843,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     with et.assert_raises_message(
         RuntimeError,
         tpu="""set_dimension_logical_size(): expected an int32 tensor for size, got float32""",
-        message_reviewed_by="wan",
     ):
       torch.ops.tpu._set_dimension_logical_size(inp, 0, size)
 
@@ -2033,7 +2002,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     with et.assert_raises_message(
         RuntimeError,
         tpu="""view_as_complex(): float16 dtype is not yet supported""",
-        message_reviewed_by="wan",
     ):
       torch.view_as_complex(t1)
 
@@ -2415,7 +2383,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     with et.assert_raises_message(
         RuntimeError,
         tpu="""is_materializing(): tensor is not on the PrivateUse1 device""",
-        message_reviewed_by="adivinpatel",
     ):
       sync.is_materializing(x)
 
@@ -2426,7 +2393,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     with et.assert_raises_message(
         RuntimeError,
         tpu="""is_materialized(): tensor is not on the PrivateUse1 device""",
-        message_reviewed_by="adivinpatel",
     ):
       sync.is_materialized(x)
 
@@ -2436,7 +2402,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     with et.assert_raises_message(
         RuntimeError,
         tpu="""_get_computation_mlir(): the tensor list must not be empty""",
-        message_reviewed_by="wan",
     ):
       sync.computation_mlir()
 
@@ -2446,7 +2411,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     with et.assert_raises_message(
         RuntimeError,
         tpu="""_get_computation_graphviz(): the tensor list must not be empty""",
-        message_reviewed_by="wan",
     ):
       sync.computation_graphviz()
 
@@ -2458,7 +2422,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     with et.assert_raises_message(
         RuntimeError,
         tpu="""_get_computation_mlir(): the tensors must not be placeholders""",
-        message_reviewed_by="wan",
     ):
       sync.computation_mlir(x)
 
@@ -2470,7 +2433,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     with et.assert_raises_message(
         RuntimeError,
         tpu="""_get_computation_graphviz(): the tensors must not be placeholders""",
-        message_reviewed_by="wan",
     ):
       sync.computation_graphviz(x)
 
@@ -2658,7 +2620,6 @@ module {
     with et.assert_raises_message(
         RuntimeError,
         tpu="""weight_norm_interface(): expected weight magnitude (g) size 0 to match weight size 2 at dimension 0, got 3""",
-        message_reviewed_by="wan",
     ):
       torch._weight_norm(v, g, 0)
 
@@ -2677,7 +2638,6 @@ module {
     with et.assert_raises_message(
         RuntimeError,
         tpu="""weight_norm_interface(): expected the size of the weight magnitude (g) at dimension 0 to be 1, got 3""",
-        message_reviewed_by="wan",
     ):
       torch._weight_norm(v, g, 1)
 
@@ -2692,7 +2652,6 @@ module {
     with et.assert_raises_message(
         RuntimeError,
         tpu="""weight_norm_interface(): expected the weight magnitude (g) to be a scalar, a 1D tensor, or have the same rank as v, got a tensor of shape [2, 3]""",
-        message_reviewed_by="wan",
     ):
       torch._weight_norm(v, g, 0)
 
@@ -2706,7 +2665,6 @@ module {
     with et.assert_raises_message(
         RuntimeError,
         tpu="""weight_norm_interface(): expected the size of the weight magnitude (g) at dimension 1 to be 3, got 2""",
-        message_reviewed_by="wan",
     ):
       torch._weight_norm(v, g, 1)
 
@@ -2721,7 +2679,6 @@ module {
     with et.assert_raises_message(
         RuntimeError,
         tpu="""copy_(): expected all dimensions of the bitcast input tensor to be static, got 1 dynamic dimension within shape [dyn, 2]; calling ViewPrimitiveShlo() with input shape=[dyn, 2] and primitive=bitcast(from_type=int32, to_type=int64)""",
-        message_reviewed_by="wan",
     ):
       # clone to force the bitcast to happen on TPU and not on CPU
       out = inp.view(torch.int64).clone()
@@ -2865,7 +2822,6 @@ module {
     with et.assert_raises_message(
         RuntimeError,
         tpu="""fused_adamw_(): expected state_steps to have the same number of tensors as self, got 1""",
-        message_reviewed_by="gunhyun",
     ):
       torch.ops.aten._fused_adamw_.default(
           [p1, p2],
@@ -2896,7 +2852,6 @@ module {
     with et.assert_raises_message(
         RuntimeError,
         tpu="""fused_adam_(): expected state_steps to have the same number of tensors as self, got 1""",
-        message_reviewed_by="gunhyun",
     ):
       torch.ops.aten._fused_adam_.default(
           [p1, p2],
@@ -2934,7 +2889,6 @@ module {
     with et.assert_raises_message(
         RuntimeError,
         tpu="""fused_adagrad_(): expected state_steps to have size 2, got 1""",
-        message_reviewed_by="adivinpatel",
     ):
       torch.ops.aten._fused_adagrad_.default(
           p,
@@ -2969,7 +2923,6 @@ module {
     with et.assert_raises_message(
         RuntimeError,
         tpu="""fused_adagrad_(): expected state_steps to have size 2, got 1""",
-        message_reviewed_by="adivinpatel",
     ):
       torch.ops.aten._fused_adagrad_.tensor_lr(
           p,
@@ -3088,7 +3041,6 @@ module {
     with et.assert_raises_message(
         RuntimeError,
         tpu="""sparse_dense_matmul_grad_with_adam(): expected velocity tensor to be 1D or 2D, got rank 3""",
-        message_reviewed_by="songbaie",
     ):
       with execution_mode.set_eager_mode(
           EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING
@@ -3120,7 +3072,6 @@ module {
     with et.assert_raises_message(
         RuntimeError,
         tpu="""sparse_dense_matmul_grad_with_adam(): expected velocity tensor dimension 1 to be 8, got 9""",
-        message_reviewed_by="songbaie",
     ):
       with execution_mode.set_eager_mode(
           EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING
@@ -3714,7 +3665,6 @@ module {
     with et.assert_raises_message(
         NotImplementedError,
         tpu="""scaled_mm_v2(): expected contraction_dim to be [1, 0], got [0, 1]""",
-        message_reviewed_by="wan",
     ):
       torch._scaled_mm_v2(
           self_tpu,
@@ -3741,7 +3691,6 @@ module {
       with et.assert_raises_message(
           RuntimeError,
           tpu="""aten::sparse_mask(): sparse operators are not supported on TPU yet""",
-          message_reviewed_by="wan",
       ):
         torch.ops.aten.sparse_mask(dense, sp)
 
@@ -3749,7 +3698,6 @@ module {
       with et.assert_raises_message(
           RuntimeError,
           tpu="""add(): add(sparse, dense) is not supported; use add(dense, sparse) instead""",
-          message_reviewed_by="wan",
       ):
         torch.add(sp, dense, out=sp)
 
@@ -3757,7 +3705,6 @@ module {
       with et.assert_raises_message(
           RuntimeError,
           tpu="""mul(): only multiplication of a sparse tensor with a 0D scalar tensor is supported on TPU""",
-          message_reviewed_by="wan",
       ):
         torch.mul(sp, dense)
 
@@ -3765,7 +3712,6 @@ module {
       with et.assert_raises_message(
           RuntimeError,
           tpu="""add(): expected dense output tensor when adding dense and sparse tensors, got sparse""",
-          message_reviewed_by="wan",
       ):
         torch.add(dense, sp, out=sp)
 
@@ -3778,7 +3724,6 @@ module {
       with et.assert_raises_message(
           RuntimeError,
           tpu="""add(): expected 'self' and 'other' to have same size, got [2, 3] and [3, 3]""",
-          message_reviewed_by="wan",
       ):
         torch.add(dense, sp_wrong, out=dense)
 
@@ -3786,7 +3731,6 @@ module {
       with et.assert_raises_message(
           RuntimeError,
           tpu="""add(): expected sparse output tensor when adding two sparse tensors, got dense""",
-          message_reviewed_by="wan",
       ):
         torch.add(sp, sp, out=dense)
 
@@ -3794,7 +3738,6 @@ module {
       with et.assert_raises_message(
           RuntimeError,
           tpu="""add(): expected 'self' and 'other' to have same size, got [2, 3] and [3, 3]""",
-          message_reviewed_by="wan",
       ):
         torch.add(sp, sp_wrong, out=sp)
 
@@ -3807,7 +3750,6 @@ module {
       with et.assert_raises_message(
           RuntimeError,
           tpu="""add(): expected matching sparse_dim and dense_dim, got (2, 0) and (1, 1)""",
-          message_reviewed_by="wan",
       ):
         torch.add(sp, sp_1d, out=sp)
 
@@ -3822,7 +3764,6 @@ module {
       with et.assert_raises_message(
           RuntimeError,
           tpu="""add(): expected result dtype to be castable to 'out' dtype, got Float and Int""",
-          message_reviewed_by="wan",
       ):
         torch.add(dense, sp, out=dense_i32)
 
@@ -3830,7 +3771,6 @@ module {
       with et.assert_raises_message(
           RuntimeError,
           tpu="""add(): expected result dtype to be castable to 'out' dtype, got Float and Int""",
-          message_reviewed_by="wan",
       ):
         torch.add(sp, sp, out=sp_i32)
 
@@ -3838,7 +3778,6 @@ module {
       with et.assert_raises_message(
           RuntimeError,
           tpu="""clone(): unsupported memory format option for sparse tensor""",
-          message_reviewed_by="wan",
       ):
         sp.clone(memory_format=torch.channels_last)
 
@@ -3846,7 +3785,6 @@ module {
       with et.assert_raises_message(
           RuntimeError,
           tpu="""mul(): expected result dtype to be castable to 'out' dtype, got Float and Int""",
-          message_reviewed_by="wan",
       ):
         torch.mul(sp, torch.tensor(2.0, device="tpu"), out=sp_i32)
 
@@ -3860,7 +3798,6 @@ module {
       with et.assert_raises_message(
           RuntimeError,
           tpu="""neg(): expected non-bool tensor for negation, got Bool""",
-          message_reviewed_by="wan",
       ):
         torch.neg(sp_bool)
 
@@ -3868,7 +3805,6 @@ module {
       with et.assert_raises_message(
           RuntimeError,
           tpu="""neg(): expected result dtype to be castable to 'out' dtype, got Float and Int""",
-          message_reviewed_by="wan",
       ):
         torch.neg(sp, out=sp_i32)
 
@@ -3876,7 +3812,6 @@ module {
       with et.assert_raises_message(
           RuntimeError,
           tpu="""sub(): expected non-bool tensors for subtraction, got Bool and Bool""",
-          message_reviewed_by="wan",
       ):
         torch.sub(sp_bool, sp_bool)
 
@@ -3884,7 +3819,6 @@ module {
       with et.assert_raises_message(
           RuntimeError,
           tpu="""to_dense(): dtype argument is not supported by sparse_to_dense""",
-          message_reviewed_by="wan",
       ):
         sp.to_dense(dtype=torch.float64)
 
@@ -3892,7 +3826,6 @@ module {
       with et.assert_raises_message(
           RuntimeError,
           tpu="""copy_(): copy_() between dense and sparse tensors is not implemented""",
-          message_reviewed_by="wan",
       ):
         sp.copy_(dense)
 
@@ -3906,7 +3839,6 @@ module {
       with et.assert_raises_message(
           RuntimeError,
           tpu="""indices(): cannot get indices on an uncoalesced tensor, please call .coalesce() first""",
-          message_reviewed_by="wan",
       ):
         sp_uncoalesced.indices()
 
@@ -3914,7 +3846,6 @@ module {
       with et.assert_raises_message(
           RuntimeError,
           tpu="""values(): cannot get values on an uncoalesced tensor, please call .coalesce() first""",
-          message_reviewed_by="wan",
       ):
         sp_uncoalesced.values()
 
@@ -3922,7 +3853,6 @@ module {
       with et.assert_raises_message(
           RuntimeError,
           tpu="""embedding_sparse_backward(): scale_grad_by_freq not supported with sparse gradients""",
-          message_reviewed_by="wan",
       ):
         torch.ops.aten.embedding_sparse_backward(
             torch.ones(2, 3, device="tpu"),
@@ -3936,7 +3866,6 @@ module {
       with et.assert_raises_message(
           RuntimeError,
           tpu="""embedding_sparse_backward(): expected indices to be int64 or int32, got float32""",
-          message_reviewed_by="wan",
       ):
         torch.ops.aten.embedding_sparse_backward(
             torch.ones(2, 3, device="tpu"),
@@ -3950,7 +3879,6 @@ module {
       with et.assert_raises_message(
           RuntimeError,
           tpu="""embedding_bag_backward(): scale_grad_by_freq not supported with sparse gradients""",
-          message_reviewed_by="wan",
       ):
         empty = torch.empty(0, dtype=torch.long, device="tpu")
         torch.ops.aten._embedding_bag_backward(
@@ -3972,7 +3900,6 @@ module {
       with et.assert_raises_message(
           RuntimeError,
           tpu="""embedding_bag_backward(): expected indices to be int64 or int32, got float32""",
-          message_reviewed_by="wan",
       ):
         empty = torch.empty(0, dtype=torch.long, device="tpu")
         torch.ops.aten._embedding_bag_backward(
@@ -3994,7 +3921,6 @@ module {
       with et.assert_raises_message(
           RuntimeError,
           tpu="""embedding_bag_backward(): expected mode to be sum (0) or mean (1) for sparse embedding_bag_backward, got 2""",
-          message_reviewed_by="wan",
       ):
         empty = torch.empty(0, dtype=torch.long, device="tpu")
         torch.ops.aten._embedding_bag_backward(
@@ -4016,7 +3942,6 @@ module {
       with et.assert_raises_message(
           RuntimeError,
           tpu="""embedding_bag_backward(): per_sample_weights only supported for mode='sum'""",
-          message_reviewed_by="wan",
       ):
         empty = torch.empty(0, dtype=torch.long, device="tpu")
         torch.ops.aten._embedding_bag_backward(
@@ -4411,7 +4336,6 @@ module {
     with et.assert_raises_message(
         RuntimeError,
         tpu="""_set_window_num_stripes(): expected window_num_stripes to be > 0, got 0""",
-        message_reviewed_by="wan",
     ):
       torch.tpu.distributed.window_num_stripes = 0
 
@@ -4420,7 +4344,6 @@ module {
     with et.assert_raises_message(
         RuntimeError,
         tpu="""_set_window_num_stripes(): expected window_num_stripes to be > 0, got -1""",
-        message_reviewed_by="wan",
     ):
       torch.tpu.distributed.window_num_stripes = -1
 
@@ -4429,7 +4352,6 @@ module {
     with et.assert_raises_message(
         RuntimeError,
         tpu="""_set_window_stripe_chunk_mb(): expected window_stripe_chunk_mb to be > 0, got 0""",
-        message_reviewed_by="wan",
     ):
       torch.tpu.distributed.window_stripe_chunk_mb = 0
 
@@ -4438,7 +4360,6 @@ module {
     with et.assert_raises_message(
         RuntimeError,
         tpu="""_set_window_stripe_chunk_mb(): expected window_stripe_chunk_mb to be > 0, got -1""",
-        message_reviewed_by="wan",
     ):
       torch.tpu.distributed.window_stripe_chunk_mb = -1
 
@@ -5039,7 +4960,6 @@ module {
     with et.assert_raises_message(
         RuntimeError,
         tpu="""unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.""",
-        message_reviewed_by="adivinpatel",
     ):
       torch.nonzero(t, out=t)
 
@@ -5052,7 +4972,6 @@ module {
     with et.assert_raises_message(
         RuntimeError,
         tpu="""unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.""",
-        message_reviewed_by="adivinpatel",
     ):
       torch.nonzero_static(t, size=2, out=t)
 
@@ -5067,7 +4986,6 @@ class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):
     with et.assert_raises_message(
         RuntimeError,
         tpu="""throw_tterror_in_free_function(): throwing invalid argument""",
-        message_reviewed_by="wan",
     ):
       tt_testing.throw_tterror_in_free_function()
 
@@ -5077,7 +4995,6 @@ class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):
     with et.assert_raises_message(
         IndexError,
         tpu="""throw_tterror_index_error(): throwing index error""",
-        message_reviewed_by="wan",
     ):
       tt_testing.throw_tterror_index_error()
 
@@ -5090,7 +5007,6 @@ class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):
     with et.assert_raises_message(
         RuntimeError,
         tpu="""TestErrorClass.throw_tterror_in_member_function(): class throwing invalid argument""",
-        message_reviewed_by="wan",
     ):
       obj.throw_tterror_in_member_function()
 
