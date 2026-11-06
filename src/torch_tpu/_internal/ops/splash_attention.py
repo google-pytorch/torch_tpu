@@ -70,6 +70,77 @@ def _default_block_size(
   return _MIN_BLOCK_SIZE
 
 
+def _resolve_block_size(
+    block_size: int | None,
+    limit: int,
+    param_name: str = "seq_len",
+) -> int:
+  """Resolves an optional block size against a sequence or tile limit.
+
+  Args:
+    block_size: Requested block size, or None to select the default tile.
+    limit: Upper bound that must be a positive multiple of 128.
+    param_name: Parameter name used in validation error messages.
+
+  Returns:
+    Resolved block size clamped to ``limit``.
+
+  Raises:
+    ValueError: If ``limit`` is not a positive multiple of 128.
+  """
+  if limit < _MIN_BLOCK_SIZE or limit % _MIN_BLOCK_SIZE != 0:
+    raise ValueError(
+        f"{param_name} ({limit}) must be a positive multiple of"
+        f" {_MIN_BLOCK_SIZE}"
+    )
+  if block_size is None:
+    return _default_block_size(limit, param_name=param_name)
+  return min(block_size, limit)
+
+
+def _normalize_segment_ids(
+    segment_ids: torch.Tensor | None,
+    batch_size: int,
+    seq_len: int,
+    kv_seq_len: int,
+) -> torch.Tensor | None:
+  """Validates packed-sequence segment IDs and normalizes dtype to int32.
+
+  Args:
+    segment_ids: Optional segment IDs of shape ``(batch, seq_len)``, or None.
+    batch_size: Batch dimension of ``q``.
+    seq_len: Query sequence length.
+    kv_seq_len: Key/value sequence length.
+
+  Returns:
+    Normalized ``torch.int32`` segment IDs tensor, or None when omitted.
+
+  Raises:
+    ValueError: If ``segment_ids`` is passed with ``seq_len != kv_seq_len``,
+      or has an invalid shape or dtype.
+  """
+  if segment_ids is None:
+    return None
+  if seq_len != kv_seq_len:
+    raise ValueError(
+        "segment_ids requires matching query and key/value sequence lengths, "
+        f"got seq_len={seq_len} and kv_seq_len={kv_seq_len}"
+    )
+  if segment_ids.shape != (batch_size, seq_len):
+    raise ValueError(
+        "segment_ids must have shape (batch, seq_len) = "
+        f"({batch_size}, {seq_len}), got {tuple(segment_ids.shape)}"
+    )
+  if segment_ids.dtype not in (torch.int32, torch.int64):
+    raise ValueError(
+        "segment_ids must have integer dtype (torch.int32 or torch.int64), "
+        f"got {segment_ids.dtype}"
+    )
+  if segment_ids.dtype != torch.int32:
+    return segment_ids.to(torch.int32)
+  return segment_ids
+
+
 def _to_numpy_mask_info(
     mask_info: splash_attention_mask_info.MaskInfo,
 ) -> splash_attention_mask_info.MaskInfo:
@@ -180,11 +251,12 @@ def _make_splash_attention_fn(
     k_layout: str = "HEAD_DIM_MINOR",
     v_layout: str = "HEAD_DIM_MINOR",
     use_vmap_bwd: bool = True,
+    kv_seq_len: int | None = None,
 ):
   """Create JAX splash attention forward and backward functions.
 
   Args:
-    seq_len: Sequence length.
+    seq_len: Query sequence length.
     n_heads: Number of query heads.
     n_kv_heads: Number of key/value heads.
     scale: Scale factor for attention logits, or None.
@@ -203,6 +275,7 @@ def _make_splash_attention_fn(
     k_layout: Key tensor layout.
     v_layout: Value tensor layout.
     use_vmap_bwd: Whether to vmap backward pass.
+    kv_seq_len: Key/value sequence length, or None to match ``seq_len``.
 
   Returns:
     (splash_fn, splash_bwd_fn): forward function taking
@@ -242,7 +315,8 @@ def _make_splash_attention_fn(
       v_layout=_get_layout(v_layout),
   )
 
-  mask_shape = (seq_len, seq_len)
+  resolved_kv_seq_len = seq_len if kv_seq_len is None else kv_seq_len
+  mask_shape = (seq_len, resolved_kv_seq_len)
   if local_window_size is not None:
     # Sliding-window causal: each q attends to the previous local_window_size
     # keys plus itself. window_size=(left, right); right=0 ⇒ no future tokens
@@ -457,6 +531,8 @@ _splash_op_name_cache = {}
 @torch.compiler.assume_constant_result
 def _get_splash_op_names(**splash_kwargs):
   """Create and cache PyTorch forward/backward functions for splash attention."""
+  if splash_kwargs.get("kv_seq_len") is None:
+    splash_kwargs["kv_seq_len"] = splash_kwargs["seq_len"]
   cache_key = tuple(sorted(splash_kwargs.items()))
   if cache_key in _splash_op_name_cache:
     return _splash_op_name_cache[cache_key]
@@ -598,19 +674,20 @@ def splash_sdpa(
 
   Args:
     q: Query tensor of shape ``(batch, n_heads, seq_len, head_dim)``.
-    k: Key tensor of shape ``(batch, n_kv_heads, seq_len, head_dim)``.
-    v: Value tensor of shape ``(batch, n_kv_heads, seq_len, head_dim)``.
+    k: Key tensor of shape ``(batch, n_kv_heads, kv_seq_len, head_dim)``.
+    v: Value tensor of shape ``(batch, n_kv_heads, kv_seq_len, head_dim)``.
     scale: Scale factor for attention logits.
     is_causal: Whether to apply causal mask.
     local_window_size: Size of sliding window attention mask, or None.
     segment_ids: Optional integer tensor of shape ``(batch, seq_len)`` with
-      document/segment IDs for packed sequences. Tokens only attend to tokens
-      with the same segment ID.
+      document/segment IDs for packed self-attention sequences
+      (``seq_len == kv_seq_len``). Tokens only attend to tokens with the same
+      segment ID.
     enable_gqa: Kept for API compatibility.
     block_q: Block size for Q. Defaults to the largest multiple of 128 (<= 512)
       that divides ``seq_len``.
     block_kv: Block size for KV. Defaults to the largest multiple of 128 (<=
-      512) that divides ``seq_len``.
+      512) that divides ``kv_seq_len``.
     block_dkv: Shorthand that sets both ``block_q_dkv`` and ``block_kv_dkv``
       when they are not explicitly provided. Smaller values (e.g. 256) reduce
       the XLA program size (enabling larger batch sizes) at a small efficiency
@@ -620,7 +697,7 @@ def splash_sdpa(
     block_q_dkv: Block size for Q in DKV. Defaults to the largest multiple of
       128 (<= 512) that divides ``seq_len``.
     block_kv_dkv: Block size for KV in DKV. Defaults to the largest multiple of
-      128 (<= 512) that divides ``seq_len``.
+      128 (<= 512) that divides ``kv_seq_len``.
     block_kv_dkv_compute: Block size for KV compute in DKV. Defaults to the
       largest multiple of 128 (<= 512) that divides ``block_kv_dkv``.
     block_q_dq: Block size for Q in DQ (when ``use_fused_bwd_kernel=False``).
@@ -635,7 +712,18 @@ def splash_sdpa(
     Output tensor of scaled dot-product attention.
   """
   batch_size, n_heads, seq_len, _ = q.shape
-  n_kv_heads = k.shape[1]
+  _, n_kv_heads, kv_seq_len, _ = k.shape
+
+  if k.shape[0] != batch_size or v.shape[:3] != (
+      batch_size,
+      n_kv_heads,
+      kv_seq_len,
+  ):
+    raise ValueError(
+        "Expected k and v leading dimensions "
+        f"({batch_size}, {n_kv_heads}, {kv_seq_len}), got "
+        f"k.shape={tuple(k.shape)} and v.shape={tuple(v.shape)}"
+    )
 
   if enable_gqa != (n_heads != n_kv_heads):
     raise ValueError(
@@ -647,19 +735,9 @@ def splash_sdpa(
         f"n_heads ({n_heads}) must be divisible by n_kv_heads ({n_kv_heads})"
     )
 
-  if segment_ids is not None:
-    if segment_ids.shape != (batch_size, seq_len):
-      raise ValueError(
-          "segment_ids must have shape (batch, seq_len) = "
-          f"({batch_size}, {seq_len}), got {tuple(segment_ids.shape)}"
-      )
-    if segment_ids.dtype not in (torch.int32, torch.int64):
-      raise ValueError(
-          "segment_ids must have integer dtype (torch.int32 or torch.int64), "
-          f"got {segment_ids.dtype}"
-      )
-    if segment_ids.dtype != torch.int32:
-      segment_ids = segment_ids.to(torch.int32)
+  segment_ids = _normalize_segment_ids(
+      segment_ids, batch_size, seq_len, kv_seq_len
+  )
 
   if block_dkv is not None:
     if block_q_dkv is None:
@@ -667,38 +745,26 @@ def splash_sdpa(
     if block_kv_dkv is None:
       block_kv_dkv = block_dkv
 
-  block_q = (
-      _default_block_size(seq_len) if block_q is None else min(block_q, seq_len)
+  block_q = _resolve_block_size(block_q, seq_len)
+  block_kv = _resolve_block_size(
+      block_kv, kv_seq_len, param_name="kv_seq_len"
   )
-  block_kv = (
-      _default_block_size(seq_len)
-      if block_kv is None
-      else min(block_kv, seq_len)
+  block_q_dkv = _resolve_block_size(block_q_dkv, seq_len)
+  block_kv_dkv = _resolve_block_size(
+      block_kv_dkv, kv_seq_len, param_name="kv_seq_len"
   )
-  block_q_dkv = (
-      _default_block_size(seq_len)
-      if block_q_dkv is None
-      else min(block_q_dkv, seq_len)
+  block_kv_compute = _resolve_block_size(
+      block_kv_compute, block_kv, param_name="block_kv"
   )
-  block_kv_dkv = (
-      _default_block_size(seq_len)
-      if block_kv_dkv is None
-      else min(block_kv_dkv, seq_len)
-  )
-  block_kv_compute = (
-      _default_block_size(block_kv, param_name="block_kv")
-      if block_kv_compute is None
-      else min(block_kv_compute, block_kv)
-  )
-  block_kv_dkv_compute = (
-      _default_block_size(block_kv_dkv, param_name="block_kv_dkv")
-      if block_kv_dkv_compute is None
-      else min(block_kv_dkv_compute, block_kv_dkv)
+  block_kv_dkv_compute = _resolve_block_size(
+      block_kv_dkv_compute, block_kv_dkv, param_name="block_kv_dkv"
   )
 
   if not use_fused_bwd_kernel:
     block_q_dq = block_q if block_q_dq is None else min(block_q_dq, seq_len)
-    block_kv_dq = block_kv if block_kv_dq is None else min(block_kv_dq, seq_len)
+    block_kv_dq = (
+        block_kv if block_kv_dq is None else min(block_kv_dq, kv_seq_len)
+    )
 
   if n_kv_heads == 1:
     # For MQA (1 kv head) the splash attention kernel expects the kv
@@ -708,6 +774,7 @@ def splash_sdpa(
 
   splash_args = dict(
       seq_len=seq_len,
+      kv_seq_len=kv_seq_len,
       n_heads=n_heads,
       n_kv_heads=n_kv_heads,
       scale=scale,
