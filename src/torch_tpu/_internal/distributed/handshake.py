@@ -152,6 +152,13 @@ class ProcessGroupCollectiveCount:
         and self.num_collectives_in_graph == other.num_collectives_in_graph
     )
 
+  def __repr__(self) -> str:
+    return (
+        "ProcessGroupCollectiveCount("
+        f"collective_count_before={self.collective_count_before!r}, "
+        f"num_collectives_in_graph={self.num_collectives_in_graph!r})"
+    )
+
 
 ProcessGroupId = process_group_utils.ProcessGroupId
 
@@ -335,6 +342,9 @@ class RankCollectiveCounts:
       return False
     return self._pg_to_count == other._pg_to_count
 
+  def __repr__(self) -> str:
+    return f"RankCollectiveCounts(pg_to_count={self._pg_to_count!r})"
+
   def collective_count(self, key: ProcessGroupId) -> int:
     """Returns total collective count for the given process group.
 
@@ -505,6 +515,14 @@ class CollectiveHandshakeRequest:
         rank=obj["rank"],
     )
 
+  def __repr__(self) -> str:
+    return (
+        "CollectiveHandshakeRequest("
+        f"pg_collective_counts={self.pg_collective_counts!r}, "
+        f"executable_fingerprint={self.executable_fingerprint!r}, "
+        f"rank={self.rank!r})"
+    )
+
 
 class CollectiveHandshakeResponse:
   """Response payload for collective handshake consensus.
@@ -518,6 +536,9 @@ class CollectiveHandshakeResponse:
 
   def __init__(self, success: bool) -> None:
     self.success = success
+
+  def __repr__(self) -> str:
+    return f"CollectiveHandshakeResponse(success={self.success!r})"
 
   def to_bytes(self) -> bytes:
     """Serializes CollectiveHandshakeResponse to bytes.
