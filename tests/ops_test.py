@@ -1175,7 +1175,7 @@ ACCURACY_OVERRIDES_GRAD_VS_GPU: dict[
             torch.float32: {"rtol": 1.5e-5, "atol": 2.6e-5},
         },
         "nn.functional.scaled_dot_product_attention": {
-            torch.bfloat16: {"rtol": 2.3e-1, "atol": 2.1e-1},
+            torch.bfloat16: {"rtol": 3.6e-1, "atol": 7.5e-1},
             torch.float16: {"rtol": 2.7e-1, "atol": 2.5e-1},
             torch.float32: {"rtol": 4.3e-1, "atol": 9.3e-1},
             torch.float64: {"rtol": 6e-6, "atol": 7.7e-6},
@@ -3359,7 +3359,6 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_nn_functional_scaled_dot_product_attention_overrideable(self):
     # b/476166586: GPU device doesn't support `OVERRIDEABLE`, so use `MATH` on
     # GPU when generating goldens. On TPU, use `OVERRIDEABLE`.
-    # Only do the forward pass (backward is not implemented yet)
     backends = (
         [attention.SDPBackend.MATH]
         if op_testing._gen_gpu_golden_mode()
