@@ -54,11 +54,13 @@ def global_compile_plus_one(x):
   return x + 1
 
 
-def get_mock_lookup_backend():
-  return absltest.mock.patch(
-      'torch._dynamo.backends.registry.lookup_backend',
-      wraps=torch._dynamo.backends.registry.lookup_backend,
-  )
+# Collects `TpuCompileDebug`s of `global_compile_plus_one_with_debug_callback`.
+_GLOBAL_COMPILE_DEBUGS: list[TpuCompileDebug] = []
+
+
+@torch.compile(options={'debug_callback': _GLOBAL_COMPILE_DEBUGS.append})
+def global_compile_plus_one_with_debug_callback(x):
+  return x + 1
 
 
 def eager_mode_compile_fx_graph():
@@ -370,42 +372,64 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
       )
 
   def test_compile_backend_defaults_to_tpu(self):
-    with get_mock_lookup_backend() as mock_lookup_backend:
-      x = torch.ones(10, device=torch.device('tpu'))
-      torch.compile(lambda arg: arg + 1)(x)
+    x = torch.ones(10, device=torch.device('tpu'))
+    debugs = []
 
-      mock_lookup_backend.assert_called_with('tpu')
+    out = torch.compile(
+        lambda arg: arg + 1, options={'debug_callback': debugs.append}
+    )(x)
+
+    # Only the TPU backend understands the `debug_callback` option.
+    self.assertLen(debugs, 1)
+    self.assertEqual(out.device.type, 'tpu')
+    utils.assert_close(out.cpu(), torch.full((10,), 2.0))
 
   def test_global_compile_decorator_backend_defaults_to_tpu(self):
-    with get_mock_lookup_backend() as mock_lookup_backend:
-      x = torch.ones(10, device=torch.device('tpu'))
-      global_compile_plus_one(x)
+    x = torch.ones(10, device=torch.device('tpu'))
+    del _GLOBAL_COMPILE_DEBUGS[:]
 
-      mock_lookup_backend.assert_called_with('tpu')
+    out = global_compile_plus_one_with_debug_callback(x)
+
+    self.assertLen(_GLOBAL_COMPILE_DEBUGS, 1)
+    self.assertEqual(out.device.type, 'tpu')
+    utils.assert_close(out.cpu(), torch.full((10,), 2.0))
 
   def test_compile_backend_defaults_to_torch_default_if_no_tpu_tensor(self):
-    with get_mock_lookup_backend() as mock_lookup_backend:
-      x = torch.ones(10, device=torch.device('cpu'))
-      torch.compile(lambda arg: arg + 1)(x)
+    x = torch.ones(10, device=torch.device('cpu'))
 
-      mock_lookup_backend.assert_called_with(_backend.get_default_cpu_backend())
+    with utils.count_tpu_compilations() as compilations:
+      out = torch.compile(lambda arg: arg + 1)(x)
+
+    self.assertEqual(compilations.count, 0)
+    self.assertEqual(out.device.type, 'cpu')
+    utils.assert_close(out, torch.full((10,), 2.0))
 
   def test_global_compile_decorator_backend_defaults_to_torch_default_if_no_tpu_tensor(
       self,
   ):
-    with get_mock_lookup_backend() as mock_lookup_backend:
-      x = torch.ones(10, device=torch.device('cpu'))
-      global_compile_plus_one(x)
+    x = torch.ones(10, device=torch.device('cpu'))
 
-      mock_lookup_backend.assert_called_with(_backend.get_default_cpu_backend())
+    with utils.count_tpu_compilations() as compilations:
+      out = global_compile_plus_one(x)
+
+    self.assertEqual(compilations.count, 0)
+    self.assertEqual(out.device.type, 'cpu')
+    utils.assert_close(out, torch.full((10,), 2.0))
 
   def test_compile_explicit_backend_is_respected(self):
+    x = torch.ones(10, device=torch.device('tpu'))
+    graphs = []
 
-    with get_mock_lookup_backend() as mock_lookup_backend:
-      x = torch.ones(10)
-      torch.compile(lambda arg: arg + 1, backend='aot_eager')(x)
+    def recording_backend(gm, example_inputs):
+      del example_inputs  # Unused.
+      graphs.append(gm)
+      return gm.forward
 
-      mock_lookup_backend.assert_called_with('aot_eager')
+    out = torch.compile(lambda arg: arg + 1, backend=recording_backend)(x)
+
+    # A TPU input would select the TPU backend if `backend` were ignored.
+    self.assertLen(graphs, 1)
+    utils.assert_close(out.cpu(), torch.full((10,), 2.0))
 
   @parameterized.named_parameters(
       dict(
