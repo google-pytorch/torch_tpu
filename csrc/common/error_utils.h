@@ -103,17 +103,22 @@ inline constexpr absl::StatusCode kPythonRuntimeError =
 
 }  // namespace error
 
-// Enables error message format checks for internal builds.
+// Returns true if error message format checks are enabled.
 //
 // When this is true, TorchTPU will hard crash if any error is raised with an
 // error message that doesn't conform to the TorchTPU error handling guidelines.
 // This should help us maintain the quality and consistency of error messages in
 // the project.
 //
-// This is a constexpr bool rather than a preprocessor macro so that the error
-// format check code is always compiled (and thus kept compilable), even in
-// builds where it's disabled (e.g. the OSS build).
-inline constexpr bool kCheckErrorFormat = TT_IS_INTERNAL_TORCH_TPU;
+// The checks are always enabled in internal builds. In other builds (e.g. the
+// OSS build), they are enabled iff the TORCH_TPU_INTERNAL_CHECK_ERROR_FORMAT
+// env var is set to true (e.g. by error coverage runs and error format unit
+// tests). This function is memoized, so calling it is cheap and will always
+// return the same value even if the env var is changed.
+//
+// The error format check code is always compiled (and thus kept compilable),
+// even in builds where it's disabled.
+[[nodiscard]] bool ShouldCheckErrorFormat();
 
 // Sentinel string for XLA compiler errors.
 //

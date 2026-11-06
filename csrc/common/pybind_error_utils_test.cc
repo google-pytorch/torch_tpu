@@ -92,8 +92,9 @@ TEST(PyBindErrorUtilsInternalTest, ImplMemberFunctionLambdaThrowsC10Error) {
 // Test that the error message checks are run on the TorchTPU C++ functions
 // bound to Python functions.
 //
-// Since error message style checks are only enabled on internal builds, this
-// test is skipped when they are disabled.
+// Since error message style checks are only enabled in internal builds or when
+// TORCH_TPU_INTERNAL_CHECK_ERROR_FORMAT is set, this test is skipped when they
+// are disabled.
 void ThrowInvalidMessage() {
   // "Invalid message" starts with uppercase, which is not allowed by
   // guidelines.
@@ -101,7 +102,7 @@ void ThrowInvalidMessage() {
 }
 
 TEST(PyBindErrorUtilsInternalDeathTest, ImplThrowsInvalidMessageCrashes) {
-  if (!kCheckErrorFormat) {
+  if (!ShouldCheckErrorFormat()) {
     GTEST_SKIP() << "Error format checks are disabled in this build.";
   }
   EXPECT_DEATH(internal::ErrorHandlingHelper<void()>::impl("test_prefix",

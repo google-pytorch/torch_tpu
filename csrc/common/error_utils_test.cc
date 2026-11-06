@@ -1466,13 +1466,20 @@ TEST(VfioDeviceCollisionTest, AdaptOmitsDevicePathWhenUnparseable) {
                     HasSubstr("TPU_VISIBLE_DEVICES"), Not(HasSubstr("/dev/"))));
 }
 
+TEST(ShouldCheckErrorFormat, ReturnsTrue) {
+  // The check is always enabled in the internal build, and the test target
+  // enables it in other builds via TORCH_TPU_INTERNAL_CHECK_ERROR_FORMAT=1.
+  EXPECT_TRUE(ShouldCheckErrorFormat());
+}
+
 // Fixture for the error message format checks. Skips the tests if the checks
-// are disabled in this build (e.g. the OSS build). The tests are still compiled
-// so that they are kept compilable.
+// are disabled (e.g. in the OSS build without
+// TORCH_TPU_INTERNAL_CHECK_ERROR_FORMAT=1). The tests are still compiled so
+// that they are kept compilable.
 class ErrorMessageGuidelinesTest : public testing::Test {
  protected:
   void SetUp() override {
-    if (!kCheckErrorFormat) {
+    if (!ShouldCheckErrorFormat()) {
       GTEST_SKIP() << "Error format checks are disabled in this build.";
     }
   }

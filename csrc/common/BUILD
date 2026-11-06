@@ -306,6 +306,9 @@ torch_tpu_cc_library(
 torch_tpu_cc_test(
     name = "error_utils_test",
     srcs = ["error_utils_test.cc"],
+    # Enables the error message format checks so that they're tested in all
+    # builds (they are always enabled in the internal build).
+    env = {"TORCH_TPU_INTERNAL_CHECK_ERROR_FORMAT": "1"},
     deps = [
         ":cache_key",
         ":env_vars",
@@ -332,6 +335,9 @@ torch_tpu_cc_test(
 torch_tpu_cc_test(
     name = "pybind_error_utils_test",
     srcs = ["pybind_error_utils_test.cc"],
+    # Enables the error message format checks so that they're tested in all
+    # builds (they are always enabled in the internal build).
+    env = {"TORCH_TPU_INTERNAL_CHECK_ERROR_FORMAT": "1"},
     tags = [
         "nodbg",
     ],

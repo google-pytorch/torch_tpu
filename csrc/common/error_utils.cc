@@ -662,6 +662,14 @@ bool GetEnableDebugChecks() {
   return GetEagerMode() == EagerMode::kDeferNeverAndLaunchBlocking;
 }
 
+bool ShouldCheckErrorFormat() {
+  if constexpr (TT_IS_INTERNAL_TORCH_TPU) {
+    return true;
+  }
+  return GetBooleanEnvOnce<kTorchTpuInternalCheckErrorFormatEnvVar>().value_or(
+      false);
+}
+
 absl::StatusOr<int64_t> SafeAdd(const int64_t x, const int64_t y) {
   if (y == 0) return x;
 
@@ -1017,7 +1025,7 @@ TtError::TtError(absl::Status status, c10::SourceLocation thrown_from)
 }
 
 void TranslateToC10ErrorAndThrow(const TtError& e) {
-  if constexpr (kCheckErrorFormat) {
+  if (ShouldCheckErrorFormat()) {
     // Check that the error message format follows the TorchTPU guidelines
     // (go/tt-error-guide).
     ErrorFormatChecker().Check(e);

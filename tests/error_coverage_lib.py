@@ -53,11 +53,15 @@ COV_TEST_BINARIES = (
 # The environment variables for running the error tests in coverage mode. They
 # ensure the needed info in stdout while skipping addr2line symbolization
 # (coverage only parses the `C++ error trace` and `Exception raised from`
-# header, not the symbolized C++ call stack frames).
+# header, not the symbolized C++ call stack frames), and enable the error
+# message format checks in all builds (including OSS), so that error messages
+# that don't follow the error message guidelines crash the error tests. Keep in
+# sync with `TEST_COV_ENV` in build_files/build_defs.bzl.
 COV_ENV = {
     "TORCH_DISABLE_ADDR2LINE": "1",
     "TORCH_SHOW_CPP_STACKTRACES": "1",
     "TORCH_TPU_ENABLE_DEBUG_CHECKS": "1",
+    "TORCH_TPU_INTERNAL_CHECK_ERROR_FORMAT": "1",
 }
 
 # The environment variables that blaze/bazel set for the test that runs the

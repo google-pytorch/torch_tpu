@@ -235,6 +235,7 @@ TORCH_TPU_BASE_PORT: {category: Environment Variable, defined_in: csrc/common/en
 TORCH_TPU_DEFER_AND_FUSE: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Experimental}
 TORCH_TPU_DEVICES_PER_HOST: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Experimental}
 TORCH_TPU_ENABLE_DEBUG_CHECKS: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Experimental}
+TORCH_TPU_INTERNAL_CHECK_ERROR_FORMAT: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Internal}
 TORCH_TPU_INTERNAL_DETECT_REPEATED_OPS: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Internal}
 TORCH_TPU_INTERNAL_DISABLE_INPLACE_BUFFER_DONATION: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Internal}
 TORCH_TPU_INTERNAL_DUMP_MLIR_PASSES_TO: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Internal}

@@ -222,11 +222,12 @@ absl::Status InitializeDistributedEnvironment(
     const DistributedWorkerConfiguration& config) {
   if (config.sb_addrs.empty()) {
     return TT_ERROR(error::kFailedPrecondition)
-           << kTorchTpuSlicebuilderAddressesEnvVar << " is empty.";
+           << "the " << kTorchTpuSlicebuilderAddressesEnvVar
+           << " environment variable must not be empty";
   }
   if (config.rank < 0) {
     return TT_ERROR(error::kFailedPrecondition)
-           << "RANK " << config.rank << " is out of bounds (negative)";
+           << "expected RANK to be >= 0, got " << config.rank;
   }
   std::vector<std::string> addresses = absl::StrSplit(config.sb_addrs, ',');
   const int slice_rank = config.rank % static_cast<int>(addresses.size());

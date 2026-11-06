@@ -124,6 +124,13 @@ inline constexpr char kTorchTpuEnableDebugChecksEnvVar[] =
 // Specifies the fixed port number for the handshake server.
 inline constexpr char kTorchTpuHandshakePortEnvVar[] =
     "TORCH_TPU_INTERNAL_HANDSHAKE_PORT";
+// If set to "1" or "true", TorchTPU crashes when an error is raised with an
+// error message that doesn't conform to the TorchTPU error message guidelines.
+// This is always enabled in internal builds; in other builds it's meant to be
+// set only by error coverage runs and error format unit tests. Default is
+// "false".
+inline constexpr char kTorchTpuInternalCheckErrorFormatEnvVar[] =
+    "TORCH_TPU_INTERNAL_CHECK_ERROR_FORMAT";
 // Specifies the repeated op detection mode. If not set, "safe" mode is used.
 // Supported modes:
 // - "safe": Uses GraphSplitMode::kSplitGraph when a repeated sequence is
@@ -320,6 +327,7 @@ inline constexpr auto kEnvVarToStage =
         {kTorchTpuDevicesPerHostEnvVar, SymbolStage::Experimental()},
         {kTorchTpuEnableDebugChecksEnvVar, SymbolStage::Experimental()},
         {kTorchTpuHandshakePortEnvVar, SymbolStage::InternalApi()},
+        {kTorchTpuInternalCheckErrorFormatEnvVar, SymbolStage::InternalApi()},
         {kTorchTpuInternalDetectRepeatedOpsEnvVar, SymbolStage::InternalApi()},
         {kTorchTpuInternalDisableInplaceBufferDonationEnvVar,
          SymbolStage::InternalApi()},
