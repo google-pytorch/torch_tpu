@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <deque>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -31,6 +32,29 @@
 #include "absl/time/time.h"
 
 namespace torch_tpu {
+
+// The type of the kernel that serves an eager batch.
+enum class KernelType {
+  // A static executable, compiled for the batch's shapes.
+  kStatic,
+  // A bounded dynamic executable, compiled for the shapes' upper bounds and run
+  // with dynamic kernel adapters.
+  kBoundedDynamic,
+  // A precompiled kernel from `UnboundedDynamicKernelRegistry`.
+  kUnboundedDynamic,
+};
+
+constexpr std::string_view ToString(KernelType type) {
+  switch (type) {
+    case KernelType::kStatic:
+      return "static";
+    case KernelType::kBoundedDynamic:
+      return "bounded_dynamic";
+    case KernelType::kUnboundedDynamic:
+      return "unbounded_dynamic";
+  }
+  return "unknown";
+}
 
 // Represents the reason for an op materialization event.
 enum class MaterializationReason {
@@ -101,6 +125,8 @@ struct StructuredLogEvent {
   std::string chromium_payload = "";
   // True if compilation failed.
   bool compile_failed = false;
+  // The type of the kernel that serves the batch, unless compilation failed.
+  std::optional<KernelType> kernel_type;
 };
 
 // A global thread-safe buffer for collecting structured log events.

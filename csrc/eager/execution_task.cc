@@ -183,6 +183,9 @@ void FinalizePushTraceEvent(std::unique_ptr<StructuredLogEvent> event,
                             std::string aten_graph_payload) {
   event->duration = absl::Now() - event->timestamp;
   event->cache_hit = compile_ok && trace_info.cache_hit;
+  if (compile_ok) {
+    event->kernel_type = trace_info.kernel_type;
+  }
   if (!event->cache_hit) {
     event->aten_graph_payload = std::move(aten_graph_payload);
     event->mlir_payload = std::move(trace_info.mlir_text);
@@ -195,7 +198,12 @@ void FinalizePushTraceEvent(std::unique_ptr<StructuredLogEvent> event,
       R"(,"cat":"torchtpu_eager","pid":)", getpid(),
       R"(,"tid":0,"args":{"cache_hit":)", event->cache_hit ? "true" : "false",
       R"(,"compile_failed":)", event->compile_failed ? "true" : "false",
-      R"(,"reason":")", absl::CEscape(ToString(event->reason)), R"("}})");
+      R"(,"reason":")", absl::CEscape(ToString(event->reason)), R"(")",
+      event->kernel_type.has_value()
+          ? absl::StrCat(R"(,"kernel_type":")", ToString(*event->kernel_type),
+                         R"(")")
+          : "",
+      R"(}})");
   StructuredLogBuffer::GetInstance().Push(std::move(event));
 }
 
@@ -222,6 +230,17 @@ struct CompiledTraversal {
   CompilationCacheKey compilation_cache_key;
   CompiledKernel compiled_kernel;
 };
+
+// Returns the type of `compiled_kernel`, as served by the compilation cache.
+KernelType GetKernelType(const CompiledKernel& compiled_kernel) {
+  if (compiled_kernel.unbounded_dynamic_kernel != nullptr) {
+    return KernelType::kUnboundedDynamic;
+  }
+  if (compiled_kernel.dynamic_kernel_adapter.has_value()) {
+    return KernelType::kBoundedDynamic;
+  }
+  return KernelType::kStatic;
+}
 
 absl::StatusOr<CompiledTraversal> VerifyAndCompileTraversal(
     Traversal& traversal, mlir::MLIRContext& mlir_context,
@@ -303,6 +322,8 @@ absl::StatusOr<ExecutionTask> ExecutionTask::FromTraversal(
   if (out_trace_info != nullptr) {
     out_trace_info->cache_hit =
         compiled_traversal_or->compiled_kernel.cache_hit;
+    out_trace_info->kernel_type =
+        GetKernelType(compiled_traversal_or->compiled_kernel);
   }
 
   // Mark all outputs of the split as scheduled/materialized.
