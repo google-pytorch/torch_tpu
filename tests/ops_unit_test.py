@@ -26154,6 +26154,133 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
 
         self.assert_close_tpu_vs_cpu(compute)
 
+  # TPU X64 (f32, f32) float64 emulation does not preserve -0.0 signbits.
+  @parameterized.parameters(torch.float32, torch.bfloat16, torch.float16)
+  def test_nan_to_num_signed_zero_cache_keys(self, dtype: torch.dtype):
+    cpu_x = torch.tensor(
+        [float("nan"), float("inf"), float("-inf"), 0.0, -0.0, 1.5],
+        dtype=dtype,
+    )
+    tpu_x = cpu_x.to("tpu")
+    replacement_cases = [
+        {"nan": 0.0, "posinf": 0.0, "neginf": 0.0},
+        {"nan": -0.0, "posinf": -0.0, "neginf": -0.0},
+        {"nan": 0.0, "posinf": 0.0, "neginf": 0.0},
+        {"nan": -0.0, "posinf": 0.0, "neginf": -0.0},
+        {"nan": 0.0, "posinf": -0.0, "neginf": 0.0},
+        {},
+        {"nan": -0.0},
+        {"posinf": -0.0},
+        {"neginf": -0.0},
+    ]
+    for kwargs in replacement_cases:
+      with self.subTest(kwargs=kwargs):
+        expected = torch.nan_to_num(cpu_x, **kwargs)
+        actual = torch.nan_to_num(tpu_x, **kwargs).cpu()
+        utils.assert_close(actual=actual, expected=expected)
+        self.assertEqual(torch.signbit(actual), torch.signbit(expected))
+
+  @parameterized.parameters(torch.float32, torch.bfloat16, torch.float16)
+  def test_nan_to_num_signed_zero_inplace_and_out(self, dtype: torch.dtype):
+    cpu_x = torch.tensor(
+        [float("nan"), float("inf"), float("-inf"), 0.0, -0.0, -2.5],
+        dtype=dtype,
+    )
+    tpu_x = cpu_x.to("tpu")
+
+    for val in (0.0, -0.0, 0.0):
+      with self.subTest(variant="out", val=val):
+        expected_out = torch.empty_like(cpu_x)
+        torch.nan_to_num(
+            cpu_x, nan=val, posinf=val, neginf=val, out=expected_out
+        )
+        tpu_out = torch.empty_like(tpu_x)
+        torch.nan_to_num(tpu_x, nan=val, posinf=val, neginf=val, out=tpu_out)
+        actual_out = tpu_out.cpu()
+        utils.assert_close(actual=actual_out, expected=expected_out)
+        self.assertEqual(torch.signbit(actual_out), torch.signbit(expected_out))
+
+      with self.subTest(variant="inplace", val=val):
+        expected_inplace = cpu_x.clone().nan_to_num_(
+            nan=val, posinf=val, neginf=val
+        )
+        tpu_inplace = tpu_x.clone().nan_to_num_(nan=val, posinf=val, neginf=val)
+        actual_inplace = tpu_inplace.cpu()
+        utils.assert_close(actual=actual_inplace, expected=expected_inplace)
+        self.assertEqual(
+            torch.signbit(actual_inplace), torch.signbit(expected_inplace)
+        )
+
+  def test_nan_to_num_signed_zero_scalar_and_empty(self):
+    for special in (float("nan"), float("inf"), float("-inf")):
+      cpu_scalar = torch.tensor(special, dtype=torch.float32)
+      tpu_scalar = cpu_scalar.to("tpu")
+      for val in (0.0, -0.0, 0.0):
+        with self.subTest(special=special, val=val):
+          expected = torch.nan_to_num(
+              cpu_scalar, nan=val, posinf=val, neginf=val
+          )
+          actual = torch.nan_to_num(
+              tpu_scalar, nan=val, posinf=val, neginf=val
+          ).cpu()
+          self.assertEqual(actual.shape, ())
+          utils.assert_close(actual=actual, expected=expected)
+          self.assertEqual(torch.signbit(actual), torch.signbit(expected))
+
+    tpu_empty = torch.empty((0, 3), dtype=torch.float32, device="tpu")
+    for val in (0.0, -0.0):
+      actual_empty = torch.nan_to_num(
+          tpu_empty, nan=val, posinf=val, neginf=val
+      )
+      self.assertEqual(actual_empty.shape, (0, 3))
+      self.assertEqual(actual_empty.dtype, torch.float32)
+
+  def test_nan_to_num_signed_zero_complex(self):
+    cpu_z = torch.complex(
+        torch.tensor([float("nan"), float("inf"), float("-inf"), 1.0]),
+        torch.tensor([float("-inf"), float("nan"), float("inf"), -0.0]),
+    )
+    tpu_z = cpu_z.to("tpu")
+    for kwargs in (
+        {"nan": 0.0, "posinf": 0.0, "neginf": 0.0},
+        {"nan": -0.0, "posinf": -0.0, "neginf": -0.0},
+        {"nan": 0.0, "posinf": -0.0, "neginf": 0.0},
+    ):
+      with self.subTest(kwargs=kwargs):
+        expected = torch.nan_to_num(cpu_z, **kwargs)
+        actual = torch.nan_to_num(tpu_z, **kwargs).cpu()
+        utils.assert_close(actual=actual, expected=expected)
+        self.assertEqual(
+            torch.signbit(torch.view_as_real(actual)),
+            torch.signbit(torch.view_as_real(expected)),
+        )
+
+  def test_nan_to_num_signed_zero_compile(self):
+    torch._dynamo.reset()
+    self.addCleanup(torch._dynamo.reset)
+    cpu_x = torch.tensor(
+        [float("nan"), float("inf"), float("-inf"), 0.0, -0.0, 3.0],
+        dtype=torch.float32,
+    )
+    tpu_x = cpu_x.to("tpu")
+
+    @torch.compile(fullgraph=True)
+    def nan_to_num_pos_zero(x: torch.Tensor) -> torch.Tensor:
+      return torch.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
+
+    @torch.compile(fullgraph=True)
+    def nan_to_num_neg_zero(x: torch.Tensor) -> torch.Tensor:
+      return torch.nan_to_num(x, nan=-0.0, posinf=-0.0, neginf=-0.0)
+
+    expected_pos = torch.nan_to_num(cpu_x, nan=0.0, posinf=0.0, neginf=0.0)
+    expected_neg = torch.nan_to_num(cpu_x, nan=-0.0, posinf=-0.0, neginf=-0.0)
+    actual_pos = nan_to_num_pos_zero(tpu_x).cpu()
+    actual_neg = nan_to_num_neg_zero(tpu_x).cpu()
+    utils.assert_close(actual=actual_pos, expected=expected_pos)
+    utils.assert_close(actual=actual_neg, expected=expected_neg)
+    self.assertEqual(torch.signbit(actual_pos), torch.signbit(expected_pos))
+    self.assertEqual(torch.signbit(actual_neg), torch.signbit(expected_neg))
+
 
 if __name__ == "__main__":
   absltest.main()
