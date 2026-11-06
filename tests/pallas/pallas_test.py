@@ -27,6 +27,7 @@ import warnings
 from absl.testing import absltest
 import jax
 from jax.experimental import pallas as pl
+from jax.interpreters.mlir import ir
 import jax.numpy as jnp
 import numpy as np
 from packaging import version
@@ -37,8 +38,10 @@ from torch_tpu._internal import compile as tpu_compile
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal import pallas
 from torch_tpu._internal import testing as tt_testing
+from torch_tpu._internal.export import export as tpu_export
 from torch_tpu._internal.ops import splash_attention
 from torch_tpu._internal.pallas import _compat
+from torch_tpu._internal.profiler import named_scope
 from torch_tpu._internal.utils import test_utils
 from torch_tpu._internal.utils import utils
 from tests import seed_test_utils
@@ -55,6 +58,25 @@ def _is_deferred_mode():
   )
 
 
+def _mlir_op_scopes(mlir_text: str) -> list[str]:
+  """Returns the composed name scopes of operations in `@main`."""
+  with jax.interpreters.mlir.make_ir_context() as ctx:
+    module = ir.Module.parse(mlir_text, context=ctx)
+    main_block = module.body.operations[0].regions[0].blocks[0]
+    scopes = []
+    for op in main_block.operations:
+      loc = op.location
+      if isinstance(loc, ir.NameLoc):
+        scopes.append(loc.name_str)
+      elif (
+          isinstance(loc, ir.CallSiteLoc)
+          and isinstance(loc.caller, ir.NameLoc)
+          and isinstance(loc.callee, ir.NameLoc)
+      ):
+        scopes.append(f"{loc.caller.name_str}/{loc.callee.name_str}")
+    return scopes
+
+
 def add_vectors_kernel_body(x_ref, y_ref, o_ref):
   x, y = x_ref[...], y_ref[...]
   o_ref[...] = x + y
@@ -69,6 +91,32 @@ def add_vectors_jax(x: jax.Array, y: jax.Array) -> jax.Array:
 @pallas.jax_op("pallas::add_vectors")
 def add_vectors(x: jax.Array, y: jax.Array) -> jax.Array:
   return add_vectors_jax(x, y)
+
+
+class _Block(torch.nn.Module):
+
+  def __init__(self, kernel_fn=add_vectors):
+    super().__init__()
+    self._kernel_fn = kernel_fn
+
+  def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    x = x * y
+    with named_scope.named_scope("pallas_phase"):
+      return self._kernel_fn(x, y)
+
+
+class _Model(torch.nn.Module):
+
+  def __init__(self, kernel_fn=add_vectors, num_layers: int = 2):
+    super().__init__()
+    self.layers = torch.nn.ModuleList(
+        [_Block(kernel_fn) for _ in range(num_layers)]
+    )
+
+  def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    for layer in self.layers:
+      x = layer(x, y)
+    return x
 
 
 def add_subtract_vectors_kernel(x_ref, y_ref, oadd_ref, osub_ref):
@@ -1194,6 +1242,186 @@ class TestPallasKernels(seed_test_utils.RepeatableTest):
             res[1]._elem,
             jax.numpy.array([-3.0, -3.0, -3.0], dtype=jax.numpy.float32),
         )
+    )
+
+  def test_pallas_kernel_name_scopes_in_compiled_mlir(self):
+    """Verifies Pallas ops carry caller module/named scopes and kernel name."""
+    debugs = []
+    compiled_model = torch.compile(
+        _Model().to(self.device),
+        backend="tpu",
+        options={"debug_callback": debugs.append},
+    )
+    x = torch.ones((8, 128), dtype=torch.float32, device=self.device)
+    y = torch.ones((8, 128), dtype=torch.float32, device=self.device)
+    out = compiled_model(x, y)
+    test_utils.assert_close(out.cpu(), torch.full((8, 128), 3.0))
+
+    self.assertLen(debugs, 1)
+    forward_mlir = "\n".join(debugs[0].stablehlo_forward_text)
+    self.assertEqual(
+        _mlir_op_scopes(forward_mlir),
+        [
+            "layers.0[_Block]/mul/mul",
+            (
+                "layers.0[_Block]/pallas_phase/call_custom_kernel/"
+                "custom_kernel/pallas_add_vectors/jit(add_vectors)/pallas_call"
+            ),
+            "layers.1[_Block]/mul/mul",
+            (
+                "layers.1[_Block]/pallas_phase/call_custom_kernel/"
+                "custom_kernel/pallas_add_vectors/jit(add_vectors)/pallas_call"
+            ),
+        ],
+    )
+
+  def test_pallas_kernel_name_scopes_in_exported_mlir(self):
+    """Verifies torch.export Pallas ops carry caller module and named scopes."""
+    x = torch.ones((8, 128), dtype=torch.float32, device=self.device)
+    y = torch.ones((8, 128), dtype=torch.float32, device=self.device)
+    exported = torch.export.export(_Model().to(self.device), (x, y))
+    mlir_text = tpu_export.exported_to_mlir(exported).serialize_text(
+        enable_debug_info=True
+    )
+    self.assertEqual(
+        _mlir_op_scopes(mlir_text),
+        [
+            "layers.0[_Block]/mul/mul",
+            (
+                "layers.0[_Block]/pallas_phase/call_custom_kernel/"
+                "custom_kernel/pallas_add_vectors/jit(add_vectors)/pallas_call"
+            ),
+            "layers.1[_Block]/mul/mul",
+            (
+                "layers.1[_Block]/pallas_phase/call_custom_kernel/"
+                "custom_kernel/pallas_add_vectors/jit(add_vectors)/pallas_call"
+            ),
+        ],
+    )
+
+  def test_pallas_kernel_backward_preserves_forward_scopes(self):
+    """Verifies backward Pallas kernels inherit forward module/named scopes."""
+
+    def scoped_add_bwd_jax(grad_out: jax.Array) -> tuple[jax.Array, jax.Array]:
+      dt = jax.ShapeDtypeStruct(grad_out.shape, grad_out.dtype)
+      dx = pl.pallas_call(add_vectors_kernel_body, out_shape=dt)(
+          grad_out, jnp.zeros_like(grad_out)
+      )
+      return dx, dx
+
+    scoped_add_fwd = pallas.jax_op("pallas::scoped_add_fwd", add_vectors_jax)
+    scoped_add_bwd = pallas.jax_op("pallas::scoped_add_bwd", scoped_add_bwd_jax)
+
+    def setup_context(ctx, inputs, output):
+      del ctx, inputs, output
+
+    def backward(ctx, grad_out):
+      del ctx
+      return scoped_add_bwd(grad_out)
+
+    scoped_add_fwd.register_autograd(backward, setup_context=setup_context)
+
+    debugs = []
+    compiled_model = torch.compile(
+        _Model(scoped_add_fwd, num_layers=1).to(self.device),
+        backend="tpu",
+        options={"debug_callback": debugs.append},
+    )
+    x = torch.ones(
+        (8, 128), dtype=torch.float32, device=self.device, requires_grad=True
+    )
+    y = torch.ones(
+        (8, 128), dtype=torch.float32, device=self.device, requires_grad=True
+    )
+    out = compiled_model(x, y)
+    out.sum().backward()
+    test_utils.assert_close(x.grad.cpu(), torch.ones((8, 128)))
+
+    self.assertLen(debugs, 1)
+    forward_mlir = "\n".join(debugs[0].stablehlo_forward_text)
+    backward_mlir = "\n".join(debugs[0].stablehlo_backward_text)
+    self.assertEqual(
+        _mlir_op_scopes(forward_mlir),
+        [
+            "layers.0[_Block]/mul/mul",
+            (
+                "layers.0[_Block]/pallas_phase/call_custom_kernel/"
+                "custom_kernel/pallas_scoped_add_fwd/jit(add_vectors_jax)/"
+                "pallas_call"
+            ),
+        ],
+    )
+    self.assertEqual(
+        _mlir_op_scopes(backward_mlir),
+        [
+            (
+                "layers.0[_Block]/pallas_phase/call_custom_kernel/"
+                "custom_kernel/pallas_scoped_add_bwd/jit(scoped_add_bwd_jax)/"
+                "broadcast_in_dim"
+            ),
+            (
+                "layers.0[_Block]/pallas_phase/call_custom_kernel/"
+                "custom_kernel/pallas_scoped_add_bwd/jit(scoped_add_bwd_jax)/"
+                "pallas_call"
+            ),
+            "layers.0[_Block]/mul/mul",
+            "layers.0[_Block]/mul/mul",
+            "add/add",
+        ],
+    )
+
+  def test_nested_jax_jit_in_pallas_kernel_preserves_outer_jit_scope(self):
+    """Verifies nested @jax.jit helpers in a jax_op keep outer jit scopes."""
+
+    @jax.jit
+    def inner_pallas_add(x: jax.Array, y: jax.Array) -> jax.Array:
+      return pl.pallas_call(
+          add_vectors_kernel_body,
+          out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype),
+      )(x, y)
+
+    @jax.jit
+    def mid_pallas_add(x: jax.Array, y: jax.Array) -> jax.Array:
+      with jax.named_scope("first_call"):
+        z = inner_pallas_add(x, y)
+      with jax.named_scope("second_call"):
+        return inner_pallas_add(z, y)
+
+    def outer_add(x: jax.Array, y: jax.Array) -> jax.Array:
+      return mid_pallas_add(x, y)
+
+    torch_outer_add = pallas.jax_op("pallas::outer_add", outer_add)
+
+    debugs = []
+    compiled_model = torch.compile(
+        _Model(torch_outer_add, num_layers=1).to(self.device),
+        backend="tpu",
+        options={"debug_callback": debugs.append},
+    )
+    x = torch.ones((8, 128), dtype=torch.float32, device=self.device)
+    y = torch.ones((8, 128), dtype=torch.float32, device=self.device)
+    out = compiled_model(x, y)
+    test_utils.assert_close(out.cpu(), torch.full((8, 128), 3.0))
+
+    self.assertLen(debugs, 1)
+    forward_mlir = "\n".join(debugs[0].stablehlo_forward_text)
+    self.assertEqual(
+        _mlir_op_scopes(forward_mlir),
+        [
+            "layers.0[_Block]/mul/mul",
+            (
+                "layers.0[_Block]/pallas_phase/call_custom_kernel/"
+                "custom_kernel/pallas_outer_add/jit(outer_add)/"
+                "jit(mid_pallas_add)/first_call/"
+                "jit(inner_pallas_add)/pallas_call"
+            ),
+            (
+                "layers.0[_Block]/pallas_phase/call_custom_kernel/"
+                "custom_kernel/pallas_outer_add/jit(outer_add)/"
+                "jit(mid_pallas_add)/second_call/"
+                "jit(inner_pallas_add)/pallas_call"
+            ),
+        ],
     )
 
 

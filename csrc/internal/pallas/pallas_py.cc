@@ -37,6 +37,7 @@
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
+#include "csrc/ops/python_context.h"
 #include "pybind11/pybind11.h"
 #include "pybind11/stl.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
@@ -139,6 +140,12 @@ std::vector<at::Tensor> PyCallCustomKernel(
       (name, kernel_key, inputs, output_shapes, donate_argnums,
        device_assignment),
       {
+        // `TT_KERNEL` pushed the generic `OpName::kCustomKernel`
+        // ("custom_kernel") onto the Python context stack. Nest the registered
+        // kernel's name under it so MLIR locations and XProf traces identify
+        // the specific custom kernel being called.
+        std::optional<ScopedPythonContextCapturer> kernel_capturer;
+        if (!name.empty()) kernel_capturer.emplace(KernelName{name});
         if (output_shapes.empty()) {
           return {};
         }

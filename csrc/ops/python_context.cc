@@ -33,6 +33,7 @@
 #include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
+#include "absl/strings/str_replace.h"
 #include "absl/types/span.h"
 #include "csrc/common/context_manager.h"
 #include "csrc/common/context_states.h"
@@ -224,6 +225,19 @@ MaybeSharedNameScopes GetActiveNameScopes(
   return active;
 }
 
+// Replaces characters in the registered `kernel_name` that XLA and XProf
+// reserve as structural delimiters, so that the name forms a single scope
+// level: `/` separates scope hierarchy levels in `ParseTfNameScopes`, `:`
+// separates `<op_name>:<op_type>` in `StatType::kTfOp` and XLA MLIR location
+// parsing, `@` separates `op_name@function_name` in XLA
+// `GetOpMetadataFromLocation`, and `;` separates `op_type;op_name` in legacy
+// XLA `NameLoc` encoding.
+std::string NormalizeKernelName(std::string_view kernel_name) {
+  return absl::StrReplaceAll(
+      kernel_name,
+      {{"::", "_"}, {":", "_"}, {"/", "_"}, {"@", "_"}, {";", "_"}});
+}
+
 }  // namespace
 
 PythonContext::PythonContext(std::vector<std::string> op_call_chain,
@@ -300,6 +314,10 @@ ScopedPythonContextCapturer::ScopedPythonContextCapturer(
 
 ScopedPythonContextCapturer::ScopedPythonContextCapturer(const OpName op_name)
     : ScopedPythonContextCapturer(ToBaseName(op_name)) {}
+
+ScopedPythonContextCapturer::ScopedPythonContextCapturer(
+    const KernelName kernel_name)
+    : ScopedPythonContextCapturer(NormalizeKernelName(kernel_name.name)) {}
 
 ScopedPythonContextCapturer::~ScopedPythonContextCapturer() {
   ABSL_CHECK(!op_names_.empty())  // CRASH_OK

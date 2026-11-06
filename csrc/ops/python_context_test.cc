@@ -17,6 +17,7 @@
 #include "csrc/ops/python_context.h"
 
 #include <memory>
+#include <optional>
 
 #include "c10/util/ThreadLocalDebugInfo.h"
 #include "csrc/common/context_manager.h"
@@ -281,6 +282,28 @@ TEST(ScopedPythonContextCapturer, NameScopesRestoreViaDebugInfoGuard) {
 
   EXPECT_THAT(unguarded_context.name_scopes(), IsEmpty());
   EXPECT_THAT(guarded_context.name_scopes(), ElementsAre("backward_phase"));
+}
+
+TEST(ScopedPythonContextCapturer,
+     KernelNameSanitizesDelimitersAndNestsUnderCustomKernel) {
+  mlir::MLIRContext ctx;
+  const NameScopeHierarchyGuard block_scope({"layers.0[Block]"});
+
+  ScopedPythonContextCapturer api_capturer(PythonApiName{"call_custom_kernel"});
+  ScopedPythonContextCapturer custom_kernel_capturer(OpName::kCustomKernel);
+  ScopedPythonContextCapturer kernel_capturer(
+      KernelName{"pallas::ns/my_kernel:v1@fn;tag"});
+
+  const PythonContext context = ScopedPythonContextCapturer::GetContext();
+  const mlir::Location loc = MakeMlirLocation(ctx, context);
+
+  EXPECT_THAT(context.op_call_chain(),
+              ElementsAre("call_custom_kernel", "custom_kernel",
+                          "pallas_ns_my_kernel_v1_fn_tag"));
+  EXPECT_EQ(GetRootOpName(std::nullopt), "call_custom_kernel");
+  EXPECT_EQ(mlir::debugString(loc),
+            "loc(\"layers.0[Block]/call_custom_kernel/custom_kernel/"
+            "pallas_ns_my_kernel_v1_fn_tag\")");
 }
 
 }  // namespace

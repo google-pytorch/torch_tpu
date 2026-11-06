@@ -158,6 +158,17 @@ struct PythonApiName {
   std::string_view name;
 };
 
+// Encapsulates the registered name of a custom (e.g. Pallas) kernel.
+//
+// Used to distinguish kernel names from internal OpName and Python API names
+// when constructing ScopedPythonContextCapturer.
+struct KernelName {
+  explicit KernelName(std::string_view name) : name(name) {}
+
+  // The registered name of the kernel, e.g. "pallas::add_vectors".
+  std::string_view name;
+};
+
 // RAII class to capture the python context for an op. Conceptually, it
 // maintains a per-thread singleton stack of PythonContext objects (the context
 // capturer stack).
@@ -193,6 +204,15 @@ class ScopedPythonContextCapturer {
   // Behaves the same way as the `OpName` overload, but pushing the current API
   // name being run.
   explicit ScopedPythonContextCapturer(PythonApiName op_name);
+
+  // Explicit KernelName constructor.
+  //
+  // Used by custom kernel ops to nest the registered kernel name under the
+  // generic `custom_kernel` op. Behaves the same way as the `OpName` overload,
+  // but pushing the kernel name with any `::`, `:`, `/`, `@`, or `;` replaced
+  // by `_`, so that the name forms a single XProf scope level without
+  // colliding with XLA/XProf location delimiters.
+  explicit ScopedPythonContextCapturer(KernelName kernel_name);
 
   // This class is neither copyable nor movable.
   ScopedPythonContextCapturer(const ScopedPythonContextCapturer&) = delete;
