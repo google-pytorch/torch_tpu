@@ -41,13 +41,9 @@ import tomllib
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 
-# Matches HTML comments for "Open in Colab" snippets.
-# Must contain "colab" (case-insensitive) and "open" or "link".
-_COLAB_SNIPPET = re.compile(
-  r"<!--[^-]*(?:open|link)[^-]*colab[^-]*-->\s*\n?|"
-  r"<!--[^-]*colab[^-]*(?:open|link)[^-]*-->\s*\n?",
-  re.IGNORECASE | re.DOTALL
-)
+# Matches the "Open in Colab" markdown link (case-insensitive).
+# Pattern: [![Open In Colab]...](...)
+_COLAB_SNIPPET = re.compile(r"\[!\[Open in Colab\]\([^)]*\)\]\([^)]*\)", re.IGNORECASE)
 
 # Matches the start of a relative link target, up to any .md suffix or anchor.
 # Targets with a scheme (https:, mailto:) or that start with # do not match.
