@@ -53,19 +53,6 @@ torch_tpu_cc_test(
 )
 
 torch_tpu_cc_library(
-    name = "xla_utils",
-    srcs = ["xla_utils.cc"],
-    hdrs = ["xla_utils.h"],
-    deps = [
-        "//shims/torch:torch_headers",
-        "//shims/torch/c10/util:base_headers",
-        "//shims/torch/torch/headeronly:torch_headeronly",
-        "@xla//xla:types",
-        "@xla//xla:xla_data_proto_cc",
-    ],
-)
-
-torch_tpu_cc_library(
     name = "op_builder_utils",
     srcs = ["op_builder_utils.cc"],
     hdrs = ["op_builder_utils.h"],
