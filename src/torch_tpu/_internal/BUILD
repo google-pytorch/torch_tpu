@@ -147,6 +147,7 @@ torch_tpu_py_library(
         "//src/torch_tpu/_internal/pallas:pallas_lib",  # build_cleaner: keep
         "//src/torch_tpu/_internal/pallas/verify:findings",  # build_cleaner: keep
         "//src/torch_tpu/_internal/pallas/verify:verifier",  # build_cleaner: keep
+        "//src/torch_tpu/_internal/profiler:named_scope",  # build_cleaner: keep
         "//src/torch_tpu/_internal/profiler:profiler_config",  # build_cleaner: keep
         "//src/torch_tpu/_internal/utils:annotations",
     ],

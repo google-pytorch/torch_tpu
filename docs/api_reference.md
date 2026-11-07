@@ -277,6 +277,7 @@ Configure TPU hardware and Python tracing for XProf and TensorBoard. See
 | API | Description |
 | :--- | :--- |
 | `torch.tpu.profiler.TpuProfilerConfig(...)` | Experimental config passed to `torch.profiler.profile(..., experimental_config=...)` to configure host, TPU device, and Python tracing for XProf. |
+| `torch.tpu.profiler.named_scope(name)` | Experimental context manager and decorator that adds `name` to the Framework Name Scope hierarchy of TPU ops in XProf across eager, `torch.compile`, and `torch.export`. |
 <!-- mdformat on -->
 
 ## **Environment Variables**

@@ -42,6 +42,7 @@ torch_tpu_py_library(
     deps = [
         "//shims/torch:pytorch",
         "//src/torch_tpu/_internal/compile:tpu_torch_compile",
+        "//src/torch_tpu/_internal/utils:annotations",
     ],
 )
 

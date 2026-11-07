@@ -35,6 +35,7 @@ from torch_tpu._internal.pallas.pallas import (
     custom_jax_kernel as internal_custom_jax_kernel,
     jax_op as internal_jax_op,
 )
+from torch_tpu._internal.profiler import named_scope as internal_named_scope
 from torch_tpu._internal.profiler.profiler_config import (
     TpuProfilerConfig as InternalTpuProfilerConfig,
 )
@@ -116,7 +117,41 @@ class ApiRegistryTest(seed_test_utils.RepeatableTest):
 
   def test_profiler_module_dir(self):
     """Verifies dir(torch.tpu.profiler) returns public symbol list."""
-    self.assertEqual(dir(torch.tpu.profiler), ["TpuProfilerConfig"])
+    self.assertEqual(
+        dir(torch.tpu.profiler), ["TpuProfilerConfig", "named_scope"]
+    )
+
+  def test_named_scope_metadata(self):
+    """Verifies exposure, identity, and lifecycle stage metadata for named_scope."""
+    self.assertTrue(hasattr(torch.tpu.profiler, "named_scope"))
+    self.assertIs(
+        torch.tpu.profiler.named_scope, internal_named_scope.named_scope
+    )
+
+    fn = torch.tpu.profiler.named_scope
+    self.assertEqual(
+        getattr(fn, annotations.TT_API_STAGE, None),
+        annotations.Stage.EXPERIMENTAL.value,
+    )
+    self.assertEqual(
+        getattr(fn, annotations.TT_API_STAGE_REASON, None),
+        "torch.tpu.profiler.named_scope is experimental and subject to change.",
+    )
+
+  def test_named_scope_warning(self):
+    """Verifies calling named_scope triggers UserWarning."""
+    with warnings.catch_warnings(record=True) as w:
+      warnings.simplefilter("always")
+      with torch.tpu.profiler.named_scope("step"):
+        pass
+    experimental_warnings = [
+        item for item in w if issubclass(item.category, UserWarning)
+    ]
+    self.assertLen(experimental_warnings, 1)
+    self.assertIn(
+        "named_scope is experimental",
+        str(experimental_warnings[0].message),
+    )
 
   def test_pallas_api_registry(self):
     """Verifies public exposure, identity, metadata, and proxy behavior for pallas."""
