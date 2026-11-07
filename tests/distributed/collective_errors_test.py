@@ -29,6 +29,7 @@ before the open source release.
 import datetime
 import os
 import re
+import time
 
 from absl.testing import absltest
 import jax
@@ -36,6 +37,7 @@ from jax.sharding import PartitionSpec as P
 import torch
 from torch import distributed as dist
 import torch.multiprocessing as mp
+from torch_tpu._internal import execution_mode
 from torch_tpu._internal import pallas
 from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.utils import test_utils as utils
@@ -44,6 +46,8 @@ from tests import error_testing as et
 from tests.distributed import continuous_test_utils
 from tests.distributed import distributed_utils
 
+# torch < 2.13 cannot return Work.exception() to Python.
+_WORK_EXCEPTION_IS_BOUND = utils.parse_version(torch.__version__) >= (2, 13, 0)
 
 _UNSUPPORTED_64BIT_REDUCE_OPS = (
     (
@@ -577,9 +581,182 @@ def run_scatter_mismatch_input_shapes() -> None:
   # Intentionally do NOT call scatter on non-root ranks.
 
 
+def run_async_work_wait_timeout() -> None:
+  """Tests that Work.wait(timeout) raises when the collective times out."""
+  rank = dist.get_rank()
+  store = dist.distributed_c10d._get_default_store()
+  gate_key = "async_work_wait_timeout_rank0_checked"
+  x = torch.ones((4,), dtype=torch.float32, device="tpu")
+  dist.all_reduce(x, op=dist.ReduceOp.SUM, async_op=True).wait()
+  torch.accelerator.synchronize()
+  dist.barrier()
+
+  if rank == 0:
+    work = dist.all_reduce(x, op=dist.ReduceOp.SUM, async_op=True)
+    try:
+      with et.assert_raises_message(
+          RuntimeError, tpu="""timed out waiting for collective after 10 ms"""
+      ):
+        work.wait(datetime.timedelta(milliseconds=10))
+    finally:
+      store.set(gate_key, "1")
+  else:
+    store.wait([gate_key])
+    work = dist.all_reduce(x, op=dist.ReduceOp.SUM, async_op=True)
+
+  work.wait()
+  torch.accelerator.synchronize()
+  # The collective has completed, so every rank has passed the gate.
+  if rank == 0:
+    store.delete_key(gate_key)
+
+
+def run_async_work_tracks_collective_with_overwritten_result(
+    spmd_safe: bool,
+) -> None:
+  """Tests that overwriting its result does not retarget a deferred Work."""
+  rank = dist.get_rank()
+  store = dist.distributed_c10d._get_default_store()
+  gate_key = f"async_work_overwritten_result_rank0_checked:{spmd_safe}"
+
+  def issue_and_overwrite(t: torch.Tensor) -> dist.Work:
+    work = dist.all_reduce(t, op=dist.ReduceOp.SUM, async_op=True)
+    t.copy_(torch.zeros((4,)), non_blocking=True)
+    return work
+
+  if spmd_safe:
+    issue_and_overwrite = torch.tpu.distributed.spmd_safe(issue_and_overwrite)
+  x = torch.full((4,), float(rank), device="tpu")
+  with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+    # Ranks > 0 hold off issuing, so the collective cannot complete on rank 0.
+    if rank != 0:
+      store.wait([gate_key])
+    work = issue_and_overwrite(x)
+    if rank == 0:
+      try:
+        with et.assert_raises_message(
+            RuntimeError, tpu="""timed out waiting for collective after 10 ms"""
+        ):
+          work.wait(datetime.timedelta(milliseconds=10))
+        completed_before_peers = work.is_completed()
+      finally:
+        store.set(gate_key, "1")
+      assert not completed_before_peers, "is_completed() was True too early"
+    assert work.wait(datetime.timedelta(seconds=60))
+  # The collective has completed, so every rank has passed the gate.
+  if rank == 0:
+    store.delete_key(gate_key)
+  utils.assert_close(x.cpu(), torch.zeros((4,)))
+
+
+def run_async_work_reports_failure() -> None:
+  """Tests that the Work of a collective over a failed input reports it."""
+  err_stream = torch.tpu.Stream()
+  with torch.tpu.stream(err_stream):
+    # Fails to compile (compile-time OOM: 4 PiB of HBM).
+    bad = torch.ones((1024,) * 5, device="tpu")
+    with et.assert_raises_message(
+        torch.OutOfMemoryError,
+        tpu="""the TPU ran out of memory while allocating tensor float32[1024, 1024, 1024, 1024, 1024]""",
+    ):
+      err_stream.synchronize()
+    x = bad[0, 0, 0, 0, :4] + 1.0
+    work = dist.all_reduce(x, op=dist.ReduceOp.SUM, async_op=True)
+    stream_failure = err_stream.record_event()
+    deadline = time.monotonic() + 60
+    while not work.is_completed() and time.monotonic() < deadline:
+      time.sleep(0.001)
+    assert work.is_completed(), "failed Work did not report is_completed()"
+    assert not work.is_success(), "failed Work reported is_success()"
+    if _WORK_EXCEPTION_IS_BOUND:
+      assert work.exception() is not None
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""the TPU ran out of memory while allocating tensor float32[4]""",
+    ):
+      work.wait()
+  with et.assert_raises_message(
+      RuntimeError,
+      tpu="""the TPU ran out of memory while allocating tensor float32[4]""",
+  ):
+    work.wait()
+  # The event took the failure of the stream, which is clean afterwards.
+  with et.assert_raises_message(
+      RuntimeError,
+      tpu="""the TPU ran out of memory while allocating tensor float32[4]""",
+  ):
+    stream_failure.synchronize()
+  err_stream.synchronize()
+
+
+def run_async_work_queried_during_fx_trace() -> None:
+  """Tests querying the Work of a fused collective during an FX trace."""
+  world_size = dist.get_world_size()
+  rank = dist.get_rank()
+
+  @torch.tpu.distributed.spmd_safe
+  def _issue_spmd_safe_async(t: torch.Tensor) -> dist.Work:
+    return dist.all_reduce(t, op=dist.ReduceOp.SUM, async_op=True)
+
+  with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+    s = torch.full((4,), float(rank), device="tpu")
+    work = _issue_spmd_safe_async(s)
+    # Nothing can be materialized here, so the collective cannot start.
+    with execution_mode.set_eager_mode(
+        execution_mode.EagerMode._INTERNAL_COMPILE_FX_GRAPH
+    ):
+      completed_in_trace = work.is_completed()
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""cannot materialize tensors during an FX trace.
+Data-dependent ops must have graph breaks inserted in the FX graph before tracing""",
+      ):
+        work.wait(datetime.timedelta(seconds=1))
+    assert not completed_in_trace, "is_completed() was True during the trace"
+    assert work.wait(datetime.timedelta(seconds=60))
+    assert work.is_completed() and work.is_success()
+  utils.assert_close(s.cpu(), torch.full((4,), float(sum(range(world_size)))))
+
+
+def run_async_work_reports_failure_of_its_stream() -> None:
+  """Tests a deferred Work that tracks its stream, which has a failed op."""
+  world_size = dist.get_world_size()
+  rank = dist.get_rank()
+  err_stream = torch.tpu.Stream()
+  with torch.tpu.stream(err_stream):
+    # Fails to compile (compile-time OOM: 4 PiB of HBM).
+    bad = torch.ones((1024,) * 5, device="tpu")
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      t = torch.full((4,), float(rank), device="tpu")
+      work = dist.all_reduce(t, op=dist.ReduceOp.SUM, async_op=True)
+      # No tensor holds the collective's result now: the Work tracks the stream.
+      t.add_(1.0)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""the TPU ran out of memory while allocating tensor float32[1024, 1024, 1024, 1024, 1024]""",
+      ):
+        work.wait(datetime.timedelta(seconds=60))
+      assert work.is_completed(), "failed Work did not report is_completed()"
+      assert not work.is_success(), "failed Work reported is_success()"
+      if _WORK_EXCEPTION_IS_BOUND:
+        assert work.exception() is not None
+    # The stream still reports the failure that its Work reported.
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""the TPU ran out of memory while allocating tensor float32[1024, 1024, 1024, 1024, 1024]""",
+    ):
+      torch.accelerator.synchronize()
+    torch.accelerator.synchronize()
+  del bad
+  utils.assert_close(
+      t.cpu(), torch.full((4,), float(sum(range(world_size))) + 1.0)
+  )
+
+
 def run_collective_validation_errors() -> None:
   """Runs synchronous collective input validation error checks."""
   run_all_reduce_error()
+  run_async_work_wait_timeout()
   run_all_gather_tensor_wrong_number_output_dimensions()
   run_all_gather_tensor_wrong_concat_dimension()
   run_all_gather_tensor_wrong_stack_dimension()
@@ -1188,6 +1365,21 @@ class CollectiveErrorsTest(
 
   def test_collective_validation_errors(self):
     run_collective_validation_errors()
+
+  def test_async_work_tracks_collective_with_overwritten_result(self):
+    run_async_work_tracks_collective_with_overwritten_result(spmd_safe=False)
+
+  def test_async_work_tracks_fused_collective_with_overwritten_result(self):
+    run_async_work_tracks_collective_with_overwritten_result(spmd_safe=True)
+
+  def test_async_work_reports_failure(self):
+    run_async_work_reports_failure()
+
+  def test_async_work_queried_during_fx_trace(self):
+    run_async_work_queried_during_fx_trace()
+
+  def test_async_work_reports_failure_of_its_stream(self):
+    run_async_work_reports_failure_of_its_stream()
 
   def test_conflicting_device_assignments_error(self):
     run_conflicting_device_assignments_error()
