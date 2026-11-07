@@ -38,6 +38,9 @@
 #include "csrc/common/to_string.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
+#include "csrc/ops/a_min_max/a_min_max.h"
+#include "csrc/ops/copy_from/copy_common.h"
+#include "csrc/ops/copy_from/tpu_to_cpu.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
@@ -124,23 +127,70 @@ at::Tensor AtenBinCount(const at::Tensor& self,
         auto weights_ = SanitizeOptionalTensor(weights);
         int64_t minlength_val = minlength.guard_int(__FILE__, __LINE__);
 
+        TT_CHECK_THROW(minlength_val >= 0, error::kInvalidArgument)
+            << "expected minlength to be >= 0, got " << minlength_val;
+
         TT_CHECK_THROW(self.dim() == 1, error::kInvalidArgument)
-            << "unexpected dimension of input tensor: "
-            << ToString(self.sizes());
+            << "expected 1D input tensor, got " << self.dim() << "D";
+
+        TT_CHECK_THROW(IsInteger(self), error::kPythonNotImplementedError)
+            << "expected integral inputs, got " << ToString(self.scalar_type());
 
         // Shortcut optimization for empty input tensors.
         if (self.defined() && self.numel() == 0) {
           return at::zeros({minlength_val}, self.options().dtype(at::kLong));
         }
 
-        // Compute the maximum element in the input and move it to the CPU. This
-        // inevitably introduces a graph break because we need to know that
-        // value in order to pass it to the actual bincount computation and to
-        // properly size the output tensor of that computation.
-        at::Scalar max = self.max().cpu().item();
+        if (weights_) {
+          TT_CHECK_THROW(weights_->dim() == 1, error::kInvalidArgument)
+              << "expected 1D weights, got " << weights_->dim() << "D";
+          TT_CHECK_THROW(weights_->size(0) == self.size(0),
+                         error::kInvalidArgument)
+              << "expected input and weights lengths to match, got "
+              << self.size(0) << " vs " << weights_->size(0);
+        }
+
+        // Compute the minimum and maximum element in the input using a single
+        // fused TPU kernel and copy directly into a stack buffer. This avoids
+        // redispatching through the PyTorch dispatcher, avoids creating CPU
+        // tensors, and requires only a single host synchronization.
+        auto min_max_builder =
+            [](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
+          auto& builder = input.getBuilder();
+          TT_ASSIGN_OR_RETURN(
+              auto min_max_ops,
+              BuildFusedAMinMaxShlo(/*dims=*/{0}, ReductionMode::kDropDims,
+                                    input));
+          auto min_i64 = mlir::stablehlo::ConvertElementType(
+              min_max_ops[0], mlir::ElementType::I64);
+          auto max_i64 = mlir::stablehlo::ConvertElementType(
+              min_max_ops[1], mlir::ElementType::I64);
+          auto min_1d = mlir::stablehlo::Reshape(min_i64, {1});
+          auto max_1d = mlir::stablehlo::Reshape(max_i64, {1});
+          return mlir::stablehlo::Concatenate(builder, {min_1d, max_1d},
+                                              /*dimension=*/0);
+        };
+
+        const Dimensions min_max_dims = {2};
+        const mlir::ElementType min_max_dtype = mlir::ElementType::I64;
+        TT_ASSIGN_OR_THROW(DeviceBufferRef min_max_buf,
+                           DispatchOp<1>(std::move(min_max_builder), self,
+                                         {.op_name = OpName::kAminmaxOut,
+                                          .out_dtype = min_max_dtype,
+                                          .out_dims = min_max_dims}));
+
+        int64_t min_max_vals[2] = {0, 0};
+        TT_THROW_IF_ERROR(CopyDeviceBufferRefToCpuPtr(
+            min_max_buf, min_max_vals,
+            GetTransferSyncMode(/*non_blocking=*/false)));
+        int64_t min_val = min_max_vals[0];
+        int64_t max_val = min_max_vals[1];
+
+        TT_CHECK_THROW(min_val >= 0, error::kInvalidArgument)
+            << "expected inputs to be >= 0, got a minimum value of " << min_val;
 
         // Compute the number of bins, i.e., the output size.
-        int64_t nbins = std::max(max.toLong() + 1, minlength_val);
+        int64_t nbins = std::max(max_val + 1, minlength_val);
 
         if (weights_) {
           // If weights are provided, PyTorch expects the computation/output

@@ -8879,7 +8879,59 @@ Supported combinations for non-constant padding:
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""bincount(): unexpected dimension of input tensor: [2, 2, 2]""",
+        tpu="""bincount(): expected 1D input tensor, got 3D""",
+        gpu="""bincount only supports 1-d non-negative integral inputs.""",
+    ):
+      torch.bincount(t)
+
+  def test_bincount_negative_minlength(self):
+    t = torch.tensor([1, 2], device=et.device(), dtype=torch.int32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""bincount(): expected minlength to be >= 0, got -1""",
+        gpu="""minlength should be >= 0""",
+    ):
+      torch.bincount(t, minlength=-1)
+
+  def test_bincount_non_integral_input(self):
+    t = torch.tensor([1.0, 2.0], device=et.device(), dtype=torch.float32)
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""bincount(): expected integral inputs, got float32""",
+        gpu=""""bincount_cuda" not implemented for 'Float'""",
+    ):
+      torch.bincount(t)
+
+  def test_bincount_weights_dimension_mismatch(self):
+    t = torch.tensor([1, 2], device=et.device(), dtype=torch.int32)
+    weights = torch.ones(2, 1, device=et.device(), dtype=torch.float32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""bincount(): expected 1D weights, got 2D""",
+        gpu="""weights should be 1-d and have the same length as input""",
+    ):
+      torch.bincount(t, weights=weights)
+
+  def test_bincount_weights_length_mismatch(self):
+    t = torch.tensor([1, 2], device=et.device(), dtype=torch.int32)
+    weights = torch.ones(5, device=et.device(), dtype=torch.float32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""bincount(): expected input and weights lengths to match, got 2 vs 5""",
+        gpu="""weights should be 1-d and have the same length as input""",
+    ):
+      torch.bincount(t, weights=weights)
+
+  def test_bincount_negative_inputs(self):
+    t = torch.tensor([-1, 2], device=et.device(), dtype=torch.int32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""bincount(): expected inputs to be >= 0, got a minimum value of -1""",
         gpu="""bincount only supports 1-d non-negative integral inputs.""",
     ):
       torch.bincount(t)

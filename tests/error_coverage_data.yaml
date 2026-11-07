@@ -85,7 +85,7 @@ csrc/ops/bernoulli/bernoulli_aten_kernels.cc: {remaining: 0, total: 4, infeasibl
 csrc/ops/binary.cc: {remaining: 0, total: 5, infeasible: 5}
 csrc/ops/binary_aten_kernels.cc: {remaining: 3, total: 39, infeasible: 0}
 csrc/ops/binary_cross_entropy/binary_cross_entropy_aten_kernels.cc: {remaining: 1, total: 6, infeasible: 0}
-csrc/ops/bincount/bincount_aten_kernels.cc: {remaining: 0, total: 1, infeasible: 0}
+csrc/ops/bincount/bincount_aten_kernels.cc: {remaining: 0, total: 6, infeasible: 0}
 csrc/ops/bmm/bmm_aten_kernels.cc: {remaining: 0, total: 7, infeasible: 0}
 csrc/ops/bucketize/bucketize_aten_kernels.cc: {remaining: 1, total: 5, infeasible: 0}
 csrc/ops/cat/cat.cc: {remaining: 0, total: 2, infeasible: 2}
