@@ -376,6 +376,43 @@ KNOWN_FAILURES: tuple[KnownFailure, ...] = (
         ),
         reason="HBM OOM during the training warmup on v7_1x1x1",
     ),
+    # TODO(b/582536640): Remove once the Flash Attention forward kernel fits
+    # scoped VMEM for unaligned sequence lengths with a mask on v7.
+    KnownFailure(
+        benchmark="opt_125m_train_gen",
+        framework=mode_lib.Framework.TORCH,
+        device_kind=target_lib.DeviceKind.TPU,
+        run_modes=frozenset({common.RunMode.COMPILED}),
+        reason=(
+            "Flash Attention forward kernel runs out of scoped VMEM on v7 for"
+            " the unaligned 2046 sequence length with a mask, since"
+            " cl/1015002657 (b/582536640)"
+        ),
+    ),
+    # TODO(b/581222586): Remove once XLA:TPU ragged dot tiling respects the
+    # scoped VMEM limit (b/579516880).
+    KnownFailure(
+        benchmark="nemotron_3_nano_30b_6_layers_forward",
+        framework=mode_lib.Framework.TORCH,
+        device_kind=target_lib.DeviceKind.TPU,
+        run_modes=frozenset({common.RunMode.EAGER_OPTIMIZED}),
+        reason=(
+            "XLA:TPU grouped_mm (ragged dot) fusion exceeds the scoped VMEM"
+            " limit on v7 (b/581222586, b/579516880)"
+        ),
+    ),
+    # TODO(b/581657168): Remove once XLA:TPU ragged dot tiling respects the
+    # scoped VMEM limit (b/579516880).
+    KnownFailure(
+        benchmark="gpt_oss_20b_decode",
+        framework=mode_lib.Framework.TORCH,
+        device_kind=target_lib.DeviceKind.TPU,
+        run_modes=frozenset({common.RunMode.EAGER_DEFAULT}),
+        reason=(
+            "XLA:TPU grouped_mm (ragged dot) fusion exceeds the scoped VMEM"
+            " limit on v7 (b/581657168, b/579516880)"
+        ),
+    ),
     # TODO(b/571695076): Remove once the 4096 parameter training step compiles
     # within the subprocess timeout.
     KnownFailure(
