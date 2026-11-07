@@ -1,5 +1,5 @@
 ---
-name: docs-review
+name: tt-write-docs
 description: >-
   Guide for writing narrative documentation in this repository. Use this when writing, editing, or reviewing any documentation or README content.
 ---
