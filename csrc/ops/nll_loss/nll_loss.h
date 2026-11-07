@@ -31,9 +31,21 @@ namespace torch_tpu {
 // `BuildIndexSelectShlo` and reshapes the result back to `safe_target`'s shape.
 mlir::MlirOp GatherWeightsShlo(mlir::MlirOp weight, mlir::MlirOp safe_target);
 
+// How `BuildNllLossForwardOutShlo` reads `self` at each target class.
+enum class NllTargetSelection {
+  // Gathers one element per sample, so only those elements of `self` are read.
+  kGather,
+  // Sums `self` over the class dimension with every other class masked to
+  // zero. All uses of `self` are then reductions, so when `self` is computed in
+  // the same program (as cross_entropy does with log_softmax), XLA can fuse it
+  // into those reductions instead of materializing it.
+  kMaskedSum,
+};
+
 absl::StatusOr<MlirOpResults<2>> BuildNllLossForwardOutShlo(
     mlir::MlirOp self, mlir::MlirOp target, std::optional<mlir::MlirOp> weight,
-    int64_t reduction, int64_t ignore_index, mlir::MlirBuilder& builder);
+    int64_t reduction, int64_t ignore_index, mlir::MlirBuilder& builder,
+    NllTargetSelection target_selection = NllTargetSelection::kGather);
 
 absl::StatusOr<mlir::MlirOp> BuildNllLossBackwardGradInputShlo(
     mlir::MlirOp grad_output, mlir::MlirOp self, mlir::MlirOp target,
