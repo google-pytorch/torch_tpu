@@ -16,11 +16,7 @@
 # benawilson
 # ghpvnist
 
-load(
-    "//build_files:build_defs.bzl",
-    "torch_tpu_cc_library",
-    "torch_tpu_package_end",
-)
+load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_end")
 
 package(
     default_applicable_licenses = ["//:license"],
