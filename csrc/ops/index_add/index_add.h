@@ -18,6 +18,7 @@
 #define TORCH_TPU_CSRC_OPS_INDEX_ADD_INDEX_ADD_H_
 
 #include <cstdint>
+#include <optional>
 
 #include "absl/status/statusor.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
@@ -25,9 +26,11 @@
 
 namespace torch_tpu {
 
+// Builds `self.index_add(dim, index, source, alpha=alpha)`. Without `alpha`,
+// `source` is added unscaled.
 absl::StatusOr<mlir::MlirOp> BuildIndexAddShlo(
     mlir::MlirOp self, int64_t dim, mlir::MlirOp index, mlir::MlirOp source,
-    mlir::MlirOp alpha, mlir::ElementType computation_xla_type);
+    std::optional<mlir::MlirOp> alpha, mlir::ElementType computation_xla_type);
 
 }  // namespace torch_tpu
 

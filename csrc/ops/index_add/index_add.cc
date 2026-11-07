@@ -17,6 +17,7 @@
 #include "csrc/ops/index_add/index_add.h"
 
 #include <cstdint>
+#include <optional>
 
 #include "absl/log/absl_log.h"
 #include "absl/status/statusor.h"
@@ -41,19 +42,27 @@ namespace stablehlo = mlir::stablehlo;
 
 absl::StatusOr<mlir::MlirOp> BuildIndexAddShlo(
     mlir::MlirOp self, int64_t dim, mlir::MlirOp index, mlir::MlirOp source,
-    mlir::MlirOp alpha, mlir::ElementType computation_xla_type) {
+    std::optional<mlir::MlirOp> alpha, mlir::ElementType computation_xla_type) {
   const mlir::RankedTensorType self_type = GetTensorTypeOrDie(self);
   const mlir::RankedTensorType source_type = GetTensorTypeOrDie(source);
   const mlir::RankedTensorType index_type = GetTensorTypeOrDie(index);
-  const mlir::RankedTensorType alpha_type = GetTensorTypeOrDie(alpha);
+  std::optional<mlir::RankedTensorType> alpha_type;
+  if (alpha.has_value()) {
+    alpha_type = GetTensorTypeOrDie(*alpha);
+  }
   ABSL_VLOG(2) << "BuildIndexAddShlo:"
                << ", dim: " << dim
                << ", self_type: " << mlir::debugString(self_type)
                << ", source_type: " << mlir::debugString(source_type)
                << ", index_type: " << mlir::debugString(index_type)
-               << ", alpha_type: " << mlir::debugString(alpha_type);
+               << ", alpha_type: "
+               << (alpha_type.has_value() ? mlir::debugString(*alpha_type)
+                                          : "none");
   if (self_type.getRank() == 0) {
-    mlir::MlirOp alpha_mul_source = stablehlo::Mul(alpha, source);
+    if (!alpha.has_value()) {
+      return stablehlo::Add(self, source);
+    }
+    mlir::MlirOp alpha_mul_source = stablehlo::Mul(*alpha, source);
     return stablehlo::Add(self, alpha_mul_source);
   }
 
@@ -67,8 +76,9 @@ absl::StatusOr<mlir::MlirOp> BuildIndexAddShlo(
   if (source_type.getElementType() != computation_type) {
     source = mlir::stablehlo::ConvertElementType(source, computation_type);
   }
-  if (alpha_type.getElementType() != computation_type) {
-    alpha = mlir::stablehlo::ConvertElementType(alpha, computation_type);
+  if (alpha_type.has_value() &&
+      alpha_type->getElementType() != computation_type) {
+    alpha = mlir::stablehlo::ConvertElementType(*alpha, computation_type);
   }
 
   Dimensions all_other_dims;
@@ -81,10 +91,12 @@ absl::StatusOr<mlir::MlirOp> BuildIndexAddShlo(
 
   index = mlir::stablehlo::Reshape(index, {index_type.getDimSize(0), 1});
 
-  TT_ASSIGN_OR_RETURN((auto [broadcasted_source, broadcasted_alpha]),
-                      ApplyBroadcastIfNeeded(source, alpha));
-  mlir::MlirOp source_scaled =
-      stablehlo::Mul(broadcasted_source, broadcasted_alpha);
+  mlir::MlirOp source_scaled = source;
+  if (alpha.has_value()) {
+    TT_ASSIGN_OR_RETURN((auto [broadcasted_source, broadcasted_alpha]),
+                        ApplyBroadcastIfNeeded(source, *alpha));
+    source_scaled = stablehlo::Mul(broadcasted_source, broadcasted_alpha);
+  }
 
   stablehlo::ScatterDimensionNumbersAttr scatter_dimension_numbers =
       stablehlo::ScatterDimensionNumbersAttr::get(

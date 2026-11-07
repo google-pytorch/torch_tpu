@@ -1955,6 +1955,32 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         z_val2.cpu(), torch.full((2, 2), 3.0, dtype=torch.float32)
     )
 
+  @parameterized.named_parameters(
+      ("add", lambda x, a: torch.add(x, x, alpha=a)),
+      ("sub", lambda x, a: torch.sub(x, x, alpha=a)),
+      ("addcmul", lambda x, a: torch.addcmul(x, x, x, value=a)),
+      ("addcdiv", lambda x, a: torch.addcdiv(x, x, x, value=a)),
+      (
+          "index_add",
+          lambda x, a: torch.zeros_like(x).index_add(
+              0, torch.arange(2, device=x.device), x, alpha=a
+          ),
+      ),
+  )
+  def test_scalar_above_int64_max(
+      self, op: Callable[[torch.Tensor, int], torch.Tensor]
+  ) -> None:
+    """An unsigned scalar above INT64_MAX works as on CPU.
+
+    Args:
+      op: Applies the op to a tensor, with the scalar as alpha or value.
+    """
+
+    def test_fn(device: torch.device) -> torch.Tensor:
+      return op(torch.ones(2, device=device), 2**63)
+
+    self.assert_close_tpu_vs_cpu(test_fn)
+
   def test_binary_arithmetic_out_upcast(self):
     device = torch.device("tpu")
     a = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=device)
@@ -11334,6 +11360,123 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     self.assertIn("stablehlo.scatter", mlir_text)
     self.assertIn("update_window_dims = [1]", mlir_text)
     self.assertNotIn("update_window_dims = []", mlir_text)
+
+  def test_index_add_default_alpha_build_mlir(self) -> None:
+    """Verifies index_add with alpha=1 traces without the alpha multiply."""
+    for alpha_kwargs in ({}, {"alpha": 1}, {"alpha": 1.0}):
+      with self.subTest(alpha_kwargs=alpha_kwargs):
+        s = torch.zeros(4, 3, device="tpu")
+        index = torch.tensor([0, 2, 2], device="tpu")
+        source = torch.ones(3, 3, device="tpu")
+        torch.accelerator.synchronize()
+        with execution_mode.set_eager_mode(
+            execution_mode.EagerMode.DEFER_AND_FUSE
+        ):
+          z = torch.index_add(s, 0, index, source, **alpha_kwargs)
+        # build_mlir raises if the program takes an input other than these, so
+        # this also checks that alpha isn't passed in.
+        mlir_text = tpu_torch_compile.serialize_mlir_text(
+            tpu_torch_compile.build_mlir([z], [s, index, source])
+        )
+        self.assertIn("stablehlo.scatter", mlir_text)
+        self.assertNotIn("stablehlo.multiply", mlir_text)
+        utils.assert_close(
+            z.cpu(),
+            torch.tensor([[1.0] * 3, [0.0] * 3, [2.0] * 3, [0.0] * 3]),
+        )
+
+  @parameterized.parameters((248, 2816), (256, 2688), (256, 2816))
+  def test_index_add_one_update_per_row(self, rows: int, hidden: int) -> None:
+    """index_add with one update per row matches CPU.
+
+    With the alpha multiply fused into the scatter, XLA dropped the updates to
+    some rows on TPU v5e for these shapes.
+
+    Args:
+      rows: Number of rows of the output and the source.
+      hidden: Size of the other dimension.
+    """
+    generator = torch.Generator().manual_seed(0)
+    index = torch.randperm(rows, generator=generator)
+    source = torch.randint(-8, 9, (rows, hidden), generator=generator).float()
+
+    def test_fn(device: torch.device) -> torch.Tensor:
+      out = torch.zeros(rows, hidden, device=device)
+      return out.index_add_(0, index.to(device), source.to(device))
+
+    self.assert_close_tpu_vs_cpu(test_fn)
+
+  @parameterized.parameters((384, 2816), (512, 2816))
+  def test_index_add_eight_updates_per_row(
+      self, rows: int, hidden: int
+  ) -> None:
+    """index_add with 8 * rows randomly indexed updates matches CPU.
+
+    With the alpha multiply fused into the scatter, XLA dropped the updates to
+    some rows on TPU v6e for these shapes (#4784).
+
+    Args:
+      rows: Number of rows of the output.
+      hidden: Size of the other dimension.
+    """
+    generator = torch.Generator().manual_seed(0)
+    index = torch.randint(0, rows, (rows * 8,), generator=generator)
+    source = torch.randint(
+        -8, 9, (rows * 8, hidden), generator=generator
+    ).float()
+
+    def test_fn(device: torch.device) -> torch.Tensor:
+      out = torch.zeros(rows, hidden, device=device)
+      return out.index_add_(0, index.to(device), source.to(device))
+
+    self.assert_close_tpu_vs_cpu(test_fn)
+
+  @parameterized.product(
+      dtype=[torch.float32, torch.bfloat16, torch.int32],
+      alpha=[1, 2],
+  )
+  def test_index_add_alpha(self, dtype: torch.dtype, alpha: int) -> None:
+    """index_add with and without scaling by alpha matches CPU.
+
+    Args:
+      dtype: Data type of the output and the source.
+      alpha: The scale for the source.
+    """
+
+    def test_fn(device: torch.device) -> torch.Tensor:
+      out = torch.arange(12, device=device).reshape(4, 3).to(dtype)
+      index = torch.tensor([0, 2, 2], device=device)
+      source = torch.ones(3, 3, device=device).to(dtype)
+      return out.index_add(0, index, source, alpha=alpha)
+
+    self.assert_close_tpu_vs_cpu(test_fn)
+
+  @parameterized.parameters(1, 2)
+  def test_index_add_0d(self, alpha: int) -> None:
+    """index_add on a 0-d tensor matches CPU.
+
+    Args:
+      alpha: The scale for the source.
+    """
+
+    def test_fn(device: torch.device) -> torch.Tensor:
+      out = torch.tensor(5.0, device=device)
+      index = torch.tensor([0], device=device)
+      source = torch.tensor(3.0, device=device)
+      return out.index_add(0, index, source, alpha=alpha)
+
+    self.assert_close_tpu_vs_cpu(test_fn)
+
+  def test_index_add_bool(self) -> None:
+    """index_add on bool tensors with alpha=True matches CPU."""
+
+    def test_fn(device: torch.device) -> torch.Tensor:
+      out = torch.zeros(3, dtype=torch.bool, device=device)
+      index = torch.tensor([0, 2], device=device)
+      source = torch.ones(2, dtype=torch.bool, device=device)
+      return out.index_add(0, index, source, alpha=True)
+
+    self.assert_close_tpu_vs_cpu(test_fn)
 
   @parameterized.product(
       dtype=[torch.float32, torch.bfloat16],

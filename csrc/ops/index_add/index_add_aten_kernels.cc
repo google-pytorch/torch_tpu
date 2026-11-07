@@ -17,6 +17,7 @@
 #include "csrc/ops/index_add/index_add_aten_kernels.h"
 
 #include <cstdint>
+#include <optional>
 #include <utility>
 
 #include "ATen/core/ATen_fwd.h"
@@ -45,7 +46,7 @@ namespace {
 
 absl::Status IndexAdd(const at::Tensor& self, int64_t dim,
                       const at::Tensor& index, const at::Tensor& source,
-                      PromotedScalar& promoted_alpha,
+                      MaybePromotedScalar& promoted_alpha,
                       OpParamCacheKeys param_keys, at::Tensor& out) {
   TT_RETURN_IF_ERROR(ValidateOutDtype(out, self.scalar_type(),
                                       /*allow_out_dtype_cast=*/false));
@@ -55,6 +56,26 @@ absl::Status IndexAdd(const at::Tensor& self, int64_t dim,
   at::ScalarType self_scalar_type = self.scalar_type();
   TT_ASSIGN_OR_RETURN(const auto computation_dtype,
                       ConvertTo<mlir::ElementType>(self_scalar_type));
+  TT_ASSIGN_OR_RETURN(const auto output_dtype,
+                      ConvertTo<mlir::ElementType>(self_scalar_type));
+  Dimensions output_dims = CopyIntVector(self.sizes());
+
+  // Skip the scaling if alpha is 1. Besides saving a multiply, this keeps XLA
+  // from fusing one into the scatter: XLA:TPU can drop scatter updates for some
+  // shapes when an elementwise op on them is fused in (openxla/xla#51765).
+  if (promoted_alpha.IsOne()) {
+    auto index_add_op_builder =
+        [dim, computation_dtype](FixedSizeSpan<mlir::MlirOp, 3> inputs) {
+          auto [self, index, source] = inputs;
+          return BuildIndexAddShlo(self, dim, index, source,
+                                   /*alpha=*/std::nullopt, computation_dtype);
+        };
+    return DispatchOpOut<3>(std::move(index_add_op_builder),
+                            {self, index, source}, out,
+                            {.out_dtype = output_dtype,
+                             .out_dims = output_dims,
+                             .op_param_cache_keys = std::move(param_keys)});
+  }
 
   TT_ASSIGN_OR_RETURN(const at::Tensor alpha_tensor,
                       promoted_alpha.GetTensor(self_scalar_type));
@@ -65,10 +86,6 @@ absl::Status IndexAdd(const at::Tensor& self, int64_t dim,
         return BuildIndexAddShlo(self, dim, index, source, alpha_op,
                                  computation_dtype);
       };
-
-  TT_ASSIGN_OR_RETURN(const auto output_dtype,
-                      ConvertTo<mlir::ElementType>(self_scalar_type));
-  Dimensions output_dims = CopyIntVector(self.sizes());
 
   return DispatchOpOut<4>(std::move(index_add_op_builder),
                           {self, index, source, alpha_tensor}, out,
@@ -83,7 +100,7 @@ at::Tensor& TpuAtenIndexAddOut(const at::Tensor& self, int64_t dim,
                                const at::Tensor& index,
                                const at::Tensor& source,
                                const at::Scalar& alpha, at::Tensor& out) {
-  PromotedScalar promoted_alpha = PromoteScalar(alpha);
+  auto promoted_alpha = PromoteScalar(alpha).AvoidPromoting(ScalarValue::kOne);
   TT_KERNEL(
       OpName::kIndexAddOut, param_keys,
       (self, dim, index, source, promoted_alpha, out), {
