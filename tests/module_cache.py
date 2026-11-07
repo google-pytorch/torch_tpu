@@ -388,12 +388,6 @@ class ModuleCacheSession:
     with self._lock:
       self._cached_factory = factory
 
-  def get_cached_factory(self) -> ModuleFactoryCache | None:
-    return self.cached_factory
-
-  def set_cached_factory(self, factory: ModuleFactoryCache | None) -> None:
-    self.cached_factory = factory
-
   def start_task(self, provider: str, model_id: str) -> bool:
     """Signals the start of a task for (provider, model_id).
 
