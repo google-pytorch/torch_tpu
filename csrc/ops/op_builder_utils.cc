@@ -698,6 +698,7 @@ absl::StatusOr<mlir::DenseElementsAttr> MakeConstantAttr(
     case mlir::ElementType::F8E4M3FNUZ:
     case mlir::ElementType::F8E5M2:
     case mlir::ElementType::F8E5M2FNUZ:
+    case mlir::ElementType::F8E5M3FNU:
     case mlir::ElementType::F8E8M0FNU:
     case mlir::ElementType::I2:
     case mlir::ElementType::I4:
@@ -1405,6 +1406,7 @@ mlir::MlirOp BuildFillUninitialized(mlir::MlirBuilder& builder,
     case mlir::ElementType::F8E4M3B11FNUZ:
     case mlir::ElementType::F8E5M2:
     case mlir::ElementType::F8E5M2FNUZ:
+    case mlir::ElementType::F8E5M3FNU:
     case mlir::ElementType::F8E8M0FNU:
     case mlir::ElementType::COMPLEXF32:
       return MakeConstant(builder, std::numeric_limits<float>::quiet_NaN(),

@@ -107,6 +107,9 @@ xla::PrimitiveType ToXlaType(const mlir::ElementType element_type) {
       return xla::PrimitiveType::F6E2M3FN;
     case mlir::ElementType::F6E3M2FN:
       return xla::PrimitiveType::F6E3M2FN;
+    // XLA has no corresponding PrimitiveType.
+    case mlir::ElementType::F8E5M3FNU:
+      break;
       // Deliberately omitting the default case. Without the default case, if an
       // enum value is added in the future and the author forgets to update this
       // switch statement, the C++ compiler will generate a warning (treated as
@@ -441,6 +444,9 @@ at::ScalarType ToScalarType(const mlir::ElementType element_type) {
     case mlir::ElementType::F8E3M4:
     case mlir::ElementType::F8E4M3B11FNUZ:
       break;
+    // TorchTPU does not yet support at::ScalarType::Float8_e5m3fnu.
+    case mlir::ElementType::F8E5M3FNU:
+      break;
   }
 
   ABSL_LOG(FATAL)  // CRASH_OK
@@ -581,6 +587,8 @@ std::string_view ToShortString(const mlir::ElementType element_type) {
       return "f8E5M2";
     case mlir::ElementType::F8E5M2FNUZ:
       return "f8E5M2FNUZ";
+    case mlir::ElementType::F8E5M3FNU:
+      return "f8E5M3FNU";
     case mlir::ElementType::F8E8M0FNU:
       return "f8E8M0FNU";
     case mlir::ElementType::COMPLEXF32:
@@ -713,6 +721,7 @@ int64_t TorchEquivalentBitwidth(mlir::ElementType element_type) {
     case mlir::ElementType::F8E4M3B11FNUZ:
     case mlir::ElementType::F8E5M2:
     case mlir::ElementType::F8E5M2FNUZ:
+    case mlir::ElementType::F8E5M3FNU:
     case mlir::ElementType::F8E8M0FNU:
       return 8;
     case mlir::ElementType::I16:
