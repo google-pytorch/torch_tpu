@@ -30,8 +30,10 @@
 #include <variant>
 #include <vector>
 
+#include "absl/base/attributes.h"
 #include "absl/base/no_destructor.h"
 #include "absl/base/nullability.h"
+#include "absl/base/optimization.h"
 #include "absl/base/thread_annotations.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
@@ -70,6 +72,10 @@ constexpr int kMinRepeatedSubsequenceLength = 2;
 constexpr int kMaxRepeatedSubsequenceLength = 128;
 constexpr int kMinRepetitionCount = 2;
 constexpr int kMaxTorchDevices = 8;
+
+// The number of streams that a graph capture is in progress on, so that graph
+// capture queries return quickly while there is none, which is the common case.
+ABSL_CONST_INIT std::atomic<int> g_active_graph_captures{0};
 
 // Creates a new deferred DeviceBufferList which represents a data dependency
 // but no actual computation.
@@ -208,6 +214,12 @@ class StreamState {
     futures_.clear();
     last_device_output_.reset();
     transfer_blocks_.clear();
+    if (graph_capture_status_ != GraphCaptureStatus::kNone) {
+      ABSL_LOG(WARNING)
+          << "clearing the state of a stream that a graph capture "
+             "is in progress on, which ends the capture";
+      SetGraphCaptureStatusLocked(GraphCaptureStatus::kNone);
+    }
   }
 
   // If a deferred op has no side effects, then as soon as all of its DataPtrs
@@ -359,6 +371,29 @@ class StreamState {
     return std::move(ready_work_);
   }
 
+  // Records that a graph capture begins on this stream. Returns false, and
+  // records nothing, if a graph capture is already in progress on it.
+  [[nodiscard]] bool TryBeginGraphCapture() ABSL_LOCKS_EXCLUDED(mu_) {
+    absl::MutexLock lock(mu_);
+    if (graph_capture_status_ != GraphCaptureStatus::kNone) {
+      return false;
+    }
+    SetGraphCaptureStatusLocked(GraphCaptureStatus::kActive);
+    return true;
+  }
+
+  // Records that the graph capture in progress on this stream, if any, has
+  // ended.
+  void EndGraphCapture() ABSL_LOCKS_EXCLUDED(mu_) {
+    absl::MutexLock lock(mu_);
+    SetGraphCaptureStatusLocked(GraphCaptureStatus::kNone);
+  }
+
+  // Returns whether a graph capture is in progress on this stream.
+  [[nodiscard]] bool IsCapturingGraph() const {
+    return is_capturing_graph_.load(std::memory_order_acquire);
+  }
+
   // Returns the core pinning mode of this events queue.
   CorePinningMode core_pinning_mode() const { return core_pinning_mode_; }
   // Sets the device pinning mode of this events queue.
@@ -492,6 +527,30 @@ class StreamState {
   }
 
  private:
+  // The status of graph capture on a stream.
+  enum class GraphCaptureStatus {
+    // No graph capture is in progress on the stream.
+    kNone,
+    // A graph capture is in progress on the stream.
+    kActive,
+  };
+
+  // Sets the status of graph capture on this stream, and keeps the number of
+  // streams that a graph capture is in progress on up to date.
+  void SetGraphCaptureStatusLocked(const GraphCaptureStatus status)
+      ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
+    const bool was_in_progress =
+        graph_capture_status_ != GraphCaptureStatus::kNone;
+    const bool in_progress = status != GraphCaptureStatus::kNone;
+    graph_capture_status_ = status;
+    is_capturing_graph_.store(status == GraphCaptureStatus::kActive,
+                              std::memory_order_release);
+    if (in_progress != was_in_progress) {
+      g_active_graph_captures.fetch_add(in_progress ? 1 : -1,
+                                        std::memory_order_acq_rel);
+    }
+  }
+
   // Result of CheckLastRepeatedSequence, representing the relationship of the
   // newest op to the prior loop sequence.
   enum class CheckLastRepeatedSequenceResult {
@@ -623,6 +682,12 @@ class StreamState {
   bool repeated_ops_graph_break_requested_ ABSL_GUARDED_BY(mu_) = false;
 
   std::atomic<CorePinningMode> core_pinning_mode_ = CorePinningMode::kUnpinned;
+
+  GraphCaptureStatus graph_capture_status_ ABSL_GUARDED_BY(mu_) =
+      GraphCaptureStatus::kNone;
+  // Whether a graph capture is in progress on this stream, for queries that do
+  // not acquire `mu_`.
+  std::atomic<bool> is_capturing_graph_{false};
 };
 StreamState::CheckLastRepeatedSequenceResult
 StreamState::CheckLastRepeatedSequence(size_t new_hash)
@@ -730,6 +795,19 @@ void StreamState::RecordRepeatedHashPattern(int64_t repetition_length)
 struct DeviceState {
   StreamState* absl_nonnull GetOrCreateStreamState(int64_t stream_id);
 
+  // Returns the state of the given stream, or nullptr if it has none yet.
+  // `stream_id` must not be negative.
+  StreamState* absl_nullable FindStreamState(int64_t stream_id) {
+    if (stream_id == 0) {
+      return &default_stream_state;
+    }
+    const size_t stream_index = stream_id - 1;
+    absl::MutexLock lock(mutex);
+    return stream_index < stream_states.size()
+               ? stream_states[stream_index].get()
+               : nullptr;
+  }
+
   std::vector<StreamState* absl_nonnull> GetAllStreamStates() {
     absl::MutexLock lock(mutex);
     std::vector<StreamState* absl_nonnull> including_default;
@@ -819,6 +897,19 @@ StreamState* absl_nonnull GetOrCreateStreamState(c10::DeviceIndex device_index,
   return GetStreamStates()
       .GetDeviceState(device_index)
       .GetOrCreateStreamState(stream_id);
+}
+
+// Returns the state of the given stream, or nullptr if the device index or
+// stream ID is invalid, or if the stream has no state yet. Unlike
+// GetOrCreateStreamState(), never creates the state of a stream, so that
+// queries about arbitrary streams cannot allocate memory or crash.
+StreamState* absl_nullable FindStreamState(c10::DeviceIndex device_index,
+                                           c10::StreamId stream_id) {
+  if (device_index < 0 || device_index >= kMaxTorchDevices || stream_id < 0) {
+    return nullptr;
+  }
+  return GetStreamStates().device_states[device_index].FindStreamState(
+      stream_id);
 }
 
 std::vector<StreamState* absl_nonnull> GetDeviceStreamStates(
@@ -1087,6 +1178,36 @@ absl::Status InsertGraphBreak(
   GetOrCreateStreamState(device_index, stream_id)
       ->InsertGraphBreak(std::move(must_materialize), reason, mode, eager_mode);
   return absl::OkStatus();
+}
+
+bool TryBeginStreamGraphCapture(const c10::DeviceIndex device_index,
+                                const c10::StreamId stream_id) {
+  // Like on CUDA, the default stream (stream 0) cannot be captured.
+  if (device_index < 0 || device_index >= kMaxTorchDevices || stream_id <= 0) {
+    return false;
+  }
+  return GetOrCreateStreamState(device_index, stream_id)
+      ->TryBeginGraphCapture();
+}
+
+void EndStreamGraphCapture(const c10::DeviceIndex device_index,
+                           const c10::StreamId stream_id) {
+  if (StreamState* const stream_state =
+          FindStreamState(device_index, stream_id);
+      stream_state != nullptr) {
+    stream_state->EndGraphCapture();
+  }
+}
+
+bool IsStreamCapturing(const c10::DeviceIndex device_index,
+                       const c10::StreamId stream_id) {
+  if (ABSL_PREDICT_TRUE(
+          g_active_graph_captures.load(std::memory_order_acquire) == 0)) {
+    return false;
+  }
+  const StreamState* const stream_state =
+      FindStreamState(device_index, stream_id);
+  return stream_state != nullptr && stream_state->IsCapturingGraph();
 }
 
 void WriteBackMaterializationFutures(
