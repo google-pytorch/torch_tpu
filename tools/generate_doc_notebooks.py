@@ -15,17 +15,19 @@
 
 """Generate the notebooks in docs/notebooks/ from their Markdown sources.
 
+Converts Markdown files that contain an "Open in Colab" snippet.
+
 Example usage:
-  # Convert all notebook sources.
+  # Convert all sources with "Open in Colab" snippet.
   $ tools/generate_doc_notebooks.py
 
-  # Convert only docs/NAME.md.
+  # Convert only docs/NAME.md if it has the snippet.
   $ tools/generate_doc_notebooks.py NAME
 
-NAME can be a basename or a path such as docs/NAME.md. Names not listed in
-NOTEBOOK_SOURCES are skipped, so the pre-commit hook can pass every changed
-Markdown file under docs/. Passing pyproject.toml converts all notebook sources,
-since the notebooks record the version set there.
+NAME can be a basename or a path such as docs/NAME.md. Files without the
+"Open in Colab" snippet are skipped, so the pre-commit hook can pass every
+changed Markdown file under docs/. Passing pyproject.toml converts all sources
+with the snippet, since the notebooks record the version set there.
 """
 
 import argparse
@@ -39,13 +41,12 @@ import tomllib
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 
-# The single list of docs that have a generated notebook.
-NOTEBOOK_SOURCES = (
-  "case_studies_flux",
-  "case_studies_muse_glimmer_30b_inference",
-  "dynamic_shapes",
-  "get_started_on_a_vm",
-  "intro_to_torchtpu",
+# Matches HTML comments for "Open in Colab" snippets.
+# Must contain "colab" (case-insensitive) and "open" or "link".
+_COLAB_SNIPPET = re.compile(
+  r"<!--[^-]*(?:open|link)[^-]*colab[^-]*-->\s*\n?|"
+  r"<!--[^-]*colab[^-]*(?:open|link)[^-]*-->\s*\n?",
+  re.IGNORECASE | re.DOTALL
 )
 
 # Matches the start of a relative link target, up to any .md suffix or anchor.
@@ -104,16 +105,45 @@ def rewrite_links(markdown: str, site_url: str) -> str:
   return _OTHER_LINK.sub(rf"]({site_url}/\1\2)", markdown)
 
 
+def strip_colab_snippet(markdown: str) -> str:
+  """Removes the 'Open in Colab' HTML comment from Markdown."""
+  return _COLAB_SNIPPET.sub("", markdown)
+
+
+def has_colab_snippet(path: pathlib.Path) -> bool:
+  """Returns True if the file contains an 'Open in Colab' snippet."""
+  try:
+    content = path.read_text(encoding="utf-8")
+    return bool(_COLAB_SNIPPET.search(content))
+  except (OSError, UnicodeDecodeError):
+    return False
+
+
 def select_sources(names: list[str]) -> list[str]:
-  """Returns the notebook sources to convert for the command line names."""
-  if not names or "pyproject.toml" in names:
-    return list(NOTEBOOK_SOURCES)
-  stems = (pathlib.Path(name).name.removesuffix(".md") for name in names)
-  return [stem for stem in stems if stem in NOTEBOOK_SOURCES]
+  """Returns stems of Markdown files with 'Open in Colab' snippet."""
+  if not names:
+    docs_dir = REPO_ROOT / "docs"
+    sources = [
+      f.stem for f in docs_dir.glob("*.md")
+      if f.is_file() and has_colab_snippet(f)
+    ]
+    return sorted(sources)
+
+  if "pyproject.toml" in names:
+    return select_sources([])
+
+  stems = []
+  for name in names:
+    path = pathlib.Path(name)
+    stem = path.name.removesuffix(".md")
+    source_file = REPO_ROOT / "docs" / f"{stem}.md"
+    if has_colab_snippet(source_file):
+      stems.append(stem)
+  return stems
 
 
 def main() -> None:
-  """Converts the selected notebook sources."""
+  """Converts Markdown files with 'Open in Colab' snippet to notebooks."""
   parser = argparse.ArgumentParser(
     description=__doc__,
     formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -122,7 +152,7 @@ def main() -> None:
     "names",
     nargs="*",
     metavar="NAME",
-    help="docs to convert (default: all notebook sources)",
+    help="docs to convert (default: all docs with 'Open in Colab' snippet)",
   )
   args = parser.parse_args()
 
@@ -153,6 +183,12 @@ def main() -> None:
     source = REPO_ROOT / "docs" / f"{name}.md"
     if not source.is_file():
       sys.exit(f"error: {source} does not exist")
+
+    # Read source and strip the colab snippet before conversion.
+    markdown = source.read_text(encoding="utf-8")
+    markdown = strip_colab_snippet(markdown)
+    markdown = rewrite_links(markdown, site_url)
+
     # --update reuses the cell ids of the existing notebook, so that
     # unchanged sources produce identical output.
     subprocess.run(
@@ -170,7 +206,7 @@ def main() -> None:
         "-",
       ],
       cwd=REPO_ROOT,
-      input=rewrite_links(source.read_text(encoding="utf-8"), site_url),
+      input=markdown,
       encoding="utf-8",
       check=True,
     )
