@@ -573,6 +573,9 @@ class _WrapperModule(torch.nn.Module):
   def forward(self, *args: Any) -> Any:
     if self.cpu_arg_indices:
       device = torch.accelerator.current_accelerator()
+      # `.to(device)` keeps the strides of dense tensors and makes the rest
+      # contiguous, always with storage offset 0. `_SubmodCompiler.compile_submod`
+      # compiles against the same layout.
       args = tuple(
           arg.to(device) if i in self.cpu_arg_indices else arg
           for i, arg in enumerate(args)
@@ -700,8 +703,20 @@ class _SubmodCompiler(torch.fx.interpreter.Interpreter):
           " and `capture_scalar_outputs`."
       )
 
+    # `_WrapperModule.forward` copies CPU arguments to the device with
+    # `.to(device)`, which produces storage offset 0 and, for dense tensors,
+    # the same strides. `torch.empty_like` with the default preserve_format
+    # has the same layout rule. Compile against it: the CPU tensors here may be
+    # views, e.g. `t[1]` of a CPU partition's output, and the executable would
+    # otherwise be built for the view's base storage and read past the copied
+    # buffer. Forcing contiguous_format instead would change the strides of
+    # transposed or channels_last arguments that later views depend on.
+    compile_args = [
+        torch.empty_like(arg) if i in cpu_arg_indices else arg
+        for i, arg in enumerate(args)
+    ]
     compiled_submod_real = self.compiler_fn(
-        input_mod, args, module_name=full_submod_name
+        input_mod, compile_args, module_name=full_submod_name
     )
     wrapper = _WrapperModule(
         compiled_submod_real, unwrap_singleton_tuple, cpu_arg_indices
