@@ -466,6 +466,7 @@ class StaticCompiler(Compiler):
               dynamic_outputs=dynamic_outputs,
               donated_inputs=donated_inputs,
               module_name=module_name,
+              compile_executable=True,
           )
 
       if exported_mlir.is_noop:

@@ -72,10 +72,14 @@ absl::StatusOr<at::Tensor> MakePlaceholder(Shape shape, bool requires_grad,
 //
 // Args:
 //   mlir_context: The MLIR context to use for the module.
-//   result_tensors: The result tensors of the graph.
 //   arg_tensors: The argument tensors of the graph.
+//   result_tensors: The result tensors of the graph.
 //   use_stablehlo_bounds: If true, use StableHLO style bounds in the generated
-//     MLIR for dynamic inputs
+//     MLIR for dynamic inputs.
+//   donated_inputs: Optional indices of arguments to donate.
+//   module_name: Optional custom name for the MLIR module.
+//   device_assignment: Optional output populated with the resolved device
+//     assignment for the graph.
 //
 // Returns:
 //   The MLIR module.
@@ -83,7 +87,10 @@ absl::StatusOr<at::Tensor> MakePlaceholder(Shape shape, bool requires_grad,
 // If the tensors are already materialized, will return status.
 absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> ExtractMlirFromGraph(
     mlir::MLIRContext& mlir_context, const std::vector<at::Tensor>& arg_tensors,
-    const std::vector<at::Tensor>& result_tensors, bool use_stablehlo_bounds);
+    const std::vector<at::Tensor>& result_tensors, bool use_stablehlo_bounds,
+    const Indices& donated_inputs = {},
+    const std::optional<std::string>& module_name = std::nullopt,
+    DeviceAssignment* absl_nullable device_assignment = nullptr);
 
 // Result of `TraverseAndCompile`, containing the compiled executable and
 // optionally additional compilation artifacts (like the MLIR module) if
