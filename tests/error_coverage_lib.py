@@ -382,18 +382,6 @@ class CoverageForFile:
     """Returns the coverage ratio as a float in the range [0, 1]."""
     return len(self.covered_locs) / len(self.locs) if self.locs else 1.0
 
-  def ratio_upper_bound(self) -> float:
-    """Returns the maximum possible coverage ratio.
-
-    Since some error macros are infeasible to test, maximum possible
-    coverage may be < 1.
-    """
-    return (
-        len(set(self.locs) - set(self.infeasible_locs)) / len(self.locs)
-        if self.locs
-        else 1.0
-    )
-
   def __str__(self):
     msg = (
         f"{self.cpp_file}:"
