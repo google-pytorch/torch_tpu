@@ -99,13 +99,15 @@ class ViewNarrowDtypeTest(seed_test_utils.RepeatableTest):
   def _apply(self, op: str, view: torch.Tensor, t1, t2):
     """Applies `op` and returns the tensor it wrote.
 
-    These three optimizer-style ops (from AdamW/Muon steps) cover the distinct
-    ways a view participates in an op:
+    These optimizer-style ops (from AdamW/Muon/FlexShard steps) cover the
+    distinct ways a view participates in an op:
       - `mul_`: in-place write on `view` with a scalar (reads `view` via
         forward view decomposition and writes back via inverse decomposition).
       - `addcdiv_`: in-place write on `view` combining multiple tensor
         operands (tests forward read + inverse write-back alongside other
         inputs).
+      - `copy_`: in-place TPU-to-TPU copy into `view` (tests `CopyTpuToTpu`
+        inverse write-back with base-buffer autodonation).
       - `lerp_`: read-only use of `view` as a source operand while mutating a
         standalone tensor `t1` (isolates forward view decomposition without
         inverse write-back on `view`).
@@ -114,11 +116,15 @@ class ViewNarrowDtypeTest(seed_test_utils.RepeatableTest):
       return view.mul_(0.5)
     if op == "addcdiv_":
       return view.addcdiv_(t1, t2, value=-0.125)
+    if op == "copy_":
+      return view.copy_(t1)
     if op == "lerp_":
       return t1.lerp_(view, 0.25)
     raise ValueError(f"unknown op: {op}")
 
-  @parameterized.product(kind=_VIEW_KINDS, op=("mul_", "addcdiv_", "lerp_"))
+  @parameterized.product(
+      kind=_VIEW_KINDS, op=("mul_", "addcdiv_", "copy_", "lerp_")
+  )
   def test_matches_standalone_and_preserves_rest_of_base(self, kind, op):
     with execution_mode.set_eager_mode(EagerMode.DEFER_NEVER):
       base_cpu = _make_base_cpu(kind, _LARGE_BASE_BYTES)
@@ -141,7 +147,7 @@ class ViewNarrowDtypeTest(seed_test_utils.RepeatableTest):
           torch.equal(_as_bytes(base.cpu()), _as_bytes(expected_base))
       )
 
-  @parameterized.parameters("mul_", "addcdiv_", "lerp_")
+  @parameterized.parameters("mul_", "addcdiv_", "copy_", "lerp_")
   def test_strided_column_view_matches_standalone_and_preserves_base(self, op):
     """Tests a column slice across all rows (GitHub issue #6046)."""
     with execution_mode.set_eager_mode(EagerMode.DEFER_NEVER):
@@ -167,6 +173,46 @@ class ViewNarrowDtypeTest(seed_test_utils.RepeatableTest):
           torch.equal(_as_bytes(base.cpu()), _as_bytes(expected_base))
       )
 
+  @parameterized.parameters(*_VIEW_KINDS)
+  def test_cross_dtype_and_aliased_copy_preserve_base(self, kind):
+    """Tests cross-dtype copy_ and same-storage aliased copy_ into a view."""
+    with execution_mode.set_eager_mode(EagerMode.DEFER_NEVER):
+      base_cpu = _make_base_cpu(kind, _SMALL_BASE_BYTES)
+      base = base_cpu.to(self.device)
+      view = _make_view(kind, base)
+      shape = (_VIEW_NUMEL,) if kind == "1d" else (1024, 1024)
+      src_bf16_cpu = torch.randn(shape, dtype=torch.bfloat16)
+      src_bf16 = src_bf16_cpu.to(self.device)
+
+      # 1. Cross-dtype copy_ (bfloat16 -> float32 view of uint8 base).
+      view.copy_(src_bf16)
+      expected_base = base_cpu.clone()
+      _make_view(kind, expected_base).copy_(src_bf16_cpu)
+      self.assertTrue(
+          torch.equal(_as_bytes(base.cpu()), _as_bytes(expected_base))
+      )
+
+      # 2. Aliased copy_ from another slice of the same storage.
+      alias_src_view = (
+          base[:_VIEW_BYTES].view(torch.float32)
+          if kind != "3d"
+          else base[:1024].view(torch.float32).view(1024, 1024)
+      )
+      if kind == "2d":
+        alias_src_view = alias_src_view.view(1024, 1024)
+      view.copy_(alias_src_view)
+      expected_alias_src = (
+          expected_base[:_VIEW_BYTES].view(torch.float32)
+          if kind != "3d"
+          else expected_base[:1024].view(torch.float32).view(1024, 1024)
+      ).clone()
+      if kind == "2d":
+        expected_alias_src = expected_alias_src.view(1024, 1024)
+      _make_view(kind, expected_base).copy_(expected_alias_src)
+      self.assertTrue(
+          torch.equal(_as_bytes(base.cpu()), _as_bytes(expected_base))
+      )
+
   def _best_time_per_op(self, fn, warmup=10, trials=5, iters=20) -> float:
     for _ in range(warmup):
       fn()
@@ -186,7 +232,7 @@ class ViewNarrowDtypeTest(seed_test_utils.RepeatableTest):
     t1, t2 = self._operands(kind)
     return self._best_time_per_op(lambda: self._apply(op, view, t1, t2))
 
-  @parameterized.product(kind=_VIEW_KINDS, op=("mul_", "lerp_"))
+  @parameterized.product(kind=_VIEW_KINDS, op=("mul_", "copy_", "lerp_"))
   def test_cost_independent_of_base_size(self, kind, op):
     """An op on the view costs the same in a 256 MiB and an 8 MiB base."""
     with execution_mode.set_eager_mode(EagerMode.DEFER_NEVER):

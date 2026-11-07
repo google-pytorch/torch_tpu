@@ -2320,6 +2320,70 @@ class InplaceBufferDonationTest(seed_test_utils.RepeatableTest):
       self.assertTrue(torch.equal(res.cpu(), expected))
       self.assertTrue(torch.equal(v.cpu(), expected))
 
+  def test_copy_to_view_donates_base_buffer_in_defer_never(self):
+    """Verifies that TPU-to-TPU copy_ into a view donates the base buffer."""
+    with execution_mode.set_eager_mode(EagerMode.DEFER_NEVER):
+      num_elements = 4 * 1024 * 1024  # 16 MB base
+      slice_elements = 1024 * 1024  # 4 MB slice
+      slice_bytes = slice_elements * 4
+      base = torch.zeros(num_elements, dtype=torch.float32, device=self.device)
+      _ = base.cpu()
+      view = base[slice_elements : 2 * slice_elements]
+
+      # 1. Same-dtype TPU-to-TPU copy_ into a slice view donates the base buffer
+      #    in-place with 0 additional bytes allocated (vs. 16 MB without
+      #    base-buffer donation).
+      src = torch.ones(slice_elements, dtype=torch.float32, device=self.device)
+      _ = src.cpu()
+      view.copy_(src)
+      torch.accelerator.synchronize()
+      gc.collect()
+
+      torch.accelerator.reset_peak_memory_stats()
+      base_mem = torch.accelerator.memory_allocated()
+      view.copy_(src)
+      torch.accelerator.synchronize()
+      peak_mem = torch.accelerator.max_memory_allocated()
+      self.assertEqual(peak_mem - base_mem, 0)
+      self.assertTrue(torch.all(view.cpu() == 1.0))
+
+      # 2. Cross-dtype TPU-to-TPU copy_ into a slice view allocates only the
+      #    4 MB converted slice buffer and donates the 16 MB base buffer
+      #    in-place (4 MB peak delta vs. 20 MB without base-buffer donation).
+      src_bf16 = torch.full(
+          (slice_elements,), 2.0, dtype=torch.bfloat16, device=self.device
+      )
+      _ = src_bf16.cpu()
+      view.copy_(src_bf16)
+      torch.accelerator.synchronize()
+      gc.collect()
+
+      torch.accelerator.reset_peak_memory_stats()
+      base_mem = torch.accelerator.memory_allocated()
+      view.copy_(src_bf16)
+      torch.accelerator.synchronize()
+      peak_mem = torch.accelerator.max_memory_allocated()
+      self.assertLessEqual(peak_mem - base_mem, slice_bytes)
+      self.assertTrue(torch.all(view.cpu() == 2.0))
+
+      # 3. Same-storage aliased copy_ (`dest.is_alias_of(src)`) must not
+      #    corrupt source data and preserves the rest of the base buffer.
+      small_base = torch.arange(
+          16, dtype=torch.float32, device=self.device
+      ).clone()
+      small_base[4:12].copy_(small_base[0:8])
+      expected_small = torch.arange(16, dtype=torch.float32)
+      expected_small[4:12] = expected_small[0:8].clone()
+      self.assertTrue(torch.equal(small_base.cpu(), expected_small))
+
+      # 4. Shallow clone safety: mutating a view via copy_ must not corrupt a
+      #    clone sharing the underlying DeviceBufferRef.
+      cloned_base = small_base.clone()
+      small_base[0:4].copy_(
+          torch.full((4,), 99.0, dtype=torch.float32, device=self.device)
+      )
+      self.assertTrue(torch.equal(cloned_base.cpu(), expected_small))
+
 
 if __name__ == "__main__":
   absltest.main()

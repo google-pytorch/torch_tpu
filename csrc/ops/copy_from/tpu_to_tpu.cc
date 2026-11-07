@@ -32,6 +32,8 @@
 #include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
 #include "csrc/eager/device_buffer.h"
+#include "csrc/eager/device_buffer_utils.h"
+#include "csrc/eager/eager_mode.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/copy_from/copy_common.h"
@@ -82,6 +84,21 @@ absl::StatusOr<mlir::MlirOp> PadFP4(mlir::MlirOp input) {
                               interior_padding);
 }
 
+absl::Status AssignCopyResultToDest(DeviceBufferRef result_buf,
+                                    const at::Tensor& src,
+                                    const at::Tensor& dest) {
+  const bool can_autodonate = !dest.is_alias_of(src) &&
+                              IsInplaceBufferDonationEnabled() &&
+                              SupportsInplaceBufferDonation(GetEagerMode());
+  TT_RETURN_IF_ERROR(
+      AssignBufferToAtTensor(std::move(result_buf), dest,
+                             /*enable_autodonation=*/can_autodonate));
+  if (can_autodonate) {
+    TT_RETURN_IF_ERROR(internal::RunPostponedMaterialization());
+  }
+  return absl::OkStatus();
+}
+
 }  // namespace
 
 absl::Status CopyTpuToTpu(const at::Tensor& src, const at::Tensor& dest) {
@@ -117,7 +134,7 @@ absl::Status CopyTpuToTpu(const at::Tensor& src, const at::Tensor& dest) {
       return AssignBufferAsStorageBase(std::move(src_base_buf), viewed_dest);
     }
     TT_ASSIGN_OR_RETURN(const DeviceBufferRef src_buf, GetBuffer(viewed_src));
-    return AssignBufferToAtTensor(src_buf, viewed_dest);
+    return AssignCopyResultToDest(src_buf, viewed_src, viewed_dest);
   }
 
   // If the dtype is different or shape is different, then we need to dispatch
@@ -171,7 +188,7 @@ absl::Status CopyTpuToTpu(const at::Tensor& src, const at::Tensor& dest) {
                      .out_dims = out_dims,
                      .op_param_cache_keys = OpParamCacheKeys::Empty()}),
       _.SetPrepend() << "failed to copy from 'tpu' to 'tpu' device: ");
-  return AssignBufferToAtTensor(new_buf, viewed_dest);
+  return AssignCopyResultToDest(std::move(new_buf), viewed_src, viewed_dest);
 }
 
 }  // namespace torch_tpu
