@@ -431,6 +431,7 @@ torch_tpu_cc_test(
         ":unfold_primitive",
         ":view_sequence",
         "//csrc/common:dimension_types",
+        "//csrc/common:dtype",
         "//csrc/common:error_utils",
         "//csrc/common:oss_test_main",
         "//csrc/common:status_test_utils",

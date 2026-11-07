@@ -29,6 +29,7 @@
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "csrc/common/dimension_types.h"
+#include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/status_test_utils.h"
 #include "csrc/common/to_string.h"
@@ -1105,11 +1106,36 @@ StorageIndices Apply(const StorageIndices& input, const ConjPrimitive& conj) {
   return input;
 }
 
-// Bitcasts change the number of elements per storage index, which
-// StorageIndices does not model.
+// A bitcast to a narrower type splits each element along a new last dimension.
+// The storage indices then count elements of the narrower type, like the
+// storage offset and strides of a view with that type.
+StorageIndices Apply(const StorageIndices& input,
+                     const RealToRealBitcast& bitcast) {
+  const int64_t from_bitwidth = TorchEquivalentBitwidth(bitcast.from_type);
+  const int64_t to_bitwidth = TorchEquivalentBitwidth(bitcast.to_type);
+  if (from_bitwidth < to_bitwidth) {
+    ADD_FAILURE() << "bitcasts to a wider type are not supported, got "
+                  << bitcast;
+    return input;
+  }
+  const int64_t ratio = from_bitwidth / to_bitwidth;
+  StorageIndices result = {.sizes = input.sizes};
+  if (ratio > 1) {
+    result.sizes.push_back(ratio);
+  }
+  for (const int64_t value : input.values) {
+    for (int64_t i = 0; i < ratio; ++i) {
+      result.values.push_back(value < 0 ? value : value * ratio + i);
+    }
+  }
+  return result;
+}
+
+// Complex bitcasts change the number of elements per storage index in ways
+// that StorageIndices does not model.
 template <typename T>
 StorageIndices Apply(const StorageIndices& input, const T& bitcast) {
-  ADD_FAILURE() << "bitcasts are not supported, got " << bitcast;
+  ADD_FAILURE() << "complex bitcasts are not supported, got " << bitcast;
   return input;
 }
 
@@ -1158,15 +1184,16 @@ void ExpectReadsViewElements(ViewSequenceSpan view_sequence,
   EXPECT_EQ(actual.values, expected.values) << ToString(view_sequence);
 }
 
-// Decomposes a view of a contiguous F32 base, and checks that the view sequence
+// Decomposes a view of a contiguous base, and checks that the view sequence
 // reads the elements of the view before and after simplification. Returns the
 // simplified view sequence.
 ViewSequence DecomposeAndCheckElements(
     absl::Span<const int64_t> contiguous_base_shape,
-    const StridedLayout& view_layout) {
-  absl::StatusOr<ViewSequence> sequence =
-      DecomposeIntoViewSequence(contiguous_base_shape, mlir::ElementType::F32,
-                                view_layout, mlir::ElementType::F32);
+    const StridedLayout& view_layout,
+    const mlir::ElementType contiguous_base_dtype = mlir::ElementType::F32,
+    const mlir::ElementType view_dtype = mlir::ElementType::F32) {
+  absl::StatusOr<ViewSequence> sequence = DecomposeIntoViewSequence(
+      contiguous_base_shape, contiguous_base_dtype, view_layout, view_dtype);
   if (!sequence.ok()) {
     ADD_FAILURE() << sequence.status();
     return {};
@@ -1296,44 +1323,111 @@ TEST(DecomposeIntoViewSequence, ExpandedDimensionUsesBroadcast) {
       HasRepeatingPrimitive(DecomposeAndCheckElements({8}, view_layout)));
 }
 
-// Checks the decomposition of the views with the given sizes and strides at
-// storage offsets 0 and 1, over the smallest contiguous base that holds the
-// view and over a larger one. A view that isn't overlapping must not repeat
-// elements, so that writes to it can be inverted.
-void CheckSmallLayout(absl::Span<const int64_t> sizes,
-                      absl::Span<const int64_t> strides) {
-  const bool is_overlapping = IsOverlapping(sizes, strides);
-  for (int64_t storage_offset = 0; storage_offset <= 1; ++storage_offset) {
-    StridedLayout view_layout = {.storage_offset = storage_offset};
-    int64_t numel = storage_offset + 1;
-    for (int64_t i = 0; i < sizes.size(); ++i) {
-      view_layout.strided_dims.push_back(
-          {.size = sizes[i], .stride = strides[i]});
-      numel += (sizes[i] - 1) * strides[i];
-    }
-    SCOPED_TRACE(view_layout);
-    for (const int64_t base_numel : {numel, numel + 5}) {
-      const ViewSequence sequence =
-          DecomposeAndCheckElements({base_numel}, view_layout);
-      if (!is_overlapping) {
-        EXPECT_FALSE(HasRepeatingPrimitive(sequence)) << ToString(sequence);
-      }
-    }
-  }
+TEST(DecomposeIntoViewSequence, StridedViewOfTwoDimensionalBase) {
+  // x.view(-1)[1:11].view(2, 5).unfold(1, 2, 3) for x of shape (6, 2). The rows
+  // of dimension 0 need a pad, so the head slice of the flattened base keeps
+  // the storage offset: [1:11]. Simplify can't move that slice before the
+  // reshape of the base, since dimension 1 of the base would need an empty
+  // slice.
+  const Dimensions contiguous_base_shape = {6, 2};
+  StridedLayout view_layout = {
+      .strided_dims = {{.size = 2, .stride = 5},
+                       {.size = 2, .stride = 3},
+                       {.size = 2, .stride = 1}},
+      .storage_offset = 1,
+  };
+  EXPECT_FALSE(HasRepeatingPrimitive(
+      DecomposeAndCheckElements(contiguous_base_shape, view_layout)));
+
+  // The same view after .permute(2, 1, 0).
+  view_layout.strided_dims = {{.size = 2, .stride = 1},
+                              {.size = 2, .stride = 3},
+                              {.size = 2, .stride = 5}};
+  EXPECT_FALSE(HasRepeatingPrimitive(
+      DecomposeAndCheckElements(contiguous_base_shape, view_layout)));
 }
 
-TEST(DecomposeIntoViewSequence, SmallLayouts) {
-  // Every layout with up to 3 dimensions of size <= 3 and stride <= 7.
+TEST(DecomposeIntoViewSequence, StridedNarrowViewOfWideBase) {
+  // torch.zeros(6).view(torch.bfloat16).as_strided((2, 2, 2), (1, 3, 5), 1).
+  // The bitcast to bfloat16 turns the base into shape (6, 2), as above.
+  const StridedLayout view_layout = {
+      .strided_dims = {{.size = 2, .stride = 1},
+                       {.size = 2, .stride = 3},
+                       {.size = 2, .stride = 5}},
+      .storage_offset = 1,
+  };
+  EXPECT_FALSE(HasRepeatingPrimitive(DecomposeAndCheckElements(
+      {6}, view_layout, mlir::ElementType::F32, mlir::ElementType::BF16)));
+}
+
+TEST(DecomposeIntoViewSequence, StridedSliceOfTwoDimensionalBase) {
+  // torch.ones(5, 4)[2::2, 2]. Simplify can't move the head slice of the
+  // flattened base, [3:19], before the reshape of the base, since dimension 1
+  // of the base would need an empty slice.
+  const StridedLayout view_layout = {
+      .strided_dims = {{.size = 2, .stride = 8}},
+      .storage_offset = 10,
+  };
+  DecomposeAndCheckElements({5, 4}, view_layout);
+}
+
+// Calls fn with every view layout with up to 3 dimensions of size <= 3, stride
+// <= 7 and storage offset <= 1, and the number of elements of the smallest
+// contiguous base that holds the view.
+void ForEachSmallLayout(
+    absl::FunctionRef<void(const StridedLayout&, int64_t)> fn) {
   for (int64_t rank = 0; rank <= 3; ++rank) {
     ForEachIndex(Dimensions(rank, 4), [&](absl::Span<const int64_t> sizes) {
       if (absl::c_linear_search(sizes, 0)) {
         return;
       }
       ForEachIndex(Dimensions(rank, 8), [&](absl::Span<const int64_t> strides) {
-        CheckSmallLayout(sizes, strides);
+        for (int64_t storage_offset = 0; storage_offset <= 1;
+             ++storage_offset) {
+          StridedLayout view_layout = {.storage_offset = storage_offset};
+          int64_t numel = storage_offset + 1;
+          for (int64_t i = 0; i < sizes.size(); ++i) {
+            view_layout.strided_dims.push_back(
+                {.size = sizes[i], .stride = strides[i]});
+            numel += (sizes[i] - 1) * strides[i];
+          }
+          fn(view_layout, numel);
+        }
       });
     });
   }
+}
+
+// Checks the decomposition of the view over the contiguous base. A view that
+// isn't overlapping must not repeat elements, so that writes to it can be
+// inverted.
+void CheckSmallLayout(absl::Span<const int64_t> contiguous_base_shape,
+                      const StridedLayout& view_layout) {
+  SCOPED_TRACE(testing::Message()
+               << "contiguous_base_shape: " << ToString(contiguous_base_shape)
+               << ", view_layout: " << view_layout);
+  const ViewSequence sequence =
+      DecomposeAndCheckElements(contiguous_base_shape, view_layout);
+  if (!IsOverlapping(GetSizes(view_layout), GetStrides(view_layout))) {
+    EXPECT_FALSE(HasRepeatingPrimitive(sequence)) << ToString(sequence);
+  }
+}
+
+TEST(DecomposeIntoViewSequence, SmallLayouts) {
+  // The smallest 1-D base that holds the view, and a larger one.
+  ForEachSmallLayout([](const StridedLayout& view_layout, int64_t numel) {
+    CheckSmallLayout({numel}, view_layout);
+    CheckSmallLayout({numel + 5}, view_layout);
+  });
+}
+
+TEST(DecomposeIntoViewSequence, SmallLayoutsOfTwoDimensionalBases) {
+  // Eager storage keeps the shape of the tensor that created it, so the base
+  // often has more than one dimension.
+  ForEachSmallLayout([](const StridedLayout& view_layout, int64_t numel) {
+    CheckSmallLayout({(numel + 1) / 2, 2}, view_layout);
+    CheckSmallLayout({(numel + 2) / 3, 3}, view_layout);
+  });
 }
 
 TEST(GetContiguousBaseShape, StridedSliceOfMiddleDimension) {

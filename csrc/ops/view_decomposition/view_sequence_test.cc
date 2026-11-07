@@ -231,6 +231,20 @@ TEST(Simplify, MergedReshapeAndSlice) {
                });
 }
 
+TEST(Simplify, DoNotMoveUnalignedSliceBeforeReshape) {
+  // Equivalent to:
+  // torch.arange(12).view(6, 2).view(12)[1:11]
+  // No slice of the (6, 2) base selects elements [1, 11), so the slice stays
+  // after the reshape.
+  ViewSequence sequence = {
+      ReshapePrimitive{.base_sizes = {6, 2}, .new_sizes = {12}},
+      SlicePrimitive{
+          .slice_dims = {{.start_index = 1, .limit_index = 11, .stride = 1}}}};
+  ViewSequence expected = sequence;  // Should not be modified
+
+  SimplifyTest({6, 2}, std::move(sequence), std::move(expected));
+}
+
 TEST(Simplify, RecursiveSimplify) {
   // The slice and transpose are no ops that get removed.
   // Then we have 3 sequential reshapes that get merged.

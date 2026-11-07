@@ -1349,6 +1349,21 @@ class UnfoldTest(LayoutTest):
         )
     )
 
+  def test_unfold_of_slice_mutate_base(self):
+    # The view has strides (5, 3, 1) and storage offset 1 in a (6, 2) storage.
+    self._assert_same_mutation_from_base(
+        (6, 2),
+        lambda tensor: tensor.view(-1)[1:11].view(2, 5).unfold(1, 2, 3),
+    )
+
+  def test_unfold_of_slice_mutate_view(self):
+    # The windows don't overlap, so the view can be written.
+    base_cpu = torch.arange(12, dtype=torch.float32).reshape(6, 2)
+    base_tpu = base_cpu.to(self.tpu_device)
+    for base in (base_cpu, base_tpu):
+      base.view(-1)[1:11].view(2, 5).unfold(1, 2, 3).mul_(-1)
+    utils.assert_close(base_tpu.cpu(), base_cpu)
+
   def test_unfold_mutate_base(self):
     self._assert_same_mutation_from_base(
         (1024, 128),
@@ -1474,6 +1489,16 @@ class StridedSliceViewTest(LayoutTest):
       else:
         base[index].mul_(src)
 
+    utils.assert_close(base_tpu.cpu(), base_cpu)
+
+  def test_strided_slice_of_2d_base(self):
+    # x[2::2, 2] has stride 8 and storage offset 10 in a (5, 4) storage.
+    base_cpu = torch.arange(20, dtype=torch.float32).reshape(5, 4)
+    base_tpu = base_cpu.to(self.tpu_device)
+    utils.assert_close(base_tpu[2::2, 2].cpu(), base_cpu[2::2, 2])
+
+    base_cpu[2::2, 2] = -1.0
+    base_tpu[2::2, 2] = -1.0
     utils.assert_close(base_tpu.cpu(), base_cpu)
 
 

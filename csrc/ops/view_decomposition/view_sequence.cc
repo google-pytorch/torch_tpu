@@ -222,7 +222,7 @@ bool ComputeStartAndLimit(const StridedLayout& layout_before_reshape,
         max_element_decrease / layout_before_reshape.strided_dims[i].stride;
     int64_t limit_index =
         layout_before_reshape.strided_dims[i].size - high_shift;
-    if (limit_index < start_index) {
+    if (limit_index <= start_index) {
       return false;
     }
     offset_increase -=
