@@ -839,6 +839,16 @@ torch_tpu_cc_library(
     ],
 )
 
+torch_tpu_cc_test(
+    name = "fixed_size_span_test",
+    srcs = ["fixed_size_span_test.cc"],
+    deps = [
+        ":fixed_size_span",
+        "//csrc/common:oss_test_main",
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
 torch_tpu_cc_library(
     name = "const_tensor",
     srcs = ["const_tensor.cc"],
