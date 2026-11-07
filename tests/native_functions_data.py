@@ -252,10 +252,6 @@ UNREGISTERED_OPS = frozenset([
     'lstm_mps_backward',
     'matmul_backward',  # No need to register as matmul is an optional op
     'max_pool2d_backward',
-    'max_unpool2d',
-    'max_unpool2d.out',
-    'max_unpool3d',
-    'max_unpool3d.out',
     'median',
     'median.dim_values',
     'miopen_batch_norm',

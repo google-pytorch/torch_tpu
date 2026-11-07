@@ -183,6 +183,7 @@
 #include "csrc/ops/pooling/adaptive_max_pool_aten_kernels.h"
 #include "csrc/ops/pooling/avg_pool_aten_kernels.h"
 #include "csrc/ops/pooling/max_pool_aten_kernels.h"
+#include "csrc/ops/pooling/max_unpool_aten_kernels.h"
 #include "csrc/ops/pooling/pooling.h"
 #include "csrc/ops/prelu/prelu_aten_kernels.h"
 #include "csrc/ops/prod/prod_aten_kernels.h"
@@ -868,6 +869,10 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kMaxPool3dWithIndicesBackwardGradInput>(
       m, AtenMaxPool3dWithIndicesBackwardGradInput);
   ImplStable<OpName::kMaxPool3dWithIndicesOut>(m, AtenMaxPool3dWithIndicesOut);
+  ImplStable<OpName::kMaxUnpool2d>(m, AtenMaxUnpool2d);
+  ImplStable<OpName::kMaxUnpool2dOut>(m, AtenMaxUnpool2dOut);
+  ImplStable<OpName::kMaxUnpool3d>(m, AtenMaxUnpool3d);
+  ImplStable<OpName::kMaxUnpool3dOut>(m, AtenMaxUnpool3dOut);
   ImplStable<OpName::kMaxUnaryOut>(m, AtenMaxUnaryOut);
   ImplStable<OpName::kMaximumOut>(m, AtenMaximumOut);
   ImplStable<OpName::kMeanOut>(m, AtenMeanOut);
