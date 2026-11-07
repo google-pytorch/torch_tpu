@@ -102,6 +102,14 @@ GraphKey AnnotateGraphKeyWithArgumentLayouts(
 GraphKey AnnotateGraphKeyWithDonatedInputs(
     const GraphKey& graph_key, absl::Span<const int64_t> donated_inputs);
 
+// Creates a deferred identity-relayout DeviceBufferRef targeting
+// `required_mtm` if `buf`'s current on-device layout differs, and updates
+// `buf`'s layout metadata. Returns std::nullopt when `buf` already has
+// `required_mtm`.
+absl::StatusOr<std::optional<DeviceBufferRef>>
+MaybeCreate3DArgumentRelayoutBuffer(DeviceBufferRef& buf,
+                                    const Indices& required_mtm);
+
 // A traversed graph of deferred ops, ready to be compiled and (optionally)
 // executed.
 // TODO(bawilson): add tests once at::Tensor dependency is removed from core

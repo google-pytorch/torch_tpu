@@ -326,6 +326,24 @@ absl::StatusOr<ExecutionTask> ExecutionTask::FromTraversal(
         GetKernelType(compiled_traversal_or->compiled_kernel);
   }
 
+  // Stamp non-default output layouts onto traversal outputs unconditionally.
+  // This ensures custom output layouts are applied on both cache hits and
+  // misses.
+  if (compiled_traversal_or->compiled_kernel.fixed_shape_kernel.valid()) {
+    auto executable_or =
+        compiled_traversal_or->compiled_kernel.fixed_shape_kernel.get();
+    if (executable_or.ok()) {
+      const auto& output_shapes = (*executable_or)->output_shapes();
+      for (size_t i = 0;
+           i < traversal->outputs().size() && i < output_shapes.size(); ++i) {
+        if (output_shapes[i].layout().has_value() &&
+            !output_shapes[i].layout()->minor_to_major.empty()) {
+          traversal->outputs()[i].set_layout(*output_shapes[i].layout());
+        }
+      }
+    }
+  }
+
   // Mark all outputs of the split as scheduled/materialized.
   ABSL_VLOG(1) << "[ExecutionTask] Setting " << traversal->outputs().size()
                << " output buffers as pending materialization";

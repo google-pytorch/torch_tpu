@@ -16,10 +16,12 @@
 
 #include "csrc/eager/materialize.h"
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -60,7 +62,9 @@
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "xla/future.h"
+#include "xla/layout_util.h"
 #include "xla/pjrt/pjrt_client.h"
+#include "xla/shape_util.h"
 
 namespace torch_tpu {
 namespace {
@@ -109,6 +113,384 @@ TEST_F(MaterializeTest, MaterializedZeroSizeBufferSuccess) {
   EXPECT_EQ(Materialize(ref, MaterializationReason::kExplicitSync),
             absl::OkStatus());
   EXPECT_TRUE(ref.AwaitBuffer().ok());
+}
+
+TEST_F(MaterializeTest, Create3DArgumentRelayoutBuffer) {
+  const ScopedPythonContextCapturer capturer(OpName::kEmpty);
+
+  // 1. Placeholder buffer has no physical buffer, so it returns nullopt without
+  // error.
+  TT_ASSERT_OK_AND_ASSIGN(DeviceBufferRef placeholder,
+                          DeviceBufferList::CreatePlaceholder(
+                              Dimensions{2, 4, 8}, mlir::ElementType::F32));
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::optional<DeviceBufferRef> placeholder_relayout,
+      MaybeCreate3DArgumentRelayoutBuffer(placeholder, {2, 1, 0}));
+  EXPECT_FALSE(placeholder_relayout.has_value());
+
+  // 2. Materialize a 3D buffer on device.
+  TT_ASSERT_OK_AND_ASSIGN(
+      DeviceBufferRef buf,
+      CreateEmptyDeviceBufferRef({2, 4, 8}, mlir::ElementType::F32));
+  ASSERT_EQ(Materialize({buf}, MaterializationReason::kExplicitSync),
+            absl::OkStatus());
+  TT_ASSERT_OK_AND_ASSIGN(xla::PjRtBuffer* const pjrt_buf, buf.AwaitBuffer());
+  ASSERT_NE(pjrt_buf, nullptr);
+
+  // 3. Request a relayout to a layout that differs from current layout.
+  const xla::Layout& current_layout = pjrt_buf->on_device_shape().layout();
+  const Indices kTargetMtm =
+      (current_layout.minor_to_major() == absl::Span<const int64_t>({2, 1, 0}))
+          ? Indices{0, 1, 2}
+          : Indices{2, 1, 0};
+
+  TT_ASSERT_OK_AND_ASSIGN(std::optional<DeviceBufferRef> relayout_ref,
+                          MaybeCreate3DArgumentRelayoutBuffer(buf, kTargetMtm));
+  ASSERT_TRUE(relayout_ref.has_value());
+  RecordDeferredOpCreated(relayout_ref->device_buffer_list());
+  ASSERT_EQ(
+      Materialize({*relayout_ref}, MaterializationReason::kCompileModeExecution,
+                  GraphSplitMode::kSplitGraph),
+      absl::OkStatus());
+  TT_ASSERT_OK_AND_ASSIGN(xla::PjRtBuffer* const relayout_pjrt_buf,
+                          relayout_ref->AwaitBuffer());
+  ASSERT_NE(relayout_pjrt_buf, nullptr);
+  EXPECT_EQ(relayout_pjrt_buf->on_device_shape().layout().minor_to_major(),
+            absl::Span<const int64_t>(kTargetMtm));
+
+  // The original buffer remains immutable and untouched.
+  EXPECT_EQ(pjrt_buf->on_device_shape().layout().minor_to_major(),
+            current_layout.minor_to_major());
+
+  // 4. Once layout matches on the relayout buffer, calling with the same target
+  // layout returns nullopt.
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::optional<DeviceBufferRef> second_relayout,
+      MaybeCreate3DArgumentRelayoutBuffer(*relayout_ref, kTargetMtm));
+  EXPECT_FALSE(second_relayout.has_value());
+}
+
+TEST_F(MaterializeTest, RelayoutDoesNotDataRaceWithConcurrentReaders) {
+  const ScopedPythonContextCapturer capturer(OpName::kEmpty);
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      DeviceBufferRef buf,
+      CreateEmptyDeviceBufferRef({2, 4, 8}, mlir::ElementType::F32));
+  ASSERT_EQ(Materialize({buf}, MaterializationReason::kExplicitSync),
+            absl::OkStatus());
+  TT_ASSERT_OK_AND_ASSIGN(xla::PjRtBuffer* const pjrt_buf, buf.AwaitBuffer());
+  ASSERT_NE(pjrt_buf, nullptr);
+
+  const xla::Layout& current_layout = pjrt_buf->on_device_shape().layout();
+  const Indices kTargetMtm =
+      (current_layout.minor_to_major() == absl::Span<const int64_t>({2, 1, 0}))
+          ? Indices{0, 1, 2}
+          : Indices{2, 1, 0};
+
+  std::atomic<bool> done{false};
+  std::vector<std::thread> readers;
+  readers.reserve(4);
+  for (int i = 0; i < 4; ++i) {
+    readers.emplace_back([&buf, &done]() {
+      while (!done.load(std::memory_order_relaxed)) {
+        auto await_or = buf.AwaitBuffer();
+        ASSERT_TRUE(await_or.ok());
+        ASSERT_NE(*await_or, nullptr);
+        EXPECT_EQ(buf.dimensions().size(), 3);
+        auto shared_or = buf.GetSharedBuffer();
+        ASSERT_TRUE(shared_or.ok());
+        ASSERT_NE(*shared_or, nullptr);
+      }
+    });
+  }
+
+  // Concurrently perform relayout creation and materialization.
+  for (int iter = 0; iter < 10; ++iter) {
+    auto relayout_ref_or = MaybeCreate3DArgumentRelayoutBuffer(buf, kTargetMtm);
+    ASSERT_TRUE(relayout_ref_or.ok());
+    if (relayout_ref_or->has_value()) {
+      RecordDeferredOpCreated((*relayout_ref_or)->device_buffer_list());
+      ASSERT_EQ(Materialize({**relayout_ref_or},
+                            MaterializationReason::kCompileModeExecution,
+                            GraphSplitMode::kSplitGraph),
+                absl::OkStatus());
+    }
+  }
+
+  done.store(true, std::memory_order_relaxed);
+  for (auto& reader : readers) {
+    reader.join();
+  }
+}
+
+TEST_F(MaterializeTest, RelayoutBufferIsAdoptedAndOldBufferDropped) {
+  const ScopedPythonContextCapturer capturer(OpName::kEmpty);
+
+  // 1. Materialize a 3D weight buffer on device.
+  TT_ASSERT_OK_AND_ASSIGN(
+      DeviceBufferRef weight_buf,
+      CreateEmptyDeviceBufferRef({2, 4, 8}, mlir::ElementType::F32));
+  ASSERT_EQ(Materialize({weight_buf}, MaterializationReason::kExplicitSync),
+            absl::OkStatus());
+  TT_ASSERT_OK_AND_ASSIGN(xla::PjRtBuffer* const pjrt_buf,
+                          weight_buf.AwaitBuffer());
+  ASSERT_NE(pjrt_buf, nullptr);
+
+  // Capture shared_ptr to the old buffer.
+  TT_ASSERT_OK_AND_ASSIGN(std::shared_ptr<xla::PjRtBuffer> old_pjrt_buf,
+                          weight_buf.GetSharedBuffer());
+  ASSERT_NE(old_pjrt_buf, nullptr);
+  // Refcount is 2: 1 in weight_buf's DeviceBufferList, 1 in old_pjrt_buf.
+  EXPECT_EQ(old_pjrt_buf.use_count(), 2);
+
+  const xla::Layout& current_layout = pjrt_buf->on_device_shape().layout();
+  const Indices kTargetMtm =
+      (current_layout.minor_to_major() == absl::Span<const int64_t>({2, 1, 0}))
+          ? Indices{0, 1, 2}
+          : Indices{2, 1, 0};
+
+  // Step 1: Request relayout buffer.
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::optional<DeviceBufferRef> relayout1,
+      MaybeCreate3DArgumentRelayoutBuffer(weight_buf, kTargetMtm));
+  ASSERT_TRUE(relayout1.has_value());
+  EXPECT_TRUE(relayout1->is_deferred());
+
+  // Materialize relayout buffer.
+  RecordDeferredOpCreated(relayout1->device_buffer_list());
+  ASSERT_EQ(
+      Materialize({*relayout1}, MaterializationReason::kCompileModeExecution,
+                  GraphSplitMode::kSplitGraph),
+      absl::OkStatus());
+  TT_ASSERT_OK_AND_ASSIGN(xla::PjRtBuffer* const pjrt_relayout1,
+                          relayout1->AwaitBuffer());
+  ASSERT_NE(pjrt_relayout1, nullptr);
+
+  // Synchronize both buffers before adoption to ensure no executions in flight.
+  ASSERT_EQ(relayout1->Synchronize(), absl::OkStatus());
+  ASSERT_EQ(weight_buf.Synchronize(), absl::OkStatus());
+
+  // Adopt the relayout buffer into weight_buf.
+  CustomLayout target_layout{.minor_to_major = kTargetMtm};
+  ASSERT_EQ(weight_buf.AdoptMaterializedBufferFrom(*relayout1, target_layout),
+            absl::OkStatus());
+
+  // The old buffer's refcount in DeviceBufferList drops!
+  // Only our local old_pjrt_buf shared pointer remains.
+  EXPECT_EQ(old_pjrt_buf.use_count(), 1);
+
+  // The adopted buffer now backs weight_buf with the new layout.
+  TT_ASSERT_OK_AND_ASSIGN(xla::PjRtBuffer* const new_pjrt_buf,
+                          weight_buf.AwaitBuffer());
+  EXPECT_EQ(new_pjrt_buf, pjrt_relayout1);
+  ASSERT_TRUE(weight_buf.shape().layout().has_value());
+  EXPECT_EQ(weight_buf.shape().layout()->minor_to_major, kTargetMtm);
+
+  // Step 2: Second call to MaybeCreate3DArgumentRelayoutBuffer sees the adopted
+  // layout matches target, returning nullopt (0 relayouts, no duplicates).
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::optional<DeviceBufferRef> relayout2,
+      MaybeCreate3DArgumentRelayoutBuffer(weight_buf, kTargetMtm));
+  EXPECT_FALSE(relayout2.has_value());
+}
+
+TEST_F(MaterializeTest, RelayoutBufferIsCachedAcrossExecutions) {
+  const ScopedPythonContextCapturer capturer(OpName::kEmpty);
+
+  // 1. Materialize a 3D weight buffer on device.
+  TT_ASSERT_OK_AND_ASSIGN(
+      DeviceBufferRef weight_buf,
+      CreateEmptyDeviceBufferRef({2, 4, 8}, mlir::ElementType::F32));
+  ASSERT_EQ(Materialize({weight_buf}, MaterializationReason::kExplicitSync),
+            absl::OkStatus());
+  TT_ASSERT_OK_AND_ASSIGN(xla::PjRtBuffer* const pjrt_buf,
+                          weight_buf.AwaitBuffer());
+  ASSERT_NE(pjrt_buf, nullptr);
+
+  const xla::Layout& current_layout = pjrt_buf->on_device_shape().layout();
+  const Indices kTargetMtm =
+      (current_layout.minor_to_major() == absl::Span<const int64_t>({2, 1, 0}))
+          ? Indices{0, 1, 2}
+          : Indices{2, 1, 0};
+
+  // 2. Step 1: First request creates a new deferred relayout buffer.
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::optional<DeviceBufferRef> relayout1,
+      MaybeCreate3DArgumentRelayoutBuffer(weight_buf, kTargetMtm));
+  ASSERT_TRUE(relayout1.has_value());
+  EXPECT_TRUE(relayout1->is_deferred());
+
+  // Materialize the relayout buffer (simulating first step execution).
+  RecordDeferredOpCreated(relayout1->device_buffer_list());
+  ASSERT_EQ(
+      Materialize({*relayout1}, MaterializationReason::kCompileModeExecution,
+                  GraphSplitMode::kSplitGraph),
+      absl::OkStatus());
+  TT_ASSERT_OK_AND_ASSIGN(xla::PjRtBuffer* const pjrt_relayout1,
+                          relayout1->AwaitBuffer());
+  ASSERT_NE(pjrt_relayout1, nullptr);
+  EXPECT_TRUE(relayout1->is_materialized());
+
+  // 3. Step 2: Second request with the same weight returns the cached relayout
+  // buffer without creating a duplicate deferred op.
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::optional<DeviceBufferRef> relayout2,
+      MaybeCreate3DArgumentRelayoutBuffer(weight_buf, kTargetMtm));
+  ASSERT_TRUE(relayout2.has_value());
+  EXPECT_EQ(relayout1->device_buffer_list(), relayout2->device_buffer_list());
+  EXPECT_EQ(relayout1->index(), relayout2->index());
+  EXPECT_FALSE(relayout2->is_deferred());
+  EXPECT_TRUE(relayout2->is_materialized());
+
+  // 4. Invalidation: Modifying or invalidating the underlying buffer clears
+  // the cache, so subsequent calls produce a new relayout buffer.
+  weight_buf.device_buffer_list()->InvalidateRelayoutCache();
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::optional<DeviceBufferRef> relayout3,
+      MaybeCreate3DArgumentRelayoutBuffer(weight_buf, kTargetMtm));
+  ASSERT_TRUE(relayout3.has_value());
+  EXPECT_NE(relayout1->device_buffer_list(), relayout3->device_buffer_list());
+  EXPECT_TRUE(relayout3->is_deferred());
+
+  RecordDeferredOpCreated(relayout3->device_buffer_list());
+  ASSERT_EQ(
+      Materialize({*relayout3}, MaterializationReason::kCompileModeExecution,
+                  GraphSplitMode::kSplitGraph),
+      absl::OkStatus());
+  TT_ASSERT_OK_AND_ASSIGN(xla::PjRtBuffer* const pjrt_relayout3,
+                          relayout3->AwaitBuffer());
+  ASSERT_NE(pjrt_relayout3, nullptr);
+  EXPECT_TRUE(relayout3->is_materialized());
+}
+
+TEST_F(MaterializeTest, RelayoutCacheInvalidatedOnSetAsError) {
+  const ScopedPythonContextCapturer capturer(OpName::kEmpty);
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      DeviceBufferRef weight_buf,
+      CreateEmptyDeviceBufferRef({2, 4, 8}, mlir::ElementType::F32));
+  ASSERT_EQ(Materialize({weight_buf}, MaterializationReason::kExplicitSync),
+            absl::OkStatus());
+
+  const Indices kTargetMtm = {0, 1, 2};
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::optional<DeviceBufferRef> relayout,
+      MaybeCreate3DArgumentRelayoutBuffer(weight_buf, kTargetMtm));
+  ASSERT_TRUE(relayout.has_value());
+  EXPECT_TRUE(weight_buf.GetCachedRelayoutBuffer(kTargetMtm).has_value());
+
+  // SetAsError clears the relayout cache.
+  weight_buf.device_buffer_list()->SetAsError(
+      absl::InternalError("simulated materialization failure"));
+  EXPECT_FALSE(weight_buf.GetCachedRelayoutBuffer(kTargetMtm).has_value());
+}
+
+TEST_F(MaterializeTest, RelayoutCacheInvalidatedOnAdoptMaterializedBuffer) {
+  const ScopedPythonContextCapturer capturer(OpName::kEmpty);
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      DeviceBufferRef weight_buf,
+      CreateEmptyDeviceBufferRef({2, 4, 8}, mlir::ElementType::F32));
+  ASSERT_EQ(Materialize({weight_buf}, MaterializationReason::kExplicitSync),
+            absl::OkStatus());
+
+  const Indices kTargetMtm = {0, 1, 2};
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::optional<DeviceBufferRef> relayout1,
+      MaybeCreate3DArgumentRelayoutBuffer(weight_buf, kTargetMtm));
+  ASSERT_TRUE(relayout1.has_value());
+  RecordDeferredOpCreated(relayout1->device_buffer_list());
+  ASSERT_EQ(
+      Materialize({*relayout1}, MaterializationReason::kCompileModeExecution,
+                  GraphSplitMode::kSplitGraph),
+      absl::OkStatus());
+  ASSERT_EQ(relayout1->Synchronize(), absl::OkStatus());
+  ASSERT_EQ(weight_buf.Synchronize(), absl::OkStatus());
+
+  EXPECT_TRUE(weight_buf.GetCachedRelayoutBuffer(kTargetMtm).has_value());
+
+  CustomLayout target_layout{.minor_to_major = kTargetMtm};
+  ASSERT_EQ(weight_buf.AdoptMaterializedBufferFrom(*relayout1, target_layout),
+            absl::OkStatus());
+  // Adopting clears the relayout cache.
+  EXPECT_FALSE(weight_buf.GetCachedRelayoutBuffer(kTargetMtm).has_value());
+}
+
+TEST_F(MaterializeTest, EnqueueExecutableNonDefaultThenDefaultLayout) {
+  const ScopedPythonContextCapturer capturer(OpName::kEmpty);
+
+  // 1. Create a 3D argument buffer on device (initially in default layout).
+  TT_ASSERT_OK_AND_ASSIGN(
+      DeviceBufferRef param_buf,
+      CreateEmptyDeviceBufferRef({2, 4, 8}, mlir::ElementType::F32));
+  ASSERT_EQ(Materialize({param_buf}, MaterializationReason::kExplicitSync),
+            absl::OkStatus());
+
+  const Shape shape_3d(Dimensions{2, 4, 8}, mlir::ElementType::F32);
+  const auto identity_builder = [](mlir::MlirBuilder&,
+                                   absl::Span<mlir::MlirOp> inputs) {
+    return DynamicMlirOpResults{inputs[0]};
+  };
+
+  // 2. Compile executable 1 with argument_layouts = {param_shape_custom}.
+  TT_ASSERT_OK_AND_ASSIGN(DeviceBufferRef placeholder1,
+                          DeviceBufferList::CreatePlaceholder(
+                              shape_3d.dimensions(), shape_3d.dtype()));
+  TT_ASSERT_OK_AND_ASSIGN(const std::vector<DeviceBufferRef> refs1,
+                          DeviceBufferList::CreateDeferred(
+                              OpName::kToCopy, identity_builder, {placeholder1},
+                              OpParamCacheKeys::Empty(), {shape_3d}));
+  TT_ASSERT_OK_AND_ASSIGN(auto traversal1, Traversal::Create(refs1));
+
+  xla::Shape param_shape_custom =
+      xla::ShapeUtil::MakeShape(xla::F32, {2, 4, 8});
+  *param_shape_custom.mutable_layout() = xla::LayoutUtil::MakeLayout({0, 1, 2});
+  CompilationSpec spec1 = GetCompilationSpec(CompilationMode::kFastCompile);
+  spec1.xla_compile_options->argument_layouts = {param_shape_custom};
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      CompiledKernel kernel1,
+      traversal1->Compile(spec1, UnboundedKernelPolicy::kDisallow));
+  TT_ASSERT_OK_AND_ASSIGN(SharedLoadedExecutableWithMetadata exec1,
+                          kernel1.fixed_shape_kernel.get());
+  ASSERT_EQ(exec1->non_default_3d_param_layouts().size(), 1);
+  EXPECT_EQ(exec1->non_default_3d_param_layouts()[0].minor_to_major,
+            Indices({0, 1, 2}));
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::vector<DeviceBufferRef> outputs1,
+      EnqueueExecutable(exec1, {param_buf}, {shape_3d}, "exec1_non_default"));
+  ASSERT_EQ(outputs1[0].Synchronize(), absl::OkStatus());
+  ASSERT_EQ(param_buf.Synchronize(), absl::OkStatus());
+
+  // param_buf now has adopted non-default layout {0, 1, 2}.
+  ASSERT_TRUE(param_buf.shape().layout().has_value());
+  EXPECT_EQ(param_buf.shape().layout()->minor_to_major, Indices({0, 1, 2}));
+
+  // 3. Compile executable 2 with default layout.
+  CompilationCache::GetInstance().EvictAll();
+  TT_ASSERT_OK_AND_ASSIGN(DeviceBufferRef placeholder2,
+                          DeviceBufferList::CreatePlaceholder(
+                              shape_3d.dimensions(), shape_3d.dtype()));
+  TT_ASSERT_OK_AND_ASSIGN(const std::vector<DeviceBufferRef> refs2,
+                          DeviceBufferList::CreateDeferred(
+                              OpName::kToCopy, identity_builder, {placeholder2},
+                              OpParamCacheKeys::Empty(), {shape_3d}));
+  TT_ASSERT_OK_AND_ASSIGN(auto traversal2, Traversal::Create(refs2));
+  CompilationSpec spec2 = GetCompilationSpec(CompilationMode::kFastCompile);
+  TT_ASSERT_OK_AND_ASSIGN(
+      CompiledKernel kernel2,
+      traversal2->Compile(spec2, UnboundedKernelPolicy::kDisallow));
+  TT_ASSERT_OK_AND_ASSIGN(SharedLoadedExecutableWithMetadata exec2,
+                          kernel2.fixed_shape_kernel.get());
+  EXPECT_TRUE(exec2->non_default_3d_param_layouts().empty());
+
+  // EnqueueExecutable handles the layout discrepancy via relayout_cache_
+  // without mutating param_buf or failing ValidateArgumentLayouts.
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::vector<DeviceBufferRef> outputs2,
+      EnqueueExecutable(exec2, {param_buf}, {shape_3d}, "exec2_default"));
+  ASSERT_EQ(outputs2[0].Synchronize(), absl::OkStatus());
 }
 
 TEST_F(MaterializeTest, CompilerOptionsPropagateToMaterializeThread) {
@@ -511,6 +893,105 @@ TEST_F(MaterializeTest, ExecutionTaskPreservesTraversalCorePinningMode) {
   EXPECT_EQ(pinned_task.core_pinning_mode(), CorePinningMode::kTensorCore);
   ASSERT_EQ(pinned_task.Run(), absl::OkStatus());
   ASSERT_EQ(pinned_op.Synchronize(), absl::OkStatus());
+}
+
+TEST_F(MaterializeTest,
+       ExecutionTaskFromTraversalStampsNonDefaultOutputLayoutOnCacheHit) {
+  const ScopedPythonContextCapturer capturer(OpName::kEmpty);
+  CompilationCache::GetInstance().SetAllowCacheMode(true);
+  const auto mlir_context = MakeMlirContext();
+
+  Shape shape_lhs(Dimensions{128, 64}, mlir::ElementType::BF16);
+  Shape shape_rhs_3d(Dimensions{8, 128, 64}, mlir::ElementType::BF16);
+  Shape shape_group_sizes(Dimensions{8}, mlir::ElementType::I32);
+  Shape shape_bias_3d(Dimensions{8, 128, 64}, mlir::ElementType::BF16);
+  Shape shape_dot_out(Dimensions{128, 128}, mlir::ElementType::BF16);
+  Shape shape_out_3d(Dimensions{8, 128, 64}, mlir::ElementType::BF16);
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      DeviceBufferRef ref_lhs,
+      CreateEmptyDeviceBufferRef(shape_lhs.dimensions(), shape_lhs.dtype()));
+  TT_ASSERT_OK_AND_ASSIGN(DeviceBufferRef ref_rhs_3d,
+                          CreateEmptyDeviceBufferRef(shape_rhs_3d.dimensions(),
+                                                     shape_rhs_3d.dtype()));
+  TT_ASSERT_OK_AND_ASSIGN(
+      DeviceBufferRef ref_group_sizes,
+      CreateEmptyDeviceBufferRef(shape_group_sizes.dimensions(),
+                                 shape_group_sizes.dtype()));
+  TT_ASSERT_OK_AND_ASSIGN(DeviceBufferRef ref_bias_3d,
+                          CreateEmptyDeviceBufferRef(shape_bias_3d.dimensions(),
+                                                     shape_bias_3d.dtype()));
+  ASSERT_EQ(Materialize({ref_lhs, ref_rhs_3d, ref_group_sizes, ref_bias_3d},
+                        MaterializationReason::kExplicitSync),
+            absl::OkStatus());
+
+  auto make_eager_traversal =
+      [&]() -> absl::StatusOr<std::unique_ptr<Traversal>> {
+    MlirOpBuilder ragged_dot_builder = [](mlir::MlirBuilder& builder,
+                                          absl::Span<mlir::MlirOp> inputs)
+        -> absl::StatusOr<DynamicMlirOpResults> {
+      mlir::MlirOp rhs_t = mlir::stablehlo::Transpose(inputs[1], {0, 2, 1});
+
+      const auto dimension_numbers =
+          mlir::chlo::RaggedDotDimensionNumbersAttr::get(
+              &builder.getContext(), /*lhsBatchingDimensions=*/{},
+              /*rhsBatchingDimensions=*/{},
+              /*lhsContractingDimensions=*/{1},
+              /*rhsContractingDimensions=*/{1},
+              /*lhsRaggedDimensions=*/{0},
+              /*rhsGroupDimensions=*/{0});
+      auto precision_attr = mlir::chlo::PrecisionAttr::get(
+          &builder.getContext(), mlir::chlo::Precision::DEFAULT);
+      auto precision_config = mlir::ArrayAttr::get(
+          &builder.getContext(), {precision_attr, precision_attr});
+      const mlir::Type out_type = mlir::makeTensorType(
+          builder.getContext(), {128, 128}, mlir::ElementType::BF16);
+      mlir::MlirOp ragged_dot =
+          mlir::chlo::RaggedDot(out_type, inputs[0], rhs_t, inputs[2],
+                                dimension_numbers, precision_config);
+
+      mlir::MlirOp add_3d = mlir::stablehlo::Add(inputs[1], inputs[3]);
+
+      return DynamicMlirOpResults{ragged_dot, add_3d};
+    };
+
+    TT_ASSIGN_OR_RETURN(
+        std::vector<DeviceBufferRef> refs_out,
+        DeviceBufferList::CreateDeferred(
+            OpName::kRaggedDot, std::move(ragged_dot_builder),
+            {ref_lhs, ref_rhs_3d, ref_group_sizes, ref_bias_3d},
+            OpParamCacheKeys::Empty(), {shape_dot_out, shape_out_3d}));
+
+    return Traversal::Create(refs_out);
+  };
+
+  const CompilationSpec spec =
+      GetCompilationSpec(CompilationMode::kFastCompile);
+
+  // 1. First execution task (cache miss - compiles and populates cache).
+  TT_ASSERT_OK_AND_ASSIGN(auto tr1, make_eager_traversal());
+  TT_ASSERT_OK_AND_ASSIGN(
+      ExecutionTask task1,
+      ExecutionTask::FromTraversal(std::move(tr1), *mlir_context, spec));
+  ASSERT_EQ(task1.Run(), absl::OkStatus());
+
+  // 2. Second execution task (cache hit - loads from cache).
+  TT_ASSERT_OK_AND_ASSIGN(auto tr2, make_eager_traversal());
+  std::vector<DeviceBufferRef> tr2_outputs(tr2->outputs().begin(),
+                                           tr2->outputs().end());
+  EXPECT_FALSE(tr2_outputs[0].shape().layout().has_value());
+  EXPECT_FALSE(tr2_outputs[1].shape().layout().has_value());
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      ExecutionTask task2,
+      ExecutionTask::FromTraversal(std::move(tr2), *mlir_context, spec));
+
+  // Output 0 has cleared default layout, leaving it unstamped.
+  EXPECT_FALSE(tr2_outputs[0].shape().layout().has_value());
+  // Output 1 has non-default {1, 2, 0}, stamped on eager compilation cache hit.
+  ASSERT_TRUE(tr2_outputs[1].shape().layout().has_value());
+  EXPECT_EQ(tr2_outputs[1].shape().layout()->minor_to_major,
+            Indices({1, 2, 0}));
 }
 
 class PinnedHostPropagationTest : public testing::Test {

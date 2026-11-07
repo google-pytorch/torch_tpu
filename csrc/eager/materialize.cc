@@ -49,10 +49,13 @@
 #include "csrc/common/cache_key.h"
 #include "csrc/common/compilation.h"
 #include "csrc/common/context_manager.h"
+#include "csrc/common/dimension_types.h"
+#include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/reroute_warnings.h"
 #include "csrc/common/shape.h"
 #include "csrc/common/status_builder.h"
+#include "csrc/common/utils.h"
 #include "csrc/eager/current_stream.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/eager_mode.h"
@@ -702,6 +705,106 @@ absl::StatusOr<std::vector<DeviceBufferRef>> EnqueueExecutable(
     SharedLoadedExecutableWithMetadata executable,
     std::vector<DeviceBufferRef> arguments,
     absl::Span<const Shape> output_shapes, std::string_view task_name) {
+  const auto& non_default_3d_params =
+      executable->non_default_3d_param_layouts();
+  if (!non_default_3d_params.empty()) {
+    Indices unmaterialized_param_indices;
+    std::vector<DeviceBufferRef> unmaterialized_relayout_refs;
+    std::vector<Indices> unmaterialized_target_mtms;
+    for (const auto& param_layout : non_default_3d_params) {
+      const int64_t param_idx = param_layout.param_idx;
+      if (param_idx < 0 || param_idx >= arguments.size()) continue;
+      TT_ASSIGN_OR_RETURN(
+          std::optional<DeviceBufferRef> relayout_ref,
+          MaybeCreate3DArgumentRelayoutBuffer(arguments[param_idx],
+                                              param_layout.minor_to_major));
+      if (relayout_ref.has_value()) {
+        if (relayout_ref->is_deferred()) {
+          RecordDeferredOpCreated(relayout_ref->device_buffer_list());
+          unmaterialized_param_indices.push_back(param_idx);
+          unmaterialized_relayout_refs.push_back(*std::move(relayout_ref));
+          unmaterialized_target_mtms.push_back(param_layout.minor_to_major);
+        } else {
+          TT_RETURN_IF_ERROR(relayout_ref->Synchronize());
+          TT_RETURN_IF_ERROR(arguments[param_idx].Synchronize());
+          TT_ASSIGN_OR_RETURN(xla::PjRtBuffer* const pjrt_buf,
+                              relayout_ref->AwaitBuffer());
+          CustomLayout target_layout;
+          target_layout.minor_to_major = param_layout.minor_to_major;
+          if (pjrt_buf->on_device_shape().has_layout()) {
+            for (const auto& tile :
+                 pjrt_buf->on_device_shape().layout().tiles()) {
+              target_layout.tiles.push_back(CopyIntVector(tile.dimensions()));
+            }
+          }
+          target_layout.element_size_in_bits =
+              XlaEquivalentBitwidth(arguments[param_idx].element_type());
+          TT_RETURN_IF_ERROR(arguments[param_idx].AdoptMaterializedBufferFrom(
+              *relayout_ref, std::move(target_layout)));
+        }
+      }
+    }
+    if (!unmaterialized_relayout_refs.empty()) {
+      TT_RETURN_IF_ERROR(
+          Materialize(unmaterialized_relayout_refs,
+                      MaterializationReason::kCompileModeExecution,
+                      GraphSplitMode::kSplitGraph));
+      // Synchronize both the relayout and parameter buffers before adopting
+      // to ensure all reading/writing executions are complete. Adopting the
+      // relayout buffer drops the old default-layout buffer from HBM.
+      for (size_t j = 0; j < unmaterialized_relayout_refs.size(); ++j) {
+        TT_RETURN_IF_ERROR(unmaterialized_relayout_refs[j].Synchronize());
+        const int64_t param_idx = unmaterialized_param_indices[j];
+        TT_RETURN_IF_ERROR(arguments[param_idx].Synchronize());
+        TT_ASSIGN_OR_RETURN(xla::PjRtBuffer* const pjrt_buf,
+                            unmaterialized_relayout_refs[j].AwaitBuffer());
+        CustomLayout target_layout;
+        target_layout.minor_to_major = unmaterialized_target_mtms[j];
+        if (pjrt_buf->on_device_shape().has_layout()) {
+          for (const auto& tile :
+               pjrt_buf->on_device_shape().layout().tiles()) {
+            target_layout.tiles.push_back(CopyIntVector(tile.dimensions()));
+          }
+        }
+        target_layout.element_size_in_bits =
+            XlaEquivalentBitwidth(arguments[param_idx].element_type());
+        TT_RETURN_IF_ERROR(arguments[param_idx].AdoptMaterializedBufferFrom(
+            unmaterialized_relayout_refs[j], std::move(target_layout)));
+      }
+    }
+  }
+
+  // Handle 3D arguments whose current layout differs from a parameter layout
+  // in parameter_device_shapes() (e.g. buffers adopted into a non-default
+  // layout running in an executable compiled for default layout) using
+  // relayout_cache_ without mutating transient or shared buffers with blocking
+  // Synchronize().
+  const auto& param_shapes = executable->parameter_device_shapes();
+  for (size_t i = 0; i < arguments.size() && i < param_shapes.size(); ++i) {
+    if (!param_shapes[i].has_value()) continue;
+    const xla::Shape& param_shape = *param_shapes[i];
+    if (!param_shape.IsArray() || param_shape.dimensions().size() != 3 ||
+        !param_shape.has_layout()) {
+      continue;
+    }
+    const auto& expected_mtm = param_shape.layout().minor_to_major();
+    Shape arg_shape = arguments[i].shape();
+    if (arg_shape.layout().has_value() &&
+        !arg_shape.layout()->minor_to_major.empty() &&
+        arg_shape.layout()->minor_to_major !=
+            absl::Span<const int64_t>(expected_mtm)) {
+      TT_ASSIGN_OR_RETURN(std::optional<DeviceBufferRef> relayout_ref,
+                          MaybeCreate3DArgumentRelayoutBuffer(
+                              arguments[i], CopyIntVector(expected_mtm)));
+      if (relayout_ref.has_value()) {
+        if (relayout_ref->is_deferred()) {
+          RecordDeferredOpCreated(relayout_ref->device_buffer_list());
+        }
+        arguments[i] = *std::move(relayout_ref);
+      }
+    }
+  }
+
   // Get the stream from the calling thread, not from the execution worker
   // thread.
   const auto [device_index, stream_id] = GetCurrentDeviceStreamId();

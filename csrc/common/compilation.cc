@@ -35,6 +35,7 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/escaping.h"
 #include "absl/strings/str_split.h"
+#include "absl/types/span.h"
 #include "csrc/common/compilation_spec.h"
 #include "csrc/common/compile_options_key.h"
 #include "csrc/common/context_manager.h"
@@ -138,8 +139,39 @@ std::vector<std::optional<xla::Shape>> GetStaticParameterDeviceShapes(
   }
   return result;
 }
-
 }  // namespace
+
+bool TilesMatchDefault(absl::Span<const Indices> layout_tiles,
+                       absl::Span<const xla::Tile> default_tiles) {
+  if (layout_tiles.empty()) {
+    return true;
+  }
+  if (layout_tiles.size() != default_tiles.size()) {
+    return false;
+  }
+  for (size_t t = 0; t < layout_tiles.size(); ++t) {
+    if (absl::MakeConstSpan(layout_tiles[t]) != default_tiles[t].dimensions()) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool TilesMatchDefault(absl::Span<const xla::Tile> layout_tiles,
+                       absl::Span<const xla::Tile> default_tiles) {
+  if (layout_tiles.empty()) {
+    return true;
+  }
+  if (layout_tiles.size() != default_tiles.size()) {
+    return false;
+  }
+  for (size_t t = 0; t < layout_tiles.size(); ++t) {
+    if (layout_tiles[t] != default_tiles[t]) {
+      return false;
+    }
+  }
+  return true;
+}
 
 absl_nonnull std::unique_ptr<mlir::MLIRContext> MakeMlirContext() {
   auto context = std::make_unique<mlir::MLIRContext>();
@@ -181,20 +213,89 @@ LoadedExecutableWithMetadata::MakeShared(
     xla::ShapeUtil::FlattenTupleShape(output_shape, output_shapes_flat_vec);
   }
 
+  xla::PjRtClient* client = executable->client();
+  if (client == nullptr) {
+    if (auto client_or = PjrtBackend::GetInstance().GetClient();
+        client_or.ok()) {
+      client = *client_or;
+    }
+  }
+
   std::vector<Shape> output_shapes;
   output_shapes.reserve(output_shapes_flat_vec.size());
   for (const auto* xla_shape : output_shapes_flat_vec) {
     TT_ASSIGN_OR_RETURN(Shape shape, MakeShape(*xla_shape));
+    if (client != nullptr && xla_shape->IsArray() && xla_shape->has_layout()) {
+      auto default_layout_or = client->GetDefaultLayout(
+          xla_shape->element_type(), xla_shape->dimensions());
+      if (default_layout_or.ok() &&
+          xla_shape->layout().minor_to_major() ==
+              default_layout_or->minor_to_major() &&
+          TilesMatchDefault(shape.layout()->tiles,
+                            default_layout_or->tiles())) {
+        shape.clear_layout();
+      }
+    }
     output_shapes.push_back(std::move(shape));
   }
 
   std::vector<std::optional<xla::Shape>> parameter_device_shapes =
       GetStaticParameterDeviceShapes(*executable);
+  std::vector<LoadedExecutableWithMetadata::Param3DLayout>
+      non_default_3d_param_layouts;
+  if (!dynamic_execution_metadata.has_value()) {
+    if (auto param_layouts_or = executable->GetParameterLayouts();
+        param_layouts_or.ok()) {
+      const auto& param_layouts = *param_layouts_or;
+      auto hlo_modules_or = executable->GetHloModules();
+      if (hlo_modules_or.ok() && hlo_modules_or->size() == 1) {
+        const xla::ComputationLayout& entry =
+            (*hlo_modules_or)[0]->entry_computation_layout();
+        if (entry.parameter_count() == static_cast<int>(param_layouts.size())) {
+          for (size_t i = 0; i < param_layouts.size(); ++i) {
+            if (param_layouts[i] == nullptr) continue;
+            const xla::Layout& xla_layout = param_layouts[i]->xla_layout();
+            if (xla_layout.minor_to_major().size() == 3) {
+              const xla::Shape& param_shape = entry.parameter_shape(i);
+              bool has_degenerate_dim = false;
+              for (int64_t dim : param_shape.dimensions()) {
+                if (dim <= 1) {
+                  has_degenerate_dim = true;
+                  break;
+                }
+              }
+              if (!has_degenerate_dim) {
+                Indices default_mtm = {2, 1, 0};
+                if (client != nullptr && param_shape.IsArray()) {
+                  auto default_layout_or = client->GetDefaultLayout(
+                      param_shape.element_type(), param_shape.dimensions());
+                  if (default_layout_or.ok()) {
+                    default_mtm =
+                        CopyIntVector(default_layout_or->minor_to_major());
+                  }
+                }
+                if (xla_layout.minor_to_major() !=
+                    absl::Span<const int64_t>(default_mtm)) {
+                  non_default_3d_param_layouts.push_back({
+                      .param_idx = static_cast<int64_t>(i),
+                      .minor_to_major =
+                          CopyIntVector(xla_layout.minor_to_major()),
+                  });
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   return std::shared_ptr<const LoadedExecutableWithMetadata>(
       new LoadedExecutableWithMetadata(
           std::move(executable), std::move(output_shapes),
           std::move(parameter_device_shapes), std::move(argument_indices),
-          std::move(dynamic_execution_metadata), std::move(subslice_origin)));
+          std::move(dynamic_execution_metadata), std::move(subslice_origin),
+          std::move(non_default_3d_param_layouts)));
 }
 
 absl::StatusOr<SharedLoadedExecutableWithMetadata> Compile(
