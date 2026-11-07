@@ -630,7 +630,7 @@ ProcessGroupTpu::CrossHostSendBuffers(
   // that waits until the remote receiver has posted its descriptors.
   std::vector<std::vector<uint8_t>> descriptors;
   try {
-    descriptors = store_->multiGet(descriptor_keys);
+    descriptors = descriptor_store_.Get(descriptor_keys);
   } catch (const std::exception& e) {
     all_sent_future->setError(std::current_exception());
   }
@@ -734,7 +734,7 @@ ProcessGroupTpu::CrossHostReceiveBuffers(
 
     // Update the store to unblock the sender's multiGet call.
     try {
-      this->store_->multiSet(descriptor_keys, descriptors);
+      this->descriptor_store_.Publish(descriptor_keys, descriptors);
       setup_future->markCompleted(c10::IValue());
     } catch (const std::exception& e) {
       setup_future->setError(std::current_exception());
@@ -1740,7 +1740,9 @@ absl::StatusOr<DeviceGroupList> ProcessGroupTpu::GatherAllSubgroups(
 
 ProcessGroupTpu::ProcessGroupTpu(c10::intrusive_ptr<c10d::Store> store,
                                  int rank, int group_size)
-    : c10d::Backend(rank, group_size), store_(std::move(store)) {
+    : c10d::Backend(rank, group_size),
+      store_(std::move(store)),
+      descriptor_store_(store_) {
   static std::atomic<int64_t> next_pg_id{0};
   const int64_t pg_id = next_pg_id.fetch_add(1);
   const int64_t ctor_t0 = NowMs();

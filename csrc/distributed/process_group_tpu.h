@@ -53,6 +53,7 @@
 #include "torch/csrc/distributed/c10d/Window.hpp"
 #endif
 #include "csrc/common/to_string.h"
+#include "csrc/distributed/cross_host_descriptor_store.h"
 #include "csrc/distributed/types.h"
 #include "csrc/eager/device_assignment.h"
 #include "csrc/eager/device_buffer.h"
@@ -420,6 +421,7 @@ class ProcessGroupTpu : public c10d::Backend {
   absl::Status InitializeRankToDeviceMappings(int64_t world_size);
 
   c10::intrusive_ptr<c10d::Store> store_;
+  CrossHostDescriptorStore descriptor_store_;
 
   int64_t addressable_device_id_;  // The TPU 'assigned' to this process.
 
