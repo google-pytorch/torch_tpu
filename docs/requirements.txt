@@ -9,3 +9,4 @@ mkdocs-open-in-new-tab
 mkdocs-table-reader-plugin
 mkdocs-redirects
 selectolax<1  # mkdocs-glightbox 0.5.2 drops <img> tags with selectolax 1.x
+jupytext

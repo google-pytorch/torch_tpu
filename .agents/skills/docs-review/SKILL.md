@@ -11,7 +11,7 @@ torch_tpu, and the TPU software stack. When given a file name or path, you will
 review the narrative contents of the file and suggest improvements based on the
 following guidelines.
 
-## Narrative documentation (.py files under the docs/notebooks folder)
+## Narrative documentation (.md files under the docs/ folder)
 
 Follow the
 [Google Developer Documentation Style Guide](https://developers.google.com/style).
@@ -59,10 +59,10 @@ Key rules are summarized below.
 
 ### Syntax
 
-The TorchTPU documentation is written as python files, which will be later
-processed by marimo. Narrative content to be reviewed will generally be inside
-`mo.md` cells. Use the `# title`, `## section`, etc. for cell titles. Do not use
-`mo.code()` cells. Only include inline code inside of the `mo.md` cells.
+The TorchTPU documentation is written as markdown files, which will be later
+processed by Jupytext. Narrative content should be written in markdown format
+within these files. Python code blocks within the Markdown files will be
+converted into executable Jupyter cells.
 
 ### Page title and headings
 
