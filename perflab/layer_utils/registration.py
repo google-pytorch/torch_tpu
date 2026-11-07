@@ -162,10 +162,12 @@ def add_layer_sweep(
     run_modes: frozenset[common.RunMode] = ALL_RUN_MODES,
     device_kinds: frozenset[target_lib.DeviceKind] = ACCELERATOR_KINDS,
     data_dependent: bool = False,
+    presubmit_skip_reason: str | None = None,
 ) -> None:
   """Registers a benchmark for each config and step of a layer.
 
-  Every spec has `PresubmitPolicy.CPU_SMOKE_ONLY`. Under `--fake_tensor_mode`,
+  Every spec has `PresubmitPolicy.CPU_SMOKE_ONLY`, unless
+  `presubmit_skip_reason` is set. Under `--fake_tensor_mode`,
   a layer that runs in an accelerator-only mode also runs `eager_default`, so
   that the FakeTensorMode CPU smoke test builds and steps it.
 
@@ -184,6 +186,9 @@ def add_layer_sweep(
     data_dependent: Whether the layer reads data-dependent values, e.g. the
       output size of `torch.unique`. The FakeTensorMode CPU smoke test then
       returns placeholders for them.
+    presubmit_skip_reason: Why the layer does not run in presubmit scope, e.g.
+      because the CPU cannot build it for the FakeTensorMode CPU smoke test. If
+      set, every spec has `PresubmitPolicy.SKIP` with this reason.
 
   Raises:
     ValueError: If `steps`, `run_modes` or `device_kinds` is empty or has
@@ -206,6 +211,12 @@ def add_layer_sweep(
       frozenset(m.value for m in ALL_RUN_MODES - run_modes),
       fake_tensor_mode=fake_tensor_mode,
   )
+  if presubmit_skip_reason is None:
+    presubmit = registry_lib.PresubmitPolicy.CPU_SMOKE_ONLY
+    presubmit_reason = _PRESUBMIT_REASON
+  else:
+    presubmit = registry_lib.PresubmitPolicy.SKIP
+    presubmit_reason = presubmit_skip_reason
   for config in configs:
     microbenchmark_name = configs_lib.microbenchmark_name(config)
     layer_args = to_layer_args(config)
@@ -228,8 +239,8 @@ def add_layer_sweep(
           ),
           name=spec_name(benchmark, step, microbenchmark_name),
           skipped_run_modes=skipped_run_modes,
-          presubmit=registry_lib.PresubmitPolicy.CPU_SMOKE_ONLY,
-          presubmit_reason=_PRESUBMIT_REASON,
+          presubmit=presubmit,
+          presubmit_reason=presubmit_reason,
           # Layer inputs come from the config shapes, not from a batch
           # workload, so layer benchmarks export no throughput.
           workload=None,
