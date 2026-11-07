@@ -1514,6 +1514,9 @@ class CompileTest(LayoutTest):
           dict(base_shape=(2, 3, 4), view_fn=lambda t: t[:, ::2]),
           dict(base_shape=(12, 4, 8, 1), view_fn=lambda t: t[:, 0:4:3]),
           dict(base_shape=(12, 5, 8), view_fn=lambda t: t[:, 1:5:3]),
+          # A view of an intermediate rather than of the input, so the output
+          # goes through ForceStrides.
+          dict(base_shape=(12, 4, 8, 1), view_fn=lambda t: (t * 2)[:, 0:4:3]),
       ],
       requires_grad=[False, True],
   )

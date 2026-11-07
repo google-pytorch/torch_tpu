@@ -893,12 +893,12 @@ void MaybeShiftInitialViewWindow(ViewSequence& result,
 }
 
 // Satisfies one or more non-overlapping tail dimensions in the tail layout
-// using exactly one reshape and one slice.
+// using exactly one reshape and one slice, and possibly one pad.
 // **PRECONDITIONS**:
 // head_layout has:
 //   rank:    k+1 < n
 //   sizes:   [... Z(k-1), c * T(k)], where c is an integer >= Z(k)
-//   strides: [... T(k-1), 1]
+//   strides: [... T(k-1), 1] (or contiguous strides after a pad)
 // tail layout has:
 //   rank:    n
 //   sizes:   [... Z(k-1), Z(k), Z(k+1), ..., Z(n-1)]
@@ -1070,7 +1070,7 @@ absl::Status BuildBodyStepNonOverlapping(StridedLayout& head_layout,
 // head_layout has:
 //   rank:    k+1 < n
 //   sizes:   [... Z(k-1), V(k)]
-//   strides: [... T(k-1), 1]
+//   strides: [... T(k-1), 1] (or contiguous strides after a pad)
 // tail layout has:
 //   rank:    n
 //   sizes:   [... Z(k-1), Z(k), Z(k+1), ..., Z(n-1)]
@@ -1138,8 +1138,8 @@ absl::Status BuildBodyStepOverlapping(StridedLayout& head_layout,
   return absl::OkStatus();
 }
 
-// Adds one reshape and either a slice or an unfold to satisfy one or more
-// overlapping tail dimensions.
+// Adds one reshape and either a slice (and possibly a pad) or an unfold to
+// satisfy one or more tail dimensions.
 absl::Status BuildBodyStep(StridedLayout& head_layout,
                            const StridedLayout& tail_layout,
                            const Dimensions& view_widths, ViewSequence& result,
@@ -1169,7 +1169,7 @@ absl::Status BuildBodyStep(StridedLayout& head_layout,
 //   sizes:   [... Z(n-2), X]
 //     where X is either c * T(n-1) with c >= Z(n-1)
 ///    or X = (Z(n-1) - 1) * T(n-1) + 1
-//   strides: [... T(n-2), 1]
+//   strides: [... T(n-2), 1] (or contiguous strides after a pad)
 // tail layout has:
 //   rank:    n
 //   sizes:   [... Z(n-2), Z(n-1)]

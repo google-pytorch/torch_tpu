@@ -1263,6 +1263,42 @@ TEST(DecomposeIntoViewSequence, StridedSliceOfMiddleDimensionWithOffset) {
       DecomposeAndCheckElements(contiguous_base_shape, view_layout)));
 }
 
+TEST(DecomposeIntoViewSequence, StridedViewsWithTwoPads) {
+  // In each view, the rows of two dimensions are narrower than the view width
+  // of the next dimension, so the body pads both of them.
+  const auto count_pads = [](ViewSequenceSpan view_sequence) {
+    return absl::c_count_if(view_sequence, [](const ViewPrimitive& primitive) {
+      return std::holds_alternative<PadPrimitive>(primitive);
+    });
+  };
+
+  // torch.ones(2, 3, 2, 3, 4)[:, ::2, :, ::2]
+  StridedLayout view_layout = {
+      .strided_dims = {{.size = 2, .stride = 72},
+                       {.size = 2, .stride = 48},
+                       {.size = 2, .stride = 12},
+                       {.size = 2, .stride = 8},
+                       {.size = 4, .stride = 1}},
+      .storage_offset = 0,
+  };
+  ViewSequence sequence =
+      DecomposeAndCheckElements({2, 3, 2, 3, 4}, view_layout);
+  EXPECT_FALSE(HasRepeatingPrimitive(sequence));
+  EXPECT_EQ(count_pads(sequence), 2) << ToString(sequence);
+
+  // torch.ones(26).as_strided((2, 2, 2, 2), (13, 7, 4, 1))
+  view_layout = {
+      .strided_dims = {{.size = 2, .stride = 13},
+                       {.size = 2, .stride = 7},
+                       {.size = 2, .stride = 4},
+                       {.size = 2, .stride = 1}},
+      .storage_offset = 0,
+  };
+  sequence = DecomposeAndCheckElements({26}, view_layout);
+  EXPECT_FALSE(HasRepeatingPrimitive(sequence));
+  EXPECT_EQ(count_pads(sequence), 2) << ToString(sequence);
+}
+
 TEST(DecomposeIntoViewSequence, StridedSliceOfDivisibleMiddleDimension) {
   // torch.ones(2, 4, 4)[:, ::2]
   Dimensions contiguous_base_shape = {2, 4, 4};
