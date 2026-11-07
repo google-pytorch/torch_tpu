@@ -18,7 +18,7 @@ from collections.abc import Sequence
 import dataclasses
 import enum
 import types
-from typing import Literal
+from typing import Any, Literal
 from unittest import mock
 
 from absl.testing import absltest
@@ -27,7 +27,12 @@ import jax.numpy as jnp
 import torch
 from torch_tpu._internal import pallas
 from torch_tpu._internal import testing as tt_testing
+from torch_tpu._internal.utils import test_utils
 from tests import seed_test_utils
+
+# `jax.jit` supports negative `donate_argnums` only from JAX 0.12 on; older
+# versions, which OSS TorchTPU still uses, ignore them, and so does `jax_op`.
+_JAX_SUPPORTS_NEGATIVE_DONATE_ARGNUMS = jax.__version_info__ >= (0, 12, 0)
 
 
 class MyCustomType:
@@ -471,7 +476,8 @@ class PallasSignatureTest(seed_test_utils.RepeatableTest):
         input_partition_specs=(pspec, pspec),
         output_partition_specs=pspec,
     )
-    self.assertEqual(op._init_fn._donate_argnums_set, {1})
+    if _JAX_SUPPORTS_NEGATIVE_DONATE_ARGNUMS:
+      self.assertEqual(op._init_fn._donate_argnums_set, {1})
 
     with torch._subclasses.fake_tensor.FakeTensorMode():
       fake_x = torch.empty((4, 8), dtype=torch.float32, device="tpu")
@@ -499,7 +505,8 @@ class PallasSignatureTest(seed_test_utils.RepeatableTest):
     ):
       op._init_fn(cpu_x, cpu_y)
       self.assertEqual(mock_call.call_args.kwargs["device_assignment"], [])
-      self.assertEqual(mock_call.call_args.kwargs["donate_argnums"], [1])
+      if _JAX_SUPPORTS_NEGATIVE_DONATE_ARGNUMS:
+        self.assertEqual(mock_call.call_args.kwargs["donate_argnums"], [1])
 
       concrete_mesh = jax.make_mesh(
           (1,),
@@ -521,7 +528,8 @@ class PallasSignatureTest(seed_test_utils.RepeatableTest):
           mock_call.call_args.kwargs["device_assignment"],
           [int(jax.devices()[0].id)],
       )
-      self.assertEqual(mock_call.call_args.kwargs["donate_argnums"], [0])
+      if _JAX_SUPPORTS_NEGATIVE_DONATE_ARGNUMS:
+        self.assertEqual(mock_call.call_args.kwargs["donate_argnums"], [0])
 
       dup_mesh = types.SimpleNamespace(
           size=1,
@@ -541,6 +549,181 @@ class PallasSignatureTest(seed_test_utils.RepeatableTest):
           ),
       ):
         pallas.pallas._validate_pallas_mesh_size(mesh=dup_mesh)
+
+  def _get_exported_donor_indices(
+      self, op: Any, *args: Any, **kwargs: Any
+  ) -> list[int]:
+    """Returns the indices of the inputs the exported module donates."""
+    # pylint: disable=protected-access
+    jax_callable = getattr(op, "_init_fn", op)
+    norm_args, norm_kwargs = jax_callable._normalize_invocation_args(
+        args, kwargs
+    )
+    jax_args, jax_kwargs = jax_callable._get_jax_placeholders(
+        norm_args, norm_kwargs
+    )
+    with jax._src.config.export_ignore_forward_compatibility(True):
+      exported = jax_callable.exported(*jax_args, **jax_kwargs)
+    # pylint: enable=protected-access
+    ir = jax.interpreters.mlir.ir
+    with jax.interpreters.mlir.make_ir_context():
+      module = ir.Module.parse(exported.mlir_module())
+      for func in module.body.operations:
+        attrs = func.operation.attributes
+        if (
+            func.operation.name == "func.func"
+            and ir.StringAttr(attrs["sym_name"]).value == "main"
+        ):
+          return [
+              i
+              for i, arg_attrs in enumerate(func.arg_attrs or [])
+              if "jax.buffer_donor" in str(arg_attrs)
+              or "tf.aliasing_output" in str(arg_attrs)
+          ]
+    self.fail("The exported module has no main function.")
+
+  def test_negative_donate_argnums_resolve_like_jax_jit(self):
+    """Verifies negative donate_argnums donate what the exported module does.
+
+    `jax.jit` resolves negative indices relative to the positional parameters,
+    and doesn't resolve them if the function takes `*args`.
+    """
+    if not _JAX_SUPPORTS_NEGATIVE_DONATE_ARGNUMS:
+      self.skipTest("jax.jit ignores negative donate_argnums before JAX 0.12.")
+
+    def kwonly_fn(
+        x: jax.Array, kv: jax.Array, *, mode: str = "a"
+    ) -> tuple[jax.Array, jax.Array]:
+      del mode  # Unused.
+      return x, kv
+
+    def three_tensors_kwonly_fn(
+        x: jax.Array, y: jax.Array, z: jax.Array, *, mode: str = "a"
+    ) -> tuple[jax.Array, jax.Array, jax.Array]:
+      del mode  # Unused.
+      return x, y, z
+
+    def var_keyword_fn(
+        x: jax.Array, kv: jax.Array, **extra: jax.Array
+    ) -> tuple[jax.Array, jax.Array]:
+      del extra  # Unused.
+      return x, kv
+
+    def var_positional_fn(
+        x: jax.Array, *rest: jax.Array
+    ) -> tuple[jax.Array, ...]:
+      return (x, *rest)
+
+    t0 = torch.ones((4, 4), dtype=torch.float32)
+    t1 = torch.full((4, 4), 2.0, dtype=torch.float32)
+    t2 = torch.full((4, 4), 3.0, dtype=torch.float32)
+
+    with (
+        mock.patch.object(
+            pallas.pallas.tpu_torch_pallas, "register_custom_kernel"
+        ),
+        mock.patch.object(
+            pallas.pallas.tpu_torch_pallas,
+            "lookup_custom_kernel",
+            return_value=True,
+        ),
+        mock.patch.object(
+            pallas.pallas.tpu_torch_pallas,
+            "call_custom_kernel",
+            side_effect=lambda *_, output_shapes, **__: list(output_shapes),
+        ) as mock_call,
+    ):
+      cases = [
+          # -1 is `kv`; the keyword-only `mode` is not counted.
+          (
+              "keyword_only",
+              pallas.jax_op(
+                  "test::negative_donate_kwonly",
+                  kwonly_fn,
+                  donate_argnums=(-1,),
+              ),
+              (t0, t1),
+              [1],
+          ),
+          # -2 is `y`, not `z`.
+          (
+              "keyword_only_three_tensors",
+              pallas.jax_op(
+                  "test::negative_donate_three_kwonly",
+                  three_tensors_kwonly_fn,
+                  donate_argnums=(-2,),
+              ),
+              (t0, t1, t2),
+              [1],
+          ),
+          # -1 is `kv`; `**extra` is not counted.
+          (
+              "var_keyword",
+              pallas.custom_jax_kernel(
+                  var_keyword_fn, donate_argnums=[-1], warn_deprecated=False
+              ),
+              (t0, t1),
+              [1],
+          ),
+          # With `*args`, `jax.jit` leaves -1 unresolved and donates nothing.
+          (
+              "var_positional",
+              pallas.custom_jax_kernel(
+                  var_positional_fn, donate_argnums=[-1], warn_deprecated=False
+              ),
+              (t0, t1, t2),
+              [],
+          ),
+      ]
+      for case_name, op, args, expected_donated in cases:
+        with self.subTest(case_name):
+          getattr(op, "_init_fn", op)(*args)
+          self.assertEqual(
+              mock_call.call_args.kwargs["donate_argnums"], expected_donated
+          )
+          self.assertEqual(
+              self._get_exported_donor_indices(op, *args), expected_donated
+          )
+
+  def test_input_output_aliases_donate_aliased_inputs(self):
+    """Verifies the deprecated input_output_aliases still donate their inputs.
+
+    `jax.jit` isn't told about them, so they're donated in addition to the
+    arguments `jax.jit` resolved.
+    """
+
+    def accumulate_fn(x: jax.Array, acc: jax.Array) -> jax.Array:
+      return acc + x
+
+    kernel = pallas.custom_jax_kernel(
+        accumulate_fn, input_output_aliases={1: 0}, warn_deprecated=False
+    )
+    t_x = torch.ones((4, 4), dtype=torch.float32)
+    t_acc = torch.zeros((4, 4), dtype=torch.float32)
+
+    with (
+        mock.patch.object(
+            pallas.pallas.tpu_torch_pallas, "register_custom_kernel"
+        ),
+        mock.patch.object(
+            pallas.pallas.tpu_torch_pallas,
+            "lookup_custom_kernel",
+            return_value=True,
+        ),
+        mock.patch.object(
+            pallas.pallas.tpu_torch_pallas,
+            "call_custom_kernel",
+            # `t_acc` starts as zeros, so return values to validate it
+            side_effect=lambda *_, output_shapes, **__: [
+                torch.full(placeholder.shape, 5.0, dtype=placeholder.dtype)
+                for placeholder in output_shapes
+            ],
+        ) as mock_call,
+    ):
+      kernel(t_x, t_acc)
+
+    self.assertEqual(mock_call.call_args.kwargs["donate_argnums"], [1])
+    test_utils.assert_close(t_acc, torch.full((4, 4), 5.0))
 
 
 if __name__ == "__main__":

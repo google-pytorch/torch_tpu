@@ -1954,6 +1954,37 @@ class TestPallasCompat(seed_test_utils.RepeatableTest):
     test_utils.assert_close(res_aliased.cpu(), torch.full((2, 2), 10.0))
     test_utils.assert_close(t_aliased.cpu(), torch.full((2, 2), 10.0))
 
+  def test_negative_donate_argnums_skip_keyword_only_parameters(self):
+    """Verifies negative donate_argnums count only positional parameters."""
+    if jax.__version_info__ < (0, 12, 0):
+      self.skipTest("jax.jit ignores negative donate_argnums before JAX 0.12.")
+
+    def kernel_donate_before_kwonly(
+        x: jax.Array,
+        y: jax.Array,
+        z: jax.Array,
+        *,
+        scale: int = 1,
+    ) -> tuple[jax.Array, jax.Array, jax.Array]:
+      return x * scale, y, z
+
+    # As in jax.jit, -2 is `y`; the keyword-only `scale` is not counted.
+    op = pallas.jax_op(
+        "test::kernel_donate_before_kwonly",
+        kernel_donate_before_kwonly,
+        donate_argnums=(-2,),
+    )
+    t_x = torch.ones((2, 2), dtype=torch.float32, device="tpu")
+    t_y = torch.full((2, 2), 2.0, dtype=torch.float32, device="tpu")
+    t_z = torch.full((2, 2), 3.0, dtype=torch.float32, device="tpu")
+    out_x, out_y, out_z = op(t_x, t_y, t_z, scale=4)
+    test_utils.assert_close(out_x.cpu(), torch.full((2, 2), 4.0))
+    test_utils.assert_close(out_y.cpu(), torch.full((2, 2), 2.0))
+    test_utils.assert_close(out_z.cpu(), torch.full((2, 2), 3.0))
+    test_utils.assert_close(t_x.cpu(), torch.ones((2, 2)))
+    self._assert_donated(t_y)
+    test_utils.assert_close(t_z.cpu(), torch.full((2, 2), 3.0))
+
   def test_jax_placeholders_mesh_tensor_sequence(self):
     """Verifies jax_placeholders does not crash when called with a mesh and tensor sequence."""
     mesh = jax.sharding.Mesh(jax.numpy.arange(1), "x")
