@@ -16,7 +16,6 @@
 
 #include "csrc/ops/reductions/std_aten_kernels.h"
 
-#include <complex>
 #include <cstdint>
 #include <optional>
 #include <utility>
@@ -45,7 +44,6 @@
 #include "csrc/ops/reductions/reductions.h"
 #include "csrc/ops/reductions/sum.h"
 #include "csrc/ops/unary.h"
-#include "llvm/Support/Casting.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Types.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
@@ -57,14 +55,14 @@ namespace torch_tpu {
 namespace {
 
 NAryMlirOpBuilder<2, 1> CreateStdBuilder(Dimensions dim_vec,
-                                         const ReductionMode reduction_mode,
-                                         const int64_t reduction_size) {
-  return [dim_vec = std::move(dim_vec), reduction_mode,
-          reduction_size](FixedSizeSpan<mlir::MlirOp, 2> inputs)
+                                         const ReductionMode reduction_mode) {
+  return [dim_vec = std::move(dim_vec),
+          reduction_mode](FixedSizeSpan<mlir::MlirOp, 2> inputs)
              -> absl::StatusOr<mlir::MlirOp> {
     auto& [self_op, correction_op] = inputs;
     mlir::MlirBuilder& builder = self_op.getBuilder();
-    const mlir::Type type = GetTensorTypeOrDie(self_op).getElementType();
+    TT_ASSIGN_OR_RETURN(const mlir::ElementType self_type,
+                        GetElementType(self_op));
     TT_ASSIGN_OR_RETURN(
         const mlir::ElementType corr_type,
         ConvertTo<mlir::ElementType>(
@@ -76,17 +74,24 @@ NAryMlirOpBuilder<2, 1> CreateStdBuilder(Dimensions dim_vec,
         const auto sum_op,
         BuildSumShlo(self_op, dim_vec, ReductionMode::kKeepDims));
 
-    // mean = sum_tensor / reduction_size
-    const mlir::MlirOp reduction_size_const =
-        llvm::isa<mlir::ComplexType>(type)
-            ? MakeScalarConstant(builder,
-                                 std::complex<double>(
-                                     static_cast<double>(reduction_size), 0.0),
-                                 type)
-            : MakeScalarConstant(builder, static_cast<double>(reduction_size),
-                                 type);
-    TT_ASSIGN_OR_RETURN(const auto mean,
-                        BuildDivShlo(sum_op, reduction_size_const));
+    // Count the elements in the program: a program with a bounded dynamic
+    // dim is reused for all of its sizes. The mean and the denominator share
+    // the count. It is built in the wider of their real types, so that the
+    // wider use does not get a count rounded to the narrower type.
+    const mlir::ElementType mean_real_type = RealComponentOf(self_type);
+    const mlir::ElementType count_type =
+        TorchEquivalentBitwidth(var_type) >
+                TorchEquivalentBitwidth(mean_real_type)
+            ? var_type
+            : mean_real_type;
+    const mlir::MlirOp num_elements = GetNumElements(
+        self_op, mlir::getElementType(builder.getContext(), count_type),
+        dim_vec);
+
+    // mean = sum_tensor / num_elements
+    TT_ASSIGN_OR_RETURN(const auto mean_count,
+                        CastIfNeeded(num_elements, self_type));
+    TT_ASSIGN_OR_RETURN(const auto mean, BuildDivShlo(sum_op, mean_count));
 
     // diff = self - mean
     TT_ASSIGN_OR_RETURN(const auto diff, BuildSubShlo(self_op, mean));
@@ -102,11 +107,11 @@ NAryMlirOpBuilder<2, 1> CreateStdBuilder(Dimensions dim_vec,
         const auto sum_sq_op,
         BuildSumShlo(squared_diff, dim_vec, reduction_mode, var_type));
 
-    // denom = max(reduction_size - correction, 0)
-    const auto reduction_size_const_corr = MakeScalarConstant(
-        builder, static_cast<double>(reduction_size), var_type);
+    // denom = max(num_elements - correction, 0)
+    TT_ASSIGN_OR_RETURN(const auto denom_count,
+                        CastIfNeeded(num_elements, var_type));
     TT_ASSIGN_OR_RETURN(const auto denom_diff,
-                        BuildSubShlo(reduction_size_const_corr, correction_op));
+                        BuildSubShlo(denom_count, correction_op));
     const auto zero = MakeScalarConstant(builder, 0.0, var_type);
     TT_ASSIGN_OR_RETURN(const auto denom, BuildMaximumShlo(denom_diff, zero));
 
@@ -171,8 +176,8 @@ at::Tensor AtenStd(const at::Tensor& self, c10::OptionalArrayRef<int64_t> dim,
           computation_dtype = mlir::ElementType::F32;
         }
 
-        auto std_builder = CreateStdBuilder(std::move(canonicalized_dims),
-                                            reduction_mode, reduction_size);
+        auto std_builder =
+            CreateStdBuilder(std::move(canonicalized_dims), reduction_mode);
 
         TT_ASSIGN_OR_THROW(
             auto result_bufs,
@@ -239,8 +244,8 @@ at::Tensor& AtenStdOut(const at::Tensor& self,
           computation_dtype = mlir::ElementType::F32;
         }
 
-        auto std_builder = CreateStdBuilder(std::move(canonicalized_dims),
-                                            reduction_mode, reduction_size);
+        auto std_builder =
+            CreateStdBuilder(std::move(canonicalized_dims), reduction_mode);
 
         TT_THROW_IF_ERROR((DispatchOpOut<2, 1>(
             std::move(std_builder), {self, correction_tensor}, out,

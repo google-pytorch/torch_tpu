@@ -17,7 +17,6 @@
 #include "csrc/ops/reductions/var_aten_kernels.h"
 
 #include <array>
-#include <complex>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -88,17 +87,27 @@ NAryMlirOpBuilder<2, 1> CreateVarBuilder(Dimensions dim_vec,
                         BuildSumShlo(self_op, dim_vec, ReductionMode::kKeepDims,
                                      self_compute_dtype));
 
-    // mean = sum_tensor / reduction_size
-    mlir::MlirOp reduction_size_const;
-    if (llvm::isa<mlir::ComplexType>(type)) {
-      reduction_size_const = MakeScalarConstant(
-          builder,
-          std::complex<double>(static_cast<double>(reduction_size), 0.0), type);
-    } else {
-      reduction_size_const = MakeScalarConstant(
-          builder, static_cast<double>(reduction_size), type);
-    }
-    TT_ASSIGN_OR_RETURN(auto mean, BuildDivShlo(sum_op, reduction_size_const));
+    // Count the elements in the program: a program with a bounded dynamic
+    // dim is reused for all of its sizes. The mean and the denominator share
+    // the count. It is built in the wider of their real types, so that the
+    // wider use does not get a count rounded to the narrower type.
+    const mlir::ElementType mean_real_type =
+        RealComponentOf(self_compute_dtype);
+    const mlir::ElementType denom_real_type =
+        RealComponentOf(real_compute_dtype);
+    const mlir::ElementType count_type =
+        TorchEquivalentBitwidth(denom_real_type) >
+                TorchEquivalentBitwidth(mean_real_type)
+            ? denom_real_type
+            : mean_real_type;
+    const mlir::MlirOp num_elements = GetNumElements(
+        self_op, mlir::getElementType(builder.getContext(), count_type),
+        dim_vec);
+
+    // mean = sum_tensor / num_elements
+    TT_ASSIGN_OR_RETURN(auto mean_count,
+                        CastIfNeeded(num_elements, self_compute_dtype));
+    TT_ASSIGN_OR_RETURN(auto mean, BuildDivShlo(sum_op, mean_count));
 
     // diff = self - mean
     TT_ASSIGN_OR_RETURN(auto diff, BuildSubShlo(self_op, mean));
@@ -119,17 +128,18 @@ NAryMlirOpBuilder<2, 1> CreateVarBuilder(Dimensions dim_vec,
                         BuildSumShlo(squared_diff, dim_vec, reduction_mode,
                                      real_compute_dtype));
 
-    // denom = max(reduction_size - correction, 0)
+    // denom = max(num_elements - correction, 0)
     // If reduction_size == 0, degrees of freedom is 0 and variance is NaN.
+    // This host check is exact for static dims and for dims marked dynamic
+    // in eager mode, which have a lower bound of at least 2.
     mlir::MlirOp denom;
     if (reduction_size == 0) {
       denom = MakeScalarConstant(builder, 0.0, corr_type);
     } else {
-      auto reduction_size_const_corr = MakeScalarConstant(
-          builder, static_cast<double>(reduction_size), corr_type);
-      TT_ASSIGN_OR_RETURN(
-          auto denom_diff,
-          BuildSubShlo(reduction_size_const_corr, correction_op));
+      TT_ASSIGN_OR_RETURN(auto denom_count,
+                          CastIfNeeded(num_elements, real_compute_dtype));
+      TT_ASSIGN_OR_RETURN(auto denom_diff,
+                          BuildSubShlo(denom_count, correction_op));
       auto zero = MakeScalarConstant(builder, 0.0, corr_type);
       TT_ASSIGN_OR_RETURN(denom, BuildMaximumShlo(denom_diff, zero));
     }
@@ -359,18 +369,19 @@ std::tuple<at::Tensor, at::Tensor> AtenVarMeanCorrection(
                               BuildSumShlo(squared_diff, canonical_dims,
                                            reduction_mode, var_type));
 
-          // denom = max(reduction_size - correction, 0)
+          // denom = max(num_elements - correction, 0)
           // If reduction_size == 0, degrees of freedom is 0 and variance is
-          // NaN.
+          // NaN. This host check is exact for static dims and for dims marked
+          // dynamic in eager mode, which have a lower bound of at least 2.
           mlir::MlirOp denom;
           if (reduction_size == 0) {
             denom = MakeScalarConstant(builder, 0.0, var_type);
           } else {
-            auto reduction_size_const = MakeScalarConstant(
-                builder, static_cast<double>(reduction_size), var_type);
-            TT_ASSIGN_OR_RETURN(
-                auto denom_diff,
-                BuildSubShlo(reduction_size_const, correction_op));
+            const mlir::MlirOp num_elements = GetNumElements(
+                self_op, mlir::getElementType(builder.getContext(), var_type),
+                canonical_dims);
+            TT_ASSIGN_OR_RETURN(auto denom_diff,
+                                BuildSubShlo(num_elements, correction_op));
             auto zero = MakeScalarConstant(builder, 0.0, var_type);
             TT_ASSIGN_OR_RETURN(denom, BuildMaximumShlo(denom_diff, zero));
           }
