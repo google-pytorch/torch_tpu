@@ -35,6 +35,13 @@ TEST(AtenUtilsTest, ConcreteSizeToDimensionsConvertsConcreteSizes) {
                           ConcreteSizeToDimensions(sizes));
   EXPECT_EQ(dims, (Dimensions{2, 0, 5}));
 
+  const c10::SymDimVector rank7_sizes = {
+      c10::SymInt(1), c10::SymInt(2), c10::SymInt(3), c10::SymInt(4),
+      c10::SymInt(5), c10::SymInt(6), c10::SymInt(7)};
+  TT_ASSERT_OK_AND_ASSIGN(const Dimensions rank7_dims,
+                          ConcreteSizeToDimensions(rank7_sizes));
+  EXPECT_EQ(rank7_dims, (Dimensions{1, 2, 3, 4, 5, 6, 7}));
+
   TT_ASSERT_OK_AND_ASSIGN(const Dimensions empty_dims,
                           ConcreteSizeToDimensions(c10::SymIntArrayRef()));
   EXPECT_EQ(empty_dims, Dimensions());
