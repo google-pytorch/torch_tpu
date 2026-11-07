@@ -646,6 +646,187 @@ class FunctionTest(seed_test_utils.RepeatableTest):
     expected = (x_cpu.sin() * 2.0).sum() + (y_cpu.sin() * 2.0).sum()
     utils.assert_close(res, expected)
 
+  def test_nested_compile_region_rng_state_advancement(self):
+    @torch.compiler.nested_compile_region
+    def rng_kernel(x):
+      return x + torch.rand_like(x)
+
+    def fn(x):
+      return rng_kernel(x), rng_kernel(x)
+
+    x = torch.ones(4, 8, device="tpu")
+    torch.manual_seed(1234)
+    eager1, eager2 = fn(x)
+    eager3, eager4 = fn(x)
+    eager_next = torch.rand_like(x)
+
+    nested_compile_region.clear_cache()
+    compiled = torch.compile(fn, backend="tpu")
+    torch.manual_seed(1234)
+    with _patch_inline_subgraph():
+      comp1, comp2 = compiled(x)
+      self.assertLen(nested_compile_region._NESTED_REGION_COMPILE_CACHE, 1)
+      comp3, comp4 = compiled(x)
+    comp_next = torch.rand_like(x)
+
+    self.assertFalse(torch.equal(comp1.to("cpu"), comp2.to("cpu")))
+    self.assertFalse(torch.equal(comp1.to("cpu"), comp3.to("cpu")))
+    self.assertFalse(torch.equal(comp3.to("cpu"), comp4.to("cpu")))
+    utils.assert_close(comp1.to("cpu"), eager1.to("cpu"))
+    utils.assert_close(comp2.to("cpu"), eager2.to("cpu"))
+    utils.assert_close(comp3.to("cpu"), eager3.to("cpu"))
+    utils.assert_close(comp4.to("cpu"), eager4.to("cpu"))
+    utils.assert_close(comp_next.to("cpu"), eager_next.to("cpu"))
+
+  def test_nested_compile_region_hierarchical_rng(self):
+    @torch.compiler.nested_compile_region
+    def inner_rng(x):
+      return x * 0.5 + torch.rand_like(x)
+
+    @torch.compiler.nested_compile_region
+    def outer_rng(x):
+      a = inner_rng(x)
+      b = torch.rand_like(x)
+      c = inner_rng(x)
+      return a, b, c
+
+    def fn(x):
+      return outer_rng(x), outer_rng(x)
+
+    x = torch.ones(4, 8, device="tpu")
+    torch.manual_seed(4321)
+    eager_first, eager_second = fn(x)
+    eager_after = torch.rand_like(x)
+
+    nested_compile_region.clear_cache()
+    compiled = torch.compile(fn, backend="tpu")
+    torch.manual_seed(4321)
+    with _patch_inline_subgraph():
+      comp_first, comp_second = compiled(x)
+      self.assertLen(nested_compile_region._NESTED_REGION_COMPILE_CACHE, 2)
+    comp_after = torch.rand_like(x)
+
+    e_first_0, e_first_1, e_first_2 = eager_first
+    c_first_0, c_first_1, c_first_2 = comp_first
+    utils.assert_close(c_first_0.to("cpu"), e_first_0.to("cpu"))
+    utils.assert_close(c_first_1.to("cpu"), e_first_1.to("cpu"))
+    utils.assert_close(c_first_2.to("cpu"), e_first_2.to("cpu"))
+
+    e_second_0, e_second_1, e_second_2 = eager_second
+    c_second_0, c_second_1, c_second_2 = comp_second
+    utils.assert_close(c_second_0.to("cpu"), e_second_0.to("cpu"))
+    utils.assert_close(c_second_1.to("cpu"), e_second_1.to("cpu"))
+    utils.assert_close(c_second_2.to("cpu"), e_second_2.to("cpu"))
+    utils.assert_close(comp_after.to("cpu"), eager_after.to("cpu"))
+
+    self.assertFalse(
+        torch.equal(comp_first[0].to("cpu"), comp_first[2].to("cpu"))
+    )
+    self.assertFalse(
+        torch.equal(comp_first[1].to("cpu"), comp_second[1].to("cpu"))
+    )
+
+  def test_nested_compile_region_explicit_generator(self):
+    graph = torch.fx.Graph()
+    x_node = graph.placeholder("x")
+    gen_node = graph.placeholder("gen")
+    rand_node = graph.call_function(
+        torch.randn,
+        args=((4, 8),),
+        kwargs={"generator": gen_node, "device": "tpu", "dtype": torch.float32},
+    )
+    add_node = graph.call_function(torch.add, args=(x_node, rand_node))
+    graph.output((add_node,))
+    sub_gm = torch.fx.GraphModule(torch.nn.Module(), graph)
+
+    x = torch.ones(4, 8, device="tpu")
+    eager_gen = torch.Generator(device="tpu").manual_seed(9876)
+    eager_out1 = x + torch.randn(
+        (4, 8), generator=eager_gen, device="tpu", dtype=torch.float32
+    )
+    eager_out2 = x + torch.randn(
+        (4, 8), generator=eager_gen, device="tpu", dtype=torch.float32
+    )
+
+    nested_compile_region.clear_cache()
+    sub_gen = torch.Generator(device="tpu").manual_seed(9876)
+    (out1,) = nested_compile_region.handle_invoke_subgraph(
+        sub_gm, "explicit_gen", x, sub_gen
+    )
+    (out2,) = nested_compile_region.handle_invoke_subgraph(
+        sub_gm, "explicit_gen", x, sub_gen
+    )
+    self.assertLen(nested_compile_region._NESTED_REGION_COMPILE_CACHE, 1)
+    utils.assert_close(out1.to("cpu"), eager_out1.to("cpu"))
+    utils.assert_close(out2.to("cpu"), eager_out2.to("cpu"))
+    self.assertFalse(torch.equal(out1.to("cpu"), out2.to("cpu")))
+
+  def test_nested_compile_region_embedded_constant_cache_reuse(self):
+    def make_region(vals):
+      @torch.compiler.nested_compile_region
+      def add_const(x):
+        return x + torch.tensor(vals, device=x.device)
+
+      return add_const
+
+    region_a = make_region((2.0, 3.0))
+    region_same = make_region((2.0, 3.0))
+    region_diff = make_region((10.0, 20.0))
+
+    def fn1(x):
+      return region_a(x * 1.0)
+
+    def fn2(x):
+      return region_same(x + 1.0)
+
+    def fn3(x):
+      return region_diff(x * 1.0)
+
+    x = torch.tensor([1.0, 4.0], device="tpu")
+    nested_compile_region.clear_cache()
+
+    c1 = torch.compile(fn1, backend="tpu", options={"serializable": False})
+    c2 = torch.compile(fn2, backend="tpu", options={"serializable": False})
+    c3 = torch.compile(fn3, backend="tpu", options={"serializable": False})
+
+    with _patch_inline_subgraph():
+      out1 = c1(x).to("cpu")
+      self.assertLen(nested_compile_region._NESTED_REGION_COMPILE_CACHE, 1)
+      out2 = c2(x).to("cpu")
+      self.assertLen(nested_compile_region._NESTED_REGION_COMPILE_CACHE, 1)
+      out3 = c3(x).to("cpu")
+      self.assertLen(nested_compile_region._NESTED_REGION_COMPILE_CACHE, 2)
+
+    utils.assert_close(out1, torch.tensor([3.0, 7.0]))
+    utils.assert_close(out2, torch.tensor([4.0, 8.0]))
+    utils.assert_close(out3, torch.tensor([11.0, 24.0]))
+
+  def test_nested_compile_region_empty_outputs(self):
+    class EmptySubmod(torch.nn.Module):
+
+      def forward(self, x):
+        return ()
+
+    sub_gm = torch.fx.symbolic_trace(EmptySubmod())
+    x = torch.tensor([1.0, 2.0, 3.0], device="tpu")
+
+    nested_compile_region.clear_cache()
+    self.assertEqual(
+        nested_compile_region.handle_invoke_subgraph(sub_gm, "empty_out", x),
+        (),
+    )
+    self.assertLen(nested_compile_region._NESTED_REGION_COMPILE_CACHE, 1)
+    entry = next(
+        iter(nested_compile_region._NESTED_REGION_COMPILE_CACHE.values())
+    )
+    self.assertIsNone(entry.module)
+
+    self.assertEqual(
+        nested_compile_region.handle_invoke_subgraph(sub_gm, "empty_out", x),
+        (),
+    )
+    self.assertLen(nested_compile_region._NESTED_REGION_COMPILE_CACHE, 1)
+
   def test_fx_graph_generates_more_than_one_graph_to_compile(self):
     # The if case trigger a graph break, so tpu_backend will generate two graphs
     # to compile.
