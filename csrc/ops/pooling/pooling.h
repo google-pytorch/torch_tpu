@@ -23,6 +23,7 @@
 
 #include "absl/status/statusor.h"
 #include "c10/util/ArrayRef.h"
+#include "c10/util/string_view.h"
 #include "csrc/common/dimension_types.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/Builders.h"
@@ -33,6 +34,29 @@
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 
 namespace torch_tpu {
+
+enum class PoolingDirection : bool {
+  kForward = false,
+  kBackward = true,
+};
+
+// Returns the 1D einsum contraction equation for pooling along spatial `dim`
+// (where `dim` is in [2, spatial_dim_count + 2)) of a batch-normalized
+// [N, C, ...] tensor with a 2D [out_size, in_size] weight matrix.
+c10::string_view GetPoolingEinsumEquation(int64_t spatial_dim_count,
+                                          int64_t dim,
+                                          PoolingDirection direction);
+
+// Builds a 2D pooling weight matrix W of shape [out_size, in_size] in
+// `compute_dtype` from column vectors `starts` ([out_size, 1], i32),
+// `ends` ([out_size, 1], i32), and `window_weights` ([out_size, 1],
+// `compute_dtype`), where W[o, i] = window_weights[o, 0] if
+// starts[o, 0] <= i < ends[o, 0], else 0.0.
+mlir::MlirOp BuildPooling1dWeightMatrix(mlir::MlirBuilder& builder,
+                                        int64_t in_size, int64_t out_size,
+                                        mlir::MlirOp starts, mlir::MlirOp ends,
+                                        mlir::MlirOp window_weights,
+                                        mlir::Type compute_dtype);
 
 // Returns the initial reduction value attribute for max pooling: -inf for
 // floating-point types and the minimum finite value for integer types.
