@@ -40,6 +40,7 @@
 #include "absl/base/nullability.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/functional/function_ref.h"
+#include "absl/log/absl_log.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/ascii.h"
 #include "absl/strings/match.h"
@@ -317,6 +318,25 @@ struct PciTpuScanResult {
 
 }  // namespace
 
+std::string_view TpuVersionName(const TpuVersion version) {
+  switch (version) {
+    case TpuVersion::kV5e:
+      return "TPU v5e";
+    case TpuVersion::kV5p:
+      return "TPU v5p";
+    case TpuVersion::kV6e:
+      return "TPU v6e";
+    case TpuVersion::kV7:
+      return "TPU v7";
+    case TpuVersion::kV8i:
+      return "TPU v8i";
+    case TpuVersion::kV8t:
+      return "TPU v8t";
+  }
+  ABSL_LOG(FATAL)  // CRASH_OK
+      << "Invalid TpuVersion: " << static_cast<int>(version);
+}
+
 absl::StatusOr<TpuSpec::Topology> TpuSpec::GetTopology(
     std::optional<int64_t> world_size, std::string_view pci_devices_dir,
     std::string_view vfio_dir) const {
@@ -331,6 +351,25 @@ absl::StatusOr<TpuSpec::Topology> TpuSpec::GetTopology(
   return it->second;
 }
 
+const TpuSpec& TpuSpec::ForVersion(const TpuVersion version) {
+  switch (version) {
+    case TpuVersion::kV5e:
+      return V5e();
+    case TpuVersion::kV5p:
+      return V5p();
+    case TpuVersion::kV6e:
+      return V6e();
+    case TpuVersion::kV7:
+      return V7();
+    case TpuVersion::kV8i:
+      return V8i();
+    case TpuVersion::kV8t:
+      return V8t();
+  }
+  ABSL_LOG(FATAL)  // CRASH_OK
+      << "Invalid TpuVersion: " << static_cast<int>(version);
+}
+
 // HBM and bf16 FLOP/s sources:
 // - v5e, v5p, v6e, v7: https://cloud.google.com/tpu/docs/{v5e,v5p,v6e,tpu7x}
 // - v8i, v8t: `hbm_capacity_bytes` and `bf16_ops_per_second` (per TensorCore)
@@ -340,7 +379,7 @@ absl::StatusOr<TpuSpec::Topology> TpuSpec::GetTopology(
 // https://github.com/jax-ml/jax/blob/main/jax/_src/tpu_info.py.
 const TpuSpec& TpuSpec::V5p() {
   static const absl::NoDestructor<TpuSpec> kSpec(TpuSpec{
-      .name = "TPU v5p",
+      .version = TpuVersion::kV5p,
       .devices_per_chip = 1,
       .hbm_bytes_per_chip = 95LL * 1024 * 1024 * 1024,
       .bf16_flops_per_chip = 459'000'000'000'000LL,
@@ -359,7 +398,7 @@ const TpuSpec& TpuSpec::V5p() {
 
 const TpuSpec& TpuSpec::V5e() {
   static const absl::NoDestructor<TpuSpec> kSpec(TpuSpec{
-      .name = "TPU v5e",
+      .version = TpuVersion::kV5e,
       .devices_per_chip = 1,
       .hbm_bytes_per_chip = 16LL * 1024 * 1024 * 1024,
       .bf16_flops_per_chip = 197'000'000'000'000LL,
@@ -384,7 +423,7 @@ const TpuSpec& TpuSpec::V5e() {
 
 const TpuSpec& TpuSpec::V6e() {
   static const absl::NoDestructor<TpuSpec> kSpec(TpuSpec{
-      .name = "TPU v6e",
+      .version = TpuVersion::kV6e,
       .devices_per_chip = 1,
       .hbm_bytes_per_chip = 32LL * 1024 * 1024 * 1024,
       .bf16_flops_per_chip = 918'000'000'000'000LL,
@@ -402,7 +441,7 @@ const TpuSpec& TpuSpec::V6e() {
 
 const TpuSpec& TpuSpec::V7() {
   static const absl::NoDestructor<TpuSpec> kSpec(TpuSpec{
-      .name = "TPU v7",
+      .version = TpuVersion::kV7,
       .devices_per_chip = 2,
       .hbm_bytes_per_chip = 192LL * 1024 * 1024 * 1024,
       .bf16_flops_per_chip = 2'307'000'000'000'000LL,
@@ -420,7 +459,7 @@ const TpuSpec& TpuSpec::V7() {
 
 const TpuSpec& TpuSpec::V8i() {
   static const absl::NoDestructor<TpuSpec> kSpec(TpuSpec{
-      .name = "TPU v8i",
+      .version = TpuVersion::kV8i,
       .devices_per_chip = 2,
       .hbm_bytes_per_chip = 309'000'000'000LL,
       .bf16_flops_per_chip = 1'101'000'000'000'000LL,
@@ -438,7 +477,7 @@ const TpuSpec& TpuSpec::V8i() {
 
 const TpuSpec& TpuSpec::V8t() {
   static const absl::NoDestructor<TpuSpec> kSpec(TpuSpec{
-      .name = "TPU v8t",
+      .version = TpuVersion::kV8t,
       .devices_per_chip = 1,
       .hbm_bytes_per_chip = 231'000'000'000LL,
       .bf16_flops_per_chip = 996'100'000'000'000LL,

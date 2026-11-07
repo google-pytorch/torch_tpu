@@ -62,6 +62,7 @@ WHEEL_PY_TARGETS = [
     "//src/torch_tpu/_internal/optimizers:single_trace_trainer",
     "//src/torch_tpu/_internal/pallas",
     "//src/torch_tpu/_internal/pallas/verify:findings",
+    "//src/torch_tpu/_internal/pallas/verify:fx_verifier",
     "//src/torch_tpu/_internal/pallas/verify:init",
     "//src/torch_tpu/_internal/pallas/verify:verifier",
     "//src/torch_tpu/_internal/pallas:mesh",

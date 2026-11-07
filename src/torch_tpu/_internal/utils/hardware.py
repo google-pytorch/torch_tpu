@@ -27,6 +27,7 @@ device and the world size.
 from __future__ import annotations
 
 from collections.abc import Set
+import enum
 import os
 from typing import Final
 
@@ -39,6 +40,19 @@ _NVIDIA_GPU_DEVICES: Final[Set[str]] = frozenset([
     "/dev/nvidiactl",  # Docker/Kubernetes
     "/dev/dxg",  # WSL2
 ])
+
+
+@annotations.experimental("TPU hardware generation.")
+class TpuVersion(enum.Enum):
+  """TPU hardware generation."""
+
+  V5E = "TPU v5e"
+  V5P = "TPU v5p"
+  V6E = "TPU v6e"
+  V7 = "TPU v7"
+  V8I = "TPU v8i"
+  V8T = "TPU v8t"
+
 
 SparseCoreSpec = _hardware_backend.SparseCoreSpec
 TpuSpec = _hardware_backend.TpuSpec

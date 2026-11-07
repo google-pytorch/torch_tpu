@@ -26,8 +26,10 @@ from __future__ import annotations
 from collections.abc import Iterable
 import dataclasses
 import enum
+from typing import TypeAlias
 
 from torch_tpu._internal.utils import annotations
+from torch_tpu._internal.utils import hardware
 
 _PUBLIC_PREFIX = "torch.tpu.pallas.verifier"
 
@@ -46,6 +48,87 @@ def _field_stages(
       )
       for name in field_names
   }
+
+
+TpuVersion: TypeAlias = hardware.TpuVersion
+
+
+# Canonical TorchTPU device names (matching `TpuSpec::name()` in
+# `tpu_hardware.h`) and their common aliases.
+_TPU_VERSION_ALIASES: dict[str, TpuVersion] = {
+    "tpu v5e": TpuVersion.V5E,
+    "tpu v5 lite": TpuVersion.V5E,
+    "v5e": TpuVersion.V5E,
+    "v5 lite": TpuVersion.V5E,
+    "tpu v5p": TpuVersion.V5P,
+    "tpu v5": TpuVersion.V5P,
+    "v5p": TpuVersion.V5P,
+    "v5": TpuVersion.V5P,
+    "tpu v6e": TpuVersion.V6E,
+    "tpu v6 lite": TpuVersion.V6E,
+    "tpu v6": TpuVersion.V6E,
+    "v6e": TpuVersion.V6E,
+    "v6 lite": TpuVersion.V6E,
+    "v6": TpuVersion.V6E,
+    "trillium": TpuVersion.V6E,
+    "tpu v7": TpuVersion.V7,
+    "tpu v7x": TpuVersion.V7,
+    "tpu7x": TpuVersion.V7,
+    "tpu7": TpuVersion.V7,
+    "v7": TpuVersion.V7,
+    "v7x": TpuVersion.V7,
+    "tpu v8i": TpuVersion.V8I,
+    "tpu8i": TpuVersion.V8I,
+    "v8i": TpuVersion.V8I,
+    "tpu v8t": TpuVersion.V8T,
+    "tpu8t": TpuVersion.V8T,
+    "v8t": TpuVersion.V8T,
+}
+
+_TORCH_TO_JAX_TPU_DEVICE_KIND: dict[TpuVersion, str] = {
+    TpuVersion.V5E: "TPU v5e",
+    TpuVersion.V5P: "TPU v5p",
+    TpuVersion.V6E: "TPU v6e",
+    TpuVersion.V7: "TPU7x",
+    TpuVersion.V8I: "TPU8i",
+    TpuVersion.V8T: "TPU8t",
+}
+
+# Default TorchTPU generation that ops without a mesh or inferred target are
+# lowered for.
+DEFAULT_TPU_VERSION: TpuVersion = TpuVersion.V7
+
+
+def parse_tpu_version(
+    tpu_version: TpuVersion | str,
+) -> TpuVersion | None:
+  """Parses a `TpuVersion` or TorchTPU/JAX TPU alias string."""
+  if isinstance(tpu_version, TpuVersion):
+    return tpu_version
+  key = " ".join(
+      tpu_version.strip().lower().replace("_", " ").replace("-", " ").split()
+  )
+  return _TPU_VERSION_ALIASES.get(key)
+
+
+def normalize_tpu_version(tpu_version: TpuVersion | str) -> str:
+  """Normalizes a `TpuVersion` or TPU alias to TorchTPU's `TPU v*` name."""
+  if isinstance(tpu_version, TpuVersion):
+    return tpu_version.value
+  parsed = parse_tpu_version(tpu_version)
+  if parsed is not None:
+    return parsed.value
+  return tpu_version.strip()
+
+
+def jax_tpu_device_kind(tpu_version: TpuVersion | str) -> str:
+  """Maps a `TpuVersion` or TPU device name to JAX's `AbstractDevice` string."""
+  if isinstance(tpu_version, TpuVersion):
+    return _TORCH_TO_JAX_TPU_DEVICE_KIND[tpu_version]
+  parsed = parse_tpu_version(tpu_version)
+  if parsed is not None:
+    return _TORCH_TO_JAX_TPU_DEVICE_KIND[parsed]
+  return tpu_version.strip()
 
 
 @annotations.experimental(_exp_reason("Severity"))
@@ -67,10 +150,29 @@ class Severity(enum.Enum):
 class Phase(enum.Enum):
   """Verification engine that produced a finding."""
 
+  # `@jax_op` registration contracts and eager argument checks.
+  CONTRACTS = "contracts"
+  # Pallas TPU (Mosaic) lowering, run on the host without a TPU.
+  LOWERING = "lowering"
+  # Buffer donation and aliasing in the FX graph of a PyTorch program.
+  FX_GRAPH = "fx_graph"
+  # Registered custom backward compared against the forward kernel.
+  AUTOGRAD = "autograd"
+
 
 @annotations.experimental(_exp_reason("FindingCategory"))
 class FindingCategory(enum.Enum):
   """Kind of safety violation or warning."""
+
+  # PyTorch program and `@jax_op` contract safety.
+  USE_AFTER_DONATE = "use_after_donate"
+  ALIASED_DONOR_INPUTS = "aliased_donor_inputs"
+  DONATED_PARAMETER = "donated_parameter"
+  ZERO_OUTPUT_SILENT_SKIP = "zero_output_silent_skip"
+  PARTITION_SPEC_MISMATCH = "partition_spec_mismatch"
+  FAKE_KERNEL_MISMATCH = "fake_kernel_mismatch"
+  AUTOGRAD_PARITY_MISMATCH = "autograd_parity_mismatch"
+  LOWERING_FAILURE = "lowering_failure"
 
   # Parts of the program that could not be verified (bounded unrolling,
   # solver timeouts, unsupported constructs, skipped phases).
@@ -201,3 +303,23 @@ class VerificationReport:
 
   def __str__(self) -> str:
     return self.summary()
+
+
+def report_of(
+    phase: Phase | None, detected: Iterable[VerificationFinding] = ()
+) -> VerificationReport:
+  """Returns a single-phase report holding `detected`."""
+  phases = (phase,) if phase is not None else ()
+  return VerificationReport(findings=tuple(detected), checked_phases=phases)
+
+
+def merge_reports(*reports: VerificationReport) -> VerificationReport:
+  """Combines several reports, keeping the first-seen phase order."""
+  merged_findings: list[VerificationFinding] = []
+  phases: list[Phase] = []
+  for rep in reports:
+    phases.extend(p for p in rep.checked_phases if p not in phases)
+    merged_findings.extend(rep.findings)
+  return VerificationReport(
+      findings=tuple(merged_findings), checked_phases=tuple(phases)
+  )

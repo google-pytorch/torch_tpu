@@ -31,6 +31,21 @@ torch_tpu_py_library(
     srcs = ["findings.py"],
     deps = [
         "//src/torch_tpu/_internal/utils:annotations",
+        "//src/torch_tpu/_internal/utils:hardware",
+    ],
+)
+
+torch_tpu_py_library(
+    name = "fx_verifier",
+    srcs = ["fx_verifier.py"],
+    deps = [
+        ":findings",
+        "//shims/jax:pallas_tpu",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu/_internal/pallas:pallas_lib",
+        "//src/torch_tpu/_internal/utils:hardware",
+        "@pypi//jax",
+        "@pypi//numpy",
     ],
 )
 
@@ -48,6 +63,7 @@ torch_tpu_py_library(
     srcs = ["verifier.py"],
     deps = [
         ":findings",
+        ":fx_verifier",
         "//shims/torch:pytorch",
         "//src/torch_tpu/_internal/utils:annotations",
         "@pypi//jax",

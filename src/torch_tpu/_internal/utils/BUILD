@@ -81,6 +81,7 @@ pybind_extension(
     deps = [
         "//csrc/common:pybind_error_utils",
         "//csrc/common:tpu_hardware",
+        "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
     ],

@@ -412,7 +412,9 @@ TEST(TpuSpecTest, PredefinedSpecsMatchExpected) {
   constexpr int64_t kTFlops = 1'000'000'000'000LL;
 
   const TpuSpec& v5p = TpuSpec::V5p();
-  EXPECT_EQ(v5p.name, "TPU v5p");
+  EXPECT_EQ(v5p.version, TpuVersion::kV5p);
+  EXPECT_EQ(v5p.name(), "TPU v5p");
+  EXPECT_EQ(&TpuSpec::ForVersion(TpuVersion::kV5p), &v5p);
   EXPECT_EQ(v5p.devices_per_chip, 1);
   EXPECT_EQ(v5p.hbm_bytes_per_chip, 95 * kGiB);
   EXPECT_EQ(v5p.hbm_bytes_per_device(), 95 * kGiB);
@@ -422,7 +424,9 @@ TEST(TpuSpecTest, PredefinedSpecsMatchExpected) {
   EXPECT_EQ(v5p.topologies.at(4), (TpuSpec::Topology{2, 2, 1}));
 
   const TpuSpec& v5e = TpuSpec::V5e();
-  EXPECT_EQ(v5e.name, "TPU v5e");
+  EXPECT_EQ(v5e.version, TpuVersion::kV5e);
+  EXPECT_EQ(v5e.name(), "TPU v5e");
+  EXPECT_EQ(&TpuSpec::ForVersion(TpuVersion::kV5e), &v5e);
   EXPECT_EQ(v5e.devices_per_chip, 1);
   EXPECT_EQ(v5e.hbm_bytes_per_chip, 16 * kGiB);
   EXPECT_EQ(v5e.bf16_flops_per_chip, 197 * kTFlops);
@@ -432,7 +436,9 @@ TEST(TpuSpecTest, PredefinedSpecsMatchExpected) {
                                       : TpuSpec::Topology{2, 4, 1}));
 
   const TpuSpec& v6e = TpuSpec::V6e();
-  EXPECT_EQ(v6e.name, "TPU v6e");
+  EXPECT_EQ(v6e.version, TpuVersion::kV6e);
+  EXPECT_EQ(v6e.name(), "TPU v6e");
+  EXPECT_EQ(&TpuSpec::ForVersion(TpuVersion::kV6e), &v6e);
   EXPECT_EQ(v6e.devices_per_chip, 1);
   EXPECT_EQ(v6e.hbm_bytes_per_chip, 32 * kGiB);
   EXPECT_EQ(v6e.bf16_flops_per_chip, 918 * kTFlops);
@@ -440,7 +446,9 @@ TEST(TpuSpecTest, PredefinedSpecsMatchExpected) {
   EXPECT_EQ(v6e.topologies.at(8), (TpuSpec::Topology{2, 4, 1}));
 
   const TpuSpec& v7 = TpuSpec::V7();
-  EXPECT_EQ(v7.name, "TPU v7");
+  EXPECT_EQ(v7.version, TpuVersion::kV7);
+  EXPECT_EQ(v7.name(), "TPU v7");
+  EXPECT_EQ(&TpuSpec::ForVersion(TpuVersion::kV7), &v7);
   EXPECT_EQ(v7.devices_per_chip, 2);
   EXPECT_EQ(v7.hbm_bytes_per_chip, 192 * kGiB);
   EXPECT_EQ(v7.hbm_bytes_per_device(), 96 * kGiB);
@@ -450,7 +458,9 @@ TEST(TpuSpecTest, PredefinedSpecsMatchExpected) {
   EXPECT_EQ(v7.topologies.at(2), (TpuSpec::Topology{1, 1, 1, 2}));
 
   const TpuSpec& v8i = TpuSpec::V8i();
-  EXPECT_EQ(v8i.name, "TPU v8i");
+  EXPECT_EQ(v8i.version, TpuVersion::kV8i);
+  EXPECT_EQ(v8i.name(), "TPU v8i");
+  EXPECT_EQ(&TpuSpec::ForVersion(TpuVersion::kV8i), &v8i);
   EXPECT_EQ(v8i.devices_per_chip, 2);
   EXPECT_EQ(v8i.hbm_bytes_per_chip, 309'000'000'000LL);
   EXPECT_EQ(v8i.hbm_bytes_per_device(), 309'000'000'000LL / 2);
@@ -460,7 +470,9 @@ TEST(TpuSpecTest, PredefinedSpecsMatchExpected) {
   EXPECT_EQ(v8i.topologies.at(2), (TpuSpec::Topology{1, 1, 1, 2}));
 
   const TpuSpec& v8t = TpuSpec::V8t();
-  EXPECT_EQ(v8t.name, "TPU v8t");
+  EXPECT_EQ(v8t.version, TpuVersion::kV8t);
+  EXPECT_EQ(v8t.name(), "TPU v8t");
+  EXPECT_EQ(&TpuSpec::ForVersion(TpuVersion::kV8t), &v8t);
   EXPECT_EQ(v8t.devices_per_chip, 1);
   EXPECT_EQ(v8t.hbm_bytes_per_chip, 231'000'000'000LL);
   EXPECT_EQ(v8t.bf16_flops_per_chip, 996'100'000'000'000LL);

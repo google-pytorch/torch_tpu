@@ -164,6 +164,11 @@ __tt_api_stages__: dict[str, annotations.ApiStageInfo] = {
         reason="On-device layout of TPU tensors.",
         value=_layout_module.TpuLayout,
     ),
+    "TpuVersion": annotations.ApiStageInfo(
+        stage=annotations.Stage.EXPERIMENTAL,
+        reason="TPU hardware generation.",
+        value=hardware.TpuVersion,
+    ),
 }
 
 
@@ -996,6 +1001,8 @@ class _TpuDeviceProperties:
       This API is experimental and subject to change in future releases.
 
   ``name`` is the human-readable name of the TPU generation, e.g. "TPU v7".
+  ``version`` is the ``torch.tpu.TpuVersion`` of the TPU generation, e.g.
+  ``torch.tpu.TpuVersion.V7``.
   ``devices_per_chip`` is the number of PyTorch devices per physical TPU chip.
   ``hbm_bytes_per_chip`` and ``hbm_bytes_per_device`` are the physical HBM
   capacity per chip and visible to a single device, in bytes.
@@ -1008,6 +1015,7 @@ class _TpuDeviceProperties:
   """
 
   name: str
+  version: hardware.TpuVersion
   devices_per_chip: int
   hbm_bytes_per_chip: int
   hbm_bytes_per_device: int
@@ -1041,6 +1049,10 @@ class _TpuDeviceProperties:
       "name": annotations.ApiStageInfo(
           stage=annotations.Stage.EXPERIMENTAL,
           reason="name is experimental and subject to change.",
+      ),
+      "version": annotations.ApiStageInfo(
+          stage=annotations.Stage.EXPERIMENTAL,
+          reason="version is experimental and subject to change.",
       ),
       "devices_per_chip": annotations.ApiStageInfo(
           stage=annotations.Stage.EXPERIMENTAL,
@@ -1172,6 +1184,7 @@ class TpuDeviceModule(_DeviceModule):
     sparse_core_spec = tpu_spec.sparse_core_spec
     return _TpuDeviceProperties(
         name=tpu_spec.name,
+        version=tpu_spec.version,
         devices_per_chip=tpu_spec.devices_per_chip,
         hbm_bytes_per_chip=tpu_spec.hbm_bytes_per_chip,
         hbm_bytes_per_device=tpu_spec.hbm_bytes_per_device,

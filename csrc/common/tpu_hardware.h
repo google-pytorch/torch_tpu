@@ -43,6 +43,23 @@ struct SparseCoreSpec {
   bool operator==(const SparseCoreSpec& other) const = default;
 };
 
+// TPU hardware generation that TorchTPU supports.
+//
+// TorchTPU doesn't run on TPU v4 and older generations, so they have no
+// enumerators here.
+enum class TpuVersion {
+  kV5e,
+  kV5p,
+  kV6e,
+  kV7,
+  kV8i,
+  kV8t,
+};
+
+// Returns the human-readable name of `version`, as returned by
+// `torch.tpu.get_device_properties().name` (e.g. "TPU v7").
+[[nodiscard]] std::string_view TpuVersionName(TpuVersion version);
+
 // Specs of a TPU generation that TorchTPU supports.
 //
 // TorchTPU doesn't run on TPU v4 and older generations, so they have no
@@ -51,9 +68,8 @@ struct TpuSpec {
   using Topology = std::vector<int64_t>;  // INT_VEC_OK
   using TopologyMap = absl::flat_hash_map<int64_t, Topology>;
 
-  // Human-readable name of the generation, as returned by
-  // `torch.tpu.get_device_properties().name`.
-  std::string name;
+  // TPU hardware generation of this spec.
+  TpuVersion version = TpuVersion::kV7;
   // Number of separately-addressable devices the chip exposes to the runtime,
   // used as the divisor that turns a per-chip quantity into what one device
   // sees. This is megacore-aware (not the physical TensorCore count): 1 for
@@ -70,6 +86,12 @@ struct TpuSpec {
   // SparseCore specs of the generation, or std::nullopt if it has no
   // SparseCores.
   std::optional<SparseCoreSpec> sparse_core_spec;
+
+  // Human-readable name of the generation, as returned by
+  // `torch.tpu.get_device_properties().name`.
+  [[nodiscard]] std::string_view name() const {
+    return TpuVersionName(version);
+  }
 
   // Physical HBM capacity, in bytes, visible to a single device.
   [[nodiscard]] int64_t hbm_bytes_per_device() const {
@@ -90,6 +112,8 @@ struct TpuSpec {
       std::string_view vfio_dir = "/dev/vfio") const;
 
   bool operator==(const TpuSpec& other) const = default;
+
+  [[nodiscard]] static const TpuSpec& ForVersion(TpuVersion version);
 
   static const TpuSpec& V5p();
   static const TpuSpec& V5e();

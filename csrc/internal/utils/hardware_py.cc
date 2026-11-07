@@ -20,8 +20,8 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <utility>
 
+#include "absl/log/absl_log.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "csrc/common/pybind_error_utils.h"
@@ -35,6 +35,66 @@ namespace torch_tpu {
 namespace py = pybind11;
 
 namespace {
+
+std::string_view PyTpuVersionMemberName(const TpuVersion version) {
+  switch (version) {
+    case TpuVersion::kV5e:
+      return "V5E";
+    case TpuVersion::kV5p:
+      return "V5P";
+    case TpuVersion::kV6e:
+      return "V6E";
+    case TpuVersion::kV7:
+      return "V7";
+    case TpuVersion::kV8i:
+      return "V8I";
+    case TpuVersion::kV8t:
+      return "V8T";
+  }
+  ABSL_LOG(FATAL)  // CRASH_OK
+      << "Invalid TpuVersion: " << static_cast<int>(version);
+}
+
+py::object GetPyTpuVersionEnum() {
+  return PyBindModule::Import("torch_tpu._internal.utils.hardware")
+      .attr("TpuVersion");
+}
+
+py::object ToPyTpuVersion(const TpuVersion version) {
+  const std::string member_name(PyTpuVersionMemberName(version));
+  return GetPyTpuVersionEnum().attr(member_name.c_str());
+}
+
+TpuVersion FromPyTpuVersion(const py::handle& obj) {
+  const py::object tpu_version_cls = GetPyTpuVersionEnum();
+  if (!py::isinstance(obj, tpu_version_cls)) {
+    throw py::type_error(  // For pybind11.
+        absl::StrCat(
+            "version must be a torch.tpu.TpuVersion, got ",
+            py::str(py::type::of(obj).attr("__name__")).cast<std::string>()));
+  }
+  const std::string member_name = obj.attr("name").cast<std::string>();
+  if (member_name == "V5E") {
+    return TpuVersion::kV5e;
+  }
+  if (member_name == "V5P") {
+    return TpuVersion::kV5p;
+  }
+  if (member_name == "V6E") {
+    return TpuVersion::kV6e;
+  }
+  if (member_name == "V7") {
+    return TpuVersion::kV7;
+  }
+  if (member_name == "V8I") {
+    return TpuVersion::kV8i;
+  }
+  if (member_name == "V8T") {
+    return TpuVersion::kV8t;
+  }
+  ABSL_LOG(FATAL)  // CRASH_OK
+      << "Unhandled TpuVersion member: " << member_name;
+}
 
 py::tuple ToPyTuple(const TpuSpec::Topology& dims) {
   py::tuple result(dims.size());
@@ -131,23 +191,29 @@ TT_PYBIND11_MODULE(_hardware_backend, m) {
       });
 
   PyBindClass<TpuSpec>(m, "TpuSpec")
-      .def(py::init([](std::string name, int64_t devices_per_chip,
-                       int64_t hbm_bytes_per_chip, int64_t bf16_flops_per_chip,
-                       const py::object& topologies,
-                       std::optional<SparseCoreSpec> sparse_core_spec) {
-             return TpuSpec{
-                 .name = std::move(name),
-                 .devices_per_chip = devices_per_chip,
-                 .hbm_bytes_per_chip = hbm_bytes_per_chip,
-                 .bf16_flops_per_chip = bf16_flops_per_chip,
-                 .topologies = ParseTopologiesDict(topologies),
-                 .sparse_core_spec = sparse_core_spec,
-             };
-           }),
-           py::arg("name"), py::arg("devices_per_chip"),
-           py::arg("hbm_bytes_per_chip"), py::arg("bf16_flops_per_chip"),
-           py::arg("topologies"), py::arg("sparse_core_spec") = std::nullopt)
-      .def_readonly("name", &TpuSpec::name)
+      .def(
+          py::init([](const py::object& version, const int64_t devices_per_chip,
+                      const int64_t hbm_bytes_per_chip,
+                      const int64_t bf16_flops_per_chip,
+                      const py::object& topologies,
+                      const std::optional<SparseCoreSpec> sparse_core_spec) {
+            return TpuSpec{
+                .version = FromPyTpuVersion(version),
+                .devices_per_chip = devices_per_chip,
+                .hbm_bytes_per_chip = hbm_bytes_per_chip,
+                .bf16_flops_per_chip = bf16_flops_per_chip,
+                .topologies = ParseTopologiesDict(topologies),
+                .sparse_core_spec = sparse_core_spec,
+            };
+          }),
+          py::arg("version"), py::arg("devices_per_chip"),
+          py::arg("hbm_bytes_per_chip"), py::arg("bf16_flops_per_chip"),
+          py::arg("topologies"), py::arg("sparse_core_spec") = std::nullopt)
+      .def_property_readonly(
+          "version",
+          [](const TpuSpec& self) { return ToPyTpuVersion(self.version); })
+      .def_property_readonly(
+          "name", [](const TpuSpec& self) { return std::string(self.name()); })
       .def_readonly("devices_per_chip", &TpuSpec::devices_per_chip)
       .def_readonly("hbm_bytes_per_chip", &TpuSpec::hbm_bytes_per_chip)
       .def_readonly("bf16_flops_per_chip", &TpuSpec::bf16_flops_per_chip)
@@ -169,31 +235,36 @@ TT_PYBIND11_MODULE(_hardware_backend, m) {
            })
       .def("__hash__",
            [](const TpuSpec& self) {
-             return py::hash(py::make_tuple(self.name, self.devices_per_chip,
-                                            self.hbm_bytes_per_chip,
-                                            self.bf16_flops_per_chip));
+             return py::hash(py::make_tuple(
+                 static_cast<int>(self.version), self.devices_per_chip,
+                 self.hbm_bytes_per_chip, self.bf16_flops_per_chip));
            })
       .def("__repr__", [](const TpuSpec& self) {
-        return absl::StrCat("TpuSpec(name='", self.name,
-                            "', devices_per_chip=", self.devices_per_chip,
-                            ", hbm_bytes_per_chip=", self.hbm_bytes_per_chip,
-                            ", bf16_flops_per_chip=", self.bf16_flops_per_chip,
-                            ")");
+        return absl::StrCat(
+            "TpuSpec(version=TpuVersion.", PyTpuVersionMemberName(self.version),
+            ", devices_per_chip=", self.devices_per_chip,
+            ", hbm_bytes_per_chip=", self.hbm_bytes_per_chip,
+            ", bf16_flops_per_chip=", self.bf16_flops_per_chip, ")");
       });
 
-  m.attr("TpuSpec").attr("V5P") =
-      py::cast(&TpuSpec::V5p(), py::return_value_policy::reference);
-  m.attr("TpuSpec").attr("V5E") =
-      py::cast(&TpuSpec::V5e(), py::return_value_policy::reference);
-  m.attr("TpuSpec").attr("V6E") =
-      py::cast(&TpuSpec::V6e(), py::return_value_policy::reference);
-  m.attr("TpuSpec").attr("V7") =
-      py::cast(&TpuSpec::V7(), py::return_value_policy::reference);
-  m.attr("TpuSpec").attr("V8I") =
-      py::cast(&TpuSpec::V8i(), py::return_value_policy::reference);
-  m.attr("TpuSpec").attr("V8T") =
-      py::cast(&TpuSpec::V8t(), py::return_value_policy::reference);
+  // Keep pybind11 wrappers for the static TpuSpec singletons alive for the
+  // lifetime of the module so `TpuSpec.for_version()` and `get_tpu_spec()`
+  // always return stable singleton Python objects.
+  m.attr("_PREDEFINED_TPU_SPECS") = py::make_tuple(
+      py::cast(&TpuSpec::V5p(), py::return_value_policy::reference),
+      py::cast(&TpuSpec::V5e(), py::return_value_policy::reference),
+      py::cast(&TpuSpec::V6e(), py::return_value_policy::reference),
+      py::cast(&TpuSpec::V7(), py::return_value_policy::reference),
+      py::cast(&TpuSpec::V8i(), py::return_value_policy::reference),
+      py::cast(&TpuSpec::V8t(), py::return_value_policy::reference));
 
+  m.def(
+      "get_tpu_spec_for_version",
+      [](const py::object& version) -> const TpuSpec& {
+        return TpuSpec::ForVersion(FromPyTpuVersion(version));
+      },
+      py::arg("version"), py::return_value_policy::reference);
+  m.attr("TpuSpec").attr("for_version") = m.attr("get_tpu_spec_for_version");
   m.def("get_tpu_specs_by_pci_device_id", &PyTpuSpecsByPciDeviceId);
   m.attr("TpuSpec").attr("specs_by_pci_device_id") =
       m.attr("get_tpu_specs_by_pci_device_id");

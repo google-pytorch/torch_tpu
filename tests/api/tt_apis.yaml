@@ -73,6 +73,13 @@ torch.tpu.TpuLayout: {category: Public Python API, defined_in: runtime, stage: E
 torch.tpu.TpuLayout.element_size_in_bits: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.TpuLayout.minor_to_major: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.TpuLayout.tiles: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.TpuVersion: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.TpuVersion.V5E: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.TpuVersion.V5P: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.TpuVersion.V6E: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.TpuVersion.V7: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.TpuVersion.V8I: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.TpuVersion.V8T: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.allow_excess_precision getter: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.allow_excess_precision setter: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.compiler.custom_compiler_options: {category: Public Python API, defined_in: runtime, stage: Experimental}
@@ -107,6 +114,7 @@ torch.tpu.get_device_properties.sparse_core_simd_width: {category: Public Python
 torch.tpu.get_device_properties.sparse_cores_per_device: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.get_device_properties.topology: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.get_device_properties.total_memory getter: {category: Public Python API, defined_in: runtime, deprecated_in: 0.2.1, stage: Deprecated}
+torch.tpu.get_device_properties.version: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.get_rng_state: {category: Public Python API, defined_in: runtime, prefer: torch.accelerator.random.get_rng_state, stage: Internal}
 torch.tpu.initial_seed: {category: Public Python API, defined_in: runtime, prefer: torch.accelerator.random.initial_seed, stage: Internal}
 torch.tpu.is_available: {category: Public Python API, defined_in: runtime, prefer: torch.accelerator.is_available, stage: Internal}
@@ -176,8 +184,20 @@ torch.tpu.optimizers.SingleTraceTrainer.params getter: {category: Public Python 
 torch.tpu.pallas.get_pallas_mesh: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.pallas.jax_op: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.pallas.verifier.FindingCategory: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.FindingCategory.ALIASED_DONOR_INPUTS: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.FindingCategory.AUTOGRAD_PARITY_MISMATCH: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.FindingCategory.DONATED_PARAMETER: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.FindingCategory.FAKE_KERNEL_MISMATCH: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.FindingCategory.LOWERING_FAILURE: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.FindingCategory.PARTITION_SPEC_MISMATCH: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.FindingCategory.USE_AFTER_DONATE: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.pallas.verifier.FindingCategory.VERIFICATION_INCOMPLETE: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.FindingCategory.ZERO_OUTPUT_SILENT_SKIP: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.pallas.verifier.Phase: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.Phase.AUTOGRAD: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.Phase.CONTRACTS: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.Phase.FX_GRAPH: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.Phase.LOWERING: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.pallas.verifier.Severity: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.pallas.verifier.Severity.ERROR: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.pallas.verifier.Severity.INFO: {category: Public Python API, defined_in: runtime, stage: Experimental}
@@ -196,6 +216,8 @@ torch.tpu.pallas.verifier.VerificationMode: {category: Public Python API, define
 torch.tpu.pallas.verifier.VerificationMode.FULL: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.pallas.verifier.VerificationMode.STATIC: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.pallas.verifier.VerificationOptions: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.VerificationOptions.check_autograd: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.VerificationOptions.tpu_version: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.pallas.verifier.VerificationReport: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.pallas.verifier.VerificationReport.checked_phases: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.pallas.verifier.VerificationReport.findings: {category: Public Python API, defined_in: runtime, stage: Experimental}

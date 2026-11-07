@@ -39,6 +39,7 @@ from torch_tpu._internal.profiler.profiler_config import (
     TpuProfilerConfig as InternalTpuProfilerConfig,
 )
 from torch_tpu._internal.utils import annotations
+from torch_tpu._internal.utils import hardware
 from tests import seed_test_utils
 
 
@@ -376,6 +377,37 @@ class ApiRegistryTest(seed_test_utils.RepeatableTest):
           getattr(api, annotations.TT_API_STAGE, None),
           annotations.Stage.EXPERIMENTAL.value,
       )
+
+  def test_tpu_version_registry(self):
+    """Verifies exposure, identity, stage metadata, and TpuSpec mapping for TpuVersion."""
+    self.assertIs(torch.tpu.TpuVersion, hardware.TpuVersion)
+    self.assertIn("TpuVersion", dir(torch.tpu))
+    self.assertFalse(hasattr(torch.tpu, "DeviceKind"))
+    self.assertNotIn("DeviceKind", dir(torch.tpu))
+    self.assertFalse(hasattr(torch.tpu.pallas.verifier, "TpuVersion"))
+    self.assertNotIn("TpuVersion", dir(torch.tpu.pallas.verifier))
+    self.assertFalse(hasattr(torch.tpu.pallas.verifier, "TpuDeviceKind"))
+    self.assertNotIn("TpuDeviceKind", dir(torch.tpu.pallas.verifier))
+    self.assertEqual(
+        getattr(torch.tpu.TpuVersion, annotations.TT_API_STAGE, None),
+        annotations.Stage.EXPERIMENTAL.value,
+    )
+    self.assertEqual(
+        getattr(torch.tpu.TpuVersion, annotations.TT_API_STAGE_REASON, None),
+        "TPU hardware generation.",
+    )
+    specs_by_version = {
+        hardware.TpuSpec.for_version(version)
+        for version in torch.tpu.TpuVersion
+    }
+    self.assertEqual(
+        specs_by_version,
+        set(hardware.TpuSpec.specs_by_pci_device_id().values()),
+    )
+    for version in torch.tpu.TpuVersion:
+      spec = hardware.TpuSpec.for_version(version)
+      self.assertIs(spec.version, version)
+      self.assertEqual(spec.name, version.value)
 
   def test_compiler_api_registry(self):
     """Verifies public exposure, identity, metadata, and proxy behavior for compiler."""

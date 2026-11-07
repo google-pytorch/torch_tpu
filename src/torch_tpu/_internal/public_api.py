@@ -137,6 +137,7 @@ _PUBLIC_MODULES: Mapping[str, ModuleSpec] = {
             "Precision": _tpu_attr("Precision"),
             "Stream": _tpu_attr("Stream"),
             "TpuLayout": _tpu_attr("TpuLayout"),
+            "TpuVersion": _tpu_attr("TpuVersion"),
             "allow_excess_precision": Property(
                 f"{_DEVICE_MODULE}:_DeviceModuleMeta.allow_excess_precision"
             ),
