@@ -294,6 +294,14 @@ bool ApplySliceBeforeReshape(const StridedLayout& layout_before,
   if (!ValidateReshape(actual_layout, post_slice_reshape)) {
     return false;
   }
+  // The slice only matches the storage offset and the last element of the
+  // desired layout, so the reshape may still select other elements. E.g. for
+  // torch.arange(16).view(8, 2).view(2, 8)[:, :3], the slice [0:6, 0:1] of the
+  // (8, 2) base selects elements [0, 2, 4, 6, 8, 10], not [0, 1, 2, 8, 9, 10].
+  UpdateLayout(actual_layout, post_slice_reshape);
+  if (actual_layout != desired_layout) {
+    return false;
+  }
 
   first = std::move(out_slice);
   second = std::move(post_slice_reshape);
