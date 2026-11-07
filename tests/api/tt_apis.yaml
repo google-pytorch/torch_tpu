@@ -13,6 +13,7 @@
 # limitations under the License.
 
 # --- Public Python API ---
+torch.accelerator.Graph: {category: Public Python API, defined_in: runtime, stage: Stable}
 torch.accelerator.current_accelerator: {category: Public Python API, defined_in: runtime, stage: Stable}
 torch.accelerator.current_device_idx: {category: Public Python API, defined_in: runtime, stage: Deprecated}
 torch.accelerator.current_device_index: {category: Public Python API, defined_in: runtime, stage: Stable}
@@ -21,6 +22,7 @@ torch.accelerator.device_count: {category: Public Python API, defined_in: runtim
 torch.accelerator.device_index: {category: Public Python API, defined_in: runtime, stage: Stable}
 torch.accelerator.empty_cache: {category: Public Python API, defined_in: runtime, stage: Stable}
 torch.accelerator.get_memory_info: {category: Public Python API, defined_in: runtime, stage: Stable}
+torch.accelerator.graphs.Graph: {category: Public Python API, defined_in: runtime, stage: Stable}
 torch.accelerator.is_available: {category: Public Python API, defined_in: runtime, stage: Stable}
 torch.accelerator.max_memory_allocated: {category: Public Python API, defined_in: runtime, stage: Stable}
 torch.accelerator.max_memory_reserved: {category: Public Python API, defined_in: runtime, stage: Stable}

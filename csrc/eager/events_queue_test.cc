@@ -26,10 +26,13 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "c10/core/Device.h"
+#include "c10/core/Stream.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/compilation_spec.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/macro_utils.h"
 #include "csrc/common/shape.h"
 #include "csrc/common/status_test_utils.h"
 #include "csrc/eager/current_stream.h"
@@ -40,6 +43,7 @@
 #include "csrc/eager/split_traversal.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
+#include "csrc/eager/tpu_hooks.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/python_context.h"
@@ -49,6 +53,7 @@
 #include "gtest/gtest.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
+#include "torch/headeronly/core/DeviceType.h"
 #include "xla/future.h"
 #include "xla/tsl/platform/env.h"
 
@@ -1335,6 +1340,103 @@ TEST(RepeatedOpsTest, ResetDropsSuspendedGraphBreak) {
   ClearAllStreams();
   EXPECT_FALSE(ResumeRepeatedOpsGraphBreaks(device_index, stream_id));
 }
+
+TEST(StreamGraphCaptureTest, BeginsAndEnds) {
+  const c10::StreamId stream_id = NextStreamId(/*device_index=*/0);
+  EXPECT_FALSE(IsStreamCapturing(/*device_index=*/0, stream_id));
+
+  ASSERT_TRUE(TryBeginStreamGraphCapture(/*device_index=*/0, stream_id));
+  EXPECT_TRUE(IsStreamCapturing(/*device_index=*/0, stream_id));
+
+  EndStreamGraphCapture(/*device_index=*/0, stream_id);
+  EXPECT_FALSE(IsStreamCapturing(/*device_index=*/0, stream_id));
+
+  // The stream can be captured again.
+  ASSERT_TRUE(TryBeginStreamGraphCapture(/*device_index=*/0, stream_id));
+  EndStreamGraphCapture(/*device_index=*/0, stream_id);
+  EXPECT_FALSE(IsStreamCapturing(/*device_index=*/0, stream_id));
+}
+
+TEST(StreamGraphCaptureTest, RejectsDefaultStreamAndInvalidIds) {
+  EXPECT_FALSE(TryBeginStreamGraphCapture(/*device_index=*/0, /*stream_id=*/0));
+  EXPECT_FALSE(
+      TryBeginStreamGraphCapture(/*device_index=*/0, /*stream_id=*/-1));
+  EXPECT_FALSE(
+      TryBeginStreamGraphCapture(/*device_index=*/-1, /*stream_id=*/1));
+  EXPECT_FALSE(
+      TryBeginStreamGraphCapture(/*device_index=*/100, /*stream_id=*/1));
+  EXPECT_FALSE(IsStreamCapturing(/*device_index=*/0, /*stream_id=*/0));
+
+  // Ending a capture that is not in progress does nothing.
+  EndStreamGraphCapture(/*device_index=*/0, /*stream_id=*/0);
+  EndStreamGraphCapture(/*device_index=*/-1, /*stream_id=*/1);
+}
+
+TEST(StreamGraphCaptureTest, RejectsCaptureAlreadyInProgress) {
+  const c10::StreamId stream_id = NextStreamId(/*device_index=*/0);
+  ASSERT_TRUE(TryBeginStreamGraphCapture(/*device_index=*/0, stream_id));
+  const absl::Cleanup end_capture = [stream_id] {
+    EndStreamGraphCapture(/*device_index=*/0, stream_id);
+  };
+
+  EXPECT_FALSE(TryBeginStreamGraphCapture(/*device_index=*/0, stream_id));
+  EXPECT_TRUE(IsStreamCapturing(/*device_index=*/0, stream_id));
+}
+
+TEST(StreamGraphCaptureTest, StreamsCaptureIndependently) {
+  const c10::StreamId stream_a = NextStreamId(/*device_index=*/0);
+  const c10::StreamId stream_b = NextStreamId(/*device_index=*/0);
+  ASSERT_TRUE(TryBeginStreamGraphCapture(/*device_index=*/0, stream_a));
+  const absl::Cleanup end_capture_a = [stream_a] {
+    EndStreamGraphCapture(/*device_index=*/0, stream_a);
+  };
+  EXPECT_FALSE(IsStreamCapturing(/*device_index=*/0, stream_b));
+  EXPECT_FALSE(IsStreamCapturing(/*device_index=*/0, /*stream_id=*/0));
+  EXPECT_FALSE(IsStreamCapturing(/*device_index=*/1, stream_a));
+
+  ASSERT_TRUE(TryBeginStreamGraphCapture(/*device_index=*/0, stream_b));
+  EXPECT_TRUE(IsStreamCapturing(/*device_index=*/0, stream_b));
+  EndStreamGraphCapture(/*device_index=*/0, stream_b);
+  EXPECT_FALSE(IsStreamCapturing(/*device_index=*/0, stream_b));
+  EXPECT_TRUE(IsStreamCapturing(/*device_index=*/0, stream_a));
+}
+
+TEST(StreamGraphCaptureTest, QueriesAboutUnknownStreamsReturnFalse) {
+  // A capture in progress keeps queries from returning early.
+  const c10::StreamId stream_id = NextStreamId(/*device_index=*/0);
+  ASSERT_TRUE(TryBeginStreamGraphCapture(/*device_index=*/0, stream_id));
+  const absl::Cleanup end_capture = [stream_id] {
+    EndStreamGraphCapture(/*device_index=*/0, stream_id);
+  };
+
+  // Queries do not create the states of the streams they ask about, which
+  // would allocate a state for every stream ID up to the one queried.
+  EXPECT_FALSE(
+      IsStreamCapturing(/*device_index=*/0, /*stream_id=*/1'000'000'000));
+  EXPECT_FALSE(IsStreamCapturing(/*device_index=*/0, /*stream_id=*/-1));
+  EXPECT_FALSE(IsStreamCapturing(/*device_index=*/-1, stream_id));
+  EXPECT_FALSE(IsStreamCapturing(/*device_index=*/100, stream_id));
+}
+
+#if TT_TORCH_VERSION_GE(2, 12)  // PyTorch 2.12 added Stream::is_capturing().
+TEST(StreamGraphCaptureTest, StreamsReportCapture) {
+  // Links the TPU device guard, which c10::Stream::is_capturing() calls.
+  ASSERT_EQ(AddTpuHooks(), absl::OkStatus());
+  const c10::Device device(c10::DeviceType::PrivateUse1, /*index=*/0);
+  const c10::StreamId stream_id = NextStreamId(/*device_index=*/0);
+  const c10::Stream stream(c10::Stream::UNSAFE, device, stream_id);
+  const c10::Stream default_stream(c10::Stream::DEFAULT, device);
+  EXPECT_FALSE(stream.is_capturing());
+
+  ASSERT_TRUE(TryBeginStreamGraphCapture(/*device_index=*/0, stream_id));
+  EXPECT_TRUE(stream.is_capturing());
+  EXPECT_FALSE(default_stream.is_capturing());
+
+  EndStreamGraphCapture(/*device_index=*/0, stream_id);
+  EXPECT_FALSE(stream.is_capturing());
+}
+#endif  // TT_TORCH_VERSION_GE(2, 12)
+
 }  // namespace
 
 }  // namespace torch_tpu

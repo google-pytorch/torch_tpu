@@ -23,6 +23,7 @@ and its removal go through the deprecation process.
 
 ### Python APIs
 
+*   `torch.accelerator.Graph`
 *   `torch.accelerator.current_accelerator`
 *   `torch.accelerator.current_device_index`
 *   `torch.accelerator.current_stream`
@@ -30,6 +31,7 @@ and its removal go through the deprecation process.
 *   `torch.accelerator.device_index`
 *   `torch.accelerator.empty_cache`
 *   `torch.accelerator.get_memory_info`
+*   `torch.accelerator.graphs.Graph`
 *   `torch.accelerator.is_available`
 *   `torch.accelerator.max_memory_allocated`
 *   `torch.accelerator.max_memory_reserved`

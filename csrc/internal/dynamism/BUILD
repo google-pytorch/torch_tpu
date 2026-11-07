@@ -38,6 +38,7 @@ torch_tpu_cc_library(
         "//csrc/common:shape",
         "//csrc/eager:device_buffer",
         "//csrc/eager:eager_mode",
+        "//csrc/eager:graph_capture_state",
         "//csrc/eager:materialize",
         "//csrc/eager:structured_log_buffer",
         "//csrc/eager:tensor_to_buffer",
