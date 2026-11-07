@@ -24,6 +24,7 @@
 #include "ATen/core/ATen_fwd.h"
 #include "absl/log/absl_check.h"
 #include "absl/status/statusor.h"
+#include "c10/util/string_view.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/ops/op_builder_utils.h"
@@ -35,11 +36,61 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Types.h"
 #include "mlir/Support/LLVM.h"
+#include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 
 namespace torch_tpu {
+
+c10::string_view GetPoolingEinsumEquation(const int64_t spatial_dim_count,
+                                          const int64_t dim,
+                                          const PoolingDirection direction) {
+  static constexpr c10::string_view kEquations[3][3][2] = {
+      {{"ncw,ow->nco", "nco,ow->ncw"}, {}, {}},
+      {{"nchw,oh->ncow", "ncow,oh->nchw"},
+       {"nchw,ow->ncho", "ncho,ow->nchw"},
+       {}},
+      {{"ncdhw,od->ncohw", "ncohw,od->ncdhw"},
+       {"ncdhw,oh->ncdow", "ncdow,oh->ncdhw"},
+       {"ncdhw,ow->ncdho", "ncdho,ow->ncdhw"}},
+  };
+  const int dir_idx = (direction == PoolingDirection::kBackward) ? 1 : 0;
+  return kEquations[spatial_dim_count - 1][dim - 2][dir_idx];
+}
+
+mlir::MlirOp BuildPooling1dWeightMatrix(mlir::MlirBuilder& builder,
+                                        const int64_t in_size,
+                                        const int64_t out_size,
+                                        mlir::MlirOp starts, mlir::MlirOp ends,
+                                        mlir::MlirOp window_weights,
+                                        const mlir::Type compute_dtype) {
+  const mlir::Type i32_type = builder.getOpBuilder().getI32Type();
+  const Dimensions mat_shape = {out_size, in_size};
+  const mlir::RankedTensorType mat_i32_type =
+      mlir::RankedTensorType::get(mat_shape, i32_type);
+  const mlir::RankedTensorType mat_calc_type =
+      mlir::RankedTensorType::get(mat_shape, compute_dtype);
+
+  const Dimensions bcast_dims = {0, 1};
+  mlir::MlirOp starts_mat = mlir::stablehlo::BroadcastInDim(
+      mat_i32_type, starts, AsArrayRef<int64_t>(bcast_dims));
+  mlir::MlirOp ends_mat = mlir::stablehlo::BroadcastInDim(
+      mat_i32_type, ends, AsArrayRef<int64_t>(bcast_dims));
+  mlir::MlirOp weights_mat = mlir::stablehlo::BroadcastInDim(
+      mat_calc_type, window_weights, AsArrayRef<int64_t>(bcast_dims));
+
+  // i in [0, in_size), shape [out_size, in_size]
+  mlir::MlirOp col_iota = mlir::stablehlo::Iota(builder, mat_i32_type, 1);
+  mlir::MlirOp ge_start = mlir::stablehlo::Compare(
+      col_iota, starts_mat, mlir::stablehlo::ComparisonDirection::GE);
+  mlir::MlirOp lt_end = mlir::stablehlo::Compare(
+      col_iota, ends_mat, mlir::stablehlo::ComparisonDirection::LT);
+  mlir::MlirOp in_window = mlir::stablehlo::And(ge_start, lt_end);
+
+  mlir::MlirOp zero_mat = MakeConstant(builder, 0.0, compute_dtype, mat_shape);
+  return mlir::stablehlo::Select(in_window, weights_mat, zero_mat);
+}
 
 mlir::Attribute GetMaxPoolInitValueAttr(mlir::Type element_type,
                                         mlir::OpBuilder& builder) {
@@ -68,10 +119,7 @@ absl::StatusOr<BatchInput> CreateBatchInput(mlir::MlirOp input,
 
   // If the input doesn't have a batch dimension, add a size 1 batch dimension
   if (num_dims == spatial_dim_count + 1) {
-    Dimensions new_shape = {1};
-    new_shape.insert(new_shape.end(), input_type.getShape().begin(),
-                     input_type.getShape().end());
-    auto batch_input = mlir::stablehlo::Reshape(input, new_shape);
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp batch_input, Unsqueeze(input, 0));
     return BatchInput{batch_input, num_dims};
   }
   return BatchInput{input, num_dims};
@@ -100,11 +148,9 @@ mlir::MlirOp RemoveTrivialBatch(mlir::MlirOp batch_op,
     return batch_op;
   }
 
-  const mlir::RankedTensorType current_type = GetTensorTypeOrDie(batch_op);
-  llvm::SmallVector<int64_t> squeezed_shape;
-  squeezed_shape.append(current_type.getShape().begin() + 1,
-                        current_type.getShape().end());
-  return mlir::stablehlo::Reshape(batch_op, squeezed_shape);
+  absl::StatusOr<mlir::MlirOp> squeezed = Squeeze(batch_op, {0});
+  ABSL_CHECK_OK(squeezed.status());  // CRASH_OK
+  return *squeezed;
 }
 
 // Calculates the adjusted (left_padding, right_padding) pairs given the padding

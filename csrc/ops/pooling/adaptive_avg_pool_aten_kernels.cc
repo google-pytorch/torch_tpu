@@ -26,7 +26,6 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "c10/core/SymIntArrayRef.h"
-#include "c10/util/string_view.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
@@ -58,34 +57,6 @@
 namespace torch_tpu {
 namespace {
 
-enum class PoolingDirection : bool {
-  kForward = false,
-  kBackward = true,
-};
-
-c10::string_view GetAdaptiveAvgPoolEinsumEquation(
-    const int64_t spatial_dim_count, const int64_t dim,
-    const PoolingDirection direction) {
-  if (spatial_dim_count == 2) {
-    if (dim == 2) {
-      return direction == PoolingDirection::kForward ? "nchw,oh->ncow"
-                                                     : "ncow,oh->nchw";
-    }
-    return direction == PoolingDirection::kForward ? "nchw,ow->ncho"
-                                                   : "ncho,ow->nchw";
-  }
-  if (dim == 2) {
-    return direction == PoolingDirection::kForward ? "ncdhw,od->ncohw"
-                                                   : "ncohw,od->ncdhw";
-  }
-  if (dim == 3) {
-    return direction == PoolingDirection::kForward ? "ncdhw,oh->ncdow"
-                                                   : "ncdow,oh->ncdhw";
-  }
-  return direction == PoolingDirection::kForward ? "ncdhw,ow->ncdho"
-                                                 : "ncdho,ow->ncdhw";
-}
-
 // Builds the 1D adaptive average pooling weight matrix W of shape
 // [out_size, in_size] in `compute_dtype`, where:
 //   s_o = (o * in_size) / out_size
@@ -96,13 +67,8 @@ absl::StatusOr<mlir::MlirOp> BuildAdaptiveAvgPool1dWeightMatrix(
     const mlir::Type compute_dtype) {
   const mlir::Type i32_type = builder.getOpBuilder().getI32Type();
   const Dimensions col_shape = {out_size, 1};
-  const Dimensions mat_shape = {out_size, in_size};
   const mlir::RankedTensorType col_i32_type =
       mlir::RankedTensorType::get(col_shape, i32_type);
-  const mlir::RankedTensorType mat_i32_type =
-      mlir::RankedTensorType::get(mat_shape, i32_type);
-  const mlir::RankedTensorType mat_calc_type =
-      mlir::RankedTensorType::get(mat_shape, compute_dtype);
 
   mlir::MlirOp row_iota = mlir::stablehlo::Iota(builder, col_i32_type, 0);
   mlir::MlirOp in_size_const =
@@ -130,24 +96,8 @@ absl::StatusOr<mlir::MlirOp> BuildAdaptiveAvgPool1dWeightMatrix(
   mlir::MlirOp one_calc = MakeConstant(builder, 1.0, compute_dtype, col_shape);
   mlir::MlirOp inv_lengths = mlir::stablehlo::Div(one_calc, lengths_calc);
 
-  const Dimensions bcast_dims = {0, 1};
-  mlir::MlirOp starts_mat = mlir::stablehlo::BroadcastInDim(
-      mat_i32_type, starts, AsArrayRef<int64_t>(bcast_dims));
-  mlir::MlirOp ends_mat = mlir::stablehlo::BroadcastInDim(
-      mat_i32_type, ends, AsArrayRef<int64_t>(bcast_dims));
-  mlir::MlirOp inv_lengths_mat = mlir::stablehlo::BroadcastInDim(
-      mat_calc_type, inv_lengths, AsArrayRef<int64_t>(bcast_dims));
-
-  // i in [0, in_size), shape [out_size, in_size]
-  mlir::MlirOp col_iota = mlir::stablehlo::Iota(builder, mat_i32_type, 1);
-  mlir::MlirOp ge_start = mlir::stablehlo::Compare(
-      col_iota, starts_mat, mlir::stablehlo::ComparisonDirection::GE);
-  mlir::MlirOp lt_end = mlir::stablehlo::Compare(
-      col_iota, ends_mat, mlir::stablehlo::ComparisonDirection::LT);
-  mlir::MlirOp in_window = mlir::stablehlo::And(ge_start, lt_end);
-
-  mlir::MlirOp zero_mat = MakeConstant(builder, 0.0, compute_dtype, mat_shape);
-  return mlir::stablehlo::Select(in_window, inv_lengths_mat, zero_mat);
+  return BuildPooling1dWeightMatrix(builder, in_size, out_size, starts, ends,
+                                    inv_lengths, compute_dtype);
 }
 
 // Applies 1D adaptive average pooling (forward or backward) along `dim` via
@@ -166,8 +116,7 @@ absl::StatusOr<mlir::MlirOp> ApplyAdaptiveAvgPool1D(
                           builder, in_size, out_size, compute_dtype));
   mlir::MlirOp contract_ops[] = {current, weight_mat};
   return BuildEinsumShlo(
-      contract_ops,
-      GetAdaptiveAvgPoolEinsumEquation(spatial_dim_count, dim, direction),
+      contract_ops, GetPoolingEinsumEquation(spatial_dim_count, dim, direction),
       precision);
 }
 
@@ -258,15 +207,17 @@ absl::StatusOr<mlir::MlirOp> BuildAdaptiveAvgPool2dBackwardShlo(
   TT_ASSIGN_OR_RETURN(auto batch_grad_info,
                       CreateBatchInput(grad_output, spatial_dim_count));
 
-  auto input_type = GetTensorTypeOrDie(batch_input_info.batch_input);
-  auto grad_output_type = GetTensorTypeOrDie(batch_grad_info.batch_input);
+  const Dimensions input_static_shape =
+      GetStaticShape(batch_input_info.batch_input);
+  const Dimensions grad_static_shape =
+      GetStaticShape(batch_grad_info.batch_input);
 
-  const int64_t h_dim = input_type.getRank() - 2;
-  const int64_t w_dim = input_type.getRank() - 1;
-  const int64_t in_h = input_type.getShape()[h_dim];
-  const int64_t in_w = input_type.getShape()[w_dim];
-  const int64_t out_h = grad_output_type.getShape()[h_dim];
-  const int64_t out_w = grad_output_type.getShape()[w_dim];
+  const int64_t h_dim = static_cast<int64_t>(input_static_shape.size()) - 2;
+  const int64_t w_dim = static_cast<int64_t>(input_static_shape.size()) - 1;
+  const int64_t in_h = input_static_shape[h_dim];
+  const int64_t in_w = input_static_shape[w_dim];
+  const int64_t out_h = grad_static_shape[h_dim];
+  const int64_t out_w = grad_static_shape[w_dim];
 
   // input: [..., out_h, out_w] -> output: [..., out_h, in_w]
   TT_ASSIGN_OR_RETURN(auto w_op, ApplyAdaptiveAvgPool1D(
@@ -301,18 +252,20 @@ absl::StatusOr<mlir::MlirOp> BuildAdaptiveAvgPool3dBackwardShlo(
   TT_ASSIGN_OR_RETURN(auto batch_grad_info,
                       CreateBatchInput(grad_output, spatial_dim_count));
 
-  auto input_type = GetTensorTypeOrDie(batch_input_info.batch_input);
-  auto grad_output_type = GetTensorTypeOrDie(batch_grad_info.batch_input);
+  const Dimensions input_static_shape =
+      GetStaticShape(batch_input_info.batch_input);
+  const Dimensions grad_static_shape =
+      GetStaticShape(batch_grad_info.batch_input);
 
-  const int64_t d_dim = input_type.getRank() - 3;
-  const int64_t h_dim = input_type.getRank() - 2;
-  const int64_t w_dim = input_type.getRank() - 1;
-  const int64_t in_d = input_type.getShape()[d_dim];
-  const int64_t in_h = input_type.getShape()[h_dim];
-  const int64_t in_w = input_type.getShape()[w_dim];
-  const int64_t out_d = grad_output_type.getShape()[d_dim];
-  const int64_t out_h = grad_output_type.getShape()[h_dim];
-  const int64_t out_w = grad_output_type.getShape()[w_dim];
+  const int64_t d_dim = static_cast<int64_t>(input_static_shape.size()) - 3;
+  const int64_t h_dim = static_cast<int64_t>(input_static_shape.size()) - 2;
+  const int64_t w_dim = static_cast<int64_t>(input_static_shape.size()) - 1;
+  const int64_t in_d = input_static_shape[d_dim];
+  const int64_t in_h = input_static_shape[h_dim];
+  const int64_t in_w = input_static_shape[w_dim];
+  const int64_t out_d = grad_static_shape[d_dim];
+  const int64_t out_h = grad_static_shape[h_dim];
+  const int64_t out_w = grad_static_shape[w_dim];
 
   // input: [..., out_d, out_h, out_w] -> output: [..., out_d, out_h, in_w]
   TT_ASSIGN_OR_RETURN(auto w_op, ApplyAdaptiveAvgPool1D(
