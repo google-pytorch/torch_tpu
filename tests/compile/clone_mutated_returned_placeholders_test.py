@@ -376,7 +376,10 @@ class CloneMutatedReturnedPlaceholdersTest(seed_test_utils.RepeatableTest):
         shape_env=shape_env
     )
     with fake_mode:
-      fake_tensor = torch.empty((symint_s0, 4), dtype=torch.float32)
+      # Use concrete tensor dimensions to avoid C++ SymInt multiplication in
+      # empty_meta_symint, which collides with HWASan pointer tag packing on
+      # Arm while still validating that SymInt placeholders are not cloned.
+      fake_tensor = torch.empty((4, 4), dtype=torch.float32)
 
     graph = Graph()
     p_s0 = graph.placeholder("s0")
