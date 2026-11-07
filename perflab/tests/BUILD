@@ -160,6 +160,7 @@ torch_tpu_py_test(
     deps = [
         "//perflab:common",
         "//perflab:export",
+        "//perflab:known_failures",
         "//perflab:metrics",
         "//perflab:mode",
         "//perflab:target",
