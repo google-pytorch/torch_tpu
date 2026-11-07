@@ -121,11 +121,13 @@ kiln::Tile ComputeLogits(kiln::Tile q, kiln::Tile k,
 // (row_offset, col_offset) within the [qt, kt] tile. When `rows` or `cols` are
 // <= 0 they default to `qt` and `kt` respectively.
 //
-// The mask is a pure function of (batch, q_head, absolute q, absolute kv) and
-// the Philox {seed, offset} in `seed_ref` (memref<4xi32, smem>), so the
-// backward kernel regenerates it rather than storing it. It is keyed on
-// absolute rather than within-tile coordinates so that the forward and
-// backward kernels agree despite their different tilings.
+// The mask is a pure function of (batch, q_head, absolute q, absolute kv),
+// `config.kv_sequence_length`, `config.dropout_rate` and the Philox
+// {seed, offset} in `seed_ref` (memref<4xi32, smem>), so the backward kernel
+// regenerates it rather than storing it. It does not depend on the tiling: the
+// forward and backward kernels can pick different tile sizes, and so pad the
+// sequences to different lengths, but they share the unpadded lengths and drop
+// the same positions.
 //
 // `q_head` must be the *query* head index.
 kiln::Tile DropoutKeepMask(const FlashAttnConfig& config, const Tiling& tiling,
