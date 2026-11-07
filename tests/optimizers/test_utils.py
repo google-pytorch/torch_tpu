@@ -40,9 +40,6 @@ def make_dummy_params(
   return params, grads
 
 
-_make_dummy_params = make_dummy_params
-
-
 def make_dummy_muon_params(
     device: torch.device,
 ) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
@@ -62,9 +59,6 @@ def make_dummy_muon_params(
   params = {"w1": p1, "w2": p2}
   grads = {"w1": g1, "w2": g2}
   return params, grads
-
-
-_make_dummy_muon_params = make_dummy_muon_params
 
 
 def validate_compiled_linear_train_step(
@@ -138,6 +132,3 @@ def validate_compiled_linear_train_step(
     test_case.assertGreater(
         step_t.item(), 1.0, msg=f"Opt step {k} was not incremented"
     )
-
-
-_validate_compiled_linear_train_step = validate_compiled_linear_train_step
