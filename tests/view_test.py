@@ -1429,12 +1429,90 @@ class StridedSliceViewTest(LayoutTest):
 
     utils.assert_close(x_t.cpu(), x_t_cpu)
 
+  @parameterized.product(
+      view_case=[
+          # The size of the middle dimension is not a multiple of the step.
+          dict(base_shape=(2, 3, 4), index=(slice(None), slice(None, None, 2))),
+          dict(base_shape=(12, 4, 8, 1), index=(slice(None), slice(0, 4, 3))),
+          dict(base_shape=(12, 5, 8), index=(slice(None), slice(1, 5, 3))),
+          # The size of the middle dimension is a multiple of the step.
+          dict(base_shape=(2, 4, 4), index=(slice(None), slice(None, None, 2))),
+      ],
+      write=[
+          "setitem_scalar",
+          "setitem_tensor",
+          "fill_",
+          "copy_",
+          "add_",
+          "mul_",
+      ],
+  )
+  def test_write_to_strided_middle_dimension(self, view_case, write):
+    base_shape = view_case["base_shape"]
+    index = view_case["index"]
+    base_cpu = torch.arange(
+        torch.Size(base_shape).numel(), dtype=torch.float32
+    ).reshape(base_shape)
+    base_tpu = base_cpu.to(self.tpu_device)
+    view_shape = base_cpu[index].shape
+    src_cpu = -1.0 - torch.arange(
+        view_shape.numel(), dtype=torch.float32
+    ).reshape(view_shape)
+    src_tpu = src_cpu.to(self.tpu_device)
+
+    for base, src in ((base_cpu, src_cpu), (base_tpu, src_tpu)):
+      if write == "setitem_scalar":
+        base[index] = -1.0
+      elif write == "setitem_tensor":
+        base[index] = src
+      elif write == "fill_":
+        base[index].fill_(-1.0)
+      elif write == "copy_":
+        base[index].copy_(src)
+      elif write == "add_":
+        base[index].add_(src)
+      else:
+        base[index].mul_(src)
+
+    utils.assert_close(base_tpu.cpu(), base_cpu)
+
 
 class CompileTest(LayoutTest):
 
   def setUp(self):
     super().setUp()
     torch._dynamo.reset()
+
+  @parameterized.product(
+      view_case=[
+          # The size of the middle dimension is not a multiple of the step.
+          dict(base_shape=(2, 3, 4), view_fn=lambda t: t[:, ::2]),
+          dict(base_shape=(12, 4, 8, 1), view_fn=lambda t: t[:, 0:4:3]),
+          dict(base_shape=(12, 5, 8), view_fn=lambda t: t[:, 1:5:3]),
+      ],
+      requires_grad=[False, True],
+  )
+  def test_strided_middle_dimension_output(self, view_case, requires_grad):
+    x_cpu = torch.randn(*view_case["base_shape"], requires_grad=requires_grad)
+    x_tpu = x_cpu.detach().to(self.tpu_device).requires_grad_(requires_grad)
+    view_fn = view_case["view_fn"]
+
+    out_expected = view_fn(x_cpu)
+    compiled_fn = torch.compile(
+        view_fn, backend=compile_lib.TpuBackend(), fullgraph=True
+    )
+    out_compiled = compiled_fn(x_tpu)
+    self.assertEqual(out_compiled.shape, out_expected.shape)
+    self.assertEqual(out_compiled.stride(), out_expected.stride())
+    utils.assert_close(out_compiled.detach().cpu(), out_expected.detach())
+
+    if requires_grad:
+      grad_out = torch.randn(out_expected.shape)
+      (grad_expected,) = torch.autograd.grad(out_expected, x_cpu, grad_out)
+      (grad_compiled,) = torch.autograd.grad(
+          out_compiled, x_tpu, grad_out.to(self.tpu_device)
+      )
+      utils.assert_close(grad_compiled.cpu(), grad_expected)
 
   @parameterized.product(
       input_case=[

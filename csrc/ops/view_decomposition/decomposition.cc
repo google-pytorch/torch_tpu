@@ -638,6 +638,16 @@ ViewSequence BuildHeadBitcast(StridedLayout& head_layout,
   return result;
 }
 
+// Returns the number of dense elements spanned by dimensions
+// [start_dim, rank) of the layout, i.e. 1 + their largest element offset.
+int64_t GetExtent(const StridedLayout& layout, const int64_t start_dim) {
+  int64_t extent = 1;
+  for (int64_t i = start_dim; i < layout.strided_dims.size(); ++i) {
+    extent += (layout.strided_dims[i].size - 1) * layout.strided_dims[i].stride;
+  }
+  return extent;
+}
+
 // The result of building the head of the decomposition.
 struct BuildHeadResult {
   ViewSequence head_sequence;
@@ -675,11 +685,13 @@ absl::StatusOr<BuildHeadResult> BuildHead(
   // This is defined to be width[n-1] = (size[n-1] - 1) * stride[n-1] + 1 for
   // the last dimension; this is the minimum number of elements required to
   // satisfy the last dimension with a strided slice.
-  // For all prior dimensions, we set the width to be the higher of:
+  // For all prior dimensions, the width depends on whether dimension i overlaps
+  // the dimensions after it, i.e. whether stride[i] is less than the extent of
+  // dimensions [i+1, n) (see GetExtent):
   //   size[i] * stride[i]                     (non-overlapping case)
   //   (size[i] - 1) * stride[i] + width[i+1]  (overlapping case)
-  // Note that this implies that width[i] >= size[i] * width[i+1] for all
-  // i < n-1.
+  // In the non-overlapping case, width[i+1] may be larger than stride[i]; the
+  // body then pads each row of dimension i to width[i+1] elements.
   Dimensions view_widths;
   if (!tail_layout.strided_dims.empty()) {
     view_widths.resize(tail_layout.strided_dims.size());
@@ -688,12 +700,12 @@ absl::StatusOr<BuildHeadResult> BuildHead(
                          1;
     // TODO(b/479163731): evaluate strategy for 1D unevenly strided views
     for (int i = tail_layout.strided_dims.size() - 2; i >= 0; --i) {
-      const int64_t non_overlapping_width =
-          tail_layout.strided_dims[i].size * tail_layout.strided_dims[i].stride;
-      const int64_t overlapping_width = (tail_layout.strided_dims[i].size - 1) *
-                                            tail_layout.strided_dims[i].stride +
-                                        view_widths[i + 1];
-      view_widths[i] = std::max(non_overlapping_width, overlapping_width);
+      const auto& dim = tail_layout.strided_dims[i];
+      if (dim.stride >= GetExtent(tail_layout, i + 1)) {
+        view_widths[i] = dim.size * dim.stride;
+      } else {
+        view_widths[i] = (dim.size - 1) * dim.stride + view_widths[i + 1];
+      }
     }
   }
 
@@ -857,6 +869,29 @@ void ShiftInitialViewWindow(PadDimension& head_pad, SliceDimension& head_slice,
   unfold.limit_index += max_start_index;
 }
 
+// Calls ShiftInitialViewWindow with the head pad at head_pad_index and the head
+// slice after it, unless the body of the decomposition already has a pad. A pad
+// resets the strides of the layout, so a body slice or unfold after it can no
+// longer shift the initial view window.
+template <typename T>
+void MaybeShiftInitialViewWindow(ViewSequence& result,
+                                 const int64_t head_pad_index,
+                                 const StridedLayout& layout_before_slice,
+                                 T& body_slice) {
+  for (int64_t i = head_pad_index + 2; i < result.size(); ++i) {
+    if (std::holds_alternative<PadPrimitive>(result[i])) {
+      return;
+    }
+  }
+  // The exact position of the pad may vary if there were bitcasts or not,
+  // but it will always be followed immediately by a slice.
+  PadDimension& head_pad =
+      std::get<PadPrimitive>(result[head_pad_index]).pad_dims[0];
+  SliceDimension& head_slice =
+      std::get<SlicePrimitive>(result[head_pad_index + 1]).slice_dims[0];
+  ShiftInitialViewWindow(head_pad, head_slice, layout_before_slice, body_slice);
+}
+
 // Satisfies one or more non-overlapping tail dimensions in the tail layout
 // using exactly one reshape and one slice.
 // **PRECONDITIONS**:
@@ -870,9 +905,10 @@ void ShiftInitialViewWindow(PadDimension& head_pad, SliceDimension& head_slice,
 //   strides: [... T(k-1), T(k), T(k+1), ..., T(n-1)]
 // Both head and tail have T(i) >= T(i+1) and T(i) > 0 for all i.
 // view_widths have values [..., V(k), V(k+1), ..., V(n-1)]
-//   where V(i) >= Z(i) * V(i+1) for all i < n-1
-//   and V(k) == Z(k) * T(k) at index k
-// Note that this implies that T(k) >= V(k+1) by construction of view_widths.
+//   where V(k) == Z(k) * T(k) at index k
+// Note that this implies that T(k) >= E(k+1) by construction of view_widths,
+// where E(i) = 1 + sum((Z(j) - 1) * T(j) for j >= i) is the extent of the
+// dimensions [i, n).
 //
 // Additionally, we define Z(i) = T(i) = V(i) = 1 for all i >= n. This allows
 // the body to append size=1, stride=1 dimensions in excess of the tail layout.
@@ -895,8 +931,7 @@ void ShiftInitialViewWindow(PadDimension& head_pad, SliceDimension& head_slice,
 // slice([... (0, Z(k+m), 1), (0, X, 1)])
 //   where X = max(floor(T(k+m) / T(k+m+1)) * T(k+m+1), V(k+m+1))
 // By construction, the slice is valid because:
-//   At i == k:
-//     T(k) >= V(k+1)                        (precondition)
+//   At i == k, if T(k) >= V(k+1):
 //     T(k) >= floor(T(k) / T(k+1)) * T(k+1) (definition of floor)
 //     => T(k) >= X
 //   At k < i <= k+m:
@@ -904,11 +939,16 @@ void ShiftInitialViewWindow(PadDimension& head_pad, SliceDimension& head_slice,
 //     T(i) % T(i+1) == 0                    (checked in algorithm)
 //     T(i) >= floor(T(i) / T(i+1)) * T(i+1) (definition of floor)
 //     => T(i) >= X
+// At i == k, T(k) may also be less than V(k+1) == X. The last dimension is then
+// too small for the next step, but since T(k) >= E(k+1), it holds the E(k+1)
+// elements spanned by the dimensions [k+1, n). In that case, construct instead:
+// slice([... (0, Z(k), 1), (0, E(k+1), 1)])
+// pad([... (0, 0, 0), (0, X - E(k+1), 0)])
 //
 // head (after slice):
 //   rank:    k+m+2
 //   sizes:   [... Z(k+m), X],
-//   strides: [... T(k+m), 1]
+//   strides: [... T(k+m), 1] (or contiguous strides after a pad)
 // which restablishes the precondition but now with k+m+1 completed dimensions.
 absl::Status BuildBodyStepNonOverlapping(StridedLayout& head_layout,
                                          const StridedLayout& tail_layout,
@@ -943,8 +983,9 @@ absl::Status BuildBodyStepNonOverlapping(StridedLayout& head_layout,
     // dimension if necessary.
     if (curr_dim + 1 < tail_layout.strided_dims.size() &&
         curr_stride < view_widths[curr_dim + 1]) {
-      // This is an overlapping dimension, so we need to stop splitting here.
-      // The next iteration will call BuildBodyStepOverlapping to resolve it.
+      // This dimension is overlapping, or its rows need a pad to fit the view
+      // width of the next dimension, so we need to stop splitting here. The
+      // next iteration will resolve it.
       break;
     }
 
@@ -980,6 +1021,8 @@ absl::Status BuildBodyStepNonOverlapping(StridedLayout& head_layout,
   }
   // Slice the last dimension.
   int64_t last_limit_index = -1;  // dummy value to avoid uninitialized memory
+  // The size to pad the last dimension to after the slice, if it needs a pad.
+  int64_t last_padded_size = -1;
   if (last_dim >= tail_layout.strided_dims.size()) {
     // If we appended an extra dimension, slice it to size 1.
     last_limit_index = 1;
@@ -990,23 +1033,34 @@ absl::Status BuildBodyStepNonOverlapping(StridedLayout& head_layout,
                         tail_layout.strided_dims[last_dim].stride) *
                        tail_layout.strided_dims[last_dim].stride;
     last_limit_index = std::max(last_limit_index, view_widths[last_dim]);
+    if (last_limit_index > head_layout.strided_dims[last_dim].size) {
+      // The last dimension is smaller than the view width, but it holds the
+      // elements spanned by the remaining tail dimensions. Slice it to these
+      // elements, and then pad it to the view width.
+      last_padded_size = last_limit_index;
+      last_limit_index = GetExtent(tail_layout, last_dim);
+    }
   }
   slice.slice_dims.push_back(SliceDimension{
       .start_index = 0, .limit_index = last_limit_index, .stride = 1});
 
   // Use the slice to reduce the amount of padding we need to do, if possible.
-  // The exact position of the pad may vary if there were bitcasts or not,
-  // but it will always be followed immediately by a slice.
-  PadDimension& head_pad =
-      std::get<PadPrimitive>(result[head_pad_index]).pad_dims[0];
-  SliceDimension& head_slice =
-      std::get<SlicePrimitive>(result[head_pad_index + 1]).slice_dims[0];
-  ShiftInitialViewWindow(head_pad, head_slice, head_layout, slice);
+  MaybeShiftInitialViewWindow(result, head_pad_index, head_layout, slice);
 
   UpdateLayout(head_layout, slice);
   ABSL_VLOG(3) << "[BuildBodyStepNonOverlapping] Appended " << slice
                << ", new head_layout: " << head_layout;
   result.push_back(std::move(slice));
+
+  if (last_padded_size > 0) {
+    PadPrimitive pad;
+    pad.pad_dims.resize(head_layout.strided_dims.size());
+    pad.pad_dims.back().high_padding = last_padded_size - last_limit_index;
+    UpdateLayout(head_layout, pad);
+    ABSL_VLOG(3) << "[BuildBodyStepNonOverlapping] Appended " << pad
+                 << ", new head_layout: " << head_layout;
+    result.push_back(std::move(pad));
+  }
   return absl::OkStatus();
 }
 
@@ -1036,11 +1090,8 @@ absl::Status BuildBodyStepNonOverlapping(StridedLayout& head_layout,
 //
 // Then unfold with window stride = T(k), window size = V(k+1),
 // start_index = 0, and limit_index = (Z(k)-1) * T(k) + V(k+1).
-// This is valid because:
-//   V(k) = Z(k) * max(T(k), V(k+1)) by definition of view_widths
-//   V(k) > Z(k) * T(k) => V(k+1) > T(k) by the precondition
-//   V(k) >= Z(k) * V(k+1) by definition of view_widths
-//   => V(k) >= (Z(k) - 1) * T(k) + V(k+1) == limit_index
+// This is valid because V(k) == (Z(k) - 1) * T(k) + V(k+1) == limit_index by
+// definition of view_widths, since dimension k is overlapping.
 // head (after unfold):
 //   rank:    k+2
 //   sizes:  [... Z(k-1), Z(k), V(k+1)]
@@ -1078,13 +1129,7 @@ absl::Status BuildBodyStepOverlapping(StridedLayout& head_layout,
       unfold.window_size;
 
   // Use the unfold to reduce the amount of padding we need to do, if possible.
-  // The exact position of the pad may vary if there were bitcasts or not,
-  // but it will always be followed immediately by a slice.
-  PadDimension& head_pad =
-      std::get<PadPrimitive>(result[head_pad_index]).pad_dims[0];
-  SliceDimension& head_slice =
-      std::get<SlicePrimitive>(result[head_pad_index + 1]).slice_dims[0];
-  ShiftInitialViewWindow(head_pad, head_slice, head_layout, unfold);
+  MaybeShiftInitialViewWindow(result, head_pad_index, head_layout, unfold);
 
   UpdateLayout(head_layout, unfold);
   ABSL_VLOG(3) << "[BuildBodyStepOverlapping] Appended " << unfold
@@ -1202,11 +1247,7 @@ absl::Status BuildFinalDimension(StridedLayout& head_layout,
                                             .limit_index = last_dim_limit_index,
                                             .stride = last_dim_stride});
 
-  PadDimension& head_pad =
-      std::get<PadPrimitive>(result[head_pad_index]).pad_dims[0];
-  SliceDimension& head_slice =
-      std::get<SlicePrimitive>(result[head_pad_index + 1]).slice_dims[0];
-  ShiftInitialViewWindow(head_pad, head_slice, head_layout, slice);
+  MaybeShiftInitialViewWindow(result, head_pad_index, head_layout, slice);
 
   UpdateLayout(head_layout, slice);
   ABSL_VLOG(3) << "[BuildFinalDimension] Appended " << slice
