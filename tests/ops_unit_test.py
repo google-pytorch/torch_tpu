@@ -2083,6 +2083,43 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       self.assertTrue(torch.isnan(res_tpu[0]))
       utils.assert_close(res_tpu, res_cpu)
 
+  def test_logit_eps_subnormal(self):
+    device = torch.device("tpu")
+    for dtype in (torch.float16, torch.bfloat16):
+      x_cpu = torch.tensor([0.0, 1e-7, 0.5, 1.0], dtype=dtype)
+      x_tpu = x_cpu.to(device)
+      for eps in (1e-8, 1e-6):
+        with self.subTest(dtype=dtype, eps=eps):
+          res_tpu = torch.logit(x_tpu, eps=eps).cpu()
+          expected = torch.logit(x_cpu.float(), eps=eps).to(dtype)
+          utils.assert_close(res_tpu, expected)
+
+          out_tpu = torch.empty_like(x_tpu)
+          torch.logit(x_tpu, eps=eps, out=out_tpu)
+          utils.assert_close(out_tpu.cpu(), expected)
+
+          in_place_tpu = x_tpu.clone()
+          in_place_tpu.logit_(eps=eps)
+          utils.assert_close(in_place_tpu.cpu(), expected)
+
+          grad_out = torch.ones_like(x_cpu)
+          grad_tpu = torch.ops.aten.logit_backward(
+              grad_out.to(device), x_tpu, eps
+          ).cpu()
+          grad_expected = torch.ops.aten.logit_backward(
+              grad_out.float(), x_cpu.float(), eps
+          ).to(dtype)
+          utils.assert_close(grad_tpu, grad_expected)
+
+          grad_out_f64 = torch.ones_like(x_cpu, dtype=torch.float64)
+          grad_tpu_f64 = torch.ops.aten.logit_backward(
+              grad_out_f64.to(device), x_tpu, eps
+          ).cpu()
+          grad_expected_f64 = torch.ops.aten.logit_backward(
+              grad_out_f64, x_cpu.double(), eps
+          )
+          utils.assert_close(grad_tpu_f64, grad_expected_f64)
+
   def test_complex_and_polar_out(self):
     device = torch.device("tpu")
     # complex: float32 -> complex64 out
