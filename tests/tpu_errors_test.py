@@ -2541,6 +2541,44 @@ Please use clone() or contiguous() to copy the tensor before writing""",
       )
 
   @et.why_tpu_only("For testing TPU compile API validation.")
+  def test_missing_input_to_traverse_and_compile(self):
+    with execution_mode.set_eager_mode(_EagerMode.INTERNAL_DEFER_ALL):
+      x = torch.ones(10, device="cpu").to(device=et.device())
+      y = torch.ones(10, device="cpu").to(device=et.device())
+      z = x + y
+    result_tensors = [z]
+    argument_tensors = [x]
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""traverse_and_compile(): failed to validate and reorder traversal inputs: identified an argument that was not provided: 10xfloat32""",
+    ):
+      tpu_torch_compile.traverse_and_compile(result_tensors, argument_tensors)
+
+  @et.why_tpu_only("For testing TPU compile API validation.")
+  def test_scan_with_unlifted_buffer_in_graph_module(self):
+    class CombineWithBuffer(torch.nn.Module):
+
+      def __init__(self, bias: torch.Tensor):
+        super().__init__()
+        self.register_buffer("bias", bias)
+
+      def forward(self, carry: torch.Tensor, x: torch.Tensor):
+        return carry + x + self.bias, carry + x
+
+    device = et.device()
+    gm = torch.fx.symbolic_trace(
+        CombineWithBuffer(torch.ones(10, device="cpu").to(device=device))
+    )
+    init = torch.ones(10, device="cpu").to(device=device)
+    xs = torch.ones((4, 10), device="cpu").to(device=device)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""traverse_and_compile(): failed to validate and reorder traversal inputs: identified an argument that was not provided: 10xfloat32""",
+    ):
+      with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+        torch.ops.higher_order.scan(gm, [init], [xs], [])
+
+  @et.why_tpu_only("For testing TPU compile API validation.")
   def test_missing_input_to_build_mlir(self):
     with execution_mode.set_eager_mode(_EagerMode.INTERNAL_DEFER_ALL):
       x = torch.ones(10, device="cpu").to(device=et.device())
