@@ -108,7 +108,9 @@ pybind_extension(
         "//csrc/common:context_states",
         "//csrc/common:error_utils",
         "//csrc/common:pybind_error_utils",
+        # buildcleaner: keep
         "//csrc/internal/profiler:tpu_profiler_plugin_cc",
+        # buildcleaner: keep
         "//csrc/internal/profiler:xprof_callback_handler",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/base:no_destructor",

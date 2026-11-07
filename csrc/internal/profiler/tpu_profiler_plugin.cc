@@ -448,8 +448,6 @@ void TpuKinetoProfilerSession::start() {
   } else {
     ABSL_LOG(INFO) << "Successfully created Tpu ProfilerSession!";
     status_ = libkineto::TraceStatus::RECORDING;
-    XProfCallbackHandler::Register();
-    callback_handler_ = std::make_unique<XProfCallbackHandler>();
   }
 }
 
@@ -486,10 +484,6 @@ absl::Status SynchronizeTpuDevicesBeforeStop() {
 void TpuKinetoProfilerSession::stop() {
   absl::MutexLock lock(mutex_);
   if (session_ != nullptr) {
-    // Stop recording PyTorch frontend events immediately before synchronizing
-    // and collecting trace data so teardown operations are not captured.
-    callback_handler_.reset();
-
     absl::Status sync_status = SynchronizeTpuDevicesBeforeStop();
     if (!sync_status.ok()) {
       ABSL_LOG(WARNING)
@@ -795,6 +789,7 @@ std::unique_ptr<libkineto::IActivityProfiler> MakeTpuProfiler() {
 // Registers `TpuProfiler` as the Kineto activity profiler for PrivateUse1.
 struct TpuProfilerRegisterer {
   TpuProfilerRegisterer() {
+    XProfCallbackHandler::RegisterTracerFactory();
     if (torch::profiler::impl::PrivateUse1ProfilerRegistry::instance !=
         nullptr) {
       // PyTorch >= 2.12: Use PyTorch's official registry, which only attaches

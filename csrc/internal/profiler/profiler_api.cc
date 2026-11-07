@@ -29,7 +29,6 @@
 #include "csrc/common/context_states.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/pybind_error_utils.h"
-#include "csrc/internal/profiler/xprof_callback_handler.h"
 #include "pybind11/pybind11.h"
 #include "tsl/platform/path.h"
 #include "tsl/profiler/lib/profiler_session.h"
@@ -112,7 +111,6 @@ absl::Status TpuProfilerServer::Start(int port) ABSL_LOCKS_EXCLUDED(mutex_) {
   absl::MutexLock lock(mutex_);
   TT_RET_CHECK(server_ == nullptr, error::kFailedPrecondition)
       << "the profiler server has already been started";
-  torch_tpu::XProfCallbackHandler::Register();
   server_ = std::make_unique<tsl::profiler::ProfilerServer>();
   server_->StartProfilerServer(port);
   return absl::OkStatus();

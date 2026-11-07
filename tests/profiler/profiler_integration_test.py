@@ -269,6 +269,18 @@ def _describe_xspace(xspace: xplane_pb2.XSpace) -> str:
   return "\n".join(parts)
 
 
+def _count_host_events(xspace: xplane_pb2.XSpace, event_name: str) -> int:
+  """Counts events matching `event_name` on `/host:CPU` XPlanes."""
+  total = 0
+  for plane in xspace.planes:
+    if plane.name == "/host:CPU":
+      ids = {k for k, m in plane.event_metadata.items() if m.name == event_name}
+      total += sum(
+          e.metadata_id in ids for line in plane.lines for e in line.events
+      )
+  return total
+
+
 def _format_inline_mlir(mlir_text: str) -> str:
   """Formats an MLIR module with inline debug locations."""
   with jax.interpreters.mlir.make_ir_context() as ctx:
@@ -690,6 +702,9 @@ class ProfilerIntegrationTest(seed_test_utils.RepeatableTest):
         content,
         "Python annotation not found in XPlane!",
     )
+    xspace = xplane_pb2.XSpace.FromString(content)
+    self.assertEqual(_count_host_events(xspace, "full_pipeline"), 1)
+    self.assertEqual(_count_host_events(xspace, "model1_inference_tpu"), 1)
 
   def test_compiled_module_name_scopes(self):
     """Checks that the module hierarchy of a compiled model reaches the trace."""
