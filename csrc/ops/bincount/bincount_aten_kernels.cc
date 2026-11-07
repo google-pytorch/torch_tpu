@@ -154,28 +154,30 @@ at::Tensor AtenBinCount(const at::Tensor& self,
         // fused TPU kernel and copy directly into a stack buffer. This avoids
         // redispatching through the PyTorch dispatcher, avoids creating CPU
         // tensors, and requires only a single host synchronization.
-        auto min_max_builder = [](FixedSizeSpan<mlir::MlirOp, 1> inputs)
-            -> absl::StatusOr<mlir::MlirOp> {
-          auto& builder = inputs[0].getBuilder();
+        auto min_max_builder =
+            [](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
+          auto& builder = input.getBuilder();
           TT_ASSIGN_OR_RETURN(
               auto min_max_ops,
               BuildFusedAMinMaxShlo(/*dims=*/{0}, ReductionMode::kDropDims,
-                                    inputs[0]));
+                                    input));
           auto min_i64 = mlir::stablehlo::ConvertElementType(
               min_max_ops[0], mlir::ElementType::I64);
           auto max_i64 = mlir::stablehlo::ConvertElementType(
               min_max_ops[1], mlir::ElementType::I64);
-          auto min_1d = mlir::stablehlo::Reshape(builder, {1}, min_i64);
-          auto max_1d = mlir::stablehlo::Reshape(builder, {1}, max_i64);
+          auto min_1d = mlir::stablehlo::Reshape(min_i64, {1});
+          auto max_1d = mlir::stablehlo::Reshape(max_i64, {1});
           return mlir::stablehlo::Concatenate(builder, {min_1d, max_1d},
                                               /*dimension=*/0);
         };
 
+        const Dimensions min_max_dims = {2};
+        const mlir::ElementType min_max_dtype = mlir::ElementType::I64;
         TT_ASSIGN_OR_THROW(DeviceBufferRef min_max_buf,
-                           DispatchOp<1>(std::move(min_max_builder), {self},
+                           DispatchOp<1>(std::move(min_max_builder), self,
                                          {.op_name = OpName::kAminmaxOut,
-                                          .out_dtype = mlir::ElementType::I64,
-                                          .out_dims = {2}}));
+                                          .out_dtype = min_max_dtype,
+                                          .out_dims = min_max_dims}));
 
         int64_t min_max_vals[2] = {0, 0};
         TT_THROW_IF_ERROR(CopyDeviceBufferRefToCpuPtr(
