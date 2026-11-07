@@ -22,6 +22,7 @@
 #include "absl/status/statusor.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/ops/nonzero/nonzero.h"
+#include "csrc/ops/op_builder_utils.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "stablehlo/dialect/StablehloOps.h"
@@ -50,9 +51,7 @@ absl::StatusOr<mlir::MlirOp> BuildTrilIndicesShlo(mlir::MlirBuilder& builder,
       /*iota_dimension=*/1);
 
   // Create a constant for the offset and broadcast it to (row, col).
-  mlir::MlirOp offset_op = mlir::stablehlo::Constant(builder, offset);
-  offset_op = mlir::stablehlo::BroadcastInDim(iota_row.getType(), offset_op,
-                                              /*broadcast_dimensions=*/{});
+  mlir::MlirOp offset_op = MakeConstantLike(iota_row, offset);
 
   // Calculate `i + offset` and compare `j <= i + offset` to get the boolean
   // mask.
