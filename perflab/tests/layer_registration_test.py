@@ -256,6 +256,14 @@ class AddLayerSweepTest(seed_test_utils.RepeatableTest):
       )
       self.assertTrue(spec.presubmit_reason)
 
+  def test_presubmit_skip_reason_skips_every_spec(self):
+    self._sweep(presubmit_skip_reason="No CPU kernel.")
+
+    self.assertNotEmpty(registry_lib.REGISTRY)
+    for spec in registry_lib.REGISTRY.values():
+      self.assertEqual(spec.presubmit, registry_lib.PresubmitPolicy.SKIP)
+      self.assertEqual(spec.presubmit_reason, "No CPU kernel.")
+
   def test_duplicate_registration_raises(self):
     self._sweep()
 
