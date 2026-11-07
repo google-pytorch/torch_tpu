@@ -21526,8 +21526,12 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
   @parameterized.named_parameters(
       ops_test_data.generate_configs_for_parameterized([
           # Reduce the batch size to max 2 to avoid OOM on smaller devices.
+          # Filter to a single backend per (shape, dtype) config and iterate
+          # over both TPU backends in subTests so the CPU reference
+          # (SDPBackend.MATH) is computed only once per (shape, dtype).
           dataclasses.replace(c, batch_size=min(c.batch_size, 2))
           for c in ops_test_data.SDPA_CONFIGS
+          if c.backend == torch.nn.attention.SDPBackend.FLASH_ATTENTION
       ])
   )
   def test_scaled_dot_product_attention(self, config: ops_test_data.SdpaConfig):
@@ -21573,7 +21577,10 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
     else:
       attn_mask = None
 
-    def compute(device: torch.device):
+    def compute(
+        device: str,
+        backend: torch.nn.attention.SDPBackend = config.backend,
+    ):
       q_t = q.clone().detach().to(device)
       k_t = k.clone().detach().to(device)
       v_t = v.clone().detach().to(device)
@@ -21582,9 +21589,7 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
       v_t.requires_grad_(config.requires_grad)
 
       with torch.nn.attention.sdpa_kernel(
-          torch.nn.attention.SDPBackend.MATH
-          if device == "cpu"
-          else config.backend
+          torch.nn.attention.SDPBackend.MATH if device == "cpu" else backend
       ):
         y = torch.nn.functional.scaled_dot_product_attention(
             q_t,
@@ -21605,27 +21610,6 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
             "v_grad": v_t.grad,
         })
       return results
-
-    cpu_results = compute("cpu")
-    tpu_results = compute("tpu")
-
-    # The gradient of the first token is zero with causal attention.
-    if config.is_causal and "q_grad" in cpu_results:
-      with self.subTest("causal_query_first_token_grad_is_zero"):
-        self.assertTrue((tpu_results["q_grad"][..., 0, :] == 0.0).all())
-      cpu_results["q_grad"] = cpu_results["q_grad"][..., 1:, :]
-      tpu_results["q_grad"] = tpu_results["q_grad"][..., 1:, :]
-
-      # KV tokens beyond q_seq_len are completely masked out in causal
-      # attention, so their gradients are zero.
-      if config.kv_seq_len > config.q_seq_len:
-        for key in ("k_grad", "v_grad"):
-          with self.subTest(f"causal_{key}_masked_tokens_grad_is_zero"):
-            self.assertTrue(
-                (tpu_results[key][..., config.q_seq_len :, :] == 0.0).all()
-            )
-          cpu_results[key] = cpu_results[key][..., : config.q_seq_len, :]
-          tpu_results[key] = tpu_results[key][..., : config.q_seq_len, :]
 
     def check_sim(cpu, tpu, key):
       # TODO(willfroom): We should also check the min similarity but currently
@@ -21655,12 +21639,42 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
           preamble=f"close check failed for {key}",
       )
 
-    for key in cpu_results:
-      with self.subTest(key):
-        cpu_tensor = cpu_results[key].cpu()
-        tpu_tensor = tpu_results[key].cpu()
-        check_sim(cpu_tensor, tpu_tensor, key)
-        assert_close(cpu_tensor, tpu_tensor, key)
+    cpu_results = compute("cpu")
+
+    for backend in (
+        torch.nn.attention.SDPBackend.FLASH_ATTENTION,
+        torch.nn.attention.SDPBackend.OVERRIDEABLE,
+    ):
+      with self.subTest(backend=backend):
+        expected_results = dict(cpu_results)
+        tpu_results = compute("tpu", backend)
+
+        # The gradient of the first token is zero with causal attention.
+        if config.is_causal and "q_grad" in expected_results:
+          with self.subTest("causal_query_first_token_grad_is_zero"):
+            self.assertTrue((tpu_results["q_grad"][..., 0, :] == 0.0).all())
+          expected_results["q_grad"] = expected_results["q_grad"][..., 1:, :]
+          tpu_results["q_grad"] = tpu_results["q_grad"][..., 1:, :]
+
+          # KV tokens beyond q_seq_len are completely masked out in causal
+          # attention, so their gradients are zero.
+          if config.kv_seq_len > config.q_seq_len:
+            for key in ("k_grad", "v_grad"):
+              with self.subTest(f"causal_{key}_masked_tokens_grad_is_zero"):
+                self.assertTrue(
+                    (tpu_results[key][..., config.q_seq_len :, :] == 0.0).all()
+                )
+              expected_results[key] = expected_results[key][
+                  ..., : config.q_seq_len, :
+              ]
+              tpu_results[key] = tpu_results[key][..., : config.q_seq_len, :]
+
+        for key in expected_results:
+          with self.subTest(key):
+            cpu_tensor = expected_results[key].cpu()
+            tpu_tensor = tpu_results[key].cpu()
+            check_sim(cpu_tensor, tpu_tensor, key)
+            assert_close(cpu_tensor, tpu_tensor, key)
 
   @parameterized.named_parameters(
       ("flash", torch.nn.attention.SDPBackend.FLASH_ATTENTION),
