@@ -5584,6 +5584,23 @@ Supported combinations for non-constant padding:
     ):
       op(x, y.to(torch.float64))
 
+  def test_bitwise_not_invalid_dtype(self):
+    x = torch.ones(5, dtype=torch.int64, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""bitwise_not(): expected the dtype of the argument to be neither floating-point nor complex, got float64""",
+        gpu=""""bitwise_not_cuda" not implemented for 'Double'""",
+    ):
+      torch.bitwise_not(x.to(torch.float64))
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""bitwise_not(): expected the dtype of the argument to be neither floating-point nor complex, got complex64""",
+        gpu=""""bitwise_not_cuda" not implemented for 'ComplexFloat'""",
+    ):
+      torch.bitwise_not(x.to(torch.complex64))
+
   @parameterized.named_parameters(
       {
           "testcase_name": "bitwise_left_shift",

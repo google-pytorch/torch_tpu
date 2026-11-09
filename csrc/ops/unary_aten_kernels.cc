@@ -401,13 +401,27 @@ at::Tensor& AtenTruncOut(const at::Tensor& self, at::Tensor& out) {
 }
 
 // go/keep-sorted start
-TT_DEFINE_ATEN_UNARY_OUT(OpName::kBitwiseNotOut, AtenBitwiseNot, BuildNotShlo);
 TT_DEFINE_ATEN_UNARY_OUT(OpName::kConjPhysicalOut, AtenConjPhysical,
                          BuildConjPhysicalShlo);
 TT_DEFINE_ATEN_UNARY_OUT(OpName::kLiftFreshOut, AtenLiftFresh,
                          BuildLiftFreshShlo);
 TT_DEFINE_ATEN_UNARY_OUT(OpName::kSgnOut, AtenSgn, BuildSgnShlo);
 // go/keep-sorted end
+
+at::Tensor& AtenBitwiseNotOut(const at::Tensor& self, at::Tensor& out) {
+  TT_KERNEL(OpName::kBitwiseNotOut, _, (self, out), {
+    TT_CHECK_THROW(!IsFloatingPoint(self) && !IsComplex(self),
+                   error::kInvalidArgument)
+        << "expected the dtype of the argument to be neither "
+           "floating-point nor complex, got "
+        << ToString(self.scalar_type());
+    TT_THROW_IF_ERROR(
+        UnaryOpOut(self, out, BuildNotShlo,
+                   {.op_param_cache_keys = OpParamCacheKeys::Empty(),
+                    .allow_out_dtype_cast = false}));
+    return out;
+  });
+}
 
 at::Tensor& AtenCeilOut(const at::Tensor& self, at::Tensor& out) {
   TT_KERNEL(OpName::kCeilOut, _, (self, out), {

@@ -252,7 +252,7 @@ csrc/ops/transformer_encoder_layer_fwd/_transformer_encoder_layer_fwd_aten_kerne
 csrc/ops/triangular/triangular.cc: {remaining: 0, total: 1, infeasible: 1}
 csrc/ops/tril_indices/tril_indices_aten_kernels.cc: {remaining: 0, total: 1, infeasible: 0}
 csrc/ops/unary.cc: {remaining: 0, total: 1, infeasible: 1}
-csrc/ops/unary_aten_kernels.cc: {remaining: 0, total: 9, infeasible: 0}
+csrc/ops/unary_aten_kernels.cc: {remaining: 0, total: 10, infeasible: 0}
 csrc/ops/unfold/unfold_aten_kernels.cc: {remaining: 0, total: 3, infeasible: 0}
 csrc/ops/uniform/uniform.cc: {remaining: 0, total: 1, infeasible: 0}
 csrc/ops/uniform/uniform_aten_kernels.cc: {remaining: 0, total: 1, infeasible: 0}
