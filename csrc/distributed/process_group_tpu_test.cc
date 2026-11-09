@@ -19,6 +19,7 @@
 #include <atomic>
 #include <chrono>  // NOLINT - needed for c10d::Store timeouts
 #include <cstdint>
+#include <map>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -36,6 +37,7 @@
 #include "torch/csrc/distributed/c10d/FileStore.hpp"
 #include "torch/csrc/distributed/c10d/HashStore.hpp"
 #include "torch/csrc/distributed/c10d/PrefixStore.hpp"
+#include "torch/csrc/distributed/c10d/Types.hpp"
 #include "xla/pjrt/pjrt_client.h"
 
 namespace torch_tpu {
@@ -742,6 +744,57 @@ TEST(ProcessGroupTpuTest, ComputeRankToTopologyOrderMissingAttributes) {
   const std::vector<int64_t>  // INT_VEC_OK
       expected_with_slice = {1, 2, 0};
   EXPECT_EQ(ComputeRankToTopologyOrder(device_attrs), expected_with_slice);
+}
+
+TEST(ProcessGroupTpuTest, SenderAndReceiverComputeIdenticalPhaseKey) {
+  for (int u = 0; u < 8; ++u) {
+    for (int v = 0; v < 8; ++v) {
+      if (u == v) continue;
+      EXPECT_EQ(ComputeP2pCoalescePhaseKey(u, v),
+                ComputeP2pCoalescePhaseKey(u, v));
+    }
+  }
+}
+
+TEST(ProcessGroupTpuTest, OppositeDirectionsHaveDistinctOrderedPhases) {
+  const auto fwd = ComputeP2pCoalescePhaseKey(2, 3);
+  const auto bwd = ComputeP2pCoalescePhaseKey(3, 2);
+  EXPECT_NE(fwd, bwd);
+  EXPECT_LT(fwd, bwd);
+}
+
+TEST(ProcessGroupTpuTest, BidirectionalRingPartitionsIntoDisjointMatchings) {
+  constexpr int kWorldSize = 8;
+  struct Edge {
+    int src;
+    int dst;
+  };
+  std::vector<Edge> edges;
+  for (int r = 0; r < kWorldSize; ++r) {
+    edges.push_back({r, (r + 1) % kWorldSize});
+    edges.push_back({r, (r + kWorldSize - 1) % kWorldSize});
+  }
+  ASSERT_EQ(edges.size(), 16);
+
+  std::map<P2pCoalescePhaseKey, std::vector<Edge>> phases;
+  for (const auto& edge : edges) {
+    phases[ComputeP2pCoalescePhaseKey(edge.src, edge.dst)].push_back(edge);
+  }
+
+  for (const auto& [phase_key, phase_edges] : phases) {
+    std::vector<int> rank_counts(kWorldSize, 0);
+    for (const auto& edge : phase_edges) {
+      rank_counts[edge.src]++;
+      rank_counts[edge.dst]++;
+    }
+    for (int r = 0; r < kWorldSize; ++r) {
+      EXPECT_LE(rank_counts[r], 1)
+          << "Rank " << r << " appears " << rank_counts[r]
+          << " times in phase color=" << phase_key.color
+          << " min_rank=" << phase_key.min_rank
+          << " max_rank=" << phase_key.max_rank << " dir=" << phase_key.dir;
+    }
+  }
 }
 
 }  // namespace
