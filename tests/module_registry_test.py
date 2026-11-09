@@ -3174,6 +3174,18 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     )
     self.assertIs(qwen_omni_dict["enable_audio_output"], False)
 
+  def test_in_tree_config_priority_when_load_weights_false(self):
+    with tempfile.TemporaryDirectory() as temp_dir:
+      base_dir = pathlib.Path(temp_dir)
+      # Invalid JSON in base_path verifies that load_weights=False uses in-tree
+      # config first without reading base_path/config.json.
+      gemma_dir = base_dir / "transformers" / "google" / "gemma-3-270m"
+      gemma_dir.mkdir(parents=True)
+      (gemma_dir / "config.json").write_text("{invalid json")
+      provider = module_registry.TransformersProvider(base_path=temp_dir)
+      spec = provider.get_module_spec("google/gemma-3-270m", load_weights=False)
+      self.assertEqual(spec.config.model_type, "gemma3_text")
+
 
 if __name__ == "__main__":
   absltest.main()
