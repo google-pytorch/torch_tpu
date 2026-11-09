@@ -73,8 +73,6 @@ template <typename T>
 [[nodiscard]] std::string ToString(const c10::IListRef<T>& list);
 template <typename T>
 [[nodiscard]] std::string ToString(mlir::ArrayRef<T> arr);
-template <typename T>
-[[nodiscard]] std::string ToString(absl::Span<T> span);
 template <typename T, size_t N>
 [[nodiscard]] std::string ToString(const absl::InlinedVector<T, N>& vec);
 template <typename T>
