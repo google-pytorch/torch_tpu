@@ -139,6 +139,42 @@ TEST_MODULE_SHARDS: Final[Mapping[str, int]] = {
     # go/keep-sorted end
 }
 
+# Bazel tag applied to the curated smoke subset of device-generic test targets
+# for PyTorch cross-repo CI relay (CRCR) validation.
+SMOKE_TEST_TAG: Final[str] = "crcr-smoke"
+
+# Curated subset of representative, high-signal device-generic test modules
+# tagged with `SMOKE_TEST_TAG` (`crcr-smoke`) for per-commit PyTorch cross-repo
+# CI relay (CRCR) validation across core integration surfaces (PrivateUse1
+# accelerator APIs, tensor ops/views, dtype promotion/autocast, autograd, custom
+# ops, Dynamo, Inductor, and nn/optim).
+SMOKE_TEST_MODULES: Final[frozenset[str]] = frozenset({
+    # go/keep-sorted start
+    "dynamo/test_backends",
+    "dynamo/test_deviceguard",
+    "inductor/test_mmdecomp",
+    "inductor/test_utils",
+    "nn/test_init",
+    "test_accelerator",
+    "test_autocast",
+    "test_autograd",
+    "test_custom_ops",
+    "test_optim",
+    "test_out_dtype_op",
+    "test_shape_ops",
+    "test_torch",
+    "test_type_promotion",
+    "test_view_ops",
+    # go/keep-sorted end
+})
+
+
+def torch_test_target_name(test_module: str) -> str:
+  """Returns the normalized Bazel target name for a PyTorch test module."""
+  *dirs, basename = test_module.split("/")
+  return "_".join([*dirs, basename.removeprefix("test_"), "test"])
+
+
 # Test modules with no device-generic tests for TPU, including
 #   1. Test modules specific to non-TPU accelerators, e.g. NCCL for Nvidia GPU.
 #   2. Test modules where every test class is labelled for other hardware or
