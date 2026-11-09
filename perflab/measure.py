@@ -45,18 +45,12 @@ XPROF_STEPS = flags.DEFINE_integer(  # PYTHON_FLAG_OK=benchmark
     "Number of steps to collect xprof for after warmup.",
     lower_bound=0,
 )
-POST_WARMUP_REWARM_MAX_STEPS = flags.DEFINE_integer(  # PYTHON_FLAG_OK=benchmark
-    "post_warmup_rewarm_max_steps",
-    10,
-    "Maximum number of untimed steps run between the pre-measurement garbage"
-    " collection and peak-memory reset and the timed post-warmup steps. They"
-    " stop as soon as two consecutive steps take within 5% of the same time.",
-    lower_bound=0,
-)
-
-# The re-warm ends once a step takes within this fraction of the time of the
-# step before it.
-_REWARM_TOLERANCE = 0.05
+# The number of untimed steps run between the pre-measurement garbage
+# collection and peak-memory reset and the timed post-warmup steps. After that
+# pause, fast host-bound steps run about 1.15x, 1.05x and 1.02x slower than
+# steady state for three steps, then settle. A fixed count runs the same steps
+# on every rank of a distributed run and in every run.
+_POST_WARMUP_UNTIMED_STEPS = 4
 
 
 def _do_post_warmup() -> bool:
@@ -461,7 +455,6 @@ def _post_warmup_run(
     name: str,
     enable_xprof: bool = False,
     profiling_time: _ProfilingTime | None = None,
-    rewarm: bool = False,
 ) -> metrics.PostWarmupRunResult:
   """Runs the model once after the warmup is complete.
 
@@ -472,8 +465,6 @@ def _post_warmup_run(
     enable_xprof: Whether to enable xprof profiling.
     profiling_time: If set, accumulates the wall time of the profiled steps,
       including starting and ending their xprof session.
-    rewarm: Whether to run untimed steps before the timed ones until the step
-      time settles, at most --post_warmup_rewarm_max_steps of them.
 
   Returns:
     A PostWarmupRunResult instance containing the average step time and peak
@@ -534,23 +525,13 @@ def _post_warmup_run(
     return device_elapsed
 
   with gc_disabled():
-    # Any pause in the step stream, such as the garbage collection and the
-    # peak-memory reset above, lets the host's caches lose the step's working
-    # set: host-bound steps then run up to ~2x slower for a few steps. Run
-    # untimed steps until the step time settles, so that the timed steps start
-    # warm. They count towards the peak memory, as the timed steps do.
-    rewarm_steps = 0
-    previous_elapsed = None
-    while rewarm and rewarm_steps < POST_WARMUP_REWARM_MAX_STEPS.value:
-      elapsed = _run_single_step(compile_count_before)
-      rewarm_steps += 1
-      if (
-          previous_elapsed is not None
-          and abs(elapsed - previous_elapsed)
-          <= _REWARM_TOLERANCE * previous_elapsed
-      ):
-        break
-      previous_elapsed = elapsed
+    # A pause of a few tenths of a second in the step stream, such as a full
+    # garbage collection, lets the host's caches lose the step's working set,
+    # so that host-bound steps run slower for a few steps. Run a fixed number
+    # of untimed steps first, so that the timed steps start warm. They count
+    # towards the peak memory, as the timed steps do.
+    for _ in range(_POST_WARMUP_UNTIMED_STEPS):
+      _run_single_step(compile_count_before)
     for step in range(POST_WARMUP_STEPS.value):
       timings[step] = _run_single_step(compile_count_before)
 
@@ -604,7 +585,6 @@ def _post_warmup_run(
         device_ops, xspace, XPROF_STEPS.value
     )
 
-  logging.info("Post Warmup re-warm steps for %s: %d", name, rewarm_steps)
   logging.info("Post Warmup Timings for %s: %s", name, timings)
   if enable_xprof and not device_ops.supports_event_device_time():
     logging.info("Post Warmup Xprof Timings for %s: %s", name, xprof_timings)
@@ -669,7 +649,6 @@ def measure(
               name=name,
               enable_xprof=enable_xprof,
               profiling_time=profiling_time,
-              rewarm=True,
           )
       )
   finally:

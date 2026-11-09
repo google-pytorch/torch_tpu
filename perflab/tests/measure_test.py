@@ -15,6 +15,7 @@
 """Tests for measure()."""
 
 import gc
+import unittest
 from unittest import mock
 
 from absl.testing import absltest
@@ -22,6 +23,14 @@ from absl.testing import flagsaver
 from perflab import measure as measure_lib
 from perflab import metrics as metrics_lib
 from tests import seed_test_utils
+
+
+def setUpModule():
+  # Most tests count the steps that run. They run no untimed post-warmup steps;
+  # MeasureUntimedStepsTest sets them.
+  patcher = mock.patch.object(measure_lib, "_POST_WARMUP_UNTIMED_STEPS", 0)
+  patcher.start()
+  unittest.addModuleCleanup(patcher.stop)
 
 
 class CountingStep:
@@ -242,17 +251,13 @@ def _run_measure(
     xprof_steps=None,
     name="test",
     enable_xprof=False,
-    rewarm_max_steps=0,
 ) -> metrics_lib.PerformanceMetrics:
-  # The re-warm steps are off by default, so that the step counts of the tests
-  # don't depend on the (real or fake) step timings.
   flag_kwargs = {
       "min_warmup_steps": min_warmup,
       "max_warmup_steps": (
           max_warmup if max_warmup is not None else min_warmup + 10
       ),
       "post_warmup_steps": steps,
-      "post_warmup_rewarm_max_steps": rewarm_max_steps,
   }
   if xprof_steps is not None:
     flag_kwargs["xprof_steps"] = xprof_steps
@@ -358,60 +363,43 @@ class MeasureGcFreezeTest(seed_test_utils.RepeatableTest):
     self.assertEqual(gc.get_freeze_count(), 0)
 
 
-class MeasureRewarmTest(seed_test_utils.RepeatableTest):
+class MeasureUntimedStepsTest(seed_test_utils.RepeatableTest):
 
-  def _measure(self, step_seconds, rewarm_max_steps, steps=3, ops=None):
+  def _measure(self, step_seconds, untimed_steps, steps=3, ops=None):
     clock = FakeClock()
     step = SequencedStep(clock, step_seconds)
-    with mock.patch.object(measure_lib.time, "perf_counter", new=clock):
-      m = _run_measure(
-          step,
-          ops or RecordingOps(),
-          steps=steps,
-          min_warmup=2,
-          rewarm_max_steps=rewarm_max_steps,
-      )
+    with (
+        mock.patch.object(measure_lib.time, "perf_counter", new=clock),
+        mock.patch.object(
+            measure_lib, "_POST_WARMUP_UNTIMED_STEPS", untimed_steps
+        ),
+    ):
+      m = _run_measure(step, ops or RecordingOps(), steps=steps, min_warmup=2)
     return step, m
 
-  def test_rewarm_runs_until_step_time_settles(self):
-    # Warmup: 10, 1. Re-warm: 3, 2, 1.5, 1.1, 1.06 (within 5% of 1.1). Timed:
-    # 1, 1, 1.
-    step, m = self._measure(
-        [10.0, 1.0, 3.0, 2.0, 1.5, 1.1, 1.06, 1.0], rewarm_max_steps=10
-    )
-    self.assertEqual(step.calls, 2 + 5 + 3)
+  def test_runs_fixed_untimed_steps_whatever_their_timings(self):
+    # The same steps whether the steps settle at once, later or never.
+    for step_seconds in (
+        [10.0, 1.0],
+        [10.0, 1.0, 3.0, 2.0, 1.0],
+        [10.0, 1.0, 8.0, 4.0, 2.0, 1.0, 0.5, 0.25, 0.1, 0.05],
+    ):
+      with self.subTest(step_seconds=step_seconds):
+        step, _ = self._measure(step_seconds, untimed_steps=4)
+        self.assertEqual(step.calls, 2 + 4 + 3)
+
+  def test_untimed_steps_are_not_timed(self):
+    # Warmup: 10, 1. Untimed: 3, 2. Timed: 1, 1, 1.
+    _, m = self._measure([10.0, 1.0, 3.0, 2.0, 1.0], untimed_steps=2)
     self.assertEqual(m.post_warmup_step_time_seconds, 1.0)
 
-  def test_rewarm_runs_two_steps_when_already_warm(self):
-    step, m = self._measure([10.0, 1.0], rewarm_max_steps=10)
-    self.assertEqual(step.calls, 2 + 2 + 3)
-    self.assertEqual(m.post_warmup_step_time_seconds, 1.0)
-
-  def test_rewarm_runs_past_a_stall(self):
-    # A stalled re-warm step is followed by one that is much faster.
-    step, m = self._measure(
-        [10.0, 1.0, 1.0, 50.0, 1.0, 1.0], rewarm_max_steps=10
-    )
-    self.assertEqual(step.calls, 2 + 4 + 3)
-    self.assertEqual(m.post_warmup_step_time_seconds, 1.0)
-
-  def test_rewarm_stops_at_max_steps(self):
-    step, m = self._measure([10.0, 1.0, 8.0, 4.0, 2.0, 1.0], rewarm_max_steps=2)
-    self.assertEqual(step.calls, 2 + 2 + 3)
-    self.assertAlmostEqual(m.post_warmup_step_time_seconds, 4.0 / 3)
-
-  def test_no_rewarm_with_zero_max_steps(self):
-    step, m = self._measure([10.0, 1.0, 3.0, 1.0], rewarm_max_steps=0)
-    self.assertEqual(step.calls, 2 + 3)
-    self.assertAlmostEqual(m.post_warmup_step_time_seconds, 5.0 / 3)
-
-  def test_peak_reset_happens_before_rewarm(self):
+  def test_peak_reset_happens_before_untimed_steps(self):
     ops = RecordingOps()
-    self._measure([10.0, 1.0, 3.0, 1.0], rewarm_max_steps=10, steps=2, ops=ops)
-    # 2 warmup steps, then the reset, then 3 re-warm and 2 timed steps.
+    self._measure([10.0, 1.0], untimed_steps=4, steps=2, ops=ops)
+    # 2 warmup steps, then the reset, then 4 untimed and 2 timed steps.
     reset_at = ops.events.index("reset")
     self.assertEqual(ops.events[:reset_at].count("await"), 2)
-    self.assertEqual(ops.events[reset_at:].count("await"), 5)
+    self.assertEqual(ops.events[reset_at:].count("await"), 6)
 
 
 class MeasureSequenceTest(seed_test_utils.RepeatableTest):
