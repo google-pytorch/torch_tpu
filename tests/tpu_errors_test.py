@@ -924,32 +924,9 @@ Please use clone() or contiguous() to copy the tensor before writing""",
       torch.addmm(input_, mat1, mat2)
 
   @et.why_tpu_only(
-      "CUDA validates operand dtypes separately but its kernels need them to"
-      " match; TPU rejects the mismatch up front."
+      "TPU cummax uses int32 for the indices output. GPU supports larger"
+      " indices."
   )
-  def test_grouped_mm_mismatched_operand_dtypes(self):
-    """Tests _grouped_mm rejects self and mat2 with different dtypes."""
-    a = torch.randn(3, 4, device=et.device(), dtype=torch.float32)
-    b = torch.randn(3, 4, 8, device=et.device(), dtype=torch.bfloat16)
-    offs = torch.tensor([1, 2, 3], dtype=torch.int32, device=et.device())
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""grouped_mm(): expected self and mat2 to have the same dtype, got float32 and bfloat16""",
-    ):
-      torch._grouped_mm(a, b, offs=offs)
-
-  @et.why_tpu_only("CUDA doesn't check K for 2D x 2D (ragged K).")
-  def test_grouped_mm_2d_2d_mismatch_contraction_dimension(self):
-    a = torch.randn(4, 8, device=et.device())
-    b = torch.randn(6, 5, device=et.device())
-    offs = torch.tensor([4, 8], dtype=torch.int32, device=et.device())
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""grouped_mm(): expected the contraction dimension of self and mat2 to match, got 8 and 6""",
-    ):
-      torch._grouped_mm(a, b, offs=offs)
-
-  @et.why_tpu_only("TODO: investigate why this is TPU-only.")
   def test_cummax_dimension_size_limit(self):
     """Tests cummax fails if dimension size has > 2^31-1 elements."""
     # Create an empty tensor with shape 2**31
@@ -961,7 +938,10 @@ Please use clone() or contiguous() to copy the tensor before writing""",
       y, _ = torch.cummax(t, dim=0)
       y.cpu()
 
-  @et.why_tpu_only("TODO: investigate why this is TPU-only.")
+  @et.why_tpu_only(
+      "TPU cummix uses int32 for the indices output. GPU supports larger"
+      " indices."
+  )
   def test_cummin_dimension_size_limit(self):
     """Tests cummin fails if dimension size has > 2^31-1 elements."""
     # Create an empty tensor with shape 2**31
@@ -1416,19 +1396,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
       ):
         # cpu() is needed because the error is triggered inside the op builder.
         torch.nn.functional.glu(x, dim=dim).cpu()
-
-  @et.why_tpu_only(
-      "On CPU/GPU, linear with bool input raises RuntimeError from matmul; on"
-      " TPU, AtenLinear raises NotImplementedError."
-  )
-  def test_linear_bool_input_error(self):
-    inp = torch.ones(2, 4, dtype=torch.bool, device=et.device())
-    weight = torch.ones(3, 4, dtype=torch.bool, device=et.device())
-    with et.assert_raises_message(
-        NotImplementedError,
-        tpu="""linear(): not implemented for bool""",
-    ):
-      torch.nn.functional.linear(inp, weight)
 
   @et.why_tpu_only(
       "aten.linear_backward is only registered for TPU (PrivateUse1), not"
@@ -3673,36 +3640,6 @@ module {
           [dummy], [1], [], "mlir", [dummy], 16, 0, 8, 0.5, 0
       )
 
-  @et.why_tpu_only("TPU-specific C++ kernel argument validation")
-  def test_scaled_mm_v2_non_standard_contraction_dim(self):
-    (
-        self_tpu,
-        mat2_tpu,
-        scale_a_tpu,
-        recipe_a,
-        swizzle_a,
-        scale_b_tpu,
-        recipe_b,
-        swizzle_b,
-    ) = et.get_scaled_mm_v2_default_inputs()
-    with et.assert_raises_message(
-        NotImplementedError,
-        tpu="""scaled_mm_v2(): expected contraction_dim to be [1, 0], got [0, 1]""",
-    ):
-      torch._scaled_mm_v2(
-          self_tpu,
-          mat2_tpu,
-          scale_a_tpu,
-          recipe_a,
-          swizzle_a,
-          scale_b_tpu,
-          recipe_b,
-          swizzle_b,
-          None,
-          None,
-          contraction_dim=[0, 1],
-      )
-
   @et.why_tpu_only("Sparse operations fallback to SparsePrivateUse1 on TPU.")
   def test_sparse_ops_not_supported(self):
     indices = torch.tensor([[0, 1], [1, 2]], device="tpu")
@@ -4004,32 +3941,6 @@ module {
       torch.ops.aten._prelu_kernel_backward(grad_output, self_tensor, weight)
 
   @et.why_tpu_only("torch._scaled_grouped_mm is not supported on GPU.")
-  def test_scaled_grouped_mm_invalid_scale_a_dim(self):
-    a = torch.randn(3, 4, device=et.device())
-    b = torch.randn(3, 4, 8, device=et.device())
-    scale_a = torch.randn(2, 2, device=et.device())
-    scale_b = torch.tensor(1.0, device=et.device())
-    offs = torch.tensor([1, 2, 3], dtype=torch.int32, device=et.device())
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""scaled_grouped_mm(): expected scale_a and scale_b to both be scalar/size-1 or match rowwise shapes for self [3, 4] and mat2 [3, 4, 8], got scale_a [2, 2] and scale_b []""",
-    ):
-      torch._scaled_grouped_mm(a, b, scale_a, scale_b, offs=offs)
-
-  @et.why_tpu_only("torch._scaled_grouped_mm is not supported on GPU.")
-  def test_scaled_grouped_mm_invalid_scale_b_dim(self):
-    a = torch.randn(3, 4, device=et.device())
-    b = torch.randn(3, 4, 8, device=et.device())
-    scale_a = torch.tensor(1.0, device=et.device())
-    scale_b = torch.randn(2, 2, device=et.device())
-    offs = torch.tensor([1, 2, 3], dtype=torch.int32, device=et.device())
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""scaled_grouped_mm(): expected scale_a and scale_b to both be scalar/size-1 or match rowwise shapes for self [3, 4] and mat2 [3, 4, 8], got scale_a [] and scale_b [2, 2]""",
-    ):
-      torch._scaled_grouped_mm(a, b, scale_a, scale_b, offs=offs)
-
-  @et.why_tpu_only("torch._scaled_grouped_mm is not supported on GPU.")
   def test_scaled_grouped_mm_invalid_bias_dim(self):
     a = torch.randn(3, 4, device=et.device())
     b = torch.randn(3, 4, 8, device=et.device())
@@ -4198,23 +4109,6 @@ module {
     ):
       torch.ops.aten._native_multi_head_attention(
           query, key, value, 8, 2, qkv_weight, qkv_bias, proj_weight, proj_bias
-      )
-
-  @et.why_tpu_only("GPU doesn't check if num_head >= 0.")
-  def test_native_multi_head_attention_non_positive_num_head(self):
-    query = torch.ones(2, 4, 8, device=et.device())
-    key = torch.ones(2, 4, 8, device=et.device())
-    value = torch.ones(2, 4, 8, device=et.device())
-    qkv_weight = torch.ones(24, 8, device=et.device())
-    qkv_bias = torch.ones(24, device=et.device())
-    proj_weight = torch.ones(8, 8, device=et.device())
-    proj_bias = torch.ones(8, device=et.device())
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""native_multi_head_attention(): expected num_head to be positive, got 0""",
-    ):
-      torch.ops.aten._native_multi_head_attention(
-          query, key, value, 8, 0, qkv_weight, qkv_bias, proj_weight, proj_bias
       )
 
   @et.why_tpu_only("Optimization Barrier requires non-empty list input")
@@ -5140,27 +5034,6 @@ class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):
         ):
           with self.assertRaises(type(exc)):
             pallas.get_default_pallas_mesh()
-
-  @et.why_tpu_only(
-      "GPU raises NotImplementedError from avg_pool2d_out_cuda_frame instead of"
-      " RuntimeError."
-  )
-  def test_avg_pool1d_out_unsupported_dtypes(self):
-    for dtype, dtype_str in [
-        (torch.bool, "bool"),
-        (torch.complex64, "complex64"),
-        (torch.uint8, "uint8"),
-        (torch.int8, "int8"),
-        (torch.int16, "int16"),
-        (torch.int32, "int32"),
-    ]:
-      t = torch.zeros((1, 1, 4), device=et.device(), dtype=dtype)
-      out = torch.empty((1, 1, 2), device=et.device(), dtype=dtype)
-      with et.assert_raises_message(
-          RuntimeError,
-          tpu=f"""avg_pool1d(): expected input dtype to be none of (bool, uint8, int8, int16, int32, complex64), got {dtype_str}""",
-      ):
-        torch.ops.aten.avg_pool1d.out(t, [3], out=out)
 
   @et.why_tpu_only(
       "Upstream CUDA _fused_rms_norm skips dtype validation when M == 0."

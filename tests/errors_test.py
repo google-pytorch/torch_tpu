@@ -63,6 +63,35 @@ _DROPOUT_INTERNAL_ASSERTION_ERROR_RE = re.compile(
 )
 
 
+def _get_short_dtype_str(dtype: torch.dtype) -> str:
+  """Returns the dtype name without the 'torch.' prefix.
+
+  Args:
+    dtype: The PyTorch dtype to format.
+
+  Returns:
+    The short string representation of the dtype (e.g. 'float32', 'int32').
+  """
+  return str(dtype).removeprefix("torch.")
+
+
+def _get_torch_dtype_str(dtype: torch.dtype) -> str:
+  """Returns the PyTorch type name for the dtype without 'torch.' or 'Tensor'.
+
+  Args:
+    dtype: The PyTorch dtype to format.
+
+  Returns:
+    The typename string suitable for matching error messages (e.g. 'Float',
+    'Int').
+  """
+  return (
+      torch.typename(torch.empty(0, dtype=dtype))
+      .removeprefix("torch.")
+      .removesuffix("Tensor")
+  )
+
+
 def setUpModule():
   """Called by absltest after flags are parsed and before tests are run."""
   et.set_up_module()
@@ -17192,6 +17221,149 @@ Got a.dtype()=Float8_e4m3fn, scale_a.dtype()=Float, scale_a.size()=[1], scale_a.
           gpu="""Casting from Float to Bits8 is not supported: Bits8 is a shell dtype with no defined conversions. Use .view() to reinterpret the bytes as a same-size integer dtype instead.""",
       ):
         dst.copy_(src)
+
+  @et.gpu_crashes_or_raises(
+      "0-Division: embed_dim % num_heads crashes with SIGFPE"
+  )
+  def test_native_multi_head_attention_non_positive_num_head(self):
+    query = torch.ones(2, 4, 8, device=et.device())
+    key = torch.ones(2, 4, 8, device=et.device())
+    value = torch.ones(2, 4, 8, device=et.device())
+    qkv_weight = torch.ones(24, 8, device=et.device())
+    qkv_bias = torch.ones(24, device=et.device())
+    proj_weight = torch.ones(8, 8, device=et.device())
+    proj_bias = torch.ones(8, device=et.device())
+
+    embed_dim = 8
+    num_heads = 0
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_multi_head_attention(): expected num_head to be positive, got 0""",
+    ):
+      torch.ops.aten._native_multi_head_attention(
+          query,
+          key,
+          value,
+          embed_dim,
+          num_heads,
+          qkv_weight,
+          qkv_bias,
+          proj_weight,
+          proj_bias,
+      )
+
+  @parameterized.named_parameters(
+      dict(testcase_name="bool", dtype=torch.bool),
+      dict(testcase_name="complex64", dtype=torch.complex64),
+      dict(testcase_name="uint8", dtype=torch.uint8),
+      dict(testcase_name="int8", dtype=torch.int8),
+      dict(testcase_name="int16", dtype=torch.int16),
+      dict(testcase_name="int32", dtype=torch.int32),
+  )
+  def test_avg_pool1d_out_unsupported_dtypes(self, dtype: torch.dtype):
+    tpu_dtype = _get_short_dtype_str(dtype)
+    gpu_dtype = _get_torch_dtype_str(dtype)
+    t = torch.zeros((1, 1, 4), device=et.device(), dtype=dtype)
+    out = torch.empty((1, 1, 2), device=et.device(), dtype=dtype)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""avg_pool1d(): expected input dtype to be none of (bool, uint8, int8, int16, int32, complex64), got {tpu_dtype}""",
+        gpu=f""""avg_pool2d_out_cuda_frame" not implemented for '{gpu_dtype}'""",
+    ):
+      torch.ops.aten.avg_pool1d.out(t, [3], out=out)
+
+  def test_grouped_mm_2d_2d_mismatch_contraction_dimension(self):
+    a = torch.randn(4, 8, device=et.device())
+    b = torch.randn(6, 4, device=et.device())
+    offs = torch.tensor([4, 8], dtype=torch.int32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""grouped_mm(): expected the contraction dimension of self and mat2 to match, got 8 and 6""",
+        gpu="""mm: mat1 and mat2 shapes cannot be multiplied (4x4 and 2x4)""",
+    ):
+      torch._grouped_mm(a, b, offs=offs)
+
+  def test_grouped_mm_mismatched_operand_dtypes(self):
+    """Tests _grouped_mm rejects self and mat2 with different dtypes."""
+    a = torch.randn(3, 4, device=et.device(), dtype=torch.float32)
+    b = torch.randn(3, 4, 8, device=et.device(), dtype=torch.bfloat16)
+    offs = torch.tensor([1, 2, 3], dtype=torch.int32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""grouped_mm(): expected self and mat2 to have the same dtype, got float32 and bfloat16""",
+        gpu="""Expected mat_a and mat_b to have the same dtype, got Float and BFloat16""",
+    ):
+      torch._grouped_mm(a, b, offs=offs)
+
+  def test_linear_bool_input_error(self):
+    inp = torch.ones(2, 4, dtype=torch.bool, device=et.device())
+    weight = torch.ones(3, 4, dtype=torch.bool, device=et.device())
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""linear(): not implemented for bool""",
+        gpu=""""addmm_cuda" not implemented for 'Bool'""",
+    ):
+      torch.nn.functional.linear(inp, weight)
+
+  def test_scaled_grouped_mm_invalid_scale_a_dim(self):
+    a = torch.randn(3, 16, device=et.device())
+    b = torch.randn(3, 16, 16, device=et.device()).transpose(-2, -1)
+    scale_a = torch.randn(2, 2, device=et.device())
+    scale_b = torch.tensor(1.0, device=et.device())
+    offs = torch.tensor([1, 2, 3], dtype=torch.int32, device=et.device())
+    err_type = NotImplementedError if et.is_on_tpu() else RuntimeError
+    with et.assert_raises_message(
+        err_type,
+        tpu="""scaled_grouped_mm(): expected scale_a and scale_b to both be scalar/size-1 or match rowwise shapes for self [3, 16] and mat2 [3, 16, 16], got scale_a [2, 2] and scale_b []""",
+        gpu="""scale must be a 1D tensor, but got 2D, arg 0""",
+    ):
+      torch._scaled_grouped_mm(a, b, scale_a, scale_b, offs=offs)
+
+  def test_scaled_grouped_mm_invalid_scale_b_dim(self):
+    a = torch.randn(3, 16, device=et.device())
+    b = torch.randn(3, 16, 16, device=et.device()).transpose(-2, -1)
+    scale_a = torch.randn(3, device=et.device())
+    scale_b = torch.randn(2, device=et.device())
+    offs = torch.tensor([1, 2, 3], dtype=torch.int32, device=et.device())
+    err_type = NotImplementedError if et.is_on_tpu() else RuntimeError
+    with et.assert_raises_message(
+        err_type,
+        tpu="""scaled_grouped_mm(): expected scale_a and scale_b to both be scalar/size-1 or match rowwise shapes for self [3, 16] and mat2 [3, 16, 16], got scale_a [3] and scale_b [2]""",
+        gpu="""scale must be a 2D tensor, but got 1D for arg 1""",
+    ):
+      torch._scaled_grouped_mm(a, b, scale_a, scale_b, offs=offs)
+
+  def test_scaled_mm_v2_non_standard_contraction_dim(self):
+    (
+        self_mat,
+        mat2,
+        scale_a,
+        recipe_a,
+        swizzle_a,
+        scale_b,
+        recipe_b,
+        swizzle_b,
+    ) = et.get_scaled_mm_v2_default_inputs()
+    err_type = NotImplementedError if et.is_on_tpu() else ValueError
+    with et.assert_raises_message(
+        err_type,
+        tpu="""scaled_mm_v2(): expected contraction_dim to be [1, 0], got [0, 1]""",
+        gpu="""torch._scaled_mm_v2 only supports contraction_dim=(1, 0)""",
+    ):
+      torch._scaled_mm_v2(
+          self_mat,
+          mat2,
+          scale_a,
+          recipe_a,
+          swizzle_a,
+          scale_b,
+          recipe_b,
+          swizzle_b,
+          None,
+          None,
+          contraction_dim=[0, 1],
+      )
 
 
 class InputPreprocessingErrorTest(et.ErrorTestBase):
