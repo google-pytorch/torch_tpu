@@ -848,8 +848,12 @@ enum class OpName {
   kUniform_,
   kUnique2,
   kUniqueConsecutive,
+  kUniqueCountsFromSorted,
   kUniqueDim,
   kUniqueDimConsecutive,
+  kUniqueInverseFromSorted,
+  kUniqueSortAndCount,
+  kUniqueValuesFromSorted,
   kUnsqueeze,
   kUnsqueezeCopy,
   kUnsqueezeCopyOut,
@@ -2558,10 +2562,18 @@ ToString(  // NOLINT(google-readability-function-size)
       return "_unique2";
     case OpName::kUniqueConsecutive:
       return "unique_consecutive";
+    case OpName::kUniqueCountsFromSorted:
+      return "unique_counts_from_sorted";
     case OpName::kUniqueDim:
       return "unique_dim";
     case OpName::kUniqueDimConsecutive:
       return "unique_dim_consecutive";
+    case OpName::kUniqueInverseFromSorted:
+      return "unique_inverse_from_sorted";
+    case OpName::kUniqueSortAndCount:
+      return "unique_sort_and_count";
+    case OpName::kUniqueValuesFromSorted:
+      return "unique_values_from_sorted";
     case OpName::kUnsqueeze:
       return "unsqueeze";
     case OpName::kUnsqueezeCopy:
