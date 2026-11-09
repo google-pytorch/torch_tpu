@@ -264,6 +264,57 @@ absl::StatusOr<mlir::MlirOp> BuildIndexPutShlo(
     const int64_t index_start_dim, const int64_t index_end_dim,
     const Dimensions& index_broadcast_shape, mlir::MlirOp values,
     const Dimensions& values_broadcast_shape, const bool accumulate) {
+  const mlir::RankedTensorType self_type = GetTensorTypeOrDie(self);
+  if (!accumulate && indices.size() == 1 && self_type.hasStaticShape()) {
+    const mlir::RankedTensorType idx_type = GetTensorTypeOrDie(indices[0]);
+    const int64_t dim = index_start_dim;
+    if (idx_type.getRank() == 1 && idx_type.getDimSize(0) == 1 &&
+        !self_type.isDynamicDim(dim)) {
+      const int64_t self_rank = self_type.getRank();
+      const int64_t dim_size = self_type.getDimSize(dim);
+      mlir::MlirBuilder& builder = self.getBuilder();
+
+      Dimensions update_slice_shape = CopyIntVector(self_type.getShape());
+      update_slice_shape[dim] = 1;
+      TT_ASSIGN_OR_RETURN(values,
+                          BroadcastIfNeeded(values, update_slice_shape));
+      if (GetTensorTypeOrDie(values).getElementType() !=
+          self_type.getElementType()) {
+        values =
+            stablehlo::ConvertElementType(values, self_type.getElementType());
+      }
+
+      mlir::MlirOp idx_scalar = stablehlo::Reshape(indices[0], {});
+      idx_scalar =
+          stablehlo::ConvertElementType(idx_scalar, mlir::ElementType::I64);
+
+      mlir::MlirOp dim_size_op =
+          MakeScalarConstant(builder, dim_size, mlir::ElementType::I64);
+      mlir::MlirOp zero =
+          MakeScalarConstant(builder, 0, mlir::ElementType::I64);
+      mlir::MlirOp dim_minus_1 =
+          MakeScalarConstant(builder, dim_size - 1, mlir::ElementType::I64);
+
+      mlir::MlirOp is_neg = stablehlo::Compare(
+          idx_scalar, zero, stablehlo::ComparisonDirection::LT);
+      mlir::MlirOp add_op = stablehlo::Add(idx_scalar, dim_size_op);
+      mlir::MlirOp wrapped_idx = stablehlo::Select(is_neg, add_op, idx_scalar);
+      mlir::MlirOp max_idx = stablehlo::Max(wrapped_idx, zero);
+      mlir::MlirOp clamped_idx = stablehlo::Min(max_idx, dim_minus_1);
+
+      std::vector<mlir::MlirOp> start_indices;
+      start_indices.reserve(self_rank);
+      for (int64_t i = 0; i < self_rank; ++i) {
+        if (i == dim) {
+          start_indices.push_back(clamped_idx);
+        } else {
+          start_indices.push_back(
+              MakeScalarConstant(builder, 0, mlir::ElementType::I64));
+        }
+      }
+      return mlir::stablehlo::DynamicUpdateSlice(self, values, start_indices);
+    }
+  }
   return ApplyScatter(self, indices, index_start_dim, index_end_dim,
                       index_broadcast_shape, values, values_broadcast_shape,
                       accumulate);

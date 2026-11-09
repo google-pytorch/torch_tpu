@@ -225,6 +225,68 @@ absl::StatusOr<mlir::MlirOp> BuildHistcShlo(mlir::MlirOp input_op, int64_t bins,
   // Values outside of [min_op, max_op] are ignored, which mirrors the PyTorch
   // implementation.
   mlir::MlirOp in_range = BuildInRange(compute_input_op, min_op, max_op);
+
+  // COST_MODEL: For static bins <= 256 and bounded intermediate
+  // (num_elements * bins <= 2^26, <= 256MB for 32-bit types), dense comparison
+  // + reduction avoids TPU scatter serialization and contention.
+  constexpr int64_t kMaxDenseBins = 256;
+  constexpr int64_t kMaxDenseElements = 1LL << 26;
+  const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input_op);
+  if (bins <= kMaxDenseBins && input_type.hasStaticShape() &&
+      input_type.getNumElements() * bins <= kMaxDenseElements) {
+    const int64_t num_elements = input_type.getNumElements();
+    if (num_elements == 0) {
+      return MakeConstant(builder, 0, input_dtype, {bins});
+    }
+
+    mlir::MlirOp clamped_indices_flat = clamped_indices;
+    mlir::MlirOp in_range_flat = in_range;
+    if (GetTensorTypeOrDie(clamped_indices).getRank() != 1) {
+      clamped_indices_flat = Flatten(clamped_indices);
+      in_range_flat = Flatten(in_range);
+    }
+
+    mlir::MlirOp bucket_idx_2d =
+        stablehlo::Reshape(clamped_indices_flat, {num_elements, 1});
+    mlir::MlirOp in_range_2d =
+        stablehlo::Reshape(in_range_flat, {num_elements, 1});
+
+    mlir::MlirOp iota_bins = stablehlo::Iota(
+        builder,
+        makeTensorType(builder.getContext(), {1, bins},
+                       GetTensorTypeOrDie(bucket_idx_2d).getElementType()),
+        /*iota_dimension=*/1);
+
+    TT_ASSIGN_OR_RETURN(auto broadcasted_indices,
+                        ApplyBroadcastIfNeeded(bucket_idx_2d, iota_bins));
+    mlir::MlirOp is_bin_match =
+        stablehlo::Compare(broadcasted_indices[0], broadcasted_indices[1],
+                           stablehlo::ComparisonDirection::EQ);
+
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp in_range_broadcasted,
+                        BroadcastIfNeeded(in_range_2d, is_bin_match));
+    mlir::MlirOp valid_match =
+        stablehlo::And(is_bin_match, in_range_broadcasted);
+
+    mlir::MlirOp one =
+        MakeConstant(builder, 1, input_dtype, {num_elements, bins});
+    mlir::MlirOp zero =
+        MakeConstant(builder, 0, input_dtype, {num_elements, bins});
+    mlir::MlirOp counts_matrix = stablehlo::Select(valid_match, one, zero);
+
+    mlir::DenseElementsAttr zero_attr = mlir::DenseElementsAttr::get(
+        mlir::RankedTensorType::get({}, input_dtype),
+        builder.getOpBuilder().getZeroAttr(input_dtype));
+    mlir::MlirOp init_val = stablehlo::Constant(builder, zero_attr);
+    auto reduce_builder = [input_dtype](mlir::RegionBuilder& rb) {
+      stablehlo::buildReduceBody<stablehlo::AddOp>(input_dtype, rb.getRegion(),
+                                                   rb.getOpBuilder());
+    };
+    auto result = stablehlo::Reduce(builder, {counts_matrix}, {init_val},
+                                    reduce_builder, {0});
+    return result[0];
+  }
+
   // Scatter-add to accumulate counts.
   return BuildScatterAdd(clamped_indices, in_range, bins, input_dtype, builder);
 }

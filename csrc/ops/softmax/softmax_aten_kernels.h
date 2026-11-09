@@ -18,11 +18,15 @@
 #define TORCH_TPU_CSRC_OPS_SOFTMAX_SOFTMAX_ATEN_KERNELS_H_
 
 #include <cstdint>
+#include <optional>
 
 #include "ATen/core/TensorBody.h"
 #include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
+
+at::Tensor AtenSafeSoftmax(const at::Tensor& self, int64_t dim,
+                           std::optional<at::ScalarType> dtype);
 
 at::Tensor& AtenSoftmaxOut(const at::Tensor& self, int64_t dim,
                            bool half_to_float, at::Tensor& out);

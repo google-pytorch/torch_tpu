@@ -15300,6 +15300,186 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         )
     )
 
+  def test_safe_softmax_native_and_canonical_lowering(self):
+    self.assertTrue(
+        torch._C._dispatch_has_kernel_for_dispatch_key(
+            "aten::_safe_softmax", "PrivateUse1"
+        )
+    )
+    x_static = torch.randn(2, 8, dtype=torch.float32).to("tpu")
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      sm_out = torch.softmax(x_static, dim=-1)
+    sm_mlir = tpu_torch_compile.serialize_mlir_text(
+        tpu_torch_compile.build_mlir([sm_out], [x_static])
+    )
+    self.assertIn("stablehlo.divide", sm_mlir)
+    self.assertNotIn("stablehlo.multiply", sm_mlir)
+
+    cpu_x = torch.tensor(
+        [
+            [float("-inf"), float("-inf"), float("-inf")],
+            [float("-inf"), 1.0, 2.0],
+            [1.0, 2.0, 3.0],
+        ],
+        dtype=torch.float32,
+    )
+    tpu_x = cpu_x.to("tpu")
+    tpu_safe_sm = torch.ops.aten._safe_softmax(tpu_x, dim=-1)
+    cpu_safe_sm = torch.ops.aten._safe_softmax(cpu_x, dim=-1)
+    utils.assert_close(actual=tpu_safe_sm.cpu(), expected=cpu_safe_sm)
+    self.assertTrue(torch.all(tpu_safe_sm[0].cpu() == 0.0))
+    self.assertFalse(torch.any(torch.isnan(tpu_safe_sm.cpu())))
+
+  def test_sort_i32_index_and_histc_small_bins(self):
+    # Test histc small bins (<= 256) emits reduce instead of scatter.
+    x_hist = torch.tensor(
+        [0.0, 1.0, 2.0, 5.0, 10.0, float("nan"), -5.0, 15.0],
+        dtype=torch.float32,
+    ).to("tpu")
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      hist_small = torch.histc(x_hist, bins=10)
+      hist_large = torch.histc(x_hist, bins=1024)
+    mlir_small = tpu_torch_compile.serialize_mlir_text(
+        tpu_torch_compile.build_mlir([hist_small], [x_hist])
+    )
+    self.assertNotIn("stablehlo.scatter", mlir_small)
+    self.assertIn("stablehlo.reduce", mlir_small)
+
+    mlir_large = tpu_torch_compile.serialize_mlir_text(
+        tpu_torch_compile.build_mlir([hist_large], [x_hist])
+    )
+    self.assertIn("stablehlo.scatter", mlir_large)
+
+    # Large-N with bins <= 256 should fall back to scatter to avoid OOM.
+    x_large_n = torch.empty((1 << 20,), dtype=torch.float32).to("tpu")
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      hist_large_n = torch.histc(x_large_n, bins=256)
+    mlir_large_n = tpu_torch_compile.serialize_mlir_text(
+        tpu_torch_compile.build_mlir([hist_large_n], [x_large_n])
+    )
+    self.assertIn("stablehlo.scatter", mlir_large_n)
+
+    # Numerics vs CPU for histc edge cases.
+    cpu_x = torch.tensor(
+        [0.0, 1.0, 2.0, 5.0, 10.0, float("nan"), -5.0, 15.0],
+        dtype=torch.float32,
+    )
+    tpu_res = torch.histc(x_hist, bins=10, min=0.0, max=10.0)
+    cpu_res = torch.histc(cpu_x, bins=10, min=0.0, max=10.0)
+    utils.assert_close(actual=tpu_res.cpu(), expected=cpu_res)
+
+    # histc min == max auto range.
+    x_eq = torch.tensor([3.0, 3.0, 3.0], dtype=torch.float32).to("tpu")
+    utils.assert_close(
+        actual=torch.histc(x_eq, bins=5, min=3.0, max=3.0).cpu(),
+        expected=torch.histc(x_eq.cpu(), bins=5, min=3.0, max=3.0),
+    )
+
+    # Test sort with int32 index iota.
+    x_sort = torch.tensor([5, 2, 8, 1, 9, 3], dtype=torch.int32).to("tpu")
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      s_val, s_idx = torch.sort(x_sort)
+    sort_mlir = tpu_torch_compile.serialize_mlir_text(
+        tpu_torch_compile.build_mlir([s_val, s_idx], [x_sort])
+    )
+    self.assertIn("stablehlo.iota", sort_mlir)
+    self.assertIn("tensor<6xi32>", sort_mlir)
+    self.assertIn("tensor<6xi64>", sort_mlir)
+
+    # Numerics vs CPU for sort (descending & stable).
+    s_val_d, s_idx_d = torch.sort(x_sort, descending=True, stable=True)
+    c_val_d, c_idx_d = torch.sort(x_sort.cpu(), descending=True, stable=True)
+    utils.assert_close(actual=s_val_d.cpu(), expected=c_val_d)
+    utils.assert_close(actual=s_idx_d.cpu(), expected=c_idx_d)
+
+  def test_kv_cache_dus_and_embedding_backward(self):
+    # Test index_copy single-slice emits DynamicUpdateSlice.
+    x_copy = torch.zeros(4, 8, dtype=torch.float32).to("tpu")
+    idx_copy = torch.tensor([2], dtype=torch.int64).to("tpu")
+    src_copy = torch.ones(1, 8, dtype=torch.float32).to("tpu")
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      out_copy = torch.index_copy(x_copy, 0, idx_copy, src_copy)
+    mlir_copy = tpu_torch_compile.serialize_mlir_text(
+        tpu_torch_compile.build_mlir([out_copy], [x_copy, idx_copy, src_copy])
+    )
+    self.assertIn("stablehlo.dynamic_update_slice", mlir_copy)
+    self.assertNotIn("stablehlo.scatter", mlir_copy)
+
+    # Test negative index wrapping in index_copy.
+    idx_neg = torch.tensor([-1], dtype=torch.int64).to("tpu")
+    res_neg = torch.index_copy(x_copy, 0, idx_neg, src_copy)
+    expected_neg = torch.index_copy(
+        x_copy.cpu(), 0, torch.tensor([3], dtype=torch.int64), src_copy.cpu()
+    )
+    utils.assert_close(actual=res_neg.cpu(), expected=expected_neg)
+
+    # Test index_put single-slice without accumulate.
+    x_put = torch.zeros(4, 8, dtype=torch.float32).to("tpu")
+    idx_put = torch.tensor([1], dtype=torch.int64).to("tpu")
+    val_put = torch.ones(1, 8, dtype=torch.float32).to("tpu")
+    out_put = torch.index_put(x_put, [idx_put], val_put, accumulate=False)
+    expected_put = torch.index_put(
+        x_put.cpu(), [idx_put.cpu()], val_put.cpu(), accumulate=False
+    )
+    utils.assert_close(actual=out_put.cpu(), expected=expected_put)
+
+    # Test index_put negative index wrapping.
+    idx_put_neg = torch.tensor([-1], dtype=torch.int64).to("tpu")
+    out_put_neg = torch.index_put(
+        x_put, [idx_put_neg], val_put, accumulate=False
+    )
+    expected_put_neg = torch.index_put(
+        x_put.cpu(),
+        [torch.tensor([3], dtype=torch.int64)],
+        val_put.cpu(),
+        accumulate=False,
+    )
+    utils.assert_close(actual=out_put_neg.cpu(), expected=expected_put_neg)
+
+    # Test index_select with rank-1 index.
+    x_sel = torch.randn(8, 16, dtype=torch.float32).to("tpu")
+    idx_sel = torch.tensor([0, 2, 4], dtype=torch.int64).to("tpu")
+    sel_out = torch.index_select(x_sel, 0, idx_sel)
+    utils.assert_close(
+        actual=sel_out.cpu(),
+        expected=torch.index_select(x_sel.cpu(), 0, idx_sel.cpu()),
+    )
+
+    torch.accelerator.synchronize()
+
+    # Test embedding_dense_backward for small table emits reduce.
+    grad_out = torch.randn(128, 16, dtype=torch.float32).to("tpu")
+    indices = torch.randint(0, 16, (128,), dtype=torch.int64).to("tpu")
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      grad_w = torch.ops.aten.embedding_dense_backward(
+          grad_out, indices, 16, -1, False
+      )
+    emb_mlir = tpu_torch_compile.serialize_mlir_text(
+        tpu_torch_compile.build_mlir([grad_w], [grad_out, indices])
+    )
+    self.assertNotIn("stablehlo.scatter", emb_mlir)
+    self.assertIn("stablehlo.reduce", emb_mlir)
+
+    # Large intermediate (V * N * D > 2^26) should fall back to scatter.
+    grad_large = torch.empty(1024, 1024, dtype=torch.float32).to("tpu")
+    idx_large = torch.empty(1024, dtype=torch.int64).to("tpu")
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      grad_w_large = torch.ops.aten.embedding_dense_backward(
+          grad_large, idx_large, 128, -1, False
+      )
+    emb_mlir_large = tpu_torch_compile.serialize_mlir_text(
+        tpu_torch_compile.build_mlir([grad_w_large], [grad_large, idx_large])
+    )
+    self.assertIn("stablehlo.scatter", emb_mlir_large)
+
+    # Test numerics for embedding_dense_backward.
+    grad_cpu = grad_out.cpu()
+    idx_cpu = indices.cpu()
+    expected_gw = torch.ops.aten.embedding_dense_backward(
+        grad_cpu, idx_cpu, 16, -1, False
+    )
+    utils.assert_close(actual=grad_w.cpu(), expected=expected_gw)
+
 
 class OpsCustomOpUnitTest(TorchTpuVsCpuTestBase):
   """Tests for custom ops."""
@@ -19412,7 +19592,322 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
 
       return in_dev.grad, w_dev.grad, b_dev.grad
 
-    self.assert_close_tpu_vs_cpu(test_fn, rtol=1e-2, atol=1e-2)
+  def test_conv_pointwise_patchify_dot_general(self):
+    """Verifies unpadded pointwise and patchify conv lowers to DotGeneral."""
+    x_tpu = torch.randn(2, 4, 8, 8, device="tpu")
+    w_pw_tpu = torch.randn(6, 4, 1, 1, device="tpu")
+    b_tpu = torch.randn(6, device="tpu")
+    w_patch_tpu = torch.randn(6, 4, 2, 2, device="tpu")
+    torch.accelerator.synchronize()
+
+    # Pointwise forward IR
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      out_pw = torch.nn.functional.conv2d(
+          x_tpu, w_pw_tpu, b_tpu, stride=1, padding=0
+      )
+    mlir_pw = tpu_torch_compile.serialize_mlir_text(
+        tpu_torch_compile.build_mlir([out_pw], [x_tpu, w_pw_tpu, b_tpu])
+    )
+    self.assertIn("stablehlo.dot_general", mlir_pw)
+    self.assertNotIn("stablehlo.convolution", mlir_pw)
+
+    # Patchify forward IR
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      out_patch = torch.nn.functional.conv2d(
+          x_tpu, w_patch_tpu, b_tpu, stride=2, padding=0
+      )
+    mlir_patch = tpu_torch_compile.serialize_mlir_text(
+        tpu_torch_compile.build_mlir([out_patch], [x_tpu, w_patch_tpu, b_tpu])
+    )
+    self.assertIn("stablehlo.dot_general", mlir_patch)
+    self.assertNotIn("stablehlo.convolution", mlir_patch)
+
+    # Backward IR: pointwise
+    torch.accelerator.synchronize()
+    grad_pw = torch.randn(2, 6, 8, 8, device="tpu")
+    torch.accelerator.synchronize()
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      grads_pw = torch.ops.aten.convolution_backward(
+          grad_pw,
+          x_tpu,
+          w_pw_tpu,
+          [b_tpu.shape[0]],
+          [1, 1],
+          [0, 0],
+          [1, 1],
+          False,
+          [0, 0],
+          1,
+          [True, True, True],
+      )
+    mlir_bw_pw = tpu_torch_compile.serialize_mlir_text(
+        tpu_torch_compile.build_mlir(list(grads_pw), [grad_pw, x_tpu, w_pw_tpu])
+    )
+    self.assertIn("stablehlo.dot_general", mlir_bw_pw)
+    self.assertNotIn("stablehlo.convolution", mlir_bw_pw)
+
+    # Backward IR: patchify
+    torch.accelerator.synchronize()
+    grad_patch = torch.randn(2, 6, 4, 4, device="tpu")
+    torch.accelerator.synchronize()
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      grads_patch = torch.ops.aten.convolution_backward(
+          grad_patch,
+          x_tpu,
+          w_patch_tpu,
+          [b_tpu.shape[0]],
+          [2, 2],
+          [0, 0],
+          [1, 1],
+          False,
+          [0, 0],
+          1,
+          [True, True, True],
+      )
+    mlir_bw_patch = tpu_torch_compile.serialize_mlir_text(
+        tpu_torch_compile.build_mlir(
+            list(grads_patch), [grad_patch, x_tpu, w_patch_tpu]
+        )
+    )
+    self.assertIn("stablehlo.dot_general", mlir_bw_patch)
+    self.assertNotIn("stablehlo.convolution", mlir_bw_patch)
+
+    # Numerics checks: 1D, 2D, 3D Pointwise & Patchify in float32 and bfloat16
+    for dtype in (torch.float32, torch.bfloat16):
+      atol = 5e-2 if dtype == torch.bfloat16 else 2e-2
+      rtol = 5e-2 if dtype == torch.bfloat16 else 2e-2
+
+      # 1D Pointwise
+      x_1d = torch.randn(2, 4, 16, dtype=dtype)
+      w_1d = torch.randn(3, 4, 1, dtype=dtype)
+      b_1d = torch.randn(3, dtype=dtype)
+
+      def fn_1d_pw(dev, x=x_1d, w=w_1d, b=b_1d):
+        x_dev = x.to(dev).detach().requires_grad_(True)
+        w_dev = w.to(dev).detach().requires_grad_(True)
+        b_dev = b.to(dev).detach().requires_grad_(True)
+        y = torch.nn.functional.conv1d(x_dev, w_dev, b_dev, stride=1, padding=0)
+        y.backward(torch.ones_like(y))
+        return y, x_dev.grad, w_dev.grad, b_dev.grad
+
+      self.assert_close_tpu_vs_cpu(fn_1d_pw, rtol=rtol, atol=atol)
+
+      # 1D Patchify (stride=4, kernel=4)
+      w_1d_patch = torch.randn(3, 4, 4, dtype=dtype)
+
+      def fn_1d_patch(dev, x=x_1d, w=w_1d_patch, b=b_1d):
+        x_dev = x.to(dev).detach().requires_grad_(True)
+        w_dev = w.to(dev).detach().requires_grad_(True)
+        b_dev = b.to(dev).detach().requires_grad_(True)
+        y = torch.nn.functional.conv1d(x_dev, w_dev, b_dev, stride=4, padding=0)
+        y.backward(torch.ones_like(y))
+        return y, x_dev.grad, w_dev.grad, b_dev.grad
+
+      self.assert_close_tpu_vs_cpu(fn_1d_patch, rtol=rtol, atol=atol)
+
+      # 2D Pointwise
+      x_2d = torch.randn(2, 4, 8, 8, dtype=dtype)
+      w_2d = torch.randn(6, 4, 1, 1, dtype=dtype)
+      b_2d = torch.randn(6, dtype=dtype)
+
+      def fn_2d_pw(dev, x=x_2d, w=w_2d, b=b_2d):
+        x_dev = x.to(dev).detach().requires_grad_(True)
+        w_dev = w.to(dev).detach().requires_grad_(True)
+        b_dev = b.to(dev).detach().requires_grad_(True)
+        y = torch.nn.functional.conv2d(x_dev, w_dev, b_dev, stride=1, padding=0)
+        y.backward(torch.ones_like(y))
+        return y, x_dev.grad, w_dev.grad, b_dev.grad
+
+      self.assert_close_tpu_vs_cpu(fn_2d_pw, rtol=rtol, atol=atol)
+
+      # 2D Patchify (stride=2, kernel=2)
+      w_2d_patch = torch.randn(6, 4, 2, 2, dtype=dtype)
+
+      def fn_2d_patch(dev, x=x_2d, w=w_2d_patch, b=b_2d):
+        x_dev = x.to(dev).detach().requires_grad_(True)
+        w_dev = w.to(dev).detach().requires_grad_(True)
+        b_dev = b.to(dev).detach().requires_grad_(True)
+        y = torch.nn.functional.conv2d(x_dev, w_dev, b_dev, stride=2, padding=0)
+        y.backward(torch.ones_like(y))
+        return y, x_dev.grad, w_dev.grad, b_dev.grad
+
+      self.assert_close_tpu_vs_cpu(fn_2d_patch, rtol=rtol, atol=atol)
+
+      # 3D Pointwise
+      x_3d = torch.randn(2, 3, 4, 4, 4, dtype=dtype)
+      w_3d = torch.randn(4, 3, 1, 1, 1, dtype=dtype)
+      b_3d = torch.randn(4, dtype=dtype)
+
+      def fn_3d_pw(dev, x=x_3d, w=w_3d, b=b_3d):
+        x_dev = x.to(dev).detach().requires_grad_(True)
+        w_dev = w.to(dev).detach().requires_grad_(True)
+        b_dev = b.to(dev).detach().requires_grad_(True)
+        y = torch.nn.functional.conv3d(x_dev, w_dev, b_dev, stride=1, padding=0)
+        y.backward(torch.ones_like(y))
+        return y, x_dev.grad, w_dev.grad, b_dev.grad
+
+      self.assert_close_tpu_vs_cpu(fn_3d_pw, rtol=rtol, atol=atol)
+
+      # 3D Patchify (stride=2, kernel=2)
+      w_3d_patch = torch.randn(4, 3, 2, 2, 2, dtype=dtype)
+
+      def fn_3d_patch(dev, x=x_3d, w=w_3d_patch, b=b_3d):
+        x_dev = x.to(dev).detach().requires_grad_(True)
+        w_dev = w.to(dev).detach().requires_grad_(True)
+        b_dev = b.to(dev).detach().requires_grad_(True)
+        y = torch.nn.functional.conv3d(x_dev, w_dev, b_dev, stride=2, padding=0)
+        y.backward(torch.ones_like(y))
+        return y, x_dev.grad, w_dev.grad, b_dev.grad
+
+      self.assert_close_tpu_vs_cpu(fn_3d_patch, rtol=rtol, atol=atol)
+
+    # Zero-sized batch and channel edge cases
+    x_zero = torch.randn(0, 4, 8, 8)
+    w_zero = torch.randn(6, 4, 1, 1)
+    b_zero = torch.randn(6)
+
+    def fn_zero(dev, x=x_zero, w=w_zero, b=b_zero):
+      x_dev = x.to(dev)
+      w_dev = w.to(dev)
+      b_dev = b.to(dev)
+      return torch.nn.functional.conv2d(
+          x_dev, w_dev, b_dev, stride=1, padding=0
+      )
+
+    self.assert_close_tpu_vs_cpu(fn_zero)
+
+  def test_sdpa_bwd_rowsum_and_mask_sinking(self):
+    """Verifies SDPA bwd O*dO rowsum, mask hoisting/sinking, and GQA."""
+    batch, q_heads, kv_heads, d_head = 1, 2, 2, 64
+    seq_q, seq_kv = 8, 16
+
+    q_tpu = torch.randn(
+        batch, q_heads, seq_q, d_head, dtype=torch.float32, device="tpu"
+    )
+    k_tpu = torch.randn(
+        batch, kv_heads, seq_kv, d_head, dtype=torch.float32, device="tpu"
+    )
+    v_tpu = torch.randn(
+        batch, kv_heads, seq_kv, d_head, dtype=torch.float32, device="tpu"
+    )
+    torch.accelerator.synchronize()
+
+    out_fwd, lse_fwd, _, _, _, _, seed, offset, _ = (
+        torch.ops.aten._scaled_dot_product_fused_attention_overrideable(
+            q_tpu, k_tpu, v_tpu
+        )
+    )
+    grad_out_tpu = torch.randn_like(out_fwd)
+    torch.accelerator.synchronize()
+
+    # 1. Backward IR: verify reduction is over head_dim (64), not seq_kv (16)
+    cum_q = torch.zeros(batch + 1, dtype=torch.int32, device="tpu")
+    cum_k = torch.zeros(batch + 1, dtype=torch.int32, device="tpu")
+    empty_bias = torch.empty(0, dtype=torch.float32, device="tpu")
+
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      sdpa_bwd_fn = getattr(
+          torch.ops.aten,
+          "_scaled_dot_product_fused_attention_overrideable_backward",
+      )
+      grads = sdpa_bwd_fn(
+          grad_out_tpu,
+          q_tpu,
+          k_tpu,
+          v_tpu,
+          empty_bias,
+          [True, True, True, False],
+          out_fwd,
+          lse_fwd,
+          cum_q,
+          cum_k,
+          seq_q,
+          seq_kv,
+          0.0,
+          False,
+          seed,
+          offset,
+      )
+    mlir_bwd = tpu_torch_compile.serialize_mlir_text(
+        tpu_torch_compile.build_mlir(
+            list(grads[:3]),
+            [grad_out_tpu, q_tpu, k_tpu, v_tpu, out_fwd, lse_fwd],
+        )
+    )
+    # Reduced tensor for rowsum (O * dO) must be [1, 2, 8, 64], not
+    # [1, 2, 8, 16]
+    self.assertIn(
+        "applies stablehlo.add across dimensions = [3] :"
+        " (tensor<1x2x8x64xf32>, tensor<f32>) -> tensor<1x2x8xf32>",
+        mlir_bwd,
+    )
+    self.assertNotIn(
+        "applies stablehlo.add across dimensions = [3] :"
+        " (tensor<1x2x8x16xf32>, tensor<f32>) -> tensor<1x2x8xf32>",
+        mlir_bwd,
+    )
+
+    # 2. Forward mask select sinking IR: select is sunk to [1, 2, 8, 64]
+    mask_tpu = torch.zeros(seq_q, seq_kv, dtype=torch.float32, device="tpu")
+    mask_tpu[2, :] = float("-inf")
+    torch.accelerator.synchronize()
+
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      out_mask, lse_mask, _, _, _, _, _, _, _ = (
+          torch.ops.aten._scaled_dot_product_fused_attention_overrideable(
+              q_tpu, k_tpu, v_tpu, attn_bias=mask_tpu
+          )
+      )
+    mlir_fwd = tpu_torch_compile.serialize_mlir_text(
+        tpu_torch_compile.build_mlir(
+            [out_mask, lse_mask], [q_tpu, k_tpu, v_tpu, mask_tpu]
+        )
+    )
+    # Select must operate on [1, 2, 8, 64] (out_4d), not [1, 2, 8, 16] (softmax)
+    self.assertIn("tensor<1x2x8x64xi1>, tensor<1x2x8x64xf32>", mlir_fwd)
+    self.assertNotIn("tensor<1x2x8x16xi1>, tensor<1x2x8x16xf32>", mlir_fwd)
+
+    # Masked row 2 must be exact 0.0 and no NaNs
+    self.assertTrue(torch.all(out_mask[:, :, 2, :] == 0.0))
+    self.assertFalse(torch.isnan(out_mask).any())
+
+    # 3. Numerics parity vs CPU: bwd gradients, causal, and GQA
+    def fn_sdpa_bwd(dev):
+      q = q_tpu.to(dev).detach().requires_grad_(True)
+      k = k_tpu.to(dev).detach().requires_grad_(True)
+      v = v_tpu.to(dev).detach().requires_grad_(True)
+      backend = (
+          torch.nn.attention.SDPBackend.MATH
+          if dev == "cpu"
+          else torch.nn.attention.SDPBackend.OVERRIDEABLE
+      )
+      with torch.nn.attention.sdpa_kernel(backend):
+        out = torch.nn.functional.scaled_dot_product_attention(
+            q, k, v, is_causal=False
+        )
+      out.backward(grad_out_tpu.to(dev))
+      return out, q.grad, k.grad, v.grad
+
+    self.assert_close_tpu_vs_cpu(fn_sdpa_bwd, rtol=1e-2, atol=1e-2)
+
+    # GQA 128-aligned vs unaligned
+    for q_len, kv_len in [(128, 128), (64, 64)]:
+      q_gqa = torch.randn(1, 4, q_len, 64)
+      k_gqa = torch.randn(1, 2, kv_len, 64)
+      v_gqa = torch.randn(1, 2, kv_len, 64)
+
+      def fn_gqa(dev, q=q_gqa, k=k_gqa, v=v_gqa):
+        backend = (
+            torch.nn.attention.SDPBackend.MATH
+            if dev == "cpu"
+            else torch.nn.attention.SDPBackend.OVERRIDEABLE
+        )
+        with torch.nn.attention.sdpa_kernel(backend):
+          return torch.nn.functional.scaled_dot_product_attention(
+              q.to(dev), k.to(dev), v.to(dev), enable_gqa=True
+          )
+
+      self.assert_close_tpu_vs_cpu(fn_gqa, rtol=1e-2, atol=1e-2)
 
   @parameterized.named_parameters(
       (

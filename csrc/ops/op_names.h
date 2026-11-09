@@ -731,6 +731,7 @@ enum class OpName {
   kRsqrtOut,
   kRsub,
   kRsubTensor,
+  kSafeSoftmax,
   kScalarTensor,
   kScaledDotProductFlashAttention,
   kScaledDotProductFlashAttentionBackward,
@@ -2312,6 +2313,8 @@ ToString(  // NOLINT(google-readability-function-size)
       return "rsub";
     case OpName::kRsubTensor:
       return "rsub.Tensor";
+    case OpName::kSafeSoftmax:
+      return "_safe_softmax";
     case OpName::kScalarTensor:
       return "scalar_tensor";
     case OpName::kScaledDotProductFlashAttention:

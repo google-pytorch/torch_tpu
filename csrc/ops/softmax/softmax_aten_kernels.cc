@@ -106,6 +106,31 @@ absl::Status SoftmaxInternalOut(const at::Tensor& self, int64_t dim,
                      .allow_out_dtype_cast = false});
 }
 
+absl::StatusOr<at::Tensor> SoftmaxInternal(const at::Tensor& self, int64_t dim,
+                                           std::optional<at::ScalarType> dtype,
+                                           SoftmaxMode softmax_mode,
+                                           OpParamCacheKeys param_keys) {
+  const at::ScalarType expected_dtype =
+      dtype.has_value() ? dtype.value() : self.scalar_type();
+
+  if (self.numel() == 0) {
+    return at::empty(self.sizes(), self.options().dtype(expected_dtype));
+  }
+
+  TT_RET_CHECK(self.is_floating_point(), error::kPythonNotImplementedError)
+      << "not implemented for input type " << ToString(self.scalar_type());
+
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType computation_dtype,
+                      GetComputationDType(self, /*half_to_float=*/false));
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType out_dtype,
+                      ConvertTo<mlir::ElementType>(expected_dtype));
+  return UnaryOp(self, GetSoftmaxFunctional(dim, softmax_mode),
+                 {.op_param_cache_keys = std::move(param_keys),
+                  .out_dtype = out_dtype,
+                  .computation_dtype = computation_dtype,
+                  .allow_low_precision_float = true});
+}
+
 absl::Status SoftmaxBackwardDataInternalOut(
     const at::Tensor& grad_output, const at::Tensor& output, int64_t dim,
     at::ScalarType input_dtype, SoftmaxMode softmax_mode,
@@ -141,6 +166,17 @@ absl::Status SoftmaxBackwardDataInternalOut(
 }
 
 }  // namespace
+
+at::Tensor AtenSafeSoftmax(const at::Tensor& self, int64_t dim,
+                           std::optional<at::ScalarType> dtype) {
+  TT_KERNEL(OpName::kSafeSoftmax, param_keys, (self, dim, dtype), {
+    TT_ASSIGN_OR_THROW(
+        at::Tensor result,
+        SoftmaxInternal(self, dim, dtype, SoftmaxMode::kSafeSoftmax,
+                        std::move(param_keys)));
+    return result;
+  });
+}
 
 at::Tensor& AtenSoftmaxOut(const at::Tensor& self, int64_t dim,
                            bool half_to_float, at::Tensor& out) {
