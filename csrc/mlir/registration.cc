@@ -18,6 +18,7 @@
 
 #include <memory>
 
+#include "csrc/mlir/passes/canonicalize_gather_scatter_reductions/canonicalize_gather_scatter_reductions.h"  // NOLINT
 #include "csrc/mlir/passes/dummy_pass.h"
 #include "csrc/mlir/passes/fold_concat_softmax.h"
 #include "csrc/mlir/passes/guard_zero_operand_custom_calls.h"
@@ -38,39 +39,46 @@
 namespace torch_tpu {
 
 void RegisterTorchTpuPasses() {
-  mlir::registerPass(
-      []() -> std::unique_ptr<mlir::Pass> { return createDummyPass(); });
-  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
-    return createLowerSeparableGatherToDotPass();
-  });
-  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
-    return createReassociateNormWeightsPass();
-  });
-  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
-    return createFoldConcatSoftmaxPass();
-  });
-  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
-    return createGuardZeroOperandCustomCallsPass();
-  });
-  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
-    return createUnguardZeroOperandCustomCallsPass();
-  });
-  mlir::registerPassPipeline(
-      "torch-tpu-optimization-pipeline",
-      "The full Torch TPU MLIR optimization pipeline run on every compiled "
-      "module (see RunTorchTpuOptimizationPasses). Must be anchored on "
-      "builtin.module.",
-      [](mlir::OpPassManager& pm, llvm::StringRef options,
-         llvm::function_ref<llvm::LogicalResult(const llvm::Twine&)>
-             error_handler) -> llvm::LogicalResult {
-        if (!options.empty()) {
-          return error_handler(
-              "torch-tpu-optimization-pipeline does not take options");
-        }
-        AddTorchTpuOptimizationPasses(pm);
-        return llvm::success();
-      },
-      [](llvm::function_ref<void(const mlir::detail::PassOptions&)>) {});
+  static const bool once = ([]() {
+    mlir::registerPass(
+        []() -> std::unique_ptr<mlir::Pass> { return createDummyPass(); });
+    mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+      return createCanonicalizeGatherScatterReductionsPass();
+    });
+    mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+      return createLowerSeparableGatherToDotPass();
+    });
+    mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+      return createReassociateNormWeightsPass();
+    });
+    mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+      return createFoldConcatSoftmaxPass();
+    });
+    mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+      return createGuardZeroOperandCustomCallsPass();
+    });
+    mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+      return createUnguardZeroOperandCustomCallsPass();
+    });
+    mlir::registerPassPipeline(
+        "torch-tpu-optimization-pipeline",
+        "The full Torch TPU MLIR optimization pipeline run on every compiled "
+        "module (see RunTorchTpuOptimizationPasses). Must be anchored on "
+        "builtin.module.",
+        [](mlir::OpPassManager& pm, llvm::StringRef options,
+           llvm::function_ref<llvm::LogicalResult(const llvm::Twine&)>
+               error_handler) -> llvm::LogicalResult {
+          if (!options.empty()) {
+            return error_handler(
+                "torch-tpu-optimization-pipeline does not take options");
+          }
+          AddTorchTpuOptimizationPasses(pm);
+          return llvm::success();
+        },
+        [](llvm::function_ref<void(const mlir::detail::PassOptions&)>) {});
+    return true;
+  })();
+  (void)once;
 }
 
 void RegisterTorchTpuDialects(mlir::DialectRegistry& registry) {
