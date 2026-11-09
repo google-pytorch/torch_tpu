@@ -1367,8 +1367,7 @@ absl::StatusOr<mlir::MlirOp> BuildEinsumShlo(
   std::vector<Dimensions> operand_shapes;
   operand_shapes.reserve(inputs.size());
   for (const mlir::MlirOp& op : inputs) {
-    const llvm::ArrayRef<int64_t> shape = GetTensorTypeOrDie(op).getShape();
-    operand_shapes.emplace_back(shape.begin(), shape.end());
+    operand_shapes.push_back(GetStaticShape(op));
   }
   TT_ASSIGN_OR_RETURN(const ParsedEinsum parsed,
                       ParseEinsumEquationFromShapes(equation, operand_shapes,

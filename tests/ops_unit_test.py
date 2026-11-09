@@ -20571,6 +20571,43 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
         )
     )
 
+    # 6. Forward + Backward: asymmetric kernel (1, 3) exercising 1D identity
+    # fast path on H and einsum contraction on W, with ceil_mode and padding.
+    def run_asymmetric_2d_fwd_bwd(dev):
+      x = x_2d_f32.detach().clone().to(dev).requires_grad_(True)
+      out = torch.nn.functional.avg_pool2d(
+          x,
+          kernel_size=(1, 3),
+          stride=(1, 2),
+          padding=(0, 1),
+          ceil_mode=True,
+          count_include_pad=False,
+      )
+      out.backward(torch.ones_like(out))
+      return out, x.grad
+
+    self.assert_close_tpu_vs_cpu(run_asymmetric_2d_fwd_bwd)
+
+    # 7. Forward + Backward: 3D with ceil_mode=True, count_include_pad=True, and
+    # explicit precision context.
+    x_3d_f32 = torch.randn(1, 2, 5, 6, 7, dtype=torch.float32)
+
+    def run_3d_ceil_fwd_bwd(dev):
+      x = x_3d_f32.detach().clone().to(dev).requires_grad_(True)
+      out = torch.nn.functional.avg_pool3d(
+          x,
+          kernel_size=(2, 3, 3),
+          stride=(2, 2, 2),
+          padding=(0, 1, 1),
+          ceil_mode=True,
+          count_include_pad=True,
+      )
+      out.backward(torch.ones_like(out))
+      return out, x.grad
+
+    with torch.tpu.precision(torch.tpu.Precision.HIGHEST):
+      self.assert_close_tpu_vs_cpu(run_3d_ceil_fwd_bwd)
+
   def test_adaptive_avg_pool_corner_cases(self):
     """Tests corner cases for adaptive_avg_pool2d and adaptive_avg_pool3d:
 
