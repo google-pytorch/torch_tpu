@@ -26,12 +26,16 @@
 // "non-functional" ones, but as some point we may want to specialize.
 
 #include <atomic>
+#include <chrono>
+#include <compare>
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -103,6 +107,23 @@ void PermuteDeviceAssignmentForSubgroups(
 [[nodiscard]] xla::CrossHostTransferKey GetCrossHostTransferKey(
     int64_t src_device_id, int64_t dst_device_id, int tag,
     size_t tensor_index = 0);
+
+struct P2pCoalescePhaseKey {
+  int color = 0;
+  int min_rank = 0;
+  int max_rank = 0;
+  int dir = 0;  // 0 if src_rank < dst_rank, 1 if src_rank > dst_rank
+
+  auto operator<=>(const P2pCoalescePhaseKey&) const = default;
+  bool operator==(const P2pCoalescePhaseKey&) const = default;
+};
+
+// Assigns a canonical phase key to a directed P2P transfer (src_rank ->
+// dst_rank) such that both sender and receiver compute the identical key, and
+// every phase forms a disjoint matching (no rank participates in more than one
+// edge per phase unless sending/receiving multiple tensors to the exact same
+// peer in the same direction).
+P2pCoalescePhaseKey ComputeP2pCoalescePhaseKey(int src_rank, int dst_rank);
 
 // Returns the OpSplitMode to use for collectives.
 [[nodiscard]] OpSplitMode GetCollectiveSplitMode();
@@ -345,6 +366,10 @@ class ProcessGroupTpu : public c10d::Backend {
   c10::intrusive_ptr<c10d::Work> experimental_recv(
       std::vector<at::Tensor>& tensors, int src_rank, int tag);
 
+  bool supportsCoalescing() const override { return true; }
+  void startCoalescing() override;
+  c10::intrusive_ptr<c10d::Work> endCoalescing() override;
+
 #if TT_TORCH_VERSION_GE(2, 14)
   // One-sided Remote Memory Access (RMA) Window support.
   bool supportsWindow() const override { return true; }
@@ -395,14 +420,22 @@ class ProcessGroupTpu : public c10d::Backend {
   // Extracts receive descriptors from store_ and sends buffers to a
   // remote device.
   absl::StatusOr<c10::intrusive_ptr<c10::ivalue::Future>> CrossHostSendBuffers(
-      std::vector<xla::PjRtBuffer*>& buffers,
+      std::shared_ptr<std::vector<DeviceBufferRef>> held_buffers,
+      std::vector<xla::PjRtBuffer*> buffers,
       absl::Span<const xla::CrossHostTransferKey> transfer_keys);
 
   // Populates store_ with receive descriptors and places buffers
   // from a cross-host send onto device.
   absl::StatusOr<std::vector<std::unique_ptr<xla::PjRtBuffer>>>
   CrossHostReceiveBuffers(
+      xla::PjRtClient* client, xla::PjRtDevice* device,
       absl::Span<const xla::Shape> shapes,
+      absl::Span<const xla::CrossHostTransferKey> transfer_keys);
+
+  absl::StatusOr<c10::intrusive_ptr<c10::ivalue::Future>> ExecutePreparedRecv(
+      xla::PjRtClient* client, xla::PjRtDevice* device,
+      absl::Span<const at::Tensor> tensors,
+      absl::Span<const xla::Shape> recv_shapes,
       absl::Span<const xla::CrossHostTransferKey> transfer_keys);
 
   // Exchanges world ranks among the members of this process group. Returns the
@@ -465,6 +498,62 @@ class ProcessGroupTpu : public c10d::Backend {
       ABSL_GUARDED_BY(p2p_seq_mu_);
   absl::flat_hash_map<P2pStreamKey, int64_t> recv_seq_
       ABSL_GUARDED_BY(p2p_seq_mu_);
+
+  struct PendingP2pSend {
+    std::shared_ptr<std::vector<DeviceBufferRef>> held_buffers;
+    std::vector<xla::PjRtBuffer*> pjrt_buffers;
+    std::vector<std::string> descriptor_keys;
+    c10::intrusive_ptr<c10::ivalue::Future> all_sent_future;
+    std::chrono::steady_clock::time_point deadline;
+  };
+
+  void P2pSendWorkerLoop();
+
+  absl::Mutex p2p_send_mu_;
+  absl::CondVar p2p_send_cv_;
+  std::deque<PendingP2pSend> p2p_send_queue_ ABSL_GUARDED_BY(p2p_send_mu_);
+  bool p2p_send_worker_started_ ABSL_GUARDED_BY(p2p_send_mu_) = false;
+  bool p2p_send_shutdown_ ABSL_GUARDED_BY(p2p_send_mu_) = false;
+  std::thread p2p_send_thread_;
+
+  struct CoalescedP2pOp {
+    bool is_send = false;
+    P2pCoalescePhaseKey phase_key;
+    // Populated on caller thread for SEND:
+    std::shared_ptr<std::vector<DeviceBufferRef>> held_send_buffers;
+    std::vector<xla::PjRtBuffer*> send_pjrt_buffers;
+    // Populated on caller thread for RECV:
+    std::vector<at::Tensor> recv_tensors;
+    std::vector<xla::Shape> recv_shapes;
+    // Populated on caller thread for both SEND and RECV (preserving exact seq
+    // order!):
+    std::vector<xla::CrossHostTransferKey> transfer_keys;
+  };
+
+  struct PendingCoalescedBatch {
+    c10::intrusive_ptr<c10::ivalue::Future> current_future;
+    std::vector<std::vector<CoalescedP2pOp>> remaining_phases;
+    xla::PjRtClient* client = nullptr;
+    xla::PjRtDevice* device = nullptr;
+    c10::intrusive_ptr<c10::ivalue::Future> all_phases_future;
+  };
+
+  absl::StatusOr<c10::intrusive_ptr<c10::ivalue::Future>> LaunchCoalescedPhase(
+      absl::Span<CoalescedP2pOp> phase_ops, xla::PjRtClient* client,
+      xla::PjRtDevice* device);
+
+  void P2pCoalesceWorkerLoop();
+
+  absl::Mutex p2p_coalesce_mu_;
+  absl::CondVar p2p_coalesce_cv_;
+  int p2p_coalescing_depth_ ABSL_GUARDED_BY(p2p_coalesce_mu_) = 0;
+  std::vector<CoalescedP2pOp> coalesced_p2p_ops_
+      ABSL_GUARDED_BY(p2p_coalesce_mu_);
+  std::deque<PendingCoalescedBatch> p2p_coalesce_queue_
+      ABSL_GUARDED_BY(p2p_coalesce_mu_);
+  bool p2p_coalesce_worker_started_ ABSL_GUARDED_BY(p2p_coalesce_mu_) = false;
+  bool p2p_coalesce_shutdown_ ABSL_GUARDED_BY(p2p_coalesce_mu_) = false;
+  std::thread p2p_coalesce_thread_;
 };
 
 }  // namespace torch_tpu
