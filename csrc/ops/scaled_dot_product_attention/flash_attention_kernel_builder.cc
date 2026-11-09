@@ -107,6 +107,25 @@ int64_t GetInitialTileSize(int64_t seq_len) {
   return RoundUpToTileSize(seq_len, kMinHeuristicTileSize);
 }
 
+// Heuristic to determine the KV compute sub-tile size.
+int64_t GetKvComputeTileSize(int64_t kt) {
+  // Chosen such that the sub-tiles are not too big.
+  int64_t target_kc = 1024;
+  // If the KV tile size is smaller than the target, don't split it.
+  if (kt < target_kc) {
+    return kt;
+  }
+  while (target_kc >= kMinHeuristicTileSize) {
+    if (kt % target_kc == 0) {
+      return target_kc;
+    }
+
+    target_kc -= kMinHeuristicTileSize;
+  }
+
+  return kMinHardwareTileSize;
+}
+
 // Bytes of a [rows, cols] array in VMEM. Mosaic lays out VMEM arrays in tiles
 // of 8 32-bit sublanes by 128 lanes, so the minor dim is padded to a multiple
 // of 128 (a head dim of 64 takes as much VMEM as one of 128), and a single row
@@ -134,21 +153,32 @@ struct TileVmemParams {
   bool is_backward = false;
 };
 
-// Upper bound of the scoped VMEM that the flash attention kernels need for
-// [qt, kt] tiles. It follows the kernel specs: Mosaic double buffers the
-// blocks of the pipelined operands, allocates the scratch operands once, and
-// spills the vector values that don't fit in vregs to VMEM.
-int64_t EstimateTileVmemBytes(const TileVmemParams& params, int64_t qt,
-                              int64_t kt) {
+int64_t MaskBlockBytes(const TileVmemParams& params, int64_t qt, int64_t kt) {
+  if (!params.has_mask) {
+    return 0;
+  }
+  return VmemArrayBytes(params.mask_q_broadcast ? 1 : qt,
+                        params.mask_kv_broadcast ? 1 : kt, params.elem_size);
+}
+
+// The estimates below are upper bounds of the scoped VMEM that the flash
+// attention kernels need for [qt, kt] tiles. They follow the kernel specs:
+// Mosaic double buffers the blocks of the pipelined operands, allocates the
+// scratch operands once, and spills the vector values that don't fit in vregs
+// to VMEM. The allowances for the spilled values are calibrated against the
+// scoped VMEM that XLA reports for the kernels on TPU v7.
+
+int64_t EstimateForwardVmemBytes(const TileVmemParams& params, int64_t qt,
+                                 int64_t kt) {
   const int64_t elem_size = params.elem_size;
   const int64_t d_qk = params.qk_head_dim;
   const int64_t d_vo = params.vo_head_dim;
-  // Blocks of the pipelined q, k, v, output and LSE operands.
-  const int64_t block_bytes = VmemArrayBytes(qt, d_qk, elem_size) +
-                              VmemArrayBytes(kt, d_qk, elem_size) +
-                              VmemArrayBytes(kt, d_vo, elem_size) +
-                              VmemArrayBytes(qt, d_vo, elem_size) +
-                              VmemArrayBytes(1, qt, kF32Bytes);
+  // Blocks of the pipelined q, k, v, mask, output and LSE operands.
+  const int64_t block_bytes =
+      VmemArrayBytes(qt, d_qk, elem_size) +
+      VmemArrayBytes(kt, d_qk, elem_size) +
+      VmemArrayBytes(kt, d_vo, elem_size) + MaskBlockBytes(params, qt, kt) +
+      VmemArrayBytes(qt, d_vo, elem_size) + VmemArrayBytes(1, qt, kF32Bytes);
   // Scratch: the output accumulator and the lane-replicated row statistics m
   // and l.
   const int64_t scratch_bytes = VmemArrayBytes(qt, d_vo, kF32Bytes) +
@@ -157,58 +187,119 @@ int64_t EstimateTileVmemBytes(const TileVmemParams& params, int64_t qt,
   //  * The q tile and the softmax state (m, l, acc), which are live across the
   //    KV sub-blocks, plus one more q-sized tile for the smaller per-step
   //    values (K / V tiles, PV, new row statistics).
-  //  * The f32 logits-shaped tiles, of which the logits S and probabilities P
-  //    are live at once. The mask, widened to f32 (and zero-padded on a ragged
-  //    tail), is only live with S, before P exists. The tiles are sized
-  //    [qt, kt] rather than [qt, kc], as the scheduler may overlap the
-  //    [qt, kc] sub-blocks of the unrolled KV loop. Dropout adds ~4 more for
-  //    the per-element intermediates of its keep mask.
-  const int64_t num_logits_tiles = params.has_dropout ? 6 : 2;
-  const int64_t value_bytes =
+  //  * One f32 logits-shaped tile, as P is computed in place of S. It is sized
+  //    [qt, kt] rather than [qt, kc], as the scheduler overlaps the [qt, kc]
+  //    sub-blocks of the unrolled KV loop. Dropout adds ~5 more for the
+  //    per-element intermediates of its keep mask.
+  //  * The f32 [qt, kc] mask sub-block (zero-padded on a ragged tail), which
+  //    is live alongside S.
+  int64_t value_bytes =
       2 * VmemArrayBytes(qt, d_qk, elem_size) + scratch_bytes +
-      num_logits_tiles * VmemArrayBytes(qt, kt, kF32Bytes);
-  int64_t total_bytes = 2 * block_bytes + scratch_bytes + value_bytes;
-  // The backward kernels have about twice the operands (dO, LSE, di, dK / dV
-  // or dQ) and live logits-shaped tiles (dP, dS) of the forward kernel.
-  if (params.is_backward) {
-    total_bytes *= 2;
-  }
-  // The mask is a pipelined operand too, so its blocks are double buffered.
-  // This is counted once: the two backward kernels are compiled separately.
+      (params.has_dropout ? 6 : 1) * VmemArrayBytes(qt, kt, kF32Bytes);
   if (params.has_mask) {
-    total_bytes +=
-        2 * VmemArrayBytes(params.mask_q_broadcast ? 1 : qt,
-                           params.mask_kv_broadcast ? 1 : kt, elem_size);
+    value_bytes += VmemArrayBytes(qt, GetKvComputeTileSize(kt), kF32Bytes);
   }
-  return total_bytes;
+  return 2 * block_bytes + scratch_bytes + value_bytes;
 }
 
-// Heuristic to determine the KV compute sub-tile size.
-int64_t GetKvComputeTileSize(int64_t kt) {
-  // Chosen such that the sub-tiles are not too big.
-  int64_t target_kc = 1024;
-  // If the KV tile size is smaller than the target, don't split it.
-  if (kt < target_kc) {
-    return kt;
-  }
-  while (target_kc >= kMinHeuristicTileSize) {
-    if (kt % target_kc == 0) {
-      return target_kc;
-    }
-
-    target_kc -= kMinHeuristicTileSize;
-  }
-
-  return kMinHardwareTileSize;
+// The q, k, v and dO tiles, which the backward kernels take as pipelined
+// operands and also spill.
+int64_t BackwardQkvdoBytes(const TileVmemParams& params, int64_t qt,
+                           int64_t kt) {
+  const int64_t elem_size = params.elem_size;
+  return VmemArrayBytes(qt, params.qk_head_dim, elem_size) +
+         VmemArrayBytes(kt, params.qk_head_dim, elem_size) +
+         VmemArrayBytes(kt, params.vo_head_dim, elem_size) +
+         VmemArrayBytes(qt, params.vo_head_dim, elem_size);
 }
+
+// The f32 [qt, kt] logits-shaped tiles that the backward kernels spill (S / P,
+// dP and dS). Dropout adds the intermediates of its keep mask and of applying
+// it to P and dP.
+int64_t BackwardLogitsBytes(const TileVmemParams& params, int64_t qt,
+                            int64_t kt) {
+  return (params.has_dropout ? 12 : 3) * VmemArrayBytes(qt, kt, kF32Bytes);
+}
+
+// The dK / dV kernel (see CreateBackwardDkvKernel).
+int64_t EstimateBackwardDkvVmemBytes(const TileVmemParams& params, int64_t qt,
+                                     int64_t kt) {
+  const int64_t elem_size = params.elem_size;
+  const int64_t d_qk = params.qk_head_dim;
+  const int64_t d_vo = params.vo_head_dim;
+  const int64_t qkvdo_bytes = BackwardQkvdoBytes(params, qt, kt);
+  // Blocks of the pipelined q, k, v, dO, LSE, di and mask operands, and of the
+  // dK and dV outputs.
+  const int64_t block_bytes =
+      qkvdo_bytes + 2 * VmemArrayBytes(1, qt, kF32Bytes) +
+      MaskBlockBytes(params, qt, kt) + VmemArrayBytes(kt, d_qk, elem_size) +
+      VmemArrayBytes(kt, d_vo, elem_size);
+  // Scratch: the f32 dK and dV accumulators.
+  const int64_t scratch_bytes =
+      VmemArrayBytes(kt, d_qk, kF32Bytes) + VmemArrayBytes(kt, d_vo, kF32Bytes);
+  // Spilled values: q, k, v, dO, the loaded accumulators and the logits-shaped
+  // tiles.
+  const int64_t value_bytes =
+      qkvdo_bytes + scratch_bytes + BackwardLogitsBytes(params, qt, kt);
+  return 2 * block_bytes + scratch_bytes + value_bytes;
+}
+
+// The dQ kernel (see CreateBackwardDqKernel).
+int64_t EstimateBackwardDqVmemBytes(const TileVmemParams& params, int64_t qt,
+                                    int64_t kt) {
+  const int64_t elem_size = params.elem_size;
+  const int64_t d_qk = params.qk_head_dim;
+  const int64_t d_vo = params.vo_head_dim;
+  const int64_t qkvdo_bytes = BackwardQkvdoBytes(params, qt, kt);
+  // Blocks of the pipelined q, k, v, dO, LSE, di, mask and (unused) forward
+  // output operands, and of the dQ output.
+  const int64_t block_bytes =
+      qkvdo_bytes + 2 * VmemArrayBytes(1, qt, kF32Bytes) +
+      MaskBlockBytes(params, qt, kt) + VmemArrayBytes(qt, d_vo, elem_size) +
+      VmemArrayBytes(qt, d_qk, elem_size);
+  // Scratch: the f32 dQ accumulator.
+  const int64_t scratch_bytes = VmemArrayBytes(qt, d_qk, kF32Bytes);
+  // Spilled values: q, k, v, dO, the loaded accumulator and the logits-shaped
+  // tiles.
+  const int64_t value_bytes =
+      qkvdo_bytes + scratch_bytes + BackwardLogitsBytes(params, qt, kt);
+  return 2 * block_bytes + scratch_bytes + value_bytes;
+}
+
+// The dK / dV and dQ kernels are compiled separately but share their tiles, so
+// this is the larger of their estimates.
+int64_t EstimateBackwardVmemBytes(const TileVmemParams& params, int64_t qt,
+                                  int64_t kt) {
+  return std::max(EstimateBackwardDkvVmemBytes(params, qt, kt),
+                  EstimateBackwardDqVmemBytes(params, qt, kt));
+}
+
+int64_t EstimateTileVmemBytes(const TileVmemParams& params, int64_t qt,
+                              int64_t kt) {
+  return params.is_backward ? EstimateBackwardVmemBytes(params, qt, kt)
+                            : EstimateForwardVmemBytes(params, qt, kt);
+}
+
+// Constraints on the shape of the [qt, kt] tiles.
+enum class TileShape {
+  kAny,
+  // qt == kt. The causal forward kernel only skips the fully masked KV
+  // sub-blocks of the tiles on the diagonal when they are square (see
+  // EmitGridStep), which typically saves more than larger non-square tiles
+  // gain.
+  kSquare,
+};
 
 Tiling CreateTiling(int64_t q_seq_len, int64_t k_seq_len,
-                    const TileVmemParams& params,
+                    const TileVmemParams& params, TileShape shape,
                     std::optional<int64_t> vmem_limit_override = std::nullopt) {
   const int64_t vmem_limit = vmem_limit_override.value_or(GetVmemLimitBytes());
 
   int64_t qt = GetInitialTileSize(q_seq_len);
   int64_t kt = GetInitialTileSize(k_seq_len);
+  // Only square the tiles of sequences that start with the same tile size, so
+  // that e.g. a short query doesn't shrink the tiles of a long KV sequence.
+  const bool square = shape == TileShape::kSquare && qt == kt;
 
   while (EstimateTileVmemBytes(params, qt, kt) > vmem_limit &&
          (qt > kMinHeuristicTileSize || kt > kMinHeuristicTileSize)) {
@@ -222,6 +313,9 @@ Tiling CreateTiling(int64_t q_seq_len, int64_t k_seq_len,
       qt = std::max(kMinHeuristicTileSize,
                     RoundUpToTileSize(qt / 2, kMinHeuristicTileSize));
     }
+  }
+  if (square) {
+    qt = kt = std::min(qt, kt);
   }
 
   return {
@@ -294,7 +388,7 @@ mlir::MlirOp PadBias(mlir::MlirOp bias, int64_t padded_q_len,
 
 Tiling CreateTiling(mlir::MlirOp query, mlir::MlirOp key, mlir::MlirOp value,
                     const std::optional<mlir::MlirOp>& attn_bias,
-                    bool is_backward, bool has_dropout) {
+                    bool is_backward, bool has_dropout, TileShape shape) {
   const auto query_type = GetTensorTypeOrDie(query);
   const auto key_type = GetTensorTypeOrDie(key);
   const auto value_type = GetTensorTypeOrDie(value);
@@ -316,7 +410,7 @@ Tiling CreateTiling(mlir::MlirOp query, mlir::MlirOp key, mlir::MlirOp value,
     params.mask_q_broadcast = mask_rank < 2 || mask_shape[mask_rank - 2] == 1;
     params.mask_kv_broadcast = mask_rank < 1 || mask_shape[mask_rank - 1] == 1;
   }
-  return CreateTiling(q_seq_len, k_seq_len, params);
+  return CreateTiling(q_seq_len, k_seq_len, params, shape);
 }
 
 // Unpacks a 2-element i64 tensor `[seed, offset]` into a 4-element i32 tensor
@@ -517,7 +611,8 @@ CreateFlashAttentionKernelImpl(const at::Tensor& query, const at::Tensor& key,
 
     const auto tiling =
         CreateTiling(query_mlir, key_mlir, value_mlir, attn_bias_mlir,
-                     /*is_backward=*/false, has_dropout);
+                     /*is_backward=*/false, has_dropout,
+                     is_causal ? TileShape::kSquare : TileShape::kAny);
     TT_ASSIGN_OR_RETURN(
         FlashAttnConfig config,
         CreateFlashAttnConfig(query_mlir, key_mlir, value_mlir, attn_bias_mlir,
@@ -732,7 +827,7 @@ CreateFlashAttentionBackwardKernel(
 
     const auto tiling =
         CreateTiling(query_mlir, key_mlir, value_mlir, attn_bias_mlir,
-                     /*is_backward=*/true, has_dropout);
+                     /*is_backward=*/true, has_dropout, TileShape::kAny);
     TT_ASSIGN_OR_RETURN(
         FlashAttnConfig config,
         CreateFlashAttnConfig(query_mlir, key_mlir, value_mlir, attn_bias_mlir,
