@@ -4386,6 +4386,48 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     ):
       torch.arange(10, 0, float("inf"), device=et.device())
 
+  def test_arange_size_overflow(self):
+    """Tests that arange fails cleanly when the output size overflows int64."""
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""arange(): expected number of elements to fit in int64, got 1e+20""",
+        gpu="""invalid size, possible overflow?""",
+    ):
+      torch.arange(0.0, 1e20, 1.0, dtype=torch.float32, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""arange(): expected number of elements to fit in int64, got inf""",
+        gpu="""invalid size, possible overflow?""",
+    ):
+      torch.arange(-1e308, 1e308, 1.0, dtype=torch.float64, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""arange(): expected number of elements to fit in int64, got 9223372036854775808""",
+        gpu="""invalid size, possible overflow?""",
+    ):
+      torch.arange(
+          -(1 << 62), 1 << 62, 1, dtype=torch.int64, device=et.device()
+      )
+
+    out = torch.empty(2, dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""arange(): expected number of elements to fit in int64, got 1e+20""",
+        gpu="""invalid size, possible overflow?""",
+    ):
+      torch.arange(0.0, 1e20, 1.0, out=out)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""value cannot be converted to type int64_t without overflow""",
+        gpu="""value cannot be converted to type int64_t without overflow""",
+    ):
+      torch.arange(
+          0, (1 << 64) - 1, 1 << 63, dtype=torch.int64, device=et.device()
+      )
+
   @parameterized.named_parameters(
       dict(
           testcase_name="bool",

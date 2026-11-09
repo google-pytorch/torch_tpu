@@ -76,7 +76,7 @@ csrc/ops/addmv/addmv_aten_kernels.cc: {remaining: 0, total: 9, infeasible: 2}
 csrc/ops/all_any/all_any_aten_kernels.cc: {remaining: 0, total: 1, infeasible: 0}
 csrc/ops/angle/angle_aten_kernels.cc: {remaining: 0, total: 1, infeasible: 0}
 csrc/ops/ao/ao_offload_kernels.cc: {remaining: 0, total: 2, infeasible: 0}
-csrc/ops/arange/arange_aten_kernels.cc: {remaining: 0, total: 7, infeasible: 1}
+csrc/ops/arange/arange_aten_kernels.cc: {remaining: 0, total: 9, infeasible: 1}
 csrc/ops/as_strided/as_strided_aten_kernels.cc: {remaining: 0, total: 1, infeasible: 1}
 csrc/ops/assertion_aten_kernels.cc: {remaining: 0, total: 3, infeasible: 0}
 csrc/ops/baddbmm/baddbmm_aten_kernels.cc: {remaining: 0, total: 8, infeasible: 0}
