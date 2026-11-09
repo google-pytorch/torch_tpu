@@ -3186,6 +3186,18 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
       spec = provider.get_module_spec("google/gemma-3-270m", load_weights=False)
       self.assertEqual(spec.config.model_type, "gemma3_text")
 
+  def test_retry_transient_io(self):
+    flaky = mock.MagicMock(side_effect=[OSError("transient"), "ok"])
+    self.assertEqual(module_registry._RETRY_TRANSIENT_IO(flaky)(), "ok")
+    self.assertEqual(flaky.call_count, 2)
+
+    missing = mock.MagicMock(side_effect=FileNotFoundError("missing"))
+    with self.assertRaises(  # ASSERT_RAISES_OK=testing a test library
+        FileNotFoundError
+    ):
+      module_registry._RETRY_TRANSIENT_IO(missing)()
+    self.assertEqual(missing.call_count, 1)
+
 
 if __name__ == "__main__":
   absltest.main()

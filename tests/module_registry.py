@@ -56,6 +56,7 @@ from absl import flags
 from absl import logging
 from etils import epath
 from google.api_core import exceptions as gcp_exceptions
+from google.api_core import retry as gcp_retry
 from google.cloud import storage
 from safetensors import torch as safetensors_torch
 import torch
@@ -660,6 +661,14 @@ _GCS_WEIGHTS_PREFIX = flags.DEFINE_string(
 # default 60s timeout.
 _GCS_DOWNLOAD_TIMEOUT_SECONDS = 15
 
+_RETRY_TRANSIENT_IO = gcp_retry.Retry(
+    predicate=lambda exc: isinstance(exc, OSError)
+    and not isinstance(exc, (FileNotFoundError, NotADirectoryError)),
+    initial=0.5,
+    maximum=2.0,
+    timeout=5.0,
+)
+
 
 def _download_gcs_blob(
     bucket_name: str,
@@ -1014,7 +1023,7 @@ class BaseProvider(abc.ABC):
       self._base_path = epath.Path(base_path)
       if subdir:
         self._base_path = self._base_path / subdir
-      if not self._base_path.exists():
+      if not _RETRY_TRANSIENT_IO(self._base_path.exists)():
         raise FileNotFoundError(f"Base path does not exist: {self._base_path}")
     else:
       self._base_path = None
@@ -1878,18 +1887,19 @@ def _load_transformers_preprocessor(
   cache_key = ("transformers", model_path_str, prefer_tokenizer)
 
   def _loader() -> Any:
+    exists = lambda p: _RETRY_TRANSIENT_IO(p.exists)()
     path = epath.Path(model_path_str)
-    if path.exists() and path.is_dir():
-      has_processor = (path / "preprocessor_config.json").exists() or (
+    if exists(path) and _RETRY_TRANSIENT_IO(path.is_dir)():
+      has_processor = exists(path / "preprocessor_config.json") or exists(
           path / "processor_config.json"
-      ).exists()
+      )
       has_tokenizer = (
-          (path / "tokenizer_config.json").exists()
-          or (path / "tokenizer.json").exists()
-          or (path / "spiece.model").exists()
-          or (path / "vocab.json").exists()
-          or (path / "vocab.txt").exists()
-          or (path / "merges.txt").exists()
+          exists(path / "tokenizer_config.json")
+          or exists(path / "tokenizer.json")
+          or exists(path / "spiece.model")
+          or exists(path / "vocab.json")
+          or exists(path / "vocab.txt")
+          or exists(path / "merges.txt")
       )
       if prefer_tokenizer and has_tokenizer:
         load_fn = transformers.AutoTokenizer.from_pretrained
@@ -2826,9 +2836,10 @@ def _load_and_sanitize_transformers_config(
     (or config dictionary for unregistered custom model types).
   """
   path = epath.Path(config_path)
-  cfg_file = path / "config.json" if path.is_dir() else path
-  with cfg_file.open("r", encoding="utf-8") as f:
-    raw_dict = json.load(f)
+  cfg_file = (
+      path / "config.json" if _RETRY_TRANSIENT_IO(path.is_dir)() else path
+  )
+  raw_dict = json.loads(_RETRY_TRANSIENT_IO(cfg_file.read_text)())
 
   config_dict = _sanitize_transformers_config_dict(
       raw_dict, load_weights=load_weights
@@ -3360,9 +3371,16 @@ class TransformersProvider(BaseProvider):
 
     if default_model_dir is not None:
       cfg_file = default_model_dir / "config.json"
-      if cfg_file.exists():
-        yield cfg_file, default_model_dir
-        return
+      try:
+        if _RETRY_TRANSIENT_IO(cfg_file.exists)():
+          yield cfg_file, default_model_dir
+          return
+      except (OSError, gcp_exceptions.RetryError) as exc:
+        if load_weights:
+          raise
+        logging.warning(
+            "Falling back to GCS for %s after cache check error: %s", name, exc
+        )
 
     if load_weights:
       raise ValueError(
@@ -3526,7 +3544,7 @@ class TransformersProvider(BaseProvider):
           if (
               modality == Modality.VISION  # Only VISION uses model_dir.
               and model_dir_or_repo_id is not None
-              and model_dir_or_repo_id.exists()
+              and _RETRY_TRANSIENT_IO(model_dir_or_repo_id.exists)()
           )
           else None
       )
