@@ -939,6 +939,30 @@ absl::StatusOr<mlir::MlirOp> ReshapeFromStaticDimensions(
 absl::StatusOr<mlir::MlirOp> ReshapeToStaticDimensions(
     mlir::MlirOp op, const Dimensions& static_shape_after);
 
+// Returns the splat scalar integer constant value if `val` is provably a splat
+// integer constant tensor.
+std::optional<int64_t> TryGetSplatIntConstant(mlir::Value val);
+
+// Returns true if all elements in `val` are provably non-negative.
+bool IsProvablyNonNegative(mlir::Value val);
+
+// Returns true if all elements in `val` provably fit in signed 32-bit integer.
+bool IsProvablyI32Bounded(mlir::Value val);
+
+// Returns the underlying index if `val` matches the ResolveNegativeIndices
+// select pattern for non-negative indices; otherwise returns `val`.
+mlir::Value UnwrapResolvedNonNegativeIndex(mlir::Value val);
+
+// Returns the innermost index operand after stripping identity wrappers
+// (ResolveNegativeIndices, +0, *1, widening converts, 1D reshapes/broadcasts).
+mlir::Value Strip1DIndexWrappers(mlir::Value val, int64_t expected_len);
+
+// Returns true if `val` is provably equivalent to `iota(0)` of length
+// `expected_len`.
+bool Is1DIota0(mlir::Value val, int64_t expected_len);
+
+// Returns true if `val` is provably a 1D permutation of `[0, expected_len)`.
+bool Is1DPermutation(mlir::Value val, int64_t expected_len);
 }  // namespace torch_tpu
 
 #endif  // TORCH_TPU_CSRC_OPS_OP_BUILDER_UTILS_H_
