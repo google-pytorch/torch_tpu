@@ -25,6 +25,7 @@
 #include <utility>
 #include <vector>
 
+#include "absl/algorithm/container.h"
 #include "absl/base/nullability.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
@@ -211,64 +212,281 @@ void RewriteCustomCallBackendConfig(
               mlir::DictionaryAttr::get(op->getContext(), new_attrs));
 }
 
-// Resolves the common global device assignment across `ops` (and `pallas_da`,
-// if non-empty). Returns `std::nullopt` if an op's global devices differ from
-// the others'.
-std::optional<std::vector<int64_t>>  // INT_VEC_OK
-TryResolveGlobalDeviceAssignment(absl::Span<const OpDeviceAssignment> ops,
-                                 absl::Span<const int64_t> pallas_da = {}) {
-  std::vector<int64_t> resolved_da(pallas_da.begin(),  // INT_VEC_OK
-                                   pallas_da.end());
-  for (size_t i = 0; i < ops.size(); ++i) {
-    const OpDeviceAssignment& op = ops[i];
-    if (op.device_assignment.empty()) {
-      continue;
+bool HasSameUniqueDevices(absl::Span<const int64_t> devices,
+                          const absl::flat_hash_set<int64_t>& expected) {
+  return devices.size() == expected.size() &&
+         absl::flat_hash_set<int64_t>(devices.begin(), devices.end()) ==
+             expected;
+}
+
+bool ContainsSubgroupTile(absl::Span<const int64_t> global_da,
+                          absl::Span<const int64_t> op_da) {
+  const size_t group_size = op_da.size();
+  if (group_size == 0 || global_da.empty() ||
+      global_da.size() % group_size != 0) {
+    return false;
+  }
+  for (size_t offset = 0; offset < global_da.size(); offset += group_size) {
+    if (global_da.subspan(offset, group_size) == op_da) {
+      return true;
     }
-    const absl::Span<const int64_t> global_da =
-        op.global_device_assignment.empty() ? op.device_assignment
-                                            : op.global_device_assignment;
-    if (resolved_da.empty()) {
-      resolved_da.assign(global_da.begin(), global_da.end());
-    } else if (resolved_da != global_da &&
-               !VerifySameDeviceSet(resolved_da,
-                                    OpDeviceAssignment{
-                                        .op_name = op.op_name,
-                                        .device_assignment = global_da,
-                                    },
-                                    i)
-                    .ok()) {
+  }
+  return false;
+}
+
+bool ExpandClosedSetUnderOp(const OpDeviceAssignment& op,
+                            absl::flat_hash_set<int64_t>& closed_devs) {
+  const size_t group_size = op.device_assignment.size();
+  const absl::Span<const int64_t> global_da = op.global_device_assignment;
+  if (group_size == 0 || global_da.empty() ||
+      global_da.size() % group_size != 0) {
+    return false;
+  }
+  const auto in_closed = [&closed_devs](int64_t dev) {
+    return closed_devs.contains(dev);
+  };
+  bool changed = false;
+  for (size_t offset = 0; offset < global_da.size(); offset += group_size) {
+    const absl::Span<const int64_t> group =
+        global_da.subspan(offset, group_size);
+    if (absl::c_any_of(group, in_closed) && !absl::c_all_of(group, in_closed)) {
+      closed_devs.insert(group.begin(), group.end());
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+// Returns the smallest superset of `closed_devs` that is a union of complete
+// subgroup tiles for every op in `ops` that has a valid
+// `global_device_assignment`.
+absl::flat_hash_set<int64_t> CloseDeviceSetUnderOpGroups(
+    absl::Span<const OpDeviceAssignment> ops,
+    absl::flat_hash_set<int64_t> closed_devs) {
+  for (bool changed = true; changed;) {
+    changed = false;
+    for (const OpDeviceAssignment& op : ops) {
+      if (ExpandClosedSetUnderOp(op, closed_devs)) {
+        changed = true;
+      }
+    }
+  }
+  return closed_devs;
+}
+
+// Extracts the groups of `global_da` (each of size `group_size`) whose devices
+// belong to `closed_devs`, preserving group order and intra-group rank order.
+// Returns std::nullopt if `global_da` is not divisible by `group_size`, if any
+// group only partially intersects `closed_devs`, or if the extracted groups do
+// not cover `closed_devs` with unique devices.
+std::optional<std::vector<int64_t>>  // INT_VEC_OK
+ExtractGroupsInClosedSet(absl::Span<const int64_t> global_da, size_t group_size,
+                         const absl::flat_hash_set<int64_t>& closed_devs) {
+  if (group_size == 0 || global_da.empty() ||
+      global_da.size() % group_size != 0) {
+    return std::nullopt;
+  }
+  const auto in_closed = [&closed_devs](int64_t dev) {
+    return closed_devs.contains(dev);
+  };
+  std::vector<int64_t> extracted;  // INT_VEC_OK
+  extracted.reserve(closed_devs.size());
+  for (size_t offset = 0; offset < global_da.size(); offset += group_size) {
+    const absl::Span<const int64_t> group =
+        global_da.subspan(offset, group_size);
+    if (absl::c_all_of(group, in_closed)) {
+      extracted.insert(extracted.end(), group.begin(), group.end());
+    } else if (!absl::c_none_of(group, in_closed)) {
       return std::nullopt;
     }
   }
-  return resolved_da;
+  if (!HasSameUniqueDevices(extracted, closed_devs)) {
+    return std::nullopt;
+  }
+  return extracted;
 }
 
-// Resolves a program whose ops run on different device sets to the devices of
-// the ops' layouts (the world): each op's collectives are then tiled over every
-// group of its layout (see RewriteAndTileOperationForSubgroup). Returns
-// `mismatch` if an op's global devices differ from the others'.
+std::optional<std::vector<int64_t>>  // INT_VEC_OK
+MapLayoutGroupsToPartitions(absl::Span<const int64_t> global_da,
+                            size_t group_size,
+                            const absl::flat_hash_set<int64_t>& target_devs,
+                            absl::Span<const int64_t> target_da) {
+  const std::optional<std::vector<int64_t>> active_da =  // INT_VEC_OK
+      ExtractGroupsInClosedSet(global_da, group_size, target_devs);
+  if (!active_da.has_value()) {
+    return std::nullopt;
+  }
+  return BuildRankToPartition(*active_da, target_da);
+}
+
+bool IsOpCompatibleWithClosedSubgroup(
+    const OpDeviceAssignment& op,
+    const absl::flat_hash_set<int64_t>& closed_devs,
+    std::optional<absl::flat_hash_set<int64_t>>& world_devs) {
+  if (op.global_device_assignment.empty()) {
+    return HasSameUniqueDevices(op.device_assignment, closed_devs);
+  }
+  if (!ContainsSubgroupTile(op.global_device_assignment,
+                            op.device_assignment)) {
+    return false;
+  }
+  if (!world_devs.has_value()) {
+    absl::flat_hash_set<int64_t> devs(op.global_device_assignment.begin(),
+                                      op.global_device_assignment.end());
+    if (devs.size() != op.global_device_assignment.size() ||
+        !absl::c_all_of(closed_devs,
+                        [&devs](int64_t dev) { return devs.contains(dev); })) {
+      return false;
+    }
+    world_devs = std::move(devs);
+    return true;
+  }
+  return HasSameUniqueDevices(op.global_device_assignment, *world_devs);
+}
+
+// Resolves a program whose ops run on different device sets to the smallest
+// closed union of subgroup tiles (the least common denominator of the ops'
+// layouts, up to the full world) that covers all ops in `ops` and `pallas_da`.
+// Each op's collectives are then tiled over the groups of its layout that lie
+// in the resolved device assignment (see RewriteAndTileOperationForSubgroup).
+// Returns `mismatch` if the ops cannot be reconciled into a common closed
+// device set.
 absl::StatusOr<std::vector<int64_t>>  // INT_VEC_OK
-ResolveGlobalDeviceAssignment(absl::Span<const OpDeviceAssignment> ops,
-                              absl::Span<const int64_t> pallas_da,
-                              absl::Status mismatch) {
+ResolveClosedSubgroupDeviceAssignment(absl::Span<const OpDeviceAssignment> ops,
+                                      absl::Span<const int64_t> pallas_da,
+                                      absl::Status mismatch) {
+  absl::flat_hash_set<int64_t> seed_devs(pallas_da.begin(), pallas_da.end());
+  for (const OpDeviceAssignment& op : ops) {
+    seed_devs.insert(op.device_assignment.begin(), op.device_assignment.end());
+  }
+  const absl::flat_hash_set<int64_t> closed_devs =
+      CloseDeviceSetUnderOpGroups(ops, std::move(seed_devs));
+  if (!pallas_da.empty() && !HasSameUniqueDevices(pallas_da, closed_devs)) {
+    return mismatch;
+  }
+
+  std::optional<absl::flat_hash_set<int64_t>> world_devs;
+  for (const OpDeviceAssignment& op : ops) {
+    if (!op.device_assignment.empty() &&
+        !IsOpCompatibleWithClosedSubgroup(op, closed_devs, world_devs)) {
+      return mismatch;
+    }
+  }
+  if (!pallas_da.empty()) {
+    return std::vector<int64_t>(pallas_da.begin(),  // INT_VEC_OK
+                                pallas_da.end());
+  }
+  const auto first_it = absl::c_find_if(ops, [](const OpDeviceAssignment& op) {
+    return !op.device_assignment.empty();
+  });
+  if (first_it == ops.end()) {
+    return std::vector<int64_t>{};  // INT_VEC_OK
+  }
+  if (first_it->global_device_assignment.empty()) {
+    return std::vector<int64_t>(  // INT_VEC_OK
+        first_it->device_assignment.begin(), first_it->device_assignment.end());
+  }
   std::optional<std::vector<int64_t>> resolved_da =  // INT_VEC_OK
-      TryResolveGlobalDeviceAssignment(ops, pallas_da);
+      ExtractGroupsInClosedSet(first_it->global_device_assignment,
+                               first_it->device_assignment.size(), closed_devs);
   if (!resolved_da.has_value()) {
     return mismatch;
   }
   return *std::move(resolved_da);
 }
 
+const OpDeviceAssignment* absl_nullable FindAnchorOpWithWiderLayout(
+    absl::Span<const OpDeviceAssignment> ops, size_t resolved_da_size) {
+  const OpDeviceAssignment* anchor = nullptr;
+  for (const OpDeviceAssignment& op : ops) {
+    if (op.device_assignment.empty()) {
+      continue;
+    }
+    if (!ContainsSubgroupTile(op.global_device_assignment,
+                              op.device_assignment)) {
+      return nullptr;
+    }
+    if (anchor == nullptr) {
+      if (op.global_device_assignment.size() <= resolved_da_size) {
+        return nullptr;
+      }
+      anchor = &op;
+    } else if (op.global_device_assignment.size() !=
+               anchor->global_device_assignment.size()) {
+      return nullptr;
+    }
+  }
+  return anchor;
+}
+
+bool IsCosetIsomorphicAcrossOps(
+    absl::Span<const OpDeviceAssignment> ops,
+    const absl::flat_hash_set<int64_t>& resolved_devs,
+    absl::Span<const int64_t> resolved_da,
+    const absl::flat_hash_set<int64_t>& component_devs,
+    absl::Span<const int64_t> component_da) {
+  for (const OpDeviceAssignment& op : ops) {
+    if (op.device_assignment.empty()) {
+      continue;
+    }
+    const size_t group_size = op.device_assignment.size();
+    const std::optional<std::vector<int64_t>> ref_map =  // INT_VEC_OK
+        MapLayoutGroupsToPartitions(op.global_device_assignment, group_size,
+                                    resolved_devs, resolved_da);
+    const std::optional<std::vector<int64_t>> comp_map =  // INT_VEC_OK
+        MapLayoutGroupsToPartitions(op.global_device_assignment, group_size,
+                                    component_devs, component_da);
+    if (!ref_map.has_value() || comp_map != ref_map) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Resolves the wider layout device assignment across `ops` when the traversal
+// resolved to a subgroup `resolved_da` and does not contain a Pallas kernel.
+// Returns empty if no wider coset layout applies across all ops.
 std::vector<int64_t>  // INT_VEC_OK
 ResolveGlobalDeviceAssignmentForTraversal(
     absl::Span<const OpDeviceAssignment> ops,
-    absl::Span<const int64_t> local_da) {
-  std::optional<std::vector<int64_t>> layout_da =  // INT_VEC_OK
-      TryResolveGlobalDeviceAssignment(ops);
-  if (!layout_da.has_value() || layout_da->size() <= local_da.size()) {
+    absl::Span<const int64_t> resolved_da) {
+  const OpDeviceAssignment* absl_nullable anchor =
+      FindAnchorOpWithWiderLayout(ops, resolved_da.size());
+  if (anchor == nullptr) {
     return {};
   }
-  return *std::move(layout_da);
+  const absl::Span<const int64_t> anchor_global_da =
+      anchor->global_device_assignment;
+  const size_t anchor_group_size = anchor->device_assignment.size();
+  const absl::flat_hash_set<int64_t> resolved_devs(resolved_da.begin(),
+                                                   resolved_da.end());
+  std::vector<int64_t> layout_da;  // INT_VEC_OK
+  layout_da.reserve(anchor_global_da.size());
+  absl::flat_hash_set<int64_t> visited;
+  visited.reserve(anchor_global_da.size());
+  for (int64_t seed_dev : anchor_global_da) {
+    if (visited.contains(seed_dev)) {
+      continue;
+    }
+    const absl::flat_hash_set<int64_t> component_devs =
+        CloseDeviceSetUnderOpGroups(ops, {seed_dev});
+    const std::optional<std::vector<int64_t>> component_da =  // INT_VEC_OK
+        component_devs.size() == resolved_da.size()
+            ? ExtractGroupsInClosedSet(anchor_global_da, anchor_group_size,
+                                       component_devs)
+            : std::nullopt;
+    if (!component_da.has_value() ||
+        !IsCosetIsomorphicAcrossOps(ops, resolved_devs, resolved_da,
+                                    component_devs, *component_da)) {
+      return {};
+    }
+    visited.insert(component_devs.begin(), component_devs.end());
+    layout_da.insert(layout_da.end(), component_da->begin(),
+                     component_da->end());
+  }
+  return layout_da.size() == anchor_global_da.size()
+             ? layout_da
+             : std::vector<int64_t>{};  // INT_VEC_OK
 }
 
 // Tiles a 2D attribute of positions (`replica_groups` or
@@ -317,35 +535,55 @@ std::optional<mlir::DenseIntElementsAttr> TileReplicaGroupsAttr(
   return mlir::DenseIntElementsAttr::get(tiled_type, tiled);
 }
 
+std::optional<std::vector<std::vector<int64_t>>>  // INT_VEC_OK
+BuildSubgroupTiles(absl::Span<const int64_t> op_da,
+                   absl::Span<const int64_t> global_da,
+                   absl::Span<const int64_t> resolved_da) {
+  if (!ContainsSubgroupTile(global_da, op_da)) {
+    return std::nullopt;
+  }
+  const absl::flat_hash_set<int64_t> resolved_devs(resolved_da.begin(),
+                                                   resolved_da.end());
+  if (resolved_devs.size() != resolved_da.size() ||
+      !resolved_devs.contains(op_da[0])) {
+    return std::nullopt;
+  }
+  const size_t group_size = op_da.size();
+  const std::optional<std::vector<int64_t>>  // INT_VEC_OK
+      rank_to_partition = MapLayoutGroupsToPartitions(
+          global_da, group_size, resolved_devs, resolved_da);
+  if (!rank_to_partition.has_value()) {
+    return std::nullopt;
+  }
+  const size_t num_groups = rank_to_partition->size() / group_size;
+  std::vector<std::vector<int64_t>> tiles(num_groups);  // INT_VEC_OK
+  for (size_t g = 0; g < num_groups; ++g) {
+    tiles[g].assign(rank_to_partition->begin() + g * group_size,
+                    rank_to_partition->begin() + (g + 1) * group_size);
+  }
+  return tiles;
+}
+
 // Rewrites the collectives of an op that runs on one group of a layout, whose
 // groups are `global_da` group by group, so that the program, which runs on
-// `resolved_da`, performs them on every group of the layout.
+// `resolved_da` (a union of one or more groups of `global_da`), performs them
+// on every group of the layout within `resolved_da`.
 absl::Status TileOperationOverGroups(mlir::Operation* absl_nonnull root_op,
                                      absl::Span<const int64_t> op_da,
                                      absl::Span<const int64_t> global_da,
                                      absl::Span<const int64_t> resolved_da) {
-  const int64_t group_size = op_da.size();
-  const std::optional<std::vector<int64_t>>  // INT_VEC_OK
-      rank_to_partition = BuildRankToPartition(global_da, resolved_da);
-  TT_RET_CHECK(group_size > 0 && !global_da.empty() &&
-                   global_da.size() % op_da.size() == 0 &&
-                   rank_to_partition.has_value(),
-               error::kInvalidArgument)
+  const std::optional<std::vector<std::vector<int64_t>>>  // INT_VEC_OK
+      tiles = BuildSubgroupTiles(op_da, global_da, resolved_da);
+  TT_RET_CHECK(tiles.has_value(), error::kInvalidArgument)
       << "op device assignment " << VectorToString(op_da)
       << " is not a permutation of the resolved device assignment "
       << VectorToString(resolved_da);
-  const int64_t num_groups = global_da.size() / group_size;
-  std::vector<std::vector<int64_t>> tiles(num_groups);  // INT_VEC_OK
-  for (int64_t g = 0; g < num_groups; ++g) {
-    tiles[g].assign(rank_to_partition->begin() + g * group_size,
-                    rank_to_partition->begin() + (g + 1) * group_size);
-  }
 
   absl::Status status = absl::OkStatus();
   const auto tile = [&]  // REF_CAPTURE_OK=called locally
       (mlir::DenseIntElementsAttr attr, std::string_view name, bool sort_rows) {
         std::optional<mlir::DenseIntElementsAttr> tiled =
-            TileReplicaGroupsAttr(attr, tiles, sort_rows);
+            TileReplicaGroupsAttr(attr, *tiles, sort_rows);
         if (!tiled.has_value()) {
           status = TT_ERROR(  // ERROR_COV_INFEASIBLE=collectives emit positions
                               // inside their group
@@ -417,8 +655,8 @@ ResolveDeviceAssignment(absl::Span<const OpDeviceAssignment> ops,
     } else if (resolved_da != op.device_assignment) {
       absl::Status same_set = VerifySameDeviceSet(resolved_da, op, i);
       if (!same_set.ok()) {
-        return ResolveGlobalDeviceAssignment(ops, pallas_da,
-                                             std::move(same_set));
+        return ResolveClosedSubgroupDeviceAssignment(ops, pallas_da,
+                                                     std::move(same_set));
       }
     }
   }

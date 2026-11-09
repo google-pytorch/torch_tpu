@@ -1008,6 +1008,7 @@ torch_tpu_cc_library(
         ":device_buffer",
         "//csrc/common:error_utils",
         "//csrc/ops:op_names",
+        "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/base:nullability",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/container:flat_hash_set",
