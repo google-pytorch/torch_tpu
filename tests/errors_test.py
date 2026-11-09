@@ -18621,6 +18621,75 @@ class UpsampleBilinear2dAaErrorTest(et.ErrorTestBase):
       # upon materialization:
       b[:8].sum().item()
 
+  def test_linalg_lu_solve_invalid_inputs(self):
+    lu = torch.eye(3, device=et.device(), dtype=torch.float32)
+    pivots = torch.tensor([1, 2, 3], device=et.device(), dtype=torch.int32)
+    b = torch.ones((3, 2), device=et.device(), dtype=torch.float32)
+
+    with self.subTest("out_on_cpu"):
+      out = torch.empty((3, 2), device="cpu", dtype=torch.float32)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""linalg_lu_solve(): expected output tensor to be on tpu, got cpu""",
+          gpu="""Expected all tensors to be on the same device, but got LU is on cuda:0, different from other tensors on cpu (when checking argument in method wrapper_CUDA_linalg_lu_solve_out_out)""",
+      ):
+        torch.linalg.lu_solve(lu, pivots, b, out=out)
+
+    with self.subTest("unsupported_lu_dtype"):
+      lu_int = torch.ones((3, 3), device=et.device(), dtype=torch.int32)
+      b_int = torch.ones((3, 2), device=et.device(), dtype=torch.int32)
+      out = torch.empty((3, 2), device=et.device(), dtype=torch.int32)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""linalg_lu_solve(): expected the input dtype to be float32, float64, complex64, or complex128, got int32""",
+          gpu="""torch.linalg.lu_solve: Expected a floating point or complex tensor as input. Got Int""",
+      ):
+        torch.linalg.lu_solve(lu_int, pivots, b_int, out=out)
+
+    with self.subTest("lu_b_dtype_mismatch"):
+      b_f64 = torch.ones((3, 2), device=et.device(), dtype=torch.float64)
+      out = torch.empty((3, 2), device=et.device(), dtype=torch.float64)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""linalg_lu_solve(): expected lu and b to have the same dtype, got float32 and float64""",
+          gpu="""linalg.lu_solve: Expected LU and B to have the same dtype, but found LU of type Float and B of type Double instead""",
+      ):
+        torch.linalg.lu_solve(lu, pivots, b_f64, out=out)
+
+    with self.subTest("pivots_wrong_dtype"):
+      pivots_i64 = torch.tensor(
+          [1, 2, 3], device=et.device(), dtype=torch.int64
+      )
+      out = torch.empty((3, 2), device=et.device(), dtype=torch.float32)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""linalg_lu_solve(): expected pivots dtype to be int32, got int64""",
+          gpu="""linalg.lu_solve: pivots should be a Tensor of scalar type torch.int32""",
+      ):
+        torch.linalg.lu_solve(lu, pivots_i64, b, out=out)
+
+    with self.subTest("b_rank_mismatch"):
+      b_1d = torch.ones((3,), device=et.device(), dtype=torch.float32)
+      out = torch.empty((5, 5), device=et.device(), dtype=torch.float32)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""linalg_lu_solve(): expected b to have the same number of dimensions as lu (2), got 1""",
+          gpu="""linalg.lu_solve: The input tensor B must have at least 2 dimensions.""",
+      ):
+        torch.linalg.lu_solve(lu, pivots, b_1d, out=out)
+      self.assertEqual(out.shape, (5, 5))
+
+    with self.subTest("pivots_dimension_too_low"):
+      short_pivots = torch.tensor([1, 2], device=et.device(), dtype=torch.int32)
+      out = torch.empty((5, 5), device=et.device(), dtype=torch.float32)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""linalg_lu_solve(): expected pivots size to match the size of the matrix (3), got 2""",
+          gpu="""linalg.lu_solve: Number of pivots per batch should be same as the dimension of the matrix""",
+      ):
+        torch.linalg.lu_solve(lu, short_pivots, b, out=out)
+      self.assertEqual(out.shape, (5, 5))
+
 
 class UnaryOpsErrorTest(et.ErrorTestBase):
 
