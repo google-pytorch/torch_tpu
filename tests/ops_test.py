@@ -433,9 +433,7 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.uint8: {"rtol": 4.4e-6},
     },
     "exp2": {
-        torch.bfloat16: {"rtol": 2.4e-2, "atol": 2.4e-3},
         torch.complex64: {"rtol": 3.3e-6},
-        torch.float16: {"rtol": 2.3e-3, "atol": 5.9e-4},
         torch.float32: {"rtol": 2.4e-6},
     },
     "expm1": {

@@ -17,6 +17,7 @@
 #include "csrc/ops/unary.h"
 
 #include <cstdint>
+#include <numbers>
 
 #include "absl/status/statusor.h"
 #include "c10/core/ScalarType.h"
@@ -269,17 +270,20 @@ absl::StatusOr<mlir::MlirOp> BuildTanhShlo(mlir::MlirOp input_op,
 
 absl::StatusOr<mlir::MlirOp> BuildExp2Shlo(
     mlir::MlirOp input_op, mlir::ElementType default_mlir_type) {
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp op,
-                      ConvertIfInteger(input_op, default_mlir_type));
-  mlir::MlirBuilder& builder = op.getBuilder();
-  mlir::RankedTensorType type = GetTensorTypeOrDie(op);
-  mlir::MlirOp value_2 =
-      MakeScalarConstant(builder, 2.0, type.getElementType());
-  mlir::MlirOp ln2 = mlir::stablehlo::Log(value_2);
-  TT_ASSIGN_OR_RETURN((auto [ln2_b, op_b]), ApplyBroadcastIfNeeded(ln2, op));
-  mlir::MlirOp mul_op = mlir::stablehlo::Mul(ln2_b, op_b);
+  // Half and BFloat16 inputs are promoted to Float for the actual
+  // mathematical computation.
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType computation_type,
+                      InferComputationDtype(default_mlir_type));
+
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp computation_input_op,
+                      ConvertIfInteger(input_op, computation_type));
+  TT_ASSIGN_OR_RETURN(computation_input_op,
+                      CastIfNeeded(computation_input_op, computation_type));
+
+  mlir::MlirOp ln2 = MakeConstantLike(computation_input_op, std::numbers::ln2);
+  mlir::MlirOp mul_op = mlir::stablehlo::Mul(ln2, computation_input_op);
   mlir::MlirOp result_op = mlir::stablehlo::Exp(mul_op);
-  return mlir::stablehlo::ConvertElementType(result_op, default_mlir_type);
+  return CastIfNeeded(result_op, default_mlir_type);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildLog2Shlo(
