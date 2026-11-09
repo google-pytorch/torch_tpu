@@ -65,7 +65,6 @@ from perflab import device_ops as device_ops_lib
 from perflab import discovery as discovery_lib
 from perflab import export as export_lib
 from perflab import flags as flags_lib
-from perflab import known_failures
 from perflab import measure as measure_lib
 from perflab import metrics as metrics_lib
 from perflab import mode as mode_lib
@@ -131,23 +130,6 @@ def get_out_of_memory_skip_reason(
       f" {mode.value} at batch size {out_of_memory_batch_size}, so batch size"
       f" {batch_size} is not run"
   )
-
-
-def _microbenchmark_name(
-    spec: registry_lib.BenchmarkSpec, batch_size: int | None
-) -> str | None:
-  """Returns the key that a case exports its results under, if any.
-
-  Args:
-    spec: The benchmark of the case; its `microbenchmark_name` keys all of its
-      results.
-    batch_size: The batch size of a batch sweep case, which also keys its
-      results (`bs<N>`), or None.
-  """
-  keys = [spec.microbenchmark_name]
-  if batch_size is not None:
-    keys.append(export_lib.batch_size_key(batch_size))
-  return "_".join(k for k in keys if k) or None
 
 
 class Outcome(enum.Enum):
@@ -491,14 +473,13 @@ class BaseBenchmarkTest(
       batch_size: The batch size of a batch sweep case, which keys its results.
     """
     self._report(
-        export_lib.BenchmarkData(
-            spec_name=spec.name,
+        export_lib.make_benchmark_data(
+            spec,
             platform=self.platform,
             framework=self.framework,
             run_mode=mode,
             succeeded=succeeded,
-            metrics=metrics or metrics_lib.PerformanceMetrics(),
-            microbenchmark_name=_microbenchmark_name(spec, batch_size),
+            metrics=metrics,
             batch_size=batch_size,
         )
     )
@@ -551,14 +532,12 @@ class BaseBenchmarkTest(
       skipped: bool = False,
   ) -> export_lib.BenchmarkData:
     """Returns the record of a batch sweep case that measured no metrics."""
-    return export_lib.BenchmarkData(
-        spec_name=spec.name,
+    return export_lib.make_benchmark_data(
+        spec,
         platform=self.platform,
         framework=self.framework,
         run_mode=mode,
         succeeded=True,
-        metrics=metrics_lib.PerformanceMetrics(),
-        microbenchmark_name=_microbenchmark_name(spec, batch_size),
         batch_size=batch_size,
         out_of_memory=out_of_memory,
         skipped=skipped,
@@ -588,15 +567,7 @@ class BaseBenchmarkTest(
     """
     if flags_lib.DRY_RUN.value:
       return
-    failure_reason = known_failures.get_known_failure_reason(
-        spec.name,
-        framework=self.framework,
-        device_kind=target_lib.make_target(self.platform).device_kind,
-        run_mode=mode,
-    )
-    if failure_reason is None:
-      return
-    export_lib.export_skip(
+    export_lib.export_known_failure_skip(
         spec_name=spec.name,
         platform=self.platform,
         framework=self.framework,

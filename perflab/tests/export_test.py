@@ -14,12 +14,14 @@
 
 """Tests for harness/export.py."""
 
+import types
 from unittest import mock
 
 from absl.testing import absltest
 from torch_tpu._internal.benchmarks import export_adapter
 from perflab import common
 from perflab import export as export_lib
+from perflab import known_failures
 from perflab import metrics as metrics_lib
 from perflab import mode as mode_lib
 from perflab import target as target_lib
@@ -138,6 +140,126 @@ class ExportTest(seed_test_utils.RepeatableTest):
         framework="torch",
         run_mode="eager_optimized",
     )
+
+  @mock.patch.object(export_adapter, "export_benchmark_skip")
+  def test_export_known_failure_skip(self, mock_export_benchmark_skip):
+    failures = (
+        known_failures.KnownFailure(
+            benchmark="known_bad",
+            framework=mode_lib.Framework.TORCH,
+            device_kind=target_lib.DeviceKind.TPU,
+            run_modes=frozenset({common.RunMode.COMPILED}),
+            reason="simulated TPU compiled failure",
+        ),
+    )
+    with mock.patch.object(known_failures, "KNOWN_FAILURES", failures):
+      export_lib.export_known_failure_skip(
+          spec_name="known_bad",
+          platform=target_lib.Platform.V7_1X1X1,
+          framework=mode_lib.Framework.TORCH,
+          run_mode=common.RunMode.COMPILED,
+      )
+    mock_export_benchmark_skip.assert_called_once_with(
+        spec_name="known_bad",
+        platform="v7_1x1x1",
+        framework="torch",
+        run_mode="compiled",
+    )
+
+  @mock.patch.object(export_adapter, "export_benchmark_skip")
+  def test_export_known_failure_skip_ignores_other_skips(
+      self, mock_export_benchmark_skip
+  ):
+    failures = (
+        known_failures.KnownFailure(
+            benchmark="known_bad",
+            framework=mode_lib.Framework.TORCH,
+            device_kind=target_lib.DeviceKind.TPU,
+            run_modes=frozenset({common.RunMode.COMPILED}),
+            reason="simulated TPU compiled failure",
+        ),
+    )
+    with mock.patch.object(known_failures, "KNOWN_FAILURES", failures):
+      for platform, run_mode in (
+          # Another run mode, and another device kind.
+          (target_lib.Platform.V7_1X1X1, common.RunMode.EAGER_DEFAULT),
+          (target_lib.Platform.B200_1, common.RunMode.COMPILED),
+      ):
+        export_lib.export_known_failure_skip(
+            spec_name="known_bad",
+            platform=platform,
+            framework=mode_lib.Framework.TORCH,
+            run_mode=run_mode,
+        )
+    mock_export_benchmark_skip.assert_not_called()
+
+  def test_make_benchmark_data(self):
+    spec = types.SimpleNamespace(name="layer", microbenchmark_name="shape_1")
+    perf_metrics = metrics_lib.PerformanceMetrics(e2e_wall_time_seconds=3.0)
+
+    data = export_lib.make_benchmark_data(
+        spec,
+        platform=target_lib.Platform.V7_1X1X1,
+        framework=mode_lib.Framework.TORCH,
+        run_mode=common.RunMode.COMPILED,
+        succeeded=True,
+        metrics=perf_metrics,
+    )
+
+    self.assertEqual(
+        data,
+        export_lib.BenchmarkData(
+            spec_name="layer",
+            platform=target_lib.Platform.V7_1X1X1,
+            framework=mode_lib.Framework.TORCH,
+            run_mode=common.RunMode.COMPILED,
+            succeeded=True,
+            metrics=perf_metrics,
+            microbenchmark_name="shape_1",
+        ),
+    )
+
+  def test_make_benchmark_data_defaults_to_empty_metrics(self):
+    spec = types.SimpleNamespace(name="model", microbenchmark_name=None)
+
+    data = export_lib.make_benchmark_data(
+        spec,
+        platform=target_lib.Platform.B200_8,
+        framework=mode_lib.Framework.TORCH,
+        run_mode=common.RunMode.COMPILED,
+        succeeded=False,
+    )
+
+    self.assertFalse(data.succeeded)
+    self.assertEqual(data.metrics, metrics_lib.PerformanceMetrics())
+    self.assertIsNone(data.microbenchmark_name)
+    self.assertIsNone(data.batch_size)
+
+  def test_make_benchmark_data_batch_sweep_case(self):
+    data = [
+        export_lib.make_benchmark_data(
+            types.SimpleNamespace(name="layer", microbenchmark_name=name),
+            platform=target_lib.Platform.V7_1X1X1,
+            framework=mode_lib.Framework.TORCH,
+            run_mode=common.RunMode.COMPILED,
+            succeeded=True,
+            batch_size=16,
+            out_of_memory=out_of_memory,
+            skipped=skipped,
+        )
+        for name, out_of_memory, skipped in (
+            ("shape_1", False, False),
+            (None, True, False),
+            (None, False, True),
+        )
+    ]
+
+    self.assertEqual(
+        [d.microbenchmark_name for d in data], ["shape_1_bs16", "bs16", "bs16"]
+    )
+    self.assertEqual([d.batch_size for d in data], [16, 16, 16])
+    self.assertEqual([d.out_of_memory for d in data], [False, True, False])
+    self.assertEqual([d.skipped for d in data], [False, False, True])
 
   @mock.patch.object(export_adapter, "export_benchmark_results")
   def test_export_batch_sweep_case(self, mock_export_benchmark_results):
