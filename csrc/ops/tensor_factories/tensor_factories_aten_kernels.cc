@@ -35,12 +35,14 @@
 #include "c10/core/ScalarType.h"
 #include "c10/core/TensorImpl.h"
 #include "csrc/common/cache_key.h"
+#include "csrc/common/context_states.h"
 #include "csrc/common/device_type.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
 #include "csrc/eager/device_buffer.h"
+#include "csrc/eager/eager_mode.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/macros/kernel.h"
@@ -142,6 +144,17 @@ at::Tensor CreateConstantFilledTensor(at::IntArrayRef size, double scalar_val,
                                       std::string_view op_name_str) {
   ValidateFactoryOptions(out_dtype, layout_opt, device_opt, pin_memory_opt,
                          op_name_str);
+  if (size.empty() && !c10::isComplexType(out_dtype) &&
+      GetEagerMode() != EagerMode::kInternalDeferAll) {
+    PromotedScalar promoted = PromoteScalar(at::Scalar(scalar_val));
+    auto cached_tensor_or = promoted.GetTensor(out_dtype);
+    if (cached_tensor_or.ok()) {
+      auto base_buf_or = GetBaseBuffer(*cached_tensor_or);
+      if (base_buf_or.ok()) {
+        return MakeTensor(*base_buf_or);
+      }
+    }
+  }
   auto op_builder =
       [size_vec = CopyIntVector(size), out_dtype,
        scalar_val](mlir::MlirBuilder& builder) -> absl::StatusOr<mlir::MlirOp> {
