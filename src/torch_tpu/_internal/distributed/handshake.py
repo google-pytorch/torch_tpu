@@ -32,7 +32,6 @@ from typing import Any, Final, TypeVar, cast
 
 from absl import logging
 import portpicker
-from torch._subclasses import fake_tensor
 import torch.distributed as dist
 from torch_tpu._internal import env
 from torch_tpu._internal.distributed import process_group_utils
@@ -42,7 +41,6 @@ import zmq.asyncio
 
 ZMQError = error.ZMQError
 
-unset_fake_temporarily = fake_tensor.unset_fake_temporarily
 _T = TypeVar("_T")
 
 _COORDINATOR_RANK = 0  # Default coordinator rank, can be overridden.
