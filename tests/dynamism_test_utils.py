@@ -55,6 +55,65 @@ COMPILE_GRAD = DynamismMode.COMPILE_GRAD
 ALL_MODES = frozenset(DynamismMode)
 
 
+class SkipCategory(enum.Enum):
+  """Category of the reason why a dynamism test is skipped."""
+
+  # The op is in `DYNAMISM_NOT_APPLICABLE_OPS`.
+  NOT_APPLICABLE = "not_applicable"
+  # The op is in `DYNAMISM_DENY_LISTS`.
+  DENY_LISTED = "deny_listed"
+  # An input tensor has a dtype that is not supported with dynamism.
+  UNSUPPORTED_DTYPE = "unsupported_dtype"
+  # An input tensor is empty.
+  EMPTY_TENSOR = "empty_tensor"
+  # The primary input is not a tensor (e.g., the size of a factory op).
+  NOT_TENSOR_INPUT = "not_tensor_input"
+  # The primary input has no dimension that can be marked dynamic.
+  NO_CANDIDATES = "no_candidates"
+  # `FakeTensorMode` cannot trace the op symbolically.
+  UNTRACEABLE = "untraceable"
+  # No marking plan matched `--dynamism_plan_filter`.
+  NO_PLAN_MATCHED = "no_plan_matched"
+  # Gradients cannot be computed for the sample.
+  NO_GRAD = "no_grad"
+  # No golden samples exist for the op variant and dtype (compiled mode only;
+  # eager mode fails the test instead).
+  NO_GOLDEN_SAMPLES = "no_golden_samples"
+  # The op variant is in `_COMPILED_DENY_LIST` in op_testing.py, so compiled
+  # modes do not test it.
+  COMPILED_DENY_LISTED = "compiled_deny_listed"
+  # The op test excludes every dtype applicable to the mode (e.g., all floating
+  # point dtypes when computing gradients).
+  ALL_DTYPES_EXCLUDED = "all_dtypes_excluded"
+  # The op failed on the golden device for the sample, and the op test does not
+  # check op failures.
+  GOLDEN_FAILED = "golden_failed"
+  # The op test's `skip_if` function filtered out the sample.
+  FILTERED_BY_SKIP_IF = "filtered_by_skip_if"
+
+
+class DynamismSkip(str):
+  """A dynamism skip reason tagged with its `SkipCategory`.
+
+  Subclasses `str` so that it can be passed to `skipTest` and compared to plain
+  strings.
+  """
+
+  category: SkipCategory
+
+  def __new__(cls, reason: str, category: SkipCategory) -> "DynamismSkip":
+    skip = super().__new__(cls, reason)
+    skip.category = category
+    return skip
+
+
+class UntraceableOpError(Exception):
+  """Raised when `FakeTensorMode` cannot trace an op to discover marking plans.
+
+  The original exception is available as `__cause__`.
+  """
+
+
 @dataclasses.dataclass(frozen=True, order=True)
 class TensorDim:
   """Identifies a 0-based dimension on an input tensor.
@@ -398,7 +457,7 @@ def _get_canonical_input_value(
 
 def verify_dtype_supports_dynamism(
     op_info: core.OpInfo, dtype: torch.dtype
-) -> None | str:
+) -> DynamismSkip | None:
   """Verifies that `dtype` is supported for `op_info` under dynamism.
 
   Args:
@@ -406,17 +465,21 @@ def verify_dtype_supports_dynamism(
     dtype: The input dtype to check.
 
   Returns:
-    None if `dtype` is supported for dynamism testing, or a skip reason string.
+    None if `dtype` is supported for dynamism testing, or a skip reason.
   """
+
+  def skip(reason: str) -> DynamismSkip:
+    return DynamismSkip(reason, SkipCategory.UNSUPPORTED_DTYPE)
+
   # TODO: b/449736443 - [XLA] Crash in complex rewriter.
   if dtype in (torch.complex64, torch.complex128):
-    return f"{op_info.name} op is not supported with dtype {dtype}."
+    return skip(f"{op_info.name} op is not supported with dtype {dtype}.")
   return None
 
 
 def _check_tensor_supported_for_dynamism(
     op_info: core.OpInfo, tensor: torch.Tensor
-) -> None | str:
+) -> DynamismSkip | None:
   """Verifies that `tensor` has no dtype or shape hazards for dynamism.
 
   Args:
@@ -424,21 +487,24 @@ def _check_tensor_supported_for_dynamism(
     tensor: An input tensor passed to the op (either primary or secondary).
 
   Returns:
-    None if `tensor` is safe for dynamism testing, or a skip reason string.
+    None if `tensor` is safe for dynamism testing, or a skip reason.
   """
   skip_dtype = verify_dtype_supports_dynamism(op_info, tensor.dtype)
   if skip_dtype is not None:
     return skip_dtype
   # TODO: b/449736443 - Empty tensor handling needs reworking.
   if tensor.numel() == 0:
-    return "Empty tensors are currently not supported."
+    return DynamismSkip(
+        "Empty tensors are currently not supported.",
+        SkipCategory.EMPTY_TENSOR,
+    )
 
   return None
 
 
 def _should_skip_input_marking(
     op_info: core.OpInfo, input_value: torch.Tensor | Any
-) -> None | str:
+) -> DynamismSkip | None:
   """Verifies that the input_value is a valid primary input for dynamism.
 
   Args:
@@ -446,17 +512,23 @@ def _should_skip_input_marking(
     input_value: The primary input value for the op test.
 
   Returns:
-    None if the op is safe to run, or a string containing the reason why
-    the test is not safe to run.
+    None if the op is safe to run, or the reason why the test is not safe to
+    run.
   """
 
   if not isinstance(input_value, torch.Tensor):
     # Some ops take scalar inputs
     # empty, empty_strided, full, tril, ones, zeros, stack, tril_indices.
-    return f"Input value is not a tensor, got {type(input_value)}."
+    return DynamismSkip(
+        f"Input value is not a tensor, got {type(input_value)}.",
+        SkipCategory.NOT_TENSOR_INPUT,
+    )
   candidates = _get_dynamic_dimension_candidates(input_value)
   if not candidates:
-    return "No valid input dimensions to mark dynamic."
+    return DynamismSkip(
+        "No valid input dimensions to mark dynamic.",
+        SkipCategory.NO_CANDIDATES,
+    )
   return _check_tensor_supported_for_dynamism(op_info, input_value)
 
 
@@ -855,7 +927,7 @@ def _find_reason(
 def verify_op_supports_dynamism(
     op_info: core.OpInfo,
     mode: DynamismMode = DynamismMode.EAGER,
-) -> None | str:
+) -> DynamismSkip | None:
   """Checks if an op is supported in `mode` with dynamism.
 
   Args:
@@ -868,15 +940,17 @@ def verify_op_supports_dynamism(
   display_name = op_deny_list_key(op_info)
   reason = _find_reason(DYNAMISM_NOT_APPLICABLE_OPS, op_info, mode)
   if reason is not None:
-    return (
+    return DynamismSkip(
         f"Dynamism is not applicable to {display_name} in {mode.value} mode:"
-        f" {reason}."
+        f" {reason}.",
+        SkipCategory.NOT_APPLICABLE,
     )
   reason = _find_reason(DYNAMISM_DENY_LISTS, op_info, mode)
   if reason is not None:
-    return (
+    return DynamismSkip(
         f"Op {display_name} is not supported in {mode.value} dynamism mode:"
-        f" {reason}."
+        f" {reason}.",
+        SkipCategory.DENY_LISTED,
     )
   return None
 
@@ -886,7 +960,7 @@ def verify_sample_supports_dynamism(
     input_value: torch.Tensor,
     args: Sequence[Any],
     kwargs: Mapping[str, Any] | None = None,
-) -> None | str:
+) -> DynamismSkip | None:
   """Checks if a sample input is supported with dynamism.
 
   Args:
@@ -918,7 +992,10 @@ def verify_sample_supports_dynamism(
   if skip_input:
     return skip_input
   if not DynamicOpInfo.get(op_info).get_candidate_dims(input_value, args):
-    return "No valid input dimensions to mark dynamic."
+    return DynamismSkip(
+        "No valid input dimensions to mark dynamic.",
+        SkipCategory.NO_CANDIDATES,
+    )
 
   # Valid testcase!
   return None
@@ -1279,6 +1356,10 @@ class DynamicOpInfo:
     Returns:
       A sequence of validated `DynamicMarkingPlan` instances, or `()` if no
       dimensions on the canonical input tensor can be marked dynamic.
+
+    Raises:
+      UntraceableOpError: If `FakeTensorMode` cannot trace the op at all, e.g.,
+        because its output shape depends on input values.
     """
     candidates = list(self.get_candidate_dims(input_value, args))
     if not candidates:
@@ -1301,8 +1382,11 @@ class DynamicOpInfo:
       return self._validate_coupled_plans(
           candidates, proposed_by_candidate, op_args, effective_op_func, mode
       )
-    except _UNTRACEABLE_FAKE_OP_EXCEPTIONS:
-      return ()
+    except _UNTRACEABLE_FAKE_OP_EXCEPTIONS as e:
+      raise UntraceableOpError(
+          f"FakeTensorMode cannot trace {self.op_info.name} in {mode.value}"
+          f" mode: {type(e).__name__}: {e}"
+      ) from e
 
   def mark_dynamic(
       self,
@@ -1889,6 +1973,9 @@ def generate_exhaustive_input_marking_plans(
   Returns:
     A sequence of `DynamicMarkingPlan` instances for the sample, or `()` if no
     dimensions can be marked dynamic.
+
+  Raises:
+    UntraceableOpError: If `FakeTensorMode` cannot trace the op at all.
   """
   return DynamicOpInfo.get(op_info).generate_exhaustive_marking_plans(
       input_value,
