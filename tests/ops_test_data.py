@@ -302,6 +302,19 @@ SDPA_CONFIGS = (
         attn_bias_type=torch.bfloat16,
         requires_grad=False,
     ),
+    # OPT-125m training: a mask with unaligned sequence lengths and a head dim
+    # of 64, which ran out of scoped VMEM on TPU v7 (b/582536640).
+    SdpaConfig(
+        batch_size=2,
+        q_seq_len=2046,
+        kv_seq_len=2046,
+        q_num_heads=12,
+        kv_num_heads=12,
+        qk_head_dim=64,
+        v_head_dim=64,
+        is_causal=False,
+        attn_bias_type=torch.bfloat16,
+    ),
     # Long sequence length configs
     SdpaConfig(
         q_seq_len=8192,

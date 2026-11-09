@@ -89,6 +89,9 @@ int64_t GetVmemLimitBytes() { return GetFlashDeviceVmemLimitBytes(); }
 constexpr int64_t kMinHardwareTileSize = kFlashMinHardwareTileSize;
 // Minimum block size produced by CreateTiling's loop.
 constexpr int64_t kMinHeuristicTileSize = kFlashMinSplitTileSize;
+// Lane width of the VMEM tiles, to which arrays pad their minor dim.
+constexpr int64_t kLanes = 128;
+constexpr int64_t kF32Bytes = 4;
 
 int64_t RoundUpToTileSize(int64_t seq_len, int64_t tile_size) {
   return llvm::divideCeil(seq_len, tile_size) * tile_size;
@@ -104,21 +107,80 @@ int64_t GetInitialTileSize(int64_t seq_len) {
   return RoundUpToTileSize(seq_len, kMinHeuristicTileSize);
 }
 
-int64_t EstimateTileVmemBytes(int64_t qt, int64_t kt, int64_t head_dim,
-                              bool is_f32, bool has_mask, bool is_backward,
-                              bool has_dropout = false) {
-  int64_t elem_size = is_f32 ? 4 : 2;
-  // x2 as the inputs / outputs are double buffered.
-  int64_t linear_bytes = 2 * (qt * head_dim * (3 * elem_size + 4) +
-                              kt * head_dim * (2 * elem_size) + qt * 1024);
-  // 4 bytes for float32.
-  int64_t logits_bytes = 4 * qt * kt;
-  int64_t mask_bytes = has_mask ? elem_size * qt * kt : 0;
-  // 2 live 32-bit [qt, kt] tiles (S, P); dropout adds ~4 more for the
-  // per-element intermediates of the mask.
-  int64_t quadratic_bytes = (has_dropout ? 6 : 2) * logits_bytes + mask_bytes;
-  int64_t total = linear_bytes + quadratic_bytes;
-  return is_backward ? 2 * total : total;
+// Bytes of a [rows, cols] array in VMEM. Mosaic lays out VMEM arrays in tiles
+// of 8 32-bit sublanes by 128 lanes, so the minor dim is padded to a multiple
+// of 128 (a head dim of 64 takes as much VMEM as one of 128), and a single row
+// (e.g. the LSE) to a whole tile.
+int64_t VmemArrayBytes(int64_t rows, int64_t cols, int64_t elem_size) {
+  const int64_t sublanes = 8 * kF32Bytes / elem_size;
+  return RoundUpToTileSize(rows, sublanes) * RoundUpToTileSize(cols, kLanes) *
+         elem_size;
+}
+
+// The parameters of a flash attention call, other than the tile sizes, that
+// determine the VMEM footprint of its kernels.
+struct TileVmemParams {
+  int64_t qk_head_dim;
+  int64_t vo_head_dim;
+  // Bytes per element of q, k, v, the output and the mask.
+  int64_t elem_size;
+  bool has_mask = false;
+  // Whether the mask is broadcast along the query / key sequence (e.g. a
+  // [B, 1, 1, S] key padding mask), which makes its blocks a single row /
+  // column (see BiasBlockShape).
+  bool mask_q_broadcast = false;
+  bool mask_kv_broadcast = false;
+  bool has_dropout = false;
+  bool is_backward = false;
+};
+
+// Upper bound of the scoped VMEM that the flash attention kernels need for
+// [qt, kt] tiles. It follows the kernel specs: Mosaic double buffers the
+// blocks of the pipelined operands, allocates the scratch operands once, and
+// spills the vector values that don't fit in vregs to VMEM.
+int64_t EstimateTileVmemBytes(const TileVmemParams& params, int64_t qt,
+                              int64_t kt) {
+  const int64_t elem_size = params.elem_size;
+  const int64_t d_qk = params.qk_head_dim;
+  const int64_t d_vo = params.vo_head_dim;
+  // Blocks of the pipelined q, k, v, output and LSE operands.
+  const int64_t block_bytes = VmemArrayBytes(qt, d_qk, elem_size) +
+                              VmemArrayBytes(kt, d_qk, elem_size) +
+                              VmemArrayBytes(kt, d_vo, elem_size) +
+                              VmemArrayBytes(qt, d_vo, elem_size) +
+                              VmemArrayBytes(1, qt, kF32Bytes);
+  // Scratch: the output accumulator and the lane-replicated row statistics m
+  // and l.
+  const int64_t scratch_bytes = VmemArrayBytes(qt, d_vo, kF32Bytes) +
+                                2 * VmemArrayBytes(qt, kLanes, kF32Bytes);
+  // Spilled values:
+  //  * The q tile and the softmax state (m, l, acc), which are live across the
+  //    KV sub-blocks, plus one more q-sized tile for the smaller per-step
+  //    values (K / V tiles, PV, new row statistics).
+  //  * The f32 logits-shaped tiles, of which the logits S and probabilities P
+  //    are live at once. The mask, widened to f32 (and zero-padded on a ragged
+  //    tail), is only live with S, before P exists. The tiles are sized
+  //    [qt, kt] rather than [qt, kc], as the scheduler may overlap the
+  //    [qt, kc] sub-blocks of the unrolled KV loop. Dropout adds ~4 more for
+  //    the per-element intermediates of its keep mask.
+  const int64_t num_logits_tiles = params.has_dropout ? 6 : 2;
+  const int64_t value_bytes =
+      2 * VmemArrayBytes(qt, d_qk, elem_size) + scratch_bytes +
+      num_logits_tiles * VmemArrayBytes(qt, kt, kF32Bytes);
+  int64_t total_bytes = 2 * block_bytes + scratch_bytes + value_bytes;
+  // The backward kernels have about twice the operands (dO, LSE, di, dK / dV
+  // or dQ) and live logits-shaped tiles (dP, dS) of the forward kernel.
+  if (params.is_backward) {
+    total_bytes *= 2;
+  }
+  // The mask is a pipelined operand too, so its blocks are double buffered.
+  // This is counted once: the two backward kernels are compiled separately.
+  if (params.has_mask) {
+    total_bytes +=
+        2 * VmemArrayBytes(params.mask_q_broadcast ? 1 : qt,
+                           params.mask_kv_broadcast ? 1 : kt, elem_size);
+  }
+  return total_bytes;
 }
 
 // Heuristic to determine the KV compute sub-tile size.
@@ -140,17 +202,15 @@ int64_t GetKvComputeTileSize(int64_t kt) {
   return kMinHardwareTileSize;
 }
 
-Tiling CreateTiling(int64_t q_seq_len, int64_t k_seq_len, int64_t head_dim,
-                    bool is_f32, bool has_mask, bool is_backward,
-                    bool has_dropout = false,
+Tiling CreateTiling(int64_t q_seq_len, int64_t k_seq_len,
+                    const TileVmemParams& params,
                     std::optional<int64_t> vmem_limit_override = std::nullopt) {
   const int64_t vmem_limit = vmem_limit_override.value_or(GetVmemLimitBytes());
 
   int64_t qt = GetInitialTileSize(q_seq_len);
   int64_t kt = GetInitialTileSize(k_seq_len);
 
-  while (EstimateTileVmemBytes(qt, kt, head_dim, is_f32, has_mask, is_backward,
-                               has_dropout) > vmem_limit &&
+  while (EstimateTileVmemBytes(params, qt, kt) > vmem_limit &&
          (qt > kMinHeuristicTileSize || kt > kMinHeuristicTileSize)) {
     if (qt > kt && qt > kMinHeuristicTileSize) {
       qt = std::max(kMinHeuristicTileSize,
@@ -232,16 +292,31 @@ mlir::MlirOp PadBias(mlir::MlirOp bias, int64_t padded_q_len,
   return bias;
 }
 
-Tiling CreateTiling(mlir::MlirOp query, mlir::MlirOp key, bool has_mask,
-                    bool is_backward = false, bool has_dropout = false) {
-  auto query_type = GetTensorTypeOrDie(query);
-  auto key_type = GetTensorTypeOrDie(key);
-  int64_t q_seq_len = query_type.getShape()[query_type.getRank() - 2];
-  int64_t k_seq_len = key_type.getShape()[key_type.getRank() - 2];
-  int64_t head_dim = query_type.getShape()[query_type.getRank() - 1];
-  bool is_f32 = query_type.getElementType().isF32();
-  return CreateTiling(q_seq_len, k_seq_len, head_dim, is_f32, has_mask,
-                      is_backward, has_dropout);
+Tiling CreateTiling(mlir::MlirOp query, mlir::MlirOp key, mlir::MlirOp value,
+                    const std::optional<mlir::MlirOp>& attn_bias,
+                    bool is_backward, bool has_dropout) {
+  const auto query_type = GetTensorTypeOrDie(query);
+  const auto key_type = GetTensorTypeOrDie(key);
+  const auto value_type = GetTensorTypeOrDie(value);
+  const int64_t q_seq_len = query_type.getShape()[query_type.getRank() - 2];
+  const int64_t k_seq_len = key_type.getShape()[key_type.getRank() - 2];
+  TileVmemParams params{
+      .qk_head_dim = query_type.getShape()[query_type.getRank() - 1],
+      .vo_head_dim = value_type.getShape()[value_type.getRank() - 1],
+      .elem_size = query_type.getElementType().isF32() ? 4 : 2,
+      .has_mask = attn_bias.has_value(),
+      .has_dropout = has_dropout,
+      .is_backward = is_backward,
+  };
+  if (attn_bias.has_value()) {
+    // As in CreateFlashAttnConfig, size-1 dims of the mask are broadcast.
+    const llvm::ArrayRef<int64_t> mask_shape =
+        GetTensorTypeOrDie(*attn_bias).getShape();
+    const int64_t mask_rank = mask_shape.size();
+    params.mask_q_broadcast = mask_rank < 2 || mask_shape[mask_rank - 2] == 1;
+    params.mask_kv_broadcast = mask_rank < 1 || mask_shape[mask_rank - 1] == 1;
+  }
+  return CreateTiling(q_seq_len, k_seq_len, params);
 }
 
 // Unpacks a 2-element i64 tensor `[seed, offset]` into a 4-element i32 tensor
@@ -440,9 +515,9 @@ CreateFlashAttentionKernelImpl(const at::Tensor& query, const at::Tensor& key,
       rng_state_mlir = inputs[idx++];
     }
 
-    const auto tiling = CreateTiling(query_mlir, key_mlir,
-                                     /*has_mask=*/attn_bias_mlir.has_value(),
-                                     /*is_backward=*/false, has_dropout);
+    const auto tiling =
+        CreateTiling(query_mlir, key_mlir, value_mlir, attn_bias_mlir,
+                     /*is_backward=*/false, has_dropout);
     TT_ASSIGN_OR_RETURN(
         FlashAttnConfig config,
         CreateFlashAttnConfig(query_mlir, key_mlir, value_mlir, attn_bias_mlir,
@@ -655,9 +730,9 @@ CreateFlashAttentionBackwardKernel(
       philox_offset_mlir = inputs[idx++];
     }
 
-    const auto tiling = CreateTiling(query_mlir, key_mlir,
-                                     /*has_mask=*/attn_bias_mlir.has_value(),
-                                     /*is_backward=*/true, has_dropout);
+    const auto tiling =
+        CreateTiling(query_mlir, key_mlir, value_mlir, attn_bias_mlir,
+                     /*is_backward=*/true, has_dropout);
     TT_ASSIGN_OR_RETURN(
         FlashAttnConfig config,
         CreateFlashAttnConfig(query_mlir, key_mlir, value_mlir, attn_bias_mlir,
