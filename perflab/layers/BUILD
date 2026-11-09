@@ -34,13 +34,17 @@ torch_tpu_py_library(
     name = "layers",
     srcs = [
         "__init__.py",
+        "attention.py",
         "linear.py",
+        "normalization.py",
     ],
     allow_multiple_srcs = True,
     deps = [
+        "//perflab:target",
         "//perflab/layer_utils:builders",
         "//perflab/layer_utils:configs",
         "//perflab/layer_utils:registration",
+        "//shims/torch:pytorch",
     ],
 )
 
