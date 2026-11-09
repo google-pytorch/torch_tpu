@@ -22,6 +22,8 @@
 #include "csrc/common/env_vars.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/mlir/instrumentation.h"
+#include "csrc/mlir/passes/canonicalize_gather_scatter_reductions/canonicalize_gather_scatter_reductions.h"  // NOLINT
+#include "csrc/mlir/passes/canonicalize_layouts_and_reshapes/canonicalize_layouts_and_reshapes.h"  // NOLINT
 #include "csrc/mlir/passes/fold_concat_softmax.h"
 #include "csrc/mlir/passes/guard_zero_operand_custom_calls.h"
 #include "csrc/mlir/passes/lower_separable_gather_to_dot.h"
@@ -64,6 +66,18 @@ void AddShloPasses(mlir::OpPassManager& pm) {
   pm.addNestedPass<mlir::func::FuncOp>(createLowerSeparableGatherToDotPass());
   pm.addNestedPass<mlir::func::FuncOp>(
       mlir::stablehlo::createStablehloTargetIndependentOptimizationPass());
+  if (GetBooleanEnvOnce<
+          kTorchTpuInternalEnableCanonicalizeGatherScatterReductionsEnvVar>()
+          .value_or(true)) {
+    pm.addNestedPass<mlir::func::FuncOp>(
+        createCanonicalizeGatherScatterReductionsPass());
+  }
+  if (GetBooleanEnvOnce<
+          kTorchTpuInternalEnableCanonicalizeLayoutsAndReshapesEnvVar>()
+          .value_or(true)) {
+    pm.addNestedPass<mlir::func::FuncOp>(
+        createCanonicalizeLayoutsAndReshapesPass());
+  }
   pm.addNestedPass<mlir::func::FuncOp>(createFoldConcatSoftmaxPass());
 }
 
