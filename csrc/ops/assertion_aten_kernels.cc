@@ -30,6 +30,7 @@
 #include "csrc/eager/current_stream.h"
 #include "csrc/eager/eager_mode.h"
 #include "csrc/eager/events_queue.h"
+#include "csrc/eager/graph_capture_state.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/macros/kernel.h"
@@ -55,10 +56,14 @@ void ValidateAssertionInput(const at::Tensor& self) {
 // the host. Returns false during graph compilation or when dealing with
 // symbolic / placeholder tensors (e.g. during FX graph tracing or
 // torch.compile).
+//
+// Also returns false while the current thread captures a
+// `torch.accelerator.Graph`: the condition is only known when the graph
+// replays, and the replays of a graph do not check assertions.
 bool ShouldScheduleAsyncCheck(const at::Tensor& self) {
   const EagerMode mode = GetEagerMode();
   if (mode == EagerMode::kInternalCompileFxGraph ||
-      mode == EagerMode::kInternalDeferAll) {
+      mode == EagerMode::kInternalDeferAll || IsCurrentThreadCapturingGraph()) {
     return false;
   }
   const auto buffer_ref_or = GetBuffer(self);

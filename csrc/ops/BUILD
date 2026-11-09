@@ -386,6 +386,7 @@ torch_tpu_cc_library(
         "//csrc/eager:current_stream",
         "//csrc/eager:eager_mode",
         "//csrc/eager:events_queue",
+        "//csrc/eager:graph_capture_state",
         "//csrc/eager:structured_log_buffer",
         "//csrc/eager:tensor_to_buffer",
         "//csrc/ops/macros:kernel",
