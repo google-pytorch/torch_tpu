@@ -42,9 +42,10 @@ struct TestCase {
 
 using NonzeroIndicesTest = ::testing::TestWithParam<TestCase>;
 
-// Execution and caching are tested through torch.nonzero in
-// tests/dynamic_ops_test.py; this covers compatibility checks that
-// torch.nonzero cannot reach.
+// Execution, caching and compatibility with default layouts are tested through
+// torch.nonzero in tests/dynamic_ops_test.py, and the shapeless key fixes the
+// number, ranks and dtypes of the operands; this covers the compatibility
+// checks that neither can reach.
 TEST_P(NonzeroIndicesTest, IsCompatible) {
   EXPECT_EQ(GetNonzeroUnboundedDynamicKernel().metadata.is_compatible(
                 GetParam().inputs, GetParam().outputs),
@@ -54,31 +55,13 @@ TEST_P(NonzeroIndicesTest, IsCompatible) {
 INSTANTIATE_TEST_SUITE_P(
     NonzeroIndicesTests, NonzeroIndicesTest,
     testing::ValuesIn<TestCase>({
-        {.expected = true},
         // Default layouts differ from the kernel's, overridden to match.
         {.inputs = {WithLayout(Shape({4, 4}, ElementType::F32), {1, 0},
                                {8, 128})},
          .outputs = {WithLayout(Shape({2, 2}, ElementType::I64), {0, 1},
                                 {2, 128})},
          .expected = true},
-        {.inputs = {}},
-        {.inputs = {Shape({17, 257}, ElementType::F32),
-                    Shape({17, 257}, ElementType::F32)}},
-        {.inputs = {Shape({16}, ElementType::F32)}},
-        {.inputs = {Shape({2, 4, 4}, ElementType::F32)}},
-        {.inputs = {Shape({17, 257}, ElementType::BF16)}},
-        {.inputs = {WithLayout(Shape({17, 257}, ElementType::F32), {1, 0},
-                               {4, 128})}},
-        {.inputs = {WithLayout(Shape({17, 257}, ElementType::F32), {0, 1},
-                               {8, 128})}},
-        {.outputs = {}},
-        {.outputs = {Shape({5, 2}, ElementType::I64),
-                     Shape({5, 2}, ElementType::I64)}},
-        {.outputs = {Shape({5}, ElementType::I64)}},
         {.outputs = {Shape({5, 3}, ElementType::I64)}},
-        {.outputs = {Shape({5, 2}, ElementType::I32)}},
-        {.outputs = {WithLayout(Shape({5, 2}, ElementType::I64), {1, 0},
-                                {2, 128})}},
         {.outputs = {WithLayout(Shape({5, 2}, ElementType::I64), {0, 1},
                                 {4, 128})}},
     }));

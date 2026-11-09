@@ -555,13 +555,9 @@ UnboundedDynamicExecutionMetadata MakeNonzeroDynamicMetadata() {
             const absl::StatusOr<std::vector<xla::Layout>> output_layouts =
                 ResolveXlaLayouts(output_shapes);
 
-            return input_shapes.size() == 1 &&
-                   input_shapes[0].dimensions().size() == 2 &&
-                   input_shapes[0].dtype() == mlir::ElementType::F32 &&
-                   output_shapes.size() == 1 &&
-                   output_shapes[0].dimensions().size() == 2 &&
-                   output_shapes[0].dimensions()[1] == 2 &&
-                   output_shapes[0].dtype() == mlir::ElementType::I64 &&
+            // The shapeless key already fixes the number, ranks and dtypes of
+            // the operands: one F32[M,N] input and one S64[K,2] output.
+            return output_shapes[0].dimensions()[1] == 2 &&
                    input_layouts.ok() && output_layouts.ok() &&
                    *input_layouts == expected_input_layouts &&
                    *output_layouts == expected_output_layouts;
