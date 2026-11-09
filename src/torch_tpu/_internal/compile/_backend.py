@@ -67,6 +67,7 @@ from torch_tpu._internal.compile.debug import TpuCompileDebug
 from torch_tpu._internal.compile.dynamic import dynamic_compiler
 from torch_tpu._internal.distributed import device_mesh
 from torch_tpu._internal.distributed import process_group_utils
+from torch_tpu._internal.precision import precision_impl
 from torch_tpu._internal.sync import sync
 from torch_tpu._internal.utils import utils
 from torch_tpu._internal.benchmarks import xprof_adapter
@@ -767,6 +768,45 @@ def _guard_input_storage_offsets(graph_module: torch.fx.GraphModule) -> None:
     dynamo_guards.install_guard(guard)
 
 
+def _guard_matmul_precision() -> None:
+  """Installs a Dynamo guard on the TPU matmul precision in effect.
+
+  Lowering reads the precision from TorchTPU's own state (`torch.tpu.precision`,
+  then `at::NoTF32Guard`, then `torch.set_float32_matmul_precision`), which
+  Dynamo's global state guard does not see. Without this guard, a frame
+  compiled under one precision keeps running after another one is selected.
+  """
+  # Ensure we're within a tracing context to install guards
+  if torch._guards.TracingContext.try_get() is None:
+    return
+  source = dynamo_source.ImportSource("torch_tpu")
+  for member in ("_internal", "precision", "precision_impl", "_get_precision"):
+    source = dynamo_source.AttrSource(source, member)
+  value_source = dynamo_source.AttrSource(
+      dynamo_source.CallFunctionNoArgsSource(source), "value"
+  )
+  dynamo_guards.install_guard(
+      value_source.make_guard(dynamo_guards.GuardBuilder.EQUALS_MATCH)
+  )
+
+
+@contextlib.contextmanager
+def _matmul_precision_cache_key_tag() -> Iterator[None]:
+  """Adds the TPU matmul precision in effect to the compile cache key tag.
+
+  AOTAutogradCache keys hash `torch.backends.cuda.matmul.fp32_precision`, which
+  the TPU precision setters do not change, so programs compiled under different
+  TPU precisions would otherwise share an on-disk entry.
+  """
+  precision = precision_impl._get_precision()  # pylint: disable=protected-access
+  precision_tag = f"tpu_matmul_precision={precision.name}"
+  tag = compiler_config.cache_key_tag
+  with compiler_config.patch(  # pyrefly: ignore[missing-attribute]
+      cache_key_tag=f"{tag}:{precision_tag}" if tag else precision_tag
+  ):
+    yield
+
+
 _VALID_SYMBOL_REGEX = re.compile(r"[^a-zA-Z0-9_]")
 
 
@@ -963,6 +1003,7 @@ class TpuBackend:
 
     _log_gm_and_inputs("__call__", "Pre", graph_module, example_inputs)
     _guard_input_storage_offsets(graph_module)
+    _guard_matmul_precision()
     input_layouts = {}
     # The inputs with non-default layouts, which are checked on each call.
     input_indices = []
@@ -1033,7 +1074,7 @@ class TpuBackend:
         if async_compile
         else contextlib.nullcontext()
     )
-    with _serialization_context(
+    with _matmul_precision_cache_key_tag(), _serialization_context(
         graph_module, example_inputs, serializable
     ) as captured_entry:
       with save_context:
