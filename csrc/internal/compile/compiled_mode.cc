@@ -412,9 +412,10 @@ absl::StatusOr<AsyncCompileResult> TraverseAndCompile(
       _ << "failed to create traversal");
   traversal->SortByCreationOrder();
 
-  ABSL_CHECK_OK(  // CRASH_OK=implies a bug in compile backend if this happens
+  TT_RETURN_IF_ERROR(
       traversal->ValidateAndReorderArguments(std::move(argument_refs)))
-      << "failed to validate and reorder traversal inputs";
+          .SetPrepend()
+      << "failed to validate and reorder traversal inputs: ";
 
   // Re-map donated inputs to deduplicated unique base arguments.
   Indices unique_donated_inputs = options.donated_inputs;

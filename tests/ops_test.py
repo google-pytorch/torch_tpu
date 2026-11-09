@@ -168,31 +168,6 @@ OpVariant = op_testing.OpVariant
 TorchTpuTestBase = op_testing.TorchTpuTestBase
 
 
-def _expm1_atol(y: float) -> float:
-  """Returns the absolute tolerance for expm1() given the expected value y."""
-
-  # For expm1 (i.e. y = e^x - 1), we especially care about the precision when
-  # y is close to 0. However, a tolerance tight enough for this case is
-  # too tight for y >> 0. Without variable-tolerance, we'd be forced to
-  # pick a large tolerance for all cases, which would cause unnecessary
-  # slack in our tests.
-  #
-  # Using variable-tolerance, we:
-  #   - use a small tolerance for y < 0,
-  #   - use a large (relative) tolerance for y > 1,
-  #   - linearly interpolate the tolerance for y in [0, 1].
-  #
-  # This allows the test to be tight for y near 0 or being negative, while
-  # allowing more slack for y >> 0.
-  atol0 = 3e-6  # small tolerance
-  atol1 = 1e-5  # large tolerance
-  if y < 0:
-    return atol0
-  if y > 1:
-    return atol1 * y
-  return atol0 + (atol1 - atol0) * y
-
-
 def update_dict(d, u):
   """Recursively update a dictionary to override tolerance values."""
   for k, v in u.items():

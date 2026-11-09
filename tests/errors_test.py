@@ -18622,5 +18622,66 @@ class UpsampleBilinear2dAaErrorTest(et.ErrorTestBase):
       b[:8].sum().item()
 
 
+class UnaryOpsErrorTest(et.ErrorTestBase):
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="complex64",
+          dtype=torch.complex64,
+          dtype_name="complex64",
+      ),
+      dict(
+          testcase_name="complex128",
+          dtype=torch.complex128,
+          dtype_name="complex128",
+      ),
+  )
+  def test_real_only_unary_ops_reject_complex_dtypes(
+      self, dtype: torch.dtype, dtype_name: str
+  ):
+    """Tests that real-only unary ops reject complex-dtype inputs."""
+    t = torch.zeros(2, 2, dtype=dtype, device=et.device())
+
+    with self.subTest(op="relu"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu=f"""relu(): expected self not to be complex, got {dtype_name}""",
+          gpu="""clamp is not supported for complex types""",
+      ):
+        torch.relu(t)
+
+    with self.subTest(op="relu_"):
+      t_inplace = t.clone()
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu=f"""relu_(): expected self not to be complex, got {dtype_name}""",
+          gpu="""clamp is not supported for complex types""",
+      ):
+        t_inplace.relu_()
+
+    with self.subTest(op="signbit_out"):
+      out_bool = torch.empty(2, 2, dtype=torch.bool, device=et.device())
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu=f"""signbit(): expected self not to be complex, got {dtype_name}""",
+          gpu="""signbit is not implemented for complex tensors.""",
+      ):
+        torch.signbit(t, out=out_bool)
+
+    for op, op_name in (
+        (torch.trunc, "trunc"),
+        (torch.ceil, "ceil"),
+        (torch.floor, "floor"),
+    ):
+      with self.subTest(op=f"{op_name}_out"):
+        out = torch.empty_like(t)
+        with et.assert_raises_message(
+            RuntimeError,
+            tpu=f"""{op_name}(): expected self not to be complex, got {dtype_name}""",
+            gpu=f"""{op_name} is not supported for complex inputs""",
+        ):
+          op(t, out=out)
+
+
 if __name__ == "__main__":
   multiprocessing.handle_test_main(absltest.main)
