@@ -1003,8 +1003,8 @@ class BaseProvider(abc.ABC):
 
   def __init__(self, base_path: str | None = None, subdir: str | None = None):
     self._subdir = subdir
-
-    if base_path is None:
+    is_default_base_path = base_path is None
+    if is_default_base_path:
       base_path = _WEIGHTS_BASE_PATH.value
 
     # If base_path is empty, assume no local cache is available
@@ -1014,8 +1014,27 @@ class BaseProvider(abc.ABC):
       self._base_path = epath.Path(base_path)
       if subdir:
         self._base_path = self._base_path / subdir
-      if not self._base_path.exists():
-        raise FileNotFoundError(f"Base path does not exist: {self._base_path}")
+      try:
+        path_exists = self._base_path.exists()
+      except OSError as exc:
+        if is_default_base_path:
+          logging.warning(
+              "Default weights base path %s is unreachable (%s); disabling"
+              " cache directory.",
+              self._base_path,
+              exc,
+          )
+          path_exists = False
+        else:
+          raise
+      if not path_exists:
+        if is_default_base_path:
+          self.has_cache_dir = False
+          self._base_path = None
+        else:
+          raise FileNotFoundError(
+              f"Base path does not exist: {self._base_path}"
+          )
     else:
       self._base_path = None
 
@@ -1879,11 +1898,14 @@ def _load_transformers_preprocessor(
 
   def _loader() -> Any:
     path = epath.Path(model_path_str)
-    if path.exists() and path.is_dir():
-      has_processor = (path / "preprocessor_config.json").exists() or (
+
+    def _has_processor() -> bool:
+      return (path / "preprocessor_config.json").exists() or (
           path / "processor_config.json"
       ).exists()
-      has_tokenizer = (
+
+    def _has_tokenizer() -> bool:
+      return (
           (path / "tokenizer_config.json").exists()
           or (path / "tokenizer.json").exists()
           or (path / "spiece.model").exists()
@@ -1891,22 +1913,28 @@ def _load_transformers_preprocessor(
           or (path / "vocab.txt").exists()
           or (path / "merges.txt").exists()
       )
-      if prefer_tokenizer and has_tokenizer:
-        load_fn = transformers.AutoTokenizer.from_pretrained
-      elif not prefer_tokenizer and has_processor:
-        load_fn = transformers.AutoProcessor.from_pretrained
-      elif has_processor:
-        load_fn = transformers.AutoProcessor.from_pretrained
-      elif has_tokenizer:
-        load_fn = transformers.AutoTokenizer.from_pretrained
-      elif prefer_tokenizer:
-        load_fn = transformers.AutoTokenizer.from_pretrained
-      else:
-        load_fn = transformers.AutoProcessor.from_pretrained
-    elif prefer_tokenizer:
-      load_fn = transformers.AutoTokenizer.from_pretrained
-    else:
-      load_fn = transformers.AutoProcessor.from_pretrained
+
+    load_fn = (
+        transformers.AutoTokenizer.from_pretrained
+        if prefer_tokenizer
+        else transformers.AutoProcessor.from_pretrained
+    )
+    is_local_path = isinstance(model_dir_or_repo_id, epath.Path)
+    try:
+      if path.exists() and path.is_dir():
+        if prefer_tokenizer:
+          if not _has_tokenizer() and _has_processor():
+            load_fn = transformers.AutoProcessor.from_pretrained
+        else:
+          if not _has_processor() and _has_tokenizer():
+            load_fn = transformers.AutoTokenizer.from_pretrained
+      elif is_local_path:
+        return None
+    except OSError as exc:
+      logging.debug(
+          "Could not stat preprocessor directory %s: %s", model_path_str, exc
+      )
+      return None
 
     try:
       return load_fn(model_path_str)
@@ -2826,7 +2854,11 @@ def _load_and_sanitize_transformers_config(
     (or config dictionary for unregistered custom model types).
   """
   path = epath.Path(config_path)
-  cfg_file = path / "config.json" if path.is_dir() else path
+  cfg_file = (
+      path
+      if path.name == "config.json"
+      else (path / "config.json" if path.is_dir() else path)
+  )
   with cfg_file.open("r", encoding="utf-8") as f:
     raw_dict = json.load(f)
 
@@ -3310,10 +3342,12 @@ class TransformersProvider(BaseProvider):
     """Stage 1: Deterministically resolves the config path across storage tiers.
 
     What this stage does:
-      Locates `config.json` and the optional model directory across three
-      storage tiers in strict priority order: (1) the shared weights cache
-      (`{base_path}/transformers/{name}/config.json`), (2) bundled package
-      resources (`_FILES`), or (3) a GCS bucket download (`fetch_gcs_file`).
+      Locates `config.json` and the optional model directory across storage
+      tiers: when `load_weights=False`, bundled package resources (`_FILES`)
+      are prioritized first before probing the shared weights cache
+      (`{base_path}/transformers/{name}/config.json`) or a GCS bucket download
+      (`fetch_gcs_file`); when `load_weights=True`, pretrained weights require
+      the local cache directory.
 
     Why this is needed as a separate stage:
       Separating file location discovery from JSON parsing and config
@@ -3324,16 +3358,16 @@ class TransformersProvider(BaseProvider):
       missing files with malformed config schemas.
 
     Example:
-      When loading `google/gemma-2-2b` in unit tests with `base_path=""` (no
-      shared weights cache mount) and `load_weights=False`, Stage 1 checks
-      `self.has_cache_dir` (False), locates `google/gemma-2-2b/config.json`
-      inside the bundled
+      When loading `google/gemma-2-2b` in unit tests with `load_weights=False`,
+      Stage 1 checks for bundled package resources first, locating
+      `google/gemma-2-2b/config.json` inside the bundled
       `google/examples/huggingface_transformers/model_configs` package resource,
       and yields the extracted path alongside `model_dir_or_repo_id=None`.
-      Conversely, during benchmark runs with `/path/to/weights` mounted, Stage 1
-      yields `/path/to/weights/transformers/google/gemma-2-2b/config.json` and
-      the cache directory as `model_dir_or_repo_id` so Stage 4 and Stage 5 can
-      load weights and tokenizers from the same directory.
+      Conversely, when `load_weights=True` with `/path/to/weights` mounted,
+      Stage 1 yields
+      `/path/to/weights/transformers/google/gemma-2-2b/config.json`
+      and the cache directory as `model_dir_or_repo_id` so Stage 4 and Stage 5
+      can load weights and tokenizers from the same directory.
 
     Args:
       name: Model identifier formatted as `{owner}/{model}`.
@@ -3346,26 +3380,40 @@ class TransformersProvider(BaseProvider):
       ValueError: If `load_weights=True` without a cached model directory, or if
         `config.json` is not found in any storage tier.
     """
-    default_model_dir: epath.Path | None = None
-    if self.has_cache_dir and self._base_path is not None:
-      default_model_dir = self._base_path / name
+    default_model_dir: epath.Path | None = (
+        self._base_path / name
+        if (self.has_cache_dir and self._base_path is not None)
+        else None
+    )
+
+    if not load_weights:
+      traversable = self.in_tree_config(name)
+      if traversable is not None:
+        with resources.as_file(traversable) as local_file:
+          if local_file.exists():
+            yield epath.Path(local_file), default_model_dir
+            return
+
+    if default_model_dir is not None:
       cfg_file = default_model_dir / "config.json"
-      if cfg_file.exists():
-        yield cfg_file, default_model_dir
-        return
+      try:
+        if cfg_file.exists():
+          yield cfg_file, default_model_dir
+          return
+      except OSError as exc:
+        if load_weights:
+          raise
+        logging.warning(
+            "Failed to stat %s on cache filesystem (%s); falling back to GCS.",
+            cfg_file,
+            exc,
+        )
 
     if load_weights:
       raise ValueError(
           f"load_weights cannot be set to True for {name} when falling back"
           " to local configuration resources or GCS."
       )
-
-    traversable = self.in_tree_config(name)
-    if traversable is not None:
-      with resources.as_file(traversable) as local_file:
-        if local_file.exists():
-          yield epath.Path(local_file), default_model_dir
-          return
 
     dest_config = self.fetch_gcs_file(f"{name}/config.json")
     if dest_config is not None and dest_config.exists():
@@ -3389,9 +3437,25 @@ class TransformersProvider(BaseProvider):
       with self._resolve_transformers_config_path(
           name, load_weights=load_weights
       ) as (cfg_path, model_dir_or_repo_id):
-        config = _load_and_sanitize_transformers_config(
-            cfg_path, load_weights=load_weights
-        )
+        try:
+          config = _load_and_sanitize_transformers_config(
+              cfg_path, load_weights=load_weights
+          )
+        except OSError as exc:
+          if load_weights:
+            raise
+          logging.warning(
+              "Failed to read config %s (%s); falling back to GCS.",
+              cfg_path,
+              exc,
+          )
+          dest_config = self.fetch_gcs_file(f"{name}/config.json")
+          if dest_config is None or not dest_config.exists():
+            raise
+          model_dir_or_repo_id = epath.Path(dest_config.parent)
+          config = _load_and_sanitize_transformers_config(
+              epath.Path(dest_config), load_weights=load_weights
+          )
         return module_cache.ConfigCacheEntry(
             config=config,
             path=model_dir_or_repo_id,
@@ -3515,12 +3579,16 @@ class TransformersProvider(BaseProvider):
         model_dir_or_repo_id, modality=modality
     )
 
+    is_bundled = not load_weights and self.in_tree_config(name) is not None
+
     def _input_fn(
         shape=None, device="cpu"
     ) -> tuple[tuple[Any, ...], dict[str, Any]]:
       model_dir = (
           str(model_dir_or_repo_id)
-          if model_dir_or_repo_id is not None and model_dir_or_repo_id.exists()
+          if modality == Modality.VISION
+          and model_dir_or_repo_id is not None
+          and not is_bundled
           else None
       )
       input_kwargs = transformers_inputs.generate_transformers_inputs(
@@ -3648,61 +3716,30 @@ class DiffusersProvider(BaseProvider):
     def _loader() -> module_cache.ConfigCacheEntry:
       raw_config = None
       resolved_subfolder = subfolder
-      model_path = None
+      model_path = (
+          self._base_path / name
+          if (self.has_cache_dir and self._base_path is not None)
+          else None
+      )
+      candidate_subfolders: list[str | None] = (
+          [subfolder] if subfolder else list(_DEFAULT_DIFFUSERS_SUBFOLDERS)
+      )
 
-      if subfolder:
-        candidate_subfolders: list[str | None] = [subfolder]
-      else:
-        candidate_subfolders = []
-        if self.has_cache_dir and self._base_path is not None:
-          model_path = self._base_path / name
-          if model_path.exists() and model_path.is_dir():
-            index_path = model_path / "model_index.json"
-            if index_path.exists():
-              with index_path.open("r", encoding="utf-8") as fp:
-                candidate_subfolders.extend(
-                    _extract_diffusers_subfolder_candidates(json.load(fp))
-                )
-            for sub_dir in model_path.iterdir():
-              if sub_dir.is_dir():
-                for sub_target in ("transformer", "unet"):
-                  if (sub_dir / sub_target / "config.json").exists():
-                    nested_cand = f"{sub_dir.name}/{sub_target}"
-                    if nested_cand not in candidate_subfolders:
-                      candidate_subfolders.append(nested_cand)
-        for cand in _DEFAULT_DIFFUSERS_SUBFOLDERS:
-          if cand not in candidate_subfolders:
-            candidate_subfolders.append(cand)
-
-      if self.has_cache_dir and self._base_path is not None:
-        model_path = self._base_path / name
-        if model_path.exists() and model_path.is_dir():
-          for cand in candidate_subfolders:
-            cfg_file = (
-                model_path / cand / "config.json"
-                if cand
-                else model_path / "config.json"
-            )
-            if cfg_file.exists():
-              raw_config = auto_model.AutoModel.load_config(
-                  str(model_path), subfolder=cand
-              )
-              resolved_subfolder = cand
-              break
-
-      if raw_config is None and not load_weights:
+      if not load_weights:
         model_dir = pathlib.Path(name)
-        local_candidates = list(candidate_subfolders)
-        index_file = self._FILES.joinpath(str(model_dir / "model_index.json"))
-        if index_file.is_file():
-          with resources.as_file(index_file) as f:
-            if f.is_file():
-              with open(f, "r", encoding="utf-8") as fp:
-                for key in _extract_diffusers_subfolder_candidates(
-                    json.load(fp)
-                ):
-                  if key not in local_candidates:
-                    local_candidates.insert(0, key)
+        local_candidates: list[str | None] = list(candidate_subfolders)
+        if not subfolder:
+          index_file = self._FILES.joinpath(str(model_dir / "model_index.json"))
+          if index_file.is_file():
+            with resources.as_file(index_file) as f:
+              if f.is_file():
+                with open(f, "r", encoding="utf-8") as fp:
+                  local_candidates = [
+                      *(_extract_diffusers_subfolder_candidates(json.load(fp))),
+                  ]
+                  for cand in candidate_subfolders:
+                    if cand not in local_candidates:
+                      local_candidates.append(cand)
 
         for cand in local_candidates:
           target_rel = (
@@ -3717,6 +3754,80 @@ class DiffusersProvider(BaseProvider):
                 raw_config = auto_model.AutoModel.load_config(str(f.parent))
                 resolved_subfolder = cand
                 break
+
+      if raw_config is None and model_path is not None:
+        try:
+          if model_path.exists() and model_path.is_dir():
+            cache_candidates: list[str | None] = []
+            if subfolder:
+              cache_candidates.append(subfolder)
+            else:
+              index_path = model_path / "model_index.json"
+              if index_path.exists():
+                with index_path.open("r", encoding="utf-8") as fp:
+                  cache_candidates.extend(
+                      _extract_diffusers_subfolder_candidates(json.load(fp))
+                  )
+              for cand in _DEFAULT_DIFFUSERS_SUBFOLDERS:
+                if cand not in cache_candidates:
+                  cache_candidates.append(cand)
+
+            def _try_load_cache_candidates(
+                candidates: list[str | None],
+            ) -> tuple[Any, str | None]:
+              for cand in candidates:
+                cfg_file = (
+                    model_path / cand / "config.json"
+                    if cand
+                    else model_path / "config.json"
+                )
+                if cfg_file.exists():
+                  if not load_weights:
+                    with cfg_file.open("r", encoding="utf-8") as fp:
+                      return json.load(fp), cand
+                  return (
+                      auto_model.AutoModel.load_config(
+                          str(model_path), subfolder=cand
+                      ),
+                      cand,
+                  )
+              return None, subfolder
+
+            raw_config, resolved_subfolder = _try_load_cache_candidates(
+                cache_candidates
+            )
+            if raw_config is None and not subfolder:
+              nested_candidates: list[str | None] = []
+              skip_dirs = {
+                  c for c in _DEFAULT_DIFFUSERS_SUBFOLDERS if c is not None
+              }
+              for sub_dir in model_path.iterdir():
+                if (
+                    sub_dir.name.startswith(".")
+                    or sub_dir.name in skip_dirs
+                    or not sub_dir.is_dir()
+                ):
+                  continue
+                for sub_target in ("transformer", "unet"):
+                  nested_cand = f"{sub_dir.name}/{sub_target}"
+                  if nested_cand not in cache_candidates:
+                    nested_candidates.append(nested_cand)
+              raw_config, resolved_subfolder = _try_load_cache_candidates(
+                  nested_candidates
+              )
+              for cand in nested_candidates:
+                if cand not in cache_candidates:
+                  cache_candidates.append(cand)
+            candidate_subfolders = cache_candidates
+        except OSError as exc:
+          if load_weights:
+            raise
+          logging.warning(
+              "Failed to load Diffusers config for %s from cache filesystem"
+              " (%s); falling back to GCS.",
+              name,
+              exc,
+          )
 
       if raw_config is None and not load_weights:
         gcs_candidates: list[str | None] = []
@@ -4464,9 +4575,6 @@ class ModuleRegistry:
       base_path: The base directory for model weights. Defaults to the value of
         `_WEIGHTS_BASE_PATH`.
     """
-    if base_path is None:
-      base_path = _WEIGHTS_BASE_PATH.value
-
     self._providers: dict[str, BaseProvider] = {}
     if _HAS_TORCHVISION:
       self._providers["torchvision"] = TorchvisionProvider(base_path=base_path)
