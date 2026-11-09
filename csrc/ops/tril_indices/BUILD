@@ -16,7 +16,11 @@
 # ghpvnist
 # adivinpatel04
 
-load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_end")
+load(
+    "//build_files:build_defs.bzl",
+    "torch_tpu_cc_library",
+    "torch_tpu_package_end",
+)
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -29,6 +33,7 @@ torch_tpu_cc_library(
     hdrs = ["tril_indices.h"],
     deps = [
         "//csrc/common:error_utils",
+        "//csrc/ops:op_builder_utils",
         "//csrc/ops/nonzero",
         "@com_google_absl//absl/status:statusor",
         "@llvm-project//mlir:IR",

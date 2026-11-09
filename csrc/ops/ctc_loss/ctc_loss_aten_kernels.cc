@@ -178,9 +178,10 @@ absl::StatusOr<mlir::MlirOp> Unpack1DTargetsTo2DShlo(
     mlir::Type element_type) {
   const int64_t K = GetTensorTypeOrDie(targets).getDimSize(0);
   if (S == 0 || K == 0) {
-    auto zero_scalar = MakeScalarConstant(builder, 0, element_type);
-    return mlir::stablehlo::BroadcastInDim(
-        mlir::RankedTensorType::get({N, S}, element_type), zero_scalar, {});
+    const mlir::RankedTensorType type_ns =
+        mlir::RankedTensorType::get({N, S}, element_type);
+    mlir::MlirOp zero_n = MakeConstantLike(target_lengths, 0, element_type);
+    return mlir::stablehlo::BroadcastInDim(type_ns, zero_n, {0});
   }
 
   // 1. Exclusive prefix sum of target_lengths to obtain batch offsets:
@@ -299,13 +300,9 @@ absl::StatusOr<MaskAndAlphaResult> ComputeInitialMaskAndAlpha(
     mlir::MlirBuilder& builder, mlir::MlirOp targets,
     mlir::MlirOp targets_with_blanks, mlir::MlirOp log_probs,
     mlir::MlirOp batch_seq, int64_t blank, int64_t N, int64_t S, int64_t C,
-    int64_t L, mlir::Type targets_element_type,
-    mlir::Type log_probs_element_type) {
+    int64_t L, mlir::Type log_probs_element_type) {
   auto* ctx = &builder.getContext();
-  auto blank_const = MakeScalarConstant(builder, blank, targets_element_type);
-  auto blank_n_l = mlir::stablehlo::BroadcastInDim(
-      mlir::RankedTensorType::get({N, L}, targets_element_type), blank_const,
-      {});
+  auto blank_n_l = MakeConstantLike(targets_with_blanks, blank);
   auto t_not_blank = mlir::stablehlo::Compare(
       targets_with_blanks, blank_n_l, mlir::stablehlo::ComparisonDirection::NE);
 
@@ -412,7 +409,6 @@ absl::StatusOr<CtcLossInitResult> InitializeCtcLoss(
       auto mask_and_alpha,
       ComputeInitialMaskAndAlpha(builder, targets, targets_with_blanks,
                                  log_probs, batch_seq, blank, N, S, C, L,
-                                 targets_type.getElementType(),
                                  log_probs_type.getElementType()));
 
   auto neg_inf_const =
@@ -448,7 +444,7 @@ std::vector<mlir::MlirOp> LoopBodyLogic(
     mlir::MlirOp t_curr, mlir::MlirOp alpha_curr, mlir::MlirOp acc_curr,
     mlir::MlirOp log_probs, mlir::MlirOp gather_indices, mlir::MlirOp mask_M,
     mlir::MlirOp neg_inf_const, mlir::RankedTensorType type_nl_probs, int64_t N,
-    int64_t C, int64_t L, mlir::Type log_probs_element_type) {
+    int64_t C, int64_t L) {
   const auto ctx = &body_builder.getContext();
   const auto i32_type = body_builder.getOpBuilder().getI32Type();
 
@@ -506,14 +502,8 @@ std::vector<mlir::MlirOp> LoopBodyLogic(
       /*pred=*/mask_M_in_body, /*on_true=*/alpha_shift_2,
       /*on_false=*/neginf_nl);
 
-  auto zero_scalar =
-      MakeScalarConstant(body_builder, 0.0, log_probs_element_type);
-  auto zero_nl =
-      mlir::stablehlo::BroadcastInDim(type_nl_probs, zero_scalar, {});
-
-  auto one_scalar =
-      MakeScalarConstant(body_builder, 1.0, log_probs_element_type);
-  auto one_nl = mlir::stablehlo::BroadcastInDim(type_nl_probs, one_scalar, {});
+  auto zero_nl = MakeConstantLike(alpha_curr, 0.0);
+  auto one_nl = MakeConstantLike(alpha_curr, 1.0);
 
   auto lse_result =
       LogSumExp({alpha_curr, alpha_shift_1, term2}, neginf_nl, zero_nl, one_nl);
@@ -543,11 +533,7 @@ absl::StatusOr<mlir::MlirOp> ComputeFinalLoss(
     mlir::MlirOp batch_seq, mlir::MlirOp neg_inf_const, int64_t N, int64_t L,
     mlir::Type log_probs_element_type, ZeroInfinity zero_infinity) {
   auto* ctx = &builder.getContext();
-  const auto i32_type = builder.getOpBuilder().getI32Type();
-  const auto type_n_i32 = mlir::RankedTensorType::get({N}, i32_type);
-  auto one_i32_loss = MakeScalarConstant(builder, 1, i32_type);
-  auto one_n_i32 =
-      mlir::stablehlo::BroadcastInDim(type_n_i32, one_i32_loss, {});
+  auto one_n_i32 = MakeConstantLike(input_lengths, 1);
 
   TT_ASSIGN_OR_RETURN(
       auto last_t_unsqueezed,
@@ -560,9 +546,7 @@ absl::StatusOr<mlir::MlirOp> ComputeFinalLoss(
       GetGatherDimensionNumbers(ctx, {1}, {0, 1}, {}, {}, {0, 1}, 1), {1, 1, L},
       /*indices_are_sorted=*/false);
 
-  auto two_i32_loss = MakeScalarConstant(builder, 2, i32_type);
-  auto two_n_i32 =
-      mlir::stablehlo::BroadcastInDim(type_n_i32, two_i32_loss, {});
+  auto two_n_i32 = MakeConstantLike(target_lengths, 2);
   auto s1 = mlir::stablehlo::Mul(target_lengths, two_n_i32);
   auto s2 = mlir::stablehlo::Subtract(s1, one_n_i32);
 
@@ -590,14 +574,9 @@ absl::StatusOr<mlir::MlirOp> ComputeFinalLoss(
                                           /*indices_are_sorted=*/false);
 
   auto neginf_n = mlir::stablehlo::BroadcastInDim(type_n, neg_inf_const, {});
-  auto zero_scalar_s = MakeScalarConstant(builder, 0.0, log_probs_element_type);
-  auto zero_n = mlir::stablehlo::BroadcastInDim(type_n, zero_scalar_s, {});
-  auto one_scalar_s = MakeScalarConstant(builder, 1.0, log_probs_element_type);
-  auto one_n = mlir::stablehlo::BroadcastInDim(type_n, one_scalar_s, {});
-
-  auto zero_i32_const = MakeScalarConstant(builder, 0, i32_type);
-  auto zero_n_i32 =
-      mlir::stablehlo::BroadcastInDim(type_n_i32, zero_i32_const, {});
+  auto zero_n = MakeConstantLike(alpha_s1, 0.0);
+  auto one_n = MakeConstantLike(alpha_s1, 1.0);
+  auto zero_n_i32 = MakeConstantLike(target_lengths, 0);
 
   auto lengths_gt_zero = mlir::stablehlo::Compare(
       target_lengths, zero_n_i32, mlir::stablehlo::ComparisonDirection::GT);
@@ -705,11 +684,11 @@ absl::StatusOr<std::vector<mlir::MlirOp>> BuildCtcLossShlo(
             body, body.getOp<mlir::stablehlo::WhileOp>());
 
         mlir::stablehlo::Return(
-            body, LoopBodyLogic(body, body_builder, args[0], args[1], args[2],
-                                log_probs, init_result.gather_indices,
-                                init_result.mask_M, neg_inf_const,
-                                init_result.type_nl_probs, N, init_result.C, L,
-                                log_probs_type.getElementType()));
+            body,
+            LoopBodyLogic(body, body_builder, args[0], args[1], args[2],
+                          log_probs, init_result.gather_indices,
+                          init_result.mask_M, neg_inf_const,
+                          init_result.type_nl_probs, N, init_result.C, L));
       });
 
   TT_ASSIGN_OR_RETURN(
@@ -735,8 +714,7 @@ std::vector<mlir::MlirOp> BackwardLoopBodyLogic(
     mlir::MlirOp log_probs, mlir::MlirOp gather_indices, mlir::MlirOp mask_m,
     mlir::MlirOp input_lengths, mlir::MlirOp target_lengths,
     mlir::MlirOp batch_seq, mlir::MlirOp neg_inf_const,
-    mlir::RankedTensorType type_nl_probs, int64_t n, int64_t c, int64_t l,
-    mlir::Type log_probs_element_type) {
+    mlir::RankedTensorType type_nl_probs, int64_t n, int64_t c, int64_t l) {
   const auto ctx = &body_builder.getContext();
   const auto i32_type = body_builder.getOpBuilder().getI32Type();
   const auto i1_type = body_builder.getOpBuilder().getI1Type();
@@ -768,13 +746,8 @@ std::vector<mlir::MlirOp> BackwardLoopBodyLogic(
 
   auto neginf_nl =
       mlir::stablehlo::BroadcastInDim(type_nl_probs, neg_inf_const_in_body, {});
-  auto zero_scalar =
-      MakeScalarConstant(body_builder, 0.0, log_probs_element_type);
-  auto zero_nl =
-      mlir::stablehlo::BroadcastInDim(type_nl_probs, zero_scalar, {});
-  auto one_scalar =
-      MakeScalarConstant(body_builder, 1.0, log_probs_element_type);
-  auto one_nl = mlir::stablehlo::BroadcastInDim(type_nl_probs, one_scalar, {});
+  auto zero_nl = MakeConstantLike(beta_curr, 0.0);
+  auto one_nl = MakeConstantLike(beta_curr, 1.0);
 
   // term2: Transitioning from s+2 (if allowed by mask_m).
   auto term2 = mlir::stablehlo::Select(mask_shift_2, beta_shift_2, neginf_nl);
@@ -802,8 +775,7 @@ std::vector<mlir::MlirOp> BackwardLoopBodyLogic(
       mlir::RankedTensorType::get({n, l}, i32_type), input_lengths_in_body,
       {0});
   auto one_const_i32 = MakeScalarConstant(body_builder, 1, i32_type);
-  auto one_i32_nl = mlir::stablehlo::BroadcastInDim(
-      mlir::RankedTensorType::get({n, l}, i32_type), one_const_i32, {});
+  auto one_i32_nl = MakeConstantLike(input_lengths_nl, 1);
   auto input_lengths_minus_1 =
       mlir::stablehlo::Subtract(input_lengths_nl, one_i32_nl);
 
@@ -814,13 +786,10 @@ std::vector<mlir::MlirOp> BackwardLoopBodyLogic(
       mlir::stablehlo::Compare(t_curr_nl, input_lengths_minus_1,
                                mlir::stablehlo::ComparisonDirection::GT);
 
-  auto two_const_i32 = MakeScalarConstant(body_builder, 2, i32_type);
-  auto two_n_i32 = mlir::stablehlo::BroadcastInDim(
-      mlir::RankedTensorType::get({n}, i32_type), two_const_i32, {});
+  auto two_n_i32 = MakeConstantLike(target_lengths_in_body, 2);
   auto s1 = mlir::stablehlo::Mul(target_lengths_in_body, two_n_i32);
 
-  auto one_n_i32 = mlir::stablehlo::BroadcastInDim(
-      mlir::RankedTensorType::get({n}, i32_type), one_const_i32, {});
+  auto one_n_i32 = MakeConstantLike(target_lengths_in_body, 1);
   auto s2 = mlir::stablehlo::Subtract(s1, one_n_i32);
 
   auto s1_nl = mlir::stablehlo::BroadcastInDim(
@@ -836,8 +805,7 @@ std::vector<mlir::MlirOp> BackwardLoopBodyLogic(
   auto is_s2 = mlir::stablehlo::Compare(
       state_indices, s2_nl, mlir::stablehlo::ComparisonDirection::EQ);
 
-  auto zero_n_i32 = mlir::stablehlo::BroadcastInDim(
-      mlir::RankedTensorType::get({n}, i32_type), zero_i32, {});
+  auto zero_n_i32 = MakeConstantLike(target_lengths_in_body, 0);
   auto target_lens_gt_0 =
       mlir::stablehlo::Compare(target_lengths_in_body, zero_n_i32,
                                mlir::stablehlo::ComparisonDirection::GT);
@@ -866,9 +834,7 @@ std::vector<mlir::MlirOp> BackwardLoopBodyLogic(
 
 mlir::MlirOp ReduceAddDim2(mlir::MlirBuilder& builder, mlir::MlirOp input,
                            mlir::Type element_type) {
-  auto zero_scalar = MakeScalarConstant(builder, 0.0, element_type);
-  auto zero = mlir::stablehlo::BroadcastInDim(
-      mlir::RankedTensorType::get({}, element_type), zero_scalar, {});
+  auto zero = MakeScalarConstant(builder, 0.0, element_type);
   return mlir::stablehlo::Reduce(
       builder, {input}, {zero},
       [&](mlir::RegionBuilder& region) {  // REF_CAPTURE_OK=called synchronously
@@ -966,12 +932,11 @@ absl::StatusOr<mlir::MlirOp> BuildCtcLossBackwardShlo(
             body, body.getOp<mlir::stablehlo::WhileOp>());
 
         mlir::stablehlo::Return(
-            body,
-            BackwardLoopBodyLogic(
-                body, body_builder, args[0], args[1], args[2], log_probs,
-                init_result.gather_indices, init_result.mask_M, input_lengths,
-                target_lengths, init_result.batch_seq, neg_inf_const,
-                init_result.type_nl_probs, n, c, l, element_type));
+            body, BackwardLoopBodyLogic(
+                      body, body_builder, args[0], args[1], args[2], log_probs,
+                      init_result.gather_indices, init_result.mask_M,
+                      input_lengths, target_lengths, init_result.batch_seq,
+                      neg_inf_const, init_result.type_nl_probs, n, c, l));
       });
 
   auto log_beta = whl[2];
@@ -1026,9 +991,7 @@ absl::StatusOr<mlir::MlirOp> BuildCtcLossBackwardShlo(
       mlir::RankedTensorType::get({n, t, l, c}, element_type), prob_term,
       {0, 1, 2});
 
-  auto zero_scalar = MakeScalarConstant(builder, 0.0, element_type);
-  auto zero_ntlc = mlir::stablehlo::BroadcastInDim(
-      mlir::RankedTensorType::get({n, t, l, c}, element_type), zero_scalar, {});
+  auto zero_ntlc = MakeConstantLike(prob_ntlc, 0.0);
 
   auto selected_prob = mlir::stablehlo::Select(mask, prob_ntlc, zero_ntlc);
 
@@ -1051,14 +1014,11 @@ absl::StatusOr<mlir::MlirOp> BuildCtcLossBackwardShlo(
       grad_out_bcast_dims);
   auto grad_final = mlir::stablehlo::Mul(grad_inner, grad_out_tnc);
 
-  auto zero_tnc = mlir::stablehlo::BroadcastInDim(
-      mlir::RankedTensorType::get({t, n, c}, element_type), zero_scalar, {});
+  auto zero_tnc = MakeConstantLike(grad_final, 0.0);
 
   if (zero_infinity == ZeroInfinity::kYes) {
-    auto inf_scalar = MakeScalarConstant(
-        builder, std::numeric_limits<double>::infinity(), element_type);
-    auto inf_n = mlir::stablehlo::BroadcastInDim(
-        mlir::RankedTensorType::get({n}, element_type), inf_scalar, {});
+    auto inf_n = MakeConstantLike(neg_log_likelihood,
+                                  std::numeric_limits<double>::infinity());
     auto nll_is_inf = mlir::stablehlo::Compare(
         neg_log_likelihood, inf_n, mlir::stablehlo::ComparisonDirection::EQ);
     auto nll_is_inf_tnc = mlir::stablehlo::BroadcastInDim(
