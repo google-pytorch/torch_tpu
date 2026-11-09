@@ -207,13 +207,24 @@ jobs:
             --with bazel-bin/ci/wheel/torch_tpu-*.whl \
             python -c "import torch_tpu; print('Successfully installed TorchTPU against local nightly PyTorch!')"
 
+      # Build on RBE, then run the tests locally, as postsubmit.yml does. A local
+      # unsandboxed build (--config=no_rbe) lets the protobuf headers bundled in
+      # torch/include shadow @com_google_protobuf and fails to compile.
+      # TODO(b/584611278): Fix the shadowing for unsandboxed local_torch builds.
+      - name: Build Test Targets
+        working-directory: ${{ github.workspace }}/torch_tpu
+        run: |
+          bazel build //... \
+            --config=${{ matrix.job_info.source_test_config }} \
+            --run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh" \
+            --config=local_torch \
+            --repo_env=TORCH_SOURCE="$TORCH_SOURCE"
+
       - name: Test TorchTPU against Local PyTorch
         working-directory: ${{ github.workspace }}/torch_tpu
         run: |
           bazel test //... \
             --config=${{ matrix.job_info.source_test_config }} \
-            --config=no_rbe \
-            --google_default_credentials=true \
             --run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh" \
             --config=local_torch \
             --repo_env=TORCH_SOURCE="$TORCH_SOURCE"
