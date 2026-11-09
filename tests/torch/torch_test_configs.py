@@ -218,6 +218,7 @@ TEST_EXCLUSIONS: Final[
             "test_conv3d_vs_scipy",
             "test_conv_backend",
             "test_conv_empty_channel",
+            "test_conv_inputs_device_mismatch",
             "test_conv_mismatch_memory_format",
             "test_convert_conv2d_weight_memory_format",
             "test_convert_conv3d_weight_memory_format",
@@ -676,6 +677,9 @@ TEST_EXCLUSIONS: Final[
         ],
     },
     "test_scaled_matmul_cuda": {
+        # TODO(b/583797384): Remove legacy class name in google3's pinned
+        # third_party/py/torch (renamed to TestFP8MatmulDevice in upstream
+        # PyTorch PR #201556) once google3 imports past 7582b920070b.
         "TestFP8Matmul": [
             "test_float32_output_errors_with_bias",
             "test_float8_error_messages",
@@ -683,6 +687,28 @@ TEST_EXCLUSIONS: Final[
             "test_scaled_mm_change_stride",
             "test_scaled_mm_few_rows",
             "test_scaled_mm_vs_emulated",
+            "test_scaled_mm_vs_emulated_row_wise",
+            "test_zero_dim_tensorwise",
+        ],
+        "TestFP8MatmulDevice": [
+            "test_float32_output_errors_with_bias",
+            "test_float8_error_messages",
+            "test_float8_scale_fast_accum",
+            "test_float8_scale_result",
+            "test_scaled_addmm_contraction_dim",
+            "test_scaled_addmm_cudagraph",
+            "test_scaled_addmm_empty",
+            "test_scaled_addmm_fullgraph",
+            "test_scaled_addmm_scalar_semantics",
+            "test_scaled_addmm_tensorwise",
+            "test_scaled_addmm_validation",
+            "test_scaled_addmm_wgrad_accumulation",
+            "test_scaled_mm_block_wise_numerics",
+            "test_scaled_mm_change_stride",
+            "test_scaled_mm_few_rows",
+            "test_scaled_mm_v2_contraction_dim",
+            "test_scaled_mm_vs_emulated",
+            "test_scaled_mm_vs_emulated_block_wise_verify_small_shapes",
             "test_scaled_mm_vs_emulated_row_wise",
             "test_zero_dim_tensorwise",
         ],
