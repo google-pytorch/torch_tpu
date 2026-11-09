@@ -31,7 +31,7 @@ load("//build_files:py_dist_info.bzl", "py_dist_info")
 load("//shims/build_files:build_defs.bzl", "TT_FRIENDS")
 load("//shims/py_rules:strict.bzl", "py_library_providing_imports_info")
 
-# copybara:uncomment WHEEL_VERSION = "0.2.1"
+# copybara:uncomment WHEEL_VERSION = "0.3.0"
 
 licenses(["notice"])
 
