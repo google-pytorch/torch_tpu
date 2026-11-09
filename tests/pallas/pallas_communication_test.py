@@ -463,7 +463,7 @@ def _test_sparsecore_vector_subcore_dma(
       pltpu.async_copy(x_hbm_ref, x_vmem_ref, dma_sem).wait()
       pltpu.async_copy(y_hbm_ref, y_vmem_ref, dma_sem).wait()
       o_vmem_ref[...] = x_vmem_ref[...] + y_vmem_ref[...]
-      pltpu.async_copy(o_vmem_ref, o_hbm_ref, sem=None).wait()
+      pltpu.async_copy(o_vmem_ref, o_hbm_ref, dma_sem).wait()
 
     return kernel(x, y)
 
