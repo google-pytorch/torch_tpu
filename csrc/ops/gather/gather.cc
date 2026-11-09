@@ -74,7 +74,7 @@ mlir::MlirOp HandleScalarGather(mlir::MlirOp self,
 }
 
 bool ParseBroadcastGatherAxes(mlir::RankedTensorType base_type,
-                              mlir::RankedTensorType index_type,
+                              mlir::RankedTensorType index_type, int64_t dim,
                               llvm::ArrayRef<int64_t> bcast_dims,
                               Dimensions& base_pos_for_dim,
                               Dimensions& squeezed_shape,
@@ -87,11 +87,11 @@ bool ParseBroadcastGatherAxes(mlir::RankedTensorType base_type,
     }
     const int64_t base_dim = base_type.getDimSize(i);
     const int64_t out_dim = index_type.getDimSize(d);
-    if (base_dim == out_dim) {
+    if (base_dim == 1 && d != dim) {
+      has_size1_expand = true;
+    } else if (base_dim == out_dim) {
       base_pos_for_dim[d] = static_cast<int64_t>(squeezed_shape.size());
       squeezed_shape.push_back(base_dim);
-    } else if (base_dim == 1 && out_dim > 1) {
-      has_size1_expand = true;
     } else {
       return false;
     }
@@ -148,7 +148,7 @@ std::optional<BroadcastGatherPlan> MatchBroadcastGatherIndex(
   Dimensions squeezed_shape;
   bool has_size1_expand = false;
   if (!ParseBroadcastGatherAxes(
-          base_type, index_type, broadcast.getBroadcastDimensions(),
+          base_type, index_type, dim, broadcast.getBroadcastDimensions(),
           base_pos_for_dim, squeezed_shape, has_size1_expand) ||
       base_pos_for_dim[dim] == -1 ||
       !ShapesMatchOffGatherDim(self_type, index_type, dim)) {
@@ -170,7 +170,8 @@ std::optional<BroadcastGatherPlan> MatchBroadcastGatherIndex(
       .base_type = base_type,
   };
   PartitionBroadcastGatherAxes(rank, dim, base_pos_for_dim, plan);
-  if (plan.free_dims.empty()) {
+  if (plan.free_dims.empty() ||
+      index_type.getNumElements() <= plan.base_type.getNumElements()) {
     return std::nullopt;
   }
   return plan;
@@ -186,26 +187,37 @@ mlir::MlirOp EmitBroadcastGatherDot(mlir::MlirOp self, int64_t dim,
       mlir::getElementType(self.getContext(), mlir::ElementType::I32);
   mlir::MlirOp base_i32 = stablehlo::ConvertElementType(plan.base_op, i32_type);
   const int64_t base_rank = plan.base_type.getRank();
+  const int64_t iota_dim = base_rank - 1;
   Dimensions ind_shape = CopyIntVector(plan.base_type.getShape());
-  ind_shape.push_back(vocab_len);
+  ind_shape.insert(ind_shape.begin() + iota_dim, vocab_len);
   Dimensions bcast_to_ind(base_rank);
   for (int64_t i = 0; i < base_rank; ++i) {
-    bcast_to_ind[i] = i;
+    bcast_to_ind[i] = i < iota_dim ? i : i + 1;
+  }
+  Dimensions rhs_batch_dims;
+  rhs_batch_dims.reserve(plan.rhs_batch_dims.size());
+  for (int64_t b : plan.rhs_batch_dims) {
+    rhs_batch_dims.push_back(b < iota_dim ? b : b + 1);
   }
   auto ind_i32_type = mlir::RankedTensorType::get(ind_shape, i32_type);
   mlir::MlirOp idx_expanded =
       stablehlo::BroadcastInDim(ind_i32_type, base_i32, bcast_to_ind);
   mlir::MlirOp iota_p =
-      stablehlo::Iota(builder, ind_i32_type, /*iota_dimension=*/base_rank);
+      stablehlo::Iota(builder, ind_i32_type, /*iota_dimension=*/iota_dim);
   mlir::MlirOp mask = stablehlo::Compare(idx_expanded, iota_p,
                                          stablehlo::ComparisonDirection::EQ);
-  mlir::MlirOp weights = stablehlo::ConvertElementType(mask, computation_type);
+  auto ind_comp_type = mlir::RankedTensorType::get(ind_shape, computation_type);
+  mlir::MlirOp one_scalar = MakeScalarConstant(builder, 1.0, computation_type);
+  mlir::MlirOp zero_scalar = MakeScalarConstant(builder, 0.0, computation_type);
+  mlir::MlirOp one = stablehlo::BroadcastInDim(ind_comp_type, one_scalar, {});
+  mlir::MlirOp zero = stablehlo::BroadcastInDim(ind_comp_type, zero_scalar, {});
+  mlir::MlirOp weights = stablehlo::Select(mask, one, zero);
   auto dot_dims = stablehlo::DotDimensionNumbersAttr::get(
       &self.getContext(),
       /*lhsBatchingDimensions=*/plan.batch_dims,
-      /*rhsBatchingDimensions=*/plan.rhs_batch_dims,
+      /*rhsBatchingDimensions=*/rhs_batch_dims,
       /*lhsContractingDimensions=*/{dim},
-      /*rhsContractingDimensions=*/{base_rank});
+      /*rhsContractingDimensions=*/{iota_dim});
   mlir::ArrayAttr precision_config;
   if (computation_type.isF32()) {
     const mlir::stablehlo::Precision precisions[2] = {

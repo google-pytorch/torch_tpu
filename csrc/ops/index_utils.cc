@@ -354,21 +354,36 @@ std::optional<UnexpandedZeroStrideIndex> TryUnexpandZeroStrideIndex(
   }
 
   const auto base_buf = GetBaseBuffer(index);
-  if (!base_buf.ok()) {
+  if (!base_buf.ok() || base_buf->on_device_shape_is_dynamic() ||
+      !base_buf->dynamic_dimensions().empty()) {
     return std::nullopt;
   }
-  const Dimensions* target_sizes = nullptr;
+  at::IntArrayRef target_sizes;
   if (base_buf->dimensions() == squeezed_sizes) {
-    target_sizes = &squeezed_sizes;
+    target_sizes =
+        at::IntArrayRef(squeezed_sizes.data(), squeezed_sizes.size());
   } else if (base_buf->dimensions() == unsqueezed_sizes) {
-    target_sizes = &unsqueezed_sizes;
+    target_sizes =
+        at::IntArrayRef(unsqueezed_sizes.data(), unsqueezed_sizes.size());
   } else {
-    return std::nullopt;
+    int64_t leading_ones = 0;
+    while (leading_ones < static_cast<int64_t>(squeezed_sizes.size()) &&
+           squeezed_sizes[leading_ones] == 1) {
+      ++leading_ones;
+    }
+    if (leading_ones > 0 &&
+        base_buf->dimensions() ==
+            absl::MakeConstSpan(squeezed_sizes).subspan(leading_ones)) {
+      target_sizes = at::IntArrayRef(base_buf->dimensions().data(),
+                                     base_buf->dimensions().size());
+    } else {
+      return std::nullopt;
+    }
   }
   at::Tensor view(c10::make_intrusive<c10::TensorImpl>(
       c10::Storage(index.storage()),
       c10::DispatchKeySet(c10::DispatchKey::PrivateUse1), index.dtype()));
-  view.unsafeGetTensorImpl()->set_sizes_contiguous(*target_sizes);
+  view.unsafeGetTensorImpl()->set_sizes_contiguous(target_sizes);
   view.unsafeGetTensorImpl()->set_storage_offset(0);
   return UnexpandedZeroStrideIndex{
       .tensor = std::move(view),

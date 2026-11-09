@@ -11400,12 +11400,15 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       dtype=[torch.float32, torch.bfloat16],
       rank=[3, 4],
       dim=[-2, -1],
+      b=[1, 2],
   )
   def test_gather_multidim_broadcast_index(
-      self, dtype: torch.dtype, rank: int, dim: int
+      self, dtype: torch.dtype, rank: int, dim: int, b: int
   ):
     """gather with a multi-dimensional broadcast index matches CPU."""
-    b, h, q, v, k = 2, 4, 8, 12, 6
+    if rank == 3 and b != 1:
+      return
+    h, q, v, k = 4, 8, 12, 6
     torch.manual_seed(42)
     lead_shape = (h,) if rank == 3 else (b, h)
     if dim == -1:
@@ -11419,26 +11422,77 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       idx_view = (1,) * len(lead_shape) + (k, q)
       target_idx_shape = (*lead_shape, k, q)
 
-    def test_fn(device: torch.device) -> torch.Tensor:
+    def test_fn(device: torch.device):
       x = x_cpu.to(device)
       base_idx = base_idx_cpu.to(device)
       index = base_idx.view(idx_view).expand(*target_idx_shape)
-      return torch.gather(x, dim, index)
+      out = torch.empty(*target_idx_shape, dtype=dtype, device=device)
+      gathered = torch.gather(x, dim, index)
+      torch.gather(x, dim, index, out=out)
+      return gathered, out
 
     rtol, atol = (1e-2, 1e-2) if dtype == torch.bfloat16 else (None, None)
     self.assert_close_tpu_vs_cpu(test_fn, rtol=rtol, atol=atol)
+
+    idx_cpu = base_idx_cpu.view(idx_view).expand(*target_idx_shape)
+    expected = torch.gather(x_cpu, dim, idx_cpu)
+    x_tpu = x_cpu.to("tpu")
+    base_idx_tpu = base_idx_cpu.to("tpu")
+    index_tpu = base_idx_tpu.view(idx_view).expand(*target_idx_shape)
+
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      gathered_defer = torch.gather(x_tpu, dim, index_tpu)
+      out_defer = torch.empty(*target_idx_shape, dtype=dtype, device="tpu")
+      torch.gather(x_tpu, dim, index_tpu, out=out_defer)
+    self.assert_close(
+        golden_result=expected,
+        torch_tpu_result=gathered_defer.cpu(),
+        rtol=rtol,
+        atol=atol,
+    )
+    self.assert_close(
+        golden_result=expected,
+        torch_tpu_result=out_defer.cpu(),
+        rtol=rtol,
+        atol=atol,
+    )
+
+    def run_gather_compiled(x, base_idx):
+      idx = base_idx.view(idx_view).expand(*target_idx_shape)
+      out = torch.empty(*target_idx_shape, dtype=dtype, device=x.device)
+      gathered = torch.gather(x, dim, idx)
+      torch.gather(x, dim, idx, out=out)
+      return gathered, out
+
+    compiled_gather = torch.compile(run_gather_compiled, backend="tpu")
+    gathered_compiled, out_compiled = compiled_gather(x_tpu, base_idx_tpu)
+    self.assert_close(
+        golden_result=expected,
+        torch_tpu_result=gathered_compiled.cpu(),
+        rtol=rtol,
+        atol=atol,
+    )
+    self.assert_close(
+        golden_result=expected,
+        torch_tpu_result=out_compiled.cpu(),
+        rtol=rtol,
+        atol=atol,
+    )
 
   @parameterized.product(
       dtype=[torch.float32, torch.bfloat16],
       rank=[3, 4],
       dim=[-2, -1],
+      b=[1, 2],
       nonzero_self=[False, True],
   )
   def test_scatter_add_multidim_broadcast_index(
-      self, dtype: torch.dtype, rank: int, dim: int, nonzero_self: bool
+      self, dtype: torch.dtype, rank: int, dim: int, b: int, nonzero_self: bool
   ):
     """scatter_add with a multi-dimensional broadcast index matches CPU."""
-    b, h, q, v, k = 2, 4, 8, 6, 12
+    if rank == 3 and b != 1:
+      return
+    h, q, v, k = 4, 8, 6, 12
     torch.manual_seed(42)
     lead_shape = (h,) if rank == 3 else (b, h)
     if dim == -1:
@@ -11467,10 +11521,46 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     rtol, atol = (1e-2, 1e-2) if dtype == torch.bfloat16 else (None, None)
     self.assert_close_tpu_vs_cpu(test_fn, rtol=rtol, atol=atol)
 
-  @parameterized.product(dtype=[torch.float32, torch.bfloat16])
-  def test_gather_multidim_broadcast_index_backward(self, dtype: torch.dtype):
+    idx_cpu = base_idx_cpu.view(idx_view).expand(*src_shape)
+    expected = out_cpu.scatter_add(dim, idx_cpu, src_cpu)
+    out_tpu = out_cpu.to("tpu")
+    src_tpu = src_cpu.to("tpu")
+    base_idx_tpu = base_idx_cpu.to("tpu")
+    index_tpu = base_idx_tpu.view(idx_view).expand(*src_shape)
+
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      scattered_defer = out_tpu.clone().scatter_add(dim, index_tpu, src_tpu)
+    self.assert_close(
+        golden_result=expected,
+        torch_tpu_result=scattered_defer.cpu(),
+        rtol=rtol,
+        atol=atol,
+    )
+
+    def run_scatter_add_compiled(out, base_idx, src):
+      idx = base_idx.view(idx_view).expand(*src_shape)
+      return out.scatter_add(dim, idx, src)
+
+    compiled_scatter = torch.compile(run_scatter_add_compiled, backend="tpu")
+    scattered_compiled = compiled_scatter(
+        out_tpu.clone(), base_idx_tpu, src_tpu
+    )
+    self.assert_close(
+        golden_result=expected,
+        torch_tpu_result=scattered_compiled.cpu(),
+        rtol=rtol,
+        atol=atol,
+    )
+
+  @parameterized.product(
+      dtype=[torch.float32, torch.bfloat16],
+      b=[1, 2],
+  )
+  def test_gather_multidim_broadcast_index_backward(
+      self, dtype: torch.dtype, b: int
+  ):
     """Forward and backward of broadcast-index gather match CPU."""
-    b, h, q, v, k = 2, 4, 8, 10, 8
+    h, q, v, k = 4, 8, 10, 8
     torch.manual_seed(42)
     x_cpu = torch.randn(b, h, q, v, dtype=dtype)
     grad_out_cpu = torch.randn(b, h, q, k, dtype=dtype)
@@ -11480,13 +11570,56 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       x = x_cpu.to(device).detach().requires_grad_(True)
       grad_out = grad_out_cpu.to(device)
       base_idx = base_idx_cpu.to(device)
-      index = base_idx.unsqueeze(0).unsqueeze(0).expand(b, h, q, k)
+      index = base_idx.view(1, 1, q, k).expand(b, h, q, k)
       out = torch.gather(x, -1, index)
       out.backward(grad_out)
       return out.detach(), x.grad.detach()
 
     rtol, atol = (1e-2, 1e-2) if dtype == torch.bfloat16 else (None, None)
     self.assert_close_tpu_vs_cpu(test_fn, rtol=rtol, atol=atol)
+
+    expected_out, expected_grad = test_fn(torch.device("cpu"))
+    base_idx_tpu = base_idx_cpu.to("tpu")
+    grad_out_tpu = grad_out_cpu.to("tpu")
+
+    x_defer = x_cpu.to("tpu").detach().requires_grad_(True)
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      index_defer = base_idx_tpu.view(1, 1, q, k).expand(b, h, q, k)
+      out_defer = torch.gather(x_defer, -1, index_defer)
+      out_defer.backward(grad_out_tpu)
+    self.assert_close(
+        golden_result=expected_out,
+        torch_tpu_result=out_defer.detach().cpu(),
+        rtol=rtol,
+        atol=atol,
+    )
+    self.assert_close(
+        golden_result=expected_grad,
+        torch_tpu_result=x_defer.grad.detach().cpu(),
+        rtol=rtol,
+        atol=atol,
+    )
+
+    def run_gather_fwd(x, base_idx):
+      idx = base_idx.view(1, 1, q, k).expand(b, h, q, k)
+      return torch.gather(x, -1, idx)
+
+    compiled_gather = torch.compile(run_gather_fwd, backend="tpu")
+    x_comp = x_cpu.to("tpu").detach().requires_grad_(True)
+    out_comp = compiled_gather(x_comp, base_idx_tpu)
+    out_comp.backward(grad_out_tpu)
+    self.assert_close(
+        golden_result=expected_out,
+        torch_tpu_result=out_comp.detach().cpu(),
+        rtol=rtol,
+        atol=atol,
+    )
+    self.assert_close(
+        golden_result=expected_grad,
+        torch_tpu_result=x_comp.grad.detach().cpu(),
+        rtol=rtol,
+        atol=atol,
+    )
 
   def test_gather_and_scatter_add_multidim_broadcast_index_lowers_to_dot_general(
       self,
@@ -11506,7 +11639,38 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         tpu_torch_compile.build_mlir([gathered], [base_idx, x])
     )
     self.assertIn("stablehlo.dot_general", gather_mlir)
+    self.assertIn("stablehlo.select", gather_mlir)
+    self.assertIn("contracting_dims = [2] x [1]", gather_mlir)
     self.assertNotIn("stablehlo.gather", gather_mlir)
+
+    x_4d = torch.ones(1, h, q, v, device="cpu").to("tpu")
+    base_idx_4d = base_idx.reshape(1, 1, q, k)
+    with execution_mode.set_eager_mode(
+        execution_mode.EagerMode._INTERNAL_COMPILE_FX_GRAPH
+    ):
+      idx_4d = base_idx_4d.expand(1, h, q, k)
+      gathered_4d = torch.gather(x_4d, -1, idx_4d)
+    gather_4d_mlir = tpu_torch_compile.serialize_mlir_text(
+        tpu_torch_compile.build_mlir([gathered_4d], [base_idx_4d, x_4d])
+    )
+    self.assertIn("stablehlo.dot_general", gather_4d_mlir)
+    self.assertIn("tensor<8x12x8xi32>", gather_4d_mlir)
+    self.assertNotIn("tensor<1x8x12x8xi32>", gather_4d_mlir)
+
+    x_no_expand = torch.ones(1, q, v, device="cpu").to("tpu")
+    base_idx_no_expand = base_idx.reshape(1, q, k)
+    with execution_mode.set_eager_mode(
+        execution_mode.EagerMode._INTERNAL_COMPILE_FX_GRAPH
+    ):
+      idx_no_expand = base_idx_no_expand.expand(1, q, k)
+      gathered_no_expand = torch.gather(x_no_expand, -1, idx_no_expand)
+    gather_no_expand_mlir = tpu_torch_compile.serialize_mlir_text(
+        tpu_torch_compile.build_mlir(
+            [gathered_no_expand], [base_idx_no_expand, x_no_expand]
+        )
+    )
+    self.assertIn("stablehlo.gather", gather_no_expand_mlir)
+    self.assertNotIn("stablehlo.dot_general", gather_no_expand_mlir)
 
     with execution_mode.set_eager_mode(
         execution_mode.EagerMode._INTERNAL_COMPILE_FX_GRAPH
@@ -11519,6 +11683,57 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     )
     self.assertIn("stablehlo.dot_general", scatter_mlir)
     self.assertNotIn("stablehlo.scatter", scatter_mlir)
+
+  def test_gather_and_scatter_add_multidim_broadcast_index_dynamic(self):
+    """Dynamic broadcast index falls back to standard gather and scatter."""
+    h, q, v, k = 4, 8, 12, 6
+    torch.manual_seed(42)
+    x_cpu = torch.randn(1, h, q, v, dtype=torch.float32)
+    base_idx_cpu = torch.randint(0, v, (q, k))
+    src_cpu = torch.randn(1, h, q, k, dtype=torch.float32)
+    idx_cpu = base_idx_cpu.view(1, 1, q, k).expand(1, h, q, k)
+
+    x_tpu = x_cpu.to("tpu")
+    base_idx_tpu = base_idx_cpu.to("tpu")
+    dynamism.mark_dynamic(x_tpu, dimension=2, lower_bound=2, upper_bound=16)
+    dynamism.mark_dynamic(
+        base_idx_tpu, dimension=0, lower_bound=2, upper_bound=16
+    )
+    index_tpu = base_idx_tpu.view(1, 1, q, k).expand(1, h, q, k)
+
+    # Gather with dynamic broadcast index matches CPU.
+    gathered_tpu = torch.gather(x_tpu, -1, index_tpu)
+    expected_gathered = torch.gather(x_cpu, -1, idx_cpu)
+    self.assert_close(
+        golden_result=expected_gathered,
+        torch_tpu_result=gathered_tpu.cpu(),
+    )
+
+    # Out-variant gather with dynamic broadcast index matches CPU.
+    out_gather_tpu = torch.empty(1, h, q, k, dtype=torch.float32, device="tpu")
+    dynamism.mark_dynamic(
+        out_gather_tpu, dimension=2, lower_bound=2, upper_bound=16
+    )
+    torch.gather(x_tpu, -1, index_tpu, out=out_gather_tpu)
+    self.assert_close(
+        golden_result=expected_gathered,
+        torch_tpu_result=out_gather_tpu.cpu(),
+    )
+
+    # Scatter-add with dynamic broadcast index matches CPU.
+    out_scatter_cpu = torch.zeros(1, h, q, v, dtype=torch.float32)
+    expected_scattered = out_scatter_cpu.scatter_add(-1, idx_cpu, src_cpu)
+    out_scatter_tpu = torch.zeros(1, h, q, v, dtype=torch.float32, device="tpu")
+    src_tpu = src_cpu.to("tpu")
+    dynamism.mark_dynamic(
+        out_scatter_tpu, dimension=2, lower_bound=2, upper_bound=16
+    )
+    dynamism.mark_dynamic(src_tpu, dimension=2, lower_bound=2, upper_bound=16)
+    scattered_tpu = out_scatter_tpu.scatter_add(-1, index_tpu, src_tpu)
+    self.assert_close(
+        golden_result=expected_scattered,
+        torch_tpu_result=scattered_tpu.cpu(),
+    )
 
   @parameterized.product(
       reduce_op=["add", "multiply"],
