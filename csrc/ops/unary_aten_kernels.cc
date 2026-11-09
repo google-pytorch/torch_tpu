@@ -318,6 +318,7 @@ at::Tensor& AtenNegOut(const at::Tensor& self, at::Tensor& out) {
 
 at::Tensor AtenRelu(const at::Tensor& self) {
   TT_KERNEL(OpName::kRelu, _, (self), {
+    TT_THROW_IF_ERROR(ValidateNotComplex(self, /*arg_name=*/"self"));
     TT_CHECK_THROW(self.scalar_type() != at::kBool,
                    error::kPythonNotImplementedError)
         << "not implemented for " << ToString(self.scalar_type());
@@ -331,6 +332,7 @@ at::Tensor AtenRelu(const at::Tensor& self) {
 
 at::Tensor& AtenRelu_(at::Tensor& self) {
   TT_KERNEL(OpName::kRelu_, _, (self), {
+    TT_THROW_IF_ERROR(ValidateNotComplex(self, /*arg_name=*/"self"));
     TT_CHECK_THROW(self.scalar_type() != at::kBool,
                    error::kPythonNotImplementedError)
         << "not implemented for " << ToString(self.scalar_type());
@@ -358,6 +360,7 @@ at::Tensor& AtenSignOut(const at::Tensor& self, at::Tensor& out) {
 
 at::Tensor& AtenSignbitOut(const at::Tensor& self, at::Tensor& out) {
   TT_KERNEL(OpName::kSignbitOut, _, (self, out), {
+    TT_THROW_IF_ERROR(ValidateNotComplex(self, /*arg_name=*/"self"));
     const auto output_dtype = mlir::ElementType::PRED;
     auto op_builder =
         [output_dtype](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
@@ -390,6 +393,7 @@ at::Tensor& AtenSignbitOut(const at::Tensor& self, at::Tensor& out) {
 
 at::Tensor& AtenTruncOut(const at::Tensor& self, at::Tensor& out) {
   TT_KERNEL(OpName::kTruncOut, _, (self, out), {
+    TT_THROW_IF_ERROR(ValidateNotComplex(self, /*arg_name=*/"self"));
     TT_CHECK_THROW(self.scalar_type() != at::kBool, error::kInvalidArgument)
         << "does not support boolean types";
     TT_THROW_IF_ERROR(
@@ -425,6 +429,7 @@ at::Tensor& AtenBitwiseNotOut(const at::Tensor& self, at::Tensor& out) {
 
 at::Tensor& AtenCeilOut(const at::Tensor& self, at::Tensor& out) {
   TT_KERNEL(OpName::kCeilOut, _, (self, out), {
+    TT_THROW_IF_ERROR(ValidateNotComplex(self, /*arg_name=*/"self"));
     TT_CHECK_THROW(self.scalar_type() != at::kBool,
                    error::kPythonNotImplementedError)
         << "not implemented for " << ToString(self.scalar_type());
@@ -438,6 +443,7 @@ at::Tensor& AtenCeilOut(const at::Tensor& self, at::Tensor& out) {
 
 at::Tensor& AtenFloorOut(const at::Tensor& self, at::Tensor& out) {
   TT_KERNEL(OpName::kFloorOut, _, (self, out), {
+    TT_THROW_IF_ERROR(ValidateNotComplex(self, /*arg_name=*/"self"));
     TT_CHECK_THROW(self.scalar_type() != at::kBool,
                    error::kPythonNotImplementedError)
         << "not implemented for " << ToString(self.scalar_type());
