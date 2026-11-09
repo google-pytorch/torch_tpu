@@ -9026,6 +9026,7 @@ Supported combinations for non-constant padding:
   def test_mse_loss_backward_invalid_dtypes(self):
     int32 = torch.ones(2, 2, device=et.device(), dtype=torch.int32)
     bool_t = torch.ones(2, 2, device=et.device(), dtype=torch.bool)
+    f32 = torch.ones(2, 2, device=et.device(), dtype=torch.float32)
 
     with et.assert_raises_message(
         RuntimeError,
@@ -9040,6 +9041,44 @@ Supported combinations for non-constant padding:
         gpu=""""mse_backward_cuda" not implemented for 'Bool'""",
     ):
       torch.ops.aten.mse_loss_backward(bool_t, bool_t, bool_t, 1)
+
+    out_cpu = torch.empty(2, 2, device="cpu", dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""mse_loss_backward(): expected grad_input tensor to be on tpu, got cpu""",
+        gpu="""Expected all tensors to be on the same device, but got grad_output is on cuda:0, different from other tensors on cpu (when checking argument in method wrapper_CUDA_grad_input_mse_loss_backward_out)""",
+    ):
+      torch.ops.aten.mse_loss_backward.grad_input(
+          f32, f32, f32, 1, grad_input=out_cpu
+      )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""mse_loss_backward(): expected the input dtype to be a floating-point type, got int32""",
+        gpu=""""mse_backward_cuda" not implemented for 'Int'""",
+    ):
+      torch.ops.aten.mse_loss_backward.grad_input(
+          int32, int32, int32, 1, grad_input=int32
+      )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""mse_loss_backward(): result type float32 can't be cast to the desired output type int32""",
+        gpu="""result type Float can't be cast to the desired output type Int""",
+    ):
+      torch.ops.aten.mse_loss_backward.grad_input(
+          f32, f32, f32, 1, grad_input=int32
+      )
+
+    small = torch.ones(1, 2, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""mse_loss_backward(): output with shape [2, 2] doesn't match the broadcast shape of the tensor being operated on in-place, which has shape [1, 2]""",
+        gpu="""output with shape [1, 2] doesn't match the broadcast shape [2, 2]""",
+    ):
+      torch.ops.aten.mse_loss_backward.grad_input(
+          f32, small, f32, 1, grad_input=small
+      )
 
   def test_embedding_renorm_float(self):
     inp = torch.ones(3, 2, device=et.device(), dtype=torch.int64)
