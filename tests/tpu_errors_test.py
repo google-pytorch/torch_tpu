@@ -81,43 +81,6 @@ def setUpModule():
   et.set_up_module()
 
 
-def _get_aminmax_outputs(
-    op: Any, device: str, dtype: torch.dtype
-) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
-  """Creates the output tensors for `op` of `dtype`, on `device`.
-
-  Args:
-    op: a torch function. Should be one of: amax, amin, or aminmax.
-    device: the device of the output tensors
-    dtype: the dtype of the output tensors
-
-  Returns:
-    The out object to be used as a kwarg when calling `op`.
-  """
-
-  assert op in (torch.amax, torch.amin, torch.aminmax)
-
-  def scalar_tensor() -> torch.Tensor:
-    return torch.tensor(0, device=device, dtype=dtype)
-
-  return (
-      scalar_tensor()
-      if op != torch.aminmax
-      else (scalar_tensor(), scalar_tensor())
-  )
-
-
-def _make_lu_unpack_outputs(
-    p: tuple[int, ...], l: tuple[int, ...], u: tuple[int, ...]
-) -> tuple[torch.Tensor, ...]:
-  """Creates a 3-tuple of tensors for `lu_unpack()` op."""
-  return (
-      torch.empty(p, device=et.device()),
-      torch.empty(l, device=et.device()),
-      torch.empty(u, device=et.device()),
-  )
-
-
 def _ensure_ao_ops_registered() -> None:
   """Ensures activation offload ops are registered, skipping test if unavailable."""
   try:
