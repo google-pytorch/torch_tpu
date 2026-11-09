@@ -139,7 +139,6 @@ torch_tpu_cc_library(
         "//csrc/ops:op_builder_utils",
         "//csrc/ops:op_names",
         "//csrc/ops:python_context",
-        "//csrc/ops:xla_utils",
         "//csrc/ops/as_strided:as_strided_aten_kernels",
         "//csrc/pjrt:pjrt_transfer",
         "//csrc/pjrt:pjrt_utils",
