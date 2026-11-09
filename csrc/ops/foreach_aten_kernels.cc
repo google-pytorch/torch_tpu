@@ -1027,6 +1027,47 @@ std::vector<DeviceBufferRef> ForeachMulList(at::TensorList self,
   return result_buffers;
 }
 
+absl::Status ValidateForeachNormDtype(c10::ScalarType self_dtype,
+                                      std::optional<c10::ScalarType> dtype) {
+  if (!dtype.has_value()) {
+    return absl::OkStatus();
+  }
+  const c10::ScalarType target_dtype = *dtype;
+  TT_RET_CHECK(
+      c10::isFloatingType(target_dtype) || c10::isComplexType(target_dtype),
+      error::kInvalidArgument)
+      << "expected dtype to be floating point or complex, got "
+      << ToString(target_dtype);
+  TT_RET_CHECK(
+      c10::isComplexType(self_dtype) == c10::isComplexType(target_dtype),
+      error::kInvalidArgument)
+      << "expected dtype to match complexness of input ("
+      << ToString(self_dtype) << "), got " << ToString(target_dtype);
+  TT_RET_CHECK(c10::promoteTypes(self_dtype, target_dtype) == target_dtype,
+               error::kInvalidArgument)
+      << "expected dtype to be safely castable from " << ToString(self_dtype)
+      << " without narrowing, got " << ToString(target_dtype);
+  return absl::OkStatus();
+}
+
+absl::Status ValidateForeachNormInputs(at::TensorList self,
+                                       const at::Scalar& ord,
+                                       std::optional<c10::ScalarType> dtype) {
+  TT_RET_CHECK(ord.isIntegral(/*includeBool=*/false) || ord.isFloatingPoint(),
+               error::kInvalidArgument)
+      << "expected ord to be integer or float, got " << ToString(ord.type());
+  TT_RETURN_IF_ERROR(ValidateNotIntegral(self, /*arg_name=*/"self"));
+  const double ord_val = ord.toDouble();
+  for (const auto& tensor : self) {
+    if (ord_val < 0.0 || ord_val == std::numeric_limits<double>::infinity()) {
+      TT_RET_CHECK(tensor.numel() > 0, error::kInvalidArgument)
+          << "expected non-empty tensor for ord " << ord_val << ", got numel 0";
+    }
+    TT_RETURN_IF_ERROR(ValidateForeachNormDtype(tensor.scalar_type(), dtype));
+  }
+  return absl::OkStatus();
+}
+
 }  // namespace
 
 std::vector<at::Tensor> AtenForeachAbs(at::TensorList self) {
@@ -2972,7 +3013,7 @@ std::vector<at::Tensor> AtenForeachNormScalar(
       (self, promoted_ord,
        IgnoreInCacheKey(dtype, "Output dtype is in GraphSignature")),
       {
-        TT_THROW_IF_ERROR(ValidateNotIntegral(self, /* arg_name= */ "self"));
+        TT_THROW_IF_ERROR(ValidateForeachNormInputs(self, ord, dtype));
         if (self.empty()) {
           return {};
         }
