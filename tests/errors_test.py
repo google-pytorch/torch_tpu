@@ -10519,6 +10519,84 @@ Supported combinations for non-constant padding:
     ):
       torch.lu_unpack(lu, pivots, out=(p, l, u))
 
+  def test_linalg_vector_norm_0d_duplicate_dims(self):
+    x = torch.tensor(3.0, device=et.device(), dtype=torch.float32)
+    out = torch.empty((), device=et.device(), dtype=torch.float32)
+    for dims in [(0, 0), (0, -1)]:
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""linalg_vector_norm(): dim 0 appears multiple times in the list of dims""",
+          gpu="""dim 0 appears multiple times in the list of dims""",
+      ):
+        torch.linalg.vector_norm(x, ord=2, dim=dims, out=out)
+
+  def test_linalg_vector_norm_invalid_inputs_and_out(self):
+    x_f32 = torch.tensor(
+        [1.0, 2.0, 3.0], device=et.device(), dtype=torch.float32
+    )
+    out_f32 = torch.empty((), device=et.device(), dtype=torch.float32)
+    out_cpu = torch.empty((), device="cpu", dtype=torch.float32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_vector_norm(): expected the out tensor to be on the TPU device, got cpu""",
+        gpu="""Expected all tensors to be on the same device, but got self is on cuda:0, different from other tensors on cpu (when checking argument in method wrapper_CUDA_linalg_vector_norm_out_out)""",
+    ):
+      torch.linalg.vector_norm(x_f32, ord=2, out=out_cpu)
+
+    x_i32 = torch.tensor([1, 2, 3], device=et.device(), dtype=torch.int32)
+    out_i32 = torch.empty((), device=et.device(), dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_vector_norm(): expected the input dtype to be floating point or complex, got int32""",
+        gpu="""linalg.vector_norm: Expected a floating point or complex tensor as input. Got Int""",
+    ):
+      torch.linalg.vector_norm(x_i32, ord=2, out=out_i32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_vector_norm(): expected a non-complex scalar as the order of norm, got complex128""",
+        gpu="""linalg.vector_norm: Expected a non-complex scalar as the order of norm.""",
+    ):
+      torch.linalg.vector_norm(x_f32, ord=complex(0, 0), out=out_f32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_vector_norm(): expected dtype to be floating point or complex, got int32""",
+        gpu="""linalg.vector_norm: dtype should be floating point or complex, but got Int""",
+    ):
+      torch.linalg.vector_norm(x_f32, ord=2, dtype=torch.int32, out=out_i32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_vector_norm(): expected dtype to match complexness of input (float32), got complex64""",
+        gpu="""linalg.vector_norm: dtype should be real for real inputs, but got ComplexFloat""",
+    ):
+      torch.linalg.vector_norm(x_f32, ord=2, dtype=torch.complex64, out=out_f32)
+
+    out_bf16 = torch.empty((), device=et.device(), dtype=torch.bfloat16)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_vector_norm(): expected dtype to be safely castable from float32 without narrowing, got bfloat16""",
+        gpu="""linalg.vector_norm: the dtype of the input (Float) should be convertible without narrowing to the specified dtype (BFloat16)""",
+    ):
+      torch.linalg.vector_norm(x_f32, ord=2, dtype=torch.bfloat16, out=out_bf16)
+
+    x_empty = torch.empty((0,), device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_vector_norm(): expected non-empty reduction dimension for ord inf, got size 0 along dim 0""",
+        gpu="""linalg.vector_norm cannot compute the inf norm on an empty tensor because the operation does not have an identity""",
+    ):
+      torch.linalg.vector_norm(x_empty, ord=float("inf"), out=out_f32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_vector_norm(): expected non-empty reduction dimension for ord -1, got size 0 along dim 0""",
+        gpu="""linalg.vector_norm cannot compute the -1 norm on an empty tensor because the operation does not have an identity""",
+    ):
+      torch.linalg.vector_norm(x_empty, ord=-1.0, out=out_f32)
+
   def test_bucketize_out_dtype_mismatch(self):
     input_tensor = torch.tensor([1.0, 2.0, 3.0], device=et.device())
     boundaries = torch.tensor([0.5, 1.5, 2.5], device=et.device())
