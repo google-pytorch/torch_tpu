@@ -21547,6 +21547,43 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
       with self.subTest(shape=shape):
         self.assert_close_tpu_vs_cpu(compute)
 
+  @parameterized.product(
+      shape=[(4, 5), (2, 3, 4), (0, 5), (5, 0)],
+      dim=[0, 1, -1],
+      return_inverse=[True, False],
+      return_counts=[True, False],
+      dtype=[
+          torch.float32,
+          torch.bfloat16,
+          torch.float16,
+          torch.int64,
+          torch.int32,
+          torch.bool,
+      ],
+  )
+  def test_unique_dim(self, shape, dim, return_inverse, return_counts, dtype):
+    if any(s == 0 for s in shape) and shape[dim] != 0:
+      self.skipTest(
+          "PyTorch does not support unique on unselected zero-sized dims."
+      )
+    numel = math.prod(shape)
+    raw = (torch.arange(numel) % 3).reshape(shape)
+    if dtype == torch.bool:
+      input_value = (raw % 2).to(torch.bool)
+    else:
+      input_value = raw.to(dtype)
+
+    def compute(device):
+      return torch.unique(
+          input_value.to(device),
+          sorted=True,
+          return_inverse=return_inverse,
+          return_counts=return_counts,
+          dim=dim,
+      )
+
+    self.assert_close_tpu_vs_cpu(compute)
+
   @parameterized.named_parameters(
       ops_test_data.generate_configs_for_parameterized([
           # Reduce the batch size to max 2 to avoid OOM on smaller devices.
