@@ -19,7 +19,6 @@ import enum
 import sys
 import types
 from typing import Any
-from unittest import mock
 import warnings
 
 from absl.testing import absltest
@@ -464,21 +463,11 @@ class AnnotationsTest(seed_test_utils.RepeatableTest):
         getattr(cls, annotations.TT_API_STAGE_REASON, ""),
     )
 
-  @mock.patch(
-      "torch_tpu._internal.device._device_ops_backend.get_default_generator",
-      return_value="mock_generator",
-  )
-  @mock.patch(
-      "torch_tpu._internal.device._device_ops_backend._get_current_device_id",
-      return_value=0,
-  )
-  @mock.patch.object(torch.tpu, "device_count", return_value=1)
-  def test_annotated_real_api_property_default_generators(
-      self, _mock_count, _mock_current, _mock_gen
-  ):
+  def test_annotated_real_api_property_default_generators(self):
     """Verifies default_generators emits UserWarning on 1st external access even after internal access."""
     if "default_generators" in _device_module.TpuDeviceModule.__dict__:
       delattr(_device_module.TpuDeviceModule, "default_generators")
+    device_count = torch.accelerator.device_count()
     with warnings.catch_warnings(record=True) as w:
       warnings.simplefilter("always")
 
@@ -487,22 +476,25 @@ class AnnotationsTest(seed_test_utils.RepeatableTest):
       gen = _device_module.TpuDeviceModule._get_generator(
           torch.device("tpu", 0)
       )
-      self.assertEqual(gen, "mock_generator")
+      self.assertIsInstance(gen, torch.Generator)
+      self.assertEqual(gen.device, torch.device("tpu", 0))
       self.assertEmpty(w)
       self.assertNotIn(
           "default_generators", _device_module.TpuDeviceModule.__dict__
       )
 
-      # 1st external access: emits 1 UserWarning and returns default generators
+      # 1st external access: emits 1 UserWarning and returns the same default
+      # generators that internal access returned.
       gens1 = torch.tpu.default_generators
-      self.assertEqual(gens1, ("mock_generator",))
+      self.assertLen(gens1, device_count)
+      self.assertIs(gens1[0], gen)
       self.assertLen(w, 1)
       self.assertTrue(issubclass(w[0].category, UserWarning))
       self.assertIn("'default_generators' is experimental", str(w[0].message))
 
       # 2nd external access: cached on class, emits 0 additional warnings
       gens2 = torch.tpu.default_generators
-      self.assertEqual(gens1, gens2)
+      self.assertIs(gens1, gens2)
       self.assertLen(w, 1)
 
   def test_static_class_attributes_bypass_getattr_and_warnings(self):
@@ -989,9 +981,9 @@ class AnnotationsTest(seed_test_utils.RepeatableTest):
 
     # The setting is read on every call, so it applies to APIs decorated
     # before it's set. Calls then behave as with `strict=False`: they warn once.
-    with mock.patch.object(
-        annotations, "_internal_apis_allowed_for_testing", True
-    ):
+    allowed = annotations._internal_apis_allowed_for_testing  # pylint: disable=protected-access
+    annotations._internal_apis_allowed_for_testing = True  # pylint: disable=protected-access
+    try:
       with self.assertWarnsRegex(
           UserWarning,
           r"sample_func is internal to TorchTPU .* Use torch\.public_func"
@@ -1002,6 +994,8 @@ class AnnotationsTest(seed_test_utils.RepeatableTest):
         warnings.simplefilter("always")
         self.assertEqual(sample_func(6), 12)
       self.assertEmpty(w)
+    finally:
+      annotations._internal_apis_allowed_for_testing = allowed  # pylint: disable=protected-access
 
     with self.assertRaisesRegex(RuntimeError, "is internal to TorchTPU"):
       sample_func(5)

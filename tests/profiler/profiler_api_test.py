@@ -35,6 +35,16 @@ from tsl.profiler.protobuf import xplane_pb2
 # pylint: enable=g-direct-tensorflow-import
 
 
+def _custom_profiler_config(config: TpuProfilerConfig) -> str:
+  """Returns the config string stored on the underlying _ExperimentalConfig."""
+  # Only newer torch binds the attribute (and it is missing from the .pyi
+  # stubs). Released torch exposes it only through the pickled state, where it
+  # is the only string field.
+  if hasattr(config, 'custom_profiler_config'):
+    return config.custom_profiler_config  # pytype: disable=attribute-error
+  return next(v for v in config.__getstate__() if isinstance(v, str))
+
+
 class ProfilerApiTest(seed_test_utils.RepeatableTest):
 
   def setUp(self):
@@ -221,30 +231,16 @@ class ProfilerApiTest(seed_test_utils.RepeatableTest):
     gcs_uri = 'gs://my-bucket/my-dir'
     local_path = '/tmp/my-dir'
 
-    # Mock __init__ to capture kwargs for assertion.
-    # We must call original_init because PyTorch C++ bindings enforce that the
-    # base class constructor is always invoked.
-    original_init = torch.profiler._ExperimentalConfig.__init__
-    called_kwargs = {}
+    # Test that passing a GCS string preserves the protocol completely
+    custom_config = _custom_profiler_config(TpuProfilerConfig(run_dir=gcs_uri))
+    self.assertIn('host_tracer_level:', custom_config)
+    self.assertIn(f'run_dir:{gcs_uri}', custom_config)
 
-    def fake_init(self, *args, **kwargs):
-      called_kwargs.clear()
-      called_kwargs.update(kwargs)
-      original_init(self, *args, **kwargs)
-
-    with mock.patch.object(
-        torch.profiler._ExperimentalConfig, '__init__', new=fake_init
-    ):
-      # Test that passing a GCS string preserves the protocol completely
-      TpuProfilerConfig(run_dir=gcs_uri)
-      custom_config = called_kwargs.get('custom_profiler_config', '')
-      self.assertIn('host_tracer_level:', custom_config)
-      self.assertIn(f'run_dir:{gcs_uri}', custom_config)
-
-      # Test that passing a pathlib.Path works for local paths
-      TpuProfilerConfig(run_dir=pathlib.Path(local_path))
-      custom_config = called_kwargs.get('custom_profiler_config', '')
-      self.assertIn(f'run_dir:{local_path}', custom_config)
+    # Test that passing a pathlib.Path works for local paths
+    custom_config = _custom_profiler_config(
+        TpuProfilerConfig(run_dir=pathlib.Path(local_path))
+    )
+    self.assertIn(f'run_dir:{local_path}', custom_config)
 
   def test_exported_start_and_stop_server(self):
     """Tests start_server and stop_server at exported module paths."""

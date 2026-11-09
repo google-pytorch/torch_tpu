@@ -281,24 +281,35 @@ class OpTestingTest(op_testing.OpInfoTestBase):
       target_tests_dir.mkdir(parents=True)
 
       prefix = op_testing._golden_file_prefix()
-      goldens = {}
-      for basename in (
-          f"{prefix}0.gz",
-          f"{prefix}{op_testing._GPU_GOLDEN_HOPPER_SUFFIX}0.gz",
-      ):
-        dummy_golden = target_tests_dir / basename
-        with gzip.open(dummy_golden, "wb") as f:
-          plistlib.dump({}, f, fmt=plistlib.FMT_BINARY)
-        goldens[basename] = goldens_pin.GoldenPath(
-            sha256=hashlib.sha256(dummy_golden.read_bytes()).hexdigest(),
-            gcs_path=f"ops_test/test/{basename}",
-        )
-
-      mock_pin_data = goldens_pin.GoldenPathPinFile(
-          version=1, gcs_bucket="torchtpu-goldens", goldens=goldens
+      golden_paths = [
+          self._write_golden_file(target_tests_dir, f"{prefix}0.gz", [1.0]),
+          self._write_golden_file(
+              target_tests_dir,
+              f"{prefix}{op_testing._GPU_GOLDEN_HOPPER_SUFFIX}0.gz",
+              [2.0],
+              test_case_name="test_fake_op_hopper",
+          ),
+      ]
+      pin_data = goldens_pin.GoldenPathPinFile(
+          version=1,
+          gcs_bucket="torchtpu-goldens",
+          goldens={
+              path.name: goldens_pin.GoldenPath(
+                  sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+                  gcs_path=f"ops_test/test/{path.name}",
+              )
+              for path in golden_paths
+          },
       )
-      mock_golden_data = mock.create_autospec(
-          op_testing.GoldenGpuData, instance=True
+      # Pre-existing samples must be cleared by the load.
+      golden_data = op_testing.GoldenGpuData()
+      stale = torch.full((1,), -1.0)
+      golden_data.add(
+          "test_stale_op",
+          op_testing.OpVariant.BASE,
+          torch.float32,
+          op_testing.OpInput(FakeSample("stale", stale, (), {})),
+          op_testing.OpOutput(stale),
       )
       with (
           flagsaver.flagsaver(golden_data_base_dir=""),
@@ -309,18 +320,24 @@ class OpTestingTest(op_testing.OpInfoTestBase):
           mock.patch.object(
               pathlib.Path, "cwd", return_value=tmp_path / "empty_cwd"
           ),
-          mock.patch.object(op_testing, "_GOLDEN_GPU_DATA", mock_golden_data),
+          mock.patch.object(op_testing, "_GOLDEN_GPU_DATA", golden_data),
           mock.patch.object(
               tests_test_utils.goldens_pin,
               "parse_goldens_pin",
-              return_value=mock_pin_data,
+              return_value=pin_data,
           ),
       ):
         op_testing._load_golden_files()
-        mock_golden_data.clear.assert_called_once()
-        mock_golden_data.merge_plistlib_pytree.assert_has_calls(
-            [mock.call({}), mock.call({})]
+
+      def loaded_values(test_case_name: str) -> list[float]:
+        samples = golden_data.get_samples(
+            test_case_name, op_testing.OpVariant.BASE, torch.float32
         )
+        return [op_output.output_value.item() for _, op_output in samples]
+
+      self.assertEqual(loaded_values("test_fake_op"), [1.0])
+      self.assertEqual(loaded_values("test_fake_op_hopper"), [2.0])
+      self.assertEqual(loaded_values("test_stale_op"), [])
 
   def test_load_golden_files_candidate_dirs(self):
     with tempfile.TemporaryDirectory() as tmpdir:
