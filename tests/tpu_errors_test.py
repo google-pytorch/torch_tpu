@@ -5554,7 +5554,7 @@ class FlexAttentionErrorsTest(et.TpuOnlyErrorTestBase):
     )
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""flex_attention_fwd(): sequence lengths must be multiples of the block sizes (got q_len=1000, kv_len=1024, q_block=128, kv_block=128)""",
+        tpu="""flex_attention_fwd(): sequence lengths must be multiples of the block sizes (got q_len=1000, kv_len=1024, q_block=128, kv_block=1024)""",
     ):
       tpu_flex_attention.flex_attention_fwd(q[:, :, :1000], k, v, block_mask)
 
@@ -5685,7 +5685,7 @@ class FlexAttentionErrorsTest(et.TpuOnlyErrorTestBase):
     q, k, v = self._inputs(1024)
     with et.assert_raises_message(
         ValueError,
-        tpu="""expected score_mod to return shape [128, 128], got [128]""",
+        tpu="""expected score_mod to return shape [1024, 1024], got [1024]""",
     ):
       tpu_flex_attention.flex_attention_fwd(
           q,

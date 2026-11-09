@@ -84,7 +84,7 @@ constexpr float kLog2e = std::numbers::log2e_v<float>;
 constexpr int64_t kLanes = 128;
 
 // Scoped VMEM limit, as in flash attention: half the capacity, to avoid
-// spilling.
+// spilling. flex_attention.py sizes the tile against the same limit.
 int64_t VmemLimitBytes() { return GetDeviceVmemCapacityBytes() / 2; }
 
 constexpr int kBatchAxis = 0;

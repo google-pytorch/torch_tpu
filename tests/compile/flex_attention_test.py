@@ -18,6 +18,8 @@ The oracle is PyTorch's dense reference for the flex_attention HOP
 (`math_attention`) on CPU; like the kernel it returns `lse` in log2 units.
 """
 
+# pylint: disable=protected-access
+
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
@@ -196,6 +198,31 @@ class FlexAttentionKilnTest(seed_test_utils.RepeatableTest):
   def test_score_mod(self, dtype):
     q, k, v = self._inputs(1, 2, 2, 1024, 128, dtype)
     self._check(q, k, v, _causal, score_mod=_alibi)
+
+  def test_merges_mask_blocks_into_the_tile_with_a_mask_mod(self):
+    block_mask = _block_mask(_causal, 1, 4 * _BLOCK)
+    num_blocks, indices, tile = flex_attention._block_tables(
+        block_mask, True, (2 * _BLOCK, 2 * _BLOCK)
+    )
+    self.assertEqual(tile, (2 * _BLOCK, 2 * _BLOCK))
+    self.assertEqual(num_blocks.tolist(), [[[1, 2]]])
+    self.assertEqual(indices.tolist(), [[[[0, 1], [0, 1]]]])
+
+  def test_merges_uniform_mask_blocks_without_a_mask_mod(self):
+    block_mask = _block_mask(fa.noop_mask, 1, 4 * _BLOCK)
+    num_blocks, _, tile = flex_attention._block_tables(
+        block_mask, False, (2 * _BLOCK, 2 * _BLOCK)
+    )
+    self.assertEqual(tile, (2 * _BLOCK, 2 * _BLOCK))
+    self.assertEqual(num_blocks.tolist(), [[[2, 2]]])
+
+  def test_keeps_mixed_mask_blocks_without_a_mask_mod(self):
+    block_mask = _block_mask(_block_causal, 1, 4 * _BLOCK)
+    num_blocks, _, tile = flex_attention._block_tables(
+        block_mask, False, (2 * _BLOCK, 2 * _BLOCK)
+    )
+    self.assertEqual(tile, (_BLOCK, _BLOCK))
+    self.assertEqual(num_blocks.tolist(), [[[1, 2, 3, 4]]])
 
 
 if __name__ == "__main__":
