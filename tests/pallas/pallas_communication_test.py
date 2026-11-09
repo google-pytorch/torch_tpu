@@ -27,6 +27,7 @@ from torch import distributed as dist
 from torch_tpu._internal import pallas
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
+from tests import oss_utils
 from tests.distributed import continuous_test_utils
 from tests.distributed import distributed_utils
 
@@ -597,6 +598,11 @@ class TestPallasCommunicationKernels(
   def test_sparsecore_vector_subcore_dma(self):
     _test_sparsecore_vector_subcore_dma(self)
 
+  @absltest.skipIf(
+      oss_utils.is_oss(),
+      "TODO(b/583954854): Fails on OSS TPU v6e (GlobalAllocationAssignment"
+      " smem alloca in TEC) and times out on TPU v7x.",
+  )
   def test_sparsecore_vector_subcore_remote_dma(self):
     _test_sparsecore_vector_subcore_remote_dma(self)
 
