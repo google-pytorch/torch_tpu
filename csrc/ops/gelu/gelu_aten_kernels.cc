@@ -109,19 +109,21 @@ at::Tensor& AtenGeluBackwardGradInput(const at::Tensor& grad_output,
         TT_CHECK_THROW(approximate == "none" || approximate == "tanh",
                        error::kInvalidArgument)
             << "unsupported approximate argument: " << approximate;
-        const c10::ScalarType self_dtype = self.scalar_type();
-        TT_CHECK_THROW(!c10::isComplexType(self_dtype),
+        const c10::ScalarType promoted_type =
+            c10::promoteTypes(grad_output.scalar_type(), self.scalar_type());
+        TT_CHECK_THROW(!c10::isComplexType(promoted_type),
                        error::kPythonNotImplementedError)
-            << "unsupported input dtype: '" << ToString(self_dtype) << "'";
-        TT_CHECK_THROW(!IsIntegral(self_dtype),
+            << "unsupported input dtype: '" << ToString(promoted_type) << "'";
+        TT_CHECK_THROW(!IsIntegral(promoted_type),
                        error::kPythonNotImplementedError)
-            << "unsupported input dtype: '" << ToString(self_dtype) << "'";
-        TT_THROW_IF_ERROR(ValidateOutDtype(grad_input, self_dtype,
-                                           /*allow_out_dtype_cast=*/false));
+            << "unsupported input dtype: '" << ToString(promoted_type) << "'";
+        TT_THROW_IF_ERROR(ValidateNotLowPrecisionFloat(grad_output));
         TT_THROW_IF_ERROR(ValidateNotLowPrecisionFloat(self));
-        const c10::ScalarType output_tensor_type = InferOutputDtype(self);
-        TT_ASSIGN_OR_THROW(const auto out_dtype,
-                           ConvertTo<mlir::ElementType>(output_tensor_type));
+        TT_THROW_IF_ERROR(ValidateOutDtype(grad_input, promoted_type,
+                                           /*allow_out_dtype_cast=*/true));
+        TT_THROW_IF_ERROR(ValidateNotLowPrecisionFloat(grad_input));
+        TT_ASSIGN_OR_THROW(const auto out_dtype, ConvertTo<mlir::ElementType>(
+                                                     grad_input.scalar_type()));
 
         auto op_builder = [approximate = static_cast<std::string>(approximate),
                            out_dtype](FixedSizeSpan<mlir::MlirOp, 2> inputs)
