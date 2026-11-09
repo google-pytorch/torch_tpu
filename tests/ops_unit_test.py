@@ -2081,7 +2081,9 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       ).cpu()
       res_cpu = torch.ops.aten.logit_backward(grad_out, x, eps)
       self.assertTrue(torch.isnan(res_tpu[0]))
-      utils.assert_close(res_tpu, res_cpu)
+      # Some torch versions' CPU kernel turns the NaN at index 0 into 0
+      # (pytorch/pytorch#202765), so only compare the rest against CPU.
+      utils.assert_close(res_tpu[1:], res_cpu[1:])
 
   def test_logit_eps_subnormal(self):
     device = torch.device("tpu")
