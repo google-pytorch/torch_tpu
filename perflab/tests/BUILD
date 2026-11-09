@@ -23,6 +23,7 @@ load(
     "//build_files:build_defs.bzl",
     "internal_target",
     "torch_tpu_package_end",
+    "torch_tpu_py_library",
     "torch_tpu_py_test",
 )
 
@@ -171,6 +172,15 @@ torch_tpu_py_test(
     ],
 )
 
+torch_tpu_py_library(
+    name = "fakes",
+    testonly = True,
+    srcs = ["fakes.py"],
+    deps = [
+        "@tsl//tsl/profiler/protobuf:xplane_proto_py_proto",
+    ],
+)
+
 torch_tpu_py_test(
     name = "flags_test",
     srcs = ["flags_test.py"],
@@ -231,10 +241,13 @@ torch_tpu_py_test(
     name = "measure_test",
     srcs = ["measure_test.py"],
     deps = [
+        ":fakes",
+        "//perflab:device_utils",
         "//perflab:measure",
         "//perflab:metrics",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:flagsaver",
+        "//shims/absl_py/testing:parameterized",
         "//src/torch_tpu",
         "//tests:seed_test_utils",
     ],
