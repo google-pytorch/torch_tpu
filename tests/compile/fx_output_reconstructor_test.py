@@ -18,13 +18,16 @@ import collections
 from collections.abc import Callable
 import pickle
 from typing import Any
+import unittest.mock
 
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
 from torch.utils import _pytree as pytree
+import torch_tpu._internal.compile._backend as _backend
 import torch_tpu._internal.compile.tpu_torch_compile as tpu_torch_compile
 from torch_tpu._internal.export import export as torch_tpu_export
+from torch_tpu._internal.utils import test_utils as utils
 from tests import seed_test_utils
 
 
@@ -354,6 +357,492 @@ module {
     self.assertIsNot(out0, out1)
     out1.add_(10.0)
     self.assertTrue(torch.equal(out0.cpu(), expected))
+
+  def test_compiled_runner_force_strides_materialization(self):
+    x = torch.arange(16, dtype=torch.float32, device="tpu").reshape(4, 4)
+    expected_values = x.cpu() * 2.0
+    expected_view = expected_values.t()
+    _, spec = pytree.tree_flatten((expected_view, expected_view))
+    layout = self._make_layout(
+        shape=expected_view.shape,
+        stride=expected_view.stride(),
+        storage_offset=expected_view.storage_offset(),
+    )
+    reconstructor = tpu_torch_compile.FxOutputReconstructor(
+        [
+            # pylint: disable-next=protected-access
+            torch_tpu_export._DedupedTensorOutput(tensor_idx=0),
+            # pylint: disable-next=protected-access
+            torch_tpu_export._DedupedTensorOutput(tensor_idx=0),
+        ],
+        [layout],
+        spec,
+    )
+    runner = tpu_torch_compile.make_compiled_runner(
+        _compile_double_executable(x.shape), reconstruct_fn=reconstructor
+    )
+
+    unused_out, used_out = runner([x])
+    del unused_out
+    torch.accelerator.synchronize()
+
+    self.assertEqual(used_out.shape, expected_view.shape)
+    self.assertEqual(used_out.stride(), expected_view.stride())
+    utils.assert_close(used_out.cpu(), expected_values)
+    utils.assert_close((used_out + 1.0).cpu(), expected_values + 1.0)
+
+  def test_compile_canonicalizes_saved_backward_view_activations(self):
+    def fn(x, w):
+      h = torch.matmul(x, w).view(2, 6, 4, 8).transpose(1, 2)[:, :, 1:, :]
+      attn = torch.nn.functional.scaled_dot_product_attention(h, h, h)
+      merged = attn.transpose(1, 2).reshape(2, 5, 32)
+      return (merged * torch.sigmoid(merged)).sum()
+
+    saved_partitions = []
+    orig_partition = _backend._partition_with_saved_view_canonicalization
+
+    def partition_hook(joint_gm, joint_inputs, **kwargs):
+      fw_gm, bw_gm = orig_partition(joint_gm, joint_inputs, **kwargs)
+      saved_partitions.append((fw_gm, bw_gm))
+      return fw_gm, bw_gm
+
+    with unittest.mock.patch.object(
+        _backend,
+        "_partition_with_saved_view_canonicalization",
+        side_effect=partition_hook,
+    ):
+      x_cpu = torch.randn(2, 6, 32)
+      w_cpu = torch.randn(32, 32)
+      x_ref = x_cpu.to("tpu").requires_grad_(True)
+      w_ref = w_cpu.to("tpu").requires_grad_(True)
+      loss_ref = fn(x_ref, w_ref)
+      loss_ref.backward()
+
+      x_tpu = x_cpu.to("tpu").requires_grad_(True)
+      w_tpu = w_cpu.to("tpu").requires_grad_(True)
+      compiled_fn = torch.compile(fn, backend="tpu")
+      loss_tpu = compiled_fn(x_tpu, w_tpu)
+      loss_tpu.backward()
+
+    self.assertNotEmpty(saved_partitions)
+    fw_module, bw_module = saved_partitions[0]
+    fw_output_node = fw_module.graph.find_nodes(op="output")[0]
+    fw_outs = list(fw_output_node.args[0])
+    bw_placeholders = {
+        n.name: n for n in bw_module.graph.find_nodes(op="placeholder")
+    }
+
+    self.assertTrue(fw_outs[1].target == torch.ops.aten.clone.default)
+    bw_ph = bw_placeholders.get(
+        "transpose", bw_placeholders.get(fw_outs[1].name)
+    )
+    self.assertIsNotNone(bw_ph)
+    self.assertTrue(bw_ph.meta["val"].is_contiguous())
+
+    # Eager vs compiled TPU MXU fusion uses atol=1e-4, rtol=1e-4 due to
+    # systolic array dot-product accumulation and SDPA contraction reordering.
+    utils.assert_close(loss_tpu.cpu(), loss_ref.cpu(), atol=1e-4, rtol=1e-4)
+    utils.assert_close(x_tpu.grad.cpu(), x_ref.grad.cpu(), atol=1e-4, rtol=1e-4)
+    utils.assert_close(w_tpu.grad.cpu(), w_ref.grad.cpu(), atol=1e-4, rtol=1e-4)
+
+  def test_canonicalize_saved_backward_views_downstream_rewrite_only(
+      self,
+  ):
+    def fn(x, w, unrelated):
+      h = torch.matmul(x, w).view(2, 6, 4, 8).transpose(1, 2)[:, :, 1:, :]
+      attn = torch.nn.functional.scaled_dot_product_attention(h, h, h)
+      merged = attn.transpose(1, 2).reshape(2, 5, 32)
+      loss_main = (merged * torch.sigmoid(merged)).sum()
+
+      unrelated_view = unrelated.view(16)
+      loss_unrelated = (unrelated_view * 2.0).sum()
+      return loss_main + loss_unrelated
+
+    saved_partitions = []
+    orig_partition = _backend._partition_with_saved_view_canonicalization
+
+    def partition_hook(joint_gm, joint_inputs, **kwargs):
+      fw_gm, bw_gm = orig_partition(joint_gm, joint_inputs, **kwargs)
+      saved_partitions.append((fw_gm, bw_gm))
+      return fw_gm, bw_gm
+
+    with unittest.mock.patch.object(
+        _backend,
+        "_partition_with_saved_view_canonicalization",
+        side_effect=partition_hook,
+    ):
+      x_cpu = torch.randn(2, 6, 32)
+      w_cpu = torch.randn(32, 32)
+      u_cpu = torch.randn(4, 4)
+
+      x_ref = x_cpu.to("tpu").requires_grad_(True)
+      w_ref = w_cpu.to("tpu").requires_grad_(True)
+      u_ref = u_cpu.to("tpu").requires_grad_(True)
+      loss_ref = fn(x_ref, w_ref, u_ref)
+      loss_ref.backward()
+
+      x_tpu = x_cpu.to("tpu").requires_grad_(True)
+      w_tpu = w_cpu.to("tpu").requires_grad_(True)
+      u_tpu = u_cpu.to("tpu").requires_grad_(True)
+      compiled_fn = torch.compile(fn, backend="tpu")
+      loss_tpu = compiled_fn(x_tpu, w_tpu, u_tpu)
+      loss_tpu.backward()
+
+    self.assertNotEmpty(saved_partitions)
+    fw_module, bw_module = saved_partitions[0]
+
+    fw_output_node = fw_module.graph.find_nodes(op="output")[0]
+    fw_outs = list(fw_output_node.args[0])
+    cloned_outs = [
+        n
+        for n in fw_outs
+        if isinstance(n, torch.fx.Node)
+        and n.target == torch.ops.aten.clone.default
+    ]
+    self.assertNotEmpty(cloned_outs)
+
+    unrelated_views = [
+        n
+        for n in bw_module.graph.nodes
+        if n.op == "call_function"
+        and n.target in (
+            torch.ops.aten.view.default,
+            torch.ops.aten._unsafe_view.default,
+        )
+    ]
+    self.assertNotEmpty(
+        unrelated_views,
+        "Expected unrelated backward view to remain aten.view, but none found.",
+    )
+
+    reshapes = [
+        n
+        for n in bw_module.graph.nodes
+        if n.op == "call_function"
+        and n.target == torch.ops.aten.reshape.default
+    ]
+    self.assertNotEmpty(
+        reshapes,
+        "Expected downstream backward views to be rewritten to aten.reshape.",
+    )
+
+    # Eager vs compiled TPU MXU fusion uses atol=1e-4, rtol=1e-4 due to
+    # systolic array dot-product accumulation and SDPA contraction reordering.
+    utils.assert_close(loss_tpu.cpu(), loss_ref.cpu(), atol=1e-4, rtol=1e-4)
+    utils.assert_close(x_tpu.grad.cpu(), x_ref.grad.cpu(), atol=1e-4, rtol=1e-4)
+    utils.assert_close(w_tpu.grad.cpu(), w_ref.grad.cpu(), atol=1e-4, rtol=1e-4)
+    utils.assert_close(u_tpu.grad.cpu(), u_ref.grad.cpu(), atol=1e-4, rtol=1e-4)
+
+  def test_saved_contiguous_slice_positive_storage_offset_canonicalization(
+      self,
+  ):
+    def fn(x, w):
+      h = torch.matmul(x, w)[1:, :]
+      attn = torch.nn.functional.scaled_dot_product_attention(h, h, h)
+      merged = attn.reshape(attn.shape[0], -1)
+      return (merged * torch.sigmoid(merged)).sum()
+
+    saved_partitions = []
+    orig_partition = _backend._partition_with_saved_view_canonicalization
+
+    def partition_hook(joint_gm, joint_inputs, **kwargs):
+      fw_gm, bw_gm = orig_partition(joint_gm, joint_inputs, **kwargs)
+      saved_partitions.append((fw_gm, bw_gm))
+      return fw_gm, bw_gm
+
+    with unittest.mock.patch.object(
+        _backend,
+        "_partition_with_saved_view_canonicalization",
+        side_effect=partition_hook,
+    ):
+      x_cpu = torch.randn(4, 16)
+      w_cpu = torch.randn(16, 16)
+      x_ref = x_cpu.to("tpu").requires_grad_(True)
+      w_ref = w_cpu.to("tpu").requires_grad_(True)
+      loss_ref = fn(x_ref, w_ref)
+      loss_ref.backward()
+
+      x_tpu = x_cpu.to("tpu").requires_grad_(True)
+      w_tpu = w_cpu.to("tpu").requires_grad_(True)
+      compiled_fn = torch.compile(fn, backend="tpu")
+      loss_tpu = compiled_fn(x_tpu, w_tpu)
+      loss_tpu.backward()
+
+    self.assertNotEmpty(saved_partitions)
+    fw_module, bw_module = saved_partitions[0]
+    fw_output_node = fw_module.graph.find_nodes(op="output")[0]
+    fw_outs = list(fw_output_node.args[0])
+    cloned_outs = [
+        n
+        for n in fw_outs
+        if isinstance(n, torch.fx.Node)
+        and n.target == torch.ops.aten.clone.default
+    ]
+    self.assertNotEmpty(cloned_outs)
+    contig_node = cloned_outs[0]
+    self.assertEqual(contig_node.meta["val"].storage_offset(), 0)
+
+    bw_placeholders = {
+        n.name: n for n in bw_module.graph.find_nodes(op="placeholder")
+    }
+    bw_ph = bw_placeholders.get(contig_node.name)
+    if bw_ph is None:
+      bw_ph = [
+          p
+          for p in bw_placeholders.values()
+          if p.meta.get("val") is not None
+          and p.meta["val"].shape == contig_node.meta["val"].shape
+      ][0]
+    self.assertEqual(bw_ph.meta["val"].storage_offset(), 0)
+
+    # Eager vs compiled TPU MXU fusion uses atol=1e-4, rtol=1e-4 due to
+    # systolic array dot-product accumulation and SDPA contraction reordering.
+    utils.assert_close(loss_tpu.cpu(), loss_ref.cpu(), atol=1e-4, rtol=1e-4)
+    utils.assert_close(x_tpu.grad.cpu(), x_ref.grad.cpu(), atol=1e-4, rtol=1e-4)
+    utils.assert_close(w_tpu.grad.cpu(), w_ref.grad.cpu(), atol=1e-4, rtol=1e-4)
+
+  def test_has_stride_sensitive_view_user_direct_and_transitive_bailouts(self):
+    stride_sensitive_targets = [
+        torch.ops.aten.as_strided.default,
+        torch.ops.aten.as_strided_scatter.default,
+        torch.ops.aten.view.dtype,
+        torch.ops.aten.view_as_complex.default,
+    ]
+    for target in (
+        getattr(
+            getattr(torch.ops.aten, "as_strided_copy", None), "default", None
+        ),
+        getattr(
+            getattr(torch.ops.aten, "_reshape_alias", None), "default", None
+        ),
+        getattr(
+            getattr(torch.ops.aten, "_reshape_alias_copy", None),
+            "default",
+            None,
+        ),
+        getattr(
+            getattr(torch.ops.aten, "view_as_complex_copy", None),
+            "default",
+            None,
+        ),
+        getattr(getattr(torch.ops.aten, "view_copy", None), "dtype", None),
+    ):
+      self.assertIsNotNone(target)
+      stride_sensitive_targets.append(target)
+    if hasattr(torch.ops, "inductor") and hasattr(
+        torch.ops.inductor, "reinterpret_tensor"
+    ):
+      stride_sensitive_targets.append(
+          getattr(
+              torch.ops.inductor.reinterpret_tensor,
+              "default",
+              torch.ops.inductor.reinterpret_tensor,
+          )
+      )
+
+    for target in stride_sensitive_targets:
+      with self.subTest(target=str(target)):
+        # Direct user test
+        g_direct = torch.fx.Graph()
+        ph = g_direct.placeholder("x")
+        g_direct.call_function(target, (ph,))
+        self.assertTrue(
+            _backend._has_stride_sensitive_view_user(ph),
+            f"Expected {target} to trigger stride-sensitive bailout directly.",
+        )
+
+        # Transitive user through clone / stride-preserving op
+        g_transitive = torch.fx.Graph()
+        ph_t = g_transitive.placeholder("x")
+        clone_node = g_transitive.call_function(
+            torch.ops.aten.clone.default, (ph_t,)
+        )
+        g_transitive.call_function(target, (clone_node,))
+        self.assertTrue(
+            _backend._has_stride_sensitive_view_user(ph_t),
+            (
+                f"Expected {target} to trigger stride-sensitive bailout"
+                " transitively."
+            ),
+        )
+
+    # Negative test: ordinary view or non-sensitive user does not bail out
+    g_safe = torch.fx.Graph()
+    ph_safe = g_safe.placeholder("x")
+    view_node = g_safe.call_function(
+        torch.ops.aten.view.default, (ph_safe, [4, 4])
+    )
+    g_safe.call_function(torch.ops.aten.sin.default, (view_node,))
+    self.assertFalse(_backend._has_stride_sensitive_view_user(ph_safe))
+
+  def test_view_dtype_in_backward_not_rewritten_and_does_not_crash(self):
+    fw_g = torch.fx.Graph()
+    ph_f = fw_g.placeholder("f_in")
+    intermediate = fw_g.call_function(torch.ops.aten.sin.default, (ph_f,))
+    view_f = fw_g.call_function(
+        torch.ops.aten.transpose.int, (intermediate, 0, 1)
+    )
+    fw_g.output((ph_f, view_f))
+    fw_mod = torch.fx.GraphModule({}, fw_g)
+
+    bw_g = torch.fx.Graph()
+    ph_b0 = bw_g.placeholder("b_in0")
+    ph_b1 = bw_g.placeholder("transpose")
+    view_dtype_node = bw_g.call_function(
+        torch.ops.aten.view.dtype, (ph_b1, torch.int32)
+    )
+    bw_g.output((ph_b0, view_dtype_node))
+    bw_mod = torch.fx.GraphModule({}, bw_g)
+
+    t_in = torch.randn(4, 8)
+    t_inter = torch.randn(4, 8)
+    t_trans = t_inter.t()
+    ph_f.meta["val"] = t_in
+    intermediate.meta["val"] = t_inter
+    view_f.meta["val"] = t_trans
+    ph_b0.meta["val"] = torch.randn(4, 8)
+    ph_b1.meta["val"] = t_trans
+
+    _backend._canonicalize_saved_backward_views(
+        fw_mod, bw_mod, num_fwd_outputs=1
+    )
+
+    self.assertEqual(view_dtype_node.target, torch.ops.aten.view.dtype)
+    self.assertFalse(
+        any(
+            n.op == "call_function" and n.target == torch.ops.aten.clone.default
+            for n in fw_mod.graph.nodes
+        )
+    )
+    self.assertFalse(ph_b1.meta["val"].is_contiguous())
+
+  def test_canonicalization_bailouts_for_ineligible_storages(self):
+    def make_modules(saved_nodes_meta, is_primal=False, is_user_out=False):
+      fw_g = torch.fx.Graph()
+      p_in = fw_g.placeholder("x_in")
+      outs = []
+      if is_primal:
+        p_in.meta["val"] = saved_nodes_meta[0]
+      else:
+        p_in.meta["val"] = torch.randn(16, 16)
+
+      if is_user_out:
+        uo = fw_g.call_function(torch.ops.aten.clone.default, (p_in,))
+        uo.meta["val"] = saved_nodes_meta[0]
+        outs.append(uo)
+      else:
+        uo = fw_g.call_function(torch.ops.aten.sin.default, (p_in,))
+        uo.meta["val"] = torch.randn(4, 4)
+        outs.append(uo)
+
+      for i, meta in enumerate(saved_nodes_meta):
+        n = fw_g.call_function(torch.ops.aten.transpose.int, (p_in, 0, 1))
+        n.name = f"saved_{i}"
+        n.meta["val"] = meta
+        outs.append(n)
+      fw_g.output(tuple(outs))
+      fw_m = torch.fx.GraphModule({}, fw_g)
+
+      bw_g = torch.fx.Graph()
+      for i, meta in enumerate(saved_nodes_meta):
+        bp = bw_g.placeholder(f"saved_{i}")
+        bp.meta["val"] = meta
+        bw_g.call_function(torch.ops.aten.sin.default, (bp,))
+      bw_g.output(())
+      bw_m = torch.fx.GraphModule({}, bw_g)
+      return fw_m, bw_m
+
+    base = torch.randn(8, 8)
+    v1 = base[1:, :].t()
+    v2 = base[:2, :].t()
+
+    # Shared storage (saved_storage_counts != 1)
+    fw_m, bw_m = make_modules([v1, v2])
+    _backend._canonicalize_saved_backward_views(fw_m, bw_m, num_fwd_outputs=1)
+    fw_outs = list(fw_m.graph.find_nodes(op="output")[0].args[0])
+    self.assertFalse(
+        any(n.target == torch.ops.aten.clone.default for n in fw_outs[1:])
+    )
+
+    # View of primal/placeholder
+    fw_m2, bw_m2 = make_modules([v1], is_primal=True)
+    _backend._canonicalize_saved_backward_views(fw_m2, bw_m2, num_fwd_outputs=1)
+    fw_outs2 = list(fw_m2.graph.find_nodes(op="output")[0].args[0])
+    self.assertFalse(
+        any(n.target == torch.ops.aten.clone.default for n in fw_outs2[1:])
+    )
+
+    # View of user forward output
+    fw_m3, bw_m3 = make_modules([v1], is_user_out=True)
+    _backend._canonicalize_saved_backward_views(fw_m3, bw_m3, num_fwd_outputs=1)
+    fw_outs3 = list(fw_m3.graph.find_nodes(op="output")[0].args[0])
+    self.assertFalse(
+        any(n.target == torch.ops.aten.clone.default for n in fw_outs3[1:])
+    )
+
+    # Dynamic SymInt shapes bailout
+    fw_m4, bw_m4 = make_modules([v1])
+    with unittest.mock.patch.object(
+        _backend.compiler, "has_dynamic_symints", return_value=True
+    ):
+      _backend._canonicalize_saved_backward_views(
+          fw_m4, bw_m4, num_fwd_outputs=1
+      )
+    fw_outs4 = list(fw_m4.graph.find_nodes(op="output")[0].args[0])
+    self.assertFalse(
+        any(n.target == torch.ops.aten.clone.default for n in fw_outs4[1:])
+    )
+
+    # Internally overlapping view bailout (unfold)
+    unfolded = torch.randn(10).unfold(0, 3, 1)
+    fw_m5, bw_m5 = make_modules([unfolded])
+    _backend._canonicalize_saved_backward_views(fw_m5, bw_m5, num_fwd_outputs=1)
+    fw_outs5 = list(fw_m5.graph.find_nodes(op="output")[0].args[0])
+    self.assertFalse(
+        any(n.target == torch.ops.aten.clone.default for n in fw_outs5[1:])
+    )
+
+    # Zero-stride broadcast view bailout
+    zero_stride = torch.randn(8, 8)[:1, :].expand(4, 8)
+    fw_m6, bw_m6 = make_modules([zero_stride])
+    _backend._canonicalize_saved_backward_views(fw_m6, bw_m6, num_fwd_outputs=1)
+    fw_outs6 = list(fw_m6.graph.find_nodes(op="output")[0].args[0])
+    self.assertFalse(
+        any(n.target == torch.ops.aten.clone.default for n in fw_outs6[1:])
+    )
+
+  def test_partition_with_saved_view_canonicalization_matches_min_cut_partition(
+      self,
+  ):
+    def fn(x, w):
+      # Pure elementwise + transpose without systolic array contractions
+      h = (x * 2.0).t()[:, 1:]
+      y = torch.sin(h) + torch.cos(w)
+      return (y * torch.relu(y)).sum()
+
+    x_cpu = torch.randn(4, 8)
+    w_cpu = torch.randn(8, 3)
+
+    x_mincut = x_cpu.to("tpu").requires_grad_(True)
+    w_mincut = w_cpu.to("tpu").requires_grad_(True)
+    with unittest.mock.patch.object(
+        _backend,
+        "_partition_with_saved_view_canonicalization",
+        side_effect=_backend.min_cut_rematerialization_partition,
+    ):
+      compiled_mincut = torch.compile(fn, backend="tpu")
+      loss_mincut = compiled_mincut(x_mincut, w_mincut)
+      loss_mincut.backward()
+
+    x_canon = x_cpu.to("tpu").requires_grad_(True)
+    w_canon = w_cpu.to("tpu").requires_grad_(True)
+    compiled_canon = torch.compile(fn, backend="tpu")
+    loss_canon = compiled_canon(x_canon, w_canon)
+    loss_canon.backward()
+
+    utils.assert_close(loss_canon.cpu(), loss_mincut.cpu())
+    utils.assert_close(x_canon.grad.cpu(), x_mincut.grad.cpu())
+    utils.assert_close(w_canon.grad.cpu(), w_mincut.grad.cpu())
 
 
 if __name__ == "__main__":
