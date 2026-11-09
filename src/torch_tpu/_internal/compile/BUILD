@@ -137,11 +137,12 @@ torch_tpu_py_library(
     name = "nested_compile_region",
     srcs = ["nested_compile_region.py"],
     deps = [
+        ":compiler",
         ":tpu_torch_compile",
         "//shims/torch:pytorch",
         "//src/torch_tpu/_internal/compile/fx_passes:mark_embedded_constants",
+        "//src/torch_tpu/_internal/execution_mode",
         "//src/torch_tpu/_internal/export",
-        "//src/torch_tpu/_internal/pallas:tpu_torch_pallas",
     ],
 )
 
@@ -212,6 +213,7 @@ pybind_extension(
         "//csrc/common:dtype",
         "//csrc/common:env_vars",
         "//csrc/common:error_utils",
+        "//csrc/common:fingerprint_utils",
         "//csrc/common:pybind_error_utils",
         "//csrc/common:shape",
         "//csrc/common:to_string",
@@ -219,9 +221,11 @@ pybind_extension(
         "//csrc/common:utils",
         "//csrc/distributed:handshake",
         "//csrc/eager:device_buffer",
+        "//csrc/eager:device_buffer_utils",
         "//csrc/eager:device_gen_impl",
         "//csrc/eager:tensor_to_buffer",
         "//csrc/internal/compile:compiled_mode",
+        "//csrc/internal/compile:dispatch_invoke_subgraph",
         "//csrc/internal/compile:dispatch_scan",
         "//csrc/internal/dynamism:dynamism_ops",
         "//csrc/ops:op_builder_utils",
