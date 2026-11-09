@@ -237,7 +237,7 @@ csrc/ops/slice_backward/slice_backward_aten_kernels.cc: {remaining: 0, total: 2,
 csrc/ops/slice_scatter/slice_scatter_aten_kernels.cc: {remaining: 0, total: 7, infeasible: 0}
 csrc/ops/softmax/_masked_softmax_aten_kernels.cc: {remaining: 0, total: 11, infeasible: 0}
 csrc/ops/softmax/softmax.cc: {remaining: 0, total: 2, infeasible: 2}
-csrc/ops/softmax/softmax_aten_kernels.cc: {remaining: 0, total: 3, infeasible: 1}
+csrc/ops/softmax/softmax_aten_kernels.cc: {remaining: 0, total: 4, infeasible: 1}
 csrc/ops/softplus/softplus_aten_kernels.cc: {remaining: 0, total: 3, infeasible: 0}
 csrc/ops/sparse_coo/sparse_coo_aten_kernels.cc: {remaining: 0, total: 18, infeasible: 0}
 csrc/ops/stride/stride_helper.cc: {remaining: 0, total: 3, infeasible: 0}

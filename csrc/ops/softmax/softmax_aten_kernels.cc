@@ -17,6 +17,7 @@
 #include "csrc/ops/softmax/softmax_aten_kernels.h"
 
 #include <cstdint>
+#include <optional>
 #include <utility>
 
 #include "ATen/core/TensorBody.h"
@@ -30,6 +31,7 @@
 #include "csrc/common/fixed_size_span.h"
 #include "csrc/common/to_string.h"
 #include "csrc/eager/op_dispatcher.h"
+#include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
@@ -45,9 +47,11 @@
 namespace torch_tpu {
 namespace {
 
-MlirUnaryOpBuilder GetSoftmaxFunctional(int64_t dim, SoftmaxMode softmax_mode) {
-  return [dim, softmax_mode](mlir::MlirOp input) {
-    return BuildSoftmaxShlo(input, dim, softmax_mode);
+MlirUnaryOpBuilder GetSoftmaxFunctional(
+    int64_t dim, SoftmaxMode softmax_mode,
+    std::optional<mlir::ElementType> out_dtype = std::nullopt) {
+  return [dim, softmax_mode, out_dtype](mlir::MlirOp input) {
+    return BuildSoftmaxShlo(input, dim, softmax_mode, out_dtype);
   };
 }
 
@@ -62,11 +66,10 @@ NAryMlirOpBuilder<2> GetSoftmaxBackwardDataFunctional(
   };
 }
 
-absl::StatusOr<mlir::ElementType> GetComputationDType(const at::Tensor& self,
-                                                      bool half_to_float) {
+absl::StatusOr<mlir::ElementType> GetComputationDType(
+    at::ScalarType scalar_type, bool half_to_float) {
   TT_ASSIGN_OR_RETURN(  // ERROR_COV_INFEASIBLE=all dtypes are supported.
-      auto computation_element_type,
-      ConvertTo<mlir::ElementType>(self.scalar_type()));
+      auto computation_element_type, ConvertTo<mlir::ElementType>(scalar_type));
   if (half_to_float && (computation_element_type == mlir::ElementType::F16 ||
                         computation_element_type == mlir::ElementType::BF16)) {
     computation_element_type = mlir::ElementType::F32;
@@ -96,14 +99,45 @@ absl::Status SoftmaxInternalOut(const at::Tensor& self, int64_t dim,
 
   TT_ASSIGN_OR_RETURN(  // ERROR_COV_INFEASIBLE=all dtypes are supported.
       const mlir::ElementType computation_dtype,
-      GetComputationDType(self, half_to_float));
+      GetComputationDType(self.scalar_type(), half_to_float));
   TT_ASSIGN_OR_RETURN(const mlir::ElementType out_dtype,
                       ConvertTo<mlir::ElementType>(expected_dtype));
-  return UnaryOpOut(self, out, GetSoftmaxFunctional(dim, softmax_mode),
+  return UnaryOpOut(self, out,
+                    GetSoftmaxFunctional(dim, softmax_mode, out_dtype),
                     {.op_param_cache_keys = std::move(param_keys),
                      .out_dtype = out_dtype,
                      .computation_dtype = computation_dtype,
                      .allow_out_dtype_cast = false});
+}
+
+absl::StatusOr<at::Tensor> SoftmaxInternal(const at::Tensor& self, int64_t dim,
+                                           std::optional<at::ScalarType> dtype,
+                                           SoftmaxMode softmax_mode,
+                                           OpParamCacheKeys param_keys) {
+  TT_ASSIGN_OR_RETURN(dim, SafeWrapDim(dim, self.dim() == 0 ? 1 : self.dim()));
+
+  const at::ScalarType expected_dtype =
+      dtype.has_value() ? dtype.value() : self.scalar_type();
+
+  TT_RET_CHECK(!IsComplex(self) && c10::isFloatingType(expected_dtype),
+               error::kPythonNotImplementedError)
+      << "not implemented for input type "
+      << ToString(IsComplex(self) ? self.scalar_type() : expected_dtype);
+
+  if (self.numel() == 0) {
+    return MakeEmptyTensor(self.sizes(), expected_dtype, self.device());
+  }
+
+  TT_ASSIGN_OR_RETURN(
+      const mlir::ElementType computation_dtype,
+      GetComputationDType(expected_dtype, /*half_to_float=*/false));
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType out_dtype,
+                      ConvertTo<mlir::ElementType>(expected_dtype));
+  return UnaryOp(self, GetSoftmaxFunctional(dim, softmax_mode, out_dtype),
+                 {.op_param_cache_keys = std::move(param_keys),
+                  .out_dtype = out_dtype,
+                  .computation_dtype = computation_dtype,
+                  .allow_low_precision_float = false});
 }
 
 absl::Status SoftmaxBackwardDataInternalOut(
@@ -141,6 +175,17 @@ absl::Status SoftmaxBackwardDataInternalOut(
 }
 
 }  // namespace
+
+at::Tensor AtenSafeSoftmax(const at::Tensor& self, int64_t dim,
+                           std::optional<at::ScalarType> dtype) {
+  TT_KERNEL(OpName::kSafeSoftmax, param_keys, (self, dim, dtype), {
+    TT_ASSIGN_OR_THROW(
+        at::Tensor result,
+        SoftmaxInternal(self, dim, dtype, SoftmaxMode::kSafeSoftmax,
+                        std::move(param_keys)));
+    return result;
+  });
+}
 
 at::Tensor& AtenSoftmaxOut(const at::Tensor& self, int64_t dim,
                            bool half_to_float, at::Tensor& out) {
