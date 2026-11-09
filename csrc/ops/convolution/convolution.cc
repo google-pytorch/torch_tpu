@@ -96,6 +96,303 @@ SpatialPadding CalculateWindowAlignedPadding(int64_t operand_dim,
   return {padding, padding - overhang};
 }
 
+enum class ConvFastPathKind {
+  kNone,
+  kPointwise,
+  kPatchify,
+};
+
+// Returns whether convolution qualifies for pointwise or patchify fast path.
+[[nodiscard]] ConvFastPathKind GetConvFastPathKind(
+    const mlir::RankedTensorType input_type,
+    const mlir::RankedTensorType weight_type,
+    const absl::Span<const int64_t> stride,
+    const absl::Span<const int64_t> padding,
+    const absl::Span<const int64_t> dilation, const int64_t groups,
+    const bool transposed, const bool has_result_dims = false) {
+  if (transposed || groups != 1 || has_result_dims) {
+    return ConvFastPathKind::kNone;
+  }
+  if (!input_type || !weight_type || !input_type.hasStaticShape() ||
+      !weight_type.hasStaticShape()) {
+    return ConvFastPathKind::kNone;
+  }
+  const int64_t num_spatial_dims = stride.size();
+  if (num_spatial_dims < 1 || num_spatial_dims > 3) {
+    return ConvFastPathKind::kNone;
+  }
+  if (input_type.getRank() != 2 + num_spatial_dims ||
+      weight_type.getRank() != 2 + num_spatial_dims) {
+    return ConvFastPathKind::kNone;
+  }
+  for (const int64_t p : padding) {
+    if (p != 0) {
+      return ConvFastPathKind::kNone;
+    }
+  }
+  for (const int64_t d : dilation) {
+    if (d != 1) {
+      return ConvFastPathKind::kNone;
+    }
+  }
+  bool is_pointwise = true;
+  bool is_patchify = true;
+  for (int i = 0; i < num_spatial_dims; ++i) {
+    const int64_t k = weight_type.getDimSize(2 + i);
+    const int64_t s = stride[i];
+    const int64_t in_s = input_type.getDimSize(2 + i);
+    if (k <= 0 || s <= 0) {
+      return ConvFastPathKind::kNone;
+    }
+    if (k != 1 || s != 1) {
+      is_pointwise = false;
+    }
+    if (s != k || in_s % k != 0) {
+      is_patchify = false;
+    }
+  }
+  if (is_pointwise) {
+    return ConvFastPathKind::kPointwise;
+  }
+  if (is_patchify) {
+    return ConvFastPathKind::kPatchify;
+  }
+  return ConvFastPathKind::kNone;
+}
+
+// Builds unpadded pointwise or patchify convolution using DotGeneral.
+[[nodiscard]] absl::StatusOr<mlir::MlirOp> BuildConvolutionFastPath(
+    mlir::MlirOp input, mlir::MlirOp weight, std::optional<mlir::MlirOp> bias,
+    const absl::Span<const int64_t> stride, const ConvFastPathKind kind,
+    const mlir::ElementType output_dtype,
+    const mlir::stablehlo::Precision precision) {
+  mlir::MlirBuilder& builder = input.getBuilder();
+  mlir::MLIRContext& ctx = builder.getContext();
+  const int64_t num_spatial_dims = stride.size();
+  const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
+  const mlir::RankedTensorType weight_type = GetTensorTypeOrDie(weight);
+  const int64_t n = input_type.getDimSize(0);
+  const int64_t c_in = input_type.getDimSize(1);
+  const int64_t c_out = weight_type.getDimSize(0);
+
+  input = stablehlo::ConvertElementType(input, output_dtype);
+  weight = stablehlo::ConvertElementType(weight, output_dtype);
+  const auto elem_type = mlir::getElementType(ctx, output_dtype);
+
+  const stablehlo::Precision precisions[2] = {precision, precision};
+  const auto precision_config =
+      stablehlo::PrecisionConfigAttr::get(&ctx, precisions);
+
+  mlir::MlirOp dot_op;
+  if (kind == ConvFastPathKind::kPointwise) {
+    const auto weight_2d_type =
+        mlir::RankedTensorType::get({c_out, c_in}, elem_type);
+    mlir::MlirOp weight_2d = stablehlo::Reshape(weight_2d_type, weight);
+    const auto dot_dims = stablehlo::DotDimensionNumbersAttr::get(
+        &ctx, /*lhs_batching_dimensions=*/{}, /*rhs_batching_dimensions=*/{},
+        /*lhs_contracting_dimensions=*/{1},
+        /*rhs_contracting_dimensions=*/{1});
+    dot_op =
+        stablehlo::DotGeneral(input, weight_2d, dot_dims, precision_config);
+  } else {
+    Dimensions reshaped_input_dims;
+    reshaped_input_dims.reserve(2 + 2 * num_spatial_dims);
+    reshaped_input_dims.push_back(n);
+    reshaped_input_dims.push_back(c_in);
+    Dimensions lhs_contracting;
+    lhs_contracting.reserve(1 + num_spatial_dims);
+    lhs_contracting.push_back(1);
+    Dimensions rhs_contracting;
+    rhs_contracting.reserve(1 + num_spatial_dims);
+    rhs_contracting.push_back(1);
+
+    for (int i = 0; i < num_spatial_dims; ++i) {
+      const int64_t k = weight_type.getDimSize(2 + i);
+      const int64_t p = input_type.getDimSize(2 + i) / k;
+      reshaped_input_dims.push_back(p);
+      reshaped_input_dims.push_back(k);
+      lhs_contracting.push_back(3 + 2 * i);
+      rhs_contracting.push_back(2 + i);
+    }
+    const auto reshaped_input_type =
+        mlir::RankedTensorType::get(reshaped_input_dims, elem_type);
+    mlir::MlirOp reshaped_input =
+        stablehlo::Reshape(reshaped_input_type, input);
+    const auto dot_dims = stablehlo::DotDimensionNumbersAttr::get(
+        &ctx, /*lhs_batching_dimensions=*/{}, /*rhs_batching_dimensions=*/{},
+        /*lhs_contracting_dimensions=*/
+        llvm::ArrayRef<int64_t>(lhs_contracting.data(), lhs_contracting.size()),
+        /*rhs_contracting_dimensions=*/
+        llvm::ArrayRef<int64_t>(rhs_contracting.data(),
+                                rhs_contracting.size()));
+    dot_op = stablehlo::DotGeneral(reshaped_input, weight, dot_dims,
+                                   precision_config);
+  }
+
+  Dimensions transpose_perm;
+  transpose_perm.reserve(2 + num_spatial_dims);
+  transpose_perm.push_back(0);
+  transpose_perm.push_back(1 + num_spatial_dims);
+  for (int i = 0; i < num_spatial_dims; ++i) {
+    transpose_perm.push_back(1 + i);
+  }
+  mlir::MlirOp conv_op = stablehlo::Transpose(dot_op, transpose_perm);
+
+  if (!bias.has_value()) {
+    return conv_op;
+  }
+  const mlir::RankedTensorType bias_type = GetTensorTypeOrDie(*bias);
+  TT_RETURN_IF_ERROR(ValidateConvolutionBias(bias_type.getShape(), c_out));
+  mlir::MlirOp converted_bias =
+      stablehlo::ConvertElementType(*bias, output_dtype);
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp shaped_bias,
+      BroadcastIfNeeded(converted_bias, conv_op, /*broadcast_dimensions=*/{1}));
+  return stablehlo::Add(conv_op, shaped_bias);
+}
+
+// Builds input gradient for unpadded pointwise or patchify convolution.
+[[nodiscard]] absl::StatusOr<mlir::MlirOp>
+BuildConvolutionBackwardInputFastPath(
+    mlir::MlirOp grad_output, mlir::MlirOp input, mlir::MlirOp weight,
+    const absl::Span<const int64_t> stride, const ConvFastPathKind kind,
+    const mlir::ElementType output_dtype,
+    const mlir::stablehlo::Precision precision) {
+  mlir::MlirBuilder& builder = grad_output.getBuilder();
+  mlir::MLIRContext& ctx = builder.getContext();
+  const int64_t num_spatial_dims = stride.size();
+  const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
+  const mlir::RankedTensorType weight_type = GetTensorTypeOrDie(weight);
+  const int64_t c_in = weight_type.getDimSize(1);
+  const int64_t c_out = weight_type.getDimSize(0);
+
+  grad_output = stablehlo::ConvertElementType(grad_output, output_dtype);
+  weight = stablehlo::ConvertElementType(weight, output_dtype);
+  const auto elem_type = mlir::getElementType(ctx, output_dtype);
+
+  const stablehlo::Precision precisions[2] = {precision, precision};
+  const auto precision_config =
+      stablehlo::PrecisionConfigAttr::get(&ctx, precisions);
+
+  if (kind == ConvFastPathKind::kPointwise) {
+    const auto weight_2d_type =
+        mlir::RankedTensorType::get({c_out, c_in}, elem_type);
+    mlir::MlirOp weight_2d = stablehlo::Reshape(weight_2d_type, weight);
+    const auto dot_dims = stablehlo::DotDimensionNumbersAttr::get(
+        &ctx, /*lhs_batching_dimensions=*/{}, /*rhs_batching_dimensions=*/{},
+        /*lhs_contracting_dimensions=*/{1},
+        /*rhs_contracting_dimensions=*/{0});
+    mlir::MlirOp dot_op = stablehlo::DotGeneral(grad_output, weight_2d,
+                                                dot_dims, precision_config);
+    Dimensions transpose_perm;
+    transpose_perm.reserve(2 + num_spatial_dims);
+    transpose_perm.push_back(0);
+    transpose_perm.push_back(1 + num_spatial_dims);
+    for (int i = 0; i < num_spatial_dims; ++i) {
+      transpose_perm.push_back(1 + i);
+    }
+    return stablehlo::Transpose(dot_op, transpose_perm);
+  }
+
+  const auto dot_dims = stablehlo::DotDimensionNumbersAttr::get(
+      &ctx, /*lhs_batching_dimensions=*/{}, /*rhs_batching_dimensions=*/{},
+      /*lhs_contracting_dimensions=*/{1},
+      /*rhs_contracting_dimensions=*/{0});
+  mlir::MlirOp dot_op =
+      stablehlo::DotGeneral(grad_output, weight, dot_dims, precision_config);
+
+  Dimensions transpose_perm;
+  transpose_perm.reserve(2 + 2 * num_spatial_dims);
+  transpose_perm.push_back(0);
+  transpose_perm.push_back(1 + num_spatial_dims);
+  for (int i = 0; i < num_spatial_dims; ++i) {
+    transpose_perm.push_back(1 + i);
+    transpose_perm.push_back(2 + num_spatial_dims + i);
+  }
+  mlir::MlirOp transposed = stablehlo::Transpose(dot_op, transpose_perm);
+  const auto result_type =
+      mlir::RankedTensorType::get(input_type.getShape(), elem_type);
+  return stablehlo::Reshape(result_type, transposed);
+}
+
+// Builds weight gradient for unpadded pointwise or patchify convolution.
+[[nodiscard]] absl::StatusOr<mlir::MlirOp>
+BuildConvolutionBackwardWeightFastPath(
+    mlir::MlirOp input, mlir::MlirOp grad_output, mlir::MlirOp weight,
+    const absl::Span<const int64_t> stride, const ConvFastPathKind kind,
+    const mlir::ElementType output_dtype,
+    const mlir::stablehlo::Precision precision) {
+  mlir::MlirBuilder& builder = input.getBuilder();
+  mlir::MLIRContext& ctx = builder.getContext();
+  const int64_t num_spatial_dims = stride.size();
+  const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
+  const mlir::RankedTensorType weight_type = GetTensorTypeOrDie(weight);
+  const int64_t n = input_type.getDimSize(0);
+  const int64_t c_in = input_type.getDimSize(1);
+
+  input = stablehlo::ConvertElementType(input, output_dtype);
+  grad_output = stablehlo::ConvertElementType(grad_output, output_dtype);
+  const auto elem_type = mlir::getElementType(ctx, output_dtype);
+
+  const stablehlo::Precision precisions[2] = {precision, precision};
+  const auto precision_config =
+      stablehlo::PrecisionConfigAttr::get(&ctx, precisions);
+
+  if (kind == ConvFastPathKind::kPointwise) {
+    Dimensions contracting_dims;
+    contracting_dims.reserve(1 + num_spatial_dims);
+    contracting_dims.push_back(0);
+    for (int i = 0; i < num_spatial_dims; ++i) {
+      contracting_dims.push_back(2 + i);
+    }
+    const auto dot_dims = stablehlo::DotDimensionNumbersAttr::get(
+        &ctx, /*lhs_batching_dimensions=*/{}, /*rhs_batching_dimensions=*/{},
+        /*lhs_contracting_dimensions=*/
+        llvm::ArrayRef<int64_t>(contracting_dims.data(),
+                                contracting_dims.size()),
+        /*rhs_contracting_dimensions=*/
+        llvm::ArrayRef<int64_t>(contracting_dims.data(),
+                                contracting_dims.size()));
+    mlir::MlirOp dot_op =
+        stablehlo::DotGeneral(grad_output, input, dot_dims, precision_config);
+    const auto result_type =
+        mlir::RankedTensorType::get(weight_type.getShape(), elem_type);
+    return stablehlo::Reshape(result_type, dot_op);
+  }
+
+  Dimensions reshaped_input_dims;
+  reshaped_input_dims.reserve(2 + 2 * num_spatial_dims);
+  reshaped_input_dims.push_back(n);
+  reshaped_input_dims.push_back(c_in);
+  Dimensions lhs_contracting;
+  lhs_contracting.reserve(1 + num_spatial_dims);
+  lhs_contracting.push_back(0);
+  Dimensions rhs_contracting;
+  rhs_contracting.reserve(1 + num_spatial_dims);
+  rhs_contracting.push_back(0);
+
+  for (int i = 0; i < num_spatial_dims; ++i) {
+    const int64_t k = weight_type.getDimSize(2 + i);
+    const int64_t p = input_type.getDimSize(2 + i) / k;
+    reshaped_input_dims.push_back(p);
+    reshaped_input_dims.push_back(k);
+    lhs_contracting.push_back(2 + i);
+    rhs_contracting.push_back(2 + 2 * i);
+  }
+  const auto reshaped_input_type =
+      mlir::RankedTensorType::get(reshaped_input_dims, elem_type);
+  mlir::MlirOp reshaped_input = stablehlo::Reshape(reshaped_input_type, input);
+
+  const auto dot_dims = stablehlo::DotDimensionNumbersAttr::get(
+      &ctx, /*lhs_batching_dimensions=*/{}, /*rhs_batching_dimensions=*/{},
+      /*lhs_contracting_dimensions=*/
+      llvm::ArrayRef<int64_t>(lhs_contracting.data(), lhs_contracting.size()),
+      /*rhs_contracting_dimensions=*/
+      llvm::ArrayRef<int64_t>(rhs_contracting.data(), rhs_contracting.size()));
+  return stablehlo::DotGeneral(grad_output, reshaped_input, dot_dims,
+                               precision_config);
+}
+
 absl::StatusOr<mlir::MlirOp> BuildTransposedConvolution(
     mlir::MlirOp input, mlir::MlirOp weight, std::optional<mlir::MlirOp> bias,
     absl::Span<const int64_t> stride, absl::Span<const int64_t> padding,
@@ -315,6 +612,14 @@ absl::StatusOr<mlir::MlirOp> BuildConvolution(
   const mlir::RankedTensorType result_type = mlir::RankedTensorType::get(
       output_dims, mlir::getElementType(ctx, output_dtype));
 
+  const ConvFastPathKind fast_path_kind = GetConvFastPathKind(
+      input_type, weight_type, stride, padding, dilation, groups,
+      /*transposed=*/false, result_dims.has_value());
+  if (fast_path_kind != ConvFastPathKind::kNone) {
+    return BuildConvolutionFastPath(input, weight, bias, stride, fast_path_kind,
+                                    output_dtype, precision);
+  }
+
   input = stablehlo::ConvertElementType(input, output_dtype);
   weight = stablehlo::ConvertElementType(weight, output_dtype);
 
@@ -396,6 +701,17 @@ absl::StatusOr<mlir::MlirOp> BuildConvolutionBackwardInput(
   const stablehlo::Dimensions input_dims = GetDimensions(input);
   const stablehlo::Dimensions weight_dims = GetDimensions(weight);
   const Dimensions output_dims = GetStaticShape(input_dims);
+
+  const ConvFastPathKind fast_path_kind =
+      GetConvFastPathKind(GetTensorTypeOrDie(input), weight_type, stride,
+                          padding, dilation, groups, transposed);
+  if (fast_path_kind != ConvFastPathKind::kNone &&
+      GetTensorTypeOrDie(grad_output).hasStaticShape()) {
+    return BuildConvolutionBackwardInputFastPath(grad_output, input, weight,
+                                                 stride, fast_path_kind,
+                                                 output_dtype, precision);
+  }
+
   if (transposed) {
     // When computing the gradient w.r.t. input for a transposed convolution,
     // we perform a standard convolution of grad_output with the kernel. The
@@ -574,6 +890,16 @@ absl::StatusOr<mlir::MlirOp> BuildConvolutionBackwardWeight(
     absl::Span<const int64_t> stride, absl::Span<const int64_t> padding,
     absl::Span<const int64_t> dilation, int64_t groups, bool transposed,
     mlir::ElementType output_dtype, mlir::stablehlo::Precision precision) {
+  const ConvFastPathKind fast_path_kind =
+      GetConvFastPathKind(GetTensorTypeOrDie(input), GetTensorTypeOrDie(weight),
+                          stride, padding, dilation, groups, transposed);
+  if (fast_path_kind != ConvFastPathKind::kNone &&
+      GetTensorTypeOrDie(grad_output).hasStaticShape()) {
+    return BuildConvolutionBackwardWeightFastPath(input, grad_output, weight,
+                                                  stride, fast_path_kind,
+                                                  output_dtype, precision);
+  }
+
   if (transposed) {
     std::swap(input, grad_output);
   }

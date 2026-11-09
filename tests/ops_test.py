@@ -3357,7 +3357,6 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_nn_functional_scaled_dot_product_attention_overrideable(self):
     # b/476166586: GPU device doesn't support `OVERRIDEABLE`, so use `MATH` on
     # GPU when generating goldens. On TPU, use `OVERRIDEABLE`.
-    # Only do the forward pass (backward is not implemented yet)
     backends = (
         [attention.SDPBackend.MATH]
         if op_testing._gen_gpu_golden_mode()

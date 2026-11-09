@@ -361,8 +361,9 @@ AtenScaledDotProductFusedAttentionOverrideableBackward(
       (grad_out, query, key, value, attn_bias,
        IgnoreInCacheKey(grad_input_mask, "Doesn't affect SHLO"), out, logsumexp,
        cum_seq_q, cum_seq_k, IgnoreInCacheKey(max_q, "Unused"),
-       IgnoreInCacheKey(max_k, "Unused"), IgnoreInCacheKey(dropout_p, "Unused"),
-       is_causal, philox_seed, philox_offset, scale),
+       IgnoreInCacheKey(max_k, "Unused"),
+       IgnoreInCacheKey(dropout_p, "Delegates to implementation"), is_causal,
+       philox_seed, philox_offset, scale),
       {
         const bool allow_half_precision_reduction_math =
             at::globalContext().allowFP16BF16ReductionMathSDP();
@@ -370,17 +371,18 @@ AtenScaledDotProductFusedAttentionOverrideableBackward(
             "allow_fp16_bf16_reduction", allow_half_precision_reduction_math));
 
         TT_ASSIGN_OR_THROW(
-            auto out, ScaledDotProductFusedAttentionShloBackward(
-                          grad_out, query, key, value, attn_bias, logsumexp,
-                          scale, is_causal, allow_half_precision_reduction_math,
-                          std::move(param_keys)));
+            auto out_grads,
+            ScaledDotProductFusedAttentionShloBackward(
+                grad_out, query, key, value, attn_bias, out, logsumexp, scale,
+                is_causal, dropout_p, allow_half_precision_reduction_math,
+                std::move(param_keys)));
 
         return std::make_tuple(
-            grad_input_mask[0] ? std::get<0>(out)
+            grad_input_mask[0] ? std::get<0>(out_grads)
                                : at::zeros({0}, grad_out.options()),
-            grad_input_mask[1] ? std::get<1>(out)
+            grad_input_mask[1] ? std::get<1>(out_grads)
                                : at::zeros({0}, grad_out.options()),
-            grad_input_mask[2] ? std::get<2>(out)
+            grad_input_mask[2] ? std::get<2>(out_grads)
                                : at::zeros({0}, grad_out.options()),
             at::zeros({0}, grad_out.options()));
       });
