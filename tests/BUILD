@@ -441,6 +441,7 @@ torch_tpu_py_test(
         "@pypi//google_api_core",
         "@pypi//google_cloud_storage",
         "@pypi//pillow",
+        "@pypi//torchvision",
         "@pypi//transformers",
     ],
 )
