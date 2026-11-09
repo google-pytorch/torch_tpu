@@ -90,22 +90,6 @@ class KnownFailure:
 KNOWN_FAILURES: tuple[KnownFailure, ...] = (
     # TorchTPU.
     #
-    # TODO(b/574632209): Remove once XLA:TPU cl/1001433059 lands. It fixes
-    # `TpuConvolutionRewriter` for non-`f0b_i0o->0bf` dimension orders.
-    # Repro: //perflab:distributed_dev_benchmarks_ws8
-    #   --test_filter=qwen3_8_27b_4_layers_simple_fsdp_training_compiled
-    KnownFailure(
-        benchmark="qwen3_8_27b_4_layers_simple_fsdp_training",
-        framework=mode_lib.Framework.TORCH,
-        device_kind=target_lib.DeviceKind.TPU,
-        run_modes=frozenset({common.RunMode.COMPILED}),
-        reason=(
-            "XLA:TPU HLO shape mismatch in qwen3_8_L147_split1_bwd: Expected"
-            " instruction to have shape equal to bf16[2048,2048,2048], actual"
-            " shape is bf16[2048,2048,1] on multiply(%slice, %silu_backward)"
-            " (b/574632209)"
-        ),
-    ),
     # TODO(b/568037427): Remove the TorchAX entries as their failures are fixed.
     #
     # `torch._grouped_mm`, used by the transformers MoE experts, has no
@@ -444,105 +428,15 @@ KNOWN_FAILURES: tuple[KnownFailure, ...] = (
             " subprocess timeout on b200_1"
         ),
     ),
-    # TODO(b/563472806): Remove once internal builds pick up
-    # https://github.com/llvm/llvm-project/pull/225808.
+    # TODO(b/563472806): Remove once verified on b200. Internal builds have
+    # picked up https://github.com/llvm/llvm-project/pull/225808, but the
+    # distributed b200 run of this benchmark has not completed since.
     #
-    # The LLVM of internal builds expands a vectorized integer division by a
-    # constant into a v2i16 smul_lohi or umul_lohi that its NVPTX backend cannot
-    # select, so Triton aborts while compiling an Inductor kernel of these
-    # models. The Triton wheel used in OSS is not affected.
+    # The LLVM of internal builds expanded a vectorized integer division by a
+    # constant into a v2i16 smul_lohi or umul_lohi that its NVPTX backend could
+    # not select, so Triton aborted while compiling an Inductor kernel. The
+    # Triton wheel used in OSS is not affected.
     # copybara:uncomment_begin(internal builds only)
-    # KnownFailure(
-        # benchmark="blip_image_captioning_base_train_gen",
-        # framework=mode_lib.Framework.TORCH,
-        # device_kind=target_lib.DeviceKind.CUDA,
-        # run_modes=frozenset({common.RunMode.COMPILED}),
-        # reason="LLVM cannot select v2i16 [su]mul_lohi in a Triton kernel",
-    # ),
-    # KnownFailure(
-        # benchmark="conformer_training",
-        # framework=mode_lib.Framework.TORCH,
-        # device_kind=target_lib.DeviceKind.CUDA,
-        # run_modes=frozenset({common.RunMode.COMPILED}),
-        # reason="LLVM cannot select v2i16 [su]mul_lohi in a Triton kernel",
-    # ),
-    # KnownFailure(
-        # benchmark="deit_tiny_forward",
-        # framework=mode_lib.Framework.TORCH,
-        # device_kind=target_lib.DeviceKind.CUDA,
-        # run_modes=frozenset({common.RunMode.COMPILED}),
-        # reason="LLVM cannot select v2i16 [su]mul_lohi in a Triton kernel",
-    # ),
-    # KnownFailure(
-        # benchmark="dinov2_small_forward_gen",
-        # framework=mode_lib.Framework.TORCH,
-        # device_kind=target_lib.DeviceKind.CUDA,
-        # run_modes=frozenset({common.RunMode.COMPILED}),
-        # reason="LLVM cannot select v2i16 [su]mul_lohi in a Triton kernel",
-    # ),
-    # KnownFailure(
-        # benchmark="dinov2_small_train_gen",
-        # framework=mode_lib.Framework.TORCH,
-        # device_kind=target_lib.DeviceKind.CUDA,
-        # run_modes=frozenset({common.RunMode.COMPILED}),
-        # reason="LLVM cannot select v2i16 [su]mul_lohi in a Triton kernel",
-    # ),
-    # KnownFailure(
-        # benchmark="dpt_hybrid_midas_forward_gen",
-        # framework=mode_lib.Framework.TORCH,
-        # device_kind=target_lib.DeviceKind.CUDA,
-        # run_modes=frozenset({common.RunMode.COMPILED}),
-        # reason="LLVM cannot select v2i16 [su]mul_lohi in a Triton kernel",
-    # ),
-    # KnownFailure(
-        # benchmark="gepard_1_0_forward_gen",
-        # framework=mode_lib.Framework.TORCH,
-        # device_kind=target_lib.DeviceKind.CUDA,
-        # run_modes=frozenset({common.RunMode.COMPILED}),
-        # reason="LLVM cannot select v2i16 [su]mul_lohi in a Triton kernel",
-    # ),
-    # KnownFailure(
-        # benchmark="gepard_1_0_train_gen",
-        # framework=mode_lib.Framework.TORCH,
-        # device_kind=target_lib.DeviceKind.CUDA,
-        # run_modes=frozenset({common.RunMode.COMPILED}),
-        # reason="LLVM cannot select v2i16 [su]mul_lohi in a Triton kernel",
-    # ),
-    # KnownFailure(
-        # benchmark="glm_ocr_forward_gen",
-        # framework=mode_lib.Framework.TORCH,
-        # device_kind=target_lib.DeviceKind.CUDA,
-        # run_modes=frozenset({common.RunMode.COMPILED}),
-        # reason="LLVM cannot select v2i16 [su]mul_lohi in a Triton kernel",
-    # ),
-    # KnownFailure(
-        # benchmark="glucose_base_ja_v2_train_gen",
-        # framework=mode_lib.Framework.TORCH,
-        # device_kind=target_lib.DeviceKind.CUDA,
-        # run_modes=frozenset({common.RunMode.COMPILED}),
-        # reason="LLVM cannot select v2i16 [su]mul_lohi in a Triton kernel",
-    # ),
-    # KnownFailure(
-        # benchmark="gpt2_train_gen",
-        # framework=mode_lib.Framework.TORCH,
-        # device_kind=target_lib.DeviceKind.CUDA,
-        # run_modes=frozenset({common.RunMode.COMPILED}),
-        # reason="LLVM cannot select v2i16 [su]mul_lohi in a Triton kernel",
-    # ),
-    # KnownFailure(
-        # benchmark="lahja_sa_ahmad_v1_forward_gen",
-        # framework=mode_lib.Framework.TORCH,
-        # device_kind=target_lib.DeviceKind.CUDA,
-        # run_modes=frozenset({common.RunMode.COMPILED}),
-        # reason="LLVM cannot select v2i16 [su]mul_lohi in a Triton kernel",
-    # ),
-    # KnownFailure(
-        # benchmark="mllama_11b_forward",
-        # framework=mode_lib.Framework.TORCH,
-        # device_kind=target_lib.DeviceKind.CUDA,
-        # run_modes=frozenset({common.RunMode.COMPILED}),
-        # reason="LLVM cannot select v2i16 [su]mul_lohi in a Triton kernel",
-    # ),
     # KnownFailure(
         # benchmark="qwen3_8_27b_4_layers_simple_fsdp_training",
         # framework=mode_lib.Framework.TORCH,
@@ -550,61 +444,16 @@ KNOWN_FAILURES: tuple[KnownFailure, ...] = (
         # run_modes=frozenset({common.RunMode.COMPILED}),
         # reason="LLVM cannot select v2i16 [su]mul_lohi in a Triton kernel",
     # ),
+    # # Inductor lowers part of the graph to its C++ CPU backend, and the
+    # # internal b200 test machines have no C++ compiler.
     # KnownFailure(
-        # benchmark="sam3_litetext_s0_forward_gen",
+        # benchmark="lahja_sa_ahmad_v1_forward_gen",
         # framework=mode_lib.Framework.TORCH,
         # device_kind=target_lib.DeviceKind.CUDA,
         # run_modes=frozenset({common.RunMode.COMPILED}),
-        # reason="LLVM cannot select v2i16 [su]mul_lohi in a Triton kernel",
-    # ),
-    # KnownFailure(
-        # benchmark="siglip_base_forward",
-        # framework=mode_lib.Framework.TORCH,
-        # device_kind=target_lib.DeviceKind.CUDA,
-        # run_modes=frozenset({common.RunMode.COMPILED}),
-        # reason="LLVM cannot select v2i16 [su]mul_lohi in a Triton kernel",
-    # ),
-    # KnownFailure(
-        # benchmark="timm_resnet_50_training",
-        # framework=mode_lib.Framework.TORCH,
-        # device_kind=target_lib.DeviceKind.CUDA,
-        # run_modes=frozenset({common.RunMode.COMPILED}),
-        # reason="LLVM cannot select v2i16 [su]mul_lohi in a Triton kernel",
-    # ),
-    # KnownFailure(
-        # benchmark="timm_vit_small_dino_forward",
-        # framework=mode_lib.Framework.TORCH,
-        # device_kind=target_lib.DeviceKind.CUDA,
-        # run_modes=frozenset({common.RunMode.COMPILED}),
-        # reason="LLVM cannot select v2i16 [su]mul_lohi in a Triton kernel",
-    # ),
-    # KnownFailure(
-        # benchmark="timm_vit_small_dino_training",
-        # framework=mode_lib.Framework.TORCH,
-        # device_kind=target_lib.DeviceKind.CUDA,
-        # run_modes=frozenset({common.RunMode.COMPILED}),
-        # reason="LLVM cannot select v2i16 [su]mul_lohi in a Triton kernel",
-    # ),
-    # KnownFailure(
-        # benchmark="tiny_doc_qa_vision_encoder_decoder_forward_gen",
-        # framework=mode_lib.Framework.TORCH,
-        # device_kind=target_lib.DeviceKind.CUDA,
-        # run_modes=frozenset({common.RunMode.COMPILED}),
-        # reason="LLVM cannot select v2i16 [su]mul_lohi in a Triton kernel",
-    # ),
-    # KnownFailure(
-        # benchmark="wan_2_2_ti2v_5b_training",
-        # framework=mode_lib.Framework.TORCH,
-        # device_kind=target_lib.DeviceKind.CUDA,
-        # run_modes=frozenset({common.RunMode.COMPILED}),
-        # reason="LLVM cannot select v2i16 [su]mul_lohi in a Triton kernel",
-    # ),
-    # KnownFailure(
-        # benchmark="yolos_small_forward_gen",
-        # framework=mode_lib.Framework.TORCH,
-        # device_kind=target_lib.DeviceKind.CUDA,
-        # run_modes=frozenset({common.RunMode.COMPILED}),
-        # reason="LLVM cannot select v2i16 [su]mul_lohi in a Triton kernel",
+        # reason=(
+            # "Inductor CPU codegen finds no working C++ compiler (g++) on b200_1"
+        # ),
     # ),
     # copybara:uncomment_end
 )
