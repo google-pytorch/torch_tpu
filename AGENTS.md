@@ -29,7 +29,8 @@ Instructions related to Bazel repositories:
 
 When writing documentation:
 
-*   Use the docs-review skill when writing, editing, or reviewing documentation.
+*   Use the tt-write-docs skill when writing, editing, or reviewing
+    documentation.
 *   Wrap Markdown at 80 characters, use ATX headers (`## Header`), and use
     asterisks for unordered lists (`* Item`), for consistent rendering and
     diffs.
@@ -203,5 +204,5 @@ in `ci/custom_lint_rules.METADATA`:
 Before starting a task, check whether one of these skills covers it. If so, read
 its `SKILL.md` and follow it.
 
-*   [`docs-review`](.agents/skills/docs-review/SKILL.md): writing, editing, or
-    reviewing narrative documentation or README content.
+*   [`tt-write-docs`](.agents/skills/tt-write-docs/SKILL.md): writing, editing,
+    or reviewing narrative documentation or README content.
