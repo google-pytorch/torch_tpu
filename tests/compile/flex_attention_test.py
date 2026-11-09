@@ -34,6 +34,10 @@ _TOLERANCES = {
     torch.float32: dict(atol=2e-4, rtol=2e-4),
     torch.bfloat16: dict(atol=2e-2, rtol=2e-2),
 }
+_GRAD_TOLERANCES = {
+    torch.float32: dict(atol=1e-3, rtol=1e-3),
+    torch.bfloat16: dict(atol=5e-2, rtol=5e-2),
+}
 _LSE_TOLERANCES = {
     torch.float32: dict(atol=1e-4, rtol=1e-4),
     torch.bfloat16: dict(atol=1e-2, rtol=1e-2),
@@ -93,6 +97,26 @@ def _reference(q, k, v, block_mask, scale, score_mod):
       q, k, v, score_mod, block_mask.as_tuple(), scale, {}
   )
   return out, lse
+
+
+def _reference_dkv(q, k, v, grad_out, mask_mod, mask_batch, scale):
+  """dK and dV of dense masked attention on CPU, via autograd."""
+  q, k, v, grad_out = (t.detach().cpu().float() for t in (q, k, v, grad_out))
+  k.requires_grad_(True)
+  v.requires_grad_(True)
+  groups = q.shape[1] // k.shape[1]
+  kk, vv = k.repeat_interleave(groups, 1), v.repeat_interleave(groups, 1)
+  s = q @ kk.transpose(-1, -2) * scale
+  mask = fa.create_mask(
+      mask_mod, mask_batch, 1, q.shape[2], k.shape[2], device="cpu"
+  )
+  s = s.masked_fill(~mask, -torch.inf)
+  m = s.amax(-1, keepdim=True).detach()
+  p = torch.exp(s - torch.where(m == -torch.inf, 0.0, m))
+  l = p.sum(-1, keepdim=True)
+  out = (p / torch.where(l == 0, 1.0, l)) @ vv
+  out.backward(grad_out)
+  return k.grad, v.grad
 
 
 class FlexAttentionKilnTest(seed_test_utils.RepeatableTest):
@@ -223,6 +247,56 @@ class FlexAttentionKilnTest(seed_test_utils.RepeatableTest):
     )
     self.assertEqual(tile, (_BLOCK, _BLOCK))
     self.assertEqual(num_blocks.tolist(), [[[1, 2, 3, 4]]])
+
+  def test_tables_by_kv_list_the_query_blocks_of_each_kv_block(self):
+    block_mask = _block_mask(_causal, 1, 4 * _BLOCK)
+    num_blocks, indices, tile = flex_attention._block_tables(
+        block_mask, True, (2 * _BLOCK, 2 * _BLOCK), by_kv=True
+    )
+    self.assertEqual(tile, (2 * _BLOCK, 2 * _BLOCK))
+    # KV tile 0 is seen by both query tiles, KV tile 1 by query tile 1 only.
+    self.assertEqual(num_blocks.tolist(), [[[2, 1]]])
+    self.assertEqual(indices.tolist(), [[[[0, 1], [1, 0]]]])
+
+  def _check_dkv(self, q, k, v, mask_mod, *, mask_batch=1, tol=None):
+    scale = q.shape[-1] ** -0.5
+    block_mask = _block_mask(mask_mod, mask_batch, q.shape[-2])
+    out, lse = flex_attention.flex_attention_fwd(
+        q, k, v, block_mask, scale=scale
+    )
+    grad_out = torch.randn_like(out)
+    dk, dv = flex_attention.flex_attention_bwd(
+        q, k, v, out, lse, grad_out, block_mask, scale=scale
+    )
+    self.assertEqual((dk.dtype, dv.dtype), (q.dtype, q.dtype))
+    ref_dk, ref_dv = _reference_dkv(
+        q, k, v, grad_out, mask_mod, mask_batch, scale
+    )
+    tol = tol or _GRAD_TOLERANCES[q.dtype]
+    test_utils.assert_close(dk.cpu().float(), ref_dk, **tol)
+    test_utils.assert_close(dv.cpu().float(), ref_dv, **tol)
+
+  @parameterized.product(
+      dtype=[torch.float32, torch.bfloat16],
+      mask_mod=[fa.noop_mask, _causal],
+  )
+  def test_dkv_matches_reference(self, dtype, mask_mod):
+    q, k, v = self._inputs(1, 2, 2, 2048, 128, dtype)
+    self._check_dkv(q, k, v, mask_mod)
+
+  @parameterized.parameters(_sliding_window, _documents)
+  def test_dkv_mask_mod(self, mask_mod):
+    q, k, v = self._inputs(1, 2, 2, 2048, 128, torch.float32)
+    self._check_dkv(q, k, v, mask_mod)
+
+  def test_dkv_batched_gqa(self):
+    # dK / dV sum over the query heads of each KV head.
+    q, k, v = self._inputs(2, 4, 2, 1024, 128, torch.float32)
+    self._check_dkv(q, k, v, _window_per_batch, mask_batch=2)
+
+  def test_dkv_with_fully_masked_rows(self):
+    q, k, v = self._inputs(1, 1, 1, 1024, 128, torch.float32)
+    self._check_dkv(q, k, v, _block_causal_empty_first_row)
 
 
 if __name__ == "__main__":

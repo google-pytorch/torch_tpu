@@ -242,6 +242,7 @@ enum class OpName {
   kFill_Scalar,
   kFill_Tensor,
   kFlatten,
+  kFlexAttentionBwdDkv,
   kFlexAttentionFwd,
   kFlip,
   kFloorDivide,
@@ -1336,6 +1337,8 @@ ToString(  // NOLINT(google-readability-function-size)
       return "fill_.Tensor";
     case OpName::kFlatten:
       return "flatten";
+    case OpName::kFlexAttentionBwdDkv:
+      return "_flex_attention_bwd_dkv";
     case OpName::kFlexAttentionFwd:
       return "_flex_attention_fwd";
     case OpName::kFlip:
