@@ -28,6 +28,7 @@ import torch.export
 import torch.utils._pytree as pytree
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal.compile import tpu_torch_compile
+from torch_tpu._internal.compile.fx_passes import clone_mutated_returned_placeholders
 from torch_tpu._internal.profiler import named_scope
 from torch_tpu._internal.utils import annotations
 from torch_tpu._internal.benchmarks import xprof_adapter
@@ -492,6 +493,130 @@ def _process_fx_outputs(
   )
 
 
+class _MutatedInputWriter:
+  """Wraps a reconstruct function to copy new input values back first.
+
+  For example, a graph that runs `buf.add_(x)` gets the new `buf` as an extra
+  output, and this writes it into the caller's `buf` after each call.
+
+  Attributes:
+    reconstruct_fn: Builds the FX graph outputs from the executable outputs.
+    input_indices: The positions in the call's arguments of the written inputs.
+    output_indices: The executable output that holds each input's new value.
+  """
+
+  def __init__(
+      self,
+      reconstruct_fn: Callable[[Sequence[Any], Sequence[torch.Tensor]], Any],
+      input_indices: Sequence[int],
+      output_indices: Sequence[int],
+  ):
+    self.reconstruct_fn = reconstruct_fn
+    self.input_indices = tuple(input_indices)
+    self.output_indices = tuple(output_indices)
+
+  def __call__(self, args: Sequence[Any], outputs: Sequence[torch.Tensor]):
+    # A same-shape TPU copy_ only rebinds the input to the output's buffer, so
+    # this moves no data.
+    with torch.no_grad():
+      torch._foreach_copy_(
+          [args[i] for i in self.input_indices],
+          [outputs[i] for i in self.output_indices],
+      )
+    return self.reconstruct_fn(args, outputs)
+
+
+def _add_mutated_input_outputs(
+    new_values: Sequence[torch.Tensor],
+    input_indices: Sequence[int],
+    result_tensors: list[torch.Tensor],
+    reconstruct_fn: Callable[[Sequence[Any], Sequence[torch.Tensor]], Any],
+) -> _MutatedInputWriter:
+  """Appends each written input's final value to `result_tensors`.
+
+  Args:
+    new_values: The final value of each written input.
+    input_indices: The position of each written input in the arguments.
+    result_tensors: The executable outputs. Updated in place; a value that is
+      already an output is added as a copy.
+    reconstruct_fn: Builds the FX graph outputs from the executable outputs.
+
+  Returns:
+    A reconstruct function that also writes the new values into the inputs.
+  """
+  keys = {_TensorDedupeKey.from_tensor(t) for t in result_tensors}
+  output_indices = []
+  for value in new_values:
+    key = _TensorDedupeKey.from_tensor(value)
+    if key in keys:
+      # Sharing an output would leave two live tensors on one buffer after the
+      # copy back, e.g. `return (buf.add_(x),)`: the result and `buf`.
+      # Donating `buf` on the next call would then delete the result.
+      value = value.clone()
+      key = _TensorDedupeKey.from_tensor(value)
+    keys.add(key)
+    output_indices.append(len(result_tensors))
+    result_tensors.append(value)
+  return _MutatedInputWriter(reconstruct_fn, input_indices, output_indices)
+
+
+def _schema_written_inputs(module: torch.fx.GraphModule) -> set[int]:
+  """Returns the positions of the inputs that an op schema says it writes.
+
+  This sees writes that leave the version counter alone, e.g. a raw
+  `torch.library` op with a `Tensor(a!)` argument, or any write to an
+  inference tensor. Targets without a schema are not counted: a
+  higher-order op would otherwise mark every input it reads as written.
+  """
+  graph = module.graph
+  output = next(n for n in reversed(graph.nodes) if n.op == "output")
+  mutated = clone_mutated_returned_placeholders._find_mutated_placeholders(  # pylint: disable=protected-access
+      graph, output, assume_unknown_targets_write=False
+  )
+  placeholders = [n for n in graph.nodes if n.op == "placeholder"]
+  return {i for i, n in enumerate(placeholders) if n in mutated}
+
+
+def _find_written_inputs(
+    module: torch.fx.GraphModule,
+    args: Sequence[Any],
+    versions_before: Sequence[int | None],
+    shapes_before: Sequence[torch.Size | None],
+) -> tuple[list[int], list[torch.Tensor]]:
+  """Returns the inputs that the eager run wrote to, and their new values.
+
+  An input counts as written if its version moved or an op schema writes it.
+  A new value with a different shape is reshaped back when only size-1 dims
+  differ (`buf.unsqueeze_(0)`). Other shape changes (`resize_`, `t_` on a
+  non-square tensor) cannot be copied into the caller's tensor, so that write
+  is dropped with a warning, as before write-back existed.
+  """
+  schema_written = _schema_written_inputs(module)
+  indices, values = [], []
+  for i, (x, version, shape) in enumerate(
+      zip(args, versions_before, shapes_before)
+  ):
+    if shape is None:
+      continue
+    version_moved = version is not None and x._version != version
+    if not version_moved and i not in schema_written:
+      continue
+    if x.shape != shape:
+      if [d for d in x.shape if d != 1] != [d for d in shape if d != 1]:
+        logging.warning(
+            "In-place write to graph input %d is dropped: it changed the"
+            " input's shape from %s to %s, which write-back cannot copy.",
+            i,
+            list(shape),
+            list(x.shape),
+        )
+        continue
+      x = x.reshape(shape)
+    indices.append(i)
+    values.append(x)
+  return indices, values
+
+
 @annotations.forbid_in_torch_compile(
     "A compiled graph already has MLIR debug locations for each op from the FX "
     "graph."
@@ -530,6 +655,7 @@ def fx_to_mlir(
     dynamic_outputs: Sequence[bool] | None = None,
     donated_inputs: Sequence[int] | None = None,
     module_name: str | None = None,
+    write_back_mutated_inputs: bool = False,
 ) -> ExportedMlir:
   """Converts an FX graph module to MLIR using TorchTPU's FX-tracing mode.
 
@@ -550,6 +676,9 @@ def fx_to_mlir(
       output is dynamic.
     donated_inputs: A list of argument indices to donate.
     module_name: Optional custom identifier for the compiled region.
+    write_back_mutated_inputs: Whether in-place writes to `args` become extra
+      outputs that the returned reconstruct function copies back into the
+      inputs. Otherwise, a write that no output reads is dropped.
 
   Returns:
     An `ExportedMlir` object containing the MLIR representation of the graph and
@@ -623,6 +752,19 @@ def fx_to_mlir(
             else (x.clone() if isinstance(x, torch.Tensor) else x)
             for x in args
         ]
+        if write_back_mutated_inputs:
+          # An in-place op bumps a tensor's version, including through a view.
+          # Inference tensors have no version counter.
+          versions_before_run = [
+              x._version
+              if isinstance(x, torch.Tensor) and not x.is_inference()
+              else None
+              for x in mapped_args
+          ]
+          shapes_before_run = [
+              x.shape if isinstance(x, torch.Tensor) else None
+              for x in mapped_args
+          ]
         with xprof_adapter.TraceMe("EagerLikeFxInterpreter.run"):
           fx_outputs = EagerLikeFxInterpreter(module).run(*mapped_args)
 
@@ -634,6 +776,29 @@ def fx_to_mlir(
         ) = _process_fx_outputs(
             module, fx_outputs, dynamic_outputs=dynamic_outputs
         )
+
+        if write_back_mutated_inputs:
+          mutated_inputs, new_values = _find_written_inputs(
+              module, mapped_args, versions_before_run, shapes_before_run
+          )
+          if mutated_inputs and (
+              use_stablehlo_bounds or any(deduped_dynamic_outputs)
+          ):
+            logging.warning(
+                "In-place writes to graph inputs %s are dropped: write-back"
+                " is not supported with dynamic shapes.",
+                mutated_inputs,
+            )
+          elif mutated_inputs:
+            reconstruct_fx_outputs_fn = _add_mutated_input_outputs(
+                new_values,
+                mutated_inputs,
+                result_tensors,
+                reconstruct_fx_outputs_fn,
+            )
+            deduped_dynamic_outputs = deduped_dynamic_outputs + [False] * (
+                len(result_tensors) - len(deduped_dynamic_outputs)
+            )
 
         # Plumb the final state tensor as the last output of the graph so
         # that the updated RNG state can be returned from the executable and
