@@ -89,12 +89,13 @@ def _pinned_nightly_torch() -> str:
 
 @nox.session
 def lint(session: nox.Session) -> None:
-  """Run clang-format check, Python lint (ruff), Bazel formatting (buildifier), and directory layout check."""
+  """Run clang-format check, Python lint (ruff), Bazel formatting (buildifier), directory layout check, and agent skill naming check."""
   session.install("clang-format", "ruff")
   session.run("ci/tools/clang_format.sh", "lint", external=True)
   session.run("ci/tools/ruff_lint.sh", "lint", external=True)
   session.run("ci/tools/buildifier_lint.sh", "lint", external=True)
   session.run("python3", "ci/tools/check_directory_layout.py", external=True)
+  session.run("python3", "-m", "ci.tools.check_agent_skills", external=True)
 
 
 @nox.session
@@ -122,6 +123,12 @@ def buildifier(session: nox.Session) -> None:
 # The script relies exclusively on Python standard libraries, so creating
 # a virtual env adds unnecessary overhead with no benefits.
 @nox.session(venv_backend="none")
+def check_agent_skills(session: nox.Session) -> None:
+  """Validate agent skill names and directories under .agents/skills/."""
+  session.run("python3", "-m", "ci.tools.check_agent_skills", external=True)
+
+
+@nox.session(venv_backend="none")
 def check_directory_layout(session: nox.Session) -> None:
   """Validate repository directory layout against expected manifests."""
   session.run("python3", "ci/tools/check_directory_layout.py", external=True)
@@ -148,6 +155,7 @@ def test_ci_tools(session: nox.Session) -> None:
       "unittest",
       "ci/tools/resolve_base_sha_test.py",
       "ci/tools/check_directory_layout_test.py",
+      "ci/tools/check_agent_skills_test.py",
       "ci/tools/list_ci_tests_test.py",
       "ci/tools/run_bazel_diff_test.py",
       "ci/tools/gen_torch_tests_test.py",

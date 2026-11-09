@@ -3245,4 +3245,13 @@ bzl_library(
     visibility = ["//visibility:private"],
 )
 
+# Agent skill naming rules (standard library only), shared by
+# //src/torch_tpu/google/tools:skill_naming_test and
+# ci/tools/check_agent_skills.py in the GitHub repository.
+torch_tpu_py_library(
+    name = "agent_skill_names",
+    srcs = ["agent_skill_names.py"],
+    visibility = ["//:__subpackages__"],
+)
+
 torch_tpu_package_end()
