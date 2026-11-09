@@ -20,7 +20,12 @@
 # pganssle-google
 # yilingyuan
 
-load("//build_files:build_defs.bzl", "torch_tpu_cc_test", "torch_tpu_package_end", "torch_tpu_py_test")
+load(
+    "//build_files:build_defs.bzl",
+    "torch_tpu_cc_test",
+    "torch_tpu_package_end",
+    "torch_tpu_py_test",
+)
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -57,6 +62,7 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
+        "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//src/torch_tpu/_internal/profiler",
         "//src/torch_tpu/_internal/profiler:profiler_config",
         "//src/torch_tpu/_internal/sync",
@@ -91,6 +97,12 @@ torch_tpu_cc_test(
         "//shims/torch",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
+        "@com_google_absl//absl/container:flat_hash_set",
+        "@tsl//tsl/profiler/lib:profiler_session",
+        "@tsl//tsl/profiler/protobuf:profiler_options_proto_cc",
+        "@tsl//tsl/profiler/protobuf:xplane_proto_cc",
+        # buildcleaner: keep
+        "@xla//xla/backends/profiler/cpu:host_tracer",
     ],
 )
 

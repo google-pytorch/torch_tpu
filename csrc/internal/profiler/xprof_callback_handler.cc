@@ -17,17 +17,22 @@
 #include "csrc/internal/profiler/xprof_callback_handler.h"
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 
 #include "ATen/record_function.h"
-#include "absl/base/no_destructor.h"
 #include "absl/base/nullability.h"
+#include "absl/status/status.h"
 #include "csrc/common/context_manager.h"
 #include "csrc/common/context_states.h"
 #include "torch/csrc/profiler/orchestration/observer.h"
+#include "tsl/profiler/lib/profiler_factory.h"
+#include "tsl/profiler/lib/profiler_interface.h"
 #include "tsl/profiler/lib/traceme.h"
 #include "tsl/profiler/lib/traceme_encode.h"
+#include "tsl/profiler/protobuf/profiler_options.pb.h"
+#include "tsl/profiler/protobuf/xplane.pb.h"
 
 namespace torch_tpu {
 
@@ -98,6 +103,40 @@ void OnFunctionExit(const at::RecordFunction& /*fn*/,
   // TraceMe destructor handles the end event.
 }
 
+// Session-scoped TSL profiler that activates an `XProfCallbackHandler` for the
+// duration of a host-tracing `tsl::ProfilerSession`.
+class RecordFunctionTracer : public tsl::profiler::ProfilerInterface {
+ public:
+  absl::Status Start() override {
+    if (!handler_.has_value()) {
+      handler_.emplace();
+    }
+    return absl::OkStatus();
+  }
+
+  absl::Status Stop() override {
+    handler_.reset();
+    return absl::OkStatus();
+  }
+
+  absl::Status CollectData(tensorflow::profiler::XSpace* /*space*/) override {
+    // Events emitted via `tsl::profiler::TraceMe` are collected into the
+    // `/host:CPU` XPlane by XLA's `HostTracer`.
+    return absl::OkStatus();
+  }
+
+ private:
+  std::optional<XProfCallbackHandler> handler_;
+};
+
+std::unique_ptr<tsl::profiler::ProfilerInterface> CreateRecordFunctionTracer(
+    const tensorflow::ProfileOptions& options) {
+  if (options.host_tracer_level() == 0) {
+    return nullptr;
+  }
+  return std::make_unique<RecordFunctionTracer>();
+}
+
 }  // namespace
 
 XProfCallbackHandler::XProfCallbackHandler()
@@ -108,9 +147,20 @@ XProfCallbackHandler::XProfCallbackHandler()
           at::RecordFunctionCallback(OnFunctionEnter, OnFunctionExit)
               .needsIds(true))) {}
 
-// Register the callback handler explicitly to avoid SIOF.
-void XProfCallbackHandler::Register() {
-  static absl::NoDestructor<XProfCallbackHandler> global_handler;
+void XProfCallbackHandler::RegisterTracerFactory() {
+  [[maybe_unused]] static const bool registered = []() {
+    tsl::profiler::RegisterProfilerFactory(&CreateRecordFunctionTracer);
+    return true;
+  }();
 }
+
+namespace {
+
+[[maybe_unused]] const bool kRecordFunctionTracerRegistered = []() {
+  XProfCallbackHandler::RegisterTracerFactory();
+  return true;
+}();
+
+}  // namespace
 
 }  // namespace torch_tpu
