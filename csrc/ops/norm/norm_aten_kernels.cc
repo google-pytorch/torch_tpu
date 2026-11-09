@@ -16,6 +16,7 @@
 
 #include "csrc/ops/norm/norm_aten_kernels.h"
 
+#include <cmath>
 #include <cstdint>
 #include <optional>
 #include <utility>
@@ -59,9 +60,22 @@ absl::Status ValidateNormOutDtype(const at::Tensor& self, const at::Tensor& out,
                error::kPythonNotImplementedError)
       << "expected the input dtype to be floating point or complex, got "
       << ToString(self.scalar_type());
-  at::ScalarType expected_dtype =
-      dtype.value_or(c10::toRealValueType(self.scalar_type()));
+  const at::ScalarType expected_dtype =
+      c10::toRealValueType(dtype.value_or(self.scalar_type()));
   return ValidateOutDtype(out, expected_dtype, /*allow_out_dtype_cast=*/false);
+}
+
+absl::Status ValidateNonEmptyNormReduction(
+    const at::Tensor& self, double ord,
+    absl::Span<const int64_t> canonical_dims) {
+  if (self.numel() == 0 && (ord < 0.0 || ord == INFINITY)) {
+    for (const int64_t d : canonical_dims) {
+      TT_RET_CHECK(self.size(d) != 0, error::kInvalidArgument)
+          << "expected non-empty reduction dimension for ord " << ord
+          << ", got size 0 along dim " << d;
+    }
+  }
+  return absl::OkStatus();
 }
 
 absl::StatusOr<mlir::MlirOp> BuildZeroNormShlo(
@@ -107,6 +121,7 @@ absl::Status PNormOut(const at::Tensor& self, PromotedScalar& promoted_ord,
       keepdim ? ReductionMode::kKeepDims : ReductionMode::kDropDims;
   TT_ASSIGN_OR_RETURN(const Dimensions canonical_dims,
                       CanonicalizeDims(self, dim));
+  TT_RETURN_IF_ERROR(ValidateNonEmptyNormReduction(self, ord, canonical_dims));
 
   const Dimensions output_dims =
       GetSizesAfterReduction(self.sizes(), reduction_mode, canonical_dims);
