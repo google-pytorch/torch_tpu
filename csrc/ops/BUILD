@@ -451,6 +451,47 @@ torch_tpu_cc_library(
     ],
 )
 
+torch_tpu_cc_test(
+    name = "binary_aten_kernels_test",
+    srcs = ["binary_aten_kernels_test.cc"],
+    exec_properties = {
+        "cpp_link.mem": "16g",
+    },
+    tags = ["requires-tpu-v5lite"],
+    deps = [
+        ":binary",
+        ":binary_aten_kernels",
+        ":op_names",
+        ":python_context",
+        "//csrc/common:cache_key",
+        "//csrc/common:compilation_cache",
+        "//csrc/common:dtype",
+        "//csrc/common:error_utils",
+        "//csrc/common:op_name_stack",
+        "//csrc/common:oss_test_main",
+        "//csrc/common:status_test_utils",
+        "//csrc/eager:device_buffer",
+        "//csrc/eager:events_queue",
+        "//csrc/eager:materialize",
+        "//csrc/eager:tensor_to_buffer",
+        "//csrc/eager:tpu_hooks",
+        "//csrc/ops/copy_from:copy_common",
+        "//csrc/ops/copy_from:tpu_to_cpu",
+        "//csrc/pjrt:pjrt_state",
+        "//csrc/pjrt:pjrt_transfer",
+        "//shims/torch:aten_headers",
+        "//shims/torch/c10/core:base_headers",
+        "//shims/torch/c10/util:base_headers",
+        "//shims/torch/torch/headeronly:torch_headeronly",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/types:span",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
+    ],
+)
+
 torch_tpu_cc_library(
     name = "index_utils",
     srcs = ["index_utils.cc"],

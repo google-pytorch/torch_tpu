@@ -114,9 +114,16 @@ absl::StatusOr<DeviceBufferRef> DispatchBinaryOp(
     const at::Tensor& self, const at::Tensor& other,
     MlirBinaryOpBuilder bin_op_builder, BinaryOpOptions opts) {
   at::ScalarType promoted_scalar_type = at::result_type(self, other);
-  if (opts.force_float_inputs) {
-    if (c10::isIntegralType(promoted_scalar_type, /*includeBool=*/true)) {
-      promoted_scalar_type = c10::get_default_dtype_as_scalartype();
+  if (opts.force_float_inputs &&
+      c10::isIntegralType(promoted_scalar_type, /*includeBool=*/true)) {
+    promoted_scalar_type = c10::get_default_dtype_as_scalartype();
+    // When `opts.result_dtype` is unset, `output_dtype` defaults to
+    // `computation_dtype` (`promoted_scalar_type`) and is already hashed via
+    // `output_shapes_`. When `opts.result_dtype` overrides the output dtype,
+    // record `default_dtype` explicitly to avoid stale cache hits.
+    if (opts.result_dtype.has_value()) {
+      TT_RETURN_IF_ERROR(opts.op_param_cache_keys.SetParam(
+          "default_dtype", promoted_scalar_type));
     }
   }
 
@@ -148,50 +155,6 @@ absl::StatusOr<DeviceBufferRef> DispatchBinaryOp(
       };
   return DispatchOp<2>(
       std::move(op_builder), {self_tpu, other_tpu},
-      {.op_name = opts.op_name,
-       .out_dtype = output_dtype,
-       .out_dims = output_dims,
-       .computation_dtype = computation_dtype,
-       .op_param_cache_keys = std::move(opts.op_param_cache_keys),
-       .split_mode = opts.split_mode,
-       .donated_indices = std::move(opts.donated_indices)});
-}
-
-absl::StatusOr<DeviceBufferRef> DispatchTernaryOp(
-    const at::Tensor& self, const at::Tensor& other, const at::Tensor& third,
-    MlirTernaryOpBuilder ternary_op_builder, TernaryOpOptions opts) {
-  at::ScalarType promoted_scalar_type = at::result_type(self, other);
-  if (opts.force_float_inputs) {
-    if (c10::isIntegralType(promoted_scalar_type, /*includeBool=*/true)) {
-      promoted_scalar_type = c10::get_default_dtype_as_scalartype();
-    }
-  }
-
-  TT_ASSIGN_OR_RETURN(
-      auto tpu_tensors,
-      MoveCpuScalarsToTpu({self, other, third}, promoted_scalar_type));
-  const at::Tensor& self_tpu = tpu_tensors[0];
-  const at::Tensor& other_tpu = tpu_tensors[1];
-  const at::Tensor& third_tpu = tpu_tensors[2];
-
-  TT_ASSIGN_OR_RETURN(
-      const Dimensions output_dims,
-      InferSize(self_tpu.sizes(), other_tpu.sizes(), third_tpu.sizes()));
-  TT_ASSIGN_OR_RETURN(mlir::ElementType computation_dtype,
-                      ToElementType(promoted_scalar_type));
-  mlir::ElementType output_dtype =
-      opts.result_dtype.value_or(computation_dtype);
-  TT_RETURN_IF_ERROR(ValidateNotLowPrecisionFloat(promoted_scalar_type));
-  TT_RETURN_IF_ERROR(
-      ValidateNotLowPrecisionFloat(ConvertTo<at::ScalarType>(output_dtype)));
-
-  auto op_builder = [ternary_op_builder = std::move(ternary_op_builder)](
-                        FixedSizeSpan<mlir::MlirOp, 3> inputs) {
-    auto& [self, other, third] = inputs;
-    return ternary_op_builder(self, other, third);
-  };
-  return DispatchOp<3>(
-      std::move(op_builder), {self_tpu, other_tpu, third_tpu},
       {.op_name = opts.op_name,
        .out_dtype = output_dtype,
        .out_dims = output_dims,
@@ -246,6 +209,8 @@ absl::Status DispatchBinaryOpOut(const at::Tensor& self,
   if (opts.force_float_inputs &&
       c10::isIntegralType(promoted_scalar_type, /*includeBool=*/true)) {
     promoted_scalar_type = c10::get_default_dtype_as_scalartype();
+    TT_RETURN_IF_ERROR(opts.op_param_cache_keys.SetParam("default_dtype",
+                                                         promoted_scalar_type));
   }
 
   const at::ScalarType expected_result_type =
@@ -310,16 +275,7 @@ absl::Status TernaryOpOut(const at::Tensor& self, const at::Tensor& other,
   // determines the natural result dtype. Callers implementing general ternary
   // ops should pass opts.result_dtype explicitly if `third` affects
   // promotion.
-  at::ScalarType promoted_scalar_type = at::result_type(self, other);
-  // For operations that require floating-point computation, PyTorch promotes
-  // integral inputs to the default float dtype. The expected mathematical
-  // result dtype is therefore the default float dtype rather than the
-  // integral promoted type, ensuring ValidateOutDtype catches invalid
-  // downcasts to `out`.
-  if (opts.force_float_inputs &&
-      c10::isIntegralType(promoted_scalar_type, /*includeBool=*/true)) {
-    promoted_scalar_type = c10::get_default_dtype_as_scalartype();
-  }
+  const at::ScalarType promoted_scalar_type = at::result_type(self, other);
 
   const at::ScalarType expected_result_type =
       opts.result_dtype.has_value()
@@ -447,39 +403,7 @@ absl::StatusOr<mlir::MlirOp> BuildAlphaAddReluShlo(mlir::MlirOp self_op,
 struct DivOpOptions {
   MlirBinaryOpBuilder op_builder;
   OpParamCacheKeys op_param_cache_keys;
-  std::optional<mlir::ElementType> result_dtype = std::nullopt;
 };
-
-template <typename OtherType>
-absl::StatusOr<DivOpOptions> GetDivOpOptionsNoMode(const at::Tensor& self,
-                                                   const OtherType& other) {
-  ABSL_VLOG(1) << "[GetDivOpOptionsNoMode]";
-  // Capture the default dtype at **dispatch** time, not **compile** time,
-  // and convert to XLA and MLIR types.
-  at::ScalarType default_aten_type = c10::get_default_dtype_as_scalartype();
-  TT_ASSIGN_OR_RETURN(auto default_dtype,
-                      ConvertTo<mlir::ElementType>(default_aten_type));
-
-  auto op_builder = [default_dtype](
-                        mlir::MlirOp self_op,
-                        mlir::MlirOp other_op) -> absl::StatusOr<mlir::MlirOp> {
-    // Convert integer and booleans to torch's default scalar type.
-    TT_ASSIGN_OR_RETURN((auto [promoted_self_op, promoted_other_op]),
-                        ConvertIfIntegers(self_op, other_op, default_dtype));
-    return BuildDivShlo(promoted_self_op, promoted_other_op);
-  };
-
-  // Integer and booleans will be converted to torch's default scalar type.
-  if (c10::isIntegralType(self.scalar_type(), /*includeBool=*/true) &&
-      c10::isIntegralType(GetScalarType(other), /*includeBool=*/true)) {
-    return DivOpOptions{.op_builder = std::move(op_builder),
-                        .op_param_cache_keys = OpParamCacheKeys::Empty(),
-                        .result_dtype = default_dtype};
-  }
-
-  return DivOpOptions{.op_builder = std::move(op_builder),
-                      .op_param_cache_keys = OpParamCacheKeys::Empty()};
-}
 
 absl::StatusOr<DivOpOptions> GetDivOpOptionsTruncMode() {
   ABSL_VLOG(1) << "[GetDivOpOptionsTruncMode]";
@@ -569,19 +493,15 @@ absl::StatusOr<DivOpOptions> GetDivOpOptionsFloorMode() {
 // https://docs.pytorch.org/docs/stable/generated/torch.div.html
 //
 // Args:
-//  self: The dividend tensor.
-//  other: The divisor tensor or scalar.
 //  mode: The division mode. Can be "trunc", "floor", or std::nullopt.
 //
 // Returns:
-//  A DivOpOptions struct containing the operator builder, cache keys, and
-//  output dtype override.
-template <typename OtherType>
+//  A DivOpOptions struct containing the operator builder and cache keys.
 absl::StatusOr<DivOpOptions> GetDivOpBuilder(
-    const at::Tensor& self, const OtherType& other,
     std::optional<std::string_view> mode = {}) {
   if (!mode.has_value()) {
-    return GetDivOpOptionsNoMode(self, other);
+    return DivOpOptions{.op_builder = BuildDivShlo,
+                        .op_param_cache_keys = OpParamCacheKeys::Empty()};
   }
   if (mode.value() == "trunc") {
     return GetDivOpOptionsTruncMode();
@@ -888,11 +808,11 @@ absl::StatusOr<at::Tensor> AddReluScalarHelper(
 
 absl::Status DivOutMode(const at::Tensor& self, const at::Tensor& other,
                         std::optional<std::string_view> mode, at::Tensor& out) {
-  TT_ASSIGN_OR_RETURN(auto div_opts, GetDivOpBuilder(self, other, mode));
+  TT_ASSIGN_OR_RETURN(auto div_opts, GetDivOpBuilder(mode));
   return BinaryOpOut(
       self, other, out, std::move(div_opts.op_builder),
-      {.op_param_cache_keys = std::move(div_opts.op_param_cache_keys),
-       .result_dtype = div_opts.result_dtype});
+      {.force_float_inputs = !mode.has_value(),
+       .op_param_cache_keys = std::move(div_opts.op_param_cache_keys)});
 }
 
 absl::Status BitwiseLeftShiftTensor(
