@@ -49,6 +49,8 @@ std::optional<bool> PyGetBooleanEnvOnce(std::string_view name,
   } else if (name == kTorchTpuInternalEnableReassociateNormWeightsEnvVar) {
     value = GetBooleanEnvOnce<
         kTorchTpuInternalEnableReassociateNormWeightsEnvVar>();
+  } else if (name == kTorchTpuInternalFuseCollectiveRelayoutsEnvVar) {
+    value = GetBooleanEnvOnce<kTorchTpuInternalFuseCollectiveRelayoutsEnvVar>();
   } else if (name == kTorchTpuInternalMaterializeCollectiveTensorsEnvVar) {
     value = GetBooleanEnvOnce<
         kTorchTpuInternalMaterializeCollectiveTensorsEnvVar>();
