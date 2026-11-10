@@ -2053,6 +2053,33 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         torch.sigmoid(x).to(torch.float64),
     )
 
+  @parameterized.product(
+      op_and_domain=[
+          ("acos", -0.99, 0.99),
+          ("acosh", 1.0, 10.0),
+          ("asin", -0.99, 0.99),
+          ("asinh", -10.0, 10.0),
+          ("atanh", -0.99, 0.99),
+      ],
+      dtype=[torch.bfloat16, torch.float16],
+  )
+  def test_inverse_trig_low_precision_uses_float32_opmath(
+      self, op_and_domain, dtype
+  ):
+    # These CHLO ops decompose into several ops. Evaluating them natively in
+    # bf16/f16 rounds every intermediate result and is off by 1 ulp on many
+    # inputs, which ops_test tolerances do not catch. CUDA computes in float32
+    # and casts back once; a dense sweep of the domain checks for an exact
+    # match with that. The float32 reference is computed on TPU because TPU
+    # and CPU float32 results can differ in the last bit, which flips the
+    # final bf16/f16 rounding on some inputs.
+    op_name, low, high = op_and_domain
+    op = getattr(torch, op_name)
+    x = torch.linspace(low, high, 4096).to(dtype).to("tpu")
+    expected = op(x.float()).to(dtype).cpu()
+
+    utils.assert_close(op(x).cpu(), expected, rtol=0, atol=0)
+
   @parameterized.parameters(torch.float32, torch.float16, torch.bfloat16)
   def test_tanh_edge_cases(self, dtype):
     small_val = 1e-15 if dtype == torch.float32 else 1e-3

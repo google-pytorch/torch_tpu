@@ -55,12 +55,7 @@ namespace torch_tpu {
 // go/keep-sorted start
 TT_UNARY_BUILDER_(BuildNegShlo, mlir::stablehlo::Neg);
 TT_UNARY_BUILDER_(BuildNotShlo, mlir::stablehlo::Not);
-TT_UNARY_BUILDER_FP_ONLY_(BuildAcosShlo, mlir::chlo::Acos);
-TT_UNARY_BUILDER_FP_ONLY_(BuildAcoshShlo, mlir::chlo::Acosh);
-TT_UNARY_BUILDER_FP_ONLY_(BuildAsinShlo, mlir::chlo::Asin);
-TT_UNARY_BUILDER_FP_ONLY_(BuildAsinhShlo, mlir::chlo::Asinh);
 TT_UNARY_BUILDER_FP_ONLY_(BuildAtanShlo, mlir::chlo::Atan);
-TT_UNARY_BUILDER_FP_ONLY_(BuildAtanhShlo, mlir::chlo::Atanh);
 TT_UNARY_BUILDER_FP_ONLY_(BuildCosShlo, mlir::stablehlo::Cosine);
 TT_UNARY_BUILDER_FP_ONLY_(BuildCoshShlo, mlir::chlo::Cosh);
 TT_UNARY_BUILDER_FP_ONLY_(BuildErfInvShlo, mlir::chlo::ErfInv);
@@ -81,6 +76,16 @@ TT_UNARY_BUILDER_FP_ONLY_(BuildTanShlo, mlir::stablehlo::Tan);
 // For functions that require more than a single-line StableHlo builder
 // call sequence, their prototypes will reside here.
 absl::StatusOr<mlir::MlirOp> BuildAbsShlo(mlir::MlirOp input);
+absl::StatusOr<mlir::MlirOp> BuildAcosShlo(mlir::MlirOp input_op,
+                                           mlir::ElementType out_mlir_type);
+absl::StatusOr<mlir::MlirOp> BuildAcoshShlo(mlir::MlirOp input_op,
+                                            mlir::ElementType out_mlir_type);
+absl::StatusOr<mlir::MlirOp> BuildAsinShlo(mlir::MlirOp input_op,
+                                           mlir::ElementType out_mlir_type);
+absl::StatusOr<mlir::MlirOp> BuildAsinhShlo(mlir::MlirOp input_op,
+                                            mlir::ElementType out_mlir_type);
+absl::StatusOr<mlir::MlirOp> BuildAtanhShlo(mlir::MlirOp input_op,
+                                            mlir::ElementType out_mlir_type);
 absl::StatusOr<mlir::MlirOp> BuildCeilShlo(mlir::MlirOp input_op);
 absl::StatusOr<mlir::MlirOp> BuildConjPhysicalShlo(mlir::MlirOp input_op);
 absl::StatusOr<mlir::MlirOp> BuildFloorShlo(mlir::MlirOp input_op);
