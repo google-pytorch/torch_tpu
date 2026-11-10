@@ -46,6 +46,57 @@ def _init_model_weights(model: torch.nn.Module) -> None:
       tensor.fill_(0.0)
 
 
+def _model_args(
+    model_name: str, max_batch_size: int = 1
+) -> llama_model.ModelArgs:
+  """Returns the arguments of a Meta Llama model variant."""
+  if model_name == "Llama-3.2-8B":
+    return llama_model.ModelArgs(
+        dim=4096,
+        ffn_dim_multiplier=1.3,
+        multiple_of=1024,
+        n_heads=32,
+        n_kv_heads=8,
+        n_layers=32,
+        norm_eps=1e-05,
+        rope_theta=500000.0,
+        use_scaled_rope=True,
+        vocab_size=128256,
+        max_seq_len=2048,
+        max_batch_size=max_batch_size,
+    )
+  if model_name == "Llama-3.2-70B":
+    return llama_model.ModelArgs(
+        dim=8192,
+        ffn_dim_multiplier=1.3,
+        multiple_of=4096,
+        n_heads=64,
+        n_kv_heads=8,
+        n_layers=80,
+        norm_eps=1e-05,
+        rope_theta=500000.0,
+        use_scaled_rope=True,
+        vocab_size=128256,
+        max_seq_len=2048,
+        max_batch_size=max_batch_size,
+    )
+  raise ValueError(f"Unknown model name: {model_name}")
+
+
+def _model_parallel_size(world_size: int, model_name: str) -> int:
+  """Returns the number of processes that one replica of the model spans.
+
+  The model is split across as many processes as divide both the world size and
+  its number of KV heads.
+
+  Args:
+    world_size: The number of processes.
+    model_name: The Meta Llama model variant (e.g. 'Llama-3.2-8B').
+  """
+  args = _model_args(model_name)
+  return math.gcd(world_size, args.n_kv_heads or args.n_heads)
+
+
 def _load_meta_llama(
     ctx: context_lib.Context,
     model_name: str,
@@ -67,38 +118,7 @@ def _load_meta_llama(
   batch_size = workload.batch_size
   seq_len = workload.require_seq_len()
 
-  if model_name == "Llama-3.2-8B":
-    args = llama_model.ModelArgs(
-        dim=4096,
-        ffn_dim_multiplier=1.3,
-        multiple_of=1024,
-        n_heads=32,
-        n_kv_heads=8,
-        n_layers=32,
-        norm_eps=1e-05,
-        rope_theta=500000.0,
-        use_scaled_rope=True,
-        vocab_size=128256,
-        max_seq_len=2048,
-        max_batch_size=batch_size,
-    )
-  elif model_name == "Llama-3.2-70B":
-    args = llama_model.ModelArgs(
-        dim=8192,
-        ffn_dim_multiplier=1.3,
-        multiple_of=4096,
-        n_heads=64,
-        n_kv_heads=8,
-        n_layers=80,
-        norm_eps=1e-05,
-        rope_theta=500000.0,
-        use_scaled_rope=True,
-        vocab_size=128256,
-        max_seq_len=2048,
-        max_batch_size=batch_size,
-    )
-  else:
-    raise ValueError(f"Unknown model name: {model_name}")
+  args = _model_args(model_name, max_batch_size=batch_size)
 
   if not torch.distributed.is_initialized():
     raise target_lib.UnsupportedBenchmark(
@@ -106,9 +126,7 @@ def _load_meta_llama(
         " environment for FairScale model parallelism."
     )
 
-  world_size = torch.distributed.get_world_size()
-  n_kv_heads = args.n_kv_heads or args.n_heads
-  mp_size = math.gcd(world_size, n_kv_heads)
+  mp_size = _model_parallel_size(torch.distributed.get_world_size(), model_name)
 
   # Ensure model parallel is initialized
   if not fairscale_init.model_parallel_is_initialized():
@@ -151,6 +169,9 @@ def _load_meta_llama(
     workload=registry_lib.scoped_workload(
         full=workload_lib.Workload(1, 2048),
         presubmit=workload_lib.Workload(1, 128),
+    ),
+    devices_per_replica=lambda world_size: _model_parallel_size(
+        world_size, "Llama-3.2-8B"
     ),
 )
 def meta_llama_8b_forward(ctx: context_lib.Context):

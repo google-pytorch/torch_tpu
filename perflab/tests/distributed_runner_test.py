@@ -40,6 +40,7 @@ from perflab import step_lib
 from perflab import steps
 from perflab import target as target_lib
 from perflab import torch_device_ops
+from perflab import workload as workload_lib
 from tests import seed_test_utils
 
 
@@ -226,6 +227,8 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
     fake_spec.stepper_kwargs = {}
     fake_spec.compile_config = None
     fake_spec.skipped_run_modes = set()
+    # No workload, so the runner does not query the world size.
+    fake_spec.workload = None
 
     registry_lib.REGISTRY["dummy"] = fake_spec
 
@@ -286,6 +289,8 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
     fake_spec.stepper_kwargs = {}
     fake_spec.compile_config = None
     fake_spec.skipped_run_modes = set()
+    # No workload, so the runner does not query the world size.
+    fake_spec.workload = None
 
     registry_lib.REGISTRY["dummy_gpu"] = fake_spec
 
@@ -313,6 +318,107 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
     mock_measure.assert_called_once()
     mock_compiler_reset.assert_called_once()
     mock_destroy_group.assert_called_once()
+
+  @parameterized.named_parameters(
+      # The 4 ranks of a tensor-parallel replica all process its 2 x 128 tokens,
+      # so each device exports 1/4 of them.
+      (
+          "tensor_parallel",
+          {"devices_per_replica": lambda world_size: world_size},
+          2 * 128 / 4,
+      ),
+      # By default each rank is a replica that processes its own batch, e.g.
+      # with data parallelism (FSDP).
+      ("one_device_per_replica", {}, 2 * 128),
+  )
+  @mock.patch.dict(registry_lib.REGISTRY, {})
+  @mock.patch.object(torch_device_ops, "TorchDeviceOps")
+  @mock.patch.object(torch.distributed, "init_process_group")
+  @mock.patch.object(torch.distributed, "barrier")
+  @mock.patch.object(torch.distributed, "destroy_process_group")
+  @mock.patch.object(torch.distributed, "is_initialized", return_value=True)
+  @mock.patch.object(torch.distributed, "get_world_size", return_value=4)
+  @mock.patch.object(torch.compiler, "reset")
+  def test_run_single_target_task_exports_per_device_throughput(
+      self,
+      spec_kwargs,
+      expected_tokens_per_step,
+      *unused_mocks,
+  ):
+    registry_lib.REGISTRY["dummy_tp"] = registry_lib.BenchmarkSpec(
+        name="dummy_tp",
+        factory=lambda ctx: (torch.nn.Linear(2, 2), (), {}, None),
+        stepper=step_lib.StepperType.FORWARD,
+        presubmit=registry_lib.PresubmitPolicy.RUN,
+        workload=lambda ctx: workload_lib.Workload(2, 128),
+        **spec_kwargs,
+    )
+    exported = []
+
+    with (
+        mock.patch.dict(os.environ, {"RANK": "0"}),
+        mock.patch.object(
+            measure_lib,
+            "measure",
+            return_value=metrics_lib.PerformanceMetrics(
+                e2e_wall_time_seconds=10.0,
+                first_step_time_seconds=1.0,
+                post_warmup_step_time_seconds=0.5,
+            ),
+        ),
+        mock.patch.object(export_lib, "export", exported.append),
+    ):
+      distributed_runner._run_single_target_task(
+          spec_name="dummy_tp",
+          mode_value="eager_default",
+          platform_name="v7_2x2x1",
+      )
+
+    [data] = exported
+    metric_map = data.metrics.metric_map()
+    self.assertEqual(metric_map["batch_size"], 2.0)
+    self.assertEqual(metric_map["seq_len"], 128.0)
+    self.assertEqual(metric_map["tokens_per_step"], expected_tokens_per_step)
+    self.assertEqual(
+        metric_map["tokens_per_second"], expected_tokens_per_step / 0.5
+    )
+
+  @parameterized.named_parameters(
+      ("not_dividing_world_size", 3),
+      ("zero", 0),
+  )
+  @mock.patch.dict(registry_lib.REGISTRY, {})
+  @mock.patch.object(torch_device_ops, "TorchDeviceOps")
+  @mock.patch.object(torch.distributed, "init_process_group")
+  @mock.patch.object(torch.distributed, "barrier")
+  @mock.patch.object(torch.distributed, "destroy_process_group")
+  @mock.patch.object(torch.distributed, "is_initialized", return_value=True)
+  @mock.patch.object(torch.distributed, "get_world_size", return_value=4)
+  @mock.patch.object(torch.compiler, "reset")
+  def test_run_single_target_task_rejects_invalid_devices_per_replica(
+      self, devices_per_replica, *unused_mocks
+  ):
+    registry_lib.REGISTRY["dummy_tp"] = registry_lib.BenchmarkSpec(
+        name="dummy_tp",
+        factory=lambda ctx: (torch.nn.Linear(2, 2), (), {}, None),
+        stepper=step_lib.StepperType.FORWARD,
+        presubmit=registry_lib.PresubmitPolicy.RUN,
+        workload=lambda ctx: workload_lib.Workload(2, 128),
+        devices_per_replica=lambda world_size: devices_per_replica,
+    )
+
+    with (
+        mock.patch.dict(os.environ, {"RANK": "0"}),
+        self.assertRaisesRegex(  # ASSERT_RAISES_OK=benchmark
+            ValueError,
+            f"{devices_per_replica} devices per replica, which must be >= 1",
+        ),
+    ):
+      distributed_runner._run_single_target_task(
+          spec_name="dummy_tp",
+          mode_value="eager_default",
+          platform_name="v7_2x2x1",
+      )
 
   @mock.patch.dict(registry_lib.REGISTRY, {})
   @mock.patch.object(target_lib, "make_target")
@@ -374,6 +480,8 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
     fake_spec.stepper_kwargs = {}
     fake_spec.compile_config = None
     fake_spec.skipped_run_modes = set()
+    # No workload, so the runner does not query the world size.
+    fake_spec.workload = None
 
     registry_lib.REGISTRY["dummy"] = fake_spec
 

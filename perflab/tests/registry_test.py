@@ -216,6 +216,25 @@ class RegisterTest(seed_test_utils.RepeatableTest):
     )(_factory)
     self.assertIs(registry_lib.REGISTRY["_factory"].workload, workload_fn)
 
+  def test_devices_per_replica_defaults_to_one(self):
+    registry_lib.register_benchmark(
+        stepper=step_lib.StepperType.FORWARD, presubmit=_RUN, workload=None
+    )(_factory)
+    self.assertEqual(
+        registry_lib.REGISTRY["_factory"].devices_per_replica(8), 1
+    )
+
+  def test_registers_devices_per_replica(self):
+    registry_lib.register_benchmark(
+        stepper=step_lib.StepperType.FORWARD,
+        presubmit=_RUN,
+        workload=None,
+        devices_per_replica=lambda world_size: world_size // 2,
+    )(_factory)
+    self.assertEqual(
+        registry_lib.REGISTRY["_factory"].devices_per_replica(8), 4
+    )
+
   def test_presubmit_reason_rejected_for_run_policy(self):
     with self.assertRaisesRegex(ValueError, "presubmit_reason is only allowed"):
       registry_lib.add_benchmark(

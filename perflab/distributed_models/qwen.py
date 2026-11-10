@@ -316,6 +316,20 @@ def get_qwen3_5_397b_a17b_model(
   return model
 
 
+def _tensor_parallel_size(world_size: int) -> int:
+  """Returns the number of processes that one replica of Qwen3.5-397B spans.
+
+  The model is split across all processes. It cannot span fewer:
+  `RaggedMoeQwen35` shards its experts over the default process group, i.e.
+  `torch.distributed.get_world_size()`, rather than over the FairScale
+  model-parallel group.
+
+  Args:
+    world_size: The number of processes.
+  """
+  return world_size
+
+
 def _load_qwen3_5_397b(
     ctx: context_lib.Context,
 ) -> tuple[torch.nn.Module, tuple[torch.Tensor, ...]]:
@@ -344,7 +358,7 @@ def _load_qwen3_5_397b(
   try:
     model = get_qwen3_5_397b_a17b_model(
         rank=rank,
-        world_size=world_size,
+        world_size=_tensor_parallel_size(world_size),
         device=device_str,
         torch_dtype=dtype,
         use_ragged_dot_moe=True,
@@ -374,6 +388,7 @@ def _load_qwen3_5_397b(
         full=workload_lib.Workload(1, 2048),
         presubmit=workload_lib.Workload(1, 128),
     ),
+    devices_per_replica=_tensor_parallel_size,
 )
 def qwen3_5_397b_a17b_forward(
     ctx: context_lib.Context,

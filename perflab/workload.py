@@ -24,7 +24,9 @@ harness resolves the workload of each case (the default, or another batch size
 in a batch sweep) and passes it to the factory as `Context.workload`, and the
 factory builds its inputs from it. The harness then knows the work of each step
 without inspecting the inputs: `step_work` scales the workload by the number of
-forward passes of a step of the benchmark's stepper.
+forward passes of a step of the benchmark's stepper, and divides it among the
+processes that one model replica spans (e.g. its tensor-parallel degree, as the
+benchmark declares), which all process the same workload.
 
 This module deliberately does not import torch, so that metrics can depend on it
 without depending on torch.
@@ -43,7 +45,10 @@ _TOKEN_INPUT_KEYS = ("input_ids", "inputs_embeds")
 
 @dataclasses.dataclass(frozen=True)
 class Workload:
-  """The inputs of one forward pass of a benchmark, per process.
+  """The inputs of one forward pass of a benchmark, per model replica.
+
+  A replica is one process, or the processes of a model-parallel (e.g.
+  tensor-parallel) group, which all process the same inputs.
 
   Attributes:
     batch_size: The number of samples (sequences, images, audio clips, ...) that
@@ -81,8 +86,12 @@ class Workload:
 class StepWork:
   """The work that one benchmark step does, per process.
 
+  The processes of a model-parallel replica each do an equal share of the work
+  of the replica, so the per-step counts can be fractional, e.g. 0.5 samples
+  per step for a batch of 4 on a tensor-parallel replica of 8 processes.
+
   Attributes:
-    workload: The inputs of one forward pass of the step.
+    workload: The inputs of one forward pass of the step, per replica.
     samples_per_step: The samples that one step processes, or None if a sample
       count is not meaningful for the step (decode).
     tokens_per_step: The tokens that one step processes (prefill and training)
@@ -90,14 +99,15 @@ class StepWork:
   """
 
   workload: Workload
-  samples_per_step: int | None
-  tokens_per_step: int | None
+  samples_per_step: float | None
+  tokens_per_step: float | None
 
 
 def step_work(
     workload: Workload,
     stepper: step_lib.StepperType,
     stepper_kwargs: Mapping[str, Any],
+    devices_per_replica: int = 1,
 ) -> StepWork:
   """Returns the work that one step of a benchmark does.
 
@@ -105,31 +115,41 @@ def step_work(
     workload: The inputs of one forward pass of the benchmark.
     stepper: The benchmark's stepper type.
     stepper_kwargs: The benchmark's stepper keyword arguments.
+    devices_per_replica: The number of processes that a model replica spans,
+      e.g. the tensor-parallel degree. They all process the same `workload`, so
+      each does `1 / devices_per_replica` of its work.
+
+  Raises:
+    ValueError: If `devices_per_replica` is less than 1.
   """
+  if devices_per_replica < 1:
+    raise ValueError(
+        f"devices_per_replica must be >= 1, got {devices_per_replica}"
+    )
   if stepper is step_lib.StepperType.DECODER_ONLY_DECODE:
     # A decode step generates `output_tokens` tokens for every sequence of the
     # batch; `seq_len` is the length of the unmeasured prefill.
     output_tokens = stepper_kwargs.get(
         "output_tokens", step_lib.DEFAULT_DECODE_OUTPUT_TOKENS
     )
-    return StepWork(
-        workload=workload,
-        samples_per_step=None,
-        tokens_per_step=workload.batch_size * output_tokens,
-    )
-  passes = 1
-  if stepper in (
-      step_lib.StepperType.TRAINING,
-      step_lib.StepperType.SINGLE_TRACE_TRAINING,
-  ):
-    passes = stepper_kwargs.get("accum_steps", step_lib.DEFAULT_ACCUM_STEPS)
-  samples = workload.batch_size * passes
+    samples = None
+    tokens = workload.batch_size * output_tokens
+  else:
+    passes = 1
+    if stepper in (
+        step_lib.StepperType.TRAINING,
+        step_lib.StepperType.SINGLE_TRACE_TRAINING,
+    ):
+      passes = stepper_kwargs.get("accum_steps", step_lib.DEFAULT_ACCUM_STEPS)
+    samples = workload.batch_size * passes
+    tokens = None if workload.seq_len is None else samples * workload.seq_len
+  # The replica's work, divided among its processes.
   return StepWork(
       workload=workload,
-      samples_per_step=samples,
-      tokens_per_step=(
-          None if workload.seq_len is None else samples * workload.seq_len
+      samples_per_step=(
+          None if samples is None else samples / devices_per_replica
       ),
+      tokens_per_step=None if tokens is None else tokens / devices_per_replica,
   )
 
 

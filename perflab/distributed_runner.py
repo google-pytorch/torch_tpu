@@ -441,14 +441,23 @@ def _run_single_target_task(
       logging.info("Rank %s calling spec.factory...", rank)
       factory_res = spec.factory(ctx)
       logging.info("Rank %s spec.factory returned.", rank)
-      # Per process: the throughput of the slice is that of all its ranks.
-      step_work = (
-          None
-          if ctx.workload is None
-          else workload_lib.step_work(
-              ctx.workload, spec.stepper, spec.stepper_kwargs
+      # The ranks of a replica (e.g. TP) share its inputs, so report each
+      # device's share.
+      step_work = None
+      if ctx.workload is not None:
+        world_size = torch.distributed.get_world_size()
+        devices_per_replica = spec.devices_per_replica(world_size)
+        if devices_per_replica < 1 or world_size % devices_per_replica:
+          raise ValueError(
+              f"{spec.name} declares {devices_per_replica} devices per replica,"
+              f" which must be >= 1 and divide the world size {world_size}."
           )
-      )
+        step_work = workload_lib.step_work(
+            ctx.workload,
+            spec.stepper,
+            spec.stepper_kwargs,
+            devices_per_replica=devices_per_replica,
+        )
       stepper = step_lib.resolve_stepper(spec.stepper, **spec.stepper_kwargs)
       stepper.init_with_benchmark_args(*factory_res)
 

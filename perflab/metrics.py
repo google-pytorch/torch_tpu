@@ -143,6 +143,9 @@ class PerformanceMetrics(MetricsInterface):
     """Returns the workload and the throughput from the wall and device times.
 
     Throughput is per process: samples or tokens per second of one device.
+    `batch_size` and `seq_len` are those of a model replica; the processes of a
+    model-parallel replica each export their share of its samples and tokens
+    per step, which can be fractional.
     """
     if self.step_work is None:
       return {}

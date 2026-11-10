@@ -80,6 +80,38 @@ class StepWorkTest(seed_test_utils.RepeatableTest):
         ),
     )
 
+  def test_devices_of_a_replica_share_the_work(self):
+    # The 8 devices of a tensor-parallel replica process the same 4 x 128
+    # tokens, so each does 1/8 of the work.
+    workload = workload_lib.Workload(batch_size=4, seq_len=128)
+    self.assertEqual(
+        workload_lib.step_work(workload, _FORWARD, {}, devices_per_replica=8),
+        workload_lib.StepWork(
+            workload=workload, samples_per_step=0.5, tokens_per_step=64
+        ),
+    )
+
+  def test_devices_of_a_replica_share_the_decoded_tokens(self):
+    # The 8 devices of a tensor-parallel replica generate the same 4 x 16
+    # tokens, so each does 1/8 of the work.
+    workload = workload_lib.Workload(batch_size=4, seq_len=2048)
+    self.assertEqual(
+        workload_lib.step_work(
+            workload, _DECODE, {"output_tokens": 16}, devices_per_replica=8
+        ),
+        workload_lib.StepWork(
+            workload=workload, samples_per_step=None, tokens_per_step=8
+        ),
+    )
+
+  def test_invalid_devices_per_replica(self):
+    with self.assertRaisesRegex(
+        ValueError, "devices_per_replica"
+    ):  # ASSERT_RAISES_OK=test
+      workload_lib.step_work(
+          workload_lib.Workload(1), _FORWARD, {}, devices_per_replica=0
+      )
+
   def test_decode_counts_generated_tokens(self):
     workload = workload_lib.Workload(batch_size=4, seq_len=2048)
     self.assertEqual(

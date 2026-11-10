@@ -51,6 +51,17 @@ Factory = Callable[..., tuple[Any, ...]]
 # target and run scope). See `BenchmarkSpec.workload`.
 WorkloadFn = Callable[[context_lib.Context], workload_lib.Workload]
 
+# Returns the number of processes (devices) that one model replica of a
+# benchmark spans, given the world size. See
+# `BenchmarkSpec.devices_per_replica`.
+DevicesPerReplicaFn = Callable[[int], int]
+
+
+def _one_device_per_replica(world_size: int) -> int:
+  """Returns 1: each process runs its own model replica."""
+  del world_size  # Unused.
+  return 1
+
 
 def scoped_workload(
     full: workload_lib.Workload,
@@ -157,6 +168,11 @@ class BenchmarkSpec:
       `Context.workload` and exports its throughput. None for a benchmark
       without a batch, e.g. a host-overhead benchmark.
     batch_sweep: How the benchmark runs in the batch sweep.
+    devices_per_replica: Returns the number of processes that one model replica
+      spans, given the world size, e.g. the tensor-parallel degree that the
+      factory splits the model across. The processes of a replica all process
+      the same `workload`, so each exports its share of the replica's
+      throughput. Defaults to 1 process per replica, e.g. for data parallelism.
   """
 
   name: str
@@ -172,6 +188,7 @@ class BenchmarkSpec:
   presubmit_reason: str | None = None
   workload: WorkloadFn | None = None
   batch_sweep: BatchSweep = dataclasses.field(default_factory=BatchSweep)
+  devices_per_replica: DevicesPerReplicaFn = _one_device_per_replica
   microbenchmark_name: str | None = dataclasses.field(
       default=None, kw_only=True
   )
@@ -212,6 +229,7 @@ def add_benchmark(
     workload: WorkloadFn | None,
     presubmit_reason: str | None = None,
     batch_sweep: BatchSweep | None = None,
+    devices_per_replica: DevicesPerReplicaFn = _one_device_per_replica,
     microbenchmark_name: str | None = None,
 ) -> None:
   """Adds a benchmark spec to REGISTRY.
@@ -233,6 +251,9 @@ def add_benchmark(
       benchmark without a batch (see `BenchmarkSpec.workload`). Required.
     batch_sweep: How the benchmark runs in the batch sweep. Defaults to
       measuring it at the batch sizes of `--batch_sweep_sizes`.
+    devices_per_replica: Returns the number of processes that one model replica
+      spans, given the world size (see `BenchmarkSpec.devices_per_replica`).
+      Defaults to 1.
     microbenchmark_name: Optional microbenchmark key exported with every result
       of this benchmark (defaults to None). See
       `BenchmarkSpec.microbenchmark_name`.
@@ -265,6 +286,7 @@ def add_benchmark(
       presubmit_reason=presubmit_reason,
       workload=workload,
       batch_sweep=batch_sweep,
+      devices_per_replica=devices_per_replica,
       microbenchmark_name=microbenchmark_name,
   )
 
@@ -280,6 +302,7 @@ def register_benchmark(
     workload: WorkloadFn | None,
     presubmit_reason: str | None = None,
     batch_sweep: BatchSweep | None = None,
+    devices_per_replica: DevicesPerReplicaFn = _one_device_per_replica,
     microbenchmark_name: str | None = None,
 ) -> Callable[[Factory], Factory]:
   """Decorator to wrap a benchmark factory and add its spec to REGISTRY.
@@ -298,6 +321,9 @@ def register_benchmark(
       benchmark without a batch (see `BenchmarkSpec.workload`). Required.
     batch_sweep: How the benchmark runs in the batch sweep. Defaults to
       measuring it at the batch sizes of `--batch_sweep_sizes`.
+    devices_per_replica: Returns the number of processes that one model replica
+      spans, given the world size (see `BenchmarkSpec.devices_per_replica`).
+      Defaults to 1.
     microbenchmark_name: Optional microbenchmark key exported with every result
       of this benchmark (defaults to None). See
       `BenchmarkSpec.microbenchmark_name`.
@@ -320,6 +346,7 @@ def register_benchmark(
         presubmit_reason=presubmit_reason,
         workload=workload,
         batch_sweep=batch_sweep,
+        devices_per_replica=devices_per_replica,
         microbenchmark_name=microbenchmark_name,
     )
     return factory

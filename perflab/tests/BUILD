@@ -629,6 +629,7 @@ torch_tpu_py_test(
         "//perflab:step_lib",
         "//perflab:target",
         "//perflab:torch_device_ops",
+        "//perflab:workload",
         "//perflab/steps",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
@@ -648,6 +649,20 @@ torch_tpu_py_test(
         "//perflab:registry",
         "//perflab:target",
         "//perflab/distributed_models:llama",
+        "//shims/absl_py/testing:absltest",
+        "//src/torch_tpu",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "distributed_qwen_test",
+    srcs = ["distributed_qwen_test.py"],
+    deps = [
+        "//perflab:context",
+        "//perflab:registry",
+        "//perflab:target",
+        "//perflab/distributed_models:qwen",
         "//shims/absl_py/testing:absltest",
         "//src/torch_tpu",
         "//tests:seed_test_utils",
