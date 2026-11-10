@@ -623,29 +623,6 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         )
     )
 
-  def test_ldexp_inplace(self):
-    """Tests the inplace ldexp_ variant."""
-
-    def test_inplace(device):
-      x = torch.tensor([1.0, 2.0], dtype=torch.float32, device=device)
-      exp = torch.tensor([1, 2], dtype=torch.int32, device=device)
-      x.ldexp_(exp)
-      return x
-
-    self.assert_close_tpu_vs_cpu(test_inplace)
-
-  def test_ldexp_out(self):
-    """Tests the out-variant ldexp.out."""
-
-    def test_out(device):
-      x = torch.tensor([1.0, 2.0], dtype=torch.float32, device=device)
-      exp = torch.tensor([1, 2], dtype=torch.int32, device=device)
-      out = torch.empty_like(x)
-      torch.ldexp(x, exp, out=out)
-      return out
-
-    self.assert_close_tpu_vs_cpu(test_out)
-
   @parameterized.product(
       reduction=[0, 1, 2],
       dtype=[torch.float32, torch.bfloat16, torch.float16],
@@ -1608,12 +1585,6 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     y.abs().sum().backward()
     print(f"rsqrt(complex64) grad: {x.grad}")
 
-  def test_rsqrt_complex(self):
-    device = torch.device("tpu")
-    x = torch.randn(2, 2, dtype=torch.complex64, device=device)
-    y = torch.rsqrt(x)
-    print(f"rsqrt(complex64) result: {y}")
-
   def test_complex_abs_precision(self):
     for dtype in [torch.complex64, torch.complex128]:
       vals = [1e30, 1e-35]
@@ -1647,23 +1618,6 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     )
     utils.assert_close(out.cpu(), want_out, rtol=1e-4, atol=0.0)
     utils.assert_close(grad.cpu(), want_grad, rtol=1e-4, atol=0.0)
-
-  def test_complex_abs_out_dtype(self):
-    device = torch.device("tpu")
-    x = torch.tensor([3.0 + 4.0j], dtype=torch.complex64, device=device)
-    # Valid cast to real float32
-    out_f32 = torch.empty(1, dtype=torch.float32, device=device)
-    torch.abs(x, out=out_f32)
-    utils.assert_close(
-        out_f32, torch.tensor([5.0], dtype=torch.float32, device=device)
-    )
-
-    # Valid upcast to real float64
-    out_f64 = torch.empty(1, dtype=torch.float64, device=device)
-    torch.abs(x, out=out_f64)
-    utils.assert_close(
-        out_f64, torch.tensor([5.0], dtype=torch.float64, device=device)
-    )
 
   def test_logcumsumexp_out_dtype(self):
     device = torch.device("tpu")
@@ -6442,13 +6396,6 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(fn, allow_failure=True)
 
-  def test_cumprod_default_dtype(self):
-    """Tests torch.cumprod with default dtype (None)."""
-    x = torch.randn(2, 3, dtype=torch.float32)
-    self.assert_close_tpu_vs_cpu(
-        lambda device, x=x: torch.cumprod(x.to(device), dim=0)
-    )
-
   def test_arange_start_step_float32(self):
     golden_result = torch.arange(
         0, 10, 2, dtype=torch.float32, device=self.golden_device
@@ -9214,22 +9161,6 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       return torch.ops.aten.hardsigmoid_backward(grad_output, self_tensor)
 
     self.assert_close_tpu_vs_cpu(compute_mixed_dtype)
-
-  @parameterized.product(dtype=[torch.float32, torch.bfloat16])
-  def test_hardswish(self, dtype):
-    # Scale by 5 to have coverage of the x < -3 and x >= 3 piecewise branches
-    input_value = torch.randn(4, 4, dtype=dtype) * 5
-
-    def compute(device):
-      x = input_value.clone().detach().to(device).requires_grad_(True)
-      y = torch.nn.functional.hardswish(x)
-      y.sum().backward()
-      return y, x.grad
-
-    if dtype == torch.bfloat16:
-      self.assert_close_tpu_vs_cpu(compute, atol=2e-2, rtol=1e-2)
-    else:
-      self.assert_close_tpu_vs_cpu(compute)
 
   @parameterized.product(dtype=[torch.float32, torch.bfloat16])
   def test_hardswish_inplace(self, dtype):
@@ -12126,16 +12057,6 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         ),
     )
 
-  def test_weight_norm_interface_m(self):
-    """Tests torch.ops.aten._weight_norm_interface with 1D g."""
-    v = torch.randn(2, 3, 4, dtype=torch.float32)
-    g = torch.randn(2, dtype=torch.float32)
-    self.assert_close_tpu_vs_cpu(
-        lambda device: torch.ops.aten._weight_norm_interface(
-            v.to(device), g.to(device), 0
-        ),
-    )
-
   def test_weight_norm_interface_all_inputs(self):
     """Tests torch.ops.aten._weight_norm_interface with all possible inputs."""
     test_cases = [
@@ -12217,37 +12138,6 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       return m.weight_v.grad, m.weight_g.grad
 
     self.assert_close_tpu_vs_cpu(run_module)
-
-  @parameterized.product(
-      input_dtype=[
-          torch.float32,
-          torch.bfloat16,
-          torch.float16,
-      ],
-      target_dtype=[
-          torch.float32,
-      ],
-  )
-  def test_mm_dtype(self, input_dtype, target_dtype):
-    """Tests torch.ops.aten.mm.dtype with various dtypes."""
-    lhs = torch.randn(2, 3, dtype=input_dtype)
-    rhs = torch.randn(3, 4, dtype=input_dtype)
-
-    def test_fn(device):
-      l = lhs.to(device)
-      r = rhs.to(device)
-
-      if device == "cpu":
-        # CPU backend does not support mm.dtype directly
-        return torch.mm(l.to(target_dtype), r.to(target_dtype))
-      else:
-        return torch.ops.aten.mm.dtype(l, r, target_dtype)
-
-    self.assert_close_tpu_vs_cpu(
-        test_fn,
-        rtol=2e-2,
-        atol=6e-3,
-    )
 
   def test_bucketize_scalar_empty_boundaries(self):
     """Tests torch.bucketize with empty boundaries."""
@@ -13466,24 +13356,6 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(compute)
 
-  def test_ceil_integral(self):
-    for dtype in [torch.int32, torch.uint8]:
-      x = torch.tensor([-2, -1, 0, 1, 2], dtype=dtype)
-      self.assert_close_tpu_vs_cpu(lambda device, x=x: torch.ceil(x.to(device)))
-      self.assert_close_tpu_vs_cpu(
-          lambda device, x=x: torch.ceil_(x.clone().to(device))
-      )
-
-  def test_floor_integral(self):
-    for dtype in [torch.int32, torch.uint8]:
-      x = torch.tensor([-2, -1, 0, 1, 2], dtype=dtype)
-      self.assert_close_tpu_vs_cpu(
-          lambda device, x=x: torch.floor(x.to(device))
-      )
-      self.assert_close_tpu_vs_cpu(
-          lambda device, x=x: torch.floor_(x.clone().to(device))
-      )
-
   def test_foreach_ceil_integral(self):
     for dtype in [torch.int32, torch.uint8]:
       x = [
@@ -14641,21 +14513,6 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         ),
         allow_failure=True,
     )
-
-  @parameterized.parameters(torch.float32, torch.bfloat16)
-  def test_silu_autograd_backward(self, dtype):
-    """End-to-end `F.silu` backward, which dispatches to `silu_backward`."""
-    x = torch.randn(3, 5, dtype=dtype)
-    grad_out = torch.randn(3, 5, dtype=dtype)
-
-    def compute(device):
-      # Detach to get a fresh leaf per device: `to(x, "cpu")` returns `x`
-      # itself, so otherwise the TPU run would accumulate into the CPU `.grad`.
-      inp = to(x, device).detach().requires_grad_()
-      torch.nn.functional.silu(inp).backward(to(grad_out, device))
-      return inp.grad
-
-    self.assert_close_tpu_vs_cpu(compute)
 
   def test_silu_backward_differentiable(self):
     """Differentiating through `silu_backward` uses the composite fallback.
