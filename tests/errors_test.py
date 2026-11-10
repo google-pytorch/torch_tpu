@@ -9805,49 +9805,52 @@ Supported combinations for non-constant padding:
       )
 
   def test_adaptive_avg_pool2d_invalid_rank(self):
+    err_type = RuntimeError if et.is_on_tpu() else ValueError
     inp = torch.ones(10, 10, device=et.device())
     out = torch.empty(5, 5, device=et.device())
 
     # adaptive_avg_pool2d expects 3-D or 4-D input.
     with et.assert_raises_message(
-        RuntimeError,
+        err_type,
         tpu="""adaptive_avg_pool2d(): expected input to be a 3D or 4D tensor, got 2D tensor""",
         gpu="""adaptive_avg_pool2d(): Expected 3D or 4D tensor, but got [10, 10]""",
     ):
       torch.ops.aten.adaptive_avg_pool2d.out(inp, tuple(out.shape), out=out)
 
   def test_adaptive_avg_pool2d_empty_spatial_dim(self):
+    err_type = RuntimeError if et.is_on_tpu() else ValueError
     inp_empty_h = torch.ones(1, 0, 4, device=et.device())
     inp_empty_w = torch.ones(1, 4, 0, device=et.device())
     out = torch.empty(1, device=et.device())
 
     with et.assert_raises_message(
-        RuntimeError,
+        err_type,
         tpu="""adaptive_avg_pool2d(): expected input to have non-zero size for non-batch dimensions, got [1, 0, 4] with dimension 1 being empty""",
         gpu="""adaptive_avg_pool2d(): Expected input to have non-zero size for non-batch dimensions, but input has sizes [1, 0, 4] with dimension 1 being empty""",
     ):
       torch.ops.aten.adaptive_avg_pool2d.out(inp_empty_h, [2, 2], out=out)
 
     with et.assert_raises_message(
-        RuntimeError,
+        err_type,
         tpu="""adaptive_avg_pool2d(): expected input to have non-zero size for non-batch dimensions, got [1, 4, 0] with dimension 2 being empty""",
         gpu="""adaptive_avg_pool2d(): Expected input to have non-zero size for non-batch dimensions, but input has sizes [1, 4, 0] with dimension 2 being empty""",
     ):
       torch.ops.aten.adaptive_avg_pool2d.out(inp_empty_w, [2, 2], out=out)
 
   def test_adaptive_avg_pool2d_invalid_output_size(self):
+    err_type = RuntimeError if et.is_on_tpu() else ValueError
     inp = torch.ones(1, 1, 4, 4, device=et.device())
     out = torch.empty(1, device=et.device())
 
     with et.assert_raises_message(
-        RuntimeError,
+        err_type,
         tpu="""adaptive_avg_pool2d(): expected output_size to have 1 or 2 elements, got 0""",
         gpu="""adaptive_avg_pool2d(): output_size must be 2""",
     ):
       torch.ops.aten.adaptive_avg_pool2d.out(inp, [], out=out)
 
     with et.assert_raises_message(
-        RuntimeError,
+        err_type,
         tpu="""adaptive_avg_pool2d(): expected output_size to have 1 or 2 elements, got 3""",
         gpu="""adaptive_avg_pool2d(): output_size must be 2""",
     ):
@@ -9861,6 +9864,7 @@ Supported combinations for non-constant padding:
       torch.ops.aten.adaptive_avg_pool2d.out(inp, [-1, 2], out=out)
 
   def test_adaptive_avg_pool2d_backward_invalid_grad_output(self):
+    err_type = RuntimeError if et.is_on_tpu() else ValueError
     inp = torch.ones(2, 3, 4, 4, device=et.device())
     grad_empty = torch.ones(2, 3, 0, 0, device=et.device())
     grad_3d = torch.ones(3, 2, 2, device=et.device())
@@ -9873,63 +9877,66 @@ Supported combinations for non-constant padding:
       torch.ops.aten._adaptive_avg_pool2d_backward(grad_empty, inp)
 
     with et.assert_raises_message(
-        RuntimeError,
+        err_type,
         tpu="""adaptive_avg_pool2d_backward(): expected grad_output to have 4 dimensions, got 3""",
         gpu="""adaptive_avg_pool2d_backward(): Expected dimensions 4 for `grad_output` but got dimensions 3""",
     ):
       torch.ops.aten._adaptive_avg_pool2d_backward(grad_3d, inp)
 
   def test_adaptive_avg_pool3d_invalid_rank(self):
+    err_type = RuntimeError if et.is_on_tpu() else ValueError
     inp = torch.ones(10, 10, 10, device=et.device())
     out = torch.empty(5, 5, 5, device=et.device())
 
     # adaptive_avg_pool3d expects 4-D or 5-D input.
     with et.assert_raises_message(
-        RuntimeError,
+        err_type,
         tpu="""adaptive_avg_pool3d(): expected input to be a 4D or 5D tensor, got 3D tensor""",
         gpu="""adaptive_avg_pool3d(): Expected 4D or 5D tensor, but got [10, 10, 10]""",
     ):
       torch.ops.aten.adaptive_avg_pool3d.out(inp, tuple(out.shape), out=out)
 
     with et.assert_raises_message(
-        RuntimeError,
+        err_type,
         tpu="""adaptive_avg_pool3d(): expected input to be a 4D or 5D tensor, got 3D tensor""",
         gpu="""adaptive_avg_pool3d(): Expected 4D or 5D tensor, but got [10, 10, 10]""",
     ):
       torch.ops.aten.adaptive_avg_pool3d(inp, tuple(out.shape))
 
   def test_adaptive_avg_pool3d_empty_spatial_dim(self):
+    err_type = RuntimeError if et.is_on_tpu() else ValueError
     inp_empty_d = torch.ones(1, 0, 4, 4, device=et.device())
     inp_empty_w = torch.ones(1, 4, 4, 0, device=et.device())
     out = torch.empty(1, device=et.device())
 
     with et.assert_raises_message(
-        RuntimeError,
+        err_type,
         tpu="""adaptive_avg_pool3d(): expected input to have non-zero size for non-batch dimensions, got [1, 0, 4, 4] with dimension 1 being empty""",
         gpu="""adaptive_avg_pool3d(): Expected input to have non-zero size for non-batch dimensions, but input has sizes [1, 0, 4, 4] with dimension 1 being empty""",
     ):
       torch.ops.aten.adaptive_avg_pool3d.out(inp_empty_d, [2, 2, 2], out=out)
 
     with et.assert_raises_message(
-        RuntimeError,
+        err_type,
         tpu="""adaptive_avg_pool3d(): expected input to have non-zero size for non-batch dimensions, got [1, 4, 4, 0] with dimension 3 being empty""",
         gpu="""adaptive_avg_pool3d(): Expected input to have non-zero size for non-batch dimensions, but input has sizes [1, 4, 4, 0] with dimension 3 being empty""",
     ):
       torch.ops.aten.adaptive_avg_pool3d.out(inp_empty_w, [2, 2, 2], out=out)
 
   def test_adaptive_avg_pool3d_invalid_output_size(self):
+    err_type = RuntimeError if et.is_on_tpu() else ValueError
     inp = torch.ones(1, 1, 4, 4, 4, device=et.device())
     out = torch.empty(1, device=et.device())
 
     with et.assert_raises_message(
-        RuntimeError,
+        err_type,
         tpu="""adaptive_avg_pool3d(): expected output_size to have 1 or 3 elements, got 0""",
         gpu="""adaptive_avg_pool3d(): output_size must be 3""",
     ):
       torch.ops.aten.adaptive_avg_pool3d.out(inp, [], out=out)
 
     with et.assert_raises_message(
-        RuntimeError,
+        err_type,
         tpu="""adaptive_avg_pool3d(): expected output_size to have 1 or 3 elements, got 2""",
         gpu="""adaptive_avg_pool3d(): output_size must be 3""",
     ):
@@ -9943,6 +9950,7 @@ Supported combinations for non-constant padding:
       torch.ops.aten.adaptive_avg_pool3d.out(inp, [-1, 2, 2], out=out)
 
   def test_adaptive_avg_pool3d_backward_invalid_grad_output(self):
+    err_type = RuntimeError if et.is_on_tpu() else ValueError
     inp = torch.ones(2, 3, 4, 4, 4, device=et.device())
     grad_empty = torch.ones(2, 3, 0, 2, 2, device=et.device())
     grad_4d = torch.ones(3, 2, 2, 2, device=et.device())
@@ -9955,7 +9963,7 @@ Supported combinations for non-constant padding:
       torch.ops.aten._adaptive_avg_pool3d_backward(grad_empty, inp)
 
     with et.assert_raises_message(
-        RuntimeError,
+        err_type,
         tpu="""adaptive_avg_pool3d_backward(): expected grad_output to have 5 dimensions, got 4""",
         gpu="""adaptive_avg_pool3d_backward(): Expected dimensions 5 for `grad_output` but got dimensions 4""",
     ):
