@@ -94,9 +94,21 @@ same changes proposed in the PR.
 
 1.  When a PR is created, the **Google oncall** triages it and adds a **Google
     domain expert** as its **reviewer**.
-1.  The **domain expert** reviews the PR, approves it, and then adds a **Google
-    quality champion** as a reviewer AND the **assignee**.
+1.  The **domain expert** reviews the PR, makes sure it passes presubmit,
+    approves it, and then adds a **Google quality champion** as a reviewer AND
+    the **assignee**.
 
+    *   **Don't approve the PR or pass it to the quality champion until all of
+        its presubmit checks (e.g. `CI - Presubmit` and `Lint checks`) have run
+        on the latest commit and passed.** A PR with no failing checks hasn't
+        necessarily passed presubmit: on PRs from some outside contributors'
+        forked repos, GitHub doesn't run the checks at all until a maintainer
+        approves the workflows to run, and the PR's checks list only shows the
+        few workflows that don't need approval. If the PR shows "Workflow(s)
+        awaiting approval", review the changes and click **Approve workflows to
+        run** first (see [Approve Workflow Runs](#approve-workflow-runs)).
+    *   If presubmit fails, ask the author to fix it (or help them) before
+        approving the PR.
     *   For now the domain expert needs to manually find a quality champion (one
         of `cbasile-g`, `LeeHowes`, `vladbelous`, and `zhanyong-wan`). Later
         we'll try to automate it.
@@ -193,6 +205,9 @@ assignee** are responsible for approving the runs whenever the PR shows
 
 *   when the PR is opened or the author pushes new commits, and
 *   after anyone submits a review or a review comment on the PR.
+
+In particular, the **Google domain expert** must approve the runs when they
+start reviewing the PR and every time the author pushes new commits.
 
 <!-- mdformat off(reason: GitHub renders an alert only if its marker is on its own line) -->
 
