@@ -110,9 +110,7 @@ class PipelineP2PTest(continuous_test_utils.TpuMultiProcContinuousTest):
   world_size = distributed_utils.get_tpu_device_count()
 
   @absltest.skipIf(_IS_TPU_V7, _SKIP_P2P_ON_TPU_V7_REASON)
-  @absltest.expectedFailure
   def test_send_first_pipeline_ring(self) -> None:
-    # Fails until isend returns before the peer posts its receive.
     rank, w = self.rank, self.world_size
     nxt, prv = (rank + 1) % w, (rank - 1) % w
     act = torch.full((1024, 1024), float(rank), device='tpu')
