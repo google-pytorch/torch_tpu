@@ -627,6 +627,7 @@ torch_tpu_py_library(
         ":export",
         ":flags",
         ":measure",
+        ":metrics",
         ":mode",
         ":registry",
         ":step_lib",

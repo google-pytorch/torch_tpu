@@ -14,6 +14,7 @@
 
 """Unit tests for standalone distributed benchmark runner."""
 
+import contextlib
 import importlib.util
 import os
 import sys
@@ -51,19 +52,27 @@ def setUpModule():
 class _FakeDistRun:
   """Stateful fake for `distributed_utils.dist_run`.
 
-  Records the spec name of every dispatched target, simulates a worker rank
-  raising (as surfaced by `torch.multiprocessing.spawn`) for specs listed in
-  `failing_specs`, and simulates a factory raising `UnsupportedBenchmark` for
-  specs listed in `unsupported_specs`.
+  Records the spec name of every dispatched target, simulates rank 0 writing
+  `METRICS` once every rank has measured for specs listed in `measured_specs`,
+  simulates a worker rank raising (as surfaced by `torch.multiprocessing.spawn`)
+  for specs listed in `failing_specs`, and simulates a factory raising
+  `UnsupportedBenchmark` for specs listed in `unsupported_specs`. A spec in both
+  `measured_specs` and `failing_specs` fails after measuring, e.g. in teardown.
   """
+
+  METRICS = metrics_lib.PerformanceMetrics(
+      e2e_wall_time_seconds=1.0, first_step_time_seconds=0.5
+  )
 
   def __init__(
       self,
       failing_specs: set[str],
       unsupported_specs: frozenset[str] = frozenset(),
+      measured_specs: frozenset[str] = frozenset(),
   ):
     self._failing_specs = failing_specs
     self._unsupported_specs = unsupported_specs
+    self._measured_specs = measured_specs
     self.ran = []
 
   def __call__(
@@ -74,9 +83,12 @@ class _FakeDistRun:
       mode_value,
       platform_name,
       skip_reason_file,
+      metrics_file,
   ):
     del nproc_per_node, fn, mode_value, platform_name
     self.ran.append(spec_name)
+    if spec_name in self._measured_specs:
+      distributed_runner._write_metrics(metrics_file, self.METRICS)
     if spec_name in self._unsupported_specs:
       # What rank 0 does when the factory raises UnsupportedBenchmark.
       with open(skip_reason_file, "w") as f:
@@ -87,6 +99,33 @@ class _FakeDistRun:
           error_index=0,
           error_pid=1234,
       )
+
+
+class _FakeProcessGroup:
+  """Fake `torch.distributed` process group, as seen by rank 0.
+
+  If `peer_fails_after_measure`, a peer rank fails once rank 0 has measured
+  (i.e. once `measured` is set), so every later barrier raises.
+  """
+
+  def __init__(self, peer_fails_after_measure: bool):
+    self._peer_fails_after_measure = peer_fails_after_measure
+    self.initialized = False
+    self.measured = False
+
+  def init_process_group(self, backend: str) -> None:
+    del backend
+    self.initialized = True
+
+  def is_initialized(self) -> bool:
+    return self.initialized
+
+  def barrier(self) -> None:
+    if self.measured and self._peer_fails_after_measure:
+      raise RuntimeError("peer rank failed")
+
+  def destroy_process_group(self) -> None:
+    self.initialized = False
 
 
 def _read_test_xml(path: str) -> dict[str, tuple[str, str]]:
@@ -353,7 +392,7 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
         workload=lambda ctx: workload_lib.Workload(2, 128),
         **spec_kwargs,
     )
-    exported = []
+    metrics_file = os.path.join(self.create_tempdir().full_path, "metrics")
 
     with (
         mock.patch.dict(os.environ, {"RANK": "0"}),
@@ -366,16 +405,17 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
                 post_warmup_step_time_seconds=0.5,
             ),
         ),
-        mock.patch.object(export_lib, "export", exported.append),
     ):
       distributed_runner._run_single_target_task(
           spec_name="dummy_tp",
           mode_value="eager_default",
           platform_name="v7_2x2x1",
+          metrics_file=metrics_file,
       )
 
-    [data] = exported
-    metric_map = data.metrics.metric_map()
+    metrics = distributed_runner._read_metrics(metrics_file)
+    self.assertIsNotNone(metrics)
+    metric_map = metrics.metric_map()
     self.assertEqual(metric_map["batch_size"], 2.0)
     self.assertEqual(metric_map["seq_len"], 128.0)
     self.assertEqual(metric_map["tokens_per_step"], expected_tokens_per_step)
@@ -531,6 +571,7 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
         "eager_default",
         "v7_2x2x2",
         mock.ANY,
+        mock.ANY,
     )
 
   @mock.patch.object(export_lib, "export")
@@ -600,6 +641,7 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
         "eager_default",
         "v7_2x2x1",
         mock.ANY,
+        mock.ANY,
     )
 
   def test_module_imports_without_torch_tpu_module(self):
@@ -642,6 +684,7 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
         "dummy",
         "eager_default",
         "b200_8",
+        mock.ANY,
         mock.ANY,
     )
 
@@ -778,6 +821,129 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
     cases = _read_test_xml(self.xml_path)
     self.assertEqual(list(cases), ["benchmark_imports"])
     self.assertEqual(cases["benchmark_imports"][0], "FAILURE")
+
+  def test_main_exports_one_result_per_measured_target(self):
+    fake_dist_run = _FakeDistRun(
+        failing_specs={"teardown_broken"},
+        measured_specs=frozenset({"teardown_broken", "healthy"}),
+    )
+    exported = []
+    registry = {
+        name: types.SimpleNamespace(
+            name=name, skipped_run_modes=frozenset(), microbenchmark_name=None
+        )
+        for name in ("teardown_broken", "healthy")
+    }
+
+    with (
+        mock.patch.dict(registry_lib.REGISTRY, registry, clear=True),
+        mock.patch.dict(
+            os.environ,
+            {
+                "BENCHMARK_PLATFORM": "b200_8",
+                "TESTBRIDGE_TEST_ONLY": (
+                    "teardown_broken_compiled healthy_compiled"
+                ),
+            },
+        ),
+        mock.patch.object(
+            distributed_runner.distributed_utils, "dist_run", fake_dist_run
+        ),
+        mock.patch.object(export_lib, "export", exported.append),
+        self.assertLogs(level="INFO") as logs,
+        self.assertRaises(
+            SystemExit
+        ),  # ASSERT_RAISES_OK=Runner must exit non-zero when a rank fails.
+    ):
+      distributed_runner.main(["distributed_runner"])
+
+    # Every rank measured both targets, so each has one record with its
+    # metrics, even though teardown_broken failed afterwards.
+    self.assertEqual(
+        [(d.spec_name, d.succeeded, d.metrics) for d in exported],
+        [
+            ("teardown_broken", True, _FakeDistRun.METRICS),
+            ("healthy", True, _FakeDistRun.METRICS),
+        ],
+    )
+    summary = "\n".join(logs.output)
+    self.assertRegex(
+        summary,
+        r"teardown_broken_compiled\s+FAILED\s+RuntimeError: factory failed",
+    )
+    self.assertRegex(summary, r"healthy_compiled\s+PASSED")
+
+  @parameterized.named_parameters(
+      ("all_ranks_measure", False, True),
+      ("peer_fails_after_measuring", True, False),
+  )
+  def test_run_single_target_task_writes_metrics_once_all_ranks_measured(
+      self, peer_fails, writes_metrics
+  ):
+    process_group = _FakeProcessGroup(peer_fails_after_measure=peer_fails)
+    metrics = metrics_lib.PerformanceMetrics(
+        e2e_wall_time_seconds=1.0, first_step_time_seconds=0.5
+    )
+
+    def fake_measure(*args, **kwargs):
+      del args, kwargs
+      process_group.measured = True
+      return metrics
+
+    spec = registry_lib.BenchmarkSpec(
+        name="dummy",
+        factory=lambda ctx: (torch.nn.Identity(), (), {}, None),
+        stepper=step_lib.StepperType.FORWARD,
+        presubmit=registry_lib.PresubmitPolicy.RUN,
+    )
+    metrics_file = os.path.join(self.create_tempdir().full_path, "metrics")
+    exported = []
+    expected_error = (
+        self.assertRaisesRegex(  # ASSERT_RAISES_OK=A peer failure fails rank 0.
+            RuntimeError, "peer rank failed"
+        )
+        if peer_fails
+        else contextlib.nullcontext()
+    )
+
+    with (
+        mock.patch.dict(registry_lib.REGISTRY, {"dummy": spec}),
+        mock.patch.dict(os.environ, {"RANK": "0"}),
+        mock.patch.object(
+            torch_device_ops, "TorchDeviceOps", lambda target: None
+        ),
+        mock.patch.object(measure_lib, "measure", fake_measure),
+        mock.patch.object(
+            torch.distributed,
+            "init_process_group",
+            process_group.init_process_group,
+        ),
+        mock.patch.object(
+            torch.distributed, "is_initialized", process_group.is_initialized
+        ),
+        mock.patch.object(torch.distributed, "barrier", process_group.barrier),
+        mock.patch.object(
+            torch.distributed,
+            "destroy_process_group",
+            process_group.destroy_process_group,
+        ),
+        mock.patch.object(export_lib, "export", exported.append),
+        expected_error,
+    ):
+      distributed_runner._run_single_target_task(
+          spec_name="dummy",
+          mode_value="eager_default",
+          platform_name="cpu",
+          metrics_file=metrics_file,
+      )
+
+    # The launcher exports the metrics, so the worker never does.
+    self.assertEqual(exported, [])
+    self.assertEqual(
+        distributed_runner._read_metrics(metrics_file),
+        metrics if writes_metrics else None,
+    )
+    self.assertFalse(process_group.initialized)
 
   def test_main_reports_unsupported_mode_as_skipped(self):
     fake_dist_run = _FakeDistRun(failing_specs=set())

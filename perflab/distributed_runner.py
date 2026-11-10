@@ -26,6 +26,7 @@ import enum
 import fnmatch
 import gc
 import os
+import pickle
 import re
 import shutil
 import sys
@@ -50,6 +51,7 @@ from perflab import distributed_models
 from perflab import export as export_lib
 from perflab import flags as flags_lib
 from perflab import measure as measure_lib
+from perflab import metrics as metrics_lib
 from perflab import mode as mode_lib
 from perflab import registry as registry_lib
 from perflab import step_lib
@@ -357,11 +359,29 @@ def _cleanup_distributed_worker_state(
   logging.info("Rank %s inter-test state cleanup completed.", rank)
 
 
+def _write_metrics(path: str, metrics: metrics_lib.PerformanceMetrics) -> None:
+  """Writes `metrics` to `path` for `_read_metrics`."""
+  # Write then rename, so that the launcher never reads a partial file if the
+  # rank is killed while writing.
+  with open(f"{path}.tmp", "wb") as f:
+    pickle.dump(metrics, f)
+  os.replace(f"{path}.tmp", path)
+
+
+def _read_metrics(path: str) -> metrics_lib.PerformanceMetrics | None:
+  """Returns the metrics `_write_metrics` wrote to `path`, or None if none."""
+  if not os.path.exists(path):
+    return None
+  with open(path, "rb") as f:
+    return pickle.load(f)
+
+
 def _run_single_target_task(
     spec_name: str,
     mode_value: str,
     platform_name: str,
     skip_reason_file: str | None = None,
+    metrics_file: str | None = None,
 ) -> None:
   """Worker task executed on each rank/host for a single benchmark target.
 
@@ -371,6 +391,9 @@ def _run_single_target_task(
     platform_name: `target_lib.Platform` value.
     skip_reason_file: If set, rank 0 writes the reason here when the benchmark
       factory raises `UnsupportedBenchmark`, so the launcher reports a skip.
+    metrics_file: If set, rank 0 writes the validated metrics here (see
+      `_write_metrics`) once every rank has measured. The launcher exports them,
+      so that each target has exactly one record.
   """
   # Required for OSS/GCP: Subprocesses spawned via torch.multiprocessing.spawn
   # bypass app.run() and start with unparsed absl flags.
@@ -483,9 +506,12 @@ def _run_single_target_task(
           metrics,
       )
 
-    # Only rank 0 validates and exports results to persistent storage
-    # (MLCompass / Sponge) to avoid duplicate entries and write collisions
-    # across distributed workers.
+    # Report metrics only after every rank has measured; if a peer fails,
+    # mp.spawn tears down rank 0 here and the launcher reports the failure.
+    torch.distributed.barrier()
+
+    # Only rank 0 validates and reports the metrics, which the launcher then
+    # exports to persistent storage (MLCompass / Sponge).
     if rank == 0:
       if (
           metrics.e2e_wall_time_seconds <= 0.0
@@ -494,16 +520,8 @@ def _run_single_target_task(
         raise AssertionError(
             f"Invalid metrics measured on rank {rank}: {metrics}"
         )
-      export_lib.export(
-          export_lib.make_benchmark_data(
-              spec,
-              platform=target.platform,
-              framework=_FRAMEWORK,
-              run_mode=mode,
-              succeeded=True,
-              metrics=metrics,
-          )
-      )
+      if metrics_file:
+        _write_metrics(metrics_file, metrics)
 
   except target_lib.UnsupportedBenchmark as e:
     logging.info("Skipping unsupported benchmark on rank %s: %s", rank, e)
@@ -728,7 +746,10 @@ def main(
   # failure and the targets every shard skips for the platform.
   num_shared_results = len(results)
   # Rank 0 writes a target's skip reason here if its factory raises
-  # `UnsupportedBenchmark` at run time.
+  # `UnsupportedBenchmark` at run time, and its metrics once every rank has
+  # measured. This is a directory on the launcher's host, so the launcher of
+  # node 0 reads what global rank 0 writes only because torchrun and `dist_run`
+  # assign global ranks node by node: global rank 0 always runs on node 0.
   skip_dir = tempfile.mkdtemp(prefix="distributed_runner_skips_")
   for idx, (spec, mode) in enumerate(shard_targets):
     target_name = f"{spec.name}_{mode.value}"
@@ -739,6 +760,7 @@ def main(
         target_name,
     )
     skip_reason_file = os.path.join(skip_dir, f"{idx}.txt")
+    metrics_file = os.path.join(skip_dir, f"{idx}.metrics.pkl")
     start = time.monotonic()
     # Isolate failures per target: `mp.spawn` raises `ProcessRaisedException`
     # or `ProcessExitedException` after terminating the surviving ranks, so a
@@ -752,6 +774,7 @@ def main(
             mode.value,
             platform.value,
             skip_reason_file,
+            metrics_file,
         )
     except Exception as e:  # pylint: disable=broad-exception-caught
       logging.exception("Benchmark target %s FAILED.", target_name)
@@ -763,18 +786,28 @@ def main(
               time.monotonic() - start,
           )
       )
-      # Report from the launcher rather than the worker so failures that never
-      # reach the worker's exception handler (e.g. a rank killed by a signal)
-      # are still visible on dashboards. Only node 0 exports to avoid duplicate
-      # records in multi-host runs.
+      # The launcher, not the worker, exports every result, so each target has
+      # exactly one record, and failures that never reach the worker's
+      # exception handler (e.g. a rank killed by a signal) are still visible on
+      # dashboards. Only node 0 exports to avoid duplicate records in
+      # multi-host runs.
+      #
+      # If rank 0 wrote metrics, every rank measured and the job failed only
+      # afterwards, e.g. in teardown. The metrics are then valid, so the
+      # dashboard records them as a success, while the run summary, the test
+      # XML and the exit code still report the target as FAILED: that is where
+      # harness breakage such as a failed teardown is triaged, and a failed
+      # record would drop a valid measurement from the dashboards.
       if node_rank == 0:
+        metrics = _read_metrics(metrics_file)
         export_lib.export(
             export_lib.make_benchmark_data(
                 spec,
                 platform=platform,
                 framework=_FRAMEWORK,
                 run_mode=mode,
-                succeeded=False,
+                succeeded=metrics is not None,
+                metrics=metrics,
             )
         )
     else:
@@ -797,6 +830,24 @@ def main(
         results.append(
             _TargetResult(target_name, TargetStatus.PASSED, "", duration)
         )
+        if node_rank == 0:
+          if (metrics := _read_metrics(metrics_file)) is not None:
+            export_lib.export(
+                export_lib.make_benchmark_data(
+                    spec,
+                    platform=platform,
+                    framework=_FRAMEWORK,
+                    run_mode=mode,
+                    succeeded=True,
+                    metrics=metrics,
+                )
+            )
+          else:
+            logging.warning(
+                "Benchmark target %s passed but global rank 0 wrote no"
+                " metrics on node 0, so no result is exported.",
+                target_name,
+            )
   shutil.rmtree(skip_dir, ignore_errors=True)
 
   logging.info("%s", _format_summary(platform, results))
