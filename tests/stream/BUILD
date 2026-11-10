@@ -142,4 +142,46 @@ torch_tpu_py_test(
     ],
 )
 
+# Postsubmit benchmark: a 1 GiB side-stream copy next to a matmul chain of equal
+# duration must overlap it. Contract tests belong in stream_integration_test.
+torch_tpu_py_test(
+    name = "stream_overlap_benchmark",
+    srcs = ["stream_overlap_benchmark.py"],
+    main = "stream_overlap_benchmark.py",
+    nopresubmit = "Benchmark.",
+    nopresubmit_oss = "Timing benchmark, runs in OSS nightly only.",
+    tags = [
+        "nofastbuild",  # Measures performance.
+        "requires-tpu-v5lite",
+    ],
+    deps = [
+        "//shims/absl_py/logging",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//tests:seed_test_utils",
+    ],
+)
+
+# The same measurement on CUDA, the reference for the saving ratio.
+torch_tpu_py_test(
+    name = "stream_overlap_benchmark_cuda",
+    srcs = ["stream_overlap_benchmark.py"],
+    main = "stream_overlap_benchmark.py",
+    nolocal = "Skipping in local runs by default as it requires --config=cuda.",
+    nopresubmit = "Benchmark.",
+    tags = [
+        "nofastbuild",  # Measures performance.
+        "nozapfhahn",  # Requires --config=cuda; excluded from Zapfhahn coverage.
+        "requires-gpu-sm90",
+    ],
+    deps = [
+        "//shims/absl_py/logging",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//tests:seed_test_utils",
+    ],
+)
+
 torch_tpu_package_end()
