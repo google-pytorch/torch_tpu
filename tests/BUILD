@@ -2500,6 +2500,7 @@ torch_tpu_py_test(
         "requires-tpu-v6e",
         "requires-tpu-v5lite",
     ],
+    shard_count = 8,
     deps = [
         ":op_testing",
         "//shims/absl_py/testing:absltest",
