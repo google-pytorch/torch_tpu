@@ -17,7 +17,7 @@ environment variables. It is designed to help you:
 > all public Python APIs and environment variables, see
 > [TorchTPU Public APIs (`public_apis.md`)](https://github.com/google-pytorch/torch_tpu/blob/0.2.0-docs/docs/public_apis.md).
 
-## **Core Device Queries**
+## Core Device Queries
 
 When `torch` is imported with TorchTPU installed, the backend automatically
 registers the `"tpu"` device and the `torch.tpu` module. Where PyTorch provides
@@ -66,7 +66,7 @@ print(
 )
 ```
 
-## **Random Number Generation (RNG)**
+## Random Number Generation (RNG)
 
 <!-- mdformat off(reason: standard GFM table rendering in Critique and Code Search) -->
 | CUDA API | TPU / Accelerator API | Description |
@@ -91,7 +91,7 @@ torch.tpu.manual_seed_all(42)
 print("Seeded all TPU cores with value 42.")
 ```
 
-## **Automatic Mixed Precision (AMP)**
+## Automatic Mixed Precision (AMP)
 
 TorchTPU integrates with PyTorch's standard
 [`torch.amp.autocast`](https://docs.pytorch.org/docs/stable/amp.html) framework
@@ -109,7 +109,7 @@ supported_dtypes = torch.tpu.get_amp_supported_dtype()
 print(f"AMP supported dtypes: {supported_dtypes}")
 ```
 
-## **Streams and Events**
+## Streams and Events
 
 For stream management and device synchronization, use standard
 [`torch.accelerator`](https://docs.pytorch.org/docs/stable/accelerator.html)
@@ -138,13 +138,13 @@ rare case that you use an older PyTorch version, use
 > schedule and overlap operations automatically based on data dependencies, so
 > manual multi-stream management is not needed.
 
-## **TPU-Specific APIs**
+## TPU-Specific APIs
 
 Beyond standard CUDA equivalents, `torch.tpu` exposes APIs designed specifically
 for TPU execution modes, MXU precision, XLA compilation, distributed topology,
 custom Pallas kernels, traceable optimizers, and profiling.
 
-### **Execution Modes and Compiler Options**
+### Execution Modes and Compiler Options
 
 Control how eager operations are queued, fused, and compiled by XLA. For an
 architectural walkthrough, see
@@ -168,7 +168,7 @@ with torch.tpu.set_eager_mode(torch.tpu.EagerMode.DEFER_AND_FUSE):
   )
 ```
 
-### **Numerical Precision**
+### Numerical Precision
 
 Control Matrix Multiply Unit (MXU) precision and intermediate `float32`
 accumulation. For detailed guidance, see
@@ -190,7 +190,7 @@ with torch.tpu.precision(torch.tpu.Precision.HIGH):
 print(f"Computed HIGH-precision matmul with output shape: {tuple(c.shape)}")
 ```
 
-### **Distributed Training and Topology**
+### Distributed Training and Topology
 
 TorchTPU registers `"tpu_dist"` (also aliased as `"tpu"`) as the default
 `torch.distributed` backend for `"tpu"` devices. See
@@ -207,7 +207,7 @@ TorchTPU registers `"tpu_dist"` (also aliased as `"tpu"`) as the default
 | `torch.tpu.window_stripe_chunk_mb` | Gets or sets the minimum payload size (in MB) per DMA stripe for peer-to-peer transfers. |
 <!-- mdformat on -->
 
-### **TPU Custom Operators (`torch.tpu.ops`) and Pallas (`torch.tpu.pallas`)**
+### TPU Custom Operators (`torch.tpu.ops`) and Pallas (`torch.tpu.pallas`)
 
 TorchTPU exposes hardware-specialized operators under `torch.tpu.ops` and a
 custom JAX/Pallas kernel wrapper under `torch.tpu.pallas`. See
@@ -233,7 +233,7 @@ custom JAX/Pallas kernel wrapper under `torch.tpu.pallas`. See
 | `torch.tpu.pallas.jax_op(name, fn=None, ...)` | Registers a JAX/Pallas function as a traceable PyTorch custom operator. |
 <!-- mdformat on -->
 
-#### **SparseCore Embedding Operators**
+#### SparseCore Embedding Operators
 
 These operators require a TPU with SparseCores. The `sparse_cores_per_device`
 property of `torch.tpu.get_device_properties()` is the number of SparseCores per
@@ -253,7 +253,7 @@ SIMD width.
 | `torch.tpu.ops.sparse_map_row(...)` | Maps a custom MLIR row-wise computation over sparse CSR matrices on SparseCore. |
 <!-- mdformat on -->
 
-### **Fused Training Step and Optimizers (`torch.tpu.optimizers`)**
+### Fused Training Step and Optimizers (`torch.tpu.optimizers`)
 
 `torch.tpu.optimizers` traces the forward pass, loss computation, backward pass,
 and functional optimizer step into a single compiled TPU graph.
@@ -268,7 +268,7 @@ and functional optimizer step into a single compiled TPU graph.
 | `torch.tpu.optimizers.Sgd(...)` | Traceable functional SGD optimizer (`Sgd.ParamGroup`). |
 <!-- mdformat on -->
 
-### **Profiling (`torch.tpu.profiler`)**
+### Profiling (`torch.tpu.profiler`)
 
 Configure TPU hardware and Python tracing for XProf and TensorBoard. See
 [XProf for TorchTPU](./performance_profiling_with_xprof.md).
@@ -279,7 +279,7 @@ Configure TPU hardware and Python tracing for XProf and TensorBoard. See
 | `torch.tpu.profiler.TpuProfilerConfig(...)` | Experimental config passed to `torch.profiler.profile(..., experimental_config=...)` to configure host, TPU device, and Python tracing for XProf. |
 <!-- mdformat on -->
 
-## **Environment Variables**
+## Environment Variables
 
 TorchTPU's behavior is controlled through several environment variables that
 configure the XLA compiler, the TPU driver (`libtpu`), and PyTorch's own debug
@@ -289,7 +289,7 @@ subsystem.
 > **locked** the moment the backend initializes (usually during `import torch`
 > or `torch.device("tpu")`).
 
-### **Device Visibility, Runtime, and Distributed Launch**
+### Device Visibility, Runtime, and Distributed Launch
 
 <!-- mdformat off(reason: standard GFM table rendering in Critique and Code Search) -->
 | Environment Variable | Description |
@@ -304,12 +304,12 @@ subsystem.
 | `MASTER_PORT` | Port on `MASTER_ADDR` used for `torch.distributed` rendezvous. |
 | `TORCH_DEVICE_BACKEND_AUTOLOAD` | Set to `"0"` to disable automatic registration of the `torch_tpu` backend. |
 | `TORCH_TPU_ALLOW_LEGACY_DEVICE_APIS` | When enabled, allows calling internal `torch.tpu` device APIs (those with a `torch.accelerator` equivalent) from outside PyTorch core with a one-time warning instead of raising a `RuntimeError`. Use this only as a temporary fix; migrating to `torch.accelerator.*` is preferred, and this variable will likely be removed in a future release. |
-| `LIBTPU_INIT_ARGS` | Space-separated initialization flags passed to `libtpu` and the PJRT runtime, including TPU compiler flags such as `--xla_tpu_*`. Generic XLA flags such as `--xla_dump_to` are rejected here; put those in `XLA_FLAGS`. See [Which variable for which flag](#which-variable-for-which-flag). |
-| `TPU_PREMAPPED_BUFFER_SIZE` | Premapped host-to-device memory buffer size in bytes for the PJRT client. |
+| `LIBTPU_INIT_ARGS` | Space-separated initialization flags passed to `libtpu` and the PjRt runtime, including TPU compiler flags such as `--xla_tpu_*`. Generic XLA flags such as `--xla_dump_to` are rejected here; put those in `XLA_FLAGS`. See [Which variable for which flag](#which-variable-for-which-flag). |
+| `TPU_PREMAPPED_BUFFER_SIZE` | Premapped host-to-device memory buffer size in bytes for the PjRt client. |
 | `TMPDIR` | Temporary directory used by the runtime and compiler. |
 <!-- mdformat on -->
 
-### **Hardware Topology and Multi-Host Coordination**
+### Hardware Topology and Multi-Host Coordination
 
 These variables specify the TPU hardware topology and process networking. In
 most cases, they are set automatically by
@@ -328,7 +328,7 @@ Google Cloud environment.
 | `TORCHCOMM_SIZE` | World size for `torchcomm` (takes precedence over `WORLD_SIZE`). |
 <!-- mdformat on -->
 
-### **Execution Mode, Compilation, and Caching**
+### Execution Mode, Compilation, and Caching
 
 These variables control how PyTorch operations and graphs are dispatched,
 lowered, optimized by XLA, and cached across runs and ranks.
@@ -343,7 +343,7 @@ lowered, optimized by XLA, and cached across runs and ranks.
 | `XLA_FLAGS` | Space-separated generic XLA compiler and debug flags (e.g., `--xla_dump_hlo_as_text --xla_dump_to=...`). TPU compiler flags such as `--xla_tpu_*` are rejected here; put those in `LIBTPU_INIT_ARGS`. See [Which variable for which flag](#which-variable-for-which-flag). |
 <!-- mdformat on -->
 
-### **Debugging, Safety, Profiling, and Tracing**
+### Debugging, Safety, Profiling, and Tracing
 
 These variables control debugging context, runtime safety checks, and profiler
 output for TorchTPU.
@@ -358,9 +358,9 @@ output for TorchTPU.
 | `TORCH_TRACE` | Output directory for structured compiler and dispatcher trace logs (`tlparse`). |
 <!-- mdformat on -->
 
-### **Environment Variable Configuration Snippets**
+### Environment Variable Configuration Snippets
 
-#### **1. C++ Stacktraces (`TORCH_SHOW_CPP_STACKTRACES`)**
+#### 1. C++ Stacktraces (`TORCH_SHOW_CPP_STACKTRACES`)
 
 Setting `TORCH_SHOW_CPP_STACKTRACES=1` before importing `torch` makes it much
 easier to diagnose errors that occur deep within the C++ backend or XLA. Instead
@@ -379,7 +379,7 @@ b = torch.randn(20, device=device)
 c = a + b
 ```
 
-#### **2. Internal Debug Checks & Boundary Validation (`TORCH_TPU_ENABLE_DEBUG_CHECKS`)**
+#### 2. Internal Debug Checks & Boundary Validation (`TORCH_TPU_ENABLE_DEBUG_CHECKS`)
 
 By default, the TPU skips bounds checks for speed. Enabling
 `TORCH_TPU_ENABLE_DEBUG_CHECKS=1` catches subtle bugs related to out-of-bounds
@@ -400,7 +400,7 @@ indices = torch.tensor([5], device=device)  # Out of bounds
 y = torch.take(x, indices).cpu()
 ```
 
-#### **3. Dumping XLA IR / HLO (`XLA_FLAGS`)**
+#### 3. Dumping XLA IR / HLO (`XLA_FLAGS`)
 
 By setting `XLA_FLAGS`, you can force the compiler to dump the High-Level
 Optimizer (HLO) text to a directory. The dump directory (e.g., `/tmp/hlo_dump`)
@@ -452,7 +452,7 @@ If either variable reports an unknown flag, check that the flag is in the right
 variable and that it exists in your installed `torch_tpu`/`libtpu` version; flag
 names can change between releases.
 
-#### **4. Multi-Tiered Compilation Caching (`TORCH_TPU_TIER2_COMPILATION_CACHE` & `TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT`)**
+#### 4. Multi-Tiered Compilation Caching (`TORCH_TPU_TIER2_COMPILATION_CACHE` & `TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT`)
 
 TorchTPU uses multi-tiered caching to avoid redundant compilation across runs
 and ranks:

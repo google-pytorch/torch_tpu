@@ -20,13 +20,13 @@ inference.
 ## User Guide and Interactive Notebooks
 
 A user guide is available at
-[https://torchtpu.readthedocs.io/](https://torchtpu.readthedocs.io/). This is a
-static version of the interactive notebooks. They are available in the docs
-folder.
+[https://torchtpu.readthedocs.io/](https://torchtpu.readthedocs.io/). The
+markdown sources for this documentation are available in the `docs/` directory.
+Jupyter notebook versions of these documents are available in the
+`docs/notebooks/` folder.
 
-The notebooks are Marimo (similar to Jupyter). They can be run with `marimo edit
-file.py` and then you can access them in your browser. You will need to be
-running this from a TPU VM, a v6e GCE instance is easiest.
+The notebooks can be opened in Colab. You will need to be running this from a
+TPU VM, a v6e GCE instance is easiest.
 
 ## Installation
 

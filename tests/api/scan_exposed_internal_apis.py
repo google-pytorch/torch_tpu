@@ -126,8 +126,8 @@ _GOOGLE3_SCAN_EXPOSED_INTERNAL_APIS_LABEL = (
 # The directories to scan, relative to the TorchTPU repository root. Keep in
 # sync with the `exposed_internal_apis_data` filegroup in BUILD.
 DEFAULT_SCAN_SUBDIRS: tuple[str, ...] = (
+    "docs",
     "docs/notebooks",
-    "docs/source",
     "examples",
 )
 
@@ -171,6 +171,10 @@ _INTERNAL_IMPLEMENTATION_ENV_VARS: frozenset[str] = frozenset({
     "TPU_PROCESS_PORT",
     "TPU_VISIBLE_CHIPS",
 })
+
+# Cell magics whose body is shell, not Python. Jupytext generates them from
+# fenced `bash` and `sh` code blocks.
+_SHELL_CELL_MAGICS: frozenset[str] = frozenset({"%%bash", "%%sh", "%%shell"})
 
 
 def _is_torch_tpu_name(name: str) -> bool:
@@ -732,7 +736,11 @@ def scan_file(
         if not cell_text.strip():
           continue
 
-        if cell.get("cell_type") == "code":
+        first_token = cell_text.split(maxsplit=1)[0]
+        if (
+            cell.get("cell_type") == "code"
+            and first_token not in _SHELL_CELL_MAGICS
+        ):
           clean_lines = [
               line if not line.strip().startswith(("%", "!")) else f"# {line}"
               for line in cell_text.splitlines()

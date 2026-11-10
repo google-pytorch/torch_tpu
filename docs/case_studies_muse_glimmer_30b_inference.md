@@ -1,7 +1,5 @@
 # Muse Glimmer 30B: autoregressive decoding
 
-<!-- Link to colab and to generated notebook -->
-
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/google-pytorch/torch_tpu/blob/0.2.0-docs/docs/notebooks/case_studies_muse_glimmer_30b_inference.ipynb)
 
 This guide walks through autoregressive LLM inference on TPU with TorchTPU,
@@ -109,12 +107,14 @@ def rotate_half(x: torch.Tensor) -> torch.Tensor:
   x2 = x[..., dh // 2 :]
   return torch.cat([-x2, x1], dim=-1)
 
+
 def apply_rope(
     x: torch.Tensor, sin: torch.Tensor, cos: torch.Tensor
 ) -> torch.Tensor:
   dtype = x.dtype
   x_f32 = x.to(dtype=torch.float32)
   return ((x_f32 * cos) + (rotate_half(x_f32) * sin)).to(dtype=dtype)
+
 
 def precompute_rope_sin_cos(
     seq_len: int, dim_head: int, rope_theta: float
@@ -124,10 +124,9 @@ def precompute_rope_sin_cos(
       ** (torch.arange(0, dim_head, 2, dtype=torch.float32) / dim_head)
   )
   inv_freq = inv_freq.repeat(2).view(1, 1, 1, dim_head)
-  pos_idx = torch.arange(0, seq_len, dtype=torch.float32).view(
-      1, 1, seq_len, 1
-  )
+  pos_idx = torch.arange(0, seq_len, dtype=torch.float32).view(1, 1, seq_len, 1)
   return torch.sin(pos_idx * inv_freq), torch.cos(pos_idx * inv_freq)
+
 
 class StaticCache:
   """Fixed-size preallocated KV cache mutated in-place for static compilation.
@@ -186,6 +185,7 @@ class StaticCache:
     past_len.add_(kv_len)
     return self.keys[layer_idx], self.values[layer_idx]
 
+
 class DynamicCache:
   """KV cache that grows along the sequence dimension via torch.cat."""
 
@@ -218,8 +218,10 @@ class DynamicCache:
       )
     return self.keys[layer_idx], self.values[layer_idx]
 
+
 # Both caches expose the same interface, so the model works with either.
 KVCache = StaticCache | DynamicCache
+
 
 @dataclasses.dataclass
 class Config:
@@ -242,6 +244,7 @@ class Config:
 
   prefill_seq_len: int = 128
   num_decode_steps: int = 20
+
 
 class Attention(nn.Module):
   """Grouped-query attention that works with StaticCache or DynamicCache."""
@@ -309,6 +312,7 @@ class Attention(nn.Module):
     gate = F.sigmoid(self.gate_proj(h))
     return self.o_proj(attn_out * gate)
 
+
 class FeedForwardSwiGLU(nn.Module):
   """Simple FFN with SwiGLU activation."""
 
@@ -321,6 +325,7 @@ class FeedForwardSwiGLU(nn.Module):
 
   def forward(self, h: torch.Tensor) -> torch.Tensor:
     return self.down_proj(self.up_proj(h) * F.silu(self.gate_proj(h)))
+
 
 class DecoderBlock(nn.Module):
 
@@ -337,9 +342,7 @@ class DecoderBlock(nn.Module):
     self.input_layernorm = nn.RMSNorm((dm,), eps=eps_pre, dtype=f32)
     self.post_attention_layernorm = nn.RMSNorm((dm,), eps=eps_post, dtype=f32)
     self.pre_feedforward_layernorm = nn.RMSNorm((dm,), eps=eps_pre, dtype=f32)
-    self.post_feedforward_layernorm = nn.RMSNorm(
-        (dm,), eps=eps_post, dtype=f32
-    )
+    self.post_feedforward_layernorm = nn.RMSNorm((dm,), eps=eps_post, dtype=f32)
 
   def forward(
       self,
@@ -360,6 +363,7 @@ class DecoderBlock(nn.Module):
         self.mlp(self.pre_feedforward_layernorm(h))
     )
     return h
+
 
 class MuseGlimmer30B(nn.Module):
 
@@ -482,6 +486,7 @@ LOCAL_CHECKPOINT_DIR = os.environ.get("MUSE_GLIMMER_CHECKPOINT_DIR") or None
 CHECKPOINT_PREFIX = "model.language_model."
 INDEX_FILENAME = "model.safetensors.index.json"
 
+
 def use_local_checkpoint() -> bool:
   """Returns True if the checkpoint should be read from LOCAL_CHECKPOINT_DIR."""
   if LOCAL_CHECKPOINT_DIR is None:
@@ -494,11 +499,13 @@ def use_local_checkpoint() -> bool:
     )
   return True
 
+
 def checkpoint_source() -> str:
   """Describes where checkpoint files are read from."""
   if use_local_checkpoint():
     return str(LOCAL_CHECKPOINT_DIR)
   return f"Hugging Face Hub ({MODEL_NAME})"
+
 
 def checkpoint_file(filename: str) -> epath.Path:
   """Returns a checkpoint file, downloading it from the Hub if needed."""
@@ -506,15 +513,18 @@ def checkpoint_file(filename: str) -> epath.Path:
     return epath.Path(LOCAL_CHECKPOINT_DIR) / filename
   return epath.Path(huggingface_hub.hf_hub_download(MODEL_NAME, filename))
 
+
 def checkpoint_key(name: str) -> str:
   """Maps a MuseGlimmer30B parameter name to its HF checkpoint key."""
   return name if name == "lm_head.weight" else CHECKPOINT_PREFIX + name
+
 
 def load_tokenizer() -> transformers.PreTrainedTokenizerBase:
   """Loads the Hugging Face Muse Glimmer tokenizer."""
   source = LOCAL_CHECKPOINT_DIR if use_local_checkpoint() else MODEL_NAME
   print(f"Loading tokenizer from {checkpoint_source()}...", flush=True)
   return transformers.AutoTokenizer.from_pretrained(source)
+
 
 # Tensors larger than this are streamed in chunks when their shard can't be
 # memory-mapped (see `load_weights_from_checkpoint`).
@@ -525,6 +535,7 @@ SAFETENSORS_DTYPES = {
     "F32": torch.float32,
 }
 
+
 def fix_layernorm(name: str, tensor: torch.Tensor) -> torch.Tensor:
   """Converts HF's centered RMSNorm weights to `nn.RMSNorm` weights."""
   if name.endswith("_layernorm.weight"):
@@ -532,10 +543,12 @@ def fix_layernorm(name: str, tensor: torch.Tensor) -> torch.Tensor:
     return tensor.float() + 1.0
   return tensor
 
+
 def read_tensor(path: epath.Path, key: str) -> torch.Tensor:
   """Reads one tensor from a safetensors file into host memory."""
   with safetensors.safe_open(path, framework="pt", device="cpu") as f:
     return f.get_tensor(key)
+
 
 def copy_tensor_in_chunks(
     path: epath.Path, key: str, dst: torch.Tensor
@@ -559,6 +572,7 @@ def copy_tensor_in_chunks(
       data = bytearray(f.read(rows * row_bytes))
       chunk = torch.frombuffer(data, dtype=dtype).view(rows, *row_shape)
       dst[start : start + rows].copy_(chunk)
+
 
 @torch.no_grad()
 def load_weights_from_checkpoint(m: MuseGlimmer30B) -> None:
@@ -628,6 +642,7 @@ share the same `muse_model`.
 ```python
 PROMPT = "The future of artificial intelligence is"
 
+
 def model_generate(
     compiled_model,
     config: Config,
@@ -683,6 +698,7 @@ def model_generate(
         flush=True,
     )
   return output_text
+
 
 torch.manual_seed(42)
 torch.set_default_dtype(torch.bfloat16)
