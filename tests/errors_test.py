@@ -16270,6 +16270,11 @@ Supported combinations for non-constant padding:
     ):
       torch.ops.aten.frac.out(x_f32, out=out_f64)
 
+  # TODO(b/584349996): Flaky on GPU; op runs to completion without crashing or raising.
+  @et.skip_if(
+      et.is_on_gpu,
+      "b/584349996: Flaky on GPU as op does not consistently crash or raise.",
+  )
   @et.gpu_crashes_or_raises(
       "GPU does not check that grads has the same size as params."
   )
