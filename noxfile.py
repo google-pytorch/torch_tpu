@@ -166,6 +166,7 @@ def test_ci_tools(session: nox.Session) -> None:
       "ci/tools/run_bazel_diff_test.py",
       "ci/tools/gen_torch_tests_test.py",
       "ci/tools/testing/fakes_test.py",
+      "tools/auto_assign_test.py",
   )
   session.run("python", "-m", "pytest", "ci/tools/custom_linter/tests")
 
