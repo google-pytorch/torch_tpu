@@ -158,9 +158,6 @@ class StreamIntegrationTest(seed_test_utils.RepeatableTest):
     self.assertEqual(act.untyped_storage().size(), 0)
     utils.assert_close(pinned_cpu, torch.full(_LARGE_SHAPE, 3.0))
 
-  @absltest.expectedFailureIf(
-      _IS_TPU, 'TpuStream.wait_event() waits on the current stream, not self'
-  )
   def test_wait_event_holds_the_called_stream(self):
     """wait_event() holds the stream it is called on, not the current one."""
     a, b = _BACKEND.Stream(), _BACKEND.Stream()

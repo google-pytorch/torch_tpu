@@ -156,9 +156,9 @@ class TpuStream(torch.Stream):
       'wait_event() is experimental and may change or be removed without'
       ' notice.'
   )
-  def wait_event(self, event: 'TpuEvent') -> None:  # pylint: disable=unused-argument
+  def wait_event(self, event: 'TpuEvent') -> None:
     """Makes all future work submitted to the stream wait for an event."""
-    event.wait()
+    event.wait(self)
 
   @experimental(
       'wait_stream() is experimental and may change or be removed without'

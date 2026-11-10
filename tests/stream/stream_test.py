@@ -310,6 +310,39 @@ class TpuStreamsTest(seed_test_utils.RepeatableTest):
     self.assertTrue(transfer_event.query())
     utils.assert_close(t_cpu, torch.ones(size, dtype=torch.float32))
 
+  def test_wait_event_waits_on_the_stream_it_is_called_on(self):
+    """b.wait_event(ev) holds b, not the stream that is current at the call."""
+    a = torch.tpu.Stream()
+    b = torch.tpu.Stream()
+    x = torch.full((8192, 8192), 1 / 8192, device='tpu')
+    ones = torch.ones(1024, device='tpu')
+    held = torch.zeros(1024, pin_memory=True)
+    (x @ x).to('cpu')
+
+    # Keep a busy for a while, so that ev stays pending below.
+    with torch.tpu.stream(a):
+      y = x
+      for _ in range(100):
+        y = y @ x
+      ev = a.record_event()
+    # The default stream is current: a wait that landed there would hold it.
+    b.wait_event(ev)
+    with torch.tpu.stream(b):
+      held.copy_(ones, non_blocking=True)
+      ev_b = b.record_event()
+
+    # The default stream is not held: its copy completes while a is still busy.
+    free = ones.to('cpu')
+    self.assertFalse(ev.query())
+    # b is held: its copy, and the event after it, complete only once ev has.
+    self.assertFalse(ev_b.query())
+    ev_b.synchronize()
+    self.assertTrue(ev.query())
+    # utils.assert_close() synchronizes the device, so it only runs from here.
+    utils.assert_close(free, torch.ones(1024))
+    utils.assert_close(held, torch.ones(1024))
+    utils.assert_close(y[0, :2].to('cpu'), torch.full((2,), 1 / 8192))
+
   def test_materialize_on_stream_switch(self):
     """Tests that a stream begins executing when leaving its context."""
     new_stream = torch.tpu.Stream()
