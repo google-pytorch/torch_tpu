@@ -59,8 +59,13 @@ from perflab import torch_device_ops
 from perflab import workload as workload_lib
 from tests.distributed import distributed_utils
 
-discovery_lib.import_submodules(distributed_models)
-discovery_lib.import_submodules(steps)
+# Import all models and steps and trigger registration of benchmarks. main()
+# fails the run if any of them fails to import. The torchtitan-dependent models
+# are not exported to OSS (see copy.bara.sky), so they never fail here.
+_IMPORT_FAILURES: tuple[discovery_lib.ImportFailure, ...] = (
+    *discovery_lib.import_submodules(distributed_models),
+    *discovery_lib.import_submodules(steps),
+)
 
 _FRAMEWORK = mode_lib.Framework.TORCH
 # Characters XML 1.0 forbids (all C0 controls except tab, newline and CR).
@@ -590,8 +595,18 @@ def _owned_compilation_caches(
       shutil.rmtree(tier2_cache_dir, ignore_errors=True)
 
 
-def main(argv: Sequence[str]) -> None:
-  """Main entry point for discovering and executing distributed benchmarks."""
+def main(
+    argv: Sequence[str],
+    *,
+    import_failures: Sequence[discovery_lib.ImportFailure] = _IMPORT_FAILURES,
+) -> None:
+  """Main entry point for discovering and executing distributed benchmarks.
+
+  Args:
+    argv: Command-line arguments.
+    import_failures: The benchmark modules that failed to import, reported as a
+      failed `benchmark_imports` result.
+  """
   if len(argv) > 1:
     raise app.UsageError("Too many command-line arguments.")
 
@@ -621,18 +636,36 @@ def main(argv: Sequence[str]) -> None:
 
     distributed.set_tpu_launch_env(nproc_per_node=local_nproc)
 
+  results: list[_TargetResult] = []
+  if import_failures:
+    reason = "benchmark module(s) failed to import:\n  " + "\n  ".join(
+        str(f) for f in import_failures
+    )
+    logging.error("%s", reason)
+    # Like the platform skips below, every shard reports the failure (and exits
+    # non-zero), but only the first shard writes it to the test XML.
+    results.append(
+        _TargetResult("benchmark_imports", TargetStatus.FAILED, reason)
+    )
+
   test_filter = os.environ.get(  # PY_ENVIRON_OK=benchmark
       "TESTBRIDGE_TEST_ONLY"
   )
-  targets_to_run = resolve_benchmark_targets(test_filter)
-
-  if not targets_to_run:
+  try:
+    targets_to_run = resolve_benchmark_targets(test_filter)
+  except ValueError:
+    if not import_failures:
+      raise
+    # The filter may select targets of a module that failed to import, so
+    # report the import failure rather than fail on the filter.
+    logging.exception("Could not resolve the benchmark targets.")
+    targets_to_run = []
+  if not targets_to_run and not import_failures:
     raise ValueError(
         f"No matching benchmark targets found for platform {platform.value}"
         f" with filter '{test_filter}'."
     )
 
-  results: list[_TargetResult] = []
   runnable_targets = []
   node_rank = int(os.environ.get("NODE_RANK", "0"))  # PY_ENVIRON_OK=benchmark
   # Every shard skips the same known failures; only node 0 of the first shard
@@ -682,8 +715,9 @@ def main(argv: Sequence[str]) -> None:
       local_nproc,
   )
 
-  # `results` so far only holds the targets every shard skips for the platform.
-  num_platform_skips = len(results)
+  # `results` so far only holds the results every shard repeats: the import
+  # failure and the targets every shard skips for the platform.
+  num_shared_results = len(results)
   # Rank 0 writes a target's skip reason here if its factory raises
   # `UnsupportedBenchmark` at run time.
   skip_dir = tempfile.mkdtemp(prefix="distributed_runner_skips_")
@@ -761,14 +795,14 @@ def main(argv: Sequence[str]) -> None:
       "XML_OUTPUT_FILE"
   ):
     # Sponge merges the reports of all shards, so only the first shard reports
-    # the platform skips every shard repeats; otherwise each would be listed
-    # once per shard.
+    # the results every shard repeats; otherwise each would be listed once per
+    # shard.
     first_shard = _shard_env()[0] == 0
     _write_test_xml(
         xml_output_file,
         platform,
-        (results[:num_platform_skips] if first_shard else [])
-        + results[num_platform_skips:],
+        (results[:num_shared_results] if first_shard else [])
+        + results[num_shared_results:],
     )
   if any(r.status == TargetStatus.FAILED for r in results):
     sys.exit(1)

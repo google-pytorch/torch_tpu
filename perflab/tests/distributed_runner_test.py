@@ -589,6 +589,88 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
     self.assertRegex(summary, r"healthy_eager_default\s+PASSED")
     self.assertIn("1 passed, 1 failed, 0 skipped", summary)
 
+  def test_discovered_modules_import(self):
+    self.assertEqual(distributed_runner._IMPORT_FAILURES, ())
+
+  def _run_main_with_import_failure(
+      self, error: Exception, test_filter: str
+  ) -> tuple[_FakeDistRun, SystemExit]:
+    """Runs main() with a model import failure and one healthy target."""
+    failure = discovery_lib.ImportFailure(
+        module="torch_tpu.perflab.distributed_models.broken", error=error
+    )
+    fake_dist_run = _FakeDistRun(failing_specs=set())
+    registry = {
+        "healthy": types.SimpleNamespace(
+            name="healthy", skipped_run_modes=frozenset()
+        ),
+    }
+    with (
+        mock.patch.dict(registry_lib.REGISTRY, registry, clear=True),
+        mock.patch.dict(
+            os.environ,
+            {
+                "BENCHMARK_PLATFORM": "b200_8",
+                "TESTBRIDGE_TEST_ONLY": test_filter,
+            },
+        ),
+        mock.patch.object(
+            distributed_runner.distributed_utils, "dist_run", fake_dist_run
+        ),
+    ):
+      # pyformat: disable
+      with self.assertRaises(SystemExit) as exit_cm:  # ASSERT_RAISES_OK=Runner must exit non-zero when a model fails to import.
+        distributed_runner.main(
+            ["distributed_runner"], import_failures=(failure,)
+        )
+      # pyformat: enable
+    return fake_dist_run, exit_cm.exception
+
+  @parameterized.named_parameters(
+      ("import_error", ImportError("cannot import name 'Foo'")),
+      (
+          "missing_module",
+          ModuleNotFoundError(
+              "No module named 'transformers'", name="transformers"
+          ),
+      ),
+      (
+          "missing_torchtitan",
+          ModuleNotFoundError(
+              "No module named 'torchtitan.experiments'",
+              name="torchtitan.experiments",
+          ),
+      ),
+  )
+  def test_main_fails_on_model_import_error(self, error):
+    fake_dist_run, exit_exception = self._run_main_with_import_failure(
+        error, test_filter="healthy_eager_default"
+    )
+
+    self.assertNotEqual(exit_exception.code, 0)
+    # The import failure does not prevent the other benchmarks from running.
+    self.assertEqual(fake_dist_run.ran, ["healthy"])
+    cases = _read_test_xml(self.xml_path)
+    self.assertEqual(cases["benchmark_imports"][0], "FAILURE")
+    self.assertIn(
+        "torch_tpu.perflab.distributed_models.broken",
+        cases["benchmark_imports"][1],
+    )
+    self.assertEqual(cases["healthy_eager_default"], ("PASSED", ""))
+
+  def test_main_reports_import_error_when_filter_matches_no_target(self):
+    # The filter may only select targets of the module that failed to import.
+    fake_dist_run, exit_exception = self._run_main_with_import_failure(
+        ImportError("cannot import name 'Foo'"),
+        test_filter="broken_eager_default",
+    )
+
+    self.assertNotEqual(exit_exception.code, 0)
+    self.assertEqual(fake_dist_run.ran, [])
+    cases = _read_test_xml(self.xml_path)
+    self.assertEqual(list(cases), ["benchmark_imports"])
+    self.assertEqual(cases["benchmark_imports"][0], "FAILURE")
+
   def test_main_reports_unsupported_mode_as_skipped(self):
     fake_dist_run = _FakeDistRun(failing_specs=set())
     registry = {
