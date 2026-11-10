@@ -191,6 +191,11 @@ inline constexpr char kTorchTpuInternalDumpMlirPassesToEnvVar[] =
 // Default is "true".
 inline constexpr char kTorchTpuInternalEnableReassociateNormWeightsEnvVar[] =
     "TORCH_TPU_INTERNAL_ENABLE_REASSOCIATE_NORM_WEIGHTS";
+// If set to "0" or "false", disables folding the chunk/cat relayouts of
+// functional all-gathers and reduce-scatters on a non-leading dim into
+// collectives on that dim. Default is "true".
+inline constexpr char kTorchTpuInternalFuseCollectiveRelayoutsEnvVar[] =
+    "TORCH_TPU_INTERNAL_FUSE_COLLECTIVE_RELAYOUTS";
 // How long, in seconds, to wait for the distributed handshake to complete. If
 // not set, 60 is used.
 inline constexpr char kTorchTpuInternalHandshakeTimeoutSEnvVar[] =
@@ -419,6 +424,8 @@ inline constexpr auto kEnvVarInfo = MakeConstexprMap<std::string_view,
     {kTorchTpuInternalDumpMlirPassesToEnvVar,
      {SymbolStage::InternalApi(), EnvVarType::kString}},
     {kTorchTpuInternalEnableReassociateNormWeightsEnvVar,
+     {SymbolStage::InternalApi(), EnvVarType::kBoolean}},
+    {kTorchTpuInternalFuseCollectiveRelayoutsEnvVar,
      {SymbolStage::InternalApi(), EnvVarType::kBoolean}},
     {kTorchTpuInternalHandshakeTimeoutSEnvVar,
      {SymbolStage::InternalApi(), EnvVarType::kInt}},
