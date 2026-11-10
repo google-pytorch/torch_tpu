@@ -331,6 +331,27 @@ absl::Status InsertGraphBreak(
     std::vector<SharedDeviceBufferList> must_materialize,
     MaterializationReason reason, GraphSplitMode mode);
 
+// Records that a graph capture begins on the given stream, which then reports
+// that it is capturing (see IsStreamCapturing()) until EndStreamGraphCapture().
+// Returns false, and records nothing, if a graph capture is already in progress
+// on the stream, if the device index is invalid, or if `stream_id` is not the
+// ID of a non-default stream: like on CUDA, the default stream cannot be
+// captured.
+[[nodiscard]] bool TryBeginStreamGraphCapture(c10::DeviceIndex device_index,
+                                              c10::StreamId stream_id);
+
+// Records that the graph capture in progress on the given stream, if any, has
+// ended.
+void EndStreamGraphCapture(c10::DeviceIndex device_index,
+                           c10::StreamId stream_id);
+
+// Returns whether a graph capture is in progress on the given stream, as
+// `c10::Stream::is_capturing()` reports. Returns false for an invalid device
+// index or stream ID. Unlike the functions that record work on a stream, this
+// never creates the state of the stream.
+[[nodiscard]] bool IsStreamCapturing(c10::DeviceIndex device_index,
+                                     c10::StreamId stream_id);
+
 void WriteBackMaterializationFutures(
     c10::DeviceIndex device_index, c10::StreamId stream_id,
     std::vector<xla::Future<void>>&& futures,

@@ -554,6 +554,21 @@ class TorchStreamsTest(seed_test_utils.RepeatableTest):
     # Verify that the tensor is now materialized.
     self.assertTrue(sync.is_materialized(x))
 
+  @absltest.skipIf(
+      utils.get_torch_version() < (2, 12),
+      'torch.Stream.is_capturing() requires PyTorch >= 2.12.',
+  )
+  def test_streams_are_not_capturing_without_graph_capture(self):
+    """No stream reports that it is capturing a graph outside of capture."""
+    device = torch.device('tpu', torch.accelerator.current_device_index())
+    new_stream = torch.Stream(device=device)
+
+    self.assertFalse(new_stream.is_capturing())
+    self.assertFalse(torch.tpu.Stream().is_capturing())
+    self.assertFalse(torch.accelerator.current_stream().is_capturing())
+    with new_stream:
+      self.assertFalse(torch.accelerator.current_stream().is_capturing())
+
 
 # The two public constructors of a TPU event.
 _EVENT_CONSTRUCTORS = (
