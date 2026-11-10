@@ -39,6 +39,7 @@
 #include "csrc/eager/current_stream.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/events_queue.h"
+#include "csrc/eager/host_allocator.h"
 #include "csrc/eager/materialize.h"
 #include "csrc/eager/split_traversal.h"
 #include "csrc/eager/structured_log_buffer.h"
@@ -315,6 +316,13 @@ absl::Status CopyTpuToCpu(const at::Tensor& src, const at::Tensor& dest,
       dest.unsafeGetTensorImpl()->set_storage_keep_dtype(empty_dest.storage());
     }
     return absl::OkStatus();
+  }
+  // Pageable memory cannot be held until the transfer lands, so the copy is
+  // synchronous on the host, as a cudaMemcpyAsync into pageable memory is.
+  if (transfer_sync_mode == TransferSyncMode::kEagerNonBlocking &&
+      (!dest.has_storage() ||
+       !IsTpuPinnedPtr(dest.storage().data_ptr().get()))) {
+    transfer_sync_mode = TransferSyncMode::kEagerBlocking;
   }
   TT_ASSIGN_OR_RETURN(DeviceBufferRef src_buf, GetBaseBuffer(src));
 

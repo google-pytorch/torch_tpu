@@ -131,6 +131,7 @@ torch_tpu_cc_library(
         "//csrc/eager:current_stream",
         "//csrc/eager:device_buffer",
         "//csrc/eager:events_queue",
+        "//csrc/eager:host_allocator",
         "//csrc/eager:materialize",
         "//csrc/eager:op_dispatcher",
         "//csrc/eager:split_traversal",

@@ -45,7 +45,8 @@ enum class TransferSyncMode {
   kEagerBlocking,
   // The copy operation is recorded on the current stream, and then the call
   // returns immediately. Errors will be reported in the future when the stream
-  // is synchronized or queried.
+  // is synchronized or queried. A device-to-host copy into pageable memory
+  // cannot be held until it completes and is run as kEagerBlocking instead.
   kEagerNonBlocking,
   // The copy operation is not recorded on the current stream. It is initiated
   // immediately (ignoring any cross-stream waits) and then the call blocks

@@ -175,9 +175,6 @@ class StreamIntegrationTest(seed_test_utils.RepeatableTest):
     self.assertFalse(default_held, 'the current stream must not be held')
     utils.assert_close(y[0, :2].to('cpu'), torch.full((2,), 1 / 8192))
 
-  @absltest.expectedFailureIf(
-      _IS_TPU, 'a non_blocking copy into pageable memory is asynchronous'
-  )
   def test_non_blocking_d2h_into_pageable_memory_is_synchronous(self):
     """A non_blocking copy into pageable memory completes before returning."""
     src = torch.full((128, 1024, 1024), 3.0, device=_DEVICE)
