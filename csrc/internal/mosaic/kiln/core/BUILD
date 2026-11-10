@@ -33,18 +33,23 @@ torch_tpu_cc_library(
         ":dtype",
         ":literal",
         ":shape",
-        ":value_base",
+        ":value_handle",
         "@com_google_absl//absl/log:absl_check",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:ArithDialect",
         "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Support",
     ],
 )
 
 torch_tpu_cc_library(
-    name = "value_base",
-    hdrs = ["value_base.h"],
-    deps = [":dtype"],
+    name = "value_handle",
+    srcs = ["value_handle.cc"],
+    hdrs = ["value_handle.h"],
+    deps = [
+        "@com_google_absl//absl/log:absl_check",
+        "@llvm-project//mlir:IR",
+    ],
 )
 
 torch_tpu_cc_library(
@@ -106,7 +111,7 @@ torch_tpu_cc_library(
         ":elementwise",
         ":elementwise_impl",
         ":literal",
-        ":value_base",
+        ":value_handle",
         "@com_google_absl//absl/log:absl_check",
         "@llvm-project//mlir:ArithDialect",
         "@llvm-project//mlir:IR",
@@ -180,7 +185,7 @@ torch_tpu_cc_library(
         ":mlir_utils",
         ":scalar",
         ":shape",
-        ":value_base",
+        ":value_handle",
         "//csrc/internal/mosaic:op_builders",
         "@com_google_absl//absl/log:absl_check",
         "@llvm-project//llvm:Support",
@@ -204,7 +209,7 @@ torch_tpu_cc_library(
         ":shape",
         ":specs",
         ":tile",
-        ":value_base",
+        ":value_handle",
         "@com_google_absl//absl/log:absl_check",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:ArithDialect",
@@ -226,7 +231,7 @@ torch_tpu_cc_library(
         ":mlir_utils",
         ":ref",
         ":scalar",
-        ":value_base",
+        ":value_handle",
         "@com_google_absl//absl/log:absl_check",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:IR",

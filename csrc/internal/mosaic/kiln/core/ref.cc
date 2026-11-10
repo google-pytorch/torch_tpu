@@ -29,7 +29,7 @@
 #include "csrc/internal/mosaic/kiln/core/shape.h"
 #include "csrc/internal/mosaic/kiln/core/specs.h"
 #include "csrc/internal/mosaic/kiln/core/tile.h"
-#include "csrc/internal/mosaic/kiln/core/value_base.h"
+#include "csrc/internal/mosaic/kiln/core/value_handle.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
@@ -214,14 +214,16 @@ void Store(SmemRef dst, Scalar value) {
 
 namespace internal {
 
-RefBase::RefBase(const void* impl, DType dtype) : ValueBase(impl, dtype) {
+RefBase::RefBase(ValueHandle handle, DType dtype)
+    : handle_(handle), dtype_(dtype) {
   ABSL_CHECK(  // CRASH_OK
-      llvm::isa<mlir::MemRefType>(unwrap(*this).getType()))
+      llvm::isa<mlir::MemRefType>(handle.value().getType()))
       << "Ref must be a memref value";
+  CheckElementType(handle, dtype, "Ref");
 }
 
-RefBase::RefBase(const void* impl, DType dtype, MemorySpace expected_space)
-    : RefBase(impl, dtype) {
+RefBase::RefBase(ValueHandle handle, DType dtype, MemorySpace expected_space)
+    : RefBase(handle, dtype) {
   ABSL_CHECK(memory_space() == expected_space)  // CRASH_OK
       << "Ref is in " << memory_space() << " but its type requires "
       << expected_space;
@@ -273,19 +275,18 @@ Scalar RefBase::Dim(int64_t axis) const {
                       i32);
 }
 
-const void* RefBase::AtImpl(llvm::ArrayRef<Indexer> indexers) const {
+ValueHandle RefBase::AtImpl(llvm::ArrayRef<Indexer> indexers) const {
   llvm::SmallVector<DimDesc, 4> dims;
   for (const Indexer& indexer : indexers) {
     dims.push_back(
         std::visit([](const auto& v) { return DimDesc::From(v); }, indexer));
   }
-  return SliceMemRefImpl(impl(), dims);
+  return SliceMemRefImpl(handle(), dims);
 }
 
-const void* SliceMemRefImpl(const void* base_impl,
-                            llvm::ArrayRef<DimDesc> dims) {
+ValueHandle SliceMemRefImpl(ValueHandle base, llvm::ArrayRef<DimDesc> dims) {
   mlir::ImplicitLocOpBuilder& b = CurrentBuilder();
-  mlir::Value current = mlir::Value::getFromOpaquePointer(base_impl);
+  mlir::Value current = base.value();
   auto base_type = llvm::cast<mlir::MemRefType>(current.getType());
   llvm::ArrayRef<int64_t> source_shape = base_type.getShape();
   const int64_t rank = source_shape.size();
@@ -317,7 +318,7 @@ const void* SliceMemRefImpl(const void* base_impl,
     current = tpu::MemRefSqueezeOp::create(b, squeezed_type, current);
   }
 
-  return current.getAsOpaquePointer();
+  return ValueHandle(current);
 }
 
 }  // namespace internal

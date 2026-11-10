@@ -114,7 +114,16 @@ static_assert(!std::is_convertible_v<VmemRef, SmemRef>);
 static_assert(!std::is_convertible_v<HbmRef, VmemRef>);
 // Nothing can rebind a typed ref through a common base.
 static_assert(!std::is_assignable_v<internal::RefBase&, SmemRef>);
-static_assert(!std::is_assignable_v<ValueBase&, SmemRef>);
+
+// A `ValueHandle` can only be created from an `mlir::Value`, not from an
+// arbitrary pointer. Handles stay cheap to copy.
+static_assert(!std::is_default_constructible_v<internal::ValueHandle>);
+static_assert(!std::is_constructible_v<internal::ValueHandle, const void*>);
+static_assert(std::is_trivially_copyable_v<internal::ValueHandle>);
+static_assert(std::is_trivially_copyable_v<Scalar>);
+static_assert(std::is_trivially_copyable_v<Tile>);
+static_assert(std::is_trivially_copyable_v<Semaphore>);
+static_assert(std::is_trivially_copyable_v<SemaphoreArray>);
 
 // The memory space of a ref determines what `Load` returns and what `Store`
 // accepts; HBM and untyped refs cannot be loaded from or stored to.
@@ -1233,6 +1242,36 @@ TEST(KilnDeathTest, ScalarMismatchedTypesFail) {
                      "Masked Store\\(\\) requires an i1 mask tile");
 
         Store(out, t_f);
+      });
+  ASSERT_THAT(kernel, IsOk());
+}
+
+// Rewrapping a handle as the wrong kind of handle, in the wrong memory space,
+// or with a dtype that doesn't match its IR element type fails.
+TEST(KilnDeathTest, RewrapHandleWithMismatchedTypeFails) {
+  absl::StatusOr<Kernel> kernel = CreateKernel(
+      GridSpec{.name = "rewrap_mismatched", .grid = {1}}, InSpec{i32(32, 128)},
+      OutSpec{i32(32, 128)}, [](VmemRef in, VmemRef out) {
+        Scalar scalar = I32(1);
+        Tile tile = Load(in);
+        EXPECT_DEATH(static_cast<void>(Scalar(tile.handle(), i32)),
+                     "Scalar should not be a shaped type");
+        EXPECT_DEATH(static_cast<void>(Tile(scalar.handle(), i32)),
+                     "Tile must be a vector value");
+        EXPECT_DEATH(static_cast<void>(Ref(scalar.handle(), i32)),
+                     "Ref must be a memref value");
+        EXPECT_DEATH(static_cast<void>(Semaphore(in.handle())),
+                     "Semaphore must be in semaphore_mem memory space");
+        EXPECT_DEATH(static_cast<void>(SmemRef(in.handle(), i32)),
+                     "Ref is in .* but its type requires");
+        EXPECT_DEATH(static_cast<void>(Scalar(scalar.handle(), f32)),
+                     "Scalar dtype .* does not match its IR element type i32");
+        EXPECT_DEATH(static_cast<void>(Tile(tile.handle(), f32)),
+                     "Tile dtype .* does not match its IR element type i32");
+        EXPECT_DEATH(static_cast<void>(VmemRef(in.handle(), f32)),
+                     "Ref dtype .* does not match its IR element type i32");
+
+        Store(out, tile);
       });
   ASSERT_THAT(kernel, IsOk());
 }

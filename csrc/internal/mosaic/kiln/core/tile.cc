@@ -29,7 +29,7 @@
 #include "csrc/internal/mosaic/kiln/core/mlir_utils.h"
 #include "csrc/internal/mosaic/kiln/core/scalar.h"
 #include "csrc/internal/mosaic/kiln/core/shape.h"
-#include "csrc/internal/mosaic/kiln/core/value_base.h"
+#include "csrc/internal/mosaic/kiln/core/value_handle.h"
 #include "csrc/internal/mosaic/op_builders.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/APInt.h"
@@ -104,10 +104,12 @@ Tile Reduce(const Tile& t, int axis, vector::CombiningKind kind,
 
 }  // namespace
 
-Tile::Tile(const void* impl, DType dtype) : ValueBase(impl, dtype) {
+Tile::Tile(internal::ValueHandle handle, DType dtype)
+    : handle_(handle), dtype_(dtype) {
   ABSL_CHECK(  // CRASH_OK
-      llvm::isa<mlir::VectorType>(internal::unwrap(*this).getType()))
+      llvm::isa<mlir::VectorType>(handle.value().getType()))
       << "Tile must be a vector value";
+  internal::CheckElementType(handle, dtype, "Tile");
 }
 
 llvm::ArrayRef<int64_t> Tile::dims() const {

@@ -17,9 +17,12 @@
 #ifndef TORCH_TPU_CSRC_INTERNAL_MOSAIC_KILN_CORE_CONTEXT_H_
 #define TORCH_TPU_CSRC_INTERNAL_MOSAIC_KILN_CORE_CONTEXT_H_
 
+#include <string_view>
+#include <utility>
+
 #include "csrc/internal/mosaic/kiln/core/dtype.h"
 #include "csrc/internal/mosaic/kiln/core/literal.h"
-#include "csrc/internal/mosaic/kiln/core/value_base.h"
+#include "csrc/internal/mosaic/kiln/core/value_handle.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributeInterfaces.h"
 #include "mlir/IR/MLIRContext.h"
@@ -48,34 +51,20 @@ mlir::ImplicitLocOpBuilder& CurrentBuilder();
 mlir::Type ToMlirType(DType dtype, mlir::MLIRContext* ctx);
 mlir::Type ToMlirType(DType dtype);
 
-struct ValueAccess {
-  template <typename T>
-  static mlir::Value Get(const T& v) {
-    return mlir::Value::getFromOpaquePointer(v.impl());
-  }
-  template <typename T>
-  static T Make(mlir::Value v, DType dtype) {
-    return T(v.getAsOpaquePointer(), dtype);
-  }
-  template <typename T>
-  static T Make(mlir::Value v) {
-    return T(v.getAsOpaquePointer());
-  }
-};
+// CHECK-fails unless the element type of `handle` (or its type, if it isn't
+// shaped) is the IR type of `dtype`. `type_name` names the Kiln type being
+// constructed (e.g. "Scalar") in the failure message.
+void CheckElementType(ValueHandle handle, DType dtype,
+                      std::string_view type_name);
 
 template <typename T>
-inline mlir::Value unwrap(const T& v) {
-  return ValueAccess::Get(v);
+inline mlir::Value unwrap(const T& value) {
+  return value.handle().value();
 }
 
-template <typename T>
-inline T wrap(mlir::Value v, DType dtype) {
-  return ValueAccess::Make<T>(v, dtype);
-}
-
-template <typename T>
-inline T wrap(mlir::Value v) {
-  return ValueAccess::Make<T>(v);
+template <typename T, typename... Args>
+T wrap(mlir::Value value, Args&&... args) {
+  return T(ValueHandle(value), std::forward<Args>(args)...);
 }
 
 mlir::TypedAttr LiteralToAttr(mlir::ImplicitLocOpBuilder& b, DType dtype,

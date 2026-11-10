@@ -24,7 +24,7 @@
 #include "csrc/internal/mosaic/kiln/core/elementwise.h"
 #include "csrc/internal/mosaic/kiln/core/elementwise_impl.h"  // IWYU pragma: keep
 #include "csrc/internal/mosaic/kiln/core/literal.h"
-#include "csrc/internal/mosaic/kiln/core/value_base.h"
+#include "csrc/internal/mosaic/kiln/core/value_handle.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
@@ -47,12 +47,12 @@ Scalar MakeScalarConstant(DType dtype, Literal value) {
 
 }  // namespace
 
-Scalar::Scalar(const void* impl, DType dtype) : ValueBase(impl, dtype) {
-  mlir::Value value = internal::unwrap(*this);
-  ABSL_CHECK(!value.getType().isIndex())  // CRASH_OK
-      << "Scalar must not hold an index";
-  ABSL_CHECK(!mlir::isa<mlir::ShapedType>(value.getType()))  // CRASH_OK
+Scalar::Scalar(internal::ValueHandle handle, DType dtype)
+    : handle_(handle), dtype_(dtype) {
+  ABSL_CHECK(  // CRASH_OK
+      !mlir::isa<mlir::ShapedType>(handle.value().getType()))
       << "Scalar should not be a shaped type";
+  internal::CheckElementType(handle, dtype, "Scalar");
 }
 
 Scalar MultipleOf(Scalar value, int32_t multiple) {

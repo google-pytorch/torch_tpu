@@ -16,10 +16,13 @@
 
 #include "csrc/internal/mosaic/kiln/core/context.h"
 
+#include <string_view>
+
 #include "absl/log/absl_check.h"
 #include "csrc/internal/mosaic/kiln/core/dtype.h"
 #include "csrc/internal/mosaic/kiln/core/literal.h"
 #include "csrc/internal/mosaic/kiln/core/shape.h"
+#include "csrc/internal/mosaic/kiln/core/value_handle.h"
 #include "llvm/Support/Casting.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/IR/ArithAttributes.h"
@@ -29,8 +32,10 @@
 #include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/TypeUtilities.h"
 #include "mlir/IR/Types.h"
 #include "mlir/IR/Value.h"
+#include "mlir/Support/DebugStringHelper.h"
 
 namespace torch_tpu::kiln::internal {
 namespace {
@@ -102,6 +107,16 @@ mlir::Type ToMlirType(DType dtype, mlir::MLIRContext* ctx) {
 
 mlir::Type ToMlirType(DType dtype) {
   return ToMlirType(dtype, CurrentBuilder().getContext());
+}
+
+void CheckElementType(ValueHandle handle, DType dtype,
+                      std::string_view type_name) {
+  const mlir::Type element_type = mlir::getElementTypeOrSelf(handle.value());
+  ABSL_CHECK(  // CRASH_OK
+      element_type == ToMlirType(dtype, element_type.getContext()))
+      << type_name << " dtype " << dtype
+      << " does not match its IR element type "
+      << mlir::debugString(element_type);
 }
 
 mlir::TypedAttr LiteralToAttr(mlir::ImplicitLocOpBuilder& b, DType dtype,

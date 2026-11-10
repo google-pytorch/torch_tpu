@@ -40,7 +40,7 @@ torch_tpu_cc_library(
         "//csrc/internal/mosaic/kiln/core:shape",
         "//csrc/internal/mosaic/kiln/core:specs",
         "//csrc/internal/mosaic/kiln/core:tile",
-        "//csrc/internal/mosaic/kiln/core:value_base",
+        "//csrc/internal/mosaic/kiln/core:value_handle",
         "//csrc/internal/mosaic/kiln/lib:pipeline",
     ],
 )

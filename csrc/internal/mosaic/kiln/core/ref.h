@@ -30,7 +30,7 @@
 #include "csrc/internal/mosaic/kiln/core/shape.h"
 #include "csrc/internal/mosaic/kiln/core/specs.h"
 #include "csrc/internal/mosaic/kiln/core/tile.h"
-#include "csrc/internal/mosaic/kiln/core/value_base.h"
+#include "csrc/internal/mosaic/kiln/core/value_handle.h"
 #include "llvm/ADT/ArrayRef.h"
 
 namespace torch_tpu::kiln {
@@ -86,15 +86,16 @@ struct DimDesc {
   }
 };
 
-const void* SliceMemRefImpl(const void* base_impl,
-                            llvm::ArrayRef<DimDesc> dims);
+ValueHandle SliceMemRefImpl(ValueHandle base, llvm::ArrayRef<DimDesc> dims);
 
 // Common implementation of `Ref` and `TypedRef<kSpace>`: a handle to a memref
 // value with shape queries and slicing helpers. Copy assignment is protected so
 // that a typed ref can never be rebound through a base reference to a ref in
 // another memory space.
-class RefBase : public ValueBase {
+class RefBase {
  public:
+  ValueHandle handle() const { return handle_; }
+  DType dtype() const { return dtype_; }
   llvm::ArrayRef<int64_t> dims() const;
   Shape shape() const { return Shape(dims(), dtype()); }
   MemorySpace memory_space() const;
@@ -108,30 +109,33 @@ class RefBase : public ValueBase {
   Scalar Dim(int64_t axis) const;
 
  protected:
-  RefBase(const void* impl, DType dtype);
+  // CHECK-fails unless `handle` is a memref value whose element type is the IR
+  // type of `dtype`.
+  RefBase(ValueHandle handle, DType dtype);
   // CHECK-fails unless the memref is in `expected_space`.
-  RefBase(const void* impl, DType dtype, MemorySpace expected_space);
+  RefBase(ValueHandle handle, DType dtype, MemorySpace expected_space);
 
   RefBase(const RefBase&) = default;
   RefBase& operator=(const RefBase&) = default;
 
-  // Returns the opaque memref value of `ref(dims...)` (see
-  // `TypedRef::operator()`).
+  // Returns the memref value of `ref(dims...)` (see `TypedRef::operator()`).
   template <typename... Dims>
-  const void* SliceImpl(Dims&&... dims) const {
+  ValueHandle SliceImpl(Dims&&... dims) const {
     const std::array<DimDesc, sizeof...(Dims)> descs = {
         DimDesc::From(std::forward<Dims>(dims))...};
-    return SliceMemRefImpl(impl(), descs);
+    return SliceMemRefImpl(handle(), descs);
   }
 
-  // Returns the opaque memref value of `ref.At(indexers)`.
+  // Returns the memref value of `ref.At(indexers)`.
   // TODO: b/581411915 - Migrate to use absl::Span.
-  const void* AtImpl(llvm::ArrayRef<Indexer> indexers) const;
+  ValueHandle AtImpl(llvm::ArrayRef<Indexer> indexers) const;
+
+ private:
+  ValueHandle handle_;
+  DType dtype_;
 };
 
 }  // namespace internal
-
-class Ref;
 
 // A memref kernel argument or allocation whose memory space is part of its
 // type: a VMEM block (`VmemRef`), an SMEM buffer (`SmemRef`), or an HBM buffer
@@ -143,6 +147,10 @@ template <MemorySpace kSpace>
 class TypedRef final : public internal::RefBase {
  public:
   static constexpr MemorySpace kMemorySpace = kSpace;
+
+  // CHECK-fails unless the memref is in `kSpace`.
+  TypedRef(internal::ValueHandle handle, DType dtype)
+      : RefBase(handle, dtype, kSpace) {}
 
   TypedRef(const TypedRef&) = default;
   TypedRef& operator=(const TypedRef&) = default;
@@ -163,12 +171,6 @@ class TypedRef final : public internal::RefBase {
   TypedRef At(llvm::ArrayRef<Indexer> indexers) const {
     return TypedRef(AtImpl(indexers), dtype());
   }
-
- private:
-  friend struct internal::ValueAccess;
-  friend class Ref;
-
-  TypedRef(const void* impl, DType dtype) : RefBase(impl, dtype, kSpace) {}
 };
 
 using VmemRef = TypedRef<MemorySpace::kVmem>;
@@ -184,6 +186,8 @@ using HbmRef = TypedRef<MemorySpace::kHbm>;
 // is advantageous vs inheritance as it avoids possible slicing bugs.
 class Ref final : public internal::RefBase {
  public:
+  Ref(internal::ValueHandle handle, DType dtype) : RefBase(handle, dtype) {}
+
   Ref(const Ref&) = default;
   Ref& operator=(const Ref&) = default;
 
@@ -198,7 +202,7 @@ class Ref final : public internal::RefBase {
     static_assert(
         std::is_same_v<TypedRefT, TypedRef<TypedRefT::kMemorySpace>>,
         "Ref::As<T>() requires T to be a TypedRef (VmemRef, SmemRef, HbmRef)");
-    return TypedRefT(impl(), dtype());
+    return TypedRefT(handle(), dtype());
   }
 
   // Same as `TypedRef::operator()` and `TypedRef::At`, returning a `Ref`.
@@ -209,11 +213,6 @@ class Ref final : public internal::RefBase {
   Ref At(llvm::ArrayRef<Indexer> indexers) const {
     return Ref(AtImpl(indexers), dtype());
   }
-
- private:
-  friend struct internal::ValueAccess;
-
-  Ref(const void* impl, DType dtype) : RefBase(impl, dtype) {}
 };
 
 // Loads the whole of `src`, a VMEM ref with a static shape, as a tile. Slice
