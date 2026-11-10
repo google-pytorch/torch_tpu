@@ -102,6 +102,10 @@ class WheelSingleSourceTest(absltest.TestCase):
     self.assertEqual(msg["Summary"], pyproject["project"]["description"])
     self.assertEqual(msg["Description-Content-Type"], "text/markdown")
     self.assertEqual(msg.get_payload().strip(), expected_readme)
+    expected_urls = {
+        f"{label}, {url}" for label, url in pyproject["project"]["urls"].items()
+    }
+    self.assertSetEqual(set(msg.get_all("Project-URL") or ()), expected_urls)
 
   def test_dependencies_match(self):
     expected_deps, actual_deps = get_wheel_dependencies(

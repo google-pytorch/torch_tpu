@@ -45,6 +45,12 @@ dependencies = [
     "pyzmq>=27",
 ]
 
+[project.urls]
+Changelog = "https://github.com/google-pytorch/torch_tpu/releases"
+Documentation = "https://torchtpu.readthedocs.io/"
+Issues = "https://github.com/google-pytorch/torch_tpu/issues"
+Repository = "https://github.com/google-pytorch/torch_tpu"
+
 [project.optional-dependencies]
 dev = [
     "accelerate>=1.12",
