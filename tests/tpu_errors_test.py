@@ -4229,16 +4229,6 @@ module {
       )
 
   @et.why_tpu_only("Custom eager input validation in TorchTPU jagged kernels")
-  def test_padded_to_jagged_total_l_mismatch(self):
-    dense = torch.randn(2, 5, 4, device=et.device())
-    offsets = torch.tensor([0, 2, 5], dtype=torch.int64, device=et.device())
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""padded_dense_to_jagged_forward(): expected the last offset to match total_L (6), got 5""",
-    ):
-      torch.ops.aten._padded_dense_to_jagged_forward(dense, [offsets], 6)
-
-  @et.why_tpu_only("Custom eager input validation in TorchTPU jagged kernels")
   def test_padded_to_jagged_segment_exceeds_max_length(self):
     dense = torch.randn(2, 4, 4, device=et.device())
     offsets = torch.tensor([0, 5, 7], dtype=torch.int64, device=et.device())

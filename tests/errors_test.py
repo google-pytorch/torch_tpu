@@ -15818,6 +15818,16 @@ Supported combinations for non-constant padding:
     ):
       torch.ops.aten._padded_dense_to_jagged_forward(dense, [offsets], 5)
 
+  def test_padded_to_jagged_negative_total_l(self):
+    dense = torch.randn(2, 5, 4, device=et.device())
+    offsets = torch.tensor([0, 2, 5], dtype=torch.int64, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""padded_dense_to_jagged_forward(): expected the last offset to be <= total_L (-1), got 5""",
+        gpu="""Trying to create tensor with negative dimension -1: [-1, 4]""",
+    ):
+      torch.ops.aten._padded_dense_to_jagged_forward(dense, [offsets], -1)
+
   def test_assert_async_ambiguous_empty(self):
     empty_cond = torch.empty(0, dtype=torch.bool, device=et.device())
     with et.assert_raises_message(

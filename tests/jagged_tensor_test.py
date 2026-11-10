@@ -988,10 +988,10 @@ class JaggedTensorTest(seed_test_utils.RepeatableTest):
           torch.randn(5, device="tpu"), [offsets]
       )
 
-    # total_L mismatch rejected
+    # total_L < final_offset rejected
     with self.assertRaises(RuntimeError):
       torch.ops.aten._padded_dense_to_jagged_forward(
-          dense, [offsets], total_L=999
+          dense, [offsets], total_L=3
       )
 
     # Offset sequence length exceeding dense sequence length rejected
@@ -2072,6 +2072,64 @@ class JaggedTensorTest(seed_test_utils.RepeatableTest):
     self.assertIsNotNone(values.grad)
     self.assertIsNotNone(layer.qkv.weight.grad)
     self.assertIsNotNone(layer.ffn2.weight.grad)
+
+  def test_padded_dense_to_jagged_forward_total_l_padding(self):
+    """Tests total_L > offsets[-1] zero-padding in forward and backward."""
+    dense_cpu = torch.arange(24, dtype=torch.float32).reshape(2, 4, 3)
+    offsets_cpu = torch.tensor([0, 2, 4], dtype=torch.int64)
+    dense_tpu = dense_cpu.to("tpu")
+    offsets_tpu = offsets_cpu.to("tpu")
+
+    # 1. total_L > offsets[-1] zero-pads trailing (total_L - offsets[-1]) rows.
+    out_tpu_pad = torch.ops.aten._padded_dense_to_jagged_forward(
+        dense_tpu, [offsets_tpu], 6
+    )
+    out_cpu_unpadded = torch.ops.aten._padded_dense_to_jagged_forward(
+        dense_cpu, [offsets_cpu], 4
+    )
+    expected_cpu = torch.cat(
+        [out_cpu_unpadded, torch.zeros(2, 3, dtype=torch.float32)], dim=0
+    )
+    self.assertEqual(out_tpu_pad.shape, (6, 3))
+    utils.assert_close(out_tpu_pad.cpu(), expected_cpu)
+
+    # 2. All-empty segments (final_offset == 0) with total_L > 0 returns zeros.
+    zero_offsets_tpu = torch.tensor([0, 0, 0], dtype=torch.int64, device="tpu")
+    out_tpu_zero_pad = torch.ops.aten._padded_dense_to_jagged_forward(
+        dense_tpu, [zero_offsets_tpu], 4
+    )
+    self.assertEqual(out_tpu_zero_pad.shape, (4, 3))
+    utils.assert_close(
+        out_tpu_zero_pad.cpu(), torch.zeros(4, 3, dtype=torch.float32)
+    )
+
+    # 3. Backward pass of to_padded_tensor on an aligned jagged NestedTensor
+    # (values.size(0) > offsets[-1]) succeeds and zero-pads trailing grads.
+    values_tpu = torch.randn(4, 3, device="tpu", requires_grad=True)
+    nt_tpu = nt_internal.nested_view_from_values_offsets(
+        values_tpu, offsets_tpu
+    )
+    nt_aligned = jagged_ops.align_jagged_to_multiple(nt_tpu, multiple=8)
+    padded = nt_aligned.to_padded_tensor(0.0)
+    padded.sum().backward()
+    self.assertIsNotNone(values_tpu.grad)
+    utils.assert_close(
+        values_tpu.grad.cpu(), torch.ones(4, 3, dtype=torch.float32)
+    )
+
+    values_padded = torch.randn(8, 3, device="tpu", requires_grad=True)
+    nt_padded = nt_internal.nested_view_from_values_offsets(
+        values_padded, offsets_tpu
+    )
+    nt_padded.to_padded_tensor(0.0).sum().backward()
+    self.assertIsNotNone(values_padded.grad)
+    self.assertEqual(values_padded.grad.shape, (8, 3))
+    utils.assert_close(
+        values_padded.grad[:4].cpu(), torch.ones(4, 3, dtype=torch.float32)
+    )
+    utils.assert_close(
+        values_padded.grad[4:].cpu(), torch.zeros(4, 3, dtype=torch.float32)
+    )
 
 
 if __name__ == "__main__":

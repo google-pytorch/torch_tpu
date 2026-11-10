@@ -386,9 +386,9 @@ absl::StatusOr<DeviceBufferRef> JaggedToPaddedDense(
 // Computes 1D linear gather indices for PaddedDenseToJagged.
 absl::StatusOr<Indices> ComputePaddedToJaggedIndices(
     absl::Span<const int64_t> offsets_vec, int64_t batch_size,
-    int64_t max_length, int64_t total_L_computed) {
+    int64_t max_length, int64_t final_offset) {
   Indices gather_indices;
-  gather_indices.reserve(total_L_computed);
+  gather_indices.reserve(final_offset);
 
   // Length of each batch item.
   // Used for showing the length of each batch item in the error message.
@@ -411,11 +411,11 @@ absl::StatusOr<Indices> ComputePaddedToJaggedIndices(
   }
 
   TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Invariant: sum of segments matches
-                 // total_L
-      gather_indices.size() == total_L_computed, error::kInvalidArgument)
-      << "expected the sum of the computed batch item lengths to match total_L "
-         "("
-      << total_L_computed << "), got " << batch_size << " batches of sizes "
+                 // final_offset
+      gather_indices.size() == final_offset, error::kInvalidArgument)
+      << "expected the sum of the computed batch item lengths to match "
+         "final_offset ("
+      << final_offset << "), got " << batch_size << " batches of sizes "
       << SequenceToReadableStr(absl::MakeConstSpan(lengths));
   return gather_indices;
 }
@@ -423,8 +423,8 @@ absl::StatusOr<Indices> ComputePaddedToJaggedIndices(
 // Lowers PaddedDenseToJagged StableHLO graph.
 absl::StatusOr<mlir::MlirOp> BuildPaddedToJaggedHlo(
     mlir::MlirOp dense_op, int64_t dense_rank, const Dimensions& dense_shape,
-    const Dimensions& flat_dense_shape, int64_t total_L_computed,
-    absl::Span<const int64_t> gather_indices) {
+    const Dimensions& flat_dense_shape, int64_t final_offset,
+    int64_t total_L_computed, absl::Span<const int64_t> gather_indices) {
   auto& builder = dense_op.getBuilder();
 
   TT_ASSIGN_OR_RETURN(
@@ -432,7 +432,7 @@ absl::StatusOr<mlir::MlirOp> BuildPaddedToJaggedHlo(
       ReshapeFromStaticDimensions(dense_op, dense_shape, flat_dense_shape));
 
   auto gather_indices_op =
-      CreateI64Constant(builder, gather_indices, {total_L_computed});
+      CreateI64Constant(builder, gather_indices, {final_offset});
 
   llvm::SmallVector<int64_t, 4> offset_dims;
   for (int64_t i = 2; i < dense_rank; ++i) {
@@ -450,8 +450,22 @@ absl::StatusOr<mlir::MlirOp> BuildPaddedToJaggedHlo(
   Dimensions slice_sizes = flat_dense_shape;
   slice_sizes[0] = 1;
 
-  return mlir::stablehlo::Gather(dense_flat, gather_indices_op,
-                                 dimension_numbers, slice_sizes);
+  mlir::MlirOp gathered = mlir::stablehlo::Gather(
+      dense_flat, gather_indices_op, dimension_numbers, slice_sizes);
+  if (total_L_computed == final_offset) {
+    return gathered;
+  }
+
+  mlir::MlirOp zero_scalar =
+      MakeScalarConstant(builder, 0, GetElementTypeOrSelf(dense_op));
+  const int64_t values_rank = dense_rank - 1;
+  const Dimensions zero_pad(values_rank, 0);
+  Dimensions high_pad(values_rank, 0);
+  high_pad[0] = total_L_computed - final_offset;
+  return mlir::stablehlo::Pad(gathered, zero_scalar,
+                              /*edge_padding_low=*/zero_pad,
+                              /*edge_padding_high=*/high_pad,
+                              /*interior_padding=*/zero_pad);
 }
 
 // Lowers aten._padded_dense_to_jagged_forward to efficient StableHLO:
@@ -459,9 +473,11 @@ absl::StatusOr<mlir::MlirOp> BuildPaddedToJaggedHlo(
 // 2. Gathers jagged elements with 1D pre-flattened linear indices
 //    (i * max_length + j), avoiding multi-dimensional index stride computations
 //    inside TPU VPU execution.
+// 3. When total_L > final_offset, pads the trailing (total_L - final_offset)
+//    rows along dimension 0 with zeros.
 absl::StatusOr<DeviceBufferRef> PaddedDenseToJagged(
-    const at::Tensor& dense, at::TensorList offsets, int64_t total_L_val,
-    OpParamCacheKeys param_keys) {
+    const at::Tensor& dense, at::TensorList offsets,
+    std::optional<int64_t> total_L, OpParamCacheKeys param_keys) {
   TT_RET_CHECK(dense.dim() >= 2, error::kInvalidArgument)
       << "expected dense to have >= 2 dimensions, got " << dense.dim();
 
@@ -472,10 +488,10 @@ absl::StatusOr<DeviceBufferRef> PaddedDenseToJagged(
   const int64_t final_offset =
       num_offsets > 0 ? offsets_vec[num_offsets - 1] : 0;
   const int64_t total_L_computed =
-      total_L_val >= 0 ? total_L_val : final_offset;
-  if (total_L_val >= 0) {
-    TT_RET_CHECK(final_offset == total_L_val, error::kInvalidArgument)
-        << "expected the last offset to match total_L (" << total_L_val
+      total_L.has_value() ? *total_L : final_offset;
+  if (total_L.has_value()) {
+    TT_RET_CHECK(final_offset <= *total_L, error::kInvalidArgument)
+        << "expected the last offset to be <= total_L (" << *total_L
         << "), got " << final_offset;
   }
 
@@ -503,8 +519,10 @@ absl::StatusOr<DeviceBufferRef> PaddedDenseToJagged(
   TT_ASSIGN_OR_RETURN(const auto output_dtype,
                       ConvertTo<mlir::ElementType>(dense.scalar_type()));
 
-  // Fast path for empty output: emit constant buffer of size 0.
-  if (total_L_computed == 0) {
+  // Fast path for empty gathered prefix (including total_L_computed == 0 or
+  // all-zero-length segments with total_L_computed > 0): emit constant zero
+  // buffer of shape (total_L_computed, *features).
+  if (final_offset == 0) {
     auto nullary_builder = [output_dtype,
                             values_shape](mlir::MlirBuilder& builder) {
       return MakeConstant(builder, at::Scalar(0), output_dtype, values_shape);
@@ -517,20 +535,19 @@ absl::StatusOr<DeviceBufferRef> PaddedDenseToJagged(
 
   // Construct 1D linear gather indices (i * max_length + j).
   const int64_t max_length = dense_shape[1];
-  TT_ASSIGN_OR_RETURN(
-      Indices gather_indices_data,
-      ComputePaddedToJaggedIndices(offsets_vec, batch_size, max_length,
-                                   total_L_computed));
+  TT_ASSIGN_OR_RETURN(Indices gather_indices_data,
+                      ComputePaddedToJaggedIndices(offsets_vec, batch_size,
+                                                   max_length, final_offset));
 
   const int64_t dense_rank = dense.dim();
 
-  auto op_builder = [dense_rank, dense_shape, flat_dense_shape,
+  auto op_builder = [dense_rank, dense_shape, flat_dense_shape, final_offset,
                      total_L_computed,
                      gather_indices_data = std::move(gather_indices_data)](
                         mlir::MlirOp dense_op) -> absl::StatusOr<mlir::MlirOp> {
     return BuildPaddedToJaggedHlo(dense_op, dense_rank, dense_shape,
-                                  flat_dense_shape, total_L_computed,
-                                  gather_indices_data);
+                                  flat_dense_shape, final_offset,
+                                  total_L_computed, gather_indices_data);
   };
 
   return DispatchOp<1>(std::move(op_builder), dense,
@@ -558,15 +575,17 @@ at::Tensor AtenJaggedToPaddedDenseForward(const at::Tensor& values,
 at::Tensor AtenPaddedDenseToJaggedForward(const at::Tensor& dense,
                                           at::TensorList offsets,
                                           std::optional<c10::SymInt> total_L) {
+  const std::optional<int64_t> total_L_opt =
+      total_L.has_value() ? std::optional<int64_t>(total_L.value().expect_int())
+                          : std::nullopt;
   // Normalize optional<SymInt> to int64_t before TT_KERNEL argument logging
   // check.
-  const int64_t total_L_val =
-      total_L.has_value() ? total_L.value().expect_int() : -1;
+  const int64_t total_L_val = total_L_opt.value_or(-1);
   TT_KERNEL(OpName::kPaddedDenseToJaggedForward, param_keys,
             (dense, offsets, total_L_val), {
               TT_ASSIGN_OR_THROW(
                   DeviceBufferRef result_buf,
-                  PaddedDenseToJagged(dense, offsets, total_L_val,
+                  PaddedDenseToJagged(dense, offsets, total_L_opt,
                                       std::move(param_keys)));
               return MakeTensor(std::move(result_buf));
             });
