@@ -197,6 +197,21 @@ in `ci/custom_lint_rules.METADATA`:
     what not to run prematurely), followed immediately by a link to the
     canonical `SKILL.md`. **Never** duplicate multi-step procedures, templates,
     or checklists outside their canonical file.
+*   **Skill Naming**: Every TorchTPU skill has one name of the form
+    `tt-<verb-phrase>`, used as its frontmatter `name` and its directory name
+    (`.agents/skills/<name>/`). `nox -s lint` checks the name and directory
+    parts of this rule with `ci/tools/check_agent_skills.py`.
+    *   **`tt-` prefix**: Skill names share one namespace across everything an
+        agent loads, and a same-named skill from elsewhere silently shadows
+        ours. The prefix keeps TorchTPU skills unique.
+    *   **Verb phrase**: after the prefix, name the task the skill performs,
+        starting with a verb in the imperative (e.g. `tt-write-tests`,
+        `tt-review-code`, `tt-fix-composite-ops`), not a noun or gerund (not
+        `tt-testing`, `tt-code-review`, or `tt-fixing-composite-ops`).
+    *   **Lowercase words joined by hyphens, never underscores** (e.g.
+        `tt-implement-ops`): the [Agent Skills spec](https://agentskills.io)
+        allows only `a-z`, `0-9` and `-` in a skill name and requires the name
+        to equal the skill's directory name.
 
 ## Skills
 
