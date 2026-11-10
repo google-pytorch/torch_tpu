@@ -94,10 +94,10 @@ jobs:
       # at the workflow level (for its optional `post_pr_comment` feature), so
       # GitHub Actions requires caller jobs to grant it.
       pull-requests: write
-    uses: google-ml-infra/bap/.github/workflows/run-benchmarks.yaml@ff212b97420bf479bd492d64e4b549534c22cd91 # main
+    uses: google-ml-infra/bap/.github/workflows/run-benchmarks.yaml@df45de4a2390d7510af1e9d747f47cd6f6b9bb94 # main
     with:
       registry_file: "perflab/benchmark_registry.pbtxt"
-      bap_ref: "ff212b97420bf479bd492d64e4b549534c22cd91"
+      bap_ref: "df45de4a2390d7510af1e9d747f47cd6f6b9bb94"
       runner: "linux-x86-n4-16"
       benchmark_filter: ${{ inputs.benchmark_filter }}
       environment_filter: ${{ inputs.environment_filter }}
