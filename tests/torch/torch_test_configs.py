@@ -676,19 +676,6 @@ TEST_EXCLUSIONS: Final[
         ],
     },
     "test_scaled_matmul_cuda": {
-        # TODO(b/583797384): Remove legacy class name in google3's pinned
-        # third_party/py/torch (renamed to TestFP8MatmulDevice in upstream
-        # PyTorch PR #201556) once google3 imports past 7582b920070b.
-        "TestFP8Matmul": [
-            "test_float32_output_errors_with_bias",
-            "test_float8_error_messages",
-            "test_float8_scale_fast_accum",
-            "test_scaled_mm_change_stride",
-            "test_scaled_mm_few_rows",
-            "test_scaled_mm_vs_emulated",
-            "test_scaled_mm_vs_emulated_row_wise",
-            "test_zero_dim_tensorwise",
-        ],
         "TestFP8MatmulDevice": [
             "test_float32_output_errors_with_bias",
             "test_float8_error_messages",
