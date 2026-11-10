@@ -273,7 +273,13 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "ao_offload_test",
     srcs = ["ao_offload_test.py"],
-    tags = ["requires-tpu-v5lite"],
+    tags = [
+        # TODO(b/583958199): TransferBufferSubAllocator::Alloc calls
+        # System::DmaMap across all host HBM locations, aborting on multi-chip
+        # TPU v7x runners when TPU_VISIBLE_DEVICES is restricted.
+        "fails-on-tpu-v7",
+        "requires-tpu-v5lite",
+    ],
     deps = [
         ":seed_test_utils",
         "//shims/absl_py/testing:absltest",
