@@ -1039,7 +1039,6 @@ torch_tpu_py_test(
         "requires-tpu-v5lite",
     ],
     deps = [
-        ":dynamism_test_utils",
         ":op_testing",
         ":oss_utils",
         ":quantize_utils",
@@ -1280,7 +1279,6 @@ torch_tpu_py_test(
     shard_count = 1,
     tags = [_GPU_GOLDEN_TAG_SM90],
     deps = [
-        ":dynamism_test_utils",
         ":op_testing",
         ":oss_utils",
         ":quantize_utils",
@@ -1331,7 +1329,6 @@ torch_tpu_py_test(
     # per-process global, so a sharded run would dump partial results.
     shard_count = 1,
     deps = [
-        ":dynamism_test_utils",
         ":op_testing",
         ":oss_utils",
         ":quantize_utils",
@@ -1451,7 +1448,6 @@ torch_tpu_py_test(
     shard_count = 1,
     tags = [_GPU_GOLDEN_TAG_SM90],
     deps = [
-        ":dynamism_test_utils",
         ":op_testing",
         ":oss_utils",
         ":quantize_utils",
@@ -1477,7 +1473,6 @@ torch_tpu_py_test(
     shard_count = 1,
     tags = [_GPU_GOLDEN_TAG_SM90],
     deps = [
-        ":dynamism_test_utils",
         ":op_testing",
         ":oss_utils",
         ":quantize_utils",
