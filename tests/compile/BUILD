@@ -40,8 +40,8 @@ exports_files(["data/goldfish.jpg"])
 torch_tpu_py_test(
     name = "flex_attention_test",
     srcs = ["flex_attention_test.py"],
+    shard_count = 4,
     tags = [
-        "noasan",  # TODO(b/583894454): fix the test in asan mode.
         "requires-tpu-v5lite",
     ],
     deps = [
