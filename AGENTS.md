@@ -37,9 +37,8 @@ When writing documentation:
 
 When creating a pull request:
 
-*   Build the body from `.github/pull_request_template.md`. Keep its `##
-    Description` and `## Test Plan` headings and drop the HTML comment
-    placeholders. `gh pr create --body` does not apply the template.
+*   Use the tt-create-change skill when committing a change, or opening,
+    describing, or updating a pull request.
 
 ## References
 
@@ -204,6 +203,9 @@ in `ci/custom_lint_rules.METADATA`:
 Before starting a task, check whether one of these skills covers it. If so, read
 its `SKILL.md` and follow it.
 
+*   [`tt-create-change`](.agents/skills/tt-create-change/SKILL.md): committing a
+    change, and opening, describing, or updating a pull request, including
+    addressing review comments.
 *   [`tt-write-docs`](.agents/skills/tt-write-docs/SKILL.md): writing, editing,
     or reviewing narrative documentation or README content.
 *   [`tt-write-error-tests`](.agents/skills/tt-write-error-tests/SKILL.md):
