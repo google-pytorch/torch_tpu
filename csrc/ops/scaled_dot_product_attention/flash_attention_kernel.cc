@@ -385,10 +385,11 @@ absl::StatusOr<kiln::Kernel> CreateKernel(const FlashAttnConfig& config,
     normalized_tiling.kc = normalized_tiling.kt;
   }
   if (normalized_tiling.kt % normalized_tiling.kc != 0 ||
-      normalized_tiling.kc % kLanes != 0) {
+      (normalized_tiling.kc != normalized_tiling.kt &&
+       normalized_tiling.kc % kLanes != 0)) {
     return TT_ERROR(error::kInvalidArgument)
-           << "KV compute tile size must be a multiple of 128 that divides "
-              "the KV tile size.";
+           << "KV compute tile size must equal the KV tile size or be a "
+              "multiple of 128 that divides it.";
   }
 
   const int64_t qt = normalized_tiling.qt;

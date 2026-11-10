@@ -99,7 +99,7 @@ int64_t RoundUpToTileSize(int64_t seq_len, int64_t tile_size) {
 
 int64_t GetInitialTileSize(int64_t seq_len) {
   if (seq_len <= kMinHardwareTileSize) {
-    return kMinHardwareTileSize;
+    return seq_len;
   }
   if (seq_len <= kMinHeuristicTileSize) {
     return kMinHeuristicTileSize;
