@@ -906,7 +906,10 @@ torch_tpu_cc_library(
     hdrs = ["fake_tensor_utils.h"],
     deps = [
         ":const_tensor",
+        "//shims/torch:aten_headers",
         "//shims/torch/c10/core:base_headers",
+        "//shims/torch/c10/util:base_headers",
+        "//shims/torch/torch/headeronly:torch_headeronly",
     ],
 )
 
@@ -922,6 +925,7 @@ torch_tpu_cc_test(
         "//shims/torch/c10/core:base_headers",
         "//shims/torch/c10/util:base_headers",
         "//shims/torch/torch/headeronly:torch_headeronly",
+        "@com_google_absl//absl/cleanup",
     ],
 )
 

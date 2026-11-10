@@ -19328,11 +19328,9 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
     # minimum OSS PyTorch is >= 2.13.0.
     # Before PyTorch 2.13, upstream `at::native::matmul` called `numel()` on its
     # input, which throws on (or specializes) symbolic shapes. Upstream CPU
-    # linear always uses it, and TPU linear falls back to it for a broadcast
-    # bias that requires grad.
-    uses_upstream_matmul = device == "cpu" or (
-        requires_grad and bias_shape is not None and len(bias_shape) > 1
-    )
+    # linear always uses it, and TPU linear falls back to the composite
+    # decomposition when `requires_grad` is true on a FakeTensor.
+    uses_upstream_matmul = device == "cpu" or requires_grad
     torch_version = utils.parse_version(torch.__version__)
     if uses_upstream_matmul and torch_version < (2, 13, 0):
       self.skipTest(
@@ -24957,6 +24955,220 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
         self.assertEqual(fx.grad.shape, (2, 4))
         self.assertEqual(fw.grad.shape, (4,))
         self.assertEqual(fb.grad.shape, ())
+
+  def test_linear_compile_nd_dot_general(self):
+    # Verify that `torch.compile(backend="tpu")` under `torch.no_grad()` lowers
+    # N-D `F.linear` natively (AOTAutograd wraps FakeTensors in
+    # `FunctionalTensor`, which must not be mistaken for a wrapper subclass),
+    # and that compiled training keeps the composite decomposition with correct
+    # gradients.
+    @contextlib.contextmanager
+    def highest_matmul_precision():
+      prev = torch.get_float32_matmul_precision()
+      torch.set_float32_matmul_precision("highest")
+      try:
+        yield
+      finally:
+        torch.set_float32_matmul_precision(prev)
+
+    for has_bias in [True, False]:
+      with self.subTest(mode="no_grad", has_bias=has_bias):
+        torch._dynamo.reset()
+        x_cpu = torch.randn(2, 5, 16, dtype=torch.float32)
+        w_cpu = torch.randn(8, 16, dtype=torch.float32)
+        b_cpu = torch.randn(8, dtype=torch.float32) if has_bias else None
+
+        x_tpu = to(x_cpu, "tpu")
+        w_tpu = to(w_cpu, "tpu")
+        b_tpu = to(b_cpu, "tpu") if b_cpu is not None else None
+
+        debugs = []
+        compiled_fn = torch.compile(
+            torch.nn.functional.linear,
+            backend="tpu",
+            fullgraph=True,
+            options={"debug_callback": debugs.append, "serializable": False},
+        )
+        with highest_matmul_precision(), torch.no_grad():
+          out_cpu = torch.nn.functional.linear(x_cpu, w_cpu, b_cpu)
+          out_tpu = compiled_fn(x_tpu, w_tpu, b_tpu)
+
+        self.assertLen(debugs, 1)
+        fwd_shlo = debugs[0].stablehlo_forward_text[0]
+        self.assertIn("stablehlo.dot_general", fwd_shlo)
+        self.assertIn("tensor<2x5x16xf32>", fwd_shlo)
+        self.assertNotIn("tensor<10x16xf32>", fwd_shlo)
+        self.assertNotIn("stablehlo.reshape", fwd_shlo)
+        self.assert_close(
+            golden_result=out_cpu,
+            torch_tpu_result=out_tpu.cpu(),
+            rtol=1e-4,
+            atol=1e-4,
+        )
+
+    # When the second-minor dim is a multiple of the 16-row TPU tile, collapsing
+    # the leading dims is a free bitcast, and the native lowering emits a 2-D
+    # matmul (which XLA:TPU fuses better with following head-split reshapes).
+    for has_bias in [True, False]:
+      with self.subTest(mode="no_grad_tile_aligned", has_bias=has_bias):
+        torch._dynamo.reset()
+        x_cpu = torch.randn(2, 16, 16, dtype=torch.float32)
+        w_cpu = torch.randn(8, 16, dtype=torch.float32)
+        b_cpu = torch.randn(8, dtype=torch.float32) if has_bias else None
+
+        debugs = []
+        compiled_fn = torch.compile(
+            torch.nn.functional.linear,
+            backend="tpu",
+            fullgraph=True,
+            options={"debug_callback": debugs.append, "serializable": False},
+        )
+        with highest_matmul_precision(), torch.no_grad():
+          out_cpu = torch.nn.functional.linear(x_cpu, w_cpu, b_cpu)
+          out_tpu = compiled_fn(
+              to(x_cpu, "tpu"),
+              to(w_cpu, "tpu"),
+              to(b_cpu, "tpu") if b_cpu is not None else None,
+          )
+
+        self.assertLen(debugs, 1)
+        fwd_shlo = debugs[0].stablehlo_forward_text[0]
+        self.assertIn("stablehlo.dot_general", fwd_shlo)
+        self.assertIn("tensor<32x16xf32>", fwd_shlo)
+        self.assertIn("tensor<32x8xf32>", fwd_shlo)
+        self.assert_close(
+            golden_result=out_cpu,
+            torch_tpu_result=out_tpu.cpu(),
+            rtol=1e-4,
+            atol=1e-4,
+        )
+
+    grad_cases = [
+        (True, True, True, True),
+        (True, True, False, False),
+        (True, False, True, True),
+        (False, True, False, False),
+    ]
+    for req_x, req_w, req_b, has_bias in grad_cases:
+      with self.subTest(
+          mode="train",
+          req_x=req_x,
+          req_w=req_w,
+          req_b=req_b,
+          has_bias=has_bias,
+      ):
+        torch._dynamo.reset()
+        x_cpu = torch.randn(2, 5, 16, dtype=torch.float32, requires_grad=req_x)
+        w_cpu = torch.randn(8, 16, dtype=torch.float32, requires_grad=req_w)
+        b_cpu = (
+            torch.randn(8, dtype=torch.float32, requires_grad=req_b)
+            if has_bias
+            else None
+        )
+        grad_out_cpu = torch.randn(2, 5, 8, dtype=torch.float32)
+
+        x_tpu = to(x_cpu.detach(), "tpu").requires_grad_(req_x)
+        w_tpu = to(w_cpu.detach(), "tpu").requires_grad_(req_w)
+        b_tpu = (
+            to(b_cpu.detach(), "tpu").requires_grad_(req_b)
+            if b_cpu is not None
+            else None
+        )
+        grad_out_tpu = to(grad_out_cpu, "tpu")
+
+        debugs = []
+        compiled_fn = torch.compile(
+            torch.nn.functional.linear,
+            backend="tpu",
+            fullgraph=True,
+            options={"debug_callback": debugs.append, "serializable": False},
+        )
+        with highest_matmul_precision():
+          out_cpu = torch.nn.functional.linear(x_cpu, w_cpu, b_cpu)
+          out_cpu.backward(grad_out_cpu)
+          out_tpu = compiled_fn(x_tpu, w_tpu, b_tpu)
+          out_tpu.backward(grad_out_tpu)
+
+        # Compiled training intentionally keeps the composite decomposition
+        # (see `is_traced_training` in linear_aten_kernels.cc).
+        self.assertLen(debugs, 1)
+        bwd_fx = debugs[0].post_autograd_fx_backward_code[0]
+        self.assertNotIn("torch.ops.aten.linear_backward", bwd_fx)
+
+        self.assert_close(
+            golden_result=out_cpu.detach(),
+            torch_tpu_result=out_tpu.detach().cpu(),
+            rtol=1e-4,
+            atol=1e-4,
+        )
+        if req_x:
+          self.assert_close(
+              golden_result=x_cpu.grad,
+              torch_tpu_result=x_tpu.grad.cpu(),
+              rtol=1e-4,
+              atol=1e-4,
+          )
+        if req_w:
+          self.assert_close(
+              golden_result=w_cpu.grad,
+              torch_tpu_result=w_tpu.grad.cpu(),
+              rtol=1e-4,
+              atol=1e-4,
+          )
+        if has_bias and req_b:
+          self.assert_close(
+              golden_result=b_cpu.grad,
+              torch_tpu_result=b_tpu.grad.cpu(),
+              rtol=1e-4,
+              atol=1e-4,
+          )
+
+    # 1D weight under `torch.compile` training should continue using the safe
+    # composite fallback (`is_meta_1d_weight`) and match CPU gradients.
+    # 1D weight under `torch.compile` training should continue using the safe
+    # composite fallback (`is_meta_1d_weight`) and match CPU gradients.
+    with self.subTest(mode="train_1d_weight"):
+      torch._dynamo.reset()
+      x_1d_cpu = torch.randn(2, 5, 4, dtype=torch.float32, requires_grad=True)
+      w_1d_cpu = torch.randn(4, dtype=torch.float32, requires_grad=True)
+      b_1d_cpu = torch.randn((), dtype=torch.float32, requires_grad=True)
+      x_1d_tpu = to(x_1d_cpu.detach(), "tpu").requires_grad_(True)
+      w_1d_tpu = to(w_1d_cpu.detach(), "tpu").requires_grad_(True)
+      b_1d_tpu = to(b_1d_cpu.detach(), "tpu").requires_grad_(True)
+
+      with highest_matmul_precision():
+        out_1d_cpu = torch.matmul(x_1d_cpu, w_1d_cpu) + b_1d_cpu
+        out_1d_cpu.sum().backward()
+        compiled_1d = torch.compile(
+            torch.nn.functional.linear, backend="tpu", fullgraph=True
+        )
+        out_1d_tpu = compiled_1d(x_1d_tpu, w_1d_tpu, b_1d_tpu)
+        out_1d_tpu.sum().backward()
+
+      self.assert_close(
+          golden_result=out_1d_cpu.detach(),
+          torch_tpu_result=out_1d_tpu.detach().cpu(),
+          rtol=1e-4,
+          atol=1e-4,
+      )
+      self.assert_close(
+          golden_result=x_1d_cpu.grad,
+          torch_tpu_result=x_1d_tpu.grad.cpu(),
+          rtol=1e-4,
+          atol=1e-4,
+      )
+      self.assert_close(
+          golden_result=w_1d_cpu.grad,
+          torch_tpu_result=w_1d_tpu.grad.cpu(),
+          rtol=1e-4,
+          atol=1e-4,
+      )
+      self.assert_close(
+          golden_result=b_1d_cpu.grad,
+          torch_tpu_result=b_1d_tpu.grad.cpu(),
+          rtol=1e-4,
+          atol=1e-4,
+      )
 
   def test_linear_backward_direct_all_masks(self):
     cases = [
