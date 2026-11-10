@@ -580,9 +580,6 @@ DYNAMISM_DENY_LISTS: DenyList = {
         # cumsum.out hits a TypedAttr cast assertion (eager), and chlo.ScanOp
         # fails MLIR function inlining (compile).
         "cumsum": ALL_MODES,
-        # digamma backward lowers via polygamma, triggering a static-shape
-        # getNumElements() assertion in BroadcastInDimOp_ReplaceWithReshape.
-        "digamma": {COMPILE_GRAD},
         # Calls getDotResultType assertion on bounded 1D operands.
         "dot": ALL_MODES,
         # embedding_renorm_ uses static BroadcastInDim and Scatter shapes.
@@ -638,8 +635,6 @@ DYNAMISM_DENY_LISTS: DenyList = {
         "nn.functional.pad": ALL_MODES,
         # Calls getNumElements() on a dynamic shaped type.
         "norm": {EAGER, COMPILE},
-        # Calls getNumElements() on a dynamic shaped type.
-        "polygamma": ALL_MODES,
         # Variable repeats fail MLIR function inlining in Cumsum/ScanOp (eager),
         # and uniform repeats reshape across bounded dimensions (compile).
         "repeat_interleave": ALL_MODES,
