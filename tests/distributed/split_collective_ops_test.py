@@ -21,6 +21,7 @@ from unittest import mock
 from absl.testing import absltest
 import torch
 from torch import distributed as dist
+from torch.distributed import _functional_collectives as funcol
 from torch_tpu._internal.compile import compiler
 from torch_tpu._internal.compile import split_compiler
 from torch_tpu._internal.compile import torch_tpu_compiled_executable
@@ -493,6 +494,53 @@ def run_compile_spmd_safe_cloned_buffer_test():
     assert len(graph) == 1, f"Expected 1 submodule, got {graph}"
 
 
+def run_compile_spmd_safe_residual_backward_test():
+  """Tests that the backward of a fully spmd_safe graph is not split.
+
+  The backward graph has nodes that AOTAutograd synthesizes without `spmd_safe`
+  metadata, e.g. the gradient accumulations of the residual connections.
+  """
+
+  world_size = dist.get_world_size()
+
+  class ResidualBlock(torch.nn.Module):
+
+    def __init__(self, all_reduce):
+      super().__init__()
+      self.all_reduce = all_reduce
+      self.w1 = torch.nn.Parameter(torch.full((2, 2), 2.0))
+      self.w2 = torch.nn.Parameter(torch.full((2, 2), 3.0))
+
+    def forward(self, x):
+      x = x + self.all_reduce(x @ self.w1)
+      return x + self.all_reduce(x @ self.w2)
+
+  # All ranks have the same inputs, so all-reducing a value multiplies it by the
+  # world size.
+  ref_model = ResidualBlock(lambda t: t * world_size)
+  ref_x = torch.ones((2, 2), requires_grad=True)
+  ref_model(ref_x).sum().backward()
+
+  model = ResidualBlock(
+      lambda t: funcol.all_reduce(t, "sum", dist.group.WORLD)
+  ).to("tpu")
+  model.forward = torch.tpu.distributed.spmd_safe(model.forward)
+  compiled = torch.compile(
+      model, backend="tpu", options={"serializable": False}
+  )
+  x = torch.ones((2, 2), device="tpu", requires_grad=True)
+
+  with _record_split_submodule_ops() as split_graphs:
+    compiled(x).sum().backward()
+
+  utils.assert_close(x.grad.cpu(), ref_x.grad)
+  utils.assert_close(model.w1.grad.cpu(), ref_model.w1.grad)
+  utils.assert_close(model.w2.grad.cpu(), ref_model.w2.grad)
+  assert len(split_graphs) == 2, f"Expected fwd and bwd, got {split_graphs}"
+  for graph in split_graphs:
+    assert len(graph) == 1, f"Expected 1 submodule, got {graph}"
+
+
 def run_compile_two_collectives_test():
   """Test that two collectives are compiled separately."""
 
@@ -857,6 +905,9 @@ class SplitCollectiveOpsTest(continuous_test_utils.TpuMultiProcContinuousTest):
 
   def test_compile_spmd_safe_cloned_buffer(self):
     run_compile_spmd_safe_cloned_buffer_test()
+
+  def test_compile_spmd_safe_residual_backward(self):
+    run_compile_spmd_safe_residual_backward_test()
 
   def test_compile_two_collectives(self):
     run_compile_two_collectives_test()
