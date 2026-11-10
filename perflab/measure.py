@@ -18,6 +18,7 @@ from collections.abc import Callable, Iterator
 import contextlib
 import dataclasses
 import gc
+import math
 import random
 import time
 import urllib.parse
@@ -37,7 +38,25 @@ MIN_WARMUP_STEPS = flags.DEFINE_integer(  # PYTHON_FLAG_OK=benchmark
     "min_warmup_steps", 10, "Minimum number of warmup steps.", lower_bound=0
 )
 POST_WARMUP_STEPS = flags.DEFINE_integer(  # PYTHON_FLAG_OK=benchmark
-    "post_warmup_steps", 10, "Number of post-warmup steps.", lower_bound=0
+    "post_warmup_steps",
+    10,
+    "Minimum number of timed post-warmup steps. 0 skips the post-warmup run.",
+    lower_bound=0,
+)
+POST_WARMUP_MIN_SECONDS = flags.DEFINE_float(  # PYTHON_FLAG_OK=benchmark
+    "post_warmup_min_seconds",
+    2.0,
+    "Minimum timed wall time of the post-warmup steps. More than"
+    " --post_warmup_steps steps run until their step times add up to at least"
+    " this, at most --post_warmup_max_steps steps.",
+    lower_bound=0.0,
+)
+POST_WARMUP_MAX_STEPS = flags.DEFINE_integer(  # PYTHON_FLAG_OK=benchmark
+    "post_warmup_max_steps",
+    2000,
+    "Maximum number of timed post-warmup steps run to reach"
+    " --post_warmup_min_seconds. --post_warmup_steps steps always run.",
+    lower_bound=0,
 )
 XPROF_STEPS = flags.DEFINE_integer(  # PYTHON_FLAG_OK=benchmark
     "xprof_steps",
@@ -51,6 +70,9 @@ XPROF_STEPS = flags.DEFINE_integer(  # PYTHON_FLAG_OK=benchmark
 # steady state for three steps, then settle. A fixed count runs the same steps
 # on every rank of a distributed run and in every run.
 _POST_WARMUP_UNTIMED_STEPS = 4
+# Windows of up to this many timed steps log every step time at the default
+# verbosity.
+_MAX_LOGGED_TIMINGS = 50
 
 
 def _do_post_warmup() -> bool:
@@ -461,6 +483,74 @@ def _warmup_run(
   )
 
 
+def _timings_summary(timings: np.ndarray) -> str:
+  """Returns the count, total and distribution of step times, in seconds."""
+  p10, median, p90 = np.percentile(timings, [10, 50, 90])
+  return (
+      f"count={timings.size} total={np.sum(timings):.6g}"
+      f" mean={np.mean(timings):.6g} median={median:.6g}"
+      f" min={np.min(timings):.6g} p10={p10:.6g} p90={p90:.6g}"
+      f" max={np.max(timings):.6g}"
+  )
+
+
+def _agree_on_step_count(device_ops: device_ops_lib.DeviceOps, steps: int):
+  """Returns the step count that all the processes of the benchmark run."""
+  agree = getattr(device_ops, "agree_on_step_count", None)
+  if agree is not None:
+    return agree(steps)
+
+  import torch
+
+  if torch.distributed.is_initialized():
+    raise RuntimeError(
+        "DeviceOps lacks agree_on_step_count, but this is a distributed run. "
+        "The step count must be agreed upon to avoid hangs."
+    )
+  return steps
+
+
+def _run_timed_window(
+    run_step: Callable[[], float], device_ops: device_ops_lib.DeviceOps
+) -> np.ndarray:
+  """Runs timed steps until the window is long enough, and returns their times.
+
+  The window has at least --post_warmup_steps steps, and more until their times
+  add up to --post_warmup_min_seconds, up to --post_warmup_max_steps steps. A
+  few fast steps would otherwise make a short and noisy window, and miss slower
+  steady states such as a GPU clocking down under sustained load.
+
+  The step count is extended in rounds sized from the mean step time so far, and
+  the processes of a distributed benchmark agree on each round's count, so that
+  they all run the same steps.
+
+  Args:
+    run_step: Runs one step and returns its time in seconds.
+    device_ops: The device operations, used to agree on the step count.
+
+  Returns:
+    The times of the timed steps, in seconds.
+  """
+  timings = [run_step() for _ in range(POST_WARMUP_STEPS.value)]
+  max_steps = max(POST_WARMUP_STEPS.value, POST_WARMUP_MAX_STEPS.value)
+  while True:
+    timed_seconds = sum(timings)
+    target_steps = len(timings)
+    if timed_seconds < POST_WARMUP_MIN_SECONDS.value and timings:
+      mean_step_seconds = max(timed_seconds / len(timings), 1e-9)
+      target_steps = min(
+          max_steps,
+          max(
+              len(timings) + 1,
+              math.ceil(POST_WARMUP_MIN_SECONDS.value / mean_step_seconds),
+          ),
+      )
+    target_steps = _agree_on_step_count(device_ops, target_steps)
+    if target_steps <= len(timings):
+      return np.array(timings, dtype=np.float64)
+    timings.extend(run_step() for _ in range(target_steps - len(timings)))
+
+
 def _post_warmup_run(
     stepper: step_lib.Stepper,
     device_ops: device_ops_lib.DeviceOps,
@@ -486,12 +576,14 @@ def _post_warmup_run(
     device memory usage.
   """
 
-  timings = np.zeros(POST_WARMUP_STEPS.value, dtype=np.float64)
   xprof_timings = np.zeros(XPROF_STEPS.value, dtype=np.float64)
   # gc is explicitly disabled below to prevent GC pauses from affecting the
   # measurements. Collect garbage once before the timed loop.
   gc.collect()
   device_ops.reset_peak_memory()
+  # The first agreement on a step count compiles its collective (on TPU), so
+  # run one before reading the compile count that the steps must not change.
+  _agree_on_step_count(device_ops, POST_WARMUP_STEPS.value)
 
   compile_count_before = device_ops.compile_count()
 
@@ -547,8 +639,9 @@ def _post_warmup_run(
     # towards the peak memory, as the timed steps do.
     for _ in range(_POST_WARMUP_UNTIMED_STEPS):
       _run_single_step(compile_count_before)
-    for step in range(POST_WARMUP_STEPS.value):
-      timings[step] = _run_single_step(compile_count_before)
+    timings = _run_timed_window(
+        lambda: _run_single_step(compile_count_before), device_ops
+    )
 
   memory_usage = device_ops.peak_memory_mb()
 
@@ -601,12 +694,26 @@ def _post_warmup_run(
         device_ops, xspace, XPROF_STEPS.value
     )
 
-  logging.info("Post Warmup Timings for %s: %s", name, timings)
+  logging.info(
+      "Post Warmup Timings summary for %s: %s", name, _timings_summary(timings)
+  )
+  # Log lines are truncated past a few KB, so long windows only log every step
+  # time at a higher verbosity.
+  if timings.size <= _MAX_LOGGED_TIMINGS:
+    logging.info("Post Warmup Timings for %s: %s", name, timings)
+  else:
+    logging.vlog(
+        1,
+        "Post Warmup Timings for %s: %s",
+        name,
+        " ".join(f"{t:.6g}" for t in timings),
+    )
   if enable_xprof and not device_ops.supports_event_device_time():
     logging.info("Post Warmup Xprof Timings for %s: %s", name, xprof_timings)
 
   return metrics.PostWarmupRunResult(
       post_warmup_step_time_seconds=float(np.mean(timings)),
+      num_post_warmup_steps=int(timings.size),
       peak_device_memory_mb=memory_usage,
       post_warmup_run_session_xprof_url=post_warmup_run_session_xprof_url,
       average_post_warmup_device_time_seconds=avg_device_time,

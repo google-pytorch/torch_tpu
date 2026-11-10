@@ -243,6 +243,32 @@ class TorchDeviceOpsTest(seed_test_utils.RepeatableTest):
 
     self.assertEqual(count, 0)
 
+  def test_agree_on_step_count_without_distributed(self):
+    target = target_lib.make_target(platform=target_lib.Platform.CPU)
+    ops = torch_device_ops.TorchDeviceOps(target)
+
+    self.assertEqual(ops.agree_on_step_count(17), 17)
+
+  def test_agree_on_step_count_takes_max_across_processes(self):
+    target = target_lib.make_target(platform=target_lib.Platform.CPU)
+    ops = torch_device_ops.TorchDeviceOps(target)
+
+    def all_reduce_with_larger_proposal(tensor, op):
+      self.assertEqual(op, torch.distributed.ReduceOp.MAX)
+      tensor.fill_(max(int(tensor.item()), 30))
+
+    with (
+        mock.patch.object(
+            torch.distributed, "is_initialized", return_value=True
+        ),
+        mock.patch.object(
+            torch.distributed,
+            "all_reduce",
+            side_effect=all_reduce_with_larger_proposal,
+        ),
+    ):
+      self.assertEqual(ops.agree_on_step_count(17), 30)
+
   def test_compile_count_tpu_counts_new_executables(self):
     ops = _tpu_ops()
     count_before = ops.compile_count()

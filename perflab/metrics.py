@@ -61,12 +61,14 @@ class PostWarmupRunResult:
     post_warmup_run_session_xprof_url: The URL of the xprof session for the post
       warmup run.
     average_post_warmup_device_time_seconds: The average device execution time.
+    num_post_warmup_steps: The number of timed post-warmup steps.
   """
 
   post_warmup_step_time_seconds: float = 0.0
   peak_device_memory_mb: float | None = None
   post_warmup_run_session_xprof_url: str | None = None
   average_post_warmup_device_time_seconds: float = -1.0
+  num_post_warmup_steps: int = 0
 
 
 @dataclasses.dataclass
@@ -101,6 +103,8 @@ class PerformanceMetrics(MetricsInterface):
       - 2*3 = 29 seconds.
     post_warmup_step_time_seconds: The average run time of a benchmark step
       after the warmup is complete.
+    num_post_warmup_steps: The number of timed post-warmup steps that
+      `post_warmup_step_time_seconds` is the average of.
     peak_device_memory_mb: The peak device memory usage in MB for a benchmark
       step.
     warmup_session_xprof_url: The URL of the xprof session for the warmup run.
@@ -125,6 +129,7 @@ class PerformanceMetrics(MetricsInterface):
   first_step_time_seconds: float = 0.0
   warmup_overhead_seconds: float = 0.0
   post_warmup_step_time_seconds: float = 0.0
+  num_post_warmup_steps: int = 0
   peak_device_memory_mb: float | None = None
   warmup_session_xprof_url: str | None = None
   post_warmup_run_session_xprof_url: str | None = None
@@ -188,6 +193,7 @@ class PerformanceMetrics(MetricsInterface):
         "post_warmup_step_time_ms": _seconds_to_ms(
             self.post_warmup_step_time_seconds
         ),
+        "num_post_warmup_steps": float(self.num_post_warmup_steps),
     }
     if self.average_post_warmup_device_time_seconds >= 0:
       res["average_post_warmup_device_time_seconds"] = (

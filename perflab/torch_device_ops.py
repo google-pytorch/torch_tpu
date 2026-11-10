@@ -247,6 +247,22 @@ class TorchDeviceOps:
     self.check_result(out)
     return _cuda_device_time_from_profile(prof)
 
+  def agree_on_step_count(self, steps: int) -> int:
+    """Returns the largest step count proposed by the benchmark's processes.
+
+    The processes of a distributed benchmark must run the same number of steps,
+    as each step runs collectives across them.
+
+    Args:
+      steps: The step count that this process proposes.
+    """
+    if not torch.distributed.is_initialized():
+      return steps
+    # int32, as TorchTPU's all_reduce only sums and averages 64-bit integers.
+    proposal = torch.tensor([steps], dtype=torch.int32, device=self.device)
+    torch.distributed.all_reduce(proposal, op=torch.distributed.ReduceOp.MAX)
+    return int(proposal.item())
+
   def compile_count(self) -> int:
     """Monotonic count of successfully compiled frames this process."""
     if self.target.platform_spec.kind == target_lib.DeviceKind.TPU:

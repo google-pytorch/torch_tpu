@@ -31,6 +31,14 @@ _ONE_MS_IN_PS = 10**9
 _CONTENDED = "UNAVAILABLE: Another profiling session active."
 
 
+from absl import flags
+
+flags.FLAGS.set_default("post_warmup_min_seconds", 0.0)
+
+from absl import flags
+
+flags.FLAGS.set_default("post_warmup_min_seconds", 0.0)
+
 def setUpModule():
   # Most tests count the steps that run. They run no untimed post-warmup steps;
   # MeasureUntimedStepsTest sets them.
@@ -49,6 +57,8 @@ def _run_measure(
     name="test",
     enable_xprof=False,
     clock=None,
+    min_seconds=0.0,
+    max_steps=None,
 ) -> metrics_lib.PerformanceMetrics:
   flag_kwargs = {
       "min_warmup_steps": min_warmup,
@@ -56,7 +66,10 @@ def _run_measure(
           max_warmup if max_warmup is not None else min_warmup + 10
       ),
       "post_warmup_steps": steps,
+      "post_warmup_min_seconds": min_seconds,
   }
+  if max_steps is not None:
+    flag_kwargs["post_warmup_max_steps"] = max_steps
   if xprof_steps is not None:
     flag_kwargs["xprof_steps"] = xprof_steps
   with flagsaver.flagsaver(**flag_kwargs):
@@ -271,6 +284,97 @@ class MeasureUntimedStepsTest(seed_test_utils.RepeatableTest):
     reset_at = ops.events.index("reset")
     self.assertEqual(ops.events[:reset_at].count("await"), 2)
     self.assertEqual(ops.events[reset_at:].count("await"), 6)
+
+
+class AgreeingOps(fakes.RecordingOps):
+
+  def __init__(self, other_process_extra_steps):
+    super().__init__()
+    self.proposals = []
+    self._extra = other_process_extra_steps
+
+  def agree_on_step_count(self, steps):
+    self.proposals.append(steps)
+    return steps + self._extra if len(self.proposals) == 2 else steps
+
+
+class MeasureWindowTest(seed_test_utils.RepeatableTest):
+
+  def _measure(self, step_seconds, steps, min_seconds, max_steps, ops=None):
+    clock = fakes.FakeClock()
+    step = fakes.CountingStep(
+        clock=clock, step_seconds=[10.0] + list(step_seconds)
+    )
+    m = _run_measure(
+        step,
+        ops or fakes.RecordingOps(),
+        steps=steps,
+        min_warmup=2,
+        min_seconds=min_seconds,
+        max_steps=max_steps,
+        clock=clock,
+    )
+    return step, m
+
+  def test_fixed_steps_when_long_enough(self):
+    step, m = self._measure([1.0], steps=3, min_seconds=2.0, max_steps=100)
+    self.assertEqual(step.calls, 2 + 3)
+    self.assertEqual(m.num_post_warmup_steps, 3)
+    self.assertEqual(m.post_warmup_step_time_seconds, 1.0)
+
+  def test_extends_until_min_seconds(self):
+    step, m = self._measure([0.125], steps=3, min_seconds=2.0, max_steps=100)
+    self.assertEqual(m.num_post_warmup_steps, 16)
+    self.assertEqual(step.calls, 2 + 16)
+    self.assertEqual(m.post_warmup_step_time_seconds, 0.125)
+
+  def test_extends_again_when_steps_speed_up(self):
+    step, m = self._measure(
+        [1.0, 1.0, 1.0, 0.25], steps=2, min_seconds=3.0, max_steps=100
+    )
+    self.assertEqual(m.num_post_warmup_steps, 6)
+    self.assertEqual(m.post_warmup_step_time_seconds, 0.5)
+
+  def test_capped_at_max_steps(self):
+    step, m = self._measure([0.001], steps=3, min_seconds=2.0, max_steps=50)
+    self.assertEqual(m.num_post_warmup_steps, 50)
+
+  def test_min_steps_win_over_max_steps(self):
+    step, m = self._measure([0.001], steps=10, min_seconds=2.0, max_steps=5)
+    self.assertEqual(m.num_post_warmup_steps, 10)
+
+  def test_processes_agree_on_the_step_count(self):
+    ops = AgreeingOps(other_process_extra_steps=7)
+    step, m = self._measure(
+        [0.125], steps=3, min_seconds=2.0, max_steps=100, ops=ops
+    )
+    self.assertEqual(m.num_post_warmup_steps, 23)
+
+  def test_logs_summary_and_every_step_time_of_a_short_window(self):
+    with self.assertLogs(level="INFO") as logs:
+      self._measure([1.0], steps=3, min_seconds=0.0, max_steps=100)
+    output = "\n".join(logs.output)
+    self.assertIn(
+        "Post Warmup Timings summary for test: count=3 total=3 mean=1", output
+    )
+
+  def test_logs_only_summary_of_a_long_window(self):
+    with self.assertLogs(level="INFO") as logs:
+      self._measure([0.125], steps=3, min_seconds=10.0, max_steps=100)
+    output = "\n".join(logs.output)
+    self.assertIn(
+        "Post Warmup Timings summary for test: count=80 total=10", output
+    )
+
+  def test_recompile_in_extended_window_raises(self):
+    ops = fakes.RecordingOps(recompile_on_calls={8})
+    with self.assertRaises(measure_lib.PostWarmupRecompileError):
+      self._measure([0.125], steps=3, min_seconds=2.0, max_steps=100, ops=ops)
+
+  @mock.patch("torch.distributed.is_initialized", return_value=True)
+  def test_distributed_run_without_agree_on_step_count_raises(self, _):
+    with self.assertRaisesRegex(RuntimeError, "must be agreed upon"):
+      self._measure([0.125], steps=3, min_seconds=2.0, max_steps=100)
 
 
 class MeasureSequenceTest(seed_test_utils.RepeatableTest):
@@ -632,6 +736,7 @@ class MeasureMetricsTest(_XprofTestCase):
             "warmup_overhead_ms",
             "post_warmup_step_time_seconds",
             "post_warmup_step_time_ms",
+            "num_post_warmup_steps",
             "average_post_warmup_device_time_seconds",
             "average_post_warmup_device_time_ms",
             "peak_device_memory_mb",

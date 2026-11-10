@@ -24,6 +24,10 @@ from typing import Any
 
 from tsl.profiler.protobuf import xplane_pb2
 
+# Most tests count the steps that run, and their steps take no (or fake) time,
+# so a time-based window would run --post_warmup_max_steps steps. They time a
+# fixed --post_warmup_steps steps instead; MeasureWindowTest sets the window.
+
 
 class FakeClock:
   """A manually advanced clock that stands in for `time.perf_counter`.

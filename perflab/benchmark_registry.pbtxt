@@ -42,6 +42,7 @@ benchmarks {
   metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
@@ -101,6 +102,7 @@ benchmarks {
   metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
@@ -160,6 +162,7 @@ benchmarks {
   metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
@@ -219,6 +222,7 @@ benchmarks {
   metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
@@ -278,6 +282,7 @@ benchmarks {
   metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
@@ -337,6 +342,7 @@ benchmarks {
   metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
@@ -396,6 +402,7 @@ benchmarks {
   metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
@@ -455,6 +462,7 @@ benchmarks {
   metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
@@ -514,6 +522,7 @@ benchmarks {
   metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
@@ -573,6 +582,7 @@ benchmarks {
   metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
@@ -632,6 +642,7 @@ benchmarks {
   metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
@@ -691,6 +702,7 @@ benchmarks {
   metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
@@ -750,6 +762,7 @@ benchmarks {
   metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
@@ -809,6 +822,7 @@ benchmarks {
   metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
@@ -868,6 +882,7 @@ benchmarks {
   metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
@@ -927,6 +942,7 @@ benchmarks {
   metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
@@ -986,6 +1002,7 @@ benchmarks {
   metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
@@ -1040,6 +1057,7 @@ benchmarks {
   metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
@@ -1094,6 +1112,7 @@ benchmarks {
   metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
@@ -1148,6 +1167,7 @@ benchmarks {
   metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
@@ -1202,6 +1222,7 @@ benchmarks {
   metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
@@ -1256,6 +1277,7 @@ benchmarks {
   metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
@@ -1310,6 +1332,7 @@ benchmarks {
   metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
@@ -1364,6 +1387,7 @@ benchmarks {
   metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
@@ -1417,6 +1441,7 @@ benchmarks {
   metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
@@ -1470,6 +1495,7 @@ benchmarks {
   metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
@@ -1523,6 +1549,7 @@ benchmarks {
   metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
