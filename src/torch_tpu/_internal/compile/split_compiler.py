@@ -391,11 +391,14 @@ class _ScheduledStage:
     return self.stage.is_tpu
 
 
-def _get_spmd_safe_nodes(graph: torch.fx.Graph) -> set[torch.fx.Node]:
+def _get_spmd_safe_nodes(
+    graph: torch.fx.Graph, fully_spmd_safe: bool = False
+) -> set[torch.fx.Node]:
   """Returns the nodes in `graph` that belong to an `spmd_safe` region.
 
-  Besides nodes marked `spmd_safe`, this includes nodes that AOTAutograd
-  synthesizes without forward `custom` metadata:
+  If `fully_spmd_safe`, all nodes do. Otherwise, besides nodes marked
+  `spmd_safe`, this includes nodes that AOTAutograd synthesizes without forward
+  `custom` metadata:
     - Gradient accumulation (`is_gradient_acc`) nodes whose inputs are all
       `spmd_safe`.
     - Backward mutations of forward inputs (`partitioner_tag` is
@@ -403,10 +406,14 @@ def _get_spmd_safe_nodes(graph: torch.fx.Graph) -> set[torch.fx.Node]:
 
   Args:
     graph: The FX graph to inspect.
+    fully_spmd_safe: Whether all the code that `graph` was traced from is
+      `spmd_safe`.
 
   Returns:
     The set of nodes that belong to an `spmd_safe` region.
   """
+  if fully_spmd_safe:
+    return set(graph.nodes)
   spmd_safe_nodes = set()
   for node in graph.nodes:
     meta = getattr(node, "meta", None)
@@ -925,11 +932,21 @@ def _unpickle_split_compiled_executable(
 class SplitCompiler(compiler.Compiler):
   """Compiler that splits the graph on collectives and compiles submodules."""
 
-  def __init__(self, base_compiler: compiler.Compiler):
+  def __init__(
+      self, base_compiler: compiler.Compiler, fully_spmd_safe: bool = False
+  ):
+    """Initializes the SplitCompiler.
+
+    Args:
+      base_compiler: The compiler for the submodules.
+      fully_spmd_safe: Whether all the code that the compiled graphs are traced
+        from is `spmd_safe`.
+    """
     super().__init__(
         base_compiler.compilation_context, debug=base_compiler._debug
     )
     self.base_compiler = base_compiler
+    self._fully_spmd_safe = fully_spmd_safe
 
   def execute_pre_grad_passes(
       self,
@@ -969,7 +986,9 @@ class SplitCompiler(compiler.Compiler):
     _register_output_namedtuple_globals(graph_module)
     graph_module.recompile()
 
-    spmd_safe_nodes = _get_spmd_safe_nodes(graph_module.graph)
+    spmd_safe_nodes = _get_spmd_safe_nodes(
+        graph_module.graph, fully_spmd_safe=self._fully_spmd_safe
+    )
     # We isolate `spmd_safe` into its own stage only when
     # `materialize_collectives=True`. For `materialize_collectives=False` there
     # will be no splits so there is no need to isolate `spmd_safe` nodes.

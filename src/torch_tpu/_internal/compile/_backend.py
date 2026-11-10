@@ -67,6 +67,7 @@ from torch_tpu._internal.compile.debug import TpuCompileDebug
 from torch_tpu._internal.compile.dynamic import dynamic_compiler
 from torch_tpu._internal.distributed import device_mesh
 from torch_tpu._internal.distributed import process_group_utils
+from torch_tpu._internal.distributed import spmd_util
 from torch_tpu._internal.sync import sync
 from torch_tpu._internal.utils import utils
 from torch_tpu._internal.benchmarks import xprof_adapter
@@ -613,6 +614,7 @@ def make_backend_compiler(
     debug: TpuCompileDebug | None = None,
     num_dynamic_buckets: int = 1,
     bucket_size: int = 128,
+    fully_spmd_safe: bool = False,
 ) -> compiler.Compiler:
   """Creates a compiler configured for static or dynamic compilation.
 
@@ -624,6 +626,8 @@ def make_backend_compiler(
     num_dynamic_buckets: Number of `bucket_size`-aligned dynamic shape buckets
       to generate when compiling with dynamic shapes.
     bucket_size: Step size for dynamic shape buckets.
+    fully_spmd_safe: Whether all the code that the compiled graphs are traced
+      from is `spmd_safe`.
 
   Returns:
     A SplitCompiler instance wrapping either DynamicCompiler or StaticCompiler.
@@ -640,7 +644,9 @@ def make_backend_compiler(
         async_compile=async_compile, debug=debug
     )
 
-  return split_compiler.SplitCompiler(base_compiler)
+  return split_compiler.SplitCompiler(
+      base_compiler, fully_spmd_safe=fully_spmd_safe
+  )
 
 
 class _CacheSavesManager:
@@ -809,6 +815,21 @@ def _get_module_name(
   clean_name = _sanitize_module_name(custom_module_name)
   phase = "fwd" if is_fwd else "bwd"
   return f"{clean_name}_split{split_idx}_{phase}"
+
+
+def _is_fully_spmd_safe(graph_module: torch.fx.GraphModule) -> bool:
+  """Returns whether `graph_module` has ops and all of them are `spmd_safe`."""
+  ops = [
+      node
+      for node in graph_module.graph.nodes
+      if node.op not in ("placeholder", "get_attr", "output")
+  ]
+  return bool(ops) and all(
+      (node.meta.get("custom") or {}).get(
+          spmd_util.SPMD_SAFE_METADATA_KEY, False
+      )
+      for node in ops
+  )
 
 
 class TpuBackend:
@@ -989,6 +1010,9 @@ class TpuBackend:
         debug=debug,
         num_dynamic_buckets=num_dynamic_buckets,
         bucket_size=bucket_size,
+        # If the code that Dynamo traced is fully `spmd_safe`, we assume its
+        # forward and backward pass are fully `spmd_safe` as well.
+        fully_spmd_safe=_is_fully_spmd_safe(graph_module),
     )
     compiler_instance.execute_pre_grad_passes(graph_module)
 
