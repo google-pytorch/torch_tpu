@@ -1068,6 +1068,7 @@ torch_tpu_py_test(
     ],
     shard_count = 50,
     tags = [
+        "noasan",  # TODO(b/583894452): fix the test in asan mode.
         "nomsan",  # TODO: fix the test in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.
         "ops-test",  # Heavy ops test: see run_bazel_diff.py for details.
