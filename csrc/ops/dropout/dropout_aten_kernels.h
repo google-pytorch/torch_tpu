@@ -34,6 +34,9 @@ std::tuple<at::Tensor, at::Tensor> AtenFusedDropout(
 at::Tensor AtenNativeDropoutBackward(const at::Tensor& grad_output,
                                      const at::Tensor& mask, double scale);
 
+at::Tensor AtenMaskedScale(const at::Tensor& self, const at::Tensor& mask,
+                           double scale);
+
 }  // namespace torch_tpu
 
 #endif  // TORCH_TPU_CSRC_OPS_DROPOUT_DROPOUT_ATEN_KERNELS_H_
