@@ -17,6 +17,7 @@
 #include "csrc/ops/bincount/bincount_aten_kernels.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <utility>
@@ -171,13 +172,20 @@ at::Tensor AtenBinCount(const at::Tensor& self,
                                               /*dimension=*/0);
         };
 
-        const Dimensions min_max_dims = {2};
+        const std::array<int64_t, 1> min_max_shape = {2};
+        const absl::Span<const int64_t> min_max_dims(min_max_shape);
         const mlir::ElementType min_max_dtype = mlir::ElementType::I64;
+
+        DispatchOpOptions<1> options = {
+            .op_name = OpName::kAminmaxOut,
+            .out_dtype = min_max_dtype,
+            .out_dims = min_max_dims,
+            .op_param_cache_keys = OpParamCacheKeys::Empty(),
+        };
+
         TT_ASSIGN_OR_THROW(DeviceBufferRef min_max_buf,
                            DispatchOp<1>(std::move(min_max_builder), self,
-                                         {.op_name = OpName::kAminmaxOut,
-                                          .out_dtype = min_max_dtype,
-                                          .out_dims = min_max_dims}));
+                                         std::move(options)));
 
         int64_t min_max_vals[2] = {0, 0};
         TT_THROW_IF_ERROR(CopyDeviceBufferRefToCpuPtr(
