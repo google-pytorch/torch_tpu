@@ -65,6 +65,7 @@ from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.utils import test_utils
 from torch_tpu._internal.utils import utils
 from tests import dynamism_test_utils
+from tests import op_honey_trap
 from tests import quantize_utils
 from tests import seed_test_utils
 from tests import test_utils as tests_test_utils
@@ -6469,6 +6470,14 @@ class TorchTpuTestBase(seed_test_utils.RepeatableTest, common_utils.TestCase):
     # Whether a known --check_symbolic_shapes failure was observed.
     self._known_symbolic_shapes_failure_seen = False
 
+    honey_trap = op_honey_trap.create_honey_trap(test_id=self.id())
+    if honey_trap is not None:
+      self.enterContext(honey_trap)
+
+  def assertEqual(self, *args: Any, **kwargs: Any) -> None:
+    with op_honey_trap.pause_honey_trap():
+      super().assertEqual(*args, **kwargs)
+
   def set_accuracy_overrides(
       self,
       *,
@@ -6565,49 +6574,50 @@ class TorchTpuTestBase(seed_test_utils.RepeatableTest, common_utils.TestCase):
 
     _validate_tolerances(rtol=rtol, atol=atol)
 
-    if _perf_mode():
-      return
+    with op_honey_trap.pause_honey_trap():
+      if _perf_mode():
+        return
 
-    if isinstance(golden_result, tuple):
-      self.assertIsInstance(torch_tpu_result, tuple)
-      self.assertEqual(len(golden_result), len(torch_tpu_result))
-      for golden_item, torch_tpu_item in zip(golden_result, torch_tpu_result):
-        self.assert_close(
-            golden_result=golden_item,
-            torch_tpu_result=torch_tpu_item,
-            check_value=check_value,
-            check_dtype=check_dtype,
-            rtol=rtol,
-            atol=atol,
-            preamble=preamble,
-        )
-      return
+      if isinstance(golden_result, tuple):
+        self.assertIsInstance(torch_tpu_result, tuple)
+        self.assertEqual(len(golden_result), len(torch_tpu_result))
+        for golden_item, torch_tpu_item in zip(golden_result, torch_tpu_result):
+          self.assert_close(
+              golden_result=golden_item,
+              torch_tpu_result=torch_tpu_item,
+              check_value=check_value,
+              check_dtype=check_dtype,
+              rtol=rtol,
+              atol=atol,
+              preamble=preamble,
+          )
+        return
 
-    if isinstance(golden_result, bool):
-      self.assertEqual(golden_result, torch_tpu_result)
-      return
+      if isinstance(golden_result, bool):
+        self.assertEqual(golden_result, torch_tpu_result)
+        return
 
-    # In GPU golden mode with torch.compile, gradients for ops like
-    # embedding(..., sparse=True) are densified to strided layout, whereas
-    # TorchTPU eager backward produces sparse_coo. Convert to dense for value
-    # comparison when layouts differ.
-    if isinstance(golden_result, torch.Tensor) and isinstance(
-        torch_tpu_result, torch.Tensor
-    ):
-      if torch_tpu_result.is_sparse and not golden_result.is_sparse:
-        torch_tpu_result = torch_tpu_result.to_dense()
-      elif golden_result.is_sparse and not torch_tpu_result.is_sparse:
-        golden_result = golden_result.to_dense()
+      # In GPU golden mode with torch.compile, gradients for ops like
+      # embedding(..., sparse=True) are densified to strided layout, whereas
+      # TorchTPU eager backward produces sparse_coo. Convert to dense for value
+      # comparison when layouts differ.
+      if isinstance(golden_result, torch.Tensor) and isinstance(
+          torch_tpu_result, torch.Tensor
+      ):
+        if torch_tpu_result.is_sparse and not golden_result.is_sparse:
+          torch_tpu_result = torch_tpu_result.to_dense()
+        elif golden_result.is_sparse and not torch_tpu_result.is_sparse:
+          golden_result = golden_result.to_dense()
 
-    test_utils.assert_close(
-        actual=torch_tpu_result,
-        expected=golden_result,
-        rtol=rtol,
-        atol=atol,
-        check_value=check_value,
-        check_dtype=check_dtype,
-        preamble=preamble or "Comparing TorchTPU to golden result",
-    )
+      test_utils.assert_close(
+          actual=torch_tpu_result,
+          expected=golden_result,
+          rtol=rtol,
+          atol=atol,
+          check_value=check_value,
+          check_dtype=check_dtype,
+          preamble=preamble or "Comparing TorchTPU to golden result",
+      )
 
   # TODO: Move the failure-handling logic to util.assert_close to avoid
   # duplication.
@@ -7143,36 +7153,37 @@ class OpInfoTestBase(TorchTpuTestBase):
       Zero-element tensors with the structure of the base variant's result, on
       the device to run the op on; or the Exception thrown by the base variant.
     """
-    # First, execute the base variant to dynamically determine the output
-    # PyTree structure (e.g., single tensor vs. tuple of tensors) and natural
-    # dtypes (e.g., bool for comparison ops or int64 for auxiliary index
-    # outputs).
-    base_result = self._run_op(
-        op=op,
-        variant=OpVariant.BASE,
-        dtype=dtype,
-        op_input=op_input,
-        compute_grad=False,
-        use_compiled=use_compiled,
-        device=device,
-        subtest_name=subtest_name,
-        check_device=check_device,
-        # This _run_op() call is for preparing test data, not part of the test
-        # itself, so don't measure its performance to avoid skewing metrics.
-        measure_perf=False,
-        marking_plan=marking_plan,
-    )
-    if isinstance(base_result, Exception):
-      return base_result
-    # Next, generate zero-element out tensors (shape (0,)) matching the
-    # discovered structure to verify out-variant shape resizing compliance.
-    return to(
-        _prepare_zero_element_out_tensors(
-            base_result,
-            out_dtype_override=out_dtype_override,
-        ),
-        _target_device(dtype, device),
-    )
+    with op_honey_trap.pause_honey_trap():
+      # First, execute the base variant to dynamically determine the output
+      # PyTree structure (e.g., single tensor vs. tuple of tensors) and natural
+      # dtypes (e.g., bool for comparison ops or int64 for auxiliary index
+      # outputs).
+      base_result = self._run_op(
+          op=op,
+          variant=OpVariant.BASE,
+          dtype=dtype,
+          op_input=op_input,
+          compute_grad=False,
+          use_compiled=use_compiled,
+          device=device,
+          subtest_name=subtest_name,
+          check_device=check_device,
+          # This _run_op() call is for preparing test data, not part of the test
+          # itself, so don't measure its performance to avoid skewing metrics.
+          measure_perf=False,
+          marking_plan=marking_plan,
+      )
+      if isinstance(base_result, Exception):
+        return base_result
+      # Next, generate zero-element out tensors (shape (0,)) matching the
+      # discovered structure to verify out-variant shape resizing compliance.
+      return to(
+          _prepare_zero_element_out_tensors(
+              base_result,
+              out_dtype_override=out_dtype_override,
+          ),
+          _target_device(dtype, device),
+      )
 
   def _mark_dynamic(
       self,
