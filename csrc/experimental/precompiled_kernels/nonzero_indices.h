@@ -17,31 +17,47 @@
 #ifndef TORCH_TPU_CSRC_EXPERIMENTAL_PRECOMPILED_KERNELS_NONZERO_INDICES_H_
 #define TORCH_TPU_CSRC_EXPERIMENTAL_PRECOMPILED_KERNELS_NONZERO_INDICES_H_
 
+#include <vector>
+
 #include "csrc/common/unbounded_dynamic_kernel_registry.h"
 
 namespace torch_tpu {
 
-// Returns the Mosaic nonzero indices kernel, keyed for registration with
-// `UnboundedDynamicKernelRegistry` under the shapeless key of a 2-D F32 nonzero
-// graph. Run through `Execute` with the F32[M,N] input and the logical output
-// shape S64[K,2], its executable returns the (row, column) coordinates of the
-// input's nonzero elements, ordered by row, then column. The predicate
+// Returns the Mosaic nonzero indices kernels, 2-D then 1-D, for registration
+// with `UnboundedDynamicKernelRegistry` in that order. Each is keyed under the
+// shapeless key of a nonzero graph with an F32 input of its rank. The predicate
 // excludes only +0.0 and -0.0, matching torch.nonzero.
 //
-// Buffer contract (all payloads have no dynamic-metadata prefix):
-// - Input: F32[M,N]{1,0:T(8,128)}, the only buffer the caller supplies.
-// - Output: S64[K,2]{0,1:T(2,128)}. `Execute` allocates the destination itself
-//   as the S32[R,128]{1,0:T(1,128)} view the Mosaic kernel was compiled against
-//   (R = 4 * ceil(K/128); rows [0, R/2) hold interleaved row/col low words,
-//   [R/2, R) hold zeroed high words), donates it, and bitcasts the result back
-//   to S64[K,2]. The detour exists only because Mosaic does not support S64
-//   memrefs; callers never see it.
-//   NB: requires K > 2 because the XLA default layout for S64[K,2] switches to
-//   {1,0:T(2,128)} when K <= 2.
+// Buffer contracts (all payloads have no dynamic-metadata prefix). The input is
+// the only buffer the caller supplies; `Execute` allocates the destination
+// itself as the S32[R,128]{1,0:T(1,128)} view the Mosaic kernel was compiled
+// against, donates it, and bitcasts the result back to the logical output. The
+// detour exists only because Mosaic does not support S64 memrefs; callers never
+// see it.
 //
-// Caller-checked arithmetic bounds: 1 <= M <= INT32_MAX,
-// 1 <= N <= INT32_MAX - 127, and 3 <= K <= min(M*N, INT32_MAX).
-UnboundedDynamicKernel GetNonzeroUnboundedDynamicKernel();
+// - 2-D kernel: run through `Execute` with the F32[M,N] input and the logical
+//   output shape S64[K,2], its executable returns the (row, column) coordinates
+//   of the input's nonzero elements, ordered by row, then column.
+//   - Input: F32[M,N]{1,0:T(8,128)}.
+//   - Output: S64[K,2]{0,1:T(2,128)}, through the view with
+//     R = 4 * ceil(K/128); rows [0, R/2) hold interleaved row/col low words,
+//     [R/2, R) hold zeroed high words.
+//     NB: requires K > 2 because the XLA default layout for S64[K,2] switches
+//     to {1,0:T(2,128)} when K <= 2.
+//   - Caller-checked arithmetic bounds: 1 <= M <= INT32_MAX,
+//     1 <= N <= INT32_MAX - 127, and 3 <= K <= min(M*N, INT32_MAX).
+// - 1-D kernel: run through `Execute` with the F32[N] input and the logical
+//   output shape S64[K,1], its executable returns the indices of the input's
+//   nonzero elements in increasing order.
+//   - Input: F32[N]{0:T(1024)}, XLA's default layout for all but small N.
+//   - Output: S64[K,1]{0,1:T(1,128)}, through the view with
+//     R = 2 * ceil(K/128); rows [0, R/2) hold the low words, [R/2, R) hold
+//     zeroed high words.
+//     NB: requires K > 1 because the XLA default layout for S64[K,1] switches
+//     to {1,0:T(1,128)} when K == 1.
+//   - Caller-checked arithmetic bounds: 2 <= N <= INT32_MAX - 127 and
+//     2 <= K <= N.
+std::vector<UnboundedDynamicKernel> GetNonzeroUnboundedDynamicKernels();
 
 }  // namespace torch_tpu
 

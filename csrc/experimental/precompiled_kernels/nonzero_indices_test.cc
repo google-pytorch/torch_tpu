@@ -35,6 +35,7 @@ Shape WithLayout(Shape shape, const Indices& order, const Indices& tile) {
 }
 
 struct TestCase {
+  int rank = 2;
   std::vector<Shape> inputs = {Shape({17, 257}, ElementType::F32)};
   std::vector<Shape> outputs = {Shape({5, 2}, ElementType::I64)};
   bool expected = false;
@@ -47,15 +48,18 @@ using NonzeroIndicesTest = ::testing::TestWithParam<TestCase>;
 // number, ranks and dtypes of the operands; this covers the compatibility
 // checks that neither can reach.
 TEST_P(NonzeroIndicesTest, IsCompatible) {
-  EXPECT_EQ(GetNonzeroUnboundedDynamicKernel().metadata.is_compatible(
-                GetParam().inputs, GetParam().outputs),
+  // GetNonzeroUnboundedDynamicKernels returns the 2-D kernel, then the 1-D one.
+  const auto is_compatible =
+      GetNonzeroUnboundedDynamicKernels()[2 - GetParam().rank]
+          .metadata.is_compatible;
+  EXPECT_EQ(is_compatible(GetParam().inputs, GetParam().outputs),
             GetParam().expected);
 }
 
 INSTANTIATE_TEST_SUITE_P(
     NonzeroIndicesTests, NonzeroIndicesTest,
     testing::ValuesIn<TestCase>({
-        // Default layouts differ from the kernel's, overridden to match.
+        // Default layouts differ from the kernels', overridden to match.
         {.inputs = {WithLayout(Shape({4, 4}, ElementType::F32), {1, 0},
                                {8, 128})},
          .outputs = {WithLayout(Shape({2, 2}, ElementType::I64), {0, 1},
@@ -64,6 +68,19 @@ INSTANTIATE_TEST_SUITE_P(
         {.outputs = {Shape({5, 3}, ElementType::I64)}},
         {.outputs = {WithLayout(Shape({5, 2}, ElementType::I64), {0, 1},
                                 {4, 128})}},
+        // 1-D: custom input tiling, custom output tiling, and a [K, 2] output.
+        {.rank = 1,
+         .inputs = {WithLayout(Shape({3000}, ElementType::F32), {0}, {2048})},
+         .outputs = {WithLayout(Shape({5, 1}, ElementType::I64), {0, 1},
+                                {1, 128})}},
+        {.rank = 1,
+         .inputs = {WithLayout(Shape({3000}, ElementType::F32), {0}, {1024})},
+         .outputs = {WithLayout(Shape({5, 1}, ElementType::I64), {0, 1},
+                                {2, 128})}},
+        {.rank = 1,
+         .inputs = {WithLayout(Shape({3000}, ElementType::F32), {0}, {1024})},
+         .outputs = {WithLayout(Shape({5, 2}, ElementType::I64), {0, 1},
+                                {1, 128})}},
     }));
 
 }  // namespace
