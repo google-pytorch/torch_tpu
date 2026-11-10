@@ -325,8 +325,11 @@ Tiling CreateTiling(int64_t q_seq_len, int64_t k_seq_len,
   };
 }
 
-bool IsDefined(const std::optional<at::Tensor>& tensor) {
-  return tensor.has_value() && tensor->defined();
+// Returns true if `tensor` is present, defined and has at least one element.
+// Empty tensors are treated as absent, since FX passes may pass an empty
+// placeholder tensor in place of an optional input (e.g. attention bias).
+bool HasData(const std::optional<at::Tensor>& tensor) {
+  return tensor.has_value() && tensor->defined() && tensor->numel() > 0;
 }
 
 absl::Status ValidateDtype(at::ScalarType dtype) {
@@ -571,7 +574,7 @@ CreateFlashAttentionKernelImpl(const at::Tensor& query, const at::Tensor& key,
   TT_RETURN_IF_ERROR(ValidateDtype(query.scalar_type()));
 
   int rank = query.ndimension();
-  const bool has_attn_bias = IsDefined(attn_bias);
+  const bool has_attn_bias = HasData(attn_bias);
   const bool has_dropout = dropout_p > 0.0;
 
   TT_ASSIGN_OR_RETURN(const auto out_dtype,
@@ -582,13 +585,14 @@ CreateFlashAttentionKernelImpl(const at::Tensor& query, const at::Tensor& key,
   Dimensions lse_dims = CopyIntVector(query.sizes().slice(0, rank - 1));
   lse_dims.push_back(1);
 
-  TT_ASSIGN_OR_RETURN(auto param_keys,
-                      *OpParamCacheKeysBuilder()
-                           .SetParam("is_causal", is_causal)
-                           .SetParam("scale", scale)
-                           .SetParam("dropout_p", dropout_p)
-                           .SetParam("attn_bias", attn_bias)
-                           .SetParam("return_lse", return_lse));
+  TT_ASSIGN_OR_RETURN(
+      auto param_keys,
+      *OpParamCacheKeysBuilder()
+           .SetParam("is_causal", is_causal)
+           .SetParam("scale", scale)
+           .SetParam("dropout_p", dropout_p)
+           .SetParam("attn_bias", has_attn_bias ? attn_bias : std::nullopt)
+           .SetParam("return_lse", return_lse));
   const mlir::stablehlo::Precision precision = GetAndAddPrecisionTo(param_keys);
 
   auto op_builder =
@@ -789,17 +793,19 @@ CreateFlashAttentionBackwardKernel(
   TT_RETURN_IF_ERROR(ValidateDtype(query.scalar_type()));
 
   int rank = query.ndimension();
-  const bool has_attn_bias = IsDefined(attn_bias);
+  const bool has_attn_bias = HasData(attn_bias);
   const bool has_dropout = dropout_p > 0.0;
 
   TT_ASSIGN_OR_RETURN(const auto out_dtype,
                       ConvertTo<mlir::ElementType>(query.scalar_type()));
 
-  TT_ASSIGN_OR_RETURN(auto param_keys, *OpParamCacheKeysBuilder()
-                                            .SetParam("is_causal", is_causal)
-                                            .SetParam("scale", scale)
-                                            .SetParam("dropout_p", dropout_p)
-                                            .SetParam("attn_bias", attn_bias));
+  TT_ASSIGN_OR_RETURN(
+      auto param_keys,
+      *OpParamCacheKeysBuilder()
+           .SetParam("is_causal", is_causal)
+           .SetParam("scale", scale)
+           .SetParam("dropout_p", dropout_p)
+           .SetParam("attn_bias", has_attn_bias ? attn_bias : std::nullopt));
   const mlir::stablehlo::Precision precision = GetAndAddPrecisionTo(param_keys);
 
   auto op_builder =
