@@ -206,3 +206,8 @@ its `SKILL.md` and follow it.
 
 *   [`tt-write-docs`](.agents/skills/tt-write-docs/SKILL.md): writing, editing,
     or reviewing narrative documentation or README content.
+*   [`tt-write-error-tests`](.agents/skills/tt-write-error-tests/SKILL.md):
+    writing and placing tests for user-facing errors (`errors_test.py`,
+    `tpu_errors_test.py`, `collective_errors_test.py`).
+*   [`tt-write-tests`](.agents/skills/tt-write-tests/SKILL.md): writing tests
+    and configuring test targets.
