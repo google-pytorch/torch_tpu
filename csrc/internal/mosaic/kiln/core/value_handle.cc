@@ -28,6 +28,8 @@ ValueHandle::ValueHandle(mlir::Value value)
 }
 
 mlir::Value ValueHandle::value() const {
+  ABSL_CHECK(!is_null())  // CRASH_OK=callers must check is_null() first
+      << "ValueHandle is null; check is_null() before calling value()";
   return mlir::Value::getFromOpaquePointer(impl_);
 }
 

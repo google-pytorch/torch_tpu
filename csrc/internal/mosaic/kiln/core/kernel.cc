@@ -72,8 +72,9 @@ struct KernelScope {
       : builder(mlir::ImplicitLocOpBuilder::atBlockBegin(fn.getLoc(),
                                                          fn.addEntryBlock())),
         spec(s),
-        builder_scope(&builder),
-        prev(tls_scope) {
+        builder_scope(&builder) {
+    ABSL_CHECK(tls_scope == nullptr)  // CRASH_OK
+        << "KernelScope cannot be nested";
     tls_scope = this;
     int arg = 0;
     mlir::Block* entry = builder.getBlock();
@@ -104,7 +105,7 @@ struct KernelScope {
            return spec.scratch[i].shape.dtype();
          });
   }
-  ~KernelScope() { tls_scope = prev; }
+  ~KernelScope() { tls_scope = nullptr; }
 
   mlir::ImplicitLocOpBuilder builder;
   const KernelSpec& spec;
@@ -114,7 +115,6 @@ struct KernelScope {
   llvm::SmallVector<Ref, 8> inputs;
   llvm::SmallVector<Ref, 4> outputs;
   llvm::SmallVector<Ref, 4> scratch;
-  KernelScope* prev;
 
   static thread_local KernelScope* tls_scope;  // CPP_THREAD_LOCAL_OK=C++ scope
 };
@@ -162,6 +162,7 @@ absl::StatusOr<mlir::FlatSymbolRefAttr> EmitIndexMapFunction(
   fn.setPrivate();
   KernelScope scope(fn, spec);
   IndexIndices indices = map.Invoke();
+  TT_RETURN_IF_ERROR(scope.builder_scope.error());
   TT_RET_CHECK(indices.size() == block_rank, error::kInvalidArgument)
       << "index map must return one index per block dimension";
   llvm::SmallVector<mlir::Value> results;
@@ -354,11 +355,12 @@ absl::StatusOr<Kernel> BuildKernel(const KernelSpec& spec,
   fn->setAttr("scratch_operands", b.getI64IntegerAttr(spec.scratch.size()));
 
   // Populate the body. Constructing `KernelScope` installs the thread-local
-  // builder and kernel arguments, and its destructor restores the previous
-  // scope.
+  // builder and kernel arguments, and its destructor clears the active scope.
+  // Errors reported by the body are held by the scope.
   {
     KernelScope scope(fn, spec);
     body();
+    TT_RETURN_IF_ERROR(scope.builder_scope.error());
     mlir::func::ReturnOp::create(scope.builder);
   }
 

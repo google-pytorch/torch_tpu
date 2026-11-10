@@ -14,7 +14,7 @@
 
 # Core building blocks of the Kiln kernel language.
 
-load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_end")
+load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_cc_test", "torch_tpu_package_end")
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -34,7 +34,9 @@ torch_tpu_cc_library(
         ":literal",
         ":shape",
         ":value_handle",
+        "@com_google_absl//absl/base:nullability",
         "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:ArithDialect",
         "@llvm-project//mlir:IR",
@@ -48,6 +50,16 @@ torch_tpu_cc_library(
     hdrs = ["value_handle.h"],
     deps = [
         "@com_google_absl//absl/log:absl_check",
+        "@llvm-project//mlir:IR",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "value_handle_test",
+    srcs = ["value_handle_test.cc"],
+    deps = [
+        ":value_handle",
+        "//csrc/common:oss_test_main",
         "@llvm-project//mlir:IR",
     ],
 )
@@ -305,6 +317,27 @@ torch_tpu_cc_library(
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Pass",
         "@llvm-project//mlir:Transforms",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "kernel_test",
+    srcs = ["kernel_test.cc"],
+    deps = [
+        ":context",
+        ":control_flow",
+        ":dtype",
+        ":index_map",
+        ":kernel",
+        ":ref",
+        ":scalar",
+        ":shape",
+        ":specs",
+        "//csrc/common:error_utils",
+        "//csrc/common:oss_test_main",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/status:statusor",
     ],
 )
 

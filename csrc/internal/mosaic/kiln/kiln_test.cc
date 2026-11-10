@@ -115,8 +115,9 @@ static_assert(!std::is_convertible_v<HbmRef, VmemRef>);
 // Nothing can rebind a typed ref through a common base.
 static_assert(!std::is_assignable_v<internal::RefBase&, SmemRef>);
 
-// A `ValueHandle` can only be created from an `mlir::Value`, not from an
-// arbitrary pointer. Handles stay cheap to copy.
+// A `ValueHandle` can only be created from an `mlir::Value` or
+// `ValueHandle::Null()`, not from an arbitrary pointer. Handles stay cheap to
+// copy.
 static_assert(!std::is_default_constructible_v<internal::ValueHandle>);
 static_assert(!std::is_constructible_v<internal::ValueHandle, const void*>);
 static_assert(std::is_trivially_copyable_v<internal::ValueHandle>);
@@ -1861,8 +1862,8 @@ TEST(KilnDeathTest, DynamicShapeSliceAndAllocaValidationErrors) {
       });
   ASSERT_THAT(kernel, IsOk());
 
-  // Verify BuilderScope::~BuilderScope() restores tls_builder to nullptr after
-  // BuildKernel() completes.
+  // Verify BuilderScope::~BuilderScope() restores tls_builder_scope to nullptr
+  // after BuildKernel() completes.
   EXPECT_DEATH(static_cast<void>(I32(1)),
                "Kiln operations may only be called inside BuildKernel");
 }
