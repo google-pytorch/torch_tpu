@@ -686,6 +686,7 @@ enum class OpName {
   kRandom_To,
   kRandpermGeneratorOut,
   kReciprocalOut,
+  kRecordStream,
   kReflectionPad1dBackwardGradInput,
   kReflectionPad1dOut,
   kReflectionPad2d,
@@ -2223,6 +2224,8 @@ ToString(  // NOLINT(google-readability-function-size)
       return "randperm.generator_out";
     case OpName::kReciprocalOut:
       return "reciprocal.out";
+    case OpName::kRecordStream:
+      return "record_stream";
     case OpName::kReflectionPad1dBackwardGradInput:
       return "reflection_pad1d_backward.grad_input";
     case OpName::kReflectionPad1dOut:

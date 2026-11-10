@@ -118,7 +118,6 @@ TEST_EXCLUSIONS: Final[
             "test_event_synchronize_inductor_lowering",
             "test_inductor_lowering",
             "test_nested_compile_in_backend_preserves_user_objects",
-            "test_record_stream",
             "test_record_stream_inductor_output_code",
             "test_synchronize_explicit_none_matches_no_arg",
         ],

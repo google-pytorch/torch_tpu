@@ -322,7 +322,6 @@ UNREGISTERED_OPS = frozenset([
     'quantized_max_pool2d',
     'quantized_max_pool3d',
     'range.out',
-    'record_stream',
     'renorm.out',
     'resize_as_sparse_',
     'rrelu_with_noise',

@@ -884,6 +884,7 @@ torch_tpu_cc_library(
         "//csrc/ops/put:put_aten_kernels",
         "//csrc/ops/random:random_aten_kernels",
         "//csrc/ops/randperm:randperm_aten_kernels",
+        "//csrc/ops/record_stream:record_stream_aten_kernels",
         "//csrc/ops/reductions:mean_aten_kernels",
         "//csrc/ops/reductions:std_aten_kernels",
         "//csrc/ops/reductions:sum_aten_kernels",

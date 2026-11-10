@@ -97,7 +97,6 @@ class StreamIntegrationTest(seed_test_utils.RepeatableTest):
         expected.sum() * 2 + (expected / 3).to(torch.bfloat16).float().sum(),
     )
 
-  @absltest.expectedFailureIf(_IS_TPU, 'aten::record_stream has no TPU kernel')
   def test_side_stream_prefetch_with_record_stream(self):
     """record_stream() marks a cross-stream read of the prefetched batch."""
     copy_stream = _BACKEND.Stream()
@@ -125,7 +124,6 @@ class StreamIntegrationTest(seed_test_utils.RepeatableTest):
 
     utils.assert_close(out.cpu(), pinned_batch * 2 + 1)
 
-  @absltest.expectedFailureIf(_IS_TPU, 'aten::record_stream has no TPU kernel')
   def test_side_stream_offload_with_record_stream(self):
     """record_stream() guards the offloaded activation until the copy ends."""
     offload_stream = _BACKEND.Stream()

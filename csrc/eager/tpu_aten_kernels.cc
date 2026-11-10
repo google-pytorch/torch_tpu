@@ -190,6 +190,7 @@
 #include "csrc/ops/put/put_aten_kernels.h"
 #include "csrc/ops/random/random_aten_kernels.h"
 #include "csrc/ops/randperm/randperm_aten_kernels.h"
+#include "csrc/ops/record_stream/record_stream_aten_kernels.h"
 #include "csrc/ops/reductions/mean_aten_kernels.h"
 #include "csrc/ops/reductions/std_aten_kernels.h"
 #include "csrc/ops/reductions/sum_aten_kernels.h"
@@ -963,6 +964,7 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kRandom_To>(m, AtenRandom_To);
   ImplStable<OpName::kRandpermGeneratorOut>(m, AtenRandpermGeneratorOut);
   ImplStable<OpName::kReciprocalOut>(m, AtenReciprocalOut);
+  ImplStable<OpName::kRecordStream>(m, AtenRecordStream);
   ImplStable<OpName::kReflectionPad1dBackwardGradInput>(
       m, AtenReflectionPad1dBackwardGradInput);
   ImplStable<OpName::kReflectionPad1dOut>(m, AtenReflectionPad1dOut);

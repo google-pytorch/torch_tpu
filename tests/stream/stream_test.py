@@ -343,6 +343,20 @@ class TpuStreamsTest(seed_test_utils.RepeatableTest):
     utils.assert_close(held, torch.ones(1024))
     utils.assert_close(y[0, :2].to('cpu'), torch.full((2,), 1 / 8192))
 
+  def test_record_stream_is_accepted_as_a_no_op(self):
+    """record_stream() is accepted on a TPU tensor and leaves it untouched."""
+    side = torch.tpu.Stream()
+    x = torch.arange(16, dtype=torch.float32, device='tpu')
+
+    self.assertIsNone(x.record_stream(side))
+    with torch.tpu.stream(side):
+      y = x * 2
+      self.assertIsNone(y.record_stream(torch.tpu.default_stream()))
+    self.assertIsNone(x.record_stream(torch.accelerator.current_stream()))
+
+    utils.assert_close(x.to('cpu'), torch.arange(16, dtype=torch.float32))
+    utils.assert_close(y.to('cpu'), torch.arange(16, dtype=torch.float32) * 2)
+
   def test_materialize_on_stream_switch(self):
     """Tests that a stream begins executing when leaving its context."""
     new_stream = torch.tpu.Stream()
