@@ -18,7 +18,7 @@ import contextlib
 import os
 import pickle
 import re
-from unittest import mock
+import types
 import warnings
 
 from absl.testing import absltest
@@ -143,8 +143,7 @@ class FunctionTest(seed_test_utils.RepeatableTest):
 
     return debugs
 
-  @mock.patch.object(compiler, "trace_structured", autospec=True)
-  def test_trace_structured_called(self, mock_trace_structured):
+  def test_trace_artifacts_logged_when_tracing_enabled(self):
     def simple(x, y):
       return x + y
 
@@ -152,35 +151,13 @@ class FunctionTest(seed_test_utils.RepeatableTest):
         torch.tensor([0.1, 0.2]),
         torch.tensor([0.4, 0.5]),
     ]
-    with mock.patch(
-        "torch._logging._internal.trace_log.handlers", [mock.Mock(level=0)]
-    ):
+    with utils.capture_trace_artifacts() as artifacts:
       self._run_and_compare(simple, inputs)
 
-    names = [call.args[0] for call in mock_trace_structured.call_args_list]
-    self.assertTrue(all(name == "artifact" for name in names))
-
-    # Extract metadata and evaluate payloads to verify artifacts are actually
-    # created
-    payloads = {
-        call.kwargs["metadata_fn"]()["name"]: call.kwargs["payload_fn"]()
-        for call in mock_trace_structured.call_args_list
-    }
-
-    self.assertIn("torchtpu_fx_graph", payloads)
-    self.assertIn("torchtpu_stablehlo_graph", payloads)
-
-    # Verify the FX graph artifact
-    fx_payload = payloads["torchtpu_fx_graph"]
-    self.assertIsInstance(fx_payload, str)
-    self.assertNotEmpty(fx_payload)
-    self.assertIn("add", fx_payload)  # simple() does x + y
-
-    # Verify the StableHLO artifact
-    mlir_payload = payloads["torchtpu_stablehlo_graph"]
-    self.assertIsInstance(mlir_payload, str)
-    self.assertNotEmpty(mlir_payload)
-    self.assertIn("module", mlir_payload)
+    payloads = {a.name: a.payload for a in artifacts}
+    self.assertIn("add", payloads["torchtpu_fx_graph"])  # simple() does x + y
+    self.assertIn("module", payloads["torchtpu_stablehlo_graph"])
+    self.assertIn("stablehlo.add", payloads["torchtpu_stablehlo_graph"])
 
   def test_super_simple(self):
     def simple(x, y):
@@ -943,10 +920,14 @@ class FunctionTest(seed_test_utils.RepeatableTest):
 
   def test_hlo_naming_default_fallback_on_exception(self):
     """Tests that an exception during stack trace inspection safely falls back to 'module'."""
-    bad_gm = mock.MagicMock()
-    bad_gm.graph.nodes = mock.PropertyMock(
-        side_effect=RuntimeError("Simulated node traversal failure")
-    )
+
+    class BrokenGraph:
+
+      @property
+      def nodes(self):
+        raise RuntimeError("Simulated node traversal failure")
+
+    bad_gm = types.SimpleNamespace(graph=BrokenGraph())
     self.assertEqual(_backend._infer_default_base_name(bad_gm), "module")
 
   def test_data_dependent_dynamic_op(self):

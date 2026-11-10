@@ -28,10 +28,9 @@ Key Architecture Mechanics:
    recompilation latency or graph breaks.
 """
 
-from unittest import mock
 from absl.testing import absltest
 import torch
-from torch_tpu._internal.compile import _backend
+from torch._dynamo import testing as dynamo_testing
 from torch_tpu._internal.utils import test_utils as utils
 from tests import seed_test_utils
 
@@ -42,32 +41,57 @@ class JaggedDynamismTest(seed_test_utils.RepeatableTest):
     super().setUp()
     torch.compiler.reset()
 
+  def _run_and_count_compilations(
+      self,
+      model: torch.nn.Module,
+      token_counts: list[int],
+      feature_dim: int,
+      max_tokens: int,
+  ) -> list[int]:
+    """Runs `model` compiled and eagerly on inputs with a dynamic token dim.
+
+    Args:
+      model: The model to compile.
+      token_counts: The token count M of the input for each call.
+      feature_dim: The size of the static feature dimension of the inputs.
+      max_tokens: The upper bound of the dynamic token dimension.
+
+    Returns:
+      The number of graphs compiled by the TPU backend for each call of the
+      compiled model.
+    """
+    compile_counter = dynamo_testing.CompileCounterWithBackend("tpu")
+    compiled_model = torch.compile(model, backend=compile_counter)
+    compilations_per_call = []
+    for count in token_counts:
+      values = torch.randn(count, feature_dim, device="tpu")
+      torch._dynamo.mark_dynamic(values, 0, min=1, max=max_tokens)
+      eager_out = model(values).cpu()
+
+      compilations_before = compile_counter.frame_count
+      compiled_out = compiled_model(values)
+      compilations_per_call.append(
+          compile_counter.frame_count - compilations_before
+      )
+
+      self.assertEqual(compiled_out.shape, eager_out.shape)
+      self.assertEqual(compiled_out.shape[0], count)
+      utils.assert_close(compiled_out.cpu(), eager_out)
+    return compilations_per_call
+
   def test_linear_layer_bounded_dynamism(self):
     """Verifies Linear execution across variable token counts without recompilation.
 
     Executes multiple dynamic token counts M in [15, 27, 45] bounded by M_max=64
-    on a single compiled executable, verifying only 1 compilation event occurs.
+    on a single compiled executable, verifying only the first call compiles.
     """
     linear = torch.nn.Linear(32, 64, bias=True).to("tpu")
 
-    with mock.patch.object(
-        _backend.dynamic_compiler,
-        "DynamicCompiler",
-        wraps=_backend.dynamic_compiler.DynamicCompiler,
-    ) as mock_dc:
-      compiled_linear = torch.compile(linear, backend="tpu")
+    compilations_per_call = self._run_and_count_compilations(
+        linear, token_counts=[15, 27, 45], feature_dim=32, max_tokens=64
+    )
 
-      # Varying batch token counts M <= 64 across iterations.
-      for count in [15, 27, 45]:
-        values = torch.randn(count, 32, device="tpu")
-        torch._dynamo.mark_dynamic(values, 0, min=1, max=64)
-        eager_out = linear(values)
-        compiled_out = compiled_linear(values)
-        self.assertEqual(compiled_out.shape, (count, 64))
-        utils.assert_close(compiled_out.cpu(), eager_out.cpu())
-
-      # Verify the model module compiled only once across all dynamic inputs.
-      self.assertEqual(mock_dc.call_count, 1)
+    self.assertEqual(compilations_per_call, [1, 0, 0])
 
   def test_qkv_projection_and_head_reshape_bounded_dynamism(self):
     """Verifies QKV projection and head reshaping with dynamic token dimension M.
@@ -91,23 +115,11 @@ class JaggedDynamismTest(seed_test_utils.RepeatableTest):
 
     model = QKVProjection().to("tpu")
 
-    with mock.patch.object(
-        _backend.dynamic_compiler,
-        "DynamicCompiler",
-        wraps=_backend.dynamic_compiler.DynamicCompiler,
-    ) as mock_dc:
-      compiled_model = torch.compile(model, backend="tpu")
+    compilations_per_call = self._run_and_count_compilations(
+        model, token_counts=[18, 42, 70], feature_dim=d_model, max_tokens=96
+    )
 
-      for count in [18, 42, 70]:
-        values = torch.randn(count, d_model, device="tpu")
-        torch._dynamo.mark_dynamic(values, 0, min=1, max=96)
-        eager_out = model(values)
-        compiled_out = compiled_model(values)
-        self.assertEqual(compiled_out.shape, (count, 3, num_heads, head_dim))
-        utils.assert_close(compiled_out.cpu(), eager_out.cpu())
-
-      # Verify single model compilation event across dynamic token counts.
-      self.assertEqual(mock_dc.call_count, 1)
+    self.assertEqual(compilations_per_call, [1, 0, 0])
 
   def test_feed_forward_network_bounded_dynamism(self):
     """Verifies FFN (Linear + ReLU + Linear + Residual) execution across dynamic token counts."""
@@ -125,25 +137,11 @@ class JaggedDynamismTest(seed_test_utils.RepeatableTest):
 
     model = FeedForwardBlock().to("tpu")
 
-    with mock.patch.object(
-        _backend.dynamic_compiler,
-        "DynamicCompiler",
-        wraps=_backend.dynamic_compiler.DynamicCompiler,
-    ) as mock_dc:
-      compiled_model = torch.compile(model, backend="tpu")
+    compilations_per_call = self._run_and_count_compilations(
+        model, token_counts=[20, 50, 80], feature_dim=d_model, max_tokens=128
+    )
 
-      for count in [20, 50, 80]:
-        values = torch.randn(count, d_model, device="tpu")
-        torch._dynamo.mark_dynamic(values, 0, min=1, max=128)
-
-        eager_out = model(values)
-        compiled_out = compiled_model(values)
-
-        self.assertEqual(compiled_out.shape, (count, d_model))
-        utils.assert_close(compiled_out.cpu(), eager_out.cpu())
-
-      # Verify single model compilation event across dynamic token counts.
-      self.assertEqual(mock_dc.call_count, 1)
+    self.assertEqual(compilations_per_call, [1, 0, 0])
 
 
 if __name__ == "__main__":

@@ -183,6 +183,20 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "test_utils_tpu_test",
+    srcs = ["test_utils_tpu_test.py"],
+    strict = True,
+    tags = ["requires-tpu-v5lite"],
+    deps = [
+        ":test_utils",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
     name = "test_fixtures_test",
     srcs = ["test_fixtures_test.py"],
     strict = True,

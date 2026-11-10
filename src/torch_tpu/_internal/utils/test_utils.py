@@ -16,13 +16,19 @@
 
 import collections
 from collections.abc import Callable
+from collections.abc import Iterator
+import contextlib
+import dataclasses
 import enum
+import logging  # PYTHON_LOGGING_OK=Needs logging.Handler to capture torch's stdlib trace_log records.
 import math
 import re
 from typing import Any, TypeAlias
 
 import numpy as np
 import torch
+from torch._functorch._aot_autograd import autograd_cache
+from torch._logging._internal import trace_log
 from torch_tpu._internal.utils import utils
 
 # A tolerance value can be either a float or a callable that takes the expected
@@ -783,6 +789,120 @@ def _assert_tensor_close(
         atol=atol,
         msg=lambda msg: strict_msg_handler(msg, is_relative=True),
     )
+
+
+def _get_tpu_cache_misses() -> int:
+  return getattr(torch, "tpu")._get_cache_misses()  # pylint: disable=protected-access
+
+
+class TpuCompilationCounter:
+  """Number of TPU compilations observed by `count_tpu_compilations`.
+
+  `count` can be read inside the `with` block to get a running total, which is
+  useful to attribute compilations to individual calls. It is frozen when the
+  block exits.
+  """
+
+  def __init__(self) -> None:
+    self._start = _get_tpu_cache_misses()
+    self._end: int | None = None
+
+  @property
+  def count(self) -> int:
+    end = self._end if self._end is not None else _get_tpu_cache_misses()
+    return end - self._start
+
+  def _stop(self) -> None:
+    self._end = _get_tpu_cache_misses()
+
+
+@contextlib.contextmanager
+def count_tpu_compilations(
+    *, clear_cache: bool = True
+) -> Iterator[TpuCompilationCounter]:
+  """Counts the TPU programs compiled while the block runs.
+
+  A compilation is a TorchTPU compilation cache miss, so both `torch.compile`
+  graphs and eager ops are counted. Pending device work is flushed on entry so
+  that it is not attributed to the block, and again on exit so that work queued
+  by the block is.
+
+  Example:
+    with test_utils.count_tpu_compilations() as compilations:
+      compiled(x)
+    self.assertEqual(compilations.count, 1)
+
+  Args:
+    clear_cache: If True, evicts the TorchTPU compilation cache and PyTorch's
+      AOTAutograd cache on entry, so the count does not depend on what earlier
+      tests compiled. AOTAutograd cache hits load serialized executables without
+      compiling.
+
+  Yields:
+    A `TpuCompilationCounter`.
+  """
+  tpu = getattr(torch, "tpu")
+  torch.accelerator.synchronize()
+  if clear_cache:
+    tpu._clear_cache()  # pylint: disable=protected-access
+    autograd_cache.AOTAutogradCache.clear()
+  counter = TpuCompilationCounter()
+  try:
+    yield counter
+  finally:
+    torch.accelerator.synchronize()
+    counter._stop()  # pylint: disable=protected-access
+
+
+@dataclasses.dataclass(frozen=True)
+class TraceArtifact:
+  """A `torch._logging.trace_structured("artifact", ...)` record.
+
+  Attributes:
+    name: The artifact name from the record metadata.
+    payload: The logged payload, or "" if there is none.
+  """
+
+  name: str
+  payload: str
+
+
+class _TraceArtifactHandler(logging.Handler):
+  """Collects artifact records logged to the structured trace log."""
+
+  def __init__(self) -> None:
+    super().__init__(level=logging.DEBUG)
+    self.artifacts: list[TraceArtifact] = []
+
+  def emit(self, record: logging.LogRecord) -> None:
+    metadata = getattr(record, "metadata", None)
+    if not isinstance(metadata, dict) or "artifact" not in metadata:
+      return
+    self.artifacts.append(
+        TraceArtifact(
+            name=metadata["artifact"].get("name", ""),
+            payload=getattr(record, "payload", None) or "",
+        )
+    )
+
+
+@contextlib.contextmanager
+def capture_trace_artifacts() -> Iterator[list[TraceArtifact]]:
+  """Enables structured trace logging and collects artifacts logged in the block.
+
+  This is the in-process equivalent of running with `TORCH_TRACE` set: the
+  structured trace log gets a handler, so code that only emits artifacts when
+  tracing is enabled emits them.
+
+  Yields:
+    The list of `TraceArtifact`s, appended to as artifacts are logged.
+  """
+  handler = _TraceArtifactHandler()
+  trace_log.addHandler(handler)
+  try:
+    yield handler.artifacts
+  finally:
+    trace_log.removeHandler(handler)
 
 
 get_torch_version = utils.get_torch_version
