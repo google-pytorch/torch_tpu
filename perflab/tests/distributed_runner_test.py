@@ -16,7 +16,6 @@
 
 import importlib.util
 import os
-import shutil
 import sys
 import types
 from unittest import mock
@@ -1047,13 +1046,195 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
     self.assertLen(eager_state_resets, expected_tpu_cleanups)
     self.assertLen(tpu_cache_clears, expected_tpu_cleanups)
 
-  @mock.patch.object(shutil, "rmtree")
-  def test_clear_persistent_compilation_caches(self, mock_rmtree):
-    with mock.patch("glob.glob", return_value=["/tmp/torchinductor_test"]):
-      distributed_runner._clear_persistent_compilation_caches()
+  def _enter_fake_tier2_cache_root(self) -> str:
+    """Returns a temporary Tier-2 cache root.
 
-    mock_rmtree.assert_any_call("/dev/shm/torch_tpu_cache", ignore_errors=True)
-    mock_rmtree.assert_any_call("/tmp/torchinductor_test", ignore_errors=True)
+    Also unsets the env vars that enable the Tier-2 cache, for the duration of
+    the test.
+    """
+    self.enter_context(mock.patch.dict(os.environ))
+    for name in (
+        "TORCH_TPU_TIER2_COMPILATION_CACHE",
+        "TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT",
+        "WORLD_SIZE",
+    ):
+      os.environ.pop(name, None)
+    return self.create_tempdir().full_path
+
+  def test_owned_compilation_caches_spares_shared_caches(self):
+    tier2_root = self._enter_fake_tier2_cache_root()
+    # Caches of other jobs on the host, which must survive the target.
+    shared_tier2_cache = os.path.join(tier2_root, "default")
+    os.makedirs(shared_tier2_cache)
+    shared_inductor_cache = self.create_tempdir().full_path
+    os.environ["TORCHINDUCTOR_CACHE_DIR"] = shared_inductor_cache
+
+    with distributed_runner._owned_compilation_caches(
+        8, tier2_cache_root=tier2_root
+    ):
+      inductor_cache = os.environ["TORCHINDUCTOR_CACHE_DIR"]
+      tier2_cache = os.path.join(
+          tier2_root, os.environ["TORCH_TPU_TIER2_COMPILATION_CACHE"]
+      )
+      # What the workers' compilations leave behind.
+      for cache in (inductor_cache, tier2_cache):
+        os.makedirs(cache, exist_ok=True)
+        with open(os.path.join(cache, "entry.bin"), "w") as f:
+          f.write("compiled")
+
+    self.assertFalse(os.path.exists(inductor_cache))
+    self.assertFalse(os.path.exists(tier2_cache))
+    self.assertTrue(os.path.isdir(shared_tier2_cache))
+    self.assertTrue(os.path.isdir(shared_inductor_cache))
+    self.assertEqual(
+        os.environ.get("TORCHINDUCTOR_CACHE_DIR"), shared_inductor_cache
+    )
+    self.assertNotIn("TORCH_TPU_TIER2_COMPILATION_CACHE", os.environ)
+
+  def test_owned_compilation_caches_are_fresh_per_target(self):
+    tier2_root = self._enter_fake_tier2_cache_root()
+    os.environ["TORCH_TPU_TIER2_COMPILATION_CACHE"] = "my_cache"
+
+    caches = []
+    for _ in range(2):
+      # An explicitly named Tier-2 cache is enabled even for a single process.
+      with distributed_runner._owned_compilation_caches(
+          1, tier2_cache_root=tier2_root
+      ):
+        caches.append((
+            os.environ["TORCHINDUCTOR_CACHE_DIR"],
+            os.environ["TORCH_TPU_TIER2_COMPILATION_CACHE"],
+        ))
+
+    self.assertNotEqual(caches[0][0], caches[1][0])
+    self.assertNotEqual(caches[0][1], caches[1][1])
+    # A user-named Tier-2 cache is neither reused nor deleted.
+    self.assertNotIn("my_cache", [name for _, name in caches])
+    self.assertEqual(
+        os.environ["TORCH_TPU_TIER2_COMPILATION_CACHE"], "my_cache"
+    )
+
+  def test_owned_compilation_caches_keep_tier2_cache_disabled(self):
+    tier2_root = self._enter_fake_tier2_cache_root()
+    os.environ["TORCH_TPU_TIER2_COMPILATION_CACHE"] = "disabled"
+
+    with distributed_runner._owned_compilation_caches(
+        8, tier2_cache_root=tier2_root
+    ):
+      tier2_cache_name = os.environ["TORCH_TPU_TIER2_COMPILATION_CACHE"]
+
+    self.assertEqual(tier2_cache_name, "disabled")
+
+  def test_owned_compilation_caches_keep_tier2_cache_off_for_single_process(
+      self,
+  ):
+    tier2_root = self._enter_fake_tier2_cache_root()
+    os.makedirs(os.path.join(tier2_root, "default"))
+
+    with distributed_runner._owned_compilation_caches(
+        1, tier2_cache_root=tier2_root
+    ):
+      env_during_target = dict(os.environ)
+
+    self.assertNotIn("TORCH_TPU_TIER2_COMPILATION_CACHE", env_during_target)
+    self.assertEqual(os.listdir(tier2_root), ["default"])
+
+  @parameterized.named_parameters(
+      dict(testcase_name="multi_host", world_size="16", uses_tier2_cache=True),
+      dict(testcase_name="single_rank", world_size="1", uses_tier2_cache=False),
+  )
+  def test_owned_compilation_caches_follow_worker_world_size(
+      self, world_size, uses_tier2_cache
+  ):
+    tier2_root = self._enter_fake_tier2_cache_root()
+    # The workers keep an inherited WORLD_SIZE over the per-node process count.
+    os.environ["WORLD_SIZE"] = world_size
+
+    with distributed_runner._owned_compilation_caches(
+        1 if uses_tier2_cache else 8, tier2_cache_root=tier2_root
+    ):
+      env_during_target = dict(os.environ)
+
+    self.assertEqual(
+        "TORCH_TPU_TIER2_COMPILATION_CACHE" in env_during_target,
+        uses_tier2_cache,
+    )
+
+  def test_owned_compilation_caches_own_tier2_cache_with_tier3_cache(self):
+    tier2_root = self._enter_fake_tier2_cache_root()
+    # The Tier-3 cache turns on the Tier-2 cache even for a single process.
+    os.environ["TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT"] = (
+        self.create_tempdir().full_path
+    )
+
+    with distributed_runner._owned_compilation_caches(
+        1, tier2_cache_root=tier2_root
+    ):
+      tier2_cache_name = os.environ["TORCH_TPU_TIER2_COMPILATION_CACHE"]
+
+    self.assertStartsWith(tier2_cache_name, "perflab_")
+
+  def test_owned_compilation_caches_removed_when_target_fails(self):
+    tier2_root = self._enter_fake_tier2_cache_root()
+
+    with self.assertRaisesRegex(RuntimeError, "target failed"):
+      with distributed_runner._owned_compilation_caches(
+          8, tier2_cache_root=tier2_root
+      ):
+        inductor_cache = os.environ["TORCHINDUCTOR_CACHE_DIR"]
+        tier2_cache = os.path.join(
+            tier2_root, os.environ["TORCH_TPU_TIER2_COMPILATION_CACHE"]
+        )
+        os.makedirs(tier2_cache)
+        raise RuntimeError("target failed")
+
+    self.assertFalse(os.path.exists(inductor_cache))
+    self.assertFalse(os.path.exists(tier2_cache))
+
+  def test_main_runs_each_target_with_its_own_compilation_caches(self):
+    tier2_root = self._enter_fake_tier2_cache_root()
+    # `main` takes no injected dependencies, so point it at the fake root.
+    self.enter_context(
+        mock.patch.object(distributed_runner, "_TIER2_CACHE_ROOT", tier2_root)
+    )
+    seen_caches = []
+
+    def fake_dist_run(*args):
+      del args
+      inductor_cache = os.environ["TORCHINDUCTOR_CACHE_DIR"]
+      tier2_cache = os.path.join(
+          tier2_root, os.environ["TORCH_TPU_TIER2_COMPILATION_CACHE"]
+      )
+      # What the workers' compilations leave behind.
+      os.makedirs(tier2_cache)
+      seen_caches.append((inductor_cache, tier2_cache))
+
+    registry = {
+        name: types.SimpleNamespace(name=name, skipped_run_modes=frozenset())
+        for name in ("first", "second")
+    }
+    with (
+        mock.patch.dict(registry_lib.REGISTRY, registry, clear=True),
+        mock.patch.dict(
+            os.environ,
+            {
+                "BENCHMARK_PLATFORM": "b200_8",
+                "TESTBRIDGE_TEST_ONLY": (
+                    "first_eager_default second_eager_default"
+                ),
+            },
+        ),
+        mock.patch.object(
+            distributed_runner.distributed_utils, "dist_run", fake_dist_run
+        ),
+    ):
+      distributed_runner.main(["distributed_runner"])
+
+    self.assertLen(seen_caches, 2)
+    self.assertLen(set(seen_caches), 2)
+    for inductor_cache, tier2_cache in seen_caches:
+      self.assertFalse(os.path.exists(inductor_cache))
+      self.assertFalse(os.path.exists(tier2_cache))
 
 
 if __name__ == "__main__":

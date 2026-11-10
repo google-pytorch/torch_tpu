@@ -18,11 +18,13 @@ Supports both single-node multi-device (CUDA/TPU) and multi-node multi-host
 Borg executions.
 """
 
+from collections.abc import Iterator
+from collections.abc import Mapping
 from collections.abc import Sequence
+import contextlib
 import enum
 import fnmatch
 import gc
-import glob
 import os
 import re
 import shutil
@@ -30,6 +32,7 @@ import sys
 import tempfile
 import time
 from typing import NamedTuple
+import uuid
 from xml.etree import ElementTree
 
 from absl import app
@@ -62,6 +65,15 @@ discovery_lib.import_submodules(steps)
 _FRAMEWORK = mode_lib.Framework.TORCH
 # Characters XML 1.0 forbids (all C0 controls except tab, newline and CR).
 _XML_INVALID_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+_INDUCTOR_CACHE_ENV = "TORCHINDUCTOR_CACHE_DIR"
+# The Tier-2 compilation cache named by this env var lives in a subdirectory of
+# the host-wide root. Keep these constants and the enablement logic in
+# `_owned_compilation_caches` in sync with `kTier2CacheRootDir` and
+# `GetTier2CacheName()` in csrc/common/tier2_compilation_cache.cc.
+_TIER2_CACHE_ENV = "TORCH_TPU_TIER2_COMPILATION_CACHE"
+_TIER2_CACHE_DISABLED = "disabled"
+_TIER2_CACHE_ROOT = "/dev/shm/torch_tpu_cache"
+_TIER3_CACHE_ROOT_ENV = "TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT"
 
 
 class BarrierPolicy(enum.Enum):
@@ -506,29 +518,76 @@ def _run_single_target_task(
     )
 
 
-def _clear_persistent_compilation_caches() -> None:
-  """Clears shared-memory and on-disk compilation caches between benchmark runs.
+@contextlib.contextmanager
+def _scoped_env(updates: Mapping[str, str]) -> Iterator[None]:
+  """Sets the given env vars, restoring their previous values on exit."""
+  saved_env = {
+      name: os.environ.get(name) for name in updates  # PY_ENVIRON_OK=benchmark
+  }
+  os.environ.update(updates)  # PY_ENVIRON_OK=benchmark
+  try:
+    yield
+  finally:
+    for name, value in saved_env.items():
+      if value is None:
+        os.environ.pop(name, None)  # PY_ENVIRON_OK=benchmark
+      else:
+        os.environ[name] = value  # PY_ENVIRON_OK=benchmark
 
-  Ensures each distributed benchmark target measures true cold compilation
-  latency without being polluted by cached graph artifacts or compiled binaries
-  from preceding targets.
+
+@contextlib.contextmanager
+def _owned_compilation_caches(
+    nproc_per_node: int, *, tier2_cache_root: str | None = None
+) -> Iterator[None]:
+  """Points the workers of a target at fresh compilation caches it owns.
+
+  The workers inherit the environment, so they compile into empty Inductor and
+  Tier-2 caches instead of reusing the entries of preceding targets. Only the
+  owned caches are removed afterwards: the default locations are shared with
+  other jobs on the host, which may be using them. A Tier-3 cache root set by
+  the user is left as is, so targets can still hit its entries.
+
+  Args:
+    nproc_per_node: Number of workers of the target on this node.
+    tier2_cache_root: Directory holding the host-wide Tier-2 caches. Defaults to
+      the one TorchTPU uses.
+
+  Yields:
+    None. The owned caches are active for the duration.
   """
-  # 1. Clear TorchTPU Tier-2 host-local shared memory compilation cache.
-  shutil.rmtree("/dev/shm/torch_tpu_cache", ignore_errors=True)
-
-  # 2. Clear PyTorch Inductor and compile on-disk caches.
-  cache_patterns = [
-      "/tmp/torchinductor*",
-      "/tmp/torch_compile*",
-  ]
-  if custom_inductor_cache := os.environ.get(  # PY_ENVIRON_OK=benchmark
-      "TORCHINDUCTOR_CACHE_DIR"
+  inductor_cache_dir = tempfile.mkdtemp(prefix="perflab_inductor_")
+  owned_env = {_INDUCTOR_CACHE_ENV: inductor_cache_dir}
+  # The world size the workers see, as set by
+  # `distributed_utils.set_worker_env`.
+  world_size = int(
+      os.environ.get("WORLD_SIZE", nproc_per_node)  # PY_ENVIRON_OK=benchmark
+  )
+  # Mirrors GetTier2CacheName(), so that the Tier-2 cache stays enabled exactly
+  # when it would be otherwise.
+  if user_tier2_cache := os.environ.get(  # PY_ENVIRON_OK=benchmark
+      _TIER2_CACHE_ENV
   ):
-    shutil.rmtree(custom_inductor_cache, ignore_errors=True)
-
-  for pattern in cache_patterns:
-    for p in glob.glob(pattern):
-      shutil.rmtree(p, ignore_errors=True)
+    uses_tier2_cache = user_tier2_cache != _TIER2_CACHE_DISABLED
+  else:
+    uses_tier2_cache = world_size > 1 or bool(
+        os.environ.get(_TIER3_CACHE_ROOT_ENV)  # PY_ENVIRON_OK=benchmark
+    )
+  tier2_cache_dir = None
+  if uses_tier2_cache:
+    # A cache name set by the user is replaced too, so that the target compiles
+    # cold and never deletes that cache.
+    tier2_cache_name = f"perflab_{uuid.uuid4().hex}"
+    owned_env[_TIER2_CACHE_ENV] = tier2_cache_name
+    tier2_cache_dir = os.path.join(
+        tier2_cache_root or _TIER2_CACHE_ROOT, tier2_cache_name
+    )
+  try:
+    with _scoped_env(owned_env):
+      yield
+  finally:
+    shutil.rmtree(inductor_cache_dir, ignore_errors=True)
+    if tier2_cache_dir is not None:
+      shutil.rmtree(tier2_cache_dir, ignore_errors=True)
 
 
 def main(argv: Sequence[str]) -> None:
@@ -636,24 +695,21 @@ def main(argv: Sequence[str]) -> None:
         len(shard_targets),
         target_name,
     )
-    # Evict shared-memory and on-disk compilation caches between targets so each
-    # target measures true cold compilation latency, including after a failed
-    # target.
-    _clear_persistent_compilation_caches()
     skip_reason_file = os.path.join(skip_dir, f"{idx}.txt")
     start = time.monotonic()
     # Isolate failures per target: `mp.spawn` raises `ProcessRaisedException`
     # or `ProcessExitedException` after terminating the surviving ranks, so a
     # broken target must not abort the remaining ones.
     try:
-      distributed_utils.dist_run(
-          local_nproc,
-          _run_single_target_task,
-          spec.name,
-          mode.value,
-          platform.value,
-          skip_reason_file,
-      )
+      with _owned_compilation_caches(local_nproc):
+        distributed_utils.dist_run(
+            local_nproc,
+            _run_single_target_task,
+            spec.name,
+            mode.value,
+            platform.value,
+            skip_reason_file,
+        )
     except Exception as e:  # pylint: disable=broad-exception-caught
       logging.exception("Benchmark target %s FAILED.", target_name)
       results.append(
