@@ -212,6 +212,12 @@ py_wheel(
     homepage = "https://github.com/google-pytorch/torch_tpu",
     license = "Apache 2.0",
     platform = "manylinux_2_31_x86_64",
+    project_urls = {
+        "Changelog": "https://github.com/google-pytorch/torch_tpu/releases",
+        "Documentation": "https://torchtpu.readthedocs.io/",
+        "Issues": "https://github.com/google-pytorch/torch_tpu/issues",
+        "Repository": "https://github.com/google-pytorch/torch_tpu",
+    },
     python_requires = select({
         ":python_" + v.replace(".", "_"): ">=" + v.removesuffix("t")
         for v in SUPPORTED_PYTHON_VERSIONS
