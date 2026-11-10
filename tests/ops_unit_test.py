@@ -15096,10 +15096,22 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     def compute_int64(device):
       a = torch.tensor(
-          [1836311903, -(2**63), 1000000007], dtype=torch.int64, device=device
+          [
+              1836311903,
+              -(2**63),
+              -(2**63),
+              -(2**63),
+              2**63 - 1,
+              2**63 - 1,
+              1000000007,
+          ],
+          dtype=torch.int64,
+          device=device,
       )
       b = torch.tensor(
-          [1134903170, 1, 1000000009], dtype=torch.int64, device=device
+          [1134903170, 1, 2, -(2**63), 1, 7, 1000000009],
+          dtype=torch.int64,
+          device=device,
       )
       return torch.lcm(a, b)
 
@@ -15165,6 +15177,21 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         return x1, x2
 
       self.assert_close_tpu_vs_cpu(compute)
+
+  def test_lcm_int64_avoids_div_rem(self):
+    """Tests int64 lcm lowers via while loops without 64-bit div/rem ops."""
+    a = torch.tensor([12, 0], dtype=torch.int64, device="tpu")
+    b = torch.tensor([18, 5], dtype=torch.int64, device="tpu")
+    with execution_mode.set_eager_mode(
+        execution_mode.EagerMode._INTERNAL_COMPILE_FX_GRAPH
+    ):
+      out = torch.lcm(a, b)
+    mlir_text = tpu_torch_compile.serialize_mlir_text(
+        tpu_torch_compile.build_mlir([out], [a, b])
+    )
+    self.assertIn("stablehlo.while", mlir_text)
+    self.assertNotIn("stablehlo.divide", mlir_text)
+    self.assertNotIn("stablehlo.remainder", mlir_text)
 
   def test_var_empty_reduction_dim(self):
     """Tests 0-sized reduction with negative correction returns NaN (b/568045113)."""
