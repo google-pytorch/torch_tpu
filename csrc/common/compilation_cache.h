@@ -184,6 +184,14 @@ struct PerfStats {
   }
 };
 
+// Which registered unbounded dynamic kernels a cache miss may load, as selected
+// by TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS.
+enum class UnboundedDynamicKernelMode {
+  kNone,     // No kernel.
+  kDefault,  // Kernels enabled by default.
+  kAll,      // Every kernel.
+};
+
 // An in-memory cache for compiled XLA programs. The ownership of cached
 // executables is shared between the cache and the user of the executable.
 // This shared ownership is needed to avoid deleting an executable still in use
@@ -295,8 +303,8 @@ class CompilationCache {
   //
   // A static cache miss is served by a compatible kernel from
   // `UnboundedDynamicKernelRegistry` only if `unbounded_kernel_policy` is
-  // `kAllow` and TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS is not
-  // disabled (it is enabled by default).
+  // `kAllow` and TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS enables the
+  // kernel (by default, only kernels that are `enabled_by_default`).
   absl::StatusOr<CompiledKernel> GetOrCompile(
       const CompilationCacheKey& key, const std::vector<Shape>& input_shapes,
       const std::vector<Shape>& output_shapes,
@@ -407,14 +415,14 @@ class CompilationCache {
   std::optional<BoundedDynamicCache::iterator> GetBoundedDynamicCacheEntries(
       ShapelessKey shapeless_key) ABSL_EXCLUSIVE_LOCKS_REQUIRED(cache_mutex_);
 
-  // Looks `key` up against the unbounded dynamic kernel registry. If
-  // auto-loading is enabled and a registered kernel under the key's shapeless
-  // key accepts `input_shapes` / `output_shapes`, returns a lookup for that
-  // kernel's tier-1 entry: the existing one if it is in flight or succeeded,
-  // or a newly created pending one (with `unbounded_dynamic_kernel` set so the
-  // kernel is built instead of the traced computation). Returns nullopt if
-  // auto-loading is disabled, no kernel matches, or the kernel's existing entry
-  // failed to build, in which case the caller falls back to the other tiers.
+  // Looks `key` up against the unbounded dynamic kernel registry. If the first
+  // registered kernel under the key's shapeless key that accepts
+  // `input_shapes` / `output_shapes` has a tier-1 entry that is in flight or
+  // succeeded, returns a lookup for it. Otherwise, if
+  // `unbounded_dynamic_kernel_mode_` enables the kernel, returns a newly
+  // created pending entry (with `unbounded_dynamic_kernel` set so the kernel is
+  // built instead of the traced computation). Returns nullopt in every other
+  // case, in which the caller falls back to the other tiers.
   std::optional<CacheLookupInternal> GetOrCreateUnboundedDynamicCacheEntry(
       const CompilationCacheKey& key, absl::Span<const Shape> input_shapes,
       absl::Span<const Shape> output_shapes)
@@ -615,12 +623,13 @@ class CompilationCache {
   // If true, the cache will dump the input StableHLO module for any cache
   // misses.
   bool dump_on_cache_miss_ ABSL_GUARDED_BY(cache_mutex_) = false;
-  // If true, a cache miss whose input shapes are accepted by a kernel in the
-  // `UnboundedDynamicKernelRegistry` loads that kernel instead of compiling
-  // the traced computation, provided the request's
+  // Which kernels of the `UnboundedDynamicKernelRegistry` a cache miss may load
+  // instead of compiling the traced computation, provided the request's
   // `UnboundedKernelPolicy` is `kAllow`. Initialized from
-  // TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS; true by default.
-  bool auto_load_unbounded_dynamic_kernels_ ABSL_GUARDED_BY(cache_mutex_);
+  // TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS when the cache is created,
+  // which crashes if the value is invalid; `kDefault` when unset.
+  UnboundedDynamicKernelMode unbounded_dynamic_kernel_mode_
+      ABSL_GUARDED_BY(cache_mutex_) = UnboundedDynamicKernelMode::kDefault;
 
   // The current initialization options.
   CompilationCacheInitializationOptions options_ ABSL_GUARDED_BY(cache_mutex_);

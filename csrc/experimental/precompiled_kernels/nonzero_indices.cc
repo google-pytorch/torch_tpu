@@ -673,6 +673,7 @@ UnboundedDynamicKernel GetNonzero2DUnboundedDynamicKernel() {
       .key = MakeUnboundedDynamicKernelCacheKey(
           NonZeroCacheKey(2),
           static_cast<int>(NonzeroKernelId::kNonzeroKGreaterThan2)),
+      .enabled_by_default = true,
   };
 }
 
@@ -683,6 +684,7 @@ UnboundedDynamicKernel GetNonzero1DUnboundedDynamicKernel() {
       .key = MakeUnboundedDynamicKernelCacheKey(
           NonZeroCacheKey(1),
           static_cast<int>(NonzeroKernelId::kNonzeroInputTile1024)),
+      .enabled_by_default = true,
   };
 }
 

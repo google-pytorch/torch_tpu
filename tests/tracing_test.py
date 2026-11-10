@@ -40,10 +40,10 @@ if "TORCH_TRACE" not in os.environ:
   )
 
 # Whether registered unbounded dynamic kernels may serve eager batches, as
-# they do unless TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS disables them.
-_UNBOUNDED_DYNAMIC_KERNELS_ENABLED = os.environ.get(
-    "TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS", "1"
-).lower() not in ("0", "false")
+# they do unless TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS is "none".
+_UNBOUNDED_DYNAMIC_KERNELS_ENABLED = (
+    os.environ.get("TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS") != "none"
+)
 
 # pylint: disable=g-import-not-at-top
 from absl.testing import absltest

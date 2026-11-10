@@ -41,6 +41,7 @@ from collections.abc import Mapping, Sequence
 import contextlib
 import os
 import re
+import tempfile
 from typing import Any, TypeAlias
 from unittest import mock
 from absl.testing import absltest
@@ -5379,6 +5380,36 @@ class InitializationErrorsTest(et.TpuOnlyErrorTestBase):
     self.assert_worker_raises_tpu_init_failure(
         _init_process_group_in_fresh_process
     )
+
+
+def _create_compilation_cache_in_fresh_process(local_rank: int) -> None:
+  """Worker that creates the compilation cache."""
+  del local_rank  # Unused.
+  torch.tpu._get_cache_stats()
+
+
+class CompilationCacheErrorsTest(et.TpuOnlyErrorTestBase):
+
+  @et.why_tpu_only("The env var only configures TorchTPU's compilation cache.")
+  def test_invalid_unbounded_dynamic_kernels_env_var_crashes(self):
+    name = "TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS"
+    # The env var is read once per process, so a fresh worker inherits the
+    # invalid value, and the stderr file that captures its crash message.
+    stderr_fd = os.dup(2)
+    with tempfile.TemporaryFile("w+") as stderr:
+      os.dup2(stderr.fileno(), 2)
+      try:
+        with _patch_env_vars((name,), {name: "bogus"}):
+          with self.assertRaises(mp.ProcessExitedException):
+            mp.spawn(_create_compilation_cache_in_fresh_process)
+      finally:
+        os.dup2(stderr_fd, 2)
+        os.close(stderr_fd)
+      stderr.seek(0)
+      # The coverage tool looks for "Covered file:line"; the crash message
+      # holds "cpp_error_trace='file:line: Function()...'".
+      for loc in re.findall(r"cpp_error_trace='([/\w\.]+:\d+)", stderr.read()):
+        print(f"\nCovered {loc}")
 
 
 class ForkErrorsTest(et.TpuOnlyErrorTestBase):

@@ -940,7 +940,7 @@ torch_tpu_py_test(
         "--max_samples_per_op_dtype=10",
     ],
     data = _GPU_GOLDENS_DATA,
-    env = {"TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS": "0"},
+    env = {"TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS": "none"},
     main = "ops_test.py",
     nopresubmit_oss = _WHEN_OSS_PRESUBMIT_OVERLOADED,
     run_on_accelerators = [
@@ -2517,7 +2517,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "ops_unit_test_static",
     srcs = ["ops_unit_test_static.py"],
-    env = {"TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS": "0"},
+    env = {"TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS": "none"},
     main = "ops_unit_test_static.py",
     run_on_accelerators = [
         "requires-tpu-v6e",
