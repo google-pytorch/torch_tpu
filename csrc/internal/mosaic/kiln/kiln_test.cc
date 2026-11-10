@@ -2681,5 +2681,49 @@ TEST(KilnTest, WindowedLoadDynamicOffset) {
   )"));
 }
 
+TEST(KilnTest, MemRefReshapeDynamicStridedBandDma) {
+  absl::StatusOr<Kernel> kernel = CreateKernel(
+      GridSpec{.name = "strided_band_dma"}, ScalarPrefetchSpec{i32(3)},
+      InSpec::Hbm(u32({kDynamic, 1, 128})),
+      OutSpec::Hbm(u32({kDynamic, 1, 128})),
+      [](SmemRef meta, HbmRef in, HbmRef out) {
+        const Scalar bands = Load(meta(0));
+        const Scalar width = Load(meta(1));
+        const Scalar stride = Load(meta(2));
+        VmemRef stage = AllocaVmem(u32(512, 1, 128));
+        HbmRef in_bands = in(Slice(0, bands * stride), all, all)
+                              .Reshape({bands, stride, 128})(
+                                  Slice(0, bands), Slice(0, width), all);
+        VmemRef stage_bands = stage(Slice(0, bands * width), all, all)
+                                  .Reshape({bands, width, 128});
+        SyncCopy(in_bands, stage_bands);
+        HbmRef out_bands = out(Slice(0, bands * stride), all, all)
+                               .Reshape({bands, stride, 128})(
+                                   Slice(0, bands), Slice(0, width), all);
+        static_assert(
+            std::is_same_v<decltype(Ref(out).Reshape({bands, 128})), Ref>);
+        SyncCopy(stage_bands, out_bands);
+      });
+  ASSERT_THAT(kernel, IsOkAndMatchesIr(R"(
+    CHECK-LABEL: func.func @strided_band_dma
+    CHECK:         tpu.memref_reshape %{{.*}}<%{{.*}}, %{{.*}}> : memref<?x1x128xi32, #tpu.memory_space<hbm>> -> memref<?x?x128xi32, #tpu.memory_space<hbm>>
+    CHECK:         tpu.memref_reshape %{{.*}}<%{{.*}}, %{{.*}}> : memref<?x1x128xi32, #tpu.memory_space<vmem>> -> memref<?x?x128xi32, #tpu.memory_space<vmem>>
+  )"));
+}
+
+TEST(KilnTest, CrossBitwidthTileBitcast) {
+  EXPECT_THAT(
+      CreateKernel(
+          GridSpec{.name = "cross_bitwidth_bitcast", .grid = {1}},
+          InSpec{u32(16, 128)}, OutSpec{bf16(32, 128)},
+          [](VmemRef in, VmemRef out) { Store(out, Load(in).Bitcast(bf16)); }),
+      IsOkAndMatchesIr(R"(
+    CHECK-LABEL: func.func @cross_bitwidth_bitcast
+    CHECK:         %[[X:.*]] = vector.load %{{.*}} : memref<16x128xi32, #tpu.memory_space<vmem>>, vector<16x128xi32>
+    CHECK:         %[[B:.*]] = tpu.bitcast %[[X]] : vector<16x128xi32> -> vector<32x128xbf16>
+    CHECK:         tpu.vector_store %{{.*}}[{{.*}}], %[[B]]
+  )"));
+}
+
 }  // namespace
 }  // namespace torch_tpu::kiln
