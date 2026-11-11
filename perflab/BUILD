@@ -230,7 +230,8 @@ pytype_strict_library(
     srcs = ["step_lib.py"],
 )
 
-torch_tpu_py_library(
+pytype_strict_library(
+    # PY_LIBRARY_OK=Decouple from torch_tpu to avoid C++ dependency in coverage tests.
     name = "loss",
     srcs = ["loss.py"],
     deps = [
