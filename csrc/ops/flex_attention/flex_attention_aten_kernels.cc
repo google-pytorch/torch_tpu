@@ -18,6 +18,7 @@
 
 #include <cstdint>
 #include <numbers>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -29,6 +30,7 @@
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "c10/core/ScalarType.h"
+#include "c10/util/ArrayRef.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
@@ -125,21 +127,20 @@ kiln::Scalar KvHead(const FlexAttnConfig& c) {
 }
 
 // Applies the score / mask mods to the scores `s` (natural units) of the
-// current tile.
-absl::StatusOr<kiln::Tile> ApplyMods(const FlexAttnConfig& c,
-                                     kiln::SmemRef kv_num_blocks,
-                                     kiln::SmemRef kv_indices, kiln::Tile s) {
+// tile of query head `head`, query block `q_blk` and key block `kv_blk`.
+absl::StatusOr<kiln::Tile> ApplyMods(const FlexAttnConfig& c, kiln::Tile s,
+                                     kiln::Scalar head, kiln::Scalar q_blk,
+                                     kiln::Scalar kv_blk) {
   if (c.score_mod_mlir.empty() && c.mask_mod_mlir.empty()) return s;
   // The mods were traced at the full tile shape (see mod_to_mlir).
   const llvm::ArrayRef<int64_t> shape = s.dims();
   const kiln::Tile b = kiln::Splat(kiln::ProgramId(kBatchAxis), shape);
-  const kiln::Tile h = kiln::Splat(kiln::ProgramId(kHeadAxis), shape);
-  const kiln::Tile q_idx = (kiln::Iota(kiln::i32(c.q_block, 1), 0) +
-                            kiln::ProgramId(kQBlockAxis) * c.q_block)
-                               .BroadcastTo(shape);
+  const kiln::Tile h = kiln::Splat(head, shape);
+  const kiln::Tile q_idx =
+      (kiln::Iota(kiln::i32(c.q_block, 1), 0) + q_blk * c.q_block)
+          .BroadcastTo(shape);
   const kiln::Tile kv_idx =
-      (kiln::Iota(kiln::i32(1, c.kv_block), 1) +
-       CurrentKvBlock(kv_num_blocks, kv_indices, c) * c.kv_block)
+      (kiln::Iota(kiln::i32(1, c.kv_block), 1) + kv_blk * c.kv_block)
           .BroadcastTo(shape);
   // s = score_mod(s, b, h, q_idx, kv_idx)
   if (!c.score_mod_mlir.empty()) {
@@ -245,7 +246,9 @@ absl::StatusOr<kiln::Kernel> BuildFlexAttentionKernel(const FlexAttnConfig& c) {
           // log2 domain.
           const kiln::Tile scores = kiln::Dot(q, k, qk_options) * c.scale;
           absl::StatusOr<kiln::Tile> modded =
-              ApplyMods(c, kv_num_blocks, kv_indices, scores);
+              ApplyMods(c, scores, kiln::ProgramId(kHeadAxis),
+                        kiln::ProgramId(kQBlockAxis),
+                        CurrentKvBlock(kv_num_blocks, kv_indices, c));
           if (!modded.ok()) {
             mod_status = modded.status();
             return;  // The kernel is discarded below.
@@ -291,6 +294,170 @@ absl::StatusOr<kiln::Kernel> BuildFlexAttentionKernel(const FlexAttnConfig& c) {
   return kernel;
 }
 
+// Grid axes of the dK / dV kernel.
+constexpr int kKvHeadAxis = 1;
+constexpr int kKvBlockAxis = 2;
+constexpr int kGroupAxis = 3;  // Query head within the KV head's group.
+constexpr int kQStepAxis = 4;
+
+// Query head of the current dK / dV grid step.
+kiln::Scalar DkvQHead(const FlexAttnConfig& c) {
+  return kiln::ProgramId(kKvHeadAxis) * c.gqa_groups() +
+         kiln::ProgramId(kGroupAxis);
+}
+
+// Row of the flattened query-side tables for the current (batch, query head,
+// KV block).
+kiln::Scalar DkvTableRow(const FlexAttnConfig& c) {
+  kiln::Scalar b =
+      c.mask_batch == 1 ? kiln::I32(0) : kiln::ProgramId(kBatchAxis);
+  kiln::Scalar h = c.mask_heads == 1 ? kiln::I32(0) : DkvQHead(c);
+  return (b * c.mask_heads + h) * c.num_kv_blocks() +
+         kiln::ProgramId(kKvBlockAxis);
+}
+
+// SMEM read: how many query blocks see this KV block.
+kiln::Scalar NumListedQBlocks(kiln::SmemRef q_num_blocks,
+                              const FlexAttnConfig& c) {
+  return kiln::Load(q_num_blocks(DkvTableRow(c)));
+}
+
+// SMEM read: the query block to visit at step j, q_indices[row, j]. Steps past
+// the end of the list repeat the last block (no new DMA); the body skips them.
+kiln::Scalar CurrentQBlock(kiln::SmemRef q_num_blocks, kiln::SmemRef q_indices,
+                           const FlexAttnConfig& c) {
+  kiln::Scalar n = NumListedQBlocks(q_num_blocks, c);
+  kiln::Scalar j = Min(kiln::ProgramId(kQStepAxis), Max(n - 1, 0));
+  return kiln::Load(q_indices(DkvTableRow(c) * c.num_q_blocks() + j));
+}
+
+// Flex attention backward for dK and dV.
+//
+// Operands: scalar prefetch `q_num_blocks` i32 [mask_batch * mask_heads * NKV]
+// and `q_indices` i32 [mask_batch * mask_heads * NKV * NQ] (the query blocks
+// that see each KV block), then q [B, Hq, T, D], k [B, Hkv, S, D],
+// v [B, Hkv, S, Dv], grad_out [B, Hq, T, Dv], and f32 lse (log2 units) and
+// di = rowsum(grad_out * out), both [B, Hq, 1, T].
+// Results: dk [B, Hkv, S, D] and dv [B, Hkv, S, Dv].
+//
+// Grid (B, Hkv, NKV, G, NQ): for each KV block, the last two axes walk the
+// query blocks of every query head in the KV head's group, accumulating
+// dK += dS^T Q * scale and dV += P^T dO in scratch.
+absl::StatusOr<kiln::Kernel> BuildFlexAttentionDkvKernel(
+    const FlexAttnConfig& c) {
+  const kiln::DType f32 = kiln::f32;
+  const kiln::DType i32 = kiln::i32;
+  const int64_t nq = c.num_q_blocks();
+  const int64_t nkv = c.num_kv_blocks();
+  const int64_t groups = c.gqa_groups();
+  const int64_t table_rows = c.mask_batch * c.mask_heads * nkv;
+
+  kiln::IndexMap kv_map([] {
+    return kiln::IndexIndices{kiln::ProgramId(kBatchAxis),
+                              kiln::ProgramId(kKvHeadAxis),
+                              kiln::ProgramId(kKvBlockAxis), 0};
+  });
+  kiln::IndexMap q_map([c] {
+    return kiln::IndexIndices{
+        kiln::ProgramId(kBatchAxis), DkvQHead(c),
+        CurrentQBlock(kiln::ScalarPrefetch(0), kiln::ScalarPrefetch(1), c), 0};
+  });
+  kiln::IndexMap row_map([c] {
+    return kiln::IndexIndices{
+        kiln::ProgramId(kBatchAxis), DkvQHead(c), 0,
+        CurrentQBlock(kiln::ScalarPrefetch(0), kiln::ScalarPrefetch(1), c)};
+  });
+
+  std::optional<kiln::ContractPrecision> precision;
+  if (c.dtype == f32) precision = kiln::ContractPrecision::kFP32;
+  const kiln::DotOptions nt{.transpose_rhs = true, .precision = precision};
+  const kiln::DotOptions tn{.transpose_lhs = true, .precision = precision};
+
+  // The body callback cannot return errors, so mod splice errors land here.
+  absl::Status mod_status;
+  absl::StatusOr<kiln::Kernel> kernel = kiln::CreateKernel(
+      kiln::GridSpec{
+          .name = "flex_attention_bwd_dkv",
+          .grid = {c.batch, c.kv_heads, nkv, groups, nq},
+          .dimension_semantics = {kiln::DimensionSemantics::kParallel,
+                                  kiln::DimensionSemantics::kParallel,
+                                  kiln::DimensionSemantics::kParallel,
+                                  kiln::DimensionSemantics::kArbitrary,
+                                  kiln::DimensionSemantics::kArbitrary}},
+      kiln::ScalarPrefetchSpec{i32(table_rows)},
+      kiln::ScalarPrefetchSpec{i32(table_rows * nq)},
+      kiln::InSpec{c.dtype(1, 1, c.q_block, c.qk_dim), q_map},     // q
+      kiln::InSpec{c.dtype(1, 1, c.kv_block, c.qk_dim), kv_map},   // k
+      kiln::InSpec{c.dtype(1, 1, c.kv_block, c.v_dim), kv_map},    // v
+      kiln::InSpec{c.dtype(1, 1, c.q_block, c.v_dim), q_map},      // grad_out
+      kiln::InSpec{f32(1, 1, 1, c.q_block), row_map},              // lse
+      kiln::InSpec{f32(1, 1, 1, c.q_block), row_map},              // di
+      kiln::OutSpec{c.dtype(1, 1, c.kv_block, c.qk_dim), kv_map},  // dk
+      kiln::OutSpec{c.dtype(1, 1, c.kv_block, c.v_dim), kv_map},   // dv
+      kiln::ScratchSpec::Vmem(f32(c.kv_block, c.qk_dim)),  // dk accumulator
+      kiln::ScratchSpec::Vmem(f32(c.kv_block, c.v_dim)),   // dv accumulator
+      [&]  // REF_CAPTURE_OK=called synchronously
+      (kiln::SmemRef q_num_blocks, kiln::SmemRef q_indices, kiln::VmemRef q_ref,
+       kiln::VmemRef k_ref, kiln::VmemRef v_ref, kiln::VmemRef do_ref,
+       kiln::VmemRef lse_ref, kiln::VmemRef di_ref, kiln::VmemRef dk_ref,
+       kiln::VmemRef dv_ref, kiln::VmemRef dk_acc, kiln::VmemRef dv_acc) {
+        const kiln::Scalar g = kiln::ProgramId(kGroupAxis);
+        const kiln::Scalar j = kiln::ProgramId(kQStepAxis);
+        const kiln::Scalar n = NumListedQBlocks(q_num_blocks, c);
+
+        kiln::If((g == 0) & (j == 0),
+                 [&] {  // REF_CAPTURE_OK=called synchronously
+                   kiln::Store(dk_acc, kiln::Zeros(f32(c.kv_block, c.qk_dim)));
+                   kiln::Store(dv_acc, kiln::Zeros(f32(c.kv_block, c.v_dim)));
+                 });
+
+        // One listed query block: recompute P and fold its gradients in.
+        kiln::If(j < n, [&] {  // REF_CAPTURE_OK=called synchronously
+          const kiln::Tile q = kiln::Load(q_ref(0, 0));
+          const kiln::Tile k = kiln::Load(k_ref(0, 0));
+          const kiln::Tile v = kiln::Load(v_ref(0, 0));
+          const kiln::Tile d_out = kiln::Load(do_ref(0, 0));
+          const kiln::Tile scores = kiln::Dot(q, k, nt) * c.scale;
+          absl::StatusOr<kiln::Tile> modded = ApplyMods(
+              c, scores, DkvQHead(c), CurrentQBlock(q_num_blocks, q_indices, c),
+              kiln::ProgramId(kKvBlockAxis));
+          if (!modded.ok()) {
+            mod_status = modded.status();
+            return;  // The kernel is discarded below.
+          }
+          const kiln::Tile s = *modded * kLog2e;
+
+          const llvm::SmallVector<int64_t, 2> tile = {c.q_block, c.kv_block};
+          const kiln::Tile lse = kiln::Load(lse_ref(0, 0))
+                                     .Reshape({c.q_block, 1})
+                                     .BroadcastTo(tile);
+          const kiln::Tile di = kiln::Load(di_ref(0, 0))
+                                    .Reshape({c.q_block, 1})
+                                    .BroadcastTo(tile);
+          // Fully masked rows have lse == -inf; their P is 0, never NaN.
+          const kiln::Tile is_empty = lse == kiln::NInf(lse.shape());
+          const kiln::Tile p =
+              Select(is_empty, 0.0, Exp2(s - Select(is_empty, 0.0, lse)));
+          const kiln::Tile dp = kiln::Dot(d_out, v, nt);
+          const kiln::Tile ds = p * (dp - di);
+          kiln::Store(dv_acc, kiln::Load(dv_acc) +
+                                  kiln::Dot(p.AsType(c.dtype), d_out, tn));
+          kiln::Store(dk_acc,
+                      kiln::Load(dk_acc) +
+                          kiln::Dot(ds.AsType(c.dtype), q, tn) * c.scale);
+        });
+
+        kiln::If(
+            (g == groups - 1) & (j == nq - 1),
+            [&] {  // REF_CAPTURE_OK=called synchronously
+              kiln::Store(dk_ref(0, 0), kiln::Load(dk_acc).AsType(c.dtype));
+              kiln::Store(dv_ref(0, 0), kiln::Load(dv_acc).AsType(c.dtype));
+            });
+      });
+  TT_RETURN_IF_ERROR(mod_status);
+  return kernel;
+}
+
 absl::StatusOr<kiln::DType> ToKilnDType(at::ScalarType dtype) {
   switch (dtype) {
     case at::kBFloat16:
@@ -305,7 +472,6 @@ absl::StatusOr<kiln::DType> ToKilnDType(at::ScalarType dtype) {
 
 absl::StatusOr<FlexAttnConfig> MakeConfig(
     const at::Tensor& q, const at::Tensor& k, const at::Tensor& v,
-    const at::Tensor& kv_num_blocks, const at::Tensor& kv_indices,
     int64_t mask_batch, int64_t mask_heads, int64_t q_block, int64_t kv_block,
     double scale, std::string_view score_mod_mlir,
     std::string_view mask_mod_mlir) {
@@ -356,22 +522,28 @@ absl::StatusOr<FlexAttnConfig> MakeConfig(
       .score_mod_mlir = std::string(score_mod_mlir),
       .mask_mod_mlir = std::string(mask_mod_mlir),
   };
-
-  const int64_t table_rows = mask_batch * mask_heads * c.num_q_blocks();
-  TT_RET_CHECK(kv_num_blocks.scalar_type() == at::kInt &&
-                   kv_indices.scalar_type() == at::kInt,
-               error::kInvalidArgument)
-      << "block mask tables must be int32";
-  TT_RET_CHECK(kv_num_blocks.dim() == 1 && kv_num_blocks.size(0) == table_rows,
-               error::kInvalidArgument)
-      << "expected kv_num_blocks to be 1D with " << table_rows
-      << " entries, got " << kv_num_blocks.sizes();
-  TT_RET_CHECK(kv_indices.dim() == 1 &&
-                   kv_indices.size(0) == table_rows * c.num_kv_blocks(),
-               error::kInvalidArgument)
-      << "expected kv_indices to be 1D with " << table_rows * c.num_kv_blocks()
-      << " entries, got " << kv_indices.sizes();
   return c;
+}
+
+// Checks the flattened block tables: `num_blocks` has `rows` entries and
+// `indices` has `rows * cols`.
+absl::Status ValidateTables(const at::Tensor& num_blocks,
+                            const at::Tensor& indices, int64_t rows,
+                            int64_t cols, std::string_view num_name,
+                            std::string_view indices_name) {
+  TT_RET_CHECK(
+      num_blocks.scalar_type() == at::kInt && indices.scalar_type() == at::kInt,
+      error::kInvalidArgument)
+      << "block mask tables must be int32";
+  TT_RET_CHECK(num_blocks.dim() == 1 && num_blocks.size(0) == rows,
+               error::kInvalidArgument)
+      << "expected " << num_name << " to be 1D with " << rows
+      << " entries, got " << num_blocks.sizes();
+  TT_RET_CHECK(indices.dim() == 1 && indices.size(0) == rows * cols,
+               error::kInvalidArgument)
+      << "expected " << indices_name << " to be 1D with " << rows * cols
+      << " entries, got " << indices.sizes();
+  return absl::OkStatus();
 }
 
 absl::StatusOr<std::tuple<at::Tensor, at::Tensor>> FlexAttentionFwdImpl(
@@ -382,8 +554,12 @@ absl::StatusOr<std::tuple<at::Tensor, at::Tensor>> FlexAttentionFwdImpl(
     std::string_view mask_mod_mlir, OpParamCacheKeys param_keys) {
   TT_ASSIGN_OR_RETURN(
       const FlexAttnConfig config,
-      MakeConfig(q, k, v, kv_num_blocks, kv_indices, mask_batch, mask_heads,
-                 q_block, kv_block, scale, score_mod_mlir, mask_mod_mlir));
+      MakeConfig(q, k, v, mask_batch, mask_heads, q_block, kv_block, scale,
+                 score_mod_mlir, mask_mod_mlir));
+  TT_RETURN_IF_ERROR(
+      ValidateTables(kv_num_blocks, kv_indices,
+                     mask_batch * mask_heads * config.num_q_blocks(),
+                     config.num_kv_blocks(), "kv_num_blocks", "kv_indices"));
 
   const Dimensions out_dims = {config.batch, config.q_heads, config.q_len,
                                config.v_dim};
@@ -435,6 +611,76 @@ absl::StatusOr<std::tuple<at::Tensor, at::Tensor>> FlexAttentionFwdImpl(
                          MakeTensor(std::move(results[1])));
 }
 
+absl::StatusOr<std::tuple<at::Tensor, at::Tensor>> FlexAttentionBwdDkvImpl(
+    const at::Tensor& q, const at::Tensor& k, const at::Tensor& v,
+    const at::Tensor& grad_out, const at::Tensor& lse, const at::Tensor& di,
+    const at::Tensor& q_num_blocks, const at::Tensor& q_indices,
+    int64_t mask_batch, int64_t mask_heads, int64_t q_block, int64_t kv_block,
+    double scale, std::string_view mask_mod_mlir, OpParamCacheKeys param_keys) {
+  TT_ASSIGN_OR_RETURN(const FlexAttnConfig config,
+                      MakeConfig(q, k, v, mask_batch, mask_heads, q_block,
+                                 kv_block, scale, "", mask_mod_mlir));
+  TT_RETURN_IF_ERROR(ValidateTables(
+      q_num_blocks, q_indices, mask_batch * mask_heads * config.num_kv_blocks(),
+      config.num_q_blocks(), "q_num_blocks", "q_indices"));
+  const Dimensions grad_out_dims = {config.batch, config.q_heads, config.q_len,
+                                    config.v_dim};
+  TT_RET_CHECK(grad_out.scalar_type() == q.scalar_type() &&
+                   grad_out.sizes() == c10::IntArrayRef(grad_out_dims),
+               error::kInvalidArgument)
+      << "expected grad_out of shape " << c10::IntArrayRef(grad_out_dims)
+      << " and dtype " << q.scalar_type() << ", got " << grad_out.sizes()
+      << " and " << grad_out.scalar_type();
+
+  const Dimensions dk_dims = {config.batch, config.kv_heads, config.kv_len,
+                              config.qk_dim};
+  const Dimensions dv_dims = {config.batch, config.kv_heads, config.kv_len,
+                              config.v_dim};
+  auto op_builder =
+      [config, dk_dims, dv_dims](
+          absl::Span<mlir::MlirOp> inputs,
+          mlir::MlirBuilder& builder) -> absl::StatusOr<DynamicMlirOpResults> {
+    TT_ASSIGN_OR_RETURN(kiln::Kernel kernel,
+                        BuildFlexAttentionDkvKernel(config));
+    const mlir::Type elem_type = GetTensorTypeOrDie(inputs[2]).getElementType();
+    const llvm::SmallVector<mlir::Type, 2> result_types = {
+        mlir::RankedTensorType::get(dk_dims, elem_type),
+        mlir::RankedTensorType::get(dv_dims, elem_type)};
+    // Kernel operand order: scalar prefetch (the two tables), then q, k, v,
+    // grad_out, lse, di.
+    llvm::SmallVector<mlir::Value, 8> operands;
+    for (mlir::MlirOp& input : inputs) {
+      operands.push_back(input.getValue());
+    }
+    TT_ASSIGN_OR_RETURN(
+        auto custom_call,
+        CreateKilnCustomCallOp(
+            builder.getOpBuilder(), builder.getLoc(), std::move(kernel),
+            operands, result_types, VmemLimitBytes(),
+            /*needs_hlo_passes=*/!config.mask_mod_mlir.empty()));
+    DynamicMlirOpResults results;
+    results.push_back(mlir::MlirOp(builder, custom_call.getResult(0)));
+    results.push_back(mlir::MlirOp(builder, custom_call.getResult(1)));
+    return results;
+  };
+
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType out_dtype,
+                      ConvertTo<mlir::ElementType>(q.scalar_type()));
+  const std::vector<mlir::ElementType> out_dtypes = {out_dtype, out_dtype};
+  const std::vector<absl::Span<const int64_t>> out_dims_list = {dk_dims,
+                                                                dv_dims};
+  const std::vector<at::Tensor> dispatch_inputs = {
+      q_num_blocks, q_indices, q, k, v, grad_out, lse, di};
+  TT_ASSIGN_OR_RETURN(std::vector<DeviceBufferRef> results,
+                      (DispatchOp<kDynamicSize, kDynamicSize>(
+                          std::move(op_builder), dispatch_inputs,
+                          {.out_dtypes = out_dtypes,
+                           .out_dims_list = out_dims_list,
+                           .op_param_cache_keys = std::move(param_keys)})));
+  return std::make_tuple(MakeTensor(std::move(results[0])),
+                         MakeTensor(std::move(results[1])));
+}
+
 }  // namespace
 
 std::tuple<at::Tensor, at::Tensor> FlexAttentionFwd(
@@ -453,6 +699,26 @@ std::tuple<at::Tensor, at::Tensor> FlexAttentionFwd(
                                        mask_batch, mask_heads, q_block,
                                        kv_block, scale, score_mod_mlir,
                                        mask_mod_mlir, std::move(param_keys)));
+              return results;
+            });
+}
+
+std::tuple<at::Tensor, at::Tensor> FlexAttentionBwdDkv(
+    const at::Tensor& q, const at::Tensor& k, const at::Tensor& v,
+    const at::Tensor& grad_out, const at::Tensor& lse, const at::Tensor& di,
+    const at::Tensor& q_num_blocks, const at::Tensor& q_indices,
+    int64_t mask_batch, int64_t mask_heads, int64_t q_block, int64_t kv_block,
+    double scale, std::string_view mask_mod_mlir) {
+  TT_KERNEL(OpName::kFlexAttentionBwdDkv, param_keys,
+            (q, k, v, grad_out, lse, di, q_num_blocks, q_indices, mask_batch,
+             mask_heads, q_block, kv_block, scale, mask_mod_mlir),
+            {
+              TT_ASSIGN_OR_THROW(
+                  auto results,
+                  FlexAttentionBwdDkvImpl(
+                      q, k, v, grad_out, lse, di, q_num_blocks, q_indices,
+                      mask_batch, mask_heads, q_block, kv_block, scale,
+                      mask_mod_mlir, std::move(param_keys)));
               return results;
             });
 }
