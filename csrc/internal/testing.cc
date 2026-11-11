@@ -15,6 +15,7 @@
  */
 
 #include <exception>
+#include <memory>
 #include <string>
 #include <string_view>
 
@@ -75,7 +76,8 @@ std::string_view PyGetMemoryKind(const at::Tensor& tensor) {
   TT_ASSIGN_OR_THROW(
       const DeviceBufferRef buffer,
       MaterializeAndReturn(tensor, MaterializationReason::kDebugMode));
-  TT_ASSIGN_OR_THROW(const xla::PjRtBuffer* pjrt_buffer, buffer.AwaitBuffer());
+  TT_ASSIGN_OR_THROW(std::shared_ptr<xla::PjRtBuffer> pjrt_buffer,
+                     buffer.GetSharedBuffer());
   if (pjrt_buffer == nullptr || pjrt_buffer->memory_space() == nullptr) {
     return "unknown";
   }

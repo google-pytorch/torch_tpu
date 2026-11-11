@@ -62,7 +62,9 @@
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/python_context.h"
 #include "csrc/pjrt/pjrt_utils.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/Support/Casting.h"
 #include "llvm/Support/raw_ostream.h"
 #include "mlir/Dialect/Func/Extensions/InlinerExtension.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -81,6 +83,7 @@
 #include "mlir/Support/DebugStringHelper.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Transforms/Passes.h"
+#include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/FuncBuilder.h"
@@ -89,6 +92,7 @@
 #include "tsl/profiler/lib/traceme.h"
 #include "xla/client/executable_build_options.h"
 #include "xla/layout.h"
+#include "xla/pjrt/pjrt_client.h"
 #include "xla/service/device_assignment.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
@@ -318,15 +322,53 @@ GraphKey AnnotateGraphKeyWithDonatedInputs(
                   graph_key.dimensions_key());
 }
 
+namespace {
+
+GraphKey AnnotateGraphKeyWithOutputLayouts(
+    const GraphKey& graph_key, absl::Span<const DeviceBufferRef> outputs) {
+  FingerprintType fp = graph_key.shapeless_key().key();
+  bool changed = false;
+  constexpr uint64_t kOutputLayoutDomain = 0x3d210b00ULL;
+  for (size_t i = 0; i < outputs.size(); ++i) {
+    if (!outputs[i].has_custom_layout()) continue;
+    const Shape output_shape = outputs[i].shape();
+    if (output_shape.layout().has_value() &&
+        !output_shape.layout()->minor_to_major.empty()) {
+      const CustomLayout& layout = *output_shape.layout();
+      fp = FingerprintCat(fp, kOutputLayoutDomain);
+      fp = FingerprintCat(fp, static_cast<uint64_t>(i));
+      fp = FingerprintCat(fp, FingerprintCat(layout.minor_to_major));
+      for (const Indices& tile : layout.tiles) {
+        fp = FingerprintCat(fp, FingerprintCat(tile));
+      }
+      fp = FingerprintCat(fp, layout.element_size_in_bits);
+      changed = true;
+    }
+  }
+  if (!changed) return graph_key;
+  return GraphKey(ShapelessKey(fp), graph_key.dimensions_key());
+}
+
+}  // namespace
+
 CompilationCacheKey Traversal::GetCacheKey(
     CompileOptionsKey compile_options_key,
     absl::Span<const CustomLayout> argument_layouts,
-    absl::Span<const int64_t> donated_inputs) const {
+    absl::Span<const int64_t> donated_inputs,
+    ArgumentLayoutOverridePolicy argument_layout_override_policy) const {
   if (graph_key_ == std::nullopt) {
     graph_key_ = BuildGraphKey();
   }
-  const GraphKey layout_key =
-      AnnotateGraphKeyWithArgumentLayouts(*graph_key_, argument_layouts);
+  GraphKey layout_key = AnnotateGraphKeyWithOutputLayouts(
+      AnnotateGraphKeyWithArgumentLayouts(*graph_key_, argument_layouts),
+      outputs_);
+  if (argument_layout_override_policy == ArgumentLayoutOverridePolicy::kAllow) {
+    constexpr uint64_t kAllowOverrideDomain = 0x7a6c6c6f77ULL;
+    layout_key =
+        GraphKey(ShapelessKey(FingerprintCat(layout_key.shapeless_key().key(),
+                                             kAllowOverrideDomain)),
+                 layout_key.dimensions_key());
+  }
   return CompilationCacheKey(
       AnnotateGraphKeyWithDonatedInputs(layout_key, donated_inputs),
       compile_options_key);
@@ -471,14 +513,19 @@ absl::Status Traversal::ValidateAndReorderArguments(
   return absl::OkStatus();
 }
 
-absl::StatusOr<mlir::MlirOp> Traversal::GetMlirOpForProcessedBuffer(
-    const absl::flat_hash_map<DeviceBufferRef, mlir::MlirOp>& ref_to_op_map,
-    const DeviceBufferRef& buffer_ref) const {
+static absl::StatusOr<mlir::MlirOp> LookupProcessedBuffer(
+    const RefToOpMap& ref_to_op_map, const DeviceBufferRef& buffer_ref) {
   auto it = ref_to_op_map.find(buffer_ref);
   TT_RET_CHECK(it != ref_to_op_map.end(), error::kInternal)
       << "DeviceBufferRef not found in ref_to_op_map: "
       << buffer_ref.DebugString();
   return it->second;
+}
+
+absl::StatusOr<mlir::MlirOp> Traversal::GetMlirOpForProcessedBuffer(
+    const absl::flat_hash_map<DeviceBufferRef, mlir::MlirOp>& ref_to_op_map,
+    const DeviceBufferRef& buffer_ref) const {
+  return LookupProcessedBuffer(ref_to_op_map, buffer_ref);
 }
 
 namespace {
@@ -558,7 +605,8 @@ mlir::MlirOp CreateArgumentOp(mlir::func::FunctionBuilder& fb,
 
 void AnnotateMlirPlacements(mlir::ModuleOp module,
                             absl::Span<const DeviceBufferRef> outputs,
-                            absl::Span<const DeviceBufferRef> arguments) {
+                            absl::Span<const DeviceBufferRef> arguments,
+                            const Indices& main_arg_indices) {
   auto func = module.lookupSymbol<mlir::func::FuncOp>("main");
   if (!func) {
     return;
@@ -573,9 +621,94 @@ void AnnotateMlirPlacements(mlir::ModuleOp module,
   }
   for (size_t i = 0; i < arguments.size(); ++i) {
     if (arguments[i].is_pinned_host()) {
-      func.setArgAttr(i, "mhlo.memory_kind", pinned_host_attr);
+      func.setArgAttr(main_arg_indices[i], "mhlo.memory_kind",
+                      pinned_host_attr);
     }
   }
+}
+
+absl::Status HandleDeferredOpDeviceAssignment(
+    mlir::func::FunctionBuilder& fb, const DeferredOp& deferred_op,
+    const DeviceAssignment& resolved_da, mlir::Operation* prev_last_op,
+    const absl::flat_hash_set<std::string>& existing_funcs) {
+  mlir::Block* insertion_block = fb.getOpBuilder().getInsertionBlock();
+  mlir::Operation* first_new_op = nullptr;
+  if (insertion_block != nullptr && !insertion_block->empty()) {
+    first_new_op = (prev_last_op != nullptr) ? prev_last_op->getNextNode()
+                                             : &insertion_block->front();
+  }
+  mlir::ModuleOp module_op = GetModuleOp(fb);
+  std::vector<mlir::func::FuncOp> new_func_ops;
+  for (mlir::func::FuncOp func_op : module_op.getOps<mlir::func::FuncOp>()) {
+    if (!existing_funcs.contains(func_op.getSymName().str())) {
+      new_func_ops.push_back(func_op);
+    }
+  }
+  return ApplySubgroupTilingOrReplicaRewriting(first_new_op, new_func_ops,
+                                               deferred_op, resolved_da.local);
+}
+
+absl::Status ProcessSingleDeferredOp(
+    mlir::func::FunctionBuilder& fb, const SharedDeviceBufferList& node,
+    RefToOpMap& ref_to_op_map, llvm::DenseSet<mlir::Value>& donated_values,
+    const DeviceAssignment& resolved_da) {
+  const auto maybe_deferred_op = node->deferred_op();
+  TT_RET_CHECK(maybe_deferred_op, error::kInternal)
+      << "in execution_order, a DeviceBufferList has no deferred op";
+  const DeferredOp& deferred_op = *maybe_deferred_op;
+
+  std::vector<mlir::MlirOp> deferred_inputs;
+  deferred_inputs.reserve(deferred_op.inputs().size());
+  for (const DeviceBufferRef& input : deferred_op.inputs()) {
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp mlir_op,
+                        LookupProcessedBuffer(ref_to_op_map, input));
+    deferred_inputs.push_back(mlir_op);
+  }
+
+  for (int64_t donated_input_index : deferred_op.donated_indices()) {
+    donated_values.insert(deferred_inputs[donated_input_index].getValue());
+  }
+
+  const bool has_op_da = !deferred_op.device_assignment().empty();
+  mlir::Block* insertion_block = fb.getOpBuilder().getInsertionBlock();
+  mlir::Operation* prev_last_op =
+      (insertion_block != nullptr && !insertion_block->empty())
+          ? &insertion_block->back()
+          : nullptr;
+  mlir::ModuleOp module_op = GetModuleOp(fb);
+  absl::flat_hash_set<std::string> existing_funcs;
+  if (has_op_da) {
+    for (mlir::func::FuncOp func_op : module_op.getOps<mlir::func::FuncOp>()) {
+      existing_funcs.insert(func_op.getSymName().str());
+    }
+  }
+
+  ScopedPythonContextProvider provider(deferred_op.op_context().Copy(), &fb);
+  TT_ASSIGN_OR_RETURN(
+      DynamicMlirOpResults results,
+      deferred_op.op_builder()(fb, absl::MakeSpan(deferred_inputs)));
+  TT_RET_CHECK(results.size() == node->size(), error::kInternal)
+      << "deferred op " << deferred_op.op_name() << " returned "
+      << results.size() << " results, expected " << node->size();
+
+  if (has_op_da) {
+    TT_RETURN_IF_ERROR(HandleDeferredOpDeviceAssignment(
+        fb, deferred_op, resolved_da, prev_last_op, existing_funcs));
+  }
+
+  for (int64_t index = 0; index < node->size(); ++index) {
+    TT_ASSIGN_OR_RETURN(
+        mlir::MlirOp casted_op,
+        CastIfNeeded(results[index], node->element_type(index)));
+
+    TT_ASSIGN_OR_RETURN(DeviceBufferRef ref,
+                        DeviceBufferRef::Create(node, index));
+    ABSL_VLOG(3) << "[Traversal::BuildMlirModule] built output " << index
+                 << " of deferred op " << deferred_op.op_name() << ": "
+                 << mlir::debugString(casted_op.getValue());
+    ref_to_op_map[std::move(ref)] = std::move(casted_op);
+  }
+  return absl::OkStatus();
 }
 
 }  // namespace
@@ -594,6 +727,17 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> Traversal::BuildMlirModule(
     mlir::MLIRContext& mlir_context, bool use_stablehlo_bounds,
     absl::Span<const int64_t> donated_inputs,
     std::optional<std::string_view> module_name) const {
+  return BuildMlirModuleWithArgIndices(mlir_context, use_stablehlo_bounds,
+                                       donated_inputs, module_name,
+                                       /*out_main_arg_indices=*/nullptr);
+}
+
+absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>>
+Traversal::BuildMlirModuleWithArgIndices(
+    mlir::MLIRContext& mlir_context, bool use_stablehlo_bounds,
+    absl::Span<const int64_t> donated_inputs,
+    std::optional<std::string_view> module_name,
+    Indices* absl_nullable out_main_arg_indices) const {
   TT_ASSIGN_OR_RETURN(const DeviceAssignment resolved_da,
                       ResolveDeviceAssignment());
 
@@ -617,9 +761,13 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> Traversal::BuildMlirModule(
 
   // Add a function parameter for each argument DeviceBufferRef.
   RefToOpMap ref_to_op_map;
+  Indices main_arg_indices;
+  main_arg_indices.reserve(arguments.size());
   ABSL_VLOG(2) << "[Traversal::BuildMlirModule] building MLIR ops for "
                << arguments.size() << " arguments";
   for (const DeviceBufferRef& argument : arguments) {
+    main_arg_indices.push_back(static_cast<int64_t>(
+        fb.getOpBuilder().getInsertionBlock()->getNumArguments()));
     ref_to_op_map[argument] =
         CreateArgumentOp(fb, argument, use_stablehlo_bounds);
   }
@@ -631,85 +779,9 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> Traversal::BuildMlirModule(
   // inputs are built before their outputs.
   ABSL_VLOG(2) << "[Traversal::BuildMlirModule] building MLIR ops for "
                << execution_order.size() << " deferred ops";
-  std::vector<mlir::MlirOp> deferred_inputs;
   for (const SharedDeviceBufferList& node : execution_order) {
-    // Get the deferred op we need to build.
-    const auto maybe_deferred_op = node->deferred_op();
-    TT_RET_CHECK(maybe_deferred_op, error::kInternal)
-        << "in execution_order, a DeviceBufferList has no deferred op";
-    const DeferredOp& deferred_op = *maybe_deferred_op;
-
-    // Get the MlirOps for all inputs.
-    deferred_inputs.clear();
-    for (const DeviceBufferRef& input : deferred_op.inputs()) {
-      TT_ASSIGN_OR_RETURN(mlir::MlirOp mlir_op,
-                          GetMlirOpForProcessedBuffer(ref_to_op_map, input));
-      deferred_inputs.push_back(mlir_op);
-    }
-
-    // Get the MlirOps for all donated inputs.
-    for (int64_t donated_input_index : deferred_op.donated_indices()) {
-      donated_values.insert(deferred_inputs[donated_input_index].getValue());
-    }
-
-    const bool has_op_da = !deferred_op.device_assignment().empty();
-    mlir::Block* insertion_block = fb.getOpBuilder().getInsertionBlock();
-    mlir::Operation* prev_last_op =
-        (insertion_block != nullptr && !insertion_block->empty())
-            ? &insertion_block->back()
-            : nullptr;
-    mlir::ModuleOp module_op = GetModuleOp(fb);
-    absl::flat_hash_set<std::string> existing_funcs;
-    if (has_op_da) {
-      for (mlir::func::FuncOp func_op :
-           module_op.getOps<mlir::func::FuncOp>()) {
-        existing_funcs.insert(func_op.getSymName().str());
-      }
-    }
-
-    // Build the MlirOp.
-    // While `context` is in scope, all MlirOp objects built by `builder` will
-    // be associated with the op's Python context.
-    // This includes both the result of op_builder() and
-    // CastIfNeeded.
-    ScopedPythonContextProvider provider(deferred_op.op_context().Copy(), &fb);
-    TT_ASSIGN_OR_RETURN(
-        DynamicMlirOpResults results,
-        deferred_op.op_builder()(fb, absl::MakeSpan(deferred_inputs)));
-    TT_RET_CHECK(results.size() == node->size(), error::kInternal)
-        << "deferred op " << deferred_op.op_name() << " returned "
-        << results.size() << " results, expected " << node->size();
-
-    if (has_op_da) {
-      mlir::Operation* first_new_op = nullptr;
-      if (insertion_block != nullptr && !insertion_block->empty()) {
-        first_new_op = (prev_last_op != nullptr) ? prev_last_op->getNextNode()
-                                                 : &insertion_block->front();
-      }
-      std::vector<mlir::func::FuncOp> new_func_ops;
-      for (mlir::func::FuncOp func_op :
-           module_op.getOps<mlir::func::FuncOp>()) {
-        if (!existing_funcs.contains(func_op.getSymName().str())) {
-          new_func_ops.push_back(func_op);
-        }
-      }
-      TT_RETURN_IF_ERROR(ApplySubgroupTilingOrReplicaRewriting(
-          first_new_op, new_func_ops, deferred_op, resolved_da.local));
-    }
-
-    // Cast each output of the deferred op to the expected type.
-    for (int64_t index = 0; index < node->size(); ++index) {
-      TT_ASSIGN_OR_RETURN(
-          mlir::MlirOp casted_op,
-          CastIfNeeded(results[index], node->element_type(index)));
-
-      TT_ASSIGN_OR_RETURN(DeviceBufferRef ref,
-                          DeviceBufferRef::Create(node, index));
-      ABSL_VLOG(3) << "[Traversal::BuildMlirModule] built output " << index
-                   << " of deferred op " << deferred_op.op_name() << ": "
-                   << mlir::debugString(casted_op.getValue());
-      ref_to_op_map[std::move(ref)] = std::move(casted_op);
-    }
+    TT_RETURN_IF_ERROR(ProcessSingleDeferredOp(fb, node, ref_to_op_map,
+                                               donated_values, resolved_da));
   }
 
   // End the main function by returning the final results. These were already
@@ -735,22 +807,26 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> Traversal::BuildMlirModule(
     for (int64_t i = 0; i < arguments.size(); ++i) {
       mlir::MlirOp input_op = ref_to_op_map[arguments[i]];
       if (donated_values.contains(input_op.getValue())) {
-        donated_arguments.push_back(i);
+        donated_arguments.push_back(main_arg_indices[i]);
       }
     }
   }
   for (int64_t donated_input : donated_inputs) {
     if (donated_input >= 0 && donated_input < arguments.size()) {
-      if (absl::c_find(donated_arguments, donated_input) ==
+      const int64_t main_idx = main_arg_indices[donated_input];
+      if (absl::c_find(donated_arguments, main_idx) ==
           donated_arguments.end()) {
-        donated_arguments.push_back(donated_input);
+        donated_arguments.push_back(main_idx);
       }
     }
   }
   if (!donated_arguments.empty()) {
     AnnotateBufferDonations(module.get(), donated_arguments);
   }
-  AnnotateMlirPlacements(module.get(), outputs, arguments);
+  AnnotateMlirPlacements(module.get(), outputs, arguments, main_arg_indices);
+  if (out_main_arg_indices != nullptr) {
+    *out_main_arg_indices = std::move(main_arg_indices);
+  }
   if (core_pinning_mode_ != CorePinningMode::kUnpinned) {
     auto op_builder = mlir::OpBuilder(module.get());
     std::vector<mlir::NamedAttribute> frontend_attrs;
@@ -790,40 +866,340 @@ std::vector<Shape> GetShapes(absl::Span<const DeviceBufferRef> buffers) {
   return shapes;
 }
 
-void AnnotateArgumentLayouts(mlir::ModuleOp module,
-                             absl::Span<const DeviceBufferRef> arguments,
-                             absl::Span<const CustomLayout> argument_layouts) {
-  if (argument_layouts.empty()) return;
+struct RaggedDot3DLayoutTargets {
+  absl::flat_hash_map<size_t, Indices> arg_layouts;
+  absl::flat_hash_map<size_t, Indices> result_layouts;
+};
+
+// GENERIC: semantic chlo.ragged_dot batched 3D expert tensors have rank 3
+// (G, K, N) and {0, 2, 1} is the batched matrix transpose permutation.
+constexpr int64_t kRaggedDotExpertRank = 3;
+
+bool IsShapePreserving3DElementwiseOp(mlir::Operation& op) {
+  if (op.getNumResults() != 1) return false;
+  auto res_type =
+      mlir::dyn_cast<mlir::RankedTensorType>(op.getResult(0).getType());
+  if (!res_type || res_type.getRank() != kRaggedDotExpertRank) return false;
+  return llvm::isa<
+      mlir::stablehlo::AddOp, mlir::stablehlo::SubtractOp,
+      mlir::stablehlo::MulOp, mlir::stablehlo::DivOp, mlir::stablehlo::RemOp,
+      mlir::stablehlo::MaxOp, mlir::stablehlo::MinOp, mlir::stablehlo::PowOp,
+      mlir::stablehlo::SqrtOp, mlir::stablehlo::RsqrtOp, mlir::stablehlo::ExpOp,
+      mlir::stablehlo::Expm1Op, mlir::stablehlo::LogOp,
+      mlir::stablehlo::Log1pOp, mlir::stablehlo::TanhOp,
+      mlir::stablehlo::LogisticOp, mlir::stablehlo::SineOp,
+      mlir::stablehlo::CosineOp, mlir::stablehlo::AbsOp, mlir::stablehlo::NegOp,
+      mlir::stablehlo::SignOp, mlir::stablehlo::CeilOp,
+      mlir::stablehlo::FloorOp, mlir::stablehlo::RoundNearestEvenOp,
+      mlir::stablehlo::RoundOp, mlir::stablehlo::ConvertOp,
+      mlir::stablehlo::BitcastConvertOp, mlir::stablehlo::SelectOp,
+      mlir::stablehlo::ClampOp>(&op);
+}
+
+bool Is3DMatrixTransposeOp(mlir::Operation& op) {
+  auto transpose_op = llvm::dyn_cast<mlir::stablehlo::TransposeOp>(op);
+  if (!transpose_op) return false;
+  auto res_type = mlir::dyn_cast<mlir::RankedTensorType>(
+      transpose_op.getResult().getType());
+  if (!res_type || res_type.getRank() != kRaggedDotExpertRank) return false;
+  llvm::ArrayRef<int64_t> perm = transpose_op.getPermutation();
+  return perm == llvm::ArrayRef<int64_t>({0, 2, 1});
+}
+
+Indices PullbackLayoutThroughTranspose(llvm::ArrayRef<int64_t> permutation,
+                                       const Indices& output_mtm) {
+  Indices input_mtm(output_mtm.size());
+  for (size_t i = 0; i < output_mtm.size(); ++i) {
+    input_mtm[i] = permutation[output_mtm[i]];
+  }
+  return input_mtm;
+}
+
+Indices PushforwardLayoutThroughTranspose(llvm::ArrayRef<int64_t> permutation,
+                                          const Indices& input_mtm) {
+  Indices inv_perm(permutation.size());
+  for (size_t i = 0; i < permutation.size(); ++i) {
+    inv_perm[permutation[i]] = i;
+  }
+  Indices output_mtm(input_mtm.size());
+  for (size_t i = 0; i < input_mtm.size(); ++i) {
+    output_mtm[i] = inv_perm[input_mtm[i]];
+  }
+  return output_mtm;
+}
+
+void SeedFromRaggedDotOperand(
+    mlir::Value val, const Indices& required_mtm,
+    llvm::DenseMap<mlir::Value, Indices>& required_layouts) {
+  auto type = mlir::dyn_cast<mlir::RankedTensorType>(val.getType());
+  if (!type || type.getRank() != kRaggedDotExpertRank) return;
+  auto [it, inserted] = required_layouts.try_emplace(val, required_mtm);
+  if (!inserted) {
+    return;
+  }
+  mlir::Operation* def = val.getDefiningOp();
+  if (def == nullptr) return;
+
+  if (llvm::isa<mlir::stablehlo::ConvertOp, mlir::stablehlo::BitcastConvertOp,
+                mlir::stablehlo::SetDimensionSizeOp>(def)) {
+    SeedFromRaggedDotOperand(def->getOperand(0), required_mtm,
+                             required_layouts);
+    return;
+  }
+  if (Is3DMatrixTransposeOp(*def)) {
+    auto transpose_op = llvm::cast<mlir::stablehlo::TransposeOp>(def);
+    const Indices pulled_mtm = PullbackLayoutThroughTranspose(
+        transpose_op.getPermutation(), required_mtm);
+    SeedFromRaggedDotOperand(def->getOperand(0), pulled_mtm, required_layouts);
+  }
+}
+
+void SeedFromRaggedDotResult(
+    mlir::Value val, const Indices& required_mtm,
+    llvm::DenseMap<mlir::Value, Indices>& required_layouts) {
+  auto type = mlir::dyn_cast<mlir::RankedTensorType>(val.getType());
+  if (!type || type.getRank() != kRaggedDotExpertRank) return;
+  auto [it, inserted] = required_layouts.try_emplace(val, required_mtm);
+  if (!inserted) {
+    return;
+  }
+  for (mlir::Operation* user : val.getUsers()) {
+    if (Is3DMatrixTransposeOp(*user)) {
+      auto transpose_op = llvm::cast<mlir::stablehlo::TransposeOp>(user);
+      const Indices pushed_mtm = PushforwardLayoutThroughTranspose(
+          transpose_op.getPermutation(), required_mtm);
+      SeedFromRaggedDotResult(user->getResult(0), pushed_mtm, required_layouts);
+    } else if (llvm::isa<mlir::stablehlo::ConvertOp,
+                         mlir::stablehlo::BitcastConvertOp>(user)) {
+      SeedFromRaggedDotResult(user->getResult(0), required_mtm,
+                              required_layouts);
+    } else if (llvm::isa<mlir::stablehlo::SetDimensionSizeOp>(user) &&
+               user->getOperand(0) == val) {
+      SeedFromRaggedDotResult(user->getResult(0), required_mtm,
+                              required_layouts);
+    }
+  }
+}
+
+void SeedRaggedDotOp(mlir::Operation* op,
+                     llvm::DenseMap<mlir::Value, Indices>& required_layouts) {
+  if (op->getName().getStringRef() != "chlo.ragged_dot") return;
+  auto ragged_dot = llvm::dyn_cast<mlir::chlo::RaggedDotOp>(op);
+  if (!ragged_dot) return;
+  auto dn = ragged_dot.getRaggedDotDimensionNumbers();
+  llvm::ArrayRef<int64_t> rhs_group_dims = dn.getRhsGroupDimensions();
+  mlir::Value rhs = ragged_dot.getRhs();
+  auto rhs_type = mlir::dyn_cast<mlir::RankedTensorType>(rhs.getType());
+  if (rhs_type && rhs_type.getRank() == kRaggedDotExpertRank &&
+      !rhs_group_dims.empty() && rhs_group_dims[0] == 0) {
+    SeedFromRaggedDotOperand(rhs, {2, 1, 0}, required_layouts);
+  }
+  for (mlir::Value res : ragged_dot->getResults()) {
+    auto res_type = mlir::dyn_cast<mlir::RankedTensorType>(res.getType());
+    if (res_type && res_type.getRank() == kRaggedDotExpertRank) {
+      SeedFromRaggedDotResult(res, {2, 1, 0}, required_layouts);
+    }
+  }
+}
+
+const Indices* FindLayoutForElementwiseOp(
+    mlir::Operation* op, mlir::RankedTensorType res_type,
+    const llvm::DenseMap<mlir::Value, Indices>& required_layouts) {
+  mlir::Value res = op->getResult(0);
+  if (auto it = required_layouts.find(res); it != required_layouts.end()) {
+    return &it->second;
+  }
+  for (mlir::Value oper : op->getOperands()) {
+    auto oper_type = mlir::dyn_cast<mlir::RankedTensorType>(oper.getType());
+    if (oper_type && oper_type.getShape() == res_type.getShape()) {
+      if (auto it = required_layouts.find(oper); it != required_layouts.end()) {
+        return &it->second;
+      }
+    }
+  }
+  return nullptr;
+}
+
+bool PropagateLayoutForElementwiseOp(
+    mlir::Operation* op,
+    llvm::DenseMap<mlir::Value, Indices>& required_layouts) {
+  if (!IsShapePreserving3DElementwiseOp(*op)) return false;
+  mlir::Value res = op->getResult(0);
+  auto res_type = mlir::cast<mlir::RankedTensorType>(res.getType());
+  const Indices* found_layout =
+      FindLayoutForElementwiseOp(op, res_type, required_layouts);
+  if (found_layout == nullptr) return false;
+
+  const Indices layout_to_propagate = *found_layout;
+  bool changed = false;
+  if (required_layouts.try_emplace(res, layout_to_propagate).second) {
+    changed = true;
+  }
+  for (mlir::Value oper : op->getOperands()) {
+    auto oper_type = mlir::dyn_cast<mlir::RankedTensorType>(oper.getType());
+    if (oper_type && oper_type.getShape() == res_type.getShape()) {
+      if (required_layouts.try_emplace(oper, layout_to_propagate).second) {
+        changed = true;
+      }
+    }
+  }
+  return changed;
+}
+
+void PropagateElementwiseLayouts(
+    mlir::func::FuncOp main,
+    llvm::DenseMap<mlir::Value, Indices>& required_layouts) {
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    main.walk([&changed, &required_layouts](mlir::Operation* op) {
+      if (PropagateLayoutForElementwiseOp(op, required_layouts)) {
+        changed = true;
+      }
+    });
+  }
+}
+
+void PopulateRaggedDotTargets(
+    mlir::func::FuncOp main, absl::Span<const DeviceBufferRef> arguments,
+    const Indices& main_arg_indices,
+    const llvm::DenseMap<mlir::Value, Indices>& required_layouts,
+    RaggedDot3DLayoutTargets& targets) {
+  for (size_t i = 0; i < arguments.size(); ++i) {
+    const int64_t main_idx = main_arg_indices[i];
+    if (main_idx >= 0 &&
+        static_cast<size_t>(main_idx) < main.getNumArguments()) {
+      if (auto it = required_layouts.find(main.getArgument(main_idx));
+          it != required_layouts.end()) {
+        targets.arg_layouts[i] = it->second;
+      }
+    }
+  }
+  main.walk([&targets, &required_layouts](mlir::func::ReturnOp ret_op) {
+    for (size_t i = 0; i < ret_op.getNumOperands(); ++i) {
+      if (auto it = required_layouts.find(ret_op.getOperand(i));
+          it != required_layouts.end()) {
+        targets.result_layouts[i] = it->second;
+      }
+    }
+  });
+}
+
+// Finds 3D @main arguments and results that flow into or out of a
+// `chlo.ragged_dot` op (either directly, through a {0, 2, 1} matrix transpose
+// that XLA absorbs into ragged-dot dimension numbers, or through 3D
+// shape-preserving elementwise optimizer updates). XLA's AssignRaggedDotLayout
+// and Mosaic Gmm require C-order {2, 1, 0} on 3D ragged-dot RHS operands and
+// outputs. Transposed operands pull back their required layout through
+// {0, 2, 1} to require {1, 2, 0}.
+RaggedDot3DLayoutTargets CollectRaggedDot3DArgsAndResults(
+    mlir::ModuleOp module, absl::Span<const DeviceBufferRef> arguments,
+    const Indices& main_arg_indices,
+    absl::Span<const CustomLayout> argument_layouts) {
+  RaggedDot3DLayoutTargets targets;
+  mlir::func::FuncOp main = module.lookupSymbol<mlir::func::FuncOp>("main");
+  if (!main) return targets;
+
+  llvm::DenseMap<mlir::Value, Indices> required_layouts;
+  main.walk([&required_layouts](mlir::Operation* op) {
+    SeedRaggedDotOp(op, required_layouts);
+  });
+
+  if (required_layouts.empty()) {
+    return targets;
+  }
+
+  PropagateElementwiseLayouts(main, required_layouts);
+  PopulateRaggedDotTargets(main, arguments, main_arg_indices, required_layouts,
+                           targets);
+  return targets;
+}
+
+bool TryAnnotateRaggedDotArgumentLayout(
+    mlir::func::FuncOp main, size_t arg_idx, int64_t main_arg_idx,
+    const DeviceBufferRef& argument,
+    absl::Span<const CustomLayout> argument_layouts,
+    const absl::flat_hash_map<size_t, Indices>& ragged_dot_3d_args,
+    mlir::Builder& builder) {
+  auto it = ragged_dot_3d_args.find(arg_idx);
+  if (it == ragged_dot_3d_args.end()) return false;
+  const Indices& target_mtm = it->second;
+  if (arg_idx < argument_layouts.size() &&
+      argument_layouts[arg_idx].minor_to_major == target_mtm &&
+      !argument_layouts[arg_idx].tiles.empty()) {
+    const CustomLayout& layout = argument_layouts[arg_idx];
+    main.setArgAttr(main_arg_idx, "mhlo.layout_mode",
+                    builder.getStringAttr(ToXlaLayout(layout).ToString()));
+  } else {
+    main.setArgAttr(main_arg_idx, "mhlo.layout_mode",
+                    builder.getStringAttr(absl::StrCat(
+                        "{", absl::StrJoin(target_mtm, ","), "}")));
+  }
+  return true;
+}
+
+void AnnotateSingleArgumentLayout(
+    mlir::func::FuncOp main, size_t arg_idx, int64_t main_arg_idx,
+    const DeviceBufferRef& argument,
+    absl::Span<const CustomLayout> argument_layouts,
+    const absl::flat_hash_map<size_t, Indices>& ragged_dot_3d_args,
+    ArgumentLayoutOverridePolicy argument_layout_override_policy,
+    mlir::Builder& builder) {
+  if (argument_layout_override_policy == ArgumentLayoutOverridePolicy::kAllow) {
+    if (TryAnnotateRaggedDotArgumentLayout(main, arg_idx, main_arg_idx,
+                                           argument, argument_layouts,
+                                           ragged_dot_3d_args, builder)) {
+      return;
+    }
+  }
+
+  if (arg_idx >= argument_layouts.size() ||
+      argument_layouts[arg_idx].minor_to_major.empty()) {
+    return;
+  }
+  const CustomLayout& layout = argument_layouts[arg_idx];
+  absl::Span<const int64_t> dims = argument.dimensions();
+  ABSL_CHECK_GE(layout.minor_to_major.size(), dims.size())  // CRASH_OK
+      << "minor_to_major size (" << layout.minor_to_major.size()
+      << ") is smaller than argument " << arg_idx << " rank (" << dims.size()
+      << ")";
+  main.setArgAttr(main_arg_idx, "mhlo.layout_mode",
+                  builder.getStringAttr(ToXlaLayout(layout).ToString()));
+}
+
+void AnnotateArgumentLayouts(
+    mlir::ModuleOp module, absl::Span<const DeviceBufferRef> arguments,
+    const Indices& main_arg_indices,
+    absl::Span<const CustomLayout> argument_layouts,
+    const absl::flat_hash_map<size_t, Indices>& ragged_dot_3d_args,
+    const ArgumentLayoutOverridePolicy argument_layout_override_policy) {
+  if (arguments.empty()) return;
 
   mlir::func::FuncOp main = module.lookupSymbol<mlir::func::FuncOp>("main");
   ABSL_CHECK(main)  // CRASH_OK: Should never call API on a malformed module.
       << "MLIR module does not contain a main function for argument layouts.";
 
-  ABSL_CHECK_EQ(argument_layouts.size(), arguments.size())  // CRASH_OK
-      << "argument_layouts size (" << argument_layouts.size()
-      << ") must match arguments size (" << arguments.size() << ")";
-  ABSL_CHECK_LE(argument_layouts.size(), main.getNumArguments())  // CRASH_OK
-      << "argument_layouts size (" << argument_layouts.size()
+  if (!argument_layouts.empty()) {
+    ABSL_CHECK_EQ(argument_layouts.size(), arguments.size())  // CRASH_OK
+        << "argument_layouts size (" << argument_layouts.size()
+        << ") must match arguments size (" << arguments.size() << ")";
+  }
+  ABSL_CHECK_LE(arguments.size(), main.getNumArguments())  // CRASH_OK
+      << "arguments size (" << arguments.size()
       << ") exceeds MLIR main argument count (" << main.getNumArguments()
       << ")";
 
   mlir::Builder builder(main.getContext());
-  for (size_t i = 0; i < argument_layouts.size(); ++i) {
-    const CustomLayout& layout = argument_layouts[i];
-    if (!layout.minor_to_major.empty()) {
-      absl::Span<const int64_t> dims = arguments[i].dimensions();
-      ABSL_CHECK_GE(layout.minor_to_major.size(), dims.size())  // CRASH_OK
-          << "minor_to_major size (" << layout.minor_to_major.size()
-          << ") is smaller than argument " << i << " rank (" << dims.size()
-          << ")";
-      main.setArgAttr(i, "mhlo.layout_mode",
-                      builder.getStringAttr(ToXlaLayout(layout).ToString()));
-    }
+  for (size_t i = 0; i < arguments.size(); ++i) {
+    AnnotateSingleArgumentLayout(main, i, main_arg_indices[i], arguments[i],
+                                 argument_layouts, ragged_dot_3d_args,
+                                 argument_layout_override_policy, builder);
   }
 }
 
-void AnnotateOutputLayouts(mlir::ModuleOp module,
-                           absl::Span<const DeviceBufferRef> outputs) {
+void AnnotateOutputLayouts(
+    mlir::ModuleOp module, absl::Span<const DeviceBufferRef> outputs,
+    const absl::flat_hash_map<size_t, Indices>& ragged_dot_3d_results) {
   mlir::func::FuncOp main = module.lookupSymbol<mlir::func::FuncOp>("main");
   ABSL_CHECK(main)  // CRASH_OK: Should never call API on a malformed module.
       << "MLIR module does not contain a main function for output layouts.";
@@ -833,13 +1209,22 @@ void AnnotateOutputLayouts(mlir::ModuleOp module,
 
   mlir::Builder builder(main.getContext());
   for (size_t i = 0; i < outputs.size(); ++i) {
-    if (!outputs[i].shape().layout().has_value()) continue;
-    const CustomLayout& layout = *outputs[i].shape().layout();
-    if (!layout.minor_to_major.empty() &&
-        !IsDefaultDeviceLayout(layout, outputs[i].element_type(),
-                               outputs[i].dimensions())) {
+    const Shape output_shape = outputs[i].shape();
+    if (output_shape.layout().has_value()) {
+      const CustomLayout& layout = *output_shape.layout();
+      if (!layout.minor_to_major.empty() &&
+          !IsDefaultDeviceLayout(layout, outputs[i].element_type(),
+                                 outputs[i].dimensions())) {
+        main.setResultAttr(
+            i, "mhlo.layout_mode",
+            builder.getStringAttr(ToXlaLayout(layout).ToString()));
+      }
+    } else if (auto it = ragged_dot_3d_results.find(i);
+               it != ragged_dot_3d_results.end()) {
+      const Indices& target_mtm = it->second;
       main.setResultAttr(i, "mhlo.layout_mode",
-                         builder.getStringAttr(ToXlaLayout(layout).ToString()));
+                         builder.getStringAttr(absl::StrCat(
+                             "{", absl::StrJoin(target_mtm, ","), "}")));
     }
   }
 }
@@ -968,7 +1353,8 @@ absl::StatusOr<CompiledKernel> Traversal::Compile(
     absl::Span<const CustomLayout> argument_layouts,
     absl::Span<const int64_t> donated_inputs,
     std::optional<std::string_view> module_name,
-    std::optional<CompilationCacheKey>* absl_nullable out_cache_key) const {
+    std::optional<CompilationCacheKey>* absl_nullable out_cache_key,
+    const ArgumentLayoutOverridePolicy argument_layout_override_policy) const {
   tsl::profiler::TraceMe trace_await("Traversal::Compile");
   if (out_cache_key != nullptr) {
     *out_cache_key = std::nullopt;
@@ -988,13 +1374,23 @@ absl::StatusOr<CompiledKernel> Traversal::Compile(
   // builder before the function returns and in the same thread it is invoked.
   MlirComputationBuilder final_op_builder =
       [this, use_stablehlo_bounds, donated_inputs, argument_layouts,
-       module_name, out_mlir_text](mlir::MLIRContext& mlir_context)
+       module_name, out_mlir_text,
+       argument_layout_override_policy](mlir::MLIRContext& mlir_context)
       -> absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> {
+    Indices main_arg_indices;
     TT_ASSIGN_OR_RETURN(auto module,
-                        BuildMlirModule(mlir_context, use_stablehlo_bounds,
-                                        donated_inputs, module_name));
-    AnnotateArgumentLayouts(*module, arguments_, argument_layouts);
-    AnnotateOutputLayouts(*module, outputs_);
+                        BuildMlirModuleWithArgIndices(
+                            mlir_context, use_stablehlo_bounds, donated_inputs,
+                            module_name, &main_arg_indices));
+    RaggedDot3DLayoutTargets ragged_dot_3d;
+    if (!(IsBoundedDynamic() && !use_stablehlo_bounds)) {
+      ragged_dot_3d = CollectRaggedDot3DArgsAndResults(
+          *module, arguments_, main_arg_indices, argument_layouts);
+    }
+    AnnotateArgumentLayouts(*module, arguments_, main_arg_indices,
+                            argument_layouts, ragged_dot_3d.arg_layouts,
+                            argument_layout_override_policy);
+    AnnotateOutputLayouts(*module, outputs_, ragged_dot_3d.result_layouts);
     if (out_mlir_text != nullptr) {
       *out_mlir_text = MlirModuleToString(*module);
     }
@@ -1008,9 +1404,9 @@ absl::StatusOr<CompiledKernel> Traversal::Compile(
   const CompilationSpec& effective_compilation_spec =
       mutable_compilation_spec.has_value() ? *mutable_compilation_spec : spec;
 
-  CompilationCacheKey compilation_cache_key =
-      GetCacheKey(effective_compilation_spec.compile_options_key,
-                  argument_layouts, donated_inputs);
+  CompilationCacheKey compilation_cache_key = GetCacheKey(
+      effective_compilation_spec.compile_options_key, argument_layouts,
+      donated_inputs, argument_layout_override_policy);
   if (out_cache_key != nullptr) {
     out_cache_key->emplace(compilation_cache_key);
   }
@@ -1480,6 +1876,113 @@ absl::StatusOr<std::string> GetGraphviz(
                                 }),
                   "\n}\n");
   return result;
+}
+
+namespace {
+
+bool LayoutMatchesMtm(absl::Span<const int64_t> mtm, bool tiles_empty,
+                      const Indices& required_mtm,
+                      absl::Span<const int64_t> dimensions) {
+  if (tiles_empty) {
+    return MinorToMajorMatchesIgnoringDegenerate(mtm, required_mtm, dimensions);
+  }
+  return mtm == absl::Span<const int64_t>(required_mtm);
+}
+
+absl::StatusOr<bool> BufferMatchesLayout(const DeviceBufferRef& buf,
+                                         const Indices& required_mtm) {
+  const Shape buf_shape = buf.shape();
+  if (buf_shape.layout().has_value()) {
+    const CustomLayout& layout = *buf_shape.layout();
+    if (!layout.tiles.empty()) {
+      return LayoutMatchesMtm(layout.minor_to_major, /*tiles_empty=*/false,
+                              required_mtm, buf.dimensions());
+    }
+    TT_ASSIGN_OR_RETURN(
+        const xla::Layout default_layout,
+        GetDefaultDeviceLayout(buf.element_type(), buf.dimensions()));
+    return LayoutMatchesMtm(layout.minor_to_major,
+                            default_layout.tiles().empty(), required_mtm,
+                            buf.dimensions());
+  }
+  TT_ASSIGN_OR_RETURN(
+      const xla::Layout default_layout,
+      GetDefaultDeviceLayout(buf.element_type(), buf.dimensions()));
+  return LayoutMatchesMtm(default_layout.minor_to_major(),
+                          default_layout.tiles().empty(), required_mtm,
+                          buf.dimensions());
+}
+
+}  // namespace
+
+absl::StatusOr<std::optional<RelayoutBufferResult>>
+MaybeCreate3DArgumentRelayoutBuffer(DeviceBufferRef& buf,
+                                    const Indices& required_mtm) {
+  if (buf.dimensions().size() != required_mtm.size()) {
+    return std::nullopt;
+  }
+  if (const auto cached = buf.GetCachedRelayoutBuffer(required_mtm);
+      cached.has_value()) {
+    return RelayoutBufferResult{.buffer = *cached, .cache_hit = true};
+  }
+  TT_ASSIGN_OR_RETURN(const bool matches_layout,
+                      BufferMatchesLayout(buf, required_mtm));
+  if (matches_layout) {
+    return std::nullopt;
+  }
+  if (buf.is_placeholder()) {
+    return std::nullopt;
+  }
+  TT_ASSIGN_OR_RETURN(std::shared_ptr<xla::PjRtBuffer> pjrt_buf,
+                      buf.GetSharedBuffer());
+  const xla::Shape on_device_shape = pjrt_buf->on_device_shape();
+  const xla::Layout& current_xla_layout = on_device_shape.layout();
+  if (LayoutMatchesMtm(current_xla_layout.minor_to_major(),
+                       current_xla_layout.tiles().empty(), required_mtm,
+                       buf.dimensions())) {
+    return std::nullopt;
+  }
+
+  CustomLayout current_layout;
+  current_layout.minor_to_major =
+      CopyIntVector(current_xla_layout.minor_to_major());
+  for (const auto& tile : current_xla_layout.tiles()) {
+    current_layout.tiles.push_back(CopyIntVector(tile.dimensions()));
+  }
+  current_layout.element_size_in_bits =
+      current_xla_layout.element_size_in_bits();
+
+  TT_ASSIGN_OR_RETURN(
+      const xla::Layout default_layout,
+      GetDefaultDeviceLayout(buf.element_type(), buf.dimensions()));
+  const bool both_tiles_empty =
+      current_xla_layout.tiles().empty() && default_layout.tiles().empty();
+  const bool mtm_matches =
+      both_tiles_empty ? MinorToMajorMatchesIgnoringDegenerate(
+                             current_xla_layout.minor_to_major(),
+                             default_layout.minor_to_major(), buf.dimensions())
+                       : (current_xla_layout.minor_to_major() ==
+                          default_layout.minor_to_major());
+  const bool matches_default =
+      mtm_matches &&
+      TilesMatchDefault(current_xla_layout.tiles(), default_layout.tiles());
+  if (!matches_default) {
+    buf.PopulateLayoutMetadata(std::move(current_layout));
+  }
+
+  Shape target_shape(CopyIntVector(buf.dimensions()), buf.element_type());
+  target_shape.set_layout(CustomLayout{.minor_to_major = required_mtm});
+  MlirOpBuilder identity_builder = [](mlir::MlirBuilder& /*builder*/,
+                                      absl::Span<mlir::MlirOp> inputs)
+      -> absl::StatusOr<DynamicMlirOpResults> {
+    return DynamicMlirOpResults{inputs[0]};
+  };
+  TT_ASSIGN_OR_RETURN(
+      std::vector<DeviceBufferRef> refs,
+      DeviceBufferList::CreateDeferred(
+          OpName::kToCopy, std::move(identity_builder), {buf},
+          OpParamCacheKeys::Empty(), {std::move(target_shape)}));
+  return RelayoutBufferResult{.buffer = std::move(refs[0]), .cache_hit = false};
 }
 
 }  // namespace torch_tpu

@@ -20,9 +20,9 @@
 #include <cstdint>
 
 #include "ATen/core/TensorBody.h"
+#include "absl/container/inlined_vector.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/statusor.h"
-#include "absl/types/span.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/shape.h"
 #include "csrc/eager/device_buffer.h"
@@ -80,7 +80,7 @@ absl::StatusOr<at::Tensor> MarkDynamic(const at::Tensor& tensor,
   return view_tensor;
 }
 
-absl::StatusOr<absl::Span<const BoundedDynamicDimension>> GetDynamismInfo(
+absl::StatusOr<absl::InlinedVector<BoundedDynamicDimension, 1>> GetDynamismInfo(
     const at::Tensor& tensor) {
   TT_ASSIGN_OR_RETURN(DeviceBufferRef buffer_ref, GetBaseBuffer(tensor));
   // We need a materialized buffer to check for dynamism.

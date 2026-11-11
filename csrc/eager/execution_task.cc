@@ -212,6 +212,9 @@ ExtractArgumentLayoutsIfDifferentFromDefault(const Traversal& traversal) {
   std::vector<CustomLayout> argument_layouts;
   const auto& arguments = traversal.arguments();
   for (size_t i = 0; i < arguments.size(); ++i) {
+    if (!arguments[i].has_custom_layout()) {
+      continue;
+    }
     TT_ASSIGN_OR_RETURN(
         std::optional<CustomLayout> custom_layout,
         ExtractCustomLayoutIfDifferentFromDefault(arguments[i].shape()));
@@ -278,11 +281,11 @@ absl::StatusOr<CompiledTraversal> VerifyAndCompileTraversal(
     tsl::profiler::TraceMe t("CompileTraversal");
     TT_ASSIGN_OR_RETURN(
         compiled_kernel,
-        traversal.Compile(compilation_spec, UnboundedKernelPolicy::kAllow,
-                          out_mlir_text,
-                          /*use_stablehlo_bounds=*/false, argument_layouts,
-                          /*donated_inputs=*/{}, /*module_name=*/std::nullopt,
-                          &compilation_cache_key));
+        traversal.Compile(
+            compilation_spec, UnboundedKernelPolicy::kAllow, out_mlir_text,
+            /*use_stablehlo_bounds=*/false, argument_layouts,
+            /*donated_inputs=*/{}, /*module_name=*/std::nullopt,
+            &compilation_cache_key, ArgumentLayoutOverridePolicy::kDisallow));
   }
   TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Compile guarantees out_cache_key.
       compilation_cache_key.has_value(), error::kInternal)
@@ -318,6 +321,22 @@ absl::StatusOr<ExecutionTask> ExecutionTask::FromTraversal(
       output.device_buffer_list()->SetAsError(compiled_traversal_or.status());
     }
     return compiled_traversal_or.status();
+  }
+  const auto& non_default_output_layouts =
+      compiled_traversal_or->compiled_kernel.non_default_output_layouts;
+  const bool has_postamble_adapter =
+      compiled_traversal_or->compiled_kernel.dynamic_kernel_adapter
+          .has_value() &&
+      compiled_traversal_or->compiled_kernel.dynamic_kernel_adapter->postamble
+          .valid();
+  if (non_default_output_layouts != nullptr && !has_postamble_adapter) {
+    for (size_t i = 0; i < traversal->outputs().size() &&
+                       i < non_default_output_layouts->size();
+         ++i) {
+      if ((*non_default_output_layouts)[i].has_value()) {
+        traversal->outputs()[i].set_layout(*(*non_default_output_layouts)[i]);
+      }
+    }
   }
   if (out_trace_info != nullptr) {
     out_trace_info->cache_hit =
@@ -382,6 +401,12 @@ absl::StatusOr<ExecutionTask> ExecutionTask::FromExecutable(
 #endif  // NDEBUG
 
   // Create a promise/future that is already done using the executable.
+  for (size_t i = 0;
+       i < outputs.size() && i < executable->output_shapes().size(); ++i) {
+    if (executable->output_shapes()[i].layout().has_value()) {
+      outputs[i].set_layout(*executable->output_shapes()[i].layout());
+    }
+  }
   LoadedExecutablePromise promise;
   CompiledKernel compiled_kernel{.fixed_shape_kernel = promise.get_future()};
   promise.set_value(std::move(executable));
@@ -557,15 +582,24 @@ absl::StatusOr<std::vector<xla::PjRtBuffer* absl_nullable>>
 ExecutionTask::GetArgumentBuffers() {
   std::vector<xla::PjRtBuffer*> root_args;
   root_args.reserve(arguments_.size());
+  argument_shared_buffers_.clear();
+  argument_shared_buffers_.reserve(arguments_.size());
   for (const auto&& [index, argument] : llvm::enumerate(arguments_)) {
     if (argument.is_executing() || argument.is_transferring()) {
       // If is_executing() is true, then this will not block as the PjRtBuffer
       // already exists. If is_transferring() is true, then this will block
       // until the transfer has started and provides a PjRtBuffer.
       ABSL_VLOG(1) << "Get PjRtBuffer for DeviceBufferRef index: " << index;
-      TT_ASSIGN_OR_RETURN(xla::PjRtBuffer * pjrt_buffer,
-                          argument.AwaitBuffer());
-      root_args.push_back(pjrt_buffer);
+      if (argument.may_adopt_buffer()) {
+        TT_ASSIGN_OR_RETURN(std::shared_ptr<xla::PjRtBuffer> shared_buffer,
+                            argument.GetSharedBuffer());
+        root_args.push_back(shared_buffer.get());
+        argument_shared_buffers_.push_back(std::move(shared_buffer));
+      } else {
+        TT_ASSIGN_OR_RETURN(xla::PjRtBuffer* const raw_buffer,
+                            argument.AwaitBuffer());
+        root_args.push_back(raw_buffer);
+      }
     } else if (argument.is_materializing()) {
       return TT_ERROR(error::kFailedPrecondition)
              << "detected an out of order execution; an earlier execution task "

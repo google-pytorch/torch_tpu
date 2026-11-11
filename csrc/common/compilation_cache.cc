@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <future>
 #include <ios>
@@ -73,10 +74,16 @@
 #include "csrc/internal/dynamism/dynamism_ops.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/pjrt/pjrt_state.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/Support/LLVM.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "tsl/platform/numbers.h"
 #include "xla/hlo/utils/concurrency/concurrency_utils.h"
+#include "xla/layout.h"
+#include "xla/pjrt/layout_mode.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_compiler.h"
 #include "xla/pjrt/pjrt_device_dimensions.h"
@@ -307,6 +314,167 @@ static void TrySetExecutablePromise(
   }
 }
 
+static void TrySetOutputLayoutsPromise(const CompilationCacheKey& key,
+                                       OutputLayoutsPromise& promise,
+                                       SharedOutputLayouts layouts) {
+  try {
+    promise.set_value(std::move(layouts));
+    ABSL_VLOG(1) << "Set output layouts for key: " << key;
+  } catch (const std::future_error& e) {
+    if (e.code() == std::future_errc::promise_already_satisfied) {
+      ABSL_VLOG(1) << "Another thread already set output layouts for key: "
+                   << key;
+    } else {
+      ABSL_LOG(FATAL)  // CRASH_OK=TorchTPU bug
+          << "Unexpected future_error: " << e.what();
+    }
+  }
+}
+
+static std::vector<std::optional<xla::Layout>> ParseResultLayoutModes(
+    mlir::func::FuncOp main) {
+  std::vector<std::optional<xla::Layout>> parsed_user_layouts(
+      main.getNumResults());
+  for (size_t i = 0; i < main.getNumResults(); ++i) {
+    if (auto attr = main.getResultAttr(i, "mhlo.layout_mode")) {
+      if (auto str_attr = mlir::dyn_cast<mlir::StringAttr>(attr)) {
+        auto layout_mode_or =
+            xla::LayoutMode::FromString(str_attr.getValue().str());
+        if (layout_mode_or.ok() && layout_mode_or->user_layout.has_value()) {
+          parsed_user_layouts[i] = std::move(layout_mode_or->user_layout);
+        }
+      }
+    }
+  }
+  return parsed_user_layouts;
+}
+
+static bool ResultLayoutMatchesDefault(const xla::Layout& cur_layout,
+                                       xla::PrimitiveType dtype,
+                                       const Dimensions& dims,
+                                       bool has_static_shape,
+                                       xla::PjRtClient* client) {
+  if (client == nullptr || !has_static_shape) {
+    return false;
+  }
+  auto default_layout_or = client->GetDefaultLayout(dtype, dims);
+  if (!default_layout_or.ok()) {
+    return false;
+  }
+  const xla::Layout& def_layout = *default_layout_or;
+  const auto& cur_mtm = cur_layout.minor_to_major();
+  const auto& def_mtm = def_layout.minor_to_major();
+  const bool both_tiles_empty =
+      cur_layout.tiles().empty() && def_layout.tiles().empty();
+  const bool mtm_matches =
+      both_tiles_empty
+          ? MinorToMajorMatchesIgnoringDegenerate(cur_mtm, def_mtm, dims)
+          : (cur_mtm == def_mtm);
+  return mtm_matches &&
+         TilesMatchDefault(cur_layout.tiles(), def_layout.tiles());
+}
+
+static bool IsPermutation(absl::Span<const int64_t> mtm, size_t rank) {
+  if (mtm.size() != rank) return false;
+  std::vector<bool> seen(rank, false);
+  for (int64_t dim : mtm) {
+    if (dim < 0 || dim >= static_cast<int64_t>(rank) || seen[dim]) {
+      return false;
+    }
+    seen[dim] = true;
+  }
+  return true;
+}
+
+static void PopulatePermutedTilesIfEmpty(
+    CustomLayout& custom_layout, const xla::Layout& cur_layout,
+    xla::PrimitiveType dtype, const Dimensions& dims, bool has_static_shape,
+    bool has_dynamic_dims, xla::PjRtClient* client) {
+  if (!cur_layout.tiles().empty() || has_dynamic_dims || client == nullptr ||
+      !has_static_shape) {
+    return;
+  }
+  const auto& mtm = cur_layout.minor_to_major();
+  if (!IsPermutation(mtm, dims.size())) {
+    return;
+  }
+  Dimensions reordered_dims(dims.size());
+  for (size_t k = 0; k < dims.size(); ++k) {
+    reordered_dims[dims.size() - 1 - k] = dims[mtm[k]];
+  }
+  auto reordered_layout_or = client->GetDefaultLayout(dtype, reordered_dims);
+  if (reordered_layout_or.ok()) {
+    for (const auto& tile : reordered_layout_or->tiles()) {
+      custom_layout.tiles.push_back(CopyIntVector(tile.dimensions()));
+    }
+    if (custom_layout.element_size_in_bits == 0) {
+      custom_layout.element_size_in_bits =
+          reordered_layout_or->element_size_in_bits();
+    }
+  }
+}
+
+static SharedOutputLayouts ExtractNonDefaultOutputLayouts(
+    mlir::ModuleOp module, absl::Span<const Shape> output_shapes) {
+  auto main = module.lookupSymbol<mlir::func::FuncOp>("main");
+  if (!main) {
+    return nullptr;
+  }
+  std::vector<std::optional<xla::Layout>> parsed_user_layouts =
+      ParseResultLayoutModes(main);
+  bool has_any_user_layout = false;
+  for (const auto& layout : parsed_user_layouts) {
+    if (layout.has_value()) {
+      has_any_user_layout = true;
+      break;
+    }
+  }
+  if (!has_any_user_layout) {
+    return nullptr;
+  }
+  xla::PjRtClient* client = nullptr;
+  if (auto client_or = PjrtBackend::GetInstance().GetClient(); client_or.ok()) {
+    client = *client_or;
+  }
+  std::vector<std::optional<CustomLayout>> candidate_layouts(
+      main.getNumResults());
+  bool has_non_default = false;
+  for (size_t i = 0; i < main.getNumResults(); ++i) {
+    if (!parsed_user_layouts[i].has_value()) continue;
+    const xla::Layout& cur_layout = *parsed_user_layouts[i];
+    auto res_type =
+        mlir::dyn_cast<mlir::RankedTensorType>(main.getResultTypes()[i]);
+    if (!res_type) continue;
+    auto xla_dtype_or =
+        ConvertTo<xla::PrimitiveType>(res_type.getElementType());
+    if (!xla_dtype_or.ok()) continue;
+    const Dimensions dims = CopyIntVector(res_type.getShape());
+    if (ResultLayoutMatchesDefault(cur_layout, *xla_dtype_or, dims,
+                                   res_type.hasStaticShape(), client)) {
+      continue;
+    }
+    CustomLayout custom_layout;
+    custom_layout.minor_to_major = CopyIntVector(cur_layout.minor_to_major());
+    for (const auto& tile : cur_layout.tiles()) {
+      custom_layout.tiles.push_back(CopyIntVector(tile.dimensions()));
+    }
+    custom_layout.element_size_in_bits = cur_layout.element_size_in_bits();
+    const bool has_dynamic_dims =
+        i >= output_shapes.size() ||
+        !output_shapes[i].dynamic_dimensions().empty();
+    PopulatePermutedTilesIfEmpty(custom_layout, cur_layout, *xla_dtype_or, dims,
+                                 res_type.hasStaticShape(), has_dynamic_dims,
+                                 client);
+    candidate_layouts[i] = std::move(custom_layout);
+    has_non_default = true;
+  }
+  if (has_non_default) {
+    return std::make_shared<const std::vector<std::optional<CustomLayout>>>(
+        std::move(candidate_layouts));
+  }
+  return nullptr;
+}
+
 void CompilationCache::EvictAll() {
   {
     auto stats = GetCacheStats();
@@ -470,6 +638,8 @@ CompilationCache::GetCacheEntry(const CompilationCacheKey& key,
   return CacheLookupInternal{
       .executable_promise = cache_entry->executable_promise(),
       .executable_future = cache_entry->executable_future(),
+      .output_layouts_promise = cache_entry->output_layouts_promise(),
+      .output_layouts_future = cache_entry->output_layouts_future(),
       .needs_compilation = false,
       .dump_on_cache_miss = false,
   };
@@ -496,6 +666,8 @@ CompilationCache::CacheLookupInternal CompilationCache::AddCacheEntry(
   return CacheLookupInternal{
       .executable_promise = entry->second.executable_promise(),
       .executable_future = entry->second.executable_future(),
+      .output_layouts_promise = entry->second.output_layouts_promise(),
+      .output_layouts_future = entry->second.output_layouts_future(),
       .needs_compilation = true,
       .dump_on_cache_miss = false,
   };
@@ -947,16 +1119,27 @@ absl::StatusOr<CompiledKernel> CompilationCache::GetOrCompileImpl(
   // xla::CompileOptions.
   if (!cache_lookup.needs_compilation &&
       !cache_lookup.shape_dynamism_metadata.has_value()) {
+    SharedOutputLayouts non_default_output_layouts = nullptr;
+    if (cache_lookup.output_layouts_future.valid()) {
+      non_default_output_layouts = cache_lookup.output_layouts_future.get();
+    }
     return CompiledKernel{
         .fixed_shape_kernel = cache_lookup.executable_future,
         .cache_hit = true,
-        .unbounded_dynamic_kernel = cache_lookup.unbounded_dynamic_kernel};
+        .unbounded_dynamic_kernel = cache_lookup.unbounded_dynamic_kernel,
+        .non_default_output_layouts = std::move(non_default_output_layouts)};
   }
 
+  SharedOutputLayouts hit_output_layouts = nullptr;
+  if (!cache_lookup.needs_compilation &&
+      cache_lookup.output_layouts_future.valid()) {
+    hit_output_layouts = cache_lookup.output_layouts_future.get();
+  }
   CompiledKernel compiled_kernel{
       .fixed_shape_kernel = cache_lookup.executable_future,
       .cache_hit = !cache_lookup.needs_compilation,
-      .unbounded_dynamic_kernel = cache_lookup.unbounded_dynamic_kernel};
+      .unbounded_dynamic_kernel = cache_lookup.unbounded_dynamic_kernel,
+      .non_default_output_layouts = std::move(hit_output_layouts)};
   CompilationCacheKey storage_key = key;
   if (cache_lookup.shape_dynamism_metadata.has_value()) {
     // Create a key for the storage of the dynamic executable.
@@ -971,12 +1154,24 @@ absl::StatusOr<CompiledKernel> CompilationCache::GetOrCompileImpl(
       // Create a copy of the compile options for the adapter.
       auto adapter_compile_options =
           std::make_unique<xla::CompileOptions>(compile_options);
-      TT_ASSIGN_OR_RETURN(
-          compiled_kernel.dynamic_kernel_adapter,
-          CreateDynamicKernelAdapter(*cache_lookup.shape_dynamism_metadata,
-                                     input_shapes, output_shapes,
-                                     key.compile_options_key(),
-                                     std::move(adapter_compile_options)));
+      auto adapter_or = CreateDynamicKernelAdapter(
+          *cache_lookup.shape_dynamism_metadata, input_shapes, output_shapes,
+          key.compile_options_key(), std::move(adapter_compile_options));
+      if (!adapter_or.ok()) {
+        if (cache_lookup.needs_compilation) {
+          if (cache_lookup.output_layouts_promise) {
+            TrySetOutputLayoutsPromise(
+                storage_key, *cache_lookup.output_layouts_promise, nullptr);
+          }
+          if (cache_lookup.executable_promise) {
+            TrySetExecutablePromise(storage_key,
+                                    *cache_lookup.executable_promise,
+                                    adapter_or.status());
+          }
+        }
+        return adapter_or.status();
+      }
+      compiled_kernel.dynamic_kernel_adapter = std::move(*adapter_or);
     }
   }
 
@@ -984,6 +1179,10 @@ absl::StatusOr<CompiledKernel> CompilationCache::GetOrCompileImpl(
     if (const UnboundedDynamicKernel* kernel =
             cache_lookup.unbounded_dynamic_kernel;
         kernel != nullptr) {
+      if (cache_lookup.output_layouts_promise) {
+        TrySetOutputLayoutsPromise(
+            storage_key, *cache_lookup.output_layouts_promise, nullptr);
+      }
       EnqueueCompilation(kernel->key, CacheEntryKind::kUnboundedDynamic,
                          kernel->build,
                          std::make_unique<xla::CompileOptions>());
@@ -996,6 +1195,10 @@ absl::StatusOr<CompiledKernel> CompilationCache::GetOrCompileImpl(
     // Only create the contexted module if we need to compile.
     auto contexted_module_or = ContextedModule::Make(computation_builder);
     if (!contexted_module_or.ok()) {
+      if (cache_lookup.output_layouts_promise) {
+        TrySetOutputLayoutsPromise(
+            storage_key, *cache_lookup.output_layouts_promise, nullptr);
+      }
       TrySetExecutablePromise(storage_key, *cache_lookup.executable_promise,
                               contexted_module_or.status());
       return contexted_module_or.status();
@@ -1007,6 +1210,18 @@ absl::StatusOr<CompiledKernel> CompilationCache::GetOrCompileImpl(
           DebugString(contexted_module_or->get(),
                       DebugStringOptions::kEnableDebugInfo)));
     }
+
+    SharedOutputLayouts non_default_output_layouts =
+        ExtractNonDefaultOutputLayouts(contexted_module_or->get(),
+                                       output_shapes);
+    if (cache_lookup.output_layouts_promise) {
+      TrySetOutputLayoutsPromise(storage_key,
+                                 *cache_lookup.output_layouts_promise,
+                                 non_default_output_layouts);
+    }
+    compiled_kernel.non_default_output_layouts =
+        std::move(non_default_output_layouts);
+
     // Reuse the caller-provided UniqueCompileOptions when available; otherwise
     // allocate an owning copy on the calling thread before enqueuing background
     // compilation.
@@ -1014,8 +1229,13 @@ absl::StatusOr<CompiledKernel> CompilationCache::GetOrCompileImpl(
         owned_compile_options != nullptr
             ? std::move(owned_compile_options)
             : std::make_unique<xla::CompileOptions>(compile_options);
+    const Param3DLayoutScanPolicy scan_policy =
+        MlirRequires3DParamLayoutScan(contexted_module_or->get(),
+                                      compile_options)
+            ? Param3DLayoutScanPolicy::kForce
+            : Param3DLayoutScanPolicy::kSkip;
     EnqueueCompilation(storage_key, *std::move(contexted_module_or),
-                       std::move(options_for_compilation));
+                       std::move(options_for_compilation), scan_policy);
     ABSL_VLOG(1) << "[TtPerf] Scheduled compilation for key: " << storage_key;
   }
 
@@ -1051,7 +1271,8 @@ absl::StatusOr<CompiledKernel> CompilationCache::GetOrCompile(
 
 void CompilationCache::EnqueueCompilation(
     const CompilationCacheKey& key, ContextedModule contexted_module,
-    UniqueCompileOptions compile_options) {
+    UniqueCompileOptions compile_options,
+    Param3DLayoutScanPolicy param_3d_layout_scan_policy) {
   auto executable_builder = [contexted_module = std::move(contexted_module)](
                                 xla::PjRtClient& client,
                                 UniqueCompileOptions options) mutable {
@@ -1060,27 +1281,31 @@ void CompilationCache::EnqueueCompilation(
         std::move(*options));
   };
   EnqueueCompilation(key, CacheEntryKind::kStatic,
-                     std::move(executable_builder), std::move(compile_options));
+                     std::move(executable_builder), std::move(compile_options),
+                     param_3d_layout_scan_policy);
 }
 
 void CompilationCache::EnqueueCompilation(
     const CompilationCacheKey& key, const CacheEntryKind kind,
     LoadedExecutableBuilder executable_builder,
-    UniqueCompileOptions compile_options) {
+    UniqueCompileOptions compile_options,
+    Param3DLayoutScanPolicy param_3d_layout_scan_policy) {
   EnsureInitialized();
-  compilation_pool_->Schedule(
-      [this, key, kind, builder = std::move(executable_builder),
-       compile_options = std::move(compile_options)]() mutable {
-        // Prevent compilation threads from accessing thread-local context
-        // states to enforce they always rely on resolved compiler options
-        // passed down from the dispatch thread.
-        DisallowThisThreadToAccessContextState();
-        // Let dispatch threads surface this thread's warnings to Python.
-        RouteWarningsOnThisThreadToDispatchThread();
-        torch_tpu::ScopedMemMeasuringContainer container;
-        this->GetFromTier2OrCompile(key, kind, std::move(builder),
-                                    std::move(compile_options));
-      });
+  compilation_pool_->Schedule([this, key, kind,
+                               builder = std::move(executable_builder),
+                               compile_options = std::move(compile_options),
+                               param_3d_layout_scan_policy]() mutable {
+    // Prevent compilation threads from accessing thread-local context
+    // states to enforce they always rely on resolved compiler options
+    // passed down from the dispatch thread.
+    DisallowThisThreadToAccessContextState();
+    // Let dispatch threads surface this thread's warnings to Python.
+    RouteWarningsOnThisThreadToDispatchThread();
+    torch_tpu::ScopedMemMeasuringContainer container;
+    this->GetFromTier2OrCompile(key, kind, std::move(builder),
+                                std::move(compile_options),
+                                param_3d_layout_scan_policy);
+  });
 }
 
 void CompilationCache::SetExecutable(
@@ -1163,7 +1388,8 @@ GetSubsliceOriginForCompileOptions(const xla::CompileOptions& options) {
 void CompilationCache::GetFromTier2OrCompile(
     const CompilationCacheKey& key, const CacheEntryKind kind,
     LoadedExecutableBuilder executable_builder,
-    UniqueCompileOptions compile_options) {
+    UniqueCompileOptions compile_options,
+    Param3DLayoutScanPolicy param_3d_layout_scan_policy) {
   const bool uses_tier2 = ShouldUseTier2Cache();
   ABSL_VLOG(1) << "Compiling executable for key: " << key
                << (uses_tier2 ? absl::StrCat(" with tier-2 cache at ",
@@ -1172,7 +1398,7 @@ void CompilationCache::GetFromTier2OrCompile(
 
   if (!uses_tier2) {
     Compile(key, kind, std::move(executable_builder),
-            std::move(compile_options));
+            std::move(compile_options), param_3d_layout_scan_policy);
     return;
   }
 
@@ -1185,7 +1411,7 @@ void CompilationCache::GetFromTier2OrCompile(
                       << ": cannot compute the TPU subslice origin: "
                       << subslice_origin.status();
     Compile(key, kind, std::move(executable_builder),
-            std::move(compile_options));
+            std::move(compile_options), param_3d_layout_scan_policy);
     return;
   }
 
@@ -1195,7 +1421,8 @@ void CompilationCache::GetFromTier2OrCompile(
   // Check 1: if the compilation result is already in the tier-2 cache, use it.
   Tier2CacheEntryStats tier2_stats;
   auto executable_or =
-      GetFromTier2Cache(key, request_start, tier2_stats, *subslice_origin);
+      GetFromTier2Cache(key, request_start, tier2_stats, *subslice_origin,
+                        param_3d_layout_scan_policy);
   if (executable_or.ok()) {
     SetExecutable(key, kind, std::move(executable_or),
                   {.tier2 = std::move(tier2_stats)});
@@ -1215,7 +1442,8 @@ void CompilationCache::GetFromTier2OrCompile(
       // released the lock.
       Tier2CacheEntryStats tier2_stats;
       auto executable_or =
-          GetFromTier2Cache(key, request_start, tier2_stats, *subslice_origin);
+          GetFromTier2Cache(key, request_start, tier2_stats, *subslice_origin,
+                            param_3d_layout_scan_policy);
       if (executable_or.ok()) {
         SetExecutable(key, kind, std::move(executable_or),
                       {.tier2 = std::move(tier2_stats)});
@@ -1225,7 +1453,7 @@ void CompilationCache::GetFromTier2OrCompile(
 
     GetFromTier3OrCompile(key, kind, std::move(executable_builder),
                           std::move(compile_options), *subslice_origin, lock,
-                          request_start);
+                          request_start, param_3d_layout_scan_policy);
   }  // End of critical section.
 }
 
@@ -1234,7 +1462,8 @@ void CompilationCache::GetFromTier3OrCompile(
     LoadedExecutableBuilder executable_builder,
     UniqueCompileOptions compile_options,
     const std::optional<xla::PjRtDeviceDimensions>& subslice_origin,
-    Tier2CacheEntryLock& lock, const absl::Time request_start) {
+    Tier2CacheEntryLock& lock, const absl::Time request_start,
+    Param3DLayoutScanPolicy param_3d_layout_scan_policy) {
   const bool uses_tier3 = UsesTier3CompilationCache();
   const auto pre_compile_duration = absl::Now() - request_start;
   absl::StatusOr<SharedLoadedExecutableWithMetadata> executable_or;
@@ -1244,29 +1473,33 @@ void CompilationCache::GetFromTier3OrCompile(
   // backup to the tier-3 cache read. Whichever succeeds first unblocks
   // execution.
   if (uses_tier3) {
-    backup_compilation_pool_->Schedule(
-        [this, key, kind, builder = std::move(executable_builder),
-         options = std::move(compile_options)]() mutable {
-          // Prevent backup compilation threads from accessing thread-local
-          // context states to enforce they always rely on resolved
-          // compiler options passed down from the dispatch thread.
-          DisallowThisThreadToAccessContextState();
-          // Let dispatch threads surface this thread's warnings to Python.
-          RouteWarningsOnThisThreadToDispatchThread();
-          // As an optimization, if the tier-3 cache read has already
-          // populated the executable, skip the backup compilation.
-          if (this->IsExecutableReady(key, kind)) {
-            ABSL_VLOG(1) << "Skipping backup compilation for key: " << key
-                         << " because it is already ready.";
-            return;
-          }
-          this->Compile(key, kind, std::move(builder), std::move(options));
-        });
+    auto backup_compile = [this, key, kind,
+                           builder = std::move(executable_builder),
+                           options = std::move(compile_options),
+                           param_3d_layout_scan_policy]() mutable {
+      // Prevent backup compilation threads from accessing thread-local
+      // context states to enforce they always rely on resolved
+      // compiler options passed down from the dispatch thread.
+      DisallowThisThreadToAccessContextState();
+      // Let dispatch threads surface this thread's warnings to Python.
+      RouteWarningsOnThisThreadToDispatchThread();
+      // As an optimization, if the tier-3 cache read has already
+      // populated the executable, skip the backup compilation.
+      if (this->IsExecutableReady(key, kind)) {
+        ABSL_VLOG(1) << "Skipping backup compilation for key: " << key
+                     << " because it is already ready.";
+        return;
+      }
+      this->Compile(key, kind, std::move(builder), std::move(options),
+                    param_3d_layout_scan_policy);
+    };
+    backup_compilation_pool_->Schedule(std::move(backup_compile));
   }
 
   // If tier-3 cache is enabled, try to get the executable from it first.
   if (uses_tier3) {
-    executable_or = GetFromTier3Cache(key, subslice_origin);
+    executable_or =
+        GetFromTier3Cache(key, subslice_origin, param_3d_layout_scan_policy);
     if (executable_or.ok()) {
       ABSL_VLOG(1) << "Tier-3 cache HIT for key " << key;
       tier = CacheTier::kTier3;
@@ -1286,7 +1519,8 @@ void CompilationCache::GetFromTier3OrCompile(
       // compile_options are used after being moved in the backup compilation
       // above. It is wrong as that move only happens when uses_tier3 is true.
       Compile(key, kind, std::move(executable_builder),  // NOLINT
-              std::move(compile_options));               // NOLINT
+              std::move(compile_options),                // NOLINT
+              param_3d_layout_scan_policy);
     }
     // When the above call finishes, the tier-1 cache will contain the compiled
     // executable and its initial stats.
@@ -1367,10 +1601,11 @@ void CompilationCache::GetFromTier3OrCompile(
   }
 }
 
-void CompilationCache::Compile(const CompilationCacheKey& key,
-                               const CacheEntryKind kind,
-                               LoadedExecutableBuilder executable_builder,
-                               UniqueCompileOptions compile_options) {
+void CompilationCache::Compile(
+    const CompilationCacheKey& key, const CacheEntryKind kind,
+    LoadedExecutableBuilder executable_builder,
+    UniqueCompileOptions compile_options,
+    Param3DLayoutScanPolicy param_3d_layout_scan_policy) {
   absl::StatusOr<xla::PjRtClient* absl_nonnull> client_or =
       PjrtBackend::GetInstance().GetClient();
   if (!client_or.ok()) {
@@ -1389,7 +1624,8 @@ void CompilationCache::Compile(const CompilationCacheKey& key,
   const absl::Time compile_start = absl::Now();
   absl::StatusOr<SharedLoadedExecutableWithMetadata> executable =
       torch_tpu::Compile(*client, std::move(executable_builder),
-                         std::move(compile_options));
+                         std::move(compile_options),
+                         param_3d_layout_scan_policy);
 
   SetExecutable(key, kind, std::move(executable),
                 {

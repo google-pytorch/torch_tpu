@@ -20,8 +20,8 @@
 #include <cstdint>
 
 #include "ATen/core/TensorBody.h"
+#include "absl/container/inlined_vector.h"
 #include "absl/status/statusor.h"
-#include "absl/types/span.h"
 #include "csrc/common/shape.h"
 
 namespace torch_tpu {
@@ -37,7 +37,7 @@ absl::StatusOr<at::Tensor> MarkDynamic(const at::Tensor& tensor,
                                        int64_t dimension, int64_t lower_bound,
                                        int64_t upper_bound);
 
-absl::StatusOr<absl::Span<const BoundedDynamicDimension>> GetDynamismInfo(
+absl::StatusOr<absl::InlinedVector<BoundedDynamicDimension, 1>> GetDynamismInfo(
     const at::Tensor& tensor);
 
 }  // namespace torch_tpu

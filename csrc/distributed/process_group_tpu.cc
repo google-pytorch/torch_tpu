@@ -2144,8 +2144,11 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::experimental_send(
   auto held_buffers = std::make_shared<std::vector<DeviceBufferRef>>();
   held_buffers->reserve(tensors.size());
   std::vector<xla::PjRtBuffer*> pjrt_buffers;
-  pjrt_buffers.reserve(tensors.size());
+  std::vector<std::shared_ptr<xla::PjRtBuffer>> shared_pjrt_buffers;
   std::vector<xla::CrossHostTransferKey> transfer_keys;
+
+  pjrt_buffers.reserve(tensors.size());
+  shared_pjrt_buffers.reserve(tensors.size());
   transfer_keys.reserve(tensors.size());
 
   int64_t src_device_id = addressable_device_id_;
@@ -2155,11 +2158,12 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::experimental_send(
     TT_ASSIGN_OR_THROW(
         DeviceBufferRef device_buffer,
         MaterializeAndReturn(tensor, MaterializationReason::kDistributedOp));
-    TT_ASSIGN_OR_THROW(xla::PjRtBuffer * pjrt_buffer,
-                       device_buffer.AwaitBuffer());
+    TT_ASSIGN_OR_THROW(std::shared_ptr<xla::PjRtBuffer> pjrt_buffer,
+                       device_buffer.GetSharedBuffer());
 
     held_buffers->push_back(std::move(device_buffer));
-    pjrt_buffers.push_back(pjrt_buffer);
+    pjrt_buffers.push_back(pjrt_buffer.get());
+    shared_pjrt_buffers.push_back(std::move(pjrt_buffer));
     int64_t seq;
     {
       absl::MutexLock lock(p2p_seq_mu_);
@@ -2175,6 +2179,8 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::experimental_send(
       auto send_future,
       CrossHostSendBuffers(dst_rank, std::move(held_buffers),
                            std::move(pjrt_buffers), transfer_keys));
+  send_future->addCallback(
+      [keep = std::move(shared_pjrt_buffers)](c10::ivalue::Future&) {});
 
   return c10::make_intrusive<TpuWork>(tensors, getRank(), c10d::OpType::SEND,
                                       std::move(send_future));

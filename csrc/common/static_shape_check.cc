@@ -140,8 +140,7 @@ absl::Status ValidateStaticShape(mlir::RankedTensorType type,
 absl::Status ValidateStaticShape(const at::Tensor& tensor,
                                  const DeviceBufferRef& buffer_ref,
                                  const std::string_view arg_name) {
-  absl::Span<const BoundedDynamicDimension> dynamic_dimensions_info =
-      buffer_ref.dynamic_dimensions();
+  const auto dynamic_dimensions_info = buffer_ref.dynamic_dimensions();
 
   auto get_extra_error_message = [&]() {  // REF_CAPTURE_OK=called synchronously
     if (tensor.sizes() != buffer_ref.dimensions()) {

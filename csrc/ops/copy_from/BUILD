@@ -224,6 +224,7 @@ torch_tpu_cc_test(
         "@com_google_absl//absl/types:span",
         "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
         "@xla//xla:shape_util",
+        "@xla//xla/pjrt:pjrt_client",
     ],
 )
 

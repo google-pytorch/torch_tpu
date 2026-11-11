@@ -64,7 +64,9 @@ absl::Status EnsureDirExistsRecursively(const std::string& path);
 // nullopt.
 absl::StatusOr<SharedLoadedExecutableWithMetadata> LoadSerializedExecutable(
     CacheTier tier, const CompilationCacheKey& key, std::string_view data,
-    const std::optional<xla::PjRtDeviceDimensions>& subslice_origin);
+    const std::optional<xla::PjRtDeviceDimensions>& subslice_origin,
+    Param3DLayoutScanPolicy param_3d_layout_scan_policy =
+        Param3DLayoutScanPolicy::kAuto);
 
 // Writes a compiled executable to the given tier-2 or tier-3 cache file. This
 // is best effort.

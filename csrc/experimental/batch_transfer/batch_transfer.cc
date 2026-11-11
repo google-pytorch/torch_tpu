@@ -20,6 +20,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
+#include <memory>
 #include <ratio>
 #include <string>
 #include <utility>
@@ -158,15 +159,16 @@ absl::Status ValidateContiguousBase(const at::Tensor& tpu_tensor) {
   return absl::OkStatus();
 }
 
-absl::StatusOr<DeviceBufferRef> GetPjrtBuffer(const at::Tensor& tpu_tensor,
-                                              xla::PjRtBuffer*& out_buffer) {
+absl::StatusOr<DeviceBufferRef> GetPjrtBuffer(
+    const at::Tensor& tpu_tensor,
+    std::shared_ptr<xla::PjRtBuffer>& out_buffer) {
   TT_RET_CHECK(tpu_tensor.device().type() == GetPrivateUse1DeviceType(),
                error::kInvalidArgument)
       << "Expected TPU tensor.";
   TT_ASSIGN_OR_RETURN(
       auto buffer_ref,
       MaterializeAndReturn(tpu_tensor, MaterializationReason::kCpuTransfer));
-  TT_ASSIGN_OR_RETURN(out_buffer, buffer_ref.AwaitBuffer());
+  TT_ASSIGN_OR_RETURN(out_buffer, buffer_ref.GetSharedBuffer());
   return buffer_ref;
 }
 
@@ -197,7 +199,7 @@ BatchTransferD2H(  // NOLINT(readability-function-cognitive-complexity)
   // Measure time spent in GetPjrtBuffer, which relates to materializing
   // PJRT buffers.
   auto start_mat = std::chrono::high_resolution_clock::now();
-  xla::PjRtBuffer* first_buffer = nullptr;
+  std::shared_ptr<xla::PjRtBuffer> first_buffer;
   TT_ASSIGN_OR_RETURN(DeviceBufferRef first_buffer_ref,
                       GetPjrtBuffer(src_arrs[0], first_buffer));
   materialize_ms += std::chrono::duration<double, std::milli>(
@@ -266,7 +268,7 @@ BatchTransferD2H(  // NOLINT(readability-function-cognitive-complexity)
 
     // Step 6a: Materialize current tensor and prepare raw DMA buffer.
     auto start_mat_loop = std::chrono::high_resolution_clock::now();
-    xla::PjRtBuffer* src_buffer = first_buffer;
+    std::shared_ptr<xla::PjRtBuffer> src_buffer = first_buffer;
     DeviceBufferRef src_buffer_ref = first_buffer_ref;
     if (layer_idx > 0) {
       TT_ASSIGN_OR_RETURN(src_buffer_ref, GetPjrtBuffer(src, src_buffer));
@@ -364,7 +366,7 @@ BatchTransferH2D(  // NOLINT(readability-function-cognitive-complexity)
 
   // Extract metadata from the first tensor.
   TT_RETURN_IF_ERROR(ValidateContiguousBase(dst_arrs[0]));
-  xla::PjRtBuffer* first_buffer = nullptr;
+  std::shared_ptr<xla::PjRtBuffer> first_buffer;
   TT_ASSIGN_OR_RETURN(DeviceBufferRef first_buffer_ref,
                       GetPjrtBuffer(dst_arrs[0], first_buffer));
 
@@ -420,7 +422,7 @@ BatchTransferH2D(  // NOLINT(readability-function-cognitive-complexity)
     size_t src_size = src.nbytes();
     const uint8_t* src_data = reinterpret_cast<const uint8_t*>(src.data_ptr());
 
-    xla::PjRtBuffer* dst_buffer = first_buffer;
+    std::shared_ptr<xla::PjRtBuffer> dst_buffer = first_buffer;
     DeviceBufferRef dst_buffer_ref = first_buffer_ref;
     if (layer_idx > 0) {
       TT_RETURN_IF_ERROR(ValidateContiguousBase(dst));

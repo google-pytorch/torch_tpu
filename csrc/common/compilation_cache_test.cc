@@ -881,5 +881,47 @@ TEST_F(CompilationCacheTest,
   CompilationCache::ShutDown();
 }
 
+TEST_F(CompilationCacheTest, FiltersDefault3DOutputLayoutFromLayoutMode) {
+  CompilationCache& cache = CompilationCache::GetInstance();
+  const CompilationCacheKey key = DummyKey(9999);
+
+  MlirComputationBuilder builder = [](mlir::MLIRContext& context)
+      -> absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> {
+    auto module = mlir::ModuleOp::create(mlir::UnknownLoc::get(&context));
+    mlir::OpBuilder builder(&context);
+    builder.setInsertionPointToEnd(module.getBody());
+
+    auto tensor_type =
+        mlir::RankedTensorType::get({64, 8, 128}, builder.getF32Type());
+    auto func_type = builder.getFunctionType({tensor_type}, {tensor_type});
+    auto func = builder.create<mlir::func::FuncOp>(
+        mlir::UnknownLoc::get(&context), "main", func_type);
+
+    auto* entry_block = func.addEntryBlock();
+    builder.setInsertionPointToStart(entry_block);
+
+    builder.create<mlir::func::ReturnOp>(mlir::UnknownLoc::get(&context),
+                                         entry_block->getArgument(0));
+
+    // Attach default C-order {2, 1, 0} layout mode to output 0.
+    func.setResultAttr(0, "mhlo.layout_mode", builder.getStringAttr("{2,1,0}"));
+    return mlir::OwningOpRef<mlir::ModuleOp>(module);
+  };
+
+  UniqueCompileOptions compile_options =
+      GetCompilationSpec(CompilationMode::kFastCompile).xla_compile_options;
+
+  const Shape shape_3d(Dimensions({64, 8, 128}), mlir::ElementType::F32);
+  TT_ASSERT_OK_AND_ASSIGN(
+      CompiledKernel kernel,
+      cache.GetOrCompile(key, {shape_3d}, {shape_3d}, std::move(builder),
+                         std::move(compile_options),
+                         UnboundedKernelPolicy::kDisallow));
+
+  // Because {2, 1, 0} matches the TPU default layout for {64, 8, 128} F32,
+  // it is filtered out, leaving non_default_output_layouts as nullptr.
+  EXPECT_EQ(kernel.non_default_output_layouts, nullptr);
+}
+
 }  // namespace
 }  // namespace torch_tpu

@@ -74,9 +74,11 @@
 #include "torch/headeronly/core/MemoryFormat.h"
 #include "torch/headeronly/core/ScalarType.h"
 #include "tsl/profiler/lib/traceme.h"
+#include "xla/layout.h"
 #include "xla/pjrt/maybe_owning_mlir_module.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_executable.h"
+#include "xla/pjrt/pjrt_layout.h"
 #include "xla/shape.h"
 
 namespace torch_tpu {
@@ -573,6 +575,11 @@ absl::StatusOr<SharedLoadedExecutableWithMetadata> CompileMlirExecutable(
   TT_ASSIGN_OR_RETURN(xla::PjRtClient* const client,
                       PjrtBackend::GetInstance().GetClient());
 
+  const Param3DLayoutScanPolicy scan_policy =
+      MlirRequires3DParamLayoutScan(module.mlir_module(), *compile_options)
+          ? Param3DLayoutScanPolicy::kForce
+          : Param3DLayoutScanPolicy::kSkip;
+
   LoadedExecutableBuilder executable_builder =
       [module = std::move(module)](
           xla::PjRtClient& client,
@@ -581,7 +588,7 @@ absl::StatusOr<SharedLoadedExecutableWithMetadata> CompileMlirExecutable(
                                         std::move(*compile_options));
       };
   return Compile(*client, std::move(executable_builder),
-                 std::move(compile_options));
+                 std::move(compile_options), scan_policy);
 }
 
 namespace {
@@ -615,6 +622,10 @@ absl::StatusOr<std::vector<Shape>> GetOutputShapes(
       << "got " << output_shapes.size() << " output shapes for "
       << inferred_shapes.size() << " output tensors";
 
+  std::optional<
+      absl::StatusOr<std::vector<std::shared_ptr<const xla::PjRtLayout>>>>
+      pjrt_output_layouts;
+
   std::vector<Shape> result_shapes;
   result_shapes.reserve(inferred_shapes.size());
 
@@ -622,6 +633,30 @@ absl::StatusOr<std::vector<Shape>> GetOutputShapes(
     Shape result_shape = inferred_shapes[i];
     const OutputShape& shape_spec = output_shapes[i];
     const auto& dimensions = shape_spec.dimensions;
+
+    const bool is_dimension_shrunk =
+        !dimensions.empty() &&
+        !absl::c_equal(dimensions, result_shape.dimensions());
+    if (!result_shape.layout().has_value() &&
+        (shape_spec.is_dynamic || is_dimension_shrunk)) {
+      if (!pjrt_output_layouts.has_value()) {
+        pjrt_output_layouts =
+            executable->GetLoadedExecutable()->GetOutputLayouts();
+      }
+      if (pjrt_output_layouts->ok() &&
+          (*pjrt_output_layouts)->size() == inferred_shapes.size() &&
+          (**pjrt_output_layouts)[i] != nullptr) {
+        const xla::Layout& xla_layout =
+            (**pjrt_output_layouts)[i]->xla_layout();
+        CustomLayout layout;
+        layout.minor_to_major = CopyIntVector(xla_layout.minor_to_major());
+        for (const auto& tile : xla_layout.tiles()) {
+          layout.tiles.push_back(CopyIntVector(tile.dimensions()));
+        }
+        layout.element_size_in_bits = xla_layout.element_size_in_bits();
+        result_shape.set_layout(std::move(layout));
+      }
+    }
 
     if (!dimensions.empty()) {
       TT_RET_CHECK(dimensions.size() == result_shape.dimensions().size(),

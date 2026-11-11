@@ -26,11 +26,14 @@
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
+#include "absl/types/span.h"
 #include "csrc/common/compilation_spec.h"
 #include "csrc/common/compilation_test_helper.h"
+#include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/excess_precision.h"
 #include "csrc/common/mlir_test_modules.h"
+#include "csrc/common/shape.h"
 #include "csrc/common/status_test_utils.h"
 #include "csrc/pjrt/pjrt_state.h"
 #include "gmock/gmock.h"
@@ -38,7 +41,9 @@
 #include "xla/hlo/builder/xla_builder.h"
 #include "xla/hlo/builder/xla_computation.h"
 #include "xla/hlo/ir/hlo_module.h"
+#include "xla/layout.h"
 #include "xla/layout_util.h"
+#include "xla/pjrt/maybe_owning_mlir_module.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_executable.h"
 #include "xla/service/computation_layout.h"
@@ -288,6 +293,209 @@ TEST_F(TupleArgumentsTest, KeepsArgumentLayoutsOfAlreadyTupledArguments) {
   ASSERT_EQ(parameter_shapes.size(), 1);
   ASSERT_TRUE(parameter_shapes[0].IsTuple());
   EXPECT_EQ(parameter_shapes[0].tuple_shapes().size(), kTupledArguments);
+}
+
+TEST(TilesMatchDefaultTest, EmptyLayoutTilesMatchesDefault) {
+  xla::Tile tile({8, 128});
+  EXPECT_TRUE(TilesMatchDefault(absl::Span<const Indices>{},
+                                absl::Span<const xla::Tile>{&tile, 1}));
+  EXPECT_TRUE(TilesMatchDefault(absl::Span<const xla::Tile>{},
+                                absl::Span<const xla::Tile>{&tile, 1}));
+}
+
+TEST(TilesMatchDefaultTest, MatchingTilesReturnTrue) {
+  Indices tile_dims = {8, 128};
+  xla::Tile default_tile({8, 128});
+  EXPECT_TRUE(TilesMatchDefault(absl::Span<const Indices>{&tile_dims, 1},
+                                absl::Span<const xla::Tile>{&default_tile, 1}));
+  EXPECT_TRUE(TilesMatchDefault(absl::Span<const xla::Tile>{&default_tile, 1},
+                                absl::Span<const xla::Tile>{&default_tile, 1}));
+}
+
+TEST(TilesMatchDefaultTest, MismatchedTilesReturnFalse) {
+  Indices tile_dims = {4, 128};
+  xla::Tile default_tile({8, 128});
+  EXPECT_FALSE(
+      TilesMatchDefault(absl::Span<const Indices>{&tile_dims, 1},
+                        absl::Span<const xla::Tile>{&default_tile, 1}));
+  xla::Tile other_tile({4, 128});
+  EXPECT_FALSE(
+      TilesMatchDefault(absl::Span<const xla::Tile>{&other_tile, 1},
+                        absl::Span<const xla::Tile>{&default_tile, 1}));
+}
+
+TEST(MinorToMajorMatchesIgnoringDegenerateTest, ExactMatchReturnsTrue) {
+  Indices mtm_a = {2, 1, 0};
+  Indices mtm_b = {2, 1, 0};
+  Indices dims = {2, 4, 8};
+  EXPECT_TRUE(MinorToMajorMatchesIgnoringDegenerate(mtm_a, mtm_b, dims));
+}
+
+TEST(MinorToMajorMatchesIgnoringDegenerateTest,
+     DegenerateAxisMatchingOrderReturnsTrue) {
+  // For [1, 4, 768], {0, 2, 1} and {2, 1, 0} both order non-degenerate
+  // axes as {2, 1}.
+  Indices mtm_a = {0, 2, 1};
+  Indices mtm_b = {2, 1, 0};
+  Indices dims = {1, 4, 768};
+  EXPECT_TRUE(MinorToMajorMatchesIgnoringDegenerate(mtm_a, mtm_b, dims));
+}
+
+TEST(MinorToMajorMatchesIgnoringDegenerateTest,
+     DegenerateAxisOppositeOrderReturnsFalse) {
+  Indices mtm_a = {0, 1, 2};
+  Indices mtm_b = {2, 1, 0};
+  Indices dims = {1, 4, 768};
+  EXPECT_FALSE(MinorToMajorMatchesIgnoringDegenerate(mtm_a, mtm_b, dims));
+}
+
+TEST(MinorToMajorMatchesIgnoringDegenerateTest,
+     NonDegenerateAxesMismatchReturnsFalse) {
+  Indices mtm_a = {0, 2, 1};
+  Indices mtm_b = {2, 1, 0};
+  Indices dims = {2, 4, 768};
+  EXPECT_FALSE(MinorToMajorMatchesIgnoringDegenerate(mtm_a, mtm_b, dims));
+}
+
+TEST_F(TupleArgumentsTest, NonDefault3DParamLayoutsPopulation) {
+  auto compile_3d =
+      [&](const xla::Shape& shape, std::optional<Indices> mtm,
+          bool tupled =
+              false) -> absl::StatusOr<SharedLoadedExecutableWithMetadata> {
+    xla::XlaBuilder builder("test_3d");
+    xla::Shape param_shape =
+        tupled ? xla::ShapeUtil::MakeTupleShape({shape}) : shape;
+    xla::Parameter(&builder, 0, param_shape, "param0");
+    TT_ASSIGN_OR_RETURN(const xla::XlaComputation computation, builder.Build());
+    xla::CompileOptions options;
+    if (mtm.has_value()) {
+      xla::Shape arg_shape = shape;
+      *arg_shape.mutable_layout() = xla::LayoutUtil::MakeLayout(*mtm);
+      if (tupled) {
+        options.argument_layouts = {
+            xla::ShapeUtil::MakeTupleShape({arg_shape})};
+      } else {
+        options.argument_layouts = {arg_shape};
+      }
+    }
+    if (tupled) {
+      options.parameter_is_tupled_arguments = true;
+    }
+    std::optional<std::vector<xla::Shape>> explicit_layouts;
+    if (options.argument_layouts.has_value()) {
+      explicit_layouts = options.argument_layouts;
+    }
+    TT_ASSIGN_OR_RETURN(
+        auto exec, client_->CompileAndLoad(computation, std::move(options)));
+    return LoadedExecutableWithMetadata::MakeShared(
+        std::move(exec), /*argument_indices=*/{},
+        /*unbounded_dynamic_execution_metadata=*/std::nullopt,
+        /*subslice_origin=*/std::nullopt,
+        /*non_default_3d_param_layouts=*/{}, std::move(explicit_layouts));
+  };
+
+  // 1. Default 3D layout {2, 1, 0}: non_default_3d_param_layouts must be empty.
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto meta_default,
+      compile_3d(xla::ShapeUtil::MakeShape(xla::F32, {8, 128, 64}),
+                 std::nullopt));
+  EXPECT_TRUE(meta_default->non_default_3d_param_layouts().empty());
+
+  // 2. Explicit non-default 3D layout {0, 1, 2}: populated with param_idx = 0.
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto meta_custom,
+      compile_3d(xla::ShapeUtil::MakeShape(xla::F32, {8, 128, 64}),
+                 Indices({0, 1, 2})));
+  ASSERT_EQ(meta_custom->non_default_3d_param_layouts().size(), 1);
+  EXPECT_EQ(meta_custom->non_default_3d_param_layouts()[0].param_idx, 0);
+  EXPECT_EQ(meta_custom->non_default_3d_param_layouts()[0].minor_to_major,
+            Indices({0, 1, 2}));
+
+  // 3. Degenerate size 1 dimension (e.g. {1, 4, 768}): populated when mtm
+  // differs from default.
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto meta_degen,
+      compile_3d(xla::ShapeUtil::MakeShape(xla::F32, {1, 4, 768}),
+                 Indices({0, 1, 2})));
+  ASSERT_EQ(meta_degen->non_default_3d_param_layouts().size(), 1);
+  EXPECT_EQ(meta_degen->non_default_3d_param_layouts()[0].param_idx, 0);
+  EXPECT_EQ(meta_degen->non_default_3d_param_layouts()[0].minor_to_major,
+            Indices({0, 1, 2}));
+
+  // 4. Tupled parameter wrapping a 3D array: properly populated from flattened
+  // parameter_device_shapes.
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto meta_tupled,
+      compile_3d(xla::ShapeUtil::MakeShape(xla::F32, {8, 128, 64}),
+                 Indices({0, 1, 2}), /*tupled=*/true));
+  ASSERT_EQ(meta_tupled->non_default_3d_param_layouts().size(), 1);
+  EXPECT_EQ(meta_tupled->non_default_3d_param_layouts()[0].param_idx, 0);
+  EXPECT_EQ(meta_tupled->non_default_3d_param_layouts()[0].minor_to_major,
+            Indices({0, 1, 2}));
+
+  // 5. Degenerate size 1 dimension matching default ignoring degenerate axis:
+  // {1, 5, 768} with {2, 0, 1} matches default {2, 1, 0}, so it must NOT be
+  // treated as non-default.
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto meta_degen_match,
+      compile_3d(xla::ShapeUtil::MakeShape(xla::F32, {1, 5, 768}),
+                 Indices({2, 0, 1})));
+  EXPECT_TRUE(meta_degen_match->non_default_3d_param_layouts().empty());
+}
+
+TEST_F(TupleArgumentsTest, Param3DLayoutScanPolicySkipAndAuto) {
+  xla::XlaBuilder builder("test_policy");
+  xla::Shape shape = xla::ShapeUtil::MakeShape(xla::F32, {8, 128, 64});
+  xla::Parameter(&builder, 0, shape, "param0");
+  TT_ASSERT_OK_AND_ASSIGN(const xla::XlaComputation computation,
+                          builder.Build());
+  xla::CompileOptions options;
+  xla::Shape arg_shape = shape;
+  *arg_shape.mutable_layout() = xla::LayoutUtil::MakeLayout({0, 1, 2});
+  options.argument_layouts = {arg_shape};
+
+  // kSkip: 3D param scan is completely skipped even with non-default layout.
+  TT_ASSERT_OK_AND_ASSIGN(auto exec_skip,
+                          client_->CompileAndLoad(computation, options));
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto meta_skip,
+      LoadedExecutableWithMetadata::MakeShared(
+          std::move(exec_skip), /*argument_indices=*/{},
+          /*unbounded_dynamic_execution_metadata=*/std::nullopt,
+          /*subslice_origin=*/std::nullopt,
+          /*non_default_3d_param_layouts=*/{}, options.argument_layouts,
+          Param3DLayoutScanPolicy::kSkip));
+  EXPECT_TRUE(meta_skip->non_default_3d_param_layouts().empty());
+
+  // kAuto: with no explicit argument layouts and no ragged_dot, scan is
+  // skipped.
+  TT_ASSERT_OK_AND_ASSIGN(auto exec_auto,
+                          client_->CompileAndLoad(computation, options));
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto meta_auto, LoadedExecutableWithMetadata::MakeShared(
+                          std::move(exec_auto), /*argument_indices=*/{},
+                          /*unbounded_dynamic_execution_metadata=*/std::nullopt,
+                          /*subslice_origin=*/std::nullopt,
+                          /*non_default_3d_param_layouts=*/{},
+                          /*explicit_argument_layouts=*/std::nullopt,
+                          Param3DLayoutScanPolicy::kAuto));
+  EXPECT_TRUE(meta_auto->non_default_3d_param_layouts().empty());
+}
+
+TEST(CompilationMlirRequires3DScanTest, ScanRequirementsDetection) {
+  auto context = MakeMlirContext();
+
+  // 1. Plain module without 3D layout mode or ragged_dot.
+  xla::MaybeOwningMlirModule plain_mod = MakeSumOfArgumentsModule(2);
+  EXPECT_FALSE(MlirRequires3DParamLayoutScan(plain_mod.mlir_module(),
+                                             xla::CompileOptions{}));
+
+  // 2. Options with argument_layouts forces scan.
+  xla::CompileOptions options_with_layouts;
+  options_with_layouts.argument_layouts = {
+      xla::ShapeUtil::MakeShape(xla::F32, {128, 128})};
+  EXPECT_TRUE(MlirRequires3DParamLayoutScan(plain_mod.mlir_module(),
+                                            options_with_layouts));
 }
 
 }  // namespace

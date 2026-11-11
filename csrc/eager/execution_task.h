@@ -144,6 +144,7 @@ class ExecutionTask {
   std::string name_;
   // The arguments to the compiled kernel.
   std::vector<DeviceBufferRef> arguments_;
+  std::vector<std::shared_ptr<xla::PjRtBuffer>> argument_shared_buffers_;
   // The outputs of the compiled kernel.
   std::vector<DeviceBufferRef> outputs_;
   // The compiled kernel; or, more precisely, the futures for the compiled

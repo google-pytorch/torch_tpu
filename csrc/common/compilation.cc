@@ -34,7 +34,9 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/escaping.h"
+#include "absl/strings/match.h"
 #include "absl/strings/str_split.h"
+#include "absl/types/span.h"
 #include "csrc/common/compilation_spec.h"
 #include "csrc/common/compile_options_key.h"
 #include "csrc/common/context_manager.h"
@@ -46,16 +48,24 @@
 #include "csrc/common/fingerprint_utils.h"
 #include "csrc/common/shape.h"
 #include "csrc/common/tpu_subslice_utils.h"
+#include "csrc/common/utils.h"
 #include "csrc/mlir/pipeline.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/pjrt/pjrt_state.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
+#include "mlir/IR/Visitors.h"
+#include "mlir/Support/LLVM.h"
 #include "xla/client/executable_build_options.h"
+#include "xla/hlo/ir/hlo_input_output_alias_config.h"
+#include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_module.h"
+#include "xla/hlo/ir/hlo_opcode.h"
 #include "xla/hlo/translate/register.h"
 #include "xla/layout.h"
 #include "xla/pjrt/maybe_owning_mlir_module.h"
@@ -104,16 +114,15 @@ constexpr std::string_view kMemoryFittingLevelOption =
 // can't be nested, as PJRT only supports one level of tupled arguments.
 // Returns an empty vector if `executable` doesn't report them.
 std::vector<std::optional<xla::Shape>> GetStaticParameterDeviceShapes(
-    const xla::PjRtLoadedExecutable& executable) {
-  absl::StatusOr<std::vector<std::shared_ptr<xla::HloModule>>> modules =
-      executable.GetHloModules();
+    const xla::PjRtLoadedExecutable& executable,
+    const xla::HloModule* absl_nullable hlo_module,
+    std::vector<bool>* absl_nullable out_flat_param_is_donated = nullptr) {
   absl::StatusOr<std::vector<std::shared_ptr<const xla::PjRtLayout>>> layouts =
       executable.GetParameterLayouts();
-  if (!modules.ok() || modules->size() != 1 || !layouts.ok()) {
+  if (hlo_module == nullptr || !layouts.ok()) {
     return {};
   }
-  const xla::ComputationLayout& entry =
-      (*modules)[0]->entry_computation_layout();
+  const xla::ComputationLayout& entry = hlo_module->entry_computation_layout();
   // Make one shape per argument buffer, to match `layouts`.
   //
   // A program can take a tuple parameter, e.g. `(a, b, c)` when compiled with
@@ -121,12 +130,28 @@ std::vector<std::optional<xla::Shape>> GetStaticParameterDeviceShapes(
   // buffers and reports 3 layouts. So split tuples into their elements, the
   // same way PJRT does (see xla::FlattenedParameterLayouts).
   std::vector<const xla::Shape*> flat_parameter_shapes;
-  for (int i = 0; i < entry.parameter_count(); ++i) {
-    xla::ShapeUtil::FlattenTupleShape(entry.parameter_shape(i),
-                                      flat_parameter_shapes);
+  std::vector<bool> flat_param_is_donated;
+  for (int p = 0; p < entry.parameter_count(); ++p) {
+    xla::ShapeUtil::ForEachSubshape(
+        entry.parameter_shape(p),
+        [&flat_parameter_shapes, &flat_param_is_donated, hlo_module, p](
+            const xla::Shape& subshape, const xla::ShapeIndex& index) {
+          if (!subshape.IsTuple()) {
+            flat_parameter_shapes.push_back(&subshape);
+            const bool is_donated =
+                hlo_module->input_output_alias_config().ParameterHasAlias(
+                    p, index) ||
+                hlo_module->buffer_donor_config().ParameterIsBufferDonor(p,
+                                                                         index);
+            flat_param_is_donated.push_back(is_donated);
+          }
+        });
   }
   if (flat_parameter_shapes.size() != layouts->size()) {
     return {};
+  }
+  if (out_flat_param_is_donated != nullptr) {
+    *out_flat_param_is_donated = std::move(flat_param_is_donated);
   }
   std::vector<std::optional<xla::Shape>> result(layouts->size());
   for (size_t i = 0; i < flat_parameter_shapes.size(); ++i) {
@@ -139,6 +164,36 @@ std::vector<std::optional<xla::Shape>> GetStaticParameterDeviceShapes(
   return result;
 }
 
+static bool InstructionHasRaggedDot(const xla::HloInstruction* instruction) {
+  if (instruction->opcode() == xla::HloOpcode::kRaggedDot) {
+    return true;
+  }
+  if (instruction->opcode() != xla::HloOpcode::kCustomCall) {
+    return false;
+  }
+  const std::string& target = instruction->custom_call_target();
+  if (absl::StrContains(target, "ragged") || absl::StrContains(target, "gmm")) {
+    return true;
+  }
+  if (absl::StrContains(instruction->metadata().op_name(), "ragged-dot")) {
+    return true;
+  }
+  const std::string& config = instruction->raw_backend_config_string();
+  return absl::StrContains(config, "gmm") ||
+         absl::StrContains(config, "ragged") ||
+         absl::StrContains(config, "is_ragged_dot");
+}
+
+static bool HloModuleHasRaggedDot(const xla::HloModule& hlo_module) {
+  for (const auto* computation : hlo_module.computations()) {
+    for (const auto* instruction : computation->instructions()) {
+      if (InstructionHasRaggedDot(instruction)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
 }  // namespace
 
 absl_nonnull std::unique_ptr<mlir::MLIRContext> MakeMlirContext() {
@@ -162,12 +217,106 @@ absl::StatusOr<ContextedModule> ContextedModule::Make(
   return ContextedModule(std::move(context), std::move(module));
 }
 
+static bool FuncHas3DLayoutModeArg(mlir::func::FuncOp func) {
+  if (!func) return false;
+  for (size_t i = 0; i < func.getNumArguments(); ++i) {
+    auto type =
+        mlir::dyn_cast<mlir::RankedTensorType>(func.getArgument(i).getType());
+    if (!type || type.getRank() != 3) continue;
+    auto str_attr = mlir::dyn_cast_or_null<mlir::StringAttr>(
+        func.getArgAttr(i, "mhlo.layout_mode"));
+    if (str_attr && !str_attr.getValue().empty()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool ModuleHasChloRaggedDot(mlir::ModuleOp module) {
+  bool has_ragged_dot = false;
+  module.walk([&has_ragged_dot](mlir::Operation* op) {
+    if (op->getName().getStringRef() == "chlo.ragged_dot") {
+      has_ragged_dot = true;
+      return mlir::WalkResult::interrupt();
+    }
+    return mlir::WalkResult::advance();
+  });
+  return has_ragged_dot;
+}
+
+bool MlirRequires3DParamLayoutScan(mlir::ModuleOp module,
+                                   const xla::CompileOptions& options) {
+  if (options.argument_layouts.has_value()) {
+    return true;
+  }
+  return FuncHas3DLayoutModeArg(
+             module.lookupSymbol<mlir::func::FuncOp>("main")) ||
+         ModuleHasChloRaggedDot(module);
+}
+
+static bool IsParamLayoutDefault(const xla::Shape& param_shape,
+                                 const xla::Layout& xla_layout,
+                                 xla::PjRtClient* client) {
+  if (client == nullptr) {
+    return false;
+  }
+  auto default_layout_or = client->GetDefaultLayout(param_shape.element_type(),
+                                                    param_shape.dimensions());
+  if (!default_layout_or.ok()) {
+    return false;
+  }
+  const xla::Layout& def_layout = *default_layout_or;
+  const bool both_tiles_empty =
+      xla_layout.tiles().empty() && def_layout.tiles().empty();
+  const bool mtm_matches =
+      both_tiles_empty
+          ? MinorToMajorMatchesIgnoringDegenerate(xla_layout.minor_to_major(),
+                                                  def_layout.minor_to_major(),
+                                                  param_shape.dimensions())
+          : (xla_layout.minor_to_major() == def_layout.minor_to_major());
+  return mtm_matches &&
+         TilesMatchDefault(xla_layout.tiles(), def_layout.tiles());
+}
+
+static std::vector<LoadedExecutableWithMetadata::Param3DLayout>
+ScanNonDefault3DParamLayouts(
+    absl::Span<const std::optional<xla::Shape>> parameter_device_shapes,
+    const std::vector<bool>& flat_param_is_donated, xla::PjRtClient* client) {
+  std::vector<LoadedExecutableWithMetadata::Param3DLayout> result;
+  for (size_t i = 0; i < parameter_device_shapes.size(); ++i) {
+    if (!parameter_device_shapes[i].has_value()) continue;
+    const xla::Shape& param_shape = *parameter_device_shapes[i];
+    if (!param_shape.IsArray() || !param_shape.is_static() ||
+        !param_shape.has_layout()) {
+      continue;
+    }
+    const xla::Layout& xla_layout = param_shape.layout();
+    if (xla_layout.memory_space() == xla::Layout::kHostMemorySpace ||
+        xla_layout.minor_to_major().size() != 3) {
+      continue;
+    }
+    if (IsParamLayoutDefault(param_shape, xla_layout, client)) {
+      continue;
+    }
+    result.push_back({
+        .param_idx = static_cast<int64_t>(i),
+        .minor_to_major = CopyIntVector(xla_layout.minor_to_major()),
+        .is_donated =
+            (i < flat_param_is_donated.size()) && flat_param_is_donated[i],
+    });
+  }
+  return result;
+}
+
 absl::StatusOr<SharedLoadedExecutableWithMetadata>
 LoadedExecutableWithMetadata::MakeShared(
     absl_nonnull std::unique_ptr<xla::PjRtLoadedExecutable> executable,
     Indices argument_indices,
     std::optional<UnboundedDynamicExecutionMetadata> dynamic_execution_metadata,
-    std::optional<xla::PjRtDeviceDimensions> subslice_origin) {
+    std::optional<xla::PjRtDeviceDimensions> subslice_origin,
+    std::vector<Param3DLayout> non_default_3d_param_layouts,
+    std::optional<std::vector<xla::Shape>> explicit_argument_layouts,
+    Param3DLayoutScanPolicy param_3d_layout_scan_policy) {
   TT_RET_CHECK(executable, error::kInternal)
       << "cannot create SharedLoadedExecutableWithMetadata from null "
          "executable.";
@@ -181,35 +330,129 @@ LoadedExecutableWithMetadata::MakeShared(
     xla::ShapeUtil::FlattenTupleShape(output_shape, output_shapes_flat_vec);
   }
 
+  xla::PjRtClient* client = executable->client();
+  if (client == nullptr) {
+    if (auto client_or = PjrtBackend::GetInstance().GetClient();
+        client_or.ok()) {
+      client = *client_or;
+    }
+  }
+
+  absl::StatusOr<std::vector<std::shared_ptr<xla::HloModule>>> modules =
+      executable->GetHloModules();
+  const xla::HloModule* absl_nullable hlo_module = nullptr;
+  if (modules.ok() && modules->size() == 1) {
+    hlo_module = (*modules)[0].get();
+  }
+
+  std::vector<const xla::Shape*> hlo_result_shapes_flat;
+  if (hlo_module != nullptr) {
+    xla::ShapeUtil::FlattenTupleShape(
+        hlo_module->entry_computation_layout().result_shape(),
+        hlo_result_shapes_flat);
+  }
+
   std::vector<Shape> output_shapes;
   output_shapes.reserve(output_shapes_flat_vec.size());
-  for (const auto* xla_shape : output_shapes_flat_vec) {
+  for (size_t i = 0; i < output_shapes_flat_vec.size(); ++i) {
+    const auto* xla_shape = output_shapes_flat_vec[i];
     TT_ASSIGN_OR_RETURN(Shape shape, MakeShape(*xla_shape));
+    const bool is_static_output =
+        (hlo_result_shapes_flat.size() == output_shapes_flat_vec.size())
+            ? hlo_result_shapes_flat[i]->is_static()
+            : xla_shape->is_static();
+    if (is_static_output && client != nullptr && shape.layout().has_value() &&
+        xla_shape->has_layout()) {
+      auto default_layout_or = client->GetDefaultLayout(
+          xla_shape->element_type(), xla_shape->dimensions());
+      if (default_layout_or.ok()) {
+        const xla::Layout& def_layout = *default_layout_or;
+        const xla::Layout& cur_layout = xla_shape->layout();
+        const bool both_tiles_empty =
+            cur_layout.tiles().empty() && def_layout.tiles().empty();
+        const bool mtm_matches =
+            both_tiles_empty
+                ? MinorToMajorMatchesIgnoringDegenerate(
+                      cur_layout.minor_to_major(), def_layout.minor_to_major(),
+                      xla_shape->dimensions())
+                : (cur_layout.minor_to_major() == def_layout.minor_to_major());
+        if (mtm_matches &&
+            TilesMatchDefault(cur_layout.tiles(), def_layout.tiles())) {
+          shape.clear_layout();
+        }
+      }
+    }
     output_shapes.push_back(std::move(shape));
   }
 
+  std::vector<bool> flat_param_is_donated;
   std::vector<std::optional<xla::Shape>> parameter_device_shapes =
-      GetStaticParameterDeviceShapes(*executable);
+      GetStaticParameterDeviceShapes(*executable, hlo_module,
+                                     &flat_param_is_donated);
+  Indices donated_3d_param_indices;
+  for (size_t i = 0; i < parameter_device_shapes.size(); ++i) {
+    if (parameter_device_shapes[i].has_value() &&
+        parameter_device_shapes[i]->IsArray() &&
+        parameter_device_shapes[i]->is_static() &&
+        parameter_device_shapes[i]->dimensions().size() == 3 &&
+        i < flat_param_is_donated.size() && flat_param_is_donated[i]) {
+      donated_3d_param_indices.push_back(static_cast<int64_t>(i));
+    }
+  }
+
+  for (auto& layout : non_default_3d_param_layouts) {
+    if (layout.param_idx >= 0 &&
+        static_cast<size_t>(layout.param_idx) < flat_param_is_donated.size()) {
+      layout.is_donated = flat_param_is_donated[layout.param_idx];
+    }
+  }
+
+  bool should_scan_3d_params = false;
+  if (param_3d_layout_scan_policy == Param3DLayoutScanPolicy::kForce) {
+    should_scan_3d_params = true;
+  } else if (param_3d_layout_scan_policy == Param3DLayoutScanPolicy::kAuto) {
+    if (explicit_argument_layouts.has_value()) {
+      should_scan_3d_params = true;
+    } else if (hlo_module != nullptr) {
+      should_scan_3d_params = HloModuleHasRaggedDot(*hlo_module);
+    } else {
+      should_scan_3d_params = !parameter_device_shapes.empty();
+    }
+  }
+
+  if (should_scan_3d_params && non_default_3d_param_layouts.empty() &&
+      !dynamic_execution_metadata.has_value()) {
+    non_default_3d_param_layouts = ScanNonDefault3DParamLayouts(
+        parameter_device_shapes, flat_param_is_donated, client);
+  }
+
   return std::shared_ptr<const LoadedExecutableWithMetadata>(
       new LoadedExecutableWithMetadata(
           std::move(executable), std::move(output_shapes),
           std::move(parameter_device_shapes), std::move(argument_indices),
-          std::move(dynamic_execution_metadata), std::move(subslice_origin)));
+          std::move(dynamic_execution_metadata), std::move(subslice_origin),
+          std::move(non_default_3d_param_layouts),
+          std::move(donated_3d_param_indices)));
 }
 
 absl::StatusOr<SharedLoadedExecutableWithMetadata> Compile(
     xla::PjRtClient& client, LoadedExecutableBuilder executable_builder,
-    UniqueCompileOptions compile_options) {
+    UniqueCompileOptions compile_options,
+    Param3DLayoutScanPolicy param_3d_layout_scan_policy) {
   // Compute the subslice origin before `compile_options` is consumed.
   TT_ASSIGN_OR_RETURN(std::optional<xla::PjRtDeviceDimensions> subslice_origin,
                       GetSubsliceOrigin(client, *compile_options));
+  std::optional<std::vector<xla::Shape>> explicit_arg_layouts =
+      compile_options->argument_layouts;
   TT_ASSIGN_OR_RETURN(
       std::unique_ptr<xla::PjRtLoadedExecutable> executable,
       std::move(executable_builder)(client, std::move(compile_options)));
   return LoadedExecutableWithMetadata::MakeShared(
       std::move(executable), /*argument_indices=*/{},
       /*unbounded_dynamic_execution_metadata=*/std::nullopt,
-      std::move(subslice_origin));
+      std::move(subslice_origin),
+      /*non_default_3d_param_layouts=*/{}, std::move(explicit_arg_layouts),
+      param_3d_layout_scan_policy);
 }
 
 absl::StatusOr<LoadedExecutableBuilder>

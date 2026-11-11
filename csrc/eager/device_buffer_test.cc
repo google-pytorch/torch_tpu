@@ -60,5 +60,15 @@ TEST(DeviceBufferRefTest, WeakTest) {
   EXPECT_FALSE(recovered.has_value());
 }
 
+TEST(DeviceBufferRefTest, PlaceholderGetSharedBufferAndAwaitBufferFail) {
+  TT_ASSERT_OK_AND_ASSIGN(DeviceBufferRef placeholder,
+                          DeviceBufferList::CreatePlaceholder(
+                              Dimensions({2, 3}), mlir::ElementType::F32));
+  EXPECT_FALSE(placeholder.GetSharedBuffer().ok());
+  EXPECT_FALSE(placeholder.AwaitBuffer().ok());
+  EXPECT_FALSE(placeholder.pjrt_buffer_size().ok());
+  EXPECT_FALSE(placeholder.device_buffer_list()->Synchronize().ok());
+}
+
 }  // namespace
 }  // namespace torch_tpu

@@ -135,19 +135,22 @@ OpUsage GetOpUsage(const DeferredOp& deferred_op,
     return OpUsage::kOutput;
   }
 
-  bool has_dynamic_dimensions = false;
-  for (int i = 0; i < device_buffer_list->size(); ++i) {
-    if (!device_buffer_list->dynamic_dimensions(i).empty()) {
-      has_dynamic_dimensions = true;
-      break;
+  if (device_buffer_list->has_dynamic_dimensions()) {
+    bool has_dynamic_dimensions = false;
+    for (int i = 0; i < device_buffer_list->size(); ++i) {
+      if (!device_buffer_list->dynamic_dimensions(i).empty()) {
+        has_dynamic_dimensions = true;
+        break;
+      }
     }
-  }
-  if (has_dynamic_dimensions) {
-    // Nodes with dynamic dimensions must be materialized to resolve them
-    // to static shapes.
-    ABSL_VLOG(3) << "[ProcessDeferredOpEvent] Adding dynamic-dimension buffer "
-                 << device_buffer_list.get() << " as output";
-    return OpUsage::kOutput;
+    if (has_dynamic_dimensions) {
+      // Nodes with dynamic dimensions must be materialized to resolve them
+      // to static shapes.
+      ABSL_VLOG(3)
+          << "[ProcessDeferredOpEvent] Adding dynamic-dimension buffer "
+          << device_buffer_list.get() << " as output";
+      return OpUsage::kOutput;
+    }
   }
 
   // Non-output nodes need to be used by at least one output to ensure they get
