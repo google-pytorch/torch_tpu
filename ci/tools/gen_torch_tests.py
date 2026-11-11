@@ -96,8 +96,7 @@ def torch_test_target(test_module: str) -> str:
     The formatted Bazel target definition.
   """
   # Normalize the module path to a test target name.
-  *dirs, basename = test_module.split("/")
-  name = "_".join([*dirs, basename.removeprefix("test_"), "test"])
+  name = torch_test_module_utils.torch_test_target_name(test_module)
 
   notap = (
       '    notap = "b/563402379",  # NOTAP_OK=torch tests\n'
@@ -108,11 +107,18 @@ def torch_test_target(test_module: str) -> str:
   num_shards = torch_test_module_utils.TEST_MODULE_SHARDS.get(test_module)
   shard_count = f"    shard_count = {num_shards},\n" if num_shards else ""
 
+  tags = (
+      f'    tags = ["{torch_test_module_utils.SMOKE_TEST_TAG}"],\n'
+      if test_module in torch_test_module_utils.SMOKE_TEST_MODULES
+      else ""
+  )
+
   return (
       "torch_tpu_torch_test(\n"
       f'    name = "{name}",\n'
       f"{notap}"
       f"{shard_count}"
+      f"{tags}"
       f'    torch_test_module = "{test_module}",\n'
       ")"
   )
@@ -200,6 +206,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         "To avoid wiping out test targets, exiting...\n"
         "Please make sure --pytorch_test_dir points to the test/ directory "
         "of a valid PyTorch checkout.",
+        file=sys.stderr,
+    )
+    return 1
+
+  missing_smoke_modules = sorted(
+      torch_test_module_utils.SMOKE_TEST_MODULES
+      - set(device_generic_test_modules)
+  )
+  if missing_smoke_modules:
+    print(
+        "ERROR: Smoke test modules not found in discovered device-generic test"
+        f" modules: {missing_smoke_modules}",
         file=sys.stderr,
     )
     return 1

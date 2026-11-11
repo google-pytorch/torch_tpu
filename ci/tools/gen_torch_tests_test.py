@@ -23,6 +23,7 @@ import unittest
 from unittest import mock
 
 from ci.tools import gen_torch_tests
+from ci.tools import torch_test_module_utils
 
 _SAMPLE_BUILD_FILE_TEMPLATE: Final[str] = textwrap.dedent(f"""\
     # Copyright 2026 Google LLC
@@ -88,9 +89,67 @@ class GenTorchTestsTest(unittest.TestCase):
         )""")
     self.assertEqual(target_def, expected)
 
-  def test_sharded_torch_test_target(self):
+  def test_sharded_torch_test_target(self) -> None:
     target_def = gen_torch_tests.torch_test_target("test_ops")
     self.assertIn("shard_count = 50", target_def)
+
+  def test_smoke_torch_test_target(self) -> None:
+    with mock.patch.object(
+        torch_test_module_utils,
+        "SMOKE_TEST_MODULES",
+        frozenset({"dynamo/test_debug_utils"}),
+    ):
+      target_def = gen_torch_tests.torch_test_target("dynamo/test_debug_utils")
+    expected = textwrap.dedent(f"""\
+        torch_tpu_torch_test(
+            name = "dynamo_debug_utils_test",
+            tags = ["{torch_test_module_utils.SMOKE_TEST_TAG}"],
+            torch_test_module = "dynamo/test_debug_utils",
+        )""")
+    self.assertEqual(target_def, expected)
+
+  def test_sharded_smoke_torch_test_target(self) -> None:
+    with mock.patch.object(
+        torch_test_module_utils,
+        "SMOKE_TEST_MODULES",
+        frozenset({"test_optim"}),
+    ):
+      target_def = gen_torch_tests.torch_test_target("test_optim")
+    expected = textwrap.dedent(f"""\
+        torch_tpu_torch_test(
+            name = "optim_test",
+            shard_count = 2,
+            tags = ["{torch_test_module_utils.SMOKE_TEST_TAG}"],
+            torch_test_module = "test_optim",
+        )""")
+    self.assertEqual(target_def, expected)
+
+  def test_smoke_modules_are_enabled(self) -> None:
+    self.assertFalse(
+        torch_test_module_utils.SMOKE_TEST_MODULES
+        & (
+            torch_test_module_utils.DISABLED_TEST_MODULES
+            | torch_test_module_utils.EXCLUDED_TEST_MODULES
+        )
+    )
+
+  def test_main_fails_when_smoke_module_missing(self) -> None:
+    pytorch_dir = self.test_root / "test"
+    pytorch_dir.mkdir(parents=True, exist_ok=True)
+    self._create_mock_pytorch_tree(pytorch_dir)
+    build_file = self.test_root / "BUILD"
+    build_file.write_text(_SAMPLE_BUILD_FILE_TEMPLATE)
+
+    with mock.patch.object(
+        torch_test_module_utils,
+        "SMOKE_TEST_MODULES",
+        frozenset({"test_nonexistent_smoke_module"}),
+    ):
+      rc = gen_torch_tests.main([
+          f"--pytorch_test_dir={pytorch_dir}",
+          f"--build_file={build_file}",
+      ])
+    self.assertEqual(rc, 1)
 
   def test_torch_test_target_disabled_module(self):
     target_def = gen_torch_tests.torch_test_target("test_binary_ufuncs")
