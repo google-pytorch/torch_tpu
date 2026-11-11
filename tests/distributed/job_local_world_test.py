@@ -79,7 +79,7 @@ def _run_two_jobs(store_port: int, cache_dir: str) -> None:
 
   # Job 1 waits for job 0 to finish its collective and compiled program, so
   # job 0 cannot depend on job 1 launching anything. Both jobs compile the same
-  # graph into one shared cache: each must get an executable for its devices.
+  # graph into one shared cache.
   if job == 1:
     slice_store.wait(["job0_done"])
   x = torch.full((1024,), float(job_rank + 1), device="tpu")
