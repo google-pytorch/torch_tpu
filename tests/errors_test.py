@@ -9919,18 +9919,131 @@ Supported combinations for non-constant padding:
       torch.histc(t, bins=bins, min=min_val, max=max_val, out=out)
 
   def test_histc_out_dtype_mismatch(self):
-    if et.is_on_gpu():
-      # PyTorch CUDA copy_ allows cross-type assignment into int32 output
-      # without checking safe promotional casting, so no exception is raised.
-      self.skipTest("GPU behavior difference")
     inp = torch.tensor([1.0, 2.0, 3.0], device=et.device(), dtype=torch.float32)
-    out = torch.empty(4, device=et.device(), dtype=torch.int32)
+    for out_dtype, tpu_out_dtype, gpu_out_dtype in [
+        (torch.int32, "int32", "int"),
+        (torch.float64, "float64", "double"),
+    ]:
+      out = torch.empty(2, device=et.device(), dtype=out_dtype)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu=f"""histc(): expected the output dtype to be float32, got {tpu_out_dtype}""",
+          gpu=f"""torch.histogram: input tensor and hist tensor should have the same dtype, but got input float and hist {gpu_out_dtype}""",
+      ):
+        torch.histc(inp, bins=4, min=0, max=4, out=out)
+      self.assertEqual(out.shape, (2,))
+
+  def test_histc_invalid_bins(self):
+    for shape in [(3,), (0,)]:
+      inp = torch.zeros(shape, device=et.device(), dtype=torch.float32)
+      for bins in [0, -5]:
+        with et.assert_raises_message(
+            RuntimeError,
+            tpu=f"""histc(): expected bins > 0, got {bins}""",
+            gpu="""bins must be > 0""",
+        ):
+          torch.histc(inp, bins=bins, min=0.0, max=1.0)
+
+        out = torch.empty(2, device=et.device(), dtype=torch.float32)
+        with et.assert_raises_message(
+            RuntimeError,
+            tpu=f"""histc(): expected bins > 0, got {bins}""",
+            gpu="""bins must be > 0""",
+        ):
+          torch.histc(inp, bins=bins, min=0.0, max=1.0, out=out)
+        self.assertEqual(out.shape, (2,))
+
+  def test_histc_empty_and_mixed_invalid_bounds(self):
+    empty = torch.empty((0,), device=et.device(), dtype=torch.float32)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""histc(): result type float32 can't be cast to the desired output type int32""",
-        gpu="""result type Float can't be cast to the desired output type Int""",
+        tpu="""histc(): expected min <= max, got 5 vs 1""",
+        gpu="""max must be larger than min""",
     ):
-      torch.histc(inp, bins=4, min=0, max=4, out=out)
+      torch.histc(empty, bins=4, min=5.0, max=1.0)
+
+    out = torch.empty(2, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""histc(): expected min <= max, got 5 vs 1""",
+        gpu="""max must be larger than min""",
+    ):
+      torch.histc(empty, bins=4, min=5.0, max=1.0, out=out)
+    self.assertEqual(out.shape, (2,))
+
+    non_empty = torch.tensor(
+        [0.2, 0.5], device=et.device(), dtype=torch.float32
+    )
+    for tensor in [empty, non_empty]:
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""histc(): expected min and max to be finite, got 0 and inf. Either make sure that the input data is finite, or provide valid finite bounds""",
+          gpu="""range of [0, inf] is not finite""",
+      ):
+        torch.histc(tensor, bins=4, min=0, max=float("inf"))
+
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""histc(): expected min and max to be finite, got 0 and nan. Either make sure that the input data is finite, or provide valid finite bounds""",
+          gpu="""range of [0, nan] is not finite""",
+      ):
+        torch.histc(tensor, bins=4, min=0, max=float("nan"))
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""histc(): expected min and max to be finite, got inf and inf. Either make sure that the input data is finite, or provide valid finite bounds""",
+        gpu="""range of [inf, inf] is not finite""",
+    ):
+      torch.histc(empty, bins=4, min=float("inf"), max=float("inf"))
+
+  @parameterized.named_parameters(
+      ("int32_max_inf", torch.int32, 0, float("inf"), "int64", "int64_t"),
+      ("int32_max_large", torch.int32, 0, 1e20, "int64", "int64_t"),
+      ("int32_min_large", torch.int32, -1e20, 0, "int64", "int64_t"),
+      ("float32_max_large", torch.float32, 0.0, 1e40, "float32", "float"),
+      ("float32_min_large", torch.float32, -1e40, 0.0, "float32", "float"),
+  )
+  def test_histc_bounds_scalar_overflow(
+      self, dtype, min_val, max_val, tpu_acc_type, gpu_acc_type
+  ):
+    inp = torch.tensor([1, 2], device=et.device(), dtype=dtype)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""histc(): value cannot be converted to type {tpu_acc_type} without overflow""",
+        gpu=f"""value cannot be converted to type {gpu_acc_type} without overflow""",
+    ):
+      torch.histc(inp, bins=4, min=min_val, max=max_val)
+
+    out = torch.empty(2, device=et.device(), dtype=dtype)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""histc(): value cannot be converted to type {tpu_acc_type} without overflow""",
+        gpu=f"""value cannot be converted to type {gpu_acc_type} without overflow""",
+    ):
+      torch.histc(inp, bins=4, min=min_val, max=max_val, out=out)
+
+  def test_histc_out_device_mismatch(self):
+    inp_dev = torch.tensor(
+        [1.0, 2.0, 3.0], device=et.device(), dtype=torch.float32
+    )
+    out_cpu = torch.empty(2, device="cpu", dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""histc(): expected out tensor to be on tpu, got cpu""",
+        gpu="""Expected all tensors to be on the same device, but got self is on cuda:0, different from other tensors on cpu (when checking argument in method wrapper_CUDA_out_histc_out)""",
+    ):
+      torch.histc(inp_dev, bins=4, min=0.0, max=4.0, out=out_cpu)
+    self.assertEqual(out_cpu.shape, (2,))
+
+    inp_cpu = torch.tensor([1.0, 2.0, 3.0], device="cpu", dtype=torch.float32)
+    out_dev = torch.empty(2, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""histc(): expected tensor to be on tpu, got cpu""",
+        gpu="""Expected all tensors to be on the same device, but got self is on cpu, different from other tensors on cuda:0 (when checking argument in method wrapper_CUDA_out_histc_out)""",
+    ):
+      torch.histc(inp_cpu, bins=4, min=0.0, max=4.0, out=out_dev)
+    self.assertEqual(out_dev.shape, (2,))
 
   def test_linalg_solve_triangular_dim_mismatch(self):
     a = torch.ones(3, 3, device=et.device())

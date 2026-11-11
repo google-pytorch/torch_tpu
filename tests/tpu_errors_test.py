@@ -575,15 +575,22 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     ):
       x[:, ::2].cpu()
 
+  @parameterized.named_parameters(
+      ("bool_bool", False, True, "bool", "bool"),
+      ("int_bool", 0, True, "int64", "bool"),
+      ("bool_float", False, 1.5, "bool", "float64"),
+  )
   @et.why_tpu_only("TODO: investigate why this is TPU-only.")
-  def test_histc_bounds_unsupported_dtype(self):
+  def test_histc_bounds_unsupported_dtype(
+      self, min_val, max_val, min_type, max_type
+  ):
     """Tests that torch.histc() fails when the bounds have an unsupported dtype."""
     t = torch.tensor([0, 0], device=et.device(), dtype=torch.float32)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""histc(): expected min and max to be float or int type, got Bool and Bool""",
+        tpu=f"""histc(): expected min and max to be float or int type, got {min_type} and {max_type}""",
     ):
-      torch.histc(t, min=False, max=True)
+      torch.histc(t, min=min_val, max=max_val)
 
   @et.why_tpu_only("TODO: investigate why this is TPU-only.")
   def test_dynamic_arange_unsupported_dtype(self):

@@ -153,7 +153,7 @@ csrc/ops/gru/gru_aten_kernels.cc: {remaining: 0, total: 16, infeasible: 3}
 csrc/ops/hardsigmoid/hardsigmoid_aten_kernels.cc: {remaining: 0, total: 2, infeasible: 0}
 csrc/ops/hardswish/hardswish_aten_kernels.cc: {remaining: 0, total: 4, infeasible: 0}
 csrc/ops/hardtanh/hardtanh_aten_kernels.cc: {remaining: 0, total: 5, infeasible: 0}
-csrc/ops/histc/histc_aten_kernels.cc: {remaining: 1, total: 7, infeasible: 0}
+csrc/ops/histc/histc_aten_kernels.cc: {remaining: 0, total: 10, infeasible: 0}
 csrc/ops/im2col/im2col_aten_kernels.cc: {remaining: 7, total: 7, infeasible: 0}
 csrc/ops/index/index_aten_kernels.cc: {remaining: 0, total: 10, infeasible: 4}
 csrc/ops/index_fill/index_fill_aten_kernels.cc: {remaining: 0, total: 3, infeasible: 0}
