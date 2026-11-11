@@ -132,22 +132,22 @@ absl::StatusOr<mlir::MlirOp> BuildLinearShlo(
   return dot_result;
 }
 
-absl::StatusOr<mlir::MlirOp> MaybeConjPhysicalShlo(mlir::MlirOp op,
-                                                   bool is_complex) {
-  if (!is_complex) {
+absl::StatusOr<mlir::MlirOp> MaybeConjPhysicalShlo(mlir::MlirOp op) {
+  if (!IsComplexType(GetTensorTypeOrDie(op))) {
     return op;
   }
   return BuildConjPhysicalShlo(op);
 }
 
+// Builds the StableHLO graph for `grad_input = grad_output @ conj(weight)`.
 absl::StatusOr<mlir::MlirOp> BuildGradInputShlo(
-    mlir::MlirOp grad_output, mlir::MlirOp weight, int64_t input_rank,
-    int64_t weight_rank, bool is_complex,
+    mlir::MlirOp grad_output, mlir::MlirOp weight,
     mlir::stablehlo::Precision precision) {
   TT_ASSIGN_OR_RETURN(mlir::MlirOp w_for_grad_input,
-                      MaybeConjPhysicalShlo(weight, is_complex));
-  if (weight_rank == 2) {
-    const int64_t lhs_contracting[1] = {input_rank - 1};
+                      MaybeConjPhysicalShlo(weight));
+  if (GetTensorTypeOrDie(weight).getRank() == 2) {
+    const int64_t lhs_contracting[1] = {
+        GetTensorTypeOrDie(grad_output).getRank() - 1};
     const int64_t rhs_contracting[1] = {0};
     return BuildDotGeneral(grad_output, w_for_grad_input, lhs_contracting,
                            rhs_contracting, precision);
@@ -155,65 +155,28 @@ absl::StatusOr<mlir::MlirOp> BuildGradInputShlo(
   return BuildDotGeneral(grad_output, w_for_grad_input, {}, {}, precision);
 }
 
-// Builds the StableHLO graph for `aten::linear_backward`.
-// Computes only the gradients enabled in `output_mask`:
-//   - grad_input  = grad_output @ conj(weight)
-//   - grad_weight = grad_output^T @ conj(input)
-//   - grad_bias   = sum(grad_output, dims=[0..input_rank-2])
-// For disabled mask entries, creates a small 1-D zero tensor `tensor<0xdtype>`
-// so `DispatchOp<3, 3>` receives valid `MlirOp` values for all 3 slots.
-absl::StatusOr<MlirOpResults<3>> BuildLinearBackwardShlo(
-    mlir::MlirOp grad_output, mlir::MlirOp input, mlir::MlirOp weight,
-    std::array<bool, 3> output_mask, mlir::stablehlo::Precision precision) {
-  const int64_t input_rank = GetTensorTypeOrDie(input).getRank();
-  const int64_t weight_rank = GetTensorTypeOrDie(weight).getRank();
-  mlir::MlirBuilder& builder = grad_output.getBuilder();
-  const mlir::RankedTensorType grad_output_type =
-      GetTensorTypeOrDie(grad_output);
-  mlir::Type output_mlir_type = grad_output_type.getElementType();
-  const bool is_complex = IsComplexType(grad_output_type);
+// Builds the StableHLO graph for `grad_weight = grad_output^T @ conj(input)`.
+absl::StatusOr<mlir::MlirOp> BuildGradWeightShlo(
+    mlir::MlirOp grad_output, mlir::MlirOp input,
+    mlir::stablehlo::Precision precision) {
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp x_for_grad_weight,
+                      MaybeConjPhysicalShlo(input));
+  Dimensions contracting_dims(GetTensorTypeOrDie(input).getRank() - 1);
+  std::iota(contracting_dims.begin(), contracting_dims.end(), 0);
+  return BuildDotGeneral(grad_output, x_for_grad_weight, contracting_dims,
+                         contracting_dims, precision);
+}
 
-  MlirOpResults<3> results;
-
-  // 0. grad_input
-  if (output_mask[0]) {
-    TT_ASSIGN_OR_RETURN(results[0],
-                        BuildGradInputShlo(grad_output, weight, input_rank,
-                                           weight_rank, is_complex, precision));
-  } else {
-    TT_ASSIGN_OR_RETURN(results[0],
-                        MakeZeroSizedTensor(builder, output_mlir_type));
+// Builds the StableHLO graph for
+// `grad_bias = sum(grad_output, dims=[0..input_rank-2])`.
+absl::StatusOr<mlir::MlirOp> BuildGradBiasShlo(mlir::MlirOp grad_output,
+                                               int64_t input_rank) {
+  if (input_rank == 1) {
+    return grad_output;
   }
-
-  // 1. grad_weight
-  if (output_mask[1]) {
-    TT_ASSIGN_OR_RETURN(mlir::MlirOp x_for_grad_weight,
-                        MaybeConjPhysicalShlo(input, is_complex));
-    Dimensions contracting_dims(input_rank - 1);
-    std::iota(contracting_dims.begin(), contracting_dims.end(), 0);
-    results[1] = BuildDotGeneral(grad_output, x_for_grad_weight,
-                                 contracting_dims, contracting_dims, precision);
-  } else {
-    TT_ASSIGN_OR_RETURN(results[1],
-                        MakeZeroSizedTensor(builder, output_mlir_type));
-  }
-
-  // 2. grad_bias
-  if (output_mask[2]) {
-    if (input_rank == 1) {
-      results[2] = grad_output;
-    } else {
-      Dimensions reduction_dims(input_rank - 1);
-      std::iota(reduction_dims.begin(), reduction_dims.end(), 0);
-      TT_ASSIGN_OR_RETURN(results[2], BuildSumShlo(grad_output, reduction_dims,
-                                                   ReductionMode::kDropDims));
-    }
-  } else {
-    TT_ASSIGN_OR_RETURN(results[2],
-                        MakeZeroSizedTensor(builder, output_mlir_type));
-  }
-
-  return results;
+  Dimensions reduction_dims(input_rank - 1);
+  std::iota(reduction_dims.begin(), reduction_dims.end(), 0);
+  return BuildSumShlo(grad_output, reduction_dims, ReductionMode::kDropDims);
 }
 
 // Validates the input, weight, and optional bias tensors for `aten::linear` and
@@ -378,52 +341,82 @@ absl::Status LinearOut(const at::Tensor& input, const at::Tensor& weight,
       });
 }
 
-absl::StatusOr<std::array<DeviceBufferRef, 3>> LinearBackward(
+// Computes the gradients of `aten::linear` enabled in `output_mask`, and
+// returns undefined tensors for the disabled ones.
+//
+// Each gradient is dispatched as its own op. The outputs of one op share a
+// `DeviceBufferList`, which frees its device memory only when all of them are
+// dead, so a single op would keep the activation-sized `grad_input` allocated
+// for as long as `grad_weight` or `grad_bias` lives in a parameter's `.grad`.
+absl::StatusOr<std::tuple<at::Tensor, at::Tensor, at::Tensor>> LinearBackward(
     const at::Tensor& self, const at::Tensor& grad_output,
     const at::Tensor& weight, std::array<bool, 3> output_mask,
     OpParamCacheKeys param_keys) {
   TT_RETURN_IF_ERROR(ValidateLinearBackwardInputs(self, grad_output, weight));
-  TT_ASSIGN_OR_RETURN(mlir::ElementType output_dtype_mlir,
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType output_dtype,
                       ConvertTo<mlir::ElementType>(grad_output.scalar_type()));
+  const mlir::stablehlo::Precision precision = GetAndAddPrecisionTo(param_keys);
 
-  const auto current_precision = GetAndAddPrecisionTo(param_keys);
-
-  std::array<mlir::ElementType, 3> out_dtypes = {
-      output_dtype_mlir, output_dtype_mlir, output_dtype_mlir};
-  Dimensions bias_dims;
-  if (weight.dim() == 2) {
-    bias_dims = {weight.size(0)};
+  at::Tensor grad_input;  // UNINITIALIZED_TENSOR_OK
+  if (output_mask[0]) {
+    OpParamCacheKeys grad_input_keys = param_keys.Clone();
+    TT_RETURN_IF_ERROR(grad_input_keys.SetParam("gradient", "input"));
+    auto op_builder = [precision](FixedSizeSpan<mlir::MlirOp, 2> inputs)
+        -> absl::StatusOr<mlir::MlirOp> {
+      auto& [grad_output_op, weight_op] = inputs;
+      return BuildGradInputShlo(grad_output_op, weight_op, precision);
+    };
+    TT_ASSIGN_OR_RETURN(
+        DeviceBufferRef grad_input_buffer,
+        DispatchOp<2>(std::move(op_builder), {grad_output, weight},
+                      {.out_dtype = output_dtype,
+                       .out_dims = self.sizes(),
+                       .op_param_cache_keys = std::move(grad_input_keys)}));
+    grad_input = MakeTensor(std::move(grad_input_buffer));
   }
-  // `DispatchOp<3, 3>` requires valid `MlirOp` outputs and matching dimensions
-  // for all 3 slots even when an `output_mask` entry is false. We use a 1-D
-  // zero-element placeholder shape `{0}` for disabled outputs and discard those
-  // buffers in `AtenLinearBackward` (returning undefined `at::Tensor()`).
-  Dimensions empty_dims = {0};
 
-  auto self_sizes = self.sizes();
-  auto weight_sizes = weight.sizes();
-  std::array<absl::Span<const int64_t>, 3> out_dims_list = {
-      output_mask[0] ? absl::Span<const int64_t>(self_sizes)
-                     : absl::Span<const int64_t>(empty_dims),
-      output_mask[1] ? absl::Span<const int64_t>(weight_sizes)
-                     : absl::Span<const int64_t>(empty_dims),
-      output_mask[2] ? absl::Span<const int64_t>(bias_dims)
-                     : absl::Span<const int64_t>(empty_dims)};
+  at::Tensor grad_weight;  // UNINITIALIZED_TENSOR_OK
+  if (output_mask[1]) {
+    OpParamCacheKeys grad_weight_keys = param_keys.Clone();
+    TT_RETURN_IF_ERROR(grad_weight_keys.SetParam("gradient", "weight"));
+    auto op_builder = [precision](FixedSizeSpan<mlir::MlirOp, 2> inputs)
+        -> absl::StatusOr<mlir::MlirOp> {
+      auto& [grad_output_op, self_op] = inputs;
+      return BuildGradWeightShlo(grad_output_op, self_op, precision);
+    };
+    TT_ASSIGN_OR_RETURN(
+        DeviceBufferRef grad_weight_buffer,
+        DispatchOp<2>(std::move(op_builder), {grad_output, self},
+                      {.out_dtype = output_dtype,
+                       .out_dims = weight.sizes(),
+                       .op_param_cache_keys = std::move(grad_weight_keys)}));
+    grad_weight = MakeTensor(std::move(grad_weight_buffer));
+  }
 
-  auto op_builder = [output_mask,
-                     current_precision](FixedSizeSpan<mlir::MlirOp, 3> inputs)
-      -> absl::StatusOr<MlirOpResults<3>> {
-    auto& [grad_output_op, self_op, weight_op] = inputs;
-    return BuildLinearBackwardShlo(grad_output_op, self_op, weight_op,
-                                   output_mask, current_precision);
-  };
+  at::Tensor grad_bias;  // UNINITIALIZED_TENSOR_OK
+  if (output_mask[2]) {
+    OpParamCacheKeys grad_bias_keys = param_keys.Clone();
+    TT_RETURN_IF_ERROR(grad_bias_keys.SetParam("gradient", "bias"));
+    Dimensions bias_dims;
+    if (weight.dim() == 2) {
+      bias_dims = {weight.size(0)};
+    }
+    auto op_builder =
+        [input_rank = self.dim()](
+            mlir::MlirOp grad_output_op) -> absl::StatusOr<mlir::MlirOp> {
+      return BuildGradBiasShlo(grad_output_op, input_rank);
+    };
+    TT_ASSIGN_OR_RETURN(
+        DeviceBufferRef grad_bias_buffer,
+        DispatchOp<1>(std::move(op_builder), grad_output,
+                      {.out_dtype = output_dtype,
+                       .out_dims = bias_dims,
+                       .op_param_cache_keys = std::move(grad_bias_keys)}));
+    grad_bias = MakeTensor(std::move(grad_bias_buffer));
+  }
 
-  return DispatchOp<3, 3>(
-      std::move(op_builder), {grad_output, self, weight},
-      {.out_dtypes = FixedSizeSpan<const mlir::ElementType, 3>(out_dtypes),
-       .out_dims_list =
-           FixedSizeSpan<const absl::Span<const int64_t>, 3>(out_dims_list),
-       .op_param_cache_keys = std::move(param_keys)});
+  return std::make_tuple(std::move(grad_input), std::move(grad_weight),
+                         std::move(grad_bias));
 }
 
 // Returns true if `tensor` is a Meta tensor or a `FakeTensor` (whose
@@ -536,29 +529,16 @@ at::Tensor& AtenLinearOut(const at::Tensor& input, const at::Tensor& weight,
 std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenLinearBackward(
     const at::Tensor& self, const at::Tensor& grad_output,
     const at::Tensor& weight, std::array<bool, 3> output_mask) {
-  TT_KERNEL(
-      OpName::kLinearBackward, param_keys,
-      (self, grad_output, weight, output_mask), {
-        if (!output_mask[0] && !output_mask[1] && !output_mask[2]) {
-          TT_THROW_IF_ERROR(
-              ValidateLinearBackwardInputs(self, grad_output, weight));
-          return {at::Tensor(), at::Tensor(), at::Tensor()};
-        }
-        TT_ASSIGN_OR_THROW(auto result_buffers,
-                           LinearBackward(self, grad_output, weight,
-                                          output_mask, std::move(param_keys)));
-        at::Tensor grad_input = output_mask[0]
-                                    ? MakeTensor(std::move(result_buffers[0]))
-                                    : at::Tensor();
-        at::Tensor grad_weight = output_mask[1]
-                                     ? MakeTensor(std::move(result_buffers[1]))
-                                     : at::Tensor();
-        at::Tensor grad_bias = output_mask[2]
-                                   ? MakeTensor(std::move(result_buffers[2]))
-                                   : at::Tensor();
-        return std::make_tuple(std::move(grad_input), std::move(grad_weight),
-                               std::move(grad_bias));
-      });
+  TT_KERNEL(OpName::kLinearBackward, param_keys,
+            (self, grad_output, weight,
+             IgnoreInCacheKey(output_mask, "Each gradient is its own op")),
+            {
+              TT_ASSIGN_OR_THROW(
+                  auto gradients,
+                  LinearBackward(self, grad_output, weight, output_mask,
+                                 std::move(param_keys)));
+              return gradients;
+            });
 }
 
 }  // namespace torch_tpu
