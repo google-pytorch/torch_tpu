@@ -89,6 +89,12 @@ layout check). In addition, follow these conventions:
 *   **Boolean Parameters**: Per
     [Tip of the Week #94](https://abseil.io/tips/94), use enum parameters as
     opposed to `bool` to improve call-site readability.
+*   **Searchable Identifiers**: Spell out every identifier in full in code,
+    comments, regexes, and docs, so that searching for it finds every use. Don't
+    synthesize identifiers (e.g. by string concatenation, token pasting, or
+    `getattr(obj, f"{prefix}_bar")`) or split them across optional regex groups.
+    For example, write the regex `FooBar|Bar` instead of `(Foo)?Bar`, so that it
+    shows up in a search for `FooBar`.
 *   **Fine-grained Build Rules**: To avoid build bloat and circular
     dependencies, each python build rule should have only one `.py` source file,
     and each C++ build rule should have at most one `srcs` file and at most one
