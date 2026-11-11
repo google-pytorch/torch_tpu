@@ -36,6 +36,17 @@ std::tuple<at::Tensor, at::Tensor> FlexAttentionFwd(
     double scale, std::string_view score_mod_mlir,
     std::string_view mask_mod_mlir);
 
+// torch.ops.tpu._flex_attention_bwd_dkv: dK and dV of flex attention.
+// `q_num_blocks` / `q_indices` list the query blocks that see each KV block
+// (flattened int32 1-D); `lse` (log2 units) and `di` = rowsum(grad_out * out)
+// are f32 [B, Hq, 1, T]. Returns (dk, dv) in q's dtype.
+std::tuple<at::Tensor, at::Tensor> FlexAttentionBwdDkv(
+    const at::Tensor& q, const at::Tensor& k, const at::Tensor& v,
+    const at::Tensor& grad_out, const at::Tensor& lse, const at::Tensor& di,
+    const at::Tensor& q_num_blocks, const at::Tensor& q_indices,
+    int64_t mask_batch, int64_t mask_heads, int64_t q_block, int64_t kv_block,
+    double scale, std::string_view mask_mod_mlir);
+
 }  // namespace torch_tpu
 
 #endif  // TORCH_TPU_CSRC_OPS_FLEX_ATTENTION_FLEX_ATTENTION_ATEN_KERNELS_H_

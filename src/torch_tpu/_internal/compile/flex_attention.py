@@ -67,11 +67,12 @@ def _round_up(n: int, multiple: int) -> int:
 
 
 def _flash_tile(
-    q_len: int, kv_len: int, head_dim: int, is_f32: bool
+    q_len: int, kv_len: int, head_dim: int, is_f32: bool, backward: bool
 ) -> tuple[int, int]:
   """Returns the largest (q, kv) tile that fits in VMEM.
 
-  Port of CreateTiling (flash_attention_kernel_builder.cc), forward only.
+  Port of CreateTiling (flash_attention_kernel_builder.cc), without a mask or
+  dropout.
   """
   elem = 4 if is_f32 else 2
 
@@ -80,7 +81,8 @@ def _flash_tile(
 
   def vmem_bytes(qt, kt):  # EstimateTileVmemBytes
     linear = 2 * (qt * head_dim * (3 * elem + 4) + kt * head_dim * 2 * elem)
-    return linear + 2 * qt * 1024 + 2 * 4 * qt * kt
+    total = linear + 2 * qt * 1024 + 2 * 4 * qt * kt
+    return 2 * total if backward else total
 
   def halve(n):
     return max(256, _round_up(n // 2, 256))
@@ -120,12 +122,16 @@ def _fit(tile: int, block: int, length: int) -> int:
 
 
 def _block_tables(
-    block_mask: fa.BlockMask, has_mask_mod: bool, tile: tuple[int, int]
+    block_mask: fa.BlockMask,
+    has_mask_mod: bool,
+    tile: tuple[int, int],
+    by_kv: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor, tuple[int, int]]:
   """Merges the mask's blocks into `tile` blocks for the kernel to visit.
 
-  Returns (kv_num_blocks, kv_indices, tile). Without a mask_mod, keeps the
-  mask's block size if a merged block would mix listed and unlisted blocks.
+  Returns (kv_num_blocks, kv_indices, tile), or with `by_kv` the query blocks
+  of each KV block (q_num_blocks, q_indices, tile). Without a mask_mod, keeps
+  the mask's block size if a merged block would mix listed and unlisted blocks.
   """
   dense = block_mask.to_dense()
   q_block, kv_block = block_mask.BLOCK_SIZE
@@ -136,9 +142,45 @@ def _block_tables(
   merged = groups.amax(dim=(3, 5))
   if not has_mask_mod and not torch.equal(merged, groups.amin(dim=(3, 5))):
     merged, tile = dense, (q_block, kv_block)
+  if by_kv:
+    merged = merged.transpose(-2, -1)
   num_blocks = merged.sum(-1)
   indices = merged.argsort(dim=-1, descending=True, stable=True)
   return num_blocks, indices, tile
+
+
+def _tile_and_mask_mod(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    block_mask: fa.BlockMask,
+    backward: bool,
+) -> tuple[tuple[int, int], Callable[..., torch.Tensor] | None]:
+  """Returns the kernel tile and the mask_mod to splice (None for noop)."""
+  q_len, kv_len = query.shape[-2], key.shape[-2]
+  mask_q_block, mask_kv_block = block_mask.BLOCK_SIZE
+  qt, kc = _flash_tile(
+      q_len,
+      kv_len,
+      max(query.shape[-1], value.shape[-1]),
+      query.dtype == torch.float32,
+      backward,
+  )
+  tile = (_fit(qt, mask_q_block, q_len), _fit(kc, mask_kv_block, kv_len))
+  # A noop mask_mod masks nothing; skip it.
+  mask_mod = block_mask.mask_mod
+  if mask_mod is fa.noop_mask:
+    mask_mod = None
+  return tile, mask_mod
+
+
+def _flat_tables(
+    num_blocks: torch.Tensor, indices: torch.Tensor, device: torch.device
+) -> tuple[torch.Tensor, torch.Tensor]:
+  return (
+      num_blocks.reshape(-1).to(device=device, dtype=torch.int32),
+      indices.reshape(-1).to(device=device, dtype=torch.int32),
+  )
 
 
 def kernel_args(
@@ -153,24 +195,13 @@ def kernel_args(
   """Returns the arguments of `_flex_attention_fwd` after query, key, value."""
   if scale is None:
     scale = 1.0 / math.sqrt(query.shape[-1])
-  q_len, kv_len = query.shape[-2], key.shape[-2]
-  mask_q_block, mask_kv_block = block_mask.BLOCK_SIZE
-  qt, kc = _flash_tile(
-      q_len,
-      kv_len,
-      max(query.shape[-1], value.shape[-1]),
-      query.dtype == torch.float32,
+  tile, mask_mod = _tile_and_mask_mod(
+      query, key, value, block_mask, backward=False
   )
-  tile = (_fit(qt, mask_q_block, q_len), _fit(kc, mask_kv_block, kv_len))
-  # A noop mask_mod masks nothing; skip it.
-  mask_mod = block_mask.mask_mod
-  if mask_mod is fa.noop_mask:
-    mask_mod = None
   kv_num_blocks, kv_indices, (q_block, kv_block) = _block_tables(
       block_mask, mask_mod is not None, tile
   )
   mask_batch, mask_heads, _ = kv_num_blocks.shape
-  device = query.device
 
   def mlir(mod, has_score):
     if mod is None:
@@ -180,8 +211,7 @@ def kernel_args(
     )
 
   return (
-      kv_num_blocks.reshape(-1).to(device=device, dtype=torch.int32),
-      kv_indices.reshape(-1).to(device=device, dtype=torch.int32),
+      *_flat_tables(kv_num_blocks, kv_indices, query.device),
       mask_batch,
       mask_heads,
       q_block,
@@ -230,3 +260,66 @@ def flex_attention_fwd(
       ),
   )
   return out, lse.reshape(query.shape[:3])
+
+
+def _dkv_kernel_args(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    block_mask: fa.BlockMask,
+    *,
+    scale: float | None = None,
+) -> tuple[object, ...]:
+  """Returns the arguments of `_flex_attention_bwd_dkv` after di."""
+  if scale is None:
+    scale = 1.0 / math.sqrt(query.shape[-1])
+  tile, mask_mod = _tile_and_mask_mod(
+      query, key, value, block_mask, backward=True
+  )
+  q_num_blocks, q_indices, (q_block, kv_block) = _block_tables(
+      block_mask, mask_mod is not None, tile, by_kv=True
+  )
+  mask_batch, mask_heads, _ = q_num_blocks.shape
+  mask_mlir = ""
+  if mask_mod is not None:
+    mask_mlir = mod_to_mlir(
+        mask_mod, q_block=q_block, kv_block=kv_block, has_score=False
+    )
+  return (
+      *_flat_tables(q_num_blocks, q_indices, query.device),
+      mask_batch,
+      mask_heads,
+      q_block,
+      kv_block,
+      float(scale),
+      mask_mlir,
+  )
+
+
+def flex_attention_bwd(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    out: torch.Tensor,
+    lse: torch.Tensor,
+    grad_out: torch.Tensor,
+    block_mask: fa.BlockMask,
+    *,
+    scale: float | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+  """Returns (dk, dv) of `flex_attention_fwd` for the gradient `grad_out`.
+
+  `out` and `lse` are the forward's results; the other arguments are as in
+  `flex_attention_fwd`. score_mod is not supported yet.
+  """
+  rows = (*query.shape[:2], 1, query.shape[2])
+  di = (grad_out.float() * out.float()).sum(-1)
+  return torch.ops.tpu._flex_attention_bwd_dkv(
+      query,
+      key,
+      value,
+      grad_out,
+      lse.reshape(rows),
+      di.reshape(rows),
+      *_dkv_kernel_args(query, key, value, block_mask, scale=scale),
+  )
