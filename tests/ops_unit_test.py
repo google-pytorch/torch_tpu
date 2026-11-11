@@ -22337,6 +22337,102 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
     self.assertAlmostEqual(row_sum_mean, 1.0, delta=0.05)
     self.assertIsNotNone(v.grad)
 
+  # The lengths come from CreateTiling (flash_attention_kernel_builder.cc) for
+  # f32, a head dim of 128 and dropout. At 1152, the forward and backward
+  # kernels pad the kv sequence to different tile multiples on v5e and v6e. At
+  # 2176 they also do on v5p and v7x. 1024 needs no padding. Re-derive the
+  # lengths when the tiling heuristic or the VMEM limits change.
+  @parameterized.product(
+      seq_len=[1024, 1152, 2176], mask=["none", "causal", "bool"]
+  )
+  def test_scaled_dot_product_attention_dropout_backward_uses_forward_mask(
+      self, seq_len: int, mask: str
+  ):
+    """Verifies that the FlashAttention backward drops what the forward did.
+
+    With the seed reset before each call, the output is A @ V for a fixed A
+    that includes the forward's dropout mask. Running the forward with
+    identity blocks as V recovers A, so dV must equal A^T @ dO. dQ and dK also
+    depend on the probabilities of the dropped entries, which are zero in A,
+    so they are checked against a CPU reference that keeps the entries that
+    are nonzero in A.
+
+    Args:
+      seq_len: The query and key/value sequence length.
+      mask: "none", "causal" for is_causal=True, or "bool" for the equivalent
+        boolean attn_mask.
+    """
+    head_dim = 128
+    dropout_p = 0.1
+    device = torch.device("tpu")
+    generator = torch.Generator().manual_seed(0)
+    q, k, v, grad = (
+        torch.randn(1, 1, seq_len, head_dim, generator=generator).to(device)
+        for _ in range(4)
+    )
+    valid = torch.ones(seq_len, seq_len, dtype=torch.bool)
+    if mask != "none":
+      valid = valid.tril()
+    attn_mask = valid.to(device) if mask == "bool" else None
+
+    def attention(value):
+      torch.manual_seed(42)
+      with torch.nn.attention.sdpa_kernel(
+          torch.nn.attention.SDPBackend.FLASH_ATTENTION
+      ):
+        return torch.nn.functional.scaled_dot_product_attention(
+            q,
+            k,
+            value,
+            attn_mask=attn_mask,
+            dropout_p=dropout_p,
+            is_causal=mask == "causal",
+        )
+
+    prev_prec = torch.get_float32_matmul_precision()
+    torch.set_float32_matmul_precision("highest")
+    try:
+      weights = torch.zeros(seq_len, seq_len)
+      for start in range(0, seq_len, head_dim):
+        width = min(head_dim, seq_len - start)
+        basis = torch.zeros(1, 1, seq_len, head_dim)
+        basis[0, 0, start : start + width, :width] = torch.eye(width)
+        out = attention(basis.to(device)).cpu()
+        weights[:, start : start + width] = out[0, 0, :, :width]
+
+      for t in (q, k, v):
+        t.requires_grad_(True)
+      attention(v).backward(grad)
+    finally:
+      torch.set_float32_matmul_precision(prev_prec)
+
+    self.assertTrue(torch.isfinite(weights).all())
+    drop_rate = (weights[valid] == 0).to(torch.float32).mean().item()
+    self.assertAlmostEqual(drop_rate, dropout_p, delta=0.05)
+
+    q_cpu, k_cpu, v_cpu, grad_cpu = (
+        t[0, 0].detach().cpu() for t in (q, k, v, grad)
+    )
+    q_cpu.requires_grad_(True)
+    k_cpu.requires_grad_(True)
+    logits = q_cpu @ k_cpu.T / math.sqrt(head_dim)
+    probs = logits.masked_fill(~valid, float("-inf")).softmax(dim=-1)
+    keep = weights != 0
+    ((probs * keep / (1 - dropout_p)) @ v_cpu).backward(grad_cpu)
+
+    for name, golden, tpu in (
+        ("q_grad", q_cpu.grad, q.grad),
+        ("k_grad", k_cpu.grad, k.grad),
+        ("v_grad", weights.T @ grad_cpu, v.grad),
+    ):
+      with self.subTest(name):
+        self.assert_close(
+            golden_result=golden,
+            torch_tpu_result=tpu[0, 0].cpu(),
+            rtol=1e-3,
+            atol=1e-3,
+        )
+
   @parameterized.product(
       use_mask=[False, True],
       dropout_p=[0.0, 0.1],
