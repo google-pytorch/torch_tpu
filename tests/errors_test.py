@@ -4277,15 +4277,17 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
 
   def test_max_unpool2d_non_floating_point_input(self):
     indices = torch.zeros((1, 1, 2, 2), device=et.device(), dtype=torch.int64)
-    for dtype, tpu_dtype in (
-        (torch.bool, "bool"),
-        (torch.int32, "int32"),
-        (torch.float8_e4m3fn, "float8_e4m3fn"),
+    # Integer inputs are left out: CUDA accepts them (AT_DISPATCH_ALL_TYPES)
+    # while CPU and TPU do not, so they have no common golden message.
+    for dtype, tpu_dtype, gpu_dtype in (
+        (torch.bool, "bool", "Bool"),
+        (torch.float8_e4m3fn, "float8_e4m3fn", "Float8_e4m3fn"),
     ):
       pooled = torch.empty((1, 1, 2, 2), device=et.device(), dtype=dtype)
       with et.assert_raises_message(
           NotImplementedError,
           tpu=f"""max_unpool2d(): not implemented for {tpu_dtype}""",
+          gpu=f""""max_unpooling2d_forward_kernel" not implemented for '{gpu_dtype}'""",
       ):
         torch.nn.functional.max_unpool2d(pooled, indices, 2)
 
@@ -4294,7 +4296,7 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     indices = torch.zeros((1, 1, 2, 2), device=et.device(), dtype=torch.int32)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""max_unpool2d(): expected indices dtype to be Long, got int32""",
+        tpu="""max_unpool2d(): expected indices dtype to be int64, got int32""",
         gpu="""elements in indices should be type int64 but got: Int""",
     ):
       torch.nn.functional.max_unpool2d(pooled, indices, 2)
@@ -4304,7 +4306,7 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     indices = torch.zeros((2, 2), device=et.device(), dtype=torch.int64)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""max_unpool2d(): expected input to be a 3-D or 4-D tensor, got 2-D tensor""",
+        tpu="""max_unpool2d(): expected input to be 3D or 4D, got 2D""",
         gpu="""Input to max_unpooling2d should be a 3d or 4d Tensor, but got a tensor with 2 dimensions.""",
     ):
       torch.nn.functional.max_unpool2d(pooled, indices, 2)
@@ -4314,10 +4316,24 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     indices = torch.zeros((1, 1, 1, 2), device=et.device(), dtype=torch.int64)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""max_unpool2d(): expected indices to have the same shape as input [1, 1, 2, 2], got [1, 1, 1, 2]""",
+        tpu="""max_unpool2d(): expected indices to have the same shape as input ([1, 1, 2, 2]), got [1, 1, 1, 2]""",
         gpu="""Expected shape of indices to be same as that of the input tensor ([1, 1, 2, 2]) but got indices tensor with shape: [1, 1, 1, 2]""",
     ):
       torch.nn.functional.max_unpool2d(pooled, indices, 2)
+
+  def test_max_unpool3d_non_positive_stride(self):
+    pooled = torch.zeros((1, 1, 2, 2, 2), device=et.device())
+    indices = torch.zeros(
+        (1, 1, 2, 2, 2), device=et.device(), dtype=torch.int64
+    )
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""max_unpool3d(): expected stride elements to be positive, got [0, 2, 2]""",
+        gpu="""strides should be greater than zero, but got stride: [0, 2, 2]""",
+    ):
+      torch.nn.functional.max_unpool3d(
+          pooled, indices, 2, stride=(0, 2, 2), output_size=(4, 4, 4)
+      )
 
   def test_max_unpool2d_empty_spatial_dim(self):
     pooled = torch.zeros((1, 1, 0, 2), device=et.device())

@@ -1568,6 +1568,24 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(run)
 
+  def test_max_unpool3d_stride_and_padding_do_not_change_result(self):
+    """As in ATen, stride and padding are validated but the output is placed
+    by indices alone."""
+    x = torch.randn(2, 2, 4, 4, 4)
+    pooled, indices = torch.nn.functional.max_pool3d(
+        x, 2, return_indices=True
+    )
+
+    def run(device):
+      p, i = pooled.to(device), indices.to(device)
+      default = torch.nn.functional.max_unpool3d(p, i, 2, output_size=(4, 4, 4))
+      other = torch.nn.functional.max_unpool3d(
+          p, i, 2, stride=(3, 1, 2), padding=(1, 0, 1), output_size=(4, 4, 4)
+      )
+      return torch.stack([default, other])
+
+    self.assert_close_tpu_vs_cpu(run)
+
   def test_max_pool1d_no_indices(self):
     """Tests nn.functional.max_pool1d without indices."""
     device = torch.device("tpu")

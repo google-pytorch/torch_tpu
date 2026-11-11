@@ -100,7 +100,7 @@ absl::Status ValidateMaxUnpoolInputs(const at::Tensor& self,
   TT_RET_CHECK(IsFloatingPoint(self), error::kPythonNotImplementedError)
       << "not implemented for " << ToString(self.scalar_type());
   TT_RET_CHECK(IsLong(indices), error::kInvalidArgument)
-      << "expected indices dtype to be Long, got "
+      << "expected indices dtype to be int64, got "
       << ToString(indices.scalar_type());
   TT_RET_CHECK(output_size.size() == spatial_dim_count, error::kInvalidArgument)
       << "expected output_size to have " << spatial_dim_count
@@ -109,11 +109,11 @@ absl::Status ValidateMaxUnpoolInputs(const at::Tensor& self,
   TT_RET_CHECK(
       num_dims == spatial_dim_count + 1 || num_dims == spatial_dim_count + 2,
       error::kInvalidArgument)
-      << "expected input to be a " << spatial_dim_count + 1 << "-D or "
-      << spatial_dim_count + 2 << "-D tensor, got " << num_dims << "-D tensor";
+      << "expected input to be " << spatial_dim_count + 1 << "D or "
+      << spatial_dim_count + 2 << "D, got " << num_dims << "D";
   TT_RET_CHECK(self.sizes() == indices.sizes(), error::kInvalidArgument)
-      << "expected indices to have the same shape as input " << self.sizes()
-      << ", got " << indices.sizes();
+      << "expected indices to have the same shape as input ("
+      << self.sizes() << "), got " << indices.sizes();
   // Non-batch dimensions must be non-empty; an empty batch dimension is fine.
   for (int64_t i = num_dims - spatial_dim_count - 1; i < num_dims; ++i) {
     TT_RET_CHECK(self.size(i) != 0, error::kInvalidArgument)
@@ -140,12 +140,20 @@ absl::StatusOr<Dimensions> ComputeOutputDimensions(
   return out_dims;
 }
 
+// ATen's max_unpool3d signature carries `stride` and `padding`, but neither
+// its CPU nor its CUDA kernel reads them: the output position of every element
+// comes from `indices` alone, and `output_size` fixes the output shape
+// (aten/src/ATen/native/MaxUnpooling.cpp, max_unpooling3d_shape_check). ATen
+// only validates them, and so does this kernel.
 absl::Status ValidateMaxUnpool3dStrideAndPadding(at::IntArrayRef stride,
                                                  at::IntArrayRef padding) {
-  TT_RET_CHECK(stride.size() == 3 && padding.size() == 3,
+  TT_RET_CHECK(stride.size() == 3, error::kInvalidArgument)
+      << "expected stride to have 3 elements, got " << stride.size();
+  TT_RET_CHECK(padding.size() == 3, error::kInvalidArgument)
+      << "expected padding to have 3 elements, got " << padding.size();
+  TT_RET_CHECK(stride[0] > 0 && stride[1] > 0 && stride[2] > 0,
                error::kInvalidArgument)
-      << "expected stride and padding to have 3 elements, got "
-      << stride.size() << " and " << padding.size();
+      << "expected stride elements to be positive, got " << stride;
   return absl::OkStatus();
 }
 
@@ -219,8 +227,8 @@ at::Tensor AtenMaxUnpool3d(const at::Tensor& self, const at::Tensor& indices,
                            at::IntArrayRef stride, at::IntArrayRef padding) {
   TT_KERNEL(OpName::kMaxUnpool3d, param_keys,
             (self, indices, output_size,
-             IgnoreInCacheKey(stride, "does not affect the computation"),
-             IgnoreInCacheKey(padding, "does not affect the computation")),
+             IgnoreInCacheKey(stride, "validated only, as in ATen"),
+             IgnoreInCacheKey(padding, "validated only, as in ATen")),
             {
               TT_THROW_IF_ERROR(
                   ValidateMaxUnpool3dStrideAndPadding(stride, padding));
@@ -242,8 +250,8 @@ at::Tensor& AtenMaxUnpool3dOut(const at::Tensor& self,
                                at::Tensor& out) {
   TT_KERNEL(OpName::kMaxUnpool3dOut, param_keys,
             (self, indices, output_size,
-             IgnoreInCacheKey(stride, "does not affect the computation"),
-             IgnoreInCacheKey(padding, "does not affect the computation"), out),
+             IgnoreInCacheKey(stride, "validated only, as in ATen"),
+             IgnoreInCacheKey(padding, "validated only, as in ATen"), out),
             {
               TT_THROW_IF_ERROR(
                   ValidateMaxUnpool3dStrideAndPadding(stride, padding));
