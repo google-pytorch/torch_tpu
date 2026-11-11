@@ -1594,8 +1594,7 @@ absl::Status GatherSubgroupsViaNodeLocalStore(
       absl::StrFormat("%d,%d:%s", pg_rank, world_rank, unwrapped.full_prefix);
   std::vector<std::string> peer_keys(world_size);
   for (int64_t r = 0; r < world_size; ++r) {
-    peer_keys[r] =
-        absl::StrFormat("pg_sub:%s%d:%d", key_scope, gather_id, r);
+    peer_keys[r] = absl::StrFormat("pg_sub:%s%d:%d", key_scope, gather_id, r);
   }
 
   TT_ASSIGN_OR_RETURN(
@@ -1970,7 +1969,7 @@ ProcessGroupTpu::ProcessGroupTpu(c10::intrusive_ptr<c10d::Store> store,
                                values[i].size()),
               &member_device_ids_[i]),
           error::kInternal)
-          << "Failed to parse peer device id of rank " << i;
+          << "failed to parse the peer device id of rank " << i;
     }
     return;
   }

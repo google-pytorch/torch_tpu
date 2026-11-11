@@ -411,13 +411,14 @@ PjrtBackend::GetJobDeviceIds() {
     for (std::string_view id : absl::StrSplit(job_devices, ',')) {
       TT_RET_CHECK(absl::SimpleAtoi(id, &device_ids.emplace_back()),
                    error::kInvalidArgument)
-          << kTorchTpuJobDeviceIdsEnvVar << " must list device ids, got "
-          << job_devices;
+          << "expected " << kTorchTpuJobDeviceIdsEnvVar
+          << " to list device ids, got '" << job_devices << "'";
     }
     TT_RET_CHECK(absl::c_linear_search(device_ids, global_device_id_),
                  error::kInvalidArgument)
-        << "this process's device " << global_device_id_ << " is not in "
-        << kTorchTpuJobDeviceIdsEnvVar << "=" << job_devices;
+        << "expected this process's device " << global_device_id_
+        << " to be in " << kTorchTpuJobDeviceIdsEnvVar << ", got '"
+        << job_devices << "'";
   }
   absl::c_sort(device_ids);
   return device_ids;
