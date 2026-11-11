@@ -28,27 +28,10 @@ package(
 )
 
 torch_tpu_cc_library(
-    name = "tril_indices",
-    srcs = ["tril_indices.cc"],
-    hdrs = ["tril_indices.h"],
-    deps = [
-        "//csrc/common:error_utils",
-        "//csrc/ops:op_builder_utils",
-        "//csrc/ops/nonzero",
-        "@com_google_absl//absl/status:statusor",
-        "@llvm-project//mlir:IR",
-        "@stablehlo//:stablehlo_ops",
-        "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
-        "@stablehlo//stablehlo/integrations/cpp/builder:stablehlo_builder",
-    ],
-)
-
-torch_tpu_cc_library(
     name = "tril_indices_aten_kernels",
     srcs = ["tril_indices_aten_kernels.cc"],
     hdrs = ["tril_indices_aten_kernels.h"],
     deps = [
-        ":tril_indices",
         "//csrc/common:dtype",
         "//csrc/common:error_utils",
         "//csrc/common:to_string",
@@ -56,13 +39,16 @@ torch_tpu_cc_library(
         "//csrc/ops:op_builder_utils",
         "//csrc/ops:op_names",
         "//csrc/ops/macros:kernel",
+        "//csrc/ops/nonzero",
         "//shims/torch:aten_headers",
         "//shims/torch/c10/core:base_headers",
         "//shims/torch/torch/headeronly:torch_headeronly",
         "@com_google_absl//absl/status:statusor",
         "@llvm-project//mlir:IR",
+        "@stablehlo//:stablehlo_ops",
         "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
         "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
+        "@stablehlo//stablehlo/integrations/cpp/builder:stablehlo_builder",
     ],
 )
 

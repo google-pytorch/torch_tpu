@@ -41,18 +41,298 @@
 #include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
 #include "csrc/eager/op_dispatcher.h"
-#include "csrc/ops/index_put/index_put.h"
 #include "csrc/ops/index_utils.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/nonzero/nonzero_aten_kernels.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
+#include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Types.h"
+#include "mlir/Support/DebugStringHelper.h"
+#include "mlir/Support/LLVM.h"
+#include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
+#include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 
 namespace torch_tpu {
 
 namespace {
+
+namespace stablehlo = mlir::stablehlo;
+
+absl::StatusOr<mlir::MlirOp> ApplyScatter(
+    mlir::MlirOp self, mlir::ArrayRef<mlir::MlirOp> indices,
+    const int64_t index_start_dim, const int64_t index_end_dim,
+    const Dimensions& index_broadcast_shape, mlir::MlirOp values,
+    const Dimensions& values_broadcast_shape, const bool accumulate) {
+  const mlir::RankedTensorType self_type = GetTensorTypeOrDie(self);
+  ABSL_VLOG(1) << "[BuildIndexPutShlo] self: " << debugString(self_type);
+
+  // Broadcast indices to the broadcast shape.
+  std::vector<mlir::MlirOp> parts;
+  parts.reserve(indices.size());
+
+  mlir::ElementType common_index_type = mlir::ElementType::I32;
+  for (const mlir::MlirOp& index : indices) {
+    if (GetElementTypeOrDie(index) == mlir::ElementType::I64) {
+      common_index_type = mlir::ElementType::I64;
+      break;
+    }
+  }
+
+  for (int i = 0; i < indices.size(); ++i) {
+    mlir::MlirOp index = indices[i];
+    mlir::RankedTensorType index_type = GetTensorTypeOrDie(index);
+    ABSL_VLOG(1) << "[BuildIndexPutShlo] index dim:" << index_start_dim + i
+                 << " before broadcast: " << debugString(index_type);
+    TT_ASSIGN_OR_RETURN(  // ERROR_COV_INFEASIBLE=the op catches this error
+                          // first before dispatching.
+        index, BroadcastIfNeeded(index, index_broadcast_shape));
+    index_type = GetTensorTypeOrDie(index);
+    ABSL_VLOG(1) << "[BuildIndexPutShlo] index " << index_start_dim + i
+                 << " after broadcast: " << debugString(index_type);
+
+    // TODO: b/551808363 - Consider downcasting to i32 when we can statically
+    // determine that the indices are within range.
+    if (GetElementTypeOrDie(index) != common_index_type) {
+      index = stablehlo::ConvertElementType(index, common_index_type);
+    }
+
+    // Expand the last dimension to 1 for concatenation to create
+    // scatter_indices.
+    Dimensions reshaped_index_shape = index_broadcast_shape;
+    reshaped_index_shape.push_back(1);
+
+    mlir::MlirOp reshaped_index =
+        stablehlo::Reshape(index, reshaped_index_shape);
+    parts.push_back(reshaped_index);
+  }
+
+  // Concatenate the reshaped indices to create scatter_indices.
+  mlir::MlirOp scatter_indices = stablehlo::Concatenate(
+      self.getBuilder(), parts, index_broadcast_shape.size());
+  const mlir::RankedTensorType scatter_indices_type =
+      GetTensorTypeOrDie(scatter_indices);
+  ABSL_VLOG(1) << "[BuildIndexPutShlo] scatter_indices: "
+               << debugString(scatter_indices_type);
+
+  // Calculate update_window_dims, inserted_window_dims and
+  // scatter_dims_to_operand_dims.
+  //
+  // update_window_dims: dimensions in values corresponding to the slice
+  // The shape of values is expected to be broadcastable to the shape:
+  // slice shape before indexing (S_before) + indexing broadcast shape (B) +
+  // slice shape after indexing (S_after) = (S_before + B + S_after)
+  //
+  // inserted_window_dims: dimensions in self not part of the update window
+  // and used for indexing into self.
+  //
+  // scatter_dims_to_operand_dims: this maps the elements of the scatter_indices
+  // tensor to the dimensions in self used for indexing into self. These will be
+  // indexed dims as there is a 1:1 mapping between the elements of the
+  // scatter_indices tensor and the dimensions in self used for indexing into
+  // self.
+  //
+  // Example 1: (no slice before indexing)
+  //   self: tensor<5x5xi64>, indexed dims: [0]
+  //   scatter_indices: tensor<2x1xi64> B: (2,)
+  //   values: tensor<2x5xi64>.  B: (2,), S_after: (5)
+  //
+  //   update_window_dims: [1]
+  //   inserted_window_dims: [0]
+  //   scatter_dims_to_operand_dims: [0]
+  //
+  // Example 2: (slice before and after indexing)
+  //   self: tensor<5x5x5xi64>, indexed dims: [1]
+  //   scatter_indices: tensor<2x1xi64> B: (2,)
+  //   values: tensor<5x2x5xi64>.  S_before: (5,), B: (2,), S_after: (5,)
+  //
+  //   update_window_dims: [0, 2]
+  //   inserted_window_dims: [1]
+  //   scatter_dims_to_operand_dims: [1]
+  //
+
+  Dimensions update_window_dims;  // dimensions in values corresponding to the
+                                  // slice shape
+  // Sliced dimensions before indexed dimensions
+  for (int64_t dim = 0; dim < index_start_dim; ++dim) {
+    update_window_dims.push_back(dim);
+  }
+  // Sliced dimensions after indexed dimensions
+  int64_t dim_after_indexing = index_start_dim + index_broadcast_shape.size();
+  for (int64_t dim = index_end_dim + 1; dim < self_type.getRank(); ++dim) {
+    update_window_dims.push_back(dim_after_indexing++);
+  }
+  for (int64_t i = 0; i < update_window_dims.size(); ++i) {
+    ABSL_VLOG(1) << "[BuildIndexPutShlo] update_window_dims[" << i
+                 << "]: " << update_window_dims[i];
+  }
+
+  Dimensions inserted_window_dims;  // dimensions in self that are indexed into
+  for (int64_t dim = index_start_dim; dim <= index_end_dim; ++dim) {
+    inserted_window_dims.push_back(dim);
+  }
+
+  // scatter_dims_to_operand_dims is the same as inserted_window_dims
+  Dimensions scatter_dims_to_operand_dims = inserted_window_dims;
+
+  mlir::RankedTensorType values_type = GetTensorTypeOrDie(values);
+  ABSL_VLOG(1) << "[BuildIndexPutShlo] values: " << debugString(values_type);
+
+  TT_ASSIGN_OR_RETURN(  // ERROR_COV_INFEASIBLE=the op catches this error
+                        // first before dispatching.
+      values, BroadcastIfNeeded(values, values_broadcast_shape));
+
+  values_type = GetTensorTypeOrDie(values);
+  ABSL_VLOG(1) << "[BuildIndexPutShlo] values after broadcast: "
+               << debugString(values_type);
+
+  stablehlo::ScatterDimensionNumbersAttr scatter_dimension_numbers =
+      stablehlo::ScatterDimensionNumbersAttr::get(
+          &self.getContext(), update_window_dims, inserted_window_dims,
+          /*input_batching_dims=*/{},
+          /*scatter_indices_batching_dims=*/{}, scatter_dims_to_operand_dims,
+          /*index_vector_dim=*/index_broadcast_shape.size());
+
+  auto element_type = self_type.getElementType();
+  auto region_tensor_type = mlir::RankedTensorType::get({}, element_type);
+  auto region_builder = [region_tensor_type,
+                         accumulate](mlir::RegionBuilder& builder) {
+    mlir::MlirOp arg0 = mlir::Argument(builder, region_tensor_type);
+    mlir::MlirOp arg1 = mlir::Argument(builder, region_tensor_type);
+    if (accumulate) {
+      mlir::MlirOp result_val = stablehlo::Add(arg0, arg1);
+      stablehlo::Return(builder, {result_val});
+    } else {
+      stablehlo::Return(builder, {arg1});
+    }
+  };
+
+  return stablehlo::Scatter({self}, scatter_indices, {values}, region_builder,
+                            scatter_dimension_numbers,
+                            /*indices_are_sorted=*/false,
+                            /*unique_indices=*/false)[0];
+}
+
+absl::StatusOr<mlir::MlirOp> ApplySelect(mlir::MlirOp self, mlir::MlirOp mask,
+                                         const int64_t index_start_dim,
+                                         mlir::MlirOp values, bool accumulate) {
+  const mlir::RankedTensorType self_type = GetTensorTypeOrDie(self);
+  const mlir::RankedTensorType mask_type = GetTensorTypeOrDie(mask);
+  const mlir::RankedTensorType values_type = GetTensorTypeOrDie(values);
+  const int64_t self_rank = self_type.getRank();
+  const int64_t mask_rank = mask_type.getRank();
+  const int64_t values_rank = values_type.getRank();
+
+  Indices mask_broadcast_dims;
+  mask_broadcast_dims.reserve(mask_rank);
+  for (int64_t i = 0; i < mask_rank; ++i) {
+    mask_broadcast_dims.push_back(index_start_dim + i);
+  }
+
+  // Example: self[B, T, H, D] indexed by mask[T, H] at index_start_dim=1
+  // (`self[:, mask, :]`), with values[1, D].
+  // - PyTorch replaces the masked axes (T, H at dims 1, 2) with a single dim N
+  //   making shape [B, N, D].
+  // - target_to_self_dims = {0, 1, 3} records the corresponding self axis for
+  //   each dim of [B, N, D] (B -> 0, collapsed N -> 1, D -> 3).
+  // - Since values[1, D] right-aligns to [B, N, D], taking the last 2 entries
+  //   gives values_broadcast_dims = {1, 3} for stablehlo.broadcast_in_dim.
+  const int64_t target_rank = self_rank - mask_rank + 1;
+  const int64_t rank_offset = target_rank - values_rank;
+  // PyTorch 0-D boolean masks insert a virtual dimension of size 1 at
+  // index_start_dim in the indexing result; squeezing it aligns values with
+  // self.
+  if (mask_rank == 0 && index_start_dim >= rank_offset) {
+    TT_ASSIGN_OR_RETURN(values,
+                        Squeeze(values, {index_start_dim - rank_offset}));
+  }
+  Indices target_to_self_dims;
+  target_to_self_dims.reserve(target_rank);
+  for (int64_t d = 0; d < index_start_dim; ++d) {
+    target_to_self_dims.push_back(d);
+  }
+  if (mask_rank > 0) {
+    target_to_self_dims.push_back(index_start_dim);
+  }
+  for (int64_t d = index_start_dim + mask_rank; d < self_rank; ++d) {
+    target_to_self_dims.push_back(d);
+  }
+  const int64_t values_squeezed_rank = GetTensorTypeOrDie(values).getRank();
+  Indices values_broadcast_dims(
+      target_to_self_dims.end() - values_squeezed_rank,
+      target_to_self_dims.end());
+
+  TT_ASSIGN_OR_RETURN(mask, BroadcastIfNeeded(mask, self, mask_broadcast_dims));
+  TT_ASSIGN_OR_RETURN(values,
+                      BroadcastIfNeeded(values, self, values_broadcast_dims));
+
+  ABSL_VLOG(1) << "[BuildIndexPutSelectShlo] self: " << self.ToString();
+  ABSL_VLOG(1) << "[BuildIndexPutSelectShlo] mask: " << mask.ToString();
+  ABSL_VLOG(1) << "[BuildIndexPutSelectShlo] values: " << values.ToString();
+
+  if (accumulate) {
+    // Accumulate: self + values
+    values = stablehlo::Add(self, values);
+  }
+  return mlir::stablehlo::Select(mask, values, self);
+}
+
+// Builds StableHLO operations to implement the semantics of index_put operation
+//
+// Parameters:
+//   self: The 'self' tensor to be updated.
+//   indices: An ArrayRef containing the index tensors.
+//   index_start_dim: The starting dimension in self indexed by the index
+//                  tensors. Index tensors must be contiguous in self starting
+//                  at index_start_dim.
+//   index_end_dim: The ending dimension in self indexed by the index tensors.
+//                  Index tensors must be contiguous in self ending at
+//                  index_end_dim.
+//   index_broadcast_shape: A Dimensions vector representing the common shape
+//                          that all index tensors are broadcastable to.
+//   values: The 'values' tensor providing the updates.
+//   values_broadcast_shape: A Dimensions vector representing the shape to
+//                           which the input 'values' tensor is broadcastable
+//                           to. This shape is formed by concatenating
+//                           `index_broadcast_shape` with the sizes of any
+//                           unindexed dimensions of 'self', in their original
+//                           relative order.
+//   accumulate: A boolean flag. If true, the elements from the 'values' tensor
+//               are added to the existing elements in the 'self' tensor at the
+//               indexed locations. If false, the elements are overwritten.
+//
+absl::StatusOr<mlir::MlirOp> BuildIndexPutShlo(
+    mlir::MlirOp self, mlir::ArrayRef<mlir::MlirOp> indices,
+    const int64_t index_start_dim, const int64_t index_end_dim,
+    const Dimensions& index_broadcast_shape, mlir::MlirOp values,
+    const Dimensions& values_broadcast_shape, const bool accumulate) {
+  return ApplyScatter(self, indices, index_start_dim, index_end_dim,
+                      index_broadcast_shape, values, values_broadcast_shape,
+                      accumulate);
+}
+
+// Builds StableHLO operations to implement the semantics of index_put operation
+// when the index is a mask tensor.
+//
+// Parameters:
+//   self: The 'self' tensor to be updated.
+//   mask: The boolean mask tensor.
+//   index_start_dim: The starting dimension in self indexed by the mask tensor.
+//   values: The 'values' tensor providing the updates. This can be a scalar
+//           or broadcastable to self.
+//   accumulate: A boolean flag. If true, the elements from the 'values' tensor
+//               are added to the existing elements in the 'self' tensor at the
+//               indexed locations. If false, the elements are overwritten.
+//
+absl::StatusOr<mlir::MlirOp> BuildIndexPutSelectShlo(
+    mlir::MlirOp self, mlir::MlirOp mask, const int64_t index_start_dim,
+    mlir::MlirOp values, const bool accumulate) {
+  return ApplySelect(self, mask, index_start_dim, values, accumulate);
+}
 
 // Returns the positions of the non-zero elements of `mask` on `device`, with
 // shape (L, mask.dim()). A CPU `mask` is evaluated on the host, which avoids a

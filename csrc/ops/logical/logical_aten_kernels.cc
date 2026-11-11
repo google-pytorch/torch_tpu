@@ -20,21 +20,71 @@
 
 #include "ATen/core/ATen_fwd.h"
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "c10/core/ScalarType.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/ops/binary_aten_kernels.h"
-#include "csrc/ops/logical/logical.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/unary_aten_kernels.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
+#include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 
 namespace torch_tpu {
 
 namespace {
+
+namespace stablehlo = mlir::stablehlo;
+
+inline absl::StatusOr<mlir::MlirOp> CastToBooleanIfNeeded(mlir::MlirOp op) {
+  const mlir::RankedTensorType tensor_type = GetTensorTypeOrDie(op);
+  if (!IsBooleanType(tensor_type)) {
+    return stablehlo::ConvertElementType(op, mlir::ElementType::PRED);
+  }
+  return op;
+}
+
+struct BroadcastedOperands {
+  mlir::MlirOp self;
+  mlir::MlirOp other;
+};
+
+absl::StatusOr<BroadcastedOperands> BroadcastLogicalOperands(
+    mlir::MlirOp self, mlir::MlirOp other) {
+  TT_ASSIGN_OR_RETURN(self, CastToBooleanIfNeeded(self));
+  TT_ASSIGN_OR_RETURN(other, CastToBooleanIfNeeded(other));
+  TT_ASSIGN_OR_RETURN((auto [self_broadcast, other_broadcast]),
+                      ApplyBroadcastIfNeeded(self, other));
+  return BroadcastedOperands{.self = self_broadcast, .other = other_broadcast};
+}
+
+absl::StatusOr<mlir::MlirOp> BuildLogicalAndShlo(mlir::MlirOp self,
+                                                 mlir::MlirOp other) {
+  TT_ASSIGN_OR_RETURN(auto operands, BroadcastLogicalOperands(self, other));
+  return stablehlo::And(operands.self, operands.other);
+}
+
+absl::StatusOr<mlir::MlirOp> BuildLogicalOrShlo(mlir::MlirOp self,
+                                                mlir::MlirOp other) {
+  TT_ASSIGN_OR_RETURN(auto operands, BroadcastLogicalOperands(self, other));
+  return stablehlo::Or(operands.self, operands.other);
+}
+
+absl::StatusOr<mlir::MlirOp> BuildLogicalXorShlo(mlir::MlirOp self,
+                                                 mlir::MlirOp other) {
+  TT_ASSIGN_OR_RETURN(auto operands, BroadcastLogicalOperands(self, other));
+  return stablehlo::Xor(operands.self, operands.other);
+}
+
+absl::StatusOr<mlir::MlirOp> BuildLogicalNotShlo(mlir::MlirOp self) {
+  TT_ASSIGN_OR_RETURN(self, CastToBooleanIfNeeded(self));
+  return stablehlo::Not(self);
+}
 
 // This helper function for binary logical operations validates output dtype
 // against kBool and dispatches via BinaryOpOut.

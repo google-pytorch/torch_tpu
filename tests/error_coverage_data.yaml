@@ -76,8 +76,7 @@ csrc/ops/addmv/addmv_aten_kernels.cc: {remaining: 0, total: 9, infeasible: 2}
 csrc/ops/all_any/all_any_aten_kernels.cc: {remaining: 0, total: 1, infeasible: 0}
 csrc/ops/angle/angle_aten_kernels.cc: {remaining: 0, total: 1, infeasible: 0}
 csrc/ops/ao/ao_offload_kernels.cc: {remaining: 0, total: 2, infeasible: 0}
-csrc/ops/arange/arange.cc: {remaining: 0, total: 1, infeasible: 1}
-csrc/ops/arange/arange_aten_kernels.cc: {remaining: 0, total: 6, infeasible: 0}
+csrc/ops/arange/arange_aten_kernels.cc: {remaining: 0, total: 7, infeasible: 1}
 csrc/ops/as_strided/as_strided_aten_kernels.cc: {remaining: 0, total: 1, infeasible: 1}
 csrc/ops/assertion_aten_kernels.cc: {remaining: 0, total: 3, infeasible: 0}
 csrc/ops/baddbmm/baddbmm_aten_kernels.cc: {remaining: 0, total: 8, infeasible: 0}
@@ -92,8 +91,7 @@ csrc/ops/cat/cat.cc: {remaining: 0, total: 2, infeasible: 2}
 csrc/ops/cat/cat_aten_kernels.cc: {remaining: 0, total: 7, infeasible: 4}
 csrc/ops/channel_shuffle/channel_shuffle_aten_kernels.cc: {remaining: 0, total: 3, infeasible: 0}
 csrc/ops/clamp/clamp_aten_kernels.cc: {remaining: 0, total: 1, infeasible: 0}
-csrc/ops/col2im/col2im.cc: {remaining: 0, total: 1, infeasible: 1}
-csrc/ops/col2im/col2im_aten_kernels.cc: {remaining: 0, total: 11, infeasible: 0}
+csrc/ops/col2im/col2im_aten_kernels.cc: {remaining: 0, total: 12, infeasible: 1}
 csrc/ops/constant_pad/constant_pad_aten_kernels.cc: {remaining: 0, total: 3, infeasible: 0}
 csrc/ops/convolution/convolution.cc: {remaining: 0, total: 2, infeasible: 1}
 csrc/ops/convolution/convolution_aten_kernels.cc: {remaining: 0, total: 8, infeasible: 0}
@@ -155,10 +153,8 @@ csrc/ops/hardsigmoid/hardsigmoid_aten_kernels.cc: {remaining: 0, total: 2, infea
 csrc/ops/hardswish/hardswish_aten_kernels.cc: {remaining: 0, total: 4, infeasible: 0}
 csrc/ops/hardtanh/hardtanh_aten_kernels.cc: {remaining: 0, total: 5, infeasible: 0}
 csrc/ops/histc/histc_aten_kernels.cc: {remaining: 1, total: 7, infeasible: 0}
-csrc/ops/im2col/im2col.cc: {remaining: 1, total: 1, infeasible: 0}
-csrc/ops/im2col/im2col_aten_kernels.cc: {remaining: 6, total: 6, infeasible: 0}
-csrc/ops/index/index.cc: {remaining: 0, total: 4, infeasible: 4}
-csrc/ops/index/index_aten_kernels.cc: {remaining: 0, total: 6, infeasible: 0}
+csrc/ops/im2col/im2col_aten_kernels.cc: {remaining: 7, total: 7, infeasible: 0}
+csrc/ops/index/index_aten_kernels.cc: {remaining: 0, total: 10, infeasible: 4}
 csrc/ops/index_fill/index_fill_aten_kernels.cc: {remaining: 0, total: 3, infeasible: 0}
 csrc/ops/index_put/index_put_aten_kernels.cc: {remaining: 0, total: 8, infeasible: 0}
 csrc/ops/index_reduce/index_reduce_aten_kernels.cc: {remaining: 1, total: 1, infeasible: 0}
@@ -185,8 +181,7 @@ csrc/ops/masked_fill/masked_fill_aten_kernels.cc: {remaining: 0, total: 4, infea
 csrc/ops/masked_scatter/masked_scatter_aten_kernels.cc: {remaining: 0, total: 4, infeasible: 0}
 csrc/ops/masked_select/masked_select_aten_kernels.cc: {remaining: 0, total: 3, infeasible: 0}
 csrc/ops/min_max/min_max_aten_kernels.cc: {remaining: 0, total: 4, infeasible: 0}
-csrc/ops/mm/mm.cc: {remaining: 0, total: 4, infeasible: 4}
-csrc/ops/mm/mm_aten_kernels.cc: {remaining: 0, total: 5, infeasible: 0}
+csrc/ops/mm/mm_aten_kernels.cc: {remaining: 0, total: 9, infeasible: 4}
 csrc/ops/mse_loss/mse_loss_aten_kernels.cc: {remaining: 0, total: 5, infeasible: 0}
 csrc/ops/multinomial/multinomial_aten_kernels.cc: {remaining: 0, total: 5, infeasible: 0}
 csrc/ops/native_batch_norm/native_batch_norm.cc: {remaining: 1, total: 1, infeasible: 0}
@@ -208,8 +203,7 @@ csrc/ops/pooling/pooling.cc: {remaining: 0, total: 2, infeasible: 1}
 csrc/ops/prelu/prelu_aten_kernels.cc: {remaining: 0, total: 6, infeasible: 0}
 csrc/ops/prod/prod_aten_kernels.cc: {remaining: 0, total: 1, infeasible: 0}
 csrc/ops/put/put_aten_kernels.cc: {remaining: 0, total: 4, infeasible: 0}
-csrc/ops/random/random.cc: {remaining: 0, total: 5, infeasible: 5}
-csrc/ops/random/random_aten_kernels.cc: {remaining: 1, total: 2, infeasible: 0}
+csrc/ops/random/random_aten_kernels.cc: {remaining: 1, total: 7, infeasible: 5}
 csrc/ops/reductions/reduction_utils.cc: {remaining: 0, total: 4, infeasible: 0}
 csrc/ops/reflection_pad/reflection_pad_aten_kernels.cc: {remaining: 0, total: 6, infeasible: 4}
 csrc/ops/repeat_interleave/repeat_interleave_aten_kernels.cc: {remaining: 0, total: 6, infeasible: 0}
@@ -250,7 +244,7 @@ csrc/ops/thnn_fused_lstm_cell/thnn_fused_lstm_cell_aten_kernels.cc: {remaining: 
 csrc/ops/threshold/threshold_aten_kernels.cc: {remaining: 0, total: 1, infeasible: 0}
 csrc/ops/to_copy/to_copy_aten_kernels.cc: {remaining: 0, total: 1, infeasible: 1}
 csrc/ops/transformer_encoder_layer_fwd/_transformer_encoder_layer_fwd_aten_kernels.cc: {remaining: 0, total: 22, infeasible: 0}
-csrc/ops/triangular/triangular.cc: {remaining: 0, total: 1, infeasible: 1}
+csrc/ops/triangular/triangular_aten_kernels.cc: {remaining: 0, total: 1, infeasible: 1}
 csrc/ops/tril_indices/tril_indices_aten_kernels.cc: {remaining: 0, total: 1, infeasible: 0}
 csrc/ops/unary.cc: {remaining: 0, total: 1, infeasible: 1}
 csrc/ops/unary_aten_kernels.cc: {remaining: 0, total: 10, infeasible: 0}

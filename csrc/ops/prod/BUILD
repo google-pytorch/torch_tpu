@@ -28,7 +28,6 @@ torch_tpu_cc_library(
     srcs = ["prod_aten_kernels.cc"],
     hdrs = ["prod_aten_kernels.h"],
     deps = [
-        ":prod",
         "//csrc/common:aten_utils",
         "//csrc/common:cache_key",
         "//csrc/common:device_type",
@@ -47,22 +46,8 @@ torch_tpu_cc_library(
         "//shims/torch:aten_headers",
         "//shims/torch/torch/headeronly:torch_headeronly",
         "@com_google_absl//absl/functional:bind_front",
-        "@com_google_absl//absl/status:statusor",
-        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
-        "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
-        "@stablehlo//stablehlo/integrations/cpp/builder:stablehlo_builder",
-    ],
-)
-
-torch_tpu_cc_library(
-    name = "prod",
-    srcs = ["prod.cc"],
-    hdrs = ["prod.h"],
-    deps = [
-        "//csrc/ops:op_builder_utils",
-        "//csrc/ops/reductions",
-        "//shims/torch:aten_headers",
         "@com_google_absl//absl/log:absl_log",
+        "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:IR",

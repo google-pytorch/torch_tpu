@@ -28,7 +28,6 @@ torch_tpu_cc_library(
     srcs = ["logical_aten_kernels.cc"],
     hdrs = ["logical_aten_kernels.h"],
     deps = [
-        ":logical",
         "//csrc/common:cache_key",
         "//csrc/common:dtype",
         "//csrc/common:error_utils",
@@ -41,17 +40,6 @@ torch_tpu_cc_library(
         "//shims/torch:torch_headers",
         "//shims/torch/c10/core:base_headers",
         "@com_google_absl//absl/status",
-        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
-    ],
-)
-
-torch_tpu_cc_library(
-    name = "logical",
-    srcs = ["logical.cc"],
-    hdrs = ["logical.h"],
-    deps = [
-        "//csrc/common:error_utils",
-        "//csrc/ops:op_builder_utils",
         "@com_google_absl//absl/status:statusor",
         "@llvm-project//mlir:IR",
         "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
