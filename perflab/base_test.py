@@ -683,27 +683,22 @@ class BaseBenchmarkTest(
       self.report_out_of_memory_skip(spec, mode, batch_size)
       self.skipTest(out_of_memory_reason)
 
-    target = target_lib.make_target(self.platform, dtype=spec.dtype)
-    device_ops = self.make_device_ops(target)
-    ctx = registry_lib.resolve_context(
-        spec,
-        context_lib.Context(
-            target=target, run_scope=context_lib.RUN_SCOPE.value
-        ),
-        batch_size,
-    )
-
-    self.reset_state(target, device_ops, mode)
-
     if (
         skip_reason is not None
         and flags_lib.SKIP_BEHAVIOR.value == "assert_raise"
     ):
+      # Outside assertRaises so that a setup failure (e.g. of the device) is an
+      # error rather than the failure that the skipped case is expected to have.
+      target, device_ops, ctx = self._set_up_case(spec, mode, batch_size)
       with self.assertRaises(Exception):  # ASSERT_RAISES_OK=benchmark
         self._run_and_measure(spec, mode, target, device_ops, ctx, batch_size)
       return
 
     try:
+      # Inside the reporting try so that setup failures are exported. A batch
+      # sweep case that runs out of memory during setup is reported like one
+      # that runs out of memory while measuring.
+      target, device_ops, ctx = self._set_up_case(spec, mode, batch_size)
       metrics = self._run_and_measure(
           spec, mode, target, device_ops, ctx, batch_size
       )
@@ -723,6 +718,25 @@ class BaseBenchmarkTest(
     self.report_result(
         spec, mode, succeeded=True, metrics=metrics, batch_size=batch_size
     )
+
+  def _set_up_case(
+      self, spec, mode, batch_size
+  ) -> tuple[target_lib.Target, device_ops_lib.DeviceOps, context_lib.Context]:
+    """Returns the target, device ops, and context of a case, set up to run."""
+    try:
+      target = target_lib.make_target(self.platform, dtype=spec.dtype)
+      device_ops = self.make_device_ops(target)
+      ctx = registry_lib.resolve_context(
+          spec,
+          context_lib.Context(
+              target=target, run_scope=context_lib.RUN_SCOPE.value
+          ),
+          batch_size,
+      )
+      self.reset_state(target, device_ops, mode)
+    except target_lib.UnsupportedBenchmark as e:
+      self.skipTest(f"{spec.name}: {e}")
+    return target, device_ops, ctx
 
   def _run_and_measure(
       self, spec, mode, target, device_ops, ctx, batch_size

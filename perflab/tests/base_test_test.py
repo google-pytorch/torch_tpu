@@ -19,6 +19,7 @@ import contextlib
 import os
 import pickle
 import types
+from typing import Literal
 import unittest
 from unittest import mock
 
@@ -224,7 +225,9 @@ class BaseBenchmarkTestChildOutcomeTest(seed_test_utils.RepeatableTest):
     self.assertFalse(data.succeeded)
 
   @parameterized.parameters(
-      base_test.Outcome.SUCCESS, base_test.Outcome.FAILURE
+      base_test.Outcome.SUCCESS,
+      base_test.Outcome.FAILURE,
+      base_test.Outcome.ERROR,
   )
   def test_child_payload_is_exported(self, outcome):
     payload = export_lib.BenchmarkData(
@@ -283,7 +286,9 @@ class BaseBenchmarkTestReportResultTest(seed_test_utils.RepeatableTest):
 
 
 def _run_case_spec(
-    name: str, skipped_run_modes: frozenset[str] = frozenset()
+    name: str,
+    skipped_run_modes: frozenset[str] = frozenset(),
+    workload: registry_lib.WorkloadFn | None = None,
 ) -> registry_lib.BenchmarkSpec:
   return registry_lib.BenchmarkSpec(
       name=name,
@@ -292,20 +297,33 @@ def _run_case_spec(
       presubmit=registry_lib.PresubmitPolicy.RUN,
       dtype=target_lib.DType.FP32,
       skipped_run_modes=skipped_run_modes,
+      workload=workload,
   )
+
+
+def _raise_workload_error(ctx):
+  del ctx  # Unused.
+  raise ValueError("simulated workload failure")
 
 
 _MEASURED_SPEC = _run_case_spec("measured")
 _FAILING_SPEC = _run_case_spec("failing")
 _UNSUPPORTED_SPEC = _run_case_spec("unsupported")
+_BAD_WORKLOAD_SPEC = _run_case_spec(
+    "bad_workload", workload=_raise_workload_error
+)
 _SKIPPED_SPEC = _run_case_spec(
     "skipped", skipped_run_modes=frozenset({common.RunMode.EAGER_DEFAULT.value})
 )
+
+# The name of a setup hook of `_fake_run_case_test_class` that raises.
+_FailingHook = Literal["make_device_ops", "reset_state"]
 
 
 def _fake_run_case_test_class(
     calls: list[str],
     failures: Sequence[discovery_lib.ImportFailure] = (),
+    failing_hook: _FailingHook | None = None,
 ) -> type[base_test.BaseBenchmarkTest]:
   """Returns a test class that runs `run_case` with recording hooks.
 
@@ -315,6 +333,7 @@ def _fake_run_case_test_class(
   Args:
     calls: The list that the hooks append the names of their calls to.
     failures: The import failures that the class reports.
+    failing_hook: The name of the setup hook that raises, if any.
   """
 
   class FakeRunCaseTest(base_test.BaseBenchmarkTest):
@@ -324,10 +343,14 @@ def _fake_run_case_test_class(
 
     def make_device_ops(self, target):
       calls.append("make_device_ops")
+      if failing_hook == "make_device_ops":
+        raise RuntimeError("simulated make_device_ops failure")
       return mock.create_autospec(device_ops_lib.DeviceOps, instance=True)
 
     def reset_state(self, target, device_ops, mode):
       calls.append("reset_state")
+      if failing_hook == "reset_state":
+        raise RuntimeError("simulated reset_state failure")
 
     @contextlib.contextmanager
     def run_context(self, mode, target):
@@ -354,6 +377,9 @@ def _fake_run_case_test_class(
 
     def unsupported_case(self):
       self.run_case(_UNSUPPORTED_SPEC, common.RunMode.EAGER_DEFAULT)
+
+    def bad_workload_case(self):
+      self.run_case(_BAD_WORKLOAD_SPEC, common.RunMode.EAGER_DEFAULT)
 
     def skipped_case(self):
       self.run_case(_SKIPPED_SPEC, common.RunMode.EAGER_DEFAULT)
@@ -397,9 +423,12 @@ class BaseBenchmarkTestRunCaseTest(seed_test_utils.RepeatableTest):
       self,
       method_name: str,
       failures: Sequence[discovery_lib.ImportFailure] = (),
+      failing_hook: _FailingHook | None = None,
   ) -> unittest.TestResult:
     result = unittest.TestResult()  # UNITTEST_OK=result of a fake test case
-    _fake_run_case_test_class(self.calls, failures)(method_name).run(result)
+    _fake_run_case_test_class(self.calls, failures, failing_hook)(
+        method_name
+    ).run(result)
     return result
 
   def test_measured_case_is_exported_as_succeeded(self):
@@ -445,6 +474,39 @@ class BaseBenchmarkTestRunCaseTest(seed_test_utils.RepeatableTest):
     self.assertEqual(data.spec_name, "failing")
     self.assertFalse(data.succeeded)
 
+  @parameterized.parameters("make_device_ops", "reset_state")
+  def test_case_whose_setup_fails_is_exported_as_failed(self, failing_hook):
+    result = self._run("measured_case", failing_hook=failing_hook)
+
+    self.assertLen(result.errors, 1)
+    self.assertIn(f"simulated {failing_hook} failure", result.errors[0][1])
+    (data,) = self.exported
+    self.assertEqual(data.spec_name, "measured")
+    self.assertFalse(data.succeeded)
+
+  def test_case_whose_context_fails_to_resolve_is_exported_as_failed(self):
+    result = self._run("bad_workload_case")
+
+    self.assertLen(result.errors, 1)
+    self.assertIn("simulated workload failure", result.errors[0][1])
+    (data,) = self.exported
+    self.assertEqual(data.spec_name, "bad_workload")
+    self.assertFalse(data.succeeded)
+
+  def test_isolated_child_hands_setup_failure_to_parent(self):
+    test = _fake_run_case_test_class(self.calls, failing_hook="reset_state")(
+        "measured_case"
+    )
+    test.in_isolated_child = True
+    result = unittest.TestResult()  # UNITTEST_OK=result of a fake test case
+
+    test.run(result)
+
+    self.assertLen(result.errors, 1)
+    self.assertEmpty(self.exported)
+    self.assertEqual(test.isolated_payload.spec_name, "measured")
+    self.assertFalse(test.isolated_payload.succeeded)
+
   def test_unsupported_case_is_skipped(self):
     result = self._run("unsupported_case")
 
@@ -475,6 +537,15 @@ class BaseBenchmarkTestRunCaseTest(seed_test_utils.RepeatableTest):
     # The skipped case measures fine, so assertRaises fails.
     self.assertLen(result.failures, 1)
     self.assertEmpty(self.exported)
+
+  def test_assert_raise_behavior_reports_setup_failure_as_error(self):
+    with flagsaver.flagsaver((flags_lib.SKIP_BEHAVIOR, "assert_raise")):
+      result = self._run("skipped_case", failing_hook="reset_state")
+
+    # A setup failure is not the failure that the skipped case should have.
+    self.assertLen(result.errors, 1)
+    self.assertIn("simulated reset_state failure", result.errors[0][1])
+    self.assertNotIn("make_run_step", self.calls)
 
   def test_dry_run_writes_the_test_method_name(self):
     output_dir = self.create_tempdir().full_path
