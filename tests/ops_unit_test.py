@@ -8453,6 +8453,322 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(compute, check_value=CheckValueMode.SKIP)
 
+  def test_normal_compile(self):
+    device = torch.device("tpu")
+    std_f32 = torch.ones(4, dtype=torch.float32, device=device)
+    std_zero = torch.zeros(4, dtype=torch.float32, device=device)
+    mean_bf16 = torch.full((4,), 2.0, dtype=torch.bfloat16, device=device)
+    mean_c64 = torch.full(
+        (4,), 1.0 + 2.0j, dtype=torch.complex64, device=device
+    )
+
+    # With std=0 every sample equals the mean, so the compiled ops can be
+    # checked by value as well as by shape and dtype.
+    compiled_float_tensor = torch.compile(
+        lambda std_arg: torch.normal(5.0, std_arg),
+        backend="tpu",
+        fullgraph=True,
+    )
+    out_ft = compiled_float_tensor(std_f32)
+    self.assertEqual(out_ft.shape, (4,))
+    self.assertEqual(out_ft.dtype, torch.float32)
+    self.assert_close(
+        golden_result=torch.full((4,), 5.0),
+        torch_tpu_result=compiled_float_tensor(std_zero).cpu(),
+    )
+
+    compiled_tensor_tensor = torch.compile(
+        torch.normal, backend="tpu", fullgraph=True
+    )
+    out_tt_bf16 = compiled_tensor_tensor(mean_bf16, std_f32)
+    self.assertEqual(out_tt_bf16.shape, (4,))
+    self.assertEqual(out_tt_bf16.dtype, torch.bfloat16)
+    self.assert_close(
+        golden_result=mean_bf16.cpu(),
+        torch_tpu_result=compiled_tensor_tensor(mean_bf16, std_zero).cpu(),
+    )
+
+    out_tt_c64 = compiled_tensor_tensor(mean_c64, std_f32)
+    self.assertEqual(out_tt_c64.shape, (4,))
+    self.assertEqual(out_tt_c64.dtype, torch.complex64)
+    self.assert_close(
+        golden_result=mean_c64.cpu(),
+        torch_tpu_result=compiled_tensor_tensor(mean_c64, std_zero).cpu(),
+    )
+
+    compiled_tensor_float = torch.compile(
+        lambda mean_arg, std_arg: torch.normal(mean_arg, std_arg),
+        backend="tpu",
+        fullgraph=True,
+    )
+    out_tf = compiled_tensor_float(mean_bf16, 1.0)
+    self.assertEqual(out_tf.shape, (4,))
+    self.assertEqual(out_tf.dtype, torch.bfloat16)
+    self.assert_close(
+        golden_result=mean_bf16.cpu(),
+        torch_tpu_result=compiled_tensor_float(mean_bf16, 0.0).cpu(),
+    )
+
+    # Complex in-place normal_ with a scalar mean shifts both components.
+    compiled_inplace = torch.compile(
+        lambda t: t.normal_(5.0, 0.0), backend="tpu", fullgraph=True
+    )
+    self.assert_close(
+        golden_result=torch.empty(4, dtype=torch.complex64).normal_(5.0, 0.0),
+        torch_tpu_result=compiled_inplace(
+            torch.empty(4, dtype=torch.complex64, device=device)
+        ).cpu(),
+    )
+
+    # Verify tracing under _INTERNAL_COMPILE_FX_GRAPH does not emit a dead
+    # min-reduction op from std validation (for both the functional and the
+    # `out=` tensor-std variants), and _INTERNAL_DEFER_ALL succeeds without
+    # host synchronization.
+    export_gen = tpu_torch_compile.make_export_mode_device_generator(
+        torch.Generator(device=device)
+    )
+    gen_state = tpu_torch_compile.get_device_state_tensor(export_gen)
+    tpu_torch_compile.set_export_mode_default_device_generator(export_gen, 0)
+    out_ft_traced = torch.empty(4, dtype=torch.float32, device=device)
+    out_tt_traced = torch.empty(4, dtype=torch.bfloat16, device=device)
+    try:
+      with execution_mode.set_eager_mode(
+          execution_mode.EagerMode._INTERNAL_COMPILE_FX_GRAPH
+      ):
+        traced = torch.normal(0.0, std_f32)
+        torch.normal(0.0, std_f32, out=out_ft_traced)
+        torch.normal(mean_bf16, std_f32, out=out_tt_traced)
+      traced_modules = [
+          tpu_torch_compile.build_mlir([traced], [std_f32, gen_state]),
+          tpu_torch_compile.build_mlir([out_ft_traced], [std_f32, gen_state]),
+          tpu_torch_compile.build_mlir(
+              [out_tt_traced], [mean_bf16, std_f32, gen_state]
+          ),
+      ]
+    finally:
+      tpu_torch_compile.clear_export_mode_default_device_generators()
+    for module in traced_modules:
+      mlir_text = tpu_torch_compile.serialize_mlir_text(module)
+      self.assertIn("stablehlo.rng_bit_generator", mlir_text)
+      self.assertNotIn("stablehlo.reduce", mlir_text)
+
+    with execution_mode.set_eager_mode(
+        execution_mode._EagerMode.INTERNAL_DEFER_ALL
+    ):
+      mean_deferred = torch.full(
+          (4,),
+          2.0,
+          dtype=torch.bfloat16,
+          device=device,
+      )
+      std_deferred = torch.zeros(4, dtype=torch.float32, device=device)
+      deferred = torch.normal(mean_deferred, std_deferred)
+      out_ft_deferred = torch.empty(4, dtype=torch.float32, device=device)
+      torch.normal(5.0, std_deferred, out=out_ft_deferred)
+      out_tt_deferred = torch.empty(4, dtype=torch.bfloat16, device=device)
+      torch.normal(mean_deferred, std_deferred, out=out_tt_deferred)
+      for tensor in (
+          mean_deferred,
+          std_deferred,
+          deferred,
+          out_ft_deferred,
+          out_tt_deferred,
+      ):
+        self.assertFalse(sync.is_materializing(tensor))
+        self.assertFalse(sync.is_materialized(tensor))
+    self.assertEqual(deferred.dtype, torch.bfloat16)
+    self.assert_close(
+        golden_result=mean_bf16.cpu(), torch_tpu_result=deferred.cpu()
+    )
+    self.assert_close(
+        golden_result=torch.full((4,), 5.0),
+        torch_tpu_result=out_ft_deferred.cpu(),
+    )
+    self.assert_close(
+        golden_result=mean_bf16.cpu(), torch_tpu_result=out_tt_deferred.cpu()
+    )
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="bf16_mean_f32_std",
+          mean_dtype=torch.bfloat16,
+          std_dtype=torch.float32,
+      ),
+      dict(
+          testcase_name="f16_mean_f32_std",
+          mean_dtype=torch.float16,
+          std_dtype=torch.float32,
+      ),
+      dict(
+          testcase_name="f32_mean_bf16_std",
+          mean_dtype=torch.float32,
+          std_dtype=torch.bfloat16,
+      ),
+      dict(
+          testcase_name="f32_mean_i32_std",
+          mean_dtype=torch.float32,
+          std_dtype=torch.int32,
+      ),
+      dict(
+          testcase_name="c64_mean_f32_std",
+          mean_dtype=torch.complex64,
+          std_dtype=torch.float32,
+      ),
+      dict(
+          testcase_name="c64_mean_bf16_std",
+          mean_dtype=torch.complex64,
+          std_dtype=torch.bfloat16,
+      ),
+  )
+  def test_normal_tensor_tensor_mixed_dtypes(
+      self, mean_dtype: torch.dtype, std_dtype: torch.dtype
+  ):
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.normal(
+            mean=torch.full((2, 3), 3.0, dtype=mean_dtype, device=device),
+            std=torch.zeros((2, 3), dtype=std_dtype, device=device),
+        )
+    )
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.normal(
+            mean=torch.ones((2, 1), dtype=mean_dtype, device=device),
+            std=torch.ones((1, 3), dtype=std_dtype, device=device),
+        ),
+        check_value=CheckValueMode.SKIP,
+    )
+
+    def compute_with_out(device):
+      out = torch.empty((1,), dtype=mean_dtype, device=device)
+      return torch.normal(
+          mean=torch.full((2, 1), 3.0, dtype=mean_dtype, device=device),
+          std=torch.zeros((1, 3), dtype=std_dtype, device=device),
+          out=out,
+      )
+
+    self.assert_close_tpu_vs_cpu(compute_with_out)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="bf16_mean_f32_out",
+          mean_dtype=torch.bfloat16,
+          out_dtype=torch.float32,
+      ),
+      dict(
+          testcase_name="f32_mean_bf16_out",
+          mean_dtype=torch.float32,
+          out_dtype=torch.bfloat16,
+      ),
+  )
+  def test_normal_out_dtype_cast(
+      self, mean_dtype: torch.dtype, out_dtype: torch.dtype
+  ):
+    # `out` may differ from `mean` in dtype as long as `mean` can be cast to it.
+    # With std=0 the result is exactly `mean` cast to `out.dtype`.
+    def compute_tensor_float_out(device):
+      out = torch.empty((1,), dtype=out_dtype, device=device)
+      return torch.normal(
+          torch.full((2, 3), 3.0, dtype=mean_dtype, device=device),
+          0.0,
+          out=out,
+      )
+
+    self.assert_close_tpu_vs_cpu(compute_tensor_float_out)
+
+    def compute_tensor_tensor_out(device):
+      out = torch.empty((1,), dtype=out_dtype, device=device)
+      return torch.normal(
+          mean=torch.full((2, 1), 3.0, dtype=mean_dtype, device=device),
+          std=torch.zeros((1, 3), dtype=torch.float32, device=device),
+          out=out,
+      )
+
+    self.assert_close_tpu_vs_cpu(compute_tensor_tensor_out)
+
+  def test_normal_complex_scalar_mean_parity(self):
+    # Complex in-place normal_(mean, std) and torch.normal(mean, std, size=...)
+    # apply scalar mean to both real and imaginary components (mean + i*mean).
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.empty(
+            4, dtype=torch.complex64, device=device
+        ).normal_(5.0, 0.0)
+    )
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.normal(
+            mean=5.0,
+            std=0.0,
+            size=(4,),
+            dtype=torch.complex64,
+            device=device,
+        )
+    )
+
+    # Verify deterministic complex scaling with non-zero scalar mean and std.
+    def compute_nonzero_scalar_mean(device):
+      torch.manual_seed(42)
+      complex_sample = torch.normal(
+          mean=3.5, std=2.0, size=(10,), dtype=torch.complex64, device=device
+      )
+      torch.manual_seed(42)
+      real_sample = torch.normal(
+          mean=3.5,
+          std=2.0 / math.sqrt(2.0),
+          size=(10, 2),
+          dtype=torch.float32,
+          device=device,
+      )
+      self.assert_close(
+          golden_result=real_sample.cpu(),
+          torch_tpu_result=torch.view_as_real(complex_sample).cpu(),
+      )
+      return complex_sample
+
+    self.assert_close_tpu_vs_cpu(
+        compute_nonzero_scalar_mean, check_value=CheckValueMode.SKIP
+    )
+
+    # In contrast, normal.float_Tensor_out with complex `out` creates a complex
+    # scalar `mean + 0j` in PyTorch (`at::full({}, mean, output.options())`).
+    def compute_float_tensor_complex_out(device):
+      out = torch.empty(4, dtype=torch.complex64, device=device)
+      return torch.normal(
+          mean=5.0,
+          std=torch.zeros(4, dtype=torch.float32, device=device),
+          out=out,
+      )
+
+    self.assert_close_tpu_vs_cpu(compute_float_tensor_complex_out)
+
+  def test_normal_out_aliased_broadcast(self):
+    # Compare TPU aliased `out` against unaliased CPU `torch.normal`: upstream
+    # CPU `normal_out_impl` overwrites `output` via `normal_(0, 1)` before
+    # reading `std` and `mean`, whereas TPU builds a single fused graph and
+    # resizes `out` in `DispatchOpOut` after reading `mean` and `std`.
+    device = torch.device("tpu")
+    mean_cpu = torch.tensor([[10.0, 20.0, 30.0, 40.0]])
+    std_cpu = torch.zeros((3, 4))
+    expected_mean_alias = torch.normal(mean_cpu.clone(), std_cpu)
+
+    mean_tpu = mean_cpu.to(device)
+    std_tpu = std_cpu.to(device)
+    torch.normal(mean_tpu, std_tpu, out=mean_tpu)
+    self.assert_close(
+        golden_result=expected_mean_alias, torch_tpu_result=mean_tpu.cpu()
+    )
+
+    # Use a non-zero `std` so that a premature resize of `out` (which aliases
+    # `std`) into zeroed memory cannot masquerade as a correct result. Compare
+    # against the unaliased TPU op under the same seed instead of CPU.
+    mean2 = torch.full((3, 4), 50.0, device=device)
+    std2 = torch.tensor([[1.0, 2.0, 3.0, 4.0]], device=device)
+    torch.manual_seed(42)
+    expected_std_alias = torch.normal(mean2, std2.clone()).cpu()
+    torch.manual_seed(42)
+    torch.normal(mean2, std2, out=std2)
+    self.assertEqual(std2.shape, (3, 4))
+    self.assert_close(
+        golden_result=expected_std_alias, torch_tpu_result=std2.cpu()
+    )
+
   def test_pow(self):
     rtol, atol = 1.3e-6, 1.2e-5
     # tensor-tensor
