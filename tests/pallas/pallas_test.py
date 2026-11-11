@@ -25,6 +25,7 @@ from typing import TypeAlias
 from unittest import mock
 import warnings
 from absl.testing import absltest
+from absl.testing import parameterized
 import jax
 from jax.experimental import pallas as pl
 from jax.interpreters.mlir import ir
@@ -182,6 +183,13 @@ def jax_add_or_subtract_vectors_wrapper(
   out_shape = jax.ShapeDtypeStruct(x.shape, x.dtype)
   wrapped = functools.partial(_add_or_subtract_vectors_kernel, mode)
   return pl.pallas_call(wrapped, out_shape=out_shape)(x, y)
+
+
+def _donate_kernel(
+    x: jax.Array, kv: jax.Array, scale: int, *, mode: str = "a"
+) -> tuple[jax.Array, jax.Array]:
+  del mode  # Unused.
+  return x * scale, kv
 
 
 class TestPallasKernels(seed_test_utils.RepeatableTest):
@@ -1953,6 +1961,91 @@ class TestPallasCompat(seed_test_utils.RepeatableTest):
     res_aliased = aliased_opt_kernel(None, t_aliased)
     test_utils.assert_close(res_aliased.cpu(), torch.full((2, 2), 10.0))
     test_utils.assert_close(t_aliased.cpu(), torch.full((2, 2), 10.0))
+
+  def test_custom_jax_kernel_donates_keyword_arguments_by_name(self):
+    """Verifies custom_jax_kernel donates keyword arguments by name on TPU."""
+
+    def kernel_donate_kwonly_tensor(
+        x: jax.Array, kv: jax.Array, *, extra: jax.Array
+    ) -> tuple[jax.Array, jax.Array, jax.Array]:
+      return x * 3, kv, extra
+
+    # `x` is donated at the position jax.jit inferred from its name, and the
+    # keyword-only `extra` by name.
+    kernel = pallas.custom_jax_kernel(
+        kernel_donate_kwonly_tensor,
+        donate_argnames=("x", "extra"),
+        warn_deprecated=False,
+    )
+    t_x = torch.ones((2, 2), dtype=torch.float32, device="tpu")
+    t_kv = torch.full((2, 2), 2.0, dtype=torch.float32, device="tpu")
+    t_extra = torch.full((2, 2), 4.0, dtype=torch.float32, device="tpu")
+    out_x, out_kv, out_extra = kernel(t_x, t_kv, extra=t_extra)
+    test_utils.assert_close(out_x.cpu(), torch.full((2, 2), 3.0))
+    test_utils.assert_close(out_kv.cpu(), torch.full((2, 2), 2.0))
+    test_utils.assert_close(out_extra.cpu(), torch.full((2, 2), 4.0))
+    self._assert_donated(t_x)
+    self._assert_donated(t_extra)
+    test_utils.assert_close(t_kv.cpu(), torch.full((2, 2), 2.0))
+
+  @parameterized.named_parameters(
+      ("positional", lambda op, x, kv: op(x, kv, 3)),
+      ("keyword", lambda op, x, kv: op(x, kv=kv, scale=3)),
+  )
+  def test_donate_argnames(self, call_op):
+    """Verifies jax_op donates only the named tensor, however it's passed."""
+    op = pallas.jax_op(
+        f"test::{self._testMethodName}", _donate_kernel, donate_argnames="kv"
+    )
+    t_x = torch.ones((2, 2), dtype=torch.float32, device="tpu")
+    t_kv = torch.full((2, 2), 2.0, dtype=torch.float32, device="tpu")
+    out_x, out_kv = call_op(op, t_x, t_kv)
+    test_utils.assert_close(out_x.cpu(), torch.full((2, 2), 3.0))
+    test_utils.assert_close(out_kv.cpu(), torch.full((2, 2), 2.0))
+    test_utils.assert_close(t_x.cpu(), torch.ones((2, 2)))
+    self._assert_donated(t_kv)
+
+  def test_donate_argnames_sequence(self):
+    """Verifies jax_op donates every tensor of a sequence donated by name."""
+
+    def kernel_donate_seq_by_name(
+        opt: jax.Array | None,
+        xs: Sequence[jax.Array],
+        kv: jax.Array,
+    ) -> tuple[jax.Array, jax.Array, jax.Array]:
+      base = xs[0] if opt is None else xs[0] + opt
+      return base, xs[1], kv
+
+    op_seq = pallas.jax_op(
+        "test::kernel_donate_seq_by_name",
+        kernel_donate_seq_by_name,
+        donate_argnames=("xs",),
+    )
+    d0 = torch.ones((2, 2), dtype=torch.float32, device="tpu")
+    d1 = torch.full((2, 2), 2.0, dtype=torch.float32, device="tpu")
+    kv_kept = torch.full((2, 2), 4.0, dtype=torch.float32, device="tpu")
+    r0, r1, r_kv = op_seq(None, [d0, d1], kv_kept)
+    test_utils.assert_close(r0.cpu(), torch.ones((2, 2)))
+    test_utils.assert_close(r1.cpu(), torch.full((2, 2), 2.0))
+    test_utils.assert_close(r_kv.cpu(), torch.full((2, 2), 4.0))
+    self._assert_donated(d0)
+    self._assert_donated(d1)
+    test_utils.assert_close(kv_kept.cpu(), torch.full((2, 2), 4.0))
+
+  def test_donate_argnames_partial(self):
+    """Verifies jax_op donates by name through `functools.partial`."""
+    op_partial = pallas.jax_op(
+        "test::kernel_donate_partial",
+        functools.partial(_donate_kernel, scale=3),
+        donate_argnames=("kv",),
+    )
+    t_x = torch.ones((2, 2), dtype=torch.float32, device="tpu")
+    t_kv = torch.full((2, 2), 2.0, dtype=torch.float32, device="tpu")
+    out_x, out_kv = op_partial(t_x, t_kv)
+    test_utils.assert_close(out_x.cpu(), torch.full((2, 2), 3.0))
+    test_utils.assert_close(out_kv.cpu(), torch.full((2, 2), 2.0))
+    test_utils.assert_close(t_x.cpu(), torch.ones((2, 2)))
+    self._assert_donated(t_kv)
 
   def test_negative_donate_argnums_skip_keyword_only_parameters(self):
     """Verifies negative donate_argnums count only positional parameters."""

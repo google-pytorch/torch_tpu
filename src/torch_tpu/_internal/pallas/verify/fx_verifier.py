@@ -215,6 +215,15 @@ def _get_donated_arg_indices(
       normalized.add(idx + bound_arity)
     else:
       normalized.add(idx)
+  # Keyword-only parameters donated by name have no position, so the donor
+  # checks identify them by parameter index. `**kwargs` entries have no
+  # parameter index at all, so the donor checks can't see them.
+  # pylint: disable=protected-access
+  for name in jax_callable._donate_argnames:
+    param_idx = jax_callable._param_name_to_idx.get(name)
+    if param_idx is not None:
+      normalized.add(param_idx)
+  # pylint: enable=protected-access
   return normalized
 
 
@@ -1934,11 +1943,20 @@ def _prepare_tpu_export(
     )
     jit_kwargs: dict[str, Any] = {
         "static_argnums": jax_callable.static_argnums,
-        "donate_argnums": jax_callable.donate_argnums,
+        # Unlike the op's `donate_argnums`, this set also has the positions
+        # `jax.jit` inferred from `donate_argnames`.
+        # pylint: disable-next=protected-access
+        "donate_argnums": tuple(jax_callable._donate_argnums_set),
         "keep_unused": True,
     }
     if jax_callable.static_argnames:
       jit_kwargs["static_argnames"] = jax_callable.static_argnames
+    # pylint: disable-next=protected-access
+    donate_argnames = tuple(jax_callable._donate_argnames)
+    if donate_argnames:
+      # Keyword-only and `**kwargs` arguments can only be donated by name.
+      # Given both, `jax.jit` donates exactly what it resolved for the op.
+      jit_kwargs["donate_argnames"] = donate_argnames
     with jax._src.config.export_ignore_forward_compatibility(True):
       export_fn = jax.export.export(
           jax.jit(rebound_raw, **jit_kwargs),

@@ -17,11 +17,13 @@ from __future__ import annotations
 from collections.abc import Sequence
 import dataclasses
 import enum
+import functools
 import types
 from typing import Any, Literal
 from unittest import mock
 
 from absl.testing import absltest
+from absl.testing import parameterized
 import jax
 import jax.numpy as jnp
 import torch
@@ -56,6 +58,35 @@ class MyEnum(enum.Enum):
 
 class MyIntSubtype(int):
   pass
+
+
+def _donate_kernel(
+    x: jax.Array, kv: jax.Array, scale: int, *, mode: str = "a"
+) -> tuple[jax.Array, jax.Array]:
+  del mode  # Unused.
+  return x * scale, kv
+
+
+def _pair_kernel(x: jax.Array, kv: jax.Array) -> tuple[jax.Array, jax.Array]:
+  return x, kv
+
+
+def _pos_only_kernel(
+    x: jax.Array, /, kv: jax.Array
+) -> tuple[jax.Array, jax.Array]:
+  return x, kv
+
+
+def _kwonly_tensor_kernel(
+    x: jax.Array, kv: jax.Array, *, extra: jax.Array
+) -> tuple[jax.Array, jax.Array, jax.Array]:
+  return x, kv, extra
+
+
+def _var_keyword_kernel(
+    x: jax.Array, **extras: jax.Array
+) -> tuple[jax.Array, ...]:
+  return (x, *extras.values())
 
 
 class PallasSignatureTest(seed_test_utils.RepeatableTest):
@@ -549,6 +580,234 @@ class PallasSignatureTest(seed_test_utils.RepeatableTest):
           ),
       ):
         pallas.pallas._validate_pallas_mesh_size(mesh=dup_mesh)
+
+  @parameterized.named_parameters(
+      # (name, fn, donate_argnames, positional args, keyword args, donated
+      # leaves)
+      (
+          "keyword_only",
+          _kwonly_tensor_kernel,
+          ("extra",),
+          ("x", "kv"),
+          ("extra",),
+          [2],
+      ),
+      (
+          "var_keyword",
+          _var_keyword_kernel,
+          ("bonus",),
+          ("x",),
+          ("bonus",),
+          [1],
+      ),
+      # `x` is donated at the position jax.jit inferred from its name.
+      (
+          "positional_and_keyword_only",
+          _kwonly_tensor_kernel,
+          ("x", "extra"),
+          ("x", "kv"),
+          ("extra",),
+          [0, 2],
+      ),
+      (
+          "positional_passed_by_keyword",
+          _kwonly_tensor_kernel,
+          ("kv",),
+          ("x",),
+          ("kv", "extra"),
+          [1],
+      ),
+  )
+  def test_custom_jax_kernel_donates_keyword_arguments_by_name(
+      self, fn, donate_argnames, arg_names, kwarg_names, expected_donated
+  ):
+    """Verifies custom_jax_kernel donates keyword arguments by name.
+
+    As in `jax.jit`, names donate arguments passed by keyword, including
+    `**kwargs` entries. Only `custom_jax_kernel` can receive tensors by keyword:
+    PyTorch passes `jax_op` tensors positionally.
+    """
+    args = [torch.ones((4, 4), dtype=torch.float32) for _ in arg_names]
+    kwargs = {
+        name: torch.ones((4, 4), dtype=torch.float32) for name in kwarg_names
+    }
+    kernel = pallas.custom_jax_kernel(
+        fn, donate_argnames=donate_argnames, warn_deprecated=False
+    )
+    self.assertEqual(
+        self._get_runtime_donor_indices(kernel, *args, **kwargs),
+        expected_donated,
+    )
+    self.assertEqual(
+        self._get_exported_donor_indices(kernel, *args, **kwargs),
+        expected_donated,
+    )
+
+  def test_custom_jax_kernel_rejects_donate_argnames_with_aliases(self):
+    """Verifies donate_argnames can't be combined with input_output_aliases."""
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=aliases with argnames
+        ValueError, "donate_argnames cannot be combined"
+    ):
+      pallas.custom_jax_kernel(
+          _pair_kernel,
+          input_output_aliases={1: 1},
+          donate_argnames="kv",
+          warn_deprecated=False,
+      )
+
+  @parameterized.named_parameters(
+      ("str_name", {"donate_argnames": "kv"}),
+      ("tuple_name", {"donate_argnames": ("kv",)}),
+      ("num", {"donate_argnums": (1,)}),
+  )
+  def test_jax_op_donate_argnames_matches_export(self, donate_kwargs):
+    """Verifies donating `kv` by name matches donating it by number."""
+    op = pallas.jax_op(
+        f"test::{self._testMethodName}", _donate_kernel, **donate_kwargs
+    )
+    args = (
+        torch.ones((4, 4), dtype=torch.float32),
+        torch.full((4, 4), 2.0, dtype=torch.float32),
+        2,
+    )
+    self.assertEqual(self._get_runtime_donor_indices(op, *args, mode="b"), [1])
+    self.assertEqual(self._get_exported_donor_indices(op, *args, mode="b"), [1])
+
+  @parameterized.named_parameters(
+      ("unknown_name", _donate_kernel, "nope"),
+      ("static_positional", _donate_kernel, "scale"),
+      ("static_kwonly", _donate_kernel, "mode"),
+      ("positional_only", _pos_only_kernel, "x"),
+      # `scale` bound by keyword becomes a keyword-only static argument.
+      (
+          "partial_keyword_static",
+          functools.partial(_donate_kernel, scale=2),
+          "scale",
+      ),
+  )
+  def test_jax_op_rejects_invalid_donate_argnames(self, fn, donate_argnames):
+    """Verifies jax_op rejects invalid donate_argnames with ValueError."""
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=invalid donate_argnames
+        ValueError, "donate_argnames"
+    ):
+      pallas.jax_op(
+          f"test::{self._testMethodName}", fn, donate_argnames=donate_argnames
+      )
+
+  @parameterized.named_parameters(
+      ("nums", (0,)),
+      # `donate_argnums=()` counts as given, as in jax.jit.
+      ("empty_nums", ()),
+  )
+  def test_jax_op_rejects_donate_argnums_with_donate_argnames(
+      self, donate_argnums
+  ):
+    """Verifies jax_op rejects donate_argnums together with donate_argnames."""
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=both donation specs
+        ValueError, "not both"
+    ):
+      pallas.jax_op(
+          f"test::{self._testMethodName}",
+          _pair_kernel,
+          donate_argnums=donate_argnums,
+          donate_argnames=("kv",),
+      )
+
+  def test_custom_jax_kernel_rejects_donate_argnums_with_donate_argnames(self):
+    """Verifies custom_jax_kernel rejects both donation specs too."""
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=both donation specs
+        ValueError, "not both"
+    ):
+      pallas.custom_jax_kernel(
+          _pair_kernel,
+          donate_argnums=[0],
+          donate_argnames=("kv",),
+          warn_deprecated=False,
+      )
+
+  @parameterized.named_parameters(
+      ("optional_none", False, [0, 1]),
+      ("optional_tensor", True, [1, 2]),
+  )
+  def test_jax_op_donates_sequence_by_name(
+      self, pass_optional, expected_donated
+  ):
+    """Verifies jax_op donates every tensor of a sequence donated by name."""
+
+    def seq_opt_fn(
+        opt: jax.Array | None,
+        xs: Sequence[jax.Array],
+        kv: jax.Array,
+        scale: int,
+        *,
+        mode: str = "a",
+    ) -> tuple[jax.Array, jax.Array, jax.Array]:
+      del mode  # Unused.
+      base = xs[0] if opt is None else xs[0] + opt
+      return base * scale, xs[1], kv
+
+    op = pallas.jax_op(
+        f"test::{self._testMethodName}", seq_opt_fn, donate_argnames=("xs",)
+    )
+    opt = torch.ones((4, 4), dtype=torch.float32) if pass_optional else None
+    xs = [
+        torch.ones((4, 4), dtype=torch.float32),
+        torch.full((4, 4), 2.0, dtype=torch.float32),
+    ]
+    args = (opt, xs, torch.full((4, 4), 3.0, dtype=torch.float32), 2)
+    self.assertEqual(
+        self._get_runtime_donor_indices(op, *args), expected_donated
+    )
+    self.assertEqual(
+        self._get_exported_donor_indices(op, *args), expected_donated
+    )
+
+  def test_jax_op_donates_by_name_through_positional_partial(self):
+    """Verifies donation by name through a partial that binds `x`."""
+    op = pallas.jax_op(
+        f"test::{self._testMethodName}",
+        functools.partial(_donate_kernel, jnp.ones((4, 4), dtype=jnp.float32)),
+        donate_argnames="kv",
+    )
+    args = (torch.full((4, 4), 3.0, dtype=torch.float32), 2)
+    self.assertEqual(self._get_runtime_donor_indices(op, *args), [0])
+    self.assertEqual(self._get_exported_donor_indices(op, *args), [0])
+
+  def test_jax_op_donates_by_name_through_keyword_partial(self):
+    """Verifies donation by name through a partial that binds `scale`."""
+    op = pallas.jax_op(
+        f"test::{self._testMethodName}",
+        functools.partial(_donate_kernel, scale=2),
+        donate_argnames=("kv",),
+    )
+    args = (
+        torch.ones((4, 4), dtype=torch.float32),
+        torch.full((4, 4), 3.0, dtype=torch.float32),
+    )
+    self.assertEqual(self._get_runtime_donor_indices(op, *args), [1])
+    self.assertEqual(self._get_exported_donor_indices(op, *args), [1])
+
+  def _get_runtime_donor_indices(
+      self, op: Any, *args: Any, **kwargs: Any
+  ) -> list[int]:
+    """Calls the kernel with mocked TPU calls; returns the donated inputs."""
+    with (
+        mock.patch.object(
+            pallas.pallas.tpu_torch_pallas, "register_custom_kernel"
+        ),
+        mock.patch.object(
+            pallas.pallas.tpu_torch_pallas,
+            "lookup_custom_kernel",
+            return_value=True,
+        ),
+        mock.patch.object(
+            pallas.pallas.tpu_torch_pallas,
+            "call_custom_kernel",
+            side_effect=lambda *_, output_shapes, **__: list(output_shapes),
+        ) as mock_call,
+    ):
+      getattr(op, "_init_fn", op)(*args, **kwargs)
+    return mock_call.call_args.kwargs["donate_argnums"]
 
   def _get_exported_donor_indices(
       self, op: Any, *args: Any, **kwargs: Any
