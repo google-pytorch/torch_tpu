@@ -50,6 +50,10 @@ levels to the `torch.tpu.Precision` enum:
     bits of significand) to approximate full IEEE-754 `float32` accuracy at
     roughly 6x the MXU compute cost.
 
+`float16` matmuls follow the same setting, so at the default `"medium"` mode
+they are only as accurate as `bfloat16`. See
+[Match matmul precision for parity](#match-matmul-precision-for-parity).
+
 You can configure matrix multiplication precision in two ways:
 
 *   **Global configuration:** Call `torch.set_float32_matmul_precision("medium"
@@ -187,6 +191,61 @@ Greatest relative difference: 0.165375 at index (3, 9) (up to 0.016 allowed)
     [PyTorch testing documentation](https://docs.pytorch.org/docs/stable/testing.html)
     as a baseline, and relax `atol` or `rtol` only where expected for
     reduced-precision accumulation.
+
+### Judge errors against a noise floor
+
+Reduced-precision runs often fail `assert_close` at default tolerances even when
+the TPU result is correct. To tell expected `bfloat16` drift from a TPU-specific
+issue, compare against a noise floor:
+
+1.  Compute a `float32` (or `float64`) reference on CPU or GPU.
+2.  Run the same model in `bfloat16` on both the TPU and the reference device.
+3.  Measure each `bfloat16` output's error against the reference. The reference
+    device's own `bfloat16` error is the noise floor.
+
+Errors near the noise floor are expected `bfloat16` drift. Errors well above it
+(for example, more than 2x) suggest a TPU-specific issue worth reporting:
+
+```python
+import copy
+
+def rel_l2(x, ref):
+  x, ref = x.float().cpu(), ref.float().cpu()
+  return ((x - ref).norm() / ref.norm()).item()
+
+ref_model = torch.nn.Linear(256, 256)
+ref_input = torch.randn(32, 256)
+ref_out = ref_model(ref_input)  # CPU float32 reference
+
+cpu_bf16_model = copy.deepcopy(ref_model).to(torch.bfloat16)
+tpu_bf16_model = copy.deepcopy(ref_model).to(device, torch.bfloat16)
+cpu_bf16_err = rel_l2(cpu_bf16_model(ref_input.to(torch.bfloat16)), ref_out)
+tpu_bf16_err = rel_l2(
+    tpu_bf16_model(ref_input.to(device, torch.bfloat16)), ref_out
+)
+print(f"CPU bfloat16 error (noise floor): {cpu_bf16_err:.2e}")
+print(f"TPU bfloat16 error: {tpu_bf16_err:.2e}")
+print(f"Ratio to noise floor: {tpu_bf16_err / cpu_bf16_err:.1f}x")
+```
+
+To find where divergence starts in a full model, register forward hooks
+(`register_forward_hook`) on its submodules, and compare each submodule's error
+against its own noise floor. The first submodule well above its floor is the
+place to investigate.
+
+### Match matmul precision for parity
+
+At the default `"medium"` mode, `float32` matmuls on TPU run as single-pass
+`bfloat16`, and `float16` matmuls follow the same setting. A `float32` or
+`float16` model at the default mode is therefore only `bfloat16`-accurate in its
+matmuls and can fail parity checks against a `float32` reference. For some
+models, `float32` at the default mode is even less accurate than running the
+model in `bfloat16`. For example, on TPU v6e, T5-small logits have a relative L2
+error of 2.0e-2 in `float32` at the default mode, 2.6e-3 in `bfloat16`, and
+2.1e-5 in `float32` with `"high"`.
+
+For `float32` parity, call `torch.set_float32_matmul_precision("high")`. Use
+`"highest"` for the closest match to IEEE-754 `float32`.
 
 ## Specify output precision
 
