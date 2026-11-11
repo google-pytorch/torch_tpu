@@ -128,7 +128,7 @@ class Framework(enum.Enum):
 def modes_for(
     framework: Framework | str,
     device_kind: target_lib.DeviceKind | str,
-) -> list[common.RunMode]:
+) -> Sequence[common.RunMode]:
   """Execution modes for the given framework and device kind.
 
   |          | torch                                            | torchax  |
@@ -401,7 +401,7 @@ def _is_non_constant_bool_mask(index: Any) -> bool:
 
 def _bind(
     func: Any, args: Sequence[Any], kwargs: Mapping[str, Any]
-) -> dict[str, Any]:
+) -> Mapping[str, Any]:
   """Returns the arguments of an op call by name, except omitted defaults."""
   names = (argument.name for argument in func._schema.arguments)  # pylint: disable=protected-access
   return dict(zip(names, args)) | dict(kwargs)
@@ -493,7 +493,7 @@ def _factory_numel(bound: Mapping[str, Any]) -> int | float:
 
 def _tensor_args(
     args: Sequence[Any], kwargs: Mapping[str, Any]
-) -> list[torch.Tensor]:
+) -> Sequence[torch.Tensor]:
   """Returns the tensors among the arguments of an op call."""
   tensors = []
   for arg in itertools.chain(args, kwargs.values()):
@@ -506,7 +506,7 @@ def _tensor_args(
 
 def _written_fake_tensors(
     func: Any, args: Sequence[Any], kwargs: Mapping[str, Any]
-) -> list[fake_tensor.FakeTensor]:
+) -> Sequence[fake_tensor.FakeTensor]:
   """Returns the fake tensors that an op call writes to."""
   bound = _bind(func, args, kwargs)
   written = []

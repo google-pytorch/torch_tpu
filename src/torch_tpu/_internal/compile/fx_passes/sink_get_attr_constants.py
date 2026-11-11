@@ -14,6 +14,7 @@
 
 """Sinks get_attr constant arguments from root module into child submodules."""
 
+from collections.abc import Mapping, Sequence
 import torch
 from torch.export.unflatten import _assign_attr
 from torch.export.unflatten import _AttrKind
@@ -21,7 +22,7 @@ from torch.export.unflatten import _AttrKind
 
 def _map_call_module_nodes(
     gm: torch.fx.GraphModule,
-) -> dict[str, list[torch.fx.Node]]:
+) -> Mapping[str, Sequence[torch.fx.Node]]:
   """Maps each submodule name to the call_module nodes that invoke it.
 
   A submodule may be invoked from more than one call site. All of them must be
@@ -35,7 +36,7 @@ def _map_call_module_nodes(
   return mapping
 
 
-def _get_placeholders(graph: torch.fx.Graph) -> list[torch.fx.Node]:
+def _get_placeholders(graph: torch.fx.Graph) -> Sequence[torch.fx.Node]:
   """Returns the placeholder (input) nodes of a graph, in order."""
   return [node for node in graph.nodes if node.op == "placeholder"]
 
@@ -92,7 +93,7 @@ def _sink_constants_for_submodule(
     gm: torch.fx.GraphModule,
     submod: torch.fx.GraphModule,
     submod_name: str,
-    call_site_nodes: list[torch.fx.Node],
+    call_site_nodes: Sequence[torch.fx.Node],
 ) -> None:
   """Sinks the constant get_attr arguments shared by all calls to a submodule.
 

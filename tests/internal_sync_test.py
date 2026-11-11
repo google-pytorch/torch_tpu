@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 import contextlib
 import os
 import re
@@ -44,7 +44,7 @@ class InternalSyncTest(absltest.TestCase):  # ABSLTEST_OK=Internal sync test
 
   def _wait_until_materializing(
       self,
-      tensors: list[torch.Tensor],
+      tensors: Sequence[torch.Tensor],
       timeout_seconds: float = 30.0,
       poll_frequency_seconds: float = 0.1,
   ):

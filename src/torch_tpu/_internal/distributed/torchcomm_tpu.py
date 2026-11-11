@@ -20,6 +20,7 @@ TorchTPU with PyTorch's `torchcomms` subsystem and `torch.distributed`.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 import datetime
 from typing import Any
 
@@ -107,7 +108,7 @@ class TorchCommsTPU(_TorchCommBackendBase):  # pyrefly: ignore[invalid-inheritan
       device: torch.device | str | None = None,
       name: str | None = None,
       store: dist.Store | None = None,
-      hints: dict[str, Any] | None = None,
+      hints: Mapping[str, Any] | None = None,
       group_rank: int | None = None,
       group_size: int | None = None,
       pg: dist.ProcessGroup | None = None,
@@ -246,7 +247,7 @@ class TorchCommsTPU(_TorchCommBackendBase):  # pyrefly: ignore[invalid-inheritan
     return self._device.type
 
   @property
-  def hints(self) -> dict[str, Any]:
+  def hints(self) -> Mapping[str, Any]:
     """Communicator hints dictionary."""
     return dict(self._hints)
 
@@ -593,7 +594,7 @@ class TorchCommsTPU(_TorchCommBackendBase):  # pyrefly: ignore[invalid-inheritan
   # ---------------- Stubs for Unsupported / Future APIs ---------------- #
 
   def create_pair_comm(
-      self, peer_rank: int, hints: dict[str, Any] | None = None
+      self, peer_rank: int, hints: Mapping[str, Any] | None = None
   ) -> Any:
     """Creates a dedicated 1-to-1 PairComm with a peer rank."""
     self._check_not_finalized()
@@ -603,7 +604,7 @@ class TorchCommsTPU(_TorchCommBackendBase):  # pyrefly: ignore[invalid-inheritan
     )
 
   def split_group(
-      self, ranks: list[int], hints: dict[str, Any] | None = None
+      self, ranks: Sequence[int], hints: Mapping[str, Any] | None = None
   ) -> TorchCommTPU:
     """Creates a subgroup communicator for an explicit list of ranks."""
     self._check_not_finalized()
@@ -614,7 +615,7 @@ class TorchCommsTPU(_TorchCommBackendBase):  # pyrefly: ignore[invalid-inheritan
 
   def reconfigure(
       self,
-      ranks: list[int] | None = None,
+      ranks: Sequence[int] | None = None,
       size: int | None = None,
       timeout: Any = None,
   ) -> None:
@@ -626,7 +627,7 @@ class TorchCommsTPU(_TorchCommBackendBase):  # pyrefly: ignore[invalid-inheritan
     )
 
   def create_window(
-      self, tensor: torch.Tensor, hints: dict[str, Any] | None = None
+      self, tensor: torch.Tensor, hints: Mapping[str, Any] | None = None
   ) -> Any:
     """Creates a one-sided RMA Window allocation over a tensor."""
     self._check_not_finalized()
@@ -757,7 +758,7 @@ class TorchCommsTPU(_TorchCommBackendBase):  # pyrefly: ignore[invalid-inheritan
         " (scheduled for Step 8)."
     )
 
-  def get_flight_recorder_traces(self) -> list[dict[str, Any]]:
+  def get_flight_recorder_traces(self) -> Sequence[Mapping[str, Any]]:
     """Returns recent circular buffer collective traces."""
     self._check_not_finalized()
     raise NotImplementedError(

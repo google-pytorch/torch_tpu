@@ -23,6 +23,7 @@ factories only to check device gating with a stub layer; the FakeTensorMode CPU
 smoke test (`torch_layer_benchmark_cpu_smoke_test`) builds and steps the layers.
 """
 
+from collections.abc import Sequence
 import enum
 import re
 import types
@@ -278,7 +279,7 @@ def _sdpa_name(step: str, shape: str, backend: attention.SDPBackend) -> str:
   )
 
 
-def _sdpa_names(backends: tuple[attention.SDPBackend, ...]) -> set[str]:
+def _sdpa_names(backends: Sequence[attention.SDPBackend]) -> set[str]:
   """Returns the registered sdpa spec names with one of `backends`."""
   return {
       name

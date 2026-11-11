@@ -21,7 +21,7 @@ Handles the following details for per-op unit testing:
   - Mark dependent args as dynamic.
 """
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 import dataclasses
 import enum
 import itertools
@@ -151,7 +151,7 @@ def _make_fake_inputs(
     op_args: _OpArgs,
     *,
     mode: DynamismMode,
-    dynamic_dims: set[TensorDim],
+    dynamic_dims: Collection[TensorDim],
 ) -> tuple[_OpArgs, dict[TensorDim, sympy.Basic]]:
   """Converts `op_args` to symbolic `FakeTensor`s.
 
@@ -255,7 +255,7 @@ def _run_fake_op(
     op_args: _OpArgs,
     *,
     mode: DynamismMode,
-    dynamic_dims: set[TensorDim],
+    dynamic_dims: Collection[TensorDim],
 ) -> tuple[symbolic_shapes.ShapeEnv, dict[TensorDim, sympy.Basic]]:
   """Traces `op_func` (and backward in `COMPILE_GRAD`) on `FakeTensor`s.
 
@@ -304,7 +304,7 @@ def _run_fake_op(
 
 def _satisfies_upper_bound_guards(
     shape_env: symbolic_shapes.ShapeEnv,
-    canonical_syms: set[sympy.Symbol],
+    canonical_syms: Iterable[sympy.Symbol],
     mode: DynamismMode,
 ) -> bool:
   """Returns True if mode-specific upper bounds satisfy `shape_env` guards."""
@@ -1881,7 +1881,7 @@ class EinsumDynamicOpInfo(DynamicOpInfo):
     return op_info.name == "einsum"
 
   @staticmethod
-  def _tokenize_subscript(sub: str) -> list[str]:
+  def _tokenize_subscript(sub: str) -> Sequence[str]:
     tokens = []
     i = 0
     while i < len(sub):
@@ -1898,7 +1898,7 @@ class EinsumDynamicOpInfo(DynamicOpInfo):
   @classmethod
   def _parse_einsum_labels(
       cls, tensors: Sequence[torch.Tensor], equation: str
-  ) -> tuple[list[list[str]], list[str]]:
+  ) -> tuple[Sequence[Sequence[str]], Sequence[str]]:
     parts = equation.split("->")
     lhs = parts[0]
     subs = lhs.split(",")

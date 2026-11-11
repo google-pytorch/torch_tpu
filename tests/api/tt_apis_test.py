@@ -29,6 +29,7 @@ The public APIs depend on the versions of PyTorch and other dependencies, so
 test only runs in OSS, and fails unless PyTorch is the newest supported release.
 """
 
+from collections.abc import Mapping, Sequence
 import difflib
 import os
 from typing import Any
@@ -105,7 +106,7 @@ def _parse_tt_apis_yaml(yaml_text: str) -> _ApiMap:
   return apis
 
 
-def _format_api(key: tuple[str, str], attributes: dict[str, Any]) -> str:
+def _format_api(key: tuple[str, str], attributes: Mapping[str, Any]) -> str:
   category, name = key
   details = ", ".join(
       f"{field}: {value}"
@@ -115,7 +116,7 @@ def _format_api(key: tuple[str, str], attributes: dict[str, Any]) -> str:
   return f"{name} [{category}] ({details})"
 
 
-def _describe_diff(expected: _ApiMap, actual: _ApiMap) -> list[str]:
+def _describe_diff(expected: _ApiMap, actual: _ApiMap) -> Sequence[str]:
   """Returns human-readable lines describing differences between API maps."""
   lines: list[str] = []
   added = sorted(actual.keys() - expected.keys())

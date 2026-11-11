@@ -2541,7 +2541,7 @@ def test_lazy_commit_message(
     content: str,
     message: str,
     check_all: bool,
-    expected_ids: list[str],
+    expected_ids: Sequence[str],
     expected_calls: int,
 ) -> None:
   assert _run_lazy(tmp_path, content, message, check_all) == (

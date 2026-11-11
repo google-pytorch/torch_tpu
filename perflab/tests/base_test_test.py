@@ -14,7 +14,7 @@
 
 """Tests for perflab/base_test.py."""
 
-from collections.abc import Sequence
+from collections.abc import MutableSequence, Sequence
 import contextlib
 import os
 import pickle
@@ -321,7 +321,7 @@ _FailingHook = Literal["make_device_ops", "reset_state"]
 
 
 def _fake_run_case_test_class(
-    calls: list[str],
+    calls: MutableSequence[str],
     failures: Sequence[discovery_lib.ImportFailure] = (),
     failing_hook: _FailingHook | None = None,
 ) -> type[base_test.BaseBenchmarkTest]:

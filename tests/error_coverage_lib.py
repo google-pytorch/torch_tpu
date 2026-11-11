@@ -27,7 +27,7 @@ builds compute the same keys.
 
 import bisect
 import collections
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence, Set
 import concurrent.futures
 import dataclasses
 import os
@@ -120,7 +120,7 @@ def canonicalize_path(path: str) -> str:
   return path
 
 
-def _get_cpp_files(repo_root: str) -> list[str]:
+def _get_cpp_files(repo_root: str) -> Sequence[str]:
   """Returns the paths of the C++ files in the repository."""
   cpp_files = []
   for root, dirs, files in os.walk(repo_root):
@@ -156,7 +156,7 @@ class ErrorMacroLine:
     self.macro = macro
 
 
-def get_file_to_locs(repo_root: str) -> dict[str, list[ErrorMacroLine]]:
+def get_file_to_locs(repo_root: str) -> Mapping[str, Sequence[ErrorMacroLine]]:
   """Scans all torch_tpu C++ files for error macros.
 
   Args:
@@ -275,7 +275,7 @@ def get_error_macro_locs(cpp_file: str) -> list[ErrorMacroLine]:
 _COVERED_LOCS_RE = re.compile(r"Covered ([/\w\.]+):(\d+)")
 
 
-def parse_cov_output(cov_output: str) -> set[SourceLoc]:
+def parse_cov_output(cov_output: str) -> Set[SourceLoc]:
   """Parses the coverage output from the coverage target.
 
   Args:
@@ -427,7 +427,9 @@ class CoverageForFile:
     }
 
 
-def sub_coverage_report(file_path: str, lines: list[int], status: str) -> str:
+def sub_coverage_report(
+    file_path: str, lines: Iterable[int], status: str
+) -> str:
   """Generates a human-readable report for lines with a given status.
 
   Args:
@@ -465,9 +467,9 @@ def _need_to_cover(loc: ErrorMacroLine) -> bool:
 
 
 def get_per_file_coverage(
-    file_to_locs: dict[str, list[ErrorMacroLine]],
-    covered_raw_locs: set[SourceLoc],
-) -> list[CoverageForFile]:
+    file_to_locs: Mapping[str, Sequence[ErrorMacroLine]],
+    covered_raw_locs: Set[SourceLoc],
+) -> Sequence[CoverageForFile]:
   """Returns the covered error macro locations for each file."""
   file_to_covered_raw_locs: dict[str, set[int]] = collections.defaultdict(set)
   for raw_loc in covered_raw_locs:
@@ -543,7 +545,7 @@ def _represent_flow_dict(
 yaml.add_representer(_FlowDict, _represent_flow_dict, Dumper=yaml.SafeDumper)
 
 
-def load_coverage_data(path: str) -> dict[str, Mapping[str, int]]:
+def load_coverage_data(path: str) -> Mapping[str, Mapping[str, int]]:
   """Loads a coverage data file.
 
   Args:

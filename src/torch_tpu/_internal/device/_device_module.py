@@ -20,7 +20,7 @@ and runtime.
 
 import abc
 import atexit
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 import dataclasses
 import sys
 from typing import Any, Final
@@ -1228,9 +1228,9 @@ class TpuDeviceModule(_DeviceModule):
   )
   def topology_aware_mesh(
       cls,
-      mesh_shape: tuple[int, ...],
+      mesh_shape: Sequence[int],
       *,
-      dcn_mesh_shape: tuple[int, ...] | None = None,
+      dcn_mesh_shape: Sequence[int] | None = None,
       allow_split_physical_axes: bool = False,
       contiguous_submeshes: bool = False,
   ) -> torch.Tensor:

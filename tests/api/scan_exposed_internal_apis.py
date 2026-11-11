@@ -247,7 +247,7 @@ def _parse_stage(stage_val: Any) -> Stage | None:
 
 def load_tt_apis_stages(
     tt_apis_path: str,
-) -> tuple[dict[str, Stage | None], dict[str, Stage | None]]:
+) -> tuple[Mapping[str, Stage | None], Mapping[str, Stage | None]]:
   """Loads Python API and Environment Variable stages dynamically from tt_apis.yaml.
 
   Args:
@@ -692,7 +692,7 @@ class InternalApiVisitor(ast.NodeVisitor):
 
 def discover_python_files(
     target_dir: str, include_tests: bool = True
-) -> list[str]:
+) -> Sequence[str]:
   """Recursively discovers all Python scripts, notebooks, markdown tutorials, and shell scripts."""
   if not os.path.exists(target_dir):
     logging.info("Target directory does not exist, skipping: %s", target_dir)
@@ -774,7 +774,7 @@ def scan_directories(
     tt_apis_path: str,
     repository_root: str = "",
     include_tests: bool = True,
-) -> tuple[list[InternalApiEntry], list[InternalApiEntry]]:
+) -> tuple[Sequence[InternalApiEntry], Sequence[InternalApiEntry]]:
   """Scans documentation and examples directories and returns internal API entries.
 
   Args:

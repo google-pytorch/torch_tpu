@@ -14,7 +14,7 @@
 
 """Model configurations for HuggingFace Transformers examples."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 from etils import epath
 import transformers
@@ -87,7 +87,9 @@ def create_config_loader(
   return _loader
 
 
-def get_mini_model_configs() -> list[tuple[str, transformers.AutoConfig]]:
+def get_mini_model_configs() -> (
+    Sequence[tuple[str, transformers.configuration_utils.PretrainedConfig]]
+):
   """Returns a list of (model_id, config) for mini models."""
   configs = []
   for model_id in _MINI_MODEL_IDS:
@@ -95,7 +97,9 @@ def get_mini_model_configs() -> list[tuple[str, transformers.AutoConfig]]:
   return configs
 
 
-def get_all_model_configs() -> list[tuple[str, transformers.AutoConfig]]:
+def get_all_model_configs() -> (
+    Sequence[tuple[str, transformers.configuration_utils.PretrainedConfig]]
+):
   """Returns a list of (model_id, config) for all models."""
   configs = []
   for model_id in _ALL_MODEL_IDS:
@@ -103,7 +107,7 @@ def get_all_model_configs() -> list[tuple[str, transformers.AutoConfig]]:
   return configs
 
 
-def get_lazy_mini_model_configs() -> list[tuple[str, ConfigLoader]]:
+def get_lazy_mini_model_configs() -> Sequence[tuple[str, ConfigLoader]]:
   """Returns a list of (model_id, config_loader_func) for mini models."""
   configs = []
   for model_id in _MINI_MODEL_IDS:
@@ -111,7 +115,7 @@ def get_lazy_mini_model_configs() -> list[tuple[str, ConfigLoader]]:
   return configs
 
 
-def get_lazy_all_model_configs() -> list[tuple[str, ConfigLoader]]:
+def get_lazy_all_model_configs() -> Sequence[tuple[str, ConfigLoader]]:
   """Returns a list of (model_id, config_loader_func) for all models."""
   configs = []
   for model_id in _ALL_MODEL_IDS:

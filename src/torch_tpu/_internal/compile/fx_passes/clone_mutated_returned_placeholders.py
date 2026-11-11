@@ -14,6 +14,7 @@
 
 """Clones placeholder nodes that the graph both mutates and returns."""
 
+from collections.abc import Collection, Mapping, Sequence, Set
 import copy
 import operator
 from typing import Any
@@ -82,7 +83,7 @@ def _root_descriptor(desc: Any) -> Any:
 
 
 def _aliased(
-    aliases: dict[torch.fx.Node, set[torch.fx.Node]], value: Any
+    aliases: Mapping[torch.fx.Node, Collection[torch.fx.Node]], value: Any
 ) -> set[torch.fx.Node]:
   """Returns the placeholders that the nodes in `value` may alias."""
   return set().union(*(aliases.get(n, ()) for n in _get_nodes(value)))
@@ -133,7 +134,7 @@ def _track_op_overload(
 
 def _find_mutated_placeholders(
     graph: torch.fx.Graph, output_node: torch.fx.Node
-) -> set[torch.fx.Node]:
+) -> Set[torch.fx.Node]:
   """Returns the placeholders whose storage may be written to.
 
   A write to a `Tensor(a!)` argument counts as a write to every placeholder
@@ -185,7 +186,7 @@ def _find_mutated_placeholders(
 
 def _is_returned_compute_placeholder(
     node: torch.fx.Node,
-    returned_nodes: set[torch.fx.Node],
+    returned_nodes: Collection[torch.fx.Node],
 ) -> bool:
   """Checks if a node is a torch.Tensor output placeholder consumed by compute operations."""
   if node.op != "placeholder" or node not in returned_nodes:
@@ -198,7 +199,7 @@ def _is_returned_compute_placeholder(
 def _find_placeholders_to_clone(
     graph: torch.fx.Graph,
     output_node: torch.fx.Node,
-) -> list[torch.fx.Node]:
+) -> Sequence[torch.fx.Node]:
   """Identifies all placeholder nodes that need cloning."""
   returned_nodes = _get_nodes(output_node.args)
   mutated = _find_mutated_placeholders(graph, output_node)
@@ -210,7 +211,7 @@ def _find_placeholders_to_clone(
   ]
 
 
-def _shared_custom_metadata(nodes: list[torch.fx.Node]) -> dict[str, Any]:
+def _shared_custom_metadata(nodes: Sequence[torch.fx.Node]) -> dict[str, Any]:
   """Returns the `custom` metadata entries that all of `nodes` have in common."""
   if not nodes:
     return {}

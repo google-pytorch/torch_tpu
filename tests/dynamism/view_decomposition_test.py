@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 from absl.testing import absltest
@@ -39,8 +40,8 @@ class ViewDecompositionTest(seed_test_utils.RepeatableTest):
 
   def _assert_base_shapes_match(
       self,
-      node_base_shape: list[Any],
-      tensor_base_shape: list[Any],
+      node_base_shape: Sequence[int | torch.SymInt],
+      tensor_base_shape: Sequence[int | torch.SymInt],
   ):
     """Verifies that base shapes match, ignoring dynamic symint dimensions."""
     self.assertLen(
@@ -77,7 +78,12 @@ class ViewDecompositionTest(seed_test_utils.RepeatableTest):
       base_tensor: torch.Tensor,
       view_fn: Any,
   ) -> tuple[
-      torch.fx.Node, tuple[list[Any], list[tuple[str, tuple[Any, ...]]]] | None
+      torch.fx.Node,
+      tuple[
+          Sequence[int | torch.SymInt],
+          Sequence[tuple[str, tuple[Any, ...]]],
+      ]
+      | None,
   ]:
     """Compiles view_fn(base_tensor) and calls view_decomposition mid-compilation inside fw_compiler."""
     torch._dynamo.reset()
@@ -134,7 +140,13 @@ class ViewDecompositionTest(seed_test_utils.RepeatableTest):
   def _print_decomposition(
       self,
       node_or_val: torch.fx.Node | torch.Tensor,
-      decomp: tuple[list[Any], list[tuple[str, tuple[Any, ...]]]] | None,
+      decomp: (
+          tuple[
+              Sequence[int | torch.SymInt],
+              Sequence[tuple[str, tuple[Any, ...]]],
+          ]
+          | None
+      ),
   ) -> None:
     """Prints the decomposition of a tensor or FX node along with its shape and stride."""
     if isinstance(node_or_val, torch.fx.Node):

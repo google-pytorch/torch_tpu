@@ -34,6 +34,7 @@ Tests that don't belong in this file:
 - Anything whose main focus isn't the actual error message.
 """
 
+from collections.abc import Mapping, Sequence
 import re
 from typing import Any
 import unittest
@@ -250,8 +251,8 @@ def _run_convolution_backward(*args, **kwargs):
 
 
 def _parameterize_convolution_fwd_bwd(
-    forward: dict[str, Any] | None = None,
-    backward: dict[str, Any] | None = None,
+    forward: Mapping[str, Any] | None = None,
+    backward: Mapping[str, Any] | None = None,
 ):
   """Parameterizes convolution tests, running the forward and backward ops.
 
@@ -342,7 +343,7 @@ def _parameterize_convolution_fwd_bwd(
 
 
 def _make_lu_unpack_outputs(
-    p: tuple[int, ...], l: tuple[int, ...], u: tuple[int, ...]
+    p: Sequence[int], l: Sequence[int], u: Sequence[int]
 ) -> tuple[torch.Tensor, ...]:
   """Creates a 3-tuple of tensors for `lu_unpack()` op."""
   return (
@@ -353,7 +354,7 @@ def _make_lu_unpack_outputs(
 
 
 def _run_native_layer_norm(
-    inp: torch.Tensor, normalized_shape: tuple[int, ...]
+    inp: torch.Tensor, normalized_shape: Sequence[int]
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
   """Runs `torch.native_layer_norm` with default arguments."""
   return torch.native_layer_norm(
@@ -362,7 +363,7 @@ def _run_native_layer_norm(
 
 
 def _run_native_layer_norm_backward(
-    inp: torch.Tensor, normalized_shape: tuple[int, ...]
+    inp: torch.Tensor, normalized_shape: Sequence[int]
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
   """Runs `torch.ops.aten.native_layer_norm_backward` with default arguments."""
 

@@ -32,7 +32,7 @@ The script exits with 0 on success, and non-zero on failure.
 """
 
 import argparse
-from collections.abc import Sequence
+from collections.abc import Sequence, Set
 import os
 import pathlib
 import re
@@ -68,7 +68,7 @@ def build_file_path(build_file: str | pathlib.Path | None) -> pathlib.Path:
 
 def discover_device_generic_test_modules(
     test_dir: pathlib.Path,
-) -> frozenset[str]:
+) -> Set[str]:
   """Returns test modules with device-generic test instantiations."""
   return frozenset(
       str(path.relative_to(test_dir).with_suffix(""))

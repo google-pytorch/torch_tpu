@@ -19,6 +19,7 @@ checks, the AOT export and its generator, and kernel numerics in the Pallas
 interpreter. On-device numerics are in rowwise_scaled_grouped_mm_kernel_test.
 """
 
+from collections.abc import Sequence
 import functools
 import os
 from unittest import mock
@@ -51,7 +52,7 @@ def _offs(sizes) -> np.ndarray:
 
 def _expected_visits(
     offs: np.ndarray, num_rows: int, tile_m: int
-) -> list[tuple[int, int]]:
+) -> Sequence[tuple[int, int]]:
   """Brute-force (group, m-tile) visits in execution order."""
   bounds = [0, *np.maximum.accumulate(offs).tolist(), num_rows]
   visits = []

@@ -21,7 +21,7 @@ directory declared by Starlark.
 
 import argparse
 import collections
-from collections.abc import Sequence
+from collections.abc import Mapping, MutableMapping, Sequence
 import gzip
 import pathlib
 import plistlib
@@ -58,11 +58,11 @@ def _load_golden_archives(
 
 
 def _merge_goldens(
-    base_tree: dict[str, _OpGoldenTree],
-    base_sources: dict[_GoldenKey, str],
-    hopper_tree: dict[str, _OpGoldenTree],
-    hopper_sources: dict[_GoldenKey, str],
-) -> dict[str, _OpGoldenTree]:
+    base_tree: MutableMapping[str, _OpGoldenTree],
+    base_sources: Mapping[_GoldenKey, str],
+    hopper_tree: Mapping[str, _OpGoldenTree],
+    hopper_sources: Mapping[_GoldenKey, str],
+) -> MutableMapping[str, _OpGoldenTree]:
   """Merges base and Hopper trees, rejecting cross-architecture key overlap."""
   overlap = set(base_sources) & set(hopper_sources)
   if overlap:
@@ -86,7 +86,7 @@ def _merge_goldens(
 
 
 def _write_per_test_case_goldens(
-    all_ops: dict[str, _OpGoldenTree],
+    all_ops: Mapping[str, _OpGoldenTree],
     output_dir: pathlib.Path,
 ) -> int:
   """Writes individual <test_case_name>.plist files to output_dir."""

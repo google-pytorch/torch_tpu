@@ -69,7 +69,7 @@ class Optimizer(abc.ABC):
       " notice."
   )
   def init_param_group(
-      self, params: dict[str, torch.Tensor] | torch.nn.Module
+      self, params: Mapping[str, torch.Tensor] | torch.nn.Module
   ) -> Any:
     """Initializes a fresh ParamGroup instance from model parameters or nn.Module."""
     pass
@@ -78,9 +78,11 @@ class Optimizer(abc.ABC):
   @_annotations.experimental(
       "step() is experimental and may change or be removed without notice."
   )
-  def step(self, param_group: Any, grads: dict[str, torch.Tensor]) -> Any:
+  def step(self, param_group: Any, grads: Mapping[str, torch.Tensor]) -> Any:
     """Performs optimizer step on param_group given grads and returns updated ParamGroup."""
     pass
 
-  def __call__(self, param_group: Any, grads: dict[str, torch.Tensor]) -> Any:
+  def __call__(
+      self, param_group: Any, grads: Mapping[str, torch.Tensor]
+  ) -> Any:
     return self.step(param_group, grads)

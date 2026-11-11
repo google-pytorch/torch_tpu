@@ -14,6 +14,7 @@
 
 """Tests for harness/discovery.py."""
 
+from collections.abc import Mapping
 import importlib
 import pathlib
 import sys
@@ -28,7 +29,7 @@ from tests import seed_test_utils
 
 class DiscoveryTest(seed_test_utils.RepeatableTest):
 
-  def _make_pkg(self, modules: dict[str, str]):
+  def _make_pkg(self, modules: Mapping[str, str]):
     """Makes a throwaway python package for testing import side-effects."""
     tmp = tempfile.mkdtemp()
     pkg_name = f"fake_models_{pathlib.Path(tmp).name}"

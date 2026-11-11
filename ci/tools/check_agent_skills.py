@@ -23,13 +23,14 @@ Run from the repository root: `python3 -m ci.tools.check_agent_skills`.
 """
 
 import argparse
+from collections.abc import Sequence
 import pathlib
 import sys
 
 from tests import agent_skill_names
 
 
-def skill_errors(skill_dir: pathlib.Path) -> list[str]:
+def skill_errors(skill_dir: pathlib.Path) -> Sequence[str]:
   """Returns the naming errors of the skill in `skill_dir`."""
   skill_md = skill_dir / "SKILL.md"
   if not skill_md.is_file():
@@ -76,7 +77,7 @@ def _default_repo_root() -> pathlib.Path:
   return pathlib.Path.cwd()
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
   parser = argparse.ArgumentParser(
       description="Validate agent skill names and directories."
   )

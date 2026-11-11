@@ -405,7 +405,7 @@ class ProcessGroupIdTest(seed_test_utils.RepeatableTest):
     self.assertFalse(ProcessGroupId([0, 2]).is_contiguous())
 
   @parameterized.parameters(([3, 4, 5, 6],), ([0, 2, 5],), ([7],))
-  def test_to_wire_and_from_wire(self, ranks: list[int]) -> None:
+  def test_to_wire_and_from_wire(self, ranks: Sequence[int]) -> None:
     pg = ProcessGroupId(ranks)
     self.assertEqual(ProcessGroupId.from_wire(pg.to_wire()), pg)
 

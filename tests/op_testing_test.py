@@ -14,6 +14,7 @@
 
 """Unit tests for the op_testing framework."""
 
+from collections.abc import Mapping, Sequence
 import gzip
 import hashlib
 import os
@@ -54,7 +55,7 @@ class FakeSample:
       name: str,
       input_value: torch.Tensor,
       args: tuple[Any, ...],
-      kwargs: dict[str, Any],
+      kwargs: Mapping[str, Any],
   ):
     self.name = name
     self.input = input_value
@@ -473,7 +474,7 @@ class OpTestingTest(op_testing.OpInfoTestBase):
 
   def _run_golden_arch_test(
       self, method_name: str
-  ) -> tuple[list[str], unittest.TestResult]:
+  ) -> tuple[Sequence[str], unittest.TestResult]:
     """Runs one method of a test class using record_gpu_goldens_on."""
     ran = []
 
@@ -543,7 +544,7 @@ class OpTestingTest(op_testing.OpInfoTestBase):
       self,
       directory: pathlib.Path,
       name: str,
-      values: list[float],
+      values: Sequence[float],
       test_case_name: str = "test_fake_op",
   ) -> pathlib.Path:
     """Writes a golden file holding one sample per entry in `values`."""
@@ -570,7 +571,7 @@ class OpTestingTest(op_testing.OpInfoTestBase):
       self,
       directory: pathlib.Path,
       test_case_name: str = "test_fake_op",
-  ) -> list[float]:
+  ) -> Sequence[float]:
     """Pins and loads the goldens in `directory`; returns one key's values."""
     pin_data = goldens_pin.GoldenPathPinFile(
         version=1,

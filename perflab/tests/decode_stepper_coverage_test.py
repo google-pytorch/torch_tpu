@@ -36,6 +36,7 @@ This test is marked `notap` (which also sets `notest_oss` in `build_defs.bzl`):
      verified against internal `transformers`.
 """
 
+from collections.abc import Sequence
 from typing import Any
 
 from absl.testing import absltest
@@ -170,7 +171,7 @@ def _try_set(cfg: Any, name: str, value: Any) -> None:
 
 
 def _shrink_schedule_sequence(
-    schedule: list[Any], num_layers: int
+    schedule: Sequence[str], num_layers: int
 ) -> list[Any]:
   """Truncates a layer-type schedule while keeping both linear and attention layers."""
   first_linear = next(

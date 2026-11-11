@@ -75,7 +75,7 @@ Contract:
       run to fail.
 """
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence, Set
 import json
 import os
 from pathlib import Path
@@ -131,7 +131,7 @@ def _logins(users: Sequence[Mapping[str, Any] | None]) -> frozenset[str]:
 def determine_label_changes(
     event_name: str,
     payload: Mapping[str, Any],
-    reviewers: frozenset[str] = frozenset(),
+    reviewers: Set[str] = frozenset(),
 ) -> LabelChanges:
   """Determines labels to add and remove based on the event.
 

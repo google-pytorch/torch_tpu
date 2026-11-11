@@ -14,7 +14,7 @@
 
 """Distributed testing utilities for TorchTPU."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 import os
 import re
 from typing import Any
@@ -182,7 +182,7 @@ def _worker_fn(
     base_seed: int,
     fn: Callable[..., Any],
     args: tuple[Any, ...],
-    kwargs: dict[str, Any],
+    kwargs: Mapping[str, Any],
 ) -> None:
   """Worker function for mp.spawn."""
   # Parse absl flags inside each mp.spawn child subprocess so tests can pass

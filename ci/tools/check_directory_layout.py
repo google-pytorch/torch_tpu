@@ -15,7 +15,7 @@
 """Validates that repository directory layout matches the expected manifests."""
 
 import argparse
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence, Set
 import pathlib
 import sys
 from typing import Final
@@ -51,7 +51,7 @@ IGNORED_DIRS: Final[frozenset[str]] = frozenset([
 ])
 
 
-def get_subdirectories(path: pathlib.Path) -> set[str]:
+def get_subdirectories(path: pathlib.Path) -> Set[str]:
   """Returns non-hidden, non-cache direct subdirectory names."""
   if not path.is_dir():
     return set()
@@ -66,7 +66,7 @@ def get_subdirectories(path: pathlib.Path) -> set[str]:
 
 
 def validate_manifest(
-    location_name: str, actual: Iterable[str], expected: frozenset[str]
+    location_name: str, actual: Iterable[str], expected: Set[str]
 ) -> bool:
   """Compares actual subdirectories against expected manifest."""
   actual_set = set(actual)
@@ -128,7 +128,7 @@ def _default_repo_root() -> pathlib.Path:
   return pathlib.Path.cwd()
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
   parser = argparse.ArgumentParser(
       description="Validate repository directory layout against manifests."
   )

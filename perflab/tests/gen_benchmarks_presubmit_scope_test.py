@@ -21,6 +21,7 @@ whose model config is in-tree are registered, so that the smoke test needs no
 network access.
 """
 
+from collections.abc import Mapping, Set
 import copy
 import os
 import sys
@@ -51,7 +52,7 @@ _MODERNBERT_BENCHMARKS = (
 )
 
 
-def _gen_names() -> set[str]:
+def _gen_names() -> Set[str]:
   """Returns the names of all generated benchmarks."""
   return {
       spec.benchmark_name(is_training=is_training, suffix="gen")
@@ -59,7 +60,7 @@ def _gen_names() -> set[str]:
   }
 
 
-def _fake_tensor_smoke_names() -> set[str]:
+def _fake_tensor_smoke_names() -> Set[str]:
   """Returns the generated benchmarks expected in the FakeTensorMode smoke."""
   names = set()
   for spec, is_training, _ in gen_benchmarks._iter_gen_benchmark_specs():  # pylint: disable=protected-access
@@ -84,7 +85,7 @@ class GenBenchmarksPresubmitScopeTest(seed_test_utils.RepeatableTest):
 
   def _register(
       self, run_scope: context_lib.RunScope, fake_tensor_mode: bool
-  ) -> dict[str, registry_lib.BenchmarkSpec]:
+  ) -> Mapping[str, registry_lib.BenchmarkSpec]:
     with flagsaver.flagsaver(
         run_scope=run_scope, fake_tensor_mode=fake_tensor_mode
     ):
@@ -105,7 +106,7 @@ class GenBenchmarksPresubmitScopeTest(seed_test_utils.RepeatableTest):
 
   def _case_benchmarks(
       self, run_scope: context_lib.RunScope, fake_tensor_mode: bool
-  ) -> set[str]:
+  ) -> Set[str]:
     with flagsaver.flagsaver(
         run_scope=run_scope, fake_tensor_mode=fake_tensor_mode
     ):

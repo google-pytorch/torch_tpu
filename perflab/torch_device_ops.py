@@ -15,7 +15,7 @@
 """TorchDeviceOps: the torch implementation of the DeviceOps protocol."""
 
 import collections
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
 
 import torch
@@ -27,7 +27,7 @@ _MB = 2**20
 _NS_PER_SECOND = 1e9
 
 
-def _merge_intervals(intervals: list[tuple[int, int]]) -> int:
+def _merge_intervals(intervals: Sequence[tuple[int, int]]) -> int:
   """Returns the total duration of the union of (start, end) intervals."""
   if not intervals:
     return 0

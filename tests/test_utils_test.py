@@ -14,6 +14,7 @@
 
 """Unit tests for the test_utils module."""
 
+from collections.abc import Sequence
 import gzip
 import pathlib
 import plistlib
@@ -95,7 +96,9 @@ class TestUtilsTest(seed_test_utils.RepeatableTest):
     dirs = test_utils.goldens_candidate_local_dirs(base_dir="/custom/path")
     self.assertIn(pathlib.Path("/custom/path"), dirs)
 
-  def _pin_with(self, filenames: list[str]) -> goldens_pin.GoldenPathPinFile:
+  def _pin_with(
+      self, filenames: Sequence[str]
+  ) -> goldens_pin.GoldenPathPinFile:
     """Builds a pin file listing `filenames`.
 
     The checksums are placeholders: goldens are verified against goldens.pin at

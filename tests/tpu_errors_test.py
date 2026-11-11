@@ -4056,7 +4056,7 @@ module {
       "GPU _scaled_grouped_mm_v2 supports these recipes, swizzles and options."
   )
   def test_scaled_grouped_mm_v2_unsupported_args(
-      self, overrides: dict[str, Any], message: str
+      self, overrides: Mapping[str, Any], message: str
   ):
     a = torch.randn(16, 8, device=et.device())
     b = torch.randn(2, 8, 8, device=et.device())
@@ -5095,7 +5095,7 @@ def _patch_env_vars(names: Sequence[str], values: Mapping[str, str]):
 
 
 @contextlib.contextmanager
-def _mock_launch_env(values: dict[str, str]):
+def _mock_launch_env(values: Mapping[str, str]):
   """Makes the environment look like `values` to `distributed.set_tpu_launch_env`.
 
   Reads through `torch_tpu._internal.env` are redirected to `values`. In

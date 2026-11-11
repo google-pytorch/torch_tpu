@@ -41,6 +41,7 @@ example, and needs no TPU. The shim supports only `python3 <script>.py [args]`.
 Usage: run_doc_commands.py <markdown file> <doc test name>
 """
 
+from collections.abc import Sequence, Set
 import os
 import re
 import runpy
@@ -84,11 +85,11 @@ def _import_script(args: list[str]) -> int:
   return 0
 
 
-def _forms(path: str) -> set[str]:
+def _forms(path: str) -> Set[str]:
   return {os.path.abspath(path), os.path.realpath(path)}
 
 
-def _import_path(excluded_tree: str) -> list[str]:
+def _import_path(excluded_tree: str) -> Sequence[str]:
   """Returns this test's import path without the excluded directory tree.
 
   The test's own virtualenv (`site-packages`), which Bazel may put under the
@@ -108,7 +109,7 @@ def _import_path(excluded_tree: str) -> list[str]:
   ]
 
 
-def main(argv: list[str]) -> int:
+def main(argv: Sequence[str]) -> int:
   if len(argv) > 1 and argv[1] == _SHIM_FLAG:
     return _import_script(argv[2:])
   if len(argv) != 3:

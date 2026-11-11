@@ -14,7 +14,7 @@
 
 """Tests for perflab/cases.py."""
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping, Sequence, Set
 import itertools
 import os
 import random
@@ -87,7 +87,7 @@ class PresubmitPolicyTest(seed_test_utils.RepeatableTest):
 
   def _case_benchmarks(
       self, run_scope: context_lib.RunScope, fake_tensor_mode: bool
-  ) -> set[str]:
+  ) -> Set[str]:
     with (
         mock.patch.dict(registry_lib.REGISTRY, _PRESUBMIT_REGISTRY, clear=True),
         flagsaver.flagsaver(

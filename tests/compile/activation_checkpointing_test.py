@@ -71,7 +71,7 @@ def _first_non_getitem_after(barrier: fx.Node) -> fx.Node:
   return curr
 
 
-def _get_barriers(gm_or_graph: fx.GraphModule | fx.Graph) -> list[fx.Node]:
+def _get_barriers(gm_or_graph: fx.GraphModule | fx.Graph) -> Sequence[fx.Node]:
   graph = (
       gm_or_graph.graph
       if isinstance(gm_or_graph, fx.GraphModule)

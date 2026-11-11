@@ -211,7 +211,7 @@ def _write_test_xml(
 
 def resolve_benchmark_targets(
     test_filter: str | None = None,
-) -> list[tuple[registry_lib.BenchmarkSpec, common.RunMode]]:
+) -> Sequence[tuple[registry_lib.BenchmarkSpec, common.RunMode]]:
   """Resolves benchmark specs and modes deterministically from a filter string.
 
   Args:
@@ -278,7 +278,7 @@ def _shard_env() -> tuple[int, int]:
 
 def _shard_targets(
     targets: Sequence[tuple[registry_lib.BenchmarkSpec, common.RunMode]],
-) -> list[tuple[registry_lib.BenchmarkSpec, common.RunMode]]:
+) -> Sequence[tuple[registry_lib.BenchmarkSpec, common.RunMode]]:
   """Returns the subset of `targets` that this blaze test shard runs.
 
   Implements the blaze test sharding protocol (go/test-sharding): reads

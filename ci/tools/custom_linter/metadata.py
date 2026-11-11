@@ -34,7 +34,7 @@ suppressed per change via `disable_tags` in commit/CL descriptions or per line
 via inline `suppression_regexp` comments.
 """
 
-from collections.abc import Iterator, Mapping, Sequence, Set
+from collections.abc import Iterator, Mapping, MutableSequence, Sequence, Set
 import dataclasses
 import enum
 import functools
@@ -337,7 +337,7 @@ class _Parser:
       return ''.join(parts), tok.line
     raise ParseError(tok.line, tok.column, 'expected field name')
 
-  def _parse_field(self, fields: list[Field]) -> None:
+  def _parse_field(self, fields: MutableSequence[Field]) -> None:
     """Parses one field or repeated list of values into `fields`."""
     name, line = self._parse_field_name()
     has_colon = self._eat_punct(':')

@@ -15,7 +15,7 @@
 """Tools and helper routines common to all examples and benchmarks."""
 
 import collections
-from collections.abc import Callable, MutableSequence, Sequence
+from collections.abc import Callable, Mapping, MutableSequence, Sequence
 import contextlib
 import functools
 import os
@@ -438,7 +438,7 @@ class ActivationTracer(contextlib.ContextDecorator):
       self,
       module: torch.nn.Module,
       args: tuple[Any, ...],
-      kwargs: dict[str, Any],
+      kwargs: Mapping[str, Any],
       depth: int,
   ) -> None:
     """Logs the forward pass of a module. Called before a forward pass.
@@ -466,7 +466,7 @@ class ActivationTracer(contextlib.ContextDecorator):
       self,
       module: torch.nn.Module,
       args: tuple[Any, ...],
-      kwargs: dict[str, Any],
+      kwargs: Mapping[str, Any],
       output: Any,
       depth: int,
   ) -> None:
@@ -496,7 +496,7 @@ class ActivationTracer(contextlib.ContextDecorator):
   def _backward_pre_hook(
       self,
       module: torch.nn.Module,
-      grad_output: tuple[torch.Tensor, ...],
+      grad_output: Sequence[torch.Tensor],
       depth: int,
   ) -> None:
     """Logs the backward pass of a module. Called before a backward pass.
@@ -521,8 +521,8 @@ class ActivationTracer(contextlib.ContextDecorator):
   def _backward_hook(
       self,
       module: torch.nn.Module,
-      grad_input: tuple[torch.Tensor, ...],
-      grad_output: tuple[torch.Tensor, ...],
+      grad_input: Sequence[torch.Tensor],
+      grad_output: Sequence[torch.Tensor],
       depth: int,
   ) -> None:
     """Logs the backward pass of a module. Called after a backward pass.

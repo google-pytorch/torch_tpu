@@ -20,6 +20,7 @@ loading; the full suite is loaded and the user gets an explicit report of what
 failed and why.
 """
 
+from collections.abc import Sequence
 import dataclasses
 import importlib
 import pkgutil
@@ -37,7 +38,7 @@ class ImportFailure:
     return f"{self.module}: {type(self.error).__name__}: {self.error}"
 
 
-def import_submodules(package: types.ModuleType) -> list[ImportFailure]:
+def import_submodules(package: types.ModuleType) -> Sequence[ImportFailure]:
   """Imports every submodule of `package` (non-recursive, one level).
 
   Benchmark registration happens as a side effect of import; the decorators run

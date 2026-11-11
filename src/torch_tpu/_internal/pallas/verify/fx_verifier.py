@@ -38,7 +38,7 @@ This module implements the four PyTorch-boundary verification passes used by
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, MutableMapping, MutableSequence, Sequence, Set
 import contextlib
 import dataclasses
 import functools
@@ -832,10 +832,10 @@ def find_function_mesh(fn: Any) -> MeshLike | None:
 def _replace_mesh_if_mock(
     val: Any,
     mesh_replacement: MeshLike,
-    memo: dict[int, tuple[Any, bool]] | None = None,
+    memo: MutableMapping[int, tuple[Any, bool]] | None = None,
     *,
     clone_closures: bool = False,
-    keep_alive: list[Any] | None = None,
+    keep_alive: MutableSequence[Any] | None = None,
 ) -> tuple[Any, bool]:
   """Recursively replaces matching non-CPU meshes in values and closures.
 
@@ -1901,10 +1901,10 @@ def _verify_fake_kernel_outputs(
 
 def _prepare_tpu_export(
     jax_callable: pallas_lib.JaxCallable,
-    jax_args: list[Any],
-    jax_kwargs: dict[str, Any],
+    jax_args: Sequence[Any],
+    jax_kwargs: Mapping[str, Any],
     tpu_version: findings.TpuVersion,
-) -> tuple[Any, list[Any], dict[str, Any], Any]:
+) -> tuple[Any, Sequence[Any], Mapping[str, Any], Any]:
   """Prepares `(export_fn, jax_args, jax_kwargs, mesh_context)` for TPU lowering."""
   export_fn = jax_callable.exported
   mesh = jax_callable.mesh
@@ -2277,7 +2277,7 @@ def _compute_placeholder_roots(
 
 def _check_stale_root_uses(
     node: fx.Node,
-    node_roots: Mapping[fx.Node, set[str]],
+    node_roots: Mapping[fx.Node, Set[str]],
     invalidated_roots: Mapping[str, tuple[str, str]],
     *,
     jax_op_name: str | None = None,

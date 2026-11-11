@@ -78,7 +78,7 @@ class _FakeGh:
     self.commands: list[tuple[str, ...]] = []
 
   @property
-  def paths(self) -> tuple[str, ...]:
+  def paths(self) -> Sequence[str]:
     return tuple(cmd[5] for cmd in self.commands)
 
   def _reply(

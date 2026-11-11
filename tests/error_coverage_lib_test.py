@@ -14,7 +14,7 @@
 
 """Unit tests for error_coverage_lib, which don't need a TPU."""
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 import os
 from unittest import mock
 
@@ -376,7 +376,7 @@ def _coverage(
   )
 
 
-def _stats(infeasible: int, remaining: int, total: int) -> dict[str, int]:
+def _stats(infeasible: int, remaining: int, total: int) -> Mapping[str, int]:
   return {"infeasible": infeasible, "remaining": remaining, "total": total}
 
 

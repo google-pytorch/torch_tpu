@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from absl.testing import absltest
 import jax
 import jax.numpy as jnp
@@ -32,7 +34,7 @@ from tests import seed_test_utils
 jax_op = pallas.jax_op
 
 
-def _make_fp8_tensor(shape: tuple[int, ...]) -> torch.Tensor:
+def _make_fp8_tensor(shape: Sequence[int]) -> torch.Tensor:
   numel = 1
   for dim in shape:
     numel *= dim
@@ -172,7 +174,7 @@ class PallasVerifyTorchTpuKernelsTest(seed_test_utils.RepeatableTest):
       self,
       report: verifier.VerificationReport,
       *,
-      expected_phases: tuple[verifier.Phase, ...],
+      expected_phases: Sequence[verifier.Phase],
   ) -> None:
     self.assertTrue(report.passed, msg=report.summary())
     self.assertEmpty(

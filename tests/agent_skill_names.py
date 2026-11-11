@@ -29,6 +29,7 @@ This module uses only the Python standard library, so CI scripts can use it
 without installing dependencies.
 """
 
+from collections.abc import Sequence
 import pathlib
 import re
 
@@ -48,7 +49,7 @@ def frontmatter_name(skill_md: pathlib.Path) -> str | None:
   return match.group(1) if match else None
 
 
-def name_errors(name: str) -> list[str]:
+def name_errors(name: str) -> Sequence[str]:
   """Returns the problems with skill name `name`; empty if it is valid."""
   if not _NAME_RE.fullmatch(name):
     return [

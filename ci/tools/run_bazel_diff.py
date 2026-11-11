@@ -559,7 +559,7 @@ def run_bazel_diff(
   return subprocess.run(cmd, check=True)
 
 
-def _bazel_analysis_command(bazel_config: str) -> list[str]:
+def _bazel_analysis_command(bazel_config: str) -> Sequence[str]:
   """Builds the `bazel cquery` command used for full-repo analysis checks."""
   cmd = ["bazel", "cquery"]
   if bazel_config:

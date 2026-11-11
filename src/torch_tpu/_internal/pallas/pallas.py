@@ -18,8 +18,7 @@ This module provides APIs to call Pallas kernels from PyTorch. Note that use
 of these APIs requires that your environment also has JAX/Pallas installed.
 """
 
-import collections.abc
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence, Set
 import enum
 import functools
 import hashlib
@@ -302,8 +301,8 @@ def _normalize_output_partition_specs(
 def _get_kernel_invocation_key(
     trace_key: str,
     input_args: Sequence[torch.Tensor | Any],
-    input_kwargs: dict[str, Any],
-    static_argnums: tuple[int, ...] = (),
+    input_kwargs: Mapping[str, Any],
+    static_argnums: Sequence[int] = (),
 ) -> str:
   """Construct a unique ID for the kernel invocation.
 
@@ -386,7 +385,7 @@ def _get_enum_type(typ: Any) -> type[enum.Enum] | None:
 def _get_sequence_element_type(typ: Any) -> Any | None:
   """If typ is a homogeneous Sequence/list/tuple, returns its element type."""
   origin = typing.get_origin(typ)
-  if origin in (list, collections.abc.Sequence):
+  if origin in (list, Sequence):
     args = typing.get_args(typ)
     if len(args) == 1:
       return args[0]
@@ -481,7 +480,7 @@ def _is_valid_argument_type(annotation: Any) -> bool:
   return False
 
 
-def _get_bound_names(fn: Any) -> set[str]:
+def _get_bound_names(fn: Any) -> Set[str]:
   """Returns the set of parameter names bound by functools.partial."""
   bound_names = set()
   cur = fn
@@ -499,7 +498,7 @@ def _get_bound_names(fn: Any) -> set[str]:
 
 def _is_valid_argument(
     param: inspect.Parameter,
-    bound_names: collections.abc.Set[str] = frozenset(),
+    bound_names: Set[str] = frozenset(),
 ) -> bool:
   """Returns True if the argument is valid for a wrapped JAX function."""
   if param.name in bound_names:
@@ -509,7 +508,7 @@ def _is_valid_argument(
 
 def _verify_signature(
     signature: inspect.Signature,
-    bound_names: collections.abc.Set[str] = frozenset(),
+    bound_names: Set[str] = frozenset(),
 ):
   """Verify that the signature contains only types supported by PyTorch custom_op.
 
@@ -557,7 +556,7 @@ def _verify_signature(
     if origin in (
         tuple,
         list,
-        collections.abc.Sequence,
+        Sequence,
     ):
       return all(is_valid_result(arg) for arg in args)
     return False
@@ -600,7 +599,7 @@ def _is_tensor_annotation(annotation: Any) -> bool:
   return False
 
 
-def _infer_static_argnums(signature: inspect.Signature) -> tuple[int, ...]:
+def _infer_static_argnums(signature: inspect.Signature) -> Sequence[int]:
   """Infers the static_argnums for a JAX function.
 
   All non-tensor arguments are considered static.
@@ -621,7 +620,7 @@ def _infer_static_argnums(signature: inspect.Signature) -> tuple[int, ...]:
   return tuple(static_argnums)
 
 
-def _infer_static_argnames(signature: inspect.Signature) -> tuple[str, ...]:
+def _infer_static_argnames(signature: inspect.Signature) -> Sequence[str]:
   """Infers the static_argnames for keyword-only parameters of a JAX function."""
   static_argnames = []
   for name, param in signature.parameters.items():
@@ -713,7 +712,7 @@ def _map_jax_param_to_torch(typ: Any) -> Any:
     if typing.get_origin(underlying) is list:
       seq_type = list[mapped_elem]
     else:
-      seq_type = collections.abc.Sequence[mapped_elem]
+      seq_type = Sequence[mapped_elem]
     return (seq_type | types.NoneType) if is_optional else seq_type
   mapped = _map_jax_base_to_torch(underlying)
   return (mapped | types.NoneType) if is_optional else mapped
@@ -743,7 +742,7 @@ def _map_jax_return_to_torch(typ: Any) -> Any:
     mapped_elem = _map_jax_return_to_torch(elem_type)
     if origin is list:
       return list[mapped_elem]
-    return collections.abc.Sequence[mapped_elem]
+    return Sequence[mapped_elem]
   if (
       isinstance(typ, type)
       and issubclass(typ, int)
@@ -870,7 +869,7 @@ def _to_hashable_jax_static_arg(val: Any, orig_annotation: Any = None) -> Any:
 
 def _get_torch_signature(
     signature: inspect.Signature,
-    bound_names: collections.abc.Set[str] = frozenset(),
+    bound_names: Set[str] = frozenset(),
 ) -> inspect.Signature:
   """Converts a JAX signature to a Torch signature for custom_op schema."""
   pos_params = []
@@ -909,7 +908,7 @@ def _get_torch_signature(
 def _generate_torch_schema(
     torch_signature: inspect.Signature,
     ret_schema_str: str,
-    mutates_args: tuple[str, ...] = (),
+    mutates_args: Sequence[str] = (),
 ) -> str:
   """Generates an explicit PyTorch custom_op schema string."""
 
@@ -985,10 +984,10 @@ class JaxCallable:
   mesh: Any
   input_partition_specs: Any
   output_partition_specs: Any
-  static_argnums: tuple[int, ...]
-  static_argnames: tuple[str, ...]
-  donate_argnums: list[int]
-  input_output_aliases: dict[int, int]
+  static_argnums: Sequence[int]
+  static_argnames: Sequence[str]
+  donate_argnums: Sequence[int]
+  input_output_aliases: Mapping[int, int]
   exported: Any
   __signature__: Any
   __globals__: Any
@@ -1001,10 +1000,10 @@ class JaxCallable:
       mesh: jax.sharding.Mesh | jax.sharding.AbstractMesh | None = None,
       input_partition_specs: tuple[tuple[str, ...], ...] | None = None,
       output_partition_specs: tuple[tuple[str, ...], ...] | None = None,
-      static_argnums: tuple[int, ...] = (),
-      donate_argnums: list[int] | None = None,
-      input_output_aliases: dict[int, int] | None = None,
-      static_argnames: tuple[str, ...] = (),
+      static_argnums: Sequence[int] = (),
+      donate_argnums: Sequence[int] | None = None,
+      input_output_aliases: Mapping[int, int] | None = None,
+      static_argnames: Sequence[str] = (),
   ):
     """Initializes a JaxCallable, a cached callable for custom kernels.
 
@@ -1070,16 +1069,16 @@ class JaxCallable:
       )
       self.input_output_aliases = input_output_aliases
       # If donate_argnums is also provided, it must match.
-      if donate_argnums is not None and self.input_output_aliases.keys() != set(
-          donate_argnums
-      ):
+      if donate_argnums is not None and set(
+          self.input_output_aliases.keys()
+      ) != set(donate_argnums):
         raise ValueError(
             "donate_argnums must be None or the same as the keys of"
             " input_output_aliases."
         )
       self.donate_argnums = list(self.input_output_aliases.keys())
     else:
-      self.donate_argnums = donate_argnums if donate_argnums is not None else []
+      self.donate_argnums = donate_argnums if donate_argnums is not None else ()
       self.input_output_aliases = {}
 
     # Unwrap jax.jit and other wrappers to get the original function for its
@@ -1152,7 +1151,7 @@ class JaxCallable:
       )
 
   def _normalize_invocation_args(
-      self, args: Sequence[Any], kwargs: dict[str, Any]
+      self, args: Sequence[Any], kwargs: Mapping[str, Any]
   ) -> tuple[list[Any], dict[str, Any]]:
     """Binds arguments to signature and normalizes static arguments."""
     try:
@@ -1439,14 +1438,14 @@ def _validate_pallas_mesh_size(
 def custom_jax_kernel(
     jax_fn: None = None,
     name: str | None = None,
-    static_argnums: tuple[int, ...] = (),
-    donate_argnums: list[int] | None = None,
-    input_output_aliases: dict[int, int] | None = None,
+    static_argnums: Sequence[int] = (),
+    donate_argnums: Sequence[int] | None = None,
+    input_output_aliases: Mapping[int, int] | None = None,
     mesh: jax.sharding.Mesh | jax.sharding.AbstractMesh | None = None,
     input_partition_specs: tuple[tuple[str, ...], ...] | None = None,
     output_partition_specs: tuple[tuple[str, ...], ...] | None = None,
     *,
-    static_argnames: tuple[str, ...] = (),
+    static_argnames: Sequence[str] = (),
     warn_deprecated: bool = True,
 ) -> Callable[[Callable[..., Any]], JaxCallable]:
   ...  # Overload stub
@@ -1456,14 +1455,14 @@ def custom_jax_kernel(
 def custom_jax_kernel(
     jax_fn: Callable[..., Any],
     name: str | None = None,
-    static_argnums: tuple[int, ...] = (),
-    donate_argnums: list[int] | None = None,
-    input_output_aliases: dict[int, int] | None = None,
+    static_argnums: Sequence[int] = (),
+    donate_argnums: Sequence[int] | None = None,
+    input_output_aliases: Mapping[int, int] | None = None,
     mesh: jax.sharding.Mesh | jax.sharding.AbstractMesh | None = None,
     input_partition_specs: tuple[tuple[str, ...], ...] | None = None,
     output_partition_specs: tuple[tuple[str, ...], ...] | None = None,
     *,
-    static_argnames: tuple[str, ...] = (),
+    static_argnames: Sequence[str] = (),
     warn_deprecated: bool = True,
 ) -> JaxCallable:
   ...  # Overload stub

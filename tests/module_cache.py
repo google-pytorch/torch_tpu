@@ -19,7 +19,7 @@ storage,
 and network reads across test runners and multi-phase worker sessions.
 """
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 import contextlib
 import copy
 import threading
@@ -49,7 +49,7 @@ class ThreadSafeKeyedCache(Generic[K, V]):
     with self._global_lock:
       return key in self._cache
 
-  def values(self) -> list[V]:
+  def values(self) -> Sequence[V]:
     """Returns a snapshot copy of all cached values."""
     with self._global_lock:
       return list(self._cache.values())

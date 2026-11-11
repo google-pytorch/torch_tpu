@@ -37,6 +37,7 @@ axes rather than being repeated per slice.
 from __future__ import annotations
 
 import collections
+from collections.abc import Sequence
 import dataclasses
 import math
 
@@ -65,7 +66,7 @@ class _DeviceStub:
   has_slice_index: bool = True
 
 
-def _gather_global_device_info(device_type: str) -> list[_DeviceStub]:
+def _gather_global_device_info(device_type: str) -> Sequence[_DeviceStub]:
   """Each torch rank reports its PJRT device; returns list indexed by rank."""
   attrs = tpu_distributed.global_device_attributes()
   return [
@@ -88,8 +89,8 @@ def _gather_global_device_info(device_type: str) -> list[_DeviceStub]:
 
 
 def _infer_dcn_mesh_shape(
-    mesh_shape: tuple[int, ...], num_slices: int
-) -> tuple[int, ...]:
+    mesh_shape: Sequence[int], num_slices: int
+) -> Sequence[int]:
   """Picks the logical axis along which to split the mesh across slices.
 
   The split goes on the outermost non-trivial axis. `mesh_shape` is ordered by
@@ -148,9 +149,9 @@ def _infer_dcn_mesh_shape(
 
 
 def _validate_multi_slice(
-    infos: list[_DeviceStub],
-    mesh_shape: tuple[int, ...],
-    dcn_mesh_shape: tuple[int, ...],
+    infos: Sequence[_DeviceStub],
+    mesh_shape: Sequence[int],
+    dcn_mesh_shape: Sequence[int],
 ) -> None:
   """Validates a multi-slice request against the observed device topology.
 
@@ -222,9 +223,9 @@ __all__ = ["topology_aware_mesh", "get_device_assignment"]
 
 def topology_aware_mesh(
     device_type: str,
-    mesh_shape: tuple[int, ...],
+    mesh_shape: Sequence[int],
     *,
-    dcn_mesh_shape: tuple[int, ...] | None = None,
+    dcn_mesh_shape: Sequence[int] | None = None,
     allow_split_physical_axes: bool = False,
     contiguous_submeshes: bool = False,
 ) -> torch.Tensor:
@@ -370,7 +371,7 @@ def topology_aware_mesh(
 
 def get_device_assignment(
     pg: dist.ProcessGroup | None = None,
-) -> list[int]:
+) -> Sequence[int]:
   """Returns physical device assignment for the given process group.
 
   Args:

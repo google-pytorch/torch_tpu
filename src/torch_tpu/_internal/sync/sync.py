@@ -13,6 +13,7 @@
 # limitations under the License.
 """Handles Python type overloading for synchronize() function."""
 
+from collections.abc import Sequence
 import inspect
 import os
 
@@ -41,13 +42,13 @@ def _dump_computation(
     f.write(str_to_dump)
 
 
-def dump_computation_graphviz(tensors: list[torch.Tensor], file_name: str):
+def dump_computation_graphviz(tensors: Sequence[torch.Tensor], file_name: str):
   """Dumps a graphviz compatible representation of the aten traversal of the given tensors, to a file_name."""
   _dump_computation(computation_graphviz(*tensors), file_name)
 
 
 def computation_graphviz(
-    *tensors: list[torch.Tensor] | tuple[torch.Tensor, ...],
+    *tensors: torch.Tensor | Sequence[torch.Tensor],
 ) -> str:
   """Returns a graphviz compatible representation of the aten traversal of the given tensors."""
   caller_frame = inspect.stack()[1]  # get the caller's frame
@@ -56,9 +57,7 @@ def computation_graphviz(
   return _tpu_torch_sync._get_computation_graphviz(flat_tensors, caller_locals)  # pylint: disable=protected-access
 
 
-def computation_mlir(
-    *tensors: list[torch.Tensor] | tuple[torch.Tensor, ...]
-) -> str:
+def computation_mlir(*tensors: torch.Tensor | Sequence[torch.Tensor]) -> str:
   """Returns a MLIR representation of the aten traversal of the given tensors."""
   flat_tensors, _ = _pytree.tree_flatten(tensors)
   return _tpu_torch_sync._get_computation_mlir(flat_tensors)  # pylint: disable=protected-access
