@@ -82,19 +82,22 @@ c10::ScalarType InferOutputDtype(const at::Tensor& self) {
   return c10::get_default_dtype_as_scalartype();
 }
 
-absl::StatusOr<mlir::ElementType> InferComputationDtype(
-    mlir::ElementType input_dtype) {
-  at::ScalarType input_type = ConvertTo<at::ScalarType>(input_dtype);
-  switch (input_type) {
-    // at::toOpMathType preserves FP8/FP4 types, but XLA HLO operations
-    // generally require working on standard FP32 formats. We intercept FP4 here
-    // to explicitly specify F32 computation.
+// TorchTPU kernels must call InferComputationDtype rather than at::toOpMathType
+// directly so that all TorchTPU-supported dtypes map to a valid XLA HLO
+// computation dtype without crashing on types omitted by upstream ATen.
+at::ScalarType InferComputationDtype(at::ScalarType input_dtype) {
+  switch (input_dtype) {
+    // Upstream at::toOpMathType only promotes BFloat16, Half, and FP8 variants
+    // to Float, leaving Float4_e2m1fn_x2 unchanged, whereas XLA HLO arithmetic
+    // requires promoting Float4_e2m1fn_x2 to Float (f32).
     case at::ScalarType::Float4_e2m1fn_x2:
-      return mlir::ElementType::F32;
+      return at::ScalarType::Float;
     // Upstream at::toOpMathType switches over AT_ALL_SCALAR_TYPES_WITH_COMPLEX,
     // which omits barebones unsigned types (UInt16, UInt32, UInt64) and
-    // sub-byte integer types (Int2, Int4, UInt2, UInt4), even though
-    // at::OpMathType<T> is the identity type for all integral types.
+    // sub-byte integer types (Int2, Int4, UInt2, UInt4) and crashes with
+    // TORCH_INTERNAL_ASSERT(false, "Unrecognized ScalarType: ...") on them,
+    // even though at::OpMathType<T> is the identity type for all integral
+    // types.
     case at::ScalarType::Int2:
     case at::ScalarType::Int4:
     case at::ScalarType::UInt2:
@@ -106,7 +109,18 @@ absl::StatusOr<mlir::ElementType> InferComputationDtype(
     default:
       break;
   }
-  at::ScalarType computation_type = at::toOpMathType(input_type);
+  return at::toOpMathType(  // AT_TO_OP_MATH_TYPE_OK=implementing
+                            // InferComputationDtype.
+      input_dtype);
+}
+
+absl::StatusOr<mlir::ElementType> InferComputationDtype(
+    mlir::ElementType input_dtype) {
+  const at::ScalarType input_type = ConvertTo<at::ScalarType>(input_dtype);
+  const at::ScalarType computation_type = InferComputationDtype(input_type);
+  if (computation_type == input_type) {
+    return input_dtype;
+  }
   return ConvertTo<mlir::ElementType>(computation_type);
 }
 

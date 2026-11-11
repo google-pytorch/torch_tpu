@@ -24,6 +24,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "csrc/eager/device_assignment.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/ops/op_names.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -55,10 +56,10 @@ ResolveDeviceAssignment(
     absl::Span<const OpDeviceAssignment> ops,
     absl::Span<const PallasDeviceAssignment> pallas_ops = {});
 
-// Resolves a single target device assignment across all deferred operations in
-// `execution_order` by delegating to `ResolveDeviceAssignment`.
-absl::StatusOr<std::vector<int64_t>>  // INT_VEC_OK
-ResolveDeviceAssignmentForTraversal(
+// Resolves the target `DeviceAssignment` (`.local`, `.global`, and
+// `.contains_pallas_kernel`) across all deferred operations in
+// `execution_order`.
+absl::StatusOr<DeviceAssignment> ResolveDeviceAssignmentForTraversal(
     absl::Span<const SharedDeviceBufferList> execution_order,
     absl::Span<const int64_t> pallas_device_assignment = {});
 

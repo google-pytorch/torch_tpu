@@ -19,13 +19,15 @@ operations and device boundaries, compiling its TPU submodules, and running its
 CPU submodules eagerly.
 """
 
-from collections.abc import Callable, Collection, Iterator, Sequence
+from collections.abc import Callable, Collection, Iterable, Iterator, Sequence
 import contextlib
 import copy
+import dataclasses
+import enum
 import functools
 import operator
 import threading
-from typing import Any
+from typing import Any, ClassVar
 
 from absl import logging
 import torch
@@ -264,8 +266,174 @@ def _register_output_namedtuple_globals(gm: torch.fx.GraphModule) -> None:
   )
 
 
-_CPU = "cpu"
-_TPU = "tpu"
+class _Device(enum.StrEnum):
+  """Execution device for a partitioned FX node."""
+
+  CPU = "cpu"
+  TPU = "tpu"
+
+
+@functools.total_ordering
+@dataclasses.dataclass(frozen=True)
+class _Stage:
+  """Execution domain of a partitioned submodule.
+
+  Attributes:
+    ALLOWED_STAGES: Valid `(device, spmd_safe)` combinations.
+    device: Device on which the submodule runs (`_Device.CPU` or `_Device.TPU`).
+    spmd_safe: Whether the submodule is an isolated `spmd_safe` TPU collective
+      region. Must be `False` when `device` is `_Device.CPU`.
+  """
+
+  ALLOWED_STAGES: ClassVar[tuple[tuple[_Device, bool], ...]] = (
+      (_Device.CPU, False),
+      (_Device.TPU, False),
+      (_Device.TPU, True),
+  )
+
+  device: _Device = _Device.CPU
+  spmd_safe: bool = False
+
+  def __post_init__(self) -> None:
+    if (self.device, self.spmd_safe) not in self.ALLOWED_STAGES:
+      raise ValueError(
+          f"Disallowed stage {(self.device, self.spmd_safe)}; "
+          f"allowed stages: {self.ALLOWED_STAGES}"
+      )
+
+  def _order_index(self) -> int:
+    """Returns this stage's position in `ALLOWED_STAGES`."""
+    return self.ALLOWED_STAGES.index((self.device, self.spmd_safe))
+
+  def __lt__(self, other: object) -> bool:
+    if not isinstance(other, _Stage):
+      return NotImplemented
+    return self._order_index() < other._order_index()
+
+  @property
+  def is_cpu(self) -> bool:
+    """Returns whether this stage runs eagerly on CPU."""
+    return self.device == _Device.CPU
+
+  @property
+  def is_tpu(self) -> bool:
+    """Returns whether this stage is compiled for TPU."""
+    return self.device == _Device.TPU
+
+
+@dataclasses.dataclass(frozen=True, order=True)
+class _ScheduledStage:
+  """A slot in the repeating sequence `CPU, TPU, TPU(spmd_safe), CPU, TPU, TPU(spmd_safe), ...`.
+
+  This is a helper class for deciding on partitioning and placement of nodes
+  based on user metadata (like `spmd_safe`) or device placement.
+
+  Each node goes in the earliest slot of its kind that doesn't come before any
+  of its inputs slots.
+  For example, in:
+  `x.neg() -> spmd_safe(all_reduce) -> abs()`
+  - `neg` goes in slot `(0, TPU)`
+  - `all_reduce` in `(0, TPU(spmd_safe))`
+  - `abs` in `(1, TPU)`
+
+  Attributes:
+    generation: Monotonic pass counter through `_Stage.ALLOWED_STAGES`.
+    stage: The `_Stage` executed in this pass.
+  """
+
+  generation: int = 0
+  stage: _Stage = dataclasses.field(default_factory=_Stage)
+
+  @classmethod
+  def after(
+      cls, input_stages: Iterable["_ScheduledStage"]
+  ) -> "_ScheduledStage":
+    """Returns the latest scheduled stage among `input_stages`.
+
+    Args:
+      input_stages: Scheduled stages of a node's DAG inputs.
+
+    Returns:
+      The maximum `_ScheduledStage` in `input_stages`, or the initial
+      `(generation=0, CPU)` stage when `input_stages` is empty.
+    """
+    return max(input_stages, default=cls())
+
+  def advance_to(self, target: _Stage) -> "_ScheduledStage":
+    """Advances to the earliest `_ScheduledStage` >= `self` matching `target`.
+
+    For example, starting from `_ScheduledStage(0, _Stage(_Device.CPU))`:
+      - `advance_to(_Stage(_Device.TPU))` -> `(generation=0, TPU)`
+      - `advance_to(_Stage(_Device.TPU, spmd_safe=True))` ->
+        `(generation=0, TPU+spmd_safe)`
+      - `advance_to(_Stage(_Device.TPU))` -> `(generation=1, TPU)`
+
+    Args:
+      target: Desired execution `_Stage` for the node.
+
+    Returns:
+      The earliest `_ScheduledStage` at or after `self` with `stage == target`.
+    """
+    if target == self.stage:
+      return self
+    # If we are staying in the same stage, we don't advance the generation.
+    generation = self.generation + (1 if target < self.stage else 0)
+    return _ScheduledStage(generation=generation, stage=target)
+
+  @property
+  def is_cpu(self) -> bool:
+    """Returns whether this scheduled stage runs eagerly on CPU."""
+    return self.stage.is_cpu
+
+  @property
+  def is_tpu(self) -> bool:
+    """Returns whether this scheduled stage is compiled for TPU."""
+    return self.stage.is_tpu
+
+
+def _get_spmd_safe_nodes(graph: torch.fx.Graph) -> set[torch.fx.Node]:
+  """Returns the nodes in `graph` that belong to an `spmd_safe` region.
+
+  Besides nodes marked `spmd_safe`, this includes nodes that AOTAutograd
+  synthesizes without forward `custom` metadata:
+    - Gradient accumulation (`is_gradient_acc`) nodes whose inputs are all
+      `spmd_safe`.
+    - Backward mutations of forward inputs (`partitioner_tag` is
+      `must_be_in_backward`) whose computed inputs are all `spmd_safe`.
+
+  Args:
+    graph: The FX graph to inspect.
+
+  Returns:
+    The set of nodes that belong to an `spmd_safe` region.
+  """
+  spmd_safe_nodes = set()
+  for node in graph.nodes:
+    meta = getattr(node, "meta", None)
+    if not isinstance(meta, dict):
+      continue
+    is_marked_safe = bool(
+        meta.get("custom", {}).get(spmd_util.SPMD_SAFE_METADATA_KEY, False)
+    )
+    is_safe_grad_acc = (
+        meta.get("is_gradient_acc", False)
+        and bool(node.all_input_nodes)
+        and spmd_safe_nodes.issuperset(node.all_input_nodes)
+    )
+    computed_inputs = [
+        n
+        for n in node.all_input_nodes
+        if n.op not in ("placeholder", "get_attr")
+    ]
+    is_safe_bw_mutation = (
+        meta.get("partitioner_tag") == "must_be_in_backward"
+        and bool(computed_inputs)
+        and spmd_safe_nodes.issuperset(computed_inputs)
+    )
+    if is_marked_safe or is_safe_grad_acc or is_safe_bw_mutation:
+      spmd_safe_nodes.add(node)
+  return spmd_safe_nodes
+
 
 # Ops with these tags are never constant expressions, even if all their inputs
 # are constants: tracing them into a TPU program would change their random
@@ -286,8 +454,10 @@ def _tensor_device_types(node: torch.fx.Node) -> set[str]:
   }
 
 
-def _assign_devices(graph: torch.fx.Graph) -> dict[torch.fx.Node, str | None]:
-  """Returns the device type each node must run on, or None if any works.
+def _assign_devices(
+    graph: torch.fx.Graph,
+) -> dict[torch.fx.Node, _Device | None]:
+  """Returns the device each node must run on, or None if any works.
 
   Nodes that produce CPU tensors run eagerly on CPU, as do nodes that produce no
   tensors from CPU tensors or values computed on CPU, e.g. `.item()` and
@@ -305,24 +475,25 @@ def _assign_devices(graph: torch.fx.Graph) -> dict[torch.fx.Node, str | None]:
     graph: The graph to assign devices to.
 
   Returns:
-    A mapping from each node other than placeholders and outputs to "cpu",
-    "tpu", or None.
+    A mapping from each node other than placeholders and outputs to
+    `_Device.CPU`, `_Device.TPU`, or `None`.
   """
   # Registered when torch._functorch._activation_offloading is imported.
   offload = getattr(torch.ops.ao, "offload", None)
   constants = set()
   pinned_host = set()
-  devices = {}
+  devices: dict[torch.fx.Node, _Device | None] = {}
   for node in graph.nodes:
     if node.op in ("placeholder", "output"):
       continue
     outputs = _tensor_device_types(node)
     op = getattr(node.target, "overloadpacket", node.target)
     if (offload is not None and op is offload) or (
-        _CPU in outputs and not pinned_host.isdisjoint(node.all_input_nodes)
+        _Device.CPU in outputs
+        and not pinned_host.isdisjoint(node.all_input_nodes)
     ):
       pinned_host.add(node)
-      devices[node] = _TPU
+      devices[node] = _Device.TPU
       continue
     inputs = set().union(*(
         _tensor_device_types(n)
@@ -339,21 +510,24 @@ def _assign_devices(graph: torch.fx.Graph) -> dict[torch.fx.Node, str | None]:
     ):
       constants.add(node)
       devices[node] = None
-    elif _CPU in outputs or (
+    elif _Device.CPU in outputs or (
         not outputs
-        and (_CPU in inputs or _CPU in map(devices.get, node.all_input_nodes))
+        and (
+            _Device.CPU in inputs
+            or _Device.CPU in map(devices.get, node.all_input_nodes)
+        )
     ):
-      devices[node] = _CPU
+      devices[node] = _Device.CPU
     else:
-      devices[node] = _TPU if outputs or "val" not in node.meta else None
+      devices[node] = _Device.TPU if outputs or "val" not in node.meta else None
 
   for node in reversed(devices):
     if devices[node] is None and any(
-        devices.get(user) == _CPU
-        or (user.op == "output" and _CPU in _tensor_device_types(node))
+        devices.get(user) == _Device.CPU
+        or (user.op == "output" and _Device.CPU in _tensor_device_types(node))
         for user in node.users
     ):
-      devices[node] = _CPU
+      devices[node] = _Device.CPU
   return devices
 
 
@@ -513,7 +687,7 @@ class _SubmodCompiler(torch.fx.interpreter.Interpreter):
     cpu_arg_indices = [
         i
         for i, arg in enumerate(args)
-        if isinstance(arg, torch.Tensor) and arg.device.type == _CPU
+        if isinstance(arg, torch.Tensor) and arg.device.type == _Device.CPU
     ]
     if symbolic_shapes.has_free_unbacked_symbols(
         [args[i] for i in cpu_arg_indices]
@@ -787,7 +961,7 @@ class SplitCompiler(compiler.Compiler):
             skip_targets={
                 str(node.target)
                 for node, device in devices.items()
-                if node.op == "get_attr" and device == _CPU
+                if node.op == "get_attr" and device == _Device.CPU
             },
         )
     )
@@ -795,12 +969,24 @@ class SplitCompiler(compiler.Compiler):
     _register_output_namedtuple_globals(graph_module)
     graph_module.recompile()
 
+    spmd_safe_nodes = _get_spmd_safe_nodes(graph_module.graph)
+    # We isolate `spmd_safe` into its own stage only when
+    # `materialize_collectives=True`. For `materialize_collectives=False` there
+    # will be no splits so there is no need to isolate `spmd_safe` nodes.
+    isolate_spmd_safe = materialize_collectives and any(
+        node.op == "call_function"
+        # We only isolate spmd_safe nodes if there is a collective, otherwise
+        # `spmd_safe` is redundant and can be grouped with other TPU ops.
+        and collective_ops.is_collective_op(node.target)
+        and devices.get(node) != _Device.CPU
+        for node in spmd_safe_nodes
+    )
+
     partition_id = 0
     partition_map = {}
-    # Even stages run on CPU and odd stages on TPU. Each node runs in the
-    # earliest stage after its inputs, so that CPU work that does not depend on
-    # TPU results is batched instead of splitting TPU programs.
-    stages = {}
+    # Each node runs in the earliest `_ScheduledStage` matching its `_Stage`
+    # after its DAG inputs.
+    stages: dict[torch.fx.Node, _ScheduledStage] = {}
     last_random_ops = {}
     # Maps device-agnostic nodes to the partition id at their position.
     deferred = {}
@@ -810,22 +996,25 @@ class SplitCompiler(compiler.Compiler):
         continue
 
       device = devices[node]
+      in_spmd_safe_region = node in spmd_safe_nodes
       inputs = list(node.all_input_nodes)
       if torch.Tag.nondeterministic_seeded in getattr(node.target, "tags", ()):
         # Random ops on each device keep their order to draw the same values.
         inputs.append(last_random_ops.get(device))
         last_random_ops[device] = node
-      stage = max((stages[n] for n in inputs if n in stages), default=0)
-      if device is not None and (stage % 2 == 1) != (device == _TPU):
-        stage += 1
+      stage = _ScheduledStage.after(stages[n] for n in inputs if n in stages)
+      # `device` is None for unconstrained constants / SymInt ops (`deferred`).
+      if device is not None:
+        target_stage = _Stage(
+            device=device,
+            spmd_safe=(
+                device == _Device.TPU
+                and isolate_spmd_safe
+                and in_spmd_safe_region
+            ),
+        )
+        stage = stage.advance_to(target_stage)
       stages[node] = stage
-
-      in_spmd_safe_region = bool(
-          isinstance(getattr(node, "meta", None), dict)
-          and node.meta.get("custom", {}).get(
-              spmd_util.SPMD_SAFE_METADATA_KEY, False
-          )
-      )
 
       maybe_collective = getattr(node.target, "overloadpacket", node.target)
       is_collective = (
@@ -852,12 +1041,14 @@ class SplitCompiler(compiler.Compiler):
         if producer not in partition_map:
           raise ValueError("wait_tensor producer not found in partition map.")
         partition_map[node] = partition_map[producer]
+        stages[node] = stages[producer]
       elif _is_getitem_of_collective(node):
         if node.args[0] not in partition_map:
           raise ValueError(
               "getitem of a collective producer not found in partition map."
           )
         partition_map[node] = partition_map[node.args[0]]
+        stages[node] = stages[node.args[0]]
       elif (
           is_collective and not in_spmd_safe_region and materialize_collectives
       ):
@@ -880,9 +1071,13 @@ class SplitCompiler(compiler.Compiler):
     keys = {node: (partition_map[node], stages[node]) for node in partition_map}
     for node in reversed(deferred):
       user_keys = sorted({keys[user] for user in node.users if user in keys})
-      keys[node] = (
-          user_keys[0] if user_keys else (deferred[node], max(stages[node], 1))
-      )
+      if user_keys:
+        keys[node] = user_keys[0]
+      else:
+        keys[node] = (
+            deferred[node],
+            stages[node].advance_to(_Stage(_Device.TPU)),
+        )
       if _tensor_device_types(node):
         continue
       for key in user_keys[1:]:
@@ -897,9 +1092,7 @@ class SplitCompiler(compiler.Compiler):
     # dependencies.
     partition_ids = {key: i for i, key in enumerate(sorted(set(keys.values())))}
     cpu_submods = {
-        f"submod_{i}"
-        for (_, stage), i in partition_ids.items()
-        if stage % 2 == 0
+        f"submod_{i}" for (_, stage), i in partition_ids.items() if stage.is_cpu
     }
     logging.info(
         "Split graph into %d partitions, %d of which run on CPU",

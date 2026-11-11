@@ -46,8 +46,7 @@ at::Tensor SetDimensionLogicalSize(const at::Tensor& input, int64_t dim,
   TT_KERNEL(OpName::kSetDimensionLogicalSize, param_keys, (input, dim, size), {
     TT_ASSIGN_OR_THROW(dim, SafeWrapDim(dim, input.dim()));
     TT_CHECK_THROW(size.dim() == 0, error::kInvalidArgument)
-        << "expected a 0-dimensional tensor for size, got " << size.dim()
-        << "-dimensional tensor";
+        << "expected a 0D tensor for size, got " << size.dim() << "D tensor";
     TT_CHECK_THROW(size.scalar_type() == at::kInt, error::kInvalidArgument)
         << "expected an " << ToString(at::kInt) << " tensor for size, got "
         << ToString(size.scalar_type());
@@ -66,7 +65,7 @@ at::Tensor SetDimensionLogicalSize(const at::Tensor& input, int64_t dim,
                       {.out_dtype = mlir_dtype,
                        .out_dims = out_dims,
                        .op_param_cache_keys = std::move(param_keys)}));
-    return MakeTensor(result_buf);
+    return MakeTensor(std::move(result_buf));
   });
 }
 

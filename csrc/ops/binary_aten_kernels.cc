@@ -21,7 +21,6 @@
 #include <utility>
 #include <vector>
 
-#include "ATen/OpMathType.h"
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/ops/result_type.h"
 #include "absl/log/absl_log.h"
@@ -73,7 +72,8 @@ namespace internal {
 // must manually move 0-D CPU scalar tensors to the TPU when paired with a TPU
 // tensor to avoid crashes when we later try to extract their TPU buffers.
 absl::StatusOr<std::vector<at::Tensor>> MoveCpuScalarsToTpu(
-    absl::Span<const at::Tensor> tensors) {
+    absl::Span<const at::Tensor> tensors,
+    std::optional<at::ScalarType> wrapped_scalar_dtype = std::nullopt) {
   const bool has_tpu_input =
       tensors.size() >= 2 &&
       (IsPrivateUse1Device(tensors[0]) || IsPrivateUse1Device(tensors[1]));
@@ -83,7 +83,13 @@ absl::StatusOr<std::vector<at::Tensor>> MoveCpuScalarsToTpu(
     // MakeTensor uses a cache to deduplicate scalar tensors.
     if (has_tpu_input && tensor.device().type() == c10::DeviceType::CPU &&
         tensor.dim() == 0) {
-      TT_ASSIGN_OR_RETURN(at::Tensor tpu_tensor, MakeTensor(tensor.item()));
+      const bool is_wrapped = tensor.unsafeGetTensorImpl()->is_wrapped_number();
+      const at::ScalarType target_dtype =
+          (is_wrapped && wrapped_scalar_dtype.has_value())
+              ? *wrapped_scalar_dtype
+              : tensor.scalar_type();
+      TT_ASSIGN_OR_RETURN(at::Tensor tpu_tensor,
+                          MakeTensor(tensor.item(), target_dtype));
       tpu_tensors.push_back(std::move(tpu_tensor));
     } else {
       tpu_tensors.push_back(tensor);
@@ -107,19 +113,27 @@ absl::StatusOr<DeviceBufferRef> DispatchBinaryOp(const at::Tensor& self,
 absl::StatusOr<DeviceBufferRef> DispatchBinaryOp(
     const at::Tensor& self, const at::Tensor& other,
     MlirBinaryOpBuilder bin_op_builder, BinaryOpOptions opts) {
-  TT_ASSIGN_OR_RETURN(auto tpu_tensors, MoveCpuScalarsToTpu({self, other}));
+  at::ScalarType promoted_scalar_type = at::result_type(self, other);
+  if (opts.force_float_inputs &&
+      c10::isIntegralType(promoted_scalar_type, /*includeBool=*/true)) {
+    promoted_scalar_type = c10::get_default_dtype_as_scalartype();
+    // When `opts.result_dtype` is unset, `output_dtype` defaults to
+    // `computation_dtype` (`promoted_scalar_type`) and is already hashed via
+    // `output_shapes_`. When `opts.result_dtype` overrides the output dtype,
+    // record `default_dtype` explicitly to avoid stale cache hits.
+    if (opts.result_dtype.has_value()) {
+      TT_RETURN_IF_ERROR(opts.op_param_cache_keys.SetParam(
+          "default_dtype", promoted_scalar_type));
+    }
+  }
+
+  TT_ASSIGN_OR_RETURN(auto tpu_tensors,
+                      MoveCpuScalarsToTpu({self, other}, promoted_scalar_type));
   const at::Tensor& self_tpu = tpu_tensors[0];
   const at::Tensor& other_tpu = tpu_tensors[1];
 
   TT_ASSIGN_OR_RETURN(const Dimensions output_dims,
                       InferSize(self_tpu.sizes(), other_tpu.sizes()));
-
-  at::ScalarType promoted_scalar_type = at::result_type(self_tpu, other_tpu);
-  if (opts.force_float_inputs) {
-    if (c10::isIntegralType(promoted_scalar_type, /*includeBool=*/true)) {
-      promoted_scalar_type = c10::get_default_dtype_as_scalartype();
-    }
-  }
   TT_ASSIGN_OR_RETURN(mlir::ElementType computation_dtype,
                       ToElementType(promoted_scalar_type));
   mlir::ElementType output_dtype =
@@ -141,50 +155,6 @@ absl::StatusOr<DeviceBufferRef> DispatchBinaryOp(
       };
   return DispatchOp<2>(
       std::move(op_builder), {self_tpu, other_tpu},
-      {.op_name = opts.op_name,
-       .out_dtype = output_dtype,
-       .out_dims = output_dims,
-       .computation_dtype = computation_dtype,
-       .op_param_cache_keys = std::move(opts.op_param_cache_keys),
-       .split_mode = opts.split_mode,
-       .donated_indices = std::move(opts.donated_indices)});
-}
-
-absl::StatusOr<DeviceBufferRef> DispatchTernaryOp(
-    const at::Tensor& self, const at::Tensor& other, const at::Tensor& third,
-    MlirTernaryOpBuilder ternary_op_builder, TernaryOpOptions opts) {
-  TT_ASSIGN_OR_RETURN(auto tpu_tensors,
-                      MoveCpuScalarsToTpu({self, other, third}));
-  const at::Tensor& self_tpu = tpu_tensors[0];
-  const at::Tensor& other_tpu = tpu_tensors[1];
-  const at::Tensor& third_tpu = tpu_tensors[2];
-
-  TT_ASSIGN_OR_RETURN(
-      const Dimensions output_dims,
-      InferSize(self_tpu.sizes(), other_tpu.sizes(), third_tpu.sizes()));
-
-  at::ScalarType promoted_scalar_type = at::result_type(self_tpu, other_tpu);
-
-  if (opts.force_float_inputs) {
-    if (c10::isIntegralType(promoted_scalar_type, /*includeBool=*/true)) {
-      promoted_scalar_type = c10::get_default_dtype_as_scalartype();
-    }
-  }
-  TT_ASSIGN_OR_RETURN(mlir::ElementType computation_dtype,
-                      ToElementType(promoted_scalar_type));
-  mlir::ElementType output_dtype =
-      opts.result_dtype.value_or(computation_dtype);
-  TT_RETURN_IF_ERROR(ValidateNotLowPrecisionFloat(promoted_scalar_type));
-  TT_RETURN_IF_ERROR(
-      ValidateNotLowPrecisionFloat(ConvertTo<at::ScalarType>(output_dtype)));
-
-  auto op_builder = [ternary_op_builder = std::move(ternary_op_builder)](
-                        FixedSizeSpan<mlir::MlirOp, 3> inputs) {
-    auto& [self, other, third] = inputs;
-    return ternary_op_builder(self, other, third);
-  };
-  return DispatchOp<3>(
-      std::move(op_builder), {self_tpu, other_tpu, third_tpu},
       {.op_name = opts.op_name,
        .out_dtype = output_dtype,
        .out_dims = output_dims,
@@ -230,25 +200,28 @@ absl::Status DispatchBinaryOpOut(const at::Tensor& self,
       << "expected out tensor to be on " << GetPrivateUse1DeviceDebugName()
       << ", got " << out.device();
 
-  at::ScalarType expected_result_type;
-  if (opts.result_dtype.has_value()) {
-    expected_result_type = ConvertTo<at::ScalarType>(*opts.result_dtype);
-  } else {
-    expected_result_type = at::result_type(self, other);
-    // For operations that require floating-point computation (e.g., true
-    // division or ldexp), PyTorch promotes integral inputs to the default
-    // float dtype. The expected mathematical result dtype is therefore the
-    // default float dtype rather than the integral promoted type, ensuring
-    // ValidateOutDtype catches invalid downcasts to `out`.
-    if (opts.force_float_inputs &&
-        c10::isIntegralType(expected_result_type, /*includeBool=*/true)) {
-      expected_result_type = c10::get_default_dtype_as_scalartype();
-    }
+  at::ScalarType promoted_scalar_type = at::result_type(self, other);
+  // For operations that require floating-point computation (e.g., true
+  // division or ldexp), PyTorch promotes integral inputs to the default
+  // float dtype. The expected mathematical result dtype is therefore the
+  // default float dtype rather than the integral promoted type, ensuring
+  // ValidateOutDtype catches invalid downcasts to `out`.
+  if (opts.force_float_inputs &&
+      c10::isIntegralType(promoted_scalar_type, /*includeBool=*/true)) {
+    promoted_scalar_type = c10::get_default_dtype_as_scalartype();
+    TT_RETURN_IF_ERROR(opts.op_param_cache_keys.SetParam("default_dtype",
+                                                         promoted_scalar_type));
   }
+
+  const at::ScalarType expected_result_type =
+      opts.result_dtype.has_value()
+          ? ConvertTo<at::ScalarType>(*opts.result_dtype)
+          : promoted_scalar_type;
   TT_RETURN_IF_ERROR(
       ValidateOutDtype(out, expected_result_type, opts.allow_out_dtype_cast));
 
-  TT_ASSIGN_OR_RETURN(auto tpu_tensors, MoveCpuScalarsToTpu({self, other}));
+  TT_ASSIGN_OR_RETURN(auto tpu_tensors,
+                      MoveCpuScalarsToTpu({self, other}, promoted_scalar_type));
   const at::Tensor& self_tpu = tpu_tensors[0];
   const at::Tensor& other_tpu = tpu_tensors[1];
 
@@ -258,12 +231,6 @@ absl::Status DispatchBinaryOpOut(const at::Tensor& self,
   TT_RETURN_IF_ERROR(
       ValidateInPlaceBroadcast(out, {self_tpu, other_tpu}, output_dims));
 
-  at::ScalarType promoted_scalar_type = at::result_type(self_tpu, other_tpu);
-  if (opts.force_float_inputs) {
-    if (c10::isIntegralType(promoted_scalar_type, /*includeBool=*/true)) {
-      promoted_scalar_type = c10::get_default_dtype_as_scalartype();
-    }
-  }
   if (!opts.allow_low_precision_float) {
     TT_RETURN_IF_ERROR(ValidateNotLowPrecisionFloat(promoted_scalar_type));
   }
@@ -295,6 +262,30 @@ absl::Status DispatchBinaryOpOut(const at::Tensor& self,
 
 }  // namespace internal
 
+namespace {
+
+struct TernaryOpOptions {
+  // The op name for dispatching. If omitted, use the op name from the active
+  // TT_KERNEL() context.
+  std::optional<OpName> op_name = std::nullopt;
+  OpParamCacheKeys op_param_cache_keys;
+  OpSplitMode split_mode = OpSplitMode::kNone;
+  Indices donated_indices = {};
+  // Natural result dtype of the operation.
+  // When std::nullopt (default), the result dtype is dynamically inferred from
+  // input operands using standard PyTorch type promotion rules. When specified,
+  // overrides the expected mathematical result dtype before casting to `out`
+  // (validated via ValidateOutDtype).
+  std::optional<mlir::ElementType> result_dtype = std::nullopt;
+  // Whether the out-variant kernel allows casting the natural result dtype
+  // to a different output tensor dtype via c10::canCast (true for
+  // math/arithmetic ops, false for ops that enforce strict dtype matching).
+  bool allow_out_dtype_cast = true;
+};
+
+// Performs output tensor processing for Ternary operations on TPU.
+// Validates that `out` is on the TPU, enforces shape constraints for in-place
+// aliasing, and dispatches via DispatchOpOut.
 absl::Status TernaryOpOut(const at::Tensor& self, const at::Tensor& other,
                           const at::Tensor& third, at::Tensor& out,
                           MlirTernaryOpBuilder op_builder,
@@ -303,31 +294,23 @@ absl::Status TernaryOpOut(const at::Tensor& self, const at::Tensor& other,
       << "expected out tensor to be on " << GetPrivateUse1DeviceDebugName()
       << ", got " << out.device();
 
-  at::ScalarType expected_result_type;
-  if (opts.result_dtype.has_value()) {
-    expected_result_type = ConvertTo<at::ScalarType>(*opts.result_dtype);
-  } else {
-    // Current callers in this file (e.g., add and sub with alpha) pass an
-    // internal scalar alpha_tensor for `third`, so result_type(self, other)
-    // determines the natural result dtype. Callers implementing general ternary
-    // ops should pass opts.result_dtype explicitly if `third` affects
-    // promotion.
-    expected_result_type = at::result_type(self, other);
-    // For operations that require floating-point computation, PyTorch promotes
-    // integral inputs to the default float dtype. The expected mathematical
-    // result dtype is therefore the default float dtype rather than the
-    // integral promoted type, ensuring ValidateOutDtype catches invalid
-    // downcasts to `out`.
-    if (opts.force_float_inputs &&
-        c10::isIntegralType(expected_result_type, /*includeBool=*/true)) {
-      expected_result_type = c10::get_default_dtype_as_scalartype();
-    }
-  }
+  // Current callers in this file (e.g., add and sub with alpha) pass an
+  // internal scalar alpha_tensor for `third`, so result_type(self, other)
+  // determines the natural result dtype. Callers implementing general ternary
+  // ops should pass opts.result_dtype explicitly if `third` affects
+  // promotion.
+  const at::ScalarType promoted_scalar_type = at::result_type(self, other);
+
+  const at::ScalarType expected_result_type =
+      opts.result_dtype.has_value()
+          ? ConvertTo<at::ScalarType>(*opts.result_dtype)
+          : promoted_scalar_type;
   TT_RETURN_IF_ERROR(
       ValidateOutDtype(out, expected_result_type, opts.allow_out_dtype_cast));
 
   TT_ASSIGN_OR_RETURN(auto tpu_tensors,
-                      internal::MoveCpuScalarsToTpu({self, other, third}));
+                      internal::MoveCpuScalarsToTpu({self, other, third},
+                                                    promoted_scalar_type));
   const at::Tensor& self_tpu = tpu_tensors[0];
   const at::Tensor& other_tpu = tpu_tensors[1];
   const at::Tensor& third_tpu = tpu_tensors[2];
@@ -342,12 +325,6 @@ absl::Status TernaryOpOut(const at::Tensor& self, const at::Tensor& other,
   TT_RETURN_IF_ERROR(ValidateNotLowPrecisionFloat(expected_result_type));
   TT_RETURN_IF_ERROR(ValidateNotLowPrecisionFloat(out));
 
-  at::ScalarType promoted_scalar_type = at::result_type(self_tpu, other_tpu);
-  if (opts.force_float_inputs) {
-    if (c10::isIntegralType(promoted_scalar_type, /*includeBool=*/true)) {
-      promoted_scalar_type = c10::get_default_dtype_as_scalartype();
-    }
-  }
   TT_ASSIGN_OR_RETURN(mlir::ElementType promoted_dtype,
                       internal::ToElementType(promoted_scalar_type));
   TT_ASSIGN_OR_RETURN(mlir::ElementType computation_dtype,
@@ -370,8 +347,6 @@ absl::Status TernaryOpOut(const at::Tensor& self, const at::Tensor& other,
        .split_mode = opts.split_mode,
        .donated_indices = std::move(opts.donated_indices)});
 }
-
-namespace {
 
 // PyTorch operations that take an `alpha` scalar only support real
 // datatypes (Integer, Floating Point, or Boolean). We reject complex scalars
@@ -450,39 +425,7 @@ absl::StatusOr<mlir::MlirOp> BuildAlphaAddReluShlo(mlir::MlirOp self_op,
 struct DivOpOptions {
   MlirBinaryOpBuilder op_builder;
   OpParamCacheKeys op_param_cache_keys;
-  std::optional<mlir::ElementType> result_dtype = std::nullopt;
 };
-
-template <typename OtherType>
-absl::StatusOr<DivOpOptions> GetDivOpOptionsNoMode(const at::Tensor& self,
-                                                   const OtherType& other) {
-  ABSL_VLOG(1) << "[GetDivOpOptionsNoMode]";
-  // Capture the default dtype at **dispatch** time, not **compile** time,
-  // and convert to XLA and MLIR types.
-  at::ScalarType default_aten_type = c10::get_default_dtype_as_scalartype();
-  TT_ASSIGN_OR_RETURN(auto default_dtype,
-                      ConvertTo<mlir::ElementType>(default_aten_type));
-
-  auto op_builder = [default_dtype](
-                        mlir::MlirOp self_op,
-                        mlir::MlirOp other_op) -> absl::StatusOr<mlir::MlirOp> {
-    // Convert integer and booleans to torch's default scalar type.
-    TT_ASSIGN_OR_RETURN((auto [promoted_self_op, promoted_other_op]),
-                        ConvertIfIntegers(self_op, other_op, default_dtype));
-    return BuildDivShlo(promoted_self_op, promoted_other_op);
-  };
-
-  // Integer and booleans will be converted to torch's default scalar type.
-  if (c10::isIntegralType(self.scalar_type(), /*includeBool=*/true) &&
-      c10::isIntegralType(GetScalarType(other), /*includeBool=*/true)) {
-    return DivOpOptions{.op_builder = std::move(op_builder),
-                        .op_param_cache_keys = OpParamCacheKeys::Empty(),
-                        .result_dtype = default_dtype};
-  }
-
-  return DivOpOptions{.op_builder = std::move(op_builder),
-                      .op_param_cache_keys = OpParamCacheKeys::Empty()};
-}
 
 absl::StatusOr<DivOpOptions> GetDivOpOptionsTruncMode() {
   ABSL_VLOG(1) << "[GetDivOpOptionsTruncMode]";
@@ -572,19 +515,15 @@ absl::StatusOr<DivOpOptions> GetDivOpOptionsFloorMode() {
 // https://docs.pytorch.org/docs/stable/generated/torch.div.html
 //
 // Args:
-//  self: The dividend tensor.
-//  other: The divisor tensor or scalar.
 //  mode: The division mode. Can be "trunc", "floor", or std::nullopt.
 //
 // Returns:
-//  A DivOpOptions struct containing the operator builder, cache keys, and
-//  output dtype override.
-template <typename OtherType>
+//  A DivOpOptions struct containing the operator builder and cache keys.
 absl::StatusOr<DivOpOptions> GetDivOpBuilder(
-    const at::Tensor& self, const OtherType& other,
     std::optional<std::string_view> mode = {}) {
   if (!mode.has_value()) {
-    return GetDivOpOptionsNoMode(self, other);
+    return DivOpOptions{.op_builder = BuildDivShlo,
+                        .op_param_cache_keys = OpParamCacheKeys::Empty()};
   }
   if (mode.value() == "trunc") {
     return GetDivOpOptionsTruncMode();
@@ -846,8 +785,9 @@ absl::Status SubHelperOut(const at::Tensor& a, const at::Tensor& b,
                        {.op_param_cache_keys = std::move(param_keys)});
   }
 
-  TT_ASSIGN_OR_RETURN(const at::Tensor alpha_tensor,
-                      promoted_alpha.GetTensor(promoted_scalar_type));
+  TT_ASSIGN_OR_RETURN(
+      const at::Tensor alpha_tensor,
+      promoted_alpha.GetTensor(InferComputationDtype(promoted_scalar_type)));
 
   auto op_builder = [](mlir::MlirOp a_op, mlir::MlirOp b_op,
                        mlir::MlirOp alpha_op) -> absl::StatusOr<mlir::MlirOp> {
@@ -878,8 +818,9 @@ absl::StatusOr<at::Tensor> AddReluScalarHelper(
     return out;
   }
 
-  TT_ASSIGN_OR_RETURN(const at::Tensor alpha_tensor,
-                      promoted_alpha.GetTensor(promoted_scalar_type));
+  TT_ASSIGN_OR_RETURN(
+      const at::Tensor alpha_tensor,
+      promoted_alpha.GetTensor(InferComputationDtype(promoted_scalar_type)));
 
   TT_RETURN_IF_ERROR(
       TernaryOpOut(self, other_tensor, alpha_tensor, out, BuildAlphaAddReluShlo,
@@ -889,11 +830,11 @@ absl::StatusOr<at::Tensor> AddReluScalarHelper(
 
 absl::Status DivOutMode(const at::Tensor& self, const at::Tensor& other,
                         std::optional<std::string_view> mode, at::Tensor& out) {
-  TT_ASSIGN_OR_RETURN(auto div_opts, GetDivOpBuilder(self, other, mode));
+  TT_ASSIGN_OR_RETURN(auto div_opts, GetDivOpBuilder(mode));
   return BinaryOpOut(
       self, other, out, std::move(div_opts.op_builder),
-      {.op_param_cache_keys = std::move(div_opts.op_param_cache_keys),
-       .result_dtype = div_opts.result_dtype});
+      {.force_float_inputs = !mode.has_value(),
+       .op_param_cache_keys = std::move(div_opts.op_param_cache_keys)});
 }
 
 absl::Status BitwiseLeftShiftTensor(
@@ -1149,7 +1090,8 @@ at::Tensor& AtenAddOut(const at::Tensor& self, const at::Tensor& other,
   auto promoted_alpha = PromoteScalar(alpha).AvoidPromoting(ScalarValue::kOne);
   TT_KERNEL(OpName::kAddOut, param_keys, (self, other, promoted_alpha, out), {
     const at::ScalarType promoted_scalar_type = at::result_type(self, other);
-    const at::ScalarType opmath_type = at::toOpMathType(promoted_scalar_type);
+    const at::ScalarType opmath_type =
+        InferComputationDtype(promoted_scalar_type);
     TT_THROW_IF_ERROR(
         ValidateAddAlphaInputs(promoted_scalar_type, alpha, opmath_type));
 
@@ -1198,7 +1140,8 @@ at::Tensor& AtenAddReluOut(const at::Tensor& self, const at::Tensor& other,
         }
 
         TT_ASSIGN_OR_THROW(const at::Tensor alpha_tensor,
-                           promoted_alpha.GetTensor(promoted_scalar_type));
+                           promoted_alpha.GetTensor(
+                               InferComputationDtype(promoted_scalar_type)));
 
         TT_THROW_IF_ERROR(
             TernaryOpOut(self, other, alpha_tensor, out, BuildAlphaAddReluShlo,
@@ -1249,8 +1192,9 @@ at::Tensor AtenAddReluTensor(const at::Tensor& self, const at::Tensor& other,
       return out;
     }
 
-    TT_ASSIGN_OR_THROW(const at::Tensor alpha_tensor,
-                       promoted_alpha.GetTensor(promoted_scalar_type));
+    TT_ASSIGN_OR_THROW(
+        const at::Tensor alpha_tensor,
+        promoted_alpha.GetTensor(InferComputationDtype(promoted_scalar_type)));
 
     TT_THROW_IF_ERROR(
         TernaryOpOut(self, other, alpha_tensor, out, BuildAlphaAddReluShlo,
@@ -1293,7 +1237,8 @@ at::Tensor& AtenAddRelu_Tensor(at::Tensor& self, const at::Tensor& other,
         }
 
         TT_ASSIGN_OR_THROW(const at::Tensor alpha_tensor,
-                           promoted_alpha.GetTensor(promoted_scalar_type));
+                           promoted_alpha.GetTensor(
+                               InferComputationDtype(promoted_scalar_type)));
         TT_THROW_IF_ERROR(
             TernaryOpOut(self, other, alpha_tensor, self, BuildAlphaAddReluShlo,
                          {.op_param_cache_keys = std::move(param_keys)}));

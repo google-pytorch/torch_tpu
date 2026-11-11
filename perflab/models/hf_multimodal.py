@@ -23,6 +23,7 @@ from perflab import model_helpers
 from perflab import registry as registry_lib
 from perflab import step_lib
 from perflab import torch_device_ops
+from perflab import workload as workload_lib
 
 
 def _load_hf_vlm(
@@ -69,6 +70,8 @@ def _load_hf_vlm(
 @registry_lib.register_benchmark(
     stepper=step_lib.StepperType.FORWARD,
     presubmit=registry_lib.PresubmitPolicy.RUN,
+    # The image alone takes 576 tokens.
+    workload=registry_lib.scoped_workload(full=workload_lib.Workload(1, 1024)),
 )
 def llava_1_5_7b_forward(ctx: context_lib.Context):
   """Benchmark factory for LLaVA-1.5-7B (liuhaotian/llava-v1.5-7b) forward."""
@@ -91,14 +94,12 @@ def llava_1_5_7b_forward(ctx: context_lib.Context):
       vision_config.num_hidden_layers = 2
     return config
 
-  batch_size = 1
-  # The image alone takes 576 tokens.
-  seq_len = 1024
+  workload = ctx.require_workload()
   model, inputs = _load_hf_vlm(
       ctx,
       "liuhaotian/llava-v1.5-7b",
-      batch_size=batch_size,
-      seq_len=seq_len,
+      batch_size=workload.batch_size,
+      seq_len=workload.require_seq_len(),
       modify_config_hook=_modify_config_hook,
   )
   return model, (), inputs
@@ -112,15 +113,18 @@ def llava_1_5_7b_forward(ctx: context_lib.Context):
         " smaller memory, and its cross-attention layer indices prevent"
         " truncating it."
     ),
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(1, 512),
+        presubmit=workload_lib.Workload(
+            model_helpers.SMOKE_BATCH_SIZE, model_helpers.SMOKE_SEQ_LEN
+        ),
+    ),
 )
 def mllama_11b_forward(ctx: context_lib.Context):
   """Benchmark factory for Llama-3.2-11B-Vision (mLlama) forward."""
-  if model_helpers.is_presubmit_smoke(ctx):
-    batch_size = model_helpers.SMOKE_BATCH_SIZE
-    seq_len = model_helpers.SMOKE_SEQ_LEN
-  else:
-    batch_size = 1
-    seq_len = 512
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
   model, inputs = _load_hf_vlm(
       ctx,
       "meta-llama/Llama-3.2-11B-Vision",

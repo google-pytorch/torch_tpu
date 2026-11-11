@@ -914,5 +914,16 @@ TEST(DecomposeIntoViewSequence, EqualSizeRealViewBitcastsOnlyView) {
       << ToString(sequence);
 }
 
+TEST(DecomposeIntoViewSequence, RemoveExtraDimWithBitcast) {
+  Dimensions base_shape = {8};
+  mlir::ElementType base_dtype = mlir::ElementType::PRED;
+  StridedLayout view_layout = {
+      .strided_dims = {{.size = 2, .stride = 2}},
+      .storage_offset = 0,
+  };
+  mlir::ElementType view_dtype = mlir::ElementType::UI8;
+  DecompositionTest(base_shape, view_layout, base_dtype, view_dtype);
+}
+
 }  // namespace
 }  // namespace torch_tpu

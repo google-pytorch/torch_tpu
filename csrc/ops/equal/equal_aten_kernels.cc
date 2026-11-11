@@ -16,7 +16,6 @@
 
 #include "csrc/ops/equal/equal_aten_kernels.h"
 
-#include <numeric>
 #include <utility>
 
 #include "ATen/core/TensorBody.h"
@@ -65,9 +64,7 @@ absl::StatusOr<mlir::MlirOp> BuildEqualShlo(mlir::MlirOp self_input,
       self_input, other_input, mlir::stablehlo::ComparisonDirection::EQ);
 
   // Reduce the comparison result to a scalar
-  const auto rank = GetTensorTypeOrDie(self_input).getRank();
-  Dimensions dims(rank);
-  std::iota(dims.begin(), dims.end(), 0);
+  const Dimensions dims = GetAllDimensions(self_input);
 
   return mlir::stablehlo::Reduce(
       builder, {compare_op}, {init_val},
@@ -80,13 +77,13 @@ absl::StatusOr<mlir::MlirOp> BuildEqualShlo(mlir::MlirOp self_input,
 }  // namespace
 
 bool AtenEqual(const at::Tensor& self, const at::Tensor& other) {
-  if (self.sizes() != other.sizes()) {
-    return false;
-  }
-
-  bool result_scalar = false;
-
   TT_KERNEL(OpName::kEqual, param_keys, (self, other), {
+    TT_THROW_IF_ERROR(GetBaseBuffer(self).status());
+    TT_THROW_IF_ERROR(GetBaseBuffer(other).status());
+    if (self.sizes() != other.sizes()) {
+      return false;
+    }
+
     TT_ASSIGN_OR_THROW(
         const auto promoted_dtype,
         ConvertTo<mlir::ElementType>(at::result_type(self, other)));
@@ -102,16 +99,16 @@ bool AtenEqual(const at::Tensor& self, const at::Tensor& other) {
                        .out_dims = {},
                        .op_param_cache_keys = std::move(param_keys)}));
 
-    auto result = MakeTensor(result_buf);
+    auto result = MakeTensor(std::move(result_buf));
     TT_ASSIGN_OR_THROW(
         auto materialized_result_buf,
         MaterializeAndReturn(result, MaterializationReason::kScalarConversion));
+    bool result_scalar = false;
     TT_THROW_IF_ERROR(CopyDeviceBufferRefToCpuPtr(
         materialized_result_buf, &result_scalar,
         GetTransferSyncMode(/*non_blocking=*/false)));
+    return result_scalar;
   });
-
-  return result_scalar;
 }
 
 }  // namespace torch_tpu

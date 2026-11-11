@@ -17,7 +17,6 @@
 #ifndef TORCH_TPU_CSRC_EAGER_MATERIALIZE_H_
 #define TORCH_TPU_CSRC_EAGER_MATERIALIZE_H_
 
-#include <memory>
 #include <string_view>
 #include <vector>
 
@@ -32,7 +31,6 @@
 #include "csrc/eager/events_queue.h"
 #include "csrc/eager/split_traversal.h"
 #include "csrc/eager/structured_log_buffer.h"
-#include "xla/future.h"
 
 // When an aten op is dispatched, we always create a DeviceBufferList to contain
 // the result. This DeviceBufferList will contain a DeferredOp, which describes
@@ -51,34 +49,15 @@
 
 namespace torch_tpu {
 
-// Controls how long a materialization operation will block the calling thread.
-enum class MaterializationBlockMode {
-  // The calling thread will block until the materialization graph has been
-  // created and enqueued, but not until it is completed.
-  // This means that the calling thread and the background thread will not run
-  // concurrently, which can be used to avoid some race conditions, or improve
-  // error reporting.
-  kBlockUntilStarted,
-  // The calling thread will return immediately after scheduling the
-  // materialization task. This means that materialization targets will not
-  // immediately be set to the materializing state, and may resolve to either
-  // a materialized result or an error at a later time.
-  kNonBlocking,
-};
-
 // Executes all deferred nodes in the list, and updates them in place.  No-op
 // for nodes that are already materialized.
 // Optional parameter mode can be set to false to avoid splitting the op graph
 // traversal and, hence, compile it as a whole. Returns an error if any of the
 // nodes are placeholder buffers, or if any leaf input in the traversed graph is
 // a placeholder.
-// Optional parameter block_mode controls if the materialization will block the
-// calling thread, and if so, for how long.
 absl::Status Materialize(absl::Span<const SharedDeviceBufferList> nodes,
                          MaterializationReason reason,
-                         GraphSplitMode mode = GraphSplitMode::kSplitGraph,
-                         MaterializationBlockMode block_mode =
-                             MaterializationBlockMode::kBlockUntilStarted);
+                         GraphSplitMode mode = GraphSplitMode::kSplitGraph);
 
 // Materializes all of the buffers and connected leaf nodes in-place.
 // This materializes all DeviceBufferLists referenced which are not already
@@ -88,28 +67,20 @@ absl::Status Materialize(absl::Span<const DeviceBufferRef> buffer_refs,
                          MaterializationReason reason,
                          GraphSplitMode mode = GraphSplitMode::kSplitGraph);
 
-absl::Status Materialize(absl::Span<const DeviceBufferRef> buffer_refs,
-                         MaterializationReason reason, GraphSplitMode mode,
-                         MaterializationBlockMode block_mode);
-
 // Materializes the given node in-place. Delegates to the span overload.
 inline absl::Status Materialize(
     const SharedDeviceBufferList& node, MaterializationReason reason,
-    GraphSplitMode mode = GraphSplitMode::kSplitGraph,
-    MaterializationBlockMode block_mode =
-        MaterializationBlockMode::kBlockUntilStarted) {
+    GraphSplitMode mode = GraphSplitMode::kSplitGraph) {
   return Materialize(absl::Span<const SharedDeviceBufferList>(&node, 1), reason,
-                     mode, block_mode);
+                     mode);
 }
 
 // Materializes the given buffer in-place. Delegates to the span overload.
 inline absl::Status Materialize(
     const DeviceBufferRef& buffer_ref, MaterializationReason reason,
-    GraphSplitMode mode = GraphSplitMode::kSplitGraph,
-    MaterializationBlockMode block_mode =
-        MaterializationBlockMode::kBlockUntilStarted) {
+    GraphSplitMode mode = GraphSplitMode::kSplitGraph) {
   return Materialize(absl::Span<const DeviceBufferRef>(&buffer_ref, 1), reason,
-                     mode, block_mode);
+                     mode);
 }
 
 // Enqueues an executable for materialization.
@@ -131,7 +102,7 @@ void ShutDownMaterializationState();
 // and all work on the stream has been enqueued for materialization, the
 // snapshot is returned and can be queried or awaited to determine when the
 // materialization is complete.
-xla::Future<std::shared_ptr<EventSnapshot>> MaterializeStream(
+absl::StatusOr<EventSnapshot> MaterializeStream(
     c10::DeviceIndex device_index, c10::StreamId stream_id,
     MaterializationReason reason,
     GraphSplitMode mode = GraphSplitMode::kSplitGraph,
@@ -142,7 +113,7 @@ xla::Future<std::shared_ptr<EventSnapshot>> MaterializeStream(
 // and all work on the stream has been enqueued for materialization, the
 // snapshot is returned and can be queried or awaited to determine when the
 // materialization is complete.
-xla::Future<std::shared_ptr<EventSnapshot>> MaterializeCurrentStream(
+absl::StatusOr<EventSnapshot> MaterializeCurrentStream(
     MaterializationReason reason,
     GraphSplitMode mode = GraphSplitMode::kSplitGraph,
     absl::Span<const SharedDeviceBufferList> must_materialize = {});
@@ -152,18 +123,18 @@ xla::Future<std::shared_ptr<EventSnapshot>> MaterializeCurrentStream(
 // and all work on the device has been enqueued for materialization, one
 // snapshot is returned for each stream on the device, and each stream can be
 // queried or awaited to determine when the materialization is complete.
-std::vector<xla::Future<std::shared_ptr<EventSnapshot>>> MaterializeDevice(
+absl::StatusOr<std::vector<EventSnapshot>> MaterializeDevice(
     c10::DeviceIndex device_index, MaterializationReason reason,
     GraphSplitMode mode = GraphSplitMode::kSplitGraph,
     absl::Span<const SharedDeviceBufferList> must_materialize = {});
 
-void EagerlyExecuteStream(
+absl::Status EagerlyExecuteStream(
     c10::DeviceIndex device_index, c10::StreamId stream_id,
     MaterializationReason reason,
     GraphSplitMode mode = GraphSplitMode::kSplitGraph,
     absl::Span<const SharedDeviceBufferList> must_materialize = {});
 
-void EagerlyExecuteCurrentStream(
+absl::Status EagerlyExecuteCurrentStream(
     MaterializationReason reason,
     GraphSplitMode mode = GraphSplitMode::kSplitGraph,
     absl::Span<const SharedDeviceBufferList> must_materialize = {});

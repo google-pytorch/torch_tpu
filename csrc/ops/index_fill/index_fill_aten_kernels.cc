@@ -104,7 +104,7 @@ absl::StatusOr<mlir::MlirOp> BuildIndexFillShlo(mlir::MlirOp self, int64_t dim,
 absl::Status ValidateIndexFillInputs(const at::Tensor& self, int64_t dim,
                                      const at::Tensor& index) {
   TT_RET_CHECK(index.dim() <= 1, error::kInvalidArgument)
-      << "expected index to be at most 1-D, got " << index.dim() << "-D";
+      << "expected index to be at most 1D, got " << index.dim() << "D";
   TT_RET_CHECK(IsLong(index), error::kInvalidArgument)
       << "expected index dtype to be Long, got "
       << ToString(index.scalar_type());
@@ -157,8 +157,8 @@ at::Tensor& AtenIndexFillIntTensor_(at::Tensor& self, int64_t dim,
       OpName::kIndexFillIntTensor, param_keys, (self, dim, index, value), {
         TT_THROW_IF_ERROR(ValidateIndexFillInputs(self, dim, index));
         TT_CHECK_THROW(value.dim() == 0, error::kInvalidArgument)
-            << "expected value to be a 0-D tensor, got " << value.dim()
-            << "-D tensor";
+            << "expected value to be a 0D tensor, got " << value.dim()
+            << "D tensor";
 
         TT_THROW_IF_ERROR(
             DispatchIndexFill(self, dim, index, value, std::move(param_keys)));

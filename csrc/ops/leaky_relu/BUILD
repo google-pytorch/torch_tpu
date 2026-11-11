@@ -28,6 +28,7 @@ torch_tpu_cc_library(
     srcs = ["leaky_relu_aten_kernels.cc"],
     hdrs = ["leaky_relu_aten_kernels.h"],
     deps = [
+        "//csrc/common:aten_utils",
         "//csrc/common:cache_key",
         "//csrc/common:dtype",
         "//csrc/common:error_utils",

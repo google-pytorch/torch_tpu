@@ -25,17 +25,39 @@ import re
 
 from absl.testing import absltest
 from absl.testing import flagsaver
+from perflab import export as export_lib
 from perflab import measure as measure_lib
 from perflab import target as target_lib
+from perflab import workload as workload_lib
 from tests import repo_paths
 from tests import seed_test_utils
 
 _REGISTRY_PATH = "perflab/benchmark_registry.pbtxt"
 _TORCH_BENCHMARK_SCRIPT = "perflab/torch_benchmark_test.py"
+_LAYER_BENCHMARK_SCRIPT = "perflab/torch_layer_benchmark_test.py"
 _DISTRIBUTED_RUNNER_SCRIPT = "perflab/distributed_runner.py"
 
-# The OSS export adapter writes these next to the metrics of a benchmark case.
-_STATUS_METRICS = ("wall_time", "succeeded", "skipped")
+# The scripts that run every case on a single device, and the name pattern of
+# their shards, whose groups are the shard index and the number of shards.
+# Layer shards are not named `torch_*`: the MLCompass regression alerts select
+# benchmarks by that prefix.
+_SINGLE_DEVICE_SHARD_NAME_RES = {
+    _TORCH_BENCHMARK_SCRIPT: re.compile(
+        r"^torch_benchmarks_shard_(\d+)_of_(\d+)$"
+    ),
+    _LAYER_BENCHMARK_SCRIPT: re.compile(
+        r"^layer_benchmarks_shard_(\d+)_of_(\d+)$"
+    ),
+}
+
+# The OSS export adapter writes these next to the metrics of a benchmark case,
+# and a batch sweep case that runs out of memory exports `out_of_memory`.
+_STATUS_METRICS = (
+    "wall_time",
+    "succeeded",
+    "skipped",
+    export_lib.OUT_OF_MEMORY_METRIC,
+)
 
 # An example test name, under which the OSS export adapter writes the metrics
 # of a case: torch_tpu/<platform>/<benchmark>/<run mode>/<framework>.
@@ -51,7 +73,6 @@ _ACTION_INPUT_RE = re.compile(
     r'^\s+(?:workload_)?action_inputs \{ key: "(\w+)" value: "([^"]*)" \}$'
 )
 _ENVIRONMENT_RE = re.compile(r'^    id: "([^"]+)"$')
-_SHARD_NAME_RE = re.compile(r"^torch_benchmarks_shard_(\d+)_of_(\d+)$")
 
 
 @dataclasses.dataclass
@@ -157,6 +178,12 @@ def _exported_metrics(count_flops: bool = False) -> set[str]:
     metrics = measure_lib.measure(
         _Stepper(), _DeviceOps(), name="registry_test", enable_xprof=False
     )
+  # As the benchmark binaries set it for a case whose workload is known.
+  metrics.step_work = workload_lib.StepWork(
+      workload=workload_lib.Workload(batch_size=2, seq_len=8),
+      samples_per_step=2,
+      tokens_per_step=16,
+  )
   if count_flops:
     # As torch_benchmark_test sets them for a counted case on a device whose
     # peak FLOP/s are known.
@@ -181,7 +208,11 @@ class BenchmarkRegistryTest(seed_test_utils.RepeatableTest):
         self.assertTrue(benchmark.name)
         self.assertIn(
             benchmark.script,
-            (_TORCH_BENCHMARK_SCRIPT, _DISTRIBUTED_RUNNER_SCRIPT),
+            (
+                _TORCH_BENCHMARK_SCRIPT,
+                _LAYER_BENCHMARK_SCRIPT,
+                _DISTRIBUTED_RUNNER_SCRIPT,
+            ),
         )
         self.assertNotEmpty(benchmark.env_vars_hw)
         self.assertNotEmpty(benchmark.metric_patterns)
@@ -216,8 +247,23 @@ class BenchmarkRegistryTest(seed_test_utils.RepeatableTest):
               msg=f"no metric pattern of {benchmark.name} matches {tag}",
           )
 
-  def test_torch_benchmark_shards_cover_every_index_once(self):
-    shards = [b for b in self.benchmarks if b.script == _TORCH_BENCHMARK_SCRIPT]
+  def test_flops_metrics_are_ingested_only_when_counted(self):
+    flops_metrics = _exported_metrics(count_flops=True) - _exported_metrics()
+    for benchmark in self.benchmarks:
+      if _COUNT_FLOPS_FLAG in benchmark.runtime_flags:
+        continue
+      for metric in sorted(flops_metrics):
+        with self.subTest(benchmark=benchmark.name, metric=metric):
+          tag = f"{_TEST_NAME}/{metric}"
+          self.assertFalse(
+              any(re.match(p, tag) for p in benchmark.metric_patterns),
+              msg=f"{benchmark.name} does not count FLOPs but ingests {tag}",
+          )
+
+  def _assert_shards_cover_every_index_once(self, script: str):
+    """Checks that the shards of `script` run each of its cases exactly once."""
+    shard_name_re = _SINGLE_DEVICE_SHARD_NAME_RES[script]
+    shards = [b for b in self.benchmarks if b.script == script]
     self.assertNotEmpty(shards)
     total_shards = {int(b.env_vars["TEST_TOTAL_SHARDS"]) for b in shards}
     self.assertLen(total_shards, 1)
@@ -227,12 +273,18 @@ class BenchmarkRegistryTest(seed_test_utils.RepeatableTest):
     )
     for benchmark in shards:
       with self.subTest(benchmark=benchmark.name):
-        match = _SHARD_NAME_RE.match(benchmark.name)
+        match = shard_name_re.match(benchmark.name)
         self.assertIsNotNone(match)
         self.assertEqual(
             (int(match.group(1)), int(match.group(2))),
             (int(benchmark.env_vars["TEST_SHARD_INDEX"]), total),
         )
+
+  def test_torch_benchmark_shards_cover_every_index_once(self):
+    self._assert_shards_cover_every_index_once(_TORCH_BENCHMARK_SCRIPT)
+
+  def test_layer_benchmark_shards_cover_every_index_once(self):
+    self._assert_shards_cover_every_index_once(_LAYER_BENCHMARK_SCRIPT)
 
   def test_platforms_match_the_script(self):
     for benchmark in self.benchmarks:
@@ -241,10 +293,13 @@ class BenchmarkRegistryTest(seed_test_utils.RepeatableTest):
           platform = target_lib.Platform(env_vars["BENCHMARK_PLATFORM"])
           topology = target_lib.make_target(platform).platform_spec.topology
           num_devices = topology.nnodes * topology.nprocs_per_node
-          if benchmark.script == _TORCH_BENCHMARK_SCRIPT:
-            # torch_benchmark_test runs every case on a single device.
+          if benchmark.script in _SINGLE_DEVICE_SHARD_NAME_RES:
+            # torch_benchmark_test and torch_layer_benchmark_test run every
+            # case on a single device.
             self.assertEqual(num_devices, 1)
           else:
+            # distributed_runner, the only other script that
+            # test_registry_is_parsed allows, runs on several devices.
             self.assertGreater(num_devices, 1)
 
 

@@ -25,7 +25,6 @@
 #include <utility>
 #include <vector>
 
-#include "ATen/OpMathType.h"
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBase.h"
 #include "ATen/core/TensorBody.h"
@@ -41,6 +40,7 @@
 #include "c10/core/GradMode.h"
 #include "c10/core/SymIntArrayRef.h"
 #include "c10/core/impl/LocalDispatchKeySet.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/const_tensor.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
@@ -161,7 +161,7 @@ at::Tensor RmsNormComposite(const at::Tensor& input,
     dims_to_reduce.push_back(input_ndim - static_cast<int64_t>(i) - 1);
   }
 
-  const at::ScalarType opmath_type = at::toOpMathType(input.scalar_type());
+  const at::ScalarType opmath_type = InferComputationDtype(input.scalar_type());
   const at::Tensor upcasted_input = input.to(opmath_type);
   const double eps_val = GetRmsNormEpsilon(eps, input.scalar_type());
 
@@ -265,7 +265,7 @@ at::Tensor AtenRmsNorm(const at::Tensor& input,
                  .out_dims = output_dims,
                  .op_param_cache_keys = std::move(param_keys)})));
 
-        return MakeTensor(output_buf);
+        return MakeTensor(std::move(output_buf));
       });
 }
 
@@ -395,8 +395,8 @@ std::tuple<at::Tensor, at::Tensor> AtenFusedRmsNorm(
                  .out_dims_list = {output_dims, rstd_buffer_shape},
                  .op_param_cache_keys = std::move(param_keys)})));
 
-        return std::make_tuple(MakeTensor(output_bufs[0]),
-                               MakeTensor(output_bufs[1]));
+        return std::make_tuple(MakeTensor(std::move(output_bufs[0])),
+                               MakeTensor(std::move(output_bufs[1])));
       });
 }
 
@@ -529,8 +529,10 @@ std::tuple<at::Tensor, at::Tensor> AtenFusedRmsNormBackward(
                  .out_dims_list = {grad_in_dims, grad_w_dims},
                  .op_param_cache_keys = std::move(param_keys)})));
 
-        return {output_mask[0] ? MakeTensor(output_bufs[0]) : at::Tensor(),
-                output_mask[1] ? MakeTensor(output_bufs[1]) : at::Tensor()};
+        return {output_mask[0] ? MakeTensor(std::move(output_bufs[0]))
+                               : at::Tensor(),
+                output_mask[1] ? MakeTensor(std::move(output_bufs[1]))
+                               : at::Tensor()};
       });
 }
 

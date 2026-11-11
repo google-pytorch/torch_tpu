@@ -19,7 +19,6 @@
 #include <array>
 #include <cstdint>
 #include <limits>
-#include <numeric>
 #include <optional>
 #include <tuple>
 #include <utility>
@@ -87,18 +86,9 @@ absl::StatusOr<std::array<mlir::MlirOp, 2>> BuildMinMaxObservationShlo(
   const mlir::RankedTensorType self_type = GetTensorTypeOrDie(self_op);
   const int64_t rank = self_type.getRank();
 
-  Dimensions reduce_dims;
-  if (!per_row_fake_quant || rank == 0) {
-    reduce_dims.resize(rank);
-    std::iota(reduce_dims.begin(), reduce_dims.end(), 0);
-  } else {
-    reduce_dims.reserve(rank - 1);
-    for (int64_t d = 0; d < rank; ++d) {
-      if (d != norm_ch_axis) {
-        reduce_dims.push_back(d);
-      }
-    }
-  }
+  const Dimensions reduce_dims = !per_row_fake_quant || rank == 0
+                                     ? GetAllDimensions(self_op)
+                                     : GetBatchDimensions(rank, norm_ch_axis);
 
   // Compute min/max of the input tensor along the reduction dimensions.
   mlir::MlirOp curr_min = self_op;

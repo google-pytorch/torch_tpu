@@ -15,21 +15,22 @@
 # TODO: b/431034055 - add build-system when OSS build working
 [project]
 name = "torch_tpu"
-version = "0.2.1"
+version = "0.3.0"
 description = "TPU support for PyTorch"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 # LINT.IfChange(requires_python)
 requires-python = ">=3.11"
-# LINT.ThenChange(
-#     bazel/supported_python_versions.bzl:supported_python_versions,
-#     README.md:python_version_support,
-#     ../docs/developers/python_support_policy.md:python_version_support,
-# )
 
 dependencies = [
-    "torch>=2.11.0",
+    "torch>=2.11.0; python_version < '3.15'",
+    "torch>=2.15.0; python_version >= '3.15'",
+    # LINT.ThenChange(
+    #     bazel/supported_python_versions.bzl:supported_python_versions,
+    #     README.md:python_version_support,
+    #     ../docs/developers/python_support_policy.md:python_version_support,
+    # )
     "numpy>=2",
     "absl-py>=2",
     # DO NOT change the minimum libtpu version without approval from TorchTPU
@@ -43,6 +44,12 @@ dependencies = [
     "immutabledict>=4",
     "pyzmq>=27",
 ]
+
+[project.urls]
+Changelog = "https://github.com/google-pytorch/torch_tpu/releases"
+Documentation = "https://torchtpu.readthedocs.io/"
+Issues = "https://github.com/google-pytorch/torch_tpu/issues"
+Repository = "https://github.com/google-pytorch/torch_tpu"
 
 [project.optional-dependencies]
 dev = [
@@ -68,6 +75,7 @@ test = [
     "google-api-core>=2.18.0",
     "unittest-xml-reporting>=4",
     "cattrs>=24.1.0",
+    "dill>=0.4.1",
 ]
 
 benchmark = [
@@ -76,6 +84,7 @@ benchmark = [
     "flax>=0.12.3",
     "grain>=0.2.16",
     "llama-models>=0.3.0",
+    "optax>=0.2.8",
     "tensorflow-datasets>=4.9.9",
     "tensorboardx>=2.6",
     "timm>=1.0.26",
@@ -88,10 +97,13 @@ benchmark = [
 ]
 
 examples = [
-    "datasets>=4.8",
+    "datasets>=4.8; python_version < '3.15'",
+    "datasets>=5.0.0; python_version >= '3.15'",
+    "einops>=0.8.2",
     "pillow>=11",
     "tqdm>=4",
-    "huggingface-hub>=0.34",
+    "huggingface-hub>=0.34; python_version < '3.15'",
+    "huggingface-hub>=1.19.0; python_version >= '3.15'",
     "transformers>=5.16.1",
     "diffusers>=0.37",
     "peft>=0.18",
@@ -138,7 +150,7 @@ extend-exclude = [
 ]
 line-length = 80
 indent-width = 2
-target-version = "py314"
+target-version = "py311"
 
 [tool.ruff.lint]
 ignore = [
@@ -197,6 +209,12 @@ select = [
     "E228",
     # Pylint errors (`PLE`): enables real Pylint error detection (undefined variables, signature mismatches) without PLR refactor noise.
     "PLE",
+    # pyupgrade typing modernization (`UP006`, `UP007`, `UP035`, `UP042`, `UP045`): enforces PEP 585 built-in generics, PEP 604 unions, StrEnum, and non-deprecated typing imports.
+    "UP006",
+    "UP007",
+    "UP035",
+    "UP042",
+    "UP045",
 ]
 
 [tool.ruff.lint.pydocstyle]
@@ -216,3 +234,32 @@ max-returns = 6
 "**/tests/**" = ["D", "PLR0913", "PLR2004", "PLR6301"]
 "**/*_test.py" = ["D", "PLR0913", "PLR2004", "PLR6301"]
 "**/examples/**" = ["D", "PLR2004"]
+
+# LINT.IfChange(custom_linter_config)
+[tool.custom_linter]
+canonical_root = "torch_tpu/oss"
+rules_base_dir = "torch_tpu"
+rules_file = "ci/custom_lint_rules.METADATA"
+
+[tool.custom_linter.path_maps]
+"src/torch_tpu" = "torch_tpu"
+"LICENSE" = "torch_tpu/LICENSE"
+"build_files" = "torch_tpu/build_files"
+"csrc" = "torch_tpu/csrc"
+"docker" = "torch_tpu/docker"
+"docs" = "torch_tpu/docs"
+"examples" = "torch_tpu/examples"
+"perflab" = "torch_tpu/perflab"
+"tests" = "torch_tpu/tests"
+# Files that Copybara moves from oss/torch_tpu/ over their monorepo version.
+"csrc/common/contain.cc" = "torch_tpu/oss/torch_tpu/csrc/common/contain.cc"
+"csrc/common/environment.cc" = "torch_tpu/oss/torch_tpu/csrc/common/environment.cc"
+"csrc/common/environment_test.cc" = "torch_tpu/oss/torch_tpu/csrc/common/environment_test.cc"
+"src/torch_tpu/_internal/distributed/multiprocessing.py" = "torch_tpu/oss/torch_tpu/_internal/distributed/multiprocessing.py"
+"src/torch_tpu/_internal/benchmarks/export_adapter.py" = "torch_tpu/oss/torch_tpu/_internal/benchmarks/export_adapter.py"
+"src/torch_tpu/_internal/benchmarks/xprof_adapter.py" = "torch_tpu/oss/torch_tpu/_internal/benchmarks/xprof_adapter.py"
+# LINT.ThenChange(
+#     ../copy.bara.sky:custom_lint_rules_move,
+#     ../copy.bara.sky:src_torch_tpu_move,
+#     ../copy.bara.sky:oss_root_moves,
+# )

@@ -17,7 +17,6 @@
 #include "csrc/ops/copy_from/tpu_to_cpu.h"
 
 #include <cstdint>
-#include <memory>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -40,6 +39,7 @@
 #include "csrc/eager/current_stream.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/events_queue.h"
+#include "csrc/eager/host_allocator.h"
 #include "csrc/eager/materialize.h"
 #include "csrc/eager/split_traversal.h"
 #include "csrc/eager/structured_log_buffer.h"
@@ -129,8 +129,7 @@ absl::Status CopyDeviceBufferRefToCpuPtrImpl(
                                               dst_pinned_ptr)
            : DeviceToHostTransfer::IntoBytes(src_buffer_ref, dest_ptr));
   if (transfer_sync_mode == TransferSyncMode::kIsolated) {
-    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=not reachable from Python
-        src_buffer_ref.is_materializing(), error::kFailedPrecondition)
+    TT_RET_CHECK(src_buffer_ref.is_materializing(), error::kFailedPrecondition)
         << "cannot materialize a tensor during a stream-isolated copy, "
            "materialization requires an active stream";
     return transfer.Run().Await();
@@ -139,9 +138,8 @@ absl::Status CopyDeviceBufferRefToCpuPtrImpl(
   if (transfer_sync_mode == TransferSyncMode::kEagerNonBlocking) {
     // Start a background materialization of src_buffer_ref (unless it's already
     // started), then start a non-blocking copy and record it on the stream.
-    TT_RETURN_IF_ERROR(Materialize(
-        src_buffer_ref, MaterializationReason::kCpuTransfer,
-        GraphSplitMode::kSplitGraph, MaterializationBlockMode::kNonBlocking));
+    TT_RETURN_IF_ERROR(
+        Materialize(src_buffer_ref, MaterializationReason::kCpuTransfer));
     ScheduleDeviceToHostTransfer(std::move(transfer));
     return absl::OkStatus();
   }
@@ -158,9 +156,8 @@ absl::Status CopyDeviceBufferRefToCpuPtrImpl(
   } else {
     // The source buffer is on a different stream. Materialize that stream and
     // block until it completes, then block on the transfer afterward.
-    TT_RETURN_IF_ERROR(Materialize(
-        src_buffer_ref, MaterializationReason::kCpuTransfer,
-        GraphSplitMode::kSplitGraph, MaterializationBlockMode::kNonBlocking));
+    TT_RETURN_IF_ERROR(
+        Materialize(src_buffer_ref, MaterializationReason::kCpuTransfer));
     TT_RETURN_IF_ERROR(src_buffer_ref.Synchronize());
   }
 
@@ -169,13 +166,11 @@ absl::Status CopyDeviceBufferRefToCpuPtrImpl(
 
   // Then wait for the copy (and materialization, if on the same stream) to
   // complete, returning any errors.
-  xla::Future<std::shared_ptr<EventSnapshot>> snapshot_future =
+  TT_ASSIGN_OR_RETURN(
+      EventSnapshot snapshot,
       MaterializeCurrentStream(MaterializationReason::kCpuTransfer,
-                               GraphSplitMode::kSplitGraph, must_materialize);
-  TT_ASSIGN_OR_RETURN(std::shared_ptr<EventSnapshot> snapshot,
-                      snapshot_future.Await());
-  TT_RETURN_IF_ERROR(snapshot->Synchronize());
-  return SyncAndReturnStickyError();
+                               GraphSplitMode::kSplitGraph, must_materialize));
+  return snapshot.Synchronize();
 }
 
 // Materializes the base buffer of src, and copies it byte-for-byte into dest's
@@ -207,28 +202,6 @@ absl::Status CopyTpuToCpuWithTpuConversion(
          "tensor has "
       << src.dim() << " dimensions, destination tensor has " << dest.dim()
       << " dimensions";
-  // Ensure the base buffer will materialize before we do any further work on
-  // the current stream that depends on it.
-  // If the base buffer is on this stream, this is guaranteed; no explicit
-  // materialization is needed.
-  // But if it's on another stream, we need to force that stream to sync and
-  // execute the base before any views or copies we do here.
-  TT_ASSIGN_OR_RETURN(DeviceBufferRef src_base_buf, GetBaseBuffer(src));
-  const auto [curr_device_index, curr_stream_id] = GetCurrentDeviceStreamId();
-  if (!src_base_buf.is_materializing() &&
-      (src_base_buf.device_index() != curr_device_index ||
-       src_base_buf.stream_id() != curr_stream_id)) {
-    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=not reachable from Python
-        transfer_sync_mode != TransferSyncMode::kIsolated,
-        error::kFailedPrecondition)
-        << "cannot materialize a tensor during a stream-isolated copy, "
-           "materialization requires an active stream";
-    tsl::profiler::TraceMe trace_mat("CopyTpuToCpu::MaterializeBase");
-    TT_RETURN_IF_ERROR(
-        Materialize(src_base_buf, MaterializationReason::kCpuTransfer,
-                    GraphSplitMode::kSplitGraph,
-                    MaterializationBlockMode::kBlockUntilStarted));
-  }
 
   // Broadcast src to dest, if needed.
   // Transpose src and dest so that dest is contiguous, if needed.
@@ -343,6 +316,13 @@ absl::Status CopyTpuToCpu(const at::Tensor& src, const at::Tensor& dest,
       dest.unsafeGetTensorImpl()->set_storage_keep_dtype(empty_dest.storage());
     }
     return absl::OkStatus();
+  }
+  // Pageable memory cannot be held until the transfer lands, so the copy is
+  // synchronous on the host, as a cudaMemcpyAsync into pageable memory is.
+  if (transfer_sync_mode == TransferSyncMode::kEagerNonBlocking &&
+      (!dest.has_storage() ||
+       !IsTpuPinnedPtr(dest.storage().data_ptr().get()))) {
+    transfer_sync_mode = TransferSyncMode::kEagerBlocking;
   }
   TT_ASSIGN_OR_RETURN(DeviceBufferRef src_buf, GetBaseBuffer(src));
 

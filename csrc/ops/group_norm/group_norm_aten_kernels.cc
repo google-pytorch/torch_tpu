@@ -35,6 +35,7 @@
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
+#include "csrc/common/utils.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
@@ -93,12 +94,6 @@ absl::StatusOr<GroupNormBackwardShloResults> BuildGroupNormBackwardShlo(
     int64_t c, int64_t h_w, int64_t group, std::array<bool, 3> output_mask) {
   mlir::MlirBuilder& builder = input_op.getBuilder();
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input_op);
-  const mlir::Type elem_type = input_type.getElementType();
-  const mlir::Type weight_type =
-      weight_op.has_value()
-          ? GetTensorTypeOrDie(weight_op.value()).getElementType()
-          : elem_type;
-
   const mlir::ElementType input_elem_type = GetElementTypeOrDie(input_op);
   const mlir::ElementType weight_elem_type =
       weight_op.has_value() ? GetElementTypeOrDie(weight_op.value())
@@ -145,14 +140,14 @@ absl::StatusOr<GroupNormBackwardShloResults> BuildGroupNormBackwardShlo(
 
   // Initialize Outputs with Default Zeros
   mlir::MlirOp d_input_op = MakeConstantLike(input_op, 0.0);
-  mlir::MlirOp d_bias_op = MakeConstant(builder, 0.0, elem_type, {c});
-  // If weight exists, Dispatcher expects a [C] tensor.
+  mlir::MlirOp d_bias_op = MakeConstant(builder, 0.0, input_elem_type, {c});
+  // If output_mask[1] is set, Dispatcher expects a [C] tensor.
   // Else, Dispatcher expects a Scalar, but the shape is not important.
   mlir::MlirOp d_weight_op;
-  if (weight_op.has_value()) {
-    d_weight_op = MakeConstant(builder, 0.0, weight_type, {c});
+  if (output_mask[1]) {
+    d_weight_op = MakeConstant(builder, 0.0, weight_elem_type, {c});
   } else {
-    d_weight_op = MakeScalarConstant(builder, 0.0, weight_type);
+    d_weight_op = MakeScalarConstant(builder, 0.0, weight_elem_type);
   }
 
   // 2. Compute d_input_op
@@ -270,7 +265,7 @@ absl::StatusOr<GroupNormBackwardShloResults> BuildGroupNormBackwardShlo(
   }
 
   // 3. Compute d_weight_op
-  if (output_mask[1] && weight_comp.has_value()) {
+  if (output_mask[1]) {
     // All views are [N, G, CPG]
     // (ds.view - db.view * mean.unsqueeze) * rstd.unsqueeze
     Dimensions n_g_cpg_shape = {n, group, cpg};
@@ -351,8 +346,10 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenNativeGroupNormBackward(
           if (output_mask[0]) {
             d_input = at::zeros_like(input, input.options());
           }
-          if (output_mask[1] && weight.has_value() && weight->defined()) {
-            d_weight = at::zeros_like(*weight, weight->options());
+          if (output_mask[1]) {
+            d_weight = (weight.has_value() && weight->defined())
+                           ? at::zeros_like(*weight, weight->options())
+                           : at::zeros({c}, input.options());
           }
           if (output_mask[2]) {
             d_bias = at::zeros({c}, input.options());
@@ -371,7 +368,8 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenNativeGroupNormBackward(
               << "expected weight to have " << c << " elements"
               << ", got " << (weight ? weight->numel() : -1);
         }
-        Dimensions weight_grad_dims = has_weight ? Dimensions{c} : Dimensions();
+        Dimensions weight_grad_dims =
+            output_mask[1] ? Dimensions{c} : Dimensions();
         Dimensions bias_grad_dims = {c};
 
         mlir::ElementType weight_dtype = input_dtype;
@@ -419,11 +417,10 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenNativeGroupNormBackward(
                  .op_param_cache_keys = std::move(param_keys)})));
 
         // Return Results (handling masks and optional weight)
-        return {output_mask[0] ? MakeTensor(d_input_buf) : at::Tensor(),
-                (output_mask[1] && weight.has_value())
-                    ? MakeTensor(d_weight_buf)
-                    : at::Tensor(),
-                output_mask[2] ? MakeTensor(d_bias_buf) : at::Tensor()};
+        return {
+            output_mask[0] ? MakeTensor(std::move(d_input_buf)) : at::Tensor(),
+            output_mask[1] ? MakeTensor(std::move(d_weight_buf)) : at::Tensor(),
+            output_mask[2] ? MakeTensor(std::move(d_bias_buf)) : at::Tensor()};
       });
 }
 }  // namespace torch_tpu

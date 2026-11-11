@@ -104,7 +104,7 @@ def _resolve_runtime_object(target_name: str) -> Any | None:
   return None
 
 
-class Stage(str, enum.Enum):
+class Stage(enum.StrEnum):
   """Lifecycle stages for TorchTPU APIs."""
 
   INTERNAL = "Internal"
@@ -126,8 +126,8 @@ _GOOGLE3_SCAN_EXPOSED_INTERNAL_APIS_LABEL = (
 # The directories to scan, relative to the TorchTPU repository root. Keep in
 # sync with the `exposed_internal_apis_data` filegroup in BUILD.
 DEFAULT_SCAN_SUBDIRS: tuple[str, ...] = (
+    "docs",
     "docs/notebooks",
-    "docs/source",
     "examples",
 )
 
@@ -145,7 +145,6 @@ _TORCH_TPU_NAMESPACES: tuple[str, ...] = (
     "torch.tpu.",
     "torch_tpu.",
     "torch.ops.tpu.",
-    "torch.ops.torch_tpu.",
 )
 _ROOT_NAMESPACES: tuple[str, ...] = (
     "torch",
@@ -153,7 +152,6 @@ _ROOT_NAMESPACES: tuple[str, ...] = (
     "torch_tpu",
     "torch.ops",
     "torch.ops.tpu",
-    "torch.ops.torch_tpu",
 )
 
 # Internal implementation environment variables from csrc/common/env_vars.h
@@ -161,6 +159,7 @@ _INTERNAL_IMPLEMENTATION_ENV_VARS: frozenset[str] = frozenset({
     "ACCELERATOR_TYPE",
     "ALLOW_MULTIPLE_LIBTPU_LOAD",
     "CLOUD_TPU_TASK_ID",
+    "MEGASCALE_COORDINATOR_ADDRESS",
     "MEGASCALE_DEBUG_PORT",
     "MEGASCALE_PORT",
     "SKIP_MEGASCALE_PJRT_CLIENT",
@@ -172,6 +171,10 @@ _INTERNAL_IMPLEMENTATION_ENV_VARS: frozenset[str] = frozenset({
     "TPU_PROCESS_PORT",
     "TPU_VISIBLE_CHIPS",
 })
+
+# Cell magics whose body is shell, not Python. Jupytext generates them from
+# fenced `bash` and `sh` code blocks.
+_SHELL_CELL_MAGICS: frozenset[str] = frozenset({"%%bash", "%%sh", "%%shell"})
 
 
 def _is_torch_tpu_name(name: str) -> bool:
@@ -733,7 +736,11 @@ def scan_file(
         if not cell_text.strip():
           continue
 
-        if cell.get("cell_type") == "code":
+        first_token = cell_text.split(maxsplit=1)[0]
+        if (
+            cell.get("cell_type") == "code"
+            and first_token not in _SHELL_CELL_MAGICS
+        ):
           clean_lines = [
               line if not line.strip().startswith(("%", "!")) else f"# {line}"
               for line in cell_text.splitlines()

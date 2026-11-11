@@ -1,4 +1,4 @@
-<img src="docs/images/torchtpu_logo.avif" alt="TorchTPU Logo" style="width: 60%;">
+<img src="https://raw.githubusercontent.com/google-pytorch/torch_tpu/main/docs/images/torchtpu_logo.avif" alt="TorchTPU: PyTorch backend for Google Cloud TPUs" style="width: 60%;">
 
 ## Description
 
@@ -20,13 +20,13 @@ inference.
 ## User Guide and Interactive Notebooks
 
 A user guide is available at
-[https://torchtpu.readthedocs.io/](https://torchtpu.readthedocs.io/). This is a
-static version of the interactive notebooks. They are available in the docs
-folder.
+[https://torchtpu.readthedocs.io/](https://torchtpu.readthedocs.io/). The
+markdown sources for this documentation are available in the `docs/` directory.
+Jupyter notebook versions of these documents are available in the
+`docs/notebooks/` folder.
 
-The notebooks are Marimo (similar to Jupyter). They can be run with `marimo edit
-file.py` and then you can access them in your browser. You will need to be
-running this from a TPU VM, a v6e GCE instance is easiest.
+The notebooks can be opened in Colab. You will need to be running this from a
+TPU VM, a v6e GCE instance is easiest.
 
 ## Installation
 
@@ -36,7 +36,8 @@ The same instructions are available in the user guide linked above.
 
 TorchTPU's Python version support policy matches
 [PyTorch's Release Compatibility Matrix](https://github.com/pytorch/pytorch/blob/main/RELEASE.md#release-compatibility-matrix).
-Currently, **Python 3.11+** is supported. See the
+Currently, **Python 3.11–3.15** is supported (including free-threaded 3.14t and
+3.15t builds, with Python 3.15 requiring PyTorch >= 2.15). See the
 [Python Version Support Policy](docs/developers/python_support_policy.md) for
 more details.
 
@@ -62,12 +63,12 @@ source .venv/bin/activate
 
 ### Install via pip
 
-Install the latest public release
-([0.2.0 on PyPI](https://pypi.org/project/torch-tpu/0.2.0/)) (for `uv` prepend
-`uv` to all `pip` commands):
+Install the latest public release from
+[PyPI](https://pypi.org/project/torch-tpu/) (for `uv`, prepend `uv` to all `pip`
+commands):
 
 ```bash
-pip install torch_tpu==0.2.0 --extra-index-url https://download.pytorch.org/whl/cpu
+pip install torch_tpu --extra-index-url https://download.pytorch.org/whl/cpu
 ```
 
 ### Build from source
@@ -127,13 +128,7 @@ Some pointers to get you started:
 
 *   [PyTorch: Official PyTorch documentation](https://github.com/pytorch/pytorch)
 *   [Tutorials and examples: easy to understand PyTorch code using TorchTPU](https://torchtpu.readthedocs.io/)
-*   [Public APIs: the TorchTPU APIs that you can use](./docs/public_apis.md)
-
-## Dependencies
-
-The project uses Bazel for dependency management. Key Python dependencies are:
-
-TBD
+*   [Public APIs: the TorchTPU APIs that you can use](https://github.com/google-pytorch/torch_tpu/blob/main/docs/public_apis.md)
 
 ## Bazel setup
 
@@ -200,7 +195,8 @@ reruns will be incremental and cheap. If you have run `bazel build` recently,
 generated files already exist so you can pass `--no-build` to skip waiting for
 heavy builds (note that on a fresh workspace, skipping the build may prevent
 `clangd` from resolving generated files). See more options in the
-[script](tools/setup_clangd.py) file-level comments.
+[`tools/setup_clangd.py`](https://github.com/google-pytorch/torch_tpu/blob/main/tools/setup_clangd.py)
+file-level comments.
 
 Alternatively, you can invoke the script via `nox` (arguments after `--` are
 forwarded):
@@ -213,9 +209,9 @@ nox -s refresh_compile_commands -- //src/torch_tpu/ops/...
 ## Contributing
 
 We welcome contributions to the PyTorch on TPU project! Please see our
-[CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on how to contribute,
-including signing our Contributor License Agreement (CLA) and code review
-processes.
+[CONTRIBUTING.md](https://github.com/google-pytorch/torch_tpu/blob/main/CONTRIBUTING.md)
+for guidelines on how to contribute, including signing our Contributor License
+Agreement (CLA) and code review processes.
 
 ## Star History
 
@@ -230,4 +226,5 @@ processes.
 ## License
 
 This project is licensed under the Apache 2.0 License. See the
-[LICENSE](LICENSE) file for details.
+[LICENSE](https://github.com/google-pytorch/torch_tpu/blob/main/LICENSE) file
+for details.

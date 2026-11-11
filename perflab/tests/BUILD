@@ -23,6 +23,7 @@ load(
     "//build_files:build_defs.bzl",
     "internal_target",
     "torch_tpu_package_end",
+    "torch_tpu_py_library",
     "torch_tpu_py_test",
 )
 
@@ -42,11 +43,16 @@ torch_tpu_py_test(
     deps = [
         "//perflab:base_test",
         "//perflab:common",
+        "//perflab:device_ops",
+        "//perflab:discovery",
         "//perflab:export",
         "//perflab:flags",
         "//perflab:known_failures",
+        "//perflab:measure",
         "//perflab:metrics",
         "//perflab:mode",
+        "//perflab:registry",
+        "//perflab:step_lib",
         "//perflab:target",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:flagsaver",
@@ -61,12 +67,39 @@ torch_tpu_py_test(
     srcs = ["benchmark_registry_test.py"],
     data = ["//perflab:benchmark_registry.pbtxt"],
     deps = [
+        "//perflab:export",
         "//perflab:measure",
         "//perflab:target",
+        "//perflab:workload",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:flagsaver",
         "//src/torch_tpu",
         "//tests:repo_paths",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "batch_size_override_test",
+    srcs = ["batch_size_override_test.py"],
+    data = [
+        "//perflab/huggingface_transformers:model_configs_data",
+        "//shims/model_configs:google_model_configs_data",
+    ],
+    notest_oss = True,  # NOTEST_OSS_OK=builds models from the internal in-tree model configs, which OSS does not export
+    deps = [
+        "//perflab:common",
+        "//perflab:context",
+        "//perflab:discovery",
+        "//perflab:mode",
+        "//perflab:registry",
+        "//perflab:target",
+        "//perflab:workload",
+        "//perflab/models",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:flagsaver",
+        "//shims/absl_py/testing:parameterized",
+        "//src/torch_tpu",
         "//tests:seed_test_utils",
     ],
 )
@@ -112,6 +145,7 @@ torch_tpu_py_test(
     deps = [
         "//perflab:context",
         "//perflab:mode",
+        "//perflab:registry",
         "//perflab:target",
         "//perflab/models",
         "//shims/absl_py/testing:absltest",
@@ -127,6 +161,7 @@ torch_tpu_py_test(
     deps = [
         "//perflab:common",
         "//perflab:export",
+        "//perflab:known_failures",
         "//perflab:metrics",
         "//perflab:mode",
         "//perflab:target",
@@ -134,6 +169,15 @@ torch_tpu_py_test(
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/benchmarks:export_adapter",
         "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_library(
+    name = "fakes",
+    testonly = True,
+    srcs = ["fakes.py"],
+    deps = [
+        "@tsl//tsl/profiler/protobuf:xplane_proto_py_proto",
     ],
 )
 
@@ -184,6 +228,7 @@ torch_tpu_py_test(
         "//perflab:step_lib",
         "//perflab:target",
         "//perflab:torch_device_ops",
+        "//perflab:workload",
         "//perflab/steps",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
@@ -196,10 +241,14 @@ torch_tpu_py_test(
     name = "measure_test",
     srcs = ["measure_test.py"],
     deps = [
+        ":fakes",
+        "//perflab:device_utils",
         "//perflab:measure",
         "//perflab:metrics",
+        "//shims/absl_py/flags",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:flagsaver",
+        "//shims/absl_py/testing:parameterized",
         "//src/torch_tpu",
         "//tests:seed_test_utils",
     ],
@@ -260,8 +309,11 @@ torch_tpu_py_test(
     srcs = ["registry_test.py"],
     deps = [
         "//perflab:compile",
+        "//perflab:context",
         "//perflab:registry",
         "//perflab:step_lib",
+        "//perflab:target",
+        "//perflab:workload",
         "//shims/absl_py/testing:absltest",
         "//src/torch_tpu",
         "//tests:seed_test_utils",
@@ -373,6 +425,35 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "torch_base_test_test",
+    srcs = ["torch_base_test_test.py"],
+    tags = [
+        # perflab/torch_base_test.py depends on perflab/base_test.py, which
+        # matches *_test.py, so the wheel test site packages leave it out.
+        "wheel_test_excluded",
+    ],
+    deps = [
+        "//perflab:common",
+        "//perflab:context",
+        "//perflab:discovery",
+        "//perflab:export",
+        "//perflab:flags",
+        "//perflab:measure",
+        "//perflab:mode",
+        "//perflab:registry",
+        "//perflab:step_lib",
+        "//perflab:target",
+        "//perflab:torch_base_test",
+        "//perflab/steps",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:flagsaver",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
     name = "compile_test",
     srcs = ["compile_test.py"],
     deps = [
@@ -392,6 +473,7 @@ torch_tpu_py_test(
     deps = [
         "//perflab:context",
         "//perflab:target",
+        "//perflab:workload",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
         "//src/torch_tpu",
@@ -423,9 +505,25 @@ torch_tpu_py_test(
         "//perflab:registry",
         "//perflab:step_lib",
         "//perflab:target",
+        "//perflab:workload",
         "//shims/absl_py/flags",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:flagsaver",
+        "//src/torch_tpu",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "workload_test",
+    srcs = ["workload_test.py"],
+    deps = [
+        "//perflab:metrics",
+        "//perflab:step_lib",
+        "//perflab:workload",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//tests:seed_test_utils",
     ],
@@ -459,6 +557,63 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "layer_utils_test",
+    srcs = ["layer_utils_test.py"],
+    deps = [
+        "//perflab/layer_utils:builders",
+        "//perflab/layer_utils:configs",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "layer_registration_test",
+    srcs = ["layer_registration_test.py"],
+    deps = [
+        "//perflab:common",
+        "//perflab:compile",
+        "//perflab:context",
+        "//perflab:flags",
+        "//perflab:mode",
+        "//perflab:registry",
+        "//perflab:step_lib",
+        "//perflab:target",
+        "//perflab/layer_utils:builders",
+        "//perflab/layer_utils:configs",
+        "//perflab/layer_utils:registration",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "layers_contract_test",
+    srcs = ["layers_contract_test.py"],
+    deps = [
+        "//perflab:context",
+        "//perflab:discovery",
+        "//perflab:mode",
+        "//perflab:registry",
+        "//perflab:step_lib",
+        "//perflab:target",
+        "//perflab/layer_utils:builders",
+        "//perflab/layer_utils:configs",
+        "//perflab/layer_utils:registration",
+        "//perflab/layers",
+        "//perflab/models",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
     name = "distributed_runner_test",
     srcs = ["distributed_runner_test.py"],
     deps = [
@@ -474,6 +629,7 @@ torch_tpu_py_test(
         "//perflab:step_lib",
         "//perflab:target",
         "//perflab:torch_device_ops",
+        "//perflab:workload",
         "//perflab/steps",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
@@ -493,6 +649,20 @@ torch_tpu_py_test(
         "//perflab:registry",
         "//perflab:target",
         "//perflab/distributed_models:llama",
+        "//shims/absl_py/testing:absltest",
+        "//src/torch_tpu",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "distributed_qwen_test",
+    srcs = ["distributed_qwen_test.py"],
+    deps = [
+        "//perflab:context",
+        "//perflab:registry",
+        "//perflab:target",
+        "//perflab/distributed_models:qwen",
         "//shims/absl_py/testing:absltest",
         "//src/torch_tpu",
         "//tests:seed_test_utils",
@@ -553,7 +723,7 @@ internal_target(
     name = "distributed_synthetic_test",
     timeout = "long",
     srcs = ["distributed_synthetic_test.py"],
-    shard_count = 2,
+    shard_count = 3,
     tags = ["requires-mem:28g"],
     # Avoids TOO_MANY_INPUT_FILES from torchtitan's sources.
     use_precompile = False,

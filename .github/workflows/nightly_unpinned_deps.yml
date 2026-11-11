@@ -62,6 +62,7 @@ jobs:
           "3.12",
           "3.13",
           "3.14",
+          "3.15",
         ]
         job_info: [
           {
@@ -103,6 +104,12 @@ jobs:
 
       # Resolve unpinned/highest upper bounds dependencies. Update the existing
       # requirements.txt with the newly resolved dependencies.
+      # TODO(b/571957709): Remove --overrides requirements/overrides_3_15.txt
+      # once the Python 3.15 dependency overrides (tracked by
+      # ci/tools/check_dependency_caveats.py) are no longer required. Pass
+      # overrides_3_15.txt so Python 3.15 excludes packages without cp315
+      # wheels and all Python versions resolve torchax>=0.0.14.dev20261002
+      # alongside PyTorch >= 2.15.
       - name: Resolve Unpinned Dependencies
         env:
           PYTHON_VERSION: ${{ matrix.python_version }}
@@ -113,6 +120,7 @@ jobs:
             --python-version "${PYTHON_VERSION}" \
             --python-platform x86_64-manylinux_2_31 \
             --resolution highest \
+            --overrides requirements/overrides_3_15.txt \
             --generate-hashes \
             --output-file "requirements/requirements_${PYTHON_VERSION_UND}.txt"
 
@@ -143,9 +151,21 @@ jobs:
             --run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh" \
             ${TEST_TARGETS}
 
+      # Alert when upstream packages start publishing wheels for newer Python
+      # versions so we can remove the corresponding dependency workarounds.
+      # Runs after the test steps so a Newly Resolved caveat does not abort test
+      # execution before we see whether the tests pass.
+      - name: Check Dependency Caveats
+        if: ${{ !cancelled() }}
+        env:
+          PYTHON_VERSION: ${{ matrix.python_version }}
+        run: |
+          ./ci/tools/check_dependency_caveats.py \
+            --python-version "${PYTHON_VERSION}"
+
       # Upload test logs on failure for triage.
       - name: Upload Test Logs on Failure
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         if: failure()
         with:
           name: bazel-testlogs-${{ matrix.job_info.runner }}-${{ matrix.python_version }}

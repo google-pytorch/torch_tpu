@@ -19,7 +19,6 @@
 
 // Utilities for reporting errors in C++ code.
 
-#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -104,17 +103,22 @@ inline constexpr absl::StatusCode kPythonRuntimeError =
 
 }  // namespace error
 
-// Enables error message format checks for internal builds.
+// Returns true if error message format checks are enabled.
 //
 // When this is true, TorchTPU will hard crash if any error is raised with an
 // error message that doesn't conform to the TorchTPU error handling guidelines.
 // This should help us maintain the quality and consistency of error messages in
 // the project.
 //
-// This is a constexpr bool rather than a preprocessor macro so that the error
-// format check code is always compiled (and thus kept compilable), even in
-// builds where it's disabled (e.g. the OSS build).
-inline constexpr bool kCheckErrorFormat = TT_IS_INTERNAL_TORCH_TPU;
+// The checks are always enabled in internal builds. In other builds (e.g. the
+// OSS build), they are enabled iff the TORCH_TPU_INTERNAL_CHECK_ERROR_FORMAT
+// env var is set to true (e.g. by error coverage runs and error format unit
+// tests). This function is memoized, so calling it is cheap and will always
+// return the same value even if the env var is changed.
+//
+// The error format check code is always compiled (and thus kept compilable),
+// even in builds where it's disabled.
+[[nodiscard]] bool ShouldCheckErrorFormat();
 
 // Sentinel string for XLA compiler errors.
 //
@@ -183,56 +187,6 @@ void CheckDeviceIsTpu(c10::optional<at::Device> device_opt,
 absl::Status TranslateXlaTensorOomError(absl::Status status,
                                         std::string_view dtype,
                                         absl::Span<const int64_t> dims);
-
-// Sets the global sticky error state. Subsequent ops should fail if this is
-// set.
-void SetStickyError(absl::Status status);
-
-// Gets the global sticky error state.
-absl::Status GetStickyError();
-
-namespace internal {
-extern std::atomic<bool> g_has_sticky_error;
-}  // namespace internal
-
-// Returns true if the global sticky error state is set.
-[[nodiscard]] inline bool HasStickyError() {
-  // This check runs on the critical path of every op dispatch. We use
-  // std::memory_order_relaxed because HasStickyError() acts only as a fast
-  // boolean gate and does not read any error payload:
-  // 1. In the common case (no error), no shared data is read, avoiding any need
-  //    for acquire semantics or memory fences.
-  // 2. In the rare case of an assertion failure, the caller immediately enters
-  //    the slow path via GetStickyError(), which acquires g_sticky_error_mutex.
-  //    Acquiring the mutex establishes full acquire-release synchronization
-  //    with the mutex release in SetStickyError(), guaranteeing that the
-  //    complete absl::Status payload is observed.
-  // 3. g_has_sticky_error is a monotonic latch (false -> true); hardware cache
-  //    coherence propagates the write to all cores within nanoseconds without
-  //    requiring pipeline-stalling load-acquire instructions (e.g., `ldar` on
-  //    ARM).
-  return internal::g_has_sticky_error.load(std::memory_order_relaxed);
-}
-
-// Clears the global sticky error state. Used for testing.
-void ClearStickyError();
-
-// Increments the count of pending asynchronous assertion checks.
-void IncrementPendingAssertionChecks();
-
-// Decrements the count of pending asynchronous assertion checks.
-void DecrementPendingAssertionChecks();
-
-// Blocks until all pending asynchronous assertion checks have completed.
-void WaitForPendingAssertionChecks();
-
-// Blocks until all pending asynchronous assertion checks have completed, and
-// throws a C++ exception if any sticky error has been recorded.
-void SyncAndCheckStickyError();
-
-// Blocks until all pending asynchronous assertion checks have completed, and
-// returns the error status if any was recorded.
-absl::Status SyncAndReturnStickyError();
 
 // Adapts an external error from OpenXLA to comply to TorchTPU error guidelines.
 //

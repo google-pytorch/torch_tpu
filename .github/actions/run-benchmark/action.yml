@@ -283,6 +283,11 @@ runs:
           INSTALL_ARGS+=(--index-strategy unsafe-best-match)
         fi
 
+        OVERRIDES_FILE="$BENCHMARK_REPO_ROOT/requirements/overrides_${BENCHMARK_PYTHON_VERSION//./_}.txt"
+        if [[ -f "$OVERRIDES_FILE" ]]; then
+          INSTALL_ARGS+=(--overrides "$OVERRIDES_FILE")
+        fi
+
         SPECS=("$BENCHMARK_WHEEL")
         if [[ -n "$TORCH_SPEC" ]]; then
           SPECS+=("$TORCH_SPEC")

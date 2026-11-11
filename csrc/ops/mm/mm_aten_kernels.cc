@@ -35,10 +35,13 @@
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/macros/kernel.h"
-#include "csrc/ops/mm/mm.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/precision_context.h"
+#include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/MLIRContext.h"
+#include "mlir/Support/DebugStringHelper.h"
+#include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
@@ -46,6 +49,77 @@
 
 namespace torch_tpu {
 namespace {
+
+namespace stablehlo = mlir::stablehlo;
+
+absl::StatusOr<mlir::MlirOp> BuildMmShlo(mlir::MlirOp lhs, mlir::MlirOp rhs,
+                                         mlir::stablehlo::Precision precision) {
+  mlir::MlirBuilder& builder = lhs.getBuilder();
+  mlir::MLIRContext& ctx = builder.getContext();
+  const mlir::RankedTensorType lhs_tensor_type = GetTensorTypeOrDie(lhs);
+  auto lhs_shape = lhs_tensor_type.getShape();
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Rank constraint is checked before Mlir
+                 // lowering.
+      lhs_shape.size() == 2, error::kInvalidArgument)
+      << "BuildMmShlo: lhs must be a 2D tensor, got rank "
+      << lhs_tensor_type.getRank();
+
+  const mlir::RankedTensorType rhs_tensor_type = GetTensorTypeOrDie(rhs);
+  auto rhs_shape = rhs_tensor_type.getShape();
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Rank constraint is checked before Mlir
+                 // lowering.
+      rhs_shape.size() == 2, error::kInvalidArgument)
+      << "BuildMmShlo: rhs must be a 2D tensor, got rank "
+      << rhs_tensor_type.getRank();
+
+  auto dot_general_element_type = lhs_tensor_type.getElementType();
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Type constraint is checked before Mlir
+                 // lowering.
+      rhs_tensor_type.getElementType() == dot_general_element_type,
+      error::kInvalidArgument)
+      << "BuildMmShlo: lhs and rhs must have the same element type, got "
+      << mlir::debugString(lhs_tensor_type.getElementType()) << " and "
+      << mlir::debugString(rhs_tensor_type.getElementType());
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Dimension constraint is checked before
+                 // Mlir lowering.
+      lhs_shape[1] == rhs_shape[0], error::kInvalidArgument)
+      << "BuildMmShlo: lhs and rhs must have the same contracting dimension, "
+         "got "
+      << lhs_shape[1] << " and " << rhs_shape[0];
+
+  // XLA doesn't support matmul with i64, so we convert them to f64.
+  const bool is_any_i64 = lhs_tensor_type.getElementType().isInteger(64) ||
+                          rhs_tensor_type.getElementType().isInteger(64);
+  if (is_any_i64) {
+    lhs = stablehlo::ConvertElementType(lhs, mlir::ElementType::F64);
+    rhs = stablehlo::ConvertElementType(rhs, mlir::ElementType::F64);
+  }
+
+  // Explanation: (m , n) @ (n, p) -> (m, p)
+  // n is a contracting dimension, m and p are result dimensions.
+  // There are no batch dimensions (like (b, m, n) @ (b, n, p) -> (b, m, p))).
+  int64_t lhs_contracting_dimensions[1] = {1};
+  int64_t rhs_contracting_dimensions[1] = {0};
+  stablehlo::DotDimensionNumbersAttr dot_dimension_numbers =
+      stablehlo::DotDimensionNumbersAttr::get(
+          &ctx, /*lhs_batching_dimensions=*/{}, /*rhs_batching_dimensions=*/{},
+          lhs_contracting_dimensions, rhs_contracting_dimensions);
+
+  // TODO(bawilson): Enable precision config once StableHLO lowering is fixed.
+  // Update: Enabling precision config via context manager.
+  stablehlo::Precision precisions[2] = {precision, precision};
+  auto precision_config_attr =
+      stablehlo::PrecisionConfigAttr::get(&ctx, precisions);
+
+  // NB: deliberately using DotGeneral instead of Dot because Dot is scheduled
+  // for removal from StableHLO.
+  auto dot_result =
+      stablehlo::DotGeneral(lhs, rhs, dot_dimension_numbers,
+                            /*precision_config=*/precision_config_attr);
+  return is_any_i64 ? stablehlo::ConvertElementType(dot_result,
+                                                    dot_general_element_type)
+                    : dot_result;
+}
 
 absl::Status ValidateMmOutInputs(const at::Tensor& lhs, const at::Tensor& rhs,
                                  at::Tensor& out,

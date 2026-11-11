@@ -130,7 +130,7 @@ at::Tensor AtenSparseIota(const at::Tensor& row_pointers,
                           {.out_dtype = mlir::ElementType::I32,
                            .out_dims = out_dims,
                            .op_param_cache_keys = std::move(param_keys)}));
-        return MakeTensor(results);
+        return MakeTensor(std::move(results));
       });
 }
 

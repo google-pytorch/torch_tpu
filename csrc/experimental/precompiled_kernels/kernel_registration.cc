@@ -14,11 +14,12 @@
  * limitations under the License.
  */
 
-// Registers the nonzero indices kernel with the unbounded dynamic kernel
+// Registers the nonzero indices kernels with the unbounded dynamic kernel
 // registry when this library is loaded. Nothing references this file, so it is
 // built with `alwayslink = True`; link it only into TPU-only targets.
 
 #include <utility>
+#include <vector>
 
 #include "absl/log/absl_check.h"
 #include "csrc/common/unbounded_dynamic_kernel_registry.h"
@@ -27,11 +28,25 @@
 namespace torch_tpu {
 namespace {
 
-// Registers a kernel with `UnboundedDynamicKernelRegistry` when constructed.
-// Prefer `TT_REGISTER_DYNAMIC_KERNEL` over instantiating this class directly.
+// Registers kernels with `UnboundedDynamicKernelRegistry` when constructed.
+// Prefer `TT_REGISTER_DYNAMIC_KERNEL` or `TT_REGISTER_DYNAMIC_KERNELS` over
+// instantiating this class directly.
 class UnboundedDynamicKernelRegistrar {
  public:
   explicit UnboundedDynamicKernelRegistrar(UnboundedDynamicKernel kernel) {
+    Register(std::move(kernel));
+  }
+
+  // Registers `kernels` in order.
+  explicit UnboundedDynamicKernelRegistrar(
+      std::vector<UnboundedDynamicKernel> kernels) {
+    for (UnboundedDynamicKernel& kernel : kernels) {
+      Register(std::move(kernel));
+    }
+  }
+
+ private:
+  static void Register(UnboundedDynamicKernel kernel) {
     ABSL_CHECK_OK(  // CRASH_OK=static-init registration bug
         UnboundedDynamicKernelRegistry::GetInstance().RegisterKernel(
             std::move(kernel)));
@@ -46,7 +61,7 @@ class UnboundedDynamicKernelRegistrar {
 // at static initialization time. Invoke at namespace scope in a library built
 // with `alwayslink = True`:
 //
-//   TT_REGISTER_DYNAMIC_KERNEL(GetNonzeroUnboundedDynamicKernel());
+//   TT_REGISTER_DYNAMIC_KERNEL(GetFooUnboundedDynamicKernel());
 //
 // `kernel` is an `UnboundedDynamicKernel`, registered under its `key`. Each
 // kernel defines its key next to its builder, e.g. with
@@ -63,7 +78,17 @@ class UnboundedDynamicKernelRegistrar {
   TT_REGISTER_DYNAMIC_KERNEL_CONCAT_(kUnboundedDynamicKernelRegistrar_, \
                                      __COUNTER__)((kernel))
 
-TT_REGISTER_DYNAMIC_KERNEL(GetNonzeroUnboundedDynamicKernel());
+// Registers a list of unbounded dynamic kernels, in order, like
+// `TT_REGISTER_DYNAMIC_KERNEL`. `kernels` is a
+// `std::vector<UnboundedDynamicKernel>`:
+//
+//   TT_REGISTER_DYNAMIC_KERNELS(GetNonzeroUnboundedDynamicKernels());
+#define TT_REGISTER_DYNAMIC_KERNELS(kernels)                            \
+  const ::torch_tpu::UnboundedDynamicKernelRegistrar                    \
+  TT_REGISTER_DYNAMIC_KERNEL_CONCAT_(kUnboundedDynamicKernelRegistrar_, \
+                                     __COUNTER__)((kernels))
+
+TT_REGISTER_DYNAMIC_KERNELS(GetNonzeroUnboundedDynamicKernels());
 
 }  // namespace
 }  // namespace torch_tpu

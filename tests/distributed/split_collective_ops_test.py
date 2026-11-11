@@ -11,9 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from collections.abc import Callable, Iterator
+import contextlib
 import dataclasses
 import pickle
-from typing import Any, Callable
+from typing import Any
+from unittest import mock
 
 from absl.testing import absltest
 import torch
@@ -234,6 +237,260 @@ def run_compile_no_splits_with_spmd_safe_test():
       wrapper, _SplitCompiledExecutable
   ), f"Expected _SplitCompiledExecutable, got {type(wrapper)}"
   assert len(wrapper.compiled_executables) == 1
+
+
+def run_compile_partial_spmd_safe_test():
+  debugs: list[TpuCompileDebug] = []
+  rank = dist.get_rank()
+  world_size = dist.get_world_size()
+
+  @torch.tpu.distributed.spmd_safe
+  def safe_fn(x):
+    y = x * 2
+    dist.all_reduce(y)
+    return y + 3
+
+  def outer(x):
+    if rank == 0:
+      x = torch.neg(x)
+    z = safe_fn(x)
+    return torch.abs(z)
+
+  compiled_outer = torch.compile(
+      outer,
+      backend="tpu",
+      options={"serializable": False, "debug_callback": debugs.append},
+  )
+
+  x = torch.ones((2, 2), device="tpu")
+  result = compiled_outer(x)
+
+  expected = torch.full((2, 2), abs(2.0 * world_size - 1.0), device="cpu")
+  utils.assert_close(result.cpu(), expected)
+
+  assert len(debugs[0].compiled_executables) == 1
+  wrapper = debugs[0].compiled_executables[0]
+  assert isinstance(wrapper, _SplitCompiledExecutable)
+
+  children = list(wrapper._split_gm.children())
+  expected_submods = 3 if rank == 0 else 2
+  assert len(children) == expected_submods, (
+      f"Expected {expected_submods} submodules on rank {rank}, got"
+      f" {len(children)}"
+  )
+
+  safe_submod = children[1 if rank == 0 else 0].submod
+  assert isinstance(safe_submod, TorchTpuCompiledExecutable)
+  mlir = safe_submod.mlir_text
+  assert "stablehlo.all_reduce" in mlir
+  assert "stablehlo.multiply" in mlir
+  assert "stablehlo.negate" not in mlir
+  assert "stablehlo.abs" not in mlir
+
+
+def _compile_and_get_split_children(
+    f: Callable[[torch.Tensor], torch.Tensor], x: torch.Tensor
+) -> tuple[torch.Tensor, list[torch.nn.Module]]:
+  """Compiles and runs `f(x)`, returning its result and split submodules."""
+  debugs: list[TpuCompileDebug] = []
+  compiled_f = torch.compile(
+      f,
+      backend="tpu",
+      options={"serializable": False, "debug_callback": debugs.append},
+  )
+  result = compiled_f(x)
+  assert len(debugs[0].compiled_executables) == 1
+  wrapper = debugs[0].compiled_executables[0]
+  assert isinstance(wrapper, _SplitCompiledExecutable)
+  children = list(wrapper._split_gm.children())
+  for child in children:
+    assert isinstance(child.submod, TorchTpuCompiledExecutable)
+  return result, children
+
+
+def run_compile_chained_spmd_safe_test():
+  """Tests that an spmd_safe region feeding another one stays one submodule."""
+  world_size = dist.get_world_size()
+
+  @torch.tpu.distributed.spmd_safe
+  def scale_and_reduce(x):
+    y = x * 2
+    dist.all_reduce(y)
+    return y
+
+  @torch.tpu.distributed.spmd_safe
+  def shift_and_reduce(x):
+    y = x + 1
+    dist.all_reduce(y)
+    return y
+
+  def f(x):
+    return shift_and_reduce(scale_and_reduce(x))
+
+  result, children = _compile_and_get_split_children(
+      f, torch.ones((2, 2), device="tpu")
+  )
+
+  expected = torch.full(
+      (2, 2), world_size * (2.0 * world_size + 1.0), device="cpu"
+  )
+  utils.assert_close(result.cpu(), expected)
+  assert len(children) == 1, f"Expected 1 submodule, got {len(children)}"
+  assert children[0].submod.mlir_text.count("stablehlo.all_reduce") == 2
+
+
+def run_compile_outer_op_between_spmd_safe_test():
+  """Tests that an outer op between spmd_safe regions splits all three."""
+  world_size = dist.get_world_size()
+
+  @torch.tpu.distributed.spmd_safe
+  def scale_and_reduce(x):
+    y = x * 2
+    dist.all_reduce(y)
+    return y
+
+  @torch.tpu.distributed.spmd_safe
+  def shift_and_reduce(x):
+    y = x + 1
+    dist.all_reduce(y)
+    return y
+
+  def f(x):
+    return shift_and_reduce(torch.neg(scale_and_reduce(x)))
+
+  result, children = _compile_and_get_split_children(
+      f, torch.ones((2, 2), device="tpu")
+  )
+
+  expected = torch.full(
+      (2, 2), world_size * (1.0 - 2.0 * world_size), device="cpu"
+  )
+  utils.assert_close(result.cpu(), expected)
+  assert len(children) == 3, f"Expected 3 submodules, got {len(children)}"
+  first, middle, last = (child.submod.mlir_text for child in children)
+  assert "stablehlo.all_reduce" in first
+  assert "stablehlo.multiply" in first
+  assert "stablehlo.negate" not in first
+  assert "stablehlo.negate" in middle
+  assert "stablehlo.all_reduce" not in middle
+  assert "stablehlo.all_reduce" in last
+  assert "stablehlo.negate" not in last
+  assert "stablehlo.multiply" not in last
+
+
+@contextlib.contextmanager
+def _record_split_submodule_ops() -> Iterator[list[list[list[str]]]]:
+  """Records the ops of each submodule for every graph SplitCompiler splits.
+
+  Yields:
+    A list that gains one entry per split graph, in compilation order. Each
+    entry lists the `call_function` op names of each submodule, in order.
+  """
+  recorded = []
+  orig_split_module = split_compiler.split_module
+
+  def split_module(*args, **kwargs):
+    split_gm = orig_split_module(*args, **kwargs)
+    recorded.append([
+        [
+            str(n.target)
+            for n in getattr(split_gm, call.target).graph.nodes
+            if n.op == "call_function"
+        ]
+        for call in split_gm.graph.find_nodes(op="call_module")
+    ])
+    return split_gm
+
+  with mock.patch.object(split_compiler, "split_module", split_module):
+    yield recorded
+
+
+class _MutateInBackward(torch.autograd.Function):
+  """Doubles `x` and increments `buf` in place during backward."""
+
+  @staticmethod
+  def forward(ctx, x, buf):
+    ctx.save_for_backward(buf)
+    return x * 2
+
+  @staticmethod
+  def backward(ctx, grad):
+    (buf,) = ctx.saved_tensors
+    buf.add_(1)
+    return grad * 2, None
+
+
+def run_compile_spmd_safe_backward_input_mutation_test():
+  """Tests that a backward input mutation stays in the spmd_safe submodule.
+
+  AOTAutograd traces the backward `copy_` into the buffer with
+  `partitioner_tag="must_be_in_backward"`, and `copy_fwd_metadata_to_bw_nodes`
+  only copies `meta["custom"]` to `"is_backward"` nodes, so the `copy_` has no
+  `spmd_safe` annotation of its own.
+  """
+
+  class Module(torch.nn.Module):
+
+    def __init__(self):
+      super().__init__()
+      self.register_buffer("amax", torch.zeros((2, 2)))
+
+    def forward(self, x):
+      y = _MutateInBackward.apply(x, self.amax)
+      dist.all_reduce(y)
+      return y
+
+  model = Module().to("tpu")
+  model.forward = torch.tpu.distributed.spmd_safe(model.forward)
+  compiled = torch.compile(
+      model, backend="tpu", options={"serializable": False}
+  )
+  x = torch.ones((2, 2), device="tpu", requires_grad=True)
+
+  with _record_split_submodule_ops() as split_graphs:
+    compiled(x).sum().backward()
+
+  assert len(split_graphs) == 2, f"Expected fwd and bwd, got {split_graphs}"
+  for graph in split_graphs:
+    assert len(graph) == 1, f"Expected 1 submodule, got {graph}"
+
+
+def run_compile_spmd_safe_cloned_buffer_test():
+  """Tests that a cloned returned buffer stays in the spmd_safe submodule.
+
+  The forward reads a buffer, which the min-cut partitioner saves for
+  backward, and then updates it in place. `clone_mutated_returned_placeholders`
+  clones the buffer and copies the placeholder's metadata onto the clone, so
+  the clone has no `spmd_safe` annotation of its own.
+  """
+
+  class Module(torch.nn.Module):
+
+    def __init__(self):
+      super().__init__()
+      self.register_buffer("scale", torch.ones(4))
+
+    def forward(self, x):
+      y = x * (self.scale + 1)
+      dist.all_reduce(y)
+      self.scale.add_(1)
+      return y
+
+  model = Module().to("tpu")
+  model.forward = torch.tpu.distributed.spmd_safe(model.forward)
+  compiled = torch.compile(
+      model, backend="tpu", options={"serializable": False}
+  )
+  x = torch.ones((2, 4), device="tpu", requires_grad=True)
+
+  with _record_split_submodule_ops() as split_graphs:
+    compiled(x).sum().backward()
+
+  assert len(split_graphs) == 2, f"Expected fwd and bwd, got {split_graphs}"
+  forward = split_graphs[0]
+  assert any("aten.clone.default" in ops for ops in forward), forward
+  for graph in split_graphs:
+    assert len(graph) == 1, f"Expected 1 submodule, got {graph}"
 
 
 def run_compile_two_collectives_test():
@@ -585,6 +842,21 @@ class SplitCollectiveOpsTest(continuous_test_utils.TpuMultiProcContinuousTest):
 
   def test_compile_no_splits_with_spmd_safe(self):
     run_compile_no_splits_with_spmd_safe_test()
+
+  def test_compile_partial_spmd_safe(self):
+    run_compile_partial_spmd_safe_test()
+
+  def test_compile_chained_spmd_safe(self):
+    run_compile_chained_spmd_safe_test()
+
+  def test_compile_outer_op_between_spmd_safe(self):
+    run_compile_outer_op_between_spmd_safe_test()
+
+  def test_compile_spmd_safe_backward_input_mutation(self):
+    run_compile_spmd_safe_backward_input_mutation_test()
+
+  def test_compile_spmd_safe_cloned_buffer(self):
+    run_compile_spmd_safe_cloned_buffer_test()
 
   def test_compile_two_collectives(self):
     run_compile_two_collectives_test()

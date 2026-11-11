@@ -37,7 +37,7 @@ import dataclasses
 import datetime
 import enum
 import json
-import logging  # PYTHON_LOGGING_OK=standalone CI script
+import logging
 import os
 import pathlib
 import re

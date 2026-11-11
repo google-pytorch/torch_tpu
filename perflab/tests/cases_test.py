@@ -32,6 +32,7 @@ from perflab import mode as mode_lib
 from perflab import registry as registry_lib
 from perflab import step_lib
 from perflab import target as target_lib
+from perflab import workload as workload_lib
 from tests import seed_test_utils
 
 
@@ -492,6 +493,262 @@ class GetSkipReasonTest(seed_test_utils.RepeatableTest):
         )
 
     self.assertCountEqual(assigned, params)
+
+
+# The default workload of the swept test benchmarks: a batch size that the
+# sweeps below do not list, so that no sweep batch size is the default.
+_SWEEP_DEFAULT_WORKLOAD = registry_lib.scoped_workload(
+    full=workload_lib.Workload(16)
+)
+
+
+def _make_sweep_spec(
+    name: str,
+    stepper: step_lib.StepperType = step_lib.StepperType.FORWARD,
+    batch_sweep: registry_lib.BatchSweep | None = None,
+    workload: registry_lib.WorkloadFn | None = _SWEEP_DEFAULT_WORKLOAD,
+) -> registry_lib.BenchmarkSpec:
+  return registry_lib.BenchmarkSpec(
+      name=name,
+      factory=_factory,
+      stepper=stepper,
+      presubmit=_RUN,
+      workload=workload,
+      batch_sweep=batch_sweep or registry_lib.BatchSweep(),
+  )
+
+
+_SWEEP_REGISTRY = {
+    "alpha": _make_sweep_spec("alpha"),
+    "bravo": _make_sweep_spec(
+        "bravo", batch_sweep=registry_lib.BatchSweep(batch_sizes=(8, 2))
+    ),
+    "charlie": _make_sweep_spec(
+        "charlie", batch_sweep=registry_lib.BatchSweep.disabled("packed")
+    ),
+    "delta": _make_sweep_spec(
+        "delta", stepper=step_lib.StepperType.DECODER_ONLY_DECODE
+    ),
+    "echo": _make_sweep_spec("echo", workload=None),
+}
+
+
+class BatchSweepCasesTest(seed_test_utils.RepeatableTest):
+
+  def _sweep_cases(
+      self,
+      platform: target_lib.Platform = target_lib.Platform.B200_1,
+      order_seed: str = "",
+  ) -> list[tuple[str, registry_lib.BenchmarkSpec, common.RunMode, int]]:
+    with mock.patch.dict(registry_lib.REGISTRY, _SWEEP_REGISTRY, clear=True):
+      return list(
+          cases.get_batch_sweep_cases(
+              platform,
+              mode_lib.Framework.TORCH,
+              batch_sizes=(4, 1),
+              order_seed=order_seed,
+          )
+      )
+
+  def test_one_case_per_swept_benchmark_run_mode_and_batch_size(self):
+    eager = common.RunMode.EAGER_DEFAULT
+    compiled = common.RunMode.COMPILED
+    self.assertCountEqual(
+        [
+            (name, spec.name, mode, b)
+            for name, spec, mode, b in self._sweep_cases()
+        ],
+        [
+            ("alpha_bs1_eager_default", "alpha", eager, 1),
+            ("alpha_bs4_eager_default", "alpha", eager, 4),
+            ("alpha_bs1_compiled", "alpha", compiled, 1),
+            ("alpha_bs4_compiled", "alpha", compiled, 4),
+            ("bravo_bs2_eager_default", "bravo", eager, 2),
+            ("bravo_bs8_eager_default", "bravo", eager, 8),
+            ("bravo_bs2_compiled", "bravo", compiled, 2),
+            ("bravo_bs8_compiled", "bravo", compiled, 8),
+        ],
+    )
+
+  def test_sweeps_the_run_modes_of_the_platform(self):
+    for platform in (
+        target_lib.Platform.CPU,
+        target_lib.Platform.B200_1,
+        target_lib.Platform.V7_1X1X1,
+    ):
+      with self.subTest(platform=platform):
+        kind = target_lib.make_target(platform).device_kind
+        self.assertCountEqual(
+            {mode for _, _, mode, _ in self._sweep_cases(platform)},
+            mode_lib.modes_for(mode_lib.Framework.TORCH, kind),
+        )
+
+  def test_cases_of_a_benchmark_and_run_mode_are_consecutive_and_ascending(
+      self,
+  ):
+    for seed in ("", "cl_1001", "cl_1002"):
+      with self.subTest(seed=seed):
+        sweep_cases = self._sweep_cases(order_seed=seed)
+        groups = [(spec.name, mode) for _, spec, mode, _ in sweep_cases]
+        batch_sizes = [b for *_, b in sweep_cases]
+        for i in range(0, len(sweep_cases), 2):
+          self.assertEqual(groups[i], groups[i + 1])
+          self.assertLess(batch_sizes[i], batch_sizes[i + 1])
+        for name, spec, mode, batch_size in sweep_cases:
+          self.assertEqual(
+              name, cases.batch_sweep_case_name(spec.name, batch_size, mode)
+          )
+
+  def test_case_names_end_in_the_run_mode(self):
+    self.assertEqual(
+        cases.batch_sweep_case_name(
+            "gemma_2_2b_forward", 16, common.RunMode.EAGER_OPTIMIZED
+        ),
+        "gemma_2_2b_forward_bs16_eager_optimized",
+    )
+
+  def test_default_batch_size_is_not_a_sweep_case(self):
+    registry = {
+        "alpha": _make_sweep_spec(
+            "alpha",
+            workload=registry_lib.scoped_workload(
+                full=workload_lib.Workload(4, 128),
+                presubmit=workload_lib.Workload(1, 128),
+            ),
+        )
+    }
+    with mock.patch.dict(registry_lib.REGISTRY, registry, clear=True):
+      sweep_cases = list(
+          cases.get_batch_sweep_cases(
+              target_lib.Platform.CPU,
+              mode_lib.Framework.TORCH,
+              batch_sizes=(1, 2, 4, 8),
+          )
+      )
+    # The default case (batch size 4) is one of `get_cases`.
+    self.assertEqual([b for *_, b in sweep_cases], [1, 2, 8])
+
+  def test_batch_sweep_skip_reason(self):
+    self.assertIsNone(
+        cases.get_batch_sweep_skip_reason(_SWEEP_REGISTRY["alpha"])
+    )
+    self.assertEqual(
+        cases.get_batch_sweep_skip_reason(_SWEEP_REGISTRY["echo"]),
+        "Benchmark echo is not batch swept: it declares no workload",
+    )
+    self.assertEqual(
+        cases.get_batch_sweep_skip_reason(_SWEEP_REGISTRY["charlie"]),
+        "Benchmark charlie is not batch swept: packed",
+    )
+    self.assertIn(
+        "decode is not swept yet",
+        cases.get_batch_sweep_skip_reason(_SWEEP_REGISTRY["delta"]),
+    )
+
+  def test_case_params_keep_the_batch_size(self):
+    params = cases.case_params([
+        ("alpha_compiled", _SWEEP_REGISTRY["alpha"], common.RunMode.COMPILED),
+        (
+            "alpha_bs4_compiled",
+            _SWEEP_REGISTRY["alpha"],
+            common.RunMode.COMPILED,
+            4,
+        ),
+    ])
+    self.assertEqual(
+        cases.unpack_case_params(params["test_benchmark_alpha_compiled"]),
+        (_SWEEP_REGISTRY["alpha"], common.RunMode.COMPILED, None),
+    )
+    self.assertEqual(
+        cases.unpack_case_params(params["test_benchmark_alpha_bs4_compiled"]),
+        (_SWEEP_REGISTRY["alpha"], common.RunMode.COMPILED, 4),
+    )
+
+  def test_order_batch_sweep_cases_keeps_positions(self):
+    a, b = _SWEEP_REGISTRY["alpha"], _SWEEP_REGISTRY["bravo"]
+    compiled, eager = common.RunMode.COMPILED, common.RunMode.EAGER_DEFAULT
+    params_by_name = {
+        "b16c": (b, compiled, 16),
+        "x": (a, compiled),
+        "a8c": (a, compiled, 8),
+        "b2c": (b, compiled, 2),
+        "a1e": (a, eager, 1),
+        "a1c": (a, compiled, 1),
+        "a4e": (a, eager, 4),
+    }
+    self.assertEqual(
+        cases.order_batch_sweep_cases(
+            ["b16c", "x", "a4e", "a8c", "b2c", "a1e", "a1c", "unknown"],
+            params_by_name,
+        ),
+        ["b2c", "x", "a1e", "a1c", "b16c", "a4e", "a8c", "unknown"],
+    )
+
+  def test_batch_sweep_cases_of_a_benchmark_and_run_mode_share_a_shard(self):
+    specs = {name: _make_sweep_spec(name) for name in "abcdefgh"}
+    modes = (common.RunMode.EAGER_DEFAULT, common.RunMode.COMPILED)
+
+    class _SweepTest:  # pylint: disable=too-few-public-methods
+      case_params = {
+          f"test_benchmark_{name}_bs{b}_{mode.value}": (spec, mode, b)
+          for name, spec in specs.items()
+          for mode in modes
+          for b in (1, 2, 4, 8, 16, 32)
+      }
+
+    loader = cases.BenchmarkTestLoader()
+    names = list(_SweepTest.case_params)
+    with mock.patch.object(
+        absltest.TestLoader, "getTestCaseNames", return_value=names
+    ):
+      ordered = loader.getTestCaseNames(_SweepTest)
+    total_shards = 4
+    shard_of = {}
+    for shard_index in range(total_shards):
+      for name in loader.shardTestCaseNames(
+          itertools.cycle(range(total_shards)), ordered, shard_index
+      ):
+        shard_of[name] = shard_index
+    self.assertCountEqual(shard_of, names)
+    for name, spec in specs.items():
+      for mode in modes:
+        with self.subTest(spec=name, mode=mode):
+          group = [
+              n
+              for n, (s, m, _) in _SweepTest.case_params.items()
+              if s is spec and m is mode
+          ]
+          self.assertLen({shard_of[n] for n in group}, 1)
+
+  def test_default_cases_keep_their_shards(self):
+    # Default cases hash their own name even if it looks like a batch sweep
+    # name, so batch sweeps never move an existing case to another shard.
+    names = [f"test_benchmark_model_bs{b}_compiled" for b in (1, 2, 4, 8)]
+
+    class _DefaultTest:  # pylint: disable=too-few-public-methods
+      case_params = {
+          name: (_SWEEP_REGISTRY["alpha"], common.RunMode.COMPILED)
+          for name in names
+      }
+
+    loader = cases.BenchmarkTestLoader()
+    with mock.patch.object(
+        absltest.TestLoader, "getTestCaseNames", return_value=names
+    ):
+      ordered = loader.getTestCaseNames(_DefaultTest)
+    for shard_index in range(4):
+      self.assertEqual(
+          list(
+              loader.shardTestCaseNames(
+                  itertools.cycle(range(4)), ordered, shard_index
+              )
+          ),
+          [
+              name
+              for name in ordered
+              if cases._stable_shard_hash(name) % 4 == shard_index  # pylint: disable=protected-access
+          ],
+      )
 
 
 if __name__ == "__main__":

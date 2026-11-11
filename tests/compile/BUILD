@@ -40,6 +40,7 @@ exports_files(["data/goldfish.jpg"])
 torch_tpu_py_test(
     name = "flex_attention_test",
     srcs = ["flex_attention_test.py"],
+    shard_count = 4,
     tags = [
         "requires-tpu-v5lite",
     ],
@@ -181,6 +182,7 @@ torch_tpu_py_test(
         "requires-tpu-v5lite",
     ],
     deps = [
+        "//shims/absl_py/logging",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
@@ -271,13 +273,13 @@ torch_tpu_py_test(
     name = "activation_checkpointing_mem_test",
     timeout = "long",
     srcs = ["activation_checkpointing_mem_test.py"],
-    nopresubmit_oss = "timeout",
     # Run on single-chip TPU v7 for faster TorchDynamo/Inductor compilation
     # and to utilize idle single-chip v7 runner capacity in OSS presubmit.
     oss_presubmit_tpu_generation = tpu_gen(
         "v7",
         reason = "Faster TorchDynamo/Inductor compilation on single-chip TPU v7",
     ),
+    shard_count = 2,
     tags = [
         "requires-net:external",
         "requires-tpu-v5lite",

@@ -131,6 +131,7 @@ torch_tpu_cc_library(
         "//csrc/eager:current_stream",
         "//csrc/eager:device_buffer",
         "//csrc/eager:events_queue",
+        "//csrc/eager:host_allocator",
         "//csrc/eager:materialize",
         "//csrc/eager:op_dispatcher",
         "//csrc/eager:split_traversal",
@@ -139,7 +140,6 @@ torch_tpu_cc_library(
         "//csrc/ops:op_builder_utils",
         "//csrc/ops:op_names",
         "//csrc/ops:python_context",
-        "//csrc/ops:xla_utils",
         "//csrc/ops/as_strided:as_strided_aten_kernels",
         "//csrc/pjrt:pjrt_transfer",
         "//csrc/pjrt:pjrt_utils",
@@ -164,9 +164,12 @@ torch_tpu_cc_library(
     deps = [
         "//csrc/common:dimension_types",
         "//csrc/common:error_utils",
+        "//csrc/common:macro_utils",
+        "//csrc/common:to_string",
         "//csrc/eager:eager_mode",
         "//csrc/ops/as_strided:as_strided_aten_kernels",
         "//shims/torch:aten_headers",
+        "//shims/torch/torch/headeronly:torch_headeronly",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/status",
     ],
@@ -178,8 +181,11 @@ torch_tpu_cc_test(
     requires_libtpu = True,
     deps = [
         ":copy_common",
+        "//csrc/common:macro_utils",
         "//csrc/common:oss_test_main",
         "//csrc/eager:eager_mode",
+        "//shims/torch/torch/headeronly:torch_headeronly",
+        "@com_google_absl//absl/status",
     ],
 )
 

@@ -31,7 +31,7 @@ load("//build_files:py_dist_info.bzl", "py_dist_info")
 load("//shims/build_files:build_defs.bzl", "TT_FRIENDS")
 load("//shims/py_rules:strict.bzl", "py_library_providing_imports_info")
 
-# copybara:uncomment WHEEL_VERSION = "0.2.1"
+# copybara:uncomment WHEEL_VERSION = "0.3.0"
 
 licenses(["notice"])
 
@@ -46,6 +46,11 @@ license(
 )
 
 exports_files(["LICENSE"])
+
+exports_files(
+    ["custom_lint_rules.METADATA"],
+    visibility = ["//ci/tools:__pkg__"],
+)
 
 py_dist_info(
     name = "torch_tpu_dist_info",

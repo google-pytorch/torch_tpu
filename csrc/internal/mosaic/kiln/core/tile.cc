@@ -29,7 +29,7 @@
 #include "csrc/internal/mosaic/kiln/core/mlir_utils.h"
 #include "csrc/internal/mosaic/kiln/core/scalar.h"
 #include "csrc/internal/mosaic/kiln/core/shape.h"
-#include "csrc/internal/mosaic/kiln/core/value_base.h"
+#include "csrc/internal/mosaic/kiln/core/value_handle.h"
 #include "csrc/internal/mosaic/op_builders.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/APInt.h"
@@ -104,10 +104,12 @@ Tile Reduce(const Tile& t, int axis, vector::CombiningKind kind,
 
 }  // namespace
 
-Tile::Tile(const void* impl, DType dtype) : ValueBase(impl, dtype) {
+Tile::Tile(internal::ValueHandle handle, DType dtype)
+    : handle_(handle), dtype_(dtype) {
   ABSL_CHECK(  // CRASH_OK
-      llvm::isa<mlir::VectorType>(internal::unwrap(*this).getType()))
+      llvm::isa<mlir::VectorType>(handle.value().getType()))
       << "Tile must be a vector value";
+  internal::CheckElementType(handle, dtype, "Tile");
 }
 
 llvm::ArrayRef<int64_t> Tile::dims() const {
@@ -312,6 +314,48 @@ Tile SumReduce(Tile t, int axis) {
   mlir::ImplicitLocOpBuilder& b = internal::CurrentBuilder();
   return Reduce(t, axis, vector::CombiningKind::ADD,
                 internal::LiteralToAttr(b, t.dtype(), 0.0));
+}
+
+Tile Concat(llvm::ArrayRef<Tile> tiles, const int32_t axis) {
+  ABSL_CHECK(!tiles.empty())  // CRASH_OK
+      << "Concat() requires at least one tile";
+  const Tile& first = tiles.front();
+  const int64_t rank = first.rank();
+  ABSL_CHECK(axis >= 0 && axis < rank)  // CRASH_OK
+      << "Concat() axis " << axis << " out of bounds for rank " << rank;
+  if (tiles.size() == 1) {
+    return first;
+  }
+  const DType dtype = first.dtype();
+  const llvm::ArrayRef<int64_t> first_dims = first.dims();
+  int64_t concat_dim_size = 0;
+  llvm::SmallVector<mlir::Value, 4> operands;
+  operands.reserve(tiles.size());
+  for (const Tile& tile : tiles) {
+    ABSL_CHECK_EQ(tile.dtype(), dtype)  // CRASH_OK
+        << "Concat() requires all tiles to have the same dtype (" << dtype
+        << " vs " << tile.dtype() << ")";
+    ABSL_CHECK_EQ(tile.rank(), rank)  // CRASH_OK
+        << "Concat() requires all tiles to have the same rank (" << rank
+        << " vs " << tile.rank() << ")";
+    const llvm::ArrayRef<int64_t> dims = tile.dims();
+    for (int64_t d = 0; d < rank; ++d) {
+      if (d == axis) continue;
+      ABSL_CHECK_EQ(dims[d], first_dims[d])  // CRASH_OK
+          << "Concat() dimension mismatch on axis " << d << " ("
+          << first_dims[d] << " vs " << dims[d] << ")";
+    }
+    concat_dim_size += dims[axis];
+    operands.push_back(internal::unwrap(tile));
+  }
+  Dimensions out_dims(first_dims);
+  out_dims[axis] = concat_dim_size;
+  mlir::ImplicitLocOpBuilder& b = internal::CurrentBuilder();
+  return internal::wrap<Tile>(
+      tpu::ConcatenateOp::create(
+          b, internal::ToMlirVectorType(Shape(out_dims, dtype)), operands,
+          static_cast<uint32_t>(axis)),
+      dtype);
 }
 
 Tile Transpose(Tile t) {

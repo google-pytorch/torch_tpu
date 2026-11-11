@@ -75,11 +75,12 @@ Contract:
       run to fail.
 """
 
+from collections.abc import Callable, Mapping, Sequence
 import json
 import os
 from pathlib import Path
 import sys
-from typing import Any, Callable, Final, Mapping, NamedTuple, Sequence
+from typing import Any, Final, NamedTuple
 import urllib.error
 import urllib.parse
 import urllib.request

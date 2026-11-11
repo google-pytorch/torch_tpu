@@ -226,6 +226,7 @@ torch_tpu_py_test(
         "//src/torch_tpu/_internal/pallas",
         "//src/torch_tpu/_internal/profiler:profiler_config",
         "//src/torch_tpu/_internal/utils:annotations",
+        "//src/torch_tpu/_internal/utils:hardware",
     ],
 )
 
@@ -272,7 +273,13 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "ao_offload_test",
     srcs = ["ao_offload_test.py"],
-    tags = ["requires-tpu-v5lite"],
+    tags = [
+        # TODO(b/583958199): TransferBufferSubAllocator::Alloc calls
+        # System::DmaMap across all host HBM locations, aborting on multi-chip
+        # TPU v7x runners when TPU_VISIBLE_DEVICES is restricted.
+        "fails-on-tpu-v7",
+        "requires-tpu-v5lite",
+    ],
     deps = [
         ":seed_test_utils",
         "//shims/absl_py/testing:absltest",
@@ -298,6 +305,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "env_test",
     srcs = ["env_test.py"],
+    shard_count = 4,
     tags = [
         "requires-tpu-v5lite",
     ],
@@ -306,6 +314,7 @@ torch_tpu_py_test(
         ":subprocess_test_utils",
         "//shims/absl_py/flags",
         "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu:_loader",
@@ -438,6 +447,7 @@ torch_tpu_py_test(
         "@pypi//google_api_core",
         "@pypi//google_cloud_storage",
         "@pypi//pillow",
+        "@pypi//torchvision",
         "@pypi//transformers",
     ],
 )
@@ -574,8 +584,10 @@ torch_tpu_py_library(
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
         "//shims/torch:testing_internal",
+        "//src/torch_tpu/_internal/compile/dynamic:symbol_bounds",
         "//src/torch_tpu/_internal/dynamism",
         "//src/torch_tpu/_internal/utils",
+        "@pypi//sympy",
     ],
 )
 
@@ -590,7 +602,10 @@ torch_tpu_py_library(
 # * ops_test_perf: TPU only, for measuring compilation/execution time.
 # * ops_test_dynamic: TPU vs GPU, bounds a dimension.
 # * ops_test_dynamic_compiled: TPU vs GPU, bounds a dimension under torch.compile.
+# * ops_test_dynamic_compiled_grad: gradient on TPU vs GPU, bounds dimensions under torch.compile.
 # * ops_test_compiled: TPU vs GPU (torch.compile TpuBackend vs GPU inductor backend).
+# * ops_test_static: TPU vs GPU, with unbounded dynamic kernels disabled, for
+#   tests marked with @also_run_static only.
 
 # We chose to manually maintain the duplicate tests instead of using a for-loop to generate the
 # targets because:
@@ -916,6 +931,40 @@ torch_tpu_py_test(
     ],
 )
 
+# Runs only the ops_test tests marked with @also_run_static with dynamic kernels disabled.
+torch_tpu_py_test(
+    name = "ops_test_static",
+    timeout = "long",
+    srcs = ["ops_test.py"],
+    args = [
+        "--max_samples_per_op_dtype=10",
+    ],
+    data = _GPU_GOLDENS_DATA,
+    env = {"TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS": "none"},
+    main = "ops_test.py",
+    nopresubmit_oss = _WHEN_OSS_PRESUBMIT_OVERLOADED,
+    run_on_accelerators = [
+        "requires-tpu-v6e",
+        "requires-tpu-v5lite",
+    ],
+    shard_count = 1,  # Increase as more tests are marked with @also_run_static.
+    tags = [
+        "ops-test",  # Heavy ops test: see run_bazel_diff.py for details.
+    ] + _OSS_GOLDEN_TAGS,
+    deps = [
+        ":dynamism_test_utils",
+        ":op_testing",
+        ":oss_utils",
+        ":quantize_utils",
+        "//csrc/eager:tpu_aten_kernels",
+        "//shims/absl_py/flags",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/utils:test_utils",
+    ],
+)
+
 torch_tpu_py_test(
     name = "searchsorted_ops_test",
     timeout = "long",
@@ -996,7 +1045,6 @@ torch_tpu_py_test(
         "requires-tpu-v5lite",
     ],
     deps = [
-        ":dynamism_test_utils",
         ":op_testing",
         ":oss_utils",
         ":quantize_utils",
@@ -1026,6 +1074,7 @@ torch_tpu_py_test(
     ],
     shard_count = 50,
     tags = [
+        "noasan",  # TODO(b/583894452): fix the test in asan mode.
         "nomsan",  # TODO: fix the test in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.
         "ops-test",  # Heavy ops test: see run_bazel_diff.py for details.
@@ -1081,6 +1130,46 @@ torch_tpu_py_test(
     ],
 )
 
+torch_tpu_py_test(
+    name = "ops_test_dynamic_compiled_grad",
+    timeout = "long",
+    srcs = ["ops_test.py"],
+    args = [
+        "--check_dynamism=True",
+        "--compute_grad=True",
+        "--use_compiled=True",
+        "--print_op_inputs=1",
+        "--max_samples_per_op_dtype=1",  # No need to test many samples to catch dynamism bugs.
+    ],
+    # TODO: b/581040310 - Generate compiled-grad GPU goldens; no
+    # ops_test_gpu_golden_grad_compiled dataset exists yet, so reuse eager GPU
+    # grad goldens for now.
+    data = _GPU_GOLDENS_GRAD_DATA,
+    main = "ops_test.py",
+    nopresubmit = "Dynamic compile grad tests are run in postsubmit to avoid overloading the presubmit.",
+    run_on_accelerators = [
+        "requires-tpu-v6e",
+        "requires-tpu-v5lite",
+    ],
+    shard_count = 50,
+    tags = [
+        "nosan",  # Rely on ops_test_grad for *san coverage.
+        "ops-test",  # Heavy ops test: see run_bazel_diff.py for details.
+    ] + _OSS_GOLDEN_TAGS,
+    deps = [
+        ":dynamism_test_utils",
+        ":op_testing",
+        ":oss_utils",
+        ":quantize_utils",
+        "//csrc/eager:tpu_aten_kernels",
+        "//shims/absl_py/flags",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/utils:test_utils",
+    ],
+)
+
 # Checks that TorchTPU doesn't specialize (or throw on) the symbolic dims that
 # CPU keeps symbolic, which would make torch.compile recompile for every new
 # input shape. The ops run on FakeTensors only, so nothing is compiled or
@@ -1092,17 +1181,17 @@ torch_tpu_py_test(
     srcs = ["ops_test.py"],
     args = [
         "--check_symbolic_shapes",
-    ] + if_oss(
-        [_OSS_SAMPLE_LIMIT],
-        ["--max_samples_per_op_dtype=20"],
-    ),
+        # 5 samples per (op, variant, dtype) is enough to catch symbolic-shape
+        # specialization bugs while keeping heavy foreach ops within the TSAN
+        # timeout.
+        "--max_samples_per_op_dtype=5",
+    ],
     data = _GPU_GOLDENS_DATA,
     main = "ops_test.py",
     run_on_accelerators = [
         "requires-tpu-v5lite",
     ],
-    # The sweep takes ~30 minutes unsharded (2-4x longer under sanitizers).
-    shard_count = 20,
+    shard_count = 50,
     tags = _OSS_GOLDEN_TAGS,
     deps = [
         ":dynamism_test_utils",
@@ -1197,7 +1286,6 @@ torch_tpu_py_test(
     shard_count = 1,
     tags = [_GPU_GOLDEN_TAG_SM90],
     deps = [
-        ":dynamism_test_utils",
         ":op_testing",
         ":oss_utils",
         ":quantize_utils",
@@ -1224,7 +1312,7 @@ torch_tpu_py_test(
     main = "ops_test.py",
     nolocal = "slow test",
     platform = _GPU_GOLDEN_PLATFORM,
-    shard_count = 3,
+    shard_count = 6,
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
@@ -1248,7 +1336,6 @@ torch_tpu_py_test(
     # per-process global, so a sharded run would dump partial results.
     shard_count = 1,
     deps = [
-        ":dynamism_test_utils",
         ":op_testing",
         ":oss_utils",
         ":quantize_utils",
@@ -1368,7 +1455,6 @@ torch_tpu_py_test(
     shard_count = 1,
     tags = [_GPU_GOLDEN_TAG_SM90],
     deps = [
-        ":dynamism_test_utils",
         ":op_testing",
         ":oss_utils",
         ":quantize_utils",
@@ -1394,7 +1480,6 @@ torch_tpu_py_test(
     shard_count = 1,
     tags = [_GPU_GOLDEN_TAG_SM90],
     deps = [
-        ":dynamism_test_utils",
         ":op_testing",
         ":oss_utils",
         ":quantize_utils",
@@ -1463,6 +1548,7 @@ torch_tpu_py_test(
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/compile:tpu_torch_compile",
         "//src/torch_tpu/_internal/device_utils:annotations",
+        "//src/torch_tpu/_internal/execution_mode",
         "@pypi//numpy",
     ],
 )
@@ -1814,6 +1900,7 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/compile:tpu_torch_compile",  # build_cleaner: keep
+        "//src/torch_tpu/_internal/device:_device_ops_backend",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//src/torch_tpu/_internal/pallas:tpu_torch_pallas",  # build_cleaner: keep
         "//src/torch_tpu/_internal/utils",
@@ -1892,6 +1979,7 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/compile:tpu_torch_compile",  # build_cleaner: keep
+        "//src/torch_tpu/_internal/device:_device_ops_backend",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//src/torch_tpu/_internal/pallas:tpu_torch_pallas",  # build_cleaner: keep
         "//src/torch_tpu/_internal/utils",
@@ -1971,6 +2059,7 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/compile:tpu_torch_compile",  # build_cleaner: keep
+        "//src/torch_tpu/_internal/device:_device_ops_backend",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//src/torch_tpu/_internal/pallas:tpu_torch_pallas",  # build_cleaner: keep
         "//src/torch_tpu/_internal/utils",
@@ -2097,6 +2186,7 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
+        "//src/torch_tpu/_internal/device:_device_ops_backend",
         "//src/torch_tpu/_internal/utils:annotations",
     ],
 )
@@ -2258,6 +2348,7 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
+        "//src/torch_tpu/_internal/device:_device_ops_backend",
         "//src/torch_tpu/_internal/execution_mode",
         "//src/torch_tpu/_internal/sync",
         "//src/torch_tpu/_internal/utils",
@@ -2396,6 +2487,49 @@ torch_tpu_py_test(
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/dynamism",
         "//src/torch_tpu/_internal/execution_mode",
+        "//src/torch_tpu/_internal/utils:test_utils",
+    ],
+)
+
+# Checks that the precompiled unbounded dynamic kernels serve the ops of
+# dynamic_ops_test.py.
+torch_tpu_py_test(
+    name = "dynamic_ops_test",
+    srcs = ["dynamic_ops_test.py"],
+    main = "dynamic_ops_test.py",
+    run_on_accelerators = [
+        "requires-tpu-v6e",
+        "requires-tpu-v5lite",
+    ],
+    shard_count = 8,
+    deps = [
+        ":op_testing",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+    ],
+)
+
+# Tests ops on their static kernels. The precompiled unbounded dynamic kernels
+# serve the ops they support by default, and the runtime reads
+# TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS once per process, so these
+# tests need their own target with it disabled.
+torch_tpu_py_test(
+    name = "ops_unit_test_static",
+    srcs = ["ops_unit_test_static.py"],
+    env = {"TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS": "none"},
+    main = "ops_unit_test_static.py",
+    run_on_accelerators = [
+        "requires-tpu-v6e",
+        "requires-tpu-v5lite",
+    ],
+    deps = [
+        ":op_testing",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
         "//src/torch_tpu/_internal/utils:test_utils",
     ],
 )
@@ -2621,6 +2755,7 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
+        "//src/torch_tpu/_internal/dynamism",
         "//src/torch_tpu/_internal/execution_mode",
         "//src/torch_tpu/_internal/tracing",
     ],
@@ -3113,6 +3248,15 @@ bzl_library(
     srcs = ["split_goldens.bzl"],
     parse_tests = False,
     visibility = ["//visibility:private"],
+)
+
+# Agent skill naming rules (standard library only), shared by
+# //src/torch_tpu/google/tools:skill_naming_test and
+# ci/tools/check_agent_skills.py in the GitHub repository.
+torch_tpu_py_library(
+    name = "agent_skill_names",
+    srcs = ["agent_skill_names.py"],
+    visibility = ["//:__subpackages__"],
 )
 
 torch_tpu_package_end()

@@ -148,6 +148,7 @@
 #include "csrc/ops/leaky_relu/leaky_relu_aten_kernels.h"
 #include "csrc/ops/lerp/lerp_aten_kernels.h"
 #include "csrc/ops/linalg/cholesky/linalg_cholesky_kernels.h"
+#include "csrc/ops/linalg/cross/linalg_cross_kernels.h"
 #include "csrc/ops/linalg/linalg_kernels.h"
 #include "csrc/ops/linalg/linalg_svd_kernels.h"
 #include "csrc/ops/linalg/lu/linalg_lu_kernels.h"
@@ -189,6 +190,7 @@
 #include "csrc/ops/put/put_aten_kernels.h"
 #include "csrc/ops/random/random_aten_kernels.h"
 #include "csrc/ops/randperm/randperm_aten_kernels.h"
+#include "csrc/ops/record_stream/record_stream_aten_kernels.h"
 #include "csrc/ops/reductions/mean_aten_kernels.h"
 #include "csrc/ops/reductions/std_aten_kernels.h"
 #include "csrc/ops/reductions/sum_aten_kernels.h"
@@ -801,6 +803,7 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kLerpTensorOut>(m, AtenLerpTensorOut);
   ImplStable<OpName::kLgammaOut>(m, AtenLgammaOut);
   ImplStable<OpName::kLinalgCholeskyExL>(m, AtenLinalgCholeskyExL);
+  ImplStable<OpName::kLinalgCrossOut>(m, AtenLinalgCrossOut);
   ImplStable<OpName::kLinalgInvExInverse>(m, AtenLinalgInvExInverse);
   ImplStable<OpName::kLinalgLuFactorExOut>(m, AtenLinalgLuFactorExOut);
   ImplStable<OpName::kLinalgLuOut>(m, AtenLinalgLuOut);
@@ -929,6 +932,8 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kNllLossNd>(m, AtenNllLossNd);
   ImplStable<OpName::kNonzero>(m, AtenNonzero);
   ImplStable<OpName::kNonzeroOut>(m, AtenNonzeroOut);
+  ImplStable<OpName::kNonzeroStatic>(m, AtenNonzeroStatic);
+  ImplStable<OpName::kNonzeroStaticOut>(m, AtenNonzeroStaticOut);
   ImplStable<OpName::kNormDtypeOut>(m, AtenNormDtypeOut);
   ImplStable<OpName::kNormOut>(m, AtenNormOut);
   ImplStable<OpName::kNormalFloatTensor>(m, AtenNormalFloatTensor);
@@ -959,6 +964,7 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kRandom_To>(m, AtenRandom_To);
   ImplStable<OpName::kRandpermGeneratorOut>(m, AtenRandpermGeneratorOut);
   ImplStable<OpName::kReciprocalOut>(m, AtenReciprocalOut);
+  ImplStable<OpName::kRecordStream>(m, AtenRecordStream);
   ImplStable<OpName::kReflectionPad1dBackwardGradInput>(
       m, AtenReflectionPad1dBackwardGradInput);
   ImplStable<OpName::kReflectionPad1dOut>(m, AtenReflectionPad1dOut);

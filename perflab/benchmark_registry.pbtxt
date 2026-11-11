@@ -42,8 +42,18 @@ benchmarks {
   metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/device_mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/model_flops_per_step$" unit: "flops" stats { stat: LAST_VALUE } }
@@ -92,8 +102,18 @@ benchmarks {
   metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/device_mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/model_flops_per_step$" unit: "flops" stats { stat: LAST_VALUE } }
@@ -142,8 +162,18 @@ benchmarks {
   metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/device_mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/model_flops_per_step$" unit: "flops" stats { stat: LAST_VALUE } }
@@ -192,8 +222,18 @@ benchmarks {
   metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/device_mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/model_flops_per_step$" unit: "flops" stats { stat: LAST_VALUE } }
@@ -242,8 +282,18 @@ benchmarks {
   metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/device_mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/model_flops_per_step$" unit: "flops" stats { stat: LAST_VALUE } }
@@ -292,8 +342,18 @@ benchmarks {
   metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/device_mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/model_flops_per_step$" unit: "flops" stats { stat: LAST_VALUE } }
@@ -342,8 +402,18 @@ benchmarks {
   metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/device_mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/model_flops_per_step$" unit: "flops" stats { stat: LAST_VALUE } }
@@ -392,8 +462,18 @@ benchmarks {
   metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/device_mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/model_flops_per_step$" unit: "flops" stats { stat: LAST_VALUE } }
@@ -442,8 +522,18 @@ benchmarks {
   metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/device_mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/model_flops_per_step$" unit: "flops" stats { stat: LAST_VALUE } }
@@ -492,8 +582,18 @@ benchmarks {
   metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/device_mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/model_flops_per_step$" unit: "flops" stats { stat: LAST_VALUE } }
@@ -542,8 +642,18 @@ benchmarks {
   metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/device_mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/model_flops_per_step$" unit: "flops" stats { stat: LAST_VALUE } }
@@ -592,8 +702,18 @@ benchmarks {
   metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/device_mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/model_flops_per_step$" unit: "flops" stats { stat: LAST_VALUE } }
@@ -642,8 +762,18 @@ benchmarks {
   metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/device_mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/model_flops_per_step$" unit: "flops" stats { stat: LAST_VALUE } }
@@ -692,8 +822,18 @@ benchmarks {
   metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/device_mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/model_flops_per_step$" unit: "flops" stats { stat: LAST_VALUE } }
@@ -742,8 +882,18 @@ benchmarks {
   metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/device_mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/model_flops_per_step$" unit: "flops" stats { stat: LAST_VALUE } }
@@ -792,13 +942,463 @@ benchmarks {
   metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/device_mfu$" unit: "ratio" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/model_flops_per_step$" unit: "flops" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/achieved_tflops_per_second$" unit: "tflops" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/device_achieved_tflops_per_second$" unit: "tflops" stats { stat: LAST_VALUE } }
+}
+
+benchmarks {
+  name: "layer_benchmarks_shard_00_of_08"
+  description: "Torch layer benchmarks shard 00 of 08"
+  owner: "TorchTPU"
+
+  workload {
+    action: "./user_repo/.github/actions/run-benchmark"
+    action_inputs { key: "script" value: "perflab/torch_layer_benchmark_test.py" }
+    action_inputs { key: "runtime_flags" value: "--run_scope=full" }
+    action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=8,TEST_SHARD_INDEX=0" }
+  }
+
+  environment_configs {
+    id: "tpu-v7"
+    runner_label: "linux-x86-tpu7x-224-4tpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:dddf008479144c57182b56a6d00bfc1f38f8f2ef206e2bc26ff6c0a401ded47e"
+    workload_action_inputs { key: "torch_index" value: "https://download.pytorch.org/whl/cpu" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.14.0" }
+    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.50" }
+    workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=v7_1x1x1" }
+  }
+
+  environment_configs {
+    id: "gpu-b200"
+    runner_label: "linux-x86-a4-224-b200-8gpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda13.2-cudnn9.15:latest"
+    workload_action_inputs { key: "torch_spec" value: "torch==2.14.0" }
+    workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=b200_1,TORCH_DEVICE_BACKEND_AUTOLOAD=0,TPU_SKIP_MDS_QUERY=1" }
+  }
+
+  metrics { pattern: ".*/post_warmup_step_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/post_warmup_step_time_ms$" unit: "ms" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/average_post_warmup_device_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/average_post_warmup_device_time_ms$" unit: "ms" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/first_step_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/first_step_time_ms$" unit: "ms" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/warmup_overhead_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/warmup_overhead_ms$" unit: "ms" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+}
+
+benchmarks {
+  name: "layer_benchmarks_shard_01_of_08"
+  description: "Torch layer benchmarks shard 01 of 08"
+  owner: "TorchTPU"
+
+  workload {
+    action: "./user_repo/.github/actions/run-benchmark"
+    action_inputs { key: "script" value: "perflab/torch_layer_benchmark_test.py" }
+    action_inputs { key: "runtime_flags" value: "--run_scope=full" }
+    action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=8,TEST_SHARD_INDEX=1" }
+  }
+
+  environment_configs {
+    id: "tpu-v7"
+    runner_label: "linux-x86-tpu7x-224-4tpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:dddf008479144c57182b56a6d00bfc1f38f8f2ef206e2bc26ff6c0a401ded47e"
+    workload_action_inputs { key: "torch_index" value: "https://download.pytorch.org/whl/cpu" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.14.0" }
+    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.50" }
+    workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=v7_1x1x1" }
+  }
+
+  environment_configs {
+    id: "gpu-b200"
+    runner_label: "linux-x86-a4-224-b200-8gpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda13.2-cudnn9.15:latest"
+    workload_action_inputs { key: "torch_spec" value: "torch==2.14.0" }
+    workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=b200_1,TORCH_DEVICE_BACKEND_AUTOLOAD=0,TPU_SKIP_MDS_QUERY=1" }
+  }
+
+  metrics { pattern: ".*/post_warmup_step_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/post_warmup_step_time_ms$" unit: "ms" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/average_post_warmup_device_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/average_post_warmup_device_time_ms$" unit: "ms" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/first_step_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/first_step_time_ms$" unit: "ms" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/warmup_overhead_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/warmup_overhead_ms$" unit: "ms" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+}
+
+benchmarks {
+  name: "layer_benchmarks_shard_02_of_08"
+  description: "Torch layer benchmarks shard 02 of 08"
+  owner: "TorchTPU"
+
+  workload {
+    action: "./user_repo/.github/actions/run-benchmark"
+    action_inputs { key: "script" value: "perflab/torch_layer_benchmark_test.py" }
+    action_inputs { key: "runtime_flags" value: "--run_scope=full" }
+    action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=8,TEST_SHARD_INDEX=2" }
+  }
+
+  environment_configs {
+    id: "tpu-v7"
+    runner_label: "linux-x86-tpu7x-224-4tpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:dddf008479144c57182b56a6d00bfc1f38f8f2ef206e2bc26ff6c0a401ded47e"
+    workload_action_inputs { key: "torch_index" value: "https://download.pytorch.org/whl/cpu" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.14.0" }
+    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.50" }
+    workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=v7_1x1x1" }
+  }
+
+  environment_configs {
+    id: "gpu-b200"
+    runner_label: "linux-x86-a4-224-b200-8gpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda13.2-cudnn9.15:latest"
+    workload_action_inputs { key: "torch_spec" value: "torch==2.14.0" }
+    workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=b200_1,TORCH_DEVICE_BACKEND_AUTOLOAD=0,TPU_SKIP_MDS_QUERY=1" }
+  }
+
+  metrics { pattern: ".*/post_warmup_step_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/post_warmup_step_time_ms$" unit: "ms" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/average_post_warmup_device_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/average_post_warmup_device_time_ms$" unit: "ms" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/first_step_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/first_step_time_ms$" unit: "ms" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/warmup_overhead_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/warmup_overhead_ms$" unit: "ms" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+}
+
+benchmarks {
+  name: "layer_benchmarks_shard_03_of_08"
+  description: "Torch layer benchmarks shard 03 of 08"
+  owner: "TorchTPU"
+
+  workload {
+    action: "./user_repo/.github/actions/run-benchmark"
+    action_inputs { key: "script" value: "perflab/torch_layer_benchmark_test.py" }
+    action_inputs { key: "runtime_flags" value: "--run_scope=full" }
+    action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=8,TEST_SHARD_INDEX=3" }
+  }
+
+  environment_configs {
+    id: "tpu-v7"
+    runner_label: "linux-x86-tpu7x-224-4tpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:dddf008479144c57182b56a6d00bfc1f38f8f2ef206e2bc26ff6c0a401ded47e"
+    workload_action_inputs { key: "torch_index" value: "https://download.pytorch.org/whl/cpu" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.14.0" }
+    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.50" }
+    workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=v7_1x1x1" }
+  }
+
+  environment_configs {
+    id: "gpu-b200"
+    runner_label: "linux-x86-a4-224-b200-8gpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda13.2-cudnn9.15:latest"
+    workload_action_inputs { key: "torch_spec" value: "torch==2.14.0" }
+    workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=b200_1,TORCH_DEVICE_BACKEND_AUTOLOAD=0,TPU_SKIP_MDS_QUERY=1" }
+  }
+
+  metrics { pattern: ".*/post_warmup_step_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/post_warmup_step_time_ms$" unit: "ms" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/average_post_warmup_device_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/average_post_warmup_device_time_ms$" unit: "ms" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/first_step_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/first_step_time_ms$" unit: "ms" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/warmup_overhead_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/warmup_overhead_ms$" unit: "ms" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+}
+
+benchmarks {
+  name: "layer_benchmarks_shard_04_of_08"
+  description: "Torch layer benchmarks shard 04 of 08"
+  owner: "TorchTPU"
+
+  workload {
+    action: "./user_repo/.github/actions/run-benchmark"
+    action_inputs { key: "script" value: "perflab/torch_layer_benchmark_test.py" }
+    action_inputs { key: "runtime_flags" value: "--run_scope=full" }
+    action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=8,TEST_SHARD_INDEX=4" }
+  }
+
+  environment_configs {
+    id: "tpu-v7"
+    runner_label: "linux-x86-tpu7x-224-4tpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:dddf008479144c57182b56a6d00bfc1f38f8f2ef206e2bc26ff6c0a401ded47e"
+    workload_action_inputs { key: "torch_index" value: "https://download.pytorch.org/whl/cpu" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.14.0" }
+    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.50" }
+    workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=v7_1x1x1" }
+  }
+
+  environment_configs {
+    id: "gpu-b200"
+    runner_label: "linux-x86-a4-224-b200-8gpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda13.2-cudnn9.15:latest"
+    workload_action_inputs { key: "torch_spec" value: "torch==2.14.0" }
+    workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=b200_1,TORCH_DEVICE_BACKEND_AUTOLOAD=0,TPU_SKIP_MDS_QUERY=1" }
+  }
+
+  metrics { pattern: ".*/post_warmup_step_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/post_warmup_step_time_ms$" unit: "ms" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/average_post_warmup_device_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/average_post_warmup_device_time_ms$" unit: "ms" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/first_step_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/first_step_time_ms$" unit: "ms" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/warmup_overhead_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/warmup_overhead_ms$" unit: "ms" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+}
+
+benchmarks {
+  name: "layer_benchmarks_shard_05_of_08"
+  description: "Torch layer benchmarks shard 05 of 08"
+  owner: "TorchTPU"
+
+  workload {
+    action: "./user_repo/.github/actions/run-benchmark"
+    action_inputs { key: "script" value: "perflab/torch_layer_benchmark_test.py" }
+    action_inputs { key: "runtime_flags" value: "--run_scope=full" }
+    action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=8,TEST_SHARD_INDEX=5" }
+  }
+
+  environment_configs {
+    id: "tpu-v7"
+    runner_label: "linux-x86-tpu7x-224-4tpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:dddf008479144c57182b56a6d00bfc1f38f8f2ef206e2bc26ff6c0a401ded47e"
+    workload_action_inputs { key: "torch_index" value: "https://download.pytorch.org/whl/cpu" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.14.0" }
+    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.50" }
+    workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=v7_1x1x1" }
+  }
+
+  environment_configs {
+    id: "gpu-b200"
+    runner_label: "linux-x86-a4-224-b200-8gpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda13.2-cudnn9.15:latest"
+    workload_action_inputs { key: "torch_spec" value: "torch==2.14.0" }
+    workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=b200_1,TORCH_DEVICE_BACKEND_AUTOLOAD=0,TPU_SKIP_MDS_QUERY=1" }
+  }
+
+  metrics { pattern: ".*/post_warmup_step_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/post_warmup_step_time_ms$" unit: "ms" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/average_post_warmup_device_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/average_post_warmup_device_time_ms$" unit: "ms" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/first_step_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/first_step_time_ms$" unit: "ms" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/warmup_overhead_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/warmup_overhead_ms$" unit: "ms" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+}
+
+benchmarks {
+  name: "layer_benchmarks_shard_06_of_08"
+  description: "Torch layer benchmarks shard 06 of 08"
+  owner: "TorchTPU"
+
+  workload {
+    action: "./user_repo/.github/actions/run-benchmark"
+    action_inputs { key: "script" value: "perflab/torch_layer_benchmark_test.py" }
+    action_inputs { key: "runtime_flags" value: "--run_scope=full" }
+    action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=8,TEST_SHARD_INDEX=6" }
+  }
+
+  environment_configs {
+    id: "tpu-v7"
+    runner_label: "linux-x86-tpu7x-224-4tpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:dddf008479144c57182b56a6d00bfc1f38f8f2ef206e2bc26ff6c0a401ded47e"
+    workload_action_inputs { key: "torch_index" value: "https://download.pytorch.org/whl/cpu" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.14.0" }
+    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.50" }
+    workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=v7_1x1x1" }
+  }
+
+  environment_configs {
+    id: "gpu-b200"
+    runner_label: "linux-x86-a4-224-b200-8gpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda13.2-cudnn9.15:latest"
+    workload_action_inputs { key: "torch_spec" value: "torch==2.14.0" }
+    workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=b200_1,TORCH_DEVICE_BACKEND_AUTOLOAD=0,TPU_SKIP_MDS_QUERY=1" }
+  }
+
+  metrics { pattern: ".*/post_warmup_step_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/post_warmup_step_time_ms$" unit: "ms" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/average_post_warmup_device_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/average_post_warmup_device_time_ms$" unit: "ms" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/first_step_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/first_step_time_ms$" unit: "ms" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/warmup_overhead_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/warmup_overhead_ms$" unit: "ms" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+}
+
+benchmarks {
+  name: "layer_benchmarks_shard_07_of_08"
+  description: "Torch layer benchmarks shard 07 of 08"
+  owner: "TorchTPU"
+
+  workload {
+    action: "./user_repo/.github/actions/run-benchmark"
+    action_inputs { key: "script" value: "perflab/torch_layer_benchmark_test.py" }
+    action_inputs { key: "runtime_flags" value: "--run_scope=full" }
+    action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=8,TEST_SHARD_INDEX=7" }
+  }
+
+  environment_configs {
+    id: "tpu-v7"
+    runner_label: "linux-x86-tpu7x-224-4tpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:dddf008479144c57182b56a6d00bfc1f38f8f2ef206e2bc26ff6c0a401ded47e"
+    workload_action_inputs { key: "torch_index" value: "https://download.pytorch.org/whl/cpu" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.14.0" }
+    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.50" }
+    workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=v7_1x1x1" }
+  }
+
+  environment_configs {
+    id: "gpu-b200"
+    runner_label: "linux-x86-a4-224-b200-8gpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda13.2-cudnn9.15:latest"
+    workload_action_inputs { key: "torch_spec" value: "torch==2.14.0" }
+    workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=b200_1,TORCH_DEVICE_BACKEND_AUTOLOAD=0,TPU_SKIP_MDS_QUERY=1" }
+  }
+
+  metrics { pattern: ".*/post_warmup_step_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/post_warmup_step_time_ms$" unit: "ms" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/average_post_warmup_device_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/average_post_warmup_device_time_ms$" unit: "ms" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/first_step_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/first_step_time_ms$" unit: "ms" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/warmup_overhead_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/warmup_overhead_ms$" unit: "ms" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
 }
 
 benchmarks {
@@ -841,8 +1441,18 @@ benchmarks {
   metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
 }
 
 benchmarks {
@@ -885,8 +1495,18 @@ benchmarks {
   metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
 }
 
 benchmarks {
@@ -929,6 +1549,16 @@ benchmarks {
   metrics { pattern: ".*/wall_time$" unit: "s" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_post_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
   metrics { pattern: ".*/skipped$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/out_of_memory$" unit: "bool" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/batch_size$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/seq_len$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_step$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_samples_per_second$" unit: "samples_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/device_tokens_per_second$" unit: "tokens_per_s" stats { stat: LAST_VALUE } }
 }

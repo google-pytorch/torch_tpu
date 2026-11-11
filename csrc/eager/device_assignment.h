@@ -35,8 +35,11 @@ struct DeviceAssignment {
       std::initializer_list<int64_t> local)
       : local(local) {}
   DeviceAssignment(std::vector<int64_t> local,   // INT_VEC_OK
-                   std::vector<int64_t> global)  // INT_VEC_OK
-      : local(std::move(local)), global(std::move(global)) {}
+                   std::vector<int64_t> global,  // INT_VEC_OK
+                   bool contains_pallas_kernel = false)
+      : local(std::move(local)),
+        global(std::move(global)),
+        contains_pallas_kernel(contains_pallas_kernel) {}
 
   // The op's devices, by rank.
   std::vector<int64_t> local;  // INT_VEC_OK
@@ -45,6 +48,9 @@ struct DeviceAssignment {
   // in a program that combines process groups, the collective is tiled over
   // them. Empty otherwise.
   std::vector<int64_t> global;  // INT_VEC_OK
+  // Whether this op is (or contains, e.g. in a scan body) a Pallas kernel with
+  // a fixed device assignment that cannot be overridden.
+  bool contains_pallas_kernel = false;
 };
 
 }  // namespace torch_tpu

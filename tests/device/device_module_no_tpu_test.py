@@ -63,7 +63,7 @@ class NoTpuDeviceModuleTest(
     ].cell_contents = False
     with self.assertWarnsRegex(
         DeprecationWarning,
-        r"^<TorchTpu/ApiStage/DeprecatedApi/> get_device_name is deprecated as"
+        r"^//TorchTpu/ApiStage/DeprecatedApi// get_device_name is deprecated as"
         r" of TorchTPU 0\.2\.1 and will be removed in a future release: Use"
         r" torch\.tpu\.get_device_properties\(\)\.name instead, which mirrors"
         r" torch\.cuda\.get_device_properties\(\)\.name\.$",
@@ -79,22 +79,64 @@ class NoTpuDeviceModuleTest(
       torch.tpu.get_device_properties()
 
   @parameterized.named_parameters(
-      ("v5p", hardware.TpuSpec.V5P, 4, 8),
-      ("v5e", hardware.TpuSpec.V5E, 0, None),
-      ("v6e", hardware.TpuSpec.V6E, 2, 8),
-      ("v7", hardware.TpuSpec.V7, 2, 16),
-      ("v8i", hardware.TpuSpec.V8I, 1, 16),
-      ("v8t", hardware.TpuSpec.V8T, 2, 16),
+      (
+          "v5p",
+          hardware.TpuSpec.for_version(hardware.TpuVersion.V5P),
+          hardware.TpuVersion.V5P,
+          4,
+          8,
+      ),
+      (
+          "v5e",
+          hardware.TpuSpec.for_version(hardware.TpuVersion.V5E),
+          hardware.TpuVersion.V5E,
+          0,
+          None,
+      ),
+      (
+          "v6e",
+          hardware.TpuSpec.for_version(hardware.TpuVersion.V6E),
+          hardware.TpuVersion.V6E,
+          2,
+          8,
+      ),
+      (
+          "v7",
+          hardware.TpuSpec.for_version(hardware.TpuVersion.V7),
+          hardware.TpuVersion.V7,
+          2,
+          16,
+      ),
+      (
+          "v8i",
+          hardware.TpuSpec.for_version(hardware.TpuVersion.V8I),
+          hardware.TpuVersion.V8I,
+          1,
+          16,
+      ),
+      (
+          "v8t",
+          hardware.TpuSpec.for_version(hardware.TpuVersion.V8T),
+          hardware.TpuVersion.V8T,
+          2,
+          16,
+      ),
   )
   def test_get_device_properties_uses_tpu_spec(
       self,
       tpu_spec,
+      expected_version,
       expected_sparse_cores_per_device,
       expected_sparse_core_simd_width,
   ):
     with mock.patch.object(hardware, "get_tpu_spec", return_value=tpu_spec):
       props = torch.tpu.get_device_properties()
     self.assertEqual(props.name, tpu_spec.name)
+    self.assertIs(props.version, expected_version)
+    self.assertIs(
+        props.version, getattr(torch.tpu.TpuVersion, expected_version.name)
+    )
+    self.assertFalse(hasattr(props, "kind"))
     self.assertEqual(props.devices_per_chip, tpu_spec.devices_per_chip)
     self.assertEqual(props.hbm_bytes_per_chip, tpu_spec.hbm_bytes_per_chip)
     self.assertEqual(props.hbm_bytes_per_device, tpu_spec.hbm_bytes_per_device)
@@ -112,12 +154,12 @@ class NoTpuDeviceModuleTest(
       self.assertEqual(props.topology(num_devices), topology)
 
   def test_device_properties_multi_processor_count_is_deprecated(self):
-    tpu_spec = hardware.TpuSpec.V7
+    tpu_spec = hardware.TpuSpec.for_version(hardware.TpuVersion.V7)
     with mock.patch.object(hardware, "get_tpu_spec", return_value=tpu_spec):
       props = torch.tpu.get_device_properties()
     with self.assertWarnsRegex(
         DeprecationWarning,
-        r"^<TorchTpu/ApiStage/DeprecatedApi/> multi_processor_count is"
+        r"^//TorchTpu/ApiStage/DeprecatedApi// multi_processor_count is"
         r" deprecated as of TorchTPU 0\.2\.1 and will be removed in a future"
         r" release: multi_processor_count is a CUDA concept with no TPU"
         r" equivalent\.$",
@@ -125,17 +167,25 @@ class NoTpuDeviceModuleTest(
       self.assertEqual(props.multi_processor_count, 1)
 
   def test_device_properties_total_memory_is_deprecated(self):
-    tpu_spec = hardware.TpuSpec.V7
+    tpu_spec = hardware.TpuSpec.for_version(hardware.TpuVersion.V7)
     with mock.patch.object(hardware, "get_tpu_spec", return_value=tpu_spec):
       props = torch.tpu.get_device_properties()
     with self.assertWarnsRegex(
         DeprecationWarning,
-        r"^<TorchTpu/ApiStage/DeprecatedApi/> total_memory is deprecated as of"
+        r"^//TorchTpu/ApiStage/DeprecatedApi// total_memory is deprecated as of"
         r" TorchTPU 0\.2\.1 and will be removed in a future release: Use"
         r" torch\.tpu\.get_device_properties\(\)\.hbm_bytes_per_device"
         r" instead\.$",
     ):
       self.assertEqual(props.total_memory, tpu_spec.hbm_bytes_per_device)
+
+  def test_stream_is_type(self):
+    self.assertTrue(issubclass(torch.tpu.Stream, torch.Stream))
+    self.assertIsInstance(None, torch.tpu.Stream | None)
+
+  def test_event_is_type(self):
+    self.assertTrue(issubclass(torch.tpu.Event, torch.Event))
+    self.assertIsInstance(None, torch.tpu.Event | None)
 
 
 if __name__ == "__main__":

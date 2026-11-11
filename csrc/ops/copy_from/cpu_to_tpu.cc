@@ -16,7 +16,6 @@
 
 #include "csrc/ops/copy_from/cpu_to_tpu.h"
 
-#include <memory>
 #include <optional>
 #include <utility>
 
@@ -171,10 +170,9 @@ absl::Status CopyCpuToTpu(const at::Tensor& src, const at::Tensor& dest,
 
   if (transfer_sync_mode == TransferSyncMode::kEagerBlocking) {
     TT_ASSIGN_OR_RETURN(
-        std::shared_ptr<EventSnapshot> snapshot,
-        MaterializeCurrentStream(MaterializationReason::kCpuTransfer).Await());
-    TT_RETURN_IF_ERROR(snapshot->Synchronize());
-    TT_RETURN_IF_ERROR(SyncAndReturnStickyError());
+        EventSnapshot snapshot,
+        MaterializeCurrentStream(MaterializationReason::kCpuTransfer));
+    TT_RETURN_IF_ERROR(snapshot.Synchronize());
   }
   return absl::OkStatus();
 }

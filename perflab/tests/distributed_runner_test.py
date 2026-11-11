@@ -14,9 +14,9 @@
 
 """Unit tests for standalone distributed benchmark runner."""
 
+import contextlib
 import importlib.util
 import os
-import shutil
 import sys
 import types
 from unittest import mock
@@ -41,6 +41,7 @@ from perflab import step_lib
 from perflab import steps
 from perflab import target as target_lib
 from perflab import torch_device_ops
+from perflab import workload as workload_lib
 from tests import seed_test_utils
 
 
@@ -51,19 +52,27 @@ def setUpModule():
 class _FakeDistRun:
   """Stateful fake for `distributed_utils.dist_run`.
 
-  Records the spec name of every dispatched target, simulates a worker rank
-  raising (as surfaced by `torch.multiprocessing.spawn`) for specs listed in
-  `failing_specs`, and simulates a factory raising `UnsupportedBenchmark` for
-  specs listed in `unsupported_specs`.
+  Records the spec name of every dispatched target, simulates rank 0 writing
+  `METRICS` once every rank has measured for specs listed in `measured_specs`,
+  simulates a worker rank raising (as surfaced by `torch.multiprocessing.spawn`)
+  for specs listed in `failing_specs`, and simulates a factory raising
+  `UnsupportedBenchmark` for specs listed in `unsupported_specs`. A spec in both
+  `measured_specs` and `failing_specs` fails after measuring, e.g. in teardown.
   """
+
+  METRICS = metrics_lib.PerformanceMetrics(
+      e2e_wall_time_seconds=1.0, first_step_time_seconds=0.5
+  )
 
   def __init__(
       self,
       failing_specs: set[str],
       unsupported_specs: frozenset[str] = frozenset(),
+      measured_specs: frozenset[str] = frozenset(),
   ):
     self._failing_specs = failing_specs
     self._unsupported_specs = unsupported_specs
+    self._measured_specs = measured_specs
     self.ran = []
 
   def __call__(
@@ -74,9 +83,12 @@ class _FakeDistRun:
       mode_value,
       platform_name,
       skip_reason_file,
+      metrics_file,
   ):
     del nproc_per_node, fn, mode_value, platform_name
     self.ran.append(spec_name)
+    if spec_name in self._measured_specs:
+      distributed_runner._write_metrics(metrics_file, self.METRICS)
     if spec_name in self._unsupported_specs:
       # What rank 0 does when the factory raises UnsupportedBenchmark.
       with open(skip_reason_file, "w") as f:
@@ -87,6 +99,33 @@ class _FakeDistRun:
           error_index=0,
           error_pid=1234,
       )
+
+
+class _FakeProcessGroup:
+  """Fake `torch.distributed` process group, as seen by rank 0.
+
+  If `peer_fails_after_measure`, a peer rank fails once rank 0 has measured
+  (i.e. once `measured` is set), so every later barrier raises.
+  """
+
+  def __init__(self, peer_fails_after_measure: bool):
+    self._peer_fails_after_measure = peer_fails_after_measure
+    self.initialized = False
+    self.measured = False
+
+  def init_process_group(self, backend: str) -> None:
+    del backend
+    self.initialized = True
+
+  def is_initialized(self) -> bool:
+    return self.initialized
+
+  def barrier(self) -> None:
+    if self.measured and self._peer_fails_after_measure:
+      raise RuntimeError("peer rank failed")
+
+  def destroy_process_group(self) -> None:
+    self.initialized = False
 
 
 def _read_test_xml(path: str) -> dict[str, tuple[str, str]]:
@@ -227,6 +266,8 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
     fake_spec.stepper_kwargs = {}
     fake_spec.compile_config = None
     fake_spec.skipped_run_modes = set()
+    # No workload, so the runner does not query the world size.
+    fake_spec.workload = None
 
     registry_lib.REGISTRY["dummy"] = fake_spec
 
@@ -287,6 +328,8 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
     fake_spec.stepper_kwargs = {}
     fake_spec.compile_config = None
     fake_spec.skipped_run_modes = set()
+    # No workload, so the runner does not query the world size.
+    fake_spec.workload = None
 
     registry_lib.REGISTRY["dummy_gpu"] = fake_spec
 
@@ -314,6 +357,108 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
     mock_measure.assert_called_once()
     mock_compiler_reset.assert_called_once()
     mock_destroy_group.assert_called_once()
+
+  @parameterized.named_parameters(
+      # The 4 ranks of a tensor-parallel replica all process its 2 x 128 tokens,
+      # so each device exports 1/4 of them.
+      (
+          "tensor_parallel",
+          {"devices_per_replica": lambda world_size: world_size},
+          2 * 128 / 4,
+      ),
+      # By default each rank is a replica that processes its own batch, e.g.
+      # with data parallelism (FSDP).
+      ("one_device_per_replica", {}, 2 * 128),
+  )
+  @mock.patch.dict(registry_lib.REGISTRY, {})
+  @mock.patch.object(torch_device_ops, "TorchDeviceOps")
+  @mock.patch.object(torch.distributed, "init_process_group")
+  @mock.patch.object(torch.distributed, "barrier")
+  @mock.patch.object(torch.distributed, "destroy_process_group")
+  @mock.patch.object(torch.distributed, "is_initialized", return_value=True)
+  @mock.patch.object(torch.distributed, "get_world_size", return_value=4)
+  @mock.patch.object(torch.compiler, "reset")
+  def test_run_single_target_task_exports_per_device_throughput(
+      self,
+      spec_kwargs,
+      expected_tokens_per_step,
+      *unused_mocks,
+  ):
+    registry_lib.REGISTRY["dummy_tp"] = registry_lib.BenchmarkSpec(
+        name="dummy_tp",
+        factory=lambda ctx: (torch.nn.Linear(2, 2), (), {}, None),
+        stepper=step_lib.StepperType.FORWARD,
+        presubmit=registry_lib.PresubmitPolicy.RUN,
+        workload=lambda ctx: workload_lib.Workload(2, 128),
+        **spec_kwargs,
+    )
+    metrics_file = os.path.join(self.create_tempdir().full_path, "metrics")
+
+    with (
+        mock.patch.dict(os.environ, {"RANK": "0"}),
+        mock.patch.object(
+            measure_lib,
+            "measure",
+            return_value=metrics_lib.PerformanceMetrics(
+                e2e_wall_time_seconds=10.0,
+                first_step_time_seconds=1.0,
+                post_warmup_step_time_seconds=0.5,
+            ),
+        ),
+    ):
+      distributed_runner._run_single_target_task(
+          spec_name="dummy_tp",
+          mode_value="eager_default",
+          platform_name="v7_2x2x1",
+          metrics_file=metrics_file,
+      )
+
+    metrics = distributed_runner._read_metrics(metrics_file)
+    self.assertIsNotNone(metrics)
+    metric_map = metrics.metric_map()
+    self.assertEqual(metric_map["batch_size"], 2.0)
+    self.assertEqual(metric_map["seq_len"], 128.0)
+    self.assertEqual(metric_map["tokens_per_step"], expected_tokens_per_step)
+    self.assertEqual(
+        metric_map["tokens_per_second"], expected_tokens_per_step / 0.5
+    )
+
+  @parameterized.named_parameters(
+      ("not_dividing_world_size", 3),
+      ("zero", 0),
+  )
+  @mock.patch.dict(registry_lib.REGISTRY, {})
+  @mock.patch.object(torch_device_ops, "TorchDeviceOps")
+  @mock.patch.object(torch.distributed, "init_process_group")
+  @mock.patch.object(torch.distributed, "barrier")
+  @mock.patch.object(torch.distributed, "destroy_process_group")
+  @mock.patch.object(torch.distributed, "is_initialized", return_value=True)
+  @mock.patch.object(torch.distributed, "get_world_size", return_value=4)
+  @mock.patch.object(torch.compiler, "reset")
+  def test_run_single_target_task_rejects_invalid_devices_per_replica(
+      self, devices_per_replica, *unused_mocks
+  ):
+    registry_lib.REGISTRY["dummy_tp"] = registry_lib.BenchmarkSpec(
+        name="dummy_tp",
+        factory=lambda ctx: (torch.nn.Linear(2, 2), (), {}, None),
+        stepper=step_lib.StepperType.FORWARD,
+        presubmit=registry_lib.PresubmitPolicy.RUN,
+        workload=lambda ctx: workload_lib.Workload(2, 128),
+        devices_per_replica=lambda world_size: devices_per_replica,
+    )
+
+    with (
+        mock.patch.dict(os.environ, {"RANK": "0"}),
+        self.assertRaisesRegex(  # ASSERT_RAISES_OK=benchmark
+            ValueError,
+            f"{devices_per_replica} devices per replica, which must be >= 1",
+        ),
+    ):
+      distributed_runner._run_single_target_task(
+          spec_name="dummy_tp",
+          mode_value="eager_default",
+          platform_name="v7_2x2x1",
+      )
 
   @mock.patch.dict(registry_lib.REGISTRY, {})
   @mock.patch.object(target_lib, "make_target")
@@ -375,6 +520,8 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
     fake_spec.stepper_kwargs = {}
     fake_spec.compile_config = None
     fake_spec.skipped_run_modes = set()
+    # No workload, so the runner does not query the world size.
+    fake_spec.workload = None
 
     registry_lib.REGISTRY["dummy"] = fake_spec
 
@@ -423,6 +570,7 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
         "dummy",
         "eager_default",
         "v7_2x2x2",
+        mock.ANY,
         mock.ANY,
     )
 
@@ -493,6 +641,7 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
         "eager_default",
         "v7_2x2x1",
         mock.ANY,
+        mock.ANY,
     )
 
   def test_module_imports_without_torch_tpu_module(self):
@@ -536,6 +685,7 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
         "eager_default",
         "b200_8",
         mock.ANY,
+        mock.ANY,
     )
 
   def test_main_isolates_failed_target_and_exits_nonzero(self):
@@ -543,7 +693,9 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
     exported = []
     registry = {
         "broken": types.SimpleNamespace(
-            name="broken", skipped_run_modes=frozenset()
+            name="broken",
+            skipped_run_modes=frozenset(),
+            microbenchmark_name="batch_size_1",
         ),
         "healthy": types.SimpleNamespace(
             name="healthy", skipped_run_modes=frozenset()
@@ -577,13 +729,221 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
     self.assertEqual(fake_dist_run.ran, ["broken", "healthy"])
     # The failed target is reported once as FAILED to the export path.
     self.assertEqual(
-        [(d.spec_name, d.run_mode, d.succeeded) for d in exported],
-        [("broken", common.RunMode.EAGER_DEFAULT, False)],
+        [
+            (d.spec_name, d.run_mode, d.succeeded, d.microbenchmark_name)
+            for d in exported
+        ],
+        [("broken", common.RunMode.EAGER_DEFAULT, False, "batch_size_1")],
     )
     summary = "\n".join(logs.output)
     self.assertRegex(summary, r"broken_eager_default\s+FAILED")
     self.assertRegex(summary, r"healthy_eager_default\s+PASSED")
     self.assertIn("1 passed, 1 failed, 0 skipped", summary)
+
+  def test_discovered_modules_import(self):
+    self.assertEqual(distributed_runner._IMPORT_FAILURES, ())
+
+  def _run_main_with_import_failure(
+      self, error: Exception, test_filter: str
+  ) -> tuple[_FakeDistRun, SystemExit]:
+    """Runs main() with a model import failure and one healthy target."""
+    failure = discovery_lib.ImportFailure(
+        module="torch_tpu.perflab.distributed_models.broken", error=error
+    )
+    fake_dist_run = _FakeDistRun(failing_specs=set())
+    registry = {
+        "healthy": types.SimpleNamespace(
+            name="healthy", skipped_run_modes=frozenset()
+        ),
+    }
+    with (
+        mock.patch.dict(registry_lib.REGISTRY, registry, clear=True),
+        mock.patch.dict(
+            os.environ,
+            {
+                "BENCHMARK_PLATFORM": "b200_8",
+                "TESTBRIDGE_TEST_ONLY": test_filter,
+            },
+        ),
+        mock.patch.object(
+            distributed_runner.distributed_utils, "dist_run", fake_dist_run
+        ),
+    ):
+      # pyformat: disable
+      with self.assertRaises(SystemExit) as exit_cm:  # ASSERT_RAISES_OK=Runner must exit non-zero when a model fails to import.
+        distributed_runner.main(
+            ["distributed_runner"], import_failures=(failure,)
+        )
+      # pyformat: enable
+    return fake_dist_run, exit_cm.exception
+
+  @parameterized.named_parameters(
+      ("import_error", ImportError("cannot import name 'Foo'")),
+      (
+          "missing_module",
+          ModuleNotFoundError(
+              "No module named 'transformers'", name="transformers"
+          ),
+      ),
+      (
+          "missing_torchtitan",
+          ModuleNotFoundError(
+              "No module named 'torchtitan.experiments'",
+              name="torchtitan.experiments",
+          ),
+      ),
+  )
+  def test_main_fails_on_model_import_error(self, error):
+    fake_dist_run, exit_exception = self._run_main_with_import_failure(
+        error, test_filter="healthy_eager_default"
+    )
+
+    self.assertNotEqual(exit_exception.code, 0)
+    # The import failure does not prevent the other benchmarks from running.
+    self.assertEqual(fake_dist_run.ran, ["healthy"])
+    cases = _read_test_xml(self.xml_path)
+    self.assertEqual(cases["benchmark_imports"][0], "FAILURE")
+    self.assertIn(
+        "torch_tpu.perflab.distributed_models.broken",
+        cases["benchmark_imports"][1],
+    )
+    self.assertEqual(cases["healthy_eager_default"], ("PASSED", ""))
+
+  def test_main_reports_import_error_when_filter_matches_no_target(self):
+    # The filter may only select targets of the module that failed to import.
+    fake_dist_run, exit_exception = self._run_main_with_import_failure(
+        ImportError("cannot import name 'Foo'"),
+        test_filter="broken_eager_default",
+    )
+
+    self.assertNotEqual(exit_exception.code, 0)
+    self.assertEqual(fake_dist_run.ran, [])
+    cases = _read_test_xml(self.xml_path)
+    self.assertEqual(list(cases), ["benchmark_imports"])
+    self.assertEqual(cases["benchmark_imports"][0], "FAILURE")
+
+  def test_main_exports_one_result_per_measured_target(self):
+    fake_dist_run = _FakeDistRun(
+        failing_specs={"teardown_broken"},
+        measured_specs=frozenset({"teardown_broken", "healthy"}),
+    )
+    exported = []
+    registry = {
+        name: types.SimpleNamespace(
+            name=name, skipped_run_modes=frozenset(), microbenchmark_name=None
+        )
+        for name in ("teardown_broken", "healthy")
+    }
+
+    with (
+        mock.patch.dict(registry_lib.REGISTRY, registry, clear=True),
+        mock.patch.dict(
+            os.environ,
+            {
+                "BENCHMARK_PLATFORM": "b200_8",
+                "TESTBRIDGE_TEST_ONLY": (
+                    "teardown_broken_compiled healthy_compiled"
+                ),
+            },
+        ),
+        mock.patch.object(
+            distributed_runner.distributed_utils, "dist_run", fake_dist_run
+        ),
+        mock.patch.object(export_lib, "export", exported.append),
+        self.assertLogs(level="INFO") as logs,
+        self.assertRaises(
+            SystemExit
+        ),  # ASSERT_RAISES_OK=Runner must exit non-zero when a rank fails.
+    ):
+      distributed_runner.main(["distributed_runner"])
+
+    # Every rank measured both targets, so each has one record with its
+    # metrics, even though teardown_broken failed afterwards.
+    self.assertEqual(
+        [(d.spec_name, d.succeeded, d.metrics) for d in exported],
+        [
+            ("teardown_broken", True, _FakeDistRun.METRICS),
+            ("healthy", True, _FakeDistRun.METRICS),
+        ],
+    )
+    summary = "\n".join(logs.output)
+    self.assertRegex(
+        summary,
+        r"teardown_broken_compiled\s+FAILED\s+RuntimeError: factory failed",
+    )
+    self.assertRegex(summary, r"healthy_compiled\s+PASSED")
+
+  @parameterized.named_parameters(
+      ("all_ranks_measure", False, True),
+      ("peer_fails_after_measuring", True, False),
+  )
+  def test_run_single_target_task_writes_metrics_once_all_ranks_measured(
+      self, peer_fails, writes_metrics
+  ):
+    process_group = _FakeProcessGroup(peer_fails_after_measure=peer_fails)
+    metrics = metrics_lib.PerformanceMetrics(
+        e2e_wall_time_seconds=1.0, first_step_time_seconds=0.5
+    )
+
+    def fake_measure(*args, **kwargs):
+      del args, kwargs
+      process_group.measured = True
+      return metrics
+
+    spec = registry_lib.BenchmarkSpec(
+        name="dummy",
+        factory=lambda ctx: (torch.nn.Identity(), (), {}, None),
+        stepper=step_lib.StepperType.FORWARD,
+        presubmit=registry_lib.PresubmitPolicy.RUN,
+    )
+    metrics_file = os.path.join(self.create_tempdir().full_path, "metrics")
+    exported = []
+    expected_error = (
+        self.assertRaisesRegex(  # ASSERT_RAISES_OK=A peer failure fails rank 0.
+            RuntimeError, "peer rank failed"
+        )
+        if peer_fails
+        else contextlib.nullcontext()
+    )
+
+    with (
+        mock.patch.dict(registry_lib.REGISTRY, {"dummy": spec}),
+        mock.patch.dict(os.environ, {"RANK": "0"}),
+        mock.patch.object(
+            torch_device_ops, "TorchDeviceOps", lambda target: None
+        ),
+        mock.patch.object(measure_lib, "measure", fake_measure),
+        mock.patch.object(
+            torch.distributed,
+            "init_process_group",
+            process_group.init_process_group,
+        ),
+        mock.patch.object(
+            torch.distributed, "is_initialized", process_group.is_initialized
+        ),
+        mock.patch.object(torch.distributed, "barrier", process_group.barrier),
+        mock.patch.object(
+            torch.distributed,
+            "destroy_process_group",
+            process_group.destroy_process_group,
+        ),
+        mock.patch.object(export_lib, "export", exported.append),
+        expected_error,
+    ):
+      distributed_runner._run_single_target_task(
+          spec_name="dummy",
+          mode_value="eager_default",
+          platform_name="cpu",
+          metrics_file=metrics_file,
+      )
+
+    # The launcher exports the metrics, so the worker never does.
+    self.assertEqual(exported, [])
+    self.assertEqual(
+        distributed_runner._read_metrics(metrics_file),
+        metrics if writes_metrics else None,
+    )
+    self.assertFalse(process_group.initialized)
 
   def test_main_reports_unsupported_mode_as_skipped(self):
     fake_dist_run = _FakeDistRun(failing_specs=set())
@@ -809,7 +1169,9 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
   def test_main_writes_test_xml_per_target(self):
     fake_dist_run = _FakeDistRun(failing_specs={"broken"})
     registry = {
-        name: types.SimpleNamespace(name=name, skipped_run_modes=frozenset())
+        name: types.SimpleNamespace(
+            name=name, skipped_run_modes=frozenset(), microbenchmark_name=None
+        )
         for name in ("broken", "healthy")
     }
 
@@ -1040,13 +1402,195 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
     self.assertLen(eager_state_resets, expected_tpu_cleanups)
     self.assertLen(tpu_cache_clears, expected_tpu_cleanups)
 
-  @mock.patch.object(shutil, "rmtree")
-  def test_clear_persistent_compilation_caches(self, mock_rmtree):
-    with mock.patch("glob.glob", return_value=["/tmp/torchinductor_test"]):
-      distributed_runner._clear_persistent_compilation_caches()
+  def _enter_fake_tier2_cache_root(self) -> str:
+    """Returns a temporary Tier-2 cache root.
 
-    mock_rmtree.assert_any_call("/dev/shm/torch_tpu_cache", ignore_errors=True)
-    mock_rmtree.assert_any_call("/tmp/torchinductor_test", ignore_errors=True)
+    Also unsets the env vars that enable the Tier-2 cache, for the duration of
+    the test.
+    """
+    self.enter_context(mock.patch.dict(os.environ))
+    for name in (
+        "TORCH_TPU_TIER2_COMPILATION_CACHE",
+        "TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT",
+        "WORLD_SIZE",
+    ):
+      os.environ.pop(name, None)
+    return self.create_tempdir().full_path
+
+  def test_owned_compilation_caches_spares_shared_caches(self):
+    tier2_root = self._enter_fake_tier2_cache_root()
+    # Caches of other jobs on the host, which must survive the target.
+    shared_tier2_cache = os.path.join(tier2_root, "default")
+    os.makedirs(shared_tier2_cache)
+    shared_inductor_cache = self.create_tempdir().full_path
+    os.environ["TORCHINDUCTOR_CACHE_DIR"] = shared_inductor_cache
+
+    with distributed_runner._owned_compilation_caches(
+        8, tier2_cache_root=tier2_root
+    ):
+      inductor_cache = os.environ["TORCHINDUCTOR_CACHE_DIR"]
+      tier2_cache = os.path.join(
+          tier2_root, os.environ["TORCH_TPU_TIER2_COMPILATION_CACHE"]
+      )
+      # What the workers' compilations leave behind.
+      for cache in (inductor_cache, tier2_cache):
+        os.makedirs(cache, exist_ok=True)
+        with open(os.path.join(cache, "entry.bin"), "w") as f:
+          f.write("compiled")
+
+    self.assertFalse(os.path.exists(inductor_cache))
+    self.assertFalse(os.path.exists(tier2_cache))
+    self.assertTrue(os.path.isdir(shared_tier2_cache))
+    self.assertTrue(os.path.isdir(shared_inductor_cache))
+    self.assertEqual(
+        os.environ.get("TORCHINDUCTOR_CACHE_DIR"), shared_inductor_cache
+    )
+    self.assertNotIn("TORCH_TPU_TIER2_COMPILATION_CACHE", os.environ)
+
+  def test_owned_compilation_caches_are_fresh_per_target(self):
+    tier2_root = self._enter_fake_tier2_cache_root()
+    os.environ["TORCH_TPU_TIER2_COMPILATION_CACHE"] = "my_cache"
+
+    caches = []
+    for _ in range(2):
+      # An explicitly named Tier-2 cache is enabled even for a single process.
+      with distributed_runner._owned_compilation_caches(
+          1, tier2_cache_root=tier2_root
+      ):
+        caches.append((
+            os.environ["TORCHINDUCTOR_CACHE_DIR"],
+            os.environ["TORCH_TPU_TIER2_COMPILATION_CACHE"],
+        ))
+
+    self.assertNotEqual(caches[0][0], caches[1][0])
+    self.assertNotEqual(caches[0][1], caches[1][1])
+    # A user-named Tier-2 cache is neither reused nor deleted.
+    self.assertNotIn("my_cache", [name for _, name in caches])
+    self.assertEqual(
+        os.environ["TORCH_TPU_TIER2_COMPILATION_CACHE"], "my_cache"
+    )
+
+  def test_owned_compilation_caches_keep_tier2_cache_disabled(self):
+    tier2_root = self._enter_fake_tier2_cache_root()
+    os.environ["TORCH_TPU_TIER2_COMPILATION_CACHE"] = "disabled"
+
+    with distributed_runner._owned_compilation_caches(
+        8, tier2_cache_root=tier2_root
+    ):
+      tier2_cache_name = os.environ["TORCH_TPU_TIER2_COMPILATION_CACHE"]
+
+    self.assertEqual(tier2_cache_name, "disabled")
+
+  def test_owned_compilation_caches_keep_tier2_cache_off_for_single_process(
+      self,
+  ):
+    tier2_root = self._enter_fake_tier2_cache_root()
+    os.makedirs(os.path.join(tier2_root, "default"))
+
+    with distributed_runner._owned_compilation_caches(
+        1, tier2_cache_root=tier2_root
+    ):
+      env_during_target = dict(os.environ)
+
+    self.assertNotIn("TORCH_TPU_TIER2_COMPILATION_CACHE", env_during_target)
+    self.assertEqual(os.listdir(tier2_root), ["default"])
+
+  @parameterized.named_parameters(
+      dict(testcase_name="multi_host", world_size="16", uses_tier2_cache=True),
+      dict(testcase_name="single_rank", world_size="1", uses_tier2_cache=False),
+  )
+  def test_owned_compilation_caches_follow_worker_world_size(
+      self, world_size, uses_tier2_cache
+  ):
+    tier2_root = self._enter_fake_tier2_cache_root()
+    # The workers keep an inherited WORLD_SIZE over the per-node process count.
+    os.environ["WORLD_SIZE"] = world_size
+
+    with distributed_runner._owned_compilation_caches(
+        1 if uses_tier2_cache else 8, tier2_cache_root=tier2_root
+    ):
+      env_during_target = dict(os.environ)
+
+    self.assertEqual(
+        "TORCH_TPU_TIER2_COMPILATION_CACHE" in env_during_target,
+        uses_tier2_cache,
+    )
+
+  def test_owned_compilation_caches_own_tier2_cache_with_tier3_cache(self):
+    tier2_root = self._enter_fake_tier2_cache_root()
+    # The Tier-3 cache turns on the Tier-2 cache even for a single process.
+    os.environ["TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT"] = (
+        self.create_tempdir().full_path
+    )
+
+    with distributed_runner._owned_compilation_caches(
+        1, tier2_cache_root=tier2_root
+    ):
+      tier2_cache_name = os.environ["TORCH_TPU_TIER2_COMPILATION_CACHE"]
+
+    self.assertStartsWith(tier2_cache_name, "perflab_")
+
+  def test_owned_compilation_caches_removed_when_target_fails(self):
+    tier2_root = self._enter_fake_tier2_cache_root()
+
+    with self.assertRaisesRegex(RuntimeError, "target failed"):
+      with distributed_runner._owned_compilation_caches(
+          8, tier2_cache_root=tier2_root
+      ):
+        inductor_cache = os.environ["TORCHINDUCTOR_CACHE_DIR"]
+        tier2_cache = os.path.join(
+            tier2_root, os.environ["TORCH_TPU_TIER2_COMPILATION_CACHE"]
+        )
+        os.makedirs(tier2_cache)
+        raise RuntimeError("target failed")
+
+    self.assertFalse(os.path.exists(inductor_cache))
+    self.assertFalse(os.path.exists(tier2_cache))
+
+  def test_main_runs_each_target_with_its_own_compilation_caches(self):
+    tier2_root = self._enter_fake_tier2_cache_root()
+    # `main` takes no injected dependencies, so point it at the fake root.
+    self.enter_context(
+        mock.patch.object(distributed_runner, "_TIER2_CACHE_ROOT", tier2_root)
+    )
+    seen_caches = []
+
+    def fake_dist_run(*args):
+      del args
+      inductor_cache = os.environ["TORCHINDUCTOR_CACHE_DIR"]
+      tier2_cache = os.path.join(
+          tier2_root, os.environ["TORCH_TPU_TIER2_COMPILATION_CACHE"]
+      )
+      # What the workers' compilations leave behind.
+      os.makedirs(tier2_cache)
+      seen_caches.append((inductor_cache, tier2_cache))
+
+    registry = {
+        name: types.SimpleNamespace(name=name, skipped_run_modes=frozenset())
+        for name in ("first", "second")
+    }
+    with (
+        mock.patch.dict(registry_lib.REGISTRY, registry, clear=True),
+        mock.patch.dict(
+            os.environ,
+            {
+                "BENCHMARK_PLATFORM": "b200_8",
+                "TESTBRIDGE_TEST_ONLY": (
+                    "first_eager_default second_eager_default"
+                ),
+            },
+        ),
+        mock.patch.object(
+            distributed_runner.distributed_utils, "dist_run", fake_dist_run
+        ),
+    ):
+      distributed_runner.main(["distributed_runner"])
+
+    self.assertLen(seen_caches, 2)
+    self.assertLen(set(seen_caches), 2)
+    for inductor_cache, tier2_cache in seen_caches:
+      self.assertFalse(os.path.exists(inductor_cache))
+      self.assertFalse(os.path.exists(tier2_cache))
 
 
 if __name__ == "__main__":

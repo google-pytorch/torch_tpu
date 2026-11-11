@@ -14,6 +14,12 @@
 
 """Module for parsing wheel dependencies."""
 
+def _unquote_toml_string(line):
+    s = line.strip().rstrip(",").strip()
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in ('"', "'"):
+        return s[1:-1].strip()
+    return s
+
 def _torch_tpu_deps_repo_impl(ctx):
     # Parse pyproject.toml groupings
     pyproject_path = ctx.path(ctx.attr.pyproject_toml)
@@ -45,7 +51,7 @@ def _torch_tpu_deps_repo_impl(ctx):
                 if line == "]":
                     current_list_name = None
                 else:
-                    raw_dep = line.strip(",").strip('"').strip("'").strip()
+                    raw_dep = _unquote_toml_string(line)
                     if raw_dep:
                         dependencies.append(raw_dep)
 
@@ -59,7 +65,7 @@ def _torch_tpu_deps_repo_impl(ctx):
                 if line == "]":
                     current_list_name = None
                 else:
-                    raw_dep = line.strip(",").strip('"').strip("'").strip()
+                    raw_dep = _unquote_toml_string(line)
                     if raw_dep:
                         optional_deps[current_list_name].append(raw_dep)
 

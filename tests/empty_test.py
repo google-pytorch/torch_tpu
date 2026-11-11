@@ -42,7 +42,7 @@ class EmptyTest(seed_test_utils.RepeatableTest):
     with execution_mode.set_eager_mode(self.blocking_mode):
       empty = torch.empty(128, device="tpu")
     self.assertFalse(is_materialized_or_materializing(empty))
-    sync.synchronize(empty)
+    sync.synchronize(empty, wait=True)
     self.assertTrue(is_materialized_or_materializing(empty))
 
   def test_not_implicitly_materialized(self):

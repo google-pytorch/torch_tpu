@@ -28,7 +28,6 @@ torch_tpu_cc_library(
     srcs = ["masked_scatter_aten_kernels.cc"],
     hdrs = ["masked_scatter_aten_kernels.h"],
     deps = [
-        ":masked_scatter",
         "//csrc/common:cache_key",
         "//csrc/common:dimension_types",
         "//csrc/common:dtype",
@@ -38,27 +37,12 @@ torch_tpu_cc_library(
         "//csrc/eager:op_dispatcher",
         "//csrc/ops:op_builder_utils",
         "//csrc/ops:op_names",
+        "//csrc/ops/cumsum",
+        "//csrc/ops/index_select",
         "//csrc/ops/macros:kernel",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
         "//shims/torch/c10/core:base_headers",
-        "@com_google_absl//absl/status:statusor",
-        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
-        "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
-    ],
-)
-
-torch_tpu_cc_library(
-    name = "masked_scatter",
-    srcs = ["masked_scatter.cc"],
-    hdrs = ["masked_scatter.h"],
-    deps = [
-        "//csrc/common:dimension_types",
-        "//csrc/common:error_utils",
-        "//csrc/common:utils",
-        "//csrc/ops:op_builder_utils",
-        "//csrc/ops/cumsum",
-        "//csrc/ops/index_select",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/types:span",
         "@llvm-project//llvm:Support",

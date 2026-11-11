@@ -17,6 +17,7 @@
 #include "csrc/internal/mosaic/kiln/core/control_flow.h"
 
 #include <cstddef>
+#include <string_view>
 #include <type_traits>
 #include <variant>
 
@@ -25,6 +26,7 @@
 #include "csrc/internal/mosaic/kiln/core/context.h"
 #include "csrc/internal/mosaic/kiln/core/dtype.h"
 #include "csrc/internal/mosaic/kiln/core/index_arg.h"
+#include "csrc/internal/mosaic/kiln/core/mlir_utils.h"
 #include "csrc/internal/mosaic/kiln/core/scalar.h"
 #include "csrc/internal/mosaic/kiln/core/shape.h"
 #include "csrc/internal/mosaic/kiln/core/tile.h"
@@ -38,6 +40,7 @@
 #include "mlir/IR/Block.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/Location.h"
 #include "mlir/IR/TypeRange.h"
 #include "mlir/IR/Value.h"
 #include "mlir/IR/ValueRange.h"
@@ -45,19 +48,6 @@
 
 namespace torch_tpu::kiln {
 namespace {
-
-mlir::Value ToIndex(mlir::ImplicitLocOpBuilder& b, const IndexArg& arg) {
-  if (arg.IsInt()) {
-    return mlir::arith::ConstantOp::create(b, b.getIndexAttr(arg.AsInt()));
-  }
-  Scalar s = arg.ToScalar();
-  if (s.dtype().IsUnsigned()) {
-    return mlir::arith::IndexCastUIOp::create(b, b.getIndexType(),
-                                              internal::unwrap(s));
-  }
-  return mlir::arith::IndexCastOp::create(b, b.getIndexType(),
-                                          internal::unwrap(s));
-}
 
 void ValidateLoopStep(const IndexArg& step) {
   if (step.IsInt()) {
@@ -76,16 +66,15 @@ void ValidateLoopStep(const IndexArg& step) {
   }
 }
 
-// The value of a `LoopVar`.
-using LoopValue = std::variant<Scalar, Tile>;
-using LoopValues = llvm::SmallVector<LoopValue, 4>;
+using internal::ControlFlowValue;
+using internal::ControlFlowValues;
 
 // The current values of `vars`.
-LoopValues Load(llvm::ArrayRef<LoopVar> vars) {
-  LoopValues values;
+ControlFlowValues Load(llvm::ArrayRef<LoopVar> vars) {
+  ControlFlowValues values;
   for (const LoopVar& var : vars) {
     values.push_back(std::visit(
-        [](auto* p) -> LoopValue {
+        [](auto* p) -> ControlFlowValue {
           ABSL_CHECK(p != nullptr)  // CRASH_OK
               << "For() loop variables must not be null";
           return *p;
@@ -95,50 +84,97 @@ LoopValues Load(llvm::ArrayRef<LoopVar> vars) {
   return values;
 }
 
+// Wraps each of `values` with the kind and dtype of the matching `prototypes`.
+ControlFlowValues Wrap(mlir::ValueRange values,
+                       llvm::ArrayRef<ControlFlowValue> prototypes) {
+  ControlFlowValues wrapped;
+  wrapped.reserve(prototypes.size());
+  for (auto [value, prototype] : llvm::zip_equal(values, prototypes)) {
+    wrapped.push_back(std::visit(
+        [value](const auto& p) -> ControlFlowValue {
+          return internal::wrap<std::decay_t<decltype(p)>>(value, p.dtype());
+        },
+        prototype));
+  }
+  return wrapped;
+}
+
 // Binds each of `vars` to the matching `values`, with the kind and dtype of the
 // matching `prototypes`.
 void Bind(llvm::ArrayRef<LoopVar> vars, mlir::ValueRange values,
-          llvm::ArrayRef<LoopValue> prototypes) {
-  for (auto [var, value, prototype] :
-       llvm::zip_equal(vars, values, prototypes)) {
+          llvm::ArrayRef<ControlFlowValue> prototypes) {
+  for (auto [var, value] : llvm::zip_equal(vars, Wrap(values, prototypes))) {
     std::visit(
-        [value, &prototype](auto* p) {
-          using T = std::remove_pointer_t<decltype(p)>;
-          *p = internal::wrap<T>(value, std::get<T>(prototype).dtype());
+        [&value](auto* p) {
+          *p = std::get<std::remove_pointer_t<decltype(p)>>(value);
         },
         var);
   }
 }
 
-llvm::SmallVector<mlir::Value, 4> Unwrap(llvm::ArrayRef<LoopValue> values) {
+llvm::SmallVector<mlir::Value, 4> Unwrap(
+    llvm::ArrayRef<ControlFlowValue> values) {
   llvm::SmallVector<mlir::Value, 4> unwrapped;
-  for (const LoopValue& v : values) {
+  for (const ControlFlowValue& v : values) {
     unwrapped.push_back(
         std::visit([](const auto& x) { return internal::unwrap(x); }, v));
   }
   return unwrapped;
 }
 
-// Checks that each loop variable kept its dtype and shape.
-void ValidateLoopValues(llvm::ArrayRef<LoopValue> init,
-                        llvm::ArrayRef<LoopValue> next) {
+// Checks that each of `next` has the dtype and shape of the matching `init`.
+// `what` names the values in error messages, e.g. "For() loop variable".
+void ValidateMatchingValues(llvm::ArrayRef<ControlFlowValue> init,
+                            llvm::ArrayRef<ControlFlowValue> next,
+                            std::string_view what) {
   for (size_t i = 0; i < init.size(); ++i) {
     if (const Scalar* want = std::get_if<Scalar>(&init[i])) {
       const DType got = std::get<Scalar>(next[i]).dtype();
       ABSL_CHECK(got == want->dtype())  // CRASH_OK
-          << "For() loop variable " << i << " changed dtype: expected "
-          << want->dtype() << ", got " << got;
+          << what << " " << i << " changed dtype: expected " << want->dtype()
+          << ", got " << got;
     } else {
       const Shape want_shape = std::get<Tile>(init[i]).shape();
       const Shape got = std::get<Tile>(next[i]).shape();
       ABSL_CHECK(got == want_shape)  // CRASH_OK
-          << "For() loop variable " << i << " changed shape: expected "
-          << want_shape << ", got " << got;
+          << what << " " << i << " changed shape: expected " << want_shape
+          << ", got " << got;
     }
   }
 }
 
 }  // namespace
+
+namespace internal {
+
+ControlFlowValues IfWithResults(
+    Scalar cond, absl::FunctionRef<ControlFlowValues()> then_body,
+    absl::FunctionRef<ControlFlowValues()> else_body) {
+  ABSL_CHECK(cond.dtype().IsBool())  // CRASH_OK
+      << "If() condition must be a bool scalar";
+  mlir::ImplicitLocOpBuilder& b = CurrentBuilder();
+  ControlFlowValues then_values;
+  // `scf.if` creates each block with `b`, which moves its insertion point there
+  // while the matching callback traces the Kiln ops of the branch, and infers
+  // its result types from the `scf.yield`s.
+  auto if_op = mlir::scf::IfOp::create(
+      b, unwrap(cond),
+      [&then_body, &then_values](mlir::OpBuilder& builder, mlir::Location loc) {
+        then_values = then_body();
+        mlir::scf::YieldOp::create(builder, loc, Unwrap(then_values));
+      },
+      [&else_body, &then_values](mlir::OpBuilder& builder, mlir::Location loc) {
+        // Both branches return the same C++ type, so the number and kinds of
+        // the values match; only their dtypes and shapes can differ.
+        const ControlFlowValues else_values = else_body();
+        ValidateMatchingValues(then_values, else_values,
+                               "If() else-branch result");
+        mlir::scf::YieldOp::create(builder, loc, Unwrap(else_values));
+      });
+  return Wrap(if_op.getResults(), then_values);
+}
+
+}  // namespace internal
 
 void If(Scalar cond, absl::FunctionRef<void()> then_body) {
   ABSL_CHECK(cond.dtype().IsBool())  // CRASH_OK
@@ -169,8 +205,9 @@ void For(IndexArg lower, IndexArg upper, IndexArg step,
          absl::FunctionRef<void(Scalar)> body) {
   ValidateLoopStep(step);
   mlir::ImplicitLocOpBuilder& b = internal::CurrentBuilder();
-  auto for_op = mlir::scf::ForOp::create(b, ToIndex(b, lower),
-                                         ToIndex(b, upper), ToIndex(b, step));
+  auto for_op = mlir::scf::ForOp::create(b, internal::ToIndex(b, lower),
+                                         internal::ToIndex(b, upper),
+                                         internal::ToIndex(b, step));
   mlir::OpBuilder::InsertionGuard guard(b);
   b.setInsertionPointToStart(for_op.getBody());
   mlir::Value iv = mlir::arith::IndexCastOp::create(b, b.getI32Type(),
@@ -181,10 +218,11 @@ void For(IndexArg lower, IndexArg upper, IndexArg step,
 void For(IndexArg lower, IndexArg upper, IndexArg step,
          llvm::ArrayRef<LoopVar> vars, absl::FunctionRef<void(Scalar)> body) {
   ValidateLoopStep(step);
-  const LoopValues init = Load(vars);
+  const ControlFlowValues init = Load(vars);
   mlir::ImplicitLocOpBuilder& b = internal::CurrentBuilder();
   auto for_op = mlir::scf::ForOp::create(
-      b, ToIndex(b, lower), ToIndex(b, upper), ToIndex(b, step), Unwrap(init));
+      b, internal::ToIndex(b, lower), internal::ToIndex(b, upper),
+      internal::ToIndex(b, step), Unwrap(init));
   {
     mlir::OpBuilder::InsertionGuard guard(b);
     mlir::Block* block = for_op.getBody();
@@ -197,8 +235,8 @@ void For(IndexArg lower, IndexArg upper, IndexArg step,
     // whatever `vars` hold.
     Bind(vars, for_op.getRegionIterArgs(), init);
     body(internal::wrap<Scalar>(iv, i32));
-    const LoopValues next = Load(vars);
-    ValidateLoopValues(init, next);
+    const ControlFlowValues next = Load(vars);
+    ValidateMatchingValues(init, next, "For() loop variable");
     mlir::scf::YieldOp::create(b, Unwrap(next));
   }
   // After the loop, `vars` hold the final values.

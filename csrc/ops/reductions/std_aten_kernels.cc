@@ -26,7 +26,6 @@
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "c10/core/ScalarType.h"
-#include "c10/util/Exception.h"
 #include "c10/util/OptionalArrayRef.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
@@ -143,7 +142,7 @@ at::Tensor AtenStd(const at::Tensor& self, c10::OptionalArrayRef<int64_t> dim,
       (self, dim, promoted_correction, keep_dim), {
         c10::ScalarType scalar_dtype = self.scalar_type();
         TT_THROW_IF_ERROR(ValidateFloatOrComplex(scalar_dtype));
-        if (c10::isComplexType(scalar_dtype)) {
+        if (IsComplex(scalar_dtype)) {
           scalar_dtype = c10::toRealValueType(scalar_dtype);
         }
 
@@ -182,7 +181,7 @@ at::Tensor AtenStd(const at::Tensor& self, c10::OptionalArrayRef<int64_t> dim,
                                .out_dims = output_dims,
                                .computation_dtype = computation_dtype,
                                .op_param_cache_keys = std::move(param_keys)})));
-        return MakeTensor(result_bufs);
+        return MakeTensor(std::move(result_bufs));
       });
 }
 

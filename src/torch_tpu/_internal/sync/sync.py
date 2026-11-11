@@ -46,13 +46,8 @@ def dump_computation_graphviz(tensors: list[torch.Tensor], file_name: str):
   _dump_computation(computation_graphviz(*tensors), file_name)
 
 
-def dump_computation_mlir(tensors: list[torch.Tensor], file_name: str):
-  """Dumps a graphviz compatible representation of the aten traversal of the given tensors, to a file_name."""
-  _dump_computation(computation_mlir(*tensors), file_name)
-
-
 def computation_graphviz(
-    *tensors: list[torch.Tensor] | tuple[torch.Tensor, ...]
+    *tensors: list[torch.Tensor] | tuple[torch.Tensor, ...],
 ) -> str:
   """Returns a graphviz compatible representation of the aten traversal of the given tensors."""
   caller_frame = inspect.stack()[1]  # get the caller's frame

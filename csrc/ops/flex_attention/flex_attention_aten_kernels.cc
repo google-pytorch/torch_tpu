@@ -18,7 +18,6 @@
 
 #include <cstdint>
 #include <numbers>
-#include <optional>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -37,6 +36,7 @@
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
+#include "csrc/internal/device/vmem_capacity.h"
 #include "csrc/internal/mosaic/kiln/kiln.h"
 #include "csrc/internal/mosaic/kiln/mlir/stablehlo_splice.h"
 #include "csrc/internal/mosaic/kiln_custom_call.h"
@@ -83,6 +83,10 @@ struct FlexAttnConfig {
 constexpr float kLog2e = std::numbers::log2e_v<float>;
 constexpr int64_t kLanes = 128;
 
+// Scoped VMEM limit, as in flash attention: half the capacity, to avoid
+// spilling. flex_attention.py sizes the tile against the same limit.
+int64_t VmemLimitBytes() { return GetDeviceVmemCapacityBytes() / 2; }
+
 constexpr int kBatchAxis = 0;
 constexpr int kHeadAxis = 1;
 constexpr int kQBlockAxis = 2;
@@ -100,18 +104,19 @@ kiln::Scalar TableRow(const FlexAttnConfig& c) {
 }
 
 // SMEM read: how many KV blocks this row attends to.
-kiln::Scalar NumListedBlocks(kiln::Ref kv_num_blocks, const FlexAttnConfig& c) {
-  return kiln::LoadScalar(kv_num_blocks(TableRow(c)));
+kiln::Scalar NumListedBlocks(kiln::SmemRef kv_num_blocks,
+                             const FlexAttnConfig& c) {
+  return kiln::Load(kv_num_blocks(TableRow(c)));
 }
 
 // SMEM read: the KV block to visit at grid step j, kv_indices[row, j]. Steps
 // past the end of the list (j >= n) repeat the last block so the pipeline
 // issues no new DMA; the body skips them.
-kiln::Scalar CurrentKvBlock(kiln::Ref kv_num_blocks, kiln::Ref kv_indices,
-                            const FlexAttnConfig& c) {
+kiln::Scalar CurrentKvBlock(kiln::SmemRef kv_num_blocks,
+                            kiln::SmemRef kv_indices, const FlexAttnConfig& c) {
   kiln::Scalar n = NumListedBlocks(kv_num_blocks, c);
   kiln::Scalar j = Min(kiln::ProgramId(kKvStepAxis), Max(n - 1, 0));
-  return kiln::LoadScalar(kv_indices(TableRow(c) * c.num_kv_blocks() + j));
+  return kiln::Load(kv_indices(TableRow(c) * c.num_kv_blocks() + j));
 }
 
 kiln::Scalar KvHead(const FlexAttnConfig& c) {
@@ -122,8 +127,8 @@ kiln::Scalar KvHead(const FlexAttnConfig& c) {
 // Applies the score / mask mods to the scores `s` (natural units) of the
 // current tile.
 absl::StatusOr<kiln::Tile> ApplyMods(const FlexAttnConfig& c,
-                                     kiln::Ref kv_num_blocks,
-                                     kiln::Ref kv_indices, kiln::Tile s) {
+                                     kiln::SmemRef kv_num_blocks,
+                                     kiln::SmemRef kv_indices, kiln::Tile s) {
   if (c.score_mod_mlir.empty() && c.mask_mod_mlir.empty()) return s;
   // The mods were traced at the full tile shape (see mod_to_mlir).
   const llvm::ArrayRef<int64_t> shape = s.dims();
@@ -217,9 +222,10 @@ absl::StatusOr<kiln::Kernel> BuildFlexAttentionKernel(const FlexAttnConfig& c) {
       kiln::ScratchSpec::Vmem(
           f32(c.q_block, c.v_dim)),  // acc: unnormalized out
       [&]                            // REF_CAPTURE_OK=called synchronously
-      (kiln::Ref kv_num_blocks, kiln::Ref kv_indices, kiln::Ref q_ref,
-       kiln::Ref k_ref, kiln::Ref v_ref, kiln::Ref out_ref, kiln::Ref lse_ref,
-       kiln::Ref m_ref, kiln::Ref l_ref, kiln::Ref acc_ref) {
+      (kiln::SmemRef kv_num_blocks, kiln::SmemRef kv_indices,
+       kiln::VmemRef q_ref, kiln::VmemRef k_ref, kiln::VmemRef v_ref,
+       kiln::VmemRef out_ref, kiln::VmemRef lse_ref, kiln::VmemRef m_ref,
+       kiln::VmemRef l_ref, kiln::VmemRef acc_ref) {
         const kiln::Scalar j = kiln::ProgramId(kKvStepAxis);
         const kiln::Scalar n = NumListedBlocks(kv_num_blocks, c);
 
@@ -246,20 +252,24 @@ absl::StatusOr<kiln::Kernel> BuildFlexAttentionKernel(const FlexAttnConfig& c) {
           }
           const kiln::Tile s = *modded * kLog2e;
 
-          const kiln::Tile m_prev = kiln::Load(m_ref).Lanes(1);
-          const kiln::Tile l_prev = kiln::Load(l_ref).Lanes(1);
-          const kiln::Tile m_new = Max(m_prev, kiln::MaxReduce(s, 1));
+          // m and l stay lane-replicated [q_block, 128]: broadcasting a
+          // [q_block, 1] column across the kv_block lanes every step is
+          // costlier than repeating whole vregs.
+          const kiln::Tile m_prev = kiln::Load(m_ref);
+          const kiln::Tile l_prev = kiln::Load(l_ref);
+          const kiln::Tile m_new =
+              Max(m_prev, kiln::MaxReduce(s, 1).Lanes(kLanes));
           // Rows with no visible key yet have m == -inf; use 0 in the
           // exponents so they give exp2(-inf) = 0 rather than NaN.
           const kiln::Tile m_safe =
               Select(m_new == kiln::NInf(m_new.shape()), 0.0, m_new);
           const kiln::Tile alpha = Exp2(m_prev - m_safe);
-          const kiln::Tile p = Exp2(s - m_safe);
-          kiln::Store(acc_ref, kiln::Load(acc_ref) * alpha +
+          const kiln::Tile p = Exp2(s - m_safe.Lanes(c.kv_block));
+          kiln::Store(acc_ref, kiln::Load(acc_ref) * alpha.Lanes(c.v_dim) +
                                    kiln::Dot(p.AsType(c.dtype), v, pv_options));
-          kiln::Store(m_ref, m_new.Lanes(kLanes));
+          kiln::Store(m_ref, m_new);
           kiln::Store(l_ref,
-                      (l_prev * alpha + kiln::SumReduce(p, 1)).Lanes(kLanes));
+                      l_prev * alpha + kiln::SumReduce(p, 1).Lanes(kLanes));
         });
 
         // End of the row: normalize and emit out / lse.
@@ -301,8 +311,8 @@ absl::StatusOr<FlexAttnConfig> MakeConfig(
     std::string_view mask_mod_mlir) {
   TT_RET_CHECK(q.dim() == 4 && k.dim() == 4 && v.dim() == 4,
                error::kInvalidArgument)
-      << "expected 4-D q, k and v, got " << q.dim() << "-D, " << k.dim()
-      << "-D and " << v.dim() << "-D";
+      << "expected 4D q, k and v, got " << q.dim() << "D, " << k.dim()
+      << "D and " << v.dim() << "D";
   TT_RET_CHECK(
       q.scalar_type() == k.scalar_type() && q.scalar_type() == v.scalar_type(),
       error::kInvalidArgument)
@@ -354,12 +364,12 @@ absl::StatusOr<FlexAttnConfig> MakeConfig(
       << "block mask tables must be int32";
   TT_RET_CHECK(kv_num_blocks.dim() == 1 && kv_num_blocks.size(0) == table_rows,
                error::kInvalidArgument)
-      << "expected kv_num_blocks to be 1-D with " << table_rows
+      << "expected kv_num_blocks to be 1D with " << table_rows
       << " entries, got " << kv_num_blocks.sizes();
   TT_RET_CHECK(kv_indices.dim() == 1 &&
                    kv_indices.size(0) == table_rows * c.num_kv_blocks(),
                error::kInvalidArgument)
-      << "expected kv_indices to be 1-D with " << table_rows * c.num_kv_blocks()
+      << "expected kv_indices to be 1D with " << table_rows * c.num_kv_blocks()
       << " entries, got " << kv_indices.sizes();
   return c;
 }
@@ -398,7 +408,7 @@ absl::StatusOr<std::tuple<at::Tensor, at::Tensor>> FlexAttentionFwdImpl(
         auto custom_call,
         CreateKilnCustomCallOp(
             op_builder, builder.getLoc(), std::move(kernel), operands,
-            result_types, /*vmem_limit_bytes=*/std::nullopt,
+            result_types, VmemLimitBytes(),
             /*needs_hlo_passes=*/!config.score_mod_mlir.empty() ||
                 !config.mask_mod_mlir.empty()));
     DynamicMlirOpResults results;
@@ -421,7 +431,8 @@ absl::StatusOr<std::tuple<at::Tensor, at::Tensor>> FlexAttentionFwdImpl(
                           {.out_dtypes = out_dtypes,
                            .out_dims_list = out_dims_list,
                            .op_param_cache_keys = std::move(param_keys)})));
-  return std::make_tuple(MakeTensor(results[0]), MakeTensor(results[1]));
+  return std::make_tuple(MakeTensor(std::move(results[0])),
+                         MakeTensor(std::move(results[1])));
 }
 
 }  // namespace

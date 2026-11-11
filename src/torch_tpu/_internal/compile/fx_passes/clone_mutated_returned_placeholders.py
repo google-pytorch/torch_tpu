@@ -14,6 +14,7 @@
 
 """Clones placeholder nodes that the graph both mutates and returns."""
 
+import copy
 import operator
 from typing import Any
 
@@ -209,17 +210,45 @@ def _find_placeholders_to_clone(
   ]
 
 
+def _shared_custom_metadata(nodes: list[torch.fx.Node]) -> dict[str, Any]:
+  """Returns the `custom` metadata entries that all of `nodes` have in common."""
+  if not nodes:
+    return {}
+  customs = [node.meta.get("custom") or {} for node in nodes]
+  return {
+      key: value
+      for key, value in customs[0].items()
+      if all(key in c and c[key] == value for c in customs[1:])
+  }
+
+
 def _clone_and_replace_placeholder(
     graph: torch.fx.Graph,
     placeholder: torch.fx.Node,
 ) -> None:
-  """Clones a placeholder and redirects all downstream uses to the clone."""
+  """Clones a placeholder and redirects all downstream uses to the clone.
+
+  The clone takes the placeholder's metadata.
+  Placeholders are created outside any user annotation so they don't have custom
+  metadata.
+  The clone will take the `custom` metadata entries shared by all of its compute
+  users.
+
+  Args:
+    graph: The graph containing `placeholder`.
+    placeholder: The placeholder to clone.
+  """
+  shared_custom = _shared_custom_metadata(
+      [u for u in placeholder.users if u.op != "output"]
+  )
   with graph.inserting_after(placeholder):
     p_clone = graph.call_function(
         torch.ops.aten.clone.default, args=(placeholder,)
     )
     if hasattr(placeholder, "meta"):
       p_clone.meta = placeholder.meta.copy()
+    if shared_custom:
+      p_clone.meta["custom"] = copy.deepcopy(shared_custom)
 
     placeholder.replace_all_uses_with(
         p_clone, delete_user_cb=lambda u, clone=p_clone: u != clone

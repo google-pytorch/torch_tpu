@@ -1269,7 +1269,7 @@ at::Tensor CastGradToTargetDtype(at::Tensor grad_k,
   if (grad_k.scalar_type() == target_dtype) {
     return grad_k;
   }
-  if (grad_k.is_complex() && !c10::isComplexType(target_dtype)) {
+  if (grad_k.is_complex() && !IsComplex(target_dtype)) {
     grad_k = at::real(grad_k);
   }
   if (grad_k.scalar_type() != target_dtype) {
@@ -1477,7 +1477,7 @@ at::Tensor AtenEinsum(c10::string_view equation, at::TensorList tensors,
                            {.out_dtype = out_dtype,
                             .out_dims = std::move(output_dims),
                             .op_param_cache_keys = std::move(param_keys)})));
-    return MakeTensor(result_buffer);
+    return MakeTensor(std::move(result_buffer));
   });
 }
 

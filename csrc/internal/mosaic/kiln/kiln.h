@@ -29,7 +29,7 @@
 //       InSpec{f32(tm, n), row_map},
 //       InSpec{f32(tm, n), row_map},
 //       OutSpec{f32(tm, n), row_map},
-//       [](Ref x, Ref y, Ref out) {
+//       [](VmemRef x, VmemRef y, VmemRef out) {
 //         Store(out, Load(x) + Load(y));
 //       });
 //
@@ -37,19 +37,22 @@
 //   * GridSpec / InSpec / OutSpec / ScratchSpec
 //     <-> pallas_call specs
 //   * std::optional<InSpec / OutSpec>
-//     <-> optional operand -> std::optional<Ref>
+//     <-> optional operand -> std::optional<VmemRef> (etc.)
 //   * ProgramId / NumPrograms
 //     <-> pl.program_id / pl.num_programs
+//   * VmemRef / SmemRef / HbmRef (TypedRef<MemorySpace>), Ref
+//     <-> refs typed by memory space (pltpu.VMEM / SMEM / ANY); Ref when the
+//         memory space is only known at runtime
 //   * ref(0, 0) / ref(0, Slice(c, kChunk), all)
 //     <-> ref slicing; emits tpu::MemRefSlice / Squeeze
-//   * Load(ref) / LoadScalar(ref) / Store(ref, value)
-//     <-> ref[...] / ref[...] = value
+//   * Load(ref) / Load(ref, offsets, sizes) / Store(ref, value)
+//     <-> ref[...] / ref[...] = value (a Tile for VMEM, a Scalar for SMEM)
 //   * Tile
 //     <-> a jax.Array value inside the kernel
 //   * Scalar
 //     <-> scalar (SMEM / grid index) values
 //   * If / For / RunScoped
-//     <-> pl.when / lax.fori_loop / pl.run_scoped
+//     <-> pl.when / lax.cond / lax.fori_loop / pl.run_scoped
 //   * AsyncCopy / MakeAsyncCopy
 //     <-> pltpu.async_copy / pltpu.make_async_copy
 //   * SyncCopy
@@ -79,7 +82,7 @@
 #include "csrc/internal/mosaic/kiln/core/shape.h"         // IWYU pragma: export
 #include "csrc/internal/mosaic/kiln/core/specs.h"         // IWYU pragma: export
 #include "csrc/internal/mosaic/kiln/core/tile.h"          // IWYU pragma: export
-#include "csrc/internal/mosaic/kiln/core/value_base.h"    // IWYU pragma: export
+#include "csrc/internal/mosaic/kiln/core/value_handle.h"  // IWYU pragma: export
 #include "csrc/internal/mosaic/kiln/lib/pipeline.h"       // IWYU pragma: export
 
 #endif  // TORCH_TPU_CSRC_INTERNAL_MOSAIC_KILN_KILN_H_

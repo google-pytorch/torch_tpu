@@ -21,7 +21,6 @@
 
 #include <algorithm>
 #include <array>
-#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -39,10 +38,6 @@
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
-#include "absl/base/const_init.h"
-#include "absl/base/no_destructor.h"
-#include "absl/base/optimization.h"
-#include "absl/base/thread_annotations.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/numeric/int128.h"
@@ -54,7 +49,6 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
 #include "absl/strings/substitute.h"
-#include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
 #include "c10/core/Device.h"
 #include "c10/core/DeviceGuard.h"
@@ -213,6 +207,31 @@ std::optional<std::string> ValidateNoUppercaseStart(
   return std::nullopt;
 }
 
+// Validates that the message does not start with an op or function call name
+// (e.g. "foo()" or "foo(): "). Pre-conditions: The error message must not be
+// empty.
+//
+// TT_KERNEL automatically prefixes the op name (e.g. "op_name(): "). Error
+// messages passed to TT_CHECK_THROW should not include an op name prefix.
+std::optional<std::string> ValidateDoesNotStartWithOpName(
+    const std::string_view message) {
+  ABSL_CHECK(  // CRASH_OK
+      !message.empty())
+      << kErrorMessageCheckPreconditionViolated;
+
+  // Matches an optionally qualified identifier (e.g. "foo", "torch.foo", or
+  // "at::foo") followed by empty call parentheses with optional whitespace
+  // (e.g. "()" or "( )") at the beginning of the message.
+  static const LazyRE2 kOpNamePrefixPattern = {
+      R"(^([a-zA-Z_]\w*(\.|::))*[a-zA-Z_]\w*\s*\(\s*\))"};
+
+  if (RE2::PartialMatch(message, *kOpNamePrefixPattern)) {
+    return "The error message should not start with an op name (e.g. 'op()' or "
+           "'op(): ') as that is automatically added by TT_KERNEL.";
+  }
+  return std::nullopt;
+}
+
 // Validates that the message ends with an alphanumeric or allowed character.
 //
 // Pre-conditions:
@@ -287,6 +306,32 @@ std::optional<std::string> ValidateExpectedGotFormat(
   return std::nullopt;
 }
 
+// Validates that the message doesn't use the phrase "non-negative" (or its
+// variants "nonnegative" and "non negative", case-insensitive). Conditions
+// must be stated with ">= 0" instead, e.g. "expected dim to be >= 0, got -1".
+//
+// Only whole words are matched, so identifiers such as "is_nonnegative" or
+// "non_negative_slope" are not flagged.
+//
+// Pre-conditions: The error message must not be empty.
+std::optional<std::string> ValidateNoNonNegative(
+    const std::string_view message) {
+  ABSL_CHECK(  // CRASH_OK
+      !message.empty())
+      << kErrorMessageCheckPreconditionViolated;
+
+  static const LazyRE2 kNonNegativePattern = {R"((?i)(\bnon[-\s]?negative\b))"};
+
+  std::string match;
+  if (RE2::PartialMatch(message, *kNonNegativePattern, &match)) {
+    return absl::StrCat(
+        "The error message must not contain \"non-negative\" (found \"", match,
+        "\"). Use \">= 0\" instead, in the format \"expected <X> to be >= 0, "
+        "got <value>\", e.g. \"expected dim to be >= 0, got -1\".");
+  }
+  return std::nullopt;
+}
+
 // Validates that the message shows the given dtype by its official PyTorch
 // name, as opposed to its StableHLO/XLA type name:
 //     - "float32" vs. "f32"
@@ -312,6 +357,74 @@ std::optional<std::string> ValidateNoStableHloTypeName(
         pair.torch, "' instead of '", pair.stablehlo,
         "'. Use ToString(mlir::ElementType) for retrieving the PyTorch "
         "dtype name.");
+  }
+  return std::nullopt;
+}
+
+// Validates that the message writes the dimensionality of tensors as "<N>D"
+// when it's a number (e.g. "0D", "5D"), and as "<n>-D" when it's a single
+// letter (e.g. "n-D", "N-D").
+//
+// Pre-conditions: The error message must not be empty.
+//
+// Examples:
+//     [good] expected a 5D tensor, got 2D
+//     [good] expected an n-D tensor, got 0D
+//      [bad] expected a 5-dimensional tensor (use "5D")
+//      [bad] expected a 5-D tensor (use "5D")
+//      [bad] expected a 5d tensor (use "5D")
+//      [bad] expected an n-dimensional tensor (use "n-D")
+//
+// To avoid false positives, the dimensionality must be a standalone token:
+// it must be at the start of the message, or preceded by whitespace, an opening
+// bracket, a quote or a comma. Hence op names and identifiers (e.g. "conv3d",
+// "avg_pool2d", "c10d"), hex numbers (e.g. "0x5d"), decimals (e.g. "1.5d") and
+// paths (e.g. "ttl=1d") are not matched. Counts of dimensions (e.g. "5 dims",
+// "5 dimensions") are not matched either.
+//
+// "nD" isn't rejected in favor of "n-D", since it can't be told apart from
+// words such as "ID". Similarly, "n dimensional" isn't rejected, since it can't
+// be told apart from phrases such as "a dimensional mismatch".
+std::optional<std::string> ValidateDimensionalityFormat(
+    const std::string_view message) {
+  ABSL_CHECK(  // CRASH_OK
+      !message.empty())
+      << kErrorMessageCheckPreconditionViolated;
+
+  // Captures (1) the whole bad dimensionality token, and either (2) its number
+  // or (3) its letter.
+  static const LazyRE2 kBadDimensionalityPattern = {
+      // Start of a standalone token.
+      R"((?:^|[\s(\[{'"`,]))"
+      R"(()"
+      // Number: 5-d, 5-D, 5-dim, 5-dimension, 5-dimensional, 5 dimensional, 5d.
+      R"((\d+)(?:-[dD]|-(?i:dim|dimension|dimensional)| (?i:dimensional)|d))"
+      R"(|)"
+      // Letter: n-d, n-dim, n-dimension, n-dimensional.
+      R"(([A-Za-z])-(?:d|(?i:dim|dimension|dimensional)))"
+      R"()\b)"};
+  ABSL_CHECK(kBadDimensionalityPattern->ok())  // CRASH_OK
+      << kErrorMessageCheckPreconditionViolated;
+
+  std::vector<std::string> replacements;
+  std::string_view input = message;
+  std::string_view token;
+  std::optional<std::string_view> number;
+  std::optional<std::string_view> letter;
+  while (RE2::FindAndConsume(&input, *kBadDimensionalityPattern, &token,
+                             &number, &letter)) {
+    replacements.push_back(
+        number.has_value()
+            ? absl::StrCat("'", token, "' with '", *number, "D'")
+            : absl::StrCat("'", token, "' with '", *letter, "-D'"));
+  }
+
+  if (!replacements.empty()) {
+    return absl::StrCat(
+        "The error message must write the dimensionality of tensors as "
+        "'<N>D' if it's a number (e.g. '5D'), or as '<n>-D' if it's a letter "
+        "(e.g. 'n-D'). Replace ",
+        absl::StrJoin(replacements, ", "), ".");
   }
   return std::nullopt;
 }
@@ -479,6 +592,13 @@ class ErrorFormatChecker {
     // over it.)
     CheckNoStableHloTypeName(to_check);
 
+    // The dimensionality format applies to the whole TorchTPU part of the
+    // message, including the context prefixes. (The XLA compiler error is not
+    // under our control.)
+    if (!to_check.empty()) {
+      AppendIfViolation(ValidateDimensionalityFormat(to_check));
+    }
+
     const std::string_view no_context_prefixes =
         RemoveAllContextPrefixes(to_check);
     if (no_context_prefixes != to_check) {
@@ -547,6 +667,8 @@ class ErrorFormatChecker {
     //                          |__ upper case letter not allowed.
     AppendIfViolation(ValidateNoUppercaseStart(trimmed));
 
+    AppendIfViolation(ValidateDoesNotStartWithOpName(trimmed));
+
     AppendIfViolation(ValidateLastChar(trimmed));
 
     // Only relevant on TorchTPU error messages.
@@ -554,6 +676,11 @@ class ErrorFormatChecker {
     // - Context prefixes must be removed so that we can enforce that it
     //   starts with `expected` if applicable.
     AppendIfViolation(ValidateExpectedGotFormat(trimmed));
+
+    // Only relevant on TorchTPU error messages, like the check above: the
+    // condition (e.g. "expected dim to be >= 0, got -1") is stated in the core
+    // message, whereas XLA compiler errors are not under our control.
+    AppendIfViolation(ValidateNoNonNegative(trimmed));
   }
 
   // If `violation` is set, records it, prefixed by the current context.
@@ -635,6 +762,14 @@ bool GetEnableDebugChecks() {
   }
   // Otherwise, enable debug checks if we are in debug eager mode.
   return GetEagerMode() == EagerMode::kDeferNeverAndLaunchBlocking;
+}
+
+bool ShouldCheckErrorFormat() {
+  if constexpr (TT_IS_INTERNAL_TORCH_TPU) {
+    return true;
+  }
+  return GetBooleanEnvOnce<kTorchTpuInternalCheckErrorFormatEnvVar>().value_or(
+      false);
 }
 
 absl::StatusOr<int64_t> SafeAdd(const int64_t x, const int64_t y) {
@@ -752,78 +887,6 @@ absl::Status TranslateXlaTensorOomError(absl::Status status,
 
   // From this point, we know that the given status is not an XLA OOM error.
   return status;
-}
-
-namespace internal {
-// Aligned to 64 bytes (cache-line size) to prevent false sharing with other
-// frequently mutated global variables on the hot dispatch path.
-alignas(64) std::atomic<bool> g_has_sticky_error{false};
-}  // namespace internal
-
-namespace {
-absl::Mutex g_sticky_error_mutex(absl::kConstInit);
-absl::NoDestructor<absl::Status> g_sticky_error
-    ABSL_GUARDED_BY(g_sticky_error_mutex){absl::OkStatus()};
-
-absl::Mutex g_assertion_mutex(absl::kConstInit);
-absl::CondVar g_assertion_cv;
-int64_t g_pending_assertions ABSL_GUARDED_BY(g_assertion_mutex) = 0;
-}  // namespace
-
-void SetStickyError(absl::Status status) {
-  if (status.ok()) {
-    return;
-  }
-  absl::MutexLock lock(g_sticky_error_mutex);
-  if (g_sticky_error->ok()) {
-    *g_sticky_error = std::move(status);
-    internal::g_has_sticky_error.store(true, std::memory_order_release);
-  }
-}
-
-absl::Status GetStickyError() {
-  absl::MutexLock lock(g_sticky_error_mutex);
-  return *g_sticky_error;
-}
-
-void IncrementPendingAssertionChecks() {
-  absl::MutexLock lock(g_assertion_mutex);
-  ++g_pending_assertions;
-}
-
-void DecrementPendingAssertionChecks() {
-  absl::MutexLock lock(g_assertion_mutex);
-  ABSL_CHECK_GT(g_pending_assertions, 0);  // CRASH_OK
-  --g_pending_assertions;
-  if (g_pending_assertions == 0) {
-    g_assertion_cv.SignalAll();
-  }
-}
-
-void WaitForPendingAssertionChecks() {
-  absl::MutexLock lock(g_assertion_mutex);
-  while (g_pending_assertions > 0) {
-    g_assertion_cv.Wait(&g_assertion_mutex);
-  }
-}
-
-absl::Status SyncAndReturnStickyError() {
-  WaitForPendingAssertionChecks();
-  if (ABSL_PREDICT_FALSE(HasStickyError())) {
-    return GetStickyError();
-  }
-  return absl::OkStatus();
-}
-
-void SyncAndCheckStickyError() {
-  TT_THROW_IF_ERROR(SyncAndReturnStickyError());
-}
-
-void ClearStickyError() {
-  WaitForPendingAssertionChecks();
-  absl::MutexLock lock(g_sticky_error_mutex);
-  *g_sticky_error = absl::OkStatus();
-  internal::g_has_sticky_error.store(false, std::memory_order_release);
 }
 
 absl::Status AdaptXlaError(const absl::Status& status,
@@ -1064,7 +1127,7 @@ TtError::TtError(absl::Status status, c10::SourceLocation thrown_from)
 }
 
 void TranslateToC10ErrorAndThrow(const TtError& e) {
-  if constexpr (kCheckErrorFormat) {
+  if (ShouldCheckErrorFormat()) {
     // Check that the error message format follows the TorchTPU guidelines
     // (go/tt-error-guide).
     ErrorFormatChecker().Check(e);

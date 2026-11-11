@@ -56,6 +56,14 @@ OP_OVERRIDES: Final[
 #       "test_broadcast": "*",
 #       "test_bytes_to_scalar": { "dtypes": [torch.complex64] }
 #   }
+# TODO(b/579965801): Inline `[torch.float8_e5m3fnu]` once all 2.16 pins include
+# PR #201269.
+_FLOAT8_E5M3FNU_DTYPES: Final[Sequence[torch.dtype]] = (
+    (getattr(torch, "float8_e5m3fnu"),)
+    if hasattr(torch, "float8_e5m3fnu")
+    else ()
+)
+
 TEST_EXCLUSIONS: Final[
     Mapping[
         str,
@@ -69,6 +77,10 @@ TEST_EXCLUSIONS: Final[
 ] = {
     # TODO(b/573758862): track per-test exclusion reasons and triage.
     # go/keep-sorted start block=yes
+    "distributed/_composable/fsdp/test_fully_shard_comm": {
+        # TODO(b/581257203): Re-enable once multi-threaded FSDP stream sync is fixed.
+        "TestFullyShardCustomAllocation": ["test_strided_allocation"],
+    },
     "distributed/fsdp/test_utils": {
         "TestUtils": ["test_apply_to_tensors"],
     },
@@ -105,7 +117,7 @@ TEST_EXCLUSIONS: Final[
             "test_event_synchronize_control_deps_e2e",
             "test_event_synchronize_inductor_lowering",
             "test_inductor_lowering",
-            "test_record_stream",
+            "test_nested_compile_in_backend_preserves_user_objects",
             "test_record_stream_inductor_output_code",
             "test_synchronize_explicit_none_matches_no_arg",
         ],
@@ -205,6 +217,7 @@ TEST_EXCLUSIONS: Final[
             "test_conv3d_vs_scipy",
             "test_conv_backend",
             "test_conv_empty_channel",
+            "test_conv_inputs_device_mismatch",
             "test_conv_mismatch_memory_format",
             "test_convert_conv2d_weight_memory_format",
             "test_convert_conv3d_weight_memory_format",
@@ -315,18 +328,25 @@ TEST_EXCLUSIONS: Final[
     },
     "quantization/core/experimental/test_floatx": {
         "TestFloat4Dtype": [
+            "test_cast_raises_on_host",
             "test_float4_e2m1fn_x2",
         ],
-        "TestFloat8Dtype": [
-            "test_cast_round_trip",
-            "test_float8_e8m0fnu_rne_rounding",
-        ],
+        "TestFloat8Dtype": {
+            "test_cast_round_trip": "*",
+            "test_cat": {"dtypes": _FLOAT8_E5M3FNU_DTYPES},
+            "test_creation_with_zeros": {"dtypes": _FLOAT8_E5M3FNU_DTYPES},
+            "test_empty": {"dtypes": _FLOAT8_E5M3FNU_DTYPES},
+            "test_float8_e8m0fnu_rne_rounding": "*",
+            "test_save_load": {"dtypes": _FLOAT8_E5M3FNU_DTYPES},
+            "test_special_numbers": {"dtypes": _FLOAT8_E5M3FNU_DTYPES},
+            "test_to_string": {"dtypes": _FLOAT8_E5M3FNU_DTYPES},
+            "test_type_promotion_fails": {"dtypes": _FLOAT8_E5M3FNU_DTYPES},
+        },
+        "TestFloat8E5M3FNU": "*",
     },
     "test_accelerator": {
         "TestAccelerator": [
             "test_memory_stats",
-            "test_multi_device_context_manager",
-            "test_multi_device_stream_context_manager",
         ],
     },
     "test_ao_sparsity": {
@@ -337,11 +357,9 @@ TEST_EXCLUSIONS: Final[
     },
     "test_autograd": {
         "TestAutogradDeviceType": [
-            "test_backward_device",
             "test_checkpointing_without_reentrant_dataparallel",
             "test_graph_save_on_cpu",
             "test_graph_save_on_cpu_device",
-            "test_inputbuffer_add_multidevice",
             "test_min_max_aminmax_median_backprops_to_all_values",
             "test_pdist_gradgrad",
             "test_pdist_gradgrad_small_p",
@@ -359,20 +377,8 @@ TEST_EXCLUSIONS: Final[
             "test_autograd_composite_implicit_and_dispatch_registration",
             "test_autograd_multiple_dispatch_registrations",
         ],
-        "TestAutogradStreamSynchronization": [
-            "test_consumer_to_multi_producer_case_4_correctness",
-            "test_consumer_to_single_producer_case_3_correctness",
-            "test_consumer_to_single_producer_case_3_correctness_non_default_ambient_stream",
-            "test_consumer_to_single_producer_case_4_correctness",
-        ],
         "TestInputGradBuffers": [
-            "test_different_device_errors",
             "test_lookup_does_not_deadlock_with_python_dispatch",
-        ],
-    },
-    "test_bmm_outer_product": {
-        "TestBmmOuterProductDevice": [
-            "test_non_current_device_outer_product",
         ],
     },
     "test_custom_ops": {
@@ -392,6 +398,23 @@ TEST_EXCLUSIONS: Final[
             "test_from_dlpack",
             "test_from_dlpack_dtype",
             "test_from_dlpack_noncontinguous",
+        ],
+        "TestTorchDlPackDevice": [
+            "test_automatically_select_in_creation",
+            "test_copy",
+            "test_dlpack_conversion_with_diff_streams",
+            "test_dlpack_conversion_with_diff_streams_narrow_precision",
+            "test_dlpack_conversion_with_streams",
+            "test_dlpack_conversion_with_streams_narrow_precision",
+            "test_dlpack_exchange_api",
+            "test_dlpack_exchange_api_sliced",
+            "test_dlpack_protocol_conversion",
+            "test_from_dlpack",
+            "test_from_dlpack_dtype",
+            "test_from_dlpack_noncontinguous",
+            "test_needs_copy_error",
+            "test_no_copy",
+            "test_readonly_wrapper_bare_capsule_is_valid",
         ],
     },
     "test_expanded_weights": {
@@ -413,7 +436,9 @@ TEST_EXCLUSIONS: Final[
         "TestFakeTensorDevice": [
             "test_aten_set_data_multi_device",
             "test_conv_mismatched_device_error_matches_eager",
+            "test_gru",
             "test_index_put_error",
+            "test_lstm",
         ],
     },
     "test_indexing": {
@@ -525,7 +550,6 @@ TEST_EXCLUSIONS: Final[
             "test_instancenorm_mixed_dtype_backward": "*",
             "test_invalid_reduction_strings": "*",
             "test_leaky_relu_inplace_with_neg_slope": "*",
-            "test_leaky_relu_inplace_with_zero_slope": "*",
             "test_linear_autograd": "*",
             "test_linear_cross_entropy_batch_invariance": "*",
             "test_linear_cross_entropy_linear_bias_chunked_matches_reference": (
@@ -612,7 +636,6 @@ TEST_EXCLUSIONS: Final[
             "test_forloop_goes_right_direction_multigpu",
             "test_grads_are_never_inplaced_into",
             "test_load_nontensor_step",
-            "test_mixed_device_dtype",
             "test_non_empty_state",
             "test_param_group_with_lrscheduler_goes_right_direction",
             "test_param_groups_lr",
@@ -653,6 +676,9 @@ TEST_EXCLUSIONS: Final[
         ],
     },
     "test_scaled_matmul_cuda": {
+        # TODO(b/583797384): Remove legacy class name in google3's pinned
+        # third_party/py/torch (renamed to TestFP8MatmulDevice in upstream
+        # PyTorch PR #201556) once google3 imports past 7582b920070b.
         "TestFP8Matmul": [
             "test_float32_output_errors_with_bias",
             "test_float8_error_messages",
@@ -663,11 +689,32 @@ TEST_EXCLUSIONS: Final[
             "test_scaled_mm_vs_emulated_row_wise",
             "test_zero_dim_tensorwise",
         ],
+        "TestFP8MatmulDevice": [
+            "test_float32_output_errors_with_bias",
+            "test_float8_error_messages",
+            "test_float8_scale_fast_accum",
+            "test_float8_scale_result",
+            "test_scaled_addmm_contraction_dim",
+            "test_scaled_addmm_cudagraph",
+            "test_scaled_addmm_empty",
+            "test_scaled_addmm_fullgraph",
+            "test_scaled_addmm_scalar_semantics",
+            "test_scaled_addmm_tensorwise",
+            "test_scaled_addmm_validation",
+            "test_scaled_addmm_wgrad_accumulation",
+            "test_scaled_mm_block_wise_numerics",
+            "test_scaled_mm_change_stride",
+            "test_scaled_mm_few_rows",
+            "test_scaled_mm_v2_contraction_dim",
+            "test_scaled_mm_vs_emulated",
+            "test_scaled_mm_vs_emulated_block_wise_verify_small_shapes",
+            "test_scaled_mm_vs_emulated_row_wise",
+            "test_zero_dim_tensorwise",
+        ],
     },
     "test_serialization": {
         "TestSerializationAccelerator": [
             "test_save_different_dtype_unallocated",
-            "test_serialization_map_location_multi_device",
             "test_skip_data_serialization",
         ],
     },
@@ -698,7 +745,6 @@ TEST_EXCLUSIONS: Final[
         ],
     },
     "test_testing": {
-        "TestAssertCloseMultiDevice": "*",
         "TestMakeTensor": [
             "test_exclude_zero",
             "test_low_ge_high",
@@ -717,13 +763,6 @@ TEST_EXCLUSIONS: Final[
         ],
     },
     "test_torch": {
-        "TestDevicePrecision": [
-            "test_advancedindex_mixed_cpu_devices",
-            "test_advancedindex_mixed_devices_error",
-            "test_copy_noncontig",
-            "test_multidevice_serialization",
-            "test_type_conversions_same_device",
-        ],
         "TestTorchDeviceType": {
             "test__local_scalar_dense_with_empty_tensor": "*",
             "test_addcmul": "*",
@@ -801,7 +840,6 @@ TEST_EXCLUSIONS: Final[
             "test_memory_format_empty_like": "*",
             "test_memory_format_operators": "*",
             "test_multinomial_device_constrain": "*",
-            "test_multinomial_gpu_device_constrain": "*",
             "test_nondeterministic_alert_AdaptiveMaxPool2d": "*",
             "test_nondeterministic_alert_FractionalMaxPool2d": "*",
             "test_nondeterministic_alert_FractionalMaxPool3d": "*",
@@ -837,7 +875,6 @@ TEST_EXCLUSIONS: Final[
             "test_shift_mem_overlap": "*",
             "test_split_with_sizes_copy_out": "*",
             "test_storage": "*",
-            "test_storage_all_devices": "*",
             "test_strides_propagation": "*",
             "test_take_empty": "*",
             "test_tensor_set_errors_cross_device": "*",
@@ -886,8 +923,6 @@ TEST_EXCLUSIONS: Final[
     "test_utils": {
         "TestCheckpointDeviceType": [
             "test_checkpoint_rng_accelerator",
-            "test_get_device_states_recursive",
-            "test_infer_device_state_recursive_multi_device",
         ],
         "TestDeviceLazyInit": [
             "test_fork_poison_on_lazy_init",

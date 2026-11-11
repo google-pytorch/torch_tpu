@@ -16,10 +16,16 @@
 
 #include "csrc/internal/mosaic/kiln/core/context.h"
 
+#include <string_view>
+#include <utility>
+
+#include "absl/base/nullability.h"
 #include "absl/log/absl_check.h"
+#include "absl/status/status.h"
 #include "csrc/internal/mosaic/kiln/core/dtype.h"
 #include "csrc/internal/mosaic/kiln/core/literal.h"
 #include "csrc/internal/mosaic/kiln/core/shape.h"
+#include "csrc/internal/mosaic/kiln/core/value_handle.h"
 #include "llvm/Support/Casting.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/IR/ArithAttributes.h"
@@ -29,8 +35,10 @@
 #include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/TypeUtilities.h"
 #include "mlir/IR/Types.h"
 #include "mlir/IR/Value.h"
+#include "mlir/Support/DebugStringHelper.h"
 
 namespace torch_tpu::kiln::internal {
 namespace {
@@ -38,8 +46,15 @@ namespace {
 static_assert(kDynamic == mlir::ShapedType::kDynamic,
               "kDynamic must match mlir::ShapedType::kDynamic");
 
-thread_local mlir::ImplicitLocOpBuilder*  // CPP_THREAD_LOCAL_OK=C++ scope
-    tls_builder = nullptr;
+// The active scope of the current thread, or null outside of BuildKernel().
+thread_local BuilderScope*  // CPP_THREAD_LOCAL_OK=C++ scope
+    tls_builder_scope = nullptr;
+
+BuilderScope& CurrentBuilderScope() {
+  ABSL_CHECK(tls_builder_scope != nullptr)  // CRASH_OK
+      << "Kiln operations may only be called inside BuildKernel()";
+  return *tls_builder_scope;
+}
 
 mlir::Type WithElementType(mlir::Type type, DType target) {
   mlir::Type elem = ToMlirType(target, type.getContext());
@@ -73,17 +88,25 @@ mlir::Value EmitIntCast(mlir::ImplicitLocOpBuilder& b, mlir::Value value,
 }  // namespace
 
 mlir::ImplicitLocOpBuilder& CurrentBuilder() {
-  ABSL_CHECK(tls_builder != nullptr)  // CRASH_OK
-      << "Kiln operations may only be called inside BuildKernel()";
-  return *tls_builder;
+  return CurrentBuilderScope().builder();
 }
 
-BuilderScope::BuilderScope(mlir::ImplicitLocOpBuilder* builder)
-    : prev_(tls_builder) {
-  tls_builder = builder;
+void ReportError(absl::Status error) {
+  ABSL_CHECK(!error.ok())  // CRASH_OK
+      << "ReportError() requires a non-OK status";
+  CurrentBuilderScope().RecordError(std::move(error));
 }
 
-BuilderScope::~BuilderScope() { tls_builder = prev_; }
+BuilderScope::BuilderScope(mlir::ImplicitLocOpBuilder* absl_nonnull builder)
+    : builder_(builder) {
+  ABSL_CHECK(builder != nullptr)  // CRASH_OK
+      << "BuilderScope requires a non-null builder";
+  ABSL_CHECK(tls_builder_scope == nullptr)  // CRASH_OK
+      << "BuilderScope cannot be nested";
+  tls_builder_scope = this;
+}
+
+BuilderScope::~BuilderScope() { tls_builder_scope = nullptr; }
 
 mlir::Type ToMlirType(DType dtype, mlir::MLIRContext* ctx) {
   switch (dtype.kind()) {
@@ -102,6 +125,16 @@ mlir::Type ToMlirType(DType dtype, mlir::MLIRContext* ctx) {
 
 mlir::Type ToMlirType(DType dtype) {
   return ToMlirType(dtype, CurrentBuilder().getContext());
+}
+
+void CheckElementType(ValueHandle handle, DType dtype,
+                      std::string_view type_name) {
+  const mlir::Type element_type = mlir::getElementTypeOrSelf(handle.value());
+  ABSL_CHECK(  // CRASH_OK
+      element_type == ToMlirType(dtype, element_type.getContext()))
+      << type_name << " dtype " << dtype
+      << " does not match its IR element type "
+      << mlir::debugString(element_type);
 }
 
 mlir::TypedAttr LiteralToAttr(mlir::ImplicitLocOpBuilder& b, DType dtype,

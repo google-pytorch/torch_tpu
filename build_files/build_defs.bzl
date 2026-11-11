@@ -18,6 +18,7 @@ load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("@rules_cc//cc:cc_test.bzl", "cc_test")
 load("@rules_python//python:py_test.bzl", "py_test")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load(
     "@xla//third_party/py/rules_pywrap:pywrap.default.bzl",
     "use_pywrap_rules",
@@ -85,11 +86,15 @@ OSS_TPU_RUNNER_CHIPS = {
 
 # Environment variables for `*_test_cov` targets that collect error coverage.
 # Disables addr2line C++ stack trace symbolization to avoid symbolizer overhead
-# and multiprocess hangs while still capturing C++ source locations.
+# and multiprocess hangs while still capturing C++ source locations. Also
+# enables the error message format checks, which crash TorchTPU on error
+# messages that don't follow the error message guidelines, in all builds
+# (including OSS). Keep in sync with `COV_ENV` in tests/error_coverage_lib.py.
 TEST_COV_ENV = {
     "TORCH_DISABLE_ADDR2LINE": "1",
     "TORCH_SHOW_CPP_STACKTRACES": "1",
     "TORCH_TPU_ENABLE_DEBUG_CHECKS": "1",
+    "TORCH_TPU_INTERNAL_CHECK_ERROR_FORMAT": "1",
 }
 
 def _get_tpu_generation(tag):
@@ -862,8 +867,7 @@ def torch_tpu_cc_test(
 
         add_rbe_exec_properties(sh_test_kwargs, effective_tags, result.tpu_generation)
 
-        # buildifier: disable=native-sh-test
-        native.sh_test(
+        sh_test(
             name = name,
             size = size,
             timeout = timeout,

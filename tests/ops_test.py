@@ -20,6 +20,7 @@ on GPU.
 
 import collections.abc
 import copy
+import functools
 import os
 import sys
 from typing import Any
@@ -29,7 +30,6 @@ from absl.testing import absltest
 import torch
 from torch.nn import attention
 from torch_tpu._internal.utils import test_utils
-from tests import dynamism_test_utils
 from tests import op_testing
 from tests import oss_utils
 from tests import quantize_utils
@@ -61,6 +61,50 @@ def category(*names):
     return func
 
   return decorator
+
+
+# The attribute that `also_run_static` sets on the tests it marks.
+_ALSO_RUN_STATIC_ATTR = "also_run_static"
+
+_UNBOUNDED_DYNAMIC_KERNELS_ENV_VAR = (
+    "TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS"
+)
+
+
+def _unbounded_dynamic_kernels_disabled() -> bool:
+  """Returns whether the env var disables unbounded dynamic kernels.
+
+  Mirrors the runtime, which disables them only if the variable is "none".
+  """
+  return os.environ.get(_UNBOUNDED_DYNAMIC_KERNELS_ENV_VAR, "") == "none"
+
+
+def _unbounded_dynamic_hits() -> int:
+  """Returns the number of lookups served by unbounded dynamic kernels."""
+  return torch.tpu._get_cache_stats().num_unbounded_dynamic_hits  # pylint: disable=protected-access
+
+
+def also_run_static(func):
+  """Also runs the test in ops_test_static, asserting no dynamic kernels ran."""
+
+  @functools.wraps(func)
+  def wrapper(self, *args, **kwargs):
+    if not _unbounded_dynamic_kernels_disabled():
+      return func(self, *args, **kwargs)
+
+    hits_before = _unbounded_dynamic_hits()
+    result = func(self, *args, **kwargs)
+    torch.accelerator.synchronize()
+    self.assertEqual(
+        _unbounded_dynamic_hits() - hits_before,
+        0,
+        "Lookups served by unbounded dynamic kernels, although"
+        f" {_UNBOUNDED_DYNAMIC_KERNELS_ENV_VAR} disables them.",
+    )
+    return result
+
+  setattr(wrapper, _ALSO_RUN_STATIC_ATTR, True)
+  return wrapper
 
 
 def _has_test_filter() -> bool:
@@ -119,32 +163,6 @@ CheckValueMode = test_utils.CheckValueMode
 OpInput = op_testing.OpInput
 OpOutput = op_testing.OpOutput
 OpVariant = op_testing.OpVariant
-TorchTpuTestBase = op_testing.TorchTpuTestBase
-
-
-def _expm1_atol(y: float) -> float:
-  """Returns the absolute tolerance for expm1() given the expected value y."""
-
-  # For expm1 (i.e. y = e^x - 1), we especially care about the precision when
-  # y is close to 0. However, a tolerance tight enough for this case is
-  # too tight for y >> 0. Without variable-tolerance, we'd be forced to
-  # pick a large tolerance for all cases, which would cause unnecessary
-  # slack in our tests.
-  #
-  # Using variable-tolerance, we:
-  #   - use a small tolerance for y < 0,
-  #   - use a large (relative) tolerance for y > 1,
-  #   - linearly interpolate the tolerance for y in [0, 1].
-  #
-  # This allows the test to be tight for y near 0 or being negative, while
-  # allowing more slack for y >> 0.
-  atol0 = 3e-6  # small tolerance
-  atol1 = 1e-5  # large tolerance
-  if y < 0:
-    return atol0
-  if y > 1:
-    return atol1 * y
-  return atol0 + (atol1 - atol0) * y
 
 
 def update_dict(d, u):
@@ -180,14 +198,6 @@ ACCURACY_OVERRIDES_VS_GPU = {
     },
     "_foreach_acos": {
         torch.complex64: {"rtol": 5.2e-5, "atol": 6.7e-5},
-    },
-    "_foreach_addcdiv": {
-        torch.bfloat16: {"rtol": 1.7e-2, "atol": 2.2e-2},
-        torch.float16: {"rtol": 1.2e-3, "atol": 3.3e-3},
-    },
-    "_foreach_addcmul": {
-        torch.bfloat16: {"rtol": 2.4e-2, "atol": 2.9e-2},
-        torch.float16: {"rtol": 3.1e-3, "atol": 3.8e-3},
     },
     "_foreach_cos": {
         torch.complex64: {"rtol": 5.5e-6},
@@ -395,9 +405,7 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.uint8: {"rtol": 4.4e-6},
     },
     "exp2": {
-        torch.bfloat16: {"rtol": 2.4e-2, "atol": 2.4e-3},
         torch.complex64: {"rtol": 3.3e-6},
-        torch.float16: {"rtol": 2.3e-3, "atol": 5.9e-4},
         torch.float32: {"rtol": 2.4e-6},
     },
     "expm1": {
@@ -526,16 +534,6 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.complex64: {"rtol": 3.6e-2},
         torch.float16: {"rtol": 2.9e-2, "atol": 4.2e-3},
         torch.float32: {"rtol": 4.9e-2, "atol": 2.9e-3},
-    },
-    # Tolerance overrides justified for performance: native bfloat16/float16
-    # pooling computations avoid costly intermediate upcasts to float32.
-    "nn.functional.adaptive_avg_pool2d": {
-        torch.bfloat16: {"rtol": 1.8e-2, "atol": 2.5e-2},
-        torch.float16: {"rtol": 2.5e-3, "atol": 4.5e-3},
-    },
-    "nn.functional.adaptive_avg_pool3d": {
-        torch.bfloat16: {"rtol": 1.8e-2, "atol": 2.0e-2},
-        torch.float16: {"rtol": 3.5e-3, "atol": 3.0e-3},
     },
     "nn.functional.binary_cross_entropy": {
         torch.bfloat16: {"rtol": 9e-3, "atol": 5.9e-3},
@@ -884,16 +882,6 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
         torch.float16: {"rtol": 2.9e-2, "atol": 4.2e-3},
         torch.float32: {"rtol": 4.9e-2, "atol": 2.9e-3},
     },
-    # Tolerance overrides justified for performance: native bfloat16/float16
-    # pooling computations avoid costly intermediate upcasts to float32.
-    "nn.functional.adaptive_avg_pool2d": {
-        torch.bfloat16: {"rtol": 1.8e-2, "atol": 2.5e-2},
-        torch.float16: {"rtol": 2.5e-3, "atol": 4.5e-3},
-    },
-    "nn.functional.adaptive_avg_pool3d": {
-        torch.bfloat16: {"rtol": 1.8e-2, "atol": 2.0e-2},
-        torch.float16: {"rtol": 3.5e-3, "atol": 3.0e-3},
-    },
     "nn.functional.binary_cross_entropy": {
         torch.bfloat16: {"rtol": 9e-3, "atol": 5.9e-3},
         torch.float16: {"rtol": 8.5e-3, "atol": 4.4e-4},
@@ -1162,9 +1150,6 @@ ACCURACY_OVERRIDES_GRAD_VS_GPU: dict[
             torch.float32: {"rtol": 4.3e-1, "atol": 9.3e-1},
             torch.float64: {"rtol": 6e-6, "atol": 7.7e-6},
         },
-        "nn.functional.softplus": {
-            torch.float16: {"rtol": 1.5e-3, "atol": 1.3e-4},
-        },
         "norm": {
             torch.complex64: {"rtol": 8.2e-6},
             torch.float16: {"atol": 1.2e-3},
@@ -1360,6 +1345,19 @@ class TestOps(op_testing.OpInfoTestBase):
   def setUp(self):
     super().setUp()
 
+    # With unbounded dynamic kernels disabled (the ops_test_static target), run
+    # only the tests marked with @also_run_static: the others run in the
+    # targets with them enabled.
+    method = getattr(self, self._testMethodName, None)
+    if _unbounded_dynamic_kernels_disabled() and not getattr(
+        method, _ALSO_RUN_STATIC_ATTR, False
+    ):
+      self.skipTest(
+          f"Skipping test because {_UNBOUNDED_DYNAMIC_KERNELS_ENV_VAR}"
+          " disables unbounded dynamic kernels, and the test is not marked"
+          " with @also_run_static."
+      )
+
     # Filter the tests by --test_categories only if --test_filter is not on
     # the bazel command line. If --test_filter is specified, we should respect
     # the user's intent and not apply any additional filtering based on
@@ -1368,7 +1366,6 @@ class TestOps(op_testing.OpInfoTestBase):
       exclusions = {c[1:] for c in _TEST_CATEGORIES.value if c.startswith("-")}
       inclusions = {c for c in _TEST_CATEGORIES.value if not c.startswith("-")}
 
-      method = getattr(self, self._testMethodName, None)
       test_categories = getattr(method, "categories", set())
 
       if any(cat in exclusions for cat in test_categories):
@@ -1386,11 +1383,6 @@ class TestOps(op_testing.OpInfoTestBase):
         if op_testing.is_compiled_mode()
         else ACCURACY_OVERRIDES_VS_GPU,
         grad_gpu_overrides=ACCURACY_OVERRIDES_GRAD_VS_GPU,
-    )
-    self.set_dynamism_handlers(
-        dynamism_test_utils.verify_op_supports_dynamism,
-        dynamism_test_utils.mark_input_dynamic,
-        dynamism_test_utils.generate_exhaustive_input_marking_plans,
     )
     self.set_symbolic_shapes_known_failures(SYMBOLIC_SHAPES_KNOWN_FAILURES)
 
@@ -2161,7 +2153,6 @@ class TestOps(op_testing.OpInfoTestBase):
 
   @category("foreach")
   def test_foreach_addcmul(self):
-    # TODO(b/494218929): Fix the high tolerance of 1e-2.
     self.do_test_op(
         "_foreach_addcmul",
         # TODO(b/485291373): fix _foreach_addcmul_() failing with complex
@@ -2790,9 +2781,6 @@ class TestOps(op_testing.OpInfoTestBase):
         # TODO(b/553658275): support data sampling of integral and
         # half-precision float dtypes for SVD-based linear algebra ops.
         exclude_dtypes=INTEGRAL_DTYPES + (torch.half, torch.bfloat16),
-        # ApplyPivotsInPlace in linalg_lu_kernels.cc calls .item() in C++ loop,
-        # which fails placeholder tensor materialization in compiled mode.
-        skip_if=lambda variant, op_input: op_testing.is_compiled_mode(),
     )
 
   def test_linalg_lu_solve(self):
@@ -2801,9 +2789,6 @@ class TestOps(op_testing.OpInfoTestBase):
         # TODO(b/553658275): support data sampling of integral and
         # half-precision float dtypes for SVD-based linear algebra ops.
         exclude_dtypes=INTEGRAL_DTYPES + (torch.half, torch.bfloat16),
-        # ApplyPivotsInPlace in linalg_lu_kernels.cc calls .item() in C++ loop,
-        # which fails placeholder tensor materialization in compiled mode.
-        skip_if=lambda variant, op_input: op_testing.is_compiled_mode(),
     )
 
   def test_linalg_solve_ex(self):
@@ -2813,9 +2798,6 @@ class TestOps(op_testing.OpInfoTestBase):
         # half-precision float dtypes for SVD-based linear algebra ops.
         exclude_dtypes=INTEGRAL_DTYPES
         + (torch.half, torch.bfloat16, torch.float64),
-        # ApplyPivotsInPlace in linalg_lu_kernels.cc calls .item() in C++ loop,
-        # which fails placeholder tensor materialization in compiled mode.
-        skip_if=lambda variant, op_input: op_testing.is_compiled_mode(),
     )
 
   def test_linalg_svd(self):
@@ -2853,12 +2835,7 @@ class TestOps(op_testing.OpInfoTestBase):
             torch.float64,
             torch.complex128,
         ),
-        # ApplyPivotsInPlace in linalg_lu_kernels.cc calls .item() in C++ loop,
-        # which fails placeholder tensor materialization in compiled mode.
-        skip_if=lambda variant, op_input: (
-            _linalg_lu_without_pivot_gpu(variant, op_input)
-            or op_testing.is_compiled_mode()
-        ),
+        skip_if=_linalg_lu_without_pivot_gpu,
     )
 
   def test_linalg_inv_ex_out(self):
@@ -3221,6 +3198,7 @@ class TestOps(op_testing.OpInfoTestBase):
         exclude_dtypes=(_if_tpu_vs_gpu_compiled((torch.complex64,), ())),
     )
 
+  @also_run_static
   @category("nonzero")
   def test_nonzero(self):
     self.do_test_op(

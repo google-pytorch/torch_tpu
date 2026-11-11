@@ -28,6 +28,7 @@ Details on configuration can be found at: https://nox.thea.codes/
 from collections.abc import Mapping, Sequence
 import os
 import pathlib
+import sys
 from typing import Final
 
 import nox
@@ -37,45 +38,35 @@ nox.options.sessions = ["lint"]
 os.environ.setdefault("UV_HTTP_RETRIES", "10")
 os.environ.setdefault("UV_HTTP_TIMEOUT", "120")
 
-# The indexes that may satisfy the `torch` dependency for each variant. The
-# `cpu` and `cuda` variants include PyTorch's RC test channels so release
-# candidates in WHEEL_TORCH_VERSIONS resolve alongside final releases. The
-# `local` variant installs no torch from an index at all: it uses the torch
-# wheel file in dist/local/ that the torch_tpu wheel was built against
-# (--config=local_torch builds).
-# TODO(b/571958437): The `/whl/test/cpu` and `/whl/test/cu130` entries (and the
-# multi-index `/whl/test/` handling in `_torch_index_args` below) are only
-# needed while PyTorch 2.15.0 is a release candidate. Remove them once PyTorch
-# 2.15.0 final is published to PyPI and `download.pytorch.org/whl/cpu`.
-_TORCH_INDEXES: Final[Mapping[str, Sequence[str]]] = {
-    "cpu": (
-        "https://download.pytorch.org/whl/cpu",
-        "https://download.pytorch.org/whl/test/cpu",  # TODO(b/571958437): Remove after 2.15.0 GA.
-    ),
-    "cuda": (
-        "https://download.pytorch.org/whl/test/cu130",  # TODO(b/571958437): Remove after 2.15.0 GA.
-    ),
-    "local": (),
-    "nightly": ("https://download.pytorch.org/whl/nightly/cpu",),
-    "nightly-pinned": ("https://download.pytorch.org/whl/nightly/cpu",),
+# The extra index URL (if any) that satisfies the `torch` dependency for each
+# variant. `cuda` resolves directly from PyPI, and `local` installs no torch
+# from an index at all: it uses the torch wheel file in dist/local/ that the
+# torch_tpu wheel was built against (--config=local_torch builds).
+_EXTRA_TORCH_PYPI_INDEXES: Final[Mapping[str, str | None]] = {
+    "cpu": "https://download.pytorch.org/whl/cpu",
+    "cuda": None,
+    "local": None,
+    "nightly": "https://download.pytorch.org/whl/nightly/cpu",
+    "nightly-pinned": "https://download.pytorch.org/whl/nightly/cpu",
 }
 
 
 def _torch_index_args(variant: str) -> Sequence[str]:
   """Return the `uv pip install` index arguments for a torch variant."""
-  indexes = _TORCH_INDEXES[variant]
-  if not indexes:
+  index = _EXTRA_TORCH_PYPI_INDEXES[variant]
+  if index is None:
     return ()
-  args: list[str] = []
-  for index in indexes:
-    args += ["--extra-index-url", index]
-  # --index-strategy unsafe-best-match lets the "+cpu" local build, RC test
-  # build, or newer nightly prerelease resolve across the PyTorch extra indexes
-  # while PyPI stays the primary index for non-torch runtime and PEP 517
-  # build-system dependencies (the PyTorch indexes carry setuptools>=78
-  # alongside an outdated packaging<24.2, which breaks source builds on 3.14t).
-  args += ["--index-strategy", "unsafe-best-match"]
-  return args
+  # --index-strategy unsafe-best-match lets the "+cpu" local build or newer
+  # nightly prerelease resolve from the PyTorch extra index while PyPI stays the
+  # primary index for non-torch runtime and PEP 517 build-system dependencies
+  # (the PyTorch indexes carry setuptools>=78 alongside an outdated
+  # packaging<24.2, which breaks source builds on 3.14t).
+  return (
+      "--extra-index-url",
+      index,
+      "--index-strategy",
+      "unsafe-best-match",
+  )
 
 
 # The lock the wheel's nightly glue is built against (see MODULE.bazel's
@@ -98,21 +89,28 @@ def _pinned_nightly_torch() -> str:
 
 @nox.session
 def lint(session: nox.Session) -> None:
-  """Run clang-format check, Python lint (ruff), Bazel formatting (buildifier), and directory layout check."""
-  session.install("clang-format", "ruff")
+  """Run linting and formatting checks."""
+  session.install("clang-format", "google-re2", "ruff")
   session.run("ci/tools/clang_format.sh", "lint", external=True)
   session.run("ci/tools/ruff_lint.sh", "lint", external=True)
   session.run("ci/tools/buildifier_lint.sh", "lint", external=True)
   session.run("python3", "ci/tools/check_directory_layout.py", external=True)
+  session.run("python3", "-m", "ci.tools.check_agent_skills", external=True)
+  # Repository-specific rules from ci/custom_lint_rules.METADATA (e.g. use
+  # torch_tpu_cc_library instead of cc_library); only changed lines are checked.
+  session.run(
+      "python", "-m", "ci.tools.custom_linter", "--root", ".", external=False
+  )
 
 
 @nox.session
 def format(session: nox.Session) -> None:  # pylint: disable=redefined-builtin
-  """Apply clang-format fixes, Python lint (ruff), and Bazel formatting (buildifier) to modified files automatically."""
+  """Apply automatic formatting fixes."""
   session.install("clang-format", "ruff")
   session.run("ci/tools/clang_format.sh", "format", external=True)
   session.run("ci/tools/ruff_lint.sh", "fix", external=True)
   session.run("ci/tools/buildifier_lint.sh", "format", external=True)
+  # Custom convention rules have no autofix.
 
 
 @nox.session(venv_backend="none")
@@ -131,6 +129,12 @@ def buildifier(session: nox.Session) -> None:
 # The script relies exclusively on Python standard libraries, so creating
 # a virtual env adds unnecessary overhead with no benefits.
 @nox.session(venv_backend="none")
+def check_agent_skills(session: nox.Session) -> None:
+  """Validate agent skill names and directories under .agents/skills/."""
+  session.run("python3", "-m", "ci.tools.check_agent_skills", external=True)
+
+
+@nox.session(venv_backend="none")
 def check_directory_layout(session: nox.Session) -> None:
   """Validate repository directory layout against expected manifests."""
   session.run("python3", "ci/tools/check_directory_layout.py", external=True)
@@ -142,25 +146,28 @@ def actionlint(session: nox.Session) -> None:
   session.run("ci/tools/actionlint.sh", external=True)
 
 
-# These scripts need PyYAML (see ci/tools/list_ci_tests.py) on top of the
-# Python standard library, so this session runs in a managed virtual env
-# instead of on the host interpreter: the GitHub-hosted runner images do not
-# guarantee PyYAML for the system Python, and PEP 668 forbids installing it
-# there.
+# These scripts need PyYAML (see ci/tools/list_ci_tests.py) and google-re2
+# (see ci/tools/custom_linter/metadata.py) on top of the Python standard
+# library, so this session runs in a managed virtual env instead of on the
+# host interpreter: the GitHub-hosted runner images do not guarantee them for
+# the system Python, and PEP 668 forbids installing them there.
 @nox.session
 def test_ci_tools(session: nox.Session) -> None:
-  """Run unit tests for CI scripts and test generation tools."""
-  session.install("pyyaml")
+  """Run unit tests for CI scripts, custom lint scripts, and test generation tools."""
+  session.install("google-re2", "pyyaml", "pytest")
   session.run(
       "python",
       "-m",
       "unittest",
       "ci/tools/resolve_base_sha_test.py",
       "ci/tools/check_directory_layout_test.py",
+      "ci/tools/check_agent_skills_test.py",
       "ci/tools/list_ci_tests_test.py",
       "ci/tools/run_bazel_diff_test.py",
       "ci/tools/gen_torch_tests_test.py",
+      "ci/tools/testing/fakes_test.py",
   )
+  session.run("python", "-m", "pytest", "ci/tools/custom_linter/tests")
 
 
 # Use venv_backend="none" to allow running the script directly in the host.
@@ -191,10 +198,18 @@ def _load_pytorch_versions() -> Mapping[str, object]:
   return namespace
 
 
+def _version_key(version: str) -> Sequence[int]:
+  """Parse a dotted version string into an integer tuple for comparisons."""
+  return tuple(map(int, version.split(".")))
+
+
 _PYTORCH_VERSIONS: Final[Mapping[str, object]] = _load_pytorch_versions()
 _WHEEL_TORCH_VERSIONS: Final[Sequence[str]] = _PYTORCH_VERSIONS[
     "WHEEL_TORCH_VERSIONS"
 ]
+_WHEEL_TORCH_VERSIONS_BY_PYTHON: Final[Mapping[str, Sequence[str]]] = (
+    _PYTORCH_VERSIONS["WHEEL_TORCH_VERSIONS_BY_PYTHON"]
+)
 _EXTRA_PYTORCH_VERSIONS: Final[Sequence[str]] = _PYTORCH_VERSIONS[
     "EXTRA_PYTORCH_VERSIONS"
 ]
@@ -207,19 +222,19 @@ _INTERMEDIATE_PATCH_VERSIONS: Final[Sequence[str]] = _PYTORCH_VERSIONS[
 # after _newest_supported_torch() moves to a newer release.
 _TESTED_TORCH_VERSIONS: Final[Sequence[str]] = sorted(
     {*_EXTRA_PYTORCH_VERSIONS, *_INTERMEDIATE_PATCH_VERSIONS},
-    key=lambda v: tuple(map(int, v.split("."))),
+    key=_version_key,
 )
 # Every released PyTorch version the wheel supports: the default version plus
 # every version in _TESTED_TORCH_VERSIONS.
 _ALL_RELEASED_TORCH_VERSIONS: Final[Sequence[str]] = sorted(
     {*_WHEEL_TORCH_VERSIONS, *_INTERMEDIATE_PATCH_VERSIONS},
-    key=lambda v: tuple(map(int, v.split("."))),
+    key=_version_key,
 )
 
 
 def _newest_supported_torch() -> str:
   """Return the newest PyTorch version the wheel ships a glue for."""
-  return max(_WHEEL_TORCH_VERSIONS, key=lambda v: tuple(map(int, v.split("."))))
+  return max(_WHEEL_TORCH_VERSIONS, key=_version_key)
 
 
 def _dist_wheel(session: nox.Session) -> pathlib.Path:
@@ -291,7 +306,8 @@ def smoke_test(session: nox.Session, device: str, torch_variant: str) -> None:
   Args:
     session: the nox session the checks run in.
     device: the accelerator the smoke test targets (`cpu` or `tpu`).
-    torch_variant: the torch build to install, a `_TORCH_INDEXES` key.
+    torch_variant: the torch build to install, a `_EXTRA_TORCH_PYPI_INDEXES`
+      key.
   """
   install_args: list[str] = list(_torch_index_args(torch_variant))
   if torch_variant == "local":
@@ -349,6 +365,31 @@ def wheel_test(session: nox.Session) -> None:
   )
 
 
+def _session_python_version(session: nox.Session) -> str:
+  """Return the major.minor(t) Python version string for `session`."""
+  if isinstance(session.python, str):
+    return session.python
+  return (
+      os.environ.get("PYTHON_VERSION")
+      or f"{sys.version_info.major}.{sys.version_info.minor}"
+  )
+
+
+def _skip_if_torch_unsupported_on_python(
+    session: nox.Session, torch_version: str
+) -> None:
+  """Skip the session if `torch_version` does not support the active Python."""
+  python_version = _session_python_version(session).removesuffix("t")
+  py_torch_versions = _WHEEL_TORCH_VERSIONS_BY_PYTHON.get(python_version)
+  if py_torch_versions:
+    min_torch = min(py_torch_versions, key=_version_key)
+    if _version_key(torch_version) < _version_key(min_torch):
+      session.skip(
+          f"PyTorch {torch_version} does not support Python {python_version}"
+          f" (requires >= {min_torch})"
+      )
+
+
 @nox.session
 @nox.parametrize("torch_version", _TESTED_TORCH_VERSIONS)
 def intermediate_patch_abi(session: nox.Session, torch_version: str) -> None:
@@ -368,6 +409,7 @@ def intermediate_patch_abi(session: nox.Session, torch_version: str) -> None:
     session: the nox session the checks run in.
     torch_version: the intermediate PyTorch release to install and test.
   """
+  _skip_if_torch_unsupported_on_python(session, torch_version)
   _install_and_run_smoke_tests(
       session,
       "cpu",
@@ -391,6 +433,7 @@ def tpu_smoke_all_versions(session: nox.Session, torch_version: str) -> None:
     session: the nox session the checks run in.
     torch_version: the PyTorch release to install and test.
   """
+  _skip_if_torch_unsupported_on_python(session, torch_version)
   _install_and_run_smoke_tests(
       session,
       "tpu",
@@ -417,6 +460,7 @@ def cpu_smoke_all_versions(
     torch_variant: the torch build to install (`cpu` or `cuda`).
     torch_version: the PyTorch release to install and test.
   """
+  _skip_if_torch_unsupported_on_python(session, torch_version)
   torch_spec = (
       f"torch=={torch_version}+cpu"
       if torch_variant == "cpu"
@@ -433,13 +477,7 @@ def cpu_smoke_all_versions(
 @nox.session
 def dep_upper_bounds(session: nox.Session) -> None:
   """Run smoke tests against dependency upper bounds from requirements_<ver>_latest.txt."""
-  # The default fallback version should match the latest version in
-  # bazel/supported_python_versions.bzl.
-  python_version = (
-      session.python
-      if isinstance(session.python, str)
-      else os.environ.get("PYTHON_VERSION", "3.14")
-  )
+  python_version = _session_python_version(session)
   version_und = python_version.replace(".", "_")
   req_file = (
       pathlib.Path(__file__).parent

@@ -53,10 +53,8 @@ std::optional<bool> TorchShowCppStacktraces() {
   return enabled;
 }
 
-// These constructors are not-inlined and defined in the .cc file to reduce
-// binary size. See cl/354351433 for a quantification.
-StatusBuilder::StatusBuilder() = default;
-
+// These constructors and destructor are not-inlined and defined in the .cc file
+// to reduce binary size. See cl/354351433 for a quantification.
 StatusBuilder::~StatusBuilder() = default;
 
 StatusBuilder::StatusBuilder(const absl::Status& original_status)

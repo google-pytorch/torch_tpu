@@ -57,6 +57,7 @@ tab of the Sponge link of `tt_apis_test`.
 
 import ast
 import collections
+from collections.abc import Sequence
 import dataclasses
 import enum
 import importlib
@@ -68,7 +69,7 @@ import sys
 import textwrap
 import types
 import typing
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any
 import warnings
 
 from absl import app
@@ -94,7 +95,7 @@ SCAN_TT_APIS_LABEL = f"//{repo_paths.SCANNER_PACKAGE}:scan_tt_apis"
 _BAZEL_OUTPUT_DIR_PREFIX = "bazel-"
 
 # Exclude build output, test, documentation, and tooling directories
-EXCLUDED_DIRS: Set[str] = {
+EXCLUDED_DIRS: set[str] = {
     # go/keep-sorted start
     "_build",
     "build",
@@ -112,7 +113,7 @@ EXCLUDED_DIRS: Set[str] = {
 # Internal-only and test-only Python packages that are not part of the public
 # API. These can appear as attributes of `torch_tpu` once imported (e.g. when
 # this scanner is imported as a library by a test).
-_EXCLUDED_PYTHON_API_PREFIXES: Tuple[str, ...] = (
+_EXCLUDED_PYTHON_API_PREFIXES: tuple[str, ...] = (
     "torch_tpu.google",
     "torch_tpu.tests",
 )
@@ -127,7 +128,7 @@ def _is_excluded_python_api(full_name: str) -> bool:
 
 
 # Prefixes of the names of the modules that TorchTPU defines.
-_TORCH_TPU_NAMESPACES: Tuple[str, ...] = (
+_TORCH_TPU_NAMESPACES: tuple[str, ...] = (
     "torch.tpu.",
     "torch_tpu.",
 )
@@ -135,13 +136,13 @@ _TORCH_TPU_NAMESPACES: Tuple[str, ...] = (
 # The paths whose members are public Python APIs, in the order that
 # `discover_python_apis` walks them. `torch.tpu` goes first, so that the
 # TorchTPU objects without a public home that it exposes are listed under it.
-_PYTHON_API_ROOTS: Tuple[str, ...] = (
+_PYTHON_API_ROOTS: tuple[str, ...] = (
     "torch.tpu",
     "torch_tpu",
 )
 
 # The namespaces that public TorchTPU Python APIs live in.
-PUBLIC_NAMESPACES: Tuple[str, ...] = (
+PUBLIC_NAMESPACES: tuple[str, ...] = (
     "torch.tpu",
     "torch.accelerator",
 )
@@ -199,10 +200,10 @@ class ApiEntry:
 
   name: str
   category: str
-  stage: Optional[Stage]
+  stage: Stage | None
   defined_in: str
-  deprecated_in: Optional[str] = None
-  prefer: Optional[str] = None
+  deprecated_in: str | None = None
+  prefer: str | None = None
 
 
 class FlowDict(dict):
@@ -309,7 +310,7 @@ OP_NAME_STR_PATTERN = re.compile(
     r'case\s+OpName::(k\w+):\s*return\s*"([^"]+)";'
 )
 
-_IMPL_STAGE_MAP: Dict[str, Stage] = {
+_IMPL_STAGE_MAP: dict[str, Stage] = {
     "ImplExperimental": Stage.EXPERIMENTAL,
     "ImplStable": Stage.STABLE,
     "ImplDeprecated": Stage.DEPRECATED,
@@ -324,7 +325,7 @@ _IMPL_STAGE_MAP: Dict[str, Stage] = {
 
 # A Python API's stage, the version that deprecated it if it's deprecated, and
 # its preferred alternative if it's internal.
-_StageInfo = Tuple[Optional[Stage], Optional[str], Optional[str]]
+_StageInfo = tuple[Stage | None, str | None, str | None]
 
 _NO_STAGE_INFO: _StageInfo = (None, None, None)
 
@@ -377,7 +378,7 @@ def _get_python_api_stage_info(
 
 def _get_python_api_stage(
     attr_name: str, attribute_value: Any, current_object: Any
-) -> Optional[Stage]:
+) -> Stage | None:
   """Resolves the lifecycle stage for a Python API attribute or function.
 
   See `_get_python_api_stage_info`.
@@ -395,7 +396,7 @@ def _get_python_api_stage(
   ]
 
 
-def _infer_return_type_from_ast(func: Any) -> Optional[type]:
+def _infer_return_type_from_ast(func: Any) -> type | None:
   """Statically inspects the AST of a function's return statements to infer the returned class within TorchTPU.
 
   Args:
@@ -474,7 +475,7 @@ def _import_public_submodules(package: types.ModuleType) -> None:
       _import_public_submodules(submodule)
 
 
-def _get_home(value: Any) -> Optional[Tuple[str, Any]]:
+def _get_home(value: Any) -> tuple[str, Any] | None:
   """Returns the public path where a TorchTPU module or class is defined.
 
   The home of a module is its `__name__`, and the home of a class is its
@@ -518,7 +519,7 @@ def _get_home(value: Any) -> Optional[Tuple[str, Any]]:
   return (home, container) if resolved is value else None
 
 
-def _extract_python_apis(roots: Sequence[Tuple[Any, str]]) -> List[ApiEntry]:
+def _extract_python_apis(roots: Sequence[tuple[Any, str]]) -> list[ApiEntry]:
   """Recursively inspects Python objects and their members for public APIs.
 
   Every public path to a TorchTPU object gets an entry, but the members of a
@@ -534,10 +535,10 @@ def _extract_python_apis(roots: Sequence[Tuple[Any, str]]) -> List[ApiEntry]:
   Returns:
       A list of ApiEntry objects representing discovered APIs with stages.
   """
-  discovered: List[ApiEntry] = []
+  discovered: list[ApiEntry] = []
   # The path where the members of each walked module or class are listed, keyed
   # by the object's id.
-  listed_at: Dict[int, str] = {}
+  listed_at: dict[int, str] = {}
 
   def _add(name: str, stage_info: _StageInfo) -> None:
     stage, deprecated_in, prefer = stage_info
@@ -760,7 +761,7 @@ def _extract_python_apis(roots: Sequence[Tuple[Any, str]]) -> List[ApiEntry]:
   return discovered
 
 
-_UNSUPPORTED_MESSAGE_SUBSTRINGS: Tuple[str, ...] = (
+_UNSUPPORTED_MESSAGE_SUBSTRINGS: tuple[str, ...] = (
     "not implemented",
     "not supported",
     "doesn't support",
@@ -801,7 +802,7 @@ class _CppWarningBridge:
       func: Any,
       types_tuple: Any,
       args: Sequence[Any] = (),
-      kwargs: Optional[Dict[str, Any]] = None,
+      kwargs: dict[str, Any] | None = None,
   ) -> Any:
     del func, types_tuple, kwargs
     runner = args[0]
@@ -826,7 +827,7 @@ def _invoke_with_cpp_warning_capture(callback: Any) -> Any:
 
 
 def _probe_accelerator_callable(
-    callable_obj: Any, probe_cache: Dict[int, bool]
+    callable_obj: Any, probe_cache: dict[int, bool]
 ) -> bool:
   """Probes a `torch.accelerator` callable or class at runtime to check TPU support.
 
@@ -848,8 +849,8 @@ def _probe_accelerator_callable(
   if obj_id in probe_cache:
     return probe_cache[obj_id]
 
-  pos_args: List[Any] = []
-  kw_args: Dict[str, Any] = {}
+  pos_args: list[Any] = []
+  kw_args: dict[str, Any] = {}
   try:
     sig = inspect.signature(callable_obj)
     for param in sig.parameters.values():
@@ -920,8 +921,8 @@ def _is_deprecated_by_pytorch(api: Any) -> bool:
 
 
 def discover_accelerator_apis(
-    accelerator_module: Optional[Any] = None,
-) -> List[ApiEntry]:
+    accelerator_module: Any | None = None,
+) -> list[ApiEntry]:
   """Discovers public Python APIs in `torch.accelerator` implemented for TPU.
 
   Args:
@@ -940,9 +941,9 @@ def discover_accelerator_apis(
     ), "Failed to find 'torch.accelerator' module in runtime memory."
 
   # The discovered APIs that TPU supports, by path.
-  discovered: Dict[str, Any] = {}
-  visited_modules: Set[int] = set()
-  probe_cache: Dict[int, bool] = {}
+  discovered: dict[str, Any] = {}
+  visited_modules: set[int] = set()
+  probe_cache: dict[int, bool] = {}
 
   # Force C++ TORCH_WARN_ONCE to emit warnings on every invocation during probing
   # and preserve device/stream state across probes.
@@ -1066,14 +1067,14 @@ def discover_accelerator_apis(
   ]
 
 
-def discover_python_apis() -> Tuple[List[ApiEntry], List[ApiEntry]]:
+def discover_python_apis() -> tuple[list[ApiEntry], list[ApiEntry]]:
   """Dynamically inspects Python modules for exported APIs and Flags.
 
   Returns:
       A tuple of (public_python_apis, python_flags).
   """
   _import_public_submodules(torch_tpu)
-  roots: List[Tuple[Any, str]] = []
+  roots: list[tuple[Any, str]] = []
   for path in _PYTHON_API_ROOTS:
     root = _resolve_module_level_path(path)
     assert root is not None, f"Failed to find '{path}' in runtime memory."
@@ -1081,14 +1082,14 @@ def discover_python_apis() -> Tuple[List[ApiEntry], List[ApiEntry]]:
   apis = _extract_python_apis(roots)
 
   # Deduplicate by full API name
-  api_dict: Dict[str, ApiEntry] = {}
+  api_dict: dict[str, ApiEntry] = {}
   for item in apis:
     api_dict[item.name] = item
 
   public_python_apis = sorted(api_dict.values(), key=lambda x: x.name)
 
   # ABSL Python Flags
-  python_flags: List[ApiEntry] = []
+  python_flags: list[ApiEntry] = []
   for flag_name in flags.FLAGS:
     flag_object = flags.FLAGS[flag_name]
     filename = getattr(flag_object, "filename", "") or ""
@@ -1141,7 +1142,7 @@ def _resolve_module_level_path(path: str) -> Any:
     return None
 
 
-def split_property_accessor(name: str) -> Tuple[str, str]:
+def split_property_accessor(name: str) -> tuple[str, str]:
   """Splits the name of an API entry into its path and property accessor.
 
   Args:
@@ -1155,7 +1156,7 @@ def split_property_accessor(name: str) -> Tuple[str, str]:
   return path, accessor
 
 
-def find_duplicate_public_paths(apis: Sequence[ApiEntry]) -> List[List[str]]:
+def find_duplicate_public_paths(apis: Sequence[ApiEntry]) -> list[list[str]]:
   """Returns the public paths that lead to the same TorchTPU object.
 
   Only paths to modules and module members count; class members are listed
@@ -1169,8 +1170,8 @@ def find_duplicate_public_paths(apis: Sequence[ApiEntry]) -> List[List[str]]:
   Returns:
       The groups of two or more paths that lead to the same object, sorted.
   """
-  paths: Set[str] = set()
-  deprecated_paths: Set[str] = set()
+  paths: set[str] = set()
+  deprecated_paths: set[str] = set()
   for api in apis:
     path, accessor = split_property_accessor(api.name)
     parts = path.split(".")
@@ -1184,7 +1185,7 @@ def find_duplicate_public_paths(apis: Sequence[ApiEntry]) -> List[List[str]]:
 
   # Maps a key for each object to the object, which keeps the ids in the key
   # from being reused, and to its paths.
-  groups: Dict[Any, Tuple[Any, List[str]]] = {}
+  groups: dict[Any, tuple[Any, list[str]]] = {}
   for path in sorted(paths - deprecated_paths):
     value = _resolve_module_level_path(path)
     if not _is_torch_tpu_object(value):
@@ -1199,7 +1200,7 @@ def find_duplicate_public_paths(apis: Sequence[ApiEntry]) -> List[List[str]]:
   return sorted(group for _, group in groups.values() if len(group) > 1)
 
 
-def find_duplicated_exports(apis: Sequence[ApiEntry]) -> List[List[str]]:
+def find_duplicated_exports(apis: Sequence[ApiEntry]) -> list[list[str]]:
   """Returns the duplicate public paths that `tt_apis.yaml` tracks.
 
   These are the groups from `find_duplicate_public_paths` that include a path in
@@ -1250,7 +1251,7 @@ def _resolve_public_path(path: str) -> Any:
 
 def _assigned_self_attributes(
     function: Any,
-) -> List[Tuple[str, str]]:
+) -> list[tuple[str, str]]:
   """Returns the attributes that `function` assigns on its first argument.
 
   Covers `self.x = ...`, `self.x: T = ...`, `self.x += ...`, tuple and list
@@ -1290,14 +1291,14 @@ def _assigned_self_attributes(
   if marker in source_file:
     source_file = source_file[source_file.rindex(marker) + len(marker) :]
 
-  def _flatten(target: ast.AST) -> List[ast.AST]:
+  def _flatten(target: ast.AST) -> list[ast.AST]:
     if isinstance(target, (ast.Tuple, ast.List)):
       return [leaf for elt in target.elts for leaf in _flatten(elt)]
     if isinstance(target, ast.Starred):
       return _flatten(target.value)
     return [target]
 
-  found: List[Tuple[str, str]] = []
+  found: list[tuple[str, str]] = []
   for node in ast.walk(function_node):
     if isinstance(node, ast.Assign):
       targets = node.targets
@@ -1321,7 +1322,7 @@ def _assigned_self_attributes(
 
 def find_public_instance_attributes_of_class(
     cls: type,
-) -> Dict[str, str]:
+) -> dict[str, str]:
   """Returns the public instance attributes that a TorchTPU class assigns.
 
   Scans the methods (including property accessors) of `cls` and of its
@@ -1346,7 +1347,7 @@ def find_public_instance_attributes_of_class(
       if dataclasses.is_dataclass(cls)
       else set()
   )
-  found: Dict[str, str] = {}
+  found: dict[str, str] = {}
   for owner in cls.__mro__:
     if owner is object or not _is_torch_tpu_name(
         getattr(owner, "__module__", None)
@@ -1375,7 +1376,7 @@ def find_public_instance_attributes_of_class(
 
 def find_public_instance_attributes(
     apis: Sequence[ApiEntry],
-) -> List[Tuple[str, str]]:
+) -> list[tuple[str, str]]:
   """Returns the public instance attributes of public TorchTPU classes.
 
   The scanner discovers APIs with `dir`, which doesn't list instance
@@ -1389,7 +1390,7 @@ def find_public_instance_attributes(
   Returns:
       Sorted (API path of the attribute, "file:line") pairs.
   """
-  classes: Dict[int, Tuple[str, type]] = {}
+  classes: dict[int, tuple[str, type]] = {}
   for api in apis:
     path, accessor = split_property_accessor(api.name)
     if accessor:
@@ -1402,7 +1403,7 @@ def find_public_instance_attributes(
       path = home[0]
     if id(value) not in classes or path < classes[id(value)][0]:
       classes[id(value)] = (path, value)
-  found: List[Tuple[str, str]] = []
+  found: list[tuple[str, str]] = []
   for path, cls in classes.values():
     for name, location in find_public_instance_attributes_of_class(cls).items():
       found.append((f"{path}.{name}", location))
@@ -1437,7 +1438,7 @@ def _strip_cpp_comments(content: str) -> str:
   return pattern.sub(_replacer, content)
 
 
-def _parse_env_stage_expr(expr: str) -> Optional[Any]:
+def _parse_env_stage_expr(expr: str) -> Any | None:
   """Parses a C++ stage expression from kEnvVarToStage to a Stage enum or sentinel."""
   expr = expr.strip()
   if "InternalImplementation" in expr:
@@ -1453,7 +1454,7 @@ def _parse_env_stage_expr(expr: str) -> Optional[Any]:
   return None
 
 
-def _parse_env_deprecated_version(expr: str) -> Optional[str]:
+def _parse_env_deprecated_version(expr: str) -> str | None:
   """Returns the version in a `SymbolStage::Deprecated("2.13")` expression."""
   match = _DEPRECATED_VERSION_PATTERN.search(expr)
   return match.group(1) if match else None
@@ -1471,7 +1472,7 @@ def _normalize_cpp_op_name(op_enum_name: str) -> str:
 
 def discover_cpp_source_surfaces(
     repository_root: str,
-) -> Tuple[List[ApiEntry], List[ApiEntry], List[ApiEntry]]:
+) -> tuple[list[ApiEntry], list[ApiEntry], list[ApiEntry]]:
   """Scans C++ headers/sources for ABSL Flags, Env Vars, and Custom Ops.
 
   Args:
@@ -1480,19 +1481,19 @@ def discover_cpp_source_surfaces(
   Returns:
       A tuple of (env_vars, cpp_flags, custom_ops).
   """
-  env_vars: List[ApiEntry] = []
-  cpp_flags: List[ApiEntry] = []
-  custom_ops: List[ApiEntry] = []
-  op_name_map: Dict[str, str] = {}
-  raw_op_matches: List[Tuple[str, Optional[Stage], str]] = []
+  env_vars: list[ApiEntry] = []
+  cpp_flags: list[ApiEntry] = []
+  custom_ops: list[ApiEntry] = []
+  op_name_map: dict[str, str] = {}
+  raw_op_matches: list[tuple[str, Stage | None, str]] = []
 
-  seen_envs: Set[str] = set()
-  seen_flags: Set[str] = set()
-  seen_ops: Set[str] = set()
+  seen_envs: set[str] = set()
+  seen_flags: set[str] = set()
+  seen_ops: set[str] = set()
 
-  env_stages: Dict[str, Any] = {}
-  env_deprecated_versions: Dict[str, Optional[str]] = {}
-  pending_envs: List[Tuple[str, str, str]] = (
+  env_stages: dict[str, Any] = {}
+  env_deprecated_versions: dict[str, str | None] = {}
+  pending_envs: list[tuple[str, str, str]] = (
       []
   )  # (const_name, env_name, relative_path)
 
@@ -1672,7 +1673,7 @@ _TT_APIS_YAML_HEADER = """\
 
 
 def format_tt_apis_yaml(
-    all_items: List[ApiEntry],
+    all_items: list[ApiEntry],
     duplicated_exports: Sequence[Sequence[str]] = (),
 ) -> str:
   """Formats API items into the `tt_apis.yaml` baseline text.
@@ -1686,11 +1687,11 @@ def format_tt_apis_yaml(
   Returns:
       The YAML text, grouped into one commented section per category.
   """
-  grouped: Dict[str, List[ApiEntry]] = collections.defaultdict(list)
+  grouped: dict[str, list[ApiEntry]] = collections.defaultdict(list)
   for item in all_items:
     grouped[item.category].append(item)
 
-  categories: List[Tuple[str, Dict[str, FlowDict]]] = []
+  categories: list[tuple[str, dict[str, FlowDict]]] = []
   for category, items in grouped.items():
     categories.append((
         category,
@@ -1701,7 +1702,7 @@ def format_tt_apis_yaml(
     ))
 
   if duplicated_exports:
-    duplicated_data: Dict[str, FlowDict] = {}
+    duplicated_data: dict[str, FlowDict] = {}
     for group in sorted(sorted(group) for group in duplicated_exports):
       name = next(
           (path for path in group if is_in_public_namespace(path)), group[0]
@@ -1712,7 +1713,7 @@ def format_tt_apis_yaml(
       })
     categories.append((DUPLICATED_EXPORT_CATEGORY, duplicated_data))
 
-  sections: List[str] = []
+  sections: list[str] = []
   for category, formatted_data in categories:
     section_header = f"# --- {category} ---"
     section_yaml = yaml.safe_dump(
@@ -1730,20 +1731,20 @@ def format_tt_apis_yaml(
 PUBLIC_APIS_MD = "public_apis.md"
 
 # The stages that `public_apis.md` lists, in order.
-_PUBLIC_API_STAGES: Tuple[Stage, ...] = (
+_PUBLIC_API_STAGES: tuple[Stage, ...] = (
     Stage.STABLE,
     Stage.EXPERIMENTAL,
     Stage.DEPRECATED,
 )
 
 # The categories that `public_apis.md` lists, in order, with their headings.
-_PUBLIC_API_MD_CATEGORIES: Tuple[Tuple[str, str], ...] = (
+_PUBLIC_API_MD_CATEGORIES: tuple[tuple[str, str], ...] = (
     (_PUBLIC_PYTHON_API_CATEGORY, "Python APIs"),
     ("Environment Variable", "Environment Variables"),
 )
 
 
-def _public_apis_md_markers(stage: Stage) -> Tuple[str, str]:
+def _public_apis_md_markers(stage: Stage) -> tuple[str, str]:
   """Returns the comments around the generated API list of a stage."""
   return (
       f"<!-- BEGIN GENERATED: {stage.value} APIs -->",
@@ -1810,7 +1811,7 @@ def _format_internal_apis_md_list(all_items: Sequence[ApiEntry]) -> str:
   )
   if not items:
     return "There are no internal APIs in public namespaces at this time."
-  lines: List[str] = []
+  lines: list[str] = []
   for item in items:
     name, accessor = split_property_accessor(item.name)
     line = f"*   `{name}`"
@@ -1826,7 +1827,7 @@ def _format_public_apis_md_list(
     all_items: Sequence[ApiEntry], stage: Stage
 ) -> str:
   """Formats the generated `public_apis.md` API list of a stage."""
-  lines: List[str] = []
+  lines: list[str] = []
   for category, heading in _PUBLIC_API_MD_CATEGORIES:
     items = sorted(
         (
@@ -1929,7 +1930,7 @@ above, relative to the repository root."""
 
 def find_out_of_date_baseline_files(
     repository_root: str, all_items: Sequence[ApiEntry]
-) -> Dict[str, str]:
+) -> dict[str, str]:
   """Returns the up-to-date `tt_apis.yaml` and `public_apis.md`, if they changed.
 
   Args:
@@ -1970,7 +1971,7 @@ def find_out_of_date_baseline_files(
   }
 
 
-def discover_all_apis(repository_root: str) -> List[ApiEntry]:
+def discover_all_apis(repository_root: str) -> list[ApiEntry]:
   """Discovers all TorchTPU API surfaces.
 
   Args:

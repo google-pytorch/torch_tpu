@@ -23,9 +23,7 @@ Environment & Flags:
 """
 
 from typing import Any
-import unittest
 
-from absl import logging
 from absl.testing import absltest
 from absl.testing import parameterized
 import jax
@@ -35,15 +33,14 @@ from perflab import cases
 from perflab import common
 from perflab import compile as compile_lib
 from perflab import context as context_lib
+from perflab import device_ops as device_ops_lib
 from perflab import discovery as discovery_lib
-from perflab import flags as flags_lib
-from perflab import measure as measure_lib
-from perflab import metrics as metrics_lib
 from perflab import mode as mode_lib
 from perflab import models
 from perflab import registry as registry_lib
 from perflab import step_lib
 from perflab import target as target_lib
+from perflab import workload as workload_lib
 from perflab.torchax import torchax_device_ops
 from perflab.torchax import torchax_step
 
@@ -72,18 +69,26 @@ def _make_run_step(
     spec: registry_lib.BenchmarkSpec,
     ctx: context_lib.Context,
     mode: common.RunMode,
-) -> step_lib.Stepper:
+) -> tuple[step_lib.Stepper, workload_lib.StepWork | None]:
+  """Builds the stepper of a benchmark and the work of one of its steps."""
   common.seed_rngs()
   runner = torchax_step.resolve_torchax_stepper(
       spec.stepper, **spec.stepper_kwargs
   )
   runner.init_with_benchmark_args(spec, ctx)
+  step_work = (
+      None
+      if ctx.workload is None
+      else workload_lib.step_work(
+          ctx.workload, spec.stepper, spec.stepper_kwargs
+      )
+  )
 
   if common.is_torch_compile(mode):
     compile_config = spec.compile_config or compile_lib.CompileConfig()
     runner.compile(compile_config, ctx.target)
 
-  return runner
+  return runner, step_work
 
 
 def reset_state() -> None:
@@ -99,13 +104,29 @@ class TorchaxBenchmarkTest(
   framework = _FRAMEWORK
   platform = _PLATFORM
   case_params = base_test.case_params(_CASES)
+  import_failures = failures
 
-  def test_benchmark_imports(self):
-    if failures:
-      self.fail(
-          "benchmark module(s) failed to import:\n  "
-          + "\n  ".join(str(f) for f in failures)
-      )
+  def make_device_ops(
+      self, target: target_lib.Target
+  ) -> torchax_device_ops.TorchaxDeviceOps:
+    return torchax_device_ops.TorchaxDeviceOps(target)
+
+  def make_run_step(
+      self,
+      spec: registry_lib.BenchmarkSpec,
+      ctx: context_lib.Context,
+      mode: common.RunMode,
+  ) -> tuple[step_lib.Stepper, workload_lib.StepWork | None]:
+    return _make_run_step(spec, ctx, mode)
+
+  def reset_state(
+      self,
+      target: target_lib.Target,
+      device_ops: device_ops_lib.DeviceOps,
+      mode: common.RunMode,
+  ) -> None:
+    del target, device_ops, mode  # Unused.
+    reset_state()
 
   @parameterized.named_parameters(*_CASES)
   def test_benchmark(
@@ -117,75 +138,7 @@ class TorchaxBenchmarkTest(
           f"TorchAx benchmark does not support stepper {spec.stepper}"
       )
 
-    skip_reason = cases.get_skip_reason(
-        spec,
-        mode,
-        framework=_FRAMEWORK,
-        device_kind=target_lib.make_target(_PLATFORM).device_kind,
-    )
-
-    if skip_reason is not None and flags_lib.SKIP_BEHAVIOR.value == "skip":
-      self.report_skip(spec, mode)
-      self.skipTest(skip_reason)
-    if skip_reason is None and flags_lib.SKIP_BEHAVIOR.value == "run_skipped":
-      self.skipTest(
-          f"Benchmark {spec.name} is not skipped for run mode {mode.value},"
-          " skipping due to skip_behavior=run_skipped"
-      )
-
-    if flags_lib.DRY_RUN.value:
-      self._dry_run_test()
-      return
-
-    target = target_lib.make_target(_PLATFORM, dtype=spec.dtype)
-    device_ops = torchax_device_ops.TorchaxDeviceOps(target)
-    ctx = context_lib.Context(
-        target=target, run_scope=context_lib.RUN_SCOPE.value
-    )
-
-    reset_state()
-
-    if (
-        skip_reason is not None
-        and flags_lib.SKIP_BEHAVIOR.value == "assert_raise"
-    ):
-      with self.assertRaises(Exception):  # ASSERT_RAISES_OK=benchmark
-        self._run_and_measure(spec, mode, device_ops, ctx)
-      return
-
-    try:
-      metrics = self._run_and_measure(spec, mode, device_ops, ctx)
-    except unittest.SkipTest:
-      raise
-    except Exception:
-      self.report_result(spec, mode, succeeded=False)
-      raise
-
-    self.report_result(spec, mode, succeeded=True, metrics=metrics)
-
-  def _run_and_measure(
-      self, spec, mode, device_ops, ctx
-  ) -> metrics_lib.PerformanceMetrics:
-    try:
-      run_step = _make_run_step(spec, ctx, mode)
-      metrics = measure_lib.measure(
-          run_step,
-          device_ops,
-          name=f"{spec.name}_{mode.value}",
-          enable_xprof=flags_lib.ENABLE_XPROF.value,
-      )
-    except target_lib.UnsupportedBenchmark as e:
-      self.skipTest(f"{spec.name}: {e}")
-
-    logging.info("Metrics for %s_%s:\n%s", spec.name, mode.value, metrics)
-    self._assert_measured(metrics)
-    return metrics
-
-  def _assert_measured(self, metrics: metrics_lib.PerformanceMetrics) -> None:
-    self.assertGreater(metrics.e2e_wall_time_seconds, 0.0)
-    self.assertGreater(metrics.first_step_time_seconds, 0.0)
-    if measure_lib.POST_WARMUP_STEPS.value > 0:
-      self.assertGreater(metrics.post_warmup_step_time_seconds, 0.0)
+    self.run_case(spec, mode)
 
 
 def _test_main(*args: Any, **kwargs: Any) -> None:

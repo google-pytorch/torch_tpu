@@ -93,7 +93,7 @@ at::Tensor AtenSelectScatter(const at::Tensor& self, const at::Tensor& src,
   TT_KERNEL(OpName::kSelectScatter, param_keys, (self, src, dim, index), {
     const int64_t ndim = self.dim();
     TT_CHECK_THROW(ndim > 0, error::kPythonIndexError)
-        << "expected tensor to be at least 1-dimensional, got 0-dimensional";
+        << "expected tensor to be at least 1D, got 0D";
     TT_ASSIGN_OR_THROW(const int64_t wrapped_dim, SafeWrapDim(dim, ndim));
     const int64_t total_len = self.size(wrapped_dim);
     TT_CHECK_THROW(index >= -total_len && index < total_len,
@@ -124,7 +124,7 @@ at::Tensor AtenSelectScatter(const at::Tensor& self, const at::Tensor& src,
     if (self.numel() == 0) {
       TT_ASSIGN_OR_THROW(auto zero_buf, CreateZeroSizeDeviceBufferRef(
                                             input_sizes_vec, element_type));
-      return MakeTensor(zero_buf);
+      return MakeTensor(std::move(zero_buf));
     }
 
     auto op_builder = [input_sizes_vec, wrapped_dim,
@@ -140,7 +140,7 @@ at::Tensor AtenSelectScatter(const at::Tensor& self, const at::Tensor& src,
                        {.out_dtype = element_type,
                         .out_dims = input_sizes_vec,
                         .op_param_cache_keys = std::move(param_keys)})));
-    return MakeTensor(out_buf);
+    return MakeTensor(std::move(out_buf));
   });
 }
 
@@ -154,8 +154,8 @@ at::Tensor& AtenSelectScatterOut(const at::Tensor& self, const at::Tensor& src,
             << ToString(out.scalar_type());
         const int64_t ndim = self.dim();
         TT_CHECK_THROW(ndim > 0, error::kPythonIndexError)
-            << "expected tensor to be at least 1-dimensional, got "
-               "0-dimensional";
+            << "expected tensor to be at least 1D, got "
+               "0D";
         TT_ASSIGN_OR_THROW(const int64_t wrapped_dim, SafeWrapDim(dim, ndim));
         const int64_t total_len = self.size(wrapped_dim);
         TT_CHECK_THROW(index >= -total_len && index < total_len,

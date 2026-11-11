@@ -109,10 +109,11 @@ For the next session, the next are used when referring to dimensions:
 
 In `DoubleStreamBlock` (the double-stream attention block implemented by our
 FLUX implementation), both the image stream (`img_qkv`) and text stream
-(`txt_qkv`) project hidden states of shape `(B, L, 3 * H * D)` into query, key,
-and value tensors, and later merge attention heads back from `(B, H, L, D)` to
-`(B, L, H * D)`. This interaction causes inefficient copies to be created which
-significantly slow down our model.
+(`txt_qkv`) project hidden states of shape `(B, L, H * D)` into fused QKV
+tensors of shape `(B, L, 3 * H * D)`, unpack them into query, key, and value
+tensors of shape `(B, L, H, D)`, and later merge attention heads back from
+`(B, H, L, D)` to `(B, L, H * D)`. This interaction causes inefficient copies to
+be created which significantly slow down our model.
 
 #### Identifying issue
 
@@ -507,6 +508,6 @@ Then:
 
 1.  If you haven't set up your cluster yet, complete the **One-time setup**
     section in
-    [Get started with TorchTPU on GKE](../../docs/markdown/1_basics_3_get_started_on_gke.md).
+    [Get started with TorchTPU on GKE](../../docs/get_started_on_gke.md).
 2.  Submit the job by following the **Single-Host Workload Execution (1-chip /
     1-device slice)** section in the same guide.

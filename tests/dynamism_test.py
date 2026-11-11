@@ -1197,6 +1197,80 @@ class DynamismTest(seed_test_utils.RepeatableTest):
     for grad_affine in act[1:]:
       self.assertEmpty(dynamism.get_dynamism_info(grad_affine))
 
+  def test_rotary_embedding_compiled_dynamic_seq_len(self):
+    # Rotary position embeddings as in HF Llama: `cos` and `sin` are computed
+    # from `torch.arange(seq_len)` and multiplied with the bounded query.
+    def fn(hidden, w, inv_freq):
+      batch, seq_len, _ = hidden.shape
+      q = (hidden @ w).view(batch, seq_len, -1, 8).transpose(1, 2)
+      position_ids = torch.arange(seq_len, device=hidden.device).unsqueeze(0)
+      inv_freq_expanded = inv_freq[None, :, None].expand(batch, -1, 1)
+      freqs = (inv_freq_expanded @ position_ids[:, None, :].float()).transpose(
+          1, 2
+      )
+      emb = torch.cat((freqs, freqs), dim=-1)
+      cos, sin = emb.cos().unsqueeze(1), emb.sin().unsqueeze(1)
+      half = q.shape[-1] // 2
+      rotated = torch.cat((-q[..., half:], q[..., :half]), dim=-1)
+      return q * cos + rotated * sin
+
+    # Small integers and powers of two keep the matmuls exact on TPU.
+    args = [
+        torch.randint(-3, 4, (1, 16, 16), dtype=torch.float32),
+        torch.randint(-3, 4, (16, 16), dtype=torch.float32),
+        torch.tensor([1.0, 0.5, 0.25, 0.125]),
+    ]
+    expected = fn(*args)
+    hidden, w, inv_freq = [a.to(self.device) for a in args]
+    torch._dynamo.mark_dynamic(hidden, 1, min=2, max=16)
+    compiled = torch.compile(fn, backend="tpu", dynamic=None)
+    utils.assert_close(compiled(hidden, w, inv_freq).to("cpu"), expected)
+    # A shorter sequence reuses the graph compiled for the bounded dim.
+    short = torch.randint(-3, 4, (1, 5, 16), dtype=torch.float32)
+    with torch._dynamo.config.patch(error_on_recompile=True):
+      act = compiled(short.to(self.device), w, inv_freq)
+    utils.assert_close(act.to("cpu"), fn(short, *args[1:]))
+
+  def test_channels_last_residual_add_compiled_dynamic_spatial_dim(self):
+    # ConvNeXt-style block: a channels-last op whose result is permuted back to
+    # NCHW and added to the bounded input.
+    def fn(x, w):
+      y = x.permute(0, 2, 3, 1) * w
+      return x + y.permute(0, 3, 1, 2)
+
+    args = [torch.randn(1, 4, 16, 16), torch.randn(4)]
+    expected = fn(*args)
+    x, w = [a.to(self.device) for a in args]
+    torch._dynamo.mark_dynamic(x, 2, min=8, max=16)
+    compiled = torch.compile(fn, backend="tpu", dynamic=None)
+    utils.assert_close(compiled(x, w).to("cpu"), expected)
+    # A smaller image reuses the graph compiled for the bounded dim.
+    small = torch.randn(1, 4, 9, 16)
+    with torch._dynamo.config.patch(error_on_recompile=True):
+      act = compiled(small.to(self.device), w)
+    utils.assert_close(act.to("cpu"), fn(small, args[1]))
+
+  def test_linalg_cross_dynamic_batch_dim(self):
+    shape = (4, 3, 5)
+    dyn_dim = 0
+    upper_bound = 12
+    a = torch.randn(shape, dtype=torch.float32)
+    b = torch.randn(shape, dtype=torch.float32)
+
+    def mark_dynamic(x: torch.Tensor, y: torch.Tensor) -> None:
+      dynamism.mark_dynamic(x, dyn_dim, 2, upper_bound)
+      dynamism.mark_dynamic(y, dyn_dim, 2, upper_bound)
+
+    def cross_fn(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+      return torch.linalg.cross(x, y, dim=1)
+
+    act = self._run_bounded_dynamism_test(cross_fn, mark_dynamic, a, b)
+    act_dynamism_info = dynamism.get_dynamism_info(act)
+    self.assertLen(act_dynamism_info, 1)
+    self.assertEqual(act_dynamism_info[0].dimension, dyn_dim)
+    self.assertEqual(act_dynamism_info[0].lower_bound, 2)
+    self.assertEqual(act_dynamism_info[0].upper_bound, upper_bound)
+
 
 if __name__ == "__main__":
   absltest.main()

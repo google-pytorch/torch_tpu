@@ -26,10 +26,12 @@
 #include "ATen/core/TensorBody.h"
 #include "ATen/ops/ones.h"
 #include "absl/status/status.h"
+#include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
 #include "c10/core/DefaultDtype.h"
+#include "c10/util/Exception.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -46,11 +48,12 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/DialectRegistry.h"
+#include "mlir/IR/Location.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/IR/Value.h"
-#include "mlir/IR/ValueRange.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Support/LLVM.h"
 #include "stablehlo/dialect/Register.h"
@@ -61,11 +64,15 @@
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "stablehlo/transforms/StablehloBroadcastLowering.h"
 #include "torch/headeronly/core/ScalarType.h"
+#include "xla/mlir/utils/error_util.h"
 
 namespace torch_tpu {
 namespace {
 
+using absl_testing::StatusIs;
 using testing::ElementsAre;
+using testing::EndsWith;
+using testing::HasSubstr;
 
 class OpBuilderUtilsBuilder {
  public:
@@ -91,6 +98,22 @@ mlir::ElementType GetDefaultMlirDType() {
     return mlir::ElementType::F32;
   }
   return *default_dtype;
+}
+
+// Returns an f32 function argument of `shape` with `bound_dims` made bounded
+// dynamic by set_dimension_size with runtime size arguments.
+mlir::MlirOp MakeBoundedArg(mlir::func::FunctionBuilder& fb,
+                            const Dimensions& shape,
+                            absl::Span<const int64_t> bound_dims) {
+  mlir::OpBuilder& op_builder = fb.getOpBuilder();
+  mlir::MlirOp op = mlir::func::Argument(
+      fb, mlir::RankedTensorType::get(shape, op_builder.getF32Type()));
+  for (int64_t dim : bound_dims) {
+    mlir::MlirOp size = mlir::func::Argument(
+        fb, mlir::RankedTensorType::get({}, op_builder.getI32Type()));
+    op = mlir::stablehlo::SetDimensionSize(op, size, dim);
+  }
+  return op;
 }
 
 // TODO(b/433265252): add tests for broadcasting on MlirOps.
@@ -462,6 +485,35 @@ TEST(BroadcastIfNeeded, StablehloDimsWithBoundOp) {
   EXPECT_EQ(result_type.getDimSize(1), 3);
 }
 
+// Expects that `status` is raised to Python as a `c10::Error`. In internal
+// builds, raising it also checks that its message follows the TorchTPU error
+// message guidelines (go/tt-error-guide), and aborts if it doesn't.
+void ExpectRaisedAsC10Error(const absl::Status& status) {
+  const TtError error(status,
+                      c10::SourceLocation{__func__, __FILE__, __LINE__});
+  EXPECT_THROW(TranslateToC10ErrorAndThrow(error), c10::Error);
+}
+
+TEST(ConsumeMlirDiagnostics, NoDiagnostic) {
+  mlir::MLIRContext context;
+  mlir::BaseScopedDiagnosticHandler diag_handler(&context);
+
+  EXPECT_EQ(ConsumeMlirDiagnostics(diag_handler),
+            "no MLIR diagnostic was reported");
+}
+
+TEST(ConsumeMlirDiagnostics, AdaptsDiagnostic) {
+  mlir::MLIRContext context;
+  mlir::BaseScopedDiagnosticHandler diag_handler(&context);
+  mlir::emitError(mlir::UnknownLoc::get(&context), "Something went wrong.");
+
+  const std::string message = ConsumeMlirDiagnostics(diag_handler);
+
+  // The trailing newline and period of the diagnostic are removed.
+  EXPECT_THAT(message, EndsWith("error: Something went wrong"));
+  EXPECT_TRUE(diag_handler.ok());  // The diagnostic was consumed.
+}
+
 TEST(BroadcastIfNeeded, Failure) {
   OpBuilderUtilsBuilder op_builder_utils_builder;
   mlir::MlirBuilder& builder = op_builder_utils_builder.get();
@@ -469,10 +521,10 @@ TEST(BroadcastIfNeeded, Failure) {
   mlir::MlirOp op = MakeConstant(builder, 5, op_builder.getI32Type(), {2});
   mlir::stablehlo::Dimensions target_shape = {{3}};
   auto result = BroadcastIfNeeded(op, target_shape);
-  ASSERT_FALSE(result.ok());
-  EXPECT_EQ(result.status().code(), error::kInvalidArgument);
-  EXPECT_THAT(result.status().message(),
-              testing::HasSubstr("failed to broadcast tensor: "));
+  EXPECT_THAT(result.status(),
+              StatusIs(error::kInvalidArgument,
+                       HasSubstr("failed to broadcast tensor: ")));
+  ExpectRaisedAsC10Error(result.status());
 }
 
 TEST(BroadcastIfNeeded, ExplicitBroadcastDims) {
@@ -564,10 +616,10 @@ TEST(BroadcastIfNeeded,
       MakeConstant(builder, 1.0f, op_builder.getF32Type(), {10, 4, 3});
 
   auto result = BroadcastIfNeeded(input_op, target_op, {0, 2});
-  ASSERT_FALSE(result.ok());
-  EXPECT_EQ(result.status().code(), error::kInvalidArgument);
-  EXPECT_THAT(result.status().message(),
-              testing::HasSubstr("cannot mix bounded and static dimensions"));
+  EXPECT_THAT(result.status(),
+              StatusIs(error::kInvalidArgument,
+                       HasSubstr("cannot mix bounded and static dimensions")));
+  ExpectRaisedAsC10Error(result.status());
 }
 
 TEST(BroadcastIfNeeded, ExplicitBroadcastDimsStaticInputToDynamicTarget) {
@@ -783,6 +835,44 @@ TEST(ApplyBroadcastIfNeeded, DynamicShape) {
   EXPECT_TRUE(bcast_op2_dims[0].boundOp.has_value());
   EXPECT_EQ(bcast_op2_dims[1].size, 4);
   EXPECT_FALSE(bcast_op2_dims[1].boundOp.has_value());
+}
+
+// Returns a [?, 3] tensor with upper bound 10 on dimension 0.
+mlir::MlirOp MakeBoundedTensor(mlir::MlirBuilder& builder) {
+  mlir::OpBuilder& op_builder = builder.getOpBuilder();
+  mlir::MlirOp size = MakeConstant(builder, 5, op_builder.getI32Type(), {});
+  mlir::MlirOp padded =
+      MakeConstant(builder, 1.0f, op_builder.getF32Type(), {10, 3});
+  return mlir::stablehlo::SetDimensionSize(padded, size, /*dim=*/0);
+}
+
+TEST(ApplyBroadcastIfNeeded, BoundedAndStaticDimensionsFailure) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::MlirBuilder& builder = op_builder_utils_builder.get();
+  mlir::MlirOp bounded = MakeBoundedTensor(builder);
+  mlir::MlirOp static_op =
+      MakeConstant(builder, 2.0f, builder.getOpBuilder().getF32Type(), {10, 3});
+
+  auto result = ApplyBroadcastIfNeeded(bounded, static_op);
+  EXPECT_THAT(result.status(),
+              StatusIs(error::kInvalidArgument,
+                       HasSubstr("cannot mix bounded and static dimensions")));
+  ExpectRaisedAsC10Error(result.status());
+}
+
+TEST(ApplyBroadcastIfNeeded, SpanBoundedAndStaticDimensionsFailure) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::MlirBuilder& builder = op_builder_utils_builder.get();
+  mlir::MlirOp bounded = MakeBoundedTensor(builder);
+  mlir::MlirOp static_op =
+      MakeConstant(builder, 2.0f, builder.getOpBuilder().getF32Type(), {10, 3});
+
+  auto result = ApplyBroadcastIfNeeded(
+      std::vector<mlir::MlirOp>{bounded, static_op});  // NOLINT
+  EXPECT_THAT(result.status(),
+              StatusIs(error::kInvalidArgument,
+                       HasSubstr("cannot mix bounded and static dimensions")));
+  ExpectRaisedAsC10Error(result.status());
 }
 
 TEST(GetNumElements, StaticShape) {
@@ -1023,22 +1113,6 @@ TEST(DynamicReshapeFromStaticDimensions, ErrorNonTransposeLikeReshape) {
       result.reshaped_op.status().message(),
       testing::HasSubstr(
           "reshape reassociation not supported for same sized reshapes"));
-}
-
-// Returns an f32 function argument of `shape` with `bound_dims` made bounded
-// dynamic by set_dimension_size with runtime size arguments.
-mlir::MlirOp MakeBoundedArg(mlir::func::FunctionBuilder& fb,
-                            const Dimensions& shape,
-                            absl::Span<const int64_t> bound_dims) {
-  mlir::OpBuilder& op_builder = fb.getOpBuilder();
-  mlir::MlirOp op = mlir::func::Argument(
-      fb, mlir::RankedTensorType::get(shape, op_builder.getF32Type()));
-  for (int64_t dim : bound_dims) {
-    mlir::MlirOp size = mlir::func::Argument(
-        fb, mlir::RankedTensorType::get({}, op_builder.getI32Type()));
-    op = mlir::stablehlo::SetDimensionSize(op, size, dim);
-  }
-  return op;
 }
 
 TEST(GetStaticShape, ReturnsUpperBoundsForBoundedDims) {
@@ -1473,45 +1547,6 @@ TEST(OpBuilderUtils, SerializePortableArtifact) {
   EXPECT_THAT(artifact, testing::HasSubstr("StableHLO_v1."));
 }
 
-TEST(OpBuilderUtils, SerializePortableArtifact_CustomCall_NoVhloCustomCallV2) {
-  OpBuilderUtilsBuilder op_builder_utils_builder;
-  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
-  mlir::func::FunctionBuilder fb(mb, "main");
-  mlir::OpBuilder& op_builder = fb.getOpBuilder();
-
-  auto tensor_type = mlir::RankedTensorType::get({10}, op_builder.getF32Type());
-  const mlir::NamedAttribute call_target = op_builder.getNamedAttr(
-      "call_target_name", op_builder.getStringAttr("custom_call_target"));
-  const mlir::NamedAttribute has_side_effect =
-      op_builder.getNamedAttr("has_side_effect", op_builder.getBoolAttr(false));
-  const mlir::NamedAttribute api_version = op_builder.getNamedAttr(
-      "api_version",
-      mlir::stablehlo::CustomCallApiVersionAttr::get(
-          op_builder.getContext(),
-          mlir::stablehlo::CustomCallApiVersion::API_VERSION_ORIGINAL));
-
-  auto custom_call_op = mlir::stablehlo::CustomCallOp::create(
-      op_builder, fb.getLoc(), {tensor_type}, mlir::ValueRange{},
-      {call_target, has_side_effect, api_version});
-  mlir::MlirOp custom_call_result(fb, custom_call_op.getResult(0));
-  mlir::func::Return(fb, custom_call_result);
-  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
-
-  TT_ASSERT_OK_AND_ASSIGN(std::string artifact,
-                          SerializePortableArtifact(module.get()));
-
-  // Check for the MLIR magic string that denotes bytecode.
-  EXPECT_THAT(artifact, testing::HasSubstr("\x4D\x4C\xEF\x52"));
-  // Check for the StableHLO_v1 producer string to indicate versioned StableHLO.
-  EXPECT_THAT(artifact, testing::HasSubstr("StableHLO_v1."));
-
-  // Verify that WEEK_12 compatibility requirement serializes to
-  // vhlo.custom_call_v1 and avoids emitting vhlo.custom_call_v2, which causes
-  // deserialization failures in StableHLO 1.17.0 (jaxlib 0.9.2).
-  EXPECT_THAT(artifact, testing::Not(testing::HasSubstr("custom_call_v2")));
-  EXPECT_THAT(artifact, testing::HasSubstr("custom_call_v1"));
-}
-
 TEST(OpBuilderUtils, MakeZeroSizedTensor_MlirType_DefaultShape) {
   OpBuilderUtilsBuilder op_builder_utils_builder;
   mlir::MlirBuilder& builder = op_builder_utils_builder.get();
@@ -1683,22 +1718,6 @@ TEST(OpBuilderUtils, Squeeze_PreservesBoundedDynamism) {
   EXPECT_TRUE(dims[1].boundOp.has_value());
 }
 
-// Returns an f32 function argument of the given shape, where `bounded_dims`
-// are made bounded dynamic by set_dimension_size with runtime size arguments.
-mlir::MlirOp MakeBoundedArgument(mlir::func::FunctionBuilder& fb,
-                                 const Dimensions& shape,
-                                 const Dimensions& bounded_dims) {
-  mlir::OpBuilder& op_builder = fb.getOpBuilder();
-  mlir::MlirOp arg = mlir::func::Argument(
-      fb, mlir::RankedTensorType::get(shape, op_builder.getF32Type()));
-  for (int64_t dim : bounded_dims) {
-    mlir::MlirOp size = mlir::func::Argument(
-        fb, mlir::RankedTensorType::get({}, op_builder.getI32Type()));
-    arg = mlir::stablehlo::SetDimensionSize(arg, size, dim);
-  }
-  return arg;
-}
-
 // A convolution of operands and result with configurable dimension numbers and
 // optional result_dims. Operand shapes are the bounds of their bounded
 // dimensions.
@@ -1767,8 +1786,8 @@ absl::StatusOr<mlir::MlirOp> CallConvolutionLike(
   }
   std::optional<mlir::stablehlo::Dimensions> result_dims;
   if (!params.result_shape.empty()) {
-    result_dims = GetDimensions(MakeBoundedArgument(
-        fb, params.result_shape, params.result_bounded_dims));
+    result_dims = GetDimensions(
+        MakeBoundedArg(fb, params.result_shape, params.result_bounded_dims));
   }
   return ConvolutionLike(
       result_type, lhs, rhs, dimension_numbers, params.feature_group_count,
@@ -1787,8 +1806,8 @@ TEST(ConvolutionLike, StaticOperandsUseResultType) {
       .padding = {2, 2},
       .feature_group_count = 4,
   };
-  const mlir::MlirOp lhs = MakeBoundedArgument(fb, params.lhs_shape, {});
-  const mlir::MlirOp rhs = MakeBoundedArgument(fb, params.rhs_shape, {});
+  const mlir::MlirOp lhs = MakeBoundedArg(fb, params.lhs_shape, {});
+  const mlir::MlirOp rhs = MakeBoundedArg(fb, params.rhs_shape, {});
   const auto result_type =
       mlir::RankedTensorType::get({1, 4, 10}, fb.getOpBuilder().getF32Type());
 
@@ -1812,8 +1831,8 @@ TEST(ConvolutionLike, StaticOperandsUseStaticResultDims) {
       .feature_group_count = 4,
       .result_shape = {1, 4, 10},
   };
-  const mlir::MlirOp lhs = MakeBoundedArgument(fb, params.lhs_shape, {});
-  const mlir::MlirOp rhs = MakeBoundedArgument(fb, params.rhs_shape, {});
+  const mlir::MlirOp lhs = MakeBoundedArg(fb, params.lhs_shape, {});
+  const mlir::MlirOp rhs = MakeBoundedArg(fb, params.rhs_shape, {});
   const auto placeholder_result_type =
       mlir::RankedTensorType::get({1, 1, 1}, fb.getOpBuilder().getF32Type());
 
@@ -1836,9 +1855,9 @@ TEST_P(ConvolutionLikeBoundedTest, BoundsResultOfStaticConvolution) {
   mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
   mlir::func::FunctionBuilder fb(mb, "main");
   const mlir::MlirOp lhs =
-      MakeBoundedArgument(fb, params.lhs_shape, params.lhs_bounded_dims);
+      MakeBoundedArg(fb, params.lhs_shape, params.lhs_bounded_dims);
   const mlir::MlirOp rhs =
-      MakeBoundedArgument(fb, params.rhs_shape, params.rhs_bounded_dims);
+      MakeBoundedArg(fb, params.rhs_shape, params.rhs_bounded_dims);
   // Only the element type of the result type is used for bounded operands.
   const auto result_type = mlir::RankedTensorType::get(
       Dimensions(params.lhs_shape.size(), 1), fb.getOpBuilder().getF32Type());
@@ -2058,8 +2077,8 @@ TEST(ConvolutionLike, MismatchedResultDimsReturnsNotImplementedError) {
       .result_bounded_dims = {2},
   };
   const mlir::MlirOp lhs =
-      MakeBoundedArgument(fb, params.lhs_shape, params.lhs_bounded_dims);
-  const mlir::MlirOp rhs = MakeBoundedArgument(fb, params.rhs_shape, {});
+      MakeBoundedArg(fb, params.lhs_shape, params.lhs_bounded_dims);
+  const mlir::MlirOp rhs = MakeBoundedArg(fb, params.rhs_shape, {});
   const auto result_type =
       mlir::RankedTensorType::get({1, 1, 1}, fb.getOpBuilder().getF32Type());
 
@@ -2088,9 +2107,9 @@ TEST_P(ConvolutionLikeUnsupportedTest, ReturnsNotImplementedError) {
   mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
   mlir::func::FunctionBuilder fb(mb, "main");
   const mlir::MlirOp lhs =
-      MakeBoundedArgument(fb, params.lhs_shape, params.lhs_bounded_dims);
+      MakeBoundedArg(fb, params.lhs_shape, params.lhs_bounded_dims);
   const mlir::MlirOp rhs =
-      MakeBoundedArgument(fb, params.rhs_shape, params.rhs_bounded_dims);
+      MakeBoundedArg(fb, params.rhs_shape, params.rhs_bounded_dims);
   const auto result_type = mlir::RankedTensorType::get(
       Dimensions(params.lhs_shape.size(), 1), fb.getOpBuilder().getF32Type());
 

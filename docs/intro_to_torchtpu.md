@@ -1,7 +1,5 @@
 # Introduction to TorchTPU
 
-<!-- Link to colab and to generated notebook -->
-
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/google-pytorch/torch_tpu/blob/0.2.0-docs/docs/notebooks/intro_to_torchtpu.ipynb)
 
 TorchTPU is an open-source, native PyTorch backend for

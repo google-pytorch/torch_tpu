@@ -17,10 +17,12 @@
 #include "csrc/ops/unary.h"
 
 #include <cstdint>
+#include <numbers>
 
-#include "ATen/OpMathType.h"
+#include "absl/functional/function_ref.h"
 #include "absl/status/statusor.h"
 #include "c10/core/ScalarType.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/ops/op_builder_utils.h"
@@ -42,14 +44,10 @@ namespace {
 
 absl::StatusOr<mlir::MlirOp> LogN(mlir::MlirOp input_op, int32_t n,
                                   mlir::ElementType default_dtype) {
-  at::ScalarType default_scalar_type = ConvertTo<at::ScalarType>(default_dtype);
-  // Similarly to CUDA, Half and BFloat16 inputs are promoted to to Float for
+  // Similarly to CUDA, Half and BFloat16 inputs are promoted to Float for
   // the actual mathematical computation.
-  at::ScalarType computation_scalar_type =
-      at::toOpMathType(default_scalar_type);
-
-  TT_ASSIGN_OR_RETURN(mlir::ElementType computation_type,
-                      ConvertTo<mlir::ElementType>(computation_scalar_type));
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType computation_type,
+                      InferComputationDtype(default_dtype));
 
   TT_ASSIGN_OR_RETURN(mlir::MlirOp computation_input_op,
                       ConvertIfInteger(input_op, computation_type));
@@ -65,6 +63,21 @@ absl::StatusOr<mlir::MlirOp> LogN(mlir::MlirOp input_op, int32_t n,
   mlir::MlirOp result_op = mlir::chlo::BroadcastDiv(log_op, log_of_n);
 
   return mlir::stablehlo::ConvertElementType(result_op, default_dtype);
+}
+
+// Applies `fct` in the computation (OpMath) dtype of `out_mlir_type` and casts
+// the result back. Similarly to CUDA, Half and BFloat16 inputs are promoted to
+// Float. This matters for CHLO ops that decompose into several ops, where
+// rounding each intermediate result to low precision compounds the error.
+absl::StatusOr<mlir::MlirOp> BuildUnaryInComputationDtype(
+    mlir::MlirOp input_op, mlir::ElementType out_mlir_type,
+    absl::FunctionRef<mlir::MlirOp(mlir::MlirOp&)> fct) {
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType computation_type,
+                      InferComputationDtype(out_mlir_type));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp computation_input_op,
+                      CastIfNeeded(input_op, computation_type));
+  mlir::MlirOp result_op = fct(computation_input_op);
+  return CastIfNeeded(result_op, out_mlir_type);
 }
 
 }  // namespace
@@ -202,46 +215,48 @@ absl::StatusOr<mlir::MlirOp> BuildLiftFreshShlo(mlir::MlirOp input_op) {
   return input_op;
 }
 
+absl::StatusOr<mlir::MlirOp> BuildAcosShlo(mlir::MlirOp input_op,
+                                           mlir::ElementType out_mlir_type) {
+  return BuildUnaryInComputationDtype(input_op, out_mlir_type,
+                                      mlir::chlo::Acos);
+}
+
+absl::StatusOr<mlir::MlirOp> BuildAcoshShlo(mlir::MlirOp input_op,
+                                            mlir::ElementType out_mlir_type) {
+  return BuildUnaryInComputationDtype(input_op, out_mlir_type,
+                                      mlir::chlo::Acosh);
+}
+
+absl::StatusOr<mlir::MlirOp> BuildAsinShlo(mlir::MlirOp input_op,
+                                           mlir::ElementType out_mlir_type) {
+  return BuildUnaryInComputationDtype(input_op, out_mlir_type,
+                                      mlir::chlo::Asin);
+}
+
+absl::StatusOr<mlir::MlirOp> BuildAsinhShlo(mlir::MlirOp input_op,
+                                            mlir::ElementType out_mlir_type) {
+  return BuildUnaryInComputationDtype(input_op, out_mlir_type,
+                                      mlir::chlo::Asinh);
+}
+
+absl::StatusOr<mlir::MlirOp> BuildAtanhShlo(mlir::MlirOp input_op,
+                                            mlir::ElementType out_mlir_type) {
+  return BuildUnaryInComputationDtype(input_op, out_mlir_type,
+                                      mlir::chlo::Atanh);
+}
+
 absl::StatusOr<mlir::MlirOp> BuildLogShlo(mlir::MlirOp input_op,
                                           mlir::ElementType default_dtype) {
-  at::ScalarType default_scalar_type = ConvertTo<at::ScalarType>(default_dtype);
-  // Similarly to CUDA, Half and BFloat16 inputs are promoted to to Float for
-  // the actual mathematical computation.
-  at::ScalarType computation_scalar_type =
-      at::toOpMathType(default_scalar_type);
-
-  TT_ASSIGN_OR_RETURN(mlir::ElementType computation_type,
-                      ConvertTo<mlir::ElementType>(computation_scalar_type));
-
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp computation_input_op,
-                      ConvertIfInteger(input_op, computation_type));
-  computation_input_op = mlir::stablehlo::ConvertElementType(
-      computation_input_op, computation_type);
-
-  mlir::MlirOp result_op = mlir::stablehlo::Log(computation_input_op);
-
-  return mlir::stablehlo::ConvertElementType(result_op, default_dtype);
+  return BuildUnaryInComputationDtype(
+      input_op, default_dtype,
+      [](mlir::MlirOp& op) { return mlir::stablehlo::Log(op); });
 }
 
 absl::StatusOr<mlir::MlirOp> BuildLog1pShlo(mlir::MlirOp input_op,
                                             mlir::ElementType default_dtype) {
-  at::ScalarType default_scalar_type = ConvertTo<at::ScalarType>(default_dtype);
-  // Similarly to CUDA, Half and BFloat16 inputs are promoted to to Float for
-  // the actual mathematical computation.
-  at::ScalarType computation_scalar_type =
-      at::toOpMathType(default_scalar_type);
-
-  TT_ASSIGN_OR_RETURN(mlir::ElementType computation_type,
-                      ConvertTo<mlir::ElementType>(computation_scalar_type));
-
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp computation_input_op,
-                      ConvertIfInteger(input_op, computation_type));
-  computation_input_op = mlir::stablehlo::ConvertElementType(
-      computation_input_op, computation_type);
-
-  mlir::MlirOp result_op = mlir::stablehlo::Log1p(computation_input_op);
-
-  return mlir::stablehlo::ConvertElementType(result_op, default_dtype);
+  return BuildUnaryInComputationDtype(
+      input_op, default_dtype,
+      [](mlir::MlirOp& op) { return mlir::stablehlo::Log1p(op); });
 }
 
 absl::StatusOr<mlir::MlirOp> BuildTanhShlo(mlir::MlirOp input_op,
@@ -250,7 +265,7 @@ absl::StatusOr<mlir::MlirOp> BuildTanhShlo(mlir::MlirOp input_op,
   // Half and BFloat16 inputs are promoted to Float for the actual
   // mathematical computation.
   at::ScalarType computation_scalar_type =
-      at::toOpMathType(default_scalar_type);
+      InferComputationDtype(default_scalar_type);
 
   TT_ASSIGN_OR_RETURN(mlir::ElementType computation_type,
                       ConvertTo<mlir::ElementType>(computation_scalar_type));
@@ -281,17 +296,20 @@ absl::StatusOr<mlir::MlirOp> BuildTanhShlo(mlir::MlirOp input_op,
 
 absl::StatusOr<mlir::MlirOp> BuildExp2Shlo(
     mlir::MlirOp input_op, mlir::ElementType default_mlir_type) {
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp op,
-                      ConvertIfInteger(input_op, default_mlir_type));
-  mlir::MlirBuilder& builder = op.getBuilder();
-  mlir::RankedTensorType type = GetTensorTypeOrDie(op);
-  mlir::MlirOp value_2 =
-      MakeScalarConstant(builder, 2.0, type.getElementType());
-  mlir::MlirOp ln2 = mlir::stablehlo::Log(value_2);
-  TT_ASSIGN_OR_RETURN((auto [ln2_b, op_b]), ApplyBroadcastIfNeeded(ln2, op));
-  mlir::MlirOp mul_op = mlir::stablehlo::Mul(ln2_b, op_b);
+  // Half and BFloat16 inputs are promoted to Float for the actual
+  // mathematical computation.
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType computation_type,
+                      InferComputationDtype(default_mlir_type));
+
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp computation_input_op,
+                      ConvertIfInteger(input_op, computation_type));
+  TT_ASSIGN_OR_RETURN(computation_input_op,
+                      CastIfNeeded(computation_input_op, computation_type));
+
+  mlir::MlirOp ln2 = MakeConstantLike(computation_input_op, std::numbers::ln2);
+  mlir::MlirOp mul_op = mlir::stablehlo::Mul(ln2, computation_input_op);
   mlir::MlirOp result_op = mlir::stablehlo::Exp(mul_op);
-  return mlir::stablehlo::ConvertElementType(result_op, default_mlir_type);
+  return CastIfNeeded(result_op, default_mlir_type);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildLog2Shlo(

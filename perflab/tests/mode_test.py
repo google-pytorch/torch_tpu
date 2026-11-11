@@ -104,6 +104,29 @@ class ModeEnumTest(seed_test_utils.RepeatableTest):
         mode_lib.modes_for("torchax", "tpu"), [common.RunMode.COMPILED]
     )
 
+  def test_smoke_skipped_run_modes(self):
+    for skipped, fake_tensor_mode, expected in (
+        # Outside the smoke test, the skipped run modes are unchanged.
+        ({"eager_default"}, False, {"eager_default"}),
+        # A benchmark that runs in an accelerator-only mode runs in the smoke.
+        ({"eager_default"}, True, set()),
+        ({"eager_default", "compiled"}, True, {"compiled"}),
+        # A benchmark that runs in no accelerator-only mode stays skipped.
+        (
+            {"eager_default", "eager_optimized", "compiled"},
+            True,
+            {"eager_default", "eager_optimized", "compiled"},
+        ),
+        ({"compiled"}, True, {"compiled"}),
+    ):
+      with self.subTest(skipped=skipped, fake_tensor_mode=fake_tensor_mode):
+        self.assertEqual(
+            mode_lib.smoke_skipped_run_modes(
+                skipped, fake_tensor_mode=fake_tensor_mode
+            ),
+            frozenset(expected),
+        )
+
   def test_bad_framework_raises(self):
     with self.assertRaises(ValueError):  # ASSERT_RAISES_OK=benchmark
       mode_lib.modes_for("framework", target_lib.DeviceKind.CPU)

@@ -17,9 +17,14 @@
 #ifndef TORCH_TPU_CSRC_INTERNAL_MOSAIC_KILN_CORE_CONTEXT_H_
 #define TORCH_TPU_CSRC_INTERNAL_MOSAIC_KILN_CORE_CONTEXT_H_
 
+#include <string_view>
+#include <utility>
+
+#include "absl/base/nullability.h"
+#include "absl/status/status.h"
 #include "csrc/internal/mosaic/kiln/core/dtype.h"
 #include "csrc/internal/mosaic/kiln/core/literal.h"
-#include "csrc/internal/mosaic/kiln/core/value_base.h"
+#include "csrc/internal/mosaic/kiln/core/value_handle.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributeInterfaces.h"
 #include "mlir/IR/MLIRContext.h"
@@ -28,54 +33,59 @@
 
 namespace torch_tpu::kiln::internal {
 
-// RAII helper to install and restore the active thread-local builder.
+// RAII helper to install and clear the active thread-local scope, which holds
+// the builder and the first error reported while the scope is active.
 class BuilderScope {
  public:
-  explicit BuilderScope(mlir::ImplicitLocOpBuilder* builder);
+  explicit BuilderScope(mlir::ImplicitLocOpBuilder* absl_nonnull builder);
   ~BuilderScope();
 
   BuilderScope(const BuilderScope&) = delete;
   BuilderScope& operator=(const BuilderScope&) = delete;
 
+  mlir::ImplicitLocOpBuilder& builder() const { return *builder_; }
+
+  // The first error reported with `ReportError()` while this was the active
+  // scope, or OK if there was none.
+  const absl::Status& error() const { return error_; }
+
  private:
-  mlir::ImplicitLocOpBuilder* prev_;
+  friend void ReportError(absl::Status error);
+
+  void RecordError(absl::Status error) { error_.Update(std::move(error)); }
+
+  mlir::ImplicitLocOpBuilder* absl_nonnull builder_;
+  absl::Status error_;
 };
 
 // Returns the active MLIR ImplicitLocOpBuilder for the current thread.
 // Must be called within an active BuildKernel() or IndexMap execution.
 mlir::ImplicitLocOpBuilder& CurrentBuilder();
 
+// Reports `error` to the active scope of the current thread, which holds the
+// first error reported to it; later errors are ignored, and `error` must not
+// be OK. `BuildKernel()` returns the held error. Kiln handle types signal an
+// error with a null `ValueHandle`; the error itself is reported here.
+// Must be called within an active BuildKernel() or IndexMap execution.
+void ReportError(absl::Status error);
+
 mlir::Type ToMlirType(DType dtype, mlir::MLIRContext* ctx);
 mlir::Type ToMlirType(DType dtype);
 
-struct ValueAccess {
-  template <typename T>
-  static mlir::Value Get(const T& v) {
-    return mlir::Value::getFromOpaquePointer(v.impl());
-  }
-  template <typename T>
-  static T Make(mlir::Value v, DType dtype) {
-    return T(v.getAsOpaquePointer(), dtype);
-  }
-  template <typename T>
-  static T Make(mlir::Value v) {
-    return T(v.getAsOpaquePointer());
-  }
-};
+// CHECK-fails unless the element type of `handle` (or its type, if it isn't
+// shaped) is the IR type of `dtype`. `type_name` names the Kiln type being
+// constructed (e.g. "Scalar") in the failure message.
+void CheckElementType(ValueHandle handle, DType dtype,
+                      std::string_view type_name);
 
 template <typename T>
-inline mlir::Value unwrap(const T& v) {
-  return ValueAccess::Get(v);
+inline mlir::Value unwrap(const T& value) {
+  return value.handle().value();
 }
 
-template <typename T>
-inline T wrap(mlir::Value v, DType dtype) {
-  return ValueAccess::Make<T>(v, dtype);
-}
-
-template <typename T>
-inline T wrap(mlir::Value v) {
-  return ValueAccess::Make<T>(v);
+template <typename T, typename... Args>
+T wrap(mlir::Value value, Args&&... args) {
+  return T(ValueHandle(value), std::forward<Args>(args)...);
 }
 
 mlir::TypedAttr LiteralToAttr(mlir::ImplicitLocOpBuilder& b, DType dtype,

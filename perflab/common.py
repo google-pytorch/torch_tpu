@@ -81,3 +81,35 @@ class RunMode(enum.Enum):
 def is_torch_compile(run_mode: RunMode) -> bool:
   """Returns whether the given run mode uses torch.compile."""
   return run_mode == RunMode.COMPILED
+
+
+# Messages of the errors that a device raises when it runs out of memory, e.g.
+# an XLA:TPU compilation or execution that does not fit in HBM, lower case.
+_OUT_OF_MEMORY_MESSAGES = ("resource_exhausted", "out of memory")
+
+# How many causes of an exception `is_out_of_memory` looks through.
+_MAX_EXCEPTION_CHAIN = 16
+
+
+def is_out_of_memory(error: BaseException) -> bool:
+  """Returns whether `error`, or an exception that caused it, is a device OOM.
+
+  torch.compile wraps the errors of its backend (e.g. in BackendCompilerFailed),
+  so the causes and contexts of `error` are checked too.
+
+  Args:
+    error: The exception that a benchmark case raised.
+  """
+  seen: set[int] = set()
+  current: BaseException | None = error
+  while current is not None and len(seen) < _MAX_EXCEPTION_CHAIN:
+    if id(current) in seen:
+      break
+    seen.add(id(current))
+    if isinstance(current, torch.OutOfMemoryError):
+      return True
+    message = str(current).lower()
+    if any(m in message for m in _OUT_OF_MEMORY_MESSAGES):
+      return True
+    current = current.__cause__ or current.__context__
+  return False

@@ -49,16 +49,6 @@ namespace torch_tpu {
 absl::Status SynchronizeTensors(absl::Span<const at::Tensor> tensors);
 absl::Status SynchronizeTensors(absl::Span<const at::Tensor* const> tensors);
 
-// Whether to wait for execution to complete.
-enum class WaitOnExecution {
-  // Only ensures that all deferred operations have been scheduled for
-  // execution on the device.
-  kNo,
-  // Blocks the calling thread until all deferred operations have completed
-  // execution on the device.
-  kYes,
-};
-
 // Checks if the tensor is materialized; that is, if it has a PjRtBuffer
 // associated with it.
 //

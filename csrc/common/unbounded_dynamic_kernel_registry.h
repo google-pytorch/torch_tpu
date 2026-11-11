@@ -45,6 +45,10 @@ struct UnboundedDynamicKernel {
   BuildFn absl_nonnull build;
   UnboundedDynamicExecutionMetadata metadata;
   CompilationCacheKey key;
+  // Whether a cache miss may load the kernel when
+  // TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS is "default" (or unset).
+  // Opt-in kernels (false) are only loaded when it is "all".
+  bool enabled_by_default = false;
 };
 
 // Process-wide registry of unbounded dynamic kernels, grouped by shapeless key.

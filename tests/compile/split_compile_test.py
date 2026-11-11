@@ -13,9 +13,13 @@
 # limitations under the License.
 
 import collections
+from collections.abc import Iterator
+import contextlib
 import gc
 import pickle
+import re
 import unittest.mock
+from absl import logging
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
@@ -33,17 +37,32 @@ class SplitCompileTest(seed_test_utils.RepeatableTest):
     if not torch.accelerator.is_available():
       self.skipTest("TPU accelerator not available in this test environment.")
 
+  @contextlib.contextmanager
+  def _assert_splits_on_mul(self) -> Iterator[None]:
+    """Treats aten.mul as a collective and asserts the graph was split on it."""
+    new_ops = collective_ops.COLLECTIVE_OPS + (torch.ops.aten.mul,)
+    with (
+        unittest.mock.patch.object(collective_ops, "COLLECTIVE_OPS", new_ops),
+        self.assertLogs(logging.get_absl_logger(), level="INFO") as logs,
+    ):
+      yield
+    num_partitions = [
+        int(n)
+        for n in re.findall(
+            r"Split graph into (\d+) partitions", "\n".join(logs.output)
+        )
+    ]
+    self.assertNotEmpty(num_partitions)
+    self.assertGreater(max(num_partitions), 1)
+
   def test_split_graph_with_dynamic_tensor(self):
     def f(x):
       y = x * 2
       z = y + 3
       return z + 4
 
-    # Monkeypatch COLLECTIVE_OPS to force a split on 'mul' (x * 2)
-    orig_ops = collective_ops.COLLECTIVE_OPS
-    new_ops = orig_ops + (torch.ops.aten.mul,)
-
-    with unittest.mock.patch.object(collective_ops, "COLLECTIVE_OPS", new_ops):
+    # Force a split on 'mul' (x * 2).
+    with self._assert_splits_on_mul():
       compiled_f = torch.compile(f, backend="tpu")
 
       x = torch.ones((2, 2), device="tpu")
@@ -63,11 +82,8 @@ class SplitCompileTest(seed_test_utils.RepeatableTest):
       z = y.reshape(s1, 1, s2, 1)
       return z + 3
 
-    # Monkeypatch COLLECTIVE_OPS to force a split on 'mul' (x * 2)
-    orig_ops = collective_ops.COLLECTIVE_OPS
-    new_ops = orig_ops + (torch.ops.aten.mul,)
-
-    with unittest.mock.patch.object(collective_ops, "COLLECTIVE_OPS", new_ops):
+    # Force a split on 'mul' (x * 2).
+    with self._assert_splits_on_mul():
       compiled_f = torch.compile(f, backend="tpu")
 
       x = torch.ones((8, 6), device="tpu")
@@ -85,10 +101,7 @@ class SplitCompileTest(seed_test_utils.RepeatableTest):
       c = torch.tensor(5.0)
       return y + c
 
-    orig_ops = collective_ops.COLLECTIVE_OPS
-    new_ops = orig_ops + (torch.ops.aten.mul,)
-
-    with unittest.mock.patch.object(collective_ops, "COLLECTIVE_OPS", new_ops):
+    with self._assert_splits_on_mul():
       compiled_f = torch.compile(f, backend="tpu")
 
       x = torch.ones((2, 2), device="tpu")

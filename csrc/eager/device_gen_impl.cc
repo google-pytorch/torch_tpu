@@ -53,7 +53,6 @@
 #include "csrc/eager/events_queue.h"
 #include "csrc/eager/materialize.h"
 #include "csrc/eager/op_dispatcher.h"
-#include "csrc/eager/split_traversal.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/macros/kernel.h"
@@ -150,7 +149,7 @@ absl::StatusOr<at::Tensor> CreateDeviceRngStateTensor(c10::Device device,
       std::move(host_data_bytes), mlir::ElementType::UI64, /*dimensions=*/{2});
   TT_ASSIGN_OR_RETURN(auto rng_state_buffer,
                       ScheduleHostToDeviceTransfer(std::move(transfer)));
-  return MakeTensor(rng_state_buffer, device.index());
+  return MakeTensor(std::move(rng_state_buffer), device.index());
 }
 
 // A modifiable string that can be used to force the next InitDefaultGenerator()
@@ -284,14 +283,8 @@ absl::Status DeviceGeneratorState::MaybeMaterializeDeviceStateTensor(
   // Do a materialization, and block on it if we're in launch blocking mode.
   materialize_state_counter_ = 0;
   TT_ASSIGN_OR_RETURN(DeviceBufferRef buf, GetBuffer(device_state_tensor_));
-  const bool should_block =
-      eager_mode == EagerMode::kDeferNeverAndLaunchBlocking;
-  const MaterializationBlockMode block_mode =
-      should_block ? MaterializationBlockMode::kBlockUntilStarted
-                   : MaterializationBlockMode::kNonBlocking;
-  TT_RETURN_IF_ERROR(Materialize(buf, MaterializationReason::kExplicitSync,
-                                 GraphSplitMode::kSplitGraph, block_mode));
-  if (should_block) {
+  TT_RETURN_IF_ERROR(Materialize(buf, MaterializationReason::kExplicitSync));
+  if (eager_mode == EagerMode::kDeferNeverAndLaunchBlocking) {
     TT_RETURN_IF_ERROR(buf.Synchronize());
   }
   return absl::OkStatus();
@@ -473,7 +466,7 @@ absl::Status DeviceGeneratorImplBase::AdvanceDeviceStateTensor(
 
   // Give back the updated state to the generator.
   auto rng_output_state =
-      MakeTensor(rng_output_state_buf, this->device().index());
+      MakeTensor(std::move(rng_output_state_buf), this->device().index());
   TT_RETURN_IF_ERROR(ValidateDeviceStateTensor(rng_output_state));
   TT_RETURN_IF_ERROR(SetDeviceStateTensor(std::move(rng_output_state)));
 
@@ -533,8 +526,8 @@ void EagerModeDeviceGeneratorImpl::set_offset(uint64_t offset) {
               TT_ASSIGN_OR_THROW(
                   auto rng_state_buffer,
                   UpdateDeviceRngOffset(state_->DeviceStateTensor(), offset));
-              auto new_rng_state =
-                  MakeTensor(rng_state_buffer, this->device().index());
+              auto new_rng_state = MakeTensor(std::move(rng_state_buffer),
+                                              this->device().index());
               TT_THROW_IF_ERROR(ValidateDeviceStateTensor(new_rng_state));
               TT_THROW_IF_ERROR(SetDeviceStateTensor(std::move(new_rng_state)));
             });
@@ -845,7 +838,8 @@ at::Generator MakeExportModePlaceholderGenerator(
       DeviceBufferList::CreatePlaceholder(
           Dimensions({2}), mlir::ElementType::UI64, /*is_pinned_host=*/false),
       _.SetPrepend() << "failed to create export generator placeholder: ");
-  at::Tensor placeholder_tensor = MakeTensor(placeholder, device_index);
+  at::Tensor placeholder_tensor =
+      MakeTensor(std::move(placeholder), device_index);
   return at::make_generator<ExportModeDeviceGeneratorImpl>(
       device_index, std::move(placeholder_tensor));
 }

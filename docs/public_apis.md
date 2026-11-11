@@ -114,6 +114,13 @@ process. Use it at your own risk. Using it triggers a one-time warning.
 *   `torch.tpu.TpuLayout.element_size_in_bits`
 *   `torch.tpu.TpuLayout.minor_to_major`
 *   `torch.tpu.TpuLayout.tiles`
+*   `torch.tpu.TpuVersion`
+*   `torch.tpu.TpuVersion.V5E`
+*   `torch.tpu.TpuVersion.V5P`
+*   `torch.tpu.TpuVersion.V6E`
+*   `torch.tpu.TpuVersion.V7`
+*   `torch.tpu.TpuVersion.V8I`
+*   `torch.tpu.TpuVersion.V8T`
 *   `torch.tpu.allow_excess_precision` (getter)
 *   `torch.tpu.allow_excess_precision` (setter)
 *   `torch.tpu.compiler.custom_compiler_options`
@@ -141,6 +148,7 @@ process. Use it at your own risk. Using it triggers a one-time warning.
 *   `torch.tpu.get_device_properties.sparse_core_simd_width`
 *   `torch.tpu.get_device_properties.sparse_cores_per_device`
 *   `torch.tpu.get_device_properties.topology`
+*   `torch.tpu.get_device_properties.version`
 *   `torch.tpu.is_initialized`
 *   `torch.tpu.manual_seed`
 *   `torch.tpu.manual_seed_all`
@@ -200,6 +208,50 @@ process. Use it at your own risk. Using it triggers a one-time warning.
 *   `torch.tpu.optimizers.SingleTraceTrainer.params` (getter)
 *   `torch.tpu.pallas.get_pallas_mesh`
 *   `torch.tpu.pallas.jax_op`
+*   `torch.tpu.pallas.verifier.FindingCategory`
+*   `torch.tpu.pallas.verifier.FindingCategory.ALIASED_DONOR_INPUTS`
+*   `torch.tpu.pallas.verifier.FindingCategory.AUTOGRAD_PARITY_MISMATCH`
+*   `torch.tpu.pallas.verifier.FindingCategory.DONATED_PARAMETER`
+*   `torch.tpu.pallas.verifier.FindingCategory.FAKE_KERNEL_MISMATCH`
+*   `torch.tpu.pallas.verifier.FindingCategory.LOWERING_FAILURE`
+*   `torch.tpu.pallas.verifier.FindingCategory.PARTITION_SPEC_MISMATCH`
+*   `torch.tpu.pallas.verifier.FindingCategory.USE_AFTER_DONATE`
+*   `torch.tpu.pallas.verifier.FindingCategory.VERIFICATION_INCOMPLETE`
+*   `torch.tpu.pallas.verifier.FindingCategory.ZERO_OUTPUT_SILENT_SKIP`
+*   `torch.tpu.pallas.verifier.Phase`
+*   `torch.tpu.pallas.verifier.Phase.AUTOGRAD`
+*   `torch.tpu.pallas.verifier.Phase.CONTRACTS`
+*   `torch.tpu.pallas.verifier.Phase.FX_GRAPH`
+*   `torch.tpu.pallas.verifier.Phase.LOWERING`
+*   `torch.tpu.pallas.verifier.Severity`
+*   `torch.tpu.pallas.verifier.Severity.ERROR`
+*   `torch.tpu.pallas.verifier.Severity.INFO`
+*   `torch.tpu.pallas.verifier.Severity.WARNING`
+*   `torch.tpu.pallas.verifier.VerificationError`
+*   `torch.tpu.pallas.verifier.VerificationError.report` (getter)
+*   `torch.tpu.pallas.verifier.VerificationFinding`
+*   `torch.tpu.pallas.verifier.VerificationFinding.category`
+*   `torch.tpu.pallas.verifier.VerificationFinding.format`
+*   `torch.tpu.pallas.verifier.VerificationFinding.message`
+*   `torch.tpu.pallas.verifier.VerificationFinding.op_name`
+*   `torch.tpu.pallas.verifier.VerificationFinding.phase`
+*   `torch.tpu.pallas.verifier.VerificationFinding.severity`
+*   `torch.tpu.pallas.verifier.VerificationFinding.source_location`
+*   `torch.tpu.pallas.verifier.VerificationMode`
+*   `torch.tpu.pallas.verifier.VerificationMode.FULL`
+*   `torch.tpu.pallas.verifier.VerificationMode.STATIC`
+*   `torch.tpu.pallas.verifier.VerificationOptions`
+*   `torch.tpu.pallas.verifier.VerificationOptions.check_autograd`
+*   `torch.tpu.pallas.verifier.VerificationOptions.tpu_version`
+*   `torch.tpu.pallas.verifier.VerificationReport`
+*   `torch.tpu.pallas.verifier.VerificationReport.checked_phases`
+*   `torch.tpu.pallas.verifier.VerificationReport.findings`
+*   `torch.tpu.pallas.verifier.VerificationReport.findings_by_category`
+*   `torch.tpu.pallas.verifier.VerificationReport.findings_by_severity`
+*   `torch.tpu.pallas.verifier.VerificationReport.passed` (getter)
+*   `torch.tpu.pallas.verifier.VerificationReport.raise_for_errors`
+*   `torch.tpu.pallas.verifier.VerificationReport.summary`
+*   `torch.tpu.pallas.verifier.verify`
 *   `torch.tpu.precision`
 *   `torch.tpu.profiler.TpuProfilerConfig`
 *   `torch.tpu.set_eager_mode`

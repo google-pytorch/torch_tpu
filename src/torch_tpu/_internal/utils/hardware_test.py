@@ -44,6 +44,10 @@ class _FakePciDevice:
     iommu_group: IOMMU group that the device's `iommu_group` symlink points to,
       or None to omit the symlink.
     vfio_exposed: Whether `/dev/vfio` has a node for the IOMMU group.
+    vfio_placeholder: Whether `/dev/vfio` has a placeholder for the IOMMU group
+      instead of a node, i.e. an empty regular file without any permissions,
+      like the ones that some sandboxes put at the paths of TPUs that they don't
+      allocate to the process. Only used if `vfio_exposed` is False.
   """
 
   address: str
@@ -51,6 +55,7 @@ class _FakePciDevice:
   vendor_id: str | None = "0x1ae0"  # Google
   iommu_group: str | None = None
   vfio_exposed: bool = True
+  vfio_placeholder: bool = False
 
 
 def _fake_tpus(
@@ -91,14 +96,24 @@ class TpuTopologyMockTest(seed_test_utils.RepeatableTest):
         expected_topology,
         expected_device_count=num_chips,
         expected_device_name="TPU v5p",
-        expected_spec=hardware.TpuSpec.V5P,
+        expected_spec=hardware.TpuSpec.for_version(hardware.TpuVersion.V5P),
     )
 
   @parameterized.parameters(
       (1, "1,1,1"),
       (4, "2,2,1"),
       # The 8-chip topology differs between internal and OSS builds.
-      (8, ",".join(map(str, hardware.TpuSpec.V5E.topologies[8]))),
+      (
+          8,
+          ",".join(
+              map(
+                  str,
+                  hardware.TpuSpec.for_version(
+                      hardware.TpuVersion.V5E
+                  ).topologies[8],
+              )
+          ),
+      ),
   )
   def test_v5e_chips(self, num_chips, expected_topology):
     self._run_mock_test(
@@ -106,7 +121,7 @@ class TpuTopologyMockTest(seed_test_utils.RepeatableTest):
         expected_topology,
         expected_device_count=num_chips,
         expected_device_name="TPU v5e",
-        expected_spec=hardware.TpuSpec.V5E,
+        expected_spec=hardware.TpuSpec.for_version(hardware.TpuVersion.V5E),
     )
 
   @parameterized.parameters(
@@ -120,7 +135,7 @@ class TpuTopologyMockTest(seed_test_utils.RepeatableTest):
         expected_topology,
         expected_device_count=num_chips,
         expected_device_name="TPU v6e",
-        expected_spec=hardware.TpuSpec.V6E,
+        expected_spec=hardware.TpuSpec.for_version(hardware.TpuVersion.V6E),
     )
 
   @parameterized.parameters(
@@ -134,7 +149,7 @@ class TpuTopologyMockTest(seed_test_utils.RepeatableTest):
         expected_topology,
         expected_device_count=2 * num_chips,
         expected_device_name="TPU v7",
-        expected_spec=hardware.TpuSpec.V7,
+        expected_spec=hardware.TpuSpec.for_version(hardware.TpuVersion.V7),
     )
 
   @parameterized.parameters(
@@ -148,7 +163,7 @@ class TpuTopologyMockTest(seed_test_utils.RepeatableTest):
         expected_topology,
         expected_device_count=2 * num_chips,
         expected_device_name="TPU v8i",
-        expected_spec=hardware.TpuSpec.V8I,
+        expected_spec=hardware.TpuSpec.for_version(hardware.TpuVersion.V8I),
     )
 
   @parameterized.parameters(
@@ -162,7 +177,7 @@ class TpuTopologyMockTest(seed_test_utils.RepeatableTest):
         expected_topology,
         expected_device_count=num_chips,
         expected_device_name="TPU v8t",
-        expected_spec=hardware.TpuSpec.V8T,
+        expected_spec=hardware.TpuSpec.for_version(hardware.TpuVersion.V8T),
     )
 
   def test_v4_is_not_recognized(self):
@@ -214,7 +229,7 @@ class TpuTopologyMockTest(seed_test_utils.RepeatableTest):
         "1,1,1,2",
         expected_device_count=2,
         expected_device_name="TPU v7",
-        expected_spec=hardware.TpuSpec.V7,
+        expected_spec=hardware.TpuSpec.for_version(hardware.TpuVersion.V7),
     )
 
   def test_identifies_tpu_without_vfio_exposed_devices(self):
@@ -232,8 +247,42 @@ class TpuTopologyMockTest(seed_test_utils.RepeatableTest):
         None,
         expected_device_count=0,
         expected_device_name="TPU v6e",
-        expected_spec=hardware.TpuSpec.V6E,
+        expected_spec=hardware.TpuSpec.for_version(hardware.TpuVersion.V6E),
     )
+
+  def test_ignores_vfio_group_placeholders(self):
+    # A 1-chip sandbox on an 8-chip host has a VFIO group node only for
+    # its own chip, and placeholders for the other chips.
+    self._run_mock_test(
+        [
+            dataclasses.replace(
+                device, vfio_exposed=i == 5, vfio_placeholder=i != 5
+            )
+            for i, device in enumerate(_fake_tpus("0x0063", 8))
+        ],
+        "1,1,1",
+        expected_device_count=1,
+        expected_device_name="TPU v5e",
+        expected_spec=hardware.TpuSpec.for_version(hardware.TpuVersion.V5E),
+    )
+
+  def test_visible_count_counts_only_visible_devices(self):
+    self._set_up_pci_fs(_fake_tpus("0x0063", 8))
+    with mock.patch.dict(os.environ, {"TPU_VISIBLE_DEVICES": "0,1,2,3"}):
+      self.assertEqual(hardware.get_visible_tpu_device_count(), 4)
+      # The host's count and topology don't depend on TPU_VISIBLE_DEVICES.
+      self.assertEqual(hardware.get_tpu_device_count(), 8)
+      self.assertEqual(
+          hardware.get_tpu_topology(),
+          ",".join(
+              map(
+                  str,
+                  hardware.TpuSpec.for_version(
+                      hardware.TpuVersion.V5E
+                  ).topologies[8],
+              )
+          ),
+      )
 
   def test_ignores_non_tpu_pci_devices(self):
     self._run_mock_test(
@@ -262,7 +311,7 @@ class TpuTopologyMockTest(seed_test_utils.RepeatableTest):
         "1,1,1",
         expected_device_count=1,
         expected_device_name="TPU v5p",
-        expected_spec=hardware.TpuSpec.V5P,
+        expected_spec=hardware.TpuSpec.for_version(hardware.TpuVersion.V5P),
     )
 
   @parameterized.parameters(
@@ -294,17 +343,25 @@ class TpuTopologyMockTest(seed_test_utils.RepeatableTest):
       (8, (2, 2, 1, 2)),
   )
   def test_tpu_spec_topology_with_world_size(self, world_size, expected):
-    self.assertEqual(hardware.TpuSpec.V7.topology(world_size), expected)
+    self.assertEqual(
+        hardware.TpuSpec.for_version(hardware.TpuVersion.V7).topology(
+            world_size
+        ),
+        expected,
+    )
 
   def test_tpu_spec_topology_defaults_to_device_count(self):
     self._set_up_pci_fs(_fake_tpus("0x0076", 4, devices_per_chip=2))
-    self.assertEqual(hardware.TpuSpec.V7.topology(), (2, 2, 1, 2))
+    self.assertEqual(
+        hardware.TpuSpec.for_version(hardware.TpuVersion.V7).topology(),
+        (2, 2, 1, 2),
+    )
 
   def test_tpu_spec_topology_raises_for_unsupported_world_size(self):
     with self.assertRaisesRegex(
         RuntimeError, "No TPU topology found for count: 3"
     ):
-      hardware.TpuSpec.V7.topology(3)
+      hardware.TpuSpec.for_version(hardware.TpuVersion.V7).topology(3)
 
   def _patch_pci_dirs(
       self, pci_devices_dir: pathlib.Path, vfio_dir: pathlib.Path
@@ -325,6 +382,17 @@ class TpuTopologyMockTest(seed_test_utils.RepeatableTest):
             "get_tpu_device_count",
             functools.partial(
                 hardware._hardware_backend.get_tpu_device_count,
+                pci_devices_dir=os.fspath(pci_devices_dir),
+                vfio_dir=os.fspath(vfio_dir),
+            ),
+        )
+    )
+    self.enter_context(
+        mock.patch.object(
+            hardware._hardware_backend,
+            "get_visible_tpu_device_count",
+            functools.partial(
+                hardware._hardware_backend.get_visible_tpu_device_count,
                 pci_devices_dir=os.fspath(pci_devices_dir),
                 vfio_dir=os.fspath(vfio_dir),
             ),
@@ -361,7 +429,13 @@ class TpuTopologyMockTest(seed_test_utils.RepeatableTest):
             root / "sys" / "kernel" / "iommu_groups" / device.iommu_group
         )
         if device.vfio_exposed:
-          (vfio_dir / device.iommu_group).touch()
+          # /dev/null is a character device that any process can read and
+          # write, like the VFIO group node of a TPU allocated to the process.
+          (vfio_dir / device.iommu_group).symlink_to("/dev/null")
+        elif device.vfio_placeholder:
+          placeholder = vfio_dir / device.iommu_group
+          placeholder.touch()
+          placeholder.chmod(0)
 
     self._patch_pci_dirs(pci_devices_dir, vfio_dir)
 
@@ -437,7 +511,7 @@ class DeprecatedFunctionsTest(seed_test_utils.RepeatableTest):
     self.assertTrue(issubclass(w[0].category, DeprecationWarning))
     self.assertEqual(
         str(w[0].message),
-        f"<TorchTpu/ApiStage/DeprecatedApi/> {function.__name__} is deprecated"
+        f"//TorchTpu/ApiStage/DeprecatedApi// {function.__name__} is deprecated"
         " as of TorchTPU 0.2.1 and will be removed in a future release: Use"
         f" {replacement} instead.",
     )
@@ -465,7 +539,7 @@ class DeviceCapabilityTest(seed_test_utils.RepeatableTest):
 
   @parameterized.parameters(
       (
-          hardware.TpuSpec.V5P,
+          hardware.TpuVersion.V5P,
           "TPU v5p",
           1,
           95 * 1024**3,
@@ -475,7 +549,7 @@ class DeviceCapabilityTest(seed_test_utils.RepeatableTest):
           hardware.SparseCoreSpec(sparse_cores_per_device=4, simd_width=8),
       ),
       (
-          hardware.TpuSpec.V5E,
+          hardware.TpuVersion.V5E,
           "TPU v5e",
           1,
           16 * 1024**3,
@@ -485,7 +559,7 @@ class DeviceCapabilityTest(seed_test_utils.RepeatableTest):
           None,
       ),
       (
-          hardware.TpuSpec.V6E,
+          hardware.TpuVersion.V6E,
           "TPU v6e",
           1,
           32 * 1024**3,
@@ -495,7 +569,7 @@ class DeviceCapabilityTest(seed_test_utils.RepeatableTest):
           hardware.SparseCoreSpec(sparse_cores_per_device=2, simd_width=8),
       ),
       (
-          hardware.TpuSpec.V7,
+          hardware.TpuVersion.V7,
           "TPU v7",
           2,
           192 * 1024**3,
@@ -505,7 +579,7 @@ class DeviceCapabilityTest(seed_test_utils.RepeatableTest):
           hardware.SparseCoreSpec(sparse_cores_per_device=2, simd_width=16),
       ),
       (
-          hardware.TpuSpec.V8I,
+          hardware.TpuVersion.V8I,
           "TPU v8i",
           2,
           309 * 10**9,
@@ -515,7 +589,7 @@ class DeviceCapabilityTest(seed_test_utils.RepeatableTest):
           hardware.SparseCoreSpec(sparse_cores_per_device=1, simd_width=16),
       ),
       (
-          hardware.TpuSpec.V8T,
+          hardware.TpuVersion.V8T,
           "TPU v8t",
           1,
           231 * 10**9,
@@ -527,7 +601,7 @@ class DeviceCapabilityTest(seed_test_utils.RepeatableTest):
   )
   def test_tpu_spec(
       self,
-      tpu_spec,
+      version,
       expected_name,
       expected_devices_per_chip,
       expected_hbm_bytes_per_chip,
@@ -536,7 +610,14 @@ class DeviceCapabilityTest(seed_test_utils.RepeatableTest):
       expected_bf16_flops_per_device,
       expected_sparse_core_spec,
   ):
+    tpu_spec = hardware.TpuSpec.for_version(version)
+    self.assertIs(tpu_spec.version, version)
     self.assertEqual(tpu_spec.name, expected_name)
+    self.assertEqual(version.value, expected_name)
+    self.assertIs(hardware.TpuSpec.for_version(version), tpu_spec)
+    self.assertStartsWith(
+        repr(tpu_spec), f"TpuSpec(version=TpuVersion.{version.name}, "
+    )
     self.assertEqual(tpu_spec.devices_per_chip, expected_devices_per_chip)
     self.assertEqual(tpu_spec.hbm_bytes_per_chip, expected_hbm_bytes_per_chip)
     self.assertEqual(
@@ -548,7 +629,7 @@ class DeviceCapabilityTest(seed_test_utils.RepeatableTest):
     )
     self.assertEqual(tpu_spec.sparse_core_spec, expected_sparse_core_spec)
     reconstructed = hardware.TpuSpec(
-        name=tpu_spec.name,
+        version=tpu_spec.version,
         devices_per_chip=tpu_spec.devices_per_chip,
         hbm_bytes_per_chip=tpu_spec.hbm_bytes_per_chip,
         bf16_flops_per_chip=tpu_spec.bf16_flops_per_chip,
@@ -556,13 +637,33 @@ class DeviceCapabilityTest(seed_test_utils.RepeatableTest):
         sparse_core_spec=tpu_spec.sparse_core_spec,
     )
     self.assertEqual(reconstructed, tpu_spec)
+    self.assertIs(reconstructed.version, version)
+    self.assertEqual(reconstructed.name, expected_name)
+    self.assertEqual(hash(reconstructed), hash(tpu_spec))
     self.assertEqual(reconstructed.topologies, tpu_spec.topologies)
+
+  def test_tpu_spec_version_validation_and_no_duplicate_class_attributes(self):
+    for version in hardware.TpuVersion:
+      self.assertFalse(hasattr(hardware.TpuSpec, version.name))
+    for bad_version in ("TPU v7", None, 7):
+      with self.assertRaisesRegex(
+          TypeError, "version must be a torch.tpu.TpuVersion"
+      ):
+        hardware.TpuSpec.for_version(bad_version)  # type: ignore[arg-type]
+      with self.assertRaisesRegex(
+          TypeError, "version must be a torch.tpu.TpuVersion"
+      ):
+        hardware.TpuSpec(
+            version=bad_version,  # type: ignore[arg-type]
+            devices_per_chip=1,
+            hbm_bytes_per_chip=16 * 1024**3,
+            bf16_flops_per_chip=197 * 10**12,
+            topologies={},
+        )
 
   def test_each_tpu_spec_has_pci_device_id_and_topologies(self):
     tpu_specs = [
-        value
-        for value in vars(hardware.TpuSpec).values()
-        if isinstance(value, hardware.TpuSpec)
+        hardware.TpuSpec.for_version(version) for version in hardware.TpuVersion
     ]
     self.assertCountEqual(
         hardware.TpuSpec.specs_by_pci_device_id().values(), tpu_specs
@@ -581,12 +682,12 @@ class DeviceCapabilityTest(seed_test_utils.RepeatableTest):
           self.assertEqual(math.prod(topology[3:]), tpu_spec.devices_per_chip)
 
   @parameterized.parameters(
-      (hardware.TpuSpec.V5P, False),
-      (hardware.TpuSpec.V5E, True),
-      (hardware.TpuSpec.V6E, False),
-      (hardware.TpuSpec.V7, False),
-      (hardware.TpuSpec.V8I, False),
-      (hardware.TpuSpec.V8T, False),
+      (hardware.TpuSpec.for_version(hardware.TpuVersion.V5P), False),
+      (hardware.TpuSpec.for_version(hardware.TpuVersion.V5E), True),
+      (hardware.TpuSpec.for_version(hardware.TpuVersion.V6E), False),
+      (hardware.TpuSpec.for_version(hardware.TpuVersion.V7), False),
+      (hardware.TpuSpec.for_version(hardware.TpuVersion.V8I), False),
+      (hardware.TpuSpec.for_version(hardware.TpuVersion.V8T), False),
       (None, True),
   )
   def test_skip_if_sparsecore_unsupported(self, tpu_spec, expect_skip):

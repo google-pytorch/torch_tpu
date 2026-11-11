@@ -12,10 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from collections.abc import Callable
+import ctypes
 import functools
 import struct
 import threading
-from typing import Any, Callable
+from typing import Any
 import unittest
 
 from absl import flags
@@ -847,6 +849,7 @@ class CompiledRngTest(_BaseRngTest):
   )
   def test_compiled_activation_checkpointing_dropout(self):
     """Verifies non-reentrant activation checkpointing reproduces the mask."""
+
     class CheckpointModel(torch.nn.Module):
 
       def __init__(self):
@@ -1143,13 +1146,19 @@ class MultiThreadRngTest(_BaseRngTest):
     # Force Dynamo to re-compile on each iteration by passing a different shape
     # with dynamic=False, triggering a fresh compilation cycle without caching.
     compiled = torch.compile(fn_to_compile, dynamic=False)
+    # Compiles are ~10x slower under sanitizers (which define these symbols),
+    # so compile fewer times there.
+    global_syms = ctypes.CDLL(None)
+    sanitizers = ("asan", "msan", "tsan")
+    sanitized = any(hasattr(global_syms, f"__{s}_init") for s in sanitizers)
+    num_compiles = 2 if sanitized else 10
 
     def compile_worker():
       # Inductor configs are thread-scoped via ContextVar; patch compile_threads
       # in the worker thread to ensure synchronous compilation during tracing.
       with torch._inductor.config.patch(compile_threads=1):
         try:
-          for i in range(10):
+          for i in range(num_compiles):
             if stop_event.is_set():
               break
             x = torch.zeros(10 + i, device=self.device)

@@ -24,7 +24,6 @@
 #include <utility>
 #include <vector>
 
-#include "absl/cleanup/cleanup.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
@@ -299,7 +298,7 @@ TEST_F(TraversalTest, CompileAnnotatesArgumentLayouts) {
   TT_ASSERT_OK_AND_ASSIGN(
       const CompiledKernel kernel,
       traversal->Compile(
-          std::move(spec), &mlir_text,
+          std::move(spec), UnboundedKernelPolicy::kDisallow, &mlir_text,
           /*use_stablehlo_bounds=*/false,
           /*argument_layouts=*/{CustomLayout{.minor_to_major = {1, 0}}}));
   kernel.fixed_shape_kernel.wait();
@@ -335,10 +334,11 @@ TEST_F(TraversalTest, CompileAnnotatesArgumentLayoutsWithTilingAndCaching) {
   CompilationSpec spec(std::make_unique<xla::CompileOptions>(),
                        compile_options_key_);
   std::string mlir_text;
-  TT_ASSERT_OK_AND_ASSIGN(const CompiledKernel kernel,
-                          tr->Compile(std::move(spec), &mlir_text,
-                                      /*use_stablehlo_bounds=*/false,
-                                      /*argument_layouts=*/{tiled_layout}));
+  TT_ASSERT_OK_AND_ASSIGN(
+      const CompiledKernel kernel,
+      tr->Compile(std::move(spec), UnboundedKernelPolicy::kDisallow, &mlir_text,
+                  /*use_stablehlo_bounds=*/false,
+                  /*argument_layouts=*/{tiled_layout}));
   kernel.fixed_shape_kernel.wait();
   EXPECT_THAT(
       mlir_text,
@@ -436,7 +436,8 @@ TEST_F(TraversalTest, CompilePopulatesAndResetsOutCacheKey) {
   std::optional<CompilationCacheKey> out_cache_key;
   TT_ASSERT_OK_AND_ASSIGN(
       const CompiledKernel kernel,
-      tr->Compile(spec, /*out_mlir_text=*/nullptr,
+      tr->Compile(spec, UnboundedKernelPolicy::kDisallow,
+                  /*out_mlir_text=*/nullptr,
                   /*use_stablehlo_bounds=*/false,
                   /*argument_layouts=*/{tiled_layout},
                   /*donated_inputs=*/{},
@@ -448,7 +449,8 @@ TEST_F(TraversalTest, CompilePopulatesAndResetsOutCacheKey) {
                             /*donated_inputs=*/{}));
 
   // Verify that an early validation failure resets out_cache_key to nullopt.
-  EXPECT_FALSE(tr->Compile(spec, /*out_mlir_text=*/nullptr,
+  EXPECT_FALSE(tr->Compile(spec, UnboundedKernelPolicy::kDisallow,
+                           /*out_mlir_text=*/nullptr,
                            /*use_stablehlo_bounds=*/false,
                            /*argument_layouts=*/{tiled_layout, tiled_layout},
                            /*donated_inputs=*/{},
@@ -661,8 +663,7 @@ TEST_F(TraversalTest, NameScopesAttachToMlirLocationsWithoutChangingCacheKey) {
 
   std::vector<DeviceBufferRef> layer0_refs;
   {
-    ScopedPythonContextCapturer::PushNameScopes({"layers.0[Block]"});
-    absl::Cleanup pop = [] { ScopedPythonContextCapturer::PopNameScopes(); };
+    const NameScopeHierarchyGuard layer0_scope({"layers.0[Block]"});
     TT_ASSERT_OK_AND_ASSIGN(
         layer0_refs,
         DeviceBufferList::CreateDeferred(OpName::kNeg, NegBuilder, {input_ref},
@@ -673,8 +674,7 @@ TEST_F(TraversalTest, NameScopesAttachToMlirLocationsWithoutChangingCacheKey) {
 
   std::vector<DeviceBufferRef> layer1_refs;
   {
-    ScopedPythonContextCapturer::PushNameScopes({"layers.1[Block]"});
-    absl::Cleanup pop = [] { ScopedPythonContextCapturer::PopNameScopes(); };
+    const NameScopeHierarchyGuard layer1_scope({"layers.1[Block]"});
     TT_ASSERT_OK_AND_ASSIGN(
         layer1_refs,
         DeviceBufferList::CreateDeferred(OpName::kNeg, NegBuilder, {input_ref},

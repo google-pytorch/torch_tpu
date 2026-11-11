@@ -65,6 +65,9 @@ namespace torch_tpu {
 
 namespace {
 
+// The maximum number of scalar device buffers MakeBuffer caches per thread.
+constexpr size_t kMaxCachedScalarBuffers = 1024;
+
 // Internal helper for MakeTensor that returns the
 // DeviceBufferRef that will get wrapped into the at::Tensor.
 absl::StatusOr<DeviceBufferRef> MakeBuffer(
@@ -134,6 +137,13 @@ absl::StatusOr<DeviceBufferRef> MakeBuffer(
         /*dimensions=*/{});
     TT_ASSIGN_OR_RETURN(DeviceBufferRef buf_ref,
                         ScheduleHostToDeviceTransfer(std::move(transfer)));
+    // Every cached scalar keeps its device buffer alive, so a stream of
+    // distinct values (e.g. a learning rate schedule) would grow device memory
+    // without bound. Start over when the cache is full; pending ops hold their
+    // own references to the buffers they use.
+    if (scalar_map.size() >= kMaxCachedScalarBuffers) {
+      scalar_map.clear();
+    }
     scalar_map.insert({hashable_scalar, buf_ref});
     return buf_ref;
   }
@@ -348,7 +358,7 @@ absl::StatusOr<at::Tensor> MakeTensor(
     const at::Scalar& scalar, c10::optional<at::ScalarType> scalar_type_opt) {
   TT_ASSIGN_OR_RETURN(  // TODO: Test by forcing "scalar_tensor" to fail.
       DeviceBufferRef buffer, MakeBuffer(scalar, scalar_type_opt));
-  return MakeTensor(buffer);
+  return MakeTensor(std::move(buffer));
 }
 
 PromotedScalar PromoteScalar(at::Scalar scalar) {
@@ -358,7 +368,7 @@ PromotedScalar PromoteScalar(at::Scalar scalar) {
           -> absl::StatusOr<at::Tensor> {
         TT_ASSIGN_OR_RETURN(DeviceBufferRef buffer,
                             MakeBuffer(scalar, scalar_type_opt));
-        return MakeTensor(buffer);
+        return MakeTensor(std::move(buffer));
       },
       std::move(scalar));
 }

@@ -31,7 +31,7 @@ inputs.
 # pylint: disable=g-import-not-at-top
 
 import abc
-from collections.abc import Callable, Mapping, MutableMapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, MutableMapping, Sequence
 import contextlib
 import copy
 import dataclasses
@@ -49,13 +49,14 @@ import pathlib
 import sys
 import tempfile
 import types
-from typing import Any, Iterator, overload
+from typing import Any, overload
 import uuid
 
 from absl import flags
 from absl import logging
 from etils import epath
 from google.api_core import exceptions as gcp_exceptions
+from google.api_core import retry as gcp_retry
 from google.cloud import storage
 from safetensors import torch as safetensors_torch
 import torch
@@ -660,6 +661,14 @@ _GCS_WEIGHTS_PREFIX = flags.DEFINE_string(
 # default 60s timeout.
 _GCS_DOWNLOAD_TIMEOUT_SECONDS = 15
 
+_RETRY_TRANSIENT_IO = gcp_retry.Retry(
+    predicate=lambda exc: isinstance(exc, OSError)
+    and not isinstance(exc, (FileNotFoundError, NotADirectoryError)),
+    initial=0.5,
+    maximum=2.0,
+    timeout=5.0,
+)
+
 
 def _download_gcs_blob(
     bucket_name: str,
@@ -1014,7 +1023,7 @@ class BaseProvider(abc.ABC):
       self._base_path = epath.Path(base_path)
       if subdir:
         self._base_path = self._base_path / subdir
-      if not self._base_path.exists():
+      if not _RETRY_TRANSIENT_IO(self._base_path.exists)():
         raise FileNotFoundError(f"Base path does not exist: {self._base_path}")
     else:
       self._base_path = None
@@ -1878,18 +1887,19 @@ def _load_transformers_preprocessor(
   cache_key = ("transformers", model_path_str, prefer_tokenizer)
 
   def _loader() -> Any:
+    exists = lambda p: _RETRY_TRANSIENT_IO(p.exists)()
     path = epath.Path(model_path_str)
-    if path.exists() and path.is_dir():
-      has_processor = (path / "preprocessor_config.json").exists() or (
+    if exists(path) and _RETRY_TRANSIENT_IO(path.is_dir)():
+      has_processor = exists(path / "preprocessor_config.json") or exists(
           path / "processor_config.json"
-      ).exists()
+      )
       has_tokenizer = (
-          (path / "tokenizer_config.json").exists()
-          or (path / "tokenizer.json").exists()
-          or (path / "spiece.model").exists()
-          or (path / "vocab.json").exists()
-          or (path / "vocab.txt").exists()
-          or (path / "merges.txt").exists()
+          exists(path / "tokenizer_config.json")
+          or exists(path / "tokenizer.json")
+          or exists(path / "spiece.model")
+          or exists(path / "vocab.json")
+          or exists(path / "vocab.txt")
+          or exists(path / "merges.txt")
       )
       if prefer_tokenizer and has_tokenizer:
         load_fn = transformers.AutoTokenizer.from_pretrained
@@ -2826,9 +2836,10 @@ def _load_and_sanitize_transformers_config(
     (or config dictionary for unregistered custom model types).
   """
   path = epath.Path(config_path)
-  cfg_file = path / "config.json" if path.is_dir() else path
-  with cfg_file.open("r", encoding="utf-8") as f:
-    raw_dict = json.load(f)
+  cfg_file = (
+      path / "config.json" if _RETRY_TRANSIENT_IO(path.is_dir)() else path
+  )
+  raw_dict = json.loads(_RETRY_TRANSIENT_IO(cfg_file.read_text)())
 
   config_dict = _sanitize_transformers_config_dict(
       raw_dict, load_weights=load_weights
@@ -3311,9 +3322,10 @@ class TransformersProvider(BaseProvider):
 
     What this stage does:
       Locates `config.json` and the optional model directory across three
-      storage tiers in strict priority order: (1) the shared weights cache
-      (`{base_path}/transformers/{name}/config.json`), (2) bundled package
-      resources (`_FILES`), or (3) a GCS bucket download (`fetch_gcs_file`).
+      storage tiers: bundled package resources (`_FILES`, checked first when
+      `load_weights=False` to avoid remote filesystem I/O), the shared weights
+      cache (`{base_path}/transformers/{name}/config.json`), or a GCS bucket
+      download (`fetch_gcs_file`).
 
     Why this is needed as a separate stage:
       Separating file location discovery from JSON parsing and config
@@ -3324,16 +3336,15 @@ class TransformersProvider(BaseProvider):
       missing files with malformed config schemas.
 
     Example:
-      When loading `google/gemma-2-2b` in unit tests with `base_path=""` (no
-      shared weights cache mount) and `load_weights=False`, Stage 1 checks
-      `self.has_cache_dir` (False), locates `google/gemma-2-2b/config.json`
-      inside the bundled
-      `google/examples/huggingface_transformers/model_configs` package resource,
-      and yields the extracted path alongside `model_dir_or_repo_id=None`.
-      Conversely, during benchmark runs with `/path/to/weights` mounted, Stage 1
-      yields `/path/to/weights/transformers/google/gemma-2-2b/config.json` and
-      the cache directory as `model_dir_or_repo_id` so Stage 4 and Stage 5 can
-      load weights and tokenizers from the same directory.
+      When loading `google/gemma-2-2b` in unit tests with `load_weights=False`,
+      Stage 1 locates `google/gemma-2-2b/config.json` inside the bundled
+      `google/examples/huggingface_transformers/model_configs` package resource
+      without probing remote storage, and yields the extracted path alongside
+      `default_model_dir`. Conversely, when `load_weights=True` with
+      `/path/to/weights` mounted, Stage 1 yields
+      `/path/to/weights/transformers/google/gemma-2-2b/config.json` and the
+      cache directory as `model_dir_or_repo_id` so Stage 4 and Stage 5 can load
+      weights and tokenizers from the same directory.
 
     Args:
       name: Model identifier formatted as `{owner}/{model}`.
@@ -3349,23 +3360,33 @@ class TransformersProvider(BaseProvider):
     default_model_dir: epath.Path | None = None
     if self.has_cache_dir and self._base_path is not None:
       default_model_dir = self._base_path / name
+
+    if not load_weights:
+      traversable = self.in_tree_config(name)
+      if traversable is not None:
+        with resources.as_file(traversable) as local_file:
+          if local_file.exists():
+            yield epath.Path(local_file), default_model_dir
+            return
+
+    if default_model_dir is not None:
       cfg_file = default_model_dir / "config.json"
-      if cfg_file.exists():
-        yield cfg_file, default_model_dir
-        return
+      try:
+        if _RETRY_TRANSIENT_IO(cfg_file.exists)():
+          yield cfg_file, default_model_dir
+          return
+      except (OSError, gcp_exceptions.RetryError) as exc:
+        if load_weights:
+          raise
+        logging.warning(
+            "Falling back to GCS for %s after cache check error: %s", name, exc
+        )
 
     if load_weights:
       raise ValueError(
           f"load_weights cannot be set to True for {name} when falling back"
           " to local configuration resources or GCS."
       )
-
-    traversable = self.in_tree_config(name)
-    if traversable is not None:
-      with resources.as_file(traversable) as local_file:
-        if local_file.exists():
-          yield epath.Path(local_file), default_model_dir
-          return
 
     dest_config = self.fetch_gcs_file(f"{name}/config.json")
     if dest_config is not None and dest_config.exists():
@@ -3520,7 +3541,11 @@ class TransformersProvider(BaseProvider):
     ) -> tuple[tuple[Any, ...], dict[str, Any]]:
       model_dir = (
           str(model_dir_or_repo_id)
-          if model_dir_or_repo_id is not None and model_dir_or_repo_id.exists()
+          if (
+              modality == Modality.VISION  # Only VISION uses model_dir.
+              and model_dir_or_repo_id is not None
+              and _RETRY_TRANSIENT_IO(model_dir_or_repo_id.exists)()
+          )
           else None
       )
       input_kwargs = transformers_inputs.generate_transformers_inputs(

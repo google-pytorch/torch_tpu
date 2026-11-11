@@ -243,7 +243,7 @@ at::Tensor AtenUnfoldBackward(const at::Tensor& grad_in,
                             {.out_dtype = elem_type,
                              .out_dims = {},
                              .op_param_cache_keys = std::move(param_keys)}));
-          return MakeTensor(result);
+          return MakeTensor(std::move(result));
         }
 
         if (grad_in.numel() == 0) {
@@ -270,7 +270,7 @@ at::Tensor AtenUnfoldBackward(const at::Tensor& grad_in,
                            .out_dims = std::move(out_dims),
                            .op_param_cache_keys = std::move(param_keys)}));
 
-        return MakeTensor(result);
+        return MakeTensor(std::move(result));
       });
 }
 

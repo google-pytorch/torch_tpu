@@ -63,7 +63,7 @@ at::Tensor DynamicSlice(const at::Tensor& input, at::TensorList start_indices,
           const auto& t = start_indices[i];
           TT_CHECK_THROW(t.dim() == 0, error::kInvalidArgument)
               << "expected start_indices tensor at index " << i
-              << " to be a 0-D (scalar) tensor, got " << t.dim() << "-D tensor";
+              << " to be a 0D (scalar) tensor, got " << t.dim() << "D tensor";
           TT_CHECK_THROW(
               t.scalar_type() == at::kInt || t.scalar_type() == at::kLong,
               error::kInvalidArgument)
@@ -115,7 +115,7 @@ at::Tensor DynamicSlice(const at::Tensor& input, at::TensorList start_indices,
                                {.out_dtype = mlir_dtype,
                                 .out_dims = out_dims,
                                 .op_param_cache_keys = std::move(param_keys)}));
-        return MakeTensor(result_buf);
+        return MakeTensor(std::move(result_buf));
       });
 }
 

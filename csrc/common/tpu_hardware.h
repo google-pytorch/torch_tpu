@@ -43,6 +43,23 @@ struct SparseCoreSpec {
   bool operator==(const SparseCoreSpec& other) const = default;
 };
 
+// TPU hardware generation that TorchTPU supports.
+//
+// TorchTPU doesn't run on TPU v4 and older generations, so they have no
+// enumerators here.
+enum class TpuVersion {
+  kV5e,
+  kV5p,
+  kV6e,
+  kV7,
+  kV8i,
+  kV8t,
+};
+
+// Returns the human-readable name of `version`, as returned by
+// `torch.tpu.get_device_properties().name` (e.g. "TPU v7").
+[[nodiscard]] std::string_view TpuVersionName(TpuVersion version);
+
 // Specs of a TPU generation that TorchTPU supports.
 //
 // TorchTPU doesn't run on TPU v4 and older generations, so they have no
@@ -51,9 +68,8 @@ struct TpuSpec {
   using Topology = std::vector<int64_t>;  // INT_VEC_OK
   using TopologyMap = absl::flat_hash_map<int64_t, Topology>;
 
-  // Human-readable name of the generation, as returned by
-  // `torch.tpu.get_device_properties().name`.
-  std::string name;
+  // TPU hardware generation of this spec.
+  TpuVersion version = TpuVersion::kV7;
   // Number of separately-addressable devices the chip exposes to the runtime,
   // used as the divisor that turns a per-chip quantity into what one device
   // sees. This is megacore-aware (not the physical TensorCore count): 1 for
@@ -70,6 +86,12 @@ struct TpuSpec {
   // SparseCore specs of the generation, or std::nullopt if it has no
   // SparseCores.
   std::optional<SparseCoreSpec> sparse_core_spec;
+
+  // Human-readable name of the generation, as returned by
+  // `torch.tpu.get_device_properties().name`.
+  [[nodiscard]] std::string_view name() const {
+    return TpuVersionName(version);
+  }
 
   // Physical HBM capacity, in bytes, visible to a single device.
   [[nodiscard]] int64_t hbm_bytes_per_device() const {
@@ -90,6 +112,8 @@ struct TpuSpec {
       std::string_view vfio_dir = "/dev/vfio") const;
 
   bool operator==(const TpuSpec& other) const = default;
+
+  [[nodiscard]] static const TpuSpec& ForVersion(TpuVersion version);
 
   static const TpuSpec& V5p();
   static const TpuSpec& V5e();
@@ -113,9 +137,21 @@ struct TpuSpec {
 };
 
 // Returns the number of supported Google TPU PCI devices under
-// `pci_devices_dir` whose IOMMU group is exposed under `vfio_dir`. Does not
-// initialize any TPU runtime.
+// `pci_devices_dir` whose IOMMU group is exposed under `vfio_dir` as a
+// character device that this process can read and write.
+//
+// This function does not initialize any TPU runtime and ignores placeholders at
+// TPU VFIO paths that a sandbox doesn't allocate to this process, such as
+// unreadable regular files.
 [[nodiscard]] int64_t GetTpuDeviceCount(
+    std::string_view pci_devices_dir = "/sys/bus/pci/devices",
+    std::string_view vfio_dir = "/dev/vfio");
+
+// Returns GetTpuDeviceCount() capped by the number of indices in
+// `TPU_VISIBLE_DEVICES`, like `CUDA_VISIBLE_DEVICES`. Each index is one device,
+// i.e. one TensorCore on chips with several, such as TPU v7. Reads the env var
+// on every call.
+[[nodiscard]] int64_t GetVisibleTpuDeviceCount(
     std::string_view pci_devices_dir = "/sys/bus/pci/devices",
     std::string_view vfio_dir = "/dev/vfio");
 
@@ -129,11 +165,33 @@ absl::StatusOr<std::optional<std::string>> GetTpuTopology(
     std::string_view pci_devices_dir = "/sys/bus/pci/devices",
     std::string_view vfio_dir = "/dev/vfio");
 
-// Returns the single-device TPU bounds ({1, 1, 1, 1} for TPU generations with
-// multiple devices per chip without megacore, or {1, 1, 1} otherwise) for the
+// Returns the TPU bounds covering all devices of an `(x, y, z)` box of chips
+// (`{x, y, z, devices_per_chip}` when a chip exposes multiple devices without
+// megacore, or `{x, y, z}` otherwise).
+template <typename Bounds = TpuSpec::Topology>
+[[nodiscard]] Bounds MakeTpuChipBounds(int32_t x, int32_t y, int32_t z,
+                                       int32_t devices_per_chip) {
+  return devices_per_chip > 1 ? Bounds{x, y, z, devices_per_chip}
+                              : Bounds{x, y, z};
+}
+
+// Returns the TPU bounds of a single logical device (`{1, 1, 1, 1}` when a
+// chip exposes multiple devices without megacore, or `{1, 1, 1}` otherwise).
+template <typename Bounds = TpuSpec::Topology>
+[[nodiscard]] Bounds MakeSingleDeviceTpuBounds(int32_t devices_per_chip) {
+  return devices_per_chip > 1 ? Bounds{1, 1, 1, 1} : Bounds{1, 1, 1};
+}
+
+// Returns the single-device TPU bounds (`{1, 1, 1, 1}` for TPU generations with
+// multiple devices per chip without megacore, or `{1, 1, 1}` otherwise) for the
 // TPU generation attached under `pci_devices_dir`.
-[[nodiscard]] TpuSpec::Topology GetSingleDeviceTpuBounds(
-    std::string_view pci_devices_dir = "/sys/bus/pci/devices");
+template <typename Bounds = TpuSpec::Topology>
+[[nodiscard]] Bounds GetSingleDeviceTpuBounds(
+    std::string_view pci_devices_dir = "/sys/bus/pci/devices") {
+  const TpuSpec* absl_nullable const spec = TpuSpec::Get(pci_devices_dir);
+  return MakeSingleDeviceTpuBounds<Bounds>(
+      spec != nullptr ? static_cast<int32_t>(spec->devices_per_chip) : 1);
+}
 
 // Returns the comma-separated single-device TPU bounds string ("1,1,1,1" or
 // "1,1,1") for the TPU generation attached under `pci_devices_dir`.

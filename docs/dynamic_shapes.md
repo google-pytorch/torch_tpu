@@ -1,7 +1,5 @@
 # Dynamic shapes
 
-<!-- Link to colab and to generated notebook -->
-
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/google-pytorch/torch_tpu/blob/0.2.0-docs/docs/notebooks/dynamic_shapes.ipynb)
 
 When you compile a model with `torch.compile(model)`, TorchTPU lowers the
@@ -116,10 +114,12 @@ from torch._functorch._aot_autograd import autograd_cache
 torch._logging.set_logs()  # pylint: disable=protected-access
 device = torch.device("tpu")
 
+
 def decode_step(
     kv_cache: torch.Tensor, new_token: torch.Tensor
 ) -> torch.Tensor:
   return torch.cat([kv_cache, new_token], dim=2)
+
 
 def run_decode_loop(
     compiled_step, num_steps: int = 10, prefix: str = ""

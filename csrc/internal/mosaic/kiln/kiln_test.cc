@@ -24,16 +24,20 @@
 
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
+#include "absl/strings/str_join.h"
 #include "csrc/common/error_utils.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
@@ -43,13 +47,17 @@
 namespace torch_tpu::kiln {
 namespace {
 
-using absl_testing::IsOk;
-using absl_testing::IsOkAndHolds;
-using absl_testing::StatusIs;
-using testing::ElementsAre;
-using testing::HasSubstr;
-using testing::IsEmpty;
-using testing::Matcher;
+using ::absl_testing::IsOk;
+using ::absl_testing::IsOkAndHolds;
+using ::absl_testing::StatusIs;
+using ::testing::Bool;
+using ::testing::Combine;
+using ::testing::ElementsAre;
+using ::testing::HasSubstr;
+using ::testing::IsEmpty;
+using ::testing::Matcher;
+using ::testing::TestParamInfo;
+using ::testing::TestWithParam;
 
 // Verifies that the kernel is valid and that its textual form matches
 // `pattern`, a FileCheck pattern
@@ -80,18 +88,65 @@ Matcher<const absl::StatusOr<Kernel>&> IsOkAndMatchesIr(
   return IsOkAndHolds(MatchesIr(pattern));
 }
 
-// Copy assignment rebinds a `Ref`; memory is only accessed through `Load` and
-// `Store`. A `Ref` cannot be assigned from or converted to a value.
+// Refs are cheap handles; copy assignment rebinds them. Memory is only
+// accessed through `Load` and `Store`, so a ref cannot be assigned from or
+// converted to a value.
+static_assert(std::is_trivially_copyable_v<Ref>);
+static_assert(std::is_trivially_copyable_v<VmemRef>);
 static_assert(std::is_copy_assignable_v<Ref>);
+static_assert(std::is_copy_assignable_v<VmemRef>);
 static_assert(!std::is_assignable_v<Ref&, Tile>);
 static_assert(!std::is_assignable_v<Ref&, Scalar>);
+static_assert(!std::is_assignable_v<VmemRef&, Tile>);
+static_assert(!std::is_assignable_v<SmemRef&, Scalar>);
 static_assert(!std::is_constructible_v<Tile, Ref>);
 static_assert(!std::is_constructible_v<Scalar, Ref>);
+static_assert(!std::is_constructible_v<Tile, VmemRef>);
+static_assert(!std::is_constructible_v<Scalar, SmemRef>);
 
-// `Load` loads a `Tile` and `LoadScalar` loads a `Scalar`.
-static_assert(std::is_same_v<decltype(Load(std::declval<Ref>())), Tile>);
+// Typed refs convert implicitly to `Ref`, but not to each other or back (that
+// needs the checked `Ref::As`).
+static_assert(std::is_convertible_v<VmemRef, Ref>);
+static_assert(std::is_convertible_v<SmemRef, Ref>);
+static_assert(std::is_convertible_v<HbmRef, Ref>);
+static_assert(!std::is_convertible_v<Ref, VmemRef>);
+static_assert(!std::is_convertible_v<VmemRef, SmemRef>);
+static_assert(!std::is_convertible_v<HbmRef, VmemRef>);
+// Nothing can rebind a typed ref through a common base.
+static_assert(!std::is_assignable_v<internal::RefBase&, SmemRef>);
+
+// A `ValueHandle` can only be created from an `mlir::Value` or
+// `ValueHandle::Null()`, not from an arbitrary pointer. Handles stay cheap to
+// copy.
+static_assert(!std::is_default_constructible_v<internal::ValueHandle>);
+static_assert(!std::is_constructible_v<internal::ValueHandle, const void*>);
+static_assert(std::is_trivially_copyable_v<internal::ValueHandle>);
+static_assert(std::is_trivially_copyable_v<Scalar>);
+static_assert(std::is_trivially_copyable_v<Tile>);
+static_assert(std::is_trivially_copyable_v<Semaphore>);
+static_assert(std::is_trivially_copyable_v<SemaphoreArray>);
+
+// The memory space of a ref determines what `Load` returns and what `Store`
+// accepts; HBM and untyped refs cannot be loaded from or stored to.
+static_assert(std::is_same_v<decltype(Load(std::declval<VmemRef>())), Tile>);
+static_assert(std::is_same_v<decltype(Load(std::declval<SmemRef>())), Scalar>);
+template <typename R>
+concept Loadable = requires(R ref) { Load(ref); };
+template <typename R, typename V>
+concept Storable = requires(R ref, V value) { Store(ref, value); };
+static_assert(!Loadable<HbmRef>);
+static_assert(!Loadable<Ref>);
+static_assert(Storable<VmemRef, Tile>);
+static_assert(Storable<SmemRef, Scalar>);
+static_assert(!Storable<VmemRef, Scalar>);
+static_assert(!Storable<SmemRef, Tile>);
+static_assert(!Storable<HbmRef, Tile>);
+static_assert(!Storable<Ref, Tile>);
+
+// Slicing preserves the memory space.
 static_assert(
-    std::is_same_v<decltype(LoadScalar(std::declval<Ref>())), Scalar>);
+    std::is_same_v<decltype(std::declval<VmemRef>()(0, all)), VmemRef>);
+static_assert(std::is_same_v<decltype(std::declval<Ref>()(0, all)), Ref>);
 
 // out[i, j] += a[i, k] @ b[k, j], with K as the innermost ("arbitrary") grid
 // axis and an f32 accumulator in scratch.
@@ -114,7 +169,8 @@ TEST(KilnTest, BlockwiseMatmul) {
       OutSpec{bf16(kTm, kTn), IndexMap([] {
                 return IndexIndices{ProgramId(0), ProgramId(1)};
               })},
-      ScratchSpec{f32(kTm, kTn)}, [](Ref a, Ref b, Ref out, Ref acc) {
+      ScratchSpec{f32(kTm, kTn)},
+      [](VmemRef a, VmemRef b, VmemRef out, VmemRef acc) {
         Scalar kk = ProgramId(2);
         If(kk == 0, [&] { Store(acc, Zeros(acc.shape())); });
         Store(acc, Load(acc) + Dot(Load(a), Load(b)));
@@ -170,16 +226,15 @@ TEST(KilnTest, BlockwiseMatmul) {
 TEST(KilnTest, ScalarPrefetchAndLoop) {
   constexpr int64_t kRows = 64, kCols = 1024, kChunk = 128;
 
-  IndexMap gathered = IndexMap([] {
-    return IndexIndices{LoadScalar(ScalarPrefetch(0)(ProgramId(0))), 0};
-  });
+  IndexMap gathered = IndexMap(
+      [] { return IndexIndices{Load(ScalarPrefetch(0)(ProgramId(0))), 0}; });
 
   absl::StatusOr<Kernel> kernel = CreateKernel(
       GridSpec{.name = "gather_rows", .grid = {kRows}},
       ScalarPrefetchSpec{i32(kRows)}, InSpec{f32(1, kCols), gathered},
       OutSpec{f32(1, kChunk),
               IndexMap([] { return IndexIndices{ProgramId(0), 0}; })},
-      [](Ref /*indices*/, Ref rows, Ref out) {
+      [](SmemRef /*indices*/, VmemRef rows, VmemRef out) {
         Tile total = Zeros(f32(1, kChunk));
         for (int64_t c = 0; c < kCols; c += kChunk) {
           total = total + Load(rows(0, Slice(c, kChunk)));
@@ -222,17 +277,17 @@ TEST(KilnTest, ScalarPrefetchAndLoop) {
 
 TEST(KilnTest, RefSliceRankCollapsing) {
   // 4-D block: (1, 1, 32, 128). Slicing in4d(0, 0) yields a 2-D tile (32, 128).
-  absl::StatusOr<Kernel> kernel =
-      CreateKernel(GridSpec{.name = "rank_collapse", .grid = {1}},
-                   InSpec{.shape = f32(1, 1, 32, 128)},
-                   OutSpec{.shape = f32(32, 128)}, [](Ref in4d, Ref out2d) {
-                     // in4d(0, 0) collapses the first 2 dimensions, resulting
-                     // in rank 2.
-                     Tile tile2d = Load(in4d(0, 0));
-                     EXPECT_EQ(tile2d.rank(), 2);
-                     EXPECT_THAT(tile2d.dims(), ElementsAre(32, 128));
-                     Store(out2d, tile2d);
-                   });
+  absl::StatusOr<Kernel> kernel = CreateKernel(
+      GridSpec{.name = "rank_collapse", .grid = {1}},
+      InSpec{.shape = f32(1, 1, 32, 128)}, OutSpec{.shape = f32(32, 128)},
+      [](VmemRef in4d, VmemRef out2d) {
+        // in4d(0, 0) collapses the first 2 dimensions, resulting
+        // in rank 2.
+        Tile tile2d = Load(in4d(0, 0));
+        EXPECT_EQ(tile2d.rank(), 2);
+        EXPECT_THAT(tile2d.dims(), ElementsAre(32, 128));
+        Store(out2d, tile2d);
+      });
   EXPECT_THAT(kernel, IsOkAndMatchesIr(R"(
     CHECK-LABEL: func.func @rank_collapse(
     CHECK-SAME:    %{{.*}}: i32, %[[IN:arg[0-9]+]]: memref<1x1x32x128xf32, #tpu.memory_space<vmem>>, %[[OUT:arg[0-9]+]]: memref<32x128xf32, #tpu.memory_space<vmem>>)
@@ -242,11 +297,63 @@ TEST(KilnTest, RefSliceRankCollapsing) {
   )"));
 }
 
+// Parameterized by whether each of the optional in, out and scratch specs is
+// present. A present spec becomes a kernel operand and its body parameter holds
+// a `Ref`; an absent one adds no operand and yields `std::nullopt`.
+class OptionalOperandsTest
+    : public TestWithParam<std::tuple<bool, bool, bool>> {};
+
+TEST_P(OptionalOperandsTest, OnlyPresentSpecsBecomeOperands) {
+  const auto [has_in, has_out, has_scratch] = GetParam();
+
+  // Returns `spec` if `present`, otherwise `std::nullopt`.
+  auto get_optional_spec = [](bool present, auto spec) {
+    return present ? std::make_optional(spec) : std::nullopt;
+  };
+
+  // Each operand has a distinct shape so the signature identifies which are
+  // present.
+  std::vector<std::string> args;
+  auto add_arg = [&](bool present, std::string_view shape) {
+    if (present) {
+      args.push_back(absl::StrCat("%arg", args.size(), ": memref<", shape,
+                                  ", #tpu.memory_space<vmem>>"));
+    }
+  };
+  add_arg(has_in, "8x128xf32");
+  add_arg(has_out, "16x128xf32");
+  add_arg(has_scratch, "32x128xf32");
+  const std::string pattern = absl::StrCat(
+      "CHECK-LABEL: func.func @optional_operands(", absl::StrJoin(args, ", "),
+      ")\nCHECK-SAME: scratch_operands = ", has_scratch ? 1 : 0);
+
+  EXPECT_THAT(
+      CreateKernel(GridSpec{.name = "optional_operands"},
+                   get_optional_spec(has_in, InSpec{f32(8, 128)}),
+                   get_optional_spec(has_out, OutSpec{f32(16, 128)}),
+                   get_optional_spec(has_scratch, ScratchSpec{f32(32, 128)}),
+                   [&](std::optional<VmemRef> in, std::optional<VmemRef> out,
+                       std::optional<VmemRef> scratch) {
+                     EXPECT_EQ(in.has_value(), has_in);
+                     EXPECT_EQ(out.has_value(), has_out);
+                     EXPECT_EQ(scratch.has_value(), has_scratch);
+                   }),
+      IsOkAndMatchesIr(pattern));
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    AllCombinations, OptionalOperandsTest, Combine(Bool(), Bool(), Bool()),
+    [](const TestParamInfo<OptionalOperandsTest::ParamType>& info) {
+      return absl::StrCat(std::get<0>(info.param) ? "In" : "NoIn",
+                          std::get<1>(info.param) ? "Out" : "NoOut",
+                          std::get<2>(info.param) ? "Scratch" : "NoScratch");
+    });
+
 TEST(KilnTest, LiteralOverloads) {
   absl::StatusOr<Kernel> kernel = CreateKernel(
       GridSpec{.name = "literal_ops", .grid = {1}}, InSpec{f32(32, 128)},
       InSpec{i32(32, 128)}, OutSpec{f32(32, 128)},
-      [](Ref f_in, Ref i_in, Ref out) {
+      [](VmemRef f_in, VmemRef i_in, VmemRef out) {
         Tile f = Load(f_in);
         Tile i = Load(i_in);
 
@@ -320,9 +427,8 @@ TEST(KilnTest, LiteralOverloads) {
 TEST(KilnTest, ScalarFloatOperations) {
   absl::StatusOr<Kernel> kernel = CreateKernel(
       GridSpec{.name = "scalar_float_ops", .grid = {1}},
-      InSpec{.shape = f32(32, 128), .space = MemorySpace::kSmem},
-      OutSpec{.shape = f32(32, 128), .space = MemorySpace::kSmem},
-      [](Ref in, Ref out) {
+      InSpec::Smem(f32(32, 128)), OutSpec::Smem(f32(32, 128)),
+      [](SmemRef in, SmemRef out) {
         Scalar sf = F32(2.5);
         EXPECT_TRUE(sf.dtype().IsFloat());
         EXPECT_FALSE(sf.dtype().IsInt());
@@ -342,7 +448,7 @@ TEST(KilnTest, ScalarFloatOperations) {
         Scalar sf_min = Min(sf, 10.0);
         Scalar sf_max = Max(sf, 0.0);
 
-        Scalar loaded = LoadScalar(in(0, 0));
+        Scalar loaded = Load(in(0, 0));
         Scalar result = loaded + sf_exp + sf_log + sf_sqrt + sf_rsqrt + sf_abs +
                         sf_sel + sf_min + sf_max + sf_div;
         Store(out(0, 0), result);
@@ -365,7 +471,7 @@ TEST(KilnTest, ScalarFloatOperations) {
     CHECK:         %[[MIN:.*]] = arith.minimumf %[[SF]], %{{.*}} : f32
     CHECK:         %[[MAX:.*]] = arith.maximumf %[[SF]], %{{.*}} : f32
 
-    // LoadScalar(ref) on an SMEM ref is a scalar memref.load of the squeezed slice.
+    // Load(ref) on an SMEM ref is a scalar memref.load of the squeezed slice.
     CHECK:         %[[IN_SLICE:.*]] = tpu.memref_slice %[[IN]][%{{.*}}, %{{.*}}] : memref<32x128xf32, #tpu.memory_space<smem>> -> memref<1x1xf32, #tpu.memory_space<smem>>
     CHECK:         %[[IN_SQ:.*]] = tpu.memref_squeeze %[[IN_SLICE]] : memref<1x1xf32, #tpu.memory_space<smem>> -> memref<f32, #tpu.memory_space<smem>>
     CHECK:         %[[LOADED:.*]] = memref.load %[[IN_SQ]][] : memref<f32, #tpu.memory_space<smem>>
@@ -384,6 +490,20 @@ TEST(KilnTest, ScalarFloatOperations) {
   )"));
 }
 
+TEST(KilnDeathTest, SmemLoadAndStoreRequire0dRefs) {
+  EXPECT_THAT(
+      CreateKernel(GridSpec{.name = "smem_rank_errors", .grid = {1}},
+                   InSpec::Smem(f32(32, 128)), OutSpec::Smem(f32(32, 128)),
+                   [](SmemRef in, SmemRef out) {
+                     EXPECT_DEATH(static_cast<void>(Load(in)),
+                                  "Load\\(\\) of a Scalar requires a 0-D ref");
+                     EXPECT_DEATH(Store(out, F32(1.0)),
+                                  "Store\\(\\) of a Scalar requires a 0-D ref");
+                     Store(out(0, 0), Load(in(0, 0)));
+                   }),
+      IsOk());
+}
+
 // The same integer hash written once and applied to both a Scalar and a Tile.
 template <typename T>
 T Fmix32(T h) {
@@ -398,7 +518,7 @@ T Fmix32(T h) {
 TEST(KilnTest, BitwiseOperations) {
   absl::StatusOr<Kernel> kernel = CreateKernel(
       GridSpec{.name = "bitwise_ops", .grid = {4}}, InSpec{u32(32, 128)},
-      OutSpec{u32(32, 128)}, [](Ref in, Ref out) {
+      OutSpec{u32(32, 128)}, [](VmemRef in, VmemRef out) {
         Scalar pid = ProgramId(0).AsType(u32);
         Scalar stream = Fmix32(pid ^ 0x9E3779B9u);
         Scalar shifted = (stream << 1) | (stream & 1);
@@ -447,7 +567,7 @@ TEST(KilnTest, BitwiseOperations) {
 TEST(KilnTest, TileScalarSplat) {
   absl::StatusOr<Kernel> kernel = CreateKernel(
       GridSpec{.name = "tile_scalar_splat", .grid = {1}}, InSpec{f32(32, 128)},
-      OutSpec{i32(32, 128)}, [](Ref float_in, Ref out) {
+      OutSpec{i32(32, 128)}, [](VmemRef float_in, VmemRef out) {
         Tile float_tile = Load(float_in);
         Scalar int_scalar = I32(42);
 
@@ -479,7 +599,7 @@ TEST(KilnTest, TileScalarArithmetic) {
   absl::StatusOr<Kernel> kernel = CreateKernel(
       GridSpec{.name = "tile_scalar_arith", .grid = {2}}, InSpec{f32(32, 128)},
       InSpec{i32(32, 128)}, OutSpec{f32(32, 128)},
-      [](Ref float_in, Ref int_in, Ref out) {
+      [](VmemRef float_in, VmemRef int_in, VmemRef out) {
         Tile float_tile = Load(float_in);
         Tile int_tile = Load(int_in);
 
@@ -528,7 +648,8 @@ TEST(KilnTest, TileScalarArithmetic) {
 TEST(KilnTest, TileScalarBitwise) {
   absl::StatusOr<Kernel> kernel = CreateKernel(
       GridSpec{.name = "tile_scalar_bitwise", .grid = {1}},
-      InSpec{i32(32, 128)}, OutSpec{i32(32, 128)}, [](Ref int_in, Ref out) {
+      InSpec{i32(32, 128)}, OutSpec{i32(32, 128)},
+      [](VmemRef int_in, VmemRef out) {
         Tile int_tile = Load(int_in);
         Scalar int_scalar = I32(42);
 
@@ -570,7 +691,7 @@ TEST(KilnTest, TileScalarComparisonAndSelect) {
   absl::StatusOr<Kernel> kernel = CreateKernel(
       GridSpec{.name = "tile_scalar_cmp_select", .grid = {1}},
       InSpec{f32(32, 128)}, InSpec{i32(32, 128)}, OutSpec{f32(32, 128)},
-      [](Ref float_in, Ref int_in, Ref out) {
+      [](VmemRef float_in, VmemRef int_in, VmemRef out) {
         Tile float_tile = Load(float_in);
         Tile int_tile = Load(int_in);
 
@@ -630,7 +751,7 @@ TEST(KilnTest, TileScalarComparisonAndSelect) {
 TEST(KilnTest, ScalarCompoundAssignmentArithmetic) {
   absl::StatusOr<Kernel> kernel =
       CreateKernel(GridSpec{.name = "scalar_compound_arith", .grid = {2, 2}},
-                   OutSpec::Smem(f32(1)), [](Ref out) {
+                   OutSpec::Smem(f32(1)), [](SmemRef out) {
                      Scalar s = ProgramId(0);
                      Scalar rhs = ProgramId(1);
                      Scalar& s_ref = (s += rhs);
@@ -689,7 +810,7 @@ TEST(KilnTest, ScalarCompoundAssignmentArithmetic) {
 TEST(KilnTest, ScalarCompoundAssignmentBitwise) {
   absl::StatusOr<Kernel> kernel =
       CreateKernel(GridSpec{.name = "scalar_compound_bitwise", .grid = {2, 2}},
-                   OutSpec::Smem(i32(1)), [](Ref out) {
+                   OutSpec::Smem(i32(1)), [](SmemRef out) {
                      Scalar s = ProgramId(0);
                      Scalar rhs = ProgramId(1);
                      s &= rhs;
@@ -723,28 +844,28 @@ TEST(KilnTest, ScalarCompoundAssignmentBitwise) {
 }
 
 TEST(KilnTest, TileFloatCompoundAssignment) {
-  absl::StatusOr<Kernel> kernel =
-      CreateKernel(GridSpec{.name = "tile_float_compound_assign", .grid = {2}},
-                   InSpec{f32(8, 128)}, InSpec{f32(8, 128)},
-                   OutSpec{f32(8, 128)}, [](Ref in0, Ref in1, Ref out) {
-                     Tile f = Load(in0);
-                     Tile rhs = Load(in1);
-                     Scalar sf = ProgramId(0).ToF32();
-                     Tile& f_ref = (f += rhs);
-                     EXPECT_EQ(&f_ref, &f);
-                     f += sf;
-                     f += 1.0;
-                     f -= rhs;
-                     f -= sf;
-                     f -= 0.5;
-                     f *= rhs;
-                     f *= sf;
-                     f *= 2.0;
-                     f /= rhs;
-                     f /= sf;
-                     f /= 4.0;
-                     Store(out, f);
-                   });
+  absl::StatusOr<Kernel> kernel = CreateKernel(
+      GridSpec{.name = "tile_float_compound_assign", .grid = {2}},
+      InSpec{f32(8, 128)}, InSpec{f32(8, 128)}, OutSpec{f32(8, 128)},
+      [](VmemRef in0, VmemRef in1, VmemRef out) {
+        Tile f = Load(in0);
+        Tile rhs = Load(in1);
+        Scalar sf = ProgramId(0).ToF32();
+        Tile& f_ref = (f += rhs);
+        EXPECT_EQ(&f_ref, &f);
+        f += sf;
+        f += 1.0;
+        f -= rhs;
+        f -= sf;
+        f -= 0.5;
+        f *= rhs;
+        f *= sf;
+        f *= 2.0;
+        f /= rhs;
+        f /= sf;
+        f /= 4.0;
+        Store(out, f);
+      });
   EXPECT_THAT(kernel, IsOkAndMatchesIr(R"(
     CHECK-LABEL: func.func @tile_float_compound_assign(
     CHECK-SAME: %[[PID:arg[0-9]+]]: i32,
@@ -773,30 +894,30 @@ TEST(KilnTest, TileFloatCompoundAssignment) {
 }
 
 TEST(KilnTest, TileIntCompoundAssignmentArithmetic) {
-  absl::StatusOr<Kernel> kernel =
-      CreateKernel(GridSpec{.name = "tile_int_compound_arith", .grid = {2}},
-                   InSpec{i32(8, 128)}, InSpec{i32(8, 128)},
-                   OutSpec{i32(8, 128)}, [](Ref in0, Ref in1, Ref out) {
-                     Tile i = Load(in0);
-                     Tile rhs = Load(in1);
-                     Scalar s = ProgramId(0);
-                     i += rhs;
-                     i += s;
-                     i += 1;
-                     i -= rhs;
-                     i -= s;
-                     i -= 1;
-                     i *= rhs;
-                     i *= s;
-                     i *= 3;
-                     i /= rhs;
-                     i /= s;
-                     i /= 2;
-                     i %= rhs;
-                     i %= s;
-                     i %= 7;
-                     Store(out, i);
-                   });
+  absl::StatusOr<Kernel> kernel = CreateKernel(
+      GridSpec{.name = "tile_int_compound_arith", .grid = {2}},
+      InSpec{i32(8, 128)}, InSpec{i32(8, 128)}, OutSpec{i32(8, 128)},
+      [](VmemRef in0, VmemRef in1, VmemRef out) {
+        Tile i = Load(in0);
+        Tile rhs = Load(in1);
+        Scalar s = ProgramId(0);
+        i += rhs;
+        i += s;
+        i += 1;
+        i -= rhs;
+        i -= s;
+        i -= 1;
+        i *= rhs;
+        i *= s;
+        i *= 3;
+        i /= rhs;
+        i /= s;
+        i /= 2;
+        i %= rhs;
+        i %= s;
+        i %= 7;
+        Store(out, i);
+      });
   EXPECT_THAT(kernel, IsOkAndMatchesIr(R"(
     CHECK-LABEL: func.func @tile_int_compound_arith(
     CHECK-SAME: %[[PID:arg[0-9]+]]: i32,
@@ -827,30 +948,30 @@ TEST(KilnTest, TileIntCompoundAssignmentArithmetic) {
 }
 
 TEST(KilnTest, TileCompoundAssignmentBitwise) {
-  absl::StatusOr<Kernel> kernel =
-      CreateKernel(GridSpec{.name = "tile_compound_bitwise", .grid = {2}},
-                   InSpec{i32(8, 128)}, InSpec{i32(8, 128)},
-                   OutSpec{i32(8, 128)}, [](Ref in0, Ref in1, Ref out) {
-                     Tile i = Load(in0);
-                     Tile rhs = Load(in1);
-                     Scalar s = ProgramId(0);
-                     i &= rhs;
-                     i &= s;
-                     i &= 0xFF;
-                     i |= rhs;
-                     i |= s;
-                     i |= 0x0F;
-                     i ^= rhs;
-                     i ^= s;
-                     i ^= 0x55;
-                     i <<= rhs;
-                     i <<= s;
-                     i <<= 1;
-                     i >>= rhs;
-                     i >>= s;
-                     i >>= 1;
-                     Store(out, i);
-                   });
+  absl::StatusOr<Kernel> kernel = CreateKernel(
+      GridSpec{.name = "tile_compound_bitwise", .grid = {2}},
+      InSpec{i32(8, 128)}, InSpec{i32(8, 128)}, OutSpec{i32(8, 128)},
+      [](VmemRef in0, VmemRef in1, VmemRef out) {
+        Tile i = Load(in0);
+        Tile rhs = Load(in1);
+        Scalar s = ProgramId(0);
+        i &= rhs;
+        i &= s;
+        i &= 0xFF;
+        i |= rhs;
+        i |= s;
+        i |= 0x0F;
+        i ^= rhs;
+        i ^= s;
+        i ^= 0x55;
+        i <<= rhs;
+        i <<= s;
+        i <<= 1;
+        i >>= rhs;
+        i >>= s;
+        i >>= 1;
+        Store(out, i);
+      });
   EXPECT_THAT(kernel, IsOkAndMatchesIr(R"(
     CHECK-LABEL: func.func @tile_compound_bitwise(
     CHECK-SAME: %[[PID:arg[0-9]+]]: i32,
@@ -884,7 +1005,7 @@ TEST(KilnTest, TileReciprocal) {
   EXPECT_THAT(CreateKernel(
                   GridSpec{.name = "tile_reciprocal", .grid = {1}},
                   InSpec{f32(32, 128)}, OutSpec{f32(32, 128)},
-                  [&](Ref in, Ref out) {
+                  [&](VmemRef in, VmemRef out) {
                     Tile t = Load(in);
                     Tile exact_default = Reciprocal(t);
                     Tile exact_explicit = Reciprocal(t, ReciprocalMode::kExact);
@@ -895,9 +1016,9 @@ TEST(KilnTest, TileReciprocal) {
     CHECK-LABEL: func.func @tile_reciprocal(
     CHECK-SAME:    %{{.*}}: i32, %[[IN:arg[0-9]+]]: memref<32x128xf32, #tpu.memory_space<vmem>>, %[[OUT:arg[0-9]+]]: memref<32x128xf32, #tpu.memory_space<vmem>>)
     CHECK:         %[[V:.*]] = vector.load %[[IN]]
-    CHECK:         %[[EXACT0:.*]] = tpu.reciprocal %[[V]] {full_range = false} : vector<32x128xf32> -> vector<32x128xf32>
-    CHECK:         %[[EXACT1:.*]] = tpu.reciprocal %[[V]] {full_range = false} : vector<32x128xf32> -> vector<32x128xf32>
-    CHECK:         %[[APPROX:.*]] = tpu.reciprocal %[[V]] {approx = true, full_range = false} : vector<32x128xf32> -> vector<32x128xf32>
+    CHECK:         %[[EXACT0:.*]] = tpu.reciprocal %[[V]] {{[{<]}}full_range = false{{[}>]}} : vector<32x128xf32> -> vector<32x128xf32>
+    CHECK:         %[[EXACT1:.*]] = tpu.reciprocal %[[V]] {{[{<]}}full_range = false{{[}>]}} : vector<32x128xf32> -> vector<32x128xf32>
+    CHECK:         %[[APPROX:.*]] = tpu.reciprocal %[[V]] {{[{<]}}approx = true, full_range = false{{[}>]}} : vector<32x128xf32> -> vector<32x128xf32>
     CHECK:         %[[SUM0:.*]] = arith.addf %[[EXACT0]], %[[EXACT1]] : vector<32x128xf32>
     CHECK:         %[[SUM1:.*]] = arith.addf %[[SUM0]], %[[APPROX]] : vector<32x128xf32>
     CHECK:         tpu.vector_store %[[OUT]][%{{.*}}, %{{.*}}], %[[SUM1]]
@@ -907,7 +1028,7 @@ TEST(KilnTest, TileReciprocal) {
 TEST(KilnTest, RotateGatherExtractBitcastAndMaskedStore) {
   absl::StatusOr<Kernel> kernel = CreateKernel(
       GridSpec{.name = "rotate_gather_extract_bitcast_store", .grid = {1}},
-      InSpec{f32(8, 128)}, OutSpec{i32(1, 128)}, [](Ref in, Ref out) {
+      InSpec{f32(8, 128)}, OutSpec{i32(1, 128)}, [](VmemRef in, VmemRef out) {
         Scalar step = ProgramId(0);
         Tile rotated = Rotate(Load(in), 8 - (step & 7), /*axis=*/0);
         Tile row0 = rotated.Slice({0, 0}, {1, 128});
@@ -933,7 +1054,7 @@ TEST(KilnTest, RotateGatherExtractBitcastAndMaskedStore) {
     CHECK:         %[[LANE:.*]] = vector.extract %[[GATHERED]][0, 0] : f32 from vector<1x128xf32>
     CHECK:         %[[LANE_BITS:.*]] = arith.bitcast %[[LANE]] : f32 to i32
     CHECK:         %[[ROW_BITS:.*]] = arith.bitcast %[[ROW0]] : vector<1x128xf32> to vector<1x128xi32>
-    CHECK:         %[[IOTA:.*]] = tpu.iota {dimensions = array<i32: 1>} : vector<1x128xi32>
+    CHECK:         %[[IOTA:.*]] = tpu.iota {{[{<]}}dimensions = {{(array<i32: 1>|\[1\])}}{{[}>]}} : vector<1x128xi32>
     CHECK:         %[[C127:.*]] = arith.constant 127 : i32
     CHECK:         %[[LANE_ID:.*]] = arith.andi %[[STEP]], %[[C127]] : i32
     CHECK:         %[[LANE_ID_V:.*]] = vector.broadcast %[[LANE_ID]] : i32 to vector<1x128xi32>
@@ -947,7 +1068,7 @@ TEST(KilnTest, RotateGatherExtractBitcastAndMaskedStore) {
 TEST(KilnTest, ForLoopWithInductionVarAndBounds) {
   absl::StatusOr<Kernel> kernel = CreateKernel(
       GridSpec{.name = "for_loop", .grid = {1}}, InSpec{f32(32, 128)},
-      OutSpec{f32(32, 128)}, [](Ref in, Ref out) {
+      OutSpec{f32(32, 128)}, [](VmemRef in, VmemRef out) {
         // Loop with static bounds.
         For(0, 10, [&](Scalar i) {
           EXPECT_TRUE(i.dtype().IsInt());
@@ -1001,7 +1122,7 @@ TEST(KilnTest, ForLoopWithInductionVarAndBounds) {
 TEST(KilnTest, ForLoopWithCarriedState) {
   EXPECT_THAT(CreateKernel(GridSpec{.name = "for_carry", .grid = {1}},
                            InSpec{f32(8, 128)}, OutSpec{f32(8, 128)},
-                           [](Ref in, Ref out) {
+                           [](VmemRef in, VmemRef out) {
                              Scalar s = I32(1);
                              Tile t = Load(in);
                              For(0, 4, 1, {&s, &t}, [&](Scalar) {
@@ -1030,7 +1151,7 @@ TEST(KilnDeathTest, ForLoopRejectsChangedStateDtype) {
       CreateKernel(
           GridSpec{.name = "for_carry_dtype", .grid = {1}}, InSpec{f32(8, 128)},
           OutSpec{f32(8, 128)},
-          [](Ref, Ref) {
+          [](VmemRef, VmemRef) {
             Scalar s = I32(0);
             EXPECT_DEATH(
                 For(0, 4, 1, {&s}, [&](Scalar i) { s = i.AsType(u32); }),
@@ -1043,7 +1164,7 @@ TEST(KilnDeathTest, ForLoopRejectsChangedStateDtype) {
 TEST(KilnTest, ForLoopWithEmptyState) {
   EXPECT_THAT(CreateKernel(GridSpec{.name = "for_empty_carry", .grid = {1}},
                            InSpec{f32(8, 128)}, OutSpec{f32(8, 128)},
-                           [](Ref in, Ref out) {
+                           [](VmemRef in, VmemRef out) {
                              For(0, 4, 1, {},
                                  [&](Scalar) { Store(out, Load(in)); });
                            }),
@@ -1058,7 +1179,7 @@ TEST(KilnDeathTest, ScalarMismatchedTypesFail) {
   absl::StatusOr<Kernel> kernel = CreateKernel(
       GridSpec{.name = "mismatched", .grid = {1}}, InSpec{f32(32, 128)},
       InSpec{i32(32, 128)}, InSpec{u32(32, 128)}, OutSpec{f32(32, 128)},
-      [](Ref f_in, Ref i_in, Ref u_in, Ref out) {
+      [](VmemRef f_in, VmemRef i_in, VmemRef u_in, VmemRef out) {
         Scalar s_i = I32(1);
         Scalar s_u = U32(1);
         Scalar s_f = F32(1.0);
@@ -1067,6 +1188,20 @@ TEST(KilnDeathTest, ScalarMismatchedTypesFail) {
         EXPECT_DEATH(!s_i, "! requires a bool operand");
         EXPECT_DEATH(If(s_i, [] {}),
                      "If\\(\\) condition must be a bool scalar");
+        EXPECT_DEATH(If(
+                         I32(0) == I32(1), [&] { return Load(f_in); },
+                         [&] { return Load(i_in); }),
+                     "If\\(\\) else-branch result 0 changed shape");
+        EXPECT_DEATH(
+            If(
+                I32(0) == I32(1), [&] { return s_i; }, [&] { return s_f; }),
+            "If\\(\\) else-branch result 0 changed dtype: expected i32, got "
+            "f32");
+        EXPECT_DEATH(
+            If(
+                I32(0) == I32(1), [&] { return std::tuple{s_i, Load(f_in)}; },
+                [&] { return std::tuple{s_i, Zeros(f32(8, 128))}; }),
+            "If\\(\\) else-branch result 1 changed shape");
         EXPECT_DEATH(Select(s_i, s_i, s_i), "Select\\(\\) mask must be bool");
         EXPECT_DEATH(For(s_f, [](Scalar) {}),
                      "IndexArg requires an integer scalar");
@@ -1087,18 +1222,57 @@ TEST(KilnDeathTest, ScalarMismatchedTypesFail) {
 
         EXPECT_DEATH(f_in(0, 0, 0), "Too many slice indices");
         EXPECT_DEATH(f_in(0, Slice(0, 0)), "Slice size must be positive");
-        EXPECT_DEATH(static_cast<void>(LoadScalar(f_in)),
-                     "LoadScalar\\(\\) requires a 0-D ref");
-        EXPECT_DEATH(static_cast<void>(LoadScalar(f_in(0, 0))),
-                     "LoadScalar\\(\\) requires an SMEM ref");
-        EXPECT_DEATH(Store(f_in, F32(1.0)),
-                     "Store\\(\\) of a Scalar requires a 0-D ref");
-        EXPECT_DEATH(Store(f_in(0, 0), F32(1.0)),
-                     "Store\\(\\) of a Scalar requires an SMEM ref");
+        EXPECT_DEATH(Load(f_in, {0}, {8, 128}),
+                     "Load\\(\\) requires one offset per ref dimension");
+        EXPECT_DEATH(Load(f_in, {0, 0}, {8}),
+                     "Load\\(\\) requires one size per ref dimension");
+        EXPECT_DEATH(Load(f_in, {0, 0}, {0, 128}),
+                     "Load\\(\\) size must be positive");
+        EXPECT_DEATH(Load(f_in, {24, 0}, {16, 128}),
+                     "Load\\(\\) offset \\+ size must not exceed dimension");
+        EXPECT_DEATH(Concat({}, 0), "Concat\\(\\) requires at least one tile");
+        EXPECT_DEATH(Concat({t_f, t_f}, 2),
+                     "Concat\\(\\) axis 2 out of bounds");
+        EXPECT_DEATH(Concat({t_f, t_i}, 0),
+                     "Concat\\(\\) requires all tiles to have the same dtype");
+        EXPECT_DEATH(Concat({t_f, Zeros(f32(32, 128, 1))}, 0),
+                     "Concat\\(\\) requires all tiles to have the same rank");
+        EXPECT_DEATH(Concat({t_f, Zeros(f32(8, 256))}, 0),
+                     "Concat\\(\\) dimension mismatch on axis 1");
         EXPECT_DEATH(Store(out, t_f, {.mask = t_i}),
                      "Masked Store\\(\\) requires an i1 mask tile");
 
         Store(out, t_f);
+      });
+  ASSERT_THAT(kernel, IsOk());
+}
+
+// Rewrapping a handle as the wrong kind of handle, in the wrong memory space,
+// or with a dtype that doesn't match its IR element type fails.
+TEST(KilnDeathTest, RewrapHandleWithMismatchedTypeFails) {
+  absl::StatusOr<Kernel> kernel = CreateKernel(
+      GridSpec{.name = "rewrap_mismatched", .grid = {1}}, InSpec{i32(32, 128)},
+      OutSpec{i32(32, 128)}, [](VmemRef in, VmemRef out) {
+        Scalar scalar = I32(1);
+        Tile tile = Load(in);
+        EXPECT_DEATH(static_cast<void>(Scalar(tile.handle(), i32)),
+                     "Scalar should not be a shaped type");
+        EXPECT_DEATH(static_cast<void>(Tile(scalar.handle(), i32)),
+                     "Tile must be a vector value");
+        EXPECT_DEATH(static_cast<void>(Ref(scalar.handle(), i32)),
+                     "Ref must be a memref value");
+        EXPECT_DEATH(static_cast<void>(Semaphore(in.handle())),
+                     "Semaphore must be in semaphore_mem memory space");
+        EXPECT_DEATH(static_cast<void>(SmemRef(in.handle(), i32)),
+                     "Ref is in .* but its type requires");
+        EXPECT_DEATH(static_cast<void>(Scalar(scalar.handle(), f32)),
+                     "Scalar dtype .* does not match its IR element type i32");
+        EXPECT_DEATH(static_cast<void>(Tile(tile.handle(), f32)),
+                     "Tile dtype .* does not match its IR element type i32");
+        EXPECT_DEATH(static_cast<void>(VmemRef(in.handle(), f32)),
+                     "Ref dtype .* does not match its IR element type i32");
+
+        Store(out, tile);
       });
   ASSERT_THAT(kernel, IsOk());
 }
@@ -1219,7 +1393,7 @@ INSTANTIATE_TEST_SUITE_P(
 TEST(KilnTest, DTypeInTileAndScalarOps) {
   absl::StatusOr<Kernel> kernel = CreateKernel(
       GridSpec{.name = "dtype_ops", .grid = {1}}, InSpec{f32(32, 128)},
-      OutSpec{f32(32, 128)}, [](Ref in, Ref out) {
+      OutSpec{f32(32, 128)}, [](VmemRef in, VmemRef out) {
         EXPECT_EQ(in.dtype(), f32);
         EXPECT_EQ(out.dtype(), f32);
         EXPECT_EQ(in.shape(), f32(32, 128));
@@ -1272,7 +1446,7 @@ TEST(KilnTest, DTypeInTileAndScalarOps) {
 TEST(KilnTest, SimplifiedOverloadsAndBounds) {
   absl::StatusOr<Kernel> kernel = CreateKernel(
       GridSpec{.name = "simplified_ops", .grid = {1}}, InSpec{f32(32, 128)},
-      OutSpec{f32(32, 128)}, [](Ref in, Ref out) {
+      OutSpec{f32(32, 128)}, [](VmemRef in, VmemRef out) {
         Scalar zero = I32(0);
         Scalar ten = I32(10);
 
@@ -1316,13 +1490,13 @@ TEST(KilnTest, SimplifiedOverloadsAndBounds) {
         EXPECT_EQ(t_logic.dtype(), bool_);
 
         // Slicing with IndexArg and 0-arg operator().
-        Ref in_full = in();
+        VmemRef in_full = in();
         EXPECT_EQ(in_full.rank(), 2);
-        Ref in_slice = in(zero, all);
-        Ref in_ds = in(0, Slice(zero, 64));
+        VmemRef in_slice = in(zero, all);
+        VmemRef in_ds = in(0, Slice(zero, 64));
         EXPECT_EQ(in_slice.rank(), 1);
         EXPECT_EQ(in_ds.rank(), 1);
-        Ref in_2d = in(all, Slice(zero, 64));
+        VmemRef in_2d = in(all, Slice(zero, 64));
         EXPECT_EQ(in_2d.rank(), 2);
 
         // Tile modulo with Tile and Literal.
@@ -1380,7 +1554,7 @@ TEST(KilnTest, SimplifiedOverloadsAndBounds) {
     CHECK:         tpu.memref_slice %[[IN]][%{{.*}}, %[[ZERO]]] : memref<32x128xf32, #tpu.memory_space<vmem>> -> memref<32x64xf32, #tpu.memory_space<vmem>>
 
     // Tile modulo with a Tile or Literal on either side.
-    CHECK:         %[[IOTA:.*]] = tpu.iota {dimensions = array<i32: 1>} : vector<32x128xi32>
+    CHECK:         %[[IOTA:.*]] = tpu.iota {{[{<]}}dimensions = {{(array<i32: 1>|\[1\])}}{{[}>]}} : vector<32x128xi32>
     CHECK:         %[[C4:.*]] = arith.constant dense<4> : vector<32x128xi32>
     CHECK:         %[[MOD1:.*]] = arith.remsi %[[IOTA]], %[[C4]] : vector<32x128xi32>
     CHECK:         %[[PLUS1:.*]] = arith.addi %[[IOTA]], %{{.*}} : vector<32x128xi32>
@@ -1394,7 +1568,7 @@ TEST(KilnTest, UnsignedOperations) {
   absl::StatusOr<Kernel> kernel = CreateKernel(
       GridSpec{.name = "unsigned_ops", .grid = {1}}, InSpec{u32(32, 128)},
       InSpec{u32(32, 128)}, OutSpec{u32(32, 128)},
-      [](Ref in_a, Ref in_b, Ref out) {
+      [](VmemRef in_a, VmemRef in_b, VmemRef out) {
         Tile a = Load(in_a);
         Tile b = Load(in_b);
         EXPECT_TRUE(a.dtype().IsUnsigned());
@@ -1478,7 +1652,7 @@ TEST(KilnTest, UnsignedAndSignedCasts) {
   absl::StatusOr<Kernel> kernel = CreateKernel(
       GridSpec{.name = "unsigned_casts", .grid = {1}}, InSpec{f32(32, 128)},
       InSpec{u8(32, 128)}, InSpec{i8(32, 128)}, OutSpec{f32(32, 128)},
-      [](Ref in_f, Ref in_u8, Ref in_i8, Ref out) {
+      [](VmemRef in_f, VmemRef in_u8, VmemRef in_i8, VmemRef out) {
         Tile f = Load(in_f);
         Tile u = Load(in_u8);
         Tile i = Load(in_i8);
@@ -1520,7 +1694,7 @@ TEST(KilnTest, DynamicMemrefSliceSizesAndAll) {
   absl::StatusOr<Kernel> kernel = CreateKernel(
       GridSpec{.name = "dynamic_slices"},
       InSpec::Vmem(f32(kDynamic, kDynamic, 128)), OutSpec::Vmem(f32(8, 128)),
-      [](Ref dyn_in, Ref /*vmem_out*/) {
+      [](VmemRef dyn_in, VmemRef /*vmem_out*/) {
         EXPECT_EQ(dyn_in.memory_space(), MemorySpace::kVmem);
         EXPECT_FALSE(dyn_in.HasStaticShape());
         EXPECT_TRUE(dyn_in.IsDynamicDim(0));
@@ -1534,20 +1708,20 @@ TEST(KilnTest, DynamicMemrefSliceSizesAndAll) {
         Scalar aligned_cols = MultipleOf(static_cols, 128);
 
         // Identity slice on dynamic ref does not emit memref_slice.
-        Ref full = dyn_in(all, all, all);
+        VmemRef full = dyn_in(all, all, all);
         EXPECT_FALSE(full.HasStaticShape());
 
         // `all` on untiled leading dynamic dim 0 + dynamic slice size on dim 1
         // + `all` on static dim 2.
-        Ref sub_in = dyn_in(all, Slice(0, half_rows), all);
+        VmemRef sub_in = dyn_in(all, Slice(0, half_rows), all);
         EXPECT_TRUE(sub_in.IsDynamicDim(0));
         EXPECT_TRUE(sub_in.IsDynamicDim(1));
         EXPECT_FALSE(sub_in.IsDynamicDim(2));
         EXPECT_EQ(sub_in.rank(), 3);
 
         // Explicit dynamic slice sizes on all 3 dimensions.
-        Ref sub_in2 = dyn_in(Slice(0, batch), Slice(0, half_rows),
-                             Slice(0, aligned_cols));
+        VmemRef sub_in2 = dyn_in(Slice(0, batch), Slice(0, half_rows),
+                                 Slice(0, aligned_cols));
         EXPECT_TRUE(sub_in2.IsDynamicDim(0));
         EXPECT_TRUE(sub_in2.IsDynamicDim(1));
         EXPECT_TRUE(sub_in2.IsDynamicDim(2));
@@ -1578,9 +1752,9 @@ TEST(KilnTest, DynamicMemrefSliceSizesAndAll) {
 TEST(KilnTest, SteppedForScopedAllocaAndUnsignedBounds) {
   absl::StatusOr<Kernel> kernel = CreateKernel(
       GridSpec{.name = "stepped_for_alloca"}, InSpec::Vmem(f32(kDynamic, 128)),
-      OutSpec::Vmem(f32(8, 128)), [](Ref dyn_in, Ref vmem_out) {
-        Ref local_smem = AllocaSmem(i32(1));
-        Ref scalar_smem = AllocaSmem(i32());
+      OutSpec::Vmem(f32(8, 128)), [](VmemRef dyn_in, VmemRef vmem_out) {
+        SmemRef local_smem = AllocaSmem(i32(1));
+        SmemRef scalar_smem = AllocaSmem(i32());
         EXPECT_EQ(local_smem.memory_space(), MemorySpace::kSmem);
         EXPECT_TRUE(local_smem.HasStaticShape());
         EXPECT_EQ(scalar_smem.rank(), 0);
@@ -1590,9 +1764,9 @@ TEST(KilnTest, SteppedForScopedAllocaAndUnsignedBounds) {
         For(0, rows, 8, [&](Scalar r) {
           Scalar aligned_r = MultipleOf(r, 8);
           RunScoped([&] {
-            Ref scratch_tile = AllocaVmem(f32(8, 128));
+            VmemRef scratch_tile = AllocaVmem(f32(8, 128));
             EXPECT_EQ(scratch_tile.memory_space(), MemorySpace::kVmem);
-            Ref tile_in = dyn_in(Slice(aligned_r, 8), all);
+            VmemRef tile_in = dyn_in(Slice(aligned_r, 8), all);
             EXPECT_TRUE(tile_in.HasStaticShape());
             Store(scratch_tile, Load(tile_in));
             Store(vmem_out, Load(scratch_tile));
@@ -1634,7 +1808,7 @@ TEST(KilnTest, SteppedForScopedAllocaAndUnsignedBounds) {
 TEST(KilnDeathTest, DynamicShapeSliceAndAllocaValidationErrors) {
   absl::StatusOr<Kernel> kernel = CreateKernel(
       GridSpec{.name = "validation_errors"}, InSpec::Vmem(f32(kDynamic, 128)),
-      OutSpec::Vmem(f32(8, 128)), [](Ref dyn_in, Ref vmem_out) {
+      OutSpec::Vmem(f32(8, 128)), [](VmemRef dyn_in, VmemRef vmem_out) {
         Scalar rows = dyn_in.Dim(0);
         EXPECT_DEATH(static_cast<void>(Load(dyn_in)),
                      "Load\\(\\) requires a Ref with a static shape");
@@ -1671,23 +1845,25 @@ TEST(KilnDeathTest, DynamicShapeSliceAndAllocaValidationErrors) {
         EXPECT_DEATH(For(0, 16, I32(0), [](Scalar) {}),
                      "Loop step must be positive");
         EXPECT_DEATH(static_cast<void>(AllocaSmem(i32(0))),
-                     "Alloca\\(\\) requires static positive dimensions");
+                     "AllocaSmem\\(\\) requires static positive dimensions");
         EXPECT_DEATH(static_cast<void>(AllocaSmem(bf16())),
-                     "SMEM Alloca\\(\\) requires a 32-bit element type");
+                     "AllocaSmem\\(\\) requires a 32-bit element type");
         EXPECT_DEATH(static_cast<void>(AllocaSmem(i16(1))),
-                     "SMEM Alloca\\(\\) requires a 32-bit element type");
+                     "AllocaSmem\\(\\) requires a 32-bit element type");
+        EXPECT_DEATH(static_cast<void>(AllocaVmem(f32(0, 128))),
+                     "AllocaVmem\\(\\) requires static positive dimensions");
         EXPECT_DEATH(static_cast<void>(AllocaVmem(f32())),
-                     "VMEM Alloca\\(\\) requires at least a 1D shape");
+                     "AllocaVmem\\(\\) requires at least a 1D shape");
         EXPECT_DEATH(static_cast<void>(AllocaVmem(bool_(8, 128))),
-                     "VMEM Alloca\\(\\) does not support bool");
+                     "AllocaVmem\\(\\) does not support bool");
         EXPECT_DEATH(static_cast<void>(AllocaVmem(i64(8, 128))),
-                     "VMEM Alloca\\(\\) does not support bool \\(i1\\) or "
+                     "AllocaVmem\\(\\) does not support bool \\(i1\\) or "
                      "64-bit element types");
       });
   ASSERT_THAT(kernel, IsOk());
 
-  // Verify BuilderScope::~BuilderScope() restores tls_builder to nullptr after
-  // BuildKernel() completes.
+  // Verify BuilderScope::~BuilderScope() restores tls_builder_scope to nullptr
+  // after BuildKernel() completes.
   EXPECT_DEATH(static_cast<void>(I32(1)),
                "Kiln operations may only be called inside BuildKernel");
 }
@@ -1695,7 +1871,7 @@ TEST(KilnDeathTest, DynamicShapeSliceAndAllocaValidationErrors) {
 TEST(KilnTest, SemaphoreAndBarrierOperations) {
   absl::StatusOr<Kernel> kernel = CreateKernel(
       GridSpec{.name = "semaphores", .grid = {1}}, InSpec::Hbm(f32(8, 128)),
-      OutSpec::Vmem(f32(8, 128)), [](Ref, Ref) {
+      OutSpec::Vmem(f32(8, 128)), [](HbmRef, VmemRef) {
         Scalar dst_dev = (ProgramId(0) + 1) % 2;
 
         Semaphore dma_sem0 = AllocaDmaSemaphore();
@@ -1745,102 +1921,125 @@ TEST(KilnTest, SemaphoreAndBarrierOperations) {
   )"));
 }
 
-TEST(KilnDeathTest, HbmAndSemaphoreValidationErrors) {
-  // HBM input/output specs with index_map are rejected by BuildKernel.
-  absl::StatusOr<Kernel> bad_hbm_in_map = CreateKernel(
-      GridSpec{.name = "bad_hbm_in", .grid = {1}},
-      InSpec{f32(8, 128), IndexMap([] { return IndexIndices{0, 0}; }),
-             MemorySpace::kHbm},
-      OutSpec::Vmem(f32(8, 128)), [](Ref, Ref) {});
-  EXPECT_THAT(bad_hbm_in_map,
+TEST(KilnTest, HbmInSpecWithIndexMapIsRejected) {
+  EXPECT_THAT(CreateKernel(
+                  GridSpec{.name = "bad_hbm_in", .grid = {1}},
+                  BasicBlockSpec<BlockRole::kIn, MemorySpace::kHbm>{
+                      f32(8, 128), IndexMap([] { return IndexIndices{0, 0}; })},
+                  OutSpec::Vmem(f32(8, 128)), [](HbmRef, VmemRef) {}),
               StatusIs(error::kInvalidArgument,
                        HasSubstr("HBM operands do not support index_map")));
+}
 
-  absl::StatusOr<Kernel> bad_hbm_out_map = CreateKernel(
-      GridSpec{.name = "bad_hbm_out", .grid = {1}}, InSpec::Vmem(f32(8, 128)),
-      OutSpec{f32(8, 128), IndexMap([] { return IndexIndices{0, 0}; }),
-              MemorySpace::kHbm},
-      [](Ref, Ref) {});
-  EXPECT_THAT(bad_hbm_out_map,
+TEST(KilnTest, HbmOutSpecWithIndexMapIsRejected) {
+  EXPECT_THAT(CreateKernel(
+                  GridSpec{.name = "bad_hbm_out", .grid = {1}},
+                  InSpec::Vmem(f32(8, 128)),
+                  BasicBlockSpec<BlockRole::kOut, MemorySpace::kHbm>{
+                      f32(8, 128), IndexMap([] { return IndexIndices{0, 0}; })},
+                  [](VmemRef, HbmRef) {}),
               StatusIs(error::kInvalidArgument,
                        HasSubstr("HBM operands do not support index_map")));
+}
 
-  absl::StatusOr<Kernel> bad_grid_free_map = CreateKernel(
-      GridSpec{.name = "bad_grid_free_map"},
-      InSpec{f32(8, 128), IndexMap([] { return IndexIndices{0, 0}; })},
-      OutSpec::Vmem(f32(8, 128)), [](Ref, Ref) {});
+TEST(KilnTest, IndexMapWithoutGridIsRejected) {
   EXPECT_THAT(
-      bad_grid_free_map,
+      CreateKernel(
+          GridSpec{.name = "bad_grid_free_map"},
+          InSpec{f32(8, 128), IndexMap([] { return IndexIndices{0, 0}; })},
+          OutSpec::Vmem(f32(8, 128)), [](VmemRef, VmemRef) {}),
       StatusIs(error::kInvalidArgument,
                HasSubstr("index_map windowing requires a non-empty grid")));
+}
 
-  absl::StatusOr<Kernel> bad_hbm_scratch = CreateKernel(
-      GridSpec{.name = "bad_hbm_scratch", .grid = {1}},
-      InSpec::Vmem(f32(8, 128)), OutSpec::Vmem(f32(8, 128)),
-      ScratchSpec{f32(8, 128), MemorySpace::kHbm}, [](Ref, Ref, Ref) {});
-  EXPECT_THAT(bad_hbm_scratch,
-              StatusIs(error::kInvalidArgument,
-                       HasSubstr("Scratch operands cannot use HBM")));
+TEST(KilnDeathTest, HbmRefCannotBeUsedAsVmemRef) {
+  EXPECT_THAT(
+      CreateKernel(GridSpec{.name = "hbm_as_vmem_errors"},
+                   InSpec::Hbm(f32(kDynamic, 128)), OutSpec::Vmem(f32(8, 128)),
+                   [](HbmRef hbm_in, VmemRef) {
+                     HbmRef hbm_tile = hbm_in(Slice(0, 8), all);
+                     const Ref erased_hbm = hbm_tile;
+                     EXPECT_EQ(erased_hbm.memory_space(), MemorySpace::kHbm);
+                     EXPECT_DEATH(static_cast<void>(erased_hbm.As<VmemRef>()),
+                                  "Ref is in HBM but its type requires VMEM");
+                   }),
+      IsOk());
+}
 
-  absl::StatusOr<Kernel> kernel = CreateKernel(
-      GridSpec{.name = "hbm_sem_errors"}, InSpec::Hbm(f32(kDynamic, 128)),
-      OutSpec::Vmem(f32(8, 128)), [](Ref hbm_in, Ref vmem_out) {
-        SemaphoreArray dma_sems = AllocaDmaSemaphore({2});
-        SemaphoreArray reg_sems = AllocaSemaphore({2, 3});
-        Semaphore reg_sem = AllocaSemaphore();
-        EXPECT_EQ(reg_sems.rank(), 2);
-        EXPECT_FALSE(reg_sems.is_dma());
-        Ref hbm_tile = hbm_in(Slice(0, 8), all);
-        EXPECT_DEATH(static_cast<void>(
-                         Alloca(ScratchSpec{f32(8, 128), MemorySpace::kHbm})),
-                     "Cannot allocate HBM in a kernel");
-        EXPECT_DEATH(
-            static_cast<void>(Alloca(ScratchSpec{f32(0), MemorySpace::kHbm})),
-            "Cannot allocate HBM in a kernel");
-        EXPECT_DEATH(static_cast<void>(AllocaDmaSemaphore(Dimensions{})),
-                     "AllocaDmaSemaphore\\(shape\\) requires a non-empty "
-                     "shape");
-        EXPECT_DEATH(static_cast<void>(AllocaSemaphore(Dimensions{})),
-                     "AllocaSemaphore\\(shape\\) requires a non-empty shape");
-        EXPECT_DEATH(static_cast<void>(AllocaDmaSemaphore({0})),
-                     "AllocaDmaSemaphore\\(shape\\) requires static positive "
-                     "dimensions");
-        EXPECT_DEATH(static_cast<void>(AllocaSemaphore({-1})),
-                     "AllocaSemaphore\\(shape\\) requires static positive "
-                     "dimensions");
-        EXPECT_DEATH(static_cast<void>(reg_sems(0)),
-                     "SemaphoreArray indexing requires exactly 2 indices");
-        EXPECT_DEATH(static_cast<void>(dma_sems(0, 0)),
-                     "SemaphoreArray indexing requires exactly 1 indices");
-        EXPECT_DEATH(static_cast<void>(dma_sems(2)),
-                     "Slice offset \\+ size must not exceed dimension size");
-        EXPECT_DEATH(static_cast<void>(Load(hbm_tile)),
-                     "Load\\(\\) requires a VMEM ref");
-        EXPECT_DEATH(Store(hbm_tile, Load(vmem_out)),
-                     "Store\\(\\) of a Tile requires a VMEM ref");
-        EXPECT_DEATH(static_cast<void>(Load(hbm_in)),
-                     "Load\\(\\) requires a Ref with a static shape");
-        EXPECT_DEATH(dma_sems(0).Signal(1),
-                     "Semaphore::Signal\\(\\) requires a regular semaphore");
-        EXPECT_DEATH(dma_sems(0).Wait(1),
-                     "Semaphore::Wait\\(\\) requires a regular semaphore");
-        EXPECT_DEATH(reg_sem.Signal(0),
-                     "Semaphore::Signal\\(\\) amount must be positive");
-        EXPECT_DEATH(reg_sem.Wait(0),
-                     "Semaphore::Wait\\(\\) amount must be positive");
-        EXPECT_DEATH(reg_sem.Signal(1, {.device_id = -1}),
-                     "SemaphoreSignalOptions::device_id must be non-negative");
-        EXPECT_DEATH(reg_sem.Signal(I32(1).AsType(i64)),
-                     "Semaphore::Signal\\(\\) amount scalar bitwidth must be "
-                     "<= 32");
-      });
-  ASSERT_THAT(kernel, IsOk());
+TEST(KilnDeathTest, SemaphoreAllocationRequiresStaticPositiveShape) {
+  EXPECT_THAT(
+      CreateKernel(
+          GridSpec{.name = "sem_alloc_errors"}, InSpec::Vmem(f32(8, 128)),
+          OutSpec::Vmem(f32(8, 128)),
+          [](VmemRef, VmemRef) {
+            EXPECT_DEATH(static_cast<void>(AllocaDmaSemaphore(Dimensions{})),
+                         "AllocaDmaSemaphore\\(shape\\) requires a non-empty "
+                         "shape");
+            EXPECT_DEATH(static_cast<void>(AllocaSemaphore(Dimensions{})),
+                         "AllocaSemaphore\\(shape\\) requires a non-empty "
+                         "shape");
+            EXPECT_DEATH(static_cast<void>(AllocaDmaSemaphore({0})),
+                         "AllocaDmaSemaphore\\(shape\\) requires static "
+                         "positive dimensions");
+            EXPECT_DEATH(static_cast<void>(AllocaSemaphore({-1})),
+                         "AllocaSemaphore\\(shape\\) requires static positive "
+                         "dimensions");
+          }),
+      IsOk());
+}
+
+TEST(KilnDeathTest, SemaphoreArrayIndexingIsValidated) {
+  EXPECT_THAT(
+      CreateKernel(
+          GridSpec{.name = "sem_index_errors"}, InSpec::Vmem(f32(8, 128)),
+          OutSpec::Vmem(f32(8, 128)),
+          [](VmemRef, VmemRef) {
+            SemaphoreArray dma_sems = AllocaDmaSemaphore({2});
+            SemaphoreArray reg_sems = AllocaSemaphore({2, 3});
+            EXPECT_EQ(reg_sems.rank(), 2);
+            EXPECT_FALSE(reg_sems.is_dma());
+            EXPECT_DEATH(static_cast<void>(reg_sems(0)),
+                         "SemaphoreArray indexing requires exactly 2 indices");
+            EXPECT_DEATH(static_cast<void>(dma_sems(0, 0)),
+                         "SemaphoreArray indexing requires exactly 1 indices");
+            EXPECT_DEATH(static_cast<void>(dma_sems(2)),
+                         "Slice offset \\+ size must not exceed "
+                         "dimension size");
+          }),
+      IsOk());
+}
+
+TEST(KilnDeathTest, SemaphoreSignalAndWaitAreValidated) {
+  EXPECT_THAT(
+      CreateKernel(
+          GridSpec{.name = "sem_signal_wait_errors"}, InSpec::Vmem(f32(8, 128)),
+          OutSpec::Vmem(f32(8, 128)),
+          [](VmemRef, VmemRef) {
+            SemaphoreArray dma_sems = AllocaDmaSemaphore({2});
+            Semaphore reg_sem = AllocaSemaphore();
+            EXPECT_DEATH(
+                dma_sems(0).Signal(1),
+                "Semaphore::Signal\\(\\) requires a regular semaphore");
+            EXPECT_DEATH(dma_sems(0).Wait(1),
+                         "Semaphore::Wait\\(\\) requires a regular semaphore");
+            EXPECT_DEATH(reg_sem.Signal(0),
+                         "Semaphore::Signal\\(\\) amount must be positive");
+            EXPECT_DEATH(reg_sem.Wait(0),
+                         "Semaphore::Wait\\(\\) amount must be positive");
+            EXPECT_DEATH(
+                reg_sem.Signal(1, {.device_id = -1}),
+                "SemaphoreSignalOptions::device_id must be non-negative");
+            EXPECT_DEATH(reg_sem.Signal(I32(1).AsType(i64)),
+                         "Semaphore::Signal\\(\\) amount scalar bitwidth must "
+                         "be <= 32");
+          }),
+      IsOk());
 }
 
 TEST(KilnTest, DmaOperations) {
   absl::StatusOr<Kernel> kernel = CreateKernel(
       GridSpec{.name = "dma_ops"}, InSpec::Hbm(f32(8, 128)),
-      OutSpec::Vmem(f32(8, 128)), [](Ref hbm_in, Ref vmem_out) {
+      OutSpec::Vmem(f32(8, 128)), [](HbmRef hbm_in, VmemRef vmem_out) {
         Scalar dev_id = DeviceId();
         Semaphore sem = AllocaDmaSemaphore();
         Semaphore send_sem = AllocaDmaSemaphore();
@@ -1906,16 +2105,16 @@ TEST(KilnTest, DmaOperations) {
     CHECK:         %[[SEND_SEM:.*]] = tpu.sem_alloc : memref<!tpu.dma_semaphore, #tpu.memory_space<semaphore_mem>>
     CHECK:         %[[RECV_SEM:.*]] = tpu.sem_alloc : memref<!tpu.dma_semaphore, #tpu.memory_space<semaphore_mem>>
     CHECK:         tpu.enqueue_dma source(%[[HBM]] : {{.*}}) target(%[[VMEM]] : {{.*}}) target_semaphore(%[[SEM]] : {{.*}})
-    CHECK:         tpu.wait_dma source(%[[HBM]] : {{.*}}) target(%[[VMEM]] : {{.*}}) target_semaphore(%[[SEM]] : {{.*}}) {wait_target = true}
-    CHECK:         tpu.enqueue_dma source(%[[VMEM]] : {{.*}}) target(%[[HBM]] : {{.*}}) target_semaphore(%[[SEM]] : {{.*}}) {priority = 1 : i32}
-    CHECK:         tpu.wait_dma source(%[[VMEM]] : {{.*}}) target(%[[HBM]] : {{.*}}) target_semaphore(%[[SEM]] : {{.*}}) {priority = 1 : i32, wait_target = true}
+    CHECK:         tpu.wait_dma source(%[[HBM]] : {{.*}}) target(%[[VMEM]] : {{.*}}) target_semaphore(%[[SEM]] : {{.*}}) {{[{<]}}wait_target = true{{[}>]}}
+    CHECK:         tpu.enqueue_dma source(%[[VMEM]] : {{.*}}) target(%[[HBM]] : {{.*}}) target_semaphore(%[[SEM]] : {{.*}}) {{[{<]}}priority = 1{{( : i32)?}}{{[}>]}}
+    CHECK:         tpu.wait_dma source(%[[VMEM]] : {{.*}}) target(%[[HBM]] : {{.*}}) target_semaphore(%[[SEM]] : {{.*}}) {{[{<]}}priority = 1{{( : i32)?}}, wait_target = true{{[}>]}}
     CHECK:         tpu.enqueue_dma source(%[[HBM]] : {{.*}}) target(%[[VMEM]] : {{.*}}) source_semaphore(%[[SEND_SEM]] : {{.*}}) target_semaphore(%[[RECV_SEM]] : {{.*}}) device_id(%[[DEV]])
-    CHECK:         tpu.wait_dma source(%[[HBM]] : {{.*}}) target(%[[VMEM]] : {{.*}}) source_semaphore(%[[SEND_SEM]] : {{.*}}) target_semaphore(%[[RECV_SEM]] : {{.*}}) device_id(%[[DEV]]) {wait_target = false}
-    CHECK:         tpu.wait_dma source(%[[HBM]] : {{.*}}) target(%[[VMEM]] : {{.*}}) source_semaphore(%[[SEND_SEM]] : {{.*}}) target_semaphore(%[[RECV_SEM]] : {{.*}}) device_id(%[[DEV]]) {wait_target = true}
+    CHECK:         tpu.wait_dma source(%[[HBM]] : {{.*}}) target(%[[VMEM]] : {{.*}}) source_semaphore(%[[SEND_SEM]] : {{.*}}) target_semaphore(%[[RECV_SEM]] : {{.*}}) device_id(%[[DEV]]) {{[{<]}}wait_target = false{{[}>]}}
+    CHECK:         tpu.wait_dma source(%[[HBM]] : {{.*}}) target(%[[VMEM]] : {{.*}}) source_semaphore(%[[SEND_SEM]] : {{.*}}) target_semaphore(%[[RECV_SEM]] : {{.*}}) device_id(%[[DEV]]) {{[{<]}}wait_target = true{{[}>]}}
     CHECK:         %[[CORE0:.*]] = arith.constant 0 : i32
     CHECK:         tpu.enqueue_dma source(%[[HBM]] : {{.*}}) target(%[[VMEM]] : {{.*}}) source_semaphore(%[[SEND_SEM]] : {{.*}}) target_semaphore(%[[RECV_SEM]] : {{.*}}) device_id(%[[DEV]]) core_id(%[[CORE0]])
-    CHECK:         tpu.wait_dma source(%[[HBM]] : {{.*}}) target(%[[VMEM]] : {{.*}}) source_semaphore(%[[SEND_SEM]] : {{.*}}) target_semaphore(%[[RECV_SEM]] : {{.*}}) device_id(%[[DEV]]) core_id(%[[CORE0]]) {wait_target = false}
-    CHECK:         tpu.wait_dma source(%[[HBM]] : {{.*}}) target(%[[VMEM]] : {{.*}}) source_semaphore(%[[SEND_SEM]] : {{.*}}) target_semaphore(%[[RECV_SEM]] : {{.*}}) device_id(%[[DEV]]) core_id(%[[CORE0]]) {wait_target = true}
+    CHECK:         tpu.wait_dma source(%[[HBM]] : {{.*}}) target(%[[VMEM]] : {{.*}}) source_semaphore(%[[SEND_SEM]] : {{.*}}) target_semaphore(%[[RECV_SEM]] : {{.*}}) device_id(%[[DEV]]) core_id(%[[CORE0]]) {{[{<]}}wait_target = false{{[}>]}}
+    CHECK:         tpu.wait_dma source(%[[HBM]] : {{.*}}) target(%[[VMEM]] : {{.*}}) source_semaphore(%[[SEND_SEM]] : {{.*}}) target_semaphore(%[[RECV_SEM]] : {{.*}}) device_id(%[[DEV]]) core_id(%[[CORE0]]) {{[{<]}}wait_target = true{{[}>]}}
     CHECK:         %[[REG_SEM:.*]] = tpu.sem_alloc : memref<!tpu.semaphore, #tpu.memory_space<semaphore_mem>>
     CHECK:         tpu.enqueue_dma source(%[[HBM]] : {{.*}}) target(%[[VMEM]] : {{.*}}) target_semaphore(%[[REG_SEM]] : {{.*}})
     CHECK:         %[[WAIT_AMT:.*]] = arith.constant 1 : i32
@@ -1935,7 +2134,7 @@ TEST(KilnTest, SyncCopyScopesItsSemaphore) {
   absl::StatusOr<Kernel> kernel = CreateKernel(
       GridSpec{.name = "sync_copy"}, InSpec::Hbm(f32(8, 128)),
       OutSpec::Vmem(f32(8, 128)),
-      [](Ref hbm_in, Ref vmem_out) { SyncCopy(hbm_in, vmem_out); });
+      [](HbmRef hbm_in, VmemRef vmem_out) { SyncCopy(hbm_in, vmem_out); });
   EXPECT_THAT(kernel, IsOkAndMatchesIr(R"(
     CHECK:      "tpu.region"() ({
     CHECK-NEXT:   %[[SEM:.*]] = tpu.sem_alloc : memref<!tpu.dma_semaphore
@@ -1950,14 +2149,14 @@ TEST(KilnTest, UnboundedDynamicDma) {
       GridSpec{.name = "unbounded_dynamic_dma"},
       InSpec::Hbm(f32(kDynamic, 128)), OutSpec::Hbm(f32(kDynamic, 128)),
       ScratchSpec::Vmem(f32(8, 128)),
-      [](Ref hbm_in, Ref hbm_out, Ref vmem_buf) {
+      [](HbmRef hbm_in, HbmRef hbm_out, VmemRef vmem_buf) {
         Semaphore in_sem = AllocaDmaSemaphore();
         Semaphore out_sem = AllocaDmaSemaphore();
         Scalar rows = hbm_in.Dim(0);
         For(0, rows, 8, [&](Scalar r) {
           Scalar aligned_r = MultipleOf(r, 8);
-          Ref in_tile = hbm_in(Slice(aligned_r, 8), all);
-          Ref out_tile = hbm_out(Slice(aligned_r, 8), all);
+          HbmRef in_tile = hbm_in(Slice(aligned_r, 8), all);
+          HbmRef out_tile = hbm_out(Slice(aligned_r, 8), all);
           AsyncCopy(in_tile, vmem_buf, in_sem).Wait();
           Store(vmem_buf, Load(vmem_buf) + 1.0f);
           AsyncCopy(vmem_buf, out_tile, out_sem).Wait();
@@ -1976,12 +2175,12 @@ TEST(KilnTest, UnboundedDynamicDma) {
     CHECK:           %[[IN_TILE:.*]] = tpu.memref_slice %[[HBM_IN]][%[[ALIGNED_R]], %{{.*}}] : memref<?x128xf32, #tpu.memory_space<hbm>> -> memref<8x128xf32, #tpu.memory_space<hbm>>
     CHECK:           %[[OUT_TILE:.*]] = tpu.memref_slice %[[HBM_OUT]][%[[ALIGNED_R]], %{{.*}}] : memref<?x128xf32, #tpu.memory_space<hbm>> -> memref<8x128xf32, #tpu.memory_space<hbm>>
     CHECK:           tpu.enqueue_dma source(%[[IN_TILE]] : {{.*}}) target(%[[VMEM_BUF]] : {{.*}}) target_semaphore(%[[IN_SEM]] : {{.*}})
-    CHECK:           tpu.wait_dma source(%[[IN_TILE]] : {{.*}}) target(%[[VMEM_BUF]] : {{.*}}) target_semaphore(%[[IN_SEM]] : {{.*}}) {wait_target = true}
+    CHECK:           tpu.wait_dma source(%[[IN_TILE]] : {{.*}}) target(%[[VMEM_BUF]] : {{.*}}) target_semaphore(%[[IN_SEM]] : {{.*}}) {{[{<]}}wait_target = true{{[}>]}}
     CHECK:           %[[V:.*]] = vector.load %[[VMEM_BUF]]
     CHECK:           %[[V_PLUS_1:.*]] = arith.addf %[[V]], %{{.*}} : vector<8x128xf32>
     CHECK:           tpu.vector_store %[[VMEM_BUF]][%{{.*}}, %{{.*}}], %[[V_PLUS_1]]
     CHECK:           tpu.enqueue_dma source(%[[VMEM_BUF]] : {{.*}}) target(%[[OUT_TILE]] : {{.*}}) target_semaphore(%[[OUT_SEM]] : {{.*}})
-    CHECK:           tpu.wait_dma source(%[[VMEM_BUF]] : {{.*}}) target(%[[OUT_TILE]] : {{.*}}) target_semaphore(%[[OUT_SEM]] : {{.*}}) {wait_target = true}
+    CHECK:           tpu.wait_dma source(%[[VMEM_BUF]] : {{.*}}) target(%[[OUT_TILE]] : {{.*}}) target_semaphore(%[[OUT_SEM]] : {{.*}}) {{[{<]}}wait_target = true{{[}>]}}
     CHECK:         }
   )"));
 }
@@ -1989,12 +2188,12 @@ TEST(KilnTest, UnboundedDynamicDma) {
 TEST(KilnDeathTest, DmaValidationErrors) {
   absl::StatusOr<Kernel> kernel = CreateKernel(
       GridSpec{.name = "dma_errors"}, InSpec::Hbm(f32(kDynamic, 128)),
-      OutSpec::Vmem(f32(8, 128)), [](Ref hbm_in, Ref vmem_out) {
+      OutSpec::Vmem(f32(8, 128)), [](HbmRef hbm_in, VmemRef vmem_out) {
         SemaphoreArray dma_sems = AllocaDmaSemaphore({2});
         Semaphore reg_sem = AllocaSemaphore();
-        Ref hbm_tile = hbm_in(Slice(0, 8), all);
-        Ref vmem_i32 = AllocaVmem(i32(8, 128));
-        Ref smem_f32 = AllocaSmem(f32(8, 128));
+        HbmRef hbm_tile = hbm_in(Slice(0, 8), all);
+        VmemRef vmem_i32 = AllocaVmem(i32(8, 128));
+        SmemRef smem_f32 = AllocaSmem(f32(8, 128));
 
         EXPECT_DEATH(AsyncCopy(hbm_tile, vmem_i32, dma_sems(0)),
                      "DMA source and destination Refs must have matching "
@@ -2065,9 +2264,9 @@ TEST(KilnTest, CanonicalizeFoldsMemRefSliceAndEliminatesDeadOps) {
   absl::StatusOr<Kernel> kernel =
       CreateKernel(GridSpec{.name = "canonicalize_smem", .grid = {4}},
                    ScalarPrefetchSpec{i32(4)}, OutSpec::Smem(i32(4, 8)),
-                   [](Ref idx, Ref out) {
+                   [](SmemRef idx, SmemRef out) {
                      Scalar i = ProgramId(0);
-                     Scalar v = LoadScalar(idx(i));
+                     Scalar v = Load(idx(i));
                      Store(out(i, 0), v);
                    });
   ASSERT_THAT(kernel, IsOk());
@@ -2124,10 +2323,10 @@ TEST(KilnTest, ConstructsShapesFromDTypeCallOperator) {
 TEST(KilnTest, RefAtSlicesWithAListOfIndexers) {
   absl::StatusOr<Kernel> kernel = CreateKernel(
       GridSpec{.name = "ref_at", .grid = {1}}, InSpec::Vmem(f32(4, 32, 128)),
-      OutSpec::Vmem(f32(8, 128)), [&](Ref in, Ref out) {
+      OutSpec::Vmem(f32(8, 128)), [&](VmemRef in, VmemRef out) {
         // The same view as `in(1, Slice(8, 8), all)`.
         const llvm::SmallVector<Indexer, 3> indexers = {1, Slice(8, 8), all};
-        Ref view = in.At(indexers);
+        VmemRef view = in.At(indexers);
         EXPECT_THAT(view.dims(), ElementsAre(8, 128));
         Store(out, Load(view));
       });
@@ -2146,8 +2345,8 @@ TEST(KilnTest, RefCopyAssignmentRebinds) {
       CreateKernel(GridSpec{.name = "ref_rebind", .grid = {1}},
                    InSpec::Vmem(f32(8, 128)), OutSpec::Vmem(f32(8, 128)),
                    ScratchSpec::Vmem(f32(8, 128)),
-                   [](Ref in, Ref out, Ref scratch) {
-                     Ref dst = scratch;
+                   [](VmemRef in, VmemRef out, VmemRef scratch) {
+                     VmemRef dst = scratch;
                      dst = out;
                      Store(dst, Load(in));
                    }),
@@ -2169,7 +2368,7 @@ TEST(KilnTest, RefCopyAssignmentRebinds) {
 TEST(KilnTest, GridFreeKernelOmitsGridAttributes) {
   EXPECT_THAT(CreateKernel(GridSpec{.name = "grid_free"},
                            InSpec::Hbm(f32(8, 128)), OutSpec::Vmem(f32(8, 128)),
-                           [](Ref in, Ref out) {
+                           [](HbmRef in, VmemRef out) {
                              AsyncCopy(in, out, AllocaDmaSemaphore()).Wait();
                            }),
               IsOkAndMatchesIr(R"(
@@ -2186,7 +2385,7 @@ TEST(KilnTest, EmitPipeline) {
   absl::StatusOr<Kernel> kernel = CreateKernel(
       GridSpec{.name = "emit_pipeline_inputs"}, InSpec::Hbm(f32(kDynamic)),
       OutSpec::Hbm(f32(kBlock)), ScratchSpec::Vmem(f32(kBlock)),
-      [&](Ref in, Ref out, Ref acc) {
+      [&](HbmRef in, HbmRef out, VmemRef acc) {
         PipelineOperand input{
             .hbm = in, .block_shape = {kBlock}, .region = [](Scalar step) {
               return BlockRegion{.offsets = {step * kBlock}, .sizes = {kBlock}};
@@ -2194,7 +2393,7 @@ TEST(KilnTest, EmitPipeline) {
         Store(acc, Zeros(acc.shape()));
         EmitPipeline(0, in.Dim(0) / kBlock, {std::move(input)},
                      /*outputs=*/{}, [&](const PipelineStep& s) {
-                       Store(acc, Load(acc) + Load(s.inputs[0]));
+                       Store(acc, Load(acc) + Load(s.inputs[0].ref));
                      });
         AsyncCopy(acc, out, AllocaDmaSemaphore()).Wait();
       });
@@ -2234,14 +2433,15 @@ TEST(KilnTest, EmitPipelineWithTwo2dInputs) {
   absl::StatusOr<Kernel> kernel = CreateKernel(
       GridSpec{.name = "emit_pipeline_2d"}, InSpec::Hbm(f32(kDynamic, 128)),
       InSpec::Hbm(f32(kDynamic, 128)), OutSpec::Hbm(f32(8, 128)),
-      ScratchSpec::Vmem(f32(8, 128)), [&](Ref a, Ref b, Ref out, Ref acc) {
+      ScratchSpec::Vmem(f32(8, 128)),
+      [&](HbmRef a, HbmRef b, HbmRef out, VmemRef acc) {
         Store(acc, Zeros(acc.shape()));
         EmitPipeline(0, a.Dim(0) / 8,
                      {{.hbm = a, .block_shape = {8, 128}, .region = rows},
                       {.hbm = b, .block_shape = {8, 128}, .region = rows}},
                      /*outputs=*/{}, [&](const PipelineStep& s) {
-                       Store(acc,
-                             Load(acc) + Load(s.inputs[0]) * Load(s.inputs[1]));
+                       Store(acc, Load(acc) + Load(s.inputs[0].ref) *
+                                                  Load(s.inputs[1].ref));
                      });
         AsyncCopy(acc, out, AllocaDmaSemaphore()).Wait();
       });
@@ -2290,13 +2490,13 @@ TEST(KilnTest, EmitPipelineWithOutputs) {
       CreateKernel(
           GridSpec{.name = "emit_pipeline_io"}, InSpec::Hbm(f32(kDynamic)),
           OutSpec::Hbm(f32(kDynamic)),
-          [&](Ref in, Ref out) {
+          [&](HbmRef in, HbmRef out) {
             EmitPipeline(
                 0, in.Dim(0) / kBlock,
                 {{.hbm = in, .block_shape = {kBlock}, .region = block}},
                 {{.hbm = out, .block_shape = {kBlock}, .region = block}},
                 [&](const PipelineStep& s) {
-                  Store(s.outputs[0], Load(s.inputs[0]) * 2.0);
+                  Store(s.outputs[0].ref, Load(s.inputs[0].ref) * 2.0);
                 });
           }),
       IsOkAndMatchesIr(R"(
@@ -2313,12 +2513,12 @@ TEST(KilnTest, EmitPipelineWithOutputs) {
     CHECK:               scf.if
     CHECK:                 tpu.enqueue_dma source(%{{.*}} : memref<128xf32, #tpu.memory_space<hbm>>)
     CHECK:               tpu.wait_dma source(%{{.*}} : memref<128xf32, #tpu.memory_space<hbm>>)
+    CHECK:               %[[IN_SLOT:.*]] = tpu.memref_slice %[[IN_SLOTS]]
     CHECK:               scf.if
     CHECK-DAG:             %[[REUSE_SRC:.*]] = tpu.memref_slice %[[OUT_SLOTS]]
     CHECK-DAG:             %[[REUSE_DST:.*]] = tpu.memref_slice %[[OUT]]
     CHECK-DAG:             tpu.memref_slice %[[OUT_SEMS]]
     CHECK:                 tpu.wait_dma source(%[[REUSE_SRC]] : {{.*}}) target(%[[REUSE_DST]] : {{.*}})
-    CHECK:               %[[IN_SLOT:.*]] = tpu.memref_slice %[[IN_SLOTS]]
     CHECK:               %[[OUT_SLOT:.*]] = tpu.memref_slice %[[OUT_SLOTS]]
     CHECK:               vector.load %[[IN_SLOT]]
     CHECK:               arith.mulf
@@ -2335,6 +2535,149 @@ TEST(KilnTest, EmitPipelineWithOutputs) {
     CHECK:             tpu.memref_slice %[[OUT_SEMS]]
     CHECK:             tpu.wait_dma source({{.*}}vmem>>) target({{.*}}hbm>>)
     CHECK:           tpu.yield
+  )"));
+}
+
+TEST(KilnTest, EmitPipelineContraction) {
+  auto rows = [](Scalar i) {
+    return BlockRegion{.offsets = {i * 8, 0}, .sizes = {8, 128}};
+  };
+  absl::StatusOr<Kernel> kernel = CreateKernel(
+      GridSpec{.name = "pipeline_contraction"}, InSpec::Hbm(f32(kDynamic, 128)),
+      OutSpec::Hbm(f32(kDynamic, 128)), [&](HbmRef in, HbmRef out) {
+        EmitPipeline(0, in.Dim(0) / 8,
+                     {{.hbm = in, .block_shape = {8, 128}, .region = rows}},
+                     {{.hbm = out,
+                       .block_shape = {8, 128},
+                       .block_index = [](Scalar step) { return step / 2; },
+                       .region = rows}},
+                     [&](const PipelineStep& s) {
+                       VmemRef acc = s.outputs[0].ref;
+                       If(s.outputs[0].is_first_step,
+                          [&] { Store(acc, Zeros(acc.shape())); });
+                       Store(acc, Load(acc) + Load(s.inputs[0].ref));
+                     });
+      });
+
+  // One block index is computed per step and carried to the next. A new block
+  // flips the slot and waits for that slot's previous copy out; the body writes
+  // the slot, which is copied out on the block's last step. The last two copies
+  // are waited for after the loop.
+  EXPECT_THAT(kernel, IsOkAndMatchesIr(R"(
+    CHECK-LABEL: func.func @pipeline_contraction(
+    CHECK:           memref.alloca() : memref<2x8x128xf32, #tpu.memory_space<vmem>>
+    CHECK:           %[[OUT_SLOTS:.*]] = memref.alloca() : memref<2x8x128xf32, #tpu.memory_space<vmem>>
+    CHECK:             scf.for {{.*}} iter_args(%[[BLOCK:.*]] = %{{.*}}, %[[SLOT:.*]] = %{{.*}}, %[[CUR:.*]] = %{{.*}}, %{{.*}} = %{{.*}}, %{{.*}} = %{{.*}}) -> (i32, i32, i32, i32, i32)
+    CHECK-NOT:           arith.divsi
+    CHECK:               %[[NEXT:.*]] = arith.divsi
+    CHECK-NOT:           arith.divsi
+    CHECK:               %[[CHANGED:.*]] = arith.cmpi ne, %[[CUR]], %[[BLOCK]]
+    CHECK:               %[[NEW_SLOT:.*]] = arith.select %[[CHANGED]], %{{.*}}, %[[SLOT]]
+    CHECK:               scf.if
+    CHECK:                 tpu.wait_dma source({{.*}}vmem>>) target({{.*}}hbm>>)
+    CHECK:               tpu.memref_slice %[[OUT_SLOTS]][%[[NEW_SLOT]],
+    CHECK:               arith.cmpi ne, %[[NEXT]], %[[CUR]]
+    CHECK:               tpu.vector_store
+    CHECK:               scf.if
+    CHECK:                 tpu.enqueue_dma source({{.*}}vmem>>) target({{.*}}hbm>>)
+    CHECK:               scf.yield %[[CUR]], %[[NEW_SLOT]], %[[NEXT]],
+    CHECK:             scf.if
+    CHECK:               tpu.wait_dma
+    CHECK:             tpu.wait_dma
+  )"));
+}
+
+TEST(KilnTest, IfReturnsValues) {
+  EXPECT_THAT(
+      CreateKernel(
+          GridSpec{.name = "if_returns_values", .grid = {2}},
+          InSpec{f32(8, 128)}, OutSpec{f32(8, 128)},
+          [](VmemRef in, VmemRef out) {
+            Scalar cond = ProgramId(0) == 0;
+            // `absl::FunctionRef<void()>` binds to the void overload.
+            absl::FunctionRef<void()> noop = +[]() {};
+            If(cond, noop, noop);
+            Scalar scale =
+                If(cond, [] { return F32(2.0f); }, [] { return F32(0.5f); });
+            auto [offset, val] = If(
+                cond, [&] { return std::tuple{F32(1.0f), Load(in) * scale}; },
+                [&] { return std::tuple{F32(-1.0f), Zeros(f32(8, 128))}; });
+            Store(out, val + offset);
+          }),
+      IsOkAndMatchesIr(R"(
+    CHECK-LABEL: func.func @if_returns_values
+    CHECK:         scf.if %{{.*}} {
+    CHECK:         } else {
+    CHECK:         }
+    CHECK:         %[[SCALE:.*]] = scf.if %{{.*}} -> (f32) {
+    CHECK:           scf.yield %{{.*}} : f32
+    CHECK:         } else {
+    CHECK:           scf.yield %{{.*}} : f32
+    CHECK:         }
+    CHECK:         %[[R:.*]]:2 = scf.if %{{.*}} -> (f32, vector<8x128xf32>) {
+    CHECK:           vector.load
+    CHECK:           %[[MUL:.*]] = arith.mulf
+    CHECK:           scf.yield %{{.*}}, %[[MUL]] : f32, vector<8x128xf32>
+    CHECK:         } else {
+    CHECK:           scf.yield %{{.*}}, %{{.*}} : f32, vector<8x128xf32>
+    CHECK:         }
+    CHECK:         vector.broadcast %[[R]]#0 : f32 to vector<8x128xf32>
+    CHECK:         arith.addf %[[R]]#1, %{{.*}} : vector<8x128xf32>
+  )"));
+}
+
+TEST(KilnTest, Concat) {
+  EXPECT_THAT(
+      CreateKernel(GridSpec{.name = "concat", .grid = {1}},
+                   InSpec{bf16(16, 128)}, OutSpec{bf16(32, 256)},
+                   [](VmemRef in, VmemRef out) {
+                     Tile x = Load(in);
+                     // Single-tile Concat is a no-op.
+                     Tile single = Concat({x}, 0);
+                     Tile rows = Concat({single, Zeros(bf16(16, 128))}, 0);
+                     Tile full = Concat({rows, Zeros(bf16(32, 128))}, 1);
+                     Store(out, full);
+                   }),
+      IsOkAndMatchesIr(R"(
+    CHECK-LABEL: func.func @concat
+    CHECK:         %[[X:.*]] = vector.load %{{.*}} : memref<16x128xbf16, #tpu.memory_space<vmem>>, vector<16x128xbf16>
+    CHECK-NOT:     tpu.concatenate %[[X]] in
+    CHECK:         %[[R:.*]] = tpu.concatenate %[[X]], %{{.*}} in 0 : vector<16x128xbf16>, vector<16x128xbf16> -> vector<32x128xbf16>
+    CHECK:         %[[C:.*]] = tpu.concatenate %[[R]], %{{.*}} in 1 : vector<32x128xbf16>, vector<32x128xbf16> -> vector<32x256xbf16>
+    CHECK:         tpu.vector_store %{{.*}}[{{.*}}], %[[C]]
+  )"));
+}
+
+TEST(KilnTest, WindowedLoad) {
+  EXPECT_THAT(CreateKernel(GridSpec{.name = "windowed_load", .grid = {1}},
+                           InSpec{bf16(128, 256)}, OutSpec{bf16(19, 100)},
+                           [](VmemRef in, VmemRef out) {
+                             // The window starts at a tile-aligned offset, but
+                             // its sizes are not multiples of the (16, 128)
+                             // bf16 tiling.
+                             Store(out, Load(in, {16, 128}, {19, 100}));
+                           }),
+              IsOkAndMatchesIr(R"(
+    CHECK-LABEL: func.func @windowed_load
+    CHECK-DAG:     %[[R:.*]] = arith.constant 16 : index
+    CHECK-DAG:     %[[C:.*]] = arith.constant 128 : index
+    CHECK:         %[[W:.*]] = vector.load %{{.*}}[%[[R]], %[[C]]] : memref<128x256xbf16, #tpu.memory_space<vmem>>, vector<19x100xbf16>
+    CHECK:         tpu.vector_store %{{.*}}[{{.*}}], %[[W]]
+  )"));
+}
+
+TEST(KilnTest, WindowedLoadDynamicOffset) {
+  EXPECT_THAT(
+      CreateKernel(GridSpec{.name = "windowed_load_dynamic", .grid = {1}},
+                   InSpec{bf16(128, 256)}, OutSpec{bf16(16, 128)},
+                   [](VmemRef in, VmemRef out) {
+                     Store(out, Load(in, {ProgramId(0) * 16, 0}, {16, 128}));
+                   }),
+      IsOkAndMatchesIr(R"(
+    CHECK-LABEL: func.func @windowed_load_dynamic
+    CHECK:         %[[R:.*]] = arith.index_cast %{{.*}} : i32 to index
+    CHECK:         %[[W:.*]] = vector.load %{{.*}}[%[[R]], %{{.*}}] : memref<128x256xbf16, #tpu.memory_space<vmem>>, vector<16x128xbf16>
+    CHECK:         tpu.vector_store %{{.*}}[{{.*}}], %[[W]]
   )"));
 }
 

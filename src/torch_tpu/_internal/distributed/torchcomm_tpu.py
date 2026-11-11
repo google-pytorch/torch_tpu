@@ -813,26 +813,8 @@ class TorchCommsTPU(_TorchCommBackendBase):  # pyrefly: ignore[invalid-inheritan
     )
 
 
-def create_torchcomms_tpu(
-    backend_str: str,
-    device: torch.device | str | None,
-    name: str | None = None,
-    store: dist.Store | None = None,
-    hints: dict[str, Any] | None = None,
-) -> TorchCommsTPU:
-  """Factory function to instantiate a TorchCommsTPU communicator."""
-  return TorchCommsTPU(
-      backend_name=backend_str,
-      device=device,
-      name=name,
-      store=store,
-      hints=hints,
-  )
-
-
 # Aliases for compatibility
 TorchCommTPU = TorchCommsTPU
-create_torchcomm_tpu = create_torchcomms_tpu
 
 
 def register_torchcomms_tpu() -> bool:

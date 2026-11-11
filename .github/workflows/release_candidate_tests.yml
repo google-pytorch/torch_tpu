@@ -19,15 +19,13 @@
 #
 # Against the staged wheel in a virtualenv (nox):
 #   smoke_tpu          nox installs the wheel with every released PyTorch and
-#                      runs the smoke suite, for every Python (3.11-3.14t), on
-#                      v5e/v6e/v7x.
+#                      runs the smoke suite, for every Python, on v5e/v6e/v7x.
 #   wheel_test         twine metadata check, single-source dependency check,
 #                      wheel structure check, and pywrap split check, for every
-#                      Python (3.11-3.14t).
+#                      Python.
 #   compat_cpu         nox installs the wheel at highest dependency resolution
 #                      with every released PyTorch (both CPU and CUDA builds)
-#                      and runs the CPU smoke suite, for every Python
-#                      (3.11-3.14t).
+#                      and runs the CPU smoke suite, for every Python.
 #
 # Regular Bazel test suites from source_sha:
 #   bazel_tpu          TPU Python and C++ tests, one job per TPU generation,
@@ -36,7 +34,7 @@
 #   bazel_cpu          CPU tests against the highest resolvable dependencies.
 #   tsan               C++ and Python tests under ThreadSanitizer.
 #   upstream_pytorch   Upstream PyTorch device-generic tests across TPU
-#                      v5e/v6e/v7x and Python 3.11-3.14, with the lock
+#                      v5e/v6e/v7x and every Python, with the lock
 #                      regenerated around the torch the job pins.
 #   upstream_examples  Upstream PyTorch examples on v7x.
 #
@@ -95,7 +93,7 @@ jobs:
             runner: "linux-x86-ct6e-180-8tpu"
           - name: "TPU v7x 1-chip"
             runner: "linux-x86-tpu7x-56-1tpu"
-        python_version: ["3.11", "3.12", "3.13", "3.14", "3.14t"]
+        python_version: &wheel_python_versions ["3.11", "3.12", "3.13", "3.14", "3.15", "3.14t", "3.15t"]
     runs-on: ${{ matrix.tpu.runner }}
     timeout-minutes: 45
     container:
@@ -112,7 +110,7 @@ jobs:
       - name: Fix Git Workspace Ownership
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Cache uv packages
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: /root/.cache/uv
           key: uv-tpu-smoke-${{ runner.os }}-py${{ matrix.python_version }}-${{ hashFiles('pyproject.toml', 'bazel/pytorch_versions.bzl') }}
@@ -131,7 +129,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python_version: ["3.11", "3.12", "3.13", "3.14", "3.14t"]
+        python_version: *wheel_python_versions
     runs-on: linux-x86-n4-16
     timeout-minutes: 45
     container:
@@ -147,7 +145,7 @@ jobs:
       - name: Fix Git Workspace Ownership
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Cache uv packages
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: /root/.cache/uv
           key: uv-wheel-test-${{ runner.os }}-py${{ matrix.python_version }}-${{ hashFiles('pyproject.toml', 'bazel/pytorch_versions.bzl') }}
@@ -173,7 +171,7 @@ jobs:
       # with uv resolving the highest compatible versions of all runtime
       # dependencies from PyPI.
       matrix:
-        python_version: ["3.11", "3.12", "3.13", "3.14", "3.14t"]
+        python_version: *wheel_python_versions
     runs-on: linux-x86-n4-16
     timeout-minutes: 60
     container:
@@ -189,7 +187,7 @@ jobs:
       - name: Fix Git Workspace Ownership
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Cache uv packages
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: /root/.cache/uv
           key: uv-cpu-compat-${{ runner.os }}-py${{ matrix.python_version }}-${{ hashFiles('pyproject.toml', 'bazel/pytorch_versions.bzl') }}
@@ -256,7 +254,7 @@ jobs:
             --run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh" \
             ${TEST_TARGETS}
       - name: Upload test logs on failure
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         if: failure()
         with:
           name: bazel-testlogs-${{ matrix.job_info.bazel_config }}
@@ -292,7 +290,7 @@ jobs:
             --config=ci_cpu \
             --repo_env=HERMETIC_PYTHON_VERSION="${PYTHON_VERSION}"
       - name: Upload test logs on failure
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         if: failure()
         with:
           name: bazel-testlogs-bazel-cpu
@@ -321,7 +319,7 @@ jobs:
             --test_lang_filters=py \
             --run_under=//ci/configs:tsan_wrapper
       - name: Upload test logs on failure
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         if: failure()
         with:
           name: bazel-testlogs-tsan
@@ -343,7 +341,7 @@ jobs:
           - name: "TPU v7x"
             runner: "linux-x86-tpu7x-224-4tpu"
             bazel_config: "ci_tpu_v7"
-        python_version: ["3.11", "3.12", "3.13", "3.14"]
+        python_version: ["3.11", "3.12", "3.13", "3.14", "3.15"]
     runs-on: ${{ matrix.tpu.runner }}
     timeout-minutes: 90
     container:
@@ -353,7 +351,7 @@ jobs:
     env:
       PYTHON_VERSION: ${{ matrix.python_version }}
       BAZEL_CONFIG: ${{ matrix.tpu.bazel_config }}
-      TORCH_VERSION: "2.14.0"
+      TORCH_VERSION: "2.15.0"
     steps:
       - name: Checkout TorchTPU
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -370,14 +368,20 @@ jobs:
       # Same flags as requirements/lock_environments.sh, with torch pinned.
       - name: Lock dependencies around torch ${{ env.TORCH_VERSION }}
         run: |
+          PYTHON_VERSION_UND="${PYTHON_VERSION//./_}"
+          EXTRA_LOCK_ARGS=(--overrides requirements/overrides_3_15.txt)
+          if [ -f "requirements/constraints_${PYTHON_VERSION_UND}.txt" ]; then
+            EXTRA_LOCK_ARGS+=(--constraint "requirements/constraints_${PYTHON_VERSION_UND}.txt")
+          fi
           uv pip compile pyproject.toml \
             --all-extras \
             --python-version "${PYTHON_VERSION}" \
             --python-platform x86_64-manylinux_2_31 \
             --resolution lowest-direct \
             --constraint <(echo "torch==${TORCH_VERSION}") \
+            "${EXTRA_LOCK_ARGS[@]}" \
             --generate-hashes \
-            --output-file "requirements/requirements_${PYTHON_VERSION//./_}.txt"
+            --output-file "requirements/requirements_${PYTHON_VERSION_UND}.txt"
       - name: Run upstream PyTorch tests
         run: |
           UPSTREAM_TARGETS=$(bazel query 'kind("py_test", //tests/torch:all)' | tr '\n' ' ')
@@ -396,7 +400,7 @@ jobs:
             --test_env=TORCH_TPU_INTERNAL_PYTORCH_TEST_DIR="$GITHUB_WORKSPACE/pytorch/test" \
             ${UPSTREAM_TARGETS}
       - name: Upload test logs on failure
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         if: failure()
         with:
           name: bazel-testlogs-upstream-pytorch-${{ matrix.tpu.bazel_config }}-py${{ matrix.python_version }}
@@ -449,7 +453,7 @@ jobs:
             --test_env=PYTHONPATH="$GITHUB_WORKSPACE/pytorch_examples" \
             ${EXAMPLE_TARGETS}
       - name: Upload test logs on failure
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         if: failure()
         with:
           name: bazel-testlogs-upstream-examples

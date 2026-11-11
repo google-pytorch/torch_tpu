@@ -14,7 +14,7 @@
 
 """Python interface for streams and events on TPU."""
 
-from typing import Optional, Self, TypeAlias
+from typing import Self, TypeAlias
 
 import torch
 from torch_tpu._internal.device import _device_ops_backend
@@ -83,6 +83,9 @@ def _parse_pinned(pinned: CorePinningMode | str | None) -> CorePinningMode:
   )
 
 
+@experimental(
+    'Stream() is experimental and may change or be removed without notice.'
+)
 class TpuStream(torch.Stream):
   """A stream of operations on a TPU device.
 
@@ -110,7 +113,7 @@ class TpuStream(torch.Stream):
       cls,
       device=None,
       priority: int = 0,
-      stream_id: Optional[int] = None,
+      stream_id: int | None = None,
       *,
       pinned: CorePinningMode | str | None = None,
       **kwargs,
@@ -135,27 +138,27 @@ class TpuStream(torch.Stream):
       self,
       device=None,
       priority: int = 0,
-      stream_id: Optional[int] = None,
+      stream_id: int | None = None,
       *,
       pinned: CorePinningMode | str | None = None,
       **kwargs,
   ):
     # pylint: disable=unused-argument
-    self.pinned: CorePinningMode = _parse_pinned(pinned)
+    self._pinned: CorePinningMode = _parse_pinned(pinned)
 
-    if self.pinned != CorePinningMode.UNPINNED:
+    if self._pinned != CorePinningMode.UNPINNED:
       # pylint: disable=protected-access
       _device_ops_backend._set_core_pinning_mode(
-          self.device_index, self.stream_id, self.pinned
+          self.device_index, self.stream_id, self._pinned
       )
 
   @experimental(
       'wait_event() is experimental and may change or be removed without'
       ' notice.'
   )
-  def wait_event(self, event: 'TpuEvent') -> None:  # pylint: disable=unused-argument
+  def wait_event(self, event: 'TpuEvent') -> None:
     """Makes all future work submitted to the stream wait for an event."""
-    event.wait()
+    event.wait(self)
 
   @experimental(
       'wait_stream() is experimental and may change or be removed without'
@@ -169,7 +172,7 @@ class TpuStream(torch.Stream):
       'record_event() is experimental and may change or be removed without'
       ' notice.'
   )
-  def record_event(self, event: Optional['TpuEvent'] = None) -> 'TpuEvent':
+  def record_event(self, event: 'TpuEvent | None' = None) -> 'TpuEvent':
     """Records an event on this stream."""
     if event is None:
       event = TpuEvent()
@@ -200,24 +203,27 @@ class TpuStream(torch.Stream):
     """Returns the priority range for streams."""
     raise NotImplementedError(_NOT_IMPLEMENTED_STREAMS_MSG)
 
-  def __repr__(self):
-    return '<torch.tpu.TpuStream>'
+  def __repr__(self) -> str:
+    return f'<torch.tpu.Stream device={self.device} stream_id={self.stream_id}>'
 
   @property
   @experimental(
       'is_sparse is experimental and may change or be removed without notice.'
   )
   def is_sparse(self) -> bool:
-    return self.pinned == CorePinningMode.SPARSE_CORE
+    return self._pinned == CorePinningMode.SPARSE_CORE
 
   @property
   @experimental(
       'is_dense is experimental and may change or be removed without notice.'
   )
   def is_dense(self) -> bool:
-    return self.pinned == CorePinningMode.TENSOR_CORE
+    return self._pinned == CorePinningMode.TENSOR_CORE
 
 
+@experimental(
+    'Event() is experimental and may change or be removed without notice.'
+)
 class TpuEvent(torch.Event):
   """Scoped completion marker for async TPU operations.
 
@@ -262,6 +268,16 @@ class TpuEvent(torch.Event):
         blocking=blocking,
         interprocess=interprocess,
     )
+
+  def __init__(
+      self,
+      enable_timing: bool = False,
+      blocking: bool = False,
+      interprocess: bool = False,
+      external: bool = False,
+      device=None,
+  ):
+    del enable_timing, blocking, interprocess, external, device
 
   @experimental(
       'record() is experimental and may change or be removed without notice.'
@@ -350,7 +366,7 @@ class TpuEvent(torch.Event):
     raise NotImplementedError(_NOT_IMPLEMENTED_STREAMS_MSG)
 
   def __repr__(self) -> str:
-    return '<torch.tpu.TpuEvent>'
+    return f'<torch.tpu.Event device={self.device}>'
 
 
 def synchronize(device: torch.device | str | int | None = None) -> None:

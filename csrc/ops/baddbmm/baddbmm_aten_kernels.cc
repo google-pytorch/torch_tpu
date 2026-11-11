@@ -57,22 +57,37 @@ absl::Status ValidateBaddbmmOut(const at::Tensor& out,
   return absl::OkStatus();
 }
 
-absl::Status ValidateBaddbmmInputs(const at::Tensor& self,
-                                   const at::Tensor& batch1,
-                                   const at::Tensor& batch2) {
+absl::Status ValidateBaddbmmInputs(
+    const at::Tensor& self, const at::Tensor& batch1, const at::Tensor& batch2,
+    std::optional<at::ScalarType> out_dtype = std::nullopt) {
   TT_RET_CHECK(batch1.numel() == 0 || batch2.numel() == 0 ||
                    c10::isFloatingType(batch1.scalar_type()) ||
                    c10::isComplexType(batch1.scalar_type()),
                error::kPythonNotImplementedError)
       << "not implemented for " << ToString(batch1.scalar_type());
 
-  TT_RET_CHECK(self.scalar_type() == batch1.scalar_type() &&
-                   batch1.scalar_type() == batch2.scalar_type(),
-               error::kInvalidArgument)
-      << "expected input dtypes to be the same, got: self="
-      << ToString(self.scalar_type())
-      << ", batch1=" << ToString(batch1.scalar_type())
-      << ", batch2=" << ToString(batch2.scalar_type());
+  if (out_dtype.has_value()) {
+    TT_RET_CHECK(batch1.scalar_type() == batch2.scalar_type(),
+                 error::kInvalidArgument)
+        << "expected batch1 and batch2 to have the same dtype, got "
+        << ToString(batch1.scalar_type()) << " vs "
+        << ToString(batch2.scalar_type());
+    TT_RET_CHECK(self.scalar_type() == *out_dtype ||
+                     self.scalar_type() == batch1.scalar_type(),
+                 error::kInvalidArgument)
+        << "expected self dtype to match either out_dtype ("
+        << ToString(*out_dtype) << ") or batch1 dtype ("
+        << ToString(batch1.scalar_type()) << "), got "
+        << ToString(self.scalar_type());
+  } else {
+    TT_RET_CHECK(self.scalar_type() == batch1.scalar_type() &&
+                     batch1.scalar_type() == batch2.scalar_type(),
+                 error::kInvalidArgument)
+        << "expected input dtypes to be the same, got "
+        << ToString(self.scalar_type()) << " (self) vs "
+        << ToString(batch1.scalar_type()) << " (batch1) vs "
+        << ToString(batch2.scalar_type()) << " (batch2)";
+  }
 
   TT_RET_CHECK(batch1.dim() == 3, error::kInvalidArgument)
       << "expected batch1 to be a 3D tensor (batch of matrices), got "
@@ -93,6 +108,14 @@ absl::Status ValidateBaddbmmInputs(const at::Tensor& self,
       << ") to match the second dimension of the second argument (of shape "
       << ToString(batch2.sizes()) << "), got " << batch1.size(2) << " vs "
       << batch2.size(1);
+
+  Dimensions output_dims = {batch1.size(0), batch1.size(1), batch2.size(2)};
+  absl::StatusOr<Dimensions> broadcast_shape =
+      InferSize(self.sizes(), output_dims);
+  TT_RET_CHECK(broadcast_shape.ok() && *broadcast_shape == output_dims,
+               error::kInvalidArgument)
+      << "expected self shape to be broadcastable to output shape "
+      << ToString(output_dims) << ", got " << ToString(self.sizes());
 
   TT_RETURN_IF_ERROR(ValidateNotLowPrecisionFloat(batch1));
 
@@ -140,10 +163,13 @@ absl::StatusOr<mlir::MlirOp> BuildBaddbmmShlo(
   }
 
   // Case 2: beta is not zero. self_op is guaranteed to have a value.
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp self_cast,
+                      CastIfNeeded(*self_op, out_dtype));
 
   // Case 2a: alpha is zero. Baddbmm result is just beta * self.
   if (alpha.IsZero()) {
-    TT_ASSIGN_OR_RETURN(auto self_bcst, BroadcastIfNeeded(*self_op, out_shape));
+    TT_ASSIGN_OR_RETURN(auto self_bcst,
+                        BroadcastIfNeeded(self_cast, out_shape));
     if (!beta.IsOne()) {
       // beta is neither 0 nor 1, so beta_op is guaranteed to have a value.
       TT_ASSIGN_OR_RETURN(auto beta_tensor,
@@ -163,7 +189,7 @@ absl::StatusOr<mlir::MlirOp> BuildBaddbmmShlo(
     bmm_res = mlir::stablehlo::Mul(bmm_res, alpha_tensor);
   }
   // Compute beta * self and add.
-  TT_ASSIGN_OR_RETURN(auto self_bcst, BroadcastIfNeeded(*self_op, bmm_res));
+  TT_ASSIGN_OR_RETURN(auto self_bcst, BroadcastIfNeeded(self_cast, bmm_res));
   if (!beta.IsOne()) {
     // beta is neither 0 nor 1, so beta_op is guaranteed to have a value.
     TT_ASSIGN_OR_RETURN(auto beta_tensor,
@@ -244,7 +270,7 @@ ReturnType DispatchBaddbmm(
     MaybePromotedScalar alpha, std::optional<at::Tensor> alpha_tensor,
     at::ScalarType out_dtype, OpParamCacheKeys& param_keys,
     std::optional<OpName> op_name_override, DispatchFn&& dispatch_fn) {
-  TT_RETURN_IF_ERROR(ValidateBaddbmmInputs(self, batch1, batch2));
+  TT_RETURN_IF_ERROR(ValidateBaddbmmInputs(self, batch1, batch2, out_dtype));
 
   TT_ASSIGN_OR_RETURN(mlir::ElementType out_dtype_mlir,
                       ConvertTo<mlir::ElementType>(out_dtype));
@@ -331,7 +357,8 @@ at::Tensor AtenBaddbmmDtype(const at::Tensor& self, const at::Tensor& batch1,
   TT_KERNEL(
       OpName::kBaddbmmDtype, param_keys,
       (self, batch1, batch2, out_dtype, promoted_beta, promoted_alpha), {
-        TT_THROW_IF_ERROR(ValidateBaddbmmInputs(self, batch1, batch2));
+        TT_THROW_IF_ERROR(
+            ValidateBaddbmmInputs(self, batch1, batch2, out_dtype));
         TT_THROW_IF_ERROR(
             ValidateBaddbmmDtypes(batch1.scalar_type(), out_dtype));
         TT_ASSIGN_OR_THROW(
@@ -356,7 +383,8 @@ at::Tensor& AtenBaddbmmDtypeOut(const at::Tensor& self,
   TT_KERNEL(
       OpName::kBaddbmmDtypeOut, param_keys,
       (self, batch1, batch2, out_dtype, promoted_beta, promoted_alpha, out), {
-        TT_THROW_IF_ERROR(ValidateBaddbmmInputs(self, batch1, batch2));
+        TT_THROW_IF_ERROR(
+            ValidateBaddbmmInputs(self, batch1, batch2, out_dtype));
         TT_THROW_IF_ERROR(
             ValidateBaddbmmDtypes(batch1.scalar_type(), out_dtype));
         TT_THROW_IF_ERROR(ValidateBaddbmmOut(out, out_dtype));

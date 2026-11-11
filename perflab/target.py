@@ -21,10 +21,10 @@ This is to avoid loading PyTorch/JAX here which can conflict to hold device
 lockfiles.
 """
 
+from collections.abc import Mapping
 import dataclasses
 import enum
 import os
-from typing import Mapping
 
 dataclass = dataclasses.dataclass
 

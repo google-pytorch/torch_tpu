@@ -46,11 +46,11 @@
 #include "csrc/common/compilation.h"
 #include "csrc/common/compilation_spec.h"
 #include "csrc/common/dimension_types.h"
+#include "csrc/common/dtype.h"
 #include "csrc/common/dynamism_utils.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/layout_utils.h"
 #include "csrc/common/shape.h"
-#include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/materialization_heuristics.h"
@@ -179,13 +179,16 @@ std::unique_ptr<StructuredLogEvent> MaybeStartTraceEvent(
 }
 
 void FinalizePushTraceEvent(std::unique_ptr<StructuredLogEvent> event,
-                            std::string captured_mlir, bool compile_ok,
+                            CompilationTraceInfo trace_info, bool compile_ok,
                             std::string aten_graph_payload) {
   event->duration = absl::Now() - event->timestamp;
-  event->cache_hit = captured_mlir.empty();
-  if (!event->cache_hit || !compile_ok) {
+  event->cache_hit = compile_ok && trace_info.cache_hit;
+  if (compile_ok) {
+    event->kernel_type = trace_info.kernel_type;
+  }
+  if (!event->cache_hit) {
     event->aten_graph_payload = std::move(aten_graph_payload);
-    event->mlir_payload = std::move(captured_mlir);
+    event->mlir_payload = std::move(trace_info.mlir_text);
   }
   event->compile_failed = !compile_ok;
   event->chromium_payload = absl::StrCat(
@@ -195,7 +198,12 @@ void FinalizePushTraceEvent(std::unique_ptr<StructuredLogEvent> event,
       R"(,"cat":"torchtpu_eager","pid":)", getpid(),
       R"(,"tid":0,"args":{"cache_hit":)", event->cache_hit ? "true" : "false",
       R"(,"compile_failed":)", event->compile_failed ? "true" : "false",
-      R"(,"reason":")", absl::CEscape(ToString(event->reason)), R"("}})");
+      R"(,"reason":")", absl::CEscape(ToString(event->reason)), R"(")",
+      event->kernel_type.has_value()
+          ? absl::StrCat(R"(,"kernel_type":")", ToString(*event->kernel_type),
+                         R"(")")
+          : "",
+      R"(}})");
   StructuredLogBuffer::GetInstance().Push(std::move(event));
 }
 
@@ -223,6 +231,17 @@ struct CompiledTraversal {
   CompiledKernel compiled_kernel;
 };
 
+// Returns the type of `compiled_kernel`, as served by the compilation cache.
+KernelType GetKernelType(const CompiledKernel& compiled_kernel) {
+  if (compiled_kernel.unbounded_dynamic_kernel != nullptr) {
+    return KernelType::kUnboundedDynamic;
+  }
+  if (compiled_kernel.dynamic_kernel_adapter.has_value()) {
+    return KernelType::kBoundedDynamic;
+  }
+  return KernelType::kStatic;
+}
+
 absl::StatusOr<CompiledTraversal> VerifyAndCompileTraversal(
     Traversal& traversal, mlir::MLIRContext& mlir_context,
     const CompilationSpec& compilation_spec,
@@ -232,6 +251,7 @@ absl::StatusOr<CompiledTraversal> VerifyAndCompileTraversal(
     TT_RETURN_IF_ERROR(PropagateBoundedDynamism(traversal, mlir_context));
   }
 
+#ifndef NDEBUG
   for (const auto& argument : traversal.arguments()) {
     if (argument.is_placeholder()) {
       return TT_ERROR(error::kInternal)
@@ -240,47 +260,8 @@ absl::StatusOr<CompiledTraversal> VerifyAndCompileTraversal(
                 "appear in compiled mode, which should never try to "
                 "materialize tensors.\n"
              << argument.DebugString();
-    } else if (argument.is_executing()) {
-      // Argument has had a PjRtBuffer already created for it, so we can
-      // check immediately to see if it is in a failed state.
-      auto buffer_or = argument.AwaitBuffer();
-      if (!buffer_or.ok()) {
-        // Don't prefix or suffix this here; if there is a chain of tasks and
-        // one of them fails, anything appended here gets duplicated over and
-        // over. Just let the original error flow down the chained tasks.
-        return buffer_or.status();
-      }
-    } else if (argument.is_materializing()) {
-      // Input has been pushed onto the execution thread, but has not yet been
-      // assigned a PjRtBuffer. We will recheck it once this task reaches the
-      // front of the execution queue (see GetArgumentBuffers).
-      continue;
-    } else if (const auto deferred_op = argument.deferred_op()) {
-      // Surface the cache key only in the ABSL_LOG, not in the TT_ERROR.
-      const CompilationCacheKey compilation_cache_key =
-          traversal.GetCacheKey(compilation_spec.compile_options_key,
-                                /*argument_layouts=*/{},
-                                /*donated_inputs=*/{});
-      ABSL_LOG(ERROR)
-          << "traversal (cache key: " << compilation_cache_key
-          << ") has deferred argument " << ToString(deferred_op->op_name())
-          << ToString(argument.dimensions())
-          << ".\nAll arguments must be set to pending materialization "
-             "before creating chained ExecutionTasks";
-      return TT_ERROR(error::kFailedPrecondition)
-             << "detected an out of order execution; an execution task "
-                "depends on an argument that is not scheduled for "
-                "materialization.\nIf you are using multiple streams, please "
-                "use torch.Events to coordinate cross-stream dependencies";
-    } else {
-      return TT_ERROR(error::kInternal)
-             << "traversal argument has an unknown state (not deferred, "
-                "placeholder, or materializing):\n"
-             << argument.DebugString();
     }
   }
-
-#ifndef NDEBUG
   // Check that the traversal has a valid set of outputs before we start
   // compiling.
   TT_RETURN_IF_ERROR(VerifyPerNodeOutputs(traversal.outputs()));
@@ -297,7 +278,8 @@ absl::StatusOr<CompiledTraversal> VerifyAndCompileTraversal(
     tsl::profiler::TraceMe t("CompileTraversal");
     TT_ASSIGN_OR_RETURN(
         compiled_kernel,
-        traversal.Compile(compilation_spec, out_mlir_text,
+        traversal.Compile(compilation_spec, UnboundedKernelPolicy::kAllow,
+                          out_mlir_text,
                           /*use_stablehlo_bounds=*/false, argument_layouts,
                           /*donated_inputs=*/{}, /*module_name=*/std::nullopt,
                           &compilation_cache_key));
@@ -327,14 +309,21 @@ std::vector<Shape> GetShapesFromDeviceBuffers(
 absl::StatusOr<ExecutionTask> ExecutionTask::FromTraversal(
     absl_nonnull std::unique_ptr<Traversal> traversal,
     mlir::MLIRContext& mlir_context, const CompilationSpec& compilation_spec,
-    std::string* absl_nullable out_mlir_text) {
+    CompilationTraceInfo* absl_nullable out_trace_info) {
   auto compiled_traversal_or = VerifyAndCompileTraversal(
-      *traversal, mlir_context, compilation_spec, out_mlir_text);
+      *traversal, mlir_context, compilation_spec,
+      out_trace_info != nullptr ? &out_trace_info->mlir_text : nullptr);
   if (!compiled_traversal_or.ok()) {
     for (const auto& output : traversal->outputs()) {
       output.device_buffer_list()->SetAsError(compiled_traversal_or.status());
     }
     return compiled_traversal_or.status();
+  }
+  if (out_trace_info != nullptr) {
+    out_trace_info->cache_hit =
+        compiled_traversal_or->compiled_kernel.cache_hit;
+    out_trace_info->kernel_type =
+        GetKernelType(compiled_traversal_or->compiled_kernel);
   }
 
   // Mark all outputs of the split as scheduled/materialized.
@@ -378,27 +367,16 @@ absl::StatusOr<ExecutionTask> ExecutionTask::FromExecutable(
     SharedLoadedExecutableWithMetadata executable,
     std::vector<DeviceBufferRef> arguments,
     std::vector<DeviceBufferRef> outputs, std::string_view task_name) {
+#ifndef NDEBUG
   for (const auto& argument : arguments) {
-    if (!argument.is_materializing()) {
-      if (argument.is_placeholder()) {
-        return TT_ERROR(error::kInternal)
-               << "ExecutionTask::FromExecutable was called on a placeholder "
-                  "tensor. This should never happen.\nkPlaceholder tensors "
-                  "should only appear at compile time, not at execution time.\n"
-               << argument.DebugString();
-      } else if (const auto deferred_op = argument.deferred_op()) {
-        return TT_ERROR(error::kInternal)
-               << "argument to task " << task_name << " has deferred input op"
-               << ToString(deferred_op->op_name());
-      } else {
-        return TT_ERROR(error::kInternal)
-               << "execution task argument has an unknown state (not deferred, "
-                  "placeholder, or materializing):\n"
-               << argument.DebugString();
-      }
+    if (argument.is_placeholder()) {
+      return TT_ERROR(error::kInternal)
+             << "ExecutionTask::FromExecutable was called on a placeholder "
+                "tensor. This should never happen.\nkPlaceholder tensors "
+                "should only appear at compile time, not at execution time.\n"
+             << argument.DebugString();
     }
   }
-#ifndef NDEBUG
   // Check that the outputs buffers are valid.
   TT_RETURN_IF_ERROR(VerifyPerNodeOutputs(outputs));
 #endif  // NDEBUG
@@ -420,20 +398,20 @@ absl::StatusOr<ExecutionTask> ExecutionTask::FromTraversalWithLogging(
   if (!event) {
     return ExecutionTask::FromTraversal(std::move(traversal), mlir_context,
                                         compilation_spec,
-                                        /*out_mlir_text=*/nullptr);
+                                        /*out_trace_info=*/nullptr);
   }
 
   // Get the aten graph payload before moving the traversal.
   std::string aten_graph_payload = traversal->ReadableString(reason);
 
   // Try to build the execution task and capture the MLIR if possible.
-  std::string captured_mlir;
+  CompilationTraceInfo trace_info;
   auto execution_task_or = ExecutionTask::FromTraversal(
-      std::move(traversal), mlir_context, compilation_spec, &captured_mlir);
+      std::move(traversal), mlir_context, compilation_spec, &trace_info);
 
   // Whether or not the execution task was created successfully, finish the
   // trace event and return.
-  FinalizePushTraceEvent(std::move(event), std::move(captured_mlir),
+  FinalizePushTraceEvent(std::move(event), std::move(trace_info),
                          execution_task_or.ok(), std::move(aten_graph_payload));
   return execution_task_or;
 }

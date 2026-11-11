@@ -276,7 +276,6 @@ def assert_raises_message(
     *,
     tpu: str | re.Pattern[str],
     gpu: str | re.Pattern[str] | None = None,
-    message_reviewed_by: str | None = None,
 ):
   """Asserts that a specific exception and message is raised.
 
@@ -290,9 +289,6 @@ def assert_raises_message(
     exception_type: The expected exception type.
     tpu: The expected error message on TPU.
     gpu: The expected error message on GPU (defaults to `tpu` if omitted).
-    message_reviewed_by: The LDAP of the engineer who reviewed the error
-      message. This will be used by a future tool to find all error messages not
-      reviewed by an engineer.
   """
 
   # Check that exception_type is a class derived from BaseException.
@@ -300,8 +296,6 @@ def assert_raises_message(
       "exception_type must be a class derived from BaseException. "
       "It cannot be anything else, including a tuple."
   )
-
-  del message_reviewed_by  # Unused for now.
 
   if not _allow_gpu_parameter and gpu is not None:
     raise AssertionError("gpu=... is not allowed in TPU-only error tests.")

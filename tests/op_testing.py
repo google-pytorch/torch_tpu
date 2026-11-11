@@ -85,10 +85,6 @@ DynamicMarkingPlan = dynamism_test_utils.DynamicMarkingPlan
 
 AccuracyOverrides = Mapping[str, Mapping[torch.dtype, Mapping[str, Tolerance]]]
 
-FilterFn = Callable[..., str | None]
-MarkDynamicFn = Callable[..., None]
-GeneratePlansFn = Callable[..., Sequence[DynamicMarkingPlan]]
-
 GPU_SM90: Final[str] = "gpu_sm90"
 GPU_SM100: Final[str] = "gpu_sm100"
 
@@ -6125,6 +6121,13 @@ def _op_func(
   return op.inplace_variant if variant == OpVariant.INPLACE else op
 
 
+def _dynamism_mode(*, use_compiled: bool, compute_grad: bool) -> DynamismMode:
+  """Returns the active `DynamismMode` for `(use_compiled, compute_grad)`."""
+  if use_compiled:
+    return DynamismMode.COMPILE_GRAD if compute_grad else DynamismMode.COMPILE
+  return DynamismMode.EAGER
+
+
 def _requires_grad_input(input_value: _pytree.PyTree) -> _pytree.PyTree:
   """Sets requires_grad=True for the non-empty float/complex input tensors."""
 
@@ -6433,10 +6436,6 @@ _VARIANT_CALL_FORMAT: Final[Mapping[OpVariant, str]] = {
 class TorchTpuTestBase(seed_test_utils.RepeatableTest, common_utils.TestCase):
   """Base class for TorchTPU tests."""
 
-  dynamism_filter_fn: FilterFn
-  dynamism_mark_dynamic_fn: MarkDynamicFn
-  dynamism_generate_plans_fn: GeneratePlansFn
-
   tpu_gpu_accuracy_overrides: AccuracyOverrides
   grad_gpu_accuracy_overrides: AccuracyOverrides
 
@@ -6458,6 +6457,7 @@ class TorchTpuTestBase(seed_test_utils.RepeatableTest, common_utils.TestCase):
     # Make sure we call `do_test_op()` method only once.
     self._do_test_op_called = False
     self._subtests_run = 0
+    self._dynamism_subtests_run = 0
     tt_testing.reset_eager_state()
     # Show long diffs in assertEqual.
     self.maxDiff = None  # pylint: disable=invalid-name
@@ -6494,27 +6494,6 @@ class TorchTpuTestBase(seed_test_utils.RepeatableTest, common_utils.TestCase):
     self.tpu_gpu_accuracy_overrides = tpu_gpu_overrides
     self.grad_gpu_accuracy_overrides = grad_gpu_overrides
 
-  def set_dynamism_handlers(
-      self,
-      filter_fn: FilterFn,
-      mark_dynamic_fn: MarkDynamicFn,
-      generate_plans_fn: GeneratePlansFn,
-  ) -> None:
-    """Sets the dynamism handlers for bounded dynamism testing.
-
-    Args:
-      filter_fn: A function that returns None if the op should be tested for
-        dynamism, or a string with the reason to skip if not.
-      mark_dynamic_fn: A function that marks an input tensor as dynamic as well
-        as any dependent arguments that should be marked dynamic as well.
-      generate_plans_fn: A function returning all valid `DynamicMarkingPlan`s
-        for a sample.
-    """
-
-    self.dynamism_filter_fn = filter_fn
-    self.dynamism_mark_dynamic_fn = mark_dynamic_fn
-    self.dynamism_generate_plans_fn = generate_plans_fn
-
   def set_symbolic_shapes_known_failures(
       self, known_failures: Mapping[str, str]
   ) -> None:
@@ -6530,7 +6509,7 @@ class TorchTpuTestBase(seed_test_utils.RepeatableTest, common_utils.TestCase):
     """
     self.symbolic_shapes_known_failures = known_failures
 
-  def skipTest(self, reason: typing.Any) -> typing.NoReturn:
+  def skipTest(self, reason: typing.Any) -> typing.Never:
     """Overrides TestCase.skipTest to bypass skips during dtype exclusion collection."""
     # Never skip tests when dumping dtype exclusions. Every test must run so
     # that its `do_test_op` calls can record its dtype exclusions, regardless of
@@ -6746,6 +6725,8 @@ class OpInfoTestBase(TorchTpuTestBase):
       use_compiled: bool = False,
       verbose: bool = True,
       out_dtype_override: torch.dtype | None = None,
+      check_op_failures: bool = True,
+      skip_if: Callable[[OpVariant, OpInput], bool] | None = None,
   ) -> Sequence[tuple[OpInput, OpOutput]]:
     """Returns a list of (input, output) pairs for the op.
 
@@ -6769,6 +6750,10 @@ class OpInfoTestBase(TorchTpuTestBase):
         results.
       out_dtype_override: The data type of the out tensor to use when testing
         out-variant dtype casting.
+      check_op_failures: Whether samples that failed on the golden device are
+        tested on TorchTPU.
+      skip_if: Optional predicate returning True when a sample should be
+        skipped.
     """
 
     op_name = _op_name_for_logging(op, variant)
@@ -6791,7 +6776,14 @@ class OpInfoTestBase(TorchTpuTestBase):
           out_dtype_override=out_dtype_override,
       )
     return self._read_golden_pairs(
-        op, dtype, variant, max_samples, out_dtype_override
+        op,
+        dtype,
+        variant,
+        max_samples,
+        out_dtype_override,
+        compute_grad=compute_grad,
+        check_op_failures=check_op_failures,
+        skip_if=skip_if,
     )
 
   def _read_golden_pairs(
@@ -6801,6 +6793,10 @@ class OpInfoTestBase(TorchTpuTestBase):
       variant: OpVariant,
       max_samples: int,
       out_dtype_override: torch.dtype | None,
+      *,
+      compute_grad: bool = False,
+      check_op_failures: bool = True,
+      skip_if: Callable[[OpVariant, OpInput], bool] | None = None,
   ) -> Sequence[tuple[OpInput, OpOutput]]:
     """Returns up to `max_samples` recorded GPU golden pairs for the op."""
     samples = _GOLDEN_GPU_DATA.get_samples(
@@ -6823,8 +6819,94 @@ class OpInfoTestBase(TorchTpuTestBase):
           f" {len(samples)} test samples ...",
           flush=True,
       )
-      samples = samples[:max_samples]
+      if _CHECK_DYNAMISM.value and not _CHECK_SYMBOLIC_SHAPES.value:
+        samples = self._select_dynamism_samples(
+            op,
+            dtype,
+            variant,
+            samples,
+            max_samples=max_samples,
+            compute_grad=compute_grad,
+            check_op_failures=check_op_failures,
+            skip_if=skip_if,
+        )
+      else:
+        samples = samples[:max_samples]
     return samples
+
+  def _select_dynamism_samples(
+      self,
+      op: OpInfo,
+      dtype: torch.dtype,
+      variant: OpVariant,
+      samples: Sequence[tuple[OpInput, OpOutput]],
+      *,
+      max_samples: int,
+      compute_grad: bool,
+      check_op_failures: bool = True,
+      skip_if: Callable[[OpVariant, OpInput], bool] | None = None,
+  ) -> Sequence[tuple[OpInput, OpOutput]]:
+    """Returns up to `max_samples` golden pairs eligible for dynamism testing.
+
+    Selects the first `max_samples` samples that are not filtered by `skip_if`,
+    did not fail on the golden device, and pass
+    `_check_dynamism_sample_supported`. If no sample qualifies, falls back to
+    the first sample not filtered by `skip_if` or `check_op_failures` (or
+    `samples[:1]` if all are filtered) so the skip reason is still logged.
+    """
+    if max_samples <= 0 or not samples:
+      return samples[:max_samples]
+
+    # Keep only samples that _test_torch_tpu_vs_golden will not skip upfront.
+    unskipped = [
+        (inp, out)
+        for inp, out in samples
+        if (check_op_failures or not isinstance(out.output_value, Exception))
+        and (skip_if is None or not skip_if(variant, inp))
+    ]
+    if not unskipped:
+      return samples[:1]
+
+    # Skip sample scanning if the dtype itself is unsupported for dynamism.
+    if (
+        dynamism_test_utils.verify_dtype_supports_dynamism(op, dtype)
+        is not None
+    ):
+      return unskipped[:1]
+
+    # Only samples that succeeded on the golden device can be marked dynamic.
+    candidates = [
+        (inp, out)
+        for inp, out in unskipped
+        if not isinstance(out.output_value, Exception)
+    ]
+    if not candidates:
+      return unskipped[:1]
+
+    # Select up to max_samples samples that have valid dimensions for dynamism.
+    selected: list[tuple[OpInput, OpOutput]] = []
+    for golden_input, golden_output in candidates:
+      skip, _ = self._check_dynamism_sample_supported(
+          op,
+          golden_input,
+          variant=variant,
+          compute_grad=compute_grad,
+      )
+      if skip is None:
+        selected.append((golden_input, golden_output))
+        if len(selected) == max_samples:
+          return selected
+    if selected:
+      return selected
+
+    # Fall back to the first unskipped sample so its skip reason is recorded.
+    print(
+        ">>> No valid sample for dynamism found for"
+        f" {_op_name_for_logging(op, variant)}() (variant={variant.value})"
+        f" with dtype {dtype} out of {len(samples)} samples.",
+        flush=True,
+    )
+    return unskipped[:1]
 
   def _generate_golden_pairs(
       self,
@@ -6954,6 +7036,15 @@ class OpInfoTestBase(TorchTpuTestBase):
     if variant == OpVariant.OUT:
       device_op_input.kwargs["out"] = out
 
+    if compute_grad:
+      # We only support testing gradients when input_value is a tensor or a
+      # (possibly nested) list/tuple of tensors.
+      device_op_input.input_value = _requires_grad_input(
+          device_op_input.input_value
+      )
+      if not _can_compute_grad(variant, device_op_input.input_value):
+        return _dummy_grad(device)
+
     is_dynamic_test = bool(
         _CHECK_DYNAMISM.value and device == torch.device("tpu")
     )
@@ -6963,8 +7054,8 @@ class OpInfoTestBase(TorchTpuTestBase):
           op,
           variant,
           dtype,
-          op_input,
           device_op_input,
+          compute_grad=compute_grad,
           use_compiled=use_compiled,
           marking_plan=marking_plan,
       )
@@ -6977,14 +7068,6 @@ class OpInfoTestBase(TorchTpuTestBase):
           device_op_input,
           is_dynamic_test=is_dynamic_test,
       )
-    if compute_grad:
-      # We only support testing gradients when input_value is a tensor or a
-      # (possibly nested) list/tuple of tensors.
-      device_op_input.input_value = _requires_grad_input(
-          device_op_input.input_value
-      )
-      if not _can_compute_grad(variant, device_op_input.input_value):
-        return _dummy_grad(device)
     input_value = device_op_input.input_value
 
     try:
@@ -7098,24 +7181,31 @@ class OpInfoTestBase(TorchTpuTestBase):
       op: OpInfo,
       variant: OpVariant,
       dtype: torch.dtype,
-      op_input: OpInput,
       device_op_input: OpInput,
       *,
+      compute_grad: bool = False,
       use_compiled: bool,
       marking_plan: DynamicMarkingPlan,
   ) -> None:
     """Marks dimensions of `device_op_input` dynamic, or skips the test."""
     op_name = _op_name_for_logging(op, variant)
-    dynamism_mode = DynamismMode.COMPILE if use_compiled else DynamismMode.EAGER
+    dynamism_mode = _dynamism_mode(
+        use_compiled=use_compiled, compute_grad=compute_grad
+    )
     print(
         f">>> Marking dynamism for {op_name} with dtype {dtype}"
         f" (mode={dynamism_mode.value}) ...",
         flush=True,
     )
 
-    # Verify op is supported with dynamism.
-    skip = self.dynamism_filter_fn(
-        op, op_input.input_value, op_input.args, mode=dynamism_mode
+    # Verify op and sample are supported with dynamism.
+    skip = dynamism_test_utils.verify_op_supports_dynamism(
+        op, mode=dynamism_mode
+    ) or dynamism_test_utils.verify_sample_supports_dynamism(
+        op,
+        device_op_input.input_value,
+        device_op_input.args,
+        kwargs=device_op_input.kwargs,
     )
     if skip is not None:
       self.skipTest(skip)
@@ -7124,7 +7214,7 @@ class OpInfoTestBase(TorchTpuTestBase):
         ">>>> Reproduce using"
         f" `--check_dynamism --dynamism_plan_filter={marking_plan.label}`"
     )
-    self.dynamism_mark_dynamic_fn(
+    dynamism_test_utils.mark_input_dynamic(
         op,
         device_op_input.input_value,
         device_op_input.args,
@@ -7616,6 +7706,8 @@ class OpInfoTestBase(TorchTpuTestBase):
         use_compiled=use_compiled,
         max_samples=max_samples_per_op_dtype,
         out_dtype_override=out_dtype_override,
+        check_op_failures=check_op_failures,
+        skip_if=skip_if,
     )
     if _gen_gpu_golden_mode():
       for golden_input, golden_output in golden_pairs:
@@ -7672,9 +7764,20 @@ class OpInfoTestBase(TorchTpuTestBase):
             skip_output_indices=skip_output_indices,
         )
       dynamism_skip, marking_plans = self._resolve_dynamism_plans(
-          op, golden_input, use_compiled=use_compiled
+          op,
+          golden_input,
+          variant=variant,
+          compute_grad=compute_grad,
+          use_compiled=use_compiled,
+          golden_result=golden_result,
+          out_dtype_override=out_dtype_override,
       )
       if dynamism_skip is not None:
+        print(
+            f"Skipping dynamism test sample {subtest_name} for {op_name}()"
+            f" with dtype {dtype}: {dynamism_skip}",
+            flush=True,
+        )
         self._subtests_run += 1
         with self.subTest(subtest_name=subtest_name, run_index=0):
           _run_and_print_exception(
@@ -7690,6 +7793,8 @@ class OpInfoTestBase(TorchTpuTestBase):
         )
         for perf_run_idx in range(_NUM_RUNS_PER_SUBTEST.value):
           self._subtests_run += 1
+          if marking_plan is not None:
+            self._dynamism_subtests_run += 1
           with self.subTest(
               subtest_name=plan_subtest_name, run_index=perf_run_idx
           ):
@@ -7709,12 +7814,57 @@ class OpInfoTestBase(TorchTpuTestBase):
                 )
             )
 
+  def _check_dynamism_sample_supported(
+      self,
+      op: OpInfo,
+      golden_input: OpInput,
+      *,
+      variant: OpVariant = OpVariant.BASE,
+      compute_grad: bool = False,
+  ) -> tuple[str | None, Any]:
+    """Checks if `golden_input` is eligible for dynamism before plan generation.
+
+    Args:
+      op: The `OpInfo` descriptor for the operator under test.
+      golden_input: Sample input bundle.
+      variant: The `OpVariant` being evaluated.
+      compute_grad: Whether gradient computation is active.
+
+    Returns:
+      A `(skip_reason, input_value)` pair where `skip_reason` is `None` if the
+      sample passes initial dynamism filtering, and `input_value` has
+      `requires_grad` populated when `compute_grad` is True.
+    """
+    input_value = golden_input.input_value
+    if compute_grad:
+      input_value = _requires_grad_input(copy.deepcopy(input_value))
+      if not _can_compute_grad(variant, input_value):
+        return (
+            (
+                f"Gradients cannot be computed for variant={variant.value} on"
+                " this sample."
+            ),
+            input_value,
+        )
+
+    skip = dynamism_test_utils.verify_sample_supports_dynamism(
+        op,
+        input_value,
+        golden_input.args,
+        kwargs=golden_input.kwargs,
+    )
+    return skip, input_value
+
   def _resolve_dynamism_plans(
       self,
       op: OpInfo,
       golden_input: OpInput,
       *,
+      variant: OpVariant = OpVariant.BASE,
+      compute_grad: bool = False,
       use_compiled: bool,
+      golden_result: Any = None,
+      out_dtype_override: torch.dtype | None = None,
   ) -> tuple[str | None, Sequence[DynamicMarkingPlan | None]]:
     """Resolves dynamism skip reason and marking plans for a sample.
 
@@ -7722,7 +7872,13 @@ class OpInfoTestBase(TorchTpuTestBase):
       op: The `OpInfo` descriptor for the operator under test.
       golden_input: Sample input bundle containing `input_value`, `args`, and
         `kwargs`.
+      variant: The `OpVariant` being evaluated.
+      compute_grad: Whether gradient computation is active.
       use_compiled: Whether the test is running under `torch.compile`.
+      golden_result: Expected output value for the sample, used to synthesize
+        zero-element `out` placeholders when analyzing `OpVariant.OUT` plans.
+      out_dtype_override: Optional `out` tensor dtype override for
+        `OpVariant.OUT` casting tests.
 
     Returns:
       A `(skip_reason, plans)` tuple:
@@ -7734,19 +7890,45 @@ class OpInfoTestBase(TorchTpuTestBase):
     if not _CHECK_DYNAMISM.value or _CHECK_SYMBOLIC_SHAPES.value:
       return None, (None,)
 
-    dynamism_mode = DynamismMode.COMPILE if use_compiled else DynamismMode.EAGER
-    skip = self.dynamism_filter_fn(
-        op, golden_input.input_value, golden_input.args, mode=dynamism_mode
+    dynamism_mode = _dynamism_mode(
+        use_compiled=use_compiled, compute_grad=compute_grad
+    )
+    skip = dynamism_test_utils.verify_op_supports_dynamism(
+        op, mode=dynamism_mode
     )
     if skip is not None:
       return skip, ()
 
+    skip, input_value = self._check_dynamism_sample_supported(
+        op,
+        golden_input,
+        variant=variant,
+        compute_grad=compute_grad,
+    )
+    if skip is not None:
+      return skip, ()
+
+    plan_kwargs = golden_input.kwargs
+    if (
+        variant == OpVariant.OUT
+        and "out" not in plan_kwargs
+        and golden_result is not None
+        and not isinstance(golden_result, Exception)
+    ):
+      plan_kwargs = {
+          **plan_kwargs,
+          "out": _prepare_zero_element_out_tensors(
+              golden_result, out_dtype_override=out_dtype_override
+          ),
+      }
     plans = list(
-        self.dynamism_generate_plans_fn(
+        dynamism_test_utils.generate_exhaustive_input_marking_plans(
             op,
-            golden_input.input_value,
+            input_value,
             golden_input.args,
             mode=dynamism_mode,
+            kwargs=plan_kwargs,
+            op_func=_op_func(op, variant, torch.device("tpu")),
         )
     )
     if not plans:
@@ -7855,6 +8037,7 @@ class OpInfoTestBase(TorchTpuTestBase):
       )
     self._do_test_op_called = True
     self._subtests_run = 0
+    self._dynamism_subtests_run = 0
 
     if _dump_dtype_exclusions_mode():
       _record_gpu_dtype_exclusions(
@@ -7905,6 +8088,16 @@ class OpInfoTestBase(TorchTpuTestBase):
             f"All dtypes excluded for {op_name} on"
             f" {self.golden_device_name()}: exclude_dtypes={exclude_dtypes}"
         )
+
+      if _CHECK_DYNAMISM.value and not _CHECK_SYMBOLIC_SHAPES.value:
+        dynamism_mode = _dynamism_mode(
+            use_compiled=use_compiled, compute_grad=compute_grad
+        )
+        skip = dynamism_test_utils.verify_op_supports_dynamism(
+            op, mode=dynamism_mode
+        )
+        if skip is not None:
+          self.skipTest(skip)
 
       # (variant, excluded dtypes, check_op_failures) for each variant to test.
       variants = [(OpVariant.BASE, exclude_dtypes, check_op_failures)]
@@ -7974,6 +8167,17 @@ class OpInfoTestBase(TorchTpuTestBase):
 
     _run_and_print_exception(_test_op_variants)
 
+    if (
+        _CHECK_DYNAMISM.value
+        and not _CHECK_SYMBOLIC_SHAPES.value
+        and self._dynamism_subtests_run == 0
+    ):
+      print(
+          f">>> No valid sample for dynamism found for op {op_name} across all"
+          " tested variants and dtypes.",
+          flush=True,
+      )
+
     if _CHECK_SYMBOLIC_SHAPES.value:
       self._assert_known_symbolic_shapes_failure_seen(
           op_name, variant_test_name
@@ -8007,11 +8211,13 @@ class TorchTpuVsCpuTestBase(TorchTpuTestBase):
 def _golden_file_prefix() -> str:
   """Returns the prefix for the golden file name."""
   if is_compiled_mode():
-    return (
-        "ops_test_gpu_golden_grad_compiled"
-        if _COMPUTE_GRAD.value
-        else "ops_test_gpu_golden_compiled"
-    )
+    if _COMPUTE_GRAD.value:
+      # TODO: b/581040310 - Generate compiled-grad GPU goldens; no
+      # ops_test_gpu_golden_grad_compiled dataset exists yet, so reuse eager GPU
+      # grad goldens for now.
+      return "ops_test_gpu_golden_grad"
+    else:
+      return "ops_test_gpu_golden_compiled"
   return (
       "ops_test_gpu_golden_grad"
       if _COMPUTE_GRAD.value

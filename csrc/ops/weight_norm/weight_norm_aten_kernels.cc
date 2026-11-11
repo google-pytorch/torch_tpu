@@ -67,21 +67,8 @@ absl::StatusOr<MlirOpResults<2>> BuildWeightNormShlo(mlir::MlirOp v_op,
   TT_ASSIGN_OR_RETURN(auto element_type,
                       ConvertTo<mlir::ElementType>(v_type.getElementType()));
 
-  Dimensions reduce_dims;
-  reduce_dims.reserve(v_rank);
-  if (g_rank == 0) {
-    // If g is a scalar, we can drop all dimensions
-    for (int i = 0; i < v_rank; ++i) {
-      reduce_dims.push_back(i);
-    }
-  } else {
-    // Otherwise, reduce all dimensions except the one specified by dim
-    for (int i = 0; i < v_rank; ++i) {
-      if (i != dim) {
-        reduce_dims.push_back(i);
-      }
-    }
-  }
+  const Dimensions reduce_dims =
+      (g_rank == 0) ? GetAllDimensions(v_op) : GetBatchDimensions(v_rank, dim);
 
   ReductionMode reduction_mode =
       (g_rank == v_rank) ? ReductionMode::kKeepDims : ReductionMode::kDropDims;
@@ -95,10 +82,9 @@ absl::StatusOr<MlirOpResults<2>> BuildWeightNormShlo(mlir::MlirOp v_op,
   auto inv_norm = mlir::stablehlo::Div(g_op, v_norm_aligned);
 
   Dimensions broadcast_dims;
-  broadcast_dims.reserve(v_rank);
-  auto inv_norm_rank = GetTensorTypeOrDie(inv_norm).getRank();
+  const auto inv_norm_rank = GetTensorTypeOrDie(inv_norm).getRank();
   if (inv_norm_rank == v_rank) {
-    for (int i = 0; i < v_rank; ++i) broadcast_dims.push_back(i);
+    broadcast_dims = GetAllDimensions(v_op);
   } else if (inv_norm_rank > 0) {
     broadcast_dims.push_back(dim);
   }
@@ -154,13 +140,8 @@ absl::StatusOr<MlirOpResults<2>> BuildWeightNormBackwardShlo(
   // - If g has the same rank as v (singleton dims), preserve dimensions
   //   (ReductionMode::kKeepDims); otherwise drop them
   //   (ReductionMode::kDropDims).
-  Dimensions reduce_dims;
-  reduce_dims.reserve(v_rank);
-  for (int i = 0; i < v_rank; ++i) {
-    if (g_rank == 0 || i != dim) {
-      reduce_dims.push_back(i);
-    }
-  }
+  const Dimensions reduce_dims =
+      (g_rank == 0) ? GetAllDimensions(v_op) : GetBatchDimensions(v_rank, dim);
 
   ReductionMode reduction_mode =
       (g_rank == v_rank) ? ReductionMode::kKeepDims : ReductionMode::kDropDims;
@@ -186,10 +167,9 @@ absl::StatusOr<MlirOpResults<2>> BuildWeightNormBackwardShlo(
   //   v_scale = grad_g / ||v|| = per_dim_sums / (||v||^2)
   // and broadcast it to match v's shape.
   Dimensions broadcast_dims;
-  broadcast_dims.reserve(v_rank);
-  auto g_calc_rank = GetTensorTypeOrDie(g_op).getRank();
+  const auto g_calc_rank = GetTensorTypeOrDie(g_op).getRank();
   if (g_calc_rank == v_rank) {
-    for (int i = 0; i < v_rank; ++i) broadcast_dims.push_back(i);
+    broadcast_dims = GetAllDimensions(v_op);
   } else if (g_calc_rank > 0) {
     broadcast_dims.push_back(dim);
   }
@@ -298,7 +278,8 @@ std::tuple<at::Tensor, at::Tensor> AtenWeightNormInterface(const at::Tensor& v,
                                              CopyIntVector(g.sizes())},
                            .op_param_cache_keys = std::move(param_keys)})));
 
-    return std::make_tuple(MakeTensor(weight_norm_buf), MakeTensor(v_norm_buf));
+    return std::make_tuple(MakeTensor(std::move(weight_norm_buf)),
+                           MakeTensor(std::move(v_norm_buf)));
   });
 }
 
@@ -332,7 +313,8 @@ std::tuple<at::Tensor, at::Tensor> AtenWeightNormInterfaceBackward(
                                    CopyIntVector(saved_g.sizes())},
                  .op_param_cache_keys = std::move(param_keys)})));
 
-        return std::make_tuple(MakeTensor(grad_v_buf), MakeTensor(grad_g_buf));
+        return std::make_tuple(MakeTensor(std::move(grad_v_buf)),
+                               MakeTensor(std::move(grad_g_buf)));
       });
 }
 

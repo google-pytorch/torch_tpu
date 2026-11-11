@@ -30,8 +30,8 @@ that the attention formula ignores causal masking, and that ops without a
 formula or a decomposition into ops with one (e.g. `_grouped_mm`) count zero.
 """
 
+from collections.abc import Mapping
 import dataclasses
-from typing import Mapping
 
 from absl import logging
 from torch.utils import flop_counter
@@ -41,6 +41,7 @@ from perflab import mode as mode_lib
 from perflab import registry as registry_lib
 from perflab import step_lib
 from perflab import target as target_lib
+from perflab import workload as workload_lib
 
 # The key of `FlopCounterMode.get_flop_counts()` that holds the counts of the
 # whole step rather than of one module.
@@ -85,6 +86,8 @@ def _count(
 def count_step_flops(
     spec: registry_lib.BenchmarkSpec,
     run_scope: context_lib.RunScope,
+    *,
+    workload: workload_lib.Workload | None = None,
 ) -> FlopCount | None:
   """Counts the model FLOPs of one step of `spec` at `run_scope`.
 
@@ -97,6 +100,10 @@ def count_step_flops(
     spec: The benchmark to count.
     run_scope: The run scope to build the benchmark at, which sets e.g. its
       batch size, sequence length and depth.
+    workload: The workload of the measured case (`Context.workload`), which the
+      copy is built at. Passed rather than resolved for the CPU target, so that
+      the FLOPs are those of the measured batch, also for benchmarks whose
+      workload depends on the device kind.
 
   Returns:
     The FLOPs of one step, or None if the benchmark could not be built or
@@ -105,6 +112,7 @@ def count_step_flops(
   ctx = context_lib.Context(
       target=target_lib.make_target(target_lib.Platform.CPU, dtype=spec.dtype),
       run_scope=run_scope,
+      workload=workload,
   )
   try:
     with mode_lib.fake_tensor_context():

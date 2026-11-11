@@ -323,8 +323,9 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenNativeBatchNorm(
                                SanitizeOptionalTensor(running_mean),
                                SanitizeOptionalTensor(running_variance),
                                training, momentum, eps, std::move(param_keys)));
-              return {MakeTensor(output), MakeTensor(mean),
-                      MakeTensor(variance_inverse)};
+              return {MakeTensor(std::move(output)),
+                      MakeTensor(std::move(mean)),
+                      MakeTensor(std::move(variance_inverse))};
             });
 }
 
@@ -454,11 +455,14 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenNativeBatchNormBackward(
                       output_mask, std::move(param_keys)));
 
               at::Tensor grad_input =
-                  output_mask[0] ? MakeTensor(grad_input_buf) : at::Tensor();
+                  output_mask[0] ? MakeTensor(std::move(grad_input_buf))
+                                 : at::Tensor();
               at::Tensor grad_weight =
-                  output_mask[1] ? MakeTensor(grad_weight_buf) : at::Tensor();
-              at::Tensor grad_bias =
-                  output_mask[2] ? MakeTensor(grad_bias_buf) : at::Tensor();
+                  output_mask[1] ? MakeTensor(std::move(grad_weight_buf))
+                                 : at::Tensor();
+              at::Tensor grad_bias = output_mask[2]
+                                         ? MakeTensor(std::move(grad_bias_buf))
+                                         : at::Tensor();
 
               return {grad_input, grad_weight, grad_bias};
             });

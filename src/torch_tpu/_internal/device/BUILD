@@ -64,9 +64,8 @@ pybind_extension(
     ],
     wrap_py_init = True,
     deps = [
-        "@com_google_absl//absl/base:nullability",
-        "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/log:absl_log",
+        "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/time",
@@ -96,6 +95,7 @@ pybind_extension(
         "//csrc/eager:structured_log_buffer",
         "//csrc/eager:tensor_to_buffer",
         "//csrc/eager:tpu_hooks",
+        "//csrc/internal/device:vmem_capacity",
         "//csrc/internal/sync:sync_cc",
         "//csrc/pjrt:pjrt_state",
         "@xla//xla/pjrt:pjrt_client",

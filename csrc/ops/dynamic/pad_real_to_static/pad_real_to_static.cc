@@ -123,7 +123,7 @@ at::Tensor PadRealToStatic(const at::Tensor& input,
           const auto& t = runtime_shape[i];
           TT_CHECK_THROW(t.dim() == 0, error::kInvalidArgument)
               << "expected runtime_shape tensor at index " << i
-              << " to be a 0-D (scalar) tensor, got " << t.dim() << "-D tensor";
+              << " to be a 0D (scalar) tensor, got " << t.dim() << "D tensor";
           TT_CHECK_THROW(t.scalar_type() == at::kInt, error::kInvalidArgument)
               << "expected runtime_shape to be a list of int32 tensors, got "
               << ToString(t.scalar_type()) << " tensor at index " << i;
@@ -168,7 +168,7 @@ at::Tensor PadRealToStatic(const at::Tensor& input,
                                {.out_dtype = mlir_dtype,
                                 .out_dims = out_dims,
                                 .op_param_cache_keys = std::move(param_keys)}));
-        return MakeTensor(result_buf);
+        return MakeTensor(std::move(result_buf));
       });
 }
 

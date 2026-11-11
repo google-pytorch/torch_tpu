@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 import copy
 import glob
 import operator
@@ -23,7 +23,10 @@ from unittest import mock
 from absl.testing import absltest
 import torch
 from torch import fx
+from torch._dynamo.backends.common import aot_autograd
+from torch._functorch import aot_autograd as functorch_aot
 from torch.utils import checkpoint
+import torch_tpu
 from torch_tpu._internal.compile.debug import TpuCompileDebug
 from torch_tpu._internal.compile.fx_passes import mark_activation_checkpoints
 from torch_tpu._internal.utils import test_utils
@@ -289,8 +292,10 @@ class ActivationCheckpointingTest(seed_test_utils.RepeatableTest):
   def _assert_hlo_cse_idempotent(
       self,
       expected_barriers: int,
-      expected_erfs: int,
+      expected_exponentials: int,
       expected_dots: int,
+      *,
+      min_exponentials_after_cse: int | None = None,
   ) -> None:
     all_module_before = sorted(
         glob.glob(
@@ -316,21 +321,36 @@ class ActivationCheckpointingTest(seed_test_utils.RepeatableTest):
     with open(before_files[0], "r") as f:
       first_entry = f.read().split("ENTRY ", maxsplit=1)[1]
     self.assertEqual(first_entry.count("opt-barrier("), expected_barriers)
-    self.assertEqual(first_entry.count("erf("), expected_erfs)
+    # gelu computes its CDF with `chlo.erfc`, which has no HLO op: it lowers
+    # to a polynomial approximation with `exponential` ops, which also
+    # appear in the gelu gradient. Count those as the gelu marker.
+    self.assertEqual(first_entry.count("exponential("), expected_exponentials)
     self.assertEqual(first_entry.count("dot("), expected_dots)
 
+    invariant_tokens = (
+        ("opt-barrier(", "dot(", "rsqrt(")
+        if min_exponentials_after_cse is not None
+        else ("opt-barrier(", "exponential(", "dot(", "rsqrt(")
+    )
     for before_path, after_path in zip(before_files, after_files, strict=True):
       with open(before_path, "r") as f:
         before_entry = f.read().split("ENTRY ", maxsplit=1)[1]
       with open(after_path, "r") as f:
         after_entry = f.read().split("ENTRY ", maxsplit=1)[1]
-      for op_token in ("opt-barrier(", "erf(", "dot(", "rsqrt("):
+      for op_token in invariant_tokens:
         self.assertEqual(
             before_entry.count(op_token),
             after_entry.count(op_token),
             f"HloCSE changed {op_token} count between"
             f" {os.path.basename(before_path)} and"
             f" {os.path.basename(after_path)}",
+        )
+      if (
+          min_exponentials_after_cse is not None
+          and before_entry.count("exponential(") > 0
+      ):
+        self.assertGreaterEqual(
+            after_entry.count("exponential("), min_exponentials_after_cse
         )
 
   def _run_and_verify_tpu_model(
@@ -339,6 +359,7 @@ class ActivationCheckpointingTest(seed_test_utils.RepeatableTest):
       ref_model: torch.nn.Module,
       *,
       fuse_step: bool,
+      input_shape: Sequence[int] = (4, 8),
   ) -> TpuCompileDebug:
     device = torch.device("tpu")
     model = model.to(device).train()
@@ -349,9 +370,9 @@ class ActivationCheckpointingTest(seed_test_utils.RepeatableTest):
     debugs: list[TpuCompileDebug] = []
     options = {"serializable": False, "debug_callback": debugs.append}
 
-    x = torch.randn(4, 8, device=device, requires_grad=True)
+    x = torch.randn(*input_shape, device=device, requires_grad=True)
     ref_x = x.detach().clone().requires_grad_(True)
-    target = torch.randn(4, 8, device=device)
+    target = torch.randn(*input_shape, device=device)
 
     ref_outputs = ref_model(ref_x)
     ref_loss = criterion(ref_outputs, target)
@@ -671,6 +692,381 @@ class ActivationCheckpointingTest(seed_test_utils.RepeatableTest):
     self.assertEqual(list(barriers[0].args[0]), [x_2, x_1])
     self.assertIs(_first_non_getitem_after(barriers[0]), a_2)
 
+  def test_three_d_linear_checkpoint_saves_boundary_and_places_barriers(self):
+    class FourLayerCheckpointedMLP(torch.nn.Module):
+
+      def __init__(self):
+        super().__init__()
+        self.layers = torch.nn.ModuleList([
+            torch.nn.Sequential(
+                torch.nn.Linear(8, 16),
+                torch.nn.GELU(),
+                torch.nn.Linear(16, 8),
+            )
+            for _ in range(4)
+        ])
+
+      def forward(self, x: torch.Tensor) -> torch.Tensor:
+        for layer in self.layers:
+          # Flatten to 2D with `view` before `nn.Linear` and unflatten back to
+          # 3D with `view` after `nn.Linear` so the checkpointed region's FX
+          # graph (`view -> addmm -> gelu -> addmm -> view`) matches PyTorch
+          # < 2.15's `_flatten_nd_linear` on all PyTorch versions.
+          x = torch.utils.checkpoint.checkpoint(
+              lambda inp, l=layer: l(inp.view(-1, inp.shape[-1])).view(
+                  inp.shape
+              ),
+              x,
+              use_reentrant=False,
+          )
+        return x
+
+    fw_graphs: list[fx.GraphModule] = []
+    bw_graphs: list[fx.GraphModule] = []
+
+    def fw_compiler(gm: fx.GraphModule, example_inputs: Sequence[Any]):
+      del example_inputs
+      fw_graphs.append(copy.deepcopy(gm))
+      return functorch_aot.make_boxed_func(gm.forward)
+
+    # pylint: disable=protected-access
+    tpu_compile_mod = torch_tpu._internal.compile
+    tpu_backend_mod = tpu_compile_mod._backend
+
+    def bw_compiler(gm: fx.GraphModule, example_inputs: Sequence[Any]):
+      del example_inputs
+      bw_copy = copy.deepcopy(gm)
+      if test_utils.get_torch_version() < (2, 12):
+        tpu_compile_mod.compiler._backfill_backward_graph_tags(bw_copy)
+      mark_activation_checkpoints.apply(bw_copy)
+      bw_graphs.append(bw_copy)
+      return functorch_aot.make_boxed_func(gm.forward)
+
+    backend = aot_autograd(
+        fw_compiler=fw_compiler,
+        bw_compiler=bw_compiler,
+        partition_fn=tpu_backend_mod.min_cut_rematerialization_partition,
+        decompositions=tpu_backend_mod._TPU_DECOMPOSITIONS,
+        keep_inference_input_mutations=False,
+    )
+    # pylint: enable=protected-access
+    for recompute_views in (False, True):
+      with self.subTest(recompute_views=recompute_views):
+        torch._dynamo.reset()
+        fw_graphs.clear()
+        bw_graphs.clear()
+        with torch._functorch.config.patch(recompute_views=recompute_views):
+          model = FourLayerCheckpointedMLP()
+          x = torch.randn(2, 4, 8)
+          compiled = torch.compile(model, backend=backend, fullgraph=True)
+          out = compiled(x)
+          out.sum().backward()
+
+        self.assertLen(fw_graphs, 1)
+        self.assertLen(bw_graphs, 1)
+        bw_gm = bw_graphs[0]
+        bwd_addmms = [
+            n
+            for n in bw_gm.graph.nodes
+            if n.op == "call_function"
+            and n.target == torch.ops.aten.addmm.default
+        ]
+        barriers = _get_barriers(bw_gm)
+        self.assertLen(
+            bwd_addmms,
+            4,
+            "Expected only 4 recomputed addmm ops in backward, got"
+            f" {len(bwd_addmms)}:\n"
+            f"{bw_gm.print_readable(print_output=False)}",
+        )
+        self.assertLen(
+            barriers,
+            4,
+            "Expected 4 per-layer barriers in backward, got"
+            f" {len(barriers)}:\n"
+            f"{bw_gm.print_readable(print_output=False)}",
+        )
+        for barrier in barriers:
+          for inp in barrier.args[0]:
+            self.assertLessEqual(
+                inp.meta["val"].ndim,
+                2,
+                f"Expected barrier input {inp.name!r} to be flattened to <= 2D,"
+                f" got shape {tuple(inp.meta['val'].shape)}",
+            )
+        nodes_after_first = [
+            (n.op, n.target, n.args) for n in bw_gm.graph.nodes
+        ]
+        mark_activation_checkpoints.apply(bw_gm)
+        self.assertEqual(
+            nodes_after_first,
+            [(n.op, n.target, n.args) for n in bw_gm.graph.nodes],
+        )
+
+  def test_three_d_barrier_inputs_flattened_to_2d_and_idempotent(self):
+    graph = fx.Graph()
+    x_shared_3d = graph.placeholder("x_shared_3d")
+    x_shared_3d.meta["val"] = torch.empty(2, 4, 8)
+    x_4d = graph.placeholder("x_4d")
+    x_4d.meta["val"] = torch.empty(2, 3, 4, 8)
+    x_noncontig = graph.placeholder("x_noncontig")
+    x_noncontig.meta["val"] = torch.empty(2, 8, 4).transpose(1, 2)
+    x_empty = graph.placeholder("x_empty")
+    x_empty.meta["val"] = torch.empty(2, 0, 8)
+    dy_3d = graph.placeholder("dy_3d")
+    dy_3d.meta["val"] = torch.empty(2, 4, 8)
+
+    # Pre-region 2D view of `x_shared_3d` whose only consumer is a backward
+    # `aten.view` inside Region 1 that reshapes back to `[2, 4, 8]`. Without
+    # explicit `_BARRIER_VIEW_META_KEY` tagging on synthetic barrier views,
+    # rewiring `v_pre` into Region 1's barrier would make `v_pre` and
+    # `b1_user_unflat` match the local graph topology of synthetic flatten and
+    # unflatten views, silently dropping `b1_user_unflat` from Region 0's
+    # barrier.
+    v_pre = _add_bwd_node(
+        graph, torch.ops.aten.view.default, (x_shared_3d, [8, 8]), "v_pre"
+    )
+    v_pre.meta["val"] = torch.empty(8, 8)
+
+    # Region 1 (ac_graph_id = 1): consumes contiguous 3D/4D, non-contiguous 3D,
+    # and empty 3D inputs.
+    r1_3d = _add_remat_node(
+        graph, torch.ops.aten.gelu.default, (x_shared_3d,), 1, "r1_3d"
+    )
+    r1_3d.meta["val"] = torch.empty(2, 4, 8)
+    r1_3d.meta["stack_trace"] = "r1_trace"
+    r1_4d = _add_remat_node(
+        graph, torch.ops.aten.relu.default, (x_4d,), 1, "r1_4d"
+    )
+    r1_4d.meta["val"] = torch.empty(2, 3, 4, 8)
+    r1_empty = _add_remat_node(
+        graph, torch.ops.aten.neg.default, (x_empty,), 1, "r1_empty"
+    )
+    r1_empty.meta["val"] = torch.empty(2, 0, 8)
+    b1_user_unflat = _add_bwd_node(
+        graph,
+        torch.ops.aten.view.default,
+        (v_pre, [2, 4, 8]),
+        "b1_user_unflat",
+    )
+    b1_user_unflat.meta["val"] = torch.empty(2, 4, 8)
+    b1_mul = _add_bwd_node(
+        graph, torch.ops.aten.mul.Tensor, (r1_3d, dy_3d), "b1_mul"
+    )
+    b1_mul.meta["val"] = torch.empty(2, 4, 8)
+    b1_unflat_term = _add_bwd_node(
+        graph,
+        torch.ops.aten.mul.Tensor,
+        (r1_3d, b1_user_unflat),
+        "b1_unflat_term",
+    )
+    b1_unflat_term.meta["val"] = torch.empty(2, 4, 8)
+    b1_with_unflat = _add_bwd_node(
+        graph,
+        torch.ops.aten.add.Tensor,
+        (b1_mul, b1_unflat_term),
+        "b1_with_unflat",
+    )
+    b1_with_unflat.meta["val"] = torch.empty(2, 4, 8)
+    b1_noncontig_term = _add_bwd_node(
+        graph,
+        torch.ops.aten.mul.Tensor,
+        (r1_3d, x_noncontig),
+        "b1_noncontig_term",
+    )
+    b1_noncontig_term.meta["val"] = torch.empty(2, 4, 8)
+    b1_noncontig = _add_bwd_node(
+        graph,
+        torch.ops.aten.add.Tensor,
+        (b1_with_unflat, b1_noncontig_term),
+        "b1_noncontig",
+    )
+    b1_noncontig.meta["val"] = torch.empty(2, 4, 8)
+    b1_4d = _add_bwd_node(
+        graph, torch.ops.aten.mul.Tensor, (r1_4d, x_4d), "b1_4d"
+    )
+    b1_4d.meta["val"] = torch.empty(2, 3, 4, 8)
+    b1_empty = _add_bwd_node(
+        graph, torch.ops.aten.neg.default, (r1_empty,), "b1_empty"
+    )
+    b1_empty.meta["val"] = torch.empty(2, 0, 8)
+    # Multi-hop backward consumer of `x_shared_3d` (analogous to `dW1`).
+    x_2d_bwd = _add_bwd_node(
+        graph, torch.ops.aten.view.default, (x_shared_3d, [8, 8]), "x_2d_bwd"
+    )
+    b1_2d_grad = _add_bwd_node(
+        graph, torch.ops.aten.view.default, (b1_noncontig, [8, 8]), "b1_2d_grad"
+    )
+    dw_1 = _add_bwd_node(
+        graph, torch.ops.aten.mm.default, (b1_2d_grad, x_2d_bwd), "dw_1"
+    )
+
+    # Region 0 (ac_graph_id = 0): consumes `x_shared_3d`, `b1_noncontig`, and
+    # `b1_user_unflat`.
+    r0_3d = _add_remat_node(
+        graph, torch.ops.aten.gelu.default, (x_shared_3d,), 0, "r0_3d"
+    )
+    r0_3d.meta["val"] = torch.empty(2, 4, 8)
+    dx_0_base = _add_bwd_node(
+        graph, torch.ops.aten.mul.Tensor, (r0_3d, b1_noncontig), "dx_0_base"
+    )
+    dx_0_base.meta["val"] = torch.empty(2, 4, 8)
+    dx_0_unflat_term = _add_bwd_node(
+        graph,
+        torch.ops.aten.mul.Tensor,
+        (r0_3d, b1_user_unflat),
+        "dx_0_unflat_term",
+    )
+    dx_0_unflat_term.meta["val"] = torch.empty(2, 4, 8)
+    dx_0 = _add_bwd_node(
+        graph,
+        torch.ops.aten.add.Tensor,
+        (dx_0_base, dx_0_unflat_term),
+        "dx_0",
+    )
+    dx_0.meta["val"] = torch.empty(2, 4, 8)
+
+    graph.output((dx_0, dw_1, b1_4d, b1_empty))
+    gm = fx.GraphModule(torch.nn.Module(), graph)
+    ref_gm = copy.deepcopy(gm)
+
+    mark_activation_checkpoints.apply(gm)
+
+    barriers = _get_barriers(gm)
+    self.assertLen(barriers, 2)
+
+    # Region 1 barrier: `x_shared_3d` ([8, 8]), `x_4d` ([24, 8]), and `dy_3d`
+    # ([8, 8]) are flattened to 2D; `v_pre` is already 2D ([8, 8]);
+    # `x_noncontig` stays 3D; `x_empty` (0-byte buffer) is excluded.
+    b0_args = list(barriers[0].args[0])
+    self.assertIn(v_pre, b0_args)
+    self.assertIn(x_noncontig, b0_args)
+    self.assertNotIn(x_empty, b0_args)
+    for inp in b0_args:
+      if inp is x_noncontig:
+        self.assertEqual(inp.meta["val"].ndim, 3)
+      else:
+        self.assertEqual(inp.meta["val"].ndim, 2)
+        self.assertEqual(inp.target, torch.ops.aten.view.default)
+        if inp is not v_pre:
+          self.assertEqual(inp.meta.get("stack_trace"), "r1_trace")
+
+    # Region 0 barrier: `x_shared_3d`, `b1_noncontig`, and `b1_user_unflat` are
+    # all flattened to 2D `[8, 8]` and gated by `barriers[1]`.
+    b1_args = list(barriers[1].args[0])
+    self.assertLen(b1_args, 3)
+    for inp in b1_args:
+      self.assertEqual(inp.meta["val"].shape, torch.Size([8, 8]))
+      self.assertEqual(inp.target, torch.ops.aten.view.default)
+    self.assertEqual(
+        {inp.args[0] for inp in b1_args},
+        {x_shared_3d, b1_noncontig, b1_user_unflat},
+    )
+
+    # `x_shared_3d` only feeds `v_pre` and the two pre-barrier 2D flatten views.
+    self.assertLen(x_shared_3d.users, 3)
+    for user in x_shared_3d.users:
+      self.assertEqual(user.target, torch.ops.aten.view.default)
+
+    # Verify numerical equivalence on TPU before vs. after the pass.
+    device = torch.device("tpu")
+    tpu_inputs = (
+        torch.randn(2, 4, 8, device=device),
+        torch.randn(2, 3, 4, 8, device=device),
+        torch.randn(2, 8, 4, device=device).transpose(1, 2),
+        torch.empty(2, 0, 8, device=device),
+        torch.randn(2, 4, 8, device=device),
+    )
+    expected_outs = ref_gm(*tpu_inputs)
+    actual_outs = gm(*tpu_inputs)
+    for actual, expected in zip(actual_outs, expected_outs, strict=True):
+      test_utils.assert_close(actual, expected)
+
+    # Calling `apply` a second time is a strict no-op.
+    nodes_after_first = [(n.op, n.target, n.args) for n in gm.graph.nodes]
+    code_after_first = gm.code
+    mark_activation_checkpoints.apply(gm)
+    self.assertEqual(
+        nodes_after_first, [(n.op, n.target, n.args) for n in gm.graph.nodes]
+    )
+    self.assertEqual(code_after_first, gm.code)
+
+  def test_three_d_activation_checkpointing_on_tpu(self):
+    cases: list[
+        tuple[
+            str,
+            Callable[[], tuple[torch.nn.Module, torch.nn.Module]],
+            bool,
+            int,
+            int,
+        ]
+    ] = [
+        (
+            "mlp_unfused",
+            lambda: (
+                _TwoLayerCheckpointedMLP(use_checkpoint=True),
+                _TwoLayerCheckpointedMLP(use_checkpoint=False),
+            ),
+            False,
+            4,
+            10,
+        ),
+    ]
+    if test_utils.get_torch_version() >= (2, 12):
+      cases.extend([
+          (
+              "mlp_fused",
+              lambda: (
+                  _TwoLayerCheckpointedMLP(use_checkpoint=True),
+                  _TwoLayerCheckpointedMLP(use_checkpoint=False),
+              ),
+              True,
+              6,
+              15,
+          ),
+          (
+              "sac_fused",
+              lambda: (
+                  _TwoLayerSACModel(use_sac=True),
+                  _TwoLayerSACModel(use_sac=False),
+              ),
+              True,
+              6,
+              12,
+          ),
+      ])
+
+    for name, build_models, fuse_step, exponentials, expected_dots in cases:
+      with self.subTest(name=name):
+        torch._dynamo.reset()
+        model, ref_model = build_models()
+        debug = self._run_and_verify_tpu_model(
+            model,
+            ref_model,
+            fuse_step=fuse_step,
+            input_shape=(2, 4, 8),
+        )
+        mlir_text = (
+            debug.stablehlo_forward_text[0]
+            if fuse_step
+            else debug.stablehlo_backward_text[0]
+        )
+        barrier_lines = [
+            line
+            for line in mlir_text.splitlines()
+            if "stablehlo.optimization_barrier" in line
+        ]
+        self.assertLen(barrier_lines, 2)
+        for line in barrier_lines:
+          self.assertNotIn("tensor<2x4x8xf32>", line)
+          self.assertIn("tensor<8x8xf32>", line)
+        self._assert_hlo_cse_idempotent(
+            expected_barriers=2,
+            expected_exponentials=exponentials,
+            expected_dots=expected_dots,
+            min_exponentials_after_cse=exponentials,
+        )
+
   def test_selective_activation_checkpointing_with_layernorm_on_tpu(self):
     debug = self._run_and_verify_tpu_model(
         _TwoLayerSACModel(use_sac=True),
@@ -683,9 +1079,9 @@ class ActivationCheckpointingTest(seed_test_utils.RepeatableTest):
     )
     bwd_mlir = debug.stablehlo_backward_text[0]
     self.assertEqual(bwd_mlir.count("stablehlo.optimization_barrier"), 2)
-    self.assertEqual(bwd_mlir.count("chlo.erf"), 2)
+    self.assertEqual(bwd_mlir.count("chlo.erfc"), 2)
     self._assert_hlo_cse_idempotent(
-        expected_barriers=2, expected_erfs=2, expected_dots=8
+        expected_barriers=2, expected_exponentials=4, expected_dots=8
     )
 
   def test_activation_checkpointing(self):
@@ -700,13 +1096,13 @@ class ActivationCheckpointingTest(seed_test_utils.RepeatableTest):
     )
     bwd_mlir = debug.stablehlo_backward_text[0]
     self.assertEqual(bwd_mlir.count("stablehlo.optimization_barrier"), 2)
-    self.assertEqual(bwd_mlir.count("chlo.erf"), 2)
+    self.assertEqual(bwd_mlir.count("chlo.erfc"), 2)
     # 8 backward aten.mm ops lower to 8 stablehlo.dot_general ops in MLIR; XLA
     # HLO additionally lowers the 2 recomputed aten.addmm ops to 2 dot( ops
     # (8 + 2 = 10 total dot( ops in HLO).
     self.assertEqual(bwd_mlir.count("stablehlo.dot_general"), 8)
     self._assert_hlo_cse_idempotent(
-        expected_barriers=2, expected_erfs=2, expected_dots=10
+        expected_barriers=2, expected_exponentials=4, expected_dots=10
     )
 
   def test_activation_checkpointing_fused_step(self):
@@ -719,8 +1115,8 @@ class ActivationCheckpointingTest(seed_test_utils.RepeatableTest):
       self.skipTest("Fused-step AC rematerialization requires PyTorch >= 2.12")
 
     # 1. Negative control: without barriers, MLIR CSE deduplicates the 2
-    #    backward recomputed `chlo.erf` ops against the 2 forward `chlo.erf` ops
-    #    (collapsing 4 -> 2).
+    #    backward recomputed `chlo.erfc` ops against the 2 forward `chlo.erfc`
+    #    ops (collapsing 4 -> 2).
     with mock.patch.object(
         mark_activation_checkpoints, "apply", side_effect=lambda gm: None
     ):
@@ -731,9 +1127,9 @@ class ActivationCheckpointingTest(seed_test_utils.RepeatableTest):
       )
     no_barrier_mlir = no_barrier_debug.stablehlo_forward_text[0]
     self.assertNotIn("stablehlo.optimization_barrier", no_barrier_mlir)
-    self.assertEqual(no_barrier_mlir.count("chlo.erf"), 2)
+    self.assertEqual(no_barrier_mlir.count("chlo.erfc"), 2)
 
-    # 2. With barriers enabled, all 4 `chlo.erf` ops and 15 HLO `dot(` ops
+    # 2. With barriers enabled, all 4 `chlo.erfc` ops and 15 HLO `dot(` ops
     #    (4 forward addmm + 3 recomputed addmm + 8 backward mm) survive both
     #    MLIR CSE and XLA `HloCSE`.
     torch._dynamo.reset()
@@ -745,10 +1141,10 @@ class ActivationCheckpointingTest(seed_test_utils.RepeatableTest):
     self.assertLen(debug.compiled_executables, 1)
     fused_mlir = debug.stablehlo_forward_text[0]
     self.assertEqual(fused_mlir.count("stablehlo.optimization_barrier"), 2)
-    self.assertEqual(fused_mlir.count("chlo.erf"), 4)
+    self.assertEqual(fused_mlir.count("chlo.erfc"), 4)
     self.assertEqual(fused_mlir.count("stablehlo.dot_general"), 8)
     self._assert_hlo_cse_idempotent(
-        expected_barriers=2, expected_erfs=4, expected_dots=15
+        expected_barriers=2, expected_exponentials=6, expected_dots=15
     )
 
   def test_selective_activation_checkpointing_with_layernorm_fused_step(self):
@@ -768,12 +1164,12 @@ class ActivationCheckpointingTest(seed_test_utils.RepeatableTest):
     self.assertLen(debug.compiled_executables, 1)
     fused_mlir = debug.stablehlo_forward_text[0]
     self.assertEqual(fused_mlir.count("stablehlo.optimization_barrier"), 2)
-    self.assertEqual(fused_mlir.count("chlo.erf"), 4)
+    self.assertEqual(fused_mlir.count("chlo.erfc"), 4)
     # Under `_sac_policy_fn`, the 4 forward addmm ops are saved (`MUST_SAVE`)
     # and not recomputed in backward, yielding 4 forward addmm + 8 backward mm =
     # 12 HLO `dot(` ops.
     self._assert_hlo_cse_idempotent(
-        expected_barriers=2, expected_erfs=4, expected_dots=12
+        expected_barriers=2, expected_exponentials=6, expected_dots=12
     )
 
   def test_activation_checkpointing_shared_weights_fused_step(self):
@@ -793,10 +1189,10 @@ class ActivationCheckpointingTest(seed_test_utils.RepeatableTest):
     self.assertLen(debug.compiled_executables, 1)
     fused_mlir = debug.stablehlo_forward_text[0]
     self.assertEqual(fused_mlir.count("stablehlo.optimization_barrier"), 2)
-    self.assertEqual(fused_mlir.count("chlo.erf"), 4)
+    self.assertEqual(fused_mlir.count("chlo.erfc"), 4)
     self.assertEqual(fused_mlir.count("stablehlo.dot_general"), 8)
     self._assert_hlo_cse_idempotent(
-        expected_barriers=2, expected_erfs=4, expected_dots=15
+        expected_barriers=2, expected_exponentials=6, expected_dots=15
     )
 
 

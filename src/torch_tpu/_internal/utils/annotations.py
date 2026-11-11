@@ -34,13 +34,14 @@ process instead. TorchTPU's own tests can set
 error.
 """
 
+from collections.abc import Callable, Mapping
 import dataclasses
 import enum
 import functools
 import inspect
 import sys
 import textwrap
-from typing import Any, Callable, Mapping, Optional, TypeVar
+from typing import Any, TypeVar
 
 import torch
 from torch_tpu._internal import warnings
@@ -101,7 +102,7 @@ def _is_framework_caller_frame(frame: Any) -> bool:
 _internal_apis_allowed_for_testing: bool = False
 
 
-class Stage(str, enum.Enum):
+class Stage(enum.StrEnum):
   """Lifecycle stages for TorchTPU APIs."""
 
   INTERNAL = "Internal"
@@ -112,7 +113,7 @@ class Stage(str, enum.Enum):
   @property
   def warning_category(
       self,
-  ) -> Optional[warnings.WarningCategory]:
+  ) -> warnings.WarningCategory | None:
     """The TorchTPU warning category for this stage."""
     if self == Stage.INTERNAL:
       return warnings.INTERNAL_API
@@ -123,7 +124,7 @@ class Stage(str, enum.Enum):
     return None
 
   def format_warning_message(
-      self, name: str, reason: str, version: Optional[str] = None
+      self, name: str, reason: str, version: str | None = None
   ) -> str:
     """Formats the warning message for this stage."""
     if self == Stage.INTERNAL:
@@ -158,7 +159,7 @@ class ApiStageInfo:
   stage: Stage
   reason: str
   value: Any = None
-  version: Optional[str] = None
+  version: str | None = None
 
 
 def _safe_setattr(target: Any, name: str, value: Any) -> None:
@@ -179,8 +180,8 @@ def _attach_stage_metadata(
     target: Any,
     stage: str,
     reason: str,
-    version: Optional[str] = None,
-    prefer: Optional[str] = None,
+    version: str | None = None,
+    prefer: str | None = None,
 ) -> None:
   """Attaches stage metadata attributes to a target.
 
@@ -228,7 +229,7 @@ def _create_warning_wrapper(
     display_target: Any,
     stage: Stage,
     reason: str,
-    version: Optional[str] = None,
+    version: str | None = None,
     strict: bool = False,
 ) -> Callable[..., Any]:
   """Wraps a callable to emit a one-time warning per process before execution.
@@ -325,8 +326,8 @@ def _annotate_target(
     target: _T,
     stage: Stage,
     reason: str,
-    version: Optional[str] = None,
-    prefer: Optional[str] = None,
+    version: str | None = None,
+    prefer: str | None = None,
     strict: bool = False,
 ) -> _T:
   """Attaches stage metadata and warning wrapper to a target function or class.
@@ -458,7 +459,7 @@ def internal_or_experimental(
     *,
     internal_when: bool,
     experimental_msg: str,
-    prefer: Optional[str] = None,
+    prefer: str | None = None,
     strict: bool = True,
 ) -> Callable[[_T], _T]:
   """Marks a TorchTPU Python API (function or class) as internal or experimental.
@@ -581,7 +582,7 @@ def _resolve_module_attribute(
     stages_map: Mapping[str, ApiStageInfo],
     name: str,
     module_name: str,
-    tt_api_globals: Optional[dict[str, Any] | type],
+    tt_api_globals: dict[str, Any] | type | None,
 ) -> Any:
   """Resolves a dynamic module attribute from a stages map and emits warnings if applicable.
 

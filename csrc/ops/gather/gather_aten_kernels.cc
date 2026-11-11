@@ -27,6 +27,7 @@
 #include "absl/types/span.h"
 #include "c10/core/DispatchKey.h"
 #include "c10/core/DispatchKeySet.h"
+#include "c10/core/ScalarType.h"
 #include "c10/core/Storage.h"
 #include "c10/core/TensorImpl.h"
 #include "c10/util/intrusive_ptr.h"
@@ -36,6 +37,7 @@
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
+#include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/device_buffer_utils.h"
@@ -55,6 +57,17 @@
 namespace torch_tpu {
 namespace {
 
+// Upstream PyTorch skips index dtype checks when `index` is empty, so callers
+// must invoke this only after handling `index.numel() == 0`.
+absl::Status ValidateGatherIndexDtype(const at::Tensor& index) {
+  TT_RET_CHECK(index.scalar_type() == at::ScalarType::Long ||
+                   index.scalar_type() == at::ScalarType::Int,
+               error::kInvalidArgument)
+      << "expected the index dtype to be int32 or int64, got "
+      << ToString(index.scalar_type());
+  return absl::OkStatus();
+}
+
 absl::StatusOr<DeviceBufferRef> Gather(const at::Tensor& self, int64_t dim,
                                        const at::Tensor& index,
                                        bool sparse_grad,
@@ -69,6 +82,7 @@ absl::StatusOr<DeviceBufferRef> Gather(const at::Tensor& self, int64_t dim,
     return CreateZeroSizeDeviceBufferRef(output_dims, output_dtype);
   }
 
+  TT_RETURN_IF_ERROR(ValidateGatherIndexDtype(index));
   TT_RETURN_IF_ERROR(
       ValidateGatherInputs(self.sizes(), dim, index.sizes(), sparse_grad));
 
@@ -126,6 +140,7 @@ absl::Status GatherOut(const at::Tensor& self, int64_t dim,
     return absl::OkStatus();
   }
 
+  TT_RETURN_IF_ERROR(ValidateGatherIndexDtype(index));
   TT_RETURN_IF_ERROR(
       ValidateGatherInputs(self.sizes(), dim, index.sizes(), sparse_grad));
 
@@ -182,7 +197,7 @@ at::Tensor AtenGather(const at::Tensor& self, int64_t dim,
   TT_KERNEL(OpName::kGather, param_keys, (self, dim, index, sparse_grad), {
     TT_ASSIGN_OR_THROW(auto result, Gather(self, dim, index, sparse_grad,
                                            std::move(param_keys)));
-    return MakeTensor(result);
+    return MakeTensor(std::move(result));
   });
 }
 

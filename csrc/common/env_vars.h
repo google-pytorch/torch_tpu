@@ -17,7 +17,6 @@
 #ifndef TORCH_TPU_CSRC_COMMON_ENV_VARS_H_
 #define TORCH_TPU_CSRC_COMMON_ENV_VARS_H_
 
-#include <cstdlib>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -25,12 +24,59 @@
 
 #include "absl/base/no_destructor.h"
 #include "absl/strings/numbers.h"
-#include "c10/util/Exception.h"
 #include "csrc/common/constexpr_map.h"
 #include "csrc/common/symbol_stage.h"
-#include "csrc/common/warnings.h"
 
 namespace torch_tpu {
+
+namespace internal {
+
+// The non-template parts of the functions below, to reduce code bloat. Only
+// the functions below should call these.
+
+// Implements SafeSetEnv().
+void SafeSetEnvImpl(const char* name, const std::string& value);
+
+// Implements SafeUnsetEnv().
+void SafeUnsetEnvImpl(const char* name);
+
+// Implements GetEnvOnce(): records that the env var with the given name is
+// memoized, reads it, and warns if it is set and `maybe_stage` is experimental
+// or deprecated. GetEnvOnce() memoizes the result, so this is called at most
+// once per env var. Thread-safe.
+[[nodiscard]] std::optional<std::string> ReadEnvForGetEnvOnce(
+    const char* name, std::optional<SymbolStage> maybe_stage);
+
+// Parses `env_var`, the value of the env var with the given name, as a Boolean
+// using absl::SimpleAtob. Returns std::nullopt and warns if it cannot be
+// parsed, or returns std::nullopt if it is not set.
+[[nodiscard]] std::optional<bool> ParseBooleanEnv(
+    const char* name, const std::optional<std::string>& env_var);
+
+// Warns that `value`, the value of the env var with the given name, cannot be
+// parsed as an integer.
+void WarnInvalidIntegerEnv(const char* name, std::string_view value);
+
+// Parses `env_var`, the value of the env var with the given name, as an
+// integer using absl::SimpleAtoi. Returns std::nullopt and warns if it cannot
+// be parsed, or returns std::nullopt if it is not set.
+template <typename IntType>
+[[nodiscard]] std::optional<IntType> ParseIntegerEnv(
+    const char* name, const std::optional<std::string>& env_var) {
+  static_assert(std::is_integral_v<IntType> && !std::is_same_v<IntType, bool>,
+                "IntType must be a non-boolean integral type.");
+  if (!env_var.has_value()) {
+    return std::nullopt;
+  }
+  IntType result = 0;
+  if (absl::SimpleAtoi(*env_var, &result)) {
+    return result;
+  }
+  WarnInvalidIntegerEnv(name, *env_var);
+  return std::nullopt;
+}
+
+}  // namespace internal
 
 // All environment variables read or written by torch_tpu.
 //
@@ -55,6 +101,10 @@ inline constexpr char kLibtpuInitArgsEnvVar[] =
 inline constexpr char kLocalRankEnvVar[] = "LOCAL_RANK";    // Set by launchers.
 inline constexpr char kMasterAddrEnvVar[] = "MASTER_ADDR";  // Set by launchers.
 inline constexpr char kMasterPortEnvVar[] = "MASTER_PORT";  // Set by launchers.
+// The address of the MegaScale coordinator in a multi-slice job. Set by GKE or
+// distributed launchers and read by libtpu.
+inline constexpr char kMegascaleCoordinatorAddressEnvVar[] =
+    "MEGASCALE_COORDINATOR_ADDRESS";
 // The MegaScale debug server port of this process. Read by libtpu, which
 // defaults it to 8081 in every process.
 inline constexpr char kMegascaleDebugPortEnvVar[] = "MEGASCALE_DEBUG_PORT";
@@ -112,6 +162,13 @@ inline constexpr char kTorchTpuEnableDebugChecksEnvVar[] =
 // Specifies the fixed port number for the handshake server.
 inline constexpr char kTorchTpuHandshakePortEnvVar[] =
     "TORCH_TPU_INTERNAL_HANDSHAKE_PORT";
+// If set to "1" or "true", TorchTPU crashes when an error is raised with an
+// error message that doesn't conform to the TorchTPU error message guidelines.
+// This is always enabled in internal builds; in other builds it's meant to be
+// set only by error coverage runs and error format unit tests. Default is
+// "false".
+inline constexpr char kTorchTpuInternalCheckErrorFormatEnvVar[] =
+    "TORCH_TPU_INTERNAL_CHECK_ERROR_FORMAT";
 // Specifies the repeated op detection mode. If not set, "safe" mode is used.
 // Supported modes:
 // - "safe": Uses GraphSplitMode::kSplitGraph when a repeated sequence is
@@ -168,8 +225,11 @@ inline constexpr char kTorchTpuInternalStorageAwarePlaceholdersEnvVar[] =
 // detect that they have a TorchTPU ancestor process.
 inline constexpr char kTorchTpuInternalTopmostPidEnvVar[] =
     "TORCH_TPU_INTERNAL_TOPMOST_PID";
-// If set to `"1"` or `"true"`, unbounded kernels are loaded instead of static
-// ones if a compatible one exists.
+// Selects which unbounded dynamic kernels are loaded instead of compiling
+// static ones in eager execution: "default" (or unset) loads the ones enabled
+// by default, e.g. nonzero; "all" loads all of them; "none" disables them.
+// Other values, including the legacy "0"/"1", crash the process when the
+// compilation cache is created. torch.compile always compiles the traced graph.
 inline constexpr char kTorchTpuInternalUseUnboundedDynamicKernelsEnvVar[] =
     "TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS";
 // TorchTPU-internal XLA compiler option overrides, in the format of
@@ -283,6 +343,8 @@ inline constexpr auto kEnvVarToStage =
         // environment variable widely used by production workloads. The
         // TorchTPU team is committed to honor this env var.
         {kMasterPortEnvVar, SymbolStage::Stable()},
+        {kMegascaleCoordinatorAddressEnvVar,
+         SymbolStage::InternalImplementation()},
         {kMegascaleDebugPortEnvVar, SymbolStage::InternalImplementation()},
         {kMegascalePortEnvVar, SymbolStage::InternalImplementation()},
         // Marked as Stable because it is an established distributed launcher
@@ -312,6 +374,7 @@ inline constexpr auto kEnvVarToStage =
         {kTorchTpuDevicesPerHostEnvVar, SymbolStage::Experimental()},
         {kTorchTpuEnableDebugChecksEnvVar, SymbolStage::Experimental()},
         {kTorchTpuHandshakePortEnvVar, SymbolStage::InternalApi()},
+        {kTorchTpuInternalCheckErrorFormatEnvVar, SymbolStage::InternalApi()},
         {kTorchTpuInternalDetectRepeatedOpsEnvVar, SymbolStage::InternalApi()},
         {kTorchTpuInternalDisableInplaceBufferDonationEnvVar,
          SymbolStage::InternalApi()},
@@ -365,24 +428,42 @@ inline constexpr auto kEnvVarToStage =
         // go/keep-sorted end
     });
 
-// Sets the environment variable with the given name to the given value.
+// Sets the environment variable with the given name to the given value. Use
+// this instead of setenv().
+//
+// Crashes if GetEnvOnce() has already memoized the env var, as the new value
+// would be silently ignored by GetEnvOnce(). If TorchTPU needs to change an env
+// var at runtime, read it with std::getenv() instead of GetEnvOnce().
 template <const char* name>
-void SetEnv(const std::string& value) {
+void SafeSetEnv(const std::string& value) {
   static_assert(kEnvVarToStage.contains(name),
                 "Unknown environment variable. All env vars used by TorchTPU "
                 "must be registered in kEnvVarToStage.");
-  setenv(name, value.c_str(), /*overwrite=*/1);
+  internal::SafeSetEnvImpl(name, value);
+}
+
+// Unsets the environment variable with the given name. Use this instead of
+// unsetenv().
+//
+// Like SafeSetEnv(), crashes if GetEnvOnce() has already memoized the env var.
+template <const char* name>
+void SafeUnsetEnv() {
+  static_assert(kEnvVarToStage.contains(name),
+                "Unknown environment variable. All env vars used by TorchTPU "
+                "must be registered in kEnvVarToStage.");
+  internal::SafeUnsetEnvImpl(name);
 }
 
 // Returns the value of the environment variable with the given name, or
 // std::nullopt if it is not set.
 //
 // This function is memoized, so the environment variable is only read once.
+// Hence SafeSetEnv() and SafeUnsetEnv() crash if they're called on the env var
+// after this function.
 //
 // We make the name a template parameter so that different env vars are
-// memoized separately and the TT_WARN_ONCE() call works for each env var
-// individually. The name must be one of the kFooEnvVar variables defined in
-// this file.
+// memoized separately, so any warning about an env var is emitted once per env
+// var. The name must be one of the kFooEnvVar variables defined in this file.
 template <const char* name>
 [[nodiscard]] const std::optional<std::string>& GetEnvOnce() {
   static_assert(kEnvVarToStage.contains(name),
@@ -397,29 +478,7 @@ template <const char* name>
         "read this env var, its stage in kEnvVarToStage must be changed.");
   }
   static const absl::NoDestructor<std::optional<std::string>> env_var(
-      [maybe_stage]() -> std::optional<std::string> {
-        const char* const env_var =  //
-            std::getenv(name);       // GETENV_OK=implementing GetEnvOnce().
-        if (env_var == nullptr) return std::nullopt;
-        if (env_var[0] == '\0') return std::string();
-
-        // The env var is set to a non-empty string. Warn the user if the env
-        // var is experimental or deprecated.
-        if (maybe_stage.has_value()) {
-          if (maybe_stage->is_experimental()) {
-            TT_WARN_ONCE(WarningCategory::kExperimentalApi, "the ", name,
-                         " environment variable is an experimental feature "
-                         "and may change or be removed without notice.");
-          } else if (maybe_stage->is_deprecated()) {
-            const auto deprecated_since = maybe_stage->version();
-            TT_WARN_ONCE(WarningCategory::kDeprecatedApi, "the ", name,
-                         " environment variable is deprecated since TorchTPU v",
-                         deprecated_since,
-                         " and will be removed in a future release.");
-          }
-        }
-        return std::string(env_var);
-      }());
+      internal::ReadEnvForGetEnvOnce(name, maybe_stage));
   return *env_var;
 }
 
@@ -431,21 +490,8 @@ template <const char* name>
 template <const char* name>
 [[nodiscard]] std::optional<bool> GetBooleanEnvOnce() {
   // Compute the value once and memoize it.
-  static const std::optional<bool> value = []() -> std::optional<bool> {
-    const auto& env_var = GetEnvOnce<name>();
-    if (!env_var.has_value()) {
-      return std::nullopt;
-    }
-    bool result = false;
-    if (absl::SimpleAtob(*env_var, &result)) {
-      return result;
-    }
-    TT_WARN_ONCE(WarningCategory::kCorrectness,
-                 "expected environment variable ", name,
-                 " to be a Boolean (e.g., '1', '0', 'true', 'false'), got '",
-                 *env_var, "'");
-    return std::nullopt;
-  }();
+  static const std::optional<bool> value =
+      internal::ParseBooleanEnv(name, GetEnvOnce<name>());
   return value;
 }
 
@@ -456,23 +502,9 @@ template <const char* name>
 // then parses the string into an integer using absl::SimpleAtoi.
 template <typename IntType, const char* name>
 [[nodiscard]] std::optional<IntType> GetIntegerEnvOnce() {
-  static_assert(std::is_integral_v<IntType> && !std::is_same_v<IntType, bool>,
-                "IntType must be a non-boolean integral type.");
   // Compute the value once and memoize it.
-  static const std::optional<IntType> value = []() -> std::optional<IntType> {
-    const auto& env_var = GetEnvOnce<name>();
-    if (!env_var.has_value()) {
-      return std::nullopt;
-    }
-    IntType result = 0;
-    if (absl::SimpleAtoi(*env_var, &result)) {
-      return result;
-    }
-    TT_WARN_ONCE(WarningCategory::kCorrectness,
-                 "expected environment variable ", name,
-                 " to be an integer, got '", *env_var, "'");
-    return std::nullopt;
-  }();
+  static const std::optional<IntType> value =
+      internal::ParseIntegerEnv<IntType>(name, GetEnvOnce<name>());
   return value;
 }
 

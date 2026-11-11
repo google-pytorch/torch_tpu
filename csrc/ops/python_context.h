@@ -158,6 +158,17 @@ struct PythonApiName {
   std::string_view name;
 };
 
+// Encapsulates the registered name of a custom (e.g. Pallas) kernel.
+//
+// Used to distinguish kernel names from internal OpName and Python API names
+// when constructing ScopedPythonContextCapturer.
+struct KernelName {
+  explicit KernelName(std::string_view name) : name(name) {}
+
+  // The registered name of the kernel, e.g. "pallas::add_vectors".
+  std::string_view name;
+};
+
 // RAII class to capture the python context for an op. Conceptually, it
 // maintains a per-thread singleton stack of PythonContext objects (the context
 // capturer stack).
@@ -194,6 +205,15 @@ class ScopedPythonContextCapturer {
   // name being run.
   explicit ScopedPythonContextCapturer(PythonApiName op_name);
 
+  // Explicit KernelName constructor.
+  //
+  // Used by custom kernel ops to nest the registered kernel name under the
+  // generic `custom_kernel` op. Behaves the same way as the `OpName` overload,
+  // but pushing the kernel name with any `::`, `:`, `/`, `@`, or `;` replaced
+  // by `_`, so that the name forms a single XProf scope level without
+  // colliding with XLA/XProf location delimiters.
+  explicit ScopedPythonContextCapturer(KernelName kernel_name);
+
   // This class is neither copyable nor movable.
   ScopedPythonContextCapturer(const ScopedPythonContextCapturer&) = delete;
   ScopedPythonContextCapturer& operator=(const ScopedPythonContextCapturer&) =
@@ -215,21 +235,6 @@ class ScopedPythonContextCapturer {
   // Like GetContext(), but returns std::nullopt if no
   // ScopedPythonContextCapturer is alive for the current thread.
   [[nodiscard]] static std::optional<PythonContext> MaybeGetContext();
-
-  // Manages the stack of active name scope hierarchies (e.g. from
-  // `nn_module_stack` or `named_scope`) on the current thread's
-  // `ContextManagerState`.
-  // - `PushNameScopes` pushes a full scope hierarchy onto the stack, replacing
-  //   the active hierarchy until popped (pass `{}` to isolate from outer
-  //   scopes).
-  // - `AppendNameScope` appends a single `scope` to the active hierarchy on top
-  //   of the stack (if not already present) and pushes that extended hierarchy.
-  // - `PopNameScopes` pops the top hierarchy from the stack, restoring the
-  //   previous hierarchy. Every `PushNameScopes` or `AppendNameScope` call must
-  //   be balanced by a matching `PopNameScopes` call.
-  static void AppendNameScope(std::string scope);
-  static void PushNameScopes(std::vector<std::string> scopes);
-  static void PopNameScopes();
 
   // For testing only: override the traceback of all currently alive contexts.
   static void SetTracebackForTesting(MaybeSharedTraceback traceback) {
@@ -265,6 +270,44 @@ class ScopedPythonContextCapturer {
   static thread_local  // CPP_THREAD_LOCAL_OK=needed only in the dispatching
                        // thread.
       MaybeSharedTraceback traceback_;
+};
+
+// Manages the stack of active name scope hierarchies (e.g. from
+// `nn_module_stack` or `named_scope`) on the current thread's
+// `ContextManagerState`.
+// - `PyPushNameScopes` pushes a full scope hierarchy onto the stack, replacing
+//   the active hierarchy until popped (pass `{}` to isolate from outer
+//   scopes).
+// - `PyAppendNameScope` appends a single `scope` to the active hierarchy on top
+//   of the stack (if not already present) and pushes that extended hierarchy.
+// - `PyPopNameScopes` pops the top hierarchy from the stack, restoring the
+//   previous hierarchy. Every `PyPushNameScopes` or `PyAppendNameScope` call
+//   must be balanced by a matching `PyPopNameScopes` call.
+void PyAppendNameScope(std::string scope);
+void PyPushNameScopes(std::vector<std::string> scopes);
+void PyPopNameScopes();
+
+// RAII counterparts of the functions above for C++ callers: the constructor
+// pushes a name scope hierarchy and the destructor pops it.
+
+// Appends `scope` to the active name scope hierarchy for its lifetime, like the
+// Python `named_scope` context manager (see `PyAppendNameScope`).
+class [[nodiscard]] NameScopeGuard {
+ public:
+  explicit NameScopeGuard(std::string scope);
+  NameScopeGuard(const NameScopeGuard&) = delete;
+  NameScopeGuard& operator=(const NameScopeGuard&) = delete;
+  ~NameScopeGuard();
+};
+
+// Replaces the active name scope hierarchy with `scopes` for its lifetime (see
+// `PyPushNameScopes`); pass `{}` to isolate from the outer scopes.
+class [[nodiscard]] NameScopeHierarchyGuard {
+ public:
+  explicit NameScopeHierarchyGuard(std::vector<std::string> scopes);
+  NameScopeHierarchyGuard(const NameScopeHierarchyGuard&) = delete;
+  NameScopeHierarchyGuard& operator=(const NameScopeHierarchyGuard&) = delete;
+  ~NameScopeHierarchyGuard();
 };
 
 // RAII class to provide a PythonContext captured earlier to an MlirOp build

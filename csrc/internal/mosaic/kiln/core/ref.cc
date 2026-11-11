@@ -29,7 +29,7 @@
 #include "csrc/internal/mosaic/kiln/core/shape.h"
 #include "csrc/internal/mosaic/kiln/core/specs.h"
 #include "csrc/internal/mosaic/kiln/core/tile.h"
-#include "csrc/internal/mosaic/kiln/core/value_base.h"
+#include "csrc/internal/mosaic/kiln/core/value_handle.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
@@ -54,20 +54,6 @@ llvm::SmallVector<mlir::Value> ZeroIndices(mlir::ImplicitLocOpBuilder& b,
                                            int64_t rank) {
   mlir::Value zero = arith::ConstantOp::create(b, b.getIndexAttr(0));
   return llvm::SmallVector<mlir::Value>(rank, zero);
-}
-
-bool HasMemorySpace(const Ref& r, tpu::MemorySpace expected_space) {
-  auto space = llvm::dyn_cast_or_null<tpu::MemorySpaceAttr>(
-      internal::MemRefTypeOf(r).getMemorySpace());
-  return space && space.getValue() == expected_space;
-}
-
-bool IsSmemRef(const Ref& r) {
-  return HasMemorySpace(r, tpu::MemorySpace::kSmem);
-}
-
-bool IsVmemRef(const Ref& r) {
-  return HasMemorySpace(r, tpu::MemorySpace::kVmem);
 }
 
 int64_t ResolveSliceDimSize(const internal::DimDesc& spec, int64_t source_dim) {
@@ -146,17 +132,9 @@ mlir::Value EmitMemRefSlice(mlir::ImplicitLocOpBuilder& b, mlir::Value source,
 
 }  // namespace
 
-Ref::Ref(const void* impl, DType dtype) : ValueBase(impl, dtype) {
-  ABSL_CHECK(  // CRASH_OK
-      llvm::isa<mlir::MemRefType>(internal::unwrap(*this).getType()))
-      << "Ref must be a memref value";
-}
-
-Tile Load(Ref src) {
+Tile Load(VmemRef src) {
   ABSL_CHECK(src.HasStaticShape())  // CRASH_OK
       << "Load() requires a Ref with a static shape";
-  ABSL_CHECK(IsVmemRef(src))  // CRASH_OK
-      << "Load() requires a VMEM ref (use AsyncCopy for HBM)";
   mlir::ImplicitLocOpBuilder& b = internal::CurrentBuilder();
   return internal::wrap<Tile>(
       vector::LoadOp::create(b, internal::ToMlirVectorType(src.shape()),
@@ -164,22 +142,52 @@ Tile Load(Ref src) {
       src.dtype());
 }
 
-Scalar LoadScalar(Ref src) {
+Tile Load(VmemRef src, llvm::ArrayRef<IndexArg> offsets,
+          llvm::ArrayRef<int64_t> sizes) {
+  ABSL_CHECK(src.HasStaticShape())  // CRASH_OK
+      << "Load() requires a Ref with a static shape";
+  const int64_t rank = src.rank();
+  ABSL_CHECK_EQ(static_cast<int64_t>(offsets.size()), rank)  // CRASH_OK
+      << "Load() requires one offset per ref dimension";
+  ABSL_CHECK_EQ(static_cast<int64_t>(sizes.size()), rank)  // CRASH_OK
+      << "Load() requires one size per ref dimension";
+
+  mlir::ImplicitLocOpBuilder& b = internal::CurrentBuilder();
+  const llvm::ArrayRef<int64_t> src_dims = src.dims();
+  llvm::SmallVector<mlir::Value, 4> indices;
+  indices.reserve(rank);
+  for (int64_t d = 0; d < rank; ++d) {
+    ABSL_CHECK_GT(sizes[d], 0)  // CRASH_OK
+        << "Load() size must be positive";
+    ABSL_CHECK_LE(sizes[d], src_dims[d])  // CRASH_OK
+        << "Load() size must not exceed dimension size";
+    internal::ValidateI32IndexArg(
+        offsets[d], internal::IndexBounds::kNonNegative, "Load offset");
+    if (offsets[d].IsInt()) {
+      ABSL_CHECK_LE(offsets[d].AsInt(), src_dims[d] - sizes[d])  // CRASH_OK
+          << "Load() offset + size must not exceed dimension size";
+    }
+    indices.push_back(internal::ToIndex(b, offsets[d]));
+  }
+  return internal::wrap<Tile>(
+      vector::LoadOp::create(
+          b, internal::ToMlirVectorType(Shape(sizes, src.dtype())),
+          internal::unwrap(src), indices),
+      src.dtype());
+}
+
+Scalar Load(SmemRef src) {
   ABSL_CHECK_EQ(src.rank(), 0)  // CRASH_OK
-      << "LoadScalar() requires a 0-D ref";
-  ABSL_CHECK(IsSmemRef(src))  // CRASH_OK
-      << "LoadScalar() requires an SMEM ref";
+      << "Load() of a Scalar requires a 0-D ref";
   return internal::wrap<Scalar>(
       memref::LoadOp::create(internal::CurrentBuilder(), internal::unwrap(src),
                              mlir::ValueRange{}),
       src.dtype());
 }
 
-void Store(Ref dst, Tile value, const StoreOptions& options) {
+void Store(VmemRef dst, Tile value, const StoreOptions& options) {
   ABSL_CHECK(dst.HasStaticShape())  // CRASH_OK
       << "Store() of a Tile requires a Ref with a static shape";
-  ABSL_CHECK(IsVmemRef(dst))  // CRASH_OK
-      << "Store() of a Tile requires a VMEM ref (use AsyncCopy for HBM)";
   Tile converted = value.AsType(dst.dtype());
   Tile shaped = converted.ToShape(dst.dims());
   mlir::Value mask_value;
@@ -196,23 +204,38 @@ void Store(Ref dst, Tile value, const StoreOptions& options) {
                              /*add=*/false);
 }
 
-void Store(Ref dst, Scalar value) {
+void Store(SmemRef dst, Scalar value) {
   ABSL_CHECK_EQ(dst.rank(), 0)  // CRASH_OK
       << "Store() of a Scalar requires a 0-D ref";
-  ABSL_CHECK(IsSmemRef(dst))  // CRASH_OK
-      << "Store() of a Scalar requires an SMEM ref";
   memref::StoreOp::create(internal::CurrentBuilder(),
                           internal::unwrap(value.AsType(dst.dtype())),
                           internal::unwrap(dst), mlir::ValueRange{});
 }
 
-llvm::ArrayRef<int64_t> Ref::dims() const {
-  return internal::MemRefTypeOf(*this).getShape();
+namespace internal {
+
+RefBase::RefBase(ValueHandle handle, DType dtype)
+    : handle_(handle), dtype_(dtype) {
+  ABSL_CHECK(  // CRASH_OK
+      llvm::isa<mlir::MemRefType>(handle.value().getType()))
+      << "Ref must be a memref value";
+  CheckElementType(handle, dtype, "Ref");
 }
 
-MemorySpace Ref::memory_space() const {
+RefBase::RefBase(ValueHandle handle, DType dtype, MemorySpace expected_space)
+    : RefBase(handle, dtype) {
+  ABSL_CHECK(memory_space() == expected_space)  // CRASH_OK
+      << "Ref is in " << memory_space() << " but its type requires "
+      << expected_space;
+}
+
+llvm::ArrayRef<int64_t> RefBase::dims() const {
+  return MemRefTypeOf(*this).getShape();
+}
+
+MemorySpace RefBase::memory_space() const {
   auto space = llvm::dyn_cast_or_null<tpu::MemorySpaceAttr>(
-      internal::MemRefTypeOf(*this).getMemorySpace());
+      MemRefTypeOf(*this).getMemorySpace());
   ABSL_CHECK(space != nullptr)  // CRASH_OK
       << "Ref is missing a TPU memory space attribute";
   switch (space.getValue()) {
@@ -229,44 +252,41 @@ MemorySpace Ref::memory_space() const {
   }
 }
 
-int64_t Ref::rank() const { return internal::MemRefTypeOf(*this).getRank(); }
+int64_t RefBase::rank() const { return MemRefTypeOf(*this).getRank(); }
 
-bool Ref::HasStaticShape() const {
-  return internal::MemRefTypeOf(*this).hasStaticShape();
+bool RefBase::HasStaticShape() const {
+  return MemRefTypeOf(*this).hasStaticShape();
 }
 
-bool Ref::IsDynamicDim(int64_t axis) const {
+bool RefBase::IsDynamicDim(int64_t axis) const {
   ABSL_CHECK_GE(axis, 0) << "Dimension axis must be non-negative";  // CRASH_OK
   ABSL_CHECK_LT(axis, rank())                                       // CRASH_OK
       << "Dimension axis " << axis << " out of bounds for rank " << rank();
-  return internal::MemRefTypeOf(*this).isDynamicDim(axis);
+  return MemRefTypeOf(*this).isDynamicDim(axis);
 }
 
-Scalar Ref::Dim(int64_t axis) const {
+Scalar RefBase::Dim(int64_t axis) const {
   if (!IsDynamicDim(axis)) {
     return I32(dims()[axis]);
   }
-  mlir::ImplicitLocOpBuilder& b = internal::CurrentBuilder();
-  mlir::Value dim_idx = memref::DimOp::create(b, internal::unwrap(*this), axis);
-  return internal::wrap<Scalar>(
-      arith::IndexCastOp::create(b, b.getI32Type(), dim_idx), i32);
-}
-
-Ref Ref::At(llvm::ArrayRef<Indexer> indexers) const {
-  llvm::SmallVector<internal::DimDesc, 4> dims;
-  for (const Indexer& indexer : indexers) {
-    dims.push_back(std::visit(
-        [](const auto& v) { return internal::DimDesc::From(v); }, indexer));
-  }
-  return internal::SliceRefImpl(*this, dims);
-}
-
-namespace internal {
-
-const void* SliceMemRefImpl(const void* base_impl,
-                            llvm::ArrayRef<DimDesc> dims) {
   mlir::ImplicitLocOpBuilder& b = CurrentBuilder();
-  mlir::Value current = mlir::Value::getFromOpaquePointer(base_impl);
+  mlir::Value dim_idx = memref::DimOp::create(b, unwrap(*this), axis);
+  return wrap<Scalar>(arith::IndexCastOp::create(b, b.getI32Type(), dim_idx),
+                      i32);
+}
+
+ValueHandle RefBase::AtImpl(llvm::ArrayRef<Indexer> indexers) const {
+  llvm::SmallVector<DimDesc, 4> dims;
+  for (const Indexer& indexer : indexers) {
+    dims.push_back(
+        std::visit([](const auto& v) { return DimDesc::From(v); }, indexer));
+  }
+  return SliceMemRefImpl(handle(), dims);
+}
+
+ValueHandle SliceMemRefImpl(ValueHandle base, llvm::ArrayRef<DimDesc> dims) {
+  mlir::ImplicitLocOpBuilder& b = CurrentBuilder();
+  mlir::Value current = base.value();
   auto base_type = llvm::cast<mlir::MemRefType>(current.getType());
   llvm::ArrayRef<int64_t> source_shape = base_type.getShape();
   const int64_t rank = source_shape.size();
@@ -298,12 +318,7 @@ const void* SliceMemRefImpl(const void* base_impl,
     current = tpu::MemRefSqueezeOp::create(b, squeezed_type, current);
   }
 
-  return current.getAsOpaquePointer();
-}
-
-Ref SliceRefImpl(Ref base, llvm::ArrayRef<DimDesc> dims) {
-  const void* sliced = SliceMemRefImpl(unwrap(base).getAsOpaquePointer(), dims);
-  return wrap<Ref>(mlir::Value::getFromOpaquePointer(sliced), base.dtype());
+  return ValueHandle(current);
 }
 
 }  // namespace internal

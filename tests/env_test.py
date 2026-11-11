@@ -19,6 +19,7 @@ import os
 
 from absl import flags
 from absl.testing import absltest
+from absl.testing import parameterized
 import torch
 from torch_tpu import _loader
 from torch_tpu._internal import env
@@ -54,18 +55,12 @@ _TEST_MODE = flags.DEFINE_enum_class(
 )
 
 
-class EnvTest(seed_test_utils.RepeatableTest):
+class EnvTest(seed_test_utils.MultiProcessRepeatableTest):
   """Worker test class running individual test cases in isolated subprocesses."""
 
   def setUp(self) -> None:
     if _TEST_MODE.value is None:
       self.skipTest("test_mode flag not provided.")
-    if _TEST_MODE.value in (
-        TestMode.HAS_TORCH_TPU_ANCESTOR_PROCESS_CHILD,
-        TestMode.HAS_TORCH_TPU_ANCESTOR_PROCESS_ROOT,
-    ):
-      self.seed_in_setup = False
-      self.synchronize_tensors_in_tear_down = False
     super().setUp()
 
   def test_has_torch_tpu_ancestor_process_child(self) -> None:
@@ -193,6 +188,61 @@ class EnvTest(seed_test_utils.RepeatableTest):
     self.assertEqual(env.get_str_env_once("MASTER_ADDR"), "worker0")
     os.environ["MASTER_ADDR"] = "worker1"
     self.assertEqual(env.get_str_env_once("MASTER_ADDR"), "worker0")
+
+
+class LibtpuVersionEnvTest(seed_test_utils.MultiProcessRepeatableTest):
+  """Parameterized tests for PEP 440 validation in env.set_libtpu_version."""
+
+  def setUp(self) -> None:
+    if _TEST_MODE.value is not None:
+      self.skipTest("Skipping parent test in sub-test mode.")
+    super().setUp()
+    original_version = env.get_libtpu_version()
+
+    def _restore_version() -> None:
+      env.reset_libtpu_version_for_testing()
+      if original_version is not None:
+        env.set_libtpu_version(original_version)
+
+    self.addCleanup(_restore_version)
+    env.reset_libtpu_version_for_testing()
+
+  @parameterized.parameters(
+      "0.1",
+      "0.0.50",
+      "0.0.50.1",
+      "0.0.50.1.dev20261026",
+      "0.0.47.dev20260824+nightly",
+      "0.0.47.dev202605201400",
+      "0.0.48a1",
+      "0.0.48b2",
+      "0.0.48rc1",
+      "0.0.50.post1",
+      "1!0.0.50",
+      "1.2.3.4.5",
+      "v0.0.50.1",
+  )
+  def test_set_libtpu_version_accepts_pep440(self, version: str) -> None:
+    env.set_libtpu_version(version)
+    self.assertEqual(env.get_libtpu_version(), version)
+
+  @parameterized.parameters(
+      "not_a_version",
+      "1..2",
+      "1.2.",
+      ".1.2",
+      "-1.0.0",
+      "1.0.0-invalid",
+      "1.0.0+",
+  )
+  def test_set_libtpu_version_rejects_pep440_violation(
+      self, version: str
+  ) -> None:
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Tests get_libtpu_version state invariance on invalid input.
+        RuntimeError, r"expected a valid PEP 440 version string"
+    ):
+      env.set_libtpu_version(version)
+    self.assertIsNone(env.get_libtpu_version())
 
 
 class ParentEnvTest(

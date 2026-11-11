@@ -98,6 +98,15 @@ class ProcessGroupId:
   def __getitem__(self, index: int) -> int:
     return self.ranks[index]
 
+  def __repr__(self) -> str:
+    if self.is_contiguous() and len(self.ranks) > 1:
+      ranks_repr = f"range({self.ranks[0]}, {self.ranks[-1] + 1})"
+    else:
+      ranks_repr = repr(self.ranks)
+    if self.world_size is not None:
+      return f"ProcessGroupId(ranks={ranks_repr}, world_size={self.world_size})"
+    return f"ProcessGroupId(ranks={ranks_repr})"
+
   def is_contiguous(self) -> bool:
     """Returns whether ranks are exactly range(ranks[0], ranks[-1] + 1)."""
     # Ranks are sorted and unique, so this is an O(1) check.

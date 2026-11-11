@@ -54,6 +54,7 @@
 #include "csrc/common/shape.h"
 #include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
+#include "csrc/eager/device_assignment.h"
 #include "csrc/eager/device_assignment_pipeline.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/structured_log_buffer.h"
@@ -593,7 +594,7 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> Traversal::BuildMlirModule(
     mlir::MLIRContext& mlir_context, bool use_stablehlo_bounds,
     absl::Span<const int64_t> donated_inputs,
     std::optional<std::string_view> module_name) const {
-  TT_ASSIGN_OR_RETURN(const std::vector<int64_t> resolved_da,  // INT_VEC_OK
+  TT_ASSIGN_OR_RETURN(const DeviceAssignment resolved_da,
                       ResolveDeviceAssignment());
 
   // Read the traversal's values.
@@ -693,7 +694,7 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> Traversal::BuildMlirModule(
         }
       }
       TT_RETURN_IF_ERROR(ApplySubgroupTilingOrReplicaRewriting(
-          first_new_op, new_func_ops, deferred_op, resolved_da));
+          first_new_op, new_func_ops, deferred_op, resolved_da.local));
     }
 
     // Cast each output of the deferred op to the expected type.
@@ -901,10 +902,9 @@ void ApplyPlacementsToCompileSpec(CompilationSpec& spec,
 
 }  // namespace
 
-absl::StatusOr<std::vector<int64_t>>  // INT_VEC_OK
-Traversal::ResolveDeviceAssignment() const {
+absl::StatusOr<DeviceAssignment> Traversal::ResolveDeviceAssignment() const {
   if (!resolved_da_.has_value()) {
-    TT_ASSIGN_OR_RETURN(std::vector<int64_t> resolved,  // INT_VEC_OK
+    TT_ASSIGN_OR_RETURN(DeviceAssignment resolved,
                         ResolveDeviceAssignmentForTraversal(execution_order_));
     resolved_da_ = std::move(resolved);
   }
@@ -933,9 +933,9 @@ absl::Status Traversal::ApplyDeviceAssignmentToCompileSpec(
 
 absl::Status Traversal::ApplyDeviceAssignmentToCompileSpec(
     CompilationSpec& spec) const {
-  TT_ASSIGN_OR_RETURN(const std::vector<int64_t> resolved_da,  // INT_VEC_OK
+  TT_ASSIGN_OR_RETURN(const DeviceAssignment resolved_da,
                       ResolveDeviceAssignment());
-  return ApplyDeviceAssignmentToCompileSpec(spec, resolved_da);
+  return ApplyDeviceAssignmentToCompileSpec(spec, resolved_da.local);
 }
 
 std::optional<CompilationSpec> Traversal::MaybeUpdateSpecWithLayout(
@@ -962,8 +962,10 @@ std::optional<CompilationSpec> Traversal::MaybeUpdateSpecWithLayout(
 }
 
 absl::StatusOr<CompiledKernel> Traversal::Compile(
-    const CompilationSpec& spec, std::string* absl_nullable out_mlir_text,
-    bool use_stablehlo_bounds, absl::Span<const CustomLayout> argument_layouts,
+    const CompilationSpec& spec,
+    const UnboundedKernelPolicy unbounded_kernel_policy,
+    std::string* absl_nullable out_mlir_text, bool use_stablehlo_bounds,
+    absl::Span<const CustomLayout> argument_layouts,
     absl::Span<const int64_t> donated_inputs,
     std::optional<std::string_view> module_name,
     std::optional<CompilationCacheKey>* absl_nullable out_cache_key) const {
@@ -971,7 +973,7 @@ absl::StatusOr<CompiledKernel> Traversal::Compile(
   if (out_cache_key != nullptr) {
     *out_cache_key = std::nullopt;
   }
-  TT_ASSIGN_OR_RETURN(const std::vector<int64_t> resolved_da,  // INT_VEC_OK
+  TT_ASSIGN_OR_RETURN(const DeviceAssignment resolved_da,
                       ResolveDeviceAssignment());
   if (!argument_layouts.empty()) {
     TT_RET_CHECK(arguments_.size() == argument_layouts.size(),
@@ -1002,7 +1004,7 @@ absl::StatusOr<CompiledKernel> Traversal::Compile(
   std::vector<Shape> output_shapes = GetShapes(outputs_);
 
   std::optional<CompilationSpec> mutable_compilation_spec =
-      MaybeUpdateSpecWithLayout(spec, resolved_da);
+      MaybeUpdateSpecWithLayout(spec, resolved_da.local);
   const CompilationSpec& effective_compilation_spec =
       mutable_compilation_spec.has_value() ? *mutable_compilation_spec : spec;
 
@@ -1019,12 +1021,13 @@ absl::StatusOr<CompiledKernel> Traversal::Compile(
         std::move(compilation_cache_key), argument_shapes, output_shapes,
         std::move(final_op_builder),
         std::move(mutable_compilation_spec->xla_compile_options),
+        unbounded_kernel_policy,
         /*use_dynamic_adapters=*/!use_stablehlo_bounds);
   }
   return CompilationCache::GetInstance().GetOrCompile(
       std::move(compilation_cache_key), argument_shapes, output_shapes,
       std::move(final_op_builder),
-      *effective_compilation_spec.xla_compile_options,
+      *effective_compilation_spec.xla_compile_options, unbounded_kernel_policy,
       /*use_dynamic_adapters=*/!use_stablehlo_bounds);
 }
 

@@ -79,7 +79,7 @@ mlir::MlirOp BuildPlacementOp(mlir::MlirOp input, std::string_view placement) {
 at::Tensor MaybeApplyStridedView(DeviceBufferRef device_buffer,
                                  at::OptionalIntArrayRef original_stride) {
   if (!original_stride.has_value()) {
-    return MakeTensor(device_buffer);
+    return MakeTensor(std::move(device_buffer));
   }
 
   TT_ASSIGN_OR_THROW(
@@ -119,7 +119,7 @@ at::Tensor AtenAoOffload(const at::Tensor& tensor) {
                        .op_param_cache_keys = OpParamCacheKeys::Empty()}));
     device_buffer.set_is_pinned_host();
 
-    return MakeTensor(device_buffer);
+    return MakeTensor(std::move(device_buffer));
   });
 }
 

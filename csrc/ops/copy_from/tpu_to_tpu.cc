@@ -127,8 +127,8 @@ absl::Status CopyTpuToTpu(const at::Tensor& src, const at::Tensor& dest) {
 
   if (is_dest_fp4 || is_src_fp4) {
     TT_RET_CHECK(viewed_dest.dim() > 0, error::kInvalidArgument)
-        << "expected float4_e2m1fn_x2 tensors to be at least 1-dimensional, "
-           "got 0-dimensional";
+        << "expected float4_e2m1fn_x2 tensors to be at least 1D, "
+           "got 0D";
   }
 
   TT_ASSIGN_OR_RETURN(const auto out_dtype,

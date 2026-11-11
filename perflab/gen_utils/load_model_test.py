@@ -24,6 +24,7 @@ from torch import nn
 from perflab import context as context_lib
 from perflab import model_helpers
 from perflab import target as target_lib
+from perflab import workload as workload_lib
 from perflab.gen_utils import load_model
 from tests import seed_test_utils
 
@@ -131,6 +132,7 @@ class LoadModelTest(seed_test_utils.RepeatableTest):
     self.ctx = context_lib.Context(
         target=target_lib.make_target(platform=target_lib.Platform.CPU),
         run_scope=context_lib.RunScope.PRESUBMIT,
+        workload=workload_lib.Workload(1),
     )
     self.inputs = {
         "input_ids": torch.randint(0, 10, (1, 128)),
@@ -228,12 +230,13 @@ class LoadModelTest(seed_test_utils.RepeatableTest):
       self,
       context_length: int,
       run_scope: context_lib.RunScope = context_lib.RunScope.FULL,
-      full_scope_batch_size: int = 1,
+      batch_size: int = 1,
       **config_kwargs: int,
   ) -> tuple[nn.Module, dict[str, Any]]:
     ctx = context_lib.Context(
         target=target_lib.make_target(platform=target_lib.Platform.CPU),
         run_scope=run_scope,
+        workload=workload_lib.Workload(batch_size),
     )
     config = types.SimpleNamespace(
         context_length=context_length, **config_kwargs
@@ -247,24 +250,21 @@ class LoadModelTest(seed_test_utils.RepeatableTest):
           ctx,
           "fake/time_series_model",
           is_training=False,
-          full_scope_batch_size=full_scope_batch_size,
       )
 
-  def test_full_scope_batch_size_used(self):
-    _, inputs = self._load_time_series(
-        context_length=512, full_scope_batch_size=8
-    )
+  def test_workload_batch_size_used(self):
+    _, inputs = self._load_time_series(context_length=512, batch_size=8)
 
     self.assertEqual(inputs["past_values"].shape, (8, 512))
 
-  def test_presubmit_ignores_full_scope_batch_size(self):
+  def test_presubmit_uses_shorter_sequences(self):
     _, inputs = self._load_time_series(
         context_length=512,
         run_scope=context_lib.RunScope.PRESUBMIT,
-        full_scope_batch_size=8,
+        batch_size=2,
     )
 
-    self.assertEqual(inputs["past_values"].shape, (1, 128))
+    self.assertEqual(inputs["past_values"].shape, (2, 128))
 
   def test_context_length_capped_at_seq_len(self):
     model, inputs = self._load_time_series(context_length=16384)
@@ -307,6 +307,7 @@ class LoadModelTest(seed_test_utils.RepeatableTest):
     ctx = context_lib.Context(
         target=target_lib.make_target(platform=target_lib.Platform.CPU),
         run_scope=run_scope,
+        workload=workload_lib.Workload(1),
     )
     with mock.patch.object(
         model_helpers,

@@ -26,8 +26,10 @@ Skipped when TORCH_TRACE is not set at process startup. To run locally:
 
 import glob
 import json
+import math
 import os
 from typing import Any
+import unittest
 
 # Set TORCH_TRACE before importing torch/torch_tpu to ensure it is picked up
 # by C++ initializers and avoids clashes with concurrent test runs.
@@ -37,9 +39,16 @@ if "TORCH_TRACE" not in os.environ:
       test_tmpdir, "torchtpu_trace_test_dir"
   )
 
+# Whether registered unbounded dynamic kernels may serve eager batches, as
+# they do unless TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS is "none".
+_UNBOUNDED_DYNAMIC_KERNELS_ENABLED = (
+    os.environ.get("TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS") != "none"
+)
+
 # pylint: disable=g-import-not-at-top
 from absl.testing import absltest
 import torch
+from torch_tpu._internal import dynamism
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal import tracing
@@ -97,6 +106,25 @@ def _parse_artifacts(log_content: str) -> list[tuple[dict[str, Any], str]]:
     out.append((artifact, "\n".join(payload_lines).strip()))
     i = j
   return out
+
+
+def _aten_graph_artifacts(op_name: str) -> list[tuple[dict[str, Any], str]]:
+  """Returns the logged torchtpu_eager_aten_graph artifacts of `op_name`."""
+  return [
+      (meta, payload)
+      for meta, payload in _parse_artifacts(_read_latest_log())
+      if meta.get("name") == "torchtpu_eager_aten_graph"
+      and meta.get("op_name") == op_name
+  ]
+
+
+def _nonzero_input(
+    shape: tuple[int, ...], device: torch.device
+) -> torch.Tensor:
+  """Returns a materialized F32 input with zeros and more than two nonzeros."""
+  x = torch.arange(1, math.prod(shape) + 1, dtype=torch.float32).reshape(shape)
+  x[x % 3 == 0] = 0
+  return x.to(device)
 
 
 class TracingTest(seed_test_utils.RepeatableTest):
@@ -231,6 +259,65 @@ class TracingTest(seed_test_utils.RepeatableTest):
     self.assertTrue(
         hits[-1], f"expected last event to be a cache hit; got {hits}"
     )
+
+  def test_static_kernel_type(self):
+    torch.tpu._clear_cache()  # pylint: disable=protected-access
+    a = torch.ones(24, 24, device="cpu").to(self._dev)
+    (a - a).cpu()
+    tracing._flush()
+
+    events = [
+        (meta, graph)
+        for meta, graph in _parse_artifacts(_read_latest_log())
+        if meta.get("name") == "torchtpu_eager_aten_graph"
+        and meta.get("op_name", "").startswith("torchtpu_eager/sub")
+    ]
+    self.assertNotEmpty(events)
+    meta, _ = events[-1]
+    self.assertFalse(meta["cache_hit"])
+    self.assertEqual(meta["kernel_type"], "static")
+    self.assertIn('"kernel_type":"static"', _read_latest_log())
+
+  def test_bounded_dynamic_kernel_type(self):
+    torch.tpu._clear_cache()  # pylint: disable=protected-access
+    x = torch.rand(5, 3).to(self._dev)
+    dynamism.mark_dynamic(x, 0, 2, 20)
+    torch.abs(x).cpu()
+    tracing._flush()
+
+    events = [
+        (meta, graph)
+        for meta, graph in _parse_artifacts(_read_latest_log())
+        if meta.get("name") == "torchtpu_eager_aten_graph"
+        and meta.get("op_name", "").startswith("torchtpu_eager/abs")
+    ]
+    self.assertNotEmpty(events)
+    meta, _ = events[-1]
+    self.assertFalse(meta["cache_hit"])
+    self.assertEqual(meta["kernel_type"], "bounded_dynamic")
+
+  @unittest.skipUnless(
+      _UNBOUNDED_DYNAMIC_KERNELS_ENABLED,
+      "requires unbounded dynamic kernels to be enabled",
+  )
+  def test_unbounded_dynamic_kernel_miss_then_hit(self):
+    torch.tpu._clear_cache()  # pylint: disable=protected-access
+    # The registered nonzero kernel serves both shapes from one cache entry:
+    # the first batch builds it (a miss), the second reuses it (a hit).
+    for shape in ((5, 5), (5, 1025)):
+      torch.nonzero(_nonzero_input(shape, self._dev)).cpu()
+    tracing._flush()
+
+    events = _aten_graph_artifacts("torchtpu_eager/nonzero")
+    self.assertGreaterEqual(len(events), 2)
+    (miss_meta, miss_graph), (hit_meta, hit_graph) = events[-2:]
+    self.assertFalse(miss_meta["cache_hit"])
+    self.assertIn("= nonzero(", miss_graph)
+    self.assertTrue(hit_meta["cache_hit"])
+    self.assertEmpty(hit_graph)
+    for meta in (miss_meta, hit_meta):
+      self.assertEqual(meta["kernel_type"], "unbounded_dynamic")
+    self.assertIn('"kernel_type":"unbounded_dynamic"', _read_latest_log())
 
 
 if __name__ == "__main__":

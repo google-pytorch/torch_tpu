@@ -30,10 +30,11 @@ keeps them, and their process group, alive across the class's tests:
 harness.
 """
 
+from collections.abc import Callable
 import functools
 import os
 import types
-from typing import Any, Callable
+from typing import Any
 import unittest
 from unittest import mock
 

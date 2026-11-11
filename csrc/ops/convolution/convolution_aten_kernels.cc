@@ -120,9 +120,9 @@ absl::Status ValidateConvolutionInputs(
     const std::optional<at::Tensor>& bias_opt, absl::Span<const int64_t> stride,
     absl::Span<const int64_t> padding, absl::Span<const int64_t> dilation,
     bool transposed, absl::Span<const int64_t> output_padding, int64_t groups) {
-  auto bias_dimensions = (bias_opt.has_value() && bias_opt->defined())
-                             ? bias_opt->sizes()
-                             : at::IntArrayRef();
+  const auto sanitized_bias = SanitizeOptionalTensor(bias_opt);
+  auto bias_dimensions =
+      sanitized_bias.has_value() ? sanitized_bias->sizes() : at::IntArrayRef();
   return ValidateConvolutionInputs(input, weight, bias_dimensions, stride,
                                    padding, dilation, transposed,
                                    output_padding, groups);
@@ -202,14 +202,15 @@ absl::StatusOr<at::ScalarType> GetPromotedType(
       error::kPythonNotImplementedError)
       << "not implemented for " << ToString(promoted_type);
 
-  if (bias_opt.has_value() && bias_opt->defined()) {
+  if (const auto sanitized_bias = SanitizeOptionalTensor(bias_opt);
+      sanitized_bias.has_value()) {
     // TODO: native PyTorch does not errors on boolean bias.
-    TT_RETURN_IF_ERROR(IsTypeSupported(*bias_opt, "bias"));
-    TT_RET_CHECK(input.scalar_type() == bias_opt->scalar_type(),
+    TT_RETURN_IF_ERROR(IsTypeSupported(*sanitized_bias, "bias"));
+    TT_RET_CHECK(input.scalar_type() == sanitized_bias->scalar_type(),
                  error::kInvalidArgument)
         << "expected input and bias to have the same dtype, got "
         << ToString(input.scalar_type()) << " and "
-        << ToString(bias_opt->scalar_type());
+        << ToString(sanitized_bias->scalar_type());
   }
 
   return promoted_type;
@@ -338,9 +339,10 @@ absl::Status ConvolutionOut(const at::Tensor& input, const at::Tensor& weight,
                             at::IntArrayRef dilation, bool transposed,
                             at::IntArrayRef output_padding, int64_t groups,
                             at::Tensor& out, OpParamCacheKeys param_keys) {
-  if (bias_opt.has_value() && bias_opt->defined()) {
+  if (const auto sanitized_bias = SanitizeOptionalTensor(bias_opt);
+      sanitized_bias.has_value()) {
     TT_RETURN_IF_ERROR(param_keys.SetParam("ternary", true));
-    return ConvolutionTernaryOut(input, weight, bias_opt.value(), stride,
+    return ConvolutionTernaryOut(input, weight, *sanitized_bias, stride,
                                  padding, dilation, transposed, output_padding,
                                  groups, out, std::move(param_keys));
   }
@@ -529,10 +531,7 @@ at::Tensor AtenConvolution(const at::Tensor& input, const at::Tensor& weight,
       {
         TT_ASSIGN_OR_THROW(
             at::ScalarType promoted_dtype,
-            GetPromotedType(input, weight,
-                            bias_opt.has_value() && bias_opt->defined()
-                                ? bias_opt
-                                : std::nullopt));
+            GetPromotedType(input, weight, SanitizeOptionalTensor(bias_opt)));
         TT_ASSIGN_OR_THROW(
             at::Tensor out,
             MakeEmptyTensor(/*size=*/{0}, promoted_dtype, input.device()));
@@ -581,7 +580,7 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenConvolutionBackward(
         auto to_tensor =
             [&](int idx) -> at::Tensor {  // REF_CAPTURE_OK=called locally
           if (!output_mask[idx]) return at::Tensor();
-          return MakeTensor(results[idx]);
+          return MakeTensor(std::move(results[idx]));
         };
 
         return std::make_tuple(to_tensor(0), to_tensor(1), to_tensor(2));

@@ -83,7 +83,7 @@ _SAMPLE_WORKFLOW = textwrap.dedent("""\
     """)
 
 
-class ListCiTestsTest(unittest.TestCase):  # UNITTEST_OK=testing tools
+class ListCiTestsTest(unittest.TestCase):
   """Test suite for OSS list_ci_tests."""
 
   def setUp(self):
@@ -109,7 +109,7 @@ class ListCiTestsTest(unittest.TestCase):  # UNITTEST_OK=testing tools
     """Verifies FileNotFoundError when .bazelrc is missing."""
     with tempfile.TemporaryDirectory() as temp_dir:
       root_path = pathlib.Path(temp_dir)
-      with self.assertRaises(FileNotFoundError):  # ASSERT_RAISES_OK=tools
+      with self.assertRaises(FileNotFoundError):
         list_ci_tests.get_bazelrc_path(root_path)
 
   def test_find_repo_root_env_override(self):
@@ -270,7 +270,7 @@ class ListCiTestsTest(unittest.TestCase):  # UNITTEST_OK=testing tools
           with mock.patch.object(
               list_ci_tests, "_verify_bazel_binary", return_value=False
           ):
-            with self.assertRaises(FileNotFoundError):  # ASSERT_RAISES_OK=tools
+            with self.assertRaises(FileNotFoundError):
               list_ci_tests.find_bazel_binary(self.repo_root)
 
   def test_get_bazelisk_download_url_is_platform_specific(self):
@@ -293,7 +293,7 @@ class ListCiTestsTest(unittest.TestCase):  # UNITTEST_OK=testing tools
     """Verifies an unsupported CPU architecture is reported clearly."""
     with mock.patch.object(sys, "platform", "linux"):
       with mock.patch.object(platform, "machine", return_value="mips"):
-        with self.assertRaises(RuntimeError):  # ASSERT_RAISES_OK=tools
+        with self.assertRaises(RuntimeError):
           list_ci_tests._get_bazelisk_download_url("1.27.0")
 
   def test_discover_test_targets_executes_query(self):

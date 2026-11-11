@@ -23,21 +23,15 @@
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/DeprecatedTypeProperties.h"
-#include "ATen/ops/result_type.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
-#include "c10/core/DefaultDtype.h"
-#include "c10/core/ScalarType.h"
-#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
-#include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
-#include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
 
@@ -72,30 +66,6 @@ struct BinaryOpOptions {
   bool allow_low_precision_float = false;
 };
 
-struct TernaryOpOptions {
-  // The op name for dispatching. If omitted, use the op name from the active
-  // TT_KERNEL() context.
-  std::optional<OpName> op_name = std::nullopt;
-  bool force_float_inputs =
-      false;  // Force inputs to be floats, by casting if necessary.
-  OpParamCacheKeys op_param_cache_keys;
-  OpSplitMode split_mode = OpSplitMode::kNone;
-  Indices donated_indices = {};
-  // Natural result dtype of the operation.
-  // When std::nullopt (default), the result dtype is dynamically inferred from
-  // input operands using standard PyTorch type promotion rules. When specified,
-  // overrides the inferred result dtype.
-  // - In TernaryOp: dtype of the returned tensor.
-  // - In TernaryOpOut: expected mathematical result dtype before casting to
-  // `out`
-  //   (validated via ValidateOutDtype).
-  std::optional<mlir::ElementType> result_dtype = std::nullopt;
-  // Whether the out-variant kernel allows casting the natural result dtype
-  // to a different output tensor dtype via c10::canCast (true for
-  // math/arithmetic ops, false for ops that enforce strict dtype matching).
-  bool allow_out_dtype_cast = true;
-};
-
 namespace internal {
 
 absl::StatusOr<DeviceBufferRef> DispatchBinaryOp(const at::Tensor& self,
@@ -106,10 +76,6 @@ absl::StatusOr<DeviceBufferRef> DispatchBinaryOp(const at::Tensor& self,
 absl::StatusOr<DeviceBufferRef> DispatchBinaryOp(
     const at::Tensor& self, const at::Tensor& other,
     MlirBinaryOpBuilder bin_op_builder, BinaryOpOptions opts);
-
-absl::StatusOr<DeviceBufferRef> DispatchTernaryOp(
-    const at::Tensor& self, const at::Tensor& other, const at::Tensor& third,
-    MlirTernaryOpBuilder ternary_op_builder, TernaryOpOptions opts);
 
 absl::Status DispatchBinaryOpOut(const at::Tensor& self,
                                  const at::Tensor& other, at::Tensor& out,
@@ -131,7 +97,7 @@ absl::StatusOr<at::Tensor> BinaryOp(const at::Tensor& tensor,
   TT_ASSIGN_OR_RETURN(auto result_buf, internal::DispatchBinaryOp(
                                            tensor, other, std::move(op_builder),
                                            std::move(opts)));
-  return MakeTensor(result_buf);
+  return MakeTensor(std::move(result_buf));
 }
 
 template <typename OtherType>
@@ -141,14 +107,6 @@ absl::Status BinaryOpOut(const at::Tensor& tensor, const OtherType& other,
   return internal::DispatchBinaryOpOut(tensor, other, out,
                                        std::move(op_builder), std::move(opts));
 }
-
-// Performs output tensor processing for Ternary operations on TPU.
-// Validates that `out` is on the TPU, enforces shape constraints for in-place
-// aliasing, and dispatches via DispatchOpOut.
-absl::Status TernaryOpOut(const at::Tensor& self, const at::Tensor& other,
-                          const at::Tensor& third, at::Tensor& out,
-                          MlirTernaryOpBuilder op_builder,
-                          TernaryOpOptions opts);
 
 // NOLINTBEGIN
 // clang-format off

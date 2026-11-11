@@ -46,7 +46,6 @@
 #include "csrc/eager/eager_mode.h"
 #include "csrc/eager/events_queue.h"
 #include "csrc/eager/execution_task.h"
-#include "csrc/eager/split_traversal.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/eager/tpu_hooks.h"
@@ -109,7 +108,7 @@ TEST_F(MaterializeTest, MaterializedZeroSizeBufferSuccess) {
   EXPECT_TRUE(ref.is_deferred());
   EXPECT_EQ(Materialize(ref, MaterializationReason::kExplicitSync),
             absl::OkStatus());
-  EXPECT_TRUE(ref.is_materializing());
+  EXPECT_TRUE(ref.AwaitBuffer().ok());
 }
 
 TEST_F(MaterializeTest, CompilerOptionsPropagateToMaterializeThread) {
@@ -146,6 +145,7 @@ TEST_F(MaterializeTest, CompilerOptionsPropagateToMaterializeThread) {
   // 3. Synchronously materialize/compile the buffer.
   ASSERT_EQ(Materialize(ref, MaterializationReason::kExplicitSync),
             absl::OkStatus());
+  EXPECT_TRUE(ref.AwaitBuffer().ok());
 
   // 4. Verify the compiled executable fingerprint in cache matches our
   // overridden key.
@@ -195,9 +195,7 @@ TEST_F(MaterializeTest, OutOfOrderUnexecutedDeferred) {
   // Try to materialize the dependent buffer in the background.
   // This will fail on synchronization when the execution thread detects that
   // the deferred buffer wasn't materialized first.
-  Materialize(depends_on_deferred, MaterializationReason::kExplicitSync,
-              GraphSplitMode::kSplitGraph,
-              MaterializationBlockMode::kNonBlocking)
+  Materialize(depends_on_deferred, MaterializationReason::kExplicitSync)
       .IgnoreError();
   auto finished_status = depends_on_deferred.Synchronize();
   EXPECT_EQ(finished_status.code(), error::kFailedPrecondition);
@@ -240,9 +238,7 @@ TEST_F(MaterializeTest, OutOfOrderUnexecutedPending) {
   // Try to materialize the dependent buffer. This will fail on synchronization
   // when the execution thread detects that the pending buffer wasn't
   // materialized first.
-  Materialize(depends_on_pending, MaterializationReason::kExplicitSync,
-              GraphSplitMode::kSplitGraph,
-              MaterializationBlockMode::kNonBlocking)
+  Materialize(depends_on_pending, MaterializationReason::kExplicitSync)
       .IgnoreError();
   auto finished_status = depends_on_pending.Synchronize();
   EXPECT_EQ(finished_status.code(), error::kFailedPrecondition);
@@ -367,19 +363,20 @@ TEST_F(MaterializeTest, SnapshotAwaitsPriorTensorCoreOutputs) {
   for (const int64_t size : {8, 64, 65536}) {
     TT_ASSERT_OK_AND_ASSIGN(DeviceBufferRef ref,
                             CreateIotaOp(/*record_on_stream=*/true, size));
-    InsertGraphBreak(device_index, stream_id, {ref.device_buffer_list()},
-                     MaterializationReason::kExplicitSync,
-                     GraphSplitMode::kSplitGraph);
+    ASSERT_TRUE(InsertGraphBreak(device_index, stream_id,
+                                 {ref.device_buffer_list()},
+                                 MaterializationReason::kExplicitSync,
+                                 GraphSplitMode::kSplitGraph)
+                    .ok());
     refs.push_back(std::move(ref));
   }
 
   TT_ASSERT_OK_AND_ASSIGN(
-      std::shared_ptr<EventSnapshot> snapshot,
+      EventSnapshot snapshot,
       MaterializeCurrentStream(MaterializationReason::kExplicitSync,
-                               GraphSplitMode::kSplitGraph)
-          .Await());
-  ASSERT_EQ(snapshot->Synchronize(), absl::OkStatus());
-  TT_ASSERT_OK_AND_ASSIGN(const bool completed, snapshot->Query());
+                               GraphSplitMode::kSplitGraph));
+  ASSERT_EQ(snapshot.Synchronize(), absl::OkStatus());
+  TT_ASSERT_OK_AND_ASSIGN(const bool completed, snapshot.Query());
   EXPECT_TRUE(completed);
 
   for (const DeviceBufferRef& ref : refs) {
@@ -398,11 +395,10 @@ TEST_F(MaterializeTest,
             absl::OkStatus());
 
   TT_ASSERT_OK_AND_ASSIGN(
-      std::shared_ptr<EventSnapshot> snapshot,
+      EventSnapshot snapshot,
       MaterializeCurrentStream(MaterializationReason::kExplicitSync,
-                               GraphSplitMode::kSplitGraph)
-          .Await());
-  ASSERT_EQ(snapshot->Synchronize(), absl::OkStatus());
+                               GraphSplitMode::kSplitGraph));
+  ASSERT_EQ(snapshot.Synchronize(), absl::OkStatus());
   TT_ASSERT_OK_AND_ASSIGN(xla::PjRtBuffer* const pjrt_buf1, ref1.AwaitBuffer());
   EXPECT_TRUE(pjrt_buf1->GetReadyFuture().IsKnownReady());
   EXPECT_EQ(pjrt_buf1->GetReadyFuture().Await(), absl::OkStatus());
@@ -425,11 +421,10 @@ TEST_F(MaterializeTest,
   }
   EXPECT_TRUE(weak_ref2.expired());
   TT_ASSERT_OK_AND_ASSIGN(
-      std::shared_ptr<EventSnapshot> post_clear_snapshot,
+      EventSnapshot post_clear_snapshot,
       MaterializeCurrentStream(MaterializationReason::kExplicitSync,
-                               GraphSplitMode::kSplitGraph)
-          .Await());
-  ASSERT_EQ(post_clear_snapshot->Synchronize(), absl::OkStatus());
+                               GraphSplitMode::kSplitGraph));
+  ASSERT_EQ(post_clear_snapshot.Synchronize(), absl::OkStatus());
 }
 
 TEST_F(MaterializeTest, DeletedLastDeviceOutputResolvesSnapshotOk) {
@@ -442,11 +437,10 @@ TEST_F(MaterializeTest, DeletedLastDeviceOutputResolvesSnapshotOk) {
   ASSERT_FALSE(pjrt_buf->GetReadyFuture().Await().ok());
 
   TT_ASSERT_OK_AND_ASSIGN(
-      std::shared_ptr<EventSnapshot> snapshot,
+      EventSnapshot snapshot,
       MaterializeCurrentStream(MaterializationReason::kExplicitSync,
-                               GraphSplitMode::kSplitGraph)
-          .Await());
-  EXPECT_EQ(snapshot->Synchronize(), absl::OkStatus());
+                               GraphSplitMode::kSplitGraph));
+  EXPECT_EQ(snapshot.Synchronize(), absl::OkStatus());
 }
 
 TEST_F(MaterializeTest, CompiledExecutionPreservesPriorLastDeviceOutput) {
@@ -466,7 +460,8 @@ TEST_F(MaterializeTest, CompiledExecutionPreservesPriorLastDeviceOutput) {
       Traversal::Create(std::vector<DeviceBufferRef>{unrecorded_op}));
   TT_ASSERT_OK_AND_ASSIGN(
       CompiledKernel kernel,
-      traversal->Compile(GetCompilationSpec(CompilationMode::kFastCompile)));
+      traversal->Compile(GetCompilationSpec(CompilationMode::kFastCompile),
+                         UnboundedKernelPolicy::kDisallow));
   TT_ASSERT_OK_AND_ASSIGN(SharedLoadedExecutableWithMetadata executable,
                           kernel.fixed_shape_kernel.get());
   TT_ASSERT_OK_AND_ASSIGN(
@@ -478,11 +473,10 @@ TEST_F(MaterializeTest, CompiledExecutionPreservesPriorLastDeviceOutput) {
   EXPECT_FALSE(weak_tc.expired());
 
   TT_ASSERT_OK_AND_ASSIGN(
-      std::shared_ptr<EventSnapshot> snapshot,
+      EventSnapshot snapshot,
       MaterializeCurrentStream(MaterializationReason::kExplicitSync,
-                               GraphSplitMode::kSplitGraph)
-          .Await());
-  ASSERT_EQ(snapshot->Synchronize(), absl::OkStatus());
+                               GraphSplitMode::kSplitGraph));
+  ASSERT_EQ(snapshot.Synchronize(), absl::OkStatus());
   EXPECT_TRUE(weak_tc.expired());
 }
 

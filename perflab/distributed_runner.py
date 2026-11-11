@@ -18,17 +18,22 @@ Supports both single-node multi-device (CUDA/TPU) and multi-node multi-host
 Borg executions.
 """
 
+from collections.abc import Iterator
+from collections.abc import Mapping
+from collections.abc import Sequence
+import contextlib
 import enum
 import fnmatch
 import gc
-import glob
 import os
+import pickle
 import re
 import shutil
 import sys
 import tempfile
 import time
-from typing import NamedTuple, Sequence
+from typing import NamedTuple
+import uuid
 from xml.etree import ElementTree
 
 from absl import app
@@ -45,7 +50,6 @@ from perflab import discovery as discovery_lib
 from perflab import distributed_models
 from perflab import export as export_lib
 from perflab import flags as flags_lib
-from perflab import known_failures
 from perflab import measure as measure_lib
 from perflab import metrics as metrics_lib
 from perflab import mode as mode_lib
@@ -54,14 +58,29 @@ from perflab import step_lib
 from perflab import steps
 from perflab import target as target_lib
 from perflab import torch_device_ops
+from perflab import workload as workload_lib
 from tests.distributed import distributed_utils
 
-discovery_lib.import_submodules(distributed_models)
-discovery_lib.import_submodules(steps)
+# Import all models and steps and trigger registration of benchmarks. main()
+# fails the run if any of them fails to import. The torchtitan-dependent models
+# are not exported to OSS (see copy.bara.sky), so they never fail here.
+_IMPORT_FAILURES: tuple[discovery_lib.ImportFailure, ...] = (
+    *discovery_lib.import_submodules(distributed_models),
+    *discovery_lib.import_submodules(steps),
+)
 
 _FRAMEWORK = mode_lib.Framework.TORCH
 # Characters XML 1.0 forbids (all C0 controls except tab, newline and CR).
 _XML_INVALID_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+_INDUCTOR_CACHE_ENV = "TORCHINDUCTOR_CACHE_DIR"
+# The Tier-2 compilation cache named by this env var lives in a subdirectory of
+# the host-wide root. Keep these constants and the enablement logic in
+# `_owned_compilation_caches` in sync with `kTier2CacheRootDir` and
+# `GetTier2CacheName()` in csrc/common/tier2_compilation_cache.cc.
+_TIER2_CACHE_ENV = "TORCH_TPU_TIER2_COMPILATION_CACHE"
+_TIER2_CACHE_DISABLED = "disabled"
+_TIER2_CACHE_ROOT = "/dev/shm/torch_tpu_cache"
+_TIER3_CACHE_ROOT_ENV = "TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT"
 
 
 class BarrierPolicy(enum.Enum):
@@ -101,24 +120,6 @@ def _get_skip_reason(
     return f"Run mode {mode.value} is not supported on {device_kind.value}"
   return cases.get_skip_reason(
       spec, mode, framework=_FRAMEWORK, device_kind=device_kind
-  )
-
-
-def _is_known_failure(
-    spec: registry_lib.BenchmarkSpec,
-    mode: common.RunMode,
-    device_kind: target_lib.DeviceKind,
-) -> bool:
-  """Returns whether `spec` runs in `mode` on `device_kind` but is known to fail."""
-  return (
-      mode in mode_lib.modes_for(_FRAMEWORK, device_kind)
-      and known_failures.get_known_failure_reason(
-          spec.name,
-          framework=_FRAMEWORK,
-          device_kind=device_kind,
-          run_mode=mode,
-      )
-      is not None
   )
 
 
@@ -358,24 +359,21 @@ def _cleanup_distributed_worker_state(
   logging.info("Rank %s inter-test state cleanup completed.", rank)
 
 
-def _export_benchmark_result(
-    spec: registry_lib.BenchmarkSpec,
-    platform: target_lib.Platform,
-    mode: common.RunMode,
-    succeeded: bool,
-    metrics: metrics_lib.PerformanceMetrics,
-) -> None:
-  """Exports benchmark outcome and metrics to output storage."""
-  export_lib.export(
-      export_lib.BenchmarkData(
-          spec_name=spec.name,
-          platform=platform,
-          framework=_FRAMEWORK,
-          run_mode=mode,
-          succeeded=succeeded,
-          metrics=metrics,
-      )
-  )
+def _write_metrics(path: str, metrics: metrics_lib.PerformanceMetrics) -> None:
+  """Writes `metrics` to `path` for `_read_metrics`."""
+  # Write then rename, so that the launcher never reads a partial file if the
+  # rank is killed while writing.
+  with open(f"{path}.tmp", "wb") as f:
+    pickle.dump(metrics, f)
+  os.replace(f"{path}.tmp", path)
+
+
+def _read_metrics(path: str) -> metrics_lib.PerformanceMetrics | None:
+  """Returns the metrics `_write_metrics` wrote to `path`, or None if none."""
+  if not os.path.exists(path):
+    return None
+  with open(path, "rb") as f:
+    return pickle.load(f)
 
 
 def _run_single_target_task(
@@ -383,6 +381,7 @@ def _run_single_target_task(
     mode_value: str,
     platform_name: str,
     skip_reason_file: str | None = None,
+    metrics_file: str | None = None,
 ) -> None:
   """Worker task executed on each rank/host for a single benchmark target.
 
@@ -392,6 +391,9 @@ def _run_single_target_task(
     platform_name: `target_lib.Platform` value.
     skip_reason_file: If set, rank 0 writes the reason here when the benchmark
       factory raises `UnsupportedBenchmark`, so the launcher reports a skip.
+    metrics_file: If set, rank 0 writes the validated metrics here (see
+      `_write_metrics`) once every rank has measured. The launcher exports them,
+      so that each target has exactly one record.
   """
   # Required for OSS/GCP: Subprocesses spawned via torch.multiprocessing.spawn
   # bypass app.run() and start with unparsed absl flags.
@@ -449,8 +451,11 @@ def _run_single_target_task(
 
     # Harness setup
     device_ops = torch_device_ops.TorchDeviceOps(target)
-    ctx = context_lib.Context(
-        target=target, run_scope=context_lib.RUN_SCOPE.value
+    ctx = registry_lib.resolve_context(
+        spec,
+        context_lib.Context(
+            target=target, run_scope=context_lib.RUN_SCOPE.value
+        ),
     )
 
     with mode_lib.run_mode_context(mode, target):
@@ -459,6 +464,23 @@ def _run_single_target_task(
       logging.info("Rank %s calling spec.factory...", rank)
       factory_res = spec.factory(ctx)
       logging.info("Rank %s spec.factory returned.", rank)
+      # The ranks of a replica (e.g. TP) share its inputs, so report each
+      # device's share.
+      step_work = None
+      if ctx.workload is not None:
+        world_size = torch.distributed.get_world_size()
+        devices_per_replica = spec.devices_per_replica(world_size)
+        if devices_per_replica < 1 or world_size % devices_per_replica:
+          raise ValueError(
+              f"{spec.name} declares {devices_per_replica} devices per replica,"
+              f" which must be >= 1 and divide the world size {world_size}."
+          )
+        step_work = workload_lib.step_work(
+            ctx.workload,
+            spec.stepper,
+            spec.stepper_kwargs,
+            devices_per_replica=devices_per_replica,
+        )
       stepper = step_lib.resolve_stepper(spec.stepper, **spec.stepper_kwargs)
       stepper.init_with_benchmark_args(*factory_res)
 
@@ -475,6 +497,7 @@ def _run_single_target_task(
           name=f"{spec.name}_{mode.value}",
           enable_xprof=flags_lib.ENABLE_XPROF.value,
       )
+      metrics.step_work = step_work
       logging.info(
           "Metrics for %s_%s on rank %s: %s",
           spec.name,
@@ -483,9 +506,12 @@ def _run_single_target_task(
           metrics,
       )
 
-    # Only rank 0 validates and exports results to persistent storage
-    # (MLCompass / Sponge) to avoid duplicate entries and write collisions
-    # across distributed workers.
+    # Report metrics only after every rank has measured; if a peer fails,
+    # mp.spawn tears down rank 0 here and the launcher reports the failure.
+    torch.distributed.barrier()
+
+    # Only rank 0 validates and reports the metrics, which the launcher then
+    # exports to persistent storage (MLCompass / Sponge).
     if rank == 0:
       if (
           metrics.e2e_wall_time_seconds <= 0.0
@@ -494,9 +520,8 @@ def _run_single_target_task(
         raise AssertionError(
             f"Invalid metrics measured on rank {rank}: {metrics}"
         )
-      _export_benchmark_result(
-          spec, target.platform, mode, succeeded=True, metrics=metrics
-      )
+      if metrics_file:
+        _write_metrics(metrics_file, metrics)
 
   except target_lib.UnsupportedBenchmark as e:
     logging.info("Skipping unsupported benchmark on rank %s: %s", rank, e)
@@ -525,33 +550,90 @@ def _run_single_target_task(
     )
 
 
-def _clear_persistent_compilation_caches() -> None:
-  """Clears shared-memory and on-disk compilation caches between benchmark runs.
+@contextlib.contextmanager
+def _scoped_env(updates: Mapping[str, str]) -> Iterator[None]:
+  """Sets the given env vars, restoring their previous values on exit."""
+  saved_env = {
+      name: os.environ.get(name) for name in updates  # PY_ENVIRON_OK=benchmark
+  }
+  os.environ.update(updates)  # PY_ENVIRON_OK=benchmark
+  try:
+    yield
+  finally:
+    for name, value in saved_env.items():
+      if value is None:
+        os.environ.pop(name, None)  # PY_ENVIRON_OK=benchmark
+      else:
+        os.environ[name] = value  # PY_ENVIRON_OK=benchmark
 
-  Ensures each distributed benchmark target measures true cold compilation
-  latency without being polluted by cached graph artifacts or compiled binaries
-  from preceding targets.
+
+@contextlib.contextmanager
+def _owned_compilation_caches(
+    nproc_per_node: int, *, tier2_cache_root: str | None = None
+) -> Iterator[None]:
+  """Points the workers of a target at fresh compilation caches it owns.
+
+  The workers inherit the environment, so they compile into empty Inductor and
+  Tier-2 caches instead of reusing the entries of preceding targets. Only the
+  owned caches are removed afterwards: the default locations are shared with
+  other jobs on the host, which may be using them. A Tier-3 cache root set by
+  the user is left as is, so targets can still hit its entries.
+
+  Args:
+    nproc_per_node: Number of workers of the target on this node.
+    tier2_cache_root: Directory holding the host-wide Tier-2 caches. Defaults to
+      the one TorchTPU uses.
+
+  Yields:
+    None. The owned caches are active for the duration.
   """
-  # 1. Clear TorchTPU Tier-2 host-local shared memory compilation cache.
-  shutil.rmtree("/dev/shm/torch_tpu_cache", ignore_errors=True)
-
-  # 2. Clear PyTorch Inductor and compile on-disk caches.
-  cache_patterns = [
-      "/tmp/torchinductor*",
-      "/tmp/torch_compile*",
-  ]
-  if custom_inductor_cache := os.environ.get(  # PY_ENVIRON_OK=benchmark
-      "TORCHINDUCTOR_CACHE_DIR"
+  inductor_cache_dir = tempfile.mkdtemp(prefix="perflab_inductor_")
+  owned_env = {_INDUCTOR_CACHE_ENV: inductor_cache_dir}
+  # The world size the workers see, as set by
+  # `distributed_utils.set_worker_env`.
+  world_size = int(
+      os.environ.get("WORLD_SIZE", nproc_per_node)  # PY_ENVIRON_OK=benchmark
+  )
+  # Mirrors GetTier2CacheName(), so that the Tier-2 cache stays enabled exactly
+  # when it would be otherwise.
+  if user_tier2_cache := os.environ.get(  # PY_ENVIRON_OK=benchmark
+      _TIER2_CACHE_ENV
   ):
-    shutil.rmtree(custom_inductor_cache, ignore_errors=True)
+    uses_tier2_cache = user_tier2_cache != _TIER2_CACHE_DISABLED
+  else:
+    uses_tier2_cache = world_size > 1 or bool(
+        os.environ.get(_TIER3_CACHE_ROOT_ENV)  # PY_ENVIRON_OK=benchmark
+    )
+  tier2_cache_dir = None
+  if uses_tier2_cache:
+    # A cache name set by the user is replaced too, so that the target compiles
+    # cold and never deletes that cache.
+    tier2_cache_name = f"perflab_{uuid.uuid4().hex}"
+    owned_env[_TIER2_CACHE_ENV] = tier2_cache_name
+    tier2_cache_dir = os.path.join(
+        tier2_cache_root or _TIER2_CACHE_ROOT, tier2_cache_name
+    )
+  try:
+    with _scoped_env(owned_env):
+      yield
+  finally:
+    shutil.rmtree(inductor_cache_dir, ignore_errors=True)
+    if tier2_cache_dir is not None:
+      shutil.rmtree(tier2_cache_dir, ignore_errors=True)
 
-  for pattern in cache_patterns:
-    for p in glob.glob(pattern):
-      shutil.rmtree(p, ignore_errors=True)
 
+def main(
+    argv: Sequence[str],
+    *,
+    import_failures: Sequence[discovery_lib.ImportFailure] = _IMPORT_FAILURES,
+) -> None:
+  """Main entry point for discovering and executing distributed benchmarks.
 
-def main(argv: Sequence[str]) -> None:
-  """Main entry point for discovering and executing distributed benchmarks."""
+  Args:
+    argv: Command-line arguments.
+    import_failures: The benchmark modules that failed to import, reported as a
+      failed `benchmark_imports` result.
+  """
   if len(argv) > 1:
     raise app.UsageError("Too many command-line arguments.")
 
@@ -581,18 +663,36 @@ def main(argv: Sequence[str]) -> None:
 
     distributed.set_tpu_launch_env(nproc_per_node=local_nproc)
 
+  results: list[_TargetResult] = []
+  if import_failures:
+    reason = "benchmark module(s) failed to import:\n  " + "\n  ".join(
+        str(f) for f in import_failures
+    )
+    logging.error("%s", reason)
+    # Like the platform skips below, every shard reports the failure (and exits
+    # non-zero), but only the first shard writes it to the test XML.
+    results.append(
+        _TargetResult("benchmark_imports", TargetStatus.FAILED, reason)
+    )
+
   test_filter = os.environ.get(  # PY_ENVIRON_OK=benchmark
       "TESTBRIDGE_TEST_ONLY"
   )
-  targets_to_run = resolve_benchmark_targets(test_filter)
-
-  if not targets_to_run:
+  try:
+    targets_to_run = resolve_benchmark_targets(test_filter)
+  except ValueError:
+    if not import_failures:
+      raise
+    # The filter may select targets of a module that failed to import, so
+    # report the import failure rather than fail on the filter.
+    logging.exception("Could not resolve the benchmark targets.")
+    targets_to_run = []
+  if not targets_to_run and not import_failures:
     raise ValueError(
         f"No matching benchmark targets found for platform {platform.value}"
         f" with filter '{test_filter}'."
     )
 
-  results: list[_TargetResult] = []
   runnable_targets = []
   node_rank = int(os.environ.get("NODE_RANK", "0"))  # PY_ENVIRON_OK=benchmark
   # Every shard skips the same known failures; only node 0 of the first shard
@@ -615,8 +715,12 @@ def main(argv: Sequence[str]) -> None:
     results.append(
         _TargetResult(target_name, TargetStatus.SKIPPED, skip_reason)
     )
-    if exports_skips and _is_known_failure(spec, mode, target.device_kind):
-      export_lib.export_skip(
+    # Like base_test, which never generates cases for the modes a platform does
+    # not run, record known failures only in the modes the platform runs.
+    if exports_skips and mode in mode_lib.modes_for(
+        _FRAMEWORK, target.device_kind
+    ):
+      export_lib.export_known_failure_skip(
           spec_name=spec.name,
           platform=platform,
           framework=_FRAMEWORK,
@@ -638,10 +742,14 @@ def main(argv: Sequence[str]) -> None:
       local_nproc,
   )
 
-  # `results` so far only holds the targets every shard skips for the platform.
-  num_platform_skips = len(results)
+  # `results` so far only holds the results every shard repeats: the import
+  # failure and the targets every shard skips for the platform.
+  num_shared_results = len(results)
   # Rank 0 writes a target's skip reason here if its factory raises
-  # `UnsupportedBenchmark` at run time.
+  # `UnsupportedBenchmark` at run time, and its metrics once every rank has
+  # measured. This is a directory on the launcher's host, so the launcher of
+  # node 0 reads what global rank 0 writes only because torchrun and `dist_run`
+  # assign global ranks node by node: global rank 0 always runs on node 0.
   skip_dir = tempfile.mkdtemp(prefix="distributed_runner_skips_")
   for idx, (spec, mode) in enumerate(shard_targets):
     target_name = f"{spec.name}_{mode.value}"
@@ -651,24 +759,23 @@ def main(argv: Sequence[str]) -> None:
         len(shard_targets),
         target_name,
     )
-    # Evict shared-memory and on-disk compilation caches between targets so each
-    # target measures true cold compilation latency, including after a failed
-    # target.
-    _clear_persistent_compilation_caches()
     skip_reason_file = os.path.join(skip_dir, f"{idx}.txt")
+    metrics_file = os.path.join(skip_dir, f"{idx}.metrics.pkl")
     start = time.monotonic()
     # Isolate failures per target: `mp.spawn` raises `ProcessRaisedException`
     # or `ProcessExitedException` after terminating the surviving ranks, so a
     # broken target must not abort the remaining ones.
     try:
-      distributed_utils.dist_run(
-          local_nproc,
-          _run_single_target_task,
-          spec.name,
-          mode.value,
-          platform.value,
-          skip_reason_file,
-      )
+      with _owned_compilation_caches(local_nproc):
+        distributed_utils.dist_run(
+            local_nproc,
+            _run_single_target_task,
+            spec.name,
+            mode.value,
+            platform.value,
+            skip_reason_file,
+            metrics_file,
+        )
     except Exception as e:  # pylint: disable=broad-exception-caught
       logging.exception("Benchmark target %s FAILED.", target_name)
       results.append(
@@ -679,17 +786,29 @@ def main(argv: Sequence[str]) -> None:
               time.monotonic() - start,
           )
       )
-      # Report from the launcher rather than the worker so failures that never
-      # reach the worker's exception handler (e.g. a rank killed by a signal)
-      # are still visible on dashboards. Only node 0 exports to avoid duplicate
-      # records in multi-host runs.
+      # The launcher, not the worker, exports every result, so each target has
+      # exactly one record, and failures that never reach the worker's
+      # exception handler (e.g. a rank killed by a signal) are still visible on
+      # dashboards. Only node 0 exports to avoid duplicate records in
+      # multi-host runs.
+      #
+      # If rank 0 wrote metrics, every rank measured and the job failed only
+      # afterwards, e.g. in teardown. The metrics are then valid, so the
+      # dashboard records them as a success, while the run summary, the test
+      # XML and the exit code still report the target as FAILED: that is where
+      # harness breakage such as a failed teardown is triaged, and a failed
+      # record would drop a valid measurement from the dashboards.
       if node_rank == 0:
-        _export_benchmark_result(
-            spec,
-            platform,
-            mode,
-            succeeded=False,
-            metrics=metrics_lib.PerformanceMetrics(),
+        metrics = _read_metrics(metrics_file)
+        export_lib.export(
+            export_lib.make_benchmark_data(
+                spec,
+                platform=platform,
+                framework=_FRAMEWORK,
+                run_mode=mode,
+                succeeded=metrics is not None,
+                metrics=metrics,
+            )
         )
     else:
       duration = time.monotonic() - start
@@ -711,6 +830,24 @@ def main(argv: Sequence[str]) -> None:
         results.append(
             _TargetResult(target_name, TargetStatus.PASSED, "", duration)
         )
+        if node_rank == 0:
+          if (metrics := _read_metrics(metrics_file)) is not None:
+            export_lib.export(
+                export_lib.make_benchmark_data(
+                    spec,
+                    platform=platform,
+                    framework=_FRAMEWORK,
+                    run_mode=mode,
+                    succeeded=True,
+                    metrics=metrics,
+                )
+            )
+          else:
+            logging.warning(
+                "Benchmark target %s passed but global rank 0 wrote no"
+                " metrics on node 0, so no result is exported.",
+                target_name,
+            )
   shutil.rmtree(skip_dir, ignore_errors=True)
 
   logging.info("%s", _format_summary(platform, results))
@@ -718,14 +855,14 @@ def main(argv: Sequence[str]) -> None:
       "XML_OUTPUT_FILE"
   ):
     # Sponge merges the reports of all shards, so only the first shard reports
-    # the platform skips every shard repeats; otherwise each would be listed
-    # once per shard.
+    # the results every shard repeats; otherwise each would be listed once per
+    # shard.
     first_shard = _shard_env()[0] == 0
     _write_test_xml(
         xml_output_file,
         platform,
-        (results[:num_platform_skips] if first_shard else [])
-        + results[num_platform_skips:],
+        (results[:num_shared_results] if first_shard else [])
+        + results[num_shared_results:],
     )
   if any(r.status == TargetStatus.FAILED for r in results):
     sys.exit(1)

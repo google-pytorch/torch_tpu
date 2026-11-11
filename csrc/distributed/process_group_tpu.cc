@@ -24,12 +24,14 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <deque>
 #include <exception>
 #include <memory>
 #include <numeric>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>  // NOLINT - needed for P2pSendQueue worker thread
 #include <tuple>
 #include <type_traits>
 #include <utility>
@@ -98,7 +100,6 @@
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/materialize.h"
 #include "csrc/eager/op_dispatcher.h"
-#include "csrc/eager/split_traversal.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/macros/kernel.h"
@@ -130,13 +131,14 @@ class TpuWork : public c10d::Work {
     // add a callback to mark the results future as completed when the future
     // is completed.
     if (future) {
-      future->addCallback([this](c10::ivalue::Future& future) {
+      future->addCallback([results_future = results_future_,
+                           results = results_](c10::ivalue::Future& future) {
         if (future.hasError()) {
-          results_future_->setError(std::make_exception_ptr(TtError(
+          results_future->setError(std::make_exception_ptr(TtError(
               TT_ERROR(error::kInternal) << future.tryRetrieveErrorMessage(),
               TT_SOURCE_LOCATION)));
         } else {
-          results_future_->markCompleted(c10::IValue(results_));
+          results_future->markCompleted(c10::IValue(results));
         }
       });
     } else {
@@ -267,7 +269,7 @@ absl::Status ValidateSplitSizesForAllToAllSingle(c10::IntArrayRef split_sizes,
 
     for (int64_t size : split_sizes) {
       TT_RET_CHECK(size >= 0, error::kInvalidArgument)
-          << "expected split sizes to be non-negative, got " << size;
+          << "expected split sizes to be >= 0, got " << size;
     }
 
     const int64_t split_sizes_sum = absl::c_accumulate(split_sizes, 0L);
@@ -601,9 +603,193 @@ absl::StatusOr<PjRtDeviceAttributes> DeserializeDeviceAttributes(
 
 }  // namespace
 
+P2pSendQueue::P2pSendQueue(c10::intrusive_ptr<c10d::Store> store)
+    : store_(std::move(store)) {}
+
+P2pSendQueue::~P2pSendQueue() { Shutdown(); }
+
+absl::StatusOr<P2pSendQueue::PeerChannel*> P2pSendQueue::GetOrCreateChannel(
+    int dst_rank) {
+  auto it = channels_.find(dst_rank);
+  if (it != channels_.end()) {
+    return it->second.get();
+  }
+  c10::intrusive_ptr<c10d::Store> cloned_store;
+  try {
+    cloned_store = store_->clone();
+    cloned_store->setTimeout(store_->getTimeout());
+  } catch (const std::exception& e) {
+    return TT_ERROR(  // ERROR_COV_INFEASIBLE=store clone failure
+               error::kInternal)
+           << "failed to clone store for p2p send: " << e.what();
+  }
+  auto channel = std::make_unique<PeerChannel>(std::move(cloned_store));
+  channel->worker = std::thread(&P2pSendQueue::PeerWorkerLoop, channel.get());
+  PeerChannel* ptr = channel.get();
+  channels_.emplace(dst_rank, std::move(channel));
+  return ptr;
+}
+
+absl::Status P2pSendQueue::Enqueue(int dst_rank,
+                                   std::vector<std::string> descriptor_keys,
+                                   ReadyCallback on_ready,
+                                   ErrorCallback on_error) {
+  absl::MutexLock lock(mu_);
+  if (shutdown_) {
+    return TT_ERROR(  // ERROR_COV_INFEASIBLE=shutdown race during teardown
+               error::kCancelled)
+           << "process group is shut down";
+  }
+  TT_ASSIGN_OR_RETURN(PeerChannel * channel, GetOrCreateChannel(dst_rank));
+  {
+    absl::MutexLock channel_lock(channel->mu);
+    channel->queue.push_back(PendingSend{
+        .descriptor_keys = std::move(descriptor_keys),
+        .on_ready = std::move(on_ready),
+        .on_error = std::move(on_error),
+    });
+    channel->cv.Signal();
+  }
+  return absl::OkStatus();
+}
+
+void P2pSendQueue::Shutdown() {
+  absl::flat_hash_map<int, std::unique_ptr<PeerChannel>> channels;
+  {
+    absl::MutexLock lock(mu_);
+    if (shutdown_) {
+      return;
+    }
+    shutdown_ = true;
+    channels = std::move(channels_);
+  }
+
+  std::vector<std::string> keys_to_wake;
+  for (const auto& [rank, channel] : channels) {
+    {
+      absl::MutexLock channel_lock(channel->mu);
+      channel->shutdown = true;
+      keys_to_wake = channel->inflight_keys;
+      channel->cv.SignalAll();
+    }
+    WakeInflightWaiters(keys_to_wake);
+  }
+
+  for (const auto& [rank, channel] : channels) {
+    if (channel->worker.joinable() &&
+        channel->worker.get_id() != std::this_thread::get_id()) {
+      channel->worker.join();
+    }
+  }
+}
+
+void P2pSendQueue::CancelQueuedTasks(std::deque<PendingSend>& tasks) {
+  for (auto& task : tasks) {
+    std::move(task.on_error)(std::make_exception_ptr(TtError(
+        TT_ERROR(  // ERROR_COV_INFEASIBLE=shutdown race with queued send
+            error::kCancelled)
+            << "process group is shut down",
+        TT_SOURCE_LOCATION)));
+  }
+  tasks.clear();
+}
+
+bool P2pSendQueue::PopNextOrWait(PeerChannel* channel, PendingSend& out_task) {
+  absl::MutexLock lock(channel->mu);
+  while (channel->queue.empty() && !channel->shutdown) {
+    channel->cv.Wait(&channel->mu);
+  }
+  if (channel->shutdown) {
+    CancelQueuedTasks(channel->queue);
+    return false;
+  }
+  out_task = std::move(channel->queue.front());
+  channel->queue.pop_front();
+  channel->inflight_keys = out_task.descriptor_keys;
+  return true;
+}
+
+void P2pSendQueue::DeleteConsumedKeys(c10d::Store& store,
+                                      absl::Span<const std::string> keys) {
+  for (const std::string& key : keys) {
+    try {
+      store.deleteKey(key);
+    } catch (const std::exception& e) {
+      ABSL_LOG(WARNING) << "failed to delete P2P descriptor key " << key
+                        << " from the store: " << e.what();
+    }
+  }
+}
+
+void P2pSendQueue::WakeInflightWaiters(absl::Span<const std::string> keys) {
+  const std::vector<uint8_t> empty_sentinel;
+  for (const std::string& key : keys) {
+    try {
+      store_->set(key, empty_sentinel);
+    } catch (const std::exception& e) {
+      ABSL_LOG(WARNING) << "failed to set wake sentinel for key " << key << ": "
+                        << e.what();
+    }
+  }
+}
+
+void P2pSendQueue::ExecuteSendTask(PeerChannel* channel, PendingSend task) {
+  std::vector<std::vector<uint8_t>> descriptors;
+  std::exception_ptr fetch_error;
+  std::string fetch_error_msg;
+  try {
+    descriptors = channel->store->multiGet(task.descriptor_keys);
+  } catch (const std::exception& e) {
+    fetch_error = std::current_exception();
+    fetch_error_msg = e.what();
+  }
+
+  bool is_shutdown = false;
+  {
+    absl::MutexLock lock(channel->mu);
+    channel->inflight_keys.clear();
+    is_shutdown = channel->shutdown;
+  }
+
+  if (is_shutdown) {
+    DeleteConsumedKeys(*channel->store, task.descriptor_keys);
+    std::move(task.on_error)(std::make_exception_ptr(TtError(
+        TT_ERROR(  // ERROR_COV_INFEASIBLE=shutdown race with active send
+            error::kCancelled)
+            << "process group is shut down",
+        TT_SOURCE_LOCATION)));
+    return;
+  }
+
+  if (fetch_error) {
+    if (absl::StrContainsIgnoreCase(fetch_error_msg, "timeout")) {
+      std::move(task.on_error)(std::make_exception_ptr(TtError(
+          TT_ERROR(  // ERROR_COV_INFEASIBLE=background store wait timeout
+              error::kDeadlineExceeded)
+              << "p2p send timed out waiting for descriptors: "
+              << fetch_error_msg,
+          TT_SOURCE_LOCATION)));
+    } else {
+      std::move(task.on_error)(std::move(fetch_error));
+    }
+    return;
+  }
+
+  std::move(task.on_ready)(std::move(descriptors));
+  DeleteConsumedKeys(*channel->store, task.descriptor_keys);
+}
+
+void P2pSendQueue::PeerWorkerLoop(PeerChannel* channel) {
+  PendingSend task;
+  while (PopNextOrWait(channel, task)) {
+    ExecuteSendTask(channel, std::move(task));
+  }
+}
+
 absl::StatusOr<c10::intrusive_ptr<c10::ivalue::Future>>
 ProcessGroupTpu::CrossHostSendBuffers(
-    std::vector<xla::PjRtBuffer*>& buffers,
+    int dst_rank, std::shared_ptr<std::vector<DeviceBufferRef>> held_buffers,
+    std::vector<xla::PjRtBuffer*> buffers,
     absl::Span<const xla::CrossHostTransferKey> transfer_keys) {
   TT_RET_CHECK(transfer_keys.size() == buffers.size(), error::kInvalidArgument)
       << "expected transfer keys to be the same size as buffers, got "
@@ -627,46 +813,48 @@ ProcessGroupTpu::CrossHostSendBuffers(
         GetCrossHostTransferDescriptorStoreKey(transfer_key));
   }
 
-  // Retrieve descriptors from the distributed store. This is a blocking call
-  // that waits until the remote receiver has posted its descriptors.
-  std::vector<std::vector<uint8_t>> descriptors;
-  try {
-    descriptors = store_->multiGet(descriptor_keys);
-  } catch (const std::exception& e) {
-    all_sent_future->setError(std::current_exception());
-  }
+  auto ready_callback = [all_sent_future,
+                         held_buffers = std::move(held_buffers),
+                         buffers = std::move(buffers)](
+                            std::vector<std::vector<uint8_t>> descriptors) {
+    auto remaining_sends =
+        std::make_shared<std::atomic<size_t>>(buffers.size());
+    for (size_t i = 0; i < descriptors.size(); ++i) {
+      const std::string descriptor(descriptors[i].begin(),
+                                   descriptors[i].end());
+      buffers[i]->CopyToRemoteDevice(
+          std::move(descriptor),
+          [all_sent_future, remaining_sends, held_buffers](
+              absl::Status status, bool sends_were_enqueued) {
+            if (all_sent_future->completed()) {
+              return;
+            }
+            if (!status.ok()) {
+              all_sent_future->setErrorIfNeeded(std::make_exception_ptr(
+                  TtError(TT_ERROR(error::kInternal)
+                              << "PjRtBuffer::CopyToRemoteDevice: " << status,
+                          TT_SOURCE_LOCATION)));
+            } else if (!sends_were_enqueued) {
+              all_sent_future->setErrorIfNeeded(std::make_exception_ptr(
+                  TtError(TT_ERROR(error::kInternal)
+                              << "PjRtBuffer::CopyToRemoteDevice: "
+                                 "sends were not enqueued",
+                          TT_SOURCE_LOCATION)));
+            } else if (remaining_sends->fetch_sub(
+                           1, std::memory_order_acq_rel) == 1) {
+              all_sent_future->markCompleted(c10::IValue());
+            }
+          });
+    }
+  };
 
-  auto remaining_sends = std::make_shared<std::atomic<size_t>>(buffers.size());
-  for (size_t i = 0; i < descriptors.size(); ++i) {
-    const std::string descriptor(descriptors[i].begin(), descriptors[i].end());
+  TT_RETURN_IF_ERROR(  // ERROR_COV_INFEASIBLE=shutdown race during teardown
+      p2p_send_queue_.Enqueue(
+          dst_rank, std::move(descriptor_keys), std::move(ready_callback),
+          [all_sent_future](std::exception_ptr eptr) {
+            all_sent_future->setErrorIfNeeded(std::move(eptr));
+          }));
 
-    buffers[i]->CopyToRemoteDevice(
-        std::move(descriptor),
-        [all_sent_future, remaining_sends](absl::Status status,
-                                           bool sends_were_enqueued) {
-          // If the aggregate future has already been resolved (likely due to a
-          // failure in a parallel callback), exit immediately.
-          if (all_sent_future->completed()) {
-            return;
-          }
-
-          if (!status.ok()) {
-            all_sent_future->setError(std::make_exception_ptr(
-                TtError(TT_ERROR(error::kInternal)
-                            << "PjRtBuffer::CopyToRemoteDevice: " << status,
-                        TT_SOURCE_LOCATION)));
-          } else if (!sends_were_enqueued) {
-            all_sent_future->setError(std::make_exception_ptr(TtError(
-                TT_ERROR(error::kInternal) << "PjRtBuffer::CopyToRemoteDevice: "
-                                              "sends were not enqueued",
-                TT_SOURCE_LOCATION)));
-          } else if (remaining_sends->fetch_sub(1) == 1) {
-            // fetch_sub returns the value before subtraction. If it was 1,
-            // this is the final transfer to complete successfully.
-            all_sent_future->markCompleted(c10::IValue());
-          }
-        });
-  }
   return all_sent_future;
 }
 
@@ -1738,7 +1926,9 @@ absl::StatusOr<DeviceGroupList> ProcessGroupTpu::GatherAllSubgroups(
 
 ProcessGroupTpu::ProcessGroupTpu(c10::intrusive_ptr<c10d::Store> store,
                                  int rank, int group_size)
-    : c10d::Backend(rank, group_size), store_(std::move(store)) {
+    : c10d::Backend(rank, group_size),
+      store_(std::move(store)),
+      p2p_send_queue_(store_) {
   static std::atomic<int64_t> next_pg_id{0};
   const int64_t pg_id = next_pg_id.fetch_add(1);
   const int64_t ctor_t0 = NowMs();
@@ -1879,7 +2069,7 @@ ProcessGroupTpu::ProcessGroupTpu(c10::intrusive_ptr<c10d::Store> store,
                << ", replica groups: " << ToString(replica_groups_);
 }
 
-void ProcessGroupTpu::shutdown() {}
+void ProcessGroupTpu::shutdown() { p2p_send_queue_.Shutdown(); }
 
 ProcessGroupTpu::~ProcessGroupTpu() { shutdown(); }
 
@@ -1995,10 +2185,11 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::broadcast(
 
 c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::experimental_send(
     std::vector<at::Tensor>& tensors, int dst_rank, int tag) {
+  auto held_buffers = std::make_shared<std::vector<DeviceBufferRef>>();
+  held_buffers->reserve(tensors.size());
   std::vector<xla::PjRtBuffer*> pjrt_buffers;
-  std::vector<xla::CrossHostTransferKey> transfer_keys;
-
   pjrt_buffers.reserve(tensors.size());
+  std::vector<xla::CrossHostTransferKey> transfer_keys;
   transfer_keys.reserve(tensors.size());
 
   int64_t src_device_id = addressable_device_id_;
@@ -2006,11 +2197,12 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::experimental_send(
   for (const auto& tensor : tensors) {
     // Extract the underlying hardware buffer from the tensor.
     TT_ASSIGN_OR_THROW(
-        const DeviceBufferRef device_buffer,
+        DeviceBufferRef device_buffer,
         MaterializeAndReturn(tensor, MaterializationReason::kDistributedOp));
     TT_ASSIGN_OR_THROW(xla::PjRtBuffer * pjrt_buffer,
                        device_buffer.AwaitBuffer());
 
+    held_buffers->push_back(std::move(device_buffer));
     pjrt_buffers.push_back(pjrt_buffer);
     int64_t seq;
     {
@@ -2021,11 +2213,12 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::experimental_send(
         GetCrossHostTransferKey(src_device_id, dst_device_id, tag, seq));
   }
 
-  // Initiate the cross-host send logic, which will block until
-  // descriptors from the receiver are available in the store and then
-  // begin the asynchronous transfer.
-  TT_ASSIGN_OR_THROW(auto send_future,
-                     CrossHostSendBuffers(pjrt_buffers, transfer_keys));
+  // Initiate the cross-host send logic asynchronously on a background worker
+  // thread without blocking on store_.
+  TT_ASSIGN_OR_THROW(
+      auto send_future,
+      CrossHostSendBuffers(dst_rank, std::move(held_buffers),
+                           std::move(pjrt_buffers), transfer_keys));
 
   return c10::make_intrusive<TpuWork>(tensors, getRank(), c10d::OpType::SEND,
                                       std::move(send_future));
@@ -2033,6 +2226,10 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::experimental_send(
 
 c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::experimental_recv(
     std::vector<at::Tensor>& tensors, int src_rank, int tag) {
+  if (tensors.empty()) {
+    return c10::make_intrusive<TpuWork>(tensors, getRank(), c10d::OpType::RECV);
+  }
+
   std::vector<xla::Shape> recv_shapes;
   std::vector<xla::CrossHostTransferKey> transfer_keys;
   transfer_keys.reserve(tensors.size());
@@ -2054,24 +2251,42 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::experimental_recv(
         GetCrossHostTransferKey(src_device_id, dst_device_id, tag, seq));
   }
 
-  // Initiate the receive process. This creates placeholder buffers and
-  // posts their network descriptors to the distributed store for the
-  // sender to find.
-  TT_ASSIGN_OR_THROW(
-      auto recv_buffers,
-      CrossHostReceiveBuffers(recv_shapes, std::move(transfer_keys)));
+  TT_ASSIGN_OR_THROW(auto recv_buffers,
+                     CrossHostReceiveBuffers(recv_shapes, transfer_keys));
 
-  // Bind the incoming PJRT buffer back to the tensors.
+  auto recv_ready_future =
+      c10::make_intrusive<c10::ivalue::Future>(c10::NoneType::get());
+  auto remaining_recvs = std::make_shared<std::atomic<size_t>>(tensors.size());
+
   for (size_t i = 0; i < tensors.size(); ++i) {
-    auto& tensor = tensors[i];
+    const auto& tensor = tensors[i];
     std::unique_ptr<xla::PjRtBuffer> buffer = std::move(recv_buffers[i]);
-    TT_ASSIGN_OR_THROW(auto device_buffer,
+    auto ready_future = buffer->GetReadyFuture();
+    TT_ASSIGN_OR_THROW(DeviceBufferRef device_buffer,
                        DeviceBufferList::CreateMaterialized(std::move(buffer)));
+    DeviceBufferRef held_buffer = device_buffer;
 
     TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(device_buffer), tensor));
+
+    ready_future.OnReady(
+        [recv_ready_future, remaining_recvs,
+         held_buffer = std::move(held_buffer)](const absl::Status& status) {
+          if (!status.ok()) {
+            recv_ready_future->setErrorIfNeeded(std::make_exception_ptr(
+                TtError(TT_ERROR(  // ERROR_COV_INFEASIBLE=internal PJRT receive
+                                   // completion failure
+                            error::kInternal)
+                            << "PjRtBuffer::GetReadyFuture failed: " << status,
+                        TT_SOURCE_LOCATION)));
+          } else if (remaining_recvs->fetch_sub(1, std::memory_order_acq_rel) ==
+                     1) {
+            recv_ready_future->markCompleted(c10::IValue());
+          }
+        });
   }
 
-  return c10::make_intrusive<TpuWork>(tensors, getRank(), c10d::OpType::RECV);
+  return c10::make_intrusive<TpuWork>(tensors, getRank(), c10d::OpType::RECV,
+                                      std::move(recv_ready_future));
 }
 
 c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::allgather(
@@ -2356,10 +2571,8 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::gather(
             empty_buffers.push_back(std::move(empty_buffer));
             allgather_outputs.push_back(std::move(tensor));
           }
-          TT_THROW_IF_ERROR(
-              Materialize(empty_buffers, MaterializationReason::kDistributedOp,
-                          GraphSplitMode::kSplitGraph,
-                          MaterializationBlockMode::kNonBlocking));
+          TT_THROW_IF_ERROR(Materialize(empty_buffers,
+                                        MaterializationReason::kDistributedOp));
         }
 
         c10d::AllgatherOptions allgather_opts;
@@ -2894,15 +3107,17 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::alltoall(
                                             .op_param_cache_keys =
                                                 OpParamCacheKeys::Empty()}));
 
-          at::Tensor concatenated_input = MakeTensor(concatenated_input_buf);
-          at::Tensor output_placeholder = MakeTensor(output_placeholder_buf);
+          at::Tensor concatenated_input =
+              MakeTensor(std::move(concatenated_input_buf));
+          at::Tensor output_placeholder =
+              MakeTensor(std::move(output_placeholder_buf));
 
           TT_ASSIGN_OR_THROW(
               DeviceBufferRef ragged_output_buf,
               AllToAllBaseUnevenSplits(output_placeholder, concatenated_input,
                                        output_split_sizes, input_split_sizes));
 
-          at::Tensor ragged_output = MakeTensor(ragged_output_buf);
+          at::Tensor ragged_output = MakeTensor(std::move(ragged_output_buf));
           TT_ASSIGN_OR_THROW(auto slice_param_keys,
                              TT_MAKE_OP_PARAM_CACHE_KEYS(slice_sizes));
           auto slice_builder =

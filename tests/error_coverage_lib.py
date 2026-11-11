@@ -53,11 +53,15 @@ COV_TEST_BINARIES = (
 # The environment variables for running the error tests in coverage mode. They
 # ensure the needed info in stdout while skipping addr2line symbolization
 # (coverage only parses the `C++ error trace` and `Exception raised from`
-# header, not the symbolized C++ call stack frames).
+# header, not the symbolized C++ call stack frames), and enable the error
+# message format checks in all builds (including OSS), so that error messages
+# that don't follow the error message guidelines crash the error tests. Keep in
+# sync with `TEST_COV_ENV` in build_files/build_defs.bzl.
 COV_ENV = {
     "TORCH_DISABLE_ADDR2LINE": "1",
     "TORCH_SHOW_CPP_STACKTRACES": "1",
     "TORCH_TPU_ENABLE_DEBUG_CHECKS": "1",
+    "TORCH_TPU_INTERNAL_CHECK_ERROR_FORMAT": "1",
 }
 
 # The environment variables that blaze/bazel set for the test that runs the
@@ -377,18 +381,6 @@ class CoverageForFile:
   def ratio(self) -> float:
     """Returns the coverage ratio as a float in the range [0, 1]."""
     return len(self.covered_locs) / len(self.locs) if self.locs else 1.0
-
-  def ratio_upper_bound(self) -> float:
-    """Returns the maximum possible coverage ratio.
-
-    Since some error macros are infeasible to test, maximum possible
-    coverage may be < 1.
-    """
-    return (
-        len(set(self.locs) - set(self.infeasible_locs)) / len(self.locs)
-        if self.locs
-        else 1.0
-    )
 
   def __str__(self):
     msg = (

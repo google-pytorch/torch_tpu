@@ -491,6 +491,11 @@ class DeferredOp {
     return device_assignment_.global;
   }
 
+  // See DeviceAssignment::contains_pallas_kernel.
+  [[nodiscard]] bool contains_pallas_kernel() const {
+    return device_assignment_.contains_pallas_kernel;
+  }
+
  private:
   // The name of the deferred op.
   OpName op_name_;

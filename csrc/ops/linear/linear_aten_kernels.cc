@@ -307,7 +307,8 @@ ReturnType DispatchLinearImpl(const at::Tensor& input, const at::Tensor& weight,
                               Dispatch3Fn&& dispatch3_fn) {
   TT_ASSIGN_OR_RETURN(mlir::ElementType output_dtype_mlir,
                       ConvertTo<mlir::ElementType>(input.scalar_type()));
-  const bool has_bias = bias.has_value() && bias->defined();
+  const auto sanitized_bias = SanitizeOptionalTensor(bias);
+  const bool has_bias = sanitized_bias.has_value();
   const auto current_precision = GetAndAddPrecisionTo(param_keys);
 
   DispatchOpOptions<1> options{.out_dtype = output_dtype_mlir,
@@ -465,28 +466,31 @@ auto MakeAutogradNode() {
 
 at::Tensor AtenLinearAutograd(const at::Tensor& input, const at::Tensor& weight,
                               const std::optional<at::Tensor>& bias) {
+  const auto sanitized_bias = SanitizeOptionalTensor(bias);
+  const bool has_bias = sanitized_bias.has_value();
   const bool any_requires_grad =
       torch::autograd::compute_requires_grad(input, weight, bias);
   // Uses `sym_size()` so that FakeTensors with symbolic shapes are not
   // specialized.
   const bool is_non_standard_grad_bias =
-      any_requires_grad && bias.has_value() && bias->defined() &&
+      any_requires_grad && has_bias &&
       ((weight.dim() == 2 &&
-        (bias->dim() != 1 || bias->sym_size(0) != weight.sym_size(0))) ||
-       (weight.dim() == 1 && bias->dim() != 0)) &&
-      torch::autograd::compute_requires_grad(*bias) &&
+        (sanitized_bias->dim() != 1 ||
+         sanitized_bias->sym_size(0) != weight.sym_size(0))) ||
+       (weight.dim() == 1 && sanitized_bias->dim() != 0)) &&
+      torch::autograd::compute_requires_grad(*sanitized_bias) &&
       ValidateLinearInputs(input, weight, bias).ok();
   const bool is_meta_1d_weight =
       weight.dim() == 1 &&
       (IsMetaOrFakeTensor(input) || IsMetaOrFakeTensor(weight));
   if (is_non_standard_grad_bias || is_meta_1d_weight ||
       IsPythonWrapperSubclass(input) || IsPythonWrapperSubclass(weight) ||
-      (bias.has_value() && IsPythonWrapperSubclass(*bias)) ||
+      (has_bias && IsPythonWrapperSubclass(*sanitized_bias)) ||
       IsFunctorchActive() || torch::autograd::isFwGradDefined(input) ||
       torch::autograd::isFwGradDefined(weight) ||
       torch::autograd::isFwGradDefined(bias)) {
-    if (weight.dim() == 1 && bias.has_value() && bias->defined()) {
-      return at::native::linear(input, weight, std::nullopt) + *bias;
+    if (weight.dim() == 1 && has_bias) {
+      return at::native::linear(input, weight, std::nullopt) + *sanitized_bias;
     }
     return at::native::linear(input, weight, bias);
   }
@@ -515,7 +519,7 @@ at::Tensor AtenLinear(const at::Tensor& input, const at::Tensor& weight,
   TT_KERNEL(OpName::kLinear, param_keys, (input, weight, bias), {
     TT_ASSIGN_OR_THROW(auto result_buffer,
                        Linear(input, weight, bias, std::move(param_keys)));
-    return MakeTensor(result_buffer);
+    return MakeTensor(std::move(result_buffer));
   });
 }
 
@@ -543,12 +547,15 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenLinearBackward(
         TT_ASSIGN_OR_THROW(auto result_buffers,
                            LinearBackward(self, grad_output, weight,
                                           output_mask, std::move(param_keys)));
-        at::Tensor grad_input =
-            output_mask[0] ? MakeTensor(result_buffers[0]) : at::Tensor();
-        at::Tensor grad_weight =
-            output_mask[1] ? MakeTensor(result_buffers[1]) : at::Tensor();
-        at::Tensor grad_bias =
-            output_mask[2] ? MakeTensor(result_buffers[2]) : at::Tensor();
+        at::Tensor grad_input = output_mask[0]
+                                    ? MakeTensor(std::move(result_buffers[0]))
+                                    : at::Tensor();
+        at::Tensor grad_weight = output_mask[1]
+                                     ? MakeTensor(std::move(result_buffers[1]))
+                                     : at::Tensor();
+        at::Tensor grad_bias = output_mask[2]
+                                   ? MakeTensor(std::move(result_buffers[2]))
+                                   : at::Tensor();
         return std::make_tuple(std::move(grad_input), std::move(grad_weight),
                                std::move(grad_bias));
       });

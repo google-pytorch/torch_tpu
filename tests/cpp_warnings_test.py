@@ -26,19 +26,19 @@ from tests import seed_test_utils
 
 # The prefix of each category. These are public API: users filter on them.
 _EXPECTED_PREFIXES = {
-    warning_categories.TORCH_TPU: "<TorchTpu/> ",
-    warning_categories.PERFORMANCE: "<TorchTpu/Performance/> ",
+    warning_categories.TORCH_TPU: "//TorchTpu// ",
+    warning_categories.PERFORMANCE: "//TorchTpu/Performance// ",
     warning_categories.UNOPTIMIZED_BUILD: (
-        "<TorchTpu/Performance/UnoptimizedBuild/> "
+        "//TorchTpu/Performance/UnoptimizedBuild// "
     ),
-    warning_categories.TCMALLOC: "<TorchTpu/Performance/TcMalloc/> ",
-    warning_categories.CORRECTNESS: "<TorchTpu/Correctness/> ",
-    warning_categories.API_STAGE: "<TorchTpu/ApiStage/> ",
-    warning_categories.INTERNAL_API: "<TorchTpu/ApiStage/InternalApi/> ",
+    warning_categories.TCMALLOC: "//TorchTpu/Performance/TcMalloc// ",
+    warning_categories.CORRECTNESS: "//TorchTpu/Correctness// ",
+    warning_categories.API_STAGE: "//TorchTpu/ApiStage// ",
+    warning_categories.INTERNAL_API: "//TorchTpu/ApiStage/InternalApi// ",
     warning_categories.EXPERIMENTAL_API: (
-        "<TorchTpu/ApiStage/ExperimentalApi/> "
+        "//TorchTpu/ApiStage/ExperimentalApi// "
     ),
-    warning_categories.DEPRECATED_API: "<TorchTpu/ApiStage/DeprecatedApi/> ",
+    warning_categories.DEPRECATED_API: "//TorchTpu/ApiStage/DeprecatedApi// ",
 }
 
 
@@ -69,6 +69,8 @@ class CppWarningsTest(seed_test_utils.RepeatableTest):
     filter_text = warning_categories.get_prefix(category).removesuffix(" ")
     # `-W` and `PYTHONWARNINGS` split on ":" and "," and strip whitespace.
     self.assertNotRegex(filter_text, r"[:,\s]")
+    # HTML log viewers strip `<...>` as HTML tags; `<` and `>` redirect in sh.
+    self.assertNotRegex(filter_text, r"[<>]")
     # Code and pytest ini filters are regexes; `-W` filters are literal text.
     self.assertEqual(re.escape(filter_text), filter_text)
 
@@ -173,10 +175,10 @@ class CppWarningsTest(seed_test_utils.RepeatableTest):
     )
 
   @parameterized.named_parameters(
-      ("torch_tpu", "<TorchTpu/"),
-      ("api_stage", "<TorchTpu/ApiStage/"),
-      ("experimental_api", "<TorchTpu/ApiStage/ExperimentalApi/"),
-      ("experimental_api_only", "<TorchTpu/ApiStage/ExperimentalApi/>"),
+      ("torch_tpu", "//TorchTpu/"),
+      ("api_stage", "//TorchTpu/ApiStage/"),
+      ("experimental_api", "//TorchTpu/ApiStage/ExperimentalApi/"),
+      ("experimental_api_only", "//TorchTpu/ApiStage/ExperimentalApi//"),
   )
   def test_prefix_ignore_filter_matches_category_and_subcategories(
       self, prefix: str
@@ -193,12 +195,12 @@ class CppWarningsTest(seed_test_utils.RepeatableTest):
     self.assertEmpty(_matching(recorded, "Ignored experimental warning"))
 
   @parameterized.named_parameters(
-      ("sibling", "<TorchTpu/Performance/"),
-      ("parent_only", "<TorchTpu/ApiStage/>"),
-      ("torch_tpu_only", "<TorchTpu/>"),
+      ("sibling", "//TorchTpu/Performance/"),
+      ("parent_only", "//TorchTpu/ApiStage//"),
+      ("torch_tpu_only", "//TorchTpu//"),
       # A trailing "/" keeps a category from matching another category whose
       # name it is a prefix of.
-      ("name_prefix", "<TorchTpu/ApiStage/Experimental/"),
+      ("name_prefix", "//TorchTpu/ApiStage/Experimental/"),
   )
   def test_prefix_ignore_filter_does_not_match_other_categories(
       self, prefix: str
@@ -219,7 +221,7 @@ class CppWarningsTest(seed_test_utils.RepeatableTest):
     with warnings.catch_warnings(record=True) as recorded:
       warnings.simplefilter("always")
       warnings.filterwarnings(
-          "error", message=re.escape("<TorchTpu/Performance/")
+          "error", message=re.escape("//TorchTpu/Performance/")
       )
       with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Verifies the error filter.
           UserWarning, "Category error filter performance warning"
@@ -254,7 +256,7 @@ class CppWarningsTest(seed_test_utils.RepeatableTest):
   def test_filterwarnings_once(self) -> None:
     """Verifies the "once" action deduplicates C++ warnings."""
     with warnings.catch_warnings(record=True) as recorded:
-      warnings.filterwarnings("once", message="<TorchTpu/")
+      warnings.filterwarnings("once", message="//TorchTpu/")
       for _ in range(2):
         tt_testing.emit_tt_warn(
             warning_categories.TORCH_TPU,

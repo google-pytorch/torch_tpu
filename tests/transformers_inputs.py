@@ -948,25 +948,6 @@ def _mm_token_type_ids(
   return mm_types
 
 
-def _build_pixel_values(
-    ctx: InputContext,
-    *,
-    num_channels: int,
-    image_size: int,
-    num_images: int | None = None,
-    num_frames: int | None = None,
-    height: int | None = None,
-    width: int | None = None,
-) -> torch.Tensor:
-  h = height if height is not None else image_size
-  w = width if width is not None else image_size
-  if num_frames is not None:
-    return ctx.randn(ctx.batch_size, num_frames, num_channels, h, w)
-  if num_images is not None:
-    return ctx.randn(ctx.batch_size, num_images, num_channels, h, w)
-  return ctx.randn(ctx.batch_size, num_channels, h, w)
-
-
 def _build_siglip2_inputs(
     ctx: InputContext,
     input_kwargs: dict[str, Any],
@@ -1133,10 +1114,6 @@ def _type_contains(*needles: str) -> _Matcher:
 
 def _model_type_contains(*needles: str) -> _Matcher:
   return lambda ctx: any(n in ctx.model_type for n in needles)
-
-
-def _has_config_key(*paths: str) -> _Matcher:
-  return lambda ctx: any(_cfg_lookup(ctx.config, p) is not None for p in paths)
 
 
 def _apply_builders(

@@ -28,6 +28,7 @@
 #include "absl/log/absl_log.h"
 #include "absl/status/statusor.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/tpu_hardware.h"
 #include "xla/client/executable_build_options.h"
 #include "xla/pjrt/maybe_owning_mlir_module.h"
 #include "xla/pjrt/pjrt_client.h"
@@ -71,7 +72,7 @@ absl::StatusOr<std::optional<Subslice>> MaybeMakeSubslice(
                       client.GetTopologyDescription());
   TT_ASSIGN_OR_RETURN(const int num_devices,
                       topology->LogicalDeviceCountOfDefaultType());
-  if (num_partitions == num_devices) {
+  if (num_partitions >= num_devices) {
     return std::nullopt;
   }
   TT_ASSIGN_OR_RETURN(const int cores_per_chip,
@@ -81,10 +82,17 @@ absl::StatusOr<std::optional<Subslice>> MaybeMakeSubslice(
   std::vector<ChipAndCore> chip_and_core;
   chip_and_core.reserve(num_partitions);
   for (int p = 0; p < num_partitions; ++p) {
+    const int64_t device_id = device_assignment(0, p);
+    // In multi-slice topologies, GetTopologyDescription() describes a single
+    // slice of `num_devices` logical devices while device IDs encode the slice
+    // offset outside [0, num_devices).
+    if (device_id < 0 || device_id >= num_devices) {
+      return std::nullopt;
+    }
     TT_ASSIGN_OR_RETURN(
         const auto location,
         topology->ChipCoordAndCoreIndexForLogicalDeviceOfDefaultType(
-            xla::GlobalDeviceId(device_assignment(0, p))));
+            xla::GlobalDeviceId(device_id)));
     chip_and_core.push_back({location.first, location.second});
   }
   xla::PjRtDeviceDimensions min_chip = chip_and_core[0].chip;
@@ -104,11 +112,13 @@ absl::StatusOr<std::optional<Subslice>> MaybeMakeSubslice(
     return std::nullopt;
   }
 
-  // torch_tpu runs one process per core with chips-per-host bounds 1,1,1 (see
-  // environment.cc), so the box is given as host bounds.
+  // torch_tpu runs one process per core with single-device chips-per-host
+  // bounds (see environment.cc), so the box of chips is given as host bounds.
   absl::StatusOr<std::unique_ptr<xla::PjRtTopologyDescription>>
       subslice_topology = topology->Subslice(
-          /*chips_per_host_bounds=*/{1, 1, 1}, /*host_bounds=*/box);
+          MakeSingleDeviceTpuBounds<xla::PjRtDeviceDimensions>(cores_per_chip),
+          MakeTpuChipBounds<xla::PjRtDeviceDimensions>(box[0], box[1], box[2],
+                                                       cores_per_chip));
   if (!subslice_topology.ok()) {
     ABSL_VLOG(1) << "Compiling for the full slice: no subslice of chips "
                  << box.ToString() << ": " << subslice_topology.status();

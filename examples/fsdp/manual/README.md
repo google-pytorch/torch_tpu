@@ -64,10 +64,10 @@ Then:
 
 1.  If you haven't set up your cluster yet, complete the **Before we begin**
     section in
-    [Get started with TorchTPU on GKE](../../../docs/markdown/1_basics_3_get_started_on_gke.md).
+    [Get started with TorchTPU on GKE](../../../docs/get_started_on_gke.md).
 2.  Submit the job by following the **Single host, multiple chips (4 chips / 8
     devices on one host)** section in
-    [Get started with TorchTPU on GKE](../../../docs/markdown/1_basics_3_get_started_on_gke.md).
+    [Get started with TorchTPU on GKE](../../../docs/get_started_on_gke.md).
 
 ## Files in This Directory
 

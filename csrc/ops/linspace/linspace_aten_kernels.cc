@@ -242,7 +242,7 @@ at::Tensor& AtenLinspaceOut(const at::Scalar& start, const at::Scalar& end,
       OpName::kLinspaceOut, param_keys,
       (start_promoted, end_promoted, steps, out), {
         TT_CHECK_THROW(steps >= 0, error::kInvalidArgument)
-            << "expected non-negative steps, got " << ToString(steps);
+            << "expected steps to be >= 0, got " << ToString(steps);
 
         const at::ScalarType output_dtype = out.scalar_type();
         TT_CHECK_THROW(output_dtype != at::ScalarType::Bool || steps <= 1,

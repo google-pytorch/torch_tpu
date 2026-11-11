@@ -14,10 +14,10 @@
 
 """Utilities for device operations in TorchBench."""
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 import json
 import os
-from typing import Any, Callable, Final
+from typing import Any, Final
 
 from absl import logging
 import psutil

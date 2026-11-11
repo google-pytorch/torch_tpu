@@ -28,7 +28,6 @@ torch_tpu_cc_library(
     srcs = ["col2im_aten_kernels.cc"],
     hdrs = ["col2im_aten_kernels.h"],
     deps = [
-        ":col2im",
         "//csrc/common:cache_key",
         "//csrc/common:dimension_types",
         "//csrc/common:dtype",
@@ -44,24 +43,10 @@ torch_tpu_cc_library(
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
         "@com_google_absl//absl/status:statusor",
-        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
-        "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
-    ],
-)
-
-torch_tpu_cc_library(
-    name = "col2im",
-    srcs = ["col2im.cc"],
-    hdrs = ["col2im.h"],
-    deps = [
-        "//csrc/common:dimension_types",
-        "//csrc/common:error_utils",
-        "//csrc/ops:op_builder_utils",
-        "//shims/torch:torch_headers",
-        "@com_google_absl//absl/status:statusor",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:IR",
         "@stablehlo//:stablehlo_ops",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
         "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
         "@stablehlo//stablehlo/integrations/cpp/builder:stablehlo_builder",
     ],

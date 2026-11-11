@@ -23,6 +23,7 @@
 #include "ATen/core/TensorBody.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -38,7 +39,6 @@
 #include "csrc/ops/softmax/softmax.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
-#include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
 namespace {
@@ -50,8 +50,7 @@ absl::StatusOr<int64_t> ValidateMaskedSoftmaxInputs(
       << "expected input to be a floating point tensor, got "
       << ToString(self.scalar_type());
 
-  TT_RET_CHECK(mask.scalar_type() == c10::ScalarType::Bool,
-               error::kInvalidArgument)
+  TT_RET_CHECK(IsBool(mask), error::kInvalidArgument)
       << "expected mask to be a boolean tensor, got "
       << ToString(mask.scalar_type());
 
@@ -124,8 +123,7 @@ absl::Status ValidateMaskedSoftmaxBackwardInputs(const at::Tensor& grad_output,
       << "expected output to be a floating point tensor, got "
       << ToString(output.scalar_type());
 
-  TT_RET_CHECK(mask.scalar_type() == c10::ScalarType::Bool,
-               error::kInvalidArgument)
+  TT_RET_CHECK(IsBool(mask), error::kInvalidArgument)
       << "expected mask to be a boolean tensor, got "
       << ToString(mask.scalar_type());
 

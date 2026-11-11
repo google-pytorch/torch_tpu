@@ -23,7 +23,7 @@ y = x + x
 print(f"Result on TPU: {y}")
 ```
 
-For `torch.compile()` usage, refer to `compile/example/simple.py`.
+For `torch.compile()` usage, refer to [fsdp/manual](fsdp/manual/README.md).
 
 For distributed training examples, refer to `examples/tensor_parallel/` and
 `examples/fsdp/`.
@@ -44,6 +44,14 @@ For distributed training examples, refer to `examples/tensor_parallel/` and
 -   [fsdp/fsdp_to_simple_fsdp](fsdp/fsdp_to_simple_fsdp/README.md): Side-by-side
     comparison and migration guide from PyTorch FSDPv2 (`fully_shard`) to
     `SimpleFSDP` (`data_parallel`).
+-   [FLUX_optimization](FLUX_optimization/README.md): Step-by-step tutorial on
+    optimizing the FLUX diffusion transformer for TPU, including Pallas kernels.
+-   [muse_glimmer_30b/llm_inference](muse_glimmer_30b/llm_inference/README.md):
+    Single-device LLM prefill and decode with `torch.compile()` and a dynamic KV
+    cache.
+-   [muse_glimmer_30b/pure_pytorch_fsdp_trainloop](muse_glimmer_30b/pure_pytorch_fsdp_trainloop/README.md):
+    Pure PyTorch FSDP training loop for a 30B LLM with `torch.compile` and
+    activation checkpointing.
 
 ## Benchmarking
 

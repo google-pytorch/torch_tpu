@@ -44,7 +44,6 @@ at::Tensor& AtenCumsumOut(const at::Tensor& self, int64_t dim,
     TT_CHECK_THROW(IsPrivateUse1Device(out), error::kInvalidArgument)
         << "expected the output tensor to be on "
         << GetPrivateUse1DeviceDebugName() << ", got " << out.device();
-    TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(out, self.sizes()));
 
     // PyTorch ATen parity: when explicit dtype is provided, out tensor dtype
     // must strictly match dtype; safe-casting is only allowed when dtype is
@@ -56,10 +55,13 @@ at::Tensor& AtenCumsumOut(const at::Tensor& self, int64_t dim,
           << ", got " << ToString(out.scalar_type());
     }
 
-    // Dimension must be validated before early returns so that invalid dims
-    // (e.g. dim > 0 on a 0-D scalar or empty tensor) throw IndexError.
+    // Dimension must be validated before resizing or early returns so that
+    // invalid dims (e.g. dim > 0 on a 0-D scalar or empty tensor) throw
+    // IndexError without mutating out.
     TT_ASSIGN_OR_THROW(const int64_t normalized_dim,
                        SafeWrapDim(dim, self.dim()));
+
+    TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(out, self.sizes()));
 
     // Fast-path: empty tensors require no computation.
     if (out.numel() == 0) {
@@ -76,8 +78,7 @@ at::Tensor& AtenCumsumOut(const at::Tensor& self, int64_t dim,
 
     // PyTorch does not support boolean cumulative scans for non-empty tensors
     // with dim > 0.
-    TT_CHECK_THROW(out.scalar_type() != at::ScalarType::Bool,
-                   error::kPythonNotImplementedError)
+    TT_CHECK_THROW(!IsBool(out), error::kPythonNotImplementedError)
         << "invalid output dtype bool";
 
     TT_ASSIGN_OR_THROW(const mlir::ElementType out_mlir_type,

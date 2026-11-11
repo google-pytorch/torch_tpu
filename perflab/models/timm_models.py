@@ -22,6 +22,7 @@ from perflab import model_helpers
 from perflab import registry as registry_lib
 from perflab import step_lib
 from perflab import torch_device_ops
+from perflab import workload as workload_lib
 
 
 def _load_timm_model(
@@ -53,10 +54,14 @@ def _load_timm_model(
 @registry_lib.register_benchmark(
     stepper=step_lib.StepperType.FORWARD,
     presubmit=registry_lib.PresubmitPolicy.RUN,
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(128), presubmit=workload_lib.Workload(2)
+    ),
 )
 def timm_resnet_50_forward(ctx: context_lib.Context):
   """Benchmark factory for TIMM ResNet-50 (resnet50d) forward."""
-  batch_size = 2 if ctx.run_scope == context_lib.RunScope.PRESUBMIT else 128
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
   model, input_args = _load_timm_model(
       ctx,
       "resnet50d",
@@ -69,10 +74,14 @@ def timm_resnet_50_forward(ctx: context_lib.Context):
 @registry_lib.register_benchmark(
     stepper=step_lib.StepperType.TRAINING,
     presubmit=registry_lib.PresubmitPolicy.RUN,
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(64), presubmit=workload_lib.Workload(2)
+    ),
 )
 def timm_resnet_50_training(ctx: context_lib.Context):
   """Benchmark factory for TIMM ResNet-50 (resnet50d) training."""
-  batch_size = 2 if ctx.run_scope == context_lib.RunScope.PRESUBMIT else 64
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
   model, input_args = _load_timm_model(
       ctx,
       "resnet50d",
@@ -91,10 +100,14 @@ def timm_resnet_50_training(ctx: context_lib.Context):
 @registry_lib.register_benchmark(
     stepper=step_lib.StepperType.FORWARD,
     presubmit=registry_lib.PresubmitPolicy.RUN,
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(8), presubmit=workload_lib.Workload(1)
+    ),
 )
 def timm_vit_small_dino_forward(ctx: context_lib.Context):
   """Benchmark factory for TIMM ViT-Small DINO forward."""
-  batch_size = 1 if ctx.run_scope == context_lib.RunScope.PRESUBMIT else 8
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
   model, input_args = _load_timm_model(
       ctx,
       "vit_small_patch8_224.dino",
@@ -107,10 +120,14 @@ def timm_vit_small_dino_forward(ctx: context_lib.Context):
 @registry_lib.register_benchmark(
     stepper=step_lib.StepperType.TRAINING,
     presubmit=registry_lib.PresubmitPolicy.RUN,
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(8), presubmit=workload_lib.Workload(1)
+    ),
 )
 def timm_vit_small_dino_training(ctx: context_lib.Context):
   """Benchmark factory for TIMM ViT-Small DINO training."""
-  batch_size = 1 if ctx.run_scope == context_lib.RunScope.PRESUBMIT else 8
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
   model, input_args = _load_timm_model(
       ctx,
       "vit_small_patch8_224.dino",

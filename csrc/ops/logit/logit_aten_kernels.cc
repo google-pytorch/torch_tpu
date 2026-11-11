@@ -129,7 +129,8 @@ ReturnType DispatchLogit(const at::Tensor& self, PromotedScalar& promoted_eps,
   TT_ASSIGN_OR_RETURN(const auto out_dtype,
                       ConvertTo<mlir::ElementType>(out_type));
 
-  const c10::ScalarType comp_scalar_type = InferOutputDtype(self);
+  const c10::ScalarType comp_scalar_type =
+      InferComputationDtype(InferOutputDtype(self));
   TT_ASSIGN_OR_RETURN(at::Tensor eps_tensor,
                       promoted_eps.GetTensor(comp_scalar_type));
 
@@ -262,7 +263,7 @@ at::Tensor AtenLogit(const at::Tensor& self, std::optional<double> eps) {
         DeviceBufferRef result_buf,
         BuildLogitBuffer(self, promoted_eps, out_type, std::move(param_keys)));
 
-    return MakeTensor(result_buf);
+    return MakeTensor(std::move(result_buf));
   });
 }
 
@@ -311,7 +312,8 @@ at::Tensor& AtenLogitBackwardGradInput(const at::Tensor& grad_output,
         TT_ASSIGN_OR_THROW(const auto out_dtype,
                            ConvertTo<mlir::ElementType>(out_type));
 
-        const c10::ScalarType comp_scalar_type = InferOutputDtype(self);
+        const c10::ScalarType comp_scalar_type = InferComputationDtype(
+            c10::promoteTypes(grad_output_dtype, InferOutputDtype(self)));
         TT_ASSIGN_OR_THROW(const at::Tensor eps_tensor,
                            promoted_eps.GetTensor(comp_scalar_type));
 

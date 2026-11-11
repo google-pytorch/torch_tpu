@@ -45,9 +45,10 @@ struct SharedGrads {
 //   ds = p * (dp - di)
 // `lse_ref` / `di_ref` hold one (1, 1, 1, qt) row per q block.
 SharedGrads ComputeSharedGrads(
-    kiln::Tile q, kiln::Tile k, kiln::Tile v, kiln::Tile do_, kiln::Ref lse_ref,
-    kiln::Ref di_ref, std::optional<kiln::Ref> bias_ref,
-    std::optional<kiln::Ref> seed_ref, kiln::Scalar batch,
+    kiln::Tile q, kiln::Tile k, kiln::Tile v, kiln::Tile do_,
+    kiln::VmemRef lse_ref, kiln::VmemRef di_ref,
+    std::optional<kiln::VmemRef> bias_ref,
+    std::optional<kiln::SmemRef> seed_ref, kiln::Scalar batch,
     std::optional<kiln::Scalar> q_head, kiln::Scalar qi, kiln::Scalar ki,
     const FlashAttnConfig& config, const Tiling& tiling, kiln::DType dt) {
   const int64_t qt = tiling.qt;
@@ -91,12 +92,13 @@ kiln::Scalar DkvQHead(int64_t head_group) {
 }
 
 void EmitDkvStep(const FlashAttnConfig& config, const Tiling& tiling,
-                 std::optional<kiln::Ref> seed_ref, kiln::Ref q_ref,
-                 kiln::Ref k_ref, kiln::Ref v_ref, kiln::Ref do_ref,
-                 kiln::Ref lse_ref, kiln::Ref di_ref,
-                 std::optional<kiln::Ref> bias_ref, kiln::Ref dk_ref,
-                 kiln::Ref dv_ref, kiln::Ref dk_acc, kiln::Ref dv_acc,
-                 int64_t head_group, kiln::Scalar qi, kiln::Scalar ki) {
+                 std::optional<kiln::SmemRef> seed_ref, kiln::VmemRef q_ref,
+                 kiln::VmemRef k_ref, kiln::VmemRef v_ref, kiln::VmemRef do_ref,
+                 kiln::VmemRef lse_ref, kiln::VmemRef di_ref,
+                 std::optional<kiln::VmemRef> bias_ref, kiln::VmemRef dk_ref,
+                 kiln::VmemRef dv_ref, kiln::VmemRef dk_acc,
+                 kiln::VmemRef dv_acc, int64_t head_group, kiln::Scalar qi,
+                 kiln::Scalar ki) {
   kiln::DType dt = config.element_type;
   std::optional<kiln::ContractPrecision> precision = config.precision;
 
@@ -128,11 +130,11 @@ void EmitDkvStep(const FlashAttnConfig& config, const Tiling& tiling,
 }
 
 void EmitDqStep(const FlashAttnConfig& config, const Tiling& tiling,
-                std::optional<kiln::Ref> seed_ref, kiln::Ref q_ref,
-                kiln::Ref k_ref, kiln::Ref v_ref, kiln::Ref do_ref,
-                kiln::Ref lse_ref, kiln::Ref di_ref,
-                std::optional<kiln::Ref> bias_ref, kiln::Ref dq_ref,
-                kiln::Ref dq_acc, kiln::Scalar qi, kiln::Scalar ki) {
+                std::optional<kiln::SmemRef> seed_ref, kiln::VmemRef q_ref,
+                kiln::VmemRef k_ref, kiln::VmemRef v_ref, kiln::VmemRef do_ref,
+                kiln::VmemRef lse_ref, kiln::VmemRef di_ref,
+                std::optional<kiln::VmemRef> bias_ref, kiln::VmemRef dq_ref,
+                kiln::VmemRef dq_acc, kiln::Scalar qi, kiln::Scalar ki) {
   kiln::DType dt = config.element_type;
   std::optional<kiln::ContractPrecision> precision = config.precision;
 
@@ -225,11 +227,11 @@ absl::StatusOr<kiln::Kernel> CreateBackwardDkvKernel(
           kiln::ScratchSpec{kiln::f32(kt, d_qk)},         // dK accumulator
           kiln::ScratchSpec{kiln::f32(kt, d_vo)},         // dV accumulator
           [&]  // REF_CAPTURE_OK=called synchronously
-          (std::optional<kiln::Ref> seed_ref, kiln::Ref q_ref, kiln::Ref k_ref,
-           kiln::Ref v_ref, kiln::Ref do_ref, kiln::Ref lse_ref,
-           kiln::Ref di_ref, std::optional<kiln::Ref> bias_ref,
-           kiln::Ref dk_ref, kiln::Ref dv_ref, kiln::Ref dk_acc,
-           kiln::Ref dv_acc) {
+          (std::optional<kiln::SmemRef> seed_ref, kiln::VmemRef q_ref,
+           kiln::VmemRef k_ref, kiln::VmemRef v_ref, kiln::VmemRef do_ref,
+           kiln::VmemRef lse_ref, kiln::VmemRef di_ref,
+           std::optional<kiln::VmemRef> bias_ref, kiln::VmemRef dk_ref,
+           kiln::VmemRef dv_ref, kiln::VmemRef dk_acc, kiln::VmemRef dv_acc) {
             kiln::Scalar ki = kiln::ProgramId(2), qi = kiln::ProgramId(3);
             kiln::Scalar head_in_group = kiln::ProgramId(4);
 
@@ -309,10 +311,11 @@ absl::StatusOr<kiln::Kernel> CreateBackwardDqKernel(
           kiln::OutSpec{dt(1, 1, qt, d_qk), q_map},  // dQ
           kiln::ScratchSpec{kiln::f32(qt, d_qk)},    // dQ accumulator
           [&]  // REF_CAPTURE_OK=called synchronously
-          (std::optional<kiln::Ref> seed_ref, kiln::Ref q_ref, kiln::Ref k_ref,
-           kiln::Ref v_ref, kiln::Ref do_ref, kiln::Ref lse_ref,
-           kiln::Ref di_ref, std::optional<kiln::Ref> bias_ref,
-           kiln::Ref /*out_ref*/, kiln::Ref dq_ref, kiln::Ref dq_acc) {
+          (std::optional<kiln::SmemRef> seed_ref, kiln::VmemRef q_ref,
+           kiln::VmemRef k_ref, kiln::VmemRef v_ref, kiln::VmemRef do_ref,
+           kiln::VmemRef lse_ref, kiln::VmemRef di_ref,
+           std::optional<kiln::VmemRef> bias_ref, kiln::VmemRef /*out_ref*/,
+           kiln::VmemRef dq_ref, kiln::VmemRef dq_acc) {
             kiln::Scalar qi = kiln::ProgramId(2), ki = kiln::ProgramId(3);
 
             kiln::If(ki == 0,
