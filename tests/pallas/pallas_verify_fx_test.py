@@ -21,6 +21,7 @@ import operator
 import types
 
 from absl.testing import absltest
+from absl.testing import parameterized
 import jax
 from jax.experimental import pallas as pl
 from jax.experimental.pallas import tpu as pltpu
@@ -105,6 +106,21 @@ def _pallas_values_and_indices(x: jax.Array) -> tuple[jax.Array, jax.Array]:
           jax.ShapeDtypeStruct(x.shape, jnp.int32),
       ),
   )(x)
+
+
+def _exported_donor_indices(exported: jax.export.Exported) -> list[int]:
+  """Returns the inputs that an exported module donates."""
+  ir = jax.interpreters.mlir.ir
+  donated_inputs = []
+  with jax.interpreters.mlir.make_ir_context():
+    module = ir.Module.parse(exported.mlir_module())
+    main = ir.SymbolTable(module.operation)["main"]
+    for i, attrs in enumerate(ir.ArrayAttr(main.arg_attrs)):
+      attrs_str = str(attrs)
+      # Donated inputs are buffer donors or alias an output.
+      if "jax.buffer_donor" in attrs_str or "tf.aliasing_output" in attrs_str:
+        donated_inputs.append(i)
+  return donated_inputs
 
 
 class FxVerifierTest(seed_test_utils.RepeatableTest):
@@ -819,6 +835,87 @@ class FxVerifierTest(seed_test_utils.RepeatableTest):
     self.assertTrue(direct_rep.passed, msg=direct_rep.summary())
     self.assertIn(verifier.Phase.LOWERING, direct_rep.checked_phases)
 
+  @parameterized.named_parameters(
+      ("nums", {"donate_argnums": (1,)}),
+      ("names", {"donate_argnames": "kv"}),
+  )
+  def test_abstract_mesh_lowering_keeps_donation(self, donate_kwargs):
+    abstract_mesh = jax.sharding.AbstractMesh((2,), ("tp",))
+
+    def sharded_add(x: jax.Array, kv: jax.Array) -> jax.Array:
+      return jax.shard_map(
+          _pallas_binary_add,
+          mesh=abstract_mesh,
+          in_specs=(P("tp"), P("tp")),
+          out_specs=P("tp"),
+          check_vma=False,
+      )(x, kv)
+
+    donate_op = jax_op(
+        f"pallas_verify_fx::{self._testMethodName}",
+        sharded_add,
+        mesh=abstract_mesh,
+        input_partition_specs=(P("tp"), P("tp")),
+        output_partition_specs=(P("tp"),),
+        **donate_kwargs,
+    )
+    x = torch.ones((8, 128), dtype=torch.float32)
+    kv = torch.ones((8, 128), dtype=torch.float32)
+    jax_callable = fx_verifier.extract_jax_callable(donate_op)
+    norm_args, norm_kwargs = jax_callable._normalize_invocation_args(
+        (x, kv), {}
+    )
+    jax_args, jax_kwargs = jax_callable._get_jax_placeholders(
+        norm_args, norm_kwargs
+    )
+    # The verifier re-jits ops whose `AbstractMesh` has no device for the
+    # target TPU, which must keep their donation.
+    export_fn, jax_args, jax_kwargs, target = fx_verifier._prepare_tpu_export(
+        jax_callable, jax_args, jax_kwargs, torch.tpu.TpuVersion.V6E
+    )
+    with target, jax._src.config.export_ignore_forward_compatibility(True):
+      exported = export_fn(*jax_args, **jax_kwargs)
+    self.assertEqual(_exported_donor_indices(exported), [1])
+
+  def test_abstract_mesh_lowering_keeps_keyword_only_donation(self):
+    abstract_mesh = jax.sharding.AbstractMesh((2,), ("tp",))
+
+    def sharded_add(x: jax.Array, *, extra: jax.Array) -> jax.Array:
+      return jax.shard_map(
+          _pallas_binary_add,
+          mesh=abstract_mesh,
+          in_specs=(P("tp"), P()),
+          out_specs=P("tp"),
+          check_vma=False,
+      )(x, extra)
+
+    # Only custom_jax_kernel can take keyword-only tensors, which can only be
+    # donated by name.
+    kernel = pallas_lib.custom_jax_kernel(
+        sharded_add,
+        mesh=abstract_mesh,
+        input_partition_specs=(P("tp"),),
+        output_partition_specs=(P("tp"),),
+        donate_argnames=("extra",),
+        warn_deprecated=False,
+    )
+    # The donor checks see `extra` as parameter 1.
+    self.assertEqual(
+        fx_verifier._get_donated_arg_indices(kernel, num_pos_args=1), {1}
+    )
+    x = torch.ones((8, 128), dtype=torch.float32)
+    extra = torch.ones((8, 128), dtype=torch.float32)
+    norm_args, norm_kwargs = kernel._normalize_invocation_args(
+        (x,), {"extra": extra}
+    )
+    jax_args, jax_kwargs = kernel._get_jax_placeholders(norm_args, norm_kwargs)
+    export_fn, jax_args, jax_kwargs, target = fx_verifier._prepare_tpu_export(
+        kernel, jax_args, jax_kwargs, torch.tpu.TpuVersion.V6E
+    )
+    with target, jax._src.config.export_ignore_forward_compatibility(True):
+      exported = export_fn(*jax_args, **jax_kwargs)
+    self.assertEqual(_exported_donor_indices(exported), [1])
+
   def test_abstract_mesh_detects_partition_spec_and_fake_shape_errors(self):
     abstract_mesh = jax.sharding.AbstractMesh((2,), ("tp",))
 
@@ -1080,6 +1177,8 @@ class FxVerifierTest(seed_test_utils.RepeatableTest):
 
     alias_callable = types.SimpleNamespace(
         _donate_argnums_set=set(),
+        _donate_argnames=set(),
+        _param_name_to_idx={},
         input_output_aliases={-1: 0},
         _orig_params=neg_bin_op._init_fn._orig_params,
     )
