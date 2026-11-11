@@ -17,6 +17,7 @@
 from collections.abc import Callable, Sequence
 import concurrent
 import contextlib
+import ctypes
 import dataclasses
 import enum
 import functools
@@ -94,6 +95,14 @@ def set_default_dtype(dtype):
     yield
   finally:
     torch.set_default_dtype(original_dtype)
+
+
+def _is_asan() -> bool:
+  """Returns whether the test runs under AddressSanitizer."""
+  try:
+    return hasattr(ctypes.CDLL(None), "__asan_init")
+  except (OSError, TypeError):
+    return False
 
 
 def run_with_dynamic_dims(
@@ -22018,6 +22027,10 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
   )
   def test_scaled_dot_product_attention(self, config: ops_test_data.SdpaConfig):
     """Tests torch.nn.functional.scaled_dot_product_attention."""
+    # TODO(b/584350545): Under ASan, each 10000-token config takes 17-25
+    # minutes, mostly in the CPU reference, which times out its shard.
+    if config.q_seq_len >= 10000 and _is_asan():
+      self.skipTest("Too slow under ASan.")
 
     torch.manual_seed(5432)
     q = torch.randn(
@@ -24357,6 +24370,10 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
           torch.bfloat16,
           torch.float16,
       ):
+        # TODO(b/568040779): Under ASan, the float64 cases take 15-19 minutes
+        # to compile since BuildZeta was unrolled, close to the shard timeout.
+        if dtype == torch.float64 and _is_asan():
+          continue
         for shape in ((), (1,)):
           self.assert_close_tpu_vs_cpu(
               lambda device, n=n, dtype=dtype, shape=shape: torch.polygamma(
@@ -24393,6 +24410,10 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
         (torch.float64, torch.float32),
     ):
       with self.subTest(in_dtype=in_dtype, out_dtype=out_dtype):
+        # TODO(b/568040779): Under ASan, compiling float64 polygamma takes over
+        # 25 minutes since BuildZeta was unrolled, which times out the shard.
+        if in_dtype == torch.float64 and _is_asan():
+          self.skipTest("Too slow under ASan.")
 
         def test_fn(device, in_dtype=in_dtype, out_dtype=out_dtype):
           x = to(torch.tensor([1.5, 2.5], dtype=in_dtype), device=device)
