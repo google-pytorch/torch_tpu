@@ -6630,7 +6630,6 @@ Supported combinations for non-constant padding:
         RuntimeError,
         tpu="""addmv(): expected the first argument to be a scalar or vector (0D or 1D tensor), got 2D tensor""",
         gpu="""vector + matrix @ vector expected, got 2, 2, 1""",
-        message_reviewed_by="gunhyun",
     ):
       torch.addmv(inp, mat, vec, out=out)
 
@@ -6638,7 +6637,6 @@ Supported combinations for non-constant padding:
         RuntimeError,
         tpu="""addmv(): expected the first argument to be a scalar or vector (0D or 1D tensor), got 2D tensor""",
         gpu="""vector + matrix @ vector expected, got 2, 2, 1""",
-        message_reviewed_by="gunhyun",
     ):
       torch.addmv(inp, mat, vec, beta=0, out=out)
 
@@ -6652,7 +6650,6 @@ Supported combinations for non-constant padding:
         RuntimeError,
         tpu="""addmv(): expected argument shapes [5], [2, 3], [3] to be compatible, got 5 vs 2""",
         gpu="""size mismatch, got input (5), mat (2x3), vec (3)""",
-        message_reviewed_by="gunhyun",
     ):
       torch.addmv(inp, mat, vec, out=out)
 
@@ -6660,7 +6657,6 @@ Supported combinations for non-constant padding:
         RuntimeError,
         tpu="""addmv(): expected argument shapes [5], [2, 3], [3] to be compatible, got 5 vs 2""",
         gpu="""size mismatch, got input (5), mat (2x3), vec (3)""",
-        message_reviewed_by="gunhyun",
     ):
       torch.addmv(inp, mat, vec, beta=0, out=out)
 
