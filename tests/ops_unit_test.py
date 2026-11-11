@@ -7730,17 +7730,6 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       ),
   )
   def test_boolean_indexing(self, x_fn, mask_fn, index_fn):
-    # TODO(b/584350545): 1d_long_mask times out under ASAN. Skip this case
-    # under ASAN mode only.
-    if self._testMethodName.endswith("_1d_long_mask"):
-      import ctypes  # pylint: disable=g-import-not-at-top
-
-      try:
-        if hasattr(ctypes.CDLL(None), "__asan_init"):
-          self.skipTest("b/584350545: Times out in ASAN mode.")
-      except (OSError, TypeError, AttributeError):
-        pass
-
     x = x_fn()
     mask = mask_fn()
 

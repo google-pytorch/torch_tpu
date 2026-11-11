@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 #include "absl/algorithm/container.h"
@@ -56,11 +57,25 @@ absl::StatusOr<mlir::MlirOp> FlattenIfNeeded(mlir::MlirOp input) {
 }
 
 absl::StatusOr<mlir::MlirOp> UnravelIndices(mlir::MlirOp input,
-                                            mlir::MlirOp linear_indices,
-                                            mlir::ElementType element_type) {
+                                            mlir::MlirOp linear_indices) {
   mlir::MlirBuilder& builder = input.getBuilder();
 
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
+  const int64_t num_elements = input_type.getNumElements();
+  const mlir::Type orig_indices_type =
+      GetTensorTypeOrDie(linear_indices).getElementType();
+  const bool use_i32 = num_elements <= std::numeric_limits<int32_t>::max() &&
+                       orig_indices_type.isInteger(64);
+
+  // On TPU, 64-bit integer division and modulo are not supported natively and
+  // get unrolled into extensive emulation loops in XLA, causing severe
+  // compilation and performance slowdowns. When the total number of elements
+  // fits in int32, downcast linear indices to int32 for coordinate calculation
+  // and convert the resulting indices back to int64.
+  mlir::MlirOp working_indices =
+      use_i32 ? mlir::stablehlo::ConvertElementType(linear_indices,
+                                                    mlir::ElementType::I32)
+              : linear_indices;
 
   Strides strides =
       CalculateStridesContiguous(CopyIntVector(input_type.getShape()));
@@ -70,8 +85,8 @@ absl::StatusOr<mlir::MlirOp> UnravelIndices(mlir::MlirOp input,
   for (int64_t dim = 0; dim < input_type.getRank(); ++dim) {
     // Support constant with bounded dynamism
     mlir::MlirOp stride_constant =
-        MakeConstantLike(linear_indices, strides[dim]);
-    mlir::MlirOp div_res = stablehlo::Div(linear_indices, stride_constant);
+        MakeConstantLike(working_indices, strides[dim]);
+    mlir::MlirOp div_res = stablehlo::Div(working_indices, stride_constant);
     mlir::MlirOp dim_constant =
         MakeConstantLike(div_res, input_type.getShape()[dim]);
     mlir::MlirOp rem_res = stablehlo::Rem(div_res, dim_constant);
@@ -80,6 +95,9 @@ absl::StatusOr<mlir::MlirOp> UnravelIndices(mlir::MlirOp input,
 
   mlir::MlirOp indices =
       stablehlo::Concatenate(builder, dim_indices, /*dim=*/1);
+  if (use_i32) {
+    indices = mlir::stablehlo::ConvertElementType(indices, orig_indices_type);
+  }
   ABSL_VLOG(3) << "BuildNonzeroShlo indices: " << indices.ToString();
   return indices;
 }
@@ -225,9 +243,8 @@ absl::StatusOr<mlir::MlirOp> BuildNonzeroShlo(int64_t output_size,
   // STEP 4:
   // The linear indices are then converted back into multi-dimensional
   // coordinates.
-  TT_ASSIGN_OR_RETURN(
-      mlir::MlirOp indices,
-      UnravelIndices(input, input_linear_indices, mlir::ElementType::I32));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp indices,
+                      UnravelIndices(input, input_linear_indices));
   return indices;
 }
 
@@ -265,9 +282,8 @@ absl::StatusOr<mlir::MlirOp> BuildNonzeroStaticShlo(int64_t size,
       stablehlo::Slice(sort_shlo_outputs.indices, /*start_indices=*/{0},
                        /*limit_indices=*/{slice_len}, /*stride_indices=*/{1});
 
-  TT_ASSIGN_OR_RETURN(
-      mlir::MlirOp unraveled_indices,
-      UnravelIndices(input, input_linear_indices, mlir::ElementType::I32));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp unraveled_indices,
+                      UnravelIndices(input, input_linear_indices));
 
   mlir::RankedTensorType mask_2d_type =
       mlir::makeTensorType(builder.getContext(), {slice_len, rank},
