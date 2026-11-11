@@ -530,6 +530,43 @@ class AsyncCompileTest(seed_test_utils.RepeatableTest):
     self.assertEqual(res.shape, (7, 13))
     test_utils.assert_close(res.cpu(), (x * 2.0).cpu())
 
+  def test_async_compile_recompiles_on_global_precision_change(self):
+    # Under DEFAULT (bf16 math), the product rounds to 1.0. Under HIGHEST
+    # (f32 math), it keeps the bits below bf16 precision.
+    a = torch.eye(256, device="tpu") * (1 + 2**-8)
+    expected_highest = 1.0 + 2**-7 + 2**-16
+    compiled = torch.compile(
+        torch.no_grad()(lambda a: a @ a),
+        backend="tpu",
+        fullgraph=True,
+        dynamic=False,
+        options={"async_compile": True},
+    )
+    saved = torch.get_float32_matmul_precision()
+
+    # Without the on-disk cache, only Dynamo's guards decide what is reused.
+    with functorch_config.patch(enable_autograd_cache=False):
+      try:
+        torch.set_float32_matmul_precision("medium")
+        with torch.tpu.precision(torch.tpu.Precision.HIGHEST):
+          with self.assertRaises(  # ASSERT_RAISES_OK=AsyncCompilationSubmitted warmup signal.
+              tpu_compile.AsyncCompilationSubmitted
+          ) as cm:
+            compiled(a)
+        cm.exception.resolve()
+        # The worker thread lowered that program with the global DEFAULT
+        # precision, not this thread's HIGHEST context, so selecting HIGHEST
+        # globally must compile the frame again.
+        torch.set_float32_matmul_precision("highest")
+        with self.assertRaises(  # ASSERT_RAISES_OK=AsyncCompilationSubmitted warmup signal.
+            tpu_compile.AsyncCompilationSubmitted
+        ) as cm:
+          compiled(a)
+        cm.exception.resolve()
+        self.assertEqual(compiled(a)[0, 0].item(), expected_highest)
+      finally:
+        torch.set_float32_matmul_precision(saved)
+
   def test_resolve_compilations_helper(self):
     model = AnotherModel().to("tpu")
     compiled_model = torch.compile(
