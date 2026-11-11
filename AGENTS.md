@@ -241,6 +241,9 @@ its `SKILL.md` and follow it.
 *   [`tt-add-precompiled-kernels`](.agents/skills/tt-add-precompiled-kernels/SKILL.md):
     adding or extending precompiled unbounded dynamic kernels (Mosaic kernels
     written in Kiln), with their registration and tests.
+*   [`tt-analyze-tpu-only-error-test-to-gpu-movement`](.agents/skills/tt-analyze-tpu-only-error-test-to-gpu-movement/SKILL.md):
+    adapting and analyzing tests from `tpu_errors_test.py` on GPU to check if
+    they can be moved to `errors_test.py`.
 *   [`tt-create-change`](.agents/skills/tt-create-change/SKILL.md): committing a
     change, and opening, describing, or updating a pull request, including
     addressing review comments.
