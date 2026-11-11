@@ -73,7 +73,7 @@ csrc/ops/a_min_max/a_min_max_aten_kernels.cc: {remaining: 0, total: 3, infeasibl
 csrc/ops/addcdiv/addcdiv_aten_kernels.cc: {remaining: 0, total: 4, infeasible: 0}
 csrc/ops/addcmul/addcmul_aten_kernels.cc: {remaining: 0, total: 4, infeasible: 0}
 csrc/ops/addmm/addmm_aten_kernels.cc: {remaining: 0, total: 15, infeasible: 0}
-csrc/ops/addmv/addmv_aten_kernels.cc: {remaining: 0, total: 9, infeasible: 2}
+csrc/ops/addmv/addmv_aten_kernels.cc: {remaining: 0, total: 11, infeasible: 2}
 csrc/ops/all_any/all_any_aten_kernels.cc: {remaining: 0, total: 1, infeasible: 0}
 csrc/ops/angle/angle_aten_kernels.cc: {remaining: 0, total: 1, infeasible: 0}
 csrc/ops/ao/ao_offload_kernels.cc: {remaining: 0, total: 2, infeasible: 0}
