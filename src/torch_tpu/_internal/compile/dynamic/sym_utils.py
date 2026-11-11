@@ -19,6 +19,7 @@ import operator
 from typing import Any
 from absl import logging
 import sympy
+from sympy.printing.pycode import PythonCodePrinter
 import torch
 from torch.fx.experimental import symbolic_shapes
 
@@ -83,8 +84,12 @@ def _sym_min(*args):
 
 
 CUSTOM_SYMPY_FUNCS = {
+    "CleanDiv": operator.floordiv,
     "FloorDiv": operator.floordiv,
     "CeilDiv": lambda a, b: -(-a // b),
+    "Mod": operator.mod,
+    "ModularIndexing": lambda a, b, c: (a // b) % c,
+    "PythonMod": operator.mod,
     "Max": _sym_max,
     "Min": _sym_min,
 }
@@ -266,6 +271,16 @@ def get_target_device(consumer_node: torch.fx.Node) -> torch.device:
     return torch.device("cpu")
 
 
+class _SymExprPythonPrinter(PythonCodePrinter):
+  """PythonCodePrinter that dispatches Mod through CUSTOM_SYMPY_FUNCS."""
+
+  def _print_Mod(self, expr: sympy.Expr) -> str:
+    # PythonCodePrinter._print_Mod parenthesizes at Mod.precedence (35 for
+    # torch.utils._sympy.functions.Mod, below Add/Mul), turning Mod(232, 4*s0)
+    # into `232 % 4*s0` (`(232 % 4) * s0`).
+    return self._print_Function(expr)
+
+
 def symexpr_to_aten(
     graph_module: torch.fx.GraphModule,
     consumer_node: torch.fx.Node,
@@ -284,7 +299,7 @@ def symexpr_to_aten(
   Returns:
     The new tensor node, or None if not supported.
   """
-  symbols = list(expr.free_symbols)
+  symbols = sorted(expr.free_symbols, key=str)
 
   # Check if we have placeholders for all symbols
   for sym in symbols:
@@ -292,7 +307,15 @@ def symexpr_to_aten(
       return None
 
   # Create a Python function from the sympy expression
-  f = sympy.lambdify(symbols, expr, modules=[CUSTOM_SYMPY_FUNCS, "math"])
+  printer = _SymExprPythonPrinter({
+      "fully_qualified_modules": False,
+      "inline": True,
+      "allow_unknown_functions": True,
+      "user_functions": {k: k for k in CUSTOM_SYMPY_FUNCS},
+  })
+  f = sympy.lambdify(
+      symbols, expr, modules=[CUSTOM_SYMPY_FUNCS, "math"], printer=printer
+  )
 
   # Create Proxies for the placeholders
   proxies = [torch.fx.Proxy(symint_to_placeholder[str(sym)]) for sym in symbols]

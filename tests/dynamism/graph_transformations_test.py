@@ -451,6 +451,87 @@ class GraphTransformationsTest(seed_test_utils.RepeatableTest):
         [torch.ops.aten.slice.Tensor, torch.ops.aten.slice.Tensor],
     )
 
+  def test_input_dynamic_view_pass_independent_storage_offset(self):
+    """Dynamic slice offset across calls lowers FloorDiv/Mod view slices."""
+    captured: list[tuple[torch.fx.GraphModule, list[Any]]] = []
+
+    def fw_compiler(graph_module, example_inputs):
+      captured.append((graph_module, list(example_inputs)))
+      return graph_module
+
+    torch._dynamo.reset()
+
+    @torch.compile(backend=aot_autograd(fw_compiler=fw_compiler))
+    def f(x):
+      return x + 1
+
+    for batch, seq_len in ((2, 16), (3, 20)):
+      idx = seq_len // 4 - 3
+      f(torch.ones(batch, seq_len, 8)[:, idx : idx + 2, idx : idx + 4])
+
+    self.assertLen(captured, 2)
+    graph_module, example_inputs = captured[-1]
+    view_index = next(
+        i
+        for i, arg in enumerate(example_inputs)
+        if isinstance(arg, torch.Tensor)
+    )
+    self.assertIsInstance(
+        example_inputs[view_index].storage_offset(), torch.SymInt
+    )
+    view_arg_indices, example_inputs = (
+        graph_transformations.apply_pre_dynamism_transformations(
+            graph_module, example_inputs
+        )
+    )
+    self.assertEqual(view_arg_indices, {view_index})
+    bm = sym_bounds_manager.SymBoundsManager(example_inputs)
+    graph_transformations.apply_dynamism_transformations(
+        graph_module, example_inputs, bm.get_fallback_symbol_bounds()
+    )
+
+    # Verify the lowered scalar index subgraph evaluates to idx=2 along both
+    # sliced dimensions (catching Mod(s_off, 8 * s_seq) precedence bugs).
+    env: dict[torch.fx.Node, Any] = {}
+    for node in graph_module.graph.nodes:
+      if node.op == "placeholder":
+        val = node.meta.get("val")
+        if isinstance(val, torch.SymInt):
+          env[node.next] = torch.tensor(int(val.node.hint), dtype=torch.int32)
+      elif (
+          node.op == "call_function"
+          and not str(node.target).startswith("tpu.")
+          and all(inp in env for inp in node.all_input_nodes)
+      ):
+        env[node] = node.target(
+            *torch.fx.node.map_arg(node.args, lambda a: env.get(a, a)),
+            **torch.fx.node.map_arg(node.kwargs, lambda a: env.get(a, a)),
+        )
+      elif node.op == "call_method" and all(
+          inp in env for inp in node.all_input_nodes
+      ):
+        self_val, *rest = torch.fx.node.map_arg(
+            node.args, lambda a: env.get(a, a)
+        )
+        env[node] = getattr(self_val, str(node.target))(
+            *rest,
+            **torch.fx.node.map_arg(node.kwargs, lambda a: env.get(a, a)),
+        )
+
+    slice_nodes = [
+        n
+        for n in graph_module.graph.nodes
+        if n.op == "call_function" and n.target == torch.ops.tpu._dynamic_slice
+    ]
+    self.assertLen(slice_nodes, 2)
+    self.assertEqual(
+        [
+            [int(env[idx_node].item()) for idx_node in s.args[1]]
+            for s in slice_nodes
+        ],
+        [[0, 2, 0], [0, 0, 2]],
+    )
+
 
 if __name__ == "__main__":
   absltest.main()

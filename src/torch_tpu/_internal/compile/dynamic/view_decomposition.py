@@ -80,25 +80,31 @@ def _to_sym(expr: Any, shape_env: Any) -> Any:
   return expr
 
 
-def _div_expr(curr_expr: Any, st_expr: Any) -> tuple[Any, Any]:
-  """Performs algebraic polynomial division on SymPy expressions.
+def _div_expr(curr_expr: Any, st_expr: Any) -> tuple[Any, Any] | None:
+  """Performs algebraic polynomial division on SymPy expressions if possible.
 
-  Raises:
-    NotImplementedError: If curr_expr cannot be algebraically divided by
-    st_expr.
+  Returns `(q_expr, r_expr)` over `ZZ[gens]`, or `None` when `curr_expr` cannot
+  be divided as an integer polynomial (e.g. when `curr_expr` contains `Mod` or
+  `FloorDiv` terms).
   """
-  gens = list(curr_expr.free_symbols | st_expr.free_symbols)
+  gens = sorted(curr_expr.free_symbols | st_expr.free_symbols, key=str)
   if not gens:
     return curr_expr // st_expr, curr_expr % st_expr
 
   try:
-    res = sympy.div(curr_expr, st_expr, *gens)
-    return res
-  except Exception as e:
-    raise NotImplementedError(
-        "Unsupported view decomposition: cannot algebraically divide storage"
-        f" offset {_fmt_sym(curr_expr)} by stride {_fmt_sym(st_expr)}: {e}"
-    ) from e
+    return sympy.div(curr_expr, st_expr, *gens, domain="ZZ")
+  except Exception:  # pylint: disable=broad-except
+    return None
+
+
+def _unwrap_const_sym(val: Any, shape_env: Any) -> Any:
+  """Unwraps constant integer SymInts to Python ints while preserving dynamic SymInts."""
+  expr = _to_expr(val)
+  if hasattr(expr, "is_Integer") and expr.is_Integer:
+    return int(expr)
+  if isinstance(val, torch.SymInt):
+    return val
+  return _to_sym(expr, shape_env)
 
 
 def _is_unit_dim(size: Any) -> bool:
@@ -296,21 +302,41 @@ def _delinearize_storage_offset(
 
   for i in range(num_dims - 1):
     st = base_strides[i]
-    if curr_sym == 0:
+    if symbolic_shapes.statically_known_true(curr_sym == 0):
       dim_offsets[i] = 0
       continue
 
-    # If the remaining offset is strictly less than this stride, offset along this dim is 0
-    if st > 0 and curr_sym < st:
+    # If the remaining offset is statically known to lie in [0, st), the
+    # coordinate along this dimension is 0 without installing a guard.
+    if (
+        symbolic_shapes.statically_known_true(curr_sym >= 0)
+        and symbolic_shapes.statically_known_true(st > 0)
+        and symbolic_shapes.statically_known_true(curr_sym < st)
+    ):
       dim_offsets[i] = 0
       continue
 
-    q_expr, r_expr = _div_expr(curr_expr, _to_expr(st))
-    curr_expr = r_expr
-    dim_offsets[i] = _to_sym(q_expr, shape_env)
-    curr_sym = _to_sym(r_expr, shape_env)
+    poly_div = _div_expr(curr_expr, _to_expr(st))
+    if poly_div is not None:
+      q_expr, r_expr = poly_div
+      r_sym = _to_sym(r_expr, shape_env)
+      if (
+          symbolic_shapes.statically_known_true(r_sym >= 0)
+          and symbolic_shapes.statically_known_true(st > 0)
+          and symbolic_shapes.statically_known_true(r_sym < st)
+      ):
+        dim_offsets[i] = _to_sym(q_expr, shape_env)
+        curr_sym = r_sym
+        curr_expr = r_expr
+        continue
 
-  dim_offsets[-1] = _to_sym(curr_expr, shape_env)
+    q_sym = curr_sym // st
+    r_sym = curr_sym % st
+    dim_offsets[i] = _unwrap_const_sym(q_sym, shape_env)
+    curr_sym = _unwrap_const_sym(r_sym, shape_env)
+    curr_expr = _to_expr(curr_sym)
+
+  dim_offsets[-1] = _unwrap_const_sym(curr_sym, shape_env)
   return dim_offsets
 
 
@@ -350,13 +376,20 @@ def _compute_base_strides_and_shapes(
       )
 
     # Verify that the stride matches contiguous base stride (step == 1).
-    if base_strides[dim_idx] > 0 and stride != base_strides[dim_idx]:
-      raise NotImplementedError(
-          f"Unsupported view decomposition: stride {_fmt_sym(stride)} at"
-          f" dim_idx={dim_idx} does not match expected contiguous base stride"
-          f" {_fmt_sym(base_strides[dim_idx])} (non-unit slice step or"
-          " unsupported layout)."
-      )
+    if base_strides[dim_idx] > 0:
+      if stride != base_strides[dim_idx]:
+        raise NotImplementedError(
+            f"Unsupported view decomposition: stride {_fmt_sym(stride)} at"
+            f" dim_idx={dim_idx} does not match expected contiguous base stride"
+            f" {_fmt_sym(base_strides[dim_idx])} (non-unit slice step or"
+            " unsupported layout)."
+        )
+      if not isinstance(base_strides[dim_idx], int) and (
+          isinstance(stride, int)
+          or sympy.count_ops(_to_expr(stride))
+          < sympy.count_ops(_to_expr(base_strides[dim_idx]))
+      ):
+        base_strides[dim_idx] = stride
 
     # Check if this dimension was sliced or reshaped from an outer stride jump.
     if dim_idx > 0:

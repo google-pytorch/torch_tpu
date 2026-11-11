@@ -860,6 +860,53 @@ class ViewDecompositionTest(seed_test_utils.RepeatableTest):
         expected_view_ops=[("slice", (1, 0, 1, 1))],
     )
 
+  def test_decompose_independent_symint_storage_offset(self):
+    """Tests Dynamo recompile where storage_offset is an independent SymInt."""
+    captured_nodes: list[torch.fx.Node] = []
+
+    def fw_compiler(graph_module, example_inputs):
+      del example_inputs
+      for node in graph_module.graph.find_nodes(op="placeholder", sort=True):
+        if isinstance(node.meta.get("val"), torch.Tensor):
+          captured_nodes.append(node)
+      return graph_module
+
+    torch._dynamo.reset()
+
+    @torch.compile(backend=aot_autograd(fw_compiler=fw_compiler))
+    def fn(x):
+      return x + 1
+
+    base = torch.randn(6, 16)
+    fn(base[1:3, 2:10])
+    view = base[2:5, 4:12]
+    fn(view)
+
+    self.assertLen(captured_nodes, 2)
+    recompiled_node = captured_nodes[-1]
+    offset = recompiled_node.meta["val"].storage_offset()
+    self.assertIsInstance(offset, torch.SymInt)
+    self.assertIsInstance(offset.node.expr, sympy.Symbol)
+
+    decomp = view_decomposition.decompose_into_view_sequence(recompiled_node)
+    self.assertIsNotNone(decomp)
+    base_shape, view_ops = decomp
+    self.assertEqual(
+        [
+            int(d.node.hint) if isinstance(d, torch.SymInt) else d
+            for d in base_shape
+        ],
+        [5, 16],
+    )
+    self.assertLen(view_ops, 2)
+    self.assertEqual(
+        [
+            (op, (dim, int(s.node.hint), int(e.node.hint), step))
+            for op, (dim, s, e, step) in view_ops
+        ],
+        [("slice", (0, 2, 5, 1)), ("slice", (1, 4, 12, 1))],
+    )
+
 
 def _storage_numel(tensor: torch.Tensor) -> int:
   return tensor.untyped_storage().nbytes() // tensor.element_size()

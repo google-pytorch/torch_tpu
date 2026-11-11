@@ -370,6 +370,27 @@ class DynamicViewTest(seed_test_utils.RepeatableTest):
         (2, 20, 8), 1, lambda x: x[:, 1:3, 2:6], ["slice", "slice"]
     )
 
+  def test_independent_dynamic_storage_offset_slice_input(self):
+    """Tests dynamic slice input whose storage_offset varies across calls."""
+
+    class AddOne(torch.nn.Module):
+
+      def forward(self, x):
+        return x + 1
+
+    torch._dynamo.reset()
+    model_cpu = AddOne()
+    compiled_model = torch.compile(AddOne(), backend="tpu", dynamic=None)
+
+    with torch.no_grad():
+      for batch, seq_len in ((2, 16), (3, 20), (4, 24)):
+        idx = seq_len // 4 - 3
+        base_cpu = torch.randn(batch, seq_len, 8)
+        view_cpu = base_cpu[:, idx : idx + 2, idx : idx + 4]
+        view_tpu = base_cpu.to(self.device)[:, idx : idx + 2, idx : idx + 4]
+        out_tpu = compiled_model(view_tpu)
+        utils.assert_close(out_tpu.cpu(), model_cpu(view_cpu))
+
 
 def _storage_numel(tensor: torch.Tensor) -> int:
   return tensor.untyped_storage().nbytes() // tensor.element_size()
