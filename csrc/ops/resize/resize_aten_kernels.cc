@@ -27,7 +27,6 @@
 #include "absl/status/status.h"
 #include "c10/util/ArrayRef.h"
 #include "c10/util/Optional.h"
-#include "c10/util/accumulate.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
@@ -48,6 +47,8 @@
 namespace torch_tpu {
 
 absl::Status ResizeTensor(const at::Tensor& self, c10::IntArrayRef size) {
+  TT_RETURN_IF_ERROR(
+      ValidateStorageResizableDuringGraphCapture(self.storage()));
   // Validate the requested new size against the tensor's logical dtype.
   // Then, compare the requested capacity in bytes (implied by the new size and
   // the self tensor's logical dtype) against the current physical storage
