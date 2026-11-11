@@ -1392,7 +1392,8 @@ absl::Status GatherSubgroupsViaNodeLocalStore(
     int64_t world_rank, absl::Span<const int64_t> global_rank_to_device_id,
     absl::Span<const int64_t> global_rank_to_topo_order, int64_t gather_id,
     DeviceGroup& out_member_world_ranks,
-    DeviceGroupList& out_subgroup_member_world_ranks) {
+    DeviceGroupList& out_subgroup_member_world_ranks,
+    std::string_view key_scope) {
   const UnwrappedStoreChain unwrapped = UnwrapPrefixStoreChain(store);
   TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=internal store chain invariant
       unwrapped.root_store != nullptr, error::kInternal)
@@ -1400,12 +1401,13 @@ absl::Status GatherSubgroupsViaNodeLocalStore(
   const int64_t world_size =
       static_cast<int64_t>(global_rank_to_device_id.size());
   const std::string my_key =
-      absl::StrFormat("pg_sub:%d:%d", gather_id, world_rank);
+      absl::StrFormat("pg_sub:%s%d:%d", key_scope, gather_id, world_rank);
   const std::string my_val =
       absl::StrFormat("%d,%d:%s", pg_rank, world_rank, unwrapped.full_prefix);
   std::vector<std::string> peer_keys(world_size);
   for (int64_t r = 0; r < world_size; ++r) {
-    peer_keys[r] = absl::StrFormat("pg_sub:%d:%d", gather_id, r);
+    peer_keys[r] =
+        absl::StrFormat("pg_sub:%s%d:%d", key_scope, gather_id, r);
   }
 
   TT_ASSIGN_OR_RETURN(
@@ -1827,11 +1829,17 @@ ProcessGroupTpu::ProcessGroupTpu(c10::intrusive_ptr<c10d::Store> store,
     TT_ASSIGN_OR_THROW(const NodeLocalStoreConfig local,
                        GetNodeLocalStore(world_size));
     const int64_t gather_id = next_subgroup_gather_id.fetch_add(1);
+    // Jobs sharing the slice may also share a root store, where the gather
+    // keys of one job's subgroups would meet the other job's.
+    const std::string key_scope =
+        world_size == slice_size
+            ? ""
+            : absl::StrCat("job", topo.rank_to_device_id[0], ":");
     TT_THROW_IF_ERROR(GatherSubgroupsViaNodeLocalStore(
         store_.get(), local.store, local.local_rank, local.local_world_size,
         rank_, size_, topo.world_rank, topo.rank_to_device_id,
         topo.rank_to_topo_order, gather_id, member_world_ranks_,
-        subgroup_member_world_ranks));
+        subgroup_member_world_ranks, key_scope));
   } else {
     TT_ASSIGN_OR_THROW(member_world_ranks_, GatherMemberWorldRanks());
     TT_ASSIGN_OR_THROW(subgroup_member_world_ranks,

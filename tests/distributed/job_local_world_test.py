@@ -88,6 +88,18 @@ def _run_two_jobs(store_port: int, cache_dir: str) -> None:
     with temporary_cache_dir(cache_dir):
       y = scaled(x)
   utils.assert_close(y.cpu(), torch.full((1024,), 21.0))
+  # The jobs lay out their subgroups differently, and both gathers meet in the
+  # root store the jobs share.
+  if job == 0:
+    halves = [dist.new_group([0, 1]), dist.new_group([2, 3])]
+    group = halves[job_rank // 2]
+  else:
+    group = dist.new_group(list(range(_JOB_SIZE)))
+  ones = torch.ones(8, device="tpu")
+  dist.all_reduce(ones, group=group)
+  utils.assert_close(
+      ones.cpu(), torch.full((8,), float(dist.get_world_size(group)))
+  )
   torch.accelerator.synchronize()
   dist.barrier()
   if job == 0 and job_rank == 0:
