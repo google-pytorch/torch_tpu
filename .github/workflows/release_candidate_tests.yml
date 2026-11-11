@@ -310,11 +310,11 @@ jobs:
       - name: Fix Git Workspace Ownership
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Run C++ tests with ThreadSanitizer
-        run: bazel test //... --config=ci_cpu --config=tsan_cc --test_lang_filters=cc
+        run: bazel test //... --config=ci_cpu_tsan --config=tsan_cc --test_lang_filters=cc
       - name: Run Python tests with ThreadSanitizer
         run: |
           bazel test //... \
-            --config=ci_cpu \
+            --config=ci_cpu_tsan \
             --config=tsan_py \
             --test_lang_filters=py \
             --run_under=//ci/configs:tsan_wrapper
