@@ -28,9 +28,12 @@
 #include "absl/container/flat_hash_set.h"
 #include "absl/log/absl_check.h"
 #include "absl/strings/match.h"
+#include "absl/strings/numbers.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_replace.h"
 #include "absl/synchronization/mutex.h"
+#include "csrc/common/symbol_stage.h"
+#include "csrc/common/warnings.h"
 
 namespace torch_tpu::internal {
 namespace {
@@ -48,13 +51,15 @@ absl::flat_hash_set<std::string_view>& MemoizedEnvVars()
   return *memoized_env_vars;
 }
 
-}  // namespace
-
+// Records that GetEnvOnce() has memoized the value of the env var with the
+// given name. Thread-safe.
 void MarkEnvVarMemoized(std::string_view name) {
   absl::MutexLock lock(memoized_env_vars_mutex);
   MemoizedEnvVars().insert(name);
 }
 
+// Crashes if GetEnvOnce() has memoized the value of the env var with the given
+// name. Thread-safe.
 void CheckEnvVarNotMemoized(std::string_view name) {
   absl::MutexLock lock(memoized_env_vars_mutex);
   ABSL_CHECK(!MemoizedEnvVars().contains(name))  // CRASH_OK
@@ -62,6 +67,71 @@ void CheckEnvVarNotMemoized(std::string_view name) {
       << " after its value was memoized by GetEnvOnce(). The new value would "
          "be ignored by GetEnvOnce(). If TorchTPU needs to change the env var "
          "at runtime, read it with std::getenv instead of GetEnvOnce().";
+}
+
+}  // namespace
+
+void SafeSetEnvImpl(const char* name, const std::string& value) {
+  CheckEnvVarNotMemoized(name);
+  setenv(name, value.c_str(),  // SETENV_OK=implementing SafeSetEnv().
+         /*overwrite=*/1);
+}
+
+void SafeUnsetEnvImpl(const char* name) {
+  CheckEnvVarNotMemoized(name);
+  unsetenv(name);  // SETENV_OK=implementing SafeUnsetEnv().
+}
+
+// GetEnvOnce() calls this at most once per env var, so the TT_WARN() calls
+// below warn at most once per env var, like TT_WARN_ONCE() in a function
+// template would.
+std::optional<std::string> ReadEnvForGetEnvOnce(
+    const char* name, const std::optional<SymbolStage> maybe_stage) {
+  MarkEnvVarMemoized(name);
+  const char* const env_var =  //
+      std::getenv(name);       // GETENV_OK=implementing GetEnvOnce().
+  if (env_var == nullptr) return std::nullopt;
+  if (env_var[0] == '\0') return std::string();
+
+  // The env var is set to a non-empty string. Warn the user if the env var is
+  // experimental or deprecated.
+  if (maybe_stage.has_value()) {
+    if (maybe_stage->is_experimental()) {
+      TT_WARN(WarningCategory::kExperimentalApi, "the ", name,
+              " environment variable is an experimental feature and may "
+              "change or be removed without notice.");
+    } else if (maybe_stage->is_deprecated()) {
+      const auto deprecated_since = maybe_stage->version();
+      TT_WARN(WarningCategory::kDeprecatedApi, "the ", name,
+              " environment variable is deprecated since TorchTPU v",
+              deprecated_since, " and will be removed in a future release.");
+    }
+  }
+  return std::string(env_var);
+}
+
+// Like ReadEnvForGetEnvOnce(), called at most once per env var by
+// GetBooleanEnvOnce().
+std::optional<bool> ParseBooleanEnv(const char* name,
+                                    const std::optional<std::string>& env_var) {
+  if (!env_var.has_value()) {
+    return std::nullopt;
+  }
+  bool result = false;
+  if (absl::SimpleAtob(*env_var, &result)) {
+    return result;
+  }
+  TT_WARN(WarningCategory::kCorrectness, "expected environment variable ", name,
+          " to be a Boolean (e.g., '1', '0', 'true', 'false'), got '", *env_var,
+          "'");
+  return std::nullopt;
+}
+
+// Like ReadEnvForGetEnvOnce(), called at most once per env var by
+// GetIntegerEnvOnce().
+void WarnInvalidIntegerEnv(const char* name, const std::string_view value) {
+  TT_WARN(WarningCategory::kCorrectness, "expected environment variable ", name,
+          " to be an integer, got '", value, "'");
 }
 
 }  // namespace torch_tpu::internal

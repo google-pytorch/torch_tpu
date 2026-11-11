@@ -17,7 +17,6 @@
 #ifndef TORCH_TPU_CSRC_COMMON_ENV_VARS_H_
 #define TORCH_TPU_CSRC_COMMON_ENV_VARS_H_
 
-#include <cstdlib>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -25,22 +24,57 @@
 
 #include "absl/base/no_destructor.h"
 #include "absl/strings/numbers.h"
-#include "c10/util/Exception.h"
 #include "csrc/common/constexpr_map.h"
 #include "csrc/common/symbol_stage.h"
-#include "csrc/common/warnings.h"
 
 namespace torch_tpu {
 
 namespace internal {
 
-// Records that GetEnvOnce() has memoized the value of the env var with the
-// given name. Thread-safe.
-void MarkEnvVarMemoized(std::string_view name);
+// The non-template parts of the functions below, to reduce code bloat. Only
+// the functions below should call these.
 
-// Crashes if GetEnvOnce() has memoized the value of the env var with the given
-// name. Thread-safe.
-void CheckEnvVarNotMemoized(std::string_view name);
+// Implements SafeSetEnv().
+void SafeSetEnvImpl(const char* name, const std::string& value);
+
+// Implements SafeUnsetEnv().
+void SafeUnsetEnvImpl(const char* name);
+
+// Implements GetEnvOnce(): records that the env var with the given name is
+// memoized, reads it, and warns if it is set and `maybe_stage` is experimental
+// or deprecated. GetEnvOnce() memoizes the result, so this is called at most
+// once per env var. Thread-safe.
+[[nodiscard]] std::optional<std::string> ReadEnvForGetEnvOnce(
+    const char* name, std::optional<SymbolStage> maybe_stage);
+
+// Parses `env_var`, the value of the env var with the given name, as a Boolean
+// using absl::SimpleAtob. Returns std::nullopt and warns if it cannot be
+// parsed, or returns std::nullopt if it is not set.
+[[nodiscard]] std::optional<bool> ParseBooleanEnv(
+    const char* name, const std::optional<std::string>& env_var);
+
+// Warns that `value`, the value of the env var with the given name, cannot be
+// parsed as an integer.
+void WarnInvalidIntegerEnv(const char* name, std::string_view value);
+
+// Parses `env_var`, the value of the env var with the given name, as an
+// integer using absl::SimpleAtoi. Returns std::nullopt and warns if it cannot
+// be parsed, or returns std::nullopt if it is not set.
+template <typename IntType>
+[[nodiscard]] std::optional<IntType> ParseIntegerEnv(
+    const char* name, const std::optional<std::string>& env_var) {
+  static_assert(std::is_integral_v<IntType> && !std::is_same_v<IntType, bool>,
+                "IntType must be a non-boolean integral type.");
+  if (!env_var.has_value()) {
+    return std::nullopt;
+  }
+  IntType result = 0;
+  if (absl::SimpleAtoi(*env_var, &result)) {
+    return result;
+  }
+  WarnInvalidIntegerEnv(name, *env_var);
+  return std::nullopt;
+}
 
 }  // namespace internal
 
@@ -399,9 +433,7 @@ void SafeSetEnv(const std::string& value) {
   static_assert(kEnvVarToStage.contains(name),
                 "Unknown environment variable. All env vars used by TorchTPU "
                 "must be registered in kEnvVarToStage.");
-  internal::CheckEnvVarNotMemoized(name);
-  setenv(name, value.c_str(),  // SETENV_OK=implementing SafeSetEnv().
-         /*overwrite=*/1);
+  internal::SafeSetEnvImpl(name, value);
 }
 
 // Unsets the environment variable with the given name. Use this instead of
@@ -413,8 +445,7 @@ void SafeUnsetEnv() {
   static_assert(kEnvVarToStage.contains(name),
                 "Unknown environment variable. All env vars used by TorchTPU "
                 "must be registered in kEnvVarToStage.");
-  internal::CheckEnvVarNotMemoized(name);
-  unsetenv(name);  // SETENV_OK=implementing SafeUnsetEnv().
+  internal::SafeUnsetEnvImpl(name);
 }
 
 // Returns the value of the environment variable with the given name, or
@@ -425,9 +456,8 @@ void SafeUnsetEnv() {
 // after this function.
 //
 // We make the name a template parameter so that different env vars are
-// memoized separately and the TT_WARN_ONCE() call works for each env var
-// individually. The name must be one of the kFooEnvVar variables defined in
-// this file.
+// memoized separately, so any warning about an env var is emitted once per env
+// var. The name must be one of the kFooEnvVar variables defined in this file.
 template <const char* name>
 [[nodiscard]] const std::optional<std::string>& GetEnvOnce() {
   static_assert(kEnvVarToStage.contains(name),
@@ -442,30 +472,7 @@ template <const char* name>
         "read this env var, its stage in kEnvVarToStage must be changed.");
   }
   static const absl::NoDestructor<std::optional<std::string>> env_var(
-      [maybe_stage]() -> std::optional<std::string> {
-        internal::MarkEnvVarMemoized(name);
-        const char* const env_var =  //
-            std::getenv(name);       // GETENV_OK=implementing GetEnvOnce().
-        if (env_var == nullptr) return std::nullopt;
-        if (env_var[0] == '\0') return std::string();
-
-        // The env var is set to a non-empty string. Warn the user if the env
-        // var is experimental or deprecated.
-        if (maybe_stage.has_value()) {
-          if (maybe_stage->is_experimental()) {
-            TT_WARN_ONCE(WarningCategory::kExperimentalApi, "the ", name,
-                         " environment variable is an experimental feature "
-                         "and may change or be removed without notice.");
-          } else if (maybe_stage->is_deprecated()) {
-            const auto deprecated_since = maybe_stage->version();
-            TT_WARN_ONCE(WarningCategory::kDeprecatedApi, "the ", name,
-                         " environment variable is deprecated since TorchTPU v",
-                         deprecated_since,
-                         " and will be removed in a future release.");
-          }
-        }
-        return std::string(env_var);
-      }());
+      internal::ReadEnvForGetEnvOnce(name, maybe_stage));
   return *env_var;
 }
 
@@ -477,21 +484,8 @@ template <const char* name>
 template <const char* name>
 [[nodiscard]] std::optional<bool> GetBooleanEnvOnce() {
   // Compute the value once and memoize it.
-  static const std::optional<bool> value = []() -> std::optional<bool> {
-    const auto& env_var = GetEnvOnce<name>();
-    if (!env_var.has_value()) {
-      return std::nullopt;
-    }
-    bool result = false;
-    if (absl::SimpleAtob(*env_var, &result)) {
-      return result;
-    }
-    TT_WARN_ONCE(WarningCategory::kCorrectness,
-                 "expected environment variable ", name,
-                 " to be a Boolean (e.g., '1', '0', 'true', 'false'), got '",
-                 *env_var, "'");
-    return std::nullopt;
-  }();
+  static const std::optional<bool> value =
+      internal::ParseBooleanEnv(name, GetEnvOnce<name>());
   return value;
 }
 
@@ -502,23 +496,9 @@ template <const char* name>
 // then parses the string into an integer using absl::SimpleAtoi.
 template <typename IntType, const char* name>
 [[nodiscard]] std::optional<IntType> GetIntegerEnvOnce() {
-  static_assert(std::is_integral_v<IntType> && !std::is_same_v<IntType, bool>,
-                "IntType must be a non-boolean integral type.");
   // Compute the value once and memoize it.
-  static const std::optional<IntType> value = []() -> std::optional<IntType> {
-    const auto& env_var = GetEnvOnce<name>();
-    if (!env_var.has_value()) {
-      return std::nullopt;
-    }
-    IntType result = 0;
-    if (absl::SimpleAtoi(*env_var, &result)) {
-      return result;
-    }
-    TT_WARN_ONCE(WarningCategory::kCorrectness,
-                 "expected environment variable ", name,
-                 " to be an integer, got '", *env_var, "'");
-    return std::nullopt;
-  }();
+  static const std::optional<IntType> value =
+      internal::ParseIntegerEnv<IntType>(name, GetEnvOnce<name>());
   return value;
 }
 
