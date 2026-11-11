@@ -12027,6 +12027,33 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(_test)
 
+  def test_arange_large_int_span(self):
+    """Tests int64 arange whose intermediate span overflows int64.
+
+    Expected values are hard-coded because upstream CPU/GPU compute
+    `end - start + step - sgn` in int64, which wraps on these inputs and
+    raises "invalid size, possible overflow?".
+    """
+    cases = [
+        (0, (1 << 62) + 1, 1 << 62, [0, 1 << 62]),
+        (0, 10, (1 << 63) - 1, [0]),
+        (-(1 << 62), (1 << 62) + 1, 1 << 62, [-(1 << 62), 0, 1 << 62]),
+        ((1 << 62) + 2, 0, -(1 << 62), [(1 << 62) + 2, 2]),
+        (10, 0, -(1 << 63), [10]),
+        (0, 0, (1 << 63) - 1, []),
+    ]
+    for start, end, step, expected_vals in cases:
+      with self.subTest(start=start, end=end, step=step):
+        expected = torch.tensor(expected_vals, dtype=torch.int64)
+        actual = torch.arange(
+            start, end, step, dtype=torch.int64, device="tpu"
+        ).cpu()
+        self.assert_close(golden_result=expected, torch_tpu_result=actual)
+
+        out = torch.empty(0, dtype=torch.int64, device="tpu")
+        torch.arange(start, end, step, out=out)
+        self.assert_close(golden_result=expected, torch_tpu_result=out.cpu())
+
   def test_randperm(self):
     n = 1000
     seed = 4321

@@ -18,6 +18,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <type_traits>
 #include <utility>
 
@@ -26,6 +27,7 @@
 #include "ATen/native/Resize.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
+#include "absl/numeric/int128.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "c10/core/ScalarType.h"
@@ -97,6 +99,13 @@ absl::StatusOr<mlir::MlirOp> BuildArangeOp(const int64_t num_elements,
   return result;
 }
 
+// Widens an integral scalar to 128 bits so the arange span computation cannot
+// overflow. The scalar itself must still fit in int64 (the kLong accumulator
+// cannot represent larger values), so toLong() is intentionally kept: it throws
+// the same overflow error as PyTorch CPU/CUDA for UInt64 scalars > INT64_MAX.
+absl::int128 ScalarToInt128(const at::Scalar& scalar) {
+  return absl::int128(scalar.toLong());
+}
 // Check that the inputs are valid for the arange operation.
 //
 // It makes sure that:
@@ -104,12 +113,12 @@ absl::StatusOr<mlir::MlirOp> BuildArangeOp(const int64_t num_elements,
 // - The bounds are consistent with the step sign
 // - If the bounds are floating-point, they are finite
 //
-// We use need to use a template here because RangeBound can be either a double
-// or a 64-bit integer. Using only one of them might result in a check failure
-// on valid inputs.
+// We need to use a template here because RangeBound can be either a double or
+// an integer. Using only one of them might result in a check failure on valid
+// inputs.
 //
-// We fix step as double precision since we just check whether its is larger or
-// smaller than 0, i.e. int64_t to double conversion issue is not a concern
+// We fix step as double precision since we just check whether it is larger or
+// smaller than 0, i.e. integer to double conversion issue is not a concern
 // here.
 template <typename RangeBound>
 absl::Status ValidateArangeInputs(const RangeBound start, const RangeBound end,
@@ -156,9 +165,9 @@ absl::Status ValidateArangeInputs(const RangeBound start, const RangeBound end,
 //   incorrect result due to precision loss
 //
 // Note: PyTorch CPU/GPU behaves the same way.
-int64_t ComputeArangeNumElements(const at::Scalar& start, const at::Scalar& end,
-                                 const at::Scalar& step,
-                                 const at::ScalarType output_dtype) {
+absl::StatusOr<int64_t> ComputeArangeNumElements(
+    const at::Scalar& start, const at::Scalar& end, const at::Scalar& step,
+    const at::ScalarType output_dtype) {
   if (output_dtype == at::kLong && start.isIntegral(/*includeBool=*/false) &&
       end.isIntegral(/*includeBool=*/false) &&
       step.isIntegral(/*includeBool=*/false)) {
@@ -166,14 +175,31 @@ int64_t ComputeArangeNumElements(const at::Scalar& start, const at::Scalar& end,
     //
     // Due to the higher precision of kLong, we need to handle this case
     // separately. When the output dtype is kLong, we might end up mapping
-    // different values to the same floating point value.
-    const int64_t step_i64 = step.toLong();
-    const int64_t sgn = (step_i64 > 0) - (step_i64 < 0);
-    return (end.toLong() - start.toLong() + step_i64 - sgn) / step_i64;
+    // different values to the same floating point value. Compute the span in
+    // 128-bit arithmetic so large valid start/end/step bounds do not overflow
+    // signed int64_t.
+    const absl::int128 start_i128 = ScalarToInt128(start);
+    const absl::int128 end_i128 = ScalarToInt128(end);
+    const absl::int128 step_i128 = ScalarToInt128(step);
+    const int64_t sgn = (step_i128 > 0) - (step_i128 < 0);
+    const absl::int128 num_elements =
+        (end_i128 - start_i128 + step_i128 - sgn) / step_i128;
+    TT_RET_CHECK(num_elements <= std::numeric_limits<int64_t>::max(),
+                 error::kInvalidArgument)
+        << "expected number of elements to fit in int64, got " << num_elements;
+    return static_cast<int64_t>(num_elements);
   } else {
-    // For all other cases, we can use the double precision, since there is no
-    // conversion issue.
-    return std::ceil((end.toDouble() - start.toDouble()) / step.toDouble());
+    // For all other cases, we can use double precision, since there is no
+    // conversion issue. std::numeric_limits<int64_t>::max() (2^63 - 1) rounds
+    // up to 2^63 (0x1p63) in IEEE-754 double, so every finite double strictly
+    // below 0x1p63 is <= 2^63 - 1024 and converts to int64_t without overflow.
+    constexpr double kInt64UpperBoundExclusive = 0x1p63;
+    const double size_d =
+        std::ceil((end.toDouble() - start.toDouble()) / step.toDouble());
+    TT_RET_CHECK(std::isfinite(size_d) && size_d < kInt64UpperBoundExclusive,
+                 error::kInvalidArgument)
+        << "expected number of elements to fit in int64, got " << size_d;
+    return static_cast<int64_t>(size_d);
   }
 }
 
@@ -196,8 +222,8 @@ absl::StatusOr<int64_t> GetArangeNumElements(
   // they are, we run the checks with their integer values. Otherwise, we
   // fallback to their double value.
   if (bounds_are_integral) {
-    TT_RETURN_IF_ERROR(
-        ValidateArangeInputs(start.toLong(), end.toLong(), step_f64));
+    TT_RETURN_IF_ERROR(ValidateArangeInputs(ScalarToInt128(start),
+                                            ScalarToInt128(end), step_f64));
   } else {
     TT_RETURN_IF_ERROR(
         ValidateArangeInputs(start.toDouble(), end.toDouble(), step_f64));
@@ -207,13 +233,10 @@ absl::StatusOr<int64_t> GetArangeNumElements(
   // - step is non-zero
   // - step value is consistent with start and end bounds
 
-  const int64_t num_elements =
-      ComputeArangeNumElements(start, end, step, output_dtype);
+  TT_ASSIGN_OR_RETURN(const int64_t num_elements,
+                      ComputeArangeNumElements(start, end, step, output_dtype));
 
-  ABSL_CHECK_GE(num_elements, 0)  // CRASH_OK
-      << "expected number of elements to be non-negative with inputs start="
-      << start << " end=" << end << " step=" << step << ", got "
-      << num_elements;
+  ABSL_DCHECK_GE(num_elements, 0);
 
   ABSL_VLOG(1) << "[GetArangeNumElements] Calculated num_elements: "
                << num_elements;
