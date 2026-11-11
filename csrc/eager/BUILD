@@ -311,6 +311,7 @@ torch_tpu_cc_library(
     srcs = ["tensor_to_buffer.cc"],
     hdrs = ["tensor_to_buffer.h"],
     deps = [
+        ":current_stream",
         ":device_buffer",
         ":device_buffer_utils",
         ":host_allocator",
@@ -321,6 +322,7 @@ torch_tpu_cc_library(
         "//csrc/common:dtype",
         "//csrc/common:error_utils",
         "//csrc/common:layout_utils",
+        "//csrc/common:shape",
         "//csrc/common:to_string",
         "//csrc/common:utils",
         "//csrc/common:warnings",
@@ -332,8 +334,11 @@ torch_tpu_cc_library(
         "//shims/torch/c10/util:base_headers",
         "//shims/torch/torch/headeronly:torch_headeronly",
         "@com_google_absl//absl/algorithm:container",
+        "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/base:no_destructor",
         "@com_google_absl//absl/base:nullability",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/status",
@@ -373,12 +378,14 @@ torch_tpu_cc_test(
     exec_properties = {"cpp_link.mem": "16g"},
     requires_libtpu = True,
     deps = [
+        ":current_stream",
         ":device_buffer",
         ":device_buffer_utils",
         ":eager_mode",
         ":tensor_to_buffer",
         "//csrc/common:dimension_types",
         "//csrc/common:oss_test_main",
+        "//csrc/common:shape",
         "//csrc/common:status_test_utils",
         "//csrc/ops:op_builder_utils",
         "//csrc/ops:op_names",
@@ -1174,6 +1181,8 @@ torch_tpu_cc_library(
         ":execution_task",
         ":split_traversal",
         ":structured_log_buffer",
+        ":traversal",
+        ":traversal_utils",
         "//csrc/common:cache_key",
         "//csrc/common:compilation",
         "//csrc/common:compilation_spec",
@@ -1220,6 +1229,7 @@ torch_tpu_cc_test(
         ":structured_log_buffer",
         ":tensor_to_buffer",
         ":tpu_hooks",
+        ":traversal",
         "//csrc/common:cache_key",
         "//csrc/common:compilation_spec",
         "//csrc/common:dimension_types",
@@ -1331,6 +1341,36 @@ torch_tpu_cc_test(
         "@com_google_absl//absl/types:span",
         "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
         "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
+    ],
+)
+
+torch_tpu_cc_library(
+    name = "graph_capture_state",
+    srcs = ["graph_capture_state.cc"],
+    hdrs = ["graph_capture_state.h"],
+    deps = [
+        ":current_stream",
+        ":events_queue",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/status",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "graph_capture_state_test",
+    srcs = ["graph_capture_state_test.cc"],
+    exec_properties = {
+        "cpp_link.mem": "16g",  # Needed for asan.
+    },
+    requires_libtpu = True,
+    deps = [
+        ":current_stream",
+        ":events_queue",
+        ":graph_capture_state",
+        "//csrc/common:error_utils",
+        "//csrc/common:oss_test_main",
+        "@com_google_absl//absl/cleanup",
+        "@com_google_absl//absl/status",
     ],
 )
 
