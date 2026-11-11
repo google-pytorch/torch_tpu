@@ -402,7 +402,8 @@ PjrtBackend::GetJobDeviceIds() {
   std::vector<int64_t> device_ids;  // INT_VEC_OK
   // Read on use, not at startup: a job learns its peers' devices only after
   // the runtime is up, and sets this before its first compiled program.
-  const char* const job_devices = std::getenv(kTorchTpuJobDeviceIdsEnvVar);
+  const char* const job_devices =
+      std::getenv(kTorchTpuJobDeviceIdsEnvVar);  // GETENV_OK=set after startup
   if (job_devices == nullptr || *job_devices == '\0') {
     for (const xla::PjRtDevice* device : client_->devices()) {
       device_ids.push_back(device->global_device_id().value());

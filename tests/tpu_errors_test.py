@@ -107,10 +107,7 @@ class TpuOnlyErrorTest(et.TpuOnlyErrorTestBase):
     with mock.patch.dict(os.environ, {"TORCH_TPU_JOB_DEVICE_IDS": "0,x"}):
       with et.assert_raises_message(
           RuntimeError,
-          tpu=(
-              "create_process_group(): expected TORCH_TPU_JOB_DEVICE_IDS to"
-              " list device ids, got '0,x'"
-          ),
+          tpu="""create_process_group(): expected TORCH_TPU_JOB_DEVICE_IDS to list device ids, got '0,x'""",
       ):
         tpu_distributed.create_process_group(
             dist.HashStore(), 0, 1, datetime.timedelta(seconds=30)
@@ -123,10 +120,7 @@ class TpuOnlyErrorTest(et.TpuOnlyErrorTestBase):
     with mock.patch.dict(os.environ, {"TORCH_TPU_JOB_DEVICE_IDS": others}):
       with et.assert_raises_message(
           RuntimeError,
-          tpu=(
-              "create_process_group(): expected this process's device"
-              f" {device_id} to be in TORCH_TPU_JOB_DEVICE_IDS, got '{others}'"
-          ),
+          tpu=f"""create_process_group(): expected this process's device {device_id} to be in TORCH_TPU_JOB_DEVICE_IDS, got '{others}'""",
       ):
         tpu_distributed.create_process_group(
             dist.HashStore(), 0, 1, datetime.timedelta(seconds=30)

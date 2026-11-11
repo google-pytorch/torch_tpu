@@ -1938,9 +1938,8 @@ ProcessGroupTpu::ProcessGroupTpu(c10::intrusive_ptr<c10d::Store> store,
                      PjrtBackend::GetInstance().GetClient());
 
   const int64_t slice_size = pjrt_client->devices().size();
-  TT_ASSIGN_OR_THROW(  // INT_VEC_OK
-      const std::vector<int64_t> job_device_ids,
-      PjrtBackend::GetInstance().GetJobDeviceIds());
+  TT_ASSIGN_OR_THROW(const std::vector<int64_t> job_device_ids,  // INT_VEC_OK
+                     PjrtBackend::GetInstance().GetJobDeviceIds());
   // The whole slice unless TORCH_TPU_JOB_DEVICE_IDS gives this job a part.
   const int64_t world_size = job_device_ids.size();
 

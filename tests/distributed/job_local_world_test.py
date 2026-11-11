@@ -34,6 +34,7 @@ import torch.multiprocessing as mp
 from torch_tpu._internal.distributed import multiprocessing
 from torch_tpu._internal.distributed import tpu_distributed
 from torch_tpu._internal.utils import test_utils as utils
+from tests import seed_test_utils
 from tests.distributed import distributed_utils
 
 _SLICE_SIZE = 8
@@ -127,7 +128,7 @@ def _run_two_jobs(store_port: int, cache_dir: str) -> None:
   dist.barrier()
 
 
-class JobLocalWorldTest(absltest.TestCase):
+class JobLocalWorldTest(seed_test_utils.MultiProcessRepeatableTest):
 
   def test_two_jobs_share_one_slice(self) -> None:
     distributed_utils.dist_run(
