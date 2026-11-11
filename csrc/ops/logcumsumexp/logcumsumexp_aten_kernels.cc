@@ -17,6 +17,7 @@
 #include "csrc/ops/logcumsumexp/logcumsumexp_aten_kernels.h"
 
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <utility>
 
@@ -34,12 +35,8 @@
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/scan_builder.h"
 #include "csrc/ops/unary_aten_kernels.h"
-#include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/Support/Casting.h"
-#include "mlir/IR/Attributes.h"
 #include "mlir/IR/Builders.h"
-#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Location.h"
 #include "mlir/IR/Types.h"
@@ -48,7 +45,6 @@
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
-#include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 
 namespace torch_tpu {
 namespace {
@@ -120,25 +116,12 @@ absl::StatusOr<mlir::MlirOp> BuildLogcumsumexpShlo(
   TT_ASSIGN_OR_RETURN(input, CastIfNeeded(input, compute_dtype));
 
   mlir::MlirBuilder& builder = input.getBuilder();
-  const mlir::RankedTensorType compute_input_type = GetTensorTypeOrDie(input);
-  const mlir::Type compute_element_type = compute_input_type.getElementType();
-
-  // chlo.ScanOp carries are rank-reduced (the scan dimension is erased).
-  Dimensions carry_shape = CopyIntVector(compute_input_type.getShape());
-  carry_shape.erase(carry_shape.begin() + normalized_dim);
-
-  // The identity of logaddexp is -inf.
-  const llvm::APFloat neg_inf = llvm::APFloat::getInf(
-      llvm::cast<mlir::FloatType>(compute_element_type).getFloatSemantics(),
-      /*Negative=*/true);
-  const mlir::Attribute neg_inf_attr =
-      mlir::FloatAttr::get(compute_element_type, neg_inf);
-  const mlir::MlirOp neg_inf_scalar = mlir::stablehlo::Constant(
-      builder,
-      mlir::DenseElementsAttr::get(
-          mlir::RankedTensorType::get({}, compute_element_type), neg_inf_attr));
-  TT_ASSIGN_OR_RETURN(const mlir::MlirOp carry_init,
-                      BroadcastIfNeeded(neg_inf_scalar, carry_shape));
+  // The identity of logaddexp is -inf. chlo.ScanOp carries are rank-reduced
+  // (the scan dimension is erased).
+  TT_ASSIGN_OR_RETURN(
+      const mlir::MlirOp carry_init,
+      CreateRankReducedConstantLike(input, normalized_dim,
+                                    -std::numeric_limits<double>::infinity()));
 
   // Associative scan -> chlo.ScanOp (native scan emitter). Results are
   // [carries..., outputs...]; the prefix-scan output is the single output. The
@@ -166,12 +149,15 @@ at::Tensor AtenLogcumsumexp(const at::Tensor& self, const int64_t dim) {
     TT_ASSIGN_OR_THROW(const int64_t normalized_dim,
                        SafeWrapDim(dim, self.dim()));
 
+    // PyTorch's meta_logcumsumexp allocates the output with
+    // `memory_format=torch.contiguous_format`.
     TT_ASSIGN_OR_THROW(
         at::Tensor result,
         UnaryOp(self,
                 absl::bind_front(BuildLogcumsumexpShlo, normalized_dim,
                                  /*out_dtype=*/std::nullopt),
-                {.op_param_cache_keys = std::move(param_keys)}));
+                {.op_param_cache_keys = std::move(param_keys),
+                 .output_layout = UnaryOpOutputLayout::kContiguous}));
     return result;
   });
 }

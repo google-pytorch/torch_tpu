@@ -21,12 +21,14 @@
 #include <optional>
 #include <vector>
 
+#include "ATen/core/TensorBase.h"
 #include "ATen/core/TensorBody.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/shape.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "torch/headeronly/core/ScalarType.h"
 #include "xla/layout.h"
 
 namespace torch_tpu {
@@ -70,6 +72,31 @@ absl::StatusOr<std::vector<xla::Layout>> ResolveXlaLayouts(
 absl::StatusOr<std::optional<CustomLayout>>
 ExtractCustomLayoutIfDifferentFromDefault(const Shape& shape);
 
+// Returns the strides of `torch.empty_like(tensor)` with the default
+// `torch.preserve_format`: the strides of `tensor` if it is non-overlapping and
+// dense, otherwise `at::infer_dense_strides`, which keeps the stride order,
+// removes gaps, and leaves zero-stride (expanded) dims in place.
+[[nodiscard]] Strides EmptyLikeStrides(const at::TensorBase& tensor);
+
+// Returns the output strides that `at::TensorIterator` allocates for a unary
+// operation on `tensor`: contiguous strides if `tensor` has zero elements,
+// otherwise `EmptyLikeStrides(tensor)`.
+[[nodiscard]] Strides UnaryOpStrides(const at::TensorBase& tensor);
+
+// Returns the output strides that `at::TensorIterator` allocates for a binary
+// operation on `(self, other)` with broadcasted output shape `out_sizes`. If
+// `common_dtype` is specified (or if `self` and `other` have differing dtypes),
+// operands promoted to the common dtype use dense, gap-free strides matching
+// PyTorch's `TensorIteratorBase::compute_types` cast semantics.
+[[nodiscard]] Strides BinaryOpStrides(
+    const at::TensorBase& self, const at::TensorBase& other,
+    absl::Span<const int64_t> out_sizes,
+    std::optional<c10::ScalarType> common_dtype = std::nullopt);
+
+// Returns the strides corresponding to `tensor.suggest_memory_format()`
+// (`ChannelsLast` for 4D NHWC, `ChannelsLast3d` for 5D NDHWC, otherwise
+// `Contiguous`).
+[[nodiscard]] Strides SuggestMemoryFormatStrides(const at::TensorBase& tensor);
 }  // namespace torch_tpu
 
 #endif  // TORCH_TPU_CSRC_COMMON_LAYOUT_UTILS_H_

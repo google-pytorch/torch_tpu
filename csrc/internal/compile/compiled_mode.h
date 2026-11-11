@@ -247,6 +247,9 @@ absl::StatusOr<SharedLoadedExecutableWithMetadata> CompileMlirExecutable(
 struct OutputShape {
   std::vector<int64_t> dimensions;  // INT_VEC_OK
   bool is_dynamic = false;
+  std::vector<int64_t> strides;  // INT_VEC_OK
+  int64_t storage_offset = 0;
+  bool has_runtime_layout = false;
 };
 
 // torch.compile integration: this is called to invoke the compiled executable

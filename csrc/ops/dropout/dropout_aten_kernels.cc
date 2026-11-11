@@ -24,6 +24,7 @@
 #include "ATen/Context.h"
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/Generator.h"
+#include "absl/algorithm/container.h"
 #include "absl/status/statusor.h"
 #include "c10/core/ScalarType.h"
 #include "c10/util/Optional.h"
@@ -31,15 +32,17 @@
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
+#include "csrc/common/layout_utils.h"
 #include "csrc/common/to_string.h"
+#include "csrc/common/utils.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/op_dispatcher.h"
-#include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/dropout/dropout.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/rng_utils.h"
+#include "csrc/ops/view_decomposition/contiguous_to_view.h"  // NOLINT
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "torch/headeronly/core/ScalarType.h"
@@ -82,6 +85,32 @@ std::tuple<at::Tensor, at::Tensor> AtenDropoutCommonImpl(
   TT_ASSIGN_OR_THROW(mlir::ElementType output_dtype,
                      ConvertTo<mlir::ElementType>(input.scalar_type()));
 
+  // Match the strides PyTorch's Meta kernels report under torch.compile:
+  // the no-op path returns `input` itself (its exact strides), `p >= 1`
+  // allocates `empty_like`, and the RNG path is an elementwise binary op whose
+  // mask is `empty_like` except for empty tensors (TensorIterator strides).
+  auto make_dropout_outputs =
+      [&input, p, train](
+          DeviceBufferRef out_buf,
+          DeviceBufferRef mask_buf) -> std::tuple<at::Tensor, at::Tensor> {
+    const auto out_strides =
+        (p <= 0.0 || !train)
+            ? CopyIntVector(input.strides())
+            : ((p >= 1.0) ? EmptyLikeStrides(input)
+                          : BinaryOpStrides(input, input, input.sizes()));
+    const auto mask_strides =
+        (train && p > 0.0 && p < 1.0 && absl::c_contains(input.sizes(), 0))
+            ? BinaryOpStrides(input, input, input.sizes())
+            : EmptyLikeStrides(input);
+    TT_ASSIGN_OR_THROW(at::Tensor out,
+                       ContiguousToView(std::move(out_buf), out_strides,
+                                        /*target_storage_offset=*/0));
+    TT_ASSIGN_OR_THROW(at::Tensor mask,
+                       ContiguousToView(std::move(mask_buf), mask_strides,
+                                        /*target_storage_offset=*/0));
+    return {std::move(out), std::move(mask)};
+  };
+
   if (p <= 0.0 || !train) {
     auto op_builder =
         [](mlir::MlirOp input) -> absl::StatusOr<MlirOpResults<2>> {
@@ -97,8 +126,7 @@ std::tuple<at::Tensor, at::Tensor> AtenDropoutCommonImpl(
             {.out_dtypes = {output_dtype, mlir::ElementType::PRED},
              .out_dims_list = {input.sizes(), input.sizes()},
              .op_param_cache_keys = std::move(param_keys)})));
-    return {MakeTensor(std::move(results[0])),
-            MakeTensor(std::move(results[1]))};
+    return make_dropout_outputs(std::move(results[0]), std::move(results[1]));
   }
   if (p >= 1.0) {
     auto op_builder =
@@ -116,8 +144,7 @@ std::tuple<at::Tensor, at::Tensor> AtenDropoutCommonImpl(
             {.out_dtypes = {output_dtype, mlir::ElementType::PRED},
              .out_dims_list = {input.sizes(), input.sizes()},
              .op_param_cache_keys = std::move(param_keys)})));
-    return {MakeTensor(std::move(results[0])),
-            MakeTensor(std::move(results[1]))};
+    return make_dropout_outputs(std::move(results[0]), std::move(results[1]));
   }
 
   const int64_t num_elements = input.numel();
@@ -138,7 +165,7 @@ std::tuple<at::Tensor, at::Tensor> AtenDropoutCommonImpl(
           RngUsage{num_elements, bit_width}));
 
   // [output, mask]
-  return {MakeTensor(std::move(results[0])), MakeTensor(std::move(results[1]))};
+  return make_dropout_outputs(std::move(results[0]), std::move(results[1]));
 }
 
 }  // namespace
@@ -199,7 +226,12 @@ at::Tensor AtenNativeDropoutBackward(const at::Tensor& grad_output,
                               {.out_dtype = output_dtype,
                                .out_dims = grad_output.sizes(),
                                .op_param_cache_keys = std::move(param_keys)})));
-        return MakeTensor(std::move(output_buf));
+        TT_ASSIGN_OR_THROW(
+            at::Tensor out,
+            ContiguousToView(std::move(output_buf),
+                             SuggestMemoryFormatStrides(grad_output),
+                             /*target_storage_offset=*/0));
+        return out;
       });
 }
 

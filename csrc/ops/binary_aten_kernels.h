@@ -17,8 +17,10 @@
 #ifndef TORCH_TPU_CSRC_OPS_BINARY_ATEN_KERNELS_H_
 #define TORCH_TPU_CSRC_OPS_BINARY_ATEN_KERNELS_H_
 
+#include <cstdint>
 #include <optional>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 
 #include "ATen/core/ATen_fwd.h"
@@ -26,11 +28,13 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "csrc/common/cache_key.h"
+#include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/layout_utils.h"
 #include "csrc/eager/device_buffer.h"
-#include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
+#include "csrc/ops/view_decomposition/contiguous_to_view.h"  // NOLINT
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 
 namespace torch_tpu {
@@ -94,10 +98,30 @@ absl::StatusOr<at::Tensor> BinaryOp(const at::Tensor& tensor,
                                     const OtherType& other,
                                     MlirBinaryOpBuilder op_builder,
                                     BinaryOpOptions opts) {
+  std::optional<c10::ScalarType> common_dtype = std::nullopt;
+  const bool reverse_operands = opts.reverse_operands;
+  if constexpr (std::is_same_v<std::decay_t<OtherType>, at::Tensor>) {
+    at::ScalarType promoted_type = at::result_type(tensor, other);
+    if (opts.force_float_inputs &&
+        c10::isIntegralType(promoted_type, /*includeBool=*/true)) {
+      promoted_type = c10::get_default_dtype_as_scalartype();
+    }
+    common_dtype = promoted_type;
+  }
   TT_ASSIGN_OR_RETURN(auto result_buf, internal::DispatchBinaryOp(
                                            tensor, other, std::move(op_builder),
                                            std::move(opts)));
-  return MakeTensor(std::move(result_buf));
+  Strides target_strides;
+  if constexpr (std::is_same_v<std::decay_t<OtherType>, at::Tensor>) {
+    const at::Tensor& first = reverse_operands ? other : tensor;
+    const at::Tensor& second = reverse_operands ? tensor : other;
+    target_strides =
+        BinaryOpStrides(first, second, result_buf.dimensions(), common_dtype);
+  } else {
+    target_strides = UnaryOpStrides(tensor);
+  }
+  return ContiguousToView(std::move(result_buf), target_strides,
+                          /*target_storage_offset=*/0);
 }
 
 template <typename OtherType>

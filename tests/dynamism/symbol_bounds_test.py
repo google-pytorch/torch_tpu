@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from absl.testing import absltest
 from absl.testing import parameterized
 import sympy
@@ -61,9 +63,9 @@ def _make_symint(
     hint: int,
     lower: int | None = None,
     upper: int | sympy.Expr = int_oo,
-    shape_env: FakeShapeEnv | None = None,
+    shape_env: Any | None = None,
 ) -> tuple[torch.SymInt, sympy.Symbol]:
-  """Creates a torch.SymInt backed by FakeShapeEnv without running torch.compile."""
+  """Creates a torch.SymInt backed by ShapeEnv without running torch.compile."""
   sym = sympy.Symbol(name, integer=True)
   if shape_env is None:
     shape_env = FakeShapeEnv()
@@ -576,6 +578,68 @@ class SymbolBoundsTest(seed_test_utils.RepeatableTest):
             bm.get_fallback_symbol_bounds().get_symint_bounds(s0_symint),
             expected_bounds,
         )
+
+  def test_output_sym_shape_stride_extraction_and_evaluation(self):
+    shape_env = symbolic_shapes.ShapeEnv()
+    s0_symint, _ = _make_symint(
+        "s0", hint=10, lower=2, upper=16, shape_env=shape_env
+    )
+    symint_to_tensor_dim = {"s0": (0, 1)}
+    dummy_input = torch.zeros(8, 10)
+
+    with fake_tensor.FakeTensorMode(shape_env=shape_env):
+      base_tensor = torch.empty((8, s0_symint), dtype=torch.float32)
+      contiguous_val = base_tensor
+      transposed_val = base_tensor.transpose(0, 1)
+      offset_val = torch.as_strided(
+          base_tensor, (8, s0_symint), (s0_symint, 1), storage_offset=2
+      )
+
+      # 1. Standard contiguous layout -> output_sym_stride is None.
+      sym_shape_cont = (
+          output_sym_shape.OutputSymShape.from_output_node_meta_value(
+              contiguous_val, symint_to_tensor_dim
+          )
+      )
+      self.assertIsNone(sym_shape_cont.output_sym_stride)
+      self.assertIsNone(sym_shape_cont.get_output_runtime_stride([dummy_input]))
+      self.assertEqual(
+          sym_shape_cont.get_output_runtime_shape([dummy_input]), [8, 10]
+      )
+      self.assertEqual(
+          sym_shape_cont.get_output_runtime_storage_offset([dummy_input]), 0
+      )
+
+      # 2. Non-contiguous transposed layout -> output_sym_stride extracted.
+      sym_shape_trans = (
+          output_sym_shape.OutputSymShape.from_output_node_meta_value(
+              transposed_val, symint_to_tensor_dim
+          )
+      )
+      self.assertIsNotNone(sym_shape_trans.output_sym_stride)
+      self.assertEqual(
+          sym_shape_trans.get_output_runtime_stride([dummy_input]), [1, 10]
+      )
+      self.assertEqual(
+          sym_shape_trans.get_output_runtime_shape([dummy_input]), [10, 8]
+      )
+      self.assertEqual(
+          sym_shape_trans.get_output_runtime_storage_offset([dummy_input]), 0
+      )
+
+      # 3. Non-contiguous layout with non-zero storage offset.
+      sym_shape_off = (
+          output_sym_shape.OutputSymShape.from_output_node_meta_value(
+              offset_val, symint_to_tensor_dim
+          )
+      )
+      self.assertIsNotNone(sym_shape_off.output_sym_stride)
+      self.assertEqual(
+          sym_shape_off.get_output_runtime_stride([dummy_input]), [10, 1]
+      )
+      self.assertEqual(
+          sym_shape_off.get_output_runtime_storage_offset([dummy_input]), 2
+      )
 
 
 if __name__ == "__main__":

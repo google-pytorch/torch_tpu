@@ -1649,17 +1649,19 @@ class FxOutputReconstructor {
   // unflattening for leaf, flat tuple, and flat list outputs. This avoids
   // intermediate Python object allocations, dictionary lookups, and reference
   // counting overhead on every compiled step.
-  py::object Reconstruct(py::handle inputs_handle,
-                         absl::Span<at::Tensor> deduped_outputs,
-                         bool outputs_are_fresh_pjrt = false) const {
+  py::object Reconstruct(
+      py::handle inputs_handle, absl::Span<at::Tensor> deduped_outputs,
+      bool outputs_are_fresh_pjrt = false,
+      absl::Span<const OutputShape> output_shapes = {}) const {
     TT_CHECK_THROW(deduped_outputs.size() >= num_output_tensors_,
                    error::kPythonIndexError)
         << "expected the number of output tensors to be at least "
         << num_output_tensors_ << ", got " << deduped_outputs.size();
     const RawPyObjPtr inputs_ptr = inputs_handle.ptr();
     if (spec_kind_ == SpecKind::kLeaf && entries_.size() == 1) {
-      return py::reinterpret_steal<py::object>(GetReconstructedLeafNewRef(
-          0, inputs_ptr, deduped_outputs, outputs_are_fresh_pjrt));
+      return py::reinterpret_steal<py::object>(
+          GetReconstructedLeafNewRef(0, inputs_ptr, deduped_outputs,
+                                     outputs_are_fresh_pjrt, output_shapes));
     }
 
     // The containers are owned before being filled so that they are released
@@ -1675,7 +1677,7 @@ class FxOutputReconstructor {
         PyTuple_SET_ITEM(
             tuple.ptr(), i,
             GetReconstructedLeafNewRef(i, inputs_ptr, deduped_outputs,
-                                       outputs_are_fresh_pjrt));
+                                       outputs_are_fresh_pjrt, output_shapes));
       }
       return tuple;
     }
@@ -1686,9 +1688,10 @@ class FxOutputReconstructor {
       throw py::error_already_set();  // Propagate Python C-API error.
     }
     for (size_t i = 0; i < entries_.size(); ++i) {
-      PyList_SET_ITEM(list.ptr(), i,
-                      GetReconstructedLeafNewRef(i, inputs_ptr, deduped_outputs,
-                                                 outputs_are_fresh_pjrt));
+      PyList_SET_ITEM(
+          list.ptr(), i,
+          GetReconstructedLeafNewRef(i, inputs_ptr, deduped_outputs,
+                                     outputs_are_fresh_pjrt, output_shapes));
     }
     if (spec_kind_ == SpecKind::kFlatList) {
       return list;
@@ -1696,10 +1699,10 @@ class FxOutputReconstructor {
     return spec_py_.attr("unflatten")(list);
   }
 
-  py::object Call(py::handle inputs,
-                  std::vector<at::Tensor> deduped_outputs) const {
+  py::object Call(py::handle inputs, std::vector<at::Tensor> deduped_outputs,
+                  absl::Span<const OutputShape> output_shapes = {}) const {
     return Reconstruct(inputs, absl::MakeSpan(deduped_outputs),
-                       /*outputs_are_fresh_pjrt=*/false);
+                       /*outputs_are_fresh_pjrt=*/false, output_shapes);
   }
 
   // Enables pickle serialization (`__reduce__`) for compiled artifact caching.
@@ -1730,9 +1733,62 @@ class FxOutputReconstructor {
     return item;
   }
 
-  RawPyObjPtr GetReconstructedLeafNewRef(size_t i, RawPyObjPtr inputs_ptr,
-                                         absl::Span<at::Tensor> deduped_outputs,
-                                         bool outputs_are_fresh_pjrt) const {
+  static at::Tensor AcquireDedupedOutput(
+      const Entry& entry, absl::Span<at::Tensor> deduped_outputs) {
+    if (entry.needs_clone) {
+      return deduped_outputs[entry.index].clone();
+    }
+    if (entry.can_move) {
+      return std::move(deduped_outputs[entry.index]);
+    }
+    return deduped_outputs[entry.index];
+  }
+
+  static void ApplyRuntimeStrides(const OutputShape& output_shape,
+                                  bool can_alias_fresh_pjrt,
+                                  at::Tensor* tensor) {
+    const Strides target_strides = CopyIntVector(output_shape.strides);
+    const int64_t target_offset = output_shape.storage_offset;
+    const at::IntArrayRef target_strides_ref(target_strides.data(),
+                                             target_strides.size());
+    if (tensor->strides() == target_strides_ref &&
+        tensor->storage_offset() == target_offset) {
+      return;
+    }
+    if (can_alias_fresh_pjrt &&
+        IsPhysicallyContiguousLayout(tensor->sizes(), target_strides_ref,
+                                     target_offset)) {
+      tensor->unsafeGetTensorImpl()->set_sizes_and_strides(
+          tensor->sizes(), target_strides_ref, target_offset);
+      return;
+    }
+    *tensor = ForceStrides(*tensor, target_strides, target_offset);
+  }
+
+  static void ApplyExpectedLayout(const Entry& entry,
+                                  const ExpectedTensorLayout& layout,
+                                  bool outputs_are_fresh_pjrt,
+                                  at::Tensor* tensor) {
+    if (layout.is_dynamic ||
+        (!entry.needs_layout_check && outputs_are_fresh_pjrt) ||
+        layout.MatchesTensor(*tensor)) {
+      return;
+    }
+    if (outputs_are_fresh_pjrt && entry.can_move &&
+        layout.is_physically_contiguous) {
+      tensor->unsafeGetTensorImpl()->set_sizes_and_strides(
+          at::IntArrayRef(layout.shape.data(), layout.shape.size()),
+          at::IntArrayRef(layout.stride.data(), layout.stride.size()),
+          layout.storage_offset);
+      return;
+    }
+    *tensor = ForceStrides(*tensor, layout.stride, layout.storage_offset);
+  }
+
+  RawPyObjPtr GetReconstructedLeafNewRef(
+      size_t i, RawPyObjPtr inputs_ptr, absl::Span<at::Tensor> deduped_outputs,
+      bool outputs_are_fresh_pjrt,
+      absl::Span<const OutputShape> output_shapes = {}) const {
     const Entry& entry = entries_[i];
     if (entry.type == EntryType::kNone) {
       Py_INCREF(Py_None);
@@ -1742,27 +1798,16 @@ class FxOutputReconstructor {
       return GetInputItemNewRef(inputs_ptr, entry.index);
     }
     const int idx = entry.index;
-    at::Tensor tensor = [&]() {  // REF_CAPTURE_OK=called locally
-      if (entry.needs_clone) {
-        return deduped_outputs[idx].clone();
-      }
-      if (entry.can_move) {
-        return std::move(deduped_outputs[idx]);
-      }
-      return deduped_outputs[idx];
-    }();
-    const ExpectedTensorLayout& layout = layouts_[idx];
-    if ((entry.needs_layout_check || !outputs_are_fresh_pjrt) &&
-        !layout.is_dynamic && !layout.MatchesTensor(tensor)) {
-      if (outputs_are_fresh_pjrt && entry.can_move &&
-          layout.is_physically_contiguous) {
-        tensor.unsafeGetTensorImpl()->set_sizes_and_strides(
-            at::IntArrayRef(layout.shape.data(), layout.shape.size()),
-            at::IntArrayRef(layout.stride.data(), layout.stride.size()),
-            layout.storage_offset);
-      } else {
-        tensor = ForceStrides(tensor, layout.stride, layout.storage_offset);
-      }
+    at::Tensor tensor = AcquireDedupedOutput(entry, deduped_outputs);
+    const bool has_runtime_strides =
+        static_cast<size_t>(idx) < output_shapes.size() &&
+        output_shapes[idx].has_runtime_layout;
+    if (has_runtime_strides) {
+      ApplyRuntimeStrides(output_shapes[idx],
+                          outputs_are_fresh_pjrt && entry.can_move, &tensor);
+    } else {
+      ApplyExpectedLayout(entry, layouts_[idx], outputs_are_fresh_pjrt,
+                          &tensor);
     }
     return THPVariable_Wrap(std::move(tensor));
   }
@@ -1866,7 +1911,7 @@ py::object PyExecuteCompiledModel(
         reconstruct_fn.cast<const FxOutputReconstructor&>();
     return reconstructor.Reconstruct(
         py::reinterpret_borrow<py::object>(args_ptr), absl::MakeSpan(outputs),
-        /*outputs_are_fresh_pjrt=*/true);
+        /*outputs_are_fresh_pjrt=*/true, parsed_output_shapes);
   }
   return reconstruct_fn(py::reinterpret_borrow<py::object>(args_ptr),
                         py::cast(outputs));
@@ -1996,7 +2041,7 @@ class CompiledExecutableRunner {
     if (reconstructor_ptr_ != nullptr) {
       return reconstructor_ptr_->Reconstruct(
           py::reinterpret_borrow<py::object>(args_ptr), user_outputs,
-          /*outputs_are_fresh_pjrt=*/true);
+          /*outputs_are_fresh_pjrt=*/true, cached_output_shapes_);
     }
     outputs.resize(user_outputs_count);
     if (reconstruct_fn_.is_none()) {
@@ -2075,10 +2120,15 @@ TT_PYBIND11_MODULE(tpu_torch_compile, m) {
       .def(
           "__call__",
           [](const FxOutputReconstructor& self, py::handle inputs,
-             std::vector<at::Tensor> deduped_outputs) {
-            return self.Call(inputs, std::move(deduped_outputs));
+             std::vector<at::Tensor> deduped_outputs,
+             py::handle output_shapes_obj) {
+            std::vector<OutputShape> parsed_output_shapes =
+                ParseOutputShapes(output_shapes_obj);
+            return self.Call(inputs, std::move(deduped_outputs),
+                             parsed_output_shapes);
           },
-          py::arg("inputs"), py::arg("deduped_outputs"))
+          py::arg("inputs"), py::arg("deduped_outputs"),
+          py::arg("output_shapes") = py::none())
       .def("__reduce__",
            [](const FxOutputReconstructor& self) { return self.Reduce(); });
   m.attr("FxOutputReconstructor").attr("__module__") =
@@ -2101,18 +2151,46 @@ TT_PYBIND11_MODULE(tpu_torch_compile, m) {
       .def_readonly("upper_bounds", &TensorBounds::upper_bounds);
 
   PyBindClass<OutputShape>(m, "OutputShape")
-      .def(py::init([](std::vector<int64_t> dimensions,  // INT_VEC_OK
-                       bool is_dynamic) {
-             return OutputShape{std::move(dimensions), is_dynamic};
-           }),
+      .def(py::init(
+               [](std::vector<int64_t> dimensions,  // INT_VEC_OK
+                  bool is_dynamic,
+                  std::optional<std::vector<int64_t>> strides,  // INT_VEC_OK
+                  int64_t storage_offset,
+                  std::optional<bool> has_runtime_layout) {
+                 const bool runtime_layout = has_runtime_layout.value_or(
+                     strides.has_value() || storage_offset != 0);
+                 std::vector<int64_t> s =  // INT_VEC_OK
+                     strides.has_value()
+                         ? std::move(*strides)
+                         : std::vector<int64_t>();  // INT_VEC_OK
+                 return OutputShape{std::move(dimensions), is_dynamic,
+                                    std::move(s), storage_offset,
+                                    runtime_layout};
+               }),
            py::arg("dimensions") = std::vector<int64_t>(),  // INT_VEC_OK
-           py::arg("is_dynamic") = false)
+           py::arg("is_dynamic") = false, py::arg("strides") = std::nullopt,
+           py::arg("storage_offset") = 0,
+           py::arg("has_runtime_layout") = std::nullopt)
       .def_readwrite("dimensions", &OutputShape::dimensions)
       .def_readwrite("is_dynamic", &OutputShape::is_dynamic)
+      .def_readwrite("strides", &OutputShape::strides)
+      .def_readwrite("storage_offset", &OutputShape::storage_offset)
+      .def_readwrite("has_runtime_layout", &OutputShape::has_runtime_layout)
       .def("__repr__", [](const OutputShape& s) {
-        return absl::StrCat("OutputShape(dimensions=", ToString(s.dimensions),
-                            ", is_dynamic=", s.is_dynamic ? "True" : "False",
-                            ")");
+        std::string repr =
+            absl::StrCat("OutputShape(dimensions=", ToString(s.dimensions),
+                         ", is_dynamic=", s.is_dynamic ? "True" : "False");
+        if (!s.strides.empty()) {
+          absl::StrAppend(&repr, ", strides=", ToString(s.strides));
+        }
+        if (s.storage_offset != 0) {
+          absl::StrAppend(&repr, ", storage_offset=", s.storage_offset);
+        }
+        if (s.has_runtime_layout) {
+          absl::StrAppend(&repr, ", has_runtime_layout=True");
+        }
+        absl::StrAppend(&repr, ")");
+        return repr;
       });
 
   py::implicitly_convertible<py::tuple, TensorInfo>();

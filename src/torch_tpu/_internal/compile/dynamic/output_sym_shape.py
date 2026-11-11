@@ -18,13 +18,24 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 import dataclasses
+import operator
 from typing import Any
 
 from absl import logging
 import sympy
 import torch
+from torch.fx.experimental import symbolic_shapes
 from torch.utils import _pytree
 from torch_tpu._internal.compile.dynamic import sym_utils
+
+# Evaluation mapping for lambdified sympy expressions operating on concrete
+# integer runtime inputs.
+RUNTIME_SYMPY_FUNCS = {
+    "FloorDiv": operator.floordiv,
+    "CeilDiv": lambda a, b: -(-a // b),
+    "Max": max,
+    "Min": min,
+}
 
 
 @dataclasses.dataclass
@@ -50,6 +61,8 @@ class OutputSymShape:
   output_sym_shape: list[int | dict[str, Any]]
   is_tensor: bool = True
   is_promoted_scalar: bool = False
+  output_sym_stride: list[int | dict[str, Any]] | None = None
+  output_sym_storage_offset: int | dict[str, Any] = 0
   is_dynamic: bool = dataclasses.field(init=False)
 
   def __post_init__(self) -> None:
@@ -78,23 +91,21 @@ class OutputSymShape:
         s0 := symbol(input0.size) := 4
         runtime_shape: [8, 5, 2]
     """
-    new_shape = []
-    for dim in self.output_sym_shape:
-      if isinstance(dim, int):
-        new_shape.append(dim)
-        continue
-      kwargs = {
-          s: (
-              inputs[tensor_idx].shape[dim_idx]
-              if isinstance(inputs[tensor_idx], torch.Tensor)
-              else inputs[tensor_idx]
-          )
-          for s, (tensor_idx, dim_idx) in dim["deps"].items()
-      }
+    return [_eval_sym_item(dim, inputs) for dim in self.output_sym_shape]
 
-      runtime_size = dim["compiled_fn"](**kwargs)
-      new_shape.append(runtime_size)
-    return new_shape
+  def get_output_runtime_stride(
+      self, inputs: Sequence[torch.Tensor | int]
+  ) -> list[int] | None:
+    """Computes the runtime stride of the output tensor if non-contiguous."""
+    if self.output_sym_stride is None:
+      return None
+    return [_eval_sym_item(st, inputs) for st in self.output_sym_stride]
+
+  def get_output_runtime_storage_offset(
+      self, inputs: Sequence[torch.Tensor | int]
+  ) -> int:
+    """Computes the runtime storage offset of the output tensor."""
+    return _eval_sym_item(self.output_sym_storage_offset, inputs)
 
   def extract_symbol_offsets(self) -> dict[str, int]:
     """Extracts non-negative constant offsets `c` from `s` or `s + c` output shape expressions.
@@ -178,46 +189,137 @@ class OutputSymShape:
         and output_node_meta_value.shape is not None
     ):
       for dim in output_node_meta_value.shape:
-        if isinstance(dim, torch.SymInt) and hasattr(dim, "node"):
-          expr = dim.node.expr
-          symbols = expr.free_symbols
-          deps = {}
-          can_evaluate = True
-          for s in symbols:
-            s_str = str(s)
-            tensor_dim = symint_to_tensor_dim.get(s_str)
-            if tensor_dim is not None:
-              deps[s_str] = tensor_dim
-            else:
-              can_evaluate = False
-              break
-          if can_evaluate:
-            # Pre-compile the sympy expression using sympy.lambdify.
-            # Sort symbols to ensure consistent argument order.
-            symbols = sorted(expr.free_symbols, key=str)
-            param_names = [str(s) for s in symbols]
-            base_fn = sympy.lambdify(
-                symbols, expr, modules=[sym_utils.CUSTOM_SYMPY_FUNCS, "math"]
-            )
-
-            compiled_fn = _make_compiled_fn(base_fn, param_names)
-            output_sym_shape.append(
-                {"expr": expr, "deps": deps, "compiled_fn": compiled_fn}
-            )
-          else:
-            raise RuntimeError(
-                f"Output shape dimension '{dim}' depends on symbols not derived"
-                " from input tensor dimensions."
-            )
-        elif isinstance(dim, int):
-          output_sym_shape.append(dim)
+        compiled = _compile_sym_expr(dim, symint_to_tensor_dim)
+        if compiled is not None:
+          output_sym_shape.append(compiled)
+        elif isinstance(dim, torch.SymInt):
+          raise RuntimeError(
+              f"Output shape dimension '{dim}' depends on symbols not derived"
+              " from input tensor dimensions."
+          )
         else:
           output_sym_shape.append(-1)
+
+    output_sym_stride = None
+    output_sym_storage_offset: int | dict[str, Any] = 0
+    if is_tensor and hasattr(output_node_meta_value, "stride"):
+      shape = output_node_meta_value.shape
+      stride = (
+          output_node_meta_value.stride()
+          if callable(output_node_meta_value.stride)
+          else output_node_meta_value.stride
+      )
+      storage_offset = (
+          output_node_meta_value.storage_offset()
+          if hasattr(output_node_meta_value, "storage_offset")
+          and callable(output_node_meta_value.storage_offset)
+          else getattr(output_node_meta_value, "storage_offset", 0)
+      )
+      has_sym_stride = any(
+          sym_utils.is_symint(st) for st in stride
+      ) or sym_utils.is_symint(storage_offset)
+      has_dynamic_shape = any(isinstance(d, dict) for d in output_sym_shape)
+      if (
+          has_dynamic_shape or has_sym_stride
+      ) and not _is_statically_standard_contiguous(
+          shape, stride, storage_offset
+      ):
+        compiled_strides = []
+        for st in stride:
+          compiled_st = _compile_sym_expr(st, symint_to_tensor_dim)
+          if compiled_st is None:
+            raise RuntimeError(
+                f"Output stride '{st}' depends on symbols not derived from"
+                " input tensor dimensions."
+            )
+          compiled_strides.append(compiled_st)
+        compiled_offset = _compile_sym_expr(
+            storage_offset, symint_to_tensor_dim
+        )
+        if compiled_offset is None:
+          raise RuntimeError(
+              f"Output storage_offset '{storage_offset}' depends on symbols"
+              " not derived from input tensor dimensions."
+          )
+        output_sym_stride = compiled_strides
+        output_sym_storage_offset = compiled_offset
+
     return cls(
         output_sym_shape,
         is_tensor=is_tensor,
         is_promoted_scalar=is_promoted_scalar,
+        output_sym_stride=output_sym_stride,
+        output_sym_storage_offset=output_sym_storage_offset,
     )
+
+
+def _eval_sym_item(
+    item: int | dict[str, Any], inputs: Sequence[torch.Tensor | int]
+) -> int:
+  """Evaluates a static or compiled symbolic dimension/stride/offset item."""
+  if isinstance(item, int):
+    return item
+  kwargs = {
+      s: (
+          inputs[tensor_idx].shape[dim_idx]
+          if isinstance(inputs[tensor_idx], torch.Tensor)
+          else inputs[tensor_idx]
+      )
+      for s, (tensor_idx, dim_idx) in item["deps"].items()
+  }
+  return int(item["compiled_fn"](**kwargs))
+
+
+def _compile_sym_expr(
+    val: Any,
+    symint_to_tensor_dim: Mapping[str, tuple[int, int]],
+) -> int | dict[str, Any] | None:
+  """Compiles a symbolic or static integer expression.
+
+  Returns an int for static constants, a dict with compiled evaluation info for
+  symbolic expressions, or None if the expression depends on unmapped symbols.
+  """
+  if isinstance(val, int) and not isinstance(val, torch.SymInt):
+    return val
+  if isinstance(val, torch.SymInt) and hasattr(val, "node"):
+    expr = val.node.expr
+    symbols = expr.free_symbols
+    if not symbols:
+      return int(expr)  # pyrefly: ignore[bad-argument-type]
+    deps = {}
+    for s in symbols:
+      s_str = str(s)
+      tensor_dim = symint_to_tensor_dim.get(s_str)
+      if tensor_dim is None:
+        return None
+      deps[s_str] = tensor_dim
+    symbols_sorted = sorted(symbols, key=str)
+    param_names = [str(s) for s in symbols_sorted]
+    base_fn = sympy.lambdify(
+        symbols_sorted, expr, modules=[RUNTIME_SYMPY_FUNCS, "math"]
+    )
+    compiled_fn = _make_compiled_fn(base_fn, param_names)
+    return {"expr": expr, "deps": deps, "compiled_fn": compiled_fn}
+  return None
+
+
+def _is_statically_standard_contiguous(
+    shape: Sequence[Any],
+    stride: Sequence[Any],
+    storage_offset: Any,
+) -> bool:
+  """Checks if layout is statically known to be standard contiguous."""
+  if not symbolic_shapes.statically_known_true(storage_offset == 0):
+    return False
+  if len(shape) != len(stride):
+    return False
+  expected_stride = 1
+  for d, st in zip(reversed(shape), reversed(stride)):
+    if not symbolic_shapes.statically_known_true(st == expected_stride):
+      return False
+    dim_factor = 1 if symbolic_shapes.statically_known_true(d == 0) else d
+    expected_stride = expected_stride * dim_factor
+  return True
 
 
 def _make_compiled_fn(base_fn: Any, param_names: Sequence[str]) -> Any:

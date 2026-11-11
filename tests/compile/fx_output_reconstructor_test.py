@@ -183,6 +183,97 @@ class FxOutputReconstructorTest(seed_test_utils.RepeatableTest):
     self.assertEqual(dynamic_out.stride(), base.stride())
     self.assertEqual(dynamic_out.storage_offset(), base.storage_offset())
 
+  def test_dynamic_output_with_runtime_strides(self):
+    base = torch.arange(6, dtype=torch.float32).reshape(3, 2).to("tpu")
+    _, spec = pytree.tree_flatten(base)
+    output_map = [
+        # pylint: disable-next=protected-access
+        torch_tpu_export._DedupedTensorOutput(tensor_idx=0)
+    ]
+    expected_layout = self._make_layout(
+        dtype=torch.float32, shape=(3, 2), stride=(1, 3), storage_offset=0
+    )
+    dynamic_reconstructor = tpu_torch_compile.FxOutputReconstructor(
+        output_map, [expected_layout], spec, dynamic_outputs=[True]
+    )
+
+    # 1. Transposed non-contiguous strides reconstructed via output_shapes.
+    out_transposed = dynamic_reconstructor(
+        inputs=[],
+        deduped_outputs=[base],
+        output_shapes=[
+            tpu_torch_compile.OutputShape(
+                dimensions=[3, 2],
+                is_dynamic=True,
+                strides=[1, 3],
+                storage_offset=0,
+            )
+        ],
+    )
+    self.assertEqual(out_transposed.shape, torch.Size([3, 2]))
+    self.assertEqual(out_transposed.stride(), (1, 3))
+    self.assertEqual(out_transposed.storage_offset(), 0)
+    self.assertTrue(torch.equal(out_transposed.cpu(), base.cpu()))
+
+    # 2. Physically contiguous size-1 strides via the fast path.
+    base_s1 = torch.arange(32, dtype=torch.float32).reshape(1, 4, 8).to("tpu")
+    _, spec_s1 = pytree.tree_flatten(base_s1)
+    s1_layout = self._make_layout(
+        dtype=torch.float32,
+        shape=(1, 4, 8),
+        stride=(8, 8, 1),
+        storage_offset=0,
+    )
+    s1_reconstructor = tpu_torch_compile.FxOutputReconstructor(
+        output_map, [s1_layout], spec_s1, dynamic_outputs=[True]
+    )
+    out_s1 = s1_reconstructor(
+        inputs=[],
+        deduped_outputs=[base_s1],
+        output_shapes=[
+            tpu_torch_compile.OutputShape(
+                dimensions=[1, 4, 8],
+                is_dynamic=True,
+                strides=[8, 8, 1],
+                storage_offset=0,
+            )
+        ],
+    )
+    self.assertEqual(out_s1.shape, torch.Size([1, 4, 8]))
+    self.assertEqual(out_s1.stride(), (8, 8, 1))
+    self.assertEqual(out_s1.storage_offset(), 0)
+    self.assertTrue(torch.equal(out_s1.cpu(), base_s1.cpu()))
+
+    # 3. Non-zero storage offset.
+    base_off = torch.arange(6, dtype=torch.float32).reshape(2, 3).to("tpu")
+    _, spec_off = pytree.tree_flatten(base_off)
+    off_layout = self._make_layout(
+        dtype=torch.float32,
+        shape=(2, 3),
+        stride=(4, 1),
+        storage_offset=2,
+    )
+    off_reconstructor = tpu_torch_compile.FxOutputReconstructor(
+        output_map, [off_layout], spec_off, dynamic_outputs=[True]
+    )
+    out_off = off_reconstructor(
+        inputs=[],
+        deduped_outputs=[base_off],
+        output_shapes=[
+            tpu_torch_compile.OutputShape(
+                dimensions=[2, 3],
+                is_dynamic=True,
+                strides=[4, 1],
+                storage_offset=2,
+            )
+        ],
+    )
+    self.assertEqual(out_off.shape, torch.Size([2, 3]))
+    self.assertEqual(out_off.stride(), (4, 1))
+    self.assertEqual(out_off.storage_offset(), 2)
+    self.assertTrue(torch.equal(out_off.cpu(), base_off.cpu()))
+    self.assertTrue(torch.equal(out_off.cpu(), base_off.cpu()))
+
   def test_size_one_dimension_stride_fast_path(self):
     # Shape (1, 4, 8) where standard contiguous strides are (32, 8, 1),
     # but FX graph expects stride (8, 8, 1) along the leading size-1 dimension.
