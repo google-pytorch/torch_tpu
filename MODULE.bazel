@@ -342,7 +342,7 @@ http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "ht
 
 http_archive(
     name = "jax_tpu_embedding",
-    sha256 = "264047b40dcded934b91670c5d4ea08bead6e7f00d9b517746bc7fa8234be03d",
-    strip_prefix = "jax-tpu-embedding-9772781da67c3d39d87f52d184f4f179043726bd",
-    urls = ["https://github.com/jax-ml/jax-tpu-embedding/archive/9772781da67c3d39d87f52d184f4f179043726bd.tar.gz"],
+    sha256 = "49e33540a76144cb8690df9b784a01d9a00481b891fa857ac1fd5badcff8d592",
+    strip_prefix = "jax-tpu-embedding-20caa4857ac32d7fd4c54737334b56141a63f308",
+    urls = ["https://github.com/jax-ml/jax-tpu-embedding/archive/20caa4857ac32d7fd4c54737334b56141a63f308.tar.gz"],
 )

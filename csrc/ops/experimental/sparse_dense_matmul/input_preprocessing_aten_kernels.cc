@@ -14,8 +14,10 @@
  * limitations under the License.
  */
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -49,6 +51,60 @@ namespace torch_tpu {
 namespace {
 
 namespace sc_preprocessing = jax_sc_embedding;
+
+template <typename ValueT, typename OffsetT>
+std::unique_ptr<sc_preprocessing::AbstractInputBatch> MakeRaggedInputBatch(
+    const at::Tensor& contiguous_indices, const at::Tensor& contiguous_offsets,
+    const std::string& table_name) {
+  absl::Span<const ValueT> val_span(contiguous_indices.data_ptr<ValueT>(),
+                                    contiguous_indices.numel());
+  absl::Span<const OffsetT> off_span(contiguous_offsets.data_ptr<OffsetT>(),
+                                     contiguous_offsets.numel());
+  return std::make_unique<sc_preprocessing::RaggedTensorInputBatch<
+      absl::Span<const ValueT>, absl::Span<const OffsetT>>>(val_span, off_span,
+                                                            table_name);
+}
+
+std::unique_ptr<sc_preprocessing::AbstractInputBatch> CreateInputBatch(
+    const at::Tensor& contiguous_indices, const at::Tensor& contiguous_offsets,
+    const std::string& table_name) {
+  if (contiguous_indices.dtype() == at::kLong) {
+    if (contiguous_offsets.dtype() == at::kLong) {
+      return MakeRaggedInputBatch<int64_t, int64_t>(
+          contiguous_indices, contiguous_offsets, table_name);
+    }
+    return MakeRaggedInputBatch<int64_t, int32_t>(
+        contiguous_indices, contiguous_offsets, table_name);
+  }
+  if (contiguous_offsets.dtype() == at::kLong) {
+    return MakeRaggedInputBatch<int32_t, int64_t>(
+        contiguous_indices, contiguous_offsets, table_name);
+  }
+  return MakeRaggedInputBatch<int32_t, int32_t>(contiguous_indices,
+                                                contiguous_offsets, table_name);
+}
+
+std::optional<int64_t> InferMaxColId(const at::Tensor& contiguous_indices,
+                                     int64_t global_device_count,
+                                     int64_t num_sc_per_device) {
+  const int64_t num_scs = global_device_count * num_sc_per_device;
+  if (contiguous_indices.dtype() != at::kLong ||
+      contiguous_indices.numel() == 0 || num_scs <= 0) {
+    return std::nullopt;
+  }
+  absl::Span<const int64_t> vals(contiguous_indices.data_ptr<int64_t>(),
+                                 contiguous_indices.numel());
+  const int64_t max_id = *std::max_element(vals.begin(), vals.end());
+  constexpr int64_t kInt32Max = std::numeric_limits<int32_t>::max();
+  if (max_id <= kInt32Max) {
+    return std::nullopt;
+  }
+  int64_t max_col_id = max_id / num_scs;
+  if (max_col_id == kInt32Max) {
+    max_col_id = kInt32Max + 1;
+  }
+  return max_col_id;
+}
 
 }  // namespace
 
@@ -86,26 +142,25 @@ TORCH_LIBRARY_FRAGMENT(tpu, m) {
          int64_t sc_simd_width, int64_t hbm_word_size_in_4b,
          bool allow_id_dropping, std::string_view table_name,
          bool enable_minibatching) -> c10::Dict<std::string, at::Tensor> {
-    TT_CHECK_THROW(input_indices.dtype() == at::kInt, error::kInvalidArgument)
-        << "indices must be int32";
-    TT_CHECK_THROW(input_offsets.dtype() == at::kInt, error::kInvalidArgument)
-        << "offsets must be int32";
+    TT_CHECK_THROW(
+        input_indices.dtype() == at::kInt || input_indices.dtype() == at::kLong,
+        error::kInvalidArgument)
+        << "indices must be int32 or int64";
+    TT_CHECK_THROW(
+        input_offsets.dtype() == at::kInt || input_offsets.dtype() == at::kLong,
+        error::kInvalidArgument)
+        << "offsets must be int32 or int64";
 
     std::string table_name_str(table_name);
     auto contiguous_indices = input_indices.contiguous();
     auto contiguous_offsets = input_offsets.contiguous();
 
-    absl::Span<const int32_t> val_span(contiguous_indices.data_ptr<int32_t>(),
-                                       contiguous_indices.numel());
-    absl::Span<const int32_t> off_span(contiguous_offsets.data_ptr<int32_t>(),
-                                       contiguous_offsets.numel());
-
     std::vector<std::unique_ptr<sc_preprocessing::AbstractInputBatch>>
         input_batches;
-    input_batches.push_back(
-        std::make_unique<sc_preprocessing::RaggedTensorInputBatch<
-            absl::Span<const int32_t>, absl::Span<const int32_t>>>(
-            val_span, off_span, table_name_str));
+    input_batches.push_back(CreateInputBatch(
+        contiguous_indices, contiguous_offsets, table_name_str));
+    const std::optional<int64_t> max_col_id = InferMaxColId(
+        contiguous_indices, global_device_count, num_sc_per_device);
 
     sc_preprocessing::OutputCsrArrays sc_output_buffers;
 
@@ -170,12 +225,12 @@ TORCH_LIBRARY_FRAGMENT(tpu, m) {
                   static_cast<int>(max_unique_ids_per_partition),
                   /*row_offset=*/0,
                   /*col_offset=*/0,
-                  /*col_shift=*/0, static_cast<int>(batch_size),
+                  /*col_shift=*/0, batch_size,
                   suggested_coo_buffer_size > 0
                       ? std::make_optional(
                             static_cast<int>(suggested_coo_buffer_size))
                       : std::nullopt,
-                  sc_preprocessing::GetRowCombiner(combiner))}}},
+                  sc_preprocessing::GetRowCombiner(combiner), max_col_id)}}},
             sc_options, &sc_output_buffers));
 
     c10::Dict<std::string, at::Tensor> outputs;

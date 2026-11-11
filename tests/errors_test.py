@@ -17676,7 +17676,7 @@ class InputPreprocessingErrorTest(et.ErrorTestBase):
     off = torch.tensor([0.0, 2.0], dtype=torch.float32)  # invalid dtype
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""offsets must be int32""",
+        tpu="""offsets must be int32 or int64""",
     ):
       torch.ops.tpu.preprocess_sparse_dense_matmul_input(
           val,
@@ -17702,7 +17702,7 @@ class InputPreprocessingErrorTest(et.ErrorTestBase):
     off = torch.tensor([0, 2], dtype=torch.int32)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""indices must be int32""",
+        tpu="""indices must be int32 or int64""",
     ):
       torch.ops.tpu.preprocess_sparse_dense_matmul_input(
           val,
@@ -17721,6 +17721,32 @@ class InputPreprocessingErrorTest(et.ErrorTestBase):
           "table_0",
       )
 
+  def test_input_preprocessing_int64_per_sc_overflow(self):
+    if et.is_on_gpu():
+      self.skipTest("TPU only op")
+    val = torch.tensor([5_000_000_000], dtype=torch.int64)
+    off = torch.tensor([0, 1, 1], dtype=torch.int64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""Per-SparseCore shard vocabulary size (2500000001) for feature 'table_0_feature_0' in table 'table_0' exceeds the maximum supported int32 limit (2147483647).""",
+    ):
+      torch.ops.tpu.preprocess_sparse_dense_matmul_input(
+          val,
+          off,
+          16,
+          16,
+          64,
+          2,
+          "sum",
+          1,
+          1,
+          2,
+          8,
+          8,  # hbm_word_size_in_4b
+          False,
+          "table_0",
+      )
+
 
 class ComputeStatsErrorTest(et.ErrorTestBase):
 
@@ -17731,7 +17757,7 @@ class ComputeStatsErrorTest(et.ErrorTestBase):
     offsets = torch.tensor([0, 2], dtype=torch.int32)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""indices must be int32""",
+        tpu="""indices must be int32 or int64""",
     ):
       torch.ops.tpu.compute_sparse_dense_matmul_stats(indices, offsets, 1, 4)
 
@@ -17742,7 +17768,7 @@ class ComputeStatsErrorTest(et.ErrorTestBase):
     offsets = torch.tensor([0.0, 2.0], dtype=torch.float32)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""offsets must be int32""",
+        tpu="""offsets must be int32 or int64""",
     ):
       torch.ops.tpu.compute_sparse_dense_matmul_stats(indices, offsets, 1, 4)
 
