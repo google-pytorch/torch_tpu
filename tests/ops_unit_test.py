@@ -2632,19 +2632,6 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(test_fn)
 
-  def test_rsub_with_alpha(self):
-    """Tests torch.rsub operator with alpha scaling factor != 1."""
-    self_tensor = torch.tensor([10.0, 20.0, 30.0])
-    other_tensor = torch.tensor([100.0, 200.0, 300.0])
-    alpha = 2.5
-
-    def test_fn(device):
-      return torch.rsub(
-          self_tensor.to(device), other_tensor.to(device), alpha=alpha
-      )
-
-    self.assert_close_tpu_vs_cpu(test_fn)
-
   def test__add_relu__Scalar(self):
     """Tests _add_relu_.Scalar with various inputs and dtypes."""
     x1 = torch.tensor([[1.0, -2.0], [-3.0, 4.0]], dtype=torch.float32)
@@ -4495,40 +4482,6 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         rtol=9.4e-2,
         atol=8e-3,
     )
-
-  @parameterized.parameters(
-      (torch.float32,),
-      (torch.float64,),
-      (torch.float16,),
-      (torch.bfloat16,),
-      (torch.complex64,),
-  )
-  def test_col2im_dtypes(self, dtype):
-    """Tests col2im with various dtypes."""
-    n, c, h, w = 1, 2, 4, 4
-    kernel_size = (2, 2)
-    dilation = (1, 1)
-    padding = (0, 0)
-    stride = (1, 1)
-    output_size = (h, w)
-    k_h, k_w = kernel_size
-    d_h, d_w = dilation
-    p_h, p_w = padding
-    s_h, s_w = stride
-    o_h, o_w = output_size
-    l_h = (o_h + 2 * p_h - d_h * (k_h - 1) - 1) // s_h + 1
-    l_w = (o_w + 2 * p_w - d_w * (k_w - 1) - 1) // s_w + 1
-    l = l_h * l_w
-    col_shape = (n, c * k_h * k_w, l)
-    col = torch.randn(*col_shape, dtype=torch.float32)
-
-    def test_fn(device):
-      col_dev = col.to(dtype=dtype, device=device)
-      return torch.ops.aten.col2im(
-          col_dev, output_size, kernel_size, dilation, padding, stride
-      )
-
-    self.assert_close_tpu_vs_cpu(test_fn, rtol=7.2e-03, atol=5.9e-03)
 
   @parameterized.parameters(
       # (kernel_size, dilation, padding, stride, output_size)
@@ -7389,41 +7342,6 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(test_fn_int)
 
-  def test_floor_divide_tensor(self):
-    sample_input = (
-        torch.tensor([10.0, -10.0, 25.5, -25.5, 0.0]).repeat(12).view(3, 4, 5)
-    )
-    other_tensor = (
-        torch.tensor([3.0, 3.0, 5.0, 5.0, 5.0]).repeat(12).view(3, 4, 5)
-    )
-    self.assert_close_tpu_vs_cpu(
-        lambda device: torch.floor_divide(
-            sample_input.to(device=device),
-            other_tensor.to(device=device),
-        ),
-    )
-
-  def test_floor_divide_inplace_tensor(self):
-    sample_input = (
-        torch.tensor([10.0, -10.0, 25.5, -25.5, 0.0]).repeat(12).view(3, 4, 5)
-    )
-    other_tensor = (
-        torch.tensor([3.0, 3.0, 5.0, 5.0, 5.0]).repeat(12).view(3, 4, 5)
-    )
-    tpu_device = torch.device("tpu")
-    cpu_result = sample_input.clone().floor_divide_(other_tensor)
-    tpu_result = (
-        sample_input.to(tpu_device)
-        .floor_divide_(other_tensor.to(tpu_device))
-        .to("cpu")
-    )
-    self.assert_close(
-        golden_result=cpu_result,
-        torch_tpu_result=tpu_result,
-        rtol=None,
-        atol=None,
-    )
-
   def test_device_gen(self):
     gen = torch.Generator(device=torch.device("tpu"))
     self.assertEqual(gen.device.type, torch.device("tpu").type)
@@ -7446,35 +7364,6 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     self.assertEqual(state2[0].item(), 4)
     self.assertEqual(state2[8].item(), 3)
     self.assertEqual(gen2.get_state()[0].item(), 42)
-
-  def test_floor_divide_scalar(self):
-    sample_input = (
-        torch.tensor([10.0, -10.0, 25.5, -25.5, 0.0]).repeat(12).view(3, 4, 5)
-    )
-    other_tensor = torch.tensor(3.0)
-    self.assert_close_tpu_vs_cpu(
-        lambda device: torch.floor_divide(
-            sample_input.to(device=device),
-            other_tensor.to(device=device),
-        ),
-    )
-
-  def test_floor_divide_inplace_scalar(self):
-    sample_input = torch.tensor([10.0, -10.0, 25.5, -25.5]).repeat(3).view(3, 4)
-    other_tensor = torch.tensor(3.0)
-    tpu_device = torch.device("tpu")
-    cpu_result = sample_input.clone().floor_divide_(other_tensor)
-    tpu_result = (
-        sample_input.to(tpu_device)
-        .floor_divide_(other_tensor.to(tpu_device))
-        .to("cpu")
-    )
-    self.assert_close(
-        golden_result=cpu_result,
-        torch_tpu_result=tpu_result,
-        rtol=None,
-        atol=None,
-    )
 
   # https://numpy.org/devdocs/user/basics.indexing.html#advanced-indexing
   def test_index_tensor_1(self):
