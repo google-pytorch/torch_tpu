@@ -3777,6 +3777,54 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
           t, real_t, grad_input=torch.empty_like(real_t)
       )
 
+  def test_logit_backward_shape_mismatch(self):
+    grad_out = torch.ones((2, 4), device=et.device(), dtype=torch.float32)
+    x = torch.full((3,), 0.5, device=et.device(), dtype=torch.float32)
+    out = torch.empty((2, 4), device=et.device(), dtype=torch.float32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""The size of tensor a (4) must match the size of tensor b (3) at non-singleton dimension 1""",
+        gpu="""The size of tensor a (4) must match the size of tensor b (3) at non-singleton dimension 1""",
+    ):
+      torch.ops.aten.logit_backward(grad_out, x, 1e-6)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""logit_backward(): the size of tensor a (4) must match the size of tensor b (3) at non-singleton dimension 1""",
+        gpu="""The size of tensor a (4) must match the size of tensor b (3) at non-singleton dimension 1""",
+    ):
+      torch.ops.aten.logit_backward.grad_input(
+          grad_out, x, 1e-6, grad_input=out
+      )
+
+  def test_logit_backward_grad_input_broadcast_alias(self):
+    grad_large = torch.ones((2, 3), device=et.device(), dtype=torch.float32)
+    x_small = torch.full((1, 3), 0.5, device=et.device(), dtype=torch.float32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""logit_backward(): output with shape [1, 3] doesn't match the broadcast shape of the tensor being operated on in-place, which has shape [2, 3]""",
+        gpu="""output with shape [1, 3] doesn't match the broadcast shape [2, 3]""",
+    ):
+      torch.ops.aten.logit_backward.grad_input(
+          grad_large, x_small, 1e-6, grad_input=x_small
+      )
+    self.assertEqual(x_small.shape, (1, 3))
+
+    grad_small = torch.ones((1, 3), device=et.device(), dtype=torch.float32)
+    x_large = torch.full((2, 3), 0.5, device=et.device(), dtype=torch.float32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""logit_backward(): output with shape [1, 3] doesn't match the broadcast shape of the tensor being operated on in-place, which has shape [2, 3]""",
+        gpu="""output with shape [1, 3] doesn't match the broadcast shape [2, 3]""",
+    ):
+      torch.ops.aten.logit_backward.grad_input(
+          grad_small, x_large, 1e-6, grad_input=grad_small
+      )
+    self.assertEqual(grad_small.shape, (1, 3))
+
   @parameterized.named_parameters(
       ("bool", torch.bool, "bool", "Bool"),
       ("int64", torch.int64, "int64", "Long"),

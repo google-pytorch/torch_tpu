@@ -2125,6 +2125,106 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
           )
           utils.assert_close(grad_tpu_f64, grad_expected_f64)
 
+  def test_logit_backward_broadcast(self):
+    device = torch.device("tpu")
+    shape_pairs = [
+        ((2, 3), (3,)),
+        ((2, 3), ()),
+        ((), (2, 3)),
+        ((3,), (2, 3)),
+        ((2, 3), (1, 3)),
+        ((2, 1), (1, 3)),
+        ((0, 3), (1, 3)),
+    ]
+    for dtype in (torch.float32, torch.bfloat16, torch.float16, torch.float64):
+      for grad_shape, self_shape in shape_pairs:
+        grad_numel = torch.Size(grad_shape).numel()
+        grad_cpu = (
+            torch.empty(grad_shape, dtype=dtype)
+            if grad_numel == 0
+            else torch.linspace(0.5, 2.0, grad_numel, dtype=dtype).reshape(
+                grad_shape
+            )
+        )
+        self_numel = torch.Size(self_shape).numel()
+        if self_shape == ():
+          x_cpu = torch.tensor(0.5, dtype=dtype)
+        elif self_numel == 0:
+          x_cpu = torch.empty(self_shape, dtype=dtype)
+        else:
+          x_cpu = torch.linspace(-0.2, 1.2, self_numel, dtype=dtype).reshape(
+              self_shape
+          )
+        grad_tpu = grad_cpu.to(device)
+        x_tpu = x_cpu.to(device)
+
+        for eps in (None, 1e-6, 0.1):
+          with self.subTest(
+              dtype=dtype, grad_shape=grad_shape, self_shape=self_shape, eps=eps
+          ):
+            ref_dtype = (
+                torch.float32
+                if dtype in (torch.float16, torch.bfloat16)
+                else dtype
+            )
+            expected = torch.ops.aten.logit_backward(
+                grad_cpu.to(ref_dtype), x_cpu.to(ref_dtype), eps
+            ).to(dtype)
+
+            res_tpu = torch.ops.aten.logit_backward(grad_tpu, x_tpu, eps)
+            self.assertEqual(res_tpu.shape, expected.shape)
+            self.assertEqual(res_tpu.dtype, dtype)
+            utils.assert_close(res_tpu.cpu(), expected)
+
+            for out_shape in ((0,), (2,), (4, 4)):
+              out_tpu = (
+                  torch.empty(out_shape, dtype=dtype, device=device)
+                  if out_shape == (0,)
+                  else torch.full(out_shape, 7.0, dtype=dtype, device=device)
+              )
+              ret = torch.ops.aten.logit_backward.grad_input(
+                  grad_tpu, x_tpu, eps, grad_input=out_tpu
+              )
+              self.assertIs(ret, out_tpu)
+              self.assertEqual(out_tpu.shape, expected.shape)
+              utils.assert_close(out_tpu.cpu(), expected)
+
+            if grad_shape == expected.shape:
+              grad_alias = grad_cpu.to(device)
+              ret = torch.ops.aten.logit_backward.grad_input(
+                  grad_alias, x_tpu, eps, grad_input=grad_alias
+              )
+              self.assertIs(ret, grad_alias)
+              self.assertEqual(grad_alias.shape, expected.shape)
+              utils.assert_close(grad_alias.cpu(), expected)
+
+            if self_shape == expected.shape:
+              x_alias = x_cpu.to(device)
+              ret = torch.ops.aten.logit_backward.grad_input(
+                  grad_tpu, x_alias, eps, grad_input=x_alias
+              )
+              self.assertIs(ret, x_alias)
+              self.assertEqual(x_alias.shape, expected.shape)
+              utils.assert_close(x_alias.cpu(), expected)
+
+    # Non-contiguous broadcast inputs and torch.compile coverage.
+    grad_nc_cpu = torch.arange(1.0, 7.0, dtype=torch.float32).reshape(3, 2).t()
+    x_cpu = torch.tensor([0.2, 0.5, 0.8], dtype=torch.float32)
+    grad_nc_tpu = grad_nc_cpu.to(device)
+    self.assertFalse(grad_nc_tpu.is_contiguous())
+    x_tpu = x_cpu.to(device)
+    expected_nc = torch.ops.aten.logit_backward(grad_nc_cpu, x_cpu, 1e-6)
+    res_nc = torch.ops.aten.logit_backward(grad_nc_tpu, x_tpu, 1e-6)
+    utils.assert_close(res_nc.cpu(), expected_nc)
+
+    compiled_fn = torch.compile(
+        lambda g, s: torch.ops.aten.logit_backward(g, s, 1e-6),
+        backend="tpu",
+        fullgraph=True,
+    )
+    res_compiled = compiled_fn(grad_nc_tpu, x_tpu)
+    utils.assert_close(res_compiled.cpu(), expected_nc)
+
   def test_complex_and_polar_out(self):
     device = torch.device("tpu")
     # complex: float32 -> complex64 out

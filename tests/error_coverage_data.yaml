@@ -179,7 +179,7 @@ csrc/ops/linalg/solve_triangular/linalg_solve_triangular_kernels.cc: {remaining:
 csrc/ops/linear/linear_aten_kernels.cc: {remaining: 0, total: 9, infeasible: 0}
 csrc/ops/linspace/linspace_aten_kernels.cc: {remaining: 0, total: 2, infeasible: 0}
 csrc/ops/logcumsumexp/logcumsumexp_aten_kernels.cc: {remaining: 0, total: 2, infeasible: 1}
-csrc/ops/logit/logit_aten_kernels.cc: {remaining: 0, total: 3, infeasible: 0}
+csrc/ops/logit/logit_aten_kernels.cc: {remaining: 0, total: 4, infeasible: 0}
 csrc/ops/lstm/lstm_aten_kernels.cc: {remaining: 0, total: 23, infeasible: 3}
 csrc/ops/masked_fill/masked_fill_aten_kernels.cc: {remaining: 0, total: 4, infeasible: 0}
 csrc/ops/masked_scatter/masked_scatter_aten_kernels.cc: {remaining: 0, total: 4, infeasible: 0}
