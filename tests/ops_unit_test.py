@@ -22231,6 +22231,17 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
   )
   def test_scaled_dot_product_attention(self, config: ops_test_data.SdpaConfig):
     """Tests torch.nn.functional.scaled_dot_product_attention."""
+    # TODO(b/584779986): Long sequence lengths (>= 8192) take too long (> 20m)
+    # under ASAN for CPU reference autograd backward calculation, leading to
+    # shard timeouts. Skip this case under ASAN mode only.
+    if config.q_seq_len >= 8192 or config.kv_seq_len >= 8192:
+      import ctypes  # pylint: disable=g-import-not-at-top
+
+      try:
+        if hasattr(ctypes.CDLL(None), "__asan_init"):
+          self.skipTest("b/584779986: Times out in ASAN mode.")
+      except (OSError, TypeError, AttributeError):
+        pass
 
     torch.manual_seed(5432)
     q = torch.randn(
@@ -24606,6 +24617,17 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
         (torch.float64, torch.float32),
     ):
       with self.subTest(in_dtype=in_dtype, out_dtype=out_dtype):
+        # TODO(b/584779384): float64 polygamma with out= generates > 70k HLO
+        # instructions, which takes > 25 mins to optimize under ASAN and causes
+        # shard timeouts. Skip this case under ASAN mode only.
+        if in_dtype == torch.float64:
+          import ctypes  # pylint: disable=g-import-not-at-top
+
+          try:
+            if hasattr(ctypes.CDLL(None), "__asan_init"):
+              self.skipTest("b/584779384: Times out in ASAN mode.")
+          except (OSError, TypeError, AttributeError):
+            pass
 
         def test_fn(device, in_dtype=in_dtype, out_dtype=out_dtype):
           x = to(torch.tensor([1.5, 2.5], dtype=in_dtype), device=device)
