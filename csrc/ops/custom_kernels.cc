@@ -42,7 +42,6 @@
 #include "csrc/common/fingerprint_utils.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/pjrt/pjrt_state.h"
-#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -653,21 +652,6 @@ absl::StatusOr<DynamicMlirOpResults> CallCustomKernel(
                       CustomKernelRegistry::GetInstance().LoadCustomKernel(
                           builder, name, kwargs, input_dims, input_dtypes));
   return mlir::func::Call(builder, func, inputs);
-}
-
-absl::StatusOr<DynamicMlirOpResults> BuildSpecializedMlirKernel(
-    mlir::MlirBuilder& builder, mlir::ModuleOp custom_kernel,
-    absl::Span<mlir::MlirOp> inputs) {
-  // Apply specialization and partitioning passes to kernel and then add it to
-  // builder.
-  // Get the argument types from inputs
-  mlir::SmallVector<mlir::Type> input_types = llvm::to_vector(
-      llvm::map_range(inputs, [](mlir::MlirOp op) { return op.getType(); }));
-
-  TT_ASSIGN_OR_RETURN(mlir::func::FuncOp main_func,
-                      InjectCustomKernel(builder, custom_kernel, input_types));
-
-  return mlir::func::Call(builder, main_func, inputs);
 }
 
 }  // namespace torch_tpu

@@ -27,14 +27,8 @@
 #include <vector>
 
 #include "ATen/core/ATen_fwd.h"
-#include "ATen/core/LegacyTypeDispatch.h"
 #include "ATen/core/TensorBody.h"
-#include "ATen/core/dispatch/Dispatcher.h"
 #include "ATen/ops/empty.h"
-#include "ATen/ops/max_pool1d_with_indices.h"
-#include "ATen/ops/max_pool2d_with_indices.h"
-#include "ATen/ops/max_pool3d_with_indices.h"
-#include "absl/base/no_destructor.h"
 #include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -68,7 +62,6 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
-#include "torch/csrc/autograd/custom_function.h"
 #include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
@@ -996,25 +989,6 @@ at::Tensor& AtenMaxPool3dWithIndicesBackwardGradInput(
             });
 }
 
-// Dispatched from AutogradPrivateUse1 for aten::max_pool1d.
-// For trivial dilation (all 1s), uses TpuMaxPool1dAutograd to avoid computing
-// indices, executing directly on TPU without index overhead.
-at::Tensor AtenMaxPool1d(const at::Tensor& self, at::IntArrayRef kernel_size,
-                         at::IntArrayRef stride, at::IntArrayRef padding,
-                         at::IntArrayRef dilation, bool ceil_mode) {
-  const bool is_dilation_trivial =
-      dilation.allMatch(std::bind_front(std::equal_to<int64_t>(), 1));
-
-  if (is_dilation_trivial) {
-    return TpuMaxPool1dAutograd::apply(self, kernel_size, stride, padding,
-                                       dilation, ceil_mode);
-  }
-
-  auto [tensor, indices] = at::max_pool1d_with_indices(
-      self, kernel_size, stride, padding, dilation, ceil_mode);
-  return tensor;
-}
-
 // Dispatched from PrivateUse1 for tpu::_max_pool1d.
 // Directly lowers 1D max pooling to StableHLO ReduceWindowOp without indices.
 at::Tensor TpuMaxPool1d(const at::Tensor& self, at::IntArrayRef kernel_size,
@@ -1052,76 +1026,6 @@ at::Tensor TpuMaxPool1dBackward(const at::Tensor& grad_output,
                 ceil_mode, spatial_dim_count, std::move(param_keys)));
         return MakeTensor(std::move(grad_buf));
       });
-}
-
-// Forward autograd pass: saves attributes and dispatches to tpu::_max_pool1d.
-at::Tensor TpuMaxPool1dAutograd::forward(
-    torch::autograd::AutogradContext* ctx, const at::Tensor& self,
-    at::IntArrayRef kernel_size, at::IntArrayRef stride,
-    at::IntArrayRef padding, at::IntArrayRef dilation, bool ceil_mode) {
-  ctx->save_for_backward({self});
-  ctx->saved_data["kernel_size"] = kernel_size.vec();  // VEC_OK
-  ctx->saved_data["stride"] = stride.vec();            // VEC_OK
-  ctx->saved_data["padding"] = padding.vec();          // VEC_OK
-  ctx->saved_data["dilation"] = dilation.vec();        // VEC_OK
-  ctx->saved_data["ceil_mode"] = ceil_mode;
-
-  // Cache the operator handle to avoid string schema lookup on every call.
-  static const absl::NoDestructor op(
-      at::Dispatcher::singleton()
-          .findSchemaOrThrow("tpu::_max_pool1d", "")
-          .typed<at::Tensor(const at::Tensor&, at::IntArrayRef, at::IntArrayRef,
-                            at::IntArrayRef, at::IntArrayRef, bool)>());
-
-  at::AutoDispatchBelowADInplaceOrView guard;
-  return op->call(self, kernel_size, stride, padding, dilation, ceil_mode);
-}
-
-torch::autograd::variable_list TpuMaxPool1dAutograd::backward(
-    torch::autograd::AutogradContext* ctx,
-    torch::autograd::variable_list grad_outputs) {
-  auto saved = ctx->get_saved_variables();
-  auto self = saved[0];
-  auto kernel_size = ctx->saved_data["kernel_size"].toIntVector();
-  auto stride = ctx->saved_data["stride"].toIntVector();
-  auto padding = ctx->saved_data["padding"].toIntVector();
-  auto dilation = ctx->saved_data["dilation"].toIntVector();
-  bool ceil_mode = ctx->saved_data["ceil_mode"].toBool();
-
-  auto grad_output = grad_outputs[0];
-
-  // Cache the operator handle to avoid string schema lookup on every call.
-  static const absl::NoDestructor op(
-      at::Dispatcher::singleton()
-          .findSchemaOrThrow("tpu::_max_pool1d_backward", "")
-          .typed<at::Tensor(const at::Tensor&, const at::Tensor&,
-                            at::IntArrayRef, at::IntArrayRef, at::IntArrayRef,
-                            at::IntArrayRef, bool)>());
-
-  at::AutoDispatchBelowADInplaceOrView guard;
-  auto grad_input = op->call(grad_output, self, kernel_size, stride, padding,
-                             dilation, ceil_mode);
-  return {grad_input,   at::Tensor(), at::Tensor(),
-          at::Tensor(), at::Tensor(), at::Tensor()};
-}
-
-// Dispatched from AutogradPrivateUse1 for aten::max_pool2d.
-// For trivial dilation (all 1s), routes through TpuMaxPool2dAutograd to avoid
-// index materialization and variadic tuple reduction overhead.
-at::Tensor AtenMaxPool2d(const at::Tensor& self, at::IntArrayRef kernel_size,
-                         at::IntArrayRef stride, at::IntArrayRef padding,
-                         at::IntArrayRef dilation, bool ceil_mode) {
-  const bool is_dilation_trivial =
-      dilation.allMatch(std::bind_front(std::equal_to<int64_t>(), 1));
-
-  if (is_dilation_trivial) {
-    return TpuMaxPool2dAutograd::apply(self, kernel_size, stride, padding,
-                                       dilation, ceil_mode);
-  }
-
-  auto [tensor, indices] = at::max_pool2d_with_indices(
-      self, kernel_size, stride, padding, dilation, ceil_mode);
-  return tensor;
 }
 
 // Dispatched from PrivateUse1 for tpu::_max_pool2d.
@@ -1163,77 +1067,6 @@ at::Tensor TpuMaxPool2dBackward(const at::Tensor& grad_output,
       });
 }
 
-// Forward autograd pass: saves attributes and dispatches to tpu::_max_pool2d.
-at::Tensor TpuMaxPool2dAutograd::forward(
-    torch::autograd::AutogradContext* ctx, const at::Tensor& self,
-    at::IntArrayRef kernel_size, at::IntArrayRef stride,
-    at::IntArrayRef padding, at::IntArrayRef dilation, bool ceil_mode) {
-  ctx->save_for_backward({self});
-  ctx->saved_data["kernel_size"] = kernel_size.vec();  // VEC_OK
-  ctx->saved_data["stride"] = stride.vec();            // VEC_OK
-  ctx->saved_data["padding"] = padding.vec();          // VEC_OK
-  ctx->saved_data["dilation"] = dilation.vec();        // VEC_OK
-  ctx->saved_data["ceil_mode"] = ceil_mode;
-
-  // Cache the operator handle to avoid string schema lookup on every call.
-  static const absl::NoDestructor op(
-      at::Dispatcher::singleton()
-          .findSchemaOrThrow("tpu::_max_pool2d", "")
-          .typed<at::Tensor(const at::Tensor&, at::IntArrayRef, at::IntArrayRef,
-                            at::IntArrayRef, at::IntArrayRef, bool)>());
-
-  at::AutoDispatchBelowADInplaceOrView guard;
-  return op->call(self, kernel_size, stride, padding, dilation, ceil_mode);
-}
-
-// Backward autograd pass: dispatches to tpu::_max_pool2d_backward.
-torch::autograd::variable_list TpuMaxPool2dAutograd::backward(
-    torch::autograd::AutogradContext* ctx,
-    torch::autograd::variable_list grad_outputs) {
-  auto saved = ctx->get_saved_variables();
-  auto self = saved[0];
-  auto kernel_size = ctx->saved_data["kernel_size"].toIntVector();
-  auto stride = ctx->saved_data["stride"].toIntVector();
-  auto padding = ctx->saved_data["padding"].toIntVector();
-  auto dilation = ctx->saved_data["dilation"].toIntVector();
-  bool ceil_mode = ctx->saved_data["ceil_mode"].toBool();
-
-  auto grad_output = grad_outputs[0];
-
-  // Cache the operator handle to avoid string schema lookup on every call.
-  static const absl::NoDestructor op(
-      at::Dispatcher::singleton()
-          .findSchemaOrThrow("tpu::_max_pool2d_backward", "")
-          .typed<at::Tensor(const at::Tensor&, const at::Tensor&,
-                            at::IntArrayRef, at::IntArrayRef, at::IntArrayRef,
-                            at::IntArrayRef, bool)>());
-
-  at::AutoDispatchBelowADInplaceOrView guard;
-  auto grad_input = op->call(grad_output, self, kernel_size, stride, padding,
-                             dilation, ceil_mode);
-  return {grad_input,   at::Tensor(), at::Tensor(),
-          at::Tensor(), at::Tensor(), at::Tensor()};
-}
-
-// Dispatched from AutogradPrivateUse1 for aten::max_pool3d.
-// For trivial dilation (all 1s), routes through TpuMaxPool3dAutograd to avoid
-// index materialization and variadic tuple reduction overhead.
-at::Tensor AtenMaxPool3d(const at::Tensor& self, at::IntArrayRef kernel_size,
-                         at::IntArrayRef stride, at::IntArrayRef padding,
-                         at::IntArrayRef dilation, bool ceil_mode) {
-  const bool is_dilation_trivial =
-      dilation.allMatch(std::bind_front(std::equal_to<int64_t>(), 1));
-
-  if (is_dilation_trivial) {
-    return TpuMaxPool3dAutograd::apply(self, kernel_size, stride, padding,
-                                       dilation, ceil_mode);
-  }
-
-  auto [tensor, indices] = at::max_pool3d_with_indices(
-      self, kernel_size, stride, padding, dilation, ceil_mode);
-  return tensor;
-}
-
 // Dispatched from PrivateUse1 for tpu::_max_pool3d.
 // Directly lowers 3D max pooling to StableHLO ReduceWindowOp without indices.
 at::Tensor TpuMaxPool3d(const at::Tensor& self, at::IntArrayRef kernel_size,
@@ -1271,58 +1104,6 @@ at::Tensor TpuMaxPool3dBackward(const at::Tensor& grad_output,
                 ceil_mode, spatial_dim_count, std::move(param_keys)));
         return MakeTensor(std::move(grad_buf));
       });
-}
-
-// Forward autograd pass: saves attributes and dispatches to tpu::_max_pool3d.
-at::Tensor TpuMaxPool3dAutograd::forward(
-    torch::autograd::AutogradContext* ctx, const at::Tensor& self,
-    at::IntArrayRef kernel_size, at::IntArrayRef stride,
-    at::IntArrayRef padding, at::IntArrayRef dilation, bool ceil_mode) {
-  ctx->save_for_backward({self});
-  ctx->saved_data["kernel_size"] = kernel_size.vec();  // VEC_OK
-  ctx->saved_data["stride"] = stride.vec();            // VEC_OK
-  ctx->saved_data["padding"] = padding.vec();          // VEC_OK
-  ctx->saved_data["dilation"] = dilation.vec();        // VEC_OK
-  ctx->saved_data["ceil_mode"] = ceil_mode;
-
-  // Cache the operator handle to avoid string schema lookup on every call.
-  static const absl::NoDestructor op(
-      at::Dispatcher::singleton()
-          .findSchemaOrThrow("tpu::_max_pool3d", "")
-          .typed<at::Tensor(const at::Tensor&, at::IntArrayRef, at::IntArrayRef,
-                            at::IntArrayRef, at::IntArrayRef, bool)>());
-
-  at::AutoDispatchBelowADInplaceOrView guard;
-  return op->call(self, kernel_size, stride, padding, dilation, ceil_mode);
-}
-
-// Backward autograd pass: dispatches to tpu::_max_pool3d_backward.
-torch::autograd::variable_list TpuMaxPool3dAutograd::backward(
-    torch::autograd::AutogradContext* ctx,
-    torch::autograd::variable_list grad_outputs) {
-  auto saved = ctx->get_saved_variables();
-  auto self = saved[0];
-  auto kernel_size = ctx->saved_data["kernel_size"].toIntVector();
-  auto stride = ctx->saved_data["stride"].toIntVector();
-  auto padding = ctx->saved_data["padding"].toIntVector();
-  auto dilation = ctx->saved_data["dilation"].toIntVector();
-  bool ceil_mode = ctx->saved_data["ceil_mode"].toBool();
-
-  auto grad_output = grad_outputs[0];
-
-  // Cache the operator handle to avoid string schema lookup on every call.
-  static const absl::NoDestructor op(
-      at::Dispatcher::singleton()
-          .findSchemaOrThrow("tpu::_max_pool3d_backward", "")
-          .typed<at::Tensor(const at::Tensor&, const at::Tensor&,
-                            at::IntArrayRef, at::IntArrayRef, at::IntArrayRef,
-                            at::IntArrayRef, bool)>());
-
-  at::AutoDispatchBelowADInplaceOrView guard;
-  auto grad_input = op->call(grad_output, self, kernel_size, stride, padding,
-                             dilation, ceil_mode);
-  return {grad_input,   at::Tensor(), at::Tensor(),
-          at::Tensor(), at::Tensor(), at::Tensor()};
 }
 
 }  // namespace torch_tpu

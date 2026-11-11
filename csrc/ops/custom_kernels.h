@@ -63,22 +63,6 @@ absl::StatusOr<DynamicMlirOpResults> CallCustomKernel(
     mlir::MlirBuilder& builder, absl::Span<const mlir::MlirOp> inputs,
     std::string_view name, std::string_view kwargs);
 
-// Build a specialized MLIR kernel from a custom dynamically shaped MLIR
-// kernel. These can be exported from any framework that produces dynamically
-// shaped StableHLO, and calls are refined to the concrete argument
-// shapes at runtime.
-//
-// Given an MLIR kernel with dynamic shapes (tensor<?xf32>) and concrete input
-// shapes, produces a fully statically shaped kernel. The custom kernel should
-// live in its own module, this builder will inline the kernel into the module
-// being built.
-//
-// For full details on dynamism and refinement, see
-// https://openxla.org/stablehlo/dynamism.
-absl::StatusOr<DynamicMlirOpResults> BuildSpecializedMlirKernel(
-    mlir::MlirBuilder& builder, mlir::ModuleOp custom_kernel,
-    absl::Span<mlir::MlirOp> inputs);
-
 namespace internal {
 
 // Strips residual sharding attributes from `module`: the module-level

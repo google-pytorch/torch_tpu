@@ -66,25 +66,6 @@ struct BinaryOpOptions {
   bool allow_low_precision_float = false;
 };
 
-struct TernaryOpOptions {
-  // The op name for dispatching. If omitted, use the op name from the active
-  // TT_KERNEL() context.
-  std::optional<OpName> op_name = std::nullopt;
-  OpParamCacheKeys op_param_cache_keys;
-  OpSplitMode split_mode = OpSplitMode::kNone;
-  Indices donated_indices = {};
-  // Natural result dtype of the operation.
-  // When std::nullopt (default), the result dtype is dynamically inferred from
-  // input operands using standard PyTorch type promotion rules. When specified,
-  // overrides the expected mathematical result dtype before casting to `out`
-  // (validated via ValidateOutDtype).
-  std::optional<mlir::ElementType> result_dtype = std::nullopt;
-  // Whether the out-variant kernel allows casting the natural result dtype
-  // to a different output tensor dtype via c10::canCast (true for
-  // math/arithmetic ops, false for ops that enforce strict dtype matching).
-  bool allow_out_dtype_cast = true;
-};
-
 namespace internal {
 
 absl::StatusOr<DeviceBufferRef> DispatchBinaryOp(const at::Tensor& self,
@@ -126,14 +107,6 @@ absl::Status BinaryOpOut(const at::Tensor& tensor, const OtherType& other,
   return internal::DispatchBinaryOpOut(tensor, other, out,
                                        std::move(op_builder), std::move(opts));
 }
-
-// Performs output tensor processing for Ternary operations on TPU.
-// Validates that `out` is on the TPU, enforces shape constraints for in-place
-// aliasing, and dispatches via DispatchOpOut.
-absl::Status TernaryOpOut(const at::Tensor& self, const at::Tensor& other,
-                          const at::Tensor& third, at::Tensor& out,
-                          MlirTernaryOpBuilder op_builder,
-                          TernaryOpOptions opts);
 
 // NOLINTBEGIN
 // clang-format off
