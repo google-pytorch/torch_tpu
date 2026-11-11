@@ -115,6 +115,15 @@ _NONZERO_SERVED_CASES = (
     _nonzero_case((9, 129), 1023),
     _nonzero_case((9, 129), 1024),
     _nonzero_case((9, 129), 1025),
+    # 1-D at the edges of each default tile, T(128) to T(1024).
+    _nonzero_case((2,), 2),
+    _nonzero_case((16,), 5),
+    _nonzero_case((128,), _ALL_NONZERO),
+    _nonzero_case((129,), 2),
+    _nonzero_case((256,), _ALL_NONZERO),
+    _nonzero_case((257,), 3),
+    _nonzero_case((512,), _ALL_NONZERO),
+    _nonzero_case((513,), _ALL_NONZERO),
     # 1-D: single tile, masked last tile, and multiple 16384-element windows.
     _nonzero_case((1024,), 2),
     _nonzero_case((1024,), _ALL_NONZERO),
@@ -130,21 +139,22 @@ _NONZERO_SERVED_CASES = (
 )
 
 _NONZERO_NOT_SERVED_CASES = (
-    # Default input layout isn't {1,0:T(8,128)} (2-D) or {0:T(1024)} (1-D).
+    # Default 2-D input layout isn't {1,0:T(8,128)}.
     _nonzero_case((3, 7), 5),
     _nonzero_case((5, 1), 5),
     _nonzero_case((5, 3), 5),
-    _nonzero_case((16,), 5),
     # K = 0 skips the index graph; K <= rank uses row-major S64[K,rank] layout.
     _nonzero_case((17, 257), 0),
     _nonzero_case((17, 257), 1),
     _nonzero_case((17, 257), 2),
     _nonzero_case((3000,), 0),
     _nonzero_case((3000,), 1),
+    _nonzero_case((16,), 1),
     # Not 1-D or 2-D F32.
     _nonzero_case((2, 4, 4), 5),
     _nonzero_case((17, 257), 5, torch.bfloat16),
     _nonzero_case((3000,), 5, torch.bfloat16),
+    _nonzero_case((16,), 5, torch.bfloat16),
 )
 
 
@@ -153,16 +163,17 @@ class DynamicOpsTest(UnboundedDynamicKernelTestBase):
   @parameterized.named_parameters(*_NONZERO_SERVED_CASES)
   def test_nonzero_served(self, x: torch.Tensor):
     # Warm up the dynamic index kernel and this shape's static count graph
-    # (CPU-to-TPU copies avoid fusing constant ops into either graph).
-    torch.nonzero(torch.ones((8, 128) if x.ndim == 2 else (1024,)).to("tpu"))
-    torch.nonzero(torch.zeros_like(x).to("tpu"))
+    # (a CPU-to-TPU copy avoids fusing constant ops into either graph).
+    torch.nonzero(torch.ones_like(x).to("tpu"))
 
     (x_tpu,), result = self.run_and_check_cache(torch.nonzero, x, served=True)
 
+    # XLA's default 1-D tile: N rounded up to a power of two in [128, 1024].
+    tile = min(max(128, 1 << (x.numel() - 1).bit_length()), 1024)
     # (minor_to_major, tiles, element_size_in_bits); see nonzero_indices.h.
     self.assertEqual(
         torch.tpu.get_device_layout_if_materialized(x_tpu),
-        ([1, 0], [[8, 128]], 0) if x.ndim == 2 else ([0], [[1024]], 0),
+        ([1, 0], [[8, 128]], 0) if x.ndim == 2 else ([0], [[tile]], 0),
     )
     self.assertEqual(
         torch.tpu.get_device_layout_if_materialized(result),

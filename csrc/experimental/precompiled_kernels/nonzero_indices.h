@@ -49,7 +49,8 @@ namespace torch_tpu {
 // - 1-D kernel: run through `Execute` with the F32[N] input and the logical
 //   output shape S64[K,1], its executable returns the indices of the input's
 //   nonzero elements in increasing order.
-//   - Input: F32[N]{0:T(1024)}, XLA's default layout for all but small N.
+//   - Input: F32[N]{0:T(B)}, one kernel per B in {1024, 512, 256, 128}. XLA's
+//     default B is N rounded up to a power of two in [128, 1024].
 //   - Output: S64[K,1]{0,1:T(1,128)}, through the view with
 //     R = 2 * ceil(K/128); rows [0, R/2) hold the low words, [R/2, R) hold
 //     zeroed high words.
