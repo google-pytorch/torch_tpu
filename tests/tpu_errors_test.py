@@ -5444,9 +5444,7 @@ class FlexAttentionErrorsTest(et.TpuOnlyErrorTestBase):
   @et.why_tpu_only("The flex_attention Kiln kernel only exists on TPU.")
   def test_non_tile_aligned_sequence(self):
     q, k, v = self._inputs(1024)
-    block_mask = flex_attention.create_block_mask(
-        flex_attention.noop_mask, 1, 1, 1024, 1024, device="cpu"
-    )
+    block_mask = self._causal_mask()
     with et.assert_raises_message(
         RuntimeError,
         tpu="""flex_attention_fwd(): sequence lengths must be multiples of the block sizes (got q_len=1000, kv_len=1024, q_block=128, kv_block=1024)""",
@@ -5589,6 +5587,36 @@ class FlexAttentionErrorsTest(et.TpuOnlyErrorTestBase):
           self._causal_mask(),
           score_mod=lambda score, b, h, q_idx, kv_idx: score.sum(-1),
       )
+
+  def _bwd_dkv(self, **overrides):
+    """Calls the dK / dV op directly with valid arguments except `overrides`."""
+    shape = (1, 1, 256, 128)
+    args = dict(
+        q=torch.randn(shape, device=et.device()),
+        k=torch.randn(shape, device=et.device()),
+        v=torch.randn(shape, device=et.device()),
+        grad_out=torch.randn(shape, device=et.device()),
+        lse=torch.zeros(1, 1, 1, 256, device=et.device()),
+        di=torch.zeros(1, 1, 1, 256, device=et.device()),
+        q_num_blocks=torch.ones(2, dtype=torch.int32, device=et.device()),
+        q_indices=torch.zeros(4, dtype=torch.int32, device=et.device()),
+        mask_batch=1,
+        mask_heads=1,
+        q_block=128,
+        kv_block=128,
+        scale=1.0,
+        mask_mod_mlir="",
+    )
+    args.update(overrides)
+    return torch.ops.tpu._flex_attention_bwd_dkv(*args.values())
+
+  @et.why_tpu_only("The flex_attention Kiln kernel only exists on TPU.")
+  def test_bwd_grad_out_must_match_the_output(self):
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""flex_attention_bwd_dkv(): expected grad_out of shape [1, 1, 256, 128] and dtype Float, got [1, 1, 256, 64] and Float""",
+    ):
+      self._bwd_dkv(grad_out=torch.randn(1, 1, 256, 64, device=et.device()))
 
 
 if __name__ == "__main__":
