@@ -213,6 +213,9 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "view_decomposition_test",
     srcs = ["view_decomposition_test.py"],
+    # Restrict HWASan pointer tags on Arm to 5 bits (bits 56..60) so they do
+    # not collide with PyTorch c10::SymInt's 3-bit tag packing in bits 61..63.
+    env = {"HWASAN_OPTIONS": "tag_bits=5"},
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
