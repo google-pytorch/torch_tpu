@@ -2222,6 +2222,58 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(test_fn)
 
+  def test_gather_int32_index(self):
+    device = torch.device("tpu")
+    inp_cpu = torch.tensor(
+        [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], requires_grad=True
+    )
+    idx_cpu = torch.tensor([[0, 2], [1, 0]], dtype=torch.int32)
+    out_cpu = torch.gather(inp_cpu, 1, idx_cpu)
+    out_cpu.sum().backward()
+
+    inp_tpu = inp_cpu.detach().clone().to(device).requires_grad_(True)
+    idx_tpu = idx_cpu.to(device)
+    out_tpu = torch.gather(inp_tpu, 1, idx_tpu)
+    out_tpu.sum().backward()
+
+    utils.assert_close(out_tpu.cpu(), out_cpu)
+    utils.assert_close(inp_tpu.grad.cpu(), inp_cpu.grad)
+
+    # Test out= variant
+    out_buf_cpu = torch.empty(2, 2)
+    torch.gather(inp_cpu.detach(), 1, idx_cpu, out=out_buf_cpu)
+    out_buf_tpu = torch.empty(2, 2, device=device)
+    torch.gather(inp_tpu.detach(), 1, idx_tpu, out=out_buf_tpu)
+    utils.assert_close(out_buf_tpu.cpu(), out_buf_cpu)
+
+  @parameterized.named_parameters(
+      dict(testcase_name="float32", dtype=torch.float32),
+      dict(testcase_name="bool", dtype=torch.bool),
+      dict(testcase_name="int16", dtype=torch.int16),
+  )
+  def test_gather_empty_non_integer_index(self, dtype: torch.dtype):
+    device = torch.device("tpu")
+    inp_cpu = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
+    idx_cpu = torch.empty(0, 2, dtype=dtype)
+    out_cpu = torch.gather(inp_cpu, 0, idx_cpu)
+
+    inp_tpu = inp_cpu.to(device)
+    idx_tpu = idx_cpu.to(device)
+    out_tpu = torch.gather(inp_tpu, 0, idx_tpu)
+
+    self.assertEqual(out_tpu.shape, out_cpu.shape)
+    self.assertEqual(out_tpu.dtype, out_cpu.dtype)
+    utils.assert_close(out_tpu.cpu(), out_cpu)
+
+    # Test out= variant with non-empty out buffer to verify resizing
+    out_buf_cpu = torch.empty(5, 5, dtype=inp_cpu.dtype)
+    torch.gather(inp_cpu, 0, idx_cpu, out=out_buf_cpu)
+    out_buf_tpu = torch.empty(5, 5, dtype=inp_tpu.dtype, device=device)
+    torch.gather(inp_tpu, 0, idx_tpu, out=out_buf_tpu)
+
+    self.assertEqual(out_buf_tpu.shape, out_buf_cpu.shape)
+    utils.assert_close(out_buf_tpu.cpu(), out_buf_cpu)
+
   def test_gather_scatter_zero_stride_and_size1_broadcast(self):
     """Tests eager and compiled gather/scatter_add on expanded broadcast indices."""
     for dtype in (torch.float32, torch.bfloat16):

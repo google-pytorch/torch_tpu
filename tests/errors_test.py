@@ -9086,6 +9086,47 @@ Supported combinations for non-constant padding:
     ):
       torch.gather(inp, dim, index)
 
+  @parameterized.named_parameters(
+      dict(testcase_name="int16", dtype=torch.int16),
+      dict(testcase_name="int8", dtype=torch.int8),
+      dict(testcase_name="uint8", dtype=torch.uint8),
+      dict(testcase_name="float32", dtype=torch.float32),
+      dict(testcase_name="bfloat16", dtype=torch.bfloat16),
+      dict(testcase_name="float64", dtype=torch.float64),
+      dict(testcase_name="bool", dtype=torch.bool),
+  )
+  def test_gather_invalid_index_dtype(self, dtype: torch.dtype):
+    dtype_name = _get_short_dtype_str(dtype)
+    inp = torch.tensor([[1.0, 2.0], [3.0, 4.0]], device=et.device())
+    index = torch.zeros(1, 2, dtype=dtype, device=et.device())
+    out = torch.empty(1, 2, dtype=torch.float32, device=et.device())
+    inp_0d = torch.tensor(1.0, device=et.device())
+    index_0d = torch.zeros((), dtype=dtype, device=et.device())
+
+    with self.subTest(op="gather"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu=f"""gather(): expected the index dtype to be int32 or int64, got {dtype_name}""",
+          gpu="""gather(): Expected dtype int32/int64 for index""",
+      ):
+        torch.gather(inp, 1, index)
+
+    with self.subTest(op="gather_out"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu=f"""gather(): expected the index dtype to be int32 or int64, got {dtype_name}""",
+          gpu="""gather(): Expected dtype int32/int64 for index""",
+      ):
+        torch.gather(inp, 1, index, out=out)
+
+    with self.subTest(op="gather_0d"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu=f"""gather(): expected the index dtype to be int32 or int64, got {dtype_name}""",
+          gpu="""gather(): Expected dtype int32/int64 for index""",
+      ):
+        torch.gather(inp_0d, 0, index_0d)
+
   def test_lerp_int(self):
     t = torch.tensor([1, 2], device=et.device(), dtype=torch.int32)
 
