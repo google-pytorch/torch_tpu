@@ -1014,7 +1014,7 @@ at::Tensor& AtenCopy_Sparse(at::Tensor& self, const at::Tensor& src,
             {
               TT_CHECK_THROW(self.is_sparse() && src.is_sparse(),
                              error::kInvalidArgument)
-                  << "copy_() between dense and sparse tensors is not "
+                  << "copying between dense and sparse tensors is not "
                      "implemented";
               return CopySparseToSparseImpl(self, src, non_blocking);
             });

@@ -1554,6 +1554,33 @@ TEST_F(ErrorMessageGuidelinesDeathTest,
                HasSubstr("start with a lowercase character"));
 }
 
+TEST_F(ErrorMessageGuidelinesDeathTest, StartsWithOpName) {
+  EXPECT_DEATH(ThrowWithMessage("select() cannot be applied to a 0-dim tensor"),
+               HasSubstr("not start with an op name"));
+  EXPECT_DEATH(
+      ThrowWithMessage("select(): cannot be applied to a 0-dim tensor"),
+      HasSubstr("not start with an op name"));
+  EXPECT_DEATH(
+      ThrowWithMessage("select( ): cannot be applied to a 0-dim tensor"),
+      HasSubstr("not start with an op name"));
+  EXPECT_DEATH(
+      ThrowWithMessage("torch.select() cannot be applied to a 0-dim tensor"),
+      HasSubstr("not start with an op name"));
+  EXPECT_DEATH(
+      ThrowWithMessage(
+          "torch.ops.aten.select() cannot be applied to a 0-dim tensor"),
+      HasSubstr("not start with an op name"));
+  EXPECT_DEATH(
+      ThrowWithMessage("at::select() cannot be applied to a 0-dim tensor"),
+      HasSubstr("not start with an op name"));
+  // After context prefix.
+  EXPECT_DEATH(
+      ThrowWithMessage(
+          "failed to materialize: select() cannot be applied to a scalar "
+          "tensor"),
+      HasSubstr("not start with an op name"));
+}
+
 TEST_F(ErrorMessageGuidelinesDeathTest, NoSpaceSurroundingXlaErrorSentinel) {
   // Missing space before.
   EXPECT_DEATH(
@@ -1913,6 +1940,18 @@ TEST_F(ErrorMessageGuidelinesPassTest, MultilineErrorMessage) {
           "failed to materialize: failed to run executable: multiline error "
           "message\nwith a second line"),
       c10::Error);
+}
+
+TEST_F(ErrorMessageGuidelinesPassTest, ParenthesesInMessage) {
+  EXPECT_THROW(
+      ThrowWithMessage("expected tensor with shape (2, 3), got (4, 5)"),
+      c10::Error);
+  EXPECT_THROW(ThrowWithMessage("dim (0) must be >= 0"), c10::Error);
+  // Empty call parentheses after the start of the message.
+  EXPECT_THROW(ThrowWithMessage("expected numel() to be positive, got 0"),
+               c10::Error);
+  // Plain leading op word without parentheses.
+  EXPECT_THROW(ThrowWithMessage("select dimension must be >= 0"), c10::Error);
 }
 
 TEST(AdaptExternalErrorMessage, KeepsAllowedUppercaseStartingWords) {

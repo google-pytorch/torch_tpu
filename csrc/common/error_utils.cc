@@ -207,6 +207,31 @@ std::optional<std::string> ValidateNoUppercaseStart(
   return std::nullopt;
 }
 
+// Validates that the message does not start with an op or function call name
+// (e.g. "foo()" or "foo(): "). Pre-conditions: The error message must not be
+// empty.
+//
+// TT_KERNEL automatically prefixes the op name (e.g. "op_name(): "). Error
+// messages passed to TT_CHECK_THROW should not include an op name prefix.
+std::optional<std::string> ValidateDoesNotStartWithOpName(
+    const std::string_view message) {
+  ABSL_CHECK(  // CRASH_OK
+      !message.empty())
+      << kErrorMessageCheckPreconditionViolated;
+
+  // Matches an optionally qualified identifier (e.g. "foo", "torch.foo", or
+  // "at::foo") followed by empty call parentheses with optional whitespace
+  // (e.g. "()" or "( )") at the beginning of the message.
+  static const LazyRE2 kOpNamePrefixPattern = {
+      R"(^([a-zA-Z_]\w*(\.|::))*[a-zA-Z_]\w*\s*\(\s*\))"};
+
+  if (RE2::PartialMatch(message, *kOpNamePrefixPattern)) {
+    return "The error message should not start with an op name (e.g. 'op()' or "
+           "'op(): ') as that is automatically added by TT_KERNEL.";
+  }
+  return std::nullopt;
+}
+
 // Validates that the message ends with an alphanumeric or allowed character.
 //
 // Pre-conditions:
@@ -641,6 +666,8 @@ class ErrorFormatChecker {
     //                          |
     //                          |__ upper case letter not allowed.
     AppendIfViolation(ValidateNoUppercaseStart(trimmed));
+
+    AppendIfViolation(ValidateDoesNotStartWithOpName(trimmed));
 
     AppendIfViolation(ValidateLastChar(trimmed));
 

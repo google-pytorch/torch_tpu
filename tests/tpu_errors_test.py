@@ -3786,7 +3786,7 @@ module {
     with self.subTest("copy_sparse_dense"):
       with et.assert_raises_message(
           RuntimeError,
-          tpu="""copy_(): copy_() between dense and sparse tensors is not implemented""",
+          tpu="""copy_(): copying between dense and sparse tensors is not implemented""",
       ):
         sp.copy_(dense)
 
