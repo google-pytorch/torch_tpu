@@ -16750,6 +16750,81 @@ Supported combinations for non-constant padding:
           is_first_step=False,
       )
 
+  @parameterized.named_parameters(
+      dict(testcase_name="default", use_tensor_lr=False),
+      dict(testcase_name="tensor_lr", use_tensor_lr=True),
+  )
+  @et.gpu_crashes_or_raises(
+      "GPU fails a TORCH_CHECK_GT(momentum, 0) internal assertion."
+  )
+  def test_fused_sgd_zero_momentum_with_momentum_buffer(self, use_tensor_lr):
+    device = et.device()
+    params = [torch.tensor([10.0, 20.0], dtype=torch.float32, device=device)]
+    grads = [torch.tensor([2.0, 4.0], dtype=torch.float32, device=device)]
+    momentum_buffers = [
+        torch.tensor([1.0, 1.0], dtype=torch.float32, device=device)
+    ]
+    if use_tensor_lr:
+      op = torch.ops.aten._fused_sgd_.tensor_lr
+      lr = torch.tensor(0.1, dtype=torch.float32, device=device)
+    else:
+      op = torch.ops.aten._fused_sgd_.default
+      lr = 0.1
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""fused_sgd_(): expected momentum_buffer_list to be empty when momentum is 0, got size 1""",
+    ):
+      op(
+          params,
+          grads,
+          momentum_buffers,
+          weight_decay=0.0,
+          momentum=0.0,
+          lr=lr,
+          dampening=0.0,
+          nesterov=False,
+          maximize=False,
+          is_first_step=False,
+      )
+
+  @parameterized.named_parameters(
+      dict(testcase_name="default", use_tensor_lr=False),
+      dict(testcase_name="tensor_lr", use_tensor_lr=True),
+  )
+  @et.gpu_crashes_or_raises(
+      "GPU fails a TORCH_CHECK_EQ(momentum, 0) internal assertion."
+  )
+  def test_fused_sgd_nonzero_momentum_without_momentum_buffer(
+      self, use_tensor_lr
+  ):
+    device = et.device()
+    params = [torch.tensor([10.0, 20.0], dtype=torch.float32, device=device)]
+    grads = [torch.tensor([2.0, 4.0], dtype=torch.float32, device=device)]
+    if use_tensor_lr:
+      op = torch.ops.aten._fused_sgd_.tensor_lr
+      lr = torch.tensor(0.1, dtype=torch.float32, device=device)
+    else:
+      op = torch.ops.aten._fused_sgd_.default
+      lr = 0.1
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""fused_sgd_(): expected momentum_buffer_list to be non-empty when momentum is non-zero, got an empty list with momentum=0.9""",
+    ):
+      op(
+          params,
+          grads,
+          [],
+          weight_decay=0.0,
+          momentum=0.9,
+          lr=lr,
+          dampening=0.0,
+          nesterov=False,
+          maximize=False,
+          is_first_step=False,
+      )
+
   def test_fused_moving_avg_obs_fq_helper_invalid_quant_min_max(self):
     dev = et.device()
     self_t = torch.ones((2, 3), dtype=torch.float32, device=dev)

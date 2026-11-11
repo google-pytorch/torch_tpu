@@ -426,8 +426,26 @@ void ValidateSgdTensorListSizes(at::TensorList self, at::TensorList grads,
   }
 }
 
+// Validates that momentum buffers are provided iff momentum is non-zero,
+// matching upstream PyTorch. Without this, GetMomentumMode() would silently
+// pick the wrong branch when the two disagree.
+void ValidateMomentumMatchesBufferList(const double momentum,
+                                       at::TensorList momentum_buffer_list) {
+  if (momentum == 0.0) {
+    TT_CHECK_THROW(momentum_buffer_list.empty(), error::kInvalidArgument)
+        << "expected momentum_buffer_list to be empty when momentum is 0, got "
+           "size "
+        << momentum_buffer_list.size();
+  } else {
+    TT_CHECK_THROW(!momentum_buffer_list.empty(), error::kInvalidArgument)
+        << "expected momentum_buffer_list to be non-empty when momentum is "
+           "non-zero, got an empty list with momentum="
+        << momentum;
+  }
+}
+
 // Determines whether momentum computation is enabled based on momentum buffer
-// presence.
+// presence. Callers must first call ValidateMomentumMatchesBufferList().
 MomentumMode GetMomentumMode(at::TensorList momentum_buffer_list) {
   return momentum_buffer_list.empty() ? MomentumMode::kDisabled
                                       : MomentumMode::kEnabled;
@@ -653,6 +671,7 @@ void AtenFusedSgd(at::TensorList self, at::TensorList grads,
        is_first_step, grad_scale, found_inf),
       {
         if (self.empty()) return;
+        ValidateMomentumMatchesBufferList(momentum, momentum_buffer_list);
         TT_CHECK_THROW(IsFloatingPoint(self[0]),
                        error::kPythonNotImplementedError)
             << "expected the input dtype to be floating-point, got "
@@ -697,6 +716,7 @@ void AtenFusedSgdTensorLr(at::TensorList self, at::TensorList grads,
        is_first_step, grad_scale, found_inf),
       {
         if (self.empty()) return;
+        ValidateMomentumMatchesBufferList(momentum, momentum_buffer_list);
         TT_CHECK_THROW(IsFloatingPoint(self[0]),
                        error::kPythonNotImplementedError)
             << "expected the input dtype to be floating-point, got "
