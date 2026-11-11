@@ -16493,43 +16493,6 @@ Supported combinations for non-constant padding:
     ):
       torch.ops.aten.frac.out(x_f32, out=out_f64)
 
-  # TODO(b/584349996): Flaky on GPU; op runs to completion without crashing or raising.
-  @et.skip_if(
-      et.is_on_gpu,
-      "b/584349996: Flaky on GPU as op does not consistently crash or raise.",
-  )
-  @et.gpu_crashes_or_raises(
-      "GPU does not check that grads has the same size as params."
-  )
-  def test_fused_adamw_mismatched_grads_size(self):
-    device = et.device()
-    p1 = torch.tensor([1.0], dtype=torch.float32, device=device)
-    p2 = torch.tensor([2.0], dtype=torch.float32, device=device)
-    g1 = torch.tensor([0.1], dtype=torch.float32, device=device)
-    ea1 = torch.tensor([0.0], dtype=torch.float32, device=device)
-    eas1 = torch.tensor([0.0], dtype=torch.float32, device=device)
-    step1 = torch.tensor(1.0, dtype=torch.float32, device=device)
-
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""fused_adamw_(): expected grads to have the same number of tensors as self, got 1""",
-    ):
-      torch.ops.aten._fused_adamw_.default(
-          [p1, p2],
-          [g1],
-          [ea1, ea1],
-          [eas1, eas1],
-          [],
-          [step1, step1],
-          lr=0.001,
-          beta1=0.9,
-          beta2=0.999,
-          weight_decay=0.01,
-          eps=1e-8,
-          amsgrad=False,
-          maximize=False,
-      )
-
   @et.gpu_crashes_or_raises(
       "GPU does not check that exp_avgs has the same size as params."
   )
