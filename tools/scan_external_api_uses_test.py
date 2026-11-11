@@ -363,6 +363,100 @@ class ScanExternalApiUsesTest(absltest.TestCase):  # ABSLTEST_OK=tool test
     ):
       self.assertNotIn(name, findings)
 
+  def test_device_module_by_name(self):
+    _write(
+        self.root,
+        "pkg/named.py",
+        textwrap.dedent("""\
+            import torch
+            from sglang.srt.utils import get_device_module
+            from torch_tpu._internal.device import _device_module
+
+            device_module = None
+
+            def _get_device_module():
+              global device_module
+              if device_module is None:
+                device_module = get_device_module()
+              return device_module
+
+            _get_device_module().current_stream()
+            device_module.Event()
+            device_module.Event.assert_not_called()
+            _device_module._DeviceModule
+
+            def set_kv_buffer(device_module):
+              device_module.synchronize()
+
+            class Mixin:
+
+              def run(self):
+                self.device_module.is_available()
+                self.runner.device_module.device_count()
+        """),
+    )
+
+    findings = self._findings()
+
+    for name in (
+        "torch.tpu.current_stream",
+        "torch.tpu.Event",
+        "torch.tpu.synchronize",
+        "torch.tpu.is_available",
+        "torch.tpu.device_count",
+    ):
+      with self.subTest(name):
+        self.assertIn("pkg/named.py", findings[name].files)
+    # An import takes precedence.
+    self.assertNotIn("torch.tpu._DeviceModule", findings)
+    # An attribute of an API in tt_apis.yaml, e.g. of a mock, is a use of it.
+    self.assertNotIn("torch.tpu.Event.assert_not_called", findings)
+
+  def test_mocks_and_fakes_in_tests(self):
+    _write(
+        self.root,
+        "tests/test_runner.py",
+        textwrap.dedent("""\
+            from types import SimpleNamespace
+            from unittest import mock
+            import torch
+
+            def test_warmup():
+              with mock.patch.object(torch, "tpu", create=True) as tpu:
+                run()
+              tpu.synchronize.assert_called_once_with()
+              tpu.max_memory_reserved.return_value = 0
+
+            def test_monkeypatch(monkeypatch):
+              monkeypatch.setattr(
+                  torch, "tpu", SimpleNamespace(current_device=lambda: 0)
+              )
+
+            def test_pool():
+              pool = SimpleNamespace(
+                  device_module=SimpleNamespace(is_available=lambda: True),
+              )
+              scheduler.device_module = SimpleNamespace(Event=mock.Mock())
+              device_module = torch.get_device_module(device="tpu")
+        """),
+    )
+
+    findings = self._findings()
+
+    for name in (
+        "torch.tpu.synchronize",
+        "torch.tpu.is_available",
+        "torch.tpu.Event",
+        "torch.tpu.current_device",
+    ):
+      with self.subTest(name):
+        self.assertIn("tests/test_runner.py", findings[name].files)
+    # Only the keyword arguments of a fake are APIs.
+    self.assertNotIn("torch.tpu.device", findings)
+    # Attributes of a mock aren't, also of an API that isn't in tt_apis.yaml.
+    self.assertIn("torch.tpu.max_memory_reserved", findings)
+    self.assertNotIn("torch.tpu.max_memory_reserved.return_value", findings)
+
   def test_module_aliases(self):
     _write(
         self.root,

@@ -27,7 +27,16 @@ A use is found:
 - through `torch.get_device_module()`, a helper that returns it, or
   `getattr(torch, device)`;
 - through a variable or `self` attribute that holds one of the above, e.g.
-  `self.device_module = torch.get_device_module(d)`.
+  `self.device_module = torch.get_device_module(d)`;
+- by name: anything named `device_module` that isn't resolved otherwise, e.g. a
+  parameter, `self.device_module` assigned in another class, or a fake
+  `device_module=SimpleNamespace(current_stream=f)` in a test;
+- through mocks and fakes in tests, e.g. `patch.object(torch, "tpu")` or
+  `monkeypatch.setattr(torch, "tpu", SimpleNamespace(current_stream=f))`.
+
+A name is cut after the longest prefix that's in `tt_apis.yaml`, e.g.
+`torch.tpu.current_stream.return_value` (a mock in a test) is a use of
+`torch.tpu.current_stream`.
 
 Environment variables and C++ flags in `tt_apis.yaml` are found as words in
 any scanned file.
@@ -185,17 +194,22 @@ _GH_URL_RE = re.compile(
     r"^(?:https://|ssh://git@|git@)github\.com[/:]([^/]+)/([^/]+?)(?:\.git)?/?$"
 )
 # Device-generic code gets the module of the current accelerator from
-# `torch.get_device_module()`, or from a helper of the same name that wraps it.
-_DEVICE_MODULE_FUNCTION = "get_device_module"
+# `torch.get_device_module()`, or from a helper of the same name that wraps it,
+# e.g. `_get_device_module()`. By convention, it keeps it in a variable,
+# parameter or attribute named `device_module`.
+_DEVICE_MODULE_FUNCTION_RE = re.compile(r"_?get_device_module")
+_DEVICE_MODULE_NAME_RE = re.compile(r"_?device_module")
 _DEVICE_MODULE = "torch.tpu"
+# Attributes of `unittest.mock` mocks, which aren't APIs.
+_MOCK_ATTRIBUTE_RE = re.compile(
+    r"return_value|side_effect|assert_\w+|call_args|call_count|called"
+)
 # The scopes of variables: functions and the module. A `self` attribute is
 # scoped to its class.
 _SCOPE_NODES = (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
 # Every TorchTPU API name contains "tpu", or is reached through the device
 # module; files without any of these aren't parsed.
-_MAY_USE_TORCH_TPU_RE = re.compile(
-    rf"tpu|{_DEVICE_MODULE_FUNCTION}|getattr\(\s*torch\s*,"
-)
+_MAY_USE_TORCH_TPU_RE = re.compile(r"tpu|device_module|getattr\(\s*torch\s*,")
 # `getattr(torch, <expression>)` is the device module if the expression is
 # device-like, e.g. `getattr(torch, device)`, not e.g. `getattr(torch, dtype)`.
 _DEVICE_LIKE_RE = re.compile(r"device|platform|accelerator|backend", re.I)
@@ -285,6 +299,24 @@ def api_symbol(name: str) -> str:
   return ".".join(parts)
 
 
+def _cut_to_known_api(name: str, python_apis: Mapping[str, ApiEntry]) -> str:
+  """Cuts `name` after the longest prefix that's in `tt_apis.yaml`.
+
+  E.g. `torch.tpu.current_stream.return_value` (a mock in a test) is a use of
+  `torch.tpu.current_stream`. Attributes of mocks, e.g. `return_value`, are cut
+  too, also if the API isn't in `tt_apis.yaml`.
+  """
+  parts = name.split(".")
+  for i, part in enumerate(parts):
+    if _MOCK_ATTRIBUTE_RE.fullmatch(part):
+      parts = parts[:i]
+      break
+  for end in range(len(parts), 1, -1):
+    if (prefix := ".".join(parts[:end])) in python_apis:
+      return prefix
+  return ".".join(parts)
+
+
 def _classify_by_stage(entry: ApiEntry) -> Classification | None:
   """Classifies an API by its stage, or returns None if it's public."""
   if entry.stage == Stage.DEPRECATED:
@@ -356,13 +388,14 @@ def _is_device_module_call(
 ) -> bool:
   """Returns whether `node` is a call that returns the device module.
 
-  E.g. `torch.get_device_module()`, `torch.get_device_module(x.device)` or
-  `_device_module()`, but not `torch.get_device_module("cpu")`.
+  E.g. `torch.get_device_module()`, `torch.get_device_module(x.device)`,
+  `_get_device_module()` or `_device_module()`, but not
+  `torch.get_device_module("cpu")`.
 
   Args:
     node: The expression to check, e.g. `torch.get_device_module()`.
-    functions: Names of functions that return the device module, e.g.
-      `{"get_device_module", "_device_module"}`.
+    functions: Names of other functions that return the device module, e.g.
+      `{"_device_module"}`.
   """
   if not isinstance(node, ast.Call):
     return False
@@ -374,16 +407,24 @@ def _is_device_module_call(
   else:
     return False
   device = _str_constant(node.args[0]) if node.args else None
-  return name in functions and (device is None or device.startswith("tpu"))
+  if device is not None and not device.startswith("tpu"):
+    return False
+  return name in functions or bool(_DEVICE_MODULE_FUNCTION_RE.fullmatch(name))
 
 
 def _getattr_args(node: ast.AST) -> tuple[ast.expr, ast.expr] | None:
-  """Returns `(obj, name)` of `getattr(obj, name, ...)`, or None."""
-  if (
-      isinstance(node, ast.Call)
-      and isinstance(node.func, ast.Name)
-      and node.func.id in ("getattr", "hasattr")
-      and len(node.args) >= 2
+  """Returns `(obj, name)` of `getattr(obj, name, ...)`, or None.
+
+  `patch.object(obj, name, ...)` of `unittest.mock` is a mock of the
+  attribute, so it counts as `getattr` too.
+  """
+  if not isinstance(node, ast.Call) or len(node.args) < 2:
+    return None
+  func = node.func
+  if (isinstance(func, ast.Name) and func.id in ("getattr", "hasattr")) or (
+      isinstance(func, ast.Attribute)
+      and func.attr == "object"
+      and ast.unparse(func.value).endswith("patch")
   ):
     return node.args[0], node.args[1]
   return None
@@ -398,13 +439,20 @@ def _str_constant(node: ast.AST) -> str | None:
 def _assignments(
     nodes: Iterable[ast.AST],
 ) -> Iterator[tuple[ast.expr, ast.expr]]:
-  """Yields `(target, value)` of the `x = v` and `x: T = v` in `nodes`."""
+  """Yields `(target, value)` of the `x = v` and `x: T = v` in `nodes`.
+
+  Also of `with patch.object(obj, name) as x`, where `x` is the mock.
+  """
   for node in nodes:
     if isinstance(node, ast.Assign):
       for target in node.targets:
         yield target, node.value
     elif isinstance(node, ast.AnnAssign) and node.value is not None:
       yield node.target, node.value
+    elif isinstance(node, (ast.With, ast.AsyncWith)):
+      for item in node.items:
+        if item.optional_vars and _getattr_args(item.context_expr):
+          yield item.optional_vars, item.context_expr
 
 
 def _nodes_in_scope(scope: ast.AST) -> Iterator[ast.AST]:
@@ -426,7 +474,8 @@ class _ApiNameCollector(ast.NodeVisitor):
   - the device module, e.g. `torch.get_device_module().x` is `torch.tpu.x`;
   - variables and `self` attributes assigned one of these, if all of their
     assignments in their scope agree;
-  - `getattr(obj, "x")`, and API names in strings.
+  - `getattr(obj, "x")`, and API names in strings;
+  - else, the name `device_module`, e.g. `self.device_module.x` in a mixin.
 
   Other objects, e.g. what a function returns, aren't tracked.
   """
@@ -437,10 +486,10 @@ class _ApiNameCollector(ast.NodeVisitor):
     for node in ast.walk(tree):
       if isinstance(node, (ast.Import, ast.ImportFrom)):
         self._add_import_aliases(node)
-    # Functions that return the device module: `get_device_module`, and
-    # helpers in the file that only return what it returns, e.g.
+    # Other functions that return the device module: helpers in the file that
+    # only return what it returns, e.g.
     # `def _device_module(): return torch.get_device_module(device)`.
-    self._device_module_functions = {_DEVICE_MODULE_FUNCTION}
+    self._device_module_functions: set[str] = set()
     for node in ast.walk(tree):
       if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
         returns = [
@@ -560,7 +609,16 @@ class _ApiNameCollector(ast.NodeVisitor):
         base = None
     else:
       base = None
-    return ".".join([base, *reversed(parts)]) if base else None
+    if base:
+      return ".".join([base, *reversed(parts)])
+    # Otherwise, the innermost name `device_module` is the device module, e.g.
+    # in `device_module.x`, `self.device_module.x` or `runner.device_module.x`.
+    names = [node.id] if isinstance(node, ast.Name) else []
+    names += reversed(parts)
+    for i, name in enumerate(names):
+      if _DEVICE_MODULE_NAME_RE.fullmatch(name):
+        return ".".join([_DEVICE_MODULE, *names[i + 1 :]])
+    return None
 
   # Visitors: collect the names, by node type.
 
@@ -583,11 +641,44 @@ class _ApiNameCollector(ast.NodeVisitor):
   def visit_Call(self, node: ast.Call):
     if _getattr_args(node) and (name := self._resolve(node)) is not None:
       self.names.append(name)
+    for keyword in node.keywords:
+      if keyword.arg and _DEVICE_MODULE_NAME_RE.fullmatch(keyword.arg):
+        self._add_fake(_DEVICE_MODULE, keyword.value)
+    # E.g. `monkeypatch.setattr(torch, "tpu", fake)` or
+    # `patch.object(torch, "tpu", fake)`.
+    func = getattr(node.func, "attr", getattr(node.func, "id", None))
+    if func in ("setattr", "object") and len(node.args) >= 3:
+      base = self._resolve(node.args[0])
+      if base and (attr := _str_constant(node.args[1])):
+        self._add_fake(f"{base}.{attr}", node.args[2])
+    self.generic_visit(node)
+
+  def visit_Assign(self, node: ast.Assign):
+    for target in node.targets:
+      self._add_fake(self._resolve(target), node.value)
     self.generic_visit(node)
 
   def visit_Constant(self, node: ast.Constant):
     if isinstance(node.value, str):
       self.names += _API_TEXT_RE.findall(node.value)
+
+  def _add_fake(self, module: str | None, value: ast.AST) -> None:
+    """Collects the APIs of a fake TorchTPU module in a test.
+
+    E.g. `device_module=SimpleNamespace(current_stream=f)` uses
+    `torch.tpu.current_stream`: the code under test calls it.
+
+    Args:
+      module: What `value` replaces, e.g. "torch.tpu".
+      value: E.g. `SimpleNamespace(current_stream=f)`.
+    """
+    if (
+        module
+        and _namespace_of(module)
+        and isinstance(value, ast.Call)
+        and ast.unparse(value.func).endswith("SimpleNamespace")
+    ):
+      self.names += [f"{module}.{k.arg}" for k in value.keywords if k.arg]
 
 
 def _api_names_in_python(code: str) -> list[str]:
@@ -716,7 +807,8 @@ def scan_repo(
         # Still report the API names in the file.
         api_names = _api_names_in_text(text)
     for name in api_names:
-      uses[("Python API", api_symbol(name))].add(rel_path)
+      name = _cut_to_known_api(api_symbol(name), python_apis)
+      uses[("Python API", name)].add(rel_path)
     for kind, pattern in word_patterns:
       for name in pattern.findall(text):
         uses[(kind, name)].add(rel_path)
