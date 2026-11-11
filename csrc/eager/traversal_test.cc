@@ -46,9 +46,11 @@
 #include "llvm/ADT/SmallVector.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/DialectRegistry.h"
+#include "mlir/IR/Location.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/IR/Types.h"
@@ -647,6 +649,81 @@ TEST_F(TraversalTest,
   ASSERT_NE(main_func, nullptr);
   EXPECT_TRUE(main_func.getOps<mlir::func::CallOp>().empty());
   EXPECT_FALSE(main_func.getOps<mlir::stablehlo::NegOp>().empty());
+}
+
+TEST_F(TraversalTest, InlinedHelperRetainsEachCallersProfileScope) {
+  TT_ASSERT_OK_AND_ASSIGN(
+      const DeviceBufferRef input_ref,
+      DeviceBufferList::CreatePlaceholder(shape_.dimensions(), shape_.dtype()));
+
+  auto call_helper_builder = [](mlir::MlirBuilder& builder,
+                                absl::Span<mlir::MlirOp> inputs)
+      -> absl::StatusOr<DynamicMlirOpResults> {
+    mlir::ModuleOp module_op = GetModuleOp(builder);
+    auto helper = module_op.lookupSymbol<mlir::func::FuncOp>("shared_helper");
+    if (!helper) {
+      mlir::OpBuilder module_builder(module_op.getBodyRegion());
+      const mlir::Type input_type = inputs[0].getValue().getType();
+      const mlir::Location kernel_loc = mlir::NameLoc::get(
+          module_builder.getStringAttr("kernel/add"),
+          mlir::FileLineColLoc::get(&builder.getContext(), "kernel.py", 10, 1));
+      helper = mlir::func::FuncOp::create(
+          module_builder, kernel_loc, "shared_helper",
+          mlir::FunctionType::get(&builder.getContext(), {input_type},
+                                  {input_type}));
+      helper.setPrivate();
+      mlir::Block* const entry_block = helper.addEntryBlock();
+      mlir::OpBuilder helper_builder =
+          mlir::OpBuilder::atBlockBegin(entry_block);
+      auto doubled = mlir::stablehlo::AddOp::create(
+          helper_builder, kernel_loc, entry_block->getArgument(0),
+          entry_block->getArgument(0));
+      mlir::func::ReturnOp::create(helper_builder, kernel_loc,
+                                   mlir::ValueRange{doubled.getResult()});
+    }
+    const llvm::SmallVector<mlir::MlirOp> results =
+        mlir::func::Call(builder, helper, inputs);
+    return DynamicMlirOpResults(results.begin(), results.end());
+  };
+
+  std::vector<DeviceBufferRef> first_refs;
+  {
+    const NameScopeHierarchyGuard scope({"layer_0", "attention"});
+    TT_ASSERT_OK_AND_ASSIGN(first_refs,
+                            DeviceBufferList::CreateDeferred(
+                                OpName::kAdd, call_helper_builder, {input_ref},
+                                OpParamCacheKeys::Empty(), {shape_}));
+  }
+  std::vector<DeviceBufferRef> second_refs;
+  {
+    const NameScopeHierarchyGuard scope({"layer_1", "moe"});
+    TT_ASSERT_OK_AND_ASSIGN(
+        second_refs, DeviceBufferList::CreateDeferred(
+                         OpName::kAdd, call_helper_builder, {first_refs[0]},
+                         OpParamCacheKeys::Empty(), {shape_}));
+  }
+  TT_ASSERT_OK_AND_ASSIGN(const std::unique_ptr<Traversal> traversal,
+                          Traversal::Create({second_refs[0]}));
+  auto mlir_context = MakeMlirContext();
+  TT_ASSERT_OK_AND_ASSIGN(mlir::OwningOpRef<mlir::ModuleOp> module,
+                          traversal->BuildMlirModule(*mlir_context));
+
+  EXPECT_EQ(module->lookupSymbol<mlir::func::FuncOp>("shared_helper"), nullptr);
+  std::vector<std::string> names;
+  module->walk([&](mlir::stablehlo::AddOp op) {
+    // PJRT plugins that only export the callee from CallSiteLoc still see
+    // the complete hierarchy when it is materialized as a top-level NameLoc.
+    const auto name_loc = mlir::dyn_cast<mlir::NameLoc>(op.getLoc());
+    ASSERT_TRUE(name_loc);
+    names.push_back(name_loc.getName().getValue().str());
+    EXPECT_TRUE(mlir::isa<mlir::CallSiteLoc>(name_loc.getChildLoc()));
+  });
+  EXPECT_THAT(names,
+              testing::ElementsAre(
+                  testing::AllOf(testing::StartsWith("layer_0/attention/"),
+                                 testing::EndsWith("/kernel/add")),
+                  testing::AllOf(testing::StartsWith("layer_1/moe/"),
+                                 testing::EndsWith("/kernel/add"))));
 }
 
 TEST_F(TraversalTest, NameScopesAttachToMlirLocationsWithoutChangingCacheKey) {

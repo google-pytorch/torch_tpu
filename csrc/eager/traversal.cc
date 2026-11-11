@@ -88,6 +88,7 @@
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "tsl/profiler/lib/traceme.h"
 #include "xla/client/executable_build_options.h"
+#include "xla/hlo/translate/mhlo_to_hlo/location_exporter.h"
 #include "xla/layout.h"
 #include "xla/service/device_assignment.h"
 #include "xla/shape.h"
@@ -776,6 +777,18 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> Traversal::BuildMlirModule(
                  // input.
       mlir::succeeded(pm.run(module.get())), error::kInternal)
       << "failed to inline functions in MLIR module";
+
+  // Older PJRT plugins discard the caller side of CallSiteLoc when exporting
+  // op names. Materialize the composed name before crossing that boundary,
+  // retaining the original location for source stacks and op types.
+  module->walk([](mlir::Operation* const op) {
+    if (!mlir::isa<mlir::CallSiteLoc>(op->getLoc())) return;
+    const std::string name = mlir::mhlo::GetDebugNameFromLocation(op->getLoc());
+    if (!name.empty()) {
+      op->setLoc(mlir::NameLoc::get(
+          mlir::StringAttr::get(op->getContext(), name), op->getLoc()));
+    }
+  });
 
   return module;
 }
