@@ -73,15 +73,12 @@ absl::StatusOr<mlir::MlirOp> BuildSoftmaxShlo(mlir::MlirOp input_op,
                                               int64_t dim,
                                               SoftmaxMode softmax_mode) {
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input_op);
+  TT_ASSIGN_OR_RETURN(dim, SafeWrapDim(dim, input_type.getRank()));
   mlir::MlirBuilder& builder = input_op.getBuilder();
   if (input_type.getRank() == 0) {
     return MakeScalarConstant(builder,
                               softmax_mode == SoftmaxMode::kSoftmax ? 1.0 : 0.0,
                               input_type.getElementType());
-  }
-
-  if (dim < 0) {
-    dim += input_type.getRank();
   }
 
   if (std::any_of(input_type.getShape().begin(), input_type.getShape().end(),
@@ -140,12 +137,12 @@ absl::StatusOr<mlir::MlirOp> BuildSoftmaxBackwardDataShlo(
   ABSL_VLOG(3) << "BuildSoftmaxBackwardDataShlo: output_type: "
                << mlir::debugString(output_type);
 
+  TT_ASSIGN_OR_RETURN(dim, SafeWrapDim(dim, output_type.getRank()));
   if (output_type.getRank() == 0) {
     mlir::MlirBuilder& builder = grad_output_op.getBuilder();
     return MakeScalarConstant(builder, 0.0, output_type.getElementType());
   }
 
-  TT_ASSIGN_OR_RETURN(dim, SafeWrapDim(dim, output_type.getRank()));
   TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Caught by the `SafeWrapDim()` function
                  // call above.
       0 <= dim && dim < output_type.getRank(), error::kInvalidArgument)
@@ -241,6 +238,9 @@ absl::StatusOr<mlir::MlirOp> BuildMaskedSoftmaxShlo(
     mlir::MlirOp input_op, mlir::MlirOp mask_op, int64_t dim,
     std::optional<int64_t> mask_type) {
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input_op);
+  const int64_t input_rank =
+      input_type.getRank() == 0 ? 1 : input_type.getRank();
+  TT_ASSIGN_OR_RETURN(dim, SafeWrapDim(dim, input_rank));
   mlir::MlirBuilder& builder = input_op.getBuilder();
 
   if (input_type.getRank() == 0) {
@@ -266,6 +266,9 @@ absl::StatusOr<mlir::MlirOp> BuildMaskedSoftmaxBackwardDataShlo(
     mlir::MlirOp grad_output_op, mlir::MlirOp output_op, mlir::MlirOp mask_op,
     int64_t dim, mlir::stablehlo::Precision precision) {
   const mlir::RankedTensorType output_type = GetTensorTypeOrDie(output_op);
+  const int64_t output_rank =
+      output_type.getRank() == 0 ? 1 : output_type.getRank();
+  TT_ASSIGN_OR_RETURN(dim, SafeWrapDim(dim, output_rank));
   mlir::MlirBuilder& builder = grad_output_op.getBuilder();
 
   if (output_type.getRank() == 0) {

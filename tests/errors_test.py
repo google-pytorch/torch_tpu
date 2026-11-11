@@ -34,7 +34,7 @@ Tests that don't belong in this file:
 - Anything whose main focus isn't the actual error message.
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 import re
 from typing import Any
 import unittest
@@ -11037,6 +11037,321 @@ Supported combinations for non-constant padding:
     ):
       torch.log_softmax(t, 0, out=out_f64)
 
+  @parameterized.named_parameters(
+      (
+          "softmax_out_1d_pos",
+          lambda input_tensor, dim, out: torch.ops.aten._softmax.out(
+              input_tensor, dim, False, out=out
+          ),
+          (2,),
+          5,
+          "softmax(): expected dimension to be in range [-1, 0], got 5",
+          (
+              "Dimension out of range (expected to be in range of [-1, 0], but"
+              " got 5)"
+          ),
+      ),
+      (
+          "softmax_out_1d_neg",
+          lambda input_tensor, dim, out: torch.ops.aten._softmax.out(
+              input_tensor, dim, False, out=out
+          ),
+          (2,),
+          -2,
+          "softmax(): expected dimension to be in range [-1, 0], got -2",
+          (
+              "Dimension out of range (expected to be in range of [-1, 0], but"
+              " got -2)"
+          ),
+      ),
+      (
+          "log_softmax_out_1d_pos",
+          lambda input_tensor, dim, out: torch.ops.aten._log_softmax.out(
+              input_tensor, dim, False, out=out
+          ),
+          (2,),
+          5,
+          "log_softmax(): expected dimension to be in range [-1, 0], got 5",
+          (
+              "Dimension out of range (expected to be in range of [-1, 0], but"
+              " got 5)"
+          ),
+      ),
+      (
+          "log_softmax_out_1d_neg",
+          lambda input_tensor, dim, out: torch.ops.aten._log_softmax.out(
+              input_tensor, dim, False, out=out
+          ),
+          (2,),
+          -2,
+          "log_softmax(): expected dimension to be in range [-1, 0], got -2",
+          (
+              "Dimension out of range (expected to be in range of [-1, 0], but"
+              " got -2)"
+          ),
+      ),
+      (
+          "softmax_0d_pos",
+          lambda input_tensor, dim, out: torch.softmax(
+              input_tensor, dim=dim, out=out
+          ),
+          (),
+          5,
+          (
+              "softmax(): expected dimension to be either 0 or -1 for a shape"
+              " with 0 dimensions, got 5"
+          ),
+          (
+              "Dimension out of range (expected to be in range of [-1, 0], but"
+              " got 5)"
+          ),
+      ),
+      (
+          "softmax_out_0d_neg",
+          lambda input_tensor, dim, out: torch.ops.aten._softmax.out(
+              input_tensor, dim, False, out=out
+          ),
+          (),
+          -2,
+          (
+              "softmax(): expected dimension to be either 0 or -1 for a shape"
+              " with 0 dimensions, got -2"
+          ),
+          (
+              "Dimension out of range (expected to be in range of [-1, 0], but"
+              " got -2)"
+          ),
+      ),
+      (
+          "log_softmax_0d_pos",
+          lambda input_tensor, dim, out: torch.log_softmax(
+              input_tensor, dim=dim, out=out
+          ),
+          (),
+          5,
+          (
+              "log_softmax(): expected dimension to be either 0 or -1 for a"
+              " shape with 0 dimensions, got 5"
+          ),
+          (
+              "Dimension out of range (expected to be in range of [-1, 0], but"
+              " got 5)"
+          ),
+      ),
+      (
+          "log_softmax_out_0d_neg",
+          lambda input_tensor, dim, out: torch.ops.aten._log_softmax.out(
+              input_tensor, dim, False, out=out
+          ),
+          (),
+          -2,
+          (
+              "log_softmax(): expected dimension to be either 0 or -1 for a"
+              " shape with 0 dimensions, got -2"
+          ),
+          (
+              "Dimension out of range (expected to be in range of [-1, 0], but"
+              " got -2)"
+          ),
+      ),
+      (
+          "softmax_empty_pos",
+          lambda input_tensor, dim, out: torch.softmax(
+              input_tensor, dim=dim, out=out
+          ),
+          (0, 3),
+          10,
+          "softmax(): expected dimension to be in range [-2, 1], got 10",
+          (
+              "Dimension out of range (expected to be in range of [-2, 1], but"
+              " got 10)"
+          ),
+      ),
+      (
+          "softmax_out_empty_neg",
+          lambda input_tensor, dim, out: torch.ops.aten._softmax.out(
+              input_tensor, dim, False, out=out
+          ),
+          (0, 3),
+          -3,
+          "softmax(): expected dimension to be in range [-2, 1], got -3",
+          (
+              "Dimension out of range (expected to be in range of [-2, 1], but"
+              " got -3)"
+          ),
+      ),
+      (
+          "log_softmax_empty_pos",
+          lambda input_tensor, dim, out: torch.log_softmax(
+              input_tensor, dim=dim, out=out
+          ),
+          (0, 3),
+          10,
+          "log_softmax(): expected dimension to be in range [-2, 1], got 10",
+          (
+              "Dimension out of range (expected to be in range of [-2, 1], but"
+              " got 10)"
+          ),
+      ),
+      (
+          "log_softmax_out_empty_neg",
+          lambda input_tensor, dim, out: torch.ops.aten._log_softmax.out(
+              input_tensor, dim, False, out=out
+          ),
+          (0, 3),
+          -3,
+          "log_softmax(): expected dimension to be in range [-2, 1], got -3",
+          (
+              "Dimension out of range (expected to be in range of [-2, 1], but"
+              " got -3)"
+          ),
+      ),
+      (
+          "softmax_bwd_out_0d_pos",
+          lambda input_tensor, dim, out: (
+              torch.ops.aten._softmax_backward_data.out(
+                  input_tensor,
+                  input_tensor,
+                  dim,
+                  torch.float32,
+                  grad_input=out,
+              )
+          ),
+          (),
+          5,
+          (
+              "softmax_backward_data(): expected dimension to be either 0 or -1"
+              " for a shape with 0 dimensions, got 5"
+          ),
+          (
+              "Dimension out of range (expected to be in range of [-1, 0], but"
+              " got 5)"
+          ),
+      ),
+      (
+          "softmax_bwd_out_0d_neg",
+          lambda input_tensor, dim, out: (
+              torch.ops.aten._softmax_backward_data.out(
+                  input_tensor,
+                  input_tensor,
+                  dim,
+                  torch.float32,
+                  grad_input=out,
+              )
+          ),
+          (),
+          -2,
+          (
+              "softmax_backward_data(): expected dimension to be either 0 or -1"
+              " for a shape with 0 dimensions, got -2"
+          ),
+          (
+              "Dimension out of range (expected to be in range of [-1, 0], but"
+              " got -2)"
+          ),
+      ),
+      (
+          "log_softmax_bwd_out_0d_pos",
+          lambda input_tensor, dim, out: (
+              torch.ops.aten._log_softmax_backward_data.out(
+                  input_tensor,
+                  input_tensor,
+                  dim,
+                  torch.float32,
+                  out=out,
+              )
+          ),
+          (),
+          5,
+          (
+              "log_softmax_backward_data(): expected dimension to be either 0"
+              " or -1 for a shape with 0 dimensions, got 5"
+          ),
+          (
+              "Dimension out of range (expected to be in range of [-1, 0], but"
+              " got 5)"
+          ),
+      ),
+      (
+          "log_softmax_bwd_out_0d_neg",
+          lambda input_tensor, dim, out: (
+              torch.ops.aten._log_softmax_backward_data.out(
+                  input_tensor,
+                  input_tensor,
+                  dim,
+                  torch.float32,
+                  out=out,
+              )
+          ),
+          (),
+          -2,
+          (
+              "log_softmax_backward_data(): expected dimension to be either 0"
+              " or -1 for a shape with 0 dimensions, got -2"
+          ),
+          (
+              "Dimension out of range (expected to be in range of [-1, 0], but"
+              " got -2)"
+          ),
+      ),
+      (
+          "softmax_bwd_out_empty_pos",
+          lambda input_tensor, dim, out: (
+              torch.ops.aten._softmax_backward_data.out(
+                  input_tensor,
+                  input_tensor,
+                  dim,
+                  torch.float32,
+                  grad_input=out,
+              )
+          ),
+          (0, 3),
+          10,
+          (
+              "softmax_backward_data(): expected dimension to be in range"
+              " [-2, 1], got 10"
+          ),
+          (
+              "Dimension out of range (expected to be in range of [-2, 1], but"
+              " got 10)"
+          ),
+      ),
+      (
+          "log_softmax_bwd_out_empty_neg",
+          lambda input_tensor, dim, out: (
+              torch.ops.aten._log_softmax_backward_data.out(
+                  input_tensor,
+                  input_tensor,
+                  dim,
+                  torch.float32,
+                  out=out,
+              )
+          ),
+          (0, 3),
+          -3,
+          (
+              "log_softmax_backward_data(): expected dimension to be in range"
+              " [-2, 1], got -3"
+          ),
+          (
+              "Dimension out of range (expected to be in range of [-2, 1], but"
+              " got -3)"
+          ),
+      ),
+  )
+  def test_softmax_dim_out_of_bounds(
+      self,
+      op_fn: Callable[..., Any],
+      shape: tuple[int, ...],
+      dim: int,
+      tpu_msg: str,
+      gpu_msg: str,
+  ):
+    input_tensor = torch.ones(shape, device=et.device(), dtype=torch.float32)
+    out = torch.empty(shape, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(IndexError, tpu=tpu_msg, gpu=gpu_msg):
+      op_fn(input_tensor, dim, out)
+
   def test_log_sigmoid_out_dtype_mismatch(self):
     t = torch.ones(5, device=et.device(), dtype=torch.float32)
     out_int = torch.empty(5, device=et.device(), dtype=torch.int32)
@@ -17988,6 +18303,83 @@ class MaskedSoftmaxErrorTest(et.ErrorTestBase):
           torch.tensor(False, dtype=torch.bool, device=et.device()),
           dim=1,
       )
+
+  @parameterized.named_parameters(
+      (
+          "empty_pos_dim",
+          lambda input_tensor, mask, dim, _out: torch.ops.aten._masked_softmax(
+              input_tensor, mask, dim=dim, mask_type=2
+          ),
+          (0, 3),
+          10,
+          "masked_softmax(): expected dimension to be in range [-2, 1], got 10",
+          (
+              "Dimension out of range (expected to be in range of [-2, 1], but"
+              " got 10)"
+          ),
+      ),
+      (
+          "empty_out_neg_dim",
+          lambda input_tensor, mask, dim, out: (
+              torch.ops.aten._masked_softmax.out(
+                  input_tensor, mask, dim=dim, mask_type=2, out=out
+              )
+          ),
+          (0, 3),
+          -3,
+          "masked_softmax(): expected dimension to be in range [-2, 1], got -3",
+          (
+              "Dimension out of range (expected to be in range of [-2, 1], but"
+              " got -3)"
+          ),
+      ),
+      (
+          "scalar_out_neg_dim",
+          lambda input_tensor, mask, dim, out: (
+              torch.ops.aten._masked_softmax.out(
+                  input_tensor, mask, dim=dim, mask_type=2, out=out
+              )
+          ),
+          (),
+          -2,
+          "masked_softmax(): expected dimension to be in range [-1, 0], got -2",
+          (
+              "Dimension out of range (expected to be in range of [-1, 0], but"
+              " got -2)"
+          ),
+      ),
+      (
+          "backward_scalar_out_neg_dim",
+          lambda input_tensor, mask, dim, out: (
+              torch.ops.aten._masked_softmax_backward.out(
+                  input_tensor, input_tensor, mask, dim=dim, out=out
+              )
+          ),
+          (),
+          -2,
+          (
+              "masked_softmax_backward(): expected dimension to be in range"
+              " [-1, 0], got -2"
+          ),
+          (
+              "Dimension out of range (expected to be in range of [-1, 0], but"
+              " got -2)"
+          ),
+      ),
+  )
+  def test_masked_softmax_dim_out_of_bounds(
+      self,
+      op_fn: Callable[..., Any],
+      shape: tuple[int, ...],
+      dim: int,
+      tpu_msg: str,
+      gpu_msg: str,
+  ):
+    input_tensor = torch.ones(shape, dtype=torch.float32, device=et.device())
+    mask = torch.zeros(shape, dtype=torch.bool, device=et.device())
+    out = torch.empty(shape, dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(IndexError, tpu=tpu_msg, gpu=gpu_msg):
+      op_fn(input_tensor, mask, dim, out)
 
   def test_histc_bfloat16_unsupported(self):
     x = torch.ones(2, 2, device=et.device(), dtype=torch.bfloat16)
