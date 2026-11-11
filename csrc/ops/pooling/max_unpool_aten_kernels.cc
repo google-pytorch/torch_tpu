@@ -60,11 +60,9 @@ namespace {
 // scattered along dimension 1 into a zero tensor of shape [B, S_out]. Positions
 // that no index points to keep their zero. The result is reshaped to
 // [batch..., output_size...].
-absl::StatusOr<mlir::MlirOp> BuildMaxUnpoolShlo(mlir::MlirOp self,
-                                                mlir::MlirOp indices,
-                                                int64_t spatial_dim_count,
-                                                const Dimensions& out_dims,
-                                                mlir::ElementType element_type) {
+absl::StatusOr<mlir::MlirOp> BuildMaxUnpoolShlo(
+    mlir::MlirOp self, mlir::MlirOp indices, int64_t spatial_dim_count,
+    const Dimensions& out_dims, mlir::ElementType element_type) {
   const mlir::RankedTensorType self_type = GetTensorTypeOrDie(self);
   const int64_t batch_rank = self_type.getRank() - spatial_dim_count;
   const absl::Span<const int64_t> self_dims = self_type.getShape();
