@@ -21,6 +21,8 @@
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <typeindex>
+#include <typeinfo>
 
 #include "absl/base/no_destructor.h"
 #include "absl/strings/numbers.h"
@@ -57,14 +59,20 @@ void SafeUnsetEnvImpl(const char* name);
 // parsed as an integer.
 void WarnInvalidIntegerEnv(const char* name, std::string_view value);
 
+// Crashes if GetIntegerEnvOnce() has already been called on `name` with a
+// different `IntType`. Thread-safe.
+void CheckIntegerEnvType(std::string_view name, std::type_index int_type);
+
 // Parses `env_var`, the value of the env var with the given name, as an
 // integer using absl::SimpleAtoi. Returns std::nullopt and warns if it cannot
-// be parsed, or returns std::nullopt if it is not set.
+// be parsed, or returns std::nullopt if it is not set. Crashes if called with
+// different IntTypes for the same env var.
 template <typename IntType>
 [[nodiscard]] std::optional<IntType> ParseIntegerEnv(
     const char* name, const std::optional<std::string>& env_var) {
   static_assert(std::is_integral_v<IntType> && !std::is_same_v<IntType, bool>,
                 "IntType must be a non-boolean integral type.");
+  CheckIntegerEnvType(name, typeid(IntType));
   if (!env_var.has_value()) {
     return std::nullopt;
   }
@@ -493,7 +501,8 @@ template <const char* name>
 // std::nullopt if it is not set or cannot be parsed as an integer.
 //
 // This function delegates to GetEnvOnce() to read the environment variable, and
-// then parses the string into an integer using absl::SimpleAtoi.
+// then parses the string into an integer using absl::SimpleAtoi. Crashes if
+// called with different IntTypes for the same environment variable.
 template <typename IntType, const char* name>
 [[nodiscard]] std::optional<IntType> GetIntegerEnvOnce() {
   // Compute the value once and memoize it.

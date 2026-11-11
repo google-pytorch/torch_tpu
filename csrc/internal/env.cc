@@ -69,24 +69,23 @@ std::optional<int64_t> PyGetIntegerEnvOnce(
     std::string_view name, std::optional<int64_t> default_value) {
   std::optional<int64_t> value;
   if (name == kLocalRankEnvVar) {
-    value = GetIntegerEnvOnce<int64_t, kLocalRankEnvVar>();
+    value = GetIntegerEnvOnce<int, kLocalRankEnvVar>();
   } else if (name == kRankEnvVar) {
-    value = GetIntegerEnvOnce<int64_t, kRankEnvVar>();
+    value = GetIntegerEnvOnce<int, kRankEnvVar>();
   } else if (name == kTorchTpuBasePortEnvVar) {
-    value = GetIntegerEnvOnce<int64_t, kTorchTpuBasePortEnvVar>();
+    value = GetIntegerEnvOnce<int, kTorchTpuBasePortEnvVar>();
   } else if (name == kTorchTpuDevicesPerHostEnvVar) {
-    value = GetIntegerEnvOnce<int64_t, kTorchTpuDevicesPerHostEnvVar>();
+    value = GetIntegerEnvOnce<int, kTorchTpuDevicesPerHostEnvVar>();
   } else if (name == kTorchTpuHandshakePortEnvVar) {
-    value = GetIntegerEnvOnce<int64_t, kTorchTpuHandshakePortEnvVar>();
+    value = GetIntegerEnvOnce<int, kTorchTpuHandshakePortEnvVar>();
   } else if (name == kTorchTpuInternalHandshakeTimeoutSEnvVar) {
-    value =
-        GetIntegerEnvOnce<int64_t, kTorchTpuInternalHandshakeTimeoutSEnvVar>();
+    value = GetIntegerEnvOnce<int, kTorchTpuInternalHandshakeTimeoutSEnvVar>();
   } else if (name == kTorchcommRankEnvVar) {
-    value = GetIntegerEnvOnce<int64_t, kTorchcommRankEnvVar>();
+    value = GetIntegerEnvOnce<int, kTorchcommRankEnvVar>();
   } else if (name == kTorchcommSizeEnvVar) {
-    value = GetIntegerEnvOnce<int64_t, kTorchcommSizeEnvVar>();
+    value = GetIntegerEnvOnce<int, kTorchcommSizeEnvVar>();
   } else if (name == kWorldSizeEnvVar) {
-    value = GetIntegerEnvOnce<int64_t, kWorldSizeEnvVar>();
+    value = GetIntegerEnvOnce<int, kWorldSizeEnvVar>();
   } else {
     ABSL_LOG(FATAL)  // CRASH_OK=TorchTPU bug
         << "Before reading integer environment variable " << name

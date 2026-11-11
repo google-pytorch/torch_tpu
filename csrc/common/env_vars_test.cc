@@ -248,5 +248,14 @@ TEST(EnvVarsDeathTest, UnsetEnvAfterGetIntegerEnvOnceCrashes) {
       "NODE_RANK.*GetEnvOnce");
 }
 
+TEST(EnvVarsDeathTest, GetIntegerEnvOnceWithDifferentIntTypesCrashes) {
+  EXPECT_DEATH(
+      {
+        static_cast<void>(GetIntegerEnvOnce<int, kNodeRankEnvVar>());
+        static_cast<void>(GetIntegerEnvOnce<int64_t, kNodeRankEnvVar>());
+      },
+      "NODE_RANK.*different IntTypes");
+}
+
 }  // namespace
 }  // namespace torch_tpu
