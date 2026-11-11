@@ -48,6 +48,7 @@
 #include "xla/shape.h"
 #include "xla/shape_util.h"
 #include "xla/tests/literal_test_util.h"
+#include "xla/types.h"
 
 namespace torch_tpu::kiln {
 namespace {
@@ -351,6 +352,49 @@ TEST_F(KilnE2eTest, TileAndScalarControlFlowOperations) {
     float after_loop = input.Get<float>({r, c}) + (0.0f + 1.0f + 2.0f + 3.0f);
     return (c % 2 == 0) ? after_loop * 2.0f : after_loop - 1.0f;
   });
+
+  RunAndCompare(std::move(kernel), {&input}, expected);
+}
+
+// Compares two bool masks elementwise. The masks come from runtime data so
+// that the comparison cannot be constant-folded away before Mosaic sees it.
+TEST_F(KilnE2eTest, EqualityOfBoolMasks) {
+  TT_ASSERT_OK_AND_ASSIGN(
+      Kernel kernel,
+      CreateKernel(GridSpec{.name = "bool_mask_eq_e2e", .grid = {1}},
+                   InSpec{f32(8, 128)}, OutSpec{f32(8, 128)},
+                   [](VmemRef in, VmemRef out) {
+                     Tile x = Load(in);
+                     Store(out, Select((x > 0.0) == (x > 1.0), x.Full(1.0),
+                                       x.Full(0.0)));
+                   }));
+
+  xla::Literal input = Make2dF32(8, 128, [](int64_t r, int64_t c) {
+    return static_cast<float>(c % 3);  // 0, 1, 2: masks disagree only on 1.
+  });
+  xla::Literal expected = Make2dF32(
+      8, 128, [](int64_t r, int64_t c) { return c % 3 == 1 ? 0.0f : 1.0f; });
+
+  RunAndCompare(std::move(kernel), {&input}, expected);
+}
+
+// Like EqualityOfBoolMasks, for `!=`.
+TEST_F(KilnE2eTest, InequalityOfBoolMasks) {
+  TT_ASSERT_OK_AND_ASSIGN(
+      Kernel kernel,
+      CreateKernel(GridSpec{.name = "bool_mask_ne_e2e", .grid = {1}},
+                   InSpec{f32(8, 128)}, OutSpec{f32(8, 128)},
+                   [](VmemRef in, VmemRef out) {
+                     Tile x = Load(in);
+                     Store(out, Select((x > 0.0) != (x > 1.0), x.Full(1.0),
+                                       x.Full(0.0)));
+                   }));
+
+  xla::Literal input = Make2dF32(8, 128, [](int64_t r, int64_t c) {
+    return static_cast<float>(c % 3);  // 0, 1, 2: masks disagree only on 1.
+  });
+  xla::Literal expected = Make2dF32(
+      8, 128, [](int64_t r, int64_t c) { return c % 3 == 1 ? 1.0f : 0.0f; });
 
   RunAndCompare(std::move(kernel), {&input}, expected);
 }

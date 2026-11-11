@@ -83,6 +83,7 @@ torch_tpu_cc_test(
         "@xla//xla:literal",
         "@xla//xla:literal_util",
         "@xla//xla:shape_util",
+        "@xla//xla:types",
         "@xla//xla/hlo/ir:hlo",
         "@xla//xla/pjrt:pjrt_client",
         "@xla//xla/service:hlo_module_config",
