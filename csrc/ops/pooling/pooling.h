@@ -24,20 +24,12 @@
 #include "absl/status/statusor.h"
 #include "c10/util/ArrayRef.h"
 #include "csrc/common/dimension_types.h"
-#include "mlir/IR/Attributes.h"
-#include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
-#include "mlir/IR/Types.h"
 #include "mlir/Support/LLVM.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 
 namespace torch_tpu {
-
-// Returns the initial reduction value attribute for max pooling: -inf for
-// floating-point types and the minimum finite value for integer types.
-mlir::Attribute GetMaxPoolInitValueAttr(mlir::Type element_type,
-                                        mlir::OpBuilder& builder);
 
 struct BatchInput {
   mlir::MlirOp batch_input;

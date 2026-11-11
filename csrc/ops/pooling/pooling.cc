@@ -27,29 +27,15 @@
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/ops/op_builder_utils.h"
-#include "llvm/ADT/APFloat.h"
-#include "llvm/Support/Casting.h"
-#include "mlir/IR/Attributes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
-#include "mlir/IR/Types.h"
 #include "mlir/Support/LLVM.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 
 namespace torch_tpu {
-
-mlir::Attribute GetMaxPoolInitValueAttr(mlir::Type element_type,
-                                        mlir::OpBuilder& builder) {
-  if (const auto float_type = llvm::dyn_cast<mlir::FloatType>(element_type)) {
-    return mlir::FloatAttr::get(
-        element_type, llvm::APFloat::getInf(float_type.getFloatSemantics(),
-                                            /*Negative=*/true));
-  }
-  return GetMinFiniteValueAttr(element_type, builder);
-}
 
 // Adds a batch dimension of size 1 if the input tensor doesn't have it.
 // Returns the batch input and the original dimension size.
