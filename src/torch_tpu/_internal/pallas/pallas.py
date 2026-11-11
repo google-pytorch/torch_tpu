@@ -1110,10 +1110,15 @@ class JaxCallable:
     self._param_name_to_idx = {
         p.name: idx for idx, p in enumerate(self._orig_params)
     }
-    num_orig_params = len(self._orig_params)
+    # Donate exactly what the exported module donates, which `jax.jit` decided
+    # when it resolved `donate_argnums` (JAX < 0.12 ignores negative indices).
+    # Before tracing, JAX only exposes this through the private `_jit_info`.
+    # The deprecated input_output_aliases aren't passed to `jax.jit`, so their
+    # keys are added separately.
+    jit_info = jit_fn._jit_info  # pylint: disable=protected-access
     self._donate_argnums_set = {
-        idx + num_orig_params if idx < 0 and num_orig_params > 0 else idx
-        for idx in self.donate_argnums
+        *jit_info.donate_argnums,
+        *self.input_output_aliases,
     }
 
     logging.debug("Creating JAX callable: %s", self)
