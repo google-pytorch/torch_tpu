@@ -78,8 +78,8 @@ absl::StatusOr<mlir::MlirOp> BuildEqualShlo(mlir::MlirOp self_input,
 
 bool AtenEqual(const at::Tensor& self, const at::Tensor& other) {
   TT_KERNEL(OpName::kEqual, param_keys, (self, other), {
-    TT_THROW_IF_ERROR(GetBaseBuffer(self).status());
-    TT_THROW_IF_ERROR(GetBaseBuffer(other).status());
+    TT_THROW_IF_ERROR(PeekBaseBuffer(self).status());
+    TT_THROW_IF_ERROR(PeekBaseBuffer(other).status());
     if (self.sizes() != other.sizes()) {
       return false;
     }
