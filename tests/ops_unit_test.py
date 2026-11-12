@@ -5135,6 +5135,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     expected_tensor = torch.tensor(expected, dtype=dtype, device="tpu")
     self.assertEqual(tpu_result, expected_tensor)
 
+  @utils.skip_if_asan("b/585144709: Slow (~425s) in ASAN mode.")
   def test_histc_mixed_int_float_bounds(self):
     # Regression test for b/579088881: mixed int/float Python scalar bounds
     # (including the default min=0 with float max).
@@ -7741,16 +7742,13 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       ),
   )
   def test_boolean_indexing(self, x_fn, mask_fn, index_fn):
-    # TODO(b/584350545): 1d_long_mask times out under ASAN. Skip this case
-    # under ASAN mode only.
-    if self._testMethodName.endswith("_1d_long_mask"):
-      import ctypes  # pylint: disable=g-import-not-at-top
-
-      try:
-        if hasattr(ctypes.CDLL(None), "__asan_init"):
-          self.skipTest("b/584350545: Times out in ASAN mode.")
-      except (OSError, TypeError, AttributeError):
-        pass
+    # TODO(b/584350545): 1d_long_mask and same_rank_mask time out / are slow
+    # under ASAN. Skip these cases under ASAN mode only.
+    if (
+        self._testMethodName.endswith(("_1d_long_mask", "_same_rank_mask"))
+        and utils.is_asan()
+    ):
+      self.skipTest("b/584350545: Times out in ASAN mode.")
 
     x = x_fn()
     mask = mask_fn()
@@ -8242,6 +8240,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         )
     )
 
+  @utils.skip_if_asan("b/585144754: Slow (~376s) in ASAN mode.")
   def test_nonzero(self):
     # empty tensor
     self.assert_close_tpu_vs_cpu(
@@ -13145,6 +13144,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       ],
       full_matrices=[True, False],
   )
+  @utils.skip_if_asan("b/585143567: Slow / times out in ASAN mode.")
   def test_linalg_svd_float64(self, shape, full_matrices):
     input_tensor = torch.randn(shape, dtype=torch.float64)
     self._test_svd_helper(input_tensor, full_matrices=full_matrices)
@@ -13173,6 +13173,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       {"some": True},
       {"some": False},
   )
+  @utils.skip_if_asan("b/585143567: Slow in ASAN mode.")
   def test_torch_legacy_svd(self, some):
     input_tensor = torch.randn(5, 3, dtype=torch.float64)
 
@@ -13336,6 +13337,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       ],
       zero_dims=[1, 2],
   )
+  @utils.skip_if_asan("b/585143567: Slow in ASAN mode.")
   def test_linalg_svd_rank_deficient(self, shape, zero_dims):
     input_tensor = torch.randn(shape, dtype=torch.float64)
     m, n = shape
@@ -13349,6 +13351,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
   @parameterized.product(
       zero_dims_batch=[(0, 1), (2, 1)],
   )
+  @utils.skip_if_asan("b/585143567: Slow in ASAN mode.")
   def test_linalg_svd_rank_deficient_batched(self, zero_dims_batch):
     shape = (2, 5, 3)
     input_tensor = torch.randn(shape, dtype=torch.float64)
@@ -13369,6 +13372,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
           (2, 1000),  # Large wide, QR preprocess
       ]
   )
+  @utils.skip_if_asan("b/585143567: Slow in ASAN mode.")
   def test_linalg_svd_large(self, shape):
     input_tensor = torch.randn(shape, dtype=torch.float64)
     self._test_svd_helper(input_tensor, full_matrices=False)
@@ -13391,6 +13395,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(run)
 
+  @utils.skip_if_asan("b/585143567: Slow in ASAN mode.")
   def test_linalg_svd_variants(self):
     dtype = torch.float64
     shape = (5, 3)
@@ -22161,17 +22166,13 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
   )
   def test_scaled_dot_product_attention(self, config: ops_test_data.SdpaConfig):
     """Tests torch.nn.functional.scaled_dot_product_attention."""
-    # TODO(b/584779986): Long sequence lengths (>= 8192) take too long (> 20m)
-    # under ASAN for CPU reference autograd backward calculation, leading to
-    # shard timeouts. Skip this case under ASAN mode only.
-    if config.q_seq_len >= 8192 or config.kv_seq_len >= 8192:
-      import ctypes  # pylint: disable=g-import-not-at-top
-
-      try:
-        if hasattr(ctypes.CDLL(None), "__asan_init"):
-          self.skipTest("b/584779986: Times out in ASAN mode.")
-      except (OSError, TypeError, AttributeError):
-        pass
+    # TODO(b/584779986): Long sequence lengths (>= 2048) take too long under
+    # ASAN for CPU reference autograd backward calculation, leading to shard
+    # timeouts. Skip these cases under ASAN mode only.
+    if (
+        config.q_seq_len >= 2048 or config.kv_seq_len >= 2048
+    ) and utils.is_asan():
+      self.skipTest("b/584779986: Times out in ASAN mode.")
 
     torch.manual_seed(5432)
     q = torch.randn(
@@ -22867,6 +22868,7 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
   @parameterized.product(
       seq_len=[1024, 1152, 2176], mask=["none", "causal", "bool"]
   )
+  @utils.skip_if_asan("b/584779986: Slow in ASAN mode.")
   def test_scaled_dot_product_attention_dropout_backward_uses_forward_mask(
       self, seq_len: int, mask: str
   ):
@@ -23634,6 +23636,7 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
       with self.subTest(f"{name}_grad"):
         utils.assert_close(compiled, eager, rtol=1e-2, atol=1e-2)
 
+  @utils.skip_if_asan("b/585144512: Slow (~805s) in ASAN mode.")
   def test_pointwise_op_dtype_promotion(self):
     """Ensure that pointwise ops promote as expected.
 
@@ -24519,6 +24522,7 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
         )
     )
 
+  @utils.skip_if_asan("b/584779384: Slow in ASAN mode.")
   def test_polygamma_integral_default_dtype(self):
     # Test integral inputs under default_dtype=float64 compute in float64
     # matching CPU (b/568040996).
@@ -24547,14 +24551,8 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
         # TODO(b/584779384): float64 polygamma with out= generates > 70k HLO
         # instructions, which takes > 25 mins to optimize under ASAN and causes
         # shard timeouts. Skip this case under ASAN mode only.
-        if in_dtype == torch.float64:
-          import ctypes  # pylint: disable=g-import-not-at-top
-
-          try:
-            if hasattr(ctypes.CDLL(None), "__asan_init"):
-              self.skipTest("b/584779384: Times out in ASAN mode.")
-          except (OSError, TypeError, AttributeError):
-            pass
+        if in_dtype == torch.float64 and utils.is_asan():
+          self.skipTest("b/584779384: Times out in ASAN mode.")
 
         def test_fn(device, in_dtype=in_dtype, out_dtype=out_dtype):
           x = to(torch.tensor([1.5, 2.5], dtype=in_dtype), device=device)

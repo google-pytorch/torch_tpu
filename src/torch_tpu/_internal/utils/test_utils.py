@@ -18,12 +18,14 @@ import collections
 from collections.abc import Callable
 from collections.abc import Iterator
 import contextlib
+import ctypes
 import dataclasses
 import enum
 import logging  # PYTHON_LOGGING_OK=Needs logging.Handler to capture torch's stdlib trace_log records.
 import math
 import re
-from typing import Any, TypeAlias
+from typing import Any, TypeAlias, TypeVar
+import unittest
 
 import numpy as np
 import torch
@@ -908,3 +910,19 @@ def capture_trace_artifacts() -> Iterator[list[TraceArtifact]]:
 get_torch_version = utils.get_torch_version
 libtpu_version = utils.libtpu_version
 parse_version = utils.parse_version
+
+
+def is_asan() -> bool:
+  """Returns True if running under AddressSanitizer (ASAN)."""
+  try:
+    return hasattr(ctypes.CDLL(None), "__asan_init")
+  except (OSError, TypeError, AttributeError):
+    return False
+
+
+_T = TypeVar("_T", bound=Callable[..., Any])
+
+
+def skip_if_asan(reason: str) -> Callable[[_T], _T]:
+  """Decorator to skip a test method or class when running under ASAN."""
+  return unittest.skipIf(is_asan(), reason)
