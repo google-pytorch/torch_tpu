@@ -24,6 +24,7 @@
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
 #include "ATen/ops/empty.h"
+#include "absl/base/optimization.h"
 #include "absl/cleanup/cleanup.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
@@ -39,6 +40,7 @@
 #include "csrc/eager/current_stream.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/events_queue.h"
+#include "csrc/eager/graph_capture_state.h"
 #include "csrc/eager/host_allocator.h"
 #include "csrc/eager/materialize.h"
 #include "csrc/eager/split_traversal.h"
@@ -123,17 +125,27 @@ absl::Status CopyDeviceBufferRefToCpuPtrImpl(
          "depends on a placeholder. \nPlaceholder tensors should only "
          "appear in compiled mode, which should never try to "
          "materialize tensors";
+  if (transfer_sync_mode == TransferSyncMode::kIsolated) {
+    TT_RET_CHECK(src_buffer_ref.is_materializing(), error::kFailedPrecondition)
+        << "cannot materialize a tensor during a stream-isolated copy, "
+           "materialization requires an active stream";
+    auto transfer =
+        (dst_pinned_ptr != nullptr
+             ? DeviceToHostTransfer::IntoTensor(src_buffer_ref, dest_ptr,
+                                                dst_pinned_ptr)
+             : DeviceToHostTransfer::IntoBytes(src_buffer_ref, dest_ptr));
+    return transfer.Run().Await();
+  }
+
+  if (ABSL_PREDICT_FALSE(IsCurrentThreadCapturingGraph())) {
+    return MaterializeWhileCapturingGraphError();
+  }
+
   auto transfer =
       (dst_pinned_ptr != nullptr
            ? DeviceToHostTransfer::IntoTensor(src_buffer_ref, dest_ptr,
                                               dst_pinned_ptr)
            : DeviceToHostTransfer::IntoBytes(src_buffer_ref, dest_ptr));
-  if (transfer_sync_mode == TransferSyncMode::kIsolated) {
-    TT_RET_CHECK(src_buffer_ref.is_materializing(), error::kFailedPrecondition)
-        << "cannot materialize a tensor during a stream-isolated copy, "
-           "materialization requires an active stream";
-    return transfer.Run().Await();
-  }
 
   if (transfer_sync_mode == TransferSyncMode::kEagerNonBlocking) {
     // Start a background materialization of src_buffer_ref (unless it's already
