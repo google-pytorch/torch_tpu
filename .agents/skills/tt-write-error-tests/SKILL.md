@@ -1,20 +1,41 @@
 ---
 name: tt-write-error-tests
 description: >-
-  Guides authoring, formatting, and placing error tests in TorchTPU across
-  errors_test.py, tpu_errors_test.py, and distributed/collective_errors_test.py.
-  Use when writing tests for C++ error checks and other user-facing errors
-  reachable when using TorchTPU, verifying error message quality and GPU parity,
-  structuring et.assert_raises_message calls, applying @et.gpu_crashes_or_raises or
-  @et.why_tpu_only decorators, or deciding between triple-quoted strings and regex.
-  Don't use for functional/behavioral op tests (use tt-write-tests or
-  ops_unit_test.py) or internal harness utilities.
+  Guides formatting C++ error messages and authoring, structuring, and placing
+  error tests in TorchTPU across errors_test.py, tpu_errors_test.py, and
+  distributed/collective_errors_test.py. Use when writing or reviewing
+  user-facing or internal C++ error messages, writing tests for C++ error checks
+  and other user-facing errors reachable when using TorchTPU, verifying error
+  message quality and GPU parity, structuring et.assert_raises_message calls,
+  applying @et.gpu_crashes_or_raises or @et.why_tpu_only decorators, or deciding
+  between triple-quoted strings and regex. Don't use for functional/behavioral
+  op tests (use tt-write-tests or ops_unit_test.py) or internal harness
+  utilities.
 ---
 
 # TorchTPU Error Testing
 
-Guidelines and instructions for authoring, structuring, and placing error tests
-in TorchTPU.
+Guidelines and instructions for formatting C++ error messages and authoring,
+structuring, and placing error tests in TorchTPU.
+
+--------------------------------------------------------------------------------
+
+## Error Message Format
+
+*   **End-user error messages**: Apply these rules to all user-facing error
+    messages, including when adapting upstream PyTorch messages. Start with a
+    lowercase letter and omit trailing punctuation. Do not start with an op or
+    function name (e.g., `"op(): ..."` or `"op() ..."`); for op kernels,
+    `TT_KERNEL` prepends `"op(): "` automatically. Prefer
+    `expected <condition>, got <actual>` (required when using `"expected"` or
+    `"got"`), and write `>= 0` instead of `"non-negative"`. Use PyTorch concepts
+    rather than C++ internals, and format values and PyTorch dtype names (e.g.,
+    `float32`, not `f32`) with `ToString(value)`. Write tensor dimensionality as
+    `<N>D` (e.g., `0D`, `2D`) or symbolic `<n>-D`.
+*   **Internal error messages**: Error messages for crashing macros (e.g.,
+    `ABSL_CHECK`) should be complete sentences with proper capitalization and
+    ending punctuation; include a `". This is a TorchTPU bug."` suffix to make
+    it clear it's not the user's fault.
 
 --------------------------------------------------------------------------------
 

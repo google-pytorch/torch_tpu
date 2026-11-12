@@ -81,6 +81,9 @@ layout check). In addition, follow these conventions:
     possible, split a large change into a series of pull requests.
 *   **Format Before Pushing**: Run `nox -s format` before every push, and make
     sure `nox -s lint` passes.
+*   **Error Messages**: When adding or modifying user-facing or internal
+    (`ABSL_CHECK`) error messages in C++, follow
+    [`tt-write-error-tests`](.agents/skills/tt-write-error-tests/SKILL.md#error-message-format).
 *   **Log Macros**: Use log macros that start with `ABSL_` (e.g. `ABSL_LOG`
     instead of `LOG`, `ABSL_CHECK` instead of `CHECK`, etc).
 *   **Const**: Make a variable or function parameter `const` unless there's a
@@ -233,7 +236,8 @@ its `SKILL.md` and follow it.
 *   [`tt-write-docs`](.agents/skills/tt-write-docs/SKILL.md): writing, editing,
     or reviewing narrative documentation or README content.
 *   [`tt-write-error-tests`](.agents/skills/tt-write-error-tests/SKILL.md):
-    writing and placing tests for user-facing errors (`errors_test.py`,
-    `tpu_errors_test.py`, `collective_errors_test.py`).
+    formatting C++ error messages and writing and placing tests for user-facing
+    errors (`errors_test.py`, `tpu_errors_test.py`,
+    `collective_errors_test.py`).
 *   [`tt-write-tests`](.agents/skills/tt-write-tests/SKILL.md): writing tests
     and configuring test targets.
