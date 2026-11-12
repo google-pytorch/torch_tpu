@@ -28,6 +28,7 @@
 #include "absl/base/nullability.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/types/span.h"
 #include "c10/core/Device.h"
 #include "c10/core/Stream.h"
 #include "csrc/common/cache_key.h"
@@ -38,6 +39,7 @@
 #include "csrc/eager/execution_task.h"
 #include "csrc/eager/split_traversal.h"
 #include "csrc/eager/structured_log_buffer.h"
+#include "csrc/eager/traversal.h"
 #include "csrc/pjrt/pjrt_transfer.h"
 #include "xla/future.h"
 
@@ -331,12 +333,12 @@ absl::Status InsertGraphBreak(
     std::vector<SharedDeviceBufferList> must_materialize,
     MaterializationReason reason, GraphSplitMode mode);
 
-// Records that a graph capture begins on the given stream, which then reports
-// that it is capturing (see IsStreamCapturing()) until EndStreamGraphCapture().
-// Returns false, and records nothing, if a graph capture is already in progress
-// on the stream, if the device index is invalid, or if `stream_id` is not the
-// ID of a non-default stream: like on CUDA, the default stream cannot be
-// captured.
+// Records that the current thread begins a graph capture on the given stream,
+// and owns it. The stream then reports that it is capturing (see
+// IsStreamCapturing()) until EndStreamGraphCapture(). Returns false, and
+// records nothing, if a graph capture is already in progress on the stream, if
+// the device index is invalid, or if `stream_id` is not the ID of a non-default
+// stream: like on CUDA, the default stream cannot be captured.
 [[nodiscard]] bool TryBeginStreamGraphCapture(c10::DeviceIndex device_index,
                                               c10::StreamId stream_id);
 
@@ -346,11 +348,43 @@ void EndStreamGraphCapture(c10::DeviceIndex device_index,
                            c10::StreamId stream_id);
 
 // Returns whether a graph capture is in progress on the given stream, as
-// `c10::Stream::is_capturing()` reports. Returns false for an invalid device
-// index or stream ID. Unlike the functions that record work on a stream, this
-// never creates the state of the stream.
+// `c10::Stream::is_capturing()` reports, including a capture that an error
+// invalidated (see InvalidateStreamGraphCapture()). Returns false for an
+// invalid device index or stream ID. Unlike the functions that record work on a
+// stream, this never creates the state of the stream.
 [[nodiscard]] bool IsStreamCapturing(c10::DeviceIndex device_index,
                                      c10::StreamId stream_id);
+
+// Returns whether the current thread owns the graph capture in progress on the
+// given stream. Never creates the state of the stream.
+[[nodiscard]] bool IsStreamCapturedByCurrentThread(
+    c10::DeviceIndex device_index, c10::StreamId stream_id);
+
+// Invalidates the graph capture in progress on the given stream, if any:
+// records `error` as the reason why the capture failed, unless an earlier error
+// did. Like a CUDA graph capture after an operation that is not permitted
+// during capture, the capture continues, and the stream reports that it is
+// capturing, until EndStreamGraphCapture(); ending the capture then fails.
+void InvalidateStreamGraphCapture(c10::DeviceIndex device_index,
+                                  c10::StreamId stream_id, absl::Status error);
+
+// Returns the error that invalidated the graph capture in progress on the given
+// stream, or OK if no error invalidated it or no capture is in progress.
+absl::Status GetStreamGraphCaptureError(c10::DeviceIndex device_index,
+                                        c10::StreamId stream_id);
+
+// Extracts the deferred ops recorded on the given stream since the last
+// synchronization, and builds the Traversals that produce `must_materialize`
+// and the side-effecting ops, with `GraphSplitMode::kFullGraph`, without
+// enqueueing them for materialization. Used by `torch.accelerator.Graph`.
+std::vector<absl_nonnull std::unique_ptr<Traversal>> ExtractCapturedTraversals(
+    c10::DeviceIndex device_index, c10::StreamId stream_id,
+    absl::Span<const SharedDeviceBufferList> must_materialize);
+
+// Returns the error for using the contents of a tensor that a graph capture in
+// progress read or wrote: until the capture ends, they are only known to the
+// captured graph.
+absl::Status TensorAccessedByGraphCaptureError();
 
 void WriteBackMaterializationFutures(
     c10::DeviceIndex device_index, c10::StreamId stream_id,
