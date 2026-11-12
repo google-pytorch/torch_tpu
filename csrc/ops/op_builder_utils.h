@@ -23,6 +23,7 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "ATen/ExpandUtils.h"
 #include "ATen/core/ATen_fwd.h"
@@ -192,6 +193,30 @@ Dimensions GetStaticShape(const mlir::stablehlo::Dimensions& dims);
 // Returns the static shape of the input op. For bounded dynamic dimensions, the
 // upper bound is returned.
 Dimensions GetStaticShape(mlir::MlirOp input);
+
+// An operand made static at its upper bounds.
+struct StaticAtBounds {
+  mlir::MlirOp op;
+  // Runtime size of each bounded dimension, nullopt for static dimensions.
+  std::vector<std::optional<mlir::MlirOp>> runtime_sizes;
+};
+
+// Makes `input` static at its upper bounds, keeping the runtime sizes of its
+// bounded dimensions.
+StaticAtBounds MakeStaticAtBounds(mlir::MlirOp input);
+
+// Restores bounded dynamic dimension sizes on `operand` for each non-nullopt
+// entry in `runtime_sizes`.
+mlir::MlirOp RestoreDynamicDimSizes(
+    mlir::MlirOp operand,
+    absl::Span<const std::optional<mlir::MlirOp>> runtime_sizes);
+
+// Replaces elements of static `input` at indices >= `runtime_sizes[dim]`
+// with `fill_value` across every non-nullopt dimension in `runtime_sizes`.
+// `fill_value` may be a scalar tensor or match the shape of `input`.
+mlir::MlirOp FillPastRuntimeSizes(
+    mlir::MlirOp input, mlir::MlirOp fill_value,
+    absl::Span<const std::optional<mlir::MlirOp>> runtime_sizes);
 
 // Returns the bytecode of the module.
 absl::StatusOr<std::string> SerializeBytecode(mlir::ModuleOp module);

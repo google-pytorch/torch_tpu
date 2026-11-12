@@ -170,33 +170,6 @@ mlir::MlirOp ConvolutionResultSize(const ConvolutionWindow& window,
   return stablehlo::Div(numerator, stride);
 }
 
-// An operand made static at its upper bounds.
-struct StaticAtBounds {
-  mlir::MlirOp op;
-  // Runtime size of each bounded dimension, nullopt for static dimensions.
-  std::vector<std::optional<mlir::MlirOp>> runtime_sizes;
-};
-
-// Makes `input` static at its upper bounds, keeping the runtime sizes of its
-// bounded dimensions.
-StaticAtBounds MakeStaticAtBounds(mlir::MlirOp input) {
-  const mlir::RankedTensorType type = GetTensorTypeOrDie(input);
-  const stablehlo::Dimensions dims = GetDimensions(input);
-  const mlir::Type i32_type = input.getBuilder().getOpBuilder().getI32Type();
-  StaticAtBounds result{
-      .op = input,
-      .runtime_sizes = std::vector<std::optional<mlir::MlirOp>>(type.getRank()),
-  };
-  for (int64_t dim = 0; dim < type.getRank(); ++dim) {
-    if (!type.isDynamicDim(dim)) continue;
-    result.runtime_sizes[dim] = stablehlo::GetDimensionSize(input, dim);
-    mlir::MlirOp bound =
-        MakeScalarConstant(input.getBuilder(), dims[dim].size, i32_type);
-    result.op = stablehlo::SetDimensionSize(result.op, bound, dim);
-  }
-  return result;
-}
-
 // Returns whether `dims` has any bounded dynamic dimension.
 bool HasBoundedDimension(const std::optional<stablehlo::Dimensions>& dims) {
   return dims.has_value() &&
@@ -225,25 +198,22 @@ mlir::MlirOp ZeroPastRuntimeSizes(
     mlir::MlirOp input,
     const std::vector<std::optional<mlir::MlirOp>>& runtime_sizes,
     const std::optional<int64_t> unzeroed_dim = std::nullopt) {
-  std::optional<mlir::MlirOp> in_bounds;
-  for (int64_t dim = 0; dim < static_cast<int64_t>(runtime_sizes.size());
-       ++dim) {
-    if (dim == unzeroed_dim || !runtime_sizes[dim].has_value()) continue;
-    mlir::MlirOp runtime_size = *runtime_sizes[dim];
-    mlir::MlirOp index =
-        stablehlo::IotaLike(input, dim, mlir::ElementType::I32);
-    mlir::MlirOp size =
-        stablehlo::BroadcastInDim(GetTensorTypeOrDie(index), runtime_size,
-                                  /*broadcast_dimensions=*/{});
-    mlir::MlirOp dim_in_bounds =
-        stablehlo::Compare(index, size, stablehlo::ComparisonDirection::LT);
-    in_bounds = in_bounds.has_value()
-                    ? stablehlo::And(*in_bounds, dim_in_bounds)
-                    : dim_in_bounds;
+  std::vector<std::optional<mlir::MlirOp>> mask_sizes = runtime_sizes;
+  if (unzeroed_dim.has_value() && *unzeroed_dim >= 0 &&
+      *unzeroed_dim < static_cast<int64_t>(mask_sizes.size())) {
+    mask_sizes[*unzeroed_dim] = std::nullopt;
   }
-  if (!in_bounds.has_value()) return input;
-  mlir::MlirOp zero = MakeConstantLike(input, 0);
-  return stablehlo::Select(*in_bounds, input, zero);
+  bool has_value = false;
+  for (const std::optional<mlir::MlirOp> size : mask_sizes) {
+    if (size.has_value()) {
+      has_value = true;
+      break;
+    }
+  }
+  if (!has_value) {
+    return input;
+  }
+  return FillPastRuntimeSizes(input, MakeConstantLike(input, 0), mask_sizes);
 }
 
 // Returns the windows of the convolution spatial dimensions. Absent window
@@ -432,6 +402,87 @@ Dimensions GetStaticShape(const mlir::stablehlo::Dimensions& dims) {
 
 Dimensions GetStaticShape(mlir::MlirOp input) {
   return GetStaticShape(GetDimensions(input));
+}
+
+StaticAtBounds MakeStaticAtBounds(mlir::MlirOp input) {
+  const mlir::RankedTensorType type = GetTensorTypeOrDie(input);
+  const stablehlo::Dimensions dims = GetDimensions(input);
+  const mlir::Type i32_type = input.getBuilder().getOpBuilder().getI32Type();
+  StaticAtBounds result{
+      .op = input,
+      .runtime_sizes = std::vector<std::optional<mlir::MlirOp>>(type.getRank()),
+  };
+  for (int64_t dim = 0; dim < type.getRank(); ++dim) {
+    if (!type.isDynamicDim(dim)) {
+      continue;
+    }
+    result.runtime_sizes[dim] = stablehlo::GetDimensionSize(input, dim);
+    mlir::MlirOp bound =
+        MakeScalarConstant(input.getBuilder(), dims[dim].size, i32_type);
+    result.op = stablehlo::SetDimensionSize(result.op, bound, dim);
+  }
+  return result;
+}
+
+mlir::MlirOp RestoreDynamicDimSizes(
+    mlir::MlirOp operand,
+    absl::Span<const std::optional<mlir::MlirOp>> runtime_sizes) {
+  ABSL_CHECK_EQ(  // CRASH_OK
+      static_cast<int64_t>(runtime_sizes.size()),
+      GetTensorTypeOrDie(operand).getRank())
+      << "Expected runtime_sizes to match operand rank. This is a TorchTPU "
+         "bug.";
+  for (int64_t dim = 0; dim < static_cast<int64_t>(runtime_sizes.size());
+       ++dim) {
+    if (runtime_sizes[dim].has_value()) {
+      mlir::MlirOp size = *runtime_sizes[dim];
+      operand = mlir::stablehlo::SetDimensionSize(operand, size, dim);
+    }
+  }
+  return operand;
+}
+
+mlir::MlirOp FillPastRuntimeSizes(
+    mlir::MlirOp input, mlir::MlirOp fill_value,
+    absl::Span<const std::optional<mlir::MlirOp>> runtime_sizes) {
+  ABSL_CHECK_EQ(  // CRASH_OK
+      static_cast<int64_t>(runtime_sizes.size()),
+      GetTensorTypeOrDie(input).getRank())
+      << "Expected runtime_sizes to match input rank. This is a TorchTPU "
+         "bug.";
+  std::optional<mlir::MlirOp> in_bounds;
+  for (int64_t dim = 0; dim < static_cast<int64_t>(runtime_sizes.size());
+       ++dim) {
+    if (!runtime_sizes[dim].has_value()) {
+      continue;
+    }
+    mlir::MlirOp runtime_size = *runtime_sizes[dim];
+    mlir::MlirOp index =
+        mlir::stablehlo::IotaLike(input, dim, mlir::ElementType::I32);
+    mlir::MlirOp size =
+        mlir::stablehlo::BroadcastInDim(GetTensorTypeOrDie(index), runtime_size,
+                                        /*broadcast_dimensions=*/{});
+    mlir::MlirOp dim_in_bounds = mlir::stablehlo::Compare(
+        index, size, mlir::stablehlo::ComparisonDirection::LT);
+    in_bounds = in_bounds.has_value()
+                    ? mlir::stablehlo::And(*in_bounds, dim_in_bounds)
+                    : dim_in_bounds;
+  }
+  if (!in_bounds.has_value()) {
+    return input;
+  }
+  const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
+  const mlir::RankedTensorType fill_type = GetTensorTypeOrDie(fill_value);
+  ABSL_CHECK(  // CRASH_OK
+      fill_type.getRank() == 0 || fill_type.getShape() == input_type.getShape())
+      << "Expected fill_value to be a scalar or match input shape. This is a "
+         "TorchTPU bug.";
+  mlir::MlirOp fill_tensor = fill_value;
+  if (fill_type.getShape() != input_type.getShape()) {
+    fill_tensor = mlir::stablehlo::BroadcastInDim(input_type, fill_value,
+                                                  /*broadcast_dimensions=*/{});
+  }
+  return mlir::stablehlo::Select(*in_bounds, input, fill_tensor);
 }
 
 std::string DebugString(mlir::Operation* absl_nonnull op,

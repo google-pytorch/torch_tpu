@@ -1123,6 +1123,113 @@ TEST(GetStaticShape, ReturnsUpperBoundsForBoundedDims) {
   EXPECT_THAT(GetStaticShape(op), ElementsAre(2, 13, 5));
 }
 
+TEST(MakeStaticAtBounds, BoundedDimsLiftedToStaticUpperBounds) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp input = MakeBoundedArg(fb, {2, 13, 5}, /*bound_dims=*/{1});
+  StaticAtBounds static_operand = MakeStaticAtBounds(input);
+  mlir::func::Return(fb, static_operand.op);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+
+  EXPECT_TRUE(GetTensorTypeOrDie(static_operand.op).hasStaticShape());
+  EXPECT_THAT(GetStaticShape(static_operand.op), ElementsAre(2, 13, 5));
+  ASSERT_EQ(static_operand.runtime_sizes.size(), 3);
+  EXPECT_FALSE(static_operand.runtime_sizes[0].has_value());
+  ASSERT_TRUE(static_operand.runtime_sizes[1].has_value());
+  EXPECT_FALSE(static_operand.runtime_sizes[2].has_value());
+  auto set_size = static_operand.op.getValue()
+                      .getDefiningOp<mlir::stablehlo::SetDimensionSizeOp>();
+  ASSERT_TRUE(set_size) << DebugString(module.get());
+  EXPECT_EQ(set_size.getDimension(), 1);
+}
+
+TEST(RestoreDynamicDimSizes, RestoresBoundedDynamicDims) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp input = MakeBoundedArg(fb, {2, 13, 5}, /*bound_dims=*/{1});
+  StaticAtBounds static_input = MakeStaticAtBounds(input);
+  mlir::MlirOp restored =
+      RestoreDynamicDimSizes(static_input.op, static_input.runtime_sizes);
+  mlir::func::Return(fb, restored);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+
+  const mlir::RankedTensorType type = GetTensorTypeOrDie(restored);
+  EXPECT_FALSE(type.isDynamicDim(0));
+  EXPECT_TRUE(type.isDynamicDim(1));
+  EXPECT_FALSE(type.isDynamicDim(2));
+  EXPECT_THAT(GetStaticShape(restored), ElementsAre(2, 13, 5));
+  const mlir::stablehlo::Dimensions dims = GetDimensions(restored);
+  ASSERT_EQ(dims.size(), 3);
+  EXPECT_FALSE(dims[0].boundOp.has_value());
+  EXPECT_TRUE(dims[1].boundOp.has_value());
+  EXPECT_FALSE(dims[2].boundOp.has_value());
+  auto set_size =
+      restored.getValue().getDefiningOp<mlir::stablehlo::SetDimensionSizeOp>();
+  ASSERT_TRUE(set_size) << DebugString(module.get());
+  EXPECT_EQ(set_size.getDimension(), 1);
+}
+
+TEST(FillPastRuntimeSizes, ScalarFillValue) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp input = MakeBoundedArg(fb, {4, 8, 16}, /*bound_dims=*/{1});
+  StaticAtBounds static_input = MakeStaticAtBounds(input);
+  mlir::MlirOp fill_value =
+      MakeScalarConstant(fb, -1.0f, fb.getOpBuilder().getF32Type());
+  mlir::MlirOp filled = FillPastRuntimeSizes(static_input.op, fill_value,
+                                             static_input.runtime_sizes);
+  mlir::func::Return(fb, filled);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+
+  EXPECT_TRUE(GetTensorTypeOrDie(filled).hasStaticShape());
+  EXPECT_THAT(GetStaticShape(filled), ElementsAre(4, 8, 16));
+  auto select_op = filled.getValue().getDefiningOp<mlir::stablehlo::SelectOp>();
+  ASSERT_TRUE(select_op) << DebugString(module.get());
+}
+
+TEST(FillPastRuntimeSizes, SameShapeFillValue) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp input = MakeBoundedArg(fb, {4, 8}, /*bound_dims=*/{0});
+  StaticAtBounds static_input = MakeStaticAtBounds(input);
+  mlir::MlirOp fill_value =
+      MakeConstant(fb, 0.0f, fb.getOpBuilder().getF32Type(), {4, 8});
+  mlir::MlirOp filled = FillPastRuntimeSizes(static_input.op, fill_value,
+                                             static_input.runtime_sizes);
+  mlir::func::Return(fb, filled);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+
+  EXPECT_TRUE(GetTensorTypeOrDie(filled).hasStaticShape());
+  EXPECT_THAT(GetStaticShape(filled), ElementsAre(4, 8));
+  auto select_op = filled.getValue().getDefiningOp<mlir::stablehlo::SelectOp>();
+  ASSERT_TRUE(select_op) << DebugString(module.get());
+}
+
+TEST(FillPastRuntimeSizes, AllNulloptNoOp) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp input =
+      MakeConstant(fb, 1.0f, fb.getOpBuilder().getF32Type(), {4, 8});
+  std::vector<std::optional<mlir::MlirOp>> runtime_sizes(2, std::nullopt);
+  mlir::MlirOp fill_value =
+      MakeScalarConstant(fb, 0.0f, fb.getOpBuilder().getF32Type());
+  mlir::MlirOp filled = FillPastRuntimeSizes(input, fill_value, runtime_sizes);
+  EXPECT_EQ(filled.getValue(), input.getValue());
+}
+
 TEST(ReshapeToStaticDimensions, SameShapeReturnsInput) {
   OpBuilderUtilsBuilder op_builder_utils_builder;
   mlir::func::FunctionBuilder fb(op_builder_utils_builder.get(), "main");

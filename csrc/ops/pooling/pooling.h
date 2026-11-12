@@ -18,7 +18,6 @@
 #define TORCH_TPU_CSRC_OPS_POOLING_POOLING_H_
 
 #include <cstdint>
-#include <utility>
 #include <vector>
 
 #include "absl/status/statusor.h"
@@ -76,8 +75,19 @@ struct PaddingParams {
   int64_t right = 0;
 };
 
-// Calculates the adjusted (left_padding, right_padding) pairs given the padding
-// (which is symmetric) and ceil mode.
+// Window parameters across spatial dimensions for N-D pooling operations.
+struct PoolingWindowParams {
+  Dimensions kernel_size;
+  Dimensions stride;
+  Dimensions padding;
+  Dimensions dilation;
+  bool ceil_mode = false;
+};
+
+// Calculates the adjusted (left_padding, right_padding) pairs given symmetric
+// padding and ceil_mode. Dynamic spatial dimensions return symmetric {P, P}
+// padding here and apply runtime extra right padding via
+// PadDynamicCeilModeSpatialDims.
 std::vector<PaddingParams> CeilModePadding(
     const mlir::RankedTensorType& input_shape,  // (N, C, H, W)
     mlir::ArrayRef<int64_t> kernel_size,        // [K_h, K_w]
@@ -85,6 +95,26 @@ std::vector<PaddingParams> CeilModePadding(
     mlir::ArrayRef<int64_t> padding,            // [P_h, P_w]
     mlir::ArrayRef<int64_t> dilation,           // [D_h, D_w]
     bool ceil_mode);
+
+std::vector<PaddingParams> CeilModePadding(
+    const mlir::RankedTensorType& input_shape,
+    const PoolingWindowParams& params);
+
+// Returns true if `params.ceil_mode` is enabled and any dynamic spatial
+// dimension (starting at index 2 of `input_shape`) has `stride > 1`.
+bool HasDynamicCeilModePadding(const mlir::RankedTensorType& input_shape,
+                               const PoolingWindowParams& params);
+
+// Pads dynamic spatial dimensions of `operand` (starting at index 2) with
+// `pad_value` by the runtime extra right padding required by `ceil_mode` when
+// `stride > 1`, using the dynamic spatial sizes of `batch_input`. `operand`
+// must be dynamic on every dynamic spatial dimension of `batch_input` with
+// `stride > 1`. Returns `operand` unchanged when `HasDynamicCeilModePadding` is
+// false.
+mlir::MlirOp PadDynamicCeilModeSpatialDims(mlir::MlirOp operand,
+                                           mlir::MlirOp pad_value,
+                                           mlir::MlirOp batch_input,
+                                           const PoolingWindowParams& params);
 
 // Calculates the output dimensions for N-dimensional pooling operations (max
 // pool, avg pool, etc.).

@@ -1269,6 +1269,261 @@ class DynamismTest(seed_test_utils.RepeatableTest):
     self.assertEqual(act_dynamism_info[0].lower_bound, 2)
     self.assertEqual(act_dynamism_info[0].upper_bound, upper_bound)
 
+  def test_avg_pool_ceil_mode_stride_one_dynamic_spatial(self) -> None:
+    def pool_fn(tensor: torch.Tensor) -> torch.Tensor:
+      return torch.nn.functional.avg_pool2d(
+          tensor - 1.0,
+          3,
+          stride=1,
+          padding=1,
+          ceil_mode=True,
+          count_include_pad=False,
+      )
+
+    def mark_dynamic(tensor: torch.Tensor) -> None:
+      dynamism.mark_dynamic(tensor, 2, 2, 12)
+
+    for height in (9, 6):
+      input_tensor = torch.randn(1, 3, height, 9, dtype=torch.float64)
+      act = self._run_bounded_dynamism_test(pool_fn, mark_dynamic, input_tensor)
+      act_dynamism_info = dynamism.get_dynamism_info(act)
+      self.assertLen(act_dynamism_info, 1)
+      self.assertEqual(act_dynamism_info[0].dimension, 2)
+      self.assertEqual(act_dynamism_info[0].lower_bound, 2)
+      self.assertEqual(act_dynamism_info[0].upper_bound, 12)
+
+  def test_avg_pool_ceil_mode_dynamic_batch(self) -> None:
+    def pool_fn(tensor: torch.Tensor) -> torch.Tensor:
+      return torch.nn.functional.avg_pool2d(
+          tensor - 1.0,
+          3,
+          stride=2,
+          padding=1,
+          ceil_mode=True,
+          count_include_pad=True,
+      )
+
+    def mark_dynamic(tensor: torch.Tensor) -> None:
+      dynamism.mark_dynamic(tensor, 0, 2, 8)
+
+    for batch_size in (3, 5):
+      input_tensor = torch.randn(batch_size, 2, 6, 6, dtype=torch.float32)
+      act = self._run_bounded_dynamism_test(pool_fn, mark_dynamic, input_tensor)
+      act_dynamism_info = dynamism.get_dynamism_info(act)
+      self.assertLen(act_dynamism_info, 1)
+      self.assertEqual(act_dynamism_info[0].dimension, 0)
+      self.assertEqual(act_dynamism_info[0].lower_bound, 2)
+      self.assertEqual(act_dynamism_info[0].upper_bound, 8)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="avg_pool1d_count_include_pad_true",
+          spatial_dim_count=1,
+          count_include_pad=True,
+          divisor_override=None,
+      ),
+      dict(
+          testcase_name="avg_pool1d_count_include_pad_false",
+          spatial_dim_count=1,
+          count_include_pad=False,
+          divisor_override=None,
+      ),
+      dict(
+          testcase_name="avg_pool2d_count_include_pad_true",
+          spatial_dim_count=2,
+          count_include_pad=True,
+          divisor_override=None,
+      ),
+      dict(
+          testcase_name="avg_pool2d_count_include_pad_false",
+          spatial_dim_count=2,
+          count_include_pad=False,
+          divisor_override=None,
+      ),
+      dict(
+          testcase_name="avg_pool2d_divisor_override",
+          spatial_dim_count=2,
+          count_include_pad=True,
+          divisor_override=4,
+      ),
+  )
+  def test_avg_pool_ceil_mode_stride_gt_one_dynamic_spatial(
+      self,
+      spatial_dim_count: int,
+      count_include_pad: bool,
+      divisor_override: int | None,
+  ) -> None:
+    def pool_fn(tensor: torch.Tensor) -> torch.Tensor:
+      shifted_tensor = tensor - 1.0
+      if spatial_dim_count == 1:
+        return torch.nn.functional.avg_pool1d(
+            shifted_tensor,
+            3,
+            stride=2,
+            padding=1,
+            ceil_mode=True,
+            count_include_pad=count_include_pad,
+        )
+      return torch.nn.functional.avg_pool2d(
+          shifted_tensor,
+          3,
+          stride=2,
+          padding=1,
+          ceil_mode=True,
+          count_include_pad=count_include_pad,
+          divisor_override=divisor_override,
+      )
+
+    expected_upper_bounds = {7: 4, 12: 7}
+    for max_spatial_size in (7, 12):
+
+      def mark_dynamic(
+          tensor: torch.Tensor, upper_bound: int = max_spatial_size
+      ) -> None:
+        dynamism.mark_dynamic(tensor, 2, 4, upper_bound)
+
+      for spatial_size in (6, 7):
+        if spatial_dim_count == 1:
+          input_tensor = -torch.rand(1, 2, spatial_size, dtype=torch.float32)
+        else:
+          input_tensor = -torch.rand(1, 2, spatial_size, 6, dtype=torch.float32)
+
+        act = self._run_bounded_dynamism_test(
+            pool_fn, mark_dynamic, input_tensor
+        )
+        act_dynamism_info = dynamism.get_dynamism_info(act)
+        self.assertLen(act_dynamism_info, 1)
+        self.assertEqual(act_dynamism_info[0].dimension, 2)
+        self.assertEqual(act_dynamism_info[0].lower_bound, 2)
+        self.assertEqual(
+            act_dynamism_info[0].upper_bound,
+            expected_upper_bounds[max_spatial_size],
+        )
+
+  def test_avg_pool_ceil_mode_trailing_window_guard(self) -> None:
+    def pool_fn(tensor: torch.Tensor) -> torch.Tensor:
+      return torch.nn.functional.avg_pool2d(
+          tensor - 1.0,
+          4,
+          stride=4,
+          padding=2,
+          ceil_mode=True,
+          count_include_pad=True,
+      )
+
+    def mark_dynamic(tensor: torch.Tensor) -> None:
+      dynamism.mark_dynamic(tensor, 2, 4, 9)
+
+    for height in (5, 6, 7):
+      input_tensor = -torch.rand(1, 2, height, 6, dtype=torch.float32)
+      act = self._run_bounded_dynamism_test(pool_fn, mark_dynamic, input_tensor)
+      act_dynamism_info = dynamism.get_dynamism_info(act)
+      self.assertLen(act_dynamism_info, 1)
+      self.assertEqual(act_dynamism_info[0].dimension, 2)
+      self.assertEqual(act_dynamism_info[0].lower_bound, 2)
+      self.assertEqual(act_dynamism_info[0].upper_bound, 3)
+
+  def test_avg_pool_ceil_mode_compiled_multi_dynamic_spatial(self) -> None:
+    def pool_fn(tensor: torch.Tensor) -> torch.Tensor:
+      return torch.nn.functional.avg_pool2d(
+          tensor - 1.0,
+          3,
+          stride=2,
+          padding=1,
+          ceil_mode=True,
+          count_include_pad=False,
+      )
+
+    compiled_fn = torch.compile(pool_fn, backend="tpu", dynamic=None)
+    first_input = -torch.rand(1, 2, 7, 5, dtype=torch.float32)
+    first_input_tpu = first_input.to(self.device)
+    torch._dynamo.mark_dynamic(first_input_tpu, 2)
+    torch._dynamo.mark_dynamic(first_input_tpu, 3)
+    utils.assert_close(
+        compiled_fn(first_input_tpu).to("cpu"), pool_fn(first_input)
+    )
+
+    # Keep spatial sizes odd across the no-recompile check because PyTorch <
+    # 2.12's meta `div_rtn` guards on `(size % stride) != 0`.
+    second_input = -torch.rand(1, 2, 5, 9, dtype=torch.float32)
+    with torch._dynamo.config.patch(error_on_recompile=True):
+      act_second = compiled_fn(second_input.to(self.device))
+    utils.assert_close(act_second.to("cpu"), pool_fn(second_input))
+
+    even_input = -torch.rand(1, 2, 6, 8, dtype=torch.float32)
+    act_even = compiled_fn(even_input.to(self.device))
+    utils.assert_close(act_even.to("cpu"), pool_fn(even_input))
+
+  @parameterized.named_parameters(
+      dict(testcase_name="max_pool1d", spatial_dim_count=1),
+      dict(testcase_name="max_pool2d", spatial_dim_count=2),
+      dict(testcase_name="max_pool3d", spatial_dim_count=3),
+  )
+  def test_max_pool_ceil_mode_stride_gt_one_dynamic_spatial(
+      self, spatial_dim_count: int
+  ) -> None:
+    def pool_fn(tensor: torch.Tensor) -> torch.Tensor:
+      shifted_tensor = tensor - 1.0
+      if spatial_dim_count == 1:
+        return torch.nn.functional.max_pool1d(
+            shifted_tensor, 3, stride=2, padding=1, ceil_mode=True
+        )
+      if spatial_dim_count == 2:
+        return torch.nn.functional.max_pool2d(
+            shifted_tensor, 3, stride=2, padding=1, ceil_mode=True
+        )
+      return torch.nn.functional.max_pool3d(
+          shifted_tensor, 3, stride=2, padding=1, ceil_mode=True
+      )
+
+    expected_upper_bounds = {7: 4, 12: 7}
+    for max_spatial_size in (7, 12):
+
+      def mark_dynamic(
+          tensor: torch.Tensor, upper_bound: int = max_spatial_size
+      ) -> None:
+        dynamism.mark_dynamic(tensor, 2, 4, upper_bound)
+
+      for spatial_size in (6, 7):
+        if spatial_dim_count == 1:
+          input_tensor = -torch.rand(1, 2, spatial_size, dtype=torch.float32)
+        elif spatial_dim_count == 2:
+          input_tensor = -torch.rand(1, 2, spatial_size, 6, dtype=torch.float32)
+        else:
+          input_tensor = -torch.rand(
+              1, 2, spatial_size, 4, 4, dtype=torch.float32
+          )
+
+        act = self._run_bounded_dynamism_test(
+            pool_fn, mark_dynamic, input_tensor
+        )
+        act_dynamism_info = dynamism.get_dynamism_info(act)
+        self.assertLen(act_dynamism_info, 1)
+        self.assertEqual(act_dynamism_info[0].dimension, 2)
+        self.assertEqual(act_dynamism_info[0].lower_bound, 2)
+        self.assertEqual(
+            act_dynamism_info[0].upper_bound,
+            expected_upper_bounds[max_spatial_size],
+        )
+
+  def test_max_pool_ceil_mode_trailing_window_guard(self) -> None:
+    def pool_fn(tensor: torch.Tensor) -> torch.Tensor:
+      return torch.nn.functional.max_pool2d(
+          tensor - 1.0, 4, stride=4, padding=2, ceil_mode=True
+      )
+
+    def mark_dynamic(tensor: torch.Tensor) -> None:
+      dynamism.mark_dynamic(tensor, 2, 4, 9)
+
+    for height in (5, 6, 7):
+      input_tensor = -torch.rand(1, 2, height, 6, dtype=torch.float32)
+      act = self._run_bounded_dynamism_test(pool_fn, mark_dynamic, input_tensor)
+      act_dynamism_info = dynamism.get_dynamism_info(act)
+      self.assertLen(act_dynamism_info, 1)
+      self.assertEqual(act_dynamism_info[0].dimension, 2)
+      self.assertEqual(act_dynamism_info[0].lower_bound, 2)
+      self.assertEqual(act_dynamism_info[0].upper_bound, 3)
+
 
 if __name__ == "__main__":
   absltest.main()

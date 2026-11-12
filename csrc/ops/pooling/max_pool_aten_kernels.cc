@@ -189,7 +189,7 @@ absl::StatusOr<std::vector<mlir::MlirOp>> ComputeMaxPoolWithIndices(
 absl::StatusOr<mlir::MlirOp> ComputeMaxPool(
     const BatchInput& batch_input_info,
     const ReduceWindowAttributes& reduce_window_attributes,
-    const int64_t spatial_dim_count) {
+    const PoolingWindowParams& window_params, const int64_t spatial_dim_count) {
   mlir::MlirOp batch_input = batch_input_info.batch_input;
   const int64_t original_dim_size = batch_input_info.original_dim_size;
 
@@ -203,9 +203,12 @@ absl::StatusOr<mlir::MlirOp> ComputeMaxPool(
       mlir::RankedTensorType::get({}, element_type), val_attr);
   mlir::MlirOp init_value = mlir::stablehlo::Constant(builder, init_value_attr);
 
-  auto reduce_results = mlir::stablehlo::ReduceWindow(
+  mlir::MlirOp padded_input = PadDynamicCeilModeSpatialDims(
+      batch_input, init_value, batch_input, window_params);
+
+  mlir::MlirOp batch_result = mlir::stablehlo::ReduceWindow(
       builder,
-      /*inputs=*/{batch_input},
+      /*inputs=*/{padded_input},
       /*init_values=*/{init_value},
       /*body=*/
       [&](mlir::RegionBuilder& rb) {  // REF_CAPTURE_OK=called synchronously
@@ -216,9 +219,7 @@ absl::StatusOr<mlir::MlirOp> ComputeMaxPool(
       reduce_window_attributes.window_strides,
       reduce_window_attributes.base_dilations,
       reduce_window_attributes.window_dilations,
-      reduce_window_attributes.padding);
-
-  mlir::MlirOp batch_result = reduce_results[0];
+      reduce_window_attributes.padding)[0];
 
   mlir::MlirOp final_output =
       RemoveTrivialBatch(batch_result, original_dim_size, spatial_dim_count);
@@ -318,13 +319,13 @@ absl::StatusOr<mlir::MlirOp> BuildMaxPoolShlo(
     mlir::MlirOp input, const int64_t spatial_dim_count, Dimensions kernel_size,
     Dimensions stride, Dimensions padding, Dimensions dilation,
     const bool ceil_mode) {
-  auto& builder = input.getBuilder();
+  mlir::MlirBuilder& builder = input.getBuilder();
 
-  TT_ASSIGN_OR_RETURN(auto batch_input_info,
+  TT_ASSIGN_OR_RETURN(const BatchInput batch_input_info,
                       CreateBatchInput(input, spatial_dim_count));
   const mlir::RankedTensorType input_shape =
       GetTensorTypeOrDie(batch_input_info.batch_input);
-  auto total_num_dims = input_shape.getRank();
+  const int64_t total_num_dims = input_shape.getRank();
   const int64_t expected_dims = spatial_dim_count + 2;
   TT_RET_CHECK(total_num_dims == expected_dims, error::kInvalidArgument)
       << "expected input shape dim size == " << expected_dims << " , got "
@@ -354,16 +355,23 @@ absl::StatusOr<mlir::MlirOp> BuildMaxPoolShlo(
                         ExpandAttribute(padding, spatial_dim_count));
   }
 
-  auto ceil_padding_pairs =
-      CeilModePadding(input_shape, kernel_size_attr, stride_attr, padding_attr,
-                      dilation_attr, ceil_mode);
+  const PoolingWindowParams window_params{
+      .kernel_size = kernel_size_attr,
+      .stride = stride_attr,
+      .padding = padding_attr,
+      .dilation = dilation_attr,
+      .ceil_mode = ceil_mode,
+  };
+
+  const std::vector<PaddingParams> ceil_padding_pairs =
+      CeilModePadding(input_shape, window_params);
 
   ReduceWindowAttributes reduce_window_attributes = GetReduceWindowAttributes(
       builder, kernel_size_attr, stride_attr, dilation_attr, ceil_padding_pairs,
       spatial_dim_count, total_num_dims);
 
   return ComputeMaxPool(batch_input_info, reduce_window_attributes,
-                        spatial_dim_count);
+                        window_params, spatial_dim_count);
 }
 
 // Tracks spatial tail slicing applied before `SelectAndScatter` in `max_pool`

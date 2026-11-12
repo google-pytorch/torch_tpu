@@ -556,12 +556,11 @@ DYNAMISM_DENY_LISTS: DenyList = {
         "nn.functional.adaptive_avg_pool3d": {EAGER, COMPILE_GRAD},
         # Queries static dim size (slice size -9223372036854775808).
         "nn.functional.adaptive_max_pool2d": ALL_MODES,
+        # avg_pool2d_backward SliceBackwardResult queries static input shape;
         # avg_pool1d compile is under "compiled as_strided view lowering fails
         # to inline MLIR functions".
         "nn.functional.avg_pool1d": {COMPILE_GRAD},
-        # CeilModePadding queries static spatial dim size (INT64_MIN) in forward
-        # lowering and SliceBackwardResult queries static input shape.
-        "nn.functional.avg_pool2d": ALL_MODES,
+        "nn.functional.avg_pool2d": {COMPILE_GRAD},
         # PropagateBoundedDynamism fails MarkDynamic when pooling reduces a
         # bounded spatial dimension to size 1 (eager), dynamic_pad_module
         # exceeds the 3 GiB shape bound on 5D <=128 inputs (compile), and
