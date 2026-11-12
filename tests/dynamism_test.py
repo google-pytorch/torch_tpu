@@ -1524,6 +1524,110 @@ class DynamismTest(seed_test_utils.RepeatableTest):
       self.assertEqual(act_dynamism_info[0].lower_bound, 2)
       self.assertEqual(act_dynamism_info[0].upper_bound, 3)
 
+  @parameterized.named_parameters(
+      dict(testcase_name="ord_0", ord_val=0.0),
+      dict(testcase_name="ord_1", ord_val=1.0),
+      dict(testcase_name="ord_2", ord_val=2.0),
+      dict(testcase_name="ord_neg_1", ord_val=-1.0),
+      dict(testcase_name="ord_neg_2", ord_val=-2.0),
+      dict(testcase_name="ord_inf", ord_val=float("inf")),
+      dict(testcase_name="ord_neg_inf", ord_val=float("-inf")),
+  )
+  def test_foreach_norm_eager_dynamic(self, ord_val: float) -> None:
+    def norm_fn(x: torch.Tensor, y: torch.Tensor):
+      return torch._foreach_norm([x, y], ord=ord_val)
+
+    def mark_dynamic(x: torch.Tensor, y: torch.Tensor) -> None:
+      dynamism.mark_dynamic(x, 0, 2, 10)
+      dynamism.mark_dynamic(y, 1, 2, 12)
+
+    x = torch.tensor(
+        [[1.0, -2.0, 3.0], [4.0, -5.0, 6.0], [-1.5, 2.5, -3.5]],
+        dtype=torch.float32,
+    )
+    y = torch.tensor(
+        [[1.0, 0.0, -2.0, 4.0], [-3.0, 2.0, 1.0, -0.5]],
+        dtype=torch.float32,
+    )
+    self._run_bounded_dynamism_test(norm_fn, mark_dynamic, x, y)
+
+  def test_foreach_norm_compiled_ord_zero_multi_dynamic(self) -> None:
+    def norm_fn(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+      norms = torch._foreach_norm([x, y], ord=0.0)
+      return norms[0] + norms[1]
+
+    compiled_fn = torch.compile(norm_fn, backend="tpu", dynamic=None)
+    x1 = torch.tensor(
+        [[1.0, 0.0, -2.0, 3.0], [0.0, 4.0, -5.0, 0.0], [1.5, 0.0, 2.5, -3.5]],
+        dtype=torch.float32,
+    )
+    y1 = torch.tensor([[0.0, 1.0, -2.0], [3.0, 0.0, 4.0]], dtype=torch.float32)
+    x1_tpu = x1.to(self.device)
+    y1_tpu = y1.to(self.device)
+    torch._dynamo.mark_dynamic(x1_tpu, 0, min=2, max=16)
+    torch._dynamo.mark_dynamic(x1_tpu, 1, min=2, max=16)
+    torch._dynamo.mark_dynamic(y1_tpu, 0, min=2, max=16)
+    torch._dynamo.mark_dynamic(y1_tpu, 1, min=2, max=16)
+    utils.assert_close(compiled_fn(x1_tpu, y1_tpu).to("cpu"), norm_fn(x1, y1))
+
+    x2 = torch.tensor([[1.0, 0.0], [0.0, -2.0], [3.0, 4.0], [0.0, 5.0]])
+    y2 = torch.tensor(
+        [[1.0, 2.0, 0.0, -1.0], [0.0, 0.0, 3.0, 4.0], [-5.0, 6.0, 0.0, 7.0]]
+    )
+    with torch._dynamo.config.patch(error_on_recompile=True):
+      act = compiled_fn(x2.to(self.device), y2.to(self.device))
+    utils.assert_close(act.to("cpu"), norm_fn(x2, y2))
+
+  @parameterized.named_parameters(
+      dict(testcase_name="ord_1", ord_val=1.0),
+      dict(testcase_name="ord_2", ord_val=2.0),
+      dict(testcase_name="ord_inf", ord_val=float("inf")),
+  )
+  def test_foreach_norm_compiled_grad_multi_dynamic(
+      self, ord_val: float
+  ) -> None:
+    def loss_fn(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+      norms = torch._foreach_norm([x, y], ord=ord_val)
+      return norms[0] + norms[1]
+
+    compiled_fn = torch.compile(loss_fn, backend="tpu", dynamic=None)
+
+    def run_step(
+        shapes: tuple[tuple[int, int], tuple[int, int]],
+        mark_dims: bool,
+    ) -> None:
+      (h1, w1), (h2, w2) = shapes
+      x_cpu = (
+          torch.arange(1, h1 * w1 + 1, dtype=torch.float32)
+          .reshape(h1, w1)
+          .requires_grad_(True)
+      )
+      y_cpu = (
+          (-torch.arange(1, h2 * w2 + 1, dtype=torch.float32))
+          .reshape(h2, w2)
+          .requires_grad_(True)
+      )
+      expected_out = loss_fn(x_cpu, y_cpu)
+      expected_out.backward()
+
+      x_tpu = x_cpu.detach().to(self.device).requires_grad_(True)
+      y_tpu = y_cpu.detach().to(self.device).requires_grad_(True)
+      if mark_dims:
+        torch._dynamo.mark_dynamic(x_tpu, 0, min=2, max=16)
+        torch._dynamo.mark_dynamic(x_tpu, 1, min=2, max=16)
+        torch._dynamo.mark_dynamic(y_tpu, 0, min=2, max=16)
+        torch._dynamo.mark_dynamic(y_tpu, 1, min=2, max=16)
+
+      act_out = compiled_fn(x_tpu, y_tpu)
+      act_out.backward()
+      utils.assert_close(act_out.to("cpu"), expected_out)
+      utils.assert_close(x_tpu.grad.to("cpu"), x_cpu.grad)
+      utils.assert_close(y_tpu.grad.to("cpu"), y_cpu.grad)
+
+    run_step(((4, 6), (3, 5)), mark_dims=True)
+    with torch._dynamo.config.patch(error_on_recompile=True):
+      run_step(((6, 4), (5, 3)), mark_dims=False)
+
 
 if __name__ == "__main__":
   absltest.main()
