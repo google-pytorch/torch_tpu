@@ -27,6 +27,7 @@
 #include <variant>
 #include <vector>
 
+#include "absl/base/optimization.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
@@ -46,6 +47,7 @@
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/eager_mode.h"
 #include "csrc/eager/events_queue.h"
+#include "csrc/eager/graph_capture_state.h"
 #include "csrc/eager/materialize.h"
 #include "csrc/eager/split_traversal.h"
 #include "csrc/eager/structured_log_buffer.h"
@@ -241,13 +243,73 @@ absl::Status DeferAndFuseDispatch(absl::Span<const DeviceBufferRef> results,
   return absl::OkStatus();
 }
 
+// Returns an error if a thread other than the current one captures a graph on
+// the current stream, or on the stream of a deferred input that is not a
+// constant. Graph capture records the operations of the capturing thread only,
+// and the deferred ops on a stream being captured belong to the graph and never
+// run on their own.
+absl::Status ValidateNoGraphCaptureOnAnotherThread(
+    absl::Span<const DeviceBufferRef> inputs) {
+  const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
+  if (ABSL_PREDICT_FALSE(
+          IsStreamCapturedByAnotherThread(device_index, stream_id))) {
+    return StreamCapturedByAnotherThreadError();
+  }
+  for (const DeviceBufferRef& input : inputs) {
+    if (ABSL_PREDICT_FALSE(input.is_deferred() && !input.is_constant() &&
+                           IsStreamCapturedByAnotherThread(
+                               input.device_index(), input.stream_id()))) {
+      return TensorAccessedByGraphCaptureError();
+    }
+  }
+  return absl::OkStatus();
+}
+
+// Creates the deferred op of `params` for the graph that the current thread
+// captures on `capture_stream`, and records it on the capture stream without
+// running it, whatever the eager mode: only the replays of the graph run it.
+absl::StatusOr<std::vector<DeviceBufferRef>> CreateCapturedDeferredOp(
+    internal::DeferredOpParams&& params, const DeviceStreamId capture_stream) {
+  // The deferred op would be recorded on the current stream, so the graph
+  // would miss it if the current stream is not the capture stream.
+  TT_RETURN_IF_ERROR(
+      ValidateGraphCaptureStream(capture_stream, GetCurrentDeviceStreamId()));
+  // Every replay reads the buffers that the tensors read during capture hold
+  // at replay time, which other tensors can share, so the graph must not
+  // donate them. Without donation, XLA writes the outputs to new buffers.
+  params.donated_indices.clear();
+  TT_ASSIGN_OR_RETURN(
+      std::vector<DeviceBufferRef> results,
+      DeviceBufferList::CreateDeferred(
+          params.op_name, std::move(params.op_builder),
+          std::move(params.inputs), std::move(params.op_param_cache_keys),
+          std::move(params.output_shapes), params.split_mode,
+          std::move(params.donated_indices),
+          std::move(params.device_assignment)));
+  RecordDeferredOpCreated(results[0].device_buffer_list());
+  return results;
+}
+
 }  // namespace
 
 namespace internal {
 
 absl::StatusOr<std::vector<DeviceBufferRef>> CreateDeferredDeviceBufferList(
     DeferredOpParams&& params) {
+  MaybeEndOrphanedGraphCaptures();
   ApplyComputationDtype(params);
+
+  const EagerMode eager_mode = GetEagerMode();
+  // An explicit FX trace, such as the tracing of a higher-order op like `scan`
+  // during capture, records nothing on device.
+  if (eager_mode != EagerMode::kInternalCompileFxGraph) {
+    TT_RETURN_IF_ERROR(ValidateNoGraphCaptureOnAnotherThread(params.inputs));
+    if (const std::optional<DeviceStreamId> capture_stream =
+            GetCurrentThreadGraphCaptureStream();
+        ABSL_PREDICT_FALSE(capture_stream.has_value())) {
+      return CreateCapturedDeferredOp(std::move(params), *capture_stream);
+    }
+  }
 
   TT_ASSIGN_OR_RETURN(
       std::vector<DeviceBufferRef> results,
@@ -258,7 +320,6 @@ absl::StatusOr<std::vector<DeviceBufferRef>> CreateDeferredDeviceBufferList(
           std::move(params.donated_indices),
           std::move(params.device_assignment)));
 
-  const EagerMode eager_mode = GetEagerMode();
   switch (eager_mode) {
     case EagerMode::kDeferNever:
     case EagerMode::kDeferNeverAndLaunchBlocking:
@@ -282,6 +343,11 @@ absl::StatusOr<std::vector<DeviceBufferRef>> CreateDeferredDeviceBufferList(
 }
 
 absl::Status RunPostponedMaterialization() {
+  // The ops that a thread records while capturing a graph run only when the
+  // graph replays.
+  if (IsCurrentThreadCapturingGraph()) {
+    return absl::OkStatus();
+  }
   const EagerMode eager_mode = GetEagerMode();
   switch (eager_mode) {
     case EagerMode::kDeferNever:

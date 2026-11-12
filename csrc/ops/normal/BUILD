@@ -39,6 +39,7 @@ torch_tpu_cc_library(
         "//csrc/eager:device_buffer",
         "//csrc/eager:device_gen_impl",
         "//csrc/eager:eager_mode",
+        "//csrc/eager:graph_capture_state",
         "//csrc/eager:op_dispatcher",
         "//csrc/eager:tensor_to_buffer",
         "//csrc/ops:op_builder_utils",
