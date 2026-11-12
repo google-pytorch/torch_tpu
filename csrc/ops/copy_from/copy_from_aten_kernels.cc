@@ -37,6 +37,8 @@
 #include "csrc/common/cache_key.h"
 #include "csrc/common/device_type.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/eager/eager_mode.h"
+#include "csrc/eager/graph_capture_state.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/copy_from/copy_common.h"
 #include "csrc/ops/copy_from/cpu_to_tpu.h"
@@ -208,6 +210,15 @@ at::Tensor CopyTensor(const at::Tensor& src, const at::Tensor& self_dest,
       ValidateShellDtypeCast(src.scalar_type(), self_dest.scalar_type()));
 
   TT_ASSIGN_OR_THROW(CopyType to_copy_type, GetCopyType(src, self_dest));
+  // A graph capture cannot record copies between CPU and TPU tensors. An FX
+  // trace during capture records nothing into the graph, so its copies take the
+  // FX path, as outside capture.
+  const bool capturing = IsCurrentThreadCapturingGraph() &&
+                         GetEagerMode() != EagerMode::kInternalCompileFxGraph;
+  TT_CHECK_THROW(!capturing || to_copy_type == CopyType::kTpuToTpu,
+                 error::kFailedPrecondition)
+      << "copying between CPU and TPU tensors while capturing a graph is not "
+         "supported";
   const TransferSyncMode transfer_sync_mode = GetTransferSyncMode(non_blocking);
 
   switch (to_copy_type) {
