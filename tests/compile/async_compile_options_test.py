@@ -57,7 +57,7 @@ class _FakeCompilerOptions:
     self._stack().pop()
 
 
-class AsyncCompileOptionsTest(absltest.TestCase):
+class AsyncCompileOptionsTest(absltest.TestCase):  # ABSLTEST_OK=no RNG used
 
   def setUp(self):
     super().setUp()
@@ -157,7 +157,9 @@ class AsyncCompileOptionsTest(absltest.TestCase):
     finally:
       self.fake_options.pop_compiler_options()
 
-    with self.assertRaisesRegex(RuntimeError, "boom"):
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=worker cleanup
+        RuntimeError, "boom"
+    ):
       artifact._future.result(timeout=10)
     self.assertEqual(
         records[0]["options"],
