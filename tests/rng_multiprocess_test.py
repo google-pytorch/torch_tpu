@@ -17,7 +17,7 @@
 Tests TPU and CUDA backends in spawned child processes across devices.
 """
 
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 import os
 import queue
 from typing import Any
@@ -82,25 +82,30 @@ def _gen_compiled_rand(
   return compiled_fn(x).cpu().tolist()
 
 
+# Every (name, seed_fn, ops_fn) case the tests check. Each set of spawned workers
+# runs all of them in order, and each case sets its own seed first.
+_CASES = (
+    ("different_seeds_initial_seed", _set_different_seeds, _get_initial_seed),
+    ("different_seeds_eager", _set_different_seeds, _gen_rand_tensors),
+    ("same_seed_eager", _set_same_seed, _gen_rand_tensors),
+    ("different_seeds_compiled", _set_different_seeds, _gen_compiled_rand),
+)
+
+
 def _multiprocess_worker(
-    results_queue: queue.Queue[tuple[int, Any]],
+    results_queue: queue.Queue[tuple[int, dict[str, Any]]],
     backend_name: str,
-    seed_fn: Callable[[Any, int], None] | None,
-    ops_fn: Callable[[Any, torch.device, int], Any],
 ) -> None:
   """Worker function executing in a spawned child process.
 
-  Retrieves device configuration based on LOCAL_RANK, invokes seed_fn to set
-  the device RNG seed, executes ops_fn to produce test output, and places the
-  resulting data into results_queue.
+  Retrieves device configuration based on LOCAL_RANK, then for each case in
+  `_CASES` invokes seed_fn to set the device RNG seed and executes ops_fn to
+  produce test output, and places the outputs of all cases into results_queue.
 
   Args:
-    results_queue: Multiprocessing queue to send tuples of (rank, return value
-      from ops_fn) back to the runner process.
+    results_queue: Multiprocessing queue to send tuples of (rank, {case name:
+      return value from ops_fn}) back to the runner process.
     backend_name: Name of backend ('tpu' or 'gpu').
-    seed_fn: Optional callable taking (backend_mod, rank) to initialize RNG
-      seed.
-    ops_fn: Callable taking (backend_mod, dev, rank) returning output result.
   """
   # The workers call the internal `torch.tpu` RNG APIs. `setUpModule` doesn't
   # run in spawned processes, so allow them here too.
@@ -112,10 +117,11 @@ def _multiprocess_worker(
   device_idx = rank if backend_name in ("gpu", "cuda") else 0
   dev = accelerator_test_utils.set_active_device(backend_name, device_idx)
 
-  if seed_fn is not None:
+  outs = {}
+  for name, seed_fn, ops_fn in _CASES:
     seed_fn(backend_mod, rank)
-  out = ops_fn(backend_mod, dev, rank)
-  results_queue.put((rank, out))
+    outs[name] = ops_fn(backend_mod, dev, rank)
+  results_queue.put((rank, outs))
 
 
 class MultiProcessTest(seed_test_utils.MultiProcessRepeatableTest):
@@ -125,6 +131,12 @@ class MultiProcessTest(seed_test_utils.MultiProcessRepeatableTest):
   distributed_utils.dist_run to spawn workers without initializing the
   device runtime in the parent runner process.
   """
+
+  @classmethod
+  def setUpClass(cls):
+    super().setUpClass()
+    # Outputs of all `_CASES` per rank, from each set of workers spawned so far.
+    cls._trials: list[list[dict[str, Any]]] = []
 
   def setUp(self):
     super().setUp()
@@ -151,54 +163,51 @@ class MultiProcessTest(seed_test_utils.MultiProcessRepeatableTest):
       return torch.accelerator.device_count()
     return min(torch.cuda.device_count(), 2)
 
-  def _run_distributed(
-      self,
-      seed_fn: Callable[[Any, int], None] | None,
-      ops_fn: Callable[[Any, torch.device, int], Any],
-      num_devices: int | None = None,
-  ) -> list[Any]:
-    if num_devices is None:
-      num_devices = self.num_devices
-
+  def _run_distributed(self) -> list[dict[str, Any]]:
+    """Runs all `_CASES` on a fresh set of workers; returns outputs per rank."""
     ctx = multiprocessing.get_context("spawn")
     results_queue = ctx.Queue()
 
     distributed_utils.dist_run(
-        num_devices,
+        self.num_devices,
         _multiprocess_worker,
         results_queue,
         self.backend,
-        seed_fn,
-        ops_fn,
     )
 
     results = {}
-    for _ in range(num_devices):
-      rank, out = results_queue.get(timeout=60)
-      results[rank] = out
+    for _ in range(self.num_devices):
+      rank, outs = results_queue.get(timeout=60)
+      results[rank] = outs
 
-    return [results[i] for i in range(num_devices)]
+    return [results[i] for i in range(self.num_devices)]
+
+  def _case_outputs(self, case: str, trial: int = 0) -> list[Any]:
+    """Returns each rank's output of `case` from the `trial`-th set of workers.
+
+    Spawning workers is slow, so each set of workers runs every case, and the
+    test class spawns each set at most once. Determinism checks compare the
+    outputs of two different sets of fresh workers.
+
+    Args:
+      case: Name of a case in `_CASES`.
+      trial: Index of the set of fresh workers to take the outputs from.
+    """
+    while len(self._trials) <= trial:
+      self._trials.append(self._run_distributed())
+    return [outs[case] for outs in self._trials[trial]]
 
   def test_multiprocess_different_seeds_isolate_seed(self):
     """Verifies spawned processes have isolated RNG seeds."""
-    seeds = self._run_distributed(
-        _set_different_seeds,
-        _get_initial_seed,
-    )
+    seeds = self._case_outputs("different_seeds_initial_seed")
     for i in range(self.num_devices):
       self.assertEqual(seeds[i], 42 + i)
     self.assertNotEqual(seeds[0], seeds[1])
 
   def test_multiprocess_eager_device_isolation_deterministic(self):
     """Verifies spawned processes per device produce deterministic outputs."""
-    trial1 = self._run_distributed(
-        _set_different_seeds,
-        _gen_rand_tensors,
-    )
-    trial2 = self._run_distributed(
-        _set_different_seeds,
-        _gen_rand_tensors,
-    )
+    trial1 = self._case_outputs("different_seeds_eager", trial=0)
+    trial2 = self._case_outputs("different_seeds_eager", trial=1)
 
     for res1, res2 in zip(trial1, trial2):
       self.assertEqual(res1, res2)
@@ -206,23 +215,14 @@ class MultiProcessTest(seed_test_utils.MultiProcessRepeatableTest):
 
   def test_multiprocess_identical_seed_across_devices_matches(self):
     """Verifies identical seed across spawned processes matches output."""
-    outputs = self._run_distributed(
-        _set_same_seed,
-        _gen_rand_tensors,
-    )
+    outputs = self._case_outputs("same_seed_eager")
     for i in range(1, len(outputs)):
       self.assertEqual(outputs[0], outputs[i])
 
   def test_multiprocess_compiled_device_deterministic(self):
     """Verifies compiled function across processes is deterministic."""
-    trial1 = self._run_distributed(
-        _set_different_seeds,
-        _gen_compiled_rand,
-    )
-    trial2 = self._run_distributed(
-        _set_different_seeds,
-        _gen_compiled_rand,
-    )
+    trial1 = self._case_outputs("different_seeds_compiled", trial=0)
+    trial2 = self._case_outputs("different_seeds_compiled", trial=1)
 
     for res1, res2 in zip(trial1, trial2):
       self.assertEqual(res1, res2)
