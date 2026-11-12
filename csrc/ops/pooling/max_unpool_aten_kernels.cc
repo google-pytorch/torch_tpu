@@ -234,9 +234,9 @@ at::Tensor AtenMaxUnpool3d(const at::Tensor& self, const at::Tensor& indices,
                                  MakeEmptyTensor(/*size=*/{0},
                                                  self.scalar_type(),
                                                  self.device()));
-              TT_THROW_IF_ERROR(MaxUnpoolOut(self, indices, output_size,
-                                             /*spatial_dim_count=*/3,
-                                             std::move(param_keys), out));
+              TT_THROW_IF_ERROR(MaxUnpoolOut(
+                  self, indices, output_size, /*spatial_dim_count=*/3,
+                  std::move(param_keys), out));
               return out;
             });
 }
@@ -253,9 +253,9 @@ at::Tensor& AtenMaxUnpool3dOut(const at::Tensor& self,
             {
               TT_THROW_IF_ERROR(
                   ValidateMaxUnpool3dStrideAndPadding(stride, padding));
-              TT_THROW_IF_ERROR(MaxUnpoolOut(self, indices, output_size,
-                                             /*spatial_dim_count=*/3,
-                                             std::move(param_keys), out));
+              TT_THROW_IF_ERROR(MaxUnpoolOut(
+                  self, indices, output_size, /*spatial_dim_count=*/3,
+                  std::move(param_keys), out));
               return out;
             });
 }
