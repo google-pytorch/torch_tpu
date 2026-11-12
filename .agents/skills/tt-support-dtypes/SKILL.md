@@ -8,6 +8,8 @@ description: >-
 
 # tt-support-dtypes
 
+<!-- SKILL_STUB -->
+
 <!-- mdformat off(reason: GitHub renders an alert only if its marker is on its own line) -->
 
 > [!NOTE]
