@@ -28,7 +28,6 @@ import torch_tpu  # pylint: disable=unused-import  # noqa: F401
 from torch_tpu._internal import compile as compile_lib
 from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.compile import _backend
-from torch_tpu._internal.compile import nested_compile_region
 from torch_tpu._internal.utils import test_utils as utils
 from tests import seed_test_utils
 
@@ -173,12 +172,11 @@ class TimingBackendWrapper:
 
 
 def reset_all_caches() -> None:
-  """Hermetically clears all Dynamo, TorchTPU, and regional compilation caches."""
+  """Hermetically clears all Dynamo and TorchTPU compilation caches."""
   tt_testing.reset_eager_state()
   torch.compiler.reset()
   torch._dynamo.reset()
   compile_lib.clear_cache()
-  nested_compile_region.clear_cache()
   if hasattr(torch, "tpu") and hasattr(torch.tpu, "_clear_cache"):
     torch.tpu._clear_cache()
   if torch.accelerator.is_available():
@@ -315,7 +313,7 @@ class NestedCompileRegionBenchmarkTest(seed_test_utils.RepeatableTest):
     # Config 2 requires Dynamo support for inlining invoke_subgraph (PyTorch >= 2.13)
     if hasattr(torch._dynamo.config, "inline_invoke_subgraph"):
       configs.append((2, "2. Vanilla NCR (Dynamo Inlining)"))
-    configs.append((3, "3. Full NCR (TorchTPU MLIR Cache)"))
+    configs.append((3, "3. NCR (Regional Compile)"))
 
     all_metrics: dict[int, list[TrialMetrics]] = {cid: [] for cid, _ in configs}
 
@@ -339,17 +337,6 @@ class NestedCompileRegionBenchmarkTest(seed_test_utils.RepeatableTest):
             seed=trial_seed,
         )
         all_metrics[config_id].append(metrics)
-        if config_id in (1, 2):
-          self.assertEmpty(nested_compile_region._NESTED_REGION_COMPILE_CACHE)
-        elif config_id == 3:
-          self.assertNotEmpty(
-              nested_compile_region._NESTED_REGION_COMPILE_CACHE
-          )
-          logging.info(
-              "[%s] Regional compile cache entries: %d",
-              config_name,
-              len(nested_compile_region._NESTED_REGION_COMPILE_CACHE),
-          )
         logging.info(
             "[%s] Trial %d: Overall Compile: %.3fs | Dynamo Trace: %.3fs | XLA"
             " Compile: %.3fs | Steady-State: %.2fms",
