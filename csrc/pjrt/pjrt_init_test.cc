@@ -105,7 +105,7 @@ TEST(PjRtInitDeathTest, FailedInitDoesNotReportInitialized) {
         backend.SetPjRtInitializationOptions({.device_type = "tpu"});
         const absl::Status status = backend.EnsureInitialized();
         EXPECT_THAT(status,
-                    StatusIs(absl::StatusCode::kInvalidArgument,
+                    StatusIs(error::kInvalidArgument,
                              HasSubstr("invalid world_size configuration")));
         EXPECT_FALSE(backend.IsInitialized());
         EXPECT_FALSE(backend.GetClient().ok());
