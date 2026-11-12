@@ -255,7 +255,7 @@ class NonzeroKernel {
           kiln::EmitPipeline(
               0, row_blocks,
               {InputBlocks([this, w](Scalar rb) { return BlockRows(w, rb); })},
-              /*outputs=*/{}, [this, &w](const kiln::PipelineStep& s) {
+              [this, &w](const kiln::PipelineStep& s) {
                 ProcessBlock(w, s.inputs[0].ref, s.step << kSublaneShift);
               });
         });
@@ -271,7 +271,7 @@ class NonzeroKernel {
           0, windows, {InputBlocks([this, rb](Scalar window) {
             return BlockRows(WideWindow(window), rb);
           })},
-          /*outputs=*/{}, [this, row](const kiln::PipelineStep& s) {
+          [this, row](const kiln::PipelineStep& s) {
             const Window w = WideWindow(s.step);
             const kiln::VmemRef block = s.inputs[0].ref;
             kiln::For(w.tiles, [this, &w, &block, row](Scalar tile_idx) {

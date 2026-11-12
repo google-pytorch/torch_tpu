@@ -339,4 +339,10 @@ void EmitPipeline(IndexArg begin_arg, IndexArg end_arg,
   });
 }
 
+void EmitPipeline(IndexArg begin, IndexArg end,
+                  llvm::ArrayRef<PipelineOperand> inputs,
+                  absl::FunctionRef<void(const PipelineStep&)> body) {
+  EmitPipeline(begin, end, inputs, /*outputs=*/{}, body);
+}
+
 }  // namespace torch_tpu::kiln

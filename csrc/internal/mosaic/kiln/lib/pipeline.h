@@ -91,6 +91,13 @@ void EmitPipeline(IndexArg begin, IndexArg end,
                   llvm::ArrayRef<PipelineOperand> outputs,
                   absl::FunctionRef<void(const PipelineStep&)> body);
 
+// Like the above, for a pipeline that only streams inputs in, e.g. when `body`
+// accumulates into a buffer of its own or writes its results to HBM itself.
+// `PipelineStep::outputs` is empty.
+void EmitPipeline(IndexArg begin, IndexArg end,
+                  llvm::ArrayRef<PipelineOperand> inputs,
+                  absl::FunctionRef<void(const PipelineStep&)> body);
+
 }  // namespace torch_tpu::kiln
 
 #endif  // TORCH_TPU_CSRC_INTERNAL_MOSAIC_KILN_LIB_PIPELINE_H_
