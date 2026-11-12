@@ -27,6 +27,7 @@
 #include <variant>
 #include <vector>
 
+#include "absl/algorithm/container.h"
 #include "absl/base/no_destructor.h"
 #include "absl/base/nullability.h"
 #include "absl/container/flat_hash_map.h"
@@ -34,6 +35,8 @@
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/numbers.h"
+#include "absl/strings/str_split.h"
 #include "absl/synchronization/mutex.h"
 #include "csrc/common/contain.h"
 #include "csrc/common/device_type.h"
@@ -390,6 +393,36 @@ absl::StatusOr<int> PjrtBackend::GetVisibleDeviceCount() {
       client_ != nullptr, error::kInternal)
       << "PjRt client is not initialized";
   return visible_device_count_;
+}
+
+absl::StatusOr<std::vector<int64_t>>  // INT_VEC_OK
+PjrtBackend::GetJobDeviceIds() {
+  TT_RETURN_IF_ERROR(EnsureInitialized());
+  absl::ReaderMutexLock lock(mutex_);
+  std::vector<int64_t> device_ids;  // INT_VEC_OK
+  // Read on use, not at startup: a job learns its peers' devices only after
+  // the runtime is up, and sets this before its first compiled program.
+  const char* const job_devices =
+      std::getenv(kTorchTpuJobDeviceIdsEnvVar);  // GETENV_OK=set after startup
+  if (job_devices == nullptr || *job_devices == '\0') {
+    for (const xla::PjRtDevice* device : client_->devices()) {
+      device_ids.push_back(device->global_device_id().value());
+    }
+  } else {
+    for (std::string_view id : absl::StrSplit(job_devices, ',')) {
+      TT_RET_CHECK(absl::SimpleAtoi(id, &device_ids.emplace_back()),
+                   error::kInvalidArgument)
+          << "expected " << kTorchTpuJobDeviceIdsEnvVar
+          << " to list device ids, got '" << job_devices << "'";
+    }
+    TT_RET_CHECK(absl::c_linear_search(device_ids, global_device_id_),
+                 error::kInvalidArgument)
+        << "expected this process's device " << global_device_id_
+        << " to be in " << kTorchTpuJobDeviceIdsEnvVar << ", got '"
+        << job_devices << "'";
+  }
+  absl::c_sort(device_ids);
+  return device_ids;
 }
 
 absl::StatusOr<int> PjrtBackend::GetGlobalDeviceId() {

@@ -269,6 +269,11 @@ inline constexpr char kTorchTpuSpmdHandshakeStageEnvVar[] =
 // "default".
 inline constexpr char kTorchTpuTier2CompilationCacheEnvVar[] =
     "TORCH_TPU_TIER2_COMPILATION_CACHE";
+// Comma-separated global device ids of this job when several independent jobs
+// share one slice. The job's world, subgroups and compiled programs then span
+// only these devices. Read when first used, so it may be set after startup.
+inline constexpr char kTorchTpuJobDeviceIdsEnvVar[] =
+    "TORCH_TPU_JOB_DEVICE_IDS";
 // The root path of the tier-3 compilation cache. If not set, the tier-3
 // compilation cache is disabled.
 inline constexpr char kTorchTpuTier3CompilationCacheRootEnvVar[] =
@@ -401,6 +406,7 @@ inline constexpr auto kEnvVarToStage =
         {kTorchTpuSlicebuilderAddressesEnvVar, SymbolStage::Experimental()},
         {kTorchTpuSpmdHandshakeStageEnvVar, SymbolStage::Experimental()},
         {kTorchTpuTier2CompilationCacheEnvVar, SymbolStage::Experimental()},
+        {kTorchTpuJobDeviceIdsEnvVar, SymbolStage::Experimental()},
         {kTorchTpuTier3CompilationCacheRootEnvVar, SymbolStage::Experimental()},
         {kTorchTpuTopologyEnvVar, SymbolStage::Experimental()},
         {kTorchTpuXprofSessionIdEnvVar, SymbolStage::Experimental()},

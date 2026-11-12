@@ -39,6 +39,7 @@ Tests that don't belong in this file:
 import collections
 from collections.abc import Mapping, Sequence
 import contextlib
+import datetime
 import os
 import re
 import tempfile
@@ -64,6 +65,7 @@ from torch_tpu._internal.compile import flex_attention as tpu_flex_attention
 from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.compile.compiler import StaticCompiler
 from torch_tpu._internal.distributed import distributed as internal_distributed
+from torch_tpu._internal.distributed import tpu_distributed
 from torch_tpu._internal.export import export as torch_tpu_export
 from torch_tpu._internal.pallas import tpu_torch_pallas
 from torch_tpu._internal.sync import sync
@@ -99,6 +101,30 @@ def _ensure_ao_ops_registered() -> None:
 
 class TpuOnlyErrorTest(et.TpuOnlyErrorTestBase):
   """Tests error messages on TPU."""
+
+  @et.why_tpu_only("TORCH_TPU_JOB_DEVICE_IDS lists TPU devices.")
+  def test_job_device_ids_must_be_device_ids(self):
+    with mock.patch.dict(os.environ, {"TORCH_TPU_JOB_DEVICE_IDS": "0,x"}):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""create_process_group(): expected TORCH_TPU_JOB_DEVICE_IDS to list device ids, got '0,x'""",
+      ):
+        tpu_distributed.create_process_group(
+            dist.HashStore(), 0, 1, datetime.timedelta(seconds=30)
+        )
+
+  @et.why_tpu_only("TORCH_TPU_JOB_DEVICE_IDS lists TPU devices.")
+  def test_job_device_ids_must_include_this_device(self):
+    device_id = int(tpu_distributed.global_device_id())
+    others = str(device_id + 1)
+    with mock.patch.dict(os.environ, {"TORCH_TPU_JOB_DEVICE_IDS": others}):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu=f"""create_process_group(): expected this process's device {device_id} to be in TORCH_TPU_JOB_DEVICE_IDS, got '{others}'""",
+      ):
+        tpu_distributed.create_process_group(
+            dist.HashStore(), 0, 1, datetime.timedelta(seconds=30)
+        )
 
   @et.why_tpu_only("StaticCompiler buffer donation is TPU-specific.")
   def test_static_compiler_buffer_donation_runtime_error(self):

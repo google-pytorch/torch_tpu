@@ -134,13 +134,15 @@ absl::StatusOr<std::vector<std::vector<uint8_t>>> AllGatherViaNodeLocalStore(
 // with subgroups sorted by `global_rank_to_topo_order[group[0]]`.
 // `global_rank_to_topo_order` must have `world_size` entries.
 // `global_rank_to_device_id` is used only for its size.
+// `key_scope` keeps the gathers of jobs that share a root store apart.
 absl::Status GatherSubgroupsViaNodeLocalStore(
     c10d::Store* store, c10d::Store* local_store, int64_t local_rank,
     int64_t local_world_size, int64_t pg_rank, int64_t pg_size,
     int64_t world_rank, absl::Span<const int64_t> global_rank_to_device_id,
     absl::Span<const int64_t> global_rank_to_topo_order, int64_t gather_id,
     DeviceGroup& out_member_world_ranks,
-    DeviceGroupList& out_subgroup_member_world_ranks);
+    DeviceGroupList& out_subgroup_member_world_ranks,
+    std::string_view key_scope = "");
 
 // Asynchronous queue for two-sided P2P send operations. Decouples the caller
 // thread from blocking Store calls by executing blocking Store::multiGet on

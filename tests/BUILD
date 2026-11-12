@@ -1943,6 +1943,7 @@ torch_tpu_py_test(
         "//src/torch_tpu/_internal/compile:tpu_torch_compile",
         "//src/torch_tpu/_internal/distributed",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
+        "//src/torch_tpu/_internal/distributed:tpu_distributed",
         "//src/torch_tpu/_internal/dynamism",
         "//src/torch_tpu/_internal/execution_mode",
         "//src/torch_tpu/_internal/export",

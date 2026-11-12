@@ -1538,6 +1538,14 @@ absl::StatusOr<NodeLocalStoreConfig> GetNodeLocalStore(int64_t world_size) {
   if (*local_world_size <= 1) {
     return NodeLocalStoreConfig{};
   }
+  TT_ASSIGN_OR_RETURN(const xla::PjRtClient* const pjrt_client,
+                      PjrtBackend::GetInstance().GetClient());
+  if (world_size != static_cast<int64_t>(pjrt_client->devices().size())) {
+    // A job sharing the slice (TORCH_TPU_JOB_DEVICE_IDS) holds only part of
+    // the host's devices, and its local ranks would meet the other job's in
+    // the per-host store.
+    return NodeLocalStoreConfig{};
+  }
   TT_RET_CHECK(*local_rank >= 0 && *local_rank < *local_world_size,
                error::kInvalidArgument)
       << absl::StrFormat(
@@ -1574,7 +1582,8 @@ absl::Status GatherSubgroupsViaNodeLocalStore(
     int64_t world_rank, absl::Span<const int64_t> global_rank_to_device_id,
     absl::Span<const int64_t> global_rank_to_topo_order, int64_t gather_id,
     DeviceGroup& out_member_world_ranks,
-    DeviceGroupList& out_subgroup_member_world_ranks) {
+    DeviceGroupList& out_subgroup_member_world_ranks,
+    std::string_view key_scope) {
   const UnwrappedStoreChain unwrapped = UnwrapPrefixStoreChain(store);
   TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=internal store chain invariant
       unwrapped.root_store != nullptr, error::kInternal)
@@ -1582,12 +1591,12 @@ absl::Status GatherSubgroupsViaNodeLocalStore(
   const int64_t world_size =
       static_cast<int64_t>(global_rank_to_device_id.size());
   const std::string my_key =
-      absl::StrFormat("pg_sub:%d:%d", gather_id, world_rank);
+      absl::StrFormat("pg_sub:%s%d:%d", key_scope, gather_id, world_rank);
   const std::string my_val =
       absl::StrFormat("%d,%d:%s", pg_rank, world_rank, unwrapped.full_prefix);
   std::vector<std::string> peer_keys(world_size);
   for (int64_t r = 0; r < world_size; ++r) {
-    peer_keys[r] = absl::StrFormat("pg_sub:%d:%d", gather_id, r);
+    peer_keys[r] = absl::StrFormat("pg_sub:%s%d:%d", key_scope, gather_id, r);
   }
 
   TT_ASSIGN_OR_RETURN(
@@ -1930,7 +1939,11 @@ ProcessGroupTpu::ProcessGroupTpu(c10::intrusive_ptr<c10d::Store> store,
   TT_ASSIGN_OR_THROW(const xla::PjRtClient* const pjrt_client,
                      PjrtBackend::GetInstance().GetClient());
 
-  const int64_t world_size = pjrt_client->devices().size();
+  const int64_t slice_size = pjrt_client->devices().size();
+  TT_ASSIGN_OR_THROW(const std::vector<int64_t> job_device_ids,  // INT_VEC_OK
+                     PjrtBackend::GetInstance().GetJobDeviceIds());
+  // The whole slice unless TORCH_TPU_JOB_DEVICE_IDS gives this job a part.
+  const int64_t world_size = job_device_ids.size();
 
   // Addressable device "assigned" to this process/rank:
   TT_CHECK_THROW(pjrt_client->addressable_devices().size() == 1,
@@ -1938,6 +1951,29 @@ ProcessGroupTpu::ProcessGroupTpu(c10::intrusive_ptr<c10d::Store> store,
       << "expected exactly one TPU device per PyTorch process";
   addressable_device_id_ =
       pjrt_client->addressable_devices()[0]->global_device_id().value();
+
+  if (world_size != slice_size && group_size == slice_size) {
+    // A slice-wide group of a job sharing the slice: only send/recv between
+    // jobs, so it records peer devices and leaves the job's world untouched.
+    store_->set(absl::StrFormat("p2p_device:%d", rank),
+                std::to_string(addressable_device_id_));
+    std::vector<std::string> keys(size_);
+    for (int64_t i = 0; i < size_; ++i) {
+      keys[i] = absl::StrFormat("p2p_device:%d", i);
+    }
+    auto values = store_->multiGet(keys);
+    member_device_ids_.resize(size_);
+    for (int64_t i = 0; i < size_; ++i) {
+      TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=peers write their device ids
+          absl::SimpleAtoi(
+              std::string_view(reinterpret_cast<const char*>(values[i].data()),
+                               values[i].size()),
+              &member_device_ids_[i]),
+          error::kInternal)
+          << "failed to parse the peer device id of rank " << i;
+    }
+    return;
+  }
 
   // We support creating "flat" process groups, as well as "2D+ mesh" process
   // (sub)groups. The (sub)group size must evenly divide the world size, i.e.
@@ -1983,11 +2019,17 @@ ProcessGroupTpu::ProcessGroupTpu(c10::intrusive_ptr<c10d::Store> store,
     TT_ASSIGN_OR_THROW(const NodeLocalStoreConfig local,
                        GetNodeLocalStore(world_size));
     const int64_t gather_id = next_subgroup_gather_id.fetch_add(1);
+    // Jobs sharing the slice may also share a root store, where the gather
+    // keys of one job's subgroups would meet the other job's.
+    const std::string key_scope =
+        world_size == slice_size
+            ? ""
+            : absl::StrCat("job", topo.rank_to_device_id[0], ":");
     TT_THROW_IF_ERROR(GatherSubgroupsViaNodeLocalStore(
         store_.get(), local.store, local.local_rank, local.local_world_size,
         rank_, size_, topo.world_rank, topo.rank_to_device_id,
         topo.rank_to_topo_order, gather_id, member_world_ranks_,
-        subgroup_member_world_ranks));
+        subgroup_member_world_ranks, key_scope));
   } else {
     TT_ASSIGN_OR_THROW(member_world_ranks_, GatherMemberWorldRanks());
     TT_ASSIGN_OR_THROW(subgroup_member_world_ranks,

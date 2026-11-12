@@ -121,6 +121,11 @@ class PjrtBackend {
   // if needed.
   absl::StatusOr<int> GetGlobalDeviceId() ABSL_LOCKS_EXCLUDED(mutex_);
 
+  // Returns the global IDs of this job's devices, sorted: every slice device,
+  // or with TORCH_TPU_JOB_DEVICE_IDS only this job's.
+  absl::StatusOr<std::vector<int64_t>> GetJobDeviceIds()  // INT_VEC_OK
+      ABSL_LOCKS_EXCLUDED(mutex_);
+
   // Returns the PjRt device type.
   [[nodiscard]] PjRtDeviceType GetDeviceType() ABSL_LOCKS_EXCLUDED(mutex_);
 

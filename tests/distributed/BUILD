@@ -193,6 +193,37 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "job_local_world_test",
+    srcs = ["job_local_world_test.py"],
+    nopresubmit_oss = "TODO(b/568095515): Flaking in GitHub TPU v7 presubmit with START_SESSION failed.",
+    oss_presubmit_tpu_generation = tpu_gen(
+        "v7",
+        reason = "Splits one v7x host into two jobs of 4 devices",
+    ),
+    tags = if_oss(
+        ["exclusive"],
+        [],
+    ) + [
+        "noasan",  # TODO(b/497035517): fix the test in asan mode.
+        "nomsan",  # TODO(b/497035517): fix the test in msan mode.
+        "notsan",  # TODO(b/497035517): fix the test in tsan mode.
+        "ok-to-wait-for-v7x-in-presubmit",
+        "requires-tpu-v7x:4",
+    ],
+    deps = [
+        ":distributed_utils",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/distributed:multiprocessing",
+        "//src/torch_tpu/_internal/distributed:tpu_distributed",
+        "//src/torch_tpu/_internal/utils:test_utils",
+        "//tests:seed_test_utils",
+        "@pypi//portpicker",
+    ],
+)
+
+torch_tpu_py_test(
     name = "compile_cache_process_groups_test",
     timeout = "long",
     srcs = ["compile_cache_process_groups_test.py"],
