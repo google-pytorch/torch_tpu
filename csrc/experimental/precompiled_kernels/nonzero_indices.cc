@@ -292,9 +292,9 @@ class NonzeroKernel {
   // while step `s - 1` is compacted.
   kiln::PipelineOperand InputBlocks(
       absl::AnyInvocable<kiln::BlockRegion(Scalar) const> region) {
-    const kiln::Dimensions block_shape =
-        x_.rank() == 2 ? kiln::Dimensions{kSublanes, kWindow}
-                       : kiln::Dimensions{kWindow};
+    const kiln::BlockShape block_shape =
+        x_.rank() == 2 ? kiln::BlockShape{kSublanes, kWindow}
+                       : kiln::BlockShape{kWindow};
     return {.hbm = x_, .block_shape = block_shape, .region = std::move(region)};
   }
 
