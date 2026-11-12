@@ -58,6 +58,7 @@
 #include "csrc/eager/eager_mode.h"
 #include "csrc/eager/events_queue.h"
 #include "csrc/eager/execution_task.h"
+#include "csrc/eager/graph_capture_state.h"
 #include "csrc/eager/split_traversal.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/traversal_utils.h"
@@ -617,6 +618,17 @@ absl::StatusOr<std::vector<SharedDeviceBufferList>> GetUniqueDeferredNodes(
   return nodes_to_materialize;
 }
 
+}  // namespace
+
+absl::Status MaterializeWhileCapturingGraphError() {
+  return InvalidateCurrentThreadGraphCapture(
+      TT_ERROR(error::kFailedPrecondition)
+      << "cannot materialize tensors or synchronize streams while capturing a "
+         "graph");
+}
+
+namespace {
+
 // Dispatches only as many stream materialization tasks as necessary to ensure
 // all deferred nodes in `items` are enqueued for materialization.
 // Note: unlike MaterializeStream (which always enqueues a stream sync, even if
@@ -627,6 +639,10 @@ template <typename T>
 absl::Status MaterializeSpan(absl::Span<const T> items,
                              MaterializationReason reason,
                              GraphSplitMode graph_split_mode) {
+  MaybeEndOrphanedGraphCaptures();
+  if (ABSL_PREDICT_FALSE(IsCurrentThreadCapturingGraph())) {
+    return MaterializeWhileCapturingGraphError();
+  }
   if (items.empty()) {
     return absl::OkStatus();
   }
@@ -650,6 +666,13 @@ absl::Status MaterializeSpan(absl::Span<const T> items,
     }
     if (!node->is_deferred()) {
       continue;
+    }
+
+    // The deferred ops on a stream that another thread is capturing a graph on
+    // belong to the graph, so they must not run.
+    if (ABSL_PREDICT_FALSE(IsStreamCapturedByAnotherThread(
+            node->device_index(), node->stream_id()))) {
+      return TensorAccessedByGraphCaptureError();
     }
 
     // This node needs to be materialized. Check if we already enqueued its
@@ -702,9 +725,19 @@ absl::StatusOr<std::vector<DeviceBufferRef>> EnqueueExecutable(
     SharedLoadedExecutableWithMetadata executable,
     std::vector<DeviceBufferRef> arguments,
     absl::Span<const Shape> output_shapes, std::string_view task_name) {
+  // A compiled executable would run during capture instead of being captured.
+  if (ABSL_PREDICT_FALSE(IsCurrentThreadCapturingGraph())) {
+    return InvalidateCurrentThreadGraphCapture(
+        TT_ERROR(error::kFailedPrecondition)
+        << "cannot run compiled executables while capturing a graph");
+  }
   // Get the stream from the calling thread, not from the execution worker
   // thread.
   const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
+  if (ABSL_PREDICT_FALSE(
+          IsStreamCapturedByAnotherThread(device_index, stream_id))) {
+    return StreamCapturedByAnotherThreadError();
+  }
   const auto eager_mode = GetEagerMode();
   // Create a set of output DeviceBufferRefs to hold the materialized results.
   std::vector<DeviceBufferRef> outputs;
@@ -744,6 +777,16 @@ absl::StatusOr<EventSnapshot> MaterializeStream(
     c10::DeviceIndex device_index, c10::StreamId stream_id,
     MaterializationReason reason, GraphSplitMode mode,
     absl::Span<const SharedDeviceBufferList> must_materialize) {
+  MaybeEndOrphanedGraphCaptures();
+  if (ABSL_PREDICT_FALSE(IsCurrentThreadCapturingGraph())) {
+    return MaterializeWhileCapturingGraphError();
+  }
+  if (ABSL_PREDICT_FALSE(
+          IsStreamCapturedByAnotherThread(device_index, stream_id))) {
+    return TT_ERROR(error::kFailedPrecondition)
+           << "cannot synchronize a stream that another thread is capturing a "
+              "graph on";
+  }
 #ifndef NDEBUG
   for (const auto& node : must_materialize) {
     ABSL_CHECK_EQ(node->device_index(),  // CRASH_OK=not visible to Python
@@ -767,6 +810,10 @@ absl::StatusOr<std::vector<EventSnapshot>> MaterializeDevice(
     c10::DeviceIndex device_index, MaterializationReason reason,
     GraphSplitMode mode,
     absl::Span<const SharedDeviceBufferList> must_materialize) {
+  MaybeEndOrphanedGraphCaptures();
+  if (ABSL_PREDICT_FALSE(IsCurrentThreadCapturingGraph())) {
+    return MaterializeWhileCapturingGraphError();
+  }
 #ifndef NDEBUG
   for (const auto& node : must_materialize) {
     ABSL_CHECK_EQ(node->device_index(),  // CRASH_OK=not visible to Python
@@ -779,6 +826,14 @@ absl::StatusOr<std::vector<EventSnapshot>> MaterializeDevice(
     // Convert from a single error to a single-element vector of a ready, error
     // future.
     return {must_materialize_vec_or.status()};
+  }
+  // RecordDeviceSnapshots skips the streams that other threads are capturing
+  // graphs on.
+  for (const SharedDeviceBufferList& node : *must_materialize_vec_or) {
+    if (ABSL_PREDICT_FALSE(IsStreamCapturedByAnotherThread(
+            node->device_index(), node->stream_id()))) {
+      return TensorAccessedByGraphCaptureError();
+    }
   }
 
   auto device_snapshots = RecordDeviceSnapshots(

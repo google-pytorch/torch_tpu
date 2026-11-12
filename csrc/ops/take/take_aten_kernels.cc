@@ -27,6 +27,7 @@
 #include "csrc/common/fixed_size_span.h"
 #include "csrc/common/warnings.h"
 #include "csrc/eager/device_buffer.h"
+#include "csrc/eager/graph_capture_state.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/macros/kernel.h"
@@ -120,9 +121,9 @@ absl::Status ValidateTakeInputs(const at::Tensor& self,
       << "expected index dtype to be int64, got " << ToString(index_dtype);
 
   TT_ASSIGN_OR_RETURN(const int64_t num_elements, NumElements(self));
-  if (GetEnableDebugChecks()) {
+  if (GetEnableDebugChecks() && !IsCurrentThreadCapturingGraph()) {
     TT_RETURN_IF_ERROR(ValidateIndicesInRange(num_elements, index));
-  } else {
+  } else if (!GetEnableDebugChecks()) {
     TT_WARN_ONCE(
         WarningCategory::kCorrectness,
         "Unlike PyTorch on CUDA or CPU, TorchTPU doesn't by default check "
