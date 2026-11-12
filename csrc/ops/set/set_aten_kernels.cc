@@ -39,6 +39,7 @@ namespace torch_tpu {
 
 at::Tensor& AtenSet_(at::Tensor& self) {
   TT_KERNEL(OpName::kSet_, _, (self), {
+    TT_THROW_IF_ERROR(PeekBaseBuffer(self).status());
     TT_ASSIGN_OR_THROW(auto element_type,
                        ConvertTo<mlir::ElementType>(self.scalar_type()));
     TT_ASSIGN_OR_THROW(DeviceBufferRef zero_size_buffer_ref,
@@ -55,6 +56,8 @@ at::Tensor& AtenSet_(at::Tensor& self) {
 at::Tensor& AtenSet_SourceStorage(at::Tensor& self, c10::Storage src) {
   TT_KERNEL(OpName::kSet_SourceStorage, _,
             (self, IgnoreInCacheKey(src, "Doesn't affect SHLO")), {
+              TT_THROW_IF_ERROR(PeekBaseBuffer(self).status());
+              TT_THROW_IF_ERROR(PeekBaseBuffer(src).status());
               c10::TensorImpl* impl = self.unsafeGetTensorImpl();
               const int64_t element_size = self.element_size();
               const int64_t numel =
@@ -88,8 +91,9 @@ at::Tensor& AtenSet_SourceStorageOffset(at::Tensor& self, c10::Storage src,
        IgnoreInCacheKey(size_vec, "Doesn't affect SHLO"),
        IgnoreInCacheKey(stride_vec, "Doesn't affect SHLO")),
       {
+        TT_THROW_IF_ERROR(PeekBaseBuffer(self).status());
         c10::TensorImpl* impl = self.unsafeGetTensorImpl();
-        TT_ASSIGN_OR_THROW(DeviceBufferRef buffer_ref, GetBaseBuffer(src));
+        TT_ASSIGN_OR_THROW(DeviceBufferRef buffer_ref, PeekBaseBuffer(src));
         const int64_t storage_numel = buffer_ref.num_elements();
         const mlir::ElementType storage_dtype = buffer_ref.element_type();
         TT_ASSIGN_OR_THROW(const mlir::ElementType tensor_dtype,
@@ -107,6 +111,8 @@ at::Tensor& AtenSet_SourceStorageOffset(at::Tensor& self, c10::Storage src,
 
 at::Tensor& AtenSet_SourceTensor(at::Tensor& self, const at::Tensor& src) {
   TT_KERNEL(OpName::kSet_SourceTensor, _, (self, src), {
+    TT_THROW_IF_ERROR(PeekBaseBuffer(self).status());
+    TT_THROW_IF_ERROR(PeekBaseBuffer(src).status());
     auto tensor_impl = src.unsafeGetTensorImpl();
     c10::Storage src_storage = tensor_impl->storage();
     c10::TensorImpl* impl = self.unsafeGetTensorImpl();

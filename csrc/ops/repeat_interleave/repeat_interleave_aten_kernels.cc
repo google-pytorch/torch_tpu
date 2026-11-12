@@ -42,6 +42,7 @@
 #include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
 #include "csrc/eager/eager_mode.h"
+#include "csrc/eager/graph_capture_state.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/copy_from/copy_common.h"
@@ -528,8 +529,9 @@ void ValidateRepeatsLengthMatchesInputDim(const at::Tensor& repeats,
 // Resolves and validates the total output size along the repeated dimension
 // from the host-synchronized sum of `repeats` (with all elements `>= 0`),
 // verifying that any explicit `output_size` is non-negative and matches the
-// sum of `repeats` (unless running under FX graph compilation or manual-sync
-// deferral where placeholder buffers cannot be materialized on host).
+// sum of `repeats` (unless running under FX graph compilation, manual-sync
+// deferral, or graph capture where placeholder buffers cannot be materialized
+// on host).
 int64_t ResolveAndValidateRepeatsTotal(
     const at::Tensor& repeats, const std::optional<int64_t> output_size) {
   if (repeats.numel() == 0) {
@@ -541,7 +543,8 @@ int64_t ResolveAndValidateRepeatsTotal(
         << "expected output_size to be greater than or equal to zero, got "
         << total;
     if (GetEagerMode() == EagerMode::kInternalCompileFxGraph ||
-        GetEagerMode() == EagerMode::kInternalDeferAll) {
+        GetEagerMode() == EagerMode::kInternalDeferAll ||
+        IsCurrentThreadCapturingGraph()) {
       return total;
     }
   }
@@ -1064,6 +1067,11 @@ absl::StatusOr<bool> TryExtractScalarRepeatCount(
     return false;
   }
   if (!IsFakeOrFunctorchTensor(repeats)) {
+    // Do not materialize or invalidate capture when recording; if output_size
+    // is omitted, the variable-length fallback will invalidate capture.
+    if (IsCurrentThreadCapturingGraph()) {
+      return false;
+    }
     // Reading the values of `repeats` needs the underlying tensor. This only
     // happens for real (non-fake) data, whose shapes are concrete.
     const auto stats = ComputeRepeatsSumAndMinOnHost(repeats.UnsafeToTensor());

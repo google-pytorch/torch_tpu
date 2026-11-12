@@ -25,11 +25,13 @@
 #include "ATen/core/TensorBody.h"
 #include "absl/algorithm/container.h"
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/eager/current_stream.h"
 #include "csrc/eager/eager_mode.h"
 #include "csrc/eager/events_queue.h"
+#include "csrc/eager/graph_capture_state.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/macros/kernel.h"
@@ -54,18 +56,16 @@ void ValidateAssertionInput(const at::Tensor& self) {
 // Determines whether the assertion check should be scheduled asynchronously on
 // the host. Returns false during graph compilation or when dealing with
 // symbolic / placeholder tensors (e.g. during FX graph tracing or
-// torch.compile).
-bool ShouldScheduleAsyncCheck(const at::Tensor& self) {
+// torch.compile), or while capturing a graph on the current thread. Returns an
+// error if reading `self` fails (e.g. when another thread is capturing it).
+absl::StatusOr<bool> ShouldScheduleAsyncCheck(const at::Tensor& self) {
   const EagerMode mode = GetEagerMode();
   if (mode == EagerMode::kInternalCompileFxGraph ||
-      mode == EagerMode::kInternalDeferAll) {
+      mode == EagerMode::kInternalDeferAll || IsCurrentThreadCapturingGraph()) {
     return false;
   }
-  const auto buffer_ref_or = GetBuffer(self);
-  if (!buffer_ref_or.ok() || buffer_ref_or->is_placeholder()) {
-    return false;
-  }
-  return true;
+  TT_ASSIGN_OR_RETURN(const DeviceBufferRef buffer_ref, GetBuffer(self));
+  return !buffer_ref.is_placeholder();
 }
 
 // Schedules an asynchronous assertion check for `self` on the background thread
@@ -74,7 +74,9 @@ bool ShouldScheduleAsyncCheck(const at::Tensor& self) {
 // thread.
 void ScheduleAsyncAssertionCheck(const at::Tensor& self,
                                  const std::string_view assert_msg) {
-  if (!ShouldScheduleAsyncCheck(self)) {
+  TT_ASSIGN_OR_THROW(const bool should_schedule,
+                     ShouldScheduleAsyncCheck(self));
+  if (!should_schedule) {
     return;
   }
 
