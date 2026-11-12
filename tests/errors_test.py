@@ -16345,6 +16345,96 @@ Supported combinations for non-constant padding:
     ):
       torch.ops.aten.repeat_interleave.Tensor_out(repeats, out=out)
 
+  def test_repeat_interleave_tensor_repeats_not_0d_or_1d(self):
+    repeats = torch.tensor([[1, 2]], device=et.device())
+    for requires_grad in (False, True):
+      with self.subTest(requires_grad=requires_grad):
+        t = torch.tensor(
+            [1.0, 2.0], device=et.device(), requires_grad=requires_grad
+        )
+        with et.assert_raises_message(
+            RuntimeError,
+            tpu="""repeat_interleave(): expected repeats to be a 0D or 1D tensor, got 2D""",
+            gpu="""repeats must be 0-dim or 1-dim tensor""",
+        ):
+          torch.repeat_interleave(t, repeats, dim=0)
+
+  def test_repeat_interleave_tensor_repeats_invalid_dtype(self):
+    for requires_grad in (False, True):
+      t = torch.tensor(
+          [1.0, 2.0], device=et.device(), requires_grad=requires_grad
+      )
+      for dtype, tpu_dtype, gpu_dtype in (
+          (torch.float32, "float32", "Float"),
+          (torch.int16, "int16", "Short"),
+      ):
+        with self.subTest(dtype=tpu_dtype, requires_grad=requires_grad):
+          repeats = torch.tensor([1, 2], dtype=dtype, device=et.device())
+          with et.assert_raises_message(
+              RuntimeError,
+              tpu=f"""repeat_interleave(): expected repeats to have int64 or int32 dtype, got {tpu_dtype}""",
+              gpu=f""""repeat_interleave_cuda" not implemented for '{gpu_dtype}'""",
+          ):
+            torch.repeat_interleave(t, repeats, dim=0)
+
+  def test_repeat_interleave_tensor_repeats_size_mismatch(self):
+    repeats = torch.tensor([1, 2], device=et.device())
+    for requires_grad in (False, True):
+      with self.subTest(requires_grad=requires_grad):
+        t = torch.tensor(
+            [1.0, 2.0, 3.0], device=et.device(), requires_grad=requires_grad
+        )
+        with et.assert_raises_message(
+            RuntimeError,
+            tpu="""repeat_interleave(): expected repeats to have the same size as input along dim (3), got 2""",
+            gpu="""repeats must have the same size as input along dim, but got repeats.size(0) = 2 and input.size(0) = 3""",
+        ):
+          torch.repeat_interleave(t, repeats, dim=0)
+
+  def test_repeat_interleave_tensor_repeats_negative(self):
+    for repeats_val in ([2, -1], [-1], -1):
+      repeats = torch.tensor(repeats_val, device=et.device())
+      for requires_grad in (False, True):
+        with self.subTest(repeats=repeats_val, requires_grad=requires_grad):
+          t = torch.tensor(
+              [1.0, 2.0], device=et.device(), requires_grad=requires_grad
+          )
+          with et.assert_raises_message(
+              RuntimeError,
+              tpu="""repeat_interleave(): expected repeats to be greater than or equal to zero, got -1""",
+              gpu="""repeats can not be negative""",
+          ):
+            torch.repeat_interleave(t, repeats, dim=0)
+
+  def test_repeat_interleave_tensor_repeats_negative_output_size(self):
+    repeats = torch.tensor([1, 2], device=et.device())
+    for requires_grad in (False, True):
+      with self.subTest(requires_grad=requires_grad):
+        t = torch.tensor(
+            [1.0, 2.0], device=et.device(), requires_grad=requires_grad
+        )
+        with et.assert_raises_message(
+            RuntimeError,
+            tpu="""repeat_interleave(): expected output_size to be greater than or equal to zero, got -1""",
+            gpu="""Trying to create tensor with negative dimension -1: [-1]""",
+        ):
+          torch.repeat_interleave(t, repeats, dim=0, output_size=-1)
+
+  def test_repeat_interleave_tensor_repeats_device_mismatch(self):
+    for repeats_val in ([1, 2], [2], 2):
+      repeats = torch.tensor(repeats_val, device="cpu")
+      for requires_grad in (False, True):
+        with self.subTest(repeats=repeats_val, requires_grad=requires_grad):
+          t = torch.tensor(
+              [1.0, 2.0], device=et.device(), requires_grad=requires_grad
+          )
+          with et.assert_raises_message(
+              RuntimeError,
+              tpu="""repeat_interleave(): expected self and repeats to be on the same device, got tpu:0 and cpu""",
+              gpu="""Expected all tensors to be on the same device, but got index is on cpu, different from other tensors on cuda:0 (when checking argument in method wrapper_CUDA__index_select)""",
+          ):
+            torch.repeat_interleave(t, repeats, dim=0)
+
   def test_constant_pad_nd_odd_pad_length(self):
     t = torch.ones(2, 2, device=et.device())
     with et.assert_raises_message(

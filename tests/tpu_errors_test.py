@@ -4936,6 +4936,63 @@ module {
     ):
       torch.nonzero_static(t, size=2, out=t)
 
+  @et.why_tpu_only(
+      "Tensor repeats validates output_size against the host-synchronized sum"
+      " of repeats synchronously on TPU."
+  )
+  def test_repeat_interleave_single_element_tensor_invalid_output_size(self):
+    for repeats_val in ([2], [1, 2, 3]):
+      repeats = torch.tensor(repeats_val, device=et.device())
+      for requires_grad in (False, True):
+        with self.subTest(repeats=repeats_val, requires_grad=requires_grad):
+          t = torch.tensor(
+              [1.0, 2.0, 3.0], device=et.device(), requires_grad=requires_grad
+          )
+          with et.assert_raises_message(
+              RuntimeError,
+              tpu="""repeat_interleave(): expected output_size to equal 6, got 9""",
+          ):
+            torch.repeat_interleave(t, repeats, dim=0, output_size=9)
+
+    repeats_only = torch.tensor([1, 2, 3], device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""repeat_interleave(): expected output_size to equal 6, got 9""",
+    ):
+      torch.repeat_interleave(repeats_only, output_size=9)
+
+  @et.why_tpu_only(
+      "Single-element tensor repeats under torch.compile validates output_size"
+      " in TryExtractScalarRepeatCount before decomposing."
+  )
+  def test_repeat_interleave_compiled_single_element_tensor_negative_output_size(
+      self,
+  ):
+    with torch._subclasses.fake_tensor.FakeTensorMode():
+      fake_t = torch.empty(2, device=et.device())
+      fake_repeats = torch.empty(1, dtype=torch.int64, device=et.device())
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""repeat_interleave(): expected output_size to be greater than or equal to zero, got -1""",
+      ):
+        torch.repeat_interleave(fake_t, fake_repeats, dim=0, output_size=-1)
+
+    @torch.compile(backend="tpu", fullgraph=True)
+    def fn(x, r):
+      return torch.repeat_interleave(x, r, dim=0, output_size=-1)
+
+    t = torch.tensor([1.0, 2.0], device=et.device())
+    repeats = torch.tensor([1], device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(
+            r".*repeat_interleave\(\): expected output_size to be greater than"
+            r" or equal to zero, got -1.*",
+            re.DOTALL,
+        ),
+    ):
+      fn(t, repeats)
+
 
 class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):
 

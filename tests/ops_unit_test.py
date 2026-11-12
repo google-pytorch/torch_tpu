@@ -9245,6 +9245,25 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         ),
     )
 
+    # Case 8: Empty input and empty repeats tensor
+    t_empty = torch.empty((0, 3), dtype=torch.float32)
+    repeats_empty = torch.empty((0,), dtype=torch.int64)
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.repeat_interleave(
+            input=to(t_empty, device=device),
+            repeats=to(repeats_empty, device=device),
+            dim=0,
+        ),
+    )
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.repeat_interleave(
+            input=to(t_empty, device=device),
+            repeats=to(repeats_empty, device=device),
+            dim=0,
+            output_size=2,
+        ),
+    )
+
   def test_repeat_interleave_repeats_only(self):
     # `torch.repeat_interleave(repeats)` returns the index vector.
     for dtype in [torch.int64, torch.int32]:
