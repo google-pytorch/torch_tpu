@@ -91,6 +91,7 @@ torch_tpu_py_test(
 internal_target(
     torch_tpu_py_test,
     name = "torchtitan_qwen3_5_test",
+    timeout = "long",  # Needed for asan.
     srcs = ["torchtitan_qwen3_5_test.py"],
     shard_count = 7,
     tags = [
