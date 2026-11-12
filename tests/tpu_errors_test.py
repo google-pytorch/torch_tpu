@@ -2316,6 +2316,20 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     ):
       tpu_torch_compile.execute(compile_result.executable, [ph])
 
+  @et.why_tpu_only("Compiled TPU programs only take TPU tensors.")
+  def test_execute_cpu_argument(self):
+    with execution_mode.set_eager_mode(EagerMode._INTERNAL_COMPILE_FX_GRAPH):
+      x = torch.ones(2, 3, device="cpu").to(device=et.device())
+      z = x + x
+    compile_result = tpu_torch_compile.traverse_and_compile([z], [x])
+    cpu_argument = torch.ones(2, 3)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""execute(): failed to prepare compiled mode arguments: failed to get buffer from argument tensor (shape=[2, 3], strides=[3, 1], numel=6, dtype=float32, device=cpu, is_contiguous=1, is_cpu=1, is_cuda=0, is_meta=0, has_storage=1, storage_offset=0): expected tensor to be on tpu, got cpu""",
+    ):
+      tpu_torch_compile.execute(compile_result.executable, [cpu_argument])
+
   @et.why_tpu_only("CUDA errors synchronously due to CUDA_LAUNCH_BLOCKING=1.")
   def test_synchronize_surfaces_async_assertion(self):
     false_cond = torch.tensor(False, device=et.device())

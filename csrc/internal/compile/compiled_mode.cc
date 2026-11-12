@@ -118,8 +118,8 @@ absl::StatusOr<std::vector<DeviceBufferRef>> PrepareCompiledModeArgumentsImpl(
     if (TensorHasTrivialLayout(argument_tensor)) {
       TT_ASSIGN_OR_RETURN(
           DeviceBufferRef buffer_ref, GetBuffer(argument_tensor),
-          _.SetPrepend() << "failed to get buffer from argument tensor: "
-                         << ToString(argument_tensor));
+          _.SetPrepend() << "failed to get buffer from argument tensor ("
+                         << ToString(argument_tensor) << "): ");
       if (NeedsMaterialize(buffer_ref)) {
         has_deferred_or_placeholder = true;
       }
@@ -143,8 +143,8 @@ absl::StatusOr<std::vector<DeviceBufferRef>> PrepareCompiledModeArgumentsImpl(
         argument_tensor.as_strided(base_sizes, base_strides, storage_offset);
     TT_ASSIGN_OR_RETURN(DeviceBufferRef buffer_ref, GetBuffer(base_tensor),
                         _.SetPrepend()
-                            << "failed to get buffer from argument tensor: "
-                            << ToString(argument_tensor));
+                            << "failed to get buffer from argument tensor ("
+                            << ToString(argument_tensor) << "): ");
     if (NeedsMaterialize(buffer_ref)) {
       has_deferred_or_placeholder = true;
     }
@@ -192,8 +192,8 @@ PrepareCompiledModeArgumentsNonSequentialFallback(
       const at::Tensor& tensor = DerefTensor(argument_tensors[j]);
       TT_ASSIGN_OR_RETURN(DeviceBufferRef buffer_ref, GetBaseBuffer(tensor),
                           _.SetPrepend()
-                              << "failed to get buffer from argument tensor: "
-                              << ToString(tensor));
+                              << "failed to get buffer from argument tensor ("
+                              << ToString(tensor) << "): ");
       base_buffer_refs[idx] = std::move(buffer_ref);
     }
   }
@@ -232,8 +232,8 @@ absl::StatusOr<std::vector<DeviceBufferRef>> PrepareCompiledModeArgumentsImpl(
       const at::Tensor& tensor = DerefTensor(argument_tensors[i]);
       TT_ASSIGN_OR_RETURN(DeviceBufferRef buffer_ref, GetBaseBuffer(tensor),
                           _.SetPrepend()
-                              << "failed to get buffer from argument tensor: "
-                              << ToString(tensor));
+                              << "failed to get buffer from argument tensor ("
+                              << ToString(tensor) << "): ");
       if (NeedsMaterialize(buffer_ref)) {
         has_deferred_or_placeholder = true;
       }
@@ -316,8 +316,8 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> ExtractMlirFromGraph(
     // deferred ops.
     TT_ASSIGN_OR_RETURN(DeviceBufferRef buffer_ref, GetBaseBuffer(tensor),
                         _.SetPrepend()
-                            << "failed to get buffer from argument tensor: "
-                            << ToString(tensor));
+                            << "failed to get buffer from argument tensor ("
+                            << ToString(tensor) << "): ");
     TT_RET_CHECK(!buffer_ref.is_deferred(), error::kInternal)
         << "argument tensor has deferred ops: " << ToString(tensor);
     ABSL_VLOG(3) << "[ExtractMlirFromGraph] arg_tensor: "
@@ -372,8 +372,8 @@ absl::StatusOr<AsyncCompileResult> TraverseAndCompile(
     // deferred ops.
     TT_ASSIGN_OR_RETURN(DeviceBufferRef buffer_ref, GetBaseBuffer(tensor),
                         _.SetPrepend()
-                            << "failed to get buffer from argument tensor: "
-                            << ToString(tensor));
+                            << "failed to get buffer from argument tensor ("
+                            << ToString(tensor) << "): ");
     ABSL_CHECK(  // CRASH_OK=implies a bug in compile backend if this happens
         !buffer_ref.is_deferred())
         << "argument tensor has deferred ops: " << ToString(tensor);
