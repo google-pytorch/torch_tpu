@@ -239,6 +239,14 @@ def _verify_kernel(
   return findings.merge_reports(*reports)
 
 
+def _clone_cpu_concrete_tensor(tensor: torch.Tensor) -> torch.Tensor:
+  """Clones `tensor` onto CPU, handling packed `float4_e2m1fn_x2` safely."""
+  detached = tensor.detach().cpu()
+  if detached.dtype == torch.float4_e2m1fn_x2:
+    return detached.view(torch.uint8).clone().view(torch.float4_e2m1fn_x2)
+  return detached.clone()
+
+
 def _materialize_fake_arg(
     val: Any,
     placeholder_env: Mapping[fx.Node, Any],
@@ -251,14 +259,14 @@ def _materialize_fake_arg(
       concrete = placeholder_env[val]
       if isinstance(concrete, torch.nn.Parameter):
         out_p = torch.nn.Parameter(
-            concrete.detach().cpu().clone(),
+            _clone_cpu_concrete_tensor(concrete),
             requires_grad=concrete.requires_grad,
         )
         if concrete_tensor_ids is not None:
           concrete_tensor_ids.add(id(out_p))
         return out_p
       if isinstance(concrete, torch.Tensor):
-        out_t = concrete.detach().cpu().clone()
+        out_t = _clone_cpu_concrete_tensor(concrete)
         if concrete_tensor_ids is not None:
           concrete_tensor_ids.add(id(out_t))
         return out_t
@@ -266,6 +274,11 @@ def _materialize_fake_arg(
     meta_val = val.meta.get("val")
     if isinstance(meta_val, torch.Tensor):
       numel = int(meta_val.numel())
+      if meta_val.dtype == torch.float4_e2m1fn_x2:
+        fill_byte = 0x00 if numel == 0 else 0x22
+        return torch.full(
+            meta_val.shape, fill_byte, dtype=torch.uint8, device="cpu"
+        ).view(torch.float4_e2m1fn_x2)
       if numel == 0:
         if meta_val.dtype in fx_verifier.FLOAT8_TORCH_DTYPES:
           return torch.zeros(

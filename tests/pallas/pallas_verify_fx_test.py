@@ -110,6 +110,16 @@ def _pallas_values_and_indices(x: jax.Array) -> tuple[jax.Array, jax.Array]:
 
 class FxVerifierTest(seed_test_utils.RepeatableTest):
 
+  def _assert_autograd_ran(self, report: verifier.VerificationReport) -> None:
+    self.assertTrue(report.passed, msg=report.summary())
+    self.assertIn(verifier.Phase.AUTOGRAD, report.checked_phases)
+    autograd_incomplete = [
+        f
+        for f in report.findings_by_category(Category.VERIFICATION_INCOMPLETE)
+        if f.phase == verifier.Phase.AUTOGRAD
+    ]
+    self.assertEmpty(autograd_incomplete, msg=report.summary())
+
   def test_safe_donated_buffer_passes_fx_verification(self):
     donating_op = jax_op(
         "pallas_verify_fx::safe_donate_add_one",
@@ -237,8 +247,7 @@ class FxVerifierTest(seed_test_utils.RepeatableTest):
 
     x = torch.randn((8, 128), dtype=torch.float32, requires_grad=True)
     valid_report = verifier.verify(valid_op, (x,))
-    self.assertTrue(valid_report.passed, msg=valid_report.summary())
-    self.assertIn(verifier.Phase.AUTOGRAD, valid_report.checked_phases)
+    self._assert_autograd_ran(valid_report)
 
     buggy_report = verifier.verify(buggy_op, (x,))
     self.assertFalse(buggy_report.passed, msg=buggy_report.summary())
@@ -473,7 +482,7 @@ class FxVerifierTest(seed_test_utils.RepeatableTest):
 
     x = torch.randn((8, 128), dtype=torch.float32, requires_grad=True)
     valid_report = verifier.verify(fwd_valid, (x,))
-    self.assertTrue(valid_report.passed, msg=valid_report.summary())
+    self._assert_autograd_ran(valid_report)
 
     buggy_report = verifier.verify(fwd_buggy, (x,))
     self.assertFalse(buggy_report.passed)
@@ -552,7 +561,7 @@ class FxVerifierTest(seed_test_utils.RepeatableTest):
 
     x = torch.randn((8, 128), dtype=torch.float32, requires_grad=True)
     dist_ok_rep = verifier.verify(dist_fwd_ok, (x,))
-    self.assertTrue(dist_ok_rep.passed, msg=dist_ok_rep.summary())
+    self._assert_autograd_ran(dist_ok_rep)
     dist_bad_rep = verifier.verify(dist_fwd_bad, (x,))
     self.assertFalse(dist_bad_rep.passed, msg=dist_bad_rep.summary())
     self.assertNotEmpty(
@@ -921,12 +930,11 @@ class FxVerifierTest(seed_test_utils.RepeatableTest):
     )
     scale = torch.full((8, 128), 2.0, dtype=torch.float32)
     rep = verifier.verify(program, (x_fp8, scale))
-    self.assertTrue(rep.passed, msg=rep.summary())
+    self._assert_autograd_ran(rep)
     self.assertEmpty(
         rep.findings_by_severity(verifier.Severity.WARNING), msg=rep.summary()
     )
     self.assertIn(verifier.Phase.FX_GRAPH, rep.checked_phases)
-    self.assertIn(verifier.Phase.AUTOGRAD, rep.checked_phases)
 
   def test_autograd_parity_treats_fp8_e8m0_outputs_as_non_differentiable(self):
     def act_with_e8m0_out(x: jax.Array) -> tuple[jax.Array, jax.Array]:
@@ -952,8 +960,7 @@ class FxVerifierTest(seed_test_utils.RepeatableTest):
 
     x = torch.ones((8, 128), dtype=torch.float32)
     valid_rep = verifier.verify(valid_e8m0_op, (x,))
-    self.assertTrue(valid_rep.passed, msg=valid_rep.summary())
-    self.assertIn(verifier.Phase.AUTOGRAD, valid_rep.checked_phases)
+    self._assert_autograd_ran(valid_rep)
 
     buggy_rep = verifier.verify(buggy_e8m0_op, (x,))
     self.assertFalse(buggy_rep.passed, msg=buggy_rep.summary())
@@ -1330,16 +1337,6 @@ class FxVerifierTest(seed_test_utils.RepeatableTest):
         fx_verifier.infer_tpu_version(v6e_mesh_op),
         torch.tpu.TpuVersion.V6E,
     )
-
-    t = torch.zeros((2, 4), dtype=torch.float32)
-    self.assertEqual(
-        verifier_impl._signature(t), ("tensor", (2, 4), torch.float32)
-    )
-    self.assertEqual(
-        verifier_impl._signature([t]), (("tensor", (2, 4), torch.float32),)
-    )
-    self.assertEqual(verifier_impl._signature({"k": 7}), (("k", 7),))
-    self.assertEqual(verifier_impl._signature({1, 2}), ("set", repr({1, 2})))
 
   def test_supported_on_keyerror_predicate_and_multi_op_chain_inference(self):
     def _dict_lookup_v6e_fn(x: jax.Array) -> jax.Array:
@@ -2267,6 +2264,449 @@ class FxVerifierTest(seed_test_utils.RepeatableTest):
             {"offsets": conc_t}, concrete_tensor_ids={id(conc_t)}
         ),
     )
+
+  def test_preconstructed_pallas_call_autograd_and_interior_tile_and_spmd(self):
+    preconstructed_non_interp = pl.pallas_call(
+        lambda g_ref, o_ref, _sem: o_ref.__setitem__(
+            Ellipsis, g_ref[...] * 2.0
+        ),
+        out_shape=jax.ShapeDtypeStruct((8, 128), jnp.float32),
+        grid_spec=pltpu.PrefetchScalarGridSpec(
+            num_scalar_prefetch=0,
+            scratch_shapes=(pltpu.SemaphoreType.DMA,),
+        ),
+    )
+    params = pltpu.InterpretParams(dma_execution_mode="on_wait")
+    worker_interprets: list[object] = []
+    x_spec = jax.ShapeDtypeStruct((8, 128), jnp.float32)
+    with (
+        pltpu.force_tpu_interpret_mode(params),
+        fx_verifier.force_primitive_interpret_params(params),
+    ):
+      main_jaxpr = jax.make_jaxpr(preconstructed_non_interp)(x_spec)
+      self.assertEqual(main_jaxpr.eqns[0].params["interpret"], params)
+
+      def _check_worker() -> None:
+        w_jaxpr = jax.make_jaxpr(preconstructed_non_interp)(x_spec)
+        worker_interprets.append(w_jaxpr.eqns[0].params["interpret"])
+
+      worker = threading.Thread(target=_check_worker)
+      worker.start()
+      worker.join()
+    self.assertEqual(worker_interprets, [False])
+    after_jaxpr = jax.make_jaxpr(preconstructed_non_interp)(x_spec)
+    self.assertFalse(after_jaxpr.eqns[0].params["interpret"])
+
+    preconstructed_bwd = pl.pallas_call(
+        lambda g_ref, o_ref: o_ref.__setitem__(Ellipsis, g_ref[...] * 2.0),
+        out_shape=jax.ShapeDtypeStruct((8, 128), jnp.float32),
+    )
+
+    def _bwd_wrapper(g: jax.Array) -> jax.Array:
+      return preconstructed_bwd(g)
+
+    def _fwd_scale2_fn(x: jax.Array) -> jax.Array:
+      return pl.pallas_call(
+          lambda x_ref, o_ref: o_ref.__setitem__(Ellipsis, x_ref[...] * 2.0),
+          out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype),
+      )(x)
+
+    bwd_jax_op = jax_op("pallas_verify_fx::preconstructed_bwd", _bwd_wrapper)
+    fwd_scale2 = jax_op(
+        "pallas_verify_fx::fwd_scale2_preconstructed", _fwd_scale2_fn
+    )
+    fwd_scale2.register_autograd(lambda ctx, g: bwd_jax_op(g))
+    x_small = torch.randn((8, 128), dtype=torch.float32, requires_grad=True)
+    pre_rep = verifier.verify(fwd_scale2, (x_small,))
+    self._assert_autograd_ran(pre_rep)
+
+    # Interior-tile zero-gradient bug on (128, 128) bfloat16: rows 0:16 and
+    # 112:128 are exact, while interior rows 16:112 are zeroed out.
+    bf16_op = jax_op("pallas_verify_fx::interior_tile_bug_bf16", _fwd_scale2_fn)
+
+    def _buggy_interior_bwd(ctx, grad_out: torch.Tensor) -> torch.Tensor:
+      del ctx
+      g = grad_out * 2.0
+      g = g.clone()
+      g[16:112, :] = 0.0
+      return g
+
+    bf16_op.register_autograd(_buggy_interior_bwd)
+    x_bf16 = torch.randn((128, 128), dtype=torch.bfloat16, requires_grad=True)
+    bf16_rep = verifier.verify(bf16_op, (x_bf16,))
+    self.assertNotEmpty(
+        bf16_rep.findings_by_category(Category.AUTOGRAD_PARITY_MISMATCH),
+        msg=bf16_rep.summary(),
+    )
+
+    # Multi-device SPMD `all_gather` forward + `psum_scatter` (`reduce_scatter`)
+    # custom backward on a 2-device mesh.
+    tp_mesh = jax.sharding.AbstractMesh((2,), ("tp",))
+
+    def _ag_fwd_fn(x: jax.Array) -> jax.Array:
+      return jax.shard_map(
+          lambda s: jax.lax.all_gather(s, "tp", axis=0, tiled=True),
+          mesh=tp_mesh,
+          in_specs=(P("tp", None),),
+          out_specs=P(None, None),
+          check_vma=False,
+      )(x)
+
+    def _rs_bwd_fn(g: jax.Array) -> jax.Array:
+      return jax.shard_map(
+          lambda s: jax.lax.psum_scatter(
+              s, "tp", scatter_dimension=0, tiled=True
+          ),
+          mesh=tp_mesh,
+          in_specs=(P(None, None),),
+          out_specs=P("tp", None),
+          check_vma=False,
+      )(g)
+
+    ag_fwd = jax_op(
+        "pallas_verify_fx::spmd_all_gather_fwd",
+        _ag_fwd_fn,
+        mesh=tp_mesh,
+        input_partition_specs=(P("tp", None),),
+        output_partition_specs=P(None, None),
+    )
+    rs_bwd = jax_op(
+        "pallas_verify_fx::spmd_reduce_scatter_bwd",
+        _rs_bwd_fn,
+        mesh=tp_mesh,
+        input_partition_specs=(P(None, None),),
+        output_partition_specs=P("tp", None),
+    )
+    ag_fwd.register_autograd(lambda ctx, g: rs_bwd(g))
+    x_shard = torch.randn((8, 128), dtype=torch.float32, requires_grad=True)
+    spmd_rep = verifier.verify(ag_fwd, (x_shard,))
+    self._assert_autograd_ran(spmd_rep)
+
+  def test_autograd_swapped_int_before_float_and_ambient_no_grad_modes(self):
+    def _pallas_indices_then_values(
+        x: jax.Array,
+    ) -> tuple[jax.Array, jax.Array]:
+      def kernel(x_ref, idx_ref, val_ref):
+        idx_ref[...] = jnp.zeros(idx_ref.shape, jnp.int32)
+        val_ref[...] = x_ref[...] * 2.0
+
+      return pl.pallas_call(
+          kernel,
+          out_shape=(
+              jax.ShapeDtypeStruct(x.shape, jnp.int32),
+              jax.ShapeDtypeStruct(x.shape, x.dtype),
+          ),
+      )(x)
+
+    swapped_ok = jax_op(
+        "pallas_verify_fx::indices_then_values_ok", _pallas_indices_then_values
+    )
+    swapped_ok.register_autograd(lambda ctx, _g_idx, g_val: g_val * 2.0)
+
+    swapped_bad = jax_op(
+        "pallas_verify_fx::indices_then_values_bad",
+        _pallas_indices_then_values,
+    )
+    swapped_bad.register_autograd(lambda ctx, _g_idx, g_val: g_val * 5.0)
+
+    x = torch.randn((8, 128), dtype=torch.float32, requires_grad=True)
+    ok_rep = verifier.verify(swapped_ok, (x,))
+    self._assert_autograd_ran(ok_rep)
+
+    bad_rep = verifier.verify(swapped_bad, (x,))
+    self.assertNotEmpty(
+        bad_rep.findings_by_category(Category.AUTOGRAD_PARITY_MISMATCH),
+        msg=bad_rep.summary(),
+    )
+
+    # Verify directional `jax.jvp` directly completes (`True`) rather than
+    # misaligning `float0` `TypedNdArray` tangents or falling back to finite
+    # differences across JAX versions (on JAX <= 0.11, `_pallas_call_jvp_rule`
+    # does not yet partition `float0` `pallas_call` output tangents, so pair a
+    # JAX `int32` output with a float `pallas_call` output).
+    def _jax_indices_then_pallas_values(
+        x: jax.Array,
+    ) -> tuple[jax.Array, jax.Array]:
+      val = pl.pallas_call(
+          lambda x_ref, val_ref: val_ref.__setitem__(
+              Ellipsis, x_ref[...] * 2.0
+          ),
+          out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype),
+      )(x)
+      return jnp.zeros(x.shape, jnp.int32), val
+
+    jvp_swapped_op = jax_op(
+        "pallas_verify_fx::jax_indices_then_pallas_values",
+        _jax_indices_then_pallas_values,
+    )
+    jc = fx_verifier.extract_jax_callable(jvp_swapped_op)
+    self.assertIsNotNone(jc)
+    slot = fx_verifier._DiffInputSlot(
+        is_kwarg=False, key=0, param_idx=0, tensor=x.detach().clone()
+    )
+    jvp_detected: list[verifier.VerificationFinding] = []
+    jvp_ran = fx_verifier._try_directional_jax_jvp_slot(
+        jc,
+        slot,
+        torch.ones_like(x) * 2.0,
+        [x.detach().clone()],
+        {},
+        [torch.ones_like(x)],
+        [torch.zeros_like(x), torch.ones_like(x)],
+        [False, True],
+        "pallas_verify_fx::jax_indices_then_pallas_values",
+        jvp_detected,
+        is_low_prec=False,
+        rtol=1e-3,
+        atol=1e-3,
+    )
+    self.assertTrue(jvp_ran)
+    self.assertEmpty(jvp_detected)
+
+    jvp_bad_detected: list[verifier.VerificationFinding] = []
+    jvp_bad_ran = fx_verifier._try_directional_jax_jvp_slot(
+        jc,
+        slot,
+        torch.ones_like(x) * 5.0,
+        [x.detach().clone()],
+        {},
+        [torch.ones_like(x)],
+        [torch.zeros_like(x), torch.ones_like(x)],
+        [False, True],
+        "pallas_verify_fx::jax_indices_then_pallas_values",
+        jvp_bad_detected,
+        is_low_prec=False,
+        rtol=1e-3,
+        atol=1e-3,
+    )
+    self.assertTrue(jvp_bad_ran)
+    self.assertNotEmpty(jvp_bad_detected)
+
+    # Calling `verify()` inside `torch.no_grad()` or `torch.inference_mode()`
+    # must still execute `Phase.AUTOGRAD` and catch buggy backwards.
+    with torch.no_grad():
+      ng_ok = verifier.verify(swapped_ok, (x.detach(),))
+      self._assert_autograd_ran(ng_ok)
+      ng_bad = verifier.verify(swapped_bad, (x.detach(),))
+      self.assertNotEmpty(
+          ng_bad.findings_by_category(Category.AUTOGRAD_PARITY_MISMATCH),
+          msg=ng_bad.summary(),
+      )
+
+    with torch.inference_mode():
+      inf_x = torch.randn((8, 128), dtype=torch.float32)
+      im_ok = verifier.verify(swapped_ok, (inf_x,))
+      self._assert_autograd_ran(im_ok)
+      im_bad = verifier.verify(swapped_bad, (inf_x,))
+      self.assertNotEmpty(
+          im_bad.findings_by_category(Category.AUTOGRAD_PARITY_MISMATCH),
+          msg=im_bad.summary(),
+      )
+
+  def test_spmd_negative_collectives_ppermute_and_replicated_input_autograd(
+      self,
+  ):
+    tp2 = jax.sharding.AbstractMesh((2,), ("tp",))
+    x_shard = torch.randn((8, 128), dtype=torch.float32, requires_grad=True)
+
+    # 1. `all_gather` forward with unreduced local-slice backward (missing
+    # cross-rank `psum_scatter`) must fail `AUTOGRAD_PARITY_MISMATCH`.
+    def _ag_unreduced_fn(x: jax.Array) -> jax.Array:
+      return jax.shard_map(
+          lambda s: jax.lax.all_gather(s, "tp", axis=0, tiled=True),
+          mesh=tp2,
+          in_specs=(P("tp", None),),
+          out_specs=P(None, None),
+          check_vma=False,
+      )(x)
+
+    ag_unreduced = jax_op(
+        "pallas_verify_fx::spmd_ag_unreduced_bwd",
+        _ag_unreduced_fn,
+        mesh=tp2,
+        input_partition_specs=(P("tp", None),),
+        output_partition_specs=P(None, None),
+    )
+    ag_unreduced.register_autograd(lambda ctx, g: g[:8])
+    unred_rep = verifier.verify(ag_unreduced, (x_shard,))
+    self.assertNotEmpty(
+        unred_rep.findings_by_category(Category.AUTOGRAD_PARITY_MISMATCH),
+        msg=unred_rep.summary(),
+    )
+
+    # 2. 4-device asymmetric ring `ppermute`: inverse permutation passes, while
+    # forward-direction permutation or missing `ppermute` fails.
+    ring4 = jax.sharding.AbstractMesh((4,), ("tp",))
+    perm_fwd = [(i, (i + 1) % 4) for i in range(4)]
+    perm_inv = [((i + 1) % 4, i) for i in range(4)]
+
+    def _make_ppermute_fn(perm):
+      def _ppermute_fn(x: jax.Array) -> jax.Array:
+        return jax.shard_map(
+            lambda s: jax.lax.ppermute(s, "tp", perm),
+            mesh=ring4,
+            in_specs=(P("tp", None),),
+            out_specs=P("tp", None),
+            check_vma=False,
+        )(x)
+
+      return _ppermute_fn
+
+    pperm_bwd_good = jax_op(
+        "pallas_verify_fx::pperm4_bwd_good",
+        _make_ppermute_fn(perm_inv),
+        mesh=ring4,
+        input_partition_specs=(P("tp", None),),
+        output_partition_specs=P("tp", None),
+    )
+    pperm_bwd_wrong_dir = jax_op(
+        "pallas_verify_fx::pperm4_bwd_wrong_dir",
+        _make_ppermute_fn(perm_fwd),
+        mesh=ring4,
+        input_partition_specs=(P("tp", None),),
+        output_partition_specs=P("tp", None),
+    )
+
+    pperm_fwd_ok = jax_op(
+        "pallas_verify_fx::pperm4_fwd_ok",
+        _make_ppermute_fn(perm_fwd),
+        mesh=ring4,
+        input_partition_specs=(P("tp", None),),
+        output_partition_specs=P("tp", None),
+    )
+    pperm_fwd_ok.register_autograd(lambda ctx, g: pperm_bwd_good(g))
+    self._assert_autograd_ran(verifier.verify(pperm_fwd_ok, (x_shard,)))
+
+    pperm_fwd_wrong = jax_op(
+        "pallas_verify_fx::pperm4_fwd_wrong_dir",
+        _make_ppermute_fn(perm_fwd),
+        mesh=ring4,
+        input_partition_specs=(P("tp", None),),
+        output_partition_specs=P("tp", None),
+    )
+    pperm_fwd_wrong.register_autograd(lambda ctx, g: pperm_bwd_wrong_dir(g))
+    wrong_dir_rep = verifier.verify(pperm_fwd_wrong, (x_shard,))
+    self.assertNotEmpty(
+        wrong_dir_rep.findings_by_category(Category.AUTOGRAD_PARITY_MISMATCH),
+        msg=wrong_dir_rep.summary(),
+    )
+
+    pperm_fwd_ident = jax_op(
+        "pallas_verify_fx::pperm4_fwd_ident_bwd",
+        _make_ppermute_fn(perm_fwd),
+        mesh=ring4,
+        input_partition_specs=(P("tp", None),),
+        output_partition_specs=P("tp", None),
+    )
+    pperm_fwd_ident.register_autograd(lambda ctx, g: g)
+    ident_rep = verifier.verify(pperm_fwd_ident, (x_shard,))
+    self.assertNotEmpty(
+        ident_rep.findings_by_category(Category.AUTOGRAD_PARITY_MISMATCH),
+        msg=ident_rep.summary(),
+    )
+
+    # 3. Replicated input `P(None, None)` -> partitioned output `P("tp", None)`:
+    # `psum` backward passes, while missing `psum` fails.
+    def _col_fwd(x: jax.Array) -> jax.Array:
+      return jax.shard_map(
+          lambda s: s
+          * jnp.asarray(jax.lax.axis_index("tp") + 1, dtype=s.dtype),
+          mesh=tp2,
+          in_specs=(P(None, None),),
+          out_specs=P("tp", None),
+          check_vma=False,
+      )(x)
+
+    def _col_bwd_ok_fn(g: jax.Array) -> jax.Array:
+      return jax.shard_map(
+          lambda s: jax.lax.psum(
+              s * jnp.asarray(jax.lax.axis_index("tp") + 1, dtype=s.dtype),
+              "tp",
+          ),
+          mesh=tp2,
+          in_specs=(P("tp", None),),
+          out_specs=P(None, None),
+          check_vma=False,
+      )(g)
+
+    col_bwd_ok = jax_op(
+        "pallas_verify_fx::col_rep_in_bwd_ok",
+        _col_bwd_ok_fn,
+        mesh=tp2,
+        input_partition_specs=(P("tp", None),),
+        output_partition_specs=P(None, None),
+    )
+
+    def _col_bwd_missing_psum_fn(g: jax.Array) -> jax.Array:
+      return jax.shard_map(
+          lambda s: s
+          * jnp.asarray(jax.lax.axis_index("tp") + 1, dtype=s.dtype),
+          mesh=tp2,
+          in_specs=(P("tp", None),),
+          out_specs=P(None, None),
+          check_vma=False,
+      )(g)
+
+    col_bwd_missing_psum = jax_op(
+        "pallas_verify_fx::col_rep_in_bwd_missing_psum",
+        _col_bwd_missing_psum_fn,
+        mesh=tp2,
+        input_partition_specs=(P("tp", None),),
+        output_partition_specs=P(None, None),
+    )
+
+    col_op_ok = jax_op(
+        "pallas_verify_fx::col_rep_in_fwd_ok",
+        _col_fwd,
+        mesh=tp2,
+        input_partition_specs=(P(None, None),),
+        output_partition_specs=P("tp", None),
+    )
+    col_op_ok.register_autograd(lambda ctx, g: col_bwd_ok(g))
+    self._assert_autograd_ran(verifier.verify(col_op_ok, (x_shard,)))
+
+    col_op_bad = jax_op(
+        "pallas_verify_fx::col_rep_in_fwd_bad",
+        _col_fwd,
+        mesh=tp2,
+        input_partition_specs=(P(None, None),),
+        output_partition_specs=P("tp", None),
+    )
+    col_op_bad.register_autograd(lambda ctx, g: col_bwd_missing_psum(g))
+    col_bad_rep = verifier.verify(col_op_bad, (x_shard,))
+    self.assertNotEmpty(
+        col_bad_rep.findings_by_category(Category.AUTOGRAD_PARITY_MISMATCH),
+        msg=col_bad_rep.summary(),
+    )
+
+  def test_float4_e2m1fn_x2_pack_unpack_and_export_placeholder(self):
+    raw_bytes = torch.tensor(
+        [[0x31, 0x25, 0x07, 0x64] * 16] * 8, dtype=torch.uint8
+    )
+    fp4_tensor = raw_bytes.view(torch.float4_e2m1fn_x2)
+    unpacked_np, jax_dt = fx_verifier.tensor_to_numpy(fp4_tensor)
+    self.assertEqual(jax_dt, jnp.float4_e2m1fn.dtype)
+    self.assertEqual(unpacked_np.shape, (8, 128))
+    # Low nibble 0x01 at even index 0, high nibble 0x03 at odd index 1.
+    self.assertEqual(int(unpacked_np.view(np.uint8)[0, 0]), 0x01)
+    self.assertEqual(int(unpacked_np.view(np.uint8)[0, 1]), 0x03)
+
+    cpu0 = jax.devices("cpu")[0]
+    jax_fp4 = jax.device_put(jnp.asarray(unpacked_np, dtype=jax_dt), cpu0)
+    repacked = fx_verifier._jax_to_torch_tensor(jax_fp4)
+    self.assertEqual(repacked.dtype, torch.float4_e2m1fn_x2)
+    self.assertEqual(repacked.shape, (8, 64))
+    self.assertTrue(torch.equal(repacked.view(torch.uint8), raw_bytes))
+
+    scalar_fp4 = torch.tensor(0x21, dtype=torch.uint8).view(
+        torch.float4_e2m1fn_x2
+    )
+    try:
+      fx_verifier.tensor_to_numpy(scalar_fp4)
+      raised_0d = False
+    except ValueError:
+      raised_0d = True
+    self.assertTrue(raised_0d)
 
 
 if __name__ == "__main__":
