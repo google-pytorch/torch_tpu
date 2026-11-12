@@ -118,16 +118,58 @@ BATCH_SWEEP = flags.DEFINE_bool(  # PYTHON_FLAG_OK=benchmark
     " size (`bs<N>`). The batch sweep is independent of the run mode. A batch"
     " size that runs out of device memory is exported as such rather than as"
     " a failure, and the larger batch sizes of the benchmark in that run mode"
-    " are then not run (and exported as skipped). Only valid with"
-    " --run_scope=full. Only"
-    " torch_benchmark_test runs batch sweeps.",
+    " are then not run (and exported as skipped), as are those after a batch"
+    " size that fails and those past which its throughput stops improving"
+    " (--batch_sweep_min_improvement, --batch_sweep_patience). Only valid with"
+    " --run_scope=full. Only torch_benchmark_test runs batch sweeps.",
 )
 
 BATCH_SWEEP_SIZES = flags.DEFINE_list(  # PYTHON_FLAG_OK=benchmark
     "batch_sweep_sizes",
-    ["1", "2", "4", "8", "16", "32", "64", "128"],
+    ["1", "2", "4", "8", "16", "32", "64", "128", "256", "512", "1024"],
     "The batch sizes that --batch_sweep measures each benchmark at, unless the"
-    " benchmark sets its own (`BatchSweep.batch_sizes`).",
+    " benchmark sets its own (`BatchSweep.batch_sizes`). The sweep of a"
+    " benchmark stops early once a batch size runs out of memory or fails, or"
+    " once its throughput stops improving (--batch_sweep_min_improvement), so"
+    " the large batch sizes only run for benchmarks that still gain from"
+    " them.",
+)
+
+
+BATCH_SWEEP_MIN_IMPROVEMENT = flags.DEFINE_float(  # PYTHON_FLAG_OK=benchmark
+    "batch_sweep_min_improvement",
+    0.03,
+    "Stop the batch sweep of a benchmark in a run mode once its throughput"
+    " (samples, or else tokens, per second) stops improving: once"
+    " --batch_sweep_patience consecutive batch sizes each improve it by less"
+    " than this fraction over the best smaller batch size, the larger batch"
+    " sizes are not run (and are exported as skipped). 0 measures every batch"
+    " size.",
+    lower_bound=0.0,
+)
+
+
+BATCH_SWEEP_PATIENCE = flags.DEFINE_integer(  # PYTHON_FLAG_OK=benchmark
+    "batch_sweep_patience",
+    2,
+    "The number of consecutive batch sizes without enough throughput"
+    " improvement (--batch_sweep_min_improvement) after which the batch sweep"
+    " of a benchmark in a run mode stops. Only batch sizes of at least"
+    " --batch_sweep_patience_min_bs count.",
+    lower_bound=1,
+)
+
+
+BATCH_SWEEP_PATIENCE_MIN_BS = flags.DEFINE_integer(  # PYTHON_FLAG_OK=benchmark
+    "batch_sweep_patience_min_bs",
+    8,
+    "The smallest batch size that counts towards --batch_sweep_patience"
+    " when it does not improve the throughput enough. Small batch sizes"
+    " are often bound by the host's dispatch rather than by the device, so"
+    " their throughput varies from run to run and can dip before larger"
+    " batch sizes improve on it; they still set the best throughput that"
+    " larger batch sizes must beat. 1 counts every batch size.",
+    lower_bound=1,
 )
 
 

@@ -54,6 +54,7 @@ torch_tpu_py_test(
         "//perflab:registry",
         "//perflab:step_lib",
         "//perflab:target",
+        "//perflab:workload",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:flagsaver",
         "//shims/absl_py/testing:parameterized",

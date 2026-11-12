@@ -175,7 +175,7 @@ class BatchSweepFlagsTest(seed_test_utils.RepeatableTest):
   def test_defaults_before_parsing(self):
     self.assertEqual(
         self._values_before_parsing([]),
-        (False, (1, 2, 4, 8, 16, 32, 64, 128)),
+        (False, (1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024)),
     )
 
   def test_reads_argv_before_parsing(self):

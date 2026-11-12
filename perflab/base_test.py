@@ -46,6 +46,7 @@ Why forkserver rather than subprocess or the other start methods:
 
 from collections.abc import Mapping, Sequence
 import contextlib
+import dataclasses
 import enum
 from multiprocessing import connection as mp_connection
 import os
@@ -130,6 +131,224 @@ def get_out_of_memory_skip_reason(
       f" {mode.value} at batch size {out_of_memory_batch_size}, so batch size"
       f" {batch_size} is not run"
   )
+
+
+# The smallest batch size at which each benchmark failed (crashed, timed out
+# or raised) in this process's batch sweep, by benchmark name and run mode. Its
+# larger batch sizes are skipped, as they are likely to fail the same way.
+_failed_batch_sizes: dict[tuple[str, common.RunMode], int] = {}
+
+# The throughput (samples, or else tokens, per second) that each benchmark
+# measured in this process's batch sweep, by batch size, by benchmark name and
+# run mode.
+_throughputs: dict[tuple[str, common.RunMode], dict[int, float]] = {}
+
+
+@dataclasses.dataclass(frozen=True)
+class _ThroughputStop:
+  """Where the throughput of a benchmark stopped improving in its sweep.
+
+  Attributes:
+    batch_size: The batch size at which the sweep stopped; larger ones are not
+      run.
+    best_batch_size: The batch size with the best throughput up to `batch_size`.
+    batch_sizes: The consecutive batch sizes that did not improve on the best
+      throughput by --batch_sweep_min_improvement and counted towards
+      --batch_sweep_patience, ending at `batch_size`.
+  """
+
+  batch_size: int
+  best_batch_size: int
+  batch_sizes: tuple[int, ...]
+
+
+# Where the throughput of each benchmark stopped improving in this process's
+# batch sweep, by benchmark name and run mode.
+_stopped_batch_sizes: dict[tuple[str, common.RunMode], _ThroughputStop] = {}
+
+
+def note_failure(spec_name: str, mode: common.RunMode, batch_size: int) -> None:
+  """Records that a batch sweep case of a benchmark failed at a batch size.
+
+  Args:
+    spec_name: The name of the benchmark.
+    mode: The run mode of the case that failed.
+    batch_size: The batch size that failed.
+  """
+  key = (spec_name, mode)
+  current = _failed_batch_sizes.get(key)
+  if current is None or batch_size < current:
+    _failed_batch_sizes[key] = batch_size
+
+
+def _throughput(metrics: metrics_lib.MetricsInterface) -> float | None:
+  """Returns the samples, or else tokens, per second of a case, if known."""
+  metric_map = metrics.metric_map()
+  for key in ("samples_per_second", "tokens_per_second"):
+    value = metric_map.get(key)
+    if value:
+      return value
+  return None
+
+
+def _find_throughput_stop(
+    throughputs: Mapping[int, float],
+    min_improvement: float,
+    patience: int,
+    patience_min_batch_size: int,
+) -> _ThroughputStop | None:
+  """Returns where the throughputs, by batch size, stop improving, if they do.
+
+  The throughput stops improving once `patience` consecutive batch sizes of at
+  least `patience_min_batch_size` each fail to beat the best throughput of the
+  smaller batch sizes by `min_improvement`. Any batch size that does resets the
+  count. Smaller batch sizes still set the best throughput, but do not count
+  towards `patience` when they fail to beat it.
+
+  Args:
+    throughputs: The throughput by batch size.
+    min_improvement: The fraction by which a batch size must beat the best
+      throughput so far to count as an improvement.
+    patience: The number of consecutive batch sizes without improvement after
+      which the sweep stops.
+    patience_min_batch_size: The smallest batch size that counts towards
+      `patience` when it does not improve the throughput.
+  """
+  best_batch_size = None
+  best = 0.0
+  without_improvement = []
+  for batch_size in sorted(throughputs):
+    throughput = throughputs[batch_size]
+    if best_batch_size is None or throughput >= best * (1 + min_improvement):
+      best_batch_size, best = batch_size, throughput
+      without_improvement = []
+      continue
+    if batch_size >= patience_min_batch_size:
+      without_improvement.append(batch_size)
+    if throughput > best:
+      best_batch_size, best = batch_size, throughput
+    if len(without_improvement) >= patience:
+      return _ThroughputStop(
+          batch_size=batch_size,
+          best_batch_size=best_batch_size,
+          batch_sizes=tuple(without_improvement),
+      )
+  return None
+
+
+def note_throughput(
+    spec_name: str, mode: common.RunMode, batch_size: int, throughput: float
+) -> None:
+  """Records the throughput of a benchmark at a batch size.
+
+  The sweep of the benchmark in the run mode stops once
+  `--batch_sweep_patience` consecutive batch sizes of at least
+  `--batch_sweep_patience_min_bs` each fail to beat the best throughput
+  of the smaller batch sizes by `--batch_sweep_min_improvement`.
+
+  Args:
+    spec_name: The name of the benchmark.
+    mode: The run mode of the case.
+    batch_size: The batch size of the case.
+    throughput: The samples, or else tokens, per second of the case.
+  """
+  key = (spec_name, mode)
+  _throughputs.setdefault(key, {})[batch_size] = throughput
+  min_improvement = flags_lib.BATCH_SWEEP_MIN_IMPROVEMENT.value
+  if min_improvement <= 0:
+    return
+  stop = _find_throughput_stop(
+      _throughputs[key],
+      min_improvement,
+      flags_lib.BATCH_SWEEP_PATIENCE.value,
+      flags_lib.BATCH_SWEEP_PATIENCE_MIN_BS.value,
+  )
+  # Recompute the stop from all the throughputs so far rather than keeping an
+  # earlier one: the default case runs before the sweep cases, so its batch size
+  # can complete the patience before smaller sweep batch sizes run, and one of
+  # those may then improve the throughput and undo the stop.
+  if stop is None:
+    _stopped_batch_sizes.pop(key, None)
+  else:
+    _stopped_batch_sizes[key] = stop
+
+
+def note_batch_sweep_record(data: export_lib.BenchmarkData) -> None:
+  """Records what a case's result means for the rest of its batch sweep.
+
+  A batch sweep case that ran out of memory or failed, or measured cases
+  (including the default case, at its default batch size) whose throughput
+  stopped improving, end the batch sweep of their benchmark in their run mode.
+  A case without a throughput (e.g. a decode benchmark, or one whose pipelined
+  steps ran out of memory) does not count towards stopping.
+
+  Args:
+    data: The exported result of a case.
+  """
+  if data.out_of_memory:
+    if data.batch_size is not None:
+      note_out_of_memory(data.spec_name, data.run_mode, data.batch_size)
+    return
+  if data.skipped:
+    return
+  if not data.succeeded:
+    if data.batch_size is not None:
+      note_failure(data.spec_name, data.run_mode, data.batch_size)
+    return
+  batch_size = data.batch_size
+  step_work = getattr(data.metrics, "step_work", None)
+  if batch_size is None and step_work is not None:
+    batch_size = step_work.workload.batch_size
+  throughput = _throughput(data.metrics)
+  if batch_size is not None and throughput is not None:
+    note_throughput(data.spec_name, data.run_mode, batch_size, throughput)
+
+
+def get_stop_reason(
+    spec_name: str, mode: common.RunMode, batch_size: int | None
+) -> str | None:
+  """Returns why a batch sweep case is not run, or None.
+
+  A case is not run if a smaller batch size of its benchmark ran out of memory
+  or failed in its run mode, or if the throughput stopped improving at a smaller
+  batch size.
+
+  Args:
+    spec_name: The name of the benchmark.
+    mode: The run mode of the case.
+    batch_size: The batch size of the case, or None if it is not a batch sweep
+      case.
+  """
+  if batch_size is None:
+    return None
+  out_of_memory_reason = get_out_of_memory_skip_reason(
+      spec_name, mode, batch_size
+  )
+  if out_of_memory_reason is not None:
+    return out_of_memory_reason
+  key = (spec_name, mode)
+  failed_batch_size = _failed_batch_sizes.get(key)
+  if failed_batch_size is not None and batch_size >= failed_batch_size:
+    return (
+        f"Benchmark {spec_name} failed in run mode {mode.value} at batch size"
+        f" {failed_batch_size}, so batch size {batch_size} is not run"
+    )
+  stop = _stopped_batch_sizes.get(key)
+  if stop is not None and batch_size > stop.batch_size:
+    sizes = ", ".join(str(b) for b in stop.batch_sizes)
+    if len(stop.batch_sizes) == 1:
+      not_improved = f"batch size {sizes} improved"
+    else:
+      not_improved = f"batch sizes {sizes} each improved"
+    return (
+        f"Benchmark {spec_name} stopped improving its throughput in run mode"
+        f" {mode.value}: {not_improved} on the best"
+        " throughput of the smaller batch sizes by less than"
+        f" {flags_lib.BATCH_SWEEP_MIN_IMPROVEMENT.value:.0%} (the best is at"
+        f" batch size {stop.best_batch_size}), so batch size {batch_size} is"
+        " not run"
+    )
+  return None
 
 
 class Outcome(enum.Enum):
@@ -420,11 +639,9 @@ class BaseBenchmarkTest(
           _record(result, self, Outcome.SKIPPED, skip_reason)
           return result
         if batch_size is not None:
-          skip_reason = get_out_of_memory_skip_reason(
-              spec.name, mode, batch_size
-          )
+          skip_reason = get_stop_reason(spec.name, mode, batch_size)
           if skip_reason is not None:
-            self.report_out_of_memory_skip(spec, mode, batch_size)
+            self.report_batch_sweep_skip(spec, mode, batch_size)
             _record(result, self, Outcome.SKIPPED, skip_reason)
             return result
 
@@ -435,16 +652,20 @@ class BaseBenchmarkTest(
       )
       if payload is not None:
         export_lib.export(payload)
-        if getattr(payload, "out_of_memory", False):
-          note_out_of_memory(
-              payload.spec_name, payload.run_mode, payload.batch_size
-          )
+        note_batch_sweep_record(payload)
       elif outcome in (Outcome.CRASHED, Outcome.TIMED_OUT):
         # No payload: the case was skipped, failed before measuring, or the
-        # child died. Only the last has no record of its own yet.
+        # child died. Only the last has no record of its own yet. Reporting
+        # the failure also stops the batch sweep of the benchmark.
         if params is not None:
           spec, mode, batch_size = cases.unpack_case_params(params)
           self.report_result(spec, mode, succeeded=False, batch_size=batch_size)
+      elif outcome in (Outcome.FAILURE, Outcome.ERROR) and params is not None:
+        # A case that failed before reporting a result still stops the batch
+        # sweep of its benchmark.
+        spec, mode, batch_size = cases.unpack_case_params(params)
+        if batch_size is not None:
+          note_failure(spec.name, mode, batch_size)
       _record(result, self, outcome, detail)
     finally:
       result.stopTest(self)
@@ -503,17 +724,19 @@ class BaseBenchmarkTest(
         self._batch_sweep_record(spec, mode, batch_size, out_of_memory=True)
     )
 
-  def report_out_of_memory_skip(
+  def report_batch_sweep_skip(
       self,
       spec: registry_lib.BenchmarkSpec,
       mode: common.RunMode,
       batch_size: int,
   ) -> None:
-    """Exports that a batch sweep case was skipped after an out of memory.
+    """Exports that a batch sweep case was not run.
 
-    A smaller batch size of the benchmark ran out of device memory in the run
-    mode, so the case is not run. It is exported as skipped rather than as out
-    of memory, which it was not measured to be.
+    A smaller batch size of the benchmark ran out of device memory or failed in
+    the run mode, or its throughput stopped improving at a smaller batch size
+    (see `get_stop_reason`), so the case is not run. It is exported as
+    skipped, e.g. rather than as out of memory, which it was not measured to
+    be.
 
     Args:
       spec: The benchmark of the case.
@@ -549,8 +772,7 @@ class BaseBenchmarkTest(
       self.isolated_payload = data
       return
     export_lib.export(data)
-    if data.out_of_memory and data.batch_size is not None:
-      note_out_of_memory(data.spec_name, data.run_mode, data.batch_size)
+    note_batch_sweep_record(data)
 
   def report_skip(
       self, spec: registry_lib.BenchmarkSpec, mode: common.RunMode
@@ -674,14 +896,13 @@ class BaseBenchmarkTest(
       self._dry_run_test()
       return
 
-    # Batch sizes above one that ran out of memory; the parent skips them
-    # before starting a child, so this only applies to in-process runs.
-    out_of_memory_reason = get_out_of_memory_skip_reason(
-        spec.name, mode, batch_size
-    )
-    if batch_size is not None and out_of_memory_reason is not None:
-      self.report_out_of_memory_skip(spec, mode, batch_size)
-      self.skipTest(out_of_memory_reason)
+    # Batch sizes that the sweep of the benchmark in the run mode stopped
+    # before; the parent skips them before starting a child, so this only
+    # applies to in-process runs.
+    stop_reason = get_stop_reason(spec.name, mode, batch_size)
+    if batch_size is not None and stop_reason is not None:
+      self.report_batch_sweep_skip(spec, mode, batch_size)
+      self.skipTest(stop_reason)
 
     if (
         skip_reason is not None
