@@ -833,6 +833,8 @@ TEST_EXCLUSIONS: Final[
             "test_grad_scaling_state_dict": "*",
             "test_grad_scaling_unscale_sparse": "*",
             "test_grad_scaling_update_scale": "*",
+            # Calls Tensor.to_sparse(); sparse layouts are unsupported on TPU.
+            "test_has_storage_data": "*",
             "test_index_add_all_dtypes": "*",
             "test_index_add_large_inputs": "*",
             "test_index_fill_mem_overlap": "*",
@@ -884,7 +886,6 @@ TEST_EXCLUSIONS: Final[
             },
             "test_scatter_reduce_scalar": {"dtypes": [torch.complex128]},
             "test_shift_mem_overlap": "*",
-            "test_split_with_sizes_copy_out": "*",
             "test_storage": "*",
             "test_strides_propagation": "*",
             "test_take_empty": "*",
