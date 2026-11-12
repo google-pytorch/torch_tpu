@@ -21,7 +21,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <future>  // NOLINT - needed for publish/read concurrency tests
 #include <memory>
+#include <mutex>  // NOLINT - models a store connection lock
 #include <string>
 #include <string_view>
 #include <thread>  // NOLINT - needed for async send test thread
@@ -40,6 +42,7 @@
 #include "torch/csrc/distributed/c10d/HashStore.hpp"
 #include "torch/csrc/distributed/c10d/PrefixStore.hpp"
 #include "torch/csrc/distributed/c10d/Store.hpp"
+#include "torch/csrc/distributed/c10d/TCPStore.hpp"
 #include "xla/pjrt/pjrt_client.h"
 
 namespace torch_tpu {
@@ -939,6 +942,213 @@ TEST(ProcessGroupTpuTest,
   EXPECT_THAT(status.message(),
               testing::HasSubstr("process group is shut down"));
   EXPECT_FALSE(store->check({"missing_key"}));
+}
+
+// Models TCPStore's per-connection serialization: every operation holds this
+// object's connection lock, and multiGet holds it while it waits for a missing
+// key. Clones share the keys but get their own connection lock, as TCPStore
+// clones open their own connection. `reads_started` counts reads that hold
+// their connection lock, so a test can wait until a read is blocked in it.
+class SerializedStore : public c10d::HashStore {
+ public:
+  SerializedStore(c10::intrusive_ptr<c10d::HashStore> data,
+                  std::shared_ptr<std::atomic<int>> reads_started)
+      : data_(std::move(data)), reads_started_(std::move(reads_started)) {}
+
+  c10::intrusive_ptr<c10d::Store> clone() override {
+    return c10::make_intrusive<SerializedStore>(data_, reads_started_);
+  }
+
+  std::vector<std::vector<uint8_t>> multiGet(
+      const std::vector<std::string>& keys) override {
+    std::lock_guard<std::mutex> lock(connection_);
+    reads_started_->fetch_add(1, std::memory_order_release);
+    return data_->multiGet(keys);
+  }
+
+  void multiSet(const std::vector<std::string>& keys,
+                const std::vector<std::vector<uint8_t>>& values) override {
+    std::lock_guard<std::mutex> lock(connection_);
+    data_->multiSet(keys, values);
+  }
+
+  void set(const std::string& key, const std::vector<uint8_t>& value) override {
+    std::lock_guard<std::mutex> lock(connection_);
+    data_->set(key, value);
+  }
+
+  bool deleteKey(const std::string& key) override {
+    std::lock_guard<std::mutex> lock(connection_);
+    return data_->deleteKey(key);
+  }
+
+ private:
+  c10::intrusive_ptr<c10d::HashStore> data_;
+  std::shared_ptr<std::atomic<int>> reads_started_;
+  std::mutex connection_;
+};
+
+// Polls `predicate` until it holds or `timeout` passes; returns its last value.
+template <typename Predicate>
+bool WaitUntil(Predicate predicate, std::chrono::milliseconds timeout) {
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (!predicate()) {
+    if (std::chrono::steady_clock::now() >= deadline) {
+      return predicate();
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  return true;
+}
+
+// Wraps `store` in `depth` PrefixStore layers named "pg" and returns the key
+// prefix they add.
+std::string WrapInPrefixStores(c10::intrusive_ptr<c10d::Store>& store,
+                               int depth) {
+  std::string prefix;
+  for (int i = 0; i < depth; ++i) {
+    store = c10::make_intrusive<c10d::PrefixStore>("pg", store);
+    prefix += "pg/";
+  }
+  return prefix;
+}
+
+class P2pSendQueueSerializedStoreTest : public testing::TestWithParam<int> {};
+
+// A send waits on the next stage while this rank publishes its own receive to
+// the previous stage. The blocked descriptor read must not hold up the
+// publication. Never fail fatally before the read is released: a broken
+// isolation would leave the worker blocked in multiGet.
+TEST_P(P2pSendQueueSerializedStoreTest, PublishesWhileSendWaitsForDescriptor) {
+  auto data = c10::make_intrusive<c10d::HashStore>();
+  data->setTimeout(kTestStoreTimeout);
+  auto reads_started = std::make_shared<std::atomic<int>>(0);
+  c10::intrusive_ptr<c10d::Store> store =
+      c10::make_intrusive<SerializedStore>(data, reads_started);
+  const std::string prefix = WrapInPrefixStores(store, GetParam());
+  P2pSendQueue queue(store);
+
+  auto waiter = std::make_shared<AsyncSendWaiter>();
+  auto received = std::make_shared<std::vector<std::vector<uint8_t>>>();
+  ASSERT_TRUE(queue
+                  .Enqueue(
+                      /*dst_rank=*/1, {"downstream"},
+                      [waiter, received](std::vector<std::vector<uint8_t>> d) {
+                        *received = std::move(d);
+                        waiter->MarkDone();
+                      },
+                      [waiter](std::exception_ptr eptr) {
+                        waiter->SetError(std::move(eptr));
+                      })
+                  .ok());
+  const bool read_started = WaitUntil(
+      [&] { return reads_started->load(std::memory_order_acquire) >= 1; },
+      std::chrono::seconds(5));
+
+  auto publish = std::async(
+      std::launch::async, [&] { store->multiSet({"upstream"}, {{1, 2, 3}}); });
+  const auto published = publish.wait_for(std::chrono::seconds(2));
+  const bool send_waiting = !waiter->done.load(std::memory_order_acquire);
+
+  // An independent peer releases the read even when the isolation is broken.
+  data->multiSet({prefix + "downstream"}, {{4, 5, 6}});
+  waiter->WaitAndThrow();
+  publish.get();
+
+  EXPECT_TRUE(read_started);
+  EXPECT_EQ(published, std::future_status::ready)
+      << "publishing must not wait for a pending send's descriptor read";
+  EXPECT_TRUE(send_waiting);
+  EXPECT_EQ(*received, (std::vector<std::vector<uint8_t>>{{4, 5, 6}}));
+  EXPECT_EQ(data->multiGet({prefix + "upstream"}),
+            (std::vector<std::vector<uint8_t>>{{1, 2, 3}}));
+  queue.Shutdown();
+  EXPECT_FALSE(data->check({prefix + "downstream"}));
+}
+
+// Sends to different peers read their descriptors on their own connections,
+// so a send whose receiver has not posted yet does not block a send to a
+// receiver that has.
+TEST_P(P2pSendQueueSerializedStoreTest, KeepsPeerReadsOnSeparateConnections) {
+  auto data = c10::make_intrusive<c10d::HashStore>();
+  data->setTimeout(kTestStoreTimeout);
+  auto reads_started = std::make_shared<std::atomic<int>>(0);
+  c10::intrusive_ptr<c10d::Store> store =
+      c10::make_intrusive<SerializedStore>(data, reads_started);
+  const std::string prefix = WrapInPrefixStores(store, GetParam());
+  P2pSendQueue queue(store);
+
+  auto enqueue = [&queue](int dst_rank, const std::string& key,
+                          std::shared_ptr<AsyncSendWaiter> waiter) {
+    return queue.Enqueue(
+        dst_rank, {key},
+        [waiter](std::vector<std::vector<uint8_t>>) { waiter->MarkDone(); },
+        [waiter](std::exception_ptr eptr) {
+          waiter->SetError(std::move(eptr));
+        });
+  };
+  auto waiter_a = std::make_shared<AsyncSendWaiter>();
+  auto waiter_b = std::make_shared<AsyncSendWaiter>();
+  ASSERT_TRUE(enqueue(/*dst_rank=*/1, "key_a", waiter_a).ok());
+  ASSERT_TRUE(enqueue(/*dst_rank=*/2, "key_b", waiter_b).ok());
+  const bool both_reading = WaitUntil(
+      [&] { return reads_started->load(std::memory_order_acquire) >= 2; },
+      std::chrono::seconds(5));
+
+  // Rank 2's receiver posts first; rank 1's send keeps waiting.
+  data->set(prefix + "key_b", {'b'});
+  const bool b_done =
+      WaitUntil([&] { return waiter_b->done.load(std::memory_order_acquire); },
+                std::chrono::seconds(2));
+  const bool a_waiting = !waiter_a->done.load(std::memory_order_acquire);
+
+  data->set(prefix + "key_a", {'a'});
+  waiter_a->WaitAndThrow();
+  waiter_b->WaitAndThrow();
+
+  EXPECT_TRUE(both_reading) << "each peer's read needs its own connection";
+  EXPECT_TRUE(b_done) << "a send must not wait behind another peer's read";
+  EXPECT_TRUE(a_waiting);
+  queue.Shutdown();
+}
+
+INSTANTIATE_TEST_SUITE_P(PrefixDepth, P2pSendQueueSerializedStoreTest,
+                         testing::Values(0, 2));
+
+// Through a real TCPStore and nested PrefixStores, descriptors published on
+// the original store reach the send intact, and the consumed keys are deleted
+// under the same prefixed names.
+TEST(ProcessGroupTpuTest, P2pSendQueueTCPStorePreservesDescriptorNamespace) {
+  c10d::TCPStoreOptions options;
+  options.port = 0;
+  options.isServer = true;
+  options.waitWorkers = false;
+  options.timeout = kTestStoreTimeout;
+  auto root = c10::make_intrusive<c10d::TCPStore>("127.0.0.1", options);
+  c10::intrusive_ptr<c10d::Store> store = root;
+  const std::string prefix = WrapInPrefixStores(store, /*depth=*/2);
+  P2pSendQueue queue(store);
+
+  auto waiter = std::make_shared<AsyncSendWaiter>();
+  auto received = std::make_shared<std::vector<std::vector<uint8_t>>>();
+  ASSERT_TRUE(queue
+                  .Enqueue(
+                      /*dst_rank=*/1, {"second", "first"},
+                      [waiter, received](std::vector<std::vector<uint8_t>> d) {
+                        *received = std::move(d);
+                        waiter->MarkDone();
+                      },
+                      [waiter](std::exception_ptr eptr) {
+                        waiter->SetError(std::move(eptr));
+                      })
+                  .ok());
+  store->multiSet({"first", "second"}, {{0, 255}, {3, 4}});
+  waiter->WaitAndThrow();
+  queue.Shutdown();
+
+  EXPECT_EQ(*received, (std::vector<std::vector<uint8_t>>{{3, 4}, {0, 255}}));
+  EXPECT_FALSE(root->check({prefix + "first"}));
+  EXPECT_FALSE(root->check({prefix + "second"}));
 }
 
 }  // namespace
