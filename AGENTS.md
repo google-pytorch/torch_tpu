@@ -236,6 +236,9 @@ its `SKILL.md` and follow it.
 *   [`tt-implement-ops`](.agents/skills/tt-implement-ops/SKILL.md): implementing
     a new ATen operator or StableHLO lowering, including C++ registration and
     tests.
+*   [`tt-manage-api-lifecycle`](.agents/skills/tt-manage-api-lifecycle/SKILL.md):
+    adding, changing, exposing, or deprecating TorchTPU APIs, env vars, or
+    `tt_apis.yaml`.
 *   [`tt-review-code`](.agents/skills/tt-review-code/SKILL.md): reviewing a
     change for complexity, C++ pitfalls, readability, and style.
 *   [`tt-support-dtypes`](.agents/skills/tt-support-dtypes/SKILL.md): fixing
