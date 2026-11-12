@@ -245,6 +245,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "tcmalloc_check_test",
     srcs = ["tcmalloc_check_test.py"],
+    tags = ["notsan"],  # TODO(b/584257115): Fails under OSS TSan.
     use_tcmalloc = True,
     deps = [
         ":seed_test_utils",

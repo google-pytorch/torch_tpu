@@ -112,6 +112,7 @@ torch_tpu_py_test(
     name = "blockwise_scaled_mm_kernel_host_test",
     srcs = ["blockwise_scaled_mm_kernel_host_test.py"],
     tags = [
+        "notsan",  # TODO(b/584257115): Fails under OSS TSan.
         # Tests build-time generator scaled_mm_generate (not packaged in runtime wheel).
         "wheel_test_excluded",
     ],
@@ -166,6 +167,7 @@ torch_tpu_py_test(
     name = "blockwise128_scaled_mm_kernel_host_test",
     srcs = ["blockwise128_scaled_mm_kernel_host_test.py"],
     tags = [
+        "notsan",  # TODO(b/584257115): Fails under OSS TSan.
         # Tests build-time generator scaled_mm_generate (not packaged in runtime wheel).
         "wheel_test_excluded",
     ],
