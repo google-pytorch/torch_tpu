@@ -712,6 +712,7 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
           " notice."
       ),
   )
+  @torch._dynamo.disable
   def get_rng_state(
       cls, device: int | str | torch.device = "tpu"
   ) -> torch.Tensor:
@@ -734,6 +735,7 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
   @experimental(
       "set_rng_state() is experimental and subject to change without notice."
   )
+  @torch._dynamo.disable
   def set_rng_state(
       cls, new_state: torch.Tensor, device: int | str | torch.device = "tpu"
   ) -> None:

@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from unittest import mock
+
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
@@ -28,6 +30,25 @@ def setUpModule():
 
 
 class RngTest(seed_test_utils.RepeatableTest):
+
+  def test_get_rng_state_raises_when_internal_apis_disallowed(self):
+    if annotations.get_torch_version() < (2, 13):
+      self.skipTest(
+          "torch.accelerator.random.get_rng_state requires PyTorch 2.13+."
+      )
+    expected_message = (
+        "get_rng_state is internal to TorchTPU and can only be called by"
+        " the PyTorch framework (torch and torch_tpu). Use"
+        " torch.accelerator.random.get_rng_state instead."
+    )
+    with mock.patch.object(
+        annotations, "_internal_apis_allowed_for_testing", False
+    ):
+      with self.assertRaises(  # ASSERT_RAISES_OK=Python API guard check
+          RuntimeError
+      ) as cm:
+        torch.tpu.get_rng_state(torch.device("tpu"))
+      self.assertEqual(str(cm.exception), expected_message)
 
   def test_get_rng_state_metadata(self):
     device = torch.device("tpu")
@@ -49,6 +70,30 @@ class RngTest(seed_test_utils.RepeatableTest):
     torch.tpu.set_rng_state(initial_state, device)
     restored_state = torch.tpu.get_rng_state(device)
     self.assertTrue(torch.equal(initial_state, restored_state))
+
+  def test_get_set_rng_state_in_torch_compile(self):
+    device = torch.device("tpu")
+
+    def fn(x):
+      y = x + 1
+      saved = torch.tpu.get_rng_state(device)
+      first = y + torch.randn_like(y)
+      torch.tpu.set_rng_state(saved, device)
+      second = y + torch.randn_like(y)
+      return first, second
+
+    x = torch.zeros(16, device=device)
+    explanation = torch._dynamo.explain(fn)(x)
+    self.assertLen(explanation.break_reasons, 2)
+    self.assertIn("torch.compiler.disable", str(explanation.break_reasons[0]))
+    self.assertIn("get_rng_state", str(explanation.break_reasons[0]))
+    self.assertIn("torch.compiler.disable", str(explanation.break_reasons[1]))
+    self.assertIn("set_rng_state", str(explanation.break_reasons[1]))
+
+    cnt = torch._dynamo.testing.CompileCounterWithBackend("tpu")
+    first, second = torch.compile(fn, backend=cnt)(x)
+    self.assertEqual(cnt.frame_count, 3)
+    self.assertTrue(torch.equal(first, second))
 
   def test_manual_seed(self):
     device = torch.device("tpu")
