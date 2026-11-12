@@ -193,6 +193,15 @@ torch_tpu_py_library(
     ],
 )
 
+torch_tpu_py_library(
+    name = "largest_common_spanning_subgraph",
+    srcs = ["largest_common_spanning_subgraph.py"],
+    deps = [
+        "//shims/torch:pytorch",
+        "//src/torch_tpu/_internal:env",
+    ],
+)
+
 pybind_extension(
     name = "tpu_distributed",
     srcs = ["//csrc/internal/distributed:tpu_distributed.cc"],
