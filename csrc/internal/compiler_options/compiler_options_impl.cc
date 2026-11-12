@@ -36,6 +36,12 @@ TT_PYBIND11_MODULE(compiler_options_impl, m) {
 
   // Pops the XLA options from the per-thread custom compiler options stack.
   m.def("pop_compiler_options", []() { PopCompilerOptionOverrides(); });
+
+  // Private snapshot used to preserve the submitting thread's custom compiler
+  // options when compilation is offloaded to a shared worker thread.
+  m.def("_get_compiler_options", &GetCompilerOptionOverrides,
+        "Returns the merged custom compiler option overrides active on the "
+        "calling thread, or an empty map if none are active.");
 }
 
 }  // namespace torch_tpu

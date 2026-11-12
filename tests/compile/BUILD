@@ -672,6 +672,17 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "async_compile_options_test",
+    srcs = ["async_compile_options_test.py"],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/compile:compiler",
+    ],
+)
+
+torch_tpu_py_test(
     name = "async_compile_test",
     srcs = ["async_compile_test.py"],
     tags = [

@@ -353,6 +353,12 @@ absl::StatusOr<SharedLoadedExecutableWithMetadata> Compile(
 [[nodiscard]] absl_nonnull std::shared_ptr<const CompilationContext>
 GetCompilationContext();
 
+// Returns the merged custom compiler option overrides active on the calling
+// thread, or an empty map if no custom options context is active. Unlike
+// GetCompilationContext(), this does not build or initialize the default
+// compilation context.
+[[nodiscard]] CompilerOptionOverrides GetCompilerOptionOverrides();
+
 // Pushes the compile option overrides for the current thread on to the
 // custom compiler option stack. Thread-safe.
 //
