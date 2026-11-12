@@ -106,6 +106,7 @@ py_test(
     ],
     deps = [
         ":list_ci_tests",
+        "//ci/tools/testing:fakes",
     ],
 )
 
