@@ -22,7 +22,6 @@
 #include "csrc/ops/op_builder_utils.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
-#include "mlir/IR/Types.h"
 #include "mlir/Support/LLVM.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
@@ -37,14 +36,10 @@ SortShloOutputs BuildSortShlo(mlir::MlirOp input_op, bool stable, int64_t dim,
                               bool descending) {
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input_op);
   mlir::MlirBuilder& builder = input_op.getBuilder();
-  mlir::MlirOp indices = stablehlo::Iota(
-      builder,
-      makeTensorType(
-          builder.getContext(), input_type.getShape(),
-          // Per https://pytorch.org/docs/stable/generated/torch.sort.html, the
-          // output indices are of type LongTensor, i.e. 64-bit integer tensor.
-          mlir::ElementType::I64),
-      dim);
+  // Per https://pytorch.org/docs/stable/generated/torch.sort.html, the
+  // output indices are of type LongTensor, i.e. 64-bit integer tensor.
+  mlir::MlirOp indices =
+      stablehlo::IotaLike(input_op, dim, mlir::ElementType::I64);
   auto comparator = [input_type, descending](mlir::RegionBuilder& rb) {
     mlir::OpBuilder& op_builder = rb.getOpBuilder();
     std::optional<llvm::StringRef> compare_type = std::nullopt;

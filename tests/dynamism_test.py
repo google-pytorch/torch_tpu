@@ -280,7 +280,6 @@ class DynamismTest(seed_test_utils.RepeatableTest):
     )
     self._run_bounded_dynamism_test(torch.addmm, mark_dynamic, *args)
 
-  @absltest.skip("torch.sort lowering needs MakeIotaLike lowering")
   def test_sort_dynamic_sort_dim(self):
     def mark_dynamic(x):
       dynamism.mark_dynamic(x, 0, 2, 10)
@@ -288,7 +287,6 @@ class DynamismTest(seed_test_utils.RepeatableTest):
     args = (torch.rand(5, 3, dtype=torch.float32),)
     self._run_bounded_dynamism_test(torch.sort, mark_dynamic, *args)
 
-  @absltest.skip("torch.sort lowering needs MakeIotaLike lowering")
   def test_sort_static_sort_dim(self):
     def mark_dynamic(x):
       dynamism.mark_dynamic(x, 1, 2, 10)

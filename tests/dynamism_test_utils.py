@@ -588,7 +588,9 @@ DYNAMISM_DENY_LISTS: DenyList = {
         "scatter": {EAGER, COMPILE},
         # AtenSelectScatter checks static src shape against padded self slice.
         "select_scatter": {COMPILE, COMPILE_GRAD},
-        "sort": {EAGER, COMPILE_GRAD},  # stablehlo.iota must be static
+        # sort backward lowers via scatter, which fails MLIR function inlining
+        # on multi-dim bounded shapes.
+        "sort": {COMPILE_GRAD},
         # Lowers via sort with %iota, which lacks XLA dynamic_padder support.
         "topk": {EAGER},
         # Calls getNumElements() and static scale checks on bounded operands.
