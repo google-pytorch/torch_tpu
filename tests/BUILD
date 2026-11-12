@@ -2571,6 +2571,7 @@ torch_tpu_py_test(
     srcs = ["dynamism_model_test.py"],
     main = "dynamism_model_test.py",
     tags = [
+        "notsan",  # TODO(b/584628465): fix the MarkDynamic data race.
         "requires-tpu-v5lite",
     ],
     deps = [
