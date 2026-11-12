@@ -48,6 +48,7 @@
 #include "csrc/common/cache_key.h"
 #include "csrc/common/env_vars.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/to_string.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/eager_mode.h"
 #include "csrc/eager/events_queue.h"
@@ -418,7 +419,8 @@ absl::Status DeviceGeneratorImplBase::ValidateDeviceStateTensor(
       << "expected rng_state to be on device " << device() << ", got "
       << rng_state.device();
   TT_RET_CHECK(rng_state.dtype() == at::kUInt64, error::kFailedPrecondition)
-      << "expected rng_state to be of dtype UInt64, got " << rng_state.dtype();
+      << "expected rng_state to be of dtype uint64, got "
+      << ToString(rng_state.scalar_type());
   TT_RET_CHECK(rng_state.dim() == 1, error::kFailedPrecondition)
       << "expected rng_state to be a 1D tensor, got " << rng_state.dim();
   TT_RET_CHECK(rng_state.size(0) == 2, error::kFailedPrecondition)

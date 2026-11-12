@@ -37,6 +37,7 @@
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
+#include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
 #include "csrc/distributed/process_group_tpu.h"
 #include "csrc/distributed/utils.h"
@@ -98,7 +99,8 @@ static absl::StatusOr<DeviceBufferRef> RaggedAllToAllCommon(
   TT_RET_CHECK(operand.scalar_type() == output.scalar_type(),
                error::kInvalidArgument)
       << "expected operand and output to have the same dtype, got "
-      << operand.scalar_type() << " and " << output.scalar_type();
+      << ToString(operand.scalar_type()) << " and "
+      << ToString(output.scalar_type());
 
   at::ScalarType out_scalar_type = output.scalar_type();
   TT_ASSIGN_OR_RETURN(auto out_dtype,

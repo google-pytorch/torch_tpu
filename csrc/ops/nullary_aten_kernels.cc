@@ -35,6 +35,7 @@
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/op_dispatcher.h"
@@ -89,8 +90,8 @@ absl::Status ApplyNullaryOpOut(at::Tensor& out, MlirNullaryOpBuilder op_builder,
   TT_RETURN_IF_ERROR(ResizeTensorIfShapeDiffers(out, out_dims));
   TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=PyTorch catches this first.
       out.scalar_type() == out_dtype, error::kInvalidArgument)
-      << "expected the out tensor dtype to be " << out_dtype << ", got "
-      << out.scalar_type();
+      << "expected the out tensor dtype to be " << ToString(out_dtype)
+      << ", got " << ToString(out.scalar_type());
 
   TT_ASSIGN_OR_RETURN(  // ERROR_COV_INFEASIBLE=errors should be covered inside.
       auto result_buf,

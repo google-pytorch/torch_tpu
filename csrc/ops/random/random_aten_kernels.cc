@@ -40,6 +40,7 @@
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/op_dispatcher.h"
@@ -209,7 +210,7 @@ absl::StatusOr<int64_t> ComputeToValue(at::ScalarType dtype) {
   ABSL_VLOG(3) << "ComputeToValue: " << dtype;
   absl::StatusOr<int64_t> maybe_to = TT_ERROR(error::kInvalidArgument)
                                      << "Unsupported dtype for random: "
-                                     << dtype;
+                                     << ToString(dtype);
   if (at::isFloatingType(dtype)) {
     AT_DISPATCH_FLOATING_TYPES_AND2(
         at::ScalarType::Half, at::ScalarType::BFloat16, dtype,

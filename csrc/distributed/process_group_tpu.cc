@@ -312,11 +312,13 @@ absl::Status ValidateAllToAllTensors(
     TT_RET_CHECK(input_tensors[i].scalar_type() == dtype,
                  error::kInvalidArgument)
         << "expected all input tensors to have the same dtype, got "
-        << input_tensors[i].scalar_type() << " and " << dtype;
+        << ToString(input_tensors[i].scalar_type()) << " and "
+        << ToString(dtype);
     TT_RET_CHECK(output_tensors[i].scalar_type() == dtype,
                  error::kInvalidArgument)
         << "expected all output tensors to have the same dtype, got "
-        << output_tensors[i].scalar_type() << " and " << dtype;
+        << ToString(output_tensors[i].scalar_type()) << " and "
+        << ToString(dtype);
 
     TT_RET_CHECK(input_tensors[i].dim() == dim, error::kInvalidArgument)
         << "expected all input tensors to have the same number of dimensions, "

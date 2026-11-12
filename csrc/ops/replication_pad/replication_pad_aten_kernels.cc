@@ -239,7 +239,7 @@ absl::Status ReplicationPadHelper(
   }
 
   TT_RET_CHECK(!IsBool(self), error::kInvalidArgument)
-      << "not implemented for 'Bool'";
+      << "not implemented for bool";
 
   Dimensions padding_vec = CopyIntVector(padding);
   TT_ASSIGN_OR_RETURN(auto element_type,

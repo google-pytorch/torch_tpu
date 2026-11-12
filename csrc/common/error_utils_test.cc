@@ -1617,6 +1617,54 @@ TEST_F(ErrorMessageGuidelinesDeathTest,
                      Not(HasSubstr("instead of 'i8'"))));
 }
 
+TEST_F(ErrorMessageGuidelinesDeathTest, ContainsLegacyScalarTypeName) {
+  EXPECT_DEATH(ThrowWithMessage("expected index dtype to be Long, got int32"),
+               AllOf(HasSubstr("legacy c10::ScalarType names"),
+                     HasSubstr("Replace 'Long' with 'int64'")));
+  // Quoted.
+  EXPECT_DEATH(ThrowWithMessage("not implemented for 'ComplexFloat'"),
+               HasSubstr("Replace 'ComplexFloat' with 'complex64'"));
+  // All the violations are listed.
+  EXPECT_DEATH(
+      ThrowWithMessage("expected q and k to share a dtype, got Float and "
+                       "BFloat16"),
+      HasSubstr("Replace 'Float' with 'float32', 'BFloat16' with 'bfloat16'"));
+  // On context prefix.
+  EXPECT_DEATH(
+      ThrowWithMessage("failed to copy Half tensor: dimension size negative"),
+      HasSubstr("Replace 'Half' with 'float16'"));
+}
+
+TEST_F(ErrorMessageGuidelinesDeathTest,
+       LegacyScalarTypeNameIsReplacedWithTorchDtypeName) {
+  using NamePair = std::pair<std::string_view, std::string_view>;
+  constexpr NamePair kLegacyToTorchNames[] = {
+      // go/keep-sorted start
+      {"BFloat16", "bfloat16"},
+      {"Bool", "bool"},
+      {"Byte", "uint8"},
+      {"Char", "int8"},
+      {"ComplexDouble", "complex128"},
+      {"ComplexFloat", "complex64"},
+      {"ComplexHalf", "complex32"},
+      {"Double", "float64"},
+      {"Float", "float32"},
+      {"Float8_e4m3fn", "float8_e4m3fn"},
+      {"Half", "float16"},
+      {"Int", "int32"},
+      {"Int4", "int4"},
+      {"Long", "int64"},
+      {"Short", "int16"},
+      {"UInt16", "uint16"},
+      // go/keep-sorted end
+  };
+  for (const auto& [legacy, torch] : kLegacyToTorchNames) {
+    EXPECT_DEATH(
+        ThrowWithMessage(absl::StrCat("unsupported dtype ", legacy)),
+        HasSubstr(absl::StrCat("Replace '", legacy, "' with '", torch, "'")));
+  }
+}
+
 TEST_F(ErrorMessageGuidelinesDeathTest, NonAlphaNumTrailingChar) {
   EXPECT_DEATH(ThrowWithMessage("dimension size negative."),
                HasSubstr("end with either an alpha-numeric"));
@@ -1741,6 +1789,46 @@ TEST_F(ErrorMessageGuidelinesPassTest, StableHloTypeNameOnXlaError) {
   EXPECT_THROW(ThrowWithContextForXlaError(
                    /* context= */ "the task has failed",
                    /* xla_error_message= */ "the dtype cannot be f32"),
+               c10::Error);
+}
+
+TEST_F(ErrorMessageGuidelinesPassTest, LegacyScalarTypeNameOnXlaError) {
+  // The XLA compiler error is not under our control, so it may contain legacy
+  // c10::ScalarType names.
+  EXPECT_THROW(ThrowWithContextForXlaError(
+                   /* context= */ "the task has failed",
+                   /* xla_error_message= */ "the dtype cannot be Float"),
+               c10::Error);
+}
+
+TEST_F(ErrorMessageGuidelinesDeathTest, LegacyScalarTypeNameBeforeXlaError) {
+  EXPECT_DEATH(ThrowWithContextForXlaError(
+                   /* context= */ "failed to compile Float tensor",
+                   /* xla_error_message= */ "unknown error"),
+               HasSubstr("Replace 'Float' with 'float32'"));
+}
+
+TEST_F(ErrorMessageGuidelinesPassTest, TorchDtypeNames) {
+  // The check is case-sensitive: the torch dtype names (e.g. "bool",
+  // "bfloat16") are allowed, but not the legacy names (e.g. "Bool",
+  // "BFloat16").
+  EXPECT_THROW(ThrowWithMessage("expected index dtype to be int64, got bool"),
+               c10::Error);
+  EXPECT_THROW(
+      ThrowWithMessage("expected bfloat16 or float32 inputs, got complex64"),
+      c10::Error);
+}
+
+TEST_F(ErrorMessageGuidelinesPassTest,
+       LegacyScalarTypeNameLookalikesAreAllowed) {
+  // Only whole legacy names are matched, so identifiers and words that merely
+  // contain one (e.g. "IntArrayRef", "LongTensor", "kFloat", "Integer") or
+  // that are not legacy names (e.g. "Float8", "Int64") are not flagged.
+  EXPECT_THROW(ThrowWithMessage("expected an IntArrayRef or a LongTensor, got "
+                                "at::kFloat"),
+               c10::Error);
+  EXPECT_THROW(ThrowWithMessage("TorchTPU does not support Integer, Float8 or "
+                                "Int64 types"),
                c10::Error);
 }
 

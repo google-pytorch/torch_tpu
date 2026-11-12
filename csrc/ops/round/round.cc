@@ -42,7 +42,7 @@ absl::StatusOr<mlir::MlirOp> BuildRoundShlo(mlir::MlirOp input_op,
   TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Check is already caught by callers, or
                  // (foreach) `decimals` is always 0.
       !is_int, error::kInvalidArgument)
-      << "Round not implemented for Int and non-zero decimals.";
+      << "round not implemented for integer dtypes and non-zero decimals";
 
   if (decimals == 0) return stablehlo::RoundNearestEven(input_op);
 

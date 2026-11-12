@@ -33,6 +33,7 @@
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/to_string.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
@@ -299,7 +300,7 @@ absl::StatusOr<kiln::DType> ToKilnDType(at::ScalarType dtype) {
       return kiln::f32;
     default:
       return TT_ERROR(error::kPythonNotImplementedError)
-             << "expected bfloat16 or float32 inputs, got " << dtype;
+             << "expected bfloat16 or float32 inputs, got " << ToString(dtype);
   }
 }
 
@@ -316,8 +317,9 @@ absl::StatusOr<FlexAttnConfig> MakeConfig(
   TT_RET_CHECK(
       q.scalar_type() == k.scalar_type() && q.scalar_type() == v.scalar_type(),
       error::kInvalidArgument)
-      << "expected q, k and v to share a dtype, got " << q.scalar_type() << ", "
-      << k.scalar_type() << " and " << v.scalar_type();
+      << "expected q, k and v to share a dtype, got "
+      << ToString(q.scalar_type()) << ", " << ToString(k.scalar_type())
+      << " and " << ToString(v.scalar_type());
   TT_RET_CHECK(k.size(0) == q.size(0) && v.size(0) == q.size(0) &&
                    v.size(1) == k.size(1) && v.size(2) == k.size(2) &&
                    k.size(3) == q.size(3),

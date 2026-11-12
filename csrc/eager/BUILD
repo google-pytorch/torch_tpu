@@ -408,6 +408,7 @@ torch_tpu_cc_library(
         "//csrc/common:cache_key",
         "//csrc/common:env_vars",
         "//csrc/common:error_utils",
+        "//csrc/common:to_string",
         "//csrc/ops:op_builder_utils",
         "//csrc/ops:op_names",
         "//csrc/ops/macros:kernel",

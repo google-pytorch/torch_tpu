@@ -3298,7 +3298,7 @@ module {
     )
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""sparse_iota(): expected row_pointers dtype to be torch.int32, got Float""",
+        tpu="""sparse_iota(): expected row_pointers dtype to be int32, got float32""",
     ):
       torch.tpu.ops.sparse_iota(row_pointers_float, 2048, 256)
 
@@ -3386,7 +3386,7 @@ module {
     )
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""expected row_pointers dtype to be torch.int32, got Float""",
+        tpu="""expected row_pointers dtype to be int32, got float32""",
     ):
       torch.tpu.ops.sparse_iota(row_pointers_float, 2048, 256)
 
@@ -3764,14 +3764,14 @@ module {
     with self.subTest("add_dense_sparse_out_dtype_cast"):
       with et.assert_raises_message(
           RuntimeError,
-          tpu="""add(): expected result dtype to be castable to 'out' dtype, got Float and Int""",
+          tpu="""add(): expected result dtype to be castable to 'out' dtype, got float32 and int32""",
       ):
         torch.add(dense, sp, out=dense_i32)
 
     with self.subTest("add_sparse_sparse_out_dtype_cast"):
       with et.assert_raises_message(
           RuntimeError,
-          tpu="""add(): expected result dtype to be castable to 'out' dtype, got Float and Int""",
+          tpu="""add(): expected result dtype to be castable to 'out' dtype, got float32 and int32""",
       ):
         torch.add(sp, sp, out=sp_i32)
 
@@ -3785,7 +3785,7 @@ module {
     with self.subTest("mul_sparse_out_dtype_cast"):
       with et.assert_raises_message(
           RuntimeError,
-          tpu="""mul(): expected result dtype to be castable to 'out' dtype, got Float and Int""",
+          tpu="""mul(): expected result dtype to be castable to 'out' dtype, got float32 and int32""",
       ):
         torch.mul(sp, torch.tensor(2.0, device="tpu"), out=sp_i32)
 
@@ -3798,21 +3798,21 @@ module {
     with self.subTest("neg_sparse_bool"):
       with et.assert_raises_message(
           RuntimeError,
-          tpu="""neg(): expected non-bool tensor for negation, got Bool""",
+          tpu="""neg(): expected non-bool tensor for negation, got bool""",
       ):
         torch.neg(sp_bool)
 
     with self.subTest("neg_sparse_out_dtype_cast"):
       with et.assert_raises_message(
           RuntimeError,
-          tpu="""neg(): expected result dtype to be castable to 'out' dtype, got Float and Int""",
+          tpu="""neg(): expected result dtype to be castable to 'out' dtype, got float32 and int32""",
       ):
         torch.neg(sp, out=sp_i32)
 
     with self.subTest("sub_sparse_bool"):
       with et.assert_raises_message(
           RuntimeError,
-          tpu="""sub(): expected non-bool tensors for subtraction, got Bool and Bool""",
+          tpu="""sub(): expected non-bool tensors for subtraction, got bool and bool""",
       ):
         torch.sub(sp_bool, sp_bool)
 
@@ -5526,7 +5526,7 @@ class FlexAttentionErrorsTest(et.TpuOnlyErrorTestBase):
   def test_inputs_must_share_a_dtype(self):
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""flex_attention_fwd(): expected q, k and v to share a dtype, got Float, Float and BFloat16""",
+        tpu="""flex_attention_fwd(): expected q, k and v to share a dtype, got float32, float32 and bfloat16""",
     ):
       self._fwd(
           v=torch.randn(
@@ -5562,7 +5562,7 @@ class FlexAttentionErrorsTest(et.TpuOnlyErrorTestBase):
   def test_unsupported_dtype(self):
     with et.assert_raises_message(
         NotImplementedError,
-        tpu="""flex_attention_fwd(): expected bfloat16 or float32 inputs, got Half""",
+        tpu="""flex_attention_fwd(): expected bfloat16 or float32 inputs, got float16""",
     ):
       self._fwd(**{
           name: torch.randn(1, 1, 256, 128, device=et.device()).half()

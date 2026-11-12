@@ -106,7 +106,7 @@ absl::Status ValidateIndexFillInputs(const at::Tensor& self, int64_t dim,
   TT_RET_CHECK(index.dim() <= 1, error::kInvalidArgument)
       << "expected index to be at most 1D, got " << index.dim() << "D";
   TT_RET_CHECK(IsLong(index), error::kInvalidArgument)
-      << "expected index dtype to be Long, got "
+      << "expected index dtype to be int64, got "
       << ToString(index.scalar_type());
   return absl::OkStatus();
 }

@@ -131,8 +131,8 @@ absl::Status ValidateSearchsortedInputs(
         << sanitized_sorter->sizes() << " and " << sorted.sizes();
     TT_RET_CHECK(sanitized_sorter->scalar_type() == at::ScalarType::Long,
                  error::kInvalidArgument)
-        << "expected sorter to have Long dtype, got "
-        << sanitized_sorter->scalar_type();
+        << "expected sorter to have int64 dtype, got "
+        << ToString(sanitized_sorter->scalar_type());
   }
 
   return absl::OkStatus();

@@ -25,6 +25,7 @@
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/ops/macros/kernel.h"
@@ -162,7 +163,8 @@ void AtenCumminHelper(const at::Tensor& self, at::Tensor& values,
     }
 
     TT_CHECK_THROW(!self.is_complex(), error::kInvalidArgument)
-        << "expected supported element type, got " << self.scalar_type();
+        << "expected supported element type, got "
+        << ToString(self.scalar_type());
 
     TT_ASSIGN_OR_THROW(const int64_t normalized_dim,
                        SafeWrapDim(dim, self.dim()));

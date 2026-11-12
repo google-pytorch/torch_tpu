@@ -29,6 +29,7 @@
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
+#include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/ops/macros/kernel.h"
@@ -94,12 +95,12 @@ absl::Status AtenLeakyReluTensorHelper(const at::Tensor& self,
   TT_ASSIGN_OR_RETURN(const auto dtype,
                       ConvertTo<mlir::ElementType>(self.scalar_type()));
   TT_RET_CHECK(!IsBoolean(dtype), error::kInvalidArgument)
-      << "expected non-bool dtype, got " << self.scalar_type();
+      << "expected non-bool dtype, got " << ToString(self.scalar_type());
   TT_RET_CHECK(!IsInteger(dtype, /*includeBool=*/false),
                error::kInvalidArgument)
-      << "expected non-integer dtype, got " << self.scalar_type();
+      << "expected non-integer dtype, got " << ToString(self.scalar_type());
   TT_RET_CHECK(!IsComplex(dtype), error::kInvalidArgument)
-      << "expected non-complex dtype, got " << self.scalar_type();
+      << "expected non-complex dtype, got " << ToString(self.scalar_type());
 
   TT_ASSIGN_OR_RETURN(const auto out_dtype,
                       ConvertTo<mlir::ElementType>(out.scalar_type()));
@@ -127,12 +128,15 @@ absl::Status AtenLeakyReluBackwardTensorHelper(const at::Tensor& grad_output,
   TT_ASSIGN_OR_RETURN(const auto dtype,
                       ConvertTo<mlir::ElementType>(grad_output.scalar_type()));
   TT_RET_CHECK(!IsBoolean(dtype), error::kInvalidArgument)
-      << "boolean dtypes are not supported, got " << grad_output.scalar_type();
+      << "boolean dtypes are not supported, got "
+      << ToString(grad_output.scalar_type());
   TT_RET_CHECK(!IsInteger(dtype, /*includeBool=*/false),
                error::kInvalidArgument)
-      << "integer dtypes are not supported, got " << grad_output.scalar_type();
+      << "integer dtypes are not supported, got "
+      << ToString(grad_output.scalar_type());
   TT_RET_CHECK(!IsComplex(dtype), error::kInvalidArgument)
-      << "complex dtypes are not supported, got " << grad_output.scalar_type();
+      << "complex dtypes are not supported, got "
+      << ToString(grad_output.scalar_type());
 
   TT_ASSIGN_OR_RETURN(const auto out_dtype,
                       ConvertTo<mlir::ElementType>(grad_output.scalar_type()));

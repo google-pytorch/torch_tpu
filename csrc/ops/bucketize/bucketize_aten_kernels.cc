@@ -61,13 +61,14 @@ absl::Status ValidateInputAndBoundaries(const at::Tensor& self,
   TT_ASSIGN_OR_RETURN(const mlir::ElementType dtype,
                       ConvertTo<mlir::ElementType>(self.scalar_type()));
   TT_RET_CHECK(!IsComplex(dtype), error::kInvalidArgument)
-      << "expected self to be non-complex, got '" << self.scalar_type() << "'";
+      << "expected self to be non-complex, got "
+      << ToString(self.scalar_type());
 
   TT_ASSIGN_OR_RETURN(const mlir::ElementType boundaries_dtype,
                       ConvertTo<mlir::ElementType>(boundaries.scalar_type()));
   TT_RET_CHECK(!IsComplex(boundaries_dtype), error::kInvalidArgument)
-      << "expected boundaries to be non-complex, got '"
-      << boundaries.scalar_type() << "'";
+      << "expected boundaries to be non-complex, got "
+      << ToString(boundaries.scalar_type());
   TT_RET_CHECK(boundaries.dim() == 1, error::kInvalidArgument)
       << "expected boundaries tensor to be 1D, got dim(" << boundaries.dim()
       << ")";

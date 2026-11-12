@@ -1265,7 +1265,7 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
       t.index_fill_(0, index, torch.tensor(5.0, device=et.device()))
 
   def test_index_fill_index_type_not_long(self):
-    tpu_err = """index_fill_(): expected index dtype to be Long, got int32"""
+    tpu_err = """index_fill_(): expected index dtype to be int64, got int32"""
     gpu_err = """index_fill_(): Expected dtype int64 for index."""
     t = torch.ones(2, 2, device=et.device())
     index = torch.tensor([0], device=et.device(), dtype=torch.int)
@@ -5167,7 +5167,7 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
   def test_replication_pad_backward_unsupported_dtypes(self):
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""replication_pad1d(): not implemented for 'Bool'""",
+        tpu="""replication_pad1d(): not implemented for bool""",
         gpu=""""replication_pad1d_cuda" not implemented for 'Bool'""",
     ):
       torch.nn.functional.pad(
@@ -5178,7 +5178,7 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""replication_pad2d(): not implemented for 'Bool'""",
+        tpu="""replication_pad2d(): not implemented for bool""",
         gpu=""""replication_pad2d_cuda" not implemented for 'Bool'""",
     ):
       torch.nn.functional.pad(
@@ -5189,7 +5189,7 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""replication_pad3d(): not implemented for 'Bool'""",
+        tpu="""replication_pad3d(): not implemented for bool""",
         gpu=""""replication_pad3d_cuda" not implemented for 'Bool'""",
     ):
       torch.nn.functional.pad(
@@ -9385,7 +9385,7 @@ Supported combinations for non-constant padding:
     err_type = RuntimeError if et.is_on_tpu() else NotImplementedError
     with et.assert_raises_message(
         err_type,
-        tpu="""fused_dropout(): expected input to be floating point or complex, got Int""",
+        tpu="""fused_dropout(): expected input to be floating point or complex, got int32""",
         gpu=""""fused_dropout" not implemented for 'Int'""",
     ):
       torch.ops.aten._fused_dropout(x, 0.5)
@@ -9395,7 +9395,7 @@ Supported combinations for non-constant padding:
     mask = torch.ones((2, 3), device=et.device(), dtype=torch.int32)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""native_dropout_backward(): expected mask to be Bool scalar type, got Int""",
+        tpu="""native_dropout_backward(): expected mask dtype to be bool, got int32""",
         gpu="""Mask should be Bool Scalar TypeInt""",
     ):
       torch.ops.aten.native_dropout_backward(grad_output, mask, 2.0)
@@ -9694,7 +9694,7 @@ Supported combinations for non-constant padding:
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""leaky_relu(): expected non-bool dtype, got Bool""",
+        tpu="""leaky_relu(): expected non-bool dtype, got bool""",
         gpu=""""leaky_relu_cuda" not implemented for 'Bool'""",
     ):
       torch.nn.functional.leaky_relu(inp)
@@ -9704,7 +9704,7 @@ Supported combinations for non-constant padding:
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""leaky_relu(): expected non-integer dtype, got Long""",
+        tpu="""leaky_relu(): expected non-integer dtype, got int64""",
         gpu=""""leaky_relu_cuda" not implemented for 'Long'""",
     ):
       torch.nn.functional.leaky_relu(inp)
@@ -9715,7 +9715,7 @@ Supported combinations for non-constant padding:
     )
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""leaky_relu(): expected non-complex dtype, got ComplexFloat""",
+        tpu="""leaky_relu(): expected non-complex dtype, got complex64""",
         gpu=""""leaky_relu_cuda" not implemented for 'ComplexFloat'""",
     ):
       torch.nn.functional.leaky_relu(inp)
@@ -11609,7 +11609,7 @@ Supported combinations for non-constant padding:
     with et.assert_raises_message(
         RuntimeError,
         gpu=""""searchsorted_out_cuda" not implemented for 'ComplexFloat'""",
-        tpu="""bucketize(): expected self to be non-complex, got 'ComplexFloat'""",
+        tpu="""bucketize(): expected self to be non-complex, got complex64""",
     ):
       torch.bucketize(input_tensor, boundaries)
 
@@ -11619,7 +11619,7 @@ Supported combinations for non-constant padding:
     with et.assert_raises_message(
         RuntimeError,
         gpu=""""searchsorted_out_cuda" not implemented for 'ComplexFloat'""",
-        tpu="""bucketize(): expected boundaries to be non-complex, got 'ComplexFloat'""",
+        tpu="""bucketize(): expected boundaries to be non-complex, got complex64""",
     ):
       torch.bucketize(input_tensor, boundaries)
 
@@ -12738,7 +12738,7 @@ Supported combinations for non-constant padding:
     sorter = torch.tensor([0, 1, 2], dtype=torch.int32)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""searchsorted(): expected sorter to have Long dtype, got Int""",
+        tpu="""searchsorted(): expected sorter to have int64 dtype, got int32""",
         gpu="""torch.searchsorted(): sorter must be a tensor of long dtype but got dtype Int""",
     ):
       torch.searchsorted(
@@ -15261,7 +15261,7 @@ Supported combinations for non-constant padding:
     """Tests cummin fails with unsupported complex dtypes."""
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""cummin_helper(): expected supported element type, got ComplexFloat""",
+        tpu="""cummin_helper(): expected supported element type, got complex64""",
         gpu=""""cummin_cuda" not implemented for 'ComplexFloat'""",
     ):
       t = torch.ones(2, 2, device=et.device(), dtype=torch.complex64)
