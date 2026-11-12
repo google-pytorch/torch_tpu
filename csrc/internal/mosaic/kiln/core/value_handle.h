@@ -17,6 +17,8 @@
 #ifndef TORCH_TPU_CSRC_INTERNAL_MOSAIC_KILN_CORE_VALUE_HANDLE_H_
 #define TORCH_TPU_CSRC_INTERNAL_MOSAIC_KILN_CORE_VALUE_HANDLE_H_
 
+#include <utility>
+
 // Forward declared rather than included so that MLIR headers do not leak into
 // Kiln's public headers.
 namespace mlir {  // NON_TORCH_TPU_OK=mlir::Value forward declaration
@@ -54,6 +56,22 @@ class ValueHandle {
 };
 
 static_assert(sizeof(ValueHandle) == sizeof(void*));
+
+// Returns true if any of `values`, which are Kiln handle types (`Scalar`,
+// `Tile`, `Ref`, ...), is null, i.e. stands for the value of a failed
+// operation. An operation given such a value must not use it (see `unwrap()`)
+// and returns a null value in turn.
+template <typename... Ts>
+[[nodiscard]] bool AnyNull(const Ts&... values) {
+  return (values.handle().is_null() || ...);
+}
+
+// Returns a null `T`, to return in place of a value once an error has been
+// reported. `args` are the constructor arguments of `T` after the handle.
+template <typename T, typename... Args>
+T CreateNullValue(Args&&... args) {
+  return T(ValueHandle::Null(), std::forward<Args>(args)...);
+}
 
 }  // namespace torch_tpu::kiln::internal
 

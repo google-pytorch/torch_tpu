@@ -49,6 +49,8 @@ torch_tpu_cc_library(
     hdrs = ["error.h"],
     deps = [
         ":builder_scope",
+        "//csrc/common:error_utils",
+        "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/status",
     ],
@@ -79,14 +81,34 @@ torch_tpu_cc_library(
     deps = [
         ":builder_scope",
         ":dtype",
+        ":error",
         ":literal",
         ":shape",
         ":value_handle",
+        "//csrc/common:error_utils",
         "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/log:absl_log",
+        "@com_google_absl//absl/status",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:ArithDialect",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Support",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "context_test",
+    srcs = ["context_test.cc"],
+    deps = [
+        ":builder_scope",
+        ":context",
+        ":dtype",
+        ":error",
+        ":value_handle",
+        "//csrc/common:error_utils",
+        "//csrc/common:oss_test_main",
+        "@com_google_absl//absl/status:status_matchers",
+        "@llvm-project//mlir:IR",
     ],
 )
 

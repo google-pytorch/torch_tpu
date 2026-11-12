@@ -16,6 +16,9 @@
 
 #include "csrc/internal/mosaic/kiln/core/value_handle.h"
 
+#include <memory>
+#include <utility>
+
 #include "gtest/gtest.h"
 #include "mlir/IR/Block.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -64,6 +67,88 @@ TEST(ValueHandleDeathTest, ValueOfNullHandleDies) {
   const ValueHandle handle = ValueHandle::Null();
 
   EXPECT_DEATH(static_cast<void>(handle.value()), "ValueHandle is null");
+}
+
+class TestHandle {
+ public:
+  explicit TestHandle(ValueHandle h, int tag) : handle_(h), tag_(tag) {}
+
+  ValueHandle handle() const { return handle_; }
+  int tag() const { return tag_; }
+
+ private:
+  ValueHandle handle_;
+  int tag_;
+};
+
+TEST(ValueHandleTest, AnyNullAndCreateNullValueForwardArgs) {
+  mlir::MLIRContext context;
+  mlir::Block block;
+  const mlir::Value value = block.addArgument(
+      mlir::IntegerType::get(&context, 32), mlir::UnknownLoc::get(&context));
+
+  const TestHandle non_null(ValueHandle(value), 1);
+  const TestHandle null = CreateNullValue<TestHandle>(7);
+
+  EXPECT_TRUE(null.handle().is_null());
+  EXPECT_EQ(null.tag(), 7);
+  EXPECT_FALSE(AnyNull(non_null));
+  EXPECT_FALSE(AnyNull(non_null, non_null));
+  EXPECT_TRUE(AnyNull(null));
+  EXPECT_TRUE(AnyNull(null, non_null));
+  EXPECT_TRUE(AnyNull(non_null, null));
+}
+
+// A handle type that, like `Semaphore`, is constructed from the handle alone.
+class BareTestHandle {
+ public:
+  explicit BareTestHandle(ValueHandle h) : handle_(h) {}
+
+  ValueHandle handle() const { return handle_; }
+
+ private:
+  ValueHandle handle_;
+};
+
+// A handle type with a move-only constructor argument.
+class OwningTestHandle {
+ public:
+  explicit OwningTestHandle(ValueHandle h, std::unique_ptr<int> tag)
+      : handle_(h), tag_(std::move(tag)) {}
+
+  ValueHandle handle() const { return handle_; }
+  int tag() const { return *tag_; }
+
+ private:
+  ValueHandle handle_;
+  std::unique_ptr<int> tag_;
+};
+
+TEST(ValueHandleTest, AnyNullAcceptsMixedHandleTypesAndNoHandles) {
+  mlir::MLIRContext context;
+  mlir::Block block;
+  const mlir::Value value = block.addArgument(
+      mlir::IntegerType::get(&context, 32), mlir::UnknownLoc::get(&context));
+
+  const TestHandle non_null(ValueHandle(value), 1);
+  const BareTestHandle bare_non_null{ValueHandle(value)};
+  const BareTestHandle bare_null = CreateNullValue<BareTestHandle>();
+
+  EXPECT_FALSE(AnyNull());
+  EXPECT_FALSE(AnyNull(non_null, bare_non_null));
+  EXPECT_TRUE(AnyNull(non_null, bare_non_null, bare_null));
+}
+
+TEST(ValueHandleTest, CreateNullValueWithoutExtraArgs) {
+  EXPECT_TRUE(CreateNullValue<BareTestHandle>().handle().is_null());
+}
+
+TEST(ValueHandleTest, CreateNullValueForwardsMoveOnlyArg) {
+  const OwningTestHandle null =
+      CreateNullValue<OwningTestHandle>(std::make_unique<int>(7));
+
+  EXPECT_TRUE(null.handle().is_null());
+  EXPECT_EQ(null.tag(), 7);
 }
 
 }  // namespace

@@ -20,7 +20,9 @@
 #include <string_view>
 #include <utility>
 
+#include "csrc/common/error_utils.h"
 #include "csrc/internal/mosaic/kiln/core/dtype.h"
+#include "csrc/internal/mosaic/kiln/core/error.h"
 #include "csrc/internal/mosaic/kiln/core/literal.h"
 #include "csrc/internal/mosaic/kiln/core/value_handle.h"
 #include "mlir/IR/Builders.h"
@@ -44,13 +46,23 @@ mlir::Type ToMlirType(DType dtype);
 void CheckElementType(ValueHandle handle, DType dtype,
                       std::string_view type_name);
 
+// Returns the value held by `handle`. CHECK-fails if `handle` is null, quoting
+// the error held by the active scope: a null handle stands for the value of a
+// failed operation, which has no value to give.
+mlir::Value ValueOf(ValueHandle handle);
+
 template <typename T>
 inline mlir::Value unwrap(const T& value) {
-  return value.handle().value();
+  return ValueOf(value.handle());
 }
 
+// Wraps `value` in a `T`. Reports an error and returns a null `T` if `value` is
+// null.
 template <typename T, typename... Args>
 T wrap(mlir::Value value, Args&&... args) {
+  TT_KILN_RET_CHECK(value, error::kInternal,
+                    CreateNullValue<T>(std::forward<Args>(args)...))
+      << "a Kiln operation produced no value";
   return T(ValueHandle(value), std::forward<Args>(args)...);
 }
 
