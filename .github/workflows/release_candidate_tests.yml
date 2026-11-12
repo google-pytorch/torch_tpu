@@ -384,21 +384,30 @@ jobs:
             --output-file "requirements/requirements_${PYTHON_VERSION_UND}.txt"
       - name: Run upstream PyTorch tests
         run: |
-          UPSTREAM_TARGETS=$(bazel query 'kind("py_test", //tests/torch:all)' | tr '\n' ' ')
-          # shellcheck disable=SC2086
+          # tests/torch/BUILD tracks PyTorch nightly on main; regenerate it for
+          # the pinned PyTorch release before querying targets.
+          bazel run \
+            --repo_env=HERMETIC_PYTHON_VERSION="${PYTHON_VERSION}" \
+            //ci/tools:gen_torch_tests -- \
+            --pytorch_test_dir="$GITHUB_WORKSPACE/pytorch/test"
+          UPSTREAM_TARGETS_RAW=$(
+            bazel query \
+              --repo_env=HERMETIC_PYTHON_VERSION="${PYTHON_VERSION}" \
+              'kind("py_test", //tests/torch:all)'
+          )
+          mapfile -t UPSTREAM_TARGETS <<< "${UPSTREAM_TARGETS_RAW}"
           bazel build \
             --config="${BAZEL_CONFIG}" \
             --repo_env=HERMETIC_PYTHON_VERSION="${PYTHON_VERSION}" \
             --run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh" \
             --test_env=TORCH_TPU_INTERNAL_PYTORCH_TEST_DIR="$GITHUB_WORKSPACE/pytorch/test" \
-            ${UPSTREAM_TARGETS}
-          # shellcheck disable=SC2086
+            "${UPSTREAM_TARGETS[@]}"
           bazel test \
             --config="${BAZEL_CONFIG}" \
             --repo_env=HERMETIC_PYTHON_VERSION="${PYTHON_VERSION}" \
             --run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh" \
             --test_env=TORCH_TPU_INTERNAL_PYTORCH_TEST_DIR="$GITHUB_WORKSPACE/pytorch/test" \
-            ${UPSTREAM_TARGETS}
+            "${UPSTREAM_TARGETS[@]}"
       - name: Upload test logs on failure
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         if: failure()
