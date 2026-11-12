@@ -234,12 +234,20 @@ torch_tpu_cc_library(
     ],
 )
 
+torch_tpu_cc_library(
+    name = "python_context_testing",
+    testonly = True,
+    hdrs = ["python_context_testing.h"],
+    deps = [":python_context"],
+)
+
 torch_tpu_cc_test(
     name = "python_context_test",
     srcs = ["python_context_test.cc"],
     deps = [
         ":op_names",
         ":python_context",
+        ":python_context_testing",
         "//csrc/common:context_manager",
         "//csrc/common:context_states",
         "//csrc/common:oss_test_main",

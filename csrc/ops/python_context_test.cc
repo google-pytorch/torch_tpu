@@ -23,6 +23,7 @@
 #include "csrc/common/context_manager.h"
 #include "csrc/common/context_states.h"
 #include "csrc/ops/op_names.h"
+#include "csrc/ops/python_context_testing.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "mlir/IR/Location.h"
@@ -126,6 +127,18 @@ TEST_F(ScopedPythonContextCapturerTrackebackTest,
     auto context = ScopedPythonContextCapturer::GetContext();
     EXPECT_TRUE(context.traceback() == nullptr);
   }
+}
+
+TEST_F(ScopedPythonContextCapturerTrackebackTest,
+       ScopedTracebackForTestingRestoresPreviousTraceback) {
+  PushContextState<EnableTracebacksContextState>(TracebackMode::kDisabled);
+  ScopedPythonContextCapturer capturer(OpName::kAdd);
+  const auto traceback = std::make_shared<PythonTraceback>();
+  {
+    const ScopedTracebackForTesting traceback_override(traceback);
+    EXPECT_EQ(ScopedPythonContextCapturer::GetContext().traceback(), traceback);
+  }
+  EXPECT_EQ(ScopedPythonContextCapturer::GetContext().traceback(), nullptr);
 }
 
 TEST(ScopedPythonContextProvider, NoObjectIsAlive) {
