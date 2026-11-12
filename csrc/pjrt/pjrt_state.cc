@@ -276,21 +276,21 @@ absl::Status PjrtBackend::InitializeInternal() {
   }
 
   // Mem tracking note: Background threads in XLA spun up during GetPjRtClient.
-  TT_ASSIGN_OR_RETURN(client_,
+  TT_ASSIGN_OR_RETURN(auto client,
                       torch_tpu::GetPjRtClient(options_.device_type,
                                                premapped_buffer_size_bytes),
                       _.SetPrepend() << "failed to retrieve the PjRt client: ");
 
-  ABSL_CHECK_NE(client_, nullptr)  // CRASH_OK
+  ABSL_CHECK_NE(client, nullptr)  // CRASH_OK
       << "PjRtClient should not be null after initialization.";
-  ABSL_CHECK(!client_->devices().empty())  // CRASH_OK
+  ABSL_CHECK(!client->devices().empty())  // CRASH_OK
       << "No PjRt devices found after client initialization.";
 
   if (options_.device_type == "tpu") {
     MaybeRegisterProfiler(plugin_name);
   }
 
-  const auto& addressable_devices = client_->addressable_devices();
+  const auto& addressable_devices = client->addressable_devices();
   ABSL_CHECK(!addressable_devices.empty())  // CRASH_OK
       << "No addressable PjRt devices found.";
   // Do this before anything else in this process can create a PJRT client.
@@ -303,7 +303,7 @@ absl::Status PjrtBackend::InitializeInternal() {
     world_size = *world_size_or;
   }
 
-  const int device_count = client_->device_count();
+  const int device_count = client->device_count();
 
   // Initialize the global device count. This is used by the CompilationCache
   // to determine the number of replicas of the XLA computation.
@@ -325,6 +325,8 @@ absl::Status PjrtBackend::InitializeInternal() {
   visible_device_count_ = static_cast<int>(std::max<int64_t>(
       visible_device_count, static_cast<int64_t>(addressable_devices.size())));
   global_device_id_ = device_->global_device_id().value();
+  // Publish the client only after every initialization check succeeds.
+  client_ = std::move(client);
   return absl::OkStatus();
 }
 
