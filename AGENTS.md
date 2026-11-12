@@ -233,6 +233,14 @@ its `SKILL.md` and follow it.
 *   [`tt-fix-composite-ops`](.agents/skills/tt-fix-composite-ops/SKILL.md):
     migrating a composite ATen operator to a native one that lowers directly to
     StableHLO.
+*   [`tt-implement-ops`](.agents/skills/tt-implement-ops/SKILL.md): implementing
+    a new ATen operator or StableHLO lowering, including C++ registration and
+    tests.
+*   [`tt-support-dtypes`](.agents/skills/tt-support-dtypes/SKILL.md): fixing
+    unsupported or excluded dtypes for an op.
+*   [`tt-support-dynamism`](.agents/skills/tt-support-dynamism/SKILL.md):
+    bounded dynamic shape support in op lowerings and `torch.compile` FX passes,
+    and fixing ops in `DYNAMISM_DENY_LISTS`.
 *   [`tt-write-docs`](.agents/skills/tt-write-docs/SKILL.md): writing, editing,
     or reviewing narrative documentation or README content.
 *   [`tt-write-error-tests`](.agents/skills/tt-write-error-tests/SKILL.md):
