@@ -117,7 +117,9 @@ class ApiRegistryTest(seed_test_utils.RepeatableTest):
 
   def test_profiler_module_dir(self):
     """Verifies dir(torch.tpu.profiler) returns public symbol list."""
-    self.assertEqual(dir(torch.tpu.profiler), ["TpuProfilerConfig"])
+    self.assertEqual(
+        dir(torch.tpu.profiler), ["TpuProfilerConfig", "named_scope"]
+    )
 
   def test_pallas_api_registry(self):
     """Verifies public exposure, identity, metadata, and proxy behavior for pallas."""
