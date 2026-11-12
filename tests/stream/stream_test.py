@@ -14,16 +14,32 @@
 
 import concurrent.futures
 import functools
+import math
+import operator
 import time
 
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
+from torch_tpu._internal import dynamism
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal import sync
 from torch_tpu._internal.utils import test_utils as utils
 from tests import oss_utils
 from tests import seed_test_utils
+
+
+# int64 values at the 32 bit carry and sign boundaries.
+_INT64_BOUNDARY_VALUES = torch.tensor(
+    [0, -1, 2**31 - 1, 2**32 - 1, -(2**63), 2**63 - 1], dtype=torch.int64
+)
+
+
+def _int64_boundary_tensor(shape):
+  """Tiles the int64 boundary values over a CPU tensor of `shape`."""
+  numel = math.prod(shape)
+  repeats = math.ceil(numel / _INT64_BOUNDARY_VALUES.numel())
+  return _INT64_BOUNDARY_VALUES.repeat(repeats)[:numel].reshape(shape)
 
 
 class TpuStreamsTest(seed_test_utils.RepeatableTest):
@@ -433,6 +449,125 @@ class TpuStreamsTest(seed_test_utils.RepeatableTest):
       actual = (x + y).item()
 
     self.assertEqual(actual, 2)
+
+  @oss_utils.skip_in_oss(
+      'OSS libtpu version not high enough to support pinning'
+  )
+  def test_int64_add_dense_vs_sparse_bitwise(self):
+    """Tests static int64 add parity between dense and sparse streams."""
+    dense_stream = torch.tpu.Stream(pinned='dense')
+    sparse_stream = torch.tpu.Stream(pinned='sparse')
+    for shape in [(1,), (2,), (3,), (5,), (6,), (7,), (3, 5)]:
+      cpu_x = _int64_boundary_tensor(shape)
+      x = cpu_x.to('tpu')
+      with torch.tpu.stream(dense_stream):
+        dense = (x + 1).cpu()
+      with torch.tpu.stream(sparse_stream):
+        sparse = (x + 1).cpu()
+      self.assertTrue(torch.equal(dense, sparse), msg=f'shape={shape}')
+      self.assertTrue(torch.equal(sparse, cpu_x + 1), msg=f'shape={shape}')
+
+  @parameterized.named_parameters(
+      ('add', operator.add),
+      ('sub', operator.sub),
+  )
+  @oss_utils.skip_in_oss(
+      'OSS libtpu version not high enough to support pinning'
+  )
+  def test_int64_binary_dense_vs_sparse_bitwise(self, op):
+    """Tests int64 tensor op tensor parity between dense and sparse streams."""
+    dense_stream = torch.tpu.Stream(pinned='dense')
+    sparse_stream = torch.tpu.Stream(pinned='sparse')
+    for shape in [(1,), (2,), (3,), (5,), (6,), (7,), (3, 5)]:
+      cpu_x = _int64_boundary_tensor(shape)
+      # Shifting by one pairs each boundary value with the next one, so the
+      # pairs carry and borrow across the 32 bit words and wrap at the sign bit.
+      numel = cpu_x.numel()
+      cpu_y = _int64_boundary_tensor((numel + 1,))[1:].reshape(shape)
+      expected = op(cpu_x, cpu_y)
+      x = cpu_x.to('tpu')
+      y = cpu_y.to('tpu')
+      with torch.tpu.stream(dense_stream):
+        dense = op(x, y).cpu()
+      with torch.tpu.stream(sparse_stream):
+        sparse = op(x, y).cpu()
+      self.assertTrue(torch.equal(dense, sparse), msg=f'shape={shape}')
+      self.assertTrue(torch.equal(sparse, expected), msg=f'shape={shape}')
+
+  @oss_utils.skip_in_oss(
+      'OSS libtpu version not high enough to support pinning'
+  )
+  def test_int64_fill_from_scalar_dense_vs_sparse_bitwise(self):
+    """Tests int64 fill from a rank 0 tensor on dense vs sparse streams."""
+    dense_stream = torch.tpu.Stream(pinned='dense')
+    sparse_stream = torch.tpu.Stream(pinned='sparse')
+    for value in [0, 1, -1, (1 << 32) - 1, (1 << 40) + 7, -(2**63), 2**63 - 1]:
+      tpu_scalar = torch.tensor(value, dtype=torch.int64).to('tpu')
+      with torch.tpu.stream(dense_stream):
+        dense_buf = torch.zeros(1, dtype=torch.int64, device='tpu')
+        dense_buf.fill_(tpu_scalar)
+        dense = dense_buf.cpu()
+      with torch.tpu.stream(sparse_stream):
+        sparse_buf = torch.zeros(1, dtype=torch.int64, device='tpu')
+        sparse_buf.fill_(tpu_scalar)
+        sparse = sparse_buf.cpu()
+      expected = torch.tensor([value], dtype=torch.int64)
+      self.assertTrue(torch.equal(dense, sparse), msg=f'value={value}')
+      self.assertTrue(torch.equal(sparse, expected), msg=f'value={value}')
+
+  @oss_utils.skip_in_oss(
+      'OSS libtpu version not high enough to support pinning'
+  )
+  def test_int64_add_bounded_dynamic_3d_dense_vs_sparse_bitwise(self):
+    """Tests 3D foldable bounded dynamic int64 add parity on dense vs sparse."""
+    dense_stream = torch.tpu.Stream(pinned='dense')
+    sparse_stream = torch.tpu.Stream(pinned='sparse')
+    cpu_x = _int64_boundary_tensor((3, 8, 128))
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      x_dense = cpu_x.to('tpu')
+      dynamism.mark_dynamic(x_dense, 0, 2, 4)
+      with torch.tpu.stream(dense_stream):
+        dense = (x_dense + 1).cpu()
+
+      x_sparse = cpu_x.to('tpu')
+      dynamism.mark_dynamic(x_sparse, 0, 2, 4)
+      with torch.tpu.stream(sparse_stream):
+        sparse = (x_sparse + 1).cpu()
+
+    self.assertTrue(torch.equal(dense, sparse))
+    self.assertTrue(torch.equal(sparse, cpu_x + 1))
+
+  @oss_utils.skip_in_oss(
+      'OSS libtpu version not high enough to support pinning'
+  )
+  def test_int64_add_bounded_dynamic_1d_dense_vs_sparse_bitwise(self):
+    """Tests rank 1 bounded dynamic int64 add parity on dense vs sparse."""
+    # `dynamism.mark_dynamic` requires `lower_bound >= 2` because 0 and 1
+    # sized dimensions carry PyTorch broadcast semantics; test the smallest
+    # unaligned runtime sizes (2, 3, 5, 7).
+    dense_stream = torch.tpu.Stream(pinned='dense')
+    sparse_stream = torch.tpu.Stream(pinned='sparse')
+    for runtime_size in [2, 3, 5, 7]:
+      cpu_x = _int64_boundary_tensor((runtime_size,))
+      with execution_mode.set_eager_mode(
+          execution_mode.EagerMode.DEFER_AND_FUSE
+      ):
+        x_dense = cpu_x.to('tpu')
+        dynamism.mark_dynamic(x_dense, 0, 2, 16)
+        with torch.tpu.stream(dense_stream):
+          dense = (x_dense + 1).cpu()
+
+        x_sparse = cpu_x.to('tpu')
+        dynamism.mark_dynamic(x_sparse, 0, 2, 16)
+        with torch.tpu.stream(sparse_stream):
+          sparse = (x_sparse + 1).cpu()
+
+      self.assertTrue(
+          torch.equal(dense, sparse), msg=f'runtime_size={runtime_size}'
+      )
+      self.assertTrue(
+          torch.equal(sparse, cpu_x + 1), msg=f'runtime_size={runtime_size}'
+      )
 
 
 class TorchStreamsTest(seed_test_utils.RepeatableTest):
