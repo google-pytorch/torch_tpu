@@ -227,6 +227,9 @@ its `SKILL.md` and follow it.
 *   [`tt-create-change`](.agents/skills/tt-create-change/SKILL.md): committing a
     change, and opening, describing, or updating a pull request, including
     addressing review comments.
+*   [`tt-fix-composite-ops`](.agents/skills/tt-fix-composite-ops/SKILL.md):
+    migrating a composite ATen operator to a native one that lowers directly to
+    StableHLO.
 *   [`tt-write-docs`](.agents/skills/tt-write-docs/SKILL.md): writing, editing,
     or reviewing narrative documentation or README content.
 *   [`tt-write-error-tests`](.agents/skills/tt-write-error-tests/SKILL.md):
