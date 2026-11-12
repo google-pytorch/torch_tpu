@@ -15,12 +15,27 @@
 """Tests ops served by precompiled unbounded dynamic kernels."""
 
 from collections.abc import Callable
+import functools
 import math
+import os
+from typing import Any
 
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
 from tests import op_testing
+
+# Opt-in kernels serve ops only when this is "all"; see the BUILD targets.
+_USE_ALL_KERNELS = (
+    os.environ.get("TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS") == "all"
+)
+
+
+def _to_cpu(result: Any) -> Any:
+  """Moves a tensor, or each tensor of a tuple of tensors, to the CPU."""
+  if isinstance(result, tuple):
+    return tuple(t.cpu() for t in result)
+  return result.cpu()
 
 
 class UnboundedDynamicKernelTestBase(op_testing.TorchTpuVsCpuTestBase):
@@ -28,11 +43,11 @@ class UnboundedDynamicKernelTestBase(op_testing.TorchTpuVsCpuTestBase):
 
   def run_and_check_cache(
       self,
-      op: Callable[..., torch.Tensor],
+      op: Callable[..., Any],
       *inputs: torch.Tensor,
       served: bool,
       static_compilations: int = 1,
-  ) -> tuple[list[torch.Tensor], torch.Tensor]:
+  ) -> tuple[list[torch.Tensor], Any]:
     """Checks `op(*inputs)` on TPU vs CPU, input preservation, and cache stats.
 
     Expects 1 unbounded dynamic hit and 0 compilations if `served`, else 0
@@ -46,7 +61,9 @@ class UnboundedDynamicKernelTestBase(op_testing.TorchTpuVsCpuTestBase):
     torch.accelerator.synchronize()
     after = torch.tpu._get_cache_stats()  # pylint: disable=protected-access
 
-    self.assert_close(golden_result=op(*inputs), torch_tpu_result=result.cpu())
+    self.assert_close(
+        golden_result=op(*inputs), torch_tpu_result=_to_cpu(result)
+    )
 
     # Check input has not been modified
     for x, x_tpu in zip(inputs, tpu_inputs):
@@ -158,6 +175,36 @@ _NONZERO_NOT_SERVED_CASES = (
 )
 
 
+def _sort_keys(n: int, repeated: bool) -> torch.Tensor:
+  """Returns `n` int32 keys, distinct unless `repeated`, with the extremes."""
+  generator = torch.Generator().manual_seed(n)
+  if repeated:
+    x = torch.randint(-8, 9, (n,), generator=generator, dtype=torch.int32)
+  else:
+    x = (torch.randperm(n, generator=generator) - n // 2).to(torch.int32)
+  x[1] = torch.iinfo(torch.int32).min
+  x[n // 2] = torch.iinfo(torch.int32).max
+  return x
+
+
+# The opt-in sort kernel serves ascending sorts of 1024 int32 elements along
+# dim -1. It is stable, so unstable sorts get distinct keys, whose sorted
+# indices are unique.
+_SORT_SERVED_CASES = (
+    ("default", _sort_keys(1024, repeated=False), {}),
+    ("stable", _sort_keys(1024, repeated=True), {"stable": True}),
+)
+
+_SORT_NOT_SERVED_CASES = (
+    ("descending", _sort_keys(1024, repeated=False), {"descending": True}),
+    ("dim_0", _sort_keys(1024, repeated=False), {"dim": 0}),
+    ("n_1023", _sort_keys(1023, repeated=False), {}),
+    ("n_2048", _sort_keys(2048, repeated=False), {}),
+    ("rank_2", _sort_keys(1024, repeated=False).reshape(8, 128), {}),
+    ("float32", _sort_keys(1024, repeated=False).float(), {}),
+)
+
+
 class DynamicOpsTest(UnboundedDynamicKernelTestBase):
 
   @parameterized.named_parameters(*_NONZERO_SERVED_CASES)
@@ -190,6 +237,26 @@ class DynamicOpsTest(UnboundedDynamicKernelTestBase):
         x,
         served=False,
         static_compilations=1 if x.count_nonzero() else 0,
+    )
+
+  @parameterized.named_parameters(*_SORT_SERVED_CASES)
+  def test_sort_served_if_opted_in(
+      self, x: torch.Tensor, kwargs: dict[str, Any]
+  ):
+    sort = functools.partial(torch.sort, **kwargs)
+    if _USE_ALL_KERNELS:
+      sort(torch.zeros_like(x).to("tpu"))  # Warm up the opt-in kernel.
+    else:
+      torch.tpu._clear_cache()  # pylint: disable=protected-access
+
+    self.run_and_check_cache(sort, x, served=_USE_ALL_KERNELS)
+
+  @parameterized.named_parameters(*_SORT_NOT_SERVED_CASES)
+  def test_sort_not_served(self, x: torch.Tensor, kwargs: dict[str, Any]):
+    torch.tpu._clear_cache()  # pylint: disable=protected-access
+
+    self.run_and_check_cache(
+        functools.partial(torch.sort, **kwargs), x, served=False
     )
 
 

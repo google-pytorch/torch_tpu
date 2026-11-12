@@ -2511,6 +2511,28 @@ torch_tpu_py_test(
     ],
 )
 
+# Runs dynamic_ops_test.py with the opt-in unbounded dynamic kernels enabled too.
+# The runtime reads TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS once per
+# process, so this needs its own target.
+torch_tpu_py_test(
+    name = "dynamic_ops_opt_in_test",
+    srcs = ["dynamic_ops_test.py"],
+    env = {"TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS": "all"},
+    main = "dynamic_ops_test.py",
+    run_on_accelerators = [
+        "requires-tpu-v6e",
+        "requires-tpu-v5lite",
+    ],
+    shard_count = 8,
+    deps = [
+        ":op_testing",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+    ],
+)
+
 # Tests ops on their static kernels. The precompiled unbounded dynamic kernels
 # serve the ops they support by default, and the runtime reads
 # TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS once per process, so these
