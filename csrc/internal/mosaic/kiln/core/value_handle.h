@@ -29,7 +29,7 @@ namespace torch_tpu::kiln::internal {
 // `Tile`, `Ref`, `Semaphore`, ...) in place of a raw pointer.
 //
 // A handle may be null, which indicates an error. The error itself is held by
-// the thread-local scope (see `ReportError()` in context.h), so that a handle
+// the thread-local scope (see `ReportError()` in error.h), so that a handle
 // stays the size of a pointer.
 class ValueHandle {
  public:

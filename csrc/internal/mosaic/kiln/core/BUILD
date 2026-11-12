@@ -22,6 +22,53 @@ package(
 )
 
 torch_tpu_cc_library(
+    name = "builder_scope",
+    srcs = ["builder_scope.cc"],
+    hdrs = ["builder_scope.h"],
+    deps = [
+        "@com_google_absl//absl/base:nullability",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "builder_scope_test",
+    srcs = ["builder_scope_test.cc"],
+    deps = [
+        ":builder_scope",
+        "//csrc/common:oss_test_main",
+        "@com_google_absl//absl/status:status_matchers",
+        "@llvm-project//mlir:IR",
+    ],
+)
+
+torch_tpu_cc_library(
+    name = "error",
+    srcs = ["error.cc"],
+    hdrs = ["error.h"],
+    deps = [
+        ":builder_scope",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "error_test",
+    srcs = ["error_test.cc"],
+    deps = [
+        ":builder_scope",
+        ":error",
+        "//csrc/common:error_utils",
+        "//csrc/common:oss_test_main",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@llvm-project//mlir:IR",
+    ],
+)
+
+torch_tpu_cc_library(
     name = "context",
     srcs = ["context.cc"],
     hdrs = ["context.h"],
@@ -30,13 +77,12 @@ torch_tpu_cc_library(
         "//csrc/internal/mosaic/kiln/mlir:__pkg__",
     ],
     deps = [
+        ":builder_scope",
         ":dtype",
         ":literal",
         ":shape",
         ":value_handle",
-        "@com_google_absl//absl/base:nullability",
         "@com_google_absl//absl/log:absl_check",
-        "@com_google_absl//absl/status",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:ArithDialect",
         "@llvm-project//mlir:IR",
@@ -295,6 +341,7 @@ torch_tpu_cc_library(
     srcs = ["kernel.cc"],
     hdrs = ["kernel.h"],
     deps = [
+        ":builder_scope",
         ":context",
         ":dtype",
         ":index_arg",
@@ -324,14 +371,13 @@ torch_tpu_cc_test(
     name = "kernel_test",
     srcs = ["kernel_test.cc"],
     deps = [
-        ":context",
         ":control_flow",
         ":dtype",
+        ":error",
         ":index_map",
         ":kernel",
         ":ref",
         ":scalar",
-        ":shape",
         ":specs",
         "//csrc/common:error_utils",
         "//csrc/common:oss_test_main",

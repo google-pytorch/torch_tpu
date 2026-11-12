@@ -29,6 +29,7 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/internal/mosaic/kiln/core/builder_scope.h"
 #include "csrc/internal/mosaic/kiln/core/context.h"
 #include "csrc/internal/mosaic/kiln/core/dtype.h"
 #include "csrc/internal/mosaic/kiln/core/index_arg.h"
