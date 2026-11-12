@@ -139,6 +139,11 @@ absl::Status EagerlyExecuteCurrentStream(
     GraphSplitMode mode = GraphSplitMode::kSplitGraph,
     absl::Span<const SharedDeviceBufferList> must_materialize = {});
 
+// Returns the error for materializing tensors or synchronizing streams on a
+// thread that is capturing a graph. Like a synchronization during the capture
+// of a CUDA graph, it invalidates the capture.
+absl::Status MaterializeWhileCapturingGraphError();
+
 }  // namespace torch_tpu
 
 #endif  // TORCH_TPU_CSRC_EAGER_MATERIALIZE_H_
