@@ -54,8 +54,10 @@
 
 #include "ATen/core/Generator.h"
 #include "ATen/ops/tensor.h"  // IWYU pragma: keep
+#include "absl/base/thread_annotations.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/synchronization/mutex.h"
 #include "c10/core/Device.h"
 #include "c10/core/GeneratorImpl.h"
 #include "c10/core/TensorImpl.h"
@@ -87,18 +89,40 @@ class DeviceGeneratorState : public c10::intrusive_ptr_target {
   static constexpr int kMaterializationThreshold = 4;
 
   DeviceGeneratorState() = default;
-  explicit DeviceGeneratorState(at::Tensor device_state_tensor)
-      : device_state_tensor_(std::move(device_state_tensor)) {}
+  // `seed` is the seed in `device_state_tensor`, or std::nullopt if unknown.
+  DeviceGeneratorState(at::Tensor device_state_tensor,
+                       std::optional<uint64_t> seed)
+      : device_state_tensor_(std::move(device_state_tensor)), seed_(seed) {}
 
-  c10::intrusive_ptr<DeviceGeneratorState> clone() const;
+  c10::intrusive_ptr<DeviceGeneratorState> clone() const
+      ABSL_LOCKS_EXCLUDED(mu_);
 
-  at::Tensor DeviceStateTensor() const { return device_state_tensor_; }
+  at::Tensor DeviceStateTensor() const ABSL_LOCKS_EXCLUDED(mu_) {
+    absl::MutexLock lock(mu_);
+    return device_state_tensor_;
+  }
 
-  // Sets the device-resident RNG state tensor.
-  absl::Status SetDeviceStateTensor(at::Tensor device_state_tensor);
+  // Returns the seed in the device state tensor if it is known without reading
+  // the device, or std::nullopt otherwise.
+  std::optional<uint64_t> seed() const ABSL_LOCKS_EXCLUDED(mu_) {
+    absl::MutexLock lock(mu_);
+    return seed_;
+  }
+
+  // Sets the device-resident RNG state tensor, which must have the same seed as
+  // the current one.
+  absl::Status SetDeviceStateTensor(at::Tensor device_state_tensor)
+      ABSL_LOCKS_EXCLUDED(mu_);
+
+  // Sets the device-resident RNG state tensor, whose seed is `seed`, or unknown
+  // if `seed` is std::nullopt.
+  absl::Status SetDeviceStateTensor(at::Tensor device_state_tensor,
+                                    std::optional<uint64_t> seed)
+      ABSL_LOCKS_EXCLUDED(mu_);
 
   // Writes seed and offset to device state tensor.
-  absl::Status WriteStateToDevice(uint64_t seed, uint64_t offset);
+  absl::Status WriteStateToDevice(uint64_t seed, uint64_t offset)
+      ABSL_LOCKS_EXCLUDED(mu_);
 
  private:
   // Materializes the RNG state tensor if the materialization counter reaches
@@ -112,13 +136,17 @@ class DeviceGeneratorState : public c10::intrusive_ptr_target {
   // Every `kMaterializationThreshold` updates, it materializes the state
   // tensor, compiling and executing the deferred updates up to this point.
   absl::Status MaybeMaterializeDeviceStateTensor(
-      bool force_materialization = false);
+      bool force_materialization = false) ABSL_LOCKS_EXCLUDED(mu_);
 
+  mutable absl::Mutex mu_;
   // 1D uint64 tensor of 2 elements: {seed, offset}
-  at::Tensor device_state_tensor_ = at::Tensor();
+  at::Tensor device_state_tensor_ ABSL_GUARDED_BY(mu_) = at::Tensor();
+
+  // The seed in `device_state_tensor_`, or std::nullopt if unknown.
+  std::optional<uint64_t> seed_ ABSL_GUARDED_BY(mu_);
 
   // Counter to throttle materialization of RNG state updates.
-  int materialize_state_counter_ = 0;
+  int materialize_state_counter_ ABSL_GUARDED_BY(mu_) = 0;
 };
 
 // Lightweight RNG state container for export mode.
@@ -248,7 +276,19 @@ class EagerModeDeviceGeneratorImpl : public DeviceGeneratorImplBase {
 
   absl::Status SetDeviceStateTensor(at::Tensor t) override;
 
-  c10::intrusive_ptr<DeviceGeneratorState> state_;
+  // Callers invoking mutating methods must hold `c10::GeneratorImpl::mutex_`
+  // (per PyTorch's GeneratorImpl contract; `THPGenerator` and
+  // `DispatchRngOpGeneral` do). `state_mu_` and `DeviceGeneratorState::mu_`
+  // additionally synchronize concurrent read-only queries (`get_offset()`,
+  // `current_seed()`) and shared-state `graphsafe_*` calls.
+  c10::intrusive_ptr<DeviceGeneratorState> GetState() const
+      ABSL_LOCKS_EXCLUDED(state_mu_) {
+    absl::MutexLock lock(state_mu_);
+    return state_;
+  }
+
+  mutable absl::Mutex state_mu_;
+  c10::intrusive_ptr<DeviceGeneratorState> state_ ABSL_GUARDED_BY(state_mu_);
 };
 
 // Concrete generator implementation used exclusively during graph export

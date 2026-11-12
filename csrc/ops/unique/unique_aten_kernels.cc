@@ -275,23 +275,25 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> UniqueDimHelper(
 std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenUnique2(
     const at::Tensor& self, bool sorted, bool return_inverse,
     bool return_counts) {
-  TT_KERNEL(
-      OpName::kUnique2, _,
-      (self, IgnoreInCacheKey(sorted, "delegates to Unique2"),
-       IgnoreInCacheKey(return_inverse, "delegates to Unique2"),
-       IgnoreInCacheKey(return_counts, "delegates to Unique2")),
-      {
-        TT_CHECK_THROW(sorted, error::kInvalidArgument)
-            << "sorted=False is not yet supported";
+  TT_KERNEL(OpName::kUnique2, _,
+            (self, IgnoreInCacheKey(sorted, "delegates to Unique2"),
+             IgnoreInCacheKey(return_inverse, "delegates to Unique2"),
+             IgnoreInCacheKey(return_counts, "delegates to Unique2")),
+            {
+              TT_CHECK_THROW(sorted, error::kInvalidArgument)
+                  << "sorted=False is not yet supported";
 
-        TT_ASSIGN_OR_THROW(at::Tensor unique_count_tensor,
-                           GetUniqueCount(self, sorted));
-        const int64_t output_size = unique_count_tensor.cpu().item<int64_t>();
+              TT_ASSIGN_OR_THROW(at::Tensor unique_count_tensor,
+                                 GetUniqueCount(self, sorted));
+              // Unlike cpu(), item() invalidates a graph capture, as unique
+              // does on CUDA.
+              const int64_t output_size = unique_count_tensor.item<int64_t>();
 
-        TT_ASSIGN_OR_THROW(auto result, Unique2(self, output_size, sorted,
-                                                return_inverse, return_counts));
-        return result;
-      });
+              TT_ASSIGN_OR_THROW(auto result,
+                                 Unique2(self, output_size, sorted,
+                                         return_inverse, return_counts));
+              return result;
+            });
 }
 
 std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenUniqueDim(

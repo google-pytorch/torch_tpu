@@ -48,6 +48,18 @@ struct CompilationTraceInfo {
   KernelType kernel_type = KernelType::kStatic;
 };
 
+struct CompiledTraversal {
+  CompilationCacheKey compilation_cache_key;
+  CompiledKernel compiled_kernel;
+};
+
+// Compiles a captured Traversal without mutating its outputs or consuming its
+// DeferredOps, allowing `torch.accelerator.Graph` to retain or re-compile the
+// captured graph when `keep_graph=True`.
+absl::StatusOr<CompiledTraversal> CompileCapturedTraversal(
+    Traversal& traversal, mlir::MLIRContext& mlir_context,
+    const CompilationSpec& compilation_spec);
+
 // To materialize a tensor's data, we need to execute it on-device.
 // This requires identifying the arguments to the executable, the MLIR for the
 // executable, both of which may only be available asynchronously due to async

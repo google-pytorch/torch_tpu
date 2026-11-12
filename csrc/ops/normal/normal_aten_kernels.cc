@@ -40,6 +40,7 @@
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/device_gen_impl.h"
 #include "csrc/eager/eager_mode.h"
+#include "csrc/eager/graph_capture_state.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/copy_from/copy_common.h"
@@ -294,11 +295,11 @@ absl::Status ValidateNormalStdPreconditions(
     return absl::OkStatus();
   }
 
-  // Skip synchronous device-to-host transfer during compilation/tracing or
-  // manual-sync deferral.
+  // Skip synchronous device-to-host transfer during compilation/tracing,
+  // manual-sync deferral, or graph capture.
   const EagerMode mode = GetEagerMode();
   if (mode == EagerMode::kInternalCompileFxGraph ||
-      mode == EagerMode::kInternalDeferAll) {
+      mode == EagerMode::kInternalDeferAll || IsCurrentThreadCapturingGraph()) {
     return absl::OkStatus();
   }
 

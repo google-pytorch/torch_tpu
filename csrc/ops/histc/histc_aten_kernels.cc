@@ -39,6 +39,7 @@
 #include "csrc/common/to_string.h"
 #include "csrc/common/warnings.h"
 #include "csrc/eager/device_buffer.h"
+#include "csrc/eager/graph_capture_state.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/macros/kernel.h"
@@ -531,10 +532,10 @@ absl::StatusOr<HistcBoundTensors> ComputeHistcBoundsFromInput(
   // Validate computed bounds, as they may be invalid due to underflow
   // and overflow. Because this needs an expensive transfer to CPU, this
   // is only done when debug checks are enabled.
-  if (GetEnableDebugChecks()) {
+  if (GetEnableDebugChecks() && !IsCurrentThreadCapturingGraph()) {
     TT_RETURN_IF_ERROR(ValidateBounds(
         min_val.cpu().item(), max_val.cpu().item(), BoundsMode::kFromInput));
-  } else {
+  } else if (!GetEnableDebugChecks()) {
     TT_WARN_ONCE(
         WarningCategory::kCorrectness,
         "Bounds computed from input data are not validated by default on "
