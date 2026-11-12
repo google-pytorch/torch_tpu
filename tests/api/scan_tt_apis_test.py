@@ -1117,7 +1117,6 @@ class ScanTtApisTest(seed_test_utils.RepeatableTest):
               {kInternalImplVar,
                {SymbolStage::InternalImplementation(), EnvVarType::kString}},
               {kInternalApiVar, {SymbolStage::InternalApi(), EnvVarType::kInt}},
-              {kMultiLineCommentVar, {std::nullopt, EnvVarType::kString}},
               {kExpVar, {SymbolStage::Experimental(), EnvVarType::kBoolean}},
               {kDepVar,
                {SymbolStage::Deprecated("0.5"), EnvVarType::kInt64}},

@@ -85,8 +85,8 @@ void SafeUnsetEnvImpl(const char* name) {
 // GetEnvOnce() calls this at most once per env var, so the TT_WARN() calls
 // below warn at most once per env var, like TT_WARN_ONCE() in a function
 // template would.
-std::optional<std::string> ReadEnvForGetEnvOnce(
-    const char* name, const std::optional<SymbolStage> maybe_stage) {
+std::optional<std::string> ReadEnvForGetEnvOnce(const char* name,
+                                                const SymbolStage stage) {
   MarkEnvVarMemoized(name);
   const char* const env_var =  //
       std::getenv(name);       // GETENV_OK=implementing GetEnvOnce().
@@ -95,17 +95,15 @@ std::optional<std::string> ReadEnvForGetEnvOnce(
 
   // The env var is set to a non-empty string. Warn the user if the env var is
   // experimental or deprecated.
-  if (maybe_stage.has_value()) {
-    if (maybe_stage->is_experimental()) {
-      TT_WARN(WarningCategory::kExperimentalApi, "the ", name,
-              " environment variable is an experimental feature and may "
-              "change or be removed without notice.");
-    } else if (maybe_stage->is_deprecated()) {
-      const auto deprecated_since = maybe_stage->version();
-      TT_WARN(WarningCategory::kDeprecatedApi, "the ", name,
-              " environment variable is deprecated since TorchTPU v",
-              deprecated_since, " and will be removed in a future release.");
-    }
+  if (stage.is_experimental()) {
+    TT_WARN(WarningCategory::kExperimentalApi, "the ", name,
+            " environment variable is an experimental feature and may "
+            "change or be removed without notice.");
+  } else if (stage.is_deprecated()) {
+    const auto deprecated_since = stage.version();
+    TT_WARN(WarningCategory::kDeprecatedApi, "the ", name,
+            " environment variable is deprecated since TorchTPU v",
+            deprecated_since, " and will be removed in a future release.");
   }
   return std::string(env_var);
 }

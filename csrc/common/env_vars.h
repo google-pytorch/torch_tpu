@@ -42,11 +42,11 @@ void SafeSetEnvImpl(const char* name, const std::string& value);
 void SafeUnsetEnvImpl(const char* name);
 
 // Implements GetEnvOnce(): records that the env var with the given name is
-// memoized, reads it, and warns if it is set and `maybe_stage` is experimental
-// or deprecated. GetEnvOnce() memoizes the result, so this is called at most
+// memoized, reads it, and warns if it is set and `stage` is experimental or
+// deprecated. GetEnvOnce() memoizes the result, so this is called at most
 // once per env var. Thread-safe.
 [[nodiscard]] std::optional<std::string> ReadEnvForGetEnvOnce(
-    const char* name, std::optional<SymbolStage> maybe_stage);
+    const char* name, SymbolStage stage);
 
 // Parses `env_var`, the value of the env var with the given name, as a Boolean
 // using absl::SimpleAtob. Returns std::nullopt and warns if it cannot be
@@ -329,11 +329,11 @@ enum class EnvVarType {
 struct EnvVarInfo {
   // Requires both fields, so that an entry that omits the type fails to
   // compile instead of defaulting to EnvVarType::kString.
-  constexpr EnvVarInfo(std::optional<SymbolStage> stage, EnvVarType type)
+  constexpr EnvVarInfo(SymbolStage stage, EnvVarType type)
       : stage(stage), type(type) {}
 
-  // The symbol stage of the env var. nullopt means the stage is unknown.
-  std::optional<SymbolStage> stage;
+  // The symbol stage of the env var.
+  SymbolStage stage;
   // The type that the env var is read as. Env vars that TorchTPU only writes
   // have their natural type.
   EnvVarType type;
@@ -522,16 +522,13 @@ template <const char* name>
   static_assert(kEnvVarInfo.contains(name),
                 "Unknown environment variable. All env vars used by TorchTPU "
                 "must be registered in kEnvVarInfo.");
-  constexpr std::optional<SymbolStage> maybe_stage = kEnvVarInfo[name].stage;
-  if constexpr (maybe_stage.has_value()) {
-    static_assert(
-        !maybe_stage->is_internal_implementation(),
-        "Cannot read from an internal implementation env var. "
-        "TorchTPU can only write to them. If TorchTPU really needs to "
-        "read this env var, its stage in kEnvVarInfo must be changed.");
-  }
+  constexpr SymbolStage stage = kEnvVarInfo[name].stage;
+  static_assert(!stage.is_internal_implementation(),
+                "Cannot read from an internal implementation env var. "
+                "TorchTPU can only write to them. If TorchTPU really needs to "
+                "read this env var, its stage in kEnvVarInfo must be changed.");
   static const absl::NoDestructor<std::optional<std::string>> env_var(
-      ReadEnvForGetEnvOnce(name, maybe_stage));
+      ReadEnvForGetEnvOnce(name, stage));
   return *env_var;
 }
 

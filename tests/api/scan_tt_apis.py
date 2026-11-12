@@ -254,7 +254,6 @@ ENV_VAR_TO_STAGE_MAP_PATTERN = re.compile(
 # Examples:
 #   {kAcceleratorTypeEnvVar,
 #    {SymbolStage::InternalImplementation(), EnvVarType::kString}}
-#   {kLibtpuInitArgsEnvVar, {std::nullopt, EnvVarType::kString}}
 #   {kWorldSizeEnvVar, {SymbolStage::Stable(), EnvVarType::kInt}}
 #   {kDeprecatedEnvVar, {SymbolStage::Deprecated("2.13"), EnvVarType::kBoolean}}
 ENV_STAGE_ENTRY_PATTERN = re.compile(
