@@ -50,6 +50,18 @@ pytype_strict_library(
     ],
 )
 
+pytype_strict_library(
+    # PY_LIBRARY_OK=Decouple from torch_tpu to avoid C++ dependency in coverage tests.
+    name = "standard_train",
+    srcs = ["standard_train.py"],
+    deps = [
+        ":common",
+        "//perflab:loss",
+        "//perflab:step_lib",
+        "//shims/torch:pytorch",
+    ],
+)
+
 torch_tpu_py_library(
     name = "steps",
     srcs = [
@@ -61,6 +73,7 @@ torch_tpu_py_library(
     deps = [
         ":common",
         ":decode",  # build_cleaner: keep
+        ":standard_train",
         "//perflab:loss",
         "//perflab:single_trace_trainer_adapter",
         "//perflab:step_lib",

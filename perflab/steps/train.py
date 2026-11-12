@@ -22,68 +22,7 @@ from perflab import single_trace_trainer_adapter
 from perflab import step_lib
 from perflab import target as target_lib
 from perflab.steps import common
-
-
-class _StandardTrainingStepper(common.BaseStepper):
-  """Standard training stepper for eager and fallback execution."""
-
-  def __init__(
-      self,
-      accum_steps: int = step_lib.DEFAULT_ACCUM_STEPS,
-      compute_loss=loss_lib.real_loss,
-  ):
-    super().__init__()
-    self._accum_steps = accum_steps
-    self._compute_loss = compute_loss
-    self._input_args = ()
-    self._input_kwargs = {}
-    self._optimizer = None
-
-  def init_with_benchmark_args(
-      self, model, input_args, input_kwargs, optimizer, *args, **kwargs
-  ) -> None:
-    super().init_with_benchmark_args(model, *args, **kwargs)
-    self._input_args = input_args
-    self._input_kwargs = input_kwargs
-    self._optimizer = optimizer
-
-  @staticmethod
-  def _step_function(accum_steps, compute_loss, m, args, kwargs, opt):
-    if opt is not None:
-      opt.zero_grad(set_to_none=True)
-    else:
-      # Gradient-only step: zero the grads so they don't accumulate across
-      # steps.
-      m.zero_grad(set_to_none=True)
-    for _ in range(accum_steps):
-      # Scale by accum_steps: backward sums gradients across micro-batches, so
-      # without this the gradient is silently scaled by accum_steps.
-      loss = compute_loss(m, args, kwargs) / accum_steps
-      loss.backward()
-    if opt is not None:
-      opt.step()
-    # Return the last micro-batch loss so measure() can check that the step's
-    # executions succeeded. A failed `opt.step()` leaves the params failed, so
-    # the next step's loss fails; only a failure in the final step's
-    # `opt.step()` goes unnoticed.
-    return loss
-
-  def get_params(self) -> Mapping[str, torch.Tensor]:
-    """Returns the current model parameters."""
-    if self._model is not None:
-      return dict(self._model.named_parameters())
-    return {}
-
-  def get_step_fn(self):
-    return functools.partial(
-        self._inner_stepper,
-        self._accum_steps,
-        self._compute_loss,
-        self._model,
-        self._input_args,
-        self._input_kwargs,
-        self._optimizer,
-    )
+from perflab.steps import standard_train
 
 
 def _to_single_trace_optimizer(
@@ -262,7 +201,7 @@ class TrainingStepper:
     self._init_args = ()
     self._init_kwargs = {}
     self._compile_args = ()
-    self._standard_stepper = _StandardTrainingStepper(
+    self._standard_stepper = standard_train.StandardTrainingStepper(
         accum_steps=accum_steps, compute_loss=compute_loss
     )
     self._single_trace_stepper: SingleTraceTrainingStepper | None = None
@@ -302,7 +241,7 @@ class TrainingStepper:
   @property
   def _active_stepper(
       self,
-  ) -> _StandardTrainingStepper | SingleTraceTrainingStepper:
+  ) -> standard_train.StandardTrainingStepper | SingleTraceTrainingStepper:
     return self._single_trace_stepper or self._standard_stepper
 
   @property
