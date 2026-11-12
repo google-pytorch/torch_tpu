@@ -1153,6 +1153,57 @@ class CoupledDimDiscoveryTest(seed_test_utils.RepeatableTest):
         ),
     )
 
+  @parameterized.parameters(
+      dynamism_test_utils.DynamismMode.EAGER,
+      dynamism_test_utils.DynamismMode.COMPILE,
+  )
+  def test_foreach_plan_couples_matching_list_elements(self, mode):
+    foreach_add_op = op_testing._get_op("_foreach_add")
+    self_list = [torch.ones(4, 3), torch.ones(5, 1), torch.ones(1, 6)]
+    # Element 2 broadcasts from a lower rank.
+    other_list = [torch.ones(4, 3), torch.ones(5, 1), torch.ones(6)]
+    plans = dynamism_test_utils.generate_exhaustive_input_marking_plans(
+        foreach_add_op, self_list, (other_list,), mode=mode
+    )
+    td = dynamism_test_utils.TensorDim
+    self.assertEqual(
+        plans,
+        (
+            dynamism_test_utils.DynamicMarkingPlan(
+                label="t0d0_t1d0_t2d1",
+                tensor_dims=(td(0, 0), td(1, 0), td(2, 1)),
+                coupled_dims=(
+                    td(0, 0),
+                    td(1, 0),
+                    td(2, 1),
+                    td(3, 0),
+                    td(4, 0),
+                    td(5, 0),
+                ),
+            ),
+        ),
+    )
+
+  def test_foreach_plan_couples_all_tensor_list_args(self):
+    foreach_addcmul_op = op_testing._get_op("_foreach_addcmul")
+    self_list = [torch.ones(4, 4), torch.ones(3, 3)]
+    tensor1 = [torch.ones(4, 4), torch.ones(3, 3)]
+    tensor2 = [torch.ones(4, 4), torch.ones(3, 3)]
+    # The `scalars` tensor (one value per element) is a single tensor rather
+    # than a tensor list, so it stays static.
+    plans = dynamism_test_utils.generate_exhaustive_input_marking_plans(
+        foreach_addcmul_op,
+        self_list,
+        (tensor1, tensor2, torch.ones(2)),
+        mode=dynamism_test_utils.DynamismMode.EAGER,
+    )
+    td = dynamism_test_utils.TensorDim
+    self.assertLen(plans, 1)
+    self.assertEqual(
+        plans[0].coupled_dims,
+        (td(0, 0), td(1, 0), td(2, 0), td(3, 0), td(4, 0), td(5, 0)),
+    )
+
 
 if __name__ == "__main__":
   absltest.main()

@@ -17,8 +17,8 @@
 Handles the following details for per-op unit testing:
   - Validate if an op supports bounded dynamism.
   - Discover valid bounded dynamic candidates.
-  - Mark input as dynamic
-  - Mark dependent args as dynamic.
+  - Discover input dimensions that must be marked dynamic together.
+  - Mark inputs as dynamic.
 """
 
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
@@ -33,7 +33,6 @@ import torch
 from torch._dynamo import source as dynamo_source
 from torch._subclasses import fake_tensor
 from torch.fx.experimental import symbolic_shapes
-from torch.testing._internal import common_methods_invocations
 from torch.testing._internal.opinfo import core
 from torch.utils import _pytree
 from torch.utils._sympy import numbers as sympy_numbers
@@ -89,8 +88,7 @@ class DynamicMarkingPlan:
     tensor_dims: Strictly ascending, duplicate-free `TensorDim` targets to mark
       dynamic on the primary input.
     coupled_dims: Validated dimensions across all input tensors to mark dynamic
-      together when executing this plan. Empty when adapter-specific marking is
-      used (e.g., foreach ops).
+      together when executing this plan.
   """
 
   label: str
@@ -360,15 +358,6 @@ def _mark_tensor_dynamic(
     raise ValueError(f"Unsupported dynamism mode: {mode}")
 
 
-# Static variables for op classification.
-foreach_binops = frozenset(
-    op.name for op in common_methods_invocations.foreach_binary_op_db
-)
-foreach_ternary_ops = frozenset(
-    op.name for op in common_methods_invocations.foreach_pointwise_op_db
-)
-
-
 def _get_dynamic_dimension_candidates(
     input_value: torch.Tensor,
 ) -> Sequence[int]:
@@ -407,40 +396,6 @@ def _get_canonical_input_value(
   return 0, input_value
 
 
-def _resolve_input_tensor(
-    input_value: torch.Tensor | Sequence[torch.Tensor],
-    tensor_index: int,
-) -> torch.Tensor:
-  """Resolves the target `Tensor` in `input_value` from `tensor_index`.
-
-  Args:
-    input_value: Single `Tensor` or sequence of `Tensor`s passed to the op.
-    tensor_index: 0-based index into `input_value` (`0` when `input_value` is a
-      single `Tensor`).
-
-  Returns:
-    The resolved `torch.Tensor`.
-
-  Raises:
-    IndexError: If `input_value` is a single `Tensor` and `tensor_index != 0`,
-      or `tensor_index` is out of range for a sequence `input_value`.
-    TypeError: If the resolved element is not a `torch.Tensor`.
-  """
-  if isinstance(input_value, torch.Tensor):
-    if tensor_index != 0:
-      raise IndexError(
-          f"tensor_index must be 0 for a single Tensor, got {tensor_index}."
-      )
-    return input_value
-  tensor = input_value[tensor_index]
-  if not isinstance(tensor, torch.Tensor):
-    raise TypeError(
-        f"Expected torch.Tensor at input_value[{tensor_index}], got"
-        f" {type(tensor).__name__}."
-    )
-  return tensor
-
-
 def verify_dtype_supports_dynamism(
     op_info: core.OpInfo, dtype: torch.dtype
 ) -> None | str:
@@ -456,15 +411,6 @@ def verify_dtype_supports_dynamism(
   # TODO: b/449736443 - [XLA] Crash in complex rewriter.
   if dtype in (torch.complex64, torch.complex128):
     return f"{op_info.name} op is not supported with dtype {dtype}."
-  # _foreach_exp_ does not support integral dtypes on TPU.
-  if op_info.name == "_foreach_exp_" and not dtype.is_floating_point:
-    return f"{op_info.name} does not support integral dtypes."
-  # ceil/floor do not support int64 under dynamism (sign-extension bugs).
-  if (
-      op_info.name in ("ceil", "floor", "_foreach_ceil", "_foreach_floor")
-      and dtype == torch.int64
-  ):
-    return f"{op_info.name} does not support int64 under dynamism."
   return None
 
 
@@ -1023,63 +969,6 @@ def verify_sample_supports_dynamism(
   return None
 
 
-def _mark_numpy_broadcastable_arg_dynamic(
-    arg: torch.Tensor,
-    like: torch.Tensor,
-    idx: int,
-    ub: int,
-    mode: DynamismMode = DynamismMode.EAGER,
-):
-  """Marks dependent dims of a bounded dimension as dynamic.
-
-  XLA has preconditions on bound sizes for certain ops, for example:
-    - Binary elementwise ops: LHS/RHS bound sizes must match.
-    - Ternary elementwise ops: All operand bound sizes must match.
-    - Matmuls: Contracting dimension bound sizes must match.
-
-  This function handles calls mark_dynamic on `arg` for the required
-  preconditions of `op_info` and the given `like` tensor having been
-  marked as dynamic.
-
-  Args:
-    arg: The tensor to mark dynamic.
-    like: The tensor that was marked dynamic.
-    idx: The dimension of `like` that was marked dynamic.
-    ub: The upper bound of the dynamic dimension.
-    mode: The dynamism mode (EAGER or COMPILE).
-  """
-
-  logging.debug(
-      "[_mark_numpy_broadcastable_arg_dynamic] arg=%s, like=%s, idx=%d, ub=%d,"
-      " mode=%s",
-      arg.shape,
-      like.shape,
-      idx,
-      ub,
-      mode,
-  )
-
-  # Don't annotate scalar args
-  if not arg.shape:
-    return
-
-  # Find related `arg` dim given numpy-broadcasting rules from `like`.
-  # Don't mark size 1 dims that broadcast or OOB idx when LHS size differs.
-  negative_idx = idx - len(like.shape)
-  arg_idx = negative_idx + len(arg.shape)
-  if arg_idx < 0 or arg_idx >= len(arg.shape) or arg.shape[arg_idx] == 1:
-    return
-
-  # Found corresponding arg dim to mark dynamic.
-  assert arg.shape[arg_idx] == like.shape[idx], "bound dims mismatch"
-  print(
-      f">>>> Marking dependent arg dim {arg_idx} dynamic [<={ub}] in"
-      f" {utils.InputMetadata(arg)} (mode={mode.value})",
-      flush=True,
-  )
-  _mark_tensor_dynamic(arg, arg_idx, 2, ub, mode=mode)
-
-
 class DynamicOpInfo:
   """A wrapper around OpInfo that supports bounded dynamism."""
 
@@ -1458,40 +1347,6 @@ class DynamicOpInfo:
     except _UNTRACEABLE_FAKE_OP_EXCEPTIONS:
       return ()
 
-  def _mark_single_dim(
-      self,
-      target: TensorDim,
-      input_value: torch.Tensor | Sequence[torch.Tensor],
-      args: Sequence[Any],
-      mode: DynamismMode = DynamismMode.EAGER,
-      kwargs: Mapping[str, Any] | None = None,
-  ) -> None:
-    """Marks `target` in `input_value` and coupled dimensions on dependent args.
-
-    Args:
-      target: `TensorDim` identifying which tensor in `input_value` and which
-        0-based dimension on that tensor to mark dynamic.
-      input_value: Primary tensor or sequence of tensors passed to the op.
-      args: Additional positional arguments whose corresponding dimensions
-        should also be marked dynamic.
-      mode: Dynamism execution mode (`EAGER` or `COMPILE`).
-      kwargs: Optional keyword arguments passed to the op (used by adapters such
-        as `SdpaDynamicOpInfo` to mark keyword tensor arguments).
-    """
-    target_tensor = _resolve_input_tensor(input_value, target.tensor_index)
-    idx = target.dim
-    input_value_str = utils.get_tensor_summary(target_tensor, data=False)
-    ub = target_tensor.shape[idx] + 10
-    print(
-        f">>>> Marking dim {idx} dynamic [<={ub}] in {input_value_str}"
-        f" (mode={mode.value})",
-        flush=True,
-    )
-    _mark_tensor_dynamic(target_tensor, idx, 2, ub, mode=mode)
-    self._mark_dependent_arg_dynamic(
-        args, target_tensor, idx, ub, mode=mode, kwargs=kwargs
-    )
-
   def mark_dynamic(
       self,
       input_value: torch.Tensor | Sequence[torch.Tensor],
@@ -1508,7 +1363,7 @@ class DynamicOpInfo:
       mode: Dynamism execution mode (`EAGER` or `COMPILE`).
       kwargs: Optional keyword arguments passed to the op.
       plan: Explicit `DynamicMarkingPlan` specifying which dimensions to mark
-        dynamic. When `None`, marks the first candidate `TensorDim`.
+        dynamic. When `None`, marks only the first candidate `TensorDim`.
 
     Raises:
       ValueError: If `plan is None` and no candidate dynamic dimensions exist.
@@ -1523,6 +1378,7 @@ class DynamicOpInfo:
       plan = DynamicMarkingPlan(
           label=_format_plan_label((chosen,)),
           tensor_dims=(chosen,),
+          coupled_dims=(chosen,),
       )
     logging.debug(
         "[DynamicOpInfo] mark_dynamic(%s, plan=%s, %s, %s, mode=%s)",
@@ -1532,132 +1388,132 @@ class DynamicOpInfo:
         utils.InputMetadata(args),
         mode,
     )
-    if plan.coupled_dims:
-      op_args = _OpArgs(input_value, tuple(args), kwargs or {})
-      tensors = _collect_tensors(op_args)
-      for coupled in plan.coupled_dims:
-        tensor = tensors[coupled.tensor_index]
-        tensor_str = utils.get_tensor_summary(tensor, data=False)
-        ub = tensor.shape[coupled.dim] + 10
-        bound_str = f" [<={ub}]" if mode == DynamismMode.EAGER else ""
-        print(
-            f">>>> Marking tensor[{coupled.tensor_index}] dim"
-            f" {coupled.dim} dynamic{bound_str} in {tensor_str}"
-            f" (mode={mode.value})",
-            flush=True,
-        )
-        _mark_tensor_dynamic(tensor, coupled.dim, 2, ub, mode=mode)
-    else:
-      for target in plan.tensor_dims:
-        self._mark_single_dim(
-            target, input_value, args, mode=mode, kwargs=kwargs
-        )
-
-  def _mark_dependent_arg_dynamic(
-      self,
-      args: Sequence[Any],
-      like: torch.Tensor,
-      idx: int,
-      ub: int,
-      mode: DynamismMode = DynamismMode.EAGER,
-      kwargs: Mapping[str, Any] | None = None,
-  ):
-    """Marks dependent dims of a bounded dimension as dynamic."""
-    # No dependent args to mark.
-    del like, idx, ub, mode, kwargs
-    logging.debug(
-        "[DynamicOpInfo] _mark_dependent_arg_dynamic %s %s",
-        self.op_info.name,
-        utils.InputMetadata(args),
-    )
-    return
-
-
-class BinaryElementwiseDynamicOpInfo(DynamicOpInfo):
-  """A wrapper around OpInfo that supports bounded dynamism."""
-
-  @staticmethod
-  def adapter_supports_op(op_info: core.OpInfo):
-    """Method to declare ops supported by this adapter."""
-
-    additional_binary_ops = [
-        "__lshift__",
-        "__rshift__",
-        "_log_softmax_backward_data",
-        "_masked_softmax",
-        "_softmax_backward_data",
-        "equal",
-    ]
-    return (
-        isinstance(op_info, core.BinaryUfuncInfo)
-        or op_info.name in additional_binary_ops
-    )
-
-  def _mark_dependent_arg_dynamic(
-      self,
-      args: Sequence[Any],
-      like: torch.Tensor,
-      idx: int,
-      ub: int,
-      mode: DynamismMode = DynamismMode.EAGER,
-      kwargs: Mapping[str, Any] | None = None,
-  ):
-    """Mark the args of a binary elementwise op as dynamic."""
-    del kwargs
-    rhs = args[0]
-    if isinstance(rhs, torch.Tensor):
-      _mark_numpy_broadcastable_arg_dynamic(rhs, like, idx, ub, mode=mode)
-
-
-class TernaryElementwiseDynamicOpInfo(DynamicOpInfo):
-  """A wrapper around OpInfo that supports bounded dynamism."""
-
-  ternary_elementwise_ops = {
-      "_masked_softmax_backward",
-      "addcdiv",
-      "addcmul",
-      "clamp",
-      "lerp",
-      "masked_fill",
-      "where",
-  }
-
-  @staticmethod
-  def adapter_supports_op(op_info: core.OpInfo):
-    """Method to declare ops supported by this adapter."""
-
-    return (
-        op_info.name in TernaryElementwiseDynamicOpInfo.ternary_elementwise_ops
-    )
-
-  def _mark_dependent_arg_dynamic(
-      self,
-      args: Sequence[Any],
-      like: torch.Tensor,
-      idx: int,
-      ub: int,
-      mode: DynamismMode = DynamismMode.EAGER,
-      kwargs: Mapping[str, Any] | None = None,
-  ):
-    """Mark the args of a ternary elementwise op as dynamic."""
-    del kwargs
-    if len(args) >= 1 and isinstance(args[0], torch.Tensor):
-      _mark_numpy_broadcastable_arg_dynamic(args[0], like, idx, ub, mode=mode)
-    if len(args) >= 2 and isinstance(args[1], torch.Tensor):
-      _mark_numpy_broadcastable_arg_dynamic(args[1], like, idx, ub, mode=mode)
+    tensors = _collect_tensors(_OpArgs(input_value, tuple(args), kwargs or {}))
+    for coupled in plan.coupled_dims:
+      tensor = tensors[coupled.tensor_index]
+      tensor_str = utils.get_tensor_summary(tensor, data=False)
+      ub = tensor.shape[coupled.dim] + 10
+      bound_str = f" [<={ub}]" if mode == DynamismMode.EAGER else ""
+      print(
+          f">>>> Marking tensor[{coupled.tensor_index}] dim"
+          f" {coupled.dim} dynamic{bound_str} in {tensor_str}"
+          f" (mode={mode.value})",
+          flush=True,
+      )
+      _mark_tensor_dynamic(tensor, coupled.dim, 2, ub, mode=mode)
 
 
 class ForEachDynamicOpInfo(DynamicOpInfo):
-  """A wrapper around OpInfo that supports bounded dynamism."""
+  """A wrapper around foreach OpInfos that marks several list elements dynamic.
 
-  # Max number of inputs in list to mark as dynamic (slow to run)
-  max_dynamic_args = 3
+  Foreach ops apply the same op to element `i` of every tensor-list argument,
+  so the dimensions to mark together follow from the op's structure: a
+  dimension of input element `i` is coupled with the matching (NumPy
+  broadcasting) dimension of element `i` of every other tensor list. Plans are
+  derived from this structure instead of `FakeTensor` tracing, because tracing
+  foreach ops on CPU specializes all dimensions for some dtypes (e.g., float16
+  or integer inputs), which the TPU kernels do not.
+  """
+
+  # Max number of list elements to mark dynamic in the plan, to bound test
+  # time and keep the plan representative.
+  max_dynamic_tensors = 3
 
   @staticmethod
   def adapter_supports_op(op_info: core.OpInfo):
     """Method to declare ops supported by this adapter."""
 
     return isinstance(op_info, core.ForeachFuncInfo)
+
+  def get_candidate_dims(
+      self,
+      input_value: torch.Tensor | Sequence[torch.Tensor],
+      args: Sequence[Any],
+  ) -> Sequence[TensorDim]:
+    """Returns the first candidate dimension of each eligible list element.
+
+    Args:
+      input_value: Sequence of primary input tensors passed to the foreach op.
+      args: Additional positional arguments (scalars or tensor sequences).
+
+    Returns:
+      Strictly ascending `TensorDim` candidates, one per eligible element of
+      `input_value`, for at most `max_dynamic_tensors` elements.
+    """
+    if isinstance(input_value, torch.Tensor):
+      return super().get_candidate_dims(input_value, args)
+    candidates: list[TensorDim] = []
+    for tensor_index, value in enumerate(input_value):
+      if len(candidates) >= self.max_dynamic_tensors:
+        break
+      if _should_skip_input_marking(self.op_info, value):
+        continue
+      dims = self.dynamic_dimension_candidates(value, args)
+      candidates.append(TensorDim(tensor_index=tensor_index, dim=dims[0]))
+    return candidates
+
+  def _coupled_dims(
+      self,
+      candidate: TensorDim,
+      op_args: _OpArgs,
+  ) -> tuple[TensorDim, ...]:
+    """Returns `candidate` and the matching dims of the other tensor lists.
+
+    Args:
+      candidate: A dimension of an element of the primary input list.
+      op_args: Operator inputs.
+
+    Returns:
+      Sorted `TensorDim`s, indexed like `_collect_tensors`, that must be marked
+      dynamic together with `candidate`.
+    """
+    # The input list's tensors come first in `_collect_tensors`, so the
+    # candidate's tensor index is also its element index `i` in the input list,
+    # which a foreach op pairs with element `i` of every other tensor list.
+    element_index = candidate.tensor_index
+    primary = op_args.input_value[element_index]
+    num_elements = len(op_args.input_value)
+
+    # Flatten the inputs in the same order as `_collect_tensors`, keeping each
+    # leaf's path: the keys that index it from the root tuple. For example, the
+    # path `(SequenceKey(1), SequenceKey(0), SequenceKey(2))` is `args[0][2]`:
+    #   - `path[0]` selects the input part (`input_value`, `args`, or `kwargs`).
+    #   - The middle keys select the argument (a `SequenceKey` position in
+    #     `args` or a `MappingKey` name in `kwargs`).
+    #   - `path[-1]` is the leaf's element index in its containing list.
+    leaves, _ = _pytree.tree_flatten_with_path(
+        (op_args.input_value, op_args.args, _normalize_kwargs(op_args.kwargs))
+    )
+    tensor_leaves = [
+        (path, leaf) for path, leaf in leaves if isinstance(leaf, torch.Tensor)
+    ]
+    input_value_key = _pytree.SequenceKey(0)
+    paired_element_key = _pytree.SequenceKey(element_index)
+
+    coupled = [candidate]
+    for tensor_index, (path, tensor) in enumerate(tensor_leaves):
+      # Other elements of the input list are independent of the candidate.
+      if path[0] == input_value_key:
+        continue
+      # Tensors passed directly in `args` or `kwargs` (path `(part, argument)`)
+      # are broadcast to every element, so they stay static.
+      if len(path) < 3:
+        continue
+      element_key, list_path = path[-1], path[:-1]
+      # Keep only element `i` of lists with one element per input element.
+      if (
+          element_key != paired_element_key
+          or _list_length(op_args, list_path) != num_elements
+      ):
+        continue
+      # Find the matching dim using NumPy broadcasting rules (shapes align from
+      # the right), skipping dims that broadcast (size 1) or don't exist.
+      dim = candidate.dim - primary.ndim + tensor.ndim
+      if 0 <= dim < tensor.ndim and (
+          tensor.shape[dim] == primary.shape[candidate.dim]
+      ):
+        coupled.append(TensorDim(tensor_index=tensor_index, dim=dim))
+    return tuple(sorted(coupled))
 
   def generate_exhaustive_marking_plans(
       self,
@@ -1667,121 +1523,60 @@ class ForEachDynamicOpInfo(DynamicOpInfo):
       kwargs: Mapping[str, Any] | None = None,
       op_func: Callable[..., Any] | None = None,
   ) -> Sequence[DynamicMarkingPlan]:
-    """Overrides `DynamicOpInfo.generate_exhaustive_marking_plans` for foreach.
+    """Generates a single plan marking several list elements dynamic together.
 
-    Foreach ops operate on heterogeneous tensor lists and delegate per-element
-    dimension selection to `ForEachDynamicOpInfo.mark_dynamic`, so this override
-    emits at most one `"foreach"` sentinel plan while keeping the base class
-    method name and `Sequence[DynamicMarkingPlan]` return type for polymorphic
-    dispatch via `DynamicOpInfo.get(op_info)`.
+    The per-element math of foreach ops is covered by the tests of the
+    corresponding base ops, so a single plan suffices to exercise what is
+    foreach-specific: one multi-output module over several independently
+    bounded elements, their coupling to the other tensor lists, and the
+    foreach dtype promotion and in-place dispatch paths.
 
     Args:
       input_value: Sequence of primary input tensors passed to the foreach op.
-      args: Additional positional arguments (scalars or sequences of tensors).
-      mode: Dynamism execution mode (`EAGER` or `COMPILE`), accepted to match
-        the `DynamicOpInfo` base signature.
-      kwargs: Optional keyword arguments, accepted to match the `DynamicOpInfo`
-        base signature.
-      op_func: Optional op variant callable, accepted to match the
-        `DynamicOpInfo` base signature.
+      args: Remaining positional arguments passed to the op.
+      mode: Unused; the plan marks at most one dim per tensor, which every mode
+        supports.
+      kwargs: Optional keyword arguments passed to the op.
+      op_func: Unused; plans are derived without tracing the op.
 
     Returns:
-      `(DynamicMarkingPlan(label="foreach"),)` if `input_value` has at least one
-      candidate dynamic dimension, or `()` otherwise.
+      A single plan marking all candidate dimensions and their coupled dims, or
+      `()` if there are no candidates.
     """
-    del mode, kwargs, op_func  # Accepted to match DynamicOpInfo signature.
-    if not self.get_candidate_dims(input_value, args):
+    del mode, op_func  # Unused.
+    if isinstance(input_value, torch.Tensor):
       return ()
-    return (DynamicMarkingPlan(label="foreach"),)
-
-  def mark_dynamic(
-      self,
-      input_value: torch.Tensor | Sequence[torch.Tensor],
-      args: Sequence[Any],
-      mode: DynamismMode = DynamismMode.EAGER,
-      kwargs: Mapping[str, Any] | None = None,
-      plan: DynamicMarkingPlan | None = None,
-  ):
-    """Overrides `DynamicOpInfo.mark_dynamic` for foreach tensor-list inputs.
-
-    Args:
-      input_value: Sequence of primary input tensors passed to the foreach op.
-      args: Additional positional arguments (scalar or per-element tensor
-        sequences).
-      mode: Dynamism execution mode (`EAGER` or `COMPILE`).
-      kwargs: Optional keyword arguments, accepted to match the `DynamicOpInfo`
-        base signature for polymorphic dispatch via `DynamicOpInfo.get`.
-      plan: Optional `DynamicMarkingPlan` (e.g., the `"foreach"` sentinel plan),
-        accepted to match the `DynamicOpInfo` base signature.
-    """
-    del kwargs, plan  # Unused; accepted to match DynamicOpInfo base signature.
-    # Split the inputs into their logical units for marking dynamic.
-    # Options are:
-    #   - foreach_add(list, [scalar|tensor])
-    #   - foreach_add(list, [[arg0s], [args1s], ...])
-
-    logging.debug(
-        "[ForEachDynamicOpInfo] mark_dynamic(%s, %s, %s, mode=%s)",
-        self.op_info.name,
-        utils.InputMetadata(input_value),
-        utils.InputMetadata(args),
-        mode,
+    candidates = tuple(self.get_candidate_dims(input_value, args))
+    if not candidates:
+      return ()
+    op_args = _OpArgs(input_value, tuple(args), kwargs or {})
+    coupled_dims: set[TensorDim] = set()
+    for candidate in candidates:
+      coupled_dims.update(self._coupled_dims(candidate, op_args))
+    return (
+        DynamicMarkingPlan(
+            label=_format_plan_label(candidates),
+            tensor_dims=candidates,
+            coupled_dims=tuple(sorted(coupled_dims)),
+        ),
     )
-    n_dynamic = 0
-    for idx, value in enumerate(input_value):
-      # If args not a list, no need to mark anything dependent dynamic
-      if _should_skip_input_marking(self.op_info, value):
-        continue
 
-      # For test speed, limit number of dynamic args.
-      if n_dynamic > self.max_dynamic_args:
-        break
-      n_dynamic += 1
 
-      # foreach_add(list, scalar)
-      if (
-          not args
-          or not isinstance(args, (list, tuple))
-          or not isinstance(args[0], (list, tuple))
-      ):
-        super().mark_dynamic(value, [], mode=mode)
-        continue
-
-      # Binary ops expect len(args) == 1
-      if self.op_info.name in foreach_binops:
-        rhs_vals = args[0]
-        BinaryElementwiseDynamicOpInfo(self.op_info).mark_dynamic(
-            value, (rhs_vals[idx],), mode=mode
-        )
-        continue
-
-      # Ternary ops expect len(args) == 2
-      base_op_name = self.op_info.name.split("_foreach_")[1]
-      if self.op_info.name in foreach_ternary_ops or (
-          base_op_name
-          in TernaryElementwiseDynamicOpInfo.ternary_elementwise_ops
-      ):
-        rhs_vals = args[0] if len(args) >= 1 else None
-        ehs_vals = args[1] if len(args) >= 2 else None
-        rhs_arg = (
-            rhs_vals[idx] if isinstance(rhs_vals, (list, tuple)) else rhs_vals
-        )
-        ehs_arg = (
-            ehs_vals[idx] if isinstance(ehs_vals, (list, tuple)) else ehs_vals
-        )
-        TernaryElementwiseDynamicOpInfo(self.op_info).mark_dynamic(
-            value,
-            (rhs_arg, ehs_arg),
-            mode=mode,
-        )
-        continue
-
-      # Not binary or ternary, no dependent args.
-      super().mark_dynamic(value, [], mode=mode)
-      logging.debug(
-          "[ForEachDynamicOpInfo] no dependent args %s",
-          utils.InputMetadata(args),
-      )
+def _list_length(op_args: _OpArgs, path: Sequence[Any]) -> int | None:
+  """Returns the length of the sequence at `path` in `op_args`, if any."""
+  node: Any = (
+      op_args.input_value,
+      op_args.args,
+      _normalize_kwargs(op_args.kwargs),
+  )
+  for key in path:
+    if isinstance(key, _pytree.SequenceKey):
+      node = node[key.idx]
+    elif isinstance(key, _pytree.MappingKey):
+      node = node[key.key]
+    else:
+      return None
+  return len(node) if isinstance(node, (list, tuple)) else None
 
 
 class ConvolutionDynamicOpInfo(DynamicOpInfo):
