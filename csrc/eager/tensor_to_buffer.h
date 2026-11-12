@@ -18,10 +18,13 @@
 #define TORCH_TPU_CSRC_EAGER_TENSOR_TO_BUFFER_H_
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <vector>
 
 #include "ATen/core/ATen_fwd.h"
+#include "absl/base/nullability.h"
+#include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
@@ -29,6 +32,7 @@
 #include "c10/core/Device.h"
 #include "c10/core/Storage.h"
 #include "c10/util/Optional.h"
+#include "csrc/eager/current_stream.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/device_buffer_utils.h"
 #include "csrc/eager/structured_log_buffer.h"
@@ -195,11 +199,70 @@ bool IsFullStorageReinterpretView(const at::Tensor& tensor,
 absl::Status AssignBufferAsStorageBase(DeviceBufferRef new_base,
                                        const at::Tensor& tensor);
 
+// A tensor storage holding a buffer produced during graph capture.
+struct CapturedStorageWrite {
+  c10::Storage storage;
+  // The DeviceBufferRef held by `storage` at the end of capture.
+  DeviceBufferRef final_buffer;
+  // True if `storage` was created during capture.
+  bool created = false;
+};
+
+// Summary of the tensor storages read or written during a graph capture.
+struct CapturedGraphStorages {
+  // Maps each placeholder buffer, installed on the first read of a storage
+  // that existed before capture, to that storage.
+  absl::flat_hash_map<DeviceBufferRef, c10::Storage> placeholder_to_storage;
+  // Storages that existed before capture and were written during capture,
+  // and storages created during capture that are still alive.
+  std::vector<CapturedStorageWrite> writes;
+};
+
+// Tracks the tensor storages that a graph capture reads and writes on the
+// thread that owns the capture.
+struct GraphCaptureStorageState;
+
+// Begins tracking the tensor storages that the current thread reads and writes
+// for the `torch.accelerator.Graph` capture on `capture_stream`, which the
+// current thread owns. The caller keeps the returned state alive until
+// EndGraphCaptureStorageTracking().
+//
+// While tracking, the first read of a storage that existed before capture
+// replaces its buffer with a placeholder, so that the captured graph reads the
+// storage's contents at replay time instead of baking in its current value.
+// Every storage accessed or created during capture is kept alive until
+// tracking ends.
+[[nodiscard]] absl_nonnull std::shared_ptr<GraphCaptureStorageState>
+BeginGraphCaptureStorageTracking(DeviceStreamId capture_stream);
+
+// Ends the tracking of tensor storages with `state`, restores the original
+// buffers of the storages that existed before capture, and returns the
+// captured storages. Stops tracking on the current thread if the current
+// thread tracks storages with `state`.
+CapturedGraphStorages EndGraphCaptureStorageTracking(
+    GraphCaptureStorageState& state);
+
+// Replaces the buffers of storages created during capture that still hold a
+// captured DeferredOp or placeholder with empty buffers, so that they remain
+// readable before the first replay. Must be called after the captured
+// DeferredOps have been extracted from the capture stream.
+absl::Status ClearCapturedDeferredStorages(
+    const CapturedGraphStorages& captured);
+
+// Replaces the base DeviceBufferRef of `storage` with `buffer`, without moving
+// any data. Requires `buffer` to have the same size in bytes as the current
+// base buffer of `storage`.
+absl::Status AssignBufferToStorage(DeviceBufferRef buffer,
+                                   const c10::Storage& storage);
+
 // Returns the C10 allocator singleton for TPU.
 // Not to be confused with TpuPinnedAllocator (see host_allocator.h) which is
 // the host-side allocator; this allocator is for device-side memory that is
 // managed by the TPU backend.
 c10::Allocator* GetTpuAllocator();
+
+// Allocates a fresh non-zero memory pool ID for `torch.accelerator.Graph`.
+[[nodiscard]] c10::MempoolId_t AllocateGraphMempoolId();
 
 // Registers the TpuAllocator as the allocator for the PrivateUse1 device,
 // and the TpuPinnedAllocator as the pinned host allocator.
