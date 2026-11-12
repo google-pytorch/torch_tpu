@@ -415,6 +415,13 @@ static absl::StatusOr<bool> SetTpuOptions(xla::CompileOptions& options) {
             // Important: keep the keys sorted alphabetically - the override
             // merging logic relies on this.
             // go/keep-sorted start
+            // XLA assigns each HBM tuple index table (such as async
+            // copy-start/done state for VMEM prefetching) its own non-reusable
+            // BufferAllocation. Aligning program HBM allocations to 1 KiB
+            // instead of 16 KiB avoids 16x alignment fragmentation across
+            // hundreds or thousands of async copies while remaining a multiple
+            // of TPU HBM word sizes across generations.
+            {"xla_jf_program_hbm_alignment_in_kib", int64_t{1}},
             // Avoid overheads associated with fingerprinting XLA inputs to
             // attempt looking up feedback-directed optimization profile data
             // that is unlikely to be available.

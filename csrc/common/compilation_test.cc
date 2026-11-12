@@ -16,6 +16,7 @@
 
 #include "csrc/common/compilation.h"
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
@@ -79,6 +80,9 @@ TEST_F(MakeCompilerOptionsTest, DefaultOptionsInEagerMode) {
   EXPECT_EQ(options->executable_build_options.optimization_level(),
             xla::ExecutionOptions::EFFORT_O1);
   EXPECT_THAT(options->env_option_overrides,
+              Contains(Pair("xla_jf_program_hbm_alignment_in_kib",
+                            xla::CompileOptions::OptionOverride(int64_t{1}))));
+  EXPECT_THAT(options->env_option_overrides,
               Contains(Pair("xla_tpu_autofdo",
                             xla::CompileOptions::OptionOverride(false))));
   EXPECT_THAT(options->env_option_overrides,
@@ -92,6 +96,9 @@ TEST_F(MakeCompilerOptionsTest, DefaultOptionsInTorchCompileMode) {
       GetCompileOptions(CompilationMode::kFastRuntime);
   EXPECT_EQ(options->executable_build_options.optimization_level(),
             xla::ExecutionOptions::EFFORT_UNKNOWN);
+  EXPECT_THAT(options->env_option_overrides,
+              Contains(Pair("xla_jf_program_hbm_alignment_in_kib",
+                            xla::CompileOptions::OptionOverride(int64_t{1}))));
   EXPECT_THAT(options->env_option_overrides,
               Contains(Pair("xla_tpu_autofdo",
                             xla::CompileOptions::OptionOverride(false))));
@@ -116,6 +123,22 @@ TEST_F(MakeCompilerOptionsTest, CompilerOptionOverrides) {
         GetCompileOptions(CompilationMode::kFastCompile);
     EXPECT_EQ(options->executable_build_options.optimization_level(),
               xla::ExecutionOptions::EFFORT_O2);
+  }
+
+  {
+    ScopedCompilerOptionOverrides overrides(
+        {{"xla_jf_program_hbm_alignment_in_kib", "16"}});
+    UniqueCompileOptions options =
+        GetCompileOptions(CompilationMode::kFastCompile);
+    EXPECT_THAT(
+        options->env_option_overrides,
+        ElementsAre(
+            Pair("xla_jf_program_hbm_alignment_in_kib",
+                 xla::CompileOptions::OptionOverride(std::string("16"))),
+            Pair("xla_tpu_autofdo", xla::CompileOptions::OptionOverride(false)),
+            Pair("xla_tpu_vmem_scavenging_mode",
+                 xla::CompileOptions::OptionOverride(
+                     std::string("SAFE_IFF_KERNEL_REQUIRED")))));
   }
 }
 
