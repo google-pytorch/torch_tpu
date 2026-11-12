@@ -674,9 +674,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "async_compile_options_test",
     srcs = ["async_compile_options_test.py"],
-    env = {
-        "TORCH_DEVICE_BACKEND_AUTOLOAD": "0",
-    },
+    autoload = False,
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
