@@ -32,7 +32,7 @@ It takes no command-line arguments and requires following environment variables:
 The test runner exits with 0 on success, and non-zero on failure.
 """
 
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 import os
 import pathlib
 import runpy
@@ -57,6 +57,15 @@ _TORCH_TEST_MODULE_ENV_VAR: Final = "TORCH_TPU_INTERNAL_TORCH_TEST_MODULE"
 # newly introduced accelerator testing APIs.
 _MINIMAL_TORCH_VERSION: Final = "2.14"
 
+# Capability map queried by `@requires_capabilities(...)` in upstream tests.
+# Only declare capabilities supported on TPU (`True`) so capability-gated tests
+# execute instead of failing with `AssertionError`; omit unsupported
+# capabilities so new capability-gated tests fail loudly until explicitly
+# triaged in `torch_test_configs.py` rather than being silently skipped.
+_TPU_CAPABILITIES: Final[Mapping[str, Callable[[], bool]]] = {
+    "attention.flex_attention": lambda: True,
+}
+
 
 def _set_private_use1_test_configs(test_module: str) -> None:
   """Declares TorchTPU configuration on PrivateUse1TestBase per test module."""
@@ -73,6 +82,7 @@ def _set_private_use1_test_configs(test_module: str) -> None:
   # Resolve the base's device type ("tpu") up front so every generated class
   # has "TPU" suffix.
   base.setUpClass()
+  base._capabilities = classmethod(lambda cls: dict(_TPU_CAPABILITIES))  # pylint: disable=protected-access
   base.set_test_configs(
       op_overrides=torch_test_configs.OP_OVERRIDES.get(test_module),
       test_exclusions=torch_test_configs.TEST_EXCLUSIONS.get(test_module),
