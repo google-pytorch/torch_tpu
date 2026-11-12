@@ -52,6 +52,7 @@
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/eager_mode.h"
 #include "csrc/eager/events_queue.h"
+#include "csrc/eager/graph_capture_state.h"
 #include "csrc/eager/materialize.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/structured_log_buffer.h"
@@ -264,6 +265,11 @@ absl::Status DeviceGeneratorState::MaybeMaterializeDeviceStateTensor(
     // materialization is possible.
     return absl::OkStatus();
   }
+  if (IsCurrentThreadCapturingGraph()) {
+    // Likewise, nothing can be materialized while the current thread captures
+    // a graph: only the replays of the graph compute the state.
+    return absl::OkStatus();
+  }
 
   // Materialize if:
   // - force_materialization is true, or
@@ -300,6 +306,8 @@ absl::Status DeviceGeneratorState::SetDeviceStateTensor(
 
 absl::Status DeviceGeneratorState::WriteStateToDevice(uint64_t seed,
                                                       uint64_t offset) {
+  TT_RET_CHECK(!IsCurrentThreadCapturingGraph(), error::kFailedPrecondition)
+      << "random number generation is not supported while capturing a graph";
   TT_ASSIGN_OR_RETURN(
       auto new_rng_state,
       CreateDeviceRngStateTensor(device_state_tensor_.device(), seed, offset));
@@ -385,6 +393,8 @@ at::Generator& DeviceGenerators::GetDefaultGenerator(at::DeviceIndex idx) {
                << static_cast<int>(idx);
   idx = NormalizeDeviceIndex(idx);
 
+  TT_CHECK_THROW(!IsCurrentThreadCapturingGraph(), error::kFailedPrecondition)
+      << "random number generation is not supported while capturing a graph";
   if (GetEagerMode() == EagerMode::kInternalCompileFxGraph) {
     const auto it = GetExportModeDefaultGenerators().find(idx);
     TT_CHECK_THROW(it != GetExportModeDefaultGenerators().end(),
@@ -525,6 +535,10 @@ void EagerModeDeviceGeneratorImpl::set_offset(uint64_t offset) {
   // set_offset() is invoked by PyTorch and behaves like an op.
   TT_KERNEL(OpName::kRngSetOffset, _,
             (IgnoreInCacheKey(offset, "delegates to UpdateRngOffset()")), {
+              TT_CHECK_THROW(!IsCurrentThreadCapturingGraph(),
+                             error::kFailedPrecondition)
+                  << "cannot set the offset of a generator while capturing a "
+                     "graph";
               TT_ASSIGN_OR_THROW(
                   auto rng_state_buffer,
                   UpdateDeviceRngOffset(state_->DeviceStateTensor(), offset));
