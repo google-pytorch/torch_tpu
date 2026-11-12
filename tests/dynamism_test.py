@@ -1524,6 +1524,28 @@ class DynamismTest(seed_test_utils.RepeatableTest):
       self.assertEqual(act_dynamism_info[0].lower_bound, 2)
       self.assertEqual(act_dynamism_info[0].upper_bound, 3)
 
+  @parameterized.named_parameters(
+      ("zeros_like_direct", lambda x: torch.zeros_like(x)),
+      ("ones_like_direct", lambda x: torch.ones_like(x)),
+      ("zeros_like_device_str", lambda x: torch.zeros_like(x, device="tpu")),
+      (
+          "ones_like_deferred_chain",
+          lambda x: torch.ones_like(x.sum(-1, keepdim=True)),
+      ),
+  )
+  def test_zeros_and_ones_like_preserve_bounded_dynamism(self, like_fn) -> None:
+    def mark_dynamic(tensor: torch.Tensor) -> None:
+      dynamism.mark_dynamic(tensor, 0, 2, 10)
+
+    for rows in (4, 7):
+      input_tensor = torch.randn(rows, 5, dtype=torch.float32)
+      act = self._run_bounded_dynamism_test(like_fn, mark_dynamic, input_tensor)
+      act_dynamism_info = dynamism.get_dynamism_info(act)
+      self.assertLen(act_dynamism_info, 1)
+      self.assertEqual(act_dynamism_info[0].dimension, 0)
+      self.assertEqual(act_dynamism_info[0].lower_bound, 2)
+      self.assertEqual(act_dynamism_info[0].upper_bound, 10)
+
 
 if __name__ == "__main__":
   absltest.main()
