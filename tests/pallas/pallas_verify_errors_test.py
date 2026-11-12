@@ -153,6 +153,7 @@ class PallasVerifyErrorsTest(seed_test_utils.RepeatableTest):
         torch.tpu.TpuVersion.V5E,
     )
     self.assertIs(findings.parse_tpu_version("TPU7x"), torch.tpu.TpuVersion.V7)
+    self.assertIs(findings.parse_tpu_version("TPU 7x"), torch.tpu.TpuVersion.V7)
     self.assertIs(
         findings.parse_tpu_version("TPU v7x"), torch.tpu.TpuVersion.V7
     )
@@ -163,18 +164,24 @@ class PallasVerifyErrorsTest(seed_test_utils.RepeatableTest):
         findings.parse_tpu_version("Trillium"), torch.tpu.TpuVersion.V6E
     )
     self.assertIs(findings.parse_tpu_version("TPU8i"), torch.tpu.TpuVersion.V8I)
+    self.assertIs(
+        findings.parse_tpu_version("TPU 8i"), torch.tpu.TpuVersion.V8I
+    )
     self.assertIs(findings.parse_tpu_version("TPU8t"), torch.tpu.TpuVersion.V8T)
+    self.assertIs(
+        findings.parse_tpu_version("TPU 8t"), torch.tpu.TpuVersion.V8T
+    )
     self.assertIsNone(findings.parse_tpu_version("custom_tpu"))
     self.assertEqual(
         findings.normalize_tpu_version(torch.tpu.TpuVersion.V7), "TPU v7"
     )
-    self.assertEqual(
-        findings.normalize_tpu_version(" custom_tpu "), "custom_tpu"
-    )
+    with self.assertRaisesRegex(ValueError, "unrecognized TPU version"):
+      findings.normalize_tpu_version(" custom_tpu ")
     self.assertEqual(
         findings.jax_tpu_device_kind(torch.tpu.TpuVersion.V7), "TPU7x"
     )
-    self.assertEqual(findings.jax_tpu_device_kind(" custom_tpu "), "custom_tpu")
+    with self.assertRaisesRegex(ValueError, "unrecognized TPU version"):
+      findings.jax_tpu_device_kind(" custom_tpu ")
     for bad_version in ("TPU v7", "", 123):
       with self.assertRaisesRegex(TypeError, "tpu_version"):
         verifier.VerificationOptions(tpu_version=bad_version)  # type: ignore[arg-type]

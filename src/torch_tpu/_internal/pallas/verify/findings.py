@@ -73,14 +73,18 @@ _TPU_VERSION_ALIASES: dict[str, TpuVersion] = {
     "trillium": TpuVersion.V6E,
     "tpu v7": TpuVersion.V7,
     "tpu v7x": TpuVersion.V7,
+    "tpu 7x": TpuVersion.V7,
+    "tpu 7": TpuVersion.V7,
     "tpu7x": TpuVersion.V7,
     "tpu7": TpuVersion.V7,
     "v7": TpuVersion.V7,
     "v7x": TpuVersion.V7,
     "tpu v8i": TpuVersion.V8I,
+    "tpu 8i": TpuVersion.V8I,
     "tpu8i": TpuVersion.V8I,
     "v8i": TpuVersion.V8I,
     "tpu v8t": TpuVersion.V8T,
+    "tpu 8t": TpuVersion.V8T,
     "tpu8t": TpuVersion.V8T,
     "v8t": TpuVersion.V8T,
 }
@@ -93,6 +97,7 @@ _TORCH_TO_JAX_TPU_DEVICE_KIND: dict[TpuVersion, str] = {
     TpuVersion.V8I: "TPU8i",
     TpuVersion.V8T: "TPU8t",
 }
+
 
 # Default TorchTPU generation that ops without a mesh or inferred target are
 # lowered for.
@@ -118,7 +123,7 @@ def normalize_tpu_version(tpu_version: TpuVersion | str) -> str:
   parsed = parse_tpu_version(tpu_version)
   if parsed is not None:
     return parsed.value
-  return tpu_version.strip()
+  raise ValueError(f"unrecognized TPU version: {tpu_version!r}")
 
 
 def jax_tpu_device_kind(tpu_version: TpuVersion | str) -> str:
@@ -128,7 +133,7 @@ def jax_tpu_device_kind(tpu_version: TpuVersion | str) -> str:
   parsed = parse_tpu_version(tpu_version)
   if parsed is not None:
     return _TORCH_TO_JAX_TPU_DEVICE_KIND[parsed]
-  return tpu_version.strip()
+  raise ValueError(f"unrecognized TPU version: {tpu_version!r}")
 
 
 @annotations.experimental(_exp_reason("Severity"))

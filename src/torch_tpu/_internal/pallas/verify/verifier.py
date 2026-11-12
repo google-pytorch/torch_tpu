@@ -69,10 +69,12 @@ class VerificationOptions:
   Attributes:
     check_autograd: Whether to compare a registered custom backward against the
       forward kernel (FULL mode only).
-    tpu_version: TPU generation that ops without a mesh are lowered for. When
-      `None` (the default), `verify` infers the target TPU generation from the
-      kernel's bound mesh, `supported_on` predicate, SparseCore usage, or
-      documentation, falling back to `torch.tpu.TpuVersion.V7`.
+    tpu_version: TPU generation used across contract, lowering, and
+      model-checking phases. An explicit non-CPU TPU mesh on the kernel or its
+      example arguments takes precedence (since TPU lowering targets that mesh's
+      device kind); otherwise `tpu_version` is used when set, else `verify`
+      infers the generation from an ambient mesh or `supported_on` predicates,
+      falling back to `torch.tpu.TpuVersion.V7`.
   """
 
   check_autograd: bool = True
@@ -203,7 +205,7 @@ def _verify_kernel(
 ) -> findings.VerificationReport:
   """Verifies a `@jax_op` or raw JAX function."""
   effective_tpu_version = fx_verifier.infer_tpu_version(
-      target, options.tpu_version
+      target, options.tpu_version, args, kwargs
   )
   is_op = fx_verifier.extract_jax_callable(target) is not None
   reports: list[findings.VerificationReport] = []

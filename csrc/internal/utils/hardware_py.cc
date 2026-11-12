@@ -158,6 +158,12 @@ std::optional<std::string> PyGetTpuTopology(std::optional<int64_t> world_size,
   return *topology;
 }
 
+std::string SparseCoreSpecRepr(const SparseCoreSpec& spec) {
+  return absl::StrCat(
+      "SparseCoreSpec(sparse_cores_per_device=", spec.sparse_cores_per_device,
+      ", simd_width=", spec.simd_width, ")");
+}
+
 }  // namespace
 
 TT_PYBIND11_MODULE(_hardware_backend, m) {
@@ -184,11 +190,7 @@ TT_PYBIND11_MODULE(_hardware_backend, m) {
              return py::hash(
                  py::make_tuple(self.sparse_cores_per_device, self.simd_width));
            })
-      .def("__repr__", [](const SparseCoreSpec& self) {
-        return absl::StrCat("SparseCoreSpec(sparse_cores_per_device=",
-                            self.sparse_cores_per_device,
-                            ", simd_width=", self.simd_width, ")");
-      });
+      .def("__repr__", &SparseCoreSpecRepr);
 
   PyBindClass<TpuSpec>(m, "TpuSpec")
       .def(
@@ -240,11 +242,17 @@ TT_PYBIND11_MODULE(_hardware_backend, m) {
                  self.hbm_bytes_per_chip, self.bf16_flops_per_chip));
            })
       .def("__repr__", [](const TpuSpec& self) {
-        return absl::StrCat(
-            "TpuSpec(version=TpuVersion.", PyTpuVersionMemberName(self.version),
-            ", devices_per_chip=", self.devices_per_chip,
-            ", hbm_bytes_per_chip=", self.hbm_bytes_per_chip,
-            ", bf16_flops_per_chip=", self.bf16_flops_per_chip, ")");
+        const std::string sparse_core_repr =
+            self.sparse_core_spec.has_value()
+                ? absl::StrCat(", sparse_core_spec=",
+                               SparseCoreSpecRepr(*self.sparse_core_spec))
+                : std::string(", sparse_core_spec=None");
+        return absl::StrCat("TpuSpec(version=TpuVersion.",
+                            PyTpuVersionMemberName(self.version),
+                            ", devices_per_chip=", self.devices_per_chip,
+                            ", hbm_bytes_per_chip=", self.hbm_bytes_per_chip,
+                            ", bf16_flops_per_chip=", self.bf16_flops_per_chip,
+                            sparse_core_repr, ")");
       });
 
   // Keep pybind11 wrappers for the static TpuSpec singletons alive for the

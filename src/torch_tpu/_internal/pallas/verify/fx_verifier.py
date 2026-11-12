@@ -38,15 +38,15 @@ This module implements the four PyTorch-boundary verification passes used by
 
 from __future__ import annotations
 
+import collections
 from collections.abc import Callable, Iterator, Mapping, MutableMapping, MutableSequence, Sequence, Set
 import contextlib
 import dataclasses
+import dis
 import functools
-import importlib
 import inspect
 import math
 import operator
-import re
 import sys
 import types
 from typing import Any
@@ -64,7 +64,6 @@ from torch.utils import _python_dispatch
 from torch.utils import _pytree as torch_pytree
 from torch_tpu._internal.pallas import pallas as pallas_lib
 from torch_tpu._internal.pallas.verify import findings
-from torch_tpu._internal.utils import hardware
 
 _CONTRACTS = findings.Phase.CONTRACTS
 _FX_GRAPH = findings.Phase.FX_GRAPH
@@ -222,36 +221,14 @@ def _get_donated_arg_indices(
 # 2. Target TPU Generation Inference & Abstract TPU Meshes
 # ==============================================================================
 
-# All TPU generations supported by TorchTPU (`hardware.TpuSpec`), in
-# `TpuVersion` declaration order for deterministic candidate evaluation.
+# All TPU generations supported by TorchTPU, in `TpuVersion` declaration order
+# for deterministic `supported_on` predicate evaluation.
 _CANDIDATE_TPU_VERSIONS: tuple[findings.TpuVersion, ...] = tuple(
     findings.TpuVersion
 )
 
-# TPU generations whose `TpuSpec` includes SparseCore hardware.
-_SPARSE_CORE_TPU_VERSIONS: frozenset[findings.TpuVersion] = frozenset(
-    version
-    for version in findings.TpuVersion
-    if hardware.TpuSpec.for_version(version).sparse_core_spec is not None
-)
-
-_DOC_TPU_PATTERNS: tuple[tuple[re.Pattern[str], findings.TpuVersion], ...] = (
-    (re.compile(r"\btpu\s*v?8i\b", re.IGNORECASE), findings.TpuVersion.V8I),
-    (re.compile(r"\btpu\s*v?8t\b", re.IGNORECASE), findings.TpuVersion.V8T),
-    (re.compile(r"\btpu\s*v?7x?\b", re.IGNORECASE), findings.TpuVersion.V7),
-    (
-        re.compile(r"\b(?:tpu\s*v?6(?:e|\s+lite)?|trillium)\b", re.IGNORECASE),
-        findings.TpuVersion.V6E,
-    ),
-    (re.compile(r"\btpu\s*v?5p\b", re.IGNORECASE), findings.TpuVersion.V5P),
-    (
-        re.compile(r"\btpu\s*v?5(?:e|\s+lite)\b", re.IGNORECASE),
-        findings.TpuVersion.V5E,
-    ),
-)
-
-# Standard library and framework module prefixes skipped when scanning user
-# kernel modules for docstrings, comments, or `supported_on` predicates.
+# Standard library and framework module prefixes skipped when inspecting user
+# kernel modules for `supported_on` predicates.
 _SKIP_MODULE_PREFIXES = (
     "torch.",
     "torch_tpu.",
@@ -284,11 +261,18 @@ _CALLABLE_WRAPPER_ATTRS = (
 def abstract_tpu_device(tpu_version: findings.TpuVersion | str) -> Any:
   """Returns an `AbstractDevice` targeting TPU `tpu_version`."""
   jax_kind = findings.jax_tpu_device_kind(tpu_version)
+  parsed = (
+      findings.parse_tpu_version(tpu_version)
+      if isinstance(tpu_version, str)
+      else tpu_version
+  )
+  # TPU v5p exposes two TensorCores per logical device in Megacore mode.
+  num_cores = 2 if parsed is findings.TpuVersion.V5P else 1
   device_cls = jax.sharding.AbstractDevice
   if "platform" in inspect.signature(device_cls).parameters:
-    return device_cls(jax_kind, 1, "tpu")  # type: ignore[call-arg]
+    return device_cls(jax_kind, num_cores, "tpu")  # type: ignore[call-arg]
   # JAX releases up to 0.9 take no platform argument.
-  return device_cls(jax_kind, 1)  # pyrefly: ignore[missing-argument]
+  return device_cls(jax_kind, num_cores)  # pyrefly: ignore[missing-argument]
 
 
 def abstract_tpu_mesh(tpu_version: findings.TpuVersion | str) -> Any:
@@ -299,15 +283,6 @@ def abstract_tpu_mesh(tpu_version: findings.TpuVersion | str) -> Any:
       axis_types=(jax.sharding.AxisType.Auto,),
       abstract_device=abstract_tpu_device(tpu_version),
   )
-
-
-def _extract_doc_tpu_versions(text: str) -> list[findings.TpuVersion]:
-  """Extracts `TpuVersion` targets mentioned in a docstring."""
-  found: list[findings.TpuVersion] = []
-  for pattern, canonical in _DOC_TPU_PATTERNS:
-    if pattern.search(text) and canonical not in found:
-      found.append(canonical)
-  return found
 
 
 def _iter_callable_children(obj: Any) -> Iterator[Any]:
@@ -344,6 +319,10 @@ def _iter_callable_children(obj: Any) -> Iterator[Any]:
   elif isinstance(obj, functools.partial):
     yield from obj.args
     yield from (obj.keywords or {}).values()
+  elif isinstance(obj, (tuple, list, set, frozenset)):
+    yield from obj
+  elif isinstance(obj, Mapping):
+    yield from obj.values()
   elif isinstance(obj, types.FunctionType):
     for cell in obj.__closure__ or ():
       try:
@@ -354,13 +333,48 @@ def _iter_callable_children(obj: Any) -> Iterator[Any]:
       yield d
     for d in (obj.__kwdefaults__ or {}).values():
       yield d
+  elif dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+    for field in dataclasses.fields(obj):
+      try:
+        yield getattr(obj, field.name)
+      except Exception:  # pylint: disable=broad-exception-caught
+        continue
+  elif (
+      callable(obj)
+      and not isinstance(
+          obj,
+          (
+              type,
+              custom_ops.CustomOpDef,
+              pallas_lib.JaxCallable,
+              torch._ops.OpOverload,
+              torch._ops.OpOverloadPacket,
+              torch._ops.HigherOrderOperator,
+          ),
+      )
+      and hasattr(obj, "__dict__")
+      and not (getattr(type(obj), "__module__", "") or "").startswith(
+          _SKIP_MODULE_PREFIXES
+      )
+  ):
+    yield from vars(obj).values()
+
+
+def _iter_code_names(code: types.CodeType) -> Iterator[str]:
+  """Yields global names loaded via `LOAD_GLOBAL` in `code` and nested code."""
+  for instr in dis.get_instructions(code):
+    if instr.opname == "LOAD_GLOBAL" and isinstance(instr.argval, str):
+      yield instr.argval
+  for const in code.co_consts:
+    if isinstance(const, types.CodeType):
+      yield from _iter_code_names(const)
 
 
 def _collect_callable_objects(
-    op_or_fn: Any, *, max_objects: int = 64
+    op_or_fn: Any, *, max_objects: int = 96
 ) -> list[Any]:
-  """Collects reachable functions and callable wrappers starting from `op_or_fn`."""
-  queue: list[Any] = [op_or_fn]
+  """Collects reachable functions and callable wrappers from `op_or_fn`."""
+  queue: collections.deque[Any] = collections.deque([op_or_fn])
 
   leaf_types = (
       int,
@@ -376,7 +390,7 @@ def _collect_callable_objects(
   visited_objs: list[Any] = []
 
   while queue and len(visited_objs) < max_objects:
-    obj = queue.pop(0)
+    obj = queue.popleft()
     if obj is None or isinstance(obj, leaf_types):
       continue
     obj_id = id(obj)
@@ -387,12 +401,13 @@ def _collect_callable_objects(
 
     queue.extend(_iter_callable_children(obj))
 
-    # Also follow same-module helper functions and `@jax_op` globals in `co_names`.
+    # Also follow same-module helper functions and `@jax_op` globals via
+    # `LOAD_GLOBAL`.
     if isinstance(obj, types.FunctionType):
       mod_name = getattr(obj, "__module__", "") or ""
       if not mod_name.startswith(_SKIP_MODULE_PREFIXES):
         gdict = getattr(obj, "__globals__", None) or {}
-        for name in obj.__code__.co_names:
+        for name in _iter_code_names(obj.__code__):
           gval = gdict.get(name)
           if extract_jax_callable(gval) is not None or (
               isinstance(gval, (types.FunctionType, type))
@@ -406,7 +421,7 @@ def _collect_callable_objects(
 def _collect_user_modules(
     visited_objs: Sequence[Any],
 ) -> list[types.ModuleType]:
-  """Returns user-defined modules (and sibling Pallas TPU modules) for `visited_objs`."""
+  """Returns already-imported user modules (and sibling TPU modules) for `visited_objs`."""
   modules: list[types.ModuleType] = []
   seen_mod_names: set[str] = set()
   for obj in visited_objs:
@@ -433,146 +448,207 @@ def _collect_user_modules(
         continue
       seen_mod_names.add(candidate_mod)
       mod = sys.modules.get(candidate_mod)
-      if mod is None and candidate_mod.endswith(".pallas_mosaic_tpu"):
-        try:
-          mod = importlib.import_module(candidate_mod)
-        except Exception:  # pylint: disable=broad-exception-caught
-          mod = None
       if isinstance(mod, types.ModuleType):
         modules.append(mod)
   return modules
 
 
-def _collect_kernel_metadata(
+def _extract_class_supported_on(cls: type[Any]) -> Callable[[Any], Any] | None:
+  """Extracts a callable `supported_on(device)` predicate from `cls.__dict__`."""
+  if "supported_on" not in cls.__dict__:
+    return None
+  raw_sup = cls.__dict__["supported_on"]
+  if isinstance(raw_sup, staticmethod):
+    return raw_sup.__func__
+  if isinstance(raw_sup, classmethod):
+    return lambda dev, f=raw_sup.__func__, c=cls: f(c, dev)
+  if callable(raw_sup):
+    unbound_wrapper: Any = lambda dev, f=raw_sup: f(None, dev)
+    unbound_wrapper._is_unbound_instance_method = True  # pylint: disable=protected-access
+    return unbound_wrapper
+  return None
+
+
+def _collect_supported_on_predicates(
     visited_objs: Sequence[Any],
     modules: Sequence[types.ModuleType],
-) -> tuple[list[Callable[[Any], Any]], list[str], list[str]]:
-  """Extracts `(supported_on_fns, doc_texts, source_texts)` from kernel objects."""
+) -> list[Callable[[Any], Any]]:
+  """Extracts `supported_on(device)` predicate callables from kernel objects."""
   supported_on_fns: list[Callable[[Any], Any]] = []
-  doc_texts: list[str] = []
-  source_texts: list[str] = []
 
   for obj in visited_objs:
-    if not isinstance(obj, type):
+    if isinstance(obj, type):
+      cls_sup = _extract_class_supported_on(obj)
+      if cls_sup is not None:
+        supported_on_fns.append(cls_sup)
+    else:
       sup = getattr(obj, "supported_on", None)
       if callable(sup):
         supported_on_fns.append(sup)
-    mod_name = getattr(obj, "__module__", "") or ""
-    if isinstance(obj, (types.FunctionType, type)) and not mod_name.startswith(
-        _SKIP_MODULE_PREFIXES
-    ):
-      doc = inspect.getdoc(obj)
-      if doc:
-        doc_texts.append(doc)
-      try:
-        src = inspect.getsource(obj)
-        source_texts.append(src)
-      except (OSError, TypeError):
-        pass
 
+  if supported_on_fns:
+    return supported_on_fns
+
+  # Fallback when the entry point is a standalone kernel helper without its own
+  # `supported_on` attribute: inspect module-level predicates, or an unambiguous
+  # single `supported_on`-bearing class (or sibling `.pallas_mosaic_tpu` module).
   for mod in modules:
-    mod_doc = getattr(mod, "__doc__", None)
-    if isinstance(mod_doc, str) and mod_doc:
-      doc_texts.append(mod_doc)
     for fn_attr in ("_supported_on", "supported_on"):
       sup_fn = getattr(mod, fn_attr, None)
       if callable(sup_fn) and not isinstance(sup_fn, type):
         supported_on_fns.append(sup_fn)
-    for val in vars(mod).values():
-      if (
-          isinstance(val, type)
-          and getattr(val, "__module__", None) == mod.__name__
-          and "supported_on" in val.__dict__
-      ):
-        raw_sup = val.__dict__["supported_on"]
-        if isinstance(raw_sup, staticmethod):
-          supported_on_fns.append(raw_sup.__func__)
-        elif isinstance(raw_sup, classmethod):
-          supported_on_fns.append(
-              lambda dev, f=raw_sup.__func__, cls=val: f(cls, dev)
-          )
-        elif callable(raw_sup):
-          supported_on_fns.append(lambda dev, f=raw_sup: f(None, dev))
+    mod_classes = [
+        val
+        for val in vars(mod).values()
+        if isinstance(val, type)
+        and getattr(val, "__module__", None) == mod.__name__
+        and "supported_on" in val.__dict__
+    ]
+    if len(mod_classes) == 1 or mod.__name__.endswith(".pallas_mosaic_tpu"):
+      for cls in mod_classes:
+        cls_sup = _extract_class_supported_on(cls)
+        if cls_sup is not None:
+          supported_on_fns.append(cls_sup)
 
-  return supported_on_fns, doc_texts, source_texts
+  return supported_on_fns
+
+
+_ALT_JAX_TPU_DEVICE_KINDS: dict[findings.TpuVersion, tuple[str, ...]] = {
+    findings.TpuVersion.V5E: ("TPU v5e", "TPU v5 lite"),
+    findings.TpuVersion.V5P: ("TPU v5p", "TPU v5"),
+    findings.TpuVersion.V6E: ("TPU v6e", "TPU v6 lite"),
+}
+
+
+def _candidate_tpu_devices_for(version: findings.TpuVersion) -> list[Any]:
+  """Returns `AbstractDevice` variants (canonical and PJRT `lite` aliases)."""
+  kinds = _ALT_JAX_TPU_DEVICE_KINDS.get(
+      version, (findings.jax_tpu_device_kind(version),)
+  )
+  num_cores = 2 if version is findings.TpuVersion.V5P else 1
+  device_cls = jax.sharding.AbstractDevice
+  has_platform = "platform" in inspect.signature(device_cls).parameters
+  devices = []
+  for kind in kinds:
+    if has_platform:
+      devices.append(device_cls(kind, num_cores, "tpu"))  # type: ignore[call-arg]
+    else:
+      devices.append(device_cls(kind, num_cores))  # pyrefly: ignore[missing-argument]
+  return devices
 
 
 def _narrow_tpu_versions_by_predicates(
     candidates: Sequence[findings.TpuVersion],
     supported_on_fns: Sequence[Callable[[Any], Any]],
 ) -> tuple[list[findings.TpuVersion], bool]:
-  """Filters `candidates` using the first evaluable `supported_on(device)` predicate."""
+  """Intersects `candidates` across evaluable `supported_on` callables."""
   allowed = list(candidates)
+  narrowed = False
   for sup_fn in supported_on_fns:
+    is_unbound = bool(getattr(sup_fn, "_is_unbound_instance_method", False))
     matched: list[findings.TpuVersion] = []
-    evaluated = False
+    failed = False
     for version in allowed:
-      try:
-        with override_abstract_mesh(abstract_tpu_mesh(version)):
-          ok = bool(sup_fn(abstract_tpu_device(version)))
-        evaluated = True
-        if ok:
-          matched.append(version)
-      except Exception:  # pylint: disable=broad-exception-caught
-        continue
-    if evaluated and matched:
-      return matched, True
-  return allowed, False
+      ver_ok = False
+      with override_abstract_mesh(abstract_tpu_mesh(version)):
+        for dev in _candidate_tpu_devices_for(version):
+          try:
+            if bool(sup_fn(dev)):
+              ver_ok = True
+              break
+          except (AttributeError, TypeError):
+            if is_unbound:
+              # An unbound `f(None, dev)` instance method touching `self` on
+              # some TPU versions must be discarded rather than half-narrowing.
+              failed = True
+              break
+          except Exception:  # pylint: disable=broad-exception-caught
+            # Dict-lookup (`KeyError`) or value checks rejecting unsupported
+            # `device_kind` strings mean `False` for that candidate device.
+            continue
+      if failed:
+        break
+      if ver_ok:
+        matched.append(version)
+    if not failed and matched:
+      allowed = matched
+      narrowed = True
+  return allowed, narrowed
+
+
+def _mesh_tpu_version(mesh: MeshLike | None) -> findings.TpuVersion | None:
+  """Extracts a `TpuVersion` from `mesh`'s device kind if present."""
+  if mesh is None or mesh.size <= 0:
+    return None
+  dev = (
+      mesh.abstract_device
+      if isinstance(mesh, jax.sharding.AbstractMesh)
+      else mesh.devices.flat[0]
+  )
+  dev_kind = getattr(dev, "device_kind", None)
+  if isinstance(dev_kind, str) and dev_kind:
+    return findings.parse_tpu_version(dev_kind)
+  return None
+
+
+def extract_explicit_mesh_tpu_version(
+    op_or_fn: Any,
+    example_args: Sequence[Any] = (),
+    example_kwargs: Mapping[str, Any] | None = None,
+) -> findings.TpuVersion | None:
+  """Returns the TPU generation of a non-CPU TPU-kind mesh on `op_or_fn`."""
+
+  def _non_cpu_ver(mesh: MeshLike | None) -> findings.TpuVersion | None:
+    if mesh is None or mesh.size <= 0 or not is_mock_tpu_mesh(mesh):
+      return None
+    if (
+        isinstance(mesh, jax.sharding.AbstractMesh)
+        and getattr(mesh.abstract_device, "platform", None) == "cpu"
+    ):
+      return None
+    return _mesh_tpu_version(mesh)
+
+  jax_callable = extract_jax_callable(op_or_fn)
+  if jax_callable is not None:
+    jc_ver = _non_cpu_ver(jax_callable.mesh)
+    if jc_ver is not None:
+      return jc_ver
+  search_root = (
+      (op_or_fn, tuple(example_args), dict(example_kwargs or {}))
+      if example_args or example_kwargs
+      else op_or_fn
+  )
+  return _non_cpu_ver(find_function_mesh(search_root))
 
 
 def infer_explicit_tpu_version(
     op_or_fn: Any,
+    example_args: Sequence[Any] = (),
+    example_kwargs: Mapping[str, Any] | None = None,
 ) -> findings.TpuVersion | None:
-  """Returns the target `TpuVersion` inferred from `op_or_fn`, or `None`."""
+  """Returns the target `TpuVersion` inferred from `op_or_fn` and inputs, or `None`."""
   visited_objs = _collect_callable_objects(op_or_fn)
   for obj in visited_objs:
     jax_callable = extract_jax_callable(obj)
-    if (
-        jax_callable is not None
-        and jax_callable.mesh is not None
-        and jax_callable.mesh.size > 0
-    ):
-      mesh = jax_callable.mesh
-      dev = (
-          mesh.abstract_device
-          if isinstance(mesh, jax.sharding.AbstractMesh)
-          else mesh.devices.flat[0]
-      )
-      dev_kind = getattr(dev, "device_kind", None)
-      if isinstance(dev_kind, str) and dev_kind:
-        parsed = findings.parse_tpu_version(dev_kind)
-        if parsed is not None:
-          return parsed
+    if jax_callable is not None:
+      parsed = _mesh_tpu_version(jax_callable.mesh)
+      if parsed is not None:
+        return parsed
+
+  search_root = (
+      (op_or_fn, tuple(example_args), dict(example_kwargs or {}))
+      if example_args or example_kwargs
+      else op_or_fn
+  )
+  fn_mesh_version = _mesh_tpu_version(find_function_mesh(search_root))
+  if fn_mesh_version is not None:
+    return fn_mesh_version
 
   modules = _collect_user_modules(visited_objs)
-  supported_on_fns, doc_texts, source_texts = _collect_kernel_metadata(
-      visited_objs, modules
-  )
-
-  # 1. Narrow candidate TPU generations via `supported_on(device)` if present.
+  supported_on_fns = _collect_supported_on_predicates(visited_objs, modules)
   allowed, narrowed = _narrow_tpu_versions_by_predicates(
       _CANDIDATE_TPU_VERSIONS, supported_on_fns
   )
-
-  # 2. Restrict to TPU generations with SparseCore hardware if the kernel source
-  # uses SparseCore APIs.
-  if any(
-      ".sparse_core" in src or "pallas.tpu_sc" in src or "import tpu_sc" in src
-      for src in source_texts
-  ):
-    sc_allowed = [v for v in allowed if v in _SPARSE_CORE_TPU_VERSIONS]
-    if sc_allowed:
-      allowed = sc_allowed
-      narrowed = True
-
-  # 3. Prefer any TPU generation explicitly named in docstrings.
-  doc_mentions = _extract_doc_tpu_versions("\n".join(doc_texts))
-  for doc_version in doc_mentions:
-    if doc_version in allowed:
-      return doc_version
-  if doc_mentions and not narrowed:
-    return doc_mentions[0]
-
   if narrowed and allowed:
     return (
         DEFAULT_TPU_VERSION if DEFAULT_TPU_VERSION in allowed else allowed[-1]
@@ -583,25 +659,24 @@ def infer_explicit_tpu_version(
 def infer_tpu_version(
     op_or_fn: Any,
     default_version: findings.TpuVersion | None = None,
+    example_args: Sequence[Any] = (),
+    example_kwargs: Mapping[str, Any] | None = None,
 ) -> findings.TpuVersion:
-  """Infers the target `TpuVersion` from `op_or_fn` or returns the default.
+  """Infers the target `TpuVersion` from `op_or_fn` (and inputs) or returns the default.
 
   When `default_version` is explicitly provided, it is returned directly.
-  Otherwise, `op_or_fn` (along with its unwrapped callables, bound op instances,
-  and defining module) is inspected for:
+  Otherwise, `op_or_fn` and any supplied example inputs are inspected for
+  structured target metadata:
 
-  1. A bound mesh whose devices report a TPU `device_kind`.
-  2. A `supported_on(device)` predicate method or helper function.
-  3. SparseCore (`pltpu.get_tpu_info().sparse_core` or `pallas.tpu_sc`) usage,
-     which restricts candidates to TPU generations with a `sparse_core_spec`
-     (excluding `TpuVersion.V5E`).
-  4. Explicit target TPU mentions in kernel/op docstrings (such as `"TPU v8i"`,
-     `"TPU v8t"`, `"TPU v7"`, `"TPU7x"`, `"TPU v6e"`, `"Trillium"`, `"TPU v5p"`,
-     or `"TPU v5e"`).
+  1. A bound or argument mesh whose devices report a TPU `device_kind`.
+  2. Callable `supported_on(device)` predicate methods or helper functions.
 
   Args:
     op_or_fn: The `@jax_op`, JAX function, or PyTorch callable being verified.
     default_version: Explicit `TpuVersion` override, or `None` to infer.
+    example_args: Optional example positional arguments whose shardings or
+      meshes may specify a TPU generation.
+    example_kwargs: Optional example keyword arguments.
 
   Returns:
     The target `TpuVersion`, falling back to `DEFAULT_TPU_VERSION`
@@ -609,7 +684,10 @@ def infer_tpu_version(
   """
   if default_version is not None:
     return default_version
-  return infer_explicit_tpu_version(op_or_fn) or DEFAULT_TPU_VERSION
+  return (
+      infer_explicit_tpu_version(op_or_fn, example_args, example_kwargs)
+      or DEFAULT_TPU_VERSION
+  )
 
 
 # ==============================================================================
@@ -783,6 +861,8 @@ def find_function_mesh(fn: Any) -> MeshLike | None:
       return obj if obj.size > 0 else None
     if isinstance(obj, jax.sharding.NamedSharding):
       return obj.mesh if obj.mesh.size > 0 else None
+    if isinstance(obj, (jax.Array, jax.ShapeDtypeStruct)):
+      return _search(getattr(obj, "sharding", None))
 
     obj_id = id(obj)
     if obj_id in visited:
@@ -824,6 +904,27 @@ def find_function_mesh(fn: Any) -> MeshLike | None:
       found = _search(child)
       if found is not None:
         return found
+
+    if isinstance(obj, types.FunctionType):
+      mod_name = getattr(obj, "__module__", "") or ""
+      if not mod_name.startswith(_SKIP_MODULE_PREFIXES):
+        gdict = getattr(obj, "__globals__", None) or {}
+        for name in _iter_code_names(obj.__code__):
+          gval = gdict.get(name)
+          if isinstance(
+              gval,
+              (
+                  jax.sharding.Mesh,
+                  jax.sharding.AbstractMesh,
+                  jax.sharding.NamedSharding,
+              ),
+          ) or (
+              isinstance(gval, types.FunctionType)
+              and getattr(gval, "__module__", None) == mod_name
+          ):
+            found = _search(gval)
+            if found is not None:
+              return found
     return None
 
   return _search(fn) or _get_ambient_jax_mesh()
@@ -1545,7 +1646,9 @@ def verify_op_contracts(
     tpu_version: findings.TpuVersion | None = None,
 ) -> findings.VerificationReport:
   """Checks static and eager contracts on a TorchTPU Pallas custom op."""
-  resolved_tpu_version = infer_tpu_version(op_or_fn, tpu_version)
+  resolved_tpu_version = infer_tpu_version(
+      op_or_fn, tpu_version, example_args, example_kwargs
+  )
   kwargs = dict(example_kwargs or {})
   op_name = get_op_display_name(op_or_fn)
 
@@ -1981,7 +2084,9 @@ def verify_tpu_lowering(
   Returns:
     A report with a `LOWERING_FAILURE` error if lowering fails.
   """
-  resolved_tpu_version = infer_tpu_version(op_or_fn, tpu_version)
+  resolved_tpu_version = infer_tpu_version(
+      op_or_fn, tpu_version, example_args, example_kwargs
+  )
   jax_callable = extract_jax_callable(op_or_fn)
   if jax_callable is None:
     return findings.VerificationReport()

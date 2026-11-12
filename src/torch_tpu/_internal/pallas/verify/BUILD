@@ -43,7 +43,6 @@ torch_tpu_py_library(
         "//shims/jax:pallas_tpu",
         "//shims/torch:pytorch",
         "//src/torch_tpu/_internal/pallas:pallas_lib",
-        "//src/torch_tpu/_internal/utils:hardware",
         "@pypi//jax",
         "@pypi//numpy",
     ],

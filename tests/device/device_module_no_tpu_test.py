@@ -179,6 +179,179 @@ class NoTpuDeviceModuleTest(
     ):
       self.assertEqual(props.total_memory, tpu_spec.hbm_bytes_per_device)
 
+  # Note: `torch.device("tpu")` is not registered on hosts without TPUs
+  # (`_loader.load` skips `rename_privateuse1_backend` when device count is 0).
+  @parameterized.parameters(
+      (None,),
+      (0,),
+      (1,),
+      ("tpu",),
+      ("tpu:0",),
+      ("tpu:1",),
+  )
+  def test_device_arg_validation_accepts_valid_specifiers(self, valid_dev):
+    tpu_spec = hardware.TpuSpec.for_version(hardware.TpuVersion.V7)
+    with (
+        mock.patch.object(
+            hardware, "get_tpu_spec", autospec=True, return_value=tpu_spec
+        ),
+        mock.patch.object(
+            hardware,
+            "get_visible_tpu_device_count",
+            autospec=True,
+            return_value=2,
+        ),
+    ):
+      self.assertEqual(
+          torch.tpu.get_device_properties(valid_dev).version,
+          hardware.TpuVersion.V7,
+      )
+      self.assertEqual(torch.tpu.get_device_name(valid_dev), "TPU v7")
+
+  @parameterized.parameters((True,), (1.5,), ((1, 2),))
+  def test_device_arg_validation_rejects_invalid_types(self, bad_type):
+    tpu_spec = hardware.TpuSpec.for_version(hardware.TpuVersion.V7)
+    with (
+        mock.patch.object(
+            hardware, "get_tpu_spec", autospec=True, return_value=tpu_spec
+        ),
+        mock.patch.object(
+            hardware,
+            "get_visible_tpu_device_count",
+            autospec=True,
+            return_value=2,
+        ),
+    ):
+      with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Needs a host without a recognized TPU.
+          TypeError,
+          "expected device to be a torch.device, str, int, or None",
+      ):
+        torch.tpu.get_device_properties(bad_type)  # type: ignore[arg-type]
+      with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Needs a host without a recognized TPU.
+          TypeError,
+          "expected device to be a torch.device, str, int, or None",
+      ):
+        torch.tpu.get_device_name(bad_type)  # type: ignore[arg-type]
+
+  @parameterized.parameters(
+      ("cpu",),
+      ("cuda:0",),
+      ("tpu:",),
+      ("tpu:+0",),
+      ("tpu:-0",),
+      ("tpu:01",),
+      ("tpu:0_0",),
+      ("tpu:abc",),
+      (torch.device("cpu"),),
+      (torch.device("cpu", 0),),
+      (torch.device("meta", 0),),
+  )
+  def test_device_arg_validation_rejects_non_tpu_specifiers(self, bad_val):
+    tpu_spec = hardware.TpuSpec.for_version(hardware.TpuVersion.V7)
+    with (
+        mock.patch.object(
+            hardware, "get_tpu_spec", autospec=True, return_value=tpu_spec
+        ),
+        mock.patch.object(
+            hardware,
+            "get_visible_tpu_device_count",
+            autospec=True,
+            return_value=2,
+        ),
+    ):
+      with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Needs a host without a recognized TPU.
+          ValueError, r"^expected a 'tpu' device, got "
+      ):
+        torch.tpu.get_device_properties(bad_val)
+      with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Needs a host without a recognized TPU.
+          ValueError, r"^expected a 'tpu' device, got "
+      ):
+        torch.tpu.get_device_name(bad_val)
+
+  @parameterized.parameters(
+      (-1, r"^device index must be non-negative, got -1$"),
+      ("tpu:-1", r"^device index must be non-negative, got -1$"),
+      (
+          2,
+          r"^device index 2 is out of range for 2 visible TPU device\(s\)$",
+      ),
+      (
+          "tpu:2",
+          r"^device index 2 is out of range for 2 visible TPU device\(s\)$",
+      ),
+  )
+  def test_device_arg_validation_rejects_out_of_range_indices(
+      self, bad_idx, expected_regex
+  ):
+    tpu_spec = hardware.TpuSpec.for_version(hardware.TpuVersion.V7)
+    with (
+        mock.patch.object(
+            hardware, "get_tpu_spec", autospec=True, return_value=tpu_spec
+        ),
+        mock.patch.object(
+            hardware,
+            "get_visible_tpu_device_count",
+            autospec=True,
+            return_value=2,
+        ),
+    ):
+      with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Needs a host without a recognized TPU.
+          ValueError, expected_regex
+      ):
+        torch.tpu.get_device_properties(bad_idx)
+      with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Needs a host without a recognized TPU.
+          ValueError, expected_regex
+      ):
+        torch.tpu.get_device_name(bad_idx)
+
+  def test_device_arg_validation_handles_zero_visible_and_cached_count(self):
+    v5e_spec = hardware.TpuSpec.for_version(hardware.TpuVersion.V5E)
+    with (
+        mock.patch.object(
+            hardware, "get_tpu_spec", autospec=True, return_value=v5e_spec
+        ),
+        mock.patch.object(
+            hardware,
+            "get_visible_tpu_device_count",
+            autospec=True,
+            return_value=0,
+        ),
+    ):
+      self.assertEqual(torch.tpu.get_device_name(0), "TPU v5e")
+      self.assertEqual(
+          torch.tpu.get_device_properties("tpu:0").version,
+          hardware.TpuVersion.V5E,
+      )
+      with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Needs a host without a recognized TPU.
+          ValueError, r"^device index must be non-negative, got -1$"
+      ):
+        torch.tpu.get_device_name(-1)
+      with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Needs a host without a recognized TPU.
+          ValueError, r"^expected a 'tpu' device, got 'tpu:01'$"
+      ):
+        torch.tpu.get_device_properties("tpu:01")
+
+    with (
+        mock.patch.object(
+            hardware, "get_tpu_spec", autospec=True, return_value=v5e_spec
+        ),
+        mock.patch.object(
+            hardware,
+            "get_visible_tpu_device_count",
+            autospec=True,
+            return_value=4,
+        ),
+        mock.patch.object(
+            torch.tpu.get_device_properties.__self__, "_device_count", 1
+        ),
+    ):
+      self.assertEqual(torch.tpu.get_device_properties(0).name, "TPU v5e")
+      with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Needs a host without a recognized TPU.
+          ValueError,
+          r"^device index 1 is out of range for 1 visible TPU device\(s\)$",
+      ):
+        torch.tpu.get_device_properties(1)
+
   def test_stream_is_type(self):
     self.assertTrue(issubclass(torch.tpu.Stream, torch.Stream))
     self.assertIsInstance(None, torch.tpu.Stream | None)

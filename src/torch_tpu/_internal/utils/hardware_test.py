@@ -618,6 +618,9 @@ class DeviceCapabilityTest(seed_test_utils.RepeatableTest):
     self.assertStartsWith(
         repr(tpu_spec), f"TpuSpec(version=TpuVersion.{version.name}, "
     )
+    self.assertIn(
+        f"sparse_core_spec={expected_sparse_core_spec!r}", repr(tpu_spec)
+    )
     self.assertEqual(tpu_spec.devices_per_chip, expected_devices_per_chip)
     self.assertEqual(tpu_spec.hbm_bytes_per_chip, expected_hbm_bytes_per_chip)
     self.assertEqual(

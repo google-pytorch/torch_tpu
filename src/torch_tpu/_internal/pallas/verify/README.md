@@ -43,12 +43,11 @@ solver time budget, the TPU generation of the lowering check, and the interpret
 sweep.
 
 The lowering check lowers a `@jax_op` for TPU on the host, as TorchTPU does the
-first time the op runs. Ops without a mesh are lowered for
-`VerificationOptions.tpu_version` (when `None`, inferred from the kernel's
-`supported_on` predicate, SparseCore usage, or documentation, or
-`torch.tpu.TpuVersion.V7` by default); ops with a mesh are lowered for the
-device kind of their mesh devices, so build the mesh with
-`torch.tpu.pallas.get_pallas_mesh`.
+first time the op runs. Ops without a TPU-typed mesh are lowered for
+`VerificationOptions.tpu_version` (when `None`, inferred from a bound/input TPU
+mesh or callable `supported_on` predicate, or `torch.tpu.TpuVersion.V7` by
+default); ops with a TPU mesh are lowered for the device kind of their mesh
+devices, so build the mesh with `torch.tpu.pallas.get_pallas_mesh`.
 
 ## Checks
 
@@ -58,7 +57,7 @@ Findings have a severity: errors fail the report, warnings and infos do not.
 
 | Category                   | Engines                 | Meaning                                                                                                  |
 | -------------------------- | ----------------------- | -------------------------------------------------------------------------------------------------------- |
-| `use_after_donate`         | `fx_graph`              | A tensor (or a view of it) is used after being donated to a `@jax_op`.                                   |
+| `use_after_donate`         | `fx_graph`, `autograd`  | A tensor (or a view of it) is used after being donated to a `@jax_op`, or saved for backward.            |
 | `aliased_donor_inputs`     | `contracts`, `fx_graph` | Two arguments of one call share storage while one of them is donated.                                    |
 | `donated_parameter`        | `contracts`, `fx_graph` | A module parameter, buffer, or captured tensor is donated and would be corrupted.                        |
 | `zero_output_silent_skip`  | `contracts`             | A `@jax_op` without outputs, which TorchTPU skips entirely.                                              |
@@ -82,11 +81,12 @@ JAX initializes, for example with
 ## TPU hosts
 
 `VerificationMode.STATIC` only traces and lowers kernels, which needs no JAX
-devices. `VerificationMode.FULL` runs kernels on JAX CPU devices; unless
-`JAX_PLATFORMS` restricts it, creating them makes JAX initialize all of its
-backends, including TPU when libtpu is installed. In a process that uses the TPU
-through TorchTPU, use `VerificationMode.STATIC`, or run the full verification in
-a separate process such as a unit test.
+devices (provided user `supported_on` predicates do not query live backends).
+`VerificationMode.FULL` runs kernels on JAX CPU devices; unless `JAX_PLATFORMS`
+restricts it, creating them makes JAX initialize all of its backends, including
+TPU when libtpu is installed. In a process that uses the TPU through TorchTPU,
+use `VerificationMode.STATIC`, or run the full verification in a separate
+process such as a unit test.
 
 ## Tests
 

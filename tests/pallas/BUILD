@@ -144,6 +144,10 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "pallas_verify_errors_test",
     srcs = ["pallas_verify_errors_test.py"],
+    env = {
+        # Keeps JAX off the TPU of OSS CI hosts.
+        "JAX_PLATFORMS": "cpu",
+    },
     tags = [
         "nosan",  # *san builds are low-value for error tests.
     ],

@@ -22,6 +22,7 @@ import abc
 import atexit
 from collections.abc import Mapping, Sequence
 import dataclasses
+import re
 import sys
 from typing import Any, Final
 import torch
@@ -1111,6 +1112,55 @@ class _TpuDeviceProperties:
     return self._tpu_spec.topology(world_size)
 
 
+_TPU_DEVICE_STR_RE: Final[re.Pattern[str]] = re.compile(
+    r"tpu(?::(0|-?[1-9][0-9]*))?", re.ASCII
+)
+
+
+def _validate_tpu_device_arg(
+    device: int | str | torch.device | None,
+) -> None:
+  """Validates an optional TPU device specifier without initializing PJRT."""
+  if device is None:
+    return
+  if isinstance(device, bool):
+    raise TypeError(
+        "expected device to be a torch.device, str, int, or None, got bool"
+    )
+  if isinstance(device, int):
+    idx: int | None = device
+  elif isinstance(device, str):
+    match = _TPU_DEVICE_STR_RE.fullmatch(device)
+    if match is None:
+      raise ValueError(f"expected a 'tpu' device, got {device!r}")
+    idx_str = match.group(1)
+    idx = None if idx_str is None else int(idx_str, 10)
+  elif isinstance(device, torch.device):
+    if device.type != "tpu":
+      raise ValueError(f"expected a 'tpu' device, got {device!r}")
+    idx = device.index
+  else:
+    raise TypeError(
+        "expected device to be a torch.device, str, int, or None, got"
+        f" {type(device).__name__}"
+    )
+
+  if idx is not None:
+    if idx < 0:
+      raise ValueError(f"device index must be non-negative, got {idx}")
+    cached_count = TpuDeviceModule._device_count  # pylint: disable=protected-access
+    visible_count = (
+        cached_count
+        if cached_count is not None
+        else hardware.get_visible_tpu_device_count()
+    )
+    if visible_count > 0 and idx >= visible_count:
+      raise ValueError(
+          f"device index {idx} is out of range for {visible_count} visible TPU"
+          " device(s)"
+      )
+
+
 class TpuDeviceModule(_DeviceModule):
   """Device module implementation for TPU devices."""
 
@@ -1143,8 +1193,14 @@ class TpuDeviceModule(_DeviceModule):
     Returns:
       The name of the attached TPU generation, or None if no TPU generation that
       TorchTPU supports is attached.
+
+    Raises:
+      TypeError: If ``device`` is not a ``torch.device``, ``str``, ``int``, or
+        ``None``.
+      ValueError: If ``device`` is not a ``tpu`` device or its index is out of
+        range.
     """
-    del device  # Unused
+    _validate_tpu_device_arg(device)
     tpu_spec = hardware.get_tpu_spec()
     return None if tpu_spec is None else tpu_spec.name
 
@@ -1172,9 +1228,13 @@ class TpuDeviceModule(_DeviceModule):
       A _TpuDeviceProperties instance for the specified device.
 
     Raises:
+      TypeError: If ``device`` is not a ``torch.device``, ``str``, ``int``, or
+        ``None``.
+      ValueError: If ``device`` is not a ``tpu`` device or its index is out of
+        range.
       RuntimeError: If no TPU generation that TorchTPU supports is attached.
     """
-    del device  # Unused
+    _validate_tpu_device_arg(device)
     tpu_spec = hardware.get_tpu_spec()
     if tpu_spec is None:
       raise RuntimeError(

@@ -997,8 +997,7 @@ class FxVerifierTest(seed_test_utils.RepeatableTest):
     )
 
   def test_tpu_version_normalization_and_inference(self):
-    def trillium_documented_fn(x: jax.Array) -> jax.Array:
-      """Pallas kernel targeting TPU v6e (Trillium)."""
+    def trillium_fn(x: jax.Array) -> jax.Array:
       if pltpu.get_tpu_info().generation != 6:
         raise ValueError("expected TPU v6e")
       return pl.pallas_call(
@@ -1006,9 +1005,10 @@ class FxVerifierTest(seed_test_utils.RepeatableTest):
           out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype),
       )(x)
 
-    doc_op = jax_op(
-        "pallas_verify_fx::trillium_documented_op", trillium_documented_fn
+    trillium_fn.supported_on = lambda dev: "v6" in getattr(
+        dev, "device_kind", ""
     )
+    doc_op = jax_op("pallas_verify_fx::trillium_supported_on_op", trillium_fn)
     x = torch.ones((8, 128), dtype=torch.float32)
     doc_rep = verifier.verify(doc_op, (x,), mode=STATIC)
     self.assertTrue(doc_rep.passed, msg=doc_rep.summary())
@@ -1032,6 +1032,51 @@ class FxVerifierTest(seed_test_utils.RepeatableTest):
         ),
     )
     self.assertFalse(v5e_rep.passed, msg=v5e_rep.summary())
+
+  def test_supported_on_intersection_and_self_access_safety(self):
+    def _v6_or_v7_fn(x: jax.Array) -> jax.Array:
+      return _pallas_add_one(x)
+
+    _v6_or_v7_fn.supported_on = lambda dev: dev.device_kind in (
+        "TPU v6 lite",
+        "TPU7x",
+    )
+
+    def _v6_only_fn(x: jax.Array) -> jax.Array:
+      assert pltpu.get_tpu_info().generation == 6
+      return _pallas_add_one(x)
+
+    _v6_only_fn.supported_on = lambda dev: dev.device_kind == "TPU v6 lite"
+
+    op_a = jax_op("pallas_verify_fx::sup_intersect_a", _v6_or_v7_fn)
+    op_b = jax_op("pallas_verify_fx::sup_intersect_b", _v6_only_fn)
+
+    def _combined_prog(t: torch.Tensor) -> torch.Tensor:
+      return op_b(op_a(t))
+
+    self.assertEqual(
+        fx_verifier.infer_tpu_version(_combined_prog),
+        torch.tpu.TpuVersion.V6E,
+    )
+    x = torch.ones((8, 128), dtype=torch.float32)
+    comb_rep = verifier.verify(_combined_prog, (x,), mode=STATIC)
+    self.assertTrue(comb_rep.passed, msg=comb_rep.summary())
+
+    # Unbound instance `supported_on(self, device)` that short-circuits `or` on
+    # v5e before touching `self.enable_v7` on v7 must be discarded rather than
+    # partially narrowing to v5e.
+    class _InstanceDependentKernel:
+      enable_v7: bool = True
+
+      def supported_on(self, device) -> bool:
+        return device.device_kind == "TPU v5 lite" or (
+            device.device_kind == "TPU7x" and self.enable_v7
+        )
+
+    self.assertEqual(
+        fx_verifier.infer_tpu_version(_InstanceDependentKernel),
+        torch.tpu.TpuVersion.V7,
+    )
 
   def test_negative_donate_argnums_tracks_donated_positional_and_keyword_args(
       self,
@@ -1295,24 +1340,98 @@ class FxVerifierTest(seed_test_utils.RepeatableTest):
     self.assertEqual(verifier_impl._signature({"k": 7}), (("k", 7),))
     self.assertEqual(verifier_impl._signature({1, 2}), ("set", repr({1, 2})))
 
-  def test_sparse_core_kernel_inference_excludes_tpus_without_sparse_core(self):
-    def _sparse_core_fn(x: jax.Array) -> jax.Array:
-      sc_info = pltpu.get_tpu_info().sparse_core
-      assert sc_info is not None
+  def test_supported_on_keyerror_predicate_and_multi_op_chain_inference(self):
+    def _dict_lookup_v6e_fn(x: jax.Array) -> jax.Array:
+      if pltpu.get_tpu_info().generation != 6:
+        raise ValueError("expected TPU v6e")
       return _pallas_add_one(x)
 
-    inferred = fx_verifier.infer_tpu_version(_sparse_core_fn)
-    self.assertIsInstance(inferred, torch.tpu.TpuVersion)
-    self.assertIsNot(inferred, torch.tpu.TpuVersion.V5E)
-    self.assertIsNotNone(
-        hardware.TpuSpec.for_version(inferred).sparse_core_spec
+    # Raises `KeyError` on candidate versions other than v6e; per-version
+    # `KeyError` must count as `False` rather than discarding the predicate.
+    _dict_lookup_v6e_fn.supported_on = lambda d: {
+        "TPU v6 lite": True,
+    }[d.device_kind]
+
+    self.assertIs(
+        fx_verifier.infer_tpu_version(_dict_lookup_v6e_fn),
+        torch.tpu.TpuVersion.V6E,
     )
 
-    sc_op = jax_op("pallas_verify_fx::sparse_core_inferred_op", _sparse_core_fn)
-    rep = verifier.verify(
-        sc_op, (torch.ones((8, 128), dtype=torch.float32),), mode=STATIC
+    def _v6_or_v7_step(x: jax.Array) -> jax.Array:
+      return _pallas_add_one(x)
+
+    _v6_or_v7_step.supported_on = lambda d: d.device_kind in (
+        "TPU v6 lite",
+        "TPU7x",
     )
-    self.assertTrue(rep.passed, msg=rep.summary())
+    step_a = jax_op("pallas_verify_fx::chain_step_a", _v6_or_v7_step)
+    step_b = jax_op("pallas_verify_fx::chain_step_b", _v6_or_v7_step)
+    step_c = jax_op("pallas_verify_fx::chain_step_c_v6e", _dict_lookup_v6e_fn)
+
+    def _three_op_chain(t: torch.Tensor) -> torch.Tensor:
+      return step_c(step_b(step_a(t)))
+
+    x = torch.ones((8, 128), dtype=torch.float32)
+    self.assertIs(
+        fx_verifier.infer_tpu_version(_three_op_chain),
+        torch.tpu.TpuVersion.V6E,
+    )
+    chain_rep = verifier.verify(_three_op_chain, (x,), mode=STATIC)
+    self.assertTrue(chain_rep.passed, msg=chain_rep.summary())
+
+    def _never_supported_fn(arr: jax.Array) -> jax.Array:
+      return _pallas_add_one(arr)
+
+    _never_supported_fn.supported_on = lambda dev: False
+    self.assertIs(
+        fx_verifier.infer_tpu_version(_never_supported_fn),
+        torch.tpu.TpuVersion.V7,
+    )
+
+    v5p_mesh = jax.sharding.AbstractMesh(
+        (2,),
+        ("tp",),
+        abstract_device=fx_verifier.abstract_tpu_device(
+            torch.tpu.TpuVersion.V5P
+        ),
+    )
+    sharded_arg = jax.ShapeDtypeStruct(
+        (16, 128),
+        jnp.float32,
+        sharding=jax.sharding.NamedSharding(v5p_mesh, P("tp", None)),
+    )
+    self.assertIs(
+        fx_verifier.infer_tpu_version(
+            _pallas_add_one, example_args=(sharded_arg,)
+        ),
+        torch.tpu.TpuVersion.V5P,
+    )
+
+  def test_abstract_tpu_device_and_raw_jax_mesh_tpu_inference(self):
+    v5p_mesh = jax.sharding.AbstractMesh(
+        (2,),
+        ("tp",),
+        abstract_device=fx_verifier.abstract_tpu_device(
+            torch.tpu.TpuVersion.V5P
+        ),
+    )
+
+    def _raw_mesh_fn(x: jax.Array) -> jax.Array:
+      return jax.shard_map(
+          _pallas_add_one,
+          mesh=v5p_mesh,
+          in_specs=P("tp"),
+          out_specs=P("tp"),
+      )(x)
+
+    self.assertIs(
+        fx_verifier.infer_tpu_version(_raw_mesh_fn), torch.tpu.TpuVersion.V5P
+    )
+    self.assertIs(
+        fx_verifier.infer_tpu_version(_pallas_add_one), torch.tpu.TpuVersion.V7
+    )
+    self.assertEqual(fx_verifier.abstract_tpu_device("v5p").num_cores, 2)
+    self.assertEqual(fx_verifier.abstract_tpu_device("v6e").num_cores, 1)
 
 
 if __name__ == "__main__":
