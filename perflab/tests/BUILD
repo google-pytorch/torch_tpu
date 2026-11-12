@@ -177,6 +177,11 @@ torch_tpu_py_library(
     testonly = True,
     srcs = ["fakes.py"],
     deps = [
+        "//perflab:export",
+        "//perflab:registry",
+        "//perflab:step_lib",
+        "//perflab:target",
+        "//shims/torch:pytorch",
         "@tsl//tsl/profiler/protobuf:xplane_proto_py_proto",
     ],
 )
@@ -618,6 +623,7 @@ torch_tpu_py_test(
     name = "distributed_runner_test",
     srcs = ["distributed_runner_test.py"],
     deps = [
+        ":fakes",
         "//perflab:common",
         "//perflab:discovery",
         "//perflab:distributed_runner_lib",
@@ -627,9 +633,7 @@ torch_tpu_py_test(
         "//perflab:metrics",
         "//perflab:mode",
         "//perflab:registry",
-        "//perflab:step_lib",
         "//perflab:target",
-        "//perflab:torch_device_ops",
         "//perflab:workload",
         "//perflab/steps",
         "//shims/absl_py/testing:absltest",
@@ -639,6 +643,7 @@ torch_tpu_py_test(
         "//src/torch_tpu/_internal:testing",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//tests:seed_test_utils",
+        "@pypi//portpicker",
     ],
 )
 
