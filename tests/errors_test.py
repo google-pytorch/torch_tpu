@@ -3854,7 +3854,7 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     t = torch.ones(2, device=et.device(), dtype=dtype)
     with et.assert_raises_message(
         NotImplementedError,
-        tpu=f"gelu(): unsupported input dtype: '{tpu_dtype_str}'",
+        tpu=f"gelu(): unsupported input dtype: {tpu_dtype_str}",
         gpu=f""""GeluCUDAKernelImpl" not implemented for '{gpu_dtype_str}'""",
     ):
       torch.nn.functional.gelu(t)
@@ -3913,7 +3913,7 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     out = torch.empty_like(t)
     with et.assert_raises_message(
         NotImplementedError,
-        tpu=f"gelu(): unsupported input dtype: '{tpu_dtype_str}'",
+        tpu=f"gelu(): unsupported input dtype: {tpu_dtype_str}",
         gpu=f""""GeluCUDAKernelImpl" not implemented for '{gpu_dtype_str}'""",
     ):
       torch.ops.aten.gelu.out(t, out=out)
@@ -3944,7 +3944,7 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     grad_input = torch.empty_like(t)
     with et.assert_raises_message(
         NotImplementedError,
-        tpu=f"gelu_backward(): unsupported input dtype: '{tpu_dtype_str}'",
+        tpu=f"gelu_backward(): unsupported input dtype: {tpu_dtype_str}",
         gpu=f""""GeluBackwardCUDAKernelImpl" not implemented for '{gpu_dtype_str}'""",
     ):
       torch.ops.aten.gelu_backward.grad_input(t, t, grad_input=grad_input)
