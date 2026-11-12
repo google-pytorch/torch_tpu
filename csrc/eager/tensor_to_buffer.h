@@ -18,10 +18,13 @@
 #define TORCH_TPU_CSRC_EAGER_TENSOR_TO_BUFFER_H_
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <vector>
 
 #include "ATen/core/ATen_fwd.h"
+#include "absl/base/nullability.h"
+#include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
@@ -29,6 +32,7 @@
 #include "c10/core/Device.h"
 #include "c10/core/Storage.h"
 #include "c10/util/Optional.h"
+#include "csrc/eager/current_stream.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/device_buffer_utils.h"
 #include "csrc/eager/structured_log_buffer.h"
@@ -73,6 +77,12 @@ namespace torch_tpu {
 
 // Creates a c10::DataPtr to hold the given DeviceBufferRef on the given
 // PrivateUse1 device index.
+//
+// Throws if the current thread captures a graph, and either the current stream
+// is not the capture stream, or `buffer_ref` is the result of an operation
+// issued on a device or stream other than the capture stream (see
+// BeginGraphCaptureStorageTracking()). Also throws if `buffer_ref` belongs to
+// the graph capture of another thread.
 [[nodiscard]] c10::DataPtr MakeDataPtr(DeviceBufferRef buffer_ref,
                                        c10::DeviceIndex device_idx);
 
@@ -89,6 +99,16 @@ namespace torch_tpu {
 // the returned DeviceBufferRef may have different dimensions than the tensor.
 absl::StatusOr<DeviceBufferRef> GetBaseBuffer(const at::Tensor& tensor);
 absl::StatusOr<DeviceBufferRef> GetBaseBuffer(const c10::Storage& storage);
+
+// Like GetBaseBuffer(), except that it reads the storage's current
+// DeviceBufferRef without installing a graph capture placeholder.
+absl::StatusOr<DeviceBufferRef> PeekBaseBuffer(const at::Tensor& tensor);
+absl::StatusOr<DeviceBufferRef> PeekBaseBuffer(const c10::Storage& storage);
+
+// Returns the number of physical storage bytes backing `buffer`. For sub-byte
+// packed F4E2M1FN, the unpacked XLA shape doubles the innermost dimension, so
+// its XLA size is twice the physical PyTorch storage size.
+[[nodiscard]] size_t PhysicalByteSize(const DeviceBufferRef& buffer);
 
 // Extracts the DeviceBufferRef from the given ATen tensor.
 //
@@ -195,11 +215,88 @@ bool IsFullStorageReinterpretView(const at::Tensor& tensor,
 absl::Status AssignBufferAsStorageBase(DeviceBufferRef new_base,
                                        const at::Tensor& tensor);
 
+// A tensor storage holding a buffer produced during graph capture.
+struct CapturedStorageWrite {
+  c10::Storage storage;
+  // The DeviceBufferRef held by `storage` at the end of capture.
+  DeviceBufferRef final_buffer;
+  // True if `storage` was created during capture.
+  bool created = false;
+};
+
+// Summary of the tensor storages read or written during a graph capture.
+struct CapturedGraphStorages {
+  // Maps each placeholder buffer, installed on the first read of a storage
+  // that existed before capture, to that storage.
+  absl::flat_hash_map<DeviceBufferRef, c10::Storage> placeholder_to_storage;
+  // Storages that existed before capture and were written during capture,
+  // and storages created during capture that are still alive.
+  std::vector<CapturedStorageWrite> writes;
+};
+
+// Tracks the tensor storages that a graph capture reads and writes on the
+// thread that owns the capture.
+struct GraphCaptureStorageState;
+
+// Begins tracking the tensor storages that the current thread reads and writes
+// for the `torch.accelerator.Graph` capture on `capture_stream`, which the
+// current thread owns. The caller keeps the returned state alive until
+// EndGraphCaptureStorageTracking().
+//
+// While tracking, the first read of a storage that existed before capture
+// replaces its buffer with a placeholder, so that the captured graph reads the
+// storage's contents at replay time instead of baking in its current value.
+// Every storage accessed or created during capture is kept alive until
+// tracking ends. Writing to a storage on a stream other than `capture_stream`,
+// or writing the result of an operation issued on a device or stream other
+// than `capture_stream`, is an error, as capture does not record such
+// operations. The storages that an explicit FX trace accesses during capture
+// are not tracked.
+//
+// Until tracking ends, other threads raise instead of reading or writing the
+// storages that the capture read or wrote. Since installing a placeholder
+// modifies a storage, reading a tensor during capture races with the reads of
+// the same tensor by other threads, which PyTorch otherwise allows. Other
+// threads must not use the tensors that a capture may read until it ends.
+[[nodiscard]] absl_nonnull std::shared_ptr<GraphCaptureStorageState>
+BeginGraphCaptureStorageTracking(DeviceStreamId capture_stream);
+
+// Ends the tracking of tensor storages with `state`, restores the original
+// buffers of the storages that existed before capture, and returns the
+// captured storages. Stops tracking on the current thread if the current
+// thread tracks storages with `state`.
+CapturedGraphStorages EndGraphCaptureStorageTracking(
+    GraphCaptureStorageState& state);
+
+// Replaces the buffers of storages created during capture that still hold a
+// captured DeferredOp or placeholder. When `aborted` is false, replaces them
+// with empty buffers so they remain readable before the first replay; when
+// `aborted` is true, marks them with an error buffer without dispatching
+// empty fills. Must be called after the captured DeferredOps have been
+// extracted from the capture stream.
+absl::Status ClearCapturedDeferredStorages(
+    const CapturedGraphStorages& captured, bool aborted = false);
+
+// Returns an error if a graph capture is in progress on the current thread and
+// `storage` existed before it began: capture cannot restore the original size
+// of such a storage when it ends.
+absl::Status ValidateStorageResizableDuringGraphCapture(
+    const c10::Storage& storage);
+
+// Replaces the base DeviceBufferRef of `storage` with `buffer`, without moving
+// any data. Requires `buffer` to have the same size in bytes as the current
+// base buffer of `storage`.
+absl::Status AssignBufferToStorage(DeviceBufferRef buffer,
+                                   const c10::Storage& storage);
+
 // Returns the C10 allocator singleton for TPU.
 // Not to be confused with TpuPinnedAllocator (see host_allocator.h) which is
 // the host-side allocator; this allocator is for device-side memory that is
 // managed by the TPU backend.
 c10::Allocator* GetTpuAllocator();
+
+// Allocates a fresh non-zero memory pool ID for `torch.accelerator.Graph`.
+[[nodiscard]] c10::MempoolId_t AllocateGraphMempoolId();
 
 // Registers the TpuAllocator as the allocator for the PrivateUse1 device,
 // and the TpuPinnedAllocator as the pinned host allocator.
