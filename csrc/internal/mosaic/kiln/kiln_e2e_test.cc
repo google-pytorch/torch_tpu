@@ -603,6 +603,58 @@ TEST_F(KilnE2eTest, PipelinedSumOfProducts) {
   }
 }
 
+// One compiled kernel sums the [8, 128] slices of an HBM array, streaming one
+// slice per step with the leading dimension squeezed out of the VMEM blocks.
+TEST_F(KilnE2eTest, PipelinedSumOfSqueezedSlices) {
+  constexpr int64_t kRows = 8, kCols = 128;
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      Kernel kernel,
+      CreateKernel(
+          GridSpec{.name = "pipelined_sum_of_squeezed_slices_e2e"},
+          InSpec::Hbm(f32(kDynamic, kRows, kCols)),
+          OutSpec::Hbm(f32(kRows, kCols)), ScratchSpec::Vmem(f32(kRows, kCols)),
+          [&](HbmRef in, HbmRef out, VmemRef acc) {
+            PipelineOperand input{.hbm = in,
+                                  .block_shape = {squeezed, kRows, kCols},
+                                  .region = [](Scalar slice) {
+                                    return BlockRegion{
+                                        .offsets = {slice, 0, 0},
+                                        .sizes = {1, kRows, kCols}};
+                                  }};
+            Store(acc, Zeros(acc.shape()));
+            EmitPipeline(0, in.Dim(0), {std::move(input)},
+                         /*outputs=*/{}, [&](const PipelineStep& s) {
+                           Store(acc, Load(acc) + Load(s.inputs[0].ref));
+                         });
+            AsyncCopy(acc, out, AllocaDmaSemaphore()).Wait();
+          }));
+
+  TT_ASSERT_OK_AND_ASSIGN(std::string serialized,
+                          VerifyAndSerialize(std::move(kernel)));
+
+  for (int64_t num_slices : {1, 5}) {
+    SCOPED_TRACE(absl::StrCat("num_slices=", num_slices));
+    xla::Literal input(
+        xla::ShapeUtil::MakeShape(xla::F32, {num_slices, kRows, kCols}));
+    for (int64_t i = 0; i < num_slices; ++i) {
+      for (int64_t r = 0; r < kRows; ++r) {
+        for (int64_t c = 0; c < kCols; ++c) {
+          input.Set<float>({i, r, c}, static_cast<float>((i + r + c) % 9 - 4));
+        }
+      }
+    }
+    xla::Literal expected = Make2dF32(kRows, kCols, [&](int64_t r, int64_t c) {
+      float sum = 0.0f;
+      for (int64_t i = 0; i < num_slices; ++i) {
+        sum += input.Get<float>({i, r, c});
+      }
+      return sum;
+    });
+    RunAndCompare(serialized, {&input}, expected);
+  }
+}
+
 // One compiled kernel doubles an HBM vector chunk by chunk, streaming both the
 // input and the output chunks.
 TEST_F(KilnE2eTest, PipelinedInputOutputStreaming) {

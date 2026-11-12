@@ -17,16 +17,26 @@
 #ifndef TORCH_TPU_CSRC_INTERNAL_MOSAIC_KILN_LIB_PIPELINE_H_
 #define TORCH_TPU_CSRC_INTERNAL_MOSAIC_KILN_LIB_PIPELINE_H_
 
+#include <cstdint>
+#include <optional>
+
 #include "absl/functional/any_invocable.h"
 #include "absl/functional/function_ref.h"
 #include "csrc/internal/mosaic/kiln/core/index_arg.h"
 #include "csrc/internal/mosaic/kiln/core/ref.h"
 #include "csrc/internal/mosaic/kiln/core/scalar.h"
-#include "csrc/internal/mosaic/kiln/core/shape.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
 
 namespace torch_tpu::kiln {
+
+// The block shape of a pipelined HBM operand: an extent per dimension, or
+// `squeezed` to leave the dimension out of the VMEM blocks, as Pallas
+// `pl.squeezed`. Along a squeezed dimension, each block covers the single index
+// given by its region's offset (with extent 1). The two minor dimensions can't
+// be squeezed.
+using BlockShape = llvm::SmallVector<std::optional<int64_t>, 4>;
+inline constexpr std::nullopt_t squeezed = std::nullopt;
 
 // The part of an HBM operand that one pipeline block covers: an offset and an
 // extent per dimension. Extents may be smaller than the VMEM block shape (e.g.
@@ -48,7 +58,7 @@ struct BlockRegion {
 // cover disjoint parts of `hbm`, as their copies out may overlap.
 struct PipelineOperand {
   HbmRef hbm;
-  Dimensions block_shape;
+  BlockShape block_shape;
   // Outputs only for now.
   absl::AnyInvocable<Scalar(Scalar step) const> block_index = nullptr;
   // Called with the step for inputs, and with the block index for outputs.

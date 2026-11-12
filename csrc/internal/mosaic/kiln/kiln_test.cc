@@ -2477,6 +2477,35 @@ TEST(KilnTest, EmitPipelineWithTwo2dInputs) {
   )"));
 }
 
+TEST(KilnTest, EmitPipelineWithSqueezedDim) {
+  absl::StatusOr<Kernel> kernel = CreateKernel(
+      GridSpec{.name = "emit_pipeline_squeezed"},
+      InSpec::Hbm(f32(kDynamic, 8, 128)), OutSpec::Hbm(f32(8, 128)),
+      ScratchSpec::Vmem(f32(8, 128)), [&](HbmRef in, HbmRef out, VmemRef acc) {
+        PipelineOperand input{.hbm = in,
+                              .block_shape = {squeezed, 8, 128},
+                              .region = [](Scalar step) {
+                                return BlockRegion{.offsets = {step, 0, 0},
+                                                   .sizes = {1, 8, 128}};
+                              }};
+        Store(acc, Zeros(acc.shape()));
+        EmitPipeline(0, in.Dim(0), {std::move(input)}, /*outputs=*/{},
+                     [&](const PipelineStep& s) {
+                       Store(acc, Load(acc) + Load(s.inputs[0].ref));
+                     });
+        AsyncCopy(acc, out, AllocaDmaSemaphore()).Wait();
+      });
+
+  // The slots leave out the squeezed dimension, which each copy indexes away
+  // from `in`.
+  EXPECT_THAT(kernel, IsOkAndMatchesIr(R"(
+    CHECK-LABEL: func.func @emit_pipeline_squeezed(
+    CHECK:         memref.alloca() : memref<2x8x128xf32, #tpu.memory_space<vmem>>
+    CHECK:         %[[SRC:.*]] = tpu.memref_squeeze {{.*}} -> memref<8x128xf32, #tpu.memory_space<hbm>>
+    CHECK:         tpu.enqueue_dma source(%[[SRC]] : {{.*}})
+  )"));
+}
+
 TEST(KilnTest, EmitPipelineWithOutputs) {
   constexpr int64_t kBlock = 128;
   auto block = [](Scalar step) {
