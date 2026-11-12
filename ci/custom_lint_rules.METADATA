@@ -1554,6 +1554,50 @@ presubmit {
   }
 }
 
+# Check that mock objects (Mock, MagicMock, AsyncMock, etc.) have a spec.
+presubmit {
+  # go/keep-sorted start
+  path_expression: "....ipynb"
+  path_expression: "....py"
+  # go/keep-sorted end
+  check_contents {
+    base {
+      id: "CheckMockSpec"
+      disable_tags: "ROLLBACK_OF"  # Don't require for rollback CLs.
+    }
+    # The unescaped regexes are:
+    #   prohibited: \b(AsyncMock|MagicMock|Mock|NonCallableMagicMock|NonCallableMock)\(
+    #   suppression:
+    #     \b(AsyncMock|MagicMock|Mock|NonCallableMagicMock|NonCallableMock)\([^\n]*(\n[^\n]*)?
+    #       \b(spec(_set)?\s*=|NO_SPEC_OK=)|
+    #     \b(AsyncMock|MagicMock|Mock|NonCallableMagicMock|NonCallableMock)\(\s*[A-Za-z_][\w.]*\s*[,)]
+    # The first suppression alternative accepts `spec=`, `spec_set=` or a
+    # NO_SPEC_OK= comment on the line of the mock call (e.g. `Mock(`) or the
+    # line after it, so that calls wrapped by the formatter pass. The second
+    # accepts a positional spec, e.g. `Mock(torch.Tensor)`, which keyword-only
+    # calls do not match. The mock classes are enumerated rather than grouped
+    # by prefix, so that code search finds the rule by class name.
+    prohibited_regexp: "\\b(AsyncMock|MagicMock|Mock|NonCallableMagicMock|NonCallableMock)\\("
+    match_multi_line: true
+    suppression_regexp:
+      "\\b(AsyncMock|MagicMock|Mock|NonCallableMagicMock|NonCallableMock)\\([^\\n]*(\\n[^\\n]*)?"
+      "\\b(spec(_set)?\\s*=|NO_SPEC_OK=)|"
+      "\\b(AsyncMock|MagicMock|Mock|NonCallableMagicMock|NonCallableMock)\\(\\s*[A-Za-z_][\\w.]*\\s*[,)]"
+    failure_message:
+      "Please give every mock a spec, e.g. `mock.Mock(spec=Foo)`, "
+      "`mock.MagicMock(spec_set=Foo)` or `mock.create_autospec(Foo)`. "
+      "Without one, the mock silently accepts any attribute or call, so a "
+      "test can pass even when the code uses an API the real object does not "
+      "have. Prefer a fake or a real object over a mock where practical. "
+      "The spec must be on the same line as the mock call (e.g. `Mock(`) or "
+      "the line after it.\n\n"
+      "If you have a legitimate reason to use a mock without a spec, add "
+      "a NO_SPEC_OK=<reason> comment on the same line as the mock call or the "
+      "line after it."
+    check_delta_only: true
+  }
+}
+
 # Check for use of absltest.TestCase, unittest.TestCase, or
 # parameterized.TestCase - prefer RepeatableTest or
 # VaryingSeedInPostsubmitTest.
