@@ -495,8 +495,6 @@ DYNAMISM_DENY_LISTS: DenyList = {
     "the lowering emits an op without bounded shape support": {
         # Backward broadcast fails with mixed bounded and static dimensions.
         "_foreach_lerp": {COMPILE_GRAD},
-        # Calls getNumElements() on a dynamic shaped type.
-        "_foreach_norm": {EAGER, COMPILE_GRAD},
         # BuildMlirModule fails to inline MLIR functions on bounded inputs.
         "_fused_moving_avg_obs_fq_helper": ALL_MODES,
         # XLA ragged-dot does not support propagating bounded dimensions.
