@@ -27,6 +27,7 @@
 #include "ATen/ScalarOps.h"
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
+#include "absl/algorithm/container.h"
 #include "absl/base/no_destructor.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/log/absl_check.h"
@@ -43,6 +44,7 @@
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/layout_utils.h"
 #include "csrc/common/shape.h"
 #include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
@@ -54,6 +56,7 @@
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/resize/resize_aten_kernels.h"
+#include "csrc/ops/stride/stride_helper.h"
 #include "csrc/pjrt/pjrt_transfer.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
@@ -174,75 +177,214 @@ absl::StatusOr<DeviceBufferRef> MakeBuffer(
                         .op_param_cache_keys = std::move(op_param_cache_keys)});
 }
 
-bool IsEligibleDonor(const at::Tensor& in, const at::Tensor& out,
-                     mlir::ElementType out_dtype,
-                     at::IntArrayRef destination_dims) {
-  // An in-place operation is one where the out-tensor is an alias of the
-  // in-tensor and does not change shape or dtype.
-  if (!out.is_alias_of(in) || in.numel() == 0 ||
-      in.sizes() != destination_dims) {
+// How the base buffer of an output tensor can be donated by DispatchOpOut.
+//
+// The base buffer of `out` can be donated whenever an op of the dispatch both
+// reads it and produces its replacement:
+//   1. A full overwrite that reads its base (`x.add_(1.0)`): the op reads the
+//      base through an input that aliases `out`, and `out` is replaced by the
+//      op's result.
+//   2. A partial overwrite that reads its base (`x[0].add_(1.0)`): the op reads
+//      the base through an input view, and the view-inversion write-back reads
+//      it again to produce the updated base.
+//   3. A partial overwrite that doesn't read its base (`x[0].copy_(y)`): the op
+//      doesn't read the base, but the write-back still does.
+//   4. A full overwrite that doesn't read its base (`x.copy_(y)`): nothing
+//      reads the base, so it is simply replaced and there's nothing to donate.
+enum class BaseDonation {
+  // The base buffer can't be donated.
+  kNone,
+  // The base can only be donated to the op, through an input that aliases
+  // `out` with the same shape and dtype (cases 1 and 2).
+  kToOp,
+  // `out` is a partial view of its base, so the base can also be donated to
+  // the write-back when no input matches (cases 2 and 3).
+  kToOpOrWriteBack,
+};
+
+// Converts the on-device `dims` of a dispatch output of `dtype` (see
+// DispatchOpOptions) to PyTorch sizes: the packed dimension of a packed
+// sub-byte dtype (e.g. `float4_e2m1fn_x2`) holds `TorchPackingFactor` values
+// per PyTorch element. Returns std::nullopt if `dims` can't be converted.
+std::optional<Dimensions> ToTorchSizes(absl::Span<const int64_t> dims,
+                                       mlir::ElementType dtype) {
+  Dimensions sizes = CopyIntVector(dims);
+  const int64_t packing_factor = TorchPackingFactor(dtype);
+  if (packing_factor > 1) {
+    if (sizes.empty() || sizes.back() % packing_factor != 0) {
+      return std::nullopt;
+    }
+    sizes.back() /= packing_factor;
+  }
+  return sizes;
+}
+
+// Returns true if the dispatch writes `out` in place: `out` is non-empty and
+// the dispatch produces its shape and dtype (otherwise `out` is resized or
+// reallocated). Packed sub-byte outputs (e.g. `float4_e2m1fn_x2`) expand their
+// packed dimension on device, so they must also be contiguous with no storage
+// offset.
+bool IsWrittenInPlace(const at::Tensor& out, mlir::ElementType out_dtype,
+                      at::IntArrayRef destination_dims) {
+  if (out.numel() == 0 || out.sizes() != destination_dims) {
+    return false;
+  }
+  const auto current_out_dtype =
+      ConvertTo<mlir::ElementType>(out.scalar_type());
+  if (!current_out_dtype.ok() || *current_out_dtype != out_dtype) {
+    return false;
+  }
+  return !IsPackedSubByteType(out_dtype) ||
+         (out.is_contiguous() && out.storage_offset() == 0 && out.dim() > 0 &&
+          out.stride(out.dim() - 1) == 1);
+}
+
+// Returns true if a write of `out_dtype` may update `base_buf` in place.
+bool IsBaseWritableInPlace(const DeviceBufferRef& base_buf,
+                           mlir::ElementType out_dtype) {
+  // Because XLA tensors are immutable, TorchTPU uses copy-on-write semantics.
+  // This means that if a tensor is cloned, we construct a new `c10::Storage`
+  // but retain the same underlying device buffer.
+  // If there is later an in-place write while multiple references exist, we
+  // perform the operation out-of-place, as a copy is required.
+  // If there is only one reference, then it is safe to donate the buffer.
+  if (base_buf.live_data_ptrs() > 1) {
+    return false;
+  }
+  // Writing a non-boolean value to a boolean tensor is allowed, but requires
+  // upcasting the storage from single-bit PRED to avoid data loss. As such
+  // this is performed out-of-place.
+  return base_buf.element_type() != mlir::ElementType::PRED ||
+         out_dtype == mlir::ElementType::PRED;
+}
+
+// Returns true if the packed sub-byte output `out` covers all of `base_buf`.
+bool CoversPackedBase(const at::Tensor& out, const DeviceBufferRef& base_buf,
+                      int64_t packing_factor) {
+  return !base_buf.dimensions().empty() &&
+         out.size(out.dim() - 1) * packing_factor ==
+             base_buf.dimensions().back() &&
+         out.nbytes() * packing_factor == base_buf.size_bytes();
+}
+
+// Returns true if writing `out` reads `base_buf` in a view-inversion
+// write-back: `out` covers only part of `base_buf`, as a full write replaces
+// (or permutes) the result directly (see AssignBufferToAtTensor). Packed
+// sub-byte bases and overlapping views (which CreateInverseViewDeviceBufferRef
+// rejects) are not written back.
+bool IsWrittenBackIntoBase(const at::Tensor& out, mlir::ElementType out_dtype,
+                           const DeviceBufferRef& base_buf) {
+  if (IsPackedSubByteType(base_buf.element_type())) {
+    return false;
+  }
+  const absl::StatusOr<TpuLayout> tpu_layout = ResolveTpuLayout(out);
+  if (!tpu_layout.ok() ||
+      IsOverlapping(tpu_layout->sizes, tpu_layout->strides)) {
+    return false;
+  }
+  const auto out_bits =
+      SafeMultiply(out.numel(), TorchEquivalentBitwidth(out_dtype));
+  const auto base_bits =
+      SafeMultiply(base_buf.num_elements(),
+                   TorchEquivalentBitwidth(base_buf.element_type()));
+  return out_bits.ok() && base_bits.ok() && *out_bits < *base_bits;
+}
+
+// Returns how the base buffer of `out` can be donated, if the dispatch
+// produces a result of `out_dtype` and shape `destination_dims` for it.
+BaseDonation GetBaseDonation(const at::Tensor& out, mlir::ElementType out_dtype,
+                             at::IntArrayRef destination_dims) {
+  if (!IsWrittenInPlace(out, out_dtype, destination_dims)) {
+    return BaseDonation::kNone;
+  }
+  // Note: We explicitly guard the base buffer checks with
+  // `GetPrivateUse1DeviceType()` because standalone C++ unit tests (e.g. in
+  // op_dispatcher_test) test ATen layout, contiguity, and offset properties
+  // using CPU tensors. In standalone C++ test binaries without Python runtime
+  // extensions, ATen view kernels like `aten::as_strided` are not registered
+  // for `PrivateUse1`. Guarding with `GetPrivateUse1DeviceType()` allows those
+  // C++ unit tests to run on CPU tensors without `GetBaseBuffer` failing, while
+  // strictly enforcing exclusive ownership for real TPU tensors in production.
+  if (out.device().type() != GetPrivateUse1DeviceType()) {
+    return BaseDonation::kToOp;
+  }
+  const absl::StatusOr<DeviceBufferRef> base_buf = GetBaseBuffer(out);
+  if (!base_buf.ok() || !IsBaseWritableInPlace(*base_buf, out_dtype)) {
+    return BaseDonation::kNone;
+  }
+  const int64_t packing_factor = TorchPackingFactor(out_dtype);
+  if (packing_factor > 1) {
+    return CoversPackedBase(out, *base_buf, packing_factor)
+               ? BaseDonation::kToOp
+               : BaseDonation::kNone;
+  }
+  return IsWrittenBackIntoBase(out, out_dtype, *base_buf)
+             ? BaseDonation::kToOpOrWriteBack
+             : BaseDonation::kToOp;
+}
+
+// Returns true if input `in` can donate the base buffer of `out` to the op: it
+// must alias `out` with the same shape and dtype (an in-place operation). The
+// base buffer itself must already be donatable (see GetBaseDonation).
+bool IsMatchingInputDonor(const at::Tensor& in, const at::Tensor& out,
+                          mlir::ElementType out_dtype,
+                          at::IntArrayRef destination_dims) {
+  if (!in.defined() || !out.is_alias_of(in) || in.sizes() != destination_dims) {
     return false;
   }
   const auto in_dtype = ConvertTo<mlir::ElementType>(in.scalar_type());
   if (!in_dtype.ok() || *in_dtype != out_dtype) {
     return false;
   }
-  if (*in_dtype == mlir::ElementType::F4E2M1FN &&
-      (!in.is_contiguous() || !out.is_contiguous() ||
-       in.storage_offset() != 0 || out.storage_offset() != 0 || in.dim() == 0 ||
-       in.stride(in.dim() - 1) != 1)) {
-    // Non-contiguous or sliced FP4 views cannot safely donate their underlying
-    // packed storage buffer in-place.
-    return false;
-  }
-  // Note: We explicitly guard this check with `GetPrivateUse1DeviceType()`
-  // because standalone C++ unit tests (e.g. in op_dispatcher_test) test ATen
-  // layout, contiguity, and offset properties using CPU tensors. In standalone
-  // C++ test binaries without Python runtime extensions, ATen view kernels like
-  // `aten::as_strided` are not registered for `PrivateUse1`. Guarding with
-  // `GetPrivateUse1DeviceType()` allows those C++ unit tests to run on CPU
-  // tensors without `GetBaseBuffer` failing, while strictly enforcing exclusive
-  // ownership for real TPU tensors in production.
-  if (in.device().type() != GetPrivateUse1DeviceType()) {
-    return true;
-  }
-  const auto in_buf_or = GetBaseBuffer(in);
-  if (!in_buf_or.ok()) {
-    return false;
-  }
-  const auto& in_buf = *in_buf_or;
-  if (*in_dtype == mlir::ElementType::F4E2M1FN &&
-      (in_buf.dimensions().empty() ||
-       in.size(in.dim() - 1) * 2 != in_buf.dimensions().back() ||
-       in.nbytes() * 2 != in_buf.size_bytes())) {
-    return false;
-  }
-  if (in_buf.live_data_ptrs() > 1) {
-    // Because XLA tensors are immutable, TorchTPU uses copy-on-write semantics.
-    // This means that if a tensor is cloned, we construct a new `c10::Storage`
-    // but retain the same underlying device buffer.
-    // If there is later an in-place write while multiple references exist, we
-    // perform the operation out-of-place, as a copy is required.
-    // If there is only one reference, then it is safe to donate the buffer.
-    return false;
-  }
-  if (in_buf.element_type() == mlir::ElementType::PRED &&
-      out_dtype != mlir::ElementType::PRED) {
-    // Writing a non-boolean value to a boolean tensor is allowed, but requires
-    // upcasting the storage from single-bit PRED to avoid data loss. As such
-    // this is performed out-of-place.
-    return false;
-  }
-  return true;
+  // Non-contiguous or sliced packed sub-byte views (e.g. `float4_e2m1fn_x2`)
+  // cannot safely donate their underlying packed storage buffer in-place.
+  return !IsPackedSubByteType(*in_dtype) ||
+         (in.is_contiguous() && in.storage_offset() == 0 &&
+          in.stride(in.dim() - 1) == 1);
 }
 
+// Marks input `donated_idx` and all inputs that alias it as donated, since a
+// buffer can be donated only once. Undefined inputs (e.g. omitted optional
+// tensors) alias nothing.
 void MarkDonatedAndAliases(size_t donated_idx,
                            absl::Span<const at::Tensor> inputs,
                            std::vector<bool>& input_donated) {
   const at::Tensor& donated_in = inputs[donated_idx];
   for (size_t k = 0; k < inputs.size(); ++k) {
-    if (inputs[k].is_alias_of(donated_in)) {
+    if (inputs[k].defined() && inputs[k].is_alias_of(donated_in)) {
       input_donated[k] = true;
+    }
+  }
+}
+
+// Returns the index of the first input not yet donated that can donate the
+// base buffer of `out` to the op (see IsMatchingInputDonor), if any.
+std::optional<size_t> FindMatchingInputDonor(
+    const at::Tensor& out, mlir::ElementType out_dtype,
+    at::IntArrayRef destination_dims, absl::Span<const at::Tensor> inputs,
+    const std::vector<bool>& input_donated) {
+  for (size_t in_idx = 0; in_idx < inputs.size(); ++in_idx) {
+    if (!input_donated[in_idx] &&
+        IsMatchingInputDonor(inputs[in_idx], out, out_dtype,
+                             destination_dims)) {
+      return in_idx;
+    }
+  }
+  return std::nullopt;
+}
+
+// Marks the inputs not yet donated that alias `out` as donated, so that
+// GetBuffers creates their views with DonateBase::kDonate, fusing the view
+// reads, the op, and the write-back of `out` into one HLO module.
+void MarkInputsAliasingOutputDonated(const at::Tensor& out,
+                                     absl::Span<const at::Tensor> inputs,
+                                     std::vector<bool>& input_donated,
+                                     Indices& donated_indices) {
+  for (size_t in_idx = 0; in_idx < inputs.size(); ++in_idx) {
+    if (!input_donated[in_idx] && inputs[in_idx].defined() &&
+        inputs[in_idx].is_alias_of(out)) {
+      donated_indices.push_back(static_cast<int64_t>(in_idx));
+      input_donated[in_idx] = true;
     }
   }
 }
@@ -269,33 +411,49 @@ std::string EncodeParamCacheKey(const std::optional<PromotedScalar>& value) {
 // Automatically detects and configures buffer donations from `inputs` into
 // multiple `outputs` in eager mode.
 //
-// Safety and layout invariants verified for each donor-destination pair:
-// 1. In-place aliasing: destination must alias donor (is_alias_of).
-// 2. Feature flag & execution mode: donation must be enabled via
-//    IsInplaceBufferDonationEnabled() and restricted to eager execution modes
-//    that support in-place buffer donation (kDeferNever,
-//    kDeferNeverAndLaunchBlocking, kDeferAndFuse, and kInternalDeferAll).
-// 3. Shape: donor must be non-empty and identical in shape to the destination
-//    dimensions. The donor may be a view (e.g. a slice or a transpose), in
-//    which case its base buffer is donated to the ops that read the view and
-//    write the result back to the base.
-// 4. Data type: donor element type must match the destination element type.
-// 5. Single donation constraint: In XLA / StableHLO, each device buffer can be
-//    donated to at most ONE output buffer. Once an input is donated, it and all
-//    its storage aliases (is_alias_of) are marked as donated to prevent any
-//    duplicate buffer donation across multiple outputs.
-// 6. Unique ownership constraint: donor must not share its DeviceBufferRef with
-//    other non-alias tensors (live_data_ptrs == 1), preventing donation from
-//    destroying buffers shared via shallow-copy clone semantics.
-void AutoDonateInPlaceBuffers(
+// Donation is only attempted if enabled via IsInplaceBufferDonationEnabled()
+// and in eager modes that support in-place buffer donation (kDeferNever,
+// kDeferNeverAndLaunchBlocking, kDeferAndFuse, and kInternalDeferAll).
+//
+// For every output, its base buffer may only be donated if (GetBaseDonation):
+// 1. Shape and data type: the output is non-empty and the op produces the
+//    output's shape and element type, so the output is updated in place
+//    rather than resized or reallocated.
+// 2. Unique ownership: the base buffer is not shared with other non-alias
+//    tensors (live_data_ptrs == 1), preventing donation from destroying
+//    buffers shared via shallow-copy clone semantics.
+// 3. No upcast: a non-boolean write into a PRED base requires an out-of-place
+//    upcast to UI8.
+// 4. Packed sub-byte types (e.g. `float4_e2m1fn_x2`): the output is contiguous
+//    and covers its whole storage buffer.
+//
+// The base buffer is then donated in one of two ways:
+// - To the op, through an input donor (IsMatchingInputDonor), which must:
+//   a. alias the output (is_alias_of),
+//   b. have the output's shape and element type, and
+//   c. for packed sub-byte types, be contiguous with no storage offset.
+//   The donor may be a view (e.g. a slice or a transpose), in which case its
+//   base buffer is donated to the ops that read the view and write the result
+//   back to the base (e.g. `x.add_(1.0)` or `x[0].add_(1.0)`).
+// - Otherwise, if the output is a partial, non-overlapping view of its base
+//   and no op split separates the op from the write-back, to the
+//   view-inversion write-back, which reads the base (e.g. `x[0].copy_(y)` or
+//   `torch.add(a, b, out=x[0])`). Inputs that alias the output are marked as
+//   donated too, so their view reads are fused into the same HLO module.
+//
+// Single donation: in XLA / StableHLO, each device buffer can be donated to at
+// most ONE output buffer. Once an input is donated, it and all its storage
+// aliases (is_alias_of) are marked as donated to prevent any duplicate buffer
+// donation across multiple outputs.
+bool AutoDonateInPlaceBuffers(
     absl::Span<const at::Tensor> outputs,
     absl::Span<const mlir::ElementType> out_dtypes,
     absl::Span<const absl::Span<const int64_t>> out_dims_list,
-    absl::Span<const at::Tensor> inputs, Indices& donated_indices,
-    std::vector<uint8_t>& output_donated) {
+    absl::Span<const at::Tensor> inputs, OpSplitMode split_mode,
+    Indices& donated_indices, std::vector<uint8_t>& output_donated) {
   if (!donated_indices.empty() || !IsInplaceBufferDonationEnabled() ||
       !SupportsInplaceBufferDonation(GetEagerMode())) {
-    return;
+    return false;
   }
 
   std::vector<bool> input_donated(inputs.size(), false);
@@ -305,20 +463,41 @@ void AutoDonateInPlaceBuffers(
       continue;
     }
     const auto out_dtype = out_dtypes[out_idx];
-    const at::IntArrayRef destination_dims(out_dims_list[out_idx].data(),
-                                           out_dims_list[out_idx].size());
-    for (size_t in_idx = 0; in_idx < inputs.size(); ++in_idx) {
-      if (input_donated[in_idx]) {
-        continue;
-      }
-      if (IsEligibleDonor(inputs[in_idx], out, out_dtype, destination_dims)) {
-        donated_indices.push_back(static_cast<int64_t>(in_idx));
-        output_donated[out_idx] = true;
-        MarkDonatedAndAliases(in_idx, inputs, input_donated);
-        break;
-      }
+    const std::optional<Dimensions> torch_dims =
+        ToTorchSizes(out_dims_list[out_idx], out_dtype);
+    if (!torch_dims.has_value()) {
+      continue;
+    }
+    const at::IntArrayRef destination_dims(*torch_dims);
+    const BaseDonation base_donation =
+        GetBaseDonation(out, out_dtype, destination_dims);
+    if (base_donation == BaseDonation::kNone) {
+      continue;
+    }
+
+    // Donate the base to the op through a matching input (cases 1 and 2).
+    if (const std::optional<size_t> in_idx = FindMatchingInputDonor(
+            out, out_dtype, destination_dims, inputs, input_donated);
+        in_idx.has_value()) {
+      donated_indices.push_back(static_cast<int64_t>(*in_idx));
+      output_donated[out_idx] = true;
+      MarkDonatedAndAliases(*in_idx, inputs, input_donated);
+      continue;
+    }
+
+    // Otherwise, donate the base of a partial view to the write-back (cases 2
+    // and 3), along with inputs that alias the output (e.g.
+    // `x[4:12].copy_(x[0:8])`).
+    if (base_donation == BaseDonation::kToOpOrWriteBack &&
+        split_mode == OpSplitMode::kNone) {
+      output_donated[out_idx] = true;
+      MarkInputsAliasingOutputDonated(out, inputs, input_donated,
+                                      donated_indices);
     }
   }
+  return !donated_indices.empty() ||
+         absl::c_any_of(output_donated,
+                        [](uint8_t donated) { return donated != 0; });
 }
 
 absl::Status AssignBufferToOutput(const at::Tensor& output,
@@ -328,11 +507,21 @@ absl::Status AssignBufferToOutput(const at::Tensor& output,
       output.defined(), error::kInvalidArgument)
       << "expected defined output tensor";
   Dimensions logical_dims = CopyIntVector(result_buffer.dimensions());
-  if (result_buffer.element_type() == mlir::ElementType::F4E2M1FN) {
-    ABSL_CHECK(!logical_dims.empty());         // CRASH_OK
-    ABSL_CHECK_EQ(logical_dims.back() % 2, 0)  // CRASH_OK
-        << "Last dimension of FP4 must be even, got " << logical_dims.back();
-    logical_dims.back() /= 2;
+  const int64_t packing_factor =
+      TorchPackingFactor(result_buffer.element_type());
+  if (packing_factor > 1) {
+    ABSL_CHECK(!logical_dims.empty());                      // CRASH_OK
+    ABSL_CHECK_EQ(logical_dims.back() % packing_factor, 0)  // CRASH_OK
+        << "Last dimension of packed sub-byte tensor ("
+        << ToString(result_buffer.element_type())
+        << ") must be divisible by packing factor " << packing_factor
+        << ", got " << logical_dims.back();
+    // A packed dimension of exactly `packing_factor` becomes a trailing
+    // dimension of size 1 rather than being dropped: PyTorch also stores it as
+    // one container element (e.g. a `float4_e2m1fn_x2` tensor of shape
+    // `[..., 1]` holds a device buffer of shape `[..., 2]`, see MakeTensor), so
+    // an output of the same shape is not resized.
+    logical_dims.back() /= packing_factor;
   }
   TT_RETURN_IF_ERROR(ResizeTensorIfShapeDiffers(output, logical_dims));
   return AssignBufferToAtTensor(std::move(result_buffer), output,

@@ -240,9 +240,11 @@ absl::Status TpuBatchNormTrainingUpdateStats(
       outputs[0], outputs[1], outputs[2], running_mean, running_variance};
   std::vector<uint8_t> output_donated(destinations.size(), 0);
   Indices donated_indices;
-  internal::AutoDonateInPlaceBuffers(destinations, out_dtypes, out_dims_list,
-                                     inputs, donated_indices, output_donated);
-  const bool autodonated = !donated_indices.empty();
+  // An output's base buffer may be donated to its write-back even when no
+  // input is donated, so use the result rather than `donated_indices`.
+  const bool autodonated = internal::AutoDonateInPlaceBuffers(
+      destinations, out_dtypes, out_dims_list, inputs, OpSplitMode::kNone,
+      donated_indices, output_donated);
 
   std::optional<DeviceBufferRefArray<5>> results;
   TT_ASSIGN_OR_RETURN(results,

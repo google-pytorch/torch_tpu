@@ -324,14 +324,24 @@ absl::Status AssignBuffersToOutputs(
 // Automatically detects and populates buffer donations from `inputs` into
 // `outputs` in eager mode if `donated_indices` is empty.
 //
+// `out_dims_list` holds the on-device dimensions of each output, as in
+// DispatchOpOptions: the packed dimension of a packed sub-byte dtype (e.g.
+// `float4_e2m1fn_x2`) is `TorchPackingFactor` times its PyTorch size.
+//
+// Returns true if any buffer was donated. Callers must then create their ops
+// with `autodonated` set and run RunPostponedMaterialization() once all
+// outputs have been assigned. Note that an output's base buffer may be donated
+// to its view-inversion write-back (`output_donated` is set) without any input
+// being donated (`donated_indices` stays empty).
+//
 // IMPORTANT: A device buffer CANNOT be donated multiple times. In XLA, each
 // input buffer can be donated to at most ONE output buffer.
-void AutoDonateInPlaceBuffers(
+bool AutoDonateInPlaceBuffers(
     absl::Span<const at::Tensor> outputs,
     absl::Span<const mlir::ElementType> out_dtypes,
     absl::Span<const absl::Span<const int64_t>> out_dims_list,
-    absl::Span<const at::Tensor> inputs, Indices& donated_indices,
-    std::vector<uint8_t>& output_donated);
+    absl::Span<const at::Tensor> inputs, OpSplitMode split_mode,
+    Indices& donated_indices, std::vector<uint8_t>& output_donated);
 
 template <int kArity, int kNumOutputs>
 DeferredOpParams MakeDeferredOpParams(
@@ -490,16 +500,15 @@ absl::Status DispatchOpOut(NAryMlirOpBuilder<kArity, kNumOutputs> op_builder,
   bool autodonated = false;
   if (options.donated_indices.empty()) {
     if constexpr (kNumOutputs == 1) {
-      internal::AutoDonateInPlaceBuffers(
+      autodonated = internal::AutoDonateInPlaceBuffers(
           outputs_span, absl::MakeSpan(&options.out_dtype, 1),
-          absl::MakeSpan(&options.out_dims, 1), inputs_span,
+          absl::MakeSpan(&options.out_dims, 1), inputs_span, options.split_mode,
           options.donated_indices, output_donated);
     } else {
-      internal::AutoDonateInPlaceBuffers(
+      autodonated = internal::AutoDonateInPlaceBuffers(
           outputs_span, options.out_dtypes, options.out_dims_list, inputs_span,
-          options.donated_indices, output_donated);
+          options.split_mode, options.donated_indices, output_donated);
     }
-    autodonated = !options.donated_indices.empty();
   }
   options.autodonated = autodonated;
 

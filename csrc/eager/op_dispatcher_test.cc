@@ -20,19 +20,29 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
 #include "ATen/core/ATen_fwd.h"
+#include "absl/algorithm/container.h"
 #include "absl/cleanup/cleanup.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "c10/core/ScalarType.h"
+#include "c10/core/ScalarTypeToTypeMeta.h"
+#include "c10/core/Storage.h"
+#include "c10/core/TensorImpl.h"
+#include "c10/util/intrusive_ptr.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
+#include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/layout_utils.h"
 #include "csrc/common/shape.h"
 #include "csrc/common/status_test_utils.h"
+#include "csrc/common/utils.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/device_buffer_utils.h"
 #include "csrc/eager/eager_mode.h"
@@ -49,6 +59,7 @@
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
+#include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
 namespace {
@@ -217,7 +228,8 @@ void AutoDonateInPlaceBuffer(const at::Tensor& out,
   const absl::Span<const int64_t> dims_span(dims.data(), dims.size());
   internal::AutoDonateInPlaceBuffers(
       absl::MakeSpan(&out, 1), absl::MakeSpan(&out_dtype, 1),
-      absl::MakeSpan(&dims_span, 1), inputs, donated_indices, output_donated);
+      absl::MakeSpan(&dims_span, 1), inputs, OpSplitMode::kNone,
+      donated_indices, output_donated);
 }
 
 TEST(AutoDonateInPlaceBuffer, EligibilityAndAliasingTests) {
@@ -304,16 +316,23 @@ TEST(AutoDonateInPlaceBuffer, EligibilityAndAliasingTests) {
   TT_ASSERT_OK_AND_ASSIGN(dummy_buffer,
                           CreateEmptyDeviceBufferRef({2, 8}, fp4_type));
   at::Tensor t_fp4 = MakeTensor(std::move(dummy_buffer));
-  EXPECT_TRUE(should_donate(t_fp4, {t_fp4}, fp4_type));
+  // Output dims are on-device dims (as in DispatchOpOptions), whose packed
+  // dimension holds 2 FP4 values per PyTorch element: [2, 4] -> [2, 8].
+  EXPECT_TRUE(should_donate(t_fp4, {t_fp4}, fp4_type, at::IntArrayRef({2, 8})));
+  // PyTorch sizes as output dims describe a result of another shape.
+  EXPECT_FALSE(
+      should_donate(t_fp4, {t_fp4}, fp4_type, at::IntArrayRef({2, 4})));
 
   at::Tensor t_fp4_transposed = t_fp4;
   t_fp4_transposed.t_();
-  EXPECT_FALSE(should_donate(t_fp4_transposed, {t_fp4_transposed}, fp4_type));
+  EXPECT_FALSE(should_donate(t_fp4_transposed, {t_fp4_transposed}, fp4_type,
+                             at::IntArrayRef({4, 4})));
 
   at::Tensor t_fp4_sliced = t_fp4;
   t_fp4_sliced.as_strided_(/*size=*/{1, 4}, /*stride=*/{4, 1},
                            /*storage_offset=*/4);
-  EXPECT_FALSE(should_donate(t_fp4_sliced, {t_fp4_sliced}, fp4_type));
+  EXPECT_FALSE(should_donate(t_fp4_sliced, {t_fp4_sliced}, fp4_type,
+                             at::IntArrayRef({1, 8})));
 
   // Restore default mode.
   SetEagerMode(EagerMode::kDeferAndFuse);
@@ -373,7 +392,8 @@ TEST(AutoDonateInPlaceBuffers, MultiOutputDonation) {
   Indices donated;
   std::vector<uint8_t> output_donated = {0, 0};
   internal::AutoDonateInPlaceBuffers({out0, out1}, out_dtypes, out_dims_list,
-                                     {in0, in1}, donated, output_donated);
+                                     {in0, in1}, OpSplitMode::kNone, donated,
+                                     output_donated);
   // out0 matches in1 (index 1), out1 matches in0 (index 0).
   EXPECT_EQ(donated, (Indices{1, 0}));
   EXPECT_EQ(output_donated, std::vector<uint8_t>({1, 1}));
@@ -399,7 +419,8 @@ TEST(AutoDonateInPlaceBuffers, CannotDonateBufferMultipleTimes) {
   Indices donated;
   std::vector<uint8_t> output_donated = {0, 0};
   internal::AutoDonateInPlaceBuffers({out0, out1}, out_dtypes, out_dims_list,
-                                     {in}, donated, output_donated);
+                                     {in}, OpSplitMode::kNone, donated,
+                                     output_donated);
   // 'in' can only be donated to at most ONE output (out0). It must NOT be
   // donated a second time to out1.
   EXPECT_EQ(donated, Indices{0});
@@ -411,8 +432,8 @@ TEST(AutoDonateInPlaceBuffers, CannotDonateBufferMultipleTimes) {
   Indices donated_aliased_inputs;
   output_donated = {0, 0};
   internal::AutoDonateInPlaceBuffers({out0, out1}, out_dtypes, out_dims_list,
-                                     {in, in_alias}, donated_aliased_inputs,
-                                     output_donated);
+                                     {in, in_alias}, OpSplitMode::kNone,
+                                     donated_aliased_inputs, output_donated);
   EXPECT_EQ(donated_aliased_inputs, Indices{0});
   EXPECT_EQ(output_donated, std::vector<uint8_t>({1, 0}));
 
@@ -439,7 +460,8 @@ TEST(AutoDonateInPlaceBuffers,
   Indices donated;
   std::vector<uint8_t> output_donated = {0};
   internal::AutoDonateInPlaceBuffers({a}, out_dtypes, out_dims_list, {a},
-                                     donated, output_donated);
+                                     OpSplitMode::kNone, donated,
+                                     output_donated);
   EXPECT_EQ(donated, Indices{0});
   EXPECT_EQ(output_donated, std::vector<uint8_t>({1}));
 
@@ -455,7 +477,8 @@ TEST(AutoDonateInPlaceBuffers,
     Indices donated_shared;
     output_donated = {0};
     internal::AutoDonateInPlaceBuffers({b}, out_dtypes, out_dims_list, {b},
-                                       donated_shared, output_donated);
+                                       OpSplitMode::kNone, donated_shared,
+                                       output_donated);
     EXPECT_TRUE(donated_shared.empty());
     EXPECT_EQ(output_donated, std::vector<uint8_t>({0}));
 
@@ -463,7 +486,8 @@ TEST(AutoDonateInPlaceBuffers,
     Indices donated_a_shared;
     output_donated = {0};
     internal::AutoDonateInPlaceBuffers({a}, out_dtypes, out_dims_list, {a},
-                                       donated_a_shared, output_donated);
+                                       OpSplitMode::kNone, donated_a_shared,
+                                       output_donated);
     EXPECT_TRUE(donated_a_shared.empty());
     EXPECT_EQ(output_donated, std::vector<uint8_t>({0}));
 
@@ -471,7 +495,8 @@ TEST(AutoDonateInPlaceBuffers,
     Indices donated_both_inputs;
     output_donated = {0};
     internal::AutoDonateInPlaceBuffers({b}, out_dtypes, out_dims_list, {b, a},
-                                       donated_both_inputs, output_donated);
+                                       OpSplitMode::kNone, donated_both_inputs,
+                                       output_donated);
     EXPECT_TRUE(donated_both_inputs.empty());
     EXPECT_EQ(output_donated, std::vector<uint8_t>({0}));
   }
@@ -482,6 +507,7 @@ TEST(AutoDonateInPlaceBuffers,
   Indices donated_after_b_destroyed;
   output_donated = {0};
   internal::AutoDonateInPlaceBuffers({a}, out_dtypes, out_dims_list, {a},
+                                     OpSplitMode::kNone,
                                      donated_after_b_destroyed, output_donated);
   EXPECT_EQ(donated_after_b_destroyed, Indices{0});
   EXPECT_EQ(output_donated, std::vector<uint8_t>({1}));
@@ -538,7 +564,8 @@ TEST(AutoDonateInPlaceBuffers,
   Indices donated_all;
   std::vector<uint8_t> output_donated = {0, 0, 0};
   internal::AutoDonateInPlaceBuffers({t0, t1, t2}, out_dtypes, out_dims_list,
-                                     {t0, t1, t2}, donated_all, output_donated);
+                                     {t0, t1, t2}, OpSplitMode::kNone,
+                                     donated_all, output_donated);
   EXPECT_EQ(donated_all, (Indices{0, 1, 2}));
   EXPECT_THAT(output_donated, ElementsAre(1, 1, 1));
 
@@ -565,8 +592,8 @@ TEST(AutoDonateInPlaceBuffers,
     Indices donated_with_clone;
     output_donated = {0, 0, 0};
     internal::AutoDonateInPlaceBuffers({t0, t1, t2}, out_dtypes, out_dims_list,
-                                       {t0, t1, t2}, donated_with_clone,
-                                       output_donated);
+                                       {t0, t1, t2}, OpSplitMode::kNone,
+                                       donated_with_clone, output_donated);
     EXPECT_EQ(donated_with_clone, (Indices{0, 2}));
     EXPECT_EQ(output_donated, std::vector<uint8_t>({1, 0, 1}));
 
@@ -601,6 +628,383 @@ TEST(AssignBufferToOutput, ErrorOnUndefinedOutput) {
                                      /*enable_autodonation=*/false);
   EXPECT_FALSE(status.ok());
   EXPECT_EQ(status.code(), error::kInvalidArgument);
+}
+
+TEST(AssignBufferToOutput, PackedDimOfPackingFactorKeepsTrailingSizeOne) {
+  constexpr auto fp4_type = mlir::ElementType::F4E2M1FN;
+  ScopedPythonContextCapturer capturer(OpName::kAdd);
+
+  // A `float4_e2m1fn_x2` tensor of shape [2, 1] holds a device buffer of shape
+  // [2, 2] (MakeTensor), and its TPU layout doubles the trailing dim back to 2
+  // (ResolveTpuLayout).
+  TT_ASSERT_OK_AND_ASSIGN(auto output_buf,
+                          CreateEmptyDeviceBufferRef({2, 2}, fp4_type));
+  at::Tensor output = MakeTensor(std::move(output_buf));
+  EXPECT_THAT(output.sizes(), ElementsAre(2, 1));
+  TT_ASSERT_OK_AND_ASSIGN(const TpuLayout layout, ResolveTpuLayout(output));
+  EXPECT_THAT(layout.sizes, ElementsAre(2, 2));
+
+  // Assigning a [2, 2] result keeps the output's [2, 1] shape, so the output
+  // is not resized, and the output now holds the [2, 2] result buffer.
+  TT_ASSERT_OK_AND_ASSIGN(auto result_buf,
+                          CreateEmptyDeviceBufferRef({2, 2}, fp4_type));
+  ASSERT_TRUE(internal::AssignBufferToOutput(output, result_buf,
+                                             /*enable_autodonation=*/false)
+                  .ok());
+  EXPECT_THAT(output.sizes(), ElementsAre(2, 1));
+  TT_ASSERT_OK_AND_ASSIGN(DeviceBufferRef assigned, GetBaseBuffer(output));
+  EXPECT_EQ(assigned, result_buf);
+}
+
+// Returns a tensor of `dtype` sharing the storage of `base`, with the given
+// sizes, strides, and storage offset (in elements of `dtype`).
+at::Tensor MakeStorageAlias(const at::Tensor& base, at::ScalarType dtype,
+                            at::IntArrayRef sizes, at::IntArrayRef strides,
+                            int64_t storage_offset) {
+  at::Tensor alias(c10::make_intrusive<c10::TensorImpl>(
+      c10::Storage(base.storage()), base.key_set(),
+      c10::scalarTypeToTypeMeta(dtype)));
+  alias.as_strided_(sizes, strides, storage_offset);
+  return alias;
+}
+
+TEST(AutoDonateInPlaceBuffers,
+     PartialViewOutputDonatesBaseBufferWithoutAliasingInput) {
+  constexpr auto f32_type = mlir::ElementType::F32;
+  constexpr auto fp4_type = mlir::ElementType::F4E2M1FN;
+  const EagerMode prev_mode = GetEagerMode();
+  SetEagerMode(EagerMode::kDeferNever);
+  auto cleanup_mode =
+      absl::MakeCleanup([prev_mode]() { SetEagerMode(prev_mode); });
+  ScopedPythonContextCapturer capturer(OpName::kAdd);
+
+  TT_ASSERT_OK_AND_ASSIGN(auto base_buf,
+                          CreateEmptyDeviceBufferRef({2, 3}, f32_type));
+  at::Tensor base = MakeTensor(base_buf);
+  TT_ASSERT_OK_AND_ASSIGN(auto other_buf,
+                          CreateEmptyDeviceBufferRef({1, 3}, f32_type));
+  at::Tensor other = MakeTensor(std::move(other_buf));
+
+  at::Tensor out_slice = base;
+  out_slice.as_strided_(/*size=*/{1, 3}, /*stride=*/{3, 1},
+                        /*storage_offset=*/3);
+
+  const std::array<int64_t, 2> slice_dims = {1, 3};
+  const std::array<absl::Span<const int64_t>, 1> out_dims_list = {slice_dims};
+  const std::array<mlir::ElementType, 1> out_dtypes = {f32_type};
+
+  // Non-aliasing input into a partial output slice donates the output's base
+  // buffer without marking the non-aliasing input as donated.
+  Indices donated;
+  std::vector<uint8_t> output_donated = {0};
+  internal::AutoDonateInPlaceBuffers({out_slice}, out_dtypes, out_dims_list,
+                                     {other}, OpSplitMode::kNone, donated,
+                                     output_donated);
+  EXPECT_TRUE(donated.empty());
+  EXPECT_THAT(output_donated, ElementsAre(1));
+
+  // Different-shape aliasing input view with a partial output slice marks both
+  // output_donated and the aliasing input index so GetBuffers fuses the read.
+  at::Tensor in_col_slice = MakeStorageAlias(base, at::kFloat, /*sizes=*/{2, 1},
+                                             /*strides=*/{3, 1},
+                                             /*storage_offset=*/0);
+  ASSERT_TRUE(in_col_slice.is_alias_of(out_slice));
+  EXPECT_EQ(base_buf.live_data_ptrs(), 1);
+  donated.clear();
+  output_donated = {0};
+  internal::AutoDonateInPlaceBuffers({out_slice}, out_dtypes, out_dims_list,
+                                     {in_col_slice}, OpSplitMode::kNone,
+                                     donated, output_donated);
+  EXPECT_THAT(donated, ElementsAre(0));
+  EXPECT_THAT(output_donated, ElementsAre(1));
+
+  // Shallow clone on the base buffer blocks output-base donation.
+  {
+    at::Tensor base_clone = MakeTensor(base_buf);
+    EXPECT_EQ(base_buf.live_data_ptrs(), 2);
+    donated.clear();
+    output_donated = {0};
+    internal::AutoDonateInPlaceBuffers({out_slice}, out_dtypes, out_dims_list,
+                                       {other}, OpSplitMode::kNone, donated,
+                                       output_donated);
+    EXPECT_TRUE(donated.empty());
+    EXPECT_THAT(output_donated, ElementsAre(0));
+  }
+
+  // Non-default split_mode blocks partial-output base donation across splits.
+  donated.clear();
+  output_donated = {0};
+  internal::AutoDonateInPlaceBuffers({out_slice}, out_dtypes, out_dims_list,
+                                     {other}, OpSplitMode::kSplitAfter, donated,
+                                     output_donated);
+  EXPECT_TRUE(donated.empty());
+  EXPECT_THAT(output_donated, ElementsAre(0));
+
+  // FP4 partial slices do not donate their base buffer.
+  TT_ASSERT_OK_AND_ASSIGN(auto fp4_base_buf,
+                          CreateEmptyDeviceBufferRef({2, 8}, fp4_type));
+  at::Tensor fp4_base = MakeTensor(std::move(fp4_base_buf));
+  TT_ASSERT_OK_AND_ASSIGN(auto fp4_other_buf,
+                          CreateEmptyDeviceBufferRef({1, 8}, fp4_type));
+  at::Tensor fp4_other = MakeTensor(std::move(fp4_other_buf));
+  at::Tensor fp4_slice = fp4_base;
+  fp4_slice.as_strided_(/*size=*/{1, 4}, /*stride=*/{4, 1},
+                        /*storage_offset=*/4);
+  const std::array<int64_t, 2> fp4_out_dims = {1, 8};
+  const std::array<absl::Span<const int64_t>, 1> fp4_dims_list = {fp4_out_dims};
+  const std::array<mlir::ElementType, 1> fp4_dtypes = {fp4_type};
+  donated.clear();
+  output_donated = {0};
+  internal::AutoDonateInPlaceBuffers({fp4_slice}, fp4_dtypes, fp4_dims_list,
+                                     {fp4_other}, OpSplitMode::kNone, donated,
+                                     output_donated);
+  EXPECT_TRUE(donated.empty());
+  EXPECT_THAT(output_donated, ElementsAre(0));
+}
+
+// Runs AutoDonateInPlaceBuffers for `outputs` written with their own sizes and
+// dtypes, and returns {donated input indices, per-output donated flags}.
+std::pair<Indices, std::vector<uint8_t>> AutoDonate(
+    absl::Span<const at::Tensor> outputs, absl::Span<const at::Tensor> inputs,
+    OpSplitMode split_mode = OpSplitMode::kNone) {
+  std::vector<mlir::ElementType> out_dtypes;
+  // On-device output dims (as in DispatchOpOptions), whose packed dimension
+  // holds `TorchPackingFactor` values per PyTorch element.
+  std::vector<Dimensions> out_dims;
+  for (const at::Tensor& out : outputs) {
+    // Undefined outputs are skipped, so their dtype and dims don't matter.
+    const mlir::ElementType dtype =
+        out.defined() ? ConvertTo<mlir::ElementType>(out.scalar_type())
+                            .value_or(mlir::ElementType::F32)
+                      : mlir::ElementType::F32;
+    out_dtypes.push_back(dtype);
+    Dimensions dims = out.defined() ? CopyIntVector(out.sizes()) : Dimensions();
+    if (!dims.empty()) {
+      dims.back() *= TorchPackingFactor(dtype);
+    }
+    out_dims.push_back(std::move(dims));
+  }
+  std::vector<absl::Span<const int64_t>> out_dims_list(out_dims.begin(),
+                                                       out_dims.end());
+  Indices donated;
+  std::vector<uint8_t> output_donated(outputs.size(), 0);
+  const bool any_donated = internal::AutoDonateInPlaceBuffers(
+      outputs, out_dtypes, out_dims_list, inputs, split_mode, donated,
+      output_donated);
+  // The result reports whether any buffer was donated, including an output's
+  // base donated to its write-back without any input being donated.
+  EXPECT_EQ(any_donated, !donated.empty() ||
+                             absl::c_any_of(output_donated,
+                                            [](uint8_t d) { return d != 0; }));
+  return {std::move(donated), std::move(output_donated)};
+}
+
+TEST(AutoDonateInPlaceBuffers, ReturnsWhetherAnyBufferWasDonated) {
+  constexpr auto f32_type = mlir::ElementType::F32;
+  constexpr auto fp4_type = mlir::ElementType::F4E2M1FN;
+  const EagerMode prev_mode = GetEagerMode();
+  SetEagerMode(EagerMode::kDeferNever);
+  auto cleanup_mode =
+      absl::MakeCleanup([prev_mode]() { SetEagerMode(prev_mode); });
+  ScopedPythonContextCapturer capturer(OpName::kAdd);
+
+  TT_ASSERT_OK_AND_ASSIGN(auto base_buf,
+                          CreateEmptyDeviceBufferRef({2, 3}, f32_type));
+  at::Tensor base = MakeTensor(std::move(base_buf));
+  TT_ASSERT_OK_AND_ASSIGN(auto other_buf,
+                          CreateEmptyDeviceBufferRef({2, 3}, f32_type));
+  at::Tensor other = MakeTensor(std::move(other_buf));
+  at::Tensor row1 = MakeStorageAlias(base, at::kFloat, /*sizes=*/{1, 3},
+                                     /*strides=*/{3, 1}, /*storage_offset=*/3);
+  const std::array<mlir::ElementType, 1> f32_dtypes = {f32_type};
+
+  {
+    SCOPED_TRACE("Only the output's base is donated, to its write-back");
+    const std::array<int64_t, 2> dims = {1, 3};
+    const std::array<absl::Span<const int64_t>, 1> dims_list = {dims};
+    Indices donated;
+    std::vector<uint8_t> output_donated = {0};
+    EXPECT_TRUE(internal::AutoDonateInPlaceBuffers(
+        {row1}, f32_dtypes, dims_list, {other}, OpSplitMode::kNone, donated,
+        output_donated));
+    EXPECT_TRUE(donated.empty());
+    EXPECT_THAT(output_donated, ElementsAre(1));
+  }
+  {
+    SCOPED_TRACE("Nothing is donated");
+    const std::array<int64_t, 2> dims = {2, 3};
+    const std::array<absl::Span<const int64_t>, 1> dims_list = {dims};
+    Indices donated;
+    std::vector<uint8_t> output_donated = {0};
+    EXPECT_FALSE(internal::AutoDonateInPlaceBuffers(
+        {base}, f32_dtypes, dims_list, {other}, OpSplitMode::kNone, donated,
+        output_donated));
+    EXPECT_TRUE(donated.empty());
+    EXPECT_THAT(output_donated, ElementsAre(0));
+  }
+
+  // FP4 output dims are on-device dims, whose packed dimension holds 2 values
+  // per PyTorch element; an odd packed dimension can't be converted.
+  TT_ASSERT_OK_AND_ASSIGN(auto fp4_buf,
+                          CreateEmptyDeviceBufferRef({2, 8}, fp4_type));
+  at::Tensor fp4 = MakeTensor(std::move(fp4_buf));
+  const std::array<mlir::ElementType, 1> fp4_dtypes = {fp4_type};
+  {
+    SCOPED_TRACE("FP4 output with convertible on-device dims");
+    const std::array<int64_t, 2> dims = {2, 8};
+    const std::array<absl::Span<const int64_t>, 1> dims_list = {dims};
+    Indices donated;
+    std::vector<uint8_t> output_donated = {0};
+    EXPECT_TRUE(internal::AutoDonateInPlaceBuffers({fp4}, fp4_dtypes, dims_list,
+                                                   {fp4}, OpSplitMode::kNone,
+                                                   donated, output_donated));
+    EXPECT_THAT(donated, ElementsAre(0));
+    EXPECT_THAT(output_donated, ElementsAre(1));
+  }
+  {
+    SCOPED_TRACE("FP4 output with an odd packed on-device dim");
+    const std::array<int64_t, 2> dims = {2, 7};
+    const std::array<absl::Span<const int64_t>, 1> dims_list = {dims};
+    Indices donated;
+    std::vector<uint8_t> output_donated = {0};
+    EXPECT_FALSE(internal::AutoDonateInPlaceBuffers(
+        {fp4}, fp4_dtypes, dims_list, {fp4}, OpSplitMode::kNone, donated,
+        output_donated));
+    EXPECT_TRUE(donated.empty());
+    EXPECT_THAT(output_donated, ElementsAre(0));
+  }
+}
+
+// Covers each decision of GetBaseDonation, IsMatchingInputDonor, and the
+// donation routes of AutoDonateInPlaceBuffers that other tests don't.
+TEST(AutoDonateInPlaceBuffers, BaseDonationDecisions) {
+  constexpr auto f32_type = mlir::ElementType::F32;
+  constexpr auto fp4_type = mlir::ElementType::F4E2M1FN;
+  const EagerMode prev_mode = GetEagerMode();
+  SetEagerMode(EagerMode::kDeferNever);
+  auto cleanup_mode =
+      absl::MakeCleanup([prev_mode]() { SetEagerMode(prev_mode); });
+  ScopedPythonContextCapturer capturer(OpName::kAdd);
+
+  TT_ASSERT_OK_AND_ASSIGN(auto base_buf,
+                          CreateEmptyDeviceBufferRef({2, 3}, f32_type));
+  at::Tensor base = MakeTensor(base_buf);
+  TT_ASSERT_OK_AND_ASSIGN(auto other_buf,
+                          CreateEmptyDeviceBufferRef({2, 3}, f32_type));
+  at::Tensor other = MakeTensor(std::move(other_buf));
+  at::Tensor row0 = MakeStorageAlias(base, at::kFloat, {1, 3}, {3, 1}, 0);
+  at::Tensor row1 = MakeStorageAlias(base, at::kFloat, {1, 3}, {3, 1}, 3);
+  at::Tensor col0 = MakeStorageAlias(base, at::kFloat, {2, 1}, {3, 1}, 0);
+
+  {
+    SCOPED_TRACE("Case 4: a full overwrite with no aliasing input");
+    auto [donated, output_donated] = AutoDonate({base}, {other});
+    EXPECT_TRUE(donated.empty());
+    EXPECT_THAT(output_donated, ElementsAre(0));
+  }
+  {
+    SCOPED_TRACE("Undefined outputs are skipped and undefined inputs ignored");
+    at::Tensor undefined;  // UNINITIALIZED_TENSOR_OK
+    auto [donated, output_donated] =
+        AutoDonate({undefined, base}, {undefined, base});
+    EXPECT_THAT(donated, ElementsAre(1));
+    EXPECT_THAT(output_donated, ElementsAre(0, 1));
+  }
+  {
+    SCOPED_TRACE("Matching input of another dtype: full overwrite");
+    at::Tensor base_i32 = MakeStorageAlias(base, at::kInt, {2, 3}, {3, 1}, 0);
+    auto [donated, output_donated] = AutoDonate({base}, {base_i32});
+    EXPECT_TRUE(donated.empty());
+    EXPECT_THAT(output_donated, ElementsAre(0));
+  }
+  {
+    SCOPED_TRACE("Matching input of another dtype: partial overwrite");
+    // The input doesn't match, so the base is donated to the write-back, and
+    // the aliasing input is marked so its read is fused with it.
+    at::Tensor row1_i32 = MakeStorageAlias(base, at::kInt, {1, 3}, {3, 1}, 3);
+    auto [donated, output_donated] = AutoDonate({row1}, {row1_i32});
+    EXPECT_THAT(donated, ElementsAre(0));
+    EXPECT_THAT(output_donated, ElementsAre(1));
+  }
+  {
+    SCOPED_TRACE("Two partial outputs of one base share an aliasing input");
+    // Both write-backs read the base, but the input is donated only once.
+    auto [donated, output_donated] = AutoDonate({row0, row1}, {col0});
+    EXPECT_THAT(donated, ElementsAre(0));
+    EXPECT_THAT(output_donated, ElementsAre(1, 1));
+  }
+  {
+    SCOPED_TRACE("Overlapping partial views are not donated to a write-back");
+    at::Tensor broadcast = MakeStorageAlias(base, at::kFloat, {4}, {0}, 0);
+    TT_ASSERT_OK_AND_ASSIGN(auto src_buf,
+                            CreateEmptyDeviceBufferRef({4}, f32_type));
+    at::Tensor src = MakeTensor(std::move(src_buf));
+    auto [donated, output_donated] = AutoDonate({broadcast}, {src});
+    EXPECT_TRUE(donated.empty());
+    EXPECT_THAT(output_donated, ElementsAre(0));
+  }
+
+  // A PRED base must be upcast out-of-place for a non-boolean write.
+  TT_ASSERT_OK_AND_ASSIGN(auto pred_buf, CreateEmptyDeviceBufferRef(
+                                             {2, 4}, mlir::ElementType::PRED));
+  at::Tensor pred_base = MakeTensor(std::move(pred_buf));
+  {
+    SCOPED_TRACE("Non-boolean write into a PRED base: full overwrite");
+    at::Tensor pred_as_u8 =
+        MakeStorageAlias(pred_base, at::kByte, {2, 4}, {4, 1}, 0);
+    auto [donated, output_donated] = AutoDonate({pred_as_u8}, {pred_as_u8});
+    EXPECT_TRUE(donated.empty());
+    EXPECT_THAT(output_donated, ElementsAre(0));
+  }
+  {
+    SCOPED_TRACE("Non-boolean write into a PRED base: partial overwrite");
+    at::Tensor pred_row_as_u8 =
+        MakeStorageAlias(pred_base, at::kByte, {1, 4}, {4, 1}, 4);
+    TT_ASSERT_OK_AND_ASSIGN(auto u8_buf, CreateEmptyDeviceBufferRef(
+                                             {1, 4}, mlir::ElementType::UI8));
+    at::Tensor u8_src = MakeTensor(std::move(u8_buf));
+    auto [donated, output_donated] = AutoDonate({pred_row_as_u8}, {u8_src});
+    EXPECT_TRUE(donated.empty());
+    EXPECT_THAT(output_donated, ElementsAre(0));
+  }
+
+  // FP4 (`float4_e2m1fn_x2`) buffers hold two values per PyTorch element.
+  TT_ASSERT_OK_AND_ASSIGN(auto fp4_buf,
+                          CreateEmptyDeviceBufferRef({4, 8}, fp4_type));
+  at::Tensor fp4_base = MakeTensor(std::move(fp4_buf));
+  {
+    SCOPED_TRACE("Contiguous FP4 output not covering its whole buffer");
+    at::Tensor fp4_row0 =
+        MakeStorageAlias(fp4_base, at::kFloat4_e2m1fn_x2, {1, 4}, {4, 1}, 0);
+    auto [donated, output_donated] = AutoDonate({fp4_row0}, {fp4_row0});
+    EXPECT_TRUE(donated.empty());
+    EXPECT_THAT(output_donated, ElementsAre(0));
+  }
+  {
+    SCOPED_TRACE("Non-contiguous FP4 input of the output's shape");
+    at::Tensor fp4_transposed =
+        MakeStorageAlias(fp4_base, at::kFloat4_e2m1fn_x2, {4, 4}, {1, 4}, 0);
+    auto [donated, output_donated] = AutoDonate({fp4_base}, {fp4_transposed});
+    EXPECT_TRUE(donated.empty());
+    EXPECT_THAT(output_donated, ElementsAre(0));
+  }
+  {
+    SCOPED_TRACE("Partial non-FP4 view of an FP4 base");
+    // Only donated through a matching input, never to a write-back.
+    at::Tensor fp4_row_as_u8 =
+        MakeStorageAlias(fp4_base, at::kByte, {1, 4}, {4, 1}, 4);
+    TT_ASSERT_OK_AND_ASSIGN(auto u8_buf, CreateEmptyDeviceBufferRef(
+                                             {1, 4}, mlir::ElementType::UI8));
+    at::Tensor u8_src = MakeTensor(std::move(u8_buf));
+    auto [donated, output_donated] = AutoDonate({fp4_row_as_u8}, {u8_src});
+    EXPECT_TRUE(donated.empty());
+    EXPECT_THAT(output_donated, ElementsAre(0));
+
+    std::tie(donated, output_donated) =
+        AutoDonate({fp4_row_as_u8}, {fp4_row_as_u8});
+    EXPECT_THAT(donated, ElementsAre(0));
+    EXPECT_THAT(output_donated, ElementsAre(1));
+  }
 }
 
 }  // namespace
