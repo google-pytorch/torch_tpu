@@ -2176,6 +2176,56 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "graph_test",
+    srcs = ["graph_test.py"],
+    main = "graph_test.py",
+    tags = ["requires-tpu-v5lite"],
+    deps = [
+        ":seed_test_utils",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/dynamism",
+        "//src/torch_tpu/_internal/execution_mode",
+        "//src/torch_tpu/_internal/utils:test_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "graph_cuda_ref_test",
+    srcs = ["graph_cuda_ref_test.py"],
+    args = ["--backend=tpu"],
+    main = "graph_cuda_ref_test.py",
+    tags = ["requires-tpu-v5lite"],
+    deps = [
+        "//shims/absl_py/flags",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "graph_cuda_ref_test_cuda",
+    srcs = ["graph_cuda_ref_test.py"],
+    args = ["--backend=gpu"],
+    # Loading TorchTPU would make TPU the accelerator instead of CUDA.
+    autoload = False,
+    main = "graph_cuda_ref_test.py",
+    nolocal = "Skipping in local runs by default as it requires --config=cuda.",
+    tags = [
+        "nozapfhahn",  # Requires --config=cuda; excluded from Zapfhahn coverage.
+        _REQUIRES_GPU_FOR_NON_OPS_TEST,
+    ],
+    deps = [
+        "//shims/absl_py/flags",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+    ],
+)
+
+torch_tpu_py_test(
     name = "rng_test",
     srcs = ["rng_test.py"],
     main = "rng_test.py",
