@@ -79,7 +79,7 @@ absl::Status ValidateIntMmOutInputs(const at::Tensor& self,
       << "expected out shape [" << self.size(0) << ", " << mat2.size(1)
       << "], got " << ToString(out.sizes());
   TT_RET_CHECK(out.is_contiguous(), error::kInvalidArgument)
-      << "expected out to be contiguous";
+      << "expected out to be contiguous, got non-contiguous tensor";
   return absl::OkStatus();
 }
 

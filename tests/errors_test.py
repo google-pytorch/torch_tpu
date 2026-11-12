@@ -1509,7 +1509,7 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     with et.assert_raises_message(
       RuntimeError,
       gpu="""Expected result to be contiguous.""",
-      tpu="""int_mm(): expected out to be contiguous""",
+      tpu="""int_mm(): expected out to be contiguous, got non-contiguous tensor""",
     ):
       torch.ops.aten._int_mm.out(a, b, out=out)
 
