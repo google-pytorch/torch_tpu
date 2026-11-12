@@ -236,6 +236,8 @@ its `SKILL.md` and follow it.
 *   [`tt-implement-ops`](.agents/skills/tt-implement-ops/SKILL.md): implementing
     a new ATen operator or StableHLO lowering, including C++ registration and
     tests.
+*   [`tt-review-code`](.agents/skills/tt-review-code/SKILL.md): reviewing a
+    change for complexity, C++ pitfalls, readability, and style.
 *   [`tt-support-dtypes`](.agents/skills/tt-support-dtypes/SKILL.md): fixing
     unsupported or excluded dtypes for an op.
 *   [`tt-support-dynamism`](.agents/skills/tt-support-dynamism/SKILL.md):
