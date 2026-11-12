@@ -4777,6 +4777,28 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     dst_tpu.copy_(src_cpu)
     self.assertEqual(dst_tpu.cpu(), src_cpu.int())
 
+  @parameterized.parameters(torch.complex64, torch.complex128)
+  def test_copy_complex_to_bool(self, dtype):
+    """Tests that complex -> bool is true if either part is non-zero."""
+    values = [0.0 + 1.0j, 1.0 + 0.0j, 0.0 + 0.0j, -2.0 - 3.0j]
+
+    def to_bool(device):
+      return torch.tensor(values, dtype=dtype, device=device).to(torch.bool)
+
+    def copy_into_bool(device):
+      src = torch.tensor(values, dtype=dtype, device=device)
+      dst = torch.empty(len(values), dtype=torch.bool, device=device)
+      return dst.copy_(src)
+
+    self.assert_close_tpu_vs_cpu(to_bool)
+    self.assert_close_tpu_vs_cpu(copy_into_bool)
+
+    # TPU -> CPU copy with a dtype conversion.
+    src_tpu = torch.tensor(values, dtype=dtype, device="tpu")
+    dst_cpu = torch.empty(len(values), dtype=torch.bool)
+    dst_cpu.copy_(src_tpu)
+    self.assertEqual(dst_cpu, torch.tensor(values, dtype=dtype).to(torch.bool))
+
   def test_copy_aten_op(self):
     """Tests torch.ops.aten.copy."""
     tpu_device = torch.device("tpu")

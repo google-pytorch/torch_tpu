@@ -145,9 +145,14 @@ absl::Status CopyTpuToTpu(const at::Tensor& src, const at::Tensor& dest) {
       TT_ASSIGN_OR_RETURN(formatted, SliceFP4(formatted));
     }
 
-    // 2. Cast to the target element type.
-    if (GetElementTypeOrDie(formatted) != out_dtype) {
-      formatted = mlir::stablehlo::ConvertElementType(formatted, out_dtype);
+    // 2. Cast complex -> bool as "either part is non-zero", since
+    //    ConvertElementType() would keep only the real part.
+    //    Every other dtype needs no explicit cast here: DispatchOp casts each
+    //    op's outputs to their out_dtype in CastOutputs()
+    //    (eager/device_buffer_utils.cc).
+    if (out_dtype == mlir::ElementType::PRED &&
+        IsComplexType(GetTensorTypeOrDie(formatted))) {
+      formatted = GetNonzeroMask(formatted);
     }
 
     // 3. If destination is FP4, it must be physically 2M. Pad it from logical
