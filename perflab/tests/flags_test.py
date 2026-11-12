@@ -25,6 +25,7 @@ from absl import flags
 from absl.testing import absltest
 from absl.testing import flagsaver
 from absl.testing import parameterized
+from perflab import common
 from perflab import context as context_lib
 from perflab import flags as flags_lib
 from perflab import target as target_lib
@@ -138,15 +139,24 @@ class BatchSweepFlagsTest(seed_test_utils.RepeatableTest):
 
   def _values_before_parsing(
       self, argv: list[str]
-  ) -> tuple[bool, tuple[int, ...]]:
+  ) -> flags_lib.BatchSweepFlagValues:
     import_time_flags = flags.FlagValues()
-    for flag in (flags_lib.BATCH_SWEEP, flags_lib.BATCH_SWEEP_SIZES):
+    for flag in (
+        flags_lib.BATCH_SWEEP,
+        flags_lib.BATCH_SWEEP_SIZES,
+        flags_lib.BATCH_SWEEP_RUN_MODES,
+        flags_lib.BATCH_SWEEP_ONLY,
+    ):
       import_time_flags[flag.name] = copy.deepcopy(flags.FLAGS[flag.name])
     with (
         mock.patch.object(flags, "FLAGS", import_time_flags),
         mock.patch.object(sys, "argv", ["prog", *argv]),
     ):
       return flags_lib.batch_sweep_flag_values()
+
+  def _enabled_and_sizes(self, argv: list[str]) -> tuple[bool, tuple[int, ...]]:
+    values = self._values_before_parsing(argv)
+    return values.enabled, values.batch_sizes
 
   def _record_argv(self, pid: int, argv: list[str]) -> None:
     os.environ[flags_lib.COLLECTION_ARGV_ENV_VAR] = json.dumps(
@@ -163,34 +173,65 @@ class BatchSweepFlagsTest(seed_test_utils.RepeatableTest):
   def test_child_process_reads_recorded_argv(self):
     # As in the forkserver of a benchmark binary run with --batch_sweep, whose
     # own command line lacks the flag.
-    self._record_argv(os.getppid(), ["--batch_sweep", "--batch_sweep_sizes=8"])
-    self.assertEqual(self._values_before_parsing([]), (True, (8,)))
+    self._record_argv(
+        os.getppid(),
+        ["--batch_sweep", "--batch_sweep_sizes=8", "--batch_sweep_only"],
+    )
+    values = self._values_before_parsing([])
+    self.assertEqual((values.enabled, values.batch_sizes), (True, (8,)))
+    self.assertTrue(values.only)
 
   def test_ignores_argv_recorded_by_another_process(self):
     self._record_argv(os.getpid(), ["--batch_sweep"])
     self.assertEqual(
-        self._values_before_parsing(["--batch_sweep_sizes=2"]), (False, (2,))
+        self._enabled_and_sizes(["--batch_sweep_sizes=2"]), (False, (2,))
     )
 
   def test_defaults_before_parsing(self):
     self.assertEqual(
         self._values_before_parsing([]),
-        (False, (1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024)),
+        flags_lib.BatchSweepFlagValues(
+            enabled=False,
+            batch_sizes=(1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024),
+            run_modes=frozenset({common.RunMode.COMPILED}),
+            only=False,
+        ),
     )
 
   def test_reads_argv_before_parsing(self):
     self.assertEqual(
-        self._values_before_parsing(
-            ["--batch_sweep", "--batch_sweep_sizes=16,4,4"]
+        self._values_before_parsing([
+            "--batch_sweep",
+            "--batch_sweep_sizes=16,4,4",
+            "--batch_sweep_run_modes=eager_default,compiled",
+            "--batch_sweep_only",
+        ]),
+        flags_lib.BatchSweepFlagValues(
+            enabled=True,
+            batch_sizes=(4, 16),
+            run_modes=frozenset(
+                {common.RunMode.EAGER_DEFAULT, common.RunMode.COMPILED}
+            ),
+            only=True,
         ),
-        (True, (4, 16)),
     )
 
   def test_reads_parsed_flags(self):
     with flagsaver.flagsaver(
-        (flags_lib.BATCH_SWEEP, True), (flags_lib.BATCH_SWEEP_SIZES, ["2"])
+        (flags_lib.BATCH_SWEEP, True),
+        (flags_lib.BATCH_SWEEP_SIZES, ["2"]),
+        (flags_lib.BATCH_SWEEP_RUN_MODES, ["eager_optimized"]),
+        (flags_lib.BATCH_SWEEP_ONLY, True),
     ):
-      self.assertEqual(flags_lib.batch_sweep_flag_values(), (True, (2,)))
+      self.assertEqual(
+          flags_lib.batch_sweep_flag_values(),
+          flags_lib.BatchSweepFlagValues(
+              enabled=True,
+              batch_sizes=(2,),
+              run_modes=frozenset({common.RunMode.EAGER_OPTIMIZED}),
+              only=True,
+          ),
+      )
 
   def test_batch_sweep_requires_full_scope(self):
     with flagsaver.flagsaver(
@@ -211,6 +252,27 @@ class BatchSweepFlagsTest(seed_test_utils.RepeatableTest):
   def test_batch_sweep_sizes_must_be_positive_integers(self, *values: str):
     with self.assertRaises(flags.IllegalFlagValueError):
       with flagsaver.flagsaver((flags_lib.BATCH_SWEEP_SIZES, list(values))):
+        pass
+
+  @parameterized.parameters([], ["compiled", "eager"], ["COMPILED"])
+  def test_batch_sweep_run_modes_must_be_run_modes(self, *values: str):
+    with self.assertRaisesRegex(
+        flags.IllegalFlagValueError, "batch_sweep_run_modes"
+    ):
+      with flagsaver.flagsaver((flags_lib.BATCH_SWEEP_RUN_MODES, list(values))):
+        pass
+
+  def test_batch_sweep_only_requires_batch_sweep(self):
+    with flagsaver.flagsaver(
+        (flags_lib.BATCH_SWEEP, True), (flags_lib.BATCH_SWEEP_ONLY, True)
+    ):
+      self.assertTrue(flags_lib.BATCH_SWEEP_ONLY.value)
+    with self.assertRaisesRegex(
+        flags.IllegalFlagValueError, "batch_sweep_only is only valid with"
+    ):
+      with flagsaver.flagsaver(
+          (flags_lib.BATCH_SWEEP, False), (flags_lib.BATCH_SWEEP_ONLY, True)
+      ):
         pass
 
 

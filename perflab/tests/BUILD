@@ -106,6 +106,36 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "batch_sweep_benchmarks_test",
+    srcs = ["batch_sweep_benchmarks_test.py"],
+    data = [
+        "//perflab/huggingface_transformers:model_configs_data",
+        "//shims/model_configs:google_model_configs_data",
+    ],
+    notest_oss = True,  # NOTEST_OSS_OK=registers the generated benchmarks of the internal in-tree model list, which OSS does not export
+    deps = [
+        "//perflab:batch_sweep_benchmarks",
+        "//perflab:cases",
+        "//perflab:common",
+        "//perflab:context",
+        "//perflab:discovery",
+        "//perflab:flags",
+        "//perflab:known_failures",
+        "//perflab:mode",
+        "//perflab:registry",
+        "//perflab:step_lib",
+        "//perflab:target",
+        "//perflab/models",
+        "//shims/absl_py/logging",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:flagsaver",
+        "//shims/absl_py/testing:parameterized",
+        "//src/torch_tpu",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
     name = "benchmark_contract_test",
     srcs = ["benchmark_contract_test.py"],
     data = [
@@ -191,6 +221,7 @@ torch_tpu_py_test(
     name = "flags_test",
     srcs = ["flags_test.py"],
     deps = [
+        "//perflab:common",
         "//perflab:context",
         "//perflab:flags",
         "//perflab:target",
@@ -504,9 +535,11 @@ torch_tpu_py_test(
     name = "cases_test",
     srcs = ["cases_test.py"],
     deps = [
+        "//perflab:batch_sweep_benchmarks",
         "//perflab:cases",
         "//perflab:common",
         "//perflab:context",
+        "//perflab:flags",
         "//perflab:known_failures",
         "//perflab:mode",
         "//perflab:registry",

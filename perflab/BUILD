@@ -129,6 +129,7 @@ torch_tpu_py_library(
     name = "flags",
     srcs = ["flags.py"],
     deps = [
+        ":common",
         ":context",
         ":target",
         "//shims/absl_py/flags",
@@ -297,6 +298,7 @@ torch_tpu_py_library(
     name = "cases",
     srcs = ["cases.py"],
     deps = [
+        ":batch_sweep_benchmarks",
         ":common",
         ":context",
         ":flags",
@@ -309,6 +311,11 @@ torch_tpu_py_library(
         "//shims/absl_py/logging",
         "//shims/absl_py/testing:absltest",
     ],
+)
+
+torch_tpu_py_library(
+    name = "batch_sweep_benchmarks",
+    srcs = ["batch_sweep_benchmarks.py"],
 )
 
 torch_tpu_py_library(

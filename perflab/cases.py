@@ -15,7 +15,7 @@
 """Provides logic to resolve benchmark cases."""
 
 import collections
-from collections.abc import Iterable, Iterator, Mapping, MutableMapping, Sequence
+from collections.abc import Collection, Iterable, Iterator, Mapping, MutableMapping, Sequence
 import hashlib
 import os
 import random
@@ -25,6 +25,7 @@ import unittest
 from absl import flags
 from absl import logging
 from absl.testing import absltest
+from perflab import batch_sweep_benchmarks
 from perflab import common
 from perflab import context as context_lib
 from perflab import flags as flags_lib
@@ -371,6 +372,9 @@ def get_cases(
   `gen_benchmarks` does to register benchmarks. The benchmarks left out, and
   why, are logged once per call.
 
+  With `--batch_sweep_only`, there are no default cases: `get_batch_sweep_cases`
+  then has a case at the default batch size of each benchmark that it sweeps.
+
   Args:
     platform: Target hardware platform on which the benchmarks will run.
     framework: Execution framework (e.g. TORCH or TORCHAX) filtering modes.
@@ -380,6 +384,11 @@ def get_cases(
   Yields:
     Tuples of (case_name, spec, run_mode) in deterministic hashed order.
   """
+  if flags_lib.batch_sweep_flag_values().only:
+    logging.info(
+        "Running no default cases: --%s", flags_lib.BATCH_SWEEP_ONLY.name
+    )
+    return
   if order_seed is None:
     order_seed = _get_order_seed()
   run_scope, fake_tensor_mode = flags_lib.collection_flag_values()
@@ -421,9 +430,19 @@ def get_batch_sweep_skip_reason(
 ) -> str | None:
   """Returns why the batch sweep does not measure `spec`, or None.
 
+  The batch sweep only measures the benchmarks that opt in to it
+  (`batch_sweep_benchmarks.BATCH_SWEEP_BENCHMARKS`), and of those, the ones
+  that declare a workload, do not disable it (`BatchSweep.disabled`) and do not
+  decode.
+
   Args:
     spec: Benchmark specification.
   """
+  if spec.name not in batch_sweep_benchmarks.BATCH_SWEEP_BENCHMARKS:
+    return (
+        f"Benchmark {spec.name} is not batch swept: it is not opted in to the"
+        " batch sweep (see BATCH_SWEEP_BENCHMARKS)"
+    )
   if spec.workload is None:
     return f"Benchmark {spec.name} is not batch swept: it declares no workload"
   if not spec.batch_sweep.enabled:
@@ -435,49 +454,111 @@ def get_batch_sweep_skip_reason(
   return None
 
 
+def _capped_batch_sizes(
+    spec_name: str,
+    batch_sizes: Iterable[int],
+    opt_in: batch_sweep_benchmarks.BatchSweepOptIn,
+    *,
+    default_batch_size: int,
+) -> set[int]:
+  """Returns the batch sizes to sweep a benchmark at, up to its cap.
+
+  Logs the cap of the benchmark, if it has one, and why.
+
+  Args:
+    spec_name: The name of the benchmark.
+    batch_sizes: The batch sizes to sweep the benchmark at, before its cap.
+    opt_in: How the benchmark opts in to the batch sweep.
+    default_batch_size: The batch size of the default workload of the benchmark,
+      which is measured whatever its cap.
+  """
+  batch_sizes = set(batch_sizes)
+  if opt_in.max_batch_size is None:
+    return batch_sizes
+  capped = {b for b in batch_sizes if b <= opt_in.max_batch_size}
+  dropped = sorted(batch_sizes - capped - {default_batch_size})
+  default_note = (
+      f" (its default batch size {default_batch_size} is still measured)"
+      if default_batch_size > opt_in.max_batch_size
+      else ""
+  )
+  logging.info(
+      "%s: batch sweep capped at %d%s, dropping batch sizes %s: %s",
+      spec_name,
+      opt_in.max_batch_size,
+      default_note,
+      ", ".join(str(b) for b in dropped) or "none",
+      opt_in.max_batch_size_reason,
+  )
+  return capped
+
+
 def get_batch_sweep_cases(
     platform: target_lib.Platform,
     framework: mode_lib.Framework,
     *,
     batch_sizes: Sequence[int] | None = None,
+    run_modes: Collection[common.RunMode] | None = None,
     order_seed: str | None = None,
 ) -> Iterator[tuple[str, registry_lib.BenchmarkSpec, common.RunMode, int]]:
   """The cases that `--batch_sweep` adds to those of `get_cases`.
 
-  One case per benchmark that the sweep measures, run mode (those of
-  `get_cases`: the batch sweep is independent of the run mode) and batch size
-  other than that of the benchmark's default workload, whose case `get_cases`
-  already has. The cases of a benchmark and run mode are consecutive and in
-  ascending batch size order, so that a runner can skip the batch sizes larger
-  than one that ran out of memory. Benchmarks are in the same deterministic
-  hashed order as in `get_cases`.
+  One case per benchmark that the sweep measures (see
+  `get_batch_sweep_skip_reason`), run mode (those of `run_modes` that
+  `get_cases` has on the platform) and batch size other than that of the
+  benchmark's default workload, whose case `get_cases` already has. The batch
+  sizes of a benchmark are those of its `BatchSweep.batch_sizes`, or else
+  `batch_sizes`, up to the `BatchSweepOptIn.max_batch_size` of the benchmark
+  (whose reason is logged). With `--batch_sweep_only`, `get_cases` has no
+  cases, so there is a case at the default batch size too, even above the cap,
+  and the whole sweep of each benchmark and run mode runs in one process, where
+  it can stop once the throughput stops improving.
+  The cases of a benchmark and run mode are consecutive and in ascending batch
+  size order, so that a runner can skip the batch sizes larger than one that
+  ran out of memory. Benchmarks are in the same deterministic hashed order as
+  in `get_cases`.
 
   Args:
     platform: Target hardware platform on which the benchmarks will run.
     framework: Execution framework (e.g. TORCH or TORCHAX) filtering modes.
     batch_sizes: The batch sizes to measure benchmarks that do not set their own
       at; defaults to those of `--batch_sweep_sizes`.
+    run_modes: The run modes to measure benchmarks in, of those of the platform;
+      defaults to those of `--batch_sweep_run_modes`.
     order_seed: Seed string used for deterministic benchmark ordering; falls
       back to the TORCH_TPU_BENCHMARK_ORDER_SEED environment variable if None.
 
   Yields:
     Tuples of (case_name, spec, run_mode, batch_size).
   """
+  sweep_flags = flags_lib.batch_sweep_flag_values()
   if batch_sizes is None:
-    _, batch_sizes = flags_lib.batch_sweep_flag_values()
+    batch_sizes = sweep_flags.batch_sizes
+  if run_modes is None:
+    run_modes = sweep_flags.run_modes
   if order_seed is None:
     order_seed = _get_order_seed()
   run_scope, _ = flags_lib.collection_flag_values()
   target_kind = target_lib.make_target(platform).device_kind
+  modes = [
+      mode
+      for mode in mode_lib.modes_for(framework, target_kind)
+      if mode in run_modes
+  ]
   ordered_names = sorted(
       registry_lib.REGISTRY,
       key=lambda name: _case_order_key(name, order_seed),
   )
+  not_opted_in = 0
   excluded = []
   for name in ordered_names:
     spec = registry_lib.REGISTRY[name]
-    if get_batch_sweep_skip_reason(spec) is not None:
-      excluded.append(spec.name)
+    if spec.name not in batch_sweep_benchmarks.BATCH_SWEEP_BENCHMARKS:
+      not_opted_in += 1
+      continue
+    skip_reason = get_batch_sweep_skip_reason(spec)
+    if skip_reason is not None:
+      excluded.append(skip_reason)
       continue
     default_workload = registry_lib.resolve_workload(
         spec,
@@ -488,24 +569,31 @@ def get_batch_sweep_cases(
     )
     if default_workload is None:  # Excluded above; narrows the type.
       continue
-    spec_batch_sizes = sorted(
-        set(spec.batch_sweep.batch_sizes or batch_sizes)
-        - {default_workload.batch_size}
+    spec_batch_sizes = _capped_batch_sizes(
+        spec.name,
+        spec.batch_sweep.batch_sizes or batch_sizes,
+        batch_sweep_benchmarks.BATCH_SWEEP_BENCHMARKS[spec.name],
+        default_batch_size=default_workload.batch_size,
     )
-    for mode in mode_lib.modes_for(framework, target_kind):
-      for batch_size in spec_batch_sizes:
+    if sweep_flags.only:
+      spec_batch_sizes.add(default_workload.batch_size)
+    else:
+      spec_batch_sizes.discard(default_workload.batch_size)
+    for mode in modes:
+      for batch_size in sorted(spec_batch_sizes):
         yield (
             batch_sweep_case_name(spec.name, batch_size, mode),
             spec,
             mode,
             batch_size,
         )
-  if excluded:
-    logging.info(
-        "Left %d benchmarks out of the batch sweep: %s",
-        len(excluded),
-        ", ".join(sorted(excluded)),
-    )
+  logging.info(
+      "Left %d benchmarks that are not opted in to the batch sweep"
+      " (BATCH_SWEEP_BENCHMARKS) out of it, and %d that are:%s",
+      not_opted_in,
+      len(excluded),
+      "".join(f"\n  {reason}" for reason in sorted(excluded)),
+  )
 
 
 def get_presubmit_skip_reason(

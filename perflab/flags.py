@@ -15,12 +15,14 @@
 """Common command-line flags for benchmark tests."""
 
 import copy
+import dataclasses
 import json
 import os
 import sys
 from typing import Any
 
 from absl import flags
+from perflab import common
 from perflab import context as context_lib
 from perflab import target as target_lib
 
@@ -112,27 +114,44 @@ BATCH_SWEEP = flags.DEFINE_bool(  # PYTHON_FLAG_OK=benchmark
     False,
     "Whether to also run the batch sweep: in addition to the default cases,"
     " which run each benchmark at its default workload, one case per"
-    " benchmark that supports it (`BenchmarkSpec.batch_sweep`), run mode and"
-    " other batch size of --batch_sweep_sizes, named"
-    " `<benchmark>_bs<N>_<run mode>`, whose results are keyed by the batch"
-    " size (`bs<N>`). The batch sweep is independent of the run mode. A batch"
-    " size that runs out of device memory is exported as such rather than as"
-    " a failure, and the larger batch sizes of the benchmark in that run mode"
-    " are then not run (and exported as skipped), as are those after a batch"
-    " size that fails and those past which its throughput stops improving"
-    " (--batch_sweep_min_improvement, --batch_sweep_patience). Only valid with"
-    " --run_scope=full. Only torch_benchmark_test runs batch sweeps.",
+    " benchmark that opts in to it (`batch_sweep_benchmarks.py`), run mode of"
+    " --batch_sweep_run_modes and other batch size of --batch_sweep_sizes,"
+    " named `<benchmark>_bs<N>_<run mode>`, whose results are keyed by the"
+    " batch size (`bs<N>`). A batch size that runs out of device memory is"
+    " exported as such rather than as a failure, and the larger batch sizes"
+    " of the benchmark in that run mode are then not run (and exported as"
+    " skipped), as are those after a batch size that fails and those past"
+    " which its throughput stops improving (--batch_sweep_min_improvement,"
+    " --batch_sweep_patience). Only valid with --run_scope=full. Only"
+    " torch_benchmark_test runs batch sweeps.",
 )
 
 BATCH_SWEEP_SIZES = flags.DEFINE_list(  # PYTHON_FLAG_OK=benchmark
     "batch_sweep_sizes",
     ["1", "2", "4", "8", "16", "32", "64", "128", "256", "512", "1024"],
     "The batch sizes that --batch_sweep measures each benchmark at, unless the"
-    " benchmark sets its own (`BatchSweep.batch_sizes`). The sweep of a"
+    " benchmark sets its own (`BatchSweep.batch_sizes`), up to the cap of the"
+    " benchmark, if any (`BatchSweepOptIn.max_batch_size`). The sweep of a"
     " benchmark stops early once a batch size runs out of memory or fails, or"
     " once its throughput stops improving (--batch_sweep_min_improvement), so"
     " the large batch sizes only run for benchmarks that still gain from"
     " them.",
+)
+
+BATCH_SWEEP_RUN_MODES = flags.DEFINE_list(  # PYTHON_FLAG_OK=benchmark
+    "batch_sweep_run_modes",
+    [common.RunMode.COMPILED.value],
+    "The run modes that --batch_sweep measures each benchmark in, of those"
+    " that the platform runs.",
+)
+
+BATCH_SWEEP_ONLY = flags.DEFINE_bool(  # PYTHON_FLAG_OK=benchmark
+    "batch_sweep_only",
+    False,
+    "Whether to run only the batch sweep: no default cases, and a batch sweep"
+    " case at the default batch size of each benchmark too, so that one job"
+    " measures the whole sweep of each benchmark in one process. Only valid"
+    " with --batch_sweep.",
 )
 
 
@@ -190,6 +209,27 @@ def _check_batch_sweep_sizes(values: list[str]) -> bool:
   return True
 
 
+def _parse_run_modes(values: list[str]) -> frozenset[common.RunMode]:
+  """Returns the run modes of a --batch_sweep_run_modes value."""
+  known = {mode.value for mode in common.RunMode}
+  unknown = sorted(set(values) - known)
+  if not values or unknown:
+    raise ValueError(
+        f"expected one or more of {sorted(known)}, got {values} (unknown:"
+        f" {unknown})"
+    )
+  return frozenset(common.RunMode(v) for v in values)
+
+
+def _check_batch_sweep_run_modes(values: list[str]) -> bool:
+  """Checks that --batch_sweep_run_modes lists run modes."""
+  try:
+    _parse_run_modes(values)
+  except ValueError as e:
+    raise flags.ValidationError(f"--{BATCH_SWEEP_RUN_MODES.name}: {e}") from e
+  return True
+
+
 def _check_batch_sweep(values: dict[str, object]) -> bool:
   """Checks that --batch_sweep runs in the full run scope."""
   if values[BATCH_SWEEP.name] and (
@@ -202,9 +242,22 @@ def _check_batch_sweep(values: dict[str, object]) -> bool:
   return True
 
 
+def _check_batch_sweep_only(values: dict[str, object]) -> bool:
+  """Checks that --batch_sweep_only is only set with --batch_sweep."""
+  if values[BATCH_SWEEP_ONLY.name] and not values[BATCH_SWEEP.name]:
+    raise flags.ValidationError(
+        f"--{BATCH_SWEEP_ONLY.name} is only valid with --{BATCH_SWEEP.name}"
+    )
+  return True
+
+
 flags.register_validator(BATCH_SWEEP_SIZES, _check_batch_sweep_sizes)
+flags.register_validator(BATCH_SWEEP_RUN_MODES, _check_batch_sweep_run_modes)
 flags.register_multi_flags_validator(
     [BATCH_SWEEP, context_lib.RUN_SCOPE], _check_batch_sweep
+)
+flags.register_multi_flags_validator(
+    [BATCH_SWEEP_ONLY, BATCH_SWEEP], _check_batch_sweep_only
 )
 
 
@@ -252,19 +305,38 @@ def collection_flag_values() -> tuple[context_lib.RunScope, bool]:
   return run_scope, fake_tensor_mode
 
 
-def batch_sweep_flag_values() -> tuple[bool, tuple[int, ...]]:
-  """Returns the values of `--batch_sweep` and `--batch_sweep_sizes`.
+@dataclasses.dataclass(frozen=True)
+class BatchSweepFlagValues:
+  """The values of the batch sweep flags.
+
+  Attributes:
+    enabled: Whether to run the batch sweep (`--batch_sweep`).
+    batch_sizes: The sorted, distinct batch sizes of `--batch_sweep_sizes`.
+    run_modes: The run modes of `--batch_sweep_run_modes`.
+    only: Whether to run only the batch sweep (`--batch_sweep_only`).
+  """
+
+  enabled: bool
+  batch_sizes: tuple[int, ...]
+  run_modes: frozenset[common.RunMode]
+  only: bool
+
+
+def batch_sweep_flag_values() -> BatchSweepFlagValues:
+  """Returns the values of the batch sweep flags.
 
   Like `collection_flag_values`, for benchmark binaries that collect their test
   cases at import, before `flags.FLAGS` is parsed.
-
-  Returns:
-    Whether to run the batch sweep, and its sorted, distinct batch sizes.
   """
-  batch_sweep, batch_sweep_sizes = _collection_values(
-      BATCH_SWEEP, BATCH_SWEEP_SIZES
+  batch_sweep, batch_sweep_sizes, run_modes, only = _collection_values(
+      BATCH_SWEEP, BATCH_SWEEP_SIZES, BATCH_SWEEP_RUN_MODES, BATCH_SWEEP_ONLY
   )
-  return bool(batch_sweep), _parse_batch_sizes(batch_sweep_sizes)
+  return BatchSweepFlagValues(
+      enabled=bool(batch_sweep),
+      batch_sizes=_parse_batch_sizes(batch_sweep_sizes),
+      run_modes=_parse_run_modes(run_modes),
+      only=bool(only),
+  )
 
 
 def _collection_values(*holders: flags.FlagHolder) -> tuple[Any, ...]:

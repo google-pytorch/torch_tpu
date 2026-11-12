@@ -109,15 +109,18 @@ class BatchSweep:
   """How a benchmark runs in the batch sweep (`--batch_sweep`).
 
   The batch sweep measures a benchmark at more batch sizes than its default
-  workload's, in each run mode, e.g. to find the batch size with the best
-  throughput on each platform. Each case builds the benchmark at its workload
-  with another batch size (`Context.workload`), so only benchmarks that declare
-  a workload are swept.
+  workload's, e.g. to find the batch size with the best throughput on each
+  platform. Each case builds the benchmark at its workload with another batch
+  size (`Context.workload`), so only benchmarks that declare a workload are
+  swept. Only the benchmarks that opt in to the batch sweep, by being listed in
+  `batch_sweep_benchmarks.BATCH_SWEEP_BENCHMARKS`, are swept; this sets how.
 
   Attributes:
-    enabled: Whether the batch sweep measures the benchmark.
+    enabled: Whether the batch sweep may measure the benchmark, if it opts in.
     batch_sizes: The batch sizes to measure the benchmark at, or None for those
-      of `--batch_sweep_sizes`.
+      of `--batch_sweep_sizes`. Either way, those above the
+      `batch_sweep_benchmarks.BatchSweepOptIn.max_batch_size` of the benchmark
+      are not measured.
     reason: Why the batch sweep does not measure the benchmark. Required if and
       only if it is not enabled.
   """
@@ -250,7 +253,8 @@ def add_benchmark(
     workload: The workload that the benchmark runs at by default, or None for a
       benchmark without a batch (see `BenchmarkSpec.workload`). Required.
     batch_sweep: How the benchmark runs in the batch sweep. Defaults to
-      measuring it at the batch sizes of `--batch_sweep_sizes`.
+      measuring it at the batch sizes of `--batch_sweep_sizes`, if it opts in to
+      the batch sweep (`batch_sweep_benchmarks.BATCH_SWEEP_BENCHMARKS`).
     devices_per_replica: Returns the number of processes that one model replica
       spans, given the world size (see `BenchmarkSpec.devices_per_replica`).
       Defaults to 1.
@@ -320,7 +324,8 @@ def register_benchmark(
     workload: The workload that the benchmark runs at by default, or None for a
       benchmark without a batch (see `BenchmarkSpec.workload`). Required.
     batch_sweep: How the benchmark runs in the batch sweep. Defaults to
-      measuring it at the batch sizes of `--batch_sweep_sizes`.
+      measuring it at the batch sizes of `--batch_sweep_sizes`, if it opts in to
+      the batch sweep (`batch_sweep_benchmarks.BATCH_SWEEP_BENCHMARKS`).
     devices_per_replica: Returns the number of processes that one model replica
       spans, given the world size (see `BenchmarkSpec.devices_per_replica`).
       Defaults to 1.

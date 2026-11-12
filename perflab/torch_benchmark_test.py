@@ -31,8 +31,11 @@ Environment & Flags:
                        step on a fake CPU copy and export TFLOP/s and MFU
                                                                (default: false)
   --batch_sweep        in addition to the default cases, measure each benchmark
-                       in each run mode at the other batch sizes of
+                       of batch_sweep_benchmarks.py in each run mode of
+                       --batch_sweep_run_modes at the other batch sizes of
                        --batch_sweep_sizes                  (default: false)
+  --batch_sweep_only   with --batch_sweep, run only the batch sweep, including
+                       the default batch sizes              (default: false)
 """
 
 from typing import Any
@@ -62,10 +65,11 @@ failures = discovery_lib.import_submodules(models)
 failures += discovery_lib.import_submodules(steps)
 
 
-_BATCH_SWEEP, _ = flags_lib.batch_sweep_flag_values()
-# A batch sweep runs the default cases and adds cases at more batch sizes.
+_BATCH_SWEEP = flags_lib.batch_sweep_flag_values()
+# A batch sweep runs the default cases (unless --batch_sweep_only) and adds
+# cases at more batch sizes.
 _CASES: list[cases.Case] = list(cases.get_cases(_PLATFORM, _FRAMEWORK))
-if _BATCH_SWEEP:
+if _BATCH_SWEEP.enabled:
   _CASES += cases.get_batch_sweep_cases(_PLATFORM, _FRAMEWORK)
 
 
