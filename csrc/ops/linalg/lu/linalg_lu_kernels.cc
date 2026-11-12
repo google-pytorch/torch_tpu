@@ -29,17 +29,11 @@
 #include "ATen/ops/_linalg_check_errors.h"
 #include "ATen/ops/add.h"
 #include "ATen/ops/any.h"
-#include "ATen/ops/arange.h"
 #include "ATen/ops/argmax.h"
 #include "ATen/ops/diagonal.h"
 #include "ATen/ops/empty.h"
 #include "ATen/ops/empty_like.h"
 #include "ATen/ops/eq.h"
-#include "ATen/ops/eye.h"
-#include "ATen/ops/gather.h"
-#include "ATen/ops/reshape.h"
-#include "ATen/ops/tril.h"
-#include "ATen/ops/triu.h"
 #include "ATen/ops/where.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -50,6 +44,7 @@
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/fixed_size_span.h"
 #include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
 #include "csrc/eager/op_dispatcher.h"
@@ -429,36 +424,112 @@ absl::Status ApplyPivotsInPlace(at::Tensor& tensor, const at::Tensor& pivots,
     return absl::OkStatus();
   }
 
-  // Flatten batch dimensions.
-  const at::Tensor pivots_flat =
-      at::reshape(pivots, {-1, pivots.size(-1)}).to(at::kLong).sub(1);
-  const int64_t n_batch = pivots_flat.size(0);
-  const int64_t n_pivots = pivots_flat.size(1);
-  at::Tensor permutation = at::arange(size, pivots.options().dtype(at::kLong))
-                               .unsqueeze(0)
-                               .expand({n_batch, size})
-                               .clone();
-  for (int64_t i = 0; i < n_pivots; ++i) {
-    // Forward swaps apply P^T, reverse swaps apply P.
-    const int64_t k = inverse ? i : n_pivots - 1 - i;
-    const at::Tensor pivot_index = pivots_flat.select(1, k).unsqueeze(1);
-    const at::Tensor permutation_at_k =
-        permutation.select(1, k).unsqueeze(1).clone();
-    const at::Tensor permutation_at_pivot =
-        at::gather(permutation, 1, pivot_index);
-    permutation.select(1, k).copy_(permutation_at_pivot.squeeze(1));
-    permutation.scatter_(1, pivot_index, permutation_at_k);
-  }
-  const int64_t rows = tensor.size(-2);
-  const int64_t cols = tensor.size(-1);
-  const at::Tensor tensor_flat = tensor.reshape({n_batch, rows, cols});
-  const at::Tensor gather_indices =
-      to_rows ? permutation.unsqueeze(2).expand({n_batch, rows, cols})
-              : permutation.unsqueeze(1).expand({n_batch, rows, cols});
-  const at::Tensor permuted =
-      at::gather(tensor_flat, to_rows ? 1 : 2, gather_indices);
-  tensor.copy_(permuted.reshape(tensor.sizes()));
-  return absl::OkStatus();
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType out_dtype,
+                      ConvertTo<mlir::ElementType>(tensor.scalar_type()));
+  auto cache_keys = OpParamCacheKeys::Empty();
+  TT_RETURN_IF_ERROR(cache_keys.SetParam("step", "P"));
+  TT_RETURN_IF_ERROR(cache_keys.SetParam("to_rows", to_rows));
+  TT_RETURN_IF_ERROR(cache_keys.SetParam("inverse", inverse));
+
+  const LuPivotOptions pivot_options{
+      .target = to_rows ? LuPivotTarget::kRows : LuPivotTarget::kColumns,
+      .direction =
+          inverse ? LuPivotDirection::kInverse : LuPivotDirection::kForward,
+  };
+  auto op_builder = [pivot_options](FixedSizeSpan<mlir::MlirOp, 2> inputs)
+      -> absl::StatusOr<mlir::MlirOp> {
+    return ApplyLuPivotsLike(inputs[0], inputs[1], pivot_options);
+  };
+  return DispatchOpOut<2>(std::move(op_builder), {tensor, pivots}, tensor,
+                          {.out_dtype = out_dtype,
+                           .out_dims = tensor.sizes(),
+                           .op_param_cache_keys = std::move(cache_keys)});
+}
+
+absl::StatusOr<MlirOpResults<2>> BuildLuUnpackDataShlo(mlir::MlirOp lu_op) {
+  return RunBatchedMatrixOpAtStaticBounds<2>(
+      lu_op,
+      {MatrixOutputSpec{.trailing_dims = {MatrixDimKind::kRows,
+                                          MatrixDimKind::kMinRowsCols}},
+       MatrixOutputSpec{.trailing_dims = {MatrixDimKind::kMinRowsCols,
+                                          MatrixDimKind::kCols}}},
+      [](mlir::MlirOp static_lu) -> absl::StatusOr<MlirOpResults<2>> {
+        const mlir::RankedTensorType lu_type = GetTensorTypeOrDie(static_lu);
+        const int64_t rank = lu_type.getRank();
+        const Dimensions shape = CopyIntVector(lu_type.getShape());
+        const int64_t m = shape[rank - 2];
+        const int64_t n = shape[rank - 1];
+        const int64_t k = std::min(m, n);
+
+        const Indices zeros(rank, 0);
+        const Indices ones(rank, 1);
+        Indices l_limits = shape;
+        l_limits[rank - 1] = k;
+        Indices u_limits = shape;
+        u_limits[rank - 2] = k;
+
+        mlir::MlirOp l_slice =
+            mlir::stablehlo::Slice(static_lu, zeros, l_limits, ones);
+        mlir::MlirOp u_slice =
+            mlir::stablehlo::Slice(static_lu, zeros, u_limits, ones);
+        if (k == 0) {
+          return MlirOpResults<2>{l_slice, u_slice};
+        }
+
+        mlir::MlirOp row_l = mlir::stablehlo::IotaLike(l_slice, rank - 2,
+                                                       mlir::ElementType::I32);
+        mlir::MlirOp col_l = mlir::stablehlo::IotaLike(l_slice, rank - 1,
+                                                       mlir::ElementType::I32);
+        mlir::MlirOp zero_l = MakeConstantLike(l_slice, 0);
+        mlir::MlirOp one_l = MakeConstantLike(l_slice, 1);
+        mlir::MlirOp is_strictly_lower = mlir::stablehlo::Compare(
+            row_l, col_l, mlir::stablehlo::ComparisonDirection::GT);
+        mlir::MlirOp is_diag = mlir::stablehlo::Compare(
+            row_l, col_l, mlir::stablehlo::ComparisonDirection::EQ);
+        mlir::MlirOp l_strict =
+            mlir::stablehlo::Select(is_strictly_lower, l_slice, zero_l);
+        mlir::MlirOp l_out = mlir::stablehlo::Select(is_diag, one_l, l_strict);
+
+        mlir::MlirOp row_u = mlir::stablehlo::IotaLike(u_slice, rank - 2,
+                                                       mlir::ElementType::I32);
+        mlir::MlirOp col_u = mlir::stablehlo::IotaLike(u_slice, rank - 1,
+                                                       mlir::ElementType::I32);
+        mlir::MlirOp zero_u = MakeConstantLike(u_slice, 0);
+        mlir::MlirOp is_upper = mlir::stablehlo::Compare(
+            row_u, col_u, mlir::stablehlo::ComparisonDirection::LE);
+        mlir::MlirOp u_out = mlir::stablehlo::Select(is_upper, u_slice, zero_u);
+        return MlirOpResults<2>{l_out, u_out};
+      });
+}
+
+absl::StatusOr<mlir::MlirOp> BuildLuIdentityMatrixShlo(mlir::MlirOp lu_op) {
+  return RunBatchedMatrixOpAtStaticBounds<1>(
+      lu_op,
+      {MatrixOutputSpec{
+          .trailing_dims = {MatrixDimKind::kRows, MatrixDimKind::kRows}}},
+      [](mlir::MlirOp static_lu) -> absl::StatusOr<mlir::MlirOp> {
+        mlir::MlirBuilder& builder = static_lu.getBuilder();
+        const mlir::RankedTensorType lu_type = GetTensorTypeOrDie(static_lu);
+        const int64_t rank = lu_type.getRank();
+        Dimensions p_shape = CopyIntVector(lu_type.getShape());
+        p_shape[rank - 1] = p_shape[rank - 2];
+        const mlir::RankedTensorType i32_type = mlir::makeTensorType(
+            builder.getContext(), p_shape, mlir::ElementType::I32);
+        if (p_shape[rank - 2] == 0) {
+          TT_ASSIGN_OR_RETURN(  // ERROR_COV_INFEASIBLE=lu_data dtype is valid.
+              const mlir::ElementType elem_type, GetElementType(static_lu));
+          return MakeZeroSizedTensor(builder, elem_type, p_shape);
+        }
+        mlir::MlirOp rows = mlir::stablehlo::Iota(builder, i32_type, rank - 2);
+        mlir::MlirOp cols = mlir::stablehlo::Iota(builder, i32_type, rank - 1);
+        mlir::MlirOp is_diag = mlir::stablehlo::Compare(
+            rows, cols, mlir::stablehlo::ComparisonDirection::EQ);
+        const mlir::RankedTensorType out_type =
+            mlir::RankedTensorType::get(p_shape, lu_type.getElementType());
+        mlir::MlirOp one = MakeConstant(builder, 1, out_type);
+        mlir::MlirOp zero = MakeConstant(builder, 0, out_type);
+        return mlir::stablehlo::Select(is_diag, one, zero);
+      });
 }
 
 }  // namespace
@@ -558,6 +629,9 @@ std::tuple<at::Tensor&, at::Tensor&, at::Tensor&> AtenLuUnpackOut(
                                              /*allow_out_dtype_cast=*/false));
         }
 
+        TT_ASSIGN_OR_THROW(const mlir::ElementType lu_elem_type,
+                           ConvertTo<mlir::ElementType>(lu_data.scalar_type()));
+
         if (unpack_data) {
           Dimensions l_dims = batch_dims;
           l_dims.reserve(l_dims.size() + 2);
@@ -571,12 +645,17 @@ std::tuple<at::Tensor&, at::Tensor&, at::Tensor&> AtenLuUnpackOut(
           u_dims.push_back(n);
           TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(u, u_dims));
 
-          l.zero_();
-          u.zero_();
-          if (k > 0) {
-            l.add_(at::tril(lu_data.narrow(-1, 0, k), /*diagonal=*/-1));
-            l.add_(at::eye(m, k, lu_data.options()));
-            u.add_(at::triu(lu_data.narrow(-2, 0, k), /*diagonal=*/0));
+          if (l.numel() == 0 && u.numel() == 0) {
+            l.zero_();
+            u.zero_();
+          } else {
+            auto data_keys = OpParamCacheKeys::Empty();
+            TT_THROW_IF_ERROR(data_keys.SetParam("part", "lu_data"));
+            TT_THROW_IF_ERROR((DispatchOpOut<1, 2>(
+                BuildLuUnpackDataShlo, lu_data, {l, u},
+                {.out_dtypes = {lu_elem_type, lu_elem_type},
+                 .out_dims_list = {l_dims, u_dims},
+                 .op_param_cache_keys = std::move(data_keys)})));
           }
         }
 
@@ -596,7 +675,13 @@ std::tuple<at::Tensor&, at::Tensor&, at::Tensor&> AtenLuUnpackOut(
           // algorithm, the i-th row was swapped with the j-th row. (So j
           // >= i).
           if (p.numel() > 0) {
-            p.copy_(at::eye(m, p.options()));
+            auto eye_keys = OpParamCacheKeys::Empty();
+            TT_THROW_IF_ERROR(eye_keys.SetParam("part", "eye"));
+            TT_THROW_IF_ERROR(
+                DispatchOpOut<1>(BuildLuIdentityMatrixShlo, lu_data, p,
+                                 {.out_dtype = lu_elem_type,
+                                  .out_dims = p_dims,
+                                  .op_param_cache_keys = std::move(eye_keys)}));
           }
           TT_THROW_IF_ERROR(ApplyPivotsInPlace(p, lu_pivots, /*to_rows=*/true,
                                                /*inverse=*/false));

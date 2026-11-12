@@ -29,7 +29,6 @@ torch_tpu_cc_library(
     hdrs = ["linalg_solve_triangular_kernels.h"],
     deps = [
         "//csrc/common:aten_utils",
-        "//csrc/common:dimension_types",
         "//csrc/common:dtype",
         "//csrc/common:error_utils",
         "//csrc/common:fixed_size_span",
@@ -47,7 +46,6 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
-        "@stablehlo//:stablehlo_ops",
         "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
         "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
     ],

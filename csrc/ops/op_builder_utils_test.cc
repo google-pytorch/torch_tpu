@@ -33,6 +33,7 @@
 #include "absl/types/span.h"
 #include "c10/core/DefaultDtype.h"
 #include "c10/util/Exception.h"
+#include "c10/util/StringUtil.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -2428,6 +2429,320 @@ INSTANTIATE_TEST_SUITE_P(
     }),
     [](const testing::TestParamInfo<ConvolutionLikeUnsupportedTest::ParamType>&
            info) { return info.param.test_name; });
+
+TEST(BroadcastBatchDimensions, BroadcastsBoundedBatchPreservingMatrixDims) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp lhs = MakeBoundedArg(fb, {1, 4, 4}, {});
+  mlir::MlirOp rhs = MakeBoundedArg(fb, {6, 4, 2}, {0});
+
+  TT_ASSERT_OK_AND_ASSIGN(auto bcast_pair, BroadcastBatchDimensions(lhs, rhs));
+  auto [lhs_bcast, rhs_bcast] = bcast_pair;
+  mlir::func::Return(fb, {lhs_bcast, rhs_bcast});
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+
+  const mlir::stablehlo::Dimensions lhs_dims = GetDimensions(lhs_bcast);
+  ASSERT_EQ(lhs_dims.size(), 3);
+  EXPECT_EQ(lhs_dims[0].size, 6);
+  EXPECT_TRUE(lhs_dims[0].boundOp.has_value());
+  EXPECT_EQ(lhs_dims[1].size, 4);
+  EXPECT_EQ(lhs_dims[2].size, 4);
+
+  const mlir::stablehlo::Dimensions rhs_dims = GetDimensions(rhs_bcast);
+  ASSERT_EQ(rhs_dims.size(), 3);
+  EXPECT_EQ(rhs_dims[0].size, 6);
+  EXPECT_TRUE(rhs_dims[0].boundOp.has_value());
+  EXPECT_EQ(rhs_dims[1].size, 4);
+  EXPECT_EQ(rhs_dims[2].size, 2);
+}
+
+TEST(BroadcastBatchDimensions, ExpandsRankWhenOperandHasNoBatchDims) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp lhs = MakeBoundedArg(fb, {4, 4}, {});
+  mlir::MlirOp rhs = MakeBoundedArg(fb, {6, 4, 2}, {0});
+
+  TT_ASSERT_OK_AND_ASSIGN(auto bcast_pair, BroadcastBatchDimensions(lhs, rhs));
+  auto [lhs_bcast, rhs_bcast] = bcast_pair;
+  mlir::func::Return(fb, {lhs_bcast, rhs_bcast});
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+
+  const mlir::stablehlo::Dimensions lhs_dims = GetDimensions(lhs_bcast);
+  ASSERT_EQ(lhs_dims.size(), 3);
+  EXPECT_EQ(lhs_dims[0].size, 6);
+  EXPECT_TRUE(lhs_dims[0].boundOp.has_value());
+  EXPECT_EQ(lhs_dims[1].size, 4);
+  EXPECT_EQ(lhs_dims[2].size, 4);
+
+  const mlir::stablehlo::Dimensions rhs_dims = GetDimensions(rhs_bcast);
+  ASSERT_EQ(rhs_dims.size(), 3);
+  EXPECT_EQ(rhs_dims[0].size, 6);
+  EXPECT_TRUE(rhs_dims[0].boundOp.has_value());
+  EXPECT_EQ(rhs_dims[1].size, 4);
+  EXPECT_EQ(rhs_dims[2].size, 2);
+}
+
+TEST(BroadcastBatchDimensions, RejectsMixedStaticAndBoundedBatchDim) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp lhs = MakeBoundedArg(fb, {6, 4, 4}, {});
+  mlir::MlirOp rhs = MakeBoundedArg(fb, {6, 4, 2}, {0});
+
+  EXPECT_THAT(
+      BroadcastBatchDimensions(lhs, rhs),
+      StatusIs(
+          error::kInvalidArgument,
+          HasSubstr("cannot mix bounded and static dimensions in broadcast")));
+}
+
+TEST(TriangularSolveLike, EmitsStaticTriangularSolveForBoundedOperands) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp a = MakeBoundedArg(fb, {6, 8, 8}, {0, 1, 2});
+  mlir::MlirOp b = MakeBoundedArg(fb, {6, 8, 5}, {0, 1, 2});
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      mlir::MlirOp result,
+      TriangularSolveLike(a, b,
+                          TriangularSolveOptions{
+                              .side = MatrixSide::kLeft,
+                              .triangular = MatrixTriangular::kUpper,
+                              .diagonal = DiagonalKind::kNonUnit,
+                          }));
+  mlir::func::Return(fb, result);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+
+  int num_solves = 0;
+  module->walk([&](mlir::stablehlo::TriangularSolveOp solve) {
+    ++num_solves;
+    EXPECT_TRUE(solve.getA().getType().hasStaticShape());
+    EXPECT_TRUE(solve.getB().getType().hasStaticShape());
+    EXPECT_TRUE(solve.getType().hasStaticShape());
+  });
+  EXPECT_EQ(num_solves, 1);
+
+  const mlir::stablehlo::Dimensions dims = GetDimensions(result);
+  ASSERT_EQ(dims.size(), 3);
+  EXPECT_EQ(dims[0].size, 6);
+  EXPECT_TRUE(dims[0].boundOp.has_value());
+  EXPECT_EQ(dims[1].size, 8);
+  EXPECT_TRUE(dims[1].boundOp.has_value());
+  EXPECT_EQ(dims[2].size, 5);
+  EXPECT_TRUE(dims[2].boundOp.has_value());
+}
+
+TEST(TriangularSolveLike, RejectsNonSquareUpperBoundMatrix) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp a = MakeBoundedArg(fb, {6, 8, 10}, {0, 1, 2});
+  mlir::MlirOp b = MakeBoundedArg(fb, {6, 8, 5}, {0, 1, 2});
+
+  EXPECT_THAT(
+      TriangularSolveLike(a, b, TriangularSolveOptions{}),
+      StatusIs(
+          error::kInvalidArgument,
+          HasSubstr(
+              "expected square upper-bound matrix in triangular solve, got 8 "
+              "and 10")));
+}
+
+TEST(TriangularSolveLike, RejectsMismatchedSharedMatrixUpperBound) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp a = MakeBoundedArg(fb, {6, 8, 8}, {0, 1, 2});
+  mlir::MlirOp b = MakeBoundedArg(fb, {6, 10, 5}, {0, 1});
+
+  EXPECT_THAT(
+      TriangularSolveLike(a, b, TriangularSolveOptions{}),
+      StatusIs(error::kInvalidArgument,
+               HasSubstr("expected the upper bounds of the shared matrix "
+                         "dimension in triangular solve to match, got 8 and "
+                         "10")));
+}
+
+TEST(ApplyLuPivotsLike, RestoresBoundedDimensionsAfterWhileGather) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp input = MakeBoundedArg(fb, {6, 8, 5}, {0, 1});
+  mlir::MlirOp pivots_f32 = MakeBoundedArg(fb, {6, 8}, {0, 1});
+  mlir::MlirOp pivots =
+      mlir::stablehlo::ConvertElementType(pivots_f32, mlir::ElementType::I32);
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      mlir::MlirOp result,
+      ApplyLuPivotsLike(
+          input, pivots,
+          LuPivotOptions{.target = LuPivotTarget::kRows,
+                         .direction = LuPivotDirection::kInverse}));
+  mlir::func::Return(fb, result);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+
+  const mlir::stablehlo::Dimensions dims = GetDimensions(result);
+  ASSERT_EQ(dims.size(), 3);
+  EXPECT_EQ(dims[0].size, 6);
+  EXPECT_TRUE(dims[0].boundOp.has_value());
+  EXPECT_EQ(dims[1].size, 8);
+  EXPECT_TRUE(dims[1].boundOp.has_value());
+  EXPECT_EQ(dims[2].size, 5);
+  EXPECT_FALSE(dims[2].boundOp.has_value());
+}
+
+TEST(ApplyLuPivotsLike, SupportsForwardDirectionOnColumns) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp input = MakeBoundedArg(fb, {6, 5, 8}, {0, 2});
+  mlir::MlirOp pivots_f32 = MakeBoundedArg(fb, {6, 8}, {0, 1});
+  mlir::MlirOp pivots =
+      mlir::stablehlo::ConvertElementType(pivots_f32, mlir::ElementType::I32);
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      mlir::MlirOp result,
+      ApplyLuPivotsLike(
+          input, pivots,
+          LuPivotOptions{.target = LuPivotTarget::kColumns,
+                         .direction = LuPivotDirection::kForward}));
+  mlir::func::Return(fb, result);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+
+  const mlir::stablehlo::Dimensions dims = GetDimensions(result);
+  ASSERT_EQ(dims.size(), 3);
+  EXPECT_EQ(dims[0].size, 6);
+  EXPECT_TRUE(dims[0].boundOp.has_value());
+  EXPECT_EQ(dims[1].size, 5);
+  EXPECT_FALSE(dims[1].boundOp.has_value());
+  EXPECT_EQ(dims[2].size, 8);
+  EXPECT_TRUE(dims[2].boundOp.has_value());
+}
+
+TEST(ApplyLuPivotsLike, RejectsMismatchedBatchUpperBounds) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp input = MakeBoundedArg(fb, {8, 4, 4}, {0});
+  mlir::MlirOp pivots_f32 = MakeBoundedArg(fb, {6, 4}, {0});
+  mlir::MlirOp pivots =
+      mlir::stablehlo::ConvertElementType(pivots_f32, mlir::ElementType::I32);
+
+  EXPECT_THAT(
+      ApplyLuPivotsLike(input, pivots, LuPivotOptions{}),
+      StatusIs(error::kInvalidArgument,
+               HasSubstr("expected input and pivots to have matching batch "
+                         "upper bounds at dimension 0, got 8 and 6")));
+}
+
+TEST(RunBatchedMatrixOpAtStaticBounds, KeepsSingleColumnMinRowsColsStatic) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  // M is bounded (<= 8), N is static 1, so min(M, N) is statically 1.
+  mlir::MlirOp input = MakeBoundedArg(fb, {6, 8, 1}, {0, 1});
+
+  const std::array<MatrixOutputSpec, 2> specs = {
+      MatrixOutputSpec{
+          .trailing_dims = {MatrixDimKind::kRows, MatrixDimKind::kMinRowsCols}},
+      MatrixOutputSpec{.trailing_dims = {MatrixDimKind::kMinRowsCols}},
+  };
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto qr_outs,
+      RunBatchedMatrixOpAtStaticBounds<2>(
+          input, specs,
+          [](mlir::MlirOp static_in) -> absl::StatusOr<MlirOpResults<2>> {
+            EXPECT_TRUE(GetTensorTypeOrDie(static_in).hasStaticShape());
+            mlir::MlirOp s = mlir::stablehlo::Reshape(
+                mlir::stablehlo::Slice(static_in, {0, 0, 0}, {6, 1, 1},
+                                       {1, 1, 1}),
+                {6, 1});
+            return MlirOpResults<2>{static_in, s};
+          }));
+  auto [q_out, s_out] = qr_outs;
+  mlir::func::Return(fb, {q_out, s_out});
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+
+  const mlir::stablehlo::Dimensions q_dims = GetDimensions(q_out);
+  ASSERT_EQ(q_dims.size(), 3);
+  EXPECT_TRUE(q_dims[0].boundOp.has_value());
+  EXPECT_TRUE(q_dims[1].boundOp.has_value());
+  EXPECT_EQ(q_dims[2].size, 1);
+  EXPECT_FALSE(q_dims[2].boundOp.has_value());
+
+  const mlir::stablehlo::Dimensions s_dims = GetDimensions(s_out);
+  ASSERT_EQ(s_dims.size(), 2);
+  EXPECT_TRUE(s_dims[0].boundOp.has_value());
+  EXPECT_EQ(s_dims[1].size, 1);
+  EXPECT_FALSE(s_dims[1].boundOp.has_value());
+}
+
+TEST(RunBatchedMatrixOpAtStaticBounds, RestoresBoundedMinRowsColsViaMin) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp input = MakeBoundedArg(fb, {6, 8, 4}, {0, 1, 2});
+
+  const std::array<MatrixOutputSpec, 2> specs = {
+      MatrixOutputSpec{
+          .trailing_dims = {MatrixDimKind::kRows, MatrixDimKind::kMinRowsCols}},
+      MatrixOutputSpec{.trailing_dims = {MatrixDimKind::kMinRowsCols}},
+  };
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto qr_outs,
+      RunBatchedMatrixOpAtStaticBounds<2>(
+          input, specs,
+          [](mlir::MlirOp static_in) -> absl::StatusOr<MlirOpResults<2>> {
+            EXPECT_TRUE(GetTensorTypeOrDie(static_in).hasStaticShape());
+            mlir::MlirOp q = mlir::stablehlo::Slice(static_in, {0, 0, 0},
+                                                    {6, 8, 4}, {1, 1, 1});
+            mlir::MlirOp s = mlir::stablehlo::Reshape(
+                mlir::stablehlo::Slice(static_in, {0, 0, 0}, {6, 4, 1},
+                                       {1, 1, 1}),
+                {6, 4});
+            return MlirOpResults<2>{q, s};
+          }));
+  auto [q_out, s_out] = qr_outs;
+  mlir::func::Return(fb, {q_out, s_out});
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+
+  int num_mins = 0;
+  module->walk([&](mlir::stablehlo::MinOp) { ++num_mins; });
+  EXPECT_GE(num_mins, 1);
+
+  const mlir::stablehlo::Dimensions q_dims = GetDimensions(q_out);
+  ASSERT_EQ(q_dims.size(), 3);
+  EXPECT_EQ(q_dims[0].size, 6);
+  EXPECT_TRUE(q_dims[0].boundOp.has_value());
+  EXPECT_EQ(q_dims[1].size, 8);
+  EXPECT_TRUE(q_dims[1].boundOp.has_value());
+  EXPECT_EQ(q_dims[2].size, 4);
+  EXPECT_TRUE(q_dims[2].boundOp.has_value());
+
+  const mlir::stablehlo::Dimensions s_dims = GetDimensions(s_out);
+  ASSERT_EQ(s_dims.size(), 2);
+  EXPECT_EQ(s_dims[0].size, 6);
+  EXPECT_TRUE(s_dims[0].boundOp.has_value());
+  EXPECT_EQ(s_dims[1].size, 4);
+  EXPECT_TRUE(s_dims[1].boundOp.has_value());
+}
 
 }  // namespace
 }  // namespace torch_tpu

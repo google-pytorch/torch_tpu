@@ -1931,5 +1931,62 @@ class IndexPutDynamicBooleanMaskTest(seed_test_utils.RepeatableTest):
     utils.assert_close(out, expected)
 
 
+class DynamicLinalgTest(seed_test_utils.RepeatableTest):
+
+  def setUp(self):
+    super().setUp()
+    if not torch.accelerator.is_available():
+      self.skipTest("TPU accelerator not available in this test environment.")
+    tt_testing.reset_eager_state()
+    self.device = torch.accelerator.current_accelerator()
+
+  def test_linalg_lu_solve_batched_dynamic_forward_and_backward(self):
+    def fn(lu, pivots, b):
+      return torch.linalg.lu_solve(lu, pivots, b).sum()
+
+    with mock.patch.object(
+        _backend.dynamic_compiler,
+        "DynamicCompiler",
+        wraps=_backend.dynamic_compiler.DynamicCompiler,
+    ) as mock_dc:
+      compiled = torch.compile(fn, backend="tpu")
+
+      for batch, n, nrhs in ((3, 4, 5), (5, 6, 7)):
+        a_cpu = (
+            torch.eye(n, dtype=torch.float32).unsqueeze(0).repeat(batch, 1, 1)
+            * 3.0
+        )
+        a_cpu = a_cpu + 0.2 * torch.randn(batch, n, n)
+        lu_cpu, pivots_cpu = torch.linalg.lu_factor(a_cpu)
+        b_cpu = torch.randn(batch, n, nrhs, dtype=torch.float32)
+
+        lu = lu_cpu.to(self.device).detach().requires_grad_(True)
+        pivots = pivots_cpu.to(self.device)
+        b = b_cpu.to(self.device).detach().requires_grad_(True)
+        lu_ref = lu_cpu.detach().clone().requires_grad_(True)
+        b_ref = b_cpu.detach().clone().requires_grad_(True)
+
+        torch._dynamo.mark_dynamic(lu, 0, min=2, max=8)
+        torch._dynamo.mark_dynamic(lu, 1, min=2, max=8)
+        torch._dynamo.mark_dynamic(lu, 2, min=2, max=8)
+        torch._dynamo.mark_dynamic(pivots, 0, min=2, max=8)
+        torch._dynamo.mark_dynamic(pivots, 1, min=2, max=8)
+        torch._dynamo.mark_dynamic(b, 0, min=2, max=8)
+        torch._dynamo.mark_dynamic(b, 1, min=2, max=8)
+        torch._dynamo.mark_dynamic(b, 2, min=2, max=10)
+
+        loss = compiled(lu, pivots, b)
+        loss.backward()
+        loss_ref = fn(lu_ref, pivots_cpu, b_ref)
+        loss_ref.backward()
+
+        utils.assert_close(loss, loss_ref, rtol=1e-4, atol=1e-4)
+        utils.assert_close(lu.grad, lu_ref.grad, rtol=1e-2, atol=1e-2)
+        utils.assert_close(b.grad, b_ref.grad, rtol=1e-4, atol=1e-4)
+
+      # Both shapes run the same bounded compilation without recompiling.
+      mock_dc.assert_called_once()
+
+
 if __name__ == "__main__":
   absltest.main()
