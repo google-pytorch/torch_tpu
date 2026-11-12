@@ -15,6 +15,7 @@
 """Tests for measure()."""
 
 import gc
+import threading
 import unittest
 from unittest import mock
 
@@ -294,6 +295,10 @@ class AgreeingOps(fakes.RecordingOps):
     self._extra = other_process_extra_steps
 
   def agree_on_step_count(self, steps):
+    # Agree with the warmup agreements, which come before the post-warmup peak
+    # memory reset; only post-warmup proposals are recorded.
+    if "reset" not in self.events:
+      return steps
     self.proposals.append(steps)
     return steps + self._extra if len(self.proposals) == 2 else steps
 
@@ -375,6 +380,102 @@ class MeasureWindowTest(seed_test_utils.RepeatableTest):
   def test_distributed_run_without_agree_on_step_count_raises(self, _):
     with self.assertRaisesRegex(RuntimeError, "must be agreed upon"):
       self._measure([0.125], steps=3, min_seconds=2.0, max_steps=100)
+
+
+class _ThreadedAgreement:
+  """Agrees on step counts across threads that stand for processes."""
+
+  def __init__(self, num_processes: int):
+    self._barrier = threading.Barrier(num_processes, timeout=10.0)
+    self._proposals = [0] * num_processes
+
+  def agree(self, process: int, steps: int) -> int:
+    self._proposals[process] = steps
+    self._barrier.wait()
+    agreed = max(self._proposals)
+    # Nobody proposes the next count before everybody has read this one.
+    self._barrier.wait()
+    return agreed
+
+
+class _ThreadedAgreeingOps(fakes.RecordingOps):
+
+  def __init__(self, agreement: _ThreadedAgreement, process: int, **kwargs):
+    super().__init__(**kwargs)
+    self._agreement = agreement
+    self._process = process
+
+  def agree_on_step_count(self, steps):
+    return self._agreement.agree(self._process, steps)
+
+
+class _CompilingAgreementOps(fakes.RecordingOps):
+  """Its first agreement compiles and waits for peers, like a TPU collective."""
+
+  def __init__(self, clock: fakes.FakeClock, **kwargs):
+    super().__init__(**kwargs)
+    self._clock = clock
+    self._agreed = False
+
+  def agree_on_step_count(self, steps):
+    if not self._agreed:
+      self._agreed = True
+      self._recompiles += 1
+      self._clock.advance(5.0)
+    return steps
+
+
+class MeasureWarmupAgreementTest(seed_test_utils.RepeatableTest):
+
+  def test_processes_run_the_warmup_steps_of_the_last_to_settle(self):
+    # Both threads toggle the process-global gc state.
+    self.addCleanup(gc.enable)
+    self.addCleanup(gc.unfreeze)
+    agreement = _ThreadedAgreement(num_processes=2)
+    # Process 0 settles after 2 warmup steps, process 1 after 4.
+    ops = [
+        _ThreadedAgreeingOps(agreement, process=0),
+        _ThreadedAgreeingOps(agreement, process=1, recompile_on_calls={2, 3}),
+    ]
+    steps = [fakes.CountingStep(), fakes.CountingStep()]
+    results: list[metrics_lib.PerformanceMetrics | None] = [None, None]
+    errors = []
+
+    def _process(i: int) -> None:
+      try:
+        results[i] = measure_lib.measure(
+            steps[i], ops[i], name="test", clock=fakes.FakeClock()
+        )
+      except Exception as e:  # pylint: disable=broad-exception-caught
+        errors.append(e)
+
+    # Flags are process-global, so set them once for both threads.
+    with flagsaver.flagsaver(
+        min_warmup_steps=2, max_warmup_steps=10, post_warmup_steps=3
+    ):
+      threads = [threading.Thread(target=_process, args=(i,)) for i in (0, 1)]
+      for t in threads:
+        t.start()
+      for t in threads:
+        t.join(timeout=30.0)
+        self.assertFalse(t.is_alive(), "measure hung")
+
+    self.assertEmpty(errors)
+    self.assertEqual([m.num_warmup_steps for m in results], [4, 4])
+    self.assertEqual([step.calls for step in steps], [4 + 3, 4 + 3])
+
+  def test_first_agreement_runs_before_the_first_warmup_step(self):
+    clock = fakes.FakeClock()
+    step = fakes.CountingStep(clock=clock, step_seconds=[10.0, 1.0])
+    # The second step recompiles, so warmup settles on the third.
+    ops = _CompilingAgreementOps(clock, recompile_on_calls={2})
+
+    m = _run_measure(step, ops, steps=2, min_warmup=2, clock=clock)
+
+    # Compiling the agreement neither delays settling nor counts as step time.
+    self.assertEqual(m.num_warmup_steps, 3)
+    self.assertEqual(m.first_step_time_seconds, 10.0)
+    self.assertEqual(step.calls, 3 + 2)
 
 
 class MeasureSequenceTest(seed_test_utils.RepeatableTest):

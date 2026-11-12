@@ -420,6 +420,10 @@ def _warmup_run(
   # gc is explicitly disabled below to prevent GC pauses from affecting the
   # warmup measurements. Collect garbage once before the warmup loop.
   gc.collect()
+  # As in `_post_warmup_run`, the first agreement compiles its collective (on
+  # TPU), so run one before the compile counts that the loop compares. It also
+  # aligns the processes, so the first step's time leaves out their setup skew.
+  _agree_on_step_count(device_ops, 0)
 
   with gc_disabled(), XprofContext(
       name="warmup_run",
@@ -445,10 +449,16 @@ def _warmup_run(
       stepper.post_warmup_hook()
       compile_count[step] = device_ops.compile_count()
 
+      # SPMD invariant: the short-circuited `step > 0 and step >= MIN - 1`
+      # depends only on `step` and flags, so every process reaches the
+      # agreement at the same steps. Never put a process-local condition
+      # before it.
       if (
           step > 0
           and step >= MIN_WARMUP_STEPS.value - 1
-          and compile_count[step] == compile_count[step - 1]
+          and _all_processes_agree(
+              device_ops, bool(compile_count[step] == compile_count[step - 1])
+          )
       ):
         num_warmup_steps = step + 1
         break
@@ -508,6 +518,22 @@ def _agree_on_step_count(device_ops: device_ops_lib.DeviceOps, steps: int):
         "The step count must be agreed upon to avoid hangs."
     )
   return steps
+
+
+def _all_processes_agree(
+    device_ops: device_ops_lib.DeviceOps, value: bool
+) -> bool:
+  """Returns whether `value` is True in every process of the benchmark.
+
+  Reuses the step count agreement, which returns the largest count proposed:
+  each process proposes 1 if its `value` is False and 0 if it is True, so the
+  agreed count is 0 only if `value` is True in every process.
+
+  Args:
+    device_ops: The device operations, used to agree across processes.
+    value: This process's value.
+  """
+  return _agree_on_step_count(device_ops, 0 if value else 1) == 0
 
 
 def _run_timed_window(
