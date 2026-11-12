@@ -140,10 +140,11 @@ def jax_tpu_device_kind(tpu_version: TpuVersion | str) -> str:
 class Severity(enum.Enum):
   """Severity of a verification finding.
 
-  Only `ERROR` findings cause `VerificationReport.passed` to evaluate to `False`
-  or cause `VerificationReport.raise_for_errors()` to raise `VerificationError`.
+  `ERROR` findings cause `VerificationReport.passed` to evaluate to `False` and
+  `VerificationReport.raise_for_errors()` to raise `VerificationError`.
   `WARNING` and `INFO` findings are surfaced in summaries without failing
-  verification.
+  verification by default (`VERIFICATION_INCOMPLETE` findings also raise when
+  `raise_for_errors(fail_on_incomplete=True)` is passed).
   """
 
   ERROR = "error"
@@ -224,10 +225,13 @@ class VerificationFinding:
 
 @annotations.experimental(_exp_reason("VerificationError"))
 class VerificationError(AssertionError):
-  """Raised by `VerificationReport.raise_for_errors` when errors were found."""
+  """Raised by `VerificationReport.raise_for_errors` on failure."""
 
   def __init__(self, report: VerificationReport) -> None:
-    super().__init__(report.summary())
+    msg = report.summary()
+    if report.passed and msg.startswith("Verification PASSED "):
+      msg = "Verification INCOMPLETE " + msg[len("Verification PASSED ") :]
+    super().__init__(msg)
     self._report = report
 
   def __reduce__(
@@ -301,9 +305,19 @@ class VerificationReport:
     return "\n".join(lines)
 
   @annotations.experimental(_exp_reason("VerificationReport.raise_for_errors"))
-  def raise_for_errors(self) -> None:
-    """Raises `VerificationError` if the report contains any error."""
-    if not self.passed:
+  def raise_for_errors(self, *, fail_on_incomplete: bool = False) -> None:
+    """Raises `VerificationError` if the report contains any error.
+
+    Args:
+      fail_on_incomplete: If `True`, also raises `VerificationError` when any
+        `FindingCategory.VERIFICATION_INCOMPLETE` finding is present.
+    """
+    if not self.passed or (
+        fail_on_incomplete
+        and bool(
+            self.findings_by_category(FindingCategory.VERIFICATION_INCOMPLETE)
+        )
+    ):
       raise VerificationError(self)
 
   def __str__(self) -> str:

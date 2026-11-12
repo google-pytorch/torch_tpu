@@ -126,6 +126,7 @@ def _convert_shape(shape, mesh, partition_spec, op):
   """Converts a shape based on a mesh and partition specification."""
   if mesh is not None and partition_spec is not None:
     mesh_shape = mesh.shape
+    unconstrained = jax.sharding.PartitionSpec.UNCONSTRAINED
     ans = tuple(
         [
             op(
@@ -134,7 +135,7 @@ def _convert_shape(shape, mesh, partition_spec, op):
                 if isinstance(name, tuple)
                 else mesh_shape[name],
             )
-            if name is not None
+            if name is not None and name is not unconstrained
             else s
             for s, name in zip(shape, partition_spec)
         ]
@@ -1630,9 +1631,11 @@ def jax_op(
   It handles the necessary tracing and registration with the TPU backend.
 
   If arguments are donated those tensors will be left in an invalid state after
-  the kernel is called and should not be used again. Consider using a wrapper
-  function and copy_ or set_ to overwrite these invalid tensors to prevent
-  accidental reuse.
+  the kernel is called and should not be used again. In eager mode, use a
+  wrapper function with `x.set_(result)` (rather than `x.copy_(result)`, which
+  writes into the invalidated PJRT buffer) to repoint donated tensors to the
+  returned buffer; under `torch.compile`, AOTAutograd functionalizes full-tensor
+  `x.copy_(result)` into output aliasing without touching the donated buffer.
 
   Args:
     name: The name of the custom operator.
@@ -1676,12 +1679,11 @@ def jax_op(
         static_argnames=static_argnames,
         warn_deprecated=False,
     )
-    # Jax functions are inherently immutable, even donated args are immutable in
-    # that they are in an invalid state rather than mutated state, users can
-    # copy back if they require.
-    # If we mark donated args as mutable then Dynamo will copy back the
-    # original value of the donated arg which then defeats the purpose of
-    # donating.
+    # JAX functions are pure, and donated args are invalidated rather than
+    # mutated in place: marking donated args in `mutates_args` would make
+    # Dynamo copy the pre-call value back over the donated buffer, defeating
+    # buffer donation (callers rebind via `set_` in eager mode or full-tensor
+    # `copy_` under `torch.compile`).
     mutates_args = ()
 
     # We require that the user pass us a function that is make_fx traceable,

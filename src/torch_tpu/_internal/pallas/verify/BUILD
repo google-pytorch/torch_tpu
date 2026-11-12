@@ -40,6 +40,7 @@ torch_tpu_py_library(
     srcs = ["fx_verifier.py"],
     deps = [
         ":findings",
+        "//shims/jax:pallas",
         "//shims/jax:pallas_tpu",
         "//shims/torch:pytorch",
         "//src/torch_tpu/_internal/pallas:pallas_lib",

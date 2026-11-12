@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import functools
 import operator
+import threading
 import types
 
 from absl.testing import absltest
@@ -1432,6 +1433,840 @@ class FxVerifierTest(seed_test_utils.RepeatableTest):
     )
     self.assertEqual(fx_verifier.abstract_tpu_device("v5p").num_cores, 2)
     self.assertEqual(fx_verifier.abstract_tpu_device("v6e").num_cores, 1)
+
+  def test_integer_tensor_signature_and_concrete_fx_propagation(self):
+    t = torch.zeros((2, 4), dtype=torch.float32)
+    self.assertEqual(
+        verifier_impl._signature(t), ("tensor", (2, 4), torch.float32)
+    )
+    self.assertEqual(
+        verifier_impl._signature([t]), (("tensor", (2, 4), torch.float32),)
+    )
+    self.assertEqual(verifier_impl._signature({"k": 7}), (("k", 7),))
+    self.assertEqual(verifier_impl._signature({1, 2}), ("set", repr({1, 2})))
+
+    i0 = torch.tensor([0, 1, 2, 3], dtype=torch.int32)
+    i1 = torch.tensor([0, 1, 2, 99], dtype=torch.int32)
+    self.assertNotEqual(
+        verifier_impl._signature(i0), verifier_impl._signature(i1)
+    )
+    large0 = torch.zeros((4097,), dtype=torch.int32)
+    large1 = large0.clone()
+    large1[-1] = 7
+    self.assertNotEqual(
+        verifier_impl._signature(large0), verifier_impl._signature(large1)
+    )
+
+    def _mutating_and_pure_prog(
+        x: torch.Tensor, caller_idx: torch.Tensor
+    ) -> torch.Tensor:
+      counts = torch.tensor([1, 1, 1, 1], dtype=torch.int32)
+      offsets = torch.cumsum(counts, dim=0, dtype=torch.int32) - 1
+      uninit_buf = torch.empty((4,), dtype=torch.int32)
+      uninit_buf.fill_(0)
+      caller_view = caller_idx.view(-1)
+      caller_view.copy_(offsets)
+      return x + offsets[0] + uninit_buf[0] + caller_idx[0]
+
+    x = torch.ones((8, 128), dtype=torch.float32)
+    caller_idx = torch.tensor([99, 99, 99, 99], dtype=torch.int32)
+    gm = fx_verifier.trace_to_fx_graph(_mutating_and_pure_prog, (x, caller_idx))
+    phs = [n for n in gm.graph.nodes if n.op == "placeholder"]
+    ph_env = fx_verifier.match_placeholders_to_inputs(
+        phs, (x, caller_idx), None
+    )
+    _, env = verifier_impl._collect_graph_module_envs(gm, ph_env)[0]
+    # `torch.empty` is never evaluated to heap garbage, and in-place mutation of
+    # `caller_view` invalidates the aliased `caller_idx` placeholder entry.
+    self.assertTrue(
+        all(
+            not (
+                isinstance(v, torch.Tensor)
+                and v.shape == (4,)
+                and torch.equal(v, torch.tensor([99, 99, 99, 99]))
+            )
+            for v in env.values()
+        )
+    )
+    self.assertTrue(
+        any(
+            isinstance(v, torch.Tensor)
+            and torch.equal(v, torch.tensor([0, 1, 2, 3], dtype=torch.int32))
+            for v in env.values()
+        )
+    )
+    self.assertTrue(
+        all(
+            verifier_impl._fx_node_base_op_name(n) != "empty"
+            for n in env
+            if n.op == "call_function"
+        )
+    )
+
+  def test_joint_autograd_detects_saved_activation_donated_later(self):
+    donating_binary = jax_op(
+        "pallas_verify_fx::joint_saved_donor",
+        _pallas_binary_add,
+        donate_argnums=(1,),
+    )
+    donating_binary.register_autograd(lambda ctx, g: (g, g))
+
+    class _SavedThenDonated(torch.nn.Module):
+
+      def __init__(self):
+        super().__init__()
+        self.scale = torch.nn.Parameter(
+            torch.ones((8, 128), dtype=torch.float32)
+        )
+
+      def forward(self, x: torch.Tensor) -> torch.Tensor:
+        h = x * self.scale
+        # `h * h` saves `h` on the standard PyTorch autograd tape, and then
+        # `donating_binary` donates `h` in the same forward pass!
+        sq = h * h
+        return donating_binary(sq, h)
+
+    mod = _SavedThenDonated()
+    x = torch.ones((8, 128), dtype=torch.float32, requires_grad=True)
+    rep = verifier.verify(mod, (x,), mode=STATIC)
+    self.assertFalse(rep.passed, msg=rep.summary())
+    donate_findings = rep.findings_by_category(Category.USE_AFTER_DONATE)
+    self.assertNotEmpty(donate_findings, msg=rep.summary())
+    self.assertTrue(
+        any("autograd backward" in f.message for f in donate_findings),
+        msg=rep.summary(),
+    )
+
+    broken_bwd_donor = jax_op(
+        "pallas_verify_fx::joint_broken_bwd_donor",
+        _pallas_add_one,
+        donate_argnums=(0,),
+    )
+
+    def _broken_bwd(ctx, g):
+      del ctx, g
+      raise RuntimeError("synthetic untraceable backward failure")
+
+    broken_bwd_donor.register_autograd(_broken_bwd)
+    inc_rep = verifier.verify(
+        lambda t: broken_bwd_donor(t * 2.0), (x,), mode=STATIC
+    )
+    inc_findings = [
+        f
+        for f in inc_rep.findings_by_category(Category.VERIFICATION_INCOMPLETE)
+        if f.phase == verifier.Phase.FX_GRAPH
+    ]
+    self.assertNotEmpty(inc_findings, msg=inc_rep.summary())
+    self.assertEqual(inc_findings[0].severity, verifier.Severity.WARNING)
+
+    # A forward-only `@jax_op` without `register_autograd` must NOT emit a
+    # spurious `VERIFICATION_INCOMPLETE` warning when `x.requires_grad=True`,
+    # and must not mask a differentiable output's saved-activation donation bug.
+    fwd_only_donor = jax_op(
+        "pallas_verify_fx::joint_fwd_only_donor",
+        _pallas_add_one,
+        donate_argnums=(0,),
+    )
+    fwd_only_rep = verifier.verify(
+        lambda t: fwd_only_donor(t.clone()), (x,), mode=STATIC
+    )
+    fwd_only_rep.raise_for_errors(fail_on_incomplete=True)
+
+    def _mixed_loss_and_fwd_only(t: torch.Tensor):
+      h = t * 2.0
+      sq = h * h
+      donated_res = donating_binary(sq, h)
+      aux = fwd_only_donor(t.detach().clone())
+      return donated_res, aux
+
+    mixed_rep = verifier.verify(_mixed_loss_and_fwd_only, (x,), mode=STATIC)
+    self.assertTrue(
+        any(
+            "autograd backward" in f.message
+            for f in mixed_rep.findings_by_category(Category.USE_AFTER_DONATE)
+        ),
+        msg=mixed_rep.summary(),
+    )
+
+  def test_fx_higher_order_cond_donation_and_nested_jax_op(self):
+    donating_op = jax_op(
+        "pallas_verify_fx::cond_donate_branch",
+        _pallas_add_one,
+        donate_argnums=(0,),
+    )
+
+    def _unaligned_pallas(arr: jax.Array) -> jax.Array:
+      return pl.pallas_call(
+          lambda x_ref, o_ref: o_ref.__setitem__(Ellipsis, x_ref[...] + 1.0),
+          out_shape=jax.ShapeDtypeStruct(arr.shape, arr.dtype),
+          in_specs=[pl.BlockSpec((8, 64), lambda i: (0, i))],
+          out_specs=pl.BlockSpec((8, 64), lambda i: (0, i)),
+          grid=(2,),
+      )(arr)
+
+    nested_bad_lowering_op = jax_op(
+        "pallas_verify_fx::cond_nested_bad_lowering",
+        _unaligned_pallas,
+    )
+    step_op = jax_op("pallas_verify_fx::scan_step_add_one", _pallas_add_one)
+
+    def cond_use_after_donate(
+        pred: torch.Tensor, x: torch.Tensor
+    ) -> torch.Tensor:
+      y = torch.cond(
+          pred,
+          lambda t: donating_op(t),
+          lambda t: t.clone(),
+          (x,),
+      )
+      return y + x
+
+    def cond_nested_bad_lowering(
+        pred: torch.Tensor, x: torch.Tensor
+    ) -> torch.Tensor:
+      return torch.cond(
+          pred,
+          lambda t: t.clone(),
+          lambda t: nested_bad_lowering_op(t),
+          (x,),
+      )
+
+    def while_loop_donate_additional_input(x: torch.Tensor) -> torch.Tensor:
+      from torch._higher_order_ops.while_loop import while_loop_op  # pylint: disable=g-import-not-at-top
+
+      i0 = torch.tensor(0, dtype=torch.int32)
+      acc0 = torch.zeros_like(x)
+      _, out_acc = while_loop_op(
+          lambda step, acc, shared: step < 2,
+          lambda step, acc, shared: (step + 1, acc + donating_op(shared)),
+          (i0, acc0),
+          (x,),
+      )
+      return out_acc
+
+    def scan_donate_additional_input(
+        xs_seq: torch.Tensor, x: torch.Tensor
+    ) -> torch.Tensor:
+      from torch._higher_order_ops.scan import scan_op  # pylint: disable=g-import-not-at-top
+
+      acc0 = torch.zeros_like(x)
+      final_carry, ys = scan_op(
+          lambda carry, x_slice, shared: (
+              carry + step_op(x_slice),
+              donating_op(shared),
+          ),
+          [acc0],
+          [xs_seq],
+          (x,),
+      )
+      return final_carry + ys[0]
+
+    pred = torch.tensor(True)
+    x = torch.ones((8, 128), dtype=torch.float32)
+    xs_seq = torch.ones((2, 8, 128), dtype=torch.float32)
+    donate_rep = verifier.verify(cond_use_after_donate, (pred, x), mode=STATIC)
+    self.assertNotEmpty(
+        donate_rep.findings_by_category(Category.USE_AFTER_DONATE),
+        msg=donate_rep.summary(),
+    )
+
+    while_rep = verifier.verify(
+        while_loop_donate_additional_input, (x,), mode=STATIC
+    )
+    self.assertNotEmpty(
+        while_rep.findings_by_category(Category.USE_AFTER_DONATE),
+        msg=while_rep.summary(),
+    )
+
+    scan_rep = verifier.verify(
+        scan_donate_additional_input, (xs_seq, x), mode=STATIC
+    )
+    self.assertNotEmpty(
+        scan_rep.findings_by_category(Category.USE_AFTER_DONATE),
+        msg=scan_rep.summary(),
+    )
+
+    lowering_rep = verifier.verify(
+        cond_nested_bad_lowering, (pred, x), mode=STATIC
+    )
+    self.assertNotEmpty(
+        lowering_rep.findings_by_category(Category.LOWERING_FAILURE),
+        msg=lowering_rep.summary(),
+    )
+
+  def test_multi_output_aminmax_out_and_set_inplace_provenance(self):
+    donating_op = jax_op(
+        "pallas_verify_fx::multi_out_and_set_donate",
+        _pallas_add_one,
+        donate_argnums=(0,),
+    )
+
+    def aminmax_disjoint_out(x: torch.Tensor) -> torch.Tensor:
+      min_buf = torch.empty((8, 128), dtype=x.dtype)
+      max_buf = torch.empty((8, 128), dtype=x.dtype)
+      lo, hi = torch.aminmax(
+          x, dim=-1, keepdim=True, out=(min_buf[:, :1], max_buf[:, :1])
+      )
+      del lo, hi
+      out = donating_op(min_buf)
+      return out + max_buf
+
+    def safe_set_rebind(x: torch.Tensor) -> torch.Tensor:
+      buf = x.clone()
+      fresh = donating_op(buf)
+      buf.set_(fresh)
+      return buf + 1.0
+
+    def buggy_set_shared_donate(x: torch.Tensor) -> torch.Tensor:
+      alias_holder = torch.empty_like(x)
+      donor = x.clone()
+      alias_holder.set_(donor)
+      out = donating_op(donor)
+      return out + alias_holder
+
+    x = torch.ones((8, 128), dtype=torch.float32)
+    aminmax_rep = verifier.verify(aminmax_disjoint_out, (x,), mode=STATIC)
+    self.assertTrue(aminmax_rep.passed, msg=aminmax_rep.summary())
+
+    safe_set_rep = verifier.verify(safe_set_rebind, (x,), mode=STATIC)
+    self.assertTrue(safe_set_rep.passed, msg=safe_set_rep.summary())
+
+    buggy_set_rep = verifier.verify(buggy_set_shared_donate, (x,), mode=STATIC)
+    self.assertNotEmpty(
+        buggy_set_rep.findings_by_category(Category.USE_AFTER_DONATE),
+        msg=buggy_set_rep.summary(),
+    )
+
+  def test_io_aliases_exempt_from_donor_invalidation_and_catch_self_alias(self):
+    io_alias_only = jax_op(
+        "pallas_verify_fx::io_alias_only",
+        _pallas_add_one,
+        donate_argnums=(0,),
+    )
+    io_alias_jc = fx_verifier.extract_jax_callable(io_alias_only)
+    self.assertIsNotNone(io_alias_jc)
+    io_alias_jc.input_output_aliases = {0: 0}
+
+    io_alias_binary = jax_op(
+        "pallas_verify_fx::io_alias_binary",
+        _pallas_binary_add,
+        donate_argnums=(0, 1),
+    )
+    io_alias_bin_jc = fx_verifier.extract_jax_callable(io_alias_binary)
+    self.assertIsNotNone(io_alias_bin_jc)
+    io_alias_bin_jc.input_output_aliases = {0: 0}
+
+    class _IoAliasParamModule(torch.nn.Module):
+
+      def __init__(self):
+        super().__init__()
+        self.w = torch.nn.Parameter(torch.ones((8, 128), dtype=torch.float32))
+
+      def forward(self, x: torch.Tensor) -> torch.Tensor:
+        y = io_alias_only(self.w)
+        return y + self.w + x
+
+    x = torch.ones((8, 128), dtype=torch.float32)
+    ok_rep = verifier.verify(_IoAliasParamModule(), (x,), mode=STATIC)
+    self.assertTrue(ok_rep.passed, msg=ok_rep.summary())
+
+    def self_aliased(t: torch.Tensor) -> torch.Tensor:
+      return io_alias_binary(t, t.view(8, 128))
+
+    bad_rep = verifier.verify(self_aliased, (x,), mode=STATIC)
+    self.assertNotEmpty(
+        bad_rep.findings_by_category(Category.ALIASED_DONOR_INPUTS),
+        msg=bad_rep.summary(),
+    )
+
+  def test_module_state_preserved_and_aliased_buffer_input_detected(self):
+    donating_op = jax_op(
+        "pallas_verify_fx::module_state_donate",
+        _pallas_add_one,
+        donate_argnums=(0,),
+    )
+
+    class _StatefulModule(torch.nn.Module):
+
+      def __init__(self):
+        super().__init__()
+        self.register_buffer(
+            "running_buf", torch.zeros((8, 128), dtype=torch.float32)
+        )
+        self.step_count = 0
+
+      def forward(self, x: torch.Tensor) -> torch.Tensor:
+        self.step_count += 1
+        self.running_buf.add_(1.0)
+        return donating_op(x) + self.running_buf
+
+    mod = _StatefulModule()
+    x = torch.ones((8, 128), dtype=torch.float32)
+    clean_rep = verifier.verify(mod, (x.clone(),), mode=STATIC)
+    self.assertTrue(clean_rep.passed, msg=clean_rep.summary())
+    self.assertEqual(mod.step_count, 0)
+    self.assertTrue(
+        torch.equal(mod.running_buf, torch.zeros((8, 128), dtype=torch.float32))
+    )
+
+    aliased_rep = verifier.verify(mod, (mod.running_buf,), mode=STATIC)
+    self.assertNotEmpty(
+        aliased_rep.findings_by_category(Category.DONATED_PARAMETER),
+        msg=aliased_rep.summary(),
+    )
+
+  def test_partition_spec_unconstrained_and_defaulted_trailing_static_arg(self):
+    mesh = jax.sharding.AbstractMesh((2,), ("tp",))
+    self.assertEmpty(
+        fx_verifier._validate_partition_spec_entry(
+            P(P.UNCONSTRAINED, "tp"),
+            2,
+            mesh,
+            "input 0",
+            "unconstrained_spec_op",
+        )
+    )
+    self.assertEqual(
+        pallas_lib.get_global_shape((8, 128), mesh, P(P.UNCONSTRAINED, "tp")),
+        (8, 256),
+    )
+
+    def _scaled_add(x: jax.Array, eps: float = 1e-5) -> jax.Array:
+      return jax.shard_map(
+          lambda s: _pallas_add_one(s) + eps,
+          mesh=mesh,
+          in_specs=(P("tp", None),),
+          out_specs=P("tp", None),
+          check_vma=False,
+      )(x)
+
+    sharded_op = jax_op(
+        "pallas_verify_fx::unconstrained_default_static",
+        _scaled_add,
+        mesh=mesh,
+        input_partition_specs=(P("tp", None),),
+        output_partition_specs=P("tp", None),
+    )
+
+    def caller(x: torch.Tensor) -> torch.Tensor:
+      return sharded_op(x)
+
+    x = torch.ones((8, 128), dtype=torch.float32)
+    rep = verifier.verify(caller, (x,), mode=STATIC)
+    self.assertTrue(rep.passed, msg=rep.summary())
+
+  def test_exported_fallback_hook_is_thread_local(self):
+    def _bad_lowering_fn(x: jax.Array) -> jax.Array:
+      def _bad_body(x_ref, o_ref):
+        o_ref[...] = x_ref[...]
+        raise ValueError("synthetic lowering failure")
+
+      return pl.pallas_call(
+          _bad_body, out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype)
+      )(x)
+
+    bad_op = jax_op(
+        "pallas_verify_fx::thread_local_bad_export", _bad_lowering_fn
+    )
+    jc = fx_verifier.extract_jax_callable(bad_op)
+    self.assertIsNotNone(jc)
+    orig_exported = jc.exported
+    worker_errors: list[Exception] = []
+    ph = jax.ShapeDtypeStruct((8, 128), jnp.float32)
+
+    with fx_verifier._eval_shape_fallback_for_jax_callables(bad_op):
+      # Calling thread gets the eval_shape fallback namespace.
+      fallback_res = jc.exported(ph)
+      self.assertEqual(fallback_res.out_avals[0].shape, (8, 128))
+
+      def _worker() -> None:
+        try:
+          jc.exported(ph)
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+          worker_errors.append(exc)
+
+      t = threading.Thread(target=_worker)
+      t.start()
+      t.join()
+
+    # Concurrent worker thread saw the unpatched `exported` failure, and exiting
+    # the context restored `jc.exported`.
+    self.assertLen(worker_errors, 1)
+    self.assertIs(jc.exported, orig_exported)
+
+  def test_hop_local_temporary_donation_and_scope_isolation(self):
+    donating_op = jax_op(
+        "pallas_verify_fx::hop_scoped_donate",
+        _pallas_add_one,
+        donate_argnums=(0,),
+    )
+    step_op = jax_op("pallas_verify_fx::hop_scoped_step", _pallas_add_one)
+
+    def while_donate_local_temp(x: torch.Tensor) -> torch.Tensor:
+      from torch._higher_order_ops.while_loop import while_loop_op  # pylint: disable=g-import-not-at-top
+
+      i0 = torch.tensor(0, dtype=torch.int32)
+      _, out_acc = while_loop_op(
+          lambda step, acc: step < 3,
+          lambda step, acc: (step + 1, acc + donating_op(acc * 1.0)),
+          (i0, x.clone()),
+          (),
+      )
+      return out_acc
+
+    def while_replace_carry_iteratively(x: torch.Tensor) -> torch.Tensor:
+      from torch._higher_order_ops.while_loop import while_loop_op  # pylint: disable=g-import-not-at-top
+
+      i0 = torch.tensor(0, dtype=torch.int32)
+      _, out_acc = while_loop_op(
+          lambda step, acc: step < 3,
+          lambda step, acc: (step + 1, donating_op(acc)),
+          (i0, x.clone()),
+          (),
+      )
+      return out_acc
+
+    def scan_donate_local_temp(
+        xs_seq: torch.Tensor, x: torch.Tensor
+    ) -> torch.Tensor:
+      from torch._higher_order_ops.scan import scan_op  # pylint: disable=g-import-not-at-top
+
+      final_carry, ys = scan_op(
+          lambda carry, x_slice: (
+              carry + step_op(x_slice),
+              donating_op(carry * 1.0),
+          ),
+          [x.clone()],
+          [xs_seq],
+          (),
+      )
+      return final_carry + ys[0]
+
+    def cond_parent_child_mul_name_collision(
+        pred: torch.Tensor, x: torch.Tensor
+    ) -> torch.Tensor:
+      a = x * 2.0
+      y = torch.cond(
+          pred,
+          lambda t: donating_op(t * 3.0),
+          lambda t: t + 1.0,
+          (x,),
+      )
+      return a + y
+
+    def cond_donate_input_without_later_use(
+        pred: torch.Tensor, x: torch.Tensor
+    ) -> torch.Tensor:
+      buf = x.clone()
+      y = torch.cond(
+          pred,
+          lambda t: donating_op(t),
+          lambda t: t + 1.0,
+          (buf,),
+      )
+      return y * 2.0
+
+    x = torch.ones((8, 128), dtype=torch.float32)
+    xs_seq = torch.ones((2, 8, 128), dtype=torch.float32)
+    pred = torch.tensor(True)
+
+    for fn, call_args in (
+        (while_donate_local_temp, (x,)),
+        (while_replace_carry_iteratively, (x,)),
+        (scan_donate_local_temp, (xs_seq, x)),
+        (cond_parent_child_mul_name_collision, (pred, x)),
+        (cond_donate_input_without_later_use, (pred, x)),
+    ):
+      rep = verifier.verify(fn, call_args, mode=STATIC)
+      self.assertTrue(rep.passed, msg=rep.summary())
+      self.assertEmpty(
+          rep.findings_by_category(Category.USE_AFTER_DONATE),
+          msg=rep.summary(),
+      )
+
+    # Unrecognized higher-order op carrying a child `fx.GraphModule` emits an
+    # `INFO` `VERIFICATION_INCOMPLETE` finding instead of mis-mapping operands.
+    sub_g = torch.fx.Graph()
+    sub_x = sub_g.placeholder("sub_x")
+    sub_g.output(sub_x)
+    sub_gm = torch.fx.GraphModule(torch.nn.Module(), sub_g)
+
+    parent_mod = torch.nn.Module()
+    parent_mod.add_module("child_sub", sub_gm)
+    parent_g = torch.fx.Graph()
+    ph_x = parent_g.placeholder("x")
+    sub_attr = parent_g.get_attr("child_sub")
+    unknown_hop = lambda gm_arg, tensor_arg: tensor_arg
+    hop_out = parent_g.call_function(unknown_hop, (sub_attr, ph_x))
+    parent_g.output(hop_out)
+    parent_gm = torch.fx.GraphModule(parent_mod, parent_g)
+
+    unk_rep = fx_verifier.verify_fx_graph(parent_gm, (x,))
+    unk_inc = [
+        f
+        for f in unk_rep.findings_by_category(Category.VERIFICATION_INCOMPLETE)
+        if f.phase == verifier.Phase.FX_GRAPH
+    ]
+    self.assertNotEmpty(unk_inc, msg=unk_rep.summary())
+    self.assertEqual(unk_inc[0].severity, verifier.Severity.INFO)
+
+  def test_hop_carry_rotation_and_carry_duplication_detected(self):
+    donating_op = jax_op(
+        "pallas_verify_fx::hop_rot_donate",
+        _pallas_add_one,
+        donate_argnums=(0,),
+    )
+    donating_two = jax_op(
+        "pallas_verify_fx::hop_dup_donate_two",
+        _pallas_binary_add,
+        donate_argnums=(0, 1),
+    )
+
+    def while_three_carry_rotation(x: torch.Tensor) -> torch.Tensor:
+      from torch._higher_order_ops.while_loop import while_loop_op  # pylint: disable=g-import-not-at-top
+
+      i0 = torch.tensor(0, dtype=torch.int32)
+      a0 = x.clone()
+      b0 = x.clone()
+      c0 = x.clone()
+
+      def _body(step, a, b, c):
+        # Donates `a` and rotates stale `a` into carry slot `c`; after two
+        # rotations, `a` arrives back at slot 0 and is donated a second time!
+        _ = donating_op(a)
+        return step + 1, b, c, a
+
+      _, out_a, _, _ = while_loop_op(
+          lambda step, a, b, c: step < 4,
+          _body,
+          (i0, a0, b0, c0),
+          (),
+      )
+      return out_a
+
+    def while_two_carry_duplication(x: torch.Tensor) -> torch.Tensor:
+      from torch._higher_order_ops.while_loop import while_loop_op  # pylint: disable=g-import-not-at-top
+
+      i0 = torch.tensor(0, dtype=torch.int32)
+      a0 = x.clone()
+      b0 = x.clone()
+
+      def _dup_body(step, a, b):
+        # Iteration 1 returns `(fresh, fresh)`, aliasing carry slots 0 and 1 on
+        # iteration 2 when passed into 2-donor `donating_two(a, b)`.
+        fresh = donating_two(a, b)
+        return step + 1, fresh, fresh
+
+      _, out_a, _ = while_loop_op(
+          lambda step, a, b: step < 3,
+          _dup_body,
+          (i0, a0, b0),
+          (),
+      )
+      return out_a
+
+    x = torch.ones((8, 128), dtype=torch.float32)
+    rot_rep = verifier.verify(while_three_carry_rotation, (x,), mode=STATIC)
+    self.assertNotEmpty(
+        rot_rep.findings_by_category(Category.USE_AFTER_DONATE),
+        msg=rot_rep.summary(),
+    )
+
+    dup_rep = verifier.verify(while_two_carry_duplication, (x,), mode=STATIC)
+    self.assertNotEmpty(
+        dup_rep.findings_by_category(Category.ALIASED_DONOR_INPUTS),
+        msg=dup_rep.summary(),
+    )
+
+  def test_joint_autograd_linear_vs_nonlinear_and_backward_only_donation(self):
+    donating_binary = jax_op(
+        "pallas_verify_fx::joint_lin_vs_nonlin_donor",
+        _pallas_binary_add,
+        donate_argnums=(1,),
+    )
+    donating_binary.register_autograd(lambda ctx, g: (g, g))
+
+    class _LinearNotSavedModule(torch.nn.Module):
+
+      def __init__(self):
+        super().__init__()
+        self.scale = torch.nn.Parameter(
+            torch.ones((8, 128), dtype=torch.float32)
+        )
+
+      def forward(self, x: torch.Tensor) -> torch.Tensor:
+        h = x * self.scale
+        # `h + h` has constant derivative and does NOT save `h` for backward.
+        lin = h + h
+        return donating_binary(lin, h)
+
+    x = torch.ones((8, 128), dtype=torch.float32, requires_grad=True)
+    lin_rep = verifier.verify(_LinearNotSavedModule(), (x,), mode=STATIC)
+    self.assertTrue(lin_rep.passed, msg=lin_rep.summary())
+    self.assertEmpty(
+        lin_rep.findings_by_category(Category.USE_AFTER_DONATE),
+        msg=lin_rep.summary(),
+    )
+
+    # Forward op has NO `donate_argnums`, while custom backward donates a saved
+    # `nn.Parameter` or passes aliased views to a 2-donor backward kernel.
+    bwd_param_donor = jax_op(
+        "pallas_verify_fx::bwd_only_param_donor",
+        _pallas_binary_add,
+        donate_argnums=(1,),
+    )
+    bwd_aliased_donor = jax_op(
+        "pallas_verify_fx::bwd_only_aliased_donor",
+        _pallas_binary_add,
+        donate_argnums=(0, 1),
+    )
+
+    fwd_clean_a = jax_op(
+        "pallas_verify_fx::fwd_clean_bwd_param_donate", _pallas_binary_add
+    )
+
+    def _save_second(ctx, inputs, output):
+      del output
+      ctx.save_for_backward(inputs[1])
+
+    def _donate_saved_param_bwd(ctx, g):
+      (w_saved,) = ctx.saved_tensors
+      return bwd_param_donor(g, w_saved), g
+
+    fwd_clean_a.register_autograd(
+        _donate_saved_param_bwd, setup_context=_save_second
+    )
+
+    class _BwdDonatesParamModule(torch.nn.Module):
+
+      def __init__(self):
+        super().__init__()
+        self.w = torch.nn.Parameter(torch.ones((8, 128), dtype=torch.float32))
+
+      def forward(self, t: torch.Tensor) -> torch.Tensor:
+        return fwd_clean_a(t, self.w)
+
+    bwd_param_rep = verifier.verify(_BwdDonatesParamModule(), (x,), mode=STATIC)
+    self.assertNotEmpty(
+        bwd_param_rep.findings_by_category(Category.DONATED_PARAMETER),
+        msg=bwd_param_rep.summary(),
+    )
+
+    fwd_clean_b = jax_op(
+        "pallas_verify_fx::fwd_clean_bwd_aliased_donate", _pallas_add_one
+    )
+    fwd_clean_b.register_autograd(
+        lambda ctx, g: bwd_aliased_donor(g, g.view_as(g))
+    )
+    bwd_alias_rep = verifier.verify(lambda t: fwd_clean_b(t), (x,), mode=STATIC)
+    self.assertNotEmpty(
+        bwd_alias_rep.findings_by_category(Category.ALIASED_DONOR_INPUTS),
+        msg=bwd_alias_rep.summary(),
+    )
+
+  def test_preserve_module_state_inference_tensors_and_expanded_buffers(self):
+    safe_op = jax_op("pallas_verify_fx::inf_mode_mod_op", _pallas_binary_add)
+
+    class _InferenceConstructedModule(torch.nn.Module):
+
+      def __init__(self):
+        super().__init__()
+        self.w = torch.nn.Parameter(
+            torch.ones((8, 128), dtype=torch.float32), requires_grad=False
+        )
+        base_row = torch.ones((1, 128), dtype=torch.float32)
+        self.register_buffer("expanded_buf", base_row.expand(8, 128))
+
+      def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return safe_op(x + self.expanded_buf, self.w)
+
+    with torch.inference_mode():
+      inf_mod = _InferenceConstructedModule()
+    self.assertTrue(inf_mod.w.is_inference())
+
+    x = torch.ones((8, 128), dtype=torch.float32)
+    inf_rep = verifier.verify(inf_mod, (x,), mode=STATIC)
+    self.assertTrue(inf_rep.passed, msg=inf_rep.summary())
+
+    class _VersionTrackedModule(torch.nn.Module):
+
+      def __init__(self):
+        super().__init__()
+        self.w = torch.nn.Parameter(torch.ones((8, 128), dtype=torch.float32))
+        self.register_buffer(
+            "scalar_buf", torch.tensor(2.0, dtype=torch.float32)
+        )
+        self.register_buffer(
+            "cl_buf",
+            torch.ones((1, 2, 4, 4), dtype=torch.float32).to(
+                memory_format=torch.channels_last
+            ),
+        )
+
+      def forward(self, t: torch.Tensor) -> torch.Tensor:
+        self.scalar_buf.add_(1.0)
+        self.cl_buf.add_(1.0)
+        return safe_op(t * self.scalar_buf + self.cl_buf.sum(), self.w)
+
+    ver_mod = _VersionTrackedModule()
+    ver_before = ver_mod.w._version
+    ver_rep = verifier.verify(ver_mod, (x,), mode=STATIC)
+    self.assertTrue(ver_rep.passed, msg=ver_rep.summary())
+    self.assertEqual(ver_mod.w._version, ver_before)
+    self.assertEqual(float(ver_mod.scalar_buf.item()), 2.0)
+    self.assertTrue(
+        torch.equal(
+            ver_mod.cl_buf, torch.ones((1, 2, 4, 4), dtype=torch.float32)
+        )
+    )
+
+  def test_concrete_int_invalidation_and_kwargs_signature_dedup(self):
+    def _neg_donor_int_fn(arr: jax.Array, offsets: jax.Array) -> jax.Array:
+      del offsets
+      return arr
+
+    neg_donor_int_op = jax_op(
+        "pallas_verify_fx::neg_donor_int_op",
+        _neg_donor_int_fn,
+        donate_argnums=(-1,),
+    )
+
+    def _set_fill_and_iadd_prog(
+        t: torch.Tensor,
+        idx_a: torch.Tensor,
+        idx_b: torch.Tensor,
+        idx_c: torch.Tensor,
+    ) -> torch.Tensor:
+      alias = torch.empty_like(idx_a)
+      alias.set_(idx_a)
+      alias.fill_(99)
+      idx_b = operator.iadd(idx_b, 99)
+      _ = neg_donor_int_op(t, offsets=idx_c)
+      return t + idx_a[0] + idx_b[0] + idx_c[0]
+
+    x3 = torch.ones((2, 8, 128), dtype=torch.float32)
+    prog_args = (
+        x3,
+        torch.tensor([0, 1, 2, 3], dtype=torch.int32),
+        torch.tensor([0, 1, 2, 3], dtype=torch.int32),
+        torch.tensor([0, 1, 2, 3], dtype=torch.int32),
+    )
+    gm = fx_verifier.trace_to_fx_graph(_set_fill_and_iadd_prog, prog_args)
+    phs = [n for n in gm.graph.nodes if n.op == "placeholder"]
+    ph_env = fx_verifier.match_placeholders_to_inputs(phs, prog_args, None)
+    _, env = verifier_impl._collect_graph_module_envs(gm, ph_env)[0]
+    self.assertNotIn(phs[1], env)
+    self.assertNotIn(phs[2], env)
+    self.assertNotIn(phs[3], env)
+
+    sym_t = torch.zeros((4,), dtype=torch.int32)
+    conc_t = torch.zeros((4,), dtype=torch.int32)
+    self.assertNotEqual(
+        verifier_impl._signature({"offsets": sym_t}, concrete_tensor_ids=set()),
+        verifier_impl._signature(
+            {"offsets": conc_t}, concrete_tensor_ids={id(conc_t)}
+        ),
+    )
 
 
 if __name__ == "__main__":

@@ -16,7 +16,7 @@ from torch.tpu.pallas import verifier
 
 # A TorchTPU @jax_op, with example arguments like torch.library.opcheck.
 report = verifier.verify(my_jax_op, (x, y))
-report.raise_for_errors()  # Raises VerificationError listing every finding.
+report.raise_for_errors()  # Pass fail_on_incomplete=True to reject bounded/skipped checks.
 
 # Any PyTorch callable, e.g. an nn.Module that calls @jax_op kernels.
 assert verifier.verify(model, (batch,)).passed
@@ -32,9 +32,11 @@ print(verifier.verify(my_pallas_fn, (spec,)))
 *   **`@jax_op`**: op-contract, TPU-lowering, model-checking, autograd-parity,
     and CPU-interpret checks.
 *   **Raw JAX function**: model-checking and CPU-interpret checks.
-*   **Other callables**: traced into an FX graph whose buffer donation and
-    aliasing are checked; every `@jax_op` call in the graph is then verified for
-    the shapes and dtypes it is called with.
+*   **Other callables**: traced into an FX graph (including nested `torch.cond`,
+    `while_loop`, and `scan` subgraphs plus joint forward+backward autograd
+    graphs) whose buffer donation and aliasing are checked; every `@jax_op` call
+    in the graph is then verified for the shapes, dtypes, and concrete small
+    integer/boolean inputs it is called with.
 
 `mode=VerificationMode.STATIC` skips everything that executes kernels (the CPU
 interpret sweep and autograd parity), which is much faster.
@@ -51,7 +53,9 @@ devices, so build the mesh with `torch.tpu.pallas.get_pallas_mesh`.
 
 ## Checks
 
-Findings have a severity: errors fail the report, warnings and infos do not.
+Findings have a severity: errors fail the report, warnings and infos do not
+(unless `raise_for_errors(fail_on_incomplete=True)` is used to fail on
+`verification_incomplete` findings).
 
 <!-- mdformat off(reason: standard GFM table rendering in Critique and Code Search) -->
 

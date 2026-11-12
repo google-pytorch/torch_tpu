@@ -54,7 +54,7 @@ class PallasVerifyErrorsTest(seed_test_utils.RepeatableTest):
     self.assertIn("kernel.py:12", formatted)
     self.assertIn("use after donate on x", formatted)
 
-  def test_report_with_only_warnings_and_infos_passes(self):
+  def test_report_warnings_and_fail_on_incomplete(self):
     warn_finding = verifier.VerificationFinding(
         category=verifier.FindingCategory.FAKE_KERNEL_MISMATCH,
         severity=verifier.Severity.WARNING,
@@ -83,8 +83,16 @@ class PallasVerifyErrorsTest(seed_test_utils.RepeatableTest):
         report.findings_by_severity(verifier.Severity.INFO),
         (info_finding,),
     )
+    self.assertIn("Verification PASSED", report.summary())
     self.assertIn("1 warning(s), 1 info(s)", report.summary())
     report.raise_for_errors()
+    with self.assertRaisesRegex(
+        verifier.VerificationError, "verification_incomplete in my_kernel"
+    ) as ctx:
+      report.raise_for_errors(fail_on_incomplete=True)
+    self.assertIs(ctx.exception.report, report)
+    self.assertIn("Verification INCOMPLETE", str(ctx.exception))
+    self.assertNotIn("Verification PASSED", str(ctx.exception))
 
   def test_report_with_error_fails_and_filters_by_category(self):
     err_finding = verifier.VerificationFinding(
@@ -182,6 +190,8 @@ class PallasVerifyErrorsTest(seed_test_utils.RepeatableTest):
     )
     with self.assertRaisesRegex(ValueError, "unrecognized TPU version"):
       findings.jax_tpu_device_kind(" custom_tpu ")
+    with self.assertRaisesRegex(TypeError, "check_autograd must be a bool"):
+      verifier.VerificationOptions(check_autograd="yes")  # type: ignore[arg-type]
     for bad_version in ("TPU v7", "", 123):
       with self.assertRaisesRegex(TypeError, "tpu_version"):
         verifier.VerificationOptions(tpu_version=bad_version)  # type: ignore[arg-type]
