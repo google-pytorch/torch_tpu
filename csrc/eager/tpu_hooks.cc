@@ -53,10 +53,12 @@
 #include "csrc/eager/device_buffer_utils.h"
 #include "csrc/eager/device_gen_impl.h"
 #include "csrc/eager/events_queue.h"
+#include "csrc/eager/graph_capture_state.h"
 #include "csrc/eager/host_allocator.h"
 #include "csrc/eager/materialize.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
+#include "csrc/eager/tpu_graph.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/pjrt/pjrt_state.h"
@@ -261,16 +263,22 @@ c10::Stream TpuDeviceGuardImpl::exchangeStream(c10::Stream s) const {
   //     because Z depends on Y, which has not yet been started.
   // By blocking on the exit from stream 2 until Y's materialization is queued,
   // Z's materialization cannot race its inputs, even if Y hasn't finished.
-  TT_ASSIGN_OR_THROW(EventSnapshot snapshot,
-                     MaterializeStream(s.device_index(), old_stream_id,
-                                       MaterializationReason::kExplicitSync));
-  TT_THROW_IF_ERROR(snapshot.BlockUntilStarted());
-  // Because we're dropping this snapshot without returning it to the user, any
-  // errors would be lost if we only chained the OkCallback. To ensure all
-  // errors are raised correctly we inject the full completion future into the
-  // stream so errors are picked up by the next snapshot.
-  internal::MarkStreamActive(s.device_index(), old_stream_id,
-                             snapshot.completion_future());
+  //
+  // A thread that captures a graph switches streams without materializing:
+  // the deferred ops on the capture stream belong to the graph, so they must
+  // not run, and the thread cannot issue operations on other streams.
+  if (!IsCurrentThreadCapturingGraph()) {
+    TT_ASSIGN_OR_THROW(EventSnapshot snapshot,
+                       MaterializeStream(s.device_index(), old_stream_id,
+                                         MaterializationReason::kExplicitSync));
+    TT_THROW_IF_ERROR(snapshot.BlockUntilStarted());
+    // Because we're dropping this snapshot without returning it to the user,
+    // any errors would be lost if we only chained the OkCallback. To ensure all
+    // errors are raised correctly we inject the full completion future into the
+    // stream so errors are picked up by the next snapshot.
+    internal::MarkStreamActive(s.device_index(), old_stream_id,
+                               snapshot.completion_future());
+  }
   return c10::Stream(c10::Stream::UNSAFE, s.device(), old_stream_id);
 }
 
@@ -435,6 +443,8 @@ struct TORCH_API TpuHooksInterface : public at::PrivateUse1HooksInterface {
         (IgnoreInCacheKey(storage, "Doesn't affect SHLO"),
          IgnoreInCacheKey(new_bytes, "Doesn't affect SHLO")),
         {
+          TT_THROW_IF_ERROR(
+              ValidateStorageResizableDuringGraphCapture(storage));
           const size_t current_bytes = storage.nbytes();
           TT_ASSIGN_OR_THROW(const DeviceBufferRef old_buffer_ref,
                              GetBaseBuffer(storage));
@@ -534,6 +544,7 @@ void CheckTpuDeviceNodesAfterInitialization() {
 
 absl::Status AddTpuHooks() {
   at::RegisterPrivateUse1HooksInterface(GetTpuHooks());
+  RegisterTpuGraphImpl();
 
   return absl::OkStatus();
 }
