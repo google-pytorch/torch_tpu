@@ -78,14 +78,7 @@ class ProcessGroupCollectiveCountTest(seed_test_utils.RepeatableTest):
 
   def test_invalid_num_collectives_in_graph(self) -> None:
     with self.assertRaisesRegex(
-        ValueError, "num_collectives_in_graph must be strictly positive"
-    ):
-      ProcessGroupCollectiveCount(
-          collective_count_before=0,
-          num_collectives_in_graph=0,
-      )
-    with self.assertRaisesRegex(
-        ValueError, "num_collectives_in_graph must be strictly positive"
+        ValueError, "num_collectives_in_graph must be non-negative"
     ):
       ProcessGroupCollectiveCount(
           collective_count_before=0,

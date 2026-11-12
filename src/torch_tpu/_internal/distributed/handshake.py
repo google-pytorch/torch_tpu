@@ -95,7 +95,8 @@ class ProcessGroupCollectiveCount:
     collective_count_before: Number of collectives that occurred on the rank so
       far for this process group.
     num_collectives_in_graph: Number of collectives in the FX graph for the
-      compiled region for this process group. Must be strictly greater than 0.
+      compiled region for this process group. Zero for a process group that the
+      rank used in earlier graphs but not in this one.
   """
 
   def __init__(
@@ -109,9 +110,9 @@ class ProcessGroupCollectiveCount:
           f" {collective_count_before}."
       )
 
-    if num_collectives_in_graph <= 0:
+    if num_collectives_in_graph < 0:
       raise ValueError(
-          "num_collectives_in_graph must be strictly positive, got"
+          "num_collectives_in_graph must be non-negative, got"
           f" {num_collectives_in_graph}."
       )
 

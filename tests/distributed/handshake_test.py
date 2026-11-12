@@ -423,6 +423,30 @@ class CollectiveHandshakeRequestTest(seed_test_utils.RepeatableTest):
     self.assertEqual(deserialized.participating_ranks, [0, 2, 5])
     self.assertEqual(deserialized.pg_collective_counts, pg_counts)
 
+  def test_to_bytes_and_from_bytes_process_group_unused_by_the_graph(
+      self,
+  ) -> None:
+    earlier_pg = ProcessGroupId([0, 1])
+    pg = ProcessGroupId([0, 2])
+    pg_counts = RankCollectiveCounts()
+    # The first graph only uses `earlier_pg`, the second one only `pg`.
+    pg_counts.increment_pg_collective_counts({earlier_pg: 3})
+    pg_counts.increment_pg_collective_counts({pg: 1})
+    request = CollectiveHandshakeRequest(
+        pg_collective_counts=pg_counts, executable_fingerprint="fp", rank=0
+    )
+
+    deserialized = CollectiveHandshakeRequest.from_bytes(request.to_bytes())
+
+    self.assertEqual(deserialized.pg_collective_counts, pg_counts)
+    self.assertEqual(
+        deserialized.pg_collective_counts[earlier_pg],
+        ProcessGroupCollectiveCount(
+            collective_count_before=3, num_collectives_in_graph=0
+        ),
+    )
+    self.assertEqual(deserialized.participating_ranks, [0, 2])
+
   def test_from_bytes_shares_process_group_instances(self) -> None:
     pg_counts = RankCollectiveCounts()
     pg_counts.increment_pg_collective_counts({ProcessGroupId(range(16)): 1})
