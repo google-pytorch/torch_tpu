@@ -37,18 +37,18 @@ import re
 from typing import Final
 import warnings
 
-# Sanitizers (ASan, MSan, TSan) replace the allocator, so tcmalloc cannot be
-# active under them.
+# Sanitizers (ASan, HWASan, MSan, TSan) replace the allocator, so tcmalloc
+# cannot be active under them.
 _TCMALLOC_OR_SANITIZER_RE: Final[re.Pattern[str]] = re.compile(
     r"""
     \blib
     (?:
         # libtcmalloc.so.4, libtcmalloc_minimal.so.4
         tcmalloc
-        # libclang_rt.asan-x86_64.so
-      | clang_rt\.(?:asan|msan|tsan)
-        # libasan.so.8, libmsan.so.0, libtsan.so.0
-      | (?:asan|msan|tsan)
+        # libclang_rt.asan-x86_64.so, libclang_rt.hwasan-aarch64.so
+      | clang_rt\.(?:asan|hwasan|msan|tsan)
+        # libasan.so.8, libhwasan.so.0, libmsan.so.0, libtsan.so.0
+      | (?:asan|hwasan|msan|tsan)
     )
     # Intentionally not have a trailing `\b`, otherwise it would not match
     # `libtcmalloc_minimal` because `_` is a word character.
@@ -61,7 +61,7 @@ _TCMALLOC_OR_SANITIZER_RE: Final[re.Pattern[str]] = re.compile(
 def _has_sanitizer_init(global_syms: ctypes.CDLL) -> bool:
   """Returns whether a sanitizer runtime's init symbol is in `global_syms`.
 
-  The symbol is present when ASan, MSan, or TSan is statically linked or
+  The symbol is present when ASan, HWASan, MSan, or TSan is statically linked or
   preloaded.
 
   Args:
@@ -69,6 +69,7 @@ def _has_sanitizer_init(global_syms: ctypes.CDLL) -> bool:
   """
   return (
       hasattr(global_syms, "__asan_init")
+      or hasattr(global_syms, "__hwasan_init")
       or hasattr(global_syms, "__msan_init")
       or hasattr(global_syms, "__tsan_init")
   )
