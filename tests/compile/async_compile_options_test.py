@@ -21,6 +21,7 @@ from unittest import mock
 from absl.testing import absltest
 import torch
 from torch_tpu._internal.compile import compiler as compiler_mod
+from torch_tpu._internal.compiler_options import compiler_options_impl
 
 
 class _AddOne(torch.nn.Module):
@@ -101,6 +102,9 @@ class AsyncCompileOptionsTest(absltest.TestCase):  # ABSLTEST_OK=no RNG used
     graph_module = torch.fx.symbolic_trace(_AddOne())
     return compiler(graph_module, [torch.ones(2)])
 
+  def test_real_snapshot_binding_without_overrides(self):
+    self.assertEmpty(compiler_options_impl._get_compiler_options())
+
   def test_async_compile_uses_custom_options(self):
     records = []
     self.fake_options.push_compiler_options({"xla_optimization_level": "O1"})
@@ -115,6 +119,11 @@ class AsyncCompileOptionsTest(absltest.TestCase):  # ABSLTEST_OK=no RNG used
         records[0]["options"], {"xla_optimization_level": "O1"}
     )
     self.assertNotEqual(records[0]["thread"], threading.current_thread().name)
+    self.assertEmpty(
+        self.executor.submit(
+            self.fake_options._get_compiler_options
+        ).result(timeout=10)
+    )
 
   def test_async_compile_uses_nested_custom_options(self):
     records = []
