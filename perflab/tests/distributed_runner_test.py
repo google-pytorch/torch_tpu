@@ -404,6 +404,7 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
                 e2e_wall_time_seconds=10.0,
                 first_step_time_seconds=1.0,
                 post_warmup_step_time_seconds=0.5,
+                throughput_step_time_seconds=0.5,
             ),
         ),
     ):

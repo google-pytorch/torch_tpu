@@ -504,6 +504,10 @@ def _reset_static_attention_layer(layer: Any, prompt_len: int) -> None:
 
 class DecodeStepper(common.BaseStepper):
 
+  # Pipelined decode steps are not timed yet, so the decode throughput still
+  # comes from the synchronized steps (see measure's _post_warmup_run).
+  supports_pipelined_steps = False
+
   def __init__(
       self,
       output_tokens: int = step_lib.DEFAULT_DECODE_OUTPUT_TOKENS,

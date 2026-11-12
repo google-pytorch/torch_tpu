@@ -243,6 +243,17 @@ class TorchDeviceOpsTest(seed_test_utils.RepeatableTest):
 
     self.assertEqual(count, 0)
 
+  @mock.patch("torch.accelerator")
+  def test_release_cached_memory(self, mock_accelerator):
+    mock_accelerator.device_count.return_value = 1
+    target = target_lib.make_target(platform=target_lib.Platform.V5E_1X1)
+    ops = torch_device_ops.TorchDeviceOps(target)
+
+    ops.release_cached_memory()
+
+    mock_accelerator.synchronize.assert_called_once()
+    mock_accelerator.empty_cache.assert_called_once()
+
   def test_agree_on_step_count_without_distributed(self):
     target = target_lib.make_target(platform=target_lib.Platform.CPU)
     ops = torch_device_ops.TorchDeviceOps(target)

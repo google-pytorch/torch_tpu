@@ -160,6 +160,7 @@ class FlopsMetricsTest(seed_test_utils.RepeatableTest):
   def test_exports_achieved_tflops_and_mfu(self):
     metrics = metrics_lib.PerformanceMetrics(
         post_warmup_step_time_seconds=0.5,
+        throughput_step_time_seconds=0.5,
         average_post_warmup_device_time_seconds=0.25,
         model_flops_per_step=500e12,
         peak_flops_per_second=2000e12,
@@ -173,9 +174,41 @@ class FlopsMetricsTest(seed_test_utils.RepeatableTest):
     )
     self.assertAlmostEqual(metric_map["device_mfu"], 1.0)
 
+  def test_achieved_tflops_and_mfu_from_throughput_step_time(self):
+    # E.g. the pipelined step time, rather than the synchronized one.
+    metric_map = metrics_lib.PerformanceMetrics(
+        post_warmup_step_time_seconds=0.5,
+        pipelined_step_time_seconds=0.25,
+        throughput_step_time_seconds=0.25,
+        average_post_warmup_device_time_seconds=0.2,
+        model_flops_per_step=500e12,
+        peak_flops_per_second=4000e12,
+    ).metric_map()
+    self.assertAlmostEqual(metric_map["achieved_tflops_per_second"], 2000.0)
+    self.assertAlmostEqual(metric_map["mfu"], 0.5)
+    # The device FLOP/s still come from the device time.
+    self.assertAlmostEqual(
+        metric_map["device_achieved_tflops_per_second"], 2500.0
+    )
+    self.assertAlmostEqual(metric_map["device_mfu"], 0.625)
+
+  def test_no_wall_flops_without_throughput_step_time(self):
+    # E.g. the pipelined steps were disabled or ran out of memory.
+    metric_map = metrics_lib.PerformanceMetrics(
+        post_warmup_step_time_seconds=0.5,
+        throughput_step_time_seconds=None,
+        average_post_warmup_device_time_seconds=0.25,
+        model_flops_per_step=500e12,
+        peak_flops_per_second=2000e12,
+    ).metric_map()
+    self.assertNotIn("achieved_tflops_per_second", metric_map)
+    self.assertNotIn("mfu", metric_map)
+    self.assertAlmostEqual(metric_map["device_mfu"], 1.0)
+
   def test_exports_no_mfu_without_peak(self):
     metric_map = metrics_lib.PerformanceMetrics(
         post_warmup_step_time_seconds=0.5,
+        throughput_step_time_seconds=0.5,
         model_flops_per_step=500e12,
     ).metric_map()
     self.assertIn("achieved_tflops_per_second", metric_map)

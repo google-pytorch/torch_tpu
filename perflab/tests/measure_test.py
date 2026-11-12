@@ -19,26 +19,25 @@ import threading
 import unittest
 from unittest import mock
 
+from absl import flags
 from absl.testing import absltest
 from absl.testing import flagsaver
 from absl.testing import parameterized
 from perflab import device_utils
 from perflab import measure as measure_lib
 from perflab import metrics as metrics_lib
+from perflab import workload as workload_lib
 from perflab.tests import fakes
 from tests import seed_test_utils
 
 _ONE_MS_IN_PS = 10**9
 _CONTENDED = "UNAVAILABLE: Another profiling session active."
 
-
-from absl import flags
-
+# Most tests count the steps that run, and their steps take no (or fake) time,
+# so a time-based window would run --post_warmup_max_steps steps. They time a
+# fixed --post_warmup_steps steps instead; MeasureWindowTest sets the window.
 flags.FLAGS.set_default("post_warmup_min_seconds", 0.0)
 
-from absl import flags
-
-flags.FLAGS.set_default("post_warmup_min_seconds", 0.0)
 
 def setUpModule():
   # Most tests count the steps that run. They run no untimed post-warmup steps;
@@ -288,11 +287,19 @@ class MeasureUntimedStepsTest(seed_test_utils.RepeatableTest):
 
 
 class AgreeingOps(fakes.RecordingOps):
+  """DeviceOps of a process whose other process proposes more steps once.
 
-  def __init__(self, other_process_extra_steps):
+  The other process proposes `other_process_extra_steps` more steps for the
+  `extra_on_proposal`-th post-warmup proposal: the first is the post-warmup
+  run's first agreement, the second the first round of the timed window, and
+  so on.
+  """
+
+  def __init__(self, other_process_extra_steps, extra_on_proposal=3):
     super().__init__()
     self.proposals = []
     self._extra = other_process_extra_steps
+    self._extra_on_proposal = extra_on_proposal
 
   def agree_on_step_count(self, steps):
     # Agree with the warmup agreements, which come before the post-warmup peak
@@ -300,7 +307,9 @@ class AgreeingOps(fakes.RecordingOps):
     if "reset" not in self.events:
       return steps
     self.proposals.append(steps)
-    return steps + self._extra if len(self.proposals) == 2 else steps
+    if len(self.proposals) == self._extra_on_proposal:
+      return steps + self._extra
+    return steps
 
 
 class MeasureWindowTest(seed_test_utils.RepeatableTest):
@@ -349,11 +358,22 @@ class MeasureWindowTest(seed_test_utils.RepeatableTest):
     self.assertEqual(m.num_post_warmup_steps, 10)
 
   def test_processes_agree_on_the_step_count(self):
+    # The other process wants 7 more steps than the 16 of the second round.
     ops = AgreeingOps(other_process_extra_steps=7)
     step, m = self._measure(
         [0.125], steps=3, min_seconds=2.0, max_steps=100, ops=ops
     )
     self.assertEqual(m.num_post_warmup_steps, 23)
+
+  def test_processes_agree_on_the_first_round(self):
+    # The other process wants 7 more steps than the 3 of the first round, and
+    # 10 steps of 0.125 s then extend to 16 steps for 2 s.
+    ops = AgreeingOps(other_process_extra_steps=7, extra_on_proposal=2)
+    step, m = self._measure(
+        [0.125], steps=3, min_seconds=2.0, max_steps=100, ops=ops
+    )
+    self.assertEqual(ops.proposals, [3, 3, 16, 16])
+    self.assertEqual(m.num_post_warmup_steps, 16)
 
   def test_logs_summary_and_every_step_time_of_a_short_window(self):
     with self.assertLogs(level="INFO") as logs:
@@ -376,10 +396,283 @@ class MeasureWindowTest(seed_test_utils.RepeatableTest):
     with self.assertRaises(measure_lib.PostWarmupRecompileError):
       self._measure([0.125], steps=3, min_seconds=2.0, max_steps=100, ops=ops)
 
-  @mock.patch("torch.distributed.is_initialized", return_value=True)
-  def test_distributed_run_without_agree_on_step_count_raises(self, _):
-    with self.assertRaisesRegex(RuntimeError, "must be agreed upon"):
-      self._measure([0.125], steps=3, min_seconds=2.0, max_steps=100)
+
+class PipelinedStep(fakes.CountingStep):
+  """CountingStep of a stepper that supports pipelined steps."""
+
+  supports_pipelined_steps = True
+
+  def __init__(self, clock, step_seconds, events=None):
+    super().__init__(clock=clock, step_seconds=step_seconds)
+    self.events = events if events is not None else []
+
+  def __call__(self):
+    out = super().__call__()
+    self.events.append(f"step {out}")
+    return out
+
+  def post_warmup_hook(self):
+    super().post_warmup_hook()
+    self.events.append("hook")
+
+
+class EventOps(fakes.RecordingOps):
+  """RecordingOps that logs its awaits and checks into a shared event list."""
+
+  def __init__(self, events, **kwargs):
+    super().__init__(**kwargs)
+    self.shared_events = events
+
+  def await_result(self, out):
+    super().await_result(out)
+    self.shared_events.append(f"await {out}")
+
+  def check_result(self, out):
+    super().check_result(out)
+    self.shared_events.append(f"check {out}")
+
+
+class MeasurePipelinedTest(seed_test_utils.RepeatableTest):
+
+  def _measure(
+      self,
+      step,
+      ops,
+      steps=3,
+      min_seconds=0.0,
+      max_steps=None,
+      pipelined=True,
+  ):
+    with flagsaver.flagsaver(pipelined_steps=pipelined, xprof_steps=0):
+      return _run_measure(
+          step,
+          ops,
+          steps=steps,
+          min_warmup=2,
+          min_seconds=min_seconds,
+          max_steps=max_steps,
+          clock=step.clock,
+      )
+
+  def test_pipelined_steps_wait_only_for_the_last_step(self):
+    events = []
+    step = PipelinedStep(
+        fakes.FakeClock(), [10.0, 1.0, 1.0, 1.0, 1.0, 0.5], events
+    )
+    m = self._measure(step, EventOps(events), steps=3)
+
+    # 2 warmup + 3 synchronized steps, then 3 pipelined steps.
+    self.assertEqual(step.calls, 2 + 3 + 3)
+    pipelined = events[events.index("step out-5") + 4 :]
+    self.assertEqual(
+        pipelined,
+        [
+            "await None",
+            "step out-6",
+            "hook",
+            "step out-7",
+            "hook",
+            "step out-8",
+            "hook",
+            "await out-8",
+            "check out-8",
+        ],
+    )
+    self.assertEqual(m.num_pipelined_steps, 3)
+    self.assertAlmostEqual(m.pipelined_step_time_seconds, 0.5)
+    self.assertAlmostEqual(m.throughput_step_time_seconds, 0.5)
+    self.assertEqual(m.post_warmup_step_time_seconds, 1.0)
+
+  def test_pipelined_steps_sized_from_synchronized_step_time(self):
+    # Synchronized steps of 0.25 s: 2 s takes 8 pipelined steps.
+    step = PipelinedStep(fakes.FakeClock(), [10.0, 0.25])
+    m = self._measure(step, fakes.RecordingOps(), steps=3, min_seconds=2.0)
+
+    self.assertEqual(m.num_post_warmup_steps, 8)
+    self.assertEqual(m.num_pipelined_steps, 8)
+    self.assertEqual(step.calls, 2 + 8 + 8)
+
+  def _faster_pipelined_step(self, events=None):
+    # 2 warmup steps, then synchronized steps of 0.25 s, and from the 11th step
+    # on, i.e. once 8 synchronized steps have taken 2 s, pipelined steps of
+    # 0.125 s.
+    return PipelinedStep(
+        fakes.FakeClock(), [10.0] + [0.25] * 9 + [0.125], events
+    )
+
+  def test_pipelined_steps_grow_until_min_seconds(self):
+    events = []
+    ops = EventOps(events)
+    m = self._measure(
+        self._faster_pipelined_step(events), ops, steps=3, min_seconds=2.0
+    )
+
+    # Sized from the synchronized steps, 8 pipelined steps take only 1 s, so a
+    # second round runs 8 more.
+    self.assertEqual(m.num_post_warmup_steps, 8)
+    self.assertEqual(m.num_pipelined_steps, 16)
+    self.assertAlmostEqual(m.pipelined_step_time_seconds, 0.125)
+    pipelined = events[events.index("step out-11") - 1 :]
+    self.assertEqual(pipelined.count("await None"), 2)
+    self.assertEqual(
+        [e for e in pipelined if e.startswith("check")],
+        ["check out-18", "check out-26"],
+    )
+
+  def test_pipelined_steps_grow_up_to_max_steps(self):
+    m = self._measure(
+        self._faster_pipelined_step(),
+        fakes.RecordingOps(),
+        steps=3,
+        min_seconds=2.0,
+        max_steps=12,
+    )
+
+    self.assertEqual(m.num_post_warmup_steps, 8)
+    self.assertEqual(m.num_pipelined_steps, 12)
+    self.assertAlmostEqual(m.pipelined_step_time_seconds, 0.125)
+
+  def test_processes_agree_on_every_pipelined_round(self):
+    class ProposalOps(fakes.RecordingOps):
+
+      def __init__(self):
+        super().__init__()
+        self.proposals = []
+
+      def agree_on_step_count(self, steps):
+        # Only post-warmup proposals, which come after the peak memory reset,
+        # are recorded.
+        if "reset" in self.events:
+          self.proposals.append(steps)
+        return steps
+
+    ops = ProposalOps()
+    self._measure(self._faster_pipelined_step(), ops, steps=3, min_seconds=2.0)
+
+    # The post-warmup run's first agreement; the synchronized rounds of 3 and 8
+    # steps and the final count; then the pipelined rounds of 8 and 16 steps and
+    # the final count.
+    self.assertEqual(ops.proposals, [3, 3, 8, 8, 8, 16, 16])
+
+  def test_no_pipelined_steps_when_disabled(self):
+    step = PipelinedStep(fakes.FakeClock(), [10.0, 1.0])
+    m = self._measure(step, fakes.RecordingOps(), steps=3, pipelined=False)
+
+    self.assertEqual(step.calls, 2 + 3)
+    self.assertEqual(m.pipelined_step_time_seconds, -1.0)
+    self.assertIsNone(m.throughput_step_time_seconds)
+
+    m.step_work = workload_lib.StepWork(
+        workload_lib.Workload(batch_size=1),
+        samples_per_step=1,
+        tokens_per_step=None,
+    )
+    self.assertNotIn("pipelined_step_time_seconds", m.metric_map())
+    self.assertNotIn("samples_per_second", m.metric_map())
+
+  def test_no_pipelined_steps_for_unsupported_stepper(self):
+    step = fakes.CountingStep(clock=fakes.FakeClock(), step_seconds=[10.0, 1.0])
+    m = self._measure(step, fakes.RecordingOps(), steps=3)
+
+    self.assertEqual(step.calls, 2 + 3)
+    self.assertEqual(m.num_pipelined_steps, 0)
+    # The throughput comes from the synchronized steps.
+    self.assertEqual(m.throughput_step_time_seconds, 1.0)
+
+  def test_peak_memory_is_read_before_pipelined_steps(self):
+    events = []
+    step = PipelinedStep(fakes.FakeClock(), [10.0, 1.0], events)
+
+    class PeakOps(EventOps):
+
+      def peak_memory_mb(self):
+        events.append("peak")
+        return 1.0
+
+    self._measure(step, PeakOps(events), steps=2)
+    self.assertLess(events.index("peak"), events.index("step out-5"))
+
+  def test_pipelined_steps_hold_one_output_at_a_time(self):
+    live = [0]
+    max_live = [0]
+
+    class Output:
+
+      def __init__(self):
+        live[0] += 1
+        max_live[0] = max(max_live[0], live[0])
+
+      def __del__(self):
+        live[0] -= 1
+
+    class OutputStep(PipelinedStep):
+
+      def __call__(self):
+        super().__call__()
+        return Output()
+
+    class NonRetainingOps(fakes.RecordingOps):
+      """RecordingOps that does not keep references to the outputs."""
+
+      def await_result(self, out):
+        del out
+        super().await_result(None)
+
+      def check_result(self, out):
+        del out
+        super().check_result(None)
+
+    step = OutputStep(fakes.FakeClock(), [10.0, 1.0])
+    self._measure(step, NonRetainingOps(), steps=3)
+
+    self.assertEqual(step.calls, 2 + 3 + 3)
+    self.assertEqual(max_live[0], 1)
+
+  def test_out_of_memory_in_pipelined_steps_keeps_synchronized_results(self):
+    class OomStep(PipelinedStep):
+
+      def __call__(self):
+        if self.calls == 5:  # The first pipelined step (2 warmup, 3 timed).
+          self.calls += 1
+          raise RuntimeError("CUDA out of memory. Tried to allocate 62.6 GiB")
+        return super().__call__()
+
+    ops = fakes.RecordingOps()
+    with self.assertLogs(level="WARNING") as logs:
+      m = self._measure(OomStep(fakes.FakeClock(), [10.0, 1.0]), ops, steps=3)
+
+    self.assertEqual(m.post_warmup_step_time_seconds, 1.0)
+    self.assertEqual(m.num_post_warmup_steps, 3)
+    self.assertEqual(m.pipelined_step_time_seconds, -1.0)
+    self.assertEqual(m.num_pipelined_steps, 0)
+    self.assertIsNone(m.throughput_step_time_seconds)
+    self.assertNotIn("pipelined_step_time_seconds", m.metric_map())
+    self.assertEqual(ops.released, 1)
+    self.assertIn("nor the throughput", "\n".join(logs.output))
+
+  def test_other_errors_in_pipelined_steps_raise(self):
+    class FailingStep(PipelinedStep):
+
+      def __call__(self):
+        if self.calls == 5:
+          raise ValueError("bad step")
+        return super().__call__()
+
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=benchmark
+        ValueError, "bad step"
+    ):
+      self._measure(
+          FailingStep(fakes.FakeClock(), [10.0, 1.0]), fakes.RecordingOps()
+      )
+
+  def test_recompile_in_pipelined_steps_raises(self):
+    # Awaits: 2 warmup, 3 synchronized, 1 before the pipelined steps, then 1
+    # after them, which sees the recompile.
+    step = PipelinedStep(fakes.FakeClock(), [10.0, 1.0])
+    with self.assertRaises(  # ASSERT_RAISES_OK=benchmark
+        measure_lib.PostWarmupRecompileError
+    ):
+      self._measure(step, fakes.RecordingOps(recompile_on_calls={7}), steps=3)
 
 
 class _ThreadedAgreement:
@@ -554,6 +847,8 @@ class MeasureSequenceTest(seed_test_utils.RepeatableTest):
         self.events.append("check")
 
     class _OutputLifetimeStep:
+
+      supports_pipelined_steps = False
 
       def get_step_fn(self):
         def step():

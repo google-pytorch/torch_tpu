@@ -72,6 +72,10 @@ class CountingStep:
     post_warmup_hook_calls: Number of `post_warmup_hook` calls.
   """
 
+  # Most tests count the steps that run, so they run no pipelined steps; tests
+  # of the pipelined steps use a subclass that supports them.
+  supports_pipelined_steps = False
+
   def __init__(
       self,
       raise_at: int | None = None,
@@ -136,6 +140,7 @@ class RecordingOps:
     peak_mb: Value reported by `peak_memory_mb`.
     recompile_on_calls: `await_result` call numbers that count as a recompile.
     session_id_lookups: Number of device-time lookups by xprof session id.
+    released: Number of `release_cached_memory` calls.
   """
 
   def __init__(
@@ -150,6 +155,7 @@ class RecordingOps:
     self.recompile_on_calls = recompile_on_calls or set()
     self.calls = 0
     self.session_id_lookups = 0
+    self.released = 0
     self._recompiles = 0
 
   def await_result(self, out):
@@ -168,6 +174,12 @@ class RecordingOps:
   def reset_peak_memory(self):
     self.events.append("reset")
     self.reset_count += 1
+
+  def release_cached_memory(self):
+    self.released += 1
+
+  def agree_on_step_count(self, steps):
+    return steps
 
   def peak_memory_mb(self):
     return self.peak_mb

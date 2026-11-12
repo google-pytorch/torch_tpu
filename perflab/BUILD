@@ -201,6 +201,7 @@ torch_tpu_py_library(
     name = "measure",
     srcs = ["measure.py"],
     deps = [
+        ":common",
         ":device_ops",
         ":metrics",
         ":step_lib",

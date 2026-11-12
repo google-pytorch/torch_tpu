@@ -55,6 +55,14 @@ DEFAULT_DECODE_OUTPUT_TOKENS = 16
 @runtime_checkable
 class Stepper(Protocol):
 
+  # Whether steps can be dispatched back to back without waiting for each
+  # step's result, so that measure() times pipelined steps and takes the
+  # throughput from them. Steppers that don't support it keep the throughput of
+  # the synchronized steps.
+  @property
+  def supports_pipelined_steps(self) -> bool:
+    ...
+
   # Initialize the stepper with the arguments returned from a benchmark spec's factory.
   def init_with_benchmark_args(self, *args: Any, **kwargs: Any) -> None:
     ...

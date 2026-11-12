@@ -239,6 +239,10 @@ class TrainingStepper:
       self._standard_stepper.compile(compile_config, target)
 
   @property
+  def supports_pipelined_steps(self) -> bool:
+    return self._active_stepper.supports_pipelined_steps
+
+  @property
   def _active_stepper(
       self,
   ) -> standard_train.StandardTrainingStepper | SingleTraceTrainingStepper:

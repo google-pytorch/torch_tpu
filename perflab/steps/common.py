@@ -38,6 +38,10 @@ class CompileConfig(typing.Protocol):
 class BaseStepper(abc.ABC):
   """Base class providing default trivial compile hook for the step function."""
 
+  # Whether steps can be dispatched back to back without waiting for each
+  # step's result (see measure's pipelined steps).
+  supports_pipelined_steps = True
+
   def __init__(self):
     self._model = None
     self._inner_stepper = self._step_function

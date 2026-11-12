@@ -267,6 +267,10 @@ class _TorchaxFactoryContext:
 class _BaseTorchaxStepper:
   """Base class for TorchAx steppers."""
 
+  # Pipelined torchax steps are not timed yet, so the torchax throughput still
+  # comes from the synchronized steps.
+  supports_pipelined_steps = False
+
   def __init__(self):
     self._weights = None
     self._buffers = None

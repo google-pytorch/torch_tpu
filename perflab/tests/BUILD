@@ -245,6 +245,7 @@ torch_tpu_py_test(
         "//perflab:device_utils",
         "//perflab:measure",
         "//perflab:metrics",
+        "//perflab:workload",
         "//shims/absl_py/flags",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:flagsaver",
