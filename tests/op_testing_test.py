@@ -2078,6 +2078,40 @@ class CoupledDimDiscoveryTest(seed_test_utils.RepeatableTest):
         ),
     )
 
+  def test_grouped_mm_2d_2d_couples_ragged_contracting_dims(self):
+    grouped_mm_op = op_testing._get_op("_grouped_mm")
+    lhs = torch.ones(16, 32, dtype=torch.bfloat16)
+    rhs = torch.ones(32, 16, dtype=torch.bfloat16)
+    offs = torch.tensor([16, 32], dtype=torch.int32)
+    plans = dynamism_test_utils.generate_exhaustive_input_marking_plans(
+        grouped_mm_op,
+        lhs,
+        (rhs,),
+        mode=dynamism_test_utils.DynamismMode.COMPILE,
+        kwargs={"offs": offs},
+    )
+    td = dynamism_test_utils.TensorDim
+    self.assertEqual(
+        plans,
+        (
+            dynamism_test_utils.DynamicMarkingPlan(
+                label="t0d0",
+                tensor_dims=(td(0, 0),),
+                coupled_dims=(td(0, 0),),
+            ),
+            dynamism_test_utils.DynamicMarkingPlan(
+                label="t0d1",
+                tensor_dims=(td(0, 1),),
+                coupled_dims=(td(0, 1), td(1, 0)),
+            ),
+            dynamism_test_utils.DynamicMarkingPlan(
+                label="t0d0_t0d1",
+                tensor_dims=(td(0, 0), td(0, 1)),
+                coupled_dims=(td(0, 0), td(0, 1), td(1, 0)),
+            ),
+        ),
+    )
+
 
 if __name__ == "__main__":
   absltest.main()

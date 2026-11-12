@@ -20,6 +20,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -50,11 +51,11 @@
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Types.h"
+#include "mlir/Support/DebugStringHelper.h"
 #include "mlir/Support/LLVM.h"
 #include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
-#include "stablehlo/integrations/cpp/builder/ChloBuilder.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "torch/headeronly/core/ScalarType.h"
@@ -270,29 +271,32 @@ mlir::MlirOp ComputeGroupSizesFromOffsets(mlir::MlirOp offs_op) {
     offs_op = mlir::stablehlo::ConvertElementType(
         offs_op, builder.getOpBuilder().getI32Type());
   }
-  const mlir::RankedTensorType offs_type = GetTensorTypeOrDie(offs_op);
+  StaticAtBounds static_offs = MakeStaticAtBounds(offs_op);
+  const mlir::RankedTensorType offs_type = GetTensorTypeOrDie(static_offs.op);
   const int64_t num_groups = offs_type.getShape()[0];
+  if (num_groups == 0) {
+    return offs_op;
+  }
   mlir::MlirOp zero_op =
       MakeConstant(builder, 0, offs_type.getElementType(), {1});
   const Strides strides(1, 1);
   const Indices start_indices(1, 0);
-  const Indices limit_indices(1, std::max<int64_t>(0, num_groups - 1));
-  mlir::MlirOp offs_slice =
-      mlir::stablehlo::Slice(offs_op, start_indices, limit_indices, strides);
+  const Indices limit_indices(1, num_groups - 1);
+  mlir::MlirOp offs_slice = mlir::stablehlo::Slice(
+      static_offs.op, start_indices, limit_indices, strides);
   mlir::MlirOp concat_op =
       mlir::stablehlo::Concatenate(builder, {zero_op, offs_slice}, 0);
-  return mlir::stablehlo::Subtract(offs_op, concat_op);
+  mlir::MlirOp group_sizes =
+      mlir::stablehlo::Subtract(static_offs.op, concat_op);
+  return RestoreDynamicDimSizes(group_sizes, static_offs.runtime_sizes);
 }
 
-mlir::MlirOp BuildRaggedDot2d3d(mlir::MlirOp self_op, mlir::MlirOp mat2_op,
-                                mlir::MlirOp offs_op, bool transpose_mat2,
-                                mlir::ElementType comp_dtype,
-                                mlir::ArrayAttr precision_config) {
-  const mlir::RankedTensorType self_type = GetTensorTypeOrDie(self_op);
-  const mlir::RankedTensorType mat2_type = GetTensorTypeOrDie(mat2_op);
+absl::StatusOr<mlir::MlirOp> BuildRaggedDot2d3d(
+    mlir::MlirOp self_op, mlir::MlirOp mat2_op, mlir::MlirOp offs_op,
+    bool transpose_mat2, mlir::ElementType comp_dtype,
+    mlir::ArrayAttr precision_config) {
   mlir::MlirOp group_sizes = ComputeGroupSizesFromOffsets(offs_op);
   const int64_t rhs_contracting_dim = transpose_mat2 ? 2 : 1;
-  const int64_t rhs_out_dim = transpose_mat2 ? 1 : 2;
   const mlir::chlo::RaggedDotDimensionNumbersAttr dimension_numbers =
       mlir::chlo::RaggedDotDimensionNumbersAttr::get(
           &self_op.getContext(), /*lhsBatchingDimensions=*/{},
@@ -301,11 +305,8 @@ mlir::MlirOp BuildRaggedDot2d3d(mlir::MlirOp self_op, mlir::MlirOp mat2_op,
           /*rhsContractingDimensions=*/{rhs_contracting_dim},
           /*lhsRaggedDimensions=*/{0},
           /*rhsGroupDimensions=*/{0});
-  const mlir::Type out_type = mlir::makeTensorType(
-      self_op.getContext(),
-      {self_type.getShape()[0], mat2_type.getShape()[rhs_out_dim]}, comp_dtype);
-  return mlir::chlo::RaggedDot(out_type, self_op, mat2_op, group_sizes,
-                               dimension_numbers, precision_config);
+  return RaggedDotLike(self_op, mat2_op, group_sizes, dimension_numbers,
+                       precision_config, comp_dtype);
 }
 
 mlir::MlirOp BuildBatchedDot3d3d(mlir::MlirOp self_op, mlir::MlirOp mat2_op,
@@ -338,13 +339,28 @@ mlir::MlirOp AppendZeroRows(mlir::MlirOp op, int64_t num_rows) {
                               /*interior_padding=*/Dimensions{0, 0});
 }
 
-mlir::MlirOp BuildRaggedDot2d2d(mlir::MlirOp self_op, mlir::MlirOp mat2_op,
-                                mlir::MlirOp offs_op,
-                                mlir::ElementType comp_dtype,
-                                mlir::ArrayAttr precision_config) {
-  const mlir::RankedTensorType self_type = GetTensorTypeOrDie(self_op);
-  const mlir::RankedTensorType mat2_type = GetTensorTypeOrDie(mat2_op);
-  const int64_t num_groups = GetTensorTypeOrDie(offs_op).getShape()[0];
+// Appends `num_rows` zero rows to rank-2 `op` at its static upper bound,
+// zeroing past runtime dimension 0 first when dimension 0 is bounded dynamic so
+// rows [runtime_k, padded_tokens) are all zero without emitting a dynamic Pad.
+mlir::MlirOp AppendZeroRowsAtStaticBound(mlir::MlirOp op, int64_t num_rows) {
+  if (!GetTensorTypeOrDie(op).isDynamicDim(0)) {
+    return AppendZeroRows(op, num_rows);
+  }
+  StaticAtBounds static_op = MakeStaticAtBounds(op);
+  mlir::MlirOp zero = MakeScalarConstant(
+      op.getBuilder(), 0, GetTensorTypeOrDie(op).getElementType());
+  std::vector<std::optional<mlir::MlirOp>> dim0_runtime_size(
+      static_op.runtime_sizes.size());
+  dim0_runtime_size[0] = static_op.runtime_sizes[0];
+  static_op.op = FillPastRuntimeSizes(static_op.op, zero, dim0_runtime_size);
+  static_op.op = AppendZeroRows(static_op.op, num_rows);
+  static_op.runtime_sizes[0] = std::nullopt;
+  return RestoreDynamicDimSizes(static_op.op, static_op.runtime_sizes);
+}
+
+absl::StatusOr<mlir::MlirOp> BuildRaggedDot2d2d(
+    mlir::MlirOp self_op, mlir::MlirOp mat2_op, mlir::MlirOp offs_op,
+    mlir::ElementType comp_dtype, mlir::ArrayAttr precision_config) {
   mlir::MlirOp group_sizes = ComputeGroupSizesFromOffsets(offs_op);
 
   // Put the ragged dimension first in both operands ([T, m] x [T, n]). This
@@ -354,21 +370,21 @@ mlir::MlirOp BuildRaggedDot2d2d(mlir::MlirOp self_op, mlir::MlirOp mat2_op,
   // can fault on some T (github.com/google-pytorch/torch_tpu/issues/2668).
   mlir::MlirOp lhs = mlir::stablehlo::Transpose(self_op, {1, 0});
   mlir::MlirOp rhs = mat2_op;
-  // Gmm also needs T to be a multiple of the sublane count, so zero-pad T to
-  // a multiple of kRaggedTokenTile. The pad rows follow the last group, so
-  // no group covers them. Bounded-dynamic T is not padded; if its bound is
-  // not a multiple of the sublane count, XLA falls back to RaggedDotExpander
-  // (#2668).
-  // TODO(amainz): Pad bounded-dynamic T to a multiple of kRaggedTokenTile.
-  if (!self_type.isDynamicDim(1) && !mat2_type.isDynamicDim(0)) {
-    const int64_t num_tokens = self_type.getDimSize(1);
+  // Gmm also needs T to be a multiple of the sublane count, so zero-pad T (or
+  // its upper bound when bounded dynamic) to a multiple of kRaggedTokenTile.
+  // The pad rows follow the last group, so no group covers them.
+  const mlir::RankedTensorType lhs_type = GetTensorTypeOrDie(lhs);
+  const mlir::RankedTensorType rhs_type = GetTensorTypeOrDie(rhs);
+  const int64_t num_tokens = GetStaticShape(lhs)[0];
+  if (lhs_type.isDynamicDim(0) == rhs_type.isDynamicDim(0) &&
+      num_tokens == GetStaticShape(rhs)[0]) {
     const int64_t padded_tokens = std::max<int64_t>(
         kRaggedTokenTile, (num_tokens + kRaggedTokenTile - 1) /
                               kRaggedTokenTile * kRaggedTokenTile);
     const int64_t num_pad_rows = padded_tokens - num_tokens;
     if (num_pad_rows > 0) {
-      lhs = AppendZeroRows(lhs, num_pad_rows);
-      rhs = AppendZeroRows(rhs, num_pad_rows);
+      lhs = AppendZeroRowsAtStaticBound(lhs, num_pad_rows);
+      rhs = AppendZeroRowsAtStaticBound(rhs, num_pad_rows);
     }
   }
 
@@ -381,12 +397,8 @@ mlir::MlirOp BuildRaggedDot2d2d(mlir::MlirOp self_op, mlir::MlirOp mat2_op,
           /*lhsRaggedDimensions=*/{0},
           /*rhsGroupDimensions=*/{});
 
-  const auto out_type = mlir::makeTensorType(
-      self_op.getContext(),
-      {num_groups, self_type.getShape()[0], mat2_type.getShape()[1]},
-      comp_dtype);
-  return mlir::chlo::RaggedDot(out_type, lhs, rhs, group_sizes,
-                               dimension_numbers, precision_config);
+  return RaggedDotLike(lhs, rhs, group_sizes, dimension_numbers,
+                       precision_config, comp_dtype);
 }
 
 // Lowers grouped matmul to MLIR StableHLO/CHLO.
@@ -507,8 +519,9 @@ absl::StatusOr<mlir::MlirOp> BuildGroupedMmShlo(
   if (a_is_2d && !b_is_2d) {
     // Case 1 (2D x 3D with offs): lhs first dimension is ragged (Mode 1).
     ABSL_CHECK(offs_op.has_value());  // CRASH_OK
-    result = BuildRaggedDot2d3d(self_op, mat2_op, *offs_op, transpose_mat2,
-                                comp_dtype, precision_config);
+    TT_ASSIGN_OR_RETURN(
+        result, BuildRaggedDot2d3d(self_op, mat2_op, *offs_op, transpose_mat2,
+                                   comp_dtype, precision_config));
   } else if (!a_is_2d && b_is_2d) {
     // Case 2 (3D x 2D with offs): rhs tailing dimension is ragged (Mode 1).
     ABSL_CHECK(offs_op.has_value());  // CRASH_OK
@@ -527,20 +540,19 @@ absl::StatusOr<mlir::MlirOp> BuildGroupedMmShlo(
             /*lhsRaggedDimensions=*/{0},
             /*rhsGroupDimensions=*/{0});
 
-    const mlir::Type ragged_out_type = mlir::makeTensorType(
-        self_op.getContext(),
-        {mat2_type.getShape()[1], self_type.getShape()[1]}, comp_dtype);
-    mlir::MlirOp ragged_dot =
-        mlir::chlo::RaggedDot(ragged_out_type, mat2_transposed, self_transposed,
-                              group_sizes, dimension_numbers, precision_config);
+    TT_ASSIGN_OR_RETURN(
+        mlir::MlirOp ragged_dot,
+        RaggedDotLike(mat2_transposed, self_transposed, group_sizes,
+                      dimension_numbers, precision_config, comp_dtype));
     result = mlir::stablehlo::Transpose(ragged_dot, {1, 0});
   } else if (a_is_2d && b_is_2d) {
     // Case 3 (2D x 2D with offs): contracting dimension is ragged (Mode 2).
     // The trailing dimension of lhs and the leading dimension of rhs are
     // partitioned according to the same offs tensor.
     ABSL_CHECK(offs_op.has_value());  // CRASH_OK
-    result = BuildRaggedDot2d2d(self_op, mat2_op, *offs_op, comp_dtype,
-                                precision_config);
+    TT_ASSIGN_OR_RETURN(
+        result, BuildRaggedDot2d2d(self_op, mat2_op, *offs_op, comp_dtype,
+                                   precision_config));
   } else {
     // Case 4 (3D x 3D without offs): fallback to standard batched matrix
     // multiplication (DotGeneral).
@@ -588,6 +600,29 @@ absl::StatusOr<mlir::MlirOp> BuildScaledGroupedMmShlo(
   TT_ASSIGN_OR_RETURN(const mlir::ElementType comp_dtype,
                       InferComputationDtype(self_elem_type));
 
+  const bool is_scalar_scale =
+      IsScalarScaleOp(scale_a) && IsScalarScaleOp(scale_b);
+  if (!is_scalar_scale) {
+    // ApplyRowwiseGroupScales builds static shapes from the operand shapes.
+    struct NamedOperand {
+      std::string_view name;
+      mlir::MlirOp op;
+    };
+    std::vector<NamedOperand> operands = {{"self", self_op},
+                                          {"mat2", mat2_op},
+                                          {"scale_a", scale_a},
+                                          {"scale_b", scale_b}};
+    if (offs_op.has_value()) {
+      operands.push_back({"offs", *offs_op});
+    }
+    for (const NamedOperand& operand : operands) {
+      const mlir::RankedTensorType type = GetTensorTypeOrDie(operand.op);
+      TT_RET_CHECK(type.hasStaticShape(), error::kPythonNotImplementedError)
+          << "expected static shapes with rowwise scales, got bounded dynamic "
+          << operand.name << " of type " << mlir::debugString(type);
+    }
+  }
+
   TT_ASSIGN_OR_RETURN(mlir::MlirOp mm_result,
                       BuildGroupedMmShlo(self_op, mat2_op, offs_op, comp_dtype,
                                          precision, rhs_2d3d_mode));
@@ -601,8 +636,6 @@ absl::StatusOr<mlir::MlirOp> BuildScaledGroupedMmShlo(
 
   const bool a_is_2d = self_type.getRank() == 2;
   const bool b_is_2d = mat2_type.getRank() == 2;
-  const bool is_scalar_scale =
-      IsScalarScaleOp(scale_a) && IsScalarScaleOp(scale_b);
 
   mlir::MlirOp scaled_result;
   if (!is_scalar_scale) {
