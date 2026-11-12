@@ -526,7 +526,7 @@ TEST_F(KilnE2eTest, PipelinedSum) {
                 }};
             Store(acc, Zeros(acc.shape()));
             EmitPipeline(0, in.Dim(0) / kChunk, {std::move(input)},
-                         /*outputs=*/{}, [&](const PipelineStep& s) {
+                         [&](const PipelineStep& s) {
                            Store(acc, Load(acc) + Load(s.inputs[0].ref));
                          });
             AsyncCopy(acc, out, AllocaDmaSemaphore()).Wait();
@@ -572,7 +572,7 @@ TEST_F(KilnE2eTest, PipelinedSumOfProducts) {
                 0, a.Dim(0) / kRows,
                 {{.hbm = a, .block_shape = {kRows, kCols}, .region = band},
                  {.hbm = b, .block_shape = {kRows, kCols}, .region = band}},
-                /*outputs=*/{}, [&](const PipelineStep& s) {
+                [&](const PipelineStep& s) {
                   Store(acc, Load(acc) +
                                  Load(s.inputs[0].ref) * Load(s.inputs[1].ref));
                 });
