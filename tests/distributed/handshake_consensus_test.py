@@ -14,7 +14,7 @@
 
 """Tests for the consensus rules of the collective handshake."""
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from unittest import mock
 
 from absl.testing import absltest
@@ -410,12 +410,10 @@ class RejectedProgramsTest(_ConsensusTestCase):
         {0: True, 1: True, 2: False},
     )
 
-  def test_requests_on_a_cycle_get_no_response_yet(self) -> None:
-    # TODO: b/553328238 - Expect rejections once such requests are rejected.
-    #
+  def test_fusion_that_would_deadlock(self) -> None:
     # Fusing the graphs that run `0_1[0]` and `1_2[0]` would deadlock, because
     # rank 2 runs `0_2[0]` before the fused executable and rank 0 runs it
-    # after. The requests are not accepted.
+    # after.
     #
     #    rank 0      rank 1      rank 2
     #  +"a"-----+  +"a"-----+  +"a"-----+
@@ -430,7 +428,149 @@ class RejectedProgramsTest(_ConsensusTestCase):
     claim = _Claim(0, 1, "a")
     self.assertEmpty(self.submit(0, {group_0_1: claim}))
     self.assertEmpty(self.submit(1, {group_0_1: claim, group_1_2: claim}))
-    self.assertEmpty(self.submit(2, {group_0_2: claim}))
+    self.assertEqual(
+        self.submit(2, {group_0_2: claim}), {0: False, 1: False, 2: False}
+    )
+    self.assertEqual(self.submit(0, {group_0_2: claim}), {0: False})
+    self.assertEqual(self.submit(2, {group_1_2: claim}), {2: False})
+
+  def test_rank_in_the_pending_cluster_part_still_has_to_claim_a_group(
+      self,
+  ) -> None:
+    # Ranks 0 and 1 run both of their collectives in one graph. Rank 2 has a
+    # graph break between `1_2[0]` and `0_2[0]`, so the cluster of the four
+    # graphs precedes itself.
+    #
+    #    rank 0      rank 1      rank 2
+    #  +"a"-----+  +"a"-----+  +"a"-----+
+    #  | 0_1[0] |  | 0_1[0] |  | 1_2[0] |
+    #  | 0_2[0] |  | 1_2[0] |  +--------+
+    #  +--------+  +--------+  +"a"-----+
+    #                          | 0_2[0] |
+    #                          +--------+
+    group_0_1 = ProcessGroupId([0, 1])
+    group_1_2 = ProcessGroupId([1, 2])
+    group_0_2 = ProcessGroupId([0, 2])
+    claim = _Claim(0, 1, "a")
+    self.assertEmpty(self.submit(0, {group_0_1: claim, group_0_2: claim}))
+    self.assertEmpty(self.submit(1, {group_0_1: claim, group_1_2: claim}))
+    # Every rank now has a request in the pending cluster part, but rank 2
+    # still has to claim `group_0_2`. The requests are not accepted. They are
+    # rejected, because the pending cluster part waits for rank 2 and so for
+    # itself.
+    self.assertEqual(
+        self.submit(2, {group_1_2: claim}), {0: False, 1: False, 2: False}
+    )
+    self.assertEqual(self.submit(2, {group_0_2: claim}), {2: False})
+
+  def test_cycle_through_a_rank_without_a_pending_request(self) -> None:
+    # Ranks 0 and 2 wait for rank 1 to join them with `1_2[0]`. Rank 1 was
+    # rejected for `0_1_3[0]` and may not submit `1_2[0]` before `0_1_3[0]`
+    # ran, which needs rank 0. Rank 1 has no pending request, so the cycle is
+    # only visible through the collective it still has to run.
+    #
+    #     rank 0        rank 1        rank 2        rank 3
+    #  +"a"-------+  +"a"-------+  +"a"-------+  +"b"-------+
+    #  | 0_2[0]   |  | 0_1_3[0] |  | 0_2[0]   |  | 0_1_3[0] |
+    #  +----------+  +----------+  | 1_2[0]   |  +----------+
+    #  +"a"-------+  +"a"-------+  +----------+
+    #  | 0_1_3[0] |  | 1_2[0]   |
+    #  +----------+  +----------+
+    group_0_2 = ProcessGroupId([0, 2])
+    group_0_1_3 = ProcessGroupId([0, 1, 3])
+    group_1_2 = ProcessGroupId([1, 2])
+    self.assertEmpty(self.submit(1, {group_0_1_3: _Claim(0, 1, "a")}))
+    self.assertEqual(
+        self.submit(3, {group_0_1_3: _Claim(0, 1, "b")}), {1: False, 3: False}
+    )
+    claim = _Claim(0, 1, "a")
+    self.assertEmpty(self.submit(0, {group_0_2: claim}))
+    # Ranks 0 and 2 need rank 1, which needs rank 0 to run `0_1_3[0]`.
+    self.assertEqual(
+        self.submit(2, {group_0_2: claim, group_1_2: claim}),
+        {0: False, 2: False},
+    )
+    self.assertEqual(self.submit(0, {group_0_1_3: claim}), {0: False})
+    self.assertEqual(self.submit(1, {group_1_2: claim}), {1: False})
+
+  def test_matching_graph_on_a_cycle_with_another_cluster(self) -> None:
+    # TODO: b/553328238 - Reconsider this example.
+    #
+    # Ranks 0 and 1 submit identical requests for the graph with `0_1[0]` and
+    # `0_1[1]`. Running it as one fused executable would be safe, in the order
+    # `1_2[0]`, the fused executable, `0_2[0]`. It is rejected nevertheless,
+    # because rank 2 runs `1_2[0]` and `0_2[0]` in one graph. That graph ties
+    # the two collectives into one cluster, which rank 1 runs before the graph
+    # of ranks 0 and 1, and rank 0 after it. The consensus rejects every
+    # cluster on such a cycle, also the ones that could be fused if the other
+    # clusters of the cycle are not.
+    #
+    # Real programs are not expected to look like this. If this case ever
+    # matters, the rules need to tell which clusters of a cycle can be fused,
+    # and this test should expect the requests of ranks 0 and 1 on `group_0_1`
+    # to be accepted.
+    #
+    #    rank 0      rank 1      rank 2
+    #  +"k"-----+  +"c2"----+  +"c2_c1"-+
+    #  | 0_1[0] |  | 1_2[0] |  | 1_2[0] |
+    #  | 0_1[1] |  +--------+  | 0_2[0] |
+    #  +--------+  +"k"-----+  +--------+
+    #  +"c1"----+  | 0_1[0] |
+    #  | 0_2[0] |  | 0_1[1] |
+    #  +--------+  +--------+
+    group_1_2 = ProcessGroupId([1, 2])
+    group_0_1 = ProcessGroupId([0, 1])
+    group_0_2 = ProcessGroupId([0, 2])
+    self.assertEmpty(self.submit(0, {group_0_1: _Claim(0, 2, "k")}))
+    self.assertEmpty(self.submit(1, {group_1_2: _Claim(0, 1, "c2")}))
+    claim = _Claim(0, 1, "c2_c1")
+    self.assertEqual(
+        self.submit(2, {group_1_2: claim, group_0_2: claim}),
+        {0: False, 1: False, 2: False},
+    )
+    self.assertEqual(
+        self.submit(0, {group_0_2: _Claim(0, 1, "c1")}), {0: False}
+    )
+    self.assertEqual(self.submit(1, {group_0_1: _Claim(0, 2, "k")}), {1: False})
+
+  def test_two_fusions_that_are_safe_alone_but_deadlock_together(self) -> None:
+    # TODO: b/553328238 - Reconsider this example.
+    #
+    # Ranks 0-3 match on a fused executable `first` and ranks 0, 3, 4, 5 match
+    # on a fused executable `second`. Rank 0 runs `first` before `second`, rank
+    # 3 runs `second` before `first`. Fusing either one alone would be safe,
+    # fusing both deadlocks. Both are rejected.
+    #
+    # A rule that picks one of them could fuse more; this test should then
+    # expect the requests of exactly one of the two fingerprints to be
+    # accepted.
+    #
+    #    rank 0      rank 1      rank 2      rank 3      rank 4      rank 5
+    #  +"first"-+  +"first"-+  +"first"-+  +"second"+  +"second"+  +"second"+
+    #  | 0_1[0] |  | 0_1[0] |  | 2_3[0] |  | 3_5[0] |  | 0_4[0] |  | 3_5[0] |
+    #  +--------+  | 1_2[0] |  | 1_2[0] |  +--------+  | 4_5[0] |  | 4_5[0] |
+    #  +"second"+  +--------+  +--------+  +"first"-+  +--------+  +--------+
+    #  | 0_4[0] |                          | 2_3[0] |
+    #  +--------+                          +--------+
+    group_0_1 = ProcessGroupId([0, 1])
+    group_1_2 = ProcessGroupId([1, 2])
+    group_2_3 = ProcessGroupId([2, 3])
+    group_3_5 = ProcessGroupId([3, 5])
+    group_4_5 = ProcessGroupId([4, 5])
+    group_0_4 = ProcessGroupId([0, 4])
+    first = _Claim(0, 1, "first")
+    second = _Claim(0, 1, "second")
+    self.assertEmpty(self.submit(0, {group_0_1: first}))
+    self.assertEmpty(self.submit(1, {group_0_1: first, group_1_2: first}))
+    self.assertEmpty(self.submit(2, {group_2_3: first, group_1_2: first}))
+    self.assertEmpty(self.submit(3, {group_3_5: second}))
+    self.assertEmpty(self.submit(4, {group_0_4: second, group_4_5: second}))
+    self.assertEqual(
+        self.submit(5, {group_3_5: second, group_4_5: second}),
+        {0: False, 1: False, 2: False, 3: False, 4: False, 5: False},
+    )
+    self.assertEqual(self.submit(0, {group_0_4: second}), {0: False})
+    self.assertEqual(self.submit(3, {group_2_3: first}), {3: False})
 
 
 class ContractViolationsTest(seed_test_utils.RepeatableTest):
@@ -479,12 +619,42 @@ class ContractViolationsTest(seed_test_utils.RepeatableTest):
     self.assertEmpty(self.submit(0, _Claim(5, 7, "a")))
     self.assertEqual(self.submit(1, _Claim(5, 7, "a")), {0: True, 1: True})
 
+  def test_rank_skipping_collectives_alone_is_not_fused(self) -> None:
+    self.assertEmpty(self.submit(0, _Claim(5, 6, "a")))
+    # Rank 0 will never claim the collectives rank 1 claims here, so neither
+    # request can be fused. Both get a response.
+    self.assertEqual(self.submit(1, _Claim(0, 5, "a")), {0: False, 1: False})
+    # Rank 0 already has a response for collective 5.
+    self.assertEqual(self.submit(1, _Claim(5, 6, "a")), {1: False})
+
   def test_rank_skipping_past_pending_requests_does_not_leave_them_waiting(
       self,
   ) -> None:
     self.assertEmpty(self.submit(0, _Claim(0, 2, "a")))
     # Rank 1 will never claim collectives 0 and 1.
     self.assertEqual(self.submit(1, _Claim(6, 7, "a")), {0: False, 1: False})
+
+  def test_rank_skipping_collectives_only_rejects_what_it_mismatches(
+      self,
+  ) -> None:
+    consensus = CollectiveHandshakeConsensus()
+    group_0_1_2 = ProcessGroupId([0, 1, 2])
+    group_2_4 = ProcessGroupId([2, 4])
+    group_0_1_2_4 = ProcessGroupId([0, 1, 2, 4])
+    request = _request(2, {group_0_1_2: _Claim(0, 1, "a")})
+    self.assertEmpty(consensus.submit(request))
+    request = _request(4, {group_2_4: _Claim(0, 2, "a")})
+    self.assertEmpty(consensus.submit(request))
+
+    # Rank 1 will never claim collective 0 of `group_0_1_2`, so the request of
+    # rank 2 is rejected (R1). The request of rank 4 only waits for rank 2 and
+    # stays pending; R3 before R1 would reject it as well.
+    request = _request(
+        1, {group_0_1_2: _Claim(6, 9, "a"), group_0_1_2_4: _Claim(0, 3, "a")}
+    )
+    self.assertEqual(
+        _handshake_successes(consensus.submit(request)), {1: False, 2: False}
+    )
 
   def test_rank_is_not_settled_by_the_response_to_its_own_rejection(
       self,
@@ -798,6 +968,30 @@ class RejectionHistoryTest(seed_test_utils.RepeatableTest):
     # in the rejected cluster part of rank 1 as well.
     self.assertCountEqual(history.lagging_ranks(0), [2])
     self.assertCountEqual(history.lagging_ranks(1), [2])
+
+
+class NodesOnCyclesTest(seed_test_utils.RepeatableTest):
+  """Tests for the cycle detection used by the consensus."""
+
+  def nodes_on_cycles(
+      self, successors: Mapping[int, Sequence[int]]
+  ) -> Sequence[int]:
+    # pylint: disable-next=protected-access
+    return sorted(handshake_consensus._nodes_on_cycles(successors))
+
+  def test_graph_without_cycles(self) -> None:
+    self.assertEmpty(self.nodes_on_cycles({0: [1, 2], 1: [2], 2: []}))
+
+  def test_self_loop(self) -> None:
+    self.assertEqual(self.nodes_on_cycles({0: [0], 1: [0]}), [0])
+
+  def test_nodes_reaching_or_reached_from_a_cycle_are_not_on_it(self) -> None:
+    successors = {0: [1], 1: [2], 2: [1, 3], 3: []}
+    self.assertEqual(self.nodes_on_cycles(successors), [1, 2])
+
+  def test_two_cycles_joined_by_a_path(self) -> None:
+    successors = {0: [1], 1: [0, 2], 2: [3], 3: [4], 4: [3]}
+    self.assertEqual(self.nodes_on_cycles(successors), [0, 1, 3, 4])
 
 
 if __name__ == "__main__":
