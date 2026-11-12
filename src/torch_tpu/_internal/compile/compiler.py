@@ -22,6 +22,7 @@ artifacts produced during compilation.
 
 import abc
 import collections
+from collections.abc import Callable
 from collections.abc import Sequence
 import concurrent.futures
 import dataclasses
@@ -41,6 +42,9 @@ from torch.utils import _pytree
 from torch_tpu._internal import env
 from torch_tpu._internal import export as torch_tpu_export
 from torch_tpu._internal.compile import tpu_torch_compile
+from torch_tpu._internal.compiler_options import (
+    compiler_options_impl as _compiler_options,
+)
 from torch_tpu._internal.compile.debug import TpuCompileDebug
 from torch_tpu._internal.compile.fx_passes import detect_causal_mask
 from torch_tpu._internal.compile.fx_passes import fold_gqa
@@ -359,6 +363,26 @@ def _create_storage_aware_placeholders(
   return placeholders
 
 
+def _get_compiler_option_overrides() -> dict[str, str]:
+  # pylint: disable=protected-access
+  return _compiler_options._get_compiler_options()
+
+
+def _run_compile_with_options(
+    compile_fn: Callable[..., Any],
+    compiler_options: dict[str, str],
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
+  if not compiler_options:
+    return compile_fn(*args, **kwargs)
+  _compiler_options.push_compiler_options(compiler_options)
+  try:
+    return compile_fn(*args, **kwargs)
+  finally:
+    _compiler_options.pop_compiler_options()
+
+
 class StaticCompiler(Compiler):
   """Compiler for static shapes.
 
@@ -607,8 +631,11 @@ class StaticCompiler(Compiler):
       )
 
     if self._async_compile:
+      compiler_options = _get_compiler_option_overrides()
       future = StaticCompiler._async_compile_executor.submit(
+          _run_compile_with_options,
           self._compile,
+          compiler_options,
           graph_module,
           example_inputs,
           is_fwd,

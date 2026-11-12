@@ -678,6 +678,15 @@ absl_nonnull std::shared_ptr<const CompilationContext> GetCompilationContext() {
       GetDefaultCompilationContext);
 }
 
+CompilerOptionOverrides GetCompilerOptionOverrides() {
+  const std::optional<CustomCompilerOptionsContextState> custom_context =
+      GetContextState<CustomCompilerOptionsContextState>();
+  if (!custom_context.has_value()) {
+    return {};
+  }
+  return (*custom_context)->compiler_option_overrides();
+}
+
 CompilationSpec GetCompilationSpec(const CompilationMode mode) {
   auto current_state = GetCompilationContext();
   const CompilationSpec& spec = current_state->compilation_specs().at(mode);

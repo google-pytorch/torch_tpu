@@ -16,6 +16,8 @@
 
 #include "csrc/common/compilation.h"
 
+#include <unistd.h>
+
 #include <memory>
 #include <optional>
 #include <string>
@@ -54,6 +56,18 @@ using absl_testing::StatusIs;
 using testing::Contains;
 using testing::ElementsAre;
 using testing::Pair;
+
+TEST(CompilerOptionOverridesDeathTest, SnapshotDoesNotInitializeRuntime) {
+  EXPECT_EXIT(
+      {
+        auto& backend = PjrtBackend::GetInstance();
+        EXPECT_FALSE(backend.InitAttempted());
+        EXPECT_THAT(GetCompilerOptionOverrides(), testing::IsEmpty());
+        EXPECT_FALSE(backend.InitAttempted());
+        _exit(testing::Test::HasFailure() ? 1 : 0);
+      },
+      testing::ExitedWithCode(0), "");
+}
 
 // Initializes the TPU PjRt client once per test suite.
 class TpuClientTest : public testing::Test {
@@ -117,6 +131,23 @@ TEST_F(MakeCompilerOptionsTest, CompilerOptionOverrides) {
     EXPECT_EQ(options->executable_build_options.optimization_level(),
               xla::ExecutionOptions::EFFORT_O2);
   }
+}
+
+TEST_F(MakeCompilerOptionsTest, CompilerOptionOverridesSnapshot) {
+  EXPECT_THAT(GetCompilerOptionOverrides(), testing::IsEmpty());
+
+  {
+    ScopedCompilerOptionOverrides outer({{"xla_optimization_level", "O1"}});
+    EXPECT_THAT(GetCompilerOptionOverrides(),
+                ElementsAre(Pair("xla_optimization_level", "O1")));
+
+    ScopedCompilerOptionOverrides inner({{"xla_memory_fitting_level", "O0"}});
+    EXPECT_THAT(GetCompilerOptionOverrides(),
+                ElementsAre(Pair("xla_memory_fitting_level", "O0"),
+                            Pair("xla_optimization_level", "O1")));
+  }
+
+  EXPECT_THAT(GetCompilerOptionOverrides(), testing::IsEmpty());
 }
 
 TEST_F(MakeCompilerOptionsTest, LocksExcessPrecision) {
