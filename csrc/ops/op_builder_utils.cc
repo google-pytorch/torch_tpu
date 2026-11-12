@@ -1444,12 +1444,18 @@ mlir::MlirOp BuildFillUninitialized(mlir::MlirBuilder& builder,
     case mlir::ElementType::UI64:
       return MakeConstant(builder, std::numeric_limits<uint64_t>::max(),
                           tensor_element_type, shape);
-    case mlir::ElementType::BF16:
-    case mlir::ElementType::F16:
-    case mlir::ElementType::F32:
     case mlir::ElementType::F4E2M1FN:
     case mlir::ElementType::F6E2M3FN:
     case mlir::ElementType::F6E3M2FN:
+      // OCP MX 4-bit and 6-bit float formats have no NaN or Inf encoding, so
+      // fill with their maximum finite value like integer types above.
+      return MakeConstant(builder,
+                          GetMaxFiniteDouble(mlir::getElementType(
+                              builder.getContext(), tensor_element_type)),
+                          tensor_element_type, shape);
+    case mlir::ElementType::BF16:
+    case mlir::ElementType::F16:
+    case mlir::ElementType::F32:
     case mlir::ElementType::F8E3M4:
     case mlir::ElementType::F8E4M3:
     case mlir::ElementType::F8E4M3FN:

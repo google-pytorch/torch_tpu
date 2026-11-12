@@ -838,7 +838,8 @@ absl::Status BuildReduceBody(mlir::RegionBuilder& rb, mlir::Type element_type,
 // memory that has uninitialized values. There is no way to represent
 // uninitialized value in MLIR; instead, we follow the convention of
 // torch.utils.deterministic.fill_uninitialized_memory, which is to use
-// std::numeric_limits<scalar_t>::quiet_NaN() for float types and
+// std::numeric_limits<scalar_t>::quiet_NaN() for float types (or maximum finite
+// value for finite-only float formats without NaN) and
 // std::numeric_limits<scalar_t>::max() for integers and boolean types.
 mlir::MlirOp BuildFillUninitialized(mlir::MlirBuilder& builder,
                                     mlir::ElementType tensor_element_type,
