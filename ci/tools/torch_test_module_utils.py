@@ -102,7 +102,6 @@ TEST_MODULE_SHARDS: Final[Mapping[str, int]] = {
     "dynamo/test_misc": 8,
     "functorch/test_eager_transforms": 2,
     "inductor/test_compiled_optimizers": 8,
-    "inductor/test_torchinductor_dynamic_shapes": 8,
     "inductor/test_torchinductor_opinfo": 16,
     "inductor/test_torchinductor_opinfo_properties": 8,
     "nn/test_convolution": 8,
@@ -175,6 +174,8 @@ _ACCELERATOR_SPECIFIC_TEST_MODULES: Final[frozenset[str]] = frozenset({
     "inductor/test_strict_numerics",
     "inductor/test_symm_mem_registry",
     "inductor/test_symmetric_mm",
+    # TODO(b/585139387): Re-enable once upstream PR #203848 merges.
+    "inductor/test_torchinductor_dynamic_shapes",
     "inductor/test_triton_helpers",
     "lazy/test_reuse_ir",
     "nn/attention/test_fa3",

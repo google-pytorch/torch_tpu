@@ -209,6 +209,12 @@ def main(argv: Sequence[str]) -> None:
   # patches `run_tests()` to run with pytest.
   _use_absltest_main()
   runpy.run_path(str(test_module_path), run_name="__main__")
+  # absltest.main() always raises SystemExit; reaching here means the module's
+  # `__main__` block skipped run_tests() (e.g. a RUN_CPU/HAS_GPU guard).
+  sys.exit(
+      f"ERROR: {test_module} did not call run_tests() under TorchTPU; add it to"
+      " _ACCELERATOR_SPECIFIC_TEST_MODULES or fix the upstream guard."
+  )
 
 
 if __name__ == "__main__":

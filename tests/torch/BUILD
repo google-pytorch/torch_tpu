@@ -559,12 +559,6 @@ torch_tpu_torch_test(
 )
 
 torch_tpu_torch_test(
-    name = "inductor_torchinductor_dynamic_shapes_test",
-    shard_count = 8,
-    torch_test_module = "inductor/test_torchinductor_dynamic_shapes",
-)
-
-torch_tpu_torch_test(
     name = "inductor_torchinductor_opinfo_test",
     notap = "b/563402379",  # NOTAP_OK=torch tests
     shard_count = 16,
