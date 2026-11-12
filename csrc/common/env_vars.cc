@@ -20,13 +20,11 @@
 #include <optional>
 #include <string>
 #include <string_view>
-#include <typeindex>
 
 #include "absl/base/attributes.h"
 #include "absl/base/const_init.h"
 #include "absl/base/no_destructor.h"
 #include "absl/base/thread_annotations.h"
-#include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/log/absl_check.h"
 #include "absl/strings/match.h"
@@ -69,18 +67,6 @@ void CheckEnvVarNotMemoized(std::string_view name) {
       << " after its value was memoized by GetEnvOnce(). The new value would "
          "be ignored by GetEnvOnce(). If TorchTPU needs to change the env var "
          "at runtime, read it with std::getenv instead of GetEnvOnce().";
-}
-
-ABSL_CONST_INIT absl::Mutex integer_env_types_mutex(absl::kConstInit);
-
-// Maps each env var name read by GetIntegerEnvOnce() to the IntType it was
-// first read with.
-absl::flat_hash_map<std::string_view, std::type_index>& IntegerEnvTypes()
-    ABSL_EXCLUSIVE_LOCKS_REQUIRED(integer_env_types_mutex) {
-  static absl::NoDestructor<
-      absl::flat_hash_map<std::string_view, std::type_index>>
-      integer_env_types;
-  return *integer_env_types;
 }
 
 }  // namespace
@@ -148,16 +134,6 @@ void WarnInvalidIntegerEnv(const char* name, const std::string_view value) {
           " to be an integer, got '", value, "'");
 }
 
-void CheckIntegerEnvType(const std::string_view name,
-                         const std::type_index int_type) {
-  absl::MutexLock lock(integer_env_types_mutex);
-  const auto it = IntegerEnvTypes().try_emplace(name, int_type).first;
-  ABSL_CHECK(it->second == int_type)  // CRASH_OK
-      << "GetIntegerEnvOnce() called on " << name
-      << " with different IntTypes: " << it->second.name() << " vs "
-      << int_type.name();
-}
-
 }  // namespace torch_tpu::internal
 
 namespace torch_tpu {
@@ -180,7 +156,7 @@ static void ExpandRankInEnvVar(const int rank) {
 
 void EnsureRankIsExpandedInEnvVars() {
   static const bool done = [] {
-    const int rank = GetIntegerEnvOnce<int, kRankEnvVar>().value_or(0);
+    const int rank = GetIntegerEnvOnce<kRankEnvVar>().value_or(0);
     ExpandRankInEnvVar<kXlaFlagsEnvVar>(rank);
     ExpandRankInEnvVar<kLibtpuInitArgsEnvVar>(rank);
     return true;

@@ -38,7 +38,7 @@ It uses a dual-strategy approach to discover and categorize APIs:
 2. Source Code Scanning:
    - Environment Variables: Parses C++ headers (e.g. `common/env_vars.h`) using
      regex for `inline constexpr char` declarations and resolves stages from
-     `kEnvVarToStage`.
+     `kEnvVarInfo`.
    - ABSL C++ Flags: Parses C++ source and header files for `ABSL_FLAG` macros.
    - Custom Ops: Inspects C++ registration blocks for custom op stages,
      skipping underscore-prefixed (internal) custom ops.
@@ -241,20 +241,22 @@ ENV_PATTERN = re.compile(
     re.DOTALL,
 )
 
-# Matches kEnvVarToStage definition block in C++ headers.
+# Matches kEnvVarInfo definition block in C++ headers.
 # Example:
-#   inline constexpr auto kEnvVarToStage = MakeConstexprMap<...>( { ... } );
+#   inline constexpr auto kEnvVarInfo = MakeConstexprMap<...>( { ... } );
 ENV_VAR_TO_STAGE_MAP_PATTERN = re.compile(
-    r"\bkEnvVarToStage\b[^=]*=\s*([^;]+);",
+    r"\bkEnvVarInfo\b[^=]*=\s*([^;]+);",
     re.DOTALL,
 )
 
-# Matches an entry within kEnvVarToStage.
+# Matches an entry within kEnvVarInfo. Group 2 captures the start of the
+# EnvVarInfo value, up to the first '}', which begins with the stage.
 # Examples:
-#   {kAcceleratorTypeEnvVar, SymbolStage::InternalImplementation()}
-#   {kLibtpuInitArgsEnvVar, std::nullopt}
-#   {kWorldSizeEnvVar, SymbolStage::Stable()}
-#   {kDeprecatedEnvVar, SymbolStage::Deprecated("2.13")}
+#   {kAcceleratorTypeEnvVar,
+#    {SymbolStage::InternalImplementation(), EnvVarType::kString}}
+#   {kLibtpuInitArgsEnvVar, {std::nullopt, EnvVarType::kString}}
+#   {kWorldSizeEnvVar, {SymbolStage::Stable(), EnvVarType::kInt}}
+#   {kDeprecatedEnvVar, {SymbolStage::Deprecated("2.13"), EnvVarType::kBoolean}}
 ENV_STAGE_ENTRY_PATTERN = re.compile(
     r"\{\s*([a-zA-Z0-9_]+|\"[^\"]+\")\s*,\s*([^}]+?)\s*\}",
     re.DOTALL,
@@ -1441,7 +1443,7 @@ def _strip_cpp_comments(content: str) -> str:
 
 
 def _parse_env_stage_expr(expr: str) -> Any | None:
-  """Parses a C++ stage expression from kEnvVarToStage to a Stage enum or sentinel."""
+  """Parses a C++ stage expression from kEnvVarInfo to a Stage enum or sentinel."""
   expr = expr.strip()
   if "InternalImplementation" in expr:
     return _STAGE_INTERNAL_IMPLEMENTATION
@@ -1528,7 +1530,7 @@ def discover_cpp_source_surfaces(
               op_str = match.group(2)
               op_name_map[op_enum_name] = op_str
 
-          # Extract kEnvVarToStage map from env_vars.h (or any header)
+          # Extract kEnvVarInfo map from env_vars.h (or any header)
           for map_match in ENV_VAR_TO_STAGE_MAP_PATTERN.finditer(clean_content):
             map_body = map_match.group(1)
             for entry_match in ENV_STAGE_ENTRY_PATTERN.finditer(map_body):

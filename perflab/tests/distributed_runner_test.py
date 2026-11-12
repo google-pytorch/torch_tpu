@@ -610,6 +610,13 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
                 name, default_value
             ),
         ),
+        mock.patch.object(
+            distributed_runner.distributed_utils.env,
+            "get_int_env_once",
+            side_effect=lambda name, default_value=None: (
+                int(os.environ[name]) if name in os.environ else default_value
+            ),
+        ),
     ):
       distributed_runner.main(["distributed_runner"])
 

@@ -279,7 +279,7 @@ absl::StatusOr<PjRtBufferPointers> Execute(
       TT_ASSIGN_OR_RETURN(
           const std::string fingerprint,
           executable->GetLoadedExecutable()->FingerprintExecutable());
-      const std::optional<int> rank = GetIntegerEnvOnce<int, kRankEnvVar>();
+      const std::optional<int> rank = GetIntegerEnvOnce<kRankEnvVar>();
       ABSL_VLOG(8) << "Executable with collectives on rank "
                    << (rank.has_value() ? absl::StrCat(*rank)
                                         : "<unknown_rank>")

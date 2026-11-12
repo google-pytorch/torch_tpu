@@ -52,16 +52,17 @@ TEST(DiscoveryDeathTest, GetDistributedWorkerConfigurationMissingAllVars) {
 
         EXPECT_THAT(
             GetDistributedWorkerConfiguration().status(),
-            StatusIs(error::kFailedPrecondition,
-                     AllOf(HasSubstr("missing required environment variables "
-                                     "for distributed training: RANK, "
-                                     "LOCAL_RANK, WORLD_SIZE, MASTER_ADDR, "
-                                     "MASTER_PORT, "
-                                     "TORCH_TPU_SLICEBUILDER_ADDRESSES, "
-                                     "TORCH_TPU_TOPOLOGY"),
-                           HasSubstr(
-                               "properly and call "
-                               "torch.tpu.distributed.set_tpu_launch_env()"))));
+            StatusIs(
+                error::kFailedPrecondition,
+                AllOf(
+                    HasSubstr("missing or invalid required environment "
+                              "variables for distributed training: RANK, "
+                              "LOCAL_RANK, WORLD_SIZE, MASTER_ADDR, "
+                              "MASTER_PORT, "
+                              "TORCH_TPU_SLICEBUILDER_ADDRESSES, "
+                              "TORCH_TPU_TOPOLOGY"),
+                    HasSubstr("properly and call "
+                              "torch.tpu.distributed.set_tpu_launch_env()"))));
         _exit(testing::Test::HasFailure() ? 1 : 0);
       },
       ExitedWithCode(0), "");
@@ -81,14 +82,15 @@ TEST(DiscoveryDeathTest, GetDistributedWorkerConfigurationMissingTorchrunVars) {
 
         EXPECT_THAT(
             GetDistributedWorkerConfiguration().status(),
-            StatusIs(error::kFailedPrecondition,
-                     AllOf(HasSubstr("missing required environment variables "
-                                     "for distributed training: RANK, "
-                                     "LOCAL_RANK, WORLD_SIZE, MASTER_ADDR, "
-                                     "MASTER_PORT; please run the program via "
-                                     "torchrun"),
-                           Not(HasSubstr(kTorchTpuSlicebuilderAddressesEnvVar)),
-                           Not(HasSubstr("set_tpu_launch_env")))));
+            StatusIs(
+                error::kFailedPrecondition,
+                AllOf(HasSubstr("missing or invalid required environment "
+                                "variables for distributed training: RANK, "
+                                "LOCAL_RANK, WORLD_SIZE, MASTER_ADDR, "
+                                "MASTER_PORT; please run the program via "
+                                "torchrun"),
+                      Not(HasSubstr(kTorchTpuSlicebuilderAddressesEnvVar)),
+                      Not(HasSubstr("set_tpu_launch_env")))));
         _exit(testing::Test::HasFailure() ? 1 : 0);
       },
       ExitedWithCode(0), "");
@@ -108,8 +110,8 @@ TEST(DiscoveryDeathTest, GetDistributedWorkerConfigurationMissingTpuVars) {
         EXPECT_THAT(
             GetDistributedWorkerConfiguration().status(),
             StatusIs(error::kFailedPrecondition,
-                     AllOf(HasSubstr("missing required environment variables "
-                                     "for distributed training: "
+                     AllOf(HasSubstr("missing or invalid required environment "
+                                     "variables for distributed training: "
                                      "TORCH_TPU_SLICEBUILDER_ADDRESSES, "
                                      "TORCH_TPU_TOPOLOGY; please call "
                                      "torch.tpu.distributed."

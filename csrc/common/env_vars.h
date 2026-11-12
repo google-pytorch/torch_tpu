@@ -17,12 +17,11 @@
 #ifndef TORCH_TPU_CSRC_COMMON_ENV_VARS_H_
 #define TORCH_TPU_CSRC_COMMON_ENV_VARS_H_
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <type_traits>
-#include <typeindex>
-#include <typeinfo>
 
 #include "absl/base/no_destructor.h"
 #include "absl/strings/numbers.h"
@@ -59,20 +58,14 @@ void SafeUnsetEnvImpl(const char* name);
 // parsed as an integer.
 void WarnInvalidIntegerEnv(const char* name, std::string_view value);
 
-// Crashes if GetIntegerEnvOnce() has already been called on `name` with a
-// different `IntType`. Thread-safe.
-void CheckIntegerEnvType(std::string_view name, std::type_index int_type);
-
 // Parses `env_var`, the value of the env var with the given name, as an
 // integer using absl::SimpleAtoi. Returns std::nullopt and warns if it cannot
-// be parsed, or returns std::nullopt if it is not set. Crashes if called with
-// different IntTypes for the same env var.
+// be parsed, or returns std::nullopt if it is not set.
 template <typename IntType>
 [[nodiscard]] std::optional<IntType> ParseIntegerEnv(
     const char* name, const std::optional<std::string>& env_var) {
   static_assert(std::is_integral_v<IntType> && !std::is_same_v<IntType, bool>,
                 "IntType must be a non-boolean integral type.");
-  CheckIntegerEnvType(name, typeid(IntType));
   if (!env_var.has_value()) {
     return std::nullopt;
   }
@@ -322,113 +315,177 @@ inline constexpr char kWorldSizeEnvVar[] = "WORLD_SIZE";
 inline constexpr char kXlaFlagsEnvVar[] = "XLA_FLAGS";
 // go/keep-sorted end
 
-// Maps an env var to its symbol stage. nullopt means the stage is unknown.
-inline constexpr auto kEnvVarToStage =
-    MakeConstexprMap<std::string_view, std::optional<SymbolStage>>({
-        // go/keep-sorted start
-        {kAcceleratorTypeEnvVar, SymbolStage::InternalImplementation()},
-        {kAllowMultipleLibtpuLoadEnvVar, SymbolStage::InternalImplementation()},
-        {kCloudTpuTaskIdEnvVar, SymbolStage::InternalImplementation()},
-        {kJobCompletionIndexEnvVar, SymbolStage::InternalApi()},
-        // Marked as Stable because it is an established XLA/PJRT runtime
-        // configuration knob widely used by production workloads. The TorchTPU
-        // team is committed to honor this env var.
-        {kLibtpuInitArgsEnvVar, SymbolStage::Stable()},
-        // Marked as Stable because it is an established distributed launcher
-        // environment variable widely used by production workloads. The
-        // TorchTPU team is committed to honor this env var.
-        {kLocalRankEnvVar, SymbolStage::Stable()},
-        // Marked as Stable because it is an established distributed launcher
-        // environment variable widely used by production workloads. The
-        // TorchTPU team is committed to honor this env var.
-        {kMasterAddrEnvVar, SymbolStage::Stable()},
-        // Marked as Stable because it is an established distributed launcher
-        // environment variable widely used by production workloads. The
-        // TorchTPU team is committed to honor this env var.
-        {kMasterPortEnvVar, SymbolStage::Stable()},
-        {kMegascaleCoordinatorAddressEnvVar,
-         SymbolStage::InternalImplementation()},
-        {kMegascaleDebugPortEnvVar, SymbolStage::InternalImplementation()},
-        {kMegascalePortEnvVar, SymbolStage::InternalImplementation()},
-        // Marked as Stable because it is an established distributed launcher
-        // environment variable widely used by production workloads. The
-        // TorchTPU team is committed to honor this env var.
-        {kNnodesEnvVar, SymbolStage::Stable()},
-        // Marked as Stable because it is an established distributed launcher
-        // environment variable widely used by production workloads. The
-        // TorchTPU team is committed to honor this env var.
-        {kNodeRankEnvVar, SymbolStage::Stable()},
-        // Marked as Internal because it is an internal build/test runner
-        // environment variable used to adjust compilation thread concurrency,
-        // controlling TorchTPU internal behavior rather than serving as a
-        // public API contract.
-        {kNprocEnvVar, SymbolStage::InternalApi()},
-        // Marked as Stable because it is an established distributed launcher
-        // environment variable widely used by production workloads. The
-        // TorchTPU team is committed to honor this env var.
-        {kRankEnvVar, SymbolStage::Stable()},
-        {kSkipMegascalePjrtClientEnvVar, SymbolStage::InternalImplementation()},
-        {kTmpdirEnvVar, SymbolStage::Stable()},
-        {kTorchDeviceBackendAutoloadEnvVar, SymbolStage::Stable()},
-        {kTorchShowCppStacktracesEnvVar, SymbolStage::Experimental()},
-        {kTorchTpuAllowLegacyDeviceApisEnvVar, SymbolStage::Experimental()},
-        {kTorchTpuBasePortEnvVar, SymbolStage::Experimental()},
-        {kTorchTpuDeferAndFuseEnvVar, SymbolStage::Experimental()},
-        {kTorchTpuDevicesPerHostEnvVar, SymbolStage::Experimental()},
-        {kTorchTpuEnableDebugChecksEnvVar, SymbolStage::Experimental()},
-        {kTorchTpuHandshakePortEnvVar, SymbolStage::InternalApi()},
-        {kTorchTpuInternalCheckErrorFormatEnvVar, SymbolStage::InternalApi()},
-        {kTorchTpuInternalDetectRepeatedOpsEnvVar, SymbolStage::InternalApi()},
-        {kTorchTpuInternalDisableInplaceBufferDonationEnvVar,
-         SymbolStage::InternalApi()},
-        {kTorchTpuInternalDumpMlirPassesToEnvVar, SymbolStage::InternalApi()},
-        {kTorchTpuInternalEnableReassociateNormWeightsEnvVar,
-         SymbolStage::InternalApi()},
-        {kTorchTpuInternalHandshakeTimeoutSEnvVar, SymbolStage::InternalApi()},
-        {kTorchTpuInternalMaterializeCollectiveTensorsEnvVar,
-         SymbolStage::InternalApi()},
-        {kTorchTpuInternalSkinnyScOffloadEnvVar, SymbolStage::InternalApi()},
-        {kTorchTpuInternalSplitRngStateUpdate, SymbolStage::InternalApi()},
-        {kTorchTpuInternalStorageAwarePlaceholdersEnvVar,
-         SymbolStage::InternalApi()},
-        {kTorchTpuInternalTopmostPidEnvVar,
-         SymbolStage::InternalImplementation()},
-        {kTorchTpuInternalUseUnboundedDynamicKernelsEnvVar,
-         SymbolStage::InternalApi()},
-        {kTorchTpuInternalXlaOptionsEnvVar, SymbolStage::InternalApi()},
-        {kTorchTpuLaunchBlockingEnvVar, SymbolStage::Experimental()},
-        {kTorchTpuProfilerOutputDirEnvVar, SymbolStage::Experimental()},
-        {kTorchTpuSlicebuilderAddressesEnvVar, SymbolStage::Experimental()},
-        {kTorchTpuSpmdHandshakeStageEnvVar, SymbolStage::Experimental()},
-        {kTorchTpuTier2CompilationCacheEnvVar, SymbolStage::Experimental()},
-        {kTorchTpuTier3CompilationCacheRootEnvVar, SymbolStage::Experimental()},
-        {kTorchTpuTopologyEnvVar, SymbolStage::Experimental()},
-        {kTorchTpuXprofSessionIdEnvVar, SymbolStage::Experimental()},
-        {kTorchTraceEnvVar, SymbolStage::Experimental()},
-        {kTorchcommRankEnvVar, SymbolStage::Experimental()},
-        {kTorchcommSizeEnvVar, SymbolStage::Experimental()},
-        {kTpuChipsPerHostBoundsEnvVar, SymbolStage::InternalImplementation()},
-        {kTpuChipsPerProcessBoundsEnvVar,
-         SymbolStage::InternalImplementation()},
-        {kTpuHostBoundsEnvVar, SymbolStage::InternalImplementation()},
-        // Marked as Stable because it is an established XLA/PJRT runtime
-        // configuration knob widely used by production workloads. The TorchTPU
-        // team is committed to honor this env var.
-        {kTpuPremappedBufferSizeEnvVar, SymbolStage::Stable()},
-        {kTpuProcessAddressesEnvVar, SymbolStage::InternalImplementation()},
-        {kTpuProcessBoundsEnvVar, SymbolStage::InternalImplementation()},
-        {kTpuProcessPortEnvVar, SymbolStage::InternalImplementation()},
-        {kTpuVisibleChipsEnvVar, SymbolStage::InternalImplementation()},
-        {kTpuVisibleDevicePathsEnvVar, SymbolStage::InternalImplementation()},
-        // Marked as Stable because it is the standard TPU runtime equivalent to
-        // CUDA_VISIBLE_DEVICES that external production consumers and infra
-        // rely on. The TorchTPU team is committed to honor this env var.
-        {kTpuVisibleDevicesEnvVar, SymbolStage::Stable()},
-        {kTpuWorkerHostnamesEnvVar, SymbolStage::InternalApi()},
-        {kWorldSizeEnvVar, SymbolStage::Stable()},
-        {kXlaFlagsEnvVar, SymbolStage::Experimental()},
-        // go/keep-sorted end
-    });
+// The type that an env var is read as. Each env var is read in one way only,
+// which GetEnvOnce(), GetBooleanEnvOnce() and GetIntegerEnvOnce() check at
+// compile time against kEnvVarInfo.
+enum class EnvVarType {
+  kString,   // Read with GetEnvOnce().
+  kBoolean,  // Read with GetBooleanEnvOnce().
+  kInt,      // Read with GetIntegerEnvOnce(), as an int.
+  kInt64,    // Read with GetIntegerEnvOnce(), as an int64_t.
+};
+
+// The registration of an env var in kEnvVarInfo.
+struct EnvVarInfo {
+  // Requires both fields, so that an entry that omits the type fails to
+  // compile instead of defaulting to EnvVarType::kString.
+  constexpr EnvVarInfo(std::optional<SymbolStage> stage, EnvVarType type)
+      : stage(stage), type(type) {}
+
+  // The symbol stage of the env var. nullopt means the stage is unknown.
+  std::optional<SymbolStage> stage;
+  // The type that the env var is read as. Env vars that TorchTPU only writes
+  // have their natural type.
+  EnvVarType type;
+
+  friend constexpr bool operator==(const EnvVarInfo&,
+                                   const EnvVarInfo&) = default;
+};
+
+// Maps an env var to its symbol stage and type.
+inline constexpr auto kEnvVarInfo = MakeConstexprMap<std::string_view,
+                                                     EnvVarInfo>({
+    // go/keep-sorted start
+    {kAcceleratorTypeEnvVar,
+     {SymbolStage::InternalImplementation(), EnvVarType::kString}},
+    {kAllowMultipleLibtpuLoadEnvVar,
+     {SymbolStage::InternalImplementation(), EnvVarType::kString}},
+    {kCloudTpuTaskIdEnvVar,
+     {SymbolStage::InternalImplementation(), EnvVarType::kInt}},
+    {kJobCompletionIndexEnvVar, {SymbolStage::InternalApi(), EnvVarType::kInt}},
+    // Marked as Stable because it is an established XLA/PJRT runtime
+    // configuration knob widely used by production workloads. The TorchTPU
+    // team is committed to honor this env var.
+    {kLibtpuInitArgsEnvVar, {SymbolStage::Stable(), EnvVarType::kString}},
+    // Marked as Stable because it is an established distributed launcher
+    // environment variable widely used by production workloads. The
+    // TorchTPU team is committed to honor this env var.
+    {kLocalRankEnvVar, {SymbolStage::Stable(), EnvVarType::kInt}},
+    // Marked as Stable because it is an established distributed launcher
+    // environment variable widely used by production workloads. The
+    // TorchTPU team is committed to honor this env var.
+    {kMasterAddrEnvVar, {SymbolStage::Stable(), EnvVarType::kString}},
+    // Marked as Stable because it is an established distributed launcher
+    // environment variable widely used by production workloads. The
+    // TorchTPU team is committed to honor this env var.
+    {kMasterPortEnvVar, {SymbolStage::Stable(), EnvVarType::kInt}},
+    {kMegascaleCoordinatorAddressEnvVar,
+     {SymbolStage::InternalImplementation(), EnvVarType::kString}},
+    {kMegascaleDebugPortEnvVar,
+     {SymbolStage::InternalImplementation(), EnvVarType::kInt}},
+    {kMegascalePortEnvVar,
+     {SymbolStage::InternalImplementation(), EnvVarType::kInt}},
+    // Marked as Stable because it is an established distributed launcher
+    // environment variable widely used by production workloads. The
+    // TorchTPU team is committed to honor this env var.
+    {kNnodesEnvVar, {SymbolStage::Stable(), EnvVarType::kInt}},
+    // Marked as Stable because it is an established distributed launcher
+    // environment variable widely used by production workloads. The
+    // TorchTPU team is committed to honor this env var.
+    {kNodeRankEnvVar, {SymbolStage::Stable(), EnvVarType::kInt}},
+    // Marked as Internal because it is an internal build/test runner
+    // environment variable used to adjust compilation thread concurrency,
+    // controlling TorchTPU internal behavior rather than serving as a
+    // public API contract.
+    {kNprocEnvVar, {SymbolStage::InternalApi(), EnvVarType::kInt}},
+    // Marked as Stable because it is an established distributed launcher
+    // environment variable widely used by production workloads. The
+    // TorchTPU team is committed to honor this env var.
+    {kRankEnvVar, {SymbolStage::Stable(), EnvVarType::kInt}},
+    {kSkipMegascalePjrtClientEnvVar,
+     {SymbolStage::InternalImplementation(), EnvVarType::kString}},
+    {kTmpdirEnvVar, {SymbolStage::Stable(), EnvVarType::kString}},
+    {kTorchDeviceBackendAutoloadEnvVar,
+     {SymbolStage::Stable(), EnvVarType::kBoolean}},
+    {kTorchShowCppStacktracesEnvVar,
+     {SymbolStage::Experimental(), EnvVarType::kBoolean}},
+    {kTorchTpuAllowLegacyDeviceApisEnvVar,
+     {SymbolStage::Experimental(), EnvVarType::kBoolean}},
+    {kTorchTpuBasePortEnvVar, {SymbolStage::Experimental(), EnvVarType::kInt}},
+    {kTorchTpuDeferAndFuseEnvVar,
+     {SymbolStage::Experimental(), EnvVarType::kBoolean}},
+    {kTorchTpuDevicesPerHostEnvVar,
+     {SymbolStage::Experimental(), EnvVarType::kInt}},
+    {kTorchTpuEnableDebugChecksEnvVar,
+     {SymbolStage::Experimental(), EnvVarType::kBoolean}},
+    {kTorchTpuHandshakePortEnvVar,
+     {SymbolStage::InternalApi(), EnvVarType::kInt}},
+    {kTorchTpuInternalCheckErrorFormatEnvVar,
+     {SymbolStage::InternalApi(), EnvVarType::kBoolean}},
+    {kTorchTpuInternalDetectRepeatedOpsEnvVar,
+     {SymbolStage::InternalApi(), EnvVarType::kString}},
+    {kTorchTpuInternalDisableInplaceBufferDonationEnvVar,
+     {SymbolStage::InternalApi(), EnvVarType::kBoolean}},
+    {kTorchTpuInternalDumpMlirPassesToEnvVar,
+     {SymbolStage::InternalApi(), EnvVarType::kString}},
+    {kTorchTpuInternalEnableReassociateNormWeightsEnvVar,
+     {SymbolStage::InternalApi(), EnvVarType::kBoolean}},
+    {kTorchTpuInternalHandshakeTimeoutSEnvVar,
+     {SymbolStage::InternalApi(), EnvVarType::kInt}},
+    {kTorchTpuInternalMaterializeCollectiveTensorsEnvVar,
+     {SymbolStage::InternalApi(), EnvVarType::kBoolean}},
+    {kTorchTpuInternalSkinnyScOffloadEnvVar,
+     {SymbolStage::InternalApi(), EnvVarType::kBoolean}},
+    {kTorchTpuInternalSplitRngStateUpdate,
+     {SymbolStage::InternalApi(), EnvVarType::kBoolean}},
+    {kTorchTpuInternalStorageAwarePlaceholdersEnvVar,
+     {SymbolStage::InternalApi(), EnvVarType::kBoolean}},
+    {kTorchTpuInternalTopmostPidEnvVar,
+     {SymbolStage::InternalImplementation(), EnvVarType::kInt}},
+    {kTorchTpuInternalUseUnboundedDynamicKernelsEnvVar,
+     {SymbolStage::InternalApi(), EnvVarType::kString}},
+    {kTorchTpuInternalXlaOptionsEnvVar,
+     {SymbolStage::InternalApi(), EnvVarType::kString}},
+    {kTorchTpuLaunchBlockingEnvVar,
+     {SymbolStage::Experimental(), EnvVarType::kBoolean}},
+    {kTorchTpuProfilerOutputDirEnvVar,
+     {SymbolStage::Experimental(), EnvVarType::kString}},
+    {kTorchTpuSlicebuilderAddressesEnvVar,
+     {SymbolStage::Experimental(), EnvVarType::kString}},
+    {kTorchTpuSpmdHandshakeStageEnvVar,
+     {SymbolStage::Experimental(), EnvVarType::kString}},
+    {kTorchTpuTier2CompilationCacheEnvVar,
+     {SymbolStage::Experimental(), EnvVarType::kString}},
+    {kTorchTpuTier3CompilationCacheRootEnvVar,
+     {SymbolStage::Experimental(), EnvVarType::kString}},
+    {kTorchTpuTopologyEnvVar,
+     {SymbolStage::Experimental(), EnvVarType::kString}},
+    {kTorchTpuXprofSessionIdEnvVar,
+     {SymbolStage::Experimental(), EnvVarType::kString}},
+    {kTorchTraceEnvVar, {SymbolStage::Experimental(), EnvVarType::kString}},
+    {kTorchcommRankEnvVar, {SymbolStage::Experimental(), EnvVarType::kInt}},
+    {kTorchcommSizeEnvVar, {SymbolStage::Experimental(), EnvVarType::kInt}},
+    {kTpuChipsPerHostBoundsEnvVar,
+     {SymbolStage::InternalImplementation(), EnvVarType::kString}},
+    {kTpuChipsPerProcessBoundsEnvVar,
+     {SymbolStage::InternalImplementation(), EnvVarType::kString}},
+    {kTpuHostBoundsEnvVar,
+     {SymbolStage::InternalImplementation(), EnvVarType::kString}},
+    // Marked as Stable because it is an established XLA/PJRT runtime
+    // configuration knob widely used by production workloads. The TorchTPU
+    // team is committed to honor this env var.
+    {kTpuPremappedBufferSizeEnvVar,
+     {SymbolStage::Stable(), EnvVarType::kInt64}},
+    {kTpuProcessAddressesEnvVar,
+     {SymbolStage::InternalImplementation(), EnvVarType::kString}},
+    {kTpuProcessBoundsEnvVar,
+     {SymbolStage::InternalImplementation(), EnvVarType::kString}},
+    {kTpuProcessPortEnvVar,
+     {SymbolStage::InternalImplementation(), EnvVarType::kInt}},
+    {kTpuVisibleChipsEnvVar,
+     {SymbolStage::InternalImplementation(), EnvVarType::kString}},
+    {kTpuVisibleDevicePathsEnvVar,
+     {SymbolStage::InternalImplementation(), EnvVarType::kString}},
+    // Marked as Stable because it is the standard TPU runtime equivalent to
+    // CUDA_VISIBLE_DEVICES that external production consumers and infra
+    // rely on. The TorchTPU team is committed to honor this env var.
+    {kTpuVisibleDevicesEnvVar, {SymbolStage::Stable(), EnvVarType::kString}},
+    {kTpuWorkerHostnamesEnvVar,
+     {SymbolStage::InternalApi(), EnvVarType::kString}},
+    {kWorldSizeEnvVar, {SymbolStage::Stable(), EnvVarType::kInt}},
+    {kXlaFlagsEnvVar, {SymbolStage::Experimental(), EnvVarType::kString}},
+    // go/keep-sorted end
+});
 
 // Sets the environment variable with the given name to the given value. Use
 // this instead of setenv().
@@ -438,9 +495,9 @@ inline constexpr auto kEnvVarToStage =
 // var at runtime, read it with std::getenv() instead of GetEnvOnce().
 template <const char* name>
 void SafeSetEnv(const std::string& value) {
-  static_assert(kEnvVarToStage.contains(name),
+  static_assert(kEnvVarInfo.contains(name),
                 "Unknown environment variable. All env vars used by TorchTPU "
-                "must be registered in kEnvVarToStage.");
+                "must be registered in kEnvVarInfo.");
   internal::SafeSetEnvImpl(name, value);
 }
 
@@ -450,11 +507,35 @@ void SafeSetEnv(const std::string& value) {
 // Like SafeSetEnv(), crashes if GetEnvOnce() has already memoized the env var.
 template <const char* name>
 void SafeUnsetEnv() {
-  static_assert(kEnvVarToStage.contains(name),
+  static_assert(kEnvVarInfo.contains(name),
                 "Unknown environment variable. All env vars used by TorchTPU "
-                "must be registered in kEnvVarToStage.");
+                "must be registered in kEnvVarInfo.");
   internal::SafeUnsetEnvImpl(name);
 }
+
+namespace internal {
+
+// Implements GetEnvOnce(), GetBooleanEnvOnce() and GetIntegerEnvOnce(), without
+// checking the registered type of the env var.
+template <const char* name>
+[[nodiscard]] const std::optional<std::string>& GetEnvOnceImpl() {
+  static_assert(kEnvVarInfo.contains(name),
+                "Unknown environment variable. All env vars used by TorchTPU "
+                "must be registered in kEnvVarInfo.");
+  constexpr std::optional<SymbolStage> maybe_stage = kEnvVarInfo[name].stage;
+  if constexpr (maybe_stage.has_value()) {
+    static_assert(
+        !maybe_stage->is_internal_implementation(),
+        "Cannot read from an internal implementation env var. "
+        "TorchTPU can only write to them. If TorchTPU really needs to "
+        "read this env var, its stage in kEnvVarInfo must be changed.");
+  }
+  static const absl::NoDestructor<std::optional<std::string>> env_var(
+      ReadEnvForGetEnvOnce(name, maybe_stage));
+  return *env_var;
+}
+
+}  // namespace internal
 
 // Returns the value of the environment variable with the given name, or
 // std::nullopt if it is not set.
@@ -466,48 +547,79 @@ void SafeUnsetEnv() {
 // We make the name a template parameter so that different env vars are
 // memoized separately, so any warning about an env var is emitted once per env
 // var. The name must be one of the kFooEnvVar variables defined in this file.
+//
+// The env var must be registered with EnvVarType::kString in kEnvVarInfo.
 template <const char* name>
 [[nodiscard]] const std::optional<std::string>& GetEnvOnce() {
-  static_assert(kEnvVarToStage.contains(name),
+  static_assert(kEnvVarInfo.contains(name),
                 "Unknown environment variable. All env vars used by TorchTPU "
-                "must be registered in kEnvVarToStage.");
-  constexpr auto maybe_stage = kEnvVarToStage[name];
-  if constexpr (maybe_stage.has_value()) {
-    static_assert(
-        !maybe_stage->is_internal_implementation(),
-        "Cannot read from an internal implementation env var. "
-        "TorchTPU can only write to them. If TorchTPU really needs to "
-        "read this env var, its stage in kEnvVarToStage must be changed.");
-  }
-  static const absl::NoDestructor<std::optional<std::string>> env_var(
-      internal::ReadEnvForGetEnvOnce(name, maybe_stage));
-  return *env_var;
+                "must be registered in kEnvVarInfo.");
+  static_assert(kEnvVarInfo[name].type == EnvVarType::kString,
+                "GetEnvOnce() called on an env var whose registered type is "
+                "not kString; see kEnvVarInfo.");
+  return internal::GetEnvOnceImpl<name>();
 }
 
 // Returns the boolean value of the environment variable with the given name, or
 // std::nullopt if it is not set or cannot be parsed as a Boolean.
 //
-// This function delegates to GetEnvOnce() to read the environment variable, and
-// then parses the string into a Boolean using absl::SimpleAtob.
+// This function reads the environment variable like GetEnvOnce(), and then
+// parses the string into a Boolean using absl::SimpleAtob. The env var must be
+// registered with EnvVarType::kBoolean in kEnvVarInfo.
 template <const char* name>
 [[nodiscard]] std::optional<bool> GetBooleanEnvOnce() {
+  static_assert(kEnvVarInfo.contains(name),
+                "Unknown environment variable. All env vars used by TorchTPU "
+                "must be registered in kEnvVarInfo.");
+  static_assert(kEnvVarInfo[name].type == EnvVarType::kBoolean,
+                "GetBooleanEnvOnce() called on an env var whose registered "
+                "type is not kBoolean; see kEnvVarInfo.");
   // Compute the value once and memoize it.
   static const std::optional<bool> value =
-      internal::ParseBooleanEnv(name, GetEnvOnce<name>());
+      internal::ParseBooleanEnv(name, internal::GetEnvOnceImpl<name>());
   return value;
 }
+
+namespace internal {
+
+// Implements EnvVarIntType. The checks are in a struct rather than in the
+// functions that use EnvVarIntType, as their return types are evaluated before
+// their bodies.
+template <const char* name>
+struct EnvVarIntTypeTraits {
+  static_assert(kEnvVarInfo.contains(name),
+                "Unknown environment variable. All env vars used by TorchTPU "
+                "must be registered in kEnvVarInfo.");
+  static_assert(kEnvVarInfo[name].type == EnvVarType::kInt ||
+                    kEnvVarInfo[name].type == EnvVarType::kInt64,
+                "Integer env var readers called on an env var whose "
+                "registered type is not kInt or kInt64; see kEnvVarInfo.");
+  using type = std::conditional_t<kEnvVarInfo[name].type == EnvVarType::kInt64,
+                                  int64_t, int>;
+};
+
+}  // namespace internal
+
+// The C++ type of the integer env var with the given name: int for
+// EnvVarType::kInt, or int64_t for EnvVarType::kInt64. Fails to compile if the
+// env var is not registered with one of these types.
+template <const char* name>
+using EnvVarIntType = typename internal::EnvVarIntTypeTraits<name>::type;
 
 // Returns the integer value of the environment variable with the given name, or
 // std::nullopt if it is not set or cannot be parsed as an integer.
 //
-// This function delegates to GetEnvOnce() to read the environment variable, and
-// then parses the string into an integer using absl::SimpleAtoi. Crashes if
-// called with different IntTypes for the same environment variable.
-template <typename IntType, const char* name>
-[[nodiscard]] std::optional<IntType> GetIntegerEnvOnce() {
+// This function reads the environment variable like GetEnvOnce(), and then
+// parses the string into an integer of type EnvVarIntType<name> using
+// absl::SimpleAtoi. The env var must be registered with EnvVarType::kInt or
+// EnvVarType::kInt64 in kEnvVarInfo.
+template <const char* name>
+[[nodiscard]] std::optional<EnvVarIntType<name>> GetIntegerEnvOnce() {
+  // EnvVarIntType<name> checks the registered type.
   // Compute the value once and memoize it.
-  static const std::optional<IntType> value =
-      internal::ParseIntegerEnv<IntType>(name, GetEnvOnce<name>());
+  static const std::optional<EnvVarIntType<name>> value =
+      internal::ParseIntegerEnv<EnvVarIntType<name>>(
+          name, internal::GetEnvOnceImpl<name>());
   return value;
 }
 

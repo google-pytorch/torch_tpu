@@ -238,8 +238,7 @@ absl::Status PjrtBackend::InitializeInternal() {
     ApplyTpuVisibleDevices();
     // When WORLD_SIZE is not set (or is 1), TorchTPU defaults to single-device
     // mode.
-    const auto& world_size_or =
-        GetRequiredIntegerEnvOnce<int, kWorldSizeEnvVar>();
+    const auto& world_size_or = GetRequiredIntegerEnvOnce<kWorldSizeEnvVar>();
     const bool single_device = !world_size_or.ok() || *world_size_or == 1;
     if (single_device) {
       // Count before the runtime is restricted to one device (in OSS, by
@@ -297,8 +296,7 @@ absl::Status PjrtBackend::InitializeInternal() {
   MaybeSkipMegascaleForLaterClients(addressable_devices[0]->Attributes());
 
   int world_size = 1;
-  if (const auto& world_size_or =
-          GetRequiredIntegerEnvOnce<int, kWorldSizeEnvVar>();
+  if (const auto& world_size_or = GetRequiredIntegerEnvOnce<kWorldSizeEnvVar>();
       world_size_or.ok()) {
     world_size = *world_size_or;
   }

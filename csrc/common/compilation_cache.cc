@@ -100,7 +100,7 @@ bool IsFutureReady(const SharedLoadedExecutableWithMetadataFuture& future) {
 // the environment variable is only read once.
 [[nodiscard]] int GetNumProcs() {
   static const int num_procs = [] {
-    const auto env_var = GetIntegerEnvOnce<int, kNprocEnvVar>();
+    const auto env_var = GetIntegerEnvOnce<kNprocEnvVar>();
     return (env_var.has_value() && *env_var > 0) ? *env_var : 0;
   }();
   return num_procs;

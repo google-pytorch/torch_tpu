@@ -93,7 +93,7 @@ def set_launch_env(nproc_per_node: int) -> bool:
   repick_slicebuilder_ports = False
   if (
       _has_tpu_devices()
-      or env.get_str_env_once("JOB_COMPLETION_INDEX") is not None
+      or env.get_int_env_once("JOB_COMPLETION_INDEX") is not None
   ):
     # Imported lazily so GPU runs (TORCH_DEVICE_BACKEND_AUTOLOAD=0) never depend
     # on `torch.tpu`, which only exists once the TorchTPU backend is loaded.
@@ -297,7 +297,7 @@ def _is_single_host() -> bool:
   """Returns whether this is a single-host (non multi-host) TPU job."""
   hostnames = env.get_str_env_once("TPU_WORKER_HOSTNAMES", default_value="")
   return (
-      env.get_str_env_once("JOB_COMPLETION_INDEX") is None
+      env.get_int_env_once("JOB_COMPLETION_INDEX") is None
       and len([h for h in hostnames.split(",") if h]) <= 1
   )
 
