@@ -114,19 +114,21 @@ class TurnTrackerTest(unittest.TestCase):  # UNITTEST_OK=standalone
     self.assertEqual(changes.add, (ASSIGNEE_LABEL,))
     self.assertEqual(changes.remove, (REQUESTER_LABEL,))
 
-  def test_issue_unassigned_switches_to_assignee(self):
-    payload = {
-        "action": "unassigned",
-        "issue": self._make_issue(
-            author="alice",
-            assignee=None,
-            labels=[{"name": REQUESTER_LABEL}],
-        ),
-        "sender": {"login": "bob"},
-    }
-    changes = determine_label_changes("issues", payload)
-    self.assertEqual(changes.add, (ASSIGNEE_LABEL,))
-    self.assertEqual(changes.remove, (REQUESTER_LABEL,))
+  def test_issue_unassigned_keeps_turn(self):
+    for label in (REQUESTER_LABEL, ASSIGNEE_LABEL):
+      with self.subTest(label=label):
+        payload = {
+            "action": "unassigned",
+            "issue": self._make_issue(
+                author="alice",
+                assignee=None,
+                labels=[{"name": label}],
+            ),
+            "sender": {"login": "bob"},
+        }
+        changes = determine_label_changes("issues", payload)
+        self.assertEqual(changes.add, ())
+        self.assertEqual(changes.remove, ())
 
   def test_issue_opened_already_has_assignee_label(self):
     payload = {
@@ -241,19 +243,22 @@ class TurnTrackerTest(unittest.TestCase):  # UNITTEST_OK=standalone
     self.assertEqual(changes.add, (REVIEWERS_LABEL,))
     self.assertEqual(changes.remove, (REQUESTER_LABEL,))
 
-  def test_pr_review_request_removed_switches_to_reviewers(self):
-    payload = {
-        "action": "review_request_removed",
-        "pull_request": self._make_issue(
-            author="alice",
-            assignee="bob",
-            labels=[{"name": REQUESTER_LABEL}],
-        ),
-        "sender": {"login": "bob"},
-    }
-    changes = determine_label_changes("pull_request_target", payload)
-    self.assertEqual(changes.add, (REVIEWERS_LABEL,))
-    self.assertEqual(changes.remove, (REQUESTER_LABEL,))
+  def test_pr_review_request_removed_keeps_turn(self):
+    for label in (REQUESTER_LABEL, REVIEWERS_LABEL):
+      for sender in ("alice", "bob", "charlie"):
+        with self.subTest(label=label, sender=sender):
+          payload = {
+              "action": "review_request_removed",
+              "pull_request": self._make_issue(
+                  author="alice",
+                  assignee="bob",
+                  labels=[{"name": label}],
+              ),
+              "sender": {"login": sender},
+          }
+          changes = determine_label_changes("pull_request_target", payload)
+          self.assertEqual(changes.add, ())
+          self.assertEqual(changes.remove, ())
 
   def test_pr_assigned_switches_to_reviewers(self):
     payload = {
@@ -269,23 +274,42 @@ class TurnTrackerTest(unittest.TestCase):  # UNITTEST_OK=standalone
     self.assertEqual(changes.add, (REVIEWERS_LABEL,))
     self.assertEqual(changes.remove, (REQUESTER_LABEL,))
 
-  def test_pr_unassigned_switches_to_reviewers(self):
-    payload = {
-        "action": "unassigned",
-        "pull_request": self._make_issue(
-            author="alice",
-            assignee=None,
-            labels=[{"name": REQUESTER_LABEL}],
-        ),
-        "sender": {"login": "bob"},
-    }
-    changes = determine_label_changes("pull_request_target", payload)
-    self.assertEqual(changes.add, (REVIEWERS_LABEL,))
-    self.assertEqual(changes.remove, (REQUESTER_LABEL,))
+  def test_pr_unassigned_keeps_turn(self):
+    for label in (REQUESTER_LABEL, REVIEWERS_LABEL):
+      for event_name in ("pull_request", "pull_request_target"):
+        with self.subTest(label=label, event_name=event_name):
+          payload = {
+              "action": "unassigned",
+              "pull_request": self._make_issue(
+                  author="alice",
+                  assignee=None,
+                  labels=[{"name": label}],
+              ),
+              "sender": {"login": "bob"},
+          }
+          changes = determine_label_changes(event_name, payload)
+          self.assertEqual(changes.add, ())
+          self.assertEqual(changes.remove, ())
+
+  def test_pr_removal_keeps_legacy_assignee_label(self):
+    for action in ("review_request_removed", "unassigned"):
+      with self.subTest(action=action):
+        payload = {
+            "action": action,
+            "pull_request": self._make_issue(
+                author="alice",
+                assignee="bob",
+                labels=[{"name": REQUESTER_LABEL}, {"name": ASSIGNEE_LABEL}],
+            ),
+            "sender": {"login": "bob"},
+        }
+        changes = determine_label_changes("pull_request_target", payload)
+        self.assertEqual(changes.add, ())
+        self.assertEqual(changes.remove, ())
 
   def test_pr_responder_turn_removes_legacy_assignee_label(self):
     payload = {
-        "action": "review_request_removed",
+        "action": "review_requested",
         "pull_request": self._make_issue(
             author="alice",
             assignee="bob",
