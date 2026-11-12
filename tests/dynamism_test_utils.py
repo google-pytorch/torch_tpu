@@ -535,9 +535,8 @@ DYNAMISM_DENY_LISTS: DenyList = {
         # SliceOp::build fails return type inference on bounded hidden slices.
         # Aborts the test process.
         "lstm.input": ALL_MODES,
-        # Slicing a dynamic dimension is not supported in ViewPrimitiveShlo
-        # (eager), and LU_pivots shape check fails (compile_grad).
-        "lu_unpack": {EAGER, COMPILE_GRAD},
+        # LU_pivots shape check fails (compile_grad).
+        "lu_unpack": {COMPILE_GRAD},
         # Backward pass calls local_scalar_dense on a placeholder tensor.
         "mean": {COMPILE_GRAD},
         # Allocates a zero-sized shape with no zero dimension. Aborts the test
