@@ -40,15 +40,13 @@ presubmit {
   check_contents {
     base {
       id: "CheckCopybaraTags"
-      disable_tags: "ALLOW_IRREVERSIBLE_TRANSFORM"
       disable_tags: "ROLLBACK_OF"  # Don't require for rollback CLs.
     }
     failure_status: ERROR
     failure_message:
       "Found irreversible 'copybara:' tags (strip or insert). "
       "Please use reversible alternatives instead. "
-      "See go/ml-velocity-copybara#reversibility for instructions on how to use reversible alternatives. "
-      "If you must use these tags, add ALLOW_IRREVERSIBLE_TRANSFORM=<reason> to the CL description."
+      "See go/ml-velocity-copybara#reversibility for instructions on how to use reversible alternatives."
     prohibited_regexp: "\\bcopybara:(strip|strip_begin|insert|insert_begin)\\b"
     check_delta_only: true
   }
@@ -153,7 +151,6 @@ presubmit {
   check_file_operation {
     base {
       id: "CheckOpFileName"
-      disable_tags: "ALLOW_SINGULAR_KERNEL_FILENAME"
       disable_tags: "ROLLBACK_OF"
     }
     operation: ADD
@@ -161,9 +158,7 @@ presubmit {
     operation: INTEGRATE
     failure_message:
       "Files under torch_tpu/csrc/ops/ should not end with 'kernel.cc' or "
-      "'kernel.h'. Use 'kernels.cc' or 'kernels.h' instead. If you have a "
-      "legitimate reason to use the singular filename, add "
-      "ALLOW_SINGULAR_KERNEL_FILENAME=<reason> to the CL description."
+      "'kernel.h'. Use 'kernels.cc' or 'kernels.h' instead."
   }
 }
 
@@ -174,20 +169,24 @@ presubmit {
   path_regexp: "torch_tpu/csrc/ops/\\w+/.*\\.(cc|h)"
   path_regexp_exclusion: ".*_kernels\\.(cc|h)"
 
-  check_file_operation {
+  check_contents {
     base {
       id: "CheckOpImplFilename"
-      disable_tags: "ALLOW_ANY_OP_IMPL_FILENAME"
       disable_tags: "ROLLBACK_OF"
     }
+    # Only check newly added, branched, or integrated files so pre-existing
+    # legacy and utility files under csrc/ops/<subdir>/ are not flagged on EDIT
+    # or full-repo (--all) runs.
     operation: ADD
     operation: BRANCH
     operation: INTEGRATE
+    required_regexp: "//\\s*ANY_OP_IMPL_FILENAME_OK=.+"
     failure_message:
       "C++ files under torch_tpu/csrc/ops/<op>/ should be named *_kernels.cc or "
       "*_kernels.h. In particular, we decided to no longer split an op library "
       "into foo and foo_kernels. If you have a legitimate reason to break this "
-      "rule, add ALLOW_ANY_OP_IMPL_FILENAME=<reason> to the CL description."
+      "rule, add a `// ANY_OP_IMPL_FILENAME_OK=<reason>` comment in the file."
+    check_delta_only: false
   }
 }
 
@@ -202,17 +201,14 @@ presubmit {
     base {
       id: "CheckKernelMacro"
       disable_tags: "ROLLBACK_OF"
-      disable_tags: "NO_TT_KERNEL_OK"
     }
     required_regexp: "\\bTT_KERNEL\\b"
     failure_message:
       "All *kernels.cc files must use TT_KERNEL() to implement a kernel (see "
-      "go/torch-tpu-op-easy for the rationale and more details. If you have "
+      "go/torch-tpu-op-easy for the rationale and more details). If you have "
       "a legitimate reason to not use TT_KERNEL(), add a comment in the file "
       "to explain why TT_KERNEL is not used (as long as the comment mentions "
-      "TT_KERNEL, this check passes). You can also suppress this check for all "
-      "files in the CL by adding NO_TT_KERNEL_OK=<reason> to the CL "
-      "description."
+      "TT_KERNEL, this check passes)."
     # As long as the file contains TT_KERNEL, this check passes. We don't need
     # the changed lines to use TT_KERNEL.
     check_delta_only: false
@@ -242,11 +238,10 @@ presubmit {
   check_contents {
     base {
       id: "CheckC10ToStringUsage"
-      disable_tags: "C10_TOSTRING_OK"
       disable_tags: "ROLLBACK_OF"
     }
     prohibited_regexp: "\\bc10::toString\\b"
-    suppression_regexp: "\\bC10_TOSTRING_OK\\b"
+    suppression_regexp: "\\bC10_TOSTRING_OK=.+"
     failure_message:
       "Please do not use c10::toString in torch_tpu codebase. "
       "Instead, use torch_tpu::ToString (defined in common/to_string.h). "
@@ -260,9 +255,9 @@ presubmit {
     base {
       id: "CheckDeprecatedMutexLock"
       disable_tags: "ROLLBACK_OF"
-      disable_tags: "DEPRECATED_MUTEX_LOCK_OK"
     }
     prohibited_regexp: "\\b(MutexLock|ReaderMutexLock|WriterMutexLock)\\b.*&"
+    suppression_regexp: "\\bDEPRECATED_MUTEX_LOCK_OK=.+"
     failure_message:
       "Please use `absl::MutexLock lock(mutex)` instead of `absl::MutexLock "
       "lock(&mutex)`. The latter is deprecated. If you have a legitimate "
@@ -275,18 +270,18 @@ presubmit {
   check_contents {
     base {
       id: "CheckIgnoreInCacheKeyLegacy"
-      disable_tags: "IGNORE_IN_CACHE_KEY_LEGACY_OK"
       disable_tags: "ROLLBACK_OF"
     }
     prohibited_regexp: "\\bIgnoreInCacheKey\\([^,]+,.*\\b(Legacy|legacy)\\b"
+    suppression_regexp: "\\bIGNORE_IN_CACHE_KEY_LEGACY_OK=.+"
     failure_message:
       "Please do not use \"Legacy usage\" as the reason for IgnoreInCacheKey() "
       "in *new* code. This reason is only used to get old code to compile. "
       "Instead, state the actual reason this parameter should be excluded "
       "from the cache key computation. If this is a false alarm (e.g. you are "
-      "moving or reformatting existing code), add "
-      "IGNORE_IN_CACHE_KEY_LEGACY_OK=<reason> to the CL description to "
-      "suppress this check."
+      "moving or reformatting existing code), add a "
+      "`// IGNORE_IN_CACHE_KEY_LEGACY_OK=<reason>` comment on the same line "
+      "to suppress this check."
     check_delta_only: true
   }
 
@@ -810,7 +805,6 @@ presubmit {
     base {
       id: "CheckNoVoidCast"
       disable_tags: "ROLLBACK_OF"
-      disable_tags: "VOID_CAST_OK"
     }
     prohibited_regexp: "\\(void\\)|\\bstatic_cast<void>"
     suppression_regexp:
@@ -1403,9 +1397,8 @@ presubmit {
     base {
       id: "CheckTorchTpuPackageEnd"
       disable_tags: "ROLLBACK_OF"
-      disable_tags: "NO_TORCH_TPU_PACKAGE_END_OK"
     }
-    required_regexp: "\\btorch_tpu_package_end\\(\\)[\\s|\\n]*$"
+    required_regexp: "\\btorch_tpu_package_end\\(\\)[\\s|\\n]*$|#\\s*NO_TORCH_TPU_PACKAGE_END_OK=.+"
     match_entire_file: true
     failure_message:
       "All BUILD files must include the following lines to define some "
@@ -1417,7 +1410,7 @@ presubmit {
       "# This must be the last line in the BUILD file.\n"
       "torch_tpu_package_end()\n\n"
       "If you have a legitimate reason to not include them, "
-      "add NO_TORCH_TPU_PACKAGE_END_OK=<reason> to the CL description."
+      "add a `# NO_TORCH_TPU_PACKAGE_END_OK=<reason>` comment in the BUILD file."
   }
 }
 
@@ -1746,6 +1739,7 @@ presubmit {
     base {
       id: "CheckCopyrightYearUpdate"
       disable_tags: "ALLOW_COPYRIGHT_YEAR_UPDATE"
+      disable_tags: "ROLLBACK_OF"
     }
     # EDIT is for existing files.
     # Unfortunately, check_contents cannot distinguish between new and branched

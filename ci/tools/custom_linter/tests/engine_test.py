@@ -512,6 +512,8 @@ def test_required_regexp_by_line() -> None:
 def test_required_regexp_entire_file() -> None:
   ok = 'load("//x")\n\ntorch_tpu_package_end()\n'
   assert not _check("CheckTorchTpuPackageEnd", ok, "csrc/BUILD")
+  suppressed = "# NO_TORCH_TPU_PACKAGE_END_OK=reason\nfoo()\n"
+  assert not _check("CheckTorchTpuPackageEnd", suppressed, "csrc/BUILD")
   bad = "torch_tpu_package_end()\nfoo()\n"
   assert _lines(_check("CheckTorchTpuPackageEnd", bad, "csrc/BUILD")) == [None]
 
@@ -638,6 +640,7 @@ _RULE_EXAMPLES: Final[Mapping[str, _RuleExample]] = {
     "CheckOpImplFilename": _RuleExample(
         path="csrc/ops/add/helper.cc",
         bad="x\n",
+        good="// ANY_OP_IMPL_FILENAME_OK=r\n",
         op=custom_lint_metadata.FileOperation.ADD,
     ),
     "CheckKernelMacro": _RuleExample(
@@ -653,15 +656,20 @@ _RULE_EXAMPLES: Final[Mapping[str, _RuleExample]] = {
     "CheckC10ToStringUsage": _RuleExample(
         path="csrc/a.cc",
         bad="c10::toString(x);\n",
-        good="c10::toString(x);  // C10_TOSTRING_OK\n",
+        good="c10::toString(x);  // C10_TOSTRING_OK=r\n",
     ),
     "CheckDeprecatedMutexLock": _RuleExample(
         path="csrc/a.cc",
         bad="MutexLock lock(&mu);\n",
+        good="MutexLock lock(&mu);  // DEPRECATED_MUTEX_LOCK_OK=r\n",
     ),
     "CheckIgnoreInCacheKeyLegacy": _RuleExample(
         path="csrc/a.cc",
         bad='IgnoreInCacheKey(x, "Legacy usage");\n',
+        good=(
+            'IgnoreInCacheKey(x, "Legacy usage");'
+            "  // IGNORE_IN_CACHE_KEY_LEGACY_OK=r\n"
+        ),
     ),
     "CheckIncludeBeforeCopyright": _RuleExample(
         path="csrc/a.cc",
