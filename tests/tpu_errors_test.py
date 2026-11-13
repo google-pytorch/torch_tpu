@@ -47,6 +47,7 @@ from unittest import mock
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
+from torch._subclasses import fake_tensor
 import torch.distributed as dist
 from torch.fx.experimental.proxy_tensor import make_fx
 import torch.multiprocessing as mp
@@ -5006,6 +5007,149 @@ module {
         ),
     ):
       fn(t, repeats)
+
+  @parameterized.named_parameters(
+      dict(testcase_name="bool", dtype=torch.bool, tpu_dtype="bool"),
+      dict(testcase_name="uint8", dtype=torch.uint8, tpu_dtype="uint8"),
+      dict(testcase_name="int8", dtype=torch.int8, tpu_dtype="int8"),
+      dict(testcase_name="int16", dtype=torch.int16, tpu_dtype="int16"),
+      dict(testcase_name="int32", dtype=torch.int32, tpu_dtype="int32"),
+      dict(testcase_name="int64", dtype=torch.int64, tpu_dtype="int64"),
+  )
+  @et.why_tpu_only(
+      "Testing TPU-specific _masked_scale unsupported dtype error messages;"
+      " TPU supports complex64 while CUDA does not."
+  )
+  def test_masked_scale_unsupported_dtypes(
+      self, dtype: torch.dtype, tpu_dtype: str
+  ):
+    self_t = torch.ones((2, 3), device=et.device(), dtype=dtype)
+    mask = torch.ones((2, 3), device=et.device(), dtype=torch.uint8)
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu=f"""masked_scale(): not implemented for {tpu_dtype}""",
+    ):
+      torch.ops.aten._masked_scale(self_t, mask, 2.0)
+
+  @parameterized.named_parameters(
+      dict(testcase_name="bool", mask_dtype=torch.bool, expected_dtype="bool"),
+      dict(
+          testcase_name="int32", mask_dtype=torch.int32, expected_dtype="int32"
+      ),
+      dict(
+          testcase_name="float32",
+          mask_dtype=torch.float32,
+          expected_dtype="float32",
+      ),
+  )
+  @et.why_tpu_only(
+      "Testing TPU-specific _masked_scale mask dtype error message."
+  )
+  def test_masked_scale_invalid_mask_dtype(
+      self, mask_dtype: torch.dtype, expected_dtype: str
+  ):
+    self_t = torch.ones((2, 3), device=et.device(), dtype=torch.float32)
+    mask = torch.ones((2, 3), device=et.device(), dtype=mask_dtype)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""masked_scale(): expected mask dtype to be uint8, got {expected_dtype}""",
+    ):
+      torch.ops.aten._masked_scale(self_t, mask, 2.0)
+
+  @parameterized.named_parameters(
+      dict(testcase_name="expand_self", self_shape=(1, 8), mask_shape=(4, 8)),
+      dict(
+          testcase_name="incompatible_dims",
+          self_shape=(4, 8),
+          mask_shape=(3, 8),
+      ),
+  )
+  @et.why_tpu_only(
+      "Testing TPU-specific _masked_scale mask broadcast shape validation."
+  )
+  def test_masked_scale_invalid_mask_shape(
+      self, self_shape: tuple[int, ...], mask_shape: tuple[int, ...]
+  ):
+    self_t = torch.ones(self_shape, device=et.device(), dtype=torch.float32)
+    mask = torch.ones(mask_shape, device=et.device(), dtype=torch.uint8)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""masked_scale(): expected mask to be broadcastable to output shape, got {list(mask_shape)} vs {list(self_shape)}""",
+    ):
+      torch.ops.aten._masked_scale(self_t, mask, 2.0)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="expand_grad_output",
+          grad_shape=(1, 8),
+          mask_shape=(4, 8),
+      ),
+      dict(
+          testcase_name="incompatible_dims",
+          grad_shape=(4, 8),
+          mask_shape=(3, 8),
+      ),
+  )
+  @et.why_tpu_only("Testing TPU-specific dropout backward shape validation.")
+  def test_native_dropout_backward_invalid_mask_shape(
+      self, grad_shape: tuple[int, ...], mask_shape: tuple[int, ...]
+  ):
+    grad_output = torch.ones(
+        grad_shape, device=et.device(), dtype=torch.float32
+    )
+    mask = torch.ones(mask_shape, device=et.device(), dtype=torch.bool)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""native_dropout_backward(): expected mask to be broadcastable to output shape, got {list(mask_shape)} vs {list(grad_shape)}""",
+    ):
+      torch.ops.aten.native_dropout_backward(grad_output, mask, 2.0)
+
+  @parameterized.named_parameters(
+      dict(testcase_name="negative_p", p=-0.5),
+      dict(testcase_name="p_greater_than_one", p=1.5),
+  )
+  @et.why_tpu_only(
+      "Testing TPU Meta _fused_dropout probability range validation."
+  )
+  def test_fused_dropout_meta_invalid_p(self, p: float):
+    with fake_tensor.FakeTensorMode():
+      x = torch.empty((2, 3), device=et.device(), dtype=torch.float32)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu=f"""fused_dropout(): expected p to be in the range [0, 1], got {p}""",
+      ):
+        torch.ops.aten._fused_dropout(x, p=p)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="int32",
+          dtype=torch.int32,
+          expected_dtype="torch.int32",
+      ),
+      dict(
+          testcase_name="int64",
+          dtype=torch.int64,
+          expected_dtype="torch.int64",
+      ),
+      dict(
+          testcase_name="bool",
+          dtype=torch.bool,
+          expected_dtype="torch.bool",
+      ),
+  )
+  @et.why_tpu_only(
+      "Testing TPU Meta _fused_dropout unsupported input dtype validation."
+  )
+  def test_fused_dropout_meta_unsupported_dtype(
+      self, dtype: torch.dtype, expected_dtype: str
+  ):
+    with fake_tensor.FakeTensorMode():
+      x = torch.empty((2, 3), device=et.device(), dtype=dtype)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu=f"""fused_dropout(): expected input to be floating point or complex, got {expected_dtype}""",
+      ):
+        torch.ops.aten._fused_dropout(x, p=0.5)
 
 
 class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):

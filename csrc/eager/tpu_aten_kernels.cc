@@ -852,6 +852,7 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kMaskedFillTensor>(m, AtenMaskedFillTensor);
   ImplStable<OpName::kMaskedFill_Scalar>(m, AtenMaskedFill_Scalar);
   ImplStable<OpName::kMaskedFill_Tensor>(m, AtenMaskedFill_Tensor);
+  ImplStable<OpName::kMaskedScale>(m, AtenMaskedScale);
   ImplStable<OpName::kMaskedScatter_>(m, AtenMaskedScatter_);
   ImplStable<OpName::kMaskedSelect>(m, AtenMaskedSelect);
   ImplStable<OpName::kMaskedSelectOut>(m, AtenMaskedSelectOut);
