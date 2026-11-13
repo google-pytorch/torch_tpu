@@ -325,11 +325,14 @@ SDPA_CONFIGS = (
         v_head_dim=128,
         is_causal=True,
     ),
+    # Two heads keep the CPU reference affordable (~4x less work than eight);
+    # the kernel tiling depends on the sequence length and head dim, not the
+    # head count.
     SdpaConfig(
         q_seq_len=10000,
         kv_seq_len=10000,
-        q_num_heads=8,
-        kv_num_heads=8,
+        q_num_heads=2,
+        kv_num_heads=2,
         qk_head_dim=256,
         v_head_dim=256,
         is_causal=False,
