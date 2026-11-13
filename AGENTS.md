@@ -246,6 +246,8 @@ its `SKILL.md` and follow it.
 *   [`tt-support-dynamism`](.agents/skills/tt-support-dynamism/SKILL.md):
     bounded dynamic shape support in op lowerings and `torch.compile` FX passes,
     and fixing ops in `DYNAMISM_DENY_LISTS`.
+*   [`tt-update-error-coverage-data`](.agents/skills/tt-update-error-coverage-data/SKILL.md):
+    updating the `tests/error_coverage_data.yaml` baseline.
 *   [`tt-write-docs`](.agents/skills/tt-write-docs/SKILL.md): writing, editing,
     or reviewing narrative documentation or README content.
 *   [`tt-write-error-tests`](.agents/skills/tt-write-error-tests/SKILL.md):
