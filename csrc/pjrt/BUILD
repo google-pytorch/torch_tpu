@@ -220,6 +220,27 @@ torch_tpu_cc_library(
     ],
 )
 
+torch_tpu_cc_library(
+    name = "counting_pjrt_buffer_test_util",
+    testonly = True,
+    hdrs = ["counting_pjrt_buffer_test_util.h"],
+    deps = [
+        "//csrc/common:error_utils",
+        "@com_google_absl//absl/base:nullability",
+        "@com_google_absl//absl/functional:any_invocable",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/types:span",
+        "@xla//xla:future",
+        "@xla//xla:literal",
+        "@xla//xla:shape_util",
+        "@xla//xla:xla_data_proto_cc",
+        "@xla//xla/pjrt:pjrt_client",
+        "@xla//xla/pjrt:pjrt_executable",
+        "@xla//xla/pjrt:pjrt_layout",
+        "@xla//xla/service:device_assignment",
+    ],
+)
+
 torch_tpu_cc_test(
     name = "pjrt_execute_test",
     srcs = ["pjrt_execute_test.cc"],
@@ -229,6 +250,7 @@ torch_tpu_cc_test(
     requires_libtpu = True,
     tags = ["requires-tpu-v5lite"],
     deps = [
+        ":counting_pjrt_buffer_test_util",
         ":pjrt_execute",
         ":pjrt_state",
         "//csrc/common:compilation",
@@ -238,10 +260,12 @@ torch_tpu_cc_test(
         "//csrc/common:shape",
         "//csrc/common:status_test_utils",
         "@com_google_absl//absl/base:nullability",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/types:span",
         "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
+        "@xla//xla:future",
         "@xla//xla:literal",
         "@xla//xla:shape_util",
         "@xla//xla:xla_data_proto_cc",

@@ -203,22 +203,35 @@ bool HloModuleContainsCollective(const xla::HloModule* hlo_module) {
 // Returns an error if an argument's on-device layout isn't the one the
 // executable was compiled for. For static parameters and arguments, PJRT only
 // checks an argument's size, so it would silently misread a same-size argument
-// with another layout.
+// with another layout. Each non-null `known_argument_shapes[i]` supplies
+// `argument_buffers[i]->on_device_shape()` without querying PJRT.
 absl::Status ValidateArgumentLayouts(
     const LoadedExecutableWithMetadata& executable,
-    absl::Span<xla::PjRtBuffer* const> argument_buffers) {
+    absl::Span<xla::PjRtBuffer* const> argument_buffers,
+    const absl::Span<const xla::Shape* absl_nullable const>
+        known_argument_shapes) {
   const absl::Span<const xla::Shape> parameter_shapes =
       executable.parameter_device_shapes();
   for (size_t i = 0; i < argument_buffers.size() && i < parameter_shapes.size();
        ++i) {
     const xla::Shape& expected = parameter_shapes[i];
-    // PJRT handles dynamic and non-array parameters and arguments itself.
+    // PJRT checks dynamic and non-array parameters itself.
     if (argument_buffers[i] == nullptr || !expected.IsArray() ||
-        !expected.is_static() || !expected.has_layout() ||
-        !argument_buffers[i]->on_device_shape().is_static()) {
+        !expected.is_static() || !expected.has_layout()) {
       continue;
     }
-    const xla::Shape& actual = argument_buffers[i]->on_device_shape();
+    const xla::Shape* const known_actual =
+        i < known_argument_shapes.size() ? known_argument_shapes[i] : nullptr;
+    if (known_actual == &expected) {
+      continue;
+    }
+    const xla::Shape& actual = known_actual != nullptr
+                                   ? *known_actual
+                                   : argument_buffers[i]->on_device_shape();
+    // PJRT checks dynamic and non-array arguments itself.
+    if (!actual.IsArray() || !actual.is_static() || !actual.has_layout()) {
+      continue;
+    }
     // An argument with other dimensions, e.g. a one-element array passed to a
     // scalar parameter, is reinterpreted on purpose. PJRT checks its size.
     if (actual.dimensions() != expected.dimensions()) {
@@ -246,7 +259,8 @@ absl::StatusOr<PjRtBufferPointers> Execute(
     const SharedLoadedExecutableWithMetadata& executable,
     std::vector<xla::PjRtBuffer* absl_nullable> argument_buffers,
     absl::Span<const Shape> logical_output_shapes,
-    ArgumentLayoutValidation layout_validation) {
+    const ArgumentLayoutValidation layout_validation,
+    absl::Span<const xla::Shape* absl_nullable const> known_argument_shapes) {
   tsl::profiler::TraceMe trace("Execute");
   xla::ExecuteOptions execute_options{.strict_shape_checking = true};
 
@@ -265,9 +279,11 @@ absl::StatusOr<PjRtBufferPointers> Execute(
             *unbounded_dynamic_meta, argument_buffers, logical_output_shapes));
     argument_buffers = std::move(dynamic_args.full_args);
     ephemeral_buffers = std::move(dynamic_args.ephemeral_buffers);
+    known_argument_shapes = {};
   }
   if (layout_validation == ArgumentLayoutValidation::kValidate) {
-    TT_RETURN_IF_ERROR(ValidateArgumentLayouts(*executable, argument_buffers));
+    TT_RETURN_IF_ERROR(ValidateArgumentLayouts(*executable, argument_buffers,
+                                               known_argument_shapes));
   }
 
   if (ABSL_VLOG_IS_ON(8)) {
