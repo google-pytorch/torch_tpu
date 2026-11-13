@@ -212,6 +212,7 @@ torch_tpu_py_test(
         "//src/torch_tpu/_internal/pallas/verify:interpret_verifier",
         "//src/torch_tpu/_internal/pallas/verify:jaxpr_model",
         "//src/torch_tpu/_internal/pallas/verify:smt_checker",
+        "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
         "@pypi//jax",
         "@pypi//numpy",

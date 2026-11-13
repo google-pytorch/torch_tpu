@@ -39,6 +39,7 @@ from torch_tpu._internal.pallas import _mock_device
 from torch_tpu._internal.pallas.verify import interpret_verifier
 from torch_tpu._internal.pallas.verify import jaxpr_model
 from torch_tpu._internal.pallas.verify import smt_checker
+from torch_tpu._internal.utils import test_utils
 from tests import seed_test_utils
 
 jax_op = pallas.jax_op
@@ -3528,6 +3529,9 @@ class KernelVerifierTest(seed_test_utils.RepeatableTest):
       )
       self.assertTrue(report.passed, msg=report.summary())
 
+  @test_utils.skip_if_msan(
+      "TODO(b/585575469): Solver race query times out under MSAN."
+  )
   def test_bugs_are_still_found_past_the_unrolling_bound(self):
     grid = 40  # Exceeds the default unrolling bound.
 
@@ -4239,6 +4243,9 @@ class KernelVerifierTest(seed_test_utils.RepeatableTest):
         msg=rep.summary(),
     )
 
+  @test_utils.skip_if_msan(
+      "TODO(b/585575469): Solver race query times out under MSAN."
+  )
   def test_truncated_loop_causal_deadlock_and_zero_signal_deadlock_caught(self):
     grid = 40  # Exceeds default max_unrolled_iterations=32.
     x_spec = jax.ShapeDtypeStruct((grid * 8, 128), jnp.float32)
