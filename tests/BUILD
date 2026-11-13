@@ -567,6 +567,21 @@ torch_tpu_py_library(
 )
 
 torch_tpu_py_library(
+    name = "ops_test_lib",
+    testonly = True,
+    srcs = ["ops_test.py"],
+    deps = [
+        ":op_testing",
+        ":oss_utils",
+        ":quantize_utils",
+        "//shims/absl_py/flags",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu/_internal/utils:test_utils",
+    ],
+)
+
+torch_tpu_py_library(
     name = "ops_test_data",
     testonly = True,
     srcs = ["ops_test_data.py"],
@@ -1406,6 +1421,7 @@ torch_tpu_py_test(
         ":dynamism_test_utils",
         ":goldens_pin",
         ":op_testing",
+        ":ops_test_lib",
         ":seed_test_utils",
         ":test_utils",
         "//shims/absl_py/testing:absltest",

@@ -15,6 +15,7 @@
 """Unit tests for the op_testing framework."""
 
 from collections.abc import Mapping, Sequence
+import dataclasses
 import gzip
 import hashlib
 import os
@@ -35,6 +36,7 @@ from torch_tpu._internal.utils import test_utils
 from tests import dynamism_test_utils
 from tests import goldens_pin
 from tests import op_testing
+from tests import ops_test
 from tests import seed_test_utils
 from tests import test_utils as tests_test_utils
 
@@ -728,6 +730,22 @@ class OpTestingTest(op_testing.OpInfoTestBase):
     self.assertEqual(cnt.frame_count, num_subtests)
 
 
+@dataclasses.dataclass(frozen=True)
+class _RecordedDoTestOpCall:
+  """Arguments captured from a single `TestOps.do_test_op` invocation."""
+
+  test_name: str
+  op_name: str
+  variant_test_name: str | None
+  check_grad: bool
+
+  @property
+  def full_key(self) -> str:
+    if self.variant_test_name:
+      return f"{self.op_name}.{self.variant_test_name}"
+    return self.op_name
+
+
 class DynamismDenyListsTest(seed_test_utils.RepeatableTest):
   """Tests for the dynamism op deny lists in dynamism_test_utils."""
 
@@ -737,6 +755,46 @@ class DynamismDenyListsTest(seed_test_utils.RepeatableTest):
           dynamism_test_utils.DYNAMISM_NOT_APPLICABLE_OPS
       ),
   }
+
+  def _collect_test_ops_calls(self) -> list[_RecordedDoTestOpCall]:
+    calls: list[_RecordedDoTestOpCall] = []
+    current_test_name = ""
+
+    def record(
+        test_self: op_testing.OpInfoTestBase,
+        op_name: str,
+        *,
+        check_grad: bool = True,
+        variant_test_name: str | None = None,
+        **kwargs: Any,
+    ) -> None:
+      del test_self, kwargs
+      calls.append(
+          _RecordedDoTestOpCall(
+              test_name=current_test_name,
+              op_name=op_name,
+              variant_test_name=variant_test_name,
+              check_grad=check_grad,
+          )
+      )
+
+    test_instance = ops_test.TestOps("test_abs")
+    with mock.patch.object(ops_test.TestOps, "do_test_op", record):
+      for attr_name in sorted(dir(ops_test.TestOps)):
+        if not attr_name.startswith("test_"):
+          continue
+        method = getattr(test_instance, attr_name)
+        if not callable(method):
+          continue
+        before = len(calls)
+        current_test_name = attr_name
+        method()
+        self.assertGreater(
+            len(calls),
+            before,
+            f"TestOps.{attr_name} did not invoke do_test_op().",
+        )
+    return calls
 
   def test_entries_are_known_ops(self):
     # verify_op_supports_dynamism() matches OpInfo.name, so a misspelled or
@@ -756,19 +814,77 @@ class DynamismDenyListsTest(seed_test_utils.RepeatableTest):
             self.assertContainsSubset(modes, dynamism_test_utils.ALL_MODES)
 
   def test_deny_lists_are_disjoint(self):
-    not_applicable = {
-        (op_name, mode)
-        for ops in dynamism_test_utils.DYNAMISM_NOT_APPLICABLE_OPS.values()
-        for op_name, modes in ops.items()
-        for mode in modes
-    }
-    denied = {
-        (op_name, mode)
+    seen: dict[tuple[str, dynamism_test_utils.DynamismMode], str] = {}
+    duplicates: list[str] = []
+    for list_name, deny_lists in self._DENY_LISTS.items():
+      for reason, ops in deny_lists.items():
+        location = f"{list_name}[{reason!r}]"
+        for op_name, modes in ops.items():
+          for mode in modes:
+            key = (op_name, mode)
+            if key in seen:
+              duplicates.append(
+                  f"{op_name} ({mode.value}) in both {seen[key]} and {location}"
+              )
+            else:
+              seen[key] = location
+    self.assertEmpty(duplicates)
+
+  def test_entries_have_live_test_ops_coverage(self):
+    calls = self._collect_test_ops_calls()
+    tested_op_names = {call.op_name for call in calls}
+    tested_full_keys = {call.full_key for call in calls}
+
+    for list_name, deny_lists in self._DENY_LISTS.items():
+      for reason, ops in deny_lists.items():
+        with self.subTest(deny_list=list_name, reason=reason):
+          self.assertEmpty(
+              sorted(set(ops) - tested_op_names),
+              "Entries without a TestOps method have no live dynamism test.",
+          )
+
+    with self.subTest(deny_list="SYMBOLIC_SHAPES_KNOWN_FAILURES"):
+      self.assertEmpty(
+          sorted(
+              set(ops_test.SYMBOLIC_SHAPES_KNOWN_FAILURES) - tested_full_keys
+          ),
+          "SYMBOLIC_SHAPES_KNOWN_FAILURES keys must match a TestOps call.",
+      )
+
+  def test_no_compile_grad_entries_on_check_grad_false_ops(self):
+    calls = self._collect_test_ops_calls()
+    grad_checked_ops = {call.op_name for call in calls if call.check_grad}
+    dead_entries = [
+        op_name
         for ops in dynamism_test_utils.DYNAMISM_DENY_LISTS.values()
         for op_name, modes in ops.items()
-        for mode in modes
+        if dynamism_test_utils.COMPILE_GRAD in modes
+        and op_name not in grad_checked_ops
+    ]
+    self.assertEmpty(
+        sorted(dead_entries),
+        "COMPILE_GRAD entries on ops with check_grad=False never execute.",
+    )
+
+  def test_no_compiled_entries_masked_by_compiled_deny_list(self):
+    compiled_modes = {
+        dynamism_test_utils.COMPILE,
+        dynamism_test_utils.COMPILE_GRAD,
     }
-    self.assertEmpty(sorted(not_applicable & denied, key=str))
+    masked_entries = [
+        (op_name, mode.value)
+        for ops in dynamism_test_utils.DYNAMISM_DENY_LISTS.values()
+        for op_name, modes in ops.items()
+        if op_name in op_testing._COMPILED_DENY_LIST
+        for mode in modes
+        if mode in compiled_modes
+    ]
+    self.assertEmpty(
+        sorted(masked_entries),
+        "Ops in op_testing._COMPILED_DENY_LIST already skip all compiled"
+        " variants, so COMPILE/COMPILE_GRAD entries in DYNAMISM_DENY_LISTS are"
+        " masked.",
+    )
 
 
 class CoupledDimDiscoveryTest(seed_test_utils.RepeatableTest):
