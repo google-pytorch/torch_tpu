@@ -237,10 +237,12 @@ class RunBazelDiffTest(unittest.TestCase):
   def test_run_bazel_test_config_flag(self):
     with mock.patch("subprocess.run", autospec=True) as mock_run:
       mock_run.return_value.returncode = 0
-      with self.subTest("with_config"):
+      with self.subTest("tpu_config_builds_then_tests"):
         mock_run.reset_mock()
         self.assertEqual(
-            run_bazel_diff._run_bazel_test("ci_cpu", "--keep_going", ["//..."]),
+            run_bazel_diff._run_bazel_test(
+                "ci_tpu_v5", "--keep_going", ["//..."]
+            ),
             0,
         )
         self.assertEqual(
@@ -250,7 +252,7 @@ class RunBazelDiffTest(unittest.TestCase):
                     [
                         "bash",
                         "-c",
-                        "bazel build --config=ci_cpu --keep_going //...",
+                        "bazel build --config=ci_tpu_v5 --keep_going //...",
                     ],
                     check=False,
                 ),
@@ -258,12 +260,27 @@ class RunBazelDiffTest(unittest.TestCase):
                     [
                         "bash",
                         "-c",
-                        "bazel test --config=ci_cpu --keep_going //...",
+                        "bazel test --config=ci_tpu_v5 --keep_going //...",
                     ],
                     check=False,
                 ),
             ],
         )
+      with self.subTest("cpu_config_only_tests"):
+        for config in ("ci_cpu", "ci_cpu_presubmit", "ci_cpu_tsan"):
+          mock_run.reset_mock()
+          self.assertEqual(
+              run_bazel_diff._run_bazel_test(config, "--keep_going", ["//..."]),
+              0,
+          )
+          mock_run.assert_called_once_with(
+              [
+                  "bash",
+                  "-c",
+                  f"bazel test --config={config} --keep_going //...",
+              ],
+              check=False,
+          )
       with self.subTest("empty_config"):
         mock_run.reset_mock()
         self.assertEqual(
@@ -287,11 +304,13 @@ class RunBazelDiffTest(unittest.TestCase):
         mock_run.reset_mock()
         mock_run.return_value.returncode = 1
         self.assertEqual(
-            run_bazel_diff._run_bazel_test("ci_cpu", "--keep_going", ["//..."]),
+            run_bazel_diff._run_bazel_test(
+                "ci_tpu_v5", "--keep_going", ["//..."]
+            ),
             1,
         )
         mock_run.assert_called_once_with(
-            ["bash", "-c", "bazel build --config=ci_cpu --keep_going //..."],
+            ["bash", "-c", "bazel build --config=ci_tpu_v5 --keep_going //..."],
             check=False,
         )
 
@@ -299,11 +318,6 @@ class RunBazelDiffTest(unittest.TestCase):
     """Exit code 4 passes only when the caller allows running no tests."""
     targets = ["//..."]
     runner = fakes.FakeSubprocessRunner()
-    runner.on([
-        "bash",
-        "-c",
-        run_bazel_diff._bazel_command("build", "ci_cpu", "", targets),
-    ])
     runner.on(
         [
             "bash",
