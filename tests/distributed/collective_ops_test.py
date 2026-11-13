@@ -22,7 +22,9 @@
 """
 
 from collections.abc import Callable, Sequence
+import datetime
 import os
+import threading
 import time
 from typing import Any
 
@@ -50,6 +52,7 @@ from torch import distributed as dist
 from torch.distributed import device_mesh
 import torch.multiprocessing as mp
 
+from torch_tpu._internal import execution_mode
 from torch_tpu._internal.distributed import tpu_distributed
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
@@ -64,6 +67,9 @@ try:
   _IS_TPU_V7 = torch.tpu.get_device_properties().name == "TPU v7"
 except RuntimeError:  # No TPU generation that TorchTPU supports is attached.
   _IS_TPU_V7 = False
+
+# torch < 2.13 cannot return Work.exception() to Python.
+_WORK_EXCEPTION_IS_BOUND = utils.parse_version(torch.__version__) >= (2, 13, 0)
 
 
 def _test_wrapper(
@@ -749,6 +755,400 @@ def _run_isend_irecv_does_not_leak_store_keys() -> None:
   )
 
 
+def _run_async_work_tracks_completion() -> None:
+  """Tests that the Work of an async collective reports its completion."""
+  world_size = dist.get_world_size()
+  rank = dist.get_rank()
+  store = dist.distributed_c10d._get_default_store()
+  gate_key = "async_work_completion_rank0_checked"
+  x = torch.full((4,), float(rank), device="tpu")
+
+  # Ranks > 0 hold off issuing, so the collective cannot complete on rank 0.
+  if rank != 0:
+    store.wait([gate_key])
+  work = dist.all_reduce(x, op=dist.ReduceOp.SUM, async_op=True)
+  completed_at_issue = rank == 0 and work.is_completed()
+  success_at_issue = rank == 0 and work.is_success()
+  exc_at_issue = (
+      work.exception() if rank == 0 and _WORK_EXCEPTION_IS_BOUND else None
+  )
+  if rank == 0:
+    store.set(gate_key, "1")
+  assert work.wait(datetime.timedelta(seconds=60))
+  assert work.wait(datetime.timedelta(seconds=5))
+  dist.barrier()
+  if rank == 0:
+    store.delete_key(gate_key)
+
+  assert not completed_at_issue, "is_completed() was True before peers issued"
+  assert not success_at_issue, "is_success() was True before peers issued"
+  assert exc_at_issue is None
+  assert work.is_completed() and work.is_success()
+  if _WORK_EXCEPTION_IS_BOUND:
+    assert work.exception() is None
+  utils.assert_close(x.cpu(), torch.full((4,), float(sum(range(world_size)))))
+
+
+def _run_async_work_wait_holds_the_current_stream() -> None:
+  """Tests cross-stream wait/synchronize/block_current_stream and prefetch."""
+  world_size = dist.get_world_size()
+  rank = dist.get_rank()
+  store = dist.distributed_c10d._get_default_store()
+  gate_key = "async_work_prefetch_rank0_waited"
+  side = torch.tpu.Stream()
+  x1 = torch.full((4,), float(rank), device="tpu")
+  x2 = torch.ones((4,), device="tpu")
+  dist.all_reduce(x1, op=dist.ReduceOp.SUM, async_op=True).wait()
+  x1.fill_(float(rank))
+  torch.accelerator.synchronize()
+  dist.barrier()
+
+  ones = torch.ones(1024, device="tpu")
+  held = torch.zeros(1024, pin_memory=True)
+
+  # Prefetch `x1` then `x2` on `side`, each flushed on its own; ranks > 0 hold
+  # off `x2`, so `work1.wait()` on the default stream must not wait on `x2`.
+  if rank == 0:
+    with torch.tpu.stream(side):
+      work1 = dist.all_reduce(x1, op=dist.ReduceOp.SUM, async_op=True)
+      side.record_event()
+      work2 = dist.all_reduce(x2, op=dist.ReduceOp.SUM, async_op=True)
+      side.record_event()
+    work1.wait()
+    held.copy_(ones, non_blocking=True)
+    torch.tpu.default_stream().record_event().synchronize()
+    work2_still_pending = not work2.is_completed()
+    # Peers have not issued `x2` yet, so the default stream must stay held.
+    work2.block_current_stream()
+    blocked = torch.tpu.default_stream().record_event()
+    deadline = time.monotonic() + 0.5
+    while not blocked.query() and time.monotonic() < deadline:
+      time.sleep(0.001)
+    stream_held = not blocked.query()
+    store.set(gate_key, "1")
+  else:
+    with torch.tpu.stream(side):
+      work1 = dist.all_reduce(x1, op=dist.ReduceOp.SUM, async_op=True)
+    work1.synchronize()
+    held.copy_(ones, non_blocking=True)
+    torch.tpu.default_stream().record_event().synchronize()
+    store.wait([gate_key])
+    with torch.tpu.stream(side):
+      work2 = dist.all_reduce(x2, op=dist.ReduceOp.SUM, async_op=True)
+    work2_still_pending = True
+    work2.block_current_stream()
+    blocked = torch.tpu.default_stream().record_event()
+    stream_held = True
+
+  blocked.synchronize()
+  completed_with_event = work2.is_completed()
+  dist.barrier()
+  if rank == 0:
+    store.delete_key(gate_key)
+
+  assert work1.is_completed() and work2.is_completed()
+  assert work2_still_pending, "work1.wait() waited on later collective work2"
+  assert stream_held, "block_current_stream() did not hold the current stream"
+  assert completed_with_event, "the held stream resumed before work2 completed"
+  utils.assert_close(held, torch.ones(1024))
+  utils.assert_close(x1.cpu(), torch.full((4,), float(sum(range(world_size)))))
+  utils.assert_close(x2.cpu(), torch.full((4,), float(world_size)))
+
+
+def _run_async_work_future_resolves_to_results() -> None:
+  """Tests that get_future() resolves to the results of the collective."""
+  world_size = dist.get_world_size()
+  rank = dist.get_rank()
+  x = torch.full((4,), float(rank), device="tpu")
+
+  work = dist.all_reduce(x, op=dist.ReduceOp.SUM, async_op=True)
+  future = work.get_future()
+  results = future.wait()
+  assert future.done() and len(results) == 1
+  utils.assert_close(
+      results[0].cpu(), torch.full((4,), float(sum(range(world_size))))
+  )
+
+  # Two outputs, so the Work tracks more than one buffer.
+  c_in = [torch.full((2,), float(rank + i), device="tpu") for i in range(2)]
+  c_out = [torch.empty((2 * world_size,), device="tpu") for _ in range(2)]
+  coalesced_opts = dist.distributed_c10d.AllgatherOptions()
+  coalesced_opts.asyncOp = True
+  pg = dist.distributed_c10d._get_default_group()
+  c_work = pg.allgather_into_tensor_coalesced(c_out, c_in, coalesced_opts)
+  c_results = c_work.get_future().wait()
+  assert c_work.wait(datetime.timedelta(seconds=60))
+  assert c_work.is_completed() and c_work.is_success()
+  assert len(c_results) == 2
+  ranks = torch.arange(world_size, dtype=torch.float32).repeat_interleave(2)
+  for i, c_result in enumerate(c_results):
+    utils.assert_close(c_result.cpu(), ranks + i)
+
+
+def _run_async_work_future_is_complete_at_issue() -> None:
+  """Tests that get_future() is complete once the collective is issued."""
+  world_size = dist.get_world_size()
+  rank = dist.get_rank()
+  store = dist.distributed_c10d._get_default_store()
+  gate_key = "async_work_future_rank0_checked"
+  x = torch.full((4,), float(rank), device="tpu")
+
+  # Ranks > 0 hold off issuing, so the collective cannot complete on rank 0.
+  if rank != 0:
+    store.wait([gate_key])
+  work = dist.all_reduce(x, op=dist.ReduceOp.SUM, async_op=True)
+  future = work.get_future()
+  done_at_issue = future.done()
+  callback_threads: list[int] = []
+  future.then(lambda _: callback_threads.append(threading.get_ident()))
+  ran_inline = callback_threads == [threading.get_ident()]
+  completed_at_issue = rank == 0 and work.is_completed()
+  if rank == 0:
+    store.set(gate_key, "1")
+
+  assert work.wait(datetime.timedelta(seconds=60))
+  dist.barrier()
+  if rank == 0:
+    store.delete_key(gate_key)
+
+  assert done_at_issue, "get_future() was not done right after issue"
+  assert ran_inline, "then() did not run the callback on the calling thread"
+  assert not completed_at_issue, "is_completed() was True before peers issued"
+  utils.assert_close(x.cpu(), torch.full((4,), float(sum(range(world_size)))))
+
+
+def _run_async_work_future_callback_updates_the_result() -> None:
+  """Tests a callback chained on the future, as DDP comm hooks do."""
+  world_size = dist.get_world_size()
+  x = torch.full((4,), float(dist.get_rank()), device="tpu")
+
+  mean = (
+      dist.all_reduce(x, op=dist.ReduceOp.SUM, async_op=True)
+      .get_future()
+      .then(lambda future: future.value()[0].div_(world_size))
+      .wait()
+  )
+
+  utils.assert_close(
+      mean.cpu(), torch.full((4,), sum(range(world_size)) / world_size)
+  )
+
+
+def _run_async_work_of_gather_has_results_on_root_only() -> None:
+  """Tests that result() of a gather Work is empty off the root rank."""
+  world_size = dist.get_world_size()
+  rank = dist.get_rank()
+  gather_in = torch.full((2,), float(rank), device="tpu")
+  gather_out = (
+      [torch.empty((2,), device="tpu") for _ in range(world_size)]
+      if rank == 0
+      else None
+  )
+
+  gather_work = dist.gather(gather_in, gather_out, dst=0, async_op=True)
+  gather_work.wait()
+
+  if rank == 0:
+    assert len(gather_work.result()) == world_size
+  else:
+    assert not gather_work.result()
+
+
+def _run_async_work_of_barrier_blocks_the_host() -> None:
+  """Tests that wait() on an async barrier blocks until all ranks enter it."""
+  world_size = dist.get_world_size()
+  rank = dist.get_rank()
+  store = dist.distributed_c10d._get_default_store()
+  barrier_key = f"async_barrier_entered:{rank}"
+
+  dist.barrier()
+  if rank == 0:
+    b_work = dist.barrier(async_op=True)
+    b_work.wait()
+    peers_entered = all(
+        store.check([f"async_barrier_entered:{r}"])
+        for r in range(1, world_size)
+    )
+  else:
+    time.sleep(0.02)
+    store.set(barrier_key, "1")
+    b_work = dist.barrier(async_op=True)
+    b_work.wait()
+    peers_entered = True
+  dist.barrier()
+  if rank != 0:
+    store.delete_key(barrier_key)
+  assert (
+      peers_entered
+  ), "async barrier wait() returned before peer ranks arrived"
+
+
+def _run_async_work_ignores_later_stream_work() -> None:
+  """Tests that is_completed() tracks the collective, not later stream work."""
+  world_size = dist.get_world_size()
+  rank = dist.get_rank()
+  store = dist.distributed_c10d._get_default_store()
+  gate_key = "async_work_isolation_rank0_checked"
+  x = torch.full((4,), float(rank), device="tpu")
+  y = torch.ones((4,), device="tpu")
+  dist.all_reduce(x, op=dist.ReduceOp.SUM, async_op=True).wait()
+  x.fill_(float(rank))
+  torch.accelerator.synchronize()
+  dist.barrier()
+
+  work = dist.all_reduce(x, op=dist.ReduceOp.SUM, async_op=True)
+  # Starts the collective in every eager mode.
+  torch.tpu.default_stream().record_event()
+  if rank == 0:
+    # Ranks > 0 hold off issuing `y`, so `stream_done` cannot complete yet.
+    dist.all_reduce(y, op=dist.ReduceOp.SUM, async_op=True)
+    stream_done = torch.tpu.default_stream().record_event()
+    deadline = time.monotonic() + 60
+    while not work.is_completed() and time.monotonic() < deadline:
+      time.sleep(0.001)
+    completed_before_gate = work.is_completed()
+    later_still_pending = not stream_done.query()
+    store.set(gate_key, "1")
+  else:
+    store.wait([gate_key])
+    dist.all_reduce(y, op=dist.ReduceOp.SUM, async_op=True)
+    stream_done = torch.tpu.default_stream().record_event()
+    completed_before_gate = True
+    later_still_pending = True
+
+  stream_done.synchronize()
+  dist.barrier()
+  if rank == 0:
+    store.delete_key(gate_key)
+
+  assert completed_before_gate, "is_completed() waited on later stream work"
+  assert later_still_pending, "the later collective completed without peers"
+  assert work.is_completed()
+  utils.assert_close(x.cpu(), torch.full((4,), float(sum(range(world_size)))))
+  utils.assert_close(y.cpu(), torch.full((4,), float(world_size)))
+
+
+def _run_async_work_succeeds_after_output_updated_in_place() -> None:
+  """Tests that the Work succeeds after its output was updated in place."""
+  world_size = dist.get_world_size()
+  a = torch.full((4,), float(dist.get_rank()), device="tpu")
+
+  work = dist.all_reduce(a, op=dist.ReduceOp.SUM, async_op=True)
+  a.add_(1.0)
+  # Lets the update run: it takes over the buffer that the collective wrote.
+  torch.accelerator.synchronize()
+
+  assert work.wait(datetime.timedelta(seconds=60))
+  assert work.is_completed() and work.is_success()
+  utils.assert_close(
+      a.cpu(), torch.full((4,), float(sum(range(world_size))) + 1.0)
+  )
+
+
+def _run_async_work_polling_starts_fused_collective() -> None:
+  """Tests that polling starts a collective that `spmd_safe` left fused."""
+  world_size = dist.get_world_size()
+  rank = dist.get_rank()
+
+  @torch.tpu.distributed.spmd_safe
+  def _issue_spmd_safe_async(t: torch.Tensor) -> dist.Work:
+    return dist.all_reduce(t, op=dist.ReduceOp.SUM, async_op=True)
+
+  with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+    s = torch.full((4,), float(rank), device="tpu")
+    work = _issue_spmd_safe_async(s)
+    assert work.wait()
+    deadline = time.monotonic() + 60
+    while not work.is_completed() and time.monotonic() < deadline:
+      time.sleep(0.001)
+    assert work.is_completed() and work.is_success()
+  utils.assert_close(s.cpu(), torch.full((4,), float(sum(range(world_size)))))
+
+
+def _run_async_work_reports_success_without_being_polled() -> None:
+  """Tests that is_success() observes a fused collective nothing polled."""
+  world_size = dist.get_world_size()
+  rank = dist.get_rank()
+
+  @torch.tpu.distributed.spmd_safe
+  def _issue_spmd_safe_async(t: torch.Tensor) -> dist.Work:
+    return dist.all_reduce(t, op=dist.ReduceOp.SUM, async_op=True)
+
+  with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+    s = torch.full((4,), float(rank), device="tpu")
+    work = _issue_spmd_safe_async(s)
+    assert work.wait()
+    torch.accelerator.synchronize()
+    assert work.is_success(), "is_success() was False after the stream synced"
+    if _WORK_EXCEPTION_IS_BOUND:
+      assert work.exception() is None
+  utils.assert_close(s.cpu(), torch.full((4,), float(sum(range(world_size)))))
+
+
+def _run_async_work_tracks_collective_fused_with_update(
+    blocking_flush: bool,
+) -> None:
+  """Tests the Work of a collective fused with a later in-place update."""
+  world_size = dist.get_world_size()
+  rank = dist.get_rank()
+
+  @torch.tpu.distributed.spmd_safe
+  def _reduce_and_average(t: torch.Tensor) -> dist.Work:
+    work = dist.all_reduce(t, op=dist.ReduceOp.SUM, async_op=True)
+    t.div_(world_size)
+    return work
+
+  with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+    t = torch.full((4,), float(rank), device="tpu")
+    work = _reduce_and_average(t)
+    # Flushes the collective fused with the update.
+    if blocking_flush:
+      t.cpu()
+    else:
+      torch.tpu.default_stream().record_event()
+    assert work.wait(datetime.timedelta(seconds=60))
+    assert work.is_completed() and work.is_success()
+    if _WORK_EXCEPTION_IS_BOUND:
+      assert work.exception() is None
+    torch.accelerator.synchronize()
+  utils.assert_close(
+      t.cpu(), torch.full((4,), sum(range(world_size)) / world_size)
+  )
+
+
+def _run_async_work_tracks_collective_while_fused_update_is_queued() -> None:
+  """Tests the Work of a collective whose fused block is cut but not run."""
+  world_size = dist.get_world_size()
+  rank = dist.get_rank()
+
+  @torch.tpu.distributed.spmd_safe
+  def _reduce_average_and_reduce(
+      t: torch.Tensor, u: torch.Tensor
+  ) -> tuple[dist.Work, dist.Work]:
+    work = dist.all_reduce(t, op=dist.ReduceOp.SUM, async_op=True)
+    t.div_(world_size)
+    other = dist.all_reduce(u, op=dist.ReduceOp.SUM, async_op=True)
+    return work, other
+
+  with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+    t = torch.full((4,), float(rank), device="tpu")
+    u = torch.full((4,), float(rank) + 1.0, device="tpu")
+    work, other = _reduce_average_and_reduce(t, u)
+    # Cuts the fused block without waiting for it to start.
+    other.is_completed()
+    assert work.wait(datetime.timedelta(seconds=60))
+    assert work.is_completed() and work.is_success()
+    assert other.wait(datetime.timedelta(seconds=60))
+    assert other.is_completed() and other.is_success()
+    torch.accelerator.synchronize()
+  utils.assert_close(
+      t.cpu(), torch.full((4,), sum(range(world_size)) / world_size)
+  )
+  utils.assert_close(
+      u.cpu(), torch.full((4,), float(sum(range(world_size)) + world_size))
+  )
+
+
 def _run_collectives_with_non_uniform_deferred_ops() -> None:
   """Tests collective functionality with non-uniform (per-rank) deferred ops."""
   rank = dist.get_rank()
@@ -1064,6 +1464,54 @@ class CollectiveOpsTest(continuous_test_utils.TpuMultiProcContinuousTest):
 
   def test_broadcast_objects(self) -> None:
     _run_broadcast_objects()
+
+  def test_async_work_tracks_completion(self) -> None:
+    _run_async_work_tracks_completion()
+
+  def test_async_work_wait_holds_the_current_stream(self) -> None:
+    _run_async_work_wait_holds_the_current_stream()
+
+  def test_async_work_future_resolves_to_results(self) -> None:
+    _run_async_work_future_resolves_to_results()
+
+  def test_async_work_future_is_complete_at_issue(self) -> None:
+    _run_async_work_future_is_complete_at_issue()
+
+  def test_async_work_future_callback_updates_the_result(self) -> None:
+    _run_async_work_future_callback_updates_the_result()
+
+  def test_async_work_of_gather_has_results_on_root_only(self) -> None:
+    _run_async_work_of_gather_has_results_on_root_only()
+
+  def test_async_work_of_barrier_blocks_the_host(self) -> None:
+    _run_async_work_of_barrier_blocks_the_host()
+
+  def test_async_work_ignores_later_stream_work(self) -> None:
+    _run_async_work_ignores_later_stream_work()
+
+  def test_async_work_ignores_later_stream_work_when_deferred(self) -> None:
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      _run_async_work_ignores_later_stream_work()
+
+  def test_async_work_succeeds_after_output_updated_in_place(self) -> None:
+    _run_async_work_succeeds_after_output_updated_in_place()
+
+  def test_async_work_polling_starts_fused_collective(self) -> None:
+    _run_async_work_polling_starts_fused_collective()
+
+  def test_async_work_reports_success_without_being_polled(self) -> None:
+    _run_async_work_reports_success_without_being_polled()
+
+  def test_async_work_tracks_collective_fused_with_update(self) -> None:
+    _run_async_work_tracks_collective_fused_with_update(blocking_flush=True)
+
+  def test_async_work_tracks_collective_while_fused_update_starts(self) -> None:
+    _run_async_work_tracks_collective_fused_with_update(blocking_flush=False)
+
+  def test_async_work_tracks_collective_while_fused_update_is_queued(
+      self,
+  ) -> None:
+    _run_async_work_tracks_collective_while_fused_update_is_queued()
 
   def test_collectives_with_non_uniform_deferred_ops(self) -> None:
     _run_collectives_with_non_uniform_deferred_ops()

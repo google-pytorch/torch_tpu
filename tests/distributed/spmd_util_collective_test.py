@@ -60,6 +60,35 @@ def run_spmd_safe_decorator_test(compile_test: bool = False):
   del res
 
 
+def run_spmd_safe_async_work_wait_test() -> None:
+  """Runs an op after wait() on the Work of a fused async collective."""
+
+  @torch.tpu.distributed.spmd_safe
+  def eager_fused_async_all_reduce(x: torch.Tensor) -> torch.Tensor:
+    y = x + 1
+    work = dist.all_reduce(y, async_op=True)
+    work.wait()
+    return y * 5
+
+  x = torch.ones((2, 2), device="cpu").to("tpu")
+  with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+    res = eager_fused_async_all_reduce(x)
+  torch.accelerator.synchronize()
+  del res
+
+
+def run_deferred_async_collective_test() -> None:
+  """Issues a deferred async collective while a temporary is still alive."""
+  x = torch.ones((2, 2), device="cpu").to("tpu")
+  with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+    y = x + 1
+    unused = y * 5
+    work = dist.all_reduce(y, async_op=True)
+    del unused
+  torch.accelerator.synchronize()
+  del work
+
+
 def run_spmd_safe_decorator_backward_test():
 
   @torch.tpu.distributed.spmd_safe
@@ -249,6 +278,19 @@ class SpmdSafeDecoratorTest(continuous_test_utils.TpuMultiProcContinuousTest):
     run_spmd_safe_decorator_test()
     if self.rank == 0:
       self._check_fused_mlir(_DUMP_DIR)
+
+  def test_spmd_safe_async_work_wait_stays_fused(self):
+    run_spmd_safe_async_work_wait_test()
+    if self.rank == 0:
+      self._check_fused_mlir(_DUMP_DIR)
+
+  def test_deferred_async_collective_is_not_flushed_at_issue(self):
+    run_deferred_async_collective_test()
+    # A flush at issue would have computed the temporary that was alive then.
+    dumps = glob.glob(f"{_DUMP_DIR}/rank_{self.rank}/**/*.mlir", recursive=True)
+    for dump in dumps:
+      with open(dump, "r") as f:
+        self.assertNotIn("stablehlo.multiply", f.read(), dump)
 
   def test_spmd_safe_decorator_compile(self):
     run_spmd_safe_decorator_test(compile_test=True)
