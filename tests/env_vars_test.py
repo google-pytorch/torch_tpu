@@ -67,9 +67,8 @@ class TestMode(enum.Enum):
 
   TIER2_WARN_ONCE = "tier2_warn_once"
   TIER2_DISABLED = "tier2_disabled"
-  TIER2_UNSET = "tier2_unset"
+  TIER2_UNSET_AND_NON_EXPERIMENTAL = "tier2_unset_and_non_experimental"
   TIER3_WARN_ONCE = "tier3_warn_once"
-  NON_EXPERIMENTAL = "non_experimental"
 
 
 _TEST_MODE = flags.DEFINE_enum_class(
@@ -162,8 +161,8 @@ class EnvVarsTest(seed_test_utils.RepeatableTest):
           str(matching_warnings[0].message),
       )
 
-  def test_tier2_unset(self) -> None:
-    """Verifies unset TORCH_TPU_TIER2_COMPILATION_CACHE does NOT trigger a warning."""
+  def test_tier2_unset_and_non_experimental(self) -> None:
+    """Verifies unset tier-2 cache and non-experimental env vars do NOT warn."""
     device = torch.accelerator.current_accelerator()
     with warnings.catch_warnings(record=True) as recorded_warnings:
       warnings.simplefilter("always")
@@ -181,6 +180,17 @@ class EnvVarsTest(seed_test_utils.RepeatableTest):
           matching_warnings,
           "Expected no warning when TORCH_TPU_TIER2_COMPILATION_CACHE is unset,"
           f" got: {[str(w.message) for w in matching_warnings]}",
+      )
+
+      matching_warnings = [
+          w
+          for w in recorded_warnings
+          if "TORCH_SHOW_CPP_STACKTRACES" in str(w.message)
+      ]
+      self.assertEmpty(
+          matching_warnings,
+          "Expected no warning for non-experimental env var"
+          f" TORCH_SHOW_CPP_STACKTRACES, got: {matching_warnings}",
       )
 
   def test_tier3_warn_once(self) -> None:
@@ -213,27 +223,6 @@ class EnvVarsTest(seed_test_utils.RepeatableTest):
           str(warning_obj.message),
       )
 
-  def test_non_experimental(self) -> None:
-    """Verifies non-experimental env vars do not emit experimental warnings."""
-    device = torch.accelerator.current_accelerator()
-    with warnings.catch_warnings(record=True) as recorded_warnings:
-      warnings.simplefilter("always")
-
-      t = torch.ones((2, 2), device=device)
-      res = t + t
-      res.cpu()
-
-      matching_warnings = [
-          w
-          for w in recorded_warnings
-          if "TORCH_SHOW_CPP_STACKTRACES" in str(w.message)
-      ]
-      self.assertEmpty(
-          matching_warnings,
-          "Expected no warning for non-experimental env var"
-          f" TORCH_SHOW_CPP_STACKTRACES, got: {matching_warnings}",
-      )
-
 
 class ParentEnvVarsTest(
     subprocess_test_utils.SubprocessTestMixin,
@@ -263,13 +252,6 @@ class ParentEnvVarsTest(
         env_updates={"TORCH_TPU_TIER2_COMPILATION_CACHE": "disabled"},
     )
 
-  def test_tier2_compilation_cache_unset_no_warning(self) -> None:
-    """Tests that unset TORCH_TPU_TIER2_COMPILATION_CACHE does not warn in isolated subprocess."""
-    self.run_sub_test(
-        TestMode.TIER2_UNSET,
-        env_removals=["TORCH_TPU_TIER2_COMPILATION_CACHE"],
-    )
-
   def test_tier3_compilation_cache_root_warns_once_on_read(self) -> None:
     """Tests TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT warning in isolated subprocess."""
     temp_dir = self.create_tempdir().full_path
@@ -281,10 +263,11 @@ class ParentEnvVarsTest(
         },
     )
 
-  def test_non_experimental_env_var_no_warning(self) -> None:
-    """Tests that non-experimental env vars do not warn in isolated subprocess."""
+  def test_tier2_unset_and_non_experimental_env_var_no_warning(self) -> None:
+    """Tests that unset tier-2 cache and non-experimental env vars do not warn."""
+    # Both are "no warning" checks, so they share one subprocess.
     self.run_sub_test(
-        TestMode.NON_EXPERIMENTAL,
+        TestMode.TIER2_UNSET_AND_NON_EXPERIMENTAL,
         env_updates={"TORCH_SHOW_CPP_STACKTRACES": "1"},
         env_removals=[
             "TORCH_TPU_TIER2_COMPILATION_CACHE",
