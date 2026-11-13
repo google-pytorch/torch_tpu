@@ -36,6 +36,7 @@
 #include "csrc/pjrt/pjrt_execute.h"
 #include "mlir/IR/MLIRContext.h"
 #include "xla/pjrt/pjrt_client.h"
+#include "xla/shape.h"
 
 namespace torch_tpu {
 
@@ -136,9 +137,12 @@ class ExecutionTask {
   absl::StatusOr<std::vector<xla::PjRtBuffer* absl_nullable>>
   GetArgumentBuffers();
 
-  // Finishes a materialization by setting the output nodes as materialized with
-  // the given results.
-  absl::Status SetOutputNodesAsMaterialized(PjRtBufferPointers results);
+  // Marks the output nodes as materialized with `results` and their compiled
+  // output shapes.
+  absl::Status SetOutputNodesAsMaterialized(
+      PjRtBufferPointers results,
+      const absl_nullable std::shared_ptr<const std::vector<xla::Shape>>&
+          output_device_shapes);
 
   // A human-readable name for the task. Debug use only.
   std::string name_;

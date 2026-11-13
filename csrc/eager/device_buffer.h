@@ -271,6 +271,12 @@ class DeviceBufferRef {
   // PjRtBuffer.
   absl::StatusOr<xla::PjRtBuffer* absl_nonnull> AwaitBuffer() const;
 
+  // Non-blocking lookup of the compiled on-device shape (including layout and
+  // bounded-dynamic dimension flags) with which this buffer was materialized,
+  // or nullptr while materialization is pending or if unknown. Valid for the
+  // lifetime of this buffer.
+  [[nodiscard]] const xla::Shape* absl_nullable known_device_shape() const;
+
   // Returns a future that is ready when the device buffer has an available
   // PjRtBuffer (or an error if materialization fails).
   // For a deferred DeviceBufferRef, this is a future that is ready when
@@ -631,8 +637,15 @@ class DeviceBufferList {
   // The number of buffers, and their Shapes must match the existing
   // DeviceBufferList, otherwise the DeviceBufferList will set to an error state
   // and a copy of the error will be returned.
+  // `device_shapes` (e.g.
+  // `LoadedExecutableWithMetadata::shared_output_device_shapes()`), if
+  // non-null, holds the compiled on-device shapes starting at
+  // `device_shapes_offset` for `buffers`.
   absl::Status SetAsMaterialized(
-      std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers);
+      std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers,
+      absl_nullable std::shared_ptr<const std::vector<xla::Shape>>
+          device_shapes = nullptr,
+      size_t device_shapes_offset = 0);
 
   // Sets the DeviceBufferList to an error state with the given error.
   // Returns an error if the DeviceBufferList is already materialized.
@@ -754,6 +767,12 @@ class DeviceBufferList {
   // PjRtBuffer.
   absl::StatusOr<xla::PjRtBuffer* absl_nonnull> AwaitBuffer(
       int64_t index) const;
+
+  // See `DeviceBufferRef::known_device_shape()`.
+  [[nodiscard]] const xla::Shape* absl_nullable known_device_shape(
+      int64_t index) const {
+    return data_.known_device_shape(index);
+  }
 
   // If the DeviceBufferList has no live data pointers, it is "stale", meaning
   // that it will never be directly materialized and will never have any new
@@ -972,8 +991,10 @@ class DeviceBufferList {
   // DeviceBufferList, e.g. the buffers' shapes and dtypes match this
   // DeviceBufferList's shapes and dtypes.
   void CheckMaterialization(
-      absl::Span<const absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers)
-      const;
+      absl::Span<const absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers,
+      const absl_nullable std::shared_ptr<const std::vector<xla::Shape>>&
+          device_shapes,
+      size_t device_shapes_offset) const;
 
   static std::atomic_uint64_t g_creation_index_;
 
@@ -1033,9 +1054,18 @@ class DeviceBufferList {
      public:
       MaterializedData(
           std::shared_ptr<xla::PjRtClient> absl_nonnull client,
-          std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers)
-          : client_(std::move(client)), buffers_(std::move(buffers)) {
+          std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers,
+          absl_nullable std::shared_ptr<const std::vector<xla::Shape>>
+              device_shapes = nullptr,
+          size_t device_shapes_offset = 0)
+          : client_(std::move(client)),
+            buffers_(std::move(buffers)),
+            device_shapes_(std::move(device_shapes)),
+            device_shapes_offset_(device_shapes_offset) {
         ABSL_CHECK(client_ != nullptr);  // CRASH_OK
+        ABSL_DCHECK(device_shapes_ == nullptr ||
+                    buffers_.size() + device_shapes_offset_ <=
+                        device_shapes_->size());
       }
 
       [[nodiscard]] const std::shared_ptr<xla::PjRtClient>& client() const {
@@ -1048,9 +1078,19 @@ class DeviceBufferList {
         return buffers_;
       }
 
+      [[nodiscard]] const xla::Shape* absl_nullable known_device_shape(
+          size_t index) const {
+        return device_shapes_ != nullptr && index < buffers_.size()
+                   ? &(*device_shapes_)[device_shapes_offset_ + index]
+                   : nullptr;
+      }
+
      private:
       std::shared_ptr<xla::PjRtClient> absl_nonnull client_;
       std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers_;
+      absl_nullable std::shared_ptr<const std::vector<xla::Shape>>
+          device_shapes_;
+      size_t device_shapes_offset_ = 0;
     };
 
     // Creates a either a placeholder DeviceBufferList::Data, or a pending
@@ -1098,7 +1138,25 @@ class DeviceBufferList {
     // materialize), this will not modify the DeviceBufferList::Data, will drop
     // the PjRtBuffers, and will return an error to the caller.
     absl::Status SetMaterializationStarted(
-        std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers);
+        std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers,
+        absl_nullable std::shared_ptr<const std::vector<xla::Shape>>
+            device_shapes = nullptr,
+        size_t device_shapes_offset = 0);
+
+    // See `DeviceBufferRef::known_device_shape()`.
+    // `IsKnownReady()`'s acquire load synchronizes with
+    // `materialization_promise_.Set(...)` and must precede reading
+    // `materialized_buffers_`.
+    [[nodiscard]] const xla::Shape* absl_nullable known_device_shape(
+        int64_t index) const {
+      if (!materialization_future_.IsValid() ||
+          !materialization_future_.IsKnownReady() ||
+          !materialized_buffers_.has_value() || index < 0) {
+        return nullptr;
+      }
+      return materialized_buffers_->known_device_shape(
+          static_cast<size_t>(index));
+    }
 
     // Returns the PjRtBuffer at the given index.
     // If the DeviceBufferList::Data is not yet materialized, this will block

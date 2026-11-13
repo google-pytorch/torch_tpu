@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <memory>
@@ -156,7 +157,9 @@ absl::Status DeviceBufferList::Data::SetMaterializationError(
 }
 
 absl::Status DeviceBufferList::Data::SetMaterializationStarted(
-    std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers) {
+    std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers,
+    absl_nullable std::shared_ptr<const std::vector<xla::Shape>> device_shapes,
+    const size_t device_shapes_offset) {
   TT_RETURN_IF_ERROR(SetAsPendingMaterialization());
 
   const bool already_started = materialization_started_.exchange(true);
@@ -169,7 +172,8 @@ absl::Status DeviceBufferList::Data::SetMaterializationStarted(
                       PjrtBackend::GetInstance().GetSharedClient());
 
   materialized_buffers_ =
-      MaterializedData(std::move(client), std::move(buffers));
+      MaterializedData(std::move(client), std::move(buffers),
+                       std::move(device_shapes), device_shapes_offset);
   materialization_promise_.Set(absl::OkStatus());
 
   return absl::OkStatus();
@@ -557,12 +561,20 @@ void CheckBufferShape(const Shape& at_shape, const xla::PjRtBuffer& buffer) {
 }  // namespace
 
 void DeviceBufferList::CheckMaterialization(
-    absl::Span<const absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers)
-    const {
+    absl::Span<const absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers,
+    const
+    absl_nullable std::shared_ptr<const std::vector<xla::Shape>>& device_shapes,
+    const size_t device_shapes_offset) const {
   ABSL_CHECK_EQ(shapes_.size(), buffers.size())  // CRASH_OK
       << "Expected " << shapes_.size()
       << " materialized PjRtBuffers for this DeviceBufferList, got "
       << buffers.size() << ".";
+  ABSL_CHECK(  // CRASH_OK
+      device_shapes == nullptr ||
+      buffers.size() + device_shapes_offset <= device_shapes->size())
+      << "Device shapes slice [offset=" << device_shapes_offset
+      << ", size=" << buffers.size() << "] out of bounds for "
+      << device_shapes->size() << " compiled output shapes.";
 
   for (size_t i = 0; i < shapes_.size(); ++i) {
     ABSL_CHECK(!buffers[i]->IsDeleted())  // CRASH_OK
@@ -584,14 +596,25 @@ void DeviceBufferList::CheckMaterialization(
            "this DeviceBufferList ("
         << ToString(shapes_[i].dtype()) << ") for buffer " << i << ", got "
         << ToString(actual_element_type) << ".";
+
+    if (device_shapes != nullptr) {
+      const xla::Shape& known = (*device_shapes)[device_shapes_offset + i];
+      ABSL_DCHECK_EQ(known.element_type(), buffers[i]->element_type());
+      if (known.is_static()) {
+        ABSL_DCHECK(known.dimensions() == buffers[i]->dimensions());
+      }
+    }
   }
 }
 
 absl::Status DeviceBufferList::SetAsMaterialized(
-    std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers) {
-  CheckMaterialization(buffers);
+    std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers,
+    absl_nullable std::shared_ptr<const std::vector<xla::Shape>> device_shapes,
+    const size_t device_shapes_offset) {
+  CheckMaterialization(buffers, device_shapes, device_shapes_offset);
   ABSL_VLOG(1) << "[SetAsMaterialized] Setting as materialized";
-  return data_.SetMaterializationStarted(std::move(buffers));
+  return data_.SetMaterializationStarted(
+      std::move(buffers), std::move(device_shapes), device_shapes_offset);
 }
 
 void DeviceBufferList::SetAsError(absl::Status error) {
@@ -749,6 +772,10 @@ absl::Status DeviceBufferRef::Synchronize() const {
 absl::StatusOr<xla::PjRtBuffer* absl_nonnull> DeviceBufferRef::AwaitBuffer()
     const {
   return device_buffer_list_->AwaitBuffer(index_);
+}
+
+const xla::Shape* absl_nullable DeviceBufferRef::known_device_shape() const {
+  return device_buffer_list_->known_device_shape(index_);
 }
 
 xla::Future<void> DeviceBufferRef::GetMaterializationFuture() const {
