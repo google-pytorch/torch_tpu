@@ -541,6 +541,29 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_library(
+    name = "op_honey_trap",
+    testonly = True,
+    srcs = ["op_honey_trap.py"],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//shims/torch:pytorch",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "op_honey_trap_test",
+    srcs = ["op_honey_trap_test.py"],
+    deps = [
+        ":op_honey_trap",
+        ":seed_test_utils",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/utils:test_utils",
+    ],
+)
+
+torch_tpu_py_library(
     name = "op_testing",
     testonly = True,
     srcs = ["op_testing.py"],
@@ -548,6 +571,7 @@ torch_tpu_py_library(
     visibility = ["//:__subpackages__"],
     deps = [
         ":dynamism_test_utils",
+        ":op_honey_trap",
         ":quantize_utils",
         ":seed_test_utils",
         ":test_utils",
