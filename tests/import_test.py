@@ -36,6 +36,7 @@ from torch_tpu._internal.distributed import multiprocessing
 # environments.
 _OPTIONAL_EXTERNAL_DEPS: Final[frozenset[str]] = frozenset({
     "jax",
+    "ortools",
     "tensorboardX",
 })
 

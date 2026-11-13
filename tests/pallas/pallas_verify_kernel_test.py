@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for Pallas kernel Jaxpr extraction and static verification."""
+"""Tests for Pallas kernel static analysis and concurrency model checking."""
 
 from __future__ import annotations
 
@@ -35,6 +35,7 @@ from torch.tpu import pallas
 from torch.tpu.pallas import verifier
 from torch_tpu._internal.pallas import _mock_device
 from torch_tpu._internal.pallas.verify import jaxpr_model
+from torch_tpu._internal.pallas.verify import smt_checker
 from tests import seed_test_utils
 
 jax_op = pallas.jax_op
@@ -90,6 +91,36 @@ def _single_block_call(kernel, x, scratch_shapes=(), collective_id=None):
           scratch_shapes=scratch_shapes,
       ),
       compiler_params=pltpu.CompilerParams(collective_id=collective_id),
+  )(x)
+
+
+def _shared_sem_race_jax(x: jax.Array) -> jax.Array:
+  """Litmus test: two concurrent DMAs that share one semaphore race."""
+
+  def kernel(x_hbm_ref, y_ref):
+    def body(buf0, buf1, shared_sem):
+      c0 = pltpu.make_async_copy(x_hbm_ref.at[0:8], buf0, shared_sem)
+      c1 = pltpu.make_async_copy(x_hbm_ref.at[8:16], buf1, shared_sem)
+      c0.start()
+      c1.start()
+      # Under unordered TPU DMA execution `c1` can finish first and satisfy
+      # `c0.wait()` while `c0` is still writing `buf0`.
+      c0.wait()
+      y_ref.at[0:8][...] = buf0[...] + 1.0
+      c1.wait()
+      y_ref.at[8:16][...] = buf1[...] + 1.0
+
+    pl.run_scoped(
+        body,
+        pltpu.VMEM((8, 128), x.dtype),
+        pltpu.VMEM((8, 128), x.dtype),
+        pltpu.SemaphoreType.DMA,
+    )
+
+  return pl.pallas_call(
+      kernel,
+      out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype),
+      in_specs=[HBM_SPEC],
   )(x)
 
 
@@ -3013,6 +3044,2112 @@ class KernelVerifierTest(seed_test_utils.RepeatableTest):
     self.assertNotEmpty(
         pure_jax_rep.findings_by_category(Category.VERIFICATION_INCOMPLETE),
         msg=pure_jax_rep.summary(),
+    )
+
+  # ==========================================================================
+  # Concurrency, Semaphore Conservation, and CP-SAT Schedule Model Checking
+  # ==========================================================================
+
+  def test_valid_double_buffered_async_dma_pipeline_passes_all_phases(self):
+    """Disjoint double-buffer slots with separate semaphores have no FPs."""
+    num_tiles = 4
+
+    def double_buffered_copy(x: jax.Array) -> jax.Array:
+
+      def kernel(x_hbm_ref, y_hbm_ref):
+
+        def body(vmem_bufs, sems):
+          def in_copy(step):
+            return pltpu.make_async_copy(
+                x_hbm_ref.at[pl.ds(step * 8, 8)],
+                vmem_bufs.at[step % 2],
+                sems.at[step % 2],
+            )
+
+          in_copy(0).start()
+          for step in range(num_tiles):
+            if step + 1 < num_tiles:
+              # Prefetch the next tile into the other slot.
+              in_copy(step + 1).start()
+            in_copy(step).wait()
+            slot = vmem_bufs.at[step % 2]
+            slot[...] = slot[...] * 2.0 + 1.0
+            out_copy = pltpu.make_async_copy(
+                slot, y_hbm_ref.at[pl.ds(step * 8, 8)], sems.at[2 + step % 2]
+            )
+            out_copy.start()
+            out_copy.wait()
+
+        pl.run_scoped(
+            body,
+            pltpu.VMEM((2, 8, 128), x.dtype),
+            pltpu.SemaphoreType.DMA((4,)),
+        )
+
+      return pl.pallas_call(
+          kernel,
+          out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype),
+          in_specs=[HBM_SPEC],
+          out_specs=HBM_SPEC,
+      )(x)
+
+    op = jax_op(
+        "pallas_verify_kernel::valid_double_buffer", double_buffered_copy
+    )
+    x = torch.arange(num_tiles * 8 * 128, dtype=torch.float32).reshape(-1, 128)
+    report = verifier.verify(op, (x,))
+    self.assertTrue(report.passed, msg=report.summary())
+    self.assertContainsSubset(
+        {
+            verifier.Phase.CONTRACTS,
+            verifier.Phase.LOWERING,
+            verifier.Phase.MODEL_CHECK,
+        },
+        set(report.checked_phases),
+    )
+
+  def test_unordered_dma_shared_semaphore_race_caught_with_counterexample(self):
+    op = jax_op(
+        "pallas_verify_kernel::buggy_shared_sem_dma", _shared_sem_race_jax
+    )
+    x = torch.ones((16, 128), dtype=torch.float32)
+    report = verifier.verify(op, (x,), mode=STATIC)
+    self.assertFalse(report.passed, msg=report.summary())
+    race_findings = report.findings_by_category(
+        Category.CONCURRENT_DMA_SEM_SHARING
+    )
+    self.assertNotEmpty(race_findings, msg=report.summary())
+    trace = race_findings[0].counterexample
+    self.assertNotEmpty(trace)
+    self.assertEqual(
+        [step.timestamp for step in trace],
+        sorted(step.timestamp for step in trace),
+    )
+    self.assertTrue(any("dma" in str(step) for step in trace))
+
+  def test_unthrottled_multichip_pipelined_rdma_caught_and_handshake_fixes(
+      self,
+  ):
+    """Push-only 2-step RDMA overwrites neighbor buffer unless throttled."""
+    mesh = _make_mock_tpu_mesh(4, "rank")
+
+    def make_pipelined_ring(*, use_capacity_handshake: bool):
+      def pipelined_ring_jax(
+          global_x: jax.Array, *, mesh: jax.sharding.Mesh
+      ) -> jax.Array:
+        def pallas_body(
+            x_ref, y_ref, recv_buf, send_sem, recv_sem, capacity_sem
+        ):
+          my_rank = lax.axis_index("rank")
+          next_rank = lax.rem(my_rank + 1, 4)
+          prev_rank = lax.rem(my_rank + 3, 4)
+
+          barrier_sem = pltpu.get_barrier_semaphore()
+          pl.semaphore_signal(barrier_sem, 1, device_id={"rank": prev_rank})
+          pl.semaphore_signal(barrier_sem, 1, device_id={"rank": next_rank})
+          pl.semaphore_wait(barrier_sem, 2)
+
+          for step in range(2):
+            copy = pltpu.make_async_remote_copy(
+                src_ref=x_ref.at[step],
+                dst_ref=recv_buf,
+                send_sem=send_sem,
+                recv_sem=recv_sem,
+                device_id={"rank": next_rank},
+            )
+            copy.start()
+            copy.wait()
+            y_ref.at[step][...] = recv_buf[...] * (step + 2.0)
+            if use_capacity_handshake and step == 0:
+              # Tell `prev_rank` that `recv_buf` was consumed, and wait until
+              # `next_rank` consumed ours before pushing into it again.
+              pl.semaphore_signal(
+                  capacity_sem, 1, device_id={"rank": prev_rank}
+              )
+              pl.semaphore_wait(capacity_sem, 1)
+
+        def per_shard(x_local):
+          return _single_block_call(
+              pallas_body,
+              x_local,
+              scratch_shapes=(
+                  pltpu.VMEM(x_local.shape[1:], x_local.dtype),
+                  pltpu.SemaphoreType.DMA,
+                  pltpu.SemaphoreType.DMA,
+                  pltpu.SemaphoreType.REGULAR,
+              ),
+              collective_id=2,
+          )
+
+        return _shard_mapped(per_shard, mesh)(global_x)
+
+      return pipelined_ring_jax
+
+    buggy_op = _distributed_op(
+        "pallas_verify_kernel::unthrottled_rdma_ring",
+        make_pipelined_ring(use_capacity_handshake=False),
+        mesh,
+    )
+    fixed_op = _distributed_op(
+        "pallas_verify_kernel::throttled_rdma_ring",
+        make_pipelined_ring(use_capacity_handshake=True),
+        mesh,
+    )
+    x_local = torch.ones((2, 8, 128), dtype=torch.float32)
+
+    buggy_rep = verifier.verify(buggy_op, (x_local,), mode=STATIC)
+    self.assertFalse(buggy_rep.passed, msg=buggy_rep.summary())
+    unthrottled = buggy_rep.findings_by_category(
+        Category.UNTHROTTLED_REMOTE_OVERWRITE
+    )
+    self.assertNotEmpty(unthrottled, msg=buggy_rep.summary())
+    self.assertNotEmpty(unthrottled[0].counterexample)
+
+    fixed_rep = verifier.verify(fixed_op, (x_local,))
+    self.assertTrue(fixed_rep.passed, msg=fixed_rep.summary())
+    self.assertEmpty(
+        fixed_rep.findings_by_severity(verifier.Severity.WARNING),
+        msg=fixed_rep.summary(),
+    )
+
+  def test_semaphore_nonzero_exit_and_deadlock_detected_statically(self):
+    """Unawaited DMA -> SEMAPHORE_NONZERO_EXIT; over-wait/cycle -> DEADLOCK."""
+
+    def leaky_sem_jax(x: jax.Array) -> jax.Array:
+      def kernel(x_hbm_ref, y_ref, vmem_buf, sem):
+        # Starts an async copy into `vmem_buf` but never waits for it.
+        pltpu.make_async_copy(x_hbm_ref, vmem_buf, sem).start()
+        y_ref[...] = jnp.zeros_like(y_ref)
+
+      return pl.pallas_call(
+          kernel,
+          out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype),
+          grid_spec=pltpu.PrefetchScalarGridSpec(
+              num_scalar_prefetch=0,
+              in_specs=[HBM_SPEC],
+              out_specs=pl.BlockSpec(x.shape),
+              scratch_shapes=(
+                  pltpu.VMEM(x.shape, x.dtype),
+                  pltpu.SemaphoreType.DMA,
+              ),
+          ),
+      )(x)
+
+    def deadlocking_sem_jax(x: jax.Array) -> jax.Array:
+      def kernel(x_ref, y_ref, sem):
+        pl.semaphore_signal(sem, 1)
+        # Waits for 2 signals when only 1 ever arrives.
+        pl.semaphore_wait(sem, 2)
+        y_ref[...] = x_ref[...]
+
+      return _single_block_call(
+          kernel, x, scratch_shapes=(pltpu.SemaphoreType.REGULAR,)
+      )
+
+    mesh2 = _make_mock_tpu_mesh(2, "rank")
+
+    def cyclic_multichip_deadlock_jax(
+        global_x: jax.Array, *, mesh: jax.sharding.Mesh
+    ) -> jax.Array:
+      def kernel(x_ref, y_ref, sem):
+        peer = lax.rem(lax.axis_index("rank") + 1, 2)
+        # Both chips wait before signaling their peer: the semaphore counts are
+        # balanced, yet the causal cycle deadlocks.
+        pl.semaphore_wait(sem, 1)
+        pl.semaphore_signal(sem, 1, device_id={"rank": peer})
+        y_ref[...] = x_ref[...]
+
+      def per_shard(x_local):
+        return _single_block_call(
+            kernel, x_local, scratch_shapes=(pltpu.SemaphoreType.REGULAR,)
+        )
+
+      return _shard_mapped(per_shard, mesh)(global_x)
+
+    def asym_misrouted_sem_jax(
+        global_x: jax.Array, *, mesh: jax.sharding.Mesh
+    ) -> jax.Array:
+      def kernel(x_ref, y_ref, sem):
+        # Both ranks signal rank 0's semaphore: rank 0 exits with +1 and
+        # rank 1 waits forever.
+        pl.semaphore_signal(sem, 1, device_id={"rank": 0})
+        pl.semaphore_wait(sem, 1)
+        y_ref[...] = x_ref[...]
+
+      def per_shard(x_local):
+        return _single_block_call(
+            kernel, x_local, scratch_shapes=(pltpu.SemaphoreType.REGULAR,)
+        )
+
+      return _shard_mapped(per_shard, mesh)(global_x)
+
+    x = torch.ones((8, 128), dtype=torch.float32)
+
+    leak_op = jax_op("pallas_verify_kernel::leaky_sem_op", leaky_sem_jax)
+    leak_rep = verifier.verify(leak_op, (x,), mode=STATIC)
+    self.assertFalse(leak_rep.passed)
+    self.assertNotEmpty(
+        leak_rep.findings_by_category(Category.SEMAPHORE_NONZERO_EXIT),
+        msg=leak_rep.summary(),
+    )
+
+    deadlock_op = jax_op(
+        "pallas_verify_kernel::deadlock_sem_op", deadlocking_sem_jax
+    )
+    deadlock_rep = verifier.verify(deadlock_op, (x,), mode=STATIC)
+    self.assertFalse(deadlock_rep.passed)
+    self.assertNotEmpty(
+        deadlock_rep.findings_by_category(Category.SEMAPHORE_DEADLOCK),
+        msg=deadlock_rep.summary(),
+    )
+
+    cyclic_op = _distributed_op(
+        "pallas_verify_kernel::cyclic_deadlock_sem_op",
+        cyclic_multichip_deadlock_jax,
+        mesh2,
+    )
+    cyclic_rep = verifier.verify(cyclic_op, (x,), mode=STATIC)
+    self.assertFalse(cyclic_rep.passed)
+    self.assertNotEmpty(
+        cyclic_rep.findings_by_category(Category.SEMAPHORE_DEADLOCK),
+        msg=cyclic_rep.summary(),
+    )
+
+    # FULL mode must report both findings without hanging on the deadlocked
+    # rank.
+    asym_op = _distributed_op(
+        "pallas_verify_kernel::asym_misrouted_sem_op",
+        asym_misrouted_sem_jax,
+        mesh2,
+    )
+    asym_rep = verifier.verify(asym_op, (x,))
+    self.assertFalse(asym_rep.passed, msg=asym_rep.summary())
+    self.assertNotEmpty(
+        asym_rep.findings_by_category(Category.SEMAPHORE_NONZERO_EXIT),
+        msg=asym_rep.summary(),
+    )
+    self.assertNotEmpty(
+        asym_rep.findings_by_category(Category.SEMAPHORE_DEADLOCK),
+        msg=asym_rep.summary(),
+    )
+
+  def test_asymmetric_barrier_participation_deadlock_detected(self):
+    mesh2 = _make_mock_tpu_mesh(2, "rank")
+
+    def make_barrier(*, every_rank_signals: bool):
+      def barrier_jax(
+          global_x: jax.Array, *, mesh: jax.sharding.Mesh
+      ) -> jax.Array:
+        def kernel(x_ref, y_ref):
+          rank = lax.axis_index("rank")
+          barrier = pltpu.get_barrier_semaphore()
+
+          @pl.when(jnp.logical_or(every_rank_signals, rank == 0))
+          def _():
+            pl.semaphore_signal(barrier, 1, device_id={"rank": 1 - rank})
+
+          pl.semaphore_wait(barrier, 1)
+          y_ref[...] = x_ref[...]
+
+        def per_shard(x_local):
+          return _single_block_call(kernel, x_local, collective_id=4)
+
+        return _shard_mapped(per_shard, mesh)(global_x)
+
+      return barrier_jax
+
+    x = torch.ones((8, 128), dtype=torch.float32)
+    bad_op = _distributed_op(
+        "pallas_verify_kernel::asymmetric_barrier",
+        make_barrier(every_rank_signals=False),
+        mesh2,
+    )
+    bad_rep = verifier.verify(bad_op, (x,), mode=STATIC)
+    self.assertNotEmpty(
+        bad_rep.findings_by_category(Category.SEMAPHORE_DEADLOCK),
+        msg=bad_rep.summary(),
+    )
+
+    ok_op = _distributed_op(
+        "pallas_verify_kernel::symmetric_barrier",
+        make_barrier(every_rank_signals=True),
+        mesh2,
+    )
+    ok_rep = verifier.verify(ok_op, (x,), mode=STATIC)
+    self.assertTrue(ok_rep.passed, msg=ok_rep.summary())
+
+  def test_dma_source_overwritten_before_wait_detected(self):
+    def make_store(*, overwrite_before_wait: bool):
+      def store_jax(x: jax.Array) -> jax.Array:
+        def kernel(x_ref, y_hbm_ref, buf, sem):
+          buf[...] = x_ref[...]
+          copy = pltpu.make_async_copy(buf, y_hbm_ref, sem)
+          copy.start()
+          if overwrite_before_wait:
+            # The DMA may still be reading `buf`.
+            buf[...] = jnp.zeros_like(buf)
+          copy.wait()
+          if not overwrite_before_wait:
+            buf[...] = jnp.zeros_like(buf)
+
+        return pl.pallas_call(
+            kernel,
+            out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype),
+            grid_spec=pltpu.PrefetchScalarGridSpec(
+                num_scalar_prefetch=0,
+                in_specs=[pl.BlockSpec(x.shape)],
+                out_specs=HBM_SPEC,
+                scratch_shapes=(
+                    pltpu.VMEM(x.shape, x.dtype),
+                    pltpu.SemaphoreType.DMA,
+                ),
+            ),
+        )(x)
+
+      return store_jax
+
+    x = torch.ones((8, 128), dtype=torch.float32)
+    bad_op = jax_op(
+        "pallas_verify_kernel::dma_src_overwrite",
+        make_store(overwrite_before_wait=True),
+    )
+    bad_rep = verifier.verify(bad_op, (x,), mode=STATIC)
+    self.assertNotEmpty(
+        bad_rep.findings_by_category(Category.DATA_RACE), msg=bad_rep.summary()
+    )
+
+    ok_op = jax_op(
+        "pallas_verify_kernel::dma_src_after_wait",
+        make_store(overwrite_before_wait=False),
+    )
+    ok_rep = verifier.verify(ok_op, (x,), mode=STATIC)
+    self.assertTrue(ok_rep.passed, msg=ok_rep.summary())
+
+  def test_parallel_grid_overlapping_write_conflict_detected(self):
+    """Reduction over a grid axis marked `parallel` instead of `arbitrary`."""
+
+    def make_grid_reduction(semantics: str):
+
+      def grid_reduce(x: jax.Array) -> jax.Array:
+
+        def kernel(x_ref, out_ref):
+          @pl.when(pl.program_id(0) == 0)
+          def _():
+            out_ref[...] = jnp.zeros_like(out_ref)
+
+          out_ref[...] += x_ref[...]
+
+        return pl.pallas_call(
+            kernel,
+            out_shape=jax.ShapeDtypeStruct(x.shape[1:], x.dtype),
+            grid=(x.shape[0],),
+            in_specs=[pl.BlockSpec((None, 8, 128), lambda i: (i, 0, 0))],
+            # Every grid iteration maps to the same output tile.
+            out_specs=pl.BlockSpec((8, 128), lambda i: (0, 0)),
+            compiler_params=pltpu.CompilerParams(
+                dimension_semantics=(semantics,)
+            ),
+        )(x)
+
+      return grid_reduce
+
+    x = torch.ones((4, 8, 128), dtype=torch.float32)
+    parallel_bug_op = jax_op(
+        "pallas_verify_kernel::parallel_grid_bug",
+        make_grid_reduction("parallel"),
+    )
+    arbitrary_ok_op = jax_op(
+        "pallas_verify_kernel::arbitrary_grid_ok",
+        make_grid_reduction("arbitrary"),
+    )
+
+    bug_rep = verifier.verify(parallel_bug_op, (x,), mode=STATIC)
+    self.assertFalse(bug_rep.passed, msg=bug_rep.summary())
+    self.assertNotEmpty(
+        bug_rep.findings_by_category(Category.PARALLEL_GRID_CONFLICT),
+        msg=bug_rep.summary(),
+    )
+
+    ok_rep = verifier.verify(arbitrary_ok_op, (x,))
+    self.assertTrue(ok_rep.passed, msg=ok_rep.summary())
+
+  def test_truncated_semaphore_traffic_is_not_reported_as_errors(self):
+    """Correct cross-step prefetching past the unrolling bound passes."""
+
+    def make_cross_step_prefetch(grid: int):
+      def prefetch(x: jax.Array) -> jax.Array:
+        def kernel(x_hbm, o_ref, buf, sem):
+          i = pl.program_id(0)
+
+          def copy(step, slot):
+            return pltpu.make_async_copy(
+                x_hbm.at[pl.ds(step * 8, 8)], buf.at[slot], sem.at[slot]
+            )
+
+          @pl.when(i == 0)
+          def _():
+            copy(0, 0).start()
+
+          @pl.when(i + 1 < pl.num_programs(0))
+          def _():
+            copy(i + 1, lax.rem(i + 1, 2)).start()
+
+          slot = lax.rem(i, 2)
+          copy(i, slot).wait()
+          o_ref[...] = buf[slot] + 1.0
+
+        return pl.pallas_call(
+            kernel,
+            out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype),
+            grid_spec=pltpu.PrefetchScalarGridSpec(
+                num_scalar_prefetch=0,
+                grid=(grid,),
+                in_specs=[HBM_SPEC],
+                out_specs=pl.BlockSpec((8, 128), lambda i: (i, 0)),
+                scratch_shapes=(
+                    pltpu.VMEM((2, 8, 128), jnp.float32),
+                    pltpu.SemaphoreType.DMA((2,)),
+                ),
+            ),
+        )(x)
+
+      return prefetch
+
+    for grid in (8, 40):  # 40 exceeds the default unrolling bound.
+      x_spec = jax.ShapeDtypeStruct((grid * 8, 128), jnp.float32)
+      report = verifier.verify(
+          make_cross_step_prefetch(grid), (x_spec,), mode=STATIC
+      )
+      self.assertTrue(report.passed, msg=report.summary())
+
+  def test_bugs_are_still_found_past_the_unrolling_bound(self):
+    grid = 40  # Exceeds the default unrolling bound.
+
+    def make_per_step_copy(*, leak: bool):
+      def per_step_copy(x: jax.Array) -> jax.Array:
+        def kernel(x_hbm, o_ref, buf, sems):
+          i = pl.program_id(0)
+          copy = pltpu.make_async_copy(
+              x_hbm.at[pl.ds(i * 8, 8)], buf, sems.at[i if leak else 0]
+          )
+          copy.start()
+          if leak:
+            o_ref[...] = jnp.zeros_like(o_ref)  # Never waits for `copy`.
+          else:
+            o_ref[...] = buf[...]  # Reads `buf` while `copy` writes it.
+            copy.wait()
+
+        return pl.pallas_call(
+            kernel,
+            out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype),
+            grid_spec=pltpu.PrefetchScalarGridSpec(
+                num_scalar_prefetch=0,
+                grid=(grid,),
+                in_specs=[HBM_SPEC],
+                out_specs=pl.BlockSpec((8, 128), lambda i: (i, 0)),
+                scratch_shapes=(
+                    pltpu.VMEM((8, 128), jnp.float32),
+                    pltpu.SemaphoreType.DMA((grid,)),
+                ),
+            ),
+        )(x)
+
+      return per_step_copy
+
+    x_spec = jax.ShapeDtypeStruct((grid * 8, 128), jnp.float32)
+    leak_rep = verifier.verify(
+        make_per_step_copy(leak=True), (x_spec,), mode=STATIC
+    )
+    self.assertNotEmpty(
+        leak_rep.findings_by_category(Category.SEMAPHORE_NONZERO_EXIT),
+        msg=leak_rep.summary(),
+    )
+    race_rep = verifier.verify(
+        make_per_step_copy(leak=False), (x_spec,), mode=STATIC
+    )
+    self.assertNotEmpty(
+        race_rep.findings_by_category(Category.DATA_RACE),
+        msg=race_rep.summary(),
+    )
+
+  def test_data_dependent_semaphore_operations_skip_sync_checks(self):
+    def branch_dma(flag: jax.Array, x: jax.Array) -> jax.Array:
+      def kernel(flag_ref, x_hbm, o_ref, buf, sem):
+        def from_a():
+          pltpu.make_async_copy(x_hbm.at[0:8], buf, sem).start()
+
+        def from_b():
+          pltpu.make_async_copy(x_hbm.at[8:16], buf, sem).start()
+
+        # Exactly one branch runs, so the single wait balances the semaphore.
+        lax.cond(flag_ref[0] > 0, from_a, from_b)
+        pltpu.make_async_copy(x_hbm.at[0:8], buf, sem).wait()
+        o_ref[...] = buf[...]
+
+      return pl.pallas_call(
+          kernel,
+          out_shape=jax.ShapeDtypeStruct((8, 128), x.dtype),
+          grid_spec=pltpu.PrefetchScalarGridSpec(
+              num_scalar_prefetch=1,
+              in_specs=[HBM_SPEC],
+              out_specs=pl.BlockSpec((8, 128), lambda *_: (0, 0)),
+              scratch_shapes=(
+                  pltpu.VMEM((8, 128), jnp.float32),
+                  pltpu.SemaphoreType.DMA,
+              ),
+          ),
+      )(flag, x)
+
+    report = verifier.verify(
+        branch_dma,
+        (
+            jax.ShapeDtypeStruct((1,), jnp.int32),
+            jax.ShapeDtypeStruct((16, 128), jnp.float32),
+        ),
+        mode=STATIC,
+    )
+    self.assertTrue(report.passed, msg=report.summary())
+    self.assertTrue(
+        any(
+            f.category is Category.VERIFICATION_INCOMPLETE
+            for f in report.findings_by_severity(verifier.Severity.WARNING)
+        ),
+        msg=report.summary(),
+    )
+
+  def test_parallel_grid_iterations_have_their_own_scratch_semaphores(self):
+    def make_per_step_dma(semantics: str):
+      def per_step_dma(x: jax.Array) -> jax.Array:
+        def kernel(x_hbm, o_ref, buf, sem):
+          copy = pltpu.make_async_copy(
+              x_hbm.at[pl.ds(pl.program_id(0) * 8, 8)], buf, sem
+          )
+          copy.start()
+          copy.wait()
+          o_ref[...] = buf[...] + 1.0
+
+        return pl.pallas_call(
+            kernel,
+            out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype),
+            grid_spec=pltpu.PrefetchScalarGridSpec(
+                num_scalar_prefetch=0,
+                grid=(4,),
+                in_specs=[HBM_SPEC],
+                out_specs=pl.BlockSpec((8, 128), lambda i: (i, 0)),
+                scratch_shapes=(
+                    pltpu.VMEM((8, 128), jnp.float32),
+                    pltpu.SemaphoreType.DMA,
+                ),
+            ),
+            compiler_params=pltpu.CompilerParams(
+                dimension_semantics=(semantics,)
+            ),
+        )(x)
+
+      return per_step_dma
+
+    x_spec = jax.ShapeDtypeStruct((32, 128), jnp.float32)
+    for semantics in ("arbitrary", "parallel"):
+      report = verifier.verify(
+          make_per_step_dma(semantics), (x_spec,), mode=STATIC
+      )
+      self.assertTrue(report.passed, msg=f"{semantics}: {report.summary()}")
+
+  def test_solver_timeout_is_reported_as_incomplete(self):
+    op = jax_op(
+        "pallas_verify_kernel::timeout_shared_sem", _shared_sem_race_jax
+    )
+    report = verifier.verify(
+        op,
+        (torch.ones((16, 128)),),
+        mode=STATIC,
+        options=verifier.VerificationOptions(solver_timeout_seconds=0.0),
+    )
+    incomplete = report.findings_by_category(Category.VERIFICATION_INCOMPLETE)
+    self.assertNotEmpty(incomplete, msg=report.summary())
+    self.assertEqual(incomplete[0].severity, verifier.Severity.WARNING)
+
+  def test_torch_program_checks_each_dtype_specialization(self):
+    """The same op called on f32 and bf16 inputs is checked per dtype."""
+
+    def dtype_dependent_sem_jax(inp: jax.Array) -> jax.Array:
+      def kernel(x_ref, y_ref, sem):
+        pl.semaphore_signal(sem, 1)
+        if x_ref.dtype == jnp.float32:
+          pl.semaphore_wait(sem, 1)
+        y_ref[...] = x_ref[...]
+
+      return _single_block_call(
+          kernel, inp, scratch_shapes=(pltpu.SemaphoreType.REGULAR,)
+      )
+
+    dtype_sem_op = jax_op(
+        "pallas_verify_kernel::dtype_dependent_sem", dtype_dependent_sem_jax
+    )
+
+    def mixed_dtype_caller(x_f32: torch.Tensor) -> torch.Tensor:
+      y_f32 = dtype_sem_op(x_f32)
+      y_bf16 = dtype_sem_op(x_f32.to(torch.bfloat16))
+      return y_f32 + y_bf16.to(torch.float32)
+
+    report = verifier.verify(
+        mixed_dtype_caller,
+        (torch.ones((8, 128), dtype=torch.float32),),
+        mode=STATIC,
+    )
+    self.assertFalse(report.passed, msg=report.summary())
+    self.assertNotEmpty(
+        report.findings_by_category(Category.SEMAPHORE_NONZERO_EXIT),
+        msg=report.summary(),
+    )
+
+  def test_runtime_dynamic_slice_dma_batch_reports_incomplete_not_false_race(
+      self,
+  ):
+    """Runtime-indexed DMA batches report incomplete (INFO), not false races."""
+
+    def batched_runtime_dslice_dma(
+        offsets: jax.Array, x: jax.Array, out_buf: jax.Array
+    ) -> jax.Array:
+      def kernel(offsets_ref, x_hbm, out_hbm, _, scratch_vmem, dma_sem):
+        in_copies = [
+            pltpu.make_async_copy(
+                x_hbm.at[pl.ds(i * 8, 8)], scratch_vmem.at[i], dma_sem
+            )
+            for i in range(2)
+        ]
+        for c in in_copies:
+          c.start()
+        for c in in_copies:
+          c.wait()
+
+        out_copies = [
+            pltpu.make_async_copy(
+                scratch_vmem.at[i],
+                out_hbm.at[pl.ds(offsets_ref[i], 8)],
+                dma_sem,
+            )
+            for i in range(2)
+        ]
+        for c in out_copies:
+          c.start()
+        for c in out_copies:
+          c.wait()
+
+      return pl.pallas_call(
+          kernel,
+          out_shape=jax.ShapeDtypeStruct(out_buf.shape, out_buf.dtype),
+          grid_spec=pltpu.PrefetchScalarGridSpec(
+              num_scalar_prefetch=1,
+              in_specs=[HBM_SPEC, HBM_SPEC],
+              out_specs=HBM_SPEC,
+              scratch_shapes=(
+                  pltpu.VMEM((2, 8, 128), x.dtype),
+                  pltpu.SemaphoreType.DMA,
+              ),
+          ),
+          input_output_aliases={2: 0},
+      )(offsets, x, out_buf)
+
+    def premature_scratch_reuse_with_runtime_dslice(
+        offsets: jax.Array, x: jax.Array, out_buf: jax.Array
+    ) -> jax.Array:
+      def kernel(offsets_ref, x_hbm, out_hbm, _, scratch_vmem, dma_sem):
+        scratch_vmem.at[0][...] = jnp.ones((8, 128), x_hbm.dtype)
+        scratch_vmem.at[1][...] = jnp.ones((8, 128), x_hbm.dtype)
+        c0 = pltpu.make_async_copy(
+            scratch_vmem.at[0], out_hbm.at[pl.ds(offsets_ref[0], 8)], dma_sem
+        )
+        c1 = pltpu.make_async_copy(
+            scratch_vmem.at[1], out_hbm.at[pl.ds(offsets_ref[1], 8)], dma_sem
+        )
+        c0.start()
+        c1.start()
+        # Bug: c1 can satisfy c0.wait() while c0 is still reading scratch[0].
+        c0.wait()
+        scratch_vmem.at[0][...] = jnp.zeros((8, 128), x_hbm.dtype)
+        c1.wait()
+
+      return pl.pallas_call(
+          kernel,
+          out_shape=jax.ShapeDtypeStruct(out_buf.shape, out_buf.dtype),
+          grid_spec=pltpu.PrefetchScalarGridSpec(
+              num_scalar_prefetch=1,
+              in_specs=[HBM_SPEC, HBM_SPEC],
+              out_specs=HBM_SPEC,
+              scratch_shapes=(
+                  pltpu.VMEM((2, 8, 128), x.dtype),
+                  pltpu.SemaphoreType.DMA,
+              ),
+          ),
+          input_output_aliases={2: 0},
+      )(offsets, x, out_buf)
+
+    def statically_disjoint_outer_axis_with_runtime_inner_slice(
+        offsets: jax.Array, out_buf: jax.Array
+    ) -> jax.Array:
+      def kernel(offsets_ref, out_hbm, _, scratch_vmem, dma_sem):
+        scratch_vmem.at[0][...] = jnp.ones((8, 128), out_hbm.dtype)
+        scratch_vmem.at[1][...] = jnp.ones((8, 128), out_hbm.dtype)
+        c0 = pltpu.make_async_copy(
+            scratch_vmem.at[0],
+            out_hbm.at[0, pl.ds(offsets_ref[0], 8)],
+            dma_sem,
+        )
+        c1 = pltpu.make_async_copy(
+            scratch_vmem.at[1],
+            out_hbm.at[1, pl.ds(offsets_ref[1], 8)],
+            dma_sem,
+        )
+        c0.start()
+        c1.start()
+        c0.wait()
+        c1.wait()
+
+      return pl.pallas_call(
+          kernel,
+          out_shape=jax.ShapeDtypeStruct(out_buf.shape, out_buf.dtype),
+          grid_spec=pltpu.PrefetchScalarGridSpec(
+              num_scalar_prefetch=1,
+              in_specs=[HBM_SPEC],
+              out_specs=HBM_SPEC,
+              scratch_shapes=(
+                  pltpu.VMEM((2, 8, 128), out_buf.dtype),
+                  pltpu.SemaphoreType.DMA,
+              ),
+          ),
+          input_output_aliases={1: 0},
+      )(offsets, out_buf)
+
+    offsets = torch.tensor([0, 8], dtype=torch.int32)
+    x = torch.ones((16, 128), dtype=torch.float32)
+    out_buf = torch.zeros((16, 128), dtype=torch.float32)
+
+    batch_op = jax_op(
+        "pallas_verify_kernel::batched_runtime_dslice_dma",
+        batched_runtime_dslice_dma,
+        donate_argnums=(2,),
+    )
+    batch_rep = verifier.verify(
+        batch_op, (offsets, x, out_buf.clone()), mode=STATIC
+    )
+    self.assertTrue(batch_rep.passed, msg=batch_rep.summary())
+    incomplete = [
+        f
+        for f in batch_rep.findings_by_category(
+            Category.VERIFICATION_INCOMPLETE
+        )
+        if "runtime" in f.message and "slice" in f.message
+    ]
+    self.assertNotEmpty(incomplete, msg=batch_rep.summary())
+    self.assertEqual(incomplete[0].severity, verifier.Severity.INFO)
+
+    buggy_op = jax_op(
+        "pallas_verify_kernel::premature_scratch_reuse_runtime_dslice",
+        premature_scratch_reuse_with_runtime_dslice,
+        donate_argnums=(2,),
+    )
+    buggy_rep = verifier.verify(
+        buggy_op, (offsets, x, out_buf.clone()), mode=STATIC
+    )
+    self.assertFalse(buggy_rep.passed, msg=buggy_rep.summary())
+    self.assertNotEmpty(
+        buggy_rep.findings_by_category(Category.CONCURRENT_DMA_SEM_SHARING),
+        msg=buggy_rep.summary(),
+    )
+
+    disjoint_op = jax_op(
+        "pallas_verify_kernel::disjoint_outer_runtime_inner_dslice",
+        statically_disjoint_outer_axis_with_runtime_inner_slice,
+        donate_argnums=(1,),
+    )
+    out_buf_3d = torch.zeros((2, 16, 128), dtype=torch.float32)
+    disjoint_rep = verifier.verify(
+        disjoint_op, (offsets, out_buf_3d), mode=STATIC
+    )
+    self.assertTrue(disjoint_rep.passed, msg=disjoint_rep.summary())
+    self.assertEmpty(
+        disjoint_rep.findings_by_category(Category.VERIFICATION_INCOMPLETE),
+        msg=disjoint_rep.summary(),
+    )
+
+  def test_dynamic_slice_dma_byte_count_extracted(self):
+    def dyn_slice_dma(idx: jax.Array, x: jax.Array) -> jax.Array:
+      def kernel(idx_ref, x_hbm, y_hbm, vmem_buf, dma_sem):
+        start = idx_ref[0] * 8
+        copy_in = pltpu.make_async_copy(
+            x_hbm.at[pl.ds(start, 8), :], vmem_buf, dma_sem
+        )
+        copy_in.start()
+        copy_in.wait()
+        copy_out = pltpu.make_async_copy(
+            vmem_buf, y_hbm.at[pl.ds(0, 8), :], dma_sem
+        )
+        copy_out.start()
+        copy_out.wait()
+
+      return pl.pallas_call(
+          kernel,
+          out_shape=jax.ShapeDtypeStruct((8, 128), x.dtype),
+          grid_spec=pltpu.PrefetchScalarGridSpec(
+              num_scalar_prefetch=1,
+              in_specs=[HBM_SPEC],
+              out_specs=HBM_SPEC,
+              scratch_shapes=(
+                  pltpu.VMEM((8, 128), x.dtype),
+                  pltpu.SemaphoreType.DMA,
+              ),
+          ),
+      )(idx, x)
+
+    idx_spec = jax.ShapeDtypeStruct((1,), jnp.int32)
+    x_spec = jax.ShapeDtypeStruct((32, 128), jnp.float32)
+    _, models = jaxpr_model.check_kernel_static_models(
+        dyn_slice_dma, (idx_spec, x_spec)
+    )
+    assert models is not None
+    self.assertLen(models, 1)
+    expected_bytes = 8 * 128 * 4
+    self.assertEqual(models[0].dma_starts[0].byte_count, expected_bytes)
+    self.assertEqual(models[0].dma_waits[0].byte_count, expected_bytes)
+
+  def test_truncated_sync_loop_halts_epilogue_event_recording(self):
+    x_spec = jax.ShapeDtypeStruct((8, 128), jnp.float32)
+
+    def sync_sem_loop_epilogue(x: jax.Array) -> jax.Array:
+      def kernel(x_vmem, o_vmem, vmem_scratch, sem):
+        def body(_, carry):
+          pl.semaphore_signal(sem, 1)
+          pl.semaphore_wait(sem, 1)
+          return carry
+
+        _ = lax.fori_loop(0, 40, body, jnp.int32(0))
+        # Concurrency event recording on this actor halts after the truncated
+        # sync loop while coverage and OOB checks continue.
+        vmem_scratch[...] = jnp.zeros_like(vmem_scratch[...])
+        o_vmem[...] = x_vmem[...]
+
+      return pl.pallas_call(
+          kernel,
+          out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype),
+          in_specs=[pl.BlockSpec((8, 128), lambda i: (0, 0))],
+          out_specs=pl.BlockSpec((8, 128), lambda i: (0, 0)),
+          scratch_shapes=[
+              pltpu.VMEM((8, 128), x.dtype),
+              pltpu.SemaphoreType.REGULAR,
+          ],
+          grid=(1,),
+      )(x)
+
+    def sync_dma_loop_epilogue(x: jax.Array) -> jax.Array:
+      def kernel(x_hbm, o_hbm, vmem_scratch, dma_sem):
+        def body(_, carry):
+          cin = pltpu.make_async_copy(x_hbm, vmem_scratch, dma_sem)
+          cin.start()
+          cin.wait()
+          return carry
+
+        _ = lax.fori_loop(0, 40, body, jnp.int32(0))
+        # Halting event recording prevents splicing this epilogue read/write
+        # onto an un-waited loop prefix.
+        vmem_scratch[...] = vmem_scratch[...] + 1.0
+        cout = pltpu.make_async_copy(vmem_scratch, o_hbm, dma_sem)
+        cout.start()
+        cout.wait()
+
+      return pl.pallas_call(
+          kernel,
+          out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype),
+          in_specs=[HBM_SPEC],
+          out_specs=HBM_SPEC,
+          scratch_shapes=[
+              pltpu.VMEM(x.shape, x.dtype),
+              pltpu.SemaphoreType.DMA,
+          ],
+      )(x)
+
+    for label, fn in (
+        ("sem_loop", sync_sem_loop_epilogue),
+        ("dma_loop", sync_dma_loop_epilogue),
+    ):
+      with self.subTest(kind=label):
+        rep, models = smt_checker.check_kernel_concurrency_with_models(
+            fn,
+            (x_spec,),
+            config=smt_checker.ModelCheckConfig(max_unrolled_iterations=4),
+        )
+        self.assertTrue(rep.passed, msg=rep.summary())
+        self.assertEmpty(
+            rep.findings_by_category(Category.DATA_RACE),
+            msg=rep.summary(),
+        )
+        assert models is not None
+        self.assertLen(models, 1)
+        self.assertTrue(models[0].sync_truncated)
+        if label == "sem_loop":
+          vmem_writes = [
+              ev
+              for ev in models[0].memory_events
+              if ev.buffer.buffer_id == "scratch_0"
+          ]
+          self.assertEmpty(vmem_writes)
+
+  def test_strided_slice_and_bitcast_preserve_exact_dma_byte_count(self):
+    def strided_and_bitcast_dma(x: jax.Array) -> jax.Array:
+      def kernel(x_hbm, o_hbm, vmem_a, vmem_b, sem):
+        # Strided view `(16, 128)[::2, :]` has view_shape `(8, 128)` -> 4096B.
+        copy1 = pltpu.make_async_copy(x_hbm.at[::2, :], vmem_a, sem)
+        copy1.start()
+        copy1.wait()
+        # Bitcast `(8, 128)` float32 -> `(8, 256)` int16 -> still 4096B.
+        copy2 = pltpu.make_async_copy(
+            vmem_a.bitcast(jnp.int16), vmem_b.bitcast(jnp.int16), sem
+        )
+        copy2.start()
+        copy2.wait()
+        copy3 = pltpu.make_async_copy(vmem_b, o_hbm.at[:8, :], sem)
+        copy3.start()
+        copy3.wait()
+        copy4 = pltpu.make_async_copy(vmem_b, o_hbm.at[8:, :], sem)
+        copy4.start()
+        copy4.wait()
+
+      return pl.pallas_call(
+          kernel,
+          out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype),
+          in_specs=[HBM_SPEC],
+          out_specs=HBM_SPEC,
+          scratch_shapes=[
+              pltpu.VMEM((8, 128), x.dtype),
+              pltpu.VMEM((8, 128), x.dtype),
+              pltpu.SemaphoreType.DMA,
+          ],
+      )(x)
+
+    x_spec = jax.ShapeDtypeStruct((16, 128), jnp.float32)
+    rep, models = jaxpr_model.check_kernel_static_models(
+        strided_and_bitcast_dma, (x_spec,)
+    )
+    self.assertTrue(rep.passed, msg=rep.summary())
+    self.assertEqual(
+        [d.byte_count for d in models[0].dma_starts], [4096, 4096, 4096, 4096]
+    )
+
+  def test_runtime_conditional_output_write_and_multi_axis_parallel_conflict(
+      self,
+  ):
+    def one_branch_unwritten(flag: jax.Array, x: jax.Array) -> jax.Array:
+      def kernel(flag_ref, x_ref, o_ref):
+        lax.cond(
+            flag_ref[0] > 0,
+            lambda: o_ref.__setitem__(Ellipsis, x_ref[...]),
+            lambda: None,
+        )
+
+      return pl.pallas_call(
+          kernel,
+          out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype),
+          grid_spec=pltpu.PrefetchScalarGridSpec(
+              num_scalar_prefetch=1,
+              in_specs=[pl.BlockSpec(x.shape, lambda _: (0, 0))],
+              out_specs=pl.BlockSpec(x.shape, lambda _: (0, 0)),
+          ),
+      )(flag, x)
+
+    flag = torch.tensor([1], dtype=torch.int32)
+    x = torch.ones((8, 128), dtype=torch.float32)
+    cond_op = jax_op(
+        "pallas_verify_kernel::one_branch_unwritten", one_branch_unwritten
+    )
+    cond_rep = verifier.verify(cond_op, (flag, x), mode=STATIC)
+    self.assertFalse(cond_rep.passed, msg=cond_rep.summary())
+    self.assertNotEmpty(
+        cond_rep.findings_by_category(Category.UNWRITTEN_OUTPUT),
+        msg=cond_rep.summary(),
+    )
+
+    # 2D `(parallel, arbitrary)` grid of shape `(2, 40)` where the inner
+    # sequential axis exceeds `max_unrolled_iterations=32` must still sample
+    # both parallel coordinates and detect the cross-parallel-coordinate race.
+    def multi_axis_parallel_race(x: jax.Array) -> jax.Array:
+      return pl.pallas_call(
+          lambda x_ref, o_ref: o_ref.__setitem__(Ellipsis, x_ref[...]),
+          out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype),
+          grid=(2, 40),
+          in_specs=[pl.BlockSpec(x.shape, lambda _p, _s: (0, 0))],
+          out_specs=pl.BlockSpec(x.shape, lambda _p, _s: (0, 0)),
+          compiler_params=pltpu.CompilerParams(
+              dimension_semantics=("parallel", "arbitrary")
+          ),
+      )(x)
+
+    par_rep = verifier.verify(
+        multi_axis_parallel_race,
+        (jax.ShapeDtypeStruct((8, 128), jnp.float32),),
+        mode=STATIC,
+    )
+    self.assertFalse(par_rep.passed, msg=par_rep.summary())
+    self.assertNotEmpty(
+        par_rep.findings_by_category(Category.PARALLEL_GRID_CONFLICT),
+        msg=par_rep.summary(),
+    )
+
+  def test_shared_dma_semaphore_unequal_transfer_sizes_race_caught(self):
+
+    def unequal_shared_dma_sem(x: jax.Array) -> jax.Array:
+      def kernel(x_hbm_ref, y_ref):
+        def body(buf_big, buf_small, shared_sem):
+          c_big = pltpu.make_async_copy(x_hbm_ref.at[0:16], buf_big, shared_sem)
+          c_small = pltpu.make_async_copy(
+              x_hbm_ref.at[16:24], buf_small, shared_sem
+          )
+          c_big.start()
+          c_small.start()
+          # Progressive byte-arrival from c_small + partial c_big can satisfy
+          # c_big.wait() before the final bytes of buf_big arrive.
+          c_big.wait()
+          y_ref.at[0:16][...] = buf_big[...] + 1.0
+          c_small.wait()
+          y_ref.at[16:24][...] = buf_small[...] + 1.0
+
+        pl.run_scoped(
+            body,
+            pltpu.VMEM((16, 128), x.dtype),
+            pltpu.VMEM((8, 128), x.dtype),
+            pltpu.SemaphoreType.DMA,
+        )
+
+      return pl.pallas_call(
+          kernel,
+          out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype),
+          in_specs=[HBM_SPEC],
+      )(x)
+
+    x_spec = jax.ShapeDtypeStruct((24, 128), jnp.float32)
+    rep = verifier.verify(unequal_shared_dma_sem, (x_spec,), mode=STATIC)
+    self.assertFalse(rep.passed, msg=rep.summary())
+    self.assertNotEmpty(
+        rep.findings_by_category(Category.CONCURRENT_DMA_SEM_SHARING),
+        msg=rep.summary(),
+    )
+
+  def test_core_map_cross_core_remote_copy_race_and_barrier_deadlock(self):
+    core_mesh = _make_tensorcore_mesh("core", num_cores=2)
+    x_spec = jax.ShapeDtypeStruct((8, 128), jnp.float32)
+
+    def unsynced_cross_core_vmem_copy(x: jax.Array) -> jax.Array:
+      @pl.kernel(
+          mesh=core_mesh,
+          out_type=jax.ShapeDtypeStruct(x.shape, x.dtype),
+          scratch_types=[
+              pltpu.VMEM(x.shape, x.dtype),
+              pltpu.SemaphoreType.DMA,
+              pltpu.SemaphoreType.DMA,
+          ],
+      )
+      def _body(x_ref, y_ref, peer_vmem, send_sem, recv_sem):
+        c = lax.axis_index("core")
+        peer = 1 - c
+        peer_vmem[...] = x_ref[...]
+        copy = pltpu.make_async_remote_copy(
+            src_ref=x_ref,
+            dst_ref=peer_vmem,
+            send_sem=send_sem,
+            recv_sem=recv_sem,
+            device_id={"core": peer},
+        )
+        copy.start()
+        # Bug: reads local `peer_vmem` without waiting for the peer's remote
+        # copy into our `peer_vmem` to complete or synchronizing with the peer.
+        y_ref[...] = peer_vmem[...] + 1.0
+        copy.wait()
+
+      return _body(x)
+
+    race_rep = verifier.verify(
+        unsynced_cross_core_vmem_copy, (x_spec,), mode=STATIC
+    )
+    self.assertFalse(race_rep.passed, msg=race_rep.summary())
+    self.assertNotEmpty(
+        race_rep.findings_by_category(Category.UNTHROTTLED_REMOTE_OVERWRITE),
+        msg=race_rep.summary(),
+    )
+
+    def misrouted_core_barrier(x: jax.Array) -> jax.Array:
+      @pl.kernel(
+          mesh=core_mesh,
+          out_type=jax.ShapeDtypeStruct(x.shape, x.dtype),
+          compiler_params=pltpu.CompilerParams(collective_id=7),
+      )
+      def _body(x_ref, y_ref):
+        barrier = pltpu.get_barrier_semaphore()
+        # Both cores signal core 0's barrier: core 1 waits forever.
+        pl.semaphore_signal(barrier, 1, device_id={"core": 0})
+        pl.semaphore_wait(barrier, 1)
+        y_ref[...] = x_ref[...]
+
+      return _body(x)
+
+    bar_rep = verifier.verify(misrouted_core_barrier, (x_spec,), mode=STATIC)
+    self.assertFalse(bar_rep.passed, msg=bar_rep.summary())
+    self.assertNotEmpty(
+        bar_rep.findings_by_category(Category.SEMAPHORE_DEADLOCK),
+        msg=bar_rep.summary(),
+    )
+    self.assertNotEmpty(
+        bar_rep.findings_by_category(Category.SEMAPHORE_NONZERO_EXIT),
+        msg=bar_rep.summary(),
+    )
+
+  def test_core_map_collective_axes_shared_vmem_race_caught(self):
+    core_mesh = _make_tensorcore_mesh("core", num_cores=2)
+    x_spec = jax.ShapeDtypeStruct((8, 128), jnp.float32)
+
+    def shared_vmem_race(x: jax.Array) -> jax.Array:
+      @pl.kernel(
+          mesh=core_mesh,
+          out_type=jax.ShapeDtypeStruct(x.shape, x.dtype),
+      )
+      def _body(x_ref, y_ref):
+        def _scoped(shared_buf):
+          # Both cores write the same shared VMEM buffer concurrently.
+          shared_buf[...] = x_ref[...] + lax.axis_index("core").astype(
+              x_ref.dtype
+          )
+          y_ref[...] = shared_buf[...]
+
+        pl.run_scoped(
+            _scoped,
+            pltpu.VMEM(x.shape, x.dtype),
+            collective_axes="core",
+        )
+
+      return _body(x)
+
+    rep = verifier.verify(shared_vmem_race, (x_spec,), mode=STATIC)
+    self.assertFalse(rep.passed, msg=rep.summary())
+    self.assertNotEmpty(
+        rep.findings_by_category(Category.DATA_RACE),
+        msg=rep.summary(),
+    )
+
+  def test_truncated_loop_causal_deadlock_and_zero_signal_deadlock_caught(self):
+    grid = 40  # Exceeds default max_unrolled_iterations=32.
+    x_spec = jax.ShapeDtypeStruct((grid * 8, 128), jnp.float32)
+
+    def step0_wait_before_signal_deadlock(x: jax.Array) -> jax.Array:
+      def kernel(x_ref, o_ref, sem):
+        @pl.when(pl.program_id(0) == 0)
+        def _deadlock():
+          pl.semaphore_wait(sem, 1)
+          pl.semaphore_signal(sem, 1)
+
+        o_ref[...] = x_ref[...]
+
+      return pl.pallas_call(
+          kernel,
+          out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype),
+          grid_spec=pltpu.PrefetchScalarGridSpec(
+              num_scalar_prefetch=0,
+              grid=(grid,),
+              in_specs=[pl.BlockSpec((8, 128), lambda i: (i, 0))],
+              out_specs=pl.BlockSpec((8, 128), lambda i: (i, 0)),
+              scratch_shapes=(pltpu.SemaphoreType.REGULAR,),
+          ),
+      )(x)
+
+    def zero_signal_wait_on_truncated_grid(x: jax.Array) -> jax.Array:
+      def kernel(x_ref, o_ref, sem):
+        @pl.when(pl.program_id(0) == 0)
+        def _wait():
+          pl.semaphore_wait(sem, 1)
+
+        o_ref[...] = x_ref[...]
+
+      return pl.pallas_call(
+          kernel,
+          out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype),
+          grid_spec=pltpu.PrefetchScalarGridSpec(
+              num_scalar_prefetch=0,
+              grid=(grid,),
+              in_specs=[pl.BlockSpec((8, 128), lambda i: (i, 0))],
+              out_specs=pl.BlockSpec((8, 128), lambda i: (i, 0)),
+              scratch_shapes=(pltpu.SemaphoreType.REGULAR,),
+          ),
+      )(x)
+
+    def prefix_race_with_tail_wait_on_truncated_grid(
+        x: jax.Array,
+    ) -> jax.Array:
+      def kernel(x_hbm, o_ref, buf, dma_sem, reg_sem):
+        i = pl.program_id(0)
+
+        @pl.when(i == 0)
+        def _signal():
+          pl.semaphore_signal(reg_sem, 1)
+
+        @pl.when(i == grid - 1)
+        def _tail_wait():
+          pl.semaphore_wait(reg_sem, 1)
+
+        copy = pltpu.make_async_copy(x_hbm.at[pl.ds(i * 8, 8)], buf, dma_sem)
+        copy.start()
+        # Race on step 0: reads `buf` before `copy.wait()`.
+        o_ref[...] = buf[...]
+        copy.wait()
+
+      return pl.pallas_call(
+          kernel,
+          out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype),
+          grid_spec=pltpu.PrefetchScalarGridSpec(
+              num_scalar_prefetch=0,
+              grid=(grid,),
+              in_specs=[HBM_SPEC],
+              out_specs=pl.BlockSpec((8, 128), lambda i: (i, 0)),
+              scratch_shapes=(
+                  pltpu.VMEM((8, 128), jnp.float32),
+                  pltpu.SemaphoreType.DMA,
+                  pltpu.SemaphoreType.REGULAR,
+              ),
+          ),
+      )(x)
+
+    dl_rep = verifier.verify(
+        step0_wait_before_signal_deadlock, (x_spec,), mode=STATIC
+    )
+    self.assertFalse(dl_rep.passed, msg=dl_rep.summary())
+    self.assertNotEmpty(
+        dl_rep.findings_by_category(Category.SEMAPHORE_DEADLOCK),
+        msg=dl_rep.summary(),
+    )
+
+    zs_rep = verifier.verify(
+        zero_signal_wait_on_truncated_grid, (x_spec,), mode=STATIC
+    )
+    self.assertFalse(zs_rep.passed, msg=zs_rep.summary())
+    self.assertNotEmpty(
+        zs_rep.findings_by_category(Category.SEMAPHORE_DEADLOCK),
+        msg=zs_rep.summary(),
+    )
+
+    pr_rep = verifier.verify(
+        prefix_race_with_tail_wait_on_truncated_grid, (x_spec,), mode=STATIC
+    )
+    self.assertFalse(pr_rep.passed, msg=pr_rep.summary())
+    self.assertNotEmpty(
+        pr_rep.findings_by_category(Category.DATA_RACE),
+        msg=pr_rep.summary(),
+    )
+    self.assertNotEmpty(
+        pr_rep.findings_by_category(Category.VERIFICATION_INCOMPLETE),
+        msg=pr_rep.summary(),
+    )
+
+  def test_dma_to_dma_write_after_write_race_and_candidate_cap(self):
+    grid = 8
+    x_spec = jax.ShapeDtypeStruct((grid * 8, 128), jnp.float32)
+
+    def dma_waw_with_sequenced_vpu(x: jax.Array) -> jax.Array:
+      def kernel(x_hbm, o_ref, vpu_buf, waw_buf, vpu_sem, waw_sems):
+        i = pl.program_id(0)
+        # Properly awaited per-step DMA + VPU traffic on `vpu_buf` is pruned by
+        # static completion bounds, while the concurrent unawaited DMA-DMA WAW
+        # race on `waw_buf` reaches CP-SAT.
+        vpu_copy = pltpu.make_async_copy(
+            x_hbm.at[pl.ds(i * 8, 8)], vpu_buf, vpu_sem
+        )
+        vpu_copy.start()
+        vpu_copy.wait()
+        vpu_buf[...] = vpu_buf[...] + 1.0
+        o_ref[...] = vpu_buf[...]
+
+        @pl.when(i == 0)
+        def _start0():
+          pltpu.make_async_copy(x_hbm.at[0:8], waw_buf, waw_sems.at[0]).start()
+
+        @pl.when(i == 1)
+        def _start1_and_wait():
+          c1 = pltpu.make_async_copy(x_hbm.at[8:16], waw_buf, waw_sems.at[1])
+          c1.start()
+          pltpu.make_async_copy(x_hbm.at[0:8], waw_buf, waw_sems.at[0]).wait()
+          c1.wait()
+
+      return pl.pallas_call(
+          kernel,
+          out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype),
+          grid_spec=pltpu.PrefetchScalarGridSpec(
+              num_scalar_prefetch=0,
+              grid=(grid,),
+              in_specs=[HBM_SPEC],
+              out_specs=pl.BlockSpec((8, 128), lambda i: (i, 0)),
+              scratch_shapes=(
+                  pltpu.VMEM((8, 128), jnp.float32),
+                  pltpu.VMEM((8, 128), jnp.float32),
+                  pltpu.SemaphoreType.DMA,
+                  pltpu.SemaphoreType.DMA((2,)),
+              ),
+          ),
+      )(x)
+
+    rep = verifier.verify(dma_waw_with_sequenced_vpu, (x_spec,), mode=STATIC)
+    self.assertFalse(rep.passed, msg=rep.summary())
+    self.assertNotEmpty(
+        rep.findings_by_category(Category.DATA_RACE),
+        msg=rep.summary(),
+    )
+
+    # Three concurrent DMAs writing `waw_buf` produce C(3, 2) = 3 unpruned WAW
+    # candidate pairs, exercising the `_MAX_RACE_CANDIDATES` cap warning.
+    def three_way_dma_waw(x: jax.Array) -> jax.Array:
+      def kernel(x_hbm, o_ref, waw_buf, sems):
+        copies = [
+            pltpu.make_async_copy(
+                x_hbm.at[pl.ds(k * 8, 8)], waw_buf, sems.at[k]
+            )
+            for k in range(3)
+        ]
+        for c in copies:
+          c.start()
+        for c in copies:
+          c.wait()
+        o_ref[...] = waw_buf[...]
+
+      return pl.pallas_call(
+          kernel,
+          out_shape=jax.ShapeDtypeStruct((8, 128), x.dtype),
+          grid_spec=pltpu.PrefetchScalarGridSpec(
+              num_scalar_prefetch=0,
+              in_specs=[HBM_SPEC],
+              out_specs=pl.BlockSpec((8, 128), lambda: (0, 0)),
+              scratch_shapes=(
+                  pltpu.VMEM((8, 128), jnp.float32),
+                  pltpu.SemaphoreType.DMA((3,)),
+              ),
+          ),
+      )(x)
+
+    with mock.patch.object(smt_checker, "_MAX_RACE_CANDIDATES", 1):
+      cap_rep = verifier.verify(
+          three_way_dma_waw,
+          (jax.ShapeDtypeStruct((24, 128), jnp.float32),),
+          mode=STATIC,
+      )
+    self.assertFalse(cap_rep.passed, msg=cap_rep.summary())
+    self.assertNotEmpty(
+        cap_rep.findings_by_category(Category.DATA_RACE),
+        msg=cap_rep.summary(),
+    )
+    cap_warnings = [
+        f
+        for f in cap_rep.findings_by_category(Category.VERIFICATION_INCOMPLETE)
+        if f.severity is verifier.Severity.WARNING
+        and "conflicting access pairs" in f.message
+    ]
+    self.assertLen(cap_warnings, 1, msg=cap_rep.summary())
+
+  def test_register_autograd_skips_backward_when_forward_deadlocks(self):
+    def deadlocking_fwd_jax(x: jax.Array) -> jax.Array:
+      def kernel(x_ref, y_ref, sem):
+        pl.semaphore_wait(sem, 1)
+        y_ref[...] = x_ref[...]
+
+      return _single_block_call(
+          kernel, x, scratch_shapes=(pltpu.SemaphoreType.REGULAR,)
+      )
+
+    no_bwd_op = jax_op(
+        "pallas_verify_kernel::deadlock_no_autograd", deadlocking_fwd_jax
+    )
+    with_bwd_op = jax_op(
+        "pallas_verify_kernel::deadlock_with_autograd", deadlocking_fwd_jax
+    )
+    with_bwd_op.register_autograd(lambda ctx, grad: (grad,))
+
+    x = torch.ones((8, 128), dtype=torch.float32, requires_grad=True)
+    no_bwd_rep = verifier.verify(no_bwd_op, (x,))
+    self.assertNotEmpty(
+        no_bwd_rep.findings_by_category(Category.SEMAPHORE_DEADLOCK),
+        msg=no_bwd_rep.summary(),
+    )
+    self.assertEmpty(
+        [f for f in no_bwd_rep.findings if f.phase is verifier.Phase.AUTOGRAD],
+        msg=no_bwd_rep.summary(),
+    )
+
+    with_bwd_rep = verifier.verify(with_bwd_op, (x,))
+    self.assertNotEmpty(
+        with_bwd_rep.findings_by_category(Category.SEMAPHORE_DEADLOCK),
+        msg=with_bwd_rep.summary(),
+    )
+    autograd_findings = [
+        f for f in with_bwd_rep.findings if f.phase is verifier.Phase.AUTOGRAD
+    ]
+    self.assertLen(autograd_findings, 1)
+    self.assertIs(
+        autograd_findings[0].category, Category.VERIFICATION_INCOMPLETE
+    )
+    self.assertIs(autograd_findings[0].severity, verifier.Severity.INFO)
+    self.assertNotIn(verifier.Phase.AUTOGRAD, with_bwd_rep.checked_phases)
+
+  def test_parallel_grid_conflict_when_cpsat_unavailable_and_race_loop_timeout(
+      self,
+  ):
+    x_spec = jax.ShapeDtypeStruct((16, 128), jnp.float32)
+
+    # Without `ortools` (`cp_model is None`), a sequential single-actor kernel
+    # with no waits or race candidates emits zero `VERIFICATION_INCOMPLETE`
+    # warnings, whereas an async DMA kernel emits a `WARNING` note.
+    with mock.patch.object(smt_checker, "cp_model", None):
+      seq_rep = verifier.verify(_make_tiled_copy(2), (x_spec,), mode=STATIC)
+      dma_no_cpsat_rep = verifier.verify(
+          _shared_sem_race_jax, (x_spec,), mode=STATIC
+      )
+    self.assertTrue(seq_rep.passed, msg=seq_rep.summary())
+    self.assertEmpty(
+        seq_rep.findings_by_category(Category.VERIFICATION_INCOMPLETE),
+        msg=seq_rep.summary(),
+    )
+    dma_warnings = [
+        f
+        for f in dma_no_cpsat_rep.findings_by_category(
+            Category.VERIFICATION_INCOMPLETE
+        )
+        if f.severity is verifier.Severity.WARNING
+    ]
+    self.assertNotEmpty(dma_warnings, msg=dma_no_cpsat_rep.summary())
+
+    def parallel_overlap(x: jax.Array) -> jax.Array:
+      return pl.pallas_call(
+          lambda x_ref, o_ref: o_ref.__setitem__(Ellipsis, x_ref[...]),
+          out_shape=jax.ShapeDtypeStruct((8, 128), x.dtype),
+          grid=(2,),
+          in_specs=[pl.BlockSpec((8, 128), lambda i: (i, 0))],
+          out_specs=pl.BlockSpec((8, 128), lambda i: (0, 0)),
+          compiler_params=pltpu.CompilerParams(
+              dimension_semantics=("parallel",)
+          ),
+      )(x)
+
+    with mock.patch.object(smt_checker, "cp_model", None):
+      no_cpsat_rep = verifier.verify(parallel_overlap, (x_spec,), mode=STATIC)
+    self.assertFalse(no_cpsat_rep.passed, msg=no_cpsat_rep.summary())
+    self.assertNotEmpty(
+        no_cpsat_rep.findings_by_category(Category.PARALLEL_GRID_CONFLICT),
+        msg=no_cpsat_rep.summary(),
+    )
+    self.assertNotEmpty(
+        no_cpsat_rep.findings_by_category(Category.VERIFICATION_INCOMPLETE),
+        msg=no_cpsat_rep.summary(),
+    )
+
+    zero_timeout_par_rep = verifier.verify(
+        parallel_overlap,
+        (x_spec,),
+        mode=STATIC,
+        options=verifier.VerificationOptions(solver_timeout_seconds=0.0),
+    )
+    self.assertFalse(
+        zero_timeout_par_rep.passed, msg=zero_timeout_par_rep.summary()
+    )
+    self.assertNotEmpty(
+        zero_timeout_par_rep.findings_by_category(
+            Category.PARALLEL_GRID_CONFLICT
+        ),
+        msg=zero_timeout_par_rep.summary(),
+    )
+
+    # Simulate the initial deadlock feasibility solve succeeding while the
+    # per-candidate race query hits the solver timeout budget.
+    real_solve = smt_checker._solve
+    call_count = 0
+
+    def _timeout_on_race_query(solver, model, timeout_seconds):
+      nonlocal call_count
+      call_count += 1
+      if call_count == 1:
+        return real_solve(solver, model, timeout_seconds)
+      return smt_checker.cp_model.UNKNOWN
+
+    with mock.patch.object(
+        smt_checker,
+        "_solve",
+        autospec=True,
+        side_effect=_timeout_on_race_query,
+    ):
+      race_timeout_rep = verifier.verify(
+          _shared_sem_race_jax, (x_spec,), mode=STATIC
+      )
+    incomplete = [
+        f
+        for f in race_timeout_rep.findings_by_category(
+            Category.VERIFICATION_INCOMPLETE
+        )
+        if f.severity is verifier.Severity.WARNING
+    ]
+    self.assertNotEmpty(incomplete, msg=race_timeout_rep.summary())
+    self.assertTrue(
+        any(
+            "candidate pair(s) across" in f.message
+            and "buffer bucket(s) unchecked" in f.message
+            for f in incomplete
+        ),
+        msg=race_timeout_rep.summary(),
+    )
+
+  def test_single_dma_partial_byte_wait_race_caught(self):
+    def partial_wait_dma(x: jax.Array) -> jax.Array:
+      def kernel(x_hbm, y_vmem, buf_vmem, dma_sem):
+        pltpu.make_async_copy(x_hbm, buf_vmem, dma_sem).start()
+        # Waiting for only half the bytes (2048B of 4096B) lets `buf_vmem[...]`
+        # read while the remaining bytes are still arriving in `buf_vmem`.
+        pltpu.make_async_copy(
+            x_hbm.at[:4, :], buf_vmem.at[:4, :], dma_sem
+        ).wait()
+        y_vmem[...] = buf_vmem[...] + 1.0
+        pltpu.make_async_copy(
+            x_hbm.at[4:, :], buf_vmem.at[4:, :], dma_sem
+        ).wait()
+
+      return pl.pallas_call(
+          kernel,
+          out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype),
+          in_specs=[HBM_SPEC],
+          out_specs=pl.BlockSpec(x.shape),
+          scratch_shapes=[
+              pltpu.VMEM(x.shape, x.dtype),
+              pltpu.SemaphoreType.DMA,
+          ],
+      )(x)
+
+    x_spec = jax.ShapeDtypeStruct((8, 128), jnp.float32)
+    rep = verifier.verify(partial_wait_dma, (x_spec,), mode=STATIC)
+    self.assertFalse(rep.passed, msg=rep.summary())
+    self.assertNotEmpty(
+        rep.findings_by_category(Category.DATA_RACE),
+        msg=rep.summary(),
+    )
+
+  def test_remote_dma_earlier_dst_wait_preserves_src_wait_send_order(self):
+    core_mesh = _make_tensorcore_mesh("core", num_cores=2)
+    x_spec = jax.ShapeDtypeStruct((8, 128), jnp.float32)
+
+    def remote_dma_with_earlier_dst_wait(x: jax.Array) -> jax.Array:
+      @pl.kernel(
+          mesh=core_mesh,
+          out_type=jax.ShapeDtypeStruct(x.shape, x.dtype),
+          scratch_types=[
+              pltpu.VMEM(x.shape, x.dtype),
+              pltpu.VMEM(x.shape, x.dtype),
+              pltpu.SemaphoreType.DMA,
+              pltpu.SemaphoreType.DMA,
+          ],
+      )
+      def _body(x_hbm, o_hbm, src_vmem, dst_vmem, send_sem, recv_sem):
+        core_idx = lax.axis_index("core")
+        copy_in = pltpu.make_async_copy(x_hbm, src_vmem, send_sem)
+        copy_in.start()
+        copy_in.wait()
+        rdma = pltpu.make_async_remote_copy(
+            src_ref=src_vmem,
+            dst_ref=dst_vmem,
+            send_sem=send_sem,
+            recv_sem=recv_sem,
+            device_id={"core": 1},
+        )
+
+        @pl.when(core_idx == 0)
+        def _sender():
+          # Extra local event pushes `wait_send` to a higher actor position than
+          # Core 1's `wait_recv`.
+          dst_vmem[...] = src_vmem[...]
+          rdma.start()
+          rdma.wait_send()
+          # Safe overwrite of `src_vmem` strictly after `wait_send()`.
+          src_vmem[...] = jnp.zeros_like(src_vmem[...])
+          out_c0 = pltpu.make_async_copy(dst_vmem, o_hbm, send_sem)
+          out_c0.start()
+          out_c0.wait()
+
+        @pl.when(core_idx == 1)
+        def _receiver():
+          rdma.wait_recv()
+
+      return _body(x)
+
+    rep, models = smt_checker.check_kernel_concurrency_with_models(
+        remote_dma_with_earlier_dst_wait, (x_spec,)
+    )
+    self.assertTrue(rep.passed, msg=rep.summary())
+    assert models is not None
+    sched = smt_checker._collect_schedule(models[0])
+    rdma_reads = [
+        acc
+        for acc in sched.accesses
+        if acc.dma is not None and acc.dma.is_remote and not acc.is_write
+    ]
+    self.assertLen(rdma_reads, 1)
+    self.assertLen(rdma_reads[0].end.completed_by, 2)
+    sender_overwrites = [
+        acc
+        for acc in sched.accesses
+        if acc.dma is None
+        and acc.is_write
+        and acc.buffer.buffer_id == rdma_reads[0].buffer.buffer_id
+        and acc.actor == rdma_reads[0].actor
+        and acc.start.position > rdma_reads[0].start.position
+    ]
+    self.assertNotEmpty(sender_overwrites)
+    self.assertEqual(
+        smt_checker._static_order(
+            rdma_reads[0].end, sender_overwrites[0].start
+        ),
+        -1,
+    )
+
+  def test_same_buffer_data_race_and_shared_dma_sem_both_reported(self):
+    def both_hazards_same_buffer(x: jax.Array) -> jax.Array:
+      def kernel(x_hbm, y_vmem, buf0, buf1, shared_sem, other_sem):
+        # 1. Shared DMA semaphore across equal-size disjoint copies `c1`, `c0`.
+        c1 = pltpu.make_async_copy(x_hbm.at[8:16], buf1, shared_sem)
+        c0 = pltpu.make_async_copy(x_hbm.at[0:8], buf0, shared_sem)
+        c1.start()
+        c0.start()
+        c0.wait()
+        y_vmem.at[0:8][...] = buf0[...]
+        c1.wait()
+        y_vmem.at[8:16][...] = buf1[...]
+        # 2. Independent un-waited DMA on `buf0` (`other_sem` waited too late)
+        # causing a plain `DATA_RACE` on the exact same `buf0`.
+        c2 = pltpu.make_async_copy(x_hbm.at[0:8], buf0, other_sem)
+        c2.start()
+        buf0[...] = jnp.zeros_like(buf0[...])
+        c2.wait()
+
+      return pl.pallas_call(
+          kernel,
+          out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype),
+          in_specs=[HBM_SPEC],
+          out_specs=pl.BlockSpec(x.shape),
+          scratch_shapes=[
+              pltpu.VMEM((8, 128), x.dtype),
+              pltpu.VMEM((8, 128), x.dtype),
+              pltpu.SemaphoreType.DMA,
+              pltpu.SemaphoreType.DMA,
+          ],
+      )(x)
+
+    x_spec = jax.ShapeDtypeStruct((16, 128), jnp.float32)
+    rep = verifier.verify(both_hazards_same_buffer, (x_spec,), mode=STATIC)
+    self.assertNotEmpty(
+        rep.findings_by_category(Category.CONCURRENT_DMA_SEM_SHARING),
+        msg=rep.summary(),
+    )
+    self.assertNotEmpty(
+        rep.findings_by_category(Category.DATA_RACE),
+        msg=rep.summary(),
+    )
+
+  def test_core_map_default_hbm_waw_race_and_concolic_while_deadlock(self):
+    core_mesh = _make_tensorcore_mesh("core", num_cores=2)
+    x_spec = jax.ShapeDtypeStruct((8, 128), jnp.float32)
+
+    def core_map_hbm_waw_race(x: jax.Array) -> jax.Array:
+      del x
+      out_ref = jax.empty_ref(jax.ShapeDtypeStruct((8, 128), jnp.float32))
+
+      @pl.kernel(
+          mesh=core_mesh,
+          scratch_types=[
+              pltpu.VMEM((8, 128), jnp.float32),
+              pltpu.SemaphoreType.DMA,
+          ],
+      )
+      def _kernel(vmem_src, sem):
+        vmem_src[...] = jnp.ones((8, 128), jnp.float32)
+        copy = pltpu.make_async_copy(vmem_src, out_ref, sem)
+        copy.start()
+        copy.wait()
+
+      _kernel()
+      return out_ref[...]
+
+    waw_rep = verifier.verify(core_map_hbm_waw_race, (x_spec,), mode=STATIC)
+    self.assertNotEmpty(
+        waw_rep.findings_by_category(Category.DATA_RACE),
+        msg=waw_rep.summary(),
+    )
+
+    def concolic_sync_while_deadlock(
+        trips: jax.Array, x: jax.Array
+    ) -> jax.Array:
+      def kernel(trips_smem, x_ref, y_ref, sem):
+        def cond_fn(i):
+          return i < trips_smem[0]
+
+        def body_fn(i):
+          pl.semaphore_signal(sem, 1)
+          # Iteration 2 waits for 2 signals when only 1 was posted on that step.
+          pl.semaphore_wait(sem, lax.select(i == 2, 2, 1))
+          return i + 1
+
+        _ = lax.while_loop(cond_fn, body_fn, jnp.int32(0))
+        y_ref[...] = x_ref[...]
+
+      return pl.pallas_call(
+          kernel,
+          out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype),
+          grid_spec=pltpu.PrefetchScalarGridSpec(
+              num_scalar_prefetch=1,
+              in_specs=[pl.BlockSpec(x.shape)],
+              out_specs=pl.BlockSpec(x.shape),
+              scratch_shapes=[pltpu.SemaphoreType.REGULAR],
+          ),
+      )(trips, x)
+
+    concolic_op = jax_op(
+        "pallas_verify_kernel::concolic_sync_while_deadlock",
+        concolic_sync_while_deadlock,
+    )
+    concolic_rep = verifier.verify(
+        concolic_op,
+        (
+            torch.tensor([3], dtype=torch.int32),
+            torch.ones((8, 128), dtype=torch.float32),
+        ),
+        mode=STATIC,
+    )
+    self.assertNotEmpty(
+        concolic_rep.findings_by_category(Category.SEMAPHORE_DEADLOCK),
+        msg=concolic_rep.summary(),
+    )
+    concolic_incomplete = concolic_rep.findings_by_category(
+        Category.VERIFICATION_INCOMPLETE
+    )
+    self.assertNotEmpty(concolic_incomplete, msg=concolic_rep.summary())
+    self.assertTrue(
+        any(
+            "a while loop's trip count was evaluated at the provided example"
+            " inputs"
+            in f.message
+            for f in concolic_incomplete
+        ),
+        msg=concolic_rep.summary(),
+    )
+
+  def test_dma_done_count_underwait_caught_on_regular_semaphore(self):
+    spec = jax.ShapeDtypeStruct((8, 128), jnp.float32)
+
+    def done_count_underwait(x: jax.Array) -> jax.Array:
+      def kernel(x_ref, y_ref, vmem_a, vmem_b, reg_sem):
+        pltpu.make_async_copy(x_ref, vmem_a, reg_sem).start()
+        pltpu.make_async_copy(x_ref, vmem_b, reg_sem).start()
+        pl.semaphore_wait(reg_sem, 1)
+        y_ref[...] = vmem_a[...] + vmem_b[...]
+
+      return pl.pallas_call(
+          kernel,
+          out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype),
+          in_specs=[HBM_SPEC],
+          out_specs=pl.BlockSpec(x.shape, lambda: (0, 0)),
+          scratch_shapes=(
+              pltpu.VMEM(x.shape, x.dtype),
+              pltpu.VMEM(x.shape, x.dtype),
+              pltpu.SemaphoreType.REGULAR,
+          ),
+      )(x)
+
+    underwait_rep = verifier.verify(
+        done_count_underwait,
+        (spec,),
+        mode=STATIC,
+        options=verifier.VerificationOptions(
+            tpu_version=torch.tpu.TpuVersion.V7
+        ),
+    )
+    self.assertFalse(underwait_rep.passed, msg=underwait_rep.summary())
+    self.assertNotEmpty(
+        underwait_rep.findings_by_category(Category.SEMAPHORE_NONZERO_EXIT),
+        msg=underwait_rep.summary(),
+    )
+    self.assertNotEmpty(
+        underwait_rep.findings_by_category(Category.CONCURRENT_DMA_SEM_SHARING),
+        msg=underwait_rep.summary(),
+    )
+
+  def test_truncated_multichip_rdma_relaxation_emits_warning_not_false_error(
+      self,
+  ):
+    mesh2 = _make_mock_tpu_mesh(2, "rank")
+    num_chunks = 8
+
+    def truncated_rdma_gather(
+        global_x: jax.Array, *, mesh: jax.sharding.Mesh
+    ) -> jax.Array:
+      def kernel(x_hbm, y_hbm, recv_buf, send_sem, recv_sem):
+        rank = lax.axis_index("rank")
+
+        @pl.when(rank == 1)
+        def _sender():
+          def body(k, carry):
+            rc = pltpu.make_async_remote_copy(
+                src_ref=x_hbm.at[pl.ds(k * 8, 8), :],
+                dst_ref=recv_buf.at[pl.ds(k * 8, 8), :],
+                send_sem=send_sem,
+                recv_sem=recv_sem,
+                device_id={"rank": 0},
+            )
+            rc.start()
+            rc.wait_send()
+            return carry
+
+          _ = lax.fori_loop(0, num_chunks, body, jnp.int32(0))
+          out_c1 = pltpu.make_async_copy(x_hbm, y_hbm, send_sem)
+          out_c1.start()
+          out_c1.wait()
+
+        @pl.when(rank == 0)
+        def _receiver():
+          pltpu.make_async_remote_copy(
+              src_ref=x_hbm,
+              dst_ref=recv_buf,
+              send_sem=send_sem,
+              recv_sem=recv_sem,
+              device_id={"rank": 0},
+          ).wait_recv()
+          recv_buf[...] = recv_buf[...] + 1.0
+          out_c0 = pltpu.make_async_copy(recv_buf, y_hbm, send_sem)
+          out_c0.start()
+          out_c0.wait()
+
+      def per_shard(x_local):
+        return pl.pallas_call(
+            kernel,
+            out_shape=jax.ShapeDtypeStruct(x_local.shape, x_local.dtype),
+            grid_spec=pltpu.PrefetchScalarGridSpec(
+                num_scalar_prefetch=0,
+                in_specs=[HBM_SPEC],
+                out_specs=HBM_SPEC,
+                scratch_shapes=(
+                    pltpu.VMEM(x_local.shape, x_local.dtype),
+                    pltpu.SemaphoreType.DMA,
+                    pltpu.SemaphoreType.DMA,
+                ),
+            ),
+        )(x_local)
+
+      return _shard_mapped(per_shard, mesh)(global_x)
+
+    gather_op = _distributed_op(
+        "pallas_verify_kernel::truncated_rdma_gather",
+        truncated_rdma_gather,
+        mesh2,
+    )
+    x_local = torch.ones((num_chunks * 8, 128), dtype=torch.float32)
+    trunc_rep = verifier.verify(
+        gather_op,
+        (x_local,),
+        mode=STATIC,
+        options=verifier.VerificationOptions(max_unrolled_iterations=4),
+    )
+    self.assertTrue(trunc_rep.passed, msg=trunc_rep.summary())
+    trunc_warnings = trunc_rep.findings_by_severity(verifier.Severity.WARNING)
+    self.assertNotEmpty(trunc_warnings, msg=trunc_rep.summary())
+    self.assertTrue(
+        all(
+            f.severity is verifier.Severity.WARNING
+            for f in trunc_rep.findings_by_category(
+                Category.UNTHROTTLED_REMOTE_OVERWRITE
+            )
+        ),
+        msg=trunc_rep.summary(),
+    )
+
+    full_unroll_rep = verifier.verify(
+        gather_op,
+        (x_local,),
+        mode=STATIC,
+        options=verifier.VerificationOptions(max_unrolled_iterations=16),
+    )
+    self.assertTrue(full_unroll_rep.passed, msg=full_unroll_rep.summary())
+    self.assertEmpty(
+        full_unroll_rep.findings_by_category(
+            Category.UNTHROTTLED_REMOTE_OVERWRITE
+        ),
+        msg=full_unroll_rep.summary(),
+    )
+
+  def test_shared_collective_id_barrier_conservation_enforced_per_kernel(self):
+    mesh2 = _make_mock_tpu_mesh(2, "rank")
+
+    def make_shared_barrier_chain(*, oversignal_first: bool):
+      def chain_jax(
+          global_x: jax.Array, *, mesh: jax.sharding.Mesh
+      ) -> jax.Array:
+        def k1(x_ref, y_ref):
+          peer = 1 - lax.axis_index("rank")
+          barrier = pltpu.get_barrier_semaphore()
+          pl.semaphore_signal(
+              barrier, 2 if oversignal_first else 1, device_id={"rank": peer}
+          )
+          pl.semaphore_wait(barrier, 1)
+          y_ref[...] = x_ref[...] + 1.0
+
+        def k2(x_ref, y_ref):
+          peer = 1 - lax.axis_index("rank")
+          barrier = pltpu.get_barrier_semaphore()
+          pl.semaphore_signal(barrier, 1, device_id={"rank": peer})
+          pl.semaphore_wait(barrier, 1)
+          y_ref[...] = x_ref[...] * 2.0
+
+        def per_shard(x_local):
+          mid = _single_block_call(k1, x_local, collective_id=0)
+          return _single_block_call(k2, mid, collective_id=0)
+
+        return _shard_mapped(per_shard, mesh)(global_x)
+
+      return chain_jax
+
+    x_local = torch.ones((8, 128), dtype=torch.float32)
+    bad_op = _distributed_op(
+        "pallas_verify_kernel::shared_cid_oversignal",
+        make_shared_barrier_chain(oversignal_first=True),
+        mesh2,
+    )
+    bad_rep = verifier.verify(bad_op, (x_local,), mode=STATIC)
+    self.assertFalse(bad_rep.passed, msg=bad_rep.summary())
+    self.assertNotEmpty(
+        bad_rep.findings_by_category(Category.SEMAPHORE_NONZERO_EXIT),
+        msg=bad_rep.summary(),
+    )
+
+    ok_op = _distributed_op(
+        "pallas_verify_kernel::shared_cid_balanced",
+        make_shared_barrier_chain(oversignal_first=False),
+        mesh2,
+    )
+    ok_rep = verifier.verify(ok_op, (x_local,), mode=STATIC)
+    self.assertTrue(ok_rep.passed, msg=ok_rep.summary())
+
+  def test_discarded_dummy_scratch_outputs_on_parallel_grid(self):
+    opts = verifier.VerificationOptions(tpu_version=torch.tpu.TpuVersion.V7)
+
+    def make_parallel_scratch_out_fn(
+        *,
+        discard_scratch: bool = True,
+        init_scratch: bool = True,
+        oob_scratch_spec: bool = False,
+        discard_all_outputs: bool = False,
+    ):
+      def single_fn(x_b: jax.Array):
+        num_heads = x_b.shape[0]
+
+        def kernel(x_ref, scratch_out_ref, out_ref):
+          if init_scratch:
+            scratch_out_ref[...] = jnp.zeros_like(scratch_out_ref)
+          acc = scratch_out_ref[...] + x_ref[...]
+          scratch_out_ref[...] = acc
+          out_ref[...] = acc
+
+        scratch_idx = (
+            (lambda h, i: (1, 0)) if oob_scratch_spec else (lambda h, i: (0, 0))
+        )
+        scratch_out, out = pl.pallas_call(
+            kernel,
+            grid_spec=pltpu.PrefetchScalarGridSpec(
+                num_scalar_prefetch=0,
+                in_specs=[
+                    pl.BlockSpec((None, 8, 128), lambda h, i: (h, i, 0)),
+                ],
+                out_specs=[
+                    pl.BlockSpec((8, 128), scratch_idx),
+                    pl.BlockSpec((None, 8, 128), lambda h, i: (h, i, 0)),
+                ],
+                grid=(num_heads, 1),
+            ),
+            out_shape=(
+                jax.ShapeDtypeStruct((8, 128), jnp.float32),
+                jax.ShapeDtypeStruct(x_b.shape, x_b.dtype),
+            ),
+            compiler_params=pltpu.CompilerParams(
+                dimension_semantics=("parallel", "arbitrary"),
+            ),
+        )(x_b)
+        if discard_all_outputs:
+          del scratch_out, out
+          return x_b + 1.0
+        if discard_scratch:
+          return out
+        return scratch_out, out
+
+      @jax.jit
+      def batched_fn(x: jax.Array):
+        return jax.vmap(single_fn)(x)
+
+      return batched_fn
+
+    for batch in (1, 2):
+      x_spec = jax.ShapeDtypeStruct((batch, 2, 8, 128), jnp.float32)
+      clean_rep = verifier.verify(
+          make_parallel_scratch_out_fn(discard_scratch=True),
+          (x_spec,),
+          mode=STATIC,
+          options=opts,
+      )
+      self.assertTrue(clean_rep.passed, msg=clean_rep.summary())
+      self.assertEmpty(
+          clean_rep.findings_by_severity(verifier.Severity.WARNING),
+          msg=clean_rep.summary(),
+      )
+
+    x1_spec = jax.ShapeDtypeStruct((1, 2, 8, 128), jnp.float32)
+    exposed_rep = verifier.verify(
+        make_parallel_scratch_out_fn(discard_scratch=False),
+        (x1_spec,),
+        mode=STATIC,
+        options=opts,
+    )
+    self.assertNotEmpty(
+        exposed_rep.findings_by_category(Category.PARALLEL_GRID_CONFLICT),
+        msg=exposed_rep.summary(),
+    )
+
+    uninit_rep = verifier.verify(
+        make_parallel_scratch_out_fn(discard_scratch=True, init_scratch=False),
+        (x1_spec,),
+        mode=STATIC,
+        options=opts,
+    )
+    uninit_findings = uninit_rep.findings_by_category(Category.UNWRITTEN_OUTPUT)
+    self.assertNotEmpty(uninit_findings, msg=uninit_rep.summary())
+    self.assertTrue(
+        any(
+            "is read before being written" in f.message for f in uninit_findings
+        ),
+        msg=uninit_rep.summary(),
+    )
+
+    oob_rep = verifier.verify(
+        make_parallel_scratch_out_fn(
+            discard_scratch=True, oob_scratch_spec=True
+        ),
+        (x1_spec,),
+        mode=STATIC,
+        options=opts,
+    )
+    self.assertNotEmpty(
+        oob_rep.findings_by_category(Category.OUT_OF_BOUNDS_ACCESS),
+        msg=oob_rep.summary(),
+    )
+
+    all_dead_rep = verifier.verify(
+        make_parallel_scratch_out_fn(discard_all_outputs=True),
+        (x1_spec,),
+        mode=STATIC,
+        options=opts,
+    )
+    self.assertNotEmpty(
+        all_dead_rep.findings_by_category(Category.PARALLEL_GRID_CONFLICT),
+        msg=all_dead_rep.summary(),
     )
 
 

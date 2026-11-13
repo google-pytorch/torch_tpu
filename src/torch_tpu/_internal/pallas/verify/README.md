@@ -40,8 +40,10 @@ print(verifier.verify(my_pallas_fn, (spec,)))
 
 `mode=VerificationMode.STATIC` skips everything that executes kernels (such as
 autograd parity), which is much faster. `VerificationOptions` controls the
-autograd check, the unrolling bound (`max_unrolled_iterations`), and the TPU
-generation of the lowering and static hardware checks (`tpu_version`).
+autograd check (`check_autograd`), the unrolling bound
+(`max_unrolled_iterations`), the per-query CP-SAT solver timeout
+(`solver_timeout_seconds`, 5.0 seconds by default), and the TPU generation of
+the lowering and static hardware checks (`tpu_version`).
 
 The lowering check lowers a `@jax_op` or raw JAX Pallas function to Mosaic TPU
 MLIR on the host via `jax.export` (up to `mosaic-serde`, including Pallas's
@@ -71,6 +73,12 @@ Findings have a severity: errors fail the report, warnings and infos do not
 | `fake_kernel_mismatch`          | `contracts`             | A custom `register_fake` output shape, dtype, or pytree disagrees with the `JaxCallable` runtime output.                                                             |
 | `lowering_failure`              | `lowering`              | The kernel fails Pallas TPU lowering, so it cannot run on TPU.                                                                                                       |
 | `autograd_parity_mismatch`      | `autograd`              | A registered custom backward disagrees with the forward kernel.                                                                                                      |
+| `data_race`                     | `model_check`           | Two accesses to overlapping memory, at least one a write, can happen at the same time.                                                                               |
+| `concurrent_dma_sem_sharing`    | `model_check`           | A race enabled by concurrent DMAs that signal the same semaphore.                                                                                                    |
+| `unthrottled_remote_overwrite`  | `model_check`           | A remote DMA can overwrite a buffer its receiver is still using.                                                                                                     |
+| `parallel_grid_conflict`        | `model_check`           | Grid iterations along a `parallel` axis access overlapping shared memory with at least one write.                                                                    |
+| `semaphore_deadlock`            | `model_check`           | No schedule lets every semaphore wait complete.                                                                                                                      |
+| `semaphore_nonzero_exit`        | `model_check`           | A semaphore is not back at zero when the kernel exits.                                                                                                               |
 | `unwritten_output`              | `model_check`           | Part of an output is never written, is clobbered by an unwritten parallel tile, or is accumulated into before being initialized.                                     |
 | `out_of_bounds_access`          | `model_check`           | A static ref slice, DMA slice, or `BlockSpec` `index_map` is out of bounds.                                                                                          |
 | `invalid_device_id`             | `model_check`           | A remote DMA or signal targets a device or core outside the mesh, or uses an invalid axis name or `device_id_type`.                                                  |
@@ -79,6 +87,10 @@ Findings have a severity: errors fail the report, warnings and infos do not
 | `verification_incomplete`       | any                     | A part of the program that could not be fully verified (see limitations).                                                                                            |
 
 <!-- mdformat on -->
+
+Concrete static race findings (`data_race`, `concurrent_dma_sem_sharing`,
+`unthrottled_remote_overwrite`) include a counterexample: the prefix of a
+concrete schedule, ordered by time, that leads to the conflicting accesses.
 
 ## Multi-chip kernels
 
@@ -105,12 +117,28 @@ integer and Boolean scalars are propagated per unrolled step to resolve
 `BlockSpec` `index_map`s, `Ref` slices, DMA/semaphore operands, remote
 `device_id`s, and coordinate-compressed output write coverage.
 
+`smt_checker.py` gives every event an integer timestamp and encodes program
+order, async DMA causality (start < read done <= write done, with progressive
+byte-count signaling), and counting-semaphore semantics (a wait completes only
+once the signals before it cover its amount plus what earlier waits consumed) as
+difference and pseudo-Boolean constraints. If no schedule satisfies them, the
+kernel deadlocks. For each pair of conflicting accesses it asks whether some
+schedule lets them overlap.
+
+The constraints are decided by the Google OR-Tools CP-SAT solver
+(`ortools.sat.python.cp_model`), installed via `pip install "torch_tpu[verify]"`
+on Python `<3.15` (semaphore conservation and parallel-grid conflict checks run
+even without OR-Tools).
+
 ## Limitations
 
 *   Model checking is bounded: loop iterations and scan steps past
-    `max_unrolled_iterations` (32 by default) are not unrolled, and static
+    `max_unrolled_iterations` (32 by default) are not unrolled, event traces are
+    recorded for up to `max_unrolled_iterations` grid points while static
     bounds, device IDs, semaphore rules, and output coverage are checked across
-    up to 4096 grid points.
+    up to 4096 grid points, and up to 2048 conflicting access pairs per kernel
+    model are checked within `solver_timeout_seconds` (5.0s per query by
+    default).
 *   Scalar-prefetch block indices and predicates are resolved at the provided
     example inputs when small concrete integer or boolean arrays/tensors are
     supplied, whereas abstract `ShapeDtypeStruct` scalar-prefetch inputs and
@@ -119,7 +147,8 @@ integer and Boolean scalars are propagated per unrolled step to resolve
     branch conditions) are not resolved; the affected checks are skipped or
     approximated.
 *   Iterations of `parallel` grid axes are modeled as if each ran on its own
-    core, with its own scratch memory and semaphores.
+    core, with its own scratch memory and semaphores, and `BlockSpec` transfers
+    are modeled at grid-step boundaries rather than overlapped across steps.
 *   VMEM and SMEM capacity are not checked.
 *   Every bounded or skipped check is reported as `verification_incomplete`.
 

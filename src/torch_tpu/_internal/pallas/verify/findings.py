@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Findings and reports produced by verification.
+"""Findings, counterexample traces, and reports produced by verification.
 
 Every verification pass in `torch.tpu.pallas.verifier` emits structured
 `VerificationFinding` records grouped into a `VerificationReport`. Reports track
@@ -205,10 +205,56 @@ class FindingCategory(enum.Enum):
   INVALID_DEVICE_ID = "invalid_device_id"
   HARDWARE_CONSTRAINT_VIOLATION = "hardware_constraint_violation"
   LOW_PRECISION_ACCUMULATION = "low_precision_accumulation"
+  DATA_RACE = "data_race"
+  CONCURRENT_DMA_SEM_SHARING = "concurrent_dma_sem_sharing"
+  UNTHROTTLED_REMOTE_OVERWRITE = "unthrottled_remote_overwrite"
+  PARALLEL_GRID_CONFLICT = "parallel_grid_conflict"
+  SEMAPHORE_DEADLOCK = "semaphore_deadlock"
+  SEMAPHORE_NONZERO_EXIT = "semaphore_nonzero_exit"
 
   # Parts of the program that could not be verified (bounded unrolling,
   # solver timeouts, unsupported constructs, skipped phases).
   VERIFICATION_INCOMPLETE = "verification_incomplete"
+
+
+@annotations.experimental(_exp_reason("CounterexampleStep"))
+@dataclasses.dataclass(frozen=True)
+class CounterexampleStep:
+  """One ordered event in a concrete counterexample execution schedule.
+
+  Attributes:
+    timestamp: Compacted integer logical timestamp (`0, 1, ...`).
+    device_id: Mesh device index (`0` for single-device kernels).
+    core_id: Core or sub-mesh index on the device.
+    actor: Short identifier of the executing core, grid iteration, or DMA
+      engine.
+    operation: Kind of operation (`vpu_load`, `vpu_store`, `dma_start`,
+      `dma_write_done`, `sem_signal`, `sem_wait`, etc.).
+    detail: Human-readable description of the buffer region or semaphore action.
+    source_location: Optional `file:line` in user code where the operation
+      originated.
+  """
+
+  timestamp: int
+  device_id: int
+  core_id: int
+  actor: str
+  operation: str
+  detail: str
+  source_location: str | None = None
+
+  __tt_api_stages__ = _field_stages(
+      "CounterexampleStep",
+      (
+          "timestamp",
+          "device_id",
+          "core_id",
+          "actor",
+          "operation",
+          "detail",
+          "source_location",
+      ),
+  )
 
 
 @annotations.experimental(_exp_reason("VerificationFinding"))
@@ -222,6 +268,7 @@ class VerificationFinding:
   message: str
   op_name: str | None = None
   source_location: str | None = None
+  counterexample: tuple[CounterexampleStep, ...] = ()
 
   __tt_api_stages__ = _field_stages(
       "VerificationFinding",
@@ -232,12 +279,13 @@ class VerificationFinding:
           "message",
           "op_name",
           "source_location",
+          "counterexample",
       ),
   )
 
   @annotations.experimental(_exp_reason("VerificationFinding.format"))
   def format(self) -> str:
-    """Formats this finding into readable text."""
+    """Formats this finding and any counterexample trace into readable text."""
     phase_part = f" ({self.phase.value})" if self.phase is not None else ""
     header = (
         f"[{self.severity.value.upper()}]{phase_part} {self.category.value}"
@@ -246,7 +294,17 @@ class VerificationFinding:
       header += f" in {self.op_name}"
     if self.source_location:
       header += f" @ {self.source_location}"
-    return f"{header}: {self.message}"
+    lines = [f"{header}: {self.message}"]
+    if self.counterexample:
+      lines.append("  Counterexample schedule:")
+      for step in self.counterexample:
+        loc = f" ({step.source_location})" if step.source_location else ""
+        lines.append(
+            f"    t={step.timestamp:02d} [dev={step.device_id},"
+            f" core={step.core_id}, {step.actor}] {step.operation}:"
+            f" {step.detail}{loc}"
+        )
+    return "\n".join(lines)
 
 
 @annotations.experimental(_exp_reason("VerificationError"))

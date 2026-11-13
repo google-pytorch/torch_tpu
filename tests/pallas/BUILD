@@ -198,7 +198,10 @@ torch_tpu_py_test(
     },
     shard_count = 4,
     tags = ["notsan"],  # TODO(b/584257115): Fails under OSS TSan.
-    deps = [
+    deps = if_oss(
+        ["//shims/ortools"],
+        [],
+    ) + [
         "//shims/absl_py/testing:absltest",
         "//shims/jax:pallas",
         "//shims/jax:pallas_tpu",
@@ -206,6 +209,7 @@ torch_tpu_py_test(
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/pallas:mock_device",
         "//src/torch_tpu/_internal/pallas/verify:jaxpr_model",
+        "//src/torch_tpu/_internal/pallas/verify:smt_checker",
         "//tests:seed_test_utils",
         "@pypi//jax",
         "@pypi//numpy",
@@ -230,6 +234,7 @@ torch_tpu_py_test(
         "//src/torch_tpu/_internal/ops/scaled_grouped_mm/kernels:rowwise_scaled_grouped_mm_kernel",
         "//src/torch_tpu/_internal/ops/scaled_mm/kernels:blockwise128_scaled_mm_kernel",
         "//src/torch_tpu/_internal/ops/scaled_mm/kernels:blockwise_scaled_mm_kernel",
+        "//src/torch_tpu/_internal/pallas/verify:smt_checker",
         "//tests:seed_test_utils",
         "@pypi//jax",
     ],

@@ -183,9 +183,19 @@ torch.tpu.optimizers.SingleTraceTrainer.param_group getter: {category: Public Py
 torch.tpu.optimizers.SingleTraceTrainer.params getter: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.pallas.get_pallas_mesh: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.pallas.jax_op: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.CounterexampleStep: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.CounterexampleStep.actor: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.CounterexampleStep.core_id: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.CounterexampleStep.detail: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.CounterexampleStep.device_id: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.CounterexampleStep.operation: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.CounterexampleStep.source_location: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.CounterexampleStep.timestamp: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.pallas.verifier.FindingCategory: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.pallas.verifier.FindingCategory.ALIASED_DONOR_INPUTS: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.pallas.verifier.FindingCategory.AUTOGRAD_PARITY_MISMATCH: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.FindingCategory.CONCURRENT_DMA_SEM_SHARING: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.FindingCategory.DATA_RACE: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.pallas.verifier.FindingCategory.DONATED_PARAMETER: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.pallas.verifier.FindingCategory.FAKE_KERNEL_MISMATCH: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.pallas.verifier.FindingCategory.HARDWARE_CONSTRAINT_VIOLATION: {category: Public Python API, defined_in: runtime, stage: Experimental}
@@ -193,7 +203,11 @@ torch.tpu.pallas.verifier.FindingCategory.INVALID_DEVICE_ID: {category: Public P
 torch.tpu.pallas.verifier.FindingCategory.LOWERING_FAILURE: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.pallas.verifier.FindingCategory.LOW_PRECISION_ACCUMULATION: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.pallas.verifier.FindingCategory.OUT_OF_BOUNDS_ACCESS: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.FindingCategory.PARALLEL_GRID_CONFLICT: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.pallas.verifier.FindingCategory.PARTITION_SPEC_MISMATCH: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.FindingCategory.SEMAPHORE_DEADLOCK: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.FindingCategory.SEMAPHORE_NONZERO_EXIT: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.FindingCategory.UNTHROTTLED_REMOTE_OVERWRITE: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.pallas.verifier.FindingCategory.UNWRITTEN_OUTPUT: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.pallas.verifier.FindingCategory.USE_AFTER_DONATE: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.pallas.verifier.FindingCategory.VERIFICATION_INCOMPLETE: {category: Public Python API, defined_in: runtime, stage: Experimental}
@@ -212,6 +226,7 @@ torch.tpu.pallas.verifier.VerificationError: {category: Public Python API, defin
 torch.tpu.pallas.verifier.VerificationError.report getter: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.pallas.verifier.VerificationFinding: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.pallas.verifier.VerificationFinding.category: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.VerificationFinding.counterexample: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.pallas.verifier.VerificationFinding.format: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.pallas.verifier.VerificationFinding.message: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.pallas.verifier.VerificationFinding.op_name: {category: Public Python API, defined_in: runtime, stage: Experimental}
@@ -224,6 +239,7 @@ torch.tpu.pallas.verifier.VerificationMode.STATIC: {category: Public Python API,
 torch.tpu.pallas.verifier.VerificationOptions: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.pallas.verifier.VerificationOptions.check_autograd: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.pallas.verifier.VerificationOptions.max_unrolled_iterations: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.verifier.VerificationOptions.solver_timeout_seconds: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.pallas.verifier.VerificationOptions.tpu_version: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.pallas.verifier.VerificationReport: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.pallas.verifier.VerificationReport.checked_phases: {category: Public Python API, defined_in: runtime, stage: Experimental}

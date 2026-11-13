@@ -304,6 +304,9 @@ _PUBLIC_MODULES: Mapping[str, ModuleSpec] = {
     "torch.tpu.pallas.verifier": ModuleSpec(
         exports={
             # go/keep-sorted start
+            "CounterexampleStep": (
+                "torch_tpu._internal.pallas.verify.findings:CounterexampleStep"
+            ),
             "FindingCategory": (
                 "torch_tpu._internal.pallas.verify.findings:FindingCategory"
             ),

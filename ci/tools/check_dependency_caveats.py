@@ -106,6 +106,16 @@ CAVEATS_BY_PYTHON_VERSION: Final[Mapping[str, Sequence[DependencyCaveat]]] = {
             extra_args=("--only-binary", ":all:"),
         ),
         DependencyCaveat(
+            name="ortools",
+            requirement="ortools>=9.15",
+            extra_args=("--only-binary", ":all:"),
+            extra_remediation=(
+                "drop the python_version < '3.15' marker on 'ortools>=9.15' in"
+                " pyproject.toml, replace //shims/ortools with @pypi//ortools"
+                " (and remove shims/ortools/BUILD.bazel),"
+            ),
+        ),
+        DependencyCaveat(
             name="torchax",
             requirement="torchax>=0.0.14",
             extra_remediation="update 'torchax>=0.0.14' in pyproject.toml,",

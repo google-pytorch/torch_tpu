@@ -65,6 +65,7 @@ WHEEL_PY_TARGETS = [
     "//src/torch_tpu/_internal/pallas/verify:fx_verifier",
     "//src/torch_tpu/_internal/pallas/verify:init",
     "//src/torch_tpu/_internal/pallas/verify:jaxpr_model",
+    "//src/torch_tpu/_internal/pallas/verify:smt_checker",
     "//src/torch_tpu/_internal/pallas/verify:verifier",
     "//src/torch_tpu/_internal/pallas:mesh",
     "//src/torch_tpu/_internal/performance",

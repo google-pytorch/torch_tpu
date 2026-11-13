@@ -39,6 +39,7 @@ from collections.abc import (
 import dataclasses
 import enum
 import hashlib
+import math
 import operator
 from typing import Any
 
@@ -48,6 +49,7 @@ import torch.fx as fx
 from torch_tpu._internal.pallas.verify import findings
 from torch_tpu._internal.pallas.verify import fx_verifier
 from torch_tpu._internal.pallas.verify import jaxpr_model
+from torch_tpu._internal.pallas.verify import smt_checker
 from torch_tpu._internal.utils import annotations
 
 
@@ -79,8 +81,10 @@ class VerificationOptions:
   Attributes:
     check_autograd: Whether to compare a registered custom backward against the
       forward kernel (FULL mode only).
-    max_unrolled_iterations: Bound on loop iterations and scan steps in the
-      model checker. Anything beyond it is reported as incomplete.
+    max_unrolled_iterations: Bound on loop iterations, scan steps, and recorded
+      event-trace grid points in the model checker. Anything beyond it is
+      reported as incomplete.
+    solver_timeout_seconds: Time budget for each model-checking query.
     tpu_version: TPU generation used across contract, lowering, and
       model-checking phases. An explicit non-CPU TPU mesh on the kernel or its
       example arguments takes precedence (since TPU lowering targets that mesh's
@@ -91,6 +95,7 @@ class VerificationOptions:
 
   check_autograd: bool = True
   max_unrolled_iterations: int = jaxpr_model.DEFAULT_MAX_UNROLLED_ITERATIONS
+  solver_timeout_seconds: float = smt_checker.DEFAULT_SOLVER_TIMEOUT_SECONDS
   tpu_version: findings.TpuVersion | None = None
 
   __tt_api_stages__ = {
@@ -104,6 +109,7 @@ class VerificationOptions:
       for name in (
           "check_autograd",
           "max_unrolled_iterations",
+          "solver_timeout_seconds",
           "tpu_version",
       )
   }
@@ -125,6 +131,21 @@ class VerificationOptions:
       raise ValueError(
           "max_unrolled_iterations must be an integer >= 1, got"
           f" {self.max_unrolled_iterations!r}"
+      )
+    if not isinstance(self.solver_timeout_seconds, (int, float)) or isinstance(
+        self.solver_timeout_seconds, bool
+    ):
+      raise TypeError(
+          "solver_timeout_seconds must be a float or int, got"
+          f" {type(self.solver_timeout_seconds).__name__}"
+      )
+    if (
+        not math.isfinite(self.solver_timeout_seconds)
+        or self.solver_timeout_seconds < 0
+    ):
+      raise ValueError(
+          "solver_timeout_seconds must be a non-negative finite number, got"
+          f" {self.solver_timeout_seconds!r}"
       )
     if self.tpu_version is not None and not isinstance(
         self.tpu_version, findings.TpuVersion
@@ -301,12 +322,15 @@ def _verify_kernel(
       # The kernel cannot be traced with inconsistent shardings.
       return findings.merge_reports(*reports)
 
-  model_report, models = jaxpr_model.check_kernel_static_models(
+  model_report, models = smt_checker.check_kernel_concurrency_with_models(
       target,
       args,
       kwargs,
-      max_unrolled_iterations=options.max_unrolled_iterations,
-      tpu_version=effective_tpu_version,
+      config=smt_checker.ModelCheckConfig(
+          max_unrolled_iterations=options.max_unrolled_iterations,
+          solver_timeout_seconds=options.solver_timeout_seconds,
+          tpu_version=effective_tpu_version,
+      ),
       concrete_arg_ids=concrete_arg_ids,
   )
   # If tracing failed in `Phase.MODEL_CHECK` and was already classified as a
@@ -333,6 +357,20 @@ def _verify_kernel(
         op_def is not None and getattr(op_def, "_backward_fn", None) is not None
     )
     if model_report.findings_by_category(
+        findings.FindingCategory.SEMAPHORE_DEADLOCK
+    ):
+      if has_backward:
+        reports.append(
+            _skipped_dynamic_check(
+                target,
+                findings.Phase.AUTOGRAD,
+                findings.Severity.INFO,
+                "skipped the autograd parity check because a semaphore"
+                " deadlock was proven and running the forward kernel would"
+                " hang",
+            )
+        )
+    elif model_report.findings_by_category(
         findings.FindingCategory.INVALID_DEVICE_ID
     ):
       if has_backward:

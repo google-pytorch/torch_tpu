@@ -57,7 +57,13 @@ dev = [
     "etils[epath]>=1.14",
     "expecttest>=0.3",
     "jax >= 0.9.2",
+    "ortools>=9.15; python_version < '3.15'",
     "transformers>=5.16.1",
+]
+
+verify = [
+    "jax >= 0.9.2",
+    "ortools>=9.15; python_version < '3.15'",
 ]
 
 test = [
@@ -76,6 +82,7 @@ test = [
     "unittest-xml-reporting>=4",
     "cattrs>=24.1.0",
     "dill>=0.4.1",
+    "ortools>=9.15; python_version < '3.15'",
 ]
 
 benchmark = [

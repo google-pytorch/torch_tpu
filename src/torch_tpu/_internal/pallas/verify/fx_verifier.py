@@ -5986,8 +5986,19 @@ def _default_classify_interpret_exception(
   msg = str(exc).strip()
   tail = msg.split("with exception:\n\n")[-1].strip()
   lower = tail.lower()
-  if "out of bounds" in lower or "out-of-bounds" in lower:
+  if "race detected" in lower:
+    category = findings.FindingCategory.DATA_RACE
+  elif "out of bounds" in lower or "out-of-bounds" in lower:
     category = findings.FindingCategory.OUT_OF_BOUNDS_ACCESS
+  elif "semaphore wait timed out" in lower:
+    category = findings.FindingCategory.SEMAPHORE_DEADLOCK
+  elif "semaphore" in lower and (
+      "non-zero" in lower
+      or "nonzero" in lower
+      or "at kernel exit" in lower
+      or "!= 0" in lower
+  ):
+    category = findings.FindingCategory.SEMAPHORE_NONZERO_EXIT
   elif "advanced indexers are not supported on tpu" in lower:
     category = findings.FindingCategory.HARDWARE_CONSTRAINT_VIOLATION
   elif (

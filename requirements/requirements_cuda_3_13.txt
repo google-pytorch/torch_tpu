@@ -12,6 +12,7 @@ absl-py==2.0.0 \
     #   optax
     #   orbax-checkpoint
     #   orbax-export
+    #   ortools
     #   tensorboard
     #   tensorflow-datasets
     #   tensorflow-metadata
@@ -715,6 +716,7 @@ dill==0.4.1 \
     --hash=sha256:1e1ce33e978ae97fcfcff5638477032b801c46c7c65cf717f95fbc2248f79a9d \
     --hash=sha256:423092df4182177d4d8ba8290c8a5b640c66ab35ec7da59ccfa00f6fa3eea5fa
     # via
+    #   torch-tpu (pyproject.toml)
     #   datasets
     #   multiprocess
 dm-tree==0.1.10 \
@@ -755,7 +757,9 @@ docstring-parser==0.18.0 \
 einops==0.8.2 \
     --hash=sha256:54058201ac7087911181bfec4af6091bb59380360f069276601256a76af08193 \
     --hash=sha256:609da665570e5e265e27283aab09e7f279ade90c4f01bcfca111f3d3e13f2827
-    # via etils
+    # via
+    #   torch-tpu (pyproject.toml)
+    #   etils
 etils==1.14.0 \
     --hash=sha256:8136e7f4c4173cd0af0ca5481c4475152f0b8686192951eefa60ee8711e1ede4 \
     --hash=sha256:b5df7341f54dbe1405a4450b2741207b4a8c279780402b45f87202b94dfc52b4
@@ -1279,6 +1283,7 @@ immutabledict==4.0.0 \
     --hash=sha256:fabf47437531e8bf65a3b5b47d501e65579323b2d1fe58f8ae01491c1fd29bf7
     # via
     #   torch-tpu (pyproject.toml)
+    #   ortools
     #   tensorflow-datasets
 importlib-metadata==10.1.0 \
     --hash=sha256:82b04047fa09792c1a8cfeddfe08bec79e4b13c29c8469b0d3949860f61017e8 \
@@ -2275,6 +2280,7 @@ numpy==2.1.0 \
     #   optax
     #   orbax-checkpoint
     #   orbax-export
+    #   ortools
     #   pandas
     #   peft
     #   scipy
@@ -2373,7 +2379,9 @@ opt-einsum==3.4.0 \
 optax==0.2.8 \
     --hash=sha256:5b225b35066fc3eebaa4d798f1b4173b4d57d1a480610908981f8343b50af0b0 \
     --hash=sha256:e3ca2d36c99daab1800ae9dbc0545034382d6bc780b24d969e1b0df65fa31cb4
-    # via flax
+    # via
+    #   torch-tpu (pyproject.toml)
+    #   flax
 orbax-checkpoint==0.12.8 \
     --hash=sha256:6a42c005db85bf412ae39598a008c894070fd69ca94ee39e2cca02c7ccc28d1f \
     --hash=sha256:fd9594cfc6dbd7881a8ce37ee9379b2a14c0e11ed49c774df1578c5ef4c6259a
@@ -2384,6 +2392,42 @@ orbax-export==0.0.8 \
     --hash=sha256:544eef564e2a6f17cd11b1167febe348b7b7cf56d9575de994a33d5613dd568a \
     --hash=sha256:f8037e1666ad28411cdb08d0668a2737b1281a32902c623ceda12109a089bc36
     # via flax
+ortools==9.15.6755 \
+    --hash=sha256:033836c0eb33bc72697a299e0caedbb25fc9d1cee0b13832d69cb30405f57b3e \
+    --hash=sha256:03424136aa48555e7f4d1bc73edeb99f80ec35a2e5f17700e2072640344980fc \
+    --hash=sha256:076565b803c85c4f87863e0616f537dd37f99c03e6f092e4068404f7b425d2b0 \
+    --hash=sha256:0b26655d25ab28030aef30e675e24d96d35940974de3a70ace01cf82ca301b69 \
+    --hash=sha256:1a0677270b0cd317a6b8dae42514264eaf5da5756c5bc7215eeea409424577df \
+    --hash=sha256:1e16686c2b457fa6242c474ab890ee1712347ab53678e0d2fab307ae03e97a4b \
+    --hash=sha256:27a10474e62c9dceed37cfa0e4845c5ffaf792138ebf5b61483771b96f1290b6 \
+    --hash=sha256:2d1f2fb2088e8953ccb902e68ffd06032cce0c7dcf7268b6135f3b6c553ca52b \
+    --hash=sha256:3cd6bec0a2e00e3891a53e3b436f45a1000269f302085572f49e9856b7f8eaf0 \
+    --hash=sha256:487796301fd9dad55f9cf21f9313c834697f74306d1a59f002e152862f8eb1b5 \
+    --hash=sha256:4f4964f8ed47ac76b5cfd23238618299f5a3c289d8e0ed66a75885ba9766eb6f \
+    --hash=sha256:55e291560d2fdb9590656cbee06ba99ee7f2476bd7d316ff757eeab33e9b20d6 \
+    --hash=sha256:5bb2b434f4ae01ce81813d01db722d9dedcc452aede681211ee4d4df8963a410 \
+    --hash=sha256:7181183cdcafe2b0d83ca5505b65048c7953dc7b5ad479361dded607964cc1b3 \
+    --hash=sha256:73b229dbc2b225441cb3bc5790ea8d55f14e3cd7f32d5185784f60b102308457 \
+    --hash=sha256:76150c4dd5927d0ab138344a5121b1f63e32501371ca93e632e2e10d8261064b \
+    --hash=sha256:781fb09d6c9f46015291f706bd7c7e0815db1bec6e92c74716342fb7ea2d0532 \
+    --hash=sha256:7a85a68ffb3fc1967e78624f40d3707aae459e82e3f2d9fe02e91788b3c7bf2a \
+    --hash=sha256:82b4a8e6e4f9380b453ab5fa4382ea7ee91e628f9b8be89d9ad760b33fca3323 \
+    --hash=sha256:87c73acda29f03ded74c7d2388f6efcbe45fa45a3f2bae4d85e1b5f1cc4cd9c1 \
+    --hash=sha256:8881e9620bf0bf8303891e171feb03d6e86c75a05fb9325a09ae7fbf93093f4a \
+    --hash=sha256:899b92afe3f775ab5867b9a8aa2850f81f2d95232db9b4ceec3456d69e6b8528 \
+    --hash=sha256:990838ad66a052e72a50e69da500878710e3420e91717fe88bf3071995caba9e \
+    --hash=sha256:acdf06a167933307608e7eba23a9490255933504df44c8de5f62c48656c29688 \
+    --hash=sha256:ae1c6e1fd844b4d756b22eb6c0ed574ea4342ee206d807c4f903039e748228fa \
+    --hash=sha256:afabb869e5fabeb704bd8147b22bf8139dee042e55fabd0d447a996428009e0c \
+    --hash=sha256:b85bd20259b146abce5e0721ce1bfd8fd273efc904216aa3be178c31b6d34057 \
+    --hash=sha256:c3bcccd15ef3fc6ac10bfa11630ba6dfe437d4fd1374a5b33f4773b7fee0f877 \
+    --hash=sha256:caac1d48b967adb877da2abcaf82c28f0f908a7cc208a6a1bbe01bc69590816c \
+    --hash=sha256:d72c136fd6e4b112bf154680290490da0aca60b7ddfc4163581c069c67016d4a \
+    --hash=sha256:d9d07cddca201e25e2e219006a9d6cda10c7e9ee2c712c50d19d508f9ed8a888 \
+    --hash=sha256:e4559603031ed371c5d86b1e9357fa49fb89236452e4b9bc429a0cf4a2fab05d \
+    --hash=sha256:e51ae55569650e5381fd6e50c655ccf6368a9532f5720ea41396bb90e0247a21 \
+    --hash=sha256:ebd5aea00374e3aad7a78de59058aca5e871a26a3c385cd0860ef1d685d03c9a
+    # via torch-tpu (pyproject.toml)
 packaging==26.3 \
     --hash=sha256:94edc256424af38762eb31306eed28beb9f0efc50a8837492c9d6fd6004aed79 \
     --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c
@@ -2457,7 +2501,9 @@ pandas==3.1.0 \
     --hash=sha256:eee72bba8a72f0bf9522132e5c87cd10fce9d77440b50f65326b093ec9fb8d43 \
     --hash=sha256:f1a93c24175129bfc9922ef748ddae1d8137c743ed835e2615be329f606fed4d \
     --hash=sha256:f4772320b7735d96dbbef437129f840dec4175f8a18a2391bd1222ed8943825c
-    # via datasets
+    # via
+    #   datasets
+    #   ortools
 parameterized==0.9.0 \
     --hash=sha256:4e0758e3d41bea3bbd05ec14fc2c24736723f243b28d702081aef438c9372b1b \
     --hash=sha256:7fc905272cefa4f364c1a3429cbbe9c0f98b793988efb5bf90aac80f08db09b1
@@ -2759,6 +2805,7 @@ protobuf==6.33.6 \
     #   grpcio-tools
     #   orbax-checkpoint
     #   orbax-export
+    #   ortools
     #   proto-plus
     #   tensorboard
     #   tensorboardx
@@ -3864,6 +3911,7 @@ typing-extensions==4.16.0 \
     #   grpcio
     #   huggingface-hub
     #   orbax-checkpoint
+    #   ortools
     #   pydantic
     #   pydantic-core
     #   simple-parsing

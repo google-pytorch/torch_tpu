@@ -40,37 +40,47 @@ def _pallas_add_one(x: jax.Array) -> jax.Array:
 class PallasVerifyErrorsTest(seed_test_utils.RepeatableTest):
 
   def test_finding_format_includes_severity_category_op_and_location(self):
+    step = verifier.CounterexampleStep(
+        timestamp=0,
+        device_id=0,
+        core_id=0,
+        actor="VPU",
+        operation="store",
+        detail="out[0:8]",
+        source_location="kernel.py:12",
+    )
     finding = verifier.VerificationFinding(
-        category=verifier.FindingCategory.USE_AFTER_DONATE,
+        category=verifier.FindingCategory.DATA_RACE,
         severity=verifier.Severity.ERROR,
-        phase=verifier.Phase.FX_GRAPH,
-        message="use after donate on x",
+        phase=verifier.Phase.MODEL_CHECK,
+        message="WAW race on out[0:8]",
         op_name="my_kernel",
         source_location="kernel.py:12",
+        counterexample=(step,),
     )
 
     formatted = finding.format()
-    self.assertIn("[ERROR] (fx_graph) use_after_donate in my_kernel", formatted)
+    self.assertIn("[ERROR] (model_check) data_race in my_kernel", formatted)
+    self.assertIn("Counterexample schedule:", formatted)
     self.assertIn("kernel.py:12", formatted)
-    self.assertIn("use after donate on x", formatted)
 
   def test_report_warnings_and_fail_on_incomplete(self):
     warn_finding = verifier.VerificationFinding(
-        category=verifier.FindingCategory.FAKE_KERNEL_MISMATCH,
+        category=verifier.FindingCategory.LOW_PRECISION_ACCUMULATION,
         severity=verifier.Severity.WARNING,
-        phase=verifier.Phase.CONTRACTS,
-        message="shape mismatch",
+        phase=verifier.Phase.MODEL_CHECK,
+        message="bfloat16 matmul without float32 accumulation",
         op_name="my_kernel",
     )
     info_finding = verifier.VerificationFinding(
         category=verifier.FindingCategory.VERIFICATION_INCOMPLETE,
         severity=verifier.Severity.INFO,
-        phase=verifier.Phase.CONTRACTS,
-        message="skipped phase",
+        phase=verifier.Phase.MODEL_CHECK,
+        message="bounded loop unrolling",
         op_name="my_kernel",
     )
     report = findings.report_of(
-        verifier.Phase.CONTRACTS, (warn_finding, info_finding)
+        verifier.Phase.MODEL_CHECK, (warn_finding, info_finding)
     )
 
     self.assertTrue(report.passed)
@@ -96,23 +106,24 @@ class PallasVerifyErrorsTest(seed_test_utils.RepeatableTest):
 
   def test_report_with_error_fails_and_filters_by_category(self):
     err_finding = verifier.VerificationFinding(
-        category=verifier.FindingCategory.USE_AFTER_DONATE,
+        category=verifier.FindingCategory.DATA_RACE,
         severity=verifier.Severity.ERROR,
-        phase=verifier.Phase.FX_GRAPH,
-        message="use after donate on x",
+        phase=verifier.Phase.MODEL_CHECK,
+        message="WAW race on out[0:8]",
         op_name="my_kernel",
     )
     warn_finding = verifier.VerificationFinding(
-        category=verifier.FindingCategory.FAKE_KERNEL_MISMATCH,
+        category=verifier.FindingCategory.LOW_PRECISION_ACCUMULATION,
         severity=verifier.Severity.WARNING,
         phase=verifier.Phase.CONTRACTS,
-        message="shape mismatch",
+        message="bfloat16 matmul without float32 accumulation",
         op_name="my_kernel",
     )
     warn_report = findings.report_of(verifier.Phase.CONTRACTS, (warn_finding,))
     report = findings.merge_reports(
         warn_report,
-        findings.report_of(verifier.Phase.FX_GRAPH, (err_finding,)),
+        findings.report_of(verifier.Phase.MODEL_CHECK, (err_finding,)),
+        findings.report_of(verifier.Phase.CONTRACTS, ()),
     )
 
     self.assertFalse(report.passed)
@@ -122,10 +133,10 @@ class PallasVerifyErrorsTest(seed_test_utils.RepeatableTest):
     )
     self.assertEqual(
         report.checked_phases,
-        (verifier.Phase.CONTRACTS, verifier.Phase.FX_GRAPH),
+        (verifier.Phase.CONTRACTS, verifier.Phase.MODEL_CHECK),
     )
     self.assertEqual(
-        report.findings_by_category(verifier.FindingCategory.USE_AFTER_DONATE),
+        report.findings_by_category(verifier.FindingCategory.DATA_RACE),
         (err_finding,),
     )
     self.assertIn("FAILED", str(report))
@@ -151,6 +162,7 @@ class PallasVerifyErrorsTest(seed_test_utils.RepeatableTest):
     opts = verifier.VerificationOptions()
     self.assertTrue(opts.check_autograd)
     self.assertEqual(opts.max_unrolled_iterations, 32)
+    self.assertEqual(opts.solver_timeout_seconds, 5.0)
     self.assertIsNone(opts.tpu_version)
     for version in torch.tpu.TpuVersion:
       self.assertIs(
@@ -210,7 +222,21 @@ class PallasVerifyErrorsTest(seed_test_utils.RepeatableTest):
       verifier.VerificationOptions(max_unrolled_iterations=0)
     with self.assertRaisesRegex(ValueError, "max_unrolled_iterations"):
       verifier.VerificationOptions(max_unrolled_iterations=-5)
-    for bad_version in ("TPU v7", "", 123):
+    with self.assertRaisesRegex(
+        TypeError, "solver_timeout_seconds must be a float or int"
+    ):
+      verifier.VerificationOptions(solver_timeout_seconds="5.0")  # type: ignore[arg-type]
+    with self.assertRaisesRegex(
+        TypeError, "solver_timeout_seconds must be a float or int"
+    ):
+      verifier.VerificationOptions(solver_timeout_seconds=True)
+    with self.assertRaisesRegex(ValueError, "solver_timeout_seconds"):
+      verifier.VerificationOptions(solver_timeout_seconds=-1.0)
+    with self.assertRaisesRegex(ValueError, "solver_timeout_seconds"):
+      verifier.VerificationOptions(solver_timeout_seconds=float("nan"))
+    with self.assertRaisesRegex(ValueError, "solver_timeout_seconds"):
+      verifier.VerificationOptions(solver_timeout_seconds=float("inf"))
+    for bad_version in ("TPU v7", "", "   ", 123):
       with self.assertRaisesRegex(TypeError, "tpu_version"):
         verifier.VerificationOptions(tpu_version=bad_version)  # type: ignore[arg-type]
     with self.assertRaisesRegex(TypeError, "mode must be"):

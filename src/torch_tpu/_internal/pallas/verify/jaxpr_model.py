@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Static structural and hardware model extraction from Pallas TPU jaxprs.
+"""Extracts concurrency and static models from Pallas TPU Jaxprs.
 
 `check_kernel_static_models` traces a TorchTPU `@jax_op` or a raw JAX function
 to a closed Jaxpr without initializing TPU backends, finds every `pallas_call`
@@ -69,9 +69,10 @@ from torch_tpu._internal.pallas.verify import fx_verifier
 _Category = findings.FindingCategory
 _Severity = findings.Severity
 
-# Default bound on unrolled loop iterations and scan steps.
+# Default bound on unrolled grid points, loop iterations, and scan steps.
 DEFAULT_MAX_UNROLLED_ITERATIONS = 32
-# Maximum grid points walked for bounds, hardware, and coverage checks.
+# Grid points whose writes are tracked for the output coverage and bounds
+# checks; only the first `max_unrolled_iterations` of them are model checked.
 _MAX_COVERAGE_GRID_POINTS = 4096
 # Bound on the cells examined when computing uncovered output regions.
 _MAX_COVERAGE_CELLS = 1 << 20
@@ -135,6 +136,12 @@ class SliceDim:
     """Exclusive upper bound `start + size`."""
     return self.start + self.size
 
+  def overlaps(self, other: SliceDim) -> bool:
+    """Returns whether `self` and `other` share at least one index."""
+    if self.size <= 0 or other.size <= 0:
+      return False
+    return self.start < other.stop and other.start < self.stop
+
   def __str__(self) -> str:
     if self.size == 1:
       return f"{self.start}"
@@ -149,6 +156,41 @@ class HyperRectSlice:
   opaque: bool = False
   covers_full_buffer: bool = dataclasses.field(default=False, compare=False)
 
+  def intersects(self, other: HyperRectSlice) -> bool:
+    """Returns whether `self` and `other` may overlap along all axes."""
+    if len(self.dims) != len(other.dims):
+      # Different ranks (e.g. scalar vs. array views): assume overlap.
+      return True
+    return all(a.overlaps(b) for a, b in zip(self.dims, other.dims))
+
+  def definitely_intersects(self, other: HyperRectSlice) -> bool:
+    """Whether `self` and `other` overlap without relying on widened axes."""
+    if len(self.dims) != len(other.dims):
+      return False
+    if any(d.size <= 0 for d in self.dims) or any(
+        d.size <= 0 for d in other.dims
+    ):
+      return False
+    if (self.covers_full_buffer and not other.opaque) or (
+        other.covers_full_buffer and not self.opaque
+    ):
+      return self.intersects(other)
+    if self.opaque or other.opaque:
+      return False
+    for a, b in zip(self.dims, other.dims):
+      if a.exact and b.exact:
+        if not a.overlaps(b):
+          return False
+      elif a.exact and not b.exact:
+        if not (a.start <= b.start and b.stop <= a.stop):
+          return False
+      elif b.exact and not a.exact:
+        if not (b.start <= a.start and a.stop <= b.stop):
+          return False
+      else:
+        return False
+    return True
+
   def __str__(self) -> str:
     if not self.dims:
       return "[...]"
@@ -156,17 +198,139 @@ class HyperRectSlice:
 
 
 @dataclasses.dataclass(frozen=True)
-class _ActorKey:
-  """Per-(device, core, parallel_grid_coords) stream key for tile state."""
+class BufferKey:
+  """Physical memory allocation identity."""
+
+  device_id: int
+  core_id: int
+  memory_space: str
+  buffer_id: str
+  # Core or parallel-iteration coordinates that own a private (VMEM, SMEM)
+  # buffer; empty for memory shared across cores of a chip (HBM, VMEM_SHARED,
+  # or collective_axes run_scoped allocations).
+  owner_coords: tuple[int, ...] = ()
+
+
+@dataclasses.dataclass(frozen=True)
+class SemaphoreKey:
+  """Physical semaphore element identity.
+
+  Iterations of `parallel` grid axes are modeled as if each ran on its own
+  core, so per-core semaphores carry the parallel grid coordinates of the
+  iteration that uses them.
+  """
+
+  device_id: int
+  core_id: int
+  sem_type: str  # "dma", "regular", or "barrier"
+  sem_id: str
+  sem_index: tuple[int, ...] = ()
+  parallel_coords: tuple[int, ...] = ()
+
+  def short_str(self) -> str:
+    """Returns a compact human-readable semaphore identifier."""
+    idx_str = (
+        f"[{','.join(str(i) for i in self.sem_index)}]"
+        if self.sem_index
+        else ""
+    )
+    par_str = f", par={self.parallel_coords}" if self.parallel_coords else ""
+    return (
+        f"{self.sem_id}{idx_str}({self.sem_type}@dev{self.device_id}{par_str})"
+    )
+
+
+@dataclasses.dataclass(frozen=True)
+class ActorKey:
+  """Execution stream `(device_id, core_id, parallel_grid_coords)`."""
 
   device_id: int
   core_id: int
   parallel_coords: tuple[int, ...] = ()
 
+  def short_str(self) -> str:
+    """Returns a compact human-readable actor label."""
+    if self.parallel_coords:
+      return f"tc(par={self.parallel_coords})"
+    return "tc"
+
+
+@dataclasses.dataclass(frozen=True)
+class MemoryAccessEvent:
+  """Synchronous load or store executed on an `ActorKey`."""
+
+  event_id: int
+  actor: ActorKey
+  grid_point: tuple[int, ...]
+  buffer: BufferKey
+  region: HyperRectSlice
+  is_write: bool
+  is_implicit_pipeline: bool = False
+  source_location: str | None = None
+  speculative: bool = False
+
+
+@dataclasses.dataclass(frozen=True)
+class DmaStartEvent:
+  """Asynchronous local or cross-chip DMA launch."""
+
+  event_id: int
+  dma_id: int
+  actor: ActorKey
+  grid_point: tuple[int, ...]
+  src_buffer: BufferKey
+  src_region: HyperRectSlice
+  dst_buffer: BufferKey
+  dst_region: HyperRectSlice
+  byte_count: int
+  dst_sem: SemaphoreKey | None
+  src_sem: SemaphoreKey | None
+  is_remote: bool
+  source_location: str | None = None
+
+
+@dataclasses.dataclass(frozen=True)
+class DmaWaitEvent:
+  """Wait on a DMA completion semaphore for `byte_count` bytes."""
+
+  event_id: int
+  actor: ActorKey
+  grid_point: tuple[int, ...]
+  sem: SemaphoreKey
+  byte_count: int
+  is_wait_send: bool
+  source_location: str | None = None
+
+
+@dataclasses.dataclass(frozen=True)
+class SemaphoreSignalEvent:
+  """Explicit `pl.semaphore_signal` increment on local or remote semaphore."""
+
+  event_id: int
+  actor: ActorKey
+  grid_point: tuple[int, ...]
+  target_sem: SemaphoreKey
+  amount: int
+  is_remote: bool
+  source_location: str | None = None
+
+
+@dataclasses.dataclass(frozen=True)
+class SemaphoreWaitEvent:
+  """Explicit `pl.semaphore_wait` on a local semaphore."""
+
+  event_id: int
+  actor: ActorKey
+  grid_point: tuple[int, ...]
+  sem: SemaphoreKey
+  amount: int
+  decrement: bool
+  source_location: str | None = None
+
 
 @dataclasses.dataclass(frozen=True)
 class StaticIssue:
-  """A static problem found while symbolically unrolling a Pallas kernel."""
+  """A problem found while extracting the model, before any solving."""
 
   category: findings.FindingCategory
   severity: findings.Severity
@@ -176,7 +340,7 @@ class StaticIssue:
 
 @dataclasses.dataclass(frozen=True)
 class KernelVerificationModel:
-  """Extracted structural and memory-region model of one `pallas_call`.
+  """Extracted concurrency and memory-region model of one `pallas_call`.
 
   Attributes:
     kernel_name: Name of the `pallas_call` (or of the op that calls it).
@@ -184,10 +348,28 @@ class KernelVerificationModel:
     grid: The kernel grid.
     dimension_semantics: "parallel" or "arbitrary" per grid axis.
     collective_id: `collective_id` from the compiler params, if any.
+    actor_event_orders: Event ids per actor in program order.
+    memory_events: Synchronous loads and stores.
+    dma_starts: DMA launches.
+    dma_waits: DMA semaphore waits.
+    sem_signals: Semaphore signals.
+    sem_waits: Semaphore waits.
     static_issues: Problems found during extraction.
     incomplete_reasons: Why the model is bounded or approximate, if it is.
+    sync_reliable: False if semaphore or remote-device identities could not be
+      resolved, or if semaphore operations sit in code whose execution depends
+      on runtime data, in which case deadlock and race results are not
+      meaningful.
+    sync_truncated: True if only a prefix of the semaphore operations is modeled
+      (bounded unrolling), so the semaphore values at kernel exit are unknown
+      and waits may depend on signals of unchecked iterations.
     uses_remote_operations: Whether the kernel issues DMAs or semaphore signals
       to other devices.
+    truncated_sem_keys: Semaphores with operations in iterations that are not
+      modeled, whose values at kernel exit are therefore unknown.
+    unwalked_sync: True if a loop, equation cap, or grid-point cap truncated
+      unwalked semaphore operations inside a grid point or beyond the coverage
+      cap.
     uses_done_count_regular_dma: Whether the kernel issues DMAs using REGULAR
       semaphores in done-count mode (TPU v5p+).
     has_revisit_any_output: Whether any output operand opts into non-consecutive
@@ -197,6 +379,8 @@ class KernelVerificationModel:
       statically proven to overwrite the full tile without reading stale values.
     core_axis_names: Core-mesh axis names when lowered via `core_map` /
       `mpmd_map`, or `()` for `pallas_call`.
+    signaled_sem_keys: Semaphores signaled at least once across all walked grid
+      points (including beyond `max_unrolled_iterations`).
   """
 
   kernel_name: str
@@ -204,13 +388,24 @@ class KernelVerificationModel:
   grid: tuple[int, ...]
   dimension_semantics: tuple[str, ...]
   collective_id: int | None
+  actor_event_orders: Mapping[ActorKey, tuple[int, ...]]
+  memory_events: tuple[MemoryAccessEvent, ...]
+  dma_starts: tuple[DmaStartEvent, ...]
+  dma_waits: tuple[DmaWaitEvent, ...]
+  sem_signals: tuple[SemaphoreSignalEvent, ...]
+  sem_waits: tuple[SemaphoreWaitEvent, ...]
   static_issues: tuple[StaticIssue, ...] = ()
   incomplete_reasons: tuple[str, ...] = ()
+  sync_reliable: bool = True
+  sync_truncated: bool = False
   uses_remote_operations: bool = False
+  truncated_sem_keys: frozenset[SemaphoreKey] = frozenset()
+  unwalked_sync: bool = False
   uses_done_count_regular_dma: bool = False
   has_revisit_any_output: bool = False
   has_verified_full_overwrite_revisit: bool = False
   core_axis_names: tuple[str, ...] = ()
+  signaled_sem_keys: frozenset[SemaphoreKey] = frozenset()
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1198,25 +1393,44 @@ class _KernelModelBuilder:
         getattr(fx_verifier.abstract_tpu_device(tpu_version), "num_cores", 1)
     )
 
+    self._next_event_id = 0
+    self._next_dma_id = 0
     self.step_count = 0
+    self.actor_events: dict[ActorKey, list[int]] = {}
+    self.memory_events: list[MemoryAccessEvent] = []
+    self.dma_starts: list[DmaStartEvent] = []
+    self.dma_waits: list[DmaWaitEvent] = []
+    self.sem_signals: list[SemaphoreSignalEvent] = []
+    self.sem_waits: list[SemaphoreWaitEvent] = []
     self.static_issues: list[StaticIssue] = []
     self._issue_keys: set[tuple[findings.FindingCategory, str]] = set()
     self._dedup_keys: set[tuple[Any, ...]] = set()
     self.incomplete_reasons: list[str] = []
     self.coverage_known = True
+    self.sync_reliable = True
+    self.sync_truncated = False
+    self.unwalked_sync = False
     self.uses_remote_operations = False
     self.has_revisit_any_output = False
     self.has_verified_full_overwrite_revisit = False
     self.uses_done_count_regular_dma = False
     # Monotone per-buffer mutation counter (never rolled back across branches).
     self._may_write_epoch: dict[str, int] = {}
+    # Actors whose recorded event prefix stopped at a truncated sync loop so
+    # post-loop epilogue accesses do not splice onto un-waited loop DMAs.
+    self.sync_halted_actors: set[ActorKey] = set()
+    # Semaphores whose operations are only partly modeled.
+    self.truncated_sem_keys: set[SemaphoreKey] = set()
+    # Semaphores signaled at any walked grid point (including coverage-only).
+    self.signaled_sem_keys: set[SemaphoreKey] = set()
+    self._sem_key_scopes: list[set[SemaphoreKey]] = []
     self._has_sync: dict[int, bool] = {}
     # (device id, output buffer id) -> regions written by stores or DMAs.
     self.output_writes: dict[tuple[int, str], list[HyperRectSlice]] = {}
     # (stream_actor, operand index) -> list of
     #   (grid_coords, window_key, region, was_read_before_full_write, writes).
     self.output_block_visits: dict[
-        tuple[_ActorKey, int],
+        tuple[ActorKey, int],
         list[
             tuple[
                 tuple[int, ...],
@@ -1233,7 +1447,7 @@ class _KernelModelBuilder:
         tuple[int, int, HyperRectSlice],
         list[
             tuple[
-                _ActorKey,
+                ActorKey,
                 tuple[int, ...],
                 list[HyperRectSlice],
             ]
@@ -1247,17 +1461,17 @@ class _KernelModelBuilder:
     # Active output block and accumulated tile writes on each (actor, op_index)
     # across consecutive reduction steps targeting the same output block.
     self.active_output_tile_block: dict[
-        tuple[_ActorKey, int], tuple[HyperRectSlice, tuple[int, ...]]
+        tuple[ActorKey, int], tuple[HyperRectSlice, tuple[int, ...]]
     ] = {}
     self.active_output_tile_writes: dict[
-        tuple[_ActorKey, int], list[HyperRectSlice]
+        tuple[ActorKey, int], list[HyperRectSlice]
     ] = {}
     self.revisit_any_tile_writes: dict[
-        tuple[_ActorKey, int, tuple[HyperRectSlice, tuple[int, ...]]],
+        tuple[ActorKey, int, tuple[HyperRectSlice, tuple[int, ...]]],
         list[HyperRectSlice],
     ] = {}
     # (actor, canonical buffer id) written in an earlier grid or loop step.
-    self.prior_step_written_buffers: set[tuple[_ActorKey, str]] = set()
+    self.prior_step_written_buffers: set[tuple[ActorKey, str]] = set()
     self._scope_counters: dict[tuple[Any, ...], int] = {}
     self._source_locations: dict[int, str | None] = {}
 
@@ -1273,6 +1487,23 @@ class _KernelModelBuilder:
     if key not in self._source_locations:
       self._source_locations[key] = _summarize_source_info(eqn)
     return self._source_locations[key]
+
+  def new_event_id(self, actor: ActorKey) -> int:
+    eid = self._next_event_id
+    self._next_event_id += 1
+    self.actor_events.setdefault(actor, []).append(eid)
+    return eid
+
+  def insert_event_id(self, actor: ActorKey, index: int) -> int:
+    eid = self._next_event_id
+    self._next_event_id += 1
+    self.actor_events.setdefault(actor, []).insert(index, eid)
+    return eid
+
+  def new_dma_id(self) -> int:
+    did = self._next_dma_id
+    self._next_dma_id += 1
+    return did
 
   def may_write_epoch(self, buffer_id: str) -> int:
     """Returns a monotone version counter for writes targeting `buffer_id`."""
@@ -1301,13 +1532,24 @@ class _KernelModelBuilder:
       self._issue_keys.add((category, message))
       self.static_issues.append(StaticIssue(category, severity, message, loc))
 
-  def note_incomplete(
-      self, reason: str, *, affects_coverage: bool = False
-  ) -> None:
+  def note_incomplete(self, reason: str, *, affects_coverage: bool) -> None:
     if reason not in self.incomplete_reasons:
       self.incomplete_reasons.append(reason)
     if affects_coverage:
       self.coverage_known = False
+
+  def note_unresolved_sync(
+      self, reason: str, *, affects_coverage: bool = False
+  ) -> None:
+    self.sync_reliable = False
+    self.note_incomplete(reason, affects_coverage=affects_coverage)
+
+  def note_truncated_sync(self, reason: str, *, affects_coverage: bool) -> None:
+    """Records that only a prefix of the semaphore operations is modeled."""
+    self.sync_truncated = True
+    if affects_coverage:
+      self.unwalked_sync = True
+    self.note_incomplete(reason, affects_coverage=affects_coverage)
 
   def has_sync(self, jaxpr: Any) -> bool:
     """Returns whether `jaxpr` or a nested jaxpr uses semaphores."""
@@ -1319,6 +1561,27 @@ class _KernelModelBuilder:
           for eqn in jaxpr.eqns
       )
     return self._has_sync[key]
+
+  def saw_semaphore(
+      self, key: SemaphoreKey, *, recorded: bool, is_signal: bool = False
+  ) -> None:
+    """Notes a semaphore operation, which may not be recorded as an event."""
+    if is_signal:
+      self.signaled_sem_keys.add(key)
+    if not recorded:
+      self.truncated_sem_keys.add(key)
+    for scope in self._sem_key_scopes:
+      scope.add(key)
+
+  def push_semaphore_scope(self) -> None:
+    """Starts collecting the semaphores that the walked code uses."""
+    self._sem_key_scopes.append(set())
+
+  def pop_semaphore_scope(self, *, truncated: bool) -> None:
+    """Stops collecting; a truncated walk only partly models them."""
+    keys = self._sem_key_scopes.pop()
+    if truncated:
+      self.truncated_sem_keys |= keys
 
   def record_output_write(
       self, device_id: int, buffer_id: str, region: HyperRectSlice
@@ -1344,15 +1607,26 @@ class _KernelModelBuilder:
         grid=self.grid,
         dimension_semantics=self.dimension_semantics,
         collective_id=self.collective_id,
+        actor_event_orders={k: tuple(v) for k, v in self.actor_events.items()},
+        memory_events=tuple(self.memory_events),
+        dma_starts=tuple(self.dma_starts),
+        dma_waits=tuple(self.dma_waits),
+        sem_signals=tuple(self.sem_signals),
+        sem_waits=tuple(self.sem_waits),
         static_issues=tuple(self.static_issues),
         incomplete_reasons=tuple(self.incomplete_reasons),
+        sync_reliable=self.sync_reliable,
+        sync_truncated=self.sync_truncated,
         uses_remote_operations=self.uses_remote_operations,
+        truncated_sem_keys=frozenset(self.truncated_sem_keys),
+        unwalked_sync=self.unwalked_sync,
         uses_done_count_regular_dma=self.uses_done_count_regular_dma,
         has_revisit_any_output=self.has_revisit_any_output,
         has_verified_full_overwrite_revisit=(
             self.has_verified_full_overwrite_revisit
         ),
         core_axis_names=self.core_axis_names,
+        signaled_sem_keys=frozenset(self.signaled_sem_keys),
     )
 
 
@@ -1397,7 +1671,7 @@ class _WalkContext:
   """Position of a jaxpr walk: device, grid point, actor, and scope."""
 
   builder: _KernelModelBuilder
-  actor: _ActorKey
+  actor: ActorKey
   device_id: int
   device_coords: tuple[int, ...]
   mesh_ctx: _MeshContext
@@ -1408,6 +1682,9 @@ class _WalkContext:
   # Buffer id -> regions written locally (by stores or local DMAs) at this
   # grid point.
   written: dict[str, list[HyperRectSlice]]
+  # Whether events are recorded for model checking (only the first grid points
+  # are; the rest only feed the coverage and bounds checks).
+  record_events: bool = True
   extra_axis_env: Mapping[Any, int] = dataclasses.field(default_factory=dict)
   core_axis_names: tuple[str, ...] = ()
   all_core_axis_sizes: Mapping[str, int] = dataclasses.field(
@@ -1444,6 +1721,12 @@ class _WalkContext:
   )
 
   @property
+  def should_record_events(self) -> bool:
+    return (
+        self.record_events and self.actor not in self.builder.sync_halted_actors
+    )
+
+  @property
   def effective_dimension_semantics(self) -> tuple[str, ...]:
     if self.dimension_semantics is not None:
       return self.dimension_semantics
@@ -1474,10 +1757,10 @@ class _WalkContext:
     )
 
   @property
-  def pipeline_stream_actor(self) -> _ActorKey:
+  def pipeline_stream_actor(self) -> ActorKey:
     """Stream key for pipelined VMEM tile residency and revisit order."""
     if self.builder.num_tpu_cores == 1 and not self.core_axis_names:
-      return _ActorKey(self.device_id, self.actor.core_id, ())
+      return ActorKey(self.device_id, self.actor.core_id, ())
     return self.actor
 
   @property
@@ -1581,16 +1864,103 @@ def _resolve_view(
   return view
 
 
-def _resolve_sem_type(
-    ctx: _WalkContext, view: _RefView, default_type: str
-) -> str | None:
-  if view.sem_index is None or view.opaque:
-    ctx.builder.note_incomplete(
+def _buffer_key(
+    ctx: _WalkContext,
+    view: _RefView,
+    device_id: int,
+    target_parallel_coords: tuple[int, ...] | None = None,
+) -> BufferKey:
+  buf_id = view.buffer_id
+  if (
+      target_parallel_coords is not None
+      and target_parallel_coords != ctx.actor.parallel_coords
+  ):
+    par_iter = iter(target_parallel_coords)
+    target_grid = [
+        next(par_iter) if sem == "parallel" else c
+        for c, sem in zip(ctx.grid_coords, ctx.effective_dimension_semantics)
+    ]
+    target_tag = "g" + "_".join(str(c) for c in target_grid)
+    cur_tag = ctx.grid_tag()
+    if buf_id.startswith(f"{cur_tag}."):
+      buf_id = target_tag + buf_id[len(cur_tag) :]
+    elif buf_id.endswith(f"_{cur_tag}"):
+      buf_id = buf_id[: -len(cur_tag)] + target_tag
+  is_shared = view.shared or view.memory_space in ("hbm", "vmem_shared")
+  owner_coords = (
+      ()
+      if is_shared
+      else (
+          ctx.actor.parallel_coords
+          if target_parallel_coords is None
+          else target_parallel_coords
+      )
+  )
+  owner_core_id = (
+      view.owner_core_id
+      if view.owner_core_id is not None
+      else ctx.actor.core_id
+  )
+  return BufferKey(
+      device_id,
+      0 if is_shared else owner_core_id,
+      view.memory_space,
+      buf_id,
+      owner_coords=owner_coords,
+  )
+
+
+def _sem_key(
+    ctx: _WalkContext,
+    view: _RefView,
+    device_id: int,
+    default_type: str,
+    *,
+    parallel_coords: tuple[int, ...] | None = None,
+    is_signal: bool = False,
+) -> SemaphoreKey | None:
+  index = view.sem_index
+  if index is None or view.opaque:
+    ctx.builder.note_unresolved_sync(
         f"the element of semaphore array {view.buffer_id} could not be"
         " determined statically"
     )
     return None
-  return view.sem_type or default_type
+  sem_type = view.sem_type or default_type
+  target_par = (
+      ctx.actor.parallel_coords if parallel_coords is None else parallel_coords
+  )
+  # Kernel-arg, scratch, and barrier semaphores are shared across sub-meshes.
+  is_shared_sem = (
+      view.shared
+      or sem_type == "barrier"
+      or view.buffer_id.startswith(("scratch_", "arg_", "barrier_sem_"))
+  )
+  owner_core_id = (
+      view.owner_core_id
+      if view.owner_core_id is not None
+      else ctx.actor.core_id
+  )
+  key = SemaphoreKey(
+      device_id=device_id,
+      core_id=0 if is_shared_sem else owner_core_id,
+      sem_type=sem_type,
+      sem_id=view.buffer_id,
+      sem_index=index,
+      # Each core has its own local semaphore counter (including per-core
+      # barrier semaphores); a remote signal targets `target_par`.
+      parallel_coords=target_par,
+  )
+  ctx.builder.saw_semaphore(
+      key, recorded=ctx.should_record_events, is_signal=is_signal
+  )
+  if not is_signal and view.target_core_axes and view.owner_core_id is None:
+    ctx.builder.truncated_sem_keys.add(key)
+    ctx.builder.note_truncated_sync(
+        "kernel waits on a semaphore owned by an external mesh",
+        affects_coverage=False,
+    )
+  return key
 
 
 def _record_buffer_read_before_step_write(
@@ -1744,6 +2114,21 @@ def _record_access(
         view.buffer_id,
         view.region if record_must_write else (event_region or view.region),
     )
+  if not ctx.should_record_events:
+    return
+  builder = ctx.builder
+  builder.memory_events.append(
+      MemoryAccessEvent(
+          event_id=builder.new_event_id(ctx.actor),
+          actor=ctx.actor,
+          grid_point=ctx.grid_coords,
+          buffer=_buffer_key(ctx, view, ctx.device_id),
+          region=view.region if event_region is None else event_region,
+          is_write=is_write,
+          source_location=loc,
+          speculative=ctx.speculative,
+      )
+  )
 
 
 def _eval_sync_scalar(
@@ -1816,7 +2201,7 @@ def _resolve_axis_mapping(
             f" {known_axes})",
             loc,
         )
-        ctx.builder.note_incomplete(
+        ctx.builder.note_unresolved_sync(
             f"a remote operation targeted unknown axis {ax!r}",
             affects_coverage=affects_coverage,
         )
@@ -1853,7 +2238,7 @@ def _resolve_axis_mapping(
           f" index with lax.rem(idx + {total_sub}, {total_sub}))",
           loc,
       )
-      ctx.builder.note_incomplete(
+      ctx.builder.note_unresolved_sync(
           "a remote operation targets a device or core outside the mesh",
           affects_coverage=affects_coverage,
       )
@@ -1967,7 +2352,7 @@ def _resolve_target_location(
           " pltpu.DeviceIdType.MESH)",
           loc,
       )
-      ctx.builder.note_incomplete(
+      ctx.builder.note_unresolved_sync(
           "a remote operation used a dictionary device_id with LOGICAL mode",
           affects_coverage=affects_coverage,
       )
@@ -1990,7 +2375,7 @@ def _resolve_target_location(
 
   if core_index_expr is not None:
     if not dest_core_axes:
-      ctx.builder.note_incomplete(
+      ctx.builder.note_unresolved_sync(
           "a core_index was specified without an enclosing core mesh",
           affects_coverage=affects_coverage,
       )
@@ -2019,7 +2404,7 @@ def _resolve_target_location(
             f" core mesh {dest_core_axes} has {len(dest_core_axes)} axis/axes",
             loc,
         )
-        ctx.builder.note_incomplete(
+        ctx.builder.note_unresolved_sync(
             "a remote core_index tuple had the wrong rank",
             affects_coverage=affects_coverage,
         )
@@ -2037,7 +2422,7 @@ def _resolve_target_location(
             f" {len(dest_core_axes)}-tuple",
             loc,
         )
-        ctx.builder.note_incomplete(
+        ctx.builder.note_unresolved_sync(
             "a scalar core_index was used on a multi-axis core mesh",
             affects_coverage=affects_coverage,
         )
@@ -2059,7 +2444,7 @@ def _resolve_target_location(
             f" lax.rem(idx + {c_sz}, {c_sz}))",
             loc,
         )
-        ctx.builder.note_incomplete(
+        ctx.builder.note_unresolved_sync(
             "a remote operation targets a core outside the mesh",
             affects_coverage=affects_coverage,
         )
@@ -2068,7 +2453,7 @@ def _resolve_target_location(
         ax not in dest_core_axes and core_coords.get(ax) is not None
         for ax in known_core_axes
     ):
-      ctx.builder.note_incomplete(
+      ctx.builder.note_unresolved_sync(
           "a remote operation targets another core mesh without a"
           " mesh-qualified ref",
           affects_coverage=affects_coverage,
@@ -2077,14 +2462,14 @@ def _resolve_target_location(
     c_values = [core_coords.get(a) for a in dest_core_axes]
     c_ints = [int(v) for v in c_values if v is not None]
     if len(c_ints) != len(c_values) or len(c_ints) != len(dest_core_sizes):
-      ctx.builder.note_incomplete(
+      ctx.builder.note_unresolved_sync(
           "a remote core index could not be determined statically",
           affects_coverage=affects_coverage,
       )
       return None
     for name, value, size in zip(dest_core_axes, c_ints, dest_core_sizes):
       if size is None:
-        ctx.builder.note_incomplete(
+        ctx.builder.note_unresolved_sync(
             "a remote core mesh dimension could not be determined statically",
             affects_coverage=affects_coverage,
         )
@@ -2097,7 +2482,7 @@ def _resolve_target_location(
             f" lax.rem(idx + {size}, {size}))",
             loc,
         )
-        ctx.builder.note_incomplete(
+        ctx.builder.note_unresolved_sync(
             "a remote operation targets a core outside the mesh",
             affects_coverage=affects_coverage,
         )
@@ -2128,7 +2513,7 @@ def _resolve_target_location(
           " device_id_type=pltpu.DeviceIdType.LOGICAL",
           loc,
       )
-      ctx.builder.note_incomplete(
+      ctx.builder.note_unresolved_sync(
           "a tuple device_id was used with LOGICAL mode",
           affects_coverage=affects_coverage,
       )
@@ -2141,7 +2526,7 @@ def _resolve_target_location(
           f" {len(mesh.mesh_shape)}",
           loc,
       )
-      ctx.builder.note_incomplete(
+      ctx.builder.note_unresolved_sync(
           "a remote device_id tuple had the wrong rank",
           affects_coverage=affects_coverage,
       )
@@ -2161,7 +2546,7 @@ def _resolve_target_location(
           " device_id_type=pltpu.DeviceIdType.LOGICAL",
           loc,
       )
-      ctx.builder.note_incomplete(
+      ctx.builder.note_unresolved_sync(
           "a scalar device_id was used in MESH mode on a multi-axis mesh",
           affects_coverage=affects_coverage,
       )
@@ -2172,7 +2557,7 @@ def _resolve_target_location(
   if len(ints) != len(values) or len(ints) != len(sizes):
     if mesh.num_devices > 1:
       ctx.builder.uses_remote_operations = True
-    ctx.builder.note_incomplete(
+    ctx.builder.note_unresolved_sync(
         "a remote device id could not be determined statically",
         affects_coverage=affects_coverage,
     )
@@ -2188,7 +2573,7 @@ def _resolve_target_location(
           f" lax.rem(idx + {size}, {size}))",
           loc,
       )
-      ctx.builder.note_incomplete(
+      ctx.builder.note_unresolved_sync(
           "a remote operation targets a device outside the mesh",
           affects_coverage=affects_coverage,
       )
@@ -2379,12 +2764,12 @@ def _check_dma_sem_view(
     is_smem_dma: bool = False,
 ) -> bool:
   if view.sem_type is None:
-    ctx.builder.note_incomplete(
+    ctx.builder.note_unresolved_sync(
         "an asynchronous copy used a data buffer ref as a semaphore"
     )
     return False
   if not view.opaque and view.view_shape != ():
-    ctx.builder.note_incomplete(
+    ctx.builder.note_unresolved_sync(
         "an asynchronous copy used a non-0D semaphore ref"
     )
     return False
@@ -2398,7 +2783,9 @@ def _check_dma_sem_view(
         loc,
         dedup_key=("dma_barrier_sem", loc),
     )
-    ctx.builder.note_incomplete("an asynchronous copy used a barrier semaphore")
+    ctx.builder.note_unresolved_sync(
+        "an asynchronous copy used a barrier semaphore"
+    )
     return False
   if view.sem_type == "regular" and allow_done_count_regular:
     ctx.builder.uses_done_count_regular_dma = True
@@ -2412,7 +2799,7 @@ def _check_dma_sem_view(
           loc,
           dedup_key=("dma_smem_reg_sem", loc),
       )
-      ctx.builder.note_incomplete(
+      ctx.builder.note_unresolved_sync(
           "an asynchronous SMEM copy used a regular semaphore"
       )
       return False
@@ -2428,7 +2815,9 @@ def _check_dma_sem_view(
         loc,
         dedup_key=("dma_v5e_reg_sem", loc),
     )
-  ctx.builder.note_incomplete("an asynchronous copy used a non-DMA semaphore")
+  ctx.builder.note_unresolved_sync(
+      "an asynchronous copy used a non-DMA semaphore"
+  )
   return False
 
 
@@ -2436,17 +2825,17 @@ def _check_non_dma_sem_view(
     ctx: _WalkContext, view: _RefView, op_desc: str
 ) -> bool:
   if view.sem_type is None:
-    ctx.builder.note_incomplete(
+    ctx.builder.note_unresolved_sync(
         f"explicit semaphore {op_desc} targeted a data buffer ref"
     )
     return False
   if not view.opaque and view.view_shape != ():
-    ctx.builder.note_incomplete(
+    ctx.builder.note_unresolved_sync(
         f"explicit semaphore {op_desc} targeted a non-0D semaphore ref"
     )
     return False
   if view.sem_type == "dma":
-    ctx.builder.note_incomplete(
+    ctx.builder.note_unresolved_sync(
         f"explicit semaphore {op_desc} targeted a DMA semaphore"
     )
     return False
@@ -2455,12 +2844,12 @@ def _check_non_dma_sem_view(
 
 def _handle_dma_start(eqn: Any, ctx: _WalkContext, env: _Env, loc: str | None):
   if "tree" not in eqn.params:
-    ctx.builder.note_incomplete(_UNRESOLVED_SYNC, affects_coverage=True)
+    ctx.builder.note_unresolved_sync(_UNRESOLVED_SYNC, affects_coverage=True)
     return
   try:
     ops = decode_dma_operands(eqn.params["tree"].unflatten(eqn.invars))
   except (TypeError, ValueError) as exc:
-    ctx.builder.note_incomplete(
+    ctx.builder.note_unresolved_sync(
         f"could not decode DMA start operands ({exc})",
         affects_coverage=True,
     )
@@ -2488,7 +2877,9 @@ def _handle_dma_start(eqn: Any, ctx: _WalkContext, env: _Env, loc: str | None):
         dst.buffer_id.startswith("arg_out_")
         or dst.buffer_id.startswith("tile_")
     )
-    ctx.builder.note_incomplete(_UNRESOLVED_SYNC, affects_coverage=affects_cov)
+    ctx.builder.note_unresolved_sync(
+        _UNRESOLVED_SYNC, affects_coverage=affects_cov
+    )
     return
   resolved = _resolve_target_location(
       ctx,
@@ -2504,7 +2895,7 @@ def _handle_dma_start(eqn: Any, ctx: _WalkContext, env: _Env, loc: str | None):
   )
   if resolved is None:
     return
-  target, target_par, _ = resolved
+  target, target_par, is_remote = resolved
   ctx.touched_refs.add(src.buffer_id)
   _record_buffer_read_before_step_write(ctx, src)
   ctx.read_refs.add(src.buffer_id)
@@ -2517,7 +2908,7 @@ def _handle_dma_start(eqn: Any, ctx: _WalkContext, env: _Env, loc: str | None):
     _record_buffer_read_before_step_write(ctx, dst)
     ctx.read_refs.add(dst.buffer_id)
   if not ctx.effective_is_sparse_core and ops.dst_sem is None:
-    ctx.builder.note_incomplete(
+    ctx.builder.note_unresolved_sync(
         "a TensorCore asynchronous copy omitted its destination semaphore"
     )
   if (
@@ -2543,38 +2934,70 @@ def _handle_dma_start(eqn: Any, ctx: _WalkContext, env: _Env, loc: str | None):
       ctx,
       env,
       ops.dst_sem,
+      target,
       loc,
       allow_done_count_regular=True,
       is_smem_dma=is_smem_dma,
+      parallel_coords=target_par,
   )
   src_sem = _operand_sem(
       ctx,
       env,
       ops.src_sem,
+      ctx.device_id,
       loc,
       allow_done_count_regular=True,
       is_smem_dma=is_smem_dma,
   )
-  if dst_sem is not None and src_sem is not None and dst_sem[1] != src_sem[1]:
-    ctx.builder.note_incomplete(
+  if (
+      dst_sem is not None
+      and src_sem is not None
+      and dst_sem.sem_type != src_sem.sem_type
+  ):
+    ctx.builder.note_unresolved_sync(
         "a remote asynchronous copy used mismatched send/recv semaphore types"
     )
     return
-  if src.byte_count is None or dst.byte_count is None:
-    ctx.builder.note_incomplete(
+  src_bytes = src.byte_count
+  dst_bytes = dst.byte_count
+  if src_bytes is None or dst_bytes is None:
+    ctx.builder.note_unresolved_sync(
         "a DMA transfer used an unsupported element dtype"
     )
+    return
+  if not ctx.should_record_events:
+    return
+  builder = ctx.builder
+  builder.dma_starts.append(
+      DmaStartEvent(
+          event_id=builder.new_event_id(ctx.actor),
+          dma_id=builder.new_dma_id(),
+          actor=ctx.actor,
+          grid_point=ctx.grid_coords,
+          src_buffer=_buffer_key(ctx, src, ctx.device_id),
+          src_region=src.region,
+          dst_buffer=_buffer_key(ctx, dst, target, target_par),
+          dst_region=dst.region,
+          byte_count=min(src_bytes, dst_bytes),
+          dst_sem=dst_sem,
+          src_sem=src_sem,
+          is_remote=is_remote,
+          source_location=loc,
+      )
+  )
 
 
 def _operand_sem(
     ctx: _WalkContext,
     env: _Env,
     operand: RefOperand | None,
+    device_id: int,
     loc: str | None,
     *,
     allow_done_count_regular: bool = False,
     is_smem_dma: bool = False,
-) -> tuple[str, str] | None:
+    parallel_coords: tuple[int, ...] | None = None,
+) -> SemaphoreKey | None:
   if operand is None:
     return None
   view = _resolve_view(
@@ -2586,7 +3009,7 @@ def _operand_sem(
       access_kind=_SliceAccessKind.DMA,
   )
   if view is None:
-    ctx.builder.note_incomplete(_UNRESOLVED_SYNC)
+    ctx.builder.note_unresolved_sync(_UNRESOLVED_SYNC)
     return None
   if not _check_dma_sem_view(
       ctx,
@@ -2596,20 +3019,26 @@ def _operand_sem(
       is_smem_dma=is_smem_dma,
   ):
     return None
-  sem_type = _resolve_sem_type(ctx, view, "dma")
-  if sem_type is None:
-    return None
-  return view.buffer_id, sem_type
+  return _sem_key(
+      ctx,
+      view,
+      device_id,
+      "dma",
+      parallel_coords=parallel_coords,
+      is_signal=True,
+  )
 
 
 def _handle_dma_wait(eqn: Any, ctx: _WalkContext, env: _Env, loc: str | None):
   if "tree" not in eqn.params:
-    ctx.builder.note_incomplete(_UNRESOLVED_SYNC)
+    ctx.builder.note_unresolved_sync(_UNRESOLVED_SYNC)
     return
   try:
     ops = decode_dma_operands(eqn.params["tree"].unflatten(eqn.invars))
   except (TypeError, ValueError) as exc:
-    ctx.builder.note_incomplete(f"could not decode DMA wait operands ({exc})")
+    ctx.builder.note_unresolved_sync(
+        f"could not decode DMA wait operands ({exc})"
+    )
     return
   # `wait_send` swaps the operands, so the waited semaphore is always in the
   # destination-semaphore slot and is always local.
@@ -2642,7 +3071,7 @@ def _handle_dma_wait(eqn: Any, ctx: _WalkContext, env: _Env, loc: str | None):
       )
   )
   if src is None or dst is None or sem_view is None:
-    ctx.builder.note_incomplete(_UNRESOLVED_SYNC)
+    ctx.builder.note_unresolved_sync(_UNRESOLVED_SYNC)
     return
   is_smem_dma = not ctx.effective_is_sparse_core and (
       src.memory_space == "smem" or dst.memory_space == "smem"
@@ -2657,10 +3086,28 @@ def _handle_dma_wait(eqn: Any, ctx: _WalkContext, env: _Env, loc: str | None):
       is_smem_dma=is_smem_dma,
   ):
     return
-  if src.byte_count is None or dst.byte_count is None:
-    ctx.builder.note_incomplete("a DMA wait used an unsupported element dtype")
+  src_bytes = src.byte_count
+  dst_bytes = dst.byte_count
+  if src_bytes is None or dst_bytes is None:
+    ctx.builder.note_unresolved_sync(
+        "a DMA wait used an unsupported element dtype"
+    )
     return
-  _resolve_sem_type(ctx, sem_view, "dma")
+  sem = _sem_key(ctx, sem_view, ctx.device_id, "dma")
+  if sem is None or not ctx.should_record_events:
+    return
+  builder = ctx.builder
+  builder.dma_waits.append(
+      DmaWaitEvent(
+          event_id=builder.new_event_id(ctx.actor),
+          actor=ctx.actor,
+          grid_point=ctx.grid_coords,
+          sem=sem,
+          byte_count=min(src_bytes, dst_bytes),
+          is_wait_send=bool(eqn.params.get("is_wait_send", False)),
+          source_location=loc,
+      )
+  )
 
 
 def _handle_barrier(eqn: Any, ctx: _WalkContext, env: _Env, loc: str | None):
@@ -2685,7 +3132,7 @@ def _semaphore_amount(
       ctx, env, amount_expr, f"a semaphore {what} amount"
   )
   if amount is None:
-    ctx.builder.note_incomplete(
+    ctx.builder.note_unresolved_sync(
         f"a semaphore {what} amount could not be determined statically"
     )
     return None
@@ -2697,7 +3144,7 @@ def _semaphore_amount(
         loc,
         dedup_key=("neg_sem_amt", loc, what, val),
     )
-    ctx.builder.note_incomplete(
+    ctx.builder.note_unresolved_sync(
         f"a semaphore {what} used a negative amount ({val})"
     )
     return None
@@ -2706,12 +3153,12 @@ def _semaphore_amount(
 
 def _handle_sem_signal(eqn: Any, ctx: _WalkContext, env: _Env, loc: str | None):
   if "args_tree" not in eqn.params:
-    ctx.builder.note_incomplete(_UNRESOLVED_SYNC)
+    ctx.builder.note_unresolved_sync(_UNRESOLVED_SYNC)
     return
   try:
     unflattened = eqn.params["args_tree"].unflatten(eqn.invars)
   except (TypeError, ValueError):
-    ctx.builder.note_incomplete(_UNRESOLVED_SYNC)
+    ctx.builder.note_unresolved_sync(_UNRESOLVED_SYNC)
     return
   sem_arg, sem_tr, inc_arg, dev_id_arg, *rest = unflattened
   core_index_arg = rest[0] if rest else None
@@ -2719,7 +3166,7 @@ def _handle_sem_signal(eqn: Any, ctx: _WalkContext, env: _Env, loc: str | None):
       ctx, env, sem_arg, sem_tr, loc, access_kind=_SliceAccessKind.DMA
   )
   if view is None:
-    ctx.builder.note_incomplete(_UNRESOLVED_SYNC)
+    ctx.builder.note_unresolved_sync(_UNRESOLVED_SYNC)
     return
   if not _check_non_dma_sem_view(ctx, view, "signal"):
     return
@@ -2735,26 +3182,48 @@ def _handle_sem_signal(eqn: Any, ctx: _WalkContext, env: _Env, loc: str | None):
   )
   if amount is None or resolved is None:
     return
-  _resolve_sem_type(ctx, view, "regular")
+  target, target_par, is_remote = resolved
+  sem = _sem_key(
+      ctx,
+      view,
+      target,
+      "regular",
+      parallel_coords=target_par,
+      is_signal=True,
+  )
+  if sem is None or not ctx.should_record_events:
+    return
+  builder = ctx.builder
+  builder.sem_signals.append(
+      SemaphoreSignalEvent(
+          event_id=builder.new_event_id(ctx.actor),
+          actor=ctx.actor,
+          grid_point=ctx.grid_coords,
+          target_sem=sem,
+          amount=amount,
+          is_remote=is_remote,
+          source_location=loc,
+      )
+  )
 
 
 def _handle_sem_wait(eqn: Any, ctx: _WalkContext, env: _Env, loc: str | None):
   if "args_tree" not in eqn.params:
-    ctx.builder.note_incomplete(_UNRESOLVED_SYNC)
+    ctx.builder.note_unresolved_sync(_UNRESOLVED_SYNC)
     return
   try:
     sem_arg, sem_tr, val_arg, *rest = eqn.params["args_tree"].unflatten(
         eqn.invars
     )
   except (TypeError, ValueError):
-    ctx.builder.note_incomplete(_UNRESOLVED_SYNC)
+    ctx.builder.note_unresolved_sync(_UNRESOLVED_SYNC)
     return
   decrement_arg = rest[0] if rest else True
   view = _resolve_view(
       ctx, env, sem_arg, sem_tr, loc, access_kind=_SliceAccessKind.DMA
   )
   if view is None:
-    ctx.builder.note_incomplete(_UNRESOLVED_SYNC)
+    ctx.builder.note_unresolved_sync(_UNRESOLVED_SYNC)
     return
   if not _check_non_dma_sem_view(ctx, view, "wait"):
     return
@@ -2771,7 +3240,7 @@ def _handle_sem_wait(eqn: Any, ctx: _WalkContext, env: _Env, loc: str | None):
         loc,
         dedup_key=("sem_wait_dec", loc),
     )
-    ctx.builder.note_incomplete(
+    ctx.builder.note_unresolved_sync(
         "pl.semaphore_wait used a non-static decrement flag"
     )
     return
@@ -2784,12 +3253,26 @@ def _handle_sem_wait(eqn: Any, ctx: _WalkContext, env: _Env, loc: str | None):
         loc,
         dedup_key=("sem_wait_dec", loc),
     )
-    ctx.builder.note_incomplete(
+    ctx.builder.note_unresolved_sync(
         "pl.semaphore_wait used unsupported decrement=False"
     )
     return
-  _semaphore_amount(ctx, env, val_arg, "wait", loc)
-  _resolve_sem_type(ctx, view, "regular")
+  amount = _semaphore_amount(ctx, env, val_arg, "wait", loc)
+  sem = _sem_key(ctx, view, ctx.device_id, "regular")
+  if amount is None or sem is None or not ctx.should_record_events:
+    return
+  builder = ctx.builder
+  builder.sem_waits.append(
+      SemaphoreWaitEvent(
+          event_id=builder.new_event_id(ctx.actor),
+          actor=ctx.actor,
+          grid_point=ctx.grid_coords,
+          sem=sem,
+          amount=amount,
+          decrement=bool(decrement),
+          source_location=loc,
+      )
+  )
 
 
 def _handle_run_scoped(eqn: Any, ctx: _WalkContext, env: _Env, loc: str | None):
@@ -2915,6 +3398,14 @@ def _scan_layout(params: Mapping[str, Any]) -> tuple[int, int]:
   return len(consts), len(carry)
 
 
+def _note_truncated_loop(ctx: _WalkContext, body: Any, reason: str) -> None:
+  """Records a loop whose later iterations are not walked."""
+  if ctx.builder.has_sync(body):
+    ctx.builder.note_truncated_sync(reason, affects_coverage=True)
+  else:
+    ctx.builder.note_incomplete(reason, affects_coverage=True)
+
+
 def _handle_scan(eqn: Any, ctx: _WalkContext, env: _Env, loc: str | None):
   del loc
   body = _unwrap_closed_jaxpr(eqn.params["jaxpr"])
@@ -2923,28 +3414,37 @@ def _handle_scan(eqn: Any, ctx: _WalkContext, env: _Env, loc: str | None):
   limit = ctx.builder.max_unrolled_iterations
   truncated = length > limit
   if truncated:
-    ctx.builder.note_incomplete(
+    _note_truncated_loop(
+        ctx,
+        body,
         f"only the first {limit} of {length} loop iterations are checked",
-        affects_coverage=True,
     )
   consts = eqn.invars[:num_consts]
   init_carry = list(eqn.invars[num_consts : num_consts + num_carry])
   carry = list(init_carry)
   carry_env = env
-  for step in range(min(length, limit)):
-    nested = env.child()
-    for outer_v, inner_v in zip(consts, body.invars[:num_consts]):
-      nested.bind(outer_v, inner_v, env)
-    for outer_v, inner_v in zip(carry, body.invars[num_consts:]):
-      nested.bind(outer_v, inner_v, carry_env)
-    step_ctx = dataclasses.replace(ctx.scoped(f"lp{step}"), read_in_step=set())
-    _walk(body, step_ctx, nested)
-    _record_step_written_buffers(step_ctx)
-    carry = list(body.outvars[:num_carry])
-    carry_env = nested
+  ctx.builder.push_semaphore_scope()
+  try:
+    for step in range(min(length, limit)):
+      nested = env.child()
+      for outer_v, inner_v in zip(consts, body.invars[:num_consts]):
+        nested.bind(outer_v, inner_v, env)
+      for outer_v, inner_v in zip(carry, body.invars[num_consts:]):
+        nested.bind(outer_v, inner_v, carry_env)
+      step_ctx = dataclasses.replace(
+          ctx.scoped(f"lp{step}"), read_in_step=set()
+      )
+      _walk(body, step_ctx, nested)
+      _record_step_written_buffers(step_ctx)
+      carry = list(body.outvars[:num_carry])
+      carry_env = nested
+  finally:
+    ctx.builder.pop_semaphore_scope(truncated=truncated)
   if not truncated:
     _bind_outputs(carry, eqn.outvars[:num_carry], carry_env, env)
   else:
+    if ctx.record_events and ctx.builder.has_sync(body):
+      ctx.builder.sync_halted_actors.add(ctx.actor)
     body_carry_in = body.invars[num_consts : num_consts + num_carry]
     body_carry_out = body.outvars[:num_carry]
     for init_v, body_in_v, body_out_v, out_v in zip(
@@ -3080,58 +3580,72 @@ def _handle_while(eqn: Any, ctx: _WalkContext, env: _Env, loc: str | None):
   carry = list(init_carry)
   carry_env = env
   limit = ctx.builder.max_unrolled_iterations
+  truncated = False
   exited = False
   used_concolic = False
-  for step in range(limit + 1):
-    cond_env = env.child()
-    for outer_v, inner_v in zip(cond_consts, cond.invars[:cond_nconsts]):
-      cond_env.bind(outer_v, inner_v, env)
-    for outer_v, inner_v in zip(carry, cond.invars[cond_nconsts:]):
-      cond_env.bind(outer_v, inner_v, carry_env)
-    keep_going, pred_concolic = _eval_predicate(cond, ctx, cond_env)
-    if pred_concolic:
-      used_concolic = True
-      ctx.builder.note_incomplete(
-          "a while loop's trip count was evaluated at the provided example"
-          " inputs",
-          affects_coverage=False,
+  ctx.builder.push_semaphore_scope()
+  try:
+    for step in range(limit + 1):
+      cond_env = env.child()
+      for outer_v, inner_v in zip(cond_consts, cond.invars[:cond_nconsts]):
+        cond_env.bind(outer_v, inner_v, env)
+      for outer_v, inner_v in zip(carry, cond.invars[cond_nconsts:]):
+        cond_env.bind(outer_v, inner_v, carry_env)
+      keep_going, pred_concolic = _eval_predicate(cond, ctx, cond_env)
+      if pred_concolic:
+        used_concolic = True
+        ctx.builder.note_incomplete(
+            "a while loop's trip count was evaluated at the provided example"
+            " inputs",
+            affects_coverage=False,
+        )
+      if keep_going is not None and not keep_going:
+        exited = True
+        break
+      if step == limit:
+        truncated = True
+        _note_truncated_loop(
+            ctx,
+            body,
+            f"only the first {limit} iterations of a while loop are checked",
+        )
+        break
+      if keep_going is None:
+        reason = (
+            "a while loop's trip count depends on runtime data, so its body"
+            " is checked once"
+        )
+        if ctx.builder.has_sync(body):
+          # One iteration is neither a prefix nor all of the semaphore
+          # traffic.
+          ctx.builder.note_unresolved_sync(reason, affects_coverage=True)
+        else:
+          ctx.builder.note_incomplete(reason, affects_coverage=True)
+      nested = env.child()
+      for outer_v, inner_v in zip(body_consts, body.invars[:body_nconsts]):
+        nested.bind(outer_v, inner_v, env)
+      for outer_v, inner_v in zip(carry, body.invars[body_nconsts:]):
+        nested.bind(outer_v, inner_v, carry_env)
+      step_ctx = dataclasses.replace(
+          ctx.scoped(f"wh{step}"),
+          speculative=ctx.speculative or (keep_going is None),
+          read_in_step=set(),
       )
-    if keep_going is not None and not keep_going:
-      exited = True
-      break
-    if step == limit:
-      ctx.builder.note_incomplete(
-          f"only the first {limit} iterations of a while loop are checked",
-          affects_coverage=True,
-      )
-      break
-    if keep_going is None:
-      ctx.builder.note_incomplete(
-          "a while loop's trip count depends on runtime data, so its body is"
-          " checked once",
-          affects_coverage=True,
-      )
-    nested = env.child()
-    for outer_v, inner_v in zip(body_consts, body.invars[:body_nconsts]):
-      nested.bind(outer_v, inner_v, env)
-    for outer_v, inner_v in zip(carry, body.invars[body_nconsts:]):
-      nested.bind(outer_v, inner_v, carry_env)
-    step_ctx = dataclasses.replace(
-        ctx.scoped(f"wh{step}"),
-        speculative=ctx.speculative or (keep_going is None),
-        read_in_step=set(),
-    )
-    _walk(body, step_ctx, nested)
-    _record_step_written_buffers(step_ctx)
-    carry = list(body.outvars)
-    carry_env = nested
-    if keep_going is None:
-      break
+      _walk(body, step_ctx, nested)
+      _record_step_written_buffers(step_ctx)
+      carry = list(body.outvars)
+      carry_env = nested
+      if keep_going is None:
+        break
+  finally:
+    ctx.builder.pop_semaphore_scope(truncated=truncated)
   if exited:
     _bind_outputs(
         carry, eqn.outvars, carry_env, env, force_concolic=used_concolic
     )
   else:
+    if ctx.record_events and ctx.builder.has_sync(body):
+      ctx.builder.sync_halted_actors.add(ctx.actor)
     body_carry_in = body.invars[body_nconsts:]
     for init_v, body_in_v, body_out_v, out_v in zip(
         init_carry, body_carry_in, body.outvars, eqn.outvars
@@ -3279,7 +3793,7 @@ def _handle_cond(eqn: Any, ctx: _WalkContext, env: _Env, loc: str | None):
       if has_branch_sync:
         # Semaphore operations of branches that exclude each other would be
         # counted together.
-        ctx.builder.note_incomplete(reason)
+        ctx.builder.note_unresolved_sync(reason)
       else:
         ctx.builder.note_incomplete(reason, affects_coverage=False)
   if len(selected) == 1:
@@ -3472,7 +3986,7 @@ def _handle_unknown(eqn: Any, ctx: _WalkContext, env: _Env, loc: str | None):
       elif _is_abstract_ref(aval):
         touches_ref = True
     if touches_sem:
-      ctx.builder.note_incomplete(
+      ctx.builder.note_unresolved_sync(
           f"unhandled synchronization primitive '{prim_name}'",
           affects_coverage=touches_ref,
       )
@@ -3487,7 +4001,7 @@ def _handle_unknown(eqn: Any, ctx: _WalkContext, env: _Env, loc: str | None):
   )
   if any(ctx.builder.has_sync(sub) for sub in subs):
     # Its semaphore operations would be missing from the model.
-    ctx.builder.note_incomplete(reason, affects_coverage=True)
+    ctx.builder.note_unresolved_sync(reason, affects_coverage=True)
   else:
     ctx.builder.note_incomplete(reason, affects_coverage=True)
 
@@ -3516,10 +4030,13 @@ def _walk(jaxpr: Any, ctx: _WalkContext, env: _Env) -> None:
   for eqn in jaxpr.eqns:
     ctx.builder.step_count += 1
     if ctx.builder.step_count > _MAX_TOTAL_EQUATION_STEPS:
-      ctx.builder.note_incomplete(
-          f"stopped walking after {_MAX_TOTAL_EQUATION_STEPS} equations",
-          affects_coverage=True,
-      )
+      reason = f"stopped walking after {_MAX_TOTAL_EQUATION_STEPS} equations"
+      if ctx.builder.has_sync(jaxpr):
+        ctx.builder.note_truncated_sync(reason, affects_coverage=True)
+        if ctx.record_events:
+          ctx.builder.sync_halted_actors.add(ctx.actor)
+      else:
+        ctx.builder.note_incomplete(reason, affects_coverage=True)
       return
     if _try_eval_scalar_eqn(
         eqn,
@@ -3558,7 +4075,7 @@ def _walk(jaxpr: Any, ctx: _WalkContext, env: _Env) -> None:
           f"could not analyze `{name}` equation ({type(exc).__name__}: {exc})"
       )
       if name in _SYNC_PRIMITIVES:
-        ctx.builder.note_incomplete(reason, affects_coverage=True)
+        ctx.builder.note_unresolved_sync(reason, affects_coverage=True)
       else:
         ctx.builder.note_incomplete(reason, affects_coverage=True)
 
@@ -4180,6 +4697,7 @@ class _Operand:
   sem_type: str | None = None
   revisit_any: bool = False
   buffer_count: int = 1
+  discarded_output: bool = False
 
   def describe(self) -> str:
     return f"{'output' if self.is_output else 'input'} {self.io_index}"
@@ -4192,7 +4710,13 @@ class _Operand:
     return ()
 
 
-def _operands(eqn: Any, kernel_jaxpr: Any, grid_mapping: Any) -> list[_Operand]:
+def _operands(
+    eqn: Any,
+    kernel_jaxpr: Any,
+    grid_mapping: Any,
+    *,
+    discarded_out_indices: AbstractSet[int] = frozenset(),
+) -> list[_Operand]:
   io_aliases = dict(eqn.params.get("input_output_aliases", ()))
   num_prefetch = int(getattr(grid_mapping, "num_index_operands", 0))
   out_to_in = {out_i: in_i for in_i, out_i in io_aliases.items()}
@@ -4225,6 +4749,13 @@ def _operands(eqn: Any, kernel_jaxpr: Any, grid_mapping: Any) -> list[_Operand]:
     revisit_any = getattr(revisit, "value", revisit) == "any"
     raw_buf_cnt = getattr(pm, "buffer_count", 1)
     buffer_count = 1 if raw_buf_cnt is None else int(raw_buf_cnt)
+    discarded_output = (
+        is_output
+        and io_index not in out_to_in
+        and io_index in discarded_out_indices
+        and sem_type is None
+        and memory_space != "hbm"
+    )
     operands.append(
         _Operand(
             b_idx,
@@ -4238,6 +4769,7 @@ def _operands(eqn: Any, kernel_jaxpr: Any, grid_mapping: Any) -> list[_Operand]:
             sem_type=sem_type,
             revisit_any=revisit_any,
             buffer_count=buffer_count,
+            discarded_output=discarded_output,
         )
     )
   return operands
@@ -4321,7 +4853,7 @@ def _bind_operands(
       ctx.builder.note_incomplete(
           f"the block index map of {op.describe()} depends on runtime data,"
           " so its pipelined accesses are not checked",
-          affects_coverage=op.is_output,
+          affects_coverage=op.is_output and not op.discarded_output,
       )
     elif block.used_runtime_prefetch:
       ctx.builder.note_incomplete(
@@ -4333,11 +4865,13 @@ def _bind_operands(
   return tiles
 
 
-def _record_pipelined_tile_writes(
+def _emit_pipeline_events(
     ctx: _WalkContext,
     tiles: Sequence[tuple[_Operand, str, _BlockSlice | None]],
+    body_actor_pos: int,
+    body_mem_pos: int,
 ) -> None:
-  """Records pipelined output block visits and HBM output coverage of tiles."""
+  """Adds the implicit HBM loads/stores and output writes of tiles."""
   builder = ctx.builder
   _record_step_written_buffers(ctx)
   for op, tile_id, block in tiles:
@@ -4346,7 +4880,7 @@ def _record_pipelined_tile_writes(
     if op.is_output:
       stream_actor = ctx.pipeline_stream_actor
       tile_writes = list(ctx.written.get(tile_id, ()))
-      if ctx.grid_sizes:
+      if ctx.grid_sizes and not op.discarded_output:
         exact_tile_writes = tuple(
             r
             for r in tile_writes
@@ -4377,23 +4911,8 @@ def _record_pipelined_tile_writes(
         builder.aliased_pipelined_blocks.setdefault(
             (ctx.device_id, op.index), []
         ).append(block.region)
-      for region in tile_writes:
-        array_region = _tile_region_to_array(region, block)
-        if array_region is None:
-          builder.note_incomplete(
-              f"the block layout of {op.describe()} is not understood",
-              affects_coverage=True,
-          )
-        else:
-          builder.record_output_write(ctx.device_id, op.buffer_id, array_region)
-          if op.buffer_id.startswith("arg_in_"):
-            builder.record_output_write(
-                ctx.device_id, f"pipelined_out_{op.io_index}", array_region
-            )
-      for (target_dev, w_tile_id), regions in ctx.remote_written.items():
-        if w_tile_id != tile_id:
-          continue
-        for region in regions:
+      if not op.discarded_output:
+        for region in tile_writes:
           array_region = _tile_region_to_array(region, block)
           if array_region is None:
             builder.note_incomplete(
@@ -4401,11 +4920,62 @@ def _record_pipelined_tile_writes(
                 affects_coverage=True,
             )
           else:
-            builder.record_output_write(target_dev, op.buffer_id, array_region)
+            builder.record_output_write(
+                ctx.device_id, op.buffer_id, array_region
+            )
             if op.buffer_id.startswith("arg_in_"):
               builder.record_output_write(
-                  target_dev, f"pipelined_out_{op.io_index}", array_region
+                  ctx.device_id, f"pipelined_out_{op.io_index}", array_region
               )
+        for (target_dev, w_tile_id), regions in ctx.remote_written.items():
+          if w_tile_id != tile_id:
+            continue
+          for region in regions:
+            array_region = _tile_region_to_array(region, block)
+            if array_region is None:
+              builder.note_incomplete(
+                  f"the block layout of {op.describe()} is not understood",
+                  affects_coverage=True,
+              )
+            else:
+              builder.record_output_write(
+                  target_dev, op.buffer_id, array_region
+              )
+              if op.buffer_id.startswith("arg_in_"):
+                builder.record_output_write(
+                    target_dev, f"pipelined_out_{op.io_index}", array_region
+                )
+    if not ctx.should_record_events:
+      continue
+    buffer = BufferKey(ctx.device_id, ctx.actor.core_id, "hbm", op.buffer_id)
+    if not op.is_output and tile_id in ctx.touched_refs:
+      eid = builder.insert_event_id(ctx.actor, body_actor_pos)
+      body_actor_pos += 1
+      builder.memory_events.insert(
+          body_mem_pos,
+          MemoryAccessEvent(
+              eid,
+              ctx.actor,
+              ctx.grid_coords,
+              buffer,
+              block.region,
+              False,
+              is_implicit_pipeline=True,
+          ),
+      )
+      body_mem_pos += 1
+    elif op.is_output and not op.discarded_output and tile_id in ctx.written:
+      builder.memory_events.append(
+          MemoryAccessEvent(
+              builder.new_event_id(ctx.actor),
+              ctx.actor,
+              ctx.grid_coords,
+              buffer,
+              block.region,
+              True,
+              is_implicit_pipeline=True,
+          ),
+      )
 
 
 def _check_output_coverage(
@@ -4532,7 +5102,7 @@ def _check_output_coverage(
         if op.block_mapping is not None
         else ()
     )
-    by_actor: dict[_ActorKey, tuple[tuple[int, ...], list[HyperRectSlice]]] = {}
+    by_actor: dict[ActorKey, tuple[tuple[int, ...], list[HyperRectSlice]]] = {}
     for act, g, regs in entries:
       prev = by_actor.get(act)
       if prev is None:
@@ -4542,7 +5112,7 @@ def _check_output_coverage(
     if len(by_actor) < 2:
       continue
     writers = [g for _, (g, regs) in by_actor.items() if regs]
-    incomplete_actors: list[tuple[_ActorKey, tuple[int, ...]]] = []
+    incomplete_actors: list[tuple[ActorKey, tuple[int, ...]]] = []
     for act, (g, regs) in by_actor.items():
       if not any(
           other_act != act and o_regs
@@ -4567,7 +5137,11 @@ def _check_output_coverage(
       )
 
   for op in operands:
-    if not op.buffer_id.startswith("arg_out_") or op.sem_type is not None:
+    if (
+        not op.buffer_id.startswith("arg_out_")
+        or op.sem_type is not None
+        or op.discarded_output
+    ):
       continue
     shape = op.full_shape()
     for device_id, _ in mesh_ctx.iter_devices():
@@ -4663,6 +5237,39 @@ def _grid_and_semantics(
   return tuple(grid), tuple(grid_sizes), tuple(semantics)
 
 
+def _select_recorded_grid_points(
+    points: Sequence[tuple[int, ...]],
+    semantics: Sequence[str],
+    max_recorded: int,
+) -> set[tuple[int, ...]]:
+  """Selects up to `max_recorded` grid points across `parallel` axes."""
+  if len(points) <= max_recorded:
+    return set(points)
+  by_parallel: dict[tuple[int, ...], list[tuple[int, ...]]] = {}
+  for pt in points:
+    par_key = tuple(
+        pt[ax] for ax, sem in enumerate(semantics) if sem == "parallel"
+    )
+    by_parallel.setdefault(par_key, []).append(pt)
+  if len(by_parallel) <= 1:
+    return set(points[:max_recorded])
+  selected: set[tuple[int, ...]] = set()
+  groups = list(by_parallel.values())
+  step = 0
+  while len(selected) < max_recorded:
+    added = False
+    for group in groups:
+      if step < len(group):
+        selected.add(group[step])
+        added = True
+        if len(selected) >= max_recorded:
+          break
+    if not added:
+      break
+    step += 1
+  return selected
+
+
 def _extract_pallas_call_model(
     eqn: Any,
     mesh_ctx: _MeshContext,
@@ -4670,6 +5277,7 @@ def _extract_pallas_call_model(
     max_unrolled_iterations: int,
     tpu_version: findings.TpuVersion = fx_verifier.DEFAULT_TPU_VERSION,
     concrete_arrays: Mapping[Any, _ConcreteArray] | None = None,
+    discarded_out_indices: AbstractSet[int] = frozenset(),
 ) -> KernelVerificationModel:
   """Extracts a `KernelVerificationModel` from one `pallas_call` equation."""
   kernel_jaxpr = _unwrap_closed_jaxpr(eqn.params["jaxpr"])
@@ -4697,8 +5305,12 @@ def _extract_pallas_call_model(
       tpu_version=tpu_version,
       is_sparse_core=is_sparse_core,
   )
+  kernel_has_sync = builder.has_sync(kernel_jaxpr)
   for note in notes:
-    builder.note_incomplete(note, affects_coverage=True)
+    if kernel_has_sync:
+      builder.note_truncated_sync(note, affects_coverage=True)
+    else:
+      builder.note_incomplete(note, affects_coverage=True)
   _check_static_hardware_rules(
       kernel_jaxpr, builder, is_sparse_core=is_sparse_core
   )
@@ -4715,7 +5327,12 @@ def _extract_pallas_call_model(
           f"scratch_shapes[{idx}] cannot allocate {bad_ms} buffers on TPU",
       )
 
-  operands = _operands(eqn, kernel_jaxpr, grid_mapping)
+  operands = _operands(
+      eqn,
+      kernel_jaxpr,
+      grid_mapping,
+      discarded_out_indices=discarded_out_indices,
+  )
   for op in operands:
     if op.is_output and op.revisit_any:
       builder.has_revisit_any_output = True
@@ -4742,17 +5359,32 @@ def _extract_pallas_call_model(
         prefetch_arrays[pref_idx] = entry
 
   num_points = math.prod(grid) if grid else 1
-  if num_points > _MAX_COVERAGE_GRID_POINTS:
-    builder.note_incomplete(
-        f"only the first {_MAX_COVERAGE_GRID_POINTS} of {num_points} grid"
-        " points are checked for out-of-bounds and unwritten outputs",
-        affects_coverage=True,
+  if num_points > max_unrolled_iterations:
+    reason = (
+        f"only the first {max_unrolled_iterations} of {num_points} grid"
+        " points are model checked for races and deadlocks"
     )
+    if kernel_has_sync:
+      builder.note_truncated_sync(reason, affects_coverage=False)
+    else:
+      builder.note_incomplete(reason, affects_coverage=False)
+  if num_points > _MAX_COVERAGE_GRID_POINTS:
+    cov_reason = (
+        f"only the first {_MAX_COVERAGE_GRID_POINTS} of {num_points} grid"
+        " points are checked for out-of-bounds and unwritten outputs"
+    )
+    if kernel_has_sync:
+      builder.note_truncated_sync(cov_reason, affects_coverage=True)
+    else:
+      builder.note_incomplete(cov_reason, affects_coverage=True)
   points = list(
       itertools.islice(
           itertools.product(*(range(s) for s in grid)),
           _MAX_COVERAGE_GRID_POINTS,
       )
+  )
+  recorded_points = _select_recorded_grid_points(
+      points, semantics, max_unrolled_iterations
   )
   for dev_id, dev_coords in mesh_ctx.iter_devices():
     for g_coords in points:
@@ -4763,7 +5395,7 @@ def _extract_pallas_call_model(
           operands,
           _WalkContext(
               builder=builder,
-              actor=_ActorKey(
+              actor=ActorKey(
                   dev_id,
                   0,
                   tuple(
@@ -4781,6 +5413,7 @@ def _extract_pallas_call_model(
               scope_path="",
               touched_refs=set(),
               written={},
+              record_events=g_coords in recorded_points,
               extra_axis_env=(
                   {
                       name: coord
@@ -4835,8 +5468,10 @@ def _walk_grid_point(
         sem_type=sem_type,
     )
   tiles = _bind_operands(ctx, env, operands, pipelined=True)
+  body_actor_pos = len(ctx.builder.actor_events.get(ctx.actor, ()))
+  body_mem_pos = len(ctx.builder.memory_events)
   _walk(kernel_jaxpr, ctx, env)
-  _record_pipelined_tile_writes(ctx, tiles)
+  _emit_pipeline_events(ctx, tiles, body_actor_pos, body_mem_pos)
 
 
 def _find_outer_empty_ref_outputs(jaxpr: Any) -> set[Any]:
@@ -4970,6 +5605,7 @@ def _extract_mpmd_map_models(
     elif axis_names and not shared_builder.core_axis_names:
       shared_builder.core_axis_names = axis_names
     builder = shared_builder
+    kernel_has_sync = builder.has_sync(kernel_jaxpr)
     _check_static_hardware_rules(
         kernel_jaxpr, builder, is_sparse_core=is_sparse_core
     )
@@ -4986,12 +5622,24 @@ def _extract_mpmd_map_models(
             dedup_key=("mpmd_scratch_ms", mesh_idx, scr_idx, bad_ms),
         )
     num_points = math.prod(grid) if grid else 1
-    if num_points > _MAX_COVERAGE_GRID_POINTS:
-      builder.note_incomplete(
-          f"only the first {_MAX_COVERAGE_GRID_POINTS} of {num_points} grid"
-          " points are checked for out-of-bounds and unwritten outputs",
-          affects_coverage=True,
+    if num_points > max_unrolled_iterations:
+      reason = (
+          f"only the first {max_unrolled_iterations} of {num_points} grid"
+          " points are model checked for races and deadlocks"
       )
+      if kernel_has_sync:
+        builder.note_truncated_sync(reason, affects_coverage=False)
+      else:
+        builder.note_incomplete(reason, affects_coverage=False)
+    if num_points > _MAX_COVERAGE_GRID_POINTS:
+      cov_reason = (
+          f"only the first {_MAX_COVERAGE_GRID_POINTS} of {num_points} grid"
+          " points are checked for out-of-bounds and unwritten outputs"
+      )
+      if kernel_has_sync:
+        builder.note_truncated_sync(cov_reason, affects_coverage=True)
+      else:
+        builder.note_incomplete(cov_reason, affects_coverage=True)
     mpmd_operands: list[_Operand] = []
     for idx, out_i in outer_out_indices.items():
       if idx >= len(kernel_jaxpr.invars):
@@ -5055,119 +5703,203 @@ def _extract_mpmd_map_models(
             _MAX_COVERAGE_GRID_POINTS,
         )
     )
-    for dev_id, dev_coords in mesh_ctx.iter_devices():
-      for g_coords in points:
-        env = _Env({}, {})
-        unaliased_out: dict[str, tuple[str, int]] = {}
-        for idx, var in enumerate(kernel_jaxpr.invars):
-          aval = getattr(var, "aval", None)
-          sem_type = _detect_semaphore_type(aval)
-          t_axes, t_sizes, t_sems, t_owner = _extract_aval_mesh_info(
-              aval, meshes
-          )
-          if idx < num_in:
-            val = _eval_atom(eqn.invars[idx], {})
-            if val is not None:
-              env.scalars[var] = val
-            if idx in outer_out_indices:
-              out_i = outer_out_indices[idx]
-              buf_id = f"arg_out_{out_i}"
-              unaliased_out[buf_id] = (f"output {out_i}", idx)
+    recorded_points = _select_recorded_grid_points(
+        points, semantics, max_unrolled_iterations
+    )
+    recorded_list = [p for p in points if p in recorded_points]
+    coverage_only_list = [p for p in points if p not in recorded_points]
+    for point_group, is_recorded in (
+        (recorded_list, True),
+        (coverage_only_list, False),
+    ):
+      if not point_group:
+        continue
+      for dev_id, dev_coords in mesh_ctx.iter_devices():
+        for g_coords in point_group:
+          env = _Env({}, {})
+          unaliased_out: dict[str, tuple[str, int]] = {}
+          for idx, var in enumerate(kernel_jaxpr.invars):
+            aval = getattr(var, "aval", None)
+            sem_type = _detect_semaphore_type(aval)
+            t_axes, t_sizes, t_sems, t_owner = _extract_aval_mesh_info(
+                aval, meshes
+            )
+            if idx < num_in:
+              val = _eval_atom(eqn.invars[idx], {})
+              if val is not None:
+                env.scalars[var] = val
+              if idx in outer_out_indices:
+                out_i = outer_out_indices[idx]
+                buf_id = f"arg_out_{out_i}"
+                unaliased_out[buf_id] = (f"output {out_i}", idx)
+              else:
+                buf_id = f"arg_in_{idx}"
+              env.refs[var] = _full_view(
+                  buf_id,
+                  _normalize_memory_space(
+                      getattr(aval, "memory_space", None),
+                      default="semaphore_mem"
+                      if sem_type is not None
+                      else mesh_default_ms,
+                  ),
+                  getattr(aval, "shape", ()),
+                  getattr(aval, "dtype", np.float32),
+                  sem_type=sem_type,
+                  target_core_axes=t_axes,
+                  target_core_sizes=t_sizes,
+                  target_core_semantics=t_sems,
+                  owner_core_id=t_owner,
+              )
+            elif idx < num_in + num_out:
+              out_i = idx - num_in
+              buf_id = (
+                  f"arg_in_{out_to_in[out_i]}"
+                  if out_i in out_to_in
+                  else f"arg_out_{out_i}"
+              )
+              if buf_id.startswith("arg_out_"):
+                unaliased_out[buf_id] = (f"output {out_i}", idx)
+              env.refs[var] = _full_view(
+                  buf_id,
+                  _normalize_memory_space(
+                      getattr(aval, "memory_space", None),
+                      default="semaphore_mem"
+                      if sem_type is not None
+                      else mesh_default_ms,
+                  ),
+                  getattr(aval, "shape", ()),
+                  getattr(aval, "dtype", np.float32),
+                  sem_type=sem_type,
+                  target_core_axes=t_axes,
+                  target_core_sizes=t_sizes,
+                  target_core_semantics=t_sems,
+                  owner_core_id=t_owner,
+              )
             else:
-              buf_id = f"arg_in_{idx}"
-            env.refs[var] = _full_view(
-                buf_id,
-                _normalize_memory_space(
-                    getattr(aval, "memory_space", None),
-                    default="semaphore_mem"
-                    if sem_type is not None
-                    else mesh_default_ms,
-                ),
-                getattr(aval, "shape", ()),
-                getattr(aval, "dtype", np.float32),
-                sem_type=sem_type,
-                target_core_axes=t_axes,
-                target_core_sizes=t_sizes,
-                target_core_semantics=t_sems,
-                owner_core_id=t_owner,
-            )
-          elif idx < num_in + num_out:
-            out_i = idx - num_in
-            buf_id = (
-                f"arg_in_{out_to_in[out_i]}"
-                if out_i in out_to_in
-                else f"arg_out_{out_i}"
-            )
-            if buf_id.startswith("arg_out_"):
-              unaliased_out[buf_id] = (f"output {out_i}", idx)
-            env.refs[var] = _full_view(
-                buf_id,
-                _normalize_memory_space(
-                    getattr(aval, "memory_space", None),
-                    default="semaphore_mem"
-                    if sem_type is not None
-                    else mesh_default_ms,
-                ),
-                getattr(aval, "shape", ()),
-                getattr(aval, "dtype", np.float32),
-                sem_type=sem_type,
-                target_core_axes=t_axes,
-                target_core_sizes=t_sizes,
-                target_core_semantics=t_sems,
-                owner_core_id=t_owner,
-            )
-          else:
-            scr_i = idx - (num_in + num_out)
-            # `mpmd_map` allocates one shared scratch tuple passed to every
-            # sub-mesh, so cross-mesh HBM scratch and semaphores share IDs.
-            scr_id = f"scratch_{scr_i}"
-            env.refs[var] = _full_view(
-                scr_id,
-                _normalize_memory_space(
-                    getattr(aval, "memory_space", None),
-                    default="semaphore_mem" if sem_type is not None else "vmem",
-                ),
-                getattr(aval, "shape", ()),
-                getattr(aval, "dtype", np.float32),
-                sem_type=sem_type,
-                target_core_axes=t_axes,
-                target_core_sizes=t_sizes,
-                target_core_semantics=t_sems,
-                owner_core_id=t_owner,
-            )
-        ctx = _WalkContext(
-            builder=builder,
-            actor=_ActorKey(
-                dev_id,
-                mesh_idx,
-                tuple(
-                    g_coords[ax]
-                    for ax, sem in enumerate(semantics)
-                    if sem == "parallel"
-                ),
-            ),
-            device_id=dev_id,
-            device_coords=dev_coords,
-            mesh_ctx=mesh_ctx,
-            grid_coords=g_coords,
-            grid_sizes=grid,
-            scope_path=f"m{mesh_idx}" if len(meshes) > 1 else "",
-            touched_refs=set(),
-            written={},
-            extra_axis_env=dict(zip(axis_names, g_coords)),
-            core_axis_names=axis_names,
-            all_core_axis_sizes=all_core_axis_sizes,
-            dimension_semantics=semantics,
-            is_sparse_core=is_sparse_core,
-            unaliased_output_buffers=unaliased_out,
-        )
-        _walk(kernel_jaxpr, ctx, env)
-        _record_step_written_buffers(ctx)
+              scr_i = idx - (num_in + num_out)
+              # `mpmd_map` allocates one shared scratch tuple passed to every
+              # sub-mesh, so cross-mesh HBM scratch and semaphores share IDs.
+              scr_id = f"scratch_{scr_i}"
+              env.refs[var] = _full_view(
+                  scr_id,
+                  _normalize_memory_space(
+                      getattr(aval, "memory_space", None),
+                      default="semaphore_mem"
+                      if sem_type is not None
+                      else "vmem",
+                  ),
+                  getattr(aval, "shape", ()),
+                  getattr(aval, "dtype", np.float32),
+                  sem_type=sem_type,
+                  target_core_axes=t_axes,
+                  target_core_sizes=t_sizes,
+                  target_core_semantics=t_sems,
+                  owner_core_id=t_owner,
+              )
+          ctx = _WalkContext(
+              builder=builder,
+              actor=ActorKey(
+                  dev_id,
+                  mesh_idx,
+                  tuple(
+                      g_coords[ax]
+                      for ax, sem in enumerate(semantics)
+                      if sem == "parallel"
+                  ),
+              ),
+              device_id=dev_id,
+              device_coords=dev_coords,
+              mesh_ctx=mesh_ctx,
+              grid_coords=g_coords,
+              grid_sizes=grid,
+              scope_path=f"m{mesh_idx}" if len(meshes) > 1 else "",
+              touched_refs=set(),
+              written={},
+              record_events=is_recorded,
+              extra_axis_env=dict(zip(axis_names, g_coords)),
+              core_axis_names=axis_names,
+              all_core_axis_sizes=all_core_axis_sizes,
+              dimension_semantics=semantics,
+              is_sparse_core=is_sparse_core,
+              unaliased_output_buffers=unaliased_out,
+          )
+          _walk(kernel_jaxpr, ctx, env)
+          _record_step_written_buffers(ctx)
 
   if shared_builder is None:
     return []
   _check_output_coverage(shared_builder, all_mpmd_operands, mesh_ctx)
   return [shared_builder.build()]
+
+
+_FORWARD_LIVE_OUTVAR_PRIMITIVES = frozenset({
+    "checkpoint",
+    "closed_call",
+    "cond",
+    "core_call",
+    "eval_jaxpr",
+    "jit",
+    "pjit",
+    "remat",
+    "remat2",
+    "shard_map",
+})
+
+
+def _contains_kernel_eqn(jaxpr: Any) -> bool:
+  """Returns whether `jaxpr` or any nested sub-jaxpr calls a Pallas kernel."""
+  for eqn in jaxpr.eqns:
+    if eqn.primitive.name in ("pallas_call", "mpmd_map"):
+      return True
+    if any(_contains_kernel_eqn(sub) for sub in _sub_jaxprs(eqn)):
+      return True
+  return False
+
+
+def _pallas_call_live_outputs(
+    jaxpr: Any,
+    live_outvars: AbstractSet[Any] | None = None,
+) -> tuple[set[Any], dict[int, frozenset[int]]]:
+  """Computes live `Var`s in `jaxpr` and live output indices per `pallas_call`.
+
+  Unaliased pipelined `pallas_call` outputs that cannot reach `live_outvars` or
+  any effectful or kernel-bearing equation (while at least one output of the
+  same `pallas_call` is live) act as temporary VMEM accumulators passed via
+  dummy `out_specs` (such as `m_scratch`/`l_scratch`/`o_scratch` in JAX <=0.11
+  Splash Attention) whose throwaway HBM buffers are never read.
+  """
+  live: set[Any] = (
+      {v for v in jaxpr.outvars if _is_jax_var(v)}
+      if live_outvars is None
+      else {v for v in live_outvars if _is_jax_var(v)}
+  )
+  live_pallas_outs: dict[int, frozenset[int]] = {}
+  for eqn in reversed(jaxpr.eqns):
+    if eqn.primitive.name == "pallas_call":
+      io_aliases = dict(eqn.params.get("input_output_aliases", ()))
+      aliased_outs = {out_i for _, out_i in io_aliases.items()}
+      live_pallas_outs[id(eqn)] = frozenset(
+          idx
+          for idx, ov in enumerate(eqn.outvars)
+          if idx in aliased_outs or (_is_jax_var(ov) and ov in live)
+      )
+      for iv in eqn.invars:
+        root_iv, _ = _unwrap_ref_and_transforms(iv)
+        if _is_jax_var(root_iv):
+          live.add(root_iv)
+      continue
+    out_is_live = (
+        bool(getattr(eqn, "effects", ()))
+        or any(_is_jax_var(ov) and ov in live for ov in eqn.outvars)
+        or eqn.primitive.name == "mpmd_map"
+        or any(_contains_kernel_eqn(sub) for sub in _sub_jaxprs(eqn))
+    )
+    if out_is_live:
+      for iv in eqn.invars:
+        root_iv, _ = _unwrap_ref_and_transforms(iv)
+        if _is_jax_var(root_iv):
+          live.add(root_iv)
+  return live, live_pallas_outs
 
 
 def _collect_models(
@@ -5178,12 +5910,22 @@ def _collect_models(
     max_unrolled_iterations: int,
     tpu_version: findings.TpuVersion = fx_verifier.DEFAULT_TPU_VERSION,
     concrete_arrays: Mapping[Any, _ConcreteArray] | None = None,
+    live_outvars: AbstractSet[Any] | None = None,
 ) -> None:
   """Locates `shard_map`, `pallas_call`, and `mpmd_map` equations."""
   outer_empty_outputs = _find_outer_empty_ref_outputs(jaxpr)
+  live_vars, live_pallas_outs = _pallas_call_live_outputs(jaxpr, live_outvars)
   for eqn in jaxpr.eqns:
     name = eqn.primitive.name
     if name == "pallas_call":
+      live_outs = live_pallas_outs.get(id(eqn), frozenset())
+      discarded_outs = (
+          frozenset(
+              idx for idx in range(len(eqn.outvars)) if idx not in live_outs
+          )
+          if live_outs
+          else frozenset()
+      )
       out_models.append(
           _extract_pallas_call_model(
               eqn,
@@ -5191,6 +5933,7 @@ def _collect_models(
               max_unrolled_iterations=max_unrolled_iterations,
               tpu_version=tpu_version,
               concrete_arrays=concrete_arrays,
+              discarded_out_indices=discarded_outs,
           )
       )
       continue
@@ -5255,6 +5998,17 @@ def _collect_models(
             )
           if entry is not None:
             sub_arrays[inner_v] = entry
+      sub_live_outvars: set[Any] | None = None
+      if (
+          name in _FORWARD_LIVE_OUTVAR_PRIMITIVES
+          and len(sub.outvars) == len(eqn.outvars)
+          and any(_is_jax_var(ov) and ov in live_vars for ov in eqn.outvars)
+      ):
+        sub_live_outvars = {
+            sv
+            for sv, ov in zip(sub.outvars, eqn.outvars)
+            if _is_jax_var(sv) and _is_jax_var(ov) and ov in live_vars
+        }
       _collect_models(
           sub,
           sub_ctx,
@@ -5262,6 +6016,7 @@ def _collect_models(
           max_unrolled_iterations=max_unrolled_iterations,
           tpu_version=tpu_version,
           concrete_arrays=sub_arrays or None,
+          live_outvars=sub_live_outvars,
       )
 
 
