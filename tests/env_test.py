@@ -35,19 +35,9 @@ class TestMode(enum.Enum):
   HAS_TORCH_TPU_ANCESTOR_PROCESS_ROOT = "has_torch_tpu_ancestor_process_root"
   LIBTPU_VERSION = "libtpu_version"
   LIBTPU_VERSION_NOT_LOADED = "libtpu_version_not_loaded"
-  GET_BOOL_ENV_ONCE_UNSET = "get_bool_env_once_unset"
-  GET_BOOL_ENV_ONCE_TRUE = "get_bool_env_once_true"
-  GET_BOOL_ENV_ONCE_FALSE = "get_bool_env_once_false"
-  GET_BOOL_ENV_ONCE_INVALID = "get_bool_env_once_invalid"
-  GET_BOOL_ENV_ONCE_MEMOIZED = "get_bool_env_once_memoized"
-  GET_INT_ENV_ONCE_UNSET = "get_int_env_once_unset"
-  GET_INT_ENV_ONCE_VALID = "get_int_env_once_valid"
-  GET_INT_ENV_ONCE_INVALID = "get_int_env_once_invalid"
-  GET_INT_ENV_ONCE_MEMOIZED = "get_int_env_once_memoized"
-  GET_STR_ENV_ONCE_UNSET = "get_str_env_once_unset"
-  GET_STR_ENV_ONCE_SET = "get_str_env_once_set"
-  GET_STR_ENV_ONCE_EMPTY = "get_str_env_once_empty"
-  GET_STR_ENV_ONCE_MEMOIZED = "get_str_env_once_memoized"
+  GET_BOOL_ENV_ONCE = "get_bool_env_once"
+  GET_INT_ENV_ONCE = "get_int_env_once"
+  GET_STR_ENV_ONCE = "get_str_env_once"
 
 
 _TEST_MODE = flags.DEFINE_enum_class(
@@ -90,104 +80,109 @@ class EnvTest(seed_test_utils.MultiProcessRepeatableTest):
   def test_libtpu_version_not_loaded(self) -> None:
     self.assertIsNone(env.get_libtpu_version())
 
-  def test_get_bool_env_once_unset(self) -> None:
-    self.assertIsNone(env.get_bool_env_once("TORCH_TPU_ENABLE_DEBUG_CHECKS"))
-    self.assertTrue(
-        env.get_bool_env_once(
-            "TORCH_TPU_ENABLE_DEBUG_CHECKS", default_value=True
-        )
-    )
+  # Each variable is memoized on its first read, so the get_*_env_once tests
+  # cover each case with a different variable of the same type to share one
+  # subprocess per type. The matching ParentEnvTest methods set the values.
 
-  def test_get_bool_env_once_true(self) -> None:
-    self.assertTrue(env.get_bool_env_once("TORCH_TPU_ENABLE_DEBUG_CHECKS"))
-    # The default value is ignored when the variable is set.
-    self.assertTrue(
-        env.get_bool_env_once(
-            "TORCH_TPU_ENABLE_DEBUG_CHECKS", default_value=False
-        )
-    )
+  def test_get_bool_env_once(self) -> None:
+    with self.subTest("unset"):
+      self.assertIsNone(
+          env.get_bool_env_once("TORCH_TPU_INTERNAL_STORAGE_AWARE_PLACEHOLDERS")
+      )
+      self.assertTrue(
+          env.get_bool_env_once(
+              "TORCH_TPU_INTERNAL_STORAGE_AWARE_PLACEHOLDERS",
+              default_value=True,
+          )
+      )
+    with self.subTest("true"):
+      self.assertTrue(env.get_bool_env_once("TORCH_TPU_ENABLE_DEBUG_CHECKS"))
+      # The default value is ignored when the variable is set.
+      self.assertTrue(
+          env.get_bool_env_once(
+              "TORCH_TPU_ENABLE_DEBUG_CHECKS", default_value=False
+          )
+      )
+    with self.subTest("memoized"):
+      os.environ["TORCH_TPU_ENABLE_DEBUG_CHECKS"] = "0"
+      self.assertTrue(env.get_bool_env_once("TORCH_TPU_ENABLE_DEBUG_CHECKS"))
+    with self.subTest("false"):
+      self.assertFalse(
+          env.get_bool_env_once(
+              "TORCH_TPU_INTERNAL_ENABLE_REASSOCIATE_NORM_WEIGHTS"
+          )
+      )
+    with self.subTest("invalid"):
+      self.assertIsNone(
+          env.get_bool_env_once(
+              "TORCH_TPU_INTERNAL_MATERIALIZE_COLLECTIVE_TENSORS"
+          )
+      )
+      self.assertTrue(
+          env.get_bool_env_once(
+              "TORCH_TPU_INTERNAL_MATERIALIZE_COLLECTIVE_TENSORS",
+              default_value=True,
+          )
+      )
 
-  def test_get_bool_env_once_false(self) -> None:
-    self.assertFalse(env.get_bool_env_once("TORCH_TPU_ENABLE_DEBUG_CHECKS"))
+  def test_get_int_env_once(self) -> None:
+    with self.subTest("unset"):
+      self.assertIsNone(
+          env.get_int_env_once("TORCH_TPU_INTERNAL_HANDSHAKE_PORT")
+      )
+      self.assertEqual(
+          env.get_int_env_once(
+              "TORCH_TPU_INTERNAL_HANDSHAKE_PORT", default_value=42
+          ),
+          42,
+      )
+    with self.subTest("valid"):
+      self.assertEqual(
+          env.get_int_env_once("TORCH_TPU_INTERNAL_HANDSHAKE_TIMEOUT_S"), 12345
+      )
+      # The default value is ignored when the variable is set.
+      self.assertEqual(
+          env.get_int_env_once(
+              "TORCH_TPU_INTERNAL_HANDSHAKE_TIMEOUT_S", default_value=42
+          ),
+          12345,
+      )
+    with self.subTest("memoized"):
+      os.environ["TORCH_TPU_INTERNAL_HANDSHAKE_TIMEOUT_S"] = "54321"
+      self.assertEqual(
+          env.get_int_env_once("TORCH_TPU_INTERNAL_HANDSHAKE_TIMEOUT_S"), 12345
+      )
+    with self.subTest("invalid"):
+      self.assertIsNone(env.get_int_env_once("TORCH_TPU_BASE_PORT"))
+      self.assertEqual(
+          env.get_int_env_once("TORCH_TPU_BASE_PORT", default_value=42), 42
+      )
 
-  def test_get_bool_env_once_invalid(self) -> None:
-    self.assertIsNone(env.get_bool_env_once("TORCH_TPU_ENABLE_DEBUG_CHECKS"))
-    self.assertTrue(
-        env.get_bool_env_once(
-            "TORCH_TPU_ENABLE_DEBUG_CHECKS", default_value=True
-        )
-    )
-
-  def test_get_bool_env_once_memoized(self) -> None:
-    self.assertTrue(env.get_bool_env_once("TORCH_TPU_ENABLE_DEBUG_CHECKS"))
-    os.environ["TORCH_TPU_ENABLE_DEBUG_CHECKS"] = "0"
-    self.assertTrue(env.get_bool_env_once("TORCH_TPU_ENABLE_DEBUG_CHECKS"))
-
-  def test_get_int_env_once_unset(self) -> None:
-    self.assertIsNone(env.get_int_env_once("TORCH_TPU_INTERNAL_HANDSHAKE_PORT"))
-    self.assertEqual(
-        env.get_int_env_once(
-            "TORCH_TPU_INTERNAL_HANDSHAKE_PORT", default_value=42
-        ),
-        42,
-    )
-
-  def test_get_int_env_once_valid(self) -> None:
-    self.assertEqual(
-        env.get_int_env_once("TORCH_TPU_INTERNAL_HANDSHAKE_PORT"), 12345
-    )
-    # The default value is ignored when the variable is set.
-    self.assertEqual(
-        env.get_int_env_once(
-            "TORCH_TPU_INTERNAL_HANDSHAKE_PORT", default_value=42
-        ),
-        12345,
-    )
-
-  def test_get_int_env_once_invalid(self) -> None:
-    self.assertIsNone(env.get_int_env_once("TORCH_TPU_INTERNAL_HANDSHAKE_PORT"))
-    self.assertEqual(
-        env.get_int_env_once(
-            "TORCH_TPU_INTERNAL_HANDSHAKE_PORT", default_value=42
-        ),
-        42,
-    )
-
-  def test_get_int_env_once_memoized(self) -> None:
-    self.assertEqual(
-        env.get_int_env_once("TORCH_TPU_INTERNAL_HANDSHAKE_PORT"), 12345
-    )
-    os.environ["TORCH_TPU_INTERNAL_HANDSHAKE_PORT"] = "54321"
-    self.assertEqual(
-        env.get_int_env_once("TORCH_TPU_INTERNAL_HANDSHAKE_PORT"), 12345
-    )
-
-  def test_get_str_env_once_unset(self) -> None:
-    self.assertIsNone(env.get_str_env_once("MASTER_ADDR"))
-    self.assertEqual(
-        env.get_str_env_once("MASTER_ADDR", default_value="localhost"),
-        "localhost",
-    )
-
-  def test_get_str_env_once_set(self) -> None:
-    self.assertEqual(env.get_str_env_once("MASTER_ADDR"), "worker0")
-    # The default value is ignored when the variable is set.
-    self.assertEqual(
-        env.get_str_env_once("MASTER_ADDR", default_value="localhost"),
-        "worker0",
-    )
-
-  def test_get_str_env_once_empty(self) -> None:
-    # An empty value is still a value, so the default value is ignored.
-    self.assertEqual(env.get_str_env_once("MASTER_ADDR"), "")
-    self.assertEqual(
-        env.get_str_env_once("MASTER_ADDR", default_value="localhost"), ""
-    )
-
-  def test_get_str_env_once_memoized(self) -> None:
-    self.assertEqual(env.get_str_env_once("MASTER_ADDR"), "worker0")
-    os.environ["MASTER_ADDR"] = "worker1"
-    self.assertEqual(env.get_str_env_once("MASTER_ADDR"), "worker0")
+  def test_get_str_env_once(self) -> None:
+    with self.subTest("unset"):
+      self.assertIsNone(env.get_str_env_once("TORCH_TPU_XPROF_SESSION_ID"))
+      self.assertEqual(
+          env.get_str_env_once(
+              "TORCH_TPU_XPROF_SESSION_ID", default_value="localhost"
+          ),
+          "localhost",
+      )
+    with self.subTest("set"):
+      self.assertEqual(env.get_str_env_once("MASTER_ADDR"), "worker0")
+      # The default value is ignored when the variable is set.
+      self.assertEqual(
+          env.get_str_env_once("MASTER_ADDR", default_value="localhost"),
+          "worker0",
+      )
+    with self.subTest("memoized"):
+      os.environ["MASTER_ADDR"] = "worker1"
+      self.assertEqual(env.get_str_env_once("MASTER_ADDR"), "worker0")
+    with self.subTest("empty"):
+      # An empty value is still a value, so the default value is ignored.
+      self.assertEqual(env.get_str_env_once("NODE_RANK"), "")
+      self.assertEqual(
+          env.get_str_env_once("NODE_RANK", default_value="localhost"), ""
+      )
 
 
 class LibtpuVersionEnvTest(seed_test_utils.MultiProcessRepeatableTest):
@@ -282,82 +277,32 @@ class ParentEnvTest(
         env_updates={"TORCH_DEVICE_BACKEND_AUTOLOAD": "0"},
     )
 
-  def test_get_bool_env_once_unset(self) -> None:
+  def test_get_bool_env_once(self) -> None:
     self.run_sub_test(
-        TestMode.GET_BOOL_ENV_ONCE_UNSET,
-        env_removals=["TORCH_TPU_ENABLE_DEBUG_CHECKS"],
+        TestMode.GET_BOOL_ENV_ONCE,
+        env_updates={
+            "TORCH_TPU_ENABLE_DEBUG_CHECKS": "1",
+            "TORCH_TPU_INTERNAL_ENABLE_REASSOCIATE_NORM_WEIGHTS": "0",
+            "TORCH_TPU_INTERNAL_MATERIALIZE_COLLECTIVE_TENSORS": "not_a_bool",
+        },
+        env_removals=["TORCH_TPU_INTERNAL_STORAGE_AWARE_PLACEHOLDERS"],
     )
 
-  def test_get_bool_env_once_true(self) -> None:
+  def test_get_int_env_once(self) -> None:
     self.run_sub_test(
-        TestMode.GET_BOOL_ENV_ONCE_TRUE,
-        env_updates={"TORCH_TPU_ENABLE_DEBUG_CHECKS": "1"},
-    )
-
-  def test_get_bool_env_once_false(self) -> None:
-    self.run_sub_test(
-        TestMode.GET_BOOL_ENV_ONCE_FALSE,
-        env_updates={"TORCH_TPU_ENABLE_DEBUG_CHECKS": "0"},
-    )
-
-  def test_get_bool_env_once_invalid(self) -> None:
-    self.run_sub_test(
-        TestMode.GET_BOOL_ENV_ONCE_INVALID,
-        env_updates={"TORCH_TPU_ENABLE_DEBUG_CHECKS": "not_a_bool"},
-    )
-
-  def test_get_bool_env_once_memoized(self) -> None:
-    self.run_sub_test(
-        TestMode.GET_BOOL_ENV_ONCE_MEMOIZED,
-        env_updates={"TORCH_TPU_ENABLE_DEBUG_CHECKS": "true"},
-    )
-
-  def test_get_int_env_once_unset(self) -> None:
-    self.run_sub_test(
-        TestMode.GET_INT_ENV_ONCE_UNSET,
+        TestMode.GET_INT_ENV_ONCE,
+        env_updates={
+            "TORCH_TPU_INTERNAL_HANDSHAKE_TIMEOUT_S": "12345",
+            "TORCH_TPU_BASE_PORT": "abc",
+        },
         env_removals=["TORCH_TPU_INTERNAL_HANDSHAKE_PORT"],
     )
 
-  def test_get_int_env_once_valid(self) -> None:
+  def test_get_str_env_once(self) -> None:
     self.run_sub_test(
-        TestMode.GET_INT_ENV_ONCE_VALID,
-        env_updates={"TORCH_TPU_INTERNAL_HANDSHAKE_PORT": "12345"},
-    )
-
-  def test_get_int_env_once_invalid(self) -> None:
-    self.run_sub_test(
-        TestMode.GET_INT_ENV_ONCE_INVALID,
-        env_updates={"TORCH_TPU_INTERNAL_HANDSHAKE_PORT": "abc"},
-    )
-
-  def test_get_int_env_once_memoized(self) -> None:
-    self.run_sub_test(
-        TestMode.GET_INT_ENV_ONCE_MEMOIZED,
-        env_updates={"TORCH_TPU_INTERNAL_HANDSHAKE_PORT": "12345"},
-    )
-
-  def test_get_str_env_once_unset(self) -> None:
-    self.run_sub_test(
-        TestMode.GET_STR_ENV_ONCE_UNSET,
-        env_removals=["MASTER_ADDR"],
-    )
-
-  def test_get_str_env_once_set(self) -> None:
-    self.run_sub_test(
-        TestMode.GET_STR_ENV_ONCE_SET,
-        env_updates={"MASTER_ADDR": "worker0"},
-    )
-
-  def test_get_str_env_once_empty(self) -> None:
-    self.run_sub_test(
-        TestMode.GET_STR_ENV_ONCE_EMPTY,
-        env_updates={"MASTER_ADDR": ""},
-    )
-
-  def test_get_str_env_once_memoized(self) -> None:
-    self.run_sub_test(
-        TestMode.GET_STR_ENV_ONCE_MEMOIZED,
-        env_updates={"MASTER_ADDR": "worker0"},
+        TestMode.GET_STR_ENV_ONCE,
+        env_updates={"MASTER_ADDR": "worker0", "NODE_RANK": ""},
+        env_removals=["TORCH_TPU_XPROF_SESSION_ID"],
     )
 
 

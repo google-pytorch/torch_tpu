@@ -791,6 +791,7 @@ class FxVerifierTest(seed_test_utils.RepeatableTest):
     )
     self.assertIn(verifier.Phase.CONTRACTS, valid_rep.checked_phases)
     self.assertIn(verifier.Phase.LOWERING, valid_rep.checked_phases)
+    self.assertIn(verifier.Phase.MODEL_CHECK, valid_rep.checked_phases)
 
     # FX program tracing (`make_fx`) over an `AbstractMesh` `@jax_op` must
     # succeed on CPU without requiring physical TPU devices.
@@ -1500,6 +1501,89 @@ class FxVerifierTest(seed_test_utils.RepeatableTest):
         )
     )
 
+    def _indexed_kernel_fn(arr: jax.Array, offsets: jax.Array) -> jax.Array:
+      def body(off_ref, x_ref, o_ref):
+        blk = off_ref[0]
+        o_ref[...] = x_ref[blk, :]
+
+      return pl.pallas_call(
+          body,
+          out_shape=jax.ShapeDtypeStruct((8, 128), arr.dtype),
+          grid_spec=pltpu.PrefetchScalarGridSpec(
+              num_scalar_prefetch=1,
+              in_specs=[pl.BlockSpec((2, 8, 128), lambda i, _: (0, 0, 0))],
+              out_specs=pl.BlockSpec((8, 128), lambda i, _: (0, 0)),
+              grid=(1,),
+          ),
+      )(offsets, arr)
+
+    indexed_op = jax_op(
+        "pallas_verify_fx::concrete_int_prop", _indexed_kernel_fn
+    )
+
+    def valid_prog(t: torch.Tensor) -> torch.Tensor:
+      counts = torch.tensor([1, 1, 1, 1], dtype=torch.int32)
+      offsets = torch.cumsum(counts, dim=0, dtype=torch.int32) - 1
+      return indexed_op(t, offsets)
+
+    def _nonzero_precond_fn(arr: jax.Array, offsets: jax.Array) -> jax.Array:
+      def body(off_ref, x_ref, o_ref):
+        blk = off_ref[0] - 1
+        o_ref[...] = x_ref[blk, :]
+
+      return pl.pallas_call(
+          body,
+          out_shape=jax.ShapeDtypeStruct((8, 128), arr.dtype),
+          grid_spec=pltpu.PrefetchScalarGridSpec(
+              num_scalar_prefetch=1,
+              in_specs=[pl.BlockSpec((2, 8, 128), lambda i, _: (0, 0, 0))],
+              out_specs=pl.BlockSpec((8, 128), lambda i, _: (0, 0)),
+              grid=(1,),
+          ),
+      )(offsets, arr)
+
+    nonzero_precond_op = jax_op(
+        "pallas_verify_fx::nonzero_precond_prop", _nonzero_precond_fn
+    )
+
+    def empty_then_fill_prog(t: torch.Tensor) -> torch.Tensor:
+      offsets = torch.empty((4,), dtype=torch.int32)
+      offsets.fill_(1)
+      return nonzero_precond_op(t, offsets)
+
+    def guarded_cond_prog(t: torch.Tensor, idx_t: torch.Tensor) -> torch.Tensor:
+      in_bounds = idx_t[0] < 2
+      return torch.cond(
+          in_bounds,
+          lambda a, idx: indexed_op(a, idx),
+          lambda a, idx: a[0].clone(),
+          (t, idx_t),
+      )
+
+    def oob_prog(t: torch.Tensor) -> torch.Tensor:
+      counts = torch.tensor([5, 1, 1, 1], dtype=torch.int32)
+      offsets = torch.cumsum(counts, dim=0, dtype=torch.int32)
+      return indexed_op(t, offsets)
+
+    x3 = torch.ones((2, 8, 128), dtype=torch.float32)
+    ok_rep = verifier.verify(valid_prog, (x3,), mode=STATIC)
+    self.assertTrue(ok_rep.passed, msg=ok_rep.summary())
+
+    fill_rep = verifier.verify(empty_then_fill_prog, (x3,), mode=STATIC)
+    self.assertTrue(fill_rep.passed, msg=fill_rep.summary())
+
+    guarded_rep = verifier.verify(
+        guarded_cond_prog,
+        (x3, torch.tensor([99, 0, 0, 0], dtype=torch.int32)),
+        mode=STATIC,
+    )
+    self.assertTrue(guarded_rep.passed, msg=guarded_rep.summary())
+
+    oob_rep = verifier.verify(oob_prog, (x3,), mode=STATIC)
+    oob_findings = oob_rep.findings_by_category(Category.OUT_OF_BOUNDS_ACCESS)
+    self.assertNotEmpty(oob_findings, msg=oob_rep.summary())
+    self.assertIn("for the provided example inputs", oob_findings[0].message)
+
   def test_joint_autograd_detects_saved_activation_donated_later(self):
     donating_binary = jax_op(
         "pallas_verify_fx::joint_saved_donor",
@@ -1689,6 +1773,33 @@ class FxVerifierTest(seed_test_utils.RepeatableTest):
     self.assertNotEmpty(
         lowering_rep.findings_by_category(Category.LOWERING_FAILURE),
         msg=lowering_rep.summary(),
+    )
+
+    def _oob_pallas(arr: jax.Array) -> jax.Array:
+      return pl.pallas_call(
+          lambda x_ref, o_ref: o_ref.__setitem__(Ellipsis, x_ref[1, :]),
+          out_shape=jax.ShapeDtypeStruct((128,), arr.dtype),
+          in_specs=[pl.BlockSpec((1, 128), lambda i: (0, 0))],
+          out_specs=pl.BlockSpec((128,), lambda i: (0,)),
+          grid=(1,),
+      )(arr)
+
+    nested_oob_op = jax_op("pallas_verify_fx::cond_nested_oob", _oob_pallas)
+
+    def cond_nested_oob(
+        p_flag: torch.Tensor, t_in: torch.Tensor
+    ) -> torch.Tensor:
+      return torch.cond(
+          p_flag,
+          lambda t: t[:1, :].squeeze(0).clone(),
+          lambda t: nested_oob_op(t),
+          (t_in,),
+      )
+
+    oob_rep = verifier.verify(cond_nested_oob, (pred, x), mode=STATIC)
+    self.assertNotEmpty(
+        oob_rep.findings_by_category(Category.OUT_OF_BOUNDS_ACCESS),
+        msg=oob_rep.summary(),
     )
 
   def test_multi_output_aminmax_out_and_set_inplace_provenance(self):
@@ -2218,6 +2329,24 @@ class FxVerifierTest(seed_test_utils.RepeatableTest):
     )
 
   def test_concrete_int_invalidation_and_kwargs_signature_dedup(self):
+    def _indexed_kw_fn(arr: jax.Array, offsets: jax.Array) -> jax.Array:
+      def body(off_ref, x_ref, o_ref):
+        blk = off_ref[0]
+        o_ref[...] = x_ref[blk, :]
+
+      return pl.pallas_call(
+          body,
+          out_shape=jax.ShapeDtypeStruct((8, 128), arr.dtype),
+          grid_spec=pltpu.PrefetchScalarGridSpec(
+              num_scalar_prefetch=1,
+              in_specs=[pl.BlockSpec((2, 8, 128), lambda i, _: (0, 0, 0))],
+              out_specs=pl.BlockSpec((8, 128), lambda i, _: (0, 0)),
+              grid=(1,),
+          ),
+      )(offsets, arr)
+
+    indexed_kw_op = jax_op("pallas_verify_fx::indexed_kw_dedup", _indexed_kw_fn)
+
     def _neg_donor_int_fn(arr: jax.Array, offsets: jax.Array) -> jax.Array:
       del offsets
       return arr
@@ -2256,13 +2385,23 @@ class FxVerifierTest(seed_test_utils.RepeatableTest):
     self.assertNotIn(phs[2], env)
     self.assertNotIn(phs[3], env)
 
-    sym_t = torch.zeros((4,), dtype=torch.int32)
-    conc_t = torch.zeros((4,), dtype=torch.int32)
-    self.assertNotEqual(
-        verifier_impl._signature({"offsets": sym_t}, concrete_tensor_ids=set()),
-        verifier_impl._signature(
-            {"offsets": conc_t}, concrete_tensor_ids={id(conc_t)}
-        ),
+    # First call passes symbolic-zero `offsets=` via kwargs; second call passes
+    # concrete OOB `[5, 1, 1, 1]` via kwargs and must NOT collide in
+    # `seen_invocations`.
+    def _sym_then_concrete_oob_kwargs(t: torch.Tensor) -> torch.Tensor:
+      sym_off = torch.empty((4,), dtype=torch.int32)
+      sym_off.zero_()
+      out1 = indexed_kw_op(t, offsets=sym_off)
+      oob_off = torch.tensor([5, 1, 1, 1], dtype=torch.int32)
+      out2 = indexed_kw_op(t, offsets=oob_off)
+      return out1 + out2
+
+    kw_dedup_rep = verifier.verify(
+        _sym_then_concrete_oob_kwargs, (x3,), mode=STATIC
+    )
+    self.assertNotEmpty(
+        kw_dedup_rep.findings_by_category(Category.OUT_OF_BOUNDS_ACCESS),
+        msg=kw_dedup_rep.summary(),
     )
 
   def test_preconstructed_pallas_call_autograd_and_interior_tile_and_spmd(self):
@@ -2697,6 +2836,12 @@ class FxVerifierTest(seed_test_utils.RepeatableTest):
     self.assertEqual(repacked.dtype, torch.float4_e2m1fn_x2)
     self.assertEqual(repacked.shape, (8, 64))
     self.assertTrue(torch.equal(repacked.view(torch.uint8), raw_bytes))
+
+    sds = fx_verifier._to_export_shape_dtype_struct(
+        fp4_tensor, torch.tpu.TpuVersion.V7
+    )
+    self.assertEqual(sds.shape, (8, 128))
+    self.assertEqual(sds.dtype, jnp.float4_e2m1fn.dtype)
 
     scalar_fp4 = torch.tensor(0x21, dtype=torch.uint8).view(
         torch.float4_e2m1fn_x2

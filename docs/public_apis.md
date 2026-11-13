@@ -213,8 +213,13 @@ process. Use it at your own risk. Using it triggers a one-time warning.
 *   `torch.tpu.pallas.verifier.FindingCategory.AUTOGRAD_PARITY_MISMATCH`
 *   `torch.tpu.pallas.verifier.FindingCategory.DONATED_PARAMETER`
 *   `torch.tpu.pallas.verifier.FindingCategory.FAKE_KERNEL_MISMATCH`
+*   `torch.tpu.pallas.verifier.FindingCategory.HARDWARE_CONSTRAINT_VIOLATION`
+*   `torch.tpu.pallas.verifier.FindingCategory.INVALID_DEVICE_ID`
 *   `torch.tpu.pallas.verifier.FindingCategory.LOWERING_FAILURE`
+*   `torch.tpu.pallas.verifier.FindingCategory.LOW_PRECISION_ACCUMULATION`
+*   `torch.tpu.pallas.verifier.FindingCategory.OUT_OF_BOUNDS_ACCESS`
 *   `torch.tpu.pallas.verifier.FindingCategory.PARTITION_SPEC_MISMATCH`
+*   `torch.tpu.pallas.verifier.FindingCategory.UNWRITTEN_OUTPUT`
 *   `torch.tpu.pallas.verifier.FindingCategory.USE_AFTER_DONATE`
 *   `torch.tpu.pallas.verifier.FindingCategory.VERIFICATION_INCOMPLETE`
 *   `torch.tpu.pallas.verifier.FindingCategory.ZERO_OUTPUT_SILENT_SKIP`
@@ -223,6 +228,7 @@ process. Use it at your own risk. Using it triggers a one-time warning.
 *   `torch.tpu.pallas.verifier.Phase.CONTRACTS`
 *   `torch.tpu.pallas.verifier.Phase.FX_GRAPH`
 *   `torch.tpu.pallas.verifier.Phase.LOWERING`
+*   `torch.tpu.pallas.verifier.Phase.MODEL_CHECK`
 *   `torch.tpu.pallas.verifier.Severity`
 *   `torch.tpu.pallas.verifier.Severity.ERROR`
 *   `torch.tpu.pallas.verifier.Severity.INFO`
@@ -242,6 +248,7 @@ process. Use it at your own risk. Using it triggers a one-time warning.
 *   `torch.tpu.pallas.verifier.VerificationMode.STATIC`
 *   `torch.tpu.pallas.verifier.VerificationOptions`
 *   `torch.tpu.pallas.verifier.VerificationOptions.check_autograd`
+*   `torch.tpu.pallas.verifier.VerificationOptions.max_unrolled_iterations`
 *   `torch.tpu.pallas.verifier.VerificationOptions.tpu_version`
 *   `torch.tpu.pallas.verifier.VerificationReport`
 *   `torch.tpu.pallas.verifier.VerificationReport.checked_phases`

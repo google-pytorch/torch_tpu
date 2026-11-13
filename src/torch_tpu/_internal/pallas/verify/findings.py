@@ -98,6 +98,12 @@ _TORCH_TO_JAX_TPU_DEVICE_KIND: dict[TpuVersion, str] = {
     TpuVersion.V8T: "TPU8t",
 }
 
+# TPU generations that do NOT support DMA done-count mode on
+# `pltpu.SemaphoreType.REGULAR` semaphores for non-SMEM transfers (TPU v5e
+# requires `pltpu.SemaphoreType.DMA`; TPU v5p and newer support done-count mode).
+_NO_DMA_DONE_COUNT_TPU_VERSIONS: frozenset[TpuVersion] = frozenset({
+    TpuVersion.V5E,
+})
 
 # Default TorchTPU generation that ops without a mesh or inferred target are
 # lowered for.
@@ -136,6 +142,16 @@ def jax_tpu_device_kind(tpu_version: TpuVersion | str) -> str:
   raise ValueError(f"unrecognized TPU version: {tpu_version!r}")
 
 
+def supports_dma_done_count_mode(tpu_version: TpuVersion | str) -> bool:
+  """Returns whether `tpu_version` supports done-count regular DMA sems."""
+  if isinstance(tpu_version, TpuVersion):
+    return tpu_version not in _NO_DMA_DONE_COUNT_TPU_VERSIONS
+  parsed = parse_tpu_version(tpu_version)
+  if parsed is not None:
+    return parsed not in _NO_DMA_DONE_COUNT_TPU_VERSIONS
+  raise ValueError(f"unrecognized TPU version: {tpu_version!r}")
+
+
 @annotations.experimental(_exp_reason("Severity"))
 class Severity(enum.Enum):
   """Severity of a verification finding.
@@ -164,6 +180,9 @@ class Phase(enum.Enum):
   FX_GRAPH = "fx_graph"
   # Registered custom backward compared against the forward kernel.
   AUTOGRAD = "autograd"
+  # Static model checking of Pallas kernel Jaxprs, semaphores, and memory
+  # accesses.
+  MODEL_CHECK = "model_check"
 
 
 @annotations.experimental(_exp_reason("FindingCategory"))
@@ -179,6 +198,13 @@ class FindingCategory(enum.Enum):
   FAKE_KERNEL_MISMATCH = "fake_kernel_mismatch"
   AUTOGRAD_PARITY_MISMATCH = "autograd_parity_mismatch"
   LOWERING_FAILURE = "lowering_failure"
+
+  # Kernel concurrency, memory, semaphore, and hardware safety.
+  UNWRITTEN_OUTPUT = "unwritten_output"
+  OUT_OF_BOUNDS_ACCESS = "out_of_bounds_access"
+  INVALID_DEVICE_ID = "invalid_device_id"
+  HARDWARE_CONSTRAINT_VIOLATION = "hardware_constraint_violation"
+  LOW_PRECISION_ACCUMULATION = "low_precision_accumulation"
 
   # Parts of the program that could not be verified (bounded unrolling,
   # solver timeouts, unsupported constructs, skipped phases).
