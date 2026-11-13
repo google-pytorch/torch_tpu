@@ -40,6 +40,18 @@ _BAZEL_DIFF_URL: Final[str] = (
 )
 _BAZEL_DIFF_JAR: Final[pathlib.Path] = pathlib.Path("/tmp/bazel-diff.jar")
 
+# The repositories that dominate a cold `bazel build`, fetched together before
+# it by `_prefetch_repos`.
+_PREFETCH_REPOS: Final[Sequence[str]] = (
+    # The LLVM C++ toolchain: a 2 GB download, ~60 s on CI runners. Its name
+    # follows `--repo_env=LLVM_VERSION` in .bazelrc.
+    "@@rules_ml_toolchain++toolchain_ext+llvm20_linux_x86_64",
+    # XLA's LLVM sources (llvm-raw), which @llvm-project is generated from.
+    "@llvm-project",
+    # Any pip hub, so that the pip module extension (~35 s) runs alongside.
+    "@pypi",
+)
+
 
 class Mode(enum.StrEnum):
   """Execution modes.
@@ -611,6 +623,35 @@ def _bazel_command(
   return f"bazel {subcommand} {config_flag}{extra_bazel_flags} {target_str}"
 
 
+def _prefetch_repos(bazel_config: str, extra_bazel_flags: str) -> None:
+  """Fetches the slowest external repositories in parallel, best effort.
+
+  On a cold runner, `bazel build` evaluates the pip extension first and only
+  then fetches the LLVM toolchain, because toolchain resolution waits for
+  loading to finish. One `bazel fetch` of `_PREFETCH_REPOS` runs them side by
+  side, and the build then reuses the fetched repositories. A failed prefetch
+  only costs time, so it is reported and the build goes on.
+
+  Args:
+    bazel_config: Bazel --config name to pass (or empty string for none). The
+      fetch must use the build's config so that the repositories match.
+    extra_bazel_flags: Additional raw flags string passed to Bazel.
+  """
+  cmd = _bazel_command(
+      "fetch",
+      bazel_config,
+      extra_bazel_flags,
+      [f"--repo={repo}" for repo in _PREFETCH_REPOS],
+  )
+  sys.stdout.flush()
+  res = subprocess.run(["bash", "-c", cmd], check=False)
+  if res.returncode != 0:
+    print(
+        f"Prefetching repositories failed with exit code {res.returncode};"
+        " continuing with the build."
+    )
+
+
 def _run_bazel_test(
     bazel_config: str,
     extra_bazel_flags: str,
@@ -825,6 +866,14 @@ def main(argv: Sequence[str]) -> int:
       write_github_output(has_impacted_targets=True, is_full_run=True)
       return 0
     return _run_bazel_test(opts.bazel_config, opts.extra_bazel_flags, ["//..."])
+
+  # On a cold runner, bazel-diff's first `bazel mod graph` and `cquery` fetch
+  # the same slow repositories as a build, one after another: the cquery only
+  # starts the LLVM toolchain download once loading is done. Fetch them all at
+  # once first, with the cquery's config. The base and current commits share
+  # MODULE.bazel and its locks here (a change to them forces a full run
+  # above), so the fetched repositories serve both hash generations.
+  _prefetch_repos(opts.bazel_config, "")
 
   print("Downloading bazel-diff...")
   subprocess.run(

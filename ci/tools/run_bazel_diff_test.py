@@ -1051,6 +1051,33 @@ class MainTest(unittest.TestCase):
           "--cqueryCommandOptions=--config=ci_tpu_v7_presubmit", call.args
       )
 
+  def test_calculate_mode_prefetches_repos_before_hashing(self):
+    self._set_impacted_targets([])
+    calls = []
+    run_bazel_diff.run_bazel_diff.side_effect = lambda *args: calls.append(
+        args[0]
+    )
+
+    with mock.patch.object(
+        run_bazel_diff,
+        "_prefetch_repos",
+        autospec=True,
+        side_effect=lambda *args: calls.append("prefetch"),
+    ) as mock_prefetch:
+      self._run_main("--mode=calculate", bazel_config="ci_tpu_v7_presubmit")
+
+    # Only the cquery's config: bazel-diff passes no other flags to Bazel.
+    mock_prefetch.assert_called_once_with("ci_tpu_v7_presubmit", "")
+    self.assertEqual(
+        calls,
+        [
+            "prefetch",
+            "generate-hashes",
+            "generate-hashes",
+            "get-impacted-targets",
+        ],
+    )
+
   def test_calculate_mode_reports_no_work_when_config_selects_no_test(self):
     """Impacted targets this config filters out must skip the runner."""
     self._set_impacted_targets(["//tests:v5_test"])
