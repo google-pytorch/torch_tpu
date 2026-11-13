@@ -29,6 +29,7 @@ torch_tpu_cc_library(
     hdrs = ["dropout_aten_kernels.h"],
     deps = [
         ":dropout",
+        "//csrc/common:aten_utils",
         "//csrc/common:cache_key",
         "//csrc/common:dtype",
         "//csrc/common:error_utils",
@@ -57,6 +58,8 @@ torch_tpu_cc_library(
     srcs = ["dropout.cc"],
     hdrs = ["dropout.h"],
     deps = [
+        "//csrc/common:aten_utils",
+        "//csrc/common:dtype",
         "//csrc/common:error_utils",
         "//csrc/ops:op_builder_utils",
         "//csrc/ops/uniform",
@@ -66,6 +69,7 @@ torch_tpu_cc_library(
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Support",
         "@stablehlo//:stablehlo_ops",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
         "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
         "@stablehlo//stablehlo/integrations/cpp/builder:stablehlo_builder",
     ],

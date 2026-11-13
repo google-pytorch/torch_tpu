@@ -81,7 +81,6 @@ UNREGISTERED_OPS = frozenset([
     '_make_dep_token',
     '_make_per_channel_quantized_tensor',
     '_make_per_tensor_quantized_tensor',
-    '_masked_scale',
     '_mixed_dtypes_linear',
     '_mkldnn_reshape',
     '_mkldnn_transpose',

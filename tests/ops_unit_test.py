@@ -7088,6 +7088,322 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         golden_result=z.to("cpu"), torch_tpu_result=z_again.to("cpu")
     )
 
+  def _run_in_mode(self, mode, fn, *args):
+    if mode == "defer_and_fuse":
+      with execution_mode.set_eager_mode(
+          execution_mode.EagerMode.DEFER_AND_FUSE
+      ):
+        return fn(*args)
+    if mode == "compiled":
+      return torch.compile(fn, backend="tpu")(*args)
+    return fn(*args)
+
+  def _mark_dynamic_dim0(self, mode, *tensors):
+    for t in tensors:
+      if mode == "compiled":
+        torch._dynamo.mark_dynamic(t, 0, min=2, max=32)
+      else:
+        dynamism.mark_dynamic(t, dimension=0, lower_bound=2, upper_bound=32)
+
+  @parameterized.parameters(
+      *(
+          (dtype, 2.5, mode)
+          for dtype in (
+              torch.bfloat16,
+              torch.float16,
+              torch.float32,
+              torch.float64,
+              torch.complex64,
+          )
+          for mode in ("immediate", "defer_and_fuse", "compiled")
+      ),
+      (torch.float16, 1e5, "immediate"),
+      (torch.bfloat16, 1e5, "immediate"),
+  )
+  def test_masked_scale_dtypes_and_modes(self, dtype, scale, mode):
+    shape = (16, 16)
+    x = (
+        torch.full(shape, 0.001, dtype=dtype, device="tpu")
+        if scale > 10.0
+        else torch.randn(shape, dtype=dtype).to("tpu")
+    )
+    mask = (torch.arange(256).reshape(shape) % 2).to(
+        device="tpu", dtype=torch.uint8
+    )
+    out = self._run_in_mode(
+        mode, lambda t, m: torch.ops.aten._masked_scale(t, m, scale), x, mask
+    )
+    self.assertEqual(out.dtype, dtype)
+    self.assertEqual(out.shape, shape)
+    calc_dtype = (
+        torch.float32 if dtype in (torch.float16, torch.bfloat16) else dtype
+    )
+    golden = torch.where(
+        mask.cpu().bool(),
+        (x.cpu().to(calc_dtype) * scale).to(dtype),
+        torch.zeros_like(x.cpu()),
+    )
+    self.assert_close(golden_result=golden, torch_tpu_result=out.cpu())
+
+  @parameterized.product(
+      case=[
+          ("_masked_scale", (4, 8), (4, 1)),
+          ("_masked_scale", (4, 8), (8,)),
+          ("_masked_scale", (4, 8), ()),
+          ("_masked_scale", (), ()),
+          ("_masked_scale", (0, 8), (0, 8)),
+          ("native_dropout_backward", (4, 8), (4, 1)),
+          ("native_dropout_backward", (4, 8), (8,)),
+          ("native_dropout_backward", (4, 8), ()),
+      ],
+      mode=["immediate", "compiled"],
+  )
+  def test_masked_scale_shapes_and_broadcast(self, case, mode):
+    op_name, x_shape, mask_shape = case
+    is_masked_scale = op_name == "_masked_scale"
+    op = (
+        torch.ops.aten._masked_scale
+        if is_masked_scale
+        else torch.ops.aten.native_dropout_backward
+    )
+    mask_dtype = torch.uint8 if is_masked_scale else torch.bool
+    x = torch.randn(x_shape, dtype=torch.float32).to("tpu")
+    mask = (
+        torch.arange(math.prod(mask_shape)).reshape(mask_shape) % 2 == 0
+    ).to(device="tpu", dtype=mask_dtype)
+
+    out = self._run_in_mode(mode, lambda t, m: op(t, m, 2.0), x, mask)
+    self.assertEqual(out.shape, x_shape)
+    self.assertEqual(out.dtype, torch.float32)
+    golden = torch.where(
+        mask.cpu().bool(), x.cpu() * 2.0, torch.zeros_like(x.cpu())
+    )
+    self.assert_close(golden_result=golden, torch_tpu_result=out.cpu())
+
+  def test_masked_scale_dynamic_shape(self):
+    scale = 2.5
+    # Same-shape dynamic native_dropout_backward is already covered in
+    # tests/dynamism/compile_test.py and ops_test_dynamic.
+    op_cases = [
+        (torch.ops.aten._masked_scale, torch.uint8, [(0, 16), (1, 16), (0, 1)]),
+        (torch.ops.aten.native_dropout_backward, torch.bool, [(1, 16), (0, 1)]),
+    ]
+    for op, mask_dtype, mask_templates in op_cases:
+      fn = lambda inp, m, op=op: op(inp, m, scale)
+      for mask_d0, mask_d1 in mask_templates:
+        compiled_fn = torch.compile(fn, backend="tpu")
+        for mode in ("compiled", "immediate"):
+          for dim_size in (4, 12):
+            x = torch.randn(dim_size, 16, dtype=torch.float32, device="tpu")
+            m_shape = (mask_d0 or dim_size, mask_d1)
+            mask = (torch.rand(m_shape, device="tpu") > 0.5).to(mask_dtype)
+            dyn_tensors = (x, mask) if mask_d0 == 0 else (x,)
+            self._mark_dynamic_dim0(mode, *dyn_tensors)
+            out = compiled_fn(x, mask) if mode == "compiled" else fn(x, mask)
+            self.assertEqual(out.shape, (dim_size, 16))
+            golden = torch.where(
+                mask.cpu().bool(), x.cpu() * scale, torch.zeros_like(x.cpu())
+            )
+            self.assert_close(golden_result=golden, torch_tpu_result=out.cpu())
+
+  @parameterized.parameters(
+      *(
+          (True, dtype, 0.25, True, mode)
+          for dtype in (
+              torch.bfloat16,
+              torch.float16,
+              torch.float32,
+              torch.float64,
+              torch.complex64,
+          )
+          for mode in ("immediate", "defer_and_fuse", "compiled")
+      ),
+      *(
+          (True, torch.float32, p, True, mode)
+          for p in (0.0, 1.0)
+          for mode in ("immediate", "compiled")
+      ),
+      *(
+          (False, dtype, 0.25, True, mode)
+          for dtype in (torch.bfloat16, torch.float32, torch.float64)
+          for mode in ("immediate", "compiled")
+      ),
+      (False, torch.complex64, 0.25, True, "immediate"),
+      *(
+          (False, torch.float32, p, train, "immediate")
+          for p, train in ((0.0, True), (1.0, True), (0.25, False))
+      ),
+  )
+  def test_fused_dropout_and_native_dropout(
+      self, is_fused, dtype, p, train, mode
+  ):
+    fill = 1 + 2j if dtype.is_complex else 1.0
+    x = torch.full((100, 100), fill, dtype=dtype).to("tpu")
+    fn = (
+        (lambda t: torch.ops.aten._fused_dropout(t, p=p))
+        if is_fused
+        else (lambda t: torch.ops.aten.native_dropout(t, p=p, train=train))
+    )
+    out, mask = self._run_in_mode(mode, fn, x)
+    expected_mask_dtype = torch.uint8 if is_fused else torch.bool
+    keep_prob = p if is_fused else (1.0 if not train else 1.0 - p)
+
+    self.assertEqual((out.dtype, mask.dtype), (dtype, expected_mask_dtype))
+    self.assertEqual((out.shape, mask.shape), (x.shape, x.shape))
+    if is_fused:
+      self.assertTrue(torch.all((mask == 0) | (mask == 1)).item())
+
+    bool_mask = mask.bool()
+    if keep_prob == 0.0:
+      self.assert_close(
+          golden_result=torch.zeros_like(x).cpu(),
+          torch_tpu_result=out.cpu(),
+      )
+      self.assertFalse(torch.any(bool_mask).item())
+    elif keep_prob == 1.0:
+      self.assert_close(golden_result=x.cpu(), torch_tpu_result=out.cpu())
+      self.assertTrue(torch.all(bool_mask).item())
+    else:
+      self.assertAlmostEqual(
+          bool_mask.float().mean().item(), keep_prob, delta=0.05
+      )
+      self.assertTrue(torch.all((out == 0.0) == (~bool_mask)).item())
+      kept = out[bool_mask]
+      self.assertGreater(kept.numel(), 0)
+      self.assert_close(
+          golden_result=(x.cpu() * (1.0 / keep_prob))[bool_mask.cpu()],
+          torch_tpu_result=kept.cpu(),
+      )
+
+  @parameterized.parameters(
+      (torch.bfloat16, 1e-4, 1.0, 6e-5),
+      (torch.float16, 1e-5, 0.001, 2.5e-5),
+  )
+  def test_fused_dropout_small_keep_prob_and_f16_scale(
+      self, dtype, p, fill_val, delta
+  ):
+    x = torch.full((1000, 1000), fill_val, dtype=dtype, device="tpu")
+    out, mask = torch.ops.aten._fused_dropout(x, p=p)
+    bool_mask = mask.bool()
+    self.assertEqual(mask.dtype, torch.uint8)
+    self.assertTrue(bool_mask.any().item())
+    self.assertAlmostEqual(bool_mask.float().mean().item(), p, delta=delta)
+    golden = torch.where(
+        bool_mask.cpu(),
+        (x.cpu().float() / p).to(dtype),
+        torch.zeros_like(x.cpu()),
+    )
+    self.assert_close(golden_result=golden, torch_tpu_result=out.cpu())
+
+  def test_fused_dropout_dynamic_shape(self):
+    fn = lambda inp: torch.ops.aten._fused_dropout(inp, p=0.25)
+    compiled_fn = torch.compile(fn, backend="tpu")
+    for mode in ("compiled", "immediate"):
+      for dim_size in (4, 12):
+        x = torch.randn(dim_size, 16, dtype=torch.float32, device="tpu")
+        self._mark_dynamic_dim0(mode, x)
+        out, mask = compiled_fn(x) if mode == "compiled" else fn(x)
+        self.assertEqual(
+            (out.shape, mask.shape), ((dim_size, 16), (dim_size, 16))
+        )
+        self.assertEqual(mask.dtype, torch.uint8)
+        self.assertTrue(torch.all((mask == 0) | (mask == 1)).item())
+        golden = torch.where(
+            mask.cpu().bool(), x.cpu() * 4.0, torch.zeros_like(x.cpu())
+        )
+        self.assert_close(golden_result=golden, torch_tpu_result=out.cpu())
+
+  @parameterized.product(
+      is_fused=[True, False],
+      shape=[(), (0, 8)],
+      mode=["immediate", "compiled"],
+  )
+  def test_fused_and_native_dropout_rank0_and_empty(
+      self, is_fused, shape, mode
+  ):
+    x = torch.full(shape, 3.5, dtype=torch.float32).to("tpu")
+    fn = (
+        (lambda t: torch.ops.aten._fused_dropout(t, p=0.5))
+        if is_fused
+        else (lambda t: torch.ops.aten.native_dropout(t, p=0.5, train=True))
+    )
+    out, mask = self._run_in_mode(mode, fn, x)
+    self.assertEqual((out.shape, mask.shape), (shape, shape))
+    self.assertEqual(mask.dtype, torch.uint8 if is_fused else torch.bool)
+    self.assertTrue(torch.all((mask == 0) | (mask == 1)).item())
+    golden = torch.where(
+        mask.cpu().bool(), x.cpu() * 2.0, torch.zeros_like(x.cpu())
+    )
+    self.assert_close(golden_result=golden, torch_tpu_result=out.cpu())
+
+  @parameterized.parameters("immediate", "compiled")
+  def test_fused_dropout_generator_determinism(self, mode):
+    x = torch.randn((64, 64), dtype=torch.float32, device="tpu")
+    fn = lambda inp, gen: torch.ops.aten._fused_dropout(
+        inp, p=0.3, generator=gen
+    )
+    runner = torch.compile(fn, backend="tpu") if mode == "compiled" else fn
+    out1, mask1 = runner(x, torch.Generator(device="tpu").manual_seed(42))
+    out2, mask2 = runner(x, torch.Generator(device="tpu").manual_seed(42))
+    _, mask3 = runner(x, torch.Generator(device="tpu").manual_seed(12345))
+    self.assertEqual(mask1.dtype, torch.uint8)
+    self.assert_close(golden_result=out1.cpu(), torch_tpu_result=out2.cpu())
+    self.assertTrue(torch.equal(mask1.cpu(), mask2.cpu()))
+    self.assertFalse(torch.equal(mask1.cpu(), mask3.cpu()))
+
+  @parameterized.parameters(torch.float32, torch.complex64)
+  def test_fused_dropout_meta(self, dtype):
+    shape = (16, 16)
+    with fake_tensor.FakeTensorMode():
+      fake_x = torch.empty(shape, dtype=dtype, device="tpu")
+      fake_gen = torch.Generator(device="tpu")
+      fake_out, fake_mask = torch.ops.aten._fused_dropout(
+          fake_x, p=0.5, generator=fake_gen
+      )
+      self.assertEqual((fake_out.dtype, fake_mask.dtype), (dtype, torch.uint8))
+      self.assertEqual((fake_out.shape, fake_mask.shape), (shape, shape))
+
+      out0 = torch.empty(shape, dtype=dtype, device="tpu")
+      out1 = torch.empty(shape, dtype=torch.uint8, device="tpu")
+      torch.ops.aten._fused_dropout.out(
+          fake_x, p=0.5, generator=fake_gen, out0=out0, out1=out1
+      )
+      self.assertEqual((out0.dtype, out1.dtype), (dtype, torch.uint8))
+
+      if not dtype.is_complex:
+        cpu_out, cpu_mask = torch.ops.aten._fused_dropout(
+            torch.empty(shape, dtype=dtype, device="cpu"), p=0.5
+        )
+        self.assertEqual((cpu_out.dtype, cpu_mask.dtype), (dtype, torch.uint8))
+
+  @parameterized.product(
+      dtype=[torch.float32, torch.bfloat16],
+      mode=["immediate", "compiled"],
+  )
+  def test_fused_dropout_autograd_backward_with_masked_scale(self, dtype, mode):
+    p = 0.25
+    x = torch.randn(32, 32, dtype=dtype, device="tpu", requires_grad=True)
+    grad_out = torch.randn(32, 32, dtype=dtype, device="tpu")
+
+    def run_step(inp, g):
+      out, mask = torch.ops.aten._fused_dropout(inp, p=p)
+      out.backward(g)
+      return mask, inp.grad
+
+    mask, grad_in = self._run_in_mode(mode, run_step, x, grad_out)
+    self.assertIsNotNone(grad_in)
+    self.assertEqual((grad_in.shape, grad_in.dtype), ((32, 32), dtype))
+    self.assertEqual(mask.dtype, torch.uint8)
+    calc_dtype = torch.float32 if dtype == torch.bfloat16 else dtype
+    expected_grad = torch.where(
+        mask.cpu().bool(),
+        (grad_out.cpu().to(calc_dtype) / p).to(dtype),
+        torch.zeros_like(grad_out.cpu()),
+    )
+    self.assert_close(
+        golden_result=expected_grad, torch_tpu_result=grad_in.cpu()
+    )
+
   def test_exponential(self):
     """Tests the exponential_ op."""
     tpu_device = torch.device("tpu")
