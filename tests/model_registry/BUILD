@@ -18,8 +18,8 @@
 # tests/module_registry.py. Must stay free of torch_tpu C++ deps (see
 # //src/torch_tpu/google/tests/module_registry:no_cpp_deps_test).
 
-load("@rules_python//python:py_library.bzl", "py_library")
 load("//build_files:build_defs.bzl", "torch_tpu_package_end")
+load("//shims/py_rules:py_library.bzl", "py_library")
 load(
     "//shims/py_rules:pytype.bzl",
     pytype_strict_test = "pytype_strict_contrib_test",

@@ -20,12 +20,12 @@
 # jparkerh
 # benawilson
 
-load("@rules_python//python:py_library.bzl", "py_library")
 load(
     "//build_files:build_defs.bzl",
     "torch_tpu_package_end",
     "torch_tpu_py_library",
 )
+load("//shims/py_rules:py_library.bzl", "py_library")
 load("//shims/py_rules:strict.bzl", "py_library_providing_imports_info")
 load("//shims/pybind11:pybind.bzl", "pybind_extension")
 

@@ -16,8 +16,6 @@
 # zhanyong-wan
 # pganssle-google
 
-load("@rules_python//python:py_binary.bzl", "py_binary")
-
 """Tests and tools that guard the TorchTPU public API surface."""
 
 load(
@@ -28,6 +26,7 @@ load(
     "torch_tpu_py_test",
 )
 load("//build_files:wheel.bzl", "WHEEL_PY_TARGETS")
+load("//shims/py_rules:py_binary.bzl", "py_binary")
 
 package(
     default_applicable_licenses = ["//:license"],

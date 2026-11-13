@@ -16,13 +16,13 @@
 # chizhang529
 # jialei-chen
 
-load("@rules_python//python:py_binary.bzl", "py_binary")
 load(
     "//build_files:build_defs.bzl",
     "torch_tpu_package_end",
     "torch_tpu_py_library",
 )
 load("//shims/build_files:torch_rules.bzl", "torch_tpu_torch_test")
+load("//shims/py_rules:py_binary.bzl", "py_binary")
 
 package(default_applicable_licenses = ["//:license"])
 

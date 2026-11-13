@@ -20,8 +20,6 @@
 # zhanyong-wan
 # haifeng-jin
 
-load("@rules_python//python:py_binary.bzl", "py_binary")
-load("@rules_python//python:py_library.bzl", "py_library")
 load(
     "//build_files:build_defs.bzl",
     "if_oss",
@@ -31,6 +29,8 @@ load(
 )
 load("//shims/mpm:genmpm.bzl", "genmpm")
 load("//shims/pkg:pkg.bzl", "pkg_binary_with_runfiles")
+load("//shims/py_rules:py_binary.bzl", "py_binary")
+load("//shims/py_rules:py_library.bzl", "py_library")
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -231,10 +231,11 @@ py_library(
     type_checking = True,
 )
 
-pytype_strict_library(
-    # PY_LIBRARY_OK=Decouple from torch_tpu to avoid C++ dependency in coverage tests.
+py_library(
+    # PY_LIBRARY_OK=Keep loss C++-free for coverage tests.
     name = "loss",
     srcs = ["loss.py"],
+    type_checking = True,
     deps = [
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",

@@ -719,6 +719,81 @@ def _run_precomputed_targets(
   )
 
 
+def _run_full_test_suite(opts: BazelDiffOptions, mode: Mode) -> int:
+  """Analyzes every target on HEAD and runs or signals the full test suite."""
+  # bazel-diff is skipped here, so nothing else would analyze the targets that
+  # `bazel test` filters out. Catch analysis failures now rather than in the
+  # base hash generation of the next PR. In calculate mode this runs on the CPU
+  # runner, so a broken target fails before claiming an accelerator runner.
+  analysis_rc = _run_bazel_analysis_check(opts.bazel_config)
+  if analysis_rc != 0:
+    return analysis_rc
+  if mode == Mode.CALCULATE:
+    print("Signaling a full test run to the test job.")
+    write_github_output(has_impacted_targets=True, is_full_run=True)
+    return 0
+  return _run_bazel_test(opts.bazel_config, opts.extra_bazel_flags, ["//..."])
+
+
+def _try_generate_base_hashes(
+    opts: BazelDiffOptions,
+    workspace_dir: pathlib.Path,
+    base_sha: str,
+    base_hashes: pathlib.Path,
+) -> bool:
+  """Generates base-branch target hashes, returning False if base_sha is broken.
+
+  Args:
+    opts: Parsed command-line options.
+    workspace_dir: Resolved repository workspace directory.
+    base_sha: Base commit SHA to check out and hash.
+    base_hashes: Output path for the base hashes JSON file.
+
+  Returns:
+    True if `base_hashes` was generated, or False if `base_sha` itself fails
+    Bazel analysis (for example, after an unvalidated commit lands on `main`) so
+    the caller should fall back to a full test run on `opts.current_sha`.
+
+  Raises:
+    subprocess.CalledProcessError: If `bazel-diff` fails even though `base_sha`
+      passes Bazel analysis, or if checking out `base_sha` or `opts.current_sha`
+      fails.
+  """
+  cquery_args = (f"--cqueryCommandOptions=--config={opts.bazel_config}",)
+  print("--- Generating Base Hashes ---")
+  print(f"PR detected. Fetching exact base SHA: {base_sha}")
+  subprocess.run(
+      ["git", "fetch", "--depth=1", "origin", base_sha],
+      stderr=subprocess.DEVNULL,
+      check=False,
+  )
+  subprocess.run(["git", "checkout", base_sha], check=True)
+  try:
+    try:
+      run_bazel_diff(
+          "generate-hashes",
+          "-w",
+          workspace_dir,
+          base_hashes,
+          "--useCquery",
+          *cquery_args,
+      )
+    except subprocess.CalledProcessError:
+      if _run_bazel_analysis_check(opts.bazel_config) == 0:
+        raise
+      print(
+          f"Base SHA {base_sha} failed Bazel analysis; falling back to a full"
+          " test run on current SHA."
+      )
+      return False
+  finally:
+    # Never leave the checkout parked on the base SHA; a later job step (or a
+    # local run) would otherwise operate on the wrong tree.
+    print(f"Checking out current SHA: {opts.current_sha}")
+    subprocess.run(["git", "checkout", opts.current_sha], check=True)
+  return True
+
+
 def main(argv: Sequence[str]) -> int:
   sys.stdout.reconfigure(line_buffering=True)
   opts = parse_args(argv)
@@ -812,19 +887,7 @@ def main(argv: Sequence[str]) -> int:
         " global configuration files modified. Skipping bazel-diff and running"
         " all tests."
     )
-    # bazel-diff is skipped here, so nothing else would analyze the targets
-    # that `bazel test` filters out. Catch analysis failures now rather than
-    # in the base hash generation of the next PR. In calculate mode this runs
-    # on the CPU runner, so a broken target fails before claiming an
-    # accelerator runner.
-    analysis_rc = _run_bazel_analysis_check(opts.bazel_config)
-    if analysis_rc != 0:
-      return analysis_rc
-    if mode == Mode.CALCULATE:
-      print("Signaling a full test run to the test job.")
-      write_github_output(has_impacted_targets=True, is_full_run=True)
-      return 0
-    return _run_bazel_test(opts.bazel_config, opts.extra_bazel_flags, ["//..."])
+    return _run_full_test_suite(opts, mode)
 
   print("Downloading bazel-diff...")
   subprocess.run(
@@ -846,29 +909,9 @@ def main(argv: Sequence[str]) -> int:
   # exactly the configured graph the test job will build.
   cquery_args = (f"--cqueryCommandOptions=--config={opts.bazel_config}",)
 
-  print("--- Generating Base Hashes ---")
-  print(f"PR detected. Fetching exact base SHA: {base_sha}")
-  subprocess.run(
-      ["git", "fetch", "--depth=1", "origin", base_sha],
-      stderr=subprocess.DEVNULL,
-      check=False,
-  )
-  subprocess.run(["git", "checkout", base_sha], check=True)
   base_hashes = workspace_dir / "base_hashes.json"
-  try:
-    run_bazel_diff(
-        "generate-hashes",
-        "-w",
-        workspace_dir,
-        base_hashes,
-        "--useCquery",
-        *cquery_args,
-    )
-  finally:
-    # Never leave the checkout parked on the base SHA; a later job step (or a
-    # local run) would otherwise operate on the wrong tree.
-    print(f"Checking out current SHA: {current_sha}")
-    subprocess.run(["git", "checkout", current_sha], check=True)
+  if not _try_generate_base_hashes(opts, workspace_dir, base_sha, base_hashes):
+    return _run_full_test_suite(opts, mode)
 
   print("--- Generating PR Hashes ---")
   pr_hashes = workspace_dir / "pr_hashes.json"

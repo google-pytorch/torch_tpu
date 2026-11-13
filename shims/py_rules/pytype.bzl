@@ -12,14 +12,23 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Stubs for pytype rules."""
+"""Stubs for Google3 Python and pytype rules."""
 
-load("@rules_python//python:py_binary.bzl", "py_binary")
-load("@rules_python//python:py_library.bzl", "py_library")
-load("@rules_python//python:py_test.bzl", "py_test")
+load("@rules_python//python:py_binary.bzl", _rules_python_py_binary = "py_binary")
+load("@rules_python//python:py_library.bzl", _rules_python_py_library = "py_library")
+load("@rules_python//python:py_test.bzl", _rules_python_py_test = "py_test")
 load("//:visibility.bzl", "BZL_VISIBILITY")
 
 visibility(BZL_VISIBILITY)
+
+# Google3-only attributes on rules_python's py_library/py_binary/py_test that
+# upstream OSS @rules_python does not accept.
+_GOOGLE3_ONLY_ATTRS = (
+    "pyi_deps",
+    "pyi_srcs",
+    "strict_deps",
+    "type_checking",
+)
 
 def _add_src_imports(kwargs):
     package = native.package_name()
@@ -38,27 +47,24 @@ def _add_src_imports(kwargs):
             imports.append(".")
         kwargs["imports"] = imports
 
-def pytype_strict_binary(**kwargs):
+def _prepare_kwargs(kwargs):
+    for attr in _GOOGLE3_ONLY_ATTRS:
+        kwargs.pop(attr, None)
     _add_src_imports(kwargs)
-    py_binary(**kwargs)
 
-def pytype_strict_library(**kwargs):  # PY_LIBRARY_OK=OSS pytype stub macro definition
-    _add_src_imports(kwargs)
-    py_library(
-        # PY_LIBRARY_OK=OSS pytype stub macro
-        **kwargs
-    )
+def py_binary(**kwargs):
+    _prepare_kwargs(kwargs)
+    _rules_python_py_binary(**kwargs)
 
-def pytype_library(**kwargs):  # PY_LIBRARY_OK=OSS pytype stub macro definition
-    _add_src_imports(kwargs)
-    py_library(
-        # PY_LIBRARY_OK=OSS pytype stub macro
-        **kwargs
-    )
+def py_library(**kwargs):  # PY_LIBRARY_OK=OSS rules_python shim macro
+    _prepare_kwargs(kwargs)
+    _rules_python_py_library(**kwargs)
 
-def pytype_strict_contrib_test(**kwargs):
-    _add_src_imports(kwargs)
-    py_test(
-        # PY_TEST_OK=oss
-        **kwargs
-    )
+def py_test(**kwargs):
+    _prepare_kwargs(kwargs)
+    _rules_python_py_test(**kwargs)
+
+pytype_strict_binary = py_binary
+pytype_strict_library = py_library
+pytype_library = py_library
+pytype_strict_contrib_test = py_test

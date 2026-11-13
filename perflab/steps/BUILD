@@ -16,12 +16,12 @@
 # lizlian
 # haifeng-jin
 
-load("@rules_python//python:py_library.bzl", "py_library")
 load(
     "//build_files:build_defs.bzl",
     "torch_tpu_package_end",
     "torch_tpu_py_library",
 )
+load("//shims/py_rules:py_library.bzl", "py_library")
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -52,10 +52,11 @@ py_library(
     ],
 )
 
-pytype_strict_library(
-    # PY_LIBRARY_OK=Decouple from torch_tpu to avoid C++ dependency in coverage tests.
+py_library(
+    # PY_LIBRARY_OK=Keep standard_train C++-free for coverage tests.
     name = "standard_train",
     srcs = ["standard_train.py"],
+    type_checking = True,
     deps = [
         ":common",
         "//perflab:loss",

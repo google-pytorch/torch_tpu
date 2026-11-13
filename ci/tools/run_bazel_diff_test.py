@@ -1119,6 +1119,74 @@ class MainTest(unittest.TestCase):
     )
     self.assertEqual(self._github_output(), {})
 
+  def test_calculate_mode_signals_full_run_when_base_sha_fails_analysis(self):
+    """A broken base SHA on main must fall back to full validation on HEAD."""
+    events: list[str] = []
+
+    def record_subprocess(
+        args: Sequence[str], **kwargs: Any
+    ) -> subprocess.CompletedProcess[bytes]:
+      del kwargs
+      if list(args[:2]) == ["git", "checkout"]:
+        events.append(f"checkout:{args[2]}")
+      return subprocess.CompletedProcess(args, 0)
+
+    analysis_results = iter([1, 0])
+
+    def record_analysis(bazel_config: str) -> int:
+      rc = next(analysis_results)
+      events.append(f"analyze:{bazel_config}:{rc}")
+      return rc
+
+    self.mock_subprocess_run.side_effect = record_subprocess
+    self.mock_analysis_check.side_effect = record_analysis
+    run_bazel_diff.run_bazel_diff.side_effect = subprocess.CalledProcessError(
+        1, ["java", "-jar", "bazel-diff.jar"]
+    )
+
+    exit_code = self._run_main("--mode=calculate")
+
+    self.assertEqual(exit_code, 0)
+    self.assertEqual(
+        events,
+        [
+            "checkout:base123",
+            "analyze:ci_cpu_presubmit:1",
+            "checkout:head456",
+            "analyze:ci_cpu_presubmit:0",
+        ],
+    )
+    self.mock_bazel_test.assert_not_called()
+    self.assertEqual(
+        self._github_output(),
+        {"has_impacted_targets": "true", "is_full_run": "true"},
+    )
+
+  def test_calculate_mode_fails_when_base_and_current_sha_fail_analysis(self):
+    run_bazel_diff.run_bazel_diff.side_effect = subprocess.CalledProcessError(
+        1, ["java", "-jar", "bazel-diff.jar"]
+    )
+    self.mock_analysis_check.side_effect = [1, 1]
+
+    exit_code = self._run_main("--mode=calculate")
+
+    self.assertEqual(exit_code, 1)
+    self.mock_bazel_test.assert_not_called()
+    self.assertEqual(self._github_output(), {})
+
+  def test_all_mode_runs_all_tests_when_base_sha_fails_analysis(self):
+    run_bazel_diff.run_bazel_diff.side_effect = subprocess.CalledProcessError(
+        1, ["java", "-jar", "bazel-diff.jar"]
+    )
+    self.mock_analysis_check.side_effect = [1, 0]
+
+    exit_code = self._run_main()
+
+    self.assertEqual(exit_code, 0)
+    self.mock_bazel_test.assert_called_once_with(
+        "ci_cpu_presubmit", "", ["//..."]
+    )
+
   def test_calculate_mode_fails_when_ops_test_query_fails(self):
     """A failed ops-test query must fail instead of keeping every target."""
     self._set_impacted_targets(["@@//tests:cpu_test"])

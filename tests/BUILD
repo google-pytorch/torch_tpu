@@ -21,8 +21,6 @@
 # willfroom
 # arfaian
 
-load("@rules_python//python:py_binary.bzl", "py_binary")
-load("@rules_python//python:py_library.bzl", "py_library")
 load(
     "//build_files:build_defs.bzl",
     "DEFAULT_TORCH_EXAMPLE_DEPS",
@@ -36,6 +34,8 @@ load(
     "tpu_gen",
 )
 load("//shims/build_defs_testing:bzl_library.bzl", "bzl_library")
+load("//shims/py_rules:py_binary.bzl", "py_binary")
+load("//shims/py_rules:py_library.bzl", "py_library")
 load(
     ":split_goldens.bzl",
     "split_gpu_goldens",
