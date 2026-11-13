@@ -46,6 +46,7 @@
 #include "csrc/eager/eager_mode.h"
 #include "csrc/eager/events_queue.h"
 #include "csrc/eager/execution_task.h"
+#include "csrc/eager/split_traversal.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/eager/tpu_hooks.h"
@@ -54,6 +55,7 @@
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/python_context.h"
 #include "csrc/pjrt/pjrt_state.h"
+#include "csrc/pjrt/pjrt_transfer.h"
 #include "gtest/gtest.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
@@ -478,6 +480,98 @@ TEST_F(MaterializeTest, CompiledExecutionPreservesPriorLastDeviceOutput) {
                                GraphSplitMode::kSplitGraph));
   ASSERT_EQ(snapshot.Synchronize(), absl::OkStatus());
   EXPECT_TRUE(weak_tc.expired());
+}
+
+TEST_F(MaterializeTest, SnapshotAwaitsPendingStreamWorkOnMaterializationError) {
+  CompilationCache::GetInstance().EvictAll();
+  const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
+  auto [pending_promise, pending_future] = xla::MakePromise<void>();
+  bool promise_set = false;
+  absl::Cleanup release_promise = [&] {
+    if (!promise_set) {
+      pending_promise.Set(absl::OkStatus());
+    }
+  };
+  internal::MarkStreamActive(device_index, stream_id, pending_future);
+
+  const ScopedPythonContextCapturer capturer(OpName::kSub);
+  TT_ASSERT_OK_AND_ASSIGN(
+      const std::vector<DeviceBufferRef> failing_refs,
+      DeviceBufferList::CreateDeferred(
+          OpName::kSub,
+          [](mlir::MlirBuilder&,
+             absl::Span<mlir::MlirOp>) -> absl::StatusOr<DynamicMlirOpResults> {
+            return TT_ERROR(error::kInvalidArgument)
+                   << "simulated builder failure";
+          },
+          /*inputs=*/{}, OpParamCacheKeys::Empty(),
+          {Shape(Dimensions{8}, mlir::ElementType::F32)}));
+  RecordDeferredOpCreated(failing_refs[0].device_buffer_list());
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      EventSnapshot snapshot,
+      MaterializeCurrentStream(MaterializationReason::kExplicitSync,
+                               GraphSplitMode::kSplitGraph,
+                               {failing_refs[0].device_buffer_list()}));
+  ASSERT_EQ(snapshot.BlockUntilStarted(), absl::OkStatus());
+
+  // The snapshot must not complete until prior stream work finishes, even
+  // though materialization failed.
+  TT_ASSERT_OK_AND_ASSIGN(const bool completed_before, snapshot.Query());
+  EXPECT_FALSE(completed_before);
+
+  promise_set = true;
+  pending_promise.Set(absl::OkStatus());
+  const absl::Status status = snapshot.Synchronize();
+  EXPECT_EQ(status.code(), error::kInvalidArgument);
+  EXPECT_NE(status.message().find("simulated builder failure"),
+            std::string::npos);
+}
+
+TEST_F(MaterializeTest,
+       SnapshotAwaitsDeviceToHostTransferOnMaterializationError) {
+  CompilationCache::GetInstance().EvictAll();
+  const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
+  TT_ASSERT_OK_AND_ASSIGN(const DeviceBufferRef valid_ref,
+                          CreateIotaOp(/*record_on_stream=*/true, /*size=*/8));
+  ASSERT_EQ(InsertGraphBreak(device_index, stream_id,
+                             {valid_ref.device_buffer_list()},
+                             MaterializationReason::kExplicitSync,
+                             GraphSplitMode::kSplitGraph),
+            absl::OkStatus());
+
+  const ScopedPythonContextCapturer capturer(OpName::kSub);
+  TT_ASSERT_OK_AND_ASSIGN(
+      const std::vector<DeviceBufferRef> failing_refs,
+      DeviceBufferList::CreateDeferred(
+          OpName::kSub,
+          [](mlir::MlirBuilder&,
+             absl::Span<mlir::MlirOp>) -> absl::StatusOr<DynamicMlirOpResults> {
+            return TT_ERROR(error::kInvalidArgument)
+                   << "simulated lowering failure";
+          },
+          /*inputs=*/{}, OpParamCacheKeys::Empty(),
+          {Shape(Dimensions{8}, mlir::ElementType::F32)}));
+  RecordDeferredOpCreated(failing_refs[0].device_buffer_list());
+
+  std::vector<float> host_data(8, -1.0f);
+  ScheduleDeviceToHostTransfer(
+      DeviceToHostTransfer::IntoBytes(valid_ref, host_data.data()));
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      EventSnapshot snapshot,
+      MaterializeCurrentStream(MaterializationReason::kExplicitSync,
+                               GraphSplitMode::kSplitGraph,
+                               {failing_refs[0].device_buffer_list()}));
+  const absl::Status status = snapshot.Synchronize();
+  EXPECT_EQ(status.code(), error::kInvalidArgument);
+  EXPECT_NE(status.message().find("simulated lowering failure"),
+            std::string::npos);
+
+  // The D2H transfer must have finished writing into `host_data` before
+  // Synchronize() returned so host buffers are not freed while transfers run.
+  EXPECT_EQ(host_data, (std::vector<float>{0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f,
+                                           6.0f, 7.0f}));
 }
 
 TEST_F(MaterializeTest, ExecutionTaskPreservesTraversalCorePinningMode) {
