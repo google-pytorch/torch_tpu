@@ -319,6 +319,12 @@ common:ci --config=resultstore_base
 common:ci --remote_download_minimal
 common:ci --keep_going
 test:ci --test_output=errors
+# Compile target C++ only as PIC. With -c opt, Bazel otherwise compiles most
+# sources twice: PIC for the pywrap .so, non-PIC for cc_test binaries and
+# *_build_test targets. The non-PIC copies were ~80% of remote compile time in
+# CPU presubmit. PIC compile actions keep their cache keys.
+# Keep in sync with ci_rbe_presubmit, which repeats `ci`.
+common:ci --force_pic
 
 # Enable ANSI color in CI logs.
 #
@@ -533,6 +539,7 @@ common:ci_rbe_presubmit --build_tests_only
 common:ci_rbe_presubmit --config=resultstore_base
 common:ci_rbe_presubmit --remote_download_minimal
 common:ci_rbe_presubmit --keep_going
+common:ci_rbe_presubmit --force_pic
 test:ci_rbe_presubmit --test_output=errors
 common:ci_rbe_presubmit --color=yes
 common:ci_rbe_presubmit --curses=no
