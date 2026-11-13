@@ -40,6 +40,18 @@ _BAZEL_DIFF_URL: Final[str] = (
 )
 _BAZEL_DIFF_JAR: Final[pathlib.Path] = pathlib.Path("/tmp/bazel-diff.jar")
 
+# The repositories that dominate a cold `bazel build`, fetched together before
+# it by `_prefetch_repos`.
+_PREFETCH_REPOS: Final[Sequence[str]] = (
+    # The LLVM C++ toolchain: a 2 GB download, ~60 s on CI runners. Its name
+    # follows `--repo_env=LLVM_VERSION` in .bazelrc.
+    "@@rules_ml_toolchain++toolchain_ext+llvm20_linux_x86_64",
+    # XLA's LLVM sources (llvm-raw), which @llvm-project is generated from.
+    "@llvm-project",
+    # Any pip hub, so that the pip module extension (~35 s) runs alongside.
+    "@pypi",
+)
+
 
 class Mode(enum.StrEnum):
   """Execution modes.
@@ -611,6 +623,35 @@ def _bazel_command(
   return f"bazel {subcommand} {config_flag}{extra_bazel_flags} {target_str}"
 
 
+def _prefetch_repos(bazel_config: str, extra_bazel_flags: str) -> None:
+  """Fetches the slowest external repositories in parallel, best effort.
+
+  On a cold runner, `bazel build` evaluates the pip extension first and only
+  then fetches the LLVM toolchain, because toolchain resolution waits for
+  loading to finish. One `bazel fetch` of `_PREFETCH_REPOS` runs them side by
+  side, and the build then reuses the fetched repositories. A failed prefetch
+  only costs time, so it is reported and the build goes on.
+
+  Args:
+    bazel_config: Bazel --config name to pass (or empty string for none). The
+      fetch must use the build's config so that the repositories match.
+    extra_bazel_flags: Additional raw flags string passed to Bazel.
+  """
+  cmd = _bazel_command(
+      "fetch",
+      bazel_config,
+      extra_bazel_flags,
+      [f"--repo={repo}" for repo in _PREFETCH_REPOS],
+  )
+  sys.stdout.flush()
+  res = subprocess.run(["bash", "-c", cmd], check=False)
+  if res.returncode != 0:
+    print(
+        f"Prefetching repositories failed with exit code {res.returncode};"
+        " continuing with the build."
+    )
+
+
 def _run_bazel_test(
     bazel_config: str,
     extra_bazel_flags: str,
@@ -638,6 +679,7 @@ def _run_bazel_test(
     The exit code of the Bazel build/test commands (0 if successful, or if exit
     code 4 'no tests found' is returned and `allow_no_tests` is set).
   """
+  _prefetch_repos(bazel_config, extra_bazel_flags)
   build_cmd = _bazel_command(
       "build", bazel_config, extra_bazel_flags, target_args
   )
