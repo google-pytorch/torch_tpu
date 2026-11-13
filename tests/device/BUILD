@@ -160,18 +160,8 @@ torch_tpu_py_test(
     srcs = ["device_count_test.py"],
     args = ["--device_type=tpu"],
     main = "device_count_test.py",
-    # OSS CI runs single-chip tests in its RBE workers without TPUs,
-    # where exclusive tests run locally. Use `no-remote-exec` to move
-    # the test to the 8-chip runner.
-    tags = if_oss(
-        [
-            "exclusive",
-            "no-remote-exec",
-        ],
-        [],
-    ) + [
-        "requires-tpu-v5lite",
-    ],
+    notest_oss = True,  # NOTEST_OSS_OK=OSS CI can only run it on an 8-chip runner, where it sees all the chips and duplicates device_count_test_tpu.
+    tags = ["requires-tpu-v5lite"],
     deps = [
         "//shims/absl_py/flags",
         "//shims/absl_py/testing:absltest",
