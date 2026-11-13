@@ -67,6 +67,7 @@ from torch_tpu._internal.compile.debug import TpuCompileDebug
 from torch_tpu._internal.compile.dynamic import dynamic_compiler
 from torch_tpu._internal.distributed import device_mesh
 from torch_tpu._internal.distributed import process_group_utils
+from torch_tpu._internal.precision import precision_impl
 from torch_tpu._internal.sync import sync
 from torch_tpu._internal.utils import utils
 from torch_tpu._internal.benchmarks import xprof_adapter
@@ -767,6 +768,73 @@ def _guard_input_storage_offsets(graph_module: torch.fx.GraphModule) -> None:
     dynamo_guards.install_guard(guard)
 
 
+def _lowering_precision_getter(
+    async_compile: bool, example_inputs: Sequence[Any]
+) -> str:
+  """Returns the `precision_impl` getter for the precision programs lower with.
+
+  StaticCompiler with `async_compile`, and DynamicCompiler for every bucket,
+  lower on worker threads. Those threads do not see the calling thread's
+  `torch.tpu.precision` context or `at::NoTF32Guard`, so they lower with the
+  global precision.
+  """
+  if async_compile or compiler.has_dynamic_symints(example_inputs):
+    return "_get_global_precision"
+  return "_get_precision"
+
+
+def _guard_matmul_precision(precision_getter: str) -> None:
+  """Installs Dynamo guards on the TPU matmul precision.
+
+  Lowering reads the precision from TorchTPU's own state (`torch.tpu.precision`,
+  then `at::NoTF32Guard`, then `torch.set_float32_matmul_precision`), which
+  Dynamo's global state guard does not see. Without these guards, a frame
+  compiled under one precision keeps running after another one is selected.
+
+  The calling thread's precision is always guarded, since programs compiled
+  again for new input layouts lower on the calling thread. The precision from
+  `precision_getter` is guarded too when it differs.
+
+  Args:
+    precision_getter: The `precision_impl` getter returned by
+      `_lowering_precision_getter`.
+  """
+  # Ensure we're within a tracing context to install guards
+  if torch._guards.TracingContext.try_get() is None:
+    return
+  for getter in dict.fromkeys(("_get_precision", precision_getter)):
+    source = dynamo_source.ImportSource("torch_tpu")
+    for member in ("_internal", "precision", "precision_impl", getter):
+      source = dynamo_source.AttrSource(source, member)
+    value_source = dynamo_source.AttrSource(
+        dynamo_source.CallFunctionNoArgsSource(source), "value"
+    )
+    dynamo_guards.install_guard(
+        value_source.make_guard(dynamo_guards.GuardBuilder.EQUALS_MATCH)
+    )
+
+
+@contextlib.contextmanager
+def _matmul_precision_cache_key_tag(precision_getter: str) -> Iterator[None]:
+  """Adds the TPU matmul precision programs lower with to the cache key tag.
+
+  AOTAutogradCache keys hash `torch.backends.cuda.matmul.fp32_precision`, which
+  the TPU precision setters do not change, so programs compiled under different
+  TPU precisions would otherwise share an on-disk entry.
+
+  Args:
+    precision_getter: The `precision_impl` getter returned by
+      `_lowering_precision_getter`.
+  """
+  precision = getattr(precision_impl, precision_getter)()
+  precision_tag = f"tpu_matmul_precision={precision.name}"
+  tag = compiler_config.cache_key_tag
+  with compiler_config.patch(  # pyrefly: ignore[missing-attribute]
+      cache_key_tag=f"{tag}:{precision_tag}" if tag else precision_tag
+  ):
+    yield
+
+
 _VALID_SYMBOL_REGEX = re.compile(r"[^a-zA-Z0-9_]")
 
 
@@ -963,6 +1031,8 @@ class TpuBackend:
 
     _log_gm_and_inputs("__call__", "Pre", graph_module, example_inputs)
     _guard_input_storage_offsets(graph_module)
+    precision_getter = _lowering_precision_getter(async_compile, example_inputs)
+    _guard_matmul_precision(precision_getter)
     input_layouts = {}
     # The inputs with non-default layouts, which are checked on each call.
     input_indices = []
@@ -1033,7 +1103,9 @@ class TpuBackend:
         if async_compile
         else contextlib.nullcontext()
     )
-    with _serialization_context(
+    with _matmul_precision_cache_key_tag(
+        precision_getter
+    ), _serialization_context(
         graph_module, example_inputs, serializable
     ) as captured_entry:
       with save_context:

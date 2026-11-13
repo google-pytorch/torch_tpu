@@ -14,11 +14,12 @@
 
 import concurrent.futures
 import threading
-import unittest
 import warnings
 
 from absl.testing import absltest
 import torch
+from torch._dynamo import testing as dynamo_testing
+from torch._functorch import config as functorch_config
 from torch.nn.attention import sdpa_kernel
 from torch.nn.attention import SDPBackend
 import torch_tpu._internal.precision as p
@@ -279,7 +280,6 @@ class PrecisionTest(seed_test_utils.RepeatableTest):
     t.start()
     t.join()
 
-  @unittest.skip("b/514829191")
   def test_torch_compile_precision_caching_bug(self):
     # Arrange
     n = 256
@@ -315,9 +315,62 @@ class PrecisionTest(seed_test_utils.RepeatableTest):
       actual = torch.compile(tensor_square)(a)
 
       # Assert
-      # This assert fails because tensor_square is not freshly compiled.
-      # Instead, torch.compile gives a false positive cache hit.
+      # The frame compiled under HIGHEST must not be reused under DEFAULT.
       self.assertEqual(actual[0, 0].item(), expected_default)
+
+  def test_torch_compile_recompiles_on_global_precision_change(self):
+    n = 256
+    device = torch.device("tpu")
+    eye = torch.eye(n, dtype=torch.float32, device=device)
+    # Under DEFAULT (bf16 math), the product rounds to 1.0. Under HIGHEST
+    # (f32 math), it keeps the bits below bf16 precision.
+    a = eye * (1 + 2**-8)
+    expected_default = 1.0
+    expected_highest = 1.0 + 2**-7 + 2**-16
+    counter = dynamo_testing.CompileCounterWithBackend("tpu")
+    compiled = torch.compile(lambda a: a @ a, backend=counter, fullgraph=True)
+    saved = torch.get_float32_matmul_precision()
+
+    # Without the on-disk cache, only Dynamo's guards decide what is reused.
+    with functorch_config.patch(enable_autograd_cache=False):
+      try:
+        torch.set_float32_matmul_precision("highest")
+        self.assertEqual(compiled(a)[0, 0].item(), expected_highest)
+        torch.set_float32_matmul_precision("medium")
+        self.assertEqual(compiled(a)[0, 0].item(), expected_default)
+        # Returning to HIGHEST reuses the first program.
+        torch.set_float32_matmul_precision("highest")
+        self.assertEqual(compiled(a)[0, 0].item(), expected_highest)
+        self.assertEqual(counter.frame_count, 2)
+      finally:
+        torch.set_float32_matmul_precision(saved)
+
+  def test_dynamic_shape_compile_recompiles_on_global_precision_change(self):
+    device = torch.device("tpu")
+    # Under DEFAULT (bf16 math), the product rounds to 1.0. Under HIGHEST
+    # (f32 math), it keeps the bits below bf16 precision.
+    x = torch.eye(200, 256, device=device) * (1 + 2**-8)
+    w = torch.eye(256, device=device) * (1 + 2**-8)
+    torch._dynamo.mark_dynamic(x, 0, min=2, max=256)
+    expected_highest = 1.0 + 2**-7 + 2**-16
+    counter = dynamo_testing.CompileCounterWithBackend("tpu")
+    compiled = torch.compile(
+        lambda x, w: x @ w, backend=counter, fullgraph=True
+    )
+    saved = torch.get_float32_matmul_precision()
+
+    try:
+      torch.set_float32_matmul_precision("medium")
+      with precision(Precision.HIGHEST):
+        compiled(x, w)
+        # DynamicCompiler lowered that program on a worker thread, with the
+        # global DEFAULT precision rather than this thread's HIGHEST context,
+        # so selecting HIGHEST globally must compile the frame again.
+        torch.set_float32_matmul_precision("highest")
+        self.assertEqual(compiled(x, w)[0, 0].item(), expected_highest)
+      self.assertEqual(counter.frame_count, 2)
+    finally:
+      torch.set_float32_matmul_precision(saved)
 
   def test_pytorch_global_precision(self):
     try:

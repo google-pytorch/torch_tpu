@@ -21,6 +21,7 @@ via `--test_mode`) compiles with the TPU backend. See
 `torch_tpu.tests.subprocess_test_utils` for the shared scaffolding.
 """
 
+from collections.abc import Sequence
 import enum
 import glob
 import os
@@ -30,6 +31,7 @@ import uuid
 from absl import flags
 from absl.testing import absltest
 import torch
+from torch._dynamo.utils import counters
 from torch_tpu._internal import compile as tpu_compile
 from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.utils import test_utils as utils
@@ -42,6 +44,10 @@ class TestMode(enum.Enum):
   """Enum for the different test modes."""
 
   FALLBACK = "fallback"
+  MEDIUM = "medium"
+  HIGHEST = "highest"
+  ASYNC_HIGHEST_CONTEXT = "async_highest_context"
+  HIGHEST_CONTEXT = "highest_context"
 
 
 # The --test_mode flag controls whether the process runs as the parent test
@@ -87,6 +93,121 @@ class AotAutogradCacheTest(seed_test_utils.RepeatableTest):
       compiled = tpu_compile.async_compile(model.to(device), [(x,)])
       out = compiled(x)
     utils.assert_close(out.cpu(), expected, rtol=1e-4, atol=1e-4)
+
+
+# Under DEFAULT (bf16 math), squaring this matrix rounds the diagonal to 1.0.
+# Under HIGHEST (f32 math), the diagonal keeps the bits below bf16 precision.
+_EXPECTED_HIGHEST = 1.0 + 2**-7 + 2**-16
+
+
+class AotAutogradCachePrecisionTest(seed_test_utils.RepeatableTest):
+  """Compiles one graph at the matmul precision named by `--test_mode`."""
+
+  def setUp(self) -> None:
+    if _TEST_MODE.value in (None, TestMode.FALLBACK):
+      self.skipTest("test_mode flag not provided.")
+    super().setUp()
+    tt_testing.reset_eager_state()
+    device = torch.accelerator.current_accelerator()
+    self.a = torch.eye(256, device=device) * (1 + 2**-8)
+    counters.clear()
+
+  def _assert_cache_lookup(self) -> None:
+    # "hit" or "miss", set by the parent for this process start.
+    lookup = os.environ["AOT_AUTOGRAD_CACHE_TEST_EXPECTED_LOOKUP"]
+    self.assertEqual(counters["aot_autograd"][f"autograd_cache_{lookup}"], 1)
+
+  def _compile_at_precision(self) -> None:
+    mode = _TEST_MODE.value
+    assert mode is not None
+    precision = mode.value
+    expected = _EXPECTED_HIGHEST if precision == "highest" else 1.0
+    saved = torch.get_float32_matmul_precision()
+    try:
+      torch.set_float32_matmul_precision(precision)
+      with torch.inference_mode():
+        actual = torch.compile(lambda a: a @ a)(self.a)[0, 0].item()
+    finally:
+      torch.set_float32_matmul_precision(saved)
+    self.assertEqual(actual, expected)
+    self._assert_cache_lookup()
+
+  def test_medium_precision_program(self) -> None:
+    self._compile_at_precision()
+
+  def test_highest_precision_program(self) -> None:
+    self._compile_at_precision()
+
+  def test_async_highest_context_precision_program(self) -> None:
+    # The worker thread that lowers this program does not see the HIGHEST
+    # context, so it lowers with the global DEFAULT precision.
+    with torch.tpu.precision(torch.tpu.Precision.HIGHEST):
+      tpu_compile.async_compile(lambda a: a @ a, [(self.a,)])
+    self._assert_cache_lookup()
+
+  def test_highest_context_precision_program(self) -> None:
+    # The same graph and grad mode as the async start, compiled synchronously.
+    with torch.tpu.precision(torch.tpu.Precision.HIGHEST), torch.no_grad():
+      compiled = torch.compile(
+          lambda a: a @ a, backend="tpu", fullgraph=True, dynamic=False
+      )
+      actual = compiled(self.a)[0, 0].item()
+    self.assertEqual(actual, _EXPECTED_HIGHEST)
+    self._assert_cache_lookup()
+
+
+class ParentAotAutogradCachePrecisionTest(
+    subprocess_test_utils.SubprocessTestMixin,
+    seed_test_utils.MultiProcessRepeatableTest,
+):
+  """Process starts at different precisions share one AOTAutogradCache dir."""
+
+  WORKER_TEST_METHOD_TEMPLATE = (
+      "AotAutogradCachePrecisionTest.test_{mode.value}_precision_program"
+  )
+
+  def setUp(self) -> None:
+    super().setUp()
+    tt_testing.reset_eager_state()
+    if _TEST_MODE.value is not None:
+      self.skipTest("Skipping parent test in sub-test mode.")
+
+  def _run_process_starts(
+      self, starts: Sequence[tuple[TestMode, str]]
+  ) -> None:
+    """Runs one process start per (mode, expected lookup) on one cache dir."""
+    env_updates = {
+        "TORCHINDUCTOR_AUTOGRAD_CACHE": "1",
+        "TORCHINDUCTOR_CACHE_DIR": self.create_tempdir().full_path,
+        "TORCH_TPU_TIER2_COMPILATION_CACHE": "disabled",
+    }
+    for mode, lookup in starts:
+      self.run_sub_test(
+          mode,
+          env_updates={
+              **env_updates,
+              "AOT_AUTOGRAD_CACHE_TEST_EXPECTED_LOOKUP": lookup,
+          },
+      )
+
+  def test_precision_is_part_of_the_cache_key(self) -> None:
+    """A warm cache entry from one precision must not serve another."""
+    # The highest start must miss the medium entry, and the second medium start
+    # must still hit the first one.
+    self._run_process_starts((
+        (TestMode.MEDIUM, "miss"),
+        (TestMode.HIGHEST, "miss"),
+        (TestMode.MEDIUM, "hit"),
+    ))
+
+  def test_async_compile_entry_keys_on_lowering_precision(self) -> None:
+    """An async compile under a context must not serve a sync one under it."""
+    # The async start lowers with the global DEFAULT precision, so the
+    # synchronous start under the same HIGHEST context must miss its entry.
+    self._run_process_starts((
+        (TestMode.ASYNC_HIGHEST_CONTEXT, "miss"),
+        (TestMode.HIGHEST_CONTEXT, "miss"),
+    ))
 
 
 class ParentAotAutogradCacheTest(
