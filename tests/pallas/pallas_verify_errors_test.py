@@ -150,6 +150,7 @@ class PallasVerifyErrorsTest(seed_test_utils.RepeatableTest):
   def test_verification_options_defaults_and_validation(self):
     opts = verifier.VerificationOptions()
     self.assertTrue(opts.check_autograd)
+    self.assertEqual(opts.max_unrolled_iterations, 32)
     self.assertIsNone(opts.tpu_version)
     for version in torch.tpu.TpuVersion:
       self.assertIs(
@@ -190,8 +191,25 @@ class PallasVerifyErrorsTest(seed_test_utils.RepeatableTest):
     )
     with self.assertRaisesRegex(ValueError, "unrecognized TPU version"):
       findings.jax_tpu_device_kind(" custom_tpu ")
+    self.assertFalse(findings.supports_dma_done_count_mode("v5e"))
+    self.assertTrue(findings.supports_dma_done_count_mode("v5p"))
+    self.assertTrue(findings.supports_dma_done_count_mode("TPU v7"))
+    with self.assertRaisesRegex(ValueError, "unrecognized TPU version"):
+      findings.supports_dma_done_count_mode("custom_tpu")
     with self.assertRaisesRegex(TypeError, "check_autograd must be a bool"):
       verifier.VerificationOptions(check_autograd="yes")  # type: ignore[arg-type]
+    with self.assertRaisesRegex(
+        TypeError, "max_unrolled_iterations must be an int"
+    ):
+      verifier.VerificationOptions(max_unrolled_iterations=True)
+    with self.assertRaisesRegex(
+        TypeError, "max_unrolled_iterations must be an int"
+    ):
+      verifier.VerificationOptions(max_unrolled_iterations=1.5)  # type: ignore[arg-type]
+    with self.assertRaisesRegex(ValueError, "max_unrolled_iterations"):
+      verifier.VerificationOptions(max_unrolled_iterations=0)
+    with self.assertRaisesRegex(ValueError, "max_unrolled_iterations"):
+      verifier.VerificationOptions(max_unrolled_iterations=-5)
     for bad_version in ("TPU v7", "", 123):
       with self.assertRaisesRegex(TypeError, "tpu_version"):
         verifier.VerificationOptions(tpu_version=bad_version)  # type: ignore[arg-type]

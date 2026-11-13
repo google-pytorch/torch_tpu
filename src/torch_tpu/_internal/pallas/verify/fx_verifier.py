@@ -473,7 +473,21 @@ def _truncate(text: str, limit: int) -> str:
 
 def _is_missing_tpu_device_kind_error(exc: BaseException) -> bool:
   """Returns whether `exc` is JAX/Pallas's missing TPU generation error."""
-  return "Unsupported TPU device kind" in str(exc)
+  msg = str(exc)
+  return (
+      "Unsupported TPU device kind" in msg
+      or "SparseCore kernels are only supported on TPU" in msg
+  )
+
+
+def _is_non_pallas_host_trace_limitation(exc: BaseException) -> bool:
+  """Returns whether `exc` is a host-CPU or concrete-device trace limitation."""
+  lower = str(exc).lower()
+  return (
+      (isinstance(exc, NotImplementedError) and "not supported on cpu" in lower)
+      or "abstractmesh cannot be used when jaxpr contains primitives that require devices"
+      in lower
+  )
 
 
 # ==============================================================================
@@ -1150,6 +1164,42 @@ def override_abstract_mesh(mesh: jax.sharding.AbstractMesh):
 
 
 @contextlib.contextmanager
+def tpu_export_mesh_context(mesh: jax.sharding.AbstractMesh):
+  """Binds `mesh` for TPU lowering while clearing any ambient CPU mesh."""
+  mesh_mod = jax._src.mesh
+  prev_env = mesh_mod.thread_resources.env
+  clear_phys = not prev_env.physical_mesh.empty and not is_mock_tpu_mesh(
+      prev_env.physical_mesh
+  )
+  dev_ctx = getattr(mesh_mod, "device_context", None)
+  prev_conc = None
+  swapped_conc = False
+  swapped_phys = False
+  try:
+    if dev_ctx is not None:
+      cur_conc = dev_ctx.value
+      if (
+          cur_conc is not None
+          and not getattr(cur_conc, "empty", True)
+          and not is_mock_tpu_mesh(cur_conc)
+      ):
+        prev_conc = dev_ctx.swap_local(mesh_mod.empty_concrete_mesh)
+        swapped_conc = True
+    if clear_phys:
+      mesh_mod.thread_resources.env = prev_env.with_mesh(
+          mesh_mod.empty_concrete_mesh
+      )
+      swapped_phys = True
+    with override_abstract_mesh(mesh):
+      yield
+  finally:
+    if swapped_phys:
+      mesh_mod.thread_resources.env = prev_env
+    if swapped_conc and dev_ctx is not None:
+      dev_ctx.set_local(prev_conc)
+
+
+@contextlib.contextmanager
 def cpu_interpret_mesh_context(cpu_mesh: jax.sharding.Mesh | None):
   """Binds `cpu_mesh` (or clears an ambient `AbstractMesh`) during CPU execution.
 
@@ -1309,33 +1359,58 @@ def find_function_mesh(fn: Any) -> MeshLike | None:
   return _search(fn) or _get_ambient_jax_mesh()
 
 
+def _retarget_mesh_for_tpu_export(
+    candidate: MeshLike,
+    tpu_version: findings.TpuVersion,
+    *,
+    explicit_to_auto: bool = False,
+) -> tuple[MeshLike, bool]:
+  """Retargets a CPU, device-less, or generic mock mesh to a TPU `AbstractMesh`."""
+  if candidate.size <= 0:
+    return candidate, False
+  cand_ver = _mesh_tpu_version(candidate)
+  is_cpu = not is_mock_tpu_mesh(candidate) or (
+      isinstance(candidate, jax.sharding.AbstractMesh)
+      and getattr(candidate.abstract_device, "platform", None) == "cpu"
+  )
+  raw_axis_types = getattr(candidate, "axis_types", None)
+  has_explicit = bool(
+      raw_axis_types
+      and any(at == jax.sharding.AxisType.Explicit for at in raw_axis_types)
+  )
+  needs_auto = explicit_to_auto and has_explicit
+  if not is_cpu and cand_ver is not None and not needs_auto:
+    return candidate, False
+  target_ver = cand_ver or tpu_version
+  mesh_shape = tuple(int(candidate.shape[ax]) for ax in candidate.axis_names)
+  axis_types = (
+      (jax.sharding.AxisType.Auto,) * len(candidate.axis_names)
+      if needs_auto
+      else raw_axis_types
+  )
+  return (
+      jax.sharding.AbstractMesh(
+          mesh_shape,
+          candidate.axis_names,
+          axis_types=axis_types,
+          abstract_device=abstract_tpu_device(target_ver),
+      ),
+      True,
+  )
+
+
 def _replace_mesh_if_mock(
     val: Any,
-    mesh_replacement: MeshLike,
+    mesh_replacement: MeshLike | None,
     memo: MutableMapping[int, tuple[Any, bool]] | None = None,
     *,
     clone_closures: bool = False,
+    include_cpu_meshes: bool = False,
+    retarget_tpu_version: findings.TpuVersion | None = None,
+    explicit_to_auto: bool = False,
     keep_alive: MutableSequence[Any] | None = None,
 ) -> tuple[Any, bool]:
-  """Recursively replaces matching non-CPU meshes in values and closures.
-
-  When verifying a multi-device kernel on CPU (or lowering an `AbstractMesh` op
-  with `abstract_device=None` for TPU), any closed-over or partial-bound mesh
-  matching `mesh_replacement`'s axis topology is swapped for `mesh_replacement`.
-
-  Args:
-    val: Object, pytree, or callable to rewrite.
-    mesh_replacement: Target `Mesh` or `AbstractMesh` with matching axes/shape.
-    memo: Optional `id(obj) -> (rewritten_obj, did_change)` memoization table.
-    clone_closures: If `True`, allocates new `types.CellType` closure cells on
-      functions so JAX/Pallas trace caches do not reuse traces from the old
-      mesh.
-    keep_alive: Optional list retaining temporary objects while `memo` is live
-      so Python does not reuse their `id()` addresses during traversal.
-
-  Returns:
-    A `(rewritten_val, did_change)` pair.
-  """
+  """Recursively replaces matching meshes in values, callables, and closures."""
   if memo is None:
     memo = {}
   if keep_alive is None:
@@ -1430,34 +1505,74 @@ def _replace_mesh_if_mock(
       new_kwdefaults, kwdefs_changed = _rewrite_dict(fn.__kwdefaults__)
       changed = changed or kwdefs_changed
 
+    new_globals = fn.__globals__
+    mod_name = getattr(fn, "__module__", "") or ""
+    if not mod_name.startswith(_SKIP_MODULE_PREFIXES) and isinstance(
+        new_globals, dict
+    ):
+      copied_globals: dict[str, Any] | None = None
+      for gname in set(_iter_code_names(fn.__code__)):
+        if gname not in new_globals:
+          continue
+        gval = new_globals[gname]
+        if isinstance(
+            gval,
+            (
+                jax.sharding.Mesh,
+                jax.sharding.AbstractMesh,
+                jax.sharding.NamedSharding,
+            ),
+        ) or (
+            isinstance(gval, types.FunctionType)
+            and getattr(gval, "__module__", None) == mod_name
+        ):
+          replaced_gval, g_changed = _rewrite(gval)
+          if g_changed:
+            if copied_globals is None:
+              copied_globals = dict(new_globals)
+            copied_globals[gname] = replaced_gval
+            changed = True
+      if copied_globals is not None:
+        new_globals = copied_globals
+
     if not changed:
       return fn, False
     rebound = types.FunctionType(
-        fn.__code__, fn.__globals__, fn.__name__, new_defaults, new_cells
+        fn.__code__, new_globals, fn.__name__, new_defaults, new_cells
     )
     rebound.__kwdefaults__ = new_kwdefaults
     rebound.__annotations__ = dict(fn.__annotations__)
     rebound.__qualname__ = fn.__qualname__
     return rebound, True
 
+  def _rewrite_mesh_leaf(candidate: MeshLike) -> tuple[MeshLike, bool]:
+    if retarget_tpu_version is not None:
+      return _retarget_mesh_for_tpu_export(
+          candidate,
+          retarget_tpu_version,
+          explicit_to_auto=explicit_to_auto,
+      )
+    if (
+        mesh_replacement is None
+        or candidate is mesh_replacement
+        or candidate.size == 0
+    ):
+      return candidate, False
+    if not _matches_mesh_topology(candidate, mesh_replacement):
+      return candidate, False
+    if include_cpu_meshes or is_mock_tpu_mesh(candidate):
+      return mesh_replacement, True
+    return candidate, False
+
   def _rewrite(obj: Any) -> tuple[Any, bool]:
     # Base cases: Mesh, AbstractMesh, NamedSharding, and sharded ShapeDtypeStruct.
     if isinstance(obj, (jax.sharding.Mesh, jax.sharding.AbstractMesh)):
-      if (
-          obj is not mesh_replacement
-          and is_mock_tpu_mesh(obj)
-          and _matches_mesh_topology(obj, mesh_replacement)
-      ):
-        return mesh_replacement, True
-      return obj, False
+      return _rewrite_mesh_leaf(obj)
 
     if isinstance(obj, jax.sharding.NamedSharding):
-      if (
-          obj.mesh is not mesh_replacement
-          and is_mock_tpu_mesh(obj.mesh)
-          and _matches_mesh_topology(obj.mesh, mesh_replacement)
-      ):
-        return jax.sharding.NamedSharding(mesh_replacement, obj.spec), True
+      new_mesh, m_changed = _rewrite_mesh_leaf(obj.mesh)
+      if m_changed:
+        return jax.sharding.NamedSharding(new_mesh, obj.spec), True
       return obj, False
 
     if isinstance(obj, jax.ShapeDtypeStruct) and isinstance(
@@ -1507,8 +1622,41 @@ def _replace_mesh_if_mock(
       memo[obj_id] = res
       return res
 
+    if isinstance(obj, types.MethodType):
+      memo[obj_id] = (obj, False)
+      new_func, f_changed = _rewrite(obj.__func__)
+      new_self, s_changed = _rewrite(obj.__self__)
+      res = (
+          (types.MethodType(new_func, new_self), True)
+          if (f_changed or s_changed)
+          else (obj, False)
+      )
+      memo[obj_id] = res
+      return res
+
     if isinstance(obj, types.FunctionType):
       res = _rewrite_function(obj)
+      memo[obj_id] = res
+      return res
+
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+      memo[obj_id] = (obj, False)
+      updates: dict[str, Any] = {}
+      for field in dataclasses.fields(obj):
+        try:
+          fval = getattr(obj, field.name)
+        except Exception:  # pylint: disable=broad-exception-caught
+          continue
+        new_fval, f_changed = _rewrite(fval)
+        if f_changed:
+          updates[field.name] = new_fval
+      if updates:
+        try:
+          res = (dataclasses.replace(obj, **updates), True)
+        except Exception:  # pylint: disable=broad-exception-caught
+          res = (obj, False)
+      else:
+        res = (obj, False)
       memo[obj_id] = res
       return res
 
@@ -1530,37 +1678,46 @@ def _replace_mesh_if_mock(
 
 
 def replace_mock_meshes_in_pytree(
-    tree: Any, mesh_replacement: MeshLike | None
+    tree: Any,
+    mesh_replacement: MeshLike | None,
+    *,
+    include_cpu_meshes: bool = False,
+    retarget_tpu_version: findings.TpuVersion | None = None,
+    explicit_to_auto: bool = False,
 ) -> Any:
-  """Replaces matching non-CPU meshes and shardings in `tree`."""
-  if mesh_replacement is None:
+  """Replaces matching meshes and shardings in `tree`."""
+  if mesh_replacement is None and retarget_tpu_version is None:
     return tree
   return jax.tree.map(
-      lambda leaf: _replace_mesh_if_mock(leaf, mesh_replacement)[0],
+      lambda leaf: _replace_mesh_if_mock(
+          leaf,
+          mesh_replacement,
+          include_cpu_meshes=include_cpu_meshes,
+          retarget_tpu_version=retarget_tpu_version,
+          explicit_to_auto=explicit_to_auto,
+      )[0],
       tree,
   )
 
 
 def rebind_function_meshes(
     fn: Callable[..., Any],
-    mesh_replacement: MeshLike,
+    mesh_replacement: MeshLike | None,
     *,
     clone_closures: bool = False,
+    include_cpu_meshes: bool = False,
+    retarget_tpu_version: findings.TpuVersion | None = None,
+    explicit_to_auto: bool = False,
 ) -> Callable[..., Any]:
-  """Replaces closed-over, default, or partial-bound non-CPU meshes in `fn`.
-
-  Args:
-    fn: Target JAX callable (optionally wrapped in `jax.jit`).
-    mesh_replacement: Replacement `Mesh` or `AbstractMesh` with matching axes.
-    clone_closures: Whether to clone function closure cells to force fresh JAX
-      and Pallas trace caches.
-
-  Returns:
-    A callable unwrapped past outer `jax.jit` with matching meshes rebound.
-  """
+  """Replaces closed-over, default, global, or partial-bound meshes in `fn`."""
   unwrapped = _unwrap_jax_jit(fn)
   rebound, _ = _replace_mesh_if_mock(
-      unwrapped, mesh_replacement, clone_closures=clone_closures
+      unwrapped,
+      mesh_replacement,
+      clone_closures=clone_closures,
+      include_cpu_meshes=include_cpu_meshes,
+      retarget_tpu_version=retarget_tpu_version,
+      explicit_to_auto=explicit_to_auto,
   )
   return rebound
 
@@ -2428,38 +2585,83 @@ def _verify_fake_kernel_outputs(
   return detected
 
 
+def _ambient_tpu_abstract_mesh_for(
+    mesh: MeshLike | None,
+    tpu_version: findings.TpuVersion,
+    *,
+    explicit_to_auto: bool = False,
+) -> jax.sharding.AbstractMesh:
+  """Returns an `AbstractMesh` with a TPU `abstract_device` matching `mesh`."""
+  if mesh is None or mesh.size <= 0:
+    return abstract_tpu_mesh(tpu_version)
+  retargeted, changed = _retarget_mesh_for_tpu_export(
+      mesh, tpu_version, explicit_to_auto=explicit_to_auto
+  )
+  if changed and isinstance(retargeted, jax.sharding.AbstractMesh):
+    return retargeted
+  return (
+      mesh
+      if isinstance(mesh, jax.sharding.AbstractMesh)
+      else mesh.abstract_mesh
+  )
+
+
 def _prepare_tpu_export(
     jax_callable: pallas_lib.JaxCallable,
     jax_args: Sequence[Any],
     jax_kwargs: Mapping[str, Any],
     tpu_version: findings.TpuVersion,
-) -> tuple[Any, Sequence[Any], Mapping[str, Any], Any]:
-  """Prepares `(export_fn, jax_args, jax_kwargs, mesh_context)` for TPU lowering."""
+) -> tuple[
+    Any, Any, Sequence[Any], Mapping[str, Any], jax.sharding.AbstractMesh
+]:
+  """Prepares `(export_fn, jitted_fn, jax_args, jax_kwargs, ambient_mesh)`."""
   export_fn = jax_callable.exported
+  jitted_fn = jax_callable.jit_fn
   mesh = jax_callable.mesh
 
   # Case 1: Single-device op (`mesh is None`) — bind a 1-chip AbstractMesh
-  # targeting `tpu_version` so `jax.export` knows the TPU generation.
+  # targeting `tpu_version` so Pallas lowering rules know the TPU generation.
   if mesh is None:
     return (
         export_fn,
+        jitted_fn,
         jax_args,
         jax_kwargs,
-        override_abstract_mesh(abstract_tpu_mesh(tpu_version)),
+        abstract_tpu_mesh(tpu_version),
     )
 
-  # Case 2: Multi-device op with an `AbstractMesh` whose `abstract_device` was
-  # left `None` — attach `abstract_tpu_device(tpu_version)` and rebind any
-  # closed-over references to the mesh before exporting.
-  if (
-      isinstance(mesh, jax.sharding.AbstractMesh)
-      and mesh.abstract_device is None
-  ):
-    tpu_mesh = mesh.update(abstract_device=abstract_tpu_device(tpu_version))
-    jax_args = replace_mock_meshes_in_pytree(jax_args, tpu_mesh)
-    jax_kwargs = replace_mock_meshes_in_pytree(jax_kwargs, tpu_mesh)
+  has_op_sharding = bool(
+      jax_callable.input_partition_specs or jax_callable.output_partition_specs
+  )
+  retargeted_mesh, mesh_retargeted = _retarget_mesh_for_tpu_export(
+      mesh, tpu_version, explicit_to_auto=not has_op_sharding
+  )
+
+  # Case 2: Multi-device op whose mesh lacks a TPU generation (`AbstractMesh`
+  # with `abstract_device=None`/CPU, or mock `_PallasDevice(device_kind="TPU")`)
+  # or requires Explicit->Auto adjustment — rebind closed-over meshes and export.
+  if mesh_retargeted:
+    jax_args = replace_mock_meshes_in_pytree(
+        jax_args,
+        retargeted_mesh,
+        include_cpu_meshes=True,
+        retarget_tpu_version=tpu_version,
+        explicit_to_auto=not has_op_sharding,
+    )
+    jax_kwargs = replace_mock_meshes_in_pytree(
+        jax_kwargs,
+        retargeted_mesh,
+        include_cpu_meshes=True,
+        retarget_tpu_version=tpu_version,
+        explicit_to_auto=not has_op_sharding,
+    )
     rebound_raw = rebind_function_meshes(
-        _unwrap_jax_jit(jax_callable.jit_fn), tpu_mesh, clone_closures=True
+        _unwrap_jax_jit(jax_callable.jit_fn),
+        retargeted_mesh,
+        clone_closures=True,
+        include_cpu_meshes=True,
+        retarget_tpu_version=tpu_version,
+        explicit_to_auto=not has_op_sharding,
     )
     jit_kwargs: dict[str, Any] = {
         "static_argnums": jax_callable.static_argnums,
@@ -2468,22 +2670,192 @@ def _prepare_tpu_export(
     }
     if jax_callable.static_argnames:
       jit_kwargs["static_argnames"] = jax_callable.static_argnames
+    jitted_fn = jax.jit(rebound_raw, **jit_kwargs)
     with jax._src.config.export_ignore_forward_compatibility(True):
       export_fn = jax.export.export(
-          jax.jit(rebound_raw, **jit_kwargs),
+          jitted_fn,
           platforms=["tpu"],
           disabled_checks=[jax.export.DisabledSafetyCheck.custom_call("ALL")],
       )
-    ctx = (
-        override_abstract_mesh(tpu_mesh)
-        if not jax.sharding.get_abstract_mesh().empty
-        else contextlib.nullcontext()
+    ambient_mesh = _ambient_tpu_abstract_mesh_for(
+        retargeted_mesh, tpu_version, explicit_to_auto=not has_op_sharding
     )
-    return export_fn, jax_args, jax_kwargs, ctx
+    return export_fn, jitted_fn, jax_args, jax_kwargs, ambient_mesh
 
-  # Case 3: Concrete or mock `Mesh` (or `AbstractMesh` with `abstract_device`
-  # already set) — the mesh's devices already specify the target TPU generation.
-  return export_fn, jax_args, jax_kwargs, contextlib.nullcontext()
+  # Case 3: Concrete or mock `Mesh` (or `AbstractMesh`) whose devices already
+  # specify a TPU generation — still bind `mesh.abstract_mesh` during lowering
+  # because `shard_map` only activates `use_abstract_mesh` during tracing, not
+  # during MLIR lowering (`_run_scoped_lowering_rule`, `sync_copy`, etc.).
+  ambient_mesh = _ambient_tpu_abstract_mesh_for(mesh, tpu_version)
+  return export_fn, jitted_fn, jax_args, jax_kwargs, ambient_mesh
+
+
+def _is_jax_array_placeholder(val: Any) -> bool:
+  """Returns whether `val` is a dynamic array/tensor leaf for JAX export."""
+  return isinstance(val, (jax.Array, jax.ShapeDtypeStruct, torch.Tensor))
+
+
+def _to_export_shape_dtype_struct(
+    val: Any,
+    tpu_version: findings.TpuVersion,
+    *,
+    explicit_to_auto: bool = False,
+) -> jax.ShapeDtypeStruct:
+  """Converts an array/tensor leaf into a `ShapeDtypeStruct` for TPU export."""
+  if isinstance(val, torch.Tensor):
+    if val.dtype == torch.float4_e2m1fn_x2 and val.ndim == 0:
+      raise ValueError(
+          "expected float4_e2m1fn_x2 tensor to be at least 1D, got 0D"
+      )
+    try:
+      return pallas_lib.jax_placeholder(val)
+    except NotImplementedError as exc:
+      raise ValueError(str(exc)) from exc
+  sharding = getattr(val, "sharding", None)
+  if isinstance(sharding, jax.sharding.NamedSharding):
+    retargeted_mesh, _ = _retarget_mesh_for_tpu_export(
+        sharding.mesh, tpu_version, explicit_to_auto=explicit_to_auto
+    )
+    return jax.ShapeDtypeStruct(
+        val.shape,
+        val.dtype,
+        sharding=jax.sharding.NamedSharding(retargeted_mesh, sharding.spec),
+    )
+  return jax.ShapeDtypeStruct(val.shape, val.dtype)
+
+
+def has_jit_named_sharding(fn: Any) -> bool:
+  """Returns whether `fn` is a `jax.jit` wrapper specifying `NamedSharding`s."""
+  if not (hasattr(fn, "_fun") and hasattr(fn, "lower")):
+    return False
+  jit_info = getattr(fn, "_jit_info", None)
+  if jit_info is None:
+    return False
+  for attr in ("in_shardings_leaves", "out_shardings_leaves"):
+    for s in getattr(jit_info, attr, ()):
+      if isinstance(s, jax.sharding.NamedSharding):
+        return True
+  return False
+
+
+def _prepare_raw_jax_tpu_export(
+    op_or_fn: Any,
+    example_args: Sequence[Any],
+    example_kwargs: Mapping[str, Any],
+    tpu_version: findings.TpuVersion,
+) -> tuple[
+    Any,
+    Any,
+    list[Any],
+    dict[str, Any],
+    jax.sharding.AbstractMesh,
+    bool,
+    bool,
+]:
+  """Prepares raw JAX TPU export function, dynamic specs, and ambient mesh."""
+  raw_args = list(example_args)
+  raw_kwargs = dict(example_kwargs)
+  found_mesh = find_function_mesh((op_or_fn, tuple(raw_args), raw_kwargs))
+  has_mesh = found_mesh is not None
+  mesh_has_tpu_kind = _mesh_tpu_version(found_mesh) is not None
+
+  leaves = jax.tree.leaves(
+      (tuple(raw_args), raw_kwargs), is_leaf=_is_jax_array_placeholder
+  )
+  has_arg_named_sharding = any(
+      isinstance(getattr(leaf, "sharding", None), jax.sharding.NamedSharding)
+      for leaf in leaves
+      if _is_jax_array_placeholder(leaf)
+  )
+  has_any_named_sharding = has_arg_named_sharding or has_jit_named_sharding(
+      op_or_fn
+  )
+  explicit_to_auto = not has_any_named_sharding
+
+  ambient_mesh = _ambient_tpu_abstract_mesh_for(
+      found_mesh, tpu_version, explicit_to_auto=explicit_to_auto
+  )
+
+  raw_args = replace_mock_meshes_in_pytree(
+      raw_args,
+      ambient_mesh,
+      include_cpu_meshes=True,
+      retarget_tpu_version=tpu_version,
+      explicit_to_auto=explicit_to_auto,
+  )
+  raw_kwargs = replace_mock_meshes_in_pytree(
+      raw_kwargs,
+      ambient_mesh,
+      include_cpu_meshes=True,
+      retarget_tpu_version=tpu_version,
+      explicit_to_auto=explicit_to_auto,
+  )
+  # Rewrite `op_or_fn` directly without pre-stripping `_unwrap_jax_jit` so any
+  # outer `@jax.jit` `in_shardings`, `out_shardings`, and `donate_argnums` stay
+  # intact via `_rewrite_pjit`.
+  target_fn, _ = _replace_mesh_if_mock(
+      op_or_fn,
+      ambient_mesh,
+      clone_closures=True,
+      include_cpu_meshes=True,
+      retarget_tpu_version=tpu_version,
+      explicit_to_auto=explicit_to_auto,
+  )
+
+  flat_leaves, treedef = jax.tree.flatten(
+      (tuple(raw_args), raw_kwargs), is_leaf=_is_jax_array_placeholder
+  )
+  dyn_specs: list[jax.ShapeDtypeStruct] = []
+  slot_map: list[tuple[bool, Any]] = []
+  for leaf in flat_leaves:
+    if _is_jax_array_placeholder(leaf):
+      slot_map.append((False, len(dyn_specs)))
+      dyn_specs.append(
+          _to_export_shape_dtype_struct(
+              leaf, tpu_version, explicit_to_auto=explicit_to_auto
+          )
+      )
+    else:
+      slot_map.append((True, leaf))
+
+  # If `target_fn` is already a top-level `jax.jit` function and all arguments
+  # are dynamic positional array specs, export `target_fn` directly so top-level
+  # `in_shardings`, `out_shardings`, and `donate_argnums` apply at entry.
+  is_direct_pjit = (
+      hasattr(target_fn, "_fun")
+      and hasattr(target_fn, "lower")
+      and not raw_kwargs
+      and len(raw_args) == len(dyn_specs)
+      and all(not is_static for is_static, _ in slot_map)
+  )
+  if is_direct_pjit:
+    jitted_fn = target_fn
+  else:
+
+    def _export_wrapper(*dyn_args: Any) -> Any:
+      rebuilt_leaves = [
+          val if is_static else dyn_args[val] for is_static, val in slot_map
+      ]
+      rebuilt_args, rebuilt_kwargs = treedef.unflatten(rebuilt_leaves)
+      return target_fn(*rebuilt_args, **rebuilt_kwargs)
+
+    jitted_fn = jax.jit(_export_wrapper, keep_unused=True)
+
+  with jax._src.config.export_ignore_forward_compatibility(True):
+    export_fn = jax.export.export(
+        jitted_fn,
+        platforms=["tpu"],
+        disabled_checks=[jax.export.DisabledSafetyCheck.custom_call("ALL")],
+    )
+  return (
+      export_fn,
+      jitted_fn,
+      dyn_specs,
+      {},
+      ambient_mesh,
+      has_mesh,
+      mesh_has_tpu_kind,
+  )
 
 
 def verify_tpu_lowering(
@@ -2493,18 +2865,20 @@ def verify_tpu_lowering(
     *,
     tpu_version: findings.TpuVersion | None = None,
 ) -> findings.VerificationReport:
-  """Lowers a TorchTPU Pallas op for TPU on the host, without a TPU.
+  """Lowers a `@jax_op` or raw JAX Pallas function for TPU on the host.
 
-  This is the lowering TorchTPU performs the first time the op runs, so a
-  failure here means the op fails on TPU too, for example because of
-  unaligned block shapes or vector loads and stores on HBM refs.
+  Runs Pallas TPU lowering and Mosaic MLIR dialect verification
+  (`func_op.verify` plus `mosaic-serde` serialization) via `jax.export` without
+  requiring a physical TPU, catching unaligned block shapes, illegal
+  memory-space loads/stores, accumulator dtype violations, and invalid DMA or
+  semaphore operands directly in Mosaic.
 
   Args:
-    op_or_fn: A `@jax_op` or `JaxCallable`.
+    op_or_fn: A `@jax_op`, `JaxCallable`, or raw JAX function.
     example_args: Example positional arguments.
     example_kwargs: Example keyword arguments.
     tpu_version: Target `TpuVersion` to lower for, or `None` to infer from the
-      kernel. Ops with a mesh are lowered for the device kind of their mesh
+      kernel. Ops with a TPU mesh are lowered for the device kind of their mesh
       devices instead.
 
   Returns:
@@ -2516,32 +2890,69 @@ def verify_tpu_lowering(
       op_or_fn, tpu_version, example_args, example_kwargs
   )
   jax_callable = extract_jax_callable(op_or_fn)
-  if jax_callable is None:
-    return findings.VerificationReport()
   op_name = get_op_display_name(op_or_fn)
-
-  # pylint: disable=protected-access
-  norm_args, norm_kwargs = jax_callable._normalize_invocation_args(
-      example_args, dict(example_kwargs or {})
-  )
-  jax_args, jax_kwargs = jax_callable._get_jax_placeholders(
-      norm_args, norm_kwargs
-  )
-  # pylint: enable=protected-access
-  export_fn, jax_args, jax_kwargs, target = _prepare_tpu_export(
-      jax_callable, jax_args, jax_kwargs, resolved_tpu_version
+  has_mesh = jax_callable is not None and jax_callable.mesh is not None
+  mesh_has_tpu_kind = (
+      jax_callable is not None
+      and _mesh_tpu_version(jax_callable.mesh) is not None
   )
 
   try:
-    # Matches the forward-compatibility mode TorchTPU lowers with.
-    with target, jax._src.config.export_ignore_forward_compatibility(True):
-      export_fn(*jax_args, **jax_kwargs)
+    if jax_callable is not None:
+      # pylint: disable=protected-access
+      norm_args, norm_kwargs = jax_callable._normalize_invocation_args(
+          example_args, dict(example_kwargs or {})
+      )
+      jax_args, jax_kwargs = jax_callable._get_jax_placeholders(
+          norm_args, norm_kwargs
+      )
+      # pylint: enable=protected-access
+      export_fn, jitted_fn, jax_args, jax_kwargs, ambient_mesh = (
+          _prepare_tpu_export(
+              jax_callable, jax_args, jax_kwargs, resolved_tpu_version
+          )
+      )
+    else:
+      early_mesh = find_function_mesh(
+          (op_or_fn, tuple(example_args), dict(example_kwargs or {}))
+      )
+      has_mesh = early_mesh is not None
+      mesh_has_tpu_kind = _mesh_tpu_version(early_mesh) is not None
+      (
+          export_fn,
+          jitted_fn,
+          jax_args,
+          jax_kwargs,
+          ambient_mesh,
+          has_mesh,
+          mesh_has_tpu_kind,
+      ) = _prepare_raw_jax_tpu_export(
+          op_or_fn,
+          example_args,
+          dict(example_kwargs or {}),
+          resolved_tpu_version,
+      )
+    with jax._src.config.export_ignore_forward_compatibility(True):
+      try:
+        with tpu_export_mesh_context(ambient_mesh):
+          export_fn(*jax_args, **jax_kwargs)
+      except ValueError as mesh_exc:
+        # If a function contains multiple `shard_map`s over distinct mesh
+        # shapes, trace with no outer `AbstractMesh` (each `shard_map` enters
+        # its own retargeted `AbstractMesh`) and bind `ambient_mesh` for MLIR
+        # lowering.
+        if "should match the mesh passed to shard_map" not in str(mesh_exc):
+          raise
+        with tpu_export_mesh_context(jax.sharding.AbstractMesh((), ())):
+          traced = jitted_fn.trace(*jax_args, **jax_kwargs)
+        with tpu_export_mesh_context(ambient_mesh):
+          traced.lower(lowering_platforms=("tpu",)).as_text()
   except Exception as exc:  # pylint: disable=broad-exception-caught
     message = _truncate(f"{exc}", _MAX_LOWERING_MESSAGE_CHARS)
     if _is_missing_tpu_device_kind_error(exc):
       finding = findings.VerificationFinding(
           category=findings.FindingCategory.VERIFICATION_INCOMPLETE,
-          severity=findings.Severity.INFO,
+          severity=findings.Severity.WARNING,
           phase=_LOWERING,
           op_name=op_name,
           message=(
@@ -2551,9 +2962,24 @@ def verify_tpu_lowering(
           ),
       )
       return findings.report_of(_LOWERING, [finding])
-    target_desc = (
-        resolved_tpu_version.value if jax_callable.mesh is None else "its mesh"
-    )
+    if jax_callable is None and _is_non_pallas_host_trace_limitation(exc):
+      finding = findings.VerificationFinding(
+          category=findings.FindingCategory.VERIFICATION_INCOMPLETE,
+          severity=findings.Severity.WARNING,
+          phase=_LOWERING,
+          op_name=op_name,
+          message=(
+              "skipped TPU lowering because tracing requires concrete host/TPU"
+              f" devices ({type(exc).__name__}: {message})"
+          ),
+      )
+      return findings.report_of(_LOWERING, [finding])
+    if has_mesh and mesh_has_tpu_kind:
+      target_desc = "its mesh"
+    elif has_mesh:
+      target_desc = f"its mesh ({resolved_tpu_version.value})"
+    else:
+      target_desc = resolved_tpu_version.value
     finding = findings.VerificationFinding(
         category=findings.FindingCategory.LOWERING_FAILURE,
         severity=findings.Severity.ERROR,
@@ -5559,24 +5985,43 @@ def _default_classify_interpret_exception(
   del has_revisit_any_output, revisit_verified_full_overwrite
   msg = str(exc).strip()
   tail = msg.split("with exception:\n\n")[-1].strip()
-  last_line = tail.splitlines()[-1].strip() if tail else ""
-  exc_name = type(exc).__name__
-  exc_summary = (
-      last_line
-      if last_line.startswith(f"{exc_name}:")
-      else (f"{exc_name}: {last_line}" if last_line else exc_name)
-  )
+  lower = tail.lower()
+  if "out of bounds" in lower or "out-of-bounds" in lower:
+    category = findings.FindingCategory.OUT_OF_BOUNDS_ACCESS
+  elif "advanced indexers are not supported on tpu" in lower:
+    category = findings.FindingCategory.HARDWARE_CONSTRAINT_VIOLATION
+  elif (
+      "unrecognized axes in device_id" in lower
+      or "unsupported device id type" in lower
+      or "semaphore_signal with device_id" in lower
+  ):
+    category = findings.FindingCategory.INVALID_DEVICE_ID
+  else:
+    last_line = tail.splitlines()[-1].strip() if tail else ""
+    exc_name = type(exc).__name__
+    exc_summary = (
+        last_line
+        if last_line.startswith(f"{exc_name}:")
+        else (f"{exc_name}: {last_line}" if last_line else exc_name)
+    )
+    return findings.VerificationFinding(
+        category=findings.FindingCategory.VERIFICATION_INCOMPLETE,
+        severity=findings.Severity.WARNING,
+        phase=phase,
+        op_name=op_name,
+        message=(
+            f"skipped {phase.value} check because the interpreter raised"
+            f" ({schedule_desc}) {exc_summary}; the kernel may be invalid or"
+            " use features that the interpreter of this JAX version does not"
+            " support"
+        ),
+    )
   return findings.VerificationFinding(
-      category=findings.FindingCategory.VERIFICATION_INCOMPLETE,
-      severity=findings.Severity.WARNING,
+      category=category,
+      severity=findings.Severity.ERROR,
       phase=phase,
       op_name=op_name,
-      message=(
-          f"skipped {phase.value} check because the interpreter raised"
-          f" ({schedule_desc}) {exc_summary}; the kernel may be invalid or"
-          " use features that the interpreter of this JAX version does not"
-          " support"
-      ),
+      message=f"CPU TPU interpret ({schedule_desc}) raised: {tail or msg}",
   )
 
 

@@ -47,6 +47,7 @@ import torch
 import torch.fx as fx
 from torch_tpu._internal.pallas.verify import findings
 from torch_tpu._internal.pallas.verify import fx_verifier
+from torch_tpu._internal.pallas.verify import jaxpr_model
 from torch_tpu._internal.utils import annotations
 
 
@@ -58,8 +59,8 @@ class VerificationMode(enum.Enum):
   """Which verification engines `verify` runs."""
 
   # Static checks plus dynamic checks that run the kernels on CPU in TPU
-  # interpret mode (schedule sweeps and autograd parity). Creating the JAX CPU
-  # devices initializes the other JAX backends too, including TPU if available.
+  # interpret mode (such as autograd parity). Creating the JAX CPU devices
+  # initializes the other JAX backends too, including TPU if available.
   FULL = "full"
   # Only checks that never execute the kernels: contracts, TPU lowering, FX
   # graph analysis, and model checking. They need no JAX devices, so they also
@@ -78,6 +79,8 @@ class VerificationOptions:
   Attributes:
     check_autograd: Whether to compare a registered custom backward against the
       forward kernel (FULL mode only).
+    max_unrolled_iterations: Bound on loop iterations and scan steps in the
+      model checker. Anything beyond it is reported as incomplete.
     tpu_version: TPU generation used across contract, lowering, and
       model-checking phases. An explicit non-CPU TPU mesh on the kernel or its
       example arguments takes precedence (since TPU lowering targets that mesh's
@@ -87,6 +90,7 @@ class VerificationOptions:
   """
 
   check_autograd: bool = True
+  max_unrolled_iterations: int = jaxpr_model.DEFAULT_MAX_UNROLLED_ITERATIONS
   tpu_version: findings.TpuVersion | None = None
 
   __tt_api_stages__ = {
@@ -99,6 +103,7 @@ class VerificationOptions:
       )
       for name in (
           "check_autograd",
+          "max_unrolled_iterations",
           "tpu_version",
       )
   }
@@ -108,6 +113,18 @@ class VerificationOptions:
       raise TypeError(
           "check_autograd must be a bool, got"
           f" {type(self.check_autograd).__name__}"
+      )
+    if not isinstance(self.max_unrolled_iterations, int) or isinstance(
+        self.max_unrolled_iterations, bool
+    ):
+      raise TypeError(
+          "max_unrolled_iterations must be an int, got"
+          f" {type(self.max_unrolled_iterations).__name__}"
+      )
+    if self.max_unrolled_iterations < 1:
+      raise ValueError(
+          "max_unrolled_iterations must be an integer >= 1, got"
+          f" {self.max_unrolled_iterations!r}"
       )
     if self.tpu_version is not None and not isinstance(
         self.tpu_version, findings.TpuVersion
@@ -137,9 +154,9 @@ def verify(
   The kind of `target` is detected automatically:
 
   * A TorchTPU `@jax_op` (or the `JaxCallable` behind it) gets op-contract,
-    TPU-lowering, model-checking, autograd-parity, and CPU-interpret checks.
+    TPU-lowering, model-checking, and autograd-parity checks.
   * A JAX function called with `jax.Array` / `jax.ShapeDtypeStruct` arguments
-    gets model-checking and CPU-interpret checks.
+    gets TPU-lowering and model-checking checks.
   * Any other callable (for example an `nn.Module`) is traced into an FX graph
     whose buffer donation and aliasing are checked; every `@jax_op` it calls
     is then verified for the argument shapes it is called with.
@@ -205,19 +222,74 @@ def _is_jax_program(
   )
 
 
+def _drop_duplicate_trace_incomplete(
+    model_report: findings.VerificationReport,
+    lowering_report: findings.VerificationReport,
+) -> findings.VerificationReport:
+  """Drops fallback model-check trace warnings when lowering reported an error."""
+  if not lowering_report.findings_by_category(
+      findings.FindingCategory.LOWERING_FAILURE
+  ):
+    return model_report
+  kept = [
+      f
+      for f in model_report.findings
+      if not (
+          f.category is findings.FindingCategory.VERIFICATION_INCOMPLETE
+          and f.severity is findings.Severity.WARNING
+      )
+  ]
+  if len(kept) == len(model_report.findings):
+    return model_report
+  return findings.VerificationReport(
+      findings=tuple(kept), checked_phases=model_report.checked_phases
+  )
+
+
 def _verify_kernel(
     target: Any,
     args: Sequence[Any],
-    kwargs: Mapping[str, Any],
+    kwargs: Mapping[str, Any] | None,
     mode: VerificationMode,
     options: VerificationOptions,
+    *,
+    concrete_arg_ids: AbstractSet[int] | None = None,
 ) -> findings.VerificationReport:
   """Verifies a `@jax_op` or raw JAX function."""
-  effective_tpu_version = fx_verifier.infer_tpu_version(
-      target, options.tpu_version, args, kwargs
+  mesh_tpu_version = fx_verifier.extract_explicit_mesh_tpu_version(
+      target, args, kwargs
   )
-  is_op = fx_verifier.extract_jax_callable(target) is not None
   reports: list[findings.VerificationReport] = []
+  if mesh_tpu_version is not None:
+    effective_tpu_version = mesh_tpu_version
+    if (
+        options.tpu_version is not None
+        and options.tpu_version is not mesh_tpu_version
+    ):
+      reports.append(
+          findings.VerificationReport(
+              findings=(
+                  findings.VerificationFinding(
+                      category=findings.FindingCategory.VERIFICATION_INCOMPLETE,
+                      severity=findings.Severity.INFO,
+                      phase=None,
+                      op_name=fx_verifier.get_op_display_name(target),
+                      message=(
+                          f"explicit TPU mesh targets {mesh_tpu_version.name}"
+                          " and overrides VerificationOptions.tpu_version="
+                          f"{options.tpu_version.name}"
+                      ),
+                  ),
+              )
+          )
+      )
+  else:
+    effective_tpu_version = fx_verifier.infer_tpu_version(
+        target, options.tpu_version, args, kwargs
+    )
+
+  is_op = fx_verifier.extract_jax_callable(target) is not None
+  lowering_report: findings.VerificationReport | None = None
   if is_op:
     contracts = fx_verifier.verify_op_contracts(
         target, args, kwargs, tpu_version=effective_tpu_version
@@ -228,15 +300,89 @@ def _verify_kernel(
     ):
       # The kernel cannot be traced with inconsistent shardings.
       return findings.merge_reports(*reports)
-    reports.append(
-        fx_verifier.verify_tpu_lowering(
-            target, args, kwargs, tpu_version=effective_tpu_version
-        )
-    )
 
-    if mode is VerificationMode.FULL and options.check_autograd:
+  model_report, models = jaxpr_model.check_kernel_static_models(
+      target,
+      args,
+      kwargs,
+      max_unrolled_iterations=options.max_unrolled_iterations,
+      tpu_version=effective_tpu_version,
+      concrete_arg_ids=concrete_arg_ids,
+  )
+  # If tracing failed in `Phase.MODEL_CHECK` and was already classified as a
+  # specific bounds, device-id, or hardware-constraint error, avoid reporting
+  # the same trace exception a second time as `LOWERING_FAILURE`.
+  trace_error_already_classified = models is None and bool(
+      model_report.findings_by_severity(findings.Severity.ERROR)
+  )
+  if not trace_error_already_classified and (
+      is_op or models is None or bool(models)
+  ):
+    lowering_report = fx_verifier.verify_tpu_lowering(
+        target, args, kwargs, tpu_version=effective_tpu_version
+    )
+    reports.append(lowering_report)
+  if lowering_report is not None and models is None:
+    model_report = _drop_duplicate_trace_incomplete(
+        model_report, lowering_report
+    )
+  reports.append(model_report)
+  if mode is VerificationMode.FULL and is_op and options.check_autograd:
+    op_def = fx_verifier.resolve_custom_op_def(target)
+    has_backward = (
+        op_def is not None and getattr(op_def, "_backward_fn", None) is not None
+    )
+    if model_report.findings_by_category(
+        findings.FindingCategory.INVALID_DEVICE_ID
+    ):
+      if has_backward:
+        reports.append(
+            _skipped_dynamic_check(
+                target,
+                findings.Phase.AUTOGRAD,
+                findings.Severity.INFO,
+                "skipped the autograd parity check because an invalid remote"
+                " device or core id was found in the kernel",
+            )
+        )
+    elif models is not None and any(
+        model.uses_done_count_regular_dma for model in models
+    ):
+      if has_backward:
+        reports.append(
+            _skipped_dynamic_check(
+                target,
+                findings.Phase.AUTOGRAD,
+                findings.Severity.INFO,
+                "skipped the autograd parity check because the CPU TPU"
+                " interpreter increments DMA semaphores by byte count rather"
+                " than transfer completion count on REGULAR semaphores",
+            )
+        )
+    else:
       reports.append(fx_verifier.verify_autograd_parity(target, args, kwargs))
   return findings.merge_reports(*reports)
+
+
+def _skipped_dynamic_check(
+    target: Any,
+    phase: findings.Phase,
+    severity: findings.Severity,
+    message: str,
+) -> findings.VerificationReport:
+  """Returns a report noting that a dynamic check did not run."""
+  return findings.VerificationReport(
+      findings=(
+          findings.VerificationFinding(
+              category=findings.FindingCategory.VERIFICATION_INCOMPLETE,
+              severity=severity,
+              phase=phase,
+              op_name=fx_verifier.get_op_display_name(target),
+              message=message,
+          ),
+      ),
+      checked_phases=(),
+  )
 
 
 def _clone_cpu_concrete_tensor(tensor: torch.Tensor) -> torch.Tensor:
@@ -1231,6 +1377,13 @@ def _verify_torch_program(
         continue
       seen_invocations.add(key)
       reports.append(
-          _verify_kernel(op_handle, mat_args, mat_kwargs, mode, options)
+          _verify_kernel(
+              op_handle,
+              mat_args,
+              mat_kwargs,
+              mode,
+              options,
+              concrete_arg_ids=frozenset(concrete_ids),
+          )
       )
   return findings.merge_reports(*reports)

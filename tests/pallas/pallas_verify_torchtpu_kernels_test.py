@@ -185,6 +185,14 @@ class PallasVerifyTorchTpuKernelsTest(seed_test_utils.RepeatableTest):
         report.findings_by_severity(verifier.Severity.WARNING),
         msg=report.summary(),
     )
+    lowering_skips = [
+        f
+        for f in report.findings_by_category(
+            verifier.FindingCategory.VERIFICATION_INCOMPLETE
+        )
+        if f.phase == verifier.Phase.LOWERING
+    ]
+    self.assertEmpty(lowering_skips, msg=report.summary())
     for phase in expected_phases:
       self.assertIn(phase, report.checked_phases, msg=report.summary())
 
@@ -211,6 +219,7 @@ class PallasVerifyTorchTpuKernelsTest(seed_test_utils.RepeatableTest):
             verifier.Phase.FX_GRAPH,
             verifier.Phase.CONTRACTS,
             verifier.Phase.LOWERING,
+            verifier.Phase.MODEL_CHECK,
         ),
     )
 
@@ -230,6 +239,7 @@ class PallasVerifyTorchTpuKernelsTest(seed_test_utils.RepeatableTest):
             verifier.Phase.FX_GRAPH,
             verifier.Phase.CONTRACTS,
             verifier.Phase.LOWERING,
+            verifier.Phase.MODEL_CHECK,
         ),
     )
 
@@ -247,6 +257,7 @@ class PallasVerifyTorchTpuKernelsTest(seed_test_utils.RepeatableTest):
             verifier.Phase.FX_GRAPH,
             verifier.Phase.CONTRACTS,
             verifier.Phase.LOWERING,
+            verifier.Phase.MODEL_CHECK,
         ),
     )
 
@@ -297,6 +308,7 @@ class PallasVerifyTorchTpuKernelsTest(seed_test_utils.RepeatableTest):
             expected_phases=(
                 verifier.Phase.CONTRACTS,
                 verifier.Phase.LOWERING,
+                verifier.Phase.MODEL_CHECK,
             ),
         )
 
@@ -325,6 +337,7 @@ class PallasVerifyTorchTpuKernelsTest(seed_test_utils.RepeatableTest):
             verifier.Phase.FX_GRAPH,
             verifier.Phase.CONTRACTS,
             verifier.Phase.LOWERING,
+            verifier.Phase.MODEL_CHECK,
         ),
     )
 
@@ -346,6 +359,7 @@ class PallasVerifyTorchTpuKernelsTest(seed_test_utils.RepeatableTest):
         expected_phases=(
             verifier.Phase.CONTRACTS,
             verifier.Phase.LOWERING,
+            verifier.Phase.MODEL_CHECK,
         ),
     )
 
@@ -367,6 +381,35 @@ class PallasVerifyTorchTpuKernelsTest(seed_test_utils.RepeatableTest):
             verifier.Phase.FX_GRAPH,
             verifier.Phase.CONTRACTS,
             verifier.Phase.LOWERING,
+            verifier.Phase.MODEL_CHECK,
+        ),
+    )
+
+    # Direct raw JAX `jax.jit` entry point with `ShapeDtypeStruct` arguments.
+    raw_rep = verifier.verify(
+        blockwise_scaled_mm_kernel.blockwise_scaled_mm,
+        (
+            jax.ShapeDtypeStruct((128, 256), jnp.float8_e4m3fn),
+            jax.ShapeDtypeStruct((256, 128), jnp.float8_e4m3fn),
+            jax.ShapeDtypeStruct((128, 8), jnp.float32),
+            jax.ShapeDtypeStruct((8, 128), jnp.float32),
+        ),
+        kwargs={
+            "block_size": 32,
+            "out_dtype": jnp.bfloat16,
+            "tile_m": 128,
+            "tile_n": 128,
+            "tile_k": 256,
+            "transpose_rhs": False,
+        },
+        mode=verifier.VerificationMode.STATIC,
+        options=opts,
+    )
+    self._assert_clean_report(
+        raw_rep,
+        expected_phases=(
+            verifier.Phase.LOWERING,
+            verifier.Phase.MODEL_CHECK,
         ),
     )
 
@@ -389,6 +432,7 @@ class PallasVerifyTorchTpuKernelsTest(seed_test_utils.RepeatableTest):
         expected_phases=(
             verifier.Phase.CONTRACTS,
             verifier.Phase.LOWERING,
+            verifier.Phase.MODEL_CHECK,
         ),
     )
 
@@ -410,6 +454,34 @@ class PallasVerifyTorchTpuKernelsTest(seed_test_utils.RepeatableTest):
             verifier.Phase.FX_GRAPH,
             verifier.Phase.CONTRACTS,
             verifier.Phase.LOWERING,
+            verifier.Phase.MODEL_CHECK,
+        ),
+    )
+
+    # Direct raw JAX `jax.jit` entry point with `ShapeDtypeStruct` arguments.
+    raw_rep = verifier.verify(
+        blockwise128_scaled_mm_kernel.scaled_mm_1x128_128x128,
+        (
+            jax.ShapeDtypeStruct((128, 256), jnp.float8_e4m3fn),
+            jax.ShapeDtypeStruct((256, 128), jnp.float8_e4m3fn),
+            jax.ShapeDtypeStruct((128, 2), jnp.float32),
+            jax.ShapeDtypeStruct((2, 1), jnp.float32),
+        ),
+        kwargs={
+            "out_dtype": jnp.bfloat16,
+            "tile_m": 128,
+            "tile_n": 128,
+            "tile_k": 256,
+            "bias": jax.ShapeDtypeStruct((128,), jnp.float32),
+        },
+        mode=verifier.VerificationMode.STATIC,
+        options=opts,
+    )
+    self._assert_clean_report(
+        raw_rep,
+        expected_phases=(
+            verifier.Phase.LOWERING,
+            verifier.Phase.MODEL_CHECK,
         ),
     )
 
@@ -432,6 +504,7 @@ class PallasVerifyTorchTpuKernelsTest(seed_test_utils.RepeatableTest):
         expected_phases=(
             verifier.Phase.CONTRACTS,
             verifier.Phase.LOWERING,
+            verifier.Phase.MODEL_CHECK,
         ),
     )
 
@@ -456,6 +529,35 @@ class PallasVerifyTorchTpuKernelsTest(seed_test_utils.RepeatableTest):
             verifier.Phase.FX_GRAPH,
             verifier.Phase.CONTRACTS,
             verifier.Phase.LOWERING,
+            verifier.Phase.MODEL_CHECK,
+        ),
+    )
+
+    # Direct raw JAX `jax.jit` entry point with `ShapeDtypeStruct` arguments.
+    raw_rep = verifier.verify(
+        rowwise_scaled_grouped_mm_kernel.rowwise_scaled_grouped_mm,
+        (
+            jax.ShapeDtypeStruct((256, 256), jnp.float8_e4m3fn),
+            jax.ShapeDtypeStruct((3, 256, 128), jnp.float8_e4m3fn),
+            jax.ShapeDtypeStruct((256,), jnp.float32),
+            jax.ShapeDtypeStruct((3, 128), jnp.float32),
+            jax.ShapeDtypeStruct((3,), jnp.int32),
+        ),
+        kwargs={
+            "out_dtype": jnp.bfloat16,
+            "transpose_rhs": False,
+            "tile_m": 128,
+            "tile_k": 128,
+            "tile_n": 128,
+        },
+        mode=verifier.VerificationMode.STATIC,
+        options=opts,
+    )
+    self._assert_clean_report(
+        raw_rep,
+        expected_phases=(
+            verifier.Phase.LOWERING,
+            verifier.Phase.MODEL_CHECK,
         ),
     )
 
