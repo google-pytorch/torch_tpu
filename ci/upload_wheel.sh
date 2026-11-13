@@ -32,7 +32,7 @@
 #   ./upload_wheel.sh "torch_tpu-*.whl"
 #   ./upload_wheel.sh "tpu_sync_torch-*.whl"
 
-set -exu -o history -o allexport
+set -exu -o pipefail -o history -o allexport
 
 if [[ $# -lt 1 || -z "${1:-}" ]]; then
   echo "ERROR: WHEEL_PATTERN argument is required." >&2
@@ -49,19 +49,30 @@ KOKORO_ARTIFACTS_DIR="${KOKORO_ARTIFACTS_DIR:-$(pwd)/../../artifacts}"
 WHEEL_DIR="${KOKORO_ARTIFACTS_DIR}/dist"
 
 CONTAINER_IMAGE="us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest"
+REPOSITORY_URLS=(
+  # Keep uploading to transient until existing consumers migrate to published.
+  "https://us-python.pkg.dev/ml-oss-artifacts-transient/torch-tpu-testing-registry/"
+  "https://us-python.pkg.dev/ml-oss-artifacts-published/torch-tpu-testing-registry/"
+)
 
 # Upload to Google Artifact Registry via Twine and keyring auth, mirroring the GitHub action process.
-export UPLOAD_WHEEL_TO_AR=${UPLOAD_WHEEL_TO_AR:-true}
+export UPLOAD_WHEEL_TO_AR="${UPLOAD_WHEEL_TO_AR:-true}"
 if [[ "${UPLOAD_WHEEL_TO_AR}" == "true" ]]; then
-  echo "===> Uploading wheels matching '${WHEEL_PATTERN}' to internal Artifact Registry..."
+  echo "===> Uploading wheels matching '${WHEEL_PATTERN}' to Artifact Registry..."
   docker run --rm \
     -v "${WHEEL_DIR}:/dist" \
     "${CONTAINER_IMAGE}" \
-    bash -c "
-      uv run --isolated \
-        --with twine \
-        --with keyrings.google-artifactregistry-auth \
-        twine upload --repository-url https://us-python.pkg.dev/ml-oss-artifacts-transient/torch-tpu-testing-registry/ /dist/${WHEEL_PATTERN}
-    "
+    bash -euo pipefail -c '
+      wheel_pattern="$1"
+      shift
+      for repo_url in "$@"; do
+        echo "===> Uploading to ${repo_url}..."
+        # Intentionally unquoted so bash expands the glob in wheel_pattern.
+        uv run --isolated \
+          --with twine \
+          --with keyrings.google-artifactregistry-auth \
+          twine upload --repository-url "${repo_url}" /dist/${wheel_pattern}
+      done
+    ' _ "${WHEEL_PATTERN}" "${REPOSITORY_URLS[@]}"
   echo "===> Wheels uploaded successfully to Artifact Registry!"
 fi
