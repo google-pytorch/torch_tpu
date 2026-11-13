@@ -343,15 +343,22 @@ torch_tpu_py_test(
 )
 
 # Like collective_ops_test, but uses a remote filesystem for the tier-3 cache.
+# The cache code path does not depend on the collective, so this runs only one
+# case per collective kind; collective_ops_test covers the rest.
 torch_tpu_py_test(
     name = "collective_ops_remote_cache_test",
     timeout = "long",
     srcs = ["collective_ops_test.py"],
     env = {
         "TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT": "gs://torchtpu-shared/collective_ops_remote_cache_test",
+        "TESTBRIDGE_TEST_ONLY": " ".join([
+            "*.CollectiveOpsTest.test_all_reduce_sum",
+            "*.CollectiveOpsTest.test_all_gather",
+            "*.CollectiveOpsTest.test_reduce_scatter",
+            "*.CollectiveOpsTest.test_broadcast",
+        ]),
     },
     main = "collective_ops_test.py",
-    shard_count = 6,
     tags = if_oss(
         [
             "exclusive",
