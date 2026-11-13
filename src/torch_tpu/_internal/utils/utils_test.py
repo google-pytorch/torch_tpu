@@ -854,6 +854,41 @@ class AllTest(seed_test_utils.RepeatableTest):
 
       self.assertEqual(unskipped_fn(), "ran")
 
+  def test_is_msan(self):
+    fake_cdll_with_msan = type("FakeCdll", (), {"__msan_init": object()})()
+    with absltest.mock.patch.object(
+        ctypes, "CDLL", return_value=fake_cdll_with_msan
+    ):
+      self.assertTrue(test_utils.is_msan())
+
+    fake_cdll_without_msan = object()
+    with absltest.mock.patch.object(
+        ctypes, "CDLL", return_value=fake_cdll_without_msan
+    ):
+      self.assertFalse(test_utils.is_msan())
+
+    for exc in (OSError("load error"), TypeError("bad arg"), AttributeError()):
+      with absltest.mock.patch.object(ctypes, "CDLL", side_effect=exc):
+        self.assertFalse(test_utils.is_msan())
+
+  def test_skip_if_msan(self):
+    with absltest.mock.patch.object(test_utils, "is_msan", return_value=True):
+
+      @test_utils.skip_if_msan("slow in msan")
+      def skipped_fn():
+        return "ran"
+
+      with self.assertRaisesRegex(unittest.SkipTest, "slow in msan"):
+        skipped_fn()
+
+    with absltest.mock.patch.object(test_utils, "is_msan", return_value=False):
+
+      @test_utils.skip_if_msan("slow in msan")
+      def unskipped_fn():
+        return "ran"
+
+      self.assertEqual(unskipped_fn(), "ran")
+
 
 if __name__ == "__main__":
   absltest.main()

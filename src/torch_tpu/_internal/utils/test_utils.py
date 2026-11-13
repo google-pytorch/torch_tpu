@@ -920,9 +920,22 @@ def is_asan() -> bool:
     return False
 
 
+def is_msan() -> bool:
+  """Returns True if running under MemorySanitizer (MSAN)."""
+  try:
+    return hasattr(ctypes.CDLL(None), "__msan_init")
+  except (OSError, TypeError, AttributeError):
+    return False
+
+
 _T = TypeVar("_T", bound=Callable[..., Any])
 
 
 def skip_if_asan(reason: str) -> Callable[[_T], _T]:
   """Decorator to skip a test method or class when running under ASAN."""
   return unittest.skipIf(is_asan(), reason)
+
+
+def skip_if_msan(reason: str) -> Callable[[_T], _T]:
+  """Decorator to skip a test method or class when running under MSAN."""
+  return unittest.skipIf(is_msan(), reason)
