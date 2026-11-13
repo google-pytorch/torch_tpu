@@ -233,6 +233,9 @@ its `SKILL.md` and follow it.
 *   [`tt-fix-composite-ops`](.agents/skills/tt-fix-composite-ops/SKILL.md):
     migrating a composite ATen operator to a native one that lowers directly to
     StableHLO.
+*   [`tt-fix-op-lowering-tolerances`](.agents/skills/tt-fix-op-lowering-tolerances/SKILL.md):
+    diagnosing and fixing numerical accuracy gaps and loose tolerances in
+    operator lowerings.
 *   [`tt-implement-ops`](.agents/skills/tt-implement-ops/SKILL.md): implementing
     a new ATen operator or StableHLO lowering, including C++ registration and
     tests.
@@ -246,6 +249,11 @@ its `SKILL.md` and follow it.
 *   [`tt-support-dynamism`](.agents/skills/tt-support-dynamism/SKILL.md):
     bounded dynamic shape support in op lowerings and `torch.compile` FX passes,
     and fixing ops in `DYNAMISM_DENY_LISTS`.
+*   [`tt-update-error-coverage-data`](.agents/skills/tt-update-error-coverage-data/SKILL.md):
+    updating the `tests/error_coverage_data.yaml` baseline.
+*   [`tt-update-tolerances`](.agents/skills/tt-update-tolerances/SKILL.md):
+    verifying, calculating, and surgically updating operator error tolerances in
+    `tests/ops_test.py`.
 *   [`tt-write-docs`](.agents/skills/tt-write-docs/SKILL.md): writing, editing,
     or reviewing narrative documentation or README content.
 *   [`tt-write-error-tests`](.agents/skills/tt-write-error-tests/SKILL.md):
