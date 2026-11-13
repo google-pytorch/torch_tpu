@@ -26,6 +26,7 @@ The CPU tests run a real torch.compile (Inductor). The TPU backend cannot run
 on CPU, so for TPU targets only the selected backend object is checked.
 """
 
+from unittest import mock
 from absl.testing import absltest
 import torch
 from torch import nn
@@ -69,6 +70,7 @@ class CompileConfigTest(seed_test_utils.RepeatableTest):
     self.assertEqual(cfg.scope, compile_lib.Scope.STEP)
     self.assertIsNone(cfg.dynamic)
     self.assertFalse(cfg.fullgraph)
+    self.assertFalse(cfg.spmd_safe)
 
   def test_scope_enum_values(self):
     self.assertEqual(compile_lib.Scope.MODEL.value, "model")
@@ -161,6 +163,55 @@ class CompileConfigTest(seed_test_utils.RepeatableTest):
         )
         self.assertIsInstance(backend, torch_tpu_compile.TpuBackend)
         self.assertIs(backend._dynamism, expected_dynamism)  # pylint: disable=protected-access
+
+  def test_spmd_safe_wraps_step_callable_on_tpu_only(self):
+    def step():
+      return None
+
+    tpu = target_lib.make_target(target_lib.Platform.V5E_1X1)
+    cpu = target_lib.make_target(target_lib.Platform.CPU)
+    cfg = compile_lib.CompileConfig(spmd_safe=True)
+    with (
+        mock.patch("torch.compile") as tc,
+        mock.patch("torch_tpu._internal.compile.TpuBackend"),
+    ):
+      cfg.apply(step, cpu)
+      self.assertIs(tc.call_args.args[0], step)
+
+      cfg.apply(step, tpu)
+      self.assertIs(tc.call_args.args[0].__wrapped__, step)
+
+  def test_spmd_safe_wraps_module_forward_on_tpu(self):
+    model = nn.Linear(2, 2)
+    orig_forward = model.forward
+    tpu = target_lib.make_target(target_lib.Platform.V5E_1X1)
+    cfg = compile_lib.CompileConfig(
+        scope=compile_lib.Scope.MODEL, spmd_safe=True
+    )
+    with (
+        mock.patch("torch.compile") as tc,
+        mock.patch("torch_tpu._internal.compile.TpuBackend"),
+    ):
+      cfg.apply(model, tpu)
+    self.assertEqual(model.forward.__wrapped__, orig_forward)
+    self.assertIs(tc.call_args.args[0], model)
+
+  def test_no_spmd_safe_by_default_on_tpu(self):
+    def step():
+      return None
+
+    model = nn.Linear(2, 2)
+    tpu = target_lib.make_target(target_lib.Platform.V5E_1X1)
+    with (
+        mock.patch("torch.compile") as tc,
+        mock.patch("torch_tpu._internal.compile.TpuBackend"),
+    ):
+      compile_lib.CompileConfig().apply(step, tpu)
+      self.assertIs(tc.call_args.args[0], step)
+
+      compile_lib.CompileConfig(scope=compile_lib.Scope.MODEL).apply(model, tpu)
+      self.assertIs(tc.call_args.args[0], model)
+    self.assertNotIn("forward", vars(model))
 
 
 if __name__ == "__main__":

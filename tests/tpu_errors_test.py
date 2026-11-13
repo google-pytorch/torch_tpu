@@ -54,6 +54,7 @@ from torch.nn.attention import flex_attention
 from torch.testing._internal.distributed import fake_pg
 from torch.tpu import distributed  # pyrefly: ignore[missing-import]
 from torch.utils import _pytree as pytree
+from torch.utils import checkpoint
 from torch_tpu._internal import dynamism
 from torch_tpu._internal import env
 from torch_tpu._internal import env_utils
@@ -61,9 +62,11 @@ from torch_tpu._internal import execution_mode
 from torch_tpu._internal import pallas
 from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.compile import flex_attention as tpu_flex_attention
+from torch_tpu._internal.compile import split_compiler
 from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.compile.compiler import StaticCompiler
 from torch_tpu._internal.distributed import distributed as internal_distributed
+from torch_tpu._internal.distributed import spmd_util
 from torch_tpu._internal.export import export as torch_tpu_export
 from torch_tpu._internal.pallas import tpu_torch_pallas
 from torch_tpu._internal.sync import sync
@@ -5700,6 +5703,136 @@ class FlexAttentionErrorsTest(et.TpuOnlyErrorTestBase):
           self._causal_mask(),
           score_mod=lambda score, b, h, q_idx, kv_idx: score.sum(-1),
       )
+
+
+class SpmdSafeCompileErrorsTest(et.TpuOnlyErrorTestBase):
+  """Tests error messages for partially `spmd_safe` compiled graphs."""
+
+  @et.why_tpu_only("`spmd_safe` only exists on TPU.")
+  def test_partially_spmd_safe_tensor_indexing(self):
+    """Verifies unannotated tensor indexing (`operator.getitem`) is rejected."""
+
+    @distributed.spmd_safe
+    def safe_fn(t):
+      return t * 2 + 1
+
+    compiled_index = torch.compile(lambda t: safe_fn(t[0]), backend="tpu")
+    compiled_ckpt_index = torch.compile(
+        lambda t: checkpoint.checkpoint(safe_fn, t, use_reentrant=False)[0],
+        backend="tpu",
+    )
+    x = torch.ones((2, 2), device=et.device())
+    x_grad = torch.ones((2, 2), device=et.device(), requires_grad=True)
+    expected = re.compile(
+        r".*ValueError: The graph is partially annotated with `spmd_safe`: 1 of"
+        r" 3 ops are not `spmd_safe`, e\.g\. \['(?:getitem|getitem_1):"
+        r" operator\.getitem \([^']*tpu_errors_test\.py:\d+\)'\]\..*",
+        re.DOTALL,
+    )
+    with et.assert_raises_message(
+        torch._dynamo.exc.BackendCompilerFailed,  # pylint: disable=protected-access
+        tpu=expected,
+    ):
+      compiled_index(x)
+    with et.assert_raises_message(
+        torch._dynamo.exc.BackendCompilerFailed,  # pylint: disable=protected-access
+        tpu=expected,
+    ):
+      compiled_ckpt_index(x_grad)
+
+  @et.why_tpu_only("`spmd_safe` only exists on TPU.")
+  def test_partially_spmd_safe_checkpoint_subgraph(self):
+    """Verifies unannotated ops inside a `checkpoint` subgraph are rejected."""
+
+    @distributed.spmd_safe
+    def safe_fn(t):
+      return t * 2 + 1
+
+    compiled_fn = torch.compile(
+        lambda t: checkpoint.checkpoint(
+            lambda y: torch.neg(safe_fn(y)), t, use_reentrant=False
+        ),
+        backend="tpu",
+    )
+    x = torch.ones((2, 2), device=et.device(), requires_grad=True)
+    with et.assert_raises_message(
+        torch._dynamo.exc.BackendCompilerFailed,  # pylint: disable=protected-access
+        tpu=re.compile(
+            r".*ValueError: The graph is partially annotated with `spmd_safe`:"
+            r" 1 of 3 ops are not `spmd_safe`, e\.g\. \['neg: torch\.neg"
+            r" \([^']*tpu_errors_test\.py:\d+\)'\]\..*",
+            re.DOTALL,
+        ),
+    ):
+      compiled_fn(x)
+
+  @et.why_tpu_only("`spmd_safe` only exists on TPU.")
+  def test_partially_spmd_safe_bodyless_higher_order_op(self):
+    """Verifies unannotated higher-order ops without a subgraph are rejected."""
+
+    @distributed.spmd_safe
+    def safe_fn(t):
+      return t + 1
+
+    def fn(t):
+      y = torch.ops.higher_order.out_dtype(
+          torch.ops.aten.mul.Scalar, torch.float32, t, 2.0
+      )
+      return safe_fn(y)
+
+    compiled_fn = torch.compile(fn, backend="tpu")
+    x = torch.ones((2, 2), device=et.device())
+    with et.assert_raises_message(
+        torch._dynamo.exc.BackendCompilerFailed,  # pylint: disable=protected-access
+        tpu=re.compile(
+            r".*ValueError: The graph is partially annotated with `spmd_safe`:"
+            r" 1 of 2 ops are not `spmd_safe`, e\.g\. \['y:"
+            r" torch\.ops\.higher_order\.out_dtype"
+            r" \([^']*tpu_errors_test\.py:\d+\)'\]\..*",
+            re.DOTALL,
+        ),
+    ):
+      compiled_fn(x)
+
+  @et.why_tpu_only("`spmd_safe` only exists on TPU.")
+  def test_partially_spmd_safe_error_formatting(self):
+    """Verifies node formatting without stack traces and 3-op truncation."""
+    no_trace_gm = torch.fx.symbolic_trace(lambda x: torch.neg(x) + 1)
+    neg_node, add_node = (
+        n for n in no_trace_gm.graph.nodes if n.op == "call_function"
+    )
+    neg_node.meta["custom"] = {spmd_util.SPMD_SAFE_METADATA_KEY: True}
+    self.assertIsNone(add_node.stack_trace)
+    with et.assert_raises_message(
+        ValueError,
+        tpu="""The graph is partially annotated with `spmd_safe`: 1 of 2 ops are not `spmd_safe`, e.g. ['add: operator.add']. Under `torch.compile`, `spmd_safe` must cover the whole compiled function: either compile the `spmd_safe` function directly, or decorate the whole compiled function with `spmd_safe`.""",
+    ):
+      split_compiler._is_fully_spmd_safe(no_trace_gm)  # pylint: disable=protected-access
+
+    @distributed.spmd_safe
+    def safe_fn(t):
+      return t * 2 + 1
+
+    compiled_fn = torch.compile(
+        lambda t: safe_fn(torch.neg(torch.abs(torch.sin(torch.cos(t))))),
+        backend="tpu",
+    )
+    x = torch.ones((2, 2), device=et.device())
+    with et.assert_raises_message(
+        torch._dynamo.exc.BackendCompilerFailed,  # pylint: disable=protected-access
+        tpu=re.compile(
+            r".*ValueError: The graph is partially annotated with `spmd_safe`:"
+            r" 4 of 6 ops are not `spmd_safe`, e\.g\. \['cos: torch\.cos"
+            r" \([^']*tpu_errors_test\.py:\d+\)', 'sin: torch\.sin"
+            r" \([^']*tpu_errors_test\.py:\d+\)', 'abs_1: torch\.abs"
+            r" \([^']*tpu_errors_test\.py:\d+\)'\]\. Under `torch\.compile`,"
+            r" `spmd_safe` must cover the whole compiled function: either"
+            r" compile the `spmd_safe` function directly, or decorate the"
+            r" whole compiled function with `spmd_safe`\..*",
+            re.DOTALL,
+        ),
+    ):
+      compiled_fn(x)
 
 
 if __name__ == "__main__":

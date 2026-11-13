@@ -281,6 +281,7 @@ torch_tpu_py_library(
         "//perflab/steps:common",
         "//shims/torch:pytorch",
         "//src/torch_tpu/_internal/compile",
+        "//src/torch_tpu/_internal/distributed:spmd_util",
     ],
 )
 

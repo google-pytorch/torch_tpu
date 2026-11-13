@@ -72,9 +72,9 @@ backends:
 TorchTPU runs each collective as a skinny collective. To let XLA overlap compute
 and communication, you can opt in to either or both of two mechanisms that fuse
 collectives with the surrounding computation. The two are independent and can be
-combined: collectives inside an `@spmd_safe` function are always fused, and,
-when enabled, the Compilation Handshake decides for the remaining collectives in
-each `torch.compile` graph.
+combined: collectives inside an `@spmd_safe` function (eager or covering a whole
+`torch.compile` graph) are always fused, and, when enabled, the Compilation
+Handshake decides for any other `torch.compile` graphs.
 
 <!-- mdformat off(reason: standard GFM table rendering in Critique and Code Search) -->
 | Mode | Configuration | Graph Behavior | Best For |
@@ -108,6 +108,14 @@ Only apply `@torch.tpu.distributed.spmd_safe` to code that executes the exact
 same sequence of tensor and collective operations on every rank; applying it to
 MPMD code can produce different StableHLO modules across ranks and cause TPU
 execution deadlocks.
+
+Under `torch.compile`, `@spmd_safe` must cover the whole compiled function, as
+in the example above. Compiling a function in which only some of the operations
+are `@spmd_safe` raises an error; compile the `@spmd_safe` function directly
+instead. On PyTorch earlier than 2.16, a graph break inside an `@spmd_safe`
+function causes TorchDynamo to run the wrapper frame eagerly and drop the
+annotation on the traced subgraphs, so pass `fullgraph=True` when compiling
+functions that should not graph break.
 
 #### Configuring the compilation handshake
 

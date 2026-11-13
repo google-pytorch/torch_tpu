@@ -190,6 +190,7 @@ torch_tpu_py_test(
         "//src/torch_tpu/_internal/compile:compiler",
         "//src/torch_tpu/_internal/compile:split_compiler",
         "//src/torch_tpu/_internal/distributed:collective_ops",
+        "//src/torch_tpu/_internal/distributed:spmd_util",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
     ],

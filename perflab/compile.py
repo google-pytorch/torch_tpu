@@ -44,6 +44,7 @@ class CompileConfig:
   scope: Scope = Scope.STEP
   dynamic: bool | None = None
   fullgraph: bool = False
+  spmd_safe: bool = False
 
   def select_backend(self, target: target_lib.Target) -> Any:
     """Returns the torch.compile backend for `target`.
@@ -79,6 +80,14 @@ class CompileConfig:
     Returns:
       The compiled object.
     """
+    if self.spmd_safe and target.device_kind is target_lib.DeviceKind.TPU:
+      from torch_tpu._internal.distributed import spmd_util  # pylint: disable=g-import-not-at-top
+
+      if isinstance(obj, torch.nn.Module):
+        obj.forward = spmd_util.spmd_safe(obj.forward)
+      else:
+        obj = spmd_util.spmd_safe(obj)
+
     return torch.compile(
         obj,
         backend=self.select_backend(target),
