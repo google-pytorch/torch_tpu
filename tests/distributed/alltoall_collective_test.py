@@ -296,109 +296,6 @@ class AllToAllSingleUnevenTestData:
     )
 
 
-class AllToAllSingleCollectiveTest(
-    continuous_test_utils.TpuMultiProcContinuousTest
-):
-
-  world_size = distributed_utils.get_tpu_device_count()
-
-  def test_no_split_sizes_1d(self):
-    rank_data = AllToAllSingleTestData()
-    run_all_to_all_single(rank_data)
-
-  def test_no_split_sizes_multi_dim(self):
-    rank_data = AllToAllSingleTestData(md_shapes=True)
-    run_all_to_all_single(rank_data)
-
-  def test_with_equal_splits(self):
-    splits = [1] * self.world_size
-    rank_data = AllToAllSingleTestData(
-        input_split_sizes=splits, output_split_sizes=splits
-    )
-    run_all_to_all_single(rank_data)
-
-  def test_uneven_splits_1d(self):
-    # matrix of split sizes: rank i sends 2 to (i + 1) % world_size, 1 to others
-    # (total world_size + 1)
-    matrix = [
-        [
-            (2 if j == (i + 1) % self.world_size else 1)
-            for j in range(self.world_size)
-        ]
-        for i in range(self.world_size)
-    ]
-    rank_data = AllToAllSingleUnevenTestData(matrix, dtype=torch.int32)
-    run_all_to_all_single(rank_data)
-
-  def test_uneven_splits_multi_dim(self):
-    matrix = [
-        [(1 if (i + j) % 2 == 0 else 2) for j in range(self.world_size)]
-        for i in range(self.world_size)
-    ]
-    rank_data = AllToAllSingleUnevenTestData(
-        matrix, dtype=torch.bfloat16, md_shapes=True
-    )
-    run_all_to_all_single(rank_data)
-
-  def test_uneven_splits_zero_sized_slices(self):
-    matrix = [
-        [(1 if (i + j) % 2 == 0 else 0) for j in range(self.world_size)]
-        for i in range(self.world_size)
-    ]
-    rank_data = AllToAllSingleUnevenTestData(matrix, dtype=torch.float32)
-    run_all_to_all_single(rank_data)
-
-  def test_uneven_splits_cyclic_pattern(self):
-    matrix = [
-        [
-            (3 if j == (i + 1) % self.world_size else 0)
-            for j in range(self.world_size)
-        ]
-        for i in range(self.world_size)
-    ]
-    rank_data = AllToAllSingleUnevenTestData(matrix, dtype=torch.int32)
-    run_all_to_all_single(rank_data)
-
-  def test_uneven_splits_float32(self):
-    matrix = [
-        [(1 if (i + j) % 2 == 0 else 2) for j in range(self.world_size)]
-        for i in range(self.world_size)
-    ]
-    rank_data = AllToAllSingleUnevenTestData(matrix, dtype=torch.float32)
-    run_all_to_all_single(rank_data)
-
-  def test_uneven_splits_asymmetric(self):
-    # Asymmetric split pattern with a mixture of sizes (3, 2, 0, 1) per peer.
-    matrix = [
-        [
-            (
-                3
-                if j == (i + 1) % self.world_size
-                else (
-                    2
-                    if j == (i + 2) % self.world_size
-                    else (0 if j == (i + 3) % self.world_size else 1)
-                )
-            )
-            for j in range(self.world_size)
-        ]
-        for i in range(self.world_size)
-    ]
-    rank_data = AllToAllSingleUnevenTestData(matrix, dtype=torch.int32)
-    run_all_to_all_single(rank_data)
-
-  def test_uneven_splits_3d_float32(self):
-    # 3D tensor with trailing shape (2, 4) and float32
-    matrix = [
-        [(1 if (i + j) % 2 == 0 else 2) for j in range(self.world_size)]
-        for i in range(self.world_size)
-    ]
-    rank_data = AllToAllSingleUnevenTestData(
-        matrix, dtype=torch.float32, extra_dims=(2, 4)
-    )
-    run_all_to_all_single(rank_data)
-
-
 class AllToAllTestData:
   """Input and output data for all_to_all tests where data is dependent on rank and world_size."""
 
@@ -551,9 +448,107 @@ def run_all_to_all(
     )
 
 
+# One class for `all_to_all_single` and `all_to_all`, so that all tests share
+# one set of workers.
 class AllToAllCollectiveTest(continuous_test_utils.TpuMultiProcContinuousTest):
 
   world_size = distributed_utils.get_tpu_device_count()
+
+  def test_no_split_sizes_1d(self):
+    rank_data = AllToAllSingleTestData()
+    run_all_to_all_single(rank_data)
+
+  def test_no_split_sizes_multi_dim(self):
+    rank_data = AllToAllSingleTestData(md_shapes=True)
+    run_all_to_all_single(rank_data)
+
+  def test_with_equal_splits(self):
+    splits = [1] * self.world_size
+    rank_data = AllToAllSingleTestData(
+        input_split_sizes=splits, output_split_sizes=splits
+    )
+    run_all_to_all_single(rank_data)
+
+  def test_uneven_splits_1d(self):
+    # matrix of split sizes: rank i sends 2 to (i + 1) % world_size, 1 to others
+    # (total world_size + 1)
+    matrix = [
+        [
+            (2 if j == (i + 1) % self.world_size else 1)
+            for j in range(self.world_size)
+        ]
+        for i in range(self.world_size)
+    ]
+    rank_data = AllToAllSingleUnevenTestData(matrix, dtype=torch.int32)
+    run_all_to_all_single(rank_data)
+
+  def test_uneven_splits_multi_dim(self):
+    matrix = [
+        [(1 if (i + j) % 2 == 0 else 2) for j in range(self.world_size)]
+        for i in range(self.world_size)
+    ]
+    rank_data = AllToAllSingleUnevenTestData(
+        matrix, dtype=torch.bfloat16, md_shapes=True
+    )
+    run_all_to_all_single(rank_data)
+
+  def test_uneven_splits_zero_sized_slices(self):
+    matrix = [
+        [(1 if (i + j) % 2 == 0 else 0) for j in range(self.world_size)]
+        for i in range(self.world_size)
+    ]
+    rank_data = AllToAllSingleUnevenTestData(matrix, dtype=torch.float32)
+    run_all_to_all_single(rank_data)
+
+  def test_uneven_splits_cyclic_pattern(self):
+    matrix = [
+        [
+            (3 if j == (i + 1) % self.world_size else 0)
+            for j in range(self.world_size)
+        ]
+        for i in range(self.world_size)
+    ]
+    rank_data = AllToAllSingleUnevenTestData(matrix, dtype=torch.int32)
+    run_all_to_all_single(rank_data)
+
+  def test_uneven_splits_float32(self):
+    matrix = [
+        [(1 if (i + j) % 2 == 0 else 2) for j in range(self.world_size)]
+        for i in range(self.world_size)
+    ]
+    rank_data = AllToAllSingleUnevenTestData(matrix, dtype=torch.float32)
+    run_all_to_all_single(rank_data)
+
+  def test_uneven_splits_asymmetric(self):
+    # Asymmetric split pattern with a mixture of sizes (3, 2, 0, 1) per peer.
+    matrix = [
+        [
+            (
+                3
+                if j == (i + 1) % self.world_size
+                else (
+                    2
+                    if j == (i + 2) % self.world_size
+                    else (0 if j == (i + 3) % self.world_size else 1)
+                )
+            )
+            for j in range(self.world_size)
+        ]
+        for i in range(self.world_size)
+    ]
+    rank_data = AllToAllSingleUnevenTestData(matrix, dtype=torch.int32)
+    run_all_to_all_single(rank_data)
+
+  def test_uneven_splits_3d_float32(self):
+    # 3D tensor with trailing shape (2, 4) and float32
+    matrix = [
+        [(1 if (i + j) % 2 == 0 else 2) for j in range(self.world_size)]
+        for i in range(self.world_size)
+    ]
+    rank_data = AllToAllSingleUnevenTestData(
+        matrix, dtype=torch.float32, extra_dims=(2, 4)
+    )
+    run_all_to_all_single(rank_data)
 
   def test_uniform_tensors_1d(self):
     rank_data = AllToAllTestData()
