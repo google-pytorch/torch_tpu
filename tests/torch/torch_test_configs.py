@@ -320,6 +320,9 @@ TEST_EXCLUSIONS: Final[
             "test_memory_profiler",
             "test_overhead_activities_own_no_device_time",
             "test_profile_all_threads",
+            # Spawns a child process that opens the TPU VFIO device node
+            # already held by the parent test process.
+            "test_region_device_time",
             "test_trace_only_export_matches_default",
         ],
         "TestProfilerEventsParityDevice": [
@@ -426,6 +429,13 @@ TEST_EXCLUSIONS: Final[
             "test_needs_copy_error",
             "test_no_copy",
             "test_readonly_wrapper_bare_capsule_is_valid",
+        ],
+    },
+    "test_dynamic_shapes": {
+        "TestUnbackedOpsDevice": [
+            # Hard-codes backend="inductor" without tpu_backend="pallas"
+            # (see _loader._INDUCTOR_TPU_ERROR).
+            "test_narrow_with_tensor_start",
         ],
     },
     "test_expanded_weights": {
@@ -901,6 +911,16 @@ TEST_EXCLUSIONS: Final[
     "test_transformers": {
         "TestSDPAFailureModes": [
             "test_dispatch_fails_no_backend",
+        ],
+        # TODO(b/585138980): Re-enable once SDPA fp16 overflow, undefined
+        # backward grad in gradcheck, batch-dim broadcasting, and zero-sized
+        # dimensions are supported on TPU.
+        "TestSDPAGeneric": [
+            "test_scaled_dot_product_attention_fp16_overflow",
+            "test_sdp_math_gradcheck",
+            "test_sdpa_math_broadcast_batch_dims",
+            "test_sdpa_zero_output",
+            "test_sdpa_zero_qk_head_dim_matches_eager_attention",
         ],
         "TestTransformersAccelerator": [
             "test_disable_fastpath",
