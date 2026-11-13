@@ -806,8 +806,11 @@ TEST_F(CompilationCacheTest, UnboundedDynamicCacheEvictAll) {
       CompilationCacheTestHelper::GetUnboundedDynamicCacheEntryStats(cache, key)
           .has_value());
 
-  // Evict all cache entries (including the unbounded dynamic cache).
+  // Evict all cache entries (including the unbounded dynamic cache). Nothing
+  // is compiling, so this must not wait for in-flight compilations.
+  const absl::Time evict_start = absl::Now();
   cache.EvictAll();
+  EXPECT_LT(absl::Now() - evict_start, absl::Seconds(1));
   EXPECT_FALSE(
       CompilationCacheTestHelper::GetUnboundedDynamicCacheEntryStats(cache, key)
           .has_value());
