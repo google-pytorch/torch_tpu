@@ -110,33 +110,22 @@ bool IsSupportedFlashAttentionShape(
 
 // Returns true if StableHLO SDPA should be preferred over the FlashAttention
 // custom call for `query`, `key`, and `value` based on FlashAttention's
-// single-tile threshold and the device VMEM score-footprint limit.
-bool ShouldPreferShloSdpa(const at::Tensor& query, const at::Tensor& key,
-                          const at::Tensor& value) {
+// hardware lane width, single-split-tile geometry, and the device VMEM
+// score-footprint limit.
+[[nodiscard]] bool ShouldPreferShloSdpa(const at::Tensor& query,
+                                        const at::Tensor& key,
+                                        const at::Tensor& value) {
   const int64_t rank = query.ndimension();
   const int64_t q_seq_len = query.size(rank - 2);
   const int64_t kv_seq_len = key.size(rank - 2);
-
-  // Sequences within kFlashMinSplitTileSize (256) never split into multiple
-  // FlashAttention blocks (num_q_blocks == 1 && num_kv_blocks == 1), so
-  // FlashAttention provides no online-softmax VMEM streaming benefit while
-  // adding custom-call fusion barriers and up to 256-lane tile padding.
-  if (q_seq_len <= kFlashMinSplitTileSize &&
-      kv_seq_len <= kFlashMinSplitTileSize) {
-    return true;
-  }
-
-  // Any sequence shorter than kFlashMinHardwareTileSize (128) is zero-padded
-  // to 128 lanes by the FlashAttention kernel, whereas StableHLO SDPA folds
-  // GQA heads into DotGeneral without lane padding.
-  if (std::min(q_seq_len, kv_seq_len) >= kFlashMinHardwareTileSize) {
-    return false;
-  }
-
+  const int64_t qk_head_dim = query.size(rank - 1);
+  const int64_t vo_head_dim = value.size(rank - 1);
   const int64_t batch_size = get_batch_size(query.sizes());
   const int64_t num_head_q = query.size(rank - 3);
   const int64_t num_head_kv = key.size(rank - 3);
-  if (batch_size <= 0 || num_head_q <= 0 || num_head_kv <= 0) {
+  if (q_seq_len <= 0 || kv_seq_len <= 0 || qk_head_dim <= 0 ||
+      vo_head_dim <= 0 || batch_size <= 0 || num_head_q <= 0 ||
+      num_head_kv <= 0) {
     return true;
   }
 
@@ -150,11 +139,46 @@ bool ShouldPreferShloSdpa(const at::Tensor& query, const at::Tensor& key,
   const double total_score_bytes = static_cast<double>(batch_size) *
                                    static_cast<double>(num_head_q) *
                                    score_elems_per_head * sizeof(float);
+  const bool within_single_split_tile = q_seq_len <= kFlashMinSplitTileSize &&
+                                        kv_seq_len <= kFlashMinSplitTileSize;
+  const bool has_sub_tile_seq =
+      std::min(q_seq_len, kv_seq_len) < kFlashMinHardwareTileSize;
+
+  const int64_t qk_pad_lanes =
+      llvm::alignTo(qk_head_dim, kFlashMinHardwareTileSize) - qk_head_dim;
+  const int64_t vo_pad_lanes =
+      llvm::alignTo(vo_head_dim, kFlashMinHardwareTileSize) - vo_head_dim;
+  const int64_t num_q_blocks =
+      llvm::divideCeil(q_seq_len, kFlashMinSplitTileSize);
+  const double elem_bytes = static_cast<double>(query.element_size());
+  const double flash_pad_bytes_per_head =
+      (static_cast<double>(q_seq_len) *
+           static_cast<double>(qk_pad_lanes + vo_pad_lanes) +
+       static_cast<double>(num_q_blocks) * static_cast<double>(kv_seq_len) *
+           static_cast<double>(qk_pad_lanes + vo_pad_lanes)) *
+      elem_bytes;
+  const double score_tensor_bytes_per_head = score_elems_per_head * elem_bytes;
+  // FlashAttention pads sub-128 head dimensions to 128 hardware lanes across
+  // Q, O, and num_q_blocks KV loads; prefer StableHLO when that padding meets
+  // or exceeds the per-head score tensor footprint.
+  const bool flash_padding_meets_or_exceeds_score =
+      flash_pad_bytes_per_head >= score_tensor_bytes_per_head;
+
   // In training, StableHLO backward has no online-softmax fusion and
   // materializes the [B, N, S_q, S_kv] softmax and dP tensors across its
   // backward contractions when total_score_bytes exceeds VMEM.
   if (requires_grad) {
-    return total_score_bytes <= static_cast<double>(vmem_limit_bytes);
+    return (within_single_split_tile || has_sub_tile_seq) &&
+           total_score_bytes <= static_cast<double>(vmem_limit_bytes);
+  }
+
+  // When the total score footprint fits within the VMEM budget, prefer
+  // StableHLO within a single FlashAttention split tile (<= 256), on sub-128
+  // sequences, or when FlashAttention's padded memory traffic meets or exceeds
+  // the unpadded score tensor footprint.
+  if (total_score_bytes <= static_cast<double>(vmem_limit_bytes)) {
+    return within_single_split_tile || has_sub_tile_seq ||
+           flash_padding_meets_or_exceeds_score;
   }
 
   // In forward inference, XLA fuses softmax per GQA head group with two live
@@ -164,7 +188,17 @@ bool ShouldPreferShloSdpa(const at::Tensor& query, const at::Tensor& key,
   const double group_live_score_bytes = 2.0 *
                                         static_cast<double>(head_group_size) *
                                         score_elems_per_head * sizeof(float);
-  return group_live_score_bytes <= static_cast<double>(vmem_limit_bytes);
+  if (group_live_score_bytes > static_cast<double>(vmem_limit_bytes)) {
+    return false;
+  }
+
+  // Above VMEM score capacity, FlashAttention pipelines multi-block (> 256)
+  // tiles in VMEM without materializing [B, N, S_q, S_kv] to HBM; prefer
+  // StableHLO only on sub-128 sequences or single-split-tile (<= 256) sub-tile
+  // head dimensions where FlashAttention's padding waste meets or exceeds the
+  // score footprint.
+  return has_sub_tile_seq ||
+         (within_single_split_tile && flash_padding_meets_or_exceeds_score);
 }
 
 }  // namespace
