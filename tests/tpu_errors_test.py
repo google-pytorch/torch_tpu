@@ -38,6 +38,7 @@ Tests that don't belong in this file:
 
 import collections
 from collections.abc import Mapping, Sequence
+import concurrent.futures
 import contextlib
 import os
 import re
@@ -5454,43 +5455,56 @@ class InitializationErrorsTest(et.TpuOnlyErrorTestBase):
   once the worker uses the TPU.
   """
 
-  def setUp(self):
-    super().setUp()
+  @classmethod
+  def setUpClass(cls):
+    super().setUpClass()
     # Initialize the TPU in this process, so that it holds the devices.
     torch.ones(1, device="tpu").cpu()
+    # Each worker takes ~9 s to start, so start them all at once here and let
+    # each test wait for its own.
+    pool = concurrent.futures.ThreadPoolExecutor()
+    cls.addClassCleanup(pool.shutdown)
 
-  def assert_worker_raises_tpu_init_failure(self, fn, *args: Any) -> None:
-    """Asserts that `fn(0, *args)` in a fresh worker raises the init failure."""
+    def spawn(fn, *args: Any) -> concurrent.futures.Future[None]:
+      return pool.submit(mp.spawn, fn, args=args, nprocs=1, join=True)
+
+    cls.seed_then_use_tpu_workers = {
+        name: spawn(_seed_then_use_tpu_in_fresh_process, name)
+        for name in _SEED_FNS
+    }
+    cls.seed_workers = {
+        name: spawn(_seed_in_fresh_process, name) for name in _SEED_FNS
+    }
+    cls.init_process_group_worker = spawn(_init_process_group_in_fresh_process)
+
+  def assert_worker_raises_tpu_init_failure(
+      self, worker: concurrent.futures.Future[None]
+  ) -> None:
+    """Asserts that `worker` raised the TPU init failure."""
     # The rest of the message names the device node and the colliding process,
     # both of which vary from host to host and run to run.
     with et.assert_subprocess_raises_message(
         RuntimeError, """[TorchTPU] Failed to acquire a TPU device node"""
     ):
-      mp.spawn(fn, args=args, nprocs=1, join=True)
+      worker.result()
 
   @et.why_tpu_only("TPU initialization can only fail on a TPU host.")
   def test_tpu_use_after_manual_seed_raises_tpu_init_failure(self):
-    for seed_fn_name in _SEED_FNS:
+    for seed_fn_name, worker in self.seed_then_use_tpu_workers.items():
       with self.subTest(seed_fn=seed_fn_name):
-        self.assert_worker_raises_tpu_init_failure(
-            _seed_then_use_tpu_in_fresh_process, seed_fn_name
-        )
+        self.assert_worker_raises_tpu_init_failure(worker)
 
   @et.why_tpu_only("TPU initialization can only fail on a TPU host.")
   def test_manual_seed_succeeds_while_tpu_is_held(self):
     # Seeding must not fail in a process that never uses the TPU, even if
     # another process holds the TPU devices.
-    for seed_fn_name in _SEED_FNS:
+    for seed_fn_name, worker in self.seed_workers.items():
       with self.subTest(seed_fn=seed_fn_name):
-        mp.spawn(
-            _seed_in_fresh_process, args=(seed_fn_name,), nprocs=1, join=True
-        )
+        worker.result()
 
   @et.why_tpu_only("TPU initialization can only fail on a TPU host.")
   def test_process_group_raises_tpu_init_failure(self):
-    self.assert_worker_raises_tpu_init_failure(
-        _init_process_group_in_fresh_process
-    )
+    self.assert_worker_raises_tpu_init_failure(self.init_process_group_worker)
 
 
 def _create_compilation_cache_in_fresh_process(local_rank: int) -> None:
