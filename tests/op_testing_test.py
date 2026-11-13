@@ -796,50 +796,91 @@ class DynamismDenyListsTest(seed_test_utils.RepeatableTest):
         )
     return calls
 
+  @staticmethod
+  def _variant_key_to_base_op_name() -> dict[str, str]:
+    base_names = {op.name for op in op_testing._KNOWN_OPS}
+    mapping: dict[str, str] = {}
+    for op in op_testing._KNOWN_OPS:
+      if op.variant_test_name:
+        variant_key = dynamism_test_utils.op_deny_list_key(op)
+        if variant_key not in base_names:
+          mapping[variant_key] = op.name
+    return mapping
+
   def test_entries_are_known_ops(self):
-    # verify_op_supports_dynamism() matches OpInfo.name, so a misspelled or
-    # stale entry would silently stop skipping its op.
-    known_op_names = {op.name for op in op_testing._KNOWN_OPS}
+    # verify_op_supports_dynamism() matches OpInfo.name or
+    # OpInfo.name.variant_test_name, so a misspelled or stale entry would
+    # silently stop skipping its op.
+    known_op_keys = {op.name for op in op_testing._KNOWN_OPS} | {
+        dynamism_test_utils.op_deny_list_key(op)
+        for op in op_testing._KNOWN_OPS
+        if op.variant_test_name
+    }
     for list_name, deny_lists in self._DENY_LISTS.items():
       for reason, ops in deny_lists.items():
         with self.subTest(deny_list=list_name, reason=reason):
-          self.assertEmpty(sorted(set(ops) - known_op_names))
+          self.assertEmpty(sorted(set(ops) - known_op_keys))
 
-  def test_entries_have_valid_modes(self):
-    for list_name, deny_lists in self._DENY_LISTS.items():
-      for reason, ops in deny_lists.items():
-        for op_name, modes in ops.items():
-          with self.subTest(deny_list=list_name, reason=reason, op=op_name):
-            self.assertNotEmpty(modes)
-            self.assertContainsSubset(modes, dynamism_test_utils.ALL_MODES)
+  def test_entries_have_valid_modes_and_failure_kinds(self):
+    valid_kinds = set(dynamism_test_utils.DynamismFailureKind)
+    for reason, ops in dynamism_test_utils.DYNAMISM_DENY_LISTS.items():
+      for op_key, entry in ops.items():
+        with self.subTest(
+            deny_list="DYNAMISM_DENY_LISTS", reason=reason, op=op_key
+        ):
+          mode_kinds = dynamism_test_utils.entry_mode_kinds(entry)
+          self.assertNotEmpty(mode_kinds)
+          self.assertContainsSubset(
+              mode_kinds.keys(), dynamism_test_utils.ALL_MODES
+          )
+          self.assertContainsSubset(mode_kinds.values(), valid_kinds)
+
+    for reason, ops in dynamism_test_utils.DYNAMISM_NOT_APPLICABLE_OPS.items():
+      for op_key, modes in ops.items():
+        with self.subTest(
+            deny_list="DYNAMISM_NOT_APPLICABLE_OPS", reason=reason, op=op_key
+        ):
+          self.assertIsInstance(modes, (set, frozenset))
+          self.assertNotEmpty(modes)
+          self.assertContainsSubset(modes, dynamism_test_utils.ALL_MODES)
 
   def test_deny_lists_are_disjoint(self):
+    variant_to_base = self._variant_key_to_base_op_name()
     seen: dict[tuple[str, dynamism_test_utils.DynamismMode], str] = {}
     duplicates: list[str] = []
     for list_name, deny_lists in self._DENY_LISTS.items():
       for reason, ops in deny_lists.items():
         location = f"{list_name}[{reason!r}]"
-        for op_name, modes in ops.items():
-          for mode in modes:
-            key = (op_name, mode)
+        for op_key, entry in ops.items():
+          for mode in dynamism_test_utils.entry_mode_kinds(entry):
+            key = (op_key, mode)
             if key in seen:
               duplicates.append(
-                  f"{op_name} ({mode.value}) in both {seen[key]} and {location}"
+                  f"{op_key} ({mode.value}) in both {seen[key]} and {location}"
               )
             else:
               seen[key] = location
+    for (op_key, mode), location in seen.items():
+      base_op = variant_to_base.get(op_key)
+      if base_op is not None and (base_op, mode) in seen:
+        duplicates.append(
+            f"variant {op_key} ({mode.value}) in {location} overlaps base"
+            f" {base_op} in {seen[(base_op, mode)]}"
+        )
     self.assertEmpty(duplicates)
 
   def test_entries_have_live_test_ops_coverage(self):
     calls = self._collect_test_ops_calls()
-    tested_op_names = {call.op_name for call in calls}
+    tested_keys = {call.op_name for call in calls} | {
+        call.full_key for call in calls
+    }
     tested_full_keys = {call.full_key for call in calls}
 
     for list_name, deny_lists in self._DENY_LISTS.items():
       for reason, ops in deny_lists.items():
         with self.subTest(deny_list=list_name, reason=reason):
           self.assertEmpty(
-              sorted(set(ops) - tested_op_names),
+              sorted(set(ops) - tested_keys),
               "Entries without a TestOps method have no live dynamism test.",
           )
 
@@ -853,13 +894,16 @@ class DynamismDenyListsTest(seed_test_utils.RepeatableTest):
 
   def test_no_compile_grad_entries_on_check_grad_false_ops(self):
     calls = self._collect_test_ops_calls()
-    grad_checked_ops = {call.op_name for call in calls if call.check_grad}
+    grad_checked_keys = {call.op_name for call in calls if call.check_grad} | {
+        call.full_key for call in calls if call.check_grad
+    }
     dead_entries = [
-        op_name
+        op_key
         for ops in dynamism_test_utils.DYNAMISM_DENY_LISTS.values()
-        for op_name, modes in ops.items()
-        if dynamism_test_utils.COMPILE_GRAD in modes
-        and op_name not in grad_checked_ops
+        for op_key, entry in ops.items()
+        if dynamism_test_utils.COMPILE_GRAD
+        in dynamism_test_utils.entry_mode_kinds(entry)
+        and op_key not in grad_checked_keys
     ]
     self.assertEmpty(
         sorted(dead_entries),
@@ -867,16 +911,17 @@ class DynamismDenyListsTest(seed_test_utils.RepeatableTest):
     )
 
   def test_no_compiled_entries_masked_by_compiled_deny_list(self):
+    variant_to_base = self._variant_key_to_base_op_name()
     compiled_modes = {
         dynamism_test_utils.COMPILE,
         dynamism_test_utils.COMPILE_GRAD,
     }
     masked_entries = [
-        (op_name, mode.value)
+        (op_key, mode.value)
         for ops in dynamism_test_utils.DYNAMISM_DENY_LISTS.values()
-        for op_name, modes in ops.items()
-        if op_name in op_testing._COMPILED_DENY_LIST
-        for mode in modes
+        for op_key, entry in ops.items()
+        if variant_to_base.get(op_key, op_key) in op_testing._COMPILED_DENY_LIST
+        for mode in dynamism_test_utils.entry_mode_kinds(entry)
         if mode in compiled_modes
     ]
     self.assertEmpty(
@@ -885,6 +930,132 @@ class DynamismDenyListsTest(seed_test_utils.RepeatableTest):
         " variants, so COMPILE/COMPILE_GRAD entries in DYNAMISM_DENY_LISTS are"
         " masked.",
     )
+
+  def test_get_dynamism_exclusion_kinds(self):
+    add_op = next(op for op in op_testing._KNOWN_OPS if op.name == "add")
+    sub_op = next(op for op in op_testing._KNOWN_OPS if op.name == "sub")
+    with (
+        mock.patch.dict(
+            dynamism_test_utils.DYNAMISM_DENY_LISTS,
+            {
+                "mixed": {
+                    "add": {
+                        dynamism_test_utils.EAGER: dynamism_test_utils.CRASH,
+                        dynamism_test_utils.COMPILE: (
+                            dynamism_test_utils.UNOPTIMIZED_ASSERT_CRASH
+                        ),
+                        dynamism_test_utils.COMPILE_GRAD: (
+                            dynamism_test_utils.EXCEPTION
+                        ),
+                    },
+                },
+                "default exception": {
+                    "sub": {dynamism_test_utils.EAGER},
+                },
+            },
+            clear=True,
+        ),
+        mock.patch.dict(
+            dynamism_test_utils.DYNAMISM_NOT_APPLICABLE_OPS,
+            {"by design": {"sub": {dynamism_test_utils.COMPILE}}},
+            clear=True,
+        ),
+    ):
+      self.assertEqual(
+          dynamism_test_utils.get_dynamism_exclusion(
+              add_op, dynamism_test_utils.EAGER
+          ),
+          dynamism_test_utils.DynamismExclusion(
+              reason="mixed", failure_kind=dynamism_test_utils.CRASH
+          ),
+      )
+      self.assertEqual(
+          dynamism_test_utils.get_dynamism_exclusion(
+              add_op, dynamism_test_utils.COMPILE
+          ),
+          dynamism_test_utils.DynamismExclusion(
+              reason="mixed",
+              failure_kind=dynamism_test_utils.UNOPTIMIZED_ASSERT_CRASH,
+          ),
+      )
+      self.assertEqual(
+          dynamism_test_utils.get_dynamism_exclusion(
+              add_op, dynamism_test_utils.COMPILE_GRAD
+          ),
+          dynamism_test_utils.DynamismExclusion(
+              reason="mixed", failure_kind=dynamism_test_utils.EXCEPTION
+          ),
+      )
+      self.assertEqual(
+          dynamism_test_utils.get_dynamism_exclusion(
+              sub_op, dynamism_test_utils.EAGER
+          ),
+          dynamism_test_utils.DynamismExclusion(
+              reason="default exception",
+              failure_kind=dynamism_test_utils.EXCEPTION,
+          ),
+      )
+      not_applicable = dynamism_test_utils.get_dynamism_exclusion(
+          sub_op, dynamism_test_utils.COMPILE
+      )
+      self.assertIsNotNone(not_applicable)
+      self.assertTrue(not_applicable.is_not_applicable)
+      self.assertIsNone(not_applicable.failure_kind)
+      self.assertIsNone(
+          dynamism_test_utils.get_dynamism_exclusion(
+              sub_op, dynamism_test_utils.COMPILE_GRAD
+          )
+      )
+
+  def test_verify_op_supports_dynamism_variant_keys(self):
+    pad_reflect = next(
+        op
+        for op in op_testing._KNOWN_OPS
+        if op.name == "nn.functional.pad" and op.variant_test_name == "reflect"
+    )
+    pad_replicate = next(
+        op
+        for op in op_testing._KNOWN_OPS
+        if op.name == "nn.functional.pad"
+        and op.variant_test_name == "replicate"
+    )
+    with mock.patch.dict(
+        dynamism_test_utils.DYNAMISM_DENY_LISTS,
+        {
+            "reflect only": {
+                "nn.functional.pad.reflect": {
+                    dynamism_test_utils.EAGER,
+                    dynamism_test_utils.COMPILE,
+                },
+            },
+            "all pad in compile": {
+                "nn.functional.pad": {dynamism_test_utils.COMPILE},
+            },
+        },
+        clear=True,
+    ):
+      reflect_eager = dynamism_test_utils.verify_op_supports_dynamism(
+          pad_reflect, mode=dynamism_test_utils.EAGER
+      )
+      self.assertIsNotNone(reflect_eager)
+      self.assertIn("nn.functional.pad.reflect", reflect_eager)
+      self.assertIn("reflect only", reflect_eager)
+      self.assertIsNone(
+          dynamism_test_utils.verify_op_supports_dynamism(
+              pad_replicate, mode=dynamism_test_utils.EAGER
+          )
+      )
+      # Variant-specific entry takes precedence over base entry.
+      reflect_compile = dynamism_test_utils.verify_op_supports_dynamism(
+          pad_reflect, mode=dynamism_test_utils.COMPILE
+      )
+      self.assertIsNotNone(reflect_compile)
+      self.assertIn("reflect only", reflect_compile)
+      replicate_compile = dynamism_test_utils.verify_op_supports_dynamism(
+          pad_replicate, mode=dynamism_test_utils.COMPILE
+      )
+      self.assertIsNotNone(replicate_compile)
+      self.assertIn("all pad in compile", replicate_compile)
 
 
 class CoupledDimDiscoveryTest(seed_test_utils.RepeatableTest):
