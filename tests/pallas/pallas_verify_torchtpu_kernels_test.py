@@ -227,6 +227,7 @@ class PallasVerifyTorchTpuKernelsTest(seed_test_utils.RepeatableTest):
             verifier.Phase.CONTRACTS,
             verifier.Phase.LOWERING,
             verifier.Phase.MODEL_CHECK,
+            verifier.Phase.INTERPRET,
         ),
     )
 
@@ -247,6 +248,7 @@ class PallasVerifyTorchTpuKernelsTest(seed_test_utils.RepeatableTest):
             verifier.Phase.CONTRACTS,
             verifier.Phase.LOWERING,
             verifier.Phase.MODEL_CHECK,
+            verifier.Phase.INTERPRET,
         ),
     )
 
@@ -265,6 +267,7 @@ class PallasVerifyTorchTpuKernelsTest(seed_test_utils.RepeatableTest):
             verifier.Phase.CONTRACTS,
             verifier.Phase.LOWERING,
             verifier.Phase.MODEL_CHECK,
+            verifier.Phase.INTERPRET,
         ),
     )
 
@@ -316,6 +319,7 @@ class PallasVerifyTorchTpuKernelsTest(seed_test_utils.RepeatableTest):
                 verifier.Phase.CONTRACTS,
                 verifier.Phase.LOWERING,
                 verifier.Phase.MODEL_CHECK,
+                verifier.Phase.INTERPRET,
             ),
         )
 
@@ -367,6 +371,7 @@ class PallasVerifyTorchTpuKernelsTest(seed_test_utils.RepeatableTest):
             verifier.Phase.CONTRACTS,
             verifier.Phase.LOWERING,
             verifier.Phase.MODEL_CHECK,
+            verifier.Phase.INTERPRET,
         ),
     )
 
@@ -389,6 +394,7 @@ class PallasVerifyTorchTpuKernelsTest(seed_test_utils.RepeatableTest):
             verifier.Phase.CONTRACTS,
             verifier.Phase.LOWERING,
             verifier.Phase.MODEL_CHECK,
+            verifier.Phase.INTERPRET,
         ),
     )
 
@@ -409,7 +415,6 @@ class PallasVerifyTorchTpuKernelsTest(seed_test_utils.RepeatableTest):
             "tile_k": 256,
             "transpose_rhs": False,
         },
-        mode=verifier.VerificationMode.STATIC,
         options=opts,
     )
     self._assert_clean_report(
@@ -417,6 +422,7 @@ class PallasVerifyTorchTpuKernelsTest(seed_test_utils.RepeatableTest):
         expected_phases=(
             verifier.Phase.LOWERING,
             verifier.Phase.MODEL_CHECK,
+            verifier.Phase.INTERPRET,
         ),
     )
 
@@ -440,6 +446,7 @@ class PallasVerifyTorchTpuKernelsTest(seed_test_utils.RepeatableTest):
             verifier.Phase.CONTRACTS,
             verifier.Phase.LOWERING,
             verifier.Phase.MODEL_CHECK,
+            verifier.Phase.INTERPRET,
         ),
     )
 
@@ -462,6 +469,7 @@ class PallasVerifyTorchTpuKernelsTest(seed_test_utils.RepeatableTest):
             verifier.Phase.CONTRACTS,
             verifier.Phase.LOWERING,
             verifier.Phase.MODEL_CHECK,
+            verifier.Phase.INTERPRET,
         ),
     )
 
@@ -512,6 +520,7 @@ class PallasVerifyTorchTpuKernelsTest(seed_test_utils.RepeatableTest):
             verifier.Phase.CONTRACTS,
             verifier.Phase.LOWERING,
             verifier.Phase.MODEL_CHECK,
+            verifier.Phase.INTERPRET,
         ),
     )
 
@@ -537,6 +546,7 @@ class PallasVerifyTorchTpuKernelsTest(seed_test_utils.RepeatableTest):
             verifier.Phase.CONTRACTS,
             verifier.Phase.LOWERING,
             verifier.Phase.MODEL_CHECK,
+            verifier.Phase.INTERPRET,
         ),
     )
 
@@ -557,7 +567,6 @@ class PallasVerifyTorchTpuKernelsTest(seed_test_utils.RepeatableTest):
             "tile_k": 128,
             "tile_n": 128,
         },
-        mode=verifier.VerificationMode.STATIC,
         options=opts,
     )
     self._assert_clean_report(
@@ -565,6 +574,7 @@ class PallasVerifyTorchTpuKernelsTest(seed_test_utils.RepeatableTest):
         expected_phases=(
             verifier.Phase.LOWERING,
             verifier.Phase.MODEL_CHECK,
+            verifier.Phase.INTERPRET,
         ),
     )
 

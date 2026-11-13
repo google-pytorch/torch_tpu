@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import pickle
+from typing import Any
 
 from absl.testing import absltest
 import jax
@@ -239,10 +240,71 @@ class PallasVerifyErrorsTest(seed_test_utils.RepeatableTest):
     for bad_version in ("TPU v7", "", "   ", 123):
       with self.assertRaisesRegex(TypeError, "tpu_version"):
         verifier.VerificationOptions(tpu_version=bad_version)  # type: ignore[arg-type]
+    bad_interpret: Any = "invalid"
+    with self.assertRaisesRegex(TypeError, "interpret must be"):
+      verifier.VerificationOptions(interpret=bad_interpret)
+
+    bad_mode: Any = "static"
+    bad_options: Any = {}
     with self.assertRaisesRegex(TypeError, "mode must be"):
-      verifier.verify(lambda x: x, (torch.ones(2),), mode="static")  # type: ignore[arg-type]
+      verifier.verify(lambda x: x, (torch.ones(2),), mode=bad_mode)
     with self.assertRaisesRegex(TypeError, "options must be"):
-      verifier.verify(lambda x: x, (torch.ones(2),), options={})  # type: ignore[arg-type]
+      verifier.verify(lambda x: x, (torch.ones(2),), options=bad_options)
+
+  def test_interpret_sweep_config_defaults_and_validation(self):
+    cfg = verifier.InterpretSweepConfig()
+    self.assertEqual(
+        cfg.schedule_modes,
+        (verifier.DmaScheduleMode.EAGER, verifier.DmaScheduleMode.ON_WAIT),
+    )
+    self.assertEqual(cfg.seeds, (0, 17))
+    self.assertEqual(cfg.uninitialized_memory, verifier.UninitMemoryMode.NAN)
+    self.assertEqual(cfg.rtol, 1e-4)
+    self.assertEqual(cfg.atol, 1e-4)
+
+    single_mode: Any = verifier.DmaScheduleMode.ON_WAIT
+    single_mode_cfg = verifier.InterpretSweepConfig(
+        schedule_modes=single_mode,
+        seeds=[3, 7, 3],
+    )
+    self.assertEqual(
+        single_mode_cfg.schedule_modes, (verifier.DmaScheduleMode.ON_WAIT,)
+    )
+    self.assertEqual(single_mode_cfg.seeds, (3, 7))
+
+    bad_schedule_modes: tuple[Any, ...] = (123, "eager", ("eager",))
+    for bad_modes in bad_schedule_modes:
+      with self.assertRaisesRegex(TypeError, "schedule_modes"):
+        verifier.InterpretSweepConfig(schedule_modes=bad_modes)
+    with self.assertRaisesRegex(ValueError, "schedule_modes"):
+      verifier.InterpretSweepConfig(schedule_modes=())
+
+    bad_seed_inputs: tuple[Any, ...] = (123, "01", (True,), (1.5,))
+    for bad_seeds in bad_seed_inputs:
+      with self.assertRaisesRegex(TypeError, "seeds"):
+        verifier.InterpretSweepConfig(seeds=bad_seeds)
+    with self.assertRaisesRegex(ValueError, "seeds"):
+      verifier.InterpretSweepConfig(seeds=())
+    with self.assertRaisesRegex(ValueError, "seeds"):
+      verifier.InterpretSweepConfig(seeds=(-1,))
+    with self.assertRaisesRegex(ValueError, "seeds"):
+      verifier.InterpretSweepConfig(seeds=(1 << 31,))
+
+    bad_uninit: Any = "nan"
+    with self.assertRaisesRegex(TypeError, "uninitialized_memory"):
+      verifier.InterpretSweepConfig(uninitialized_memory=bad_uninit)
+
+    for bad_tol in (True, "1e-4"):
+      with self.assertRaisesRegex(TypeError, "rtol"):
+        verifier.InterpretSweepConfig(rtol=bad_tol)  # type: ignore[arg-type]
+      with self.assertRaisesRegex(TypeError, "atol"):
+        verifier.InterpretSweepConfig(atol=bad_tol)  # type: ignore[arg-type]
+
+    for bad_val in (-1e-3, float("nan"), float("inf")):
+      with self.assertRaisesRegex(ValueError, "rtol"):
+        verifier.InterpretSweepConfig(rtol=bad_val)
+      with self.assertRaisesRegex(ValueError, "atol"):
+        verifier.InterpretSweepConfig(atol=bad_val)
 
   def test_verify_rejects_non_callable_target(self):
     with self.assertRaisesRegex(TypeError, "target must be callable"):

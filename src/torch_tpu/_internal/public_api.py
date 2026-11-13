@@ -307,11 +307,20 @@ _PUBLIC_MODULES: Mapping[str, ModuleSpec] = {
             "CounterexampleStep": (
                 "torch_tpu._internal.pallas.verify.findings:CounterexampleStep"
             ),
+            "DmaScheduleMode": (
+                "torch_tpu._internal.pallas.verify.findings:DmaScheduleMode"
+            ),
             "FindingCategory": (
                 "torch_tpu._internal.pallas.verify.findings:FindingCategory"
             ),
+            "InterpretSweepConfig": (
+                "torch_tpu._internal.pallas.verify.findings:InterpretSweepConfig"
+            ),
             "Phase": "torch_tpu._internal.pallas.verify.findings:Phase",
             "Severity": "torch_tpu._internal.pallas.verify.findings:Severity",
+            "UninitMemoryMode": (
+                "torch_tpu._internal.pallas.verify.findings:UninitMemoryMode"
+            ),
             "VerificationError": (
                 "torch_tpu._internal.pallas.verify.findings:VerificationError"
             ),

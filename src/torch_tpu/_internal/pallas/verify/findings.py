@@ -26,6 +26,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 import dataclasses
 import enum
+import math
 from typing import TypeAlias
 
 from torch_tpu._internal.utils import annotations
@@ -183,6 +184,8 @@ class Phase(enum.Enum):
   # Static model checking of Pallas kernel Jaxprs, semaphores, and memory
   # accesses.
   MODEL_CHECK = "model_check"
+  # Dynamic sweeps over CPU TPU-interpret schedules.
+  INTERPRET = "interpret"
 
 
 @annotations.experimental(_exp_reason("FindingCategory"))
@@ -211,10 +214,137 @@ class FindingCategory(enum.Enum):
   PARALLEL_GRID_CONFLICT = "parallel_grid_conflict"
   SEMAPHORE_DEADLOCK = "semaphore_deadlock"
   SEMAPHORE_NONZERO_EXIT = "semaphore_nonzero_exit"
+  NAN_OR_UNINIT_READ = "nan_or_uninit_read"
+  SCHEDULE_DIVERGENCE = "schedule_divergence"
 
   # Parts of the program that could not be verified (bounded unrolling,
   # solver timeouts, unsupported constructs, skipped phases).
   VERIFICATION_INCOMPLETE = "verification_incomplete"
+
+
+@annotations.experimental(_exp_reason("DmaScheduleMode"))
+class DmaScheduleMode(enum.Enum):
+  """DMA execution schedule policy for CPU TPU interpret simulation."""
+
+  # DMAs complete as soon as `dma_start` issues.
+  EAGER = "eager"
+  # Pending DMAs remain in flight and execute when a semaphore wait runs.
+  ON_WAIT = "on_wait"
+
+
+@annotations.experimental(_exp_reason("UninitMemoryMode"))
+class UninitMemoryMode(enum.Enum):
+  """Buffer initialization policy for CPU TPU interpret simulation."""
+
+  # Scratch and output buffers are poisoned (quiet NaNs for floating-point
+  # dtypes, `iinfo.max` for integers, `True` for booleans) so reads of
+  # unwritten regions propagate into the kernel's outputs.
+  NAN = "nan"
+  # Scratch and output buffers are zero-filled before kernel execution.
+  ZERO = "zero"
+
+
+@annotations.experimental(_exp_reason("InterpretSweepConfig"))
+@dataclasses.dataclass(frozen=True)
+class InterpretSweepConfig:
+  """Configuration for CPU TPU interpret schedule sweeping.
+
+  Attributes:
+    schedule_modes: DMA completion timing policies (`EAGER`, `ON_WAIT`) to test.
+    seeds: PRNG seeds passed as `random_seed` to TPU interpret mode to randomize
+      `parallel`-dimension grid execution order.
+    uninitialized_memory: Scratch and output buffer initialization policy (`NAN`
+      or `ZERO`). When set to `NAN`, the verifier poisons buffers (quiet NaNs
+      for floats, `iinfo.max` for integers, `True` for booleans) and compares
+      against a `ZERO`-filled control run to distinguish genuine uninitialized
+      reads or unwritten output regions from intentional kernel-computed values.
+    rtol: Relative tolerance used when comparing floating-point/inexact outputs
+      across schedules (integer and boolean outputs require exact equality).
+    atol: Absolute tolerance used when comparing floating-point/inexact outputs
+      across schedules (integer and boolean outputs require exact equality).
+  """
+
+  schedule_modes: tuple[DmaScheduleMode, ...] = (
+      DmaScheduleMode.EAGER,
+      DmaScheduleMode.ON_WAIT,
+  )
+  seeds: tuple[int, ...] = (0, 17)
+  uninitialized_memory: UninitMemoryMode = UninitMemoryMode.NAN
+  rtol: float = 1e-4
+  atol: float = 1e-4
+
+  __tt_api_stages__ = _field_stages(
+      "InterpretSweepConfig",
+      (
+          "schedule_modes",
+          "seeds",
+          "uninitialized_memory",
+          "rtol",
+          "atol",
+      ),
+  )
+
+  def __post_init__(self) -> None:
+    if isinstance(self.schedule_modes, DmaScheduleMode):
+      modes = (self.schedule_modes,)
+    elif isinstance(self.schedule_modes, Iterable) and not isinstance(
+        self.schedule_modes, (str, bytes)
+    ):
+      modes = tuple(self.schedule_modes)
+    else:
+      raise TypeError(
+          "schedule_modes must be a sequence of DmaScheduleMode, got"
+          f" {type(self.schedule_modes).__name__}"
+      )
+    if not all(isinstance(mode, DmaScheduleMode) for mode in modes):
+      raise TypeError(
+          "schedule_modes elements must be DmaScheduleMode instances"
+      )
+    if not modes:
+      raise ValueError(
+          "schedule_modes must be a non-empty sequence of DmaScheduleMode"
+      )
+    object.__setattr__(self, "schedule_modes", tuple(dict.fromkeys(modes)))
+
+    if isinstance(self.seeds, Iterable) and not isinstance(
+        self.seeds, (str, bytes)
+    ):
+      seeds = tuple(self.seeds)
+    else:
+      raise TypeError(
+          f"seeds must be a sequence of ints, got {type(self.seeds).__name__}"
+      )
+    if not all(
+        isinstance(seed, int) and not isinstance(seed, bool) for seed in seeds
+    ):
+      raise TypeError("seeds elements must be ints")
+    if not seeds or not all(0 <= seed < (1 << 31) for seed in seeds):
+      raise ValueError(
+          "seeds must be a non-empty sequence of ints in [0, 2**31)"
+      )
+    object.__setattr__(self, "seeds", tuple(dict.fromkeys(seeds)))
+
+    if not isinstance(self.uninitialized_memory, UninitMemoryMode):
+      raise TypeError(
+          "uninitialized_memory must be an UninitMemoryMode, got"
+          f" {type(self.uninitialized_memory).__name__}"
+      )
+    if not isinstance(self.rtol, (int, float)) or isinstance(self.rtol, bool):
+      raise TypeError(
+          f"rtol must be a float or int, got {type(self.rtol).__name__}"
+      )
+    if not math.isfinite(self.rtol) or self.rtol < 0:
+      raise ValueError(
+          f"rtol must be a finite non-negative number, got {self.rtol!r}"
+      )
+    if not isinstance(self.atol, (int, float)) or isinstance(self.atol, bool):
+      raise TypeError(
+          f"atol must be a float or int, got {type(self.atol).__name__}"
+      )
+    if not math.isfinite(self.atol) or self.atol < 0:
+      raise ValueError(
+          f"atol must be a finite non-negative number, got {self.atol!r}"
+      )
 
 
 @annotations.experimental(_exp_reason("CounterexampleStep"))

@@ -59,6 +59,19 @@ torch_tpu_py_library(
 )
 
 torch_tpu_py_library(
+    name = "interpret_verifier",
+    srcs = ["interpret_verifier.py"],
+    deps = [
+        ":findings",
+        ":fx_verifier",
+        "//shims/jax:pallas_tpu",
+        "//shims/torch:pytorch",
+        "@pypi//jax",
+        "@pypi//numpy",
+    ],
+)
+
+torch_tpu_py_library(
     name = "jaxpr_model",
     srcs = ["jaxpr_model.py"],
     deps = [
@@ -89,6 +102,7 @@ torch_tpu_py_library(
     deps = [
         ":findings",
         ":fx_verifier",
+        ":interpret_verifier",
         ":jaxpr_model",
         ":smt_checker",
         "//shims/torch:pytorch",

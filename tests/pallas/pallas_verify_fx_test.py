@@ -789,9 +789,15 @@ class FxVerifierTest(seed_test_utils.RepeatableTest):
         valid_rep.findings_by_severity(verifier.Severity.WARNING),
         msg=valid_rep.summary(),
     )
-    self.assertIn(verifier.Phase.CONTRACTS, valid_rep.checked_phases)
-    self.assertIn(verifier.Phase.LOWERING, valid_rep.checked_phases)
-    self.assertIn(verifier.Phase.MODEL_CHECK, valid_rep.checked_phases)
+    self.assertEqual(
+        set(valid_rep.checked_phases),
+        {
+            verifier.Phase.CONTRACTS,
+            verifier.Phase.LOWERING,
+            verifier.Phase.MODEL_CHECK,
+            verifier.Phase.INTERPRET,
+        },
+    )
 
     # FX program tracing (`make_fx`) over an `AbstractMesh` `@jax_op` must
     # succeed on CPU without requiring physical TPU devices.
@@ -828,7 +834,7 @@ class FxVerifierTest(seed_test_utils.RepeatableTest):
     x_shard = torch.ones((8, 128), dtype=torch.float32)
     direct_rep = verifier.verify(direct_op, (x_shard,))
     self.assertTrue(direct_rep.passed, msg=direct_rep.summary())
-    self.assertIn(verifier.Phase.LOWERING, direct_rep.checked_phases)
+    self.assertIn(verifier.Phase.INTERPRET, direct_rep.checked_phases)
 
   def test_abstract_mesh_detects_partition_spec_and_fake_shape_errors(self):
     abstract_mesh = jax.sharding.AbstractMesh((2,), ("tp",))
@@ -936,6 +942,7 @@ class FxVerifierTest(seed_test_utils.RepeatableTest):
         rep.findings_by_severity(verifier.Severity.WARNING), msg=rep.summary()
     )
     self.assertIn(verifier.Phase.FX_GRAPH, rep.checked_phases)
+    self.assertIn(verifier.Phase.INTERPRET, rep.checked_phases)
 
   def test_autograd_parity_treats_fp8_e8m0_outputs_as_non_differentiable(self):
     def act_with_e8m0_out(x: jax.Array) -> tuple[jax.Array, jax.Array]:

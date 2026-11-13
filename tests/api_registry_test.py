@@ -165,9 +165,12 @@ class ApiRegistryTest(seed_test_utils.RepeatableTest):
     self.assertIs(verifier_mod, torch.tpu.pallas.verifier)
     expected_symbols = [
         "CounterexampleStep",
+        "DmaScheduleMode",
         "FindingCategory",
+        "InterpretSweepConfig",
         "Phase",
         "Severity",
+        "UninitMemoryMode",
         "VerificationError",
         "VerificationFinding",
         "VerificationMode",
@@ -175,6 +178,7 @@ class ApiRegistryTest(seed_test_utils.RepeatableTest):
         "VerificationReport",
         "verify",
     ]
+
     self.assertEqual(dir(torch.tpu.pallas.verifier), expected_symbols)
     for name in expected_symbols:
       sym = getattr(torch.tpu.pallas.verifier, name)

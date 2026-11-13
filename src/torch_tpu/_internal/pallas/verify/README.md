@@ -29,21 +29,23 @@ print(verifier.verify(my_pallas_fn, (spec,)))
 `verify(target, args, kwargs=None, *, mode=..., options=None)` detects what
 `target` is:
 
-*   **`@jax_op`**: op-contract, TPU-lowering, model-checking, and
-    autograd-parity checks.
-*   **Raw JAX function**: TPU-lowering and model-checking checks.
+*   **`@jax_op`**: op-contract, TPU-lowering, model-checking, CPU TPU-interpret
+    sweep, and autograd-parity checks.
+*   **Raw JAX function**: TPU-lowering, model-checking, and CPU TPU-interpret
+    sweep checks.
 *   **Other callables**: traced into an FX graph (including nested `torch.cond`,
     `while_loop`, and `scan` subgraphs plus joint forward+backward autograd
     graphs) whose buffer donation and aliasing are checked; every `@jax_op` call
     in the graph is then verified for the shapes, dtypes, and concrete small
     integer/boolean inputs it is called with.
 
-`mode=VerificationMode.STATIC` skips everything that executes kernels (such as
-autograd parity), which is much faster. `VerificationOptions` controls the
-autograd check (`check_autograd`), the unrolling bound
-(`max_unrolled_iterations`), the per-query CP-SAT solver timeout
-(`solver_timeout_seconds`, 5.0 seconds by default), and the TPU generation of
-the lowering and static hardware checks (`tpu_version`).
+`mode=VerificationMode.STATIC` skips everything that executes kernels (CPU
+TPU-interpret sweeps and autograd parity), which is much faster.
+`VerificationOptions` controls the autograd check (`check_autograd`), the
+unrolling bound (`max_unrolled_iterations`), the per-query CP-SAT solver timeout
+(`solver_timeout_seconds`, 5.0 seconds by default), the TPU generation of the
+lowering and static hardware checks (`tpu_version`), and the CPU TPU-interpret
+schedule/NaN-poisoning sweep (`interpret`).
 
 The lowering check lowers a `@jax_op` or raw JAX Pallas function to Mosaic TPU
 MLIR on the host via `jax.export` (up to `mosaic-serde`, including Pallas's
@@ -63,28 +65,30 @@ Findings have a severity: errors fail the report, warnings and infos do not
 
 <!-- mdformat off(reason: standard GFM table rendering in Critique and Code Search) -->
 
-| Category                        | Engines                 | Meaning                                                                                                                                                              |
-| ------------------------------- | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `use_after_donate`              | `fx_graph`, `autograd`  | A tensor (or a view of it) is used after being donated to a `@jax_op`, or saved for backward across donation.                                                        |
-| `aliased_donor_inputs`          | `contracts`, `fx_graph` | Two arguments of one call share storage while one of them is donated.                                                                                                |
-| `donated_parameter`             | `contracts`, `fx_graph` | A module parameter, buffer, or captured tensor is donated and would be corrupted.                                                                                    |
-| `zero_output_silent_skip`       | `contracts`             | A `@jax_op` without outputs, which TorchTPU skips entirely.                                                                                                          |
-| `partition_spec_mismatch`       | `contracts`             | Mesh or `PartitionSpec` errors: unknown or repeated axes, rank or divisibility mismatches.                                                                           |
-| `fake_kernel_mismatch`          | `contracts`             | A custom `register_fake` output shape, dtype, or pytree disagrees with the `JaxCallable` runtime output.                                                             |
-| `lowering_failure`              | `lowering`              | The kernel fails Pallas TPU lowering, so it cannot run on TPU.                                                                                                       |
-| `autograd_parity_mismatch`      | `autograd`              | A registered custom backward disagrees with the forward kernel.                                                                                                      |
-| `data_race`                     | `model_check`           | Two accesses to overlapping memory, at least one a write, can happen at the same time.                                                                               |
-| `concurrent_dma_sem_sharing`    | `model_check`           | A race enabled by concurrent DMAs that signal the same semaphore.                                                                                                    |
-| `unthrottled_remote_overwrite`  | `model_check`           | A remote DMA can overwrite a buffer its receiver is still using.                                                                                                     |
-| `parallel_grid_conflict`        | `model_check`           | Grid iterations along a `parallel` axis access overlapping shared memory with at least one write.                                                                    |
-| `semaphore_deadlock`            | `model_check`           | No schedule lets every semaphore wait complete.                                                                                                                      |
-| `semaphore_nonzero_exit`        | `model_check`           | A semaphore is not back at zero when the kernel exits.                                                                                                               |
-| `unwritten_output`              | `model_check`           | Part of an output is never written, is clobbered by an unwritten parallel tile, or is accumulated into before being initialized.                                     |
-| `out_of_bounds_access`          | `model_check`           | A static ref slice, DMA slice, or `BlockSpec` `index_map` is out of bounds.                                                                                          |
-| `invalid_device_id`             | `model_check`           | A remote DMA or signal targets a device or core outside the mesh, or uses an invalid axis name or `device_id_type`.                                                  |
-| `low_precision_accumulation`    | `model_check`           | A low-precision `dot_general` without `preferred_element_type=jnp.float32`, or cross-step accumulation into a 16-bit `Ref` (warning).                                |
-| `hardware_constraint_violation` | `model_check`           | Rules missed by `jax.export`: TensorCore HBM/CMEM/ANY scratch, SparseCore sync `ANY` loads/stores, non-consecutive revisits, DMA sem rules, or invalid wait counts.  |
-| `verification_incomplete`       | any                     | A part of the program that could not be fully verified (see limitations).                                                                                            |
+| Category                        | Engines                    | Meaning                                                                                                                                                              |
+| ------------------------------- | -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `use_after_donate`              | `fx_graph`, `autograd`     | A tensor (or a view of it) is used after being donated to a `@jax_op`, or saved for backward across donation.                                                        |
+| `aliased_donor_inputs`          | `contracts`, `fx_graph`    | Two arguments of one call share storage while one of them is donated.                                                                                                |
+| `donated_parameter`             | `contracts`, `fx_graph`    | A module parameter, buffer, or captured tensor is donated and would be corrupted.                                                                                    |
+| `zero_output_silent_skip`       | `contracts`                | A `@jax_op` without outputs, which TorchTPU skips entirely.                                                                                                          |
+| `partition_spec_mismatch`       | `contracts`                | Mesh or `PartitionSpec` errors: unknown or repeated axes, rank or divisibility mismatches.                                                                           |
+| `fake_kernel_mismatch`          | `contracts`                | A custom `register_fake` output shape, dtype, or pytree disagrees with the `JaxCallable` runtime output.                                                             |
+| `lowering_failure`              | `lowering`                 | The kernel fails Pallas TPU lowering, so it cannot run on TPU.                                                                                                       |
+| `autograd_parity_mismatch`      | `autograd`                 | A registered custom backward disagrees with the forward kernel.                                                                                                      |
+| `data_race`                     | `model_check`, `interpret` | Two accesses to overlapping memory, at least one a write, can happen at the same time.                                                                               |
+| `concurrent_dma_sem_sharing`    | `model_check`              | A race enabled by concurrent DMAs that signal the same semaphore.                                                                                                    |
+| `unthrottled_remote_overwrite`  | `model_check`              | A remote DMA can overwrite a buffer its receiver is still using.                                                                                                     |
+| `parallel_grid_conflict`        | `model_check`              | Grid iterations along a `parallel` axis access overlapping shared memory with at least one write.                                                                    |
+| `semaphore_deadlock`            | `model_check`, `interpret` | No schedule lets every semaphore wait complete (or a CPU interpret wait timed out).                                                                                  |
+| `semaphore_nonzero_exit`        | `model_check`, `interpret` | A semaphore is not back at zero when the kernel exits.                                                                                                               |
+| `unwritten_output`              | `model_check`              | Part of an output is never written, is clobbered by an unwritten parallel tile, or is accumulated into before being initialized.                                     |
+| `out_of_bounds_access`          | `model_check`, `interpret` | A static or runtime ref slice, DMA slice, or `BlockSpec` `index_map` is out of bounds.                                                                               |
+| `invalid_device_id`             | `model_check`, `interpret` | A remote DMA or signal targets a device or core outside the mesh, or uses an invalid axis name or `device_id_type`.                                                  |
+| `low_precision_accumulation`    | `model_check`              | A low-precision `dot_general` without `preferred_element_type=jnp.float32`, or cross-step accumulation into a 16-bit `Ref` (warning).                                |
+| `hardware_constraint_violation` | `model_check`, `interpret` | Rules missed by `jax.export`: TensorCore HBM/CMEM/ANY scratch, SparseCore sync `ANY` loads/stores, non-consecutive revisits, DMA sem rules, or invalid wait counts. |
+| `nan_or_uninit_read`            | `interpret`                | Poisoned initial VMEM/scratch memory or an unwritten first-visit output region reaches an output (values that zero-filled memory avoids).                            |
+| `schedule_divergence`           | `interpret`                | Outputs differ across DMA schedules or grid orders.                                                                                                                  |
+| `verification_incomplete`       | any                        | A part of the program that could not be fully verified (see limitations).                                                                                            |
 
 <!-- mdformat on -->
 
@@ -96,16 +100,18 @@ concrete schedule, ordered by time, that leads to the conflicting accesses.
 
 A `@jax_op` with a `mesh` (`jax.sharding.Mesh` or `jax.sharding.AbstractMesh`)
 or a raw `jax.shard_map` callable is checked for every device of the mesh.
+Dynamic sweeps (`VerificationMode.FULL`) require enough virtual CPU devices for
+the mesh (for example via `XLA_FLAGS=--xla_force_host_platform_device_count=N`).
 
 ## TPU hosts
 
 `VerificationMode.STATIC` only traces and lowers kernels, which needs no JAX
 devices (provided user `supported_on` predicates do not query live backends).
-`VerificationMode.FULL` runs autograd parity on JAX CPU devices; unless
-`JAX_PLATFORMS` restricts it, creating them makes JAX initialize all of its
-backends, including TPU when libtpu is installed. In a process that uses the TPU
-through TorchTPU, use `VerificationMode.STATIC`, or run the full verification in
-a separate process such as a unit test.
+`VerificationMode.FULL` runs CPU TPU-interpret sweeps and autograd parity on JAX
+CPU devices; unless `JAX_PLATFORMS` restricts it, creating them makes JAX
+initialize all of its backends, including TPU when libtpu is installed. In a
+process that uses the TPU through TorchTPU, use `VerificationMode.STATIC`, or
+run the full verification in a separate process such as a unit test.
 
 ## How the model checker works
 
@@ -149,6 +155,11 @@ even without OR-Tools).
 *   Iterations of `parallel` grid axes are modeled as if each ran on its own
     core, with its own scratch memory and semaphores, and `BlockSpec` transfers
     are modeled at grid-step boundaries rather than overlapped across steps.
+*   Dynamic CPU TPU-interpret sweeps sample a finite set of schedules (2 DMA
+    modes × 2 PRNG seeds by default), simulate 1 thread per device outside
+    `pl.core_map` over a multi-core `TensorCoreMesh`, poison kernel VMEM buffers
+    at initial allocation (first visit), guard semaphore and barrier waits with
+    a progress watchdog, and require JAX >= 0.11.2 for cross-device remote DMAs.
 *   VMEM and SMEM capacity are not checked.
 *   Every bounded or skipped check is reported as `verification_incomplete`.
 

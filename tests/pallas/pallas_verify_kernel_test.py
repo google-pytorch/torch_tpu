@@ -19,7 +19,9 @@ from __future__ import annotations
 import dataclasses
 import functools
 import inspect
+import threading
 import types
+from typing import NamedTuple
 from unittest import mock
 
 from absl.testing import absltest
@@ -34,6 +36,7 @@ import torch
 from torch.tpu import pallas
 from torch.tpu.pallas import verifier
 from torch_tpu._internal.pallas import _mock_device
+from torch_tpu._internal.pallas.verify import interpret_verifier
 from torch_tpu._internal.pallas.verify import jaxpr_model
 from torch_tpu._internal.pallas.verify import smt_checker
 from tests import seed_test_utils
@@ -3104,6 +3107,7 @@ class KernelVerifierTest(seed_test_utils.RepeatableTest):
             verifier.Phase.CONTRACTS,
             verifier.Phase.LOWERING,
             verifier.Phase.MODEL_CHECK,
+            verifier.Phase.INTERPRET,
         },
         set(report.checked_phases),
     )
@@ -3211,6 +3215,7 @@ class KernelVerifierTest(seed_test_utils.RepeatableTest):
         fixed_rep.findings_by_severity(verifier.Severity.WARNING),
         msg=fixed_rep.summary(),
     )
+    self.assertIn(verifier.Phase.INTERPRET, fixed_rep.checked_phases)
 
   def test_semaphore_nonzero_exit_and_deadlock_detected_statically(self):
     """Unawaited DMA -> SEMAPHORE_NONZERO_EXIT; over-wait/cycle -> DEADLOCK."""
@@ -3332,6 +3337,7 @@ class KernelVerifierTest(seed_test_utils.RepeatableTest):
         asym_rep.findings_by_category(Category.SEMAPHORE_DEADLOCK),
         msg=asym_rep.summary(),
     )
+    self.assertNotIn(verifier.Phase.INTERPRET, asym_rep.checked_phases)
 
   def test_asymmetric_barrier_participation_deadlock_detected(self):
     mesh2 = _make_mock_tpu_mesh(2, "rank")
@@ -4490,6 +4496,14 @@ class KernelVerifierTest(seed_test_utils.RepeatableTest):
     )
     self.assertIs(autograd_findings[0].severity, verifier.Severity.INFO)
     self.assertNotIn(verifier.Phase.AUTOGRAD, with_bwd_rep.checked_phases)
+    self.assertNotIn(verifier.Phase.INTERPRET, no_bwd_rep.checked_phases)
+    self.assertNotIn(verifier.Phase.INTERPRET, with_bwd_rep.checked_phases)
+    interp_skip = [
+        f for f in with_bwd_rep.findings if f.phase is verifier.Phase.INTERPRET
+    ]
+    self.assertLen(interp_skip, 1, msg=with_bwd_rep.summary())
+    self.assertIs(interp_skip[0].category, Category.VERIFICATION_INCOMPLETE)
+    self.assertIs(interp_skip[0].severity, verifier.Severity.INFO)
 
   def test_parallel_grid_conflict_when_cpsat_unavailable_and_race_loop_timeout(
       self,
@@ -5151,6 +5165,1334 @@ class KernelVerifierTest(seed_test_utils.RepeatableTest):
         all_dead_rep.findings_by_category(Category.PARALLEL_GRID_CONFLICT),
         msg=all_dead_rep.summary(),
     )
+
+  # ==========================================================================
+  # Dynamic CPU TPU-Interpret Schedule and Poisoned-Memory Sweeps
+  # ==========================================================================
+
+  def test_raw_jax_function_runs_on_example_values_in_full_mode(self):
+    x_spec = jax.ShapeDtypeStruct((32, 128), jnp.float32)
+    report = verifier.verify(_make_tiled_copy(4), (x_spec,))
+    self.assertTrue(report.passed, msg=report.summary())
+    self.assertEmpty(
+        report.findings_by_severity(verifier.Severity.WARNING),
+        msg=report.summary(),
+    )
+    self.assertIn(verifier.Phase.INTERPRET, report.checked_phases)
+
+  def test_interpreter_failure_is_reported_as_incomplete(self):
+    """A crash of the CPU interpreter itself is not a kernel bug."""
+
+    def crash(x):
+      raise KeyError(f"interpreter state for {x.shape}")
+
+    def crashing_fn(x: jax.Array) -> jax.Array:
+      return jax.pure_callback(crash, jax.ShapeDtypeStruct(x.shape, x.dtype), x)
+
+    x_spec = jax.ShapeDtypeStruct((8, 128), jnp.float32)
+    report = verifier.verify(crashing_fn, (x_spec,))
+    self.assertTrue(report.passed, msg=report.summary())
+    incomplete = [
+        f
+        for f in report.findings_by_category(Category.VERIFICATION_INCOMPLETE)
+        if f.phase is verifier.Phase.INTERPRET
+    ]
+    # Reported once: the other schedules would fail the same way.
+    self.assertLen(incomplete, 1, msg=report.summary())
+    self.assertEqual(incomplete[0].severity, verifier.Severity.WARNING)
+    self.assertIn("KeyError", incomplete[0].message)
+
+  def test_valid_distributed_ring_shift_passes_interpret_and_model_check(self):
+    """4-chip shard_map + make_async_remote_copy ring shift passes."""
+    mesh = _make_mock_tpu_mesh(4, "rank")
+
+    def ring_shift_jax(
+        global_x: jax.Array, *, mesh: jax.sharding.Mesh
+    ) -> jax.Array:
+      def pallas_body(x_ref, y_ref, send_sem, recv_sem):
+        my_rank = lax.axis_index("rank")
+        next_rank = lax.rem(my_rank + 1, 4)
+        prev_rank = lax.rem(my_rank + 3, 4)
+
+        barrier_sem = pltpu.get_barrier_semaphore()
+        pl.semaphore_signal(barrier_sem, 1, device_id={"rank": prev_rank})
+        pl.semaphore_signal(barrier_sem, 1, device_id={"rank": next_rank})
+        pl.semaphore_wait(barrier_sem, 2)
+
+        copy = pltpu.make_async_remote_copy(
+            src_ref=x_ref,
+            dst_ref=y_ref,
+            send_sem=send_sem,
+            recv_sem=recv_sem,
+            device_id={"rank": next_rank},
+        )
+        copy.start()
+        copy.wait()
+
+      def per_shard(x_local):
+        return _single_block_call(
+            pallas_body,
+            x_local,
+            scratch_shapes=(pltpu.SemaphoreType.DMA, pltpu.SemaphoreType.DMA),
+            collective_id=1,
+        )
+
+      return _shard_mapped(per_shard, mesh)(global_x)
+
+    op = _distributed_op(
+        "pallas_verify_kernel::valid_ring_shift", ring_shift_jax, mesh
+    )
+    x_local = torch.arange(8 * 128, dtype=torch.float32).reshape(8, 128)
+    report = verifier.verify(op, (x_local,))
+    self.assertTrue(report.passed, msg=report.summary())
+    self.assertEmpty(
+        report.findings_by_severity(verifier.Severity.WARNING),
+        msg=report.summary(),
+    )
+    self.assertIn(verifier.Phase.INTERPRET, report.checked_phases)
+
+  def test_dynamic_checks_skipped_where_jax_cannot_interpret_remote_ops(self):
+    mesh2 = _make_mock_tpu_mesh(2, "rank")
+
+    def barrier_jax(
+        global_x: jax.Array, *, mesh: jax.sharding.Mesh
+    ) -> jax.Array:
+      def kernel(x_ref, y_ref):
+        barrier = pltpu.get_barrier_semaphore()
+        peer = 1 - lax.axis_index("rank")
+        pl.semaphore_signal(barrier, 1, device_id={"rank": peer})
+        pl.semaphore_wait(barrier, 1)
+        y_ref[...] = x_ref[...]
+
+      def per_shard(x_local):
+        return _single_block_call(kernel, x_local, collective_id=6)
+
+      return _shard_mapped(per_shard, mesh)(global_x)
+
+    op = _distributed_op(
+        "pallas_verify_kernel::barrier_on_old_jax", barrier_jax, mesh2
+    )
+    with mock.patch.object(
+        interpret_verifier, "MIN_JAX_FOR_REMOTE_INTERPRET", (99, 0, 0)
+    ):
+      report = verifier.verify(op, (torch.ones((8, 128)),))
+    self.assertTrue(report.passed, msg=report.summary())
+    self.assertNotIn(verifier.Phase.INTERPRET, report.checked_phases)
+    skipped = [
+        f
+        for f in report.findings_by_severity(verifier.Severity.WARNING)
+        if f.phase is verifier.Phase.INTERPRET
+    ]
+    self.assertLen(skipped, 1, msg=report.summary())
+
+  def test_nans_computed_by_the_kernel_are_not_uninitialized_reads(self):
+    def sqrt_of_negative(x: jax.Array) -> jax.Array:
+      return pl.pallas_call(
+          lambda x_ref, o_ref: o_ref.__setitem__(
+              Ellipsis, jnp.sqrt(x_ref[...] - 2.0)
+          ),
+          out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype),
+      )(x)
+
+    x_spec = jax.ShapeDtypeStruct((8, 128), jnp.float32)
+    report = verifier.verify(sqrt_of_negative, (x_spec,))
+    self.assertTrue(report.passed, msg=report.summary())
+    self.assertEmpty(
+        report.findings_by_category(Category.NAN_OR_UNINIT_READ),
+        msg=report.summary(),
+    )
+
+  def test_fp8_jax_op_full_interpret_passes(self):
+    def fp8_dual_out_jax(
+        x_e4m3: jax.Array, y_e5m2: jax.Array
+    ) -> tuple[jax.Array, jax.Array]:
+      def kernel(x_ref, y_ref, bf16_out_ref, fp8_out_ref):
+        acc = x_ref[...].astype(jnp.float32) + y_ref[...].astype(jnp.float32)
+        bf16_out_ref[...] = acc.astype(jnp.bfloat16)
+        fp8_out_ref[...] = acc.astype(jnp.float8_e4m3fn)
+
+      return pl.pallas_call(
+          kernel,
+          out_shape=(
+              jax.ShapeDtypeStruct(x_e4m3.shape, jnp.bfloat16),
+              jax.ShapeDtypeStruct(x_e4m3.shape, jnp.float8_e4m3fn),
+          ),
+      )(x_e4m3, y_e5m2)
+
+    valid_fp8_op = jax_op(
+        "pallas_verify_kernel::fp8_dual_out", fp8_dual_out_jax
+    )
+    x_e4m3 = torch.ones((8, 128), dtype=torch.float32).to(torch.float8_e4m3fn)
+    y_e5m2 = torch.full((8, 128), 0.5, dtype=torch.float32).to(
+        torch.float8_e5m2
+    )
+    rep = verifier.verify(valid_fp8_op, (x_e4m3, y_e5m2))
+    self.assertTrue(rep.passed, msg=rep.summary())
+    self.assertEmpty(
+        rep.findings_by_severity(verifier.Severity.WARNING), msg=rep.summary()
+    )
+    self.assertEqual(
+        set(rep.checked_phases),
+        {
+            verifier.Phase.CONTRACTS,
+            verifier.Phase.LOWERING,
+            verifier.Phase.MODEL_CHECK,
+            verifier.Phase.INTERPRET,
+        },
+    )
+
+  def test_sharded_fp8_jax_op_full_interpret_passes(self):
+    mesh2 = _make_mock_tpu_mesh(2, "rank")
+    x_e4m3 = torch.ones((8, 128), dtype=torch.float32).to(torch.float8_e4m3fn)
+
+    def sharded_fp8_jax(
+        global_x: jax.Array, *, mesh: jax.sharding.Mesh
+    ) -> jax.Array:
+      def per_shard(local_x: jax.Array) -> jax.Array:
+        return pl.pallas_call(
+            lambda x_ref, o_ref: o_ref.__setitem__(
+                Ellipsis,
+                (x_ref[...].astype(jnp.float32) * 2.0).astype(
+                    jnp.float8_e4m3fn
+                ),
+            ),
+            out_shape=jax.ShapeDtypeStruct(local_x.shape, jnp.float8_e4m3fn),
+        )(local_x)
+
+      return _shard_mapped(per_shard, mesh)(global_x)
+
+    sharded_fp8_op = _distributed_op(
+        "pallas_verify_kernel::sharded_fp8", sharded_fp8_jax, mesh2
+    )
+    sharded_rep = verifier.verify(sharded_fp8_op, (x_e4m3,))
+    self.assertTrue(sharded_rep.passed, msg=sharded_rep.summary())
+    self.assertEmpty(
+        sharded_rep.findings_by_severity(verifier.Severity.WARNING),
+        msg=sharded_rep.summary(),
+    )
+    self.assertIn(verifier.Phase.INTERPRET, sharded_rep.checked_phases)
+
+  def test_uninit_fp8_output_caught_by_nan_poisoning(self):
+    x_e4m3 = torch.ones((8, 128), dtype=torch.float32).to(torch.float8_e4m3fn)
+
+    def uninit_fp8_out_jax(x_in: jax.Array) -> jax.Array:
+      def kernel(x_ref, fp8_out_ref, uninit_vmem):
+        del x_ref
+        fp8_out_ref[...] = uninit_vmem[...]
+
+      return _single_block_call(
+          kernel,
+          x_in,
+          scratch_shapes=(pltpu.VMEM(x_in.shape, jnp.float8_e4m3fn),),
+      )
+
+    buggy_fp8_op = jax_op(
+        "pallas_verify_kernel::uninit_fp8_out", uninit_fp8_out_jax
+    )
+    interp_rep = interpret_verifier.verify_with_cpu_interpret(
+        buggy_fp8_op, (x_e4m3,)
+    )
+    self.assertFalse(interp_rep.passed, msg=interp_rep.summary())
+    self.assertNotEmpty(
+        interp_rep.findings_by_category(Category.NAN_OR_UNINIT_READ),
+        msg=interp_rep.summary(),
+    )
+
+  def test_raw_shard_map_callable_with_axis_index_in_full_mode(self):
+    def per_shard_rank_scale(local_x: jax.Array) -> jax.Array:
+      def kernel(x_ref, o_ref):
+        rank = lax.axis_index("tp").astype(x_ref.dtype)
+        o_ref[...] = x_ref[...] * (rank + 1.0)
+
+      return _single_block_call(kernel, local_x)
+
+    global_spec = jax.ShapeDtypeStruct((16, 128), jnp.float32)
+
+    cpu_mesh = jax.sharding.Mesh(np.array(jax.devices("cpu")[:2]), ("tp",))
+    mock_mesh = _make_mock_tpu_mesh(2, "tp")
+    abstract_mesh = jax.sharding.AbstractMesh((2,), ("tp",))
+
+    for label, mesh in (
+        ("cpu_mesh", cpu_mesh),
+        ("mock_mesh", mock_mesh),
+        ("abstract_mesh", abstract_mesh),
+    ):
+      with self.subTest(mesh_kind=label):
+        sharded_fn = jax.shard_map(
+            per_shard_rank_scale,
+            mesh=mesh,
+            in_specs=(P("tp"),),
+            out_specs=P("tp"),
+            check_vma=False,
+        )
+        rep = verifier.verify(sharded_fn, (global_spec,))
+        self.assertTrue(rep.passed, msg=rep.summary())
+        self.assertEmpty(
+            rep.findings_by_severity(verifier.Severity.WARNING),
+            msg=rep.summary(),
+        )
+        self.assertEqual(
+            set(rep.checked_phases),
+            {
+                verifier.Phase.LOWERING,
+                verifier.Phase.MODEL_CHECK,
+                verifier.Phase.INTERPRET,
+            },
+        )
+
+    with jax.sharding.use_abstract_mesh(abstract_mesh):
+      ambient_sharded_fn = jax.shard_map(
+          per_shard_rank_scale,
+          mesh=None,
+          in_specs=(P("tp"),),
+          out_specs=P("tp"),
+          check_vma=False,
+      )
+      ambient_rep = verifier.verify(ambient_sharded_fn, (global_spec,))
+    self.assertTrue(ambient_rep.passed, msg=ambient_rep.summary())
+    self.assertEmpty(
+        ambient_rep.findings_by_severity(verifier.Severity.WARNING),
+        msg=ambient_rep.summary(),
+    )
+    self.assertIn(verifier.Phase.INTERPRET, ambient_rep.checked_phases)
+
+  def test_raw_shard_map_rank1_uninitialized_read_detected(self):
+    # Bug present only on rank 1 (`axis_index("tp") == 1`) proves CPU interpret
+    # executes all shards across the mesh rather than running rank 0 alone.
+    def per_shard_rank1_uninit(local_x: jax.Array) -> jax.Array:
+      def kernel(x_ref, o_ref, uninit_vmem):
+        rank = lax.axis_index("tp")
+        o_ref[...] = jnp.where(rank == 1, uninit_vmem[...], x_ref[...])
+
+      return _single_block_call(
+          kernel,
+          local_x,
+          scratch_shapes=(pltpu.VMEM(local_x.shape, local_x.dtype),),
+      )
+
+    mock_mesh = _make_mock_tpu_mesh(2, "tp")
+    global_spec = jax.ShapeDtypeStruct((16, 128), jnp.float32)
+    rank1_buggy_fn = jax.shard_map(
+        per_shard_rank1_uninit,
+        mesh=mock_mesh,
+        in_specs=(P("tp"),),
+        out_specs=P("tp"),
+        check_vma=False,
+    )
+    buggy_rep = verifier.verify(rank1_buggy_fn, (global_spec,))
+    self.assertFalse(buggy_rep.passed, msg=buggy_rep.summary())
+    self.assertNotEmpty(
+        buggy_rep.findings_by_category(Category.NAN_OR_UNINIT_READ),
+        msg=buggy_rep.summary(),
+    )
+
+  def test_raw_shard_map_exceeding_virtual_cpu_devices_reports_incomplete(self):
+    def per_shard_rank_scale(local_x: jax.Array) -> jax.Array:
+      def kernel(x_ref, o_ref):
+        rank = lax.axis_index("tp").astype(x_ref.dtype)
+        o_ref[...] = x_ref[...] * (rank + 1.0)
+
+      return _single_block_call(kernel, local_x)
+
+    mesh8 = _make_mock_tpu_mesh(8, "tp")
+    oversized_fn = jax.shard_map(
+        per_shard_rank_scale,
+        mesh=mesh8,
+        in_specs=(P("tp"),),
+        out_specs=P("tp"),
+        check_vma=False,
+    )
+    oversized_rep = verifier.verify(
+        oversized_fn, (jax.ShapeDtypeStruct((64, 128), jnp.float32),)
+    )
+    self.assertTrue(oversized_rep.passed, msg=oversized_rep.summary())
+    self.assertIn(verifier.Phase.MODEL_CHECK, oversized_rep.checked_phases)
+    self.assertNotIn(verifier.Phase.INTERPRET, oversized_rep.checked_phases)
+    self.assertNotEmpty(
+        oversized_rep.findings_by_category(Category.VERIFICATION_INCOMPLETE),
+        msg=oversized_rep.summary(),
+    )
+
+  def test_parallel_grid_order_dependent_int32_schedule_divergence_detected(
+      self,
+  ):
+    def parallel_order_dependent_int32(x: jax.Array) -> jax.Array:
+      def kernel(x_ref, o_ref):
+        prog_id = pl.program_id(0).astype(o_ref.dtype)
+        o_ref[...] = x_ref[...] + 100_000 + prog_id
+
+      return pl.pallas_call(
+          kernel,
+          out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype),
+          grid=(8,),
+          in_specs=[pl.BlockSpec(x.shape, lambda _i: (0, 0))],
+          out_specs=pl.BlockSpec(x.shape, lambda _i: (0, 0)),
+          compiler_params=pltpu.CompilerParams(
+              dimension_semantics=("parallel",)
+          ),
+      )(x)
+
+    div_rep = interpret_verifier.verify_with_cpu_interpret(
+        parallel_order_dependent_int32,
+        (jnp.zeros((8, 128), dtype=jnp.int32),),
+        config=verifier.InterpretSweepConfig(
+            schedule_modes=(verifier.DmaScheduleMode.EAGER,),
+            seeds=(0, 1, 2, 17),
+        ),
+    )
+    self.assertFalse(div_rep.passed, msg=div_rep.summary())
+    self.assertNotEmpty(
+        div_rep.findings_by_category(Category.SCHEDULE_DIVERGENCE),
+        msg=div_rep.summary(),
+    )
+    self.assertIn("integer element(s) differ", div_rep.summary())
+
+  def test_race_and_uninitialized_vmem_read_both_reported_in_interpret(self):
+    x_spec = jax.ShapeDtypeStruct((8, 128), jnp.float32)
+
+    def racy_plus_uninit_vmem(x: jax.Array) -> jax.Array:
+      def kernel(x_hbm, o_ref, buf, uninit_buf, sem):
+        copy = pltpu.make_async_copy(x_hbm, buf, sem)
+        copy.start()
+        # Unawaited read triggers `DATA_RACE`, so `Phase.INTERPRET` skips the
+        # NaN-vs-zero control diff on this schedule rather than misattributing
+        # OS-thread race non-determinism to `NAN_OR_UNINIT_READ`.
+        o_ref[0:4, :] = buf[0:4, :]
+        copy.wait()
+        o_ref[4:8, :] = uninit_buf[4:8, :]
+
+      return pl.pallas_call(
+          kernel,
+          out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype),
+          grid_spec=pltpu.PrefetchScalarGridSpec(
+              num_scalar_prefetch=0,
+              in_specs=[HBM_SPEC],
+              out_specs=pl.BlockSpec(x.shape, lambda: (0, 0)),
+              scratch_shapes=(
+                  pltpu.VMEM(x.shape, x.dtype),
+                  pltpu.VMEM(x.shape, x.dtype),
+                  pltpu.SemaphoreType.DMA,
+              ),
+          ),
+      )(x)
+
+    racy_rep = interpret_verifier.verify_with_cpu_interpret(
+        racy_plus_uninit_vmem, (x_spec,)
+    )
+    self.assertFalse(racy_rep.passed, msg=racy_rep.summary())
+    self.assertNotEmpty(
+        racy_rep.findings_by_category(Category.DATA_RACE),
+        msg=racy_rep.summary(),
+    )
+    self.assertEmpty(
+        racy_rep.findings_by_category(Category.NAN_OR_UNINIT_READ),
+        msg=racy_rep.summary(),
+    )
+
+    def ordered_uninit_vmem(x: jax.Array) -> jax.Array:
+      def kernel(x_hbm, o_ref, buf, uninit_buf, sem):
+        copy = pltpu.make_async_copy(x_hbm, buf, sem)
+        copy.start()
+        copy.wait()
+        o_ref[0:4, :] = buf[0:4, :]
+        o_ref[4:8, :] = uninit_buf[4:8, :]
+
+      return pl.pallas_call(
+          kernel,
+          out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype),
+          grid_spec=pltpu.PrefetchScalarGridSpec(
+              num_scalar_prefetch=0,
+              in_specs=[HBM_SPEC],
+              out_specs=pl.BlockSpec(x.shape, lambda: (0, 0)),
+              scratch_shapes=(
+                  pltpu.VMEM(x.shape, x.dtype),
+                  pltpu.VMEM(x.shape, x.dtype),
+                  pltpu.SemaphoreType.DMA,
+              ),
+          ),
+      )(x)
+
+    uninit_rep = interpret_verifier.verify_with_cpu_interpret(
+        ordered_uninit_vmem, (x_spec,)
+    )
+    self.assertFalse(uninit_rep.passed, msg=uninit_rep.summary())
+    self.assertEmpty(
+        uninit_rep.findings_by_category(Category.DATA_RACE),
+        msg=uninit_rep.summary(),
+    )
+    self.assertNotEmpty(
+        uninit_rep.findings_by_category(Category.NAN_OR_UNINIT_READ),
+        msg=uninit_rep.summary(),
+    )
+
+  def test_uninitialized_int32_vmem_read_detected(self):
+    def uninit_int32_vmem(x: jax.Array) -> jax.Array:
+      def kernel(x_ref, o_ref, scratch_i32):
+        scratch_i32.at[0:4][...] = x_ref.at[0:4][...]
+        o_ref[...] = scratch_i32[...]
+
+      return _single_block_call(
+          kernel, x, scratch_shapes=(pltpu.VMEM(x.shape, jnp.int32),)
+      )
+
+    i32_uninit_rep = interpret_verifier.verify_with_cpu_interpret(
+        uninit_int32_vmem,
+        (jnp.zeros((8, 128), dtype=jnp.int32),),
+    )
+    self.assertFalse(i32_uninit_rep.passed, msg=i32_uninit_rep.summary())
+    self.assertNotEmpty(
+        i32_uninit_rep.findings_by_category(Category.NAN_OR_UNINIT_READ),
+        msg=i32_uninit_rep.summary(),
+    )
+
+  def test_revisit_output_block_classified_as_hardware_constraint_in_interpret(
+      self,
+  ):
+    def revisit_output_block(x: jax.Array) -> jax.Array:
+      return pl.pallas_call(
+          lambda x_ref, o_ref: o_ref.__setitem__(Ellipsis, x_ref[...]),
+          out_shape=jax.ShapeDtypeStruct((16, 128), x.dtype),
+          grid=(4,),
+          in_specs=[pl.BlockSpec((8, 128), lambda i: (i % 2, 0))],
+          out_specs=pl.BlockSpec((8, 128), lambda i: (i % 2, 0)),
+      )(x)
+
+    revisit_interp_rep = interpret_verifier.verify_with_cpu_interpret(
+        revisit_output_block,
+        (jax.ShapeDtypeStruct((16, 128), jnp.float32),),
+    )
+    self.assertFalse(
+        revisit_interp_rep.passed, msg=revisit_interp_rep.summary()
+    )
+    self.assertNotEmpty(
+        revisit_interp_rep.findings_by_category(
+            Category.HARDWARE_CONSTRAINT_VIOLATION
+        ),
+        msg=revisit_interp_rep.summary(),
+    )
+
+    # Full `verifier.verify` keeps write-only full-tile revisits as a non-fatal
+    # WARNING (consistent with STATIC mode) and passes valid `RevisitMode.ANY`
+    # kernels cleanly.
+    full_revisit_rep = verifier.verify(
+        revisit_output_block,
+        (jax.ShapeDtypeStruct((16, 128), jnp.float32),),
+    )
+    self.assertTrue(full_revisit_rep.passed, msg=full_revisit_rep.summary())
+
+    revisit_cls = getattr(pl, "RevisitMode", None)
+    if revisit_cls is None:
+      self.skipTest("pl.RevisitMode is unavailable in this JAX release")
+
+    def revisit_any_kernel(x: jax.Array) -> jax.Array:
+      return pl.pallas_call(
+          lambda x_ref, o_ref: o_ref.__setitem__(Ellipsis, x_ref[...]),
+          out_shape=jax.ShapeDtypeStruct((16, 128), x.dtype),
+          grid=(4,),
+          in_specs=[pl.BlockSpec((8, 128), lambda i: (i % 2, 0))],
+          out_specs=pl.BlockSpec(
+              (8, 128),
+              lambda i: (i % 2, 0),
+              pipeline_mode=pl.Buffered(1, revisit=revisit_cls.ANY),
+          ),
+      )(x)
+
+    revisit_any_rep = verifier.verify(
+        revisit_any_kernel,
+        (jax.ShapeDtypeStruct((16, 128), jnp.float32),),
+    )
+    self.assertTrue(revisit_any_rep.passed, msg=revisit_any_rep.summary())
+
+  def test_preconstructed_pallas_call_executes_under_cpu_interpret(self):
+    shape = (8, 128)
+    preconstructed = pl.pallas_call(
+        lambda x_ref, o_ref, uninit_ref: o_ref.__setitem__(
+            Ellipsis, x_ref[...] + uninit_ref[...]
+        ),
+        out_shape=jax.ShapeDtypeStruct(shape, jnp.float32),
+        grid_spec=pltpu.PrefetchScalarGridSpec(
+            num_scalar_prefetch=0,
+            in_specs=[pl.BlockSpec(shape)],
+            out_specs=pl.BlockSpec(shape),
+            scratch_shapes=(pltpu.VMEM(shape, jnp.float32),),
+        ),
+    )
+    rep = verifier.verify(
+        preconstructed, (jax.ShapeDtypeStruct(shape, jnp.float32),)
+    )
+    self.assertFalse(rep.passed, msg=rep.summary())
+    self.assertIn(verifier.Phase.INTERPRET, rep.checked_phases)
+    self.assertNotEmpty(
+        rep.findings_by_category(Category.NAN_OR_UNINIT_READ),
+        msg=rep.summary(),
+    )
+
+  def test_runtime_semaphore_nonzero_exit_detected_in_interpret(self):
+    def leaky_sem_fn(x: jax.Array) -> jax.Array:
+      def kernel(x_ref, o_ref, sem):
+        pl.semaphore_signal(sem, 1)
+        o_ref[...] = x_ref[...]
+
+      return _single_block_call(
+          kernel, x, scratch_shapes=(pltpu.SemaphoreType.REGULAR,)
+      )
+
+    rep = interpret_verifier.verify_with_cpu_interpret(
+        leaky_sem_fn, (jax.ShapeDtypeStruct((8, 128), jnp.float32),)
+    )
+    self.assertFalse(rep.passed, msg=rep.summary())
+    nonzero = rep.findings_by_category(Category.SEMAPHORE_NONZERO_EXIT)
+    self.assertNotEmpty(nonzero, msg=rep.summary())
+    self.assertEqual(nonzero[0].phase, verifier.Phase.INTERPRET)
+
+  def test_uninitialized_read_behind_comparison_and_with_nan_input_detected(
+      self,
+  ):
+    # Uninitialized read used in a comparison produces finite float outputs
+    # without NaNs, which the zero-filled control run still catches.
+    def uninit_comparison_branch(x: jax.Array) -> jax.Array:
+      def kernel(x_ref, o_ref, uninit_buf):
+        o_ref[...] = jnp.where(uninit_buf[...] == 0.0, x_ref[...], -x_ref[...])
+
+      return _single_block_call(
+          kernel, x, scratch_shapes=(pltpu.VMEM(x.shape, x.dtype),)
+      )
+
+    spec = jax.ShapeDtypeStruct((8, 128), jnp.float32)
+    cmp_rep = verifier.verify(uninit_comparison_branch, (spec,))
+    self.assertFalse(cmp_rep.passed, msg=cmp_rep.summary())
+    self.assertNotEmpty(
+        cmp_rep.findings_by_category(Category.NAN_OR_UNINIT_READ),
+        msg=cmp_rep.summary(),
+    )
+
+    # Setting `UninitMemoryMode.ZERO` via `VerificationOptions(interpret=...)`
+    # disables uninitialized-memory poisoning.
+    zero_opts = verifier.VerificationOptions(
+        interpret=verifier.InterpretSweepConfig(
+            uninitialized_memory=verifier.UninitMemoryMode.ZERO
+        )
+    )
+    zero_rep = verifier.verify(
+        uninit_comparison_branch, (spec,), options=zero_opts
+    )
+    self.assertEmpty(
+        zero_rep.findings_by_category(Category.NAN_OR_UNINIT_READ),
+        msg=zero_rep.summary(),
+    )
+
+    # An input tensor containing a NaN in rows 0:4 does not mask an
+    # uninitialized VMEM read in rows 4:8.
+    def partial_uninit_with_nan_input(x: jax.Array) -> jax.Array:
+      def kernel(x_ref, o_ref, uninit_buf):
+        o_ref[0:4, :] = x_ref[0:4, :]
+        o_ref[4:8, :] = uninit_buf[4:8, :]
+
+      return _single_block_call(
+          kernel, x, scratch_shapes=(pltpu.VMEM(x.shape, x.dtype),)
+      )
+
+    nan_op = jax_op(
+        "pallas_verify_kernel::partial_uninit_with_nan_input",
+        partial_uninit_with_nan_input,
+    )
+    x_with_nan = torch.ones((8, 128), dtype=torch.float32)
+    x_with_nan[0, 0] = float("nan")
+    nan_in_rep = verifier.verify(nan_op, (x_with_nan,))
+    self.assertFalse(nan_in_rep.passed, msg=nan_in_rep.summary())
+    self.assertNotEmpty(
+        nan_in_rep.findings_by_category(Category.NAN_OR_UNINIT_READ),
+        msg=nan_in_rep.summary(),
+    )
+
+  def test_post_race_out_of_bounds_and_namedtuple_inputs_handled_in_interpret(
+      self,
+  ):
+    def race_then_oob(idx: jax.Array, x: jax.Array) -> jax.Array:
+      def kernel(idx_ref, x_hbm, o_ref, buf, oob_buf, sem1, sem2):
+        c1 = pltpu.make_async_copy(x_hbm.at[0:8, :], buf, sem1)
+        c1.start()
+        # Race: reads `buf` before `c1.wait()`.
+        o_ref[...] = buf[...]
+        c1.wait()
+        # Runtime OOB DMA read after the race.
+        bad_start = idx_ref[0] + 64
+        c2 = pltpu.make_async_copy(
+            x_hbm.at[pl.ds(bad_start, 8), :], oob_buf, sem2
+        )
+        c2.start()
+        c2.wait()
+
+      return pl.pallas_call(
+          kernel,
+          out_shape=jax.ShapeDtypeStruct((8, 128), x.dtype),
+          grid_spec=pltpu.PrefetchScalarGridSpec(
+              num_scalar_prefetch=1,
+              in_specs=[HBM_SPEC],
+              out_specs=pl.BlockSpec((8, 128), lambda _idx: (0, 0)),
+              scratch_shapes=(
+                  pltpu.VMEM((8, 128), x.dtype),
+                  pltpu.VMEM((8, 128), x.dtype),
+                  pltpu.SemaphoreType.DMA,
+                  pltpu.SemaphoreType.DMA,
+              ),
+          ),
+      )(idx, x)
+
+    idx_arr = jnp.zeros((1,), dtype=jnp.int32)
+    x_spec = jax.ShapeDtypeStruct((16, 128), jnp.float32)
+    rep = interpret_verifier.verify_with_cpu_interpret(
+        race_then_oob, (idx_arr, x_spec)
+    )
+    self.assertFalse(rep.passed, msg=rep.summary())
+    self.assertNotEmpty(
+        rep.findings_by_category(Category.DATA_RACE), msg=rep.summary()
+    )
+    self.assertNotEmpty(
+        rep.findings_by_category(Category.OUT_OF_BOUNDS_ACCESS),
+        msg=rep.summary(),
+    )
+
+    if any(
+        f.name == "on_race" for f in dataclasses.fields(pltpu.InterpretParams)
+    ):
+      # Older JAX releases lack `on_race="raise"`, recording `races_found=True`
+      # and continuing until the subsequent OOB exception is raised.
+
+      orig_make_params = interpret_verifier.make_interpret_params
+      with mock.patch.object(
+          interpret_verifier,
+          "make_interpret_params",
+          side_effect=lambda **kw: orig_make_params(
+              **{**kw, "on_race": "warn"}
+          ),
+      ):
+        warn_rep = interpret_verifier.verify_with_cpu_interpret(
+            race_then_oob, (idx_arr, x_spec)
+        )
+      self.assertFalse(warn_rep.passed, msg=warn_rep.summary())
+      self.assertNotEmpty(
+          warn_rep.findings_by_category(Category.DATA_RACE),
+          msg=warn_rep.summary(),
+      )
+      self.assertNotEmpty(
+          warn_rep.findings_by_category(Category.OUT_OF_BOUNDS_ACCESS),
+          msg=warn_rep.summary(),
+      )
+
+    class _KernelInputs(NamedTuple):
+      offset: jax.Array
+      data: jax.Array
+
+    def namedtuple_fn(inputs: _KernelInputs) -> jax.Array:
+      def kernel(off_ref, x_hbm, o_ref, buf, sem):
+        copy = pltpu.make_async_copy(
+            x_hbm.at[pl.ds(off_ref[0], 8), :], buf, sem
+        )
+        copy.start()
+        copy.wait()
+        o_ref[...] = buf[...]
+
+      return pl.pallas_call(
+          kernel,
+          out_shape=jax.ShapeDtypeStruct((8, 128), inputs.data.dtype),
+          grid_spec=pltpu.PrefetchScalarGridSpec(
+              num_scalar_prefetch=1,
+              in_specs=[HBM_SPEC],
+              out_specs=pl.BlockSpec((8, 128), lambda unused_off: (0, 0)),
+              scratch_shapes=(
+                  pltpu.VMEM((8, 128), inputs.data.dtype),
+                  pltpu.SemaphoreType.DMA,
+              ),
+          ),
+      )(inputs.offset, inputs.data)
+
+    nt_rep = verifier.verify(
+        namedtuple_fn, (_KernelInputs(offset=idx_arr, data=x_spec),)
+    )
+    self.assertTrue(nt_rep.passed, msg=nt_rep.summary())
+    self.assertIn(verifier.Phase.INTERPRET, nt_rep.checked_phases)
+
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=internal helper check
+        TypeError, "unexpected InterpretParams"
+    ):
+      interpret_verifier.make_interpret_params(unknown_field_xyz=1)
+
+  def test_dma_done_count_mode_skips_dynamic_interpret_in_full_mode(self):
+    def done_count_v7_fn(x: jax.Array) -> jax.Array:
+      def kernel(x_hbm, o_hbm, vmem, reg_sem):
+        pltpu.make_async_copy(x_hbm, vmem, reg_sem).start()
+        pl.semaphore_wait(reg_sem, 1)
+        vmem[...] = vmem[...] * 2.0
+        pltpu.make_async_copy(vmem, o_hbm, reg_sem).start()
+        pl.semaphore_wait(reg_sem, 1)
+
+      return pl.pallas_call(
+          kernel,
+          out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype),
+          in_specs=[HBM_SPEC],
+          out_specs=HBM_SPEC,
+          scratch_shapes=(
+              pltpu.VMEM(x.shape, x.dtype),
+              pltpu.SemaphoreType.REGULAR,
+          ),
+      )(x)
+
+    opts = verifier.VerificationOptions(tpu_version=torch.tpu.TpuVersion.V7)
+    spec = jax.ShapeDtypeStruct((8, 128), jnp.float32)
+    raw_rep = verifier.verify(done_count_v7_fn, (spec,), options=opts)
+    self.assertTrue(raw_rep.passed, msg=raw_rep.summary())
+    self.assertEmpty(
+        raw_rep.findings_by_category(Category.SEMAPHORE_NONZERO_EXIT),
+        msg=raw_rep.summary(),
+    )
+    self.assertNotIn(verifier.Phase.INTERPRET, raw_rep.checked_phases)
+    raw_incomplete = [
+        f
+        for f in raw_rep.findings_by_category(Category.VERIFICATION_INCOMPLETE)
+        if f.phase is verifier.Phase.INTERPRET
+    ]
+    self.assertLen(raw_incomplete, 1)
+    self.assertIs(raw_incomplete[0].severity, verifier.Severity.INFO)
+
+    done_count_op = jax_op(
+        "pallas_verify_kernel::done_count_v7_full", done_count_v7_fn
+    )
+    done_count_op.register_autograd(lambda ctx, grad: (grad * 2.0,))
+    x_t = torch.ones((8, 128), dtype=torch.float32, requires_grad=True)
+    op_rep = verifier.verify(done_count_op, (x_t,), options=opts)
+    self.assertTrue(op_rep.passed, msg=op_rep.summary())
+    self.assertNotIn(verifier.Phase.INTERPRET, op_rep.checked_phases)
+    self.assertNotIn(verifier.Phase.AUTOGRAD, op_rep.checked_phases)
+
+  def test_stall_progress_watchdog_allows_slow_progress_and_aborts_stalled_wait(
+      self,
+  ):
+    shape = (8, 128)
+    cpu0 = jax.devices("cpu")[0]
+    with jax.default_device(cpu0):
+      x_cpu = jnp.ones(shape, dtype=jnp.float32)
+    params = interpret_verifier.make_interpret_params(
+        dma_execution_mode="eager",
+        detect_races=False,
+        uninitialized_memory="zero",
+        random_seed=0,
+    )
+
+    def multi_step_dma_fn(x: jax.Array) -> jax.Array:
+      def kernel(x_hbm, o_ref, buf, sem):
+        i = pl.program_id(0)
+        c = pltpu.make_async_copy(x_hbm.at[pl.ds(i * 8, 8), :], buf, sem)
+        c.start()
+        c.wait()
+        o_ref[...] = buf[...] * 2.0
+
+      return pl.pallas_call(
+          kernel,
+          out_shape=jax.ShapeDtypeStruct((64, 128), x.dtype),
+          grid=(8,),
+          in_specs=[HBM_SPEC],
+          out_specs=pl.BlockSpec((8, 128), lambda i: (i, 0)),
+          scratch_shapes=(
+              pltpu.VMEM(shape, x.dtype),
+              pltpu.SemaphoreType.DMA,
+          ),
+      )(x)
+
+    with jax.default_device(cpu0):
+      x_grid = jnp.ones((64, 128), dtype=jnp.float32)
+
+    class _FakeClock:
+
+      def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._now = 0.0
+
+      def __call__(self) -> float:
+        with self._lock:
+          return self._now
+
+      def advance(self, delta: float) -> None:
+        with self._lock:
+          self._now += delta
+
+    interpret_mod = inspect.getmodule(pltpu.reset_tpu_interpret_mode_state)
+    shm_cls = interpret_mod.memory.SharedMemory
+    sem_cls = interpret_mod.memory.Semaphore
+    orig_store = shm_cls.store_buffer_content
+    slow_clock = _FakeClock()
+
+    def _slow_store(self_shm, *s_args, **s_kwargs):
+      slow_clock.advance(0.4)
+      return orig_store(self_shm, *s_args, **s_kwargs)
+
+    # Total virtual time exceeds `timeout_seconds=1.0` (>=3.2s across 8 steps),
+    # while each step makes forward progress within 0.4s.
+    with mock.patch.object(shm_cls, "store_buffer_content", _slow_store):
+      slow_ok = interpret_verifier._interpret_run(
+          multi_step_dma_fn,
+          (x_grid,),
+          {},
+          params,
+          cpu0,
+          timeout_seconds=1.0,
+          clock=slow_clock,
+      )
+    self.assertGreaterEqual(slow_clock(), 3.2)
+    self.assertIsNone(slow_ok.exc)
+    assert slow_ok.leaves is not None
+    np.testing.assert_allclose(slow_ok.leaves[0], 2.0)
+
+    # A genuinely deadlocked semaphore wait makes zero progress and is aborted
+    # once virtual time advances past `timeout_seconds`, classified as
+    # `SEMAPHORE_DEADLOCK`, without poisoning the next interpret run.
+    def stalled_wait_fn(x: jax.Array) -> jax.Array:
+      def kernel(x_ref, o_ref, sem):
+        pl.semaphore_wait(sem, 1)
+        o_ref[...] = x_ref[...]
+
+      return _single_block_call(
+          kernel, x, scratch_shapes=(pltpu.SemaphoreType.REGULAR,)
+      )
+
+    orig_sem_wait = sem_cls.wait
+    stall_clock = _FakeClock()
+
+    def _stalled_sem_wait(self_sem, *w_args, **w_kwargs):
+      stall_clock.advance(2.0)
+      return orig_sem_wait(self_sem, *w_args, **w_kwargs)
+
+    with mock.patch.object(sem_cls, "wait", _stalled_sem_wait):
+      stalled = interpret_verifier._interpret_run(
+          stalled_wait_fn,
+          (x_cpu,),
+          {},
+          params,
+          cpu0,
+          timeout_seconds=0.05,
+          clock=stall_clock,
+      )
+    self.assertIsNotNone(stalled.exc)
+    assert stalled.exc is not None
+    finding = interpret_verifier._classify_interpret_exception(
+        stalled.exc, "stalled_wait_fn", "dma=eager, seed=0"
+    )
+    self.assertIs(finding.category, Category.SEMAPHORE_DEADLOCK)
+
+    recovery_clock = _FakeClock()
+    after_stall = interpret_verifier._interpret_run(
+        multi_step_dma_fn,
+        (x_grid,),
+        {},
+        params,
+        cpu0,
+        timeout_seconds=1.0,
+        clock=recovery_clock,
+    )
+    self.assertIsNone(after_stall.exc)
+
+  def test_complex64_fallback_and_second_seed_int32_uninit_control_in_interpret(
+      self,
+  ):
+    shape = (8, 128)
+    c64_spec = jax.ShapeDtypeStruct(shape, jnp.complex64)
+
+    def valid_complex_fn(x: jax.Array) -> jax.Array:
+      def kernel(x_ref, o_ref, scratch_c64):
+        scratch_c64[...] = x_ref[...] * jnp.complex64(1.0 + 2.0j)
+        o_ref[...] = scratch_c64[...]
+
+      return _single_block_call(
+          kernel, x, scratch_shapes=(pltpu.VMEM(shape, jnp.complex64),)
+      )
+
+    # Mosaic TPU rejects `complex64` VMEM vectors at lowering time, while the
+    # CPU TPU interpreter falls back from NaN poisoning to zero-filled memory.
+    full_c64_rep = verifier.verify(valid_complex_fn, (c64_spec,), mode=STATIC)
+    self.assertNotEmpty(
+        full_c64_rep.findings_by_category(Category.LOWERING_FAILURE),
+        msg=full_c64_rep.summary(),
+    )
+    c64_rep = interpret_verifier.verify_with_cpu_interpret(
+        valid_complex_fn, (c64_spec,)
+    )
+    self.assertTrue(c64_rep.passed, msg=c64_rep.summary())
+    self.assertIn(verifier.Phase.INTERPRET, c64_rep.checked_phases)
+    c64_notes = [
+        f
+        for f in c64_rep.findings_by_category(Category.VERIFICATION_INCOMPLETE)
+        if f.phase is verifier.Phase.INTERPRET
+    ]
+    self.assertLen(c64_notes, 1)
+    self.assertIs(c64_notes[0].severity, verifier.Severity.INFO)
+
+    def racy_complex_fn(x: jax.Array) -> jax.Array:
+      def kernel(x_hbm, o_ref, buf_c64, sem):
+        copy = pltpu.make_async_copy(x_hbm, buf_c64, sem)
+        copy.start()
+        o_ref[...] = buf_c64[...]
+        copy.wait()
+
+      return pl.pallas_call(
+          kernel,
+          out_shape=c64_spec,
+          in_specs=[HBM_SPEC],
+          out_specs=pl.BlockSpec(shape, lambda: (0, 0)),
+          scratch_shapes=(
+              pltpu.VMEM(shape, jnp.complex64),
+              pltpu.SemaphoreType.DMA,
+          ),
+      )(x)
+
+    racy_c64_rep = interpret_verifier.verify_with_cpu_interpret(
+        racy_complex_fn, (c64_spec,)
+    )
+    self.assertFalse(racy_c64_rep.passed, msg=racy_c64_rep.summary())
+    self.assertNotEmpty(
+        racy_c64_rep.findings_by_category(Category.DATA_RACE),
+        msg=racy_c64_rep.summary(),
+    )
+
+    # Determine which of `(0, 1)` runs first on `seed=0` vs an opposite seed so
+    # `seed=0` legitimately produces `iinfo(int32).max` on both poisoned and
+    # zero-filled memory while `other_seed` reads uninitialized `scratch_i32`
+    # first (matching `seed=0` under poisoned memory and differing only against
+    # the zero-filled control run on `other_seed`).
+    def _first_coord(seed: int) -> int:
+      _, subkey = jax.random.split(jax.random.key(seed))
+      return int(
+          jax.random.permutation(subkey, jnp.arange(2, dtype=jnp.int32))[0]
+      )
+
+    first_on_0 = _first_coord(0)
+    other_seed = next(s for s in range(1, 64) if _first_coord(s) != first_on_0)
+    i32_max = int(np.iinfo(np.int32).max)
+
+    def second_seed_only_uninit_i32(x: jax.Array) -> jax.Array:
+      del x
+
+      def kernel(o_ref, scratch_i32):
+        prog_id = pl.program_id(0)
+
+        @pl.when(prog_id == first_on_0)
+        def _writer():
+          scratch_i32[...] = jnp.full(shape, i32_max, dtype=jnp.int32)
+          o_ref[...] = jnp.full(shape, i32_max, dtype=jnp.int32)
+
+        @pl.when(prog_id != first_on_0)
+        def _reader():
+          o_ref[...] = scratch_i32[...]
+
+      return pl.pallas_call(
+          kernel,
+          out_shape=jax.ShapeDtypeStruct((16, 128), jnp.int32),
+          grid=(2,),
+          out_specs=pl.BlockSpec(shape, lambda i: (i, 0)),
+          scratch_shapes=(pltpu.VMEM(shape, jnp.int32),),
+          compiler_params=pltpu.CompilerParams(
+              dimension_semantics=("parallel",)
+          ),
+      )()
+
+    seed2_rep = interpret_verifier.verify_with_cpu_interpret(
+        second_seed_only_uninit_i32,
+        (jnp.zeros(shape, dtype=jnp.int32),),
+        config=verifier.InterpretSweepConfig(
+            schedule_modes=(verifier.DmaScheduleMode.EAGER,),
+            seeds=(0, other_seed),
+        ),
+    )
+    self.assertFalse(seed2_rep.passed, msg=seed2_rep.summary())
+    seed2_nan = seed2_rep.findings_by_category(Category.NAN_OR_UNINIT_READ)
+    self.assertNotEmpty(seed2_nan, msg=seed2_rep.summary())
+    self.assertIn(f"seed={other_seed}", seed2_nan[0].message)
+
+  def test_raw_jax_abstract_int32_shape_dtype_struct_skips_interpret(self):
+    def offset_minus_one_copy(offset: jax.Array, x: jax.Array) -> jax.Array:
+      def kernel(off_ref, x_hbm, o_ref, buf, sem):
+        # Valid whenever `offset[0] >= 1`; zero-filling an abstract `int32`
+        # `ShapeDtypeStruct` would read `-8:0` and report a false OOB error.
+        start = (off_ref[0] - 1) * 8
+        copy = pltpu.make_async_copy(x_hbm.at[pl.ds(start, 8), :], buf, sem)
+        copy.start()
+        copy.wait()
+        o_ref[...] = buf[...]
+
+      return pl.pallas_call(
+          kernel,
+          out_shape=jax.ShapeDtypeStruct((8, 128), x.dtype),
+          grid_spec=pltpu.PrefetchScalarGridSpec(
+              num_scalar_prefetch=1,
+              in_specs=[HBM_SPEC],
+              out_specs=pl.BlockSpec((8, 128), lambda _off: (0, 0)),
+              scratch_shapes=(
+                  pltpu.VMEM((8, 128), x.dtype),
+                  pltpu.SemaphoreType.DMA,
+              ),
+          ),
+      )(offset, x)
+
+    abs_rep = verifier.verify(
+        offset_minus_one_copy,
+        (
+            jax.ShapeDtypeStruct((1,), jnp.int32),
+            jax.ShapeDtypeStruct((16, 128), jnp.float32),
+        ),
+    )
+    self.assertTrue(abs_rep.passed, msg=abs_rep.summary())
+    self.assertNotIn(verifier.Phase.INTERPRET, abs_rep.checked_phases)
+    interp_notes = [
+        f
+        for f in abs_rep.findings_by_category(Category.VERIFICATION_INCOMPLETE)
+        if f.phase is verifier.Phase.INTERPRET
+    ]
+    self.assertLen(interp_notes, 1, msg=abs_rep.summary())
+    self.assertIs(interp_notes[0].severity, verifier.Severity.INFO)
+
+    concrete_rep = verifier.verify(
+        offset_minus_one_copy,
+        (
+            jnp.array([1], dtype=jnp.int32),
+            jnp.ones((16, 128), dtype=jnp.float32),
+        ),
+    )
+    self.assertTrue(concrete_rep.passed, msg=concrete_rep.summary())
+    self.assertIn(verifier.Phase.INTERPRET, concrete_rep.checked_phases)
+
+  def test_fp4x2_int4_and_typed_prng_key_inputs_in_full_mode(self):
+    # 1. Packed `torch.float4_e2m1fn_x2` input on a `@jax_op` in `FULL` mode.
+    def fp4_upcast_jax(x: jax.Array) -> jax.Array:
+      return pl.pallas_call(
+          lambda x_ref, o_ref: o_ref.__setitem__(
+              Ellipsis, x_ref[...].astype(jnp.float32)
+          ),
+          out_shape=jax.ShapeDtypeStruct(x.shape, jnp.float32),
+      )(x)
+
+    fp4_op = jax_op("pallas_verify_kernel::fp4x2_upcast_full", fp4_upcast_jax)
+    x_fp4 = torch.zeros((64, 64), dtype=torch.uint8).view(
+        torch.float4_e2m1fn_x2
+    )
+    fp4_rep = verifier.verify(fp4_op, (x_fp4,))
+    self.assertTrue(fp4_rep.passed, msg=fp4_rep.summary())
+    self.assertIn(verifier.Phase.MODEL_CHECK, fp4_rep.checked_phases)
+
+    # 2. Concrete `jnp.int4` input and output across schedules in `FULL` mode.
+    def int4_copy_jax(x: jax.Array) -> jax.Array:
+      return pl.pallas_call(
+          lambda x_ref, o_ref: o_ref.__setitem__(Ellipsis, x_ref[...]),
+          out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype),
+      )(x)
+
+    x_i4 = jnp.zeros((64, 128), dtype=jnp.int4)
+    i4_rep = verifier.verify(int4_copy_jax, (x_i4,))
+    self.assertTrue(i4_rep.passed, msg=i4_rep.summary())
+
+    # 3. Typed `jax.random.key(0)` PRNG key input (and output) in `FULL` mode.
+    def keyed_scale_jax(
+        key: jax.Array, x: jax.Array
+    ) -> tuple[jax.Array, jax.Array]:
+      bits = jax.random.bits(key, shape=(), dtype=jnp.uint32)
+      scale = (bits & jnp.uint32(1)).astype(x.dtype) + jnp.float32(1.0)
+      out = pl.pallas_call(
+          lambda x_ref, s_ref, o_ref: o_ref.__setitem__(
+              Ellipsis, x_ref[...] * s_ref[0]
+          ),
+          out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype),
+          in_specs=[
+              pl.BlockSpec(x.shape, lambda: (0, 0)),
+              pl.BlockSpec(memory_space=pltpu.SMEM),
+          ],
+          out_specs=pl.BlockSpec(x.shape, lambda: (0, 0)),
+      )(x, jnp.reshape(scale, (1,)))
+      return out, key
+
+    key_rep = verifier.verify(
+        keyed_scale_jax,
+        (jax.random.key(0), jnp.ones((8, 128), dtype=jnp.float32)),
+    )
+    self.assertTrue(key_rep.passed, msg=key_rep.summary())
+    self.assertIn(verifier.Phase.INTERPRET, key_rep.checked_phases)
+
+  def test_sharded_int32_offset_metadata_passes_full_interpret(self):
+    mesh2 = _make_mock_tpu_mesh(2, "rank")
+
+    def sharded_offset_dma_jax(
+        global_offsets: jax.Array,
+        global_x: jax.Array,
+        *,
+        mesh: jax.sharding.Mesh,
+    ) -> jax.Array:
+      def per_shard(off_local: jax.Array, x_local: jax.Array) -> jax.Array:
+        def kernel(off_ref, x_hbm, o_ref, buf, sem):
+          # Local `x_hbm` has 8 rows; adding a rank offset (`+1`) to sharded
+          # `int32` metadata on rank 1 would read rows `8:16` out of bounds.
+          copy = pltpu.make_async_copy(
+              x_hbm.at[pl.ds(off_ref[0] * 8, 8), :], buf, sem
+          )
+          copy.start()
+          copy.wait()
+          o_ref[...] = buf[...] * 2.0
+
+        return pl.pallas_call(
+            kernel,
+            out_shape=jax.ShapeDtypeStruct(x_local.shape, x_local.dtype),
+            grid_spec=pltpu.PrefetchScalarGridSpec(
+                num_scalar_prefetch=1,
+                in_specs=[HBM_SPEC],
+                out_specs=pl.BlockSpec(x_local.shape, lambda _off: (0, 0)),
+                scratch_shapes=(
+                    pltpu.VMEM(x_local.shape, x_local.dtype),
+                    pltpu.SemaphoreType.DMA,
+                ),
+            ),
+        )(off_local, x_local)
+
+      return jax.shard_map(
+          per_shard,
+          mesh=mesh,
+          in_specs=(P("rank"), P("rank")),
+          out_specs=P("rank"),
+          check_vma=False,
+      )(global_offsets, global_x)
+
+    sharded_meta_op = jax_op(
+        "pallas_verify_kernel::sharded_int32_offset_dma",
+        functools.partial(sharded_offset_dma_jax, mesh=mesh2),
+        mesh=mesh2,
+        input_partition_specs=(P("rank"), P("rank")),
+        output_partition_specs=P("rank"),
+    )
+    offsets = torch.zeros((1,), dtype=torch.int32)
+    x_local = torch.ones((8, 128), dtype=torch.float32)
+    rep = verifier.verify(sharded_meta_op, (offsets, x_local))
+    self.assertTrue(rep.passed, msg=rep.summary())
+    self.assertIn(verifier.Phase.INTERPRET, rep.checked_phases)
+    self.assertEmpty(
+        rep.findings_by_severity(verifier.Severity.WARNING),
+        msg=rep.summary(),
+    )
+
+  def test_statically_unproven_deadlock_with_autograd_aborts_in_interpret_first(
+      self,
+  ):
+    def wait_before_signal_jax(x: jax.Array) -> jax.Array:
+      def kernel(x_ref, y_ref, sem):
+        # Balanced (+1 / -1) wait-before-signal cycle passes conservation when
+        # CP-SAT is unavailable, leaving the deadlock unproven statically.
+        pl.semaphore_wait(sem, 1)
+        pl.semaphore_signal(sem, 1)
+        y_ref[...] = x_ref[...] * 2.0
+
+      return _single_block_call(
+          kernel, x, scratch_shapes=(pltpu.SemaphoreType.REGULAR,)
+      )
+
+    bwd_calls: list[bool] = []
+    op = jax_op(
+        "pallas_verify_kernel::unproven_deadlock_autograd_full",
+        wait_before_signal_jax,
+    )
+
+    def _bwd(ctx, grad):
+      del ctx
+      bwd_calls.append(True)
+      return (grad * 2.0,)
+
+    op.register_autograd(_bwd)
+    x = torch.ones((8, 128), dtype=torch.float32, requires_grad=True)
+    opts = verifier.VerificationOptions(
+        interpret=verifier.InterpretSweepConfig(
+            schedule_modes=(verifier.DmaScheduleMode.EAGER,),
+            seeds=(0,),
+        )
+    )
+    assert interpret_verifier._interpret_run.__kwdefaults__ is not None
+    with (
+        mock.patch.object(smt_checker, "cp_model", None),
+        mock.patch.dict(
+            interpret_verifier._interpret_run.__kwdefaults__,
+            {"timeout_seconds": 0.12},
+        ),
+    ):
+      rep = verifier.verify(op, (x,), options=opts)
+
+    self.assertFalse(rep.passed, msg=rep.summary())
+    deadlocks = rep.findings_by_category(Category.SEMAPHORE_DEADLOCK)
+    self.assertNotEmpty(deadlocks, msg=rep.summary())
+    self.assertEqual(deadlocks[0].phase, verifier.Phase.INTERPRET)
+    self.assertNotIn(verifier.Phase.AUTOGRAD, rep.checked_phases)
+    self.assertEmpty(bwd_calls)
+
+  def test_verify_full_mode_restores_global_and_thread_local_patch_state(self):
+    pallas_call_mod = inspect.getmodule(pl.pallas_call)
+    assert pallas_call_mod is not None
+    pallas_call_p = pallas_call_mod.pallas_call_p
+
+    mpmd_mod = getattr(jax._src.pallas, "mpmd", None)
+    mpmd_map_p = getattr(mpmd_mod, "mpmd_map_p", None)
+
+    interpret_mod = inspect.getmodule(pltpu.reset_tpu_interpret_mode_state)
+    assert interpret_mod is not None
+    shm_cls = interpret_mod.memory.SharedMemory
+    had_alloc_in_shm_dict = "allocate_buffer" in shm_cls.__dict__
+
+    fx_vfy = interpret_verifier.fx_verifier
+
+    def scale_jax(x: jax.Array) -> jax.Array:
+      return _single_block_call(
+          lambda x_ref, o_ref: o_ref.__setitem__(Ellipsis, x_ref[...] * 3.0), x
+      )
+
+    clean_op = jax_op("pallas_verify_kernel::patch_state_clean", scale_jax)
+    clean_op.register_autograd(lambda ctx, g: (g * 3.0,))
+    jc = fx_vfy.extract_jax_callable(clean_op)
+    assert jc is not None
+    op_def = fx_vfy.resolve_custom_op_def(clean_op)
+    assert op_def is not None
+    orig_exported = jc.exported
+    orig_setup_ctx = getattr(op_def, "_setup_context_fn", None)
+
+    def _assert_clean_patch_state() -> None:
+      self.assertNotIn("bind", pallas_call_p.__dict__)
+      if mpmd_map_p is not None:
+        self.assertNotIn("bind", mpmd_map_p.__dict__)
+      if not had_alloc_in_shm_dict:
+        self.assertNotIn("allocate_buffer", shm_cls.__dict__)
+      self.assertIs(jc.exported, orig_exported)
+      self.assertIs(getattr(op_def, "_setup_context_fn", None), orig_setup_ctx)
+      self.assertTrue(jax.sharding.get_abstract_mesh().empty)
+      self.assertFalse(
+          bool(
+              getattr(fx_vfy._THREAD_PATCH_STATE, "interpret_params_stack", ())
+          )
+      )
+      for depth_attr in (
+          "watchdog_depth",
+          "stub_pallas_call_depth",
+          "eval_shape_fallback_depth",
+      ):
+        self.assertEqual(
+            int(getattr(fx_vfy._THREAD_PATCH_STATE, depth_attr, 0)), 0
+        )
+
+    x = torch.ones((8, 128), dtype=torch.float32, requires_grad=True)
+
+    ok_rep = verifier.verify(clean_op, (x,))
+    self.assertTrue(ok_rep.passed, msg=ok_rep.summary())
+    _assert_clean_patch_state()
+
+    def raising_jax(x: jax.Array) -> jax.Array:
+      def _boom(arr):
+        raise RuntimeError(f"callback boom on {arr.shape}")
+
+      return jax.pure_callback(_boom, jax.ShapeDtypeStruct(x.shape, x.dtype), x)
+
+    err_rep = verifier.verify(
+        raising_jax, (jax.ShapeDtypeStruct((8, 128), jnp.float32),)
+    )
+    self.assertTrue(err_rep.passed, msg=err_rep.summary())
+    _assert_clean_patch_state()
 
 
 if __name__ == "__main__":

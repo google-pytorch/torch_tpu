@@ -32,6 +32,7 @@ from collections.abc import (
     Callable,
     Mapping,
     MutableMapping,
+    MutableSequence,
     MutableSet,
     Sequence,
     Set as AbstractSet,
@@ -48,6 +49,7 @@ import torch
 import torch.fx as fx
 from torch_tpu._internal.pallas.verify import findings
 from torch_tpu._internal.pallas.verify import fx_verifier
+from torch_tpu._internal.pallas.verify import interpret_verifier
 from torch_tpu._internal.pallas.verify import jaxpr_model
 from torch_tpu._internal.pallas.verify import smt_checker
 from torch_tpu._internal.utils import annotations
@@ -61,8 +63,9 @@ class VerificationMode(enum.Enum):
   """Which verification engines `verify` runs."""
 
   # Static checks plus dynamic checks that run the kernels on CPU in TPU
-  # interpret mode (such as autograd parity). Creating the JAX CPU devices
-  # initializes the other JAX backends too, including TPU if available.
+  # interpret mode (CPU TPU-interpret schedule/NaN-poisoning sweeps and
+  # autograd parity). Creating the JAX CPU devices initializes the other JAX
+  # backends too, including TPU if available.
   FULL = "full"
   # Only checks that never execute the kernels: contracts, TPU lowering, FX
   # graph analysis, and model checking. They need no JAX devices, so they also
@@ -91,12 +94,16 @@ class VerificationOptions:
       device kind); otherwise `tpu_version` is used when set, else `verify`
       infers the generation from an ambient mesh or `supported_on` predicates,
       falling back to `torch.tpu.TpuVersion.V7`.
+    interpret: Configuration of the CPU TPU-interpret schedule sweep.
   """
 
   check_autograd: bool = True
   max_unrolled_iterations: int = jaxpr_model.DEFAULT_MAX_UNROLLED_ITERATIONS
   solver_timeout_seconds: float = smt_checker.DEFAULT_SOLVER_TIMEOUT_SECONDS
   tpu_version: findings.TpuVersion | None = None
+  interpret: findings.InterpretSweepConfig = dataclasses.field(
+      default_factory=findings.InterpretSweepConfig
+  )
 
   __tt_api_stages__ = {
       name: annotations.ApiStageInfo(
@@ -111,6 +118,7 @@ class VerificationOptions:
           "max_unrolled_iterations",
           "solver_timeout_seconds",
           "tpu_version",
+          "interpret",
       )
   }
 
@@ -154,6 +162,11 @@ class VerificationOptions:
           "tpu_version must be a torch.tpu.TpuVersion or None, got"
           f" {type(self.tpu_version).__name__}"
       )
+    if not isinstance(self.interpret, findings.InterpretSweepConfig):
+      raise TypeError(
+          "interpret must be an InterpretSweepConfig, got"
+          f" {type(self.interpret).__name__}"
+      )
 
 
 @annotations.forbid_in_torch_compile(
@@ -175,9 +188,10 @@ def verify(
   The kind of `target` is detected automatically:
 
   * A TorchTPU `@jax_op` (or the `JaxCallable` behind it) gets op-contract,
-    TPU-lowering, model-checking, and autograd-parity checks.
+    TPU-lowering, model-checking, CPU TPU-interpret sweep, and autograd-parity
+    checks.
   * A JAX function called with `jax.Array` / `jax.ShapeDtypeStruct` arguments
-    gets TPU-lowering and model-checking checks.
+    gets TPU-lowering, model-checking, and CPU TPU-interpret sweep checks.
   * Any other callable (for example an `nn.Module`) is traced into an FX graph
     whose buffer donation and aliasing are checked; every `@jax_op` it calls
     is then verified for the argument shapes it is called with.
@@ -243,6 +257,79 @@ def _is_jax_program(
   )
 
 
+def _dynamic_check_skip_reason(
+    model_report: findings.VerificationReport,
+    models: Sequence[jaxpr_model.KernelVerificationModel] | None,
+) -> tuple[findings.Severity, str, str] | None:
+  """Returns skip severity and messages when dynamic runs must be skipped.
+
+  Args:
+    model_report: Static model checking report.
+    models: Extracted kernel verification models, or None when model extraction
+      did not produce models.
+
+  Returns:
+    `(severity, autograd_msg, interpret_msg)` when dynamic runs must be skipped,
+    or None when dynamic runs may proceed.
+  """
+  if model_report.findings_by_category(
+      findings.FindingCategory.SEMAPHORE_DEADLOCK
+  ):
+    return (
+        findings.Severity.INFO,
+        (
+            "skipped the autograd parity check because a semaphore deadlock was"
+            " proven and running the forward kernel would hang"
+        ),
+        (
+            "skipped CPU interpret runs because a semaphore deadlock was proven"
+            " and they would hang"
+        ),
+    )
+  if model_report.findings_by_category(
+      findings.FindingCategory.INVALID_DEVICE_ID
+  ):
+    return (
+        findings.Severity.INFO,
+        (
+            "skipped the autograd parity check because an invalid remote device"
+            " or core id was found in the kernel"
+        ),
+        (
+            "skipped CPU interpret runs because an invalid remote device or"
+            " core id was found in the kernel"
+        ),
+    )
+  if models is not None and any(
+      model.uses_done_count_regular_dma for model in models
+  ):
+    done_count_reason = (
+        "the CPU TPU interpreter increments DMA semaphores by byte count"
+        " rather than transfer completion count on REGULAR semaphores"
+    )
+    return (
+        findings.Severity.INFO,
+        f"skipped the autograd parity check because {done_count_reason}",
+        f"skipped CPU interpret runs because {done_count_reason}",
+    )
+  if not interpret_verifier.remote_interpret_supported() and (
+      models is None or any(model.uses_remote_operations for model in models)
+  ):
+    unsupported_reason = (
+        f"the CPU interpreter of JAX {jax.__version__} cannot run DMAs or"
+        " semaphore signals between devices, which the kernel"
+        f" {'may use' if models is None else 'uses'}; use JAX"
+        f" {interpret_verifier.MIN_JAX_FOR_REMOTE_INTERPRET_STR} or newer to"
+        " run them"
+    )
+    return (
+        findings.Severity.WARNING,
+        f"skipped the autograd parity check because {unsupported_reason}",
+        f"skipped CPU interpret runs because {unsupported_reason}",
+    )
+  return None
+
+
 def _drop_duplicate_trace_incomplete(
     model_report: findings.VerificationReport,
     lowering_report: findings.VerificationReport,
@@ -270,11 +357,12 @@ def _drop_duplicate_trace_incomplete(
 def _verify_kernel(
     target: Any,
     args: Sequence[Any],
-    kwargs: Mapping[str, Any] | None,
+    kwargs: Mapping[str, Any],
     mode: VerificationMode,
     options: VerificationOptions,
     *,
     concrete_arg_ids: AbstractSet[int] | None = None,
+    has_unresolved_int_args: bool = False,
 ) -> findings.VerificationReport:
   """Verifies a `@jax_op` or raw JAX function."""
   mesh_tpu_version = fx_verifier.extract_explicit_mesh_tpu_version(
@@ -351,54 +439,116 @@ def _verify_kernel(
         model_report, lowering_report
     )
   reports.append(model_report)
-  if mode is VerificationMode.FULL and is_op and options.check_autograd:
-    op_def = fx_verifier.resolve_custom_op_def(target)
-    has_backward = (
-        op_def is not None and getattr(op_def, "_backward_fn", None) is not None
-    )
-    if model_report.findings_by_category(
-        findings.FindingCategory.SEMAPHORE_DEADLOCK
-    ):
-      if has_backward:
-        reports.append(
-            _skipped_dynamic_check(
-                target,
-                findings.Phase.AUTOGRAD,
-                findings.Severity.INFO,
-                "skipped the autograd parity check because a semaphore"
-                " deadlock was proven and running the forward kernel would"
-                " hang",
-            )
-        )
-    elif model_report.findings_by_category(
-        findings.FindingCategory.INVALID_DEVICE_ID
-    ):
-      if has_backward:
-        reports.append(
-            _skipped_dynamic_check(
-                target,
-                findings.Phase.AUTOGRAD,
-                findings.Severity.INFO,
-                "skipped the autograd parity check because an invalid remote"
-                " device or core id was found in the kernel",
-            )
-        )
-    elif models is not None and any(
-        model.uses_done_count_regular_dma for model in models
-    ):
-      if has_backward:
-        reports.append(
-            _skipped_dynamic_check(
-                target,
-                findings.Phase.AUTOGRAD,
-                findings.Severity.INFO,
-                "skipped the autograd parity check because the CPU TPU"
-                " interpreter increments DMA semaphores by byte count rather"
-                " than transfer completion count on REGULAR semaphores",
-            )
-        )
+
+  if mode is VerificationMode.FULL:
+    skip_info = _dynamic_check_skip_reason(model_report, models)
+    interpret_report: findings.VerificationReport | None = None
+    if skip_info is not None:
+      reports.append(
+          _skipped_dynamic_check(
+              target,
+              findings.Phase.INTERPRET,
+              skip_info[0],
+              skip_info[2],
+          )
+      )
+    elif has_unresolved_int_args:
+      reports.append(
+          _skipped_dynamic_check(
+              target,
+              findings.Phase.INTERPRET,
+              findings.Severity.INFO,
+              "skipped CPU interpret runs because an integer or boolean FX"
+              " input depends on dynamic or mutated operations",
+          )
+      )
     else:
-      reports.append(fx_verifier.verify_autograd_parity(target, args, kwargs))
+      has_revisit_any = bool(
+          models and any(m.has_revisit_any_output for m in models)
+      )
+      revisit_warn_only = bool(
+          models
+          and any(
+              getattr(m, "has_verified_full_overwrite_revisit", False)
+              for m in models
+          )
+      )
+      interpret_report = interpret_verifier.verify_with_cpu_interpret(
+          target,
+          args,
+          kwargs,
+          config=options.interpret,
+          has_revisit_any_output=has_revisit_any,
+          revisit_verified_full_overwrite=revisit_warn_only,
+      )
+      reports.append(interpret_report)
+
+    if is_op and options.check_autograd:
+      op_def = fx_verifier.resolve_custom_op_def(target)
+      has_backward = (
+          op_def is not None
+          and getattr(op_def, "_backward_fn", None) is not None
+      )
+      if has_backward:
+        if skip_info is not None:
+          reports.append(
+              _skipped_dynamic_check(
+                  target,
+                  findings.Phase.AUTOGRAD,
+                  skip_info[0],
+                  skip_info[1],
+              )
+          )
+        elif has_unresolved_int_args:
+          reports.append(
+              _skipped_dynamic_check(
+                  target,
+                  findings.Phase.AUTOGRAD,
+                  findings.Severity.INFO,
+                  "skipped the autograd parity check because an integer or"
+                  " boolean FX input depends on dynamic or mutated operations",
+              )
+          )
+        elif interpret_report is not None and (
+            interpret_report.findings_by_category(
+                findings.FindingCategory.SEMAPHORE_DEADLOCK
+            )
+        ):
+          reports.append(
+              _skipped_dynamic_check(
+                  target,
+                  findings.Phase.AUTOGRAD,
+                  findings.Severity.INFO,
+                  "skipped the autograd parity check because CPU interpret"
+                  " timed out on a possible semaphore deadlock",
+              )
+          )
+        elif interpret_report is not None and (
+            interpret_report.findings_by_category(
+                findings.FindingCategory.INVALID_DEVICE_ID
+            )
+        ):
+          reports.append(
+              _skipped_dynamic_check(
+                  target,
+                  findings.Phase.AUTOGRAD,
+                  findings.Severity.INFO,
+                  "skipped the autograd parity check because CPU interpret"
+                  " detected an invalid remote device or core id",
+              )
+          )
+        else:
+          reports.append(
+              fx_verifier.verify_autograd_parity(
+                  target,
+                  args,
+                  kwargs,
+                  watchdog_ctx=interpret_verifier.interpret_watchdog_context,
+                  exception_classifier=(
+                      interpret_verifier.classify_interpret_exception
+                  ),
+              )
+          )
   return findings.merge_reports(*reports)
 
 
@@ -418,8 +568,7 @@ def _skipped_dynamic_check(
               op_name=fx_verifier.get_op_display_name(target),
               message=message,
           ),
-      ),
-      checked_phases=(),
+      )
   )
 
 
@@ -436,6 +585,7 @@ def _materialize_fake_arg(
     placeholder_env: Mapping[fx.Node, Any],
     *,
     concrete_tensor_ids: MutableSet[int] | None = None,
+    unresolved_int_nodes: MutableSequence[str] | None = None,
 ) -> Any:
   """Turns an FX node's FakeTensor metadata into a concrete CPU tensor."""
   if isinstance(val, fx.Node):
@@ -456,6 +606,12 @@ def _materialize_fake_arg(
         return out_t
       return concrete
     meta_val = val.meta.get("val")
+    if (
+        unresolved_int_nodes is not None
+        and isinstance(meta_val, torch.Tensor)
+        and meta_val.dtype in fx_verifier.INT_OR_BOOL_TORCH_DTYPES
+    ):
+      unresolved_int_nodes.append(val.name)
     if isinstance(meta_val, torch.Tensor):
       numel = int(meta_val.numel())
       if meta_val.dtype == torch.float4_e2m1fn_x2:
@@ -486,6 +642,7 @@ def _materialize_fake_arg(
             elem,
             placeholder_env,
             concrete_tensor_ids=concrete_tensor_ids,
+            unresolved_int_nodes=unresolved_int_nodes,
         )
         for elem in val
     ]
@@ -498,6 +655,7 @@ def _materialize_fake_arg(
             v,
             placeholder_env,
             concrete_tensor_ids=concrete_tensor_ids,
+            unresolved_int_nodes=unresolved_int_nodes,
         )
         for k, v in val.items()
     }
@@ -1389,11 +1547,13 @@ def _verify_torch_program(
           else fx_verifier.extract_jax_callable(node.target)
       )
       concrete_ids: set[int] = set()
+      unresolved_ints: list[str] = []
       mat_args = tuple(
           _materialize_fake_arg(
               a,
               sub_env,
               concrete_tensor_ids=concrete_ids,
+              unresolved_int_nodes=unresolved_ints,
           )
           for a in node.args
       )
@@ -1402,6 +1562,7 @@ def _verify_torch_program(
               v,
               sub_env,
               concrete_tensor_ids=concrete_ids,
+              unresolved_int_nodes=unresolved_ints,
           )
           for k, v in node.kwargs.items()
       }
@@ -1410,6 +1571,7 @@ def _verify_torch_program(
           fx_verifier.get_op_display_name(op_handle),
           _signature(mat_args, concrete_tensor_ids=concrete_ids),
           _signature(mat_kwargs, concrete_tensor_ids=concrete_ids),
+          bool(unresolved_ints),
       )
       if key in seen_invocations:
         continue
@@ -1422,6 +1584,7 @@ def _verify_torch_program(
               mode,
               options,
               concrete_arg_ids=frozenset(concrete_ids),
+              has_unresolved_int_args=bool(unresolved_ints),
           )
       )
   return findings.merge_reports(*reports)

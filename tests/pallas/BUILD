@@ -195,6 +195,7 @@ torch_tpu_py_test(
     env = {
         # Keeps JAX off the TPU of OSS CI hosts.
         "JAX_PLATFORMS": "cpu",
+        "XLA_FLAGS": "--xla_force_host_platform_device_count=4",
     },
     shard_count = 4,
     tags = ["notsan"],  # TODO(b/584257115): Fails under OSS TSan.
@@ -208,6 +209,7 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/pallas:mock_device",
+        "//src/torch_tpu/_internal/pallas/verify:interpret_verifier",
         "//src/torch_tpu/_internal/pallas/verify:jaxpr_model",
         "//src/torch_tpu/_internal/pallas/verify:smt_checker",
         "//tests:seed_test_utils",
