@@ -23715,8 +23715,30 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
       with self.subTest(f"{name}_grad"):
         utils.assert_close(compiled, eager, rtol=1e-2, atol=1e-2)
 
+  # Each op compiles a new program for every dtype pair and rank, so one case
+  # per op lets sharding spread the ~500 compiles.
+  # TODO: Systematically enumerate all 2-ary, pointwise ops out of
+  # native_functions.yaml. Note that matmul is not a pointwise op.
+  @parameterized.named_parameters(
+      ("add", torch.add),
+      ("mul", torch.mul),
+      ("sub", torch.sub),
+      ("div", torch.div),
+      ("pow", torch.pow),
+      ("remainder", torch.remainder),
+      ("fmod", torch.fmod),
+      ("maximum", torch.maximum),
+      ("minimum", torch.minimum),
+      # ("hypot", torch.hypot),  # TODO: Uncomment once operator is added.
+      ("atan2", torch.atan2),
+      # ("nextafter", torch.nextafter),  # TODO: Uncomment once op is added.
+      # ("copysign", torch.copysign),  # TODO: Uncomment once op is added.
+      # Not in tpu_aten_kernels, but native_functions.yaml indicates this is a
+      # decomposed op.
+      ("ldexp", torch.ldexp),
+  )
   @utils.skip_if_asan("b/585144512: Slow (~805s) in ASAN mode.")
-  def test_pointwise_op_dtype_promotion(self):
+  def test_pointwise_op_dtype_promotion(self, op):
     """Ensure that pointwise ops promote as expected.
 
     In particular, they promote in all cases except one: rank zero
@@ -23734,81 +23756,58 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
     device = torch.device("tpu")
     dtypes = op_testing.FLOAT_DTYPES
 
-    # TODO: Systematically enumerate all 2-ary, pointwise ops out of
-    # native_functions.yaml. Note that matmul is not a pointwise op.
-    ops = [
-        torch.add,
-        torch.mul,
-        torch.sub,
-        torch.div,
-        torch.pow,
-        torch.remainder,
-        torch.fmod,
-        torch.maximum,
-        torch.minimum,
-        # torch.hypot,  # TODO: Uncomment once operator is added.
-        torch.atan2,
-        # torch.nextafter,  # TODO: Uncomment once operator is added.
-        # torch.copysign,  # TODO: Uncomment once operator is added.
-        torch.ldexp,  # not in tpu_aten_kernels, but native_functions.yaml
-        # indicates this is a decomposed op.
-    ]
-
     # 1) Non-rank-zero tensors
-    for op in ops:
-      for left_dtype in dtypes:
-        for right_dtype in dtypes:
-          left = torch.tensor([0.0], dtype=left_dtype, device=device)
-          right = torch.tensor([0.0], dtype=right_dtype, device=device)
-          expected = torch.promote_types(left_dtype, right_dtype)
-          actual = op(left, right).dtype
+    for left_dtype in dtypes:
+      for right_dtype in dtypes:
+        left = torch.tensor([0.0], dtype=left_dtype, device=device)
+        right = torch.tensor([0.0], dtype=right_dtype, device=device)
+        expected = torch.promote_types(left_dtype, right_dtype)
+        actual = op(left, right).dtype
 
-          self.assertEqual(
-              expected,
-              actual,
-              msg=(
-                  f"{op.__name__=} {left_dtype=} {right_dtype=} {expected=}"
-                  f" {actual=}"
-              ),
-          )
+        self.assertEqual(
+            expected,
+            actual,
+            msg=(
+                f"{op.__name__=} {left_dtype=} {right_dtype=} {expected=}"
+                f" {actual=}"
+            ),
+        )
 
     # 2) Mixed rank-zero and non-rank-zero tensors
-    for op in ops:
-      for left_dtype in dtypes:
-        for right_dtype in dtypes:
-          left = torch.tensor([0.0], dtype=left_dtype, device=device)
-          right = torch.tensor(0.0, dtype=right_dtype, device=device)
-          # Notice that the output type matches the type of the non-scalar
-          # input, rather than the result of torch.promote_types.
-          expected = left.dtype
-          actual = op(left, right).dtype
+    for left_dtype in dtypes:
+      for right_dtype in dtypes:
+        left = torch.tensor([0.0], dtype=left_dtype, device=device)
+        right = torch.tensor(0.0, dtype=right_dtype, device=device)
+        # Notice that the output type matches the type of the non-scalar
+        # input, rather than the result of torch.promote_types.
+        expected = left.dtype
+        actual = op(left, right).dtype
 
-          self.assertEqual(
-              expected,
-              actual,
-              msg=(
-                  f"{op.__name__=} {left_dtype=} {right_dtype=} {expected=}"
-                  f" {actual=}"
-              ),
-          )
+        self.assertEqual(
+            expected,
+            actual,
+            msg=(
+                f"{op.__name__=} {left_dtype=} {right_dtype=} {expected=}"
+                f" {actual=}"
+            ),
+        )
 
     # 3) Rank-zero tensors
-    for op in ops:
-      for left_dtype in dtypes:
-        for right_dtype in dtypes:
-          left = torch.tensor(0.0, dtype=left_dtype, device=device)
-          right = torch.tensor(0.0, dtype=right_dtype, device=device)
-          expected = torch.promote_types(left_dtype, right_dtype)
-          actual = op(left, right).dtype
+    for left_dtype in dtypes:
+      for right_dtype in dtypes:
+        left = torch.tensor(0.0, dtype=left_dtype, device=device)
+        right = torch.tensor(0.0, dtype=right_dtype, device=device)
+        expected = torch.promote_types(left_dtype, right_dtype)
+        actual = op(left, right).dtype
 
-          self.assertEqual(
-              expected,
-              actual,
-              msg=(
-                  f"{op.__name__=} {left_dtype=} {right_dtype=} {expected=}"
-                  f" {actual=}"
-              ),
-          )
+        self.assertEqual(
+            expected,
+            actual,
+            msg=(
+                f"{op.__name__=} {left_dtype=} {right_dtype=} {expected=}"
+                f" {actual=}"
+            ),
+        )
 
   def test_index_backward_with_cpu_mask(self):
     # The backward of `index` scatters the gradient with
