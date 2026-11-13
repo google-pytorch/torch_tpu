@@ -848,6 +848,44 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
     self.assertEqual(out1.shape, (4, 6))
 
   # =========================================================================
+  # torch.fill Tests
+  # =========================================================================
+
+  def test_fill_scalar_multi_dynamic_dims(self):
+    class Model(torch.nn.Module):
+
+      def forward(self, x):
+        return torch.fill(x, 3.5) + x
+
+    model = Model()
+    compiled = torch.compile(model, backend="tpu")
+
+    x_cpu = torch.arange(24, dtype=torch.float32).reshape(4, 6)
+    expected = model(x_cpu)
+    x_tpu = x_cpu.to(self.device)
+    torch._dynamo.mark_dynamic(x_tpu, 0, min=2, max=16)
+    torch._dynamo.mark_dynamic(x_tpu, 1, min=2, max=16)
+    utils.assert_close(compiled(x_tpu), expected)
+
+  def test_fill_tensor_multi_dynamic_dims(self):
+    class Model(torch.nn.Module):
+
+      def forward(self, x, fill_value):
+        return torch.fill(x, fill_value) + x
+
+    model = Model()
+    compiled = torch.compile(model, backend="tpu")
+
+    x_cpu = torch.arange(24, dtype=torch.float32).reshape(4, 6)
+    fill_value_cpu = torch.tensor(2.5, dtype=torch.float32)
+    expected = model(x_cpu, fill_value_cpu)
+    x_tpu = x_cpu.to(self.device)
+    fill_value_tpu = fill_value_cpu.to(self.device)
+    torch._dynamo.mark_dynamic(x_tpu, 0, min=2, max=16)
+    torch._dynamo.mark_dynamic(x_tpu, 1, min=2, max=16)
+    utils.assert_close(compiled(x_tpu, fill_value_tpu), expected)
+
+  # =========================================================================
   # torch.rand and torch.randn Tests
   # =========================================================================
 

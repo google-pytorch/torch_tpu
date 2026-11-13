@@ -498,8 +498,6 @@ DYNAMISM_DENY_LISTS: DenyList = {
     },
     # TODO: b/449736443 - Support bounded dimensions in these lowerings.
     "the lowering emits an op without bounded shape support": {
-        # Backward broadcast fails with mixed bounded and static dimensions.
-        "_foreach_lerp": {COMPILE_GRAD},
         # Calls getNumElements() on a dynamic shaped type, failing an MLIR
         # assertion that aborts the test process in builds with MLIR
         # assertions enabled.
