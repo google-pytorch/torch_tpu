@@ -15,6 +15,8 @@
 """Unit tests for signature-driven input synthesis."""
 
 import inspect
+import math
+from unittest import mock
 
 from absl.testing import absltest
 from absl.testing import parameterized
@@ -22,6 +24,48 @@ import torch
 from tests.model_registry.core import inputs
 from tests.model_registry.types import Modality
 import transformers
+from transformers.models.t5 import modeling_t5
+
+
+# Patch T5 relative position bucket calculation.
+# Computing torch.log(relative_position.float() / max_exact) on CPU tensors
+# where relative_position == 0 yields -inf. Casting -inf to torch.long via
+# .to(torch.long) triggers an undefined-behavior float-cast-overflow trap
+# (SIGTRAP) on Arm (aarch64) in Clang-compiled builds. Clamping the input
+# position tensor to max_exact avoids log(0) = -inf while preserving identical
+# behavior because torch.where selects the exact position whenever
+# relative_position < max_exact.
+def _safe_t5_relative_position_bucket(
+    relative_position, bidirectional=True, num_buckets=32, max_distance=128
+):
+  relative_buckets = 0
+  if bidirectional:
+    num_buckets //= 2
+    relative_buckets += (relative_position > 0).to(torch.long) * num_buckets
+    relative_position = torch.abs(relative_position)
+  else:
+    relative_position = -torch.min(
+        relative_position, torch.zeros_like(relative_position)
+    )
+
+  max_exact = num_buckets // 2
+  is_small = relative_position < max_exact
+
+  clamped_position = torch.clamp(relative_position.float(), min=max_exact)
+  relative_position_if_large = max_exact + (
+      torch.log(clamped_position / max_exact)
+      / math.log(max_distance / max_exact)
+      * (num_buckets - max_exact)
+  ).to(torch.long)
+  relative_position_if_large = torch.min(
+      relative_position_if_large,
+      torch.full_like(relative_position_if_large, num_buckets - 1),
+  )
+
+  relative_buckets += torch.where(
+      is_small, relative_position, relative_position_if_large
+  )
+  return relative_buckets
 
 
 def _tiny_models() -> dict[str, torch.nn.Module]:
@@ -157,9 +201,14 @@ class SignatureInputsTest(
     self.assertEqual(out["input_features"].shape, (1, 8, 32))
 
   def test_generated_inputs_run_forward(self):
-    for name, model in self.models.items():
-      with self.subTest(name), torch.no_grad():
-        model.eval()(**self._generate(name))
+    with mock.patch.object(
+        modeling_t5.T5Attention,
+        "_relative_position_bucket",
+        staticmethod(_safe_t5_relative_position_bucket),
+    ):
+      for name, model in self.models.items():
+        with self.subTest(name), torch.no_grad():
+          model.eval()(**self._generate(name))
 
 
 class RuleTableTest(
