@@ -32,6 +32,7 @@
 #include "absl/types/span.h"
 #include "c10/core/DefaultDtype.h"
 #include "c10/util/Exception.h"
+#include "c10/util/StringUtil.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -2324,6 +2325,48 @@ INSTANTIATE_TEST_SUITE_P(
     }),
     [](const testing::TestParamInfo<ConvolutionLikeUnsupportedTest::ParamType>&
            info) { return info.param.test_name; });
+
+TEST(BuildFillUninitialized, FiniteOnlyFloatTypesUseMaxFiniteValue) {
+  struct TestCase {
+    mlir::ElementType element_type;
+    double expected_value;
+  };
+  const std::vector<TestCase> test_cases = {
+      {mlir::ElementType::F4E2M1FN, 6.0},
+      {mlir::ElementType::F6E2M3FN, 7.5},
+      {mlir::ElementType::F6E3M2FN, 28.0},
+  };
+
+  for (const auto& tc : test_cases) {
+    OpBuilderUtilsBuilder builder_holder;
+    mlir::ModuleBuilder& mb = builder_holder.get();
+    mlir::MlirOp op = BuildFillUninitialized(mb, tc.element_type, {2, 4});
+    auto const_op = mlir::dyn_cast<mlir::stablehlo::ConstantOp>(
+        op.getValue().getDefiningOp());
+    ASSERT_TRUE(const_op != nullptr);
+    auto dense_attr =
+        mlir::dyn_cast<mlir::DenseElementsAttr>(const_op.getValue());
+    ASSERT_TRUE(dense_attr != nullptr);
+    ASSERT_TRUE(dense_attr.isSplat());
+    EXPECT_DOUBLE_EQ(
+        dense_attr.getSplatValue<llvm::APFloat>().convertToDouble(),
+        tc.expected_value);
+  }
+}
+
+TEST(BuildFillUninitialized, StandardFloatTypesUseNaN) {
+  OpBuilderUtilsBuilder builder_holder;
+  mlir::ModuleBuilder& mb = builder_holder.get();
+  mlir::MlirOp op = BuildFillUninitialized(mb, mlir::ElementType::F32, {2, 4});
+  auto const_op = mlir::dyn_cast<mlir::stablehlo::ConstantOp>(
+      op.getValue().getDefiningOp());
+  ASSERT_TRUE(const_op != nullptr);
+  auto dense_attr =
+      mlir::dyn_cast<mlir::DenseElementsAttr>(const_op.getValue());
+  ASSERT_TRUE(dense_attr != nullptr);
+  ASSERT_TRUE(dense_attr.isSplat());
+  EXPECT_TRUE(dense_attr.getSplatValue<llvm::APFloat>().isNaN());
+}
 
 }  // namespace
 }  // namespace torch_tpu
