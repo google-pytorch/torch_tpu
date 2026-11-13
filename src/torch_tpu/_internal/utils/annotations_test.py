@@ -431,7 +431,7 @@ class AnnotationsTest(seed_test_utils.RepeatableTest):
     self.assertEqual(
         getattr(fn, annotations.TT_API_STAGE, None),
         "Internal"
-        if annotations.get_torch_version() >= (2, 13)
+        if annotations.get_torch_version() >= (2, 14)
         else "Experimental",
     )
     self.assertIn(
@@ -1142,8 +1142,8 @@ class AnnotationsTest(seed_test_utils.RepeatableTest):
         "synchronize": ("torch.accelerator.synchronize", (2, 11)),
         "current_stream": ("torch.accelerator.current_stream", (2, 11)),
         "set_stream": ("torch.accelerator.set_stream", (2, 11)),
-        "initial_seed": ("torch.accelerator.random.initial_seed", (2, 13)),
-        "get_rng_state": ("torch.accelerator.random.get_rng_state", (2, 13)),
+        "initial_seed": ("torch.accelerator.random.initial_seed", (2, 14)),
+        "get_rng_state": ("torch.accelerator.random.get_rng_state", (2, 14)),
     }
     for api, (replacement, version) in replacements.items():
       with self.subTest(api=api):

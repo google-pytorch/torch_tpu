@@ -79,10 +79,10 @@ print(
 | `torch.cuda.default_generators` | `torch.tpu.default_generators` | Lazily initialized tuple of default `torch.Generator` instances indexed by local device ordinal. |
 <!-- mdformat on -->
 
-The `torch.accelerator.random` APIs in this table require PyTorch 2.13 or later.
+The `torch.accelerator.random` APIs in this table require PyTorch 2.14 or later.
 In the rare case that you use an older PyTorch version, use
 `torch.tpu.initial_seed()` or `torch.tpu.get_rng_state()` instead. In PyTorch
-2.13 and later, these `torch.tpu` APIs are internal to TorchTPU, and calling
+2.14 and later, these `torch.tpu` APIs are internal to TorchTPU, and calling
 them from your code raises an error.
 
 ```python

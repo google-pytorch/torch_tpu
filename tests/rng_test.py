@@ -32,9 +32,9 @@ def setUpModule():
 class RngTest(seed_test_utils.RepeatableTest):
 
   def test_get_rng_state_raises_when_internal_apis_disallowed(self):
-    if annotations.get_torch_version() < (2, 13):
+    if annotations.get_torch_version() < (2, 14):
       self.skipTest(
-          "torch.accelerator.random.get_rng_state requires PyTorch 2.13+."
+          "torch.accelerator.random.get_rng_state requires PyTorch 2.14+."
       )
     expected_message = (
         "get_rng_state is internal to TorchTPU and can only be called by"

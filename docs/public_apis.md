@@ -313,7 +313,7 @@ its recommended alternative instead.
 
 Each API below is internal in the PyTorch versions that provide its recommended
 alternative: PyTorch 2.11 or later for the `torch.accelerator` APIs, and PyTorch
-2.13 or later for the `torch.accelerator.random` APIs. In the rare case that you
+2.14 or later for the `torch.accelerator.random` APIs. In the rare case that you
 use an older PyTorch version, the API is experimental instead, and you can call
 it.
 

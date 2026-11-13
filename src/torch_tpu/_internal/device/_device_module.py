@@ -679,7 +679,7 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
 
   @classmethod
   @annotations.internal_or_experimental(
-      internal_when=get_torch_version() >= (2, 13),
+      internal_when=get_torch_version() >= (2, 14),
       prefer="torch.accelerator.random.initial_seed",
       strict=_STRICT_INTERNAL_DEVICE_APIS,
       experimental_msg=(
@@ -704,7 +704,7 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
 
   @classmethod
   @annotations.internal_or_experimental(
-      internal_when=get_torch_version() >= (2, 13),
+      internal_when=get_torch_version() >= (2, 14),
       prefer="torch.accelerator.random.get_rng_state",
       strict=_STRICT_INTERNAL_DEVICE_APIS,
       experimental_msg=(
