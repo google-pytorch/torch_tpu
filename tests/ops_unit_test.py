@@ -24550,12 +24550,6 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
         (torch.float64, torch.float32),
     ):
       with self.subTest(in_dtype=in_dtype, out_dtype=out_dtype):
-        # TODO(b/584779384): float64 polygamma with out= generates > 70k HLO
-        # instructions, which takes > 25 mins to optimize under ASAN and causes
-        # shard timeouts. Skip this case under ASAN mode only.
-        if in_dtype == torch.float64 and utils.is_asan():
-          self.skipTest("b/584779384: Times out in ASAN mode.")
-
         def test_fn(device, in_dtype=in_dtype, out_dtype=out_dtype):
           x = to(torch.tensor([1.5, 2.5], dtype=in_dtype), device=device)
           out = to(torch.zeros(2, dtype=out_dtype), device=device)
@@ -24563,6 +24557,50 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
           return out
 
         self.assert_close_tpu_vs_cpu(test_fn)
+
+  def test_polygamma_integer_power_mlir(self) -> None:
+    """Verifies polygamma(n >= 1) lowers integer powers without stablehlo.power.
+
+    General float64 stablehlo.power expands to ~3k HLO instructions in
+    X64Rewriter (22 calls -> >70k HLO instructions, timing out under ASAN;
+    b/584779384).
+    """
+    x = torch.tensor([1.5, 2.5], dtype=torch.float64, device="tpu")
+    torch.accelerator.synchronize()
+    for n in (1, 2, 3, 4):
+      with self.subTest(n=n):
+        with execution_mode.set_eager_mode(
+            execution_mode.EagerMode.DEFER_AND_FUSE
+        ):
+          y = torch.polygamma(n, x)
+        mlir_text = tpu_torch_compile.serialize_mlir_text(
+            tpu_torch_compile.build_mlir([y], [x])
+        )
+        self.assertNotIn("stablehlo.power", mlir_text)
+        self.assertIn("stablehlo.multiply", mlir_text)
+
+  def test_polygamma_reflection_and_higher_order(self) -> None:
+    """Verifies polygamma(n >= 1) outputs for x < 0 reflection and n = 4."""
+    values = [-1.5, 0.5, 1.5, 2.5]
+    # float32 pi / 2 ULP rounding in cot(pi * x) scales by 16 * pi^5 at n = 4.
+    # CPU trigamma(double) truncates after B_6 (error ~1.5e-9); n=1 uses 2e-9.
+    cases = (
+        (1, torch.float32, None, None),
+        (2, torch.float32, None, None),
+        (3, torch.float32, None, None),
+        (4, torch.float32, None, 3e-4),
+        (1, torch.float64, 2e-9, 2e-9),
+        (4, torch.float64, 1e-11, 1e-11),
+    )
+    for n, dtype, rtol, atol in cases:
+      with self.subTest(n=n, dtype=dtype):
+        self.assert_close_tpu_vs_cpu(
+            lambda device, n=n, dtype=dtype: torch.polygamma(
+                n, to(torch.tensor(values, dtype=dtype), device=device)
+            ),
+            rtol=rtol,
+            atol=atol,
+        )
 
   def test_masked_softmax(self):
     def test_fn(device):
