@@ -79,15 +79,19 @@ struct MaterializationTask {
 
 // Checks that all must_materialize nodes in the task have started
 // materializing. If any are not materializing, then those nodes are marked
-// as an error and the first error is returned to signal an overall task
-// failure.
+// as an error (using `prior_error` if non-OK, otherwise an internal error)
+// and the first error is returned to signal an overall task failure.
 absl::Status VerifyMustMaterialize(
-    absl::Span<const SharedDeviceBufferList> must_materialize) {
+    absl::Span<const SharedDeviceBufferList> must_materialize,
+    const absl::Status& prior_error) {
   absl::Status first_missing_node_error = absl::OkStatus();
   for (const auto& node : must_materialize) {
     if (!node->is_materializing()) {
-      auto error = TT_ERROR(error::kInternal)
-                   << "materialization failed for node " << node;
+      absl::Status error = prior_error;
+      if (error.ok()) {
+        error = TT_ERROR(error::kInternal)
+                << "materialization failed for node " << node;
+      }
       node->SetAsError(error);
       if (first_missing_node_error.ok()) {
         first_missing_node_error = error;
@@ -180,9 +184,10 @@ void ProcessEagerExecution(
                          eager_execution.settings.compilation_mode,
                          eager_execution.settings.reason);
 
+  const absl::Status verify_error = VerifyMustMaterialize(
+      eager_execution.must_materialize, tasks_result.first_error);
   if (tasks_result.first_error.ok()) {
-    tasks_result.first_error =
-        VerifyMustMaterialize(eager_execution.must_materialize);
+    tasks_result.first_error = verify_error;
   }
   if (!tasks_result.first_error.ok() && materialization_error.ok()) {
     materialization_error = tasks_result.first_error;
@@ -218,21 +223,24 @@ void ProcessSnapshotRequest(
   const std::optional<DeviceBufferRef>& latest_output =
       last_device_output.has_value() ? last_device_output
                                      : snapshot_request.last_device_output;
-  if (materialization_error.ok()) {
-    if (latest_output.has_value()) {
-      snapshot_request.futures.push_back(
-          GetSnapshotDeviceReadyFuture(*latest_output));
-    }
-    snapshot_request.futures.insert(
-        snapshot_request.futures.end(),
-        std::make_move_iterator(materialization_futures.begin()),
-        std::make_move_iterator(materialization_futures.end()));
-    snapshot_request.snapshot_to_start.Start(
-        xla::JoinFutures(snapshot_request.futures));
-  } else {
-    snapshot_request.snapshot_to_start.Start(materialization_error);
+  if (latest_output.has_value()) {
+    snapshot_request.futures.push_back(
+        GetSnapshotDeviceReadyFuture(*latest_output));
+  }
+  snapshot_request.futures.insert(
+      snapshot_request.futures.end(),
+      std::make_move_iterator(materialization_futures.begin()),
+      std::make_move_iterator(materialization_futures.end()));
+  if (!materialization_error.ok()) {
+    // Still await all prior stream work (e.g. D2H transfers and already
+    // enqueued executions) before completing the snapshot with the error, so
+    // callers do not free host buffers while background transfers are active.
+    snapshot_request.futures.push_back(
+        xla::Future<void>(std::move(materialization_error)));
     materialization_error = absl::OkStatus();
   }
+  snapshot_request.snapshot_to_start.Start(
+      xla::JoinFutures(snapshot_request.futures));
   last_device_output.reset();
   snapshot_request.futures.clear();
   materialization_futures.clear();
