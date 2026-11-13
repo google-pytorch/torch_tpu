@@ -147,51 +147,37 @@ torch_tpu_py_test(
     ],
 )
 
+# Package holding the golden files: this one internally, @torch_tpu_goldens in
+# OSS.
+_GOLDENS_PACKAGE = if_oss("@torch_tpu_goldens//:", "")
+
+# The ops tests depend on these per-test-case splits rather than on the .gz
+# files, so that each shard decodes only the goldens of the test cases it runs.
 # The target name must be `<golden file prefix>_per_test_case`, matching
 # op_testing._golden_file_prefix() and _GPU_GOLDEN_PER_TEST_CASE_SUFFIX.
 split_gpu_goldens(
     name = "ops_test_gpu_golden_per_test_case",
-    base_srcs = _GPU_GOLDENS_BASE,
-    hopper_srcs = _GPU_GOLDENS_HOPPER,
+    base_srcs = [_GOLDENS_PACKAGE + f for f in _GPU_GOLDENS_BASE],
+    hopper_srcs = [_GOLDENS_PACKAGE + f for f in _GPU_GOLDENS_HOPPER],
 )
 
 split_gpu_goldens(
     name = "ops_test_gpu_golden_grad_per_test_case",
-    base_srcs = _GPU_GOLDENS_GRAD_BASE,
-    hopper_srcs = _GPU_GOLDENS_GRAD_HOPPER,
+    base_srcs = [_GOLDENS_PACKAGE + f for f in _GPU_GOLDENS_GRAD_BASE],
+    hopper_srcs = [_GOLDENS_PACKAGE + f for f in _GPU_GOLDENS_GRAD_HOPPER],
 )
 
 split_gpu_goldens(
     name = "ops_test_gpu_golden_compiled_per_test_case",
-    base_srcs = _GPU_GOLDENS_COMPILED_BASE,
-    hopper_srcs = _GPU_GOLDENS_COMPILED_HOPPER,
+    base_srcs = [_GOLDENS_PACKAGE + f for f in _GPU_GOLDENS_COMPILED_BASE],
+    hopper_srcs = [_GOLDENS_PACKAGE + f for f in _GPU_GOLDENS_COMPILED_HOPPER],
 )
 
-# TODO(b/576014545): Add per-test-case loading in OSS so OSS tests can also use
-# per-test-case directory artifacts and drop monolithic .gz loading.
-_GPU_GOLDENS_DATA = if_oss(
-    [
-        "@torch_tpu_goldens//:" + f
-        for f in _GPU_GOLDENS_BASE + _GPU_GOLDENS_HOPPER
-    ],
-    [":ops_test_gpu_golden_per_test_case"],
-)
+_GPU_GOLDENS_DATA = [":ops_test_gpu_golden_per_test_case"]
 
-_GPU_GOLDENS_GRAD_DATA = if_oss(
-    [
-        "@torch_tpu_goldens//:" + f
-        for f in _GPU_GOLDENS_GRAD_BASE + _GPU_GOLDENS_GRAD_HOPPER
-    ],
-    [":ops_test_gpu_golden_grad_per_test_case"],
-)
+_GPU_GOLDENS_GRAD_DATA = [":ops_test_gpu_golden_grad_per_test_case"]
 
-_GPU_GOLDENS_COMPILED_DATA = if_oss(
-    [
-        "@torch_tpu_goldens//:" + f
-        for f in _GPU_GOLDENS_COMPILED_BASE + _GPU_GOLDENS_COMPILED_HOPPER
-    ],
-    [":ops_test_gpu_golden_compiled_per_test_case"],
-)
+_GPU_GOLDENS_COMPILED_DATA = [":ops_test_gpu_golden_compiled_per_test_case"]
 
 torch_tpu_py_library(
     name = "oss_utils",
