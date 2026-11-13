@@ -50,6 +50,7 @@ from torch import distributed as dist
 from torch.distributed import device_mesh
 import torch.multiprocessing as mp
 
+from torch_tpu._internal.distributed import tpu_distributed
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
@@ -853,6 +854,37 @@ def _run_rank_variable_dead_collective_without_hang(world_size: int) -> None:
 class CollectiveOpsTest(continuous_test_utils.TpuMultiProcContinuousTest):
   world_size = distributed_utils.get_tpu_device_count()
 
+  def test_global_device_count(self) -> None:
+    # Verify that rank-related environment variables are set by launcher.
+    self.assertIn("RANK", os.environ)
+    self.assertIn("LOCAL_RANK", os.environ)
+    self.assertIn("GROUP_RANK", os.environ)
+    self.assertIn("WORLD_SIZE", os.environ)
+    self.assertEqual(int(os.environ["WORLD_SIZE"]), self.world_size)
+    self.assertEqual(int(os.environ["RANK"]), self.rank)
+
+    self.assertEqual(dist.get_world_size(), self.world_size)
+    self.assertEqual(dist.get_rank(), self.rank)
+
+    global_device_ids = tpu_distributed.all_global_device_ids()
+    self.assertLen(global_device_ids, self.world_size)
+
+    this_device = torch.accelerator.current_device_index()
+    # torch.accelerator.current_device_index() returns the id among all
+    # addressable devices, not the global device id.
+    self.assertGreaterEqual(this_device, 0)
+    self.assertLess(
+        this_device,
+        torch.accelerator.device_count(),
+        msg=(
+            "Expected device id to be in range [0,"
+            f" {torch.accelerator.device_count()}), got {this_device}"
+        ),
+    )
+    # A worker uses only its own device, and PyTorch picks device
+    # `rank % device_count()`, so the count must be 1.
+    self.assertEqual(torch.accelerator.device_count(), 1)
+
   def test_all_reduce_sum(self) -> None:
     w = self.world_size
     _run_all_reduce(
@@ -985,6 +1017,35 @@ class CollectiveOpsTest(continuous_test_utils.TpuMultiProcContinuousTest):
 
   def test_gather_with_root_subset_use(self) -> None:
     _run_gather_with_root_subset_use()
+
+  def test_scatter_tensor(self) -> None:
+    src_rank = 0
+    size = 5
+    inputs = None
+    if self.rank == src_rank:
+      inputs = [
+          torch.full((size,), i, device="tpu", dtype=torch.float32)
+          for i in range(self.world_size)
+      ]
+    output = torch.empty(size, device="tpu", dtype=torch.float32)
+
+    torch.distributed.scatter(output, inputs, src=src_rank)
+    expected = torch.full((size,), fill_value=self.rank, dtype=torch.float32)
+    utils.assert_close(output.cpu(), expected)
+
+  def test_scatter_scalar(self) -> None:
+    src_rank = 0
+    inputs = None
+    if self.rank == src_rank:
+      inputs = [
+          torch.tensor(i, device="tpu", dtype=torch.float32)
+          for i in range(self.world_size)
+      ]
+    output = torch.tensor(-1, device="tpu", dtype=torch.float32)
+
+    torch.distributed.scatter(output, inputs, src=src_rank)
+    expected = torch.tensor(self.rank, dtype=torch.float32)
+    utils.assert_close(output.cpu(), expected)
 
   def test_reduce_scatter(self) -> None:
     _run_reduce_scatter()

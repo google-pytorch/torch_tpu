@@ -33,7 +33,7 @@
 #include "pybind11/stl.h"
 #include "torch/csrc/distributed/c10d/Backend.hpp"
 #include "torch/csrc/distributed/c10d/Store.hpp"
-#include "torch/csrc/utils/pybind.h"  // IWYU pragma: keep or multi_tpu_test fails
+#include "torch/csrc/utils/pybind.h"  // IWYU pragma: keep or collective_ops_test fails
 #include "xla/pjrt/pjrt_client.h"
 
 namespace torch_tpu {
