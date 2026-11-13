@@ -463,7 +463,9 @@ def _should_skip_input_marking(
 DenyList = dict[str, dict[str, set[DynamismMode] | frozenset[DynamismMode]]]
 
 # Mode-aware deny lists for bounded dynamism op tests, keyed by the reason for
-# the skip. The reason is included in the skip message.
+# the skip. The reason is included in the skip message. Each inner dict maps an
+# `OpInfo.name` (or `f"{OpInfo.name}.{OpInfo.variant_test_name}"` to narrow to
+# a single variant) to the excluded modes.
 #
 # Policy: every entry is a known bug in a lowering, XLA or TorchTPU, or a gap
 # in the dynamism test harness. The goal is to drive this to empty, so remove
@@ -621,7 +623,7 @@ DYNAMISM_DENY_LISTS: DenyList = {
         "topk": {EAGER},
         # Calls getNumElements() and static scale checks on bounded operands.
         # torch._scaled_mm_v2 aborts the test process.
-        "torch._scaled_mm": {EAGER, COMPILE},
+        "torch._scaled_mm.rowwise": {EAGER, COMPILE},
         "torch._scaled_mm_v2": {EAGER, COMPILE},
         # stablehlo.reshape allows at most one bounded dimension. This fails
         # when dims 0 and 2 are both dynamic, which happens in compile mode
@@ -834,13 +836,28 @@ DYNAMISM_NOT_APPLICABLE_OPS: DenyList = {
 }
 
 
+def op_deny_list_key(op_info: core.OpInfo) -> str:
+  """Returns the most specific deny-list key for `op_info`."""
+  if op_info.variant_test_name:
+    return f"{op_info.name}.{op_info.variant_test_name}"
+  return op_info.name
+
+
+def _op_deny_list_lookup_keys(op_info: core.OpInfo) -> tuple[str, ...]:
+  """Returns deny-list lookup keys for `op_info`, most specific first."""
+  if op_info.variant_test_name:
+    return (f"{op_info.name}.{op_info.variant_test_name}", op_info.name)
+  return (op_info.name,)
+
+
 def _find_reason(
-    deny_lists: DenyList, op_name: str, mode: DynamismMode
+    deny_lists: DenyList, op_info: core.OpInfo, mode: DynamismMode
 ) -> str | None:
-  """Returns the first reason in `deny_lists` that excludes `op_name` in `mode`."""
-  for reason, ops in deny_lists.items():
-    if mode in ops.get(op_name, ()):
-      return reason
+  """Returns the first reason in `deny_lists` that excludes `op_info` in `mode`."""
+  for key in _op_deny_list_lookup_keys(op_info):
+    for reason, ops in deny_lists.items():
+      if mode in ops.get(key, ()):
+        return reason
   return None
 
 
@@ -857,16 +874,17 @@ def verify_op_supports_dynamism(
   Returns:
     None if the op is supported in `mode`, or a skipTest message if not.
   """
-  reason = _find_reason(DYNAMISM_NOT_APPLICABLE_OPS, op_info.name, mode)
+  display_name = op_deny_list_key(op_info)
+  reason = _find_reason(DYNAMISM_NOT_APPLICABLE_OPS, op_info, mode)
   if reason is not None:
     return (
-        f"Dynamism is not applicable to {op_info.name} in {mode.value} mode:"
+        f"Dynamism is not applicable to {display_name} in {mode.value} mode:"
         f" {reason}."
     )
-  reason = _find_reason(DYNAMISM_DENY_LISTS, op_info.name, mode)
+  reason = _find_reason(DYNAMISM_DENY_LISTS, op_info, mode)
   if reason is not None:
     return (
-        f"Op {op_info.name} is not supported in {mode.value} dynamism mode:"
+        f"Op {display_name} is not supported in {mode.value} dynamism mode:"
         f" {reason}."
     )
   return None
