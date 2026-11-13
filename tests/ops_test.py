@@ -4252,4 +4252,4 @@ def tearDownModule() -> None:
 
 
 if __name__ == "__main__":
-  absltest.main()
+  op_testing.run_test_main(absltest.main)
