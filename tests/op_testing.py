@@ -28,12 +28,14 @@ import gzip
 import importlib
 import itertools
 import logging  # PYTHON_LOGGING_OK=Setting module log level for compile testing
+from multiprocessing import connection as mp_connection
 import os
 import plistlib
 import random
 import re
 import statistics
 import sys
+import tempfile
 import time
 import traceback
 import typing
@@ -41,6 +43,7 @@ from typing import Any, Final
 import unittest
 
 from absl import flags
+from absl.testing import absltest
 from etils import epath
 import safetensors.torch as st
 import sympy
@@ -61,9 +64,12 @@ from torch.testing._internal.opinfo.definitions import linalg
 from torch.utils import _pytree
 from torch_tpu._internal import compile as tt_compile
 from torch_tpu._internal import compiler_options as compiler
+from torch_tpu._internal import env
 from torch_tpu._internal import testing as tt_testing
+from torch_tpu._internal.device import _device_ops_backend
 from torch_tpu._internal.utils import test_utils
 from torch_tpu._internal.utils import utils
+from torch_tpu._internal.distributed import multiprocessing
 from tests import dynamism_test_utils
 from tests import quantize_utils
 from tests import seed_test_utils
@@ -190,6 +196,29 @@ _DYNAMISM_PLAN_FILTER: Final[flags.FlagHolder[str]] = flags.DEFINE_string(
     "",
     "If non-empty, only runs the DynamicMarkingPlan whose label matches this"
     " string (e.g. 't0d0' or 't0d0_t0d1').",
+)
+
+_IGNORE_DYNAMISM_DENY_LIST: Final[flags.FlagHolder[bool]] = flags.DEFINE_bool(
+    "ignore_dynamism_deny_list",
+    False,
+    "If set, runs DYNAMISM_DENY_LISTS ops normally (without xfail or crash"
+    " skipping) for TDD reproduction. DYNAMISM_NOT_APPLICABLE_OPS are still"
+    " skipped.",
+)
+
+_CHECK_DYNAMISM_CRASHES: Final[flags.FlagHolder[bool]] = flags.DEFINE_bool(
+    "check_dynamism_crashes",
+    False,
+    "If set with --check_dynamism, skips non-crashing ops and runs each active"
+    " CRASH (or UNOPTIMIZED_ASSERT_CRASH in unoptimized builds) entry in an"
+    " isolated subprocess, failing if it passes or fails without crashing.",
+)
+
+_RUN_CRASHING_DYNAMISM_OPS: Final[flags.FlagHolder[bool]] = flags.DEFINE_bool(
+    "_run_crashing_dynamism_ops",
+    False,
+    "Internal flag set by --check_dynamism_crashes inside worker subprocesses"
+    " to execute the target test in-process.",
 )
 
 _CHECK_SYMBOLIC_SHAPES: Final[flags.FlagHolder[bool]] = flags.DEFINE_bool(
@@ -6104,7 +6133,7 @@ def _target_device(dtype: torch.dtype, device: torch.device) -> torch.device:
 
 
 def _op_func(
-    op: OpInfo, variant: OpVariant, target_device: torch.device
+    op: OpInfo, variant: OpVariant, target_device: torch.device | None = None
 ) -> Callable[..., Any]:
   """Returns the function to call for running `variant` of `op`."""
   # For operators that lack a native PyTorch CPU kernel (e.g. internal CUDA
@@ -6113,7 +6142,8 @@ def _op_func(
   # i.e. for sub-byte dtypes in the gen_gpu_golden mode.
   ref = getattr(op, "ref", None)
   if (
-      target_device.type == "cpu"
+      target_device is not None
+      and target_device.type == "cpu"
       and ref is not None
       and (
           op.name.startswith("_thnn_fused_")
@@ -6129,6 +6159,299 @@ def _dynamism_mode(*, use_compiled: bool, compute_grad: bool) -> DynamismMode:
   if use_compiled:
     return DynamismMode.COMPILE_GRAD if compute_grad else DynamismMode.COMPILE
   return DynamismMode.EAGER
+
+
+def _resolve_dynamism_op_exclusion(
+    op: OpInfo,
+    mode: DynamismMode,
+) -> tuple[str | None, dynamism_test_utils.DynamismExclusion | None]:
+  """Resolves whether `(op, mode)` should skip or run in-process as an xfail.
+
+  Args:
+    op: The `OpInfo` descriptor for the operator under test.
+    mode: The active `DynamismMode`.
+
+  Returns:
+    A `(skip_reason, xfail_exclusion)` tuple:
+      - `(None, None)`: run normally (no deny-list entry, or bypassed via
+        `--ignore_dynamism_deny_list`).
+      - `(skip_reason, None)`: skip the op (`DYNAMISM_NOT_APPLICABLE_OPS`,
+        `CRASH`, or `UNOPTIMIZED_ASSERT_CRASH` in unoptimized builds).
+      - `(None, exclusion)`: run in-process as an expected failure
+        (`EXCEPTION`, or `UNOPTIMIZED_ASSERT_CRASH` in optimized builds where
+        assertions do not abort).
+  """
+  exclusion = dynamism_test_utils.get_dynamism_exclusion(op, mode)
+  if exclusion is None:
+    return None, None
+  if exclusion.is_not_applicable:
+    return exclusion.skip_message(op, mode), None
+  if _IGNORE_DYNAMISM_DENY_LIST.value:
+    return None, None
+  if exclusion.failure_kind == dynamism_test_utils.DynamismFailureKind.CRASH:
+    return exclusion.skip_message(op, mode), None
+  if (
+      exclusion.failure_kind
+      == dynamism_test_utils.DynamismFailureKind.UNOPTIMIZED_ASSERT_CRASH
+      and not env.TORCH_TPU_IS_OPTIMIZED_BUILD
+  ):
+    return exclusion.skip_message(op, mode), None
+  return None, exclusion
+
+
+_CRASH_OUTCOME_PASSED: Final[str] = "passed"
+_CRASH_OUTCOME_FAILED: Final[str] = "failed"
+_CRASH_OUTCOME_SKIPPED: Final[str] = "skipped"
+_CRASH_OUTCOME_RUNTIME_POISONED: Final[str] = "runtime_poisoned"
+
+
+def _in_dynamism_crash_parent_mode() -> bool:
+  """Returns whether this process is the parent coordinator for crash checks."""
+  return _CHECK_DYNAMISM_CRASHES.value and not _RUN_CRASHING_DYNAMISM_OPS.value
+
+
+def _is_active_dynamism_crash_exclusion(
+    exclusion: dynamism_test_utils.DynamismExclusion | None,
+) -> bool:
+  """Returns whether `exclusion` expects a process crash in this build."""
+  if exclusion is None or exclusion.is_not_applicable:
+    return False
+  if exclusion.failure_kind == dynamism_test_utils.DynamismFailureKind.CRASH:
+    return True
+  if (
+      exclusion.failure_kind
+      == dynamism_test_utils.DynamismFailureKind.UNOPTIMIZED_ASSERT_CRASH
+      and not env.TORCH_TPU_IS_OPTIMIZED_BUILD
+  ):
+    return True
+  return False
+
+
+@dataclasses.dataclass(frozen=True)
+class _DynamismCrashSubprocessResult:
+  """Outcome of running a single dynamism test in an isolated subprocess."""
+
+  exitcode: int | None
+  outcome: str | None
+  detail: str | None
+  output: str
+
+
+def _build_dynamism_crash_worker_argv() -> list[str]:
+  """Builds argv for an isolated dynamism crash worker subprocess."""
+  argv = [
+      sys.argv[0],
+      f"--test_mode={_TEST_MODE.value.value}",
+      "--check_dynamism=True",
+      "--check_dynamism_crashes=False",
+      "--_run_crashing_dynamism_ops=True",
+      "--ignore_dynamism_deny_list=True",
+      f"--use_compiled={is_compiled_mode()}",
+      f"--compute_grad={_COMPUTE_GRAD.value}",
+      f"--max_samples_per_op_dtype={_MAX_SAMPLES_PER_OP_DTYPE.value}",
+      f"--dtypes={','.join(_DTYPES.value)}",
+      f"--print_op_inputs={_PRINT_OP_INPUTS.value}",
+  ]
+  if _DYNAMISM_PLAN_FILTER.value:
+    argv.append(f"--dynamism_plan_filter={_DYNAMISM_PLAN_FILTER.value}")
+  if _GOLDEN_DATA_BASE_DIR.value:
+    argv.append(f"--golden_data_base_dir={_GOLDEN_DATA_BASE_DIR.value}")
+  if _IGNORE_ACCURACY_OVERRIDES.value:
+    argv.append("--ignore_accuracy_overrides=True")
+  if (
+      "test_random_seed" in flags.FLAGS
+      and flags.FLAGS["test_random_seed"].present
+  ):
+    argv.append(f"--test_random_seed={flags.FLAGS.test_random_seed}")
+  return argv
+
+
+def _format_subprocess_tail(output: str, max_lines: int = 40) -> str:
+  """Returns the trailing lines of subprocess output for failure diagnostics."""
+  lines = output.splitlines()
+  if len(lines) <= max_lines:
+    return output or "(no output)"
+  omitted = len(lines) - max_lines
+  return f"... ({omitted} lines omitted) ...\n" + "\n".join(lines[-max_lines:])
+
+
+def _evaluate_dynamism_crash_result(
+    op: OpInfo,
+    mode: DynamismMode,
+    exclusion: dynamism_test_utils.DynamismExclusion,
+    result: _DynamismCrashSubprocessResult,
+) -> str | None:
+  """Evaluates a crash-check subprocess result; returns failure message or None."""
+  key = f"{op.name}.{op.variant_test_name}" if op.variant_test_name else op.name
+  assert exclusion.failure_kind is not None
+  kind = exclusion.failure_kind.value
+
+  # Fatal crash: killed by a signal (negative exitcode), exited non-zero before
+  # sending a structured unittest outcome, or poisoned/halted the TPU runtime
+  # (e.g., RuntimeUnexpectedCoreHalt) so later ops cannot execute in-process.
+  if result.outcome == _CRASH_OUTCOME_RUNTIME_POISONED or (
+      result.exitcode != 0
+      and (
+          result.outcome is None
+          or (result.exitcode is not None and result.exitcode < 0)
+      )
+  ):
+    print(
+        f"Verified expected dynamism crash for {key} ({mode.value},"
+        f" {kind}, exitcode={result.exitcode}, outcome={result.outcome}):"
+        f" {exclusion.reason}",
+        flush=True,
+    )
+    return None
+
+  tail = _format_subprocess_tail(result.output)
+  if result.outcome == _CRASH_OUTCOME_PASSED:
+    return (
+        f"{key} is marked {kind} in DYNAMISM_DENY_LISTS for {mode.value} mode"
+        f" ({exclusion.reason}), but the isolated subprocess passed cleanly."
+        f" Remove it from DYNAMISM_DENY_LISTS.\n\nSubprocess output:\n{tail}"
+    )
+  if result.outcome == _CRASH_OUTCOME_FAILED:
+    return (
+        f"{key} is marked {kind} in DYNAMISM_DENY_LISTS for {mode.value} mode"
+        f" ({exclusion.reason}), but the isolated subprocess failed cleanly"
+        " with a Python exception instead of crashing. Demote it to"
+        " DynamismFailureKind.EXCEPTION in DYNAMISM_DENY_LISTS.\n\nFailure"
+        f" detail:\n{result.detail}\n\nSubprocess output:\n{tail}"
+    )
+  if result.outcome == _CRASH_OUTCOME_SKIPPED:
+    return (
+        f"{key} is marked {kind} in DYNAMISM_DENY_LISTS for {mode.value} mode"
+        f" ({exclusion.reason}), but the isolated subprocess skipped instead"
+        f" of crashing ({result.detail}). Re-evaluate this entry in"
+        f" DYNAMISM_DENY_LISTS.\n\nSubprocess output:\n{tail}"
+    )
+  return (
+      f"{key} crash check subprocess exited cleanly"
+      f" (exitcode={result.exitcode}) without reporting a unittest"
+      f" outcome.\n\nSubprocess output:\n{tail}"
+  )
+
+
+def _tpu_runtime_still_healthy() -> bool:
+  """Returns whether the TPU runtime can still execute ops after a failure.
+
+  Some fatal TPU failures (such as RuntimeUnexpectedCoreHalt) raise a Python
+  exception from PJRT rather than terminating the process via a signal, yet
+  permanently halt the TPU runtime so every subsequent test in the process
+  fails. Probing with a trivial TPU op distinguishes recoverable exceptions
+  (safe to demote to EXCEPTION) from unrecoverable device halts (must stay
+  CRASH).
+  """
+  if not _device_ops_backend._is_initialized():  # pylint: disable=protected-access
+    return True
+  try:
+    tt_testing.reset_eager_state()
+    _ = (torch.ones(1, device="tpu") + 1).cpu()
+    return True
+  except Exception:  # pylint: disable=broad-exception-caught
+    return False
+
+
+def _dynamism_crash_worker(
+    test_cls: type[absltest.TestCase],  # ABSLTEST_OK=TestCase type annotation.
+    method_name: str,
+    child_argv: Sequence[str],
+    output_file_path: str,
+    outcome_conn: mp_connection.Connection,
+) -> None:
+  """Child-process entry point executing a single crashing op test method."""
+  # Redirect OS-level stdout/stderr so C++ aborts and CHECK failures are
+  # preserved even if the child terminates via SIGABRT/SIGSEGV.
+  with open(output_file_path, "w") as f:
+    os.dup2(f.fileno(), 1)
+    os.dup2(f.fileno(), 2)
+
+  try:
+    sys.argv = list(child_argv)
+    flags.FLAGS(sys.argv, known_only=True)
+    set_up_test_module()
+    instance = test_cls(method_name)
+    res = unittest.TestResult()  # UNITTEST_OK=Subprocess test result collector.
+    suite = unittest.TestSuite([instance])  # UNITTEST_OK=Runs class setup.
+    suite.run(res)
+    if res.failures or res.errors:
+      details = [tb for _, tb in res.failures] + [tb for _, tb in res.errors]
+      outcome = (
+          _CRASH_OUTCOME_FAILED
+          if _tpu_runtime_still_healthy()
+          else _CRASH_OUTCOME_RUNTIME_POISONED
+      )
+      outcome_conn.send((outcome, "\n".join(details)))
+    elif getattr(instance, "_dynamism_subtests_run", 0) == 0:
+      reason = (
+          res.skipped[0][1]
+          if res.skipped
+          else "0 dynamism subtests were executed."
+      )
+      outcome_conn.send((_CRASH_OUTCOME_SKIPPED, reason))
+    else:
+      outcome_conn.send((_CRASH_OUTCOME_PASSED, None))
+  except Exception:  # pylint: disable=broad-exception-caught
+    outcome = (
+        _CRASH_OUTCOME_FAILED
+        if _tpu_runtime_still_healthy()
+        else _CRASH_OUTCOME_RUNTIME_POISONED
+    )
+    outcome_conn.send((outcome, traceback.format_exc()))
+  finally:
+    sys.stdout.flush()
+    sys.stderr.flush()
+    outcome_conn.close()
+
+
+def _run_dynamism_crash_subprocess(
+    test_cls: type[absltest.TestCase],  # ABSLTEST_OK=TestCase type annotation.
+    method_name: str,
+    child_argv: Sequence[str],
+) -> _DynamismCrashSubprocessResult:
+  """Spawns an isolated child process to verify that a test method crashes."""
+  ctx = multiprocessing.get_context("spawn")
+  receiver_conn, sender_conn = ctx.Pipe(duplex=False)
+  with receiver_conn:
+    with tempfile.NamedTemporaryFile() as child_output_file:
+      p = ctx.Process(
+          target=_dynamism_crash_worker,
+          args=(
+              test_cls,
+              method_name,
+              child_argv,
+              child_output_file.name,
+              sender_conn,
+          ),
+      )
+      try:
+        p.start()
+      finally:
+        sender_conn.close()
+      try:
+        payload = receiver_conn.recv()
+      except EOFError:
+        payload = None
+      p.join()
+      child_output_file.seek(0)
+      child_output = child_output_file.read().decode("utf-8", errors="replace")
+
+  outcome = payload[0] if payload is not None else None
+  detail = payload[1] if payload is not None else None
+  return _DynamismCrashSubprocessResult(
+      exitcode=p.exitcode,
+      outcome=outcome,
+      detail=detail,
+      output=child_output,
+  )
+
+
+def run_test_main(
+    main_fn: Callable[..., Any] = absltest.main, *args: Any, **kwargs: Any
+) -> Any:
+  """Runs the test main entrypoint with multiprocessing spawn support."""
+  return multiprocessing.handle_test_main(main_fn, *args, **kwargs)
 
 
 def _requires_grad_input(input_value: _pytree.PyTree) -> _pytree.PyTree:
@@ -6456,6 +6779,24 @@ class TorchTpuTestBase(seed_test_utils.RepeatableTest, common_utils.TestCase):
       self.skipTest("SparseCore is not supported on this TPU device.")
 
   def setUp(self) -> None:
+    if _in_dynamism_crash_parent_mode():
+      # Bypass SeededTest / absltest / common_utils setUp() because OSS
+      # absl-py's TestCase.setUp() calls super().setUp(), which via MRO enters
+      # common_utils.TestCase.setUp() -> torch.manual_seed() and initializes/
+      # locks the TPU runtime in the parent process before child crash-check
+      # subprocesses can spawn.
+      unittest.TestCase.setUp(self)  # UNITTEST_OK=Bypass TPU-seeding setUp.
+      self.synchronize_tensors_in_tear_down = False
+      self._do_test_op_called = False
+      self._subtests_run = 0
+      self._dynamism_subtests_run = 0
+      self.maxDiff = None  # pylint: disable=invalid-name
+      self.golden_device = None
+      self.symbolic_shapes_known_failures = {}
+      self._known_symbolic_shapes_failure_seen = False
+      self._active_dynamism_xfail = None
+      self._known_dynamism_failure_seen = False
+      return
     super().setUp()
     # Make sure we call `do_test_op()` method only once.
     self._do_test_op_called = False
@@ -6473,6 +6814,17 @@ class TorchTpuTestBase(seed_test_utils.RepeatableTest, common_utils.TestCase):
     self.symbolic_shapes_known_failures: Mapping[str, str] = {}
     # Whether a known --check_symbolic_shapes failure was observed.
     self._known_symbolic_shapes_failure_seen = False
+    # Active --check_dynamism xfail exclusion and whether a failure was seen.
+    self._active_dynamism_xfail: (
+        dynamism_test_utils.DynamismExclusion | None
+    ) = None
+    self._known_dynamism_failure_seen = False
+
+  def tearDown(self) -> None:
+    if _in_dynamism_crash_parent_mode():
+      unittest.TestCase.tearDown(self)  # UNITTEST_OK=Bypass TPU-sync tearDown.
+      return
+    super().tearDown()
 
   def set_accuracy_overrides(
       self,
@@ -7202,14 +7554,14 @@ class OpInfoTestBase(TorchTpuTestBase):
     )
 
     # Verify op and sample are supported with dynamism.
-    skip = dynamism_test_utils.verify_op_supports_dynamism(
-        op, mode=dynamism_mode
-    ) or dynamism_test_utils.verify_sample_supports_dynamism(
-        op,
-        device_op_input.input_value,
-        device_op_input.args,
-        kwargs=device_op_input.kwargs,
-    )
+    skip, _ = _resolve_dynamism_op_exclusion(op, dynamism_mode)
+    if skip is None:
+      skip = dynamism_test_utils.verify_sample_supports_dynamism(
+          op,
+          device_op_input.input_value,
+          device_op_input.args,
+          kwargs=device_op_input.kwargs,
+      )
     if skip is not None:
       self.skipTest(skip)
 
@@ -7798,24 +8150,61 @@ class OpInfoTestBase(TorchTpuTestBase):
           self._subtests_run += 1
           if marking_plan is not None:
             self._dynamism_subtests_run += 1
+          subtest_fn = functools.partial(
+              test,
+              plan_subtest_name,
+              op,
+              variant,
+              dtype,
+              golden_input=golden_input,
+              check_device=check_device,
+              compute_grad=compute_grad,
+              use_compiled=use_compiled,
+              out_dtype_override=out_dtype_override,
+              marking_plan=marking_plan,
+          )
           with self.subTest(
               subtest_name=plan_subtest_name, run_index=perf_run_idx
           ):
-            _run_and_print_exception(
-                functools.partial(
-                    test,
-                    plan_subtest_name,
-                    op,
-                    variant,
-                    dtype,
-                    golden_input=golden_input,
-                    check_device=check_device,
-                    compute_grad=compute_grad,
-                    use_compiled=use_compiled,
-                    out_dtype_override=out_dtype_override,
-                    marking_plan=marking_plan,
+            try:
+              if self._active_dynamism_xfail is not None:
+                self._run_known_dynamism_failure_subtest(
+                    plan_subtest_name, subtest_fn
                 )
-            )
+              else:
+                _run_and_print_exception(subtest_fn)
+            except unittest.case.SkipTest:
+              if marking_plan is not None:
+                self._dynamism_subtests_run -= 1
+              raise
+
+  def _run_known_dynamism_failure_subtest(
+      self,
+      subtest_name: str,
+      subtest_fn: Callable[[], Any],
+  ) -> None:
+    """Runs a subtest for a known-failing dynamism op, recording failures."""
+    try:
+      subtest_fn()
+    except unittest.case.SkipTest:
+      raise
+    except Exception as e:  # pylint: disable=broad-except
+      self._known_dynamism_failure_seen = True
+      reason = (
+          self._active_dynamism_xfail.reason
+          if self._active_dynamism_xfail is not None
+          else "unknown"
+      )
+      print(
+          f"Known dynamism failure in {subtest_name} ({reason}):"
+          f" {type(e).__name__}: {e}",
+          flush=True,
+      )
+      # Clear any pending eager state or partial graph left behind by the failed
+      # subtest so subsequent subtests and tearDown() start cleanly.
+      tt_testing.reset_eager_state()
+      if is_compiled_mode():
+        torch._dynamo.reset()  # pylint: disable=protected-access
 
   def _check_dynamism_sample_supported(
       self,
@@ -7896,9 +8285,7 @@ class OpInfoTestBase(TorchTpuTestBase):
     dynamism_mode = _dynamism_mode(
         use_compiled=use_compiled, compute_grad=compute_grad
     )
-    skip = dynamism_test_utils.verify_op_supports_dynamism(
-        op, mode=dynamism_mode
-    )
+    skip, _ = _resolve_dynamism_op_exclusion(op, dynamism_mode)
     if skip is not None:
       return skip, ()
 
@@ -7931,7 +8318,7 @@ class OpInfoTestBase(TorchTpuTestBase):
             golden_input.args,
             mode=dynamism_mode,
             kwargs=plan_kwargs,
-            op_func=_op_func(op, variant, torch.device("tpu")),
+            op_func=_op_func(op, variant),
         )
     )
     if not plans:
@@ -7969,6 +8356,86 @@ class OpInfoTestBase(TorchTpuTestBase):
         " sample specialized or threw on TorchTPU. If it's fixed, remove it"
         " from the known failures."
     )
+
+  def _assert_known_dynamism_failure_seen(
+      self,
+      op_name: str,
+      variant_test_name: str | None,
+      mode: DynamismMode,
+  ) -> None:
+    """Fails if an EXCEPTION entry in DYNAMISM_DENY_LISTS no longer fails."""
+    exclusion = self._active_dynamism_xfail
+    if (
+        exclusion is None
+        or exclusion.failure_kind
+        != dynamism_test_utils.DynamismFailureKind.EXCEPTION
+    ):
+      return
+    if self._known_dynamism_failure_seen:
+      return
+    # Runs restricted to a subset of dtypes or marking plans may miss the
+    # failing sample.
+    if _DTYPES.value != ["all"] or _DYNAMISM_PLAN_FILTER.value:
+      return
+    key = f"{op_name}.{variant_test_name}" if variant_test_name else op_name
+    if self._dynamism_subtests_run == 0:
+      self.fail(
+          f"{key} is in DYNAMISM_DENY_LISTS for {mode.value} mode"
+          f" ({exclusion.reason}), but 0 dynamism subtests ran. If no samples"
+          " are eligible for dynamism, remove the stale entry from"
+          " DYNAMISM_DENY_LISTS or move it to DYNAMISM_NOT_APPLICABLE_OPS."
+      )
+    self.fail(
+        f"{key} is in DYNAMISM_DENY_LISTS for {mode.value} mode"
+        f" ({exclusion.reason}), but all {self._dynamism_subtests_run} dynamism"
+        " subtests passed. Remove it from DYNAMISM_DENY_LISTS."
+    )
+
+  def _run_dynamism_crash_parent(
+      self,
+      op_name: str,
+      *,
+      variant_test_name: str | None,
+      exclude_dtypes: tuple[torch.dtype, ...],
+      compute_grad: bool,
+      use_compiled: bool,
+  ) -> None:
+    """Runs active crashing dynamism entries in an isolated subprocess."""
+    op = _get_op(op_name, variant_test_name=variant_test_name)
+    dtypes_to_test = _dtypes_to_test_for_op(op, recording=False)
+    if all(
+        _should_skip_dtype(d, exclude_dtypes=exclude_dtypes)
+        for d in dtypes_to_test
+    ):
+      self.skipTest(
+          f"All dtypes excluded for {op_name} on"
+          f" {self.golden_device_name()}: exclude_dtypes={exclude_dtypes}"
+      )
+    dynamism_mode = _dynamism_mode(
+        use_compiled=use_compiled, compute_grad=compute_grad
+    )
+    exclusion = dynamism_test_utils.get_dynamism_exclusion(op, dynamism_mode)
+    if not _is_active_dynamism_crash_exclusion(exclusion):
+      self.skipTest(
+          f"Skipping {op_name}: not an active dynamism crash entry for"
+          f" {dynamism_mode.value} mode in this build."
+      )
+    assert exclusion is not None
+    if _device_ops_backend._is_initialized():  # pylint: disable=protected-access
+      self.fail(
+          "The parent process initialized the TPU runtime before spawning a"
+          " dynamism crash worker subprocess."
+      )
+    result = _run_dynamism_crash_subprocess(
+        self.__class__,
+        self._testMethodName,
+        _build_dynamism_crash_worker_argv(),
+    )
+    failure_msg = _evaluate_dynamism_crash_result(
+        op, dynamism_mode, exclusion, result
+    )
+    if failure_msg is not None:
+      self.fail(failure_msg)
 
   def do_test_op(
       self,
@@ -8041,6 +8508,8 @@ class OpInfoTestBase(TorchTpuTestBase):
     self._do_test_op_called = True
     self._subtests_run = 0
     self._dynamism_subtests_run = 0
+    self._active_dynamism_xfail = None
+    self._known_dynamism_failure_seen = False
 
     if _dump_dtype_exclusions_mode():
       _record_gpu_dtype_exclusions(
@@ -8074,6 +8543,16 @@ class OpInfoTestBase(TorchTpuTestBase):
           f"Skipping gradient tests for {op_name} as check_grad is False."
       )
 
+    if _in_dynamism_crash_parent_mode():
+      self._run_dynamism_crash_parent(
+          op_name,
+          variant_test_name=variant_test_name,
+          exclude_dtypes=exclude_dtypes,
+          compute_grad=compute_grad,
+          use_compiled=use_compiled,
+      )
+      return
+
     def _test_op_variants() -> None:
       """Tests all enabled variants of the op.
 
@@ -8096,11 +8575,13 @@ class OpInfoTestBase(TorchTpuTestBase):
         dynamism_mode = _dynamism_mode(
             use_compiled=use_compiled, compute_grad=compute_grad
         )
-        skip = dynamism_test_utils.verify_op_supports_dynamism(
-            op, mode=dynamism_mode
+        skip, xfail_exclusion = _resolve_dynamism_op_exclusion(
+            op, dynamism_mode
         )
         if skip is not None:
           self.skipTest(skip)
+        if not recording and not _perf_mode():
+          self._active_dynamism_xfail = xfail_exclusion
 
       # (variant, excluded dtypes, check_op_failures) for each variant to test.
       variants = [(OpVariant.BASE, exclude_dtypes, check_op_failures)]
@@ -8170,16 +8651,21 @@ class OpInfoTestBase(TorchTpuTestBase):
 
     _run_and_print_exception(_test_op_variants)
 
-    if (
-        _CHECK_DYNAMISM.value
-        and not _CHECK_SYMBOLIC_SHAPES.value
-        and self._dynamism_subtests_run == 0
-    ):
-      print(
-          f">>> No valid sample for dynamism found for op {op_name} across all"
-          " tested variants and dtypes.",
-          flush=True,
-      )
+    if _CHECK_DYNAMISM.value and not _CHECK_SYMBOLIC_SHAPES.value:
+      if self._dynamism_subtests_run == 0:
+        print(
+            f">>> No valid sample for dynamism found for op {op_name} across"
+            " all tested variants and dtypes.",
+            flush=True,
+        )
+      if not recording and not _perf_mode():
+        self._assert_known_dynamism_failure_seen(
+            op_name,
+            variant_test_name,
+            _dynamism_mode(
+                use_compiled=use_compiled, compute_grad=compute_grad
+            ),
+        )
 
     if _CHECK_SYMBOLIC_SHAPES.value:
       self._assert_known_symbolic_shapes_failure_seen(
@@ -8489,6 +8975,17 @@ def set_up_test_module() -> None:
     # test to always fail in this case.
     sys.exit(0)
 
+  if _CHECK_DYNAMISM_CRASHES.value and (
+      not _CHECK_DYNAMISM.value
+      or _CHECK_SYMBOLIC_SHAPES.value
+      or not _torch_tpu_vs_gpu_mode()
+  ):
+    raise ValueError(
+        "--check_dynamism_crashes requires --check_dynamism and"
+        " --test_mode=torch_tpu_vs_gpu, and cannot be combined with"
+        " --check_symbolic_shapes."
+    )
+
   if _CHECK_SYMBOLIC_SHAPES.value and (
       not _torch_tpu_vs_gpu_mode()
       or is_compiled_mode()
@@ -8523,6 +9020,13 @@ def set_up_test_module() -> None:
   TestCase._default_dtype_check_enabled = True  # pylint: disable=protected-access
 
   if _torch_tpu_vs_gpu_mode():
+    if _in_dynamism_crash_parent_mode():
+      print(
+          "Running in dynamism crash check mode (spawning isolated"
+          " subprocesses for active crashing entries).",
+          flush=True,
+      )
+      return
     print("Running in TorchTPU vs GPU mode.", flush=True)
     _load_golden_files()
     return
