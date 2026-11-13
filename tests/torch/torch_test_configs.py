@@ -91,10 +91,21 @@ TEST_EXCLUSIONS: Final[
     },
     "dynamo/test_activation_checkpointing": {
         "ActivationCheckpointingViaTagsTests": [
+            # Calls aten._scaled_dot_product_efficient_attention directly,
+            # which is not implemented on TPU.
             "test_autocast_flash_attention",
+            # Requires Capability.attention.mem_efficient_attention, which is
+            # unsupported on TPU.
             "test_compile_checkpoint_mem_eff_attention_no_dropout",
+            # TODO(b/585250071): Re-enable once run_and_save_rng_state supports
+            # the TPU backend.
             "test_compile_selective_checkpoint_random_op",
+            # TODO(b/585249401): Re-enable once Pallas SDPA philox seed/offset
+            # metadata shape and Mosaic tpu.load vector type are fixed.
             "test_pattern_matcher",
+            "test_selective_checkpoint_preserves_registered_effect",
+            # Hard-codes backend="inductor" without tpu_backend="pallas"
+            # (see _loader._INDUCTOR_TPU_ERROR).
             "test_tags_dropout",
             "test_tags_rand",
             "test_tags_recomputed_rand",
