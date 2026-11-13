@@ -321,6 +321,13 @@ absl::Status AssignBuffersToOutputs(
     absl::Span<DeviceBufferRef> result_buffers,
     absl::Span<const uint8_t> enable_autodonation);
 
+// Returns whether `in` is eligible to be donated to `out` for an in-place
+// operation, verifying shape, dtype, FP4 constraints, and exclusive buffer
+// ownership (live_data_ptrs <= 1).
+bool IsEligibleDonor(const at::Tensor& in, const at::Tensor& out,
+                     mlir::ElementType out_dtype,
+                     at::IntArrayRef destination_dims);
+
 // Automatically detects and populates buffer donations from `inputs` into
 // `outputs` in eager mode if `donated_indices` is empty.
 //

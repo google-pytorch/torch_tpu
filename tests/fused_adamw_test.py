@@ -592,6 +592,302 @@ class FusedAdamWTest(TorchTpuVsCpuTestBase):
     ):
       old_p_view.cpu()
 
+  @parameterized.product(amsgrad=[False, True])
+  def test_shared_step_deduplication_and_hoisting(self, amsgrad):
+    """Tests shared step tensor deduplication and hoisted bias corrections."""
+
+    def run_fn(device):
+      p1 = torch.tensor([1.0, 2.0, -1.0], dtype=torch.float32, device=device)
+      p2 = torch.tensor(
+          [[0.5, -0.5], [1.5, 0.0]], dtype=torch.float32, device=device
+      )
+      p3 = torch.tensor([0.25, -0.75], dtype=torch.float32, device=device)
+      g1 = torch.tensor([0.1, -0.2, 0.5], dtype=torch.float32, device=device)
+      g2 = torch.tensor(
+          [[-0.1, 0.2], [0.3, -0.4]], dtype=torch.float32, device=device
+      )
+      g3 = torch.tensor([0.05, -0.15], dtype=torch.float32, device=device)
+      ea1 = torch.tensor([0.01, 0.02, 0.0], dtype=torch.float32, device=device)
+      ea2 = torch.tensor(
+          [[0.0, 0.01], [-0.01, 0.02]], dtype=torch.float32, device=device
+      )
+      ea3 = torch.tensor([0.02, -0.01], dtype=torch.float32, device=device)
+      eas1 = torch.tensor(
+          [0.001, 0.002, 0.001], dtype=torch.float32, device=device
+      )
+      eas2 = torch.tensor(
+          [[0.001, 0.001], [0.002, 0.002]], dtype=torch.float32, device=device
+      )
+      eas3 = torch.tensor([0.003, 0.001], dtype=torch.float32, device=device)
+      meas = [eas1.clone(), eas2.clone(), eas3.clone()] if amsgrad else []
+      shared_step = torch.tensor(3.0, dtype=torch.float32, device=device)
+
+      torch.ops.aten._fused_adamw_.default(
+          [p1, p2, p3],
+          [g1, g2, g3],
+          [ea1, ea2, ea3],
+          [eas1, eas2, eas3],
+          meas,
+          [shared_step, shared_step, shared_step],
+          lr=0.001,
+          beta1=0.9,
+          beta2=0.999,
+          weight_decay=0.01,
+          eps=1e-8,
+          amsgrad=amsgrad,
+          maximize=False,
+      )
+      return p1, p2, p3, ea1, ea2, ea3, eas1, eas2, eas3, meas
+
+    self.assert_close_tpu_vs_cpu(run_fn)
+
+  def test_fused_adamw_tensor_lr_rank1_scalars_and_rank0_params(self):
+    """Tests _fused_adamw_.tensor_lr with rank 1 scalars and rank 0 params."""
+
+    def run_fn(device):
+      p0 = torch.tensor(1.5, dtype=torch.float32, device=device)
+      p1 = torch.tensor([1.0, -2.0, 0.5], dtype=torch.float32, device=device)
+      p2 = torch.tensor(
+          [[0.2, -0.4], [1.0, -1.5]], dtype=torch.float32, device=device
+      )
+      g0 = torch.tensor(0.1, dtype=torch.float32, device=device)
+      g1 = torch.tensor([0.1, -0.2, 0.3], dtype=torch.float32, device=device)
+      g2 = torch.tensor(
+          [[-0.1, 0.05], [0.2, -0.3]], dtype=torch.float32, device=device
+      )
+      ea0 = torch.zeros_like(p0)
+      ea1 = torch.zeros_like(p1)
+      ea2 = torch.zeros_like(p2)
+      eas0 = torch.zeros_like(p0)
+      eas1 = torch.zeros_like(p1)
+      eas2 = torch.zeros_like(p2)
+      step0 = torch.tensor(1.0, dtype=torch.float32, device=device)
+      step1 = torch.tensor(1.0, dtype=torch.float32, device=device)
+      step2 = torch.tensor(1.0, dtype=torch.float32, device=device)
+
+      lr_t = torch.tensor([1e-3], dtype=torch.float32, device=device)
+      grad_scale = torch.tensor([2.0], dtype=torch.float32, device=device)
+      found_inf = torch.tensor([0.0], dtype=torch.float32, device=device)
+
+      torch.ops.aten._fused_adamw_.tensor_lr(
+          [p0, p1, p2],
+          [g0, g1, g2],
+          [ea0, ea1, ea2],
+          [eas0, eas1, eas2],
+          [],
+          [step0, step1, step2],
+          lr=lr_t,
+          beta1=0.9,
+          beta2=0.999,
+          weight_decay=0.01,
+          eps=1e-8,
+          amsgrad=False,
+          maximize=False,
+          grad_scale=grad_scale,
+          found_inf=found_inf,
+      )
+      return p0, p1, p2, ea0, ea1, ea2, eas0, eas1, eas2
+
+    self.assert_close_tpu_vs_cpu(run_fn)
+
+  def test_foreach_offset0_slice_not_collapsed_with_base(self):
+    """Verifies offset 0 slices like x[0] are not collapsed onto base x."""
+
+    def run_fn(device):
+      p1 = torch.tensor(
+          [1.0, 2.0, 3.0, 4.0], dtype=torch.float32, device=device
+      )
+      p2 = torch.tensor(
+          [10.0, 20.0, 30.0, 40.0], dtype=torch.float32, device=device
+      )
+      x = torch.tensor([2.0, 4.0, 6.0, 8.0], dtype=torch.float32, device=device)
+      res = torch._foreach_add([p1, p2], [x, x[0]])
+      return res[0], res[1]
+
+    self.assert_close_tpu_vs_cpu(run_fn)
+
+  def test_foreach_out_of_place_duplicate_element_isolation(self):
+    """Verifies mutating one output of duplicate elements preserves other."""
+
+    def run_fn(device):
+      p = torch.tensor([1.0, 2.0, 3.0, 4.0], dtype=torch.float32, device=device)
+      x = torch.tensor(
+          [0.5, -0.5, 1.5, -1.5], dtype=torch.float32, device=device
+      )
+      res = torch._foreach_add([p, p], [x, x])
+      res[0].add_(100.0)
+      return res[0], res[1]
+
+    self.assert_close_tpu_vs_cpu(run_fn)
+
+  def test_foreach_compile_repeated_scalar_parity(self):
+    """Verifies torch.compile parity on repeated scalar extra inputs."""
+
+    def eager_fn(tensors, scalar):
+      return torch._foreach_add(tensors, scalar)
+
+    @torch.compile(backend="tpu")
+    def compiled_fn(tensors, scalar):
+      return torch._foreach_add(tensors, scalar)
+
+    t1 = torch.tensor([1.0, 2.0], dtype=torch.float32, device="tpu")
+    t2 = torch.tensor([3.0, 4.0], dtype=torch.float32, device="tpu")
+    scalar = 2.5
+
+    eager_res = eager_fn([t1, t2], scalar)
+    compiled_res = compiled_fn([t1, t2], scalar)
+    self.assertEqual(len(eager_res), len(compiled_res))
+    for e, c in zip(eager_res, compiled_res):
+      torch.testing.assert_close(e, c)
+
+  def test_foreach_step_group_dedup_and_single_element_mutation(self):
+    """Tests foreach scalar grouping and isolation when one element mutates."""
+
+    def run_fn(device):
+      steps = [
+          torch.zeros((), dtype=torch.float32, device=device) for _ in range(4)
+      ]
+      torch._foreach_add_(steps, 1)
+      torch._foreach_add_(steps, 1)
+      steps[0].add_(5)
+      torch._foreach_add_(steps, 1)
+      params = [
+          torch.tensor([1.0, -2.0], dtype=torch.float32, device=device)
+          for _ in range(4)
+      ]
+      grads = [
+          torch.tensor([0.2, -0.3], dtype=torch.float32, device=device)
+          for _ in range(4)
+      ]
+      exp_avgs = [
+          torch.zeros(2, dtype=torch.float32, device=device) for _ in range(4)
+      ]
+      exp_avg_sqs = [
+          torch.zeros(2, dtype=torch.float32, device=device) for _ in range(4)
+      ]
+      torch.ops.aten._fused_adamw_.default(
+          params,
+          grads,
+          exp_avgs,
+          exp_avg_sqs,
+          [],
+          steps,
+          lr=0.001,
+          beta1=0.9,
+          beta2=0.999,
+          weight_decay=0.01,
+          eps=1e-8,
+          amsgrad=False,
+          maximize=False,
+      )
+      return tuple(steps) + tuple(params) + tuple(exp_avgs) + tuple(exp_avg_sqs)
+
+    self.assert_close_tpu_vs_cpu(run_fn)
+
+  def test_foreach_add_inplace_shared_buffer_copy_on_write(self):
+    """Verifies in-place foreach preserves unreferenced cloned tensors."""
+
+    def run_fn(device):
+      t1 = torch.tensor([1.0, 2.0], dtype=torch.float32, device=device)
+      t2 = t1.clone()
+      torch._foreach_add_([t1], 10.0)
+      return t1, t2
+
+    self.assert_close_tpu_vs_cpu(run_fn)
+
+  def test_zeros_rank0_returns_distinct_storages(self):
+    """Verifies distinct rank-0 factory calls return independent storages."""
+
+    def run_fn(device):
+      z1 = torch.zeros((), dtype=torch.float32, device=device)
+      z2 = torch.zeros((), dtype=torch.float32, device=device)
+      z1.add_(5.0)
+      return z1, z2
+
+    self.assert_close_tpu_vs_cpu(run_fn)
+
+  @parameterized.product(
+      eps=[1e-8, 1e-16],
+      amsgrad=[False, True],
+      maximize=[False, True],
+  )
+  def test_adamw_parity_with_torch_optim_reference(
+      self, eps, amsgrad, maximize
+  ):
+    """Verifies _fused_adamw_ matches reference torch.optim.AdamW."""
+
+    def run_fused(device):
+      p1 = torch.tensor([1.5, -2.0, 0.5], dtype=torch.float32, device=device)
+      p2 = torch.tensor(
+          [[0.2, -0.4], [1.0, -1.5]], dtype=torch.float32, device=device
+      )
+      g1 = torch.tensor([0.1, -0.2, 0.3], dtype=torch.float32, device=device)
+      g2 = torch.tensor(
+          [[-0.1, 0.05], [0.2, -0.3]], dtype=torch.float32, device=device
+      )
+      ea1 = torch.zeros_like(p1)
+      ea2 = torch.zeros_like(p2)
+      eas1 = torch.zeros_like(p1)
+      eas2 = torch.zeros_like(p2)
+      meas = [torch.zeros_like(p1), torch.zeros_like(p2)] if amsgrad else []
+      step1 = torch.tensor(0.0, dtype=torch.float32, device=device)
+      step2 = torch.tensor(0.0, dtype=torch.float32, device=device)
+
+      for _ in range(3):
+        step1.add_(1.0)
+        step2.add_(1.0)
+        torch.ops.aten._fused_adamw_.default(
+            [p1, p2],
+            [g1, g2],
+            [ea1, ea2],
+            [eas1, eas2],
+            meas,
+            [step1, step2],
+            lr=1e-3,
+            beta1=0.9,
+            beta2=0.999,
+            weight_decay=0.01,
+            eps=eps,
+            amsgrad=amsgrad,
+            maximize=maximize,
+        )
+      return p1, p2, ea1, ea2, eas1, eas2
+
+    def run_ref():
+      p1 = torch.tensor([1.5, -2.0, 0.5], dtype=torch.float32)
+      p2 = torch.tensor([[0.2, -0.4], [1.0, -1.5]], dtype=torch.float32)
+      g1 = torch.tensor([0.1, -0.2, 0.3], dtype=torch.float32)
+      g2 = torch.tensor([[-0.1, 0.05], [0.2, -0.3]], dtype=torch.float32)
+      opt = torch.optim.AdamW(
+          [p1, p2],
+          lr=1e-3,
+          betas=(0.9, 0.999),
+          eps=eps,
+          weight_decay=0.01,
+          amsgrad=amsgrad,
+          maximize=maximize,
+      )
+      for _ in range(3):
+        opt.zero_grad()
+        p1.grad = g1.clone()
+        p2.grad = g2.clone()
+        opt.step()
+      state1 = opt.state[p1]
+      state2 = opt.state[p2]
+      return (
+          p1,
+          p2,
+          state1["exp_avg"],
+          state2["exp_avg"],
+          state1["exp_avg_sq"],
+          state2["exp_avg_sq"],
+      )
+
+    tpu_res = run_fused("tpu")
+    ref_res = run_ref()
+    for tpu_t, ref_t in zip(tpu_res, ref_res):
+      self.assert_close(golden_result=ref_t, torch_tpu_result=tpu_t.cpu())
+
 
 if __name__ == "__main__":
   absltest.main()

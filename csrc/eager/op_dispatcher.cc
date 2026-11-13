@@ -174,6 +174,21 @@ absl::StatusOr<DeviceBufferRef> MakeBuffer(
                         .op_param_cache_keys = std::move(op_param_cache_keys)});
 }
 
+void MarkDonatedAndAliases(size_t donated_idx,
+                           absl::Span<const at::Tensor> inputs,
+                           std::vector<bool>& input_donated) {
+  const at::Tensor& donated_in = inputs[donated_idx];
+  for (size_t k = 0; k < inputs.size(); ++k) {
+    if (inputs[k].is_alias_of(donated_in)) {
+      input_donated[k] = true;
+    }
+  }
+}
+
+}  // namespace
+
+namespace internal {
+
 bool IsEligibleDonor(const at::Tensor& in, const at::Tensor& out,
                      mlir::ElementType out_dtype,
                      at::IntArrayRef destination_dims) {
@@ -235,21 +250,6 @@ bool IsEligibleDonor(const at::Tensor& in, const at::Tensor& out,
   }
   return true;
 }
-
-void MarkDonatedAndAliases(size_t donated_idx,
-                           absl::Span<const at::Tensor> inputs,
-                           std::vector<bool>& input_donated) {
-  const at::Tensor& donated_in = inputs[donated_idx];
-  for (size_t k = 0; k < inputs.size(); ++k) {
-    if (inputs[k].is_alias_of(donated_in)) {
-      input_donated[k] = true;
-    }
-  }
-}
-
-}  // namespace
-
-namespace internal {
 
 [[nodiscard]] OpDispatchFailure& GetOpDispatchFailure() {
   static absl::NoDestructor<OpDispatchFailure> failure;

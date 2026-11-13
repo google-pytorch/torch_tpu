@@ -17,6 +17,7 @@
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
+from torch_tpu._internal import compile as tpu_compile
 from tests import op_testing
 
 TorchTpuVsCpuTestBase = op_testing.TorchTpuVsCpuTestBase
@@ -600,6 +601,148 @@ class FusedAdamTest(TorchTpuVsCpuTestBase):
     self.assert_close_tpu_vs_cpu(
         run_fn, atol=1e-3 if dtype == torch.float16 else 1e-5, rtol=1e-2
     )
+
+  @parameterized.product(amsgrad=[False, True])
+  def test_shared_step_deduplication_and_hoisting(self, amsgrad):
+    """Tests shared step tensor deduplication and hoisted bias corrections."""
+
+    def run_fn(device):
+      p1 = torch.tensor([1.0, 2.0, -1.0], dtype=torch.float32, device=device)
+      p2 = torch.tensor(
+          [[0.5, -0.5], [1.5, 0.0]], dtype=torch.float32, device=device
+      )
+      p3 = torch.tensor([0.25, -0.75], dtype=torch.float32, device=device)
+      g1 = torch.tensor([0.1, -0.2, 0.5], dtype=torch.float32, device=device)
+      g2 = torch.tensor(
+          [[-0.1, 0.2], [0.3, -0.4]], dtype=torch.float32, device=device
+      )
+      g3 = torch.tensor([0.05, -0.15], dtype=torch.float32, device=device)
+      ea1 = torch.tensor([0.01, 0.02, 0.0], dtype=torch.float32, device=device)
+      ea2 = torch.tensor(
+          [[0.0, 0.01], [-0.01, 0.02]], dtype=torch.float32, device=device
+      )
+      ea3 = torch.tensor([0.02, -0.01], dtype=torch.float32, device=device)
+      eas1 = torch.tensor(
+          [0.001, 0.002, 0.001], dtype=torch.float32, device=device
+      )
+      eas2 = torch.tensor(
+          [[0.001, 0.001], [0.002, 0.002]], dtype=torch.float32, device=device
+      )
+      eas3 = torch.tensor([0.003, 0.001], dtype=torch.float32, device=device)
+      meas = [eas1.clone(), eas2.clone(), eas3.clone()] if amsgrad else []
+      shared_step = torch.tensor(3.0, dtype=torch.float32, device=device)
+
+      torch.ops.aten._fused_adam_.default(
+          [p1, p2, p3],
+          [g1, g2, g3],
+          [ea1, ea2, ea3],
+          [eas1, eas2, eas3],
+          meas,
+          [shared_step, shared_step, shared_step],
+          lr=0.001,
+          beta1=0.9,
+          beta2=0.999,
+          weight_decay=0.01,
+          eps=1e-8,
+          amsgrad=amsgrad,
+          maximize=False,
+      )
+      return p1, p2, p3, ea1, ea2, ea3, eas1, eas2, eas3, meas
+
+    self.assert_close_tpu_vs_cpu(run_fn)
+
+  def test_fused_adam_tensor_lr_rank1_scalars_and_rank0_params(self):
+    """Tests _fused_adam_.tensor_lr with rank 1 scalars and rank 0 params."""
+
+    def run_fn(device):
+      p0 = torch.tensor(1.5, dtype=torch.float32, device=device)
+      p1 = torch.tensor([1.0, -2.0, 0.5], dtype=torch.float32, device=device)
+      p2 = torch.tensor(
+          [[0.2, -0.4], [1.0, -1.5]], dtype=torch.float32, device=device
+      )
+      g0 = torch.tensor(0.1, dtype=torch.float32, device=device)
+      g1 = torch.tensor([0.1, -0.2, 0.3], dtype=torch.float32, device=device)
+      g2 = torch.tensor(
+          [[-0.1, 0.05], [0.2, -0.3]], dtype=torch.float32, device=device
+      )
+      ea0 = torch.zeros_like(p0)
+      ea1 = torch.zeros_like(p1)
+      ea2 = torch.zeros_like(p2)
+      eas0 = torch.zeros_like(p0)
+      eas1 = torch.zeros_like(p1)
+      eas2 = torch.zeros_like(p2)
+      step0 = torch.tensor(1.0, dtype=torch.float32, device=device)
+      step1 = torch.tensor(1.0, dtype=torch.float32, device=device)
+      step2 = torch.tensor(1.0, dtype=torch.float32, device=device)
+
+      lr_t = torch.tensor([1e-3], dtype=torch.float32, device=device)
+      grad_scale = torch.tensor([2.0], dtype=torch.float32, device=device)
+      found_inf = torch.tensor([0.0], dtype=torch.float32, device=device)
+
+      torch.ops.aten._fused_adam_.tensor_lr(
+          [p0, p1, p2],
+          [g0, g1, g2],
+          [ea0, ea1, ea2],
+          [eas0, eas1, eas2],
+          [],
+          [step0, step1, step2],
+          lr=lr_t,
+          beta1=0.9,
+          beta2=0.999,
+          weight_decay=0.01,
+          eps=1e-8,
+          amsgrad=False,
+          maximize=False,
+          grad_scale=grad_scale,
+          found_inf=found_inf,
+      )
+      return p0, p1, p2, ea0, ea1, ea2, eas0, eas1, eas2
+
+    self.assert_close_tpu_vs_cpu(run_fn)
+
+  def test_foreach_step_group_dedup_and_single_element_mutation(self):
+    """Tests foreach scalar grouping and isolation when one element mutates."""
+
+    def run_fn(device):
+      steps = [
+          torch.zeros((), dtype=torch.float32, device=device) for _ in range(4)
+      ]
+      torch._foreach_add_(steps, 1)
+      torch._foreach_add_(steps, 1)
+      steps[0].add_(5)
+      torch._foreach_add_(steps, 1)
+      params = [
+          torch.tensor([1.0, -2.0], dtype=torch.float32, device=device)
+          for _ in range(4)
+      ]
+      grads = [
+          torch.tensor([0.2, -0.3], dtype=torch.float32, device=device)
+          for _ in range(4)
+      ]
+      exp_avgs = [
+          torch.zeros(2, dtype=torch.float32, device=device) for _ in range(4)
+      ]
+      exp_avg_sqs = [
+          torch.zeros(2, dtype=torch.float32, device=device) for _ in range(4)
+      ]
+      torch.ops.aten._fused_adam_.default(
+          params,
+          grads,
+          exp_avgs,
+          exp_avg_sqs,
+          [],
+          steps,
+          lr=0.001,
+          beta1=0.9,
+          beta2=0.999,
+          weight_decay=0.01,
+          eps=1e-8,
+          amsgrad=False,
+          maximize=False,
+      )
+      return tuple(steps) + tuple(params) + tuple(exp_avgs) + tuple(exp_avg_sqs)
+
+    self.assert_close_tpu_vs_cpu(run_fn)
 
 
 if __name__ == "__main__":
