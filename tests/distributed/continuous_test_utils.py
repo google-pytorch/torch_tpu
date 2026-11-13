@@ -32,6 +32,7 @@ harness.
 
 from collections.abc import Callable
 import functools
+from multiprocessing import context as multiprocessing_context
 import os
 import types
 from typing import Any
@@ -80,6 +81,24 @@ class _ReportSkipsQueue:
 
   def __getattr__(self, name: str) -> Any:
     return getattr(self._queue, name)
+
+
+class _ForkserverProcess(multiprocessing_context.ForkServerProcess):
+  """A worker process forked from a forkserver, with the parent's environment.
+
+  Unlike spawned workers, forkserver workers don't redo the interpreter startup
+  and imports. They would keep the forkserver's environment though, so each gets
+  the parent's environment from when the process object was created.
+  """
+
+  def __init__(self, *args: Any, **kwargs: Any):
+    super().__init__(*args, **kwargs)
+    self._environ = dict(os.environ)
+
+  def run(self) -> None:
+    os.environ.clear()
+    os.environ.update(self._environ)
+    super().run()
 
 
 class TpuMultiProcContinuousTest(
@@ -143,7 +162,15 @@ class TpuMultiProcContinuousTest(
             else str(portpicker.pick_unused_port())
         ),
     }
-    with mock.patch.dict(os.environ, launch_env):
+    with (
+        mock.patch.dict(os.environ, launch_env),
+        mock.patch.object(torch.multiprocessing, "Process", _ForkserverProcess),
+        mock.patch.object(
+            torch.multiprocessing,
+            "Queue",
+            multiprocessing_context.ForkServerContext().Queue,
+        ),
+    ):
       super()._spawn_processes(world_size)
 
   @classmethod
