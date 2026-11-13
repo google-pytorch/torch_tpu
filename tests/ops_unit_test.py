@@ -25121,6 +25121,29 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
             else:
               self.assertTrue(tpu_grad is None or not tpu_grad.defined())
 
+  def test_linear_backward_frees_grad_input_before_grad_weight(self):
+    for eager_mode in (
+        execution_mode.EagerMode.DEFER_NEVER,
+        execution_mode.EagerMode.DEFER_AND_FUSE,
+    ):
+      with (
+          self.subTest(eager_mode=eager_mode),
+          execution_mode.set_eager_mode(eager_mode),
+      ):
+        # `x` and its gradient are 32 MiB each, `w` and its gradient 64 KiB.
+        x = torch.ones(8192, 1024, device="tpu", requires_grad=True)
+        w = torch.ones(16, 1024, device="tpu", requires_grad=True)
+        torch.nn.functional.linear(x, w).sum().backward()
+        x.grad = None
+        torch.accelerator.synchronize()
+        mem_with_grad_weight = torch.accelerator.memory_allocated()
+        w.grad = None
+        torch.accelerator.synchronize()
+        freed = mem_with_grad_weight - torch.accelerator.memory_allocated()
+        # Freeing `w.grad` must not be what releases the gradient of `x`.
+        # Allow up to 4 MiB for allocator page alignment.
+        self.assertLess(freed, 4 * 1024 * 1024)
+
   def test_materialize_non_leaf_tensor_does_not_warn(self):
     """Verifies copying a non-leaf tensor with requires_grad does not warn."""
     device = torch.device("tpu")
