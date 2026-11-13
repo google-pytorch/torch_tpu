@@ -149,8 +149,9 @@ class LoadedExecutableWithMetadata {
       Indices argument_indices) {
     return std::shared_ptr<const LoadedExecutableWithMetadata>(
         new LoadedExecutableWithMetadata(
-            existing->executable_, existing->output_shapes_,
-            existing->parameter_device_shapes_, std::move(argument_indices),
+            existing->executable_, existing->parameter_device_shapes_,
+            existing->output_shapes_, existing->output_shapes_kind_,
+            std::move(argument_indices),
             existing->unbounded_dynamic_execution_metadata_,
             existing->subslice_origin_));
   }
@@ -160,8 +161,9 @@ class LoadedExecutableWithMetadata {
       UnboundedDynamicExecutionMetadata unbounded_dynamic_execution_metadata) {
     return std::shared_ptr<const LoadedExecutableWithMetadata>(
         new LoadedExecutableWithMetadata(
-            existing->executable_, existing->output_shapes_,
-            existing->parameter_device_shapes_, existing->argument_indices_,
+            existing->executable_, existing->parameter_device_shapes_,
+            existing->output_shapes_, existing->output_shapes_kind_,
+            existing->argument_indices_,
             std::move(unbounded_dynamic_execution_metadata),
             existing->subslice_origin_));
   }
@@ -174,14 +176,29 @@ class LoadedExecutableWithMetadata {
     return executable_.get();
   }
 
-  const std::vector<Shape>& output_shapes() const { return output_shapes_; }
-  // For each argument buffer the executable takes, the on-device shape it was
-  // compiled for, or nullopt for dynamic parameters. Tuple parameters take one
-  // buffer per element and can't be nested. Empty if the executable doesn't
-  // report them.
-  const std::vector<std::optional<xla::Shape>>& parameter_device_shapes()
-      const {
+  // Flattened output shapes of the executable (one per output buffer).
+  absl::Span<const xla::Shape> output_shapes() const { return *output_shapes_; }
+  // For each flat argument buffer the executable takes, the on-device shape
+  // (including layout and bounded-dynamic dimension flags) it was compiled for.
+  // Tuple parameters take one buffer per element and can't be nested. Empty if
+  // the executable doesn't report them.
+  absl::Span<const xla::Shape> parameter_device_shapes() const {
     return parameter_device_shapes_;
+  }
+  // Shared immutable list of on-device shapes (including layout and
+  // bounded-dynamic dimension flags) for each flat output buffer the executable
+  // produces, allowing materialized DeviceBufferLists to retain output shapes
+  // without keeping `executable_` alive. Null if the executable doesn't report
+  // them or if an `output_transform` rewrites output buffers after execution.
+  absl_nullable std::shared_ptr<const std::vector<xla::Shape>>
+  shared_output_device_shapes() const {
+    return output_shapes_kind_ == OutputShapesKind::kOnDevice ? output_shapes_
+                                                              : nullptr;
+  }
+  absl::Span<const xla::Shape> output_device_shapes() const {
+    return output_shapes_kind_ == OutputShapesKind::kOnDevice
+               ? absl::MakeConstSpan(*output_shapes_)
+               : absl::Span<const xla::Shape>{};
   }
   const Indices& argument_indices() const { return argument_indices_; }
   const std::optional<UnboundedDynamicExecutionMetadata>&
@@ -197,27 +214,46 @@ class LoadedExecutableWithMetadata {
   }
 
  private:
+  enum class OutputShapesKind {
+    // `output_shapes_` holds the post-execution on-device shapes (with layouts
+    // and bounded-dynamic dimension flags).
+    kOnDevice,
+    // `output_shapes_` is only valid for inferring logical output shapes (HLO
+    // layout metadata was unavailable or an `output_transform` rewrites output
+    // buffers after execution).
+    kLogicalOnly,
+  };
+
   LoadedExecutableWithMetadata(
       absl_nonnull std::shared_ptr<const xla::PjRtLoadedExecutable> executable,
-      std::vector<Shape> output_shapes,
-      std::vector<std::optional<xla::Shape>> parameter_device_shapes,
-      Indices argument_indices = {},
+      std::vector<xla::Shape> parameter_device_shapes,
+      absl_nonnull std::shared_ptr<const std::vector<xla::Shape>> output_shapes,
+      const OutputShapesKind output_shapes_kind, Indices argument_indices = {},
       std::optional<UnboundedDynamicExecutionMetadata>
           unbounded_dynamic_execution_metadata = std::nullopt,
       std::optional<xla::PjRtDeviceDimensions> subslice_origin = std::nullopt)
       : executable_(std::move(executable)),
-        output_shapes_(std::move(output_shapes)),
         parameter_device_shapes_(std::move(parameter_device_shapes)),
+        output_shapes_(std::move(output_shapes)),
+        output_shapes_kind_(
+            unbounded_dynamic_execution_metadata.has_value() &&
+                    unbounded_dynamic_execution_metadata->output_transform !=
+                        nullptr
+                ? OutputShapesKind::kLogicalOnly
+                : output_shapes_kind),
         argument_indices_(std::move(argument_indices)),
         unbounded_dynamic_execution_metadata_(
             std::move(unbounded_dynamic_execution_metadata)),
         subslice_origin_(std::move(subslice_origin)) {}
 
   absl_nonnull std::shared_ptr<const xla::PjRtLoadedExecutable> executable_;
-  // Cached output shapes for the executable.
-  std::vector<Shape> output_shapes_;
-  // Cached on-device parameter shapes for the executable.
-  std::vector<std::optional<xla::Shape>> parameter_device_shapes_;
+  // Cached on-device parameter shapes (with layout) for the executable.
+  std::vector<xla::Shape> parameter_device_shapes_;
+  // Cached output shapes, shared with materialized output DeviceBufferLists
+  // when `output_shapes_kind_ == OutputShapesKind::kOnDevice` so cache eviction
+  // can still free `executable_`.
+  absl_nonnull std::shared_ptr<const std::vector<xla::Shape>> output_shapes_;
+  OutputShapesKind output_shapes_kind_;
   Indices argument_indices_;
   std::optional<UnboundedDynamicExecutionMetadata>
       unbounded_dynamic_execution_metadata_;

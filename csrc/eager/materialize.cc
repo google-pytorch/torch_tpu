@@ -64,6 +64,7 @@
 #include "mlir/IR/MLIRContext.h"
 #include "xla/future.h"
 #include "xla/pjrt/pjrt_client.h"
+#include "xla/shape.h"
 
 namespace torch_tpu {
 namespace {
@@ -698,25 +699,14 @@ absl::Status Materialize(absl::Span<const DeviceBufferRef> buffer_refs,
   return MaterializeSpan(buffer_refs, reason, graph_split_mode);
 }
 
-absl::StatusOr<std::vector<DeviceBufferRef>> EnqueueExecutable(
+namespace {
+
+absl::StatusOr<std::vector<DeviceBufferRef>> EnqueueExecutableWithOutputs(
     SharedLoadedExecutableWithMetadata executable,
     std::vector<DeviceBufferRef> arguments,
-    absl::Span<const Shape> output_shapes, std::string_view task_name) {
-  // Get the stream from the calling thread, not from the execution worker
-  // thread.
-  const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
-  const auto eager_mode = GetEagerMode();
-  // Create a set of output DeviceBufferRefs to hold the materialized results.
-  std::vector<DeviceBufferRef> outputs;
-  outputs.reserve(output_shapes.size());
-  for (const auto& shape : output_shapes) {
-    // Create pending buffer lists to hold the results.
-    TT_ASSIGN_OR_RETURN(DeviceBufferRef output_ref,
-                        DeviceBufferList::CreatePendingExecution(
-                            shape, device_index, stream_id));
-    outputs.push_back(std::move(output_ref));
-  }
-
+    std::vector<DeviceBufferRef> outputs, const c10::DeviceIndex device_index,
+    const c10::StreamId stream_id, const EagerMode eager_mode,
+    const std::string_view task_name) {
   TT_RETURN_IF_ERROR(MarkPinnedHostOutputs(outputs, executable));
 
   // FromExecutable will check to make sure all arguments are materializing
@@ -738,6 +728,54 @@ absl::StatusOr<std::vector<DeviceBufferRef>> EnqueueExecutable(
   GetMaterializationWorker().EnqueueStream(device_index, stream_id);
 
   return outputs;
+}
+
+}  // namespace
+
+absl::StatusOr<std::vector<DeviceBufferRef>> EnqueueExecutable(
+    SharedLoadedExecutableWithMetadata executable,
+    std::vector<DeviceBufferRef> arguments, const std::string_view task_name) {
+  // Get the stream from the calling thread, not from the execution worker
+  // thread.
+  const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
+  const auto eager_mode = GetEagerMode();
+  const absl::Span<const xla::Shape> output_shapes =
+      executable->output_shapes();
+  std::vector<DeviceBufferRef> outputs;
+  outputs.reserve(output_shapes.size());
+  for (const xla::Shape& xla_shape : output_shapes) {
+    TT_ASSIGN_OR_RETURN(const Shape shape, MakeShape(xla_shape));
+    TT_ASSIGN_OR_RETURN(DeviceBufferRef output_ref,
+                        DeviceBufferList::CreatePendingExecution(
+                            shape, device_index, stream_id));
+    outputs.push_back(std::move(output_ref));
+  }
+  return EnqueueExecutableWithOutputs(
+      std::move(executable), std::move(arguments), std::move(outputs),
+      device_index, stream_id, eager_mode, task_name);
+}
+
+absl::StatusOr<std::vector<DeviceBufferRef>> EnqueueExecutable(
+    SharedLoadedExecutableWithMetadata executable,
+    std::vector<DeviceBufferRef> arguments,
+    absl::Span<const Shape> output_shapes, std::string_view task_name) {
+  // Get the stream from the calling thread, not from the execution worker
+  // thread.
+  const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
+  const auto eager_mode = GetEagerMode();
+  // Create a set of output DeviceBufferRefs to hold the materialized results.
+  std::vector<DeviceBufferRef> outputs;
+  outputs.reserve(output_shapes.size());
+  for (const auto& shape : output_shapes) {
+    // Create pending buffer lists to hold the results.
+    TT_ASSIGN_OR_RETURN(DeviceBufferRef output_ref,
+                        DeviceBufferList::CreatePendingExecution(
+                            shape, device_index, stream_id));
+    outputs.push_back(std::move(output_ref));
+  }
+  return EnqueueExecutableWithOutputs(
+      std::move(executable), std::move(arguments), std::move(outputs),
+      device_index, stream_id, eager_mode, task_name);
 }
 
 absl::StatusOr<EventSnapshot> MaterializeStream(

@@ -514,6 +514,7 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/types:span",
         "@llvm-project//mlir:IR",
         "@xla//xla:future",
+        "@xla//xla:shape_util",
         "@xla//xla/pjrt:pjrt_client",
     ],
 )

@@ -23,15 +23,18 @@
 #include <utility>
 #include <vector>
 
+#include "absl/base/nullability.h"
 #include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
+#include "absl/types/span.h"
 #include "csrc/common/compilation_spec.h"
 #include "csrc/common/compilation_test_helper.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/excess_precision.h"
 #include "csrc/common/mlir_test_modules.h"
+#include "csrc/common/shape.h"
 #include "csrc/common/status_test_utils.h"
 #include "csrc/pjrt/pjrt_state.h"
 #include "gmock/gmock.h"
@@ -179,18 +182,241 @@ class TupleArgumentsTest : public TpuClientTest {
 void ExpectDeviceShapesOfThreeArguments(
     std::unique_ptr<xla::PjRtLoadedExecutable> loaded_executable) {
   TT_ASSERT_OK_AND_ASSIGN(
-      SharedLoadedExecutableWithMetadata executable,
+      const SharedLoadedExecutableWithMetadata executable,
       LoadedExecutableWithMetadata::MakeShared(std::move(loaded_executable)));
-  const std::vector<std::optional<xla::Shape>>& shapes =
+  const absl::Span<const xla::Shape> shapes =
       executable->parameter_device_shapes();
   ASSERT_EQ(shapes.size(), 3);
-  for (const std::optional<xla::Shape>& shape : shapes) {
-    ASSERT_TRUE(shape.has_value());
-    EXPECT_TRUE(shape->has_layout());
+  for (const xla::Shape& shape : shapes) {
+    EXPECT_TRUE(shape.IsArray());
+    EXPECT_TRUE(shape.is_static());
+    EXPECT_TRUE(shape.has_layout());
   }
-  EXPECT_THAT(shapes[0]->dimensions(), ElementsAre(2, 3));
-  EXPECT_THAT(shapes[1]->dimensions(), ElementsAre(4, 5));
-  EXPECT_THAT(shapes[2]->dimensions(), ElementsAre(6));
+  EXPECT_THAT(shapes[0].dimensions(), ElementsAre(2, 3));
+  EXPECT_THAT(shapes[1].dimensions(), ElementsAre(4, 5));
+  EXPECT_THAT(shapes[2].dimensions(), ElementsAre(6));
+}
+
+class DeviceShapesTest : public TpuClientTest {
+ protected:
+  void SetUp() override {
+    TT_ASSERT_OK_AND_ASSIGN(client_, PjrtBackend::GetInstance().GetClient());
+  }
+
+  absl::StatusOr<SharedLoadedExecutableWithMetadata> CompileTuplePassthrough() {
+    xla::XlaBuilder builder("tupled_outputs");
+    const xla::XlaOp p0 = xla::Parameter(
+        &builder, 0, xla::ShapeUtil::MakeShape(xla::F32, {2, 3}), "p0");
+    const xla::XlaOp p1 = xla::Parameter(
+        &builder, 1, xla::ShapeUtil::MakeShape(xla::F32, {4, 5}), "p1");
+    TT_ASSIGN_OR_RETURN(const xla::XlaComputation computation,
+                        builder.Build(xla::Tuple(&builder, {p0, p1})));
+    TT_ASSIGN_OR_RETURN(
+        std::unique_ptr<xla::PjRtLoadedExecutable> loaded_executable,
+        client_->CompileAndLoad(computation, xla::CompileOptions()));
+    return LoadedExecutableWithMetadata::MakeShared(
+        std::move(loaded_executable));
+  }
+
+  xla::PjRtClient* client_ = nullptr;
+};
+
+TEST_F(DeviceShapesTest, FlattensTupleOutputDeviceShapes) {
+  TT_ASSERT_OK_AND_ASSIGN(const SharedLoadedExecutableWithMetadata executable,
+                          CompileTuplePassthrough());
+
+  ASSERT_NE(executable->shared_output_device_shapes(), nullptr);
+  ASSERT_EQ(executable->output_device_shapes().size(), 2);
+  EXPECT_TRUE(executable->output_device_shapes()[0].has_layout());
+  EXPECT_TRUE(executable->output_device_shapes()[1].has_layout());
+  EXPECT_THAT(executable->output_device_shapes()[0].dimensions(),
+              ElementsAre(2, 3));
+  EXPECT_THAT(executable->output_device_shapes()[1].dimensions(),
+              ElementsAre(4, 5));
+  ASSERT_EQ(executable->output_shapes().size(), 2);
+  EXPECT_EQ(executable->output_shapes(), executable->output_device_shapes());
+  ASSERT_EQ(executable->parameter_device_shapes().size(), 2);
+  EXPECT_EQ(executable->output_device_shapes()[0],
+            executable->parameter_device_shapes()[0]);
+  EXPECT_EQ(executable->output_device_shapes()[1],
+            executable->parameter_device_shapes()[1]);
+}
+
+TEST_F(DeviceShapesTest,
+       BoundedDynamicParameterAndOutputPreserveDynamicDimensionFlags) {
+  xla::XlaBuilder dyn_out_builder("bounded_dynamic_output");
+  const xla::XlaOp static_in = xla::Parameter(
+      &dyn_out_builder, 0, xla::ShapeUtil::MakeShape(xla::F32, {8, 8}), "x");
+  const xla::XlaOp dyn_size = xla::Parameter(
+      &dyn_out_builder, 1, xla::ShapeUtil::MakeShape(xla::S32, {}), "n");
+  TT_ASSERT_OK_AND_ASSIGN(
+      const xla::XlaComputation dyn_out_comp,
+      dyn_out_builder.Build(xla::SetDimensionSize(static_in, dyn_size, 0)));
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<xla::PjRtLoadedExecutable> raw_dyn_out,
+      client_->CompileAndLoad(dyn_out_comp, xla::CompileOptions()));
+  TT_ASSERT_OK_AND_ASSIGN(
+      const SharedLoadedExecutableWithMetadata dyn_out_exec,
+      LoadedExecutableWithMetadata::MakeShared(std::move(raw_dyn_out)));
+
+  ASSERT_EQ(dyn_out_exec->parameter_device_shapes().size(), 2);
+  EXPECT_TRUE(dyn_out_exec->parameter_device_shapes()[0].is_static());
+  EXPECT_TRUE(dyn_out_exec->parameter_device_shapes()[1].is_static());
+  ASSERT_EQ(dyn_out_exec->output_device_shapes().size(), 1);
+  EXPECT_TRUE(dyn_out_exec->output_device_shapes()[0].is_dynamic());
+  EXPECT_TRUE(dyn_out_exec->output_device_shapes()[0].is_dynamic_dimension(0));
+  EXPECT_FALSE(dyn_out_exec->output_device_shapes()[0].is_dynamic_dimension(1));
+  ASSERT_EQ(dyn_out_exec->output_shapes().size(), 1);
+  EXPECT_THAT(dyn_out_exec->output_shapes()[0].dimensions(), ElementsAre(8, 8));
+
+  xla::XlaBuilder dyn_param_builder("bounded_dynamic_parameter");
+  const xla::Shape dyn_param_shape = xla::ShapeUtil::MakeShape(
+      xla::F32, {8, 8}, /*dynamic_dimensions=*/{true, false});
+  const xla::XlaOp dyn_in =
+      xla::Parameter(&dyn_param_builder, 0, dyn_param_shape, "dyn_x");
+  TT_ASSERT_OK_AND_ASSIGN(const xla::XlaComputation dyn_param_comp,
+                          dyn_param_builder.Build(xla::Add(dyn_in, dyn_in)));
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<xla::PjRtLoadedExecutable> raw_dyn_param,
+      client_->CompileAndLoad(dyn_param_comp, xla::CompileOptions()));
+  TT_ASSERT_OK_AND_ASSIGN(
+      const SharedLoadedExecutableWithMetadata dyn_param_exec,
+      LoadedExecutableWithMetadata::MakeShared(std::move(raw_dyn_param)));
+
+  ASSERT_EQ(dyn_param_exec->parameter_device_shapes().size(), 1);
+  EXPECT_TRUE(dyn_param_exec->parameter_device_shapes()[0].is_dynamic());
+  EXPECT_TRUE(
+      dyn_param_exec->parameter_device_shapes()[0].is_dynamic_dimension(0));
+  ASSERT_EQ(dyn_param_exec->output_device_shapes().size(), 1);
+  EXPECT_TRUE(dyn_param_exec->output_device_shapes()[0].is_dynamic());
+  EXPECT_TRUE(
+      dyn_param_exec->output_device_shapes()[0].is_dynamic_dimension(0));
+}
+
+TEST_F(DeviceShapesTest,
+       WithArgumentIndicesPreservesParameterAndOutputDeviceShapes) {
+  TT_ASSERT_OK_AND_ASSIGN(const SharedLoadedExecutableWithMetadata executable,
+                          CompileTuplePassthrough());
+  const SharedLoadedExecutableWithMetadata with_indices =
+      LoadedExecutableWithMetadata::WithArgumentIndices(executable, {0, 1});
+  EXPECT_EQ(with_indices->parameter_device_shapes(),
+            executable->parameter_device_shapes());
+  EXPECT_EQ(with_indices->shared_output_device_shapes(),
+            executable->shared_output_device_shapes());
+}
+
+TEST_F(DeviceShapesTest,
+       PreservesParameterAndOutputDeviceShapesAcrossSerialization) {
+  // 1. Static tuple-output executable preserves compiled shapes across
+  // Tier-2/Tier-3 serialization round-trips.
+  TT_ASSERT_OK_AND_ASSIGN(const SharedLoadedExecutableWithMetadata static_exec,
+                          CompileTuplePassthrough());
+  TT_ASSERT_OK_AND_ASSIGN(
+      const std::string serialized_static,
+      static_exec->GetLoadedExecutable()->SerializeExecutable());
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<xla::PjRtLoadedExecutable> loaded_static,
+      client_->LoadSerializedExecutable(serialized_static,
+                                        /*options=*/std::nullopt,
+                                        xla::LoadOptions{}));
+  TT_ASSERT_OK_AND_ASSIGN(
+      const SharedLoadedExecutableWithMetadata deserialized_static,
+      LoadedExecutableWithMetadata::MakeShared(std::move(loaded_static)));
+  EXPECT_EQ(deserialized_static->parameter_device_shapes(),
+            static_exec->parameter_device_shapes());
+  EXPECT_EQ(deserialized_static->output_device_shapes(),
+            static_exec->output_device_shapes());
+
+  // 2. Bounded-dynamic parameter and output flags also survive serialization
+  // rather than turning into static upper-bound shapes.
+  xla::XlaBuilder dyn_builder("serialized_bounded_dynamic");
+  const xla::Shape dyn_param_shape = xla::ShapeUtil::MakeShape(
+      xla::F32, {8, 8}, /*dynamic_dimensions=*/{true, false});
+  const xla::XlaOp dyn_in =
+      xla::Parameter(&dyn_builder, 0, dyn_param_shape, "dyn_x");
+  const xla::XlaOp static_in = xla::Parameter(
+      &dyn_builder, 1, xla::ShapeUtil::MakeShape(xla::F32, {8, 8}), "static_x");
+  TT_ASSERT_OK_AND_ASSIGN(
+      const xla::XlaComputation dyn_comp,
+      dyn_builder.Build(xla::Tuple(&dyn_builder, {dyn_in, static_in})));
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<xla::PjRtLoadedExecutable> raw_dyn,
+      client_->CompileAndLoad(dyn_comp, xla::CompileOptions()));
+  TT_ASSERT_OK_AND_ASSIGN(
+      const SharedLoadedExecutableWithMetadata dyn_exec,
+      LoadedExecutableWithMetadata::MakeShared(std::move(raw_dyn)));
+  TT_ASSERT_OK_AND_ASSIGN(
+      const std::string serialized_dyn,
+      dyn_exec->GetLoadedExecutable()->SerializeExecutable());
+  TT_ASSERT_OK_AND_ASSIGN(std::unique_ptr<xla::PjRtLoadedExecutable> loaded_dyn,
+                          client_->LoadSerializedExecutable(
+                              serialized_dyn,
+                              /*options=*/std::nullopt, xla::LoadOptions{}));
+  TT_ASSERT_OK_AND_ASSIGN(
+      const SharedLoadedExecutableWithMetadata deserialized_dyn,
+      LoadedExecutableWithMetadata::MakeShared(std::move(loaded_dyn)));
+  ASSERT_EQ(deserialized_dyn->parameter_device_shapes().size(), 2);
+  EXPECT_TRUE(deserialized_dyn->parameter_device_shapes()[0].is_dynamic());
+  EXPECT_TRUE(deserialized_dyn->parameter_device_shapes()[1].is_static());
+  EXPECT_EQ(deserialized_dyn->parameter_device_shapes(),
+            dyn_exec->parameter_device_shapes());
+  ASSERT_EQ(deserialized_dyn->output_device_shapes().size(), 2);
+  EXPECT_TRUE(deserialized_dyn->output_device_shapes()[0].is_dynamic());
+  EXPECT_TRUE(deserialized_dyn->output_device_shapes()[1].is_static());
+  EXPECT_EQ(deserialized_dyn->output_device_shapes(),
+            dyn_exec->output_device_shapes());
+}
+
+TEST_F(DeviceShapesTest,
+       DynamicExecutionMetadataGatesOutputDeviceShapesOnOutputTransform) {
+  const auto identity_transform =
+      +[](std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers,
+          absl::Span<const Shape>)
+      -> absl::StatusOr<
+          std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>>> {
+    return buffers;
+  };
+
+  xla::XlaBuilder builder("make_shared_with_transform");
+  const xla::XlaOp p0 = xla::Parameter(
+      &builder, 0, xla::ShapeUtil::MakeShape(xla::F32, {2, 3}), "p0");
+  TT_ASSERT_OK_AND_ASSIGN(const xla::XlaComputation computation,
+                          builder.Build(p0));
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<xla::PjRtLoadedExecutable> raw_executable,
+      client_->CompileAndLoad(computation, xla::CompileOptions()));
+  UnboundedDynamicExecutionMetadata meta_with_transform;
+  meta_with_transform.output_transform = identity_transform;
+  TT_ASSERT_OK_AND_ASSIGN(
+      const SharedLoadedExecutableWithMetadata direct_transformed,
+      LoadedExecutableWithMetadata::MakeShared(std::move(raw_executable),
+                                               /*argument_indices=*/{},
+                                               meta_with_transform));
+  EXPECT_EQ(direct_transformed->parameter_device_shapes().size(), 1);
+  EXPECT_EQ(direct_transformed->shared_output_device_shapes(), nullptr);
+  EXPECT_TRUE(direct_transformed->output_device_shapes().empty());
+  EXPECT_EQ(direct_transformed->output_shapes().size(), 1);
+
+  TT_ASSERT_OK_AND_ASSIGN(const SharedLoadedExecutableWithMetadata executable,
+                          CompileTuplePassthrough());
+
+  UnboundedDynamicExecutionMetadata meta_without_transform;
+  const SharedLoadedExecutableWithMetadata untransformed =
+      LoadedExecutableWithMetadata::WithDynamicExecutionMetadata(
+          executable, meta_without_transform);
+  EXPECT_EQ(untransformed->parameter_device_shapes(),
+            executable->parameter_device_shapes());
+  EXPECT_EQ(untransformed->shared_output_device_shapes(),
+            executable->shared_output_device_shapes());
+
+  const SharedLoadedExecutableWithMetadata transformed =
+      LoadedExecutableWithMetadata::WithDynamicExecutionMetadata(
+          executable, meta_with_transform);
+  EXPECT_EQ(transformed->parameter_device_shapes(),
+            executable->parameter_device_shapes());
+  EXPECT_EQ(transformed->shared_output_device_shapes(), nullptr);
+  EXPECT_TRUE(transformed->output_device_shapes().empty());
+  EXPECT_EQ(transformed->output_shapes().size(), 2);
 }
 
 TEST_F(TupleArgumentsTest, ReportsParameterDeviceShapesOfTupledArguments) {
@@ -206,8 +432,8 @@ TEST_F(TupleArgumentsTest, ReportsParameterDeviceShapesOfTupledArguments) {
 
 // PJRT only supports one level of tupled arguments (see
 // xla::GetParameterShapes), so nested tuples never reach
-// GetStaticParameterDeviceShapes. If that changes, checks that they are
-// flattened in order.
+// GetCompiledDeviceShapes. If that changes, checks that they are flattened in
+// order.
 TEST_F(TupleArgumentsTest, RejectsOrFlattensNestedTupledArguments) {
   absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>> loaded_executable =
       CompileWithTupledArguments(xla::ShapeUtil::MakeTupleShape(

@@ -207,16 +207,17 @@ bool HloModuleContainsCollective(const xla::HloModule* hlo_module) {
 absl::Status ValidateArgumentLayouts(
     const LoadedExecutableWithMetadata& executable,
     absl::Span<xla::PjRtBuffer* const> argument_buffers) {
-  const std::vector<std::optional<xla::Shape>>& parameter_shapes =
+  const absl::Span<const xla::Shape> parameter_shapes =
       executable.parameter_device_shapes();
   for (size_t i = 0; i < argument_buffers.size() && i < parameter_shapes.size();
        ++i) {
-    // PJRT handles dynamic parameters and arguments itself.
-    if (argument_buffers[i] == nullptr || !parameter_shapes[i].has_value() ||
+    const xla::Shape& expected = parameter_shapes[i];
+    // PJRT handles dynamic and non-array parameters and arguments itself.
+    if (argument_buffers[i] == nullptr || !expected.IsArray() ||
+        !expected.is_static() || !expected.has_layout() ||
         !argument_buffers[i]->on_device_shape().is_static()) {
       continue;
     }
-    const xla::Shape& expected = *parameter_shapes[i];
     const xla::Shape& actual = argument_buffers[i]->on_device_shape();
     // An argument with other dimensions, e.g. a one-element array passed to a
     // scalar parameter, is reinterpreted on purpose. PJRT checks its size.
