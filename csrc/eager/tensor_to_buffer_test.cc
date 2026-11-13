@@ -24,11 +24,14 @@
 #include "ATen/core/ATen_fwd.h"
 #include "absl/cleanup/cleanup.h"
 #include "absl/types/span.h"
+#include "c10/core/Allocator.h"
 #include "c10/core/Storage.h"
 #include "c10/core/TensorImpl.h"
 #include "c10/util/intrusive_ptr.h"
 #include "csrc/common/dimension_types.h"
+#include "csrc/common/shape.h"
 #include "csrc/common/status_test_utils.h"
+#include "csrc/eager/current_stream.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/device_buffer_utils.h"
 #include "csrc/eager/eager_mode.h"
@@ -361,6 +364,168 @@ TEST(TensorToBufferTest, AssignBufferToAtTensorBumpVersion) {
             initial_version + 2);
   EXPECT_EQ(view.unsafeGetTensorImpl()->version_counter().current_version(),
             initial_version + 2);
+}
+
+TEST(TensorToBufferTest,
+     GraphCaptureTracksPreexistingStoragesAndRestoresOriginalBuffers) {
+  ScopedPythonContextCapturer capturer(OpName::kAdd);
+  const EagerMode prev_mode = GetEagerMode();
+  SetEagerMode(EagerMode::kInternalDeferAll);
+  const auto cleanup_mode =
+      absl::MakeCleanup([prev_mode]() { SetEagerMode(prev_mode); });
+  constexpr auto f32_type = mlir::ElementType::F32;
+
+  TT_ASSERT_OK_AND_ASSIGN(DeviceBufferRef init_read_only,
+                          CreateEmptyDeviceBufferRef({4}, f32_type));
+  ASSERT_TRUE(init_read_only.MarkDynamic(0, 2, 8).ok());
+  TT_ASSERT_OK_AND_ASSIGN(const DeviceBufferRef init_write_first,
+                          CreateEmptyDeviceBufferRef({4}, f32_type));
+  TT_ASSERT_OK_AND_ASSIGN(const DeviceBufferRef init_read_then_write,
+                          CreateEmptyDeviceBufferRef({4}, f32_type));
+  TT_ASSERT_OK_AND_ASSIGN(const DeviceBufferRef written_first_buf,
+                          CreateEmptyDeviceBufferRef({4}, f32_type));
+  TT_ASSERT_OK_AND_ASSIGN(const DeviceBufferRef written_after_read_buf,
+                          CreateEmptyDeviceBufferRef({4}, f32_type));
+
+  at::Tensor read_only = MakeTensor(init_read_only);
+  at::Tensor write_first = MakeTensor(init_write_first);
+  at::Tensor read_then_write = MakeTensor(init_read_then_write);
+
+  const auto state =
+      BeginGraphCaptureStorageTracking(GetCurrentDeviceStreamId());
+  absl::Cleanup end_tracking = [&state] {
+    EndGraphCaptureStorageTracking(*state);
+  };
+
+  // First read installs a static-shape placeholder; second read returns the
+  // same placeholder without installing another.
+  TT_ASSERT_OK_AND_ASSIGN(const DeviceBufferRef placeholder_ro_1,
+                          GetBuffer(read_only));
+  TT_ASSERT_OK_AND_ASSIGN(const DeviceBufferRef placeholder_ro_2,
+                          GetBuffer(read_only));
+  EXPECT_NE(placeholder_ro_1, init_read_only);
+  EXPECT_EQ(placeholder_ro_1, placeholder_ro_2);
+  EXPECT_TRUE(placeholder_ro_1.is_materializing());
+  EXPECT_FALSE(placeholder_ro_1.is_deferred());
+  EXPECT_TRUE(placeholder_ro_1.dynamic_dimensions().empty());
+
+  // Writing the full storage base before any read records the storage without
+  // installing a placeholder.
+  ASSERT_TRUE(AssignBufferAsStorageBase(written_first_buf, write_first).ok());
+  TT_ASSERT_OK_AND_ASSIGN(const DeviceBufferRef read_after_write,
+                          GetBuffer(write_first));
+  EXPECT_EQ(read_after_write, written_first_buf);
+
+  // Reading then writing records both the placeholder and the final write.
+  TT_ASSERT_OK_AND_ASSIGN(const DeviceBufferRef placeholder_rtw,
+                          GetBuffer(read_then_write));
+  EXPECT_NE(placeholder_rtw, init_read_then_write);
+  ASSERT_TRUE(
+      AssignBufferToAtTensor(written_after_read_buf, read_then_write).ok());
+
+  std::move(end_tracking).Cancel();
+  const CapturedGraphStorages captured = EndGraphCaptureStorageTracking(*state);
+
+  ASSERT_EQ(captured.placeholder_to_storage.size(), 2);
+  EXPECT_TRUE(captured.placeholder_to_storage.contains(placeholder_ro_1));
+  EXPECT_TRUE(captured.placeholder_to_storage.contains(placeholder_rtw));
+
+  ASSERT_EQ(captured.writes.size(), 2);
+  EXPECT_EQ(captured.writes[0].storage.unsafeGetStorageImpl(),
+            write_first.storage().unsafeGetStorageImpl());
+  EXPECT_EQ(captured.writes[0].final_buffer, written_first_buf);
+  EXPECT_FALSE(captured.writes[0].created);
+  EXPECT_EQ(captured.writes[1].storage.unsafeGetStorageImpl(),
+            read_then_write.storage().unsafeGetStorageImpl());
+  EXPECT_EQ(captured.writes[1].final_buffer, written_after_read_buf);
+  EXPECT_FALSE(captured.writes[1].created);
+
+  // All pre-existing storages (including pre-marked dynamic bounds) are
+  // restored to their pre-capture buffers.
+  TT_ASSERT_OK_AND_ASSIGN(const DeviceBufferRef restored_ro,
+                          GetBuffer(read_only));
+  EXPECT_EQ(restored_ro, init_read_only);
+  ASSERT_EQ(restored_ro.dynamic_dimensions().size(), 1);
+  EXPECT_EQ(restored_ro.dynamic_dimensions()[0].upper_bound, 8);
+  TT_ASSERT_OK_AND_ASSIGN(const DeviceBufferRef restored_wf,
+                          GetBuffer(write_first));
+  EXPECT_EQ(restored_wf, init_write_first);
+  TT_ASSERT_OK_AND_ASSIGN(const DeviceBufferRef restored_rtw,
+                          GetBuffer(read_then_write));
+  EXPECT_EQ(restored_rtw, init_read_then_write);
+}
+
+TEST(TensorToBufferTest,
+     GraphCaptureTracksLiveCreatedStoragesAndClearsDeferredBuffers) {
+  ScopedPythonContextCapturer capturer(OpName::kAdd);
+  const EagerMode prev_mode = GetEagerMode();
+  SetEagerMode(EagerMode::kInternalDeferAll);
+  const auto cleanup_mode =
+      absl::MakeCleanup([prev_mode]() { SetEagerMode(prev_mode); });
+  constexpr auto f32_type = mlir::ElementType::F32;
+
+  TT_ASSERT_OK_AND_ASSIGN(const DeviceBufferRef deferred_live,
+                          CreateEmptyDeviceBufferRef({2, 3}, f32_type));
+  TT_ASSERT_OK_AND_ASSIGN(const DeviceBufferRef deferred_freed,
+                          CreateEmptyDeviceBufferRef({2, 3}, f32_type));
+
+  const auto state =
+      BeginGraphCaptureStorageTracking(GetCurrentDeviceStreamId());
+  absl::Cleanup end_tracking = [&state] {
+    EndGraphCaptureStorageTracking(*state);
+  };
+
+  at::Tensor live_tensor = MakeTensor(deferred_live);
+  {
+    at::Tensor freed_tensor = MakeTensor(deferred_freed);
+    (void)freed_tensor;
+  }
+
+  std::move(end_tracking).Cancel();
+  const CapturedGraphStorages captured = EndGraphCaptureStorageTracking(*state);
+
+  EXPECT_TRUE(captured.placeholder_to_storage.empty());
+  ASSERT_EQ(captured.writes.size(), 1);
+  EXPECT_EQ(captured.writes[0].storage.unsafeGetStorageImpl(),
+            live_tensor.storage().unsafeGetStorageImpl());
+  EXPECT_EQ(captured.writes[0].final_buffer, deferred_live);
+  EXPECT_TRUE(captured.writes[0].created);
+
+  ASSERT_TRUE(ClearCapturedDeferredStorages(captured).ok());
+  TT_ASSERT_OK_AND_ASSIGN(const DeviceBufferRef cleared_buf,
+                          GetBaseBuffer(live_tensor.storage()));
+  EXPECT_NE(cleared_buf, deferred_live);
+  EXPECT_THAT(cleared_buf.dimensions(), testing::ElementsAre(2, 3));
+  EXPECT_EQ(cleared_buf.element_type(), f32_type);
+}
+
+TEST(TensorToBufferTest,
+     AssignBufferToStorageUpdatesSlotAndAllocateGraphMempoolIdIsUnique) {
+  ScopedPythonContextCapturer capturer(OpName::kAdd);
+  const EagerMode prev_mode = GetEagerMode();
+  SetEagerMode(EagerMode::kInternalDeferAll);
+  const auto cleanup_mode =
+      absl::MakeCleanup([prev_mode]() { SetEagerMode(prev_mode); });
+  constexpr auto f32_type = mlir::ElementType::F32;
+
+  TT_ASSERT_OK_AND_ASSIGN(const DeviceBufferRef buf0,
+                          CreateEmptyDeviceBufferRef({2, 3}, f32_type));
+  TT_ASSERT_OK_AND_ASSIGN(const DeviceBufferRef buf1,
+                          CreateEmptyDeviceBufferRef({2, 3}, f32_type));
+  TT_ASSERT_OK_AND_ASSIGN(const DeviceBufferRef wrong_size_buf,
+                          CreateEmptyDeviceBufferRef({4, 3}, f32_type));
+
+  at::Tensor tensor = MakeTensor(buf0);
+  ASSERT_TRUE(AssignBufferToStorage(buf1, tensor.storage()).ok());
+  TT_ASSERT_OK_AND_ASSIGN(const DeviceBufferRef read_buf, GetBuffer(tensor));
+  EXPECT_EQ(read_buf, buf1);
+  EXPECT_FALSE(AssignBufferToStorage(wrong_size_buf, tensor.storage()).ok());
+
+  const c10::MempoolId_t pool1 = AllocateGraphMempoolId();
+  const c10::MempoolId_t pool2 = AllocateGraphMempoolId();
+  EXPECT_NE(pool1.first, 0);
+  EXPECT_EQ(pool1.second, 0);
+  EXPECT_NE(pool2.first, pool1.first);
 }
 
 }  // namespace
