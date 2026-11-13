@@ -448,11 +448,11 @@ bool IsPythonWrapperSubclass(const at::Tensor& tensor) {
 }
 
 // Creates an autograd `Node` smart pointer (`c10::intrusive_ptr<T>` in PyTorch
-// 2.12+ where `Node` inherits from `c10::intrusive_ptr_target`, or
+// 2.13+ where `Node` inherits from `c10::intrusive_ptr_target`, or
 // `std::shared_ptr<T>` with `torch::autograd::deleteNode` in earlier PyTorch
 // versions used by OSS builds).
-// TODO: b/576283069 - Simplify to `c10::make_intrusive<T>()` once minimum OSS
-// PyTorch is >= 2.12.0.
+// TODO: b/585211199 - Simplify to `c10::make_intrusive<T>()` once minimum OSS
+// PyTorch is >= 2.13.0, where `Node` is a `c10::intrusive_ptr_target`.
 template <typename T>
 auto MakeAutogradNode() {
   if constexpr (std::is_base_of_v<c10::intrusive_ptr_target, T>) {

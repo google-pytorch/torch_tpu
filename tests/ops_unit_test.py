@@ -19324,6 +19324,8 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
   )
   def test_linear_fake_symbolic_shapes(self, device, requires_grad, bias_shape):
     """Tests linear on symbolic-shape FakeTensors doesn't specialize dims."""
+    # TODO: b/585211199 - Remove the skip (and `uses_upstream_matmul`) once
+    # minimum OSS PyTorch is >= 2.13.0.
     # Before PyTorch 2.13, upstream `at::native::matmul` called `numel()` on its
     # input, which throws on (or specializes) symbolic shapes. Upstream CPU
     # linear always uses it, and TPU linear falls back to it for a broadcast

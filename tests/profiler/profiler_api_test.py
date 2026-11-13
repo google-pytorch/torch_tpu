@@ -37,6 +37,8 @@ from tsl.profiler.protobuf import xplane_pb2
 
 def _custom_profiler_config(config: TpuProfilerConfig) -> str:
   """Returns the config string stored on the underlying _ExperimentalConfig."""
+  # TODO: b/585211199 - Return `config.custom_profiler_config` directly once
+  # minimum OSS PyTorch is >= 2.13.0.
   # Only newer torch binds the attribute (and it is missing from the .pyi
   # stubs). Released torch exposes it only through the pickled state, where it
   # is the only string field.

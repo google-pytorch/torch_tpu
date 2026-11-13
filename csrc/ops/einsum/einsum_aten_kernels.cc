@@ -1142,6 +1142,8 @@ bool AnyOperandHasSymbolicSizes(at::TensorList tensors) {
   return false;
 }
 
+// TODO: b/585211199 - Simplify to `c10::make_intrusive<T>()` once minimum OSS
+// PyTorch is >= 2.13.0, where `Node` is a `c10::intrusive_ptr_target`.
 template <typename T>
 auto MakeAutogradNode() {
   if constexpr (std::is_base_of_v<c10::intrusive_ptr_target, T>) {

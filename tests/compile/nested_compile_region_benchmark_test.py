@@ -235,6 +235,8 @@ def run_benchmark_trial(
   elif config_id == 3:
     if hasattr(torch._dynamo.config, "inline_invoke_subgraph"):
       patch_kwargs["inline_invoke_subgraph"] = False
+    # TODO: b/585211199 - Remove the hasattr check once minimum OSS PyTorch is
+    # >= 2.13.0.
     if hasattr(torch._dynamo.config, "inline_single_use_invoke_subgraph"):
       patch_kwargs["inline_single_use_invoke_subgraph"] = False
     if hasattr(torch._dynamo.config, "enable_invoke_subgraph_regional_compile"):

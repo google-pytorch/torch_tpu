@@ -842,9 +842,9 @@ class CompiledRngTest(_BaseRngTest):
     mask_bwd = x.grad > 0
     self.assertTrue(torch.equal(mask_fwd, mask_bwd))
 
-  # TODO: b/576283069 - Remove skip once minimum OSS PyTorch is >= 2.12.0.
+  # TODO: b/585211199 - Remove skip once minimum OSS PyTorch is >= 2.13.0.
   @oss_utils.skip_in_oss(
-      "Generic graphsafe RNG for TPU in AOTAutograd requires PyTorch >= 2.12.0"
+      "Generic graphsafe RNG for TPU in AOTAutograd requires PyTorch >= 2.13.0"
       " (PR #182391); OSS CI currently runs on PyTorch 2.11.0."
   )
   def test_compiled_activation_checkpointing_dropout(self):
