@@ -26,6 +26,7 @@ from absl.testing import absltest
 import portpicker
 import torch
 import torch.multiprocessing as mp
+from torch_tpu._internal.utils import test_utils
 from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
 from tests.distributed import distributed_utils
@@ -221,6 +222,7 @@ class DistributedUtilsTest(seed_test_utils.MultiProcessRepeatableTest):
     """Verifies that gloo_run ranks share an initialized gloo group."""
     distributed_utils.gloo_run(2, _worker_gloo_all_reduce, 2)
 
+  @test_utils.skip_if_msan("TODO(b/585574829): Flaky under MSAN.")
   def test_gloo_run_propagates_rank_failure(self) -> None:
     """Verifies that an assertion failing on one rank fails the caller."""
     with self.assertRaisesRegex(  # ASSERT_RAISES_OK=tests the test fixture
