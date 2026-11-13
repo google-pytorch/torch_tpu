@@ -2276,6 +2276,269 @@ class TestSplashAttention(seed_test_utils.RepeatableTest):
     test_utils.assert_close(k_tpu.grad.cpu(), k_ref.grad, rtol=1e-2, atol=1e-2)
     test_utils.assert_close(v_tpu.grad.cpu(), v_ref.grad, rtol=1e-2, atol=1e-2)
 
+  def test_make_splash_attention_fn_rectangular_export(self):
+    kernel_lib = splash_attention.splash_attention_kernel
+    mask_lib = splash_attention.splash_attention_mask
+    block_sizes = kernel_lib.BlockSizes(
+        block_q=128,
+        block_kv=128,
+        block_kv_compute=128,
+        block_q_dkv=128,
+        block_kv_dkv=128,
+        block_kv_dkv_compute=128,
+        block_q_dq=128,
+        block_kv_dq=128,
+        use_fused_bwd_kernel=False,
+    )
+    rect_mask = mask_lib.MultiHeadMask(
+        masks=(mask_lib.CausalMask(shape=(256, 512)),) * 4
+    )
+    with jax.transfer_guard("disallow"):
+      fwd_info, dq_info, dkv_info, _ = (
+          splash_attention._make_numpy_splash_mask_infos(rect_mask, block_sizes)
+      )
+    self._assert_host_numpy_mask_info(fwd_info)
+    self._assert_host_numpy_mask_info(dq_info)
+    self._assert_host_numpy_mask_info(dkv_info)
+
+    for kwargs in (
+        dict(
+            seq_len=256,
+            kv_seq_len=512,
+            n_heads=4,
+            n_kv_heads=4,
+            is_causal=False,
+            use_fused_bwd_kernel=True,
+            block_q=128,
+            block_kv=256,
+            block_kv_compute=256,
+            block_q_dkv=128,
+            block_kv_dkv=256,
+            block_kv_dkv_compute=256,
+        ),
+        dict(
+            seq_len=512,
+            kv_seq_len=256,
+            n_heads=4,
+            n_kv_heads=2,
+            is_causal=False,
+            use_fused_bwd_kernel=False,
+            block_q=256,
+            block_kv=128,
+            block_kv_compute=128,
+            block_q_dkv=256,
+            block_kv_dkv=128,
+            block_kv_dkv_compute=128,
+            block_q_dq=256,
+            block_kv_dq=128,
+        ),
+        dict(
+            seq_len=256,
+            kv_seq_len=512,
+            n_heads=4,
+            n_kv_heads=1,
+            is_causal=True,
+            use_fused_bwd_kernel=True,
+            block_q=128,
+            block_kv=128,
+            block_kv_compute=128,
+            block_q_dkv=128,
+            block_kv_dkv=128,
+            block_kv_dkv_compute=128,
+        ),
+    ):
+      q_len = kwargs["seq_len"]
+      kv_len = kwargs["kv_seq_len"]
+      q_spec = jax.ShapeDtypeStruct((2, 4, q_len, 128), jnp.float32)
+      kv_shape = (
+          (2, kv_len, 128)
+          if kwargs["n_kv_heads"] == 1
+          else (2, kwargs["n_kv_heads"], kv_len, 128)
+      )
+      kv_spec = jax.ShapeDtypeStruct(kv_shape, jnp.float32)
+      lse_spec = jax.ShapeDtypeStruct((2, 4, q_len), jnp.float32)
+      with jax.transfer_guard("disallow"):
+        fwd_fn, bwd_fn = splash_attention._make_splash_attention_fn(**kwargs)
+        fwd_exp = jax.export.export(fwd_fn, platforms=["tpu"])(
+            q_spec, kv_spec, kv_spec
+        )
+        bwd_exp = jax.export.export(bwd_fn, platforms=["tpu"])(
+            q_spec, kv_spec, kv_spec, q_spec, lse_spec, q_spec
+        )
+      self.assertEqual(
+          [a.shape for a in fwd_exp.out_avals], [q_spec.shape, lse_spec.shape]
+      )
+      self.assertEqual(
+          [a.shape for a in bwd_exp.out_avals],
+          [q_spec.shape, kv_spec.shape, kv_spec.shape],
+      )
+
+  def test_get_splash_op_names_separates_kv_seq_len(self):
+    base = dict(
+        n_heads=4,
+        n_kv_heads=2,
+        is_causal=False,
+        block_q=128,
+        block_kv=128,
+        block_kv_compute=128,
+        block_q_dkv=128,
+        block_kv_dkv=128,
+        block_kv_dkv_compute=128,
+    )
+    ops_default = splash_attention._get_splash_op_names(seq_len=256, **base)
+    ops_256_256 = splash_attention._get_splash_op_names(
+        seq_len=256, kv_seq_len=256, **base
+    )
+    ops_256_512 = splash_attention._get_splash_op_names(
+        seq_len=256, kv_seq_len=512, **base
+    )
+    ops_512_256 = splash_attention._get_splash_op_names(
+        seq_len=512, kv_seq_len=256, **base
+    )
+    self.assertEqual(ops_default, ops_256_256)
+    self.assertNotEqual(ops_256_256, ops_256_512)
+    self.assertNotEqual(ops_256_512, ops_512_256)
+    self.assertNotEqual(ops_256_256, ops_512_256)
+
+    with torch._subclasses.FakeTensorMode():
+      q = torch.randn(
+          2, 256, 4, 128, dtype=torch.bfloat16, requires_grad=True
+      ).transpose(1, 2)
+      k = torch.randn(
+          2, 512, 2, 128, dtype=torch.bfloat16, requires_grad=True
+      ).transpose(1, 2)
+      v = torch.randn(
+          2, 512, 2, 128, dtype=torch.bfloat16, requires_grad=True
+      ).transpose(1, 2)
+      q.retain_grad()
+      k.retain_grad()
+      v.retain_grad()
+      out = splash_attention.splash_sdpa(
+          q, k, v, is_causal=False, enable_gqa=True
+      )
+      out.sum().backward()
+      self.assertEqual(out.shape, (2, 4, 256, 128))
+      self.assertTrue(out.is_contiguous())
+      self.assertIsNotNone(q.grad)
+      self.assertIsNotNone(k.grad)
+      self.assertIsNotNone(v.grad)
+      self.assertEqual(q.grad.shape, (2, 4, 256, 128))
+      self.assertEqual(k.grad.shape, (2, 2, 512, 128))
+      self.assertEqual(v.grad.shape, (2, 2, 512, 128))
+      self.assertTrue(q.grad.is_contiguous())
+      self.assertTrue(k.grad.is_contiguous())
+      self.assertTrue(v.grad.is_contiguous())
+
+  def test_splash_sdpa_cross_attention_fwd_bwd(self):
+    bsz, n_heads, head_dim = 2, 4, 128
+    torch.manual_seed(42)
+    cases = (
+        (256, 512, 4, False, True, True),
+        (512, 256, 2, False, False, True),
+        (256, 512, 1, True, True, False),
+    )
+    for (
+        q_len,
+        kv_len,
+        n_kv_heads,
+        is_causal,
+        use_fused_bwd,
+        use_vmap_bwd,
+    ) in cases:
+      enable_gqa = n_heads != n_kv_heads
+      q_cpu = torch.randn(bsz, n_heads, q_len, head_dim, dtype=torch.float32)
+      k_cpu = torch.randn(
+          bsz, n_kv_heads, kv_len, head_dim, dtype=torch.float32
+      )
+      v_cpu = torch.randn(
+          bsz, n_kv_heads, kv_len, head_dim, dtype=torch.float32
+      )
+      dy_cpu = torch.randn(bsz, n_heads, q_len, head_dim, dtype=torch.float32)
+
+      q_ref = q_cpu.clone().requires_grad_(True)
+      k_ref = k_cpu.clone().requires_grad_(True)
+      v_ref = v_cpu.clone().requires_grad_(True)
+      out_ref = torch.nn.functional.scaled_dot_product_attention(
+          q_ref,
+          k_ref,
+          v_ref,
+          is_causal=is_causal,
+          enable_gqa=enable_gqa,
+      )
+      out_ref.backward(dy_cpu)
+
+      q_tpu = q_cpu.to("tpu").detach().requires_grad_(True)
+      k_tpu = k_cpu.to("tpu").detach().requires_grad_(True)
+      v_tpu = v_cpu.to("tpu").detach().requires_grad_(True)
+      out_tpu = torch.tpu.ops.splash_sdpa(
+          q_tpu,
+          k_tpu,
+          v_tpu,
+          is_causal=is_causal,
+          enable_gqa=enable_gqa,
+          use_fused_bwd_kernel=use_fused_bwd,
+          use_vmap_bwd=use_vmap_bwd,
+      )
+      out_tpu.backward(dy_cpu.to("tpu"))
+
+      self.assertEqual(out_tpu.shape, (bsz, n_heads, q_len, head_dim))
+      self.assertIsNotNone(q_tpu.grad)
+      self.assertIsNotNone(k_tpu.grad)
+      self.assertIsNotNone(v_tpu.grad)
+      self.assertEqual(k_tpu.grad.shape, (bsz, n_kv_heads, kv_len, head_dim))
+      self.assertEqual(v_tpu.grad.shape, (bsz, n_kv_heads, kv_len, head_dim))
+      test_utils.assert_close(out_tpu.cpu(), out_ref, rtol=2e-2, atol=2e-2)
+      test_utils.assert_close(
+          q_tpu.grad.cpu(), q_ref.grad, rtol=3e-2, atol=3e-2
+      )
+      test_utils.assert_close(
+          k_tpu.grad.cpu(), k_ref.grad, rtol=3e-2, atol=3e-2
+      )
+      test_utils.assert_close(
+          v_tpu.grad.cpu(), v_ref.grad, rtol=3e-2, atol=3e-2
+      )
+
+  def test_splash_sdpa_cross_attention_invalid_inputs(self):
+    q = torch.zeros(2, 4, 256, 128, dtype=torch.bfloat16)
+    k_valid = torch.zeros(2, 4, 512, 128, dtype=torch.bfloat16)
+    v_valid = torch.zeros(2, 4, 512, 128, dtype=torch.bfloat16)
+    k_unaligned = torch.zeros(2, 4, 300, 128, dtype=torch.bfloat16)
+    v_unaligned = torch.zeros(2, 4, 300, 128, dtype=torch.bfloat16)
+    v_mismatched = torch.zeros(2, 4, 256, 128, dtype=torch.bfloat16)
+    k_bad_batch = torch.zeros(1, 4, 512, 128, dtype=torch.bfloat16)
+    v_bad_batch = torch.zeros(1, 4, 512, 128, dtype=torch.bfloat16)
+    seg_ids = torch.zeros(2, 256, dtype=torch.int32)
+
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=no jax in errors tests
+        ValueError, r"kv_seq_len \(300\) must be a positive multiple of 128"
+    ):
+      splash_attention.splash_sdpa(q, k_unaligned, v_unaligned, is_causal=False)
+
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=no jax in errors tests
+        ValueError, r"kv_seq_len \(300\) must be a positive multiple of 128"
+    ):
+      splash_attention.splash_sdpa(
+          q, k_unaligned, v_unaligned, is_causal=False, block_kv=128
+      )
+
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=no jax in errors tests
+        ValueError, r"Expected k and v leading dimensions \(2, 4, 512\)"
+    ):
+      splash_attention.splash_sdpa(q, k_valid, v_mismatched, is_causal=False)
+
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=no jax in errors tests
+        ValueError, r"Expected k and v leading dimensions \(2, 4, 512\)"
+    ):
+      splash_attention.splash_sdpa(q, k_bad_batch, v_bad_batch, is_causal=False)
+
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=no jax in errors tests
+        ValueError,
+        r"segment_ids requires matching query and key/value sequence lengths",
+    ):
+      splash_attention.splash_sdpa(
+          q, k_valid, v_valid, is_causal=False, segment_ids=seg_ids
+      )
+
 
 if __name__ == "__main__":
   absltest.main()
