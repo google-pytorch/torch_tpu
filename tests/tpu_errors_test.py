@@ -5459,37 +5459,51 @@ class InitializationErrorsTest(et.TpuOnlyErrorTestBase):
     # Initialize the TPU in this process, so that it holds the devices.
     torch.ones(1, device="tpu").cpu()
 
-  def assert_worker_raises_tpu_init_failure(self, fn, *args: Any) -> None:
-    """Asserts that `fn(0, *args)` in a fresh worker raises the init failure."""
+  def assert_worker_raises_tpu_init_failure(
+      self, worker: mp.ProcessContext
+  ) -> None:
+    """Asserts that `worker`, started by `mp.spawn`, raises the init failure."""
     # The rest of the message names the device node and the colliding process,
     # both of which vary from host to host and run to run.
     with et.assert_subprocess_raises_message(
         RuntimeError, """[TorchTPU] Failed to acquire a TPU device node"""
     ):
-      mp.spawn(fn, args=args, nprocs=1, join=True)
+      worker.join()
 
   @et.why_tpu_only("TPU initialization can only fail on a TPU host.")
   def test_tpu_use_after_manual_seed_raises_tpu_init_failure(self):
-    for seed_fn_name in _SEED_FNS:
-      with self.subTest(seed_fn=seed_fn_name):
-        self.assert_worker_raises_tpu_init_failure(
-            _seed_then_use_tpu_in_fresh_process, seed_fn_name
+    # Start all the workers before waiting for any, since each one takes
+    # seconds to start up.
+    workers = {
+        seed_fn_name: mp.spawn(
+            _seed_then_use_tpu_in_fresh_process,
+            args=(seed_fn_name,),
+            join=False,
         )
+        for seed_fn_name in _SEED_FNS
+    }
+    for seed_fn_name, worker in workers.items():
+      with self.subTest(seed_fn=seed_fn_name):
+        self.assert_worker_raises_tpu_init_failure(worker)
 
   @et.why_tpu_only("TPU initialization can only fail on a TPU host.")
   def test_manual_seed_succeeds_while_tpu_is_held(self):
     # Seeding must not fail in a process that never uses the TPU, even if
     # another process holds the TPU devices.
-    for seed_fn_name in _SEED_FNS:
-      with self.subTest(seed_fn=seed_fn_name):
-        mp.spawn(
-            _seed_in_fresh_process, args=(seed_fn_name,), nprocs=1, join=True
+    workers = {
+        seed_fn_name: mp.spawn(
+            _seed_in_fresh_process, args=(seed_fn_name,), join=False
         )
+        for seed_fn_name in _SEED_FNS
+    }
+    for seed_fn_name, worker in workers.items():
+      with self.subTest(seed_fn=seed_fn_name):
+        worker.join()
 
   @et.why_tpu_only("TPU initialization can only fail on a TPU host.")
   def test_process_group_raises_tpu_init_failure(self):
     self.assert_worker_raises_tpu_init_failure(
-        _init_process_group_in_fresh_process
+        mp.spawn(_init_process_group_in_fresh_process, join=False)
     )
 
 
