@@ -39,6 +39,7 @@
 #include "mlir/IR/Types.h"
 #include "mlir/IR/Value.h"
 #include "mlir/Support/DebugStringHelper.h"
+#include "xla/mosaic/dialect/tpu/tpu_dialect.h"
 
 namespace torch_tpu::kiln::internal {
 namespace {
@@ -174,11 +175,23 @@ mlir::Value EmitCast(mlir::Value value, DType source, DType target) {
 mlir::Value EmitBitcast(mlir::Value value, DType source, DType target) {
   ABSL_CHECK(source.IsIntOrFloat() && target.IsIntOrFloat())  // CRASH_OK
       << "Bitcast() requires integer or floating-point types";
-  ABSL_CHECK_EQ(source.GetIntOrFloatBitWidth(),  // CRASH_OK
-                target.GetIntOrFloatBitWidth())
-      << "Bitcast() requires source and target types to have the same bit "
-         "width";
+  const unsigned src_bw = source.GetIntOrFloatBitWidth();
+  const unsigned dst_bw = target.GetIntOrFloatBitWidth();
   mlir::ImplicitLocOpBuilder& b = CurrentBuilder();
+  if (src_bw != dst_bw) {
+    auto vec_ty = llvm::dyn_cast<mlir::VectorType>(value.getType());
+    ABSL_CHECK(vec_ty != nullptr && vec_ty.getRank() >= 2)  // CRASH_OK
+        << "Cross-bitwidth Bitcast() requires a Tile of rank >= 2";
+    llvm::SmallVector<int64_t, 4> shape(vec_ty.getShape());
+    const int64_t total_bits = shape[shape.size() - 2] * src_bw;
+    ABSL_CHECK_EQ(total_bits % dst_bw, 0)  // CRASH_OK
+        << "Cross-bitwidth Bitcast() requires sublane dim * src_bw to be "
+           "divisible by dst_bw";
+    shape[shape.size() - 2] = total_bits / dst_bw;
+    auto dst_vec_ty =
+        mlir::VectorType::get(shape, ToMlirType(target, b.getContext()));
+    return mlir::tpu::BitcastOp::create(b, dst_vec_ty, value);
+  }
   mlir::Type dst_mlir_type = WithElementType(value.getType(), target);
   if (dst_mlir_type == value.getType()) {
     return value;
