@@ -341,6 +341,79 @@ class PallasVerifyTorchTpuKernelsTest(seed_test_utils.RepeatableTest):
         ),
     )
 
+    # 5. Rectangular cross-attention (q_seq_len != kv_seq_len) forward +
+    # autograd backward in STATIC mode and split backward lowering.
+    kv_seq_len = 256
+    q_cross = torch.randn(
+        (2, 4, seq_len, head_dim), dtype=torch.bfloat16, requires_grad=True
+    )
+    k_cross = torch.randn(
+        (2, 2, kv_seq_len, head_dim), dtype=torch.bfloat16, requires_grad=True
+    )
+    v_cross = torch.randn(
+        (2, 2, kv_seq_len, head_dim), dtype=torch.bfloat16, requires_grad=True
+    )
+    cross_static_rep = verifier.verify(
+        tpu_ops.splash_sdpa,
+        (q_cross, k_cross, v_cross),
+        kwargs={"is_causal": False, "enable_gqa": True},
+        mode=verifier.VerificationMode.STATIC,
+        options=opts,
+    )
+    self._assert_clean_report(
+        cross_static_rep,
+        expected_phases=(
+            verifier.Phase.FX_GRAPH,
+            verifier.Phase.CONTRACTS,
+            verifier.Phase.LOWERING,
+        ),
+    )
+    _, cross_bwd_name = splash_attention._get_splash_op_names(
+        seq_len=seq_len,
+        kv_seq_len=kv_seq_len,
+        n_heads=4,
+        n_kv_heads=2,
+        scale=None,
+        is_causal=False,
+        local_window_size=None,
+        block_q=128,
+        block_kv=128,
+        block_kv_compute=128,
+        block_q_dkv=128,
+        block_kv_dkv=128,
+        block_kv_dkv_compute=128,
+        block_q_dq=128,
+        block_kv_dq=128,
+        use_fused_bwd_kernel=False,
+        use_vmap_bwd=True,
+        q_layout="HEAD_DIM_MINOR",
+        k_layout="HEAD_DIM_MINOR",
+        v_layout="HEAD_DIM_MINOR",
+    )
+    cross_bwd_op = getattr(torch.ops.pallas, cross_bwd_name)
+    cross_out = torch.randn_like(q_cross.detach())
+    cross_lse = torch.randn((2, 4, seq_len), dtype=torch.float32)
+    cross_grad_out = torch.randn_like(q_cross.detach())
+    cross_bwd_rep = verifier.verify(
+        cross_bwd_op,
+        (
+            q_cross.detach(),
+            k_cross.detach(),
+            v_cross.detach(),
+            cross_out,
+            cross_lse,
+            cross_grad_out,
+        ),
+        options=opts,
+    )
+    self._assert_clean_report(
+        cross_bwd_rep,
+        expected_phases=(
+            verifier.Phase.CONTRACTS,
+            verifier.Phase.LOWERING,
+        ),
+    )
+
   def test_blockwise_scaled_mm_kernel_passes_verification(self):
     opts = verifier.VerificationOptions(tpu_version=torch.tpu.TpuVersion.V7)
 
