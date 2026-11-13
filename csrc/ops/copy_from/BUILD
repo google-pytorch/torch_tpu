@@ -167,6 +167,7 @@ torch_tpu_cc_library(
         "//csrc/common:macro_utils",
         "//csrc/common:to_string",
         "//csrc/eager:eager_mode",
+        "//csrc/ops:op_builder_utils",
         "//csrc/ops/as_strided:as_strided_aten_kernels",
         "//shims/torch:aten_headers",
         "//shims/torch/torch/headeronly:torch_headeronly",

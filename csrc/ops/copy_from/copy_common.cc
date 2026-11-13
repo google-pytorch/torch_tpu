@@ -32,6 +32,7 @@
 #include "csrc/common/to_string.h"
 #include "csrc/eager/eager_mode.h"
 #include "csrc/ops/as_strided/as_strided_aten_kernels.h"
+#include "csrc/ops/op_builder_utils.h"
 #include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
@@ -200,6 +201,19 @@ absl::Status ValidateShellDtypeCast(at::ScalarType src, at::ScalarType dst) {
 absl::Status BroadcastAndTranspose(at::Tensor& src, at::Tensor& dest) {
   TT_RETURN_IF_ERROR(BroadcastToDest(src, dest));
   TT_RETURN_IF_ERROR(TransposeToRowMajorDest(src, dest));
+  return absl::OkStatus();
+}
+
+absl::Status ValidateBroadcastableToDest(const at::Tensor& src,
+                                         const at::Tensor& dest) {
+  // dest goes first so that the error message names the tensors in the same
+  // order as CPU's copy_().
+  TT_ASSIGN_OR_RETURN(const Dimensions broadcast_sizes,
+                      InferSize(dest.sizes(), src.sizes()));
+  TT_RET_CHECK(at::IntArrayRef(broadcast_sizes) == dest.sizes(),
+               error::kInvalidArgument)
+      << "output with shape " << ToString(dest.sizes())
+      << " doesn't match the broadcast shape " << ToString(broadcast_sizes);
   return absl::OkStatus();
 }
 

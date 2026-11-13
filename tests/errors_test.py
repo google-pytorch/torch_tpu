@@ -17830,6 +17830,39 @@ Got a.dtype()=Float8_e4m3fn, scale_a.dtype()=Float, scale_a.size()=[1], scale_a.
       ):
         dst.copy_(src)
 
+  def test_copy_empty_cpu_src_not_broadcastable_to_device_dest(self):
+    """Tests that a CPU -> device copy of an empty tensor validates shapes."""
+    dst = torch.ones(2, 3, dtype=torch.float32, device=et.device())
+    src = torch.zeros(0, dtype=torch.float32, device="cpu")
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""copy_(): the size of tensor a (3) must match the size of tensor b (0) at non-singleton dimension 1""",
+        gpu="""The size of tensor a (3) must match the size of tensor b (0) at non-singleton dimension 1""",
+    ):
+      dst.copy_(src)
+
+  def test_copy_empty_device_src_not_broadcastable_to_cpu_dest(self):
+    """Tests that a device -> CPU copy of an empty tensor validates shapes."""
+    dst = torch.ones(2, 3, dtype=torch.float32, device="cpu")
+    src = torch.zeros(0, dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""copy_(): the size of tensor a (3) must match the size of tensor b (0) at non-singleton dimension 1""",
+        gpu="""The size of tensor a (3) must match the size of tensor b (0) at non-singleton dimension 1""",
+    ):
+      dst.copy_(src)
+
+  def test_copy_empty_src_broadcast_shape_larger_than_dest(self):
+    """Tests that an empty src whose broadcast shape exceeds dest is rejected."""
+    dst = torch.ones(3, dtype=torch.float32, device=et.device())
+    src = torch.zeros(0, 3, dtype=torch.float32, device="cpu")
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""copy_(): output with shape [3] doesn't match the broadcast shape [0, 3]""",
+        gpu="""output with shape [3] doesn't match the broadcast shape [0, 3]""",
+    ):
+      dst.copy_(src)
+
   @et.gpu_crashes_or_raises(
       "0-Division: embed_dim % num_heads crashes with SIGFPE"
   )
