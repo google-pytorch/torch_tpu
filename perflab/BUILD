@@ -20,6 +20,8 @@
 # zhanyong-wan
 # haifeng-jin
 
+load("@rules_python//python:py_binary.bzl", "py_binary")
+load("@rules_python//python:py_library.bzl", "py_library")
 load(
     "//build_files:build_defs.bzl",
     "if_oss",
@@ -29,11 +31,6 @@ load(
 )
 load("//shims/mpm:genmpm.bzl", "genmpm")
 load("//shims/pkg:pkg.bzl", "pkg_binary_with_runfiles")
-load(
-    "//shims/py_rules:pytype.bzl",
-    "pytype_strict_binary",
-    "pytype_strict_library",
-)
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -181,10 +178,11 @@ torch_tpu_py_library(
     deps = [":workload"],
 )
 
-pytype_strict_library(
+py_library(
     # PY_LIBRARY_OK=Decouple from torch_tpu to avoid C++ dependency in coverage tests.
     name = "workload",
     srcs = ["workload.py"],
+    type_checking = True,
     deps = [":step_lib"],
 )
 
@@ -226,10 +224,11 @@ torch_tpu_py_library(
     ],
 )
 
-pytype_strict_library(
+py_library(
     # PY_LIBRARY_OK=Decouple from torch_tpu to avoid C++ dependency in coverage tests.
     name = "step_lib",
     srcs = ["step_lib.py"],
+    type_checking = True,
 )
 
 pytype_strict_library(
@@ -254,10 +253,11 @@ torch_tpu_py_library(
     ],
 )
 
-pytype_strict_library(
+py_library(
     # PY_LIBRARY_OK=Decouple from torch_tpu to avoid C++ dependency in coverage tests.
     name = "target",
     srcs = ["target.py"],
+    type_checking = True,
 )
 
 torch_tpu_py_library(
@@ -864,11 +864,12 @@ _DISTRIBUTED_RUNNER_MODEL_DEPS = if_oss(
     ],
 )
 
-pytype_strict_binary(
+py_binary(
     name = "distributed_runner",
     testonly = 1,
     srcs = ["distributed_runner.py"],
     data = _DISTRIBUTED_RUNNER_DATA,
+    type_checking = True,
     deps = _DISTRIBUTED_RUNNER_MODEL_DEPS + [
         ":distributed_runner_lib",
     ],

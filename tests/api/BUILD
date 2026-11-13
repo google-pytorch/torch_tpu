@@ -16,6 +16,8 @@
 # zhanyong-wan
 # pganssle-google
 
+load("@rules_python//python:py_binary.bzl", "py_binary")
+
 """Tests and tools that guard the TorchTPU public API surface."""
 
 load(
@@ -26,7 +28,6 @@ load(
     "torch_tpu_py_test",
 )
 load("//build_files:wheel.bzl", "WHEEL_PY_TARGETS")
-load("//shims/py_rules:pytype.bzl", "pytype_strict_binary")
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -65,10 +66,11 @@ torch_tpu_py_library(
 
 # Updates tt_apis.yaml and docs/public_apis.md in the workspace. Run it
 # on a TPU VM with `bazel run` and the newest supported dependencies in OSS.
-pytype_strict_binary(
+py_binary(
     name = "scan_tt_apis",
     srcs = ["scan_tt_apis.py"],
     main = "scan_tt_apis.py",
+    type_checking = True,
     deps = [
         ":scan_tt_apis_lib",
     ],
@@ -156,11 +158,12 @@ torch_tpu_py_library(
     ],
 )
 
-pytype_strict_binary(
+py_binary(
     name = "scan_exposed_internal_apis",
     srcs = ["scan_exposed_internal_apis.py"],
     data = [":exposed_internal_apis_data"],
     main = "scan_exposed_internal_apis.py",
+    type_checking = True,
     deps = [
         ":scan_exposed_internal_apis_lib",
     ],

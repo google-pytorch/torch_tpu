@@ -18,10 +18,10 @@
 # tests/module_registry.py. Must stay free of torch_tpu C++ deps (see
 # //src/torch_tpu/google/tests/module_registry:no_cpp_deps_test).
 
+load("@rules_python//python:py_library.bzl", "py_library")
 load("//build_files:build_defs.bzl", "torch_tpu_package_end")
 load(
     "//shims/py_rules:pytype.bzl",
-    "pytype_strict_library",
     pytype_strict_test = "pytype_strict_contrib_test",
 )
 
@@ -33,37 +33,42 @@ package(
 # Public facade. Not testonly: non-test libraries (e.g.
 # //perflab:model_helpers) depend on module_registry,
 # which will depend on this target.
-pytype_strict_library(
+py_library(
     # PY_LIBRARY_OK=Must stay free of torch_tpu C++ deps.
     name = "model_registry",
     srcs = ["__init__.py"],
+    type_checking = True,
     deps = [
         ":types",
     ],
 )
 
-pytype_strict_library(
+py_library(
     # PY_LIBRARY_OK=Must stay free of torch_tpu C++ deps.
     name = "types",
     srcs = ["types.py"],
+    type_checking = True,
 )
 
-pytype_strict_library(
+py_library(
     # PY_LIBRARY_OK=Must stay free of torch_tpu C++ deps.
     name = "core",
     srcs = ["core/__init__.py"],
+    type_checking = True,
 )
 
-pytype_strict_library(
+py_library(
     # PY_LIBRARY_OK=Must stay free of torch_tpu C++ deps.
     name = "core_config_utils",
     srcs = ["core/config_utils.py"],
+    type_checking = True,
 )
 
-pytype_strict_library(
+py_library(
     # PY_LIBRARY_OK=Must stay free of torch_tpu C++ deps.
     name = "core_inputs",
     srcs = ["core/inputs.py"],
+    type_checking = True,
     deps = [
         ":core_config_utils",
         ":types",
@@ -71,61 +76,70 @@ pytype_strict_library(
     ],
 )
 
-pytype_strict_library(
+py_library(
     # PY_LIBRARY_OK=Must stay free of torch_tpu C++ deps.
     name = "core_modality",
     srcs = ["core/modality.py"],
+    type_checking = True,
 )
 
-pytype_strict_library(
+py_library(
     # PY_LIBRARY_OK=Must stay free of torch_tpu C++ deps.
     name = "core_shims",
     srcs = ["core/shims.py"],
+    type_checking = True,
 )
 
-pytype_strict_library(
+py_library(
     # PY_LIBRARY_OK=Must stay free of torch_tpu C++ deps.
     name = "providers",
     srcs = ["providers/__init__.py"],
+    type_checking = True,
     deps = [
         ":providers_base",
     ],
 )
 
-pytype_strict_library(
+py_library(
     # PY_LIBRARY_OK=Must stay free of torch_tpu C++ deps.
     name = "providers_base",
     srcs = ["providers/base.py"],
+    type_checking = True,
 )
 
-pytype_strict_library(
+py_library(
     # PY_LIBRARY_OK=Must stay free of torch_tpu C++ deps.
     name = "providers_diffusers",
     srcs = ["providers/diffusers.py"],
+    type_checking = True,
 )
 
-pytype_strict_library(
+py_library(
     # PY_LIBRARY_OK=Must stay free of torch_tpu C++ deps.
     name = "providers_timm",
     srcs = ["providers/timm.py"],
+    type_checking = True,
 )
 
-pytype_strict_library(
+py_library(
     # PY_LIBRARY_OK=Must stay free of torch_tpu C++ deps.
     name = "providers_torchvision",
     srcs = ["providers/torchvision.py"],
+    type_checking = True,
 )
 
-pytype_strict_library(
+py_library(
     # PY_LIBRARY_OK=Must stay free of torch_tpu C++ deps.
     name = "providers_transformers",
     srcs = ["providers/transformers.py"],
+    type_checking = True,
 )
 
-pytype_strict_library(
+py_library(
     # PY_LIBRARY_OK=Must stay free of torch_tpu C++ deps.
     name = "overrides",
     srcs = ["overrides/__init__.py"],
+    type_checking = True,
     deps = [
         ":overrides_audio",
         ":overrides_diffusion",
@@ -135,40 +149,46 @@ pytype_strict_library(
     ],
 )
 
-pytype_strict_library(
+py_library(
     # PY_LIBRARY_OK=Must stay free of torch_tpu C++ deps.
     name = "overrides_audio",
     srcs = ["overrides/audio.py"],
+    type_checking = True,
 )
 
-pytype_strict_library(
+py_library(
     # PY_LIBRARY_OK=Must stay free of torch_tpu C++ deps.
     name = "overrides_diffusion",
     srcs = ["overrides/diffusion.py"],
+    type_checking = True,
 )
 
-pytype_strict_library(
+py_library(
     # PY_LIBRARY_OK=Must stay free of torch_tpu C++ deps.
     name = "overrides_multimodal",
     srcs = ["overrides/multimodal.py"],
+    type_checking = True,
 )
 
-pytype_strict_library(
+py_library(
     # PY_LIBRARY_OK=Must stay free of torch_tpu C++ deps.
     name = "overrides_registry",
     srcs = ["overrides/registry.py"],
+    type_checking = True,
 )
 
-pytype_strict_library(
+py_library(
     # PY_LIBRARY_OK=Must stay free of torch_tpu C++ deps.
     name = "overrides_text",
     srcs = ["overrides/text.py"],
+    type_checking = True,
 )
 
-pytype_strict_library(
+py_library(
     # PY_LIBRARY_OK=Must stay free of torch_tpu C++ deps.
     name = "overrides_vision",
     srcs = ["overrides/vision.py"],
+    type_checking = True,
 )
 
 pytype_strict_test(
