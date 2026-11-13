@@ -106,9 +106,9 @@ class AmpTest(seed_test_utils.RepeatableTest):
 
     # Operations that get actually performed:
     # - embedding layer uses f32 (%0)
-    # - linear layer converts to bf16 (%1 through %6)
-    # - multiplication preserves bf16 (%7)
-    # - loss function converts to f32 (%8 through %16)
+    # - linear layer converts to bf16 (%1 through %8, accumulating bias in f32)
+    # - multiplication preserves bf16 (%9)
+    # - loss function converts to f32 (%10 through %18)
     expected_mlir = """module @tt_jit_build_mlir_compile_mlir_as_strided {
   func.func @main(%arg0: tensor<10xi64>, %arg1: tensor<10x10xf32>, %arg2: tensor<10x10xf32>, %arg3: tensor<10x10xf32>, %arg4: tensor<10xf32>) -> tensor<f32> {
     %cst = stablehlo.constant dense<-1.000000e+00> : tensor<10x10xbf16>
@@ -120,20 +120,22 @@ class AmpTest(seed_test_utils.RepeatableTest):
     %1 = stablehlo.convert %0 : (tensor<10x10xf32>) -> tensor<10x10xbf16>
     %2 = stablehlo.convert %arg3 : (tensor<10x10xf32>) -> tensor<10x10xbf16>
     %3 = stablehlo.convert %arg4 : (tensor<10xf32>) -> tensor<10xbf16>
-    %4 = stablehlo.dot_general %1, %2, contracting_dims = [1] x [1], precision = [DEFAULT, DEFAULT] : (tensor<10x10xbf16>, tensor<10x10xbf16>) -> tensor<10x10xbf16>
-    %5 = stablehlo.broadcast_in_dim %3, dims = [1] : (tensor<10xbf16>) -> tensor<10x10xbf16>
-    %6 = stablehlo.add %4, %5 : tensor<10x10xbf16>
-    %7 = stablehlo.multiply %6, %cst : tensor<10x10xbf16>
-    %8 = stablehlo.convert %7 : (tensor<10x10xbf16>) -> tensor<10x10xf32>
-    %9 = stablehlo.subtract %8, %arg1 : tensor<10x10xf32>
-    %10 = stablehlo.multiply %9, %9 : tensor<10x10xf32>
-    %11 = stablehlo.reduce(%10 init: %cst_1) applies stablehlo.add across dimensions = [0, 1] : (tensor<10x10xf32>, tensor<f32>) -> tensor<f32>
-    %12 = stablehlo.divide %11, %cst_0 : tensor<f32>
-    %13 = stablehlo.reshape %12 : (tensor<f32>) -> tensor<1x1xf32>
-    %14 = stablehlo.dynamic_update_slice %cst_2, %13, %c, %c : (tensor<10x10xf32>, tensor<1x1xf32>, tensor<i64>, tensor<i64>) -> tensor<10x10xf32>
-    %15 = stablehlo.slice %14 [0:1, 0:1] : (tensor<10x10xf32>) -> tensor<1x1xf32>
-    %16 = stablehlo.reshape %15 : (tensor<1x1xf32>) -> tensor<f32>
-    return %16 : tensor<f32>
+    %4 = stablehlo.dot_general %1, %2, contracting_dims = [1] x [1], precision = [DEFAULT, DEFAULT] : (tensor<10x10xbf16>, tensor<10x10xbf16>) -> tensor<10x10xf32>
+    %5 = stablehlo.convert %3 : (tensor<10xbf16>) -> tensor<10xf32>
+    %6 = stablehlo.broadcast_in_dim %5, dims = [1] : (tensor<10xf32>) -> tensor<10x10xf32>
+    %7 = stablehlo.add %4, %6 : tensor<10x10xf32>
+    %8 = stablehlo.convert %7 : (tensor<10x10xf32>) -> tensor<10x10xbf16>
+    %9 = stablehlo.multiply %8, %cst : tensor<10x10xbf16>
+    %10 = stablehlo.convert %9 : (tensor<10x10xbf16>) -> tensor<10x10xf32>
+    %11 = stablehlo.subtract %10, %arg1 : tensor<10x10xf32>
+    %12 = stablehlo.multiply %11, %11 : tensor<10x10xf32>
+    %13 = stablehlo.reduce(%12 init: %cst_1) applies stablehlo.add across dimensions = [0, 1] : (tensor<10x10xf32>, tensor<f32>) -> tensor<f32>
+    %14 = stablehlo.divide %13, %cst_0 : tensor<f32>
+    %15 = stablehlo.reshape %14 : (tensor<f32>) -> tensor<1x1xf32>
+    %16 = stablehlo.dynamic_update_slice %cst_2, %15, %c, %c : (tensor<10x10xf32>, tensor<1x1xf32>, tensor<i64>, tensor<i64>) -> tensor<10x10xf32>
+    %17 = stablehlo.slice %16 [0:1, 0:1] : (tensor<10x10xf32>) -> tensor<1x1xf32>
+    %18 = stablehlo.reshape %17 : (tensor<1x1xf32>) -> tensor<f32>
+    return %18 : tensor<f32>
   }
 }"""
     expected_mlir_reduced = """module @tt_jit_functional_L4403C0_mse_loss_mse_loss {
@@ -145,16 +147,18 @@ class AmpTest(seed_test_utils.RepeatableTest):
     %1 = stablehlo.convert %0 : (tensor<10x10xf32>) -> tensor<10x10xbf16>
     %2 = stablehlo.convert %arg3 : (tensor<10x10xf32>) -> tensor<10x10xbf16>
     %3 = stablehlo.convert %arg4 : (tensor<10xf32>) -> tensor<10xbf16>
-    %4 = stablehlo.dot_general %1, %2, contracting_dims = [1] x [1], precision = [DEFAULT, DEFAULT] : (tensor<10x10xbf16>, tensor<10x10xbf16>) -> tensor<10x10xbf16>
-    %5 = stablehlo.broadcast_in_dim %3, dims = [1] : (tensor<10xbf16>) -> tensor<10x10xbf16>
-    %6 = stablehlo.add %4, %5 : tensor<10x10xbf16>
-    %7 = stablehlo.multiply %6, %cst : tensor<10x10xbf16>
-    %8 = stablehlo.convert %7 : (tensor<10x10xbf16>) -> tensor<10x10xf32>
-    %9 = stablehlo.subtract %8, %arg1 : tensor<10x10xf32>
-    %10 = stablehlo.multiply %9, %9 : tensor<10x10xf32>
-    %11 = stablehlo.reduce(%10 init: %cst_1) applies stablehlo.add across dimensions = [0, 1] : (tensor<10x10xf32>, tensor<f32>) -> tensor<f32>
-    %12 = stablehlo.divide %11, %cst_0 : tensor<f32>
-    return %12 : tensor<f32>
+    %4 = stablehlo.dot_general %1, %2, contracting_dims = [1] x [1], precision = [DEFAULT, DEFAULT] : (tensor<10x10xbf16>, tensor<10x10xbf16>) -> tensor<10x10xf32>
+    %5 = stablehlo.convert %3 : (tensor<10xbf16>) -> tensor<10xf32>
+    %6 = stablehlo.broadcast_in_dim %5, dims = [1] : (tensor<10xf32>) -> tensor<10x10xf32>
+    %7 = stablehlo.add %4, %6 : tensor<10x10xf32>
+    %8 = stablehlo.convert %7 : (tensor<10x10xf32>) -> tensor<10x10xbf16>
+    %9 = stablehlo.multiply %8, %cst : tensor<10x10xbf16>
+    %10 = stablehlo.convert %9 : (tensor<10x10xbf16>) -> tensor<10x10xf32>
+    %11 = stablehlo.subtract %10, %arg1 : tensor<10x10xf32>
+    %12 = stablehlo.multiply %11, %11 : tensor<10x10xf32>
+    %13 = stablehlo.reduce(%12 init: %cst_1) applies stablehlo.add across dimensions = [0, 1] : (tensor<10x10xf32>, tensor<f32>) -> tensor<f32>
+    %14 = stablehlo.divide %13, %cst_0 : tensor<f32>
+    return %14 : tensor<f32>
   }
 }"""
     self.assertIn(
