@@ -1663,12 +1663,35 @@ torch_tpu_py_test(
     ],
 )
 
-# Tests the tier-3 compilation cache.
+# Tests the tier-3 compilation cache. The cache path does not depend on the op,
+# so this runs a cross-section of ops_unit_test: eager, grad, torch.compile,
+# dynamic shapes, float64, RNG, buffer donation, a Pallas kernel, cache-key
+# checks, and compile/runtime errors. ops_unit_test covers the rest.
 torch_tpu_py_test(
     name = "ops_unit_test_tier3_cache",
     timeout = "long",  # Needed for asan.
     srcs = ["ops_unit_test.py"],
     env = {
+        "TESTBRIDGE_TEST_ONLY": " ".join([
+            "*.OpsUnitTest.test_cat",
+            "*.OpsUnitTest.test_binary_float_out_default_dtype_cache_invalidation_div_out",
+            "*.OpsUnitTest.test_segment_reduce_cache_key_lengths_then_offsets",
+            "*.OpsUnitTest.test_batch_norm_training_momentum_does_not_recompile0",
+            "*.OpsUnitTest.test_dynamic_float64_elementwise_and_fused_ops0",
+            "*.OpsUnitTest.test_lcm_inplace_and_out_buffer_donation",
+            "*.OpsUnitTest.test_dropout_reproducible",
+            "*.OpsUnitTest.test_assert_async_compile",
+            "*.OpsUnitTest.test_assert_async_eager_false_msg",
+            "*.OpsUnitTest.test_scaled_mm_rowwise_compiled_without_graph_breaks0",
+            "*.OpsGradUnitTest.test_index_backward_with_cpu_mask",
+            "*.OpsGradUnitTest.test_convolution_backward_bias_precision_conv2d_bfloat16",
+            "*.OpsGradUnitTest.test_linear_compile_dynamic_shapes0",
+            "*.OpsGradUnitTest.test_splash_sdpa_gqa_fwd_bwd",
+            "*.OpsCustomOpUnitTest.test_dynamic_reshape_flatten",
+            "*.OpsCustomOpUnitTest.test_aten_grouped_mm_compiled_rejects_invalid_inputs",
+            "*.OpTestingFrameworkTest.test_nan_to_num_signed_zero_cache_keys0",
+            "*.OpTestingFrameworkTest.test_einsum_two_operands_matmul",
+        ]),
         "TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT": "/tmp/my_cache",
     },
     main = "ops_unit_test.py",
