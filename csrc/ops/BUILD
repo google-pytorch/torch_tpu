@@ -294,6 +294,7 @@ torch_tpu_cc_library(
         "//shims/torch/torch/headeronly:torch_headeronly",
         "@com_google_absl//absl/functional:function_ref",
         "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/types:span",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:IR",
         "@stablehlo//:stablehlo_ops",

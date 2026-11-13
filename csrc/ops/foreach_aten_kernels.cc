@@ -1235,7 +1235,9 @@ std::vector<at::Tensor> AtenForeachErfc(at::TensorList self) {
     TT_ASSIGN_OR_THROW(auto out_dtypes,
                        GetOutputDtypes(self, /*cast_integral_to_float=*/true));
     TT_ASSIGN_OR_THROW(auto result_buffers,
-                       ForeachUnaryOp(self, out_dtypes, BuildErfcShlo));
+                       ForeachUnaryOp(self, out_dtypes, BuildErfcShlo,
+                                      /*op_name=*/std::nullopt,
+                                      /*cast_inputs=*/false));
     return ForeachConvertToTensor(result_buffers, out_dtypes);
   });
 }
@@ -1250,7 +1252,8 @@ void AtenForeachErfc_(at::TensorList self) {
         ForeachUnaryOp(self, std::move(out_dtypes), BuildErfcShlo,
                        // Share OpName with AtenForeachErfc() as
                        // the underlying Shlo is the same.
-                       OpName::kForeachErfc));
+                       OpName::kForeachErfc,
+                       /*cast_inputs=*/false));
     TT_THROW_IF_ERROR(ForeachAssignToTensor(result_buffers, self));
   });
 }

@@ -1619,6 +1619,83 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     utils.assert_close(out.cpu(), want_out, rtol=1e-4, atol=0.0)
     utils.assert_close(grad.cpu(), want_grad, rtol=1e-4, atol=0.0)
 
+  @parameterized.parameters(torch.bfloat16, torch.float16)
+  def test_gelu_and_erfc_low_precision_accuracy(self, dtype):
+    """Tests minimax erfc accuracy for bf16/f16 gelu, gelu_backward, and _foreach_erfc."""
+    x_quant = torch.linspace(-9.0, 9.0, 361, dtype=torch.float64).to(dtype)
+    x_ref = x_quant.to(torch.float64)
+    cdf = 0.5 * torch.special.erfc(-x_ref / math.sqrt(2.0))
+    pdf = torch.exp(-0.5 * x_ref * x_ref) / math.sqrt(2.0 * math.pi)
+    want_out = (x_ref * cdf).to(dtype)
+    want_grad = (cdf + x_ref * pdf).to(dtype)
+    want_erfc = torch.special.erfc(x_ref).to(dtype)
+
+    x_tpu = x_quant.to("tpu")
+    out = torch.nn.functional.gelu(x_tpu, approximate="none")
+    grad = torch.ops.aten.gelu_backward(
+        torch.ones_like(x_tpu), x_tpu, approximate="none"
+    )
+    erfc_out = torch._foreach_erfc([x_tpu])[0]
+
+    rtol = 1.6e-2 if dtype == torch.bfloat16 else 2e-3
+    # float16 subnormals around |val| ~ 1e-6 have 1 ULP = 2^-24 (~6e-8).
+    atol = 0.0 if dtype == torch.bfloat16 else 2e-7
+    utils.assert_close(out.cpu(), want_out, rtol=rtol, atol=atol)
+    utils.assert_close(grad.cpu(), want_grad, rtol=rtol, atol=atol)
+    utils.assert_close(erfc_out.cpu(), want_erfc, rtol=rtol, atol=atol)
+
+    special = torch.tensor(
+        [-float("inf"), -0.0, 0.0, float("inf"), float("nan")],
+        dtype=dtype,
+        device="tpu",
+    )
+    special_erfc = torch._foreach_erfc([special])[0].cpu()
+    self.assertEqual(special_erfc[0].item(), 2.0)
+    self.assertEqual(special_erfc[1].item(), 1.0)
+    self.assertEqual(special_erfc[2].item(), 1.0)
+    self.assertEqual(special_erfc[3].item(), 0.0)
+    self.assertTrue(torch.isnan(special_erfc[4]))
+
+    special_gelu = torch.nn.functional.gelu(special, approximate="none").cpu()
+    self.assertTrue(torch.isnan(special_gelu[0]))
+    self.assertEqual(special_gelu[1].item(), 0.0)
+    self.assertEqual(special_gelu[2].item(), 0.0)
+    self.assertEqual(special_gelu[3].item(), float("inf"))
+    self.assertTrue(torch.isnan(special_gelu[4]))
+
+  @parameterized.parameters(
+      (torch.bfloat16, False),
+      (torch.float16, False),
+      (torch.float32, True),
+  )
+  def test_gelu_and_erfc_stablehlo_chlo_erfc_dispatch(
+      self, dtype, expect_chlo_erfc
+  ):
+    """Verifies bf16/f16 gelu and _foreach_erfc avoid chlo.erfc while f32 keeps it."""
+
+    def gelu_fwd_bwd(x):
+      y = torch.nn.functional.gelu(x, approximate="none")
+      return y, torch.ops.aten.gelu_backward(
+          torch.ones_like(y), x, approximate="none"
+      )
+
+    for fn in (gelu_fwd_bwd, lambda x: torch._foreach_erfc([x])[0]):
+      torch.compiler.reset()
+      debugs = []
+      compiled = torch.compile(
+          fn,
+          backend="tpu",
+          dynamic=False,
+          options={"serializable": False, "debug_callback": debugs.append},
+      )
+      x = torch.randn(4, 8, dtype=dtype, device="tpu")
+      compiled(x)
+      shlo = "\n".join(t for d in debugs for t in d.stablehlo_forward_text)
+      if expect_chlo_erfc:
+        self.assertIn("chlo.erfc", shlo)
+      else:
+        self.assertNotIn("chlo.erfc", shlo)
+
   def test_logcumsumexp_out_dtype(self):
     device = torch.device("tpu")
     x = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=device)
