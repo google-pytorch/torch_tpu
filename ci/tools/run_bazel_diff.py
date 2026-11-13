@@ -625,6 +625,11 @@ def _run_bazel_test(
   locally executed TPU `TestRunner` results can be cached and shared across
   runners.
 
+  CPU CI configs (`ci_cpu*`) use the same remote settings for both commands, so
+  they run a single `bazel test`. A separate `build` would only make every test
+  wait for the whole build to finish, instead of starting as soon as its own
+  dependencies are built.
+
   Args:
     bazel_config: Bazel --config name to pass (or empty string for none).
     extra_bazel_flags: Additional raw flags string passed to Bazel.
@@ -638,14 +643,15 @@ def _run_bazel_test(
     The exit code of the Bazel build/test commands (0 if successful, or if exit
     code 4 'no tests found' is returned and `allow_no_tests` is set).
   """
-  build_cmd = _bazel_command(
-      "build", bazel_config, extra_bazel_flags, target_args
-  )
-  sys.stdout.flush()
-  build_res = subprocess.run(["bash", "-c", build_cmd], check=False)
-  if build_res.returncode != 0:
-    print(f"Bazel build failed with exit code {build_res.returncode}.")
-    return build_res.returncode
+  if not bazel_config.startswith("ci_cpu"):
+    build_cmd = _bazel_command(
+        "build", bazel_config, extra_bazel_flags, target_args
+    )
+    sys.stdout.flush()
+    build_res = subprocess.run(["bash", "-c", build_cmd], check=False)
+    if build_res.returncode != 0:
+      print(f"Bazel build failed with exit code {build_res.returncode}.")
+      return build_res.returncode
 
   test_cmd = _bazel_command(
       "test", bazel_config, extra_bazel_flags, target_args
