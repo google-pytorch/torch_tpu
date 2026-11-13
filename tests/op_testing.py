@@ -61,6 +61,7 @@ from torch.testing._internal.opinfo.definitions import linalg
 from torch.utils import _pytree
 from torch_tpu._internal import compile as tt_compile
 from torch_tpu._internal import compiler_options as compiler
+from torch_tpu._internal import env
 from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.utils import test_utils
 from torch_tpu._internal.utils import utils
@@ -190,6 +191,14 @@ _DYNAMISM_PLAN_FILTER: Final[flags.FlagHolder[str]] = flags.DEFINE_string(
     "",
     "If non-empty, only runs the DynamicMarkingPlan whose label matches this"
     " string (e.g. 't0d0' or 't0d0_t0d1').",
+)
+
+_IGNORE_DYNAMISM_DENY_LIST: Final[flags.FlagHolder[bool]] = flags.DEFINE_bool(
+    "ignore_dynamism_deny_list",
+    False,
+    "If set, runs DYNAMISM_DENY_LISTS ops normally (without xfail or crash"
+    " skipping) for TDD reproduction. DYNAMISM_NOT_APPLICABLE_OPS are still"
+    " skipped.",
 )
 
 _CHECK_SYMBOLIC_SHAPES: Final[flags.FlagHolder[bool]] = flags.DEFINE_bool(
@@ -6104,7 +6113,7 @@ def _target_device(dtype: torch.dtype, device: torch.device) -> torch.device:
 
 
 def _op_func(
-    op: OpInfo, variant: OpVariant, target_device: torch.device
+    op: OpInfo, variant: OpVariant, target_device: torch.device | None = None
 ) -> Callable[..., Any]:
   """Returns the function to call for running `variant` of `op`."""
   # For operators that lack a native PyTorch CPU kernel (e.g. internal CUDA
@@ -6113,7 +6122,8 @@ def _op_func(
   # i.e. for sub-byte dtypes in the gen_gpu_golden mode.
   ref = getattr(op, "ref", None)
   if (
-      target_device.type == "cpu"
+      target_device is not None
+      and target_device.type == "cpu"
       and ref is not None
       and (
           op.name.startswith("_thnn_fused_")
@@ -6129,6 +6139,44 @@ def _dynamism_mode(*, use_compiled: bool, compute_grad: bool) -> DynamismMode:
   if use_compiled:
     return DynamismMode.COMPILE_GRAD if compute_grad else DynamismMode.COMPILE
   return DynamismMode.EAGER
+
+
+def _resolve_dynamism_op_exclusion(
+    op: OpInfo,
+    mode: DynamismMode,
+) -> tuple[str | None, dynamism_test_utils.DynamismExclusion | None]:
+  """Resolves whether `(op, mode)` should skip or run in-process as an xfail.
+
+  Args:
+    op: The `OpInfo` descriptor for the operator under test.
+    mode: The active `DynamismMode`.
+
+  Returns:
+    A `(skip_reason, xfail_exclusion)` tuple:
+      - `(None, None)`: run normally (no deny-list entry, or bypassed via
+        `--ignore_dynamism_deny_list`).
+      - `(skip_reason, None)`: skip the op (`DYNAMISM_NOT_APPLICABLE_OPS`,
+        `CRASH`, or `UNOPTIMIZED_ASSERT_CRASH` in unoptimized builds).
+      - `(None, exclusion)`: run in-process as an expected failure
+        (`EXCEPTION`, or `UNOPTIMIZED_ASSERT_CRASH` in optimized builds where
+        assertions do not abort).
+  """
+  exclusion = dynamism_test_utils.get_dynamism_exclusion(op, mode)
+  if exclusion is None:
+    return None, None
+  if exclusion.is_not_applicable:
+    return exclusion.skip_message(op, mode), None
+  if _IGNORE_DYNAMISM_DENY_LIST.value:
+    return None, None
+  if exclusion.failure_kind == dynamism_test_utils.DynamismFailureKind.CRASH:
+    return exclusion.skip_message(op, mode), None
+  if (
+      exclusion.failure_kind
+      == dynamism_test_utils.DynamismFailureKind.UNOPTIMIZED_ASSERT_CRASH
+      and not env.TORCH_TPU_IS_OPTIMIZED_BUILD
+  ):
+    return exclusion.skip_message(op, mode), None
+  return None, exclusion
 
 
 def _requires_grad_input(input_value: _pytree.PyTree) -> _pytree.PyTree:
@@ -6473,6 +6521,11 @@ class TorchTpuTestBase(seed_test_utils.RepeatableTest, common_utils.TestCase):
     self.symbolic_shapes_known_failures: Mapping[str, str] = {}
     # Whether a known --check_symbolic_shapes failure was observed.
     self._known_symbolic_shapes_failure_seen = False
+    # Active --check_dynamism xfail exclusion and whether a failure was seen.
+    self._active_dynamism_xfail: (
+        dynamism_test_utils.DynamismExclusion | None
+    ) = None
+    self._known_dynamism_failure_seen = False
 
   def set_accuracy_overrides(
       self,
@@ -7202,14 +7255,14 @@ class OpInfoTestBase(TorchTpuTestBase):
     )
 
     # Verify op and sample are supported with dynamism.
-    skip = dynamism_test_utils.verify_op_supports_dynamism(
-        op, mode=dynamism_mode
-    ) or dynamism_test_utils.verify_sample_supports_dynamism(
-        op,
-        device_op_input.input_value,
-        device_op_input.args,
-        kwargs=device_op_input.kwargs,
-    )
+    skip, _ = _resolve_dynamism_op_exclusion(op, dynamism_mode)
+    if skip is None:
+      skip = dynamism_test_utils.verify_sample_supports_dynamism(
+          op,
+          device_op_input.input_value,
+          device_op_input.args,
+          kwargs=device_op_input.kwargs,
+      )
     if skip is not None:
       self.skipTest(skip)
 
@@ -7798,24 +7851,56 @@ class OpInfoTestBase(TorchTpuTestBase):
           self._subtests_run += 1
           if marking_plan is not None:
             self._dynamism_subtests_run += 1
+          subtest_fn = functools.partial(
+              test,
+              plan_subtest_name,
+              op,
+              variant,
+              dtype,
+              golden_input=golden_input,
+              check_device=check_device,
+              compute_grad=compute_grad,
+              use_compiled=use_compiled,
+              out_dtype_override=out_dtype_override,
+              marking_plan=marking_plan,
+          )
           with self.subTest(
               subtest_name=plan_subtest_name, run_index=perf_run_idx
           ):
-            _run_and_print_exception(
-                functools.partial(
-                    test,
-                    plan_subtest_name,
-                    op,
-                    variant,
-                    dtype,
-                    golden_input=golden_input,
-                    check_device=check_device,
-                    compute_grad=compute_grad,
-                    use_compiled=use_compiled,
-                    out_dtype_override=out_dtype_override,
-                    marking_plan=marking_plan,
-                )
-            )
+            if self._active_dynamism_xfail is not None:
+              self._run_known_dynamism_failure_subtest(
+                  plan_subtest_name, subtest_fn
+              )
+            else:
+              _run_and_print_exception(subtest_fn)
+
+  def _run_known_dynamism_failure_subtest(
+      self,
+      subtest_name: str,
+      subtest_fn: Callable[[], Any],
+  ) -> None:
+    """Runs a subtest for a known-failing dynamism op, recording failures."""
+    try:
+      subtest_fn()
+    except unittest.case.SkipTest:
+      raise
+    except Exception as e:  # pylint: disable=broad-except
+      self._known_dynamism_failure_seen = True
+      reason = (
+          self._active_dynamism_xfail.reason
+          if self._active_dynamism_xfail is not None
+          else "unknown"
+      )
+      print(
+          f"Known dynamism failure in {subtest_name} ({reason}):"
+          f" {type(e).__name__}: {e}",
+          flush=True,
+      )
+      # Clear any pending eager state or partial graph left behind by the failed
+      # subtest so subsequent subtests and tearDown() start cleanly.
+      tt_testing.reset_eager_state()
+      if is_compiled_mode():
+        torch._dynamo.reset()  # pylint: disable=protected-access
 
   def _check_dynamism_sample_supported(
       self,
@@ -7896,9 +7981,7 @@ class OpInfoTestBase(TorchTpuTestBase):
     dynamism_mode = _dynamism_mode(
         use_compiled=use_compiled, compute_grad=compute_grad
     )
-    skip = dynamism_test_utils.verify_op_supports_dynamism(
-        op, mode=dynamism_mode
-    )
+    skip, _ = _resolve_dynamism_op_exclusion(op, dynamism_mode)
     if skip is not None:
       return skip, ()
 
@@ -7931,7 +8014,7 @@ class OpInfoTestBase(TorchTpuTestBase):
             golden_input.args,
             mode=dynamism_mode,
             kwargs=plan_kwargs,
-            op_func=_op_func(op, variant, torch.device("tpu")),
+            op_func=_op_func(op, variant),
         )
     )
     if not plans:
@@ -7968,6 +8051,40 @@ class OpInfoTestBase(TorchTpuTestBase):
         f"{key} is a known --check_symbolic_shapes failure ({reason}), but no"
         " sample specialized or threw on TorchTPU. If it's fixed, remove it"
         " from the known failures."
+    )
+
+  def _assert_known_dynamism_failure_seen(
+      self,
+      op_name: str,
+      variant_test_name: str | None,
+      mode: DynamismMode,
+  ) -> None:
+    """Fails if an EXCEPTION entry in DYNAMISM_DENY_LISTS no longer fails."""
+    exclusion = self._active_dynamism_xfail
+    if (
+        exclusion is None
+        or exclusion.failure_kind
+        != dynamism_test_utils.DynamismFailureKind.EXCEPTION
+    ):
+      return
+    if self._known_dynamism_failure_seen:
+      return
+    # Runs restricted to a subset of dtypes or marking plans may miss the
+    # failing sample.
+    if _DTYPES.value != ["all"] or _DYNAMISM_PLAN_FILTER.value:
+      return
+    key = f"{op_name}.{variant_test_name}" if variant_test_name else op_name
+    if self._dynamism_subtests_run == 0:
+      self.fail(
+          f"{key} is in DYNAMISM_DENY_LISTS for {mode.value} mode"
+          f" ({exclusion.reason}), but 0 dynamism subtests ran. If no samples"
+          " are eligible for dynamism, remove the stale entry from"
+          " DYNAMISM_DENY_LISTS or move it to DYNAMISM_NOT_APPLICABLE_OPS."
+      )
+    self.fail(
+        f"{key} is in DYNAMISM_DENY_LISTS for {mode.value} mode"
+        f" ({exclusion.reason}), but all {self._dynamism_subtests_run} dynamism"
+        " subtests passed. Remove it from DYNAMISM_DENY_LISTS."
     )
 
   def do_test_op(
@@ -8041,6 +8158,8 @@ class OpInfoTestBase(TorchTpuTestBase):
     self._do_test_op_called = True
     self._subtests_run = 0
     self._dynamism_subtests_run = 0
+    self._active_dynamism_xfail = None
+    self._known_dynamism_failure_seen = False
 
     if _dump_dtype_exclusions_mode():
       _record_gpu_dtype_exclusions(
@@ -8096,11 +8215,13 @@ class OpInfoTestBase(TorchTpuTestBase):
         dynamism_mode = _dynamism_mode(
             use_compiled=use_compiled, compute_grad=compute_grad
         )
-        skip = dynamism_test_utils.verify_op_supports_dynamism(
-            op, mode=dynamism_mode
+        skip, xfail_exclusion = _resolve_dynamism_op_exclusion(
+            op, dynamism_mode
         )
         if skip is not None:
           self.skipTest(skip)
+        if not recording and not _perf_mode():
+          self._active_dynamism_xfail = xfail_exclusion
 
       # (variant, excluded dtypes, check_op_failures) for each variant to test.
       variants = [(OpVariant.BASE, exclude_dtypes, check_op_failures)]
@@ -8170,16 +8291,21 @@ class OpInfoTestBase(TorchTpuTestBase):
 
     _run_and_print_exception(_test_op_variants)
 
-    if (
-        _CHECK_DYNAMISM.value
-        and not _CHECK_SYMBOLIC_SHAPES.value
-        and self._dynamism_subtests_run == 0
-    ):
-      print(
-          f">>> No valid sample for dynamism found for op {op_name} across all"
-          " tested variants and dtypes.",
-          flush=True,
-      )
+    if _CHECK_DYNAMISM.value and not _CHECK_SYMBOLIC_SHAPES.value:
+      if self._dynamism_subtests_run == 0:
+        print(
+            f">>> No valid sample for dynamism found for op {op_name} across"
+            " all tested variants and dtypes.",
+            flush=True,
+        )
+      if not recording and not _perf_mode():
+        self._assert_known_dynamism_failure_seen(
+            op_name,
+            variant_test_name,
+            _dynamism_mode(
+                use_compiled=use_compiled, compute_grad=compute_grad
+            ),
+        )
 
     if _CHECK_SYMBOLIC_SHAPES.value:
       self._assert_known_symbolic_shapes_failure_seen(
