@@ -69,12 +69,12 @@ namespace {
 absl::StatusOr<mlir::MlirOp> BuildZeroNorm(mlir::MlirOp input,
                                            int64_t reduce_dim,
                                            mlir::Type element_type) {
-  // Create a scalar zero and broadcast it for comparison
   mlir::MlirBuilder& builder = input.getBuilder();
 
+  // Create a scalar zero for the reduce initial value.
   auto zero = MakeScalarConstant(builder, 0.0, element_type);
   auto input_type = GetTensorTypeOrDie(input);
-  auto zero_bcast = mlir::stablehlo::BroadcastInDim(input_type, zero, {});
+  auto zero_bcast = MakeConstantLike(input, 0.0);
 
   auto is_non_zero = mlir::stablehlo::Compare(
       input, zero_bcast, mlir::stablehlo::ComparisonDirection::NE);
@@ -128,9 +128,9 @@ mlir::MlirOp BroadcastCdistInput(mlir::MlirOp op,
 // x1 shape: (B..., R1, C)
 // x2 shape: (B..., R2, C)
 // Output shape: (B..., R1, R2)
-absl::StatusOr<mlir::MlirOp> BuildCdistForwardShlo(
-    mlir::MlirOp x1_op, mlir::MlirOp x2_op, double p, int64_t compute_mode,
-    const Dimensions common_batch_shape, int64_t r1, int64_t r2, int64_t c) {
+absl::StatusOr<mlir::MlirOp> BuildCdistForwardShlo(mlir::MlirOp x1_op,
+                                                   mlir::MlirOp x2_op,
+                                                   double p) {
   TT_ASSIGN_OR_RETURN(mlir::ElementType out_type, GetElementType(x1_op));
   TT_ASSIGN_OR_RETURN(mlir::ElementType compute_dtype,
                       InferComputationDtype(out_type));
@@ -140,40 +140,34 @@ absl::StatusOr<mlir::MlirOp> BuildCdistForwardShlo(
 
   const mlir::RankedTensorType x1_type = GetTensorTypeOrDie(x1_op);
   const mlir::Type element_type = x1_type.getElementType();
+  const int64_t x1_rank = x1_type.getRank();
+  const int64_t x2_rank = GetTensorTypeOrDie(x2_op).getRank();
 
-  // Define the target shape for the difference tensor: (B_common..., R1, R2, C)
-  Dimensions target_diff_shape = common_batch_shape;
-  target_diff_shape.insert(target_diff_shape.end(), {r1, r2, c});
-  const int64_t common_batch_rank = common_batch_shape.size();
-  mlir::RankedTensorType bcast_type =
-      mlir::RankedTensorType::get(target_diff_shape, element_type);
-
-  // Broadcast X1 to (B_common..., R1, 1, C)
-  mlir::MlirOp x1_bcast =
-      BroadcastCdistInput(x1_op, bcast_type, common_batch_rank,
-                          {common_batch_rank, common_batch_rank + 2});
-
-  // Broadcast X2 to (B_common..., 1, R2, C)
-  mlir::MlirOp x2_bcast =
-      BroadcastCdistInput(x2_op, bcast_type, common_batch_rank,
-                          {common_batch_rank + 1, common_batch_rank + 2});
+  // Insert singleton dimensions so X1 is (B1..., R1, 1, C) and X2 is
+  // (B2..., 1, R2, C), then broadcast to (B_common..., R1, R2, C) preserving
+  // bounded dynamic dimensions.
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp x1_unsqueezed,
+                      Unsqueeze(x1_op, x1_rank - 1));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp x2_unsqueezed,
+                      Unsqueeze(x2_op, x2_rank - 2));
+  TT_ASSIGN_OR_RETURN((auto [x1_bcast, x2_bcast]),
+                      ApplyBroadcastIfNeeded(x1_unsqueezed, x2_unsqueezed));
 
   // Compute diff = X1 - X2
   mlir::MlirOp diff_op = mlir::stablehlo::Subtract(x1_bcast, x2_bcast);
 
   // Reduce over the C dimension.
-  int64_t reduce_dim_idx = common_batch_rank + 2;
+  const int64_t reduce_dim_idx = GetTensorTypeOrDie(diff_op).getRank() - 1;
 
   if (p == 0.0) {
     // Special handling for 0-norm (hamming distance equivalent)
     TT_ASSIGN_OR_RETURN(mlir::MlirOp res,
                         BuildZeroNorm(diff_op, reduce_dim_idx, element_type));
     return CastIfNeeded(res, out_type);
-  } else {
-    // General case for p-norm
-    return BuildPNormShlo(diff_op, p, {reduce_dim_idx},
-                          ReductionMode::kDropDims, out_type);
-  };
+  }
+  // General case for p-norm
+  return BuildPNormShlo(diff_op, p, {reduce_dim_idx}, ReductionMode::kDropDims,
+                        out_type);
 }
 
 // Computes the p-norm distance of the difference between each pair of elements
@@ -671,12 +665,10 @@ at::Tensor AtenCdistForward(const at::Tensor& x1, const at::Tensor& x2,
           << ToString(x2.scalar_type());
     }
 
-    auto op_builder = [p, mode, common_batch_shape, r1, r2,
-                       c](FixedSizeSpan<mlir::MlirOp, 2> inputs)
+    auto op_builder = [p](FixedSizeSpan<mlir::MlirOp, 2> inputs)
         -> absl::StatusOr<mlir::MlirOp> {
       auto& [x1_op, x2_op] = inputs;
-      return BuildCdistForwardShlo(x1_op, x2_op, p, mode, common_batch_shape,
-                                   r1, r2, c);
+      return BuildCdistForwardShlo(x1_op, x2_op, p);
     };
 
     TT_ASSIGN_OR_THROW(
