@@ -423,6 +423,90 @@ class WindowTpuTest(continuous_test_utils.TpuMultiProcContinuousTest):
     """Verifies win.signal paired with win.wait_signal across peer ranks."""
     _run_window_signal_wait_test()
 
+  def test_window_multi_stripe_peer_transfer(self) -> None:
+    """Verifies multi-stripe (>= 16 MiB) peer put with a non-contiguous view."""
+    # ~24 MiB (1537 * 4096 * 4 B) -> 3 uneven stripes with mid-row splits.
+    rows, cols = 1537, 4096
+
+    def make_view(src_rank: int, device: str) -> torch.Tensor:
+      base = (
+          torch.arange(
+              (cols + 2) * rows, dtype=torch.float32, device=device
+          ).reshape(cols + 2, rows)
+          + float(src_rank * 1000)
+      )
+      return base[1 : cols + 1].t()
+
+    window_tensor = torch.zeros(
+        (rows, cols), dtype=torch.float32, device="tpu:0"
+    )
+    win = dist._new_window(window_tensor)
+
+    send_work = None
+    recv_work = None
+    if self.rank < self.world_size - 1:
+      src_view = make_view(self.rank, "tpu:0")
+      self.assertFalse(src_view.is_contiguous())
+      send_work = win.put(
+          src_view,
+          dst_rank=self.rank + 1,
+          target_offset_nelems=0,
+          async_op=True,
+      )
+      # Drop source references before wait() to exercise async send retention.
+      del src_view
+    if self.rank > 0:
+      recv_work = win.wait_signal(peer_rank=self.rank - 1, async_op=True)
+
+    if recv_work is not None:
+      recv_work.wait()
+    if send_work is not None:
+      send_work.wait()
+
+    actual = win.map_remote_tensor(self.rank).cpu() if self.rank > 0 else None
+    win.tensor_deregister()
+    del win
+
+    if self.rank > 0:
+      expected = make_view(self.rank - 1, "cpu").contiguous()
+      assert_close(actual, expected, rtol=0, atol=0)
+
+  def test_window_multi_stripe_signal_wait(self) -> None:
+    """Verifies multi-stripe (>= 16 MiB) win.signal and win.wait_signal."""
+    rows, cols = 1537, 4096
+
+    def make_window_data(src_rank: int, device: str) -> torch.Tensor:
+      return (
+          torch.arange(rows * cols, dtype=torch.float32, device=device).reshape(
+              rows, cols
+          )
+          + float(src_rank * 1000)
+      )
+
+    window_tensor = make_window_data(self.rank, "tpu:0")
+    win = dist._new_window(window_tensor)
+
+    sig_work = None
+    wait_work = None
+    if self.rank < self.world_size - 1:
+      sig_work = win.signal(peer_rank=self.rank + 1, async_op=True)
+    if self.rank > 0:
+      wait_work = win.wait_signal(peer_rank=self.rank - 1, async_op=True)
+    if wait_work is not None:
+      wait_work.wait()
+    if sig_work is not None:
+      sig_work.wait()
+
+    actual = win.map_remote_tensor(self.rank).cpu() if self.rank > 0 else None
+    win.tensor_deregister()
+    del win
+
+    if self.rank > 0:
+      # WindowTpu::signal currently emulates signaling via striped P2P sends of
+      # registered_tensor_ (see TODO(cbasile) in window_tpu.cc).
+      expected = make_window_data(self.rank - 1, "cpu")
+      assert_close(actual, expected, rtol=0, atol=0)
+
 
 if __name__ == "__main__":
   multiprocessing.handle_test_main(absltest.main)
