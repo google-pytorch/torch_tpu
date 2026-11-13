@@ -88,6 +88,32 @@ TEST(PjRtInitDeathTest,
       ExitedWithCode(0), "");
 }
 
+TEST(PjRtInitDeathTest, FailedInitDoesNotReportInitialized) {
+  EXPECT_EXIT(
+      {
+        // One local worker can create a client, but WORLD_SIZE=0 must fail
+        // the subsequent check against the PJRT device count.
+        setenv(kWorldSizeEnvVar, "0", /*overwrite=*/1);
+        setenv(kRankEnvVar, "0", /*overwrite=*/1);
+        setenv(kLocalRankEnvVar, "0", /*overwrite=*/1);
+        setenv(kMasterAddrEnvVar, "127.0.0.1", /*overwrite=*/1);
+        setenv(kMasterPortEnvVar, "29500", /*overwrite=*/1);
+        setenv(kTorchTpuSlicebuilderAddressesEnvVar, "127.0.0.1:28477",
+               /*overwrite=*/1);
+        setenv(kTorchTpuTopologyEnvVar, "1,1,1", /*overwrite=*/1);
+        auto& backend = PjrtBackend::GetInstance();
+        backend.SetPjRtInitializationOptions({.device_type = "tpu"});
+        const absl::Status status = backend.EnsureInitialized();
+        EXPECT_THAT(status,
+                    StatusIs(error::kInvalidArgument,
+                             HasSubstr("invalid world_size configuration")));
+        EXPECT_FALSE(backend.IsInitialized());
+        EXPECT_FALSE(backend.GetClient().ok());
+        _exit(testing::Test::HasFailure() ? 1 : 0);
+      },
+      ExitedWithCode(0), "");
+}
+
 TEST_F(PjRtInitTest, InitializePjRtIsLazy) {
   ASSERT_FALSE(PjrtBackend::GetInstance().IsInitialized());
 
