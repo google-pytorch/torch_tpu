@@ -27,8 +27,7 @@ namespace torch_tpu::kiln::internal {
 
 // Reports `error` to the active scope of the current thread, which holds the
 // first error reported to it; later errors are ignored, and `error` must not
-// be OK. `BuildKernel()` returns the held error. Kiln handle types signal an
-// error with a null `ValueHandle`; the error itself is reported here.
+// be OK. `BuildKernel()` returns the held error.
 // Must be called within an active BuildKernel() or IndexMap execution.
 void ReportError(absl::Status error);
 
@@ -67,8 +66,7 @@ ErrorReturner(ResultFn) -> ErrorReturner<ResultFn>;
 // in a constructor or destructor.
 //
 // Example:
-//   TT_KILN_RET_CHECK(axis < rank(), error::kInvalidArgument,
-//                     CreateNullValue<Tile>(dtype()))
+//   TT_KILN_RET_CHECK(axis < rank(), error::kInvalidArgument, false)
 //       << "axis " << axis << " out of bounds for rank " << rank();
 //
 // Implementation notes:
