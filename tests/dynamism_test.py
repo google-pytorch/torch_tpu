@@ -1525,5 +1525,115 @@ class DynamismTest(seed_test_utils.RepeatableTest):
       self.assertEqual(act_dynamism_info[0].upper_bound, 3)
 
 
+class DynamismGlobalSkipCanaryTest(seed_test_utils.RepeatableTest):
+  """Canary tests for global skips in `dynamism_test_utils.py`.
+
+  `verify_dtype_supports_dynamism` and `_check_tensor_supported_for_dynamism`
+  skip complex dtypes and empty tensors globally across all `ops_test` dynamism
+  runs. These canaries fail if those unsupported cases start succeeding so the
+  global skips cannot silently go stale.
+  """
+
+  def setUp(self):
+    super().setUp()
+    tt_testing.reset_eager_state()
+    self.device = torch.device("tpu")
+    self.old_eager_mode = execution_mode.eager_mode
+    execution_mode.eager_mode = EagerMode.DEFER_AND_FUSE
+
+  def tearDown(self):
+    torch._dynamo.reset()
+    execution_mode.eager_mode = self.old_eager_mode
+    tt_testing.reset_eager_state()
+    super().tearDown()
+
+  @parameterized.named_parameters(
+      ("complex64", torch.complex64),
+      ("complex128", torch.complex128),
+  )
+  def test_complex_dtype_dynamism_canary(self, dtype: torch.dtype):
+    """Detects when complex dtype dynamism stops failing in `torch.compile`."""
+
+    # Basic eager/compile complex dynamic ops started passing after XLA's
+    # ComplexRewriter gained dynamic-dimension support, but complex dynamism
+    # still breaks on ops such as `torch.compile(mean)` (tested in-process
+    # here), `torch.compile(real)`/`view_as_real`, and `MakeConstantLike`/`sgn`.
+    # If this canary starts passing, re-evaluate `verify_dtype_supports_dynamism`
+    # in `dynamism_test_utils.py`.
+    def mean_fn(t: torch.Tensor) -> torch.Tensor:
+      return torch.mean(t, dim=0)
+
+    # Baselines: static complex and dynamic float32 both succeed, confirming
+    # the failure below is specific to complex + dynamism.
+    torch._dynamo.reset()
+    static_complex = torch.ones((4, 3), dtype=dtype, device=self.device)
+    torch.compile(mean_fn, backend="tpu", dynamic=None)(static_complex).cpu()
+
+    torch._dynamo.reset()
+    dyn_float = torch.ones((4, 3), dtype=torch.float32, device=self.device)
+    torch._dynamo.mark_dynamic(dyn_float, 0, min=2, max=8)
+    torch.compile(mean_fn, backend="tpu", dynamic=None)(dyn_float).cpu()
+
+    torch._dynamo.reset()
+    dyn_complex = torch.ones((4, 3), dtype=dtype, device=self.device)
+    torch._dynamo.mark_dynamic(dyn_complex, 0, min=2, max=8)
+    compiled = torch.compile(mean_fn, backend="tpu", dynamic=None)
+    try:
+      compiled(dyn_complex).cpu()
+    except Exception:  # pylint: disable=broad-exception-caught
+      return
+    self.fail(
+        f"Dynamic {dtype} canary unexpectedly passed! Re-evaluate the global "
+        f"{dtype} skip in `verify_dtype_supports_dynamism` "
+        "(third_party/py/torch_tpu/tests/dynamism_test_utils.py)."
+    )
+
+  def test_empty_tensor_eager_dynamism_canary(self):
+    """Detects when eager empty-tensor dynamism stops failing."""
+    # Baseline: static empty-tensor reduction succeeds.
+    static_empty = torch.zeros((4, 0), dtype=torch.float32, device=self.device)
+    static_empty.sum(dim=1).cpu()
+
+    tt_testing.reset_eager_state()
+    dyn_empty = torch.zeros((4, 0), dtype=torch.float32, device=self.device)
+    dynamism.mark_dynamic(dyn_empty, 0, 2, 8)
+    try:
+      dyn_empty.sum(dim=1).cpu()
+    except Exception:  # pylint: disable=broad-exception-caught
+      return
+    self.fail(
+        "Eager empty-tensor dynamism canary unexpectedly passed! Re-evaluate "
+        "the global `tensor.numel() == 0` skip in "
+        "`_check_tensor_supported_for_dynamism` "
+        "(third_party/py/torch_tpu/tests/dynamism_test_utils.py)."
+    )
+
+  def test_empty_tensor_compile_dynamism_canary(self):
+    """Detects when compiled empty-tensor dynamism stops failing."""
+
+    def sum_fn(t: torch.Tensor) -> torch.Tensor:
+      return t.sum(dim=1)
+
+    # Baseline: static compiled empty-tensor reduction succeeds.
+    torch._dynamo.reset()
+    static_empty = torch.zeros((4, 0), dtype=torch.float32, device=self.device)
+    torch.compile(sum_fn, backend="tpu", dynamic=None)(static_empty).cpu()
+
+    torch._dynamo.reset()
+    dyn_empty = torch.zeros((4, 0), dtype=torch.float32, device=self.device)
+    torch._dynamo.mark_dynamic(dyn_empty, 0, min=2, max=8)
+    compiled = torch.compile(sum_fn, backend="tpu", dynamic=None)
+    try:
+      compiled(dyn_empty).cpu()
+    except Exception:  # pylint: disable=broad-exception-caught
+      return
+    self.fail(
+        "Compiled empty-tensor dynamism canary unexpectedly passed! "
+        "Re-evaluate the global `tensor.numel() == 0` skip in "
+        "`_check_tensor_supported_for_dynamism` "
+        "(third_party/py/torch_tpu/tests/dynamism_test_utils.py)."
+    )
+
+
 if __name__ == "__main__":
   absltest.main()

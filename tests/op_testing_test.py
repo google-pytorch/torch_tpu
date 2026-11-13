@@ -18,9 +18,11 @@ from collections.abc import Mapping, Sequence
 import dataclasses
 import gzip
 import hashlib
+import multiprocessing
 import os
 import pathlib
 import plistlib
+import sys
 import tempfile
 from typing import Any
 import unittest
@@ -796,50 +798,91 @@ class DynamismDenyListsTest(seed_test_utils.RepeatableTest):
         )
     return calls
 
+  @staticmethod
+  def _variant_key_to_base_op_name() -> dict[str, str]:
+    base_names = {op.name for op in op_testing._KNOWN_OPS}
+    mapping: dict[str, str] = {}
+    for op in op_testing._KNOWN_OPS:
+      if op.variant_test_name:
+        variant_key = dynamism_test_utils.op_deny_list_key(op)
+        if variant_key not in base_names:
+          mapping[variant_key] = op.name
+    return mapping
+
   def test_entries_are_known_ops(self):
-    # verify_op_supports_dynamism() matches OpInfo.name, so a misspelled or
-    # stale entry would silently stop skipping its op.
-    known_op_names = {op.name for op in op_testing._KNOWN_OPS}
+    # verify_op_supports_dynamism() matches OpInfo.name or
+    # OpInfo.name.variant_test_name, so a misspelled or stale entry would
+    # silently stop skipping its op.
+    known_op_keys = {op.name for op in op_testing._KNOWN_OPS} | {
+        dynamism_test_utils.op_deny_list_key(op)
+        for op in op_testing._KNOWN_OPS
+        if op.variant_test_name
+    }
     for list_name, deny_lists in self._DENY_LISTS.items():
       for reason, ops in deny_lists.items():
         with self.subTest(deny_list=list_name, reason=reason):
-          self.assertEmpty(sorted(set(ops) - known_op_names))
+          self.assertEmpty(sorted(set(ops) - known_op_keys))
 
-  def test_entries_have_valid_modes(self):
-    for list_name, deny_lists in self._DENY_LISTS.items():
-      for reason, ops in deny_lists.items():
-        for op_name, modes in ops.items():
-          with self.subTest(deny_list=list_name, reason=reason, op=op_name):
-            self.assertNotEmpty(modes)
-            self.assertContainsSubset(modes, dynamism_test_utils.ALL_MODES)
+  def test_entries_have_valid_modes_and_failure_kinds(self):
+    valid_kinds = set(dynamism_test_utils.DynamismFailureKind)
+    for reason, ops in dynamism_test_utils.DYNAMISM_DENY_LISTS.items():
+      for op_key, entry in ops.items():
+        with self.subTest(
+            deny_list="DYNAMISM_DENY_LISTS", reason=reason, op=op_key
+        ):
+          mode_kinds = dynamism_test_utils.entry_mode_kinds(entry)
+          self.assertNotEmpty(mode_kinds)
+          self.assertContainsSubset(
+              mode_kinds.keys(), dynamism_test_utils.ALL_MODES
+          )
+          self.assertContainsSubset(mode_kinds.values(), valid_kinds)
+
+    for reason, ops in dynamism_test_utils.DYNAMISM_NOT_APPLICABLE_OPS.items():
+      for op_key, modes in ops.items():
+        with self.subTest(
+            deny_list="DYNAMISM_NOT_APPLICABLE_OPS", reason=reason, op=op_key
+        ):
+          self.assertIsInstance(modes, (set, frozenset))
+          self.assertNotEmpty(modes)
+          self.assertContainsSubset(modes, dynamism_test_utils.ALL_MODES)
 
   def test_deny_lists_are_disjoint(self):
+    variant_to_base = self._variant_key_to_base_op_name()
     seen: dict[tuple[str, dynamism_test_utils.DynamismMode], str] = {}
     duplicates: list[str] = []
     for list_name, deny_lists in self._DENY_LISTS.items():
       for reason, ops in deny_lists.items():
         location = f"{list_name}[{reason!r}]"
-        for op_name, modes in ops.items():
-          for mode in modes:
-            key = (op_name, mode)
+        for op_key, entry in ops.items():
+          for mode in dynamism_test_utils.entry_mode_kinds(entry):
+            key = (op_key, mode)
             if key in seen:
               duplicates.append(
-                  f"{op_name} ({mode.value}) in both {seen[key]} and {location}"
+                  f"{op_key} ({mode.value}) in both {seen[key]} and {location}"
               )
             else:
               seen[key] = location
+    for (op_key, mode), location in seen.items():
+      base_op = variant_to_base.get(op_key)
+      if base_op is not None and (base_op, mode) in seen:
+        duplicates.append(
+            f"variant {op_key} ({mode.value}) in {location} overlaps base"
+            f" {base_op} in {seen[(base_op, mode)]}"
+        )
     self.assertEmpty(duplicates)
 
   def test_entries_have_live_test_ops_coverage(self):
     calls = self._collect_test_ops_calls()
-    tested_op_names = {call.op_name for call in calls}
+    tested_keys = {call.op_name for call in calls} | {
+        call.full_key for call in calls
+    }
     tested_full_keys = {call.full_key for call in calls}
 
     for list_name, deny_lists in self._DENY_LISTS.items():
       for reason, ops in deny_lists.items():
         with self.subTest(deny_list=list_name, reason=reason):
           self.assertEmpty(
-              sorted(set(ops) - tested_op_names),
+              sorted(set(ops) - tested_keys),
               "Entries without a TestOps method have no live dynamism test.",
           )
 
@@ -853,13 +896,16 @@ class DynamismDenyListsTest(seed_test_utils.RepeatableTest):
 
   def test_no_compile_grad_entries_on_check_grad_false_ops(self):
     calls = self._collect_test_ops_calls()
-    grad_checked_ops = {call.op_name for call in calls if call.check_grad}
+    grad_checked_keys = {call.op_name for call in calls if call.check_grad} | {
+        call.full_key for call in calls if call.check_grad
+    }
     dead_entries = [
-        op_name
+        op_key
         for ops in dynamism_test_utils.DYNAMISM_DENY_LISTS.values()
-        for op_name, modes in ops.items()
-        if dynamism_test_utils.COMPILE_GRAD in modes
-        and op_name not in grad_checked_ops
+        for op_key, entry in ops.items()
+        if dynamism_test_utils.COMPILE_GRAD
+        in dynamism_test_utils.entry_mode_kinds(entry)
+        and op_key not in grad_checked_keys
     ]
     self.assertEmpty(
         sorted(dead_entries),
@@ -867,16 +913,17 @@ class DynamismDenyListsTest(seed_test_utils.RepeatableTest):
     )
 
   def test_no_compiled_entries_masked_by_compiled_deny_list(self):
+    variant_to_base = self._variant_key_to_base_op_name()
     compiled_modes = {
         dynamism_test_utils.COMPILE,
         dynamism_test_utils.COMPILE_GRAD,
     }
     masked_entries = [
-        (op_name, mode.value)
+        (op_key, mode.value)
         for ops in dynamism_test_utils.DYNAMISM_DENY_LISTS.values()
-        for op_name, modes in ops.items()
-        if op_name in op_testing._COMPILED_DENY_LIST
-        for mode in modes
+        for op_key, entry in ops.items()
+        if variant_to_base.get(op_key, op_key) in op_testing._COMPILED_DENY_LIST
+        for mode in dynamism_test_utils.entry_mode_kinds(entry)
         if mode in compiled_modes
     ]
     self.assertEmpty(
@@ -885,6 +932,723 @@ class DynamismDenyListsTest(seed_test_utils.RepeatableTest):
         " variants, so COMPILE/COMPILE_GRAD entries in DYNAMISM_DENY_LISTS are"
         " masked.",
     )
+
+  def test_get_dynamism_exclusion_kinds(self):
+    add_op = next(op for op in op_testing._KNOWN_OPS if op.name == "add")
+    sub_op = next(op for op in op_testing._KNOWN_OPS if op.name == "sub")
+    with (
+        mock.patch.dict(
+            dynamism_test_utils.DYNAMISM_DENY_LISTS,
+            {
+                "mixed": {
+                    "add": {
+                        dynamism_test_utils.EAGER: dynamism_test_utils.CRASH,
+                        dynamism_test_utils.COMPILE: (
+                            dynamism_test_utils.UNOPTIMIZED_ASSERT_CRASH
+                        ),
+                        dynamism_test_utils.COMPILE_GRAD: (
+                            dynamism_test_utils.EXCEPTION
+                        ),
+                    },
+                },
+                "default exception": {
+                    "sub": {dynamism_test_utils.EAGER},
+                },
+            },
+            clear=True,
+        ),
+        mock.patch.dict(
+            dynamism_test_utils.DYNAMISM_NOT_APPLICABLE_OPS,
+            {"by design": {"sub": {dynamism_test_utils.COMPILE}}},
+            clear=True,
+        ),
+    ):
+      self.assertEqual(
+          dynamism_test_utils.get_dynamism_exclusion(
+              add_op, dynamism_test_utils.EAGER
+          ),
+          dynamism_test_utils.DynamismExclusion(
+              reason="mixed", failure_kind=dynamism_test_utils.CRASH
+          ),
+      )
+      self.assertEqual(
+          dynamism_test_utils.get_dynamism_exclusion(
+              add_op, dynamism_test_utils.COMPILE
+          ),
+          dynamism_test_utils.DynamismExclusion(
+              reason="mixed",
+              failure_kind=dynamism_test_utils.UNOPTIMIZED_ASSERT_CRASH,
+          ),
+      )
+      self.assertEqual(
+          dynamism_test_utils.get_dynamism_exclusion(
+              add_op, dynamism_test_utils.COMPILE_GRAD
+          ),
+          dynamism_test_utils.DynamismExclusion(
+              reason="mixed", failure_kind=dynamism_test_utils.EXCEPTION
+          ),
+      )
+      self.assertEqual(
+          dynamism_test_utils.get_dynamism_exclusion(
+              sub_op, dynamism_test_utils.EAGER
+          ),
+          dynamism_test_utils.DynamismExclusion(
+              reason="default exception",
+              failure_kind=dynamism_test_utils.EXCEPTION,
+          ),
+      )
+      not_applicable = dynamism_test_utils.get_dynamism_exclusion(
+          sub_op, dynamism_test_utils.COMPILE
+      )
+      self.assertIsNotNone(not_applicable)
+      self.assertTrue(not_applicable.is_not_applicable)
+      self.assertIsNone(not_applicable.failure_kind)
+      self.assertIsNone(
+          dynamism_test_utils.get_dynamism_exclusion(
+              sub_op, dynamism_test_utils.COMPILE_GRAD
+          )
+      )
+
+  def test_verify_op_supports_dynamism_variant_keys(self):
+    pad_reflect = next(
+        op
+        for op in op_testing._KNOWN_OPS
+        if op.name == "nn.functional.pad" and op.variant_test_name == "reflect"
+    )
+    pad_replicate = next(
+        op
+        for op in op_testing._KNOWN_OPS
+        if op.name == "nn.functional.pad"
+        and op.variant_test_name == "replicate"
+    )
+    with mock.patch.dict(
+        dynamism_test_utils.DYNAMISM_DENY_LISTS,
+        {
+            "reflect only": {
+                "nn.functional.pad.reflect": {
+                    dynamism_test_utils.EAGER,
+                    dynamism_test_utils.COMPILE,
+                },
+            },
+            "all pad in compile": {
+                "nn.functional.pad": {dynamism_test_utils.COMPILE},
+            },
+        },
+        clear=True,
+    ):
+      reflect_eager = dynamism_test_utils.verify_op_supports_dynamism(
+          pad_reflect, mode=dynamism_test_utils.EAGER
+      )
+      self.assertIsNotNone(reflect_eager)
+      self.assertIn("nn.functional.pad.reflect", reflect_eager)
+      self.assertIn("reflect only", reflect_eager)
+      self.assertIsNone(
+          dynamism_test_utils.verify_op_supports_dynamism(
+              pad_replicate, mode=dynamism_test_utils.EAGER
+          )
+      )
+      # Variant-specific entry takes precedence over base entry.
+      reflect_compile = dynamism_test_utils.verify_op_supports_dynamism(
+          pad_reflect, mode=dynamism_test_utils.COMPILE
+      )
+      self.assertIsNotNone(reflect_compile)
+      self.assertIn("reflect only", reflect_compile)
+      replicate_compile = dynamism_test_utils.verify_op_supports_dynamism(
+          pad_replicate, mode=dynamism_test_utils.COMPILE
+      )
+      self.assertIsNotNone(replicate_compile)
+      self.assertIn("all pad in compile", replicate_compile)
+
+
+class DynamismXfailTest(seed_test_utils.RepeatableTest):
+  """Tests in-process xfail and exclusion behavior for --check_dynamism."""
+
+  def _make_golden_data(
+      self, shape: tuple[int, ...] = (3, 4)
+  ) -> op_testing.GoldenGpuData:
+    golden_data = op_testing.GoldenGpuData()
+    tensor = torch.ones(shape, dtype=torch.float32)
+    golden_data.add(
+        "test_abs",
+        op_testing.OpVariant.BASE,
+        torch.float32,
+        op_testing.OpInput(FakeSample("s0", tensor, (), {})),
+        op_testing.OpOutput(tensor),
+    )
+    return golden_data
+
+  def _run_abs_dynamism_test(
+      self,
+      *,
+      subtest_side_effect: Any = None,
+      deny_lists: Mapping[str, Mapping[str, Any]] | None = None,
+      not_applicable: Mapping[str, Mapping[str, Any]] | None = None,
+      sample_shape: tuple[int, ...] = (3, 4),
+      flag_overrides: Mapping[str, Any] | None = None,
+      optimized_build: bool = True,
+  ) -> tuple[unittest.TestResult, mock.MagicMock]:
+    class AbsDynamismTest(op_testing.OpInfoTestBase):
+
+      def setUp(self) -> None:
+        super().setUp()
+        self.synchronize_tensors_in_tear_down = False
+
+      def test_abs(self) -> None:
+        self.do_test_op(
+            "abs",
+            exclude_inplace_dtypes=(torch.float32,),
+            check_out_variant=False,
+        )
+
+    golden_data = self._make_golden_data(sample_shape)
+    flags_dict: dict[str, Any] = {
+        "check_dynamism": True,
+        "test_mode": op_testing.TestMode.TORCH_TPU_VS_GPU,
+    }
+    if flag_overrides:
+      flags_dict.update(flag_overrides)
+
+    result = unittest.TestResult()
+    with (
+        flagsaver.flagsaver(**flags_dict),
+        mock.patch.object(op_testing, "_GOLDEN_GPU_DATA", golden_data),
+        mock.patch.object(
+            op_testing, "_dtypes_to_test_for_op", return_value=(torch.float32,)
+        ),
+        mock.patch.object(
+            op_testing.env, "TORCH_TPU_IS_OPTIMIZED_BUILD", optimized_build
+        ),
+        mock.patch.dict(
+            dynamism_test_utils.DYNAMISM_DENY_LISTS,
+            deny_lists or {},
+            clear=True,
+        ),
+        mock.patch.dict(
+            dynamism_test_utils.DYNAMISM_NOT_APPLICABLE_OPS,
+            not_applicable or {},
+            clear=True,
+        ),
+        mock.patch.object(
+            AbsDynamismTest, "_sub_test", side_effect=subtest_side_effect
+        ) as sub_test_mock,
+    ):
+      AbsDynamismTest("test_abs").run(result)
+    return result, sub_test_mock
+
+  @parameterized.named_parameters(
+      ("runtime_error", RuntimeError("boom")),
+      ("assertion_error", AssertionError("numerical mismatch")),
+  )
+  def test_exception_entry_passes_when_subtest_fails(self, exc):
+    with mock.patch.object(
+        op_testing.tt_testing, "reset_eager_state"
+    ) as reset_mock:
+      result, sub_test_mock = self._run_abs_dynamism_test(
+          subtest_side_effect=exc,
+          deny_lists={"known bug": {"abs": {dynamism_test_utils.EAGER}}},
+      )
+    self.assertTrue(result.wasSuccessful(), msg=result.failures + result.errors)
+    self.assertEmpty(result.skipped)
+    self.assertGreaterEqual(sub_test_mock.call_count, 1)
+    # setUp() calls reset_eager_state once, plus once per failing subtest.
+    self.assertGreaterEqual(reset_mock.call_count, 1 + sub_test_mock.call_count)
+
+  def test_exception_entry_fails_loudly_when_all_subtests_pass(self):
+    result, sub_test_mock = self._run_abs_dynamism_test(
+        subtest_side_effect=None,
+        deny_lists={"fixed bug": {"abs": {dynamism_test_utils.EAGER}}},
+    )
+    self.assertGreaterEqual(sub_test_mock.call_count, 1)
+    self.assertLen(result.failures, 1)
+    self.assertIn("Remove it from DYNAMISM_DENY_LISTS", result.failures[0][1])
+
+  def test_exception_entry_fails_loudly_when_zero_dynamism_subtests_run(self):
+    # A (1,) sample has no dims >= 2, so 0 dynamism subtests execute.
+    result, sub_test_mock = self._run_abs_dynamism_test(
+        sample_shape=(1,),
+        deny_lists={"dead entry": {"abs": {dynamism_test_utils.EAGER}}},
+    )
+    sub_test_mock.assert_not_called()
+    self.assertLen(result.failures, 1)
+    self.assertIn("0 dynamism subtests ran", result.failures[0][1])
+
+  def test_exception_entry_skips_do_not_satisfy_expected_failure(self):
+    result, _ = self._run_abs_dynamism_test(
+        subtest_side_effect=unittest.case.SkipTest("skipped subtest"),
+        deny_lists={"skipped bug": {"abs": {dynamism_test_utils.EAGER}}},
+    )
+    self.assertNotEmpty(result.skipped)
+    self.assertLen(result.failures, 1)
+    self.assertIn("0 dynamism subtests ran", result.failures[0][1])
+
+  @parameterized.named_parameters(
+      ("dtypes_subset", {"dtypes": ["float32"]}),
+      ("plan_filter", {"dynamism_plan_filter": "t0d0"}),
+  )
+  def test_exception_entry_filtered_run_does_not_false_fail(
+      self, flag_overrides
+  ):
+    result, sub_test_mock = self._run_abs_dynamism_test(
+        subtest_side_effect=None,
+        deny_lists={"other sample fails": {"abs": {dynamism_test_utils.EAGER}}},
+        flag_overrides=flag_overrides,
+    )
+    self.assertTrue(result.wasSuccessful(), msg=result.failures + result.errors)
+    self.assertGreaterEqual(sub_test_mock.call_count, 1)
+
+  def test_crash_entry_skips_in_process(self):
+    result, sub_test_mock = self._run_abs_dynamism_test(
+        deny_lists={
+            "aborts": {
+                "abs": {dynamism_test_utils.EAGER: dynamism_test_utils.CRASH}
+            }
+        },
+    )
+    sub_test_mock.assert_not_called()
+    self.assertLen(result.skipped, 1)
+    self.assertTrue(result.wasSuccessful())
+
+  @parameterized.named_parameters(
+      ("unoptimized_skips", False, None, True, 0),
+      ("optimized_passes_when_op_passes", True, None, False, 2),
+      (
+          "optimized_catches_when_op_fails",
+          True,
+          RuntimeError("opt err"),
+          False,
+          2,
+      ),
+  )
+  def test_unoptimized_assert_crash_policy(
+      self, optimized_build, side_effect, expect_skipped, expected_calls
+  ):
+    result, sub_test_mock = self._run_abs_dynamism_test(
+        subtest_side_effect=side_effect,
+        deny_lists={
+            "mlir assert": {
+                "abs": {
+                    dynamism_test_utils.EAGER: (
+                        dynamism_test_utils.UNOPTIMIZED_ASSERT_CRASH
+                    )
+                }
+            }
+        },
+        optimized_build=optimized_build,
+    )
+    self.assertTrue(result.wasSuccessful(), msg=result.failures + result.errors)
+    self.assertLen(result.skipped, 1 if expect_skipped else 0)
+    self.assertEqual(sub_test_mock.call_count, expected_calls)
+
+  def test_ignore_dynamism_deny_list_flag(self):
+    # EXCEPTION entry fails normally instead of being swallowed as xfail.
+    exc_result, exc_calls = self._run_abs_dynamism_test(
+        subtest_side_effect=RuntimeError("boom"),
+        deny_lists={"known bug": {"abs": {dynamism_test_utils.EAGER}}},
+        flag_overrides={"ignore_dynamism_deny_list": True},
+    )
+    self.assertGreaterEqual(exc_calls.call_count, 1)
+    self.assertFalse(exc_result.wasSuccessful())
+
+    # CRASH entry executes instead of skipping.
+    crash_result, crash_calls = self._run_abs_dynamism_test(
+        subtest_side_effect=None,
+        deny_lists={
+            "aborts": {
+                "abs": {dynamism_test_utils.EAGER: dynamism_test_utils.CRASH}
+            }
+        },
+        flag_overrides={"ignore_dynamism_deny_list": True},
+    )
+    self.assertGreaterEqual(crash_calls.call_count, 1)
+    self.assertEmpty(crash_result.skipped)
+    self.assertTrue(crash_result.wasSuccessful())
+
+    # DYNAMISM_NOT_APPLICABLE_OPS still skips even with the flag set.
+    na_result, na_calls = self._run_abs_dynamism_test(
+        not_applicable={"by design": {"abs": {dynamism_test_utils.EAGER}}},
+        flag_overrides={"ignore_dynamism_deny_list": True},
+    )
+    na_calls.assert_not_called()
+    self.assertLen(na_result.skipped, 1)
+    self.assertTrue(na_result.wasSuccessful())
+
+
+class DynamismCrashCheckTest(seed_test_utils.RepeatableTest):
+  """Tests --check_dynamism_crashes parent/subprocess gating and evaluation."""
+
+  def _run_abs_crash_check(
+      self,
+      *,
+      deny_lists: Mapping[str, Mapping[str, Any]] | None = None,
+      not_applicable: Mapping[str, Mapping[str, Any]] | None = None,
+      subprocess_result: (
+          op_testing._DynamismCrashSubprocessResult | None  # pylint: disable=protected-access
+      ) = None,
+      optimized_build: bool = True,
+      tpu_initialized: bool = False,
+      flag_overrides: Mapping[str, Any] | None = None,
+  ) -> tuple[unittest.TestResult, mock.MagicMock]:
+    class AbsCrashTest(op_testing.OpInfoTestBase):
+
+      def test_abs(self) -> None:
+        self.do_test_op(
+            "abs",
+            exclude_inplace_dtypes=(torch.float32,),
+            check_out_variant=False,
+        )
+
+    if subprocess_result is None:
+      subprocess_result = op_testing._DynamismCrashSubprocessResult(  # pylint: disable=protected-access
+          exitcode=-6, outcome=None, detail=None, output="Check failed"
+      )
+    flags_dict: dict[str, Any] = {
+        "check_dynamism": True,
+        "check_dynamism_crashes": True,
+        "test_mode": op_testing.TestMode.TORCH_TPU_VS_GPU,
+    }
+    if flag_overrides:
+      flags_dict.update(flag_overrides)
+
+    result = unittest.TestResult()
+    with (
+        flagsaver.flagsaver(**flags_dict),
+        mock.patch.object(
+            op_testing, "_dtypes_to_test_for_op", return_value=(torch.float32,)
+        ),
+        mock.patch.object(
+            op_testing.env, "TORCH_TPU_IS_OPTIMIZED_BUILD", optimized_build
+        ),
+        mock.patch.object(
+            op_testing._device_ops_backend,  # pylint: disable=protected-access
+            "_is_initialized",
+            return_value=tpu_initialized,
+        ),
+        mock.patch.dict(
+            dynamism_test_utils.DYNAMISM_DENY_LISTS,
+            deny_lists or {},
+            clear=True,
+        ),
+        mock.patch.dict(
+            dynamism_test_utils.DYNAMISM_NOT_APPLICABLE_OPS,
+            not_applicable or {},
+            clear=True,
+        ),
+        mock.patch.object(
+            op_testing,
+            "_run_dynamism_crash_subprocess",
+            return_value=subprocess_result,
+        ) as spawn_mock,
+    ):
+      AbsCrashTest("test_abs").run(result)
+    return result, spawn_mock
+
+  @parameterized.named_parameters(
+      ("no_entry", None, None),
+      (
+          "exception_entry",
+          {"known": {"abs": {dynamism_test_utils.EAGER}}},
+          None,
+      ),
+      (
+          "not_applicable",
+          None,
+          {"by design": {"abs": {dynamism_test_utils.EAGER}}},
+      ),
+  )
+  def test_non_crashing_entries_skip_without_spawning_or_tpu_setup(
+      self, deny_lists, not_applicable
+  ):
+    absl_tc = absltest.TestCase  # ABSLTEST_OK=Simulate OSS absl-py super() MRO.
+    with (
+        mock.patch.object(
+            absl_tc, "setUp", lambda tc: super(absl_tc, tc).setUp()
+        ),
+        mock.patch.object(
+            absl_tc, "tearDown", lambda tc: super(absl_tc, tc).tearDown()
+        ),
+        mock.patch.object(
+            op_testing.tt_testing, "reset_eager_state"
+        ) as reset_mock,
+        mock.patch.object(torch, "manual_seed") as seed_mock,
+    ):
+      result, spawn_mock = self._run_abs_crash_check(
+          deny_lists=deny_lists, not_applicable=not_applicable
+      )
+    self.assertTrue(result.wasSuccessful(), msg=result.failures + result.errors)
+    self.assertLen(result.skipped, 1)
+    spawn_mock.assert_not_called()
+    reset_mock.assert_not_called()
+    seed_mock.assert_not_called()
+
+  @parameterized.named_parameters(
+      ("optimized_skips", True, 0, True),
+      ("unoptimized_spawns_and_passes", False, 1, False),
+  )
+  def test_unoptimized_assert_crash_build_gating(
+      self, optimized_build, expected_spawns, expect_skipped
+  ):
+    result, spawn_mock = self._run_abs_crash_check(
+        deny_lists={
+            "mlir assert": {
+                "abs": {
+                    dynamism_test_utils.EAGER: (
+                        dynamism_test_utils.UNOPTIMIZED_ASSERT_CRASH
+                    )
+                }
+            }
+        },
+        optimized_build=optimized_build,
+    )
+    self.assertTrue(result.wasSuccessful(), msg=result.failures + result.errors)
+    self.assertEqual(spawn_mock.call_count, expected_spawns)
+    self.assertLen(result.skipped, 1 if expect_skipped else 0)
+
+  @parameterized.named_parameters(
+      ("sigabrt", -6, None),
+      ("sigsegv", -11, None),
+      ("nonzero_exit", 1, None),
+      ("late_signal_after_outcome", -6, "passed"),
+      ("runtime_poisoned", 0, "runtime_poisoned"),
+  )
+  def test_crash_entry_passes_on_subprocess_crash(self, exitcode, outcome):
+    result, spawn_mock = self._run_abs_crash_check(
+        deny_lists={
+            "aborts": {
+                "abs": {dynamism_test_utils.EAGER: dynamism_test_utils.CRASH}
+            }
+        },
+        subprocess_result=op_testing._DynamismCrashSubprocessResult(  # pylint: disable=protected-access
+            exitcode=exitcode,
+            outcome=outcome,
+            detail=None,
+            output="Fatal error",
+        ),
+    )
+    self.assertTrue(result.wasSuccessful(), msg=result.failures + result.errors)
+    self.assertEmpty(result.skipped)
+    spawn_mock.assert_called_once()
+    child_argv = spawn_mock.call_args.args[2]
+    self.assertIn("--check_dynamism=True", child_argv)
+    self.assertIn("--check_dynamism_crashes=False", child_argv)
+    self.assertIn("--_run_crashing_dynamism_ops=True", child_argv)
+    self.assertIn("--ignore_dynamism_deny_list=True", child_argv)
+
+  @parameterized.named_parameters(
+      (
+          "passed",
+          0,
+          "passed",
+          None,
+          "Remove it from DYNAMISM_DENY_LISTS",
+      ),
+      (
+          "python_exception",
+          0,
+          "failed",
+          "RuntimeError: boom",
+          "Demote it to DynamismFailureKind.EXCEPTION",
+      ),
+      (
+          "skipped",
+          0,
+          "skipped",
+          "0 dynamism subtests",
+          "Re-evaluate this entry",
+      ),
+      (
+          "missing_outcome",
+          0,
+          None,
+          None,
+          "without reporting a unittest outcome",
+      ),
+  )
+  def test_crash_entry_fails_loudly_on_non_crash_outcomes(
+      self, exitcode, outcome, detail, expected_msg
+  ):
+    result, spawn_mock = self._run_abs_crash_check(
+        deny_lists={
+            "aborts": {
+                "abs": {dynamism_test_utils.EAGER: dynamism_test_utils.CRASH}
+            }
+        },
+        subprocess_result=op_testing._DynamismCrashSubprocessResult(  # pylint: disable=protected-access
+            exitcode=exitcode,
+            outcome=outcome,
+            detail=detail,
+            output="child log tail",
+        ),
+    )
+    spawn_mock.assert_called_once()
+    self.assertLen(result.failures, 1)
+    self.assertIn(expected_msg, result.failures[0][1])
+
+  def test_fails_if_parent_already_initialized_tpu(self):
+    result, spawn_mock = self._run_abs_crash_check(
+        deny_lists={
+            "aborts": {
+                "abs": {dynamism_test_utils.EAGER: dynamism_test_utils.CRASH}
+            }
+        },
+        tpu_initialized=True,
+    )
+    spawn_mock.assert_not_called()
+    self.assertLen(result.failures, 1)
+    self.assertIn(
+        "initialized the TPU runtime before spawning", result.failures[0][1]
+    )
+
+  @parameterized.named_parameters(
+      (
+          "without_check_dynamism",
+          {"check_dynamism": False, "check_dynamism_crashes": True},
+      ),
+      (
+          "with_symbolic_shapes",
+          {
+              "check_dynamism": True,
+              "check_dynamism_crashes": True,
+              "check_symbolic_shapes": True,
+          },
+      ),
+      (
+          "non_vs_gpu_mode",
+          {
+              "check_dynamism": True,
+              "check_dynamism_crashes": True,
+              "test_mode": op_testing.TestMode.PERF,
+          },
+      ),
+  )
+  def test_set_up_test_module_rejects_invalid_crash_flags(self, flag_overrides):
+    with flagsaver.flagsaver(**flag_overrides):
+      with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Tests harness flags.
+          ValueError, "--check_dynamism_crashes requires"
+      ):
+        op_testing.set_up_test_module()
+
+  def test_set_up_test_module_skips_golden_load_in_parent_mode(self):
+    with (
+        flagsaver.flagsaver(
+            check_dynamism=True,
+            check_dynamism_crashes=True,
+            test_mode=op_testing.TestMode.TORCH_TPU_VS_GPU,
+        ),
+        mock.patch.object(op_testing, "_load_golden_files") as load_mock,
+    ):
+      op_testing.set_up_test_module()
+    load_mock.assert_not_called()
+
+  def _invoke_crash_worker(
+      self,
+      test_cls,
+      method_name: str,
+      *,
+      tpu_initialized: bool = False,
+      reset_eager_side_effect=None,
+  ):
+    """Runs `_dynamism_crash_worker` directly with a real Pipe and temp file."""
+    receiver_conn, sender_conn = multiprocessing.Pipe(duplex=False)
+    output_file = self.create_tempfile()
+    saved_stdout_fd = os.dup(1)
+    saved_stderr_fd = os.dup(2)
+    saved_argv = list(sys.argv)
+    try:
+      with (
+          flagsaver.flagsaver(),
+          mock.patch.object(op_testing, "set_up_test_module"),
+          mock.patch.object(
+              op_testing._device_ops_backend,  # pylint: disable=protected-access
+              "_is_initialized",
+              return_value=tpu_initialized,
+          ),
+          mock.patch.object(
+              op_testing.tt_testing,
+              "reset_eager_state",
+              side_effect=reset_eager_side_effect,
+          ),
+      ):
+        op_testing._dynamism_crash_worker(  # pylint: disable=protected-access
+            test_cls,
+            method_name,
+            ["op_testing_test"],
+            output_file.full_path,
+            sender_conn,
+        )
+    finally:
+      os.dup2(saved_stdout_fd, 1)
+      os.dup2(saved_stderr_fd, 2)
+      os.close(saved_stdout_fd)
+      os.close(saved_stderr_fd)
+      sys.argv = saved_argv
+    with receiver_conn:
+      outcome, detail = receiver_conn.recv()
+    return outcome, detail, output_file.read_text()
+
+  def test_crash_worker_outcomes_and_output_capture(self):
+    class _FakeWorkerTest(absltest.TestCase):  # ABSLTEST_OK=Local test double.
+
+      def test_pass_with_output(self):
+        self._dynamism_subtests_run = 1
+        os.write(1, b"raw stdout bytes\n")
+        os.write(2, b"raw stderr bytes\n")
+
+      def test_mixed_sample_skip_and_pass(self):
+        with self.subTest("skipped_sample"):
+          self.skipTest("unsupported dtype torch.complex64")
+        self._dynamism_subtests_run = 1
+
+      def test_skip_all_with_reason(self):
+        self._dynamism_subtests_run = 0
+        self.skipTest("all samples skipped")
+
+      def test_skip_zero_subtests(self):
+        self._dynamism_subtests_run = 0
+
+      def test_failure(self):
+        self._dynamism_subtests_run = 1
+        raise RuntimeError("boom")
+
+    outcome, detail, output = self._invoke_crash_worker(
+        _FakeWorkerTest, "test_pass_with_output"
+    )
+    self.assertEqual(outcome, op_testing._CRASH_OUTCOME_PASSED)  # pylint: disable=protected-access
+    self.assertIsNone(detail)
+    self.assertIn("raw stdout bytes", output)
+    self.assertIn("raw stderr bytes", output)
+
+    outcome, detail, _ = self._invoke_crash_worker(
+        _FakeWorkerTest, "test_mixed_sample_skip_and_pass"
+    )
+    self.assertEqual(outcome, op_testing._CRASH_OUTCOME_PASSED)  # pylint: disable=protected-access
+    self.assertIsNone(detail)
+
+    outcome, detail, _ = self._invoke_crash_worker(
+        _FakeWorkerTest, "test_skip_all_with_reason"
+    )
+    self.assertEqual(outcome, op_testing._CRASH_OUTCOME_SKIPPED)  # pylint: disable=protected-access
+    self.assertEqual(detail, "all samples skipped")
+
+    outcome, detail, _ = self._invoke_crash_worker(
+        _FakeWorkerTest, "test_skip_zero_subtests"
+    )
+    self.assertEqual(outcome, op_testing._CRASH_OUTCOME_SKIPPED)  # pylint: disable=protected-access
+    self.assertIn("0 dynamism subtests", detail)
+
+    outcome, detail, _ = self._invoke_crash_worker(
+        _FakeWorkerTest, "test_failure", tpu_initialized=False
+    )
+    self.assertEqual(outcome, op_testing._CRASH_OUTCOME_FAILED)  # pylint: disable=protected-access
+    self.assertIn("RuntimeError: boom", detail)
+
+    outcome, detail, _ = self._invoke_crash_worker(
+        _FakeWorkerTest,
+        "test_failure",
+        tpu_initialized=True,
+        reset_eager_side_effect=RuntimeError("TPU halted"),
+    )
+    self.assertEqual(outcome, op_testing._CRASH_OUTCOME_RUNTIME_POISONED)  # pylint: disable=protected-access
+    self.assertIn("RuntimeError: boom", detail)
 
 
 class CoupledDimDiscoveryTest(seed_test_utils.RepeatableTest):

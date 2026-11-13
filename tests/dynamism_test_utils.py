@@ -408,7 +408,10 @@ def verify_dtype_supports_dynamism(
   Returns:
     None if `dtype` is supported for dynamism testing, or a skip reason string.
   """
-  # TODO: b/449736443 - [XLA] Crash in complex rewriter.
+  # TODO: b/449736443 - Complex dynamism still fails on several paths (e.g.
+  # `torch.compile(mean)`, `torch.compile(real)`/`view_as_real`, and
+  # `MakeConstantLike`/`sgn`). Tracked by `DynamismGlobalSkipCanaryTest` in
+  # `dynamism_test.py`.
   if dtype in (torch.complex64, torch.complex128):
     return f"{op_info.name} op is not supported with dtype {dtype}."
   return None
@@ -429,7 +432,8 @@ def _check_tensor_supported_for_dynamism(
   skip_dtype = verify_dtype_supports_dynamism(op_info, tensor.dtype)
   if skip_dtype is not None:
     return skip_dtype
-  # TODO: b/449736443 - Empty tensor handling needs reworking.
+  # TODO: b/449736443 - Empty tensor handling needs reworking (tracked by
+  # `DynamismGlobalSkipCanaryTest` in `dynamism_test.py`).
   if tensor.numel() == 0:
     return "Empty tensors are currently not supported."
 
@@ -460,10 +464,82 @@ def _should_skip_input_marking(
   return _check_tensor_supported_for_dynamism(op_info, input_value)
 
 
-DenyList = dict[str, dict[str, set[DynamismMode] | frozenset[DynamismMode]]]
+class DynamismFailureKind(enum.Enum):
+  """How an op excluded in `DYNAMISM_DENY_LISTS` currently fails."""
+
+  # Raises a catchable exception or fails a test assertion; safe to run
+  # in-process.
+  EXCEPTION = "exception"
+  # Aborts the test process or permanently halts the TPU runtime (CHECK failure,
+  # segfault, or unrecoverable TPU core halt).
+  CRASH = "crash"
+  # Hits an MLIR assertion that aborts only when
+  # `not env.TORCH_TPU_IS_OPTIMIZED_BUILD` (e.g., `-c fastbuild`).
+  UNOPTIMIZED_ASSERT_CRASH = "unoptimized_assert_crash"
+
+
+EXCEPTION = DynamismFailureKind.EXCEPTION
+CRASH = DynamismFailureKind.CRASH
+UNOPTIMIZED_ASSERT_CRASH = DynamismFailureKind.UNOPTIMIZED_ASSERT_CRASH
+
+
+@dataclasses.dataclass(frozen=True)
+class DynamismExclusion:
+  """Resolved exclusion metadata for an `(op_info, mode)` pair.
+
+  Attributes:
+    reason: Category/reason string describing why the op is excluded.
+    failure_kind: Failure mode for `DYNAMISM_DENY_LISTS` entries, or `None` if
+      the op is in `DYNAMISM_NOT_APPLICABLE_OPS`.
+  """
+
+  reason: str
+  failure_kind: DynamismFailureKind | None = None
+
+  @property
+  def is_not_applicable(self) -> bool:
+    return self.failure_kind is None
+
+  def skip_message(self, op_info: core.OpInfo, mode: DynamismMode) -> str:
+    display_name = op_deny_list_key(op_info)
+    if self.is_not_applicable:
+      return (
+          f"Dynamism is not applicable to {display_name} in {mode.value} mode:"
+          f" {self.reason}."
+      )
+    return (
+        f"Op {display_name} is not supported in {mode.value} dynamism mode:"
+        f" {self.reason}."
+    )
+
+
+DenyListEntry = (
+    set[DynamismMode]
+    | frozenset[DynamismMode]
+    | Mapping[DynamismMode, DynamismFailureKind]
+)
+DenyList = dict[str, dict[str, DenyListEntry]]
+NotApplicableList = dict[
+    str, dict[str, set[DynamismMode] | frozenset[DynamismMode]]
+]
+
+
+def entry_mode_kinds(
+    entry: DenyListEntry,
+) -> Mapping[DynamismMode, DynamismFailureKind]:
+  """Normalizes a `DenyListEntry` into a `{mode: DynamismFailureKind}` map."""
+  if isinstance(entry, Mapping):
+    return entry
+  return {mode: DynamismFailureKind.EXCEPTION for mode in entry}
+
 
 # Mode-aware deny lists for bounded dynamism op tests, keyed by the reason for
-# the skip. The reason is included in the skip message.
+# the skip. The reason is included in the skip message. Each inner dict maps an
+# `OpInfo.name` (or `f"{OpInfo.name}.{OpInfo.variant_test_name}"` to narrow to
+# a single variant) to either:
+#   - a set/frozenset of `DynamismMode`s (defaults to `EXCEPTION`), or
+#   - a `{DynamismMode: DynamismFailureKind}` mapping (use for `CRASH` and
+#     `UNOPTIMIZED_ASSERT_CRASH`, or when modes differ in failure kind).
 #
 # Policy: every entry is a known bug in a lowering, XLA or TorchTPU, or a gap
 # in the dynamism test harness. The goal is to drive this to empty, so remove
@@ -480,28 +556,29 @@ DenyList = dict[str, dict[str, set[DynamismMode] | frozenset[DynamismMode]]]
 DYNAMISM_DENY_LISTS: DenyList = {
     # TODO: b/449736443 - Support bounded dimensions in these lowerings.
     "the lowering broadcasts a bounded input to a static shape": {
-        # Aborts the test process with a CHECK failure in BroadcastIfNeeded
-        # (op_builder_utils.cc).
-        "_segment_reduce": {EAGER, COMPILE},
+        # Entries marked CRASH abort the test process with a CHECK failure in
+        # BroadcastIfNeeded (op_builder_utils.cc); the others raise a broadcast
+        # or XLA compile exception cleanly.
+        "_segment_reduce": {EAGER: CRASH, COMPILE: CRASH},
         "_weight_norm_interface_backward": {EAGER, COMPILE},
         "atanh": {COMPILE_GRAD},
         "bernoulli": {EAGER},
         "cdist": {EAGER},
-        # These abort the test process with a CHECK failure in
-        # BroadcastIfNeeded (op_builder_utils.cc).
-        "linalg.qr": {EAGER},
-        "linalg.svd": {EAGER},
-        "linalg.svdvals": {EAGER, COMPILE_GRAD},
-        "masked_scatter": {EAGER},
-        "multinomial": {EAGER},
-        "nn.functional.nll_loss": {COMPILE_GRAD},
+        "linalg.qr": {EAGER: CRASH},
+        "linalg.svd": {EAGER: CRASH},
+        "linalg.svdvals": {EAGER: CRASH, COMPILE_GRAD: CRASH},
+        "masked_scatter": {EAGER: CRASH},
+        "multinomial": {EAGER: CRASH},
+        "nn.functional.nll_loss": {COMPILE_GRAD: CRASH},
     },
     # TODO: b/449736443 - Support bounded dimensions in these lowerings.
     "the lowering emits an op without bounded shape support": {
         # Calls getNumElements() on a dynamic shaped type, failing an MLIR
-        # assertion that aborts the test process in builds with MLIR
-        # assertions enabled.
-        "_foreach_norm": {EAGER, COMPILE_GRAD},
+        # assertion in builds with MLIR assertions enabled.
+        "_foreach_norm": {
+            EAGER: UNOPTIMIZED_ASSERT_CRASH,
+            COMPILE_GRAD: UNOPTIMIZED_ASSERT_CRASH,
+        },
         # BuildMlirModule fails to inline MLIR functions on bounded inputs.
         "_fused_moving_avg_obs_fq_helper": ALL_MODES,
         # XLA ragged-dot does not support propagating bounded dimensions.
@@ -510,105 +587,116 @@ DYNAMISM_DENY_LISTS: DenyList = {
         "_jagged_to_padded_dense_forward": {EAGER},
         # Fails to inline MLIR functions on bounded inputs.
         "_native_multi_head_attention": {EAGER},
-        # BuildMlirModule fails to inline MLIR functions on bounded inputs.
-        "_weight_norm_interface": {COMPILE, COMPILE_GRAD},
+        # Calls getNumElements() on a dynamic shaped type, failing an MLIR
+        # assertion in unoptimized builds, and fails to inline MLIR functions.
+        "_weight_norm_interface": {
+            COMPILE: UNOPTIMIZED_ASSERT_CRASH,
+            COMPILE_GRAD: UNOPTIMIZED_ASSERT_CRASH,
+        },
         # ViewPrimitiveShlo does not support slicing a dynamic dimension.
         "as_strided": ALL_MODES,
-        # Fails to inline MLIR functions on bounded inputs.
-        "bincount": {EAGER},
+        # Fails RankedTensorType bounds-length assertion in unoptimized builds
+        # and fails to inline MLIR functions on bounded inputs.
+        "bincount": {EAGER: UNOPTIMIZED_ASSERT_CRASH},
         # BuildMlirModule fails to inline MLIR functions on bounded inputs;
         # EAGER mode is triaged under "the lowering broadcasts a bounded input
         # to a static shape".
         "cdist": {COMPILE_GRAD},
         # cummax_helper and cummin_helper emit static stablehlo.iota and query
-        # static dim sizes (-9223372036854775808). Aborts the test process.
-        "cummax": ALL_MODES,
-        "cummin": ALL_MODES,
+        # static dim sizes (-9223372036854775808).
+        "cummax": dict.fromkeys(ALL_MODES, CRASH),
+        "cummin": dict.fromkeys(ALL_MODES, CRASH),
         # chlo.ScanOp fails MLIR function inlining.
         "cumprod": {EAGER, COMPILE_GRAD},
         # cumsum.out segfaults (eager), and chlo.ScanOp fails MLIR function
         # inlining (compile).
-        "cumsum": ALL_MODES,
-        # Fails the getDotResultType assertion on bounded 1D operands. Aborts
-        # the test process in builds with MLIR assertions enabled.
-        "dot": ALL_MODES,
+        "cumsum": {EAGER: CRASH, COMPILE: EXCEPTION, COMPILE_GRAD: EXCEPTION},
+        # Fails the getDotResultType assertion on bounded 1D operands in builds
+        # with MLIR assertions enabled.
+        "dot": dict.fromkeys(ALL_MODES, UNOPTIMIZED_ASSERT_CRASH),
         # embedding_renorm_ uses static BroadcastInDim and Scatter shapes.
-        # Aborts the test process.
-        "embedding_renorm_": {EAGER, COMPILE},
+        "embedding_renorm_": {EAGER: CRASH, COMPILE: CRASH},
         # BuildFmaxShlo and BuildFminShlo emit NaN CompareOp on integer tensors,
-        # failing an MLIR assertion in DenseElementsAttr. Aborts the test
-        # process in builds with MLIR assertions enabled.
-        "fmax": {EAGER},
-        "fmin": {EAGER},
+        # failing an MLIR assertion in DenseElementsAttr in builds with MLIR
+        # assertions enabled.
+        "fmax": {EAGER: UNOPTIMIZED_ASSERT_CRASH},
+        "fmin": {EAGER: UNOPTIMIZED_ASSERT_CRASH},
         # Checks index.size(d) <= input.size(d) against INT64_MIN.
         "gather": {EAGER, COMPILE_GRAD},
         # Compiled backward loses grad_fn when hidden size is dynamic.
         "gru.input": {COMPILE_GRAD},
-        # Fails to inline MLIR functions on bounded inputs. COMPILE is triaged
-        # under "XLA fails layout verification with 'layout does not match any
-        # allowed tile kind'".
-        "index_copy": {COMPILE_GRAD},
+        # Fails RankedTensorType bounds-length assertion in unoptimized builds
+        # and fails to inline MLIR functions. COMPILE is triaged under "XLA
+        # fails layout verification with 'layout does not match any allowed tile
+        # kind'".
+        "index_copy": {COMPILE_GRAD: UNOPTIMIZED_ASSERT_CRASH},
         # BuildMlirModule fails to inline MLIR functions on bounded inputs.
         "index_fill": ALL_MODES,
         # chlo.ScanOp fails MLIR function inlining.
         "logcumsumexp": ALL_MODES,
         # SliceOp::build fails return type inference on bounded hidden slices.
-        # Aborts the test process.
-        "lstm.input": ALL_MODES,
+        "lstm.input": dict.fromkeys(ALL_MODES, CRASH),
         # Slicing a dynamic dimension is not supported in ViewPrimitiveShlo
         # (eager), and LU_pivots shape check fails (compile_grad).
         "lu_unpack": {EAGER, COMPILE_GRAD},
         # Backward pass calls local_scalar_dense on a placeholder tensor.
         "mean": {COMPILE_GRAD},
-        # Allocates a zero-sized shape with no zero dimension. Aborts the test
-        # process.
-        "nn.functional.adaptive_avg_pool3d": {EAGER, COMPILE_GRAD},
-        # Queries static dim size (slice size -9223372036854775808). Aborts the
-        # test process.
-        "nn.functional.adaptive_max_pool2d": {EAGER, COMPILE},
-        # Aborts the test process.
-        "nn.functional.avg_pool1d": {COMPILE_GRAD},
-        # SliceBackwardResult queries static input shape. Aborts the test
-        # process.
-        "nn.functional.avg_pool2d": {COMPILE_GRAD},
+        # Allocates a zero-sized shape with no zero dimension.
+        "nn.functional.adaptive_avg_pool3d": {
+            EAGER: CRASH,
+            COMPILE_GRAD: CRASH,
+        },
+        # Queries static dim size (slice size -9223372036854775808).
+        "nn.functional.adaptive_max_pool2d": {EAGER: CRASH, COMPILE: CRASH},
+        "nn.functional.avg_pool1d": {COMPILE_GRAD: CRASH},
+        # SliceBackwardResult queries static input shape.
+        "nn.functional.avg_pool2d": {COMPILE_GRAD: CRASH},
         # PropagateBoundedDynamism fails MarkDynamic when pooling reduces a
         # bounded spatial dimension to size 1 (eager), and avg_pool3d_backward
-        # queries static input shape, aborting the test process (compile_grad).
-        "nn.functional.avg_pool3d": {EAGER, COMPILE_GRAD},
-        # Fails to inline MLIR functions on bounded inputs.
-        "nn.functional.channel_shuffle": ALL_MODES,
-        # cross_entropy_loss queries a dynamic dim size, failing an MLIR
-        # assertion that aborts the test process in builds with MLIR assertions
-        # enabled (eager), and its backward fails to inline MLIR functions
-        # (compile_grad). COMPILE is triaged under "the result has wrong
-        # values".
-        "nn.functional.cross_entropy": {EAGER, COMPILE_GRAD},
+        # queries static input shape (compile_grad).
+        "nn.functional.avg_pool3d": {EAGER: EXCEPTION, COMPILE_GRAD: CRASH},
+        # Fails RankedTensorType invalid tensor dimension size assertion in
+        # unoptimized builds and fails to inline MLIR functions on bounded
+        # inputs.
+        "nn.functional.channel_shuffle": dict.fromkeys(
+            ALL_MODES, UNOPTIMIZED_ASSERT_CRASH
+        ),
+        # cross_entropy_loss calls getNumElements() on a dynamic shaped type,
+        # failing an MLIR assertion in unoptimized builds. COMPILE is triaged
+        # under "the result has wrong values".
+        "nn.functional.cross_entropy": {
+            EAGER: UNOPTIMIZED_ASSERT_CRASH,
+            COMPILE_GRAD: UNOPTIMIZED_ASSERT_CRASH,
+        },
         # var_mean reshape reassociation fails (eager) and local_scalar_dense
         # cannot materialize a placeholder tensor (compile_grad).
         "nn.functional.group_norm": {EAGER, COMPILE_GRAD},
-        # Queries static dim size (dimension size -9223372036854775808). Eager
-        # aborts the test process, and compile fails to inline MLIR functions.
-        "nn.functional.max_pool1d": ALL_MODES,
-        # Queries static dim size (dimension size -9223372036854775808). Aborts
-        # the test process.
-        "nn.functional.max_pool2d": ALL_MODES,
-        "nn.functional.max_pool3d": ALL_MODES,
-        # Queries a dynamic dim size, failing an MLIR assertion that aborts the
-        # test process in builds with MLIR assertions enabled. COMPILE and
-        # COMPILE_GRAD are triaged under other reasons.
-        "nn.functional.nll_loss": {EAGER},
+        # Queries static dim size (dimension size -9223372036854775808) in
+        # eager, and compile fails to inline MLIR functions.
+        "nn.functional.max_pool1d": {
+            EAGER: CRASH,
+            COMPILE: EXCEPTION,
+            COMPILE_GRAD: EXCEPTION,
+        },
+        # Queries static dim size (dimension size -9223372036854775808).
+        "nn.functional.max_pool2d": dict.fromkeys(ALL_MODES, CRASH),
+        "nn.functional.max_pool3d": dict.fromkeys(ALL_MODES, CRASH),
+        # Queries a dynamic dim size, failing an MLIR assertion in builds with
+        # MLIR assertions enabled. COMPILE and COMPILE_GRAD are triaged under
+        # other reasons.
+        "nn.functional.nll_loss": {EAGER: UNOPTIMIZED_ASSERT_CRASH},
         # Calls getNumElements() on a dynamic shaped type, failing an MLIR
-        # assertion that aborts the test process in builds with MLIR
-        # assertions enabled.
-        "norm": {EAGER, COMPILE},
+        # assertion in builds with MLIR assertions enabled.
+        "norm": {
+            EAGER: UNOPTIMIZED_ASSERT_CRASH,
+            COMPILE: UNOPTIMIZED_ASSERT_CRASH,
+        },
         # reflection_pad*d and replication_pad*d query static input shape.
-        # Aborts the test process.
-        "nn.functional.pad": {EAGER, COMPILE_GRAD},
+        "nn.functional.pad": {EAGER: CRASH, COMPILE_GRAD: CRASH},
         # Variable repeats fail MLIR function inlining in Cumsum/ScanOp.
         "repeat_interleave": {EAGER},
-        # Queries static input shape (limit index -9223372036854775808). Aborts
-        # the test process.
-        "scatter": {EAGER, COMPILE},
+        # Queries static input shape (limit index -9223372036854775808).
+        "scatter": {EAGER: CRASH, COMPILE: CRASH},
         # AtenSelectScatter checks static src shape against padded self slice.
         "select_scatter": {COMPILE, COMPILE_GRAD},
         # sort backward lowers via scatter, which fails MLIR function inlining
@@ -620,9 +708,11 @@ DYNAMISM_DENY_LISTS: DenyList = {
         # Lowers via sort with %iota, which lacks XLA dynamic_padder support.
         "topk": {EAGER},
         # Calls getNumElements() and static scale checks on bounded operands.
-        # torch._scaled_mm_v2 aborts the test process.
-        "torch._scaled_mm": {EAGER, COMPILE},
-        "torch._scaled_mm_v2": {EAGER, COMPILE},
+        "torch._scaled_mm.rowwise": {
+            EAGER: UNOPTIMIZED_ASSERT_CRASH,
+            COMPILE: UNOPTIMIZED_ASSERT_CRASH,
+        },
+        "torch._scaled_mm_v2": {EAGER: CRASH, COMPILE: CRASH},
         # stablehlo.reshape allows at most one bounded dimension. This fails
         # when dims 0 and 2 are both dynamic, which happens in compile mode
         # because dims marked in earlier subtests stay dynamic.
@@ -648,7 +738,8 @@ DYNAMISM_DENY_LISTS: DenyList = {
     },
     # TODO: b/449736443 - Support bounded dimensions in these lowerings.
     "the result has wrong values": {
-        "nn.functional.cross_entropy": {COMPILE},
+        # Calls getNumElements() on a dynamic shaped type in unoptimized builds.
+        "nn.functional.cross_entropy": {COMPILE: UNOPTIMIZED_ASSERT_CRASH},
         # TODO: b/566327914 - With dim 0 bounded, the result matches the
         # transposed golden output.
         "nn.functional.hardtanh": {EAGER},
@@ -676,7 +767,8 @@ DYNAMISM_DENY_LISTS: DenyList = {
         "clamp": {COMPILE, COMPILE_GRAD},
         "clone": {COMPILE},
         "floor": {COMPILE},
-        "index_copy": {COMPILE},
+        # Fails RankedTensorType bounds-length assertion in unoptimized builds.
+        "index_copy": {COMPILE: UNOPTIMIZED_ASSERT_CRASH},
         # COMPILE is triaged under "untriaged: buffer dimension mismatch".
         "isinf": {COMPILE_GRAD},
         "isnan": {COMPILE, COMPILE_GRAD},
@@ -729,24 +821,26 @@ DYNAMISM_DENY_LISTS: DenyList = {
         "atan": {COMPILE_GRAD},  # float16 compiled backward tolerance
         "erf": {COMPILE_GRAD},  # float16 compiled backward tolerance
         "erfinv": {COMPILE_GRAD},  # bfloat16 compiled backward tolerance
-        "nn.functional.nll_loss": {COMPILE},
+        # Calls getNumElements() on a dynamic shaped type in unoptimized builds.
+        "nn.functional.nll_loss": {COMPILE: UNOPTIMIZED_ASSERT_CRASH},
         "tanh": {COMPILE_GRAD},  # float16/bfloat16 compiled backward tolerance
     },
     "untriaged: buffer dimension mismatch": {
         # These abort the test process with a CHECK failure in
         # device_buffer.cc.
-        "fill": {COMPILE_GRAD},  # backward emits zeros_like
-        "isinf": {COMPILE},
+        "isinf": {COMPILE: CRASH},
     },
     # These fail an MLIR RankedTensorType invariant check, which aborts the test
     # process in builds with MLIR assertions enabled (not in -c opt).
     "untriaged: MLIR assertion failure (bounds length vs rank)": {
-        "matmul": {EAGER, COMPILE_GRAD},
-        "vdot": ALL_MODES,
+        "matmul": {
+            EAGER: UNOPTIMIZED_ASSERT_CRASH,
+            COMPILE_GRAD: UNOPTIMIZED_ASSERT_CRASH,
+        },
+        "vdot": dict.fromkeys(ALL_MODES, UNOPTIMIZED_ASSERT_CRASH),
     },
     "untriaged: materialization failure (negative dimension size)": {
-        # Aborts the test process.
-        "isin": ALL_MODES,
+        "isin": dict.fromkeys(ALL_MODES, CRASH),
     },
     "untriaged: expected all dimensions to be static": {
         "fft.ifft": {EAGER},
@@ -756,44 +850,57 @@ DYNAMISM_DENY_LISTS: DenyList = {
         "nn.functional.embedding_bag": {EAGER},
     },
     "untriaged: invalid gather": {
+        # Fails RankedTensorType bounds-length assertion in unoptimized builds;
         # XLA scatter does not support a dynamic update window size.
-        "index_copy": {EAGER},
+        "index_copy": {EAGER: UNOPTIMIZED_ASSERT_CRASH},
     },
     "untriaged: XLA compile or runtime failure": {
-        "bmm": {COMPILE_GRAD},  # RuntimeProgramInputMismatch
+        # Triggers RuntimeUnexpectedCoreHalt (scheckge) on t0d2.
+        "bmm": {COMPILE_GRAD: CRASH},
         "linalg.lu_factor_ex": {EAGER},  # incompatible shapes RET_CHECK
-        "mm": {COMPILE_GRAD},  # TPU core halted unexpectedly
+        "mm": {COMPILE_GRAD: CRASH},  # TPU core halted unexpectedly
         "split": {COMPILE_GRAD},  # RuntimeProgramInputMismatch
     },
-    # These abort the test process.
     "untriaged: crash": {
-        "_transformer_encoder_layer_fwd": {EAGER},
-        "fft.irfft": {COMPILE_GRAD},  # buffer != nullptr CHECK in shape.h
-        "index_select": ALL_MODES,
+        "_transformer_encoder_layer_fwd": {EAGER: CRASH},
+        "fft.irfft": {
+            COMPILE_GRAD: CRASH
+        },  # buffer != nullptr CHECK in shape.h
+        "index_select": dict.fromkeys(ALL_MODES, CRASH),
         # Allocates a zero-sized shape with no zero dimension.
-        "nn.functional.adaptive_avg_pool2d": ALL_MODES,
-        "nn.functional.embedding": {COMPILE, COMPILE_GRAD},
-        "nn.functional.embedding_bag": {COMPILE, COMPILE_GRAD},
-        "nn.functional.grid_sample": ALL_MODES,
-        "searchsorted": ALL_MODES,  # buffer != nullptr CHECK in shape.h
-        "slice_scatter": {EAGER, COMPILE},  # buffer != nullptr CHECK in shape.h
-        "unique": {EAGER},
-        "unique_consecutive": {EAGER},
-        "view_as_complex": {COMPILE, COMPILE_GRAD},
+        "nn.functional.adaptive_avg_pool2d": dict.fromkeys(ALL_MODES, CRASH),
+        "nn.functional.embedding": {COMPILE: CRASH, COMPILE_GRAD: CRASH},
+        "nn.functional.embedding_bag": {COMPILE: CRASH, COMPILE_GRAD: CRASH},
+        "nn.functional.grid_sample": dict.fromkeys(ALL_MODES, CRASH),
+        "searchsorted": dict.fromkeys(
+            ALL_MODES, CRASH
+        ),  # buffer != nullptr CHECK in shape.h
+        "slice_scatter": {
+            EAGER: CRASH,
+            COMPILE: CRASH,
+        },  # buffer != nullptr CHECK in shape.h
+        "unique": {EAGER: CRASH},
+        "unique_consecutive": {EAGER: CRASH},
+        "view_as_complex": {COMPILE: CRASH, COMPILE_GRAD: CRASH},
     },
     "untriaged: unsupported view op or reshape": {
         # Slicing a dynamic dimension is not supported.
         "diagonal": ALL_MODES,
-        # unflatten is ambiguous for a bounded dimension.
-        "put": {EAGER, COMPILE_GRAD},
+        # unflatten is ambiguous for a bounded dimension; fails RankedTensorType
+        # bounds-length assertion in unoptimized builds.
+        "put": {
+            EAGER: UNOPTIMIZED_ASSERT_CRASH,
+            COMPILE_GRAD: UNOPTIMIZED_ASSERT_CRASH,
+        },
         # Slicing a dynamic dimension is not supported.
         "select": {EAGER},
         "split": {EAGER},
         "split_with_sizes": {EAGER},
         "split_with_sizes_copy": {EAGER},
         # Reshape has mismatched element counts (eager), and unflatten is
-        # ambiguous for a bounded dimension (compile_grad).
-        "take": {EAGER, COMPILE_GRAD},
+        # ambiguous for a bounded dimension (compile_grad; fails
+        # RankedTensorType assertion in unoptimized builds).
+        "take": {EAGER: EXCEPTION, COMPILE_GRAD: UNOPTIMIZED_ASSERT_CRASH},
     },
     "untriaged: shape mismatch": {
         # Compile marks self dim bounded but not source.
@@ -803,8 +910,8 @@ DYNAMISM_DENY_LISTS: DenyList = {
         "slice_scatter": {COMPILE_GRAD},
     },
     "untriaged: unknown failure": {
-        # Input SymInt is not present in example_inputs.
-        "_thnn_fused_gru_cell": {COMPILE_GRAD},
+        # Calls getNumElements() on a dynamic shaped type in unoptimized builds.
+        "_thnn_fused_gru_cell": {COMPILE_GRAD: UNOPTIMIZED_ASSERT_CRASH},
         "bernoulli": {COMPILE_GRAD},  # Dynamo no_dispatch error
         # Compiled backward graph codegen emits invalid Python.
         "std": {COMPILE_GRAD},
@@ -820,7 +927,7 @@ DYNAMISM_DENY_LISTS: DenyList = {
 # Policy: unlike `DYNAMISM_DENY_LISTS`, these entries are not bugs and are not
 # expected to be removed. Each entry requires a justification of why dynamism
 # does not apply to the op, so this should rarely change.
-DYNAMISM_NOT_APPLICABLE_OPS: DenyList = {
+DYNAMISM_NOT_APPLICABLE_OPS: NotApplicableList = {
     "fused optimizers update fixed-shape parameters and optimizer states in place": {
         "_fused_adagrad_": ALL_MODES,
         "_fused_adagrad_.tensor_lr": ALL_MODES,
@@ -834,13 +941,33 @@ DYNAMISM_NOT_APPLICABLE_OPS: DenyList = {
 }
 
 
-def _find_reason(
-    deny_lists: DenyList, op_name: str, mode: DynamismMode
-) -> str | None:
-  """Returns the first reason in `deny_lists` that excludes `op_name` in `mode`."""
-  for reason, ops in deny_lists.items():
-    if mode in ops.get(op_name, ()):
-      return reason
+def op_deny_list_key(op_info: core.OpInfo) -> str:
+  """Returns the most specific deny-list key for `op_info`."""
+  if op_info.variant_test_name:
+    return f"{op_info.name}.{op_info.variant_test_name}"
+  return op_info.name
+
+
+def _op_deny_list_lookup_keys(op_info: core.OpInfo) -> tuple[str, ...]:
+  """Returns deny-list lookup keys for `op_info`, most specific first."""
+  if op_info.variant_test_name:
+    return (f"{op_info.name}.{op_info.variant_test_name}", op_info.name)
+  return (op_info.name,)
+
+
+def get_dynamism_exclusion(
+    op_info: core.OpInfo,
+    mode: DynamismMode = DynamismMode.EAGER,
+) -> DynamismExclusion | None:
+  """Returns the exclusion for `(op_info, mode)`, or `None` if not excluded."""
+  for key in _op_deny_list_lookup_keys(op_info):
+    for reason, ops in DYNAMISM_NOT_APPLICABLE_OPS.items():
+      if mode in ops.get(key, ()):
+        return DynamismExclusion(reason=reason, failure_kind=None)
+    for reason, ops in DYNAMISM_DENY_LISTS.items():
+      if (entry := ops.get(key)) is not None:
+        if (failure_kind := entry_mode_kinds(entry).get(mode)) is not None:
+          return DynamismExclusion(reason=reason, failure_kind=failure_kind)
   return None
 
 
@@ -857,19 +984,10 @@ def verify_op_supports_dynamism(
   Returns:
     None if the op is supported in `mode`, or a skipTest message if not.
   """
-  reason = _find_reason(DYNAMISM_NOT_APPLICABLE_OPS, op_info.name, mode)
-  if reason is not None:
-    return (
-        f"Dynamism is not applicable to {op_info.name} in {mode.value} mode:"
-        f" {reason}."
-    )
-  reason = _find_reason(DYNAMISM_DENY_LISTS, op_info.name, mode)
-  if reason is not None:
-    return (
-        f"Op {op_info.name} is not supported in {mode.value} dynamism mode:"
-        f" {reason}."
-    )
-  return None
+  exclusion = get_dynamism_exclusion(op_info, mode)
+  if exclusion is None:
+    return None
+  return exclusion.skip_message(op_info, mode)
 
 
 def verify_sample_supports_dynamism(
