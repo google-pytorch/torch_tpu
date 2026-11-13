@@ -142,6 +142,66 @@ def _patch_sdpa_meta(meta_lib: torch.library.Library) -> None:
   # pylint: enable=protected-access
 
 
+def _patch_fused_dropout_meta(meta_lib: torch.library.Library) -> None:
+  """Patches `aten._fused_dropout` default and out Meta kernels."""
+  # pylint: disable=protected-access
+  default_op = torch.ops.aten._fused_dropout.default
+  out_op = torch.ops.aten._fused_dropout.out
+  meta_key = torch._C.DispatchKey.Meta
+  upstream_decomp = _decomp.decomposition_table.get(default_op)
+  upstream_meta = default_op.py_kernels.get(meta_key)
+
+  @decompositions.out_wrapper("out0", "out1")
+  def _fused_dropout_meta(
+      self: torch.Tensor,
+      p: float,
+      generator: torch.Generator | None = None,
+  ) -> tuple[torch.Tensor, torch.Tensor]:
+    if _meta_registrations.device_hint(self) == "tpu":
+      torch._check(
+          p >= 0.0,
+          lambda: (
+              f"fused_dropout(): expected p to be in the range [0, 1], got {p}"
+          ),
+      )
+      torch._check(
+          p <= 1.0,
+          lambda: (
+              f"fused_dropout(): expected p to be in the range [0, 1], got {p}"
+          ),
+      )
+      torch._check(
+          self.is_floating_point() or self.is_complex(),
+          lambda: (
+              "fused_dropout(): expected input to be floating point or"
+              f" complex, got {self.dtype}"
+          ),
+      )
+      return (
+          torch.empty_like(self, memory_format=torch.contiguous_format),
+          torch.empty_like(
+              self, dtype=torch.uint8, memory_format=torch.contiguous_format
+          ),
+      )
+    if upstream_decomp is not None:
+      return upstream_decomp(self, p, generator=generator)
+    if upstream_meta is not None:
+      return upstream_meta(self, p, generator=generator)
+    raise NotImplementedError(
+        f"No upstream implementation for _fused_dropout on device {self.device}"
+    )
+
+  wrapped_fn = _decomp._convert_out_params(_fused_dropout_meta)
+  for op in (default_op, out_op):
+    _decomp.meta_table[op] = wrapped_fn
+    schema = op._schema
+    torch._C._fake_dispatch_register_meta(schema.name, schema.overload_name)
+    op.py_kernels.pop(meta_key, None)
+    meta_lib.impl(op, wrapped_fn, allow_override=True)
+    op.py_impl(meta_key)(wrapped_fn)
+  # pylint: enable=protected-access
+
+
 def register() -> None:
   """Registers TPU Meta kernel overrides."""
   global _meta_lib
@@ -150,3 +210,4 @@ def register() -> None:
   _meta_lib = torch.library.Library("aten", "IMPL", "Meta")
   _patch_sdpa_meta(_meta_lib)
   _patch_addmm_dtype_meta(_meta_lib)
+  _patch_fused_dropout_meta(_meta_lib)
