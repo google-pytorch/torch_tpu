@@ -346,6 +346,10 @@ common:bench --strategy=TestRunner=standalone,local
 common:ci_cpu --config=ci
 common:ci_cpu --build_tag_filters=-nobuild,-requires-gpu,-requires-tpu,-cuda-build-test
 common:ci_cpu --test_tag_filters=-nobuild,-notest,-requires-gpu,-requires-tpu,-cuda-build-test,-requires-newest-deps
+# CPU tests run remotely on RBE, so skip building local .runfiles symlink trees,
+# the slowest tail of the CPU presubmit build. Bazel still builds them on demand
+# for any test that runs locally.
+common:ci_cpu --nobuild_runfile_links
 
 # Settings specific to CPU ThreadSanitizer CI runs.
 common:ci_cpu_tsan --config=ci_cpu
