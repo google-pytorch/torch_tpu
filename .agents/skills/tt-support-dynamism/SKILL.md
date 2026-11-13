@@ -30,10 +30,9 @@ Playbook for supporting bounded dynamism in TorchTPU op lowerings and
     `src/torch_tpu/_internal/compile/dynamic/`.
 *   **Target `COMPILE` and `COMPILE_GRAD`, not `EAGER`**: Eager dynamism is not
     a goal (e.g., view ops cannot support it). *Exception*: for ops skipped in
-    `COMPILE` mode (`compiled_deny_list` in `_compiled_supports_op` in
-    `tests/op_testing.py`, or `exclude_dtypes` / `skip_if` in
-    `tests/ops_test.py`), reproduce C++ lowering fixes in `EAGER` mode, or
-    enable `COMPILE` mode first if feasible.
+    `COMPILE` mode (`_COMPILED_DENY_LIST` in `tests/op_testing.py`, or
+    `exclude_dtypes` / `skip_if` in `tests/ops_test.py`), reproduce C++ lowering
+    fixes in `EAGER` mode, or enable `COMPILE` mode first if feasible.
 *   **Never query static sizes on dynamic MLIR types or symbolic ATen tensors**:
     *   MLIR: `RankedTensorType::getDimSize(i)` and `getShape()` return
         `ShapedType::kDynamic` (`INT64_MIN`, `-9223372036854775808`) on bounded
@@ -69,14 +68,15 @@ filtered there or in `_compiled_supports_op`.
 
 ## 2. Run the Reproducer (TDD)
 
-Temporarily remove the target mode(s) for the op from `DYNAMISM_DENY_LISTS`,
-then run the scoped target:
+Pass `--test_arg=--ignore_dynamism_deny_list` (or temporarily remove the target
+mode(s) from `DYNAMISM_DENY_LISTS`), then run the scoped target:
 
 ```bash
 # Use ops_test_dynamic_compiled_grad_tpu-v5lite for COMPILE_GRAD, and
 # ops_test_dynamic_tpu-v5lite for EAGER (only for compile-skipped ops).
 bazel test -c opt //tests:ops_test_dynamic_compiled_tpu-v5lite \
-  --test_filter=TestOps.test_{op_name} --test_output=all --test_sharding_strategy=disabled
+  --test_filter=TestOps.test_{op_name} --test_arg=--ignore_dynamism_deny_list \
+  --test_output=all --test_sharding_strategy=disabled
 ```
 
 *   `--test_filter` is a substring match (`$` anchors match nothing), so
@@ -203,12 +203,31 @@ bazel test -c opt //tests:ops_test_dynamic_compiled_tpu-v5lite \
         fix makes `EAGER` pass too, remove the op from `DYNAMISM_DENY_LISTS`
         entirely; if the fix is `torch.compile`-only (e.g., view ops), narrow
         its modes to `{EAGER}`.
+    *   `//tests:ops_test_dynamic_crashes_tpu-v5lite`,
+        `//tests:ops_test_dynamic_compiled_crashes_tpu-v5lite`, and
+        `//tests:ops_test_dynamic_compiled_grad_crashes_tpu-v5lite` when
+        touching or adding `CRASH` / `UNOPTIMIZED_ASSERT_CRASH` entries (also
+        test `UNOPTIMIZED_ASSERT_CRASH` in `-c fastbuild`). These are
+        `nopresubmit` postsubmit targets that spawn an isolated subprocess per
+        active crash entry (`--check_dynamism_crashes=True`).
     *   `//tests:op_testing_test` to validate deny-list integrity.
 2.  **Filtering policy** when an op or mode must stay filtered:
     *   `DYNAMISM_DENY_LISTS` maps a diagnosed root cause (with a GitHub issue
-        where possible) to `{op_name: modes}`, where `modes` is a subset of
-        `{EAGER, COMPILE, COMPILE_GRAD}` or `ALL_MODES`. Use `untriaged: ` only
-        when the root cause is unknown.
+        where possible) to `{op_key: entry}`, where `op_key` is `OpInfo.name`
+        (or `f"{OpInfo.name}.{OpInfo.variant_test_name}"` to narrow to one
+        variant) and `entry` is either a subset of
+        `{EAGER, COMPILE, COMPILE_GRAD}` / `ALL_MODES` (defaults to
+        `DynamismFailureKind.EXCEPTION`) or a `{mode: DynamismFailureKind}` map
+        (`EXCEPTION`, `CRASH`, or `UNOPTIMIZED_ASSERT_CRASH`). Use `untriaged: `
+        only when the root cause is unknown.
+    *   `EXCEPTION` entries run in-process as self-checking xfails: if all
+        subtests pass or 0 dynamism subtests run, the test fails loudly so stale
+        entries are removed right away. Use `CRASH` only when the op aborts the
+        process, and `UNOPTIMIZED_ASSERT_CRASH` when it only aborts in
+        unoptimized builds (MLIR assertions enabled); the
+        `ops_test_dynamic*_crashes` targets verify these in isolated
+        subprocesses and fail if they stop crashing (prompting removal or
+        demotion to `EXCEPTION`).
     *   `DYNAMISM_NOT_APPLICABLE_OPS` is for ops where bounded dynamism is out
         of scope by design, with explicit justification.
     *   Never disable dynamism inside `ops_test.py`.

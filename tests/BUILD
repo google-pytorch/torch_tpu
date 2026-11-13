@@ -553,12 +553,16 @@ torch_tpu_py_library(
         ":test_utils",
         "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/flags",
+        "//shims/absl_py/testing:absltest",
         "//shims/etils/epath",
         "//shims/safetensors",
         "//shims/torch:pytorch",
         "//shims/torch:testing_internal",
+        "//src/torch_tpu/_internal:env",
         "//src/torch_tpu/_internal/compile",
         "//src/torch_tpu/_internal/compiler_options",
+        "//src/torch_tpu/_internal/device:_device_ops_backend",
+        "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//src/torch_tpu/_internal/utils",
         "//src/torch_tpu/_internal/utils:test_utils",
         "@pypi//pyyaml",
@@ -619,6 +623,9 @@ torch_tpu_py_library(
 # * ops_test_dynamic: TPU vs GPU, bounds a dimension.
 # * ops_test_dynamic_compiled: TPU vs GPU, bounds a dimension under torch.compile.
 # * ops_test_dynamic_compiled_grad: gradient on TPU vs GPU, bounds dimensions under torch.compile.
+# * ops_test_dynamic_crashes / ops_test_dynamic_compiled_crashes /
+#   ops_test_dynamic_compiled_grad_crashes: postsubmit subprocess verification
+#   of CRASH / UNOPTIMIZED_ASSERT_CRASH entries in DYNAMISM_DENY_LISTS.
 # * ops_test_compiled: TPU vs GPU (torch.compile TpuBackend vs GPU inductor backend).
 # * ops_test_static: TPU vs GPU, with unbounded dynamic kernels disabled, for
 #   tests marked with @also_run_static only.
@@ -1170,6 +1177,120 @@ torch_tpu_py_test(
     shard_count = 50,
     tags = [
         "nosan",  # Rely on ops_test_grad for *san coverage.
+        "ops-test",  # Heavy ops test: see run_bazel_diff.py for details.
+    ] + _OSS_GOLDEN_TAGS,
+    deps = [
+        ":dynamism_test_utils",
+        ":op_testing",
+        ":oss_utils",
+        ":quantize_utils",
+        "//csrc/eager:tpu_aten_kernels",
+        "//shims/absl_py/flags",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/utils:test_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "ops_test_dynamic_crashes",
+    timeout = "long",
+    srcs = ["ops_test.py"],
+    args = [
+        "--check_dynamism=True",
+        "--check_dynamism_crashes=True",
+        "--print_op_inputs=1",
+        "--max_samples_per_op_dtype=1",
+    ],
+    data = _GPU_GOLDENS_DATA,
+    main = "ops_test.py",
+    nopresubmit = "Dynamic crash-detection tests spawn subprocesses and are run in postsubmit.",
+    run_on_accelerators = [
+        "requires-tpu-v6e",
+        "requires-tpu-v5lite",
+    ],
+    shard_count = 10,
+    tags = [
+        "nosan",  # Intentionally executes crashing subprocesses; sanitizers are not applicable.
+        "ops-test",  # Heavy ops test: see run_bazel_diff.py for details.
+    ] + _OSS_GOLDEN_TAGS,
+    deps = [
+        ":dynamism_test_utils",
+        ":op_testing",
+        ":oss_utils",
+        ":quantize_utils",
+        "//csrc/eager:tpu_aten_kernels",
+        "//shims/absl_py/flags",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/utils:test_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "ops_test_dynamic_compiled_crashes",
+    timeout = "long",
+    srcs = ["ops_test.py"],
+    args = [
+        "--check_dynamism=True",
+        "--check_dynamism_crashes=True",
+        "--use_compiled=True",
+        "--print_op_inputs=1",
+        "--max_samples_per_op_dtype=1",
+    ],
+    data = _GPU_GOLDENS_COMPILED_DATA,
+    main = "ops_test.py",
+    nopresubmit = "Dynamic crash-detection tests spawn subprocesses and are run in postsubmit.",
+    run_on_accelerators = [
+        "requires-tpu-v6e",
+        "requires-tpu-v5lite",
+    ],
+    shard_count = 10,
+    tags = [
+        "nosan",  # Intentionally executes crashing subprocesses; sanitizers are not applicable.
+        "ops-test",  # Heavy ops test: see run_bazel_diff.py for details.
+    ] + _OSS_GOLDEN_TAGS,
+    deps = [
+        ":dynamism_test_utils",
+        ":op_testing",
+        ":oss_utils",
+        ":quantize_utils",
+        "//csrc/eager:tpu_aten_kernels",
+        "//shims/absl_py/flags",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/utils:test_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "ops_test_dynamic_compiled_grad_crashes",
+    timeout = "long",
+    srcs = ["ops_test.py"],
+    args = [
+        "--check_dynamism=True",
+        "--check_dynamism_crashes=True",
+        "--compute_grad=True",
+        "--use_compiled=True",
+        "--print_op_inputs=1",
+        "--max_samples_per_op_dtype=1",
+    ],
+    # TODO: b/581040310 - Generate compiled-grad GPU goldens; no
+    # ops_test_gpu_golden_grad_compiled dataset exists yet, so reuse eager GPU
+    # grad goldens for now.
+    data = _GPU_GOLDENS_GRAD_DATA,
+    main = "ops_test.py",
+    nopresubmit = "Dynamic crash-detection tests spawn subprocesses and are run in postsubmit.",
+    run_on_accelerators = [
+        "requires-tpu-v6e",
+        "requires-tpu-v5lite",
+    ],
+    shard_count = 10,
+    tags = [
+        "nosan",  # Intentionally executes crashing subprocesses; sanitizers are not applicable.
         "ops-test",  # Heavy ops test: see run_bazel_diff.py for details.
     ] + _OSS_GOLDEN_TAGS,
     deps = [
