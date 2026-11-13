@@ -318,6 +318,57 @@ class SplitCompileTest(seed_test_utils.RepeatableTest):
     if num_fields == 2:
       utils.assert_close(out.diff.cpu(), (x - y).cpu())
 
+  @parameterized.named_parameters(
+      ("select", lambda t: t[1], torch.tensor([0, 2])),
+      ("float_select", lambda t: t[1], torch.tensor([0.0, 2.0])),
+      ("strided_slice", lambda t: t[1::2], torch.tensor([0, 2, 0, 3, 0, 4])),
+      ("transpose", lambda t: t.t(), torch.arange(6).reshape(2, 3)),
+  )
+  def test_cpu_view_argument_to_tpu_partition(self, view_fn, cpu_tensor):
+    # `view_fn(cpu_tensor)` runs in a CPU partition and its output, a view with
+    # a non-trivial layout, is an argument of the TPU partition.
+    def f(x):
+      return x * view_fn(cpu_tensor).to(x.device)
+
+    x = torch.arange(6.0, device="tpu").reshape(2, 3)
+    if view_fn(cpu_tensor).dim() == 2:
+      x = x.reshape(3, 2)
+    res = torch.compile(f, backend="tpu")(x)
+    utils.assert_close(res.cpu(), f(x.cpu()))
+
+  def test_cpu_argument_strides_are_preserved(self):
+    # Dense CPU arguments keep their strides when copied to the device, and
+    # views taken of them inside the TPU partition depend on those strides.
+    c = torch.arange(9.0).view(3, 3)
+    img = torch.arange(24.0).view(1, 2, 3, 4).contiguous(
+        memory_format=torch.channels_last
+    )
+
+    def transpose_scaled(x, c):
+      y = c.t().to(x.device)
+      s = (x * y).sum().cpu()
+      return y * s
+
+    def as_strided_of_transpose(x, c):
+      return torch.as_strided(c.t().to(x.device), (3,), (1,), 0) + x
+
+    def transpose_back_and_flatten(x, c):
+      return c.t().to(x.device).t().reshape(9) + x
+
+    def channels_last_permute(x, img):
+      return img.to(x.device).permute(0, 2, 3, 1).reshape(1, 3, 8) + x
+
+    cases = (
+        (transpose_scaled, torch.ones(3, 3), c),
+        (as_strided_of_transpose, torch.zeros(3), c),
+        (transpose_back_and_flatten, torch.zeros(9), c),
+        (channels_last_permute, torch.zeros(1, 3, 8), img),
+    )
+    for f, x, arg in cases:
+      with self.subTest(f.__name__):
+        res = torch.compile(f, backend="tpu", fullgraph=True)(x.to("tpu"), arg)
+        utils.assert_close(res.cpu(), f(x, arg))
+
 
 class SplitCompileHermeticTest(seed_test_utils.RepeatableTest):
 
