@@ -293,6 +293,8 @@ class ExportTest(seed_test_utils.RepeatableTest):
         succeeded=True,
         wall_time=3.0,
         microbenchmark_name="bs16",
+        warmup_xprof_url=None,
+        post_warmup_xprof_url=None,
     )
 
   @mock.patch.object(export_adapter, "export_benchmark_results")
@@ -319,6 +321,8 @@ class ExportTest(seed_test_utils.RepeatableTest):
         succeeded=True,
         wall_time=None,
         microbenchmark_name="bs64",
+        warmup_xprof_url=None,
+        post_warmup_xprof_url=None,
     )
 
   @mock.patch.object(export_adapter, "export_benchmark_results")
@@ -347,7 +351,110 @@ class ExportTest(seed_test_utils.RepeatableTest):
         succeeded=True,
         wall_time=None,
         microbenchmark_name="bs128",
+        warmup_xprof_url=None,
+        post_warmup_xprof_url=None,
     )
+
+  def test_export_forwards_xprof_urls_to_link_map(self):
+    perf_metrics = metrics_lib.PerformanceMetrics(
+        e2e_wall_time_seconds=10.0,
+        post_warmup_step_time_seconds=0.5,
+        warmup_session_xprof_url="http://xprof/?session_id=warmup",
+        post_warmup_run_session_xprof_url="http://xprof/?session_id=post",
+    )
+
+    export_lib.export(
+        export_lib.BenchmarkData(
+            spec_name="test_model",
+            platform=target_lib.Platform.V7_1X1X1,
+            framework=mode_lib.Framework.TORCH,
+            run_mode=common.RunMode.COMPILED,
+            succeeded=True,
+            metrics=perf_metrics,
+        )
+    )
+
+    self.assertLen(self.mlcompass.uploaded, 1)
+    record = self.mlcompass.uploaded[0]
+    self.assertEqual(
+        record.link_map,
+        {
+            "warmup_xprof_url": "http://xprof/?session_id=warmup",
+            "post_warmup_xprof_url": "http://xprof/?session_id=post",
+        },
+    )
+
+  def test_export_logs_diagnostics_only_in_result_json_not_mlcompass(self):
+    perf_metrics = metrics_lib.PerformanceMetrics(
+        e2e_wall_time_seconds=10.0,
+        post_warmup_step_time_seconds=0.01,
+        diagnostics={
+            "post_warmup_step_time_mean_seconds": 0.03,
+            "post_warmup_step_time_p10_seconds": 0.01,
+            "post_warmup_step_time_p90_seconds": 0.03,
+            "post_warmup_step_time_max_seconds": 0.21,
+            "ru_nivcsw": 4.0,
+            "non_finite": float("nan"),
+        },
+    )
+
+    with self.assertLogs(level="INFO") as logs:
+      export_lib.export(
+          export_lib.BenchmarkData(
+              spec_name="test_model",
+              platform=target_lib.Platform.V7_1X1X1,
+              framework=mode_lib.Framework.TORCH,
+              run_mode=common.RunMode.COMPILED,
+              succeeded=True,
+              metrics=perf_metrics,
+          )
+      )
+
+    self.assertLen(self.mlcompass.uploaded, 1)
+    uploaded = self.mlcompass.uploaded[0]
+    self.assertEqual(uploaded.metrics, perf_metrics.metric_map())
+    self.assertNotIn("ru_nivcsw", uploaded.metrics)
+    self.assertNotIn("post_warmup_step_time_mean_seconds", uploaded.metrics)
+
+    (line,) = _result_lines(logs.output)
+    self.assertNotIn("NaN", line)
+    parsed = json.loads(line)
+    self.assertEqual(parsed["schema_version"], 1)
+    self.assertEqual(
+        parsed["diagnostics"],
+        {
+            "post_warmup_step_time_mean_seconds": 0.03,
+            "post_warmup_step_time_p10_seconds": 0.01,
+            "post_warmup_step_time_p90_seconds": 0.03,
+            "post_warmup_step_time_max_seconds": 0.21,
+            "ru_nivcsw": 4.0,
+            "non_finite": None,
+        },
+    )
+
+  def test_bad_diagnostics_value_preserves_primary_result_json(self):
+    perf_metrics = metrics_lib.PerformanceMetrics(
+        e2e_wall_time_seconds=10.0,
+        post_warmup_step_time_seconds=0.01,
+        diagnostics={"bad": object()},  # pytype: disable=wrong-arg-types
+    )
+
+    with self.assertLogs(level="INFO") as logs:
+      export_lib.export(
+          export_lib.BenchmarkData(
+              spec_name="test_model",
+              platform=target_lib.Platform.V7_1X1X1,
+              framework=mode_lib.Framework.TORCH,
+              run_mode=common.RunMode.COMPILED,
+              succeeded=True,
+              metrics=perf_metrics,
+          )
+      )
+
+    (line,) = _result_lines(logs.output)
+    parsed = json.loads(line)
+    self.assertEqual(parsed["spec_name"], "test_model")
+    self.assertNotIn("diagnostics", parsed)
 
 
 def _result_lines(log_output: Sequence[str]) -> list[str]:
