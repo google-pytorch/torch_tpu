@@ -295,6 +295,8 @@ def note_batch_sweep_record(data: export_lib.BenchmarkData) -> None:
     if data.batch_size is not None:
       note_failure(data.spec_name, data.run_mode, data.batch_size)
     return
+  if data.metrics is None:
+    return
   batch_size = data.batch_size
   step_work = getattr(data.metrics, "step_work", None)
   if batch_size is None and step_work is not None:
