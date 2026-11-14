@@ -813,6 +813,24 @@ static constexpr std::string_view kAssociativeMinF32CombineMlir = R"mlir(
   }
 )mlir";
 
+static constexpr std::string_view kAssociativeMaxF8E4M3FNCombineMlir = R"mlir(
+  module {
+    func.func @main(%lhs: tensor<3xf8E4M3FN>, %rhs: tensor<3xf8E4M3FN>) -> tensor<3xf8E4M3FN> {
+      %0 = stablehlo.maximum %lhs, %rhs : tensor<3xf8E4M3FN>
+      return %0 : tensor<3xf8E4M3FN>
+    }
+  }
+)mlir";
+
+static constexpr std::string_view kAssociativeMinF8E4M3FNCombineMlir = R"mlir(
+  module {
+    func.func @main(%lhs: tensor<3xf8E4M3FN>, %rhs: tensor<3xf8E4M3FN>) -> tensor<3xf8E4M3FN> {
+      %0 = stablehlo.minimum %lhs, %rhs : tensor<3xf8E4M3FN>
+      return %0 : tensor<3xf8E4M3FN>
+    }
+  }
+)mlir";
+
 static constexpr std::string_view kAssociativeXorCombineMlir = R"mlir(
   module {
     func.func @main(%lhs: tensor<3xi32>, %rhs: tensor<3xi32>) -> tensor<3xi32> {
@@ -921,6 +939,36 @@ TEST_F(DispatchScanTest, AssociativeScanInfersIdentityAndEmitsChloScan) {
     EXPECT_THAT(lowered_mlir, HasSubstr("chlo.scan"));
     EXPECT_THAT(lowered_mlir, testing::Not(HasSubstr("stablehlo.while")));
     EXPECT_THAT(lowered_mlir, testing::Not(HasSubstr("stablehlo.concatenate")));
+  }
+}
+
+TEST_F(DispatchScanTest, AssociativeScanMaxMinIdentityWithoutInfinities) {
+  // f8E4M3FN has no infinities, so `maximum` and `minimum` scans start from its
+  // lowest and highest finite values.
+  const auto f8_or =
+      DeviceBufferList::CreatePlaceholder({4, 3}, mlir::ElementType::F8E4M3FN);
+  ABSL_CHECK(f8_or.ok()) << f8_or.status();
+  const at::Tensor input_f8 = MakeTensor(*f8_or);
+  struct IdentityCase {
+    std::string_view combine_mlir;
+    std::string_view identity;
+  };
+  for (const auto& [combine_mlir, identity] : std::vector<IdentityCase>{
+           {kAssociativeMaxF8E4M3FNCombineMlir,
+            "dense<-4.480000e+02> : tensor<3xf8E4M3FN>"},
+           {kAssociativeMinF8E4M3FNCombineMlir,
+            "dense<4.480000e+02> : tensor<3xf8E4M3FN>"},
+       }) {
+    const std::vector<at::Tensor> results = PyCreateAssociativeScanOp(
+        {input_f8}, CreateBodyModule(combine_mlir), ScanDirection::kForward,
+        /*dim=*/0, /*num_scan_inputs=*/1);
+    ASSERT_EQ(results.size(), 1);
+
+    std::string lowered_mlir;
+    LowerAndVerify(results, {input_f8}, /*expected_results_size=*/1,
+                   /*output_buffer_index=*/0, &lowered_mlir);
+    EXPECT_THAT(lowered_mlir, HasSubstr("chlo.scan"));
+    EXPECT_THAT(lowered_mlir, HasSubstr(identity));
   }
 }
 

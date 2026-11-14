@@ -95,8 +95,8 @@ mlir::MlirOp BuildReduce(mlir::MlirOp input_op, mlir::Attribute init_attr) {
 mlir::MlirOp BuildReduceMinShlo(mlir::MlirOp input_op) {
   mlir::MlirBuilder& builder = input_op.getBuilder();
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input_op);
-  mlir::Attribute init_attr = GetMaxFiniteValueAttr(input_type.getElementType(),
-                                                    builder.getOpBuilder());
+  mlir::Attribute init_attr = GetMinReductionIdentityAttr(
+      input_type.getElementType(), builder.getOpBuilder());
   return BuildReduce<stablehlo::MinOp>(input_op, init_attr);
 }
 
@@ -105,8 +105,8 @@ mlir::MlirOp BuildReduceMinShlo(mlir::MlirOp input_op) {
 mlir::MlirOp BuildReduceMaxShlo(mlir::MlirOp input_op) {
   mlir::MlirBuilder& builder = input_op.getBuilder();
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input_op);
-  mlir::Attribute init_attr = GetMinFiniteValueAttr(input_type.getElementType(),
-                                                    builder.getOpBuilder());
+  mlir::Attribute init_attr = GetMaxReductionIdentityAttr(
+      input_type.getElementType(), builder.getOpBuilder());
   return BuildReduce<stablehlo::MaxOp>(input_op, init_attr);
 }
 

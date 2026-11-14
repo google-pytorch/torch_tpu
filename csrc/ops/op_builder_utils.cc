@@ -49,6 +49,7 @@
 #include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
 #include "csrc/ops/python_context.h"
+#include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/SmallVectorExtras.h"
@@ -629,6 +630,30 @@ mlir::Attribute GetMaxFiniteValueAttr(mlir::Type element_type,
   }
   // Return null if the type is not supported
   return nullptr;
+}
+
+mlir::Attribute GetMaxReductionIdentityAttr(mlir::Type element_type,
+                                            mlir::OpBuilder& builder) {
+  if (auto float_type = mlir::dyn_cast<mlir::FloatType>(element_type);
+      float_type &&
+      llvm::APFloat::semanticsHasInf(float_type.getFloatSemantics())) {
+    return builder.getFloatAttr(
+        float_type, llvm::APFloat::getInf(float_type.getFloatSemantics(),
+                                          /*Negative=*/true));
+  }
+  return GetMinFiniteValueAttr(element_type, builder);
+}
+
+mlir::Attribute GetMinReductionIdentityAttr(mlir::Type element_type,
+                                            mlir::OpBuilder& builder) {
+  if (auto float_type = mlir::dyn_cast<mlir::FloatType>(element_type);
+      float_type &&
+      llvm::APFloat::semanticsHasInf(float_type.getFloatSemantics())) {
+    return builder.getFloatAttr(
+        float_type, llvm::APFloat::getInf(float_type.getFloatSemantics(),
+                                          /*Negative=*/false));
+  }
+  return GetMaxFiniteValueAttr(element_type, builder);
 }
 
 double GetMaxFiniteDouble(mlir::Type element_type) {

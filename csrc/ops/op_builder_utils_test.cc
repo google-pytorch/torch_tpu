@@ -40,6 +40,7 @@
 #include "csrc/eager/eager_mode.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
+#include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/raw_ostream.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -362,6 +363,106 @@ TEST(OpBuilderUtils, GetMaxFiniteValueAttr_UnsupportedType) {
       GetMaxFiniteValueAttr(op_builder.getNoneType(), op_builder);
   EXPECT_EQ(result_attr, nullptr);
 }
+
+enum class ReductionKind { kMax, kMin };
+
+mlir::Attribute GetReductionIdentityAttr(ReductionKind kind, mlir::Type type,
+                                         mlir::OpBuilder& builder) {
+  return kind == ReductionKind::kMax
+             ? GetMaxReductionIdentityAttr(type, builder)
+             : GetMinReductionIdentityAttr(type, builder);
+}
+
+mlir::Type F32Type(mlir::OpBuilder& b) { return b.getF32Type(); }
+// f8E4M3FN has no infinities, unlike f8E5M2.
+mlir::Type F8E4M3FNType(mlir::OpBuilder& b) {
+  return b.getType<mlir::Float8E4M3FNType>();
+}
+mlir::Type F8E5M2Type(mlir::OpBuilder& b) {
+  return b.getType<mlir::Float8E5M2Type>();
+}
+mlir::Type I32Type(mlir::OpBuilder& b) { return b.getI32Type(); }
+mlir::Type I1Type(mlir::OpBuilder& b) { return b.getI1Type(); }
+mlir::Type NoneType(mlir::OpBuilder& b) { return b.getNoneType(); }
+
+struct FloatReductionIdentityParams {
+  std::string test_name;
+  ReductionKind kind;
+  mlir::Type (*make_type)(mlir::OpBuilder&);
+  // Otherwise the identity is the largest finite magnitude.
+  bool has_infinity;
+};
+
+class FloatReductionIdentityAttrTest
+    : public testing::TestWithParam<FloatReductionIdentityParams> {};
+
+TEST_P(FloatReductionIdentityAttrTest, ReturnsInfinityOrLargestFinite) {
+  const FloatReductionIdentityParams& params = GetParam();
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::OpBuilder& op_builder = op_builder_utils_builder.get().getOpBuilder();
+  auto result_attr = mlir::dyn_cast<mlir::FloatAttr>(GetReductionIdentityAttr(
+      params.kind, params.make_type(op_builder), op_builder));
+  ASSERT_TRUE(result_attr);
+  const llvm::APFloat value = result_attr.getValue();
+  EXPECT_EQ(value.isInfinity(), params.has_infinity);
+  EXPECT_EQ(value.isLargest(), !params.has_infinity);
+  // A max reduction starts at the lowest value, a min at the highest.
+  EXPECT_EQ(value.isNegative(), params.kind == ReductionKind::kMax);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    FloatReductionIdentityAttrTests, FloatReductionIdentityAttrTest,
+    testing::ValuesIn<FloatReductionIdentityParams>({
+        {"MaxFloat32", ReductionKind::kMax, F32Type, true},
+        {"MaxFloat8E4M3FN", ReductionKind::kMax, F8E4M3FNType, false},
+        {"MaxFloat8E5M2", ReductionKind::kMax, F8E5M2Type, true},
+        {"MinFloat32", ReductionKind::kMin, F32Type, true},
+        {"MinFloat8E4M3FN", ReductionKind::kMin, F8E4M3FNType, false},
+        {"MinFloat8E5M2", ReductionKind::kMin, F8E5M2Type, true},
+    }),
+    [](const testing::TestParamInfo<FloatReductionIdentityAttrTest::ParamType>&
+           info) { return info.param.test_name; });
+
+struct OtherReductionIdentityParams {
+  std::string test_name;
+  ReductionKind kind;
+  mlir::Type (*make_type)(mlir::OpBuilder&);
+  // The printed identity, or empty if the type is not supported.
+  std::string expected;
+};
+
+class OtherReductionIdentityAttrTest
+    : public testing::TestWithParam<OtherReductionIdentityParams> {};
+
+TEST_P(OtherReductionIdentityAttrTest, ReturnsLimitOrNull) {
+  const OtherReductionIdentityParams& params = GetParam();
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::OpBuilder& op_builder = op_builder_utils_builder.get().getOpBuilder();
+  const mlir::Attribute result_attr = GetReductionIdentityAttr(
+      params.kind, params.make_type(op_builder), op_builder);
+  if (params.expected.empty()) {
+    EXPECT_EQ(result_attr, nullptr);
+    return;
+  }
+  ASSERT_TRUE(result_attr);
+  std::string result_str;
+  llvm::raw_string_ostream sstream(result_str);
+  result_attr.print(sstream);
+  EXPECT_EQ(result_str, params.expected);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    OtherReductionIdentityAttrTests, OtherReductionIdentityAttrTest,
+    testing::ValuesIn<OtherReductionIdentityParams>({
+        {"MaxInt32", ReductionKind::kMax, I32Type, "-2147483648 : i32"},
+        {"MaxBool", ReductionKind::kMax, I1Type, "false"},
+        {"MaxUnsupported", ReductionKind::kMax, NoneType, ""},
+        {"MinInt32", ReductionKind::kMin, I32Type, "2147483647 : i32"},
+        {"MinBool", ReductionKind::kMin, I1Type, "true"},
+        {"MinUnsupported", ReductionKind::kMin, NoneType, ""},
+    }),
+    [](const testing::TestParamInfo<OtherReductionIdentityAttrTest::ParamType>&
+           info) { return info.param.test_name; });
 
 TEST(OpBuilderUtils, InferSize_Broadcastable_Check) {
   Dimensions dims1_broadcastable = {2, 1};
