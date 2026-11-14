@@ -1408,6 +1408,53 @@ Please use clone() or contiguous() to copy the tensor before writing""",
         # cpu() is needed because the error is triggered inside the op builder.
         torch.nn.functional.glu(x, dim=dim).cpu()
 
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_linalg_solve_triangular_mismatched_square_upper_bounds(self):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      a = torch.eye(4, device=et.device())
+      b = torch.ones(4, 2, device=et.device())
+      # Bounding only the rows of `a` makes its upper-bound matrix 8x4.
+      dynamism.mark_dynamic(a, 0, 2, 8)
+      dynamism.mark_dynamic(b, 0, 2, 8)
+
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""linalg_solve_triangular(): expected square upper-bound matrix in triangular solve, got 8 and 4""",
+      ):
+        # cpu() is needed because the error is triggered inside the op builder.
+        torch.linalg.solve_triangular(a, b, upper=True).cpu()
+
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_lu_unpack_mismatched_pivots_batch_upper_bounds(self):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      data = torch.eye(4, device=et.device()).unsqueeze(0).repeat(3, 1, 1)
+      pivots = torch.ones(3, 4, dtype=torch.int32, device=et.device())
+      # `data` stays static so the permutation matrix built from it has a
+      # static batch of 3, which mismatches the bounded `pivots` batch.
+      dynamism.mark_dynamic(pivots, 0, 2, 6)
+
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""lu_unpack(): expected input and pivots to have matching batch upper bounds at dimension 0, got 3 and 6""",
+      ):
+        # cpu() is needed because the error is triggered inside the op builder.
+        torch.lu_unpack(data, pivots)[0].cpu()
+
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_linalg_solve_triangular_mismatched_shared_matrix_upper_bounds(self):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      a = torch.eye(4, device=et.device())
+      b = torch.ones(4, 2, device=et.device())
+      # `a` stays static (4x4) while the rows of `b` are bounded by 8.
+      dynamism.mark_dynamic(b, 0, 2, 8)
+
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""linalg_solve_triangular(): expected the upper bounds of the shared matrix dimension in triangular solve to match, got 4 and 8""",
+      ):
+        # cpu() is needed because the error is triggered inside the op builder.
+        torch.linalg.solve_triangular(a, b, upper=True).cpu()
+
   @et.why_tpu_only(
       "aten.linear_backward is only registered for TPU (PrivateUse1), not"
       " CPU/CUDA."

@@ -780,6 +780,142 @@ absl::StatusOr<DynamicMlirOpResults> ToResultVector(
 absl::StatusOr<DynamicMlirOpResults> ToResultVector(
     absl::StatusOr<mlir::MlirOp> results);
 
+// Broadcasts the leading batch dimensions (`rank - num_matrix_dims` dimensions)
+// of `lhs` and `rhs` to a common batch shape using NumPy broadcasting rules,
+// keeping each operand's trailing `num_matrix_dims` dimensions intact.
+// Supports both static and bounded dynamic batch and matrix dimensions.
+absl::StatusOr<std::array<mlir::MlirOp, 2>> BroadcastBatchDimensions(
+    mlir::MlirOp lhs, mlir::MlirOp rhs, int64_t num_matrix_dims = 2);
+
+enum class MatrixSide {
+  kLeft,
+  kRight,
+};
+
+enum class MatrixTriangular {
+  kLower,
+  kUpper,
+};
+
+enum class DiagonalKind {
+  kNonUnit,
+  kUnit,
+};
+
+enum class MatrixTranspose {
+  kNoTranspose,
+  kTranspose,
+  kAdjoint,
+};
+
+struct TriangularSolveOptions {
+  MatrixSide side = MatrixSide::kLeft;
+  MatrixTriangular triangular = MatrixTriangular::kLower;
+  DiagonalKind diagonal = DiagonalKind::kNonUnit;
+  MatrixTranspose transpose_a = MatrixTranspose::kNoTranspose;
+};
+
+// Builds a `stablehlo.triangular_solve` that also supports bounded dynamic
+// batch and matrix dimensions. Broadcasts leading batch dimensions of `a` and
+// `b`, runs the triangular solve at static upper bounds when bounded (padding
+// `a` past runtime sizes with an identity diagonal and zeroing `b` past runtime
+// sizes), and restores bounded dynamic dimension sizes on the result.
+absl::StatusOr<mlir::MlirOp> TriangularSolveLike(
+    mlir::MlirOp a, mlir::MlirOp b, const TriangularSolveOptions& options);
+
+enum class LuPivotTarget {
+  kRows,
+  kColumns,
+};
+
+enum class LuPivotDirection {
+  // Applies P by iterating swaps in reverse order (`k = num_pivots - 1 .. 0`).
+  kForward,
+  // Applies P^T by iterating swaps in forward order (`k = 0 .. num_pivots -
+  // 1`).
+  kInverse,
+};
+
+struct LuPivotOptions {
+  LuPivotTarget target = LuPivotTarget::kRows;
+  LuPivotDirection direction = LuPivotDirection::kForward;
+};
+
+// Applies a batch of 1-indexed LAPACK/PyTorch LU pivot swaps (`pivots` of shape
+// `(B..., P)`) to the rows or columns of `input` (of shape `(B..., R, C)`).
+// Supports both static and bounded dynamic batch and matrix dimensions.
+absl::StatusOr<mlir::MlirOp> ApplyLuPivotsLike(mlir::MlirOp input,
+                                               mlir::MlirOp pivots,
+                                               const LuPivotOptions& options);
+
+// Describes how a trailing dimension of a batched matrix op's output relates to
+// the input matrix's row (`M`, dim `rank - 2`) and column (`N`, dim `rank - 1`)
+// dimensions.
+enum class MatrixDimKind {
+  // Static dimension unchanged from `static_builder`'s output.
+  kStatic,
+  // Matches the input's row dimension `M` (`rank - 2`).
+  kRows,
+  // Matches the input's column dimension `N` (`rank - 1`).
+  kCols,
+  // Matches `min(M, N)`.
+  kMinRowsCols,
+};
+
+enum class MatrixBatchMode {
+  kInheritInputBatch,
+  kNoBatchDims,
+};
+
+struct MatrixOutputSpec {
+  llvm::SmallVector<MatrixDimKind, 2> trailing_dims;
+  MatrixBatchMode batch_mode = MatrixBatchMode::kInheritInputBatch;
+};
+
+// Runs `static_builder` on `input` (of shape `(B..., M, N)`) made static at its
+// upper bounds with out-of-bounds elements zeroed, then restores bounded
+// dynamic batch and matrix dimension sizes on each output according to
+// `output_specs`. If `input` already has a static shape, calls `static_builder`
+// directly.
+absl::StatusOr<DynamicMlirOpResults> RunBatchedMatrixOpAtStaticBounds(
+    mlir::MlirOp input, absl::Span<const MatrixOutputSpec> output_specs,
+    NAryMlirOpBuilder<1, kDynamicSize> static_builder);
+
+template <int kNumOutputs>
+absl::StatusOr<MlirOpResults<kNumOutputs>> RunBatchedMatrixOpAtStaticBounds(
+    mlir::MlirOp input,
+    const std::array<MatrixOutputSpec, kNumOutputs>& output_specs,
+    NAryMlirOpBuilder<1, kNumOutputs> static_builder) {
+  TT_ASSIGN_OR_RETURN(
+      DynamicMlirOpResults dyn_results,
+      RunBatchedMatrixOpAtStaticBounds(
+          input, output_specs,
+          [static_builder =
+               std::move(static_builder)](mlir::MlirOp static_input)
+              -> absl::StatusOr<DynamicMlirOpResults> {
+            TT_ASSIGN_OR_RETURN(MlirOpResults<kNumOutputs> results,
+                                static_builder(static_input));
+            if constexpr (kNumOutputs == 1) {
+              return DynamicMlirOpResults{results};
+            } else {
+              return DynamicMlirOpResults(results.begin(), results.end());
+            }
+          }));
+  ABSL_CHECK_EQ(  // CRASH_OK=internal invariant.
+      static_cast<int64_t>(dyn_results.size()), kNumOutputs)
+      << "Expected " << kNumOutputs << " outputs, got " << dyn_results.size()
+      << ". This is a TorchTPU bug.";
+  if constexpr (kNumOutputs == 1) {
+    return dyn_results[0];
+  } else {
+    std::array<mlir::MlirOp, kNumOutputs> out;
+    for (int i = 0; i < kNumOutputs; ++i) {
+      out[i] = dyn_results[i];
+    }
+    return out;
+  }
+}
+
 // Builds a module name from the current Python stack frame.
 // In most cases this frame is the one that triggered a materialization.
 //
