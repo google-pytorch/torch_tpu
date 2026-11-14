@@ -63,6 +63,7 @@ torch_tpu_py_test(
     name = "cpu_backward_no_tpu_test",
     srcs = ["cpu_backward_no_tpu_test.py"],
     main = "cpu_backward_no_tpu_test.py",
+    notap = "TODO(b/585668893): Flaky on Forge (-c opt) when non-TPU VFIO/accel nodes are present",
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
