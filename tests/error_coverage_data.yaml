@@ -210,6 +210,8 @@ csrc/ops/prod/prod_aten_kernels.cc: {remaining: 0, total: 1, infeasible: 0}
 csrc/ops/put/put_aten_kernels.cc: {remaining: 0, total: 4, infeasible: 0}
 csrc/ops/random/random_aten_kernels.cc: {remaining: 1, total: 7, infeasible: 5}
 csrc/ops/reductions/reduction_utils.cc: {remaining: 0, total: 4, infeasible: 0}
+csrc/ops/reductions/std_aten_kernels.cc: {remaining: 0, total: 1, infeasible: 0}
+csrc/ops/reductions/var_aten_kernels.cc: {remaining: 0, total: 1, infeasible: 0}
 csrc/ops/reflection_pad/reflection_pad_aten_kernels.cc: {remaining: 0, total: 6, infeasible: 4}
 csrc/ops/repeat_interleave/repeat_interleave_aten_kernels.cc: {remaining: 0, total: 12, infeasible: 0}
 csrc/ops/replication_pad/replication_pad_aten_kernels.cc: {remaining: 0, total: 10, infeasible: 6}

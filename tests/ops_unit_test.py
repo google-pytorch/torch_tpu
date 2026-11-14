@@ -15853,6 +15853,133 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(compute)
 
+  def test_std_empty_reduction_dim(self):
+    """Tests 0-sized reduction with negative correction returns NaN."""
+
+    def compute(device):
+      x = torch.empty((0, 3), dtype=torch.float32, device=device)
+      out = torch.empty(3, dtype=torch.float32, device=device)
+      torch.std(x, dim=0, correction=-1, out=out)
+      return torch.std(x, dim=0, correction=-1), out
+
+    self.assert_close_tpu_vs_cpu(compute)
+
+  @parameterized.named_parameters(
+      ("defer_never", execution_mode.EagerMode.DEFER_NEVER),
+      ("defer_and_fuse", execution_mode.EagerMode.DEFER_AND_FUSE),
+  )
+  def test_var_std_dynamic_reduction_dim(self, eager_mode):
+    """Tests var/std/var_mean over a bounded dynamic dim at several sizes."""
+    # Sizes 5, 13 and 2 reuse the programs compiled for size 8. An unmarked
+    # shape within the bounds reuses them too, while size 17 is outside the
+    # bounds and compiles static programs, which use a constant count. At
+    # size 2, correction=2.5 clamps the denominator to 0.
+    sizes = (
+        (8, True),
+        (5, True),
+        (13, True),
+        (2, True),
+        (11, False),
+        (17, False),
+    )
+    with execution_mode.set_eager_mode(eager_mode):
+      for dtype in (
+          torch.float32,
+          torch.bfloat16,
+          torch.complex64,
+          torch.complex128,
+      ):
+        for n, marked in sizes:
+          if dtype == torch.complex128 and marked:
+            # complex128 sums over a bounded dynamic dim are wrong on TPU for
+            # some sizes, so complex128 runs the static sizes.
+            continue
+          x_cpu = torch.randn(n, 6, 3, dtype=dtype)
+
+          def compute(device, x_cpu=x_cpu, marked=marked):
+            x = x_cpu.to(device)
+            if marked and str(device).startswith("tpu"):
+              dynamism.mark_dynamic(
+                  x, dimension=0, lower_bound=2, upper_bound=16
+              )
+            out_dtype = x_cpu.dtype.to_real()
+            var_out = torch.empty(6, 3, dtype=out_dtype, device=device)
+            std_out = torch.empty(6, 3, dtype=out_dtype, device=device)
+            torch.var(x, dim=0, out=var_out)
+            torch.std(x, dim=0, correction=2.5, out=std_out)
+            return (
+                torch.var(x, dim=0),
+                torch.var(x, dim=0, keepdim=True, correction=2.5),
+                torch.var(x),
+                torch.std(x, dim=0, correction=2.5),
+                torch.std(x, dim=(0, 2), keepdim=True),
+                torch.var_mean(x, dim=0, correction=0),
+                torch.var_mean(x, dim=0, correction=2.5),
+                torch.var_mean(x, dim=(0, 2)),
+                var_out,
+                std_out,
+            )
+
+          with self.subTest(dtype=dtype, n=n, marked=marked):
+            self.assert_close_tpu_vs_cpu(compute)
+
+  def test_var_std_out_narrower_than_input(self):
+    """Tests var/std of float64 input with a float32 or bfloat16 out=."""
+
+    # The count 2**24 + 1 is not a float32 value. Rounding it to float32 for
+    # the mean gives this constant input a nonzero variance.
+    def compute(device):
+      x = torch.full((2**24 + 1,), 2.0**20, dtype=torch.float64, device=device)
+      outs = []
+      for out_dtype in (torch.float32, torch.bfloat16):
+        var_out = torch.empty((), dtype=out_dtype, device=device)
+        std_out = torch.empty((), dtype=out_dtype, device=device)
+        torch.var(x, dim=0, out=var_out)
+        torch.std(x, dim=0, out=std_out)
+        outs += [var_out, std_out]
+      return tuple(outs)
+
+    self.assert_close_tpu_vs_cpu(compute)
+
+  def test_var_std_out_narrower_than_input_denominator(self):
+    """Tests var/std with N - correction = 1 and a float32 or bfloat16 out=."""
+
+    # Rounding the count 2**24 + 1 to float32 for the denominator gives
+    # N - correction = 0. Deviations of 2**13 keep the result insensitive to
+    # rounding in the mean, and the values are exact in bfloat16.
+    def compute(device):
+      x = torch.full((2**24 + 1,), 2.0**20, dtype=torch.float64)
+      x[0] += 2.0**13
+      x[1] -= 2.0**13
+      x = x.to(device)
+      outs = []
+      for out_dtype in (torch.float32, torch.bfloat16):
+        var_out = torch.empty((), dtype=out_dtype, device=device)
+        std_out = torch.empty((), dtype=out_dtype, device=device)
+        torch.var(x, dim=0, correction=2**24, out=var_out)
+        torch.std(x, dim=0, correction=2**24, out=std_out)
+        outs += [var_out, std_out]
+      return tuple(outs)
+
+    self.assert_close_tpu_vs_cpu(compute)
+
+  def test_var_std_complex_out(self):
+    """Tests var/std of complex input with a complex or bfloat16 out=."""
+    for dtype in (torch.complex64, torch.complex128):
+      for out_dtype in (torch.complex64, torch.complex128, torch.bfloat16):
+        x_cpu = torch.randn(4, 3, dtype=dtype)
+
+        def compute(device, x_cpu=x_cpu, out_dtype=out_dtype):
+          x = x_cpu.to(device)
+          var_out = torch.empty(3, dtype=out_dtype, device=device)
+          std_out = torch.empty(3, dtype=out_dtype, device=device)
+          torch.var(x, dim=0, out=var_out)
+          torch.std(x, dim=0, out=std_out)
+          return var_out, std_out
+
+        with self.subTest(dtype=dtype, out_dtype=out_dtype):
+          self.assert_close_tpu_vs_cpu(compute)
+
   def test_sdpa_overrideable_meta_checks_kv_seq_len(self):
     """Tests SDPA overrideable meta checks and guards key/value sequence lengths."""
     shape_env = symbolic_shapes.ShapeEnv(duck_shape=False)
