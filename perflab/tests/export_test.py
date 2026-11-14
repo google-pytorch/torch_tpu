@@ -225,7 +225,7 @@ class ExportTest(seed_test_utils.RepeatableTest):
         ),
     )
 
-  def test_make_benchmark_data_defaults_to_empty_metrics(self):
+  def test_make_benchmark_data_defaults_to_no_metrics(self):
     spec = types.SimpleNamespace(name="model", microbenchmark_name=None)
 
     data = export_lib.make_benchmark_data(
@@ -237,7 +237,7 @@ class ExportTest(seed_test_utils.RepeatableTest):
     )
 
     self.assertFalse(data.succeeded)
-    self.assertEqual(data.metrics, metrics_lib.PerformanceMetrics())
+    self.assertIsNone(data.metrics)
     self.assertIsNone(data.microbenchmark_name)
     self.assertIsNone(data.batch_size)
 
@@ -293,6 +293,9 @@ class ExportTest(seed_test_utils.RepeatableTest):
         succeeded=True,
         wall_time=3.0,
         microbenchmark_name="bs16",
+        warmup_xprof_url=None,
+        post_warmup_xprof_url=None,
+        failure_reason=None,
     )
 
   @mock.patch.object(export_adapter, "export_benchmark_results")
@@ -319,6 +322,9 @@ class ExportTest(seed_test_utils.RepeatableTest):
         succeeded=True,
         wall_time=None,
         microbenchmark_name="bs64",
+        warmup_xprof_url=None,
+        post_warmup_xprof_url=None,
+        failure_reason=None,
     )
 
   @mock.patch.object(export_adapter, "export_benchmark_results")
@@ -347,7 +353,111 @@ class ExportTest(seed_test_utils.RepeatableTest):
         succeeded=True,
         wall_time=None,
         microbenchmark_name="bs128",
+        warmup_xprof_url=None,
+        post_warmup_xprof_url=None,
+        failure_reason=None,
     )
+
+  def test_export_forwards_xprof_urls_to_link_map(self):
+    perf_metrics = metrics_lib.PerformanceMetrics(
+        e2e_wall_time_seconds=10.0,
+        post_warmup_step_time_seconds=0.5,
+        warmup_session_xprof_url="http://xprof/?session_id=warmup",
+        post_warmup_run_session_xprof_url="http://xprof/?session_id=post",
+    )
+
+    export_lib.export(
+        export_lib.BenchmarkData(
+            spec_name="test_model",
+            platform=target_lib.Platform.V7_1X1X1,
+            framework=mode_lib.Framework.TORCH,
+            run_mode=common.RunMode.COMPILED,
+            succeeded=True,
+            metrics=perf_metrics,
+        )
+    )
+
+    self.assertLen(self.mlcompass.uploaded, 1)
+    record = self.mlcompass.uploaded[0]
+    self.assertEqual(
+        record.link_map,
+        {
+            "warmup_xprof_url": "http://xprof/?session_id=warmup",
+            "post_warmup_xprof_url": "http://xprof/?session_id=post",
+        },
+    )
+
+  def test_export_logs_diagnostics_only_in_result_json_not_mlcompass(self):
+    perf_metrics = metrics_lib.PerformanceMetrics(
+        e2e_wall_time_seconds=10.0,
+        post_warmup_step_time_seconds=0.01,
+        diagnostics={
+            "post_warmup_step_time_mean_seconds": 0.03,
+            "post_warmup_step_time_p10_seconds": 0.01,
+            "post_warmup_step_time_p90_seconds": 0.03,
+            "post_warmup_step_time_max_seconds": 0.21,
+            "ru_nivcsw": 4.0,
+            "non_finite": float("nan"),
+        },
+    )
+
+    with self.assertLogs(level="INFO") as logs:
+      export_lib.export(
+          export_lib.BenchmarkData(
+              spec_name="test_model",
+              platform=target_lib.Platform.V7_1X1X1,
+              framework=mode_lib.Framework.TORCH,
+              run_mode=common.RunMode.COMPILED,
+              succeeded=True,
+              metrics=perf_metrics,
+          )
+      )
+
+    self.assertLen(self.mlcompass.uploaded, 1)
+    uploaded = self.mlcompass.uploaded[0]
+    self.assertEqual(uploaded.metrics, perf_metrics.metric_map())
+    self.assertNotIn("ru_nivcsw", uploaded.metrics)
+    self.assertNotIn("post_warmup_step_time_mean_seconds", uploaded.metrics)
+
+    (line,) = _result_lines(logs.output)
+    self.assertNotIn("NaN", line)
+    parsed = json.loads(line)
+    self.assertEqual(parsed["schema_version"], 1)
+    self.assertEqual(
+        parsed["diagnostics"],
+        {
+            "post_warmup_step_time_mean_seconds": 0.03,
+            "post_warmup_step_time_p10_seconds": 0.01,
+            "post_warmup_step_time_p90_seconds": 0.03,
+            "post_warmup_step_time_max_seconds": 0.21,
+            "ru_nivcsw": 4.0,
+            "non_finite": None,
+        },
+    )
+
+  def test_bad_diagnostics_value_preserves_primary_result_json(self):
+    perf_metrics = metrics_lib.PerformanceMetrics(
+        e2e_wall_time_seconds=10.0,
+        post_warmup_step_time_seconds=0.01,
+        diagnostics={"bad": object()},  # pytype: disable=wrong-arg-types
+    )
+
+    with self.assertLogs(level="INFO") as logs:
+      export_lib.export(
+          export_lib.BenchmarkData(
+              spec_name="test_model",
+              platform=target_lib.Platform.V7_1X1X1,
+              framework=mode_lib.Framework.TORCH,
+              run_mode=common.RunMode.COMPILED,
+              succeeded=True,
+              metrics=perf_metrics,
+          )
+      )
+
+    (line,) = _result_lines(logs.output)
+    parsed = json.loads(line)
+    self.assertEqual(parsed["spec_name"], "test_model")
+    self.assertNotIn("diagnostics", parsed)
 
 
 def _result_lines(log_output: Sequence[str]) -> list[str]:
@@ -372,6 +482,112 @@ class ResultLogTest(seed_test_utils.RepeatableTest):
       timestamp = datetime.datetime.fromisoformat(record.pop("timestamp"))
       self.assertIsNotNone(timestamp.tzinfo)
     return records
+
+  def test_describe_failure(self):
+    relayed = RuntimeError(
+        "\n\n-- Process 0 terminated with the following error:\nTraceback"
+        " (most recent call last):\n  File x\nValueError: factory failed\n"
+    )
+    for error, reason in (
+        (RuntimeError("out of memory"), "RuntimeError: out of memory"),
+        (relayed, "ValueError: factory failed"),
+        (AssertionError("Expected: 5"), "AssertionError: Expected: 5"),
+        (ValueError(), "ValueError"),
+        (KeyError("platform"), "KeyError: 'platform'"),
+    ):
+      with self.subTest(reason=reason):
+        self.assertEqual(export_lib.describe_failure(error), reason)
+    long_reason = export_lib.describe_failure(RuntimeError("x" * 1000))
+    self.assertLen(long_reason, 500)
+    self.assertTrue(long_reason.endswith("..."))
+
+  @mock.patch.object(export_adapter, "export_benchmark_results", autospec=True)
+  def test_failure_exports_its_reason(self, mock_export_benchmark_results):
+    spec = types.SimpleNamespace(name="model", microbenchmark_name=None)
+    with self.assertLogs(level="INFO") as logs:
+      export_lib.export(
+          export_lib.make_benchmark_data(
+              spec,
+              platform=target_lib.Platform.V7_1X1X1,
+              framework=mode_lib.Framework.TORCH,
+              run_mode=common.RunMode.COMPILED,
+              succeeded=False,
+              failure_reason="RuntimeError: out of memory",
+          )
+      )
+      export_lib.export(
+          export_lib.make_benchmark_data(
+              spec,
+              platform=target_lib.Platform.V7_1X1X1,
+              framework=mode_lib.Framework.TORCH,
+              run_mode=common.RunMode.COMPILED,
+              succeeded=True,
+              metrics=metrics_lib.PerformanceMetrics(),
+              failure_reason="ignored on success",
+          )
+      )
+
+    self.assertEqual(
+        [
+            c.kwargs["failure_reason"]
+            for c in mock_export_benchmark_results.mock_calls
+        ],
+        [
+            "RuntimeError: out of memory",
+            None,
+        ],
+    )
+    self.assertEqual(
+        [r["failure_reason"] for r in self._read_results(logs.output)],
+        [
+            "RuntimeError: out of memory",
+            None,
+        ],
+    )
+
+  @mock.patch.object(export_adapter, "export_benchmark_results")
+  def test_unmeasured_failure_exports_no_metrics(
+      self, mock_export_benchmark_results
+  ):
+    with self.assertLogs(level="INFO") as logs:
+      export_lib.export(
+          export_lib.make_benchmark_data(
+              types.SimpleNamespace(name="model", microbenchmark_name=None),
+              platform=target_lib.Platform.V7_1X1X1,
+              framework=mode_lib.Framework.TORCH,
+              run_mode=common.RunMode.COMPILED,
+              succeeded=False,
+          )
+      )
+
+    kwargs = mock_export_benchmark_results.call_args.kwargs
+    self.assertEqual(kwargs["metrics"], {})
+    self.assertIsNone(kwargs["wall_time"])
+    self.assertFalse(kwargs["succeeded"])
+    (record,) = self._read_results(logs.output)
+    self.assertEqual((record["status"], record["metrics"]), ("failed", {}))
+
+  @mock.patch.object(export_adapter, "export_benchmark_results")
+  def test_measured_failure_still_exports_its_metrics(
+      self, mock_export_benchmark_results
+  ):
+    perf_metrics = metrics_lib.PerformanceMetrics(
+        e2e_wall_time_seconds=2.0, post_warmup_step_time_seconds=0.5
+    )
+    export_lib.export(
+        export_lib.BenchmarkData(
+            spec_name="model",
+            platform=target_lib.Platform.V7_1X1X1,
+            framework=mode_lib.Framework.TORCH,
+            run_mode=common.RunMode.COMPILED,
+            succeeded=False,
+            metrics=perf_metrics,
+        )
+    )
+
+    kwargs = mock_export_benchmark_results.call_args.kwargs
+    self.assertEqual(kwargs["metrics"], perf_metrics.metric_map())
+    self.assertEqual(kwargs["wall_time"], 2.0)
 
   @mock.patch.object(export_adapter, "export_benchmark_results")
   def test_export_logs_structured_json_records(self, unused_mock_export):
@@ -431,6 +647,7 @@ class ResultLogTest(seed_test_utils.RepeatableTest):
             "test_name": "torch_tpu/v7_2x2x1/model/compiled/torch",
             "warmup_xprof_url": "http://xprof/warmup",
             "post_warmup_xprof_url": "http://xprof/post_warmup",
+            "failure_reason": None,
         },
     )
     self.assertEqual((failed["status"], failed["succeeded"]), ("failed", False))

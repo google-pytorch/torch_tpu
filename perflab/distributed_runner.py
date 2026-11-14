@@ -140,12 +140,6 @@ def _get_skip_reason(
   )
 
 
-def _failure_reason(e: Exception) -> str:
-  """Returns a one-line failure reason for the summary table."""
-  lines = str(e).strip().splitlines()
-  return lines[-1] if lines else type(e).__name__
-
-
 _T = TypeVar("_T")
 
 
@@ -745,7 +739,7 @@ def _run_target(
         )
       else:
         status = TargetStatus.FAILED
-        reason = _failure_reason(e)
+        reason = export_lib.describe_failure(e)
         logging.exception("Benchmark target %s FAILED.", bench_target.name)
       return _TargetResult(
           bench_target.name,
@@ -898,6 +892,9 @@ class _Reporter:
             run_mode=bench_target.mode,
             succeeded=result.metrics is not None,
             metrics=result.metrics,
+            failure_reason=(
+                (result.reason or None) if result.metrics is None else None
+            ),
         )
     )
 
