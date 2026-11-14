@@ -9088,6 +9088,80 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(compute_direct)
 
+  @parameterized.product(
+      op_name=["hardshrink", "softshrink"],
+      dtype=[torch.float32, torch.bfloat16],
+      lambd=[0.0, 0.5, 1, 2.0],
+  )
+  def test_shrink(self, op_name, dtype, lambd):
+    op = getattr(torch.nn.functional, op_name)
+    # Covers the boundaries, signed zeros, infinities and NaN.
+    input_value = torch.tensor(
+        [
+            float("-inf"),
+            -3.0,
+            -lambd,
+            -0.25,
+            -0.0,
+            0.0,
+            0.25,
+            lambd,
+            3.0,
+            float("inf"),
+            float("nan"),
+        ],
+        dtype=dtype,
+    )
+
+    def compute(device):
+      x = input_value.clone().detach().to(device).requires_grad_(True)
+      y = op(x, lambd)
+      y.sum().backward()
+      return y, x.grad
+
+    self.assert_close_tpu_vs_cpu(compute)
+
+  @parameterized.parameters("hardshrink", "softshrink")
+  def test_shrink_default_lambd(self, op_name):
+    def compute(device):
+      x = torch.linspace(-1, 1, 16, device=device)
+      return getattr(torch.nn.functional, op_name)(x)
+
+    self.assert_close_tpu_vs_cpu(compute)
+
+  @parameterized.parameters(float("inf"), float("-inf"), float("nan"))
+  def test_hardshrink_non_finite_lambd(self, lambd):
+    def compute(device):
+      x = torch.tensor([-2.0, 0.0, 3.0], device=device, requires_grad=True)
+      y = torch.nn.functional.hardshrink(x, lambd)
+      y.sum().backward()
+      return y, x.grad
+
+    self.assert_close_tpu_vs_cpu(compute)
+
+  @parameterized.parameters("hardshrink", "softshrink")
+  def test_shrink_out(self, op_name):
+    def compute(device):
+      x = torch.linspace(-1, 1, 16, device=device).reshape(4, 4)
+      out = torch.empty(4, 4, device=device)
+      getattr(torch.ops.aten, op_name).out(x, 0.5, out=out)
+      return out
+
+    self.assert_close_tpu_vs_cpu(compute)
+
+  @parameterized.parameters("hardshrink_backward", "softshrink_backward")
+  def test_shrink_backward_broadcast(self, op_name):
+    def compute(device):
+      grad_output = torch.tensor([[1.0], [2.0], [3.0]], device=device)
+      x = torch.tensor([-1.0, 0.0, 1.0], device=device)
+      grad_input = torch.empty(3, 3, device=device)
+      getattr(torch.ops.aten, op_name).grad_input(
+          grad_output, x, 0.5, grad_input=grad_input
+      )
+      return grad_input
+
+    self.assert_close_tpu_vs_cpu(compute)
+
   def test_hardsigmoid_backward_broadcast(self):
     """Tests hardsigmoid backward with broadcastable inputs."""
 

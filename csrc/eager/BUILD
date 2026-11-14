@@ -918,6 +918,7 @@ torch_tpu_cc_library(
         "//csrc/ops/segment_reduce:segment_reduce_aten_kernels",
         "//csrc/ops/select_scatter:select_scatter_aten_kernels",
         "//csrc/ops/set:set_aten_kernels",
+        "//csrc/ops/shrink:shrink_aten_kernels",
         "//csrc/ops/sigmoid:sigmoid_aten_kernels",
         "//csrc/ops/silu:silu_aten_kernels",
         "//csrc/ops/slice_backward:slice_backward_aten_kernels",

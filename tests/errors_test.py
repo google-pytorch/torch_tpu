@@ -9758,6 +9758,106 @@ Note: this function is intended to be used with the output produced by torch.lin
     ):
       torch.ops.aten.hardsigmoid_backward(grad, self_val)
 
+  def test_shrink_unsupported_dtype(self):
+    t = torch.tensor([1, 2], device=et.device(), dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""hardshrink(): expected the input dtype to be floating point, got int32""",
+        gpu=""""hardshrink_cuda" not implemented for 'Int'""",
+    ):
+      torch.nn.functional.hardshrink(t)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""softshrink(): expected the input dtype to be floating point, got int32""",
+        gpu=""""softshrink_check" not implemented for 'Int'""",
+    ):
+      torch.nn.functional.softshrink(t)
+
+  def test_shrink_unsupported_float8_dtype(self):
+    for dtype, tpu_dtype, gpu_dtype in (
+        (torch.float8_e4m3fn, "float8_e4m3fn", "Float8_e4m3fn"),
+        (torch.float8_e5m2, "float8_e5m2", "Float8_e5m2"),
+    ):
+      t = torch.ones(2, device=et.device(), dtype=torch.float32).to(dtype)
+      for name, gpu_name, call in (
+          ("hardshrink", "hardshrink_cuda", torch.nn.functional.hardshrink),
+          ("softshrink", "softshrink_check", torch.nn.functional.softshrink),
+          (
+              "hardshrink_backward",
+              "shrink_backward_cuda",
+              lambda t: torch.ops.aten.hardshrink_backward(t, t, 0.5),
+          ),
+          (
+              "softshrink_backward",
+              "shrink_backward_cuda",
+              lambda t: torch.ops.aten.softshrink_backward(t, t, 0.5),
+          ),
+      ):
+        with self.subTest(op=name, dtype=tpu_dtype):
+          with et.assert_raises_message(
+              NotImplementedError,
+              tpu=f"""{name}(): not implemented for {tpu_dtype}""",
+              gpu=f""""{gpu_name}" not implemented for '{gpu_dtype}'""",
+          ):
+            call(t)
+
+  def test_shrink_lambd_overflows_dtype(self):
+    for dtype, tpu_dtype, gpu_dtype, lambd, found in (
+        (torch.float32, "float32", "float", 1e39, "1e+39"),
+        (torch.float32, "float32", "float", -1e39, "-1e+39"),
+        (torch.float16, "float16", "c10::Half", 1e5, "100000"),
+        (torch.bfloat16, "bfloat16", "c10::BFloat16", 1e39, "1e+39"),
+    ):
+      t = torch.ones(2, device=et.device(), dtype=dtype)
+      for name, call in (
+          ("hardshrink", lambda t, l: torch.nn.functional.hardshrink(t, l)),
+          (
+              "hardshrink_backward",
+              lambda t, l: torch.ops.aten.hardshrink_backward(t, t, l),
+          ),
+          (
+              "softshrink_backward",
+              lambda t, l: torch.ops.aten.softshrink_backward(t, t, l),
+          ),
+      ):
+        with self.subTest(op=name, dtype=tpu_dtype, lambd=lambd):
+          with et.assert_raises_message(
+              RuntimeError,
+              tpu=f"""{name}(): expected lambd to be representable as {tpu_dtype}, got {found}""",
+              gpu=f"""value cannot be converted to type {gpu_dtype} without overflow""",
+          ):
+            call(t, lambd)
+
+  def test_shrink_backward_mismatched_dtypes(self):
+    if et.is_on_gpu():
+      self.skipTest("GPU promotes the dtypes instead of raising")
+
+    grad = torch.ones(2, device=et.device(), dtype=torch.float32)
+    self_val = torch.ones(2, device=et.device(), dtype=torch.bfloat16)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""hardshrink_backward(): expected dtype to be the same across grad_output, self, and grad_input, got grad_output=float32, self=bfloat16, and grad_input=float32""",
+    ):
+      torch.ops.aten.hardshrink_backward(grad, self_val, 0.5)
+
+  def test_softshrink_lambd_out_of_range(self):
+    for dtype, tpu_dtype, gpu_dtype, max_lambd, lambd, found in (
+        (torch.float32, "float32", "Float", "3.40282e+38", -1.0, "-1"),
+        (torch.float32, "float32", "Float", "3.40282e+38", float("inf"), "inf"),
+        (torch.float32, "float32", "Float", "3.40282e+38", 1e39, "1e+39"),
+        (torch.float16, "float16", "Half", "65504", 1e5, "100000"),
+        (torch.bfloat16, "bfloat16", "BFloat16", "3.38953e+38", 1e39, "1e+39"),
+    ):
+      with self.subTest(dtype=tpu_dtype, lambd=lambd):
+        t = torch.ones(2, device=et.device(), dtype=dtype)
+        with et.assert_raises_message(
+            RuntimeError,
+            tpu=f"""softshrink(): expected lambd to be in the range [0, {max_lambd}] for input dtype {tpu_dtype}, got {found}""",
+            gpu=f"""lambda must be in range [0, {max_lambd}] for input dtype {gpu_dtype}, but found {found}""",
+        ):
+          torch.nn.functional.softshrink(t, lambd)
+
   def test_bincount_rank_too_high(self):
     t = torch.ones(2, 2, 2, device=et.device(), dtype=torch.int32)
 
