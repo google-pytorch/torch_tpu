@@ -202,13 +202,13 @@ bool CompositeWorkTpu::wait(std::chrono::milliseconds timeout) {
 
 namespace {
 
-// Flattens the tensor into a 1D contiguous view so PyTorch chunking evenly
+// Flattens a contiguous tensor into a 1D view so PyTorch chunking evenly
 // divides elements across stripes regardless of tensor shape, returning chunk
 // views.
 inline std::vector<at::Tensor> ChunkTensorForStriping(const at::Tensor& tensor,
                                                       int num_stripes) {
   // Dimension -1 infers total elements for flattening into a 1D view.
-  return tensor.contiguous().view(-1).chunk(num_stripes, /*dim=*/0);
+  return tensor.view(-1).chunk(num_stripes, /*dim=*/0);
 }
 
 }  // namespace
@@ -235,7 +235,7 @@ c10::intrusive_ptr<c10d::Work> WindowTpu::PutPeerP2P(const at::Tensor& tensor,
   std::vector<c10::intrusive_ptr<c10d::Work>> sub_works;
   sub_works.reserve(chunks.size());
   for (size_t i = 0; i < chunks.size(); ++i) {
-    std::vector<at::Tensor> chunk_tensors = {chunks[i].contiguous()};
+    std::vector<at::Tensor> chunk_tensors = {chunks[i]};
     sub_works.push_back(backend_->send(chunk_tensors, static_cast<int>(dstRank),
                                        static_cast<int>(i)));
   }
@@ -298,7 +298,7 @@ c10::intrusive_ptr<c10d::Work> WindowTpu::signal(
   std::vector<c10::intrusive_ptr<c10d::Work>> sub_works;
   sub_works.reserve(chunks.size());
   for (size_t i = 0; i < chunks.size(); ++i) {
-    std::vector<at::Tensor> chunk_tensors = {chunks[i].contiguous()};
+    std::vector<at::Tensor> chunk_tensors = {chunks[i]};
     sub_works.push_back(backend_->send(
         chunk_tensors, static_cast<int>(peerRank), static_cast<int>(i)));
   }
