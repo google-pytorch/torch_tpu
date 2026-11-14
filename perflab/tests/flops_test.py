@@ -14,9 +14,13 @@
 
 """Tests for perflab/flops.py and the FLOPs metrics it feeds."""
 
+from unittest import mock
+
 from absl.testing import absltest
 import torch
 from torch._subclasses import fake_tensor
+from torch.nn import functional as F
+from torch.utils import flop_counter
 from perflab import context as context_lib
 from perflab import discovery as discovery_lib
 from perflab import flops as flops_lib
@@ -83,6 +87,66 @@ def _spec(
 
 def _forward_flops(batch: int) -> int:
   return 2 * batch * (_IN * _HIDDEN + _HIDDEN * _OUT)
+
+
+# The (batch, heads, sequence, head dim) shape of the attention inputs.
+_SDPA_SHAPE = (2, 4, 16, 8)
+
+# The CPU attention ops that `torch.utils.flop_counter` has formulas for only
+# from torch 2.15 on.
+_CPU_SDPA_OPS = (
+    torch.ops.aten._scaled_dot_product_flash_attention_for_cpu,  # pylint: disable=protected-access
+    torch.ops.aten._scaled_dot_product_flash_attention_for_cpu_backward,  # pylint: disable=protected-access
+)
+
+
+class _Attention(torch.nn.Module):
+  """Self-attention over its input plus a parameter, so that it has grads."""
+
+  def __init__(self, dtype: torch.dtype, device: str):
+    super().__init__()
+    self.bias = torch.nn.Parameter(
+        torch.zeros(_SDPA_SHAPE, dtype=dtype, device=device)
+    )
+
+  def forward(self, x: torch.Tensor) -> torch.Tensor:
+    q = x + self.bias
+    return F.scaled_dot_product_attention(q, q, q)
+
+
+def _build_attention(
+    ctx: context_lib.Context,
+) -> tuple[torch.nn.Module, tuple]:
+  dtype = torch_device_ops.get_torch_dtype(ctx.dtype)
+  device = ctx.device_kind.value
+  x = torch.randn(_SDPA_SHAPE, dtype=dtype, device=device)
+  return _Attention(dtype, device), (x,)
+
+
+def _attention_forward(ctx: context_lib.Context):
+  model, args = _build_attention(ctx)
+  return model.eval(), args, {}
+
+
+def _attention_training(ctx: context_lib.Context):
+  model, args = _build_attention(ctx)
+  opt = torch.optim.AdamW(model.parameters(), lr=1e-4)
+  return model.train(), args, {}, opt
+
+
+def _attention_matmul_flops() -> int:
+  """Returns the FLOPs of one (s, d) x (d, s) matmul per batch and head."""
+  b, h, s, d = _SDPA_SHAPE
+  return 2 * b * h * s * s * d
+
+
+def _registry_without_cpu_sdpa() -> dict:
+  """Returns the flop registry of torch versions before 2.15."""
+  return {
+      op: formula
+      for op, formula in flop_counter.flop_registry.items()
+      if op not in _CPU_SDPA_OPS
+  }
 
 
 class CountStepFlopsTest(seed_test_utils.RepeatableTest):
@@ -155,6 +219,73 @@ class CountStepFlopsTest(seed_test_utils.RepeatableTest):
     )
 
 
+class CountAttentionFlopsTest(seed_test_utils.RepeatableTest):
+  """Tests attention counts with and without torch's CPU attention formulas.
+
+  Torch has formulas for the CPU attention ops only from 2.15 on.
+  """
+
+  def _count(
+      self, factory: registry_lib.Factory, stepper: step_lib.StepperType
+  ) -> int:
+    flop_count = flops_lib.count_step_flops(
+        _spec(factory, stepper), context_lib.RunScope.FULL
+    )
+    self.assertIsNotNone(flop_count)
+    return flop_count.total
+
+  def _count_without_torch_formulas(
+      self, factory: registry_lib.Factory, stepper: step_lib.StepperType
+  ) -> int:
+    with mock.patch.dict(
+        flop_counter.flop_registry, _registry_without_cpu_sdpa(), clear=True
+    ):
+      self.assertNotIn(_CPU_SDPA_OPS[0], flop_counter.flop_registry)
+      return self._count(factory, stepper)
+
+  def test_counts_forward(self):
+    # q @ k^T and scores @ v.
+    expected = 2 * _attention_matmul_flops()
+    stepper = step_lib.StepperType.FORWARD
+    self.assertEqual(self._count(_attention_forward, stepper), expected)
+    self.assertEqual(
+        self._count_without_torch_formulas(_attention_forward, stepper),
+        expected,
+    )
+
+  def test_counts_forward_and_backward_of_training(self):
+    # The forward's 2 matmuls, and the backward's recomputed scores plus the
+    # gradients of the scores, v, q and k.
+    expected = (2 + 5) * _attention_matmul_flops()
+    stepper = step_lib.StepperType.TRAINING
+    self.assertEqual(self._count(_attention_training, stepper), expected)
+    self.assertEqual(
+        self._count_without_torch_formulas(_attention_training, stepper),
+        expected,
+    )
+
+  def test_adds_only_missing_formulas(self):
+    expected_missing = {
+        op for op in _CPU_SDPA_OPS if op not in flop_counter.flop_registry
+    }
+    self.assertEqual(
+        set(flops_lib._missing_cpu_sdpa_formulas()),  # pylint: disable=protected-access
+        expected_missing,
+    )
+    with mock.patch.dict(
+        flop_counter.flop_registry,
+        {op: lambda *args, **kwargs: 0 for op in _CPU_SDPA_OPS},
+    ):
+      self.assertEmpty(flops_lib._missing_cpu_sdpa_formulas())  # pylint: disable=protected-access
+    with mock.patch.dict(
+        flop_counter.flop_registry, _registry_without_cpu_sdpa(), clear=True
+    ):
+      self.assertEqual(
+          set(flops_lib._missing_cpu_sdpa_formulas()),  # pylint: disable=protected-access
+          set(_CPU_SDPA_OPS),
+      )
+
+
 class FlopsMetricsTest(seed_test_utils.RepeatableTest):
 
   def test_exports_achieved_tflops_and_mfu(self):
@@ -222,6 +353,24 @@ class FlopsMetricsTest(seed_test_utils.RepeatableTest):
     ).metric_map()
     self.assertNotIn("model_flops_per_step", metric_map)
     self.assertNotIn("mfu", metric_map)
+
+  def test_exports_no_flop_rates_for_zero_flops(self):
+    # E.g. a synthetic benchmark whose ops have no FlopCounterMode formula.
+    metric_map = metrics_lib.PerformanceMetrics(
+        post_warmup_step_time_seconds=0.5,
+        throughput_step_time_seconds=0.5,
+        average_post_warmup_device_time_seconds=0.25,
+        model_flops_per_step=0.0,
+        peak_flops_per_second=2000e12,
+    ).metric_map()
+    self.assertEqual(metric_map["model_flops_per_step"], 0.0)
+    for name in (
+        "achieved_tflops_per_second",
+        "mfu",
+        "device_achieved_tflops_per_second",
+        "device_mfu",
+    ):
+      self.assertNotIn(name, metric_map)
 
 
 class CheckUtilizationTest(seed_test_utils.RepeatableTest):

@@ -30,10 +30,12 @@ that the attention formula ignores causal masking, and that ops without a
 formula or a decomposition into ops with one (e.g. `_grouped_mm`) count zero.
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 import dataclasses
+from typing import Any
 
 from absl import logging
+import torch
 from torch.utils import flop_counter
 from perflab import common
 from perflab import context as context_lib
@@ -61,6 +63,59 @@ class FlopCount:
   by_op: Mapping[str, int]
 
 
+def _cpu_sdpa_flop(
+    query_shape, key_shape, value_shape, *args, out_shape=None, **kwargs
+) -> int:
+  """Counts the FLOPs of `aten._scaled_dot_product_flash_attention_for_cpu`."""
+  del args, out_shape, kwargs  # Unused.
+  return flop_counter.sdpa_flop_count(query_shape, key_shape, value_shape)
+
+
+def _cpu_sdpa_backward_flop(
+    grad_out_shape,
+    query_shape,
+    key_shape,
+    value_shape,
+    *args,
+    out_shape=None,
+    **kwargs,
+) -> int:
+  """Counts the FLOPs of `..._flash_attention_for_cpu_backward`."""
+  del args, out_shape, kwargs  # Unused.
+  return flop_counter.sdpa_backward_flop_count(
+      grad_out_shape, query_shape, key_shape, value_shape
+  )
+
+
+def _missing_cpu_sdpa_formulas() -> dict[Any, Callable[..., int]]:
+  """Returns FLOP formulas for the CPU attention ops that torch lacks.
+
+  The step is counted on CPU, where `F.scaled_dot_product_attention` dispatches
+  to `aten._scaled_dot_product_flash_attention_for_cpu` and its backward.
+  `torch.utils.flop_counter` registers formulas for them only from torch 2.15
+  on; before, `FlopCounterMode` counts them as 0 FLOPs without a warning, which
+  drops all attention FLOPs from the count. So this returns the same formulas
+  as torch 2.15, for `FlopCounterMode(custom_mapping=...)`, for the ops that
+  the installed torch has no formula for, and nothing on newer torch.
+
+  The formulas are our own rather than torch's `sdpa_flop` and
+  `sdpa_backward_flop`, where those exist: `register_flop_formula` already
+  wrapped those to take tensors, and `custom_mapping` wraps its formulas again.
+  """
+  aten = torch.ops.aten
+  formulas = {
+      aten._scaled_dot_product_flash_attention_for_cpu: _cpu_sdpa_flop,  # pylint: disable=protected-access
+      aten._scaled_dot_product_flash_attention_for_cpu_backward: (  # pylint: disable=protected-access
+          _cpu_sdpa_backward_flop
+      ),
+  }
+  return {
+      op: formula
+      for op, formula in formulas.items()
+      if op not in flop_counter.flop_registry
+  }
+
+
 def _count(
     spec: registry_lib.BenchmarkSpec, ctx: context_lib.Context
 ) -> FlopCount:
@@ -74,7 +129,9 @@ def _count(
   # sees op by op. E.g. the decode prefill runs here, uncounted.
   stepper.pre_warmup_init()
   step_fn = stepper.get_step_fn()
-  with flop_counter.FlopCounterMode(display=False) as counter:
+  with flop_counter.FlopCounterMode(
+      display=False, custom_mapping=_missing_cpu_sdpa_formulas()
+  ) as counter:
     step_fn()
   by_op = counter.get_flop_counts().get(_GLOBAL_MODULE, {})
   return FlopCount(

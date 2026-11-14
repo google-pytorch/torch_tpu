@@ -19,6 +19,7 @@ import dataclasses
 import datetime
 import json
 import math
+import re
 from typing import Any
 
 from absl import logging
@@ -69,7 +70,9 @@ class BenchmarkData:
     run_mode: The execution run mode (e.g. RunMode.EAGER_DEFAULT,
       RunMode.COMPILED).
     succeeded: Whether the benchmark run succeeded.
-    metrics: The benchmark metrics collected during the run.
+    metrics: The benchmark metrics collected during the run, or None if the case
+      measured none (e.g. it failed before measuring), which exports no metrics
+      rather than zeros.
     microbenchmark_name: The name of the microbenchmark if the benchmark is
       composed of multiple microbenchmarks. Batch sweep cases use their batch
       size (`batch_size_key`).
@@ -82,6 +85,8 @@ class BenchmarkData:
       size of the benchmark ran out of device memory. It then exports
       `SKIPPED_METRIC` and its batch size instead of its metrics, so that an
       assumed out of memory is not exported as a measured one.
+    failure_reason: Why a failed case failed, in one line (see
+      `describe_failure`), or None if unknown or the case did not fail.
   """
 
   spec_name: str
@@ -89,11 +94,45 @@ class BenchmarkData:
   framework: mode_lib.Framework
   run_mode: common.RunMode
   succeeded: bool
-  metrics: metrics_lib.MetricsInterface
+  metrics: metrics_lib.MetricsInterface | None
   microbenchmark_name: str | None = None
   batch_size: int | None = None
   out_of_memory: bool = False
   skipped: bool = False
+  failure_reason: str | None = None
+
+
+# The longest failure reason that is exported, in characters.
+_MAX_FAILURE_REASON_LENGTH = 500
+# A line that already starts with an exception class prefix, e.g.
+# "RuntimeError: ..." or "torch.OutOfMemoryError: ...".
+_NAMED_ERROR_RE = re.compile(
+    r"[A-Za-z_][\w.]*(?:Error|Exception|Warning|Interrupt|Exit): "
+)
+
+
+def describe_failure(e: BaseException) -> str:
+  """Returns why `e` failed a case, in one line, e.g. for `BenchmarkData`.
+
+  The last line of the message, which for an exception relayed from another
+  process (e.g. `torch.multiprocessing`) is the original one's, prefixed with
+  the exception type unless the line already names it.
+
+  Args:
+    e: The exception that failed the case.
+  """
+  lines = [line.strip() for line in str(e).strip().splitlines()]
+  lines = [line for line in lines if line]
+  name = type(e).__name__
+  if not lines:
+    reason = name
+  elif _NAMED_ERROR_RE.match(lines[-1]):
+    reason = lines[-1]
+  else:
+    reason = f"{name}: {lines[-1]}"
+  if len(reason) > _MAX_FAILURE_REASON_LENGTH:
+    reason = reason[: _MAX_FAILURE_REASON_LENGTH - 3] + "..."
+  return reason
 
 
 def _microbenchmark_name(
@@ -126,6 +165,7 @@ def make_benchmark_data(
     batch_size: int | None = None,
     out_of_memory: bool = False,
     skipped: bool = False,
+    failure_reason: str | None = None,
 ) -> BenchmarkData:
   """Returns the record of a case of `spec`, keyed by its microbenchmark name.
 
@@ -135,11 +175,12 @@ def make_benchmark_data(
     framework: The execution framework.
     run_mode: The execution run mode.
     succeeded: Whether the case succeeded.
-    metrics: The metrics of the case, if it measured any.
+    metrics: The metrics of the case, or None if it measured none.
     batch_size: The batch size of a batch sweep case, which extends the
       microbenchmark name of `spec` (`batch_size_key`), or None.
     out_of_memory: See `BenchmarkData.out_of_memory`.
     skipped: See `BenchmarkData.skipped`.
+    failure_reason: See `BenchmarkData.failure_reason`.
   """
   return BenchmarkData(
       spec_name=spec.name,
@@ -147,11 +188,12 @@ def make_benchmark_data(
       framework=framework,
       run_mode=run_mode,
       succeeded=succeeded,
-      metrics=metrics or metrics_lib.PerformanceMetrics(),
+      metrics=metrics,
       microbenchmark_name=_microbenchmark_name(spec, batch_size),
       batch_size=batch_size,
       out_of_memory=out_of_memory,
       skipped=skipped,
+      failure_reason=failure_reason,
   )
 
 
@@ -197,6 +239,8 @@ def _log_result(
     test_name: str,
     warmup_xprof_url: str | None = None,
     post_warmup_xprof_url: str | None = None,
+    diagnostics: Mapping[str, Any] | None = None,
+    failure_reason: str | None = None,
 ) -> None:
   """Logs a machine-readable JSON record prefixed with `RESULT_LOG_PREFIX`.
 
@@ -213,6 +257,9 @@ def _log_result(
     test_name: The test name of the run, as exported by `_test_name`.
     warmup_xprof_url: The XProf URL of the warmup run, if profiled.
     post_warmup_xprof_url: The XProf URL of the post-warmup run, if profiled.
+    diagnostics: Optional run diagnostics written only to `PERFLAB_RESULT_JSON`
+      when non-empty.
+    failure_reason: See `BenchmarkData.failure_reason`.
   """
   try:
     record = {
@@ -228,8 +275,17 @@ def _log_result(
         "test_name": test_name,
         "warmup_xprof_url": warmup_xprof_url,
         "post_warmup_xprof_url": post_warmup_xprof_url,
+        "failure_reason": failure_reason,
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }
+    if diagnostics:
+      try:
+        record["diagnostics"] = {
+            str(name): _finite_or_none(float(value))
+            for name, value in diagnostics.items()
+        }
+      except Exception:  # pylint: disable=broad-exception-caught
+        logging.exception("Failed to serialize diagnostics for %s", spec_name)
     line = json.dumps(record, sort_keys=True, allow_nan=False)
     logging.info("%s %s", RESULT_LOG_PREFIX, line)
   except Exception:  # pylint: disable=broad-exception-caught
@@ -258,9 +314,23 @@ def export(data: BenchmarkData) -> None:
     if data.batch_size is not None:
       metrics["batch_size"] = float(data.batch_size)
     wall_time = None
+  elif data.metrics is None:
+    # A case that measured nothing has no metrics; exporting default zeros
+    # would read as a real measurement.
+    metrics = {}
+    wall_time = None
   else:
     metrics = data.metrics.metric_map()
     wall_time = data.metrics.e2e_wall_time_seconds
+  if isinstance(data.metrics, metrics_lib.PerformanceMetrics):
+    warmup_xprof_url = data.metrics.warmup_session_xprof_url
+    post_warmup_xprof_url = data.metrics.post_warmup_run_session_xprof_url
+    diagnostics = data.metrics.diagnostics
+  else:
+    warmup_xprof_url = None
+    post_warmup_xprof_url = None
+    diagnostics = None
+  failure_reason = data.failure_reason if not data.succeeded else None
   # Logged first, so that a failed export still leaves a record in the log.
   _log_result(
       spec_name=data.spec_name,
@@ -275,10 +345,10 @@ def export(data: BenchmarkData) -> None:
           framework=data.framework,
           run_mode=data.run_mode,
       ),
-      warmup_xprof_url=getattr(data.metrics, "warmup_session_xprof_url", None),
-      post_warmup_xprof_url=getattr(
-          data.metrics, "post_warmup_run_session_xprof_url", None
-      ),
+      warmup_xprof_url=warmup_xprof_url,
+      post_warmup_xprof_url=post_warmup_xprof_url,
+      diagnostics=diagnostics,
+      failure_reason=failure_reason,
   )
   export_adapter.export_benchmark_results(
       spec_name=data.spec_name,
@@ -289,6 +359,9 @@ def export(data: BenchmarkData) -> None:
       succeeded=data.succeeded,
       wall_time=wall_time,
       microbenchmark_name=data.microbenchmark_name,
+      warmup_xprof_url=warmup_xprof_url,
+      post_warmup_xprof_url=post_warmup_xprof_url,
+      failure_reason=failure_reason,
   )
 
 

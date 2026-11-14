@@ -295,6 +295,8 @@ def note_batch_sweep_record(data: export_lib.BenchmarkData) -> None:
     if data.batch_size is not None:
       note_failure(data.spec_name, data.run_mode, data.batch_size)
     return
+  if data.metrics is None:
+    return
   batch_size = data.batch_size
   step_work = getattr(data.metrics, "step_work", None)
   if batch_size is None and step_work is not None:
@@ -659,7 +661,13 @@ class BaseBenchmarkTest(
         # the failure also stops the batch sweep of the benchmark.
         if params is not None:
           spec, mode, batch_size = cases.unpack_case_params(params)
-          self.report_result(spec, mode, succeeded=False, batch_size=batch_size)
+          self.report_result(
+              spec,
+              mode,
+              succeeded=False,
+              batch_size=batch_size,
+              failure_reason=detail,
+          )
       elif outcome in (Outcome.FAILURE, Outcome.ERROR) and params is not None:
         # A case that failed before reporting a result still stops the batch
         # sweep of its benchmark.
@@ -683,6 +691,7 @@ class BaseBenchmarkTest(
       succeeded: bool,
       metrics: metrics_lib.MetricsInterface | None = None,
       batch_size: int | None = None,
+      failure_reason: str | None = None,
   ) -> None:
     """Exports the case's result, or hands it to the parent to export.
 
@@ -692,6 +701,7 @@ class BaseBenchmarkTest(
       succeeded: Whether the case succeeded.
       metrics: The metrics of the case, if it measured any.
       batch_size: The batch size of a batch sweep case, which keys its results.
+      failure_reason: Why a failed case failed, in one line.
     """
     self._report(
         export_lib.make_benchmark_data(
@@ -702,6 +712,7 @@ class BaseBenchmarkTest(
             succeeded=succeeded,
             metrics=metrics,
             batch_size=batch_size,
+            failure_reason=failure_reason,
         )
     )
 
@@ -933,7 +944,13 @@ class BaseBenchmarkTest(
             f"{spec.name} ran out of device memory at batch size"
             f" {batch_size}: {e}"
         )
-      self.report_result(spec, mode, succeeded=False, batch_size=batch_size)
+      self.report_result(
+          spec,
+          mode,
+          succeeded=False,
+          batch_size=batch_size,
+          failure_reason=export_lib.describe_failure(e),
+      )
       raise
 
     self.report_result(

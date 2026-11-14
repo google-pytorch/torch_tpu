@@ -209,6 +209,7 @@ class BaseBenchmarkTestChildOutcomeTest(seed_test_utils.RepeatableTest):
     self.assertLen(result.errors, 1)
     (data,) = self.exported
     self.assertEqual(data.spec_name, "healthy")
+    self.assertEqual(data.failure_reason, "child died")
     self.assertEqual(data.platform, target_lib.Platform.V7_1X1X1)
     self.assertEqual(data.framework, mode_lib.Framework.TORCH)
     self.assertEqual(data.run_mode, common.RunMode.COMPILED)
@@ -474,6 +475,9 @@ class BaseBenchmarkTestRunCaseTest(seed_test_utils.RepeatableTest):
     (data,) = self.exported
     self.assertEqual(data.spec_name, "failing")
     self.assertFalse(data.succeeded)
+    self.assertEqual(
+        data.failure_reason, "RuntimeError: simulated build failure"
+    )
 
   @parameterized.parameters("make_device_ops", "reset_state")
   def test_case_whose_setup_fails_is_exported_as_failed(self, failing_hook):
@@ -507,6 +511,10 @@ class BaseBenchmarkTestRunCaseTest(seed_test_utils.RepeatableTest):
     self.assertEmpty(self.exported)
     self.assertEqual(test.isolated_payload.spec_name, "measured")
     self.assertFalse(test.isolated_payload.succeeded)
+    self.assertEqual(
+        test.isolated_payload.failure_reason,
+        "RuntimeError: simulated reset_state failure",
+    )
 
   def test_unsupported_case_is_skipped(self):
     result = self._run("unsupported_case")
