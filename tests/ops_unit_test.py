@@ -10903,6 +10903,24 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
             torch.tensor([[1.0] * 3, [0.0] * 3, [2.0] * 3, [0.0] * 3]),
         )
 
+  def test_index_add_updates_pass_through_barrier_build_mlir(self) -> None:
+    """Verifies index_add puts its updates behind an optimization barrier."""
+    s = torch.zeros(4, 3, device="tpu")
+    index = torch.tensor([0, 2, 2], device="tpu")
+    source = torch.ones(3, 3, device="tpu")
+    torch.accelerator.synchronize()
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      z = torch.index_add(s, 0, index, source)
+    mlir_text = tpu_torch_compile.serialize_mlir_text(
+        tpu_torch_compile.build_mlir([z], [s, index, source])
+    )
+    self.assertIn("stablehlo.optimization_barrier", mlir_text)
+    self.assertIn("stablehlo.scatter", mlir_text)
+    utils.assert_close(
+        z.cpu(),
+        torch.tensor([[1.0] * 3, [0.0] * 3, [2.0] * 3, [0.0] * 3]),
+    )
+
   @parameterized.parameters((248, 2816), (256, 2688), (256, 2816))
   def test_index_add_one_update_per_row(self, rows: int, hidden: int) -> None:
     """index_add with one update per row matches CPU.
@@ -10921,6 +10939,65 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     def test_fn(device: torch.device) -> torch.Tensor:
       out = torch.zeros(rows, hidden, device=device)
       return out.index_add_(0, index.to(device), source.to(device))
+
+    self.assert_close_tpu_vs_cpu(test_fn)
+
+  @parameterized.product(
+      shape=((248, 2816), (256, 2688), (256, 2816)),
+      scaling=("alpha", "multiply"),
+      mode=("defer_never", "defer_and_fuse", "compile"),
+  )
+  def test_index_add_scaled_one_update_per_row(
+      self, shape: tuple[int, int], scaling: str, mode: str
+  ) -> None:
+    """index_add of a scaled source with one update per row matches CPU.
+
+    With the scaling (alpha=2, or a multiply computed before the call) fused
+    into the scatter, XLA dropped the updates to some rows on TPU v5e for
+    these shapes.
+
+    Args:
+      shape: Number of rows of the output and the source, and the size of the
+        other dimension.
+      scaling: "alpha" passes alpha=2; "multiply" scales the source by a
+        per-row weight before the call.
+      mode: The eager mode, or torch.compile.
+    """
+    rows, hidden = shape
+    generator = torch.Generator().manual_seed(0)
+    index = torch.randperm(rows, generator=generator)
+    source = torch.randint(-8, 9, (rows, hidden), generator=generator).float()
+    weight = torch.randint(1, 4, (rows,), generator=generator).float()
+
+    def index_add(
+        out: torch.Tensor,
+        index: torch.Tensor,
+        source: torch.Tensor,
+        weight: torch.Tensor,
+    ) -> torch.Tensor:
+      if scaling == "alpha":
+        return out.index_add_(0, index, source, alpha=2)
+      return out.index_add_(0, index, source * weight[:, None])
+
+    def test_fn(device: torch.device) -> torch.Tensor:
+      fn = index_add
+      eager_mode = contextlib.nullcontext()
+      if torch.device(device).type == "tpu":
+        if mode == "compile":
+          fn = torch.compile(
+              index_add, backend="tpu", dynamic=False, fullgraph=True
+          )
+        else:
+          eager_mode = execution_mode.set_eager_mode(
+              execution_mode.EagerMode.DEFER_AND_FUSE
+              if mode == "defer_and_fuse"
+              else execution_mode.EagerMode.DEFER_NEVER
+          )
+      with eager_mode:
+        out = torch.zeros(rows, hidden, device=device)
+        return fn(
+            out, index.to(device), source.to(device), weight.to(device)
+        ).cpu()
 
     self.assert_close_tpu_vs_cpu(test_fn)
 

@@ -91,6 +91,14 @@ absl::StatusOr<mlir::MlirOp> BuildIndexAddShlo(
                         ApplyBroadcastIfNeeded(source, *alpha));
     source_scaled = stablehlo::Mul(broadcasted_source, broadcasted_alpha);
   }
+  // XLA:TPU can drop scatter updates for some shapes when an elementwise op on
+  // them, such as the alpha multiply above or one the caller computed, is
+  // fused into the scatter. The barrier keeps the updates out of the scatter's
+  // fusion.
+  // TODO(https://github.com/openxla/xla/issues/51765): Remove the barrier once
+  // XLA:TPU no longer drops the updates.
+  source_scaled = stablehlo::OptimizationBarrier(source_scaled.getBuilder(),
+                                                 {source_scaled})[0];
 
   stablehlo::ScatterDimensionNumbersAttr scatter_dimension_numbers =
       stablehlo::ScatterDimensionNumbersAttr::get(
