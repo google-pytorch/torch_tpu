@@ -16,15 +16,53 @@
 
 import collections
 from collections.abc import Callable, Sequence
+import datetime
 from typing import Any
 
 import torch
+from torch.distributed import distributed_c10d as c10d
 from torch_tpu._internal.benchmarks import xprof_adapter
 from perflab import device_utils
 from perflab import target as target_lib
 
 _MB = 2**20
 _NS_PER_SECOND = 1e9
+# Exceeds XprofContext's 30s ProfilerLock retry delay
+# (measure._XPROF_START_RETRY_DELAY_SECONDS) while failing fast well below the
+# 1800s target timeout (perflab/flags.py).
+_HOST_BARRIER_TIMEOUT = datetime.timedelta(seconds=300)
+
+
+def _host_barrier_key(seq: int) -> str:
+  """Returns the default-store barrier key prefix for sequence `seq`."""
+  return f"perflab_host_barrier:{seq}"
+
+
+def _store_host_barrier(
+    store: torch.distributed.Store,
+    world_size: int,
+    *,
+    barrier_key: str,
+    timeout: datetime.timedelta | None = None,
+) -> None:
+  """Synchronizes `world_size` ranks via `store` without device collectives."""
+  if world_size <= 1:
+    return
+  if timeout is None:
+    timeout = _HOST_BARRIER_TIMEOUT
+  count_key = f"{barrier_key}:count"
+  ready_key = f"{barrier_key}:ready"
+  if store.add(count_key, 1) == world_size:
+    store.set(ready_key, "1")
+    return
+  try:
+    store.wait([ready_key], timeout)
+  except torch.distributed.DistStoreError as e:
+    timeout_s = timeout.total_seconds()
+    raise RuntimeError(
+        f"host barrier {barrier_key!r}: peers did not arrive in {timeout_s:g}"
+        " s; a peer rank likely failed or diverged"
+    ) from e
 
 
 def _merge_intervals(intervals: Sequence[tuple[int, int]]) -> int:
@@ -156,6 +194,22 @@ class TorchDeviceOps:
     if self.target.device_kind != target_lib.DeviceKind.CPU:
       torch.accelerator.synchronize()
 
+  def launch_result(self, out: Any) -> None:  # pylint: disable=unused-argument
+    """Start the work that produced out on TPU, without waiting for it.
+
+    TorchTPU defers the ops of the eager_optimized run mode until their result
+    is needed, and drops the deferred ops of outputs that are released unread.
+    Like `await_result`, this acts on the whole device rather than on out: it
+    starts all live deferred work, which includes e.g. the parameter updates of
+    a training step, which its output (the loss) does not reach. CUDA and CPU
+    start work when it is dispatched, so this is a no-op there.
+
+    Args:
+      out: The step's output; unused.
+    """
+    if self.target.device_kind == target_lib.DeviceKind.TPU:
+      device_utils.launch_tpu()
+
   def check_result(self, out: Any) -> None:
     """Raise if the work that produced out failed.
 
@@ -211,6 +265,13 @@ class TorchDeviceOps:
     if self.target.device_kind == target_lib.DeviceKind.CPU:
       return 0.0
     return torch.accelerator.max_memory_allocated(self.device) / _MB
+
+  def allocated_memory_mb(self) -> float | None:
+    """Current allocated device memory in MB, or None on CPU."""
+    if self.target.device_kind == target_lib.DeviceKind.CPU:
+      return None
+    torch.accelerator.synchronize()
+    return torch.accelerator.memory_allocated(self.device) / _MB
 
   def get_device_time(self, session_id: str | None = None) -> float:
     """Total active device time in seconds across profiling steps from XSpace."""
@@ -268,6 +329,26 @@ class TorchDeviceOps:
     proposal = torch.tensor([steps], dtype=torch.int32, device=self.device)
     torch.distributed.all_reduce(proposal, op=torch.distributed.ReduceOp.MAX)
     return int(proposal.item())
+
+  def host_barrier(self) -> None:
+    """Blocks on the host until all distributed ranks reach this point.
+
+    Every rank must call `host_barrier()` the same number of times per
+    process-group store lifecycle.
+    """
+    if not torch.distributed.is_initialized():
+      return
+    world_size = torch.distributed.get_world_size()
+    if world_size <= 1:
+      return
+    store = c10d._get_default_store()  # pylint: disable=protected-access
+    rank = torch.distributed.get_rank()
+    seq = store.add(f"perflab_host_barrier:seq:{rank}", 1) - 1
+    _store_host_barrier(
+        store,
+        world_size,
+        barrier_key=_host_barrier_key(seq),
+    )
 
   def compile_count(self) -> int:
     """Monotonic count of successfully compiled frames this process."""

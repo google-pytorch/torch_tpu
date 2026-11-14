@@ -72,6 +72,10 @@ class TorchaxDeviceOps:
     """Block until the value-level futures reachable from out complete."""
     _sync_jax_device(out)
 
+  def launch_result(self, out: Any) -> None:
+    """No-op: JAX starts work when it is dispatched."""
+    del out
+
   def check_result(self, out: Any) -> None:
     """No-op: `await_result` already raises if the work for out failed."""
     del out
@@ -89,12 +93,19 @@ class TorchaxDeviceOps:
     """Return peak device memory usage in MB, or None if unsupported."""
     return device_utils.get_jax_peak_memory_mb()
 
+  def allocated_memory_mb(self) -> float | None:
+    """Return current device memory allocation in MB, or None if unsupported."""
+    return device_utils.get_jax_allocated_memory_mb()
+
   def release_cached_memory(self) -> None:
     """No-op: the torchax steppers do not run pipelined steps."""
 
   def agree_on_step_count(self, steps: int) -> int:
     """Returns `steps`: torchax benchmarks run in a single process."""
     return steps
+
+  def host_barrier(self) -> None:
+    """No-op: torchax benchmarks run in a single process."""
 
   def get_device_time(self, session_id: str | None = None) -> float:
     """Total active device time in seconds across profiling steps from XSpace."""
