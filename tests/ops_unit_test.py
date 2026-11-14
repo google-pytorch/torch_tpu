@@ -7556,6 +7556,20 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(test_fn)
 
+  def test_index_fill_negative_indices(self):
+    def test_fn(device: torch.device):
+      x = torch.zeros((4, 3), dtype=torch.float32, device=device)
+      idx0 = torch.tensor([-1, -3], dtype=torch.long, device=device)
+      idx1 = torch.tensor([-2, 0], dtype=torch.long, device=device)
+      val_tensor = torch.tensor(5.0, dtype=torch.float32, device=device)
+      out_scalar = x.index_fill(0, idx0, 9.0)
+      out_tensor = x.index_fill(1, idx1, val_tensor)
+      inplace = x.clone()
+      inplace.index_fill_(-1, idx1, -7.0)
+      return out_scalar, out_tensor, inplace
+
+    self.assert_close_tpu_vs_cpu(test_fn)
+
   def test_index_tensor_multidim_1(self):
     t = torch.arange(60).reshape(3, 4, 5)
     i1 = torch.tensor([[0, 1], [1, 2]])

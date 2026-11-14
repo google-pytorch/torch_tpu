@@ -78,6 +78,13 @@ absl::StatusOr<mlir::MlirOp> BuildIndexFillShlo(mlir::MlirOp self, int64_t dim,
     }
   }
 
+  mlir::MlirOp zero = MakeConstantLike(index, 0);
+  mlir::MlirOp dim_size = MakeConstantLike(index, self_type.getDimSize(dim));
+  mlir::MlirOp is_negative = mlir::stablehlo::Compare(
+      index, zero, mlir::stablehlo::ComparisonDirection::LT);
+  mlir::MlirOp wrapped_index = mlir::stablehlo::Add(index, dim_size);
+  index = mlir::stablehlo::Select(is_negative, wrapped_index, index);
+
   index = mlir::stablehlo::Reshape(index, {index_type.getDimSize(0), 1});
   mlir::stablehlo::ScatterDimensionNumbersAttr scatter_dimension_numbers =
       mlir::stablehlo::ScatterDimensionNumbersAttr::get(
