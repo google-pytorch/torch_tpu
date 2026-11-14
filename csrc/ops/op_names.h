@@ -580,6 +580,10 @@ enum class OpName {
   kMaxPool3dWithIndicesBackwardGradInput,
   kMaxPool3dWithIndicesOut,
   kMaxUnaryOut,
+  kMaxUnpool2d,
+  kMaxUnpool2dOut,
+  kMaxUnpool3d,
+  kMaxUnpool3dOut,
   kMaximum,
   kMaximumOut,
   kMeanOut,
@@ -2013,6 +2017,14 @@ ToString(  // NOLINT(google-readability-function-size)
       return "max_pool3d_with_indices.out";
     case OpName::kMaxUnaryOut:
       return "max.unary_out";
+    case OpName::kMaxUnpool2d:
+      return "max_unpool2d";
+    case OpName::kMaxUnpool2dOut:
+      return "max_unpool2d.out";
+    case OpName::kMaxUnpool3d:
+      return "max_unpool3d";
+    case OpName::kMaxUnpool3dOut:
+      return "max_unpool3d.out";
     case OpName::kMaximum:
       return "maximum";
     case OpName::kMaximumOut:
