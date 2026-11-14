@@ -233,6 +233,9 @@ its `SKILL.md` and follow it.
 *   [`tt-fix-composite-ops`](.agents/skills/tt-fix-composite-ops/SKILL.md):
     migrating a composite ATen operator to a native one that lowers directly to
     StableHLO.
+*   [`tt-fix-op-lowering-tolerances`](.agents/skills/tt-fix-op-lowering-tolerances/SKILL.md):
+    diagnosing and fixing numerical accuracy gaps and loose tolerances in
+    operator lowerings.
 *   [`tt-implement-ops`](.agents/skills/tt-implement-ops/SKILL.md): implementing
     a new ATen operator or StableHLO lowering, including C++ registration and
     tests.
