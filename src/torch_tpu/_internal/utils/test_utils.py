@@ -912,12 +912,22 @@ libtpu_version = utils.libtpu_version
 parse_version = utils.parse_version
 
 
-def is_asan() -> bool:
-  """Returns True if running under AddressSanitizer (ASAN)."""
+def _has_sanitizer_symbol(symbol: str) -> bool:
+  """Returns True if the current process exports the given sanitizer symbol."""
   try:
-    return hasattr(ctypes.CDLL(None), "__asan_init")
+    return hasattr(ctypes.CDLL(None), symbol)
   except (OSError, TypeError, AttributeError):
     return False
+
+
+def is_asan() -> bool:
+  """Returns True if running under AddressSanitizer (ASAN)."""
+  return _has_sanitizer_symbol("__asan_init")
+
+
+def is_tsan() -> bool:
+  """Returns True if running under ThreadSanitizer (TSAN)."""
+  return _has_sanitizer_symbol("__tsan_init")
 
 
 def is_msan() -> bool:
@@ -939,3 +949,8 @@ def skip_if_asan(reason: str) -> Callable[[_T], _T]:
 def skip_if_msan(reason: str) -> Callable[[_T], _T]:
   """Decorator to skip a test method or class when running under MSAN."""
   return unittest.skipIf(is_msan(), reason)
+
+
+def skip_if_tsan(reason: str) -> Callable[[_T], _T]:
+  """Decorator to skip a test method or class when running under TSAN."""
+  return unittest.skipIf(is_tsan(), reason)

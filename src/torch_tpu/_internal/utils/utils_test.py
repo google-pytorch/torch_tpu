@@ -889,6 +889,41 @@ class AllTest(seed_test_utils.RepeatableTest):
 
       self.assertEqual(unskipped_fn(), "ran")
 
+  def test_is_tsan(self):
+    fake_cdll_with_tsan = type("FakeCdll", (), {"__tsan_init": object()})()
+    with absltest.mock.patch.object(
+        ctypes, "CDLL", return_value=fake_cdll_with_tsan
+    ):
+      self.assertTrue(test_utils.is_tsan())
+
+    fake_cdll_without_tsan = object()
+    with absltest.mock.patch.object(
+        ctypes, "CDLL", return_value=fake_cdll_without_tsan
+    ):
+      self.assertFalse(test_utils.is_tsan())
+
+    for exc in (OSError("load error"), TypeError("bad arg"), AttributeError()):
+      with absltest.mock.patch.object(ctypes, "CDLL", side_effect=exc):
+        self.assertFalse(test_utils.is_tsan())
+
+  def test_skip_if_tsan(self):
+    with absltest.mock.patch.object(test_utils, "is_tsan", return_value=True):
+
+      @test_utils.skip_if_tsan("flaky in tsan")
+      def skipped_fn():
+        return "ran"
+
+      with self.assertRaisesRegex(unittest.SkipTest, "flaky in tsan"):
+        skipped_fn()
+
+    with absltest.mock.patch.object(test_utils, "is_tsan", return_value=False):
+
+      @test_utils.skip_if_tsan("flaky in tsan")
+      def unskipped_fn():
+        return "ran"
+
+      self.assertEqual(unskipped_fn(), "ran")
+
 
 if __name__ == "__main__":
   absltest.main()
