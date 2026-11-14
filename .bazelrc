@@ -79,6 +79,13 @@ build --compilation_mode=opt
 # PIE, as in google3, whose toolchain enables `prefer_pic_for_opt_binaries`.
 build --force_pic
 
+# Compile all target C++ as PIC so each source is compiled only once. Everything
+# we ship is a shared library (the pywrap `.so`s), which must be PIC, but in
+# `-c opt` Bazel compiles C++ for executables (e.g. `cc_test`) as non-PIC, so
+# code used by both is compiled twice. This also makes test binaries PIE, which
+# matches google3, whose toolchain enables `prefer_pic_for_opt_binaries`.
+build --force_pic
+
 # ===== Start spammy C++ compile warning disables =====
 # Some low-level legacy glibc macros are used in lots of
 # places, which very spammy, so silence this one.
