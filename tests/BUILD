@@ -1674,6 +1674,10 @@ torch_tpu_py_test(
     shard_count = 50,
     tags = [
         "fails-on-tpu-v7",  # Numeric divergence in scaled_mm on TPU v7.
+        # Runs in the .opt presubmit. The cache code has no
+        # compilation-mode-specific logic, and :ops_unit_test already runs
+        # ops_unit_test.py in fastbuild and ASAN.
+        "nofastbuild",
         "nomsan",  # TODO: fix the test in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.
         "requires-tpu-v5lite",
