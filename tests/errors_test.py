@@ -11642,6 +11642,16 @@ Supported combinations for non-constant padding:
     ):
       torch.view_as_complex(t)
 
+  def test_view_as_complex_invalid_storage_offset(self):
+    t = torch.ones(9, device=et.device())[1:].view(4, 2)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""view_as_complex(): expected the storage offset to be divisible by 2, got 1""",
+        gpu="""Tensor must have a storage_offset divisible by 2""",
+    ):
+      torch.view_as_complex(t)
+
   def test_where_out_dtype_mismatch(self):
     condition = torch.tensor([True, False], device=et.device())
     inp = torch.ones(2, device=et.device(), dtype=torch.float32)
