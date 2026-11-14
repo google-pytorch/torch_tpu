@@ -312,13 +312,12 @@ common:helion_public_caching_readwrite --config=helion_public_caching_readonly
 common:helion_public_caching_readwrite --remote_upload_local_results=true
 common:helion_public_caching_readwrite --google_default_credentials
 
-# Settings specific to CI runs.
-common:ci --build_tests_only
-common:ci --config=remote_execution_readwrite
-common:ci --config=resultstore_base
-common:ci --remote_download_minimal
-common:ci --keep_going
-test:ci --test_output=errors
+# Settings shared by all CI runs, independent of where actions execute.
+common:ci_base --build_tests_only
+common:ci_base --config=resultstore_base
+common:ci_base --remote_download_minimal
+common:ci_base --keep_going
+test:ci_base --test_output=errors
 
 # Enable ANSI color in CI logs.
 #
@@ -331,8 +330,12 @@ test:ci --test_output=errors
 # lists, query results, and every other machine-readable payload written to
 # stdout are still uncolored, so analyers like `bazel-diff` and `bazel query`
 # keep parsing clean text.
-common:ci --color=yes
-common:ci --curses=no
+common:ci_base --color=yes
+common:ci_base --curses=no
+
+# Settings specific to CI runs.
+common:ci --config=ci_base
+common:ci --config=remote_execution_readwrite
 
 # Setting specific to benchmarking runs.
 common:bench --config=ci
@@ -526,16 +529,11 @@ common:rbe_test_execution --test_env=VBAR_CONTROL_SERVICE_URL=
 # out by that tag and multi-chip v5 tests by their `:8`/`:4` tags. Tests that
 # cannot run in the RBE container environment are tagged no-remote-exec.
 #
-# This repeats `ci` minus remote_execution_readwrite, whose platform would
-# otherwise come ahead of rbe_platform in --extra_execution_platforms.
-# rbe_test_execution comes after resultstore_base so its BES instance wins.
-common:ci_rbe_presubmit --build_tests_only
-common:ci_rbe_presubmit --config=resultstore_base
-common:ci_rbe_presubmit --remote_download_minimal
-common:ci_rbe_presubmit --keep_going
-test:ci_rbe_presubmit --test_output=errors
-common:ci_rbe_presubmit --color=yes
-common:ci_rbe_presubmit --curses=no
+# This uses ci_base rather than ci: ci's remote_execution_readwrite would put
+# its platform ahead of rbe_platform in --extra_execution_platforms.
+# rbe_test_execution comes after ci_base (and so resultstore_base) so its BES
+# instance wins.
+common:ci_rbe_presubmit --config=ci_base
 common:ci_rbe_presubmit --config=rbe_test_execution
 common:ci_rbe_presubmit --build_tag_filters=-nobuild,-requires-gpu,-cuda-build-test
 common:ci_rbe_presubmit --test_tag_filters=-nobuild,-notest,-nopresubmit,-fails-on-tpu-v5,-requires-gpu,-cuda-build-test,-presubmit-v6,-presubmit-v7,-requires-tpu-v5lite:4,-requires-tpu-v5lite:8,-requires-tpu-v5p:4,-no-remote-exec,-requires-newest-deps
