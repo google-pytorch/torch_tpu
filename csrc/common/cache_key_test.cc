@@ -168,6 +168,17 @@ TEST(MaybePromotedScalar, IsZeroAndIsOneAndIsTwo) {
     EXPECT_FALSE(mps.IsOne());
     EXPECT_FALSE(mps.IsTwo());
   }
+
+  {
+    // Above INT64_MAX, so the scalar holds a UInt64.
+    PromotedScalar ps(dummy_promoter, at::Scalar(uint64_t{1} << 63));
+    MaybePromotedScalar mps(std::move(ps), ScalarValue::kOne);
+    EXPECT_FALSE(mps.ValueMatchesExclude());
+    EXPECT_FALSE(mps.IsZero());
+    EXPECT_FALSE(mps.IsOne());
+    EXPECT_FALSE(mps.IsMinusOne());
+    EXPECT_FALSE(mps.IsTwo());
+  }
 }
 
 TEST(OpParamCacheKeys, SetParamScalarType) {

@@ -165,6 +165,11 @@ bool IsScalarEqualTo(const at::Scalar& scalar, const int value) {
     return scalar.toDouble() == value;
   }
   if (scalar.isIntegral(/*include_bool=*/true)) {
+    // A UInt64 scalar holds a value above INT64_MAX, which toLong() can't
+    // convert and which can't equal an int.
+    if (scalar.type() == at::ScalarType::UInt64) {
+      return false;
+    }
     return scalar.toLong() == value;
   }
   if (scalar.isComplex()) {
