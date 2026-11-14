@@ -1364,6 +1364,185 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     ):
       torch.masked_select(t, mask, out=out)
 
+  @parameterized.parameters(False, True)
+  def test_int_mm_invalid_self_rank(self, use_out):
+    a = torch.ones((32, 64), dtype=torch.int8, device=et.device())[:, 0]
+    b = torch.ones((64, 16), dtype=torch.int8, device=et.device())
+    out = torch.empty((32, 16), dtype=torch.int32, device=et.device())
+    if utils.get_torch_version() >= (2, 15):
+      gpu = """_int_mm: self must be a matrix, got 1-D tensor"""
+    else:
+      gpu = """Expected self to be of dimension 2 but got 1"""
+    with et.assert_raises_message(
+      RuntimeError,
+      gpu=gpu,
+      tpu="""int_mm(): expected the self argument to be a 2D tensor (matrix), got 1D of shape [32]""",
+    ):
+      if use_out:
+        torch.ops.aten._int_mm.out(a, b, out=out)
+      else:
+        torch._int_mm(a, b)
+
+  @parameterized.parameters(False, True)
+  def test_int_mm_invalid_mat2_rank(self, use_out):
+    a = torch.ones((32, 64), dtype=torch.int8, device=et.device())
+    b = torch.ones((64, 16), dtype=torch.int8, device=et.device()).unsqueeze(-1)
+    out = torch.empty((32, 16), dtype=torch.int32, device=et.device())
+    if utils.get_torch_version() >= (2, 15):
+      gpu = """_int_mm: mat2 must be a matrix, got 3-D tensor"""
+    else:
+      gpu = """Expected mat2 to be of dimension 2 but got 3"""
+    with et.assert_raises_message(
+      RuntimeError,
+      gpu=gpu,
+      tpu="""int_mm(): expected the mat2 argument to be a 2D tensor (matrix), got 3D of shape [64, 16, 1]""",
+    ):
+      if use_out:
+        torch.ops.aten._int_mm.out(a, b, out=out)
+      else:
+        torch._int_mm(a, b)
+
+  @parameterized.parameters(False, True)
+  def test_int_mm_invalid_contracting_dimensions(self, use_out):
+    a = torch.ones((32, 64), dtype=torch.int8, device=et.device())
+    b = torch.ones((64, 16), dtype=torch.int8, device=et.device())[:32]
+    out = torch.empty((32, 16), dtype=torch.int32, device=et.device())
+    if utils.get_torch_version() >= (2, 15):
+      gpu = """_int_mm: mat1 and mat2 shapes cannot be multiplied (32x64 and 32x16)"""
+    else:
+      gpu = """self.size(1) needs to match mat2.size(0) but got 64 and 32"""
+    with et.assert_raises_message(
+      RuntimeError,
+      gpu=gpu,
+      tpu="""int_mm(): expected the two arguments' 2D shapes to be compatible for matrix multiplication, got [32, 64] and [32, 16]""",
+    ):
+      if use_out:
+        torch.ops.aten._int_mm.out(a, b, out=out)
+      else:
+        torch._int_mm(a, b)
+
+  @parameterized.product(
+    use_out=[False, True],
+    arg=["self", "mat2"],
+    dtype=[torch.int32, torch.float32],
+  )
+  def test_int_mm_invalid_input_dtype(self, use_out, arg, dtype):
+    a = torch.ones((32, 64), dtype=torch.int8, device=et.device())
+    b = torch.ones((64, 16), dtype=torch.int8, device=et.device())
+    if arg == "self":
+      a = a.to(dtype)
+    else:
+      b = b.to(dtype)
+    out = torch.empty((32, 16), dtype=torch.int32, device=et.device())
+    dtype_name = "int32" if dtype == torch.int32 else "float32"
+    gpu_dtype_name = "Int" if dtype == torch.int32 else "Float"
+    with et.assert_raises_message(
+      RuntimeError,
+      gpu=f"""expected scalar type Char but found {gpu_dtype_name}""",
+      tpu=f"""int_mm(): expected {arg} dtype to be int8, got {dtype_name}""",
+    ):
+      if use_out:
+        torch.ops.aten._int_mm.out(a, b, out=out)
+      else:
+        torch._int_mm(a, b)
+
+  def test_int_mm_invalid_out_dtype(self):
+    a = torch.ones((32, 64), dtype=torch.int8, device=et.device())
+    b = torch.ones((64, 16), dtype=torch.int8, device=et.device())
+    out = torch.empty((32, 16), dtype=torch.int32, device=et.device())
+    out = out.to(torch.float32)
+    with et.assert_raises_message(
+      RuntimeError,
+      gpu="""Expected result dtype to be of type kInt but got float""",
+      tpu="""int_mm(): expected the output dtype to be int32, got float32""",
+    ):
+      torch.ops.aten._int_mm.out(a, b, out=out)
+
+  def test_int_mm_invalid_out_rank(self):
+    a = torch.ones((32, 64), dtype=torch.int8, device=et.device())
+    b = torch.ones((64, 16), dtype=torch.int8, device=et.device())
+    out = torch.empty((32, 16), dtype=torch.int32, device=et.device())
+    out = out.unsqueeze(-1)
+    with et.assert_raises_message(
+      RuntimeError,
+      gpu="""Expected result to be of dimension 2 but got 3""",
+      tpu="""int_mm(): expected the out argument to be a 2D tensor (matrix), got 3D of shape [32, 16, 1]""",
+    ):
+      torch.ops.aten._int_mm.out(a, b, out=out)
+
+  def test_int_mm_invalid_out_empty(self):
+    a = torch.ones((32, 64), dtype=torch.int8, device=et.device())
+    b = torch.ones((64, 16), dtype=torch.int8, device=et.device())
+    out = torch.empty((0,), dtype=torch.int32, device=et.device())
+    with et.assert_raises_message(
+      RuntimeError,
+      gpu="""Expected result.size(0) to be 32 but got 0""",
+      tpu="""int_mm(): expected the out argument to be a 2D tensor (matrix), got 1D of shape [0]""",
+    ):
+      torch.ops.aten._int_mm.out(a, b, out=out)
+
+  def test_int_mm_invalid_out_rows(self):
+    a = torch.ones((32, 64), dtype=torch.int8, device=et.device())
+    b = torch.ones((64, 16), dtype=torch.int8, device=et.device())
+    out = torch.empty((33, 16), dtype=torch.int32, device=et.device())
+    with et.assert_raises_message(
+      RuntimeError,
+      gpu="""Expected result.size(0) to be 32 but got 33""",
+      tpu="""int_mm(): expected out shape [32, 16], got [33, 16]""",
+    ):
+      torch.ops.aten._int_mm.out(a, b, out=out)
+
+  def test_int_mm_invalid_out_columns(self):
+    a = torch.ones((32, 64), dtype=torch.int8, device=et.device())
+    b = torch.ones((64, 16), dtype=torch.int8, device=et.device())
+    out = torch.empty((32, 17), dtype=torch.int32, device=et.device())
+    with et.assert_raises_message(
+      RuntimeError,
+      gpu="""Expected result.size(1) to be 16 but got 17""",
+      tpu="""int_mm(): expected out shape [32, 16], got [32, 17]""",
+    ):
+      torch.ops.aten._int_mm.out(a, b, out=out)
+
+  def test_int_mm_invalid_out_non_contiguous(self):
+    a = torch.ones((32, 64), dtype=torch.int8, device=et.device())
+    b = torch.ones((64, 16), dtype=torch.int8, device=et.device())
+    out = torch.empty((16, 32), dtype=torch.int32, device=et.device()).t()
+    with et.assert_raises_message(
+      RuntimeError,
+      gpu="""Expected result to be contiguous.""",
+      tpu="""int_mm(): expected out to be contiguous, got non-contiguous tensor""",
+    ):
+      torch.ops.aten._int_mm.out(a, b, out=out)
+
+  @parameterized.named_parameters(
+    ("functional_self", False, "self"),
+    ("functional_mat2", False, "mat2"),
+    ("out_self", True, "self"),
+    ("out_mat2", True, "mat2"),
+    ("out_result", True, "out"),
+  )
+  def test_int_mm_cpu_tensor(self, use_out, cpu_arg):
+    if et.is_on_gpu():
+      self.skipTest("Checks TorchTPU's explicit mixed-device validation")
+    a = torch.ones((32, 64), dtype=torch.int8, device=et.device())
+    b = torch.ones((64, 16), dtype=torch.int8, device=et.device())
+    out = torch.empty((32, 16), dtype=torch.int32, device=et.device())
+    if cpu_arg == "self":
+      a = a.cpu()
+    elif cpu_arg == "mat2":
+      b = b.cpu()
+    else:
+      out = out.cpu()
+    if cpu_arg == "out":
+      message = f"""expected out on {a.device}, got cpu"""
+    else:
+      message = f"""expected both inputs on the same TPU device, got {a.device} and {b.device}"""
+    with et.assert_raises_message(RuntimeError, tpu=f"""int_mm(): {message}"""):
+      if use_out:
+        torch.ops.aten._int_mm.out(a, b, out=out)
+      else:
+        torch._int_mm(a, b)
+
   def test_mm_with_matching_sizes(self):
     """Tests that mm with matching sizes doesn't fail."""
     t1 = torch.ones(2, 3, device=et.device(), dtype=torch.float32)
