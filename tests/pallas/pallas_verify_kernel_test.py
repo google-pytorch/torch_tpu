@@ -5520,6 +5520,7 @@ class KernelVerifierTest(seed_test_utils.RepeatableTest):
         msg=oversized_rep.summary(),
     )
 
+  @test_utils.skip_if_asan("b/585576879: Slow (~185s) in ASAN mode.")
   def test_parallel_grid_order_dependent_int32_schedule_divergence_detected(
       self,
   ):
@@ -6431,6 +6432,7 @@ class KernelVerifierTest(seed_test_utils.RepeatableTest):
     self.assertNotIn(verifier.Phase.AUTOGRAD, rep.checked_phases)
     self.assertEmpty(bwd_calls)
 
+  @test_utils.skip_if_asan("b/585576879: Slow (~140s) in ASAN mode.")
   def test_verify_full_mode_restores_global_and_thread_local_patch_state(self):
     pallas_call_mod = inspect.getmodule(pl.pallas_call)
     assert pallas_call_mod is not None

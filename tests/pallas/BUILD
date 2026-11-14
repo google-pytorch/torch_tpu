@@ -238,6 +238,7 @@ torch_tpu_py_test(
         "//src/torch_tpu/_internal/ops/scaled_mm/kernels:blockwise128_scaled_mm_kernel",
         "//src/torch_tpu/_internal/ops/scaled_mm/kernels:blockwise_scaled_mm_kernel",
         "//src/torch_tpu/_internal/pallas/verify:smt_checker",
+        "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
         "@pypi//jax",
     ],

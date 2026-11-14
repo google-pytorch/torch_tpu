@@ -30,6 +30,7 @@ from torch_tpu._internal.ops.scaled_grouped_mm.kernels import rowwise_scaled_gro
 from torch_tpu._internal.ops.scaled_mm.kernels import blockwise128_scaled_mm_kernel
 from torch_tpu._internal.ops.scaled_mm.kernels import blockwise_scaled_mm_kernel
 from torch_tpu._internal.pallas.verify import smt_checker
+from torch_tpu._internal.utils import test_utils
 from tests import seed_test_utils
 
 jax_op = pallas.jax_op
@@ -203,6 +204,7 @@ class PallasVerifyTorchTpuKernelsTest(seed_test_utils.RepeatableTest):
     for phase in expected_phases:
       self.assertIn(phase, report.checked_phases, msg=report.summary())
 
+  @test_utils.skip_if_asan("b/585577062: Slow / times out in ASAN mode.")
   def test_splash_sdpa_forward_and_backward_kernels_pass_verification(self):
     opts = verifier.VerificationOptions(tpu_version=torch.tpu.TpuVersion.V7)
     batch, seq_len, head_dim = 1, 128, 128
