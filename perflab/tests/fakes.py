@@ -148,10 +148,16 @@ class RecordingOps:
     recompile_on_calls: `await_result` call numbers that count as a recompile.
     session_id_lookups: Number of device-time lookups by xprof session id.
     released: Number of `release_cached_memory` calls.
+    launched: Number of `launch_result` calls. The outputs are not kept, so that
+      tests can count the live outputs.
   """
 
   def __init__(
-      self, peak_mb=None, recompile_on_calls=None, fail_check_on_calls=None
+      self,
+      peak_mb=None,
+      recompile_on_calls=None,
+      fail_check_on_calls=None,
+      allocated_mb=None,
   ):
     self.events = []
     self.awaited = []
@@ -159,10 +165,13 @@ class RecordingOps:
     self.fail_check_on_calls = fail_check_on_calls or set()
     self.reset_count = 0
     self.peak_mb = peak_mb
+    self.allocated_mb = allocated_mb
     self.recompile_on_calls = recompile_on_calls or set()
     self.calls = 0
     self.session_id_lookups = 0
     self.released = 0
+    self.launched = 0
+    self.host_barriers = 0
     self._recompiles = 0
 
   def await_result(self, out):
@@ -171,6 +180,10 @@ class RecordingOps:
     self.calls += 1
     if self.calls in self.recompile_on_calls:
       self._recompiles += 1
+
+  def launch_result(self, out):
+    del out
+    self.launched += 1
 
   def check_result(self, out):
     self.events.append("check")
@@ -188,8 +201,14 @@ class RecordingOps:
   def agree_on_step_count(self, steps):
     return steps
 
+  def host_barrier(self) -> None:
+    self.host_barriers += 1
+
   def peak_memory_mb(self):
     return self.peak_mb
+
+  def allocated_memory_mb(self):
+    return self.allocated_mb
 
   def get_device_time(self, session_id=None, expected_steps=None):
     del session_id, expected_steps
