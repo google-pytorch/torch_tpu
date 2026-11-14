@@ -572,6 +572,10 @@ class TorchCommsTPUCollectivesTest(seed_test_utils.MultiProcessRepeatableTest):
   def test_all_gather_and_all_gather_v(self):
     distributed_utils.gloo_run(_WORLD_SIZE, _worker_all_gather)
 
+  @test_utils.skip_if_tsan(
+      "b/585575105: Times out and reports TSAN data race in"
+      " ProcessGroupGloo::runLoop."
+  )
   def test_all_gather_single(self):
     distributed_utils.gloo_run(_WORLD_SIZE, _worker_all_gather_single)
 

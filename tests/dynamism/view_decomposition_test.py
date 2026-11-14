@@ -212,6 +212,9 @@ class ViewDecompositionTest(seed_test_utils.RepeatableTest):
     self.assertEqual(tensor_base_shape, [16, 20, 8, 64])
     self.assertEqual(tensor_view_ops, [("permute", ([0, 2, 1, 3],))])
 
+  @utils.skip_if_tsan(
+      "b/585575489: Flaky under TSAN (dynamo num_threads state change)."
+  )
   def test_decompose_static_shape_dynamic_stride_slice(self):
     """Tests view decomposition when torch.fx.Node has static shape but dynamic stride."""
     # Dynamic base buffer: dim 2 is dynamic
