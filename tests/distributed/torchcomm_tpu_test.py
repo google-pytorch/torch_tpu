@@ -560,6 +560,10 @@ class TorchCommsTPUTest(seed_test_utils.RepeatableTest):
     comm.finalize()
 
 
+@test_utils.skip_if_tsan(
+    "b/585575105: Times out and reports TSAN data race in"
+    " ProcessGroupGloo::runLoop."
+)
 class TorchCommsTPUCollectivesTest(seed_test_utils.MultiProcessRepeatableTest):
   """Runs each collective across real gloo ranks and checks the results."""
 
@@ -573,10 +577,6 @@ class TorchCommsTPUCollectivesTest(seed_test_utils.MultiProcessRepeatableTest):
     distributed_utils.gloo_run(_WORLD_SIZE, _worker_all_gather)
 
   @test_utils.skip_if_asan("b/585575105: Slow / times out in ASAN mode.")
-  @test_utils.skip_if_tsan(
-      "b/585575105: Times out and reports TSAN data race in"
-      " ProcessGroupGloo::runLoop."
-  )
   def test_all_gather_single(self):
     distributed_utils.gloo_run(_WORLD_SIZE, _worker_all_gather_single)
 
