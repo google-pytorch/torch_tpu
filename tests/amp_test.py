@@ -162,6 +162,23 @@ class AmpTest(seed_test_utils.RepeatableTest):
         [expected_mlir.strip(), expected_mlir_reduced.strip()],
     )
 
+  def test_group_norm_low_precision_input_keeps_input_dtype(self):
+    # nn.GroupNorm keeps f32 affine parameters while its input is bf16 (e.g.
+    # an autocast activation). CPU and the native_group_norm meta function
+    # return the input dtype; TPU must match, both eagerly and under autocast.
+    gn_cpu = torch.nn.GroupNorm(4, 64)
+    torch.nn.init.normal_(gn_cpu.weight)
+    torch.nn.init.normal_(gn_cpu.bias)
+    x_cpu = torch.randn(3, 64, 37).to(torch.bfloat16)
+    expected = gn_cpu(x_cpu)
+    gn_tpu = torch.nn.GroupNorm(4, 64).to("tpu")
+    gn_tpu.load_state_dict(gn_cpu.state_dict())
+    actual = gn_tpu(x_cpu.to("tpu"))
+    self.assertEqual(actual.dtype, expected.dtype)
+    torch.testing.assert_close(actual.cpu(), expected)
+    with torch.autocast("tpu", dtype=torch.bfloat16):
+      self.assertEqual(gn_tpu(x_cpu.to("tpu")).dtype, torch.bfloat16)
+
 
 if __name__ == "__main__":
   absltest.main()
