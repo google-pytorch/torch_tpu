@@ -333,8 +333,13 @@ void CompilationCache::EvictAll() {
   // waiting 1 second between iterations to give in-flight compilations a
   // chance to complete and update the cache.
   //
-  // We chose a busy-wait loop as the alternative is much more complex.
-  for (; !keys_to_evict.empty(); absl::SleepFor(absl::Seconds(1))) {
+  // We chose a busy-wait loop as the alternative is much more complex. Only
+  // wait if a pass left keys behind: most calls evict everything in the first
+  // pass and must not pay the wait.
+  for (bool first_pass = true; !keys_to_evict.empty(); first_pass = false) {
+    if (!first_pass) {
+      absl::SleepFor(absl::Seconds(1));
+    }
     absl::MutexLock lock(cache_mutex_);
     const auto keys = keys_to_evict;
     // Loop over a copy of keys_to_evict, as we will modify it during

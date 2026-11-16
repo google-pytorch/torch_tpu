@@ -51,6 +51,17 @@
 namespace torch_tpu {
 namespace {
 
+// Removes the persistent cache entry at `path`. The entry is written after the
+// in-memory entry becomes ready, so it may still be in flight when EvictAll()
+// returns: wait for it to land first.
+void RemoveCacheEntry(const std::string& path) {
+  const absl::Time deadline = absl::Now() + absl::Seconds(60);
+  while (access(path.c_str(), F_OK) != 0 && absl::Now() < deadline) {
+    absl::SleepFor(absl::Milliseconds(10));
+  }
+  ASSERT_EQ(unlink(path.c_str()), 0) << path;
+}
+
 class TieredCompilationCacheTest : public testing::Test {
  protected:
   static void SetUpTestSuite() {
@@ -114,7 +125,7 @@ TEST_F(TieredCompilationCacheTest, UnboundedDynamicCacheTier2Hit) {
   // Evict the in-memory cache, and remove the tier-3 entry so that only a
   // tier-2 hit can avoid recompilation.
   cache.EvictAll();
-  ASSERT_EQ(unlink(GetTier3CacheEntryPath(key).c_str()), 0);
+  RemoveCacheEntry(GetTier3CacheEntryPath(key));
 
   EXPECT_TRUE(GetOrCompileDummy(cache, lookup_key).ok());
   EXPECT_EQ(cache.GetCacheStats().num_compilations, 1);
@@ -131,7 +142,7 @@ TEST_F(TieredCompilationCacheTest, UnboundedDynamicCacheTier3Hit) {
   // Evict the in-memory cache, and remove the tier-2 entry so that the lookup
   // goes to the tier-3 cache.
   cache.EvictAll();
-  ASSERT_EQ(unlink(GetTier2CacheEntryPath(key).c_str()), 0);
+  RemoveCacheEntry(GetTier2CacheEntryPath(key));
 
   EXPECT_TRUE(GetOrCompileDummy(cache, lookup_key).ok());
   // The tier-3 read races a local backup compilation, which may or may not
@@ -142,7 +153,7 @@ TEST_F(TieredCompilationCacheTest, UnboundedDynamicCacheTier3Hit) {
   // cache again and remove the tier-3 entry so that only the backfilled tier-2
   // entry can avoid recompilation.
   cache.EvictAll();
-  ASSERT_EQ(unlink(GetTier3CacheEntryPath(key).c_str()), 0);
+  RemoveCacheEntry(GetTier3CacheEntryPath(key));
 
   EXPECT_TRUE(GetOrCompileDummy(cache, lookup_key).ok());
   // At most the initial compilation and the backup compilation above.
