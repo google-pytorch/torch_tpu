@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -24,7 +25,6 @@
 #include "absl/log/absl_log.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
-#include "c10/util/string_view.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/layout_utils.h"
@@ -48,8 +48,8 @@ namespace torch_tpu {
 namespace py = pybind11;
 namespace {
 
-void PyRegisterCustomKernel(c10::string_view name, c10::string_view kernel_key,
-                            c10::string_view mlir_module_string) {
+void PyRegisterCustomKernel(std::string_view name, std::string_view kernel_key,
+                            std::string_view mlir_module_string) {
   if (RegisterCustomKernel(name, kernel_key, mlir_module_string)) {
     ABSL_VLOG(1) << "Registered new custom kernel: name=" << name
                  << ", kernel_key=" << kernel_key;
@@ -59,7 +59,7 @@ void PyRegisterCustomKernel(c10::string_view name, c10::string_view kernel_key,
   }
 }
 
-bool PyLookupCustomKernel(c10::string_view name, c10::string_view kernel_key) {
+bool PyLookupCustomKernel(std::string_view name, std::string_view kernel_key) {
   return LookupCustomKernel(name, kernel_key);
 }
 
@@ -129,7 +129,7 @@ bool PyLookupCustomKernel(c10::string_view name, c10::string_view kernel_key) {
 //   out = results[0]
 //   ```
 std::vector<at::Tensor> PyCallCustomKernel(
-    c10::string_view name, c10::string_view kernel_key,
+    std::string_view name, std::string_view kernel_key,
     const std::vector<at::Tensor>& inputs,
     const std::vector<at::Tensor>& output_shapes,
     // Use std::vector as pybind has built-in support for it.

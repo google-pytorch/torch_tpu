@@ -19,6 +19,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string_view>
 #include <utility>
 
 #include "ATen/core/ATen_fwd.h"
@@ -27,7 +28,6 @@
 #include "absl/log/absl_check.h"
 #include "absl/status/statusor.h"
 #include "c10/core/ScalarType.h"
-#include "c10/util/string_view.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/to_string.h"
@@ -62,9 +62,9 @@ enum class UpsampleMode {
 constexpr int64_t kBilinearHeightDim = 2;
 constexpr int64_t kBilinearWidthDim = 3;
 
-c10::string_view GetSpatialEinsumEquation(int64_t rank, int64_t spatial_dim,
+std::string_view GetSpatialEinsumEquation(int64_t rank, int64_t spatial_dim,
                                           bool is_backward) {
-  static constexpr c10::string_view kEquations[3][3][2] = {
+  static constexpr std::string_view kEquations[3][3][2] = {
       // rank 3 (N, C, W)
       {{"ncw,ow->nco", "nco,ow->ncw"}, {}, {}},
       // rank 4 (N, C, H, W)
@@ -179,7 +179,7 @@ absl::StatusOr<mlir::MlirOp> InterpolateSpatialDim(
   const mlir::Type calc_type = GetTensorTypeOrDie(operand).getElementType();
   mlir::MlirOp matrix = BuildInterpolationMatrix(
       builder, in_size, out_size, align_corners, scale, calc_type);
-  const c10::string_view equation =
+  const std::string_view equation =
       GetSpatialEinsumEquation(/*rank=*/4, spatial_dim, is_backward);
   return BuildEinsumShlo({operand, matrix}, equation, precision);
 }
@@ -283,7 +283,7 @@ absl::StatusOr<mlir::MlirOp> InterpolateNearestSpatialDim(
   const mlir::Type calc_type = GetTensorTypeOrDie(operand).getElementType();
   mlir::MlirOp matrix = BuildNearestInterpolationMatrix(
       builder, in_size, out_size, scale, mode, calc_type);
-  const c10::string_view equation =
+  const std::string_view equation =
       GetSpatialEinsumEquation(rank, spatial_dim, is_backward);
   return BuildEinsumShlo({operand, matrix}, equation, precision);
 }

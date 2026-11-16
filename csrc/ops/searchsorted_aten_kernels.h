@@ -17,36 +17,37 @@
 #ifndef TORCH_TPU_CSRC_OPS_SEARCHSORTED_ATEN_KERNELS_H_
 #define TORCH_TPU_CSRC_OPS_SEARCHSORTED_ATEN_KERNELS_H_
 
+#include <string_view>
+
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
 #include "c10/util/Optional.h"
-#include "c10/util/string_view.h"
 
 namespace torch_tpu {
 
 at::Tensor AtenSearchsortedTensor(const at::Tensor& sorted_sequence,
                                   const at::Tensor& values, bool out_int32,
                                   bool right,
-                                  c10::optional<c10::string_view> side,
+                                  c10::optional<std::string_view> side,
                                   const c10::optional<at::Tensor>& sorter);
 
 at::Tensor& AtenSearchsortedTensorOut(const at::Tensor& sorted_sequence,
                                       const at::Tensor& values, bool out_int32,
                                       bool right,
-                                      c10::optional<c10::string_view> side,
+                                      c10::optional<std::string_view> side,
                                       const c10::optional<at::Tensor>& sorter,
                                       at::Tensor& out);
 
 at::Tensor AtenSearchsortedScalar(const at::Tensor& sorted_sequence,
                                   const at::Scalar& value, bool out_int32,
                                   bool right,
-                                  c10::optional<c10::string_view> side,
+                                  c10::optional<std::string_view> side,
                                   const c10::optional<at::Tensor>& sorter);
 
 at::Tensor& AtenSearchsortedScalarOut(const at::Tensor& sorted_sequence,
                                       const at::Scalar& value, bool out_int32,
                                       bool right,
-                                      c10::optional<c10::string_view> side,
+                                      c10::optional<std::string_view> side,
                                       const c10::optional<at::Tensor>& sorter,
                                       at::Tensor& out);
 

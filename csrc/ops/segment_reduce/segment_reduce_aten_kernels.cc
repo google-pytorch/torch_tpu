@@ -29,7 +29,6 @@
 #include "ATen/core/TensorBody.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
-#include "c10/util/string_view.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
@@ -456,7 +455,7 @@ absl::StatusOr<mlir::MlirOp> BuildSegmentReduceShlo(
 
 }  // namespace
 
-at::Tensor AtenSegmentReduce(const at::Tensor& data, c10::string_view reduce,
+at::Tensor AtenSegmentReduce(const at::Tensor& data, std::string_view reduce,
                              const std::optional<at::Tensor>& lengths,
                              const std::optional<at::Tensor>& indices,
                              const std::optional<at::Tensor>& offsets,

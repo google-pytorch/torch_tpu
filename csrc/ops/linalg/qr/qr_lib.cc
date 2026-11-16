@@ -18,10 +18,10 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <string_view>
 
 #include "ATen/core/ATen_fwd.h"
 #include "absl/status/statusor.h"
-#include "c10/util/string_view.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/utils.h"
@@ -95,7 +95,7 @@ Dimensions ConcatBatchAndMatrixDims(llvm::ArrayRef<int64_t> batch_dims,
 absl::StatusOr<MlirOpResults<2>> BuildEmptyQrShlo(
     mlir::MlirBuilder& builder, mlir::ElementType element_type, int64_t m,
     int64_t n, bool full_matrices, llvm::ArrayRef<int64_t> batch_dims,
-    c10::string_view mode) {
+    std::string_view mode) {
   const int64_t k = full_matrices ? m : std::min(m, n);
 
   // Make Q. If mode is "r", Q is an empty matrix. Otherwise, Q is an identity
@@ -202,7 +202,7 @@ absl::StatusOr<MlirOpResults<2>> BuildGeqrfShlo(mlir::MlirOp input) {
 }
 
 absl::StatusOr<MlirOpResults<2>> BuildQrShlo(mlir::MlirOp input,
-                                             c10::string_view mode) {
+                                             std::string_view mode) {
   const mlir::RankedTensorType a_type = GetTensorTypeOrDie(input);
   const int64_t a_rank = a_type.getRank();
   const llvm::ArrayRef<int64_t> a_shape = a_type.getShape();

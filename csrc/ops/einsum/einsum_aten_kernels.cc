@@ -47,7 +47,6 @@
 #include "c10/core/SymInt.h"
 #include "c10/core/TensorImpl.h"
 #include "c10/util/intrusive_ptr.h"
-#include "c10/util/string_view.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
@@ -158,7 +157,7 @@ struct ParsedEinsum {
 };
 
 absl::Status ParseSingleLhsChar(unsigned char label, size_t& i,
-                                c10::string_view lhs, size_t num_ops,
+                                std::string_view lhs, size_t num_ops,
                                 size_t& curr_op, bool& ell_in_input,
                                 std::vector<std::vector<uint8_t>>& op_labels) {
   switch (label) {
@@ -198,7 +197,7 @@ absl::Status ParseSingleLhsChar(unsigned char label, size_t& i,
 }
 
 absl::StatusOr<std::vector<std::vector<uint8_t>>> ParseLhsSubscripts(
-    c10::string_view lhs, size_t num_ops) {
+    std::string_view lhs, size_t num_ops) {
   std::vector<std::vector<uint8_t>> op_labels(num_ops);
   bool ell_in_input = false;
   size_t curr_op = 0;
@@ -271,7 +270,7 @@ Indices ParseImplicitRhsSubscripts(const Dimensions& label_count,
 }
 
 absl::Status ParseSingleRhsChar(
-    unsigned char label, size_t& i, c10::string_view rhs, size_t lhs_size,
+    unsigned char label, size_t& i, std::string_view rhs, size_t lhs_size,
     const Dimensions& label_count, int64_t ell_num_dim, int64_t& perm_index,
     bool& ell_in_output, Dimensions& label_perm_index, Indices& rhs_labels) {
   switch (label) {
@@ -315,7 +314,7 @@ absl::Status ParseSingleRhsChar(
 }
 
 absl::StatusOr<Indices> ParseExplicitRhsSubscripts(
-    c10::string_view rhs, size_t lhs_size, const Dimensions& label_count,
+    std::string_view rhs, size_t lhs_size, const Dimensions& label_count,
     int64_t ell_num_dim) {
   Dimensions label_perm_index(kTotalLabels, -1);
   int64_t perm_index = 0;
@@ -476,7 +475,7 @@ void PopulateLabelToCharMap(const Dimensions& label_count, int64_t ell_num_dim,
 }
 
 absl::StatusOr<ParsedEinsum> ParseEinsumEquationFromShapes(
-    c10::string_view equation, absl::Span<const Dimensions> operand_shapes,
+    std::string_view equation, absl::Span<const Dimensions> operand_shapes,
     at::OptionalIntArrayRef path) {
   TT_RET_CHECK(!operand_shapes.empty(), error::kInvalidArgument)
       << "expected at least one operand, got 0";
@@ -490,7 +489,7 @@ absl::StatusOr<ParsedEinsum> ParseEinsumEquationFromShapes(
   }
 
   const size_t arrow_pos = equation.find("->");
-  const c10::string_view lhs = equation.substr(0, arrow_pos);
+  const std::string_view lhs = equation.substr(0, arrow_pos);
   TT_ASSIGN_OR_RETURN(const std::vector<std::vector<uint8_t>> op_labels,
                       ParseLhsSubscripts(lhs, num_ops));
 
@@ -500,7 +499,7 @@ absl::StatusOr<ParsedEinsum> ParseEinsumEquationFromShapes(
                                                 label_count, ell_num_dim));
 
   Indices rhs_labels;
-  if (arrow_pos == c10::string_view::npos) {
+  if (arrow_pos == std::string_view::npos) {
     rhs_labels = ParseImplicitRhsSubscripts(label_count, ell_num_dim);
   } else {
     TT_ASSIGN_OR_RETURN(rhs_labels, ParseExplicitRhsSubscripts(
@@ -761,7 +760,7 @@ absl::Status ValidateAndResolveOperandDtypes(at::TensorList operands,
 
 // Parses and validates the einsum equation, operand shapes/dtypes, and
 // optional contraction path.
-absl::StatusOr<ParsedEinsum> ParseEinsumEquation(c10::string_view equation,
+absl::StatusOr<ParsedEinsum> ParseEinsumEquation(std::string_view equation,
                                                  at::TensorList operands,
                                                  at::OptionalIntArrayRef path) {
   std::vector<Dimensions> operand_shapes;
@@ -1364,7 +1363,7 @@ struct EinsumBackwardNode : public torch::autograd::Node {
 
 absl::StatusOr<mlir::MlirOp> BuildEinsumShlo(
     const absl::Span<const mlir::MlirOp> inputs,
-    const c10::string_view equation,
+    const std::string_view equation,
     const mlir::stablehlo::Precision precision) {
   std::vector<Dimensions> operand_shapes;
   operand_shapes.reserve(inputs.size());
@@ -1389,7 +1388,7 @@ absl::StatusOr<mlir::MlirOp> BuildEinsumShlo(
   return BuildEinsumShlo(inputs, builder, parsed, out_dtype, precision);
 }
 
-at::Tensor AtenEinsumAutograd(c10::string_view equation, at::TensorList tensors,
+at::Tensor AtenEinsumAutograd(std::string_view equation, at::TensorList tensors,
                               at::OptionalIntArrayRef path) {
   if (ShouldFallbackToNativeEinsum(tensors)) {
     return at::native::einsum(equation, tensors, path);
@@ -1452,7 +1451,7 @@ at::Tensor AtenEinsumAutograd(c10::string_view equation, at::TensorList tensors,
   return output;
 }
 
-at::Tensor AtenEinsum(c10::string_view equation, at::TensorList tensors,
+at::Tensor AtenEinsum(std::string_view equation, at::TensorList tensors,
                       at::OptionalIntArrayRef path) {
   TT_KERNEL(OpName::kEinsum, param_keys, (equation, tensors, path), {
     TT_ASSIGN_OR_THROW(ParsedEinsum parsed,

@@ -17,17 +17,18 @@
 #ifndef TORCH_TPU_CSRC_OPS_GELU_GELU_ATEN_KERNELS_H_
 #define TORCH_TPU_CSRC_OPS_GELU_GELU_ATEN_KERNELS_H_
 
+#include <string_view>
+
 #include "ATen/core/TensorBody.h"
-#include "c10/util/string_view.h"
 
 namespace torch_tpu {
 
-at::Tensor AtenGelu(const at::Tensor& self, c10::string_view approximate);
-at::Tensor& AtenGeluOut(const at::Tensor& self, c10::string_view approximate,
+at::Tensor AtenGelu(const at::Tensor& self, std::string_view approximate);
+at::Tensor& AtenGeluOut(const at::Tensor& self, std::string_view approximate,
                         at::Tensor& out);
 at::Tensor& AtenGeluBackwardGradInput(const at::Tensor& grad_output,
                                       const at::Tensor& self,
-                                      c10::string_view approximate,
+                                      std::string_view approximate,
                                       at::Tensor& grad_input);
 }  // namespace torch_tpu
 

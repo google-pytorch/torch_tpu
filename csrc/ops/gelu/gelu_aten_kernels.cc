@@ -17,12 +17,12 @@
 #include "csrc/ops/gelu/gelu_aten_kernels.h"
 
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include "ATen/core/TensorBody.h"
 #include "absl/status/statusor.h"
 #include "c10/core/ScalarType.h"
-#include "c10/util/string_view.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -42,7 +42,7 @@
 namespace torch_tpu {
 namespace {
 
-MlirUnaryOpBuilder GetGeluFunctional(c10::string_view approximate,
+MlirUnaryOpBuilder GetGeluFunctional(std::string_view approximate,
                                      mlir::ElementType output_dtype) {
   return [approximate = static_cast<std::string>(approximate),
           output_dtype](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
@@ -52,7 +52,7 @@ MlirUnaryOpBuilder GetGeluFunctional(c10::string_view approximate,
 
 }  // namespace
 
-at::Tensor AtenGelu(const at::Tensor& self, c10::string_view approximate) {
+at::Tensor AtenGelu(const at::Tensor& self, std::string_view approximate) {
   TT_KERNEL(OpName::kGelu, param_keys, (self, approximate), {
     TT_CHECK_THROW(approximate == "none" || approximate == "tanh",
                    error::kInvalidArgument)
@@ -75,7 +75,7 @@ at::Tensor AtenGelu(const at::Tensor& self, c10::string_view approximate) {
   });
 }
 
-at::Tensor& AtenGeluOut(const at::Tensor& self, c10::string_view approximate,
+at::Tensor& AtenGeluOut(const at::Tensor& self, std::string_view approximate,
                         at::Tensor& out) {
   TT_KERNEL(OpName::kGeluOut, param_keys, (self, approximate, out), {
     TT_CHECK_THROW(approximate == "none" || approximate == "tanh",
@@ -101,7 +101,7 @@ at::Tensor& AtenGeluOut(const at::Tensor& self, c10::string_view approximate,
 
 at::Tensor& AtenGeluBackwardGradInput(const at::Tensor& grad_output,
                                       const at::Tensor& self,
-                                      c10::string_view approximate,
+                                      std::string_view approximate,
                                       at::Tensor& grad_input) {
   TT_KERNEL(
       OpName::kGeluBackwardGradInput, param_keys,

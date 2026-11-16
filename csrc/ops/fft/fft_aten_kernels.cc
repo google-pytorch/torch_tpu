@@ -32,7 +32,6 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "c10/core/ScalarType.h"
-#include "c10/util/string_view.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
@@ -685,53 +684,53 @@ at::Tensor& AtenFftC2rOut(const at::Tensor& self, at::IntArrayRef dim,
 }
 
 at::Tensor AtenFftFft(const at::Tensor& self, std::optional<c10::SymInt> n,
-                      int64_t dim, std::optional<c10::string_view> norm) {
+                      int64_t dim, std::optional<std::string_view> norm) {
   return at::native::fft_fft_symint(PromoteToFloatIfBFloat16(self), n, dim,
                                     norm);
 }
 
 at::Tensor& AtenFftFftOut(const at::Tensor& self, std::optional<c10::SymInt> n,
-                          int64_t dim, std::optional<c10::string_view> norm,
+                          int64_t dim, std::optional<std::string_view> norm,
                           at::Tensor& out) {
   return at::native::fft_fft_symint_out(PromoteToFloatIfBFloat16(self), n, dim,
                                         norm, out);
 }
 
 at::Tensor AtenFftIfft(const at::Tensor& self, std::optional<c10::SymInt> n,
-                       int64_t dim, std::optional<c10::string_view> norm) {
+                       int64_t dim, std::optional<std::string_view> norm) {
   return at::native::fft_ifft_symint(PromoteToFloatIfBFloat16(self), n, dim,
                                      norm);
 }
 
 at::Tensor& AtenFftIfftOut(const at::Tensor& self, std::optional<c10::SymInt> n,
-                           int64_t dim, std::optional<c10::string_view> norm,
+                           int64_t dim, std::optional<std::string_view> norm,
                            at::Tensor& out) {
   return at::native::fft_ifft_symint_out(PromoteToFloatIfBFloat16(self), n, dim,
                                          norm, out);
 }
 
 at::Tensor AtenFftRfft(const at::Tensor& self, std::optional<c10::SymInt> n,
-                       int64_t dim, std::optional<c10::string_view> norm) {
+                       int64_t dim, std::optional<std::string_view> norm) {
   return at::native::fft_rfft_symint(PromoteToFloatIfBFloat16(self), n, dim,
                                      norm);
 }
 
 at::Tensor& AtenFftRfftOut(const at::Tensor& self, std::optional<c10::SymInt> n,
-                           int64_t dim, std::optional<c10::string_view> norm,
+                           int64_t dim, std::optional<std::string_view> norm,
                            at::Tensor& out) {
   return at::native::fft_rfft_symint_out(PromoteToFloatIfBFloat16(self), n, dim,
                                          norm, out);
 }
 
 at::Tensor AtenFftIrfft(const at::Tensor& self, std::optional<c10::SymInt> n,
-                        int64_t dim, std::optional<c10::string_view> norm) {
+                        int64_t dim, std::optional<std::string_view> norm) {
   return at::native::fft_irfft_symint(PromoteToFloatIfBFloat16(self), n, dim,
                                       norm);
 }
 
 at::Tensor& AtenFftIrfftOut(const at::Tensor& self,
                             std::optional<c10::SymInt> n, int64_t dim,
-                            std::optional<c10::string_view> norm,
+                            std::optional<std::string_view> norm,
                             at::Tensor& out) {
   return at::native::fft_irfft_symint_out(PromoteToFloatIfBFloat16(self), n,
                                           dim, norm, out);

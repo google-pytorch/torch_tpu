@@ -50,7 +50,6 @@ torch_tpu_cc_library(
         "//shims/pybind11",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
-        "//shims/torch/c10/util:base_headers",
         "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/types:span",

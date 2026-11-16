@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <string_view>
 #include <utility>
 
 #include "ATen/core/ATen_fwd.h"
@@ -26,7 +27,6 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "c10/core/SymIntArrayRef.h"
-#include "c10/util/string_view.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
@@ -63,7 +63,7 @@ enum class PoolingDirection : bool {
   kBackward = true,
 };
 
-c10::string_view GetAdaptiveAvgPoolEinsumEquation(
+std::string_view GetAdaptiveAvgPoolEinsumEquation(
     const int64_t spatial_dim_count, const int64_t dim,
     const PoolingDirection direction) {
   if (spatial_dim_count == 2) {
