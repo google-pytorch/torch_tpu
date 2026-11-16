@@ -16,9 +16,11 @@
 
 #include "csrc/eager/tensor_to_buffer.h"
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -30,6 +32,8 @@
 #include "absl/algorithm/container.h"
 #include "absl/base/no_destructor.h"
 #include "absl/base/nullability.h"
+#include "absl/base/optimization.h"
+#include "absl/container/flat_hash_set.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
@@ -57,9 +61,11 @@
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/layout_utils.h"
+#include "csrc/common/shape.h"
 #include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
 #include "csrc/common/warnings.h"
+#include "csrc/eager/current_stream.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/device_buffer_utils.h"
 #include "csrc/eager/host_allocator.h"
@@ -76,7 +82,42 @@
 
 namespace torch_tpu {
 
+// A tensor storage that existed before graph capture and was read or written
+// during capture.
+struct PreexistingCapturedStorage {
+  c10::Storage storage;
+  // The DeviceBufferRef held by `storage` when capture first accessed it.
+  DeviceBufferRef initial_buffer;
+  // The placeholder installed on the first read of `storage`, if it was read
+  // before being written.
+  std::optional<DeviceBufferRef> placeholder;
+};
+
+// Tracks the tensor storages accessed during a graph capture on its owner
+// thread.
+//
+// Every tracked c10::StorageImpl is held by a strong reference until capture
+// ends, so that its address cannot be reused by a different storage.
+struct GraphCaptureStorageState {
+  // The stream that capture records operations from.
+  DeviceStreamId capture_stream;
+  // Storages that existed before capture, in the order they were first
+  // accessed.
+  std::vector<PreexistingCapturedStorage> preexisting;
+  absl::flat_hash_set<const c10::StorageImpl*> preexisting_impls;
+  // Storages created during capture, in creation order. At the end of capture,
+  // a storage that is referenced only from here was freed during capture.
+  std::vector<c10::Storage> created;
+  absl::flat_hash_set<const c10::StorageImpl*> created_impls;
+};
+
 namespace {
+
+// The storage tracking state of the graph capture that the current thread
+// owns, if any. Not owning: the graph capture keeps the state alive until
+// EndGraphCaptureStorageTracking() clears this pointer.
+thread_local  // CPP_THREAD_LOCAL_OK=ownership stays on the capturing thread
+    GraphCaptureStorageState* current_thread_capture_storage = nullptr;
 
 // Records that a DeviceBufferRef has one more c10::DataPtr using it.
 void AddDataPtrAlias(const DeviceBufferRef& buffer_ref) {
@@ -100,7 +141,73 @@ void DeleteDeviceBufferRef(void* ctx_ptr) {
   delete ref_ptr;
 }
 
-// Overwrites the referent of the data_ptr to be the new buffer_ref.
+// Returns the storage tracking state of the graph capture that the current
+// thread owns, or nullptr if the current thread does not capture a graph.
+GraphCaptureStorageState* absl_nullable GetCurrentCaptureStorageState() {
+  return current_thread_capture_storage;
+}
+
+// Returns the DeviceBufferRef slot that `storage` holds via its c10::DataPtr.
+DeviceBufferRef& GetStorageSlot(const c10::Storage& storage) {
+  DeviceBufferRef* const slot =
+      static_cast<DeviceBufferRef*>(storage.data_ptr().get());
+  ABSL_CHECK(slot)  // CRASH_OK
+      << "tensor storage has a null DeviceBufferRef* via c10::DataPtr::get()";
+  return *slot;
+}
+
+// Replaces the DeviceBufferRef in `slot` with `new_ref`.
+void ReplaceSlotBuffer(DeviceBufferRef& slot, DeviceBufferRef new_ref) {
+  RemoveDataPtrAlias(slot);
+  AddDataPtrAlias(new_ref);
+  slot = std::move(new_ref);
+}
+
+// Returns true if `storage` existed before capture and capture has not
+// accessed it yet.
+bool IsUntrackedPreexistingStorage(const GraphCaptureStorageState& state,
+                                   const c10::Storage& storage) {
+  const c10::StorageImpl* const impl = storage.unsafeGetStorageImpl();
+  return !state.created_impls.contains(impl) &&
+         !state.preexisting_impls.contains(impl);
+}
+
+// Starts tracking `storage`, which existed before capture and holds
+// `initial_buffer`.
+void TrackPreexistingStorage(GraphCaptureStorageState& state,
+                             const c10::Storage& storage,
+                             DeviceBufferRef initial_buffer,
+                             std::optional<DeviceBufferRef> placeholder) {
+  state.preexisting_impls.insert(storage.unsafeGetStorageImpl());
+  state.preexisting.push_back(
+      PreexistingCapturedStorage{.storage = storage,
+                                 .initial_buffer = std::move(initial_buffer),
+                                 .placeholder = std::move(placeholder)});
+}
+
+// Replaces `slot`, the buffer of `storage`, with a placeholder, so that the
+// captured graph reads the contents of `storage` at replay time instead of
+// baking in its current buffer. `storage` must be an untracked storage that
+// existed before capture.
+//
+absl::Status InstallCapturePlaceholder(GraphCaptureStorageState& state,
+                                       const c10::Storage& storage,
+                                       DeviceBufferRef& slot) {
+  // Placeholders represent fixed-shape storage slots at replay time.
+  TT_ASSIGN_OR_RETURN(
+      DeviceBufferRef placeholder,
+      DeviceBufferList::CreatePendingExecution(
+          Shape(CopyIntVector(slot.dimensions()), slot.element_type()),
+          slot.device_index(), slot.stream_id()));
+  if (slot.is_pinned_host()) {
+    placeholder.set_is_pinned_host();
+  }
+  TrackPreexistingStorage(state, storage, slot, placeholder);
+  ReplaceSlotBuffer(slot, std::move(placeholder));
+  return absl::OkStatus();
+}
+
+// Overwrites the referent of the storage's data_ptr to be the new buffer_ref.
 //
 // This does *not* modify the ctx_ or deleter of the data_ptr. This is because
 // PyTorch will sometimes create "borrowing" DataPtrs, which share the data_
@@ -112,16 +219,18 @@ void DeleteDeviceBufferRef(void* ctx_ptr) {
 // this means that the address of the data_ must be unchanged, but needs to be
 // replaced with the SharedDeviceBufferList and list index of the new
 // buffer_ref so that it references the updated data.
-void OverwriteDataPtr(const c10::DataPtr& data_ptr,
-                      DeviceBufferRef&& buffer_ref) {
-  DeviceBufferRef* const old_ref_ptr =
-      static_cast<DeviceBufferRef*>(data_ptr.get());
-  ABSL_CHECK(old_ref_ptr)  // CRASH_OK
-      << "tensor storage has a null DeviceBufferRef* via c10::DataPtr::get()";
-  RemoveDataPtrAlias(*old_ref_ptr);
-  AddDataPtrAlias(buffer_ref);
-
-  *old_ref_ptr = std::move(buffer_ref);
+absl::Status OverwriteDataPtr(const c10::Storage& storage,
+                              DeviceBufferRef&& buffer_ref) {
+  DeviceBufferRef& slot = GetStorageSlot(storage);
+  if (GraphCaptureStorageState* const state = GetCurrentCaptureStorageState();
+      ABSL_PREDICT_FALSE(state != nullptr)) {
+    if (IsUntrackedPreexistingStorage(*state, storage)) {
+      TrackPreexistingStorage(*state, storage, slot,
+                              /*placeholder=*/std::nullopt);
+    }
+  }
+  ReplaceSlotBuffer(slot, std::move(buffer_ref));
+  return absl::OkStatus();
 }
 
 }  // namespace
@@ -231,7 +340,8 @@ absl::Status AssignBufferToAtTensor(DeviceBufferRef result_buf,
     // Overwrite the c10::DataPtr in storage to use the new DeviceBufferRef.
     // This ensures that all active views on this same contiguous base tensor
     // will be updated by the write.
-    OverwriteDataPtr(tensor.storage().data_ptr(), std::move(result_buf));
+    TT_RETURN_IF_ERROR(
+        OverwriteDataPtr(tensor.storage(), std::move(result_buf)));
   } else {
     TT_ASSIGN_OR_RETURN(DeviceBufferRef new_base_buffer_ref,
                         CreateInverseViewDeviceBufferRef(
@@ -242,8 +352,8 @@ absl::Status AssignBufferToAtTensor(DeviceBufferRef result_buf,
     // Overwrite the c10::DataPtr in storage to use the new DeviceBufferRef.
     // All reads that happened before the write will be unaffected, but reads
     // to all extant views will reflect the new value on later accesses.
-    OverwriteDataPtr(tensor.storage().data_ptr(),
-                     std::move(new_base_buffer_ref));
+    TT_RETURN_IF_ERROR(
+        OverwriteDataPtr(tensor.storage(), std::move(new_base_buffer_ref)));
   }
 
   // Bump the version counter for autograd in-place tracking and
@@ -306,7 +416,7 @@ absl::Status AssignBufferAsStorageBase(DeviceBufferRef new_base,
 
   // Overwrite the c10::DataPtr in storage to use the new DeviceBufferRef, so
   // that all views sharing the storage observe the write.
-  OverwriteDataPtr(tensor.storage().data_ptr(), std::move(new_base));
+  TT_RETURN_IF_ERROR(OverwriteDataPtr(tensor.storage(), std::move(new_base)));
 
   // Bump the version to tell PyTorch how to handle functionalization
   tensor.unsafeGetTensorImpl()->bump_version();
@@ -339,11 +449,15 @@ absl::StatusOr<DeviceBufferRef> GetBaseBuffer(const c10::Storage& storage) {
   // base" buffer--this is the shape of the original tensor that was used to
   // construct the tensor, and represents all of the data available to all
   // views that share the same Storage.
-  const DeviceBufferRef* base_buffer_ref =
-      static_cast<const DeviceBufferRef*>(storage.data_ptr().get());
-  ABSL_CHECK(base_buffer_ref)  // CRASH_OK
-      << "tensor storage has a null DeviceBufferRef* via c10::DataPtr::get()";
-  return *base_buffer_ref;
+  DeviceBufferRef& base_buffer_ref = GetStorageSlot(storage);
+  if (GraphCaptureStorageState* const state = GetCurrentCaptureStorageState();
+      ABSL_PREDICT_FALSE(state != nullptr) &&
+      !base_buffer_ref.is_placeholder() &&
+      IsUntrackedPreexistingStorage(*state, storage)) {
+    TT_RETURN_IF_ERROR(
+        InstallCapturePlaceholder(*state, storage, base_buffer_ref));
+  }
+  return base_buffer_ref;
 }
 
 absl::StatusOr<DeviceBufferRef> GetBuffer(const at::Tensor& tensor,
@@ -408,10 +522,16 @@ c10::Storage MakeStorage(DeviceBufferRef buffer_ref,
                << " and dtype: " << ToString(buffer_ref.element_type())
                << " on device_idx: " << static_cast<int>(device_idx);
   const auto size = buffer_ref.size_bytes();
-  return c10::Storage(c10::make_intrusive<c10::StorageImpl>(
+  c10::Storage storage(c10::make_intrusive<c10::StorageImpl>(
       c10::StorageImpl::use_byte_size_t(), size,
       MakeDataPtr(std::move(buffer_ref), device_idx), GetTpuAllocator(),
       /*resizable=*/true));
+  if (GraphCaptureStorageState* const state = GetCurrentCaptureStorageState();
+      ABSL_PREDICT_FALSE(state != nullptr)) {
+    state->created_impls.insert(storage.unsafeGetStorageImpl());
+    state->created.push_back(storage);
+  }
+  return storage;
 }
 
 at::Tensor MakeTensor(DeviceBufferRef buffer_ref,
@@ -456,11 +576,14 @@ class TpuAllocator final : public c10::DeviceAllocator {
  public:
   TpuAllocator() = default;
 
-  // This class is move-only.
-  TpuAllocator(TpuAllocator&& other) = default;
-  TpuAllocator& operator=(TpuAllocator&& other) = default;
+  TpuAllocator(TpuAllocator&&) = delete;
+  TpuAllocator& operator=(TpuAllocator&&) = delete;
   TpuAllocator(const TpuAllocator&) = delete;
   TpuAllocator& operator=(const TpuAllocator&) = delete;
+
+  c10::MempoolId_t AllocateGraphMempoolId() {
+    return {next_graph_pool_id_.fetch_add(1, std::memory_order_relaxed), 0};
+  }
 
   c10::DataPtr allocate(size_t nbytes) override {
     ScopedPythonContextCapturer _(OpName::kTorchTpuStorageAllocate);
@@ -588,11 +711,18 @@ class TpuAllocator final : public c10::DeviceAllocator {
           c10::Device(GetPrivateUse1DeviceType(), device));
     }
   }
+
+  std::atomic<uint64_t> next_graph_pool_id_{1};
 };
 
 c10::Allocator* GetTpuAllocator() {
   static absl::NoDestructor<TpuAllocator> g_tpu_allocator;
   return g_tpu_allocator.get();
+}
+
+c10::MempoolId_t AllocateGraphMempoolId() {
+  return static_cast<TpuAllocator*>(GetTpuAllocator())
+      ->AllocateGraphMempoolId();
 }
 
 void RegisterTpuAllocator() {
@@ -709,6 +839,114 @@ absl::StatusOr<at::Tensor> MakeEmptyTensor(
   return MakeEmptyMemoryFormat(size, dtype, /*layout_opt=*/c10::nullopt,
                                device_opt, /*pin_memory_opt=*/c10::nullopt,
                                /*memory_format_opt=*/c10::nullopt);
+}
+
+namespace {
+
+// Appends to `captured` the storages created during capture that are still
+// alive, with the buffers they hold.
+void CollectCreatedStorageWrites(const GraphCaptureStorageState& state,
+                                 CapturedGraphStorages& captured) {
+  for (const c10::Storage& storage : state.created) {
+    // A storage referenced only by `state` was freed during capture, and a
+    // storage whose c10::DataPtr was moved to another storage holds no buffer.
+    if (storage.use_count() > 1 && storage.data_ptr().get() != nullptr) {
+      captured.writes.push_back(
+          CapturedStorageWrite{.storage = storage,
+                               .final_buffer = GetStorageSlot(storage),
+                               .created = true});
+    }
+  }
+}
+
+// Appends to `captured` the placeholders installed in storages that existed
+// before capture, and the storages among them that capture wrote.
+void CollectPreexistingStorageWrites(const GraphCaptureStorageState& state,
+                                     CapturedGraphStorages& captured) {
+  for (const PreexistingCapturedStorage& entry : state.preexisting) {
+    const DeviceBufferRef& final_buffer = GetStorageSlot(entry.storage);
+    if (entry.placeholder.has_value()) {
+      captured.placeholder_to_storage.emplace(*entry.placeholder,
+                                              entry.storage);
+      if (final_buffer == *entry.placeholder) {
+        // Capture only read the storage.
+        continue;
+      }
+    }
+    // Capture wrote the storage, either after reading it or before reading it
+    // (without installing a placeholder).
+    captured.writes.push_back(CapturedStorageWrite{.storage = entry.storage,
+                                                   .final_buffer = final_buffer,
+                                                   .created = false});
+  }
+}
+
+// Restores the buffers that storages that existed before capture held when
+// capture first accessed them. Restores them in reverse order of first access,
+// so that storages sharing a DeviceBufferRef slot through borrowing
+// c10::DataPtrs end up holding the buffer that the slot held before capture.
+void RestorePreexistingStorages(const GraphCaptureStorageState& state) {
+  for (auto it = state.preexisting.rbegin(); it != state.preexisting.rend();
+       ++it) {
+    ReplaceSlotBuffer(GetStorageSlot(it->storage), it->initial_buffer);
+  }
+}
+
+}  // namespace
+
+absl_nonnull std::shared_ptr<GraphCaptureStorageState>
+BeginGraphCaptureStorageTracking(const DeviceStreamId capture_stream) {
+  ABSL_DCHECK(current_thread_capture_storage == nullptr);
+  auto state = std::make_shared<GraphCaptureStorageState>(
+      GraphCaptureStorageState{.capture_stream = capture_stream});
+  current_thread_capture_storage = state.get();
+  return state;
+}
+
+CapturedGraphStorages EndGraphCaptureStorageTracking(
+    GraphCaptureStorageState& state) {
+  if (current_thread_capture_storage == &state) {
+    current_thread_capture_storage = nullptr;
+  }
+  CapturedGraphStorages captured;
+  CollectCreatedStorageWrites(state, captured);
+  CollectPreexistingStorageWrites(state, captured);
+  RestorePreexistingStorages(state);
+  state.preexisting.clear();
+  state.preexisting_impls.clear();
+  state.created.clear();
+  state.created_impls.clear();
+  return captured;
+}
+
+absl::Status ClearCapturedDeferredStorages(
+    const CapturedGraphStorages& captured) {
+  ScopedPythonContextCapturer _(OpName::kTorchTpuStorageAllocate);
+  for (const CapturedStorageWrite& write : captured.writes) {
+    const DeviceBufferRef& final_buffer = write.final_buffer;
+    if (!write.created ||
+        (!final_buffer.is_deferred() &&
+         !captured.placeholder_to_storage.contains(final_buffer))) {
+      continue;
+    }
+    TT_ASSIGN_OR_RETURN(
+        DeviceBufferRef empty_buffer,
+        CreateEmptyDeviceBufferRef(CopyIntVector(final_buffer.dimensions()),
+                                   final_buffer.element_type()));
+    TT_RETURN_IF_ERROR(
+        OverwriteDataPtr(write.storage, std::move(empty_buffer)));
+  }
+  return absl::OkStatus();
+}
+
+absl::Status AssignBufferToStorage(DeviceBufferRef buffer,
+                                   const c10::Storage& storage) {
+  const size_t current_bytes = GetStorageSlot(storage).size_bytes();
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Checked by caller.
+      buffer.size_bytes() == current_bytes, error::kFailedPrecondition)
+      << "cannot assign a buffer of " << buffer.size_bytes()
+      << " bytes to a tensor storage of " << current_bytes << " bytes";
+  return OverwriteDataPtr(storage, std::move(buffer));
 }
 
 }  // namespace torch_tpu

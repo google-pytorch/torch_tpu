@@ -1325,6 +1325,7 @@ class ScanTtApisTest(seed_test_utils.RepeatableTest):
     fake_acc = types.ModuleType("torch.accelerator")
     fake_acc.__all__ = [
         "Graph",
+        "UnsupportedGraph",
         "current_accelerator",
         "device_index",
         "get_device_capability",
@@ -1359,6 +1360,27 @@ class ScanTtApisTest(seed_test_utils.RepeatableTest):
 
       def __init__(self, keep_graph: bool = False):
         del keep_graph
+
+      def capture_begin(self):
+        return None
+
+      def capture_end(self):
+        return None
+
+      def __enter__(self):
+        warnings.warn(
+            "empty_host_cache is not implemented for TPU.", UserWarning
+        )
+        return None
+
+      def __exit__(self, *exc_info):
+        del exc_info
+        return None
+
+    class UnsupportedGraph:
+
+      def __init__(self, keep_graph: bool = False):
+        del keep_graph
         raise RuntimeError("Graph is not supported on device type: tpu")
 
     def get_device_capability(device=None):
@@ -1378,6 +1400,7 @@ class ScanTtApisTest(seed_test_utils.RepeatableTest):
     fake_acc.set_stream = set_stream
     fake_acc.device_index = device_index
     fake_acc.Graph = Graph
+    fake_acc.UnsupportedGraph = UnsupportedGraph
     fake_acc.get_device_capability = get_device_capability
     fake_acc.reset_accumulated_memory_stats = reset_accumulated_memory_stats
 
@@ -1398,6 +1421,7 @@ class ScanTtApisTest(seed_test_utils.RepeatableTest):
     entries = scan_tt_apis.discover_accelerator_apis(fake_acc)
     entry_map = {entry.name: entry for entry in entries}
 
+    self.assertIn("torch.accelerator.Graph", entry_map)
     self.assertIn("torch.accelerator.current_accelerator", entry_map)
     self.assertIn("torch.accelerator.device_index", entry_map)
     self.assertIn("torch.accelerator.set_device_index", entry_map)
@@ -1410,7 +1434,7 @@ class ScanTtApisTest(seed_test_utils.RepeatableTest):
       self.assertEqual(entry.defined_in, "runtime")
 
     # Verify unsupported APIs are excluded
-    self.assertNotIn("torch.accelerator.Graph", entry_map)
+    self.assertNotIn("torch.accelerator.UnsupportedGraph", entry_map)
     self.assertNotIn("torch.accelerator.get_device_capability", entry_map)
     self.assertNotIn(
         "torch.accelerator.reset_accumulated_memory_stats", entry_map
