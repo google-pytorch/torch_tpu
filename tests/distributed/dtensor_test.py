@@ -162,7 +162,40 @@ def run_dtensor_1d_partial_to_shard() -> None:
   _test_redistribute(dtensor, [dt.Shard(0)])
 
 
-class DTensor1DimTest(continuous_test_utils.TpuMultiProcContinuousTest):
+def run_dtensor_2d_shard_to_shard() -> None:
+  """Redistributing from shard to shard triggers all_to_all."""
+  world_size = dist.get_world_size()
+  full_tensor = _range_tensor_2d(world_size)
+  device_mesh = dt.init_device_mesh("tpu", (world_size // 2, 2))
+  dtensor = dt.distribute_tensor(
+      full_tensor,
+      device_mesh=device_mesh,
+      placements=[dt.Shard(0), dt.Shard(1)],
+      src_data_rank=None,
+  )
+  _test_redistribute(dtensor, [dt.Shard(1), dt.Shard(0)])
+
+
+def run_sync_dtensor() -> None:
+  """Syncing a DTensor materializes the underlying shard."""
+  rank = dist.get_rank()
+  world_size = dist.get_world_size()
+  device_mesh = dt.init_device_mesh("tpu", (world_size,))
+  shard_cpu = torch.full((world_size,), fill_value=rank, device="cpu")
+  shard = shard_cpu.to("tpu")
+  dtensor = dt.DTensor.from_local(shard, device_mesh, [dt.Shard(0)])
+  dtensor = dtensor + 1
+
+  torch.accelerator.synchronize()
+  assert sync.is_materializing(dtensor), "DTensor not materialized after sync"
+  assert sync.is_materialized(dtensor), "Dtensor materialized but not ready"
+
+  updated_shard = dtensor.to_local().to("cpu")
+  utils.assert_close(updated_shard, shard_cpu + 1)
+
+
+# One class, so that all tests share one set of workers.
+class DTensorTest(continuous_test_utils.TpuMultiProcContinuousTest):
 
   world_size = 8
 
@@ -187,50 +220,8 @@ class DTensor1DimTest(continuous_test_utils.TpuMultiProcContinuousTest):
   def test_partial_to_shard(self):
     run_dtensor_1d_partial_to_shard()
 
-
-def run_dtensor_2d_shard_to_shard() -> None:
-  """Redistributing from shard to shard triggers all_to_all."""
-  world_size = dist.get_world_size()
-  full_tensor = _range_tensor_2d(world_size)
-  device_mesh = dt.init_device_mesh("tpu", (world_size // 2, 2))
-  dtensor = dt.distribute_tensor(
-      full_tensor,
-      device_mesh=device_mesh,
-      placements=[dt.Shard(0), dt.Shard(1)],
-      src_data_rank=None,
-  )
-  _test_redistribute(dtensor, [dt.Shard(1), dt.Shard(0)])
-
-
-class DTensor2DimTest(continuous_test_utils.TpuMultiProcContinuousTest):
-
-  world_size = 8
-
-  def test_shard_to_shard(self):
+  def test_2d_shard_to_shard(self):
     run_dtensor_2d_shard_to_shard()
-
-
-def run_sync_dtensor() -> None:
-  """Syncing a DTensor materializes the underlying shard."""
-  rank = dist.get_rank()
-  world_size = dist.get_world_size()
-  device_mesh = dt.init_device_mesh("tpu", (world_size,))
-  shard_cpu = torch.full((world_size,), fill_value=rank, device="cpu")
-  shard = shard_cpu.to("tpu")
-  dtensor = dt.DTensor.from_local(shard, device_mesh, [dt.Shard(0)])
-  dtensor = dtensor + 1
-
-  torch.accelerator.synchronize()
-  assert sync.is_materializing(dtensor), "DTensor not materialized after sync"
-  assert sync.is_materialized(dtensor), "Dtensor materialized but not ready"
-
-  updated_shard = dtensor.to_local().to("cpu")
-  utils.assert_close(updated_shard, shard_cpu + 1)
-
-
-class DTensorSyncTest(continuous_test_utils.TpuMultiProcContinuousTest):
-
-  world_size = 8
 
   def test_sync_dtensor(self):
     run_sync_dtensor()
