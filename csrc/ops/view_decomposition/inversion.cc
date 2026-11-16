@@ -714,6 +714,62 @@ struct BitcastTransforms {
   mlir::ElementType writable_dtype;
   ViewSequence invertible_bitcast;
 };
+
+// Returns true if `view` covers fewer bytes than the contiguous base.
+bool IsViewSmallerThanBase(absl::Span<const int64_t> contiguous_base_shape,
+                           int64_t base_bitwidth,
+                           const StridedLayout& view_layout,
+                           int64_t view_bitwidth) {
+  int64_t base_bits = base_bitwidth;
+  for (int64_t d : contiguous_base_shape) {
+    base_bits *= d;
+  }
+  int64_t view_bits = view_bitwidth;
+  for (const auto& dim : view_layout.strided_dims) {
+    view_bits *= dim.size;
+  }
+  return view_bits < base_bits;
+}
+
+// Returns true if the base buffer can be retyped to `view_dtype` (a bitcast,
+// preceded by a split of the trailing dimension when `view_dtype` is wider)
+// before writing `view` into it. This applies to partial writes of an
+// equal-or-wider real dtype, and to any wider-dtype write into a raw byte
+// (`UI8`) buffer.
+bool CanRetypeBaseToViewDtype(absl::Span<const int64_t> contiguous_base_shape,
+                              mlir::ElementType contiguous_base_dtype,
+                              mlir::ElementType view_dtype,
+                              const StridedLayout& view_layout,
+                              int64_t base_bitwidth, int64_t view_bitwidth) {
+  if (contiguous_base_dtype == mlir::ElementType::PRED ||
+      view_dtype == mlir::ElementType::PRED ||
+      IsComplex(contiguous_base_dtype) || IsComplex(view_dtype) ||
+      view_bitwidth < base_bitwidth || view_bitwidth % base_bitwidth != 0 ||
+      contiguous_base_shape.empty()) {
+    return false;
+  }
+  const int64_t size_ratio = view_bitwidth / base_bitwidth;
+  const bool is_wider_write_into_bytes =
+      size_ratio > 1 && contiguous_base_dtype == mlir::ElementType::UI8;
+  if (!is_wider_write_into_bytes &&
+      !IsViewSmallerThanBase(contiguous_base_shape, base_bitwidth, view_layout,
+                             view_bitwidth)) {
+    return false;
+  }
+  if (size_ratio == 1) {
+    return true;
+  }
+  // The trailing dimension must split evenly into `size_ratio` elements, the
+  // result must not collapse to a scalar, and all other strides must stay
+  // divisible by `size_ratio` (size-1 dimensions get stride 1).
+  return contiguous_base_shape.back() % size_ratio == 0 &&
+         (contiguous_base_shape.size() > 1 ||
+          contiguous_base_shape.back() > size_ratio) &&
+         std::all_of(contiguous_base_shape.begin(),
+                     contiguous_base_shape.end() - 1,
+                     [](int64_t d) { return d > 1; });
+}
+
 BitcastTransforms GetBitcastTransforms(
     absl::Span<const int64_t> contiguous_base_shape,
     mlir::ElementType contiguous_base_dtype, const StridedLayout& view_layout,
@@ -760,6 +816,39 @@ BitcastTransforms GetBitcastTransforms(
   const int64_t view_bitwidth = TorchEquivalentBitwidth(view_dtype);
 
   if (view_bitwidth >= base_bitwidth) {
+    // Where possible, retype the base buffer to `view_dtype` (e.g. a `UI8`
+    // bucket written through a `F32` parameter view, or an `I32` buffer
+    // written through a `F32` slice). The write then needs no bitcast of the
+    // view, and later `view_dtype` reads/writes of the same storage operate
+    // directly on `view_dtype` without bitcast relayouts.
+    if (CanRetypeBaseToViewDtype(contiguous_base_shape, contiguous_base_dtype,
+                                 view_dtype, view_layout, base_bitwidth,
+                                 view_bitwidth)) {
+      const int64_t size_ratio = view_bitwidth / base_bitwidth;
+      if (size_ratio > 1 && contiguous_base_shape.back() > size_ratio) {
+        // [..., K * size_ratio] -> [..., K, size_ratio], so the bitcast below
+        // folds the trailing dimension into one `view_dtype` element.
+        SmallInt64Vector orig_sizes = GetSizes(base_layout_after_transform);
+        SmallInt64Vector split_sizes = orig_sizes;
+        split_sizes.back() /= size_ratio;
+        split_sizes.push_back(size_ratio);
+        base_transform.push_back(
+            ReshapePrimitive{.base_sizes = std::move(orig_sizes),
+                             .new_sizes = std::move(split_sizes)});
+        UpdateLayout(base_layout_after_transform, base_transform.back());
+      }
+      base_transform.push_back(RealToRealBitcast{
+          .from_type = contiguous_base_dtype, .to_type = view_dtype});
+      UpdateLayout(base_layout_after_transform, base_transform.back());
+      return BitcastTransforms{
+          .base_transform = std::move(base_transform),
+          .base_dtype_after_transform = view_dtype,
+          .bitcast_view = {},
+          .writable_dtype = view_dtype,
+          .invertible_bitcast = {},
+      };
+    }
+
     // We can losslessly transform the view to the base dtype.
     StridedLayout view_layout_after_transform = view_layout;
     auto bitcast_view = GetBitcastSequenceToWritable(

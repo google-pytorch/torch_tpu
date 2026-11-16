@@ -99,13 +99,16 @@ class ViewNarrowDtypeTest(seed_test_utils.RepeatableTest):
   def _apply(self, op: str, view: torch.Tensor, t1, t2):
     """Applies `op` and returns the tensor it wrote.
 
-    These three optimizer-style ops (from AdamW/Muon steps) cover the distinct
-    ways a view participates in an op:
+    These optimizer-style ops (from AdamW/Muon/FlexShard steps) cover the
+    distinct ways a view participates in an op:
       - `mul_`: in-place write on `view` with a scalar (reads `view` via
         forward view decomposition and writes back via inverse decomposition).
       - `addcdiv_`: in-place write on `view` combining multiple tensor
         operands (tests forward read + inverse write-back alongside other
         inputs).
+      - `copy_`: in-place TPU-to-TPU copy into `view` (tests `CopyTpuToTpu`
+        inverse write-back with base-buffer autodonation and narrow-base
+        promotion).
       - `lerp_`: read-only use of `view` as a source operand while mutating a
         standalone tensor `t1` (isolates forward view decomposition without
         inverse write-back on `view`).
@@ -114,11 +117,15 @@ class ViewNarrowDtypeTest(seed_test_utils.RepeatableTest):
       return view.mul_(0.5)
     if op == "addcdiv_":
       return view.addcdiv_(t1, t2, value=-0.125)
+    if op == "copy_":
+      return view.copy_(t1)
     if op == "lerp_":
       return t1.lerp_(view, 0.25)
     raise ValueError(f"unknown op: {op}")
 
-  @parameterized.product(kind=_VIEW_KINDS, op=("mul_", "addcdiv_", "lerp_"))
+  @parameterized.product(
+      kind=_VIEW_KINDS, op=("mul_", "addcdiv_", "copy_", "lerp_")
+  )
   def test_matches_standalone_and_preserves_rest_of_base(self, kind, op):
     with execution_mode.set_eager_mode(EagerMode.DEFER_NEVER):
       base_cpu = _make_base_cpu(kind, _LARGE_BASE_BYTES)
@@ -141,7 +148,7 @@ class ViewNarrowDtypeTest(seed_test_utils.RepeatableTest):
           torch.equal(_as_bytes(base.cpu()), _as_bytes(expected_base))
       )
 
-  @parameterized.parameters("mul_", "addcdiv_", "lerp_")
+  @parameterized.parameters("mul_", "addcdiv_", "copy_", "lerp_")
   def test_strided_column_view_matches_standalone_and_preserves_base(self, op):
     """Tests a column slice across all rows (GitHub issue #6046)."""
     with execution_mode.set_eager_mode(EagerMode.DEFER_NEVER):
@@ -167,6 +174,151 @@ class ViewNarrowDtypeTest(seed_test_utils.RepeatableTest):
           torch.equal(_as_bytes(base.cpu()), _as_bytes(expected_base))
       )
 
+  @parameterized.parameters(*_VIEW_KINDS)
+  def test_cross_dtype_and_aliased_copy_preserve_base(self, kind):
+    """Tests cross-dtype copy_ and same-storage aliased copy_ into a view."""
+    with execution_mode.set_eager_mode(EagerMode.DEFER_NEVER):
+      base_cpu = _make_base_cpu(kind, _SMALL_BASE_BYTES)
+      base = base_cpu.to(self.device)
+      view = _make_view(kind, base)
+      shape = (_VIEW_NUMEL,) if kind == "1d" else (1024, 1024)
+      src_bf16_cpu = torch.randn(shape, dtype=torch.bfloat16)
+      src_bf16 = src_bf16_cpu.to(self.device)
+
+      # 1. Cross-dtype copy_ (bfloat16 -> float32 view of uint8 base).
+      view.copy_(src_bf16)
+      expected_base = base_cpu.clone()
+      _make_view(kind, expected_base).copy_(src_bf16_cpu)
+      self.assertTrue(
+          torch.equal(_as_bytes(base.cpu()), _as_bytes(expected_base))
+      )
+
+      # 2. Aliased copy_ from another slice of the same storage.
+      alias_src_view = (
+          base[:_VIEW_BYTES].view(torch.float32)
+          if kind != "3d"
+          else base[:1024].view(torch.float32).view(1024, 1024)
+      )
+      if kind == "2d":
+        alias_src_view = alias_src_view.view(1024, 1024)
+      view.copy_(alias_src_view)
+      expected_alias_src = (
+          expected_base[:_VIEW_BYTES].view(torch.float32)
+          if kind != "3d"
+          else expected_base[:1024].view(torch.float32).view(1024, 1024)
+      ).clone()
+      if kind == "2d":
+        expected_alias_src = expected_alias_src.view(1024, 1024)
+      _make_view(kind, expected_base).copy_(expected_alias_src)
+      self.assertTrue(
+          torch.equal(_as_bytes(base.cpu()), _as_bytes(expected_base))
+      )
+
+  def test_mixed_dtype_views_share_promoted_base(self):
+    """Tests mixed float32, bfloat16, int32, and uint8 views sharing a base."""
+    with execution_mode.set_eager_mode(EagerMode.DEFER_NEVER):
+      base_cpu = torch.randn(4096 // 2, dtype=torch.bfloat16).view(torch.uint8)
+      base = base_cpu.to(self.device)
+      expected_base = base_cpu.clone()
+
+      fp32_view = base[256:768].view(torch.float32)
+      bf16_view = base[1024:1536].view(torch.bfloat16)
+      u8_view = base[2048:2304]
+
+      expected_fp32 = expected_base[256:768].view(torch.float32)
+      expected_bf16 = expected_base[1024:1536].view(torch.bfloat16)
+      expected_u8 = expected_base[2048:2304]
+
+      # 1. Promote base via float32 view write, then mutate bfloat16 and uint8
+      #    views in the same storage and verify all views and base bytes.
+      fp32_src_cpu = torch.randint(-100, 100, fp32_view.shape).to(torch.float32)
+      bf16_src_cpu = torch.randn(bf16_view.shape, dtype=torch.bfloat16)
+      u8_src_cpu = torch.randint(0, 127, u8_view.shape, dtype=torch.uint8)
+
+      fp32_view.copy_(fp32_src_cpu.to(self.device))
+      expected_fp32.copy_(fp32_src_cpu)
+      self.assertTrue(
+          torch.equal(_as_bytes(base.cpu()), _as_bytes(expected_base))
+      )
+
+      bf16_view.copy_(bf16_src_cpu.to(self.device))
+      expected_bf16.copy_(bf16_src_cpu)
+      self.assertTrue(
+          torch.equal(_as_bytes(base.cpu()), _as_bytes(expected_base))
+      )
+
+      bf16_view.mul_(2.0)
+      expected_bf16.mul_(2.0)
+      self.assertTrue(
+          torch.equal(_as_bytes(base.cpu()), _as_bytes(expected_base))
+      )
+
+      u8_view.copy_(u8_src_cpu.to(self.device))
+      expected_u8.copy_(u8_src_cpu)
+      self.assertTrue(
+          torch.equal(_as_bytes(base.cpu()), _as_bytes(expected_base))
+      )
+
+      fp32_view.mul_(2.0)
+      expected_fp32.mul_(2.0)
+
+      self.assertTrue(
+          torch.equal(_as_bytes(fp32_view.cpu()), _as_bytes(expected_fp32))
+      )
+      self.assertTrue(
+          torch.equal(_as_bytes(bf16_view.cpu()), _as_bytes(expected_bf16))
+      )
+      self.assertTrue(torch.equal(u8_view.cpu(), expected_u8))
+      self.assertTrue(
+          torch.equal(_as_bytes(base.cpu()), _as_bytes(expected_base))
+      )
+
+      # 2. Fresh base promoted via bfloat16 first, then mutated via float32.
+      base2_cpu = torch.randn(4096 // 2, dtype=torch.bfloat16).view(torch.uint8)
+      base2 = base2_cpu.to(self.device)
+      expected_base2 = base2_cpu.clone()
+
+      bf16_first = base2[256:768].view(torch.bfloat16)
+      fp32_second = base2[1024:1536].view(torch.float32)
+      expected_bf16_first = expected_base2[256:768].view(torch.bfloat16)
+      expected_fp32_second = expected_base2[1024:1536].view(torch.float32)
+
+      bf16_first.copy_(bf16_src_cpu.to(self.device))
+      expected_bf16_first.copy_(bf16_src_cpu)
+      bf16_first.mul_(2.0)
+      expected_bf16_first.mul_(2.0)
+      fp32_second.add_(fp32_src_cpu.to(self.device))
+      expected_fp32_second.add_(fp32_src_cpu)
+
+      self.assertTrue(
+          torch.equal(_as_bytes(base2.cpu()), _as_bytes(expected_base2))
+      )
+
+      # 3. Non-uint8 narrow base (bfloat16) promoted to float32 and
+      #    reinterpreted as equal-bitwidth int32.
+      base3_cpu = torch.randn(2048, dtype=torch.bfloat16)
+      base3 = base3_cpu.to(self.device)
+      expected_base3 = base3_cpu.clone()
+
+      fp32_from_bf16 = base3[128:384].view(torch.float32)
+      i32_from_bf16 = base3[512:768].view(torch.int32)
+      expected_fp32_3 = expected_base3[128:384].view(torch.float32)
+      expected_i32_3 = expected_base3[512:768].view(torch.int32)
+
+      i32_src_cpu = torch.randint(
+          -1000, 1000, i32_from_bf16.shape, dtype=torch.int32
+      )
+      fp32_from_bf16.copy_(fp32_src_cpu.to(self.device))
+      expected_fp32_3.copy_(fp32_src_cpu)
+      fp32_from_bf16.mul_(2.0)
+      expected_fp32_3.mul_(2.0)
+      i32_from_bf16.copy_(i32_src_cpu.to(self.device))
+      expected_i32_3.copy_(i32_src_cpu)
+
+      self.assertTrue(
+          torch.equal(_as_bytes(base3.cpu()), _as_bytes(expected_base3))
+      )
+
   def _best_time_per_op(self, fn, warmup=10, trials=5, iters=20) -> float:
     for _ in range(warmup):
       fn()
@@ -186,7 +338,7 @@ class ViewNarrowDtypeTest(seed_test_utils.RepeatableTest):
     t1, t2 = self._operands(kind)
     return self._best_time_per_op(lambda: self._apply(op, view, t1, t2))
 
-  @parameterized.product(kind=_VIEW_KINDS, op=("mul_", "lerp_"))
+  @parameterized.product(kind=_VIEW_KINDS, op=("copy_", "lerp_"))
   def test_cost_independent_of_base_size(self, kind, op):
     """An op on the view costs the same in a 256 MiB and an 8 MiB base."""
     with execution_mode.set_eager_mode(EagerMode.DEFER_NEVER):
@@ -196,6 +348,40 @@ class ViewNarrowDtypeTest(seed_test_utils.RepeatableTest):
     print(
         f"[base_size] kind={kind} op={op} base256_us={large * 1e6:.1f} "
         f"base8_us={small * 1e6:.1f} ratio={ratio:.2f}",
+        flush=True,
+    )
+    self.assertLess(ratio, _MAX_BASE_SIZE_RATIO)
+
+  @parameterized.product(kind=_VIEW_KINDS, op=("mul_", "addcdiv_"))
+  def test_promoted_uint8_base_matches_fp32_base(self, kind, op):
+    """After first-write promotion, a uint8 base matches a float32 base."""
+    with execution_mode.set_eager_mode(EagerMode.DEFER_NEVER):
+      uint8_time = self._view_time(kind, op, _LARGE_BASE_BYTES)
+      off_elems = _view_byte_offset(_LARGE_BASE_BYTES) // 4
+      if kind == "3d":
+        fp32_base = torch.randn(
+            (_LARGE_BASE_BYTES // 4096, 1024),
+            dtype=torch.float32,
+            device=self.device,
+        )
+        row = off_elems // 1024
+        fp32_view = fp32_base[row : row + 1024]
+      else:
+        fp32_base = torch.randn(
+            _LARGE_BASE_BYTES // 4, dtype=torch.float32, device=self.device
+        )
+        fp32_view = fp32_base[off_elems : off_elems + _VIEW_NUMEL]
+        if kind == "2d":
+          fp32_view = fp32_view.view(1024, 1024)
+      t1, t2 = self._operands(kind)
+      fp32_time = self._best_time_per_op(
+          lambda: self._apply(op, fp32_view, t1, t2)
+      )
+    ratio = uint8_time / fp32_time
+    print(
+        f"[promoted_fp32_parity] kind={kind} op={op} "
+        f"uint8_256_us={uint8_time * 1e6:.1f} "
+        f"fp32_256_us={fp32_time * 1e6:.1f} ratio={ratio:.2f}",
         flush=True,
     )
     self.assertLess(ratio, _MAX_BASE_SIZE_RATIO)

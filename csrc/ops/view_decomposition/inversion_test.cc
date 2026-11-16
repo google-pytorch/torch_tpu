@@ -1079,6 +1079,257 @@ TEST(ComputeInverseViewOperation, ByteToBoolPreserveBase) {
   EXPECT_EQ(inverse_view_operation.final_shape, expected.final_shape);
 }
 
+TEST(ComputeInverseViewOperation, ByteToLargerSizePromotesBase) {
+  const Dimensions contiguous_base_shape = {24};
+  const mlir::ElementType contiguous_base_dtype = mlir::ElementType::UI8;
+  const Dimensions view_shape = {2, 2};
+  const StridedLayout view_layout = MakeContiguousBaseLayout(view_shape);
+  const mlir::ElementType view_dtype = mlir::ElementType::F32;
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto inverse_view_operation,
+      ComputeInverseViewOperation(contiguous_base_shape, contiguous_base_dtype,
+                                  view_layout, view_dtype,
+                                  /*is_conj=*/false,
+                                  /*preserve_base=*/true));
+  SlicePrimitive expected_slice;
+  expected_slice.slice_dims.push_back(
+      SliceDimension{.start_index = 0, .limit_index = 4, .stride = 1});
+  InverseViewOperation expected = {
+      .base_transform = {ReshapePrimitive{.base_sizes = {24},
+                                          .new_sizes = {6, 4}},
+                         RealToRealBitcast{.from_type = mlir::ElementType::UI8,
+                                           .to_type = mlir::ElementType::F32}},
+      .bitcast_view = {},
+      .stages = {InverseViewStage{.slice = std::move(expected_slice)},
+                 InverseViewStage{
+                     .forward = {ReshapePrimitive{.base_sizes = {4},
+                                                  .new_sizes = {2, 2}}},
+                     .inverse = {ReshapePrimitive{.base_sizes = {2, 2},
+                                                  .new_sizes = {4}}},
+                 }},
+      .final_shape = Shape({6}, mlir::ElementType::F32)};
+  EXPECT_EQ(inverse_view_operation.base_transform, expected.base_transform);
+  EXPECT_EQ(inverse_view_operation.bitcast_view, expected.bitcast_view);
+  EXPECT_EQ(inverse_view_operation.stages, expected.stages);
+  EXPECT_EQ(inverse_view_operation.final_shape, expected.final_shape);
+}
+
+TEST(ComputeInverseViewOperation,
+     ByteToLargerSizeTrailingDimEqualsRatioPromotesBase) {
+  const Dimensions contiguous_base_shape = {4, 2, 4};
+  const mlir::ElementType contiguous_base_dtype = mlir::ElementType::UI8;
+  const Dimensions view_shape = {2, 2};
+  const StridedLayout view_layout = MakeContiguousBaseLayout(view_shape);
+  const mlir::ElementType view_dtype = mlir::ElementType::F32;
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto inverse_view_operation,
+      ComputeInverseViewOperation(contiguous_base_shape, contiguous_base_dtype,
+                                  view_layout, view_dtype,
+                                  /*is_conj=*/false,
+                                  /*preserve_base=*/true));
+  SlicePrimitive expected_slice;
+  expected_slice.slice_dims.push_back(
+      SliceDimension{.start_index = 0, .limit_index = 2, .stride = 1});
+  expected_slice.slice_dims.push_back(
+      SliceDimension{.start_index = 0, .limit_index = 2, .stride = 1});
+  InverseViewOperation expected = {
+      .base_transform = {RealToRealBitcast{.from_type = mlir::ElementType::UI8,
+                                           .to_type = mlir::ElementType::F32}},
+      .bitcast_view = {},
+      .stages = {InverseViewStage{.slice = std::move(expected_slice)},
+                 InverseViewStage()},
+      .final_shape = Shape({4, 2}, mlir::ElementType::F32)};
+  EXPECT_EQ(inverse_view_operation.base_transform, expected.base_transform);
+  EXPECT_EQ(inverse_view_operation.bitcast_view, expected.bitcast_view);
+  EXPECT_EQ(inverse_view_operation.stages, expected.stages);
+  EXPECT_EQ(inverse_view_operation.final_shape, expected.final_shape);
+}
+
+TEST(ComputeInverseViewOperation, NonUi8NarrowBaseSlicePromotesBase) {
+  // Generalizes narrow-base promotion beyond UI8 (e.g. BF16 -> F32, I8 -> BF16,
+  // F32 -> F64).
+  const Dimensions contiguous_base_shape = {12};
+  const mlir::ElementType contiguous_base_dtype = mlir::ElementType::BF16;
+  const Dimensions view_shape = {2, 2};
+  const StridedLayout view_layout = MakeContiguousBaseLayout(view_shape);
+  const mlir::ElementType view_dtype = mlir::ElementType::F32;
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto inverse_view_operation,
+      ComputeInverseViewOperation(contiguous_base_shape, contiguous_base_dtype,
+                                  view_layout, view_dtype,
+                                  /*is_conj=*/false,
+                                  /*preserve_base=*/true));
+  SlicePrimitive expected_slice;
+  expected_slice.slice_dims.push_back(
+      SliceDimension{.start_index = 0, .limit_index = 4, .stride = 1});
+  InverseViewOperation expected = {
+      .base_transform = {ReshapePrimitive{.base_sizes = {12},
+                                          .new_sizes = {6, 2}},
+                         RealToRealBitcast{.from_type = mlir::ElementType::BF16,
+                                           .to_type = mlir::ElementType::F32}},
+      .bitcast_view = {},
+      .stages = {InverseViewStage{.slice = std::move(expected_slice)},
+                 InverseViewStage{
+                     .forward = {ReshapePrimitive{.base_sizes = {4},
+                                                  .new_sizes = {2, 2}}},
+                     .inverse = {ReshapePrimitive{.base_sizes = {2, 2},
+                                                  .new_sizes = {4}}},
+                 }},
+      .final_shape = Shape({6}, mlir::ElementType::F32)};
+  EXPECT_EQ(inverse_view_operation.base_transform, expected.base_transform);
+  EXPECT_EQ(inverse_view_operation.bitcast_view, expected.bitcast_view);
+  EXPECT_EQ(inverse_view_operation.stages, expected.stages);
+  EXPECT_EQ(inverse_view_operation.final_shape, expected.final_shape);
+}
+
+TEST(ComputeInverseViewOperation, EqualSizeSliceReinterpretsBase) {
+  const Dimensions contiguous_base_shape = {6};
+  const mlir::ElementType contiguous_base_dtype = mlir::ElementType::I32;
+  const Dimensions view_shape = {2, 2};
+  const StridedLayout view_layout = MakeContiguousBaseLayout(view_shape);
+  const mlir::ElementType view_dtype = mlir::ElementType::F32;
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto inverse_view_operation,
+      ComputeInverseViewOperation(contiguous_base_shape, contiguous_base_dtype,
+                                  view_layout, view_dtype,
+                                  /*is_conj=*/false,
+                                  /*preserve_base=*/true));
+  SlicePrimitive expected_slice;
+  expected_slice.slice_dims.push_back(
+      SliceDimension{.start_index = 0, .limit_index = 4, .stride = 1});
+  InverseViewOperation expected = {
+      .base_transform = {RealToRealBitcast{.from_type = mlir::ElementType::I32,
+                                           .to_type = mlir::ElementType::F32}},
+      .bitcast_view = {},
+      .stages = {InverseViewStage{.slice = std::move(expected_slice)},
+                 InverseViewStage{
+                     .forward = {ReshapePrimitive{.base_sizes = {4},
+                                                  .new_sizes = {2, 2}}},
+                     .inverse = {ReshapePrimitive{.base_sizes = {2, 2},
+                                                  .new_sizes = {4}}},
+                 }},
+      .final_shape = Shape({6}, mlir::ElementType::F32)};
+  EXPECT_EQ(inverse_view_operation.base_transform, expected.base_transform);
+  EXPECT_EQ(inverse_view_operation.bitcast_view, expected.bitcast_view);
+  EXPECT_EQ(inverse_view_operation.stages, expected.stages);
+  EXPECT_EQ(inverse_view_operation.final_shape, expected.final_shape);
+}
+
+TEST(ComputeInverseViewOperation,
+     ByteToLargerSizeFullTransposedViewPromotesBase) {
+  const Dimensions contiguous_base_shape = {2, 12};
+  const mlir::ElementType contiguous_base_dtype = mlir::ElementType::UI8;
+  const StridedLayout view_layout = {
+      .strided_dims = {{.size = 3, .stride = 1}, {.size = 2, .stride = 3}},
+      .storage_offset = 0,
+  };
+  const mlir::ElementType view_dtype = mlir::ElementType::F32;
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto inverse_view_operation,
+      ComputeInverseViewOperation(contiguous_base_shape, contiguous_base_dtype,
+                                  view_layout, view_dtype,
+                                  /*is_conj=*/false,
+                                  /*preserve_base=*/true));
+  InverseViewOperation expected = {
+      .base_transform = {ReshapePrimitive{.base_sizes = {2, 12},
+                                          .new_sizes = {2, 3, 4}},
+                         RealToRealBitcast{.from_type = mlir::ElementType::UI8,
+                                           .to_type = mlir::ElementType::F32}},
+      .bitcast_view = {},
+      .stages = {InverseViewStage{
+          .forward = {TransposePrimitive{.permutation = {1, 0}}},
+          .inverse = {TransposePrimitive{.permutation = {1, 0}}},
+      }},
+      .final_shape = Shape({2, 3}, mlir::ElementType::F32)};
+  EXPECT_EQ(inverse_view_operation.base_transform, expected.base_transform);
+  EXPECT_EQ(inverse_view_operation.bitcast_view, expected.bitcast_view);
+  EXPECT_EQ(inverse_view_operation.stages, expected.stages);
+  EXPECT_EQ(inverse_view_operation.final_shape, expected.final_shape);
+}
+
+TEST(ComputeInverseViewOperation,
+     ByteToLargerSizeNonDivisibleTrailingDimFallsBack) {
+  const Dimensions contiguous_base_shape = {2, 6};
+  const mlir::ElementType contiguous_base_dtype = mlir::ElementType::UI8;
+  const Dimensions view_shape = {3};
+  const StridedLayout view_layout = MakeContiguousBaseLayout(view_shape);
+  const mlir::ElementType view_dtype = mlir::ElementType::F32;
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto inverse_view_operation,
+      ComputeInverseViewOperation(contiguous_base_shape, contiguous_base_dtype,
+                                  view_layout, view_dtype,
+                                  /*is_conj=*/false,
+                                  /*preserve_base=*/true));
+  InverseViewOperation expected = {
+      .base_transform = {},
+      .bitcast_view = {RealToRealBitcast{.from_type = mlir::ElementType::F32,
+                                         .to_type = mlir::ElementType::UI8}},
+      .stages = {InverseViewStage{
+          .forward = {ReshapePrimitive{.base_sizes = {2, 6},
+                                       .new_sizes = {3, 4}}},
+          .inverse = {ReshapePrimitive{.base_sizes = {3, 4},
+                                       .new_sizes = {2, 6}}},
+      }},
+      .final_shape = Shape({2, 6}, mlir::ElementType::UI8)};
+  EXPECT_EQ(inverse_view_operation.base_transform, expected.base_transform);
+  EXPECT_EQ(inverse_view_operation.bitcast_view, expected.bitcast_view);
+  EXPECT_EQ(inverse_view_operation.stages, expected.stages);
+  EXPECT_EQ(inverse_view_operation.final_shape, expected.final_shape);
+}
+
+TEST(ComputeInverseViewOperation, ByteToLargerSizeSingleElement1DFallsBack) {
+  const Dimensions contiguous_base_shape = {4};
+  const mlir::ElementType contiguous_base_dtype = mlir::ElementType::UI8;
+  const Dimensions view_shape = {1};
+  const StridedLayout view_layout = MakeContiguousBaseLayout(view_shape);
+  const mlir::ElementType view_dtype = mlir::ElementType::F32;
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto inverse_view_operation,
+      ComputeInverseViewOperation(contiguous_base_shape, contiguous_base_dtype,
+                                  view_layout, view_dtype,
+                                  /*is_conj=*/false,
+                                  /*preserve_base=*/true));
+  InverseViewOperation expected = {
+      .base_transform = {},
+      .bitcast_view = {RealToRealBitcast{.from_type = mlir::ElementType::F32,
+                                         .to_type = mlir::ElementType::UI8}},
+      .stages = {InverseViewStage{
+          .forward = {ReshapePrimitive{.base_sizes = {4}, .new_sizes = {1, 4}}},
+          .inverse = {ReshapePrimitive{.base_sizes = {1, 4}, .new_sizes = {4}}},
+      }},
+      .final_shape = Shape({4}, mlir::ElementType::UI8)};
+  EXPECT_EQ(inverse_view_operation.base_transform, expected.base_transform);
+  EXPECT_EQ(inverse_view_operation.bitcast_view, expected.bitcast_view);
+  EXPECT_EQ(inverse_view_operation.stages, expected.stages);
+  EXPECT_EQ(inverse_view_operation.final_shape, expected.final_shape);
+}
+
+TEST(ComputeInverseViewOperation, ByteToLargerSizeLeadingSizeOneDimFallsBack) {
+  for (const Dimensions& contiguous_base_shape :
+       {Dimensions{1, 4}, Dimensions{1, 24}}) {
+    const mlir::ElementType contiguous_base_dtype = mlir::ElementType::UI8;
+    const Dimensions view_shape = {1};
+    const StridedLayout view_layout = MakeContiguousBaseLayout(view_shape);
+    const mlir::ElementType view_dtype = mlir::ElementType::F32;
+
+    TT_ASSERT_OK_AND_ASSIGN(auto inverse_view_operation,
+                            ComputeInverseViewOperation(
+                                contiguous_base_shape, contiguous_base_dtype,
+                                view_layout, view_dtype, /*is_conj=*/false,
+                                /*preserve_base=*/true));
+    EXPECT_TRUE(inverse_view_operation.base_transform.empty());
+    EXPECT_EQ(inverse_view_operation.final_shape,
+              Shape(contiguous_base_shape, mlir::ElementType::UI8));
+  }
+}
+
 TEST(ComputeInverseViewOperation, ViewAsReal) {
   const Dimensions contiguous_base_shape = {2, 3, 4};
   const mlir::ElementType contiguous_base_dtype = mlir::ElementType::COMPLEXF32;
