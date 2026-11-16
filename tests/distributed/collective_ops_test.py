@@ -14,11 +14,9 @@
 
 """Tests PyTorch distributed collectives on multiple TPUs.
 
-- `CollectiveOpsTest` uses `TpuMultiProcContinuousTest`: N worker processes (one
-  per TPU) are spawned once and share a process group across tests. Each test
-  method runs on every rank.
-- Tests that need fresh worker processes (e.g. to exercise process exit) use
-  `distributed_utils.dist_run()`, which spawns N workers per test.
+`CollectiveOpsTest` uses `TpuMultiProcContinuousTest`: N worker processes (one
+per TPU) are spawned once and share a process group across tests. Each test
+method runs on every rank.
 """
 
 from collections.abc import Callable, Sequence
@@ -53,7 +51,6 @@ import torch.multiprocessing as mp
 from torch_tpu._internal.distributed import tpu_distributed
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
-from tests import seed_test_utils
 from tests.distributed import continuous_test_utils
 from tests.distributed import distributed_utils
 
@@ -64,30 +61,6 @@ try:
   _IS_TPU_V7 = torch.tpu.get_device_properties().name == "TPU v7"
 except RuntimeError:  # No TPU generation that TorchTPU supports is attached.
   _IS_TPU_V7 = False
-
-
-def _test_wrapper(
-    test_fn: Callable[..., None], *args: Any, **kwargs: Any
-) -> None:
-  """Wrapper to initialize and cleanup the distributed environment for tests.
-
-  This helper ensures that every test rank initializes the TPU device and
-  process group. After the test function completes, it performs a final
-  synchronization barrier to ensure all workers have finished before
-  destroying the process group, preventing premature exit crashes.
-
-  Args:
-    test_fn: The test function to execute.
-    *args: Positional arguments for the test function.
-    **kwargs: Keyword arguments for the test function.
-  """
-  dist.init_process_group(backend="tpu_dist")
-  try:
-    test_fn(*args, **kwargs)
-  finally:
-    if dist.is_initialized():
-      dist.barrier()
-      dist.destroy_process_group()
 
 
 def _all_reduce_input_fn_rank(r, w):
@@ -1133,19 +1106,10 @@ class CollectiveOpsTest(continuous_test_utils.TpuMultiProcContinuousTest):
   def test_isend_irecv_does_not_leak_store_keys(self) -> None:
     _run_isend_irecv_does_not_leak_store_keys()
 
-
-class ProcessExitTest(seed_test_utils.MultiProcessRepeatableTest):
-  """Tests that need each worker process to exit at the end of the test."""
-
-  _world_size = distributed_utils.get_tpu_device_count()
-
   def test_rank_variable_dead_collective_without_hang(self) -> None:
-    distributed_utils.dist_run(
-        nproc_per_node=self._world_size,
-        fn=_test_wrapper,
-        test_fn=_run_rank_variable_dead_collective_without_hang,
-        world_size=self._world_size,
-    )
+    _run_rank_variable_dead_collective_without_hang(self.world_size)
+    # Ranks other than 0 reach this barrier with the all-reduce still pending.
+    dist.barrier()
 
 
 if __name__ == "__main__":  # We are in the parent process.
