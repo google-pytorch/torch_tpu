@@ -127,8 +127,12 @@ build --host_copt=-Wno-unused-value
 # to get C++20. See
 # https://github.com/google-ml-infra/rules_ml_toolchain?tab=readme-ov-file#configure-the-llvm--sysroot-in-rules_ml_toolchain
 # for details.
-build --repo_env=LLVM_VERSION=20
-build --repo_env=SYSROOT_DIST=linux_glibc_2_31
+# These are `common`, not `build`, so that `bazel mod` and `bazel query` (run
+# by bazel-diff and ci/tools/run_bazel_diff.py) see the same repo environment
+# as `build` and `cquery`. Otherwise every switch between the two kinds of
+# command invalidates the toolchain repos and everything that depends on them.
+common --repo_env=LLVM_VERSION=20
+common --repo_env=SYSROOT_DIST=linux_glibc_2_31
 build --action_env=BAZEL_CXXOPTS="-std=c++20"
 
 # The disk cache uses local disk as a "remote" cache backend, which can
@@ -148,14 +152,12 @@ build --experimental_python_import_all_repositories=true
 # Use a downloader config to mirror GitHub and Python package downloads.
 common --downloader_config=bazel_downloader.cfg
 
-# llvm has a bug where an empty glob isn't explicitly set.
-build --incompatible_disallow_empty_glob=false
-# Using the //... wildcard forces Bazel's loading phase to evaluate every single
-# BUILD file in the entire repository. The flag prefixed with `build` above only
-# allows Bazel to suppress the empty glob crashes from commands `bazel build` or
-# `bazel test`. Once we introduce `bazel query` commands, Bazel will execute the
-# glob check, hit the empty packages and instantly crash.
-query --incompatible_disallow_empty_glob=false
+# llvm has a bug where an empty glob isn't explicitly set. This is `common` so
+# that every command (`build`, `query`, `cquery`, `mod`, ...) sees the same
+# Starlark semantics. bazel-diff alternates `bazel mod graph` with `bazel
+# cquery`, and a semantics flag that differs between them makes Bazel
+# re-evaluate every module extension and re-analyze everything on each switch.
+common --incompatible_disallow_empty_glob=false
 
 # Disable magic generation of `__init__.py` files. This avoids surprising
 # import behaviors that only happen under Bazel.
