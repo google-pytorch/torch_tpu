@@ -15,7 +15,9 @@
 """Tests for distributed handshake protocol using PyZMQ and asyncio."""
 
 import asyncio
+import atexit
 from collections.abc import Callable
+from multiprocessing import util as multiprocessing_util
 import os
 import select
 import threading
@@ -1347,6 +1349,21 @@ class HandshakeTest(seed_test_utils.RepeatableTest):
   def tearDown(self) -> None:
     super().tearDown()
     Handshake._reset_instances()
+
+  def test_reset_instances_at_exit_of_forked_processes(self) -> None:
+    # `multiprocessing` clears the atexit handlers of the processes it forks,
+    # then runs the hooks registered with `register_after_fork()` in them.
+    hooks = [
+        (func, obj)
+        for (_, _, func), obj in multiprocessing_util._afterfork_registry.items()  # pylint: disable=protected-access
+        if obj is Handshake
+    ]
+    self.assertLen(hooks, 1)
+    func, obj = hooks[0]
+    with mock.patch.object(atexit, "register") as mock_register:
+      func(obj)
+
+    mock_register.assert_called_once_with(Handshake._reset_instances)
 
   def test_handshake_port_cache(self) -> None:
     """Tests that Handshake caches port selection per coordinator rank."""

@@ -23,6 +23,7 @@ import contextlib
 import dataclasses
 import functools
 import json
+from multiprocessing import util as multiprocessing_util
 import queue
 import struct
 import threading
@@ -1681,3 +1682,11 @@ class Handshake:
 
 # Ensure server/client instances are cleanly closed on process exit.
 atexit.register(Handshake._reset_instances)  # pylint: disable=protected-access
+# Processes that `multiprocessing` forks (with the "fork" or "forkserver" start
+# method) start with no atexit handlers, so register it again in each of them.
+# Otherwise a coordinator that exits right after replying can drop the replies
+# that are still queued in ZMQ, leaving the other ranks waiting for them.
+multiprocessing_util.register_after_fork(
+    Handshake,
+    lambda _: atexit.register(Handshake._reset_instances),  # pylint: disable=protected-access
+)
