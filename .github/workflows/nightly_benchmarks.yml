@@ -39,9 +39,12 @@ on:
         type: string
         default: ""
 
+  # Each run fills most of the shared linux-x86-tpu7x-224-4tpu pool for ~30 min,
+  # so every run is scheduled between 02:00 and 12:00 UTC, outside US working
+  # hours, to keep presubmit from queueing behind it.
   schedule:
-    - cron: "0 0 * * *"           # Daily 00:00 UTC: full TPU + GPU baseline
-    - cron: "0 4,8,12,16,20 * * *" # Every 4h (except 00:00 UTC): fast compiled TPU lane of the torch_* benchmarks
+    - cron: "0 6 * * *"            # Daily 06:00 UTC: full TPU + GPU baseline
+    - cron: "0 2,4,8,10,12 * * *"  # Fast compiled TPU lane of the torch_* benchmarks
 
 permissions:
   contents: read
@@ -87,10 +90,10 @@ jobs:
     with:
       registry_file: "perflab/benchmark_registry.pbtxt"
       bap_ref: "df45de4a2390d7510af1e9d747f47cd6f6b9bb94"
-      # The 4-hourly lane runs only the torch_* benchmarks (the model shards
+      # The fast lane runs only the torch_* benchmarks (the model shards
       # and the distributed benchmarks), not the layer shards. The filter
       # selects benchmarks whose names start with torch_.
-      benchmark_filter: ${{ inputs.benchmark_filter || ((github.event_name == 'schedule' && github.event.schedule != '0 0 * * *') && '^torch_.*' || '') }}
+      benchmark_filter: ${{ inputs.benchmark_filter || ((github.event_name == 'schedule' && github.event.schedule != '0 6 * * *') && '^torch_.*' || '') }}
       environment_filter: ${{ inputs.environment_filter || 'tpu-v7' }}
       # experiment_ref is pinned to a commit SHA, so BAP would otherwise record
       # the SHA as the result's branch. When experiment_ref is unset, default
@@ -109,13 +112,13 @@ jobs:
         TORCH_TPU_PYTHON_VERSION=3.12
         TORCH_TPU_BENCHMARK_ORDER_SEED=${{ needs.build_wheel.outputs.resolved_sha }}
         TEST_RANDOMIZE_ORDERING_SEED=${{ github.run_id }}
-        TESTBRIDGE_TEST_ONLY=${{ (github.event_name == 'schedule' && github.event.schedule != '0 0 * * *') && '*_compiled' || '' }}
+        TESTBRIDGE_TEST_ONLY=${{ (github.event_name == 'schedule' && github.event.schedule != '0 6 * * *') && '*_compiled' || '' }}
 
   run_gpu_benchmarks:
     name: Run GPU baseline benchmarks
     # The GPU benchmarks also import torch_tpu, so they need the wheel too.
     needs: [build_wheel]
-    if: ${{ (github.event_name == 'workflow_dispatch' && (!inputs.environment_filter || contains(inputs.environment_filter, 'gpu'))) || github.event.schedule == '0 0 * * *' }}
+    if: ${{ (github.event_name == 'workflow_dispatch' && (!inputs.environment_filter || contains(inputs.environment_filter, 'gpu'))) || github.event.schedule == '0 6 * * *' }}
     permissions:
       contents: read
       pull-requests: write
