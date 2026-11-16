@@ -20,6 +20,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -39,13 +40,22 @@
 #include "csrc/pjrt/pjrt_state.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/OwningOpRef.h"
+#include "mlir/Parser/Parser.h"
+#include "xla/future.h"
 #include "xla/hlo/builder/xla_builder.h"
 #include "xla/hlo/builder/xla_computation.h"
 #include "xla/hlo/ir/hlo_module.h"
+#include "xla/hlo/parser/hlo_parser.h"
 #include "xla/layout_util.h"
+#include "xla/pjrt/maybe_owning_mlir_module.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_executable.h"
+#include "xla/pjrt/pjrt_layout.h"
 #include "xla/service/computation_layout.h"
+#include "xla/service/device_assignment.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
 #include "xla/xla.pb.h"
@@ -57,6 +67,7 @@ namespace {
 using absl_testing::StatusIs;
 using testing::Contains;
 using testing::ElementsAre;
+using ::testing::IsEmpty;
 using testing::Pair;
 
 // Initializes the TPU PjRt client once per test suite.
@@ -218,6 +229,38 @@ class DeviceShapesTest : public TpuClientTest {
         std::move(loaded_executable));
   }
 
+  absl::StatusOr<SharedLoadedExecutableWithMetadata> CompileMlirWithMetadata(
+      const std::string_view mlir_source, xla::CompileOptions options = {}) {
+    std::unique_ptr<mlir::MLIRContext> context = MakeMlirContext();
+    mlir::OwningOpRef<mlir::ModuleOp> module =
+        mlir::parseSourceString<mlir::ModuleOp>(mlir_source, context.get());
+    if (!module) {
+      return TT_ERROR(error::kInvalidArgument) << "failed to parse MLIR module";
+    }
+    TT_ASSIGN_OR_RETURN(
+        std::unique_ptr<xla::PjRtLoadedExecutable> raw_executable,
+        CompileAndLoadMlirModule(
+            *client_,
+            xla::MaybeOwningMlirModule(std::move(context), std::move(module)),
+            std::move(options)));
+    return LoadedExecutableWithMetadata::MakeShared(std::move(raw_executable));
+  }
+
+  absl::StatusOr<std::unique_ptr<xla::PjRtBuffer>> MakeScalarS32Buffer(
+      const int32_t value) {
+    if (client_->addressable_devices().empty()) {
+      return TT_ERROR(error::kFailedPrecondition) << "no addressable devices";
+    }
+    TT_ASSIGN_OR_RETURN(
+        xla::PjRtMemorySpace* const memory_space,
+        client_->addressable_devices()[0]->default_memory_space());
+    return client_->BufferFromHostBuffer(
+        &value, xla::S32, /*dims=*/{}, /*byte_strides=*/std::nullopt,
+        xla::PjRtClient::HostBufferSemantics::kImmutableOnlyDuringCall,
+        /*on_done_with_host_buffer=*/nullptr, memory_space,
+        /*device_layout=*/nullptr);
+  }
+
   xla::PjRtClient* client_ = nullptr;
 };
 
@@ -291,6 +334,294 @@ TEST_F(DeviceShapesTest,
   EXPECT_TRUE(dyn_param_exec->output_device_shapes()[0].is_dynamic());
   EXPECT_TRUE(
       dyn_param_exec->output_device_shapes()[0].is_dynamic_dimension(0));
+}
+
+TEST_F(DeviceShapesTest,
+       MlirSetDimensionSizeOutputMatchesRuntimeBufferOnDeviceShape) {
+  constexpr std::string_view kMlirModule = R"mlir(
+    func.func public @main(%arg0: tensor<i32>) -> tensor<8x8xf32> {
+      %0 = stablehlo.iota dim = 0 : tensor<8x8xf32>
+      %1 = stablehlo.set_dimension_size %0, %arg0, dim = 0 : (tensor<8x8xf32>, tensor<i32>) -> tensor<8x8xf32>
+      return %1 : tensor<8x8xf32>
+    }
+  )mlir";
+  TT_ASSERT_OK_AND_ASSIGN(const SharedLoadedExecutableWithMetadata executable,
+                          CompileMlirWithMetadata(kMlirModule));
+
+  ASSERT_EQ(executable->output_device_shapes().size(), 1);
+  EXPECT_TRUE(executable->output_device_shapes()[0].is_dynamic());
+  EXPECT_TRUE(executable->output_device_shapes()[0].is_dynamic_dimension(0));
+  EXPECT_FALSE(executable->output_device_shapes()[0].is_dynamic_dimension(1));
+  EXPECT_EQ(executable->output_device_shapes()[0]
+                .layout()
+                .dynamic_shape_metadata_prefix_bytes(),
+            1024);
+
+  TT_ASSERT_OK_AND_ASSIGN(std::unique_ptr<xla::PjRtBuffer> size_buf,
+                          MakeScalarS32Buffer(5));
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>> outputs,
+      executable->GetLoadedExecutable()->Execute({{size_buf.get()}},
+                                                 xla::ExecuteOptions()));
+  ASSERT_EQ(outputs.size(), 1);
+  ASSERT_EQ(outputs[0].size(), 1);
+  EXPECT_EQ(executable->output_device_shapes()[0],
+            outputs[0][0]->on_device_shape());
+}
+
+TEST_F(DeviceShapesTest,
+       ZeroElementBoundedDynamicOutputMatchesRuntimeBufferOnDeviceShape) {
+  constexpr std::string_view kMlirModule = R"mlir(
+    func.func public @main(%arg0: tensor<i32>) -> tensor<?x0xf32, #stablehlo.bounds<8, ?>> {
+      %0 = stablehlo.constant dense<0.0> : tensor<8x0xf32>
+      %1 = stablehlo.set_dimension_size %0, %arg0, dim = 0 : (tensor<8x0xf32>, tensor<i32>) -> tensor<?x0xf32, #stablehlo.bounds<8, ?>>
+      return %1 : tensor<?x0xf32, #stablehlo.bounds<8, ?>>
+    }
+  )mlir";
+  TT_ASSERT_OK_AND_ASSIGN(const SharedLoadedExecutableWithMetadata executable,
+                          CompileMlirWithMetadata(kMlirModule));
+
+  ASSERT_EQ(executable->output_device_shapes().size(), 1);
+  EXPECT_TRUE(executable->output_device_shapes()[0].is_dynamic());
+  EXPECT_TRUE(executable->output_device_shapes()[0].is_dynamic_dimension(0));
+  EXPECT_FALSE(executable->output_device_shapes()[0].is_dynamic_dimension(1));
+  EXPECT_THAT(executable->output_device_shapes()[0].layout().tiles(),
+              IsEmpty());
+  EXPECT_EQ(executable->output_device_shapes()[0]
+                .layout()
+                .dynamic_shape_metadata_prefix_bytes(),
+            1024);
+
+  TT_ASSERT_OK_AND_ASSIGN(std::unique_ptr<xla::PjRtBuffer> size_buf,
+                          MakeScalarS32Buffer(3));
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>> outputs,
+      executable->GetLoadedExecutable()->Execute({{size_buf.get()}},
+                                                 xla::ExecuteOptions()));
+  ASSERT_EQ(outputs.size(), 1);
+  ASSERT_EQ(outputs[0].size(), 1);
+  EXPECT_EQ(executable->output_device_shapes()[0],
+            outputs[0][0]->on_device_shape());
+}
+
+class ForwardingLoadedExecutable : public xla::PjRtLoadedExecutable {
+ public:
+  explicit ForwardingLoadedExecutable(
+      std::shared_ptr<xla::PjRtLoadedExecutable> wrapped,
+      std::optional<xla::PjRtClient*> override_client = std::nullopt,
+      std::optional<std::vector<std::shared_ptr<xla::HloModule>>>
+          override_hlo_modules = std::nullopt)
+      : wrapped_(std::move(wrapped)),
+        override_client_(override_client),
+        override_hlo_modules_(std::move(override_hlo_modules)) {}
+
+  xla::PjRtClient* client() const override {
+    return override_client_.has_value() ? *override_client_
+                                        : wrapped_->client();
+  }
+  const xla::DeviceAssignment& device_assignment() const override {
+    return wrapped_->device_assignment();
+  }
+  absl::Span<xla::PjRtDevice* const> addressable_devices() const override {
+    return wrapped_->addressable_devices();
+  }
+  absl::StatusOr<std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>>>
+  Execute(absl::Span<const std::vector<xla::PjRtBuffer*>> argument_handles,
+          const xla::ExecuteOptions& options,
+          std::optional<std::vector<xla::Future<>>>& returned_futures)
+      const override {
+    return wrapped_->Execute(argument_handles, options, returned_futures);
+  }
+  absl::StatusOr<std::vector<std::unique_ptr<xla::PjRtBuffer>>> ExecuteSharded(
+      absl::Span<xla::PjRtBuffer* const> argument_handles,
+      xla::PjRtDevice* device, const xla::ExecuteOptions& options,
+      std::optional<xla::Future<>>& returned_future,
+      bool fill_future) const override {
+    return wrapped_->ExecuteSharded(argument_handles, device, options,
+                                    returned_future, fill_future);
+  }
+  absl::StatusOr<std::vector<std::unique_ptr<xla::PjRtBuffer>>> ExecutePortable(
+      absl::Span<xla::PjRtBuffer* const> argument_handles,
+      xla::PjRtDevice* device, const xla::ExecuteOptions& options,
+      std::optional<xla::Future<>>& returned_future,
+      bool fill_future) const override {
+    return wrapped_->ExecutePortable(argument_handles, device, options,
+                                     returned_future, fill_future);
+  }
+  void Delete() override { wrapped_->Delete(); }
+  bool IsDeleted() const override { return wrapped_->IsDeleted(); }
+  absl::StatusOr<std::vector<std::shared_ptr<xla::HloModule>>> GetHloModules()
+      const override {
+    if (override_hlo_modules_.has_value()) {
+      return *override_hlo_modules_;
+    }
+    return wrapped_->GetHloModules();
+  }
+  absl::StatusOr<std::vector<std::shared_ptr<const xla::PjRtLayout>>>
+  GetParameterLayouts() const override {
+    return wrapped_->GetParameterLayouts();
+  }
+  absl::StatusOr<std::vector<std::shared_ptr<const xla::PjRtLayout>>>
+  GetOutputLayouts() const override {
+    return wrapped_->GetOutputLayouts();
+  }
+  absl::StatusOr<std::vector<xla::Shape>> GetOutputShapes() const override {
+    return wrapped_->GetOutputShapes();
+  }
+
+ private:
+  std::shared_ptr<xla::PjRtLoadedExecutable> wrapped_;
+  std::optional<xla::PjRtClient*> override_client_;
+  std::optional<std::vector<std::shared_ptr<xla::HloModule>>>
+      override_hlo_modules_;
+};
+
+TEST_F(DeviceShapesTest,
+       ClearsPadRealToStaticMetadataPrefixOnFlatAndTupledParameters) {
+  constexpr std::string_view kMlirModule = R"mlir(
+    func.func public @main(
+        %pad_real_in: tensor<2x4x?xi32, #stablehlo.bounds<?, ?, 1024>>,
+        %d_dim2: tensor<i32>,
+        %standard_dyn_in: tensor<2x4x?xi32, #stablehlo.bounds<?, ?, 1024>>)
+        -> (tensor<2x4x?xi32, #stablehlo.bounds<?, ?, 1024>>,
+            tensor<2x4x?xi32, #stablehlo.bounds<?, ?, 1024>>) {
+      %c_dim0 = stablehlo.constant dense<2> : tensor<i32>
+      %c_dim1 = stablehlo.constant dense<4> : tensor<i32>
+      %0 = stablehlo.custom_call @PadRealToStatic(%pad_real_in, %c_dim0, %c_dim1, %d_dim2)
+          : (tensor<2x4x?xi32, #stablehlo.bounds<?, ?, 1024>>, tensor<i32>, tensor<i32>, tensor<i32>)
+          -> tensor<2x4x1024xi32>
+      %1 = stablehlo.set_dimension_size %0, %d_dim2, dim = 2
+          : (tensor<2x4x1024xi32>, tensor<i32>)
+          -> tensor<2x4x?xi32, #stablehlo.bounds<?, ?, 1024>>
+      return %1, %standard_dyn_in
+          : tensor<2x4x?xi32, #stablehlo.bounds<?, ?, 1024>>,
+            tensor<2x4x?xi32, #stablehlo.bounds<?, ?, 1024>>
+    }
+  )mlir";
+
+  std::unique_ptr<mlir::MLIRContext> context = MakeMlirContext();
+  mlir::OwningOpRef<mlir::ModuleOp> mlir_module =
+      mlir::parseSourceString<mlir::ModuleOp>(kMlirModule, context.get());
+  ASSERT_TRUE(mlir_module);
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<xla::PjRtLoadedExecutable> unique_raw_executable,
+      CompileAndLoadMlirModule(*client_,
+                               xla::MaybeOwningMlirModule(
+                                   std::move(context), std::move(mlir_module)),
+                               xla::CompileOptions()));
+  const std::shared_ptr<xla::PjRtLoadedExecutable> raw_executable =
+      std::move(unique_raw_executable);
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      const SharedLoadedExecutableWithMetadata flat_executable,
+      LoadedExecutableWithMetadata::MakeShared(
+          std::make_unique<ForwardingLoadedExecutable>(raw_executable)));
+
+  // Exercise the tupled-entry-parameter path in `GetCompiledDeviceShapes`
+  // directly via an HLO module override so the test stays compatible with older
+  // prebuilt OSS libtpu wheels whose `TpuClient::LoadInternal` requires direct
+  // `kParameter` operands on `PadRealToStatic`.
+  constexpr std::string_view kTupledHloModule = R"hlo(
+    HloModule tupled_pad_real_to_static
+
+    ENTRY main {
+      args = (s32[2,4,<=1024]{2,1,0}, s32[], s32[2,4,<=1024]{2,1,0}) parameter(0)
+      pad_real_in = s32[2,4,<=1024]{2,1,0} get-tuple-element(args), index=0
+      d_dim2 = s32[] get-tuple-element(args), index=1
+      standard_dyn_in = s32[2,4,<=1024]{2,1,0} get-tuple-element(args), index=2
+      c_dim0 = s32[] constant(2)
+      c_dim1 = s32[] constant(4)
+      padded = s32[2,4,1024]{2,1,0} custom-call(pad_real_in, c_dim0, c_dim1, d_dim2),
+          custom_call_target="PadRealToStatic"
+      dyn_out = s32[2,4,<=1024]{2,1,0} set-dimension-size(padded, d_dim2), dimensions={2}
+      ROOT out = (s32[2,4,<=1024]{2,1,0}, s32[2,4,<=1024]{2,1,0}) tuple(dyn_out, standard_dyn_in)
+    }
+  )hlo";
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<xla::HloModule> parsed_tupled_module,
+      xla::ParseAndReturnUnverifiedModule(kTupledHloModule));
+  std::vector<std::shared_ptr<xla::HloModule>> tupled_modules = {
+      std::move(parsed_tupled_module)};
+  TT_ASSERT_OK_AND_ASSIGN(
+      const SharedLoadedExecutableWithMetadata tupled_executable,
+      LoadedExecutableWithMetadata::MakeShared(
+          std::make_unique<ForwardingLoadedExecutable>(
+              raw_executable, /*override_client=*/std::nullopt,
+              std::move(tupled_modules))));
+
+  struct TestCase {
+    std::string_view name;
+    SharedLoadedExecutableWithMetadata executable;
+  };
+  const TestCase cases[] = {
+      {.name = "flat_arguments", .executable = flat_executable},
+      {.name = "tupled_arguments", .executable = tupled_executable},
+  };
+  for (const TestCase& test_case : cases) {
+    SCOPED_TRACE(test_case.name);
+    const SharedLoadedExecutableWithMetadata& executable = test_case.executable;
+    ASSERT_EQ(executable->parameter_device_shapes().size(), 3);
+    EXPECT_TRUE(executable->parameter_device_shapes()[0].is_dynamic());
+    EXPECT_EQ(executable->parameter_device_shapes()[0]
+                  .layout()
+                  .dynamic_shape_metadata_prefix_bytes(),
+              0);
+    EXPECT_TRUE(executable->parameter_device_shapes()[1].is_static());
+    EXPECT_EQ(executable->parameter_device_shapes()[1]
+                  .layout()
+                  .dynamic_shape_metadata_prefix_bytes(),
+              0);
+    EXPECT_TRUE(executable->parameter_device_shapes()[2].is_dynamic());
+    EXPECT_EQ(executable->parameter_device_shapes()[2]
+                  .layout()
+                  .dynamic_shape_metadata_prefix_bytes(),
+              1024);
+
+    ASSERT_EQ(executable->output_device_shapes().size(), 2);
+    EXPECT_TRUE(executable->output_device_shapes()[0].is_dynamic());
+    EXPECT_EQ(executable->output_device_shapes()[0]
+                  .layout()
+                  .dynamic_shape_metadata_prefix_bytes(),
+              1024);
+    EXPECT_TRUE(executable->output_device_shapes()[1].is_dynamic());
+    EXPECT_EQ(executable->output_device_shapes()[1]
+                  .layout()
+                  .dynamic_shape_metadata_prefix_bytes(),
+              1024);
+  }
+}
+
+TEST_F(DeviceShapesTest, DoesNotPopulateTpuMetadataPrefixForNonTpuExecutable) {
+  constexpr std::string_view kMlirModule = R"mlir(
+    func.func public @main(%arg0: tensor<i32>) -> tensor<8x8xf32> {
+      %0 = stablehlo.iota dim = 0 : tensor<8x8xf32>
+      %1 = stablehlo.set_dimension_size %0, %arg0, dim = 0 : (tensor<8x8xf32>, tensor<i32>) -> tensor<8x8xf32>
+      return %1 : tensor<8x8xf32>
+    }
+  )mlir";
+  std::unique_ptr<mlir::MLIRContext> context = MakeMlirContext();
+  mlir::OwningOpRef<mlir::ModuleOp> module =
+      mlir::parseSourceString<mlir::ModuleOp>(kMlirModule, context.get());
+  ASSERT_TRUE(module);
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<xla::PjRtLoadedExecutable> raw_executable,
+      CompileAndLoadMlirModule(
+          *client_,
+          xla::MaybeOwningMlirModule(std::move(context), std::move(module)),
+          xla::CompileOptions()));
+  TT_ASSERT_OK_AND_ASSIGN(
+      const SharedLoadedExecutableWithMetadata executable,
+      LoadedExecutableWithMetadata::MakeShared(
+          std::make_unique<ForwardingLoadedExecutable>(
+              std::move(raw_executable), /*override_client=*/nullptr)));
+
+  ASSERT_EQ(executable->output_device_shapes().size(), 1);
+  EXPECT_TRUE(executable->output_device_shapes()[0].is_dynamic());
+  EXPECT_EQ(executable->output_device_shapes()[0]
+                .layout()
+                .dynamic_shape_metadata_prefix_bytes(),
+            0);
 }
 
 TEST_F(DeviceShapesTest,

@@ -59,6 +59,8 @@
 #include "xla/hlo/translate/register.h"
 #include "xla/layout.h"
 #include "xla/layout_util.h"
+#include "xla/pjrt/dynamic_pad_to_static.h"
+#include "xla/pjrt/infer_dispatch_info.h"
 #include "xla/pjrt/maybe_owning_mlir_module.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_compiler.h"
@@ -99,27 +101,111 @@ constexpr std::string_view kOptimizationLevelOption = "xla_optimization_level";
 constexpr std::string_view kMemoryFittingLevelOption =
     "xla_memory_fitting_level";
 
-// Combines flattened HLO entry-computation shapes with PJRT per-leaf layouts.
-// Clears the layout on any leaf whose PJRT layout is null; returns `nullopt` on
-// count mismatch.
-std::optional<std::vector<xla::Shape>> MakeDeviceShapesWithLayouts(
-    const absl::Span<const xla::Shape* absl_nonnull const> flat_hlo_shapes,
-    const absl::Span<const std::shared_ptr<const xla::PjRtLayout>> layouts) {
-  if (flat_hlo_shapes.size() != layouts.size()) {
-    return std::nullopt;
+// Matches the 1024-byte TPU dynamic-shape metadata prefix applied by
+// `TpuTopologyDescription::MakeCanonicalShapeForMemorySpace` in
+// `CommonPjRtClient::LoadInternal`.
+constexpr int64_t kTpuDynamicShapeMetadataPrefixBytes = 1024;
+
+// Applies PJRT per-leaf `layouts` to `leaf_shapes`, populating
+// `kTpuDynamicShapeMetadataPrefixBytes` on dynamic TPU array shapes whose HLO
+// layout lacks the prefix. Clears the layout on any leaf whose PJRT layout is
+// null; returns false on count mismatch.
+bool ApplyLeafLayouts(
+    const absl::Span<xla::Shape* absl_nonnull const> leaf_shapes,
+    const absl::Span<const std::shared_ptr<const xla::PjRtLayout>> layouts,
+    const bool is_tpu) {
+  if (leaf_shapes.size() != layouts.size()) {
+    return false;
   }
-  std::vector<xla::Shape> shapes;
-  shapes.reserve(flat_hlo_shapes.size());
-  for (size_t i = 0; i < flat_hlo_shapes.size(); ++i) {
-    xla::Shape shape = *flat_hlo_shapes[i];
+  for (size_t i = 0; i < leaf_shapes.size(); ++i) {
+    xla::Shape& shape = *leaf_shapes[i];
     if (shape.IsArray() && layouts[i] != nullptr) {
       *shape.mutable_layout() = layouts[i]->xla_layout();
+      if (is_tpu && shape.is_dynamic() &&
+          shape.layout().dynamic_shape_metadata_prefix_bytes() == 0) {
+        // `GetParameterLayouts()` and `GetOutputLayouts()` read the HLO entry
+        // computation layout before `CommonPjRtClient::LoadInternal`
+        // canonicalizes every dynamic TPU parameter and output shape via
+        // `TpuTopologyDescription::MakeCanonicalShapeForMemorySpace`, which
+        // unconditionally sets `1024` prefix bytes before
+        // `ClearPadRealToStaticParameterMetadataPrefixes` clears
+        // `PadRealToStatic` parameters.
+        shape.mutable_layout()->set_dynamic_shape_metadata_prefix_bytes(
+            kTpuDynamicShapeMetadataPrefixBytes);
+      }
     } else {
       xla::LayoutUtil::ClearLayout(&shape);
     }
-    shapes.push_back(std::move(shape));
+  }
+  return true;
+}
+
+// Combines flattened HLO entry-computation shapes with PJRT per-leaf layouts,
+// populating `kTpuDynamicShapeMetadataPrefixBytes` on dynamic TPU shapes whose
+// HLO layout lacks the prefix. Clears the layout on any leaf whose PJRT layout
+// is null; returns `nullopt` on count mismatch.
+std::optional<std::vector<xla::Shape>> MakeDeviceShapesWithLayouts(
+    const absl::Span<const xla::Shape* absl_nonnull const> flat_hlo_shapes,
+    const absl::Span<const std::shared_ptr<const xla::PjRtLayout>> layouts,
+    const bool is_tpu) {
+  std::vector<xla::Shape> shapes;
+  shapes.reserve(flat_hlo_shapes.size());
+  std::vector<xla::Shape*> leaf_shapes;
+  leaf_shapes.reserve(flat_hlo_shapes.size());
+  for (const xla::Shape* const hlo_shape : flat_hlo_shapes) {
+    shapes.push_back(*hlo_shape);
+    leaf_shapes.push_back(&shapes.back());
+  }
+  if (!ApplyLeafLayouts(leaf_shapes, layouts, is_tpu)) {
+    return std::nullopt;
   }
   return shapes;
+}
+
+// Reconstructs the flat per-leaf parameter device shapes of `hlo_module` from
+// its HLO entry computation and `parameter_layouts`, clearing the dynamic-shape
+// metadata prefix on any TPU parameter consumed by `PadRealToStatic` to match
+// `CommonPjRtClient::LoadInternal`.
+std::optional<std::vector<xla::Shape>> MakeParameterDeviceShapesWithLayouts(
+    const xla::HloModule& hlo_module,
+    const absl::Span<const std::shared_ptr<const xla::PjRtLayout>>
+        parameter_layouts,
+    const bool is_tpu) {
+  const xla::ComputationLayout& entry = hlo_module.entry_computation_layout();
+  std::vector<xla::Shape> structured_parameters =
+      xla::GetParameterShapes(entry);
+
+  std::vector<xla::Shape*> leaf_shapes;
+  for (xla::Shape& param_shape : structured_parameters) {
+    xla::ShapeUtil::ForEachMutableSubshape(
+        &param_shape,
+        [&leaf_shapes](xla::Shape* subshape, const xla::ShapeIndex&) {
+          if (!subshape->IsTuple()) {
+            leaf_shapes.push_back(subshape);
+          }
+        });
+  }
+  if (!ApplyLeafLayouts(leaf_shapes, parameter_layouts, is_tpu)) {
+    return std::nullopt;
+  }
+  if (is_tpu) {
+    if (const absl::Status status =
+            xla::ClearPadRealToStaticParameterMetadataPrefixes(
+                hlo_module, absl::MakeSpan(structured_parameters));
+        !status.ok()) {
+      ABSL_LOG(WARNING)
+          << "Failed to clear PadRealToStatic parameter metadata prefixes for "
+          << hlo_module.name() << ": " << status;
+      return std::nullopt;
+    }
+  }
+
+  std::vector<xla::Shape> flat_parameters;
+  flat_parameters.reserve(leaf_shapes.size());
+  for (xla::Shape* const leaf_shape : leaf_shapes) {
+    flat_parameters.push_back(std::move(*leaf_shape));
+  }
+  return flat_parameters;
 }
 
 struct CompiledDeviceShapes {
@@ -140,18 +226,11 @@ CompiledDeviceShapes GetCompiledDeviceShapes(
   if (!modules.ok() || modules->size() != 1) {
     return {};
   }
+  const bool is_tpu = executable.client() != nullptr &&
+                      executable.client()->platform_id() == xla::TpuId();
   const xla::ComputationLayout& entry =
       (*modules)[0]->entry_computation_layout();
 
-  // Make one shape per leaf buffer to match PJRT's flat per-buffer layouts.
-  // For example, a program compiled with `parameter_is_tupled_arguments` has a
-  // single tuple parameter `(a, b, c)`, while PJRT takes 3 separate buffers and
-  // reports 3 layouts (see xla::FlattenedParameterLayouts).
-  std::vector<const xla::Shape*> flat_parameter_shapes;
-  for (int i = 0; i < entry.parameter_count(); ++i) {
-    xla::ShapeUtil::FlattenTupleShape(entry.parameter_shape(i),
-                                      flat_parameter_shapes);
-  }
   std::vector<const xla::Shape*> flat_output_shapes;
   xla::ShapeUtil::FlattenTupleShape(entry.result_shape(), flat_output_shapes);
 
@@ -160,8 +239,8 @@ CompiledDeviceShapes GetCompiledDeviceShapes(
           parameter_layouts = executable.GetParameterLayouts();
       parameter_layouts.ok()) {
     if (std::optional<std::vector<xla::Shape>> parameters =
-            MakeDeviceShapesWithLayouts(flat_parameter_shapes,
-                                        *parameter_layouts);
+            MakeParameterDeviceShapesWithLayouts(*(*modules)[0],
+                                                 *parameter_layouts, is_tpu);
         parameters.has_value()) {
       result.parameters = std::move(*parameters);
     }
@@ -169,8 +248,8 @@ CompiledDeviceShapes GetCompiledDeviceShapes(
   if (const absl::StatusOr<std::vector<std::shared_ptr<const xla::PjRtLayout>>>
           output_layouts = executable.GetOutputLayouts();
       output_layouts.ok()) {
-    result.outputs =
-        MakeDeviceShapesWithLayouts(flat_output_shapes, *output_layouts);
+    result.outputs = MakeDeviceShapesWithLayouts(flat_output_shapes,
+                                                 *output_layouts, is_tpu);
   }
   return result;
 }
