@@ -38,7 +38,7 @@ csrc/common/version.cc: {remaining: 0, total: 2, infeasible: 0}
 csrc/distributed/process_group_tpu.cc: {remaining: 25, total: 104, infeasible: 42}
 csrc/distributed/slicebuilder/discovery.cc: {remaining: 4, total: 4, infeasible: 0}
 csrc/distributed/utils.cc: {remaining: 1, total: 3, infeasible: 0}
-csrc/distributed/window_tpu.cc: {remaining: 10, total: 12, infeasible: 0}
+csrc/distributed/window_tpu.cc: {remaining: 10, total: 13, infeasible: 1}
 csrc/eager/device_assignment_pipeline.cc: {remaining: 3, total: 5, infeasible: 1}
 csrc/eager/device_buffer.cc: {remaining: 7, total: 16, infeasible: 4}
 csrc/eager/device_buffer_utils.cc: {remaining: 10, total: 12, infeasible: 0}

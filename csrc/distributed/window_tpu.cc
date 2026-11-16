@@ -207,6 +207,10 @@ namespace {
 // views.
 inline std::vector<at::Tensor> ChunkTensorForStriping(const at::Tensor& tensor,
                                                       int num_stripes) {
+  TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=Callers pass contiguous tensors.
+      tensor.is_contiguous(), error::kInvalidArgument)
+      << "expected a contiguous tensor to split into stripes, got a "
+         "non-contiguous tensor";
   // Dimension -1 infers total elements for flattening into a 1D view.
   return tensor.view(-1).chunk(num_stripes, /*dim=*/0);
 }
