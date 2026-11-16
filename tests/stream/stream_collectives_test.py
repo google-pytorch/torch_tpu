@@ -85,9 +85,8 @@ class StreamCollectivesTest(continuous_test_utils.TpuMultiProcContinuousTest):
 class AsyncCollectiveWorkTest(continuous_test_utils.TpuMultiProcContinuousTest):
   world_size = distributed_utils.get_tpu_device_count()
 
-  @absltest.expectedFailure
   def test_async_op_work_tracks_completion(self) -> None:
-    # Fails until a collective's Work tracks the collective's completion.
+    """The Work of an async_op collective reports its completion."""
     moe_in, moe_out, expected = _all_to_all_inputs(self.rank, self.world_size)
 
     work = dist.all_to_all_single(moe_out, moe_in, group=None, async_op=True)

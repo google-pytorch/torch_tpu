@@ -52,6 +52,7 @@
 #include "absl/algorithm/container.h"
 #include "absl/base/no_destructor.h"
 #include "absl/base/nullability.h"
+#include "absl/base/thread_annotations.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/log/absl_check.h"
@@ -65,6 +66,8 @@
 #include "absl/strings/str_join.h"
 #include "absl/strings/str_split.h"
 #include "absl/synchronization/mutex.h"
+#include "absl/synchronization/notification.h"
+#include "absl/time/time.h"
 #include "absl/types/span.h"
 #include "c10/core/ScalarType.h"
 #include "c10/core/TensorOptions.h"
@@ -97,7 +100,10 @@
 #include "csrc/distributed/types.h"
 #include "csrc/distributed/utils.h"
 #include "csrc/distributed/window_tpu.h"
+#include "csrc/eager/current_stream.h"
 #include "csrc/eager/device_buffer.h"
+#include "csrc/eager/eager_mode.h"
+#include "csrc/eager/events_queue.h"
 #include "csrc/eager/materialize.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/structured_log_buffer.h"
@@ -110,6 +116,7 @@
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "torch/csrc/distributed/c10d/Work.hpp"
 #include "torch/headeronly/core/ScalarType.h"
+#include "xla/future.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/runtime/device_id.h"
 #include "xla/shape.h"
@@ -118,18 +125,74 @@ namespace torch_tpu {
 
 namespace {
 
+// Waits up to `timeout` for `future` to become ready.
+bool AwaitFutureWithTimeout(const xla::Future<void>& future,
+                            std::chrono::milliseconds timeout) {
+  if (future.IsKnownReady()) {
+    return true;
+  }
+  auto done = std::make_shared<absl::Notification>();
+  future.OnReady([done](const absl::Status&) { done->Notify(); });
+  return done->WaitForNotificationWithTimeout(absl::FromChrono(timeout));
+}
+
+// Returns the base buffers of `tensors`, one per DeviceBufferList.
+absl::StatusOr<std::vector<DeviceBufferRef>> GetBaseBuffers(
+    absl::Span<const at::Tensor> tensors) {
+  std::vector<DeviceBufferRef> buffers;
+  buffers.reserve(tensors.size());
+  for (const at::Tensor& tensor : tensors) {
+    TT_ASSIGN_OR_RETURN(DeviceBufferRef buffer, GetBaseBuffer(tensor));
+    if (absl::c_none_of(buffers, [&buffer](const DeviceBufferRef& existing) {
+          return existing.device_buffer_list() == buffer.device_buffer_list();
+        })) {
+      buffers.push_back(std::move(buffer));
+    }
+  }
+  return buffers;
+}
+
+// Materializes `buffers` and returns a future that is ready when they are
+// ready on the device.
+absl::StatusOr<xla::Future<void>> MaterializeAndGetReadyFuture(
+    absl::Span<const DeviceBufferRef> buffers) {
+  TT_RETURN_IF_ERROR(
+      Materialize(buffers, MaterializationReason::kDistributedOp));
+  std::vector<xla::Future<void>> ready_futures;
+  ready_futures.reserve(buffers.size());
+  for (const DeviceBufferRef& buffer : buffers) {
+    ready_futures.push_back(buffer.GetReadyFuture());
+  }
+  return xla::JoinFutures(ready_futures);
+}
+
+// Flushes `stream` and returns a future that is ready when the work issued on
+// it so far has completed.
+absl::StatusOr<xla::Future<void>> FlushAndGetCompletionFuture(
+    const DeviceStreamId& stream) {
+  TT_ASSIGN_OR_RETURN(const EventSnapshot snapshot,
+                      MaterializeStream(stream.device_index, stream.stream_id,
+                                        MaterializationReason::kDistributedOp));
+  auto [promise, future] = xla::MakePromise<void>();
+  // The completion future of a snapshot is only valid once it has started.
+  snapshot.OkCallback().OnReady(
+      [promise = std::move(promise), snapshot](const absl::Status&) mutable {
+        promise.Set(snapshot.completion_future().Await());
+      });
+  // The snapshot took the stream's failures; the next sync must report them.
+  internal::MarkStreamActive(stream.device_index, stream.stream_id, future);
+  return future;
+}
+
 class TpuWork : public c10d::Work {
  public:
+  // A Work completed by `future` (P2P), or at once when `future` is null.
   explicit TpuWork(std::vector<at::Tensor> result_tensors, int rank = -1,
                    c10d::OpType op_type = c10d::OpType::UNKNOWN,
                    c10::intrusive_ptr<c10::ivalue::Future> future = nullptr)
       : Work(rank, op_type), results_(std::move(result_tensors)) {
     results_future_ = c10::make_intrusive<c10::ivalue::Future>(
         c10::ListType::create(c10::TensorType::get()));
-
-    // If the future is null, mark the results future as completed. Otherwise,
-    // add a callback to mark the results future as completed when the future
-    // is completed.
     if (future) {
       future->addCallback([results_future = results_future_,
                            results = results_](c10::ivalue::Future& future) {
@@ -146,23 +209,95 @@ class TpuWork : public c10d::Work {
     }
   }
 
+  // A Work that tracks the collective that writes `outputs` on `stream`. With
+  // no `completion` the collective is deferred and writes `deferred_buffers`.
+  TpuWork(std::vector<at::Tensor> outputs, int rank, c10d::OpType op_type,
+          DeviceStreamId stream, std::optional<xla::Future<void>> completion,
+          absl::Span<const DeviceBufferRef> deferred_buffers = {})
+      : Work(rank, op_type),
+        results_(std::move(outputs)),
+        issuing_stream_(stream),
+        completion_(std::move(completion)) {
+    deferred_buffers_.reserve(deferred_buffers.size());
+    for (const DeviceBufferRef& buffer : deferred_buffers) {
+      deferred_buffers_.push_back(buffer.weak());
+    }
+  }
+
   // This class is neither copyable nor movable.
   TpuWork(const TpuWork&) = delete;
   TpuWork& operator=(const TpuWork&) = delete;
   TpuWork(TpuWork&&) = delete;
   TpuWork& operator=(TpuWork&&) = delete;
 
-  // NOTE: We implement TpuWork to match the PyTorch API surface.
-  bool isCompleted() override { return results_future_->completed(); }
-
-  bool isSuccess() const override {
-    return results_future_->completed() && !results_future_->hasError();
+  bool isCompleted() override {
+    if (!issuing_stream_.has_value()) {
+      return results_future_->completed();
+    }
+    return StatusIfCompleted().has_value();
   }
 
+  bool isSuccess() const override {
+    if (!issuing_stream_.has_value()) {
+      return results_future_->completed() && !results_future_->hasError();
+    }
+    const std::optional<absl::Status> status = StatusIfCompleted();
+    return status.has_value() && status->ok();
+  }
+
+  std::exception_ptr exception() const override {
+    if (!issuing_stream_.has_value()) {
+      return results_future_->exception_ptr();
+    }
+    const std::optional<absl::Status> status = StatusIfCompleted();
+    if (!status.has_value() || status->ok()) {
+      return nullptr;
+    }
+    return std::make_exception_ptr(TtError(*status, TT_SOURCE_LOCATION));
+  }
+
+  void synchronize() override {
+    if (issuing_stream_.has_value()) {
+      const DeviceStreamId current = GetCurrentDeviceStreamId();
+      if (current.device_index != issuing_stream_->device_index ||
+          current.stream_id != issuing_stream_->stream_id) {
+        TT_ASSIGN_OR_THROW(xla::Future<void> completion, Completion());
+        EventSnapshot snapshot(issuing_stream_->device_index,
+                               issuing_stream_->stream_id);
+        snapshot.Start(std::move(completion));
+        InsertStreamWait(current.device_index, current.stream_id, snapshot);
+      }
+    }
+    c10d::Work::synchronize();
+  }
+
+  void blockCurrentStream() override { synchronize(); }
+
   bool wait(std::chrono::milliseconds timeout) override {
-    results_future_->wait();
-    TT_CHECK_THROW(!results_future_->hasError(), error::kInternal)
-        << results_future_->tryRetrieveErrorMessage();
+    if (!issuing_stream_.has_value()) {
+      results_future_->wait();
+      TT_CHECK_THROW(!results_future_->hasError(), error::kInternal)
+          << results_future_->tryRetrieveErrorMessage();
+      return true;
+    }
+    synchronize();
+    if (timeout > kNoTimeout || opType_ == c10d::OpType::BARRIER) {
+      TT_ASSIGN_OR_THROW(const xla::Future<void> completion, Completion());
+      if (timeout > kNoTimeout) {
+        TT_CHECK_THROW(AwaitFutureWithTimeout(completion, timeout),
+                       error::kDeadlineExceeded)
+            << "timed out waiting for collective after " << timeout.count()
+            << " ms";
+      }
+      TT_THROW_IF_ERROR(completion.Await());
+      return true;
+    }
+    // Reports a known failure without blocking the host or flushing the
+    // stream, so that a deferred collective can still fuse with later ops.
+    const std::optional<xla::Future<void>> completion = CompletionIfStarted();
+    if (completion.has_value() && completion->IsKnownReady()) {
+      TT_THROW_IF_ERROR(completion->Await());
+    }
     return true;
   }
 
@@ -171,15 +306,108 @@ class TpuWork : public c10d::Work {
   void abort() override {}
 
   c10::intrusive_ptr<c10::ivalue::Future> getFuture() override {
+    if (!issuing_stream_.has_value()) {
+      return results_future_;
+    }
+    // As on a GPU stream, the future is complete once the collective is issued.
+    absl::MutexLock lock(mu_);
+    if (results_future_ == nullptr) {
+      results_future_ = c10::make_intrusive<c10::ivalue::Future>(
+          c10::ListType::create(c10::TensorType::get()));
+      results_future_->markCompleted(c10::IValue(results_));
+    }
     return results_future_;
   }
 
  private:
+  // Returns the collective's completion, starting the collective if needed.
+  absl::StatusOr<xla::Future<void>> Completion() const
+      ABSL_LOCKS_EXCLUDED(mu_) {
+    absl::MutexLock lock(mu_);
+    if (!completion_.has_value()) {
+      TT_ASSIGN_OR_RETURN(completion_, StartDeferredCollective());
+      deferred_buffers_.clear();
+    }
+    return *completion_;
+  }
+
+  // Starts the deferred collective by flushing its stream. Returns a future
+  // that is ready when the collective has completed.
+  absl::StatusOr<xla::Future<void>> StartDeferredCollective() const
+      ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
+    std::vector<DeviceBufferRef> buffers;
+    buffers.reserve(deferred_buffers_.size());
+    for (const DeviceBufferRef::Weak& deferred_buffer : deferred_buffers_) {
+      std::optional<DeviceBufferRef> buffer = deferred_buffer.lock();
+      if (!buffer.has_value() || buffer->live_data_ptrs() == 0) {
+        // No tensor holds what the collective writes any more (updated in
+        // place, overwritten or released), so track its stream instead.
+        return FlushAndGetCompletionFuture(*issuing_stream_);
+      }
+      buffers.push_back(std::move(*buffer));
+    }
+    return MaterializeAndGetReadyFuture(buffers);
+  }
+
+  // Returns the collective's status if it has completed, starting it first if
+  // needed. Never blocks or throws.
+  std::optional<absl::Status> StatusIfCompleted() const
+      ABSL_LOCKS_EXCLUDED(mu_) {
+    const absl::StatusOr<xla::Future<void>> completion = Completion();
+    if (!completion.ok() || !completion->IsKnownReady()) {
+      return std::nullopt;
+    }
+    return completion->Await();
+  }
+
+  // Returns the collective's completion if the collective has been started.
+  std::optional<xla::Future<void>> CompletionIfStarted() const
+      ABSL_LOCKS_EXCLUDED(mu_) {
+    absl::MutexLock lock(mu_);
+    return completion_;
+  }
+
   std::vector<at::Tensor> results_;
+  // Null for a collective Work until getFuture() is called.
   c10::intrusive_ptr<c10::ivalue::Future> results_future_;
+  // Set for a collective Work; unset for P2P and completed-at-once Works.
+  std::optional<DeviceStreamId> issuing_stream_;
+  mutable absl::Mutex mu_;
+  // What a deferred collective writes, until the collective is started.
+  mutable std::vector<DeviceBufferRef::Weak> deferred_buffers_
+      ABSL_GUARDED_BY(mu_);
+  // Mutable: the const queries of c10d::Work also start a deferred collective.
+  mutable std::optional<xla::Future<void>> completion_ ABSL_GUARDED_BY(mu_);
 
   friend class ::torch_tpu::ProcessGroupTpu;  // To allow changing op type.
 };
+
+// Returns the Work of a collective that produced `result_tensors`. During an FX
+// trace nothing runs on the device, so the Work is complete at once.
+c10::intrusive_ptr<c10d::Work> MakeCollectiveWork(
+    std::vector<at::Tensor> result_tensors, int rank, c10d::OpType op_type) {
+  const EagerMode eager_mode = GetEagerMode();
+  if (eager_mode == EagerMode::kInternalCompileFxGraph ||
+      result_tensors.empty()) {
+    return c10::make_intrusive<TpuWork>(std::move(result_tensors), rank,
+                                        op_type);
+  }
+  TT_ASSIGN_OR_THROW(const std::vector<DeviceBufferRef> buffers,
+                     GetBaseBuffers(result_tensors));
+  const DeviceStreamId stream = GetCurrentDeviceStreamId();
+  if (!IsDeferNeverMode(eager_mode)) {
+    // A deferred collective starts like any deferred op: at the next flush of
+    // its stream, or when its Work needs its completion.
+    return c10::make_intrusive<TpuWork>(std::move(result_tensors), rank,
+                                        op_type, stream, std::nullopt, buffers);
+  }
+  // The collective has started. Its completion is taken now: a later in-place
+  // update donates the buffers that it wrote.
+  TT_ASSIGN_OR_THROW(xla::Future<void> completion,
+                     MaterializeAndGetReadyFuture(buffers));
+  return c10::make_intrusive<TpuWork>(std::move(result_tensors), rank, op_type,
+                                      stream, std::move(completion));
+}
 
 std::string DeviceBufferRefDebugString(const at::Tensor& input) {
   auto maybe_base_buffer_ref = GetBaseBuffer(input);
@@ -2082,8 +2310,7 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::allreduce(
     // NOTE: from distributed/c10d/ProcessGroupNCCL.cpp;l=3604 in
     // pytorch/pytorch if not async should return nullptr.
     if (opts.asyncOp) {
-      return c10::make_intrusive<TpuWork>(tensors, getRank(),
-                                          c10d::OpType::ALLREDUCE);
+      return MakeCollectiveWork(tensors, getRank(), c10d::OpType::ALLREDUCE);
     }
     return nullptr;
   });
@@ -2334,8 +2561,8 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::allgather(
         }
 
         if (opts.asyncOp) {
-          return c10::make_intrusive<TpuWork>(output_tensor_list, getRank(),
-                                              c10d::OpType::ALLGATHER);
+          return MakeCollectiveWork(output_tensor_list, getRank(),
+                                    c10d::OpType::ALLGATHER);
         }
         return nullptr;
       });
@@ -2441,9 +2668,8 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::_allgather_base(
             AssignBufferToAtTensor(std::move(result_buffer), output_tensor));
 
         if (opts.asyncOp) {
-          return c10::make_intrusive<TpuWork>(
-              std::vector<at::Tensor>{output_tensor}, getRank(),
-              c10d::OpType::_ALLGATHER_BASE);
+          return MakeCollectiveWork(std::vector<at::Tensor>{output_tensor},
+                                    getRank(), c10d::OpType::_ALLGATHER_BASE);
         }
         return nullptr;
       });
@@ -2463,13 +2689,15 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::allgather_into_tensor_coalesced(
         // simplification for now as we are primarily focused on supporting
         // higher level distributed APIs such as DTensor, which only ever call
         // this method with a single input.
+        c10d::AllgatherOptions inner_opts = opts;
+        inner_opts.asyncOp = false;
         for (int i = 0; i < inputs.size(); ++i) {
-          _allgather_base(outputs[i], inputs[i], opts);
+          _allgather_base(outputs[i], inputs[i], inner_opts);
         }
 
         if (opts.asyncOp) {
-          return c10::make_intrusive<TpuWork>(
-              outputs, getRank(), c10d::OpType::ALLGATHER_COALESCED);
+          return MakeCollectiveWork(outputs, getRank(),
+                                    c10d::OpType::ALLGATHER_COALESCED);
         }
         return nullptr;
       });
@@ -2543,8 +2771,11 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::gather(
             allgather(allgather_output_tensors, input_tensors, allgather_opts);
 
         if (work_ptr != nullptr) {
-          dynamic_cast<TpuWork* absl_nonnull>(work_ptr.get())->opType_ =
-              c10d::OpType::GATHER;
+          auto* tpu_work = dynamic_cast<TpuWork* absl_nonnull>(work_ptr.get());
+          tpu_work->opType_ = c10d::OpType::GATHER;
+          if (rank != root_rank) {
+            tpu_work->results_.clear();
+          }
         }
 
         return work_ptr;
@@ -2728,9 +2959,8 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::_reduce_scatter_base(
             AssignBufferToAtTensor(std::move(result_buffer), output));
 
         if (opts.asyncOp) {
-          return c10::make_intrusive<TpuWork>(
-              std::vector<at::Tensor>{output}, getRank(),
-              c10d::OpType::_REDUCE_SCATTER_BASE);
+          return MakeCollectiveWork(std::vector<at::Tensor>{output}, getRank(),
+                                    c10d::OpType::_REDUCE_SCATTER_BASE);
         }
         return nullptr;
       });
@@ -2752,13 +2982,15 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::reduce_scatter_tensor_coalesced(
         // simplification for now as we are primarily focused on supporting
         // higher level distributed APIs such as DTensor,
         // which only ever call this method with a single input.
+        c10d::ReduceScatterOptions inner_opts = opts;
+        inner_opts.asyncOp = false;
         for (int i = 0; i < inputs.size(); ++i) {
-          _reduce_scatter_base(outputs[i], inputs[i], opts);
+          _reduce_scatter_base(outputs[i], inputs[i], inner_opts);
         }
 
         if (opts.asyncOp) {
-          return c10::make_intrusive<TpuWork>(
-              outputs, getRank(), c10d::OpType::_REDUCE_SCATTER_BASE);
+          return MakeCollectiveWork(outputs, getRank(),
+                                    c10d::OpType::_REDUCE_SCATTER_BASE);
         }
         return nullptr;
       });
@@ -2806,9 +3038,8 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::alltoall_base(
               }
 
               if (async) {
-                return c10::make_intrusive<TpuWork>(
-                    std::vector<at::Tensor>{output}, rank,
-                    c10d::OpType::ALLTOALL_BASE);
+                return MakeCollectiveWork(std::vector<at::Tensor>{output}, rank,
+                                          c10d::OpType::ALLTOALL_BASE);
               }
               return nullptr;
             });
@@ -3099,8 +3330,8 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::alltoall(
         }
 
         if (async) {
-          return c10::make_intrusive<TpuWork>(output_tensors, rank,
-                                              c10d::OpType::ALLTOALL);
+          return MakeCollectiveWork(output_tensors, rank,
+                                    c10d::OpType::ALLTOALL);
         }
         return nullptr;
       });
