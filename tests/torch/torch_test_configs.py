@@ -858,6 +858,9 @@ TEST_EXCLUSIONS: Final[
             "test_nondeterministic_alert_MaxUnpool2d": "*",
             "test_nondeterministic_alert_MaxUnpool3d": "*",
             "test_nondeterministic_alert_interpolate_trilinear": "*",
+            # Present in PyTorch 2.15 (removed upstream in 2.16); aten::median
+            # is not implemented for TPU.
+            "test_nondeterministic_alert_median": "*",
             "test_nondeterministic_alert_put": "*",
             "test_normal_shape": "*",
             "test_normal_small_std_kstest": {"dtypes": [torch.bfloat16]},
