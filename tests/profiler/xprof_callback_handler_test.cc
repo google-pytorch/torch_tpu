@@ -19,6 +19,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <memory>
 #include <string_view>
 #include <thread>
 #include <vector>
@@ -103,7 +104,8 @@ TEST(XProfCallbackHandlerTest, BackToBackSessionsCaptureExactSingleEventEach) {
 
   tensorflow::profiler::XSpace xspace1;
   {
-    auto session1 = tsl::ProfilerSession::Create(MakeProfileOptions(2));
+    std::unique_ptr<tsl::ProfilerSession> session1 =
+        tsl::ProfilerSession::Create(MakeProfileOptions(2));
     ASSERT_NE(session1, nullptr);
     ASSERT_TRUE(session1->Status().ok());
     EXPECT_TRUE(at::hasGlobalCallbacks());
@@ -126,7 +128,8 @@ TEST(XProfCallbackHandlerTest, BackToBackSessionsCaptureExactSingleEventEach) {
 
   tensorflow::profiler::XSpace xspace2;
   {
-    auto session2 = tsl::ProfilerSession::Create(MakeProfileOptions(2));
+    std::unique_ptr<tsl::ProfilerSession> session2 =
+        tsl::ProfilerSession::Create(MakeProfileOptions(2));
     ASSERT_NE(session2, nullptr);
     ASSERT_TRUE(session2->Status().ok());
     EXPECT_TRUE(at::hasGlobalCallbacks());
@@ -148,7 +151,8 @@ TEST(XProfCallbackHandlerTest, BackToBackSessionsCaptureExactSingleEventEach) {
 
 TEST(XProfCallbackHandlerTest, HostTracerLevelZeroSkipsCallbackRegistration) {
   ASSERT_FALSE(at::hasGlobalCallbacks());
-  auto session = tsl::ProfilerSession::Create(MakeProfileOptions(0));
+  std::unique_ptr<tsl::ProfilerSession> session =
+      tsl::ProfilerSession::Create(MakeProfileOptions(0));
   ASSERT_NE(session, nullptr);
   ASSERT_TRUE(session->Status().ok());
   EXPECT_FALSE(at::hasGlobalCallbacks());
@@ -164,7 +168,8 @@ TEST(XProfCallbackHandlerTest, HostTracerLevelZeroSkipsCallbackRegistration) {
 TEST(XProfCallbackHandlerTest, UncollectedSessionDestructionRemovesCallback) {
   ASSERT_FALSE(at::hasGlobalCallbacks());
   {
-    auto session = tsl::ProfilerSession::Create(MakeProfileOptions(2));
+    std::unique_ptr<tsl::ProfilerSession> session =
+        tsl::ProfilerSession::Create(MakeProfileOptions(2));
     ASSERT_NE(session, nullptr);
     ASSERT_TRUE(session->Status().ok());
     EXPECT_TRUE(at::hasGlobalCallbacks());

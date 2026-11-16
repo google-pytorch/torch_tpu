@@ -54,18 +54,23 @@ def _count_host_events(xspace: xplane_pb2.XSpace, event_name: str) -> int:
   total = 0
   for plane in xspace.planes:
     if plane.name == '/host:CPU':
-      ids = {k for k, m in plane.event_metadata.items() if m.name == event_name}
-      total += sum(
-          e.metadata_id in ids for line in plane.lines for e in line.events
-      )
+      matching_ids = {
+          meta_id
+          for meta_id, metadata in plane.event_metadata.items()
+          if metadata.name == event_name
+      }
+      for line in plane.lines:
+        for event in line.events:
+          if event.metadata_id in matching_ids:
+            total += 1
   return total
 
 
-def _fresh_process_door2_worker(output_dir: str, result_queue) -> None:
+def _fresh_process_profile_worker(output_dir: str, result_queue) -> None:
   """Runs `torch_tpu._internal.profiler.profile` in a fresh process."""
   try:
     multiprocessing.parse_absl_flags()
-    marker = 'door2_fresh_process_unique_op'
+    marker = 'profile_fresh_process_unique_op'
     # Use CPU-only activities so the spawned worker does not contend for TPU
     # device nodes held by the parent test process.
     with profiler.profile(
@@ -291,7 +296,7 @@ class ProfilerApiTest(seed_test_utils.RepeatableTest):
     self.assertEqual(server_port, port)
     profiler.stop_server()
 
-  def test_start_server_registers_xprof_callback_handler(self):
+  def test_start_trace_with_server_captures_exact_single_event(self):
     """Tests that active trace sessions capture exact single host events."""
     # 1. Start profiler server; callback registration is scoped to active
     # ProfilerSessions rather than server startup.
@@ -339,12 +344,12 @@ class ProfilerApiTest(seed_test_utils.RepeatableTest):
       profiler.stop_server()
 
   def test_profile_api_fresh_process_captures_exact_single_event(self):
-    """Verifies Door 2 captures RecordFunction in a fresh process."""
-    output_dir = self.create_tempdir('door2_fresh_process').full_path
+    """Verifies `profile` captures RecordFunction in a fresh process."""
+    output_dir = self.create_tempdir('profile_fresh_process').full_path
     ctx = multiprocessing.get_context('spawn')
     result_queue = ctx.Queue()
     proc = ctx.Process(
-        target=_fresh_process_door2_worker,
+        target=_fresh_process_profile_worker,
         args=(output_dir, result_queue),
     )
     proc.start()

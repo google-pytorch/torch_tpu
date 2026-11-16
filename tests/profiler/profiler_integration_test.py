@@ -274,10 +274,15 @@ def _count_host_events(xspace: xplane_pb2.XSpace, event_name: str) -> int:
   total = 0
   for plane in xspace.planes:
     if plane.name == "/host:CPU":
-      ids = {k for k, m in plane.event_metadata.items() if m.name == event_name}
-      total += sum(
-          e.metadata_id in ids for line in plane.lines for e in line.events
-      )
+      matching_ids = {
+          meta_id
+          for meta_id, metadata in plane.event_metadata.items()
+          if metadata.name == event_name
+      }
+      for line in plane.lines:
+        for event in line.events:
+          if event.metadata_id in matching_ids:
+            total += 1
   return total
 
 
