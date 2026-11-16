@@ -264,6 +264,7 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "dynamo_backends_test",
+    tags = ["crcr-smoke"],
     torch_test_module = "dynamo/test_backends",
 )
 
@@ -279,6 +280,7 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "dynamo_deviceguard_test",
+    tags = ["crcr-smoke"],
     torch_test_module = "dynamo/test_deviceguard",
 )
 
@@ -534,6 +536,7 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "inductor_mmdecomp_test",
+    tags = ["crcr-smoke"],
     torch_test_module = "inductor/test_mmdecomp",
 )
 
@@ -585,6 +588,7 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "inductor_utils_test",
+    tags = ["crcr-smoke"],
     torch_test_module = "inductor/test_utils",
 )
 
@@ -613,6 +617,7 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "nn_init_test",
+    tags = ["crcr-smoke"],
     torch_test_module = "nn/test_init",
 )
 
@@ -677,6 +682,7 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "accelerator_test",
+    tags = ["crcr-smoke"],
     torch_test_module = "test_accelerator",
 )
 
@@ -688,11 +694,13 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "autocast_test",
+    tags = ["crcr-smoke"],
     torch_test_module = "test_autocast",
 )
 
 torch_tpu_torch_test(
     name = "autograd_test",
+    tags = ["crcr-smoke"],
     torch_test_module = "test_autograd",
 )
 
@@ -731,6 +739,7 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "custom_ops_test",
+    tags = ["crcr-smoke"],
     torch_test_module = "test_custom_ops",
 )
 
@@ -881,11 +890,13 @@ torch_tpu_torch_test(
 torch_tpu_torch_test(
     name = "optim_test",
     shard_count = 2,
+    tags = ["crcr-smoke"],
     torch_test_module = "test_optim",
 )
 
 torch_tpu_torch_test(
     name = "out_dtype_op_test",
+    tags = ["crcr-smoke"],
     torch_test_module = "test_out_dtype_op",
 )
 
@@ -955,6 +966,7 @@ torch_tpu_torch_test(
 torch_tpu_torch_test(
     name = "shape_ops_test",
     shard_count = 2,
+    tags = ["crcr-smoke"],
     torch_test_module = "test_shape_ops",
 )
 
@@ -1024,6 +1036,7 @@ torch_tpu_torch_test(
 torch_tpu_torch_test(
     name = "torch_test",
     shard_count = 4,
+    tags = ["crcr-smoke"],
     torch_test_module = "test_torch",
 )
 
@@ -1035,6 +1048,7 @@ torch_tpu_torch_test(
 torch_tpu_torch_test(
     name = "type_promotion_test",
     shard_count = 4,
+    tags = ["crcr-smoke"],
     torch_test_module = "test_type_promotion",
 )
 
@@ -1054,6 +1068,7 @@ torch_tpu_torch_test(
 torch_tpu_torch_test(
     name = "view_ops_test",
     shard_count = 4,
+    tags = ["crcr-smoke"],
     torch_test_module = "test_view_ops",
 )
 
