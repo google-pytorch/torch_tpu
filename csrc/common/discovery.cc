@@ -21,6 +21,7 @@
 #include "absl/base/no_destructor.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/numbers.h"
+#include "absl/strings/str_cat.h"
 #include "csrc/common/env_vars.h"
 #include "csrc/common/error_utils.h"
 
@@ -35,8 +36,9 @@ const absl::StatusOr<int64_t>& GetPremappedBufferSizeFromEnvOnce() {
             std::getenv(  // GETENV_OK=the env var is set below.
                 kTpuPremappedBufferSizeEnvVar);
         if (raw_val == nullptr) {
-          SafeSetEnv<kTpuPremappedBufferSizeEnvVar>("0");
-          return 0;
+          constexpr int64_t kDefaultSize = int64_t{1} << 30;  // 1 GiB
+          SafeSetEnv<kTpuPremappedBufferSizeEnvVar>(absl::StrCat(kDefaultSize));
+          return kDefaultSize;
         }
         int64_t env_val = 0;
         TT_RET_CHECK(absl::SimpleAtoi(raw_val, &env_val),

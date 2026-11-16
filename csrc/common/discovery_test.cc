@@ -15,6 +15,7 @@
  */
 #include "csrc/common/discovery.h"
 
+#include <cstdint>
 #include <cstdlib>
 #include <string>
 
@@ -34,14 +35,14 @@ using testing::ExitedWithCode;
 // setting the environment variable to different values (EXPECT_EXIT() runs
 // the function in a subprocess, so side effects are not shared between tests).
 
-TEST(GetPremappedBufferSizeFromEnvOnceDeathTest, Returns0ByDefault) {
+TEST(GetPremappedBufferSizeFromEnvOnceDeathTest, Returns1GiBByDefault) {
   EXPECT_EXIT(
       {
         unsetenv(kTpuPremappedBufferSizeEnvVar);
         TT_ASSIGN_OR_CRASH(auto size, GetPremappedBufferSizeFromEnvOnce());
-        exit(size);
+        exit(size == (int64_t{1} << 30) ? 0 : 1);
       },
-      // Verifies that *status_or_size is 0.
+      // Verifies that size is 1 GiB.
       ExitedWithCode(0), "");
 }
 
@@ -51,12 +52,12 @@ TEST(GetPremappedBufferSizeFromEnvOnceDeathTest, SetsEnvVarIfNotFound) {
         unsetenv(kTpuPremappedBufferSizeEnvVar);
         const auto& status_or_size = GetPremappedBufferSizeFromEnvOnce();
         ABSL_CHECK_OK(status_or_size.status());
-        // This should be true.
-        const bool env_var_is_0 =
-            std::string(getenv(kTpuPremappedBufferSizeEnvVar)) == "0";
-        exit(env_var_is_0 ? 0 : 1);
+        const char* const env_val = getenv(kTpuPremappedBufferSizeEnvVar);
+        const bool env_var_is_1gib =
+            env_val != nullptr && std::string(env_val) == "1073741824";
+        exit(env_var_is_1gib ? 0 : 1);
       },
-      // Verifies that env_var_is_0 is true.
+      // Verifies that env_var_is_1gib is true.
       ExitedWithCode(0), "");
 }
 

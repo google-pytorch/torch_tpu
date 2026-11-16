@@ -24,7 +24,7 @@ namespace torch_tpu {
 
 // Returns the premapped buffer size from the TPU_PREMAPPED_BUFFER_SIZE
 // environment variable. If the environment variable is not set, it is set to
-// "0" and 0 is returned.
+// "1073741824" (1 GiB) and 1073741824 is returned.
 //
 // This function is memoized, so the environment variable is only read once.
 const absl::StatusOr<int64_t>& GetPremappedBufferSizeFromEnvOnce();
