@@ -109,16 +109,13 @@ class DistributedUtilsTpuTest(seed_test_utils.MultiProcessRepeatableTest):
     self.assertLen(ports, _TPU_NPROC)  # No duplicates within one attempt.
     return ports
 
-  def _assert_disjoint_fresh_ports(self, attempts: Sequence[str]) -> None:
-    """Asserts every attempt used `_TPU_NPROC` ports unseen by any other."""
-    self.assertLen(attempts, 2)
-    first, second = (self._local_ports(a) for a in attempts)
-    self.assertEmpty(
-        first & second, f"Ports reused across attempts: {attempts}"
-    )
+  def test_dist_run_picks_fresh_slicebuilder_ports_per_attempt(self) -> None:
+    """Verifies each attempt picks ports unused by the attempt before it.
 
-  def test_dist_run_retries_on_tpu_agent_connect_failure(self) -> None:
-    """Verifies a transient TPU-agent failure is retried on fresh ports."""
+    Covers a transient TPU-agent failure retried on fresh ports, then a
+    back-to-back `dist_run` call. They share one test because each `dist_run`
+    attempt spawns `_TPU_NPROC` fresh workers, which is most of the runtime.
+    """
     output_dir = self.create_tempdir().full_path
 
     distributed_utils.dist_run(
@@ -127,22 +124,20 @@ class DistributedUtilsTpuTest(seed_test_utils.MultiProcessRepeatableTest):
         output_dir,
         max_retries=3,
     )
+    distributed_utils.dist_run(
+        _TPU_NPROC, _worker_record_and_all_reduce, output_dir
+    )
 
-    self._assert_disjoint_fresh_ports(self._read_attempts(output_dir))
-
-  def test_dist_run_picks_fresh_slicebuilder_ports_per_attempt(self) -> None:
-    """Verifies back-to-back dist_run calls each get their own ports."""
-    output_dir = self.create_tempdir().full_path
-
-    for _ in range(2):
-      distributed_utils.dist_run(
-          _TPU_NPROC, _worker_record_and_all_reduce, output_dir
-      )
-
+    # Failed attempt, its retry, then the back-to-back call.
     attempts = self._read_attempts(output_dir)
-    self._assert_disjoint_fresh_ports(attempts)
+    self.assertLen(attempts, 3)
+    ports = [self._local_ports(a) for a in attempts]
+    for previous, current in zip(ports, ports[1:]):
+      self.assertEmpty(
+          previous & current, f"Ports reused across attempts: {attempts}"
+      )
     # The parent process is left pointing at the ports of the last call.
-    self.assertEqual(os.environ[_ADDRESSES_ENV], attempts[1])
+    self.assertEqual(os.environ[_ADDRESSES_ENV], attempts[-1])
 
 
 if __name__ == "__main__":
