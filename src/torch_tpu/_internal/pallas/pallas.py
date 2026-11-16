@@ -18,7 +18,7 @@ This module provides APIs to call Pallas kernels from PyTorch. Note that use
 of these APIs requires that your environment also has JAX/Pallas installed.
 """
 
-from collections.abc import Callable, Mapping, Sequence, Set
+from collections.abc import Callable, Iterable, Mapping, Sequence, Set
 import enum
 import functools
 import hashlib
@@ -1005,6 +1005,7 @@ class JaxCallable:
       donate_argnums: Sequence[int] | None = None,
       input_output_aliases: Mapping[int, int] | None = None,
       static_argnames: Sequence[str] = (),
+      donate_argnames: str | Iterable[str] | None = None,
   ):
     """Initializes a JaxCallable, a cached callable for custom kernels.
 
@@ -1034,6 +1035,11 @@ class JaxCallable:
       input_output_aliases: Indices of arguments to alias. This is deprecated
         and will be removed soon.
       static_argnames: Tuple of argument names that are compile-time constants.
+      donate_argnames: Name or iterable of names of arguments to donate,
+        following `jax.jit`'s rules. Must be what `jit_fn` was jitted with,
+        since the names are read from it. If None, `donate_argnums` alone
+        decides what is donated. Pass either `donate_argnums` or
+        `donate_argnames`, not both.
     """
 
     self.name = name
@@ -1062,12 +1068,23 @@ class JaxCallable:
           platforms=["tpu"],
           disabled_checks=[jax.export.DisabledSafetyCheck.custom_call("ALL")],
       )
+    if donate_argnums is not None and donate_argnames is not None:
+      raise ValueError(
+          "Pass either donate_argnums or donate_argnames, not both. When both"
+          " are given, jax.jit applies the numbers only to arguments passed by"
+          " position and the names only to arguments passed by keyword."
+      )
     if input_output_aliases is not None:
       _compat.warn_deprecation_with_skip(
           "input_output_aliases is deprecated and will be removed soon. Please"
           " use donate_argnums instead.",
           pathlib.Path(__file__).parent,
       )
+      if donate_argnames is not None:
+        raise ValueError(
+            "donate_argnames cannot be combined with deprecated"
+            " input_output_aliases."
+        )
       self.input_output_aliases = input_output_aliases
       # If donate_argnums is also provided, it must match.
       if donate_argnums is not None and set(
@@ -1120,6 +1137,20 @@ class JaxCallable:
         *jit_info.donate_argnums,
         *self.input_output_aliases,
     }
+
+    # Names whose tensors `__call__` donates when they're passed by keyword, as
+    # jax.jit does. Tensors passed by position are donated through
+    # `_donate_argnums_set`, which has the positions jax.jit inferred from
+    # these names. `jit_info` already turned a single name into a tuple.
+    self._donate_argnames = (
+        set(jit_info.donate_argnames) if donate_argnames is not None else set()
+    )
+    static_donated_names = self._donate_argnames & self._static_param_names
+    if static_donated_names:
+      raise ValueError(
+          f"donate_argnames {sorted(static_donated_names)} refer to static"
+          " arguments, which can't be donated."
+      )
 
     logging.debug("Creating JAX callable: %s", self)
 
@@ -1337,7 +1368,9 @@ class JaxCallable:
     tensor_donate_argnums: list[int] = []
     tensor_io_aliases: dict[int, int] = {}
 
-    def _add_tensor_arg(arg: Any, param_idx: int | None) -> None:
+    def _add_tensor_arg(
+        arg: Any, param_idx: int | None, keyword: str | None = None
+    ) -> None:
       if arg is None:
         return
       start_idx = len(tensor_args)
@@ -1346,11 +1379,17 @@ class JaxCallable:
       elif isinstance(arg, torch.Tensor):
         tensor_args.append(arg)
       end_idx = len(tensor_args)
-      if param_idx is not None and start_idx < end_idx:
-        if param_idx in self._donate_argnums_set:
-          tensor_donate_argnums.extend(range(start_idx, end_idx))
-        if param_idx in self.input_output_aliases:
-          tensor_io_aliases[start_idx] = self.input_output_aliases[param_idx]
+      if start_idx == end_idx:  # No tensors, e.g. an empty list.
+        return
+      # `param_idx` is None for arguments collected by `**kwargs`. Following
+      # jax.jit, names donate arguments passed by keyword.
+      if (
+          param_idx in self._donate_argnums_set
+          or keyword in self._donate_argnames
+      ):
+        tensor_donate_argnums.extend(range(start_idx, end_idx))
+      if param_idx is not None and param_idx in self.input_output_aliases:
+        tensor_io_aliases[start_idx] = self.input_output_aliases[param_idx]
 
     for i, arg in enumerate(norm_args):
       param = (
@@ -1375,7 +1414,7 @@ class JaxCallable:
           param is not None and not self._param_is_tensor.get(k, False)
       )
       if not is_static:
-        _add_tensor_arg(arg, self._param_name_to_idx.get(k))
+        _add_tensor_arg(arg, self._param_name_to_idx.get(k), keyword=k)
 
     device_assignment: list[int] = []
     if self.mesh is not None:
@@ -1447,6 +1486,7 @@ def custom_jax_kernel(
     output_partition_specs: tuple[tuple[str, ...], ...] | None = None,
     *,
     static_argnames: Sequence[str] = (),
+    donate_argnames: str | Iterable[str] | None = None,
     warn_deprecated: bool = True,
 ) -> Callable[[Callable[..., Any]], JaxCallable]:
   ...  # Overload stub
@@ -1464,6 +1504,7 @@ def custom_jax_kernel(
     output_partition_specs: tuple[tuple[str, ...], ...] | None = None,
     *,
     static_argnames: Sequence[str] = (),
+    donate_argnames: str | Iterable[str] | None = None,
     warn_deprecated: bool = True,
 ) -> JaxCallable:
   ...  # Overload stub
@@ -1480,6 +1521,7 @@ def custom_jax_kernel(
     output_partition_specs=None,
     *,
     static_argnames=(),
+    donate_argnames=None,
     warn_deprecated: bool = True,
 ):
   """Deprecated: Please use `jax_op` instead.
@@ -1525,6 +1567,9 @@ def custom_jax_kernel(
     output_partition_specs: If using a distributed kernel, provide the output
       partition specs for each output tensor.
     static_argnames: Tuple of argument names that are compile-time constants.
+    donate_argnames: Name or iterable of names of arguments to donate, following
+      `jax.jit`'s rules. If None, `donate_argnums` alone decides what is
+      donated. Pass either `donate_argnums` or `donate_argnames`, not both.
     warn_deprecated: If True, issue a deprecation warning.
 
   Returns:
@@ -1553,12 +1598,14 @@ def custom_jax_kernel(
             "static_argnums": static_argnums,
             "static_argnames": static_argnames,
             "donate_argnums": donate_argnums,
+            "donate_argnames": donate_argnames,
         },
     )
 
     jit_kwargs: dict[str, Any] = {
         "static_argnums": static_argnums,
         "donate_argnums": donate_argnums,
+        "donate_argnames": donate_argnames,
         "keep_unused": True,
     }
     if static_argnames:
@@ -1576,6 +1623,7 @@ def custom_jax_kernel(
         donate_argnums=donate_argnums,
         input_output_aliases=input_output_aliases,
         static_argnames=static_argnames,
+        donate_argnames=donate_argnames,
     )
 
   if jax_fn is None:
@@ -1590,6 +1638,7 @@ def jax_op(
     /,
     *,
     donate_argnums: Sequence[int] | None = None,
+    donate_argnames: str | Iterable[str] | None = None,
     mesh: jax.sharding.Mesh | jax.sharding.AbstractMesh | None = None,
     input_partition_specs: tuple[tuple[str, ...], ...] | None = None,
     output_partition_specs: tuple[tuple[str, ...], ...] | None = None,
@@ -1604,6 +1653,7 @@ def jax_op(
     /,
     *,
     donate_argnums: Sequence[int] | None = None,
+    donate_argnames: str | Iterable[str] | None = None,
     mesh: jax.sharding.Mesh | jax.sharding.AbstractMesh | None = None,
     input_partition_specs: tuple[tuple[str, ...], ...] | None = None,
     output_partition_specs: tuple[tuple[str, ...], ...] | None = None,
@@ -1620,6 +1670,7 @@ def jax_op(
     /,
     *,
     donate_argnums=None,
+    donate_argnames=None,
     mesh: jax.sharding.Mesh | jax.sharding.AbstractMesh | None = None,
     input_partition_specs=None,
     output_partition_specs=None,
@@ -1641,6 +1692,9 @@ def jax_op(
     name: The name of the custom operator.
     fn: The JAX function to wrap. If None, `pallas_op` acts as a decorator.
     donate_argnums: A sequence of argument indices to donate.
+    donate_argnames: A name or iterable of names of tensor arguments to donate,
+      following `jax.jit`'s rules. If None, `donate_argnums` alone decides what
+      is donated. Pass either `donate_argnums` or `donate_argnames`, not both.
     mesh: If using a distributed kernel, provide the device mesh.
     input_partition_specs: If using a distributed kernel, provide the input
       partition specs for each input tensor.
@@ -1650,6 +1704,11 @@ def jax_op(
   Returns:
     A `CustomOpDef` instance if `fn` is provided, or a decorator that returns
     a `CustomOpDef` when applied to a function.
+
+  Raises:
+    ValueError: If both `donate_argnums` and `donate_argnames` are given, or if
+      `donate_argnames` names a non-tensor (static) argument, a positional-only
+      argument, or an argument the function doesn't take.
   """
 
   if "::" not in name:
@@ -1672,6 +1731,7 @@ def jax_op(
         fn,
         name,
         donate_argnums=donate_argnums,
+        donate_argnames=donate_argnames,
         mesh=mesh,
         input_partition_specs=input_partition_specs,
         output_partition_specs=output_partition_specs,
