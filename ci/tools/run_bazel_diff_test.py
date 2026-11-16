@@ -29,6 +29,9 @@ from ci.tools import run_bazel_diff
 from ci.tools.testing import fakes
 
 
+_REPO_FLAGS = " ".join(f"--repo={r}" for r in run_bazel_diff._PREFETCH_REPOS)
+
+
 class RunBazelDiffTest(unittest.TestCase):
   """Tests argument parsing, file classification, and ops-test filtering."""
 
@@ -250,6 +253,17 @@ class RunBazelDiffTest(unittest.TestCase):
                     [
                         "bash",
                         "-c",
+                        (
+                            "bazel fetch --config=ci_cpu --keep_going"
+                            f" {_REPO_FLAGS}"
+                        ),
+                    ],
+                    check=False,
+                ),
+                mock.call(
+                    [
+                        "bash",
+                        "-c",
                         "bazel build --config=ci_cpu --keep_going //...",
                     ],
                     check=False,
@@ -274,6 +288,10 @@ class RunBazelDiffTest(unittest.TestCase):
             mock_run.call_args_list,
             [
                 mock.call(
+                    ["bash", "-c", f"bazel fetch --keep_going {_REPO_FLAGS}"],
+                    check=False,
+                ),
+                mock.call(
                     ["bash", "-c", "bazel build --keep_going //..."],
                     check=False,
                 ),
@@ -290,15 +308,44 @@ class RunBazelDiffTest(unittest.TestCase):
             run_bazel_diff._run_bazel_test("ci_cpu", "--keep_going", ["//..."]),
             1,
         )
-        mock_run.assert_called_once_with(
-            ["bash", "-c", "bazel build --config=ci_cpu --keep_going //..."],
-            check=False,
+        self.assertEqual(
+            mock_run.call_args_list[-1],
+            mock.call(
+                [
+                    "bash",
+                    "-c",
+                    "bazel build --config=ci_cpu --keep_going //...",
+                ],
+                check=False,
+            ),
         )
+
+  def test_run_bazel_test_prefetch_failure_continues(self):
+    """A failed prefetch is not fatal: the build and test still run."""
+    runner = fakes.FakeSubprocessRunner()
+    runner.on(["bash", "-c"])
+    runner.on(
+        [
+            "bash",
+            "-c",
+            f"bazel fetch --config=ci_cpu  {_REPO_FLAGS}",
+        ],
+        returncode=1,
+    )
+    with mock.patch.object(subprocess, "run", runner):
+      self.assertEqual(
+          run_bazel_diff._run_bazel_test("ci_cpu", "", ["//..."]), 0
+      )
+    self.assertEqual(
+        [cmd[2].split()[:2] for cmd in runner.commands("bash", "-c")],
+        [["bazel", "fetch"], ["bazel", "build"], ["bazel", "test"]],
+    )
 
   def test_run_bazel_test_no_tests_found(self):
     """Exit code 4 passes only when the caller allows running no tests."""
     targets = ["//..."]
     runner = fakes.FakeSubprocessRunner()
+    runner.on(["bash", "-c", f"bazel fetch --config=ci_cpu  {_REPO_FLAGS}"])
     runner.on([
         "bash",
         "-c",
@@ -353,10 +400,10 @@ class RunBazelDiffTest(unittest.TestCase):
         with mock.patch.object(subprocess, "run", runner):
           self.assertEqual(run_bazel_diff.main(args), 0)
         self.assertEqual(len(runner.commands("bazel", "cquery")), 1)
-        # One `bazel build`, then one `bazel test`.
+        # A `bazel fetch`, then one `bazel build`, then one `bazel test`.
         self.assertEqual(
             [cmd[2].split()[:2] for cmd in runner.commands("bash", "-c")],
-            [["bazel", "build"], ["bazel", "test"]],
+            [["bazel", "fetch"], ["bazel", "build"], ["bazel", "test"]],
         )
       with self.subTest("analysis_fails"):
         runner = fakes.FakeSubprocessRunner()
@@ -657,6 +704,18 @@ class RunBazelDiffTest(unittest.TestCase):
       self.assertEqual(
           mock_run.call_args_list,
           [
+              mock.call(
+                  [
+                      "bash",
+                      "-c",
+                      (
+                          "bazel fetch --config=ci_tpu_v5_presubmit"
+                          ' --run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"'
+                          f" {_REPO_FLAGS}"
+                      ),
+                  ],
+                  check=False,
+              ),
               mock.call(
                   [
                       "bash",
