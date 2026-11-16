@@ -79,6 +79,8 @@ layout check). In addition, follow these conventions:
     [Small CLs](https://google.github.io/eng-practices/review/developer/small-cls.html),
     prefer small and focused pull requests that each solve one problem. When
     possible, split a large change into a series of pull requests.
+*   **Minimalism (No Speculative Bloat)**: Solve only what was asked with the
+    smallest clear diff. Reuse and extend existing code when possible.
 *   **Format Before Pushing**: Run `nox -s format` before every push, and make
     sure `nox -s lint` passes.
 *   **Error Messages**: When adding or modifying user-facing or internal
@@ -206,6 +208,11 @@ in `ci/custom_lint_rules.METADATA`:
     what not to run prematurely), followed immediately by a link to the
     canonical `SKILL.md`. **Never** duplicate multi-step procedures, templates,
     or checklists outside their canonical file.
+*   **Prompts Over Scripts for Judgment**: A skill's caller is already an LLM
+    agent with search and CLI tools. Keep semantic judgment, classification, and
+    rare edge cases in concise `SKILL.md` instructions; write helper scripts
+    only for deterministic computation, bulk queries, or mutations the agent
+    cannot do reliably.
 *   **Skill Naming**: Every TorchTPU skill has one name of the form
     `tt-<verb-phrase>`, used as its frontmatter `name` and its directory name
     (`.agents/skills/<name>/`). `nox -s lint` checks the name and directory

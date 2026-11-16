@@ -27,11 +27,16 @@ You MUST manually evaluate the following gates.
         of StableHLO operations to suggest lowering that is more efficient or
         has mathematical expansions that lead to more accurate precision.
     *   Assume JAX lowering as the ground truth for performant code.
-*   **Architectural Simplification**:
-    *   Identify all custom logic and new abstractions introduced in the pull
+*   **Architectural Simplification & Anti-Bloat**:
+    *   Identify all custom logic, new files, and new abstractions in the pull
         request.
-    *   Verify that no unnecessary classes or structs were created where simple
-        functional mappings suffice.
+    *   Flag unnecessary abstractions and logic.
+    *   For agent skills and tooling, flag scripts or taxonomies that encode
+        semantic judgment the calling agent can follow in a few lines of
+        `SKILL.md` prose.
+    *   Treat whole-change bloat as a blocking issue: if the diff is too large
+        to review cleanly, ask to cut low-value or speculative code first and
+        split what remains into smaller pull requests.
 *   **Conventions**: check the change against the code style rules in
     `AGENTS.md` ("Code Style & Conventions"), in particular const correctness,
     enum-instead-of-`bool` parameters, no `sys.path` manipulation or
