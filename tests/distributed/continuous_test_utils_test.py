@@ -32,26 +32,13 @@ _FAILURE_MESSAGE: Final[str] = "DELIBERATE_FAILURE_ON_RANK_3"
 _SKIP_MESSAGE: Final[str] = "DELIBERATE_SKIP_IN_WORKERS"
 
 
-class _FailsOnOneRank(continuous_test_utils.TpuMultiProcContinuousTest):
-  """Fails on a single rank, after a collective.
-
-  Its method has no `test` prefix, so the test runner doesn't collect it.
-  `TpuMultiProcContinuousTestTest` runs it explicitly.
-  """
-
-  world_size = 8
-
-  def fail_on_rank_3(self) -> None:
-    dist.all_reduce(torch.ones(1, device="tpu"))
-    if self.rank == 3:
-      raise AssertionError(_FAILURE_MESSAGE)
-
-
-class _SkipsInWorkers(continuous_test_utils.TpuMultiProcContinuousTest):
-  """Skips one test in the workers; the next test must still run.
+class _Harness(continuous_test_utils.TpuMultiProcContinuousTest):
+  """Skips in the workers, runs a collective, then fails on a single rank.
 
   Its methods have no `test` prefix, so the test runner doesn't collect them.
-  `TpuMultiProcContinuousTestTest` runs them explicitly.
+  `TpuMultiProcContinuousTestTest` runs them explicitly, in this order, on one
+  set of workers (spawning workers is most of this test's runtime). The failing
+  method runs last because a failure skips the rest of the class.
   """
 
   world_size = 8
@@ -59,26 +46,31 @@ class _SkipsInWorkers(continuous_test_utils.TpuMultiProcContinuousTest):
   def skip_in_workers(self) -> None:
     self.skipTest(_SKIP_MESSAGE)
 
-  def run_after_skip(self) -> None:
+  def fail_on_rank_3(self) -> None:
     dist.all_reduce(torch.ones(1, device="tpu"))
+    if self.rank == 3:
+      raise AssertionError(_FAILURE_MESSAGE)
 
 
 class TpuMultiProcContinuousTestTest(
     seed_test_utils.MultiProcessRepeatableTest
 ):
 
+  @classmethod
+  def setUpClass(cls):
+    super().setUpClass()
+    cls.result = unittest.TestResult()
+    unittest.TestSuite([
+        _Harness("skip_in_workers"),
+        _Harness("fail_on_rank_3"),
+    ]).run(cls.result)
+
   def test_worker_skip_is_reported_as_skip(self) -> None:
     """A skip raised in the workers is a skip, and later tests still run."""
-    result = unittest.TestResult()
-    unittest.TestSuite([
-        _SkipsInWorkers("skip_in_workers"),
-        _SkipsInWorkers("run_after_skip"),
-    ]).run(result)
-
-    self.assertEmpty(result.errors + result.failures)
-    self.assertEqual(result.testsRun, 2)
-    self.assertLen(result.skipped, 1)
-    _, reason = result.skipped[0]
+    self.assertEqual(self.result.testsRun, 2)
+    self.assertLen(self.result.skipped, 1)
+    test, reason = self.result.skipped[0]
+    self.assertEqual(test.id(), _Harness("skip_in_workers").id())
     self.assertIn(_SKIP_MESSAGE, reason)
 
   def test_single_rank_failure_is_reported_without_hanging(self) -> None:
@@ -92,12 +84,10 @@ class TpuMultiProcContinuousTestTest(
 
     A regression shows up as this test timing out.
     """
-    result = unittest.TestResult()
-    unittest.TestSuite([_FailsOnOneRank("fail_on_rank_3")]).run(result)
-
-    problems = result.errors + result.failures
+    problems = self.result.errors + self.result.failures
     self.assertLen(problems, 1)
-    _, traceback_str = problems[0]
+    test, traceback_str = problems[0]
+    self.assertEqual(test.id(), _Harness("fail_on_rank_3").id())
     self.assertIn(_FAILURE_MESSAGE, traceback_str)
 
   def test_contract_invariants(self):
@@ -107,7 +97,7 @@ class TpuMultiProcContinuousTestTest(
     the main process will initialize the PJRT client / claim TPU devices,
     preventing child workers from acquiring them.
     """
-    test_instance = _FailsOnOneRank("fail_on_rank_3")
+    test_instance = _Harness("fail_on_rank_3")
     self.assertFalse(test_instance.seed_in_setup)
     self.assertFalse(test_instance.synchronize_tensors_in_tear_down)
     self.assertIsInstance(
