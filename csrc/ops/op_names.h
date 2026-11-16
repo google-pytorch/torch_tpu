@@ -588,6 +588,8 @@ enum class OpName {
   kMinUnaryOut,
   kMinimum,
   kMinimumOut,
+  kMishBackward,
+  kMishOut,
   kMmDtype,
   kMmDtypeOut,
   kMmOut,
@@ -2029,6 +2031,10 @@ ToString(  // NOLINT(google-readability-function-size)
       return "minimum";
     case OpName::kMinimumOut:
       return "minimum.out";
+    case OpName::kMishBackward:
+      return "mish_backward";
+    case OpName::kMishOut:
+      return "mish.out";
     case OpName::kMmDtype:
       return "mm.dtype";
     case OpName::kMmDtypeOut:
