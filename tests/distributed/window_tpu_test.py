@@ -441,31 +441,33 @@ class WindowTpuTest(continuous_test_utils.TpuMultiProcContinuousTest):
         (rows, cols), dtype=torch.float32, device="tpu:0"
     )
     win = dist._new_window(window_tensor)
+    try:
+      send_work = None
+      recv_work = None
+      if self.rank < self.world_size - 1:
+        src_view = make_view(self.rank, "tpu:0")
+        self.assertFalse(src_view.is_contiguous())
+        send_work = win.put(
+            src_view,
+            dst_rank=self.rank + 1,
+            target_offset_nelems=0,
+            async_op=True,
+        )
+        # Drop source references before wait() to exercise async send
+        # retention.
+        del src_view
+      if self.rank > 0:
+        recv_work = win.wait_signal(peer_rank=self.rank - 1, async_op=True)
 
-    send_work = None
-    recv_work = None
-    if self.rank < self.world_size - 1:
-      src_view = make_view(self.rank, "tpu:0")
-      self.assertFalse(src_view.is_contiguous())
-      send_work = win.put(
-          src_view,
-          dst_rank=self.rank + 1,
-          target_offset_nelems=0,
-          async_op=True,
-      )
-      # Drop source references before wait() to exercise async send retention.
-      del src_view
-    if self.rank > 0:
-      recv_work = win.wait_signal(peer_rank=self.rank - 1, async_op=True)
+      if recv_work is not None:
+        recv_work.wait()
+      if send_work is not None:
+        send_work.wait()
 
-    if recv_work is not None:
-      recv_work.wait()
-    if send_work is not None:
-      send_work.wait()
-
-    actual = win.map_remote_tensor(self.rank).cpu() if self.rank > 0 else None
-    win.tensor_deregister()
-    del win
+      actual = win.map_remote_tensor(self.rank).cpu() if self.rank > 0 else None
+    finally:
+      win.tensor_deregister()
+      del win
 
     if self.rank > 0:
       expected = make_view(self.rank - 1, "cpu").contiguous()
@@ -485,21 +487,22 @@ class WindowTpuTest(continuous_test_utils.TpuMultiProcContinuousTest):
 
     window_tensor = make_window_data(self.rank, "tpu:0")
     win = dist._new_window(window_tensor)
+    try:
+      sig_work = None
+      wait_work = None
+      if self.rank < self.world_size - 1:
+        sig_work = win.signal(peer_rank=self.rank + 1, async_op=True)
+      if self.rank > 0:
+        wait_work = win.wait_signal(peer_rank=self.rank - 1, async_op=True)
+      if wait_work is not None:
+        wait_work.wait()
+      if sig_work is not None:
+        sig_work.wait()
 
-    sig_work = None
-    wait_work = None
-    if self.rank < self.world_size - 1:
-      sig_work = win.signal(peer_rank=self.rank + 1, async_op=True)
-    if self.rank > 0:
-      wait_work = win.wait_signal(peer_rank=self.rank - 1, async_op=True)
-    if wait_work is not None:
-      wait_work.wait()
-    if sig_work is not None:
-      sig_work.wait()
-
-    actual = win.map_remote_tensor(self.rank).cpu() if self.rank > 0 else None
-    win.tensor_deregister()
-    del win
+      actual = win.map_remote_tensor(self.rank).cpu() if self.rank > 0 else None
+    finally:
+      win.tensor_deregister()
+      del win
 
     if self.rank > 0:
       # WindowTpu::signal currently emulates signaling via striped P2P sends of
