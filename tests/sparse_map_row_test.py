@@ -18,8 +18,11 @@ from typing import Any
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
+from torch._dynamo import testing as dynamo_testing
+from torch._subclasses import fake_tensor
 import torch.export
 import torch.fx
+from torch.fx.experimental import symbolic_shapes
 from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.export import export
 from tests import op_testing
@@ -493,6 +496,89 @@ class SparseMapRowTest(op_testing.TorchTpuTestBase):
     self.assertEqual(res_values.shape, torch.Size([16]))
     self.assertEqual(res_values.dtype, torch.float32)
     self.assertEqual(res_values.device, torch.device("meta"))
+
+  @parameterized.parameters("meta", "tpu")
+  def test_sparse_map_row_fake_symbolic_shapes(self, device):
+    """Tests sparse_map_row doesn't specialize symbolic FakeTensor dims."""
+    shape_env = symbolic_shapes.ShapeEnv()
+    mode = fake_tensor.FakeTensorMode(shape_env=shape_env)
+
+    def make_fake(*shape, dtype):
+      return mode.from_tensor(
+          torch.empty(shape, dtype=dtype, device=device),
+          symbolic_context=symbolic_shapes.StatelessSymbolicContext(
+              dynamic_sizes=[symbolic_shapes.DimDynamic.DYNAMIC] * len(shape)
+          ),
+      )
+
+    row_ptrs = make_fake(8, dtype=torch.int32)
+    indices = make_fake(16, dtype=torch.int32)
+    values = make_fake(16, 4, dtype=torch.float32)
+    dummy_outputs = [
+        make_fake(8, dtype=torch.int32),
+        make_fake(16, dtype=torch.int32),
+        make_fake(16, 4, dtype=torch.float32),
+    ]
+    with mode:
+      out = torch.tpu.ops.sparse_map_row(
+          [row_ptrs, indices, values],
+          [3],
+          [],
+          "dummy_mlir",
+          dummy_outputs,
+          16,
+          2147483647,
+          8,
+          0.5,
+          0,
+      )
+    self.assertLen(out, len(dummy_outputs))
+    sizes = [size for t in [*dummy_outputs, *out] for size in t.shape]
+    for size in sizes:
+      self.assertIsInstance(size, torch.SymInt)
+    specialized = [
+        size for size in sizes if shape_env.replace(size.node.expr).is_number
+    ]
+    self.assertEmpty(specialized)
+    for dummy, result in zip(dummy_outputs, out):
+      self.assertEqual(result.shape, dummy.shape)
+      self.assertEqual(result.dtype, dummy.dtype)
+
+  def test_sparse_map_row_compile_dynamic_shapes(self):
+    """Tests compiled sparse_map_row recompiles once for dynamic shapes."""
+    torch._dynamo.reset()
+    self.addCleanup(torch._dynamo.reset)
+    counter = dynamo_testing.CompileCounter()
+
+    @torch.compile(backend=counter, fullgraph=True)
+    def fn(row_ptrs, indices, values, dummy_outputs):
+      return torch.tpu.ops.sparse_map_row(
+          [row_ptrs, indices, values],
+          [3],
+          [],
+          "dummy_mlir",
+          dummy_outputs,
+          16,
+          2147483647,
+          8,
+          0.5,
+          0,
+      )
+
+    for n in (2, 3, 4):
+      # All dims change between calls.
+      row_ptrs = torch.empty(n * 4, dtype=torch.int32, device="meta")
+      indices = torch.empty(n * 8, dtype=torch.int32, device="meta")
+      values = torch.empty(n * 8, n + 4, device="meta")
+      dummy_outputs = [
+          torch.empty(n * 4, dtype=torch.int32, device="meta"),
+          torch.empty(n * 8, dtype=torch.int32, device="meta"),
+          torch.empty(n * 8, n + 4, device="meta"),
+      ]
+      out = fn(row_ptrs, indices, values, dummy_outputs)
+      self.assertEqual([t.shape for t in out], [t.shape for t in dummy_outputs])
+    # One static frame, then one dynamic frame that serves all later sizes.
+    self.assertEqual(counter.frame_count, 2)
 
 
 if __name__ == "__main__":

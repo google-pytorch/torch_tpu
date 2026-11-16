@@ -21,6 +21,7 @@ whose model config is in-tree are registered, so that the smoke test needs no
 network access.
 """
 
+from collections.abc import Mapping, Set
 import copy
 import os
 import sys
@@ -51,7 +52,7 @@ _MODERNBERT_BENCHMARKS = (
 )
 
 
-def _gen_names() -> set[str]:
+def _gen_names() -> Set[str]:
   """Returns the names of all generated benchmarks."""
   return {
       spec.benchmark_name(is_training=is_training, suffix="gen")
@@ -59,7 +60,7 @@ def _gen_names() -> set[str]:
   }
 
 
-def _fake_tensor_smoke_names() -> set[str]:
+def _fake_tensor_smoke_names() -> Set[str]:
   """Returns the generated benchmarks expected in the FakeTensorMode smoke."""
   names = set()
   for spec, is_training, _ in gen_benchmarks._iter_gen_benchmark_specs():  # pylint: disable=protected-access
@@ -84,7 +85,7 @@ class GenBenchmarksPresubmitScopeTest(seed_test_utils.RepeatableTest):
 
   def _register(
       self, run_scope: context_lib.RunScope, fake_tensor_mode: bool
-  ) -> dict[str, registry_lib.BenchmarkSpec]:
+  ) -> Mapping[str, registry_lib.BenchmarkSpec]:
     with flagsaver.flagsaver(
         run_scope=run_scope, fake_tensor_mode=fake_tensor_mode
     ):
@@ -105,7 +106,7 @@ class GenBenchmarksPresubmitScopeTest(seed_test_utils.RepeatableTest):
 
   def _case_benchmarks(
       self, run_scope: context_lib.RunScope, fake_tensor_mode: bool
-  ) -> set[str]:
+  ) -> Set[str]:
     with flagsaver.flagsaver(
         run_scope=run_scope, fake_tensor_mode=fake_tensor_mode
     ):
@@ -230,7 +231,7 @@ class GenBenchmarksPresubmitScopeTest(seed_test_utils.RepeatableTest):
         self.assertIn(name, model_ids)
         self.assertTrue(gen_benchmarks.has_in_tree_config(model_ids[name]))
 
-    fake_load_fn = lambda ctx, model_id, is_training, batch_size: (
+    fake_load_fn = lambda ctx, model_id, is_training: (
         torch.nn.Linear(2, 2),
         {},
     )
@@ -239,7 +240,7 @@ class GenBenchmarksPresubmitScopeTest(seed_test_utils.RepeatableTest):
         run_scope=context_lib.RunScope.PRESUBMIT,
     )
     default_factory = gen_benchmarks._make_factory(  # pylint: disable=protected-access
-        "fake/model", False, fake_load_fn, 1
+        "fake/model", False, fake_load_fn
     )
     with mode_lib.fake_tensor_context():
       default_factory(ctx)
@@ -250,7 +251,6 @@ class GenBenchmarksPresubmitScopeTest(seed_test_utils.RepeatableTest):
         "fake/model",
         False,
         fake_load_fn,
-        1,
         allow_data_dependent_outputs=True,
     )
     with mode_lib.fake_tensor_context():

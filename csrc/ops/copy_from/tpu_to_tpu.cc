@@ -52,8 +52,7 @@ absl::StatusOr<mlir::MlirOp> SliceFP4(mlir::MlirOp input) {
   auto rank = input_type.getRank();
 
   const Indices start_indices(rank, 0);
-  Indices limit_indices(input_type.getShape().begin(),
-                        input_type.getShape().end());
+  Indices limit_indices = CopyIntVector(input_type.getShape());
   if (rank > 0) {
     ABSL_DCHECK_EQ(limit_indices.back() % 2, 0)
         << "Expected even last dimension for FP4, got " << limit_indices.back();
@@ -128,8 +127,8 @@ absl::Status CopyTpuToTpu(const at::Tensor& src, const at::Tensor& dest) {
 
   if (is_dest_fp4 || is_src_fp4) {
     TT_RET_CHECK(viewed_dest.dim() > 0, error::kInvalidArgument)
-        << "expected float4_e2m1fn_x2 tensors to be at least 1-dimensional, "
-           "got 0-dimensional";
+        << "expected float4_e2m1fn_x2 tensors to be at least 1D, "
+           "got 0D";
   }
 
   TT_ASSIGN_OR_RETURN(const auto out_dtype,
@@ -146,9 +145,14 @@ absl::Status CopyTpuToTpu(const at::Tensor& src, const at::Tensor& dest) {
       TT_ASSIGN_OR_RETURN(formatted, SliceFP4(formatted));
     }
 
-    // 2. Cast to the target element type.
-    if (GetElementTypeOrDie(formatted) != out_dtype) {
-      formatted = mlir::stablehlo::ConvertElementType(formatted, out_dtype);
+    // 2. Cast complex -> bool as "either part is non-zero", since
+    //    ConvertElementType() would keep only the real part.
+    //    Every other dtype needs no explicit cast here: DispatchOp casts each
+    //    op's outputs to their out_dtype in CastOutputs()
+    //    (eager/device_buffer_utils.cc).
+    if (out_dtype == mlir::ElementType::PRED &&
+        IsComplexType(GetTensorTypeOrDie(formatted))) {
+      formatted = GetNonzeroMask(formatted);
     }
 
     // 3. If destination is FP4, it must be physically 2M. Pad it from logical

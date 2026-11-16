@@ -19,7 +19,6 @@
 #include <cstdint>
 #include <utility>
 
-#include "ATen/core/TensorBody.h"
 #include "c10/core/Storage.h"
 #include "c10/core/SymInt.h"
 #include "c10/core/SymIntArrayRef.h"

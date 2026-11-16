@@ -24,12 +24,15 @@
 #
 # Environment variables:
 #     TORCH_TPU_ACCELERATOR_COUNT =
-#         Number of TPU accelerators available.
+#         Number of TPU accelerators (chips) available.
 #     TORCH_TPU_TESTS_PER_ACCELERATOR =
 #         Number of concurrent test runs permitted per TPU accelerator.
+#     TORCH_TPU_DEVICES_PER_CHIP =
+#         Number of VF devices (TensorCores) per physical TPU chip.
 
 TORCH_TPU_ACCELERATOR_COUNT=${TORCH_TPU_ACCELERATOR_COUNT:-8}
 TORCH_TPU_TESTS_PER_ACCELERATOR=${TORCH_TPU_TESTS_PER_ACCELERATOR:-1}
+TORCH_TPU_DEVICES_PER_CHIP=${TORCH_TPU_DEVICES_PER_CHIP:-1}
 
 # rlocation is needed to find the test binary when running with Bazel 8+
 set -uo pipefail
@@ -141,7 +144,7 @@ if [ "${TORCH_TPU_EXCLUSIVE_TEST:-0}" = "1" ]; then
     done
   done
 
-  export TPU_VISIBLE_DEVICES="$(seq -s, 0 $((TORCH_TPU_ACCELERATOR_COUNT-1)))"
+  export TPU_VISIBLE_DEVICES="$(seq -s, 0 $((TORCH_TPU_ACCELERATOR_COUNT * TORCH_TPU_DEVICES_PER_CHIP - 1)))"
   export TPU_VISIBLE_CHIPS="$TPU_VISIBLE_DEVICES"
   run_test "$@"
   exit $?
@@ -160,8 +163,9 @@ while true; do
       exec {lock_fd}>>"/var/lock/torch_tpu_accelerator_lock_${i}_${j}" || exit 1
       if flock -n "$lock_fd"; then
         LOCK_FDS=("$lock_fd")
-        export TPU_VISIBLE_DEVICES=$i
-        export TPU_VISIBLE_CHIPS=$i
+        device_id=$((i * TORCH_TPU_DEVICES_PER_CHIP))
+        export TPU_VISIBLE_DEVICES=$device_id
+        export TPU_VISIBLE_CHIPS=$device_id
         echo "Running test $TEST_BINARY $* on accelerator $i"
         run_test "$@"
         exit $?

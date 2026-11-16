@@ -42,7 +42,6 @@
 #include "csrc/common/fingerprint_utils.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/pjrt/pjrt_state.h"
-#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -84,6 +83,30 @@
 #include "xla/service/spmd/spmd_partitioner.h"
 
 namespace torch_tpu {
+
+namespace internal {
+
+void RemoveShardingAnnotations(mlir::ModuleOp module) {
+  module->removeAttr("mhlo.spmd_parameters_shardings");
+  module->removeAttr("mhlo.spmd_output_sharding");
+  module.walk([](mlir::Operation* op) {
+    op->removeAttr("mhlo.sharding");
+    op->removeAttr("sdy.sharding");
+    op->removeAttr("sdy.sharding_rule");
+    if (auto func_op = mlir::dyn_cast<mlir::func::FuncOp>(op)) {
+      for (int i = 0; i < func_op.getNumArguments(); ++i) {
+        func_op.removeArgAttr(i, "mhlo.sharding");
+        func_op.removeArgAttr(i, "sdy.sharding");
+      }
+      for (int i = 0; i < func_op.getNumResults(); ++i) {
+        func_op.removeResultAttr(i, "mhlo.sharding");
+        func_op.removeResultAttr(i, "sdy.sharding");
+      }
+    }
+  });
+}
+
+}  // namespace internal
 
 namespace {
 
@@ -223,11 +246,6 @@ absl::Status SpecializeCustomMlirKernel(
   return absl::OkStatus();
 }
 
-void RemoveSpmdModuleShardings(mlir::ModuleOp module) {
-  module->removeAttr("mhlo.spmd_parameters_shardings");
-  module->removeAttr("mhlo.spmd_output_sharding");
-}
-
 absl::Status AddTpuPartitioningPasses(xla::HloModule* module,
                                       const xla::AliasInfo* alias_info,
                                       xla::HloPassPipeline* pipeline) {
@@ -247,10 +265,7 @@ absl::Status AddTpuPartitioningPasses(xla::HloModule* module,
           .enableInsertExplicitCollectives = true
           /*shardy_options.enable_explicit_collectives()*/,
           .removeAllGatherReduceScatterForCMV1 = false,
-          .avoidReshardsOnNamedComputations = false
-          /*shardy_options.dedup_functions_fully()*/,
-      },
-      /*enableNativeNonFlatSupport=*/false);
+      });
 
   xla::spmd::SPMDCollectiveOpsCreator collective_creator =
       xla::spmd::GetDefaultCollectiveOpsCreator(
@@ -392,7 +407,7 @@ absl::Status PartitionGlobalToLocal(
 
   new_module.erase();
 
-  RemoveSpmdModuleShardings(module);
+  internal::RemoveShardingAnnotations(module);
 
   return absl::OkStatus();
 }
@@ -637,21 +652,6 @@ absl::StatusOr<DynamicMlirOpResults> CallCustomKernel(
                       CustomKernelRegistry::GetInstance().LoadCustomKernel(
                           builder, name, kwargs, input_dims, input_dtypes));
   return mlir::func::Call(builder, func, inputs);
-}
-
-absl::StatusOr<DynamicMlirOpResults> BuildSpecializedMlirKernel(
-    mlir::MlirBuilder& builder, mlir::ModuleOp custom_kernel,
-    absl::Span<mlir::MlirOp> inputs) {
-  // Apply specialization and partitioning passes to kernel and then add it to
-  // builder.
-  // Get the argument types from inputs
-  mlir::SmallVector<mlir::Type> input_types = llvm::to_vector(
-      llvm::map_range(inputs, [](mlir::MlirOp op) { return op.getType(); }));
-
-  TT_ASSIGN_OR_RETURN(mlir::func::FuncOp main_func,
-                      InjectCustomKernel(builder, custom_kernel, input_types));
-
-  return mlir::func::Call(builder, main_func, inputs);
 }
 
 }  // namespace torch_tpu

@@ -19,17 +19,15 @@
 #include <utility>
 
 #include "ATen/core/ATen_fwd.h"
-#include "ATen/ops/result_type.h"
 #include "absl/status/statusor.h"
-#include "c10/core/DefaultDtype.h"
-#include "c10/core/ScalarType.h"
+#include "absl/types/span.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
-#include "csrc/common/dtype.h"
+#include "csrc/common/device_type.h"
 #include "csrc/common/error_utils.h"
-#include "csrc/common/fixed_size_span.h"
 #include "csrc/common/to_string.h"
-#include "csrc/eager/op_dispatcher.h"
 #include "csrc/ops/binary.h"
+#include "csrc/ops/binary_aten_kernels.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
@@ -38,35 +36,38 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
-#include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
 namespace {
 
-absl::StatusOr<mlir::MlirOp> BuildXlogyShlo(
-    mlir::MlirOp x, mlir::MlirOp y, mlir::ElementType computation_dtype) {
-  x = mlir::stablehlo::ConvertElementType(x, computation_dtype);
-  y = mlir::stablehlo::ConvertElementType(y, computation_dtype);
+absl::StatusOr<mlir::MlirOp> BuildXlogyShlo(mlir::MlirOp x, mlir::MlirOp y) {
+  const mlir::ElementType input_dtype = GetElementTypeOrDie(x);
+  TT_ASSIGN_OR_RETURN(const auto computation_dtype,
+                      InferComputationDtype(input_dtype));
 
   TT_ASSIGN_OR_RETURN((auto [x_bcst, y_bcst]), ApplyBroadcastIfNeeded(x, y));
 
-  auto zero = MakeConstantLike(x_bcst, 0.0, computation_dtype);
-  auto one = MakeConstantLike(x_bcst, 1.0, computation_dtype);
+  auto comp_x = mlir::stablehlo::ConvertElementType(x_bcst, computation_dtype);
+  auto comp_y = mlir::stablehlo::ConvertElementType(y_bcst, computation_dtype);
+
+  auto zero = MakeConstantLike(comp_x, 0.0);
+  auto one = MakeConstantLike(comp_x, 1.0);
 
   // If x is zero, use 1.0 for y to avoid log(0)
   mlir::MlirOp is_zero_x = mlir::stablehlo::Compare(
-      x_bcst, zero, mlir::stablehlo::ComparisonDirection::EQ);
-  auto safe_y = mlir::stablehlo::Select(is_zero_x, one, y_bcst);
+      comp_x, zero, mlir::stablehlo::ComparisonDirection::EQ);
+  auto safe_y = mlir::stablehlo::Select(is_zero_x, one, comp_y);
 
   TT_ASSIGN_OR_RETURN(auto log_y, BuildLogShlo(safe_y, computation_dtype));
-  TT_ASSIGN_OR_RETURN(auto x_log_y, BuildMulShlo(x_bcst, log_y));
+  TT_ASSIGN_OR_RETURN(auto x_log_y, BuildMulShlo(comp_x, log_y));
 
   // If y is NaN, always return NaN regardless of x
   mlir::MlirOp is_nan_y = mlir::stablehlo::Compare(
-      y_bcst, y_bcst, mlir::stablehlo::ComparisonDirection::NE);
+      comp_y, comp_y, mlir::stablehlo::ComparisonDirection::NE);
 
   auto x_or_zero = mlir::stablehlo::Select(is_zero_x, zero, x_log_y);
-  return mlir::stablehlo::Select(is_nan_y, y_bcst, x_or_zero);
+  auto res = mlir::stablehlo::Select(is_nan_y, comp_y, x_or_zero);
+  return mlir::stablehlo::ConvertElementType(res, input_dtype);
 }
 
 }  // namespace
@@ -74,36 +75,33 @@ absl::StatusOr<mlir::MlirOp> BuildXlogyShlo(
 at::Tensor& AtenXlogyOutTensor(const at::Tensor& self, const at::Tensor& other,
                                at::Tensor& out) {
   TT_KERNEL(OpName::kXlogyOutTensor, _, (self, other, out), {
+    TT_CHECK_THROW(IsPrivateUse1Device(out), error::kInvalidArgument)
+        << "expected out tensor to be on " << GetPrivateUse1DeviceDebugName()
+        << ", got " << out.device();
+
     TT_CHECK_THROW(!self.is_complex() && !other.is_complex(),
                    error::kInvalidArgument)
         << "expected non-complex dtypes, got x dtype "
         << ToString(self.scalar_type()) << " and y dtype "
         << ToString(other.scalar_type());
 
-    at::ScalarType promoted_scalar_type = at::result_type(self, other);
-    // If promoted_scalar_type is integral, use the default float scalar type
-    if (c10::isIntegralType(promoted_scalar_type, /*includeBool=*/true)) {
-      promoted_scalar_type = c10::get_default_dtype_as_scalartype();
-    }
-    TT_ASSIGN_OR_THROW(auto computation_dtype,
-                       ConvertTo<mlir::ElementType>(promoted_scalar_type));
-
-    auto op_builder = [computation_dtype](FixedSizeSpan<mlir::MlirOp, 2> inputs)
-        -> absl::StatusOr<mlir::MlirOp> {
-      auto& [x_op, y_op] = inputs;
-      return BuildXlogyShlo(x_op, y_op, computation_dtype);
-    };
-
     TT_ASSIGN_OR_THROW(const auto out_dims,
                        InferSize(self.sizes(), other.sizes()));
-    TT_ASSIGN_OR_THROW(auto out_dtype,
-                       ConvertTo<mlir::ElementType>(out.scalar_type()));
+    if (out.is_alias_of(self) || out.is_alias_of(other)) {
+      TT_CHECK_THROW(absl::MakeConstSpan(out.sizes()) == out_dims,
+                     error::kInvalidArgument)
+          << "output with shape " << ToString(out.sizes())
+          << " doesn't match the broadcast shape of the tensor being "
+             "operated on in-place, which has shape "
+          << ToString(out_dims);
+    }
 
+    BinaryOpOptions opts{
+        .force_float_inputs = true,
+        .op_param_cache_keys = OpParamCacheKeys::Empty(),
+    };
     TT_THROW_IF_ERROR(
-        DispatchOpOut<2>(std::move(op_builder), {self, other}, out,
-                         {.out_dtype = out_dtype,
-                          .out_dims = out_dims,
-                          .op_param_cache_keys = OpParamCacheKeys::Empty()}));
+        BinaryOpOut(self, other, out, BuildXlogyShlo, std::move(opts)));
     return out;
   });
 }

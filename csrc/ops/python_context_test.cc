@@ -16,10 +16,14 @@
 
 #include "csrc/ops/python_context.h"
 
-#include "absl/cleanup/cleanup.h"
+#include <memory>
+#include <optional>
+
+#include "c10/util/ThreadLocalDebugInfo.h"
 #include "csrc/common/context_manager.h"
 #include "csrc/common/context_states.h"
 #include "csrc/ops/op_names.h"
+#include "csrc/ops/python_context_testing.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "mlir/IR/Location.h"
@@ -30,9 +34,10 @@
 namespace torch_tpu {
 namespace {
 
-using testing::ElementsAre;
-using testing::HasSubstr;
-using testing::Not;
+using ::testing::ElementsAre;
+using ::testing::HasSubstr;
+using ::testing::IsEmpty;
+using ::testing::Not;
 
 TEST(CaptureCurrentPythonTrackback, CapturesPythonStack) {
   mlir::MLIRContext ctx;
@@ -124,6 +129,18 @@ TEST_F(ScopedPythonContextCapturerTrackebackTest,
   }
 }
 
+TEST_F(ScopedPythonContextCapturerTrackebackTest,
+       ScopedTracebackForTestingRestoresPreviousTraceback) {
+  PushContextState<EnableTracebacksContextState>(TracebackMode::kDisabled);
+  ScopedPythonContextCapturer capturer(OpName::kAdd);
+  const auto traceback = std::make_shared<PythonTraceback>();
+  {
+    const ScopedTracebackForTesting traceback_override(traceback);
+    EXPECT_EQ(ScopedPythonContextCapturer::GetContext().traceback(), traceback);
+  }
+  EXPECT_EQ(ScopedPythonContextCapturer::GetContext().traceback(), nullptr);
+}
+
 TEST(ScopedPythonContextProvider, NoObjectIsAlive) {
   const auto& context = ScopedPythonContextProvider::MaybeGetContext();
   EXPECT_FALSE(context.has_value());
@@ -209,12 +226,13 @@ TEST(GetOriginalOpName, ReturnsFirstOpNameWhenProviderIsAlive) {
 
 TEST(ScopedPythonContextCapturer, CapturesNameScopesAndFormatsMlirLocation) {
   mlir::MLIRContext ctx;
-  ScopedPythonContextCapturer::PushNameScopes(
-      {"layers.0[SimpleTransformerBlock]", "attn[SimpleAttention]"});
-  absl::Cleanup pop_attn = [] { ScopedPythonContextCapturer::PopNameScopes(); };
-  ScopedPythonContextCapturer capturer(OpName::kBmm);
+  const NameScopeGuard block_scope("layers.0[SimpleTransformerBlock]");
+  const NameScopeGuard attn_scope("attn[SimpleAttention]");
+  // Duplicate nested scopes collapse into one while keeping the pops balanced.
+  const NameScopeGuard dup_scope("attn[SimpleAttention]");
 
-  const auto context = ScopedPythonContextCapturer::GetContext();
+  ScopedPythonContextCapturer capturer(OpName::kBmm);
+  const PythonContext context = ScopedPythonContextCapturer::GetContext();
   EXPECT_THAT(
       context.name_scopes(),
       ElementsAre("layers.0[SimpleTransformerBlock]", "attn[SimpleAttention]"));
@@ -223,13 +241,82 @@ TEST(ScopedPythonContextCapturer, CapturesNameScopesAndFormatsMlirLocation) {
   EXPECT_THAT(mlir::debugString(loc),
               HasSubstr("layers.0[SimpleTransformerBlock]/"
                         "attn[SimpleAttention]/bmm/bmm"));
+}
 
-  ScopedPythonContextCapturer::PushNameScopes(
+TEST(ScopedPythonContextCapturer, InternalConstantSuppressesActiveNameScopes) {
+  const NameScopeGuard block_scope("layers.0[SimpleTransformerBlock]");
+
+  ScopedPythonContextCapturer capturer(OpName::kTorchTpuInternalConstant);
+  EXPECT_THAT(ScopedPythonContextCapturer::GetContext().name_scopes(),
+              IsEmpty());
+}
+
+TEST(ScopedPythonContextCapturer, PushEmptyNameScopesIsolatesFromOuterScopes) {
+  const NameScopeGuard block_scope("layers.0[SimpleTransformerBlock]");
+  const NameScopeHierarchyGuard clear_scopes({});
+
+  ScopedPythonContextCapturer capturer(OpName::kBmm);
+  EXPECT_THAT(ScopedPythonContextCapturer::GetContext().name_scopes(),
+              IsEmpty());
+}
+
+TEST(ScopedPythonContextCapturer, PushNameScopesReplacesActiveHierarchy) {
+  const NameScopeGuard outer_scope("outer_scope");
+  const NameScopeHierarchyGuard mlp_scopes(
       {"layers.0[SimpleTransformerBlock]", "mlp[SimpleMLP]"});
-  absl::Cleanup pop_mlp = [] { ScopedPythonContextCapturer::PopNameScopes(); };
+
+  ScopedPythonContextCapturer capturer(OpName::kBmm);
   EXPECT_THAT(
       ScopedPythonContextCapturer::GetContext().name_scopes(),
       ElementsAre("layers.0[SimpleTransformerBlock]", "mlp[SimpleMLP]"));
+}
+
+TEST(ScopedPythonContextCapturer, NameScopesRestoreViaDebugInfoGuard) {
+  std::shared_ptr<c10::ThreadLocalDebugInfo> saved_debug_info;
+  {
+    const NameScopeGuard backward_scope("backward_phase");
+    saved_debug_info = c10::ThreadLocalDebugInfo::current();
+  }
+  // Scope has been popped.
+  PythonContext unguarded_context;
+  {
+    ScopedPythonContextCapturer capturer(OpName::kAdd);
+    unguarded_context = ScopedPythonContextCapturer::GetContext();
+  }
+  // Restoring saved_debug_info via DebugInfoGuard (as PyTorch's C++ autograd
+  // engine does when dispatching backward tasks) restores the backward
+  // caller's name scopes.
+  PythonContext guarded_context;
+  {
+    c10::DebugInfoGuard guard(saved_debug_info);
+    ScopedPythonContextCapturer capturer(OpName::kMul);
+    guarded_context = ScopedPythonContextCapturer::GetContext();
+  }
+
+  EXPECT_THAT(unguarded_context.name_scopes(), IsEmpty());
+  EXPECT_THAT(guarded_context.name_scopes(), ElementsAre("backward_phase"));
+}
+
+TEST(ScopedPythonContextCapturer,
+     KernelNameSanitizesDelimitersAndNestsUnderCustomKernel) {
+  mlir::MLIRContext ctx;
+  const NameScopeHierarchyGuard block_scope({"layers.0[Block]"});
+
+  ScopedPythonContextCapturer api_capturer(PythonApiName{"call_custom_kernel"});
+  ScopedPythonContextCapturer custom_kernel_capturer(OpName::kCustomKernel);
+  ScopedPythonContextCapturer kernel_capturer(
+      KernelName{"pallas::ns/my_kernel:v1@fn;tag"});
+
+  const PythonContext context = ScopedPythonContextCapturer::GetContext();
+  const mlir::Location loc = MakeMlirLocation(ctx, context);
+
+  EXPECT_THAT(context.op_call_chain(),
+              ElementsAre("call_custom_kernel", "custom_kernel",
+                          "pallas_ns_my_kernel_v1_fn_tag"));
+  EXPECT_EQ(GetRootOpName(std::nullopt), "call_custom_kernel");
+  EXPECT_EQ(mlir::debugString(loc),
+            "loc(\"layers.0[Block]/call_custom_kernel/custom_kernel/"
+            "pallas_ns_my_kernel_v1_fn_tag\")");
 }
 
 }  // namespace

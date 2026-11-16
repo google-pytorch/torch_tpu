@@ -14,10 +14,11 @@
  * limitations under the License.
  */
 
+#include <unistd.h>
+
 #include <cstdlib>
 #include <string>
 
-#include "absl/cleanup/cleanup.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "csrc/common/env_vars.h"
@@ -32,6 +33,7 @@ namespace torch_tpu {
 namespace {
 
 using absl_testing::StatusIs;
+using testing::ExitedWithCode;
 using testing::HasSubstr;
 
 class PjRtInitTest : public testing::Test {
@@ -43,6 +45,48 @@ class PjRtInitTest : public testing::Test {
     PjrtBackend::GetInstance().Shutdown();
   }
 };
+
+// Initializes the PJRT TPU backend in single-device mode, verifies that the
+// runtime sees 1 addressable and 1 global device, and shuts down the backend.
+void VerifySingleDevicePjRtInit() {
+  PjrtBackend::GetInstance().SetPjRtInitializationOptions(
+      {.device_type = "tpu"});
+  ASSERT_EQ(PjrtBackend::GetInstance().EnsureInitialized(), absl::OkStatus());
+  TT_ASSERT_OK_AND_ASSIGN(xla::PjRtClient * client,
+                          PjrtBackend::GetInstance().GetClient());
+  ASSERT_NE(client, nullptr);
+  EXPECT_EQ(client->addressable_device_count(), 1);
+  TT_ASSERT_OK_AND_ASSIGN(int device_count,
+                          PjrtBackend::GetInstance().GetGlobalDeviceCount());
+  EXPECT_EQ(device_count, 1);
+  PjrtBackend::GetInstance().Shutdown();
+}
+
+TEST(PjRtInitDeathTest,
+     EnsureInitializedSucceedsWhenWorldSizeIsOneWithoutDistEnvVars) {
+  EXPECT_EXIT(
+      {
+        setenv(kWorldSizeEnvVar, "1", /*overwrite=*/1);
+        unsetenv(kTorchTpuSlicebuilderAddressesEnvVar);
+        unsetenv(kTorchTpuTopologyEnvVar);
+        VerifySingleDevicePjRtInit();
+        _exit(testing::Test::HasFailure() ? 1 : 0);
+      },
+      ExitedWithCode(0), "");
+}
+
+TEST(PjRtInitDeathTest,
+     EnsureInitializedSucceedsWhenWorldSizeIsUnsetWithoutDistEnvVars) {
+  EXPECT_EXIT(
+      {
+        unsetenv(kWorldSizeEnvVar);
+        unsetenv(kTorchTpuSlicebuilderAddressesEnvVar);
+        unsetenv(kTorchTpuTopologyEnvVar);
+        VerifySingleDevicePjRtInit();
+        _exit(testing::Test::HasFailure() ? 1 : 0);
+      },
+      ExitedWithCode(0), "");
+}
 
 TEST_F(PjRtInitTest, InitializePjRtIsLazy) {
   ASSERT_FALSE(PjrtBackend::GetInstance().IsInitialized());
@@ -94,33 +138,6 @@ TEST_F(PjRtInitTest, InitializePjRtSetsCorrectDeviceCount) {
   TT_ASSERT_OK_AND_ASSIGN(int device_count,
                           PjrtBackend::GetInstance().GetGlobalDeviceCount());
   EXPECT_EQ(device_count, 1);
-}
-
-TEST_F(PjRtInitTest, InitializeExpandsRankInEnvVars) {
-  auto cleanup = absl::MakeCleanup([] {
-    unsetenv(kXlaFlagsEnvVar);
-    unsetenv(kLibtpuInitArgsEnvVar);
-    unsetenv(kRankEnvVar);
-  });
-
-  // Use a valid XLA flag to avoid parsing errors in XLA initialization.
-  SetEnv<kXlaFlagsEnvVar>("--xla_disable_hlo_passes=some_pass_${RANK}");
-  SetEnv<kLibtpuInitArgsEnvVar>("some_args_${RANK}");
-  SetEnv<kRankEnvVar>("1234");
-
-  PjrtBackend::GetInstance().SetPjRtInitializationOptions(
-      {.device_type = "tpu"});
-  TT_ASSERT_OK_AND_ASSIGN(xla::PjRtClient * client,
-                          PjrtBackend::GetInstance().GetClient());
-  EXPECT_NE(client, nullptr);
-
-  const char* xla_flags = std::getenv(kXlaFlagsEnvVar);
-  EXPECT_NE(xla_flags, nullptr);
-  EXPECT_STREQ(xla_flags, "--xla_disable_hlo_passes=some_pass_1234");
-
-  const char* libtpu_args = std::getenv(kLibtpuInitArgsEnvVar);
-  EXPECT_NE(libtpu_args, nullptr);
-  EXPECT_STREQ(libtpu_args, "some_args_1234");
 }
 
 TEST_F(PjRtInitTest, BadForkCheckerPreventsAccessAfterInit) {

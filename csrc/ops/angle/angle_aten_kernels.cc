@@ -74,7 +74,7 @@ at::Tensor AtenAngle(const at::Tensor& self) {
                        ConvertTo<mlir::ElementType>(out_dtype));
 
     std::optional<mlir::ElementType> computation_dtype;
-    if (c10::isIntegralType(self.scalar_type(), /*includeBool=*/true)) {
+    if (IsIntegral(self)) {
       TT_ASSIGN_OR_THROW(computation_dtype, ConvertTo<mlir::ElementType>(
                                                 ToAccumulateType(out_dtype)));
     }
@@ -102,7 +102,7 @@ at::Tensor& AtenAngleOut(const at::Tensor& self, at::Tensor& out) {
                        ConvertTo<mlir::ElementType>(out.scalar_type()));
 
     std::optional<mlir::ElementType> computation_dtype;
-    if (c10::isIntegralType(self.scalar_type(), /*includeBool=*/true)) {
+    if (IsIntegral(self)) {
       TT_ASSIGN_OR_THROW(
           computation_dtype,
           ConvertTo<mlir::ElementType>(ToAccumulateType(expected_dtype)));

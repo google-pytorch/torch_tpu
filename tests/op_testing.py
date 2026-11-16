@@ -19,7 +19,7 @@ See go/torch-tpu-op-test for more details.
 
 import builtins
 import collections
-from collections.abc import Callable, Iterable, Iterator, Mapping, MutableMapping, MutableSequence, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, MutableMapping, MutableSequence, Sequence, Set
 import copy
 import dataclasses
 import enum
@@ -43,7 +43,10 @@ import unittest
 from absl import flags
 from etils import epath
 import safetensors.torch as st
+import sympy
 import torch
+from torch._subclasses import fake_tensor
+from torch.fx.experimental import symbolic_shapes
 from torch.testing._internal import autograd_function_db
 from torch.testing._internal import common_dtype
 from torch.testing._internal import common_methods_invocations
@@ -78,11 +81,9 @@ SampleInput = core.SampleInput  # pylint: disable=protected-access
 CheckValueMode = test_utils.CheckValueMode
 Tolerance = test_utils.Tolerance
 DynamismMode = dynamism_test_utils.DynamismMode
+DynamicMarkingPlan = dynamism_test_utils.DynamicMarkingPlan
 
 AccuracyOverrides = Mapping[str, Mapping[torch.dtype, Mapping[str, Tolerance]]]
-
-FilterFn = Callable[..., str | None]
-MarkDynamicFn = Callable[..., None]
 
 GPU_SM90: Final[str] = "gpu_sm90"
 GPU_SM100: Final[str] = "gpu_sm100"
@@ -94,6 +95,10 @@ _DEFAULT_GPU_GOLDEN_ARCH: Final[str] = GPU_SM100
 _GPU_GOLDEN_ARCH_ATTR: Final[str] = "gpu_golden_arch"
 
 _GPU_GOLDEN_HOPPER_SUFFIX: Final[str] = "_hopper"
+
+# Suffix of the directory artifact holding per-test-case golden files, see
+# split_gpu_goldens() in BUILD.
+_GPU_GOLDEN_PER_TEST_CASE_SUFFIX: Final[str] = "_per_test_case"
 
 # Identifies a list of golden samples: (test case name, op variant, dtype key).
 _GoldenKey = tuple[str, str, str]
@@ -172,14 +177,29 @@ _IGNORE_ACCURACY_OVERRIDES: Final[flags.FlagHolder[bool]] = flags.DEFINE_bool(
     "If set, accuracy overrides will be ignored, forcing strict checks.",
 )
 
-_CHECK_DYNAMISM_USING_SEED: Final[flags.FlagHolder[int]] = flags.DEFINE_integer(
-    "check_dynamism_using_seed",
-    0,
-    "If non-zero, marks a random dimension as bounded dynamic and runs the ops "
-    "test, comparing the bounded TorchTPU result with the golden result. "
-    "Only picks dimensions with size >=2, "
-    "and bounds for size+10. Allows for explicitly setting the seed value for "
-    "reproducibility, or -1 for random seed.",
+_CHECK_DYNAMISM: Final[flags.FlagHolder[bool]] = flags.DEFINE_bool(
+    "check_dynamism",
+    False,
+    "If set, marks candidate dimensions (size >= 2, upper bound size + 10) as"
+    " bounded dynamic across all valid marking plans and compares the bounded"
+    " TorchTPU result with the golden result.",
+)
+
+_DYNAMISM_PLAN_FILTER: Final[flags.FlagHolder[str]] = flags.DEFINE_string(
+    "dynamism_plan_filter",
+    "",
+    "If non-empty, only runs the DynamicMarkingPlan whose label matches this"
+    " string (e.g. 't0d0' or 't0d0_t0d1').",
+)
+
+_CHECK_SYMBOLIC_SHAPES: Final[flags.FlagHolder[bool]] = flags.DEFINE_bool(
+    "check_symbolic_shapes",
+    False,
+    "If set, instead of comparing results with the golden results, runs each"
+    " golden input on FakeTensors whose dims of size >= 2 are symbolic, and"
+    " fails if TorchTPU specializes (pins to a constant) or throws on a"
+    " symbolic dim that CPU keeps symbolic. Such specializations make"
+    " torch.compile recompile for every new input shape.",
 )
 
 _OPT_LEVEL: Final[flags.FlagHolder[str]] = flags.DEFINE_string(
@@ -338,14 +358,19 @@ def find_cast_pairs(
 # out-kernels are updated with proper ATen type checking.
 _OUT_DTYPE_CAST_KNOWN_FAILURES: Final[set[str]] = {
     # go/keep-sorted start
+    "_addmm_activation",
+    "_masked_softmax",
+    "_masked_softmax_backward",
     "addcdiv",
     "addcmul",
+    "addmm.dtype",
     "addmv",
+    "baddbmm.dtype",
     "bitwise_not",
-    # TODO: Remove "histc" once find_cast_pairs avoids real->complex pairs.
-    "histc",
+    "bmm.dtype",
     "index_reduce",
     "lerp",
+    "mm.dtype",
     "sparse_coo_mul",
     "sparse_coo_neg",
     # TODO: Remove "std" once find_cast_pairs avoids real->complex pairs.
@@ -1882,12 +1907,12 @@ def _make_fused_opt_tensors(
     state_dtype: torch.dtype | None = None,
     shapes: Sequence[Sequence[int]] = ((4,), (2, 2)),
 ) -> tuple[
-    list[torch.Tensor],
-    list[torch.Tensor],
-    list[torch.Tensor],
-    list[torch.Tensor],
-    list[torch.Tensor],
-    list[torch.Tensor],
+    Sequence[torch.Tensor],
+    Sequence[torch.Tensor],
+    Sequence[torch.Tensor],
+    Sequence[torch.Tensor],
+    Sequence[torch.Tensor],
+    Sequence[torch.Tensor],
 ]:
   """Constructs deterministic multi-tensor inputs for fused optimizers (no randn)."""
   if state_dtype is None:
@@ -1962,12 +1987,12 @@ def _make_fused_opt_tensors(
 def _make_dummy_unsupported_tensors(
     device: str | torch.device, dtype: torch.dtype
 ) -> tuple[
-    list[torch.Tensor],
-    list[torch.Tensor],
-    list[torch.Tensor],
-    list[torch.Tensor],
-    list[torch.Tensor],
-    list[torch.Tensor],
+    Sequence[torch.Tensor],
+    Sequence[torch.Tensor],
+    Sequence[torch.Tensor],
+    Sequence[torch.Tensor],
+    Sequence[torch.Tensor],
+    Sequence[torch.Tensor],
 ]:
   if dtype in quantize_utils.SUB_BYTE_DTYPES:
     t = torch.zeros((4,), dtype=torch.uint8, device=device).view(dtype)
@@ -2712,6 +2737,1206 @@ def _sample_inputs_sparse_coo_copy_(
   )
 
 
+def _make_analytic_tensor(
+    shape: Sequence[int],
+    *,
+    device: str | torch.device,
+    dtype: torch.dtype,
+    low: float = -1.0,
+    high: float = 1.0,
+    offset: int = 0,
+    requires_grad: bool = False,
+) -> torch.Tensor:
+  """Creates a deterministic tensor analytically without calling PyTorch RNG."""
+  numel = 1
+  for d in shape:
+    numel *= d
+  if dtype in quantize_utils.SUB_BYTE_DTYPES:
+    return torch.zeros(shape, dtype=torch.uint8, device=device).view(dtype)
+  if dtype == torch.bool:
+    vals = (
+        torch.arange(numel, device=device, dtype=torch.int64) + offset
+    ) % 2 == 0
+    return vals.reshape(shape)
+  if dtype.is_floating_point:
+    compute_dtype = torch.float64 if dtype == torch.float64 else torch.float32
+    base = torch.linspace(
+        low + 0.05 * offset,
+        high - 0.03 * offset,
+        steps=max(numel, 1),
+        device=device,
+        dtype=compute_dtype,
+    )[:numel]
+    if numel > 1 and offset > 0:
+      base = torch.roll(base, shifts=(offset * 3) % numel)
+    out = base.reshape(shape).to(dtype)
+    if requires_grad and dtype in (
+        torch.float16,
+        torch.bfloat16,
+        torch.float32,
+        torch.float64,
+    ):
+      out.requires_grad_(True)
+    return out
+  if dtype.is_complex:
+    real_dtype = torch.float64 if dtype == torch.complex128 else torch.float32
+    real = _make_analytic_tensor(
+        shape,
+        device=device,
+        dtype=real_dtype,
+        low=low,
+        high=high,
+        offset=offset,
+    )
+    imag = _make_analytic_tensor(
+        shape,
+        device=device,
+        dtype=real_dtype,
+        low=low,
+        high=high,
+        offset=offset + 1,
+    )
+    out = torch.complex(real, imag).to(dtype)
+    if requires_grad:
+      out.requires_grad_(True)
+    return out
+  span = max(int(high - low), 1)
+  vals = int(low) + (
+      (torch.arange(numel, device=device, dtype=torch.int64) + offset) % span
+  )
+  return vals.reshape(shape).to(dtype)
+
+
+def _sample_inputs_addmm_activation(
+    op_info: OpInfo,
+    device: torch.device,
+    dtype: torch.dtype,
+    requires_grad: bool,
+    **kwargs: Any,
+) -> Iterable[SampleInput]:
+  """Deterministic sample inputs generator for _addmm_activation."""
+  del op_info, kwargs
+  make_arg = functools.partial(
+      _make_analytic_tensor,
+      device=device,
+      dtype=dtype,
+      requires_grad=requires_grad,
+  )
+  m, k, n = 4, 6, 8
+  if dtype not in (
+      torch.float16,
+      torch.bfloat16,
+      torch.float32,
+      torch.float64,
+  ):
+    yield SampleInput(
+        make_arg((m, n), offset=0),
+        args=(make_arg((m, k), offset=1), make_arg((k, n), offset=2)),
+        kwargs={"beta": 1.0, "alpha": 1.0, "use_gelu": False},
+        name="unsupported_dtype",
+    )
+    return
+  yield SampleInput(
+      make_arg((m, n), offset=0),
+      args=(make_arg((m, k), offset=1), make_arg((k, n), offset=2)),
+      kwargs={"beta": 1.0, "alpha": 1.0, "use_gelu": False},
+      name="relu_2d_bias",
+  )
+  yield SampleInput(
+      make_arg((m, n), offset=3),
+      args=(make_arg((m, k), offset=4), make_arg((k, n), offset=5)),
+      kwargs={"beta": 1.0, "alpha": 1.0, "use_gelu": True},
+      name="gelu_2d_bias",
+  )
+  yield SampleInput(
+      make_arg((n,), offset=6),
+      args=(make_arg((m, k), offset=7), make_arg((k, n), offset=8)),
+      kwargs={"beta": 0.5, "alpha": 2.0, "use_gelu": False},
+      name="relu_1d_bias_scaled",
+  )
+  yield SampleInput(
+      make_arg((m, n), offset=9),
+      args=(make_arg((m, k), offset=10), make_arg((k, n), offset=11)),
+      kwargs={"beta": 0.0, "alpha": 1.0, "use_gelu": True},
+      name="gelu_zero_beta",
+  )
+
+
+def _sample_inputs_col2im(
+    op_info: OpInfo,
+    device: torch.device,
+    dtype: torch.dtype,
+    requires_grad: bool,
+    **kwargs: Any,
+) -> Iterable[SampleInput]:
+  """Deterministic sample inputs generator for col2im."""
+  del op_info, kwargs
+  make_arg = functools.partial(
+      _make_analytic_tensor,
+      device=device,
+      dtype=dtype,
+      requires_grad=requires_grad,
+  )
+  if dtype not in (
+      torch.float16,
+      torch.bfloat16,
+      torch.float32,
+      torch.float64,
+      torch.complex64,
+      torch.complex128,
+  ):
+    yield SampleInput(
+        make_arg((2, 8, 4), offset=0),
+        args=([4, 4], [2, 2], [1, 1], [0, 0], [2, 2]),
+        name="unsupported_dtype",
+    )
+    return
+  # 3D batched input: (N=2, C*kH*kW=2*2*2=8, L=2*2=4) -> output (2, 2, 4, 4)
+  yield SampleInput(
+      make_arg((2, 8, 4), offset=0),
+      args=([4, 4], [2, 2], [1, 1], [0, 0], [2, 2]),
+      name="batched_3d_stride2",
+  )
+  # 3D batched with padding=1, stride=1: (N=2, C*kH*kW=2*3*3=18, L=4*4=16)
+  yield SampleInput(
+      make_arg((2, 18, 16), offset=1),
+      args=([4, 4], [3, 3], [1, 1], [1, 1], [1, 1]),
+      name="batched_3d_pad1_stride1",
+  )
+
+
+def _sample_inputs_grouped_mm(
+    op_info: OpInfo,
+    device: torch.device,
+    dtype: torch.dtype,
+    requires_grad: bool,
+    **kwargs: Any,
+) -> Iterable[SampleInput]:
+  """Deterministic sample inputs generator for _grouped_mm."""
+  del op_info, kwargs
+  make_arg = functools.partial(
+      _make_analytic_tensor,
+      device=device,
+      dtype=dtype,
+      low=-1.0,
+      high=1.0,
+      requires_grad=requires_grad,
+  )
+  offs = torch.tensor([16, 32], device=device, dtype=torch.int32)
+  if dtype not in (
+      torch.float16,
+      torch.bfloat16,
+      torch.float32,
+      torch.float64,
+  ):
+    yield SampleInput(
+        make_arg((32, 16), offset=0),
+        args=(make_arg((2, 16, 16), offset=1),),
+        kwargs={"offs": offs},
+        name="unsupported_dtype",
+    )
+    return
+  # 2D x 3D: [sum_m, k] x [g, k, n] -> [sum_m, n]
+  yield SampleInput(
+      make_arg((32, 16), offset=0),
+      args=(make_arg((2, 16, 16), offset=1),),
+      kwargs={"offs": offs},
+      name="2d_3d_with_offs",
+  )
+  # 3D x 2D: [g, m, k] x [k, sum_n] -> [m, sum_n]
+  yield SampleInput(
+      make_arg((2, 16, 16), offset=2),
+      args=(make_arg((16, 32), offset=3),),
+      kwargs={"offs": offs},
+      name="3d_2d_with_offs",
+  )
+  # 2D x 2D: [m, sum_k] x [sum_k, n] -> [g, m, n]
+  yield SampleInput(
+      make_arg((16, 32), offset=4),
+      args=(make_arg((32, 16), offset=5),),
+      kwargs={"offs": offs},
+      name="2d_2d_with_offs",
+  )
+  # 3D x 3D: [g, m, k] x [g, k, n] -> [g, m, n], offs=None
+  yield SampleInput(
+      make_arg((2, 16, 16), offset=6),
+      args=(make_arg((2, 16, 32), offset=7),),
+      name="3d_3d_no_offs",
+  )
+
+
+def _sample_inputs_fake_quantize_per_tensor_affine_cachemask(
+    op_info: OpInfo,
+    device: torch.device,
+    dtype: torch.dtype,
+    requires_grad: bool,
+    **kwargs: Any,
+) -> Iterable[SampleInput]:
+  """Deterministic sample inputs generator for fake_quantize_per_tensor_affine_cachemask."""
+  del op_info, requires_grad, kwargs
+  if dtype not in (
+      torch.float16,
+      torch.bfloat16,
+      torch.float32,
+      torch.float64,
+  ):
+    yield SampleInput(
+        _make_analytic_tensor((2, 4), device=device, dtype=dtype),
+        args=(0.5, 0, -128, 127),
+        name="unsupported_dtype",
+    )
+    return
+  x = torch.tensor(
+      [[-3.2, -1.1, 0.2, 1.3], [2.4, 3.8, -0.7, 0.8]],
+      device=device,
+      dtype=dtype,
+  )
+  yield SampleInput(
+      x,
+      args=(0.5, 0, -128, 127),
+      name="signed_int8_range",
+  )
+  yield SampleInput(
+      x.clone(),
+      args=(0.25, 2, 0, 255),
+      name="unsigned_uint8_range",
+  )
+
+
+def _fused_moving_avg_obs_fq_helper_wrapper(
+    self: torch.Tensor,
+    observer_on: torch.Tensor,
+    fake_quant_on: torch.Tensor,
+    running_min: torch.Tensor,
+    running_max: torch.Tensor,
+    scale: torch.Tensor,
+    zero_point: torch.Tensor,
+    averaging_const: float,
+    quant_min: int,
+    quant_max: int,
+    ch_axis: int,
+    per_row_fq: bool = False,
+    symmetric_quant: bool = False,
+):
+  """Functional wrapper for torch._fused_moving_avg_obs_fq_helper."""
+  running_min_c = running_min.clone()
+  running_max_c = running_max.clone()
+  scale_c = scale.clone()
+  zero_point_c = zero_point.clone()
+  out, mask = torch._fused_moving_avg_obs_fq_helper(
+      self,
+      observer_on,
+      fake_quant_on,
+      running_min_c,
+      running_max_c,
+      scale_c,
+      zero_point_c,
+      averaging_const,
+      quant_min,
+      quant_max,
+      ch_axis,
+      per_row_fq,
+      symmetric_quant,
+  )
+  return out, mask, running_min_c, running_max_c, scale_c, zero_point_c
+
+
+def _sample_inputs_fused_moving_avg_obs_fq_helper(
+    op_info: OpInfo,
+    device: torch.device,
+    dtype: torch.dtype,
+    requires_grad: bool,
+    **kwargs: Any,
+) -> Iterable[SampleInput]:
+  """Deterministic sample inputs generator for _fused_moving_avg_obs_fq_helper."""
+  del op_info, kwargs
+  obs_on = torch.tensor([1], device=device, dtype=torch.int64)
+  fq_on = torch.tensor([1], device=device, dtype=torch.int64)
+  if dtype != torch.float32:
+    yield SampleInput(
+        _make_analytic_tensor(
+            (2, 4), device=device, dtype=dtype, requires_grad=requires_grad
+        ),
+        args=(
+            obs_on,
+            fq_on,
+            torch.tensor([-1.0], device=device, dtype=torch.float32),
+            torch.tensor([1.0], device=device, dtype=torch.float32),
+            torch.tensor([0.1], device=device, dtype=torch.float32),
+            torch.tensor([0], device=device, dtype=torch.int32),
+            0.01,
+            0,
+            255,
+            -1,
+            False,
+            False,
+        ),
+        name="unsupported_dtype",
+    )
+    return
+  x = torch.tensor(
+      [[-2.1, -0.8, 0.3, 1.4], [0.7, 2.3, -1.6, 0.9]],
+      device=device,
+      dtype=dtype,
+      requires_grad=requires_grad,
+  )
+  # Per-tensor asymmetric
+  yield SampleInput(
+      x,
+      args=(
+          obs_on,
+          fq_on,
+          torch.tensor([-1.0], device=device, dtype=torch.float32),
+          torch.tensor([1.0], device=device, dtype=torch.float32),
+          torch.tensor([0.1], device=device, dtype=torch.float32),
+          torch.tensor([0], device=device, dtype=torch.int32),
+          0.01,
+          0,
+          255,
+          -1,
+          False,
+          False,
+      ),
+      name="per_tensor_asymmetric",
+  )
+  # Per-tensor symmetric
+  yield SampleInput(
+      x.detach().clone().requires_grad_(requires_grad),
+      args=(
+          obs_on.clone(),
+          fq_on.clone(),
+          torch.tensor([-1.0], device=device, dtype=torch.float32),
+          torch.tensor([1.0], device=device, dtype=torch.float32),
+          torch.tensor([0.1], device=device, dtype=torch.float32),
+          torch.tensor([0], device=device, dtype=torch.int32),
+          0.01,
+          -128,
+          127,
+          -1,
+          False,
+          True,
+      ),
+      name="per_tensor_symmetric",
+  )
+  # Per-channel (ch_axis=0)
+  yield SampleInput(
+      x.detach().clone().requires_grad_(requires_grad),
+      args=(
+          obs_on.clone(),
+          fq_on.clone(),
+          torch.tensor([-1.0, -0.5], device=device, dtype=torch.float32),
+          torch.tensor([1.0, 1.5], device=device, dtype=torch.float32),
+          torch.tensor([0.1, 0.1], device=device, dtype=torch.float32),
+          torch.tensor([0, 0], device=device, dtype=torch.int32),
+          0.01,
+          0,
+          255,
+          0,
+          True,
+          False,
+      ),
+      name="per_channel_axis0",
+  )
+
+
+def _sample_inputs_masked_softmax(
+    op_info: OpInfo,
+    device: torch.device,
+    dtype: torch.dtype,
+    requires_grad: bool,
+    **kwargs: Any,
+) -> Iterable[SampleInput]:
+  """Deterministic sample inputs generator for _masked_softmax."""
+  del op_info, kwargs
+  make_arg = functools.partial(
+      _make_analytic_tensor,
+      device=device,
+      dtype=dtype,
+      low=-2.0,
+      high=2.0,
+      requires_grad=requires_grad,
+  )
+  b, h, l, s = 2, 2, 4, 4
+  mask_2d = torch.tensor(
+      [
+          [False, False, True, False],
+          [False, True, False, False],
+          [True, False, False, False],
+          [False, False, False, True],
+      ],
+      device=device,
+      dtype=torch.bool,
+  )
+  mask_4d = mask_2d.unsqueeze(0).unsqueeze(0).expand(b, h, l, s).contiguous()
+  if dtype not in (
+      torch.float16,
+      torch.bfloat16,
+      torch.float32,
+      torch.float64,
+  ):
+    yield SampleInput(
+        make_arg((b, h, l, s), offset=0),
+        args=(mask_4d,),
+        kwargs={"dim": -1, "mask_type": 2},
+        name="unsupported_dtype",
+    )
+    return
+  # 4D input with 4D mask (mask_type=2: mask shape == self shape)
+  yield SampleInput(
+      make_arg((b, h, l, s), offset=0),
+      args=(mask_4d,),
+      kwargs={"dim": -1, "mask_type": 2},
+      name="4d_mask_type2",
+  )
+  # 2D input with 2D mask (mask_type=2: mask shape == self shape)
+  yield SampleInput(
+      make_arg((l, s), offset=1),
+      args=(mask_2d,),
+      kwargs={"dim": 1, "mask_type": 2},
+      name="2d_mask_type2",
+  )
+
+
+def _sample_inputs_masked_softmax_backward(
+    op_info: OpInfo,
+    device: torch.device,
+    dtype: torch.dtype,
+    requires_grad: bool,
+    **kwargs: Any,
+) -> Iterable[SampleInput]:
+  """Deterministic sample inputs generator for _masked_softmax_backward."""
+  del op_info, requires_grad, kwargs
+  make_arg = functools.partial(
+      _make_analytic_tensor,
+      device=device,
+      dtype=dtype,
+      low=-1.0,
+      high=1.0,
+  )
+  b, h, l, s = 2, 2, 4, 4
+  mask_2d = torch.tensor(
+      [
+          [False, False, True, False],
+          [False, True, False, False],
+          [True, False, False, False],
+          [False, False, False, True],
+      ],
+      device=device,
+      dtype=torch.bool,
+  )
+  mask_4d = mask_2d.unsqueeze(0).unsqueeze(0).expand(b, h, l, s).contiguous()
+  if dtype not in (
+      torch.float16,
+      torch.bfloat16,
+      torch.float32,
+      torch.float64,
+  ):
+    yield SampleInput(
+        make_arg((b, h, l, s), offset=0),
+        args=(make_arg((b, h, l, s), offset=1), mask_4d),
+        kwargs={"dim": -1},
+        name="unsupported_dtype",
+    )
+    return
+  yield SampleInput(
+      make_arg((b, h, l, s), offset=0),
+      args=(
+          make_arg((b, h, l, s), offset=1).masked_fill(mask_4d, 0.0),
+          mask_4d,
+      ),
+      kwargs={"dim": -1},
+      name="4d_dim_neg1",
+  )
+  yield SampleInput(
+      make_arg((l, s), offset=2),
+      args=(make_arg((l, s), offset=3).masked_fill(mask_2d, 0.0), mask_2d),
+      kwargs={"dim": 1},
+      name="2d_dim1",
+  )
+
+
+def _sample_inputs_weight_norm_interface(
+    op_info: OpInfo,
+    device: torch.device,
+    dtype: torch.dtype,
+    requires_grad: bool,
+    **kwargs: Any,
+) -> Iterable[SampleInput]:
+  """Deterministic sample inputs generator for _weight_norm_interface."""
+  del op_info, kwargs
+  make_arg = functools.partial(
+      _make_analytic_tensor,
+      device=device,
+      dtype=dtype,
+      low=0.5,
+      high=2.0,
+      requires_grad=requires_grad,
+  )
+  if dtype not in (
+      torch.float16,
+      torch.bfloat16,
+      torch.float32,
+      torch.float64,
+  ):
+    yield SampleInput(
+        make_arg((4, 6), offset=0),
+        args=(make_arg((4, 1), offset=1), 0),
+        name="unsupported_dtype",
+    )
+    return
+  # dim=0: v has shape (4, 6), g has shape (4, 1)
+  yield SampleInput(
+      make_arg((4, 6), offset=0),
+      args=(make_arg((4, 1), offset=1), 0),
+      name="dim0",
+  )
+  # dim=1 (last dim): v has shape (4, 6), g has shape (1, 6)
+  yield SampleInput(
+      make_arg((4, 6), offset=2),
+      args=(make_arg((1, 6), offset=3), 1),
+      name="dim1_last",
+  )
+
+
+def _sample_inputs_weight_norm_interface_backward(
+    op_info: OpInfo,
+    device: torch.device,
+    dtype: torch.dtype,
+    requires_grad: bool,
+    **kwargs: Any,
+) -> Iterable[SampleInput]:
+  """Deterministic sample inputs generator for _weight_norm_interface_backward."""
+  del op_info, requires_grad, kwargs
+  make_arg = functools.partial(
+      _make_analytic_tensor,
+      device=device,
+      dtype=dtype,
+      low=0.5,
+      high=2.0,
+  )
+  if dtype not in (
+      torch.float16,
+      torch.bfloat16,
+      torch.float32,
+      torch.float64,
+  ):
+    yield SampleInput(
+        make_arg((4, 6), offset=0),
+        args=(
+            make_arg((4, 6), offset=1),
+            make_arg((4, 1), offset=2),
+            make_arg((4, 1), offset=3),
+            0,
+        ),
+        name="unsupported_dtype",
+    )
+    return
+  norm_dtype = (
+      torch.float32 if dtype in (torch.float16, torch.bfloat16) else dtype
+  )
+  v0 = make_arg((4, 6), offset=0)
+  g0 = make_arg((4, 1), offset=1)
+  norms0 = torch.linalg.vector_norm(v0.float(), dim=1, keepdim=True).to(
+      norm_dtype
+  )
+  yield SampleInput(
+      make_arg((4, 6), offset=2),
+      args=(v0, g0, norms0, 0),
+      name="dim0",
+  )
+  v1 = make_arg((4, 6), offset=3)
+  g1 = make_arg((1, 6), offset=4)
+  norms1 = torch.linalg.vector_norm(v1.float(), dim=0, keepdim=True).to(
+      norm_dtype
+  )
+  yield SampleInput(
+      make_arg((4, 6), offset=5),
+      args=(v1, g1, norms1, 1),
+      name="dim1_last",
+  )
+
+
+def _sample_inputs_gru_input(
+    op_info: OpInfo,
+    device: torch.device,
+    dtype: torch.dtype,
+    requires_grad: bool,
+    **kwargs: Any,
+) -> Iterable[SampleInput]:
+  """Deterministic sample inputs generator for gru.input."""
+  del op_info, kwargs
+  make_arg = functools.partial(
+      _make_analytic_tensor,
+      device=device,
+      dtype=dtype,
+      low=-0.5,
+      high=0.5,
+      requires_grad=requires_grad,
+  )
+  seq_len, batch_size, input_size, hidden_size = 4, 2, 4, 6
+  if dtype not in (
+      torch.float16,
+      torch.bfloat16,
+      torch.float32,
+      torch.float64,
+  ):
+    yield SampleInput(
+        make_arg((seq_len, batch_size, input_size), offset=0),
+        args=(
+            make_arg((1, batch_size, hidden_size), offset=1),
+            [
+                make_arg((3 * hidden_size, input_size), offset=2),
+                make_arg((3 * hidden_size, hidden_size), offset=3),
+                make_arg((3 * hidden_size,), offset=4),
+                make_arg((3 * hidden_size,), offset=5),
+            ],
+            True,
+            1,
+            0.0,
+            True,
+            False,
+            False,
+        ),
+        name="unsupported_dtype",
+    )
+    return
+  # Unidirectional, has_biases=True, batch_first=False
+  yield SampleInput(
+      make_arg((seq_len, batch_size, input_size), offset=0),
+      args=(
+          make_arg((1, batch_size, hidden_size), offset=1),
+          [
+              make_arg((3 * hidden_size, input_size), offset=2),
+              make_arg((3 * hidden_size, hidden_size), offset=3),
+              make_arg((3 * hidden_size,), offset=4),
+              make_arg((3 * hidden_size,), offset=5),
+          ],
+          True,
+          1,
+          0.0,
+          True,
+          False,
+          False,
+      ),
+      name="unidirectional_with_bias",
+  )
+  # Bidirectional, has_biases=False, batch_first=True
+  yield SampleInput(
+      make_arg((batch_size, seq_len, input_size), offset=6),
+      args=(
+          make_arg((2, batch_size, hidden_size), offset=7),
+          [
+              make_arg((3 * hidden_size, input_size), offset=8),
+              make_arg((3 * hidden_size, hidden_size), offset=9),
+              make_arg((3 * hidden_size, input_size), offset=10),
+              make_arg((3 * hidden_size, hidden_size), offset=11),
+          ],
+          False,
+          1,
+          0.0,
+          True,
+          True,
+          True,
+      ),
+      name="bidirectional_no_bias_batch_first",
+  )
+
+
+def _sample_inputs_lstm_input(
+    op_info: OpInfo,
+    device: torch.device,
+    dtype: torch.dtype,
+    requires_grad: bool,
+    **kwargs: Any,
+) -> Iterable[SampleInput]:
+  """Deterministic sample inputs generator for lstm.input."""
+  del op_info, kwargs
+  make_arg = functools.partial(
+      _make_analytic_tensor,
+      device=device,
+      dtype=dtype,
+      low=-0.5,
+      high=0.5,
+      requires_grad=requires_grad,
+  )
+  seq_len, batch_size, input_size, hidden_size = 4, 2, 4, 6
+  if dtype not in (
+      torch.float16,
+      torch.bfloat16,
+      torch.float32,
+      torch.float64,
+  ):
+    yield SampleInput(
+        make_arg((seq_len, batch_size, input_size), offset=0),
+        args=(
+            [
+                make_arg((1, batch_size, hidden_size), offset=1),
+                make_arg((1, batch_size, hidden_size), offset=2),
+            ],
+            [
+                make_arg((4 * hidden_size, input_size), offset=3),
+                make_arg((4 * hidden_size, hidden_size), offset=4),
+                make_arg((4 * hidden_size,), offset=5),
+                make_arg((4 * hidden_size,), offset=6),
+            ],
+            True,
+            1,
+            0.0,
+            True,
+            False,
+            False,
+        ),
+        name="unsupported_dtype",
+    )
+    return
+  # Unidirectional, has_biases=True, batch_first=False
+  yield SampleInput(
+      make_arg((seq_len, batch_size, input_size), offset=0),
+      args=(
+          [
+              make_arg((1, batch_size, hidden_size), offset=1),
+              make_arg((1, batch_size, hidden_size), offset=2),
+          ],
+          [
+              make_arg((4 * hidden_size, input_size), offset=3),
+              make_arg((4 * hidden_size, hidden_size), offset=4),
+              make_arg((4 * hidden_size,), offset=5),
+              make_arg((4 * hidden_size,), offset=6),
+          ],
+          True,
+          1,
+          0.0,
+          True,
+          False,
+          False,
+      ),
+      name="unidirectional_with_bias",
+  )
+  # Bidirectional, has_biases=False, batch_first=True
+  yield SampleInput(
+      make_arg((batch_size, seq_len, input_size), offset=7),
+      args=(
+          [
+              make_arg((2, batch_size, hidden_size), offset=8),
+              make_arg((2, batch_size, hidden_size), offset=9),
+          ],
+          [
+              make_arg((4 * hidden_size, input_size), offset=10),
+              make_arg((4 * hidden_size, hidden_size), offset=11),
+              make_arg((4 * hidden_size, input_size), offset=12),
+              make_arg((4 * hidden_size, hidden_size), offset=13),
+          ],
+          False,
+          1,
+          0.0,
+          True,
+          True,
+          True,
+      ),
+      name="bidirectional_no_bias_batch_first",
+  )
+
+
+def _sample_inputs_jagged_to_padded_dense_forward(
+    op_info: OpInfo,
+    device: torch.device,
+    dtype: torch.dtype,
+    requires_grad: bool,
+    **kwargs: Any,
+) -> Iterable[SampleInput]:
+  """Deterministic sample inputs generator for _jagged_to_padded_dense_forward."""
+  del op_info, kwargs
+  req_grad = requires_grad and (dtype.is_floating_point or dtype.is_complex)
+  values = _make_analytic_tensor(
+      (6, 4), dtype=dtype, device=device, requires_grad=req_grad
+  )
+  offsets_i64 = torch.tensor([0, 2, 3, 6], device=device, dtype=torch.int64)
+  if dtype in quantize_utils.QUANTIZED_NUMERIC_DTYPES:
+    yield SampleInput(
+        values,
+        args=([offsets_i64], [4], 0.0),
+        name="unsupported_dtype",
+    )
+    return
+  yield SampleInput(
+      values,
+      args=([offsets_i64], [4], 0.0),
+      name="basic_1d_jagged",
+  )
+
+
+def _sample_inputs_padded_dense_to_jagged_forward(
+    op_info: OpInfo,
+    device: torch.device,
+    dtype: torch.dtype,
+    requires_grad: bool,
+    **kwargs: Any,
+) -> Iterable[SampleInput]:
+  """Deterministic sample inputs generator for _padded_dense_to_jagged_forward."""
+  del op_info, kwargs
+  req_grad = requires_grad and (dtype.is_floating_point or dtype.is_complex)
+  dense = _make_analytic_tensor(
+      (3, 4, 4), dtype=dtype, device=device, requires_grad=req_grad
+  )
+  offsets_i64 = torch.tensor([0, 2, 3, 6], device=device, dtype=torch.int64)
+  if dtype in quantize_utils.QUANTIZED_NUMERIC_DTYPES:
+    yield SampleInput(
+        dense,
+        args=([offsets_i64], 6),
+        name="unsupported_dtype",
+    )
+    return
+  yield SampleInput(
+      dense,
+      args=([offsets_i64], 6),
+      name="basic_3d_dense",
+  )
+
+
+def _sample_inputs_embedding_renorm_(
+    op_info: OpInfo,
+    device: torch.device,
+    dtype: torch.dtype,
+    requires_grad: bool,
+    **kwargs: Any,
+) -> Iterable[SampleInput]:
+  """Deterministic sample inputs generator for embedding_renorm_."""
+  del op_info, requires_grad, kwargs
+  weights = _make_analytic_tensor(
+      (8, 4), dtype=dtype, device=device, low=-2.0, high=2.0
+  )
+  indices = torch.tensor([0, 2, 5, 2], device=device, dtype=torch.int64)
+  if dtype not in (
+      torch.float16,
+      torch.bfloat16,
+      torch.float32,
+      torch.float64,
+  ):
+    yield SampleInput(
+        weights,
+        args=(indices, 1.0, 2.0),
+        name="unsupported_dtype",
+    )
+    return
+  yield SampleInput(
+      weights,
+      args=(indices, 1.0, 2.0),
+      name="l2_norm_max1",
+  )
+  yield SampleInput(
+      weights.clone(),
+      args=(indices.clone(), 0.5, 1.0),
+      name="l1_norm_max0_5",
+  )
+
+
+def _sample_inputs_bitshift(
+    op_info: OpInfo,
+    device: torch.device,
+    dtype: torch.dtype,
+    requires_grad: bool,
+    **kwargs: Any,
+) -> Iterable[SampleInput]:
+  """Deterministic sample inputs generator for __lshift__ and __rshift__."""
+  del op_info, requires_grad, kwargs
+  lhs = _make_analytic_tensor(
+      (4, 4), dtype=dtype, device=device, low=1, high=16, offset=0
+  )
+  rhs = _make_analytic_tensor(
+      (4, 4), dtype=dtype, device=device, low=0, high=3, offset=1
+  )
+  if dtype not in (
+      torch.uint8,
+      torch.int8,
+      torch.int16,
+      torch.int32,
+      torch.int64,
+  ):
+    yield SampleInput(lhs, args=(rhs,), name="unsupported_dtype")
+    return
+  yield SampleInput(lhs, args=(rhs,), name="tensor_shift")
+  yield SampleInput(lhs.clone(), args=(2,), name="scalar_shift")
+
+
+def _addmm_dtype_wrapper(
+    self: torch.Tensor,
+    mat1: torch.Tensor,
+    mat2: torch.Tensor,
+    out_dtype: torch.dtype,
+    *,
+    beta: float = 1,
+    alpha: float = 1,
+    out: torch.Tensor | None = None,
+) -> torch.Tensor:
+  if out is not None:
+    if out.dtype != out_dtype:
+      raise RuntimeError(
+          "out_dtype must be the same as the dtype of the provided out tensor"
+      )
+    if out.shape == (0,):
+      out.resize_((mat1.size(0), mat2.size(1)))
+    return torch.ops.aten.addmm.dtype_out(
+        self, mat1, mat2, out_dtype, beta=beta, alpha=alpha, out=out
+    )
+  return torch.ops.aten.addmm.dtype(
+      self, mat1, mat2, out_dtype, beta=beta, alpha=alpha
+  )
+
+
+def _baddbmm_dtype_wrapper(
+    self: torch.Tensor,
+    batch1: torch.Tensor,
+    batch2: torch.Tensor,
+    out_dtype: torch.dtype,
+    *,
+    beta: float = 1,
+    alpha: float = 1,
+    out: torch.Tensor | None = None,
+) -> torch.Tensor:
+  if out is not None:
+    if out.dtype != out_dtype:
+      raise RuntimeError(
+          "out_dtype must be the same as the dtype of the provided out tensor"
+      )
+    if out.shape == (0,):
+      out.resize_((batch1.size(0), batch1.size(1), batch2.size(2)))
+    return torch.ops.aten.baddbmm.dtype_out(
+        self, batch1, batch2, out_dtype, beta=beta, alpha=alpha, out=out
+    )
+  return torch.ops.aten.baddbmm.dtype(
+      self, batch1, batch2, out_dtype, beta=beta, alpha=alpha
+  )
+
+
+def _bmm_dtype_wrapper(
+    self: torch.Tensor,
+    mat2: torch.Tensor,
+    out_dtype: torch.dtype,
+    *,
+    out: torch.Tensor | None = None,
+) -> torch.Tensor:
+  if out is not None:
+    if out.dtype != out_dtype:
+      raise RuntimeError(
+          "out_dtype must be the same as the dtype of the provided out tensor"
+      )
+    if out.shape == (0,):
+      out.resize_((self.size(0), self.size(1), mat2.size(2)))
+    return torch.ops.aten.bmm.dtype_out(self, mat2, out_dtype, out=out)
+  return torch.ops.aten.bmm.dtype(self, mat2, out_dtype)
+
+
+def _mm_dtype_wrapper(
+    self: torch.Tensor,
+    mat2: torch.Tensor,
+    out_dtype: torch.dtype,
+    *,
+    out: torch.Tensor | None = None,
+) -> torch.Tensor:
+  if out is not None:
+    if out.dtype != out_dtype:
+      raise RuntimeError(
+          "out_dtype must be the same as the dtype of the provided out tensor"
+      )
+    if out.shape == (0,):
+      out.resize_((self.size(0), mat2.size(1)))
+    return torch.ops.aten.mm.dtype_out(self, mat2, out_dtype, out=out)
+  return torch.ops.aten.mm.dtype(self, mat2, out_dtype)
+
+
+def _sample_inputs_addmm_dtype(
+    op_info: OpInfo,
+    device: torch.device,
+    dtype: torch.dtype,
+    requires_grad: bool,
+    **kwargs: Any,
+) -> Iterable[SampleInput]:
+  """Deterministic sample inputs generator for addmm.dtype."""
+  del op_info, kwargs
+  make_arg = functools.partial(
+      _make_analytic_tensor,
+      device=device,
+      dtype=dtype,
+      requires_grad=requires_grad,
+  )
+  m, k, n = 4, 6, 8
+  if dtype not in (
+      torch.float16,
+      torch.bfloat16,
+      torch.float32,
+      torch.float64,
+      torch.complex64,
+      torch.complex128,
+  ):
+    yield SampleInput(
+        make_arg((m, n), offset=0),
+        args=(make_arg((m, k), offset=1), make_arg((k, n), offset=2), dtype),
+        kwargs={"beta": 1, "alpha": 1},
+        name="unsupported_dtype",
+    )
+    return
+  yield SampleInput(
+      make_arg((m, n), offset=0),
+      args=(make_arg((m, k), offset=1), make_arg((k, n), offset=2), dtype),
+      kwargs={"beta": 1, "alpha": 1},
+      name="2d_bias_default_scales",
+  )
+  yield SampleInput(
+      make_arg((n,), offset=3),
+      args=(make_arg((m, k), offset=4), make_arg((k, n), offset=5), dtype),
+      kwargs={"beta": 2, "alpha": 1},
+      name="1d_bias_beta2",
+  )
+
+
+def _sample_inputs_baddbmm_dtype(
+    op_info: OpInfo,
+    device: torch.device,
+    dtype: torch.dtype,
+    requires_grad: bool,
+    **kwargs: Any,
+) -> Iterable[SampleInput]:
+  """Deterministic sample inputs generator for baddbmm.dtype."""
+  del op_info, kwargs
+  make_arg = functools.partial(
+      _make_analytic_tensor,
+      device=device,
+      dtype=dtype,
+      requires_grad=requires_grad,
+  )
+  b, m, k, n = 2, 4, 6, 8
+  if dtype not in (
+      torch.float16,
+      torch.bfloat16,
+      torch.float32,
+      torch.float64,
+      torch.complex64,
+      torch.complex128,
+  ):
+    yield SampleInput(
+        make_arg((b, m, n), offset=0),
+        args=(
+            make_arg((b, m, k), offset=1),
+            make_arg((b, k, n), offset=2),
+            dtype,
+        ),
+        kwargs={"beta": 1, "alpha": 1},
+        name="unsupported_dtype",
+    )
+    return
+  yield SampleInput(
+      make_arg((b, m, n), offset=0),
+      args=(
+          make_arg((b, m, k), offset=1),
+          make_arg((b, k, n), offset=2),
+          dtype,
+      ),
+      kwargs={"beta": 1, "alpha": 1},
+      name="3d_bias_beta1",
+  )
+  yield SampleInput(
+      make_arg((b, m, n), offset=3),
+      args=(
+          make_arg((b, m, k), offset=4),
+          make_arg((b, k, n), offset=5),
+          dtype,
+      ),
+      kwargs={"beta": 2, "alpha": 1},
+      name="3d_bias_beta2",
+  )
+
+
+def _sample_inputs_bmm_dtype(
+    op_info: OpInfo,
+    device: torch.device,
+    dtype: torch.dtype,
+    requires_grad: bool,
+    **kwargs: Any,
+) -> Iterable[SampleInput]:
+  """Deterministic sample inputs generator for bmm.dtype."""
+  del op_info, kwargs
+  make_arg = functools.partial(
+      _make_analytic_tensor,
+      device=device,
+      dtype=dtype,
+      requires_grad=requires_grad,
+  )
+  b, m, k, n = 2, 4, 6, 8
+  if dtype not in (
+      torch.float16,
+      torch.bfloat16,
+      torch.float32,
+      torch.float64,
+      torch.complex64,
+      torch.complex128,
+  ):
+    yield SampleInput(
+        make_arg((b, m, k), offset=0),
+        args=(make_arg((b, k, n), offset=1), dtype),
+        name="unsupported_dtype",
+    )
+    return
+  yield SampleInput(
+      make_arg((b, m, k), offset=0),
+      args=(make_arg((b, k, n), offset=1), dtype),
+      name="batch2_4x6_6x8",
+  )
+  yield SampleInput(
+      make_arg((3, 5, 4), offset=2),
+      args=(make_arg((3, 4, 7), offset=3), dtype),
+      name="batch3_5x4_4x7",
+  )
+
+
+def _sample_inputs_mm_dtype(
+    op_info: OpInfo,
+    device: torch.device,
+    dtype: torch.dtype,
+    requires_grad: bool,
+    **kwargs: Any,
+) -> Iterable[SampleInput]:
+  """Deterministic sample inputs generator for mm.dtype."""
+  del op_info, kwargs
+  make_arg = functools.partial(
+      _make_analytic_tensor,
+      device=device,
+      dtype=dtype,
+      requires_grad=requires_grad,
+  )
+  m, k, n = 4, 6, 8
+  if dtype not in (
+      torch.float16,
+      torch.bfloat16,
+      torch.float32,
+      torch.float64,
+      torch.complex64,
+      torch.complex128,
+  ):
+    yield SampleInput(
+        make_arg((m, k), offset=0),
+        args=(make_arg((k, n), offset=1), dtype),
+        name="unsupported_dtype",
+    )
+    return
+  yield SampleInput(
+      make_arg((m, k), offset=0),
+      args=(make_arg((k, n), offset=1), dtype),
+      name="same_out_dtype_4x6_6x8",
+  )
+  if dtype in (torch.float16, torch.bfloat16):
+    yield SampleInput(
+        make_arg((m, k), offset=2),
+        args=(make_arg((k, n), offset=3), torch.float32),
+        name="fp32_out_dtype_4x6_6x8",
+    )
+  else:
+    yield SampleInput(
+        make_arg((5, 4), offset=2),
+        args=(make_arg((4, 7), offset=3), dtype),
+        name="same_out_dtype_5x4_4x7",
+    )
+
+
 # Ops not included in the list of tested ops for pytorch.
 _ADDITIONAL_TORCH_TPU_OPS: Final[Sequence[OpInfo]] = [
     OpInfo(
@@ -3058,6 +4283,207 @@ _ADDITIONAL_TORCH_TPU_OPS: Final[Sequence[OpInfo]] = [
         supports_out=False,
         supports_autograd=False,
     ),
+    OpInfo(
+        "__lshift__",
+        op=torch.Tensor.__lshift__,
+        inplace_variant=torch.Tensor.__ilshift__,
+        aten_name="__lshift__",
+        dtypes=common_dtype.integral_types(),
+        sample_inputs_func=_sample_inputs_bitshift,
+        supports_out=False,
+        supports_autograd=False,
+    ),
+    OpInfo(
+        "__rshift__",
+        op=torch.Tensor.__rshift__,
+        inplace_variant=torch.Tensor.__irshift__,
+        aten_name="__rshift__",
+        dtypes=common_dtype.integral_types(),
+        sample_inputs_func=_sample_inputs_bitshift,
+        supports_out=False,
+        supports_autograd=False,
+    ),
+    OpInfo(
+        "_addmm_activation",
+        op=torch._addmm_activation,
+        aten_name="_addmm_activation",
+        dtypes=common_dtype.floating_types_and(torch.bfloat16, torch.float16),
+        sample_inputs_func=_sample_inputs_addmm_activation,
+        supports_out=True,
+        supports_autograd=False,
+    ),
+    OpInfo(
+        "_fused_moving_avg_obs_fq_helper",
+        op=_fused_moving_avg_obs_fq_helper_wrapper,
+        aten_name="_fused_moving_avg_obs_fq_helper",
+        dtypes=common_dtype.floating_types_and(torch.bfloat16, torch.float16),
+        sample_inputs_func=_sample_inputs_fused_moving_avg_obs_fq_helper,
+        supports_out=False,
+        supports_autograd=True,
+    ),
+    OpInfo(
+        "_grouped_mm",
+        op=torch._grouped_mm,
+        aten_name="_grouped_mm",
+        dtypes=common_dtype.floating_types_and(torch.bfloat16, torch.float16),
+        sample_inputs_func=_sample_inputs_grouped_mm,
+        supports_out=False,
+        supports_autograd=False,
+    ),
+    OpInfo(
+        "_jagged_to_padded_dense_forward",
+        op=torch.ops.aten._jagged_to_padded_dense_forward,
+        aten_name="_jagged_to_padded_dense_forward",
+        dtypes=common_dtype.all_types_and_complex_and(
+            torch.bfloat16, torch.float16, torch.bool
+        ),
+        sample_inputs_func=_sample_inputs_jagged_to_padded_dense_forward,
+        supports_out=False,
+        supports_autograd=False,
+    ),
+    OpInfo(
+        "_masked_softmax",
+        op=torch.ops.aten._masked_softmax,
+        aten_name="_masked_softmax",
+        dtypes=common_dtype.floating_types_and(torch.bfloat16, torch.float16),
+        sample_inputs_func=_sample_inputs_masked_softmax,
+        supports_out=True,
+        supports_autograd=True,
+    ),
+    OpInfo(
+        "_masked_softmax_backward",
+        op=torch.ops.aten._masked_softmax_backward,
+        aten_name="_masked_softmax_backward",
+        dtypes=common_dtype.floating_types_and(torch.bfloat16, torch.float16),
+        sample_inputs_func=_sample_inputs_masked_softmax_backward,
+        supports_out=True,
+        supports_autograd=False,
+    ),
+    OpInfo(
+        "_padded_dense_to_jagged_forward",
+        op=torch.ops.aten._padded_dense_to_jagged_forward,
+        aten_name="_padded_dense_to_jagged_forward",
+        dtypes=common_dtype.all_types_and_complex_and(
+            torch.bfloat16, torch.float16, torch.bool
+        ),
+        sample_inputs_func=_sample_inputs_padded_dense_to_jagged_forward,
+        supports_out=False,
+        supports_autograd=False,
+    ),
+    OpInfo(
+        "_weight_norm_interface",
+        op=torch.ops.aten._weight_norm_interface,
+        aten_name="_weight_norm_interface",
+        dtypes=common_dtype.floating_types_and(torch.bfloat16, torch.float16),
+        sample_inputs_func=_sample_inputs_weight_norm_interface,
+        supports_out=False,
+        supports_autograd=True,
+    ),
+    OpInfo(
+        "_weight_norm_interface_backward",
+        op=torch.ops.aten._weight_norm_interface_backward,
+        aten_name="_weight_norm_interface_backward",
+        dtypes=common_dtype.floating_types_and(torch.bfloat16, torch.float16),
+        sample_inputs_func=_sample_inputs_weight_norm_interface_backward,
+        supports_out=False,
+        supports_autograd=False,
+    ),
+    OpInfo(
+        "addmm.dtype",
+        op=_addmm_dtype_wrapper,
+        aten_name="addmm.dtype",
+        dtypes=common_dtype.floating_and_complex_types_and(
+            torch.bfloat16, torch.float16
+        ),
+        sample_inputs_func=_sample_inputs_addmm_dtype,
+        supports_out=True,
+        supports_autograd=False,
+    ),
+    OpInfo(
+        "baddbmm.dtype",
+        op=_baddbmm_dtype_wrapper,
+        aten_name="baddbmm.dtype",
+        dtypes=common_dtype.floating_and_complex_types_and(
+            torch.bfloat16, torch.float16
+        ),
+        sample_inputs_func=_sample_inputs_baddbmm_dtype,
+        supports_out=True,
+        supports_autograd=False,
+    ),
+    OpInfo(
+        "bmm.dtype",
+        op=_bmm_dtype_wrapper,
+        aten_name="bmm.dtype",
+        dtypes=common_dtype.floating_and_complex_types_and(
+            torch.bfloat16, torch.float16
+        ),
+        sample_inputs_func=_sample_inputs_bmm_dtype,
+        supports_out=True,
+        supports_autograd=False,
+    ),
+    OpInfo(
+        "col2im",
+        op=torch.ops.aten.col2im,
+        aten_name="col2im",
+        dtypes=common_dtype.floating_and_complex_types_and(
+            torch.bfloat16, torch.float16
+        ),
+        sample_inputs_func=_sample_inputs_col2im,
+        supports_out=False,
+        supports_autograd=True,
+    ),
+    OpInfo(
+        "embedding_renorm_",
+        op=lambda self, indices, max_norm, norm_type=2.0: (
+            torch.embedding_renorm_(self.clone(), indices, max_norm, norm_type)
+        ),
+        inplace_variant=torch.embedding_renorm_,
+        aten_name="embedding_renorm_",
+        dtypes=common_dtype.floating_types_and(torch.bfloat16, torch.float16),
+        sample_inputs_func=_sample_inputs_embedding_renorm_,
+        supports_out=False,
+        supports_autograd=False,
+    ),
+    OpInfo(
+        "fake_quantize_per_tensor_affine_cachemask",
+        op=torch.ops.aten.fake_quantize_per_tensor_affine_cachemask,
+        aten_name="fake_quantize_per_tensor_affine_cachemask",
+        dtypes=common_dtype.floating_types_and(torch.bfloat16, torch.float16),
+        sample_inputs_func=(
+            _sample_inputs_fake_quantize_per_tensor_affine_cachemask
+        ),
+        supports_out=False,
+        supports_autograd=False,
+    ),
+    OpInfo(
+        "gru.input",
+        op=torch.ops.aten.gru.input,
+        aten_name="gru.input",
+        dtypes=common_dtype.floating_types_and(torch.bfloat16, torch.float16),
+        sample_inputs_func=_sample_inputs_gru_input,
+        supports_out=False,
+        supports_autograd=True,
+    ),
+    OpInfo(
+        "lstm.input",
+        op=torch.ops.aten.lstm.input,
+        aten_name="lstm.input",
+        dtypes=common_dtype.floating_types_and(torch.bfloat16, torch.float16),
+        sample_inputs_func=_sample_inputs_lstm_input,
+        supports_out=False,
+        supports_autograd=True,
+    ),
+    OpInfo(
+        "mm.dtype",
+        op=_mm_dtype_wrapper,
+        aten_name="mm.dtype",
+        dtypes=common_dtype.floating_and_complex_types_and(
+            torch.bfloat16, torch.float16
+        ),
+        sample_inputs_func=_sample_inputs_mm_dtype,
+        supports_out=True,
+        supports_autograd=False,
+    ),
 ]
 for _op_info in _ADDITIONAL_TORCH_TPU_OPS:
   if _op_info.name in (
@@ -3156,6 +4582,28 @@ class GoldenGpuData:
         (op_input, op_output)
     )
 
+  def _ensure_test_case_loaded(self, test_case_name: str) -> None:
+    """Lazily loads the golden samples for `test_case_name`, if present."""
+    if test_case_name in self._data:
+      return
+    candidate_dirs = tests_test_utils.goldens_candidate_local_dirs(
+        base_dir=_GOLDEN_DATA_BASE_DIR.value
+    )
+    per_test_case_dir = tests_test_utils.find_per_test_case_goldens_dir(
+        _golden_file_prefix() + _GPU_GOLDEN_PER_TEST_CASE_SUFFIX, candidate_dirs
+    )
+    if per_test_case_dir is None:
+      # TODO(b/576014545): Remove fallback once we add per-test-case loading
+      # in OSS. If `per_test_case_dir` is `None`, goldens were already all
+      # loaded by _load_golden_files().
+      return
+    op_tree = tests_test_utils.load_single_test_case_golden(
+        test_case_name,
+        per_test_case_dir,
+    )
+    if op_tree is not None:
+      self.merge_plistlib_pytree({test_case_name: op_tree})
+
   def get_samples(
       self,
       test_case_name: str,
@@ -3164,6 +4612,7 @@ class GoldenGpuData:
       out_dtype_override: torch.dtype | None = None,
   ) -> Sequence[tuple["OpInput", "OpOutput"]]:
     """Returns the recorded samples for the key, or an empty list if absent."""
+    self._ensure_test_case_loaded(test_case_name)
     key = _golden_dtype_key(dtype, out_dtype_override)
     samples = (
         self._data.get(test_case_name, {}).get(variant.value, {}).get(key, [])
@@ -3181,7 +4630,7 @@ class GoldenGpuData:
 
   def _samples_for(
       self, test_case_name: str, variant_name: str, dtype_key: str
-  ) -> list[_GoldenSample]:
+  ) -> MutableSequence[_GoldenSample]:
     """Returns the mutable sample list for the key, creating it if needed."""
     return (
         self._data.setdefault(test_case_name, {})
@@ -3257,17 +4706,17 @@ _KNOWN_OPS: Final[Sequence[OpInfo]] = (
 )
 
 
-COMPLEX_DTYPES: Final[Sequence[torch.dtype]] = (
+COMPLEX_DTYPES: Final[tuple[torch.dtype, ...]] = (
     # TODO: add complex128.
     torch.complex64,
 )
-FLOAT_DTYPES: Final[Sequence[torch.dtype]] = (
+FLOAT_DTYPES: Final[tuple[torch.dtype, ...]] = (
     torch.float64,
     torch.float32,
     torch.float16,
     torch.bfloat16,
 )
-INTEGRAL_DTYPES: Final[Sequence[torch.dtype]] = (
+INTEGRAL_DTYPES: Final[tuple[torch.dtype, ...]] = (
     torch.uint8,
     torch.int8,
     torch.int16,
@@ -3276,13 +4725,13 @@ INTEGRAL_DTYPES: Final[Sequence[torch.dtype]] = (
     torch.bool,
 )
 
-UNQUANTIZED_NUMERIC_DTYPES: Final[Sequence[torch.dtype]] = (
+UNQUANTIZED_NUMERIC_DTYPES: Final[tuple[torch.dtype, ...]] = (
     *COMPLEX_DTYPES,
     *FLOAT_DTYPES,
     *INTEGRAL_DTYPES,
 )
 
-ALL_NUMERIC_DTYPES: Final[Sequence[torch.dtype]] = (
+ALL_NUMERIC_DTYPES: Final[tuple[torch.dtype, ...]] = (
     *UNQUANTIZED_NUMERIC_DTYPES,
     *quantize_utils.QUANTIZED_NUMERIC_DTYPES,
 )
@@ -3678,6 +5127,13 @@ def _op_name_for_logging(op: OpInfo, variant: OpVariant) -> str:
   return f"{op.name}.out"
 
 
+def _symbolic_shapes_key(op: OpInfo) -> str:
+  """Returns the key of `op` in the --check_symbolic_shapes known failures."""
+  if op.variant_test_name:
+    return f"{op.name}.{op.variant_test_name}"
+  return op.name
+
+
 def _tensor_tree_map(
     leaf_func: Callable[[Any], Any], x: _pytree.PyTree
 ) -> _pytree.PyTree:
@@ -3732,7 +5188,7 @@ def _sample_inputs(
     op: OpInfo,
     device: torch.device,
     dtype: torch.dtype,
-) -> list[SampleInput]:
+) -> Sequence[SampleInput]:
   """Generates sample inputs for an op on the given device.
 
   Args:
@@ -3970,6 +5426,11 @@ def _perf_mode() -> bool:
 def is_compiled_mode() -> bool:
   """Returns true if --use_compiled is set."""
   return _USE_COMPILED.value
+
+
+def is_check_symbolic_shapes_mode() -> bool:
+  """Returns true if --check_symbolic_shapes is set."""
+  return _CHECK_SYMBOLIC_SHAPES.value
 
 
 @functools.lru_cache(maxsize=None)
@@ -4497,6 +5958,80 @@ def _dummy_grad(device: torch.device) -> torch.Tensor:
   return torch.tensor([], dtype=torch.float32, device=device)
 
 
+_COMPILED_DENY_LIST: frozenset[str] = frozenset(
+    [
+        ####
+        # TODO: Materialize was called on a placeholder tensor.
+        #  Dynamo handing our compile backend a graph with data dependent ops.
+        "index_put",
+        "masked_scatter",
+        "masked_select",
+        "nonzero",
+        ####
+        # TODO: failed to validate and reorder inputs.
+        # This is mostly the same as the numel == 0 case, but for embedded
+        # constants in the graph.
+        "arange",
+        "empty",
+        "split_with_sizes",
+        "tril_indices",
+        ####
+        # TODO: NaN result
+        "prod",
+        "topk",
+        ####
+        # TODO: Precision mismatch, need to update tolerance.
+        "nn.functional.gelu",
+        ####
+        # TODO: Unsupported CVT X64 expansion from c64[] to c128[]
+        #  Likely only shows in compiled mode due to optimization level
+        #  difference
+        "addcdiv",
+        ####
+        # TODO: Timeout, looks like this causes a hang somewhere.
+        "_foreach_erf",
+        "_foreach_erf.out",
+        ####
+        # TODO: dynamo assert _PyEval_EvalFrameDefault is EMPTY
+        #  Unclear if these are dynamo bugs or due to the special dynamo flags
+        #  we set in our backend.
+        "_foreach_add",
+        "_foreach_add.out",
+        "bincount",
+        "exponential",  # exponential_complex64_sample0
+        "empty_strided",
+        "empty_strided.out",
+        "multinomial",
+        "nn.functional.scaled_dot_product_attention",
+        "normal",
+        "normal.out",
+        "randint",
+        "randint.out",
+        "randn",
+        "resize_",
+        "uniform",
+        # TODO(b/568080282): Fix list index out of range and 0D shape mismatch
+        # in compiled .out variant with dim.
+        "max.out",
+        "min.out",
+        # Zero-element 1D (0,) out tensor passed by _prepare_out fails shape
+        # expansion in Inductor for 4D _masked_softmax inputs.
+        "_masked_softmax.out",
+        "_masked_softmax_backward.out",
+    ]
+    + (
+        # Before PyTorch 2.15, Dynamo does not treat a torch.return_types
+        # `out=` (e.g. cummax's (values, indices)) as a tuple, so it misses the
+        # graph break for resizing the zero-element out tensors. Tracing then
+        # fails with "list index out of range" (or leaves the wrong out shape
+        # for 0-D inputs).
+        ["cummax.out", "cummin.out"]
+        if utils.get_torch_version() < (2, 15, 0)
+        else []
+    )
+)
+
+
 def _compiled_supports_op(
     op: OpInfo, device_op_input: OpInput, variant: OpVariant
 ) -> bool:
@@ -4541,75 +6076,10 @@ def _compiled_supports_op(
   ):
     return False
 
-  compiled_deny_list = [
-      ####
-      # TODO: Materialize was called on a placeholder tensor.
-      #  Dynamo handing our compile backend a graph with data dependent ops.
-      "index_put",
-      "masked_scatter",
-      "masked_select",
-      "nonzero",
-      ####
-      # TODO: failed to validate and reorder inputs.
-      # This is mostly the same as the numel == 0 case, but for embedded
-      # constants in the graph.
-      "arange",
-      "empty",
-      "split_with_sizes",
-      "tril_indices",
-      ####
-      # TODO: NaN result
-      "prod",
-      "topk",
-      ####
-      # TODO: Precision mismatch, need to update tolerance.
-      "nn.functional.gelu",
-      ####
-      # TODO: Unsupported CVT X64 expansion from c64[] to c128[]
-      #  Likely only shows in compiled mode due to optimization level difference
-      "addcdiv",
-      ####
-      # TODO: Timeout, looks like this causes a hang somewhere.
-      "_foreach_erf",
-      "_foreach_erf.out",
-      ####
-      # TODO: dynamo assert _PyEval_EvalFrameDefault is EMPTY
-      #  Unclear if these are dynamo bugs or due to the special dynamo flags we
-      #  set in our backend.
-      "_foreach_add",
-      "_foreach_add.out",
-      "bincount",
-      "exponential",  # exponential_complex64_sample0
-      "empty_strided",
-      "empty_strided.out",
-      "multinomial",
-      "nn.functional.scaled_dot_product_attention",
-      "normal",
-      "normal.out",
-      "randint",
-      "randint.out",
-      "randn",
-      "resize_",
-      "uniform",
-      # TODO(b/568080282): Fix list index out of range and 0D shape mismatch in
-      # compiled .out variant with dim.
-      "max.out",
-      "min.out",
-  ]
-  if utils.get_torch_version() < (2, 15, 0):
-    # Before PyTorch 2.15, Dynamo does not treat a torch.return_types `out=`
-    # (e.g. cummax's (values, indices)) as a tuple, so it misses the graph
-    # break for resizing the zero-element out tensors. Tracing then fails with
-    # "list index out of range" (or leaves the wrong out shape for 0-D inputs).
-    compiled_deny_list += [
-        "cummax.out",
-        "cummin.out",
-    ]
-
   key = op.name
   if variant == OpVariant.OUT:
     key += ".out"
-  return key not in compiled_deny_list
+  return key not in _COMPILED_DENY_LIST
 
 
 def _target_device(dtype: torch.dtype, device: torch.device) -> torch.device:
@@ -4652,6 +6122,13 @@ def _op_func(
   ):
     return ref
   return op.inplace_variant if variant == OpVariant.INPLACE else op
+
+
+def _dynamism_mode(*, use_compiled: bool, compute_grad: bool) -> DynamismMode:
+  """Returns the active `DynamismMode` for `(use_compiled, compute_grad)`."""
+  if use_compiled:
+    return DynamismMode.COMPILE_GRAD if compute_grad else DynamismMode.COMPILE
+  return DynamismMode.EAGER
 
 
 def _requires_grad_input(input_value: _pytree.PyTree) -> _pytree.PyTree:
@@ -4716,6 +6193,156 @@ def _compute_grad(
     return None
 
   return _tensor_tree_map(get_grad, input_value)
+
+
+@dataclasses.dataclass(frozen=True)
+class _SymbolicRunResult:
+  """The result of running an op on FakeTensors with symbolic dims.
+
+  Attributes:
+    specialized: The names (e.g. `args[0].size(1)`) of the symbolic input dims
+      that running the op specialized, i.e. pinned to a constant.
+    error: The exception raised by the op, or None if it succeeded.
+  """
+
+  specialized: frozenset[str]
+  error: Exception | None = None
+
+
+def _has_differentiable_input(op_input: OpInput) -> bool:
+  """Returns whether `op_input.input_value` has a float or complex tensor."""
+  return any(
+      isinstance(t, torch.Tensor)
+      and (t.is_floating_point() or t.is_complex())
+      and t.numel() > 0
+      for t in _pytree.tree_leaves(op_input.input_value)
+  )
+
+
+def _pinned_symbols(shape_env: symbolic_shapes.ShapeEnv) -> Set[sympy.Basic]:
+  """Returns the symbols that `shape_env` pinned to a constant.
+
+  A symbol is pinned if it was replaced with a constant (e.g. by a guard
+  `s0 == 5` from calling `size()` on a FakeTensor), or if it occurs in a guard
+  that equates an expression with a constant (e.g. `s0 * s1 == 12` from calling
+  `numel()`). Either way, torch.compile recompiles when the dim changes.
+
+  Args:
+    shape_env: The ShapeEnv that the op ran with.
+  """
+  pinned: set[sympy.Basic] = {
+      symbol
+      for symbol in shape_env.var_to_val
+      if shape_env.replace(symbol).is_number
+  }
+  for guard in shape_env.guards:
+    expr = guard.expr
+    if isinstance(expr, sympy.Eq) and (
+        expr.lhs.is_number or expr.rhs.is_number
+    ):
+      pinned |= expr.free_symbols
+  return pinned
+
+
+def _run_with_symbolic_dims(
+    op_func: Callable[..., Any],
+    op_input: OpInput,
+    device: torch.device,
+    *,
+    requires_grad: bool,
+) -> _SymbolicRunResult:
+  """Runs `op_func` on FakeTensors made from `op_input` with symbolic dims.
+
+  Every dim of size >= 2 of every input tensor (including tensors nested in args
+  and kwargs) gets a backed symbolic size whose hint is the real size. Dims of
+  size 0 and 1 stay static, as torch.compile always specializes them. The input
+  tensors must be strided.
+
+  Args:
+    op_func: The function to run.
+    op_input: The input to run `op_func` on. Not mutated.
+    device: The device of the FakeTensors.
+    requires_grad: If True, the non-empty float and complex tensors in
+      `op_input.input_value` require grad (like with --compute_grad), and the
+      gradients of the outputs w.r.t. them are computed too, so that autograd
+      kernels and backward formulas are covered.
+
+  Returns:
+    The input dims that the op specialized, or the exception it raised.
+  """
+  device_input = to(copy.deepcopy(op_input), device)
+  shape_env = symbolic_shapes.ShapeEnv()
+  fake_mode = fake_tensor.FakeTensorMode(
+      shape_env=shape_env, allow_non_fake_inputs=True
+  )
+  # Maps each input symbol to the input dims that have it. With duck sizing,
+  # dims that have the same size share a symbol.
+  dim_names: dict[sympy.Basic, list[str]] = collections.defaultdict(list)
+  grad_inputs = []
+
+  def make_fake(
+      prefix: str, needs_grad: bool, path: _pytree.KeyPath, t: Any
+  ) -> Any:
+    if not isinstance(t, torch.Tensor):
+      return t
+    differentiable = (t.is_floating_point() or t.is_complex()) and t.numel() > 0
+    fake = fake_mode.from_tensor(
+        t,
+        symbolic_context=symbolic_shapes.StatelessSymbolicContext(
+            dynamic_sizes=[
+                symbolic_shapes.DimDynamic.DYNAMIC
+                if size >= 2
+                else symbolic_shapes.DimDynamic.STATIC
+                for size in t.shape
+            ]
+        ),
+    )
+    for dim, size in enumerate(fake.shape):
+      if isinstance(size, torch.SymInt):
+        dim_names[size.node.expr].append(
+            f"{prefix}{_pytree.keystr(path)}.size({dim})"
+        )
+    if needs_grad and differentiable:
+      fake.requires_grad_(True)
+      grad_inputs.append(fake)
+    return fake
+
+  def make_fakes(
+      prefix: str, tree: _pytree.PyTree, needs_grad: bool = False
+  ) -> _pytree.PyTree:
+    return _pytree.tree_map_with_path(
+        functools.partial(make_fake, prefix, needs_grad), tree
+    )
+
+  try:
+    input_value = make_fakes(
+        "input", device_input.input_value, needs_grad=requires_grad
+    )
+    args = make_fakes("args", device_input.args)
+    kwargs = make_fakes("kwargs", device_input.kwargs)
+    with fake_mode:
+      result = op_func(input_value, *args, **kwargs)
+      outputs = [
+          t
+          for t in _pytree.tree_leaves(result)
+          if isinstance(t, torch.Tensor) and t.requires_grad
+      ]
+      if grad_inputs and outputs:
+        torch.autograd.grad(
+            outputs,
+            grad_inputs,
+            grad_outputs=[torch.ones_like(t) for t in outputs],
+            allow_unused=True,
+        )
+  except Exception as e:  # pylint: disable=broad-except
+    return _SymbolicRunResult(specialized=frozenset(), error=e)
+  return _SymbolicRunResult(
+      specialized=frozenset(
+          name
+          for symbol in _pinned_symbols(shape_env)
+          for name in dim_names.get(symbol, ())
+      )
+  )
 
 
 def _dtypes_to_test_for_op(
@@ -4812,9 +6439,6 @@ _VARIANT_CALL_FORMAT: Final[Mapping[OpVariant, str]] = {
 class TorchTpuTestBase(seed_test_utils.RepeatableTest, common_utils.TestCase):
   """Base class for TorchTPU tests."""
 
-  dynamism_filter_fn: FilterFn
-  dynamism_mark_dynamic_fn: MarkDynamicFn
-
   tpu_gpu_accuracy_overrides: AccuracyOverrides
   grad_gpu_accuracy_overrides: AccuracyOverrides
 
@@ -4836,6 +6460,7 @@ class TorchTpuTestBase(seed_test_utils.RepeatableTest, common_utils.TestCase):
     # Make sure we call `do_test_op()` method only once.
     self._do_test_op_called = False
     self._subtests_run = 0
+    self._dynamism_subtests_run = 0
     tt_testing.reset_eager_state()
     # Show long diffs in assertEqual.
     self.maxDiff = None  # pylint: disable=invalid-name
@@ -4845,6 +6470,9 @@ class TorchTpuTestBase(seed_test_utils.RepeatableTest, common_utils.TestCase):
     self.golden_device = (
         torch.device("cuda") if _gen_gpu_golden_mode() else None
     )
+    self.symbolic_shapes_known_failures: Mapping[str, str] = {}
+    # Whether a known --check_symbolic_shapes failure was observed.
+    self._known_symbolic_shapes_failure_seen = False
 
   def set_accuracy_overrides(
       self,
@@ -4869,24 +6497,22 @@ class TorchTpuTestBase(seed_test_utils.RepeatableTest, common_utils.TestCase):
     self.tpu_gpu_accuracy_overrides = tpu_gpu_overrides
     self.grad_gpu_accuracy_overrides = grad_gpu_overrides
 
-  def set_dynamism_handlers(
-      self,
-      filter_fn: FilterFn,
-      mark_dynamic_fn: MarkDynamicFn,
+  def set_symbolic_shapes_known_failures(
+      self, known_failures: Mapping[str, str]
   ) -> None:
-    """Sets the dynamism handler for bounded dynamism testing.
+    """Sets the ops that are known to fail --check_symbolic_shapes.
 
     Args:
-      filter_fn: A function that returns None if the op should be tested for
-        dynamism, or a string with the reason to skip if not.
-      mark_dynamic_fn: A function that marks an input tensor as dynamic as well
-        as any dependent arguments that should be marked dynamic as well.
+      known_failures: Maps the name of an op (with `.{variant_test_name}` if the
+        test uses one) to the reason why TorchTPU specializes or throws on its
+        symbolic dims. Such an op must still fail the check on some sample, so
+        that the entry is removed once the op is fixed.
+
+    To be called by a subclass's setUp() method.
     """
+    self.symbolic_shapes_known_failures = known_failures
 
-    self.dynamism_filter_fn = filter_fn
-    self.dynamism_mark_dynamic_fn = mark_dynamic_fn
-
-  def skipTest(self, reason: typing.Any) -> typing.NoReturn:
+  def skipTest(self, reason: typing.Any) -> typing.Never:
     """Overrides TestCase.skipTest to bypass skips during dtype exclusion collection."""
     # Never skip tests when dumping dtype exclusions. Every test must run so
     # that its `do_test_op` calls can record its dtype exclusions, regardless of
@@ -5102,6 +6728,8 @@ class OpInfoTestBase(TorchTpuTestBase):
       use_compiled: bool = False,
       verbose: bool = True,
       out_dtype_override: torch.dtype | None = None,
+      check_op_failures: bool = True,
+      skip_if: Callable[[OpVariant, OpInput], bool] | None = None,
   ) -> Sequence[tuple[OpInput, OpOutput]]:
     """Returns a list of (input, output) pairs for the op.
 
@@ -5125,6 +6753,10 @@ class OpInfoTestBase(TorchTpuTestBase):
         results.
       out_dtype_override: The data type of the out tensor to use when testing
         out-variant dtype casting.
+      check_op_failures: Whether samples that failed on the golden device are
+        tested on TorchTPU.
+      skip_if: Optional predicate returning True when a sample should be
+        skipped.
     """
 
     op_name = _op_name_for_logging(op, variant)
@@ -5147,7 +6779,14 @@ class OpInfoTestBase(TorchTpuTestBase):
           out_dtype_override=out_dtype_override,
       )
     return self._read_golden_pairs(
-        op, dtype, variant, max_samples, out_dtype_override
+        op,
+        dtype,
+        variant,
+        max_samples,
+        out_dtype_override,
+        compute_grad=compute_grad,
+        check_op_failures=check_op_failures,
+        skip_if=skip_if,
     )
 
   def _read_golden_pairs(
@@ -5157,6 +6796,10 @@ class OpInfoTestBase(TorchTpuTestBase):
       variant: OpVariant,
       max_samples: int,
       out_dtype_override: torch.dtype | None,
+      *,
+      compute_grad: bool = False,
+      check_op_failures: bool = True,
+      skip_if: Callable[[OpVariant, OpInput], bool] | None = None,
   ) -> Sequence[tuple[OpInput, OpOutput]]:
     """Returns up to `max_samples` recorded GPU golden pairs for the op."""
     samples = _GOLDEN_GPU_DATA.get_samples(
@@ -5179,8 +6822,94 @@ class OpInfoTestBase(TorchTpuTestBase):
           f" {len(samples)} test samples ...",
           flush=True,
       )
-      samples = samples[:max_samples]
+      if _CHECK_DYNAMISM.value and not _CHECK_SYMBOLIC_SHAPES.value:
+        samples = self._select_dynamism_samples(
+            op,
+            dtype,
+            variant,
+            samples,
+            max_samples=max_samples,
+            compute_grad=compute_grad,
+            check_op_failures=check_op_failures,
+            skip_if=skip_if,
+        )
+      else:
+        samples = samples[:max_samples]
     return samples
+
+  def _select_dynamism_samples(
+      self,
+      op: OpInfo,
+      dtype: torch.dtype,
+      variant: OpVariant,
+      samples: Sequence[tuple[OpInput, OpOutput]],
+      *,
+      max_samples: int,
+      compute_grad: bool,
+      check_op_failures: bool = True,
+      skip_if: Callable[[OpVariant, OpInput], bool] | None = None,
+  ) -> Sequence[tuple[OpInput, OpOutput]]:
+    """Returns up to `max_samples` golden pairs eligible for dynamism testing.
+
+    Selects the first `max_samples` samples that are not filtered by `skip_if`,
+    did not fail on the golden device, and pass
+    `_check_dynamism_sample_supported`. If no sample qualifies, falls back to
+    the first sample not filtered by `skip_if` or `check_op_failures` (or
+    `samples[:1]` if all are filtered) so the skip reason is still logged.
+    """
+    if max_samples <= 0 or not samples:
+      return samples[:max_samples]
+
+    # Keep only samples that _test_torch_tpu_vs_golden will not skip upfront.
+    unskipped = [
+        (inp, out)
+        for inp, out in samples
+        if (check_op_failures or not isinstance(out.output_value, Exception))
+        and (skip_if is None or not skip_if(variant, inp))
+    ]
+    if not unskipped:
+      return samples[:1]
+
+    # Skip sample scanning if the dtype itself is unsupported for dynamism.
+    if (
+        dynamism_test_utils.verify_dtype_supports_dynamism(op, dtype)
+        is not None
+    ):
+      return unskipped[:1]
+
+    # Only samples that succeeded on the golden device can be marked dynamic.
+    candidates = [
+        (inp, out)
+        for inp, out in unskipped
+        if not isinstance(out.output_value, Exception)
+    ]
+    if not candidates:
+      return unskipped[:1]
+
+    # Select up to max_samples samples that have valid dimensions for dynamism.
+    selected: list[tuple[OpInput, OpOutput]] = []
+    for golden_input, golden_output in candidates:
+      skip, _ = self._check_dynamism_sample_supported(
+          op,
+          golden_input,
+          variant=variant,
+          compute_grad=compute_grad,
+      )
+      if skip is None:
+        selected.append((golden_input, golden_output))
+        if len(selected) == max_samples:
+          return selected
+    if selected:
+      return selected
+
+    # Fall back to the first unskipped sample so its skip reason is recorded.
+    print(
+        ">>> No valid sample for dynamism found for"
+        f" {_op_name_for_logging(op, variant)}() (variant={variant.value})"
+        f" with dtype {dtype} out of {len(samples)} samples.",
+        flush=True,
+    )
+    return unskipped[:1]
 
   def _generate_golden_pairs(
       self,
@@ -5222,8 +6951,6 @@ class OpInfoTestBase(TorchTpuTestBase):
           # gen_gpu_golden mode, torch.arange(5) should return a tensor on
           # CPU instead of GPU.
           check_device=False,
-          # No need to mark inputs as dynamic when computing golden results.
-          check_dynamism=False,
           **run_op_kwargs,
       )
       pairs.append((golden_input, OpOutput(golden_result)))
@@ -5239,12 +6966,12 @@ class OpInfoTestBase(TorchTpuTestBase):
       *,
       subtest_name: str,
       check_device: bool,
-      check_dynamism: bool,
       out: Any = None,
       compute_grad: bool = False,
       use_compiled: bool = False,
       measure_perf: bool = False,
       out_dtype_override: torch.dtype | None = None,
+      marking_plan: DynamicMarkingPlan | None = None,
   ) -> Any:
     """Run the op on the given device.
 
@@ -5261,9 +6988,6 @@ class OpInfoTestBase(TorchTpuTestBase):
         represent multiple runs of the same subtest.
       check_device: If True, check that the result tensors are on the given
         device.
-      check_dynamism: If True and the test is running in dynamism checking mode
-        (i.e. the --check_dynamism_using_seed flag is set), check that the op
-        supports dynamism.
       out: If variant is OUT, this can be either the out argument to be used
         when running the op or None if this function should create the out
         argument itself. Otherwise this must be None.
@@ -5273,6 +6997,8 @@ class OpInfoTestBase(TorchTpuTestBase):
       measure_perf: If True, measure the performance of the op.
       out_dtype_override: The data type of the out tensor to use when testing
         out-variant dtype casting.
+      marking_plan: Optional deterministic dynamic marking plan to apply when
+        running in dynamic mode.
 
     Returns:
       When compute_grad is false: the result of the op, transferred to the CPU
@@ -5297,9 +7023,9 @@ class OpInfoTestBase(TorchTpuTestBase):
           device,
           subtest_name=subtest_name,
           check_device=check_device,
-          check_dynamism=check_dynamism,
           use_compiled=use_compiled,
           out_dtype_override=out_dtype_override,
+          marking_plan=marking_plan,
       )
       if isinstance(out, Exception):
         return out
@@ -5313,18 +7039,28 @@ class OpInfoTestBase(TorchTpuTestBase):
     if variant == OpVariant.OUT:
       device_op_input.kwargs["out"] = out
 
+    if compute_grad:
+      # We only support testing gradients when input_value is a tensor or a
+      # (possibly nested) list/tuple of tensors.
+      device_op_input.input_value = _requires_grad_input(
+          device_op_input.input_value
+      )
+      if not _can_compute_grad(variant, device_op_input.input_value):
+        return _dummy_grad(device)
+
     is_dynamic_test = bool(
-        _CHECK_DYNAMISM_USING_SEED.value and device == torch.device("tpu")
+        _CHECK_DYNAMISM.value and device == torch.device("tpu")
     )
     if is_dynamic_test:
+      assert marking_plan is not None
       self._mark_dynamic(
           op,
           variant,
           dtype,
-          op_input,
           device_op_input,
-          check_dynamism=check_dynamism,
+          compute_grad=compute_grad,
           use_compiled=use_compiled,
+          marking_plan=marking_plan,
       )
     if use_compiled:
       op_func = self._compile(
@@ -5335,14 +7071,6 @@ class OpInfoTestBase(TorchTpuTestBase):
           device_op_input,
           is_dynamic_test=is_dynamic_test,
       )
-    if compute_grad:
-      # We only support testing gradients when input_value is a tensor or a
-      # (possibly nested) list/tuple of tensors.
-      device_op_input.input_value = _requires_grad_input(
-          device_op_input.input_value
-      )
-      if not _can_compute_grad(variant, device_op_input.input_value):
-        return _dummy_grad(device)
     input_value = device_op_input.input_value
 
     try:
@@ -5410,9 +7138,9 @@ class OpInfoTestBase(TorchTpuTestBase):
       *,
       subtest_name: str,
       check_device: bool,
-      check_dynamism: bool,
       use_compiled: bool,
       out_dtype_override: torch.dtype | None,
+      marking_plan: DynamicMarkingPlan | None = None,
   ) -> Any:
     """Returns the out argument for running the out variant of the op.
 
@@ -5434,10 +7162,10 @@ class OpInfoTestBase(TorchTpuTestBase):
         device=device,
         subtest_name=subtest_name,
         check_device=check_device,
-        check_dynamism=check_dynamism,
         # This _run_op() call is for preparing test data, not part of the test
         # itself, so don't measure its performance to avoid skewing metrics.
         measure_perf=False,
+        marking_plan=marking_plan,
     )
     if isinstance(base_result, Exception):
       return base_result
@@ -5456,42 +7184,46 @@ class OpInfoTestBase(TorchTpuTestBase):
       op: OpInfo,
       variant: OpVariant,
       dtype: torch.dtype,
-      op_input: OpInput,
       device_op_input: OpInput,
       *,
-      check_dynamism: bool,
+      compute_grad: bool = False,
       use_compiled: bool,
+      marking_plan: DynamicMarkingPlan,
   ) -> None:
     """Marks dimensions of `device_op_input` dynamic, or skips the test."""
     op_name = _op_name_for_logging(op, variant)
-    if not check_dynamism:
-      self.skipTest(f"Dynamism check is explicitly disabled for {op_name}.")
-
-    dynamism_mode = DynamismMode.COMPILE if use_compiled else DynamismMode.EAGER
+    dynamism_mode = _dynamism_mode(
+        use_compiled=use_compiled, compute_grad=compute_grad
+    )
     print(
         f">>> Marking dynamism for {op_name} with dtype {dtype}"
         f" (mode={dynamism_mode.value}) ...",
         flush=True,
     )
 
-    # Verify op is supported with dynamism.
-    skip = self.dynamism_filter_fn(
-        op, op_input.input_value, op_input.args, mode=dynamism_mode
+    # Verify op and sample are supported with dynamism.
+    skip = dynamism_test_utils.verify_op_supports_dynamism(
+        op, mode=dynamism_mode
+    ) or dynamism_test_utils.verify_sample_supports_dynamism(
+        op,
+        device_op_input.input_value,
+        device_op_input.args,
+        kwargs=device_op_input.kwargs,
     )
     if skip is not None:
       self.skipTest(skip)
 
-    # Use a seed value to enable reproducing a failure deterministically.
-    seed = _CHECK_DYNAMISM_USING_SEED.value
-    seed = seed if seed > 0 else (time.time_ns() % 100000)
-    print(f">>>> Reproduce using `--check_dynamism_using_seed={seed}`")
-    self.dynamism_mark_dynamic_fn(
-        seed,
+    print(
+        ">>>> Reproduce using"
+        f" `--check_dynamism --dynamism_plan_filter={marking_plan.label}`"
+    )
+    dynamism_test_utils.mark_input_dynamic(
         op,
         device_op_input.input_value,
         device_op_input.args,
         mode=dynamism_mode,
         kwargs=device_op_input.kwargs,
+        plan=marking_plan,
     )
 
   def _compile(
@@ -5794,6 +7526,116 @@ class OpInfoTestBase(TorchTpuTestBase):
           accuracy_override=accuracy_override,
       )
 
+  def _check_symbolic_shapes_sub_test(
+      self,
+      subtest_name: str,
+      op: OpInfo,
+      variant: OpVariant,
+      dtype: torch.dtype,
+      *,
+      golden_input: OpInput,
+      golden_result: Any,
+      **unused_run_op_kwargs: Any,
+  ) -> None:
+    """Checks that TorchTPU keeps the symbolic dims that CPU keeps.
+
+    Runs `golden_input` on CPU and TorchTPU FakeTensors with symbolic dims (see
+    `_run_with_symbolic_dims`), once without and once with autograd, and fails
+    if TorchTPU specializes a dim that CPU doesn't, or throws when CPU doesn't.
+    CPU is the control: specializations that upstream PyTorch also makes (e.g.
+    for data-dependent output shapes or shape arguments) are expected.
+
+    Args:
+      subtest_name: The name of the subtest.
+      op: The op to check.
+      variant: The variant of the op to check.
+      dtype: The dtype of the op's inputs.
+      golden_input: The input to check the op with.
+      golden_result: The golden result for `golden_input`. If it's an exception,
+        the check is skipped, as the op fails on real tensors too.
+      **unused_run_op_kwargs: The `_run_op` kwargs of the other test modes.
+    """
+    del dtype, unused_run_op_kwargs  # Unused.
+    op_name = _op_name_for_logging(op, variant)
+    if isinstance(golden_result, Exception):
+      print(
+          f"Skipping {subtest_name} as it failed on"
+          f" {self.golden_device_name()}: {golden_result}",
+          flush=True,
+      )
+      return
+    # torch.compile doesn't support sparse tensors (see _compiled_supports_op).
+    if any(
+        isinstance(t, torch.Tensor) and t.layout != torch.strided
+        for t in _pytree.tree_leaves(
+            (golden_input.input_value, golden_input.args, golden_input.kwargs)
+        )
+    ):
+      print(f"Skipping {subtest_name} as it has sparse tensors.", flush=True)
+      return
+
+    print(f">>>> Checking symbolic shapes in {subtest_name} ...", flush=True)
+    if _PRINT_OP_INPUTS.value > 0:
+      print_op_input(golden_input, data=_PRINT_OP_INPUTS.value > 1)
+    grad_modes = [False]
+    # Autograd doesn't work with inplace ops, as they erase the input tensor.
+    if (
+        op.supports_autograd
+        and variant != OpVariant.INPLACE
+        and _has_differentiable_input(golden_input)
+    ):
+      grad_modes.append(True)
+    failures = []
+    for requires_grad in grad_modes:
+      run_with_symbolic_dims = functools.partial(
+          _run_with_symbolic_dims, requires_grad=requires_grad
+      )
+      cpu_device = torch.device("cpu")
+      cpu = run_with_symbolic_dims(
+          _op_func(op, variant, cpu_device), golden_input, cpu_device
+      )
+      if cpu.error is not None:
+        # The control can't tell which specializations are expected.
+        print(
+            f"Skipping {subtest_name} (requires_grad={requires_grad}) as CPU"
+            f" threw on symbolic dims: {type(cpu.error).__name__}:"
+            f" {cpu.error}",
+            flush=True,
+        )
+        continue
+      tpu_device = torch.device("tpu")
+      tpu = run_with_symbolic_dims(
+          _op_func(op, variant, tpu_device), golden_input, tpu_device
+      )
+      if tpu.error is not None:
+        failures.append(
+            f"With requires_grad={requires_grad}, TorchTPU threw on symbolic"
+            f" dims but CPU didn't: {type(tpu.error).__name__}: {tpu.error}"
+        )
+      elif extra := tpu.specialized - cpu.specialized:
+        failures.append(
+            f"With requires_grad={requires_grad}, TorchTPU specialized"
+            f" {sorted(extra)}, which CPU keeps symbolic (CPU specialized"
+            f" {sorted(cpu.specialized)})."
+        )
+    if not failures:
+      return
+
+    message = (
+        f"{op_name}() specializes or throws on symbolic dims on TorchTPU but"
+        " not on CPU, which makes torch.compile recompile for every new"
+        f" shape.\n{golden_input.summary()}\n"
+        + "\n".join(failures)
+    )
+    known_failure = self.symbolic_shapes_known_failures.get(
+        _symbolic_shapes_key(op)
+    )
+    if known_failure is not None:
+      self._known_symbolic_shapes_failure_seen = True
+      print(f"Known failure ({known_failure}): {message}", flush=True)
+      return
+    self.fail(message)
+
   def _test_torch_tpu_vs_golden(
       self,
       op: OpInfo,
@@ -5805,7 +7647,6 @@ class OpInfoTestBase(TorchTpuTestBase):
       check_value: CheckValueMode | Iterable[CheckValueMode] | None,
       check_dtype: bool,
       check_device: bool,
-      check_dynamism: bool,
       check_op_failures: bool,
       skip_output_indices: Sequence[int],
       skip_if: Callable[[OpVariant, OpInput], bool] | None,
@@ -5828,9 +7669,6 @@ class OpInfoTestBase(TorchTpuTestBase):
       check_dtype: Check if the dtypes are the same.
       check_device: Whether to check that the result tensors are on the expected
         device.
-      check_dynamism: If True and the test is running in dynamism checking mode,
-        i.e. --check_dynamsim_using_seed is set, check that the op supports
-        dynamism.
       check_op_failures: Whether to check that the op fails on TorchTPU when it
         fails on the golden device.
       skip_output_indices: The indices of the output to skip checking.
@@ -5871,6 +7709,8 @@ class OpInfoTestBase(TorchTpuTestBase):
         use_compiled=use_compiled,
         max_samples=max_samples_per_op_dtype,
         out_dtype_override=out_dtype_override,
+        check_op_failures=check_op_failures,
+        skip_if=skip_if,
     )
     if _gen_gpu_golden_mode():
       for golden_input, golden_output in golden_pairs:
@@ -5914,6 +7754,10 @@ class OpInfoTestBase(TorchTpuTestBase):
 
       if _perf_mode():
         test = functools.partial(self._run_on_tpu, measure_perf=True)
+      elif _CHECK_SYMBOLIC_SHAPES.value:
+        test = functools.partial(
+            self._check_symbolic_shapes_sub_test, golden_result=golden_result
+        )
       else:
         test = functools.partial(
             self._sub_test,
@@ -5922,24 +7766,209 @@ class OpInfoTestBase(TorchTpuTestBase):
             check_dtype=check_dtype,
             skip_output_indices=skip_output_indices,
         )
-      for perf_run_idx in range(_NUM_RUNS_PER_SUBTEST.value):
+      dynamism_skip, marking_plans = self._resolve_dynamism_plans(
+          op,
+          golden_input,
+          variant=variant,
+          compute_grad=compute_grad,
+          use_compiled=use_compiled,
+          golden_result=golden_result,
+          out_dtype_override=out_dtype_override,
+      )
+      if dynamism_skip is not None:
+        print(
+            f"Skipping dynamism test sample {subtest_name} for {op_name}()"
+            f" with dtype {dtype}: {dynamism_skip}",
+            flush=True,
+        )
         self._subtests_run += 1
-        with self.subTest(subtest_name=subtest_name, run_index=perf_run_idx):
+        with self.subTest(subtest_name=subtest_name, run_index=0):
           _run_and_print_exception(
-              functools.partial(
-                  test,
-                  subtest_name,
-                  op,
-                  variant,
-                  dtype,
-                  golden_input=golden_input,
-                  check_device=check_device,
-                  check_dynamism=check_dynamism,
-                  compute_grad=compute_grad,
-                  use_compiled=use_compiled,
-                  out_dtype_override=out_dtype_override,
-              )
+              lambda reason=dynamism_skip: self.skipTest(reason)
           )
+        continue
+
+      for marking_plan in marking_plans:
+        plan_subtest_name = (
+            f"{subtest_name}_{marking_plan.label}"
+            if marking_plan is not None
+            else subtest_name
+        )
+        for perf_run_idx in range(_NUM_RUNS_PER_SUBTEST.value):
+          self._subtests_run += 1
+          if marking_plan is not None:
+            self._dynamism_subtests_run += 1
+          with self.subTest(
+              subtest_name=plan_subtest_name, run_index=perf_run_idx
+          ):
+            _run_and_print_exception(
+                functools.partial(
+                    test,
+                    plan_subtest_name,
+                    op,
+                    variant,
+                    dtype,
+                    golden_input=golden_input,
+                    check_device=check_device,
+                    compute_grad=compute_grad,
+                    use_compiled=use_compiled,
+                    out_dtype_override=out_dtype_override,
+                    marking_plan=marking_plan,
+                )
+            )
+
+  def _check_dynamism_sample_supported(
+      self,
+      op: OpInfo,
+      golden_input: OpInput,
+      *,
+      variant: OpVariant = OpVariant.BASE,
+      compute_grad: bool = False,
+  ) -> tuple[str | None, Any]:
+    """Checks if `golden_input` is eligible for dynamism before plan generation.
+
+    Args:
+      op: The `OpInfo` descriptor for the operator under test.
+      golden_input: Sample input bundle.
+      variant: The `OpVariant` being evaluated.
+      compute_grad: Whether gradient computation is active.
+
+    Returns:
+      A `(skip_reason, input_value)` pair where `skip_reason` is `None` if the
+      sample passes initial dynamism filtering, and `input_value` has
+      `requires_grad` populated when `compute_grad` is True.
+    """
+    input_value = golden_input.input_value
+    if compute_grad:
+      input_value = _requires_grad_input(copy.deepcopy(input_value))
+      if not _can_compute_grad(variant, input_value):
+        return (
+            (
+                f"Gradients cannot be computed for variant={variant.value} on"
+                " this sample."
+            ),
+            input_value,
+        )
+
+    skip = dynamism_test_utils.verify_sample_supports_dynamism(
+        op,
+        input_value,
+        golden_input.args,
+        kwargs=golden_input.kwargs,
+    )
+    return skip, input_value
+
+  def _resolve_dynamism_plans(
+      self,
+      op: OpInfo,
+      golden_input: OpInput,
+      *,
+      variant: OpVariant = OpVariant.BASE,
+      compute_grad: bool = False,
+      use_compiled: bool,
+      golden_result: Any = None,
+      out_dtype_override: torch.dtype | None = None,
+  ) -> tuple[str | None, Sequence[DynamicMarkingPlan | None]]:
+    """Resolves dynamism skip reason and marking plans for a sample.
+
+    Args:
+      op: The `OpInfo` descriptor for the operator under test.
+      golden_input: Sample input bundle containing `input_value`, `args`, and
+        `kwargs`.
+      variant: The `OpVariant` being evaluated.
+      compute_grad: Whether gradient computation is active.
+      use_compiled: Whether the test is running under `torch.compile`.
+      golden_result: Expected output value for the sample, used to synthesize
+        zero-element `out` placeholders when analyzing `OpVariant.OUT` plans.
+      out_dtype_override: Optional `out` tensor dtype override for
+        `OpVariant.OUT` casting tests.
+
+    Returns:
+      A `(skip_reason, plans)` tuple:
+        - `(None, (None,))` when bounded dynamism checking is inactive.
+        - `(reason, ())` when the sample should be skipped.
+        - `(None, plans)` with the non-empty sequence of `DynamicMarkingPlan`s
+          to execute when the sample is eligible.
+    """
+    if not _CHECK_DYNAMISM.value or _CHECK_SYMBOLIC_SHAPES.value:
+      return None, (None,)
+
+    dynamism_mode = _dynamism_mode(
+        use_compiled=use_compiled, compute_grad=compute_grad
+    )
+    skip = dynamism_test_utils.verify_op_supports_dynamism(
+        op, mode=dynamism_mode
+    )
+    if skip is not None:
+      return skip, ()
+
+    skip, input_value = self._check_dynamism_sample_supported(
+        op,
+        golden_input,
+        variant=variant,
+        compute_grad=compute_grad,
+    )
+    if skip is not None:
+      return skip, ()
+
+    plan_kwargs = golden_input.kwargs
+    if (
+        variant == OpVariant.OUT
+        and "out" not in plan_kwargs
+        and golden_result is not None
+        and not isinstance(golden_result, Exception)
+    ):
+      plan_kwargs = {
+          **plan_kwargs,
+          "out": _prepare_zero_element_out_tensors(
+              golden_result, out_dtype_override=out_dtype_override
+          ),
+      }
+    plans = list(
+        dynamism_test_utils.generate_exhaustive_input_marking_plans(
+            op,
+            input_value,
+            golden_input.args,
+            mode=dynamism_mode,
+            kwargs=plan_kwargs,
+            op_func=_op_func(op, variant, torch.device("tpu")),
+        )
+    )
+    if not plans:
+      return "No valid input dimensions to mark dynamic.", ()
+
+    plan_filter = _DYNAMISM_PLAN_FILTER.value
+    if plan_filter:
+      available = [p.label for p in plans]
+      plans = [p for p in plans if p.label == plan_filter]
+      if not plans:
+        return (
+            (
+                "No dynamic marking plan matched"
+                f" --dynamism_plan_filter={plan_filter!r} (available:"
+                f" {available})."
+            ),
+            (),
+        )
+
+    return None, tuple(plans)
+
+  def _assert_known_symbolic_shapes_failure_seen(
+      self, op_name: str, variant_test_name: str | None
+  ) -> None:
+    """Fails if a known --check_symbolic_shapes failure no longer fails."""
+    key = f"{op_name}.{variant_test_name}" if variant_test_name else op_name
+    reason = self.symbolic_shapes_known_failures.get(key)
+    if reason is None or self._known_symbolic_shapes_failure_seen:
+      return
+    # Runs restricted to some dtypes may miss the failing samples.
+    if _DTYPES.value != ["all"] or self._subtests_run == 0:
+      return
+    self.fail(
+        f"{key} is a known --check_symbolic_shapes failure ({reason}), but no"
+        " sample specialized or threw on TorchTPU. If it's fixed, remove it"
+        " from the known failures."
+    )
 
   def do_test_op(
       self,
@@ -5950,7 +7979,6 @@ class OpInfoTestBase(TorchTpuTestBase):
       check_out_variant: bool = True,
       check_grad: bool = True,
       check_device: bool = True,
-      check_dynamism: bool = True,
       check_value: CheckValueMode | Iterable[CheckValueMode] | None = None,
       check_dtype: bool = True,
       check_op_failures: bool = True,
@@ -5972,9 +8000,6 @@ class OpInfoTestBase(TorchTpuTestBase):
       check_grad: Whether to check the gradient of the op.
       check_device: Whether to check that the op's result is on the correct
         device.
-      check_dynamism: If True and the test is running in dynamism checking mode,
-        i.e. --check_dynamsim_using_seed is set, check that the op supports
-        dynamism.
       check_value: Mode for checking the values. If SKIP, only the output's
         dtype and shape will be checked. If an iterable is provided, it must
         have the same length as the op's output list, and the i-th element will
@@ -6015,6 +8040,7 @@ class OpInfoTestBase(TorchTpuTestBase):
       )
     self._do_test_op_called = True
     self._subtests_run = 0
+    self._dynamism_subtests_run = 0
 
     if _dump_dtype_exclusions_mode():
       _record_gpu_dtype_exclusions(
@@ -6066,9 +8092,25 @@ class OpInfoTestBase(TorchTpuTestBase):
             f" {self.golden_device_name()}: exclude_dtypes={exclude_dtypes}"
         )
 
+      if _CHECK_DYNAMISM.value and not _CHECK_SYMBOLIC_SHAPES.value:
+        dynamism_mode = _dynamism_mode(
+            use_compiled=use_compiled, compute_grad=compute_grad
+        )
+        skip = dynamism_test_utils.verify_op_supports_dynamism(
+            op, mode=dynamism_mode
+        )
+        if skip is not None:
+          self.skipTest(skip)
+
       # (variant, excluded dtypes, check_op_failures) for each variant to test.
       variants = [(OpVariant.BASE, exclude_dtypes, check_op_failures)]
-      if check_out_variant and _supports_out(op):
+      # --check_symbolic_shapes skips the out variant: it dispatches to the same
+      # autograd and Meta kernels as the base variant on FakeTensors.
+      if (
+          check_out_variant
+          and _supports_out(op)
+          and not _CHECK_SYMBOLIC_SHAPES.value
+      ):
         variants.append((OpVariant.OUT, exclude_dtypes, check_op_failures))
       if op.inplace_variant:
         variants.append((
@@ -6108,7 +8150,6 @@ class OpInfoTestBase(TorchTpuTestBase):
               check_value=check_value,
               check_dtype=check_dtype,
               check_device=check_device,
-              check_dynamism=check_dynamism,
               skip_output_indices=skip_output_indices,
               skip_if=skip_if,
           )
@@ -6128,6 +8169,22 @@ class OpInfoTestBase(TorchTpuTestBase):
             )
 
     _run_and_print_exception(_test_op_variants)
+
+    if (
+        _CHECK_DYNAMISM.value
+        and not _CHECK_SYMBOLIC_SHAPES.value
+        and self._dynamism_subtests_run == 0
+    ):
+      print(
+          f">>> No valid sample for dynamism found for op {op_name} across all"
+          " tested variants and dtypes.",
+          flush=True,
+      )
+
+    if _CHECK_SYMBOLIC_SHAPES.value:
+      self._assert_known_symbolic_shapes_failure_seen(
+          op_name, variant_test_name
+      )
 
     # We have available dtypes to check and not intentionally excluded, but every sample disappeared, which is not expected.
     if _torch_tpu_vs_gpu_mode() and not is_compiled_mode():
@@ -6157,11 +8214,13 @@ class TorchTpuVsCpuTestBase(TorchTpuTestBase):
 def _golden_file_prefix() -> str:
   """Returns the prefix for the golden file name."""
   if is_compiled_mode():
-    return (
-        "ops_test_gpu_golden_grad_compiled"
-        if _COMPUTE_GRAD.value
-        else "ops_test_gpu_golden_compiled"
-    )
+    if _COMPUTE_GRAD.value:
+      # TODO: b/581040310 - Generate compiled-grad GPU goldens; no
+      # ops_test_gpu_golden_grad_compiled dataset exists yet, so reuse eager GPU
+      # grad goldens for now.
+      return "ops_test_gpu_golden_grad"
+    else:
+      return "ops_test_gpu_golden_compiled"
   return (
       "ops_test_gpu_golden_grad"
       if _COMPUTE_GRAD.value
@@ -6217,7 +8276,7 @@ def _save_golden_file() -> None:
     f.write(bin_data)
 
 
-def _golden_keys(encoded_data: _pytree.PyTree) -> set[_GoldenKey]:
+def _golden_keys(encoded_data: _pytree.PyTree) -> Set[_GoldenKey]:
   """Returns the golden keys `encoded_data` holds samples for."""
   return {
       (test_case_name, variant_name, dtype_name)
@@ -6253,6 +8312,15 @@ def _load_golden_files() -> None:
   candidate_dirs = tests_test_utils.goldens_candidate_local_dirs(
       base_dir=_GOLDEN_DATA_BASE_DIR.value
   )
+  if tests_test_utils.find_per_test_case_goldens_dir(
+      prefix + _GPU_GOLDEN_PER_TEST_CASE_SUFFIX, candidate_dirs
+  ):
+    # Per-test-case golden artifacts are present, so skip eager monolithic
+    # loading; GoldenGpuData.get_samples() lazily loads each test case's
+    # goldens on demand.
+    return
+  # TODO(b/576014545): Remove monolithic fallback once we add per-test-case
+  # loading in OSS.
   goldens = tests_test_utils.load_golden_files(
       prefix=prefix, candidate_dirs=candidate_dirs
   )
@@ -6420,6 +8488,26 @@ def set_up_test_module() -> None:
     # will run in all three modes without --config=cuda, and we don't want the
     # test to always fail in this case.
     sys.exit(0)
+
+  if _CHECK_SYMBOLIC_SHAPES.value and (
+      not _torch_tpu_vs_gpu_mode()
+      or is_compiled_mode()
+      or _COMPUTE_GRAD.value
+      or _CHECK_DYNAMISM.value
+  ):
+    raise ValueError(
+        "--check_symbolic_shapes reads the GPU golden inputs of the"
+        " torch_tpu_vs_gpu test mode and checks gradients itself, so it can't"
+        " be combined with another --test_mode, --use_compiled,"
+        " --compute_grad or --check_dynamism."
+    )
+  if _CHECK_SYMBOLIC_SHAPES.value:
+    # Don't log every symbol and guard that the checks create.
+    logging.getLogger(symbolic_shapes.__name__).setLevel(logging.WARNING)
+    # Don't log the traceback of every exception that an op raises on
+    # FakeTensors: the checks report them, and the logs can exceed the size of
+    # the test output that CI shows.
+    logging.getLogger(fake_tensor.__name__).setLevel(logging.CRITICAL)
 
   # Note that global APIs must be configured before seeding PyTorch RNGs on TPU
   # as it triggers compilation of the seed modules.

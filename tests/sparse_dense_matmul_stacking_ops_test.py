@@ -14,16 +14,20 @@
 
 """Tests for sparse_dense_matmul_activation_unstack and sparse_dense_matmul_gradient_stack ops."""
 
+from collections.abc import Sequence
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
+from torch._dynamo import testing as dynamo_testing
+from torch._subclasses import fake_tensor
+from torch.fx.experimental import symbolic_shapes
 import torch.nn.functional as F
 from tests import op_testing
 from tests import oss_utils
 
 
 def reference_interleave_gradients(
-    unstacked_gradients: list[torch.Tensor],
+    unstacked_gradients: Sequence[torch.Tensor],
     stacked_batch_size: int,
     stacked_feature_dim: int,
     num_sc: int = 2,
@@ -49,10 +53,10 @@ def reference_interleave_gradients(
 
 def reference_uninterleave_activations(
     stacked_activations: torch.Tensor,
-    per_feature_batch_sizes: list[int],
-    per_feature_dims: list[int],
+    per_feature_batch_sizes: Sequence[int],
+    per_feature_dims: Sequence[int],
     num_sc: int = 2,
-) -> list[torch.Tensor]:
+) -> Sequence[torch.Tensor]:
   """CPU reference implementation for uninterleaving activations."""
   num_features = len(per_feature_batch_sizes)
   feature_batch_size = per_feature_batch_sizes[0]
@@ -154,6 +158,52 @@ class SparseDenseMatmulStackingOpsTest(op_testing.TorchTpuTestBase):
           stacked_2d, [32, 32], [0, 32]
       )
 
+  @parameterized.parameters("meta", "tpu")
+  def test_unstack_fake_symbolic_feature_dim(self, device):
+    """Tests unstack doesn't specialize a symbolic stacked feature dim."""
+    # Only TPU tensors go through the autograd kernel.
+    if device == "tpu" and not torch.accelerator.is_available():
+      self.skipTest("TPU accelerator not available in this test environment.")
+    shape_env = symbolic_shapes.ShapeEnv()
+    mode = fake_tensor.FakeTensorMode(shape_env=shape_env)
+    # Dim 0 must equal sum(per_feature_batch_sizes), so only dim 1 is dynamic.
+    stacked = mode.from_tensor(
+        torch.empty(64, 32, dtype=torch.float32, device=device),
+        symbolic_context=symbolic_shapes.StatelessSymbolicContext(
+            dynamic_sizes=[
+                symbolic_shapes.DimDynamic.STATIC,
+                symbolic_shapes.DimDynamic.DYNAMIC,
+            ]
+        ),
+    )
+    feature_dim = stacked.shape[1]
+    with mode:
+      results = torch.tpu.ops.sparse_dense_matmul_activation_unstack(
+          stacked, [32, 32], [16, 32]
+      )
+    self.assertEqual([r.shape for r in results], [(32, 16), (32, 32)])
+    self.assertIsInstance(feature_dim, torch.SymInt)
+    self.assertFalse(shape_env.replace(feature_dim.node.expr).is_number)
+
+  def test_unstack_compile_dynamic_feature_dim(self):
+    """Tests compiled unstack recompiles only once for a dynamic feature dim."""
+    torch._dynamo.reset()
+    self.addCleanup(torch._dynamo.reset)
+    counter = dynamo_testing.CompileCounter()
+
+    @torch.compile(backend=counter, fullgraph=True)
+    def fn(stacked):
+      return torch.tpu.ops.sparse_dense_matmul_activation_unstack(
+          stacked, [32, 32], [8, 12]
+      )
+
+    for stacked_dim in (16, 17, 18):
+      stacked = torch.empty(64, stacked_dim, device="meta")
+      results = fn(stacked)
+      self.assertEqual([r.shape for r in results], [(32, 8), (32, 12)])
+    # One static frame, then one dynamic frame that serves all later sizes.
+    self.assertEqual(counter.frame_count, 2)
+
   def test_stack_meta_shape(self):
     g1 = torch.empty(32, 16, device="meta", dtype=torch.float32)
     g2 = torch.empty(32, 32, device="meta", dtype=torch.float32)
@@ -216,6 +266,56 @@ class SparseDenseMatmulStackingOpsTest(op_testing.TorchTpuTestBase):
     ):
       torch.tpu.ops.sparse_dense_matmul_gradient_stack([g1, g2], 64, 0)
 
+  @parameterized.parameters("meta", "tpu")
+  def test_stack_fake_symbolic_shapes(self, device):
+    """Tests gradient_stack doesn't specialize symbolic dims of FakeTensors."""
+    if device == "tpu" and not torch.accelerator.is_available():
+      self.skipTest("TPU accelerator not available in this test environment.")
+    shape_env = symbolic_shapes.ShapeEnv()
+    mode = fake_tensor.FakeTensorMode(shape_env=shape_env)
+    dynamic = symbolic_shapes.StatelessSymbolicContext(
+        dynamic_sizes=[symbolic_shapes.DimDynamic.DYNAMIC] * 2
+    )
+    # Distinct sizes so that duck sizing gives every dim its own symbol.
+    g1, g2 = (
+        mode.from_tensor(
+            torch.empty(*shape, dtype=torch.float32, device=device),
+            symbolic_context=dynamic,
+        )
+        for shape in ((24, 8), (40, 16))
+    )
+    stacked_batch_size = g1.shape[0] + g2.shape[0]
+    stacked_feature_dim = g2.shape[1]
+    with mode:
+      result = torch.tpu.ops.sparse_dense_matmul_gradient_stack(
+          [g1, g2], stacked_batch_size, stacked_feature_dim
+      )
+    for size in (*g1.shape, *g2.shape, *result.shape):
+      self.assertIsInstance(size, torch.SymInt)
+      self.assertFalse(shape_env.replace(size.node.expr).is_number)
+    # Checked last, since comparing symbolic sizes to ints specializes them.
+    self.assertEqual(result.shape, (64, 16))
+
+  def test_stack_compile_dynamic_shapes(self):
+    """Tests compiled gradient_stack recompiles only once for dynamic shapes."""
+    torch._dynamo.reset()
+    self.addCleanup(torch._dynamo.reset)
+    counter = dynamo_testing.CompileCounter()
+
+    @torch.compile(backend=counter, fullgraph=True)
+    def fn(g1, g2):
+      return torch.tpu.ops.sparse_dense_matmul_gradient_stack(
+          [g1, g2], g1.shape[0] + g2.shape[0], g2.shape[1]
+      )
+
+    for batch_size, feature_dim in ((16, 8), (17, 9), (18, 10)):
+      g1 = torch.empty(batch_size, feature_dim, device="meta")
+      g2 = torch.empty(batch_size + 20, feature_dim + 30, device="meta")
+      result = fn(g1, g2)
+      self.assertEqual(result.shape, (2 * batch_size + 20, feature_dim + 30))
+    # One static frame, then one dynamic frame that serves all later sizes.
+    self.assertEqual(counter.frame_count, 2)
+
   @parameterized.parameters(
       (False, [8, 16], 16),
       (True, [8, 16], 16),
@@ -229,7 +329,7 @@ class SparseDenseMatmulStackingOpsTest(op_testing.TorchTpuTestBase):
   def test_sparse_dense_matmul_activation_unstack_on_tpu(
       self,
       compile_op: bool,
-      per_feature_dims: list[int],
+      per_feature_dims: Sequence[int],
       stacked_dim: int,
   ):
     device = torch.device("tpu")
@@ -282,7 +382,7 @@ class SparseDenseMatmulStackingOpsTest(op_testing.TorchTpuTestBase):
   def test_sparse_dense_matmul_gradient_stack_on_tpu(
       self,
       compile_op: bool,
-      feature_dims: list[int],
+      feature_dims: Sequence[int],
       stacked_dim: int,
   ):
     device = torch.device("tpu")
@@ -329,7 +429,7 @@ class SparseDenseMatmulStackingOpsTest(op_testing.TorchTpuTestBase):
   )
   def test_unstack_stack_autograd_flow_on_tpu(
       self,
-      per_feature_dims: list[int],
+      per_feature_dims: Sequence[int],
       stacked_dim: int,
   ):
     device = torch.device("tpu")
@@ -391,7 +491,7 @@ class SparseDenseMatmulStackingOpsTest(op_testing.TorchTpuTestBase):
   )
   def test_unstack_autograd_partial_output_gradient(
       self,
-      per_feature_dims: list[int],
+      per_feature_dims: Sequence[int],
       stacked_dim: int,
   ):
     """Verifies backward pass when downstream loss only uses a subset of features."""

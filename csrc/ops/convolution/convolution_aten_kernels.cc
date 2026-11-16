@@ -37,6 +37,7 @@
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
 #include "csrc/common/to_string.h"
+#include "csrc/common/utils.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/eager_mode.h"
 #include "csrc/eager/op_dispatcher.h"
@@ -77,7 +78,7 @@ Dimensions ExpandIfNecessary(at::IntArrayRef param, int num_spatial_dims) {
   if (param.size() == 1) {
     return Dimensions(num_spatial_dims, param[0]);
   }
-  return Dimensions(param.begin(), param.end());
+  return CopyIntVector(param);
 }
 
 absl::Status ValidateConvolutionInputs(
@@ -119,9 +120,9 @@ absl::Status ValidateConvolutionInputs(
     const std::optional<at::Tensor>& bias_opt, absl::Span<const int64_t> stride,
     absl::Span<const int64_t> padding, absl::Span<const int64_t> dilation,
     bool transposed, absl::Span<const int64_t> output_padding, int64_t groups) {
-  auto bias_dimensions = (bias_opt.has_value() && bias_opt->defined())
-                             ? bias_opt->sizes()
-                             : at::IntArrayRef();
+  const auto sanitized_bias = SanitizeOptionalTensor(bias_opt);
+  auto bias_dimensions =
+      sanitized_bias.has_value() ? sanitized_bias->sizes() : at::IntArrayRef();
   return ValidateConvolutionInputs(input, weight, bias_dimensions, stride,
                                    padding, dilation, transposed,
                                    output_padding, groups);
@@ -201,14 +202,15 @@ absl::StatusOr<at::ScalarType> GetPromotedType(
       error::kPythonNotImplementedError)
       << "not implemented for " << ToString(promoted_type);
 
-  if (bias_opt.has_value() && bias_opt->defined()) {
+  if (const auto sanitized_bias = SanitizeOptionalTensor(bias_opt);
+      sanitized_bias.has_value()) {
     // TODO: native PyTorch does not errors on boolean bias.
-    TT_RETURN_IF_ERROR(IsTypeSupported(*bias_opt, "bias"));
-    TT_RET_CHECK(input.scalar_type() == bias_opt->scalar_type(),
+    TT_RETURN_IF_ERROR(IsTypeSupported(*sanitized_bias, "bias"));
+    TT_RET_CHECK(input.scalar_type() == sanitized_bias->scalar_type(),
                  error::kInvalidArgument)
         << "expected input and bias to have the same dtype, got "
         << ToString(input.scalar_type()) << " and "
-        << ToString(bias_opt->scalar_type());
+        << ToString(sanitized_bias->scalar_type());
   }
 
   return promoted_type;
@@ -278,19 +280,10 @@ absl::Status ConvolutionBinaryOut(
                                  out, param_keys));
 
   auto op_builder =
-      [stride = Strides(params.expanded_stride.begin(),
-                        params.expanded_stride.end()),
-       padding = Dimensions(params.expanded_padding.begin(),
-                            params.expanded_padding.end()),
-       dilation = Dimensions(params.expanded_dilation.begin(),
-                             params.expanded_dilation.end()),
-       transposed,
-       output_padding = Dimensions(params.expanded_output_padding.begin(),
-                                   params.expanded_output_padding.end()),
-       groups,
-       output_dims =
-           Dimensions(params.output_dims.begin(), params.output_dims.end()),
-       mlir_dtype = params.mlir_dtype,
+      [stride = params.expanded_stride, padding = params.expanded_padding,
+       dilation = params.expanded_dilation, transposed,
+       output_padding = params.expanded_output_padding, groups,
+       output_dims = params.output_dims, mlir_dtype = params.mlir_dtype,
        current_precision =
            params.current_precision](FixedSizeSpan<mlir::MlirOp, 2> inputs) {
         auto& [input, weight] = inputs;
@@ -319,19 +312,10 @@ absl::Status ConvolutionTernaryOut(
                           transposed, output_padding, groups, out, param_keys));
 
   auto op_builder =
-      [stride = Strides(params.expanded_stride.begin(),
-                        params.expanded_stride.end()),
-       padding = Dimensions(params.expanded_padding.begin(),
-                            params.expanded_padding.end()),
-       dilation = Dimensions(params.expanded_dilation.begin(),
-                             params.expanded_dilation.end()),
-       transposed,
-       output_padding = Dimensions(params.expanded_output_padding.begin(),
-                                   params.expanded_output_padding.end()),
-       groups,
-       output_dims =
-           Dimensions(params.output_dims.begin(), params.output_dims.end()),
-       mlir_dtype = params.mlir_dtype,
+      [stride = params.expanded_stride, padding = params.expanded_padding,
+       dilation = params.expanded_dilation, transposed,
+       output_padding = params.expanded_output_padding, groups,
+       output_dims = params.output_dims, mlir_dtype = params.mlir_dtype,
        current_precision =
            params.current_precision](FixedSizeSpan<mlir::MlirOp, 3> inputs) {
         auto& [input, weight, bias] = inputs;
@@ -355,9 +339,10 @@ absl::Status ConvolutionOut(const at::Tensor& input, const at::Tensor& weight,
                             at::IntArrayRef dilation, bool transposed,
                             at::IntArrayRef output_padding, int64_t groups,
                             at::Tensor& out, OpParamCacheKeys param_keys) {
-  if (bias_opt.has_value() && bias_opt->defined()) {
+  if (const auto sanitized_bias = SanitizeOptionalTensor(bias_opt);
+      sanitized_bias.has_value()) {
     TT_RETURN_IF_ERROR(param_keys.SetParam("ternary", true));
-    return ConvolutionTernaryOut(input, weight, bias_opt.value(), stride,
+    return ConvolutionTernaryOut(input, weight, *sanitized_bias, stride,
                                  padding, dilation, transposed, output_padding,
                                  groups, out, std::move(param_keys));
   }
@@ -453,8 +438,7 @@ absl::StatusOr<DeviceBufferRefArray<3>> ConvolutionBackward(
 
   auto input_sizes = input.sizes();
   auto weight_sizes = weight.sizes();
-  Dimensions grad_out_sizes(grad_output.sizes().begin(),
-                            grad_output.sizes().end());
+  Dimensions grad_out_sizes = CopyIntVector(grad_output.sizes());
 
   auto op_builder = [stride = expanded_stride, padding = expanded_padding,
                      dilation = expanded_dilation, groups, transposed,
@@ -547,10 +531,7 @@ at::Tensor AtenConvolution(const at::Tensor& input, const at::Tensor& weight,
       {
         TT_ASSIGN_OR_THROW(
             at::ScalarType promoted_dtype,
-            GetPromotedType(input, weight,
-                            bias_opt.has_value() && bias_opt->defined()
-                                ? bias_opt
-                                : std::nullopt));
+            GetPromotedType(input, weight, SanitizeOptionalTensor(bias_opt)));
         TT_ASSIGN_OR_THROW(
             at::Tensor out,
             MakeEmptyTensor(/*size=*/{0}, promoted_dtype, input.device()));

@@ -16,9 +16,11 @@
 #include "csrc/common/discovery.h"
 
 #include <cstdint>
+#include <cstdlib>
 
 #include "absl/base/no_destructor.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/numbers.h"
 #include "csrc/common/env_vars.h"
 #include "csrc/common/error_utils.h"
 
@@ -27,17 +29,21 @@ namespace torch_tpu {
 const absl::StatusOr<int64_t>& GetPremappedBufferSizeFromEnvOnce() {
   static const absl::NoDestructor<absl::StatusOr<int64_t>>
       premapped_buffer_size([]() -> absl::StatusOr<int64_t> {
-        const auto& raw_val = GetEnvOnce<kTpuPremappedBufferSizeEnvVar>();
-        if (!raw_val.has_value()) {
-          SetEnv<kTpuPremappedBufferSizeEnvVar>("0");
+        // Read with std::getenv() rather than GetEnvOnce<>(), since the env var
+        // is set below if it's unset. The result is memoized here instead.
+        const char* const raw_val =
+            std::getenv(  // GETENV_OK=the env var is set below.
+                kTpuPremappedBufferSizeEnvVar);
+        if (raw_val == nullptr) {
+          SafeSetEnv<kTpuPremappedBufferSizeEnvVar>("0");
           return 0;
         }
-        const auto env_val =
-            GetIntegerEnvOnce<int64_t, kTpuPremappedBufferSizeEnvVar>();
-        TT_RET_CHECK(env_val.has_value(), error::kFailedPrecondition)
+        int64_t env_val = 0;
+        TT_RET_CHECK(absl::SimpleAtoi(raw_val, &env_val),
+                     error::kFailedPrecondition)
             << "the " << kTpuPremappedBufferSizeEnvVar
-            << " environment variable is not a valid integer: " << *raw_val;
-        return *env_val;
+            << " environment variable is not a valid integer: " << raw_val;
+        return env_val;
       }());
   return *premapped_buffer_size;
 }

@@ -128,7 +128,7 @@ absl::StatusOr<GatherMaxPool1DResult> BuildGatherMaxPool1D(
   const Dimensions zero_pad(dim_size, 0);
 
   const mlir::Attribute val_min_attr =
-      GetMaxPoolInitValueAttr(element_type, builder.getOpBuilder());
+      GetMaxReductionIdentityAttr(element_type, builder.getOpBuilder());
   const mlir::DenseElementsAttr val_min_dense = mlir::DenseElementsAttr::get(
       mlir::RankedTensorType::get({}, element_type), val_min_attr);
   mlir::MlirOp val_min_scalar =
@@ -289,7 +289,7 @@ absl::StatusOr<MlirOpResults<2>> BuildAdaptiveMaxPool2dShlo(
         mlir::stablehlo::BroadcastInDim(target_tensor_type, iota_2d, {2, 3});
 
     const mlir::Attribute val_attr =
-        GetMaxPoolInitValueAttr(element_type, builder.getOpBuilder());
+        GetMaxReductionIdentityAttr(element_type, builder.getOpBuilder());
     const mlir::DenseElementsAttr init_value_attr =
         mlir::DenseElementsAttr::get(
             mlir::RankedTensorType::get({}, element_type), val_attr);
@@ -398,8 +398,8 @@ absl::StatusOr<AdaptiveMaxPoolBuffers> AdaptiveMaxPool2dHelper(
   const int64_t out_w = output_size[1];
 
   TT_RET_CHECK(out_h >= 0 && out_w >= 0, error::kInvalidArgument)
-      << "expected output size to be non-negative, got [" << out_h << ", "
-      << out_w << "]";
+      << "expected output size to be >= 0, got [" << out_h << ", " << out_w
+      << "]";
 
   const int64_t in_h = self.size(ndim - 2);
   const int64_t in_w = self.size(ndim - 1);

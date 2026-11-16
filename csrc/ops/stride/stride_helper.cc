@@ -126,6 +126,15 @@ absl::Status ValidateProvidedLayoutDataFitsInStorage(
       << ToString(strides) << " to have the same length, got " << sizes.size()
       << " vs. " << strides.size();
 
+  bool is_zero_sized = false;
+  for (int64_t i = 0; i < sizes.size(); ++i) {
+    TT_RET_CHECK(sizes[i] >= 0, error::kInvalidArgument)
+        << "expected sizes to be >= 0, got sizes " << ToString(sizes);
+    TT_RET_CHECK(strides[i] >= 0, error::kInvalidArgument)
+        << "expected strides to be >= 0, got strides " << ToString(strides);
+    is_zero_sized |= sizes[i] == 0;
+  }
+
   const int64_t storage_element_bitwidth =
       TorchEquivalentBitwidth(storage_element_type);
   int64_t storage_nbytes = -1;
@@ -136,23 +145,29 @@ absl::Status ValidateProvidedLayoutDataFitsInStorage(
     storage_nbytes = storage_numel * (storage_element_bitwidth / 8);
   }
 
-  int64_t required_numel = storage_offset + 1;
-  for (auto i = 0; i < sizes.size(); ++i) {
-    if (sizes[i] == 0) {
-      // Zero-sized views are always valid.
-      required_numel = 0;
-      break;
+  int64_t required_numel = 0;
+  if (!is_zero_sized) {
+    TT_ASSIGN_OR_RETURN(required_numel, SafeAdd(storage_offset, 1));
+    for (int64_t i = 0; i < sizes.size(); ++i) {
+      TT_ASSIGN_OR_RETURN(const int64_t dim_span,
+                          SafeMultiply(sizes[i] - 1, strides[i]));
+      TT_ASSIGN_OR_RETURN(required_numel, SafeAdd(required_numel, dim_span));
     }
-    required_numel += (sizes[i] - 1) * strides[i];
   }
   const int64_t layout_element_bitwidth =
       TorchEquivalentBitwidth(layout_element_type);
   int64_t required_nbytes = -1;
   if (layout_element_bitwidth < 8) {
     // Round up to the nearest byte.
-    required_nbytes = (required_numel * layout_element_bitwidth + 7) / 8;
+    TT_ASSIGN_OR_RETURN(const int64_t required_bits,
+                        SafeMultiply(required_numel, layout_element_bitwidth));
+    TT_ASSIGN_OR_RETURN(const int64_t required_bits_rounded,
+                        SafeAdd(required_bits, 7));
+    required_nbytes = required_bits_rounded / 8;
   } else {
-    required_nbytes = required_numel * (layout_element_bitwidth / 8);
+    TT_ASSIGN_OR_RETURN(
+        required_nbytes,
+        SafeMultiply(required_numel, layout_element_bitwidth / 8));
   }
 
   TT_RET_CHECK(required_nbytes <= storage_nbytes, error::kInvalidArgument)

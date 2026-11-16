@@ -14,8 +14,8 @@
 
 """Op precision context manager."""
 
+from collections.abc import Generator
 import contextlib
-from typing import Generator
 
 import torch
 from torch_tpu._internal.precision import precision_impl

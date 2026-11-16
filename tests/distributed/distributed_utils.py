@@ -14,13 +14,15 @@
 
 """Distributed testing utilities for TorchTPU."""
 
+from collections.abc import Callable, Mapping
 import os
 import re
-from typing import Any, Callable
+from typing import Any
 
 from absl import logging
 import portpicker
 import torch
+import torch.distributed as torch_dist
 import torch.multiprocessing as mp
 from torch_tpu._internal import env
 from torch_tpu._internal import env_utils
@@ -63,7 +65,7 @@ def get_tpu_device_count(default: int = 4) -> int:
 
   Call this in the parent process, which does not initialize the TPU runtime:
   once it is initialized, e.g. in a worker, `torch.accelerator.device_count()`
-  only counts the devices visible to that process.
+  only counts the devices that worker uses.
 
   Args:
     default: Fallback device count to return when no TPU devices are detected
@@ -91,7 +93,7 @@ def set_launch_env(nproc_per_node: int) -> bool:
   repick_slicebuilder_ports = False
   if (
       _has_tpu_devices()
-      or env.get_str_env_once("JOB_COMPLETION_INDEX") is not None
+      or env.get_int_env_once("JOB_COMPLETION_INDEX") is not None
   ):
     # Imported lazily so GPU runs (TORCH_DEVICE_BACKEND_AUTOLOAD=0) never depend
     # on `torch.tpu`, which only exists once the TorchTPU backend is loaded.
@@ -181,7 +183,7 @@ def _worker_fn(
     base_seed: int,
     fn: Callable[..., Any],
     args: tuple[Any, ...],
-    kwargs: dict[str, Any],
+    kwargs: Mapping[str, Any],
 ) -> None:
   """Worker function for mp.spawn."""
   # Parse absl flags inside each mp.spawn child subprocess so tests can pass
@@ -295,7 +297,7 @@ def _is_single_host() -> bool:
   """Returns whether this is a single-host (non multi-host) TPU job."""
   hostnames = env.get_str_env_once("TPU_WORKER_HOSTNAMES", default_value="")
   return (
-      env.get_str_env_once("JOB_COMPLETION_INDEX") is None
+      env.get_int_env_once("JOB_COMPLETION_INDEX") is None
       and len([h for h in hostnames.split(",") if h]) <= 1
   )
 
@@ -351,3 +353,44 @@ def _retryable_failure_reason(
   if _TPU_AGENT_CONNECT_FAILURE_RE.search(message):
     return "TPU runtime failed to connect to the local TPU agent"
   return None
+
+
+def _gloo_worker_fn(
+    fn: Callable[..., Any],
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+) -> None:
+  """Runs `fn` inside a gloo default process group, then tears it down."""
+  torch_dist.init_process_group(backend="gloo", init_method="env://")
+  try:
+    # Wait for every rank to initialize. Otherwise, a rank whose `fn` returns
+    # right away destroys the group while a peer is still connecting to it, and
+    # that peer's `init_process_group` fails with "Connection closed by peer".
+    torch_dist.barrier()
+    fn(*args, **kwargs)
+  finally:
+    torch_dist.destroy_process_group()
+
+
+def gloo_run(
+    world_size: int,
+    fn: Callable[..., Any],
+    *args: Any,
+    **kwargs: Any,
+) -> None:
+  """Runs `fn` on `world_size` CPU ranks that share a real gloo process group.
+
+  Use this instead of patching `torch.distributed` (e.g. `is_initialized`,
+  `get_world_size`) or putting a mock process group into the code under test:
+  each rank gets a real, initialized default group, so collectives move data
+  and `fn` can assert on their results. An assertion that fails on any rank
+  fails the calling test.
+
+  Args:
+    world_size: The number of ranks to spawn on the current host.
+    fn: A picklable (module-level) function run by every rank. Use
+      `torch.distributed.get_rank()` inside it to tell the ranks apart.
+    *args: Positional arguments to pass to `fn`.
+    **kwargs: Keyword arguments to pass to `fn`.
+  """
+  dist_run(world_size, _gloo_worker_fn, fn, args, kwargs)

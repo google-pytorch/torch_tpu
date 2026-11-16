@@ -14,16 +14,32 @@
 
 import concurrent.futures
 import functools
+import math
+import operator
 import time
 
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
+from torch_tpu._internal import dynamism
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal import sync
 from torch_tpu._internal.utils import test_utils as utils
 from tests import oss_utils
 from tests import seed_test_utils
+
+
+# int64 values at the 32 bit carry and sign boundaries.
+_INT64_BOUNDARY_VALUES = torch.tensor(
+    [0, -1, 2**31 - 1, 2**32 - 1, -(2**63), 2**63 - 1], dtype=torch.int64
+)
+
+
+def _int64_boundary_tensor(shape):
+  """Tiles the int64 boundary values over a CPU tensor of `shape`."""
+  numel = math.prod(shape)
+  repeats = math.ceil(numel / _INT64_BOUNDARY_VALUES.numel())
+  return _INT64_BOUNDARY_VALUES.repeat(repeats)[:numel].reshape(shape)
 
 
 class TpuStreamsTest(seed_test_utils.RepeatableTest):
@@ -50,6 +66,23 @@ class TpuStreamsTest(seed_test_utils.RepeatableTest):
     finally:
       torch.accelerator.set_stream(default_acc_stream)
     self.assertEqual(torch.accelerator.current_stream(), default_acc_stream)
+
+  def test_stream_repr_identifies_the_stream(self):
+    """Distinct streams have distinct reprs that identify the stream."""
+    new_stream = torch.tpu.Stream()
+
+    self.assertEqual(
+        repr(new_stream),
+        f'<torch.tpu.Stream device=tpu:0 stream_id={new_stream.stream_id}>',
+    )
+    self.assertNotEqual(repr(new_stream), repr(torch.tpu.default_stream()))
+
+  def test_event_repr_uses_public_name(self):
+    """The event repr names the public class and the device."""
+    event = torch.tpu.Event()
+
+    self.assertEqual(repr(event), f'<torch.tpu.Event device={event.device}>')
+    self.assertEqual(event.device.type, 'tpu')
 
   def test_stream(self):
     """Tests basic usage of streams and events.
@@ -293,6 +326,53 @@ class TpuStreamsTest(seed_test_utils.RepeatableTest):
     self.assertTrue(transfer_event.query())
     utils.assert_close(t_cpu, torch.ones(size, dtype=torch.float32))
 
+  def test_wait_event_waits_on_the_stream_it_is_called_on(self):
+    """b.wait_event(ev) holds b, not the stream that is current at the call."""
+    a = torch.tpu.Stream()
+    b = torch.tpu.Stream()
+    x = torch.full((8192, 8192), 1 / 8192, device='tpu')
+    ones = torch.ones(1024, device='tpu')
+    held = torch.zeros(1024, pin_memory=True)
+    (x @ x).to('cpu')
+
+    # Keep a busy for a while, so that ev stays pending below.
+    with torch.tpu.stream(a):
+      y = x
+      for _ in range(100):
+        y = y @ x
+      ev = a.record_event()
+    # The default stream is current: a wait that landed there would hold it.
+    b.wait_event(ev)
+    with torch.tpu.stream(b):
+      held.copy_(ones, non_blocking=True)
+      ev_b = b.record_event()
+
+    # The default stream is not held: its copy completes while a is still busy.
+    free = ones.to('cpu')
+    self.assertFalse(ev.query())
+    # b is held: its copy, and the event after it, complete only once ev has.
+    self.assertFalse(ev_b.query())
+    ev_b.synchronize()
+    self.assertTrue(ev.query())
+    # utils.assert_close() synchronizes the device, so it only runs from here.
+    utils.assert_close(free, torch.ones(1024))
+    utils.assert_close(held, torch.ones(1024))
+    utils.assert_close(y[0, :2].to('cpu'), torch.full((2,), 1 / 8192))
+
+  def test_record_stream_is_accepted_as_a_no_op(self):
+    """record_stream() is accepted on a TPU tensor and leaves it untouched."""
+    side = torch.tpu.Stream()
+    x = torch.arange(16, dtype=torch.float32, device='tpu')
+
+    self.assertIsNone(x.record_stream(side))
+    with torch.tpu.stream(side):
+      y = x * 2
+      self.assertIsNone(y.record_stream(torch.tpu.default_stream()))
+    self.assertIsNone(x.record_stream(torch.accelerator.current_stream()))
+
+    utils.assert_close(x.to('cpu'), torch.arange(16, dtype=torch.float32))
+    utils.assert_close(y.to('cpu'), torch.arange(16, dtype=torch.float32) * 2)
+
   def test_materialize_on_stream_switch(self):
     """Tests that a stream begins executing when leaving its context."""
     new_stream = torch.tpu.Stream()
@@ -350,8 +430,11 @@ class TpuStreamsTest(seed_test_utils.RepeatableTest):
     x = torch.ones(1, device='cpu').to('tpu')
     y = torch.ones(1, device='cpu').to('tpu')
     with torch.tpu.stream(new_stream):
-      actual = (x + y).item()
-    self.assertEqual(actual, 2)
+      z = x + y
+      event = new_stream.record_event()
+    event.synchronize()
+    self.assertTrue(event.query())
+    self.assertEqual(z.item(), 2)
 
   def test_stream_pinned_to_tensor_core(self):
     """Tests that a stream can be pinned to a dense core."""
@@ -366,6 +449,125 @@ class TpuStreamsTest(seed_test_utils.RepeatableTest):
       actual = (x + y).item()
 
     self.assertEqual(actual, 2)
+
+  @oss_utils.skip_in_oss(
+      'OSS libtpu version not high enough to support pinning'
+  )
+  def test_int64_add_dense_vs_sparse_bitwise(self):
+    """Tests static int64 add parity between dense and sparse streams."""
+    dense_stream = torch.tpu.Stream(pinned='dense')
+    sparse_stream = torch.tpu.Stream(pinned='sparse')
+    for shape in [(1,), (2,), (3,), (5,), (6,), (7,), (3, 5)]:
+      cpu_x = _int64_boundary_tensor(shape)
+      x = cpu_x.to('tpu')
+      with torch.tpu.stream(dense_stream):
+        dense = (x + 1).cpu()
+      with torch.tpu.stream(sparse_stream):
+        sparse = (x + 1).cpu()
+      self.assertTrue(torch.equal(dense, sparse), msg=f'shape={shape}')
+      self.assertTrue(torch.equal(sparse, cpu_x + 1), msg=f'shape={shape}')
+
+  @parameterized.named_parameters(
+      ('add', operator.add),
+      ('sub', operator.sub),
+  )
+  @oss_utils.skip_in_oss(
+      'OSS libtpu version not high enough to support pinning'
+  )
+  def test_int64_binary_dense_vs_sparse_bitwise(self, op):
+    """Tests int64 tensor op tensor parity between dense and sparse streams."""
+    dense_stream = torch.tpu.Stream(pinned='dense')
+    sparse_stream = torch.tpu.Stream(pinned='sparse')
+    for shape in [(1,), (2,), (3,), (5,), (6,), (7,), (3, 5)]:
+      cpu_x = _int64_boundary_tensor(shape)
+      # Shifting by one pairs each boundary value with the next one, so the
+      # pairs carry and borrow across the 32 bit words and wrap at the sign bit.
+      numel = cpu_x.numel()
+      cpu_y = _int64_boundary_tensor((numel + 1,))[1:].reshape(shape)
+      expected = op(cpu_x, cpu_y)
+      x = cpu_x.to('tpu')
+      y = cpu_y.to('tpu')
+      with torch.tpu.stream(dense_stream):
+        dense = op(x, y).cpu()
+      with torch.tpu.stream(sparse_stream):
+        sparse = op(x, y).cpu()
+      self.assertTrue(torch.equal(dense, sparse), msg=f'shape={shape}')
+      self.assertTrue(torch.equal(sparse, expected), msg=f'shape={shape}')
+
+  @oss_utils.skip_in_oss(
+      'OSS libtpu version not high enough to support pinning'
+  )
+  def test_int64_fill_from_scalar_dense_vs_sparse_bitwise(self):
+    """Tests int64 fill from a rank 0 tensor on dense vs sparse streams."""
+    dense_stream = torch.tpu.Stream(pinned='dense')
+    sparse_stream = torch.tpu.Stream(pinned='sparse')
+    for value in [0, 1, -1, (1 << 32) - 1, (1 << 40) + 7, -(2**63), 2**63 - 1]:
+      tpu_scalar = torch.tensor(value, dtype=torch.int64).to('tpu')
+      with torch.tpu.stream(dense_stream):
+        dense_buf = torch.zeros(1, dtype=torch.int64, device='tpu')
+        dense_buf.fill_(tpu_scalar)
+        dense = dense_buf.cpu()
+      with torch.tpu.stream(sparse_stream):
+        sparse_buf = torch.zeros(1, dtype=torch.int64, device='tpu')
+        sparse_buf.fill_(tpu_scalar)
+        sparse = sparse_buf.cpu()
+      expected = torch.tensor([value], dtype=torch.int64)
+      self.assertTrue(torch.equal(dense, sparse), msg=f'value={value}')
+      self.assertTrue(torch.equal(sparse, expected), msg=f'value={value}')
+
+  @oss_utils.skip_in_oss(
+      'OSS libtpu version not high enough to support pinning'
+  )
+  def test_int64_add_bounded_dynamic_3d_dense_vs_sparse_bitwise(self):
+    """Tests 3D foldable bounded dynamic int64 add parity on dense vs sparse."""
+    dense_stream = torch.tpu.Stream(pinned='dense')
+    sparse_stream = torch.tpu.Stream(pinned='sparse')
+    cpu_x = _int64_boundary_tensor((3, 8, 128))
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      x_dense = cpu_x.to('tpu')
+      dynamism.mark_dynamic(x_dense, 0, 2, 4)
+      with torch.tpu.stream(dense_stream):
+        dense = (x_dense + 1).cpu()
+
+      x_sparse = cpu_x.to('tpu')
+      dynamism.mark_dynamic(x_sparse, 0, 2, 4)
+      with torch.tpu.stream(sparse_stream):
+        sparse = (x_sparse + 1).cpu()
+
+    self.assertTrue(torch.equal(dense, sparse))
+    self.assertTrue(torch.equal(sparse, cpu_x + 1))
+
+  @oss_utils.skip_in_oss(
+      'OSS libtpu version not high enough to support pinning'
+  )
+  def test_int64_add_bounded_dynamic_1d_dense_vs_sparse_bitwise(self):
+    """Tests rank 1 bounded dynamic int64 add parity on dense vs sparse."""
+    # `dynamism.mark_dynamic` requires `lower_bound >= 2` because 0 and 1
+    # sized dimensions carry PyTorch broadcast semantics; test the smallest
+    # unaligned runtime sizes (2, 3, 5, 7).
+    dense_stream = torch.tpu.Stream(pinned='dense')
+    sparse_stream = torch.tpu.Stream(pinned='sparse')
+    for runtime_size in [2, 3, 5, 7]:
+      cpu_x = _int64_boundary_tensor((runtime_size,))
+      with execution_mode.set_eager_mode(
+          execution_mode.EagerMode.DEFER_AND_FUSE
+      ):
+        x_dense = cpu_x.to('tpu')
+        dynamism.mark_dynamic(x_dense, 0, 2, 16)
+        with torch.tpu.stream(dense_stream):
+          dense = (x_dense + 1).cpu()
+
+        x_sparse = cpu_x.to('tpu')
+        dynamism.mark_dynamic(x_sparse, 0, 2, 16)
+        with torch.tpu.stream(sparse_stream):
+          sparse = (x_sparse + 1).cpu()
+
+      self.assertTrue(
+          torch.equal(dense, sparse), msg=f'runtime_size={runtime_size}'
+      )
+      self.assertTrue(
+          torch.equal(sparse, cpu_x + 1), msg=f'runtime_size={runtime_size}'
+      )
 
 
 class TorchStreamsTest(seed_test_utils.RepeatableTest):
@@ -500,6 +702,21 @@ class TorchStreamsTest(seed_test_utils.RepeatableTest):
 
     # Verify that the tensor is now materialized.
     self.assertTrue(sync.is_materialized(x))
+
+  @absltest.skipIf(
+      utils.get_torch_version() < (2, 12),
+      'torch.Stream.is_capturing() requires PyTorch >= 2.12.',
+  )
+  def test_streams_are_not_capturing_without_graph_capture(self):
+    """No stream reports that it is capturing a graph outside of capture."""
+    device = torch.device('tpu', torch.accelerator.current_device_index())
+    new_stream = torch.Stream(device=device)
+
+    self.assertFalse(new_stream.is_capturing())
+    self.assertFalse(torch.tpu.Stream().is_capturing())
+    self.assertFalse(torch.accelerator.current_stream().is_capturing())
+    with new_stream:
+      self.assertFalse(torch.accelerator.current_stream().is_capturing())
 
 
 # The two public constructors of a TPU event.
@@ -666,6 +883,42 @@ class EventElapsedTimeTest(seed_test_utils.RepeatableTest):
         elapsed_ms, 0.0, (time.perf_counter() - host_start) * 1000
     )
     utils.assert_close(y.to('cpu'), torch.full((8, 8), 2.0))
+
+  def test_elapsed_time_reflects_host_time(self):
+    # Record two events with host delay but no device-side work between them.
+    start = torch.tpu.Event(enable_timing=True)
+    end = torch.tpu.Event(enable_timing=True)
+    start.record()
+    time.sleep(1)
+    end.record()
+    end.synchronize()
+
+    # The elapsed time should reflect the delay inserted by the host.
+    device_time_ms = start.elapsed_time(end)
+    self.assertGreater(device_time_ms, 990)  # 1% tolerance
+
+  def test_errors_preserved_after_stream_exit(self):
+    new_stream = torch.tpu.Stream()
+    with torch.tpu.stream(new_stream):
+      # This will fail to compile due to a compile-time OOM (it would require
+      # 4 petabytes of HBM).
+      x = torch.ones((1024, 1024, 1024, 1024, 1024), device='tpu')
+
+    # Exit the stream, and wait on host. Errors will not be raised here.
+    time.sleep(1)
+
+    # The next sync will pick up the error.
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=tests error timing
+        RuntimeError, 'out of memory'
+    ):
+      torch.accelerator.synchronize()
+
+    # Attempting to use the value will also propagate the error.
+    y = (x + 1)[0, 0, 0, 0, 0]
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=tests error timing
+        RuntimeError, 'out of memory'
+    ):
+      y.item()
 
 
 if __name__ == '__main__':

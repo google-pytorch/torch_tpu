@@ -59,7 +59,7 @@ mlir::DenseIntElementsAttr DefaultLayout(mlir::OpBuilder& builder,
 absl::StatusOr<mlir::stablehlo::CustomCallOp> CreateKilnCustomCallOp(
     mlir::OpBuilder& builder, mlir::Location loc, kiln::Kernel kernel,
     mlir::ValueRange inputs, mlir::TypeRange output_types,
-    std::optional<int64_t> vmem_limit_bytes) {
+    std::optional<int64_t> vmem_limit_bytes, bool needs_hlo_passes) {
   TT_RETURN_IF_ERROR(kernel.Verify());
   TT_ASSIGN_OR_RETURN(const std::string body, std::move(kernel).Serialize());
 
@@ -81,11 +81,12 @@ absl::StatusOr<mlir::stablehlo::CustomCallOp> CreateKilnCustomCallOp(
         "custom_call_config": {
           "body": "%s",
           "needs_layout_passes": true,
+          "needs_hlo_passes": %v,
           "serialization_format": 1
         },
         "device_type": "DEVICE_TYPE_TENSORCORE"%s
       })",
-      absl::Base64Escape(body), scoped_memory_configs);
+      absl::Base64Escape(body), needs_hlo_passes, scoped_memory_configs);
 
   llvm::SmallVector<mlir::Attribute> input_layouts;
   input_layouts.reserve(inputs.size());

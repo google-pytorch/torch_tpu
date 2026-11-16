@@ -242,6 +242,7 @@ enum class OpName {
   kFill_Scalar,
   kFill_Tensor,
   kFlatten,
+  kFlexAttentionFwd,
   kFlip,
   kFloorDivide,
   kFloorDivideOut,
@@ -505,6 +506,8 @@ enum class OpName {
   kLerpTensorOut,
   kLgammaOut,
   kLiftFreshOut,
+  kLinalgCholeskyExL,
+  kLinalgCrossOut,
   kLinalgInvExInverse,
   kLinalgLuFactorExOut,
   kLinalgLuOut,
@@ -643,6 +646,8 @@ enum class OpName {
   kNonzero,
   kNonzeroOut,
   kNonzeroSize,
+  kNonzeroStatic,
+  kNonzeroStaticOut,
   kNormDtypeOut,
   kNormOut,
   kNormalFloatTensor,
@@ -681,6 +686,7 @@ enum class OpName {
   kRandom_To,
   kRandpermGeneratorOut,
   kReciprocalOut,
+  kRecordStream,
   kReflectionPad1dBackwardGradInput,
   kReflectionPad1dOut,
   kReflectionPad2d,
@@ -823,6 +829,7 @@ enum class OpName {
   kTopkValues,
   kTorchTpuInternalConstant,
   kTorchTpuInternalDataDependency,
+  kTorchTpuInternalInvokeSubgraph,
   kTorchTpuInternalZeroSize,
   kTorchTpuOptimizationBarrier,
   kTorchTpuStorageAllocate,
@@ -1330,6 +1337,8 @@ ToString(  // NOLINT(google-readability-function-size)
       return "fill_.Tensor";
     case OpName::kFlatten:
       return "flatten";
+    case OpName::kFlexAttentionFwd:
+      return "_flex_attention_fwd";
     case OpName::kFlip:
       return "flip";
     case OpName::kFloorDivide:
@@ -1856,6 +1865,10 @@ ToString(  // NOLINT(google-readability-function-size)
       return "lgamma.out";
     case OpName::kLiftFreshOut:
       return "liftfresh.out";
+    case OpName::kLinalgCholeskyExL:
+      return "linalg_cholesky_ex.L";
+    case OpName::kLinalgCrossOut:
+      return "linalg_cross.out";
     case OpName::kLinalgInvExInverse:
       return "linalg_inv_ex.inverse";
     case OpName::kLinalgLuFactorExOut:
@@ -2132,6 +2145,10 @@ ToString(  // NOLINT(google-readability-function-size)
       return "nonzero.out";
     case OpName::kNonzeroSize:
       return "nonzero_size";
+    case OpName::kNonzeroStatic:
+      return "nonzero_static";
+    case OpName::kNonzeroStaticOut:
+      return "nonzero_static.out";
     case OpName::kNormDtypeOut:
       return "norm.dtype_out";
     case OpName::kNormOut:
@@ -2208,6 +2225,8 @@ ToString(  // NOLINT(google-readability-function-size)
       return "randperm.generator_out";
     case OpName::kReciprocalOut:
       return "reciprocal.out";
+    case OpName::kRecordStream:
+      return "record_stream";
     case OpName::kReflectionPad1dBackwardGradInput:
       return "reflection_pad1d_backward.grad_input";
     case OpName::kReflectionPad1dOut:
@@ -2496,6 +2515,8 @@ ToString(  // NOLINT(google-readability-function-size)
       return "_torchtpu_internal_constant";
     case OpName::kTorchTpuInternalDataDependency:
       return "_torchtpu_internal_data_dependency";
+    case OpName::kTorchTpuInternalInvokeSubgraph:
+      return "_torchtpu_internal_invoke_subgraph";
     case OpName::kTorchTpuInternalZeroSize:
       return "_torchtpu_internal_zero_size";
     case OpName::kTorchTpuOptimizationBarrier:

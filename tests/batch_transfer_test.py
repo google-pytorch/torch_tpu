@@ -187,6 +187,32 @@ class BatchTransferTest(seed_test_utils.RepeatableTest):
     for i in range(5):
       utils.assert_close(tpu_tensors_dst[i].cpu(), tpu_tensors_src[i].cpu())
 
+  def test_h2d_retains_dst_buffer_on_overwrite(self):
+    cpu_tensor_large = torch.zeros(
+        4096 * 2, dtype=torch.float32, pin_memory=True
+    )
+    cpu_tensor_large[:10] = torch.arange(10, dtype=torch.float32)
+    tpu_tensor = torch.empty(10, dtype=torch.float32, device=self.device)
+
+    future = batch_transfer.batch_transfer_h2d([cpu_tensor_large], [tpu_tensor])
+    # Replace the tensor's underlying DeviceBufferRef before waiting on the
+    # in-flight H2D DMA; TransferFuture must keep the original DeviceBufferRef
+    # alive until wait() completes.
+    tpu_tensor.zero_()
+    future.wait()
+
+  def test_h2d_rejects_non_base_view(self):
+    cpu_tensor_large = torch.zeros(
+        4096 * 2, dtype=torch.float32, pin_memory=True
+    )
+    tpu_base = torch.empty(20, dtype=torch.float32, device=self.device)
+    tpu_slice = tpu_base[2:12]
+
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Requires TPU v5lite hardware
+        RuntimeError, 'destination TPU tensor must be a contiguous base tensor'
+    ):
+      batch_transfer.batch_transfer_h2d([cpu_tensor_large], [tpu_slice])
+
 
 if __name__ == '__main__':
   absltest.main()

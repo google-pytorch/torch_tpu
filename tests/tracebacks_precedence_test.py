@@ -19,7 +19,6 @@ import os
 from absl.testing import absltest
 import torch
 import torch.export
-from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.export import export as torch_tpu_export
 from tests import seed_test_utils
 
@@ -32,9 +31,23 @@ class SimpleModule(torch.nn.Module):
 
 class TracebackPrecedenceTest(seed_test_utils.RepeatableTest):
 
+  # --torch_tpu_internal_mlir_tracebacks=true is set in the BUILD file, as the
+  # flag is memoized on first use. The flag is only meant for Google internal
+  # use, so this test isn't run in OSS.
+
+  def test_traceback_enabled_by_flag(self):
+    sample_input = (torch.tensor([0.1, 0.2, 0.3]),)
+    exported = torch.export.export(SimpleModule(), args=sample_input)
+
+    exported_mlir = torch_tpu_export.exported_to_mlir(exported)
+
+    mlir_text = exported_mlir.serialize_text(enable_debug_info=True)
+
+    # Expect python filenames since tracebacks are enabled by the flag.
+    current_filename = os.path.basename(__file__)
+    self.assertIn(current_filename, mlir_text)
+
   def test_traceback_disabled_by_context_manager_even_if_flag_enabled(self):
-    tt_testing.enable_mlir_tracebacks(True)
-    self.addCleanup(tt_testing.enable_mlir_tracebacks, None)
     sample_input = (torch.tensor([0.1, 0.2, 0.3]),)
     exported = torch.export.export(SimpleModule(), args=sample_input)
 

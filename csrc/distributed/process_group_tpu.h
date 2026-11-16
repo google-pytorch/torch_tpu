@@ -27,18 +27,26 @@
 
 #include <atomic>
 #include <cstdint>
+#include <deque>
+#include <exception>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <thread>  // NOLINT - needed for P2pSendQueue worker thread
+#include <utility>
 #include <vector>
 
 #include "ATen/core/TensorBody.h"
 #include "ATen/core/ivalue_inl.h"
+#include "absl/base/thread_annotations.h"
+#include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_format.h"
+#include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
 #include "c10/util/intrusive_ptr.h"
 #include "csrc/common/macro_utils.h"
@@ -133,6 +141,65 @@ absl::Status GatherSubgroupsViaNodeLocalStore(
     absl::Span<const int64_t> global_rank_to_topo_order, int64_t gather_id,
     DeviceGroup& out_member_world_ranks,
     DeviceGroupList& out_subgroup_member_world_ranks);
+
+// Asynchronous queue for two-sided P2P send operations. Decouples the caller
+// thread from blocking Store calls by executing blocking Store::multiGet on
+// dedicated cloned c10d::Store handles with dedicated background worker
+// threads.
+class P2pSendQueue {
+ public:
+  using Descriptors = std::vector<std::vector<uint8_t>>;
+  using ReadyCallback = std::function<void(Descriptors)>;  // STD_FUNCTION_OK
+  using ErrorCallback =
+      std::function<void(std::exception_ptr)>;  // STD_FUNCTION_OK
+
+  explicit P2pSendQueue(c10::intrusive_ptr<c10d::Store> store);
+  ~P2pSendQueue();
+
+  P2pSendQueue(const P2pSendQueue&) = delete;
+  P2pSendQueue& operator=(const P2pSendQueue&) = delete;
+
+  absl::Status Enqueue(int dst_rank, std::vector<std::string> descriptor_keys,
+                       ReadyCallback on_ready, ErrorCallback on_error);
+
+  void Shutdown();
+
+ private:
+  struct PendingSend {
+    std::vector<std::string> descriptor_keys;
+    ReadyCallback on_ready;
+    ErrorCallback on_error;
+  };
+
+  struct PeerChannel {
+    explicit PeerChannel(c10::intrusive_ptr<c10d::Store> cloned_store)
+        : store(std::move(cloned_store)) {}
+
+    c10::intrusive_ptr<c10d::Store> store;
+    absl::Mutex mu;
+    absl::CondVar cv;
+    std::deque<PendingSend> queue ABSL_GUARDED_BY(mu);
+    std::vector<std::string> inflight_keys ABSL_GUARDED_BY(mu);
+    bool shutdown ABSL_GUARDED_BY(mu) = false;
+    std::thread worker;
+  };
+
+  absl::StatusOr<PeerChannel*> GetOrCreateChannel(int dst_rank)
+      ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_);
+  static void PeerWorkerLoop(PeerChannel* channel);
+  static bool PopNextOrWait(PeerChannel* channel, PendingSend& out_task);
+  static void ExecuteSendTask(PeerChannel* channel, PendingSend task);
+  static void CancelQueuedTasks(std::deque<PendingSend>& tasks);
+  static void DeleteConsumedKeys(c10d::Store& store,
+                                 absl::Span<const std::string> keys);
+  void WakeInflightWaiters(absl::Span<const std::string> keys);
+
+  c10::intrusive_ptr<c10d::Store> store_;
+  absl::Mutex mu_;
+  bool shutdown_ ABSL_GUARDED_BY(mu_) = false;
+  absl::flat_hash_map<int, std::unique_ptr<PeerChannel>> channels_
+      ABSL_GUARDED_BY(mu_);
+};
 
 class ProcessGroupTpu : public c10d::Backend {
  public:
@@ -391,7 +458,8 @@ class ProcessGroupTpu : public c10d::Backend {
   // Extracts receive descriptors from store_ and sends buffers to a
   // remote device.
   absl::StatusOr<c10::intrusive_ptr<c10::ivalue::Future>> CrossHostSendBuffers(
-      std::vector<xla::PjRtBuffer*>& buffers,
+      int dst_rank, std::shared_ptr<std::vector<DeviceBufferRef>> held_buffers,
+      std::vector<xla::PjRtBuffer*> buffers,
       absl::Span<const xla::CrossHostTransferKey> transfer_keys);
 
   // Populates store_ with receive descriptors and places buffers
@@ -439,6 +507,30 @@ class ProcessGroupTpu : public c10d::Backend {
   // Monotonic sequence counter for uneven all_to_all and all_to_all_single
   // offset coordination.
   std::atomic<uint64_t> alltoall_seq_{0};
+
+  // Identifies a two-sided P2P send or receive stream by peer rank and tag.
+  struct P2pStreamKey {
+    int peer_rank = 0;
+    int tag = 0;
+
+    friend bool operator==(const P2pStreamKey&, const P2pStreamKey&) = default;
+
+    template <typename H>
+    friend H AbslHashValue(H h, const P2pStreamKey& key) {
+      return H::combine(std::move(h), key.peer_rank, key.tag);
+    }
+  };
+
+  // Per-(peer_rank, tag) tensor sequence counters for two-sided P2P send/recv
+  // so repeated transfers with the same (src, dst, tag) use distinct store
+  // keys.
+  absl::Mutex p2p_seq_mu_;
+  absl::flat_hash_map<P2pStreamKey, int64_t> send_seq_
+      ABSL_GUARDED_BY(p2p_seq_mu_);
+  absl::flat_hash_map<P2pStreamKey, int64_t> recv_seq_
+      ABSL_GUARDED_BY(p2p_seq_mu_);
+
+  P2pSendQueue p2p_send_queue_;
 };
 
 }  // namespace torch_tpu

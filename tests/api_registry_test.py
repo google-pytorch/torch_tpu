@@ -39,6 +39,7 @@ from torch_tpu._internal.profiler.profiler_config import (
     TpuProfilerConfig as InternalTpuProfilerConfig,
 )
 from torch_tpu._internal.utils import annotations
+from torch_tpu._internal.utils import hardware
 from tests import seed_test_utils
 
 
@@ -116,7 +117,9 @@ class ApiRegistryTest(seed_test_utils.RepeatableTest):
 
   def test_profiler_module_dir(self):
     """Verifies dir(torch.tpu.profiler) returns public symbol list."""
-    self.assertEqual(dir(torch.tpu.profiler), ["TpuProfilerConfig"])
+    self.assertEqual(
+        dir(torch.tpu.profiler), ["TpuProfilerConfig", "named_scope"]
+    )
 
   def test_pallas_api_registry(self):
     """Verifies public exposure, identity, metadata, and proxy behavior for pallas."""
@@ -131,7 +134,9 @@ class ApiRegistryTest(seed_test_utils.RepeatableTest):
     )
 
     # 3. Proxy dir and invalid attribute handling
-    self.assertEqual(dir(torch.tpu.pallas), ["get_pallas_mesh", "jax_op"])
+    self.assertEqual(
+        dir(torch.tpu.pallas), ["get_pallas_mesh", "jax_op", "verifier"]
+    )
     with self.assertRaises(  # ASSERT_RAISES_OK=Verifies proxy module raises AttributeError for non-existent attributes
         AttributeError
     ):
@@ -153,6 +158,38 @@ class ApiRegistryTest(seed_test_utils.RepeatableTest):
         AttributeError
     ):
       _ = getattr(internal_pallas, "non_existent_attribute")
+
+  def test_pallas_verifier_api_registry(self):
+    """Verifies public exposure and metadata for torch.tpu.pallas.verifier."""
+    verifier_mod = importlib.import_module("torch.tpu.pallas.verifier")
+    self.assertIs(verifier_mod, torch.tpu.pallas.verifier)
+    expected_symbols = [
+        "CounterexampleStep",
+        "DmaScheduleMode",
+        "FindingCategory",
+        "InterpretSweepConfig",
+        "Phase",
+        "Severity",
+        "UninitMemoryMode",
+        "VerificationError",
+        "VerificationFinding",
+        "VerificationMode",
+        "VerificationOptions",
+        "VerificationReport",
+        "verify",
+    ]
+
+    self.assertEqual(dir(torch.tpu.pallas.verifier), expected_symbols)
+    for name in expected_symbols:
+      sym = getattr(torch.tpu.pallas.verifier, name)
+      self.assertEqual(
+          getattr(sym, annotations.TT_API_STAGE, None),
+          annotations.Stage.EXPERIMENTAL.value,
+      )
+    with self.assertRaises(  # ASSERT_RAISES_OK=Verifies proxy module raises AttributeError for non-existent attributes
+        AttributeError
+    ):
+      _ = getattr(torch.tpu.pallas.verifier, "non_existent_attribute")
 
   def test_ops_optimization_barrier_registry(self):
     """Verifies exposure, identity, metadata and proxy behavior for the barrier."""
@@ -374,6 +411,37 @@ class ApiRegistryTest(seed_test_utils.RepeatableTest):
           getattr(api, annotations.TT_API_STAGE, None),
           annotations.Stage.EXPERIMENTAL.value,
       )
+
+  def test_tpu_version_registry(self):
+    """Verifies exposure, identity, stage metadata, and TpuSpec mapping for TpuVersion."""
+    self.assertIs(torch.tpu.TpuVersion, hardware.TpuVersion)
+    self.assertIn("TpuVersion", dir(torch.tpu))
+    self.assertFalse(hasattr(torch.tpu, "DeviceKind"))
+    self.assertNotIn("DeviceKind", dir(torch.tpu))
+    self.assertFalse(hasattr(torch.tpu.pallas.verifier, "TpuVersion"))
+    self.assertNotIn("TpuVersion", dir(torch.tpu.pallas.verifier))
+    self.assertFalse(hasattr(torch.tpu.pallas.verifier, "TpuDeviceKind"))
+    self.assertNotIn("TpuDeviceKind", dir(torch.tpu.pallas.verifier))
+    self.assertEqual(
+        getattr(torch.tpu.TpuVersion, annotations.TT_API_STAGE, None),
+        annotations.Stage.EXPERIMENTAL.value,
+    )
+    self.assertEqual(
+        getattr(torch.tpu.TpuVersion, annotations.TT_API_STAGE_REASON, None),
+        "TPU hardware generation.",
+    )
+    specs_by_version = {
+        hardware.TpuSpec.for_version(version)
+        for version in torch.tpu.TpuVersion
+    }
+    self.assertEqual(
+        specs_by_version,
+        set(hardware.TpuSpec.specs_by_pci_device_id().values()),
+    )
+    for version in torch.tpu.TpuVersion:
+      spec = hardware.TpuSpec.for_version(version)
+      self.assertIs(spec.version, version)
+      self.assertEqual(spec.name, version.value)
 
   def test_compiler_api_registry(self):
     """Verifies public exposure, identity, metadata, and proxy behavior for compiler."""

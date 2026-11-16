@@ -12,39 +12,63 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for max pooling monkey patch module."""
+"""Unit tests for max pooling monkey patch module.
 
-from unittest import mock
+The test target does not run on a TPU, so the TPU-only behavior (argument
+normalization and route selection) is covered through the pure helpers
+`_normalize_pool_args` and `_select_route`.
+"""
+
 from absl.testing import absltest
+from absl.testing import parameterized
 import torch
 import torch.nn.functional as F
+from torch.nn.modules.utils import _pair, _single, _triple
 from torch_tpu._internal.pooling import patch as pooling_patch
+from torch_tpu._internal.utils import test_utils
+from tests import seed_test_utils
+
+_Route = pooling_patch._Route
+
+_ORIG_MAX_POOL = {
+    1: pooling_patch._ORIG_F_MAX_POOL1D,
+    2: pooling_patch._ORIG_F_MAX_POOL2D,
+    3: pooling_patch._ORIG_F_MAX_POOL3D,
+}
+_ATEN_MAX_POOL = {
+    1: torch.ops.aten.max_pool1d,
+    2: torch.ops.aten.max_pool2d,
+    3: torch.ops.aten.max_pool3d,
+}
+_TO_TUPLE = {1: _single, 2: _pair, 3: _triple}
+_PATCHED_MAX_POOL = {
+    1: pooling_patch.patched_max_pool1d,
+    2: pooling_patch.patched_max_pool2d,
+    3: pooling_patch.patched_max_pool3d,
+}
 
 
-class PatchTest(absltest.TestCase):  # ABSLTEST_OK=deterministic mock test
+def _input(ndim: int) -> torch.Tensor:
+  """Returns a deterministic (N, C, *spatial) CPU input without ties."""
+  spatial = {1: (11,), 2: (9, 10), 3: (5, 6, 7)}[ndim]
+  numel = 2 * 3 * torch.Size(spatial).numel()
+  gen = torch.Generator().manual_seed(0)
+  return torch.randperm(numel, generator=gen).float().reshape(2, 3, *spatial)
+
+
+class PatchTest(seed_test_utils.RepeatableTest):
 
   def tearDown(self):
     super().tearDown()
     pooling_patch.unpatch_max_pool()
 
-  def _create_mock_tensor(self, device_type: str, requires_grad: bool = False):
-    t = mock.MagicMock(spec=torch.Tensor)
-    t.device = mock.MagicMock()
-    t.device.type = device_type
-    t.requires_grad = requires_grad
-    return t
-
   def test_is_tpu_tensor(self):
-    self.assertTrue(
-        pooling_patch._is_tpu_tensor(self._create_mock_tensor("tpu"))
-    )
+    self.assertFalse(pooling_patch._is_tpu_tensor(torch.zeros(2)))
     self.assertFalse(
-        pooling_patch._is_tpu_tensor(self._create_mock_tensor("cpu"))
-    )
-    self.assertFalse(
-        pooling_patch._is_tpu_tensor(self._create_mock_tensor("cuda"))
+        pooling_patch._is_tpu_tensor(torch.zeros(2, device="meta"))
     )
     self.assertFalse(pooling_patch._is_tpu_tensor(123))
+    self.assertFalse(pooling_patch._is_tpu_tensor(None))
 
   def test_patch_and_unpatch_lifecycle(self):
     orig_f1 = F.max_pool1d
@@ -61,68 +85,106 @@ class PatchTest(absltest.TestCase):  # ABSLTEST_OK=deterministic mock test
     self.assertIs(F.max_pool2d, orig_f2)
     self.assertIs(F.max_pool3d, orig_f3)
 
-  def test_patched_max_pool2d_cpu_fallback(self):
-    cpu_tensor = torch.randn(2, 4, 8, 8)
-    out = pooling_patch.patched_max_pool2d(cpu_tensor, kernel_size=2, stride=2)
-    self.assertEqual(out.shape, (2, 4, 4, 4))
+  # Integer arguments and `stride=None` are checked numerically, for every rank,
+  # by test_normalized_args_match_cpu_reference; these cover tuples and lists.
+  @parameterized.named_parameters(
+      ("2d_mixed_tuples", _pair, (3, 2), (2, 1), (1, 0), (2, 1)),
+      ("1d_lists", _single, [4], [3], [2], [2]),
+  )
+  def test_normalize_pool_args_accepts_sequences(
+      self, to_tuple, kernel_size, stride, padding, dilation
+  ):
+    self.assertEqual(
+        pooling_patch._normalize_pool_args(
+            to_tuple, kernel_size, stride, padding, dilation
+        ),
+        tuple(list(arg) for arg in (kernel_size, stride, padding, dilation)),
+    )
+
+  @parameterized.product(
+      ndim=(1, 2, 3),
+      args=(
+          dict(kernel_size=3, stride=2, padding=1, dilation=1),
+          dict(kernel_size=2, stride=None, padding=0, dilation=1),
+          dict(kernel_size=3, stride=1, padding=1, dilation=2),
+          dict(kernel_size=3, stride=2, padding=0, dilation=1, ceil_mode=True),
+      ),
+  )
+  def test_normalized_args_match_cpu_reference(self, ndim, args):
+    """Normalized args give the same pooling result as the raw user args."""
+    args = dict(args)
+    ceil_mode = args.pop("ceil_mode", False)
+    x = _input(ndim)
+    k, s, p, d = pooling_patch._normalize_pool_args(_TO_TUPLE[ndim], **args)
+
+    # aten::max_pool*d takes the same positional arguments as tpu::_max_pool*d.
+    actual = _ATEN_MAX_POOL[ndim](x, k, s, p, d, ceil_mode)
+    expected = _ORIG_MAX_POOL[ndim](x, ceil_mode=ceil_mode, **args)
+
+    test_utils.assert_close(actual, expected, rtol=0, atol=0)
+
+  @parameterized.named_parameters(
+      # (name, is_tpu, return_indices, dilation, needs_grad, expected)
+      ("cpu", False, False, [1, 1], False, _Route.FALLBACK),
+      ("cpu_grad", False, False, [1, 1], True, _Route.FALLBACK),
+      ("tpu_return_indices", True, True, [1, 1], False, _Route.FALLBACK),
+      ("tpu_dilated", True, False, [1, 2], False, _Route.FALLBACK),
+      ("tpu_dilated_grad", True, False, [2, 2, 2], True, _Route.FALLBACK),
+      ("tpu_eval", True, False, [1], False, _Route.NATIVE),
+      ("tpu_train", True, False, [1, 1, 1], True, _Route.AUTOGRAD),
+  )
+  def test_select_route(
+      self, is_tpu, return_indices, dilation, needs_grad, expected
+  ):
+    self.assertIs(
+        pooling_patch._select_route(
+            is_tpu=is_tpu,
+            return_indices=return_indices,
+            dilation=dilation,
+            needs_grad=needs_grad,
+        ),
+        expected,
+    )
+
+  @parameterized.parameters(1, 2, 3)
+  def test_patched_max_pool_cpu_fallback_matches_reference(self, ndim):
+    x = _input(ndim)
+
+    out = _PATCHED_MAX_POOL[ndim](x, kernel_size=3, stride=2, padding=1)
+
     self.assertEqual(out.device.type, "cpu")
+    test_utils.assert_close(
+        out,
+        _ORIG_MAX_POOL[ndim](x, kernel_size=3, stride=2, padding=1),
+        rtol=0,
+        atol=0,
+    )
 
   def test_patched_max_pool2d_return_indices_fallback(self):
-    cpu_tensor = torch.randn(2, 4, 8, 8)
+    x = _input(2)
+
     out, idx = pooling_patch.patched_max_pool2d(
-        cpu_tensor, kernel_size=2, stride=2, return_indices=True
+        x, kernel_size=2, stride=2, return_indices=True
     )
-    self.assertEqual(out.shape, (2, 4, 4, 4))
-    self.assertEqual(idx.shape, (2, 4, 4, 4))
 
-  def test_patched_max_pool2d_tpu_eval_routes_to_tpu_op(self):
-    tpu_tensor = self._create_mock_tensor("tpu", requires_grad=False)
-    with mock.patch.object(torch.ops.tpu, "_max_pool2d") as mock_op:
-      mock_op.return_value = "mock_tpu_result"
-      res = pooling_patch.patched_max_pool2d(
-          tpu_tensor, kernel_size=3, stride=2, padding=1
-      )
-      self.assertEqual(res, "mock_tpu_result")
-      mock_op.assert_called_once_with(
-          tpu_tensor, [3, 3], [2, 2], [1, 1], [1, 1], False
-      )
+    expected_out, expected_idx = pooling_patch._ORIG_F_MAX_POOL2D(
+        x, kernel_size=2, stride=2, return_indices=True
+    )
+    test_utils.assert_close(out, expected_out, rtol=0, atol=0)
+    test_utils.assert_close(idx, expected_idx, rtol=0, atol=0)
 
-  def test_patched_max_pool2d_tpu_train_routes_to_autograd_function(self):
-    tpu_tensor = self._create_mock_tensor("tpu", requires_grad=True)
-    with torch.enable_grad():
-      with mock.patch.object(
-          pooling_patch._TpuMaxPool2dFunction, "apply"
-      ) as mock_fn:
-        mock_fn.return_value = "mock_autograd_result"
-        res = pooling_patch.patched_max_pool2d(
-            tpu_tensor, kernel_size=3, stride=2, padding=1
-        )
-        self.assertEqual(res, "mock_autograd_result")
-        mock_fn.assert_called_once_with(
-            tpu_tensor, [3, 3], [2, 2], [1, 1], [1, 1], False
-        )
+  def test_patched_max_pool2d_cpu_backward_matches_reference(self):
+    x = _input(2).requires_grad_()
+    x_ref = x.detach().clone().requires_grad_()
 
-  def test_patched_max_pool1d_tpu_routes_to_tpu_op(self):
-    tpu_tensor = self._create_mock_tensor("tpu", requires_grad=False)
-    with mock.patch.object(torch.ops.tpu, "_max_pool1d") as mock_op:
-      mock_op.return_value = "mock_tpu_result"
-      res = pooling_patch.patched_max_pool1d(
-          tpu_tensor, kernel_size=3, stride=2, padding=1
-      )
-      self.assertEqual(res, "mock_tpu_result")
-      mock_op.assert_called_once_with(tpu_tensor, [3], [2], [1], [1], False)
+    pooling_patch.patched_max_pool2d(
+        x, kernel_size=3, stride=2
+    ).sum().backward()
+    pooling_patch._ORIG_F_MAX_POOL2D(
+        x_ref, kernel_size=3, stride=2
+    ).sum().backward()
 
-  def test_patched_max_pool3d_tpu_routes_to_tpu_op(self):
-    tpu_tensor = self._create_mock_tensor("tpu", requires_grad=False)
-    with mock.patch.object(torch.ops.tpu, "_max_pool3d") as mock_op:
-      mock_op.return_value = "mock_tpu_result"
-      res = pooling_patch.patched_max_pool3d(
-          tpu_tensor, kernel_size=3, stride=2, padding=1
-      )
-      self.assertEqual(res, "mock_tpu_result")
-      mock_op.assert_called_once_with(
-          tpu_tensor, [3, 3, 3], [2, 2, 2], [1, 1, 1], [1, 1, 1], False
-      )
+    test_utils.assert_close(x.grad, x_ref.grad, rtol=0, atol=0)
 
 
 if __name__ == "__main__":

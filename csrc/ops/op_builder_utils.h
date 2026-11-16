@@ -23,6 +23,7 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "ATen/ExpandUtils.h"
 #include "ATen/core/ATen_fwd.h"
@@ -193,6 +194,30 @@ Dimensions GetStaticShape(const mlir::stablehlo::Dimensions& dims);
 // upper bound is returned.
 Dimensions GetStaticShape(mlir::MlirOp input);
 
+// An operand made static at its upper bounds.
+struct StaticAtBounds {
+  mlir::MlirOp op;
+  // Runtime size of each bounded dimension, nullopt for static dimensions.
+  std::vector<std::optional<mlir::MlirOp>> runtime_sizes;
+};
+
+// Makes `input` static at its upper bounds, keeping the runtime sizes of its
+// bounded dimensions.
+StaticAtBounds MakeStaticAtBounds(mlir::MlirOp input);
+
+// Restores bounded dynamic dimension sizes on `operand` for each non-nullopt
+// entry in `runtime_sizes`.
+mlir::MlirOp RestoreDynamicDimSizes(
+    mlir::MlirOp operand,
+    absl::Span<const std::optional<mlir::MlirOp>> runtime_sizes);
+
+// Replaces elements of static `input` at indices >= `runtime_sizes[dim]`
+// with `fill_value` across every non-nullopt dimension in `runtime_sizes`.
+// `fill_value` may be a scalar tensor or match the shape of `input`.
+mlir::MlirOp FillPastRuntimeSizes(
+    mlir::MlirOp input, mlir::MlirOp fill_value,
+    absl::Span<const std::optional<mlir::MlirOp>> runtime_sizes);
+
 // Returns the bytecode of the module.
 absl::StatusOr<std::string> SerializeBytecode(mlir::ModuleOp module);
 
@@ -238,15 +263,31 @@ absl::StatusOr<mlir::Type> GetMlirType(mlir::MLIRContext& ctx,
 absl::StatusOr<mlir::DenseElementsAttr> GetVerifiedMinFiniteValue(
     mlir::MlirBuilder& builder, mlir::RankedTensorType constant_tensor_type);
 
-// Returns an attribute for the minimum finite value for a given type. This is
-// used for initializing the minimum finite value for operations like argmax.
+// Returns an attribute for the minimum finite value for a given type, or null
+// if the type is not supported. To start a max reduction, use
+// GetMaxReductionIdentityAttr instead.
 [[nodiscard]] mlir::Attribute GetMinFiniteValueAttr(mlir::Type element_type,
                                                     mlir::OpBuilder& builder);
 
-// Returns an attribute for the maximum finite value for a given type. This is
-// used for initializing the maximum finite value for operations like argmin.
+// Returns an attribute for the maximum finite value for a given type, or null
+// if the type is not supported. To start a min reduction, use
+// GetMinReductionIdentityAttr instead.
 [[nodiscard]] mlir::Attribute GetMaxFiniteValueAttr(mlir::Type element_type,
                                                     mlir::OpBuilder& builder);
+
+// Returns the identity (initial value) of a max reduction over `element_type`:
+// -inf for floating-point types that have infinities, and the minimum finite
+// value otherwise, as in PyTorch. A max over only -inf then yields -inf.
+// Returns null if the type is not supported.
+[[nodiscard]] mlir::Attribute GetMaxReductionIdentityAttr(
+    mlir::Type element_type, mlir::OpBuilder& builder);
+
+// Returns the identity (initial value) of a min reduction over `element_type`:
+// +inf for floating-point types that have infinities, and the maximum finite
+// value otherwise, as in PyTorch. A min over only +inf then yields +inf.
+// Returns null if the type is not supported.
+[[nodiscard]] mlir::Attribute GetMinReductionIdentityAttr(
+    mlir::Type element_type, mlir::OpBuilder& builder);
 
 // Returns the maximum representable finite value for a given floating-point
 // type as a double. Asserts (ABSL_CHECK) that the type is a floating-point
@@ -544,8 +585,17 @@ absl::StatusOr<mlir::MlirOp> Squeeze(mlir::MlirOp input,
 // Supports bounded dynamic flatten.
 mlir::MlirOp Flatten(mlir::MlirOp input);
 
+// Consumes the diagnostics of `diag_handler` and returns them formatted for an
+// error message. Never returns an empty string.
+std::string ConsumeMlirDiagnostics(
+    mlir::BaseScopedDiagnosticHandler& diag_handler);
+
 // Applies Numpy's broadcasting rules, if needed. See
 // https://numpy.org/devdocs//user/basics.broadcasting.html#broadcastable-arrays
+
+// Applies Numpy's broadcasting rules to a dynamic span of ops, if needed.
+absl::StatusOr<std::vector<mlir::MlirOp>> ApplyBroadcastIfNeeded(
+    absl::Span<const mlir::MlirOp> ops);
 
 // This overload takes a fixed number of inputs as an std::array, and returns
 // the same number of outputs.
@@ -553,27 +603,10 @@ template <int kNumInputs>
 absl::StatusOr<std::array<mlir::MlirOp, kNumInputs>> ApplyBroadcastIfNeeded(
     std::array<mlir::MlirOp, kNumInputs> ops) {
   static_assert(kNumInputs > 0, "ApplyBroadcastIfNeeded requires >= 1 input");
-  if (ABSL_VLOG_IS_ON(3)) {
-    ABSL_VLOG(3) << "[ApplyBroadcastIfNeeded] Broadcasting ops:" << '\n';
-    for (const mlir::MlirOp& op : ops) {
-      ABSL_VLOG(3) << "  " << mlir::debugString(op.getType()) << " from op "
-                   << op.ToString() << '\n';
-    }
-  }
-
-  mlir::SmallVector<mlir::Value, kNumInputs> values = llvm::map_to_vector(
-      ops, [](const mlir::MlirOp& op) { return op.getValue(); });
-  mlir::BaseScopedDiagnosticHandler diag_handler(values[0].getContext());
-  auto broadcasted_values_or_fail = mlir::stablehlo::numpyBroadcastIfNeeded(
-      ops[0].getBuilder().getOpBuilder(), values);
-  TT_RET_CHECK(mlir::succeeded(broadcasted_values_or_fail),
-               error::kInvalidArgument)
-      << "failed to broadcast tensors: "
-      << diag_handler.ConsumeStatus().message();
-  mlir::SmallVector<mlir::Value, kNumInputs> broadcasted_values =
-      std::move(*broadcasted_values_or_fail);
+  TT_ASSIGN_OR_RETURN(std::vector<mlir::MlirOp> broadcasted,
+                      ApplyBroadcastIfNeeded(absl::MakeConstSpan(ops)));
   for (int i = 0; i < kNumInputs; ++i) {
-    ops[i] = mlir::MlirOp(ops[i].getBuilder(), broadcasted_values[i]);
+    ops[i] = broadcasted[i];
   }
   return std::move(ops);
 }
@@ -586,10 +619,6 @@ ApplyBroadcastIfNeeded(Op1 op1, Op2 op2, Ops... ops) {
   return ApplyBroadcastIfNeeded<2 + sizeof...(Ops)>(
       std::array<mlir::MlirOp, 2 + sizeof...(Ops)>{op1, op2, ops...});
 }
-
-// Applies Numpy's broadcasting rules to a dynamic span of ops, if needed.
-absl::StatusOr<std::vector<mlir::MlirOp>> ApplyBroadcastIfNeeded(
-    absl::Span<const mlir::MlirOp> ops);
 
 absl::StatusOr<mlir::MlirOp> Broadcast(mlir::MlirOp input,
                                        absl::Span<const int64_t> output_dims,

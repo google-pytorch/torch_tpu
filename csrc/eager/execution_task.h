@@ -27,6 +27,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "csrc/common/cache_key.h"
 #include "csrc/common/compilation.h"
 #include "csrc/common/compilation_spec.h"
 #include "csrc/eager/device_buffer.h"
@@ -35,8 +36,18 @@
 #include "csrc/pjrt/pjrt_execute.h"
 #include "mlir/IR/MLIRContext.h"
 #include "xla/pjrt/pjrt_client.h"
+#include "xla/shape.h"
 
 namespace torch_tpu {
+
+// How the compiled kernel of an execution task was obtained, for TORCH_TRACE.
+struct CompilationTraceInfo {
+  // The traced StableHLO, if this request built it.
+  std::string mlir_text;
+  // See `CompiledKernel::cache_hit`.
+  bool cache_hit = false;
+  KernelType kernel_type = KernelType::kStatic;
+};
 
 // To materialize a tensor's data, we need to execute it on-device.
 // This requires identifying the arguments to the executable, the MLIR for the
@@ -66,10 +77,14 @@ class ExecutionTask {
   //   * Mark all nodes in the traversal as having been executed
   //   * Begin compiling the traversal into a kernel (or kernels)
   //   * Set all outputs to the "pending materialization" state
+  //   * Skip runtime argument layout validation for fixed-shape device-only
+  //     traversals, whose compilation cache key already encodes the exact
+  //     argument layouts.
+  //   * Fill `out_trace_info`, if not null.
   static absl::StatusOr<ExecutionTask> FromTraversal(
       absl_nonnull std::unique_ptr<Traversal> traversal,
       mlir::MLIRContext& mlir_context, const CompilationSpec& compilation_spec,
-      std::string* absl_nullable out_mlir_text = nullptr);
+      CompilationTraceInfo* absl_nullable out_trace_info = nullptr);
 
   // Creates an execution task from a pre-compiled executable.
   // This will set all outputs to the "pending materialization" state.
@@ -91,15 +106,23 @@ class ExecutionTask {
 
   absl::Span<const DeviceBufferRef> outputs() const { return outputs_; }
 
+  [[nodiscard]] CorePinningMode core_pinning_mode() const {
+    return core_pinning_mode_;
+  }
+
  private:
-  explicit ExecutionTask(std::string name,
-                         std::vector<DeviceBufferRef> arguments,
-                         std::vector<DeviceBufferRef> outputs,
-                         CompiledKernel compiled_kernel)
+  explicit ExecutionTask(
+      std::string name, std::vector<DeviceBufferRef> arguments,
+      std::vector<DeviceBufferRef> outputs, CompiledKernel compiled_kernel,
+      ArgumentLayoutValidation layout_validation =
+          ArgumentLayoutValidation::kValidate,
+      CorePinningMode core_pinning_mode = CorePinningMode::kUnpinned)
       : name_(std::move(name)),
         arguments_(std::move(arguments)),
         outputs_(std::move(outputs)),
-        compiled_kernel_(std::move(compiled_kernel)) {}
+        compiled_kernel_(std::move(compiled_kernel)),
+        layout_validation_(layout_validation),
+        core_pinning_mode_(core_pinning_mode) {}
 
   // Runs the execution task and early-returns if there is any failure.
   absl::Status RunInternal();
@@ -114,9 +137,12 @@ class ExecutionTask {
   absl::StatusOr<std::vector<xla::PjRtBuffer* absl_nullable>>
   GetArgumentBuffers();
 
-  // Finishes a materialization by setting the output nodes as materialized with
-  // the given results.
-  absl::Status SetOutputNodesAsMaterialized(PjRtBufferPointers results);
+  // Marks the output nodes as materialized with `results` and their compiled
+  // output shapes.
+  absl::Status SetOutputNodesAsMaterialized(
+      PjRtBufferPointers results,
+      const absl_nullable std::shared_ptr<const std::vector<xla::Shape>>&
+          output_device_shapes);
 
   // A human-readable name for the task. Debug use only.
   std::string name_;
@@ -127,6 +153,14 @@ class ExecutionTask {
   // The compiled kernel; or, more precisely, the futures for the compiled
   // kernel and any dynamic adapters.
   CompiledKernel compiled_kernel_;
+  // Controls whether Execute() validates runtime argument layouts against the
+  // compiled parameter layouts. Set to kSkip for fixed-shape device-only eager
+  // traversals, which compile or look up the executable using the exact layouts
+  // of `arguments_`.
+  ArgumentLayoutValidation layout_validation_;
+  // The core pinning mode of the originating Traversal, or kUnpinned for
+  // pre-compiled executables.
+  CorePinningMode core_pinning_mode_;
 };
 
 // The result of attempting to make a batch of ExecutionTasks from a list of

@@ -125,5 +125,45 @@ class CommonTest(seed_test_utils.RepeatableTest):
     self.assertTrue(param.is_contiguous())
 
 
+class RunModeTest(seed_test_utils.RepeatableTest):
+
+  def test_no_run_mode_is_a_prefix_of_another(self):
+    values = [mode.value for mode in common.RunMode]
+    for a in values:
+      for b in values:
+        if a != b:
+          self.assertFalse(b.startswith(a), f"{a} is a prefix of {b}")
+
+
+class IsOutOfMemoryTest(seed_test_utils.RepeatableTest):
+
+  def test_torch_out_of_memory_error(self):
+    self.assertTrue(
+        common.is_out_of_memory(torch.OutOfMemoryError("CUDA out of memory."))
+    )
+
+  def test_resource_exhausted_message(self):
+    self.assertTrue(
+        common.is_out_of_memory(
+            RuntimeError(
+                "RESOURCE_EXHAUSTED: XLA:TPU compile permanent error. Ran out"
+                " of memory in memory space hbm."
+            )
+        )
+    )
+
+  def test_wrapped_error(self):
+    try:
+      try:
+        raise RuntimeError("RESOURCE_EXHAUSTED: out of HBM")
+      except RuntimeError as e:
+        raise ValueError("backend compiler failed") from e
+    except ValueError as wrapped:
+      self.assertTrue(common.is_out_of_memory(wrapped))
+
+  def test_other_error(self):
+    self.assertFalse(common.is_out_of_memory(RuntimeError("shape mismatch")))
+
+
 if __name__ == "__main__":
   absltest.main()

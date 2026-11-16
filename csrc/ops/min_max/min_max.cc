@@ -15,7 +15,6 @@
 #include "csrc/ops/min_max/min_max.h"
 
 #include <cstdint>
-#include <numeric>
 
 #include "absl/status/statusor.h"
 #include "c10/util/Optional.h"
@@ -124,13 +123,13 @@ absl::StatusOr<ReductionInput> PrepareReductionInput(
 }
 
 // Returns the initial value for reduction based on the MinMaxOp type
-// (lowest finite value for Max, highest for Min).
+// (-inf for Max, +inf for Min, or the type's limits if it has no infinities).
 mlir::MlirOp GetMinMaxInitValue(mlir::MlirBuilder& builder, MinMaxOp op,
                                 mlir::Type element_type) {
   mlir::Attribute init_attr =
       op == MinMaxOp::kMax
-          ? GetMinFiniteValueAttr(element_type, builder.getOpBuilder())
-          : GetMaxFiniteValueAttr(element_type, builder.getOpBuilder());
+          ? GetMaxReductionIdentityAttr(element_type, builder.getOpBuilder())
+          : GetMinReductionIdentityAttr(element_type, builder.getOpBuilder());
   mlir::DenseElementsAttr init_elements_attr = mlir::DenseElementsAttr::get(
       mlir::RankedTensorType::get({}, element_type), init_attr);
   return stablehlo::Constant(builder, init_elements_attr);
@@ -146,15 +145,8 @@ absl::StatusOr<MinMaxOutputs> RestoreReducedDims(mlir::MlirOp original_input,
                                                  MinMaxOutputs outputs,
                                                  int64_t reduction_dim,
                                                  bool was_flattened) {
-  const mlir::RankedTensorType original_type =
-      GetTensorTypeOrDie(original_input);
-  llvm::SmallVector<int64_t> dims;
-  if (was_flattened) {
-    dims.resize(original_type.getRank());
-    std::iota(dims.begin(), dims.end(), 0);
-  } else {
-    dims.push_back(reduction_dim);
-  }
+  const Dimensions dims = was_flattened ? GetAllDimensions(original_input)
+                                        : Dimensions{reduction_dim};
   outputs.values = BuildKeepDimsShlo(original_input, outputs.values, dims);
   outputs.indices = BuildKeepDimsShlo(original_input, outputs.indices, dims);
   return outputs;

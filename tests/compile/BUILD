@@ -38,6 +38,25 @@ package(
 exports_files(["data/goldfish.jpg"])
 
 torch_tpu_py_test(
+    name = "flex_attention_test",
+    srcs = ["flex_attention_test.py"],
+    shard_count = 4,
+    tags = [
+        "requires-tpu-v5lite",
+    ],
+    deps = [
+        "//csrc/eager:tpu_aten_kernels",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/compile:flex_attention",
+        "//src/torch_tpu/_internal/utils:test_utils",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
     name = "detect_causal_mask_test",
     srcs = ["detect_causal_mask_test.py"],
     # Run on single-chip TPU v7 for faster TorchDynamo/Inductor compilation
@@ -163,6 +182,7 @@ torch_tpu_py_test(
         "requires-tpu-v5lite",
     ],
     deps = [
+        "//shims/absl_py/logging",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
@@ -170,6 +190,7 @@ torch_tpu_py_test(
         "//src/torch_tpu/_internal/compile:compiler",
         "//src/torch_tpu/_internal/compile:split_compiler",
         "//src/torch_tpu/_internal/distributed:collective_ops",
+        "//src/torch_tpu/_internal/distributed:spmd_util",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
     ],
@@ -244,7 +265,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/compile",
-        "//src/torch_tpu/_internal/compile/fx_passes:mark_activation_checkpoints",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
     ],
@@ -254,17 +274,18 @@ torch_tpu_py_test(
     name = "activation_checkpointing_mem_test",
     timeout = "long",
     srcs = ["activation_checkpointing_mem_test.py"],
-    nopresubmit_oss = "timeout",
     # Run on single-chip TPU v7 for faster TorchDynamo/Inductor compilation
     # and to utilize idle single-chip v7 runner capacity in OSS presubmit.
     oss_presubmit_tpu_generation = tpu_gen(
         "v7",
         reason = "Faster TorchDynamo/Inductor compilation on single-chip TPU v7",
     ),
+    shard_count = 2,
     tags = [
         "requires-net:external",
         "requires-tpu-v5lite",
     ],
+    use_tcmalloc = True,
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
@@ -511,6 +532,7 @@ torch_tpu_py_test(
     ],
     deps = [
         "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/compiler_options",
@@ -519,6 +541,7 @@ torch_tpu_py_test(
         "//src/torch_tpu/_internal/export",
         "//src/torch_tpu/_internal/precision",
         "//src/torch_tpu/_internal/profiler",
+        "//src/torch_tpu/_internal/profiler:named_scope",
         "//tests:seed_test_utils",
     ],
 )
@@ -569,6 +592,26 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "aot_autograd_cache_test",
+    srcs = ["aot_autograd_cache_test.py"],
+    tags = [
+        "requires-net:external",
+        "requires-tpu-v5lite",
+    ],
+    deps = [
+        "//shims/absl_py/flags",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/compile",
+        "//src/torch_tpu/_internal/distributed:multiprocessing",
+        "//src/torch_tpu/_internal/utils:test_utils",
+        "//tests:seed_test_utils",
+        "//tests:subprocess_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
     name = "reorder_symints_test",
     srcs = ["reorder_symints_test.py"],
     deps = [
@@ -597,6 +640,7 @@ torch_tpu_py_test(
     srcs = ["clone_mutated_returned_placeholders_test.py"],
     deps = [
         "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/compile/fx_passes:clone_mutated_returned_placeholders",

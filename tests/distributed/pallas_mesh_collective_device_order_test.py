@@ -78,7 +78,7 @@ _FUSED_BROADCAST_SKIP = (
 
 
 # Broadcast roots: first, last, middle.
-def _broadcast_sources(world_size: int) -> tuple[int, ...]:
+def _broadcast_sources(world_size: int) -> Sequence[int]:
   return (0, world_size - 1, world_size // 2)
 
 
@@ -181,11 +181,11 @@ def _read_kernel_output(y: torch.Tensor) -> _KernelReport:
 # ==============================================================================
 
 
-def _mesh_device_ids(mesh: jax.sharding.Mesh) -> list[int]:
+def _mesh_device_ids(mesh: jax.sharding.Mesh) -> Sequence[int]:
   return [int(d.id) for d in mesh.devices.flat]
 
 
-def _pjrt_device_ids() -> list[int]:
+def _pjrt_device_ids() -> Sequence[int]:
   return [int(v) for v in tpu_distributed.all_global_device_ids()]
 
 
@@ -239,7 +239,7 @@ def _interleave(base: torch.Tensor, ballast: torch.Tensor) -> torch.Tensor:
   return torch.stack((base, filler), dim=1).reshape(-1)
 
 
-def _even_slots(out: torch.Tensor) -> list[int]:
+def _even_slots(out: torch.Tensor) -> Sequence[int]:
   return out.cpu().tolist()[0::2]
 
 
@@ -273,7 +273,7 @@ def _build_cases(
     world_size: int,
     subgroup: dist.ProcessGroup,
     subgroup_members: Sequence[int],
-) -> list[_CollectiveCase]:
+) -> Sequence[_CollectiveCase]:
   """Builds the six collective cases.
 
   Args:
@@ -425,7 +425,7 @@ def _select_case(case_name: str, rank: int, world_size: int) -> _CollectiveCase:
 
 def _run_solo(
     case: _CollectiveCase, base: torch.Tensor, ballast: torch.Tensor
-) -> list[int]:
+) -> Sequence[int]:
   return _even_slots(case.run(base, ballast))
 
 
@@ -461,7 +461,7 @@ def _run_fused(
     base: torch.Tensor,
     kernel_op: Callable[[torch.Tensor], torch.Tensor],
     x: torch.Tensor,
-) -> list[int]:
+) -> Sequence[int]:
   """Runs the collective inside one compiled region with the kernel.
 
   `fullgraph=True` is load-bearing: a graph break between the kernel and the

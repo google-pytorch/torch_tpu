@@ -422,7 +422,7 @@ _MODALITY_DEFAULTS: Mapping[Modality, tuple[str, ...]] = {
 # -----------------------------------------------------------------------------
 
 
-def _forward_arg_names(forward: Callable[..., Any]) -> list[str]:
+def _forward_arg_names(forward: Callable[..., Any]) -> Sequence[str]:
   """Returns the named (non-variadic) parameters of `forward`."""
   return [
       p.name
@@ -431,7 +431,9 @@ def _forward_arg_names(forward: Callable[..., Any]) -> list[str]:
   ]
 
 
-def _select_args(forward: Callable[..., Any], modality: Modality) -> list[str]:
+def _select_args(
+    forward: Callable[..., Any], modality: Modality
+) -> Sequence[str]:
   """Returns the arguments to generate, in `forward` order (Tiers 1 and 2)."""
   arg_names = _forward_arg_names(forward)
   if not arg_names:

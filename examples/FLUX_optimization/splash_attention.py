@@ -46,6 +46,9 @@ import typing
 import jax
 from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_kernel
 from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_mask
+from jax.experimental.pallas.ops.tpu.splash_attention import (
+    splash_attention_mask_info,
+)
 from jax.experimental.pallas.ops.tpu.splash_attention.splash_attention_kernel import QKVLayout
 import jax.numpy as jnp
 import torch
@@ -148,32 +151,40 @@ def _make_splash_attention_fn(
 
   is_mqa = n_kv_heads == 1
 
-  if is_mqa:
-    splash_kernel = splash_attention_kernel.make_splash_mqa(
-        mask=multi_head_mask,
-        head_shards=1,
-        q_seq_shards=1,
-        block_sizes=block_sizes,
-    )
-  else:
-    splash_kernel = splash_attention_kernel.make_splash_mha(
-        mask=multi_head_mask,
-        head_shards=1,
-        q_seq_shards=1,
-        block_sizes=block_sizes,
-    )
-
-  # Static mask infos and kernel kwargs from creation time.
-  fwd_mask_info = splash_kernel.fwd_mask_info
-  dq_mask_info = splash_kernel.dq_mask_info
-  dkv_mask_info = splash_kernel.dkv_mask_info
-  _mask_value = splash_kernel.kwargs.get("mask_value", _DEFAULT_MASK_VALUE)
-  _mask_function = splash_kernel.kwargs.get("mask_function", None)
-  _attn_logits_soft_cap = splash_kernel.kwargs.get("attn_logits_soft_cap", None)
-  _residual_checkpoint_name = splash_kernel.kwargs.get(
-      "residual_checkpoint_name", None
+  # Static mask metadata, computed on the host as NumPy arrays that get embedded
+  # as constants when the kernels are traced for export. This is what
+  # `splash_attention_kernel.make_splash_mha` (and `make_splash_mqa`) computes,
+  # minus its final `jnp.array` conversion, which runs JAX programs to stage
+  # the metadata on JAX's default device: on a TPU host, the very TPU that
+  # TorchTPU concurrently executes on.
+  fwd_mask_info, _mask_function = splash_attention_mask_info.process_mask(
+      multi_head_mask,
+      (block_sizes.block_q, block_sizes.block_kv),
+      head_shards=1,
+      q_seq_shards=1,
   )
-  _interpret = splash_kernel.kwargs.get("interpret", False)
+  dq_mask_info = None
+  dkv_mask_info = None
+  if block_sizes.has_backward_blocks:
+    if not use_fused_bwd_kernel:
+      dq_mask_info, _ = splash_attention_mask_info.process_mask(
+          multi_head_mask,
+          (block_sizes.block_q_dq, block_sizes.block_kv_dq),
+          head_shards=1,
+          q_seq_shards=1,
+      )
+    dkv_mask_info, _ = splash_attention_mask_info.process_mask_dkv(
+        multi_head_mask,
+        (block_sizes.block_q_dkv, block_sizes.block_kv_dkv),
+        head_shards=1,
+        q_seq_shards=1,
+        shrink_grid=not use_fused_bwd_kernel,
+    )
+  # The remaining kernel options keep the defaults of `make_splash_mha`.
+  _mask_value = _DEFAULT_MASK_VALUE
+  _attn_logits_soft_cap = None
+  _residual_checkpoint_name = None
+  _interpret = False
 
   def _single_fwd_with_lse(q_b, k_b, v_b):
     """Forward for one batch element; returns (out_b, logsumexp_b)."""

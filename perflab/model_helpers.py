@@ -138,7 +138,7 @@ def load_hf_llm(
   )
 
   with torch.device(device_str):
-    model = module_spec.module_factory().to(dtype=dtype)
+    model = module_spec.module_factory(dtype=dtype)
 
   if is_training:
     model.train()

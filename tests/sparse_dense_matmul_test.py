@@ -13,11 +13,16 @@
 # limitations under the License.
 
 
+from collections.abc import Mapping, MutableSequence, Sequence
 from typing import Any
 from absl.testing import absltest
 from absl.testing import parameterized
 import numpy as np
 import torch
+from torch._dynamo import testing as dynamo_testing
+from torch._subclasses import fake_tensor
+from torch.fx.experimental import symbolic_shapes
+from torch_tpu._internal import execution_mode
 from torch_tpu._internal.compile import tpu_torch_compile
 import torch_tpu._internal.device_utils.annotations as tpu_annotations
 from tests import op_testing
@@ -31,9 +36,9 @@ def preprocess_sparse_dense_matmul_input(
     suggested_coo_buffer_size: int = 128,
     batch_size: int = 16,
     combiner: str = "sum",
-    options: dict[str, Any] | None = None,
+    options: Mapping[str, Any] | None = None,
     table_name: str = "table_0",
-) -> dict[str, torch.Tensor]:
+) -> Mapping[str, torch.Tensor]:
   """Preprocesses sparse dense matmul input tensors for a table into CSR buffers and stats.
 
   Args:
@@ -341,6 +346,35 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
           2,
           2,
       ),
+      (
+          "int64_large_vocab_5b",
+          torch.tensor(
+              [
+                  4,
+                  3_000_000_000,
+                  4_999_999_996,
+                  4_999_999_997,
+                  4_999_999_998,
+                  4_999_999_999,
+                  3_000_000_000,
+                  5,
+              ],
+              dtype=torch.int64,
+          ),
+          torch.tensor([0, 2, 4, 6, 8], dtype=torch.int64),
+          2,
+          2,
+      ),
+      (
+          "int64_indices_int32_offsets",
+          torch.tensor(
+              [2_500_000_000, 4_500_000_001, 4_500_000_002, 4_500_000_003],
+              dtype=torch.int64,
+          ),
+          torch.tensor([0, 2, 4], dtype=torch.int32),
+          2,
+          2,
+      ),
   )
   def test_compute_stats_parity_with_input_preprocessing(
       self,
@@ -401,6 +435,68 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
         ),
     )
 
+  def test_input_preprocessing_int64_large_vocab_local_ids(self):
+    """Verifies 5B-row int64 IDs narrow to int32 per-SparseCore row IDs."""
+    global_device_count = 2
+    num_sc_per_device = 2
+    num_scs = global_device_count * num_sc_per_device
+    # Route one ID (> 2^31 - 1 and > 2^32 - 1) to each global SparseCore p.
+    raw_ids = [
+        4_999_999_996,  # % 4 == 0 -> local_id = 1_249_999_999
+        3_000_000_001,  # % 4 == 1 -> local_id = 750_000_000
+        4_999_999_998,  # % 4 == 2 -> local_id = 1_249_999_999
+        4_999_999_999,  # % 4 == 3 -> local_id = 1_249_999_999
+    ]
+    indices = torch.tensor(raw_ids, dtype=torch.int64)
+    offsets = torch.tensor([0, 2, 4, 4, 4], dtype=torch.int64)
+
+    hbm_word_size_in_4b = _get_hbm_word_size_in_4b()
+    device_simd_width = torch.tpu.get_device_properties().sparse_core_simd_width
+    for sc_simd_width in sorted({device_simd_width, 8, 16}):
+      with self.subTest(sc_simd_width=sc_simd_width):
+        outputs = torch.ops.tpu.preprocess_sparse_dense_matmul_input(
+            indices,
+            offsets,
+            16,  # max_ids_per_partition
+            16,  # max_unique_ids_per_partition
+            64,  # suggested_coo_buffer_size
+            4,  # batch_size
+            "sum",
+            1,  # local_device_count
+            global_device_count,
+            num_sc_per_device,
+            sc_simd_width,
+            hbm_word_size_in_4b,
+            False,  # allow_id_dropping
+            "table_5b",
+        )
+
+        self.assertEqual(outputs["embedding_ids"].dtype, torch.int32)
+        self.assertEqual(int(outputs["dropped_id_count"].item()), 0)
+
+        row_pointers = outputs["row_pointers"]
+        embedding_ids = outputs["embedding_ids"]
+        rp_stride = max(num_scs, sc_simd_width, hbm_word_size_in_4b)
+        extracted_local_ids = []
+        # Local SC0 processes samples [0, 2) containing all 4 IDs in p = 0..3.
+        start = 0
+        for p in range(num_scs):
+          end = int(row_pointers[p].item())
+          self.assertEqual(end - start, 1)
+          extracted_local_ids.append(int(embedding_ids[start].item()))
+          start = (
+              (end + hbm_word_size_in_4b - 1) // hbm_word_size_in_4b
+          ) * hbm_word_size_in_4b
+        self.assertEqual(int(row_pointers[rp_stride].item()), 0)
+        self.assert_close(
+            golden_result=torch.tensor(
+                [v // num_scs for v in raw_ids], dtype=torch.int32
+            ),
+            torch_tpu_result=torch.tensor(
+                extracted_local_ids, dtype=torch.int32
+            ),
+        )
+
   def test_compute_stats_invalid_inputs(self):
     """Verifies error handling for invalid input arguments."""
     val_float = torch.tensor([0.0, 1.0], dtype=torch.float32)
@@ -446,7 +542,7 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
     )
     return row_pointers, embedding_ids, sample_ids, gains, embedding_table
 
-  def _get_updated_rows(self, vocab_size: int = 32) -> list[int]:
+  def _get_updated_rows(self, vocab_size: int = 32) -> Sequence[int]:
     num_sc = torch.tpu.get_device_properties().sparse_cores_per_device
     shard_size = vocab_size // num_sc
     logical_ids = [0, 1, 2, 3, 4, 6]
@@ -536,6 +632,78 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
 
     expected = self._get_expected_forward_output()
     self.assert_close(golden_result=expected, torch_tpu_result=out.cpu())
+
+  @parameterized.parameters("meta", "tpu")
+  def test_sparse_dense_matmul_fake_symbolic_shapes(self, device):
+    """Tests sparse_dense_matmul doesn't specialize symbolic FakeTensor dims."""
+    device_batch_size = 16
+    shape_env = symbolic_shapes.ShapeEnv()
+    mode = fake_tensor.FakeTensorMode(shape_env=shape_env)
+
+    def make_fake(*shape, dtype):
+      return mode.from_tensor(
+          torch.empty(shape, dtype=dtype, device=device),
+          symbolic_context=symbolic_shapes.StatelessSymbolicContext(
+              dynamic_sizes=[symbolic_shapes.DimDynamic.DYNAMIC] * len(shape)
+          ),
+      )
+
+    row_pointers = make_fake(64, dtype=torch.int32)
+    embedding_ids = make_fake(128, dtype=torch.int32)
+    sample_ids = make_fake(128, dtype=torch.int32)
+    gains = make_fake(128, dtype=torch.float32)
+    embedding_table = make_fake(32, 8, dtype=torch.float32)
+    with mode:
+      out = torch.tpu.ops.sparse_dense_matmul(
+          row_pointers,
+          embedding_ids,
+          sample_ids,
+          gains,
+          embedding_table,
+          device_batch_size=device_batch_size,
+          max_ids_per_partition=16,
+          max_unique_ids_per_partition=16,
+      )
+    sizes = [*embedding_table.shape, out.shape[1]]
+    for size in sizes:
+      self.assertIsInstance(size, torch.SymInt)
+    specialized = [
+        size for size in sizes if shape_env.replace(size.node.expr).is_number
+    ]
+    self.assertEmpty(specialized)
+    self.assertEqual(out.shape[0], device_batch_size)
+
+  def test_sparse_dense_matmul_compile_dynamic_shapes(self):
+    """Tests compiled sparse_dense_matmul recompiles once for dynamic shapes."""
+    torch._dynamo.reset()
+    self.addCleanup(torch._dynamo.reset)
+    counter = dynamo_testing.CompileCounter()
+    device_batch_size = 16
+
+    @torch.compile(backend=counter, fullgraph=True)
+    def fn(row_pointers, embedding_ids, sample_ids, gains, embedding_table):
+      return torch.tpu.ops.sparse_dense_matmul(
+          row_pointers,
+          embedding_ids,
+          sample_ids,
+          gains,
+          embedding_table,
+          device_batch_size=device_batch_size,
+          max_ids_per_partition=16,
+          max_unique_ids_per_partition=16,
+      )
+
+    for n in (2, 3, 4):
+      # All dims change between calls.
+      row_pointers = torch.empty(n * 8, dtype=torch.int32, device="meta")
+      embedding_ids = torch.empty(n * 16, dtype=torch.int32, device="meta")
+      sample_ids = torch.empty(n * 16, dtype=torch.int32, device="meta")
+      gains = torch.empty(n * 16, dtype=torch.float32, device="meta")
+      embedding_table = torch.empty(n * 32, n + 4, device="meta")
+      out = fn(row_pointers, embedding_ids, sample_ids, gains, embedding_table)
+      self.assertEqual(out.shape, (device_batch_size, n + 4))
+    # One static frame, then one dynamic frame that serves all later sizes.
+    self.assertEqual(counter.frame_count, 2)
 
   def test_sparse_dense_matmul_grad_eager_device_assignment(self):
     device = torch.device("tpu")
@@ -1487,6 +1655,11 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
   def test_sparse_dense_matmul_grad_preserves_t8_layout_on_tpu(
       self, compile_op
   ):
+    self.enter_context(
+        execution_mode.set_eager_mode(
+            execution_mode.EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING
+        )
+    )
     device = torch.device("tpu")
     row_pointers, embedding_ids, sample_ids, gains, embedding_table = (
         self._get_inputs(device)
@@ -1583,7 +1756,7 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
       self.assertEqual(tpu_annotations.TpuLayout(*layout_tuple), t8_layout)
 
   def _compile_sgd(
-      self, device: torch.device, debugs: list[Any]
+      self, device: torch.device, debugs: MutableSequence[Any]
   ) -> tuple[Any, torch.Tensor]:
     """Returns a compiled SGD step on a table, and the table's initial value."""
     row_pointers, embedding_ids, sample_ids, gains, embedding_table = (
@@ -1623,6 +1796,21 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
 
     return sgd, embedding_table.cpu()
 
+  def test_compiled_op_reuses_program_after_copy_from_cpu(self):
+    device = torch.device("tpu")
+    t8_layout = tpu_annotations.TpuLayout(minor_to_major=[1, 0], tiles=[[8]])
+    debugs = []
+    sgd, initial_table = self._compile_sgd(device, debugs)
+    with tpu_annotations.LayoutContext(t8_layout):
+      table = initial_table.to(device)
+    expected = sgd(table).cpu()
+
+    # Like load_state_dict, copy_ from the CPU keeps the table's SparseCore
+    # layout, so the next call reuses the first program.
+    table.copy_(initial_table)
+    self.assert_close(golden_result=expected, torch_tpu_result=sgd(table).cpu())
+    self.assertLen(debugs, 1)
+
   def test_compiled_op_recompiles_when_table_loses_t8_layout(self):
     device = torch.device("tpu")
     t8_layout = tpu_annotations.TpuLayout(minor_to_major=[1, 0], tiles=[[8]])
@@ -1637,10 +1825,10 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
     expected = sgd(t8_table()).cpu()
     self.assertLen(debugs, 1)
 
-    # Like load_state_dict, copy_ gives a table the default layout, so the next
-    # call compiles a program for it.
+    # Copying from a default-layout TPU tensor gives the table the default
+    # layout, so the next call compiles a program for it.
     table = t8_table()
-    table.copy_(initial_table)
+    table.copy_(initial_table.to(device))
     self.assert_close(golden_result=expected, torch_tpu_result=sgd(table).cpu())
     self.assertLen(debugs, 2)
 

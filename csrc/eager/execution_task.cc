@@ -33,6 +33,7 @@
 #include "absl/base/optimization.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
+#include "absl/container/inlined_vector.h"
 #include "absl/log/absl_log.h"
 #include "absl/log/absl_vlog_is_on.h"
 #include "absl/status/status.h"
@@ -49,8 +50,8 @@
 #include "csrc/common/dtype.h"
 #include "csrc/common/dynamism_utils.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/layout_utils.h"
 #include "csrc/common/shape.h"
-#include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/materialization_heuristics.h"
@@ -58,13 +59,11 @@
 #include "csrc/eager/traversal.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/pjrt/pjrt_execute.h"
-#include "csrc/pjrt/pjrt_state.h"
 #include "llvm/ADT/STLExtras.h"
 #include "mlir/IR/MLIRContext.h"
 #include "tsl/profiler/lib/traceme.h"
-#include "xla/layout.h"
 #include "xla/pjrt/pjrt_client.h"
-#include "xla/xla_data.pb.h"
+#include "xla/shape.h"
 
 namespace torch_tpu {
 
@@ -182,13 +181,16 @@ std::unique_ptr<StructuredLogEvent> MaybeStartTraceEvent(
 }
 
 void FinalizePushTraceEvent(std::unique_ptr<StructuredLogEvent> event,
-                            std::string captured_mlir, bool compile_ok,
+                            CompilationTraceInfo trace_info, bool compile_ok,
                             std::string aten_graph_payload) {
   event->duration = absl::Now() - event->timestamp;
-  event->cache_hit = captured_mlir.empty();
-  if (!event->cache_hit || !compile_ok) {
+  event->cache_hit = compile_ok && trace_info.cache_hit;
+  if (compile_ok) {
+    event->kernel_type = trace_info.kernel_type;
+  }
+  if (!event->cache_hit) {
     event->aten_graph_payload = std::move(aten_graph_payload);
-    event->mlir_payload = std::move(captured_mlir);
+    event->mlir_payload = std::move(trace_info.mlir_text);
   }
   event->compile_failed = !compile_ok;
   event->chromium_payload = absl::StrCat(
@@ -198,84 +200,30 @@ void FinalizePushTraceEvent(std::unique_ptr<StructuredLogEvent> event,
       R"(,"cat":"torchtpu_eager","pid":)", getpid(),
       R"(,"tid":0,"args":{"cache_hit":)", event->cache_hit ? "true" : "false",
       R"(,"compile_failed":)", event->compile_failed ? "true" : "false",
-      R"(,"reason":")", absl::CEscape(ToString(event->reason)), R"("}})");
+      R"(,"reason":")", absl::CEscape(ToString(event->reason)), R"(")",
+      event->kernel_type.has_value()
+          ? absl::StrCat(R"(,"kernel_type":")", ToString(*event->kernel_type),
+                         R"(")")
+          : "",
+      R"(}})");
   StructuredLogBuffer::GetInstance().Push(std::move(event));
-}
-
-// Returns whether the specified layout tiles match the device default tiles.
-// If layout_tiles is empty, default device tiling is assumed.
-bool TilesMatchDefault(absl::Span<const Indices> layout_tiles,
-                       absl::Span<const xla::Tile> default_tiles) {
-  if (layout_tiles.empty()) {
-    return true;
-  }
-  if (layout_tiles.size() != default_tiles.size()) {
-    return false;
-  }
-  for (size_t t = 0; t < layout_tiles.size(); ++t) {
-    if (absl::MakeConstSpan(layout_tiles[t]) != default_tiles[t].dimensions()) {
-      return false;
-    }
-  }
-  return true;
 }
 
 absl::StatusOr<std::vector<CustomLayout>>
 ExtractArgumentLayoutsIfDifferentFromDefault(const Traversal& traversal) {
   std::vector<CustomLayout> argument_layouts;
-  TT_ASSIGN_OR_RETURN(xla::PjRtClient* const client,
-                      PjrtBackend::GetInstance().GetClient());
   const auto& arguments = traversal.arguments();
   for (size_t i = 0; i < arguments.size(); ++i) {
-    const DeviceBufferRef& arg = arguments[i];
-    const Shape& shape = arg.shape();
-    const std::optional<CustomLayout>& layout_opt = shape.layout();
-    if (!layout_opt.has_value()) {
-      continue;
-    }
-
-    const Indices& minor_to_major = layout_opt->minor_to_major;
-    const xla::PrimitiveType element_type =
-        ConvertTo<xla::PrimitiveType>(arg.element_type());
     TT_ASSIGN_OR_RETURN(
-        const auto default_layout,
-        client->GetDefaultLayout(element_type, arg.dimensions()));
-
-    if (arg.on_device_shape_is_dynamic()) {
-      // Dynamic on-device buffers (e.g. outputs of compiled models with bounded
-      // dynamism) have physical tiling determined by their upper bounds rather
-      // than their runtime logical dimensions. If their dimension ordering
-      // matches the default layout, no layout annotation is needed. If their
-      // dimension ordering differs, propagate minor_to_major but omit tiling so
-      // downstream eager kernels do not force static tile padding onto the
-      // dynamic buffer.
-      if (minor_to_major == default_layout.minor_to_major()) {
-        continue;
-      }
-      if (argument_layouts.empty()) {
-        argument_layouts.resize(arguments.size());
-      }
-      CustomLayout dynamic_layout = *layout_opt;
-      dynamic_layout.tiles.clear();
-      argument_layouts[i] = std::move(dynamic_layout);
+        std::optional<CustomLayout> custom_layout,
+        ExtractCustomLayoutIfDifferentFromDefault(arguments[i].shape()));
+    if (!custom_layout.has_value()) {
       continue;
     }
-
-    if (minor_to_major == default_layout.minor_to_major() &&
-        TilesMatchDefault(layout_opt->tiles, default_layout.tiles())) {
-      continue;
-    }
-    ABSL_VLOG(3)
-        << "[ExtractArgumentLayoutsIfDifferentFromDefault] Argument layout "
-        << ToString(minor_to_major) << " differs from PjRT default layout "
-        << default_layout.ToString() << " for shape ("
-        << ToString(arg.dimensions()) << "), setting layout to "
-        << ToString(minor_to_major);
-
     if (argument_layouts.empty()) {
       argument_layouts.resize(arguments.size());
     }
-    argument_layouts[i] = *layout_opt;
+    argument_layouts[i] = *std::move(custom_layout);
   }
   return argument_layouts;
 }
@@ -284,6 +232,17 @@ struct CompiledTraversal {
   CompilationCacheKey compilation_cache_key;
   CompiledKernel compiled_kernel;
 };
+
+// Returns the type of `compiled_kernel`, as served by the compilation cache.
+KernelType GetKernelType(const CompiledKernel& compiled_kernel) {
+  if (compiled_kernel.unbounded_dynamic_kernel != nullptr) {
+    return KernelType::kUnboundedDynamic;
+  }
+  if (compiled_kernel.dynamic_kernel_adapter.has_value()) {
+    return KernelType::kBoundedDynamic;
+  }
+  return KernelType::kStatic;
+}
 
 absl::StatusOr<CompiledTraversal> VerifyAndCompileTraversal(
     Traversal& traversal, mlir::MLIRContext& mlir_context,
@@ -294,6 +253,7 @@ absl::StatusOr<CompiledTraversal> VerifyAndCompileTraversal(
     TT_RETURN_IF_ERROR(PropagateBoundedDynamism(traversal, mlir_context));
   }
 
+#ifndef NDEBUG
   for (const auto& argument : traversal.arguments()) {
     if (argument.is_placeholder()) {
       return TT_ERROR(error::kInternal)
@@ -302,47 +262,8 @@ absl::StatusOr<CompiledTraversal> VerifyAndCompileTraversal(
                 "appear in compiled mode, which should never try to "
                 "materialize tensors.\n"
              << argument.DebugString();
-    } else if (argument.is_executing()) {
-      // Argument has had a PjRtBuffer already created for it, so we can
-      // check immediately to see if it is in a failed state.
-      auto buffer_or = argument.AwaitBuffer();
-      if (!buffer_or.ok()) {
-        // Don't prefix or suffix this here; if there is a chain of tasks and
-        // one of them fails, anything appended here gets duplicated over and
-        // over. Just let the original error flow down the chained tasks.
-        return buffer_or.status();
-      }
-    } else if (argument.is_materializing()) {
-      // Input has been pushed onto the execution thread, but has not yet been
-      // assigned a PjRtBuffer. We will recheck it once this task reaches the
-      // front of the execution queue (see GetArgumentBuffers).
-      continue;
-    } else if (const auto deferred_op = argument.deferred_op()) {
-      // Surface the cache key only in the ABSL_LOG, not in the TT_ERROR.
-      const CompilationCacheKey compilation_cache_key =
-          traversal.GetCacheKey(compilation_spec.compile_options_key,
-                                /*argument_layouts=*/{},
-                                /*donated_inputs=*/{});
-      ABSL_LOG(ERROR)
-          << "traversal (cache key: " << compilation_cache_key
-          << ") has deferred argument " << ToString(deferred_op->op_name())
-          << ToString(argument.dimensions())
-          << ".\nAll arguments must be set to pending materialization "
-             "before creating chained ExecutionTasks";
-      return TT_ERROR(error::kFailedPrecondition)
-             << "detected an out of order execution; an execution task "
-                "depends on an argument that is not scheduled for "
-                "materialization.\nIf you are using multiple streams, please "
-                "use torch.Events to coordinate cross-stream dependencies";
-    } else {
-      return TT_ERROR(error::kInternal)
-             << "traversal argument has an unknown state (not deferred, "
-                "placeholder, or materializing):\n"
-             << argument.DebugString();
     }
   }
-
-#ifndef NDEBUG
   // Check that the traversal has a valid set of outputs before we start
   // compiling.
   TT_RETURN_IF_ERROR(VerifyPerNodeOutputs(traversal.outputs()));
@@ -359,7 +280,8 @@ absl::StatusOr<CompiledTraversal> VerifyAndCompileTraversal(
     tsl::profiler::TraceMe t("CompileTraversal");
     TT_ASSIGN_OR_RETURN(
         compiled_kernel,
-        traversal.Compile(compilation_spec, out_mlir_text,
+        traversal.Compile(compilation_spec, UnboundedKernelPolicy::kAllow,
+                          out_mlir_text,
                           /*use_stablehlo_bounds=*/false, argument_layouts,
                           /*donated_inputs=*/{}, /*module_name=*/std::nullopt,
                           &compilation_cache_key));
@@ -389,14 +311,21 @@ std::vector<Shape> GetShapesFromDeviceBuffers(
 absl::StatusOr<ExecutionTask> ExecutionTask::FromTraversal(
     absl_nonnull std::unique_ptr<Traversal> traversal,
     mlir::MLIRContext& mlir_context, const CompilationSpec& compilation_spec,
-    std::string* absl_nullable out_mlir_text) {
+    CompilationTraceInfo* absl_nullable out_trace_info) {
   auto compiled_traversal_or = VerifyAndCompileTraversal(
-      *traversal, mlir_context, compilation_spec, out_mlir_text);
+      *traversal, mlir_context, compilation_spec,
+      out_trace_info != nullptr ? &out_trace_info->mlir_text : nullptr);
   if (!compiled_traversal_or.ok()) {
     for (const auto& output : traversal->outputs()) {
       output.device_buffer_list()->SetAsError(compiled_traversal_or.status());
     }
     return compiled_traversal_or.status();
+  }
+  if (out_trace_info != nullptr) {
+    out_trace_info->cache_hit =
+        compiled_traversal_or->compiled_kernel.cache_hit;
+    out_trace_info->kernel_type =
+        GetKernelType(compiled_traversal_or->compiled_kernel);
   }
 
   // Mark all outputs of the split as scheduled/materialized.
@@ -411,38 +340,45 @@ absl::StatusOr<ExecutionTask> ExecutionTask::FromTraversal(
   if (ABSL_VLOG_IS_ON(1)) {
     task_name = absl::StrCat(compiled_traversal_or->compilation_cache_key);
   }
+  const CorePinningMode core_pinning_mode = traversal->core_pinning_mode();
   Traversal::Parts traversal_parts = traversal->IntoParts();
+  // Fixed-shape eager traversals without pinned-host buffers extract and key
+  // compilation on the exact custom layouts of `arguments`, so runtime layout
+  // validation is redundant. When any argument or output is on pinned host
+  // memory (where ApplyPlacementsToCompileSpec clears custom device layouts on
+  // the compile options) or a dynamic kernel adapter is used, retain runtime
+  // layout validation.
+  const auto is_pinned_host = [](const DeviceBufferRef& ref) {
+    return ref.is_pinned_host();
+  };
+  const ArgumentLayoutValidation layout_validation =
+      (compiled_traversal_or->compiled_kernel.dynamic_kernel_adapter
+           .has_value() ||
+       llvm::any_of(traversal_parts.arguments, is_pinned_host) ||
+       llvm::any_of(traversal_parts.outputs, is_pinned_host))
+          ? ArgumentLayoutValidation::kValidate
+          : ArgumentLayoutValidation::kSkip;
   return ExecutionTask(std::move(task_name),
                        std::move(traversal_parts.arguments),
                        std::move(traversal_parts.outputs),
-                       std::move(compiled_traversal_or->compiled_kernel));
+                       std::move(compiled_traversal_or->compiled_kernel),
+                       layout_validation, core_pinning_mode);
 }
 
 absl::StatusOr<ExecutionTask> ExecutionTask::FromExecutable(
     SharedLoadedExecutableWithMetadata executable,
     std::vector<DeviceBufferRef> arguments,
     std::vector<DeviceBufferRef> outputs, std::string_view task_name) {
+#ifndef NDEBUG
   for (const auto& argument : arguments) {
-    if (!argument.is_materializing()) {
-      if (argument.is_placeholder()) {
-        return TT_ERROR(error::kInternal)
-               << "ExecutionTask::FromExecutable was called on a placeholder "
-                  "tensor. This should never happen.\nkPlaceholder tensors "
-                  "should only appear at compile time, not at execution time.\n"
-               << argument.DebugString();
-      } else if (const auto deferred_op = argument.deferred_op()) {
-        return TT_ERROR(error::kInternal)
-               << "argument to task " << task_name << " has deferred input op"
-               << ToString(deferred_op->op_name());
-      } else {
-        return TT_ERROR(error::kInternal)
-               << "execution task argument has an unknown state (not deferred, "
-                  "placeholder, or materializing):\n"
-               << argument.DebugString();
-      }
+    if (argument.is_placeholder()) {
+      return TT_ERROR(error::kInternal)
+             << "ExecutionTask::FromExecutable was called on a placeholder "
+                "tensor. This should never happen.\nkPlaceholder tensors "
+                "should only appear at compile time, not at execution time.\n"
+             << argument.DebugString();
     }
   }
-#ifndef NDEBUG
   // Check that the outputs buffers are valid.
   TT_RETURN_IF_ERROR(VerifyPerNodeOutputs(outputs));
 #endif  // NDEBUG
@@ -464,20 +400,20 @@ absl::StatusOr<ExecutionTask> ExecutionTask::FromTraversalWithLogging(
   if (!event) {
     return ExecutionTask::FromTraversal(std::move(traversal), mlir_context,
                                         compilation_spec,
-                                        /*out_mlir_text=*/nullptr);
+                                        /*out_trace_info=*/nullptr);
   }
 
   // Get the aten graph payload before moving the traversal.
   std::string aten_graph_payload = traversal->ReadableString(reason);
 
   // Try to build the execution task and capture the MLIR if possible.
-  std::string captured_mlir;
+  CompilationTraceInfo trace_info;
   auto execution_task_or = ExecutionTask::FromTraversal(
-      std::move(traversal), mlir_context, compilation_spec, &captured_mlir);
+      std::move(traversal), mlir_context, compilation_spec, &trace_info);
 
   // Whether or not the execution task was created successfully, finish the
   // trace event and return.
-  FinalizePushTraceEvent(std::move(event), std::move(captured_mlir),
+  FinalizePushTraceEvent(std::move(event), std::move(trace_info),
                          execution_task_or.ok(), std::move(aten_graph_payload));
   return execution_task_or;
 }
@@ -520,14 +456,32 @@ void LogCompilationWait(const CompiledKernel& compiled_kernel,
 absl::StatusOr<PjRtBufferPointers> RunSequentialExecutables(
     absl::Span<const SharedLoadedExecutableWithMetadata> executables,
     std::vector<xla::PjRtBuffer*> argument_buffers,
-    absl::Span<const Shape> logical_output_shapes, std::string_view task_name) {
+    absl::Span<const Shape> logical_output_shapes, std::string_view task_name,
+    const ArgumentLayoutValidation layout_validation,
+    absl::Span<const xla::Shape* absl_nullable const> known_argument_shapes) {
   std::vector<PjRtBufferPointers> intermediate_results;
-  for (auto& executable : executables) {
+  absl::InlinedVector<const xla::Shape* absl_nullable, 64> stage_known_shapes;
+  for (const SharedLoadedExecutableWithMetadata& executable : executables) {
     TT_ASSIGN_OR_RETURN(
         PjRtBufferPointers results,
-        Execute(executable, std::move(argument_buffers), logical_output_shapes),
+        Execute(executable, std::move(argument_buffers), logical_output_shapes,
+                layout_validation, known_argument_shapes),
         _.SetPrepend() << "failed to enqueue execution for task_name="
                        << task_name << ": ");
+    // Subsequent stages (e.g. fixed-shape kernel after preamble, or postamble)
+    // consume `results` from the current stage 1-for-1.
+    stage_known_shapes.clear();
+    const absl::Span<const xla::Shape> stage_output_shapes =
+        executable->output_device_shapes();
+    if (layout_validation == ArgumentLayoutValidation::kValidate &&
+        &executable != &executables.back() &&
+        stage_output_shapes.size() == results.size()) {
+      stage_known_shapes.reserve(stage_output_shapes.size());
+      for (const xla::Shape& shape : stage_output_shapes) {
+        stage_known_shapes.push_back(&shape);
+      }
+    }
+    known_argument_shapes = stage_known_shapes;
     argument_buffers.clear();
     argument_buffers.reserve(results.size());
     for (const auto& result : results) {
@@ -620,8 +574,12 @@ ExecutionTask::GetCachedExecutables(std::string_view task_name) {
 absl::StatusOr<std::vector<xla::PjRtBuffer* absl_nullable>>
 ExecutionTask::GetArgumentBuffers() {
   std::vector<xla::PjRtBuffer*> root_args;
+  root_args.reserve(arguments_.size());
   for (const auto&& [index, argument] : llvm::enumerate(arguments_)) {
-    if (argument.is_executing()) {
+    if (argument.is_executing() || argument.is_transferring()) {
+      // If is_executing() is true, then this will not block as the PjRtBuffer
+      // already exists. If is_transferring() is true, then this will block
+      // until the transfer has started and provides a PjRtBuffer.
       ABSL_VLOG(1) << "Get PjRtBuffer for DeviceBufferRef index: " << index;
       TT_ASSIGN_OR_RETURN(xla::PjRtBuffer * pjrt_buffer,
                           argument.AwaitBuffer());
@@ -653,20 +611,31 @@ ExecutionTask::GetArgumentBuffers() {
 }
 
 absl::Status ExecutionTask::SetOutputNodesAsMaterialized(
-    PjRtBufferPointers results) {
+    PjRtBufferPointers results,
+    const absl_nullable std::shared_ptr<const std::vector<xla::Shape>>&
+        output_device_shapes) {
   tsl::profiler::TraceMe trace("SetOutputNodesAsMaterialized");
   ABSL_VLOG(1) << "[SetOutputNodesAsMaterialized] Starting";
+  // Use `output_device_shapes` only when it has one shape per result (e.g. it
+  // is null when layouts aren't reported or an `output_transform` rewrites
+  // outputs), which also keeps `device_shapes_offset` in range.
+  const std::shared_ptr<const std::vector<xla::Shape>> task_output_shapes =
+      output_device_shapes != nullptr &&
+              output_device_shapes->size() == results.size()
+          ? output_device_shapes
+          : nullptr;
   PjRtBufferPointers buffers_to_assign;
   buffers_to_assign.reserve(outputs_.size());
-  auto i = 0;
+  size_t i = 0;
   while (i < outputs_.size()) {
     ABSL_VLOG(1) << "[AssignMaterializedBuffers] Assigning materialized "
                     "buffers for node "
                  << i;
     auto* absl_nonnull node = outputs_[i].device_buffer_list().get();
+    const size_t node_size = static_cast<size_t>(node->size());
     buffers_to_assign.clear();
-    buffers_to_assign.reserve(node->size());
-    if (i + node->size() > results.size()) {
+    buffers_to_assign.reserve(node_size);
+    if (i + node_size > results.size()) {
       ABSL_VLOG(1)
           << "[AssignMaterializedBuffers] Not enough results to materialize "
              "node "
@@ -674,16 +643,18 @@ absl::Status ExecutionTask::SetOutputNodesAsMaterialized(
       return TT_ERROR(error::kFailedPrecondition)
              << "Not enough results to materialize node " << node;
     }
-    for (auto j = 0; j < node->size(); ++j) {
+    for (size_t j = 0; j < node_size; ++j) {
       ABSL_VLOG(1)
           << "[AssignMaterializedBuffers] Assigning materialized buffer for "
              "node "
           << node << " index " << j;
       buffers_to_assign.push_back(std::move(results[i + j]));
     }
-    TT_RETURN_IF_ERROR(node->SetAsMaterialized(std::move(buffers_to_assign)))
+    TT_RETURN_IF_ERROR(node->SetAsMaterialized(std::move(buffers_to_assign),
+                                               task_output_shapes,
+                                               /*device_shapes_offset=*/i))
         << "Failed to set node " << node << " as materialized";
-    i += node->size();
+    i += node_size;
   }
   ABSL_VLOG(1) << "[AssignMaterializedBuffers] Assigned materialized buffers "
                   "for nodes";
@@ -696,6 +667,7 @@ absl::Status ExecutionTask::RunInternal() {
   if (!name_.empty()) {
     task_name = name_;
   }
+  const DeviceBufferRef& output = outputs_.front();
 
   // Wait for compilation to complete.
   ABSL_VLOG(1) << "[ExecutionTask::Run] Waiting for compilation for "
@@ -703,7 +675,9 @@ absl::Status ExecutionTask::RunInternal() {
                << task_name;
   TT_ASSIGN_OR_RETURN(
       std::vector<SharedLoadedExecutableWithMetadata> cached_executables,
-      GetCachedExecutables(task_name));
+      GetCachedExecutables(task_name),
+      TranslateXlaTensorOomError(_, ToString(output.element_type()),
+                                 output.dimensions()));
   ABSL_VLOG(1) << "[ExecutionTask::Run] Cached executables size: "
                << cached_executables.size();
 
@@ -713,7 +687,23 @@ absl::Status ExecutionTask::RunInternal() {
   ABSL_VLOG(1) << "[ExecutionTask::Run] Retrieved " << argument_buffers.size()
                << " argument buffers for task_name=" << task_name;
 
-  std::vector<Shape> output_shapes = GetShapesFromDeviceBuffers(outputs_);
+  absl::InlinedVector<const xla::Shape* absl_nullable, 64>
+      known_argument_shapes;
+  if (layout_validation_ == ArgumentLayoutValidation::kValidate) {
+    known_argument_shapes.reserve(arguments_.size());
+    for (const DeviceBufferRef& argument : arguments_) {
+      known_argument_shapes.push_back(argument.known_device_shape());
+    }
+  }
+
+  std::vector<Shape> output_shapes;
+  if (llvm::any_of(
+          cached_executables,
+          [](const SharedLoadedExecutableWithMetadata& exe) {
+            return exe->unbounded_dynamic_execution_metadata().has_value();
+          })) {
+    output_shapes = GetShapesFromDeviceBuffers(outputs_);
+  }
 
   // Run all cached executables in sequence to get the PjRtBuffer pointers.
   ABSL_VLOG(1) << "[ExecutionTask::Run] Executing job for task_name="
@@ -721,10 +711,15 @@ absl::Status ExecutionTask::RunInternal() {
   TT_ASSIGN_OR_RETURN(
       PjRtBufferPointers final_results,
       RunSequentialExecutables(cached_executables, std::move(argument_buffers),
-                               output_shapes, task_name));
+                               output_shapes, task_name, layout_validation_,
+                               known_argument_shapes),
+      TranslateXlaTensorOomError(_, ToString(output.element_type()),
+                                 output.dimensions()));
 
   // Assign the final results to the output nodes.
-  TT_RETURN_IF_ERROR(SetOutputNodesAsMaterialized(std::move(final_results)));
+  TT_RETURN_IF_ERROR(SetOutputNodesAsMaterialized(
+      std::move(final_results),
+      cached_executables.back()->shared_output_device_shapes()));
 
   ABSL_VLOG(1) << "[ExecutionTask::Run] ExecuteMaterializationJob "
                   "succeeded for task_name="

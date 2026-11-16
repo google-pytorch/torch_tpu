@@ -53,6 +53,7 @@ torch_tpu_cc_library(
         "//csrc/common:env_vars",
         "//csrc/common:error_utils",
         "//csrc/mlir/passes:fold_concat_softmax",
+        "//csrc/mlir/passes:guard_zero_operand_custom_calls",
         "//csrc/mlir/passes:lower_separable_gather_to_dot",
         "//csrc/mlir/passes:reassociate_norm_weights",
         "@com_google_absl//absl/status",
@@ -76,10 +77,6 @@ torch_tpu_cc_test(
         "@com_google_absl//absl/status:status_matchers",
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:IR",
-        "@llvm-project//mlir:Parser",
-        "@llvm-project//mlir:Support",
-        "@stablehlo//:register",
-        "@stablehlo//:stablehlo_ops",
     ],
 )
 
@@ -88,10 +85,13 @@ torch_tpu_cc_library(
     srcs = ["registration.cc"],
     hdrs = ["registration.h"],
     deps = [
+        ":pipeline",
         "//csrc/mlir/passes:dummy_pass",
         "//csrc/mlir/passes:fold_concat_softmax",
+        "//csrc/mlir/passes:guard_zero_operand_custom_calls",
         "//csrc/mlir/passes:lower_separable_gather_to_dot",
         "//csrc/mlir/passes:reassociate_norm_weights",
+        "@llvm-project//llvm:Support",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Pass",
         "@stablehlo//:register",

@@ -169,19 +169,22 @@ absl::Status ValidateGruTensorShapes(const at::Tensor& hx,
   const int64_t num_directions = bidirectional ? 2 : 1;
   // Step 1: Verify rank is 3D [num_layers * num_directions, batch, hidden]
   TT_RET_CHECK(hx.dim() == 3, error::kInvalidArgument)
-      << "expected hx to be a 3D tensor [num_layers * num_directions, batch, "
-         "hidden_size], got "
-      << hx.dim() << "D";
+      << "expected the initial hidden state hx to be a 3D tensor "
+         "[num_layers * num_directions, batch, hidden_size], got "
+      << hx.dim() << "D tensor of shape " << ToString(hx.sizes());
   // Step 2: Verify layer/direction dimension matches num_layers *
   // num_directions
   TT_RET_CHECK(hx.size(0) == num_layers * num_directions,
                error::kInvalidArgument)
-      << "expected hx size(0) to match num_layers * num_directions ("
-      << num_layers * num_directions << "), got " << hx.size(0);
+      << "expected the size of the initial hidden state hx at dimension 0 to "
+         "be "
+      << num_layers * num_directions
+      << " (num_layers * number of directions), got " << hx.size(0);
   // Step 3: Verify batch size matches the input batch dimension
   TT_RET_CHECK(hx.size(1) == batch, error::kInvalidArgument)
-      << "expected hx size(1) to match batch (" << batch << "), got "
-      << hx.size(1);
+      << "expected the size of the initial hidden state hx at dimension 1 to "
+         "be "
+      << batch << " (batch size), got " << hx.size(1);
   return absl::OkStatus();
 }
 
@@ -316,13 +319,16 @@ absl::Status ValidateGruInputs(const at::Tensor& input, const at::Tensor& hx,
 
   // Validate positive dimensions
   TT_RET_CHECK(seq_len > 0, error::kInvalidArgument)
-      << "expected sequence length to be larger than 0 in RNN, got " << seq_len;
+      << "expected the sequence length to be > 0, got " << seq_len;
   TT_RET_CHECK(batch > 0, error::kInvalidArgument)
-      << "expected batch size > 0 in RNN, got " << batch;
+      << "expected the batch size to be > 0, got " << batch;
   TT_RET_CHECK(num_layers > 0, error::kInvalidArgument)
-      << "expected num_layers > 0 in RNN, got " << num_layers;
+      << "expected the number of layers (num_layers) to be > 0, got "
+      << num_layers;
   TT_RET_CHECK(dropout >= 0.0 && dropout <= 1.0, error::kInvalidArgument)
-      << "expected dropout to be in range [0, 1], got " << dropout;
+      << "expected the dropout probability (dropout) to be in range [0, 1], "
+         "got "
+      << dropout;
 
   // Validate initial hidden state tensor shapes
   TT_RETURN_IF_ERROR(

@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 #include <cstdint>
+#include <cstdlib>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -22,6 +23,7 @@
 #include "csrc/common/env_vars.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/libtpu_version.h"
+#include "csrc/common/process.h"
 #include "csrc/common/pybind_error_utils.h"
 #include "csrc/common/utils.h"
 #include "pybind11/stl.h"
@@ -66,25 +68,32 @@ std::optional<bool> PyGetBooleanEnvOnce(std::string_view name,
 std::optional<int64_t> PyGetIntegerEnvOnce(
     std::string_view name, std::optional<int64_t> default_value) {
   std::optional<int64_t> value;
-  if (name == kLocalRankEnvVar) {
-    value = GetIntegerEnvOnce<int64_t, kLocalRankEnvVar>();
+  if (name == kJobCompletionIndexEnvVar) {
+    value = GetIntegerEnvOnce<kJobCompletionIndexEnvVar>();
+  } else if (name == kLocalRankEnvVar) {
+    value = GetIntegerEnvOnce<kLocalRankEnvVar>();
+  } else if (name == kMasterPortEnvVar) {
+    value = GetIntegerEnvOnce<kMasterPortEnvVar>();
+  } else if (name == kNnodesEnvVar) {
+    value = GetIntegerEnvOnce<kNnodesEnvVar>();
+  } else if (name == kNodeRankEnvVar) {
+    value = GetIntegerEnvOnce<kNodeRankEnvVar>();
   } else if (name == kRankEnvVar) {
-    value = GetIntegerEnvOnce<int64_t, kRankEnvVar>();
+    value = GetIntegerEnvOnce<kRankEnvVar>();
   } else if (name == kTorchTpuBasePortEnvVar) {
-    value = GetIntegerEnvOnce<int64_t, kTorchTpuBasePortEnvVar>();
+    value = GetIntegerEnvOnce<kTorchTpuBasePortEnvVar>();
   } else if (name == kTorchTpuDevicesPerHostEnvVar) {
-    value = GetIntegerEnvOnce<int64_t, kTorchTpuDevicesPerHostEnvVar>();
+    value = GetIntegerEnvOnce<kTorchTpuDevicesPerHostEnvVar>();
   } else if (name == kTorchTpuHandshakePortEnvVar) {
-    value = GetIntegerEnvOnce<int64_t, kTorchTpuHandshakePortEnvVar>();
+    value = GetIntegerEnvOnce<kTorchTpuHandshakePortEnvVar>();
   } else if (name == kTorchTpuInternalHandshakeTimeoutSEnvVar) {
-    value =
-        GetIntegerEnvOnce<int64_t, kTorchTpuInternalHandshakeTimeoutSEnvVar>();
+    value = GetIntegerEnvOnce<kTorchTpuInternalHandshakeTimeoutSEnvVar>();
   } else if (name == kTorchcommRankEnvVar) {
-    value = GetIntegerEnvOnce<int64_t, kTorchcommRankEnvVar>();
+    value = GetIntegerEnvOnce<kTorchcommRankEnvVar>();
   } else if (name == kTorchcommSizeEnvVar) {
-    value = GetIntegerEnvOnce<int64_t, kTorchcommSizeEnvVar>();
+    value = GetIntegerEnvOnce<kTorchcommSizeEnvVar>();
   } else if (name == kWorldSizeEnvVar) {
-    value = GetIntegerEnvOnce<int64_t, kWorldSizeEnvVar>();
+    value = GetIntegerEnvOnce<kWorldSizeEnvVar>();
   } else {
     ABSL_LOG(FATAL)  // CRASH_OK=TorchTPU bug
         << "Before reading integer environment variable " << name
@@ -100,16 +109,8 @@ std::optional<int64_t> PyGetIntegerEnvOnce(
 std::optional<std::string> PyGetStringEnvOnce(
     std::string_view name, std::optional<std::string> default_value) {
   std::optional<std::string> value;
-  if (name == kJobCompletionIndexEnvVar) {
-    value = GetEnvOnce<kJobCompletionIndexEnvVar>();
-  } else if (name == kMasterAddrEnvVar) {
+  if (name == kMasterAddrEnvVar) {
     value = GetEnvOnce<kMasterAddrEnvVar>();
-  } else if (name == kMasterPortEnvVar) {
-    value = GetEnvOnce<kMasterPortEnvVar>();
-  } else if (name == kNnodesEnvVar) {
-    value = GetEnvOnce<kNnodesEnvVar>();
-  } else if (name == kNodeRankEnvVar) {
-    value = GetEnvOnce<kNodeRankEnvVar>();
   } else if (name == kTorchTpuSlicebuilderAddressesEnvVar) {
     value = GetEnvOnce<kTorchTpuSlicebuilderAddressesEnvVar>();
   } else if (name == kTorchTpuTopologyEnvVar) {
@@ -130,12 +131,30 @@ std::optional<std::string> PyGetStringEnvOnce(
 }  // namespace
 
 TT_PYBIND11_MODULE(env, m) {
+  // Resolve the process lineage at module import time and mirror the resulting
+  // TORCH_TPU_INTERNAL_TOPMOST_PID into Python's os.environ, so that child
+  // processes spawned from Python (e.g. via os.environ.copy()) inherit it.
+  static_cast<void>(  // VOID_CAST_OK=only called for its side effect.
+      HasTorchTpuAncestorProcess());
+  if (const char* const topmost_pid =
+          std::getenv(  // GETENV_OK=Internal implementation env var.
+              kTorchTpuInternalTopmostPidEnvVar);
+      topmost_pid != nullptr) {
+    PyBindModule::Import("os").attr(
+        "environ")[kTorchTpuInternalTopmostPidEnvVar] = topmost_pid;
+  }
   m.attr("IS_INTERNAL_TORCH_TPU") = static_cast<bool>(TT_IS_INTERNAL_TORCH_TPU);
 #if defined(NDEBUG)
   m.attr("TORCH_TPU_IS_OPTIMIZED_BUILD") = true;
 #else
   m.attr("TORCH_TPU_IS_OPTIMIZED_BUILD") = false;
 #endif
+  m.def("has_torch_tpu_ancestor_process", &HasTorchTpuAncestorProcess,
+        "Returns True if the current process inherited the PID of an "
+        "ancestor TorchTPU process. "
+        "Best-effort: launchers that don't load TorchTPU are invisible, so "
+        "use it only where a wrong answer is harmless (e.g. log "
+        "deduplication). See csrc/common/process.h.");
   m.def("set_libtpu_version", &SetLibtpuVersion, pybind11::arg("version"));
   m.def("get_libtpu_version", &GetLibtpuVersionString);
   m.def("reset_libtpu_version_for_testing", &ResetLibtpuVersionForTesting);

@@ -42,7 +42,6 @@
 #include "csrc/common/env_vars.h"
 #include "csrc/common/status_builder.h"
 #include "csrc/common/status_test_utils.h"
-#include "csrc/common/utils.h"
 #include "csrc/eager/eager_mode.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_names.h"
@@ -1007,7 +1006,7 @@ TEST(GetEnableDebugChecks, IsDisabledInDefaultEagerMode) {
 TEST(GetEnableDebugChecksDeathTest, CanBeEnabledByEnvVar) {
   EXPECT_EXIT(
       {
-        SetEnv<kTorchTpuEnableDebugChecksEnvVar>("1");
+        SafeSetEnv<kTorchTpuEnableDebugChecksEnvVar>("1");
         exit(GetEnableDebugChecks());
       },
       testing::ExitedWithCode(1), "");
@@ -1016,7 +1015,7 @@ TEST(GetEnableDebugChecksDeathTest, CanBeEnabledByEnvVar) {
 TEST(GetEnableDebugChecksDeathTest, CanBeDisabledByEnvVar) {
   EXPECT_EXIT(
       {
-        SetEnv<kTorchTpuEnableDebugChecksEnvVar>("0");
+        SafeSetEnv<kTorchTpuEnableDebugChecksEnvVar>("0");
         exit(GetEnableDebugChecks());
       },
       testing::ExitedWithCode(0), "");
@@ -1026,7 +1025,7 @@ TEST(GetEnableDebugChecksDeathTest, CanBeEnabledByEnvVarInDebugMode) {
   EXPECT_EXIT(
       {
         SetEagerMode(EagerMode::kDeferNeverAndLaunchBlocking);
-        SetEnv<kTorchTpuEnableDebugChecksEnvVar>("1");
+        SafeSetEnv<kTorchTpuEnableDebugChecksEnvVar>("1");
         exit(GetEnableDebugChecks());
       },
       testing::ExitedWithCode(1), "");
@@ -1036,7 +1035,7 @@ TEST(GetEnableDebugChecksDeathTest, CanBeDisabledByEnvVarInDebugMode) {
   EXPECT_EXIT(
       {
         SetEagerMode(EagerMode::kDeferNeverAndLaunchBlocking);
-        SetEnv<kTorchTpuEnableDebugChecksEnvVar>("0");
+        SafeSetEnv<kTorchTpuEnableDebugChecksEnvVar>("0");
         exit(GetEnableDebugChecks());
       },
       testing::ExitedWithCode(0), "");
@@ -1467,7 +1466,26 @@ TEST(VfioDeviceCollisionTest, AdaptOmitsDevicePathWhenUnparseable) {
                     HasSubstr("TPU_VISIBLE_DEVICES"), Not(HasSubstr("/dev/"))));
 }
 
-#if TT_CHECKS_ERROR_FORMAT
+TEST(ShouldCheckErrorFormat, ReturnsTrue) {
+  // The check is always enabled in the internal build, and the test target
+  // enables it in other builds via TORCH_TPU_INTERNAL_CHECK_ERROR_FORMAT=1.
+  EXPECT_TRUE(ShouldCheckErrorFormat());
+}
+
+// Fixture for the error message format checks. Skips the tests if the checks
+// are disabled (e.g. in the OSS build without
+// TORCH_TPU_INTERNAL_CHECK_ERROR_FORMAT=1). The tests are still compiled so
+// that they are kept compilable.
+class ErrorMessageGuidelinesTest : public testing::Test {
+ protected:
+  void SetUp() override {
+    if (!ShouldCheckErrorFormat()) {
+      GTEST_SKIP() << "Error format checks are disabled in this build.";
+    }
+  }
+};
+using ErrorMessageGuidelinesDeathTest = ErrorMessageGuidelinesTest;
+using ErrorMessageGuidelinesPassTest = ErrorMessageGuidelinesTest;
 
 // Throws a c10::Error with `message` as its error message.
 //
@@ -1482,25 +1500,26 @@ void ThrowWithMessage(const std::string_view message) {
             { TT_THROW_IF_ERROR(TT_ERROR(error::kInternal) << message); });
 }
 
-TEST(ErrorMessageGuidelinesDeathTest, LeadingWhitespace) {
+TEST_F(ErrorMessageGuidelinesDeathTest, LeadingWhitespace) {
   EXPECT_DEATH(ThrowWithMessage("  dimension size negative"),
                HasSubstr("start with whitespace"));
   // After context prefix.
   EXPECT_DEATH(
       ThrowWithMessage("failed to materialize:  dimension size negative"),
-      HasSubstr("should not start with whitespace"));
+      HasSubstr("must not start with whitespace"));
 }
 
-TEST(ErrorMessageGuidelinesDeathTest, TrailingWhitespace) {
+TEST_F(ErrorMessageGuidelinesDeathTest, TrailingWhitespace) {
   EXPECT_DEATH(ThrowWithMessage("dimension size negative  "),
                HasSubstr("end with whitespace"));
 }
 
-TEST(ErrorMessageGuidelinesDeathTest, MessageContainsOnlyWhitespace) {
-  EXPECT_DEATH(ThrowWithMessage("   "), HasSubstr("should not be empty"));
+TEST_F(ErrorMessageGuidelinesDeathTest, MessageContainsOnlyWhitespace) {
+  EXPECT_DEATH(ThrowWithMessage("   "),
+               HasSubstr("must not be whitespace only"));
 }
 
-TEST(ErrorMessageGuidelinesDeathTest, StartsWithUppercaseLetter) {
+TEST_F(ErrorMessageGuidelinesDeathTest, StartsWithUppercaseLetter) {
   EXPECT_DEATH(ThrowWithMessage("Dimension size negative"),
                HasSubstr("start with a lowercase character"));
   // After context prefix.
@@ -1509,19 +1528,18 @@ TEST(ErrorMessageGuidelinesDeathTest, StartsWithUppercaseLetter) {
       HasSubstr("start with a lowercase character"));
 }
 
-TEST(ErrorMessageGuidelinesDeathTest,
-     StartsWithUppercaseLetterDoesNotSuggestReplacement) {
+TEST_F(ErrorMessageGuidelinesDeathTest,
+       StartsWithUppercaseLetterDoesNotSuggestReplacement) {
   // Lowercasing the first word may produce a wrong suggestion (e.g. for
   // acronyms), so the check must not suggest a replacement: the message ends
   // right after the sentence.
   EXPECT_DEATH(
       ThrowWithMessage("CPU tensors are not supported"),
-      HasSubstr(
-          "The error message should start with a lowercase character.\n"));
+      HasSubstr("The error message must start with a lowercase character.\n"));
 }
 
-TEST(ErrorMessageGuidelinesDeathTest,
-     StartsWithAllowedUppercaseWordAsPrefixOfLongerWord) {
+TEST_F(ErrorMessageGuidelinesDeathTest,
+       StartsWithAllowedUppercaseWordAsPrefixOfLongerWord) {
   // Allowed uppercase words must only match at a word boundary.
   EXPECT_DEATH(ThrowWithMessage("XLAB is not supported"),
                HasSubstr("start with a lowercase character"));
@@ -1536,7 +1554,34 @@ TEST(ErrorMessageGuidelinesDeathTest,
                HasSubstr("start with a lowercase character"));
 }
 
-TEST(ErrorMessageGuidelinesDeathTest, NoSpaceSurroundingXlaErrorSentinel) {
+TEST_F(ErrorMessageGuidelinesDeathTest, StartsWithOpName) {
+  EXPECT_DEATH(ThrowWithMessage("select() cannot be applied to a 0-dim tensor"),
+               HasSubstr("not start with an op name"));
+  EXPECT_DEATH(
+      ThrowWithMessage("select(): cannot be applied to a 0-dim tensor"),
+      HasSubstr("not start with an op name"));
+  EXPECT_DEATH(
+      ThrowWithMessage("select( ): cannot be applied to a 0-dim tensor"),
+      HasSubstr("not start with an op name"));
+  EXPECT_DEATH(
+      ThrowWithMessage("torch.select() cannot be applied to a 0-dim tensor"),
+      HasSubstr("not start with an op name"));
+  EXPECT_DEATH(
+      ThrowWithMessage(
+          "torch.ops.aten.select() cannot be applied to a 0-dim tensor"),
+      HasSubstr("not start with an op name"));
+  EXPECT_DEATH(
+      ThrowWithMessage("at::select() cannot be applied to a 0-dim tensor"),
+      HasSubstr("not start with an op name"));
+  // After context prefix.
+  EXPECT_DEATH(
+      ThrowWithMessage(
+          "failed to materialize: select() cannot be applied to a scalar "
+          "tensor"),
+      HasSubstr("not start with an op name"));
+}
+
+TEST_F(ErrorMessageGuidelinesDeathTest, NoSpaceSurroundingXlaErrorSentinel) {
   // Missing space before.
   EXPECT_DEATH(
       ThrowWithMessage("context  -- the XLA compiler failed with: error"),
@@ -1547,7 +1592,7 @@ TEST(ErrorMessageGuidelinesDeathTest, NoSpaceSurroundingXlaErrorSentinel) {
       HasSubstr("spaces after the XLA compiler error sentinel"));
 }
 
-TEST(ErrorMessageGuidelinesDeathTest, ContainsStableHloTypeName) {
+TEST_F(ErrorMessageGuidelinesDeathTest, ContainsStableHloTypeName) {
   EXPECT_DEATH(ThrowWithMessage("unsupported type f32"),
                HasSubstr("StableHLO type names"));
   // On context prefix.
@@ -1556,7 +1601,123 @@ TEST(ErrorMessageGuidelinesDeathTest, ContainsStableHloTypeName) {
                HasSubstr("StableHLO type names"));
 }
 
-TEST(ErrorMessageGuidelinesDeathTest, NonAlphaNumTrailingChar) {
+TEST_F(ErrorMessageGuidelinesDeathTest,
+       StableHloTypeNameIsNotMatchedInsideLongerTypeName) {
+  // "f16" is a substring of "bf16", and "f32" is a substring of "complexf32".
+  // Only the whole type name should be reported, regardless of the order of
+  // entries in the dtype names table.
+  EXPECT_DEATH(ThrowWithMessage("unsupported type bf16"),
+               AllOf(HasSubstr("show 'bfloat16' instead of 'bf16'"),
+                     Not(HasSubstr("instead of 'f16'"))));
+  EXPECT_DEATH(ThrowWithMessage("unsupported type complexf32"),
+               AllOf(HasSubstr("show 'complex64' instead of 'complexf32'"),
+                     Not(HasSubstr("instead of 'f32'"))));
+  EXPECT_DEATH(ThrowWithMessage("unsupported type ui8"),
+               AllOf(HasSubstr("show 'uint8' instead of 'ui8'"),
+                     Not(HasSubstr("instead of 'i8'"))));
+}
+
+TEST_F(ErrorMessageGuidelinesDeathTest, ContainsLegacyScalarTypeName) {
+  EXPECT_DEATH(ThrowWithMessage("expected index dtype to be Long, got int32"),
+               AllOf(HasSubstr("legacy c10::ScalarType names"),
+                     HasSubstr("Replace 'Long' with 'int64'")));
+  // Quoted.
+  EXPECT_DEATH(ThrowWithMessage("not implemented for 'ComplexFloat'"),
+               HasSubstr("Replace 'ComplexFloat' with 'complex64'"));
+  // All the violations are listed.
+  EXPECT_DEATH(
+      ThrowWithMessage("expected q and k to share a dtype, got Float and "
+                       "BFloat16"),
+      HasSubstr("Replace 'Float' with 'float32', 'BFloat16' with 'bfloat16'"));
+  // On context prefix.
+  EXPECT_DEATH(
+      ThrowWithMessage("failed to copy Half tensor: dimension size negative"),
+      HasSubstr("Replace 'Half' with 'float16'"));
+}
+
+TEST_F(ErrorMessageGuidelinesDeathTest,
+       LegacyScalarTypeNameIsReplacedWithTorchDtypeName) {
+  using NamePair = std::pair<std::string_view, std::string_view>;
+  constexpr NamePair kLegacyToTorchNames[] = {
+      // go/keep-sorted start
+      {"BFloat16", "bfloat16"},
+      {"Bool", "bool"},
+      {"Byte", "uint8"},
+      {"Char", "int8"},
+      {"ComplexDouble", "complex128"},
+      {"ComplexFloat", "complex64"},
+      {"ComplexHalf", "complex32"},
+      {"Double", "float64"},
+      {"Float", "float32"},
+      {"Float8_e4m3fn", "float8_e4m3fn"},
+      {"Half", "float16"},
+      {"Int", "int32"},
+      {"Int4", "int4"},
+      {"Long", "int64"},
+      {"Short", "int16"},
+      {"UInt16", "uint16"},
+      // go/keep-sorted end
+  };
+  for (const auto& [legacy, torch] : kLegacyToTorchNames) {
+    EXPECT_DEATH(
+        ThrowWithMessage(absl::StrCat("unsupported dtype ", legacy)),
+        HasSubstr(absl::StrCat("Replace '", legacy, "' with '", torch, "'")));
+  }
+}
+
+TEST_F(ErrorMessageGuidelinesDeathTest, ContainsTorchPrefixedDtypeName) {
+  EXPECT_DEATH(
+      ThrowWithMessage("expected index dtype to be torch.int64, got int32"),
+      AllOf(HasSubstr("must write the PyTorch dtype names plainly"),
+            HasSubstr("Replace torch.int64 with int64")));
+  EXPECT_DEATH(ThrowWithMessage("expected dtype=torch.float32, got bfloat16"),
+               HasSubstr("Replace torch.float32 with float32"));
+  // On context prefix.
+  EXPECT_DEATH(ThrowWithMessage("failed to copy torch.float16 tensor: "
+                                "dimension size negative"),
+               HasSubstr("Replace torch.float16 with float16"));
+}
+
+TEST_F(ErrorMessageGuidelinesDeathTest, ContainsQuotedDtypeName) {
+  EXPECT_DEATH(ThrowWithMessage("unsupported input dtype: 'int32'"),
+               AllOf(HasSubstr("must write the PyTorch dtype names plainly"),
+                     HasSubstr("Replace 'int32' with int32")));
+  EXPECT_DEATH(ThrowWithMessage("unsupported input dtype: \"float32\""),
+               HasSubstr("Replace \"float32\" with float32"));
+  EXPECT_DEATH(ThrowWithMessage("unsupported input dtype: `bool`"),
+               HasSubstr("Replace `bool` with bool"));
+  EXPECT_DEATH(ThrowWithMessage("unsupported input dtype: 'torch.int32'"),
+               HasSubstr("Replace 'torch.int32' with int32"));
+  // All the violations are listed.
+  EXPECT_DEATH(
+      ThrowWithMessage("expected 'int32' or \"float32\", got torch.bool"),
+      HasSubstr("Replace 'int32' with int32, \"float32\" with "
+                "float32, torch.bool with bool"));
+}
+
+TEST_F(ErrorMessageGuidelinesDeathTest,
+       TorchPrefixedOrQuotedDtypeNameIsReplacedWithPlainName) {
+  // The dtype names come from c10, so every PyTorch dtype is covered.
+  constexpr std::string_view kTorchNames[] = {
+      // go/keep-sorted start
+      "bfloat16",  "bool",          "complex128",  "complex32",
+      "complex64", "float16",       "float32",     "float4_e2m1fn_x2",
+      "float64",   "float8_e4m3fn", "float8_e5m2", "int16",
+      "int32",     "int4",          "int64",       "int8",
+      "qint8",     "uint16",        "uint8",
+      // go/keep-sorted end
+  };
+  for (const std::string_view torch : kTorchNames) {
+    EXPECT_DEATH(
+        ThrowWithMessage(absl::StrCat("unsupported dtype torch.", torch)),
+        HasSubstr(absl::StrCat("Replace torch.", torch, " with ", torch)));
+    EXPECT_DEATH(
+        ThrowWithMessage(absl::StrCat("unsupported dtype '", torch, "'")),
+        HasSubstr(absl::StrCat("Replace '", torch, "' with ", torch)));
+  }
+}
+
+TEST_F(ErrorMessageGuidelinesDeathTest, NonAlphaNumTrailingChar) {
   EXPECT_DEATH(ThrowWithMessage("dimension size negative."),
                HasSubstr("end with either an alpha-numeric"));
   // Multiple non-alphanumeric characters.
@@ -1564,7 +1725,7 @@ TEST(ErrorMessageGuidelinesDeathTest, NonAlphaNumTrailingChar) {
                HasSubstr("end with either an alpha-numeric"));
 }
 
-TEST(ErrorMessageGuidelinesDeathTest, InvalidExpectedGotFormat) {
+TEST_F(ErrorMessageGuidelinesDeathTest, InvalidExpectedGotFormat) {
   // Missing ", got" part.
   EXPECT_DEATH(ThrowWithMessage("expected a 3D tensor"),
                HasSubstr("expected ..., got ..."));
@@ -1589,7 +1750,73 @@ TEST(ErrorMessageGuidelinesDeathTest, InvalidExpectedGotFormat) {
       HasSubstr("expected ..., got ..."));
 }
 
-TEST(ErrorMessageGuidelinesDeathTest, MultipleViolationsIncludingEnforced) {
+TEST_F(ErrorMessageGuidelinesDeathTest, ContainsNonNegative) {
+  EXPECT_DEATH(ThrowWithMessage("expected dim to be non-negative, got -1"),
+               AllOf(HasSubstr("must not contain \"non-negative\""),
+                     HasSubstr("expected dim to be >= 0, got -1")));
+  // Case-insensitive.
+  EXPECT_DEATH(ThrowWithMessage("the dim must be Non-Negative"),
+               HasSubstr("must not contain \"non-negative\""));
+  // Alternative spellings.
+  EXPECT_DEATH(ThrowWithMessage("expected dim to be nonnegative, got -1"),
+               HasSubstr("must not contain \"non-negative\""));
+  EXPECT_DEATH(ThrowWithMessage("expected dim to be non negative, got -1"),
+               HasSubstr("must not contain \"non-negative\""));
+  // After context prefix.
+  EXPECT_DEATH(
+      ThrowWithMessage(
+          "failed to materialize: expected dim to be non-negative, got -1"),
+      HasSubstr("After removing all context prefixes: The error message must "
+                "not contain \"non-negative\""));
+}
+
+TEST_F(ErrorMessageGuidelinesDeathTest, NumericDimensionalityNotWrittenAsND) {
+  EXPECT_DEATH(ThrowWithMessage("expected a 5-dimensional tensor"),
+               HasSubstr("Replace '5-dimensional' with '5D'"));
+  EXPECT_DEATH(ThrowWithMessage("expected a 5 dimensional tensor"),
+               HasSubstr("Replace '5 dimensional' with '5D'"));
+  EXPECT_DEATH(ThrowWithMessage("expected a 5-Dimensional tensor"),
+               HasSubstr("Replace '5-Dimensional' with '5D'"));
+  EXPECT_DEATH(ThrowWithMessage("expected a 5-dimension tensor"),
+               HasSubstr("Replace '5-dimension' with '5D'"));
+  EXPECT_DEATH(ThrowWithMessage("expected a 0-dim tensor"),
+               HasSubstr("Replace '0-dim' with '0D'"));
+  EXPECT_DEATH(ThrowWithMessage("expected a 5-d tensor"),
+               HasSubstr("Replace '5-d' with '5D'"));
+  EXPECT_DEATH(ThrowWithMessage("expected a 5-D tensor"),
+               HasSubstr("Replace '5-D' with '5D'"));
+  EXPECT_DEATH(ThrowWithMessage("expected a 5d tensor"),
+               HasSubstr("Replace '5d' with '5D'"));
+  EXPECT_DEATH(ThrowWithMessage("input must be 12-D"),
+               HasSubstr("Replace '12-D' with '12D'"));
+  EXPECT_DEATH(ThrowWithMessage("2-D input is not supported"),
+               HasSubstr("Replace '2-D' with '2D'"));
+  EXPECT_DEATH(ThrowWithMessage("input is not supported (2-D)"),
+               HasSubstr("Replace '2-D' with '2D'"));
+  // All the violations are listed.
+  EXPECT_DEATH(ThrowWithMessage("expected 1-D or 2-d tensor, got 3d"),
+               HasSubstr("Replace '1-D' with '1D', '2-d' with '2D', '3d' "
+                         "with '3D'"));
+}
+
+TEST_F(ErrorMessageGuidelinesDeathTest,
+       NumericDimensionalityNotWrittenAsNDOnContextPrefix) {
+  EXPECT_DEATH(
+      ThrowWithMessage("failed to reshape 2-D tensor: dimension size negative"),
+      HasSubstr("Replace '2-D' with '2D'"));
+}
+
+TEST_F(ErrorMessageGuidelinesDeathTest,
+       SymbolicDimensionalityNotWrittenAsHyphenatedD) {
+  EXPECT_DEATH(ThrowWithMessage("expected an n-d tensor"),
+               HasSubstr("Replace 'n-d' with 'n-D'"));
+  EXPECT_DEATH(ThrowWithMessage("expected an N-dimensional tensor"),
+               HasSubstr("Replace 'N-dimensional' with 'N-D'"));
+  EXPECT_DEATH(ThrowWithMessage("expected a k-dim tensor"),
+               HasSubstr("Replace 'k-dim' with 'k-D'"));
+}
+
+TEST_F(ErrorMessageGuidelinesDeathTest, MultipleViolations) {
   EXPECT_DEATH(ThrowWithMessage("Dimension size negative with f32"),
                AllOf(HasSubstr("start with a lowercase"),
                      HasSubstr("StableHLO type names")));
@@ -1610,14 +1837,149 @@ void ThrowWithContextForXlaError(const std::string_view context,
             });
 }
 
-TEST(ErrorMessageGuidelinesPassTest, StableHloTypeNameOnXlaError) {
+TEST_F(ErrorMessageGuidelinesPassTest, StableHloTypeNameOnXlaError) {
   EXPECT_THROW(ThrowWithContextForXlaError(
                    /* context= */ "the task has failed",
                    /* xla_error_message= */ "the dtype cannot be f32"),
                c10::Error);
 }
 
-TEST(ErrorMessageGuidelinesPassTest, ExpectedGotFormat) {
+TEST_F(ErrorMessageGuidelinesPassTest, LegacyScalarTypeNameOnXlaError) {
+  // The XLA compiler error is not under our control, so it may contain legacy
+  // c10::ScalarType names.
+  EXPECT_THROW(ThrowWithContextForXlaError(
+                   /* context= */ "the task has failed",
+                   /* xla_error_message= */ "the dtype cannot be Float"),
+               c10::Error);
+}
+
+TEST_F(ErrorMessageGuidelinesDeathTest, LegacyScalarTypeNameBeforeXlaError) {
+  EXPECT_DEATH(ThrowWithContextForXlaError(
+                   /* context= */ "failed to compile Float tensor",
+                   /* xla_error_message= */ "unknown error"),
+               HasSubstr("Replace 'Float' with 'float32'"));
+}
+
+TEST_F(ErrorMessageGuidelinesPassTest,
+       TorchPrefixedOrQuotedDtypeNameOnXlaError) {
+  // The XLA compiler error is not under our control, so it may contain
+  // decorated dtype names.
+  EXPECT_THROW(
+      ThrowWithContextForXlaError(
+          /* context= */ "the task has failed",
+          /* xla_error_message= */ "the dtype cannot be 'torch.int32'"),
+      c10::Error);
+}
+
+TEST_F(ErrorMessageGuidelinesDeathTest,
+       TorchPrefixedOrQuotedDtypeNameBeforeXlaError) {
+  EXPECT_DEATH(ThrowWithContextForXlaError(
+                   /* context= */ "failed to compile 'int32' tensor",
+                   /* xla_error_message= */ "unknown error"),
+               HasSubstr("Replace 'int32' with int32"));
+}
+
+TEST_F(ErrorMessageGuidelinesPassTest, TorchDtypeNames) {
+  // The check is case-sensitive: the torch dtype names (e.g. "bool",
+  // "bfloat16") are allowed, but not the legacy names (e.g. "Bool",
+  // "BFloat16").
+  EXPECT_THROW(ThrowWithMessage("expected index dtype to be int64, got bool"),
+               c10::Error);
+  EXPECT_THROW(
+      ThrowWithMessage("expected bfloat16 or float32 inputs, got complex64"),
+      c10::Error);
+}
+
+TEST_F(ErrorMessageGuidelinesPassTest,
+       LegacyScalarTypeNameLookalikesAreAllowed) {
+  // Only whole legacy names are matched, so identifiers and words that merely
+  // contain one (e.g. "IntArrayRef", "LongTensor", "kFloat", "Integer") or
+  // that are not legacy names (e.g. "Float8", "Int64") are not flagged.
+  EXPECT_THROW(ThrowWithMessage("expected an IntArrayRef or a LongTensor, got "
+                                "at::kFloat"),
+               c10::Error);
+  EXPECT_THROW(ThrowWithMessage("TorchTPU does not support Integer, Float8 or "
+                                "Int64 types"),
+               c10::Error);
+}
+
+TEST_F(ErrorMessageGuidelinesPassTest,
+       TorchPrefixedOrQuotedDtypeNameLookalikesAreAllowed) {
+  // Only whole dtype names are matched, so C++ types and other identifiers
+  // that merely start with one (e.g. "int32_t", "torch.int32x") are not
+  // flagged.
+  EXPECT_THROW(ThrowWithMessage("expected 'int32_t' or torch.int32_t, got "
+                                "torch.int32x"),
+               c10::Error);
+  // Quoted strings that aren't exactly a dtype name are not flagged.
+  EXPECT_THROW(ThrowWithMessage("expected an 'int32 tensor' or \"bool mask\", "
+                                "got `torch.select` and 'tpu'"),
+               c10::Error);
+  // "torch." must be a whole word.
+  EXPECT_THROW(ThrowWithMessage("unsupported dtype my_torch.int32"),
+               c10::Error);
+}
+
+TEST_F(ErrorMessageGuidelinesPassTest, DimensionalityOnXlaError) {
+  // The XLA compiler error is not under our control, so its dimensionality
+  // format is not checked.
+  EXPECT_THROW(ThrowWithContextForXlaError(
+                   /* context= */ "failed to compile 2D convolution",
+                   /* xla_error_message= */ "expected 2-dimensional input"),
+               c10::Error);
+}
+
+TEST_F(ErrorMessageGuidelinesDeathTest,
+       NumericDimensionalityNotWrittenAsNDBeforeXlaError) {
+  EXPECT_DEATH(ThrowWithContextForXlaError(
+                   /* context= */ "failed to compile 2-D convolution",
+                   /* xla_error_message= */ "error"),
+               HasSubstr("After removing the XLA compiler error: The error "
+                         "message must write the dimensionality"));
+}
+
+TEST_F(ErrorMessageGuidelinesPassTest, NonAlphaNumTrailingCharOnXlaError) {
+  // The XLA compiler error is not under our control, so its last character is
+  // not checked.
+  EXPECT_THROW(ThrowWithContextForXlaError(
+                   /* context= */ "the task has failed",
+                   /* xla_error_message= */ "the dtype is invalid."),
+               c10::Error);
+}
+
+TEST_F(ErrorMessageGuidelinesDeathTest, NonAlphaNumTrailingCharBeforeXlaError) {
+  // The last character of the TorchTPU part of the message is checked, even if
+  // an XLA compiler error follows.
+  EXPECT_DEATH(ThrowWithContextForXlaError(
+                   /* context= */ "the task has failed.",
+                   /* xla_error_message= */ "error"),
+               HasSubstr("After removing the XLA compiler error: The error "
+                         "message must end with either an alpha-numeric"));
+}
+
+TEST_F(ErrorMessageGuidelinesDeathTest,
+       NonAlphaNumTrailingCharAfterContextPrefix) {
+  // Violations found after removing the context prefixes are labeled as such.
+  EXPECT_DEATH(
+      ThrowWithMessage("failed to materialize: dimension size negative."),
+      HasSubstr("After removing all context prefixes: The error message must "
+                "end with either an alpha-numeric"));
+}
+
+TEST_F(ErrorMessageGuidelinesDeathTest,
+       NonAlphaNumTrailingCharAfterContextPrefixAndBeforeXlaError) {
+  // Violations found after removing both the context prefixes and the XLA
+  // compiler error are labeled as such.
+  EXPECT_DEATH(
+      ThrowWithContextForXlaError(
+          /* context= */ "failed to compile: the task has failed.",
+          /* xla_error_message= */ "error"),
+      HasSubstr("After removing all context prefixes and the XLA compiler "
+                "error: The error message must end with either an "
+                "alpha-numeric"));
+}
+
+TEST_F(ErrorMessageGuidelinesPassTest, ExpectedGotFormat) {
   EXPECT_THROW(ThrowWithMessage("expected 3D tensor, got 2D"), c10::Error);
   // Valid format after a single context prefix.
   EXPECT_THROW(
@@ -1632,12 +1994,93 @@ TEST(ErrorMessageGuidelinesPassTest, ExpectedGotFormat) {
       c10::Error);
 }
 
-TEST(ErrorMessageGuidelinesPassTest, StartsWithNonLetter) {
+TEST_F(ErrorMessageGuidelinesPassTest, GreaterThanOrEqualToZero) {
+  EXPECT_THROW(ThrowWithMessage("expected dim to be >= 0, got -1"), c10::Error);
+  // After context prefix.
+  EXPECT_THROW(ThrowWithMessage(
+                   "failed to materialize: expected dim to be >= 0, got -1"),
+               c10::Error);
+}
+
+TEST_F(ErrorMessageGuidelinesPassTest, NonNegativeOnXlaError) {
+  // The XLA compiler error is not under our control, so it may contain
+  // "non-negative".
+  EXPECT_THROW(ThrowWithContextForXlaError(
+                   /* context= */ "the task has failed",
+                   /* xla_error_message= */ "the dim must be non-negative"),
+               c10::Error);
+}
+
+TEST_F(ErrorMessageGuidelinesDeathTest, NonNegativeBeforeXlaError) {
+  // The TorchTPU part of the message is checked, even if an XLA compiler error
+  // follows.
+  EXPECT_DEATH(ThrowWithContextForXlaError(
+                   /* context= */ "the dim must be non-negative",
+                   /* xla_error_message= */ "error"),
+               HasSubstr("After removing the XLA compiler error: The error "
+                         "message must not contain \"non-negative\""));
+}
+
+TEST_F(ErrorMessageGuidelinesPassTest, NonNegativeInsideIdentifier) {
+  // Identifiers (e.g. variable or function names) are not flagged.
+  EXPECT_THROW(ThrowWithMessage("is_nonnegative must be true"), c10::Error);
+  EXPECT_THROW(ThrowWithMessage("non_negative_slope must be set"), c10::Error);
+}
+
+TEST_F(ErrorMessageGuidelinesPassTest, NumericDimensionalityWrittenAsND) {
+  EXPECT_THROW(ThrowWithMessage("expected 0D or 1D tensor, got 5D"),
+               c10::Error);
+  EXPECT_THROW(ThrowWithMessage("expected a 12D tensor, got 2D"), c10::Error);
+  EXPECT_THROW(ThrowWithMessage("failed to reshape 2D tensor: dimension size "
+                                "negative"),
+               c10::Error);
+}
+
+TEST_F(ErrorMessageGuidelinesPassTest, SymbolicDimensionalityWrittenAsND) {
+  EXPECT_THROW(ThrowWithMessage("expected an n-D tensor, got 0D"), c10::Error);
+  EXPECT_THROW(ThrowWithMessage("expected an N-D tensor, got 0D"), c10::Error);
+  EXPECT_THROW(ThrowWithMessage("expected a (k+1)-D tensor, got 0D"),
+               c10::Error);
+  // `nD` isn't rejected, since it can't be told apart from words such as
+  // "ID".
+  EXPECT_THROW(ThrowWithMessage("expected an nD tensor, got 0D"), c10::Error);
+  EXPECT_THROW(ThrowWithMessage("invalid device ID"), c10::Error);
+}
+
+TEST_F(ErrorMessageGuidelinesPassTest, DimensionalityLookalikesAreAllowed) {
+  // Op names, identifiers and class names.
+  EXPECT_THROW(ThrowWithMessage("conv3d is not supported"), c10::Error);
+  EXPECT_THROW(ThrowWithMessage("avg_pool2d is not supported"), c10::Error);
+  EXPECT_THROW(ThrowWithMessage("torch.nn.Conv2d is not supported"),
+               c10::Error);
+  EXPECT_THROW(ThrowWithMessage("upsample_bilinear2d is not supported"),
+               c10::Error);
+  EXPECT_THROW(ThrowWithMessage("aten::max_pool3d_with_indices is not "
+                                "supported"),
+               c10::Error);
+  EXPECT_THROW(ThrowWithMessage("channels_last_3d is not supported"),
+               c10::Error);
+  EXPECT_THROW(ThrowWithMessage("c10d::Store is required"), c10::Error);
+  // Counts of dimensions.
+  EXPECT_THROW(ThrowWithMessage("expected 5 dims, got 3 dimensions"),
+               c10::Error);
+  EXPECT_THROW(ThrowWithMessage("the tensor has 5 dim"), c10::Error);
+  // Hex numbers, decimals, durations in paths, and words.
+  EXPECT_THROW(ThrowWithMessage("invalid value 0x5d"), c10::Error);
+  EXPECT_THROW(ThrowWithMessage("invalid value 1.5d"), c10::Error);
+  EXPECT_THROW(ThrowWithMessage("cannot open /tmp/is-d/ttl=1d/cache"),
+               c10::Error);
+  EXPECT_THROW(ThrowWithMessage("the 5 days limit was exceeded"), c10::Error);
+  EXPECT_THROW(ThrowWithMessage("a dimensional mismatch was found"),
+               c10::Error);
+}
+
+TEST_F(ErrorMessageGuidelinesPassTest, StartsWithNonLetter) {
   EXPECT_THROW(ThrowWithMessage("1D tensor is not supported"), c10::Error);
   EXPECT_THROW(ThrowWithMessage("-1 is not a valid dimension"), c10::Error);
 }
 
-TEST(ErrorMessageGuidelinesPassTest, StartsWithAllowedUppercaseWord) {
+TEST_F(ErrorMessageGuidelinesPassTest, StartsWithAllowedUppercaseWord) {
   EXPECT_THROW(ThrowWithMessage("TorchTPU does not support this"), c10::Error);
   EXPECT_THROW(ThrowWithMessage("TorchTPU's cache is full"), c10::Error);
   EXPECT_THROW(ThrowWithMessage("PjRt client must be initialized"), c10::Error);
@@ -1649,7 +2092,7 @@ TEST(ErrorMessageGuidelinesPassTest, StartsWithAllowedUppercaseWord) {
                c10::Error);
 }
 
-TEST(ErrorMessageGuidelinesPassTest, ArbitraryAllowedFormats) {
+TEST_F(ErrorMessageGuidelinesPassTest, ArbitraryAllowedFormats) {
   // Has 'must', but no 'got'.
   EXPECT_THROW(ThrowWithMessage("the dtype must not be float32"), c10::Error);
   EXPECT_THROW(ThrowWithMessage("PjRt client must be initialized"), c10::Error);
@@ -1658,7 +2101,7 @@ TEST(ErrorMessageGuidelinesPassTest, ArbitraryAllowedFormats) {
   EXPECT_THROW(ThrowWithMessage("failed to match label:Torch"), c10::Error);
 }
 
-TEST(ErrorMessageGuidelinesPassTest, MultilineErrorMessage) {
+TEST_F(ErrorMessageGuidelinesPassTest, MultilineErrorMessage) {
   EXPECT_THROW(ThrowWithMessage("multiline error message\nwith a second line"),
                c10::Error);
   // Multiline message after a single context prefix.
@@ -1675,7 +2118,17 @@ TEST(ErrorMessageGuidelinesPassTest, MultilineErrorMessage) {
       c10::Error);
 }
 
-#endif  // TT_CHECKS_ERROR_FORMAT
+TEST_F(ErrorMessageGuidelinesPassTest, ParenthesesInMessage) {
+  EXPECT_THROW(
+      ThrowWithMessage("expected tensor with shape (2, 3), got (4, 5)"),
+      c10::Error);
+  EXPECT_THROW(ThrowWithMessage("dim (0) must be >= 0"), c10::Error);
+  // Empty call parentheses after the start of the message.
+  EXPECT_THROW(ThrowWithMessage("expected numel() to be positive, got 0"),
+               c10::Error);
+  // Plain leading op word without parentheses.
+  EXPECT_THROW(ThrowWithMessage("select dimension must be >= 0"), c10::Error);
+}
 
 TEST(AdaptExternalErrorMessage, KeepsAllowedUppercaseStartingWords) {
   EXPECT_EQ(AdaptExternalErrorMessage("TorchTPU does not support this"),
@@ -1709,8 +2162,50 @@ TEST(ErrorUtilsTest, GetRequiredEnvOnceReturnsValueWhenSet) {
 TEST(ErrorUtilsTest, GetRequiredIntegerEnvOnceReturnsValueWhenSet) {
   setenv(kWorldSizeEnvVar, "8", 1);
   TT_ASSERT_OK_AND_ASSIGN(const auto val,
-                          (GetRequiredIntegerEnvOnce<int, kWorldSizeEnvVar>()));
+                          (GetRequiredIntegerEnvOnce<kWorldSizeEnvVar>()));
   EXPECT_EQ(val, 8);
+}
+
+TEST(ErrorUtilsTest, GetRequiredIntegerEnvOnceFailsOnInvalidValue) {
+  setenv(kNprocEnvVar, "not_an_int", 1);
+  const absl::Status status =
+      GetRequiredIntegerEnvOnce<kNprocEnvVar>().status();
+  EXPECT_EQ(status.code(), error::kFailedPrecondition);
+  EXPECT_THAT(status.message(),
+              HasSubstr("the NPROC environment variable is not set or is not "
+                        "a valid integer"));
+  unsetenv(kNprocEnvVar);
+}
+
+TEST(TranslateXlaTensorOomError, ReturnsOkStatusUnchanged) {
+  EXPECT_EQ(TranslateXlaTensorOomError(absl::OkStatus(), "float32", {2, 3}),
+            absl::OkStatus());
+}
+
+TEST(TranslateXlaTensorOomError, TranslatesResourceExhaustedError) {
+  const absl::Status status = TranslateXlaTensorOomError(
+      absl::Status(error::kResourceExhausted, "Out of memory"), "float32",
+      {100000, 300000});
+  EXPECT_EQ(status.code(), error::kResourceExhausted);
+  EXPECT_THAT(status.message(),
+              HasSubstr("the TPU ran out of memory while allocating tensor "
+                        "float32[100000, 300000]"));
+}
+
+TEST(TranslateXlaTensorOomError, TranslatesInternalErrorWithAllocationSize) {
+  const absl::Status status = TranslateXlaTensorOomError(
+      absl::Status(error::kInternal, "Failed with allocation_size=1234"),
+      "bfloat16", {4, 8});
+  EXPECT_EQ(status.code(), error::kResourceExhausted);
+  EXPECT_THAT(
+      status.message(),
+      HasSubstr(
+          "the TPU ran out of memory while allocating tensor bfloat16[4, 8]"));
+}
+
+TEST(TranslateXlaTensorOomError, ReturnsNonOomErrorUnchanged) {
+  const absl::Status original(error::kInvalidArgument, "some other error");
+  EXPECT_EQ(TranslateXlaTensorOomError(original, "float32", {2, 3}), original);
 }
 
 }  // namespace

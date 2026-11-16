@@ -63,13 +63,18 @@ void SetEagerMode(EagerMode mode);
          mode == EagerMode::kDeferNeverAndLaunchBlocking;
 }
 
+// Returns whether the specified eager mode supports in-place buffer donation
+// (all eager modes except kInternalCompileFxGraph).
+[[nodiscard]] constexpr bool SupportsInplaceBufferDonation(EagerMode mode) {
+  return mode != EagerMode::kInternalCompileFxGraph;
+}
+
 // Controls whether input buffer donation for in-place ATen operations in
-// DeferNever eager mode is enabled globally. Thread-safe.
+// eager mode is enabled globally. Thread-safe.
 void EnableInplaceBufferDonation(bool enabled);
 
 // Returns whether input buffer donation for in-place ATen operations in
-// DeferNever eager mode is enabled for the current Python thread/context.
-// Thread-safe.
+// eager mode is enabled for the current Python thread/context. Thread-safe.
 //
 // It resolves the state from the thread-local context state managed via Python
 // context managers, with innermost context taking precedence. If no context

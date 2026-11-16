@@ -36,6 +36,7 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
+#include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
 
@@ -50,22 +51,23 @@ absl::StatusOr<mlir::MlirOp> BuildEluShlo(mlir::MlirOp input_op,
       ApplyBroadcastIfNeeded(input_op, alpha_op, scale_op, input_scale_op));
 
   auto zero_op = MakeConstantLike(input_bcast, 0.0);
-  auto one = MakeConstantLike(input_bcast, 1.0);
+
+  // As in PyTorch, the branch depends on the sign of self, and input_scale
+  // only applies to the negative path (e.g. celu: input_scale = 1 / alpha).
+  auto pred = mlir::stablehlo::Compare(
+      input_bcast, zero_op, mlir::stablehlo::ComparisonDirection::GT);
+
+  // --- Positive path: scale * self ---
+  auto positive_val = mlir::stablehlo::Mul(input_bcast, scale_bcast);
 
   //  y = self * input_scale
   auto input_scaled = mlir::stablehlo::Mul(input_bcast, input_scale_bcast);
-  auto pred = mlir::stablehlo::Compare(
-      input_scaled, zero_op, mlir::stablehlo::ComparisonDirection::GT);
 
-  // --- Positive path: scale * input_scaled ---
-  auto positive_val = mlir::stablehlo::Mul(input_scaled, scale_bcast);
-
-  // --- Negative path: scale * alpha * (exp(input_scaled) - 1) ---
-  auto exp_input_scaled = mlir::stablehlo::Exp(input_scaled);
-  auto exp_input_scaled_minus_1 =
-      mlir::stablehlo::Subtract(exp_input_scaled, one);
-  auto exp_alpha_scaled =
-      mlir::stablehlo::Mul(alpha_bcast, exp_input_scaled_minus_1);
+  // --- Negative path: scale * alpha * expm1(input_scaled) ---
+  // Use expm1: exp(input_scaled) - 1 loses precision when input_scaled is
+  // close to 0, because exp(input_scaled) is then close to 1.
+  auto expm1_input_scaled = mlir::stablehlo::Expm1(input_scaled);
+  auto exp_alpha_scaled = mlir::stablehlo::Mul(alpha_bcast, expm1_input_scaled);
   auto negative_val = mlir::stablehlo::Mul(exp_alpha_scaled, scale_bcast);
 
   return mlir::stablehlo::Select(pred, /*on_true=*/positive_val,
@@ -137,15 +139,19 @@ at::Tensor& AtenEluOut(const at::Tensor& input, const at::Scalar& alpha,
       (input, promoted_alpha, promoted_scale, promoted_input_scale, out), {
         TT_THROW_IF_ERROR(ValidateIsFloatingPoint(input, /* name= */ "input"));
 
+        const at::ScalarType comp_scalar_type =
+            InferComputationDtype(input.scalar_type());
         TT_ASSIGN_OR_THROW(const at::Tensor alpha_tensor,
-                           promoted_alpha.GetTensor(input.scalar_type()));
+                           promoted_alpha.GetTensor(comp_scalar_type));
         TT_ASSIGN_OR_THROW(const at::Tensor scale_tensor,
-                           promoted_scale.GetTensor(input.scalar_type()));
+                           promoted_scale.GetTensor(comp_scalar_type));
         TT_ASSIGN_OR_THROW(const at::Tensor input_scale_tensor,
-                           promoted_input_scale.GetTensor(input.scalar_type()));
+                           promoted_input_scale.GetTensor(comp_scalar_type));
 
         TT_ASSIGN_OR_THROW(const mlir::ElementType out_dtype,
                            ConvertTo<mlir::ElementType>(out.scalar_type()));
+        TT_ASSIGN_OR_THROW(const mlir::ElementType computation_dtype,
+                           InferComputationDtype(out_dtype));
 
         auto op_builder = [](FixedSizeSpan<mlir::MlirOp, 4> inputs)
             -> absl::StatusOr<mlir::MlirOp> {
@@ -158,6 +164,7 @@ at::Tensor& AtenEluOut(const at::Tensor& input, const at::Scalar& alpha,
             {input, alpha_tensor, scale_tensor, input_scale_tensor}, out,
             {.out_dtype = out_dtype,
              .out_dims = CopyIntVector(out.sizes()),
+             .computation_dtype = computation_dtype,
              .op_param_cache_keys = std::move(param_keys)}));
         return out;
       });
@@ -178,13 +185,14 @@ at::Tensor& AtenEluBackwardGradInput(
         TT_THROW_IF_ERROR(
             ValidateIsFloatingPoint(grad_output, /* name= */ "grad output"));
 
+        const at::ScalarType comp_scalar_type =
+            InferComputationDtype(grad_output.scalar_type());
         TT_ASSIGN_OR_THROW(const at::Tensor alpha_tensor,
-                           promoted_alpha.GetTensor(grad_output.scalar_type()));
+                           promoted_alpha.GetTensor(comp_scalar_type));
         TT_ASSIGN_OR_THROW(const at::Tensor scale_tensor,
-                           promoted_scale.GetTensor(grad_output.scalar_type()));
-        TT_ASSIGN_OR_THROW(
-            const at::Tensor input_scale_tensor,
-            promoted_input_scale.GetTensor(grad_output.scalar_type()));
+                           promoted_scale.GetTensor(comp_scalar_type));
+        TT_ASSIGN_OR_THROW(const at::Tensor input_scale_tensor,
+                           promoted_input_scale.GetTensor(comp_scalar_type));
 
         auto op_builder = [is_result](FixedSizeSpan<mlir::MlirOp, 5> inputs)
             -> absl::StatusOr<mlir::MlirOp> {
@@ -198,6 +206,8 @@ at::Tensor& AtenEluBackwardGradInput(
         TT_ASSIGN_OR_THROW(
             const auto output_dtype,
             ConvertTo<mlir::ElementType>(grad_input.scalar_type()));
+        TT_ASSIGN_OR_THROW(const mlir::ElementType computation_dtype,
+                           InferComputationDtype(output_dtype));
         auto output_shape = CopyIntVector(grad_input.sizes());
 
         TT_THROW_IF_ERROR(
@@ -208,6 +218,7 @@ at::Tensor& AtenEluBackwardGradInput(
                              /*options=*/
                              {.out_dtype = output_dtype,
                               .out_dims = output_shape,
+                              .computation_dtype = computation_dtype,
                               .op_param_cache_keys = std::move(param_keys)}));
         return grad_input;
       });

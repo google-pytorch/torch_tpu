@@ -24,8 +24,10 @@
 
 namespace torch_tpu {
 
-// Adds Torch TPU optimization passes to the pass manager.
-void AddTorchTpuOptimizationPasses(mlir::PassManager& pm);
+// Adds Torch TPU optimization passes to the pass manager. `pm` must be
+// anchored on `builtin.module`. Also registered as the
+// `torch-tpu-optimization-pipeline` pass pipeline (see registration.h).
+void AddTorchTpuOptimizationPasses(mlir::OpPassManager& pm);
 
 // Runs all custom Torch TPU optimization passes on the given module.
 absl::Status RunTorchTpuOptimizationPasses(mlir::ModuleOp module,

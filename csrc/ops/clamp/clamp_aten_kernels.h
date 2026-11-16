@@ -18,7 +18,6 @@
 #define TORCH_TPU_CSRC_OPS_CLAMP_CLAMP_ATEN_KERNELS_H_
 
 #include "ATen/core/ATen_fwd.h"
-#include "ATen/core/TensorBody.h"
 #include "c10/util/Optional.h"
 
 namespace torch_tpu {

@@ -142,6 +142,26 @@ class InstalledTorchVersionTest(seed_test_utils.RepeatableTest):
     with mock.patch.dict(sys.modules, {"torch": fake_torch}):
       self.assertEqual(loader.installed_torch_version(), "2.12.5+fake")
 
+  def test_falls_back_to_install_metadata_when_torch_not_imported(self) -> None:
+    site_dir = pathlib.Path(self.create_tempdir().full_path)
+    dist_info = site_dir / "torch-2.12.0.dist-info"
+    dist_info.mkdir()
+    (dist_info / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: torch\nVersion: 2.12.0+cu124\n",
+        encoding="utf-8",
+    )
+    with _isolated_import_state():
+      sys.modules.pop("torch", None)
+      sys.path[:] = [str(site_dir)]
+      self.assertEqual(loader.installed_torch_version(), "2.12.0+cu124")
+
+  def test_returns_none_when_torch_not_imported_or_installed(self) -> None:
+    site_dir = pathlib.Path(self.create_tempdir().full_path)
+    with _isolated_import_state():
+      sys.modules.pop("torch", None)
+      sys.path[:] = [str(site_dir)]
+      self.assertIsNone(loader.installed_torch_version())
+
 
 class DiscoverBuiltSuffixesTest(seed_test_utils.RepeatableTest):
 

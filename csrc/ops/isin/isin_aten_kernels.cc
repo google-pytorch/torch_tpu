@@ -30,14 +30,104 @@
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
 #include "csrc/eager/op_dispatcher.h"
-#include "csrc/ops/isin/isin.h"
 #include "csrc/ops/macros/kernel.h"
+#include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
+#include "mlir/IR/BuiltinTypes.h"
+#include "stablehlo/dialect/StablehloOps.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
+#include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
 namespace {
+
+// Specifies whether elements are assumed to be unique to optimize search.
+enum class IsUnique {
+  kNo,
+  kYes,
+};
+
+// Specifies whether matches should be inverted in the final predicate output.
+enum class IsInverted {
+  kNo,
+  kYes,
+};
+
+absl::StatusOr<mlir::MlirOp> BuildIsInShlo(mlir::MlirOp elements,
+                                           mlir::MlirOp test_elements,
+                                           IsUnique uniqueness,
+                                           IsInverted inversion) {
+  ABSL_VLOG(3) << "BuildIsInShlo elements=" << elements.ToString()
+               << " test_elements=" << test_elements.ToString()
+               << " uniqueness="
+               << (uniqueness == IsUnique::kYes ? "true" : "false")
+               << " inversion="
+               << (inversion == IsInverted::kYes ? "true" : "false");
+  auto& builder = elements.getBuilder();
+
+  // TODO: for now we ignore assume_unique. In principle, taking that into
+  // account can speed up the computation.
+
+  // The algorithm below is based on the SHLO expansion of jnp.isin, for
+  // instance:
+  //
+  // def foo():
+  //   elements = jnp.array([[1, 2.2], [3, 4]])
+  //   test_elements = jnp.array([2, 3, 7])
+  //   return jnp.isin(elements, test_elements, assume_unique=False,
+  //   invert=False)
+  //
+  // print(jax.jit(foo).lower()._lowering.stablehlo())
+
+  const mlir::RankedTensorType elements_type = GetTensorTypeOrDie(elements);
+  const mlir::RankedTensorType test_elements_type =
+      GetTensorTypeOrDie(test_elements);
+
+  TT_ASSIGN_OR_RETURN(const int64_t num_elements,
+                      NumElements(elements_type.getShape()));
+  TT_ASSIGN_OR_RETURN(const int64_t num_test_elements,
+                      NumElements(test_elements_type.getShape()));
+
+  auto elements_flat = mlir::stablehlo::Reshape(elements, {num_elements});
+  auto test_elements_flat =
+      mlir::stablehlo::Reshape(test_elements, {num_test_elements});
+
+  TT_ASSIGN_OR_RETURN(auto elements_bcast,
+                      Broadcast(elements_flat, {num_elements, 1}, {0}));
+  TT_ASSIGN_OR_RETURN(
+      auto test_elements_bcast,
+      Broadcast(test_elements_flat, {1, num_test_elements}, {1}));
+
+  TT_ASSIGN_OR_RETURN(
+      elements_bcast,
+      Broadcast(elements_bcast, {num_elements, num_test_elements}, {0, 1}));
+  TT_ASSIGN_OR_RETURN(test_elements_bcast,
+                      Broadcast(test_elements_bcast,
+                                {num_elements, num_test_elements}, {0, 1}));
+
+  auto cmp = mlir::stablehlo::Compare(elements_bcast, test_elements_bcast,
+                                      mlir::stablehlo::ComparisonDirection::EQ);
+  auto init = MakeScalarConstant(builder, false, mlir::ElementType::PRED);
+
+  const mlir::RankedTensorType cmp_type = GetTensorTypeOrDie(cmp);
+
+  auto reduce_builder =
+      [dtype = cmp_type.getElementType()](mlir::RegionBuilder& rb) {
+        mlir::stablehlo::buildReduceBody<mlir::stablehlo::OrOp>(
+            dtype, rb.getRegion(), rb.getOpBuilder());
+      };
+
+  auto res =
+      mlir::stablehlo::Reduce(builder, cmp, init, reduce_builder, {1})[0];
+
+  if (inversion == IsInverted::kYes) {
+    res = mlir::stablehlo::Not(res);
+  }
+
+  return mlir::stablehlo::Reshape(res, elements_type.getShape());
+}
 
 IsUnique ToIsUnique(bool assume_unique) {
   return assume_unique ? IsUnique::kYes : IsUnique::kNo;

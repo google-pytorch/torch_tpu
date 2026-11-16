@@ -14,7 +14,7 @@
 
 """Unit tests for experimental asynchronous compilation and warmup overlapping."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, MutableMapping
 import threading
 from typing import Any
 from unittest import mock
@@ -25,6 +25,7 @@ from torch import nn
 from torch._dynamo.package import DynamoCache
 from torch._dynamo.precompile_context import PrecompileContext
 from torch._dynamo.utils import counters
+from torch._functorch import config as functorch_config
 from torch._functorch._aot_autograd import autograd_cache
 from torch._inductor.codecache import FxGraphCache
 from torch._inductor.codecache import PyCodeCache
@@ -70,7 +71,7 @@ class MultiOutputModel(nn.Module):
 
   def forward(
       self, x: torch.Tensor
-  ) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
+  ) -> tuple[torch.Tensor, torch.Tensor, Mapping[str, torch.Tensor]]:
     return x + 1.0, x * 2.0, {"sub": x - 3.0}
 
 
@@ -99,7 +100,7 @@ class CompileBarrier:
     self.call_count = 0
 
   def _get_event(
-      self, event_dict: dict[int, threading.Event], index: int
+      self, event_dict: MutableMapping[int, threading.Event], index: int
   ) -> threading.Event:
     with self._lock:
       if index not in event_dict:
@@ -271,6 +272,35 @@ class AsyncCompileTest(seed_test_utils.RepeatableTest):
       test_utils.assert_close(out1.cpu(), (shape1[0] + 1.0).cpu())
       test_utils.assert_close(out2.cpu(), (shape2[0] + 1.0).cpu())
 
+  def test_async_compile_without_torch_cache_key_does_not_block(self):
+    # With torch's autograd cache disabled the backend builds the bundled entry
+    # under its own fallback key; building it must not resolve the compile.
+    barrier = CompileBarrier()
+    model = SimpleModel().to("tpu")
+    x = (torch.randn(4, 16, device="tpu"),)
+    with mock.patch.object(
+        tpu_compiler_mod.StaticCompiler,
+        "_compile",
+        barrier.intercept_compile(tpu_compiler_mod.StaticCompiler._compile),
+    ), functorch_config.patch(enable_autograd_cache=False):
+      compiled = torch.compile(
+          torch.no_grad()(model),
+          backend="tpu",
+          fullgraph=True,
+          dynamic=False,
+          options={"async_compile": True},
+      )
+      with self.assertRaises(  # ASSERT_RAISES_OK=AsyncCompilationSubmitted warmup signal.
+          tpu_compile.AsyncCompilationSubmitted
+      ) as cm:
+        compiled(*x)
+      art = cm.exception.artifact
+      self.assertTrue(barrier.wait_for_compile_start(0))
+      self.assertFalse(art.is_resolved)
+      barrier.release_all()
+      self.assertEqual(tpu_compile.resolve_compilations([art]), 1)
+      test_utils.assert_close(compiled(*x).cpu(), (x[0] + 1.0).cpu())
+
   def test_async_compile_zero_premature_resolution_canary(self):
     """Ensures no PyTorch or backend wrapper triggers premature artifact resolution."""
     canary = ResolutionCanary()
@@ -439,16 +469,20 @@ class AsyncCompileTest(seed_test_utils.RepeatableTest):
     warmup_inputs = [(torch.randn(4, 8, device="tpu"),)]
 
     compiled = tpu_compile.async_compile(model, warmup_inputs)
+    x1 = torch.ones(4, 8, device="tpu")
+    x2 = torch.ones(4, 8, device="tpu") * 2
+    with torch.no_grad():
+      expected1 = model(x1).cpu()
+      expected2 = model(x2).cpu()
 
-    with mock.patch.object(
-        tpu_compiler_mod.StaticCompiler, "__call__"
-    ) as mock_compiler:
-      res1 = compiled(torch.ones(4, 8, device="tpu"))
-      res2 = compiled(torch.ones(4, 8, device="tpu") * 2)
+    # The caches are cleared on entry, so a recompile would show up as a miss.
+    with test_utils.count_tpu_compilations() as compilations:
+      res1 = compiled(x1)
+      res2 = compiled(x2)
 
-      mock_compiler.assert_not_called()
-      self.assertEqual(res1.shape, (4, 8))
-      self.assertEqual(res2.shape, (4, 8))
+    self.assertEqual(compilations.count, 0)
+    test_utils.assert_close(res1.cpu(), expected1)
+    test_utils.assert_close(res2.cpu(), expected2)
 
   def test_async_compile_no_grad_option(self):
     model = SimpleModel().to("tpu")

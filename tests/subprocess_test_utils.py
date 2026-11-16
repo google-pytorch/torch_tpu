@@ -93,12 +93,12 @@ Examples:
      ```
 """
 
+from collections.abc import Mapping, Sequence
 import enum
 import io
 import os
 import queue
 import sys
-from typing import Mapping, Sequence
 from unittest import mock
 
 from absl import flags

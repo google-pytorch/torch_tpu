@@ -16,13 +16,14 @@
 
 from __future__ import annotations
 
-from unittest import mock
-
 from absl.testing import absltest
 from absl.testing import parameterized
 import sympy
 import torch
+from torch._dynamo import source
+from torch._subclasses import fake_tensor
 from torch.fx.experimental import sym_node
+from torch.fx.experimental import symbolic_shapes
 from torch.utils._sympy import value_ranges
 from torch.utils._sympy.functions import Mod as TorchMod, PythonMod
 from torch.utils._sympy.numbers import int_oo
@@ -545,26 +546,36 @@ class SymbolBoundsTest(seed_test_utils.RepeatableTest):
         bm.get_fallback_symbol_bounds().get_symint_bounds(s0_symint), (16, 32)
     )
 
-    def _make_mock_tensor(shape, stride, storage_offset=0):
-      t = mock.MagicMock(spec=torch.Tensor)
-      t.shape = shape
-      t.stride.return_value = stride
-      t.storage_offset.return_value = storage_offset
-      return t
-
-    for tensor_arg in (
-        _make_mock_tensor(shape=(s0_symint, 4), stride=(4, 1)),
-        _make_mock_tensor(shape=(2, 4), stride=(s0_symint, 1)),
-        _make_mock_tensor(shape=(4,), stride=(1,), storage_offset=s0_symint),
-    ):
-      with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Cannot happen from user end
-          ValueError, "depends on symbols"
-      ):
-        sym_bounds_manager.SymBoundsManager([tensor_arg])
-      bm = sym_bounds_manager.SymBoundsManager([s0_symint, tensor_arg])
-      self.assertEqual(
-          bm.get_fallback_symbol_bounds().get_symint_bounds(s0_symint), (16, 32)
+  def test_missing_atomic_symint_in_tensor_raises_value_error(self):
+    shape_env = symbolic_shapes.ShapeEnv()
+    s0_source = source.ConstantSource("s0")
+    s0_symint = shape_env.create_symintnode(
+        shape_env.create_symbol(16, source=s0_source), hint=16, source=s0_source
+    )
+    with fake_tensor.FakeTensorMode(shape_env=shape_env):
+      tensor_args = (
+          torch.empty_strided((s0_symint, 4), (4, 1)),
+          torch.empty_strided((2, 4), (s0_symint, 1)),
+          torch.empty(s0_symint + 4)[s0_symint:],  # Symbolic storage_offset.
       )
+    # Lower bound 2 is the ShapeEnv default for sizes; upper is 2 * hint.
+    expected_bounds = (2, 32)
+
+    for tensor_arg in tensor_args:
+      with self.subTest(
+          shape=tensor_arg.shape,
+          stride=tensor_arg.stride(),
+          storage_offset=tensor_arg.storage_offset(),
+      ):
+        with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Cannot happen from user end
+            ValueError, "depends on symbols"
+        ):
+          sym_bounds_manager.SymBoundsManager([tensor_arg])
+        bm = sym_bounds_manager.SymBoundsManager([s0_symint, tensor_arg])
+        self.assertEqual(
+            bm.get_fallback_symbol_bounds().get_symint_bounds(s0_symint),
+            expected_bounds,
+        )
 
 
 if __name__ == "__main__":

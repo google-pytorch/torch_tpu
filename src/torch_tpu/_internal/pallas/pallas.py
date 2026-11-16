@@ -18,7 +18,7 @@ This module provides APIs to call Pallas kernels from PyTorch. Note that use
 of these APIs requires that your environment also has JAX/Pallas installed.
 """
 
-import collections.abc
+from collections.abc import Callable, Mapping, Sequence, Set
 import enum
 import functools
 import hashlib
@@ -28,7 +28,7 @@ import math
 import pathlib
 import types
 import typing
-from typing import Any, Callable, Sequence, Union, overload
+from typing import Any, Union, overload
 from absl import logging
 import frozendict
 import numpy as np
@@ -125,11 +125,17 @@ __all__ = [
 def _convert_shape(shape, mesh, partition_spec, op):
   """Converts a shape based on a mesh and partition specification."""
   if mesh is not None and partition_spec is not None:
-    axis_to_index = {axis: index for index, axis in enumerate(mesh.axis_names)}
+    mesh_shape = mesh.shape
+    unconstrained = jax.sharding.PartitionSpec.UNCONSTRAINED
     ans = tuple(
         [
-            op(s, mesh.devices.shape[axis_to_index[name]])
-            if name is not None
+            op(
+                s,
+                math.prod(mesh_shape[ax] for ax in name)
+                if isinstance(name, tuple)
+                else mesh_shape[name],
+            )
+            if name is not None and name is not unconstrained
             else s
             for s, name in zip(shape, partition_spec)
         ]
@@ -219,8 +225,12 @@ def jax_placeholders(
 
 def torch_placeholder(
     array: jax.core.ShapedArray | None,
-    mesh: jax.sharding.Mesh | None = None,
-    partition_spec: tuple[str | None, ...] | None = None,
+    mesh: jax.sharding.Mesh | jax.sharding.AbstractMesh | None = None,
+    partition_spec: (
+        tuple[str | tuple[str, ...] | None, ...]
+        | jax.sharding.PartitionSpec
+        | None
+    ) = None,
     device: torch.device | str = "tpu",
 ) -> torch.Tensor | None:
   """Converts a jax output to a torch tensor for return type.
@@ -278,6 +288,8 @@ def _normalize_output_partition_specs(
   """Normalizes output partition specs across output leaves."""
   if output_specs is None:
     return None
+  if isinstance(output_specs, jax.sharding.PartitionSpec):
+    return [output_specs] * num_outputs
   if (
       isinstance(output_specs, tuple)
       and len(output_specs) > 0
@@ -290,8 +302,8 @@ def _normalize_output_partition_specs(
 def _get_kernel_invocation_key(
     trace_key: str,
     input_args: Sequence[torch.Tensor | Any],
-    input_kwargs: dict[str, Any],
-    static_argnums: tuple[int, ...] = (),
+    input_kwargs: Mapping[str, Any],
+    static_argnums: Sequence[int] = (),
 ) -> str:
   """Construct a unique ID for the kernel invocation.
 
@@ -374,7 +386,7 @@ def _get_enum_type(typ: Any) -> type[enum.Enum] | None:
 def _get_sequence_element_type(typ: Any) -> Any | None:
   """If typ is a homogeneous Sequence/list/tuple, returns its element type."""
   origin = typing.get_origin(typ)
-  if origin in (list, collections.abc.Sequence):
+  if origin in (list, Sequence):
     args = typing.get_args(typ)
     if len(args) == 1:
       return args[0]
@@ -469,7 +481,7 @@ def _is_valid_argument_type(annotation: Any) -> bool:
   return False
 
 
-def _get_bound_names(fn: Any) -> set[str]:
+def _get_bound_names(fn: Any) -> Set[str]:
   """Returns the set of parameter names bound by functools.partial."""
   bound_names = set()
   cur = fn
@@ -487,7 +499,7 @@ def _get_bound_names(fn: Any) -> set[str]:
 
 def _is_valid_argument(
     param: inspect.Parameter,
-    bound_names: collections.abc.Set[str] = frozenset(),
+    bound_names: Set[str] = frozenset(),
 ) -> bool:
   """Returns True if the argument is valid for a wrapped JAX function."""
   if param.name in bound_names:
@@ -497,7 +509,7 @@ def _is_valid_argument(
 
 def _verify_signature(
     signature: inspect.Signature,
-    bound_names: collections.abc.Set[str] = frozenset(),
+    bound_names: Set[str] = frozenset(),
 ):
   """Verify that the signature contains only types supported by PyTorch custom_op.
 
@@ -545,7 +557,7 @@ def _verify_signature(
     if origin in (
         tuple,
         list,
-        collections.abc.Sequence,
+        Sequence,
     ):
       return all(is_valid_result(arg) for arg in args)
     return False
@@ -588,7 +600,7 @@ def _is_tensor_annotation(annotation: Any) -> bool:
   return False
 
 
-def _infer_static_argnums(signature: inspect.Signature) -> tuple[int, ...]:
+def _infer_static_argnums(signature: inspect.Signature) -> Sequence[int]:
   """Infers the static_argnums for a JAX function.
 
   All non-tensor arguments are considered static.
@@ -609,7 +621,7 @@ def _infer_static_argnums(signature: inspect.Signature) -> tuple[int, ...]:
   return tuple(static_argnums)
 
 
-def _infer_static_argnames(signature: inspect.Signature) -> tuple[str, ...]:
+def _infer_static_argnames(signature: inspect.Signature) -> Sequence[str]:
   """Infers the static_argnames for keyword-only parameters of a JAX function."""
   static_argnames = []
   for name, param in signature.parameters.items():
@@ -701,7 +713,7 @@ def _map_jax_param_to_torch(typ: Any) -> Any:
     if typing.get_origin(underlying) is list:
       seq_type = list[mapped_elem]
     else:
-      seq_type = collections.abc.Sequence[mapped_elem]
+      seq_type = Sequence[mapped_elem]
     return (seq_type | types.NoneType) if is_optional else seq_type
   mapped = _map_jax_base_to_torch(underlying)
   return (mapped | types.NoneType) if is_optional else mapped
@@ -731,7 +743,7 @@ def _map_jax_return_to_torch(typ: Any) -> Any:
     mapped_elem = _map_jax_return_to_torch(elem_type)
     if origin is list:
       return list[mapped_elem]
-    return collections.abc.Sequence[mapped_elem]
+    return Sequence[mapped_elem]
   if (
       isinstance(typ, type)
       and issubclass(typ, int)
@@ -858,7 +870,7 @@ def _to_hashable_jax_static_arg(val: Any, orig_annotation: Any = None) -> Any:
 
 def _get_torch_signature(
     signature: inspect.Signature,
-    bound_names: collections.abc.Set[str] = frozenset(),
+    bound_names: Set[str] = frozenset(),
 ) -> inspect.Signature:
   """Converts a JAX signature to a Torch signature for custom_op schema."""
   pos_params = []
@@ -897,7 +909,7 @@ def _get_torch_signature(
 def _generate_torch_schema(
     torch_signature: inspect.Signature,
     ret_schema_str: str,
-    mutates_args: tuple[str, ...] = (),
+    mutates_args: Sequence[str] = (),
 ) -> str:
   """Generates an explicit PyTorch custom_op schema string."""
 
@@ -927,6 +939,39 @@ class _JaxCustomOpDef(CustomOpDef):
     return self._opoverload(*norm_args, **norm_kwargs)
 
 
+def _normalize_mlir_module(mlir_module_text: str) -> str:
+  """Returns the MLIR module re-printed without location debug info.
+
+  Stripping locations lets differing caller stack frames produce the same
+  deterministic fingerprint and reuse the compiled executable cache.
+
+  Note that this only removes the outer module's debug information (#loc), not
+  the inner debug info embedded inside the base64-encoded kernel
+  (custom_call_config.body), which contains the Mosaic MLIR debug info that is
+  more useful for debugging / profiling than the outer tracing call stack. The
+  exact outer tracing call stack is deterministic but unstable, depending on
+  which layer/callsite happens to trace first.
+
+  Args:
+    mlir_module_text: The textual MLIR module, e.g. from
+      `jax.export.Exported.mlir_module()`.
+  """
+  with jax.interpreters.mlir.make_ir_context():
+    ir_module = jax.interpreters.mlir.ir.Module.parse(mlir_module_text)
+    return str(ir_module.operation.get_asm(enable_debug_info=False))
+
+
+def _fingerprint_normalized_mlir(normalized_mlir: str) -> str:
+  """Returns a content-addressable fingerprint of a normalized MLIR module."""
+  # BLAKE2 is significantly faster than SHA-256, and 128 bits (16 bytes)
+  # provides enough collision resistance before being fingerprinted down to
+  # 64 bits in lower layers.
+  return hashlib.blake2b(
+      normalized_mlir.encode("utf-8"),
+      digest_size=16,
+  ).hexdigest()
+
+
 class JaxCallable:
   """A torch callable function that wraps a JAX function.
 
@@ -940,10 +985,10 @@ class JaxCallable:
   mesh: Any
   input_partition_specs: Any
   output_partition_specs: Any
-  static_argnums: tuple[int, ...]
-  static_argnames: tuple[str, ...]
-  donate_argnums: list[int]
-  input_output_aliases: dict[int, int]
+  static_argnums: Sequence[int]
+  static_argnames: Sequence[str]
+  donate_argnums: Sequence[int]
+  input_output_aliases: Mapping[int, int]
   exported: Any
   __signature__: Any
   __globals__: Any
@@ -953,13 +998,13 @@ class JaxCallable:
       name: str,
       jit_fn: Any,
       trace_key: str,
-      mesh: jax.sharding.Mesh | None = None,
+      mesh: jax.sharding.Mesh | jax.sharding.AbstractMesh | None = None,
       input_partition_specs: tuple[tuple[str, ...], ...] | None = None,
       output_partition_specs: tuple[tuple[str, ...], ...] | None = None,
-      static_argnums: tuple[int, ...] = (),
-      donate_argnums: list[int] | None = None,
-      input_output_aliases: dict[int, int] | None = None,
-      static_argnames: tuple[str, ...] = (),
+      static_argnums: Sequence[int] = (),
+      donate_argnums: Sequence[int] | None = None,
+      input_output_aliases: Mapping[int, int] | None = None,
+      static_argnames: Sequence[str] = (),
   ):
     """Initializes a JaxCallable, a cached callable for custom kernels.
 
@@ -1025,16 +1070,16 @@ class JaxCallable:
       )
       self.input_output_aliases = input_output_aliases
       # If donate_argnums is also provided, it must match.
-      if donate_argnums is not None and self.input_output_aliases.keys() != set(
-          donate_argnums
-      ):
+      if donate_argnums is not None and set(
+          self.input_output_aliases.keys()
+      ) != set(donate_argnums):
         raise ValueError(
             "donate_argnums must be None or the same as the keys of"
             " input_output_aliases."
         )
       self.donate_argnums = list(self.input_output_aliases.keys())
     else:
-      self.donate_argnums = donate_argnums if donate_argnums is not None else []
+      self.donate_argnums = donate_argnums if donate_argnums is not None else ()
       self.input_output_aliases = {}
 
     # Unwrap jax.jit and other wrappers to get the original function for its
@@ -1065,7 +1110,16 @@ class JaxCallable:
     self._param_name_to_idx = {
         p.name: idx for idx, p in enumerate(self._orig_params)
     }
-    self._donate_argnums_set = set(self.donate_argnums)
+    # Donate exactly what the exported module donates, which `jax.jit` decided
+    # when it resolved `donate_argnums` (JAX < 0.12 ignores negative indices).
+    # Before tracing, JAX only exposes this through the private `_jit_info`.
+    # The deprecated input_output_aliases aren't passed to `jax.jit`, so their
+    # keys are added separately.
+    jit_info = jit_fn._jit_info  # pylint: disable=protected-access
+    self._donate_argnums_set = {
+        *jit_info.donate_argnums,
+        *self.input_output_aliases,
+    }
 
     logging.debug("Creating JAX callable: %s", self)
 
@@ -1098,7 +1152,7 @@ class JaxCallable:
       )
 
   def _normalize_invocation_args(
-      self, args: Sequence[Any], kwargs: dict[str, Any]
+      self, args: Sequence[Any], kwargs: Mapping[str, Any]
   ) -> tuple[list[Any], dict[str, Any]]:
     """Binds arguments to signature and normalizes static arguments."""
     try:
@@ -1249,27 +1303,8 @@ class JaxCallable:
       jax_args, jax_kwargs = self._get_jax_placeholders(norm_args, norm_kwargs)
       with jax._src.config.export_ignore_forward_compatibility(True):
         lowered = self.exported(*jax_args, **jax_kwargs)
-      # Normalize the MLIR module without location debug info so that
-      # differing caller stack frames produce the same deterministic fingerprint
-      # and reuse the compiled executable cache.
-      # Note that this only removes the outer module's debug information (#loc),
-      # not the inner debug info embedded inside the base64-encoded kernel
-      # (custom_call_config.body), which contains the Mosaic MLIR debug info
-      # that is more useful for debugging / profiling than the outer tracing
-      # call stack. The exact outer tracing call stack is deterministic but
-      # unstable, depending on which layer/callsite happens to trace first.
-      with jax.interpreters.mlir.make_ir_context():
-        ir_module = jax.interpreters.mlir.ir.Module.parse(lowered.mlir_module())
-        normalized_mlir = str(
-            ir_module.operation.get_asm(enable_debug_info=False)
-        )
-      # BLAKE2 is significantly faster than SHA-256, and 128 bits (16 bytes)
-      # provides enough collision resistance before being fingerprinted down to
-      # 64 bits in lower layers.
-      mlir_fingerprint = hashlib.blake2b(
-          normalized_mlir.encode("utf-8"),
-          digest_size=16,
-      ).hexdigest()
+      normalized_mlir = _normalize_mlir_module(lowered.mlir_module())
+      mlir_fingerprint = _fingerprint_normalized_mlir(normalized_mlir)
       self.kernel_key_to_mlir_fingerprint[kernel_key] = mlir_fingerprint
 
       logging.debug(
@@ -1345,7 +1380,8 @@ class JaxCallable:
     device_assignment: list[int] = []
     if self.mesh is not None:
       _validate_pallas_mesh_size(mesh=self.mesh)
-      device_assignment = [int(d.id) for d in self.mesh.devices.flat]
+      if not isinstance(self.mesh, jax.sharding.AbstractMesh):
+        device_assignment = [int(d.id) for d in self.mesh.devices.flat]
 
     results = tpu_torch_pallas.call_custom_kernel(
         self.name,
@@ -1365,7 +1401,7 @@ class JaxCallable:
 
 def _validate_pallas_mesh_size(
     *,
-    mesh: jax.sharding.Mesh | None = None,
+    mesh: jax.sharding.Mesh | jax.sharding.AbstractMesh | None = None,
     mesh_shape: Sequence[int] | None = None,
     process_group: dist.ProcessGroup | None = None,
 ) -> None:
@@ -1391,25 +1427,26 @@ def _validate_pallas_mesh_size(
           f"Pallas kernel mesh size ({mesh.size}) must not exceed world size"
           f" ({world_size})."
       )
-    device_ids = [int(d.id) for d in mesh.devices.flat]
-    if len(set(device_ids)) != len(device_ids):
-      raise ValueError(
-          f"Pallas kernel mesh device ids must be unique. Got {device_ids}."
-      )
+    if not isinstance(mesh, jax.sharding.AbstractMesh):
+      device_ids = [int(d.id) for d in mesh.devices.flat]
+      if len(set(device_ids)) != len(device_ids):
+        raise ValueError(
+            f"Pallas kernel mesh device ids must be unique. Got {device_ids}."
+        )
 
 
 @overload
 def custom_jax_kernel(
     jax_fn: None = None,
     name: str | None = None,
-    static_argnums: tuple[int, ...] = (),
-    donate_argnums: list[int] | None = None,
-    input_output_aliases: dict[int, int] | None = None,
-    mesh: jax.sharding.Mesh | None = None,
+    static_argnums: Sequence[int] = (),
+    donate_argnums: Sequence[int] | None = None,
+    input_output_aliases: Mapping[int, int] | None = None,
+    mesh: jax.sharding.Mesh | jax.sharding.AbstractMesh | None = None,
     input_partition_specs: tuple[tuple[str, ...], ...] | None = None,
     output_partition_specs: tuple[tuple[str, ...], ...] | None = None,
     *,
-    static_argnames: tuple[str, ...] = (),
+    static_argnames: Sequence[str] = (),
     warn_deprecated: bool = True,
 ) -> Callable[[Callable[..., Any]], JaxCallable]:
   ...  # Overload stub
@@ -1419,14 +1456,14 @@ def custom_jax_kernel(
 def custom_jax_kernel(
     jax_fn: Callable[..., Any],
     name: str | None = None,
-    static_argnums: tuple[int, ...] = (),
-    donate_argnums: list[int] | None = None,
-    input_output_aliases: dict[int, int] | None = None,
-    mesh: jax.sharding.Mesh | None = None,
+    static_argnums: Sequence[int] = (),
+    donate_argnums: Sequence[int] | None = None,
+    input_output_aliases: Mapping[int, int] | None = None,
+    mesh: jax.sharding.Mesh | jax.sharding.AbstractMesh | None = None,
     input_partition_specs: tuple[tuple[str, ...], ...] | None = None,
     output_partition_specs: tuple[tuple[str, ...], ...] | None = None,
     *,
-    static_argnames: tuple[str, ...] = (),
+    static_argnames: Sequence[str] = (),
     warn_deprecated: bool = True,
 ) -> JaxCallable:
   ...  # Overload stub
@@ -1438,7 +1475,7 @@ def custom_jax_kernel(
     static_argnums=(),
     donate_argnums=None,
     input_output_aliases=None,
-    mesh: jax.sharding.Mesh | None = None,
+    mesh: jax.sharding.Mesh | jax.sharding.AbstractMesh | None = None,
     input_partition_specs=None,
     output_partition_specs=None,
     *,
@@ -1553,7 +1590,7 @@ def jax_op(
     /,
     *,
     donate_argnums: Sequence[int] | None = None,
-    mesh: jax.sharding.Mesh | None = None,
+    mesh: jax.sharding.Mesh | jax.sharding.AbstractMesh | None = None,
     input_partition_specs: tuple[tuple[str, ...], ...] | None = None,
     output_partition_specs: tuple[tuple[str, ...], ...] | None = None,
 ) -> Callable[[Callable[..., Any]], CustomOpDef]:
@@ -1567,7 +1604,7 @@ def jax_op(
     /,
     *,
     donate_argnums: Sequence[int] | None = None,
-    mesh: jax.sharding.Mesh | None = None,
+    mesh: jax.sharding.Mesh | jax.sharding.AbstractMesh | None = None,
     input_partition_specs: tuple[tuple[str, ...], ...] | None = None,
     output_partition_specs: tuple[tuple[str, ...], ...] | None = None,
 ) -> CustomOpDef:
@@ -1583,7 +1620,7 @@ def jax_op(
     /,
     *,
     donate_argnums=None,
-    mesh: jax.sharding.Mesh | None = None,
+    mesh: jax.sharding.Mesh | jax.sharding.AbstractMesh | None = None,
     input_partition_specs=None,
     output_partition_specs=None,
 ):
@@ -1594,9 +1631,11 @@ def jax_op(
   It handles the necessary tracing and registration with the TPU backend.
 
   If arguments are donated those tensors will be left in an invalid state after
-  the kernel is called and should not be used again. Consider using a wrapper
-  function and copy_ or set_ to overwrite these invalid tensors to prevent
-  accidental reuse.
+  the kernel is called and should not be used again. In eager mode, use a
+  wrapper function with `x.set_(result)` (rather than `x.copy_(result)`, which
+  writes into the invalidated PJRT buffer) to repoint donated tensors to the
+  returned buffer; under `torch.compile`, AOTAutograd functionalizes full-tensor
+  `x.copy_(result)` into output aliasing without touching the donated buffer.
 
   Args:
     name: The name of the custom operator.
@@ -1640,12 +1679,11 @@ def jax_op(
         static_argnames=static_argnames,
         warn_deprecated=False,
     )
-    # Jax functions are inherently immutable, even donated args are immutable in
-    # that they are in an invalid state rather than mutated state, users can
-    # copy back if they require.
-    # If we mark donated args as mutable then Dynamo will copy back the
-    # original value of the donated arg which then defeats the purpose of
-    # donating.
+    # JAX functions are pure, and donated args are invalidated rather than
+    # mutated in place: marking donated args in `mutates_args` would make
+    # Dynamo copy the pre-call value back over the donated buffer, defeating
+    # buffer donation (callers rebind via `set_` in eager mode or full-tensor
+    # `copy_` under `torch.compile`).
     mutates_args = ()
 
     # We require that the user pass us a function that is make_fx traceable,
@@ -1672,14 +1710,29 @@ def jax_op(
       jax_args, jax_kwargs = wrapped_fn._get_jax_placeholders(
           norm_args, norm_kwargs
       )
-      with jax._src.config.export_ignore_forward_compatibility(True):
-        lowered = wrapped_fn.exported(*jax_args, **jax_kwargs)
+      if (
+          isinstance(mesh, jax.sharding.AbstractMesh)
+          and mesh.abstract_device is None
+      ):
+        out_struct = jax.eval_shape(wrapped_fn.jit_fn, *jax_args, **jax_kwargs)
+        out_leaves, out_tree = jax.tree.flatten(out_struct)
+        out_avals = [
+            jax.core.ShapedArray(leaf.shape, leaf.dtype)
+            if hasattr(leaf, "shape") and hasattr(leaf, "dtype")
+            else leaf
+            for leaf in out_leaves
+        ]
+      else:
+        with jax._src.config.export_ignore_forward_compatibility(True):
+          lowered = wrapped_fn.exported(*jax_args, **jax_kwargs)
+        out_avals = lowered.out_avals
+        out_tree = lowered.out_tree
       specs = _normalize_output_partition_specs(
-          output_partition_specs, len(lowered.out_avals)
-      ) or [None] * len(lowered.out_avals)
-      unflattened = lowered.out_tree.unflatten(
+          output_partition_specs, len(out_avals)
+      ) or [None] * len(out_avals)
+      unflattened = out_tree.unflatten(
           torch_placeholder(aval, mesh=mesh, partition_spec=spec, device=dev)
-          for aval, spec in zip(lowered.out_avals, specs)
+          for aval, spec in zip(out_avals, specs)
       )
       # pylint: enable=protected-access
       return unflattened

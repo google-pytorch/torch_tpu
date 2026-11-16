@@ -14,6 +14,7 @@
 import json
 import os
 import pathlib
+import re
 import shutil
 import threading
 import time
@@ -22,10 +23,18 @@ import unittest
 from absl import logging
 from absl.testing import absltest
 from absl.testing import parameterized
+import jax
+from jax.experimental import pallas as pl
+from jax.interpreters.mlir import ir
 import torch
 from torch.autograd import profiler
+from torch_tpu._internal import execution_mode
+from torch_tpu._internal import pallas
 from torch_tpu._internal import sync as tpu_sync
+from torch_tpu._internal.profiler import named_scope
 from torch_tpu._internal.profiler.profiler_config import TpuProfilerConfig
+from torch_tpu._internal.utils import utils
+from tests import oss_utils
 from tests import seed_test_utils
 
 # pylint: disable=g-direct-tensorflow-import
@@ -140,6 +149,48 @@ class SimpleTransformerModel(torch.nn.Module):
     return self.head(x)
 
 
+def _add_vectors_kernel(x_ref, y_ref, o_ref):
+  with jax.named_scope("kernel_add"):
+    o_ref[...] = x_ref[...] + y_ref[...]
+
+
+def _inner_pallas_add(x: jax.Array, y: jax.Array) -> jax.Array:
+  dt = jax.ShapeDtypeStruct(x.shape, x.dtype)
+  return pl.pallas_call(_add_vectors_kernel, out_shape=dt)(x, y)
+
+
+def _pallas_add_vectors(x: jax.Array, y: jax.Array) -> jax.Array:
+  with jax.named_scope("inner_jax_scope"):
+    return jax.jit(_inner_pallas_add)(x, y)
+
+
+_torch_inner_pallas_add = pallas.jax_op("pallas::inner_add", _inner_pallas_add)
+_torch_pallas_add_vectors = pallas.jax_op(
+    "pallas::add_vectors", _pallas_add_vectors
+)
+
+
+class _Block(torch.nn.Module):
+
+  def __init__(self, kernel_fn=_torch_pallas_add_vectors):
+    super().__init__()
+    self._kernel_fn = kernel_fn
+
+  def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    return self._kernel_fn(x, y)
+
+
+class _Model(torch.nn.Module):
+
+  def __init__(self, kernel_fn=_torch_pallas_add_vectors):
+    super().__init__()
+    self.layer = _Block(kernel_fn)
+
+  def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    with named_scope.named_scope("pallas_phase"):
+      return self.layer(x, y)
+
+
 def _cleanup_profile_dir() -> None:
   try:
     shutil.rmtree(_get_profile_dir())
@@ -157,6 +208,74 @@ def _get_profiler_options_bytes(xspace: xplane_pb2.XSpace) -> bytes:
       if metadata and metadata.name == "profile_options":
         return stat.bytes_value
   return b""
+
+
+def _device_tf_ops(xspace: xplane_pb2.XSpace) -> set[str]:
+  """Returns the `tf_op` stat (Framework Name Scope) of TPU device events.
+
+  On TPU the stat is attached to the event metadata of each HLO op (shared by
+  all occurrences of the op), so both the per-event and the per-metadata stats
+  are inspected.
+  """
+  tf_ops = set()
+  for plane in xspace.planes:
+    if "TPU" not in plane.name or plane.name.startswith("/host"):
+      continue
+    tf_op_ids = {
+        stat_id
+        for stat_id, metadata in plane.stat_metadata.items()
+        if metadata.name == "tf_op"
+    }
+    if not tf_op_ids:
+      continue
+
+    def stat_value(stat):
+      if stat.HasField("ref_value"):
+        return plane.stat_metadata[stat.ref_value].name
+      return stat.str_value
+
+    for metadata in plane.event_metadata.values():
+      for stat in metadata.stats:
+        if stat.metadata_id in tf_op_ids:
+          tf_ops.add(stat_value(stat))
+    for line in plane.lines:
+      for event in line.events:
+        for stat in event.stats:
+          if stat.metadata_id in tf_op_ids:
+            tf_ops.add(stat_value(stat))
+  return tf_ops
+
+
+def _device_traceme_events(xspace: xplane_pb2.XSpace) -> set[str]:
+  """Returns event names on the `XLA TraceMe` line of TPU device planes."""
+  events = set()
+  for plane in xspace.planes:
+    if not plane.name.startswith("/device:TPU:"):
+      continue
+    for line in plane.lines:
+      if line.name != "XLA TraceMe":
+        continue
+      for event in line.events:
+        events.add(plane.event_metadata[event.metadata_id].name)
+  return events
+
+
+def _describe_xspace(xspace: xplane_pb2.XSpace) -> str:
+  """Summarizes plane names and their stat names, for assertion messages."""
+  parts = []
+  for plane in xspace.planes:
+    stat_names = sorted({m.name for m in plane.stat_metadata.values()})
+    parts.append(f"{plane.name}: {stat_names[:40]}")
+  return "\n".join(parts)
+
+
+def _format_inline_mlir(mlir_text: str) -> str:
+  """Formats an MLIR module with inline debug locations."""
+  with jax.interpreters.mlir.make_ir_context() as ctx:
+    module = ir.Module.parse(mlir_text, context=ctx)
+    return module.operation.get_asm(
+        enable_debug_info=True, use_local_scope=True
+    )
 
 
 class ProfilerIntegrationTest(seed_test_utils.RepeatableTest):
@@ -624,6 +743,243 @@ class ProfilerIntegrationTest(seed_test_utils.RepeatableTest):
         b"q_proj[Linear]",
     ):
       self.assertIn(scope, content)
+
+  def test_named_scope_in_xprof(self):
+    """Checks that `named_scope` annotations reach the XProf trace."""
+
+    @named_scope.named_scope("rope")
+    def apply_rope(x: torch.Tensor, freqs: torch.Tensor) -> torch.Tensor:
+      return torch.matmul(x, freqs)
+
+    class ScopedAttention(torch.nn.Module):
+
+      def __init__(self, d_model: int):
+        super().__init__()
+        self.q_proj = torch.nn.Linear(d_model, d_model, bias=False)
+        self.k_proj = torch.nn.Linear(d_model, d_model, bias=False)
+        self.v_proj = torch.nn.Linear(d_model, d_model, bias=False)
+        self.out_proj = torch.nn.Linear(d_model, d_model, bias=False)
+        self.register_buffer("freqs", torch.eye(d_model))
+
+      def forward(self, x: torch.Tensor) -> torch.Tensor:
+        with named_scope.named_scope("qkv_proj"):
+          q = apply_rope(self.q_proj(x), self.freqs)
+          k = apply_rope(self.k_proj(x), self.freqs)
+          v = self.v_proj(x)
+        with named_scope.named_scope("sdpa"):
+          scores = torch.matmul(q, k.transpose(-2, -1))
+          probs = torch.softmax(scores, dim=-1)
+          attn_out = torch.matmul(probs, v)
+        return self.out_proj(attn_out)
+
+    class ScopedBlock(torch.nn.Module):
+
+      def __init__(self, d_model: int):
+        super().__init__()
+        self.attn = ScopedAttention(d_model)
+
+      def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.attn(x)
+
+    device = torch.device("tpu")
+    d_model = 192
+    model = ScopedBlock(d_model).to(device)
+    compiled_model = torch.compile(model, backend="tpu")
+    x = torch.randn((4, 64, d_model), device=device, requires_grad=True)
+
+    def train_step():
+      out = compiled_model(x)
+      # Default eager mode (DEFER_NEVER): each op is compiled on its own.
+      with named_scope.named_scope("eager_loss"):
+        loss = (out * out).sum()
+      loss.backward()
+      tpu_sync.synchronize(loss)
+      # DEFER_AND_FUSE: the scoped ops are fused into one executable.
+      with execution_mode.set_eager_mode(
+          execution_mode.EagerMode.DEFER_AND_FUSE
+      ):
+        with named_scope.named_scope("eager_fused"):
+          fused = (out.detach() + 1) * 2
+        tpu_sync.synchronize(fused)
+      torch.accelerator.synchronize()
+
+    # Compile both the initial gradient creation and the gradient accumulation
+    # before tracing.
+    for _ in range(2):
+      train_step()
+
+    output_dir = pathlib.Path(self.create_tempdir("named_scopes").full_path)
+
+    _cleanup_profile_dir()
+
+    with torch.profiler.profile(
+        activities=[
+            torch.profiler.ProfilerActivity.CPU,
+            torch.profiler.ProfilerActivity.TPU,  # type: ignore
+        ],
+        on_trace_ready=torch.profiler.tensorboard_trace_handler(output_dir),
+    ) as prof:
+      for _ in range(2):
+        train_step()
+        prof.step()
+
+    self._get_and_copy_xplane(output_dir / "xplane.pb")
+
+    # Verify the outer-to-inner `/`-joined scope hierarchy in the `tf_op` stat
+    # (XProf's Framework Name Scope, stored as `<op_name>:<op_type>`) of the
+    # TPU device events, not merely in the HLO module proto that the XPlane
+    # also carries.
+    xplane_bytes = (output_dir / "xplane.pb").read_bytes()
+    xspace = xplane_pb2.XSpace()
+    xspace.ParseFromString(xplane_bytes)
+    tf_ops = _device_tf_ops(xspace)
+    self.assertNotEmpty(tf_ops, _describe_xspace(xspace))
+    self.assertContainsSubset(
+        (
+            "attn[ScopedAttention]/qkv_proj/q_proj[Linear]/mm/mm:",
+            "attn[ScopedAttention]/qkv_proj/k_proj[Linear]/mm/mm:",
+            "attn[ScopedAttention]/qkv_proj/v_proj[Linear]/mm/mm:",
+            "attn[ScopedAttention]/qkv_proj/rope/mm/mm:",
+            "attn[ScopedAttention]/sdpa/bmm/bmm:",
+            "attn[ScopedAttention]/sdpa/softmax/softmax:",
+            "attn[ScopedAttention]/out_proj[Linear]/mm/mm:",
+            # Default eager mode (DEFER_NEVER).
+            "eager_loss/mul/mul:",
+            "eager_loss/sum/sum:",
+            # DEFER_AND_FUSE: the fusion carries the scope of its root op.
+            "eager_fused/mul/mul:",
+        ),
+        tf_ops,
+    )
+    # Backward ops keep their scopes in the HLO metadata, but XLA may fuse them
+    # into a fusion whose device event reports the root op's `tf_op` only, so
+    # the backward softmax is checked in the embedded HLO module instead.
+    # (`named_scope_test` asserts the backward StableHLO before fusion.)
+    self.assertIn(
+        b"attn[ScopedAttention]/sdpa/softmax_backward_data/softmax_backward_data",
+        xplane_bytes,
+    )
+
+  @unittest.skipIf(
+      oss_utils.is_oss() and utils.parse_version(jax.__version__) < (0, 12, 1),
+      "Requires jax/jaxlib >= 0.12.1 for exported MLIR location parity.",
+  )
+  def test_pallas_kernel_name_scopes(self):
+    """Checks that TorchTPU Pallas MLIR matches JAX except for caller scopes."""
+    jax_input_spec = jax.ShapeDtypeStruct((8, 128), jax.numpy.float32)
+    with jax._src.config.export_ignore_forward_compatibility(True):
+      jax_mlir = jax.export.export(
+          jax.jit(_inner_pallas_add),
+          platforms=["tpu"],
+          disabled_checks=[jax.export.DisabledSafetyCheck.custom_call("ALL")],
+      )(jax_input_spec, jax_input_spec).mlir_module()
+    # TorchTPU's `PartitionGlobalToLocal` round-trips imported custom kernels
+    # through HLO before inlining them into `@main`.
+    jax_mlir = _format_inline_mlir(
+        jax._src.lib._jax.mlir.xla_computation_to_mlir_module(
+            jax._src.lib._jax.mlir.mlir_module_to_xla_computation(jax_mlir)
+        )
+    )
+
+    device = torch.device("tpu")
+    model = _Model(_torch_inner_pallas_add).to(device)
+    debugs = []
+    compiled_model = torch.compile(
+        model,
+        backend="tpu",
+        options={"debug_callback": debugs.append},
+    )
+    x = torch.ones((8, 128), dtype=torch.float32, device=device)
+    y = torch.ones((8, 128), dtype=torch.float32, device=device)
+    compiled_model(x, y)
+
+    torch_tpu_mlir = _format_inline_mlir(
+        "\n".join(debugs[0].stablehlo_forward_text)
+    )
+    caller_scope = (
+        "pallas_phase/layer[_Block]/call_custom_kernel/"
+        "custom_kernel/pallas_inner_add"
+    )
+    self.assertIn(caller_scope, torch_tpu_mlir)
+    self.assertIn('at callsite("__call__"(', torch_tpu_mlir)
+    unwrapped_torch_tpu_mlir = re.sub(
+        rf'loc\(callsite\((.+?) at "{re.escape(caller_scope)}"\(.+\)\)\)',
+        r"loc(\1)",
+        torch_tpu_mlir,
+    )
+    # Compare `@main`'s body (skipping the `module` and `func.func @main`
+    # header lines, where JAX attaches parameter names `loc("x")`, `loc("y")`
+    # that are eliminated when TorchTPU inlines the kernel into `@main`).
+    self.assertEqual(
+        unwrapped_torch_tpu_mlir.splitlines()[2:],
+        jax_mlir.splitlines()[2:],
+    )
+
+  @oss_utils.skip_if_libtpu_version(
+      lambda v: v < (0, 0, 53),
+      "Requires libtpu >= 0.0.53 for CallSiteLoc op_name composition.",
+  )
+  def test_pallas_kernel_name_scopes_in_xprof(self):
+    """Checks that compiled and eager Pallas scopes reach the XProf trace."""
+    device = torch.device("tpu")
+    compiled_model = torch.compile(_Model().to(device), backend="tpu")
+    x = torch.ones((8, 128), dtype=torch.float32, device=device)
+    y = torch.ones((8, 128), dtype=torch.float32, device=device)
+    eager_x = torch.ones((4, 128), dtype=torch.float32, device=device)
+    eager_y = torch.ones((4, 128), dtype=torch.float32, device=device)
+
+    def step():
+      compiled_out = compiled_model(x, y)
+      with named_scope.named_scope("eager_pallas_scope"):
+        eager_out = _torch_pallas_add_vectors(eager_x, eager_y)
+      tpu_sync.synchronize(compiled_out)
+      tpu_sync.synchronize(eager_out)
+      torch.accelerator.synchronize()
+
+    output_dir = pathlib.Path(self.create_tempdir("pallas_scopes").full_path)
+    _cleanup_profile_dir()
+
+    # Warmup compilation before tracing. Custom-call region tracing must be
+    # enabled to emit TraceMe events for `jax.named_scope`.
+    with torch.tpu.compiler.custom_compiler_options(
+        {"xla_enable_custom_call_region_trace": "true"}
+    ):
+      step()
+      with torch.profiler.profile(
+          activities=[
+              torch.profiler.ProfilerActivity.CPU,
+              torch.profiler.ProfilerActivity.TPU,  # type: ignore
+          ],
+          on_trace_ready=torch.profiler.tensorboard_trace_handler(output_dir),
+      ) as prof:
+        step()
+        prof.step()
+
+    self._get_and_copy_xplane(output_dir / "xplane.pb")
+    xspace = xplane_pb2.XSpace.FromString(
+        (output_dir / "xplane.pb").read_bytes()
+    )
+    self.assertEqual(
+        _device_tf_ops(xspace),
+        {
+            (
+                "pallas_phase/layer[_Block]/call_custom_kernel/"
+                "custom_kernel/pallas_add_vectors/jit(_pallas_add_vectors)/"
+                "inner_jax_scope/jit(_inner_pallas_add)/pallas_call:"
+            ),
+            (
+                "eager_pallas_scope/call_custom_kernel/"
+                "custom_kernel/pallas_add_vectors/jit(_pallas_add_vectors)/"
+                "inner_jax_scope/jit(_inner_pallas_add)/pallas_call:"
+            ),
+        },
+        _describe_xspace(xspace),
+    )
+    self.assertEqual(
+        _device_traceme_events(xspace),
+        {"kernel_add"},
+        _describe_xspace(xspace),
+    )
 
   def test_tpu_profiler_config_override(self):
     """Verifies that TPU-specific profiler options are correctly applied."""

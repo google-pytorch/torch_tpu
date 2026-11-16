@@ -21,35 +21,54 @@ from absl.testing import absltest
 import jax
 from jax.experimental import pallas as pl
 from jax.experimental.pallas import tpu as pltpu
+from jax.experimental.pallas import tpu_sc as plsc
 import torch
 from torch import distributed as dist
 from torch_tpu._internal import pallas
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
+from tests import oss_utils
 from tests.distributed import continuous_test_utils
+from tests.distributed import distributed_utils
 
 P = jax.sharding.PartitionSpec
 
-EXPECTED_1D_ROLL_OUTPUT_BY_RANK = {
-    0: [57.0, 58.0, 59.0, 60.0, 61.0, 62.0, 63.0, 64.0],
-    1: [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
-    2: [9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0],
-    3: [17.0, 18.0, 19.0, 20.0, 21.0, 22.0, 23.0, 24.0],
-    4: [25.0, 26.0, 27.0, 28.0, 29.0, 30.0, 31.0, 32.0],
-    5: [33.0, 34.0, 35.0, 36.0, 37.0, 38.0, 39.0, 40.0],
-    6: [41.0, 42.0, 43.0, 44.0, 45.0, 46.0, 47.0, 48.0],
-    7: [49.0, 50.0, 51.0, 52.0, 53.0, 54.0, 55.0, 56.0],
+EXPECTED_1D_ROLL_OUTPUT_BY_WORLD_SIZE_AND_RANK = {
+    4: {
+        0: [25.0, 26.0, 27.0, 28.0, 29.0, 30.0, 31.0, 32.0],
+        1: [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+        2: [9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0],
+        3: [17.0, 18.0, 19.0, 20.0, 21.0, 22.0, 23.0, 24.0],
+    },
+    8: {
+        0: [57.0, 58.0, 59.0, 60.0, 61.0, 62.0, 63.0, 64.0],
+        1: [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+        2: [9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0],
+        3: [17.0, 18.0, 19.0, 20.0, 21.0, 22.0, 23.0, 24.0],
+        4: [25.0, 26.0, 27.0, 28.0, 29.0, 30.0, 31.0, 32.0],
+        5: [33.0, 34.0, 35.0, 36.0, 37.0, 38.0, 39.0, 40.0],
+        6: [41.0, 42.0, 43.0, 44.0, 45.0, 46.0, 47.0, 48.0],
+        7: [49.0, 50.0, 51.0, 52.0, 53.0, 54.0, 55.0, 56.0],
+    },
 }
 
-EXPECTED_2D_RANK_DP_ROLL_OUTPUT_BY_RANK = {
-    0: [[25.0, 26.0, 27.0, 28.0, 29.0, 30.0, 31.0, 32.0]],
-    1: [[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]],
-    2: [[9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0]],
-    3: [[17.0, 18.0, 19.0, 20.0, 21.0, 22.0, 23.0, 24.0]],
-    4: [[57.0, 58.0, 59.0, 60.0, 61.0, 62.0, 63.0, 64.0]],
-    5: [[33.0, 34.0, 35.0, 36.0, 37.0, 38.0, 39.0, 40.0]],
-    6: [[41.0, 42.0, 43.0, 44.0, 45.0, 46.0, 47.0, 48.0]],
-    7: [[49.0, 50.0, 51.0, 52.0, 53.0, 54.0, 55.0, 56.0]],
+EXPECTED_2D_RANK_DP_ROLL_OUTPUT_BY_WORLD_SIZE_AND_RANK = {
+    4: {
+        0: [[9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0]],
+        1: [[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]],
+        2: [[25.0, 26.0, 27.0, 28.0, 29.0, 30.0, 31.0, 32.0]],
+        3: [[17.0, 18.0, 19.0, 20.0, 21.0, 22.0, 23.0, 24.0]],
+    },
+    8: {
+        0: [[25.0, 26.0, 27.0, 28.0, 29.0, 30.0, 31.0, 32.0]],
+        1: [[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]],
+        2: [[9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0]],
+        3: [[17.0, 18.0, 19.0, 20.0, 21.0, 22.0, 23.0, 24.0]],
+        4: [[57.0, 58.0, 59.0, 60.0, 61.0, 62.0, 63.0, 64.0]],
+        5: [[33.0, 34.0, 35.0, 36.0, 37.0, 38.0, 39.0, 40.0]],
+        6: [[41.0, 42.0, 43.0, 44.0, 45.0, 46.0, 47.0, 48.0]],
+        7: [[49.0, 50.0, 51.0, 52.0, 53.0, 54.0, 55.0, 56.0]],
+    },
 }
 
 # ==============================================================================
@@ -127,7 +146,7 @@ def create_1d_mesh_roll_op(mesh, op_name="pallas::mesh_1d_roll"):
 def _run_1d_mesh(do_compile):
   device = torch.device("tpu")
   world_size = dist.get_world_size()
-  assert world_size == 8, f"Test requires 8 ranks, got {world_size}"
+  assert world_size in (4, 8), f"Test requires 4 or 8 ranks, got {world_size}"
   rank = dist.get_rank()
 
   num_per_rank = 8
@@ -160,7 +179,7 @@ def _run_1d_mesh(do_compile):
   y = roll_op_plus_one(x)
 
   y_expected = torch.tensor(
-      EXPECTED_1D_ROLL_OUTPUT_BY_RANK[rank],
+      EXPECTED_1D_ROLL_OUTPUT_BY_WORLD_SIZE_AND_RANK[world_size][rank],
       dtype=torch.float32,
       device=device,
   )
@@ -247,14 +266,14 @@ def create_2d_rank_dp_mesh_roll_op(
 def _run_2d_rank_dp_mesh(do_compile):
   device = torch.device("tpu")
   world_size = dist.get_world_size()
-  assert world_size == 8, f"Test requires 8 ranks, got {world_size}"
+  assert world_size in (4, 8), f"Test requires 4 or 8 ranks, got {world_size}"
   rank = dist.get_rank()
 
   num_per_rank = 8
 
-  # Create 2D mesh: ('rank', 'dp') with shape (2, 4), spanning world_size 8.
+  # Create 2D mesh: ('rank', 'dp') with shape (2, world_size // 2).
   mesh = torch.tpu.pallas.get_pallas_mesh(
-      axis_names=("rank", "dp"), mesh_shape=(2, 4)
+      axis_names=("rank", "dp"), mesh_shape=(2, world_size // 2)
   )
   assert isinstance(mesh, jax.sharding.Mesh)
 
@@ -285,7 +304,7 @@ def _run_2d_rank_dp_mesh(do_compile):
   y = roll_op_plus_one(x)
 
   y_expected = torch.tensor(
-      EXPECTED_2D_RANK_DP_ROLL_OUTPUT_BY_RANK[rank],
+      EXPECTED_2D_RANK_DP_ROLL_OUTPUT_BY_WORLD_SIZE_AND_RANK[world_size][rank],
       dtype=torch.float32,
       device=device,
   )
@@ -305,7 +324,7 @@ def _run_2d_rank_dp_mesh(do_compile):
 def _run_combined_collective_and_pallas(do_compile: bool = True):
   device = torch.device("tpu")
   world_size = dist.get_world_size()
-  assert world_size == 8, f"Test requires 8 ranks, got {world_size}"
+  assert world_size in (4, 8), f"Test requires 4 or 8 ranks, got {world_size}"
   rank = dist.get_rank()
 
   num_per_rank = 8
@@ -339,13 +358,13 @@ def _run_combined_collective_and_pallas(do_compile: bool = True):
   x = generate_input(rank, num_per_rank)
   y = combined_fn(x)
 
-  # After all_reduce across 8 ranks, sum of ranks is sum(range(8)) = 28.
-  # For each element i: sum_r (r * 8 + i) = 28 * 8 + 8 * i = 224 + 8 * i.
-  # roll_op shifts within world mesh: rank r sends to (r + 1) % 8, receives from (r - 1) % 8.
-  # All ranks hold identical values after all_reduce, so roll_op outputs 224 + 8 * i.
-  # Then + 1 gives 225 + 8 * i.
+  # After all_reduce across world_size ranks, for each element i:
+  # sum_r (r * num_per_rank + i) = sum(range(world_size)) * num_per_rank + world_size * i.
+  # roll_op shifts within world mesh, where all ranks hold identical values after all_reduce.
+  # Then + 1 is added.
+  rank_sum = sum(range(world_size)) * num_per_rank
   y_expected = torch.tensor(
-      [224 + 8 * i + 1 for i in range(num_per_rank)],
+      [rank_sum + world_size * i + 1 for i in range(num_per_rank)],
       dtype=torch.float32,
       device=device,
   )
@@ -404,13 +423,156 @@ def _test_pallas_axis_index_rank_equivalence():
   utils.assert_close(y, torch.full_like(x, rank))
 
 
+def _test_sparsecore_vector_subcore_dma(
+    test_case: continuous_test_utils.TpuMultiProcContinuousTest,
+):
+  if torch.tpu.get_device_properties().sparse_cores_per_device == 0:
+    test_case.skipTest("SparseCore is not supported on this TPU device.")
+
+  device = torch.device("tpu")
+  rank = dist.get_rank()
+  world_size = dist.get_world_size()
+
+  @pallas.jax_op("test_pallas_comm::sc_async_dma_add")
+  def sc_async_dma_add(x: jax.Array, y: jax.Array) -> jax.Array:
+    mesh = plsc.VectorSubcoreMesh(
+        core_axis_name="core",
+        subcore_axis_name="subcore",
+        num_cores=1,
+        num_subcores=1,
+    )
+
+    @pl.kernel(
+        out_type=jax.ShapeDtypeStruct(x.shape, x.dtype),
+        mesh=mesh,
+        scratch_types=[
+            pltpu.VMEM(x.shape, x.dtype),
+            pltpu.VMEM(y.shape, y.dtype),
+            pltpu.VMEM(x.shape, x.dtype),
+            pltpu.SemaphoreType.DMA(()),
+        ],
+    )
+    def kernel(
+        x_hbm_ref,
+        y_hbm_ref,
+        o_hbm_ref,
+        x_vmem_ref,
+        y_vmem_ref,
+        o_vmem_ref,
+        dma_sem,
+    ):
+      pltpu.async_copy(x_hbm_ref, x_vmem_ref, dma_sem).wait()
+      pltpu.async_copy(y_hbm_ref, y_vmem_ref, dma_sem).wait()
+      o_vmem_ref[...] = x_vmem_ref[...] + y_vmem_ref[...]
+      pltpu.async_copy(o_vmem_ref, o_hbm_ref, dma_sem).wait()
+
+    return kernel(x, y)
+
+  num_lanes = plsc.get_sparse_core_info().num_lanes
+  x = torch.arange(num_lanes, dtype=torch.float32, device=device) + float(
+      rank * 100
+  )
+  y = torch.arange(num_lanes, dtype=torch.float32, device=device) * 2.0
+  expected = x + y
+  actual = sc_async_dma_add(x, y)
+  logging.info("rank = %d/%d, actual = %s", rank, world_size, actual.cpu())
+  utils.assert_close(actual, expected)
+
+  dist.all_reduce(actual)
+  rank_offset_sum = sum(r * 100.0 for r in range(world_size))
+  expected_reduced = (
+      torch.arange(num_lanes, dtype=torch.float32, device=device)
+      * (3.0 * world_size)
+      + rank_offset_sum
+  )
+  utils.assert_close(actual, expected_reduced)
+
+
+def _test_sparsecore_vector_subcore_remote_dma(
+    test_case: continuous_test_utils.TpuMultiProcContinuousTest,
+):
+  if torch.tpu.get_device_properties().sparse_cores_per_device == 0:
+    test_case.skipTest("SparseCore is not supported on this TPU device.")
+
+  device = torch.device("tpu")
+  rank = dist.get_rank()
+  world_size = dist.get_world_size()
+
+  pallas_mesh = pallas.get_default_pallas_mesh()
+
+  def sc_remote_copy_jax(x_global: jax.Array) -> jax.Array:
+    sc_mesh = plsc.VectorSubcoreMesh(
+        core_axis_name="core",
+        subcore_axis_name="subcore",
+    )
+
+    def shard_kernel(x_local: jax.Array) -> jax.Array:
+      @pl.kernel(
+          out_type=jax.ShapeDtypeStruct(x_local.shape, x_local.dtype),
+          mesh=sc_mesh,
+          scratch_types=[
+              pltpu.SemaphoreType.DMA(()),
+              pltpu.SemaphoreType.DMA(()),
+          ],
+      )
+      def rcopy_kernel(x_hbm_ref, o_hbm_ref, send_sem, recv_sem):
+        core_id = jax.lax.axis_index("core")
+        subcore_id = jax.lax.axis_index("subcore")
+        my_rank = jax.lax.axis_index("rank")
+        num_ranks = jax.lax.axis_size("rank")
+        next_rank = jax.lax.rem(my_rank + 1, num_ranks)
+
+        @pl.when((core_id == 0) & (subcore_id == 0))
+        def _():
+          desc = pltpu.make_async_remote_copy(
+              src_ref=x_hbm_ref,
+              dst_ref=o_hbm_ref,
+              send_sem=send_sem,
+              recv_sem=recv_sem,
+              device_id={"rank": next_rank},
+          )
+          desc.start()
+          desc.wait()
+
+      return rcopy_kernel(x_local)
+
+    return jax.shard_map(
+        shard_kernel,
+        in_specs=(P("rank"),),
+        out_specs=P("rank"),
+        mesh=pallas_mesh,
+        check_vma=False,
+    )(x_global)
+
+  sc_remote_copy = pallas.jax_op(
+      "test_pallas_comm::sc_remote_copy",
+      sc_remote_copy_jax,
+      mesh=pallas_mesh,
+      input_partition_specs=[P("rank")],
+      output_partition_specs=[P("rank")],
+  )
+  num_lanes = plsc.get_sparse_core_info().num_lanes
+  x = torch.arange(num_lanes, dtype=torch.float32, device=device) + float(
+      rank * 100
+  )
+  actual = sc_remote_copy(x)
+  prev_rank = (rank - 1) % world_size
+  expected = torch.arange(
+      num_lanes, dtype=torch.float32, device=device
+  ) + float(prev_rank * 100)
+  logging.info(
+      "rank = %d/%d, rcopy actual = %s", rank, world_size, actual.cpu()
+  )
+  utils.assert_close(actual, expected)
+
+
 class TestPallasCommunicationKernels(
     continuous_test_utils.TpuMultiProcContinuousTest
 ):
 
   @property
   def world_size(self) -> int:
-    return 8
+    return distributed_utils.get_tpu_device_count()
 
   def test_1d_mesh_kernel_communication_eager(self):
     _run_1d_mesh(False)
@@ -432,6 +594,17 @@ class TestPallasCommunicationKernels(
 
   def test_pallas_axis_index_rank_equivalence(self):
     _test_pallas_axis_index_rank_equivalence()
+
+  def test_sparsecore_vector_subcore_dma(self):
+    _test_sparsecore_vector_subcore_dma(self)
+
+  @absltest.skipIf(
+      oss_utils.is_oss(),
+      "TODO(b/583954854): Fails on OSS TPU v6e (GlobalAllocationAssignment"
+      " smem alloca in TEC) and times out on TPU v7x.",
+  )
+  def test_sparsecore_vector_subcore_remote_dma(self):
+    _test_sparsecore_vector_subcore_remote_dma(self)
 
 
 if __name__ == "__main__":

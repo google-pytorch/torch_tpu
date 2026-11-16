@@ -12,10 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from collections.abc import Callable
+import ctypes
 import functools
 import struct
 import threading
-from typing import Any, Callable
+from typing import Any
 import unittest
 
 from absl import flags
@@ -840,13 +842,14 @@ class CompiledRngTest(_BaseRngTest):
     mask_bwd = x.grad > 0
     self.assertTrue(torch.equal(mask_fwd, mask_bwd))
 
-  # TODO: b/576283069 - Remove skip once minimum OSS PyTorch is >= 2.12.0.
+  # TODO: b/585211199 - Remove skip once minimum OSS PyTorch is >= 2.13.0.
   @oss_utils.skip_in_oss(
-      "Generic graphsafe RNG for TPU in AOTAutograd requires PyTorch >= 2.12.0"
+      "Generic graphsafe RNG for TPU in AOTAutograd requires PyTorch >= 2.13.0"
       " (PR #182391); OSS CI currently runs on PyTorch 2.11.0."
   )
   def test_compiled_activation_checkpointing_dropout(self):
     """Verifies non-reentrant activation checkpointing reproduces the mask."""
+
     class CheckpointModel(torch.nn.Module):
 
       def __init__(self):
@@ -1143,13 +1146,19 @@ class MultiThreadRngTest(_BaseRngTest):
     # Force Dynamo to re-compile on each iteration by passing a different shape
     # with dynamic=False, triggering a fresh compilation cycle without caching.
     compiled = torch.compile(fn_to_compile, dynamic=False)
+    # Compiles are ~10x slower under sanitizers (which define these symbols),
+    # so compile fewer times there.
+    global_syms = ctypes.CDLL(None)
+    sanitizers = ("asan", "msan", "tsan")
+    sanitized = any(hasattr(global_syms, f"__{s}_init") for s in sanitizers)
+    num_compiles = 2 if sanitized else 10
 
     def compile_worker():
       # Inductor configs are thread-scoped via ContextVar; patch compile_threads
       # in the worker thread to ensure synchronous compilation during tracing.
       with torch._inductor.config.patch(compile_threads=1):
         try:
-          for i in range(10):
+          for i in range(num_compiles):
             if stop_event.is_set():
               break
             x = torch.zeros(10 + i, device=self.device)

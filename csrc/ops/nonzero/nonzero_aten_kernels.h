@@ -18,6 +18,7 @@
 #define TORCH_TPU_CSRC_OPS_NONZERO_NONZERO_ATEN_KERNELS_H_
 
 #include "ATen/core/TensorBody.h"
+#include "c10/core/SymInt.h"
 
 namespace torch_tpu {
 
@@ -27,6 +28,12 @@ namespace torch_tpu {
 at::Tensor AtenNonzero(const at::Tensor& self);
 
 at::Tensor& AtenNonzeroOut(const at::Tensor& self, at::Tensor& out);
+
+at::Tensor AtenNonzeroStatic(const at::Tensor& self, c10::SymInt size,
+                             int64_t fill_value);
+
+at::Tensor& AtenNonzeroStaticOut(const at::Tensor& self, c10::SymInt size,
+                                 int64_t fill_value, at::Tensor& out);
 
 }  // namespace torch_tpu
 

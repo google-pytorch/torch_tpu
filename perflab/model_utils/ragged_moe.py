@@ -222,6 +222,7 @@ class RaggedExpertsGemma4(torch.nn.Module):
           Callable[[torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor]
           | None
       ) = None,
+      dtype: torch.dtype | None = None,
   ):
     super().__init__()
     self.num_experts = config.num_experts
@@ -231,19 +232,28 @@ class RaggedExpertsGemma4(torch.nn.Module):
 
     self.up = torch.nn.Parameter(
         torch.randn(
-            self.num_experts, self.hidden_size, self.moe_intermediate_size
+            self.num_experts,
+            self.hidden_size,
+            self.moe_intermediate_size,
+            dtype=dtype,
         )
         / math.sqrt(self.hidden_size)
     )
     self.gate = torch.nn.Parameter(
         torch.randn(
-            self.num_experts, self.hidden_size, self.moe_intermediate_size
+            self.num_experts,
+            self.hidden_size,
+            self.moe_intermediate_size,
+            dtype=dtype,
         )
         / math.sqrt(self.hidden_size)
     )
     self.down = torch.nn.Parameter(
         torch.randn(
-            self.num_experts, self.moe_intermediate_size, self.hidden_size
+            self.num_experts,
+            self.moe_intermediate_size,
+            self.hidden_size,
+            dtype=dtype,
         )
         / math.sqrt(self.moe_intermediate_size)
     )

@@ -140,8 +140,6 @@ absl::StatusOr<LayerNormShloResults> BuildLayerNormShlo(
 
   const mlir::FloatType stats_float_type =
       mlir::cast<mlir::FloatType>(stats_type);
-  const auto stats_tensor_type =
-      mlir::RankedTensorType::get(input_type.getShape(), stats_type);
 
   const mlir::MlirOp x_squared =
       mlir::stablehlo::Mul(input_casted, input_casted);
@@ -186,13 +184,15 @@ absl::StatusOr<LayerNormShloResults> BuildLayerNormShlo(
   mlir::MlirOp variance_plus_eps = mlir::stablehlo::Add(variance, eps_op);
   mlir::MlirOp rstd = mlir::stablehlo::Rsqrt(variance_plus_eps);
 
-  mlir::MlirOp mean_broadcasted =
-      mlir::stablehlo::BroadcastInDim(stats_tensor_type, mean, unreduced_axes);
+  // Broadcast with `BroadcastIfNeeded`, which keeps bounded dynamic dimensions
+  // of the input bounded.
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp mean_broadcasted,
+                      BroadcastIfNeeded(mean, input_casted, unreduced_axes));
   mlir::MlirOp input_minus_mean =
       mlir::stablehlo::Subtract(input_casted, mean_broadcasted);
 
-  mlir::MlirOp rstd_broadcasted =
-      mlir::stablehlo::BroadcastInDim(stats_tensor_type, rstd, unreduced_axes);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp rstd_broadcasted,
+                      BroadcastIfNeeded(rstd, input_casted, unreduced_axes));
 
   // Compute normalized input by multiplying (input - mean) by rstd.
   mlir::MlirOp normalized_input =
@@ -208,16 +208,17 @@ absl::StatusOr<LayerNormShloResults> BuildLayerNormShlo(
 
   mlir::MlirOp normalized_input_times_weight = normalized_input_casted;
   if (weight_op.has_value()) {
-    mlir::MlirOp weight_broadcasted =
-        mlir::stablehlo::BroadcastInDim(input_type, *weight_op, reduction_axes);
+    TT_ASSIGN_OR_RETURN(
+        mlir::MlirOp weight_broadcasted,
+        BroadcastIfNeeded(*weight_op, input_op, reduction_axes));
     normalized_input_times_weight =
         mlir::stablehlo::Mul(normalized_input_casted, weight_broadcasted);
   }
 
   mlir::MlirOp affine_output = normalized_input_times_weight;
   if (bias_op.has_value()) {
-    mlir::MlirOp bias_broadcasted =
-        mlir::stablehlo::BroadcastInDim(input_type, *bias_op, reduction_axes);
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp bias_broadcasted,
+                        BroadcastIfNeeded(*bias_op, input_op, reduction_axes));
 
     affine_output =
         mlir::stablehlo::Add(normalized_input_times_weight, bias_broadcasted);
@@ -292,11 +293,12 @@ absl::StatusOr<LayerNormBackwardShloResults> BuildLayerNormBackwardShlo(
       norm_dims.push_back(i);
   }
 
-  // Broadcast mean/rstd to x shape.
-  mlir::MlirOp mean_bcast =
-      mlir::stablehlo::BroadcastInDim(x.getType(), mean, all_dims);
-  mlir::MlirOp rstd_bcast =
-      mlir::stablehlo::BroadcastInDim(x.getType(), rstd, all_dims);
+  // Broadcast mean/rstd to x shape. As in the forward pass, `BroadcastIfNeeded`
+  // keeps bounded dynamic dimensions of x bounded.
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp mean_bcast,
+                      BroadcastIfNeeded(mean, x, all_dims));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp rstd_bcast,
+                      BroadcastIfNeeded(rstd, x, all_dims));
 
   // x_hat = (x - mean) * rstd
   mlir::MlirOp x_hat = mlir::stablehlo::Subtract(x, mean_bcast);
@@ -309,7 +311,7 @@ absl::StatusOr<LayerNormBackwardShloResults> BuildLayerNormBackwardShlo(
     if (needs_upcast) {
       TT_ASSIGN_OR_RETURN(w, PromoteFloatDtype(w));
     }
-    gamma_bcast = mlir::stablehlo::BroadcastInDim(x.getType(), w, norm_dims);
+    TT_ASSIGN_OR_RETURN(gamma_bcast, BroadcastIfNeeded(w, x, norm_dims));
   }
 
   // dgamma = sum_batch(dy * x_hat)
@@ -359,10 +361,10 @@ absl::StatusOr<LayerNormBackwardShloResults> BuildLayerNormBackwardShlo(
   mlir::MlirOp inv_n = MakeConstantLike(a1, inv_n_val);
   mlir::MlirOp a1_scaled = mlir::stablehlo::Mul(a1, inv_n);
   mlir::MlirOp a2_scaled = mlir::stablehlo::Mul(a2, inv_n);
-  mlir::MlirOp a1_bcast =
-      mlir::stablehlo::BroadcastInDim(x.getType(), a1_scaled, batch_dims);
-  mlir::MlirOp a2_bcast =
-      mlir::stablehlo::BroadcastInDim(x.getType(), a2_scaled, batch_dims);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp a1_bcast,
+                      BroadcastIfNeeded(a1_scaled, x, batch_dims));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp a2_bcast,
+                      BroadcastIfNeeded(a2_scaled, x, batch_dims));
 
   mlir::MlirOp dx = mlir::stablehlo::Subtract(dy_gamma, a1_bcast);
   mlir::MlirOp x_hat_a2 = mlir::stablehlo::Mul(x_hat, a2_bcast);

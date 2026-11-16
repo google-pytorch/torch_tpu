@@ -110,8 +110,8 @@ jobs:
   # in //tests/api:tt_apis_test) doesn't block submission.
   # The RBE job and its self-hosted fallback are gated here rather than as
   # separate Copybara check runs so that a red RBE run does not block a merge
-  # once the fallback has passed. A skipped RBE job on a fork PR or an
-  # opted-out dispatch is still a pass.
+  # once the fallback has passed. A skipped RBE job on an opted-out dispatch is
+  # still a pass.
   presubmit_tests_passed:
     name: "Presubmit"
     needs: [run_tests, tpu_v5_newest_deps, rbe_presubmit, rbe_tpu_v5_fallback]
@@ -122,7 +122,7 @@ jobs:
         env:
           RUN_TESTS_RESULT: ${{ needs.run_tests.result }}
           NEWEST_DEPS_RESULT: ${{ needs.tpu_v5_newest_deps.result }}
-          RBE_EXPECTED: ${{ inputs.run_rbe_presubmit || github.event.pull_request.head.repo.full_name == github.repository }}
+          RBE_EXPECTED: ${{ inputs.run_rbe_presubmit || github.event_name == 'pull_request' }}
           RBE_RESULT: ${{ needs.rbe_presubmit.result }}
           RBE_FALLBACK_RESULT: ${{ needs.rbe_tpu_v5_fallback.result }}
         run: |
@@ -148,16 +148,16 @@ jobs:
             exit 1
           fi
 
-  # Runs CPU and single-chip TPU v5e presubmit tests on RBE. Runs on every
-  # same-repo PR, never on fork PRs, and on workflow_dispatch when
-  # `run_rbe_presubmit` is set. Set the RBE_PRESUBMIT_ENABLED repo variable to
-  # `false` during an RBE outage to skip RBE and run the fallback job instead.
+  # Runs CPU and single-chip TPU v5e presubmit tests on RBE. Runs on every PR
+  # (including fork PRs) and on workflow_dispatch when `run_rbe_presubmit` is
+  # set. Set the RBE_PRESUBMIT_ENABLED repo variable to `false` during an RBE
+  # outage to skip RBE and run the fallback job instead.
   rbe_presubmit:
     name: "Presubmit on RBE"
     timeout-minutes: 120
     if: >-
       vars.RBE_PRESUBMIT_ENABLED != 'false' &&
-      (inputs.run_rbe_presubmit || github.event.pull_request.head.repo.full_name == github.repository)
+      (inputs.run_rbe_presubmit || github.event_name == 'pull_request')
     runs-on: linux-x86-n4-16
     outputs:
       bazel_exit_code: ${{ steps.bazel_diff.outputs.exit_code }}
@@ -250,7 +250,7 @@ jobs:
     needs: rbe_presubmit
     if: >-
       !cancelled() &&
-      (inputs.run_rbe_presubmit || github.event.pull_request.head.repo.full_name == github.repository) && (
+      (inputs.run_rbe_presubmit || github.event_name == 'pull_request') && (
         needs.rbe_presubmit.result == 'skipped' ||
         needs.rbe_presubmit.result == 'cancelled' ||
         (needs.rbe_presubmit.result == 'failure' &&
@@ -297,7 +297,7 @@ jobs:
       # E.g. the test outputs of tt_apis_test have the up-to-date tt_apis.yaml
       # and public_apis.md.
       - name: Upload Test Logs on Failure
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         if: failure()
         with:
           name: bazel-testlogs-newest-deps

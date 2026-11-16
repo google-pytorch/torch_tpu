@@ -133,8 +133,7 @@ at::Tensor& AtenLerpScalarOut(const at::Tensor& self, const at::Tensor& end,
     // demote to the matching real dtype so that ComplexSafeConvertElementType
     // in BuildLerpShlo can construct the complex operand without host
     // downcasts.
-    if (c10::isComplexType(weight_dtype) &&
-        !promoted_weight.scalar().isComplex()) {
+    if (IsComplex(weight_dtype) && !promoted_weight.scalar().isComplex()) {
       weight_dtype = c10::toRealValueType(weight_dtype);
     }
     TT_ASSIGN_OR_THROW(auto weight_tensor,

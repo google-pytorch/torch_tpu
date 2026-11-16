@@ -58,6 +58,7 @@ torch_tpu_py_library(
         "//src/torch_tpu/_internal/benchmarks:xprof_adapter",
         "//src/torch_tpu/_internal/compile:tpu_torch_compile",
         "//src/torch_tpu/_internal/execution_mode",
+        "//src/torch_tpu/_internal/profiler:named_scope",
         "//src/torch_tpu/_internal/utils:annotations",
     ],
 )

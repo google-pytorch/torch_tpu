@@ -20,10 +20,18 @@
 
 #include "csrc/mlir/passes/dummy_pass.h"
 #include "csrc/mlir/passes/fold_concat_softmax.h"
+#include "csrc/mlir/passes/guard_zero_operand_custom_calls.h"
 #include "csrc/mlir/passes/lower_separable_gather_to_dot.h"
 #include "csrc/mlir/passes/reassociate_norm_weights.h"
+#include "csrc/mlir/pipeline.h"
+#include "llvm/ADT/STLFunctionalExtras.h"
+#include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/Twine.h"
+#include "llvm/Support/LogicalResult.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/Pass/Pass.h"
+#include "mlir/Pass/PassManager.h"
+#include "mlir/Pass/PassOptions.h"
 #include "mlir/Pass/PassRegistry.h"
 #include "stablehlo/dialect/Register.h"
 
@@ -41,6 +49,28 @@ void RegisterTorchTpuPasses() {
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return createFoldConcatSoftmaxPass();
   });
+  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return createGuardZeroOperandCustomCallsPass();
+  });
+  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return createUnguardZeroOperandCustomCallsPass();
+  });
+  mlir::registerPassPipeline(
+      "torch-tpu-optimization-pipeline",
+      "The full Torch TPU MLIR optimization pipeline run on every compiled "
+      "module (see RunTorchTpuOptimizationPasses). Must be anchored on "
+      "builtin.module.",
+      [](mlir::OpPassManager& pm, llvm::StringRef options,
+         llvm::function_ref<llvm::LogicalResult(const llvm::Twine&)>
+             error_handler) -> llvm::LogicalResult {
+        if (!options.empty()) {
+          return error_handler(
+              "torch-tpu-optimization-pipeline does not take options");
+        }
+        AddTorchTpuOptimizationPasses(pm);
+        return llvm::success();
+      },
+      [](llvm::function_ref<void(const mlir::detail::PassOptions&)>) {});
 }
 
 void RegisterTorchTpuDialects(mlir::DialectRegistry& registry) {

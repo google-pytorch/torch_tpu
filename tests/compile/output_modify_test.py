@@ -14,8 +14,8 @@
 
 """Ensure we error out at torch.compile() when "dynamic" is applied."""
 
+from collections.abc import Callable
 import os
-from typing import Callable, List, Tuple
 
 from absl import logging
 from absl.testing import absltest
@@ -29,10 +29,10 @@ from tests import seed_test_utils
 def _run_tpu_backend_with_injected_test_case(
     compiler_instance: compiler.StaticCompiler,
     inject_test_case: Callable[
-        [torch.fx.GraphModule, List[torch.Tensor]],
-        Tuple[torch.fx.GraphModule, List[torch.Tensor]],
+        [torch.fx.GraphModule, list[torch.Tensor]],
+        tuple[torch.fx.GraphModule, list[torch.Tensor]],
     ],
-    map_output: Callable[List[torch.Tensor], List[torch.Tensor]],
+    map_output: Callable[[list[torch.Tensor]], list[torch.Tensor]],
 ):
   """Wraps a TpuBackend to inject graph/output modifications for testing.
 
@@ -58,7 +58,7 @@ def _run_tpu_backend_with_injected_test_case(
     A backend function compatible with `torch.compile`.
   """
 
-  def _inner(gm: torch.fx.GraphModule, example_inputs: List[torch.Tensor]):
+  def _inner(gm: torch.fx.GraphModule, example_inputs: list[torch.Tensor]):
     logging.info("before injecting test case %s", gm.code)
     # 1. Inject test-specific modifications to the graph and/or inputs.
     # Modify the graph and example inputs to reproduce a test scenario.
@@ -104,8 +104,8 @@ class OutputModifyTest(seed_test_utils.RepeatableTest):
 
     # Note that _add_none_to_output must be paired with _remove_none_from_output
     def _add_none_to_output(
-        gm: torch.fx.GraphModule, example_inputs: List[torch.Tensor]
-    ) -> Tuple[torch.fx.GraphModule, List[torch.Tensor]]:
+        gm: torch.fx.GraphModule, example_inputs: list[torch.Tensor]
+    ) -> tuple[torch.fx.GraphModule, list[torch.Tensor]]:
       for node in reversed(gm.graph.nodes):
         if node.op == "output":
           # Add a None to the beginning of the output
@@ -117,8 +117,8 @@ class OutputModifyTest(seed_test_utils.RepeatableTest):
       return gm, example_inputs
 
     def _remove_none_from_output(
-        results: List[torch.Tensor],
-    ) -> List[torch.Tensor]:
+        results: list[torch.Tensor],
+    ) -> list[torch.Tensor]:
       # Ignore the None we added
       self.assertIsNone(results[0])
       return results[1]
@@ -145,8 +145,8 @@ class OutputModifyTest(seed_test_utils.RepeatableTest):
       return a, b, a
 
     def _assert_no_duplicate_output(
-        results: List[torch.Tensor],
-    ) -> List[torch.Tensor]:
+        results: list[torch.Tensor],
+    ) -> list[torch.Tensor]:
       # The third output should be dropped internally.
       self.assertLen(results, 2)
       return results

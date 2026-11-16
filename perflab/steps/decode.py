@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from collections.abc import Mapping, Sequence, Set
 import copy
 import functools
 import inspect
@@ -106,7 +107,7 @@ def _apply_projection(
 
 
 @functools.lru_cache(maxsize=256)
-def _inspect_params(fn: Any) -> tuple[frozenset[str], bool] | None:
+def _inspect_params(fn: Any) -> tuple[Set[str], bool] | None:
   """Returns (parameter names, accepts **kwargs) for fn, or None if unknown."""
   try:
     sig = inspect.signature(fn)
@@ -117,7 +118,7 @@ def _inspect_params(fn: Any) -> tuple[frozenset[str], bool] | None:
   )
 
 
-def _forward_param_spec(target_fn: Any) -> tuple[frozenset[str], bool] | None:
+def _forward_param_spec(target_fn: Any) -> tuple[Set[str], bool] | None:
   """Memoized `_inspect_params`, safe to call on every decode step.
 
   The decode loop calls this once per generated token, so the underlying
@@ -277,6 +278,53 @@ def _supports_early_initialization(cache: Any) -> bool:
   )
 
 
+def _early_init_head_shapes(
+    cfg: Any,
+    num_layers: int,
+    default_num_heads: int,
+    default_head_dim: int,
+) -> tuple[int | list[int], int | list[int]]:
+  """Returns `(num_heads, head_dim)` for `Cache.early_initialization`.
+
+  Heterogeneous configs (e.g. Gemma 4, whose full-attention layers use a wider
+  `global_head_dim` and fewer KV heads than its sliding-window layers) expose
+  per-layer shapes via `cfg.per_layer_config`. Passing scalar defaults would
+  pre-allocate every `StaticLayer` with layer 0's shape and fail on the first
+  full-attention `update()`.
+
+  Args:
+    cfg: The (text) model config to inspect.
+    num_layers: Number of layers in the cache.
+    default_num_heads: Fallback KV head count.
+    default_head_dim: Fallback head dimension.
+
+  Returns:
+    Either scalar `(default_num_heads, default_head_dim)` or per-layer lists of
+    length `num_layers`.
+  """
+  if not getattr(cfg, "is_heterogeneous", False) or num_layers <= 0:
+    return default_num_heads, default_head_dim
+  per_layer_config = getattr(cfg, "per_layer_config", None)
+  if per_layer_config is None:
+    return default_num_heads, default_head_dim
+  try:
+    num_heads = []
+    head_dim = []
+    for idx in range(num_layers):
+      layer_cfg = per_layer_config[idx]
+      nh = _safe_get(
+          layer_cfg, "num_key_value_heads", "num_kv_heads", "n_head_kv"
+      )
+      if nh is None:
+        nh = _safe_get(layer_cfg, "num_attention_heads", "n_head", "num_heads")
+      hd = _safe_get(layer_cfg, "head_dim", "head_size", "d_kv")
+      num_heads.append(nh or default_num_heads)
+      head_dim.append(hd or default_head_dim)
+    return num_heads, head_dim
+  except (IndexError, KeyError, TypeError):
+    return default_num_heads, default_head_dim
+
+
 def _activate_past_recording(cache: Any) -> None:
   """Arms rollback recording on a `DynamicCache`, which `crop` requires.
 
@@ -321,7 +369,7 @@ def _clone_linear_attention_state(states: Any) -> _LinearState | None:
 
 def _snapshot_linear_attention_states(
     cache: Any, include_conv: bool
-) -> dict[int, dict[str, _LinearState]] | None:
+) -> Mapping[int, Mapping[str, _LinearState]] | None:
   """Clones the per-layer linear-attention (SSM) states of a cache.
 
   Both `conv_states` and `recurrent_states` are mutated in place via `copy_()`
@@ -376,7 +424,7 @@ def _copy_or_replace(current: Any, want: torch.Tensor) -> torch.Tensor:
 
 
 def _restore_linear_attention_states(
-    cache: Any, snapshot: dict[int, dict[str, _LinearState]]
+    cache: Any, snapshot: Mapping[int, Mapping[str, _LinearState]]
 ) -> None:
   """Restores states captured by `_snapshot_linear_attention_states`."""
   layers = getattr(cache, "layers", None) or []
@@ -397,7 +445,7 @@ def _restore_linear_attention_states(
 
 def _snapshot_module_recurrent_states(
     model: Any,
-) -> list[tuple[Any, str, torch.Tensor]]:
+) -> Sequence[tuple[Any, str, torch.Tensor]]:
   """Clones recurrent state tensors stored directly on model submodules.
 
   Some architectures (notably RecurrentGemma's RG-LRU and 1D-conv blocks) keep
@@ -423,7 +471,7 @@ def _snapshot_module_recurrent_states(
 
 
 def _restore_module_recurrent_states(
-    snapshots: list[tuple[Any, str, torch.Tensor]] | None,
+    snapshots: Sequence[tuple[Any, str, torch.Tensor]] | None,
 ) -> None:
   """Restores submodule recurrent state tensors saved by `_snapshot_module_recurrent_states`."""
   if not snapshots:
@@ -456,7 +504,15 @@ def _reset_static_attention_layer(layer: Any, prompt_len: int) -> None:
 
 class DecodeStepper(common.BaseStepper):
 
-  def __init__(self, output_tokens: int = 16, dynamism: bool = False):
+  # Pipelined decode steps are not timed yet, so the decode throughput still
+  # comes from the synchronized steps (see measure's _post_warmup_run).
+  supports_pipelined_steps = False
+
+  def __init__(
+      self,
+      output_tokens: int = step_lib.DEFAULT_DECODE_OUTPUT_TOKENS,
+      dynamism: bool = False,
+  ):
     super().__init__()
     self.output_tokens = output_tokens
     self.dynamism = dynamism
@@ -618,10 +674,17 @@ class DecodeStepper(common.BaseStepper):
         _drop_unreachable_sliding_windows(self.cache, max_cache_len)
         if _supports_early_initialization(self.cache):
           try:
+            cache_layers = getattr(self.cache, "layers", None) or []
+            init_num_heads, init_head_dim = _early_init_head_shapes(
+                cfg,
+                len(cache_layers),
+                self.num_heads,
+                self.head_dim,
+            )
             self.cache.early_initialization(
                 batch_size=self.batch_size,
-                num_heads=self.num_heads,
-                head_dim=self.head_dim,
+                num_heads=init_num_heads,
+                head_dim=init_head_dim,
                 dtype=self.dtype,
                 device=self.device,
             )
@@ -672,7 +735,7 @@ class DecodeStepper(common.BaseStepper):
   def _prepare_forward_kwargs(
       m: Any,
       cache: Any,
-      base_kwargs: dict[str, Any],
+      base_kwargs: Mapping[str, Any],
   ) -> dict[str, Any]:
     """Prepares kwargs matching the model forward signature."""
     call_kwargs = dict(base_kwargs)
@@ -978,7 +1041,7 @@ class DecodeStepper(common.BaseStepper):
 
 @step_lib.register_stepper(step_lib.StepperType.DECODER_ONLY_DECODE)
 def decode(
-    output_tokens: int = 16,
+    output_tokens: int = step_lib.DEFAULT_DECODE_OUTPUT_TOKENS,
     dynamism: bool = False,
 ) -> step_lib.Stepper:
   """Stateful decode step: prefill, reset, and decode iterations."""

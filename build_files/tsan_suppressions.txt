@@ -39,3 +39,7 @@ race:third_party/hwloc/hwloc-master/hwloc/topology-linux.c
 race:c10::set_default_dtype
 race:DefaultDtype.cpp
 
+# Data race on llvm::DebugFlag between LLVMCommandLineOptionsLock and MLIR dialect loading.
+race:llvm::cl::ResetAllOptionOccurrences
+race:LLVMCommandLineOptionsLock
+

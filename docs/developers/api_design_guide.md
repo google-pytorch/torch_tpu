@@ -135,6 +135,7 @@ torch.tpu        # TorchTPU root module
  |- ops          # custom ops
  |- optimizers   # TorchTPU-optimized optimizers
  |- pallas       # utilities for using pallas kernels
+ |   `- verifier # utilities for verifying pallas kernels
  `- profiler     # utilities for profiling TorchTPU programs
 ```
 

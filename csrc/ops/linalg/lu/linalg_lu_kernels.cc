@@ -29,13 +29,14 @@
 #include "ATen/ops/_linalg_check_errors.h"
 #include "ATen/ops/add.h"
 #include "ATen/ops/any.h"
+#include "ATen/ops/arange.h"
 #include "ATen/ops/argmax.h"
-#include "ATen/ops/diagflat.h"
 #include "ATen/ops/diagonal.h"
 #include "ATen/ops/empty.h"
 #include "ATen/ops/empty_like.h"
 #include "ATen/ops/eq.h"
-#include "ATen/ops/ones.h"
+#include "ATen/ops/eye.h"
+#include "ATen/ops/gather.h"
 #include "ATen/ops/reshape.h"
 #include "ATen/ops/tril.h"
 #include "ATen/ops/triu.h"
@@ -45,6 +46,7 @@
 #include "c10/core/ScalarType.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
+#include "csrc/common/device_type.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -97,7 +99,7 @@ absl::StatusOr<MlirOpResults<2>> BuildComplexL2PivotedLuShlo(
   const int64_t n = a_shape[rank - 2];
   const int64_t row_dim = rank - 2;
   const int64_t col_dim = rank - 1;
-  Dimensions batch_dims(a_shape.begin(), a_shape.begin() + row_dim);
+  Dimensions batch_dims = CopyIntVector(a_shape.drop_back(2));
 
   auto make_shape_1d = [&](int64_t d) {  // REF_CAPTURE_OK=called locally
     Dimensions s = batch_dims;
@@ -343,8 +345,7 @@ absl::StatusOr<MlirOpResults<2>> LuDecompositionBuilder(mlir::MlirOp input) {
 
   const int n = a_shape[rank - 2];
   const int m = a_shape[rank - 1];
-  const int num_batch_dims = rank - 2;
-  Dimensions batch_dims(a_shape.begin(), a_shape.begin() + num_batch_dims);
+  Dimensions batch_dims = CopyIntVector(a_shape.drop_back(2));
   int64_t batch_count = 1;
   for (int64_t d : batch_dims) {
     batch_count *= d;
@@ -416,43 +417,47 @@ absl::Status ApplyPivotsInPlace(at::Tensor& tensor, const at::Tensor& pivots,
       << "expected pivots size to be <= " << size
       << " (the size of the matrix), got " << pivots.size(-1) << " and "
       << size;
-  Dimensions tensor_batch_dims(tensor.sizes().begin(),
-                               tensor.sizes().begin() + rank - 2);
-  Dimensions pivots_batch_dims(pivots.sizes().begin(),
-                               pivots.sizes().begin() + pivots.dim() - 1);
+  Dimensions tensor_batch_dims =
+      CopyIntVector(tensor.sizes().slice(0, rank - 2));
+  Dimensions pivots_batch_dims =
+      CopyIntVector(pivots.sizes().slice(0, pivots.dim() - 1));
   TT_RET_CHECK(tensor_batch_dims == pivots_batch_dims, error::kInvalidArgument)
       << "expected pivots and tensor to have the same batch dimensions, got "
       << ToString(tensor_batch_dims) << " and " << ToString(pivots_batch_dims);
 
-  // Flatten batch dimensions.
-  auto pivots_flat = at::reshape(pivots, {-1, pivots.size(-1)});
-  int64_t n_batch = pivots_flat.size(0);
-  int64_t n_pivots = pivots_flat.size(1);
-  auto tensor_view =
-      tensor.reshape({n_batch, tensor.size(-2), tensor.size(-1)});
-  for (int i = 0; i < n_pivots; ++i) {
-    // Forward swaps apply P^T, reverse swaps apply P.
-    int k = inverse ? i : n_pivots - 1 - i;
-    auto pivot_indices = pivots_flat.select(1, k).sub(1);
-    for (int batch = 0; batch < n_batch; ++batch) {
-      int p = pivot_indices[batch].item<int>();
-      if (p != k) {
-        if (to_rows) {
-          auto r1 = tensor_view[batch].select(0, k);
-          auto r2 = tensor_view[batch].select(0, p);
-          auto tmp = r1.clone();
-          r1.copy_(r2);
-          r2.copy_(tmp);
-        } else {
-          auto c1 = tensor_view[batch].select(1, k);
-          auto c2 = tensor_view[batch].select(1, p);
-          auto tmp = c1.clone();
-          c1.copy_(c2);
-          c2.copy_(tmp);
-        }
-      }
-    }
+  if (tensor.numel() == 0 || pivots.numel() == 0) {
+    return absl::OkStatus();
   }
+
+  // Flatten batch dimensions.
+  const at::Tensor pivots_flat =
+      at::reshape(pivots, {-1, pivots.size(-1)}).to(at::kLong).sub(1);
+  const int64_t n_batch = pivots_flat.size(0);
+  const int64_t n_pivots = pivots_flat.size(1);
+  at::Tensor permutation = at::arange(size, pivots.options().dtype(at::kLong))
+                               .unsqueeze(0)
+                               .expand({n_batch, size})
+                               .clone();
+  for (int64_t i = 0; i < n_pivots; ++i) {
+    // Forward swaps apply P^T, reverse swaps apply P.
+    const int64_t k = inverse ? i : n_pivots - 1 - i;
+    const at::Tensor pivot_index = pivots_flat.select(1, k).unsqueeze(1);
+    const at::Tensor permutation_at_k =
+        permutation.select(1, k).unsqueeze(1).clone();
+    const at::Tensor permutation_at_pivot =
+        at::gather(permutation, 1, pivot_index);
+    permutation.select(1, k).copy_(permutation_at_pivot.squeeze(1));
+    permutation.scatter_(1, pivot_index, permutation_at_k);
+  }
+  const int64_t rows = tensor.size(-2);
+  const int64_t cols = tensor.size(-1);
+  const at::Tensor tensor_flat = tensor.reshape({n_batch, rows, cols});
+  const at::Tensor gather_indices =
+      to_rows ? permutation.unsqueeze(2).expand({n_batch, rows, cols})
+              : permutation.unsqueeze(1).expand({n_batch, rows, cols});
+  const at::Tensor permuted =
+      at::gather(tensor_flat, to_rows ? 1 : 2, gather_indices);
+  tensor.copy_(permuted.reshape(tensor.sizes()));
   return absl::OkStatus();
 }
 
@@ -474,8 +479,8 @@ std::tuple<at::Tensor&, at::Tensor&, at::Tensor&> AtenLinalgLuFactorExOut(
         const int n = a.size(a.dim() - 2);
         const int m = a.size(a.dim() - 1);
         const int num_batch_dims = a.dim() - 2;
-        Dimensions batch_dims(a.sizes().begin(),
-                              a.sizes().begin() + num_batch_dims);
+        Dimensions batch_dims =
+            CopyIntVector(a.sizes().slice(0, num_batch_dims));
         Dimensions pivot_dims = batch_dims;
         pivot_dims.push_back(std::min(n, m));
 
@@ -539,8 +544,8 @@ std::tuple<at::Tensor&, at::Tensor&, at::Tensor&> AtenLuUnpackOut(
         int64_t m = lu_data.size(-2);
         int64_t n = lu_data.size(-1);
         int64_t k = std::min(m, n);
-        Dimensions batch_dims(lu_data.sizes().begin(),
-                              lu_data.sizes().end() - 2);
+        Dimensions batch_dims =
+            CopyIntVector(lu_data.sizes().slice(0, lu_data.dim() - 2));
 
         if (unpack_pivots) {
           TT_THROW_IF_ERROR(ValidateOutDtype(p, lu_data.scalar_type(),
@@ -567,12 +572,12 @@ std::tuple<at::Tensor&, at::Tensor&, at::Tensor&> AtenLuUnpackOut(
           TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(u, u_dims));
 
           l.zero_();
-          l.add_(at::tril(lu_data.narrow(-1, 0, k), /*diagonal=*/-1));
-          // at::eye is not implemented yet.
-          l.add_(
-              at::diagflat(at::ones({m}, lu_data.options())).narrow(-1, 0, k));
           u.zero_();
-          u.add_(at::triu(lu_data.narrow(-2, 0, k), /*diagonal=*/0));
+          if (k > 0) {
+            l.add_(at::tril(lu_data.narrow(-1, 0, k), /*diagonal=*/-1));
+            l.add_(at::eye(m, k, lu_data.options()));
+            u.add_(at::triu(lu_data.narrow(-2, 0, k), /*diagonal=*/0));
+          }
         }
 
         if (unpack_pivots) {
@@ -590,8 +595,9 @@ std::tuple<at::Tensor&, at::Tensor&, at::Tensor&> AtenLuUnpackOut(
           // pivots[..., i] = j means that in the i-th step of the
           // algorithm, the i-th row was swapped with the j-th row. (So j
           // >= i).
-          p.zero_();
-          p.add_(at::diagflat(at::ones({p.size(-1)}, p.options())));
+          if (p.numel() > 0) {
+            p.copy_(at::eye(m, p.options()));
+          }
           TT_THROW_IF_ERROR(ApplyPivotsInPlace(p, lu_pivots, /*to_rows=*/true,
                                                /*inverse=*/false));
         }
@@ -713,6 +719,15 @@ std::tuple<at::Tensor&, at::Tensor&, at::Tensor&> AtenLinalgLuOut(
       (a, IgnoreInCacheKey(pivot, "Delegates to AtenLinalgLuFactorExOut"), p, l,
        u),
       {
+        TT_CHECK_THROW(IsPrivateUse1Device(p) && IsPrivateUse1Device(l) &&
+                           IsPrivateUse1Device(u),
+                       error::kInvalidArgument)
+            << "expected all output tensors to be on "
+            << GetPrivateUse1DeviceDebugName() << ", got " << p.device() << ", "
+            << l.device() << ", and " << u.device();
+        TT_CHECK_THROW(a.dim() >= 2, error::kInvalidArgument)
+            << "expected input tensor to have at least 2 dimensions, got dim "
+            << a.dim() << " with shape " << ToString(a.sizes());
         TT_THROW_IF_ERROR(ValidateOutDtype(p, a.scalar_type(),
                                            /*allow_out_dtype_cast=*/false));
         TT_THROW_IF_ERROR(ValidateOutDtype(l, a.scalar_type(),
@@ -721,13 +736,12 @@ std::tuple<at::Tensor&, at::Tensor&, at::Tensor&> AtenLinalgLuOut(
                                            /*allow_out_dtype_cast=*/false));
 
         at::Tensor lu = at::empty_like(a);
-        Dimensions pivot_dims = CopyIntVector(a.sizes());
-        pivot_dims.pop_back();
-        int pivot_size = std::min(a.size(-2), a.size(-1));
-        pivot_dims[pivot_dims.size() - 1] = pivot_size;
+        Dimensions batch_dims(a.sizes().begin(), a.sizes().end() - 2);
+        Dimensions pivot_dims = batch_dims;
+        pivot_dims.push_back(std::min(a.size(-2), a.size(-1)));
         at::Tensor pivots = at::empty(pivot_dims, a.options().dtype(at::kInt));
-        at::Tensor info = at::empty(pivot_dims, a.options().dtype(at::kInt));
-        AtenLinalgLuFactorExOut(a, pivot, /*check_errors=*/true, lu, pivots,
+        at::Tensor info = at::empty(batch_dims, a.options().dtype(at::kInt));
+        AtenLinalgLuFactorExOut(a, pivot, /*check_errors=*/false, lu, pivots,
                                 info);
         AtenLuUnpackOut(lu, pivots, /*unpack_data=*/true,
                         /*unpack_pivots=*/true, p, l, u);

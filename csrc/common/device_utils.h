@@ -15,6 +15,7 @@
 #ifndef TORCH_TPU_CSRC_COMMON_DEVICE_UTILS_H_
 #define TORCH_TPU_CSRC_COMMON_DEVICE_UTILS_H_
 
+#include <string>
 #include <string_view>
 
 #include "absl/strings/numbers.h"
@@ -24,7 +25,7 @@ namespace torch_tpu {
 // Returns true if `val` represents a single device index (e.g. "0" or "2").
 // Returns false for empty strings, multi-device strings ("0,1"), or
 // non-integers.
-inline bool IsSingleDeviceSpecified(std::string_view val) {
+[[nodiscard]] inline bool IsSingleDeviceSpecified(std::string_view val) {
   if (val.empty()) {
     return false;
   }
@@ -36,6 +37,15 @@ inline bool IsSingleDeviceSpecified(std::string_view val) {
     return false;
   }
   return true;
+}
+
+// Returns `configured_devices` if it specifies a single device index, or
+// `default_device` otherwise.
+[[nodiscard]] inline std::string GetSingleDeviceOrDefault(
+    std::string_view configured_devices, std::string_view default_device) {
+  return IsSingleDeviceSpecified(configured_devices)
+             ? std::string(configured_devices)
+             : std::string(default_device);
 }
 
 }  // namespace torch_tpu

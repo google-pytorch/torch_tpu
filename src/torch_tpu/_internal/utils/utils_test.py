@@ -13,8 +13,10 @@
 # limitations under the License.
 
 from collections.abc import Sequence
+import ctypes
 import math
 from typing import Any
+import unittest
 
 from absl.testing import absltest
 import torch
@@ -816,6 +818,111 @@ class AllTest(seed_test_utils.RepeatableTest):
     with absltest.mock.patch.object(torch, "__version__", "2.12.0.dev20260301"):
       self.assertEqual(utils.get_torch_version(), (2, 12, 0))
       self.assertGreaterEqual(utils.get_torch_version(), (2, 12))
+
+  def test_is_asan(self):
+    fake_cdll_with_asan = type("FakeCdll", (), {"__asan_init": object()})()
+    with absltest.mock.patch.object(
+        ctypes, "CDLL", return_value=fake_cdll_with_asan
+    ):
+      self.assertTrue(test_utils.is_asan())
+
+    fake_cdll_without_asan = object()
+    with absltest.mock.patch.object(
+        ctypes, "CDLL", return_value=fake_cdll_without_asan
+    ):
+      self.assertFalse(test_utils.is_asan())
+
+    for exc in (OSError("load error"), TypeError("bad arg"), AttributeError()):
+      with absltest.mock.patch.object(ctypes, "CDLL", side_effect=exc):
+        self.assertFalse(test_utils.is_asan())
+
+  def test_skip_if_asan(self):
+    with absltest.mock.patch.object(test_utils, "is_asan", return_value=True):
+
+      @test_utils.skip_if_asan("slow in asan")
+      def skipped_fn():
+        return "ran"
+
+      with self.assertRaisesRegex(unittest.SkipTest, "slow in asan"):
+        skipped_fn()
+
+    with absltest.mock.patch.object(test_utils, "is_asan", return_value=False):
+
+      @test_utils.skip_if_asan("slow in asan")
+      def unskipped_fn():
+        return "ran"
+
+      self.assertEqual(unskipped_fn(), "ran")
+
+  def test_is_msan(self):
+    fake_cdll_with_msan = type("FakeCdll", (), {"__msan_init": object()})()
+    with absltest.mock.patch.object(
+        ctypes, "CDLL", return_value=fake_cdll_with_msan
+    ):
+      self.assertTrue(test_utils.is_msan())
+
+    fake_cdll_without_msan = object()
+    with absltest.mock.patch.object(
+        ctypes, "CDLL", return_value=fake_cdll_without_msan
+    ):
+      self.assertFalse(test_utils.is_msan())
+
+    for exc in (OSError("load error"), TypeError("bad arg"), AttributeError()):
+      with absltest.mock.patch.object(ctypes, "CDLL", side_effect=exc):
+        self.assertFalse(test_utils.is_msan())
+
+  def test_skip_if_msan(self):
+    with absltest.mock.patch.object(test_utils, "is_msan", return_value=True):
+
+      @test_utils.skip_if_msan("slow in msan")
+      def skipped_fn():
+        return "ran"
+
+      with self.assertRaisesRegex(unittest.SkipTest, "slow in msan"):
+        skipped_fn()
+
+    with absltest.mock.patch.object(test_utils, "is_msan", return_value=False):
+
+      @test_utils.skip_if_msan("slow in msan")
+      def unskipped_fn():
+        return "ran"
+
+      self.assertEqual(unskipped_fn(), "ran")
+
+  def test_is_tsan(self):
+    fake_cdll_with_tsan = type("FakeCdll", (), {"__tsan_init": object()})()
+    with absltest.mock.patch.object(
+        ctypes, "CDLL", return_value=fake_cdll_with_tsan
+    ):
+      self.assertTrue(test_utils.is_tsan())
+
+    fake_cdll_without_tsan = object()
+    with absltest.mock.patch.object(
+        ctypes, "CDLL", return_value=fake_cdll_without_tsan
+    ):
+      self.assertFalse(test_utils.is_tsan())
+
+    for exc in (OSError("load error"), TypeError("bad arg"), AttributeError()):
+      with absltest.mock.patch.object(ctypes, "CDLL", side_effect=exc):
+        self.assertFalse(test_utils.is_tsan())
+
+  def test_skip_if_tsan(self):
+    with absltest.mock.patch.object(test_utils, "is_tsan", return_value=True):
+
+      @test_utils.skip_if_tsan("flaky in tsan")
+      def skipped_fn():
+        return "ran"
+
+      with self.assertRaisesRegex(unittest.SkipTest, "flaky in tsan"):
+        skipped_fn()
+
+    with absltest.mock.patch.object(test_utils, "is_tsan", return_value=False):
+
+      @test_utils.skip_if_tsan("flaky in tsan")
+      def unskipped_fn():
+        return "ran"
+
+      self.assertEqual(unskipped_fn(), "ran")
 
 
 if __name__ == "__main__":

@@ -14,7 +14,7 @@
 
 """Dummy input generation for Hugging Face Transformers models."""
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping, MutableMapping, Sequence
 import dataclasses
 import math
 import types
@@ -756,7 +756,7 @@ class InputContext:
       self,
       low: int,
       high: int,
-      size: Sequence[int] | tuple[int, ...],
+      size: Sequence[int],
       dtype: torch.dtype = torch.long,
   ) -> torch.Tensor:
     t = torch.randint(
@@ -766,21 +766,21 @@ class InputContext:
 
   def ones(
       self,
-      size: Sequence[int] | tuple[int, ...],
+      size: Sequence[int],
       dtype: torch.dtype = torch.long,
   ) -> torch.Tensor:
     return torch.ones(tuple(size), device=self.device, dtype=dtype)
 
   def zeros(
       self,
-      size: Sequence[int] | tuple[int, ...],
+      size: Sequence[int],
       dtype: torch.dtype = torch.long,
   ) -> torch.Tensor:
     return torch.zeros(tuple(size), device=self.device, dtype=dtype)
 
   def full(
       self,
-      size: Sequence[int] | tuple[int, ...],
+      size: Sequence[int],
       fill_value: Any,
       dtype: torch.dtype = torch.long,
   ) -> torch.Tensor:
@@ -897,7 +897,7 @@ def _build_text_tokens(
 
 def _ensure_min_seq_len(
     ctx: InputContext,
-    input_kwargs: dict[str, Any],
+    input_kwargs: MutableMapping[str, Any],
     *,
     needed_len: int,
     vocab_size: int,
@@ -948,28 +948,9 @@ def _mm_token_type_ids(
   return mm_types
 
 
-def _build_pixel_values(
-    ctx: InputContext,
-    *,
-    num_channels: int,
-    image_size: int,
-    num_images: int | None = None,
-    num_frames: int | None = None,
-    height: int | None = None,
-    width: int | None = None,
-) -> torch.Tensor:
-  h = height if height is not None else image_size
-  w = width if width is not None else image_size
-  if num_frames is not None:
-    return ctx.randn(ctx.batch_size, num_frames, num_channels, h, w)
-  if num_images is not None:
-    return ctx.randn(ctx.batch_size, num_images, num_channels, h, w)
-  return ctx.randn(ctx.batch_size, num_channels, h, w)
-
-
 def _build_siglip2_inputs(
     ctx: InputContext,
-    input_kwargs: dict[str, Any],
+    input_kwargs: MutableMapping[str, Any],
     *,
     image_size: int | None = None,
 ) -> None:
@@ -1002,7 +983,7 @@ def _build_siglip2_inputs(
 
 def _build_oneformer_inputs(
     ctx: InputContext,
-    input_kwargs: dict[str, Any],
+    input_kwargs: MutableMapping[str, Any],
 ) -> None:
   task_len = _safe_int(ctx.config.get("task_seq_len"), default=77, min_val=1)
   input_kwargs["task_inputs"] = torch.zeros(
@@ -1012,7 +993,7 @@ def _build_oneformer_inputs(
 
 def _build_spatial_merged_patches(
     ctx: InputContext,
-    input_kwargs: dict[str, Any],
+    input_kwargs: MutableMapping[str, Any],
     *,
     image_size: int,
     num_channels: int,
@@ -1135,10 +1116,6 @@ def _model_type_contains(*needles: str) -> _Matcher:
   return lambda ctx: any(n in ctx.model_type for n in needles)
 
 
-def _has_config_key(*paths: str) -> _Matcher:
-  return lambda ctx: any(_cfg_lookup(ctx.config, p) is not None for p in paths)
-
-
 def _apply_builders(
     ctx: InputContext,
     input_kwargs: dict[str, Any],
@@ -1164,7 +1141,7 @@ def _apply_builders(
 
 
 def _build_timesfm_text_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   context_length = _cfg_int(
       ctx.config, "context_length", "seq_length", default=64
@@ -1176,7 +1153,7 @@ def _build_timesfm_text_inputs(
 
 
 def _build_time_series_text_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   context_length = _cfg_int(
       ctx.config, "context_length", "seq_length", default=64
@@ -1247,7 +1224,7 @@ def _build_time_series_text_inputs(
 
 
 def _build_decision_transformer_text_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   input_kwargs.pop("input_ids", None)
   state_dim = _cfg_int(ctx.config, "state_dim", default=17)
@@ -1263,7 +1240,7 @@ def _build_decision_transformer_text_inputs(
 
 
 def _build_luke_text_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   num_entities = 2 if "entitypair" in ctx.arch_name else 1
   input_kwargs["entity_ids"] = ctx.zeros((ctx.batch_size, num_entities))
@@ -1276,14 +1253,14 @@ def _build_luke_text_inputs(
 
 
 def _build_bros_text_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   seq_len = input_kwargs["input_ids"].shape[1]
   input_kwargs["bbox"] = ctx.zeros((ctx.batch_size, seq_len, 4))
 
 
 def _build_lxmert_text_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   feat_dim = _cfg_int(ctx.config, "visual_feat_dim", default=2048)
   input_kwargs["visual_feats"] = ctx.randn(ctx.batch_size, 36, feat_dim)
@@ -1293,11 +1270,8 @@ def _build_lxmert_text_inputs(
 
 
 def _build_tapas_text_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
-  ctx.config.reset_position_index_per_cell = False
-  ctx.config.init_cell_selection_weights_to_zero = False
-
   seq_len = input_kwargs["input_ids"].shape[1]
   token_type_ids_tensor = ctx.zeros((ctx.batch_size, seq_len, 7))
   token_type_ids_tensor[:, :, 0] = 1  # segment
@@ -1309,14 +1283,14 @@ def _build_tapas_text_inputs(
 
 
 def _build_mobilebert_text_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   seq_len = input_kwargs["input_ids"].shape[1]
   input_kwargs["token_type_ids"] = ctx.zeros((ctx.batch_size, seq_len))
 
 
 def _build_rag_text_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   n_docs = _cfg_int(ctx.config, "n_docs", default=5)
   q_vocab_size = _cfg_int(
@@ -1347,7 +1321,7 @@ def _build_rag_text_inputs(
 
 
 def _build_perceiver_text_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   input_kwargs.pop("input_ids", None)
   input_kwargs.pop("attention_mask", None)
@@ -1357,7 +1331,7 @@ def _build_perceiver_text_inputs(
 
 
 def _build_gemma4_assistant_text_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   backbone_hidden_size = _cfg_int(
       ctx.config,
@@ -1430,7 +1404,7 @@ def _build_gemma4_assistant_text_inputs(
 
 
 def _build_xlstm_text_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   chunk_size = _cfg_int(ctx.config, "chunk_size", default=64)
   vocab_size = _cfg_int(ctx.config, "vocab_size", default=50304)
@@ -1522,7 +1496,7 @@ def _build_text_inputs(ctx: InputContext) -> dict[str, Any]:
 
 
 def _build_seggpt_vision_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   num_channels = _get_num_channels(ctx.config)
   input_kwargs["pixel_values"] = ctx.randn(
@@ -1537,7 +1511,7 @@ def _build_seggpt_vision_inputs(
 
 
 def _build_qwen3_vision_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   image_size = _parse_image_size(ctx.config)
   num_channels = _get_num_channels(ctx.config)
@@ -1560,7 +1534,7 @@ def _build_qwen3_vision_inputs(
 
 
 def _build_mllama_vision_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   image_size = _parse_image_size(ctx.config)
   num_channels = _get_num_channels(ctx.config)
@@ -1581,7 +1555,7 @@ def _build_mllama_vision_inputs(
 
 
 def _build_videomae_vision_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   if "videoclassification" not in ctx.type_str:
     image_size = _parse_image_size(ctx.config)
@@ -1600,7 +1574,7 @@ def _build_videomae_vision_inputs(
 
 
 def _build_vitpose_vision_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   input_kwargs["dataset_index"] = torch.tensor(
       [0] * ctx.batch_size, device=ctx.device, dtype=torch.long
@@ -1608,7 +1582,7 @@ def _build_vitpose_vision_inputs(
 
 
 def _build_gemma4_vision_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   image_size = _parse_image_size(ctx.config)
   patch_size = _cfg_int(ctx.config, "patch_size", default=16)
@@ -1637,7 +1611,7 @@ def _build_gemma4_vision_inputs(
 
 
 def _build_safety_checker_vision_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   image_size = _parse_image_size(ctx.config)
   num_channels = _get_num_channels(ctx.config)
@@ -1651,7 +1625,7 @@ def _build_safety_checker_vision_inputs(
 
 
 def _build_vision_encoder_decoder_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   decoder_config = ctx.config.get("decoder")
   vocab_size = _cfg_int(decoder_config, "vocab_size", default=50265)
@@ -1791,14 +1765,14 @@ def _build_vision_inputs(
 
 
 def _build_whisper_audio_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   num_mel = _cfg_int(ctx.config, "num_mel_bins", default=80)
   input_kwargs["input_features"] = ctx.randn(ctx.batch_size, num_mel, 3000)
 
 
 def _build_clap_audio_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   audio_cfg = ctx.config.get("audio_config") or ctx.config
   num_mel = _safe_int(
@@ -1839,7 +1813,7 @@ def _build_clap_audio_inputs(
 
 
 def _build_ast_audio_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   max_length = _cfg_int(ctx.config, "max_length", default=1024)
   num_mel = _cfg_int(ctx.config, "num_mel_bins", default=128)
@@ -1847,7 +1821,7 @@ def _build_ast_audio_inputs(
 
 
 def _build_w2v_bert_audio_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   if any(
       k in ctx.type_str
@@ -1916,7 +1890,7 @@ def _build_w2v_bert_audio_inputs(
 
 
 def _build_gemma3n_audio_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   input_kwargs["audio_mel"] = ctx.randn(ctx.batch_size, 128, 128)
   input_kwargs["audio_mel_mask"] = ctx.ones(
@@ -1925,13 +1899,13 @@ def _build_gemma3n_audio_inputs(
 
 
 def _build_omnitoken2wav_audio_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   input_kwargs["mel_spectrogram"] = ctx.randn(ctx.batch_size, 80, 128)
 
 
 def _build_kyutai_stt_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   num_codebooks = _safe_int(
       ctx.config.get("num_codebooks"), default=32, min_val=1
@@ -1946,7 +1920,7 @@ def _build_kyutai_stt_inputs(
 
 
 def _build_moshi_audio_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   num_codebooks = _safe_int(
       ctx.config.get("num_codebooks"), default=8, min_val=1
@@ -1977,7 +1951,7 @@ def _build_moshi_audio_inputs(
 
 
 def _build_glmasr_audio_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   text_cfg = ctx.config.get("text_config") or ctx.config
   vocab_size = _safe_int(
@@ -1994,7 +1968,7 @@ def _build_glmasr_audio_inputs(
 
 
 def _build_s2t_audio_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   num_mel = _safe_int(
       ctx.config.get("feature_projection_input_dim")
@@ -2009,7 +1983,7 @@ def _build_s2t_audio_inputs(
 
 
 def _build_univnet_audio_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   num_mel = _cfg_int(ctx.config, "num_mel_bins", "input_dim", default=80)
   input_kwargs["input_features"] = ctx.randn(ctx.batch_size, 128, num_mel)
@@ -2055,7 +2029,7 @@ def _build_xcodec2_audio_inputs(
 
 
 def _build_codec_audio_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   seq_len = ctx.shape[1] if ctx.shape and len(ctx.shape) > 1 else 16000
   channels = _cfg_int(ctx.config, "audio_channels", default=1)
@@ -2063,7 +2037,7 @@ def _build_codec_audio_inputs(
 
 
 def _build_musicgen_audio_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   safe_seq_len = min(_get_max_seq_len(ctx.config), 16)
   dec_cfg = ctx.config.get("decoder") or ctx.config
@@ -2085,7 +2059,7 @@ def _build_musicgen_audio_inputs(
 
 
 def _build_bark_audio_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   safe_seq_len = min(_get_max_seq_len(ctx.config), 64)
   sem_cfg = (
@@ -2102,7 +2076,7 @@ def _build_bark_audio_inputs(
 
 
 def _build_voxtral_realtime_audio_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   safe_seq_len = min(
       ctx.shape[1]
@@ -2143,7 +2117,7 @@ def _build_voxtral_realtime_audio_inputs(
 
 
 def _build_csm_audio_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   safe_seq_len = min(_get_max_seq_len(ctx.config), 32)
   vocab_size = _cfg_int(ctx.config, "vocab_size", default=32000)
@@ -2153,7 +2127,7 @@ def _build_csm_audio_inputs(
 
 
 def _build_cohere_asr_audio_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   enc_cfg = (
       ctx.config.get("encoder_config")
@@ -2173,7 +2147,7 @@ def _build_cohere_asr_audio_inputs(
 
 
 def _build_dia_audio_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   enc_cfg = ctx.config.get("encoder_config") or ctx.config
   dec_cfg = ctx.config.get("decoder_config") or ctx.config
@@ -2209,7 +2183,7 @@ def _build_dia_audio_inputs(
 
 
 def _build_speecht5_audio_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   safe_seq_len = min(_get_max_seq_len(ctx.config), 8)
   vocab_size = _cfg_int(ctx.config, "vocab_size", default=81, min_val=4)
@@ -2247,7 +2221,7 @@ def _build_speecht5_audio_inputs(
 
 
 def _build_vits_audio_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   safe_seq_len = min(_get_max_seq_len(ctx.config), 8)
   vocab_size = _cfg_int(ctx.config, "vocab_size", default=38, min_val=4)
@@ -2262,7 +2236,7 @@ def _build_vits_audio_inputs(
 
 
 def _build_granite_audio_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   encoder_cfg = (
       ctx.config.get("encoder_config")
@@ -2293,7 +2267,7 @@ def _build_granite_audio_inputs(
 
 
 def _build_fastspeech_audio_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   safe_seq_len = min(_get_max_seq_len(ctx.config), 16)
   model_cfg = ctx.config.get("model_config")
@@ -2309,7 +2283,7 @@ def _build_fastspeech_audio_inputs(
 
 
 def _build_pe_audio_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   safe_seq_len = min(_get_max_seq_len(ctx.config), 16)
   text_cfg = ctx.config.get("text_config")
@@ -2330,7 +2304,7 @@ def _build_pe_audio_inputs(
 
 
 def _build_qwen_omni_audio_encoder_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   num_mel = _cfg_int(ctx.config, "num_mel_bins", "feature_size", default=128)
   if ctx.shape and len(ctx.shape) > 1:
@@ -2505,7 +2479,7 @@ def _build_audio_inputs(ctx: InputContext) -> dict[str, Any]:
 
 
 def _build_idefics_multimodal_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   image_size = _parse_image_size(ctx.config)
   num_channels = _get_num_channels(ctx.config)
@@ -2532,7 +2506,7 @@ def _build_idefics_multimodal_inputs(
 
 
 def _build_video_multimodal_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   image_size = _parse_image_size(ctx.config)
   num_channels = _get_num_channels(ctx.config)
@@ -2546,7 +2520,7 @@ def _build_video_multimodal_inputs(
 
 
 def _build_llava_next_multimodal_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   image_size = _parse_image_size(ctx.config)
   size_device = "cpu" if str(ctx.device) == "meta" else ctx.device
@@ -2558,7 +2532,7 @@ def _build_llava_next_multimodal_inputs(
 
 
 def _build_minicpmv_multimodal_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   num_channels = _get_num_channels(ctx.config)
   vision_cfg = ctx.config.get("vision_config")
@@ -2576,7 +2550,7 @@ def _build_minicpmv_multimodal_inputs(
 
 
 def _build_qformer_multimodal_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   num_query_tokens = _cfg_int(ctx.config, "num_query_tokens", default=32)
   hidden_size = _cfg_int(ctx.config, "hidden_size", default=768)
@@ -2592,14 +2566,14 @@ def _build_qformer_multimodal_inputs(
 
 
 def _build_instructblip_multimodal_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   input_kwargs["qformer_input_ids"] = input_kwargs["input_ids"]
   input_kwargs["qformer_attention_mask"] = input_kwargs["attention_mask"]
 
 
 def _build_blip_multimodal_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   input_kwargs["decoder_input_ids"] = torch.tensor(
       [[1]], device=ctx.device, dtype=torch.long
@@ -2607,7 +2581,7 @@ def _build_blip_multimodal_inputs(
 
 
 def _build_lxmert_multimodal_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   input_kwargs["visual_feats"] = ctx.randn(ctx.batch_size, 10, 2048)
   input_kwargs["visual_pos"] = ctx.zeros(
@@ -2616,7 +2590,7 @@ def _build_lxmert_multimodal_inputs(
 
 
 def _build_udop_multimodal_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   input_kwargs["bbox"] = ctx.zeros(
       (*input_kwargs["input_ids"].shape, 4), dtype=torch.long
@@ -2627,7 +2601,7 @@ def _build_udop_multimodal_inputs(
 
 
 def _build_pix2struct_multimodal_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   max_patches = min(
       _cfg_int(ctx.config, "max_patches", default=2048),
@@ -2734,7 +2708,7 @@ def _build_glm_vl_multimodal_inputs(
 
 
 def _build_kosmos_multimodal_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   latent_query_num = _cfg_int(ctx.config, "latent_query_num", default=64)
   text_cfg = ctx.config.get("text_config")
@@ -2770,7 +2744,7 @@ def _build_kosmos_multimodal_inputs(
 
 
 def _build_xclip_multimodal_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   image_size = _parse_image_size(ctx.config)
   num_channels = _get_num_channels(ctx.config)
@@ -2783,7 +2757,7 @@ def _build_xclip_multimodal_inputs(
 
 
 def _build_vilt_multimodal_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   # ViLT selects its image patches with data-dependent ops on `pixel_mask`.
   # Without one, it makes a floating-point `torch.ones` mask, whose values the
@@ -2794,14 +2768,14 @@ def _build_vilt_multimodal_inputs(
 
 
 def _build_beingvl_multimodal_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   input_kwargs.pop("input_ids", None)
   input_kwargs.pop("attention_mask", None)
 
 
 def _build_clvp_multimodal_inputs(
-    ctx: InputContext, input_kwargs: dict[str, Any]
+    ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   input_kwargs.pop("pixel_values", None)
   dec_cfg = ctx.config.get("decoder_config") or ctx.config

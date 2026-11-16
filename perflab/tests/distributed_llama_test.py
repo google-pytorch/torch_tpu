@@ -31,6 +31,15 @@ class DistributedLlamaBenchmarkTest(seed_test_utils.RepeatableTest):
     spec = registry_lib.REGISTRY["meta_llama_8b_forward"]
     self.assertEqual(spec.name, "meta_llama_8b_forward")
 
+  def test_meta_llama_8b_replica_spans_up_to_its_kv_heads(self):
+    # The model is split across gcd(world size, 8 KV heads) devices.
+    spec = registry_lib.REGISTRY["meta_llama_8b_forward"]
+    for world_size, devices_per_replica in ((4, 4), (8, 8), (16, 8), (12, 4)):
+      with self.subTest(world_size=world_size):
+        self.assertEqual(
+            spec.devices_per_replica(world_size), devices_per_replica
+        )
+
   @mock.patch.object(llama, "_load_meta_llama", return_value=("model", ("x",)))
   def test_meta_llama_8b_supports_gpu_and_tpu_platforms(self, mock_load):
     for platform in (

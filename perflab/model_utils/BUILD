@@ -91,7 +91,13 @@ torch_tpu_py_test(
 internal_target(
     torch_tpu_py_test,
     name = "torchtitan_qwen3_5_test",
+    timeout = "long",  # Needed for asan.
     srcs = ["torchtitan_qwen3_5_test.py"],
+    shard_count = 7,
+    tags = [
+        # TODO(b/583684321): fix the test in tsan mode.
+        "notsan",  # Hangs in torch.nn.init.trunc_normal_.
+    ],
     # Disable `use_precompile`, otherwise the test fails with `INPUTS_TOO_LARGE`.
     use_precompile = False,
     deps = [

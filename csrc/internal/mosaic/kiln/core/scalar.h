@@ -22,7 +22,7 @@
 #include "csrc/internal/mosaic/kiln/core/dtype.h"
 #include "csrc/internal/mosaic/kiln/core/elementwise.h"
 #include "csrc/internal/mosaic/kiln/core/literal.h"
-#include "csrc/internal/mosaic/kiln/core/value_base.h"
+#include "csrc/internal/mosaic/kiln/core/value_handle.h"
 
 namespace torch_tpu::kiln {
 
@@ -33,16 +33,22 @@ namespace torch_tpu::kiln {
 // Arithmetic, bitwise, comparison (yielding a bool `Scalar`), min / max /
 // select and unary math operators come from `WithElementwiseOps`; overloads
 // taking a `Literal` on either side come from `WithOperandOps`.
-class Scalar : public ValueBase,
-               public WithElementwiseOps<Scalar>,
-               public WithOperandOps<Scalar, Literal> {
+class Scalar final : public WithElementwiseOps<Scalar>,
+                     public WithOperandOps<Scalar, Literal> {
+ public:
+  // CHECK-fails unless `handle` is a scalar value with the IR type of `dtype`.
+  Scalar(internal::ValueHandle handle, DType dtype);
+
+  internal::ValueHandle handle() const { return handle_; }
+  DType dtype() const { return dtype_; }
+
  private:
-  friend struct internal::ValueAccess;
   friend class WithOperandOps<Scalar, Literal>;
 
-  Scalar(const void* impl, DType dtype);
-
   Scalar Coerce(Literal value) const;
+
+  internal::ValueHandle handle_;
+  DType dtype_;
 };
 
 Scalar I32(Literal value);

@@ -23,7 +23,6 @@
 
 #include "c10/util/Exception.h"
 #include "csrc/common/error_utils.h"
-#include "csrc/common/utils.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
@@ -93,10 +92,9 @@ TEST(PyBindErrorUtilsInternalTest, ImplMemberFunctionLambdaThrowsC10Error) {
 // Test that the error message checks are run on the TorchTPU C++ functions
 // bound to Python functions.
 //
-// Since error message style checks are only enabled on internal debug builds,
-// we need to condition the compilation of that test with this macro.
-#if TT_CHECKS_ERROR_FORMAT
-
+// Since error message style checks are only enabled in internal builds or when
+// TORCH_TPU_INTERNAL_CHECK_ERROR_FORMAT is set, this test is skipped when they
+// are disabled.
 void ThrowInvalidMessage() {
   // "Invalid message" starts with uppercase, which is not allowed by
   // guidelines.
@@ -104,12 +102,13 @@ void ThrowInvalidMessage() {
 }
 
 TEST(PyBindErrorUtilsInternalDeathTest, ImplThrowsInvalidMessageCrashes) {
+  if (!ShouldCheckErrorFormat()) {
+    GTEST_SKIP() << "Error format checks are disabled in this build.";
+  }
   EXPECT_DEATH(internal::ErrorHandlingHelper<void()>::impl("test_prefix",
                                                            ThrowInvalidMessage),
-               "Improper error message format");
+               "Bad error message format");
 }
-
-#endif  // TT_CHECKS_ERROR_FORMAT
 
 }  // namespace
 }  // namespace torch_tpu

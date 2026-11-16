@@ -273,6 +273,31 @@ class MultiBucketCompilationTest(seed_test_utils.RepeatableTest):
       self.assertEqual(compiled_upper_bounds, [127, 255])
       self.assertEqual(mock_static_call.call_count, 2)
 
+  def test_static_parameter_sliced_by_dynamic_end_backward(self):
+    # Slicing a static parameter `pos_emb[:s]` refines `s` to <= max_len (200),
+    # while bucket 1's aligned capacity (256) overshoots `max_len`.
+    # `slice_backward` must bound the gradient window by the ShapeEnv range
+    # and zero padded rows past `s` so the static parameter's gradient stays
+    # static and uncorrupted across bucket 0 ([2, 128]) and bucket 1 ([129, 256]).
+    max_len, dim = 200, 8
+    pos_emb = torch.randn(max_len, dim, device=self.device, requires_grad=True)
+
+    def fn(x, emb):
+      return (x + emb[: x.shape[1]]).sum()
+
+    compiled = torch.compile(
+        fn, backend="tpu", options={"num_dynamic_buckets": 2}
+    )
+    # 100 runs in bucket 0 ([2, 128]); 150 and 200 run in bucket 1 ([129, 256]).
+    for length in (100, 150, max_len):
+      x = torch.randn(2, length, dim, device=self.device)
+      torch._dynamo.mark_dynamic(x, 1)
+      pos_emb.grad = None
+      compiled(x, pos_emb).backward()
+      expected_grad = torch.zeros(max_len, dim, device=self.device)
+      expected_grad[:length] = 2.0
+      utils.assert_close(pos_emb.grad, expected_grad)
+
 
 if __name__ == "__main__":
   absltest.main()

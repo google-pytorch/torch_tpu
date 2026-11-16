@@ -128,7 +128,7 @@ class SingleProcessMultiDeviceTest(_BaseRngTest):
     )
 
   def _get_num_devices(self) -> int:
-    """Returns the number of devices to test, capped at 4 on TPU in OSS."""
+    """Returns the number of devices to use for multi-device testing."""
     if self.backend == "tpu":
       return accelerator_test_utils.get_tpu_device_count()
     return torch.accelerator.device_count()
@@ -259,6 +259,10 @@ class SingleProcessMultiDeviceTest(_BaseRngTest):
     for exp, act in zip(expected_outs, actual_outs):
       self.assertTrue(torch.equal(exp, act))
 
+  @_fails_on_tpu(
+      "TODO(b/555281188): Single-process multi-device execution is not yet"
+      " supported on TPU."
+  )
   def test_multithread_eager_cross_device_isolation(self):
     """Verifies threads on distinct devices produce deterministic outputs.
 

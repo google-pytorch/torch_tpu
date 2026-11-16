@@ -43,12 +43,26 @@ mkdocs serve
 
 ## Sources for the documentation
 
-The documentation is built from the [Marimo](https://marimo.io/) sources located
-in the `docs/source/` directory. These files are Marimo `.py` notebooks. They
-serve as the single source of truth for TorchTPU documentation and tutorials.
-Jupyter notebooks (`.ipynb`) and Markdown exports are generated from these
-files.
+The documentation is built from the markdown sources located in the `docs/`
+directory. These files serve as the single source of truth for TorchTPU
+documentation and tutorials. Jupyter notebooks (`.ipynb`) are generated from
+these files through [Jupytext](https://github.com/mwouts/jupytext). Plain
+markdown content will be converted into markdown cells, and code blocks will be
+converted into executable code cells in the notebooks. After editing one of
+these sources, regenerate the notebooks from the root of the repository:
 
-The `docs/markdown/` directory contains the generated Markdown exports from the
-Marimo sources. These Markdown files are used by MkDocs to build the HTML
-documentation.
+```bash
+tools/generate_doc_notebooks.py
+```
+
+To run this step on every commit, install the
+[pre-commit](https://pre-commit.com) hook once:
+
+```bash
+python -m pip install pre-commit
+pre-commit install
+```
+
+When you commit a change to one of these sources, the hook regenerates its
+notebook. If the notebook changed, the commit stops so you can stage the
+notebook and commit again.

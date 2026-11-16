@@ -156,7 +156,7 @@ Dimensions GetShapeAfterRealToRealBitcast(
       << "), got " << shape.back() << error_message_suffix;
 
   // Element size is larger, so the last dimension is removed.
-  return Dimensions(shape.begin(), shape.end() - 1);
+  return CopyIntVector(shape.first(shape.size() - 1));
 }
 
 // Computes the strides of the tensor after a real-to-real bitcast.

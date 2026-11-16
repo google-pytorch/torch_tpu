@@ -45,7 +45,6 @@ torch_tpu_cc_library(
         "//csrc/ops/macros:kernel",
         "//csrc/ops/reductions",
         "//shims/torch:aten_headers",
-        "//shims/torch:torch_headers",
         "//shims/torch/c10/core:base_headers",
         "//shims/torch/c10/util:base_headers",
         "@com_google_absl//absl/log:absl_log",

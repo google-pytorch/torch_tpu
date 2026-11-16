@@ -35,6 +35,7 @@
 #include "c10/util/ArrayRef.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/compilation.h"
+#include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/shape.h"
@@ -46,7 +47,6 @@
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/python_context.h"
 #include "csrc/ops/scan_builder.h"
-#include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
@@ -346,7 +346,7 @@ bool CanLowerToChloScan(mlir::func::FuncOp main_func,
 
   const llvm::ArrayRef<int64_t> full_shape =
       GetTensorTypeOrDie(scanned[0]).getShape();
-  llvm::SmallVector<int64_t> slice_shape(full_shape.begin(), full_shape.end());
+  Dimensions slice_shape = CopyIntVector(full_shape);
   slice_shape.erase(slice_shape.begin() + scan_dim);
   if (!AllRankedWithShape(main_func.getArgumentTypes(), slice_shape) ||
       !AllRankedWithShape(main_func.getResultTypes(), slice_shape)) {
@@ -364,10 +364,10 @@ bool CanLowerToChloScan(mlir::func::FuncOp main_func,
 // Candidate per-leaf identity constants for symbolic identity inference:
 // - `kZero`: additive / bitwise-OR / bitwise-XOR identity (`0` or `false`).
 // - `kOne`: multiplicative identity (`1` or `true`).
-// - `kMinValue`: `maximum` identity (`-inf` for floats, ` numeric_limits::min`
-//   for integers).
-// - `kMaxValue`: `minimum` identity (`+inf` for floats, `numeric_limits::max`
-//   for integers).
+// - `kMinValue`: `maximum` identity (`-inf`, or the lowest finite value for
+//   types without infinities, such as integers).
+// - `kMaxValue`: `minimum` identity (`+inf`, or the highest finite value for
+//   types without infinities, such as integers).
 enum class IdentityKind { kZero, kOne, kMinValue, kMaxValue };
 
 // Lightweight symbolic value domain used to verify whether a candidate tuple of
@@ -699,8 +699,7 @@ mlir::MlirOp CreateIdentityConstant(mlir::MlirBuilder& builder,
                                     mlir::MlirOp input, const int64_t scan_dim,
                                     const IdentityKind kind) {
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
-  llvm::SmallVector<int64_t> reduced_shape(input_type.getShape().begin(),
-                                           input_type.getShape().end());
+  Dimensions reduced_shape = CopyIntVector(input_type.getShape());
   reduced_shape.erase(reduced_shape.begin() + scan_dim);
   const mlir::Type element_type = input_type.getElementType();
   const mlir::RankedTensorType reduced_type =
@@ -718,28 +717,14 @@ mlir::MlirOp CreateIdentityConstant(mlir::MlirBuilder& builder,
       }
       return MakeConstant(builder, 1, reduced_type);
     case IdentityKind::kMinValue: {
-      if (const auto float_type =
-              llvm::dyn_cast<mlir::FloatType>(element_type)) {
-        const llvm::APFloat neg_inf = llvm::APFloat::getInf(
-            float_type.getFloatSemantics(), /*Negative=*/true);
-        return mlir::stablehlo::Constant(
-            builder, mlir::DenseElementsAttr::get(reduced_type, neg_inf));
-      }
       const mlir::Attribute attr =
-          GetMinFiniteValueAttr(element_type, builder.getOpBuilder());
+          GetMaxReductionIdentityAttr(element_type, builder.getOpBuilder());
       return mlir::stablehlo::Constant(
           builder, mlir::DenseElementsAttr::get(reduced_type, attr));
     }
     case IdentityKind::kMaxValue: {
-      if (const auto float_type =
-              llvm::dyn_cast<mlir::FloatType>(element_type)) {
-        const llvm::APFloat pos_inf = llvm::APFloat::getInf(
-            float_type.getFloatSemantics(), /*Negative=*/false);
-        return mlir::stablehlo::Constant(
-            builder, mlir::DenseElementsAttr::get(reduced_type, pos_inf));
-      }
       const mlir::Attribute attr =
-          GetMaxFiniteValueAttr(element_type, builder.getOpBuilder());
+          GetMinReductionIdentityAttr(element_type, builder.getOpBuilder());
       return mlir::stablehlo::Constant(
           builder, mlir::DenseElementsAttr::get(reduced_type, attr));
     }
@@ -882,9 +867,9 @@ AssociativeScanBuffers CollectAssociativeScanBuffers(
 mlir::MlirOp SliceAlongDim(mlir::MlirOp input, const int64_t scan_dim,
                            const int64_t start, const int64_t size) {
   const llvm::ArrayRef<int64_t> shape = GetTensorTypeOrDie(input).getShape();
-  llvm::SmallVector<int64_t, 4> starts(shape.size(), 0);
-  llvm::SmallVector<int64_t, 4> limits(shape.begin(), shape.end());
-  const llvm::SmallVector<int64_t, 4> strides(shape.size(), 1);
+  Dimensions starts(shape.size(), 0);
+  Dimensions limits = CopyIntVector(shape);
+  const Dimensions strides(shape.size(), 1);
   starts[scan_dim] = start;
   limits[scan_dim] = start + size;
   return mlir::stablehlo::Slice(input, starts, limits, strides);
@@ -1263,6 +1248,7 @@ std::vector<at::Tensor> PyCreateAssociativeScanOp(
           .op_param_cache_keys = std::move(cache_keys),
           .inputs = std::move(buffers.inputs),
           .output_shapes = std::move(buffers.output_shapes),
+          .device_assignment = body_module->device_assignment(),
       }));
 
   std::vector<at::Tensor> results;

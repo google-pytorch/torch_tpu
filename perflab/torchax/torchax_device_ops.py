@@ -14,7 +14,8 @@
 
 """TorchaxDeviceOps: the TorchAx (torch_xla2 / JAX) implementation of DeviceOps."""
 
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import jax
 from torch_tpu._internal.benchmarks import xprof_adapter
@@ -87,6 +88,13 @@ class TorchaxDeviceOps:
   def peak_memory_mb(self) -> float | None:
     """Return peak device memory usage in MB, or None if unsupported."""
     return device_utils.get_jax_peak_memory_mb()
+
+  def release_cached_memory(self) -> None:
+    """No-op: the torchax steppers do not run pipelined steps."""
+
+  def agree_on_step_count(self, steps: int) -> int:
+    """Returns `steps`: torchax benchmarks run in a single process."""
+    return steps
 
   def get_device_time(self, session_id: str | None = None) -> float:
     """Total active device time in seconds across profiling steps from XSpace."""

@@ -739,8 +739,12 @@ def run_strict_cache_half_programs() -> None:
   utils.assert_close(w.cpu(), torch.tensor([float(sum(range(_WORLD)))]))
 
 
-def run_group_programs_from_the_caches(layout: str, compilations: int) -> None:
+def run_group_programs_from_the_caches(
+    layout: str, compilations: int, *, exact: bool = True
+) -> None:
   """The members of each group compile the group's program `compilations` times.
+
+  If `exact` is False, they compile it at most `compilations` times instead.
 
   The members that do not compile it load it from the tier-2 or the tier-3
   cache, a group that fills a box of devices off the origin at its own chips;
@@ -770,7 +774,11 @@ def run_group_programs_from_the_caches(layout: str, compilations: int) -> None:
   counts = counts.cpu().tolist()
   logging.info("rank %d compilations per rank %s", rank, counts)
   for group in _LAYOUTS[layout]:
-    assert sum(counts[r] for r in group) == compilations, counts
+    group_compilations = sum(counts[r] for r in group)
+    if exact:
+      assert group_compilations == compilations, counts
+    else:
+      assert group_compilations <= compilations, counts
 
 
 class SubgroupLaunchOrderTest(continuous_test_utils.TpuMultiProcContinuousTest):
@@ -875,7 +883,6 @@ class SubgroupLaunchOrderTest(continuous_test_utils.TpuMultiProcContinuousTest):
         {
             "TORCH_TPU_TIER2_COMPILATION_CACHE": tier2_cache,
             "TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT": _TIER3_CACHE_ROOT,
-            "TORCH_TPU_INTERNAL_TIER3_COMPILATION_CACHE_LOCAL_BACKUP_TASK": "0",
         },
     ):
       run_group_programs_from_the_caches(
@@ -893,9 +900,12 @@ class SubgroupLaunchOrderTest(continuous_test_utils.TpuMultiProcContinuousTest):
             path.unlink(missing_ok=True)
         torch.accelerator.synchronize()
         dist.barrier()
+      # The member that reads the tier-3 cache also races a local backup
+      # compilation against the read, which may or may not compile.
       run_group_programs_from_the_caches(
           layout=layout,
-          compilations=0,
+          compilations=1,
+          exact=False,
       )
 
   def test_uneven_compiled_half_programs(self):

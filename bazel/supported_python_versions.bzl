@@ -15,8 +15,13 @@
 """Module for single-sourcing the supported Python versions."""
 
 # When updating SUPPORTED_PYTHON_VERSIONS (or the latest supported version), also update:
+# - MODULE.bazel
 # - .github/workflows/build_wheel.yml
+# - .github/workflows/nightly_tpu.yml
 # - .github/workflows/nightly_unpinned_deps.yml
+# - .github/workflows/release_candidate_tests.yml
+# - .github/workflows/run_benchmarks.yml
+# - ci/build_wheel.sh
 # - noxfile.py
 # - requirements/lock_environments.sh
 # LINT.IfChange(supported_python_versions)
@@ -25,7 +30,9 @@ SUPPORTED_PYTHON_VERSIONS = [
     "3.12",
     "3.13",
     "3.14",
+    "3.15",
     "3.14t",
+    "3.15t",
 ]
 # LINT.ThenChange(
 #     ../pyproject.toml:requires_python,

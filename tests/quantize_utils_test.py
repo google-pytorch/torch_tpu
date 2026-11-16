@@ -70,6 +70,20 @@ class QuantizeUtilsTest(seed_test_utils.RepeatableTest):
     )  # pyformat: disable
     utils.assert_close(fp4.view(torch.uint8), expected_bytes)
 
+  def test_quantize_to_float4_e2m1fn_x2_non_finite_and_signed_zero(self):
+    t = torch.tensor(
+        [float("nan"), float("inf"), float("-inf"), -0.0],
+        dtype=torch.float32,
+    )
+    fp4 = quantize_utils.quantize_to_float4_e2m1fn_x2(t)
+    self.assertEqual(fp4.dtype, torch.float4_e2m1fn_x2)
+    self.assertEqual(fp4.shape, t.shape)
+
+    # - t[0]=NaN  -> +0.0 (0x0), t[1]=+inf -> +6.0 (0x7) -> Byte 0: 0x70
+    # - t[2]=-inf -> -6.0 (0xF), t[3]=-0.0 -> -0.0 (0x8) -> Byte 1: 0x8F
+    expected_bytes = torch.tensor([0x70, 0x8F, 0x00, 0x00], dtype=torch.uint8)
+    utils.assert_close(fp4.view(torch.uint8), expected_bytes)
+
   def test_quantize_to_int4(self):
     t = torch.tensor([-100, -9, -8, -1, 0, 7, 8, 100], dtype=torch.int8)
     i4 = quantize_utils.quantize_to_int4(t)

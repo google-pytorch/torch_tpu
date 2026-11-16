@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from unittest import mock
+
 from absl.testing import absltest
 import torch
 from torch_tpu._internal.utils import test_utils
@@ -29,7 +31,30 @@ class TorchtitanMuseGlimmerTest(seed_test_utils.RepeatableTest):
     self.assertIsNone(config.vision_encoder)
 
     torch.manual_seed(123)
-    model = torchtitan_muse_glimmer.build_model(config, "cpu", torch.bfloat16)
+    meta_param_dtypes: list[torch.dtype] = []
+    to_empty = torch.nn.Module.to_empty
+
+    def record_dtypes_and_materialize(module, *args, **kwargs):
+      meta_param_dtypes.extend(
+          p.dtype for p in module.parameters() if p.is_floating_point()
+      )
+      return to_empty(module, *args, **kwargs)
+
+    with mock.patch.object(
+        torch.nn.Module,
+        "to_empty",
+        autospec=True,
+        side_effect=record_dtypes_and_materialize,
+    ):
+      model = torchtitan_muse_glimmer.build_model(config, "cpu", torch.bfloat16)
+
+    # The parameters are materialized on the device in bfloat16, without a
+    # float32 copy.
+    self.assertEqual(torch.get_default_dtype(), torch.float32)
+    self.assertNotEmpty(meta_param_dtypes)
+    self.assertEqual(set(meta_param_dtypes), {torch.bfloat16})
+    for p in model.parameters():
+      self.assertEqual(p.dtype, torch.bfloat16)
 
     # Check that complex rope cache is preserved and matches fp32.
     torch.manual_seed(123)

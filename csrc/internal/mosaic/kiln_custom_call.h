@@ -38,10 +38,14 @@ namespace torch_tpu {
 //
 // `vmem_limit_bytes` optionally raises Mosaic's scoped VMEM limit for the
 // kernel; when omitted the platform default applies.
+//
+// `needs_hlo_passes` must be set for a kernel whose body calls
+// `SpliceStablehlo`: it makes Mosaic legalize the StableHLO before compiling.
 absl::StatusOr<mlir::stablehlo::CustomCallOp> CreateKilnCustomCallOp(
     mlir::OpBuilder& builder, mlir::Location loc, kiln::Kernel kernel,
     mlir::ValueRange inputs, mlir::TypeRange output_types,
-    std::optional<int64_t> vmem_limit_bytes = std::nullopt);
+    std::optional<int64_t> vmem_limit_bytes = std::nullopt,
+    bool needs_hlo_passes = false);
 
 }  // namespace torch_tpu
 

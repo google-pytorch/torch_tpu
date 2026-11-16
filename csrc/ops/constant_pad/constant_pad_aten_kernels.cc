@@ -130,8 +130,7 @@ absl::StatusOr<mlir::MlirOp> BuildConstantPadNdShlo(mlir::MlirOp input,
                                                     mlir::MlirOp val_scalar,
                                                     const Dimensions& pad_vec) {
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
-  Dimensions cur_shape(input_type.getShape().begin(),
-                       input_type.getShape().end());
+  Dimensions cur_shape = CopyIntVector(input_type.getShape());
   const int64_t rank = cur_shape.size();
   const int64_t num_pad_dims = pad_vec.size() / 2;
 
@@ -172,7 +171,7 @@ at::Tensor AtenConstantPadNd(const at::Tensor& self, at::IntArrayRef pad,
                                  std::min<int64_t>(0, left_pad) +
                                  std::min<int64_t>(0, right_pad);
     TT_CHECK_THROW(cropped_size >= 0, error::kInvalidArgument)
-        << "length must be non-negative";
+        << "expected length to be >= 0, got " << cropped_size;
     out_dims[dim] += left_pad + right_pad;
   }
 

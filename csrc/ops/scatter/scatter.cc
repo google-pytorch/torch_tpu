@@ -17,7 +17,6 @@
 #include "csrc/ops/scatter/scatter.h"
 
 #include <cstdint>
-#include <limits>
 #include <optional>
 #include <vector>
 
@@ -56,14 +55,9 @@ mlir::MlirOp GetIdentityValue(mlir::MlirBuilder& builder, mlir::Type type,
   }
   if (op == ScatterOp::kAmax || op == ScatterOp::kAmin) {
     const bool is_max = (op == ScatterOp::kAmax);
-    if (mlir::isa<mlir::FloatType>(type)) {
-      double val = is_max ? -std::numeric_limits<double>::infinity()
-                          : std::numeric_limits<double>::infinity();
-      return MakeScalarConstant(builder, val, type);
-    }
     mlir::Attribute attr =
-        is_max ? GetMinFiniteValueAttr(type, builder.getOpBuilder())
-               : GetMaxFiniteValueAttr(type, builder.getOpBuilder());
+        is_max ? GetMaxReductionIdentityAttr(type, builder.getOpBuilder())
+               : GetMinReductionIdentityAttr(type, builder.getOpBuilder());
     return mlir::stablehlo::Constant(
         builder, mlir::DenseElementsAttr::get(
                      mlir::RankedTensorType::get({}, type), attr));
@@ -264,8 +258,7 @@ mlir::MlirOp EmitBroadcastScatterDot(mlir::MlirOp self,
   mlir::MlirOp base_i32 =
       mlir::stablehlo::ConvertElementType(plan.base_op, i32_type);
   const int64_t base_rank = plan.base_type.getRank();
-  Dimensions ind_shape(plan.base_type.getShape().begin(),
-                       plan.base_type.getShape().end());
+  Dimensions ind_shape = CopyIntVector(plan.base_type.getShape());
   ind_shape.push_back(target_len);
   Dimensions bcast_to_ind(base_rank);
   for (int64_t i = 0; i < base_rank; ++i) {

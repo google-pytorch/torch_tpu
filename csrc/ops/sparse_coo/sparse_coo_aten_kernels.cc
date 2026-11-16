@@ -220,7 +220,7 @@ at::Tensor& AddOutDenseSparse(const at::Tensor& self, const at::Tensor& other,
   TT_CHECK_THROW(c10::canCast(common_dtype, out.scalar_type()),
                  error::kInvalidArgument)
       << "expected result dtype to be castable to 'out' dtype, got "
-      << common_dtype << " and " << out.scalar_type();
+      << ToString(common_dtype) << " and " << ToString(out.scalar_type());
   TT_ASSIGN_OR_THROW(const auto out_dtype,
                      ConvertTo<mlir::ElementType>(out.scalar_type()));
   const Dimensions out_dims = CopyIntVector(self.sizes());
@@ -274,7 +274,7 @@ at::Tensor& AddOutSparseSparse(const at::Tensor& self, const at::Tensor& other,
     TT_CHECK_THROW(c10::canCast(common_dtype, out.scalar_type()),
                    error::kInvalidArgument)
         << "expected result dtype to be castable to 'out' dtype, got "
-        << common_dtype << " and " << out.scalar_type();
+        << ToString(common_dtype) << " and " << ToString(out.scalar_type());
   }
   if (other._nnz() == 0) {
     if (!out.is_same(self)) {
@@ -521,7 +521,7 @@ at::Tensor& MulOutSparseImpl(const at::Tensor& self, const at::Tensor& other,
   TT_CHECK_THROW((self_is_sparse && !other_is_sparse && other.dim() == 0) ||
                      (!self_is_sparse && self.dim() == 0 && other_is_sparse),
                  error::kPythonNotImplementedError)
-      << "only multiplication of a sparse tensor with a 0-dim scalar tensor is "
+      << "only multiplication of a sparse tensor with a 0D scalar tensor is "
          "supported on TPU";
   const at::Tensor& sp = self_is_sparse ? self : other;
   const at::Tensor& scalar = self_is_sparse ? other : self;
@@ -535,7 +535,7 @@ at::Tensor& MulOutSparseImpl(const at::Tensor& self, const at::Tensor& other,
   TT_CHECK_THROW(c10::canCast(common_dtype, out.scalar_type()),
                  error::kInvalidArgument)
       << "expected result dtype to be castable to 'out' dtype, got "
-      << common_dtype << " and " << out.scalar_type();
+      << ToString(common_dtype) << " and " << ToString(out.scalar_type());
 
   at::Tensor scalar_dev = scalar;
   if (scalar.device() != sp.device()) {
@@ -579,9 +579,9 @@ at::Tensor& MulOutSparseImpl(const at::Tensor& self, const at::Tensor& other,
 
 at::Tensor& NegOutSparseImpl(const at::Tensor& self, OpParamCacheKeys pk,
                              at::Tensor& out) {
-  TT_CHECK_THROW(self.scalar_type() != at::ScalarType::Bool,
-                 error::kInvalidArgument)
-      << "expected non-bool tensor for negation, got " << self.scalar_type();
+  TT_CHECK_THROW(!IsBool(self), error::kInvalidArgument)
+      << "expected non-bool tensor for negation, got "
+      << ToString(self.scalar_type());
   if (self._nnz() == 0) {
     if (!out.is_same(self)) {
       CopySparseToSparseImpl(out, self, /*non_blocking=*/false);
@@ -591,7 +591,7 @@ at::Tensor& NegOutSparseImpl(const at::Tensor& self, OpParamCacheKeys pk,
   TT_CHECK_THROW(c10::canCast(self.scalar_type(), out.scalar_type()),
                  error::kInvalidArgument)
       << "expected result dtype to be castable to 'out' dtype, got "
-      << self.scalar_type() << " and " << out.scalar_type();
+      << ToString(self.scalar_type()) << " and " << ToString(out.scalar_type());
   const at::Tensor self_values = self._values();
   TT_ASSIGN_OR_THROW(const auto out_dtype,
                      ConvertTo<mlir::ElementType>(out.scalar_type()));
@@ -625,11 +625,10 @@ at::Tensor& NegOutSparseImpl(const at::Tensor& self, OpParamCacheKeys pk,
 }
 
 void CheckSubNotBool(const at::Tensor& self, const at::Tensor& other) {
-  TT_CHECK_THROW(self.scalar_type() != at::ScalarType::Bool &&
-                     other.scalar_type() != at::ScalarType::Bool,
-                 error::kInvalidArgument)
-      << "expected non-bool tensors for subtraction, got " << self.scalar_type()
-      << " and " << other.scalar_type();
+  TT_CHECK_THROW(!IsBool(self) && !IsBool(other), error::kInvalidArgument)
+      << "expected non-bool tensors for subtraction, got "
+      << ToString(self.scalar_type()) << " and "
+      << ToString(other.scalar_type());
 }
 
 MaybePromotedScalar PromoteNegAlpha(const c10::Scalar& alpha) {
@@ -1017,7 +1016,7 @@ at::Tensor& AtenCopy_Sparse(at::Tensor& self, const at::Tensor& src,
             {
               TT_CHECK_THROW(self.is_sparse() && src.is_sparse(),
                              error::kInvalidArgument)
-                  << "copy_() between dense and sparse tensors is not "
+                  << "copying between dense and sparse tensors is not "
                      "implemented";
               return CopySparseToSparseImpl(self, src, non_blocking);
             });

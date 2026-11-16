@@ -22,6 +22,7 @@ from perflab import model_helpers
 from perflab import registry as registry_lib
 from perflab import step_lib
 from perflab import torch_device_ops
+from perflab import workload as workload_lib
 
 
 def _load_hf_vision_model(
@@ -68,10 +69,14 @@ def _load_hf_vision_model(
 @registry_lib.register_benchmark(
     stepper=step_lib.StepperType.FORWARD,
     presubmit=registry_lib.PresubmitPolicy.RUN,
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(32), presubmit=workload_lib.Workload(1)
+    ),
 )
 def clip_base_forward(ctx: context_lib.Context):
   """Benchmark factory for CLIP ViT-B/16 (openai/clip-vit-base-patch16) forward."""
-  batch_size = 1 if ctx.run_scope == context_lib.RunScope.PRESUBMIT else 32
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
   # 77 is the maximum number of CLIP text positions.
   model, inputs = _load_hf_vision_model(
       ctx, "openai/clip-vit-base-patch16", batch_size=batch_size, seq_len=77
@@ -82,10 +87,14 @@ def clip_base_forward(ctx: context_lib.Context):
 @registry_lib.register_benchmark(
     stepper=step_lib.StepperType.FORWARD,
     presubmit=registry_lib.PresubmitPolicy.RUN,
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(32), presubmit=workload_lib.Workload(1)
+    ),
 )
 def vit_base_forward(ctx: context_lib.Context):
   """Benchmark factory for ViT-B/16 (google/vit-base-patch16-224) forward."""
-  batch_size = 1 if ctx.run_scope == context_lib.RunScope.PRESUBMIT else 32
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
   model, inputs = _load_hf_vision_model(
       ctx, "google/vit-base-patch16-224", batch_size=batch_size
   )
@@ -95,10 +104,14 @@ def vit_base_forward(ctx: context_lib.Context):
 @registry_lib.register_benchmark(
     stepper=step_lib.StepperType.FORWARD,
     presubmit=registry_lib.PresubmitPolicy.RUN,
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(32), presubmit=workload_lib.Workload(1)
+    ),
 )
 def siglip_base_forward(ctx: context_lib.Context):
   """Benchmark factory for SigLIP-B/16 (google/siglip-base-patch16-224) forward."""
-  batch_size = 1 if ctx.run_scope == context_lib.RunScope.PRESUBMIT else 32
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
   # 64 is the maximum number of SigLIP text positions.
   model, inputs = _load_hf_vision_model(
       ctx, "google/siglip-base-patch16-224", batch_size=batch_size, seq_len=64
@@ -109,10 +122,14 @@ def siglip_base_forward(ctx: context_lib.Context):
 @registry_lib.register_benchmark(
     stepper=step_lib.StepperType.FORWARD,
     presubmit=registry_lib.PresubmitPolicy.RUN,
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(16), presubmit=workload_lib.Workload(1)
+    ),
 )
 def dinov2_base_forward(ctx: context_lib.Context):
   """Benchmark factory for DINOv2-B (facebook/dinov2-base) forward."""
-  batch_size = 1 if ctx.run_scope == context_lib.RunScope.PRESUBMIT else 16
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
   model, inputs = _load_hf_vision_model(
       ctx, "facebook/dinov2-base", batch_size=batch_size
   )
@@ -122,10 +139,14 @@ def dinov2_base_forward(ctx: context_lib.Context):
 @registry_lib.register_benchmark(
     stepper=step_lib.StepperType.FORWARD,
     presubmit=registry_lib.PresubmitPolicy.RUN,
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(64), presubmit=workload_lib.Workload(1)
+    ),
 )
 def deit_tiny_forward(ctx: context_lib.Context):
   """Benchmark factory for DeiT-Ti (facebook/deit-tiny-patch16-224) forward."""
-  batch_size = 1 if ctx.run_scope == context_lib.RunScope.PRESUBMIT else 64
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
   model, inputs = _load_hf_vision_model(
       ctx, "facebook/deit-tiny-patch16-224", batch_size=batch_size
   )
@@ -135,10 +156,14 @@ def deit_tiny_forward(ctx: context_lib.Context):
 @registry_lib.register_benchmark(
     stepper=step_lib.StepperType.FORWARD,
     presubmit=registry_lib.PresubmitPolicy.RUN,
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(32), presubmit=workload_lib.Workload(1)
+    ),
 )
 def segformer_b2_forward(ctx: context_lib.Context):
   """Benchmark factory for SegFormer-B2 (ADE20K, 512x512) forward."""
-  batch_size = 1 if ctx.run_scope == context_lib.RunScope.PRESUBMIT else 32
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
   model, inputs = _load_hf_vision_model(
       ctx,
       "nvidia/segformer-b2-finetuned-ade-512-512",

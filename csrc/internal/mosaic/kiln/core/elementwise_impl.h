@@ -243,12 +243,20 @@ T ElementwiseOps<T>::LogicalNot(T v) {
 
 template <typename T>
 T ElementwiseOps<T>::Eq(T lhs, T rhs) {
+  // Compare bools bitwise, as Min / Max / LogicalNot do.
+  if (lhs.dtype().IsBool() && rhs.dtype().IsBool()) {
+    return !(lhs ^ rhs);
+  }
   return Compare(lhs, rhs, mlir::arith::CmpFPredicate::OEQ,
                  mlir::arith::CmpIPredicate::eq);
 }
 
 template <typename T>
 T ElementwiseOps<T>::Ne(T lhs, T rhs) {
+  // See `Eq`.
+  if (lhs.dtype().IsBool() && rhs.dtype().IsBool()) {
+    return lhs ^ rhs;
+  }
   return Compare(lhs, rhs, mlir::arith::CmpFPredicate::ONE,
                  mlir::arith::CmpIPredicate::ne);
 }

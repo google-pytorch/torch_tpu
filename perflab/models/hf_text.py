@@ -22,6 +22,7 @@ from perflab import model_helpers
 from perflab import registry as registry_lib
 from perflab import step_lib
 from perflab import torch_device_ops
+from perflab import workload as workload_lib
 
 
 def _modify_config_hook(config: Any) -> Any:
@@ -68,16 +69,17 @@ def _load_hf_text_model(
 @registry_lib.register_benchmark(
     stepper=step_lib.StepperType.FORWARD,
     presubmit=registry_lib.PresubmitPolicy.RUN,
+    # 512 is the maximum number of BERT positions.
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(16, 512),
+        presubmit=workload_lib.Workload(1, 128),
+    ),
 )
 def bert_base_forward(ctx: context_lib.Context):
   """Benchmark factory for BERT-Base (uncased) forward."""
-  if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
-    batch_size = 1
-    seq_len = 128
-  else:
-    batch_size = 16
-    # 512 is the maximum number of BERT positions.
-    seq_len = 512
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
   model, inputs = _load_hf_text_model(
       ctx,
       "EhsanAghazadeh/bert-base-uncased-random-weights",
@@ -90,16 +92,18 @@ def bert_base_forward(ctx: context_lib.Context):
 @registry_lib.register_benchmark(
     stepper=step_lib.StepperType.FORWARD,
     presubmit=registry_lib.PresubmitPolicy.RUN,
+    # BART has 1024 positions, offset by `pad_token_id + 1` (2), so the input
+    # generator caps its sequences at 1022 tokens.
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(4, 1022),
+        presubmit=workload_lib.Workload(1, 128),
+    ),
 )
 def bart_base_forward(ctx: context_lib.Context):
   """Benchmark factory for BART-Base (facebook/bart-base) forward."""
-  if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
-    batch_size = 1
-    seq_len = 128
-  else:
-    batch_size = 4
-    # 1024 is the maximum number of BART positions.
-    seq_len = 1024
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
   model, inputs = _load_hf_text_model(
       ctx, "facebook/bart-base", batch_size=batch_size, seq_len=seq_len
   )
@@ -109,16 +113,17 @@ def bart_base_forward(ctx: context_lib.Context):
 @registry_lib.register_benchmark(
     stepper=step_lib.StepperType.FORWARD,
     presubmit=registry_lib.PresubmitPolicy.RUN,
+    # T5 was pretrained on 512-token inputs.
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(8, 512),
+        presubmit=workload_lib.Workload(1, 128),
+    ),
 )
 def t5_base_forward(ctx: context_lib.Context):
   """Benchmark factory for T5-Base (google-t5/t5-base) forward."""
-  if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
-    batch_size = 1
-    seq_len = 128
-  else:
-    batch_size = 8
-    # T5 was pretrained on 512-token inputs.
-    seq_len = 512
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
   model, inputs = _load_hf_text_model(
       ctx, "google-t5/t5-base", batch_size=batch_size, seq_len=seq_len
   )

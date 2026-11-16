@@ -26,6 +26,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/to_string.h"
@@ -691,22 +692,24 @@ absl::StatusOr<mlir::MlirOp> BuildConvolutionBackwardBias(
     reduction_dims.push_back(i);  // Spatial
   }
 
-  grad_output = stablehlo::ConvertElementType(grad_output, output_dtype);
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType computation_dtype,
+                      InferComputationDtype(output_dtype));
+  grad_output = stablehlo::ConvertElementType(grad_output, computation_dtype);
 
-  mlir::MlirOp init_val = MakeScalarConstant(builder, 0, output_dtype);
+  mlir::MlirOp init_val = MakeScalarConstant(builder, 0, computation_dtype);
 
   absl::Status reduce_status;
   auto body_builder =
       [&](mlir::RegionBuilder& rb) {  // REF_CAPTURE_OK=called locally
         reduce_status = BuildReduceBody(
-            rb, mlir::getElementType(builder.getContext(), output_dtype),
+            rb, mlir::getElementType(builder.getContext(), computation_dtype),
             c10d::ReduceOp::SUM);
       };
 
   auto results = stablehlo::Reduce(builder, {grad_output}, {init_val},
                                    body_builder, reduction_dims);
   TT_RETURN_IF_ERROR(reduce_status);
-  return results[0];
+  return stablehlo::ConvertElementType(results[0], output_dtype);
 }
 
 }  // namespace torch_tpu

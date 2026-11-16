@@ -22,6 +22,8 @@ underlying providers (Torchvision, TIMM, and Transformers). It ensures that:
     successfully with their generated sample inputs.
 """
 
+from collections.abc import Iterator, Sequence
+import contextlib
 import copy
 import json
 import pathlib
@@ -29,6 +31,7 @@ import tempfile
 import threading
 import time
 import types
+from typing import Any
 from unittest import mock
 
 from absl.testing import absltest
@@ -43,10 +46,63 @@ from tests import module_cache
 from tests import module_registry
 from tests import seed_test_utils
 from tests import transformers_inputs
+import torchvision
+import transformers
 
 _GOLDFISH_IMG_PATH = (
     epath.resource_path("torch_tpu") / "tests/compile/data/goldfish.jpg"
 )
+
+
+_TINY_QWEN3_CONFIG = {
+    "model_type": "qwen3",
+    "architectures": ["Qwen3ForCausalLM"],
+    "hidden_size": 16,
+    "intermediate_size": 32,
+    "num_hidden_layers": 1,
+    "num_attention_heads": 2,
+    "num_key_value_heads": 1,
+    "head_dim": 8,
+    "vocab_size": 64,
+    "max_position_embeddings": 64,
+}
+
+# Sets a dtype only on `text_config`.
+_TINY_LLAVA_CONFIG = {
+    "model_type": "llava",
+    "architectures": ["LlavaForConditionalGeneration"],
+    "text_config": {
+        **_TINY_QWEN3_CONFIG,
+        "architectures": None,
+        "torch_dtype": "bfloat16",
+    },
+    "vision_config": {
+        "model_type": "clip_vision_model",
+        "hidden_size": 16,
+        "intermediate_size": 32,
+        "num_hidden_layers": 2,
+        "num_attention_heads": 2,
+        "image_size": 8,
+        "patch_size": 4,
+    },
+}
+
+
+@contextlib.contextmanager
+def _recording_parameter_dtypes() -> Iterator[Sequence[torch.dtype]]:
+  """Records the dtypes of the parameters registered within the context.
+
+  Yields:
+    The dtypes of the parameters in the order they were registered.
+  """
+  registered_dtypes = []
+  handle = torch.nn.modules.module.register_module_parameter_registration_hook(
+      lambda module, name, param: registered_dtypes.append(param.dtype)
+  )
+  try:
+    yield registered_dtypes
+  finally:
+    handle.remove()
 
 
 class ModuleRegistryTest(seed_test_utils.RepeatableTest):
@@ -639,10 +695,14 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     self.assertIn("image_embeds_position_mask", kwargs)
 
   def test_transformers_glm_ocr_generate_inputs(self):
-    config = mock.MagicMock(
+    # TODO(wan): revisit DECISION (b/568593384): HF configs in this file are
+    # `types.SimpleNamespace` rather than `transformers.PretrainedConfig`, since
+    # the v5 strict-dataclass config adds defaults and validation that are not
+    # under test here.
+    config = types.SimpleNamespace(
         model_type="glm_ocr",
         architectures=["GlmOcrForConditionalGeneration"],
-        vision_config=mock.MagicMock(
+        vision_config=types.SimpleNamespace(
             patch_size=14, temporal_patch_size=2, spatial_merge_size=2
         ),
         image_size=336,
@@ -666,10 +726,10 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     self.assertEqual(kwargs["mm_token_type_ids"][0, 1].item(), 1)
 
   def test_transformers_kosmos2_generate_inputs(self):
-    config = mock.MagicMock(
+    config = types.SimpleNamespace(
         model_type="kosmos-2",
         architectures=["Kosmos2ForConditionalGeneration"],
-        vision_config=mock.MagicMock(patch_size=14),
+        vision_config=types.SimpleNamespace(patch_size=14),
         image_size=224,
         latent_query_num=64,
         vocab_size=64007,
@@ -689,7 +749,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     )
 
   def test_transformers_sequence_length_clamping(self):
-    config = mock.MagicMock(
+    config = types.SimpleNamespace(
         model_type="electra",
         architectures=["ElectraForPreTraining"],
         max_position_embeddings=512,
@@ -858,7 +918,8 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
       mock_bucket.blob.return_value = mock_blob
       mock_blob.exists.return_value = True
 
-      def fake_download(filename):
+      def fake_download(filename, timeout=None):
+        del timeout  # Unused.
         pathlib.Path(filename).write_bytes(b'{"model_type": "bert"}')
 
       mock_blob.download_to_filename.side_effect = fake_download
@@ -875,6 +936,9 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
       mock_client.bucket.assert_called_once_with("torchtpu-test")
       mock_bucket.blob.assert_called_once_with(
           "weights/transformers/test/config.json"
+      )
+      mock_blob.download_to_filename.assert_called_once_with(
+          mock.ANY, timeout=module_registry._GCS_DOWNLOAD_TIMEOUT_SECONDS
       )
 
   def test_download_gcs_blob_not_found(self):
@@ -957,6 +1021,369 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
           self.assertIn("input_ids", kwargs)
           self.assertIn("attention_mask", kwargs)
           self.assertTrue(mock_dl.called)
+
+  def _get_tiny_transformers_module_spec(
+      self, config: dict[str, Any]
+  ) -> module_registry.ModuleSpec:
+    """Returns the module spec of a tiny model with random weights.
+
+    Args:
+      config: The model config.
+
+    Returns:
+      The module spec of the model.
+    """
+    # Each call writes its own config under the same model name.
+    module_cache.clear_config_cache()
+    with tempfile.TemporaryDirectory() as temp_dir:
+      with mock.patch("tempfile.gettempdir", return_value=temp_dir):
+        provider = module_registry.TransformersProvider(base_path="")
+        model_name = "test-org/tiny-model"
+        cache_dir = (
+            pathlib.Path(temp_dir)
+            / "torch_tpu_cache"
+            / "transformers"
+            / model_name
+        )
+        cache_dir.mkdir(parents=True)
+        (cache_dir / "config.json").write_text(json.dumps(config))
+        return provider.get_module_spec(model_name)
+
+  def _construct_tiny_transformers_model(
+      self, config: dict[str, Any], *, dtype: torch.dtype | None = None
+  ) -> tuple[Sequence[torch.dtype], torch.nn.Module]:
+    """Constructs a tiny model with random weights from the registry.
+
+    Args:
+      config: The model config.
+      dtype: The dtype to pass to the module factory.
+
+    Returns:
+      The dtypes of the parameters in the order they were registered during
+      construction, and the constructed model.
+    """
+    module_spec = self._get_tiny_transformers_module_spec(config)
+    with _recording_parameter_dtypes() as registered_dtypes:
+      model = module_spec.module_factory(dtype=dtype)
+    return registered_dtypes, model
+
+  def _construct_tiny_qwen3(
+      self, *, dtype: torch.dtype | None = None, **config_overrides: Any
+  ) -> tuple[Sequence[torch.dtype], torch.nn.Module]:
+    """Constructs a tiny Qwen3 model with random weights from the registry.
+
+    Args:
+      dtype: The dtype to pass to the module factory.
+      **config_overrides: Entries to add to the model config.
+
+    Returns:
+      The dtypes of the parameters in the order they were registered during
+      construction, and the constructed model.
+    """
+    return self._construct_tiny_transformers_model(
+        {**_TINY_QWEN3_CONFIG, **config_overrides}, dtype=dtype
+    )
+
+  def test_transformers_dtype_overrides_config_dtype(self):
+    for config_overrides, dtype in (
+        ({"torch_dtype": "bfloat16"}, torch.float32),
+        ({"torch_dtype": "float32"}, torch.bfloat16),
+        ({}, torch.bfloat16),
+    ):
+      with self.subTest(config_overrides=config_overrides, dtype=dtype):
+        registered_dtypes, model = self._construct_tiny_qwen3(
+            dtype=dtype, **config_overrides
+        )
+
+        self.assertNotEmpty(registered_dtypes)
+        self.assertEqual(set(registered_dtypes), {dtype})
+        self.assertEqual({p.dtype for p in model.parameters()}, {dtype})
+        self.assertEqual(torch.get_default_dtype(), torch.float32)
+
+  def test_transformers_dtype_leaves_module_spec_config_unchanged(self):
+    # `_from_config` writes its dtype to the config, which later calls without
+    # a `dtype` would otherwise construct in.
+    module_spec = self._get_tiny_transformers_module_spec(_TINY_QWEN3_CONFIG)
+
+    module_spec.module_factory(dtype=torch.bfloat16)
+    model = module_spec.module_factory()
+
+    self.assertEqual({p.dtype for p in model.parameters()}, {torch.float32})
+
+  def test_transformers_config_without_dtype_constructs_in_default_dtype(self):
+    # Some callers construct the model under their run dtype as the default
+    # dtype instead of passing a `dtype`.
+    module_spec = self._get_tiny_transformers_module_spec(_TINY_QWEN3_CONFIG)
+    original_dtype = torch.get_default_dtype()
+    torch.set_default_dtype(torch.bfloat16)
+    try:
+      model = module_spec.module_factory()
+    finally:
+      torch.set_default_dtype(original_dtype)
+
+    self.assertEqual({p.dtype for p in model.parameters()}, {torch.bfloat16})
+
+  def test_transformers_module_factory_leaves_sub_config_dtype_unchanged(self):
+    # Without a `dtype`, the model is constructed in the `text_config` dtype,
+    # which `_from_config` would otherwise write to the root config and the
+    # other sub-configs of the module spec.
+    module_spec = self._get_tiny_transformers_module_spec(_TINY_LLAVA_CONFIG)
+    expected_config = module_spec.config.to_dict()
+
+    model = module_spec.module_factory()
+
+    self.assertEqual({p.dtype for p in model.parameters()}, {torch.bfloat16})
+    self.assertEqual(module_spec.config.to_dict(), expected_config)
+
+  def test_transformers_constructs_in_dtype_on_meta_device(self):
+    # Benchmarks construct models on the meta device and materialize them on
+    # the TPU later, so the meta parameters must already have the run dtype.
+    module_spec = self._get_tiny_transformers_module_spec(_TINY_QWEN3_CONFIG)
+
+    with _recording_parameter_dtypes() as registered_dtypes:
+      with torch.device("meta"):
+        model = module_spec.module_factory(dtype=torch.bfloat16)
+
+    self.assertNotEmpty(registered_dtypes)
+    self.assertEqual(set(registered_dtypes), {torch.bfloat16})
+    self.assertEqual({p.device.type for p in model.parameters()}, {"meta"})
+    self.assertEqual({p.dtype for p in model.parameters()}, {torch.bfloat16})
+
+  def test_transformers_tapas_disables_relative_position_embeddings(self):
+    # The relative position embeddings per table cell call `Tensor.item()`,
+    # which fails on the meta device. The module spec config disables them, so
+    # that models constructed from a copy of it do too.
+    module_spec = self._get_tiny_transformers_module_spec({
+        "model_type": "tapas",
+        "architectures": ["TapasModel"],
+        "hidden_size": 16,
+        "intermediate_size": 32,
+        "num_hidden_layers": 1,
+        "num_attention_heads": 2,
+        "vocab_size": 64,
+        "max_position_embeddings": 64,
+    })
+    expected_config = module_spec.config.to_dict()
+
+    with torch.device("meta"):
+      model = module_spec.module_factory()
+    module_spec.sample_inputs_factory(None, "meta")
+
+    self.assertFalse(model.config.reset_position_index_per_cell)
+    self.assertFalse(model.config.init_cell_selection_weights_to_zero)
+    # Generating inputs leaves the module spec config unchanged.
+    self.assertEqual(module_spec.config.to_dict(), expected_config)
+
+  def test_default_dtype_sets_and_restores_default_dtype(self):
+    with module_registry._default_dtype(torch.bfloat16):
+      self.assertEqual(torch.get_default_dtype(), torch.bfloat16)
+
+    self.assertEqual(torch.get_default_dtype(), torch.float32)
+
+  def test_default_dtype_restores_default_dtype_on_error(self):
+    with self.assertRaises(  # ASSERT_RAISES_OK=Test infrastructure cleanup.
+        RuntimeError
+    ):
+      with module_registry._default_dtype(torch.bfloat16):
+        raise RuntimeError("construction failed")
+
+    self.assertEqual(torch.get_default_dtype(), torch.float32)
+
+  def test_default_dtype_leaves_default_dtype_for_none_and_non_floating(self):
+    for dtype in (None, torch.int8):
+      with self.subTest(dtype=dtype):
+        with module_registry._default_dtype(dtype):
+          self.assertEqual(torch.get_default_dtype(), torch.float32)
+
+  def test_transformers_constructs_class_without_from_config_in_dtype(self):
+    # E.g. `AutoModel*` classes named in `architectures` have `from_config`
+    # but not `_from_config`, and other classes may have neither.
+
+    class _ModelWithFromConfig(torch.nn.Module):
+
+      def __init__(self, config: Any):
+        del config  # Unused.
+        super().__init__()
+        self.linear = torch.nn.Linear(2, 2)
+
+      @classmethod
+      def from_config(cls, config: Any) -> "_ModelWithFromConfig":
+        return cls(config)
+
+    class _ModelWithoutFromConfig(torch.nn.Module):
+
+      def __init__(self, config: Any):
+        del config  # Unused.
+        super().__init__()
+        self.linear = torch.nn.Linear(2, 2)
+
+    for model_cls in (_ModelWithFromConfig, _ModelWithoutFromConfig):
+      with self.subTest(model_cls=model_cls.__name__):
+        with _recording_parameter_dtypes() as registered_dtypes:
+          model = module_registry._instantiate_transformers_model(
+              model_cls, transformers.PretrainedConfig(), torch.bfloat16
+          )
+
+        self.assertNotEmpty(registered_dtypes)
+        self.assertEqual(set(registered_dtypes), {torch.bfloat16})
+        self.assertEqual(
+            {p.dtype for p in model.parameters()}, {torch.bfloat16}
+        )
+        self.assertEqual(torch.get_default_dtype(), torch.float32)
+
+  def test_transformers_non_floating_dtype_raises(self):
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Test infrastructure input.
+        ValueError, "floating point"
+    ):
+      self._construct_tiny_qwen3(dtype=torch.int8)
+
+  def test_transformers_composite_model_constructs_in_dtype(self):
+    # Composite models construct their sub-models through
+    # `AutoModel.from_config(sub_config)`, which constructs in the sub-config
+    # dtype.
+    registered_dtypes, model = self._construct_tiny_transformers_model(
+        {
+            **_TINY_LLAVA_CONFIG,
+            "vision_config": {
+                **_TINY_LLAVA_CONFIG["vision_config"],
+                "torch_dtype": "bfloat16",
+            },
+        },
+        dtype=torch.float32,
+    )
+
+    self.assertNotEmpty(registered_dtypes)
+    self.assertEqual(set(registered_dtypes), {torch.float32})
+    self.assertEqual({p.dtype for p in model.parameters()}, {torch.float32})
+
+  def test_transformers_initializes_random_weights_in_bfloat16(self):
+    # Configs without a dtype initialize their random weights directly in the
+    # benchmark dtype, e.g. with `trunc_normal_` for ViT-style models.
+    registered_dtypes, model = self._construct_tiny_transformers_model(
+        {
+            "model_type": "dinov2",
+            "architectures": ["Dinov2Model"],
+            "hidden_size": 16,
+            "num_hidden_layers": 1,
+            "num_attention_heads": 2,
+            "image_size": 8,
+            "patch_size": 4,
+        },
+        dtype=torch.bfloat16,
+    )
+
+    self.assertNotEmpty(registered_dtypes)
+    self.assertEqual(set(registered_dtypes), {torch.bfloat16})
+    for name, param in model.named_parameters():
+      with self.subTest(name=name):
+        self.assertEqual(param.dtype, torch.bfloat16)
+        self.assertTrue(torch.isfinite(param).all())
+
+  def test_transformers_pretrained_loads_in_dtype(self):
+    with tempfile.TemporaryDirectory() as temp_dir:
+      model_dir = pathlib.Path(temp_dir) / "transformers" / "test-org" / "tiny"
+      model_dir.mkdir(parents=True)
+      (model_dir / "config.json").write_text(
+          json.dumps({**_TINY_QWEN3_CONFIG, "torch_dtype": "bfloat16"})
+      )
+      provider = module_registry.TransformersProvider(base_path=temp_dir)
+
+      for spec_kwargs, dtype, expected_dtype in (
+          ({}, None, torch.bfloat16),
+          ({}, torch.float32, torch.float32),
+          ({"torch_dtype": torch.float16}, None, torch.float16),
+          ({"torch_dtype": torch.float16}, torch.float32, torch.float32),
+      ):
+        with self.subTest(spec_kwargs=spec_kwargs, dtype=dtype):
+          with mock.patch.object(
+              transformers.AutoModelForCausalLM, "from_pretrained"
+          ) as mock_from_pretrained:
+            module_spec = provider.get_module_spec(
+                "test-org/tiny", load_weights=True, **spec_kwargs
+            )
+            module_spec.module_factory(dtype=dtype)
+
+          mock_from_pretrained.assert_called_once_with(
+              str(model_dir),
+              low_cpu_mem_usage=True,
+              ignore_mismatched_sizes=True,
+              dtype=expected_dtype,
+          )
+
+  def _assert_module_factory_matches_cast(
+      self, module_spec: module_registry.ModuleSpec, dtype: torch.dtype
+  ) -> None:
+    """Asserts that `module_factory(dtype=dtype)` matches a cast afterwards.
+
+    Args:
+      module_spec: The module spec of a provider that casts after construction.
+      dtype: The dtype to pass to the module factory.
+    """
+    torch.manual_seed(0)
+    model = module_spec.module_factory(dtype=dtype)
+    torch.manual_seed(0)
+    expected_model = module_spec.module_factory().to(dtype)
+
+    self.assertEqual({p.dtype for p in model.parameters()}, {dtype})
+    state_dict = model.state_dict()
+    expected_state_dict = expected_model.state_dict()
+    self.assertEqual(state_dict.keys(), expected_state_dict.keys())
+    for name, tensor in state_dict.items():
+      with self.subTest(name=name):
+        self.assertTrue(torch.equal(tensor, expected_state_dict[name]))
+
+  def test_torchvision_module_factory_casts_to_dtype(self):
+    module_spec = self.module_registry.get_module_spec(
+        "torchvision", "mobilenet_v3_small"
+    )
+
+    self._assert_module_factory_matches_cast(module_spec, torch.bfloat16)
+
+  def test_timm_module_factory_casts_to_dtype(self):
+    # Values that TIMM computes at construction and that are not parameters
+    # (e.g. stochastic depth rates) must not depend on `dtype` either.
+    module_spec = self.module_registry.get_module_spec(
+        "timm", "mobilenetv3_small_050"
+    )
+
+    self._assert_module_factory_matches_cast(module_spec, torch.bfloat16)
+
+  def test_diffusers_module_factory_casts_to_dtype(self):
+    def tiny_unet_config(config):
+      del config  # Unused.
+      return {
+          "_class_name": "UNet2DConditionModel",
+          "block_out_channels": [32, 64],
+          "layers_per_block": 1,
+          "sample_size": 8,
+          "in_channels": 4,
+          "out_channels": 4,
+          "down_block_types": ["DownBlock2D", "CrossAttnDownBlock2D"],
+          "up_block_types": ["CrossAttnUpBlock2D", "UpBlock2D"],
+          "cross_attention_dim": 32,
+      }
+
+    module_spec = self.module_registry.get_module_spec(
+        "diffusers",
+        "stabilityai/stable-diffusion-xl-base-1.0",
+        subfolder="unet",
+        modify_config_hook=tiny_unet_config,
+    )
+
+    for dtype, expected_registered_dtype, expected_dtype in (
+        (None, torch.float32, torch.bfloat16),
+        (torch.bfloat16, torch.bfloat16, torch.bfloat16),
+        (torch.float32, torch.float32, torch.float32),
+    ):
+      with self.subTest(dtype=dtype):
+        with _recording_parameter_dtypes() as registered_dtypes:
+          model = module_spec.module_factory(dtype=dtype)
+
+        self.assertNotEmpty(registered_dtypes)
+        self.assertEqual(set(registered_dtypes), {expected_registered_dtype})
+        self.assertEqual(
+            {p.dtype for p in model.parameters()}, {expected_dtype}
+        )
 
   def test_transformers_get_module_spec_uses_cached_gcs_config(self):
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -1099,29 +1526,48 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
       )
       self.assertEqual(custom_spec.modality, mod)
 
+  def _assert_same_state_dict(self, actual, expected):
+    actual_sd = actual.state_dict()
+    expected_sd = expected.state_dict()
+    self.assertEqual(actual_sd.keys(), expected_sd.keys())
+    for key, value in expected_sd.items():
+      self.assertTrue(torch.equal(actual_sd[key], value), key)
+
   def test_torchvision_weights_backbone_none(self):
-    with mock.patch(
-        "torchvision.models.get_model", return_value=mock.MagicMock()
-    ) as mock_get_model:
-      module_spec = self.module_registry.get_module_spec(
-          "torchvision", "fasterrcnn_resnet50_fpn"
-      )
-      model = module_spec.module_factory()
-      self.assertIsNotNone(model)
-      mock_get_model.assert_called_once_with(
-          "fasterrcnn_resnet50_fpn", weights=None, weights_backbone=None
-      )
+    # Detection builders accept `weights_backbone`, whose default would load a
+    # pretrained backbone (with frozen BatchNorm). The factory must disable it.
+    name = "fasterrcnn_mobilenet_v3_large_320_fpn"
+    module_spec = self.module_registry.get_module_spec("torchvision", name)
+
+    torch.manual_seed(0)
+    model = module_spec.module_factory()
+    torch.manual_seed(0)
+    expected = torchvision.models.get_model(
+        name, weights=None, weights_backbone=None
+    )
+
+    self.assertIsInstance(model, torchvision.models.detection.FasterRCNN)
+    self.assertFalse(
+        any(
+            isinstance(m, torchvision.ops.FrozenBatchNorm2d)
+            for m in model.modules()
+        )
+    )
+    self._assert_same_state_dict(model, expected)
 
   def test_torchvision_without_weights_backbone_parameter(self):
-    with mock.patch(
-        "torchvision.models.get_model", return_value=mock.MagicMock()
-    ) as mock_get_model:
-      module_spec = self.module_registry.get_module_spec(
-          "torchvision", "resnet50"
-      )
-      model = module_spec.module_factory()
-      self.assertIsNotNone(model)
-      mock_get_model.assert_called_once_with("resnet50", weights=None)
+    # Classification builders have no `weights_backbone` parameter, so the
+    # factory must not pass it and builds a randomly initialized model.
+    name = "resnet18"
+    module_spec = self.module_registry.get_module_spec("torchvision", name)
+
+    torch.manual_seed(0)
+    model = module_spec.module_factory()
+    torch.manual_seed(0)
+    expected = torchvision.models.get_model(name, weights=None)
+
+    self.assertIsInstance(model, torchvision.models.ResNet)
+    self._assert_same_state_dict(model, expected)
 
   def test_diffusers_dynamic_subfolder_resolution_via_model_index(self):
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -1243,11 +1689,9 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
         ),
     ]
     for name, cfg_dict in configs:
-      mock_cfg = mock.MagicMock()
-      for k, v in cfg_dict.items():
-        setattr(mock_cfg, k, v)
+      cfg = types.SimpleNamespace(**cfg_dict)
       inputs = transformers_inputs.generate_transformers_inputs(
-          mock_cfg, module_registry.Modality.VISION
+          cfg, module_registry.Modality.VISION
       )
       if name == "videoprism":
         self.assertIn("pixel_values_videos", inputs, f"Failed for {name}")
@@ -1279,15 +1723,16 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
         self.assertFalse(torch.all(inputs["bool_masked_pos"]))
 
   def test_transformers_videomae_classification_no_mask(self):
-    mock_cfg = mock.MagicMock()
-    mock_cfg.model_type = "videomae"
-    mock_cfg.architectures = ["VideoMAEForVideoClassification"]
-    mock_cfg.num_frames = 16
-    mock_cfg.image_size = 224
-    mock_cfg.patch_size = 16
-    mock_cfg.tubelet_size = 2
+    cfg = types.SimpleNamespace(
+        model_type="videomae",
+        architectures=["VideoMAEForVideoClassification"],
+        num_frames=16,
+        image_size=224,
+        patch_size=16,
+        tubelet_size=2,
+    )
     inputs = transformers_inputs.generate_transformers_inputs(
-        mock_cfg, module_registry.Modality.VISION
+        cfg, module_registry.Modality.VISION
     )
     self.assertIn("pixel_values", inputs)
     self.assertNotIn("bool_masked_pos", inputs)
@@ -1301,11 +1746,9 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
         "xcodec2",
     ]
     for codec in codecs:
-      mock_cfg = mock.MagicMock()
-      mock_cfg.model_type = codec
-      mock_cfg.architectures = [codec]
+      cfg = types.SimpleNamespace(model_type=codec, architectures=[codec])
       inputs = transformers_inputs.generate_transformers_inputs(
-          mock_cfg, module_registry.Modality.AUDIO, shape=(2, 8000)
+          cfg, module_registry.Modality.AUDIO, shape=(2, 8000)
       )
       if codec == "xcodec2":
         self.assertIn("input_features", inputs, f"Failed for {codec}")
@@ -1415,15 +1858,16 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
         "timesfm",
     ]
     for ts in ts_models:
-      mock_cfg = mock.MagicMock()
-      mock_cfg.model_type = ts
-      mock_cfg.architectures = [ts]
-      mock_cfg.context_length = 32
-      mock_cfg.input_size = 1
-      mock_cfg.num_time_features = 4
-      mock_cfg.lags_sequence = [1, 2, 3]
+      cfg = types.SimpleNamespace(
+          model_type=ts,
+          architectures=[ts],
+          context_length=32,
+          input_size=1,
+          num_time_features=4,
+          lags_sequence=[1, 2, 3],
+      )
       inputs = transformers_inputs.generate_transformers_inputs(
-          mock_cfg, module_registry.Modality.CAUSAL_LM, shape=(2, 32)
+          cfg, module_registry.Modality.CAUSAL_LM, shape=(2, 32)
       )
       self.assertNotIn("input_ids", inputs, f"Failed for {ts}")
       self.assertNotIn("attention_mask", inputs, f"Failed for {ts}")
@@ -1452,7 +1896,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
 
   def test_transformers_model_specific_kwargs(self):
     # SigLIP2
-    cfg_siglip2 = mock.MagicMock(
+    cfg_siglip2 = types.SimpleNamespace(
         model_type="siglip2",
         architectures=["Siglip2VisionModel"],
         image_size=224,
@@ -1466,7 +1910,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     self.assertEqual(inputs_siglip2["spatial_shapes"].tolist(), [[14, 14]])
 
     # OneFormer
-    cfg_oneformer = mock.MagicMock(
+    cfg_oneformer = types.SimpleNamespace(
         model_type="oneformer",
         architectures=["OneFormerModel"],
         image_size=224,
@@ -1477,7 +1921,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     self.assertIn("task_inputs", inputs_oneformer)
 
     # VitMatte (4 channels)
-    cfg_vitmatte = mock.MagicMock(
+    cfg_vitmatte = types.SimpleNamespace(
         model_type="vitmatte",
         architectures=["VitMatteForImageMatting"],
         image_size=224,
@@ -1489,7 +1933,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     self.assertEqual(inputs_vitmatte["pixel_values"].shape[1], 4)
 
     # VitPose
-    cfg_vitpose = mock.MagicMock(
+    cfg_vitpose = types.SimpleNamespace(
         model_type="vitpose",
         architectures=["VitPoseModel"],
         image_size=[256, 192],
@@ -1502,7 +1946,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     self.assertIn("dataset_index", inputs_vitpose)
 
     # Bros (bbox)
-    cfg_bros = mock.MagicMock(
+    cfg_bros = types.SimpleNamespace(
         model_type="bros",
         architectures=["BrosModel"],
         vocab_size=30522,
@@ -1514,11 +1958,11 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     self.assertEqual(inputs_bros["bbox"].shape, (1, 32, 4))
 
     # Pix2Struct (flattened_patches)
-    cfg_p2s = mock.MagicMock(
+    cfg_p2s = types.SimpleNamespace(
         model_type="pix2struct",
         architectures=["Pix2StructForConditionalGeneration"],
         max_patches=16,
-        text_config=mock.MagicMock(hidden_size=768),
+        text_config=types.SimpleNamespace(hidden_size=768),
     )
     inputs_p2s = transformers_inputs.generate_transformers_inputs(
         cfg_p2s, module_registry.Modality.MULTIMODAL, shape=(1, 32)
@@ -1529,7 +1973,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     self.assertIn("decoder_input_ids", inputs_p2s)
 
     # Qwen2-VL / Qwen3-VL / Holo (image_grid_thw)
-    cfg_qwenvl = mock.MagicMock(
+    cfg_qwenvl = types.SimpleNamespace(
         model_type="qwen2_5_vl",
         architectures=["Qwen2_5_VLForConditionalGeneration"],
         image_size=224,
@@ -1541,7 +1985,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     self.assertEqual(inputs_qwenvl["image_grid_thw"].tolist(), [[1, 16, 16]])
 
     # InstructBlip / Blip
-    cfg_iblip = mock.MagicMock(
+    cfg_iblip = types.SimpleNamespace(
         model_type="instructblip",
         architectures=["InstructBlipForConditionalGeneration"],
         image_size=224,
@@ -1554,7 +1998,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     self.assertIn("decoder_input_ids", inputs_iblip)
 
     # LXMERT
-    cfg_lxmert = mock.MagicMock(
+    cfg_lxmert = types.SimpleNamespace(
         model_type="lxmert",
         architectures=["LxmertForQuestionAnswering"],
         vocab_size=30522,
@@ -1569,7 +2013,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     self.assertEqual(inputs_lxmert["visual_pos"].shape, (1, 36, 4))
 
     # SpeechT5 (TextToSpeech)
-    cfg_speecht5_tts = mock.MagicMock(
+    cfg_speecht5_tts = types.SimpleNamespace(
         model_type="speecht5",
         architectures=["SpeechT5ForTextToSpeech"],
         vocab_size=81,
@@ -1591,7 +2035,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     self.assertEqual(inputs_tts["speaker_embeddings"].shape, (1, 512))
 
     # SpeechT5 (SpeechToText)
-    cfg_speecht5_asr = mock.MagicMock(
+    cfg_speecht5_asr = types.SimpleNamespace(
         model_type="speecht5",
         architectures=["SpeechT5ForSpeechToText"],
         vocab_size=81,
@@ -1611,7 +2055,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     self.assertEqual(inputs_asr["attention_mask"].shape, (1, 16000))
 
     # SpeechT5 (SpeechToSpeech)
-    cfg_speecht5_vc = mock.MagicMock(
+    cfg_speecht5_vc = types.SimpleNamespace(
         model_type="speecht5",
         architectures=["SpeechT5ForSpeechToSpeech"],
         vocab_size=81,
@@ -1630,20 +2074,26 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     self.assertEqual(inputs_vc["attention_mask"].shape, (1, 16000))
 
   def test_transformers_get_max_seq_len_bounds(self):
-    cfg_normal = mock.MagicMock(max_position_embeddings=2048)
+    cfg_normal = types.SimpleNamespace(max_position_embeddings=2048)
     self.assertEqual(module_registry._get_max_seq_len(cfg_normal), 2048)
 
-    cfg_neg = mock.MagicMock(max_position_embeddings=-1)
+    cfg_neg = types.SimpleNamespace(max_position_embeddings=-1)
     self.assertEqual(module_registry._get_max_seq_len(cfg_neg), 512)
 
-    cfg_oversized = mock.MagicMock(max_position_embeddings=1000000)
+    cfg_oversized = types.SimpleNamespace(max_position_embeddings=1000000)
     self.assertEqual(module_registry._get_max_seq_len(cfg_oversized), 512)
 
-    cfg_empty = mock.MagicMock(spec=[])
+    cfg_empty = types.SimpleNamespace()
     self.assertEqual(module_registry._get_max_seq_len(cfg_empty), 512)
     self.assertEqual(
         module_registry._get_max_seq_len(cfg_empty, default=256), 256
     )
+
+    # Positional limits on `text_config` are used when the top level has none.
+    cfg_text_only = types.SimpleNamespace(
+        text_config=types.SimpleNamespace(max_position_embeddings=1024)
+    )
+    self.assertEqual(module_registry._get_max_seq_len(cfg_text_only), 1024)
 
   def test_safe_int(self):
     self.assertEqual(module_registry._safe_int(42), 42)
@@ -1654,8 +2104,9 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     self.assertEqual(module_registry._safe_int("invalid", default=0), 0)
     self.assertEqual(module_registry._safe_int(0, default=10, min_val=1), 10)
     self.assertEqual(module_registry._safe_int(5, default=10, min_val=1), 5)
+    # Non-scalar objects (e.g. nested configs) fall back to the default.
     self.assertEqual(
-        module_registry._safe_int(mock.MagicMock(), default=10), 10
+        module_registry._safe_int(types.SimpleNamespace(), default=10), 10
     )
 
   def test_parse_image_size(self):
@@ -1728,7 +2179,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
         module_registry.Modality.VISION,
     )
     # Config object with dict backbone_config
-    cfg_obj = mock.MagicMock(
+    cfg_obj = types.SimpleNamespace(
         _class_name="",
         _name_or_path="",
         model_type="chmv2",
@@ -2751,6 +3202,30 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
         qwen_omni_dict, load_weights=False
     )
     self.assertIs(qwen_omni_dict["enable_audio_output"], False)
+
+  def test_in_tree_config_priority_when_load_weights_false(self):
+    with tempfile.TemporaryDirectory() as temp_dir:
+      base_dir = pathlib.Path(temp_dir)
+      # Invalid JSON in base_path verifies that load_weights=False uses in-tree
+      # config first without reading base_path/config.json.
+      gemma_dir = base_dir / "transformers" / "google" / "gemma-3-270m"
+      gemma_dir.mkdir(parents=True)
+      (gemma_dir / "config.json").write_text("{invalid json")
+      provider = module_registry.TransformersProvider(base_path=temp_dir)
+      spec = provider.get_module_spec("google/gemma-3-270m", load_weights=False)
+      self.assertEqual(spec.config.model_type, "gemma3_text")
+
+  def test_retry_transient_io(self):
+    flaky = mock.MagicMock(side_effect=[OSError("transient"), "ok"])
+    self.assertEqual(module_registry._RETRY_TRANSIENT_IO(flaky)(), "ok")
+    self.assertEqual(flaky.call_count, 2)
+
+    missing = mock.MagicMock(side_effect=FileNotFoundError("missing"))
+    with self.assertRaises(  # ASSERT_RAISES_OK=testing a test library
+        FileNotFoundError
+    ):
+      module_registry._RETRY_TRANSIENT_IO(missing)()
+    self.assertEqual(missing.call_count, 1)
 
 
 if __name__ == "__main__":

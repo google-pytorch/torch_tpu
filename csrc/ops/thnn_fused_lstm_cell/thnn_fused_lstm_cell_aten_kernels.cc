@@ -400,10 +400,12 @@ AtenThnnFusedLstmCellBackwardImpl(const std::optional<at::Tensor>& grad_hy,
   TT_KERNEL(
       OpName::kThnnFusedLstmCellBackwardImpl, param_keys,
       (grad_hy, grad_cy, cx, cy, workspace, has_bias), {
-        const bool grad_hy_defined = grad_hy.has_value() && grad_hy->defined();
-        const bool grad_cy_defined = grad_cy.has_value() && grad_cy->defined();
-        const at::Tensor grad_hy_t = grad_hy_defined ? *grad_hy : cy;
-        const at::Tensor grad_cy_t = grad_cy_defined ? *grad_cy : cy;
+        const auto sanitized_grad_hy = SanitizeOptionalTensor(grad_hy);
+        const auto sanitized_grad_cy = SanitizeOptionalTensor(grad_cy);
+        const bool grad_hy_defined = sanitized_grad_hy.has_value();
+        const bool grad_cy_defined = sanitized_grad_cy.has_value();
+        const at::Tensor grad_hy_t = grad_hy_defined ? *sanitized_grad_hy : cy;
+        const at::Tensor grad_cy_t = grad_cy_defined ? *sanitized_grad_cy : cy;
         const int64_t batch = cy.size(0);
         const int64_t hidden = cy.size(1);
         TT_ASSIGN_OR_THROW(const auto out_dtype,

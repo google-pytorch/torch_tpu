@@ -20,12 +20,16 @@
 #include <optional>
 #include <string_view>
 
+#include "absl/base/nullability.h"
 #include "csrc/internal/mosaic/kiln/core/context.h"
 #include "csrc/internal/mosaic/kiln/core/index_arg.h"
 #include "csrc/internal/mosaic/kiln/core/scalar.h"
 #include "csrc/internal/mosaic/kiln/core/shape.h"
+#include "csrc/internal/mosaic/kiln/core/specs.h"
 #include "llvm/Support/Casting.h"
+#include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Value.h"
 
 namespace torch_tpu::kiln::internal {
@@ -38,10 +42,22 @@ inline mlir::MemRefType MemRefTypeOf(const T& val) {
 // Get the mlir::VectorType corresponding to the given Shape.
 mlir::VectorType ToMlirVectorType(const Shape& shape);
 
-void ValidateI32IndexArg(const IndexArg& arg, bool require_positive,
+// Get the mlir::MemRefType corresponding to the given Shape and MemorySpace.
+mlir::MemRefType ToMlirMemRefType(const Shape& shape, MemorySpace space,
+                                  mlir::MLIRContext* absl_nonnull ctx);
+
+enum class IndexBounds {
+  kNonNegative,
+  kPositive,
+};
+
+// Validates that `arg` satisfies `bounds` when it is an integer literal or
+// constant Scalar, and that any Scalar argument has bitwidth <= 32.
+void ValidateI32IndexArg(const IndexArg& arg, IndexBounds bounds,
                          std::string_view name);
 
-mlir::Value ToValidatedI32Value(const IndexArg& arg, bool require_positive,
+// Validates `arg` against `bounds` and converts it to an i32 mlir::Value.
+mlir::Value ToValidatedI32Value(const IndexArg& arg, IndexBounds bounds,
                                 std::string_view name);
 
 // Converts an optional I32 IndexArg to an optional Scalar, validating the
@@ -55,6 +71,10 @@ mlir::Value UnwrapOptionalScalar(const std::optional<Scalar>& s);
 
 mlir::Value OptionalI32Value(const std::optional<IndexArg>& arg,
                              std::string_view name);
+
+// Converts `arg` to an `index`-typed mlir::Value: an `arith.constant` for
+// integer literals, otherwise an `arith.index_cast[ui]` of the Scalar.
+mlir::Value ToIndex(mlir::ImplicitLocOpBuilder& b, const IndexArg& arg);
 
 }  // namespace torch_tpu::kiln::internal
 

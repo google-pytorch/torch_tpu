@@ -28,6 +28,9 @@
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "c10/core/ScalarType.h"
+#include "c10/core/SymInt.h"
+#include "c10/core/SymIntArrayRef.h"
+#include "csrc/common/const_tensor.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -103,37 +106,48 @@ auto SparseDenseMatmulGradientStackBuilder(int64_t stacked_batch_size,
 }  // namespace
 
 absl::Status ValidateSparseDenseMatmulGradientStackInputs(
-    at::TensorList unstacked_gradients, int64_t stacked_batch_size,
-    int64_t stacked_feature_dim) {
-  TT_RET_CHECK(stacked_batch_size > 0, error::kInvalidArgument)
+    at::TensorList unstacked_gradients, const c10::SymInt& stacked_batch_size,
+    const c10::SymInt& stacked_feature_dim) {
+  // For symbolic sizes, the comparisons below add relational guards but don't
+  // specialize.
+  TT_RET_CHECK(stacked_batch_size.sym_gt(0).guard_bool(__FILE__, __LINE__),
+               error::kInvalidArgument)
       << "expected stacked_batch_size to be positive, got "
       << stacked_batch_size;
 
-  TT_RET_CHECK(stacked_feature_dim > 0, error::kInvalidArgument)
+  TT_RET_CHECK(stacked_feature_dim.sym_gt(0).guard_bool(__FILE__, __LINE__),
+               error::kInvalidArgument)
       << "expected stacked_feature_dim to be positive, got "
       << stacked_feature_dim;
 
-  int64_t total_batch_size = 0;
+  c10::SymInt total_batch_size = 0;
 
   for (size_t i = 0; i < unstacked_gradients.size(); ++i) {
-    const at::Tensor& grad = unstacked_gradients[i];
-    TT_RET_CHECK(grad.dim() == 2, error::kInvalidArgument)
+    const ConstTensor grad(unstacked_gradients[i]);
+    TT_ASSIGN_OR_RETURN(const int64_t grad_dim, grad.dim());
+    TT_ASSIGN_OR_RETURN(const c10::SymIntArrayRef grad_sizes, grad.sym_sizes());
+    TT_RET_CHECK(grad_dim == 2, error::kInvalidArgument)
         << "expected unstacked_gradients[" << i << "] to be a 2D tensor, got a "
-        << grad.dim() << "D tensor of shape " << ToString(grad.sizes());
+        << grad_dim << "D tensor of shape " << ToString(grad_sizes);
 
     TT_RET_CHECK(grad.scalar_type() == at::kFloat, error::kInvalidArgument)
         << "expected unstacked_gradients[" << i
         << "] to have float32 dtype, got " << ToString(grad.scalar_type());
 
-    TT_RET_CHECK(grad.size(1) <= stacked_feature_dim, error::kInvalidArgument)
-        << "expected unstacked_gradients[" << i << "] dim 1 (" << grad.size(1)
+    TT_RET_CHECK(grad_sizes[1]
+                     .sym_le(stacked_feature_dim)
+                     .guard_bool(__FILE__, __LINE__),
+                 error::kInvalidArgument)
+        << "expected unstacked_gradients[" << i << "] dim 1 (" << grad_sizes[1]
         << ") to be at most stacked_feature_dim (" << stacked_feature_dim
         << ")";
 
-    total_batch_size += grad.size(0);
+    total_batch_size += grad_sizes[0];
   }
 
-  TT_RET_CHECK(total_batch_size == stacked_batch_size, error::kInvalidArgument)
+  TT_RET_CHECK(total_batch_size.sym_eq(stacked_batch_size)
+                   .guard_bool(__FILE__, __LINE__),
+               error::kInvalidArgument)
       << "expected sum of unstacked gradient batch sizes (" << total_batch_size
       << ") to match stacked_batch_size (" << stacked_batch_size << ")";
 
@@ -144,7 +158,7 @@ at::Tensor AtenSparseDenseMatmulGradientStack(
     at::TensorList unstacked_gradients, int64_t stacked_batch_size,
     int64_t stacked_feature_dim) {
   TT_KERNEL(
-      torch_tpu::OpName::kSparseDenseMatmulGradientStack, param_keys,
+      OpName::kSparseDenseMatmulGradientStack, param_keys,
       (unstacked_gradients, stacked_batch_size, stacked_feature_dim), {
         TT_THROW_IF_ERROR(ValidateSparseDenseMatmulGradientStackInputs(
             unstacked_gradients, stacked_batch_size, stacked_feature_dim));
@@ -152,14 +166,13 @@ at::Tensor AtenSparseDenseMatmulGradientStack(
         std::vector<at::Tensor> inputs_vec(unstacked_gradients.begin(),
                                            unstacked_gradients.end());
 
-        torch_tpu::Dimensions out_dims = {stacked_batch_size,
-                                          stacked_feature_dim};
+        Dimensions out_dims = {stacked_batch_size, stacked_feature_dim};
 
         auto builder_fn = SparseDenseMatmulGradientStackBuilder(
             stacked_batch_size, stacked_feature_dim);
 
         TT_ASSIGN_OR_THROW(mlir::ElementType out_dtype,
-                           torch_tpu::ConvertTo<mlir::ElementType>(at::kFloat));
+                           ConvertTo<mlir::ElementType>(at::kFloat));
 
         TT_ASSIGN_OR_THROW(
             std::vector<int64_t> device_assignment,  // INT_VEC_OK
@@ -174,8 +187,8 @@ at::Tensor AtenSparseDenseMatmulGradientStack(
 
         TT_ASSIGN_OR_THROW(
             DeviceBufferRef result,
-            (torch_tpu::DispatchOp<torch_tpu::kDynamicSize, 1>(
-                std::move(builder_fn), inputs_vec, std::move(options))));
+            (DispatchOp<kDynamicSize, 1>(std::move(builder_fn), inputs_vec,
+                                         std::move(options))));
 
         return torch_tpu::MakeTensor(std::move(result));
       });

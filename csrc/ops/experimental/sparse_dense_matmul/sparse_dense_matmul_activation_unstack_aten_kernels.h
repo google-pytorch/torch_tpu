@@ -24,6 +24,7 @@
 #include "absl/status/status.h"
 // NOTE: Do not add torch/csrc/autograd/node.h here; see the note on
 // AtenSparseDenseMatmulActivationUnstackAutograd below.
+#include "csrc/common/const_tensor.h"
 #include "torch/csrc/autograd/custom_function.h"
 
 namespace torch_tpu {
@@ -39,7 +40,7 @@ namespace torch_tpu {
  * @return OK if the inputs are valid, otherwise an error status.
  */
 absl::Status ValidateSparseDenseMatmulActivationUnstackInputs(
-    const at::Tensor& stacked_activations,
+    const ConstTensor& stacked_activations,
     at::IntArrayRef per_feature_batch_sizes, at::IntArrayRef per_feature_dims);
 
 /**

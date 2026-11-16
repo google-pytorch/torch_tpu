@@ -17,6 +17,8 @@
 from collections import OrderedDict
 import concurrent.futures
 import gc
+import os
+import threading
 import time
 from typing import TypeAlias
 
@@ -26,17 +28,24 @@ import torch
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal import sync
 from torch_tpu._internal import testing as tt_testing
+from torch_tpu._internal.device import _device_ops_backend
 from torch_tpu._internal.utils import annotations
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.utils import utils as tt_utils
 from tests import seed_test_utils
 
 EagerMode: TypeAlias = execution_mode.EagerMode
+_EagerMode: TypeAlias = execution_mode._EagerMode
 
 
 def setUpModule():
   # Compare torch.accelerator APIs with the internal torch.tpu APIs they use.
   annotations._internal_apis_allowed_for_testing = True  # pylint: disable=protected-access
+
+
+def _usable_device_count() -> int:
+  """Returns the number of devices this process uses (PJRT addressable)."""
+  return _device_ops_backend._get_addressable_device_count()  # pylint: disable=protected-access
 
 
 class AcceleratorDeviceTest(seed_test_utils.RepeatableTest):
@@ -75,6 +84,7 @@ class AcceleratorDeviceTest(seed_test_utils.RepeatableTest):
     self.assertIsInstance(count, int)
     self.assertGreater(count, 0)
     self.assertEqual(count, torch.tpu.device_count())
+    self.assertGreaterEqual(count, _usable_device_count())
 
   def test_current_device_index(self):
     idx = torch.accelerator.current_device_index()
@@ -97,7 +107,7 @@ class AcceleratorDeviceTest(seed_test_utils.RepeatableTest):
         torch.accelerator.set_device_index(valid_device)
         self.assertEqual(torch.accelerator.current_device_index(), 0)
 
-    if torch.accelerator.device_count() > 1:
+    if _usable_device_count() > 1:
       for device_one in (1, "tpu:1", torch.device("tpu", 1)):
         with self.subTest(device_one=device_one):
           torch.accelerator.set_device_index(device_one)
@@ -133,10 +143,13 @@ class AcceleratorDeviceTest(seed_test_utils.RepeatableTest):
         ):
           torch.accelerator.set_device_index(wrong_type)
 
-    # Out-of-range device index raises RuntimeError.
-    out_of_range = torch.accelerator.device_count()
-    with self.assertRaises(  # ASSERT_RAISES_OK=PyTorch accelerator API contract check
-        RuntimeError
+    # The first unusable index raises, with a hint if the device is visible.
+    out_of_range = _usable_device_count()
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=PyTorch accelerator API contract check
+        RuntimeError,
+        "is not supported yet"
+        if out_of_range < torch.accelerator.device_count()
+        else "",
     ):
       torch.accelerator.set_device_index(out_of_range)
 
@@ -172,7 +185,7 @@ class AcceleratorDeviceTest(seed_test_utils.RepeatableTest):
 
     # If multiple devices are available, verify switching and restoration
     # including when an exception occurs inside the block.
-    if torch.accelerator.device_count() > 1:
+    if _usable_device_count() > 1:
       with torch.accelerator.device_index(0):
         self.assertEqual(torch.accelerator.current_device_index(), 0)
         with torch.accelerator.device_index(1):
@@ -194,7 +207,7 @@ class AcceleratorDeviceTest(seed_test_utils.RepeatableTest):
       torch.accelerator.device_index(device=0)  # pytype: disable=wrong-keyword-args
 
     # Negative or out-of-range device index raises RuntimeError on context entry.
-    for bad_index in (-1, torch.accelerator.device_count()):
+    for bad_index in (-1, _usable_device_count()):
       with self.subTest(bad_index=bad_index):
         with self.assertRaises(  # ASSERT_RAISES_OK=PyTorch accelerator API contract check
             RuntimeError
@@ -211,7 +224,7 @@ class AcceleratorDeviceTest(seed_test_utils.RepeatableTest):
     tensor caused subsequent ops to be recorded on device 0's events queue while
     their inputs lived on device N's queue, which raced during materialization.
     """
-    num_devices = torch.accelerator.device_count()
+    num_devices = _usable_device_count()
     if num_devices < 2:
       self.skipTest(
           "Requires multiple devices to verify device index metadata."
@@ -384,7 +397,7 @@ class AcceleratorStreamAndSyncTest(seed_test_utils.RepeatableTest):
           torch.accelerator.current_stream(wrong_type)
 
     # Out-of-range or negative index raises RuntimeError.
-    for bad_index in (-1, torch.accelerator.device_count(), 100):
+    for bad_index in (-1, _usable_device_count(), 100):
       with self.subTest(bad_index=bad_index):
         with self.assertRaises(  # ASSERT_RAISES_OK=PyTorch accelerator API contract check
             RuntimeError
@@ -659,6 +672,64 @@ class AcceleratorMemoryTest(seed_test_utils.RepeatableTest):
 
     self.assertIsNone(torch.accelerator.empty_cache())
     self.assertIsNone(torch.accelerator.memory.empty_cache())
+
+  @parameterized.named_parameters(
+      ("defer_and_fuse", EagerMode.DEFER_AND_FUSE),
+      ("defer_never", EagerMode.DEFER_NEVER),
+  )
+  def test_distinct_scalars_do_not_accumulate_device_buffers(self, mode):
+    def add_distinct_scalars():
+      with execution_mode.set_eager_mode(mode):
+        t = torch.ones(8, device="tpu")
+        t_cpu = torch.ones(8)
+        gc.collect()
+        torch.accelerator.synchronize()
+        before = torch.accelerator.memory_stats()["allocation.all.current"]
+
+        # Each distinct Python scalar is materialized once as a device buffer.
+        # The scalars and all partial sums are exact in float32, so reading a
+        # wrong scalar buffer changes the result.
+        for i in range(4000):
+          scalar = (-1) ** i * (1.0 + i / 4096)
+          t = t + scalar
+          t_cpu = t_cpu + scalar
+        torch.accelerator.synchronize()
+        gc.collect()
+
+        after = torch.accelerator.memory_stats()["allocation.all.current"]
+        return t.cpu(), t_cpu, after - before
+
+    # Run in a new thread, which starts with an empty scalar buffer cache. The
+    # thread frees its cache on exit, so it takes both snapshots itself.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+      native_id = executor.submit(threading.get_native_id).result()
+      future = executor.submit(add_distinct_scalars)
+    # Before Python 3.13, the executor shutdown can return before the thread
+    # runs its C++ thread_local destructors, which free its cache. Wait until
+    # the thread is gone, so that the cache is freed before the next test.
+    while os.path.exists(f"/proc/self/task/{native_id}"):
+      time.sleep(0.001)
+    actual, expected, growth = future.result()
+    utils.assert_close(actual, expected)
+    # The cache keeps at most kMaxCachedScalarBuffers (1024, op_dispatcher.cc)
+    # buffers. Without a bound, it would keep all 4000.
+    self.assertLess(growth, 2048)
+
+  def test_queued_op_keeps_scalar_buffer_after_cache_clear(self):
+    with execution_mode.set_eager_mode(_EagerMode.INTERNAL_DEFER_ALL):
+      x = torch.ones(8, device="tpu")
+      y = x + 0.25
+      # Pass 2048 distinct scalars, twice kMaxCachedScalarBuffers (1024, in
+      # op_dispatcher.cc), so the cache is cleared at least once. Then only the
+      # queued add for y holds its 0.25 buffer.
+      for i in range(2048):
+        _ = x + (2.0 + i / 4096)
+      self.assertFalse(sync.is_materializing(y))
+      # 0.25 now misses the cache, so the graph gets a second 0.25 buffer.
+      z = y + 0.25
+      torch.accelerator.synchronize()
+    utils.assert_close(y.cpu(), torch.full((8,), 1.25))
+    utils.assert_close(z.cpu(), torch.full((8,), 1.5))
 
   @parameterized.named_parameters(
       ("top_level", torch.accelerator.get_memory_info),
@@ -983,7 +1054,7 @@ class AcceleratorRandomTest(seed_test_utils.RepeatableTest):
     with self.assertRaises(  # ASSERT_RAISES_OK=PyTorch accelerator API contract check
         RuntimeError
     ):
-      torch.accelerator.random.initial_seed(torch.accelerator.device_count())
+      torch.accelerator.random.initial_seed(_usable_device_count())
 
   def test_get_rng_state(self):
     torch.manual_seed(42)
@@ -1029,10 +1100,17 @@ class AcceleratorRandomTest(seed_test_utils.RepeatableTest):
     with self.assertRaises(  # ASSERT_RAISES_OK=PyTorch accelerator API contract check
         RuntimeError
     ):
-      torch.accelerator.random.get_rng_state(torch.accelerator.device_count())
+      torch.accelerator.random.get_rng_state(_usable_device_count())
 
   def test_get_rng_state_all(self):
     torch.manual_seed(2026)
+    if _usable_device_count() < torch.accelerator.device_count():
+      # TODO(b/555281188): Generators exist only for addressable devices.
+      with self.assertRaisesRegex(  # ASSERT_RAISES_OK=TPU runtime limitation
+          RuntimeError, "expected device_index between 0 and"
+      ):
+        torch.accelerator.random.get_rng_state_all()
+      return
     all_states = torch.accelerator.random.get_rng_state_all()
     self.assertIsInstance(all_states, list)
     self.assertLen(all_states, torch.accelerator.device_count())

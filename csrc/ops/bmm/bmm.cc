@@ -51,7 +51,8 @@ absl::StatusOr<mlir::MlirOp> BuildBmmShlo(
       /*lhs_contracting_dimensions=*/{2},
       /*rhs_contracting_dimensions=*/{1});
   mlir::MlirOp dot_result = stablehlo::DotGeneral(
-      self_op, mat2_op, dot_dimension_numbers, precision_config);
+      self_op, mat2_op, dot_dimension_numbers, precision_config,
+      is_any_i64 ? std::nullopt : std::optional<mlir::ElementType>(out_dtype));
   if (is_any_i64) {
     return stablehlo::ConvertElementType(dot_result, out_dtype);
   }

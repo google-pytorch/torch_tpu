@@ -30,15 +30,11 @@
 #include "absl/algorithm/container.h"
 #include "absl/base/no_destructor.h"
 #include "absl/base/nullability.h"
-#include "absl/base/thread_annotations.h"
-#include "absl/container/flat_hash_map.h"
-#include "absl/container/flat_hash_set.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_join.h"
-#include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
 #include "c10/core/Allocator.h"
 #include "c10/core/CachingDeviceAllocator.h"
@@ -66,19 +62,17 @@
 #include "csrc/common/warnings.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/device_buffer_utils.h"
+#include "csrc/eager/host_allocator.h"
 #include "csrc/eager/materialize.h"
-#include "csrc/eager/split_traversal.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/python_context.h"
 #include "csrc/pjrt/pjrt_state.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
-#include "torch/headeronly/core/DeviceType.h"
 #include "torch/headeronly/core/Layout.h"
 #include "torch/headeronly/core/MemoryFormat.h"
 #include "torch/headeronly/core/ScalarType.h"
 #include "tsl/profiler/lib/traceme.h"
-#include "xla/pjrt/host_memory_allocator.h"
 
 namespace torch_tpu {
 
@@ -134,7 +128,8 @@ void OverwriteDataPtr(const c10::DataPtr& data_ptr,
 
 absl::Status AssignBufferToAtTensor(DeviceBufferRef result_buf,
                                     const at::Tensor& tensor,
-                                    bool enable_autodonation) {
+                                    bool enable_autodonation,
+                                    bool bump_version) {
   TT_RET_CHECK(tensor.device().type() == GetPrivateUse1DeviceType(),
                error::kInvalidArgument)
       << "expected tensor to be on " << GetPrivateUse1DeviceDebugName()
@@ -251,8 +246,11 @@ absl::Status AssignBufferToAtTensor(DeviceBufferRef result_buf,
                      std::move(new_base_buffer_ref));
   }
 
-  // Bump the version to tell PyTorch how to handle functionalization
-  tensor.unsafeGetTensorImpl()->bump_version();
+  // Bump the version counter for autograd in-place tracking and
+  // functionalization.
+  if (bump_version) {
+    tensor.unsafeGetTensorImpl()->bump_version();
+  }
 
   ABSL_VLOG(1) << "[AssignBufferToAtTensor] Final tensor after assignment:"
                << ToString(tensor)
@@ -426,8 +424,7 @@ at::Tensor MakeTensor(DeviceBufferRef buffer_ref,
 
   const auto dtype = ConvertTo<at::ScalarType>(buffer_ref.element_type());
   auto caffe2_type_meta = c10::scalarTypeToTypeMeta(dtype);
-  Dimensions sizes(buffer_ref.dimensions().begin(),
-                   buffer_ref.dimensions().end());
+  Dimensions sizes = CopyIntVector(buffer_ref.dimensions());
   if (buffer_ref.element_type() == mlir::ElementType::F4E2M1FN) {
     ABSL_CHECK(!sizes.empty());         // CRASH_OK
     ABSL_CHECK_EQ(sizes.back() % 2, 0)  // CRASH_OK
@@ -593,103 +590,9 @@ class TpuAllocator final : public c10::DeviceAllocator {
   }
 };
 
-class TpuPinnedAllocator final : public at::HostAllocator {
- public:
-  c10::DataPtr allocate(size_t nbytes) override {
-    if (nbytes == 0) {
-      return {nullptr, nullptr, &DeleteTpuPinnedBufferStatic,
-              c10::Device(c10::DeviceType::CPU)};
-    }
-    TT_ASSIGN_OR_THROW(xla::HostMemoryAllocator * host_allocator,
-                       PjrtBackend::GetInstance().GetHostAllocator(),
-                       _ << "Failed to get PJRT host allocator");
-    xla::HostMemoryAllocator::OwnedPtr data = host_allocator->Allocate(nbytes);
-    TT_CHECK_THROW(data != nullptr, error::kResourceExhausted)
-        << "Failed to allocate " << nbytes << " bytes of pinned host memory";
-
-    void* raw_ptr = data.get();
-    {
-      absl::MutexLock lock(mutex_);
-      pinned_ptrs_.emplace(raw_ptr, std::move(data));
-    }
-
-    return {raw_ptr, raw_ptr, &DeleteTpuPinnedBufferStatic,
-            c10::Device(c10::DeviceType::CPU)};
-  }
-
-  void copy_data(void* dest, const void* src,
-                 std::size_t count) const override {
-    default_copy_data(dest, src, count);
-  }
-
-  c10::DeleterFnPtr raw_deleter() const override {
-    return &DeleteTpuPinnedBufferStatic;
-  }
-
-  bool record_event(void* ptr, void* ctx, c10::Stream stream) override {
-    // TPU does not yet support asynchronous stream-based events for pinned
-    // memory in the same way CUDA does. Returning false indicates that
-    // this allocator does not support event recording.
-    return false;
-  }
-
-  // This allocator does not cache allocations, so there is nothing to do here.
-  void empty_cache() override {
-    TT_WARN_ONCE(WarningCategory::kTorchTpu,
-                 "TpuPinnedAllocator::empty_cache is not implemented for TPU.");
-  }
-
-  at::HostStats get_stats() override { return {}; }
-
-  void reset_accumulated_stats() override {}
-
-  void reset_peak_stats() override {}
-
-  bool is_pinned_ptr(const void* ptr) {
-    absl::ReaderMutexLock lock(mutex_);
-    return pinned_ptrs_.contains(ptr);
-  }
-
-  void free_ptr(void* ptr) {
-    if (ptr) {
-      decltype(pinned_ptrs_)::node_type data;
-      {
-        absl::MutexLock lock(mutex_);
-        data = pinned_ptrs_.extract(ptr);
-      }
-    }
-  }
-
- private:
-  static void DeleteTpuPinnedBufferStatic(void* ptr);
-
-  absl::Mutex mutex_;
-  absl::flat_hash_map<const void*, xla::HostMemoryAllocator::OwnedPtr>
-      pinned_ptrs_ ABSL_GUARDED_BY(mutex_);
-};
-
-at::HostAllocator* GetTpuPinnedAllocatorInternal() {
-  static absl::NoDestructor<TpuPinnedAllocator> g_tpu_pinned_allocator;
-  return g_tpu_pinned_allocator.get();
-}
-
-void TpuPinnedAllocator::DeleteTpuPinnedBufferStatic(void* ptr) {
-  static_cast<TpuPinnedAllocator*>(GetTpuPinnedAllocatorInternal())
-      ->free_ptr(ptr);
-}
-
 c10::Allocator* GetTpuAllocator() {
   static absl::NoDestructor<TpuAllocator> g_tpu_allocator;
   return g_tpu_allocator.get();
-}
-
-at::HostAllocator* GetTpuPinnedAllocator() {
-  return GetTpuPinnedAllocatorInternal();
-}
-
-bool IsTpuPinnedPtr(const void* ptr) {
-  return static_cast<TpuPinnedAllocator*>(GetTpuPinnedAllocatorInternal())
-      ->is_pinned_ptr(ptr);
 }
 
 void RegisterTpuAllocator() {
@@ -707,42 +610,25 @@ c10::DataPtr MakeDataPtr(DeviceBufferRef buffer_ref,
 }
 
 absl::StatusOr<DeviceBufferRef> MaterializeAndReturn(
-    const at::Tensor& tensor, MaterializationReason reason,
-    MaterializationBlockMode block_mode) {
+    const at::Tensor& tensor, MaterializationReason reason) {
   tsl::profiler::TraceMe trace("MaterializeAndReturn");
-  // If the tensor is a (non-trivial) view, these will be two different
-  // buffers. If the tensor's base is the same shape and layout as the tensor,
-  // these will be the same buffer.
-  TT_ASSIGN_OR_RETURN(const DeviceBufferRef base_buffer_ref,
-                      GetBaseBuffer(tensor));
+  // There are three cases here, all handled the same way:
+  //   1. `tensor` is not a view. In this case, materializing the view is the
+  //      same as materializing the base, and will execute everything on the
+  //      stream that `tensor` was created on.
+  //   2. `tensor` is a view, and its base was created on the current stream. In
+  //      this case, materializing the view will also force the base to
+  //      materialize (because it has a live Tensor using it) as part of the
+  //      same execution graph, along with everything else on `tensor'`s stream.
+  //   3. `tensor` is a view, and its base was created on a different stream.
+  //      This represents a cross-stream dependency; users are expected to
+  //      coordinate cross-stream dependencies using Event.wait and syncs, so
+  //      we assume that no further coordination is needed here. If this is not
+  //      the case, we detect the error and fail (see execution_task.cc).
+  //      Currently we also enforce this by blocking on Event creation (see
+  //      tpu_hooks.cc) which handles the single-thread, multi-stream case.
   TT_ASSIGN_OR_RETURN(DeviceBufferRef view_buffer_ref, GetBuffer(tensor));
-  if (base_buffer_ref.device_index() != view_buffer_ref.device_index() ||
-      base_buffer_ref.stream_id() != view_buffer_ref.stream_id()) {
-    // The base and view were created on different streams, but the implied
-    // dependency forces the base buffer to materialize first. Block until the
-    // base buffer has been enqueued to avoid scheduling the view buffer before
-    // its input.
-    //
-    // Note: in most cases, the materialization on exiting the prior stream
-    // will have already forced the base buffer to materialize and this will
-    // be a no-op. But exceptions are possible (such as in a
-    // one-stream-per-thread setup).
-    if (!base_buffer_ref.is_materializing()) {
-      TT_RETURN_IF_ERROR(
-          Materialize(base_buffer_ref, reason, GraphSplitMode::kSplitGraph,
-                      MaterializationBlockMode::kBlockUntilStarted));
-    }
-    TT_RETURN_IF_ERROR(Materialize(view_buffer_ref, reason,
-                                   GraphSplitMode::kSplitGraph, block_mode));
-  } else {
-    // Deduplication will happen inside the Materialize() call; this will cover
-    // the case where a tensor is a trivial view.
-    // If the view is not trivial but the base and view are on the same stream,
-    // we can materialize them jointly.
-    TT_RETURN_IF_ERROR(Materialize({base_buffer_ref, view_buffer_ref}, reason,
-                                   GraphSplitMode::kSplitGraph, block_mode));
-  }
-
+  TT_RETURN_IF_ERROR(Materialize(view_buffer_ref, reason));
   return view_buffer_ref;
 }
 
@@ -789,8 +675,8 @@ absl::StatusOr<at::Tensor> MakeEmptyMemoryFormat(
   Dimensions xla_sizes = CopyIntVector(size);
   if (dtype == mlir::ElementType::F4E2M1FN) {
     TT_RET_CHECK(!xla_sizes.empty(), error::kInvalidArgument)
-        << "expected float4_e2m1fn_x2 tensors to be at least 1-dimensional, "
-           "got 0-dimensional";
+        << "expected float4_e2m1fn_x2 tensors to be at least 1D, "
+           "got 0D";
     // A PyTorch tensor of shape [..., N] of dtype float4_e2m1fn_x2 represents
     // N container elements (each 1 byte), which contain 2N packed FP4 values.
     // On the TPU/XLA side, FP4 elements are represented as unpacked 1-byte

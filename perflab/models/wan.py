@@ -22,6 +22,7 @@ from perflab import model_helpers
 from perflab import registry as registry_lib
 from perflab import step_lib
 from perflab import torch_device_ops
+from perflab import workload as workload_lib
 
 
 def _load_diffusers_wan(
@@ -31,10 +32,13 @@ def _load_diffusers_wan(
     height: int = 704,
     width: int = 1280,
     num_frames: int = 5,
-    batch_size: int = 1,
     text_seq_len: int = 512,
 ) -> tuple[torch.nn.Module, dict[str, Any]]:
-  """Loads a Wan2.2 Diffusers transformer model and generates latent inputs."""
+  """Loads a Wan2.2 Diffusers transformer model and generates latent inputs.
+
+  The batch size comes from the workload of the context.
+  """
+  batch_size = ctx.require_workload().batch_size
   registry = model_helpers.get_module_registry()
   module_spec = registry.get_module_spec(
       "diffusers", model_name, load_weights=False, subfolder="transformer"
@@ -44,7 +48,7 @@ def _load_diffusers_wan(
   device_str = ctx.device_kind.value
 
   with torch.device(device_str):
-    model = module_spec.module_factory().to(dtype=dtype)
+    model = module_spec.module_factory(dtype=dtype)
   model.apply(model_helpers.init_small_random_weights)
 
   if is_training:
@@ -74,6 +78,7 @@ def _load_diffusers_wan(
         "Wan2.2-TI2V-5B uses too much memory to run on TPUs with smaller"
         " memory."
     ),
+    workload=registry_lib.scoped_workload(full=workload_lib.Workload(1)),
 )
 def wan_2_2_ti2v_5b_forward(ctx: context_lib.Context):
   """Benchmark factory for Wan2.2-TI2V-5B forward."""
@@ -95,6 +100,8 @@ def wan_2_2_ti2v_5b_forward(ctx: context_lib.Context):
         "Wan2.2-TI2V-5B uses too much memory to run on TPUs with smaller"
         " memory."
     ),
+    # Batch 1 at 256x256 leaves the step dominated by host overhead.
+    workload=registry_lib.scoped_workload(full=workload_lib.Workload(4)),
 )
 def wan_2_2_ti2v_5b_256x256_forward(ctx: context_lib.Context):
   """Benchmark factory for Wan2.2-TI2V-5B (256x256) forward."""
@@ -105,8 +112,6 @@ def wan_2_2_ti2v_5b_256x256_forward(ctx: context_lib.Context):
       height=256,
       width=256,
       num_frames=1,
-      # Batch 1 at 256x256 leaves the step dominated by host overhead.
-      batch_size=4,
   )
   return model, (), inputs
 
@@ -118,6 +123,7 @@ def wan_2_2_ti2v_5b_256x256_forward(ctx: context_lib.Context):
         "Wan2.2-TI2V-5B uses too much memory to run on TPUs with smaller"
         " memory."
     ),
+    workload=registry_lib.scoped_workload(full=workload_lib.Workload(1)),
 )
 def wan_2_2_ti2v_5b_training(ctx: context_lib.Context):
   """Benchmark factory for Wan2.2-TI2V-5B training."""
@@ -145,6 +151,7 @@ def wan_2_2_ti2v_5b_training(ctx: context_lib.Context):
         "Wan2.2-TI2V-5B uses too much memory to run on TPUs with smaller"
         " memory."
     ),
+    workload=registry_lib.scoped_workload(full=workload_lib.Workload(1)),
 )
 def wan_2_2_ti2v_5b_256x256_training(ctx: context_lib.Context):
   """Benchmark factory for Wan2.2-TI2V-5B (256x256) training."""

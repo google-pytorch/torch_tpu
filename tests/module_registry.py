@@ -31,7 +31,7 @@ inputs.
 # pylint: disable=g-import-not-at-top
 
 import abc
-from collections.abc import Callable, Mapping, MutableMapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, MutableMapping, Sequence
 import contextlib
 import copy
 import dataclasses
@@ -49,13 +49,14 @@ import pathlib
 import sys
 import tempfile
 import types
-from typing import Any, Iterator, overload
+from typing import Any, overload
 import uuid
 
 from absl import flags
 from absl import logging
 from etils import epath
 from google.api_core import exceptions as gcp_exceptions
+from google.api_core import retry as gcp_retry
 from google.cloud import storage
 from safetensors import torch as safetensors_torch
 import torch
@@ -655,6 +656,19 @@ _GCS_WEIGHTS_PREFIX = flags.DEFINE_string(
     "Prefix within the GCS bucket where weights and configs are stored.",
 )
 
+# Per-request HTTP timeout for GCS downloads, so an unreachable GCS endpoint
+# fails fast and falls back instead of stalling the caller on the library's
+# default 60s timeout.
+_GCS_DOWNLOAD_TIMEOUT_SECONDS = 15
+
+_RETRY_TRANSIENT_IO = gcp_retry.Retry(
+    predicate=lambda exc: isinstance(exc, OSError)
+    and not isinstance(exc, (FileNotFoundError, NotADirectoryError)),
+    initial=0.5,
+    maximum=2.0,
+    timeout=5.0,
+)
+
 
 def _download_gcs_blob(
     bucket_name: str,
@@ -680,7 +694,9 @@ def _download_gcs_blob(
     client = storage.Client()
     bucket = client.bucket(bucket_name)
     blob = bucket.blob(blob_name)
-    blob.download_to_filename(str(temp_dest))
+    blob.download_to_filename(
+        str(temp_dest), timeout=_GCS_DOWNLOAD_TIMEOUT_SECONDS
+    )
     temp_dest.replace(dest_path)
     logging.info(
         "Successfully downloaded gs://%s/%s to %s",
@@ -731,7 +747,7 @@ class _ConfigWrapper:
   def __getstate__(self) -> dict[str, Any]:
     return {"_data": self._data}
 
-  def __setstate__(self, state: dict[str, Any]) -> None:
+  def __setstate__(self, state: Mapping[str, Any]) -> None:
     object.__setattr__(self, "_data", state["_data"])
 
   def __getattr__(self, name: str) -> Any:
@@ -919,11 +935,19 @@ class Modality(enum.Enum):
   VISION = "vision"
 
 
+ModuleFactory = module_cache.ModuleFactory
+
+
 class ModuleSpec:
   """A specification container for a PyTorch model and its inputs.
 
   Attributes:
-    module_factory: A callable that returns an instantiated `torch.nn.Module`.
+    module_factory: A `ModuleFactory` that returns an instantiated
+      `torch.nn.Module`. It accepts an optional `dtype` (`torch.dtype`).
+      Transformers and Diffusers models are constructed in it, while Torchvision
+      and TIMM models are constructed in the default dtype and cast to it. If
+      `dtype` is None, the provider chooses the dtype (e.g. the config dtype of
+      a Transformers model).
     sample_inputs_factory: A callable that generates compatible input tensors.
       It accepts optional `shape` (Sequence) and `device` (str) arguments and
       returns a tuple containing `(args, kwargs)` for the model's forward pass.
@@ -937,7 +961,7 @@ class ModuleSpec:
 
   def __init__(
       self,
-      module_factory: Callable[[], torch.nn.Module],
+      module_factory: ModuleFactory,
       sample_inputs_factory: Callable[
           [Sequence[int] | None, str | None],
           tuple[tuple[Any, ...], dict[str, Any]],
@@ -957,6 +981,32 @@ class ModuleSpec:
     self.modality = modality
 
 
+def _cast_after_construction(
+    create_module: Callable[[], torch.nn.Module],
+) -> ModuleFactory:
+  """Returns a module factory that casts the constructed model to `dtype`.
+
+  Unlike Transformers and Diffusers models, Torchvision and TIMM models are
+  constructed in the default dtype and cast to `dtype` afterwards. Their
+  constructors take no dtype, and constructing them under another default dtype
+  would also change values computed at construction that are not parameters
+  (e.g. TIMM's stochastic depth rates from `torch.linspace`). The models are
+  small, so the float32 copy before the cast costs little memory.
+
+  Args:
+    create_module: Constructs the model in the default dtype.
+
+  Returns:
+    The module factory.
+  """
+
+  def module_factory(dtype: torch.dtype | None = None) -> torch.nn.Module:
+    model = create_module()
+    return model if dtype is None else model.to(dtype)
+
+  return module_factory
+
+
 class BaseProvider(abc.ABC):
   """Abstract base class for model source providers."""
 
@@ -973,7 +1023,7 @@ class BaseProvider(abc.ABC):
       self._base_path = epath.Path(base_path)
       if subdir:
         self._base_path = self._base_path / subdir
-      if not self._base_path.exists():
+      if not _RETRY_TRANSIENT_IO(self._base_path.exists)():
         raise FileNotFoundError(f"Base path does not exist: {self._base_path}")
     else:
       self._base_path = None
@@ -1032,7 +1082,7 @@ class BaseProvider(abc.ABC):
     return None
 
   @abc.abstractmethod
-  def list_modules(self) -> list[str]:
+  def list_modules(self) -> Sequence[str]:
     """Lists the names of all models available from this provider.
 
     Returns:
@@ -1089,7 +1139,7 @@ class TorchvisionProvider(BaseProvider):
   def __init__(self, base_path: str | None = None):
     super().__init__(base_path=base_path, subdir="torchvision")
 
-  def list_modules(self) -> list[str]:
+  def list_modules(self) -> Sequence[str]:
     """Lists the names of all models available from this provider.
 
     Structured as {base_path}/torchvision/{model_name}/weights.pt
@@ -1135,7 +1185,7 @@ class TorchvisionProvider(BaseProvider):
           {},
       )
 
-    def _module_factory():
+    def _create_module():
       if load_weights and self._base_path:
         local_checkpoint = None
         local_dir = self._base_path / name
@@ -1166,7 +1216,7 @@ class TorchvisionProvider(BaseProvider):
       return _create_torchvision_model(name)
 
     return ModuleSpec(
-        _module_factory,
+        _cast_after_construction(_create_module),
         _torchvision_input_factory,
         modality=Modality.VISION,
     )
@@ -1178,7 +1228,7 @@ class TimmProvider(BaseProvider):
   def __init__(self, base_path: str | None = None):
     super().__init__(base_path=base_path, subdir="timm")
 
-  def list_modules(self) -> list[str]:
+  def list_modules(self) -> Sequence[str]:
     """Lists the names of all models available from this provider.
 
     Structured as {base_path}/timm/{model_name}/weights.pth
@@ -1242,7 +1292,7 @@ class TimmProvider(BaseProvider):
     if config and modify_config_hook is not None:
       config = modify_config_hook(config)
 
-    def _module_factory():
+    def _create_module():
       if load_weights and self._base_path:
         local_checkpoint = self._base_path / name / f"{name}.pth"
         safetensors_checkpoint = self._base_path / name / "model.safetensors"
@@ -1286,7 +1336,7 @@ class TimmProvider(BaseProvider):
       return None
 
     return ModuleSpec(
-        _module_factory,
+        _cast_after_construction(_create_module),
         _input_factory,
         _preprocessor_factory,
         config,
@@ -1732,6 +1782,28 @@ def _get_num_channels(config: Any, default_channels: int = 3) -> int:
   return val
 
 
+@contextlib.contextmanager
+def _default_dtype(dtype: torch.dtype | None) -> Iterator[None]:
+  """Sets the default floating point dtype within the context.
+
+  Args:
+    dtype: The dtype to construct floating point tensors in. None and
+      non-floating point dtypes leave the default dtype unchanged.
+
+  Yields:
+    None.
+  """
+  if dtype is None or not dtype.is_floating_point:
+    yield
+    return
+  original_dtype = torch.get_default_dtype()
+  torch.set_default_dtype(dtype)
+  try:
+    yield
+  finally:
+    torch.set_default_dtype(original_dtype)
+
+
 def _extract_target_dtype(config: Any) -> torch.dtype:
   """Extracts target torch_dtype from root or nested transformer configs."""
   cfg = _wrap_config(config)
@@ -1815,18 +1887,19 @@ def _load_transformers_preprocessor(
   cache_key = ("transformers", model_path_str, prefer_tokenizer)
 
   def _loader() -> Any:
+    exists = lambda p: _RETRY_TRANSIENT_IO(p.exists)()
     path = epath.Path(model_path_str)
-    if path.exists() and path.is_dir():
-      has_processor = (path / "preprocessor_config.json").exists() or (
+    if exists(path) and _RETRY_TRANSIENT_IO(path.is_dir)():
+      has_processor = exists(path / "preprocessor_config.json") or exists(
           path / "processor_config.json"
-      ).exists()
+      )
       has_tokenizer = (
-          (path / "tokenizer_config.json").exists()
-          or (path / "tokenizer.json").exists()
-          or (path / "spiece.model").exists()
-          or (path / "vocab.json").exists()
-          or (path / "vocab.txt").exists()
-          or (path / "merges.txt").exists()
+          exists(path / "tokenizer_config.json")
+          or exists(path / "tokenizer.json")
+          or exists(path / "spiece.model")
+          or exists(path / "vocab.json")
+          or exists(path / "vocab.txt")
+          or exists(path / "merges.txt")
       )
       if prefer_tokenizer and has_tokenizer:
         load_fn = transformers.AutoTokenizer.from_pretrained
@@ -2318,7 +2391,7 @@ def _sanitize_common_config_dict_fields(
 
 
 def _sanitize_model_specific_config_dict(
-    config_dict: dict[str, Any],
+    config_dict: MutableMapping[str, Any],
     load_weights: bool = False,
 ) -> None:
   """Applies model-type-specific normalizations to a raw config dictionary."""
@@ -2492,7 +2565,7 @@ def _suppress_strict_dataclass_validation(
 
 
 def _resolve_sub_config_class(
-    sub_cls: Any, sub_dict: dict[str, Any]
+    sub_cls: Any, sub_dict: Mapping[str, Any]
 ) -> type[Any] | None:
   """Resolves the concrete config class for a sub-config entry."""
   if hasattr(sub_cls, "for_model") or getattr(sub_cls, "__name__", "") in (
@@ -2577,7 +2650,7 @@ def _instantiate_transformers_config_class(
 
 
 def _resolve_config_class(
-    model_type: str, config_dict: dict[str, Any]
+    model_type: str, config_dict: Mapping[str, Any]
 ) -> type[Any] | None:
   """Resolves the configuration class for a model type or architecture."""
   config_mapping = getattr(
@@ -2763,9 +2836,10 @@ def _load_and_sanitize_transformers_config(
     (or config dictionary for unregistered custom model types).
   """
   path = epath.Path(config_path)
-  cfg_file = path / "config.json" if path.is_dir() else path
-  with cfg_file.open("r", encoding="utf-8") as f:
-    raw_dict = json.load(f)
+  cfg_file = (
+      path / "config.json" if _RETRY_TRANSIENT_IO(path.is_dir)() else path
+  )
+  raw_dict = json.loads(_RETRY_TRANSIENT_IO(cfg_file.read_text)())
 
   config_dict = _sanitize_transformers_config_dict(
       raw_dict, load_weights=load_weights
@@ -3092,17 +3166,17 @@ def _apply_model_patches(
 def _instantiate_transformers_model(
     model_cls: type[torch.nn.Module],
     config: Any,
-    target_dtype: torch.dtype,
+    dtype: torch.dtype | None,
 ) -> torch.nn.Module:
   """Stage 4: Deterministically instantiates and patches the resolved model.
 
   What this stage does:
     Unwraps the sanitized `config` (and extracts `config.get_text_config()` when
     `model_cls` expects the inner text sub-config of a composite multimodal
-    config), constructs the model in `target_dtype` via
-    `model_cls._from_config(target_cfg, dtype=target_dtype)`, casts any
-    remaining floating-point parameters/buffers to `target_dtype`, and applies
-    post-instantiation runtime hooks via `_apply_model_patches`.
+    config), constructs the model in `dtype` via
+    `model_cls._from_config(target_cfg, dtype=dtype)`, casts any remaining
+    floating-point parameters/buffers to it, and applies post-instantiation
+    runtime hooks via `_apply_model_patches`.
 
   Why this is needed as a separate stage:
     Model construction must be deferred inside `ModuleSpec.module_factory` so
@@ -3130,11 +3204,18 @@ def _instantiate_transformers_model(
   Args:
     model_cls: The resolved `torch.nn.Module` class from Stage 3.
     config: The sanitized `_ConfigWrapper` or `PretrainedConfig` from Stage 2.
-    target_dtype: Target `torch.dtype` extracted from `config`.
+    dtype: The dtype to construct the model in. If None, the model is
+      constructed in the config dtype, or in the default dtype if the config has
+      none.
 
   Returns:
     The instantiated and patched `torch.nn.Module`.
+
+  Raises:
+    ValueError: If `dtype` is not a floating point dtype.
   """
+  if dtype is not None and not dtype.is_floating_point:
+    raise ValueError(f"dtype must be a floating point dtype, got {dtype}.")
   raw_cfg = config.unwrap() if isinstance(config, _ConfigWrapper) else config
   target_cfg = raw_cfg
 
@@ -3148,30 +3229,33 @@ def _instantiate_transformers_model(
       and hasattr(raw_cfg, "get_text_config")
   ):
     target_cfg = raw_cfg.get_text_config()
+  # `_from_config` writes the dtype to the config and its sub-configs. Keep
+  # the config of the module spec, which later calls and the input factory
+  # read, unchanged.
+  target_cfg = copy.deepcopy(target_cfg)
 
-  if hasattr(model_cls, "_from_config") and callable(
-      getattr(model_cls, "_from_config")
-  ):
-    # Build the model directly in `target_dtype`. Without an explicit dtype,
+  if callable(getattr(model_cls, "_from_config", None)):
+    # Build the model directly in `dtype`, which `_from_config` also sets as
+    # the default dtype during construction. Without an explicit dtype,
     # `_from_config` uses the root config's dtype for the whole model. Some
     # configs set a dtype only on a sub-config (e.g. Qwen3.5-397B-A17B sets it
     # only on `text_config`), so the root dtype is None and the model is built
     # in float32 and then cast, which doubles peak memory.
-    from_config_kwargs = (
-        {"dtype": target_dtype} if target_dtype != torch.float32 else {}
-    )
+    from_config_kwargs = {} if dtype is None else {"dtype": dtype}
     # pyrefly: ignore[missing-attribute]
     model = model_cls._from_config(target_cfg, **from_config_kwargs)
-  elif hasattr(model_cls, "from_config") and callable(
-      getattr(model_cls, "from_config")
-  ):
-    # pyrefly: ignore[missing-attribute]
-    model = model_cls.from_config(target_cfg)
   else:
-    model = model_cls(target_cfg)
+    # Classes without `_from_config` (e.g. `AutoModel*` classes named in
+    # `architectures`) take no dtype, so construct them under it.
+    with _default_dtype(dtype):
+      if callable(getattr(model_cls, "from_config", None)):
+        # pyrefly: ignore[missing-attribute]
+        model = model_cls.from_config(target_cfg)
+      else:
+        model = model_cls(target_cfg)
 
-  if model is not None and target_dtype != torch.float32:
-    model = model.to(dtype=target_dtype)  # pyrefly: ignore[missing-attribute]
+  if model is not None and dtype is not None:
+    model = model.to(dtype=dtype)  # pyrefly: ignore[missing-attribute]
   patched = _apply_model_patches(model, config)
   assert patched is not None
   return patched
@@ -3214,7 +3298,7 @@ class TransformersProvider(BaseProvider):
         return traversable
     return None
 
-  def list_modules(self) -> list[str]:
+  def list_modules(self) -> Sequence[str]:
     """Lists the names of all models available from this provider.
 
     Structured as {base_path}/transformers/{owner}/{model}/files
@@ -3238,9 +3322,10 @@ class TransformersProvider(BaseProvider):
 
     What this stage does:
       Locates `config.json` and the optional model directory across three
-      storage tiers in strict priority order: (1) the shared weights cache
-      (`{base_path}/transformers/{name}/config.json`), (2) bundled package
-      resources (`_FILES`), or (3) a GCS bucket download (`fetch_gcs_file`).
+      storage tiers: bundled package resources (`_FILES`, checked first when
+      `load_weights=False` to avoid remote filesystem I/O), the shared weights
+      cache (`{base_path}/transformers/{name}/config.json`), or a GCS bucket
+      download (`fetch_gcs_file`).
 
     Why this is needed as a separate stage:
       Separating file location discovery from JSON parsing and config
@@ -3251,16 +3336,15 @@ class TransformersProvider(BaseProvider):
       missing files with malformed config schemas.
 
     Example:
-      When loading `google/gemma-2-2b` in unit tests with `base_path=""` (no
-      shared weights cache mount) and `load_weights=False`, Stage 1 checks
-      `self.has_cache_dir` (False), locates `google/gemma-2-2b/config.json`
-      inside the bundled
-      `google/examples/huggingface_transformers/model_configs` package resource,
-      and yields the extracted path alongside `model_dir_or_repo_id=None`.
-      Conversely, during benchmark runs with `/path/to/weights` mounted, Stage 1
-      yields `/path/to/weights/transformers/google/gemma-2-2b/config.json` and
-      the cache directory as `model_dir_or_repo_id` so Stage 4 and Stage 5 can
-      load weights and tokenizers from the same directory.
+      When loading `google/gemma-2-2b` in unit tests with `load_weights=False`,
+      Stage 1 locates `google/gemma-2-2b/config.json` inside the bundled
+      `google/examples/huggingface_transformers/model_configs` package resource
+      without probing remote storage, and yields the extracted path alongside
+      `default_model_dir`. Conversely, when `load_weights=True` with
+      `/path/to/weights` mounted, Stage 1 yields
+      `/path/to/weights/transformers/google/gemma-2-2b/config.json` and the
+      cache directory as `model_dir_or_repo_id` so Stage 4 and Stage 5 can load
+      weights and tokenizers from the same directory.
 
     Args:
       name: Model identifier formatted as `{owner}/{model}`.
@@ -3276,23 +3360,33 @@ class TransformersProvider(BaseProvider):
     default_model_dir: epath.Path | None = None
     if self.has_cache_dir and self._base_path is not None:
       default_model_dir = self._base_path / name
+
+    if not load_weights:
+      traversable = self.in_tree_config(name)
+      if traversable is not None:
+        with resources.as_file(traversable) as local_file:
+          if local_file.exists():
+            yield epath.Path(local_file), default_model_dir
+            return
+
+    if default_model_dir is not None:
       cfg_file = default_model_dir / "config.json"
-      if cfg_file.exists():
-        yield cfg_file, default_model_dir
-        return
+      try:
+        if _RETRY_TRANSIENT_IO(cfg_file.exists)():
+          yield cfg_file, default_model_dir
+          return
+      except (OSError, gcp_exceptions.RetryError) as exc:
+        if load_weights:
+          raise
+        logging.warning(
+            "Falling back to GCS for %s after cache check error: %s", name, exc
+        )
 
     if load_weights:
       raise ValueError(
           f"load_weights cannot be set to True for {name} when falling back"
           " to local configuration resources or GCS."
       )
-
-    traversable = self.in_tree_config(name)
-    if traversable is not None:
-      with resources.as_file(traversable) as local_file:
-        if local_file.exists():
-          yield epath.Path(local_file), default_model_dir
-          return
 
     dest_config = self.fetch_gcs_file(f"{name}/config.json")
     if dest_config is not None and dest_config.exists():
@@ -3383,8 +3477,19 @@ class TransformersProvider(BaseProvider):
     if not load_weights and config.get("model_type", "") == "vits":
       config.use_stochastic_duration_prediction = False
 
+    # TAPAS's relative position embeddings per table cell call `Tensor.item()`,
+    # which fails on the meta device. Set these on the config here rather than
+    # in the input factory, since models are constructed from a copy of it.
+    if not load_weights and config.get("model_type", "") == "tapas":
+      config.reset_position_index_per_cell = False
+      config.init_cell_selection_weights_to_zero = False
+
     modality = _determine_modality(config)
+    # `_extract_target_dtype` returns float32 also for configs without a dtype,
+    # which Transformers constructs in the default dtype. Some callers set it to
+    # their run dtype, so don't override it with float32.
     target_dtype = _extract_target_dtype(config)
+    config_dtype = None if target_dtype == torch.float32 else target_dtype
 
     if load_weights:
       if modality == Modality.CAUSAL_LM:
@@ -3401,17 +3506,30 @@ class TransformersProvider(BaseProvider):
 
       kwargs.setdefault("low_cpu_mem_usage", True)
       kwargs.setdefault("ignore_mismatched_sizes", True)
-      if target_dtype != torch.float32:
-        kwargs.setdefault("torch_dtype", target_dtype)
-      model_fn = lambda: model_cls.from_pretrained(
-          str(model_dir_or_repo_id), **kwargs
-      )
+      # `torch_dtype` is deprecated in favor of `dtype`, which takes precedence
+      # in `from_pretrained`. Keep a caller's `torch_dtype` over `config_dtype`.
+      if "torch_dtype" in kwargs:
+        kwargs.setdefault("dtype", kwargs.pop("torch_dtype"))
+      if config_dtype is not None:
+        kwargs.setdefault("dtype", config_dtype)
+      # Pyrefly cannot narrow `model_cls`, which is assigned in branches above,
+      # inside the closure.
+      from_pretrained = model_cls.from_pretrained
+
+      def model_fn(dtype: torch.dtype | None = None) -> torch.nn.Module:
+        pretrained_kwargs = (
+            kwargs if dtype is None else {**kwargs, "dtype": dtype}
+        )
+        return from_pretrained(str(model_dir_or_repo_id), **pretrained_kwargs)
+
     else:
       # Stage 3 & Stage 4: Resolve model class and instantiate model.
-      model_cls = _resolve_transformers_model_class(config, modality)
-      model_fn = lambda: _instantiate_transformers_model(
-          model_cls, config, target_dtype
-      )
+      resolved_cls = _resolve_transformers_model_class(config, modality)
+
+      def model_fn(dtype: torch.dtype | None = None) -> torch.nn.Module:
+        return _instantiate_transformers_model(
+            resolved_cls, config, config_dtype if dtype is None else dtype
+        )
 
     # Stage 5: Preprocessor factory.
     preprocessor_fn = lambda: _load_transformers_preprocessor(
@@ -3423,7 +3541,11 @@ class TransformersProvider(BaseProvider):
     ) -> tuple[tuple[Any, ...], dict[str, Any]]:
       model_dir = (
           str(model_dir_or_repo_id)
-          if model_dir_or_repo_id is not None and model_dir_or_repo_id.exists()
+          if (
+              modality == Modality.VISION  # Only VISION uses model_dir.
+              and model_dir_or_repo_id is not None
+              and _RETRY_TRANSIENT_IO(model_dir_or_repo_id.exists)()
+          )
           else None
       )
       input_kwargs = transformers_inputs.generate_transformers_inputs(
@@ -3464,8 +3586,8 @@ _DEFAULT_DIFFUSERS_SUBFOLDERS: tuple[str | None, ...] = (
 
 
 def _extract_diffusers_subfolder_candidates(
-    index_dict: dict[str, Any],
-) -> list[str]:
+    index_dict: Mapping[str, Any],
+) -> Sequence[str]:
   """Extracts prioritized candidate subfolders from diffusers model_index."""
   candidates = []
   for key in _DIFFUSERS_SUBFOLDER_PRIORITY:
@@ -3524,7 +3646,7 @@ class DiffusersProvider(BaseProvider):
   def __init__(self, base_path: str | None = None):
     super().__init__(base_path=base_path, subdir="diffusers")
 
-  def list_modules(self) -> list[str]:
+  def list_modules(self) -> Sequence[str]:
     """Lists the names of all models available from this provider.
 
     Structured as {base_path}/diffusers/{owner}/{model}/files
@@ -3545,7 +3667,7 @@ class DiffusersProvider(BaseProvider):
       name: str,
       subfolder: str | None = None,
       load_weights: bool = False,
-  ) -> tuple[Any, str | None, epath.Path | None]:
+  ) -> tuple[Mapping[str, Any], str | None, epath.Path | None]:
     base_path = self._base_path if self.has_cache_dir else None
 
     def _loader() -> module_cache.ConfigCacheEntry:
@@ -3712,11 +3834,12 @@ class DiffusersProvider(BaseProvider):
     if config_dict.get("encoder_hid_dim_type") == "ip_image_proj":
       config_dict["encoder_hid_dim_type"] = None
 
-    def _module_factory():
+    def _module_factory(dtype: torch.dtype | None = None) -> torch.nn.Module:
+      cast_dtype = d_type if dtype is None else dtype
       if load_weights:
         return auto_model.AutoModel.from_pretrained(
             str(model_path),
-            torch_dtype=d_type,
+            torch_dtype=cast_dtype,
             subfolder=subfolder,
         )
       else:
@@ -3730,10 +3853,13 @@ class DiffusersProvider(BaseProvider):
             head_val = config_dict.pop("num_attention_heads")
             if "attention_head_dim" not in config_dict:
               config_dict["attention_head_dim"] = head_val
-        model = model_cls.from_config(config_dict)
+        # Without an explicit `dtype`, keep constructing in the default dtype,
+        # which keeps the random weights unchanged.
+        with _default_dtype(dtype):
+          model = model_cls.from_config(config_dict)
         if isinstance(model, tuple):
           model = model[0]
-        return model.to(d_type)
+        return model.to(cast_dtype)
 
     def _input_factory(shape=None, device="cpu"):
       g = torch.Generator(device="cpu").manual_seed(42)
@@ -4378,11 +4504,11 @@ class ModuleRegistry:
     if _HAS_DIFFUSERS:
       self._providers["diffusers"] = DiffusersProvider(base_path=base_path)
 
-  def list_all_sources(self) -> list[str]:
+  def list_all_sources(self) -> Sequence[str]:
     """Returns a list of registered provider keys (e.g., 'torchvision')."""
     return list(self._providers.keys())
 
-  def list_all_modules(self) -> list[str]:
+  def list_all_modules(self) -> Sequence[str]:
     """Returns a unified list of all available modules across all providers.
 
     Returns:
@@ -4400,7 +4526,7 @@ class ModuleRegistry:
       raise ValueError(f"Source '{source}' not supported.")
     return self._providers[canonical_source]
 
-  def list_modules(self, source: str) -> list[str]:
+  def list_modules(self, source: str) -> Sequence[str]:
     """Lists available models for a specific source.
 
     Args:

@@ -19,6 +19,7 @@ from unittest import mock
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
+from torch._dynamo import testing as dynamo_testing
 from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.compile import _backend
 from torch_tpu._internal.utils import test_utils as utils
@@ -36,42 +37,51 @@ class CompileTest(seed_test_utils.RepeatableTest):
 
   def call_and_compare(
       self, func, test_inputs, mark_dynamic_tests_info=None
-  ) -> dict[str, int]:
+  ) -> list[int]:
+    """Runs `func` compiled and eagerly on each input, comparing the results.
+
+    Args:
+      func: The function to compile.
+      test_inputs: The positional inputs for each call.
+      mark_dynamic_tests_info: Per call, per input `(mark_dynamic, dim_infos)`
+        with `dim_infos` a list of `(dim, min, max)`.
+
+    Returns:
+      The number of graphs compiled by the TPU backend for each call of the
+      compiled function.
+    """
     if mark_dynamic_tests_info is None:
       mark_dynamic_tests_info = [() for _ in test_inputs]
 
-    with mock.patch.object(
-        _backend.dynamic_compiler,
-        "DynamicCompiler",
-        wraps=_backend.dynamic_compiler.DynamicCompiler,
-    ) as mock_dc:
-      compiled = torch.compile(func, backend="tpu", dynamic=None)
-
-      for inputs, per_case_mark_info in zip(
-          test_inputs, mark_dynamic_tests_info
+    compile_counter = dynamo_testing.CompileCounterWithBackend("tpu")
+    compiled = torch.compile(func, backend=compile_counter, dynamic=None)
+    compilations_per_call = []
+    for inputs, per_case_mark_info in zip(test_inputs, mark_dynamic_tests_info):
+      inputs = [
+          input.to(torch.int32)
+          if isinstance(input, torch.Tensor) and input.dtype == torch.int64
+          else input
+          for input in inputs
+      ]
+      expected = func(*inputs)
+      device_inputs = [input.to(self.device) for input in inputs]
+      for input_tensor, input_mark_info in zip(
+          device_inputs, per_case_mark_info
       ):
-        inputs = [
-            input.to(torch.int32)
-            if isinstance(input, torch.Tensor) and input.dtype == torch.int64
-            else input
-            for input in inputs
-        ]
-        expected = func(*inputs)
-        device_inputs = [input.to(self.device) for input in inputs]
-        for input_tensor, input_mark_info in zip(
-            device_inputs, per_case_mark_info
-        ):
-          mark_dynamic, dim_infos = input_mark_info
-          if mark_dynamic:
-            for dim_info in dim_infos:
-              dim, min_val, max_val = dim_info
-              torch._dynamo.mark_dynamic(
-                  input_tensor, dim, min=min_val, max=max_val
-              )
-        actual = compiled(*device_inputs).to("cpu")
-        utils.assert_close(actual, expected)
-      metrics = {"bounded_compile_events": mock_dc.call_count}
-    return metrics
+        mark_dynamic, dim_infos = input_mark_info
+        if mark_dynamic:
+          for dim_info in dim_infos:
+            dim, min_val, max_val = dim_info
+            torch._dynamo.mark_dynamic(
+                input_tensor, dim, min=min_val, max=max_val
+            )
+      compilations_before = compile_counter.frame_count
+      actual = compiled(*device_inputs).to("cpu")
+      compilations_per_call.append(
+          compile_counter.frame_count - compilations_before
+      )
+      utils.assert_close(actual, expected)
+    return compilations_per_call
 
   def test_add_simple(self):
     def simple(x):
@@ -82,8 +92,8 @@ class CompileTest(seed_test_utils.RepeatableTest):
         (torch.arange(4).reshape(1, 4),),  # bounded compile, [1, 4(4<=b<=8)]
         (torch.arange(6).reshape(1, 6),),  # no compile, [1, 6]
     ]
-    metrics = self.call_and_compare(simple, test_inputs, None)
-    self.assertEqual(metrics["bounded_compile_events"], 1)
+    compilations_per_call = self.call_and_compare(simple, test_inputs, None)
+    self.assertEqual(compilations_per_call, [1, 1, 0])
 
   def test_boxed_call_does_not_mutate_caller_list(self):
     def simple(x):
@@ -134,10 +144,10 @@ class CompileTest(seed_test_utils.RepeatableTest):
         ((True, [(0, 2, 16)]),),
         ((True, [(0, 2, 16)]),),
     ]
-    metrics = self.call_and_compare(
+    compilations_per_call = self.call_and_compare(
         scan_fn, test_inputs, mark_dynamic_tests_info
     )
-    self.assertEqual(metrics["bounded_compile_events"], 1)
+    self.assertEqual(compilations_per_call, [1, 0])
 
   def test_add_multiple_dynamic_inputs(self):
     def simple_add(x, y):
@@ -157,8 +167,8 @@ class CompileTest(seed_test_utils.RepeatableTest):
             torch.arange(6).reshape(6, 1),
         ),  # no compile, [6, 1]
     ]
-    metrics = self.call_and_compare(simple_add, test_inputs, None)
-    self.assertEqual(metrics["bounded_compile_events"], 1)
+    compilations_per_call = self.call_and_compare(simple_add, test_inputs, None)
+    self.assertEqual(compilations_per_call, [1, 1, 0])
 
   def test_mul(self):
     def simple_mul(x):
@@ -170,8 +180,8 @@ class CompileTest(seed_test_utils.RepeatableTest):
         (torch.arange(4).reshape(1, 4),),  # bounded compile, [1, 4(4<=b<=8)]
         (torch.arange(6).reshape(1, 6),),  # no compile, [1, 6]
     ]
-    metrics = self.call_and_compare(simple_mul, test_inputs, None)
-    self.assertEqual(metrics["bounded_compile_events"], 1)
+    compilations_per_call = self.call_and_compare(simple_mul, test_inputs, None)
+    self.assertEqual(compilations_per_call, [1, 1, 0])
 
   def test_cat_dim0(self):
     def simple_cat(x):
@@ -189,10 +199,10 @@ class CompileTest(seed_test_utils.RepeatableTest):
         ((False, []),),  # no compile, [16, 1] + [16, 1] -> [32, 1]
         ((False, []),),  # no compile, [4, 1] + [4, 1] -> [8, 1]
     ]
-    metrics = self.call_and_compare(
+    compilations_per_call = self.call_and_compare(
         simple_cat, test_inputs, mark_dynamic_tests_info
     )
-    self.assertEqual(metrics["bounded_compile_events"], 1)
+    self.assertEqual(compilations_per_call, [1, 0, 0])
 
   def test_cat_dim1(self):
     def simple_cat(x, y):
@@ -215,8 +225,8 @@ class CompileTest(seed_test_utils.RepeatableTest):
             input_0,
         ],  # no compile, [1, 4] + [1, 1] -> [1, 5]
     ]
-    metrics = self.call_and_compare(simple_cat, test_inputs, None)
-    self.assertEqual(metrics["bounded_compile_events"], 1)
+    compilations_per_call = self.call_and_compare(simple_cat, test_inputs, None)
+    self.assertEqual(compilations_per_call, [1, 1, 0])
 
   def test_squeeze(self):
     def simple_squeeze(x):
@@ -227,8 +237,10 @@ class CompileTest(seed_test_utils.RepeatableTest):
         (torch.arange(4).reshape(1, 4),),  # bounded compile, [1, 4 (4<=b<=8)]
         (torch.arange(6).reshape(1, 6),),  # no compile, [1, 6]
     ]
-    metrics = self.call_and_compare(simple_squeeze, test_inputs, None)
-    self.assertEqual(metrics["bounded_compile_events"], 1)
+    compilations_per_call = self.call_and_compare(
+        simple_squeeze, test_inputs, None
+    )
+    self.assertEqual(compilations_per_call, [1, 1, 0])
 
   def test_unsqueeze(self):
     def simple_unsqueeze(x):
@@ -239,8 +251,10 @@ class CompileTest(seed_test_utils.RepeatableTest):
         (torch.arange(4),),  # bounded compile, [4 (4<=b<=8)]
         (torch.arange(6),),  # no compile, [6]
     ]
-    metrics = self.call_and_compare(simple_unsqueeze, test_inputs, None)
-    self.assertEqual(metrics["bounded_compile_events"], 1)
+    compilations_per_call = self.call_and_compare(
+        simple_unsqueeze, test_inputs, None
+    )
+    self.assertEqual(compilations_per_call, [1, 1, 0])
 
   def test_reshape(self):
     def simple_reshape(x):
@@ -253,8 +267,10 @@ class CompileTest(seed_test_utils.RepeatableTest):
         ),  # bounded compile, [4(4<=b<=8), 4]
         (torch.arange(6 * 4).reshape(6, 4),),  # no compile, [6, 4]
     ]
-    metrics = self.call_and_compare(simple_reshape, test_inputs, None)
-    self.assertEqual(metrics["bounded_compile_events"], 1)
+    compilations_per_call = self.call_and_compare(
+        simple_reshape, test_inputs, None
+    )
+    self.assertEqual(compilations_per_call, [1, 1, 0])
 
   def test_arange(self):
     def arange(x):
@@ -266,8 +282,8 @@ class CompileTest(seed_test_utils.RepeatableTest):
         [torch.arange(4)],  # bounded compile, [4 (4<=b<=8)]
         [torch.arange(8)],  # no compile, [8]
     ]
-    metrics = self.call_and_compare(arange, test_inputs, None)
-    self.assertEqual(metrics["bounded_compile_events"], 1)
+    compilations_per_call = self.call_and_compare(arange, test_inputs, None)
+    self.assertEqual(compilations_per_call, [1, 1, 0])
 
   def test_ones_multiple_dynamic_dims(self):
     def ones_func(x, y):
@@ -278,8 +294,8 @@ class CompileTest(seed_test_utils.RepeatableTest):
         [torch.arange(4), torch.arange(5)],  # bounded compile
         [torch.arange(8), torch.arange(6)],  # no compile
     ]
-    metrics = self.call_and_compare(ones_func, test_inputs, None)
-    self.assertEqual(metrics["bounded_compile_events"], 1)
+    compilations_per_call = self.call_and_compare(ones_func, test_inputs, None)
+    self.assertEqual(compilations_per_call, [1, 1, 0])
 
   def test_dynamic_reduction(self):
     def reduction_func(x):
@@ -292,8 +308,10 @@ class CompileTest(seed_test_utils.RepeatableTest):
         (torch.ones(1, 6, 4),),  # no compile
         (torch.ones(1, 12, 4),),  # no compile
     ]
-    metrics = self.call_and_compare(reduction_func, test_inputs, None)
-    self.assertEqual(metrics["bounded_compile_events"], 1)
+    compilations_per_call = self.call_and_compare(
+        reduction_func, test_inputs, None
+    )
+    self.assertEqual(compilations_per_call, [1, 1, 0, 0, 0])
 
   def test_matmul(self):
     def simple_matmul(x, y):
@@ -327,10 +345,10 @@ class CompileTest(seed_test_utils.RepeatableTest):
             (False, []),
         ),  # no compile, [16, 3] x [3, 1] -> [16, 1]
     ]
-    metrics = self.call_and_compare(
+    compilations_per_call = self.call_and_compare(
         simple_matmul, test_inputs, mark_dynamic_tests_info
     )
-    self.assertEqual(metrics["bounded_compile_events"], 1)
+    self.assertEqual(compilations_per_call, [1, 0, 0])
 
   def test_arange_with_expression(self):
     def arange_expr(x):
@@ -342,8 +360,10 @@ class CompileTest(seed_test_utils.RepeatableTest):
         [torch.arange(4)],  # bounded compile, [4 (4<=b<=8)]
         [torch.arange(8)],  # no compile, [8]
     ]
-    metrics = self.call_and_compare(arange_expr, test_inputs, None)
-    self.assertEqual(metrics["bounded_compile_events"], 1)
+    compilations_per_call = self.call_and_compare(
+        arange_expr, test_inputs, None
+    )
+    self.assertEqual(compilations_per_call, [1, 1, 0])
 
   def test_arange_with_chained_expression(self):
     def arange_expr(x):
@@ -356,8 +376,10 @@ class CompileTest(seed_test_utils.RepeatableTest):
         [torch.arange(4)],  # bounded compile, [4 (4<=b<=8)]
         [torch.arange(8)],  # no compile, [8]
     ]
-    metrics = self.call_and_compare(arange_expr, test_inputs, None)
-    self.assertEqual(metrics["bounded_compile_events"], 1)
+    compilations_per_call = self.call_and_compare(
+        arange_expr, test_inputs, None
+    )
+    self.assertEqual(compilations_per_call, [1, 1, 0])
 
   def test_arange_with_sym_sum(self):
     def arange_expr(x):
@@ -370,8 +392,10 @@ class CompileTest(seed_test_utils.RepeatableTest):
         [torch.arange(4)],  # bounded compile, [4 (4<=b<=8)]
         [torch.arange(8)],  # no compile, [8]
     ]
-    metrics = self.call_and_compare(arange_expr, test_inputs, None)
-    self.assertEqual(metrics["bounded_compile_events"], 1)
+    compilations_per_call = self.call_and_compare(
+        arange_expr, test_inputs, None
+    )
+    self.assertEqual(compilations_per_call, [1, 1, 0])
 
   def test_arange_constant_length(self):
     def arange_func(x):
@@ -385,8 +409,10 @@ class CompileTest(seed_test_utils.RepeatableTest):
         [torch.arange(4)],  # bounded compile, [4 (4<=b<=8)]
         [torch.arange(8)],  # no compile, [8]
     ]
-    metrics = self.call_and_compare(arange_func, test_inputs, None)
-    self.assertEqual(metrics["bounded_compile_events"], 1)
+    compilations_per_call = self.call_and_compare(
+        arange_func, test_inputs, None
+    )
+    self.assertEqual(compilations_per_call, [1, 1, 0])
 
   def test_arange_dynamic_length(self):
     def arange_func(x, y):
@@ -398,8 +424,10 @@ class CompileTest(seed_test_utils.RepeatableTest):
         [torch.arange(4), torch.arange(5)],  # bounded compile, [4 (4<=b<=8)]
         [torch.arange(8), torch.arange(6)],  # no compile, [8]
     ]
-    metrics = self.call_and_compare(arange_func, test_inputs, None)
-    self.assertEqual(metrics["bounded_compile_events"], 1)
+    compilations_per_call = self.call_and_compare(
+        arange_func, test_inputs, None
+    )
+    self.assertEqual(compilations_per_call, [1, 1, 0])
 
   def test_arange_dynamic_step(self):
     def arange_func(x):
@@ -416,8 +444,10 @@ class CompileTest(seed_test_utils.RepeatableTest):
         [torch.arange(4)],  # bounded compile, [4 (4<=b<=8)]
         [torch.arange(8)],  # no compile, [8]
     ]
-    metrics = self.call_and_compare(arange_func, test_inputs, None)
-    self.assertEqual(metrics["bounded_compile_events"], 1)
+    compilations_per_call = self.call_and_compare(
+        arange_func, test_inputs, None
+    )
+    self.assertEqual(compilations_per_call, [1, 1, 0])
 
   def test_duplicate_symint_in_placeholder(self):
     def f(x):

@@ -34,7 +34,7 @@ class InputDynamicViewPass:
 
   def __init__(
       self,
-      placeholders: list[torch.fx.Node],
+      placeholders: Sequence[torch.fx.Node],
       example_inputs: Sequence[InputType],
   ):
     self._placeholders = placeholders

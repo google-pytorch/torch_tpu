@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <memory>
@@ -46,6 +47,7 @@
 #include "csrc/common/shape.h"
 #include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
+#include "csrc/eager/device_assignment.h"
 #include "csrc/eager/eager_mode.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
@@ -67,8 +69,10 @@ bool IsPinnedHostBuffer(const xla::PjRtBuffer* absl_nullable buffer) {
   return buffer->memory_space()->kind() == "pinned_host";
 }
 
-DeviceBufferList::Data::Data(bool placeholder)
-    : placeholder_(placeholder), materialization_pending_(!placeholder) {
+DeviceBufferList::Data::Data(NoDataType no_data_type)
+    : no_data_type_(no_data_type),
+      materialization_pending_(no_data_type_.value() !=
+                               NoDataType::kPlaceholder) {
   if (materialization_pending_) {
     auto [promise, future] = xla::MakePromise<void>();
     materialization_promise_ = std::move(promise);
@@ -106,7 +110,7 @@ DeviceBufferList::Data::Data(
 
 absl_nullable std::shared_ptr<DeferredOp> DeviceBufferList::Data::deferred_op()
     const {
-  if (placeholder_ || materialization_pending_) {
+  if (is_placeholder() || materialization_pending_) {
     // DeviceBufferList::Data that is created in the placeholder state never had
     // a DeferredOp. DeviceBufferList::Data that is pending materialization may
     // have had a DeferredOp, but if it did, it has been consumed.
@@ -117,7 +121,7 @@ absl_nullable std::shared_ptr<DeferredOp> DeviceBufferList::Data::deferred_op()
 }
 
 absl::Status DeviceBufferList::Data::SetAsPendingMaterialization() {
-  TT_RET_CHECK(!placeholder_, error::kFailedPrecondition)
+  TT_RET_CHECK(!is_placeholder(), error::kFailedPrecondition)
       << "placeholders cannot be materialized";
   // Immediately mark the DeviceBufferList::Data as pending materialization, and
   // check if this was the first time this was called.
@@ -153,7 +157,9 @@ absl::Status DeviceBufferList::Data::SetMaterializationError(
 }
 
 absl::Status DeviceBufferList::Data::SetMaterializationStarted(
-    std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers) {
+    std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers,
+    absl_nullable std::shared_ptr<const std::vector<xla::Shape>> device_shapes,
+    const size_t device_shapes_offset) {
   TT_RETURN_IF_ERROR(SetAsPendingMaterialization());
 
   const bool already_started = materialization_started_.exchange(true);
@@ -166,7 +172,8 @@ absl::Status DeviceBufferList::Data::SetMaterializationStarted(
                       PjrtBackend::GetInstance().GetSharedClient());
 
   materialized_buffers_ =
-      MaterializedData(std::move(client), std::move(buffers));
+      MaterializedData(std::move(client), std::move(buffers),
+                       std::move(device_shapes), device_shapes_offset);
   materialization_promise_.Set(absl::OkStatus());
 
   return absl::OkStatus();
@@ -185,7 +192,7 @@ void DeviceBufferList::Data::ValidateMaterializedBuffers(int64_t index) const {
 
 absl::StatusOr<xla::PjRtBuffer* absl_nonnull>
 DeviceBufferList::Data::operator[](int64_t index) const {
-  TT_RET_CHECK(!placeholder_, error::kFailedPrecondition)
+  TT_RET_CHECK(!is_placeholder(), error::kFailedPrecondition)
       << "placeholders do not have buffers";
 
   if (!materialization_future_.IsKnownReady()) {
@@ -380,9 +387,8 @@ absl::StatusOr<std::vector<DeviceBufferRef>> DeviceBufferList::CreateDeferred(
   int64_t num_outputs = output_shapes.size();
 
   const auto eager_mode = GetEagerMode();
-  const bool is_defer_never = IsDeferNeverMode(eager_mode);
 
-  // Runtime validation for in-place buffer donation in DeferNever mode:
+  // Runtime validation for in-place buffer donation in eager mode:
   //
   // In PjRt, buffer donation transfers physical ownership of the underlying
   // device memory buffer to the operation output, consuming and invalidating
@@ -425,8 +431,9 @@ absl::StatusOr<std::vector<DeviceBufferRef>> DeviceBufferList::CreateDeferred(
   //
   // Note: We bypass this check for custom kernels (Pallas), which manage buffer
   // donation explicitly through their compiler/runtime signatures, and for
-  // non-DeferNever modes (where DAG buffer assignment is handled globally).
-  if (is_defer_never && !donated_indices.empty() &&
+  // internal graph-capture modes (where DAG buffer assignment is handled
+  // globally).
+  if (SupportsInplaceBufferDonation(eager_mode) && !donated_indices.empty() &&
       op_name != OpName::kCustomKernel) {
     Indices safe_donated_indices;
     safe_donated_indices.reserve(donated_indices.size());
@@ -466,20 +473,32 @@ absl::StatusOr<DeviceBufferRef> DeviceBufferList::CreatePlaceholder(
   TT_RETURN_IF_ERROR(ValidateTensorByteSize(dimensions, element_type));
   // Can't use make_shared because the constructor is private.
   auto device_buffer = std::shared_ptr<DeviceBufferList>(new DeviceBufferList(
-      std::move(dimensions), element_type, /*placeholder=*/true));
+      std::move(dimensions), element_type, NoDataType::kPlaceholder));
   if (is_pinned_host) {
     device_buffer->set_is_pinned_host();
   }
   return DeviceBufferRef(std::move(device_buffer), 0);
 }
 
-absl::StatusOr<DeviceBufferRef> DeviceBufferList::CreatePending(
+absl::StatusOr<DeviceBufferRef> DeviceBufferList::CreatePendingExecution(
     const Shape& shape, c10::DeviceIndex device_index,
     c10::StreamId stream_id) {
   TT_RETURN_IF_ERROR(ValidateTensorByteSize(shape.dimensions(), shape.dtype()));
   // Can't use make_shared because the constructor is private.
   auto device_buffer = std::shared_ptr<DeviceBufferList>(
-      new DeviceBufferList(shape, /*placeholder=*/false,
+      new DeviceBufferList(shape, NoDataType::kPendingExecution,
+                           /*device_index_override=*/device_index,
+                           /*stream_id_override=*/stream_id));
+  return DeviceBufferRef(std::move(device_buffer), 0);
+}
+
+absl::StatusOr<DeviceBufferRef> DeviceBufferList::CreatePendingTransfer(
+    const Shape& shape, c10::DeviceIndex device_index,
+    c10::StreamId stream_id) {
+  TT_RETURN_IF_ERROR(ValidateTensorByteSize(shape.dimensions(), shape.dtype()));
+  // Can't use make_shared because the constructor is private.
+  auto device_buffer = std::shared_ptr<DeviceBufferList>(
+      new DeviceBufferList(shape, NoDataType::kPendingTransfer,
                            /*device_index_override=*/device_index,
                            /*stream_id_override=*/stream_id));
   return DeviceBufferRef(std::move(device_buffer), 0);
@@ -494,18 +513,19 @@ absl::Status DeviceBufferList::SetAsPendingMaterialization() {
 namespace {
 
 // Checks that the requested `at_shape` that a deferred op expects is valid for
-// the given `buffer_shape` that is on device.
+// the given `buffer` that is on device.
 //
-// For static dimensions the buffer and op shape must match exactly, for bounded
-// dimensions, only check upper bounds. We could get the real on-device shape
-// from `buffers[i]->logical_dimensions()`, but this is a device syncing
-// operation (blocking), so we want to avoid it.
+// For static dimensions the buffer and op shape must match exactly; for bounded
+// dimensions, only check upper bounds. Only queries `buffer.on_device_shape()`
+// (which lazily constructs an `xla::Shape` inside `PjRtCApiBuffer`) when a
+// dimension size differs from `at_shape`. We could get the real on-device shape
+// from `buffer.logical_dimensions()`, but this is a device-syncing operation
+// (blocking), so we want to avoid it.
 //
-// This function will crash if `at_shape` is not valid for the given
-// `buffer_shape`.
-void CheckBufferShape(const Shape& at_shape, const xla::Shape& buffer_shape) {
+// This function will crash if `at_shape` is not valid for `buffer`.
+void CheckBufferShape(const Shape& at_shape, const xla::PjRtBuffer& buffer) {
   // Ranks must match
-  absl::Span<const int64_t> buffer_dims = buffer_shape.dimensions();
+  absl::Span<const int64_t> buffer_dims = buffer.dimensions();
   ABSL_CHECK_EQ(at_shape.dimensions().size(), buffer_dims.size())  // CRASH_OK
       << "Expected the PjRtBuffer to have the same number of dimensions as "
          "this DeviceBufferList ("
@@ -514,7 +534,10 @@ void CheckBufferShape(const Shape& at_shape, const xla::Shape& buffer_shape) {
 
   // Static dims must match and dynamic dims must be LTE the upper bound.
   for (int64_t d = 0; d < at_shape.dimensions().size(); ++d) {
-    if (buffer_shape.is_dynamic_dimension(d)) {
+    if (at_shape.dimensions()[d] == buffer_dims[d]) {
+      continue;
+    }
+    if (buffer.on_device_shape().is_dynamic_dimension(d)) {
       ABSL_CHECK_LE(at_shape.dimensions()[d], buffer_dims[d])  // CRASH_OK
           << "Expected the size of dimension " << d
           << " of the PjRtBuffer (marked as dynamic in this buffer) of shape "
@@ -538,18 +561,26 @@ void CheckBufferShape(const Shape& at_shape, const xla::Shape& buffer_shape) {
 }  // namespace
 
 void DeviceBufferList::CheckMaterialization(
-    absl::Span<const absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers)
-    const {
+    absl::Span<const absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers,
+    const
+    absl_nullable std::shared_ptr<const std::vector<xla::Shape>>& device_shapes,
+    const size_t device_shapes_offset) const {
   ABSL_CHECK_EQ(shapes_.size(), buffers.size())  // CRASH_OK
       << "Expected " << shapes_.size()
       << " materialized PjRtBuffers for this DeviceBufferList, got "
       << buffers.size() << ".";
+  ABSL_CHECK(  // CRASH_OK
+      device_shapes == nullptr ||
+      buffers.size() + device_shapes_offset <= device_shapes->size())
+      << "Device shapes slice [offset=" << device_shapes_offset
+      << ", size=" << buffers.size() << "] out of bounds for "
+      << device_shapes->size() << " compiled output shapes.";
 
   for (size_t i = 0; i < shapes_.size(); ++i) {
     ABSL_CHECK(!buffers[i]->IsDeleted())  // CRASH_OK
         << "Buffer " << i << " is deleted.";
 
-    CheckBufferShape(shapes_[i], buffers[i]->on_device_shape());
+    CheckBufferShape(shapes_[i], *buffers[i]);
 
     TT_ASSIGN_OR_CRASH(  // CRASH_OK
         mlir::ElementType actual_element_type,
@@ -565,14 +596,25 @@ void DeviceBufferList::CheckMaterialization(
            "this DeviceBufferList ("
         << ToString(shapes_[i].dtype()) << ") for buffer " << i << ", got "
         << ToString(actual_element_type) << ".";
+
+    if (device_shapes != nullptr) {
+      const xla::Shape& known = (*device_shapes)[device_shapes_offset + i];
+      ABSL_DCHECK_EQ(known.element_type(), buffers[i]->element_type());
+      if (known.is_static()) {
+        ABSL_DCHECK(known.dimensions() == buffers[i]->dimensions());
+      }
+    }
   }
 }
 
 absl::Status DeviceBufferList::SetAsMaterialized(
-    std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers) {
-  CheckMaterialization(buffers);
+    std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers,
+    absl_nullable std::shared_ptr<const std::vector<xla::Shape>> device_shapes,
+    const size_t device_shapes_offset) {
+  CheckMaterialization(buffers, device_shapes, device_shapes_offset);
   ABSL_VLOG(1) << "[SetAsMaterialized] Setting as materialized";
-  return data_.SetMaterializationStarted(std::move(buffers));
+  return data_.SetMaterializationStarted(
+      std::move(buffers), std::move(device_shapes), device_shapes_offset);
 }
 
 void DeviceBufferList::SetAsError(absl::Status error) {
@@ -674,6 +716,10 @@ absl::StatusOr<size_t> DeviceBufferRef::pjrt_buffer_size() const {
   return device_buffer_list_->is_deferred();
 }
 
+[[nodiscard]] bool DeviceBufferRef::is_transferring() const {
+  return device_buffer_list_->is_transferring();
+}
+
 [[nodiscard]] bool DeviceBufferRef::is_materializing() const {
   return device_buffer_list_->is_materializing();
 }
@@ -726,6 +772,10 @@ absl::Status DeviceBufferRef::Synchronize() const {
 absl::StatusOr<xla::PjRtBuffer* absl_nonnull> DeviceBufferRef::AwaitBuffer()
     const {
   return device_buffer_list_->AwaitBuffer(index_);
+}
+
+const xla::Shape* absl_nullable DeviceBufferRef::known_device_shape() const {
+  return device_buffer_list_->known_device_shape(index_);
 }
 
 xla::Future<void> DeviceBufferRef::GetMaterializationFuture() const {

@@ -45,8 +45,6 @@ void OpNameStack::Push(OpName op_name) {
           // DO NOT ADD NEW ENTRIES TO THIS LIST! Our goal is to shrink the list
           // and eventually remove it.
           // go/keep-sorted start
-          OpName::kAdaptiveAvgPool3d,
-          OpName::kAdaptiveAvgPool3dBackward,
           OpName::kAddRelu_Scalar,
           OpName::kAddRelu_Tensor,
           OpName::kAllOut,
@@ -202,7 +200,7 @@ void OpNameStack::Push(OpName op_name) {
   // Only check known_composite_ops size once as it's a run-time constant.
   static const bool check_once = [] {
     ABSL_CHECK_EQ(  // CRASH_OK
-        known_composite_ops->size(), 150 /* DO NOT increase this! */)
+        known_composite_ops->size(), 148 /* DO NOT increase this! */)
         << "The size of known_composite_ops MUST NOT go up. "
            "If you are removing entries from known_composite_ops, please LOWER "
            "the expected size in the comparison to match the new size and "

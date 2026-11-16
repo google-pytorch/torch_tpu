@@ -26,7 +26,7 @@ tensors to the benchmark dtype (`Module.to(dtype)` would drop its imaginary
 part).
 """
 
-from typing import Any
+from collections.abc import Mapping, Sequence
 
 import torch
 from torch import nn
@@ -89,10 +89,11 @@ def build_model(
 ) -> nn.Module:
   """Builds and initializes a torchtitan Muse Glimmer model directly on `device`.
 
-  The model is built on meta and materialized on the device in fp32. Only
-  floating-point parameters/buffers are cast to `dtype` to avoid losing the
-  complex RoPE cache, and SDPA submodules are swapped to support packed
-  `(B * S,)` batches.
+  The model is built on meta under `dtype` as the default dtype and materialized
+  directly on the device in `dtype`. Only floating-point parameters/buffers are
+  cast to `dtype` (rather than `model.to(dtype)`) to avoid losing the complex
+  RoPE cache, and SDPA submodules are swapped to support packed `(B * S,)`
+  batches.
 
   Args:
     config: Model config.
@@ -107,11 +108,16 @@ def build_model(
   """
   if seq_len is None:
     seq_len = torchtitan_batching.infer_seq_len(config)
-  with torch.device("meta"):
-    model = config.build()
-  model.to_empty(device=device)
-  with torch.no_grad():
-    model.init_states(buffer_device=torch.device(device))
+  prev_dtype = torch.get_default_dtype()
+  torch.set_default_dtype(dtype)
+  try:
+    with torch.device("meta"):
+      model = config.build()
+    model.to_empty(device=device)
+    with torch.no_grad():
+      model.init_states(buffer_device=torch.device(device))
+  finally:
+    torch.set_default_dtype(prev_dtype)
 
   for p in model.parameters():
     if p.is_floating_point():
@@ -126,8 +132,8 @@ def build_model(
 
 def cross_entropy_loss(
     model: nn.Module,
-    input_args: tuple[Any, ...],
-    input_kwargs: dict[str, Any],
+    input_args: Sequence[torch.Tensor],
+    input_kwargs: Mapping[str, torch.Tensor],
 ) -> torch.Tensor:
   """Next-token cross entropy over fp32 logits (torchtitan returns logits)."""
   input_kwargs = dict(input_kwargs)

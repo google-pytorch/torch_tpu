@@ -137,6 +137,7 @@ _PUBLIC_MODULES: Mapping[str, ModuleSpec] = {
             "Precision": _tpu_attr("Precision"),
             "Stream": _tpu_attr("Stream"),
             "TpuLayout": _tpu_attr("TpuLayout"),
+            "TpuVersion": _tpu_attr("TpuVersion"),
             "allow_excess_precision": Property(
                 f"{_DEVICE_MODULE}:_DeviceModuleMeta.allow_excess_precision"
             ),
@@ -300,11 +301,57 @@ _PUBLIC_MODULES: Mapping[str, ModuleSpec] = {
         },
         doc="Public Pallas API for TorchTPU (`torch.tpu.pallas`).",
     ),
+    "torch.tpu.pallas.verifier": ModuleSpec(
+        exports={
+            # go/keep-sorted start
+            "CounterexampleStep": (
+                "torch_tpu._internal.pallas.verify.findings:CounterexampleStep"
+            ),
+            "DmaScheduleMode": (
+                "torch_tpu._internal.pallas.verify.findings:DmaScheduleMode"
+            ),
+            "FindingCategory": (
+                "torch_tpu._internal.pallas.verify.findings:FindingCategory"
+            ),
+            "InterpretSweepConfig": (
+                "torch_tpu._internal.pallas.verify.findings:InterpretSweepConfig"
+            ),
+            "Phase": "torch_tpu._internal.pallas.verify.findings:Phase",
+            "Severity": "torch_tpu._internal.pallas.verify.findings:Severity",
+            "UninitMemoryMode": (
+                "torch_tpu._internal.pallas.verify.findings:UninitMemoryMode"
+            ),
+            "VerificationError": (
+                "torch_tpu._internal.pallas.verify.findings:VerificationError"
+            ),
+            "VerificationFinding": (
+                "torch_tpu._internal.pallas.verify.findings:VerificationFinding"
+            ),
+            "VerificationMode": (
+                "torch_tpu._internal.pallas.verify.verifier:VerificationMode"
+            ),
+            "VerificationOptions": (
+                "torch_tpu._internal.pallas.verify.verifier:VerificationOptions"
+            ),
+            "VerificationReport": (
+                "torch_tpu._internal.pallas.verify.findings:VerificationReport"
+            ),
+            "verify": "torch_tpu._internal.pallas.verify.verifier:verify",
+            # go/keep-sorted end
+        },
+        doc=(
+            "Public Pallas verification API for TorchTPU"
+            " (`torch.tpu.pallas.verifier`)."
+        ),
+    ),
     "torch.tpu.profiler": ModuleSpec(
         exports={
             # go/keep-sorted start
             "TpuProfilerConfig": (
                 "torch_tpu._internal.profiler.profiler_config:TpuProfilerConfig"
+            ),
+            "named_scope": (
+                "torch_tpu._internal.profiler.named_scope:named_scope"
             ),
             # go/keep-sorted end
         },

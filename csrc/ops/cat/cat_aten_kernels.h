@@ -25,8 +25,6 @@
 
 namespace torch_tpu {
 
-at::Tensor AtenCat(const at::ITensorListRef& tensors, int64_t dim);
-
 at::Tensor& AtenCatOut(const at::ITensorListRef& tensors, int64_t dim,
                        at::Tensor& out);
 

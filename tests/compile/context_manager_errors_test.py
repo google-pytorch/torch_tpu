@@ -12,9 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for TorchTPU context manager support under `torch.compile`."""
+"""Tests for errors raised by TorchTPU context managers."""
 
 from absl.testing import absltest
+from absl.testing import parameterized
 import torch
 from torch_tpu._internal import compiler_options
 from torch_tpu._internal import execution_mode
@@ -22,6 +23,7 @@ from torch_tpu._internal import precision
 from torch_tpu._internal import profiler
 from torch_tpu._internal.device_utils import annotations
 from torch_tpu._internal.export import export
+from torch_tpu._internal.profiler import named_scope
 from tests import seed_test_utils
 
 # See the assertion text in torch/_dynamo/symbolic_convert.py.
@@ -109,6 +111,64 @@ class ContextManagerErrorsTest(seed_test_utils.RepeatableTest):
         r"`precision` context manager is not yet traceable",
     ):
       model(torch.randn(2, 2))
+
+
+class NamedScopeErrorsTest(seed_test_utils.RepeatableTest):
+
+  def test_rejects_empty_name(self):
+    with self.assertRaisesRegex(
+        ValueError, r"named_scope expects a non-empty string, got ''"
+    ):
+      with named_scope.named_scope(""):
+        pass
+
+  def test_rejects_at_sign(self):
+    # XLA truncates HLO op metadata names at the first "@".
+    with self.assertRaisesRegex(ValueError, r"must not contain '@'"):
+      with named_scope.named_scope("layer@1"):
+        pass
+
+  def test_rejects_colon(self):
+    # XProf splits `<op_name>:<op_type>` at the first ":".
+    with self.assertRaisesRegex(ValueError, r"must not contain ':'"):
+      with named_scope.named_scope("step:1"):
+        pass
+
+  @parameterized.named_parameters(
+      ("leading_slash", "/a"),
+      ("trailing_slash", "a/"),
+      ("consecutive_slashes", "a//b"),
+  )
+  def test_rejects_empty_segments(self, name: str):
+    with self.assertRaisesRegex(ValueError, r"empty '/'-separated"):
+      with named_scope.named_scope(name):
+        pass
+
+  def test_rejects_invalid_name_in_compiled_code(self):
+    def model(x: torch.Tensor) -> torch.Tensor:
+      with named_scope.named_scope(""):
+        return x.abs()
+
+    # Without `fullgraph`, Dynamo graph-breaks on the raised exception and the
+    # frame re-raises it when it runs eagerly.
+    with self.assertRaisesRegex(
+        ValueError, r"named_scope expects a non-empty string, got ''"
+    ):
+      torch.compile(model, backend="eager")(torch.randn(2, 2))
+
+  def test_rejects_invalid_name_in_compiled_code_when_fullgraph(self):
+    def model(x: torch.Tensor) -> torch.Tensor:
+      with named_scope.named_scope(""):
+        return x.abs()
+
+    # With `fullgraph=True`, Dynamo surfaces the exception it observed while
+    # tracing (as `Unsupported` carrying the `ValueError`) instead of silently
+    # compiling an unscoped graph.
+    with self.assertRaisesRegex(
+        (ValueError, torch._dynamo.exc.Unsupported),
+        r"named_scope expects a non-empty string, got ''",
+    ):
+      torch.compile(model, backend="eager", fullgraph=True)(torch.randn(2, 2))
 
 
 if __name__ == "__main__":

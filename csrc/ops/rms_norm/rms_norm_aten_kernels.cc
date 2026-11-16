@@ -25,7 +25,6 @@
 #include <utility>
 #include <vector>
 
-#include "ATen/OpMathType.h"
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBase.h"
 #include "ATen/core/TensorBody.h"
@@ -41,6 +40,7 @@
 #include "c10/core/GradMode.h"
 #include "c10/core/SymIntArrayRef.h"
 #include "c10/core/impl/LocalDispatchKeySet.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/const_tensor.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
@@ -161,7 +161,7 @@ at::Tensor RmsNormComposite(const at::Tensor& input,
     dims_to_reduce.push_back(input_ndim - static_cast<int64_t>(i) - 1);
   }
 
-  const at::ScalarType opmath_type = at::toOpMathType(input.scalar_type());
+  const at::ScalarType opmath_type = InferComputationDtype(input.scalar_type());
   const at::Tensor upcasted_input = input.to(opmath_type);
   const double eps_val = GetRmsNormEpsilon(eps, input.scalar_type());
 

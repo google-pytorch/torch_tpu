@@ -20,7 +20,6 @@
 
 #include "absl/log/absl_log.h"
 #include "absl/strings/str_join.h"
-#include "csrc/common/aten_utils.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "mlir/IR/Builders.h"
@@ -47,12 +46,7 @@ mlir::MlirOp BuildIndexSelectShlo(mlir::MlirOp self, int64_t dim,
 
   Dimensions gather_slice_sizes = CopyIntVector(self_type.getShape());
   gather_slice_sizes[dim] = 1;
-  Indices offset_dims;
-  for (int i = 0; i < self_type.getRank(); ++i) {
-    if (i != dim) {
-      offset_dims.push_back(i);
-    }
-  }
+  const Indices offset_dims = GetBatchDimensions(self_type.getRank(), dim);
 
   index = mlir::stablehlo::Reshape(index, {index_type.getDimSize(0), 1});
 

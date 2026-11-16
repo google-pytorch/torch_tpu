@@ -21,32 +21,47 @@ load(
     "torch_tpu_package_end",
     "torch_tpu_py_library",
 )
-load("//shims/py_rules:pytype.bzl", "pytype_strict_library")
+load("//shims/py_rules:py_library.bzl", "py_library")
 
 package(
     default_applicable_licenses = ["//:license"],
     default_visibility = ["//:__subpackages__"],
 )
 
-pytype_strict_library(
+py_library(
     # PY_LIBRARY_OK=Decouple from torch_tpu to avoid C++ dependency in coverage tests.
     name = "common",
     srcs = ["common.py"],
+    type_checking = True,
     deps = [
         "//perflab:target",
     ],
 )
 
-pytype_strict_library(
+py_library(
     # PY_LIBRARY_OK=Decouple from torch_tpu to avoid C++ dependency in coverage tests.
     name = "decode",
     srcs = ["decode.py"],
+    type_checking = True,
     deps = [
         ":common",
         "//perflab:step_lib",
         "//perflab:target",
         "//shims/torch:pytorch",
         "@pypi//transformers",
+    ],
+)
+
+py_library(
+    # PY_LIBRARY_OK=Keep standard_train C++-free for coverage tests.
+    name = "standard_train",
+    srcs = ["standard_train.py"],
+    type_checking = True,
+    deps = [
+        ":common",
+        "//perflab:loss",
+        "//perflab:step_lib",
+        "//shims/torch:pytorch",
     ],
 )
 
@@ -61,6 +76,7 @@ torch_tpu_py_library(
     deps = [
         ":common",
         ":decode",  # build_cleaner: keep
+        ":standard_train",
         "//perflab:loss",
         "//perflab:single_trace_trainer_adapter",
         "//perflab:step_lib",

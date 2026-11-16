@@ -20,13 +20,14 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <utility>
 #include <vector>
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
+#include "absl/log/absl_check.h"
 #include "absl/status/statusor.h"
-#include "c10/core/ScalarType.h"
 #include "c10/util/BFloat16.h"
 #include "c10/util/Half.h"
 #include "csrc/common/aten_utils.h"
@@ -38,13 +39,10 @@
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/unary_aten_kernels.h"
-#include "mlir/IR/BuiltinTypes.h"
-#include "mlir/IR/Types.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
-#include "torch/headeronly/core/ScalarType.h"
 #include "torch/headeronly/util/BFloat16.h"
 #include "torch/headeronly/util/Half.h"
 
@@ -53,7 +51,7 @@ namespace {
 
 constexpr double kPi = 3.14159265358979323846;
 
-std::vector<double> ComputeCotDerivativeCoeffs(int n) {
+std::vector<double> ComputeCotDerivativeCoeffs(int64_t n) {
   if (n == 0) return {0.0, 1.0};
 
   std::vector<double> prev = ComputeCotDerivativeCoeffs(n - 1);
@@ -63,7 +61,7 @@ std::vector<double> ComputeCotDerivativeCoeffs(int n) {
   if (prev.size() > 2) {
     coeffs[1] = -2.0 * prev[2];
   }
-  for (int k = 2; k <= n + 1; ++k) {
+  for (int64_t k = 2; k <= n + 1; ++k) {
     double term1 = 0.0;
     if (k + 1 < prev.size()) {
       term1 = -(k + 1) * prev[k + 1];
@@ -102,15 +100,37 @@ double GetEpsilon(mlir::ElementType type) {
   return std::numeric_limits<float>::epsilon();  // Default fallback
 }
 
-// Computes the Hurwitz Zeta function of x and q.
-// Reference: xla/hlo/builder/lib/math.cc:Zeta
-absl::StatusOr<mlir::MlirOp> BuildZeta(mlir::MlirOp x, mlir::MlirOp q,
-                                       mlir::MlirBuilder& builder) {
-  mlir::ElementType computation_type = GetElementTypeOrDie(q);
-  mlir::Type comp_type =
-      mlir::getElementType(builder.getContext(), computation_type);
+// Raises `base` to an integer exponent `exp` via binary exponentiation,
+// avoiding `stablehlo::Pow` which `X64Rewriter` expands into `exp(y * ln(|x|))`
+// (~3,000 HLO instructions per call on float64).
+[[nodiscard]] mlir::MlirOp BuildPosIntPower(mlir::MlirOp base, uint64_t exp) {
+  ABSL_CHECK_GT(exp, uint64_t{0})  // CRASH_OK=BuildZeta passes x_int >= 2.
+      << "expected positive exponent, got " << exp
+      << ". This is a TorchTPU bug.";
+  std::optional<mlir::MlirOp> result;
+  mlir::MlirOp power = base;
+  while (exp > 0) {
+    if ((exp & 1) != 0) {
+      result =
+          result.has_value() ? mlir::stablehlo::Mul(*result, power) : power;
+    }
+    exp >>= 1;
+    if (exp > 0) {
+      power = mlir::stablehlo::Mul(power, power);
+    }
+  }
+  return *result;
+}
 
+// Computes the Hurwitz Zeta function for integer order `x_int` (>= 2) at `q`.
+// Reference: xla/hlo/builder/lib/math.cc:Zeta
+[[nodiscard]] mlir::MlirOp BuildZeta(const uint64_t x_int, mlir::MlirOp q) {
+  const mlir::ElementType computation_type = GetElementTypeOrDie(q);
+
+  // 12-term Euler-Maclaurin asymptotic expansion matching Cephes/XLA Zeta.
   static constexpr int M = 12;
+  // 9 additional series terms (q, q + 1, ..., q + 9) before the tail at q + 10.
+  static constexpr int N = 9;
   static constexpr int kTwoKMinusOne = 2 * M - 1;
 
   // (2k)! / B_{2k}, where B_{2k} are the Bernoulli numbers.
@@ -131,199 +151,110 @@ absl::StatusOr<mlir::MlirOp> BuildZeta(mlir::MlirOp x, mlir::MlirOp q,
       12.0,
   };
 
-  auto i32_type = builder.getOpBuilder().getI32Type();
-  auto zero_i32 = MakeScalarConstant(builder, 0, i32_type);
-  auto nine_i32 = MakeScalarConstant(builder, 9, i32_type);
-  auto one_i32 = MakeScalarConstant(builder, 1, i32_type);
-
   auto one_like_q = MakeConstantLike(q, 1.0);
-  auto neg_x = mlir::stablehlo::Neg(x);
-  auto s_init = mlir::stablehlo::Pow(q, neg_x);
 
-  // While loop for S: state: [i, acc, S]
-  auto s_loop = mlir::stablehlo::While(
-      builder, {zero_i32, q, s_init},
-      [&](mlir::RegionBuilder& cond) {  // REF_CAPTURE_OK=called synchronously
-        mlir::MlirBuilder cond_builder(cond.getOpBuilder(),
-                                       cond.getOpBuilder().getUnknownLoc());
-        auto args = mlir::stablehlo::Arguments(
-            cond, cond.getOp<mlir::stablehlo::WhileOp>());
-        auto cond_val = mlir::stablehlo::Compare(
-            args[0], nine_i32, mlir::stablehlo::ComparisonDirection::LT);
-        mlir::stablehlo::Return(cond, cond_val);
-      },
-      [&](mlir::RegionBuilder& body) {  // REF_CAPTURE_OK=called synchronously
-        mlir::MlirBuilder body_builder(body.getOpBuilder(),
-                                       body.getOpBuilder().getUnknownLoc());
-        auto args = mlir::stablehlo::Arguments(
-            body, body.getOp<mlir::stablehlo::WhileOp>());
-
-        auto i_val = args[0];
-        auto acc_val = args[1];
-        auto s_val = args[2];
-
-        auto next_i = mlir::stablehlo::Add(i_val, one_i32);
-        auto next_acc = mlir::stablehlo::Add(acc_val, one_like_q);
-        auto neg_power = mlir::stablehlo::Pow(next_acc, neg_x);
-        auto next_s = mlir::stablehlo::Add(s_val, neg_power);
-
-        mlir::stablehlo::Return(body, {next_i, next_acc, next_s});
-      });
-
-  auto acc_final = s_loop[1];
-  auto s_final = s_loop[2];
-
-  auto acc_after = mlir::stablehlo::Add(acc_final, one_like_q);
-  auto neg_power_after = mlir::stablehlo::Pow(acc_after, neg_x);
-
-  auto x_minus_one = mlir::stablehlo::Subtract(x, one_like_q);
-  auto I_mul = mlir::stablehlo::Mul(neg_power_after, acc_after);
-  auto I_op = mlir::stablehlo::Div(I_mul, x_minus_one);
-
-  auto one_cst = MakeConstantLike(acc_after, 1.0);
-  auto acc_square = mlir::stablehlo::Mul(acc_after, acc_after);
-  auto a_inverse_square = mlir::stablehlo::Div(one_cst, acc_square);
-
-  std::vector<double> coeffs_inv(M - 1);
-  for (int i = 0; i < M - 1; ++i) {
-    coeffs_inv[i] = 1.0 / kZetaCoeffs[i];
+  // Calculating S = sum_{k=0}^{N} (q + k)^(-x_int) using reciprocal integer
+  // powers: for x_int >= 2, |1 / (q + k)| overflows only when (q + k)^(-x_int)
+  // already overflows, while avoiding intermediate (q + k)^x_int overflow for
+  // large q.
+  auto inv_q = mlir::stablehlo::Div(one_like_q, q);
+  auto s = BuildPosIntPower(inv_q, x_int);
+  for (int i = 1; i <= N; ++i) {
+    auto i_cst = MakeConstantLike(q, static_cast<double>(i));
+    auto q_plus_i = mlir::stablehlo::Add(q, i_cst);
+    auto inv_term = mlir::stablehlo::Div(one_like_q, q_plus_i);
+    auto term_pow = BuildPosIntPower(inv_term, x_int);
+    s = mlir::stablehlo::Add(s, term_pow);
   }
-  auto coeffs_inv_cst = MakeConstant(
-      builder, coeffs_inv, mlir::RankedTensorType::get({M - 1}, comp_type));
+  auto tail_offset = MakeConstantLike(q, static_cast<double>(N + 1));
+  auto acc = mlir::stablehlo::Add(q, tail_offset);
+  auto inv_acc = mlir::stablehlo::Div(one_like_q, acc);
+  auto neg_power = BuildPosIntPower(inv_acc, x_int);
 
-  auto two_float_0d = MakeScalarConstant(builder, 2.0, comp_type);
-  auto c1_float_0d = MakeScalarConstant(
-      builder, static_cast<double>(kTwoKMinusOne - 1), comp_type);
-  auto c2_float_0d = MakeScalarConstant(
-      builder, static_cast<double>(kTwoKMinusOne - 2), comp_type);
+  // Calculating I = neg_power * acc / (x_int - 1). Keep `neg_power * acc` so
+  // q = +inf produces 0 * inf = NaN for n > 1 matching PyTorch CPU semantics.
+  const double x_val = static_cast<double>(x_int);
+  auto i_mul = mlir::stablehlo::Mul(neg_power, acc);
+  mlir::MlirOp i_op = i_mul;
+  if (x_int != 2) {
+    auto x_minus_one_cst = MakeConstantLike(q, x_val - 1.0);
+    i_op = mlir::stablehlo::Div(i_mul, x_minus_one_cst);
+  }
 
-  auto eleven_i32 = MakeScalarConstant(builder, 11, i32_type);
-  auto horner_sum_init = MakeConstantLike(acc_after, 0.0);
+  // Calculating T via Horner's rule.
+  auto a_inverse_square = mlir::stablehlo::Mul(inv_acc, inv_acc);
+  auto horner_sum = MakeConstantLike(acc, 0.0);
 
-  // While loop for T: state: [i, horner_sum]
-  auto t_loop = mlir::stablehlo::While(
-      builder, {zero_i32, horner_sum_init},
-      [&](mlir::RegionBuilder& cond) {  // REF_CAPTURE_OK=called synchronously
-        mlir::MlirBuilder cond_builder(cond.getOpBuilder(),
-                                       cond.getOpBuilder().getUnknownLoc());
-        auto args = mlir::stablehlo::Arguments(
-            cond, cond.getOp<mlir::stablehlo::WhileOp>());
-        auto cond_val = mlir::stablehlo::Compare(
-            args[0], eleven_i32, mlir::stablehlo::ComparisonDirection::LT);
-        mlir::stablehlo::Return(cond, cond_val);
-      },
-      [&](mlir::RegionBuilder& body) {  // REF_CAPTURE_OK=called synchronously
-        auto args = mlir::stablehlo::Arguments(
-            body, body.getOp<mlir::stablehlo::WhileOp>());
+  for (int i = 0; i < M - 1; ++i) {
+    const double factor_val =
+        (x_val + static_cast<double>(kTwoKMinusOne - 1 - 2 * i)) *
+        (x_val + static_cast<double>(kTwoKMinusOne - 2 - 2 * i));
+    auto factor_cst = MakeConstantLike(acc, factor_val);
+    auto coeff_inv_cst = MakeConstantLike(acc, 1.0 / kZetaCoeffs[i]);
+    auto sum_plus_coeff = mlir::stablehlo::Add(horner_sum, coeff_inv_cst);
+    auto horner_mul_1 = mlir::stablehlo::Mul(factor_cst, a_inverse_square);
+    horner_sum = mlir::stablehlo::Mul(horner_mul_1, sum_plus_coeff);
+  }
 
-        auto i_val = args[0];
-        auto horner_sum_val = args[1];
+  auto point_five = MakeConstantLike(neg_power, 0.5);
+  auto coeff_m_minus_one = MakeConstantLike(acc, 1.0 / kZetaCoeffs[M - 1]);
+  auto inner_sum = mlir::stablehlo::Add(coeff_m_minus_one, horner_sum);
+  auto x_cst = MakeConstantLike(acc, x_val);
+  auto x_div_acc = mlir::stablehlo::Mul(x_cst, inv_acc);
+  auto t_mul = mlir::stablehlo::Mul(x_div_acc, inner_sum);
+  auto t_add = mlir::stablehlo::Add(point_five, t_mul);
+  auto t_op = mlir::stablehlo::Mul(neg_power, t_add);
 
-        auto coeffs_local = mlir::MlirOp(body, coeffs_inv_cst.getValue());
-        auto coeff_slice =
-            mlir::stablehlo::DynamicSlice(coeffs_local, {i_val}, {1});
-        auto coeff_cst = mlir::stablehlo::Reshape(coeff_slice, {});
+  auto s_plus_i = mlir::stablehlo::Add(s, i_op);
+  auto accurate_result = mlir::stablehlo::Add(s_plus_i, t_op);
 
-        auto i_float =
-            mlir::stablehlo::ConvertElementType(i_val, computation_type);
-        auto two_i = mlir::stablehlo::Mul(i_float, two_float_0d);
-
-        auto c1_local = mlir::MlirOp(body, c1_float_0d.getValue());
-        auto s1 = mlir::stablehlo::Subtract(c1_local, two_i);
-
-        auto c2_local = mlir::MlirOp(body, c2_float_0d.getValue());
-        auto s2 = mlir::stablehlo::Subtract(c2_local, two_i);
-
-        auto x_local = mlir::MlirOp(body, x.getValue());
-        auto s1_bcast = mlir::stablehlo::BroadcastInDim(
-            x_local.getType(), s1,
-            body.getOpBuilder().getDenseI64ArrayAttr({}));
-        auto s2_bcast = mlir::stablehlo::BroadcastInDim(
-            x_local.getType(), s2,
-            body.getOpBuilder().getDenseI64ArrayAttr({}));
-
-        auto term_1 = mlir::stablehlo::Add(x_local, s1_bcast);
-        auto term_2 = mlir::stablehlo::Add(x_local, s2_bcast);
-        auto factor = mlir::stablehlo::Mul(term_1, term_2);
-
-        auto coeff_bcast = mlir::stablehlo::BroadcastInDim(
-            horner_sum_val.getType(), coeff_cst,
-            body.getOpBuilder().getDenseI64ArrayAttr({}));
-
-        auto sum_plus_coeff = mlir::stablehlo::Add(horner_sum_val, coeff_bcast);
-        auto horner_mul_1 = mlir::stablehlo::Mul(factor, a_inverse_square);
-        auto next_horner_sum =
-            mlir::stablehlo::Mul(horner_mul_1, sum_plus_coeff);
-
-        auto one_local = mlir::MlirOp(body, one_i32.getValue());
-        auto next_i = mlir::stablehlo::Add(i_val, one_local);
-
-        mlir::stablehlo::Return(body, {next_i, next_horner_sum});
-      });
-
-  auto horner_sum_final = t_loop[1];
-
-  auto point_five = MakeConstantLike(neg_power_after, 0.5);
-  auto coeff_M_minus_one =
-      MakeConstantLike(acc_after, 1.0 / kZetaCoeffs[M - 1]);
-  auto inner_sum = mlir::stablehlo::Add(coeff_M_minus_one, horner_sum_final);
-  auto x_div_acc = mlir::stablehlo::Div(x, acc_after);
-  auto T_mul = mlir::stablehlo::Mul(x_div_acc, inner_sum);
-  auto T_add = mlir::stablehlo::Add(point_five, T_mul);
-  auto T_op = mlir::stablehlo::Mul(neg_power_after, T_add);
-
-  auto s_plus_I = mlir::stablehlo::Add(s_final, I_op);
-  auto accurate_result = mlir::stablehlo::Add(s_plus_I, T_op);
-
-  double eps_val = GetEpsilon(computation_type);
+  const double eps_val = GetEpsilon(computation_type);
   auto eps_cst = MakeConstantLike(q, eps_val);
 
-  auto abs_neg_power = mlir::stablehlo::Abs(neg_power_after);
-  auto abs_s = mlir::stablehlo::Abs(s_final);
+  auto abs_neg_power = mlir::stablehlo::Abs(neg_power);
+  auto abs_s = mlir::stablehlo::Abs(s);
   auto threshold = mlir::stablehlo::Mul(abs_s, eps_cst);
   auto is_accurate_enough = mlir::stablehlo::Compare(
       abs_neg_power, threshold, mlir::stablehlo::ComparisonDirection::LT);
-  auto output =
-      mlir::stablehlo::Select(is_accurate_enough, s_final, accurate_result);
-
-  return output;
+  return mlir::stablehlo::Select(is_accurate_enough, s, accurate_result);
 }
 
 // Computes the polygamma function of order n at self_op.
 // Reference: xla/hlo/builder/lib/math.cc:Polygamma
 absl::StatusOr<mlir::MlirOp> BuildPolygammaShlo(
-    mlir::MlirOp self_op, int64_t n, mlir::ElementType out_mlir_type) {
-  mlir::ElementType input_dtype = GetElementTypeOrDie(self_op);
-  TT_ASSIGN_OR_RETURN(mlir::ElementType computation_type,
-                      InferComputationDtype(input_dtype));
-
-  mlir::MlirOp input_op = self_op;
-  if (input_dtype != computation_type) {
-    input_op = mlir::stablehlo::ConvertElementType(self_op, computation_type);
-  }
+    mlir::MlirOp self_op, const int64_t n,
+    const mlir::ElementType out_mlir_type) {
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp op,
+                      ConvertIfInteger(self_op, out_mlir_type));
 
   if (n == 0) {  // Digamma
-    return BuildDigammaShlo(self_op, out_mlir_type);
+    return BuildDigammaShlo(op, out_mlir_type);
   }
 
-  mlir::MlirBuilder& builder = input_op.getBuilder();
+  const mlir::ElementType input_dtype = GetElementTypeOrDie(op);
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType computation_type,
+                      InferComputationDtype(input_dtype));
+
+  mlir::MlirOp input_op = op;
+  if (input_dtype != computation_type) {
+    input_op = mlir::stablehlo::ConvertElementType(op, computation_type);
+  }
+
+  const uint64_t n_plus_one = static_cast<uint64_t>(n) + 1;
 
   // 1. Direct path (x >= 0.0)
   // psi^(n)(x) = (-1)^(n+1) * n! * zeta(n+1, x)
-  double sign_val = (n % 2 == 0) ? -1.0 : 1.0;
-  double coeff_val = sign_val * std::tgamma(n + 1);
+  const double sign_val = (n % 2 == 0) ? -1.0 : 1.0;
+  const double coeff_val = sign_val * std::tgamma(n + 1);
   auto coeff_cst = MakeConstantLike(input_op, coeff_val);
-  auto n_plus_one_cst = MakeConstantLike(input_op, static_cast<double>(n + 1));
-  TT_ASSIGN_OR_RETURN(auto zeta_op,
-                      BuildZeta(n_plus_one_cst, input_op, builder));
+  mlir::MlirOp zeta_op = BuildZeta(n_plus_one, input_op);
   auto direct_op = mlir::stablehlo::Mul(coeff_cst, zeta_op);
 
   // 2. Reflection path (x < 0.0)
   // psi^(n)(x) = (-1)^n * psi^(n)(1-x) - pi^(n+1) * d^n/dx^n (cot(pi x))
   auto one = MakeConstantLike(input_op, 1.0);
   auto one_minus_x = mlir::stablehlo::Subtract(one, input_op);
-  TT_ASSIGN_OR_RETURN(auto zeta_1_minus_x,
-                      BuildZeta(n_plus_one_cst, one_minus_x, builder));
+  mlir::MlirOp zeta_1_minus_x = BuildZeta(n_plus_one, one_minus_x);
 
   // First term: (-1)^n * psi^(n)(1-x) = -n! * zeta(n+1, 1-x)
   double first_term_coeff = -std::tgamma(n + 1);
@@ -414,25 +345,19 @@ at::Tensor& AtenPolygammaOut(int64_t n, const at::Tensor& self,
                              at::Tensor& out) {
   TT_KERNEL(OpName::kPolygammaOut, param_keys, (n, self, out), {
     TT_CHECK_THROW(n >= 0, error::kInvalidArgument)
-        << "expected n to be non-negative, got " << n;
+        << "expected n to be >= 0, got " << n;
     TT_CHECK_THROW(!IsComplex(self), error::kInvalidArgument)
         << "expected the input dtype not to be complex, got "
         << ToString(self.scalar_type());
 
-    auto computation_type = self.scalar_type();
-    if (c10::isIntegralType(computation_type, /*includeBool=*/true)) {
-      computation_type = at::ScalarType::Float;
-    }
     // Enforce safe type promotion (casting to integer outputs is not safe)
     TT_CHECK_THROW(out.is_floating_point() || out.is_complex(),
                    error::kInvalidArgument)
         << "expected the output dtype to be floating point or complex, got "
         << ToString(out.scalar_type());
 
-    TT_ASSIGN_OR_THROW(auto out_dtype,
-                       ConvertTo<mlir::ElementType>(out.scalar_type()));
-    TT_ASSIGN_OR_THROW(auto computation_mlir_type,
-                       ConvertTo<mlir::ElementType>(computation_type));
+    TT_ASSIGN_OR_THROW(const auto out_dtype,
+                       ConvertTo<mlir::ElementType>(InferOutputDtype(self)));
 
     auto op_builder =
         [n, out_dtype](mlir::MlirOp self_op) -> absl::StatusOr<mlir::MlirOp> {
@@ -441,8 +366,7 @@ at::Tensor& AtenPolygammaOut(int64_t n, const at::Tensor& self,
 
     TT_THROW_IF_ERROR(UnaryOpOut(self, out, std::move(op_builder),
                                  {.op_param_cache_keys = std::move(param_keys),
-                                  .out_dtype = out_dtype,
-                                  .computation_dtype = computation_mlir_type}));
+                                  .out_dtype = out_dtype}));
     return out;
   });
 }

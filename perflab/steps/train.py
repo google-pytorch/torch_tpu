@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from collections.abc import Mapping
 import functools
 from typing import Any
 from absl import logging
@@ -21,66 +22,24 @@ from perflab import single_trace_trainer_adapter
 from perflab import step_lib
 from perflab import target as target_lib
 from perflab.steps import common
-
-
-class _StandardTrainingStepper(common.BaseStepper):
-  """Standard training stepper for eager and fallback execution."""
-
-  def __init__(self, accum_steps: int = 1, compute_loss=loss_lib.real_loss):
-    super().__init__()
-    self._accum_steps = accum_steps
-    self._compute_loss = compute_loss
-    self._input_args = ()
-    self._input_kwargs = {}
-    self._optimizer = None
-
-  def init_with_benchmark_args(
-      self, model, input_args, input_kwargs, optimizer, *args, **kwargs
-  ) -> None:
-    super().init_with_benchmark_args(model, *args, **kwargs)
-    self._input_args = input_args
-    self._input_kwargs = input_kwargs
-    self._optimizer = optimizer
-
-  @staticmethod
-  def _step_function(accum_steps, compute_loss, m, args, kwargs, opt):
-    if opt is not None:
-      opt.zero_grad(set_to_none=True)
-    for _ in range(accum_steps):
-      # Scale by accum_steps: backward sums gradients across micro-batches, so
-      # without this the gradient is silently scaled by accum_steps.
-      loss = compute_loss(m, args, kwargs) / accum_steps
-      loss.backward()
-    if opt is not None:
-      opt.step()
-    # Return the last micro-batch loss so measure() can check that the step's
-    # executions succeeded. A failed `opt.step()` leaves the params failed, so
-    # the next step's loss fails; only a failure in the final step's
-    # `opt.step()` goes unnoticed.
-    return loss
-
-  def get_params(self) -> dict[str, torch.Tensor]:
-    """Returns the current model parameters."""
-    if self._model is not None:
-      return dict(self._model.named_parameters())
-    return {}
-
-  def get_step_fn(self):
-    return functools.partial(
-        self._inner_stepper,
-        self._accum_steps,
-        self._compute_loss,
-        self._model,
-        self._input_args,
-        self._input_kwargs,
-        self._optimizer,
-    )
+from perflab.steps import standard_train
 
 
 def _to_single_trace_optimizer(
     optimizer: Any = None, use_bfloat16_moments: bool = False
-) -> single_trace_trainer_adapter.Optimizer:
-  """Converts a torch.optim.Optimizer into a SingleTraceTrainer Optimizer."""
+) -> single_trace_trainer_adapter.Optimizer | None:
+  """Converts a torch.optim.Optimizer into a SingleTraceTrainer Optimizer.
+
+  Args:
+    optimizer: The optimizer from the benchmark factory, or None for a
+      gradient-only step.
+    use_bfloat16_moments: Whether AdamW keeps its moments in bfloat16.
+
+  Returns:
+    The SingleTraceTrainer optimizer, or None if `optimizer` is None.
+  """
+  if optimizer is None:
+    return None
   if isinstance(optimizer, single_trace_trainer_adapter.Optimizer):
     return optimizer
   defaults = getattr(optimizer, "defaults", {})
@@ -101,7 +60,7 @@ def _to_single_trace_optimizer(
         "Unsupported Adam/AdamW options (amsgrad or maximize) for"
         f" SingleTraceTrainer: {type(optimizer).__name__}"
     )
-  if optimizer is None or isinstance(optimizer, torch.optim.AdamW):
+  if isinstance(optimizer, torch.optim.AdamW):
     beta1, beta2 = defaults.get("betas", (0.9, 0.999))
     return single_trace_trainer_adapter.ReferenceAdamW(
         lr=defaults.get("lr", 1e-4),
@@ -144,7 +103,11 @@ def _to_single_trace_optimizer(
 class SingleTraceTrainingStepper(common.BaseStepper):
   """Training stepper using SingleTraceTrainer under the hood."""
 
-  def __init__(self, accum_steps: int = 1, compute_loss=loss_lib.real_loss):
+  def __init__(
+      self,
+      accum_steps: int = step_lib.DEFAULT_ACCUM_STEPS,
+      compute_loss=loss_lib.real_loss,
+  ):
     super().__init__()
     if accum_steps != 1:
       raise ValueError(
@@ -201,7 +164,7 @@ class SingleTraceTrainingStepper(common.BaseStepper):
   def _step_function(step_fn, inputs):
     return step_fn(inputs)
 
-  def get_params(self) -> dict[str, torch.Tensor]:
+  def get_params(self) -> Mapping[str, torch.Tensor]:
     """Returns the current model parameters from the trainer."""
     if self._trainer is not None:
       return self._trainer.params
@@ -228,7 +191,7 @@ class TrainingStepper:
 
   def __init__(
       self,
-      accum_steps: int = 1,
+      accum_steps: int = step_lib.DEFAULT_ACCUM_STEPS,
       compute_loss=loss_lib.real_loss,
       use_single_trace: bool = True,
   ):
@@ -238,7 +201,7 @@ class TrainingStepper:
     self._init_args = ()
     self._init_kwargs = {}
     self._compile_args = ()
-    self._standard_stepper = _StandardTrainingStepper(
+    self._standard_stepper = standard_train.StandardTrainingStepper(
         accum_steps=accum_steps, compute_loss=compute_loss
     )
     self._single_trace_stepper: SingleTraceTrainingStepper | None = None
@@ -276,9 +239,13 @@ class TrainingStepper:
       self._standard_stepper.compile(compile_config, target)
 
   @property
+  def supports_pipelined_steps(self) -> bool:
+    return self._active_stepper.supports_pipelined_steps
+
+  @property
   def _active_stepper(
       self,
-  ) -> _StandardTrainingStepper | SingleTraceTrainingStepper:
+  ) -> standard_train.StandardTrainingStepper | SingleTraceTrainingStepper:
     return self._single_trace_stepper or self._standard_stepper
 
   @property
@@ -289,7 +256,7 @@ class TrainingStepper:
       return self._single_trace_stepper._trainer
     return None
 
-  def get_params(self) -> dict[str, torch.Tensor]:
+  def get_params(self) -> Mapping[str, torch.Tensor]:
     """Returns the current model parameters from the active stepper."""
     return self._active_stepper.get_params()
 
@@ -323,11 +290,18 @@ class TrainingStepper:
 
 @step_lib.register_stepper(step_lib.StepperType.TRAINING)
 def training(
-    accum_steps: int = 1,
+    accum_steps: int = step_lib.DEFAULT_ACCUM_STEPS,
     compute_loss=loss_lib.real_loss,
     use_single_trace: bool = True,
 ) -> step_lib.Stepper:
   """Forward+backward over accum_steps micro-batches, then one optimizer step.
+
+  If the benchmark factory returns `None` as the optimizer, the step is
+  gradient-only: it calls `model.zero_grad(set_to_none=True)`, runs
+  forward+backward, and takes no optimizer step, so the params stay unchanged
+  and `param.grad` holds the gradients of the last step. The single-trace path
+  builds `SingleTraceTrainer(optimizer=None)`, which computes the gradients in
+  the compiled step and writes them to `param.grad`.
 
   Args:
     accum_steps: The number of micro-batches to accumulate gradients over before
@@ -351,10 +325,15 @@ def training(
 
 @step_lib.register_stepper(step_lib.StepperType.SINGLE_TRACE_TRAINING)
 def single_trace_training(
-    accum_steps: int = 1,
+    accum_steps: int = step_lib.DEFAULT_ACCUM_STEPS,
     compute_loss=loss_lib.real_loss,
 ) -> step_lib.Stepper:
   """Forward+backward over accum_steps micro-batches, then one optimizer step.
+
+  If the benchmark factory returns `None` as the optimizer, the step is
+  gradient-only: `SingleTraceTrainer(optimizer=None)` computes the gradients in
+  the compiled step and writes them to `param.grad`, and the params stay
+  unchanged.
 
   Args:
     accum_steps: The number of micro-batches to accumulate gradients over before

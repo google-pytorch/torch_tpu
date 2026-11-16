@@ -20,7 +20,7 @@ Both `device_mesh_test` and `device_mesh_errors_test` drive the function that
 way, which is why these helpers live here rather than in either test.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import TypeVar
 from unittest import mock
 
@@ -69,7 +69,7 @@ def v7x_multislice_infos(
 
 
 def patched_call(
-    infos: list[device_mesh._DeviceStub],
+    infos: Sequence[device_mesh._DeviceStub],
     fn: Callable[[], _T],
 ) -> _T:
   """Invokes fn with torch.distributed and the device gather stubbed out.

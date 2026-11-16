@@ -27,6 +27,7 @@ from perflab import context as context_lib
 from perflab import registry as registry_lib
 from perflab import step_lib
 from perflab import torch_device_ops
+from perflab import workload as workload_lib
 
 
 class _ConformerConvModule(torch.nn.Module):
@@ -245,6 +246,13 @@ class Conformer(torch.nn.Module):
     return x.transpose(0, 1)
 
 
+# The workload of the Conformer benchmarks (built by `_load_conformer`): audio
+# frames, not tokens.
+_WORKLOAD = registry_lib.scoped_workload(
+    full=workload_lib.Workload(32), presubmit=workload_lib.Workload(2)
+)
+
+
 def _load_conformer(
     ctx: context_lib.Context, is_training: bool
 ) -> tuple[torch.nn.Module, tuple[torch.Tensor, torch.Tensor]]:
@@ -253,12 +261,11 @@ def _load_conformer(
   Full scope matches `torchaudio_conformer`: 17 layers, batch 32, up to 150
   frames of 512 features; presubmit shrinks it to 2 layers, batch 2, 32 frames.
   """
+  batch_size = ctx.require_workload().batch_size
   if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
-    batch_size = 2
     max_seq_len = 32
     num_layers = 2
   else:
-    batch_size = 32
     max_seq_len = 150
     num_layers = 17
 
@@ -298,6 +305,7 @@ def _load_conformer(
 @registry_lib.register_benchmark(
     stepper=step_lib.StepperType.FORWARD,
     presubmit=registry_lib.PresubmitPolicy.RUN,
+    workload=_WORKLOAD,
 )
 def conformer_forward(ctx: context_lib.Context):
   """Benchmark factory for Conformer forward."""
@@ -308,6 +316,7 @@ def conformer_forward(ctx: context_lib.Context):
 @registry_lib.register_benchmark(
     stepper=step_lib.StepperType.TRAINING,
     presubmit=registry_lib.PresubmitPolicy.RUN,
+    workload=_WORKLOAD,
 )
 def conformer_training(ctx: context_lib.Context):
   """Benchmark factory for Conformer training."""

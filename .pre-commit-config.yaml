@@ -1,0 +1,26 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+repos:
+  - repo: local
+    hooks:
+      # Regenerates docs/notebooks/NAME.ipynb when docs/NAME.md changes, and
+      # all notebooks when pyproject.toml (which sets the version) changes.
+      # The script skips docs that do not contain an "Open in Colab" link to a notebook.
+      - id: generate-doc-notebooks
+        name: Generate docs notebooks with Jupytext
+        language: python
+        additional_dependencies: [jupytext==1.19.6]
+        entry: tools/generate_doc_notebooks.py
+        files: ^(docs/[^/]+\.md|pyproject\.toml)$

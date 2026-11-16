@@ -22,7 +22,6 @@
 #include "ATen/core/TensorBody.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
-#include "c10/core/ScalarType.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dtype.h"
@@ -41,7 +40,6 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
-#include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
 
@@ -144,7 +142,7 @@ absl::Status LogSigmoidForward(const at::Tensor& self, at::Tensor& out,
   };
 
   c10::ScalarType out_scalar_type = self.scalar_type();
-  if (c10::isIntegralType(out_scalar_type, /*includeBool=*/true)) {
+  if (IsIntegral(out_scalar_type)) {
     out_scalar_type = c10::ScalarType::Float;
   }
   TT_ASSIGN_OR_RETURN(mlir::ElementType dtype,

@@ -14,6 +14,8 @@
 
 """Unit tests for the op_testing framework."""
 
+from collections.abc import Mapping, Sequence
+import dataclasses
 import gzip
 import hashlib
 import os
@@ -31,10 +33,12 @@ import torch
 from torch.testing._internal import common_methods_invocations
 from torch.utils import _pytree
 from torch_tpu._internal.utils import test_utils
+from tests import dynamism_test_utils
 from tests import goldens_pin
 from tests import op_testing
+from tests import ops_test
+from tests import seed_test_utils
 from tests import test_utils as tests_test_utils
-
 
 op_db = common_methods_invocations.op_db
 
@@ -53,7 +57,7 @@ class FakeSample:
       name: str,
       input_value: torch.Tensor,
       args: tuple[Any, ...],
-      kwargs: dict[str, Any],
+      kwargs: Mapping[str, Any],
   ):
     self.name = name
     self.input = input_value
@@ -280,24 +284,35 @@ class OpTestingTest(op_testing.OpInfoTestBase):
       target_tests_dir.mkdir(parents=True)
 
       prefix = op_testing._golden_file_prefix()
-      goldens = {}
-      for basename in (
-          f"{prefix}0.gz",
-          f"{prefix}{op_testing._GPU_GOLDEN_HOPPER_SUFFIX}0.gz",
-      ):
-        dummy_golden = target_tests_dir / basename
-        with gzip.open(dummy_golden, "wb") as f:
-          plistlib.dump({}, f, fmt=plistlib.FMT_BINARY)
-        goldens[basename] = goldens_pin.GoldenPath(
-            sha256=hashlib.sha256(dummy_golden.read_bytes()).hexdigest(),
-            gcs_path=f"ops_test/test/{basename}",
-        )
-
-      mock_pin_data = goldens_pin.GoldenPathPinFile(
-          version=1, gcs_bucket="torchtpu-goldens", goldens=goldens
+      golden_paths = [
+          self._write_golden_file(target_tests_dir, f"{prefix}0.gz", [1.0]),
+          self._write_golden_file(
+              target_tests_dir,
+              f"{prefix}{op_testing._GPU_GOLDEN_HOPPER_SUFFIX}0.gz",
+              [2.0],
+              test_case_name="test_fake_op_hopper",
+          ),
+      ]
+      pin_data = goldens_pin.GoldenPathPinFile(
+          version=1,
+          gcs_bucket="torchtpu-goldens",
+          goldens={
+              path.name: goldens_pin.GoldenPath(
+                  sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+                  gcs_path=f"ops_test/test/{path.name}",
+              )
+              for path in golden_paths
+          },
       )
-      mock_golden_data = mock.create_autospec(
-          op_testing.GoldenGpuData, instance=True
+      # Pre-existing samples must be cleared by the load.
+      golden_data = op_testing.GoldenGpuData()
+      stale = torch.full((1,), -1.0)
+      golden_data.add(
+          "test_stale_op",
+          op_testing.OpVariant.BASE,
+          torch.float32,
+          op_testing.OpInput(FakeSample("stale", stale, (), {})),
+          op_testing.OpOutput(stale),
       )
       with (
           flagsaver.flagsaver(golden_data_base_dir=""),
@@ -308,18 +323,24 @@ class OpTestingTest(op_testing.OpInfoTestBase):
           mock.patch.object(
               pathlib.Path, "cwd", return_value=tmp_path / "empty_cwd"
           ),
-          mock.patch.object(op_testing, "_GOLDEN_GPU_DATA", mock_golden_data),
+          mock.patch.object(op_testing, "_GOLDEN_GPU_DATA", golden_data),
           mock.patch.object(
               tests_test_utils.goldens_pin,
               "parse_goldens_pin",
-              return_value=mock_pin_data,
+              return_value=pin_data,
           ),
       ):
         op_testing._load_golden_files()
-        mock_golden_data.clear.assert_called_once()
-        mock_golden_data.merge_plistlib_pytree.assert_has_calls(
-            [mock.call({}), mock.call({})]
+
+      def loaded_values(test_case_name: str) -> list[float]:
+        samples = golden_data.get_samples(
+            test_case_name, op_testing.OpVariant.BASE, torch.float32
         )
+        return [op_output.output_value.item() for _, op_output in samples]
+
+      self.assertEqual(loaded_values("test_fake_op"), [1.0])
+      self.assertEqual(loaded_values("test_fake_op_hopper"), [2.0])
+      self.assertEqual(loaded_values("test_stale_op"), [])
 
   def test_load_golden_files_candidate_dirs(self):
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -455,7 +476,7 @@ class OpTestingTest(op_testing.OpInfoTestBase):
 
   def _run_golden_arch_test(
       self, method_name: str
-  ) -> tuple[list[str], unittest.TestResult]:
+  ) -> tuple[Sequence[str], unittest.TestResult]:
     """Runs one method of a test class using record_gpu_goldens_on."""
     ran = []
 
@@ -525,7 +546,7 @@ class OpTestingTest(op_testing.OpInfoTestBase):
       self,
       directory: pathlib.Path,
       name: str,
-      values: list[float],
+      values: Sequence[float],
       test_case_name: str = "test_fake_op",
   ) -> pathlib.Path:
     """Writes a golden file holding one sample per entry in `values`."""
@@ -552,7 +573,7 @@ class OpTestingTest(op_testing.OpInfoTestBase):
       self,
       directory: pathlib.Path,
       test_case_name: str = "test_fake_op",
-  ) -> list[float]:
+  ) -> Sequence[float]:
     """Pins and loads the goldens in `directory`; returns one key's values."""
     pin_data = goldens_pin.GoldenPathPinFile(
         version=1,
@@ -646,6 +667,53 @@ class OpTestingTest(op_testing.OpInfoTestBase):
       ):
         self._load_goldens_from(directory)
 
+  def test_monolithic_fallback_when_per_test_case_dir_absent(self):
+    with tempfile.TemporaryDirectory() as tmp:
+      directory = pathlib.Path(tmp)
+      self._write_golden_file(directory, "ops_test_gpu_golden0.gz", [42.0])
+
+      self.assertEqual(self._load_goldens_from(directory), [42.0])
+      self.assertEmpty(
+          self._load_goldens_from(directory, test_case_name="test_nonexistent")
+      )
+
+  def test_lazy_load_from_per_test_case_dir(self):
+    with tempfile.TemporaryDirectory() as tmp:
+      directory = pathlib.Path(tmp)
+      per_test_case_dir = directory / "ops_test_gpu_golden_per_test_case"
+      per_test_case_dir.mkdir()
+
+      golden_writer = op_testing.GoldenGpuData()
+      tensor = torch.full((1,), 84.0)
+      golden_writer.add(
+          "test_fake_lazy_op",
+          op_testing.OpVariant.BASE,
+          torch.float32,
+          op_testing.OpInput(FakeSample("s84", tensor, (), {})),
+          op_testing.OpOutput(tensor),
+      )
+      all_trees = golden_writer.to_plistlib_pytree()
+      op_tree = all_trees["test_fake_lazy_op"]
+
+      with open(per_test_case_dir / "test_fake_lazy_op.plist", "wb") as f:
+        plistlib.dump(op_tree, f, fmt=plistlib.FMT_BINARY)
+
+      golden_data = op_testing.GoldenGpuData()
+      with (
+          flagsaver.flagsaver(golden_data_base_dir=str(directory)),
+          mock.patch.object(op_testing, "_GOLDEN_GPU_DATA", golden_data),
+      ):
+        samples = golden_data.get_samples(
+            "test_fake_lazy_op", op_testing.OpVariant.BASE, torch.float32
+        )
+        self.assertLen(samples, 1)
+        self.assertEqual(samples[0][1].output_value.item(), 84.0)
+
+        empty_samples = golden_data.get_samples(
+            "test_nonexistent_op", op_testing.OpVariant.BASE, torch.float32
+        )
+        self.assertEmpty(empty_samples)
+
   @torch._dynamo.config.patch(fail_on_recompile_limit_hit=True)  # pylint: disable=protected-access
   def test_dynamo_cache_limit_disabled_across_subtests(self):
     cnt = torch._dynamo.testing.CompileCounter()  # pylint: disable=protected-access
@@ -660,6 +728,597 @@ class OpTestingTest(op_testing.OpInfoTestBase):
         compiled_fn(torch.ones(i))
 
     self.assertEqual(cnt.frame_count, num_subtests)
+
+
+@dataclasses.dataclass(frozen=True)
+class _RecordedDoTestOpCall:
+  """Arguments captured from a single `TestOps.do_test_op` invocation."""
+
+  test_name: str
+  op_name: str
+  variant_test_name: str | None
+  check_grad: bool
+
+  @property
+  def full_key(self) -> str:
+    if self.variant_test_name:
+      return f"{self.op_name}.{self.variant_test_name}"
+    return self.op_name
+
+
+class DynamismDenyListsTest(seed_test_utils.RepeatableTest):
+  """Tests for the dynamism op deny lists in dynamism_test_utils."""
+
+  _DENY_LISTS = {
+      "DYNAMISM_DENY_LISTS": dynamism_test_utils.DYNAMISM_DENY_LISTS,
+      "DYNAMISM_NOT_APPLICABLE_OPS": (
+          dynamism_test_utils.DYNAMISM_NOT_APPLICABLE_OPS
+      ),
+  }
+
+  def _collect_test_ops_calls(self) -> list[_RecordedDoTestOpCall]:
+    calls: list[_RecordedDoTestOpCall] = []
+    current_test_name = ""
+
+    def record(
+        test_self: op_testing.OpInfoTestBase,
+        op_name: str,
+        *,
+        check_grad: bool = True,
+        variant_test_name: str | None = None,
+        **kwargs: Any,
+    ) -> None:
+      del test_self, kwargs
+      calls.append(
+          _RecordedDoTestOpCall(
+              test_name=current_test_name,
+              op_name=op_name,
+              variant_test_name=variant_test_name,
+              check_grad=check_grad,
+          )
+      )
+
+    test_instance = ops_test.TestOps("test_abs")
+    with mock.patch.object(ops_test.TestOps, "do_test_op", record):
+      for attr_name in sorted(dir(ops_test.TestOps)):
+        if not attr_name.startswith("test_"):
+          continue
+        method = getattr(test_instance, attr_name)
+        if not callable(method):
+          continue
+        before = len(calls)
+        current_test_name = attr_name
+        method()
+        self.assertGreater(
+            len(calls),
+            before,
+            f"TestOps.{attr_name} did not invoke do_test_op().",
+        )
+    return calls
+
+  def test_entries_are_known_ops(self):
+    # verify_op_supports_dynamism() matches OpInfo.name, so a misspelled or
+    # stale entry would silently stop skipping its op.
+    known_op_names = {op.name for op in op_testing._KNOWN_OPS}
+    for list_name, deny_lists in self._DENY_LISTS.items():
+      for reason, ops in deny_lists.items():
+        with self.subTest(deny_list=list_name, reason=reason):
+          self.assertEmpty(sorted(set(ops) - known_op_names))
+
+  def test_entries_have_valid_modes(self):
+    for list_name, deny_lists in self._DENY_LISTS.items():
+      for reason, ops in deny_lists.items():
+        for op_name, modes in ops.items():
+          with self.subTest(deny_list=list_name, reason=reason, op=op_name):
+            self.assertNotEmpty(modes)
+            self.assertContainsSubset(modes, dynamism_test_utils.ALL_MODES)
+
+  def test_deny_lists_are_disjoint(self):
+    seen: dict[tuple[str, dynamism_test_utils.DynamismMode], str] = {}
+    duplicates: list[str] = []
+    for list_name, deny_lists in self._DENY_LISTS.items():
+      for reason, ops in deny_lists.items():
+        location = f"{list_name}[{reason!r}]"
+        for op_name, modes in ops.items():
+          for mode in modes:
+            key = (op_name, mode)
+            if key in seen:
+              duplicates.append(
+                  f"{op_name} ({mode.value}) in both {seen[key]} and {location}"
+              )
+            else:
+              seen[key] = location
+    self.assertEmpty(duplicates)
+
+  def test_entries_have_live_test_ops_coverage(self):
+    calls = self._collect_test_ops_calls()
+    tested_op_names = {call.op_name for call in calls}
+    tested_full_keys = {call.full_key for call in calls}
+
+    for list_name, deny_lists in self._DENY_LISTS.items():
+      for reason, ops in deny_lists.items():
+        with self.subTest(deny_list=list_name, reason=reason):
+          self.assertEmpty(
+              sorted(set(ops) - tested_op_names),
+              "Entries without a TestOps method have no live dynamism test.",
+          )
+
+    with self.subTest(deny_list="SYMBOLIC_SHAPES_KNOWN_FAILURES"):
+      self.assertEmpty(
+          sorted(
+              set(ops_test.SYMBOLIC_SHAPES_KNOWN_FAILURES) - tested_full_keys
+          ),
+          "SYMBOLIC_SHAPES_KNOWN_FAILURES keys must match a TestOps call.",
+      )
+
+  def test_no_compile_grad_entries_on_check_grad_false_ops(self):
+    calls = self._collect_test_ops_calls()
+    grad_checked_ops = {call.op_name for call in calls if call.check_grad}
+    dead_entries = [
+        op_name
+        for ops in dynamism_test_utils.DYNAMISM_DENY_LISTS.values()
+        for op_name, modes in ops.items()
+        if dynamism_test_utils.COMPILE_GRAD in modes
+        and op_name not in grad_checked_ops
+    ]
+    self.assertEmpty(
+        sorted(dead_entries),
+        "COMPILE_GRAD entries on ops with check_grad=False never execute.",
+    )
+
+  def test_no_compiled_entries_masked_by_compiled_deny_list(self):
+    compiled_modes = {
+        dynamism_test_utils.COMPILE,
+        dynamism_test_utils.COMPILE_GRAD,
+    }
+    masked_entries = [
+        (op_name, mode.value)
+        for ops in dynamism_test_utils.DYNAMISM_DENY_LISTS.values()
+        for op_name, modes in ops.items()
+        if op_name in op_testing._COMPILED_DENY_LIST
+        for mode in modes
+        if mode in compiled_modes
+    ]
+    self.assertEmpty(
+        sorted(masked_entries),
+        "Ops in op_testing._COMPILED_DENY_LIST already skip all compiled"
+        " variants, so COMPILE/COMPILE_GRAD entries in DYNAMISM_DENY_LISTS are"
+        " masked.",
+    )
+
+
+class CoupledDimDiscoveryTest(seed_test_utils.RepeatableTest):
+
+  def test_collect_tensors_orders_kwargs_and_excludes_out(self):
+    t_in = torch.zeros(2, 3)
+    t_arg = torch.zeros(3, 4)
+    t_alpha = torch.zeros(1)
+    t_beta = torch.zeros(2, 4)
+    t_out = torch.zeros(2, 4)
+    op_args = dynamism_test_utils._OpArgs(  # pylint: disable=protected-access
+        input_value=t_in,
+        args=(t_arg, "non_tensor", 5),
+        kwargs={"out": t_out, "beta": t_beta, "alpha": t_alpha, "scale": 2.0},
+    )
+    collected = dynamism_test_utils._collect_tensors(op_args)  # pylint: disable=protected-access
+    self.assertLen(collected, 4)
+    self.assertIs(collected[0], t_in)
+    self.assertIs(collected[1], t_arg)
+    self.assertIs(collected[2], t_alpha)
+    self.assertIs(collected[3], t_beta)
+
+  def test_run_fake_op_allocates_distinct_symbols_and_keeps_out_static(self):
+    lhs = torch.ones(4, 4)
+    rhs = torch.ones(4, 4)
+    out = torch.empty(4, 4)
+    op_args = dynamism_test_utils._OpArgs(  # pylint: disable=protected-access
+        input_value=lhs,
+        args=(rhs,),
+        kwargs={"out": out},
+    )
+    t0d0 = dynamism_test_utils.TensorDim(0, 0)
+    t1d1 = dynamism_test_utils.TensorDim(1, 1)
+    _, initial_syms = dynamism_test_utils._run_fake_op(  # pylint: disable=protected-access
+        torch.add,
+        op_args,
+        mode=dynamism_test_utils.DynamismMode.COMPILE,
+        dynamic_dims={t0d0, t1d1},
+    )
+    self.assertSameElements(initial_syms.keys(), [t0d0, t1d1])
+    self.assertNotEqual(initial_syms[t0d0], initial_syms[t1d1])
+
+  def test_discover_coupled_dims_matmul(self):
+    mm_op = op_testing._get_op("mm")
+    dyn_info = dynamism_test_utils.DynamicOpInfo.get(mm_op)
+    lhs = torch.ones(3, 4)
+    rhs = torch.ones(4, 5)
+    candidates = list(dyn_info.get_candidate_dims(lhs, (rhs,)))
+    op_args = dynamism_test_utils._OpArgs(lhs, (rhs,), {})  # pylint: disable=protected-access
+    tensors = dynamism_test_utils._collect_tensors(op_args)  # pylint: disable=protected-access
+
+    discovered = dyn_info._discover_coupled_dims(  # pylint: disable=protected-access
+        candidates,
+        tensors,
+        op_args,
+        mm_op,
+        dynamism_test_utils.DynamismMode.COMPILE,
+    )
+    t0d0 = dynamism_test_utils.TensorDim(0, 0)
+    t0d1 = dynamism_test_utils.TensorDim(0, 1)
+    t1d0 = dynamism_test_utils.TensorDim(1, 0)
+    self.assertDictEqual(
+        discovered,
+        {
+            t0d0: (t0d0,),
+            t0d1: (t0d1, t1d0),
+        },
+    )
+
+  def test_discover_coupled_dims_baddbmm(self):
+    baddbmm_op = op_testing._get_op("baddbmm")
+    dyn_info = dynamism_test_utils.DynamicOpInfo.get(baddbmm_op)
+    self_t = torch.ones(2, 3, 5)
+    batch1 = torch.ones(2, 3, 4)
+    batch2 = torch.ones(2, 4, 5)
+    candidates = list(dyn_info.get_candidate_dims(self_t, (batch1, batch2)))
+    op_args = dynamism_test_utils._OpArgs(self_t, (batch1, batch2), {})  # pylint: disable=protected-access
+    tensors = dynamism_test_utils._collect_tensors(op_args)  # pylint: disable=protected-access
+
+    discovered = dyn_info._discover_coupled_dims(  # pylint: disable=protected-access
+        candidates,
+        tensors,
+        op_args,
+        baddbmm_op,
+        dynamism_test_utils.DynamismMode.COMPILE,
+    )
+    t0d0 = dynamism_test_utils.TensorDim(0, 0)
+    t0d1 = dynamism_test_utils.TensorDim(0, 1)
+    t0d2 = dynamism_test_utils.TensorDim(0, 2)
+    t1d0 = dynamism_test_utils.TensorDim(1, 0)
+    t1d1 = dynamism_test_utils.TensorDim(1, 1)
+    t2d0 = dynamism_test_utils.TensorDim(2, 0)
+    t2d2 = dynamism_test_utils.TensorDim(2, 2)
+    self.assertDictEqual(
+        discovered,
+        {
+            t0d0: (t0d0, t1d0, t2d0),
+            t0d1: (t0d1, t1d1),
+            t0d2: (t0d2, t2d2),
+        },
+    )
+
+  def test_discover_coupled_dims_keyword_tensor_args(self):
+    add_op = op_testing._get_op("add")
+    dyn_info = dynamism_test_utils.DynamicOpInfo.get(add_op)
+    lhs = torch.ones(3, 4)
+    rhs = torch.ones(3, 4)
+    candidates = list(dyn_info.get_candidate_dims(lhs, ()))
+    op_args = dynamism_test_utils._OpArgs(lhs, (), {"other": rhs})  # pylint: disable=protected-access
+    tensors = dynamism_test_utils._collect_tensors(op_args)  # pylint: disable=protected-access
+
+    discovered = dyn_info._discover_coupled_dims(  # pylint: disable=protected-access
+        candidates,
+        tensors,
+        op_args,
+        torch.add,
+        dynamism_test_utils.DynamismMode.COMPILE,
+    )
+    t0d0 = dynamism_test_utils.TensorDim(0, 0)
+    t0d1 = dynamism_test_utils.TensorDim(0, 1)
+    t1d0 = dynamism_test_utils.TensorDim(1, 0)
+    t1d1 = dynamism_test_utils.TensorDim(1, 1)
+    self.assertDictEqual(
+        discovered,
+        {
+            t0d0: (t0d0, t1d0),
+            t0d1: (t0d1, t1d1),
+        },
+    )
+
+  def test_discover_coupled_dims_respects_static_tensor_indices(self):
+    conv2d_op = op_testing._get_op("nn.functional.conv2d")
+    dyn_info = dynamism_test_utils.DynamicOpInfo.get(conv2d_op)
+    # Batch size (4) matches out_channels (4) on weight, but weight must stay
+    # static via ConvolutionDynamicOpInfo._static_tensor_indices.
+    inp = torch.ones(4, 3, 6, 6)
+    weight = torch.ones(4, 3, 3, 3)
+    candidates = list(dyn_info.get_candidate_dims(inp, (weight,)))
+    op_args = dynamism_test_utils._OpArgs(inp, (weight,), {})  # pylint: disable=protected-access
+    tensors = dynamism_test_utils._collect_tensors(op_args)  # pylint: disable=protected-access
+
+    discovered = dyn_info._discover_coupled_dims(  # pylint: disable=protected-access
+        candidates,
+        tensors,
+        op_args,
+        torch.nn.functional.conv2d,
+        dynamism_test_utils.DynamismMode.COMPILE,
+    )
+    t0d0 = dynamism_test_utils.TensorDim(0, 0)
+    t0d2 = dynamism_test_utils.TensorDim(0, 2)
+    t0d3 = dynamism_test_utils.TensorDim(0, 3)
+    self.assertDictEqual(
+        discovered,
+        {
+            t0d0: (t0d0,),
+            t0d2: (t0d2,),
+            t0d3: (t0d3,),
+        },
+    )
+
+  def test_validate_coupled_plans_filters_specialized_dims(self):
+    add_op = op_testing._get_op("add")
+    dyn_info = dynamism_test_utils.DynamicOpInfo(add_op)
+    inp = torch.ones(3, 4)
+    candidates = list(dyn_info.get_candidate_dims(inp, ()))
+    op_args = dynamism_test_utils._OpArgs(inp, (), {})  # pylint: disable=protected-access
+    tensors = dynamism_test_utils._collect_tensors(op_args)  # pylint: disable=protected-access
+
+    def specialize_dim0(x):
+      if x.shape[0] != 3:
+        raise ValueError("dim 0 must be 3")
+      return x + 1
+
+    discovered = dyn_info._discover_coupled_dims(  # pylint: disable=protected-access
+        candidates,
+        tensors,
+        op_args,
+        specialize_dim0,
+        dynamism_test_utils.DynamismMode.COMPILE,
+    )
+    plans = dyn_info._validate_coupled_plans(  # pylint: disable=protected-access
+        candidates,
+        discovered,
+        op_args,
+        specialize_dim0,
+        dynamism_test_utils.DynamismMode.COMPILE,
+    )
+    t0d1 = dynamism_test_utils.TensorDim(0, 1)
+    self.assertEqual(
+        plans,
+        (
+            dynamism_test_utils.DynamicMarkingPlan(
+                label="t0d1",
+                tensor_dims=(t0d1,),
+                coupled_dims=(t0d1,),
+            ),
+        ),
+    )
+
+  def test_validate_coupled_plans_eager_vs_compile_modes(self):
+    mm_op = op_testing._get_op("mm")
+    dyn_info = dynamism_test_utils.DynamicOpInfo(mm_op)
+    lhs = torch.ones(3, 4)
+    rhs = torch.ones(4, 5)
+    candidates = list(dyn_info.get_candidate_dims(lhs, (rhs,)))
+    op_args = dynamism_test_utils._OpArgs(lhs, (rhs,), {})  # pylint: disable=protected-access
+    tensors = dynamism_test_utils._collect_tensors(op_args)  # pylint: disable=protected-access
+
+    t0d0 = dynamism_test_utils.TensorDim(0, 0)
+    t0d1 = dynamism_test_utils.TensorDim(0, 1)
+    t1d0 = dynamism_test_utils.TensorDim(1, 0)
+
+    proposed_eager = dyn_info._discover_coupled_dims(  # pylint: disable=protected-access
+        candidates,
+        tensors,
+        op_args,
+        torch.mm,
+        dynamism_test_utils.DynamismMode.EAGER,
+    )
+    plans_eager = dyn_info._validate_coupled_plans(  # pylint: disable=protected-access
+        candidates,
+        proposed_eager,
+        op_args,
+        torch.mm,
+        dynamism_test_utils.DynamismMode.EAGER,
+    )
+    self.assertEqual(
+        plans_eager,
+        (
+            dynamism_test_utils.DynamicMarkingPlan(
+                label="t0d0",
+                tensor_dims=(t0d0,),
+                coupled_dims=(t0d0,),
+            ),
+            dynamism_test_utils.DynamicMarkingPlan(
+                label="t0d1",
+                tensor_dims=(t0d1,),
+                coupled_dims=(t0d1, t1d0),
+            ),
+        ),
+    )
+
+    proposed_compile = dyn_info._discover_coupled_dims(  # pylint: disable=protected-access
+        candidates,
+        tensors,
+        op_args,
+        torch.mm,
+        dynamism_test_utils.DynamismMode.COMPILE,
+    )
+    plans_compile = dyn_info._validate_coupled_plans(  # pylint: disable=protected-access
+        candidates,
+        proposed_compile,
+        op_args,
+        torch.mm,
+        dynamism_test_utils.DynamismMode.COMPILE,
+    )
+    self.assertEqual(
+        plans_compile,
+        (
+            dynamism_test_utils.DynamicMarkingPlan(
+                label="t0d0",
+                tensor_dims=(t0d0,),
+                coupled_dims=(t0d0,),
+            ),
+            dynamism_test_utils.DynamicMarkingPlan(
+                label="t0d1",
+                tensor_dims=(t0d1,),
+                coupled_dims=(t0d1, t1d0),
+            ),
+            dynamism_test_utils.DynamicMarkingPlan(
+                label="t0d0_t0d1",
+                tensor_dims=(t0d0, t0d1),
+                coupled_dims=(t0d0, t0d1, t1d0),
+            ),
+        ),
+    )
+
+  def test_is_valid_coupled_plan_upper_bound_guards(self):
+    abs_op = op_testing._get_op("abs")
+    dyn_info = dynamism_test_utils.DynamicOpInfo(abs_op)
+    inp = torch.ones(4, 5)
+    op_args = dynamism_test_utils._OpArgs(inp, (), {})  # pylint: disable=protected-access
+    t0d0 = dynamism_test_utils.TensorDim(0, 0)
+
+    def guard_mod3_eq_1(x):
+      if x.shape[0] % 3 != 1:
+        raise ValueError("dim 0 mod 3 must be 1")
+      return x + 1
+
+    # Both bucket (128 % 3 == 2) and fallback (8 % 3 == 2) upper bounds
+    # violate Mod(s0, 3) == 1, so COMPILE validation must reject.
+    self.assertFalse(
+        dyn_info._is_valid_coupled_plan(  # pylint: disable=protected-access
+            guard_mod3_eq_1,
+            op_args,
+            (t0d0,),
+            dynamism_test_utils.DynamismMode.COMPILE,
+        )
+    )
+
+  def test_is_valid_coupled_plan_compile_grad_checks_backward(self):
+    abs_op = op_testing._get_op("abs")
+    dyn_info = dynamism_test_utils.DynamicOpInfo(abs_op)
+    inp = torch.ones(3, 4, dtype=torch.float32)
+    op_args = dynamism_test_utils._OpArgs(inp, (), {})  # pylint: disable=protected-access
+    t0d0 = dynamism_test_utils.TensorDim(0, 0)
+
+    class _SpecializeBackwardFn(torch.autograd.Function):
+
+      @staticmethod
+      def forward(ctx, x):
+        del ctx
+        return x.clone()
+
+      @staticmethod
+      def backward(ctx, grad_output):
+        del ctx
+        if grad_output.shape[0] != 3:
+          raise RuntimeError("backward requires static dim 0 == 3")
+        return grad_output
+
+    op_fn = _SpecializeBackwardFn.apply
+    self.assertTrue(
+        dyn_info._is_valid_coupled_plan(  # pylint: disable=protected-access
+            op_fn,
+            op_args,
+            (t0d0,),
+            dynamism_test_utils.DynamismMode.COMPILE,
+        )
+    )
+    self.assertFalse(
+        dyn_info._is_valid_coupled_plan(  # pylint: disable=protected-access
+            op_fn,
+            op_args,
+            (t0d0,),
+            dynamism_test_utils.DynamismMode.COMPILE_GRAD,
+        )
+    )
+
+  def test_generate_exhaustive_marking_plans(self):
+    baddbmm_op = op_testing._get_op("baddbmm")
+    self_t = torch.ones(2, 3, 5)
+    batch1 = torch.ones(2, 3, 4)
+    batch2 = torch.ones(2, 4, 5)
+    plans = dynamism_test_utils.generate_exhaustive_input_marking_plans(
+        baddbmm_op,
+        self_t,
+        (batch1, batch2),
+        mode=dynamism_test_utils.DynamismMode.COMPILE,
+        kwargs={},
+    )
+    t0d0 = dynamism_test_utils.TensorDim(0, 0)
+    t0d1 = dynamism_test_utils.TensorDim(0, 1)
+    t0d2 = dynamism_test_utils.TensorDim(0, 2)
+    t1d0 = dynamism_test_utils.TensorDim(1, 0)
+    t1d1 = dynamism_test_utils.TensorDim(1, 1)
+    t2d0 = dynamism_test_utils.TensorDim(2, 0)
+    t2d2 = dynamism_test_utils.TensorDim(2, 2)
+    self.assertEqual(
+        plans,
+        (
+            dynamism_test_utils.DynamicMarkingPlan(
+                label="t0d0",
+                tensor_dims=(t0d0,),
+                coupled_dims=(t0d0, t1d0, t2d0),
+            ),
+            dynamism_test_utils.DynamicMarkingPlan(
+                label="t0d1",
+                tensor_dims=(t0d1,),
+                coupled_dims=(t0d1, t1d1),
+            ),
+            dynamism_test_utils.DynamicMarkingPlan(
+                label="t0d2",
+                tensor_dims=(t0d2,),
+                coupled_dims=(t0d2, t2d2),
+            ),
+            dynamism_test_utils.DynamicMarkingPlan(
+                label="t0d0_t0d1_t0d2",
+                tensor_dims=(t0d0, t0d1, t0d2),
+                coupled_dims=(t0d0, t0d1, t0d2, t1d0, t1d1, t2d0, t2d2),
+            ),
+        ),
+    )
+
+  @parameterized.parameters(
+      dynamism_test_utils.DynamismMode.EAGER,
+      dynamism_test_utils.DynamismMode.COMPILE,
+  )
+  def test_foreach_plan_couples_matching_list_elements(self, mode):
+    foreach_add_op = op_testing._get_op("_foreach_add")
+    self_list = [torch.ones(4, 3), torch.ones(5, 1), torch.ones(1, 6)]
+    # Element 2 broadcasts from a lower rank.
+    other_list = [torch.ones(4, 3), torch.ones(5, 1), torch.ones(6)]
+    plans = dynamism_test_utils.generate_exhaustive_input_marking_plans(
+        foreach_add_op, self_list, (other_list,), mode=mode
+    )
+    td = dynamism_test_utils.TensorDim
+    self.assertEqual(
+        plans,
+        (
+            dynamism_test_utils.DynamicMarkingPlan(
+                label="t0d0_t1d0_t2d1",
+                tensor_dims=(td(0, 0), td(1, 0), td(2, 1)),
+                coupled_dims=(
+                    td(0, 0),
+                    td(1, 0),
+                    td(2, 1),
+                    td(3, 0),
+                    td(4, 0),
+                    td(5, 0),
+                ),
+            ),
+        ),
+    )
+
+  def test_foreach_plan_couples_all_tensor_list_args(self):
+    foreach_addcmul_op = op_testing._get_op("_foreach_addcmul")
+    self_list = [torch.ones(4, 4), torch.ones(3, 3)]
+    tensor1 = [torch.ones(4, 4), torch.ones(3, 3)]
+    tensor2 = [torch.ones(4, 4), torch.ones(3, 3)]
+    # The `scalars` tensor (one value per element) is a single tensor rather
+    # than a tensor list, so it stays static.
+    plans = dynamism_test_utils.generate_exhaustive_input_marking_plans(
+        foreach_addcmul_op,
+        self_list,
+        (tensor1, tensor2, torch.ones(2)),
+        mode=dynamism_test_utils.DynamismMode.EAGER,
+    )
+    td = dynamism_test_utils.TensorDim
+    self.assertLen(plans, 1)
+    self.assertEqual(
+        plans[0].coupled_dims,
+        (td(0, 0), td(1, 0), td(2, 0), td(3, 0), td(4, 0), td(5, 0)),
+    )
 
 
 if __name__ == "__main__":

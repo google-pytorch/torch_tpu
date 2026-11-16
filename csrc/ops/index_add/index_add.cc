@@ -27,7 +27,6 @@
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Types.h"
-#include "mlir/IR/Value.h"
 #include "mlir/Support/DebugStringHelper.h"
 #include "mlir/Support/LLVM.h"
 #include "stablehlo/dialect/StablehloOps.h"
@@ -71,13 +70,8 @@ absl::StatusOr<mlir::MlirOp> BuildIndexAddShlo(
     alpha = mlir::stablehlo::ConvertElementType(alpha, computation_type);
   }
 
-  Dimensions all_other_dims;
-  all_other_dims.reserve(self_type.getRank() - 1);
-  for (int i = 0; i < self_type.getRank(); ++i) {
-    if (i != dim) {
-      all_other_dims.push_back(i);
-    }
-  }
+  const Dimensions all_other_dims =
+      GetBatchDimensions(self_type.getRank(), dim);
 
   index = mlir::stablehlo::Reshape(index, {index_type.getDimSize(0), 1});
 

@@ -17,7 +17,6 @@
 #include "csrc/ops/has_compatible_shallow_copy_type/has_compatible_shallow_copy_type_aten_kernels.h"
 
 #include "ATen/core/ATen_fwd.h"
-#include "ATen/core/TensorBody.h"
 #include "c10/core/DispatchKey.h"
 #include "c10/core/DispatchKeySet.h"
 #include "csrc/ops/macros/kernel.h"

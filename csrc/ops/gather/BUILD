@@ -35,6 +35,7 @@ torch_tpu_cc_library(
         "//csrc/common:dtype",
         "//csrc/common:error_utils",
         "//csrc/common:fixed_size_span",
+        "//csrc/common:to_string",
         "//csrc/common:utils",
         "//csrc/eager:device_buffer",
         "//csrc/eager:device_buffer_utils",
@@ -66,6 +67,7 @@ torch_tpu_cc_library(
     deps = [
         "//csrc/common:dimension_types",
         "//csrc/common:error_utils",
+        "//csrc/common:utils",
         "//csrc/ops:op_builder_utils",
         "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/status",

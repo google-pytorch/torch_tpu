@@ -216,6 +216,9 @@ class DeviceBufferRef {
   // yet started materialization.
   [[nodiscard]] bool is_deferred() const;
 
+  // Returns true if this DeviceBufferRef is a pending transfer.
+  [[nodiscard]] bool is_transferring() const;
+
   // Returns true if this DeviceBufferRef has started materialization.
   // It may or may not have completed materialization.
   [[nodiscard]] bool is_materializing() const;
@@ -267,6 +270,12 @@ class DeviceBufferRef {
   // error encountered during materialization, or a pointer to the
   // PjRtBuffer.
   absl::StatusOr<xla::PjRtBuffer* absl_nonnull> AwaitBuffer() const;
+
+  // Non-blocking lookup of the compiled on-device shape (including layout and
+  // bounded-dynamic dimension flags) with which this buffer was materialized,
+  // or nullptr while materialization is pending or if unknown. Valid for the
+  // lifetime of this buffer.
+  [[nodiscard]] const xla::Shape* absl_nullable known_device_shape() const;
 
   // Returns a future that is ready when the device buffer has an available
   // PjRtBuffer (or an error if materialization fails).
@@ -488,6 +497,11 @@ class DeferredOp {
     return device_assignment_.global;
   }
 
+  // See DeviceAssignment::contains_pallas_kernel.
+  [[nodiscard]] bool contains_pallas_kernel() const {
+    return device_assignment_.contains_pallas_kernel;
+  }
+
  private:
   // The name of the deferred op.
   OpName op_name_;
@@ -601,7 +615,14 @@ class DeviceBufferList {
   // Creates a DeviceBufferList that represents a pending materialized buffer.
   // This is used to hold the output of calling a precompiled executable, such
   // as for torch.compile mode.
-  static absl::StatusOr<DeviceBufferRef> CreatePending(
+  static absl::StatusOr<DeviceBufferRef> CreatePendingExecution(
+      const Shape& shape, c10::DeviceIndex device_index,
+      c10::StreamId stream_id);
+
+  // Creates a DeviceBufferList that represents a pending transfer.
+  // This is used to hold the output of a host-to-device transfer operation that
+  // has been delayed due to a user-inserted torch.Event.wait().
+  static absl::StatusOr<DeviceBufferRef> CreatePendingTransfer(
       const Shape& shape, c10::DeviceIndex device_index,
       c10::StreamId stream_id);
 
@@ -616,8 +637,15 @@ class DeviceBufferList {
   // The number of buffers, and their Shapes must match the existing
   // DeviceBufferList, otherwise the DeviceBufferList will set to an error state
   // and a copy of the error will be returned.
+  // `device_shapes` (e.g.
+  // `LoadedExecutableWithMetadata::shared_output_device_shapes()`), if
+  // non-null, holds the compiled on-device shapes starting at
+  // `device_shapes_offset` for `buffers`.
   absl::Status SetAsMaterialized(
-      std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers);
+      std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers,
+      absl_nullable std::shared_ptr<const std::vector<xla::Shape>>
+          device_shapes = nullptr,
+      size_t device_shapes_offset = 0);
 
   // Sets the DeviceBufferList to an error state with the given error.
   // Returns an error if the DeviceBufferList is already materialized.
@@ -680,6 +708,9 @@ class DeviceBufferList {
     return data_.is_materializing();
   }
 
+  // Returns true if this DeviceBufferList is a queued transfer.
+  [[nodiscard]] bool is_transferring() const { return data_.is_transferring(); }
+
   // Returns true if this DeviceBufferList was created by a deferred op with a
   // statically-known constant value.
   // This includes "empty" operations (e.g. torch.empty) where the constant
@@ -736,6 +767,12 @@ class DeviceBufferList {
   // PjRtBuffer.
   absl::StatusOr<xla::PjRtBuffer* absl_nonnull> AwaitBuffer(
       int64_t index) const;
+
+  // See `DeviceBufferRef::known_device_shape()`.
+  [[nodiscard]] const xla::Shape* absl_nullable known_device_shape(
+      int64_t index) const {
+    return data_.known_device_shape(index);
+  }
 
   // If the DeviceBufferList has no live data pointers, it is "stale", meaning
   // that it will never be directly materialized and will never have any new
@@ -890,22 +927,33 @@ class DeviceBufferList {
     }
   }
 
+  // If a DeviceBufferList is constructed without a DeferredOp or a
+  // materialized PjRtBuffer, it will be one of the following types.
+  enum class NoDataType {
+    // The DeviceBufferList is a placeholder; it represents data that will be
+    // provided as an argument to a compiled executable, but is not actually
+    // available and will never become materialized.
+    kPlaceholder,
+    // The DeviceBufferList is pending execution, such as the output of a
+    // compiled mode executable.
+    kPendingExecution,
+    // The DeviceBufferList is pending a host-to-device transfer. It will be
+    // materialized as soon as the transfer completes.
+    kPendingTransfer,
+  };
+
   // Private constructor for a DeviceBufferList with a single unbacked buffer.
   // DeviceBufferListss should only ever be accessed via DeviceBufferRef, which
   // is returned by the Create* functions.
   //
-  // If placeholder is true, the buffer is a compiled mode placeholder,
-  // representing data that the compiled executable will expect to be provided
-  // as an argument.
-  //
-  // If placeholder is false, the buffer is in the pending materialization
-  // state and can later be materialized.
+  // This can represent a placeholder, a pending execution, or a pending
+  // transfer, as indicated by the `no_data_type` argument.
   DeviceBufferList(
       Dimensions dimensions, const mlir::ElementType element_type,
-      bool placeholder,
+      NoDataType no_data_type,
       std::optional<c10::DeviceIndex> device_index_override = std::nullopt,
       std::optional<c10::StreamId> stream_id_override = std::nullopt)
-      : data_(placeholder) {
+      : data_(no_data_type) {
     const auto [current_device_index, current_stream_id] =
         GetCurrentDeviceStreamId();
     device_index_ = device_index_override.value_or(current_device_index);
@@ -919,10 +967,10 @@ class DeviceBufferList {
   }
 
   DeviceBufferList(
-      const Shape& shape, bool placeholder,
+      const Shape& shape, NoDataType no_data_type,
       std::optional<c10::DeviceIndex> device_index_override = std::nullopt,
       std::optional<c10::StreamId> stream_id_override = std::nullopt)
-      : data_(placeholder) {
+      : data_(no_data_type) {
     const auto [current_device_index, current_stream_id] =
         GetCurrentDeviceStreamId();
     device_index_ = device_index_override.value_or(current_device_index);
@@ -943,8 +991,10 @@ class DeviceBufferList {
   // DeviceBufferList, e.g. the buffers' shapes and dtypes match this
   // DeviceBufferList's shapes and dtypes.
   void CheckMaterialization(
-      absl::Span<const absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers)
-      const;
+      absl::Span<const absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers,
+      const absl_nullable std::shared_ptr<const std::vector<xla::Shape>>&
+          device_shapes,
+      size_t device_shapes_offset) const;
 
   static std::atomic_uint64_t g_creation_index_;
 
@@ -1004,9 +1054,18 @@ class DeviceBufferList {
      public:
       MaterializedData(
           std::shared_ptr<xla::PjRtClient> absl_nonnull client,
-          std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers)
-          : client_(std::move(client)), buffers_(std::move(buffers)) {
+          std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers,
+          absl_nullable std::shared_ptr<const std::vector<xla::Shape>>
+              device_shapes = nullptr,
+          size_t device_shapes_offset = 0)
+          : client_(std::move(client)),
+            buffers_(std::move(buffers)),
+            device_shapes_(std::move(device_shapes)),
+            device_shapes_offset_(device_shapes_offset) {
         ABSL_CHECK(client_ != nullptr);  // CRASH_OK
+        ABSL_DCHECK(device_shapes_ == nullptr ||
+                    buffers_.size() + device_shapes_offset_ <=
+                        device_shapes_->size());
       }
 
       [[nodiscard]] const std::shared_ptr<xla::PjRtClient>& client() const {
@@ -1019,14 +1078,24 @@ class DeviceBufferList {
         return buffers_;
       }
 
+      [[nodiscard]] const xla::Shape* absl_nullable known_device_shape(
+          size_t index) const {
+        return device_shapes_ != nullptr && index < buffers_.size()
+                   ? &(*device_shapes_)[device_shapes_offset_ + index]
+                   : nullptr;
+      }
+
      private:
       std::shared_ptr<xla::PjRtClient> absl_nonnull client_;
       std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers_;
+      absl_nullable std::shared_ptr<const std::vector<xla::Shape>>
+          device_shapes_;
+      size_t device_shapes_offset_ = 0;
     };
 
     // Creates a either a placeholder DeviceBufferList::Data, or a pending
     // materialization DeviceBufferList::Data.
-    explicit Data(bool placeholder = true);
+    explicit Data(NoDataType no_data_type);
 
     // Creates a DeviceBufferList::Data with a DeferredOp, which can later be
     // materialized.
@@ -1069,7 +1138,25 @@ class DeviceBufferList {
     // materialize), this will not modify the DeviceBufferList::Data, will drop
     // the PjRtBuffers, and will return an error to the caller.
     absl::Status SetMaterializationStarted(
-        std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers);
+        std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers,
+        absl_nullable std::shared_ptr<const std::vector<xla::Shape>>
+            device_shapes = nullptr,
+        size_t device_shapes_offset = 0);
+
+    // See `DeviceBufferRef::known_device_shape()`.
+    // `IsKnownReady()`'s acquire load synchronizes with
+    // `materialization_promise_.Set(...)` and must precede reading
+    // `materialized_buffers_`.
+    [[nodiscard]] const xla::Shape* absl_nullable known_device_shape(
+        int64_t index) const {
+      if (!materialization_future_.IsValid() ||
+          !materialization_future_.IsKnownReady() ||
+          !materialized_buffers_.has_value() || index < 0) {
+        return nullptr;
+      }
+      return materialized_buffers_->known_device_shape(
+          static_cast<size_t>(index));
+    }
 
     // Returns the PjRtBuffer at the given index.
     // If the DeviceBufferList::Data is not yet materialized, this will block
@@ -1082,12 +1169,23 @@ class DeviceBufferList {
 
     // Returns true if this DeviceBufferList::Data is a placeholder.
     // This will never change state.
-    [[nodiscard]] bool is_placeholder() const { return placeholder_; }
+    [[nodiscard]] bool is_placeholder() const {
+      return no_data_type_.has_value() &&
+             *no_data_type_ == NoDataType::kPlaceholder;
+    }
 
     // Returns true if this DeviceBufferList::Data is a deferred op and has not
     // yet started materialization.
     [[nodiscard]] bool is_deferred() const {
-      return !placeholder_ && !materialization_pending_;
+      return !no_data_type_.has_value() && !materialization_pending_;
+    }
+
+    // Returns true if this DeviceBufferList::Data is a pending transfer.
+    // This will become a materialized buffer or an error.
+    [[nodiscard]] bool is_transferring() const {
+      return !materialization_future_.IsKnownReady() &&
+             no_data_type_.has_value() &&
+             *no_data_type_ == NoDataType::kPendingTransfer;
     }
 
     // Returns true if this DeviceBufferList::Data has started materialization.
@@ -1103,7 +1201,7 @@ class DeviceBufferList {
     // Returns true if this DeviceBufferList::Data has finished materialization.
     // It may have succeeded or failed.
     [[nodiscard]] bool is_materialized() const {
-      return !placeholder_ && materialization_future_.IsValid() &&
+      return materialization_future_.IsValid() &&
              materialization_future_.IsKnownReady();
     }
 
@@ -1146,7 +1244,7 @@ class DeviceBufferList {
     // If the DeviceBufferList::Data was created as a placeholder, it will never
     // change state, and we don't need to ever acquire a mutex or check any
     // atomic flags.
-    const bool placeholder_ = false;
+    const std::optional<NoDataType> no_data_type_ = std::nullopt;
 
     // The following flags are used to atomically enforce a one-way "ramp":
     //

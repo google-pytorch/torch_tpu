@@ -20,7 +20,7 @@ the pre-grad clone of returned dynamic views, and TPU end-to-end checks.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence, Set
 import sys
 from typing import Any, NamedTuple
 
@@ -108,7 +108,7 @@ def _capture_and_run_slice_pass(
 
 def _capture_dynamo_graph(
     fn: Callable[..., Any],
-    inputs: list[torch.Tensor],
+    inputs: Sequence[torch.Tensor],
 ) -> torch.fx.GraphModule:
   """Returns the Dynamo (pre-grad) graph of fn traced with dynamic shapes."""
   captured: list[torch.fx.GraphModule] = []
@@ -127,7 +127,7 @@ def _capture_dynamo_graph(
   return captured[0]
 
 
-def _dynamic_slice_nodes(gm: torch.fx.GraphModule) -> list[torch.fx.Node]:
+def _dynamic_slice_nodes(gm: torch.fx.GraphModule) -> Sequence[torch.fx.Node]:
   return list(
       gm.graph.find_nodes(
           op="call_function", target=torch.ops.tpu._dynamic_slice
@@ -135,7 +135,7 @@ def _dynamic_slice_nodes(gm: torch.fx.GraphModule) -> list[torch.fx.Node]:
   )
 
 
-def _transitive_placeholder_names(node: torch.fx.Node) -> set[str]:
+def _transitive_placeholder_names(node: torch.fx.Node) -> Set[str]:
   """Returns the names of all placeholders node transitively depends on."""
   names: set[str] = set()
   seen: set[torch.fx.Node] = set()
@@ -330,6 +330,38 @@ class HandleSliceLikeOpsPassTest(seed_test_utils.RepeatableTest):
     self.assertIsInstance(cm.exception.inner_exception, NotImplementedError)
     self.assertIn("dynamic start", str(cm.exception.inner_exception))
 
+  def test_pass_slice_backward_bounds_window_by_runtime_range(self) -> None:
+    # Gradient of a static [4, 300] input sliced by a dynamic end with range
+    # [2, 200]: bucket 1's capacity (256) overshoots the range, so the window
+    # must end at the runtime upper bound (200) and slice_backward must get a
+    # static [4, 200] gradient (zeros past the runtime size) while the static
+    # input sizes stay unchanged.
+    g = torch.ones(4, 16)
+    torch._dynamo.mark_static(g, 0)
+    torch._dynamo.mark_dynamic(g, 1, min=2, max=200)
+
+    result = _capture_and_run_slice_pass(
+        lambda g_in: torch.ops.aten.slice_backward(
+            g_in, [4, 300], dim=1, start=0, end=g_in.shape[1], step=1
+        ),
+        [g],
+        bucket_idx=1,
+    )
+
+    self.assertEmpty(result.new_guards)
+    bwd_nodes = list(
+        result.gm.graph.find_nodes(
+            op="call_function", target=torch.ops.aten.slice_backward.default
+        )
+    )
+    self.assertLen(bwd_nodes, 1)
+    grad, input_sizes, dim, start, end, step = bwd_nodes[0].args
+    self.assertEqual(list(input_sizes), [4, 300])
+    self.assertEqual((dim, start, end, step), (1, 0, 200, 1))
+    self.assertEqual(grad.target, torch.ops.aten.slice.Tensor)
+    self.assertEqual(tuple(grad.meta["val"].shape), (4, 200))
+    self.assertEqual(grad.args[0].target, torch.ops.aten.where.self)
+
   def test_pass_rejects_negative_pads_on_dynamic_tensor(self) -> None:
     # The C++ constant_pad_nd builder sizes its blocks from the static shape,
     # so negative pads on a bounded operand must fail with a clear message
@@ -350,8 +382,8 @@ class ReplaceDynamicOutputBroadcastOpsPreGradPassTest(
   """CPU-only unit tests for the clone of returned dynamic slice views."""
 
   def _run_pass(
-      self, fn: Callable[..., Any], inputs: list[torch.Tensor]
-  ) -> tuple[torch.fx.GraphModule, list[torch.fx.Node]]:
+      self, fn: Callable[..., Any], inputs: Sequence[torch.Tensor]
+  ) -> tuple[torch.fx.GraphModule, Sequence[torch.fx.Node]]:
     gm = _capture_dynamo_graph(fn, inputs)
     view_ops_passes.ReplaceDynamicOutputBroadcastOpsPreGradPass()(gm)
     clones = list(

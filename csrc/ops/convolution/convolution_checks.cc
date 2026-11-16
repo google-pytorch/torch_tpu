@@ -72,11 +72,11 @@ absl::Status ValidateConvolutionSpatialParameters(
     TT_RET_CHECK(stride[i] > 0, error::kInvalidArgument)
         << "expected stride to be greater than 0, got " << ToString(stride);
     TT_RET_CHECK(padding[i] >= 0, error::kInvalidArgument)
-        << "expected padding to be non-negative, got " << ToString(padding);
+        << "expected padding to be >= 0, got " << ToString(padding);
     TT_RET_CHECK(dilation[i] > 0, error::kInvalidArgument)
         << "expected dilation to be greater than 0, got " << ToString(dilation);
     TT_RET_CHECK(output_padding[i] >= 0, error::kInvalidArgument)
-        << "expected output_padding to be non-negative, got "
+        << "expected output_padding to be >= 0, got "
         << ToString(output_padding);
     TT_RET_CHECK(!transposed || output_padding[i] < stride[i] ||
                      output_padding[i] < dilation[i],

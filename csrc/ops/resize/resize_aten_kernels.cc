@@ -22,6 +22,7 @@
 #include "ATen/ceil_div.h"
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
+#include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
 #include "c10/util/ArrayRef.h"
@@ -53,8 +54,14 @@ absl::Status ResizeTensor(const at::Tensor& self, c10::IntArrayRef size) {
   // capacity in bytes (implied by the base buffer) to determine if we need
   // to grow the storage.
   TT_ASSIGN_OR_RETURN(DeviceBufferRef base_buffer_ref, GetBaseBuffer(self));
+  Dimensions base_logical_dims = CopyIntVector(base_buffer_ref.dimensions());
+  if (base_buffer_ref.element_type() == mlir::ElementType::F4E2M1FN) {
+    ABSL_CHECK(!base_logical_dims.empty() &&  // CRASH_OK
+               base_logical_dims.back() % 2 == 0);
+    base_logical_dims.back() /= 2;
+  }
   TT_ASSIGN_OR_RETURN(const int64_t old_storage_capacity_bytes,
-                      ValidateTensorByteSize(base_buffer_ref.dimensions(),
+                      ValidateTensorByteSize(base_logical_dims,
                                              base_buffer_ref.element_type()));
   TT_ASSIGN_OR_RETURN(const auto self_mlir_dtype,
                       ConvertTo<mlir::ElementType>(self.scalar_type()));
@@ -88,12 +95,10 @@ absl::Status ResizeTensor(const at::Tensor& self, c10::IntArrayRef size) {
                                         base_scalar_type, self.device()));
 
     // Take a view on the new tensor corresponding to the existing data.
-    Strides base_strides =
-        CalculateStridesContiguous(base_buffer_ref.dimensions());
-    TT_ASSIGN_OR_RETURN(
-        at::Tensor view_on_empty,
-        AsStrided(larger_empty, base_buffer_ref.dimensions(), base_strides,
-                  /*storage_offset=*/0));
+    Strides base_strides = CalculateStridesContiguous(base_logical_dims);
+    TT_ASSIGN_OR_RETURN(at::Tensor view_on_empty,
+                        AsStrided(larger_empty, base_logical_dims, base_strides,
+                                  /*storage_offset=*/0));
 
     // Copy the existing data into the view window. This will leave some
     // elements uninitialized in the resized tensor.

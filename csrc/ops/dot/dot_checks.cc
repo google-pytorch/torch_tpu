@@ -19,7 +19,6 @@
 #include <string_view>
 
 #include "ATen/core/TensorBody.h"
-#include "ATen/ops/result_type.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "c10/core/ScalarType.h"
@@ -40,20 +39,33 @@ absl::Status ValidateIsVector(const at::Tensor& tensor,
   return absl::OkStatus();
 }
 
+absl::Status ValidateDotInputs(const at::Tensor& lhs, const at::Tensor& rhs) {
+  TT_RETURN_IF_ERROR(ValidateIsVector(lhs, "first"));
+  TT_RETURN_IF_ERROR(ValidateIsVector(rhs, "second"));
+
+  TT_RET_CHECK(lhs.size(0) == rhs.size(0), error::kInvalidArgument)
+      << "expected inputs to have the same shape, got " << ToString(lhs.sizes())
+      << " vs " << ToString(rhs.sizes());
+
+  return absl::OkStatus();
+}
+
 absl::StatusOr<mlir::ElementType> ValidateAndGetDotOutputType(
     const at::Tensor& lhs, const at::Tensor& rhs) {
-  at::ScalarType output_scalar_type = at::result_type(lhs, rhs);
-
+  TT_RET_CHECK(lhs.scalar_type() == rhs.scalar_type(), error::kInvalidArgument)
+      << "expected both vectors to have the same dtype, got "
+      << ToString(lhs.scalar_type()) << " and " << ToString(rhs.scalar_type());
+  at::ScalarType output_scalar_type = lhs.scalar_type();
   TT_RET_CHECK(!IsBool(output_scalar_type), error::kInvalidArgument)
       << "the input dtypes cannot be bool";
   TT_RET_CHECK(
-      output_scalar_type != at::kInt && output_scalar_type != at::kLong,
+      c10::isFloatingType(output_scalar_type) || IsComplex(output_scalar_type),
       error::kPythonNotImplementedError)
       << "not implemented for " << ToString(output_scalar_type);
   TT_RETURN_IF_ERROR(ValidateNotLowPrecisionFloat(output_scalar_type));
 
   TT_ASSIGN_OR_RETURN(auto output_type,
-                      ConvertTo<mlir::ElementType>(at::result_type(lhs, rhs)));
+                      ConvertTo<mlir::ElementType>(output_scalar_type));
 
   return output_type;
 }

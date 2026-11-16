@@ -97,8 +97,8 @@ absl::Status ValidateSparseIotaInputs(const at::Tensor& row_pointers,
       << "D tensor of shape " << ToString(row_pointers.sizes());
 
   TT_RET_CHECK(row_pointers.scalar_type() == at::kInt, error::kInvalidArgument)
-      << "expected row_pointers dtype to be torch.int32, got "
-      << row_pointers.scalar_type();
+      << "expected row_pointers dtype to be int32, got "
+      << ToString(row_pointers.scalar_type());
 
   TT_RET_CHECK(max_non_zeroes > 0, error::kInvalidArgument)
       << "expected max_non_zeroes to be positive, got " << max_non_zeroes;
@@ -114,12 +114,12 @@ at::Tensor AtenSparseIota(const at::Tensor& row_pointers,
                           int64_t max_non_zeroes,
                           int64_t max_non_zeroes_per_row) {
   TT_KERNEL(
-      torch_tpu::OpName::kSparseIota, param_keys,
+      OpName::kSparseIota, param_keys,
       (row_pointers, max_non_zeroes, max_non_zeroes_per_row), {
         TT_THROW_IF_ERROR(ValidateSparseIotaInputs(row_pointers, max_non_zeroes,
                                                    max_non_zeroes_per_row));
 
-        const torch_tpu::Dimensions out_dims = {max_non_zeroes};
+        const Dimensions out_dims = {max_non_zeroes};
 
         auto builder_fn =
             SparseIotaBuilder(max_non_zeroes, max_non_zeroes_per_row);

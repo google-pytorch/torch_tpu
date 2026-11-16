@@ -14,7 +14,7 @@
 
 """Test utilities for TorchTPU tests, including locating and loading goldens data."""
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 import dataclasses
 import gzip
 import importlib.resources
@@ -51,6 +51,8 @@ def matches_prefix(filename: str, prefix: str) -> bool:
   return filename.startswith(prefix)
 
 
+# TODO(b/576014545): Replace candidate directory searching with direct Bazel
+# runfiles resolution once per-test-case golden artifacts land in OSS.
 def goldens_candidate_local_dirs(
     base_dir: str | pathlib.Path | None = None,
 ) -> Sequence[pathlib.Path]:
@@ -87,9 +89,21 @@ def goldens_candidate_local_dirs(
   return candidate_dirs
 
 
-def locate_goldens_pinfile() -> pathlib.Path:
-  """Locates the tests/goldens.pin configuration file."""
-  package = goldens_pin.__package__
+def locate_goldens_pinfile(package: str | None = None) -> pathlib.Path:
+  """Locates the goldens.pin configuration file.
+
+  Args:
+    package: The package containing goldens.pin. Defaults to the package of
+      `torch_tpu.tests.goldens_pin`, i.e. `tests/goldens.pin`.
+
+  Returns:
+    The path to goldens.pin.
+
+  Raises:
+    FileNotFoundError: If `package` contains no goldens.pin file.
+  """
+  if package is None:
+    package = goldens_pin.__package__
   resource = importlib.resources.files(package).joinpath("goldens.pin")
   if resource is None or not resource.is_file():
     raise FileNotFoundError("Could not locate goldens.pin")
@@ -161,3 +175,48 @@ def _find_golden_file(
     if candidate_path.is_file():
       return candidate_path
   return None
+
+
+def find_per_test_case_goldens_dir(
+    goldens_dir_name: str,
+    candidate_dirs: Sequence[pathlib.Path] | None = None,
+) -> pathlib.Path | None:
+  """Returns directory containing per-test-case golden files, if found.
+
+  Args:
+    goldens_dir_name: Name of the per-test-case golden directory artifact to
+      locate (e.g. "ops_test_gpu_golden_per_test_case").
+    candidate_dirs: Candidate search paths. If None, defaults to
+      `goldens_candidate_local_dirs()`.
+
+  Returns:
+    The directory path if found in one of candidate_dirs, or None otherwise.
+  """
+  if candidate_dirs is None:
+    candidate_dirs = goldens_candidate_local_dirs()
+  for d in candidate_dirs:
+    candidate_path = d / goldens_dir_name
+    if candidate_path.is_dir():
+      return candidate_path
+  return None
+
+
+def load_single_test_case_golden(
+    test_case_name: str,
+    per_test_case_dir: pathlib.Path,
+) -> Mapping[str, Any] | None:
+  """Loads the plist pytree for a single test case, if present.
+
+  Args:
+    test_case_name: Name of the test case method (e.g. "test_sin").
+    per_test_case_dir: Directory containing `<test_case_name>.plist` files.
+
+  Returns:
+    The deserialized dictionary mapping variant -> dtype -> samples for the
+    given test case, or None if the corresponding `.plist` file is not present.
+  """
+  test_case_file = per_test_case_dir / f"{test_case_name}.plist"
+  if not test_case_file.is_file():
+    return None
+  with open(test_case_file, "rb") as f:
+    return plistlib.load(f, fmt=plistlib.FMT_BINARY)

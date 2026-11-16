@@ -22,6 +22,7 @@
 # chizhang529
 
 load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_library", "torch_tpu_py_test")
+load("//shims/pybind11:pybind.bzl", "pybind_extension")
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -67,12 +68,31 @@ torch_tpu_py_library(
     ],
 )
 
+pybind_extension(
+    name = "_hardware_backend",
+    srcs = ["//csrc/internal/utils:hardware_py.cc"],
+    common_lib_packages = [
+        "torch_tpu/csrc/common",
+    ],
+    py_deps = [
+        "//shims/torch:pytorch",
+    ],
+    wrap_py_init = True,
+    deps = [
+        "//csrc/common:pybind_error_utils",
+        "//csrc/common:tpu_hardware",
+        "@com_google_absl//absl/log:absl_log",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
 torch_tpu_py_library(
     name = "hardware",
     srcs = ["hardware.py"],
     deps = [
+        ":_hardware_backend",
         ":annotations",
-        "@pypi//immutabledict",
     ],
 )
 
@@ -155,6 +175,20 @@ torch_tpu_py_test(
         ":tracer_utils",
         ":utils",
         "//shims/absl_py/logging",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "test_utils_tpu_test",
+    srcs = ["test_utils_tpu_test.py"],
+    strict = True,
+    tags = ["requires-tpu-v5lite"],
+    deps = [
+        ":test_utils",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//src/torch_tpu",

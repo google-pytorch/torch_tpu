@@ -112,6 +112,11 @@ AsyncCopyDescriptor MakeAsyncCopy(Ref src_ref, Ref dst_ref, Semaphore sem,
 AsyncCopyDescriptor AsyncCopy(Ref src_ref, Ref dst_ref, Semaphore sem,
                               AsyncCopyOptions options = {});
 
+// Copies `src_ref` to `dst_ref` and waits for completion, using a DMA semaphore
+// scoped to the copy (Pallas `pltpu.sync_copy`). Both refs are safe to reuse
+// once it returns.
+void SyncCopy(Ref src_ref, Ref dst_ref);
+
 // Creates a descriptor for a remote asynchronous DMA copy without starting it
 // (Pallas `pltpu.make_async_remote_copy`).
 AsyncRemoteCopyDescriptor MakeAsyncRemoteCopy(Ref src_ref, Ref dst_ref,

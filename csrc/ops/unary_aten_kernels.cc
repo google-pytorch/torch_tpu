@@ -223,8 +223,6 @@ TT_DEFINE_FP_ONLY_ATEN_UNARY_OUT(OpName::kCoshOut, AtenCosh, BuildCoshShlo);
 TT_DEFINE_FP_ONLY_ATEN_UNARY_OUT(OpName::kExp2Out, AtenExp2, BuildExp2Shlo);
 TT_DEFINE_FP_ONLY_ATEN_UNARY_OUT(OpName::kExpM1Out, AtenExpm1, BuildExpm1Shlo);
 TT_DEFINE_FP_ONLY_ATEN_UNARY_OUT(OpName::kExpOut, AtenExp, BuildExpShlo);
-TT_DEFINE_FP_ONLY_ATEN_UNARY_OUT(OpName::kLgammaOut, AtenLgamma,
-                                 BuildLgammaShlo);
 TT_DEFINE_FP_ONLY_ATEN_UNARY_OUT(OpName::kLog10Out, AtenLog10, BuildLog10Shlo);
 TT_DEFINE_FP_ONLY_ATEN_UNARY_OUT(OpName::kLog1pOut, AtenLog1p, BuildLog1pShlo);
 TT_DEFINE_FP_ONLY_ATEN_UNARY_OUT(OpName::kLog2Out, AtenLog2, BuildLog2Shlo);
@@ -292,6 +290,22 @@ at::Tensor& AtenErfInvOut(const at::Tensor& self, at::Tensor& out) {
   });
 }
 
+at::Tensor& AtenLgammaOut(const at::Tensor& self, at::Tensor& out) {
+  TT_KERNEL(OpName::kLgammaOut, param_keys, (self, out), {
+    TT_THROW_IF_ERROR(ValidateNotComplex(self, /*arg_name=*/"self"));
+    TT_ASSIGN_OR_THROW(const auto out_dtype,
+                       ConvertTo<mlir::ElementType>(InferOutputDtype(self)));
+    auto op_builder =
+        [out_dtype](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
+      return BuildLgammaShlo(input, out_dtype);
+    };
+    TT_THROW_IF_ERROR(UnaryOpOut(self, out, std::move(op_builder),
+                                 {.op_param_cache_keys = std::move(param_keys),
+                                  .out_dtype = out_dtype}));
+    return out;
+  });
+}
+
 at::Tensor& AtenNegOut(const at::Tensor& self, at::Tensor& out) {
   TT_KERNEL(OpName::kNegOut, _, (self, out), {
     TT_THROW_IF_ERROR(
@@ -304,6 +318,7 @@ at::Tensor& AtenNegOut(const at::Tensor& self, at::Tensor& out) {
 
 at::Tensor AtenRelu(const at::Tensor& self) {
   TT_KERNEL(OpName::kRelu, _, (self), {
+    TT_THROW_IF_ERROR(ValidateNotComplex(self, /*arg_name=*/"self"));
     TT_CHECK_THROW(self.scalar_type() != at::kBool,
                    error::kPythonNotImplementedError)
         << "not implemented for " << ToString(self.scalar_type());
@@ -317,6 +332,7 @@ at::Tensor AtenRelu(const at::Tensor& self) {
 
 at::Tensor& AtenRelu_(at::Tensor& self) {
   TT_KERNEL(OpName::kRelu_, _, (self), {
+    TT_THROW_IF_ERROR(ValidateNotComplex(self, /*arg_name=*/"self"));
     TT_CHECK_THROW(self.scalar_type() != at::kBool,
                    error::kPythonNotImplementedError)
         << "not implemented for " << ToString(self.scalar_type());
@@ -344,6 +360,7 @@ at::Tensor& AtenSignOut(const at::Tensor& self, at::Tensor& out) {
 
 at::Tensor& AtenSignbitOut(const at::Tensor& self, at::Tensor& out) {
   TT_KERNEL(OpName::kSignbitOut, _, (self, out), {
+    TT_THROW_IF_ERROR(ValidateNotComplex(self, /*arg_name=*/"self"));
     const auto output_dtype = mlir::ElementType::PRED;
     auto op_builder =
         [output_dtype](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
@@ -376,6 +393,7 @@ at::Tensor& AtenSignbitOut(const at::Tensor& self, at::Tensor& out) {
 
 at::Tensor& AtenTruncOut(const at::Tensor& self, at::Tensor& out) {
   TT_KERNEL(OpName::kTruncOut, _, (self, out), {
+    TT_THROW_IF_ERROR(ValidateNotComplex(self, /*arg_name=*/"self"));
     TT_CHECK_THROW(self.scalar_type() != at::kBool, error::kInvalidArgument)
         << "does not support boolean types";
     TT_THROW_IF_ERROR(
@@ -387,7 +405,6 @@ at::Tensor& AtenTruncOut(const at::Tensor& self, at::Tensor& out) {
 }
 
 // go/keep-sorted start
-TT_DEFINE_ATEN_UNARY_OUT(OpName::kBitwiseNotOut, AtenBitwiseNot, BuildNotShlo);
 TT_DEFINE_ATEN_UNARY_OUT(OpName::kConjPhysicalOut, AtenConjPhysical,
                          BuildConjPhysicalShlo);
 TT_DEFINE_ATEN_UNARY_OUT(OpName::kLiftFreshOut, AtenLiftFresh,
@@ -395,8 +412,24 @@ TT_DEFINE_ATEN_UNARY_OUT(OpName::kLiftFreshOut, AtenLiftFresh,
 TT_DEFINE_ATEN_UNARY_OUT(OpName::kSgnOut, AtenSgn, BuildSgnShlo);
 // go/keep-sorted end
 
+at::Tensor& AtenBitwiseNotOut(const at::Tensor& self, at::Tensor& out) {
+  TT_KERNEL(OpName::kBitwiseNotOut, _, (self, out), {
+    TT_CHECK_THROW(!IsFloatingPoint(self) && !IsComplex(self),
+                   error::kInvalidArgument)
+        << "expected the dtype of the argument to be neither "
+           "floating-point nor complex, got "
+        << ToString(self.scalar_type());
+    TT_THROW_IF_ERROR(
+        UnaryOpOut(self, out, BuildNotShlo,
+                   {.op_param_cache_keys = OpParamCacheKeys::Empty(),
+                    .allow_out_dtype_cast = false}));
+    return out;
+  });
+}
+
 at::Tensor& AtenCeilOut(const at::Tensor& self, at::Tensor& out) {
   TT_KERNEL(OpName::kCeilOut, _, (self, out), {
+    TT_THROW_IF_ERROR(ValidateNotComplex(self, /*arg_name=*/"self"));
     TT_CHECK_THROW(self.scalar_type() != at::kBool,
                    error::kPythonNotImplementedError)
         << "not implemented for " << ToString(self.scalar_type());
@@ -410,6 +443,7 @@ at::Tensor& AtenCeilOut(const at::Tensor& self, at::Tensor& out) {
 
 at::Tensor& AtenFloorOut(const at::Tensor& self, at::Tensor& out) {
   TT_KERNEL(OpName::kFloorOut, _, (self, out), {
+    TT_THROW_IF_ERROR(ValidateNotComplex(self, /*arg_name=*/"self"));
     TT_CHECK_THROW(self.scalar_type() != at::kBool,
                    error::kPythonNotImplementedError)
         << "not implemented for " << ToString(self.scalar_type());

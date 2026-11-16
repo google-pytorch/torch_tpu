@@ -16,13 +16,12 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "ATen/core/Generator.h"
-#include "absl/base/nullability.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/statusor.h"
@@ -45,6 +44,7 @@
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/eager/tpu_hooks.h"
+#include "csrc/internal/device/vmem_capacity.h"
 #include "csrc/pjrt/pjrt_state.h"
 #include "pybind11/chrono.h"
 #include "pybind11/gil.h"
@@ -66,22 +66,21 @@ namespace {
 // a status.
 class PyTpuEventBase {
  public:
-  explicit PyTpuEventBase(
-      absl_nonnull std::shared_ptr<EventSnapshot> event_snapshot)
+  explicit PyTpuEventBase(EventSnapshot event_snapshot)
       : event_snapshot_(std::move(event_snapshot)) {}
 
   // Block the calling thread until the event snapshot is complete.
-  void Synchronize() { TT_THROW_IF_ERROR(event_snapshot_->Synchronize()); }
+  void Synchronize() { TT_THROW_IF_ERROR(event_snapshot_.Synchronize()); }
 
   // Query whether the event snapshot has completed.
   bool Query() {
-    TT_ASSIGN_OR_THROW(bool is_ready, event_snapshot_->Query());
+    TT_ASSIGN_OR_THROW(bool is_ready, event_snapshot_.Query());
     return is_ready;
   }
 
  private:
   // The wrapped event snapshot.
-  absl_nonnull std::shared_ptr<EventSnapshot> event_snapshot_;
+  EventSnapshot event_snapshot_;
 };
 
 void PySynchronizeDevice(int device_index, bool wait) {
@@ -93,12 +92,13 @@ void PySynchronizeDevice(int device_index, bool wait) {
 
     impl->synchronizeDevice(device_index);
   } else {
-    auto stream_futures =
-        MaterializeDevice(device_index, MaterializationReason::kExplicitSync);
+    TT_ASSIGN_OR_THROW(
+        std::vector<EventSnapshot> device_snapshots,
+        MaterializeDevice(device_index, MaterializationReason::kExplicitSync));
     // Wait until each stream has enqueued its materialization task, but don't
     // wait for the materialization to complete.
-    for (auto& future : stream_futures) {
-      TT_THROW_IF_ERROR(future.Await().status());
+    for (const auto& snapshot : device_snapshots) {
+      TT_THROW_IF_ERROR(snapshot.BlockUntilStarted());
     }
   }
 }
@@ -123,21 +123,27 @@ PyTpuEventBase PyRecordEvent(std::optional<int> device_index,
     id = current_stream.id();
   }
   TT_ASSIGN_OR_THROW(
-      auto event_snapshot,
-      MaterializeStream(index, id, MaterializationReason::kExplicitSync)
-          .Await());
+      EventSnapshot event_snapshot,
+      MaterializeStream(index, id, MaterializationReason::kExplicitSync));
+  TT_THROW_IF_ERROR(event_snapshot.BlockUntilStarted());
   return PyTpuEventBase(std::move(event_snapshot));
 }
+
+// Returns the type name of the given Python object.
+const char* GetPyTypeName(py::handle h) {
+  return h.is_none() ? "None" : Py_TYPE(h.ptr())->tp_name;
+};
 
 // Returns the milliseconds from the completion of `start` to the completion of
 // `end`. torch.Event.elapsed_time() only accepts an end event of the exact type
 // torch.Event, so its subclasses reach the timing of the two events here.
 double PyEventElapsedTime(py::handle start, py::handle end) {
-  TT_CHECK_THROW(THPEvent_Check(start.ptr()) && THPEvent_Check(end.ptr()),
-                 error::kInvalidArgument)
-      << "expected start and end to be torch.Event objects, got "
-      << Py_TYPE(start.ptr())->tp_name << " and "
-      << Py_TYPE(end.ptr())->tp_name;
+  ABSL_CHECK(THPEvent_Check(start.ptr()))  // CRASH_OK
+      << "expected start to be a torch.Event object";
+
+  TT_CHECK_THROW(THPEvent_Check(end.ptr()), error::kInvalidArgument)
+      << "expected other to be a torch.Event object, got "
+      << GetPyTypeName(end);
   THPEvent* start_event = reinterpret_cast<THPEvent*>(start.ptr());
   THPEvent* end_event = reinterpret_cast<THPEvent*>(end.ptr());
   return start_event->event.elapsedTime(end_event->event);
@@ -359,17 +365,29 @@ TT_PYBIND11_MODULE(_device_ops_backend, m) {
   m.def(
       "_get_device_count",
       []() -> int {
+        TT_ASSIGN_OR_THROW(const int visible_device_count,
+                           PjrtBackend::GetInstance().GetVisibleDeviceCount());
+        return visible_device_count;
+      },
+      "Returns the number of TPU devices visible to this process.");
+
+  m.def(
+      "_get_addressable_device_count",
+      []() -> int {
         TT_ASSIGN_OR_THROW(xla::PjRtClient* const client,
                            PjrtBackend::GetInstance().GetClient());
         return client->addressable_device_count();
       },
-      "Returns the number of devices visible to the PJRT client. This count "
-      "is equivalent to the addressable device count.");
+      "Returns the PJRT addressable device count, i.e. the devices this "
+      "process uses.");
 
   m.def(
       "_get_local_device_attributes", &PyGetLocalDeviceAttributes,
       "Returns explicitly needed attributes and properties of the current PJRT "
       "device.");
+
+  m.def("_get_vmem_capacity_bytes", &GetDeviceVmemCapacityBytes,
+        "Returns the VMEM capacity of the current device.");
 
   m.def(
       "_set_allow_cache",
@@ -510,6 +528,8 @@ TT_PYBIND11_MODULE(_device_ops_backend, m) {
       .def_readonly("num_cache_reqs", &PerfStats::num_cache_reqs)
       .def_readonly("num_cache_hits", &PerfStats::num_cache_hits)
       .def_readonly("num_compilations", &PerfStats::num_compilations)
+      .def_readonly("num_unbounded_dynamic_hits",
+                    &PerfStats::num_unbounded_dynamic_hits)
       // Gets the peak memory used by the host during compilation. Resetting
       // value during eviction is not supported, limitation with cgroups v2.
       .def_readonly("peak_compilation_host_memory_bytes",

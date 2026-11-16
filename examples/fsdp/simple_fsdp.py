@@ -157,7 +157,7 @@ _wrap_class_cache: dict[tuple[type, tuple[str, ...]], type] = {}
 
 def _register_parametrization(
     module: nn.Module,
-    param_names: list[str],
+    param_names: Sequence[str],
     parametrization_init: Callable[[str], nn.Module],
 ) -> None:
   """It works with state_dict without incurring parametrization calls because
@@ -204,7 +204,7 @@ class ReplicateComputation(nn.Module):
   def __init__(
       self,
       device_mesh: DeviceMesh,
-      param_sharding: tuple[Placement, ...],
+      param_sharding: Sequence[Placement],
       mode: str,
       full_dtensor: bool = False,
       mp_policy: MixedPrecisionPolicy | None = None,

@@ -20,6 +20,7 @@ from absl.testing import absltest
 from absl.testing import parameterized
 import torch
 from perflab.gen_utils import gen_utils
+from perflab.gen_utils import load_model
 from tests import seed_test_utils
 
 
@@ -93,6 +94,32 @@ class GenUtilsTest(seed_test_utils.RepeatableTest):
     self.assertIsNotNone(config)
     self.assertIn("compiled", config.skipped_run_modes)
     self.assertEqual(config.full_scope_batch_size, 1)
+
+  @parameterized.parameters(
+      "google/tapas-base-finetuned-sqa",
+      "google/tapas-large-finetuned-sqa",
+  )
+  def test_tapas_sqa_train_benchmarks_use_tapas_load_model(self, model_id: str):
+    entry = gen_utils.ModelEntry(
+        model_id=model_id,
+        provider="",
+        model_type="",
+        category="",
+        pipeline_tag="",
+        downloads=0,
+        downloads_all_time=0,
+        likes=0,
+        created_at="",
+        trending_score=0.0,
+        params_est=0,
+        is_finetune=False,
+        base_model="",
+        tier="",
+    )
+    train_cfg = entry.get_extra_config(is_training=True, suffix="gen")
+    forward_cfg = entry.get_extra_config(is_training=False, suffix="gen")
+    self.assertIs(train_cfg.model_load_fn, load_model.tapas_load_model)
+    self.assertIs(forward_cfg.model_load_fn, load_model.default_load_model)
 
   def test_full_scope_batch_sizes_match_benchmarks(self):
     benchmark_names = {

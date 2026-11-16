@@ -41,6 +41,7 @@
 #include "absl/log/absl_log.h"
 #include "absl/log/log.h"
 #include "c10/core/ScalarType.h"
+#include "c10/core/SymInt.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/to_string.h"
 #include "csrc/common/warnings.h"
@@ -110,6 +111,7 @@
 #include "csrc/ops/fake_quantize/fused_moving_avg_obs_fq_helper_aten_kernels.h"
 #include "csrc/ops/fft/fft_aten_kernels.h"
 #include "csrc/ops/fill/fill_aten_kernels.h"
+#include "csrc/ops/flex_attention/flex_attention_aten_kernels.h"
 #include "csrc/ops/flip/flip_aten_kernels.h"
 #include "csrc/ops/fmax/fmax_aten_kernels.h"
 #include "csrc/ops/fmin/fmin_aten_kernels.h"
@@ -145,6 +147,8 @@
 #include "csrc/ops/lcm/lcm_aten_kernels.h"
 #include "csrc/ops/leaky_relu/leaky_relu_aten_kernels.h"
 #include "csrc/ops/lerp/lerp_aten_kernels.h"
+#include "csrc/ops/linalg/cholesky/linalg_cholesky_kernels.h"
+#include "csrc/ops/linalg/cross/linalg_cross_kernels.h"
 #include "csrc/ops/linalg/linalg_kernels.h"
 #include "csrc/ops/linalg/linalg_svd_kernels.h"
 #include "csrc/ops/linalg/lu/linalg_lu_kernels.h"
@@ -186,6 +190,7 @@
 #include "csrc/ops/put/put_aten_kernels.h"
 #include "csrc/ops/random/random_aten_kernels.h"
 #include "csrc/ops/randperm/randperm_aten_kernels.h"
+#include "csrc/ops/record_stream/record_stream_aten_kernels.h"
 #include "csrc/ops/reductions/mean_aten_kernels.h"
 #include "csrc/ops/reductions/std_aten_kernels.h"
 #include "csrc/ops/reductions/sum_aten_kernels.h"
@@ -797,6 +802,8 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kLerpScalarOut>(m, AtenLerpScalarOut);
   ImplStable<OpName::kLerpTensorOut>(m, AtenLerpTensorOut);
   ImplStable<OpName::kLgammaOut>(m, AtenLgammaOut);
+  ImplStable<OpName::kLinalgCholeskyExL>(m, AtenLinalgCholeskyExL);
+  ImplStable<OpName::kLinalgCrossOut>(m, AtenLinalgCrossOut);
   ImplStable<OpName::kLinalgInvExInverse>(m, AtenLinalgInvExInverse);
   ImplStable<OpName::kLinalgLuFactorExOut>(m, AtenLinalgLuFactorExOut);
   ImplStable<OpName::kLinalgLuOut>(m, AtenLinalgLuOut);
@@ -925,6 +932,8 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kNllLossNd>(m, AtenNllLossNd);
   ImplStable<OpName::kNonzero>(m, AtenNonzero);
   ImplStable<OpName::kNonzeroOut>(m, AtenNonzeroOut);
+  ImplStable<OpName::kNonzeroStatic>(m, AtenNonzeroStatic);
+  ImplStable<OpName::kNonzeroStaticOut>(m, AtenNonzeroStaticOut);
   ImplStable<OpName::kNormDtypeOut>(m, AtenNormDtypeOut);
   ImplStable<OpName::kNormOut>(m, AtenNormOut);
   ImplStable<OpName::kNormalFloatTensor>(m, AtenNormalFloatTensor);
@@ -955,6 +964,7 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kRandom_To>(m, AtenRandom_To);
   ImplStable<OpName::kRandpermGeneratorOut>(m, AtenRandpermGeneratorOut);
   ImplStable<OpName::kReciprocalOut>(m, AtenReciprocalOut);
+  ImplStable<OpName::kRecordStream>(m, AtenRecordStream);
   ImplStable<OpName::kReflectionPad1dBackwardGradInput>(
       m, AtenReflectionPad1dBackwardGradInput);
   ImplStable<OpName::kReflectionPad1dOut>(m, AtenReflectionPad1dOut);
@@ -1243,6 +1253,7 @@ TORCH_LIBRARY_IMPL(aten, AutogradPrivateUse1, m) {
   // All entries should be registered via ImplStable as we don't want to
   // generate a warning for standard aten ops.
   // go/keep-sorted start
+  ImplStable<OpName::kAvgPool1d>(m, AtenAvgPool1dAutograd);
   ImplStable<OpName::kCrossEntropyLoss>(m, AtenCrossEntropyLossAutograd);
   // TODO(b/513607161): remove CtcLossPublic overrides once upstream PyTorch bug
   // is fixed.
@@ -1302,6 +1313,11 @@ TORCH_LIBRARY(tpu, m) {
       "int[] kernel_size, int[] stride, int[] padding, int[] dilation, "
       "bool ceil_mode) -> Tensor");
   m.def("_ragged_dot(Tensor lhs, Tensor rhs, Tensor group_sizes) -> Tensor");
+  m.def(
+      "_flex_attention_fwd(Tensor q, Tensor k, Tensor v, "
+      "Tensor kv_num_blocks, Tensor kv_indices, int mask_batch, "
+      "int mask_heads, int q_block, int kv_block, float scale, "
+      "str score_mod_mlir, str mask_mod_mlir) -> (Tensor, Tensor)");
   m.def(
       "_ragged_dot.out(Tensor lhs, Tensor rhs, Tensor group_sizes, *, "
       "Tensor(a!) out) -> Tensor(a!)");
@@ -1486,8 +1502,8 @@ TORCH_LIBRARY(tpu, m) {
       "int[] "
       "per_feature_batch_sizes, int[] per_feature_dims) -> Tensor[]");
   m.def(
-      "_sparse_dense_matmul_gradient_stack(Tensor[] unstacked_gradients, int "
-      "stacked_batch_size, int stacked_feature_dim) -> Tensor");
+      "_sparse_dense_matmul_gradient_stack(Tensor[] unstacked_gradients, "
+      "SymInt stacked_batch_size, SymInt stacked_feature_dim) -> Tensor");
   m.def(
       "_sparse_map_row(Tensor[] csr_tensors, int[] csr_lengths, Tensor[] "
       "dense_args, str body_mlir, Tensor[] dummy_outputs, int "
@@ -1586,8 +1602,9 @@ TORCH_LIBRARY_IMPL(tpu, Meta, m) {
             << "expected embedding_table to be a 2D tensor, got a "
             << embedding_table.dim() << "D tensor of shape "
             << ToString(embedding_table.sizes());
-        return at::empty({device_batch_size, embedding_table.size(1)},
-                         embedding_table.options());
+        return at::empty_symint(
+            {c10::SymInt(device_batch_size), embedding_table.sym_size(1)},
+            embedding_table.options());
       });
   ImplInternal<OpName::kSparseGather>(
       m,
@@ -1632,12 +1649,12 @@ TORCH_LIBRARY_IMPL(tpu, Meta, m) {
       });
   ImplInternal<OpName::kSparseDenseMatmulGradientStack>(
       m,
-      +[](at::TensorList unstacked_gradients, int64_t stacked_batch_size,
-          int64_t stacked_feature_dim) -> at::Tensor {
+      +[](at::TensorList unstacked_gradients, c10::SymInt stacked_batch_size,
+          c10::SymInt stacked_feature_dim) -> at::Tensor {
         TT_THROW_IF_ERROR(ValidateSparseDenseMatmulGradientStackInputs(
             unstacked_gradients, stacked_batch_size, stacked_feature_dim));
-        return at::empty({stacked_batch_size, stacked_feature_dim},
-                         unstacked_gradients[0].options());
+        return at::empty_symint({stacked_batch_size, stacked_feature_dim},
+                                unstacked_gradients[0].options());
       });
   ImplInternal<OpName::kSparseMapRow>(
       m,
@@ -1654,9 +1671,9 @@ TORCH_LIBRARY_IMPL(tpu, Meta, m) {
         std::vector<at::Tensor> results;
         results.reserve(dummy_outputs.size());
         for (const auto& dummy : dummy_outputs) {
-          results.push_back(
-              at::empty(dummy.sizes(),
-                        csr_tensors[0].options().dtype(dummy.scalar_type())));
+          results.push_back(at::empty_symint(
+              dummy.sym_sizes(),
+              csr_tensors[0].options().dtype(dummy.scalar_type())));
         }
         return results;
       });
@@ -1752,6 +1769,7 @@ TORCH_LIBRARY_IMPL(tpu, PrivateUse1, m) {
   // ImplDeprecated to mark their API stages.
   ImplInternal<OpName::kDistributedSend>(m, TorchTpuSend);
   ImplInternal<OpName::kDistributedRecv>(m, TorchTpuRecv);
+  ImplInternal<OpName::kFlexAttentionFwd>(m, FlexAttentionFwd);
   ImplInternal<OpName::kMaxPool1d>(m, TpuMaxPool1d);
   ImplInternal<OpName::kMaxPool1dBackward>(m, TpuMaxPool1dBackward);
   ImplInternal<OpName::kMaxPool2d>(m, TpuMaxPool2d);

@@ -21,6 +21,7 @@ from perflab import model_helpers
 from perflab import registry as registry_lib
 from perflab import step_lib
 from perflab import torch_device_ops
+from perflab import workload as workload_lib
 
 
 def _load_hf_qwen(
@@ -68,16 +69,19 @@ def _load_hf_qwen(
 @registry_lib.register_benchmark(
     stepper=step_lib.StepperType.FORWARD,
     presubmit=registry_lib.PresubmitPolicy.RUN,
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(8, 2048),
+        presubmit=workload_lib.Workload(1, 128),
+    ),
 )
 def qwen3_0_6b_forward(ctx: context_lib.Context):
   """Benchmark factory for Qwen3-0.6B forward."""
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
   if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
-    batch_size = 1
-    seq_len = 128
     num_layers = 2
   else:
-    batch_size = 8
-    seq_len = 2048
     num_layers = None
 
   model, inputs = _load_hf_qwen(
@@ -94,16 +98,19 @@ def qwen3_0_6b_forward(ctx: context_lib.Context):
 @registry_lib.register_benchmark(
     stepper=step_lib.StepperType.TRAINING,
     presubmit=registry_lib.PresubmitPolicy.RUN,
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(8, 2048),
+        presubmit=workload_lib.Workload(1, 128),
+    ),
 )
 def qwen3_0_6b_training(ctx: context_lib.Context):
   """Benchmark factory for Qwen3-0.6B training."""
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
   if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
-    batch_size = 1
-    seq_len = 128
     num_layers = 2
   else:
-    batch_size = 8
-    seq_len = 2048
     num_layers = None
 
   model, inputs = _load_hf_qwen(
@@ -127,10 +134,18 @@ def qwen3_0_6b_training(ctx: context_lib.Context):
     stepper=step_lib.StepperType.DECODER_ONLY_DECODE,
     # Builds the same (full-size) model in every scope.
     presubmit=registry_lib.PresubmitPolicy.RUN,
+    workload=registry_lib.scoped_workload(full=workload_lib.Workload(1, 2048)),
 )
 def qwen3_0_6b_decode(ctx):
   """Benchmark factory for Qwen3-0.6B decode."""
-  model, inputs = _load_hf_qwen(ctx, "Qwen/Qwen3-0.6B", is_training=False)
+  workload = ctx.require_workload()
+  model, inputs = _load_hf_qwen(
+      ctx,
+      "Qwen/Qwen3-0.6B",
+      is_training=False,
+      seq_len=workload.require_seq_len(),
+      batch_size=workload.batch_size,
+  )
   return model, (), inputs
 
 
@@ -140,16 +155,19 @@ def qwen3_0_6b_decode(ctx):
 @registry_lib.register_benchmark(
     stepper=step_lib.StepperType.FORWARD,
     presubmit=registry_lib.PresubmitPolicy.RUN,
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(4, 2048),
+        presubmit=workload_lib.Workload(1, 128),
+    ),
 )
 def qwen3_1_7b_forward(ctx: context_lib.Context):
   """Benchmark factory for Qwen3-1.7B forward."""
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
   if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
-    batch_size = 1
-    seq_len = 128
     num_layers = 2
   else:
-    batch_size = 4
-    seq_len = 2048
     num_layers = None
 
   model, inputs = _load_hf_qwen(
@@ -166,16 +184,19 @@ def qwen3_1_7b_forward(ctx: context_lib.Context):
 @registry_lib.register_benchmark(
     stepper=step_lib.StepperType.TRAINING,
     presubmit=registry_lib.PresubmitPolicy.RUN,
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(4, 2048),
+        presubmit=workload_lib.Workload(1, 128),
+    ),
 )
 def qwen3_1_7b_training(ctx: context_lib.Context):
   """Benchmark factory for Qwen3-1.7B training."""
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
   if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
-    batch_size = 1
-    seq_len = 128
     num_layers = 2
   else:
-    batch_size = 4
-    seq_len = 2048
     num_layers = None
 
   model, inputs = _load_hf_qwen(
@@ -193,6 +214,35 @@ def qwen3_1_7b_training(ctx: context_lib.Context):
       fused=True,
   )
   return model, (), inputs, opt
+
+
+@registry_lib.register_benchmark(
+    stepper=step_lib.StepperType.DECODER_ONLY_DECODE,
+    presubmit=registry_lib.PresubmitPolicy.RUN,
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(4, 2048),
+        presubmit=workload_lib.Workload(1, 128),
+    ),
+)
+def qwen3_1_7b_decode(ctx: context_lib.Context):
+  """Benchmark factory for Qwen3-1.7B decode."""
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
+  if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
+    num_layers = 2
+  else:
+    num_layers = None
+
+  model, inputs = _load_hf_qwen(
+      ctx,
+      "Qwen/Qwen3-1.7B",
+      is_training=False,
+      seq_len=seq_len,
+      batch_size=batch_size,
+      num_layers=num_layers,
+  )
+  return model, (), inputs
 
 
 # --- Qwen3 4B ---
@@ -201,16 +251,19 @@ def qwen3_1_7b_training(ctx: context_lib.Context):
 @registry_lib.register_benchmark(
     stepper=step_lib.StepperType.FORWARD,
     presubmit=registry_lib.PresubmitPolicy.RUN,
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(2, 1024),
+        presubmit=workload_lib.Workload(1, 128),
+    ),
 )
 def qwen3_4b_forward(ctx: context_lib.Context):
   """Benchmark factory for Qwen3-4B forward."""
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
   if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
-    batch_size = 1
-    seq_len = 128
     num_layers = 2
   else:
-    batch_size = 2
-    seq_len = 1024
     num_layers = None
 
   model, inputs = _load_hf_qwen(
@@ -227,16 +280,19 @@ def qwen3_4b_forward(ctx: context_lib.Context):
 @registry_lib.register_benchmark(
     stepper=step_lib.StepperType.TRAINING,
     presubmit=registry_lib.PresubmitPolicy.RUN,
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(2, 1024),
+        presubmit=workload_lib.Workload(1, 128),
+    ),
 )
 def qwen3_4b_training(ctx: context_lib.Context):
   """Benchmark factory for Qwen3-4B training."""
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
   if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
-    batch_size = 1
-    seq_len = 128
     num_layers = 2
   else:
-    batch_size = 2
-    seq_len = 1024
     num_layers = None
 
   model, inputs = _load_hf_qwen(
@@ -256,22 +312,83 @@ def qwen3_4b_training(ctx: context_lib.Context):
   return model, (), inputs, opt
 
 
+@registry_lib.register_benchmark(
+    stepper=step_lib.StepperType.DECODER_ONLY_DECODE,
+    presubmit=registry_lib.PresubmitPolicy.RUN,
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(2, 1024),
+        presubmit=workload_lib.Workload(1, 128),
+    ),
+)
+def qwen3_4b_decode(ctx: context_lib.Context):
+  """Benchmark factory for Qwen3-4B decode."""
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
+  if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
+    num_layers = 2
+  else:
+    num_layers = None
+
+  model, inputs = _load_hf_qwen(
+      ctx,
+      "Qwen/Qwen3-4B",
+      is_training=False,
+      seq_len=seq_len,
+      batch_size=batch_size,
+      num_layers=num_layers,
+  )
+  return model, (), inputs
+
+
 # --- Qwen3 8B ---
 
 
 @registry_lib.register_benchmark(
     stepper=step_lib.StepperType.FORWARD,
     presubmit=registry_lib.PresubmitPolicy.RUN,
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(1, 512),
+        presubmit=workload_lib.Workload(1, 128),
+    ),
 )
 def qwen3_8b_forward(ctx: context_lib.Context):
   """Benchmark factory for Qwen3-8B forward."""
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
   if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
-    batch_size = 1
-    seq_len = 128
     num_layers = 2
   else:
-    batch_size = 1
-    seq_len = 512
+    num_layers = None
+
+  model, inputs = _load_hf_qwen(
+      ctx,
+      "Qwen/Qwen3-8B",
+      is_training=False,
+      seq_len=seq_len,
+      batch_size=batch_size,
+      num_layers=num_layers,
+  )
+  return model, (), inputs
+
+
+@registry_lib.register_benchmark(
+    stepper=step_lib.StepperType.DECODER_ONLY_DECODE,
+    presubmit=registry_lib.PresubmitPolicy.RUN,
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(1, 512),
+        presubmit=workload_lib.Workload(1, 128),
+    ),
+)
+def qwen3_8b_decode(ctx: context_lib.Context):
+  """Benchmark factory for Qwen3-8B decode."""
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
+  if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
+    num_layers = 2
+  else:
     num_layers = None
 
   model, inputs = _load_hf_qwen(
@@ -291,16 +408,48 @@ def qwen3_8b_forward(ctx: context_lib.Context):
 @registry_lib.register_benchmark(
     stepper=step_lib.StepperType.FORWARD,
     presubmit=registry_lib.PresubmitPolicy.RUN,
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(1, 2048),
+        presubmit=workload_lib.Workload(1, 128),
+    ),
 )
 def qwen3_coder_30b_moe_forward(ctx: context_lib.Context):
   """Benchmark factory for Qwen3-Coder-30B-A3B forward."""
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
   if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
-    batch_size = 1
-    seq_len = 128
     num_layers = 2
   else:
-    batch_size = 1
-    seq_len = 2048
+    num_layers = None
+
+  model, inputs = _load_hf_qwen(
+      ctx,
+      "Qwen/Qwen3-Coder-30B-A3B-Instruct",
+      is_training=False,
+      seq_len=seq_len,
+      batch_size=batch_size,
+      num_layers=num_layers,
+  )
+  return model, (), inputs
+
+
+@registry_lib.register_benchmark(
+    stepper=step_lib.StepperType.DECODER_ONLY_DECODE,
+    presubmit=registry_lib.PresubmitPolicy.RUN,
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(1, 2048),
+        presubmit=workload_lib.Workload(1, 128),
+    ),
+)
+def qwen3_coder_30b_moe_decode(ctx: context_lib.Context):
+  """Benchmark factory for Qwen3-Coder-30B-A3B decode."""
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
+  if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
+    num_layers = 2
+  else:
     num_layers = None
 
   model, inputs = _load_hf_qwen(
@@ -323,15 +472,48 @@ def qwen3_coder_30b_moe_forward(ctx: context_lib.Context):
     presubmit_reason=(
         "Qwen3.5-397B uses too much memory to run on TPUs with smaller memory."
     ),
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(1, 2048),
+        presubmit=workload_lib.Workload(
+            model_helpers.SMOKE_BATCH_SIZE, model_helpers.SMOKE_SEQ_LEN
+        ),
+    ),
 )
 def qwen3_5_397b_4_layers_forward(ctx: context_lib.Context):
   """Benchmark factory for Qwen3.5-397B-A17B (4 Layers) MoE forward."""
-  if model_helpers.is_presubmit_smoke(ctx):
-    batch_size = model_helpers.SMOKE_BATCH_SIZE
-    seq_len = model_helpers.SMOKE_SEQ_LEN
-  else:
-    batch_size = 1
-    seq_len = 2048
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
+
+  model, inputs = _load_hf_qwen(
+      ctx,
+      "Qwen/Qwen3.5-397B-A17B",
+      is_training=False,
+      seq_len=seq_len,
+      batch_size=batch_size,
+      num_layers=4,
+  )
+  return model, (), inputs
+
+
+@registry_lib.register_benchmark(
+    stepper=step_lib.StepperType.DECODER_ONLY_DECODE,
+    presubmit=registry_lib.PresubmitPolicy.CPU_SMOKE_ONLY,
+    presubmit_reason=(
+        "Qwen3.5-397B uses too much memory to run on TPUs with smaller memory."
+    ),
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(1, 2048),
+        presubmit=workload_lib.Workload(
+            model_helpers.SMOKE_BATCH_SIZE, model_helpers.SMOKE_SEQ_LEN
+        ),
+    ),
+)
+def qwen3_5_397b_4_layers_decode(ctx: context_lib.Context):
+  """Benchmark factory for Qwen3.5-397B-A17B (4 Layers) MoE decode."""
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
 
   model, inputs = _load_hf_qwen(
       ctx,

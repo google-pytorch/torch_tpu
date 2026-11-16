@@ -22,6 +22,7 @@ against eager SimpleFSDP plus the same functional optimizer applied to the
 local gradient shards.
 """
 
+from collections.abc import Mapping, Sequence
 from typing import Any
 from unittest import mock
 from absl import flags
@@ -156,7 +157,7 @@ def _make_trainer(
   )
 
 
-def _safe_local_params(model: nn.Module) -> dict[str, torch.Tensor]:
+def _safe_local_params(model: nn.Module) -> Mapping[str, torch.Tensor]:
   return {
       name.replace(".", "_"): p.detach().to_local().clone()
       for name, p in model.named_parameters()
@@ -165,7 +166,7 @@ def _safe_local_params(model: nn.Module) -> dict[str, torch.Tensor]:
 
 def _eager_reference(
     optimizer_name: str, device: str, mode: str
-) -> tuple[list[torch.Tensor], dict[str, torch.Tensor]]:
+) -> tuple[Sequence[torch.Tensor], Mapping[str, torch.Tensor]]:
   """Eager SimpleFSDP fwd/bwd + the functional optimizer on local grads."""
   model = _build_fsdp_mlp(device, mode)
   optimizer = _make_optimizer(optimizer_name)

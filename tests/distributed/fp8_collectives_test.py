@@ -20,8 +20,9 @@ byte must match the expected input byte, including the Inf, negative zero and
 subnormal encodings. NaNs only need to stay NaNs.
 """
 
+from collections.abc import Callable
 import math
-from typing import Any, Callable
+from typing import Any
 
 from absl.testing import absltest
 from absl.testing import parameterized

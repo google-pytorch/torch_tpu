@@ -208,30 +208,40 @@ absl::Status ValidateLstmTensorShapes(const at::TensorList hx,
   const at::Tensor& h_0 = hx[0];
   const at::Tensor& c_0 = hx[1];
   TT_RET_CHECK(h_0.dim() == 3, error::kInvalidArgument)
-      << "expected h_0 to be a 3D tensor [num_layers * num_directions, batch, "
-         "out_size], got "
-      << h_0.dim() << "D";
+      << "expected the initial hidden state h_0 (first element of hx) to be a "
+         "3D tensor [num_layers * num_directions, batch, out_size], got "
+      << h_0.dim() << "D tensor of shape " << ToString(h_0.sizes());
   TT_RET_CHECK(c_0.dim() == 3, error::kInvalidArgument)
-      << "expected c_0 to be a 3D tensor [num_layers * num_directions, batch, "
-         "hidden_size], got "
-      << c_0.dim() << "D";
+      << "expected the initial cell state c_0 (second element of hx) to be a "
+         "3D tensor [num_layers * num_directions, batch, hidden_size], got "
+      << c_0.dim() << "D tensor of shape " << ToString(c_0.sizes());
   TT_RET_CHECK(h_0.size(0) == num_layers * num_directions,
                error::kInvalidArgument)
-      << "expected h_0 size(0) to match num_layers * num_directions ("
-      << num_layers * num_directions << "), got " << h_0.size(0);
+      << "expected the size of the initial hidden state h_0 (first element of "
+         "hx) at dimension 0 to be "
+      << num_layers * num_directions
+      << " (num_layers * number of directions), got " << h_0.size(0);
   TT_RET_CHECK(h_0.size(1) == batch, error::kInvalidArgument)
-      << "expected h_0 size(1) to match batch (" << batch << "), got "
-      << h_0.size(1);
+      << "expected the size of the initial hidden state h_0 (first element of "
+         "hx) at dimension 1 to be "
+      << batch << " (batch size), got " << h_0.size(1);
   TT_RET_CHECK(c_0.size(0) == num_layers * num_directions,
                error::kInvalidArgument)
-      << "expected c_0 size(0) to match num_layers * num_directions ("
-      << num_layers * num_directions << "), got " << c_0.size(0);
+      << "expected the size of the initial cell state c_0 (second element of "
+         "hx) at dimension 0 to be "
+      << num_layers * num_directions
+      << " (num_layers * number of directions), got " << c_0.size(0);
   TT_RET_CHECK(c_0.size(1) == batch, error::kInvalidArgument)
-      << "expected c_0 size(1) to match batch (" << batch << "), got "
-      << c_0.size(1);
+      << "expected the size of the initial cell state c_0 (second element of "
+         "hx) at dimension 1 to be "
+      << batch << " (batch size), got " << c_0.size(1);
   TT_RET_CHECK(h_0.size(2) <= c_0.size(2), error::kInvalidArgument)
-      << "h_0 size(2) (" << h_0.size(2) << ") cannot exceed c_0 size(2) ("
-      << c_0.size(2) << ")";
+      << "expected the size of the initial hidden state h_0 (first element of "
+         "hx) at dimension 2 to be <= "
+      << c_0.size(2)
+      << " (size of the initial cell state c_0 -- second element of hx) at "
+         "dimension 2, got "
+      << h_0.size(2);
   return absl::OkStatus();
 }
 
@@ -340,21 +350,25 @@ absl::Status ValidateLstmInputs(const at::Tensor& input,
   TT_RET_CHECK(input.dim() == 3, error::kInvalidArgument)
       << "expected input to be a 3D tensor, got " << input.dim() << "D";
   TT_RET_CHECK(hx.size() == 2, error::kInvalidArgument)
-      << "expected hx to contain exactly 2 tensors (h_0, c_0), got "
-      << hx.size();
+      << "expected hx to be a list of 2 tensors (the initial hidden states h_0 "
+         "and c_0, in order), got "
+      << FormatCount(hx.size(), "tensor", "tensors");
 
   const int64_t batch = batch_first ? input.size(0) : input.size(1);
   const int64_t seq_len = batch_first ? input.size(1) : input.size(0);
   const int64_t input_size = input.size(2);
 
   TT_RET_CHECK(seq_len > 0, error::kInvalidArgument)
-      << "expected sequence length to be larger than 0 in RNN, got " << seq_len;
+      << "expected the sequence length to be > 0, got " << seq_len;
   TT_RET_CHECK(batch > 0, error::kInvalidArgument)
-      << "expected batch size > 0 in RNN, got " << batch;
+      << "expected the batch size to be > 0, got " << batch;
   TT_RET_CHECK(num_layers > 0, error::kInvalidArgument)
-      << "expected num_layers > 0 in RNN, got " << num_layers;
+      << "expected the number of layers (num_layers) to be > 0, got "
+      << num_layers;
   TT_RET_CHECK(dropout >= 0.0 && dropout <= 1.0, error::kInvalidArgument)
-      << "expected dropout to be in range [0, 1], got " << dropout;
+      << "expected the dropout probability (dropout) to be in range [0, 1], "
+         "got "
+      << dropout;
 
   const int64_t hidden = hx[1].dim() == 3 ? hx[1].size(2) : 0;
   const int64_t proj_size =

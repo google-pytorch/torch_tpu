@@ -64,7 +64,7 @@ def _emit_event_artifacts(event: Mapping[str, Any]) -> None:
 
   Args:
     event: A mapping containing event details, including `name`, `cache_hit`,
-      `reason`, `aten_graph`, and `stablehlo`.
+      `reason`, `aten_graph`, `stablehlo` and optionally `kernel_type`.
   """
   artifacts = [
       ("torchtpu_eager_aten_graph", "aten_graph"),
@@ -79,6 +79,8 @@ def _emit_event_artifacts(event: Mapping[str, Any]) -> None:
         "compile_failed": event.get("compile_failed", False),
         "reason": event["reason"],
     }
+    if "kernel_type" in event:
+      metadata["kernel_type"] = event["kernel_type"]
     payload = event.get(payload_key, "")
     trace_structured(
         "artifact",

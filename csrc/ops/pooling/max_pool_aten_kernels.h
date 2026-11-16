@@ -21,20 +21,12 @@
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
-#include "torch/csrc/autograd/custom_function.h"
 
 namespace torch_tpu {
 
 // ============================================================================
 // MaxPool1D Kernels
 // ============================================================================
-
-// Dispatched from ATen AutogradPrivateUse1 for aten::max_pool1d.
-// Routes to TpuMaxPool1dAutograd for automatic differentiation when dilation is
-// trivial, avoiding index tensor generation and variadic reduction.
-at::Tensor AtenMaxPool1d(const at::Tensor& self, at::IntArrayRef kernel_size,
-                         at::IntArrayRef stride, at::IntArrayRef padding,
-                         at::IntArrayRef dilation, bool ceil_mode);
 
 // Dispatched from PrivateUse1 for tpu::_max_pool1d.
 // Directly lowers to StableHLO ReduceWindowOp without returning or computing
@@ -51,30 +43,9 @@ at::Tensor TpuMaxPool1dBackward(const at::Tensor& grad_output,
                                 at::IntArrayRef stride, at::IntArrayRef padding,
                                 at::IntArrayRef dilation, bool ceil_mode);
 
-// Autograd function for MaxPool1D that routes to tpu::_max_pool1d during
-// forward and tpu::_max_pool1d_backward during backward.
-struct TpuMaxPool1dAutograd
-    : public torch::autograd::Function<TpuMaxPool1dAutograd> {
-  static at::Tensor forward(torch::autograd::AutogradContext* ctx,
-                            const at::Tensor& self, at::IntArrayRef kernel_size,
-                            at::IntArrayRef stride, at::IntArrayRef padding,
-                            at::IntArrayRef dilation, bool ceil_mode);
-
-  static torch::autograd::variable_list backward(
-      torch::autograd::AutogradContext* ctx,
-      torch::autograd::variable_list grad_outputs);
-};
-
 // ============================================================================
 // MaxPool2D Kernels
 // ============================================================================
-
-// Dispatched from ATen AutogradPrivateUse1 for aten::max_pool2d.
-// Routes to TpuMaxPool2dAutograd for automatic differentiation when dilation is
-// trivial, avoiding index tensor generation and variadic reduction.
-at::Tensor AtenMaxPool2d(const at::Tensor& self, at::IntArrayRef kernel_size,
-                         at::IntArrayRef stride, at::IntArrayRef padding,
-                         at::IntArrayRef dilation, bool ceil_mode);
 
 // Dispatched from ATen PrivateUse1 for aten::max_pool2d_with_indices.out.
 // Uses StableHLO ReduceWindowOp with iota indices for backwards compatibility
@@ -99,20 +70,6 @@ at::Tensor TpuMaxPool2dBackward(const at::Tensor& grad_output,
                                 at::IntArrayRef stride, at::IntArrayRef padding,
                                 at::IntArrayRef dilation, bool ceil_mode);
 
-// Autograd function for MaxPool2D that routes to tpu::_max_pool2d during
-// forward and tpu::_max_pool2d_backward during backward.
-struct TpuMaxPool2dAutograd
-    : public torch::autograd::Function<TpuMaxPool2dAutograd> {
-  static at::Tensor forward(torch::autograd::AutogradContext* ctx,
-                            const at::Tensor& self, at::IntArrayRef kernel_size,
-                            at::IntArrayRef stride, at::IntArrayRef padding,
-                            at::IntArrayRef dilation, bool ceil_mode);
-
-  static torch::autograd::variable_list backward(
-      torch::autograd::AutogradContext* ctx,
-      torch::autograd::variable_list grad_outputs);
-};
-
 // Dispatched from ATen PrivateUse1 for
 // aten::max_pool2d_with_indices_backward.grad_input.
 at::Tensor& AtenMaxPool2dWithIndicesBackwardGradInput(
@@ -124,13 +81,6 @@ at::Tensor& AtenMaxPool2dWithIndicesBackwardGradInput(
 // ============================================================================
 // MaxPool3D Kernels
 // ============================================================================
-
-// Dispatched from ATen AutogradPrivateUse1 for aten::max_pool3d.
-// Routes to TpuMaxPool3dAutograd for automatic differentiation when dilation is
-// trivial, avoiding index tensor generation and variadic reduction.
-at::Tensor AtenMaxPool3d(const at::Tensor& self, at::IntArrayRef kernel_size,
-                         at::IntArrayRef stride, at::IntArrayRef padding,
-                         at::IntArrayRef dilation, bool ceil_mode);
 
 // Dispatched from PrivateUse1 for tpu::_max_pool3d.
 // Directly lowers to StableHLO ReduceWindowOp without returning or computing
@@ -146,20 +96,6 @@ at::Tensor TpuMaxPool3dBackward(const at::Tensor& grad_output,
                                 at::IntArrayRef kernel_size,
                                 at::IntArrayRef stride, at::IntArrayRef padding,
                                 at::IntArrayRef dilation, bool ceil_mode);
-
-// Autograd function for MaxPool3D that routes to tpu::_max_pool3d during
-// forward and tpu::_max_pool3d_backward during backward.
-struct TpuMaxPool3dAutograd
-    : public torch::autograd::Function<TpuMaxPool3dAutograd> {
-  static at::Tensor forward(torch::autograd::AutogradContext* ctx,
-                            const at::Tensor& self, at::IntArrayRef kernel_size,
-                            at::IntArrayRef stride, at::IntArrayRef padding,
-                            at::IntArrayRef dilation, bool ceil_mode);
-
-  static torch::autograd::variable_list backward(
-      torch::autograd::AutogradContext* ctx,
-      torch::autograd::variable_list grad_outputs);
-};
 
 // Dispatched from ATen PrivateUse1 for aten::max_pool3d_with_indices.
 std::tuple<at::Tensor, at::Tensor> AtenMaxPool3dWithIndices(

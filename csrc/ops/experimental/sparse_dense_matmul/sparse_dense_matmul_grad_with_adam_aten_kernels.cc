@@ -31,6 +31,7 @@
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
+#include "csrc/common/utils.h"
 #include "csrc/distributed/process_group_tpu.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/op_dispatcher.h"
@@ -346,9 +347,8 @@ AtenSparseDenseMatmulGradWithAdam(
             gains,        embedding_table,  momentum,
             velocity,     activations_grad, alpha_t};
 
-        Dimensions out_dims(embedding_table.sizes().begin(),
-                            embedding_table.sizes().end());
-        Dimensions vel_dims(velocity.sizes().begin(), velocity.sizes().end());
+        Dimensions out_dims = CopyIntVector(embedding_table.sizes());
+        Dimensions vel_dims = CopyIntVector(velocity.sizes());
 
         auto builder_fn = SparseDenseMatmulGradWithAdamBuilder(
             device_batch_size, max_ids_per_partition,
@@ -366,28 +366,22 @@ AtenSparseDenseMatmulGradWithAdam(
             std::vector<int64_t> device_assignment,  // INT_VEC_OK
             GetWorldDeviceAssignment());
 
+        TT_ASSIGN_OR_THROW(const DeviceBufferRef table_buf,
+                           GetBuffer(embedding_table));
+        TT_ASSIGN_OR_THROW(const DeviceBufferRef mom_buf, GetBuffer(momentum));
+        TT_ASSIGN_OR_THROW(const DeviceBufferRef vel_buf, GetBuffer(velocity));
         TT_ASSIGN_OR_THROW(
             auto results,
             (DispatchOp<9, 3>(
                 builder_fn, inputs,
                 {.out_dtypes = {out_dtype, out_dtype, vel_dtype},
                  .out_dims_list = {out_dims, out_dims, vel_dims},
+                 .out_layouts = {table_buf.shape().layout(),
+                                 mom_buf.shape().layout(),
+                                 vel_buf.shape().layout()},
                  .op_param_cache_keys = std::move(param_keys),
                  .donated_indices = {4, 5, 6},
                  .device_assignment = std::move(device_assignment)})));
-        TT_ASSIGN_OR_THROW(const DeviceBufferRef table_buf,
-                           GetBuffer(embedding_table));
-        if (table_buf.shape().layout().has_value()) {
-          results[0].set_layout(*table_buf.shape().layout());
-        }
-        TT_ASSIGN_OR_THROW(const DeviceBufferRef mom_buf, GetBuffer(momentum));
-        if (mom_buf.shape().layout().has_value()) {
-          results[1].set_layout(*mom_buf.shape().layout());
-        }
-        TT_ASSIGN_OR_THROW(const DeviceBufferRef vel_buf, GetBuffer(velocity));
-        if (vel_buf.shape().layout().has_value()) {
-          results[2].set_layout(*vel_buf.shape().layout());
-        }
 
         return std::make_tuple(MakeTensor(std::move(results[0])),
                                MakeTensor(std::move(results[1])),

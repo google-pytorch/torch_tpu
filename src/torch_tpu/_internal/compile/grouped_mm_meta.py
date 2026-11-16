@@ -21,7 +21,7 @@ upstream's meta. Checks mirror `ValidateGroupedMmInputs`, `ScaledGroupedMm`, and
 eager and compile agree.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
 
 import torch
@@ -54,7 +54,7 @@ def _get_grouped_mm_output_size(
     mat2: torch.Tensor,
     offs: torch.Tensor | None,
     op_name: str,
-) -> list[int | torch.SymInt]:
+) -> Sequence[int | torch.SymInt]:
   """Validates ranks, offs presence, batch sizes, and contraction dim."""
   _check(
       self.dim() in (2, 3),

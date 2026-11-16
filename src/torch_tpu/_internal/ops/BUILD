@@ -72,6 +72,7 @@ torch_tpu_py_library(
         "//src/torch_tpu/_internal/pallas",
         "//src/torch_tpu/_internal/utils:annotations",
         "@pypi//jax",
+        "@pypi//numpy",
     ],
 )
 

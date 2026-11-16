@@ -39,3 +39,19 @@ updates:
     # has time to be fixed before it is picked up.
     cooldown:
       default-days: 7
+  # We don't use Dependabot for Python dependencies, but security updates are
+  # enabled by an enforced enterprise configuration and can't be disabled at
+  # the repo level. Allegedly, security updates respect `ignore` rules and an
+  # ignore entry without `update-types` or `versions` blocks both version and
+  # security updates, so this should suppress pip PRs without affecting the
+  # GitHub Actions configuration above.
+  # See https://github.com/google-pytorch/torch_tpu/issues/521.
+  - package-ecosystem: "pip"
+    directories:
+      - "/"
+      - "/requirements"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 0
+    ignore:
+      - dependency-name: "*"

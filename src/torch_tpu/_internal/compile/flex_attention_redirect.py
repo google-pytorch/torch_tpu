@@ -23,7 +23,6 @@ attention kernel. Everything else falls back to upstream's eager math path.
 
 # pylint: disable=protected-access
 
-import typing
 import weakref
 
 import torch
@@ -113,42 +112,33 @@ def patch() -> None:
   _causal_mask_cache = weakref.WeakKeyDictionary()
 
   @torch.compiler.assume_constant_result
-  def _get_causal_window_size(
+  def _is_causal_block_mask(
       block_mask: flex_attention.BlockMask,
       q_len: int,
       kv_len: int,
       device: torch.device,
-  ) -> int | None:
-    """Returns the causal window size in [1, q_len] for `block_mask`, or None."""
+  ) -> bool:
+    """Returns True if `block_mask` is a lower-triangular causal mask."""
     cache = _causal_mask_cache.setdefault(block_mask, {})
     key = (q_len, kv_len)
     if key in cache:
       return cache[key]
 
     b_mask, h_mask = block_mask.kv_num_blocks.shape[:2]
-    if q_len <= 0 or q_len != kv_len or b_mask != 1 or h_mask != 1:
-      return cache.setdefault(key, None)
+    is_square = q_len > 0 and q_len == kv_len
+    is_broadcastable = b_mask == 1 and h_mask == 1
+    if not (is_square and is_broadcastable):
+      return cache.setdefault(key, False)
 
     bool_mask = flex_attention.create_mask(
         block_mask.mask_mod, 1, 1, q_len, kv_len, device=device
     )
-    # In a causal mask, the last query row attends to the last
-    # `candidate_window` keys (`q_len` for full causal, `< q_len` for sliding
-    # window).
-    candidate_window = int(bool_mask[0, 0, -1].sum().item())
-    if candidate_window <= 0:
-      return cache.setdefault(key, None)
+    expected = torch.ones(
+        (q_len, kv_len), dtype=torch.bool, device=device
+    ).tril_()
 
-    # Reference causal band mask (`0 <= row - col < candidate_window`).
-    expected = (
-        torch.ones((q_len, kv_len), dtype=torch.bool, device=device)
-        .tril_()
-        .triu_(1 - candidate_window)
-    )
-    window_size = (
-        candidate_window if torch.equal(bool_mask[0, 0], expected) else None
-    )
-    return cache.setdefault(key, window_size)
+    is_causal = torch.equal(bool_mask[0, 0], expected)
+    return cache.setdefault(key, is_causal)
 
   def _get_sdpa_attn_bias(
       block_mask: flex_attention.BlockMask,
@@ -178,36 +168,6 @@ def patch() -> None:
         ).masked_fill_(~bool_mask, float("-inf"))
       cache[key] = attn_bias
     return cache[key]
-
-  class _SdpaMaskArgs(typing.NamedTuple):
-    attn_mask: torch.Tensor | None = None
-    is_causal: bool = False
-
-  def _block_mask_to_sdpa_args(
-      block_mask: flex_attention.BlockMask | None,
-      q_len: int,
-      kv_len: int,
-      dtype: torch.dtype,
-      device: torch.device,
-  ) -> _SdpaMaskArgs:
-    """Returns SDPA mask arguments for lowering `block_mask`."""
-    if block_mask is None:
-      return _SdpaMaskArgs()
-
-    window_size = _get_causal_window_size(block_mask, q_len, kv_len, device)
-    if window_size is None:
-      return _SdpaMaskArgs(
-          attn_mask=_get_sdpa_attn_bias(
-              block_mask, q_len, kv_len, dtype, device
-          )
-      )
-
-    if window_size == q_len:
-      return _SdpaMaskArgs(is_causal=True)
-
-    return _SdpaMaskArgs(
-        attn_mask=torch.empty((window_size,), dtype=dtype, device=device)
-    )
 
   def _flex_attention_tpu(
       query: torch.Tensor,
@@ -245,38 +205,54 @@ def patch() -> None:
         if doc_len:
           num_docs = q_len // doc_len
 
-      mask_args = _block_mask_to_sdpa_args(
-          block_mask,
-          q_len // num_docs,
-          kv_len // num_docs,
-          query.dtype,
-          query.device,
+      doc_q_len = q_len // num_docs
+      doc_kv_len = kv_len // num_docs
+      is_causal = (
+          _is_causal_block_mask(block_mask, doc_q_len, doc_kv_len, query.device)
+          if block_mask is not None
+          else False
       )
+      attn_bias = (
+          _get_sdpa_attn_bias(
+              block_mask,
+              doc_q_len,
+              doc_kv_len,
+              query.dtype,
+              query.device,
+          )
+          if block_mask is not None and not is_causal
+          else None
+      )
+
       if num_docs > 1:
 
         def fold(
             tensor: torch.Tensor,
         ) -> torch.Tensor:  # [1,H,T,D] -> [N,H,T/N,D]
           return tensor.reshape(
-              tensor.shape[1], num_docs, q_len // num_docs, -1
+              tensor.shape[1], num_docs, doc_q_len, -1
           ).transpose(0, 1)
 
         query, key, value = fold(query), fold(key), fold(value)
+
       out = F.scaled_dot_product_attention(
           query,
           key,
           value,
-          attn_mask=mask_args.attn_mask,
+          attn_mask=attn_bias,
           dropout_p=0.0,
-          is_causal=mask_args.is_causal,
+          is_causal=is_causal,
           scale=scale,
           enable_gqa=enable_gqa,
       )
+
       if num_docs > 1:
         out = out.transpose(0, 1).reshape(1, -1, q_len, out.shape[-1])
+
       if return_aux is not None:
         return out, flex_attention.AuxOutput()
       return out
+
     return original_flex_attention(
         query,
         key,

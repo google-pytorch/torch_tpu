@@ -14,7 +14,7 @@
 
 """Execution modes for each framework and target kind."""
 
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence, Set
 import contextlib
 import enum
 import functools
@@ -128,7 +128,7 @@ class Framework(enum.Enum):
 def modes_for(
     framework: Framework | str,
     device_kind: target_lib.DeviceKind | str,
-) -> list[common.RunMode]:
+) -> Sequence[common.RunMode]:
   """Execution modes for the given framework and device kind.
 
   |          | torch                                            | torchax  |
@@ -174,6 +174,34 @@ def modes_for(
       common.RunMode.EAGER_DEFAULT,
       common.RunMode.COMPILED,
   ]
+
+
+# The run modes that only TPUs and GPUs run. CPU targets, including the
+# FakeTensorMode CPU smoke test, run only `eager_default` (`modes_for`).
+_ACCELERATOR_ONLY_RUN_MODES = frozenset({
+    common.RunMode.EAGER_OPTIMIZED.value,
+    common.RunMode.COMPILED.value,
+})
+
+
+def smoke_skipped_run_modes(
+    skipped_run_modes: Set[str], *, fake_tensor_mode: bool
+) -> frozenset[str]:
+  """Returns the run modes that a benchmark skips in this run.
+
+  The FakeTensorMode CPU smoke test only builds a benchmark and takes a step,
+  in `eager_default`. So under `--fake_tensor_mode`, a benchmark that skips
+  `eager_default` but runs on accelerators in another mode does not skip
+  `eager_default`, and the smoke test checks it too.
+
+  Args:
+    skipped_run_modes: The run modes that the benchmark skips on accelerators.
+    fake_tensor_mode: Whether this run is the FakeTensorMode CPU smoke test.
+  """
+  skipped = frozenset(skipped_run_modes)
+  if fake_tensor_mode and _ACCELERATOR_ONLY_RUN_MODES - skipped:
+    return skipped - {common.RunMode.EAGER_DEFAULT.value}
+  return skipped
 
 
 @contextlib.contextmanager
@@ -373,7 +401,7 @@ def _is_non_constant_bool_mask(index: Any) -> bool:
 
 def _bind(
     func: Any, args: Sequence[Any], kwargs: Mapping[str, Any]
-) -> dict[str, Any]:
+) -> Mapping[str, Any]:
   """Returns the arguments of an op call by name, except omitted defaults."""
   names = (argument.name for argument in func._schema.arguments)  # pylint: disable=protected-access
   return dict(zip(names, args)) | dict(kwargs)
@@ -465,7 +493,7 @@ def _factory_numel(bound: Mapping[str, Any]) -> int | float:
 
 def _tensor_args(
     args: Sequence[Any], kwargs: Mapping[str, Any]
-) -> list[torch.Tensor]:
+) -> Sequence[torch.Tensor]:
   """Returns the tensors among the arguments of an op call."""
   tensors = []
   for arg in itertools.chain(args, kwargs.values()):
@@ -478,7 +506,7 @@ def _tensor_args(
 
 def _written_fake_tensors(
     func: Any, args: Sequence[Any], kwargs: Mapping[str, Any]
-) -> list[fake_tensor.FakeTensor]:
+) -> Sequence[fake_tensor.FakeTensor]:
   """Returns the fake tensors that an op call writes to."""
   bound = _bind(func, args, kwargs)
   written = []

@@ -53,7 +53,8 @@ absl::Status ValidateBmmOut(const at::Tensor& out, at::ScalarType out_dtype) {
   return absl::OkStatus();
 }
 
-absl::Status ValidateBmmInputs(const at::Tensor& self, const at::Tensor& mat2) {
+absl::Status ValidateBmmInputs(const at::Tensor& self, const at::Tensor& mat2,
+                               at::ScalarType out_dtype) {
   TT_RET_CHECK(self.dim() == 3, error::kInvalidArgument)
       << "expected the first argument to be a 3D tensor (batch of matrices), "
          "got "
@@ -82,6 +83,15 @@ absl::Status ValidateBmmInputs(const at::Tensor& self, const at::Tensor& mat2) {
       << ToString(mat2.sizes()) << ", got " << self.size(2) << " vs "
       << mat2.size(1);
 
+  TT_RET_CHECK(
+      out_dtype == self.scalar_type() ||
+          (out_dtype == at::kFloat && (self.scalar_type() == at::kHalf ||
+                                       self.scalar_type() == at::kBFloat16)),
+      error::kInvalidArgument)
+      << "expected out_dtype to be the same as input dtype or float32 for "
+         "float16/bfloat16 inputs, got "
+      << ToString(out_dtype);
+
   // Must come after the dtype and shape checks. CUDA validates those criteria
   // before reaching the dispatch that reports the dtype as unimplemented.
   TT_RET_CHECK(self.numel() == 0 || mat2.numel() == 0 ||
@@ -89,6 +99,7 @@ absl::Status ValidateBmmInputs(const at::Tensor& self, const at::Tensor& mat2) {
                    c10::isComplexType(self.scalar_type()),
                error::kPythonNotImplementedError)
       << "not implemented for " << ToString(self.scalar_type());
+  TT_RETURN_IF_ERROR(ValidateNotLowPrecisionFloat(self));
 
   return absl::OkStatus();
 }
@@ -97,7 +108,7 @@ template <typename ReturnType, typename DispatchFn>
 ReturnType DispatchBmm(const at::Tensor& self, const at::Tensor& mat2,
                        at::ScalarType out_dtype, OpParamCacheKeys param_keys,
                        DispatchFn&& dispatch_fn) {
-  TT_RETURN_IF_ERROR(ValidateBmmInputs(self, mat2));
+  TT_RETURN_IF_ERROR(ValidateBmmInputs(self, mat2, out_dtype));
   TT_RETURN_IF_ERROR(ValidateNotLowPrecisionFloat(out_dtype));
   TT_ASSIGN_OR_RETURN(mlir::ElementType output_dtype_mlir,
                       ConvertTo<mlir::ElementType>(out_dtype));
@@ -134,7 +145,7 @@ absl::StatusOr<DeviceBufferRef> Bmm(const at::Tensor& self,
 absl::Status BmmOut(const at::Tensor& self, const at::Tensor& mat2,
                     at::ScalarType out_dtype, at::Tensor& out,
                     OpParamCacheKeys param_keys) {
-  TT_RETURN_IF_ERROR(ValidateBmmInputs(self, mat2));
+  TT_RETURN_IF_ERROR(ValidateBmmInputs(self, mat2, out_dtype));
   TT_RETURN_IF_ERROR(ValidateBmmOut(out, out_dtype));
   return DispatchBmm<absl::Status>(self, mat2, out_dtype, std::move(param_keys),
                                    [&]  // REF_CAPTURE_OK=called synchronously

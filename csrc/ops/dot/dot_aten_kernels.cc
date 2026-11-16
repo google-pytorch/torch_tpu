@@ -41,8 +41,7 @@ namespace {
 absl::StatusOr<DeviceBufferRef> Dot(const at::Tensor& lhs,
                                     const at::Tensor& rhs,
                                     OpParamCacheKeys param_keys) {
-  TT_RETURN_IF_ERROR(ValidateIsVector(lhs, "first"));
-  TT_RETURN_IF_ERROR(ValidateIsVector(rhs, "second"));
+  TT_RETURN_IF_ERROR(ValidateDotInputs(lhs, rhs));
 
   TT_ASSIGN_OR_RETURN(auto result_scalar_type,
                       ValidateAndGetDotOutputType(lhs, rhs));

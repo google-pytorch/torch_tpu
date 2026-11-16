@@ -1,7 +1,5 @@
 # Introduction to TorchTPU
 
-<!-- Link to colab and to generated notebook -->
-
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/google-pytorch/torch_tpu/blob/0.2.0-docs/docs/notebooks/intro_to_torchtpu.ipynb)
 
 TorchTPU is an open-source, native PyTorch backend for
@@ -135,10 +133,10 @@ and [torchtpu-feedback@google.com](mailto:torchtpu-feedback@google.com).
         future.
     *   Use SimpleFSDP with `torch.compile()` as opposed to FSDPv2 with eager or
         `torch.compile` see [FSDP best practices](./case_studies_fsdp.md)
-    *   Use the `spmd_safe` decorator on regions **users guarantee** to be
-        exactly the same is the recommended way to get peak performance from XLA
-        optimizations on communicating modules (i.e., to enable
-        compute/communication overlap)
+    *   Decorating functions that **you guarantee** run identically on every
+        rank with `@torch.tpu.distributed.spmd_safe` (covering the whole
+        compiled function when using `torch.compile`) is the recommended way to
+        enable XLA compute/communication overlap.
 *   TorchTPU does not currently have native FlexAttention support
 *   Current generation TPUs do not support matmul accumulation in lower
     precision than fp32 (e.g., tf32).

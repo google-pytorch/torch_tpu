@@ -21,7 +21,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <exception>
-#include <memory>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -58,8 +57,7 @@ void PySetWindowStripeChunkMb(int64_t chunk_mb);
 // Work handle representing asynchronous TPU zero-copy DMA or RMA transfers.
 class WorkTpu : public c10d::Work {
  public:
-  explicit WorkTpu(xla::Future<> future, std::shared_ptr<void> hold = nullptr)
-      : future_(std::move(future)), hold_(std::move(hold)) {}
+  explicit WorkTpu(xla::Future<> future) : future_(std::move(future)) {}
 
   bool isCompleted() override { return future_.IsReady(); }
 
@@ -76,7 +74,6 @@ class WorkTpu : public c10d::Work {
 
  private:
   xla::Future<> future_;
-  std::shared_ptr<void> hold_;
 };
 
 // Composite work handle that aggregates multiple concurrent sub-stream DMA or

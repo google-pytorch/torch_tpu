@@ -20,7 +20,6 @@
 #include <cstddef>
 #include <optional>
 #include <string_view>
-#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -248,12 +247,6 @@ class InvalidOpParamCacheKeys {
   operator OpParamCacheKeys&&() &&;  // NOLINT
   OpParamCacheKeys Clone() const;
 };
-
-// This helper returns std::true_type if any of the given arguments should
-// normally be included in the parameter cache key computation.
-template <typename... Ts>
-std::bool_constant<(... || IncludeInCacheKey<Ts>())>
-ShouldIncludeSomeInCacheKey(const Ts&...);
 
 // Checks if an argument should be ignored in the cache key.
 // If not, it triggers a static_assert with the index of the argument.

@@ -24,7 +24,9 @@ from torch_tpu._internal.utils import annotations
 @annotations.experimental(
     "torch.tpu.ops.optimization_barrier is experimental and subject to change."
 )
-def optimization_barrier(inputs: Sequence[torch.Tensor]) -> list[torch.Tensor]:
+def optimization_barrier(
+    inputs: Sequence[torch.Tensor],
+) -> Sequence[torch.Tensor]:
   """Inserts an XLA optimization barrier around `inputs`.
 
   The barrier lowers to `stablehlo.optimization_barrier`
@@ -655,7 +657,7 @@ def sparse_dense_matmul_activation_unstack(
     stacked_activations: torch.Tensor,
     per_feature_batch_sizes: Sequence[int],
     per_feature_dims: Sequence[int],
-) -> list[torch.Tensor]:
+) -> Sequence[torch.Tensor]:
   """Splits the stacked activations of multiple features into one per feature.
 
   This op is differentiable. Its backward is
@@ -791,7 +793,7 @@ def sparse_map_row(
     max_pad_per_row: int,
     wait_threshold: float,
     result_row_pointer_op_index: int,
-) -> list[torch.Tensor]:
+) -> Sequence[torch.Tensor]:
   """Maps a row-wise computation over sparse CSR matrices on TPU SparseCore.
 
   Args:

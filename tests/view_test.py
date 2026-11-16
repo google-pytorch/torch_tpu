@@ -14,11 +14,10 @@
 
 """Tests that view ops return layout information that is consistent with CPU."""
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 import dataclasses
 import gc
 import time
-from typing import Callable, Tuple
 
 from absl.testing import absltest
 from absl.testing import parameterized
@@ -128,7 +127,7 @@ class LayoutTest(seed_test_utils.RepeatableTest):
   ):
     cpu_result = tensor_from_device(torch.device("cpu"))
     tpu_result = tensor_from_device(self.tpu_device)
-    if isinstance(cpu_result, Tuple):
+    if isinstance(cpu_result, tuple):
       for cpu_result_i, tpu_result_i in zip(cpu_result, tpu_result):
         self._assert_same_layout(cpu_result_i, tpu_result_i)
 
@@ -169,7 +168,7 @@ class LayoutTest(seed_test_utils.RepeatableTest):
 
   def _assert_no_mutation_from_base(
       self,
-      base_shape: tuple[int, ...],
+      base_shape: Sequence[int],
       non_view_operation: Callable[[torch.Tensor], torch.Tensor],
   ):
     # Use zeros to easily identify if any elements are mutated
@@ -196,7 +195,7 @@ class LayoutTest(seed_test_utils.RepeatableTest):
 
   def _assert_same_mutation_from_view(
       self,
-      base_shape: tuple[int, ...],
+      base_shape: Sequence[int],
       view_operation: Callable[
           [torch.Tensor], torch.Tensor | Sequence[torch.Tensor]
       ],

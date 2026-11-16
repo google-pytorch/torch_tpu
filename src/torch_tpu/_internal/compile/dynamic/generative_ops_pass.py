@@ -43,11 +43,10 @@ class HandleGenerativeOpsPass:
      truncate the tensor at runtime.
   4. Like-Op Dimension Bounding: For generative operations taking a template
      tensor input (like `torch.zeros_like`, `torch.ones_like`,
-     `torch.full_like`,
-     `torch.empty_like`), the operation generates a new buffer matching the
-     bounded physical shape of the template. This pass appends
-     `set_dimension_logical_size` operations for any dynamic dimensions to
-     truncate the output tensor to its runtime logical size.
+     `torch.full_like`, `torch.empty_like`, `torch.fill`), the operation
+     generates a new buffer matching the bounded physical shape of the template.
+     This pass appends `set_dimension_logical_size` operations for any dynamic
+     dimensions to truncate the output tensor to its runtime logical size.
 
   Examples:
 
@@ -167,6 +166,8 @@ class HandleGenerativeOpsPass:
         torch.ops.aten.ones_like.default: self._process_like_op,
         torch.ops.aten.full_like.default: self._process_like_op,
         torch.ops.aten.empty_like.default: self._process_like_op,
+        torch.ops.aten.fill.Scalar: self._process_like_op,
+        torch.ops.aten.fill.Tensor: self._process_like_op,
     }
 
   def __call__(self, graph_module: torch.fx.GraphModule) -> None:
@@ -377,7 +378,7 @@ class HandleGenerativeOpsPass:
   ) -> None:
     """Processes *_like generative ops with dynamic shapes (e.g.
 
-    zeros_like, ones_like, full_like, empty_like).
+    zeros_like, ones_like, full_like, empty_like, fill).
     """
     val = node.meta.get("val")
     if val is None or not hasattr(val, "shape"):

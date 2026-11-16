@@ -19,7 +19,6 @@
 
 // Utilities for reporting errors in C++ code.
 
-#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -104,6 +103,23 @@ inline constexpr absl::StatusCode kPythonRuntimeError =
 
 }  // namespace error
 
+// Returns true if error message format checks are enabled.
+//
+// When this is true, TorchTPU will hard crash if any error is raised with an
+// error message that doesn't conform to the TorchTPU error handling guidelines.
+// This should help us maintain the quality and consistency of error messages in
+// the project.
+//
+// The checks are always enabled in internal builds. In other builds (e.g. the
+// OSS build), they are enabled iff the TORCH_TPU_INTERNAL_CHECK_ERROR_FORMAT
+// env var is set to true (e.g. by error coverage runs and error format unit
+// tests). This function is memoized, so calling it is cheap and will always
+// return the same value even if the env var is changed.
+//
+// The error format check code is always compiled (and thus kept compilable),
+// even in builds where it's disabled.
+[[nodiscard]] bool ShouldCheckErrorFormat();
+
 // Sentinel string for XLA compiler errors.
 //
 // Leading and trailing spaces are added to this sentinel, so that we don't need
@@ -162,55 +178,15 @@ void CheckDeviceIsTpu(c10::optional<at::Device> device_opt,
 // TODO(wan): use a more robust mechanism to detect XLA OOM errors.
 [[nodiscard]] bool IsXlaOomError(const absl::Status& status);
 
-// Sets the global sticky error state. Subsequent ops should fail if this is
-// set.
-void SetStickyError(absl::Status status);
-
-// Gets the global sticky error state.
-absl::Status GetStickyError();
-
-namespace internal {
-extern std::atomic<bool> g_has_sticky_error;
-}  // namespace internal
-
-// Returns true if the global sticky error state is set.
-[[nodiscard]] inline bool HasStickyError() {
-  // This check runs on the critical path of every op dispatch. We use
-  // std::memory_order_relaxed because HasStickyError() acts only as a fast
-  // boolean gate and does not read any error payload:
-  // 1. In the common case (no error), no shared data is read, avoiding any need
-  //    for acquire semantics or memory fences.
-  // 2. In the rare case of an assertion failure, the caller immediately enters
-  //    the slow path via GetStickyError(), which acquires g_sticky_error_mutex.
-  //    Acquiring the mutex establishes full acquire-release synchronization
-  //    with the mutex release in SetStickyError(), guaranteeing that the
-  //    complete absl::Status payload is observed.
-  // 3. g_has_sticky_error is a monotonic latch (false -> true); hardware cache
-  //    coherence propagates the write to all cores within nanoseconds without
-  //    requiring pipeline-stalling load-acquire instructions (e.g., `ldar` on
-  //    ARM).
-  return internal::g_has_sticky_error.load(std::memory_order_relaxed);
-}
-
-// Clears the global sticky error state. Used for testing.
-void ClearStickyError();
-
-// Increments the count of pending asynchronous assertion checks.
-void IncrementPendingAssertionChecks();
-
-// Decrements the count of pending asynchronous assertion checks.
-void DecrementPendingAssertionChecks();
-
-// Blocks until all pending asynchronous assertion checks have completed.
-void WaitForPendingAssertionChecks();
-
-// Blocks until all pending asynchronous assertion checks have completed, and
-// throws a C++ exception if any sticky error has been recorded.
-void SyncAndCheckStickyError();
-
-// Blocks until all pending asynchronous assertion checks have completed, and
-// returns the error status if any was recorded.
-absl::Status SyncAndReturnStickyError();
+// Translates a low-level XLA OOM error to an error that is easier to understand
+// by a PyTorch user. If the status is not an XLA OOM error, returns it as is.
+//
+// `dtype` is the string representation of the element type of the tensor that
+// caused the XLA OOM error.
+// `dims` is the dimensions of the tensor that caused the XLA OOM error.
+absl::Status TranslateXlaTensorOomError(absl::Status status,
+                                        std::string_view dtype,
+                                        absl::Span<const int64_t> dims);
 
 // Adapts an external error from OpenXLA to comply to TorchTPU error guidelines.
 //
@@ -1241,19 +1217,19 @@ template <const char* env_name>
 }
 
 // Returns the integer value of the environment variable with the given name, or
-// an error if it is not set or cannot be parsed as an integer.
+// an error if it is not set or cannot be parsed as an integer. In the latter
+// case, GetIntegerEnvOnce() also warns about the invalid value.
 //
 // This function is memoized, so the environment variable is only read once.
-template <typename IntType, const char* env_name>
-[[nodiscard]] const absl::StatusOr<IntType>& GetRequiredIntegerEnvOnce() {
-  static const absl::NoDestructor<absl::StatusOr<IntType>> env_var(
-      []() -> absl::StatusOr<IntType> {
-        const auto& raw_val = GetEnvOnce<env_name>();
-        TT_RET_CHECK(raw_val.has_value(), error::kFailedPrecondition)
-            << "the " << env_name << " environment variable is not set";
-        const auto int_val = GetIntegerEnvOnce<IntType, env_name>();
+template <const char* env_name>
+[[nodiscard]] const absl::StatusOr<EnvVarIntType<env_name>>&
+GetRequiredIntegerEnvOnce() {
+  static const absl::NoDestructor<absl::StatusOr<EnvVarIntType<env_name>>>
+      env_var([]() -> absl::StatusOr<EnvVarIntType<env_name>> {
+        const auto int_val = GetIntegerEnvOnce<env_name>();
         TT_RET_CHECK(int_val.has_value(), error::kFailedPrecondition)
-            << "Failed to parse " << env_name << ": " << *raw_val;
+            << "the " << env_name
+            << " environment variable is not set or is not a valid integer";
         return *int_val;
       }());
   return *env_var;

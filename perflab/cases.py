@@ -15,7 +15,7 @@
 """Provides logic to resolve benchmark cases."""
 
 import collections
-from collections.abc import Iterable, Iterator, Mapping, MutableMapping, Sequence
+from collections.abc import Collection, Iterable, Iterator, Mapping, MutableMapping, Sequence
 import hashlib
 import os
 import random
@@ -25,6 +25,7 @@ import unittest
 from absl import flags
 from absl import logging
 from absl.testing import absltest
+from perflab import batch_sweep_benchmarks
 from perflab import common
 from perflab import context as context_lib
 from perflab import flags as flags_lib
@@ -34,52 +35,32 @@ from perflab import registry as registry_lib
 from perflab import step_lib
 from perflab import target as target_lib
 
-CaseParams = tuple[registry_lib.BenchmarkSpec, common.RunMode]
+# The benchmark and run mode of a case, and the batch size of a batch sweep
+# case.
+CaseParams = (
+    tuple[registry_lib.BenchmarkSpec, common.RunMode]
+    | tuple[registry_lib.BenchmarkSpec, common.RunMode, int]
+)
+# A case as `get_cases` and `get_batch_sweep_cases` yield it: its name, then its
+# `CaseParams`.
+Case = (
+    tuple[str, registry_lib.BenchmarkSpec, common.RunMode]
+    | tuple[str, registry_lib.BenchmarkSpec, common.RunMode, int]
+)
 
 _MAX_ABSLTEST_SEED = 4294967295
-
-_HEAVY_MODEL_PREFIXES = (
-    "audio_flamingo",
-    "bge_multilingual_gemma2",
-    "colpali",
-    "colqwen2",
-    "deepseek",
-    "dinov2_giant",
-    "dse_qwen2",
-    "e5_omni",
-    "flux",
-    "gemma",
-    "glm",
-    "gpt_oss",
-    "granite_speech",
-    "higgs_tts",
-    "hunyuan",
-    "if_i_xl",
-    "janus",
-    "llama",
-    "llava",
-    "metaclip",
-    "mistral",
-    "mixtral",
-    "muse",
-    "music_flamingo",
-    "nemotron",
-    "qwen",
-    "sam2",
-    "stable_diffusion",
-    "swin_large",
-    "vibevoice",
-    "vit_giant",
-    "vjepa2",
-    "wan",
-    "whisper",
-)
 
 
 def _case_order_key(name: str, seed: str) -> str:
   """Returns a deterministic hash key for ordering benchmark cases."""
   payload = f"{seed}:{name}" if seed else name
   return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _stable_shard_hash(name: str) -> int:
+  """Returns a hash of `name` that never changes across commits or processes."""
+  digest = hashlib.sha256(name.encode("utf-8")).digest()
+  return int.from_bytes(digest[:8], "big")
 
 
 def _get_order_seed(env: Mapping[str, str] | None = None) -> str:
@@ -109,15 +90,86 @@ def seed_to_int(seed: str) -> int:
 
 
 def case_params(
-    cases_iter: Iterable[
-        tuple[str, registry_lib.BenchmarkSpec, common.RunMode]
-    ],
+    cases_iter: Iterable[Case],
     method_name: str = "test_benchmark",
 ) -> Mapping[str, CaseParams]:
-  """Maps the names parameterized.named_parameters generates to (spec, mode)."""
-  return {
-      f"{method_name}_{name}": (spec, mode) for name, spec, mode in cases_iter
-  }
+  """Maps the names parameterized.named_parameters generates to CaseParams."""
+  return {f"{method_name}_{case[0]}": tuple(case[1:]) for case in cases_iter}
+
+
+def unpack_case_params(
+    params: CaseParams,
+) -> tuple[registry_lib.BenchmarkSpec, common.RunMode, int | None]:
+  """Returns the benchmark, run mode and batch sweep batch size of a case."""
+  spec, mode, *rest = params
+  return spec, mode, (rest[0] if rest else None)
+
+
+def batch_sweep_case_name(
+    spec_name: str, batch_size: int, mode: common.RunMode
+) -> str:
+  """Returns the name of a batch sweep case, e.g. `gemma_2_2b_forward_bs16_compiled`.
+
+  The run mode stays the suffix of the name, as in every other case name, so
+  that filters such as `*_compiled` select the cases of a run mode in both
+  default and batch sweep runs.
+
+  Args:
+    spec_name: The name of the benchmark.
+    batch_size: The batch size of the case.
+    mode: The run mode of the case.
+  """
+  return f"{spec_name}_bs{batch_size}_{mode.value}"
+
+
+def _batch_sweep_group(params: CaseParams) -> tuple[str, int] | None:
+  """Returns the (benchmark and run mode, batch size) of a batch sweep case.
+
+  Args:
+    params: The parameters of a case.
+
+  Returns:
+    A key shared by the batch sweep cases of one benchmark in one run mode, and
+    the batch size of the case, or None if it is not a batch sweep case.
+  """
+  spec, mode, batch_size = unpack_case_params(params)
+  if batch_size is None:
+    return None
+  return f"{spec.name}_{mode.value}", batch_size
+
+
+def order_batch_sweep_cases(
+    names: Sequence[str], params_by_name: Mapping[str, CaseParams]
+) -> list[str]:
+  """Orders the batch sweep cases of each benchmark and run mode by batch size.
+
+  The other names, and the positions of the batch sweep cases of each benchmark
+  and run mode, are kept, so a shuffled order stays shuffled across them.
+
+  Args:
+    names: The names of test methods, in order.
+    params_by_name: The parameters of the cases behind the names.
+
+  Returns:
+    The names, with the batch sweep cases of each benchmark and run mode in
+    ascending batch size order.
+  """
+  positions: dict[str, list[int]] = collections.defaultdict(list)
+  batch_sizes: dict[str, int] = {}
+  for i, name in enumerate(names):
+    params = params_by_name.get(name)
+    group = None if params is None else _batch_sweep_group(params)
+    if group is not None:
+      positions[group[0]].append(i)
+      batch_sizes[name] = group[1]
+  ordered = list(names)
+  for indices in positions.values():
+    group_names = sorted(
+        (names[i] for i in indices), key=batch_sizes.__getitem__
+    )
+    for i, name in zip(indices, group_names):
+      ordered[i] = name
+  return ordered
 
 
 def normalize_randomize_ordering_seed(
@@ -165,77 +217,19 @@ def normalize_randomize_ordering_seed(
   return normalized
 
 
-def estimate_case_cost(
-    spec: registry_lib.BenchmarkSpec,
-    mode: common.RunMode,
-    *,
-    framework: mode_lib.Framework,
-    device_kind: target_lib.DeviceKind,
-    skip_behavior: str | None = None,
-) -> float:
-  """Estimates relative execution weight for LPT shard load balancing.
-
-  Cases that are statically skipped in the parent process receive zero weight so
-  they do not displace active benchmarks during shard assignment.
-
-  Args:
-    spec: Benchmark specification.
-    mode: Execution mode (e.g. compiled or eager).
-    framework: Execution framework (e.g. TORCH or TORCHAX).
-    device_kind: Target device kind.
-    skip_behavior: Skip behavior mode ('skip', 'run_skipped', 'ignore', or
-      'assert_raise'). Defaults to `--skip_behavior` when parsed, else 'skip'.
-
-  Returns:
-    Estimated non-negative relative cost weight.
-  """
-  if (
-      framework == mode_lib.Framework.TORCHAX
-      and spec.stepper == step_lib.StepperType.DECODER_ONLY_DECODE
-  ):
-    return 0.0
-
-  if skip_behavior is None:
-    skip_behavior = (
-        flags_lib.SKIP_BEHAVIOR.value if flags.FLAGS.is_parsed() else "skip"
-    )
-
-  skip_reason = get_skip_reason(
-      spec, mode, framework=framework, device_kind=device_kind
-  )
-  if skip_behavior == "skip" and skip_reason is not None:
-    return 0.0
-  if skip_behavior == "run_skipped" and skip_reason is None:
-    return 0.0
-
-  cost = 3.0 if mode == common.RunMode.COMPILED else 1.0
-  if spec.stepper == step_lib.StepperType.DECODER_ONLY_DECODE:
-    cost *= 2.0
-  elif spec.stepper in (
-      step_lib.StepperType.TRAINING,
-      step_lib.StepperType.SINGLE_TRACE_TRAINING,
-  ):
-    cost *= 1.5
-  if spec.name.startswith(_HEAVY_MODEL_PREFIXES):
-    cost *= 2.0
-  return cost
-
-
 class BenchmarkTestLoader(absltest.TestLoader):
-  """TestLoader with deterministic hash ordering and LPT cost-balanced sharding."""
-
-  _last_test_case_class: (
-      type[unittest.TestCase] | None  # UNITTEST_OK=type annotation
-  ) = None
+  """TestLoader with deterministic hash ordering and stable name-hash sharding."""
 
   def __init__(self, *args: Any, **kwargs: Any):
+    # The names whose hash assigns a batch sweep case to a shard, by test method
+    # name; see `shardTestCaseNames`.
+    self._shard_keys: dict[str, str] = {}
     self._seed_initialized: bool = False
     self._randomize_ordering_seed: int | None = None
     self._random: random.Random | None = None
     normalize_randomize_ordering_seed()
     super().__init__(*args, **kwargs)
     self._ensure_randomize_ordering_seed()
-    self._last_test_case_class = None
 
   def _ensure_randomize_ordering_seed(self) -> None:
     """Lazily resolves and normalizes randomize ordering seed after flag parsing."""
@@ -278,7 +272,6 @@ class BenchmarkTestLoader(absltest.TestLoader):
   ) -> list[str]:
     """Returns test case names ordered by `case_params` before optional shuffle."""
     self._ensure_randomize_ordering_seed()
-    self._last_test_case_class = testCaseClass
     names = list(super().getTestCaseNames(testCaseClass))
     class_case_params: Mapping[str, CaseParams] = getattr(
         testCaseClass, "case_params", {}
@@ -295,27 +288,11 @@ class BenchmarkTestLoader(absltest.TestLoader):
         )
       else:
         names.sort(key=lambda name: 1 if name in class_case_params else 0)
-    return names
-
-  def _estimate_method_cost(
-      self,
-      method_name: str,
-      class_case_params: Mapping[str, CaseParams],
-      framework: mode_lib.Framework | None,
-      device_kind: target_lib.DeviceKind | None,
-      skip_behavior: str,
-  ) -> float:
-    params = class_case_params.get(method_name)
-    if params is None or framework is None or device_kind is None:
-      return 0.1
-    spec, mode = params
-    return estimate_case_cost(
-        spec,
-        mode,
-        framework=framework,
-        device_kind=device_kind,
-        skip_behavior=skip_behavior,
-    )
+    for name, params in class_case_params.items():
+      group = _batch_sweep_group(params)
+      if group is not None:
+        self._shard_keys[name] = group[0]
+    return order_batch_sweep_cases(names, class_case_params)
 
   def shardTestCaseNames(  # pylint: disable=invalid-name
       self,
@@ -323,78 +300,53 @@ class BenchmarkTestLoader(absltest.TestLoader):
       ordered_names: Sequence[str],
       shard_index: int,
   ) -> Sequence[str]:
-    """Partitions `ordered_names` across shards using LPT greedy load balancing."""
+    """Partitions `ordered_names` across shards by a stable hash of each name.
+
+    Auto-bisect reruns a single shard (e.g.
+    `torch_benchmarks_shard_05_of_16_tpu-v7`) at each candidate commit, so a
+    case must stay in the same shard across commits. A case's shard therefore
+    depends only on its own name and the shard count, not on the ordering seed
+    (the commit SHA in CI), estimated costs, known failures, the order of the
+    names, or which other cases exist. The batch sweep cases of a benchmark in
+    a run mode hash the same name instead (recorded by `getTestCaseNames`), so
+    they share a shard and the shard can skip the batch sizes larger than one
+    that ran out of memory.
+
+    Args:
+      iterator: absltest's cyclic iterator over the shard indices.
+      ordered_names: Test case names, in the order they should run.
+      shard_index: The index of the current shard.
+
+    Returns:
+      The names in `ordered_names` assigned to `shard_index`, in order.
+    """
     if not ordered_names:
       return []
 
-    buckets: list[int] = []
+    # TODO: b/578163611 - Balance shards by runtime without breaking bisect
+    # stability, either with a checked-in shard map (falling back to the name
+    # hash) or, once MLCompass can bisect a single test, by rebalancing on
+    # every run. cl/998158472 has the previous cost-balanced loader.
+
+    # absltest shares one `itertools.cycle(range(total_shards))` across all
+    # test classes, so it may be mid-cycle; read one full cycle and sort it.
     seen_buckets: set[int] = set()
-    for _ in range(len(ordered_names)):
-      bucket = next(iterator)
+    for bucket in iterator:
       if bucket in seen_buckets:
         break
       seen_buckets.add(bucket)
-      buckets.append(bucket)
-
-    if not buckets or shard_index not in seen_buckets:
+    if shard_index not in seen_buckets:
       return []
+    buckets = sorted(seen_buckets)
 
-    test_cls = self._last_test_case_class
-    class_case_params: Mapping[str, CaseParams] = (
-        getattr(test_cls, "case_params", {}) if test_cls is not None else {}
-    )
-    framework: mode_lib.Framework | None = (
-        getattr(test_cls, "framework", None) if test_cls is not None else None
-    )
-    platform: target_lib.Platform | None = (
-        getattr(test_cls, "platform", None) if test_cls is not None else None
-    )
-    device_kind = (
-        target_lib.make_target(platform).device_kind
-        if platform is not None
-        else None
-    )
-    order_seed = _get_order_seed()
-    skip_behavior = (
-        flags_lib.SKIP_BEHAVIOR.value if flags.FLAGS.is_parsed() else "skip"
-    )
-
-    costs = {
-        name: self._estimate_method_cost(
-            name, class_case_params, framework, device_kind, skip_behavior
-        )
+    return [
+        name
         for name in ordered_names
-    }
-    lpt_ordered = sorted(
-        ordered_names,
-        key=lambda name: (
-            -costs[name],
-            _case_order_key(name, order_seed),
-            name,
-        ),
-    )
-
-    shard_load = {b: 0.0 for b in buckets}
-    shard_count = {b: 0 for b in buckets}
-    assigned_to_shard: set[str] = set()
-    for testcase in lpt_ordered:
-      cost = costs[testcase]
-      if cost > 0.0:
-        target_bucket = min(
-            buckets,
-            key=lambda b: (shard_load[b], shard_count[b], b),
-        )
-      else:
-        target_bucket = min(
-            buckets,
-            key=lambda b: (shard_count[b], shard_load[b], b),
-        )
-      shard_load[target_bucket] += cost
-      shard_count[target_bucket] += 1
-      if target_bucket == shard_index:
-        assigned_to_shard.add(testcase)
-
-    return [x for x in ordered_names if x in assigned_to_shard]
+        if buckets[
+            _stable_shard_hash(self._shard_keys.get(name, name)) % len(buckets)
+        ]
+        == shard_index
+    ]
 
 
 def get_cases(
@@ -420,6 +372,9 @@ def get_cases(
   `gen_benchmarks` does to register benchmarks. The benchmarks left out, and
   why, are logged once per call.
 
+  With `--batch_sweep_only`, there are no default cases: `get_batch_sweep_cases`
+  then has a case at the default batch size of each benchmark that it sweeps.
+
   Args:
     platform: Target hardware platform on which the benchmarks will run.
     framework: Execution framework (e.g. TORCH or TORCHAX) filtering modes.
@@ -429,6 +384,11 @@ def get_cases(
   Yields:
     Tuples of (case_name, spec, run_mode) in deterministic hashed order.
   """
+  if flags_lib.batch_sweep_flag_values().only:
+    logging.info(
+        "Running no default cases: --%s", flags_lib.BATCH_SWEEP_ONLY.name
+    )
+    return
   if order_seed is None:
     order_seed = _get_order_seed()
   run_scope, fake_tensor_mode = flags_lib.collection_flag_values()
@@ -463,6 +423,177 @@ def get_cases(
             for (policy, reason), names in sorted(excluded.items())
         ),
     )
+
+
+def get_batch_sweep_skip_reason(
+    spec: registry_lib.BenchmarkSpec,
+) -> str | None:
+  """Returns why the batch sweep does not measure `spec`, or None.
+
+  The batch sweep only measures the benchmarks that opt in to it
+  (`batch_sweep_benchmarks.BATCH_SWEEP_BENCHMARKS`), and of those, the ones
+  that declare a workload, do not disable it (`BatchSweep.disabled`) and do not
+  decode.
+
+  Args:
+    spec: Benchmark specification.
+  """
+  if spec.name not in batch_sweep_benchmarks.BATCH_SWEEP_BENCHMARKS:
+    return (
+        f"Benchmark {spec.name} is not batch swept: it is not opted in to the"
+        " batch sweep (see BATCH_SWEEP_BENCHMARKS)"
+    )
+  if spec.workload is None:
+    return f"Benchmark {spec.name} is not batch swept: it declares no workload"
+  if not spec.batch_sweep.enabled:
+    return (
+        f"Benchmark {spec.name} is not batch swept: {spec.batch_sweep.reason}"
+    )
+  if spec.stepper is step_lib.StepperType.DECODER_ONLY_DECODE:
+    return f"Benchmark {spec.name} is not batch swept: decode is not swept yet"
+  return None
+
+
+def _capped_batch_sizes(
+    spec_name: str,
+    batch_sizes: Iterable[int],
+    opt_in: batch_sweep_benchmarks.BatchSweepOptIn,
+    *,
+    default_batch_size: int,
+) -> set[int]:
+  """Returns the batch sizes to sweep a benchmark at, up to its cap.
+
+  Logs the cap of the benchmark, if it has one, and why.
+
+  Args:
+    spec_name: The name of the benchmark.
+    batch_sizes: The batch sizes to sweep the benchmark at, before its cap.
+    opt_in: How the benchmark opts in to the batch sweep.
+    default_batch_size: The batch size of the default workload of the benchmark,
+      which is measured whatever its cap.
+  """
+  batch_sizes = set(batch_sizes)
+  if opt_in.max_batch_size is None:
+    return batch_sizes
+  capped = {b for b in batch_sizes if b <= opt_in.max_batch_size}
+  dropped = sorted(batch_sizes - capped - {default_batch_size})
+  default_note = (
+      f" (its default batch size {default_batch_size} is still measured)"
+      if default_batch_size > opt_in.max_batch_size
+      else ""
+  )
+  logging.info(
+      "%s: batch sweep capped at %d%s, dropping batch sizes %s: %s",
+      spec_name,
+      opt_in.max_batch_size,
+      default_note,
+      ", ".join(str(b) for b in dropped) or "none",
+      opt_in.max_batch_size_reason,
+  )
+  return capped
+
+
+def get_batch_sweep_cases(
+    platform: target_lib.Platform,
+    framework: mode_lib.Framework,
+    *,
+    batch_sizes: Sequence[int] | None = None,
+    run_modes: Collection[common.RunMode] | None = None,
+    order_seed: str | None = None,
+) -> Iterator[tuple[str, registry_lib.BenchmarkSpec, common.RunMode, int]]:
+  """The cases that `--batch_sweep` adds to those of `get_cases`.
+
+  One case per benchmark that the sweep measures (see
+  `get_batch_sweep_skip_reason`), run mode (those of `run_modes` that
+  `get_cases` has on the platform) and batch size other than that of the
+  benchmark's default workload, whose case `get_cases` already has. The batch
+  sizes of a benchmark are those of its `BatchSweep.batch_sizes`, or else
+  `batch_sizes`, up to the `BatchSweepOptIn.max_batch_size` of the benchmark
+  (whose reason is logged). With `--batch_sweep_only`, `get_cases` has no
+  cases, so there is a case at the default batch size too, even above the cap,
+  and the whole sweep of each benchmark and run mode runs in one process, where
+  it can stop once the throughput stops improving.
+  The cases of a benchmark and run mode are consecutive and in ascending batch
+  size order, so that a runner can skip the batch sizes larger than one that
+  ran out of memory. Benchmarks are in the same deterministic hashed order as
+  in `get_cases`.
+
+  Args:
+    platform: Target hardware platform on which the benchmarks will run.
+    framework: Execution framework (e.g. TORCH or TORCHAX) filtering modes.
+    batch_sizes: The batch sizes to measure benchmarks that do not set their own
+      at; defaults to those of `--batch_sweep_sizes`.
+    run_modes: The run modes to measure benchmarks in, of those of the platform;
+      defaults to those of `--batch_sweep_run_modes`.
+    order_seed: Seed string used for deterministic benchmark ordering; falls
+      back to the TORCH_TPU_BENCHMARK_ORDER_SEED environment variable if None.
+
+  Yields:
+    Tuples of (case_name, spec, run_mode, batch_size).
+  """
+  sweep_flags = flags_lib.batch_sweep_flag_values()
+  if batch_sizes is None:
+    batch_sizes = sweep_flags.batch_sizes
+  if run_modes is None:
+    run_modes = sweep_flags.run_modes
+  if order_seed is None:
+    order_seed = _get_order_seed()
+  run_scope, _ = flags_lib.collection_flag_values()
+  target_kind = target_lib.make_target(platform).device_kind
+  modes = [
+      mode
+      for mode in mode_lib.modes_for(framework, target_kind)
+      if mode in run_modes
+  ]
+  ordered_names = sorted(
+      registry_lib.REGISTRY,
+      key=lambda name: _case_order_key(name, order_seed),
+  )
+  not_opted_in = 0
+  excluded = []
+  for name in ordered_names:
+    spec = registry_lib.REGISTRY[name]
+    if spec.name not in batch_sweep_benchmarks.BATCH_SWEEP_BENCHMARKS:
+      not_opted_in += 1
+      continue
+    skip_reason = get_batch_sweep_skip_reason(spec)
+    if skip_reason is not None:
+      excluded.append(skip_reason)
+      continue
+    default_workload = registry_lib.resolve_workload(
+        spec,
+        context_lib.Context(
+            target=target_lib.make_target(platform, dtype=spec.dtype),
+            run_scope=run_scope,
+        ),
+    )
+    if default_workload is None:  # Excluded above; narrows the type.
+      continue
+    spec_batch_sizes = _capped_batch_sizes(
+        spec.name,
+        spec.batch_sweep.batch_sizes or batch_sizes,
+        batch_sweep_benchmarks.BATCH_SWEEP_BENCHMARKS[spec.name],
+        default_batch_size=default_workload.batch_size,
+    )
+    if sweep_flags.only:
+      spec_batch_sizes.add(default_workload.batch_size)
+    else:
+      spec_batch_sizes.discard(default_workload.batch_size)
+    for mode in modes:
+      for batch_size in sorted(spec_batch_sizes):
+        yield (
+            batch_sweep_case_name(spec.name, batch_size, mode),
+            spec,
+            mode,
+            batch_size,
+        )
+  logging.info(
+      "Left %d benchmarks that are not opted in to the batch sweep"
+      " (BATCH_SWEEP_BENCHMARKS) out of it, and %d that are:%s",
+      not_opted_in,
+      len(excluded),
+      "".join(f"\n  {reason}" for reason in sorted(excluded)),
+  )
 
 
 def get_presubmit_skip_reason(
@@ -500,8 +631,9 @@ def get_skip_reason(
 ) -> str | None:
   """Returns why a case should be skipped, or None if it should run.
 
-  A case is skipped if it matches an entry in `known_failures.KNOWN_FAILURES`,
-  if `spec.skipped_run_modes` lists `mode`, or if, in presubmit scope, the
+  A case is skipped if it matches a known failure in
+  `known_failures.KNOWN_FAILURES` or `known_failures.LAYER_KNOWN_FAILURES`, if
+  `spec.skipped_run_modes` lists `mode`, or if, in presubmit scope, the
   benchmark's `PresubmitPolicy` keeps it out of this run.
   """
   failure_reason = known_failures.get_known_failure_reason(

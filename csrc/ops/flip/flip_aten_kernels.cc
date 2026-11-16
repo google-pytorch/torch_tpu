@@ -47,7 +47,7 @@ absl::StatusOr<mlir::MlirOp> BuildFlipShlo(mlir::MlirOp input_op,
 }  // namespace
 
 at::Tensor AtenFlip(const at::Tensor& self, at::IntArrayRef flip_dims) {
-  Dimensions flip_dims_vec(flip_dims.begin(), flip_dims.end());
+  Dimensions flip_dims_vec = CopyIntVector(flip_dims);
   // Normalize to positive values
   for (auto& dim : flip_dims_vec) {
     if (dim < 0) {

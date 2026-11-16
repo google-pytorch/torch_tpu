@@ -131,6 +131,26 @@ torch_tpu_cc_test(
 )
 
 torch_tpu_py_test(
+    name = "named_scope_test",
+    srcs = ["named_scope_test.py"],
+    tags = [
+        "requires-tpu-v5lite",
+    ],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/compile:tpu_torch_compile",
+        "//src/torch_tpu/_internal/execution_mode",
+        "//src/torch_tpu/_internal/export",
+        "//src/torch_tpu/_internal/profiler:named_scope",
+        "//src/torch_tpu/_internal/utils:test_utils",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
     name = "profiler_integration_test",
     timeout = "long",
     srcs = ["profiler_integration_test.py"],
@@ -140,11 +160,18 @@ torch_tpu_py_test(
         "//shims/absl_py/logging",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
+        "//shims/jax:pallas",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
+        "//src/torch_tpu/_internal/execution_mode",
+        "//src/torch_tpu/_internal/pallas",
+        "//src/torch_tpu/_internal/profiler:named_scope",
         "//src/torch_tpu/_internal/profiler:profiler_config",
         "//src/torch_tpu/_internal/sync",
+        "//src/torch_tpu/_internal/utils",
+        "//tests:oss_utils",
         "//tests:seed_test_utils",
+        "@pypi//jax",
         "@tsl//tsl/profiler/protobuf:profiler_options_proto_py_proto",
         "@tsl//tsl/profiler/protobuf:xplane_proto_py_proto",
     ],

@@ -15,7 +15,8 @@
 """TorchDeviceOps: the torch implementation of the DeviceOps protocol."""
 
 import collections
-from typing import Any, Callable
+from collections.abc import Callable, Sequence
+from typing import Any
 
 import torch
 from torch_tpu._internal.benchmarks import xprof_adapter
@@ -26,7 +27,7 @@ _MB = 2**20
 _NS_PER_SECOND = 1e9
 
 
-def _merge_intervals(intervals: list[tuple[int, int]]) -> int:
+def _merge_intervals(intervals: Sequence[tuple[int, int]]) -> int:
   """Returns the total duration of the union of (start, end) intervals."""
   if not intervals:
     return 0
@@ -199,6 +200,12 @@ class TorchDeviceOps:
       torch.accelerator.synchronize()
       torch.accelerator.reset_peak_memory_stats(self.device)
 
+  def release_cached_memory(self) -> None:
+    """Releases the device memory that the allocator caches but doesn't use."""
+    if self.target.device_kind != target_lib.DeviceKind.CPU:
+      torch.accelerator.synchronize()
+      torch.accelerator.empty_cache()
+
   def peak_memory_mb(self) -> float:
     """Peak device memory in MB since the last reset."""
     if self.target.device_kind == target_lib.DeviceKind.CPU:
@@ -245,6 +252,22 @@ class TorchDeviceOps:
       self.await_result(out)
     self.check_result(out)
     return _cuda_device_time_from_profile(prof)
+
+  def agree_on_step_count(self, steps: int) -> int:
+    """Returns the largest step count proposed by the benchmark's processes.
+
+    The processes of a distributed benchmark must run the same number of steps,
+    as each step runs collectives across them.
+
+    Args:
+      steps: The step count that this process proposes.
+    """
+    if not torch.distributed.is_initialized():
+      return steps
+    # int32, as TorchTPU's all_reduce only sums and averages 64-bit integers.
+    proposal = torch.tensor([steps], dtype=torch.int32, device=self.device)
+    torch.distributed.all_reduce(proposal, op=torch.distributed.ReduceOp.MAX)
+    return int(proposal.item())
 
   def compile_count(self) -> int:
     """Monotonic count of successfully compiled frames this process."""

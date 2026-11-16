@@ -21,6 +21,7 @@
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/pybind_error_utils.h"
+#include "csrc/common/utils.h"
 #include "csrc/experimental/batch_transfer/batch_transfer.h"
 #include "pybind11/attr.h"
 #include "pybind11/cast.h"
@@ -40,12 +41,9 @@ static void PyBatchTransferD2HSync(
     const std::vector<int64_t>& dst_offsets_major_dim,   // INT_VEC_OK
     const std::vector<int64_t>& copy_sizes_major_dim) {  // INT_VEC_OK
   py::gil_scoped_release release;
-  Dimensions src_offsets(src_offsets_major_dim.begin(),
-                         src_offsets_major_dim.end());
-  Dimensions dst_offsets(dst_offsets_major_dim.begin(),
-                         dst_offsets_major_dim.end());
-  Dimensions copy_sizes(copy_sizes_major_dim.begin(),
-                        copy_sizes_major_dim.end());
+  Dimensions src_offsets = CopyIntVector(src_offsets_major_dim);
+  Dimensions dst_offsets = CopyIntVector(dst_offsets_major_dim);
+  Dimensions copy_sizes = CopyIntVector(copy_sizes_major_dim);
   TT_THROW_IF_ERROR(BatchTransferD2HSync(src_arrs, dst_arrs, src_offsets,
                                          dst_offsets, copy_sizes));
 }
@@ -57,12 +55,9 @@ static void PyBatchTransferH2DSync(
     const std::vector<int64_t>& dst_offsets_major_dim,   // INT_VEC_OK
     const std::vector<int64_t>& copy_sizes_major_dim) {  // INT_VEC_OK
   py::gil_scoped_release release;
-  Dimensions src_offsets(src_offsets_major_dim.begin(),
-                         src_offsets_major_dim.end());
-  Dimensions dst_offsets(dst_offsets_major_dim.begin(),
-                         dst_offsets_major_dim.end());
-  Dimensions copy_sizes(copy_sizes_major_dim.begin(),
-                        copy_sizes_major_dim.end());
+  Dimensions src_offsets = CopyIntVector(src_offsets_major_dim);
+  Dimensions dst_offsets = CopyIntVector(dst_offsets_major_dim);
+  Dimensions copy_sizes = CopyIntVector(copy_sizes_major_dim);
   TT_THROW_IF_ERROR(BatchTransferH2DSync(src_arrs, dst_arrs, src_offsets,
                                          dst_offsets, copy_sizes));
 }
@@ -74,12 +69,9 @@ static TransferFuture PyBatchTransferD2H(
     const std::vector<int64_t>& dst_offsets_major_dim,   // INT_VEC_OK
     const std::vector<int64_t>& copy_sizes_major_dim) {  // INT_VEC_OK
   py::gil_scoped_release release;
-  Dimensions src_offsets(src_offsets_major_dim.begin(),
-                         src_offsets_major_dim.end());
-  Dimensions dst_offsets(dst_offsets_major_dim.begin(),
-                         dst_offsets_major_dim.end());
-  Dimensions copy_sizes(copy_sizes_major_dim.begin(),
-                        copy_sizes_major_dim.end());
+  Dimensions src_offsets = CopyIntVector(src_offsets_major_dim);
+  Dimensions dst_offsets = CopyIntVector(dst_offsets_major_dim);
+  Dimensions copy_sizes = CopyIntVector(copy_sizes_major_dim);
   TT_ASSIGN_OR_THROW(auto result,
                      BatchTransferD2H(src_arrs, dst_arrs, src_offsets,
                                       dst_offsets, copy_sizes));
@@ -93,12 +85,9 @@ static TransferFuture PyBatchTransferH2D(
     const std::vector<int64_t>& dst_offsets_major_dim,   // INT_VEC_OK
     const std::vector<int64_t>& copy_sizes_major_dim) {  // INT_VEC_OK
   py::gil_scoped_release release;
-  Dimensions src_offsets(src_offsets_major_dim.begin(),
-                         src_offsets_major_dim.end());
-  Dimensions dst_offsets(dst_offsets_major_dim.begin(),
-                         dst_offsets_major_dim.end());
-  Dimensions copy_sizes(copy_sizes_major_dim.begin(),
-                        copy_sizes_major_dim.end());
+  Dimensions src_offsets = CopyIntVector(src_offsets_major_dim);
+  Dimensions dst_offsets = CopyIntVector(dst_offsets_major_dim);
+  Dimensions copy_sizes = CopyIntVector(copy_sizes_major_dim);
   TT_ASSIGN_OR_THROW(auto result,
                      BatchTransferH2D(src_arrs, dst_arrs, src_offsets,
                                       dst_offsets, copy_sizes));

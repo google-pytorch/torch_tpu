@@ -326,7 +326,7 @@ std::vector<at::Tensor> AtenSparseMapRow(
     int64_t max_non_zeroes_per_row, int64_t pad_value, int64_t max_pad_per_row,
     double wait_threshold, int64_t result_row_pointer_op_index) {
   TT_KERNEL(
-      torch_tpu::OpName::kSparseMapRow, param_keys,
+      OpName::kSparseMapRow, param_keys,
       (csr_tensors, csr_lengths, dense_args, body_mlir, dummy_outputs,
        max_non_zeroes_per_row, pad_value, max_pad_per_row, wait_threshold,
        result_row_pointer_op_index),
@@ -362,8 +362,7 @@ std::vector<at::Tensor> AtenSparseMapRow(
                              ConvertTo<mlir::ElementType>(dummy.scalar_type()));
           out_dtypes.push_back(dtype);
           out_dims_storage.push_back(CopyIntVector(dummy.sizes()));
-          output_shapes.emplace_back(
-              Dimensions(dummy.sizes().begin(), dummy.sizes().end()), dtype);
+          output_shapes.emplace_back(CopyIntVector(dummy.sizes()), dtype);
         }
         for (const auto& dims : out_dims_storage) {
           out_dims_spans.push_back(absl::MakeConstSpan(dims));
@@ -371,8 +370,7 @@ std::vector<at::Tensor> AtenSparseMapRow(
 
         const int64_t total_csr_tensors = csr_tensors.size();
         const int64_t total_dense_args = dense_args.size();
-        const SmallInt64Vector csr_lengths_vec(csr_lengths.begin(),
-                                               csr_lengths.end());
+        const SmallInt64Vector csr_lengths_vec = CopyIntVector(csr_lengths);
 
         // 4. Define the MLIR graph-builder callback invoked during tracing or
         // compilation.
@@ -413,7 +411,7 @@ std::vector<at::Tensor> AtenSparseMapRow(
         // 5. Dispatch op execution on TPU via DispatchOp, compiling or
         // retrieving the cached executable.
         TT_ASSIGN_OR_THROW(
-            auto results, (torch_tpu::DispatchOp<kDynamicSize, kDynamicSize>(
+            auto results, (DispatchOp<kDynamicSize, kDynamicSize>(
                               std::move(builder_fn), all_inputs,
                               {.out_dtypes = out_dtypes_span,
                                .out_dims_list = out_dims_list_span,

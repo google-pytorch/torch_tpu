@@ -266,7 +266,8 @@ absl::StatusOr<at::Tensor> ContiguousToView(
                error::kInvalidArgument)
       << "must specify the same number of strides as dimensions in the tensor";
   TT_RET_CHECK(target_storage_offset >= 0, error::kInvalidArgument)
-      << "target_storage_offset must be non-negative";
+      << "expected target_storage_offset to be >= 0, got "
+      << target_storage_offset;
 
   if (target_storage_offset == 0 &&
       GetStrides(MakeContiguousBaseLayout(contiguous_buffer.dimensions())) ==

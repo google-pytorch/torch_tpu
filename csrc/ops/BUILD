@@ -53,19 +53,6 @@ torch_tpu_cc_test(
 )
 
 torch_tpu_cc_library(
-    name = "xla_utils",
-    srcs = ["xla_utils.cc"],
-    hdrs = ["xla_utils.h"],
-    deps = [
-        "//shims/torch:torch_headers",
-        "//shims/torch/c10/util:base_headers",
-        "//shims/torch/torch/headeronly:torch_headeronly",
-        "@xla//xla:types",
-        "@xla//xla:xla_data_proto_cc",
-    ],
-)
-
-torch_tpu_cc_library(
     name = "op_builder_utils",
     srcs = ["op_builder_utils.cc"],
     hdrs = ["op_builder_utils.h"],
@@ -94,7 +81,6 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
         "@llvm-project//llvm:Support",
-        "@llvm-project//mlir:BytecodeWriter",
         "@llvm-project//mlir:DialectUtils",
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:IR",
@@ -120,7 +106,9 @@ torch_tpu_cc_library(
     hdrs = ["scan_builder.h"],
     deps = [
         ":op_builder_utils",
+        "//csrc/common:dimension_types",
         "//csrc/common:error_utils",
+        "//csrc/common:utils",
         "//shims/torch:aten_headers",
         "@com_google_absl//absl/functional:any_invocable",
         "@com_google_absl//absl/status",
@@ -179,6 +167,7 @@ torch_tpu_cc_test(
         "//csrc/eager:eager_mode",
         "//shims/torch:aten_headers",
         "//shims/torch/c10/core:base_headers",
+        "//shims/torch/c10/util:base_headers",
         "//shims/torch/torch/headeronly:torch_headeronly",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/status",
@@ -198,6 +187,7 @@ torch_tpu_cc_test(
         "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
         "@stablehlo//stablehlo/integrations/cpp/builder:stablehlo_builder",
         "@xla//xla:xla_data_proto_cc",
+        "@xla//xla/mlir/utils:error_util",
     ],
 )
 
@@ -231,6 +221,7 @@ torch_tpu_cc_library(
         "//csrc/eager:eager_mode",
         "//shims/torch",
         "//shims/torch:torch_headers",
+        "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/base:nullability",
         "@com_google_absl//absl/flags:flag",
         "@com_google_absl//absl/log:absl_check",
@@ -243,17 +234,25 @@ torch_tpu_cc_library(
     ],
 )
 
+torch_tpu_cc_library(
+    name = "python_context_testing",
+    testonly = True,
+    hdrs = ["python_context_testing.h"],
+    deps = [":python_context"],
+)
+
 torch_tpu_cc_test(
     name = "python_context_test",
     srcs = ["python_context_test.cc"],
     deps = [
         ":op_names",
         ":python_context",
+        ":python_context_testing",
         "//csrc/common:context_manager",
         "//csrc/common:context_states",
         "//csrc/common:oss_test_main",
         "//shims/torch:torch_headers",
-        "@com_google_absl//absl/cleanup",
+        "//shims/torch/c10/util:base_headers",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Support",
         "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
@@ -286,14 +285,16 @@ torch_tpu_cc_library(
     hdrs = ["unary.h"],
     deps = [
         ":op_builder_utils",
+        "//csrc/common:aten_utils",
         "//csrc/common:dtype",
         "//csrc/common:error_utils",
         "//csrc/common:macro_utils",
-        "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
         "//shims/torch/c10/core:base_headers",
         "//shims/torch/torch/headeronly:torch_headeronly",
+        "@com_google_absl//absl/functional:function_ref",
         "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/types:span",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:IR",
         "@stablehlo//:stablehlo_ops",
@@ -316,6 +317,7 @@ torch_tpu_cc_library(
         "//csrc/common:dimension_types",
         "//csrc/common:dtype",
         "//csrc/common:error_utils",
+        "//csrc/common:to_string",
         "//csrc/common:utils",
         "//csrc/eager:device_buffer",
         "//csrc/eager:op_dispatcher",
@@ -379,21 +381,17 @@ torch_tpu_cc_library(
         ":op_names",
         "//csrc/common:cache_key",
         "//csrc/common:error_utils",
-        "//csrc/common:reroute_warnings",
-        "//csrc/common:thread_pool",
-        "//csrc/eager:device_buffer",
+        "//csrc/eager:current_stream",
         "//csrc/eager:eager_mode",
+        "//csrc/eager:events_queue",
         "//csrc/eager:structured_log_buffer",
         "//csrc/eager:tensor_to_buffer",
-        "//csrc/ops/copy_from:copy_common",
-        "//csrc/ops/copy_from:tpu_to_cpu",
         "//csrc/ops/macros:kernel",
+        "//csrc/pjrt:pjrt_transfer",
         "//shims/torch:aten_headers",
-        "@com_google_absl//absl/base:core_headers",
-        "@com_google_absl//absl/base:no_destructor",
-        "@com_google_absl//absl/cleanup",
+        "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/status",
-        "@com_google_absl//absl/status:statusor",
+        "@xla//xla:future",
     ],
 )
 
@@ -412,6 +410,7 @@ torch_tpu_cc_library(
         "@llvm-project//mlir:Support",
         "@stablehlo//:stablehlo_ops",
         "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
+        "@stablehlo//stablehlo/integrations/cpp/builder:chlo_builder",
         "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
         "@stablehlo//stablehlo/integrations/cpp/builder:stablehlo_builder",
     ],
@@ -462,6 +461,47 @@ torch_tpu_cc_library(
     ],
 )
 
+torch_tpu_cc_test(
+    name = "binary_aten_kernels_test",
+    srcs = ["binary_aten_kernels_test.cc"],
+    exec_properties = {
+        "cpp_link.mem": "16g",
+    },
+    tags = ["requires-tpu-v5lite"],
+    deps = [
+        ":binary",
+        ":binary_aten_kernels",
+        ":op_names",
+        ":python_context",
+        "//csrc/common:cache_key",
+        "//csrc/common:compilation_cache",
+        "//csrc/common:dtype",
+        "//csrc/common:error_utils",
+        "//csrc/common:op_name_stack",
+        "//csrc/common:oss_test_main",
+        "//csrc/common:status_test_utils",
+        "//csrc/eager:device_buffer",
+        "//csrc/eager:events_queue",
+        "//csrc/eager:materialize",
+        "//csrc/eager:tensor_to_buffer",
+        "//csrc/eager:tpu_hooks",
+        "//csrc/ops/copy_from:copy_common",
+        "//csrc/ops/copy_from:tpu_to_cpu",
+        "//csrc/pjrt:pjrt_state",
+        "//csrc/pjrt:pjrt_transfer",
+        "//shims/torch:aten_headers",
+        "//shims/torch/c10/core:base_headers",
+        "//shims/torch/c10/util:base_headers",
+        "//shims/torch/torch/headeronly:torch_headeronly",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/types:span",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
+    ],
+)
+
 torch_tpu_cc_library(
     name = "index_utils",
     srcs = ["index_utils.cc"],
@@ -471,10 +511,11 @@ torch_tpu_cc_library(
         ":op_builder_utils",
         ":op_names",
         "//csrc/common:cache_key",
-        "//csrc/common:device_type",
         "//csrc/common:dimension_types",
         "//csrc/common:dtype",
         "//csrc/common:error_utils",
+        "//csrc/common:to_string",
+        "//csrc/common:utils",
         "//csrc/eager:device_buffer",
         "//csrc/eager:op_dispatcher",
         "//csrc/eager:tensor_to_buffer",
@@ -628,6 +669,7 @@ torch_tpu_cc_test(
         "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
         "@stablehlo//stablehlo/integrations/cpp/builder:func_builder",
         "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
+        "@xla//xla/pjrt:mlir_to_hlo",
     ],
 )
 

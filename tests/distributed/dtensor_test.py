@@ -14,6 +14,7 @@
 
 """Tests DTensor APIs."""
 
+from collections.abc import Sequence
 from absl.testing import absltest
 import torch
 from torch import distributed as dist
@@ -72,7 +73,7 @@ def _range_tensor_2d(n: int) -> torch.Tensor:
 
 
 def _test_redistribute(
-    dtensor: dt.DTensor, new_placements: list[dt.Placement]
+    dtensor: dt.DTensor, new_placements: Sequence[dt.Placement]
 ) -> None:
   """Exercises DTensor.redistribute() and checks the results.
 

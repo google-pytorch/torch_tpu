@@ -34,9 +34,30 @@ cd "$working_dir"
 
 PYTHON_PLATFORM="x86_64-manylinux_2_31"
 
+verify_pinned_torch() {
+  local req_file="$1"
+  local expected_torch="$2"
+  local pinned
+  pinned=$(grep -m1 '^torch==' "$req_file" | awk '{print $1}' | cut -d'=' -f3 | cut -d'+' -f1)
+  if [ "$pinned" != "$expected_torch" ]; then
+    echo "ERROR: $req_file pins torch==$pinned, but expected torch==$expected_torch" >&2
+    echo "(from bazel/pytorch_versions.bzl)." >&2
+    exit 1
+  fi
+}
+
 # Loop over supported Python versions and generate the full-environment locks.
-for version in "3.11" "3.12" "3.13" "3.14"; do
+for version in "3.11" "3.12" "3.13" "3.14" "3.15"; do
   version_und=$(echo "$version" | tr '.' '_')
+  EXTRA_LOCK_ARGS=()
+  if [ -f "requirements/constraints_${version_und}.txt" ]; then
+    EXTRA_LOCK_ARGS+=(--constraint "requirements/constraints_${version_und}.txt")
+  fi
+  if [ -f "requirements/overrides_${version_und}.txt" ]; then
+    EXTRA_LOCK_ARGS+=(--overrides "requirements/overrides_${version_und}.txt")
+  fi
+  EXPECTED_TORCH=$(uv run --no-project bazel/pytorch_versions.py --python-version "$version" DEFAULT_TORCH_VERSION)
+
   REQUIREMENTS_FILE="requirements/requirements_${version_und}.txt"
 
   echo "Generating lock file for Python $version -> $REQUIREMENTS_FILE"
@@ -51,7 +72,9 @@ for version in "3.11" "3.12" "3.13" "3.14"; do
     --python-platform "$PYTHON_PLATFORM" \
     --resolution lowest-direct \
     --generate-hashes \
+    "${EXTRA_LOCK_ARGS[@]}" \
     --output-file "$REQUIREMENTS_FILE"
+  verify_pinned_torch "$REQUIREMENTS_FILE" "$EXPECTED_TORCH"
 
   REQUIREMENTS_CUDA_FILE="requirements/requirements_cuda_${version_und}.txt"
   echo "Generating CUDA lock file for Python $version -> $REQUIREMENTS_CUDA_FILE"
@@ -69,12 +92,16 @@ for version in "3.11" "3.12" "3.13" "3.14"; do
     --resolution lowest-direct \
     --generate-hashes \
     --index-url https://pypi.org/simple \
+    "${EXTRA_LOCK_ARGS[@]}" \
     --output-file "$REQUIREMENTS_CUDA_FILE"
+  verify_pinned_torch "$REQUIREMENTS_CUDA_FILE" "$EXPECTED_TORCH"
 done
 
-# Full-environment lock for the latest supported Python version pinning the upper
-# bound of all dependencies.
-# Keep in sync with the latest version in bazel/supported_python_versions.bzl.
+# Full-environment lock for DEFAULT_PYTHON_VERSION pinning the upper bound of
+# all dependencies. Kept at 3.14 (DEFAULT_PYTHON_VERSION in
+# bazel/supported_python_versions.bzl) while Python 3.15 requires package
+# exclusions in requirements/overrides_3_15.txt; passes overrides_3_15.txt so
+# torchax resolves to the PyTorch-2.15-compatible 0.0.14 pre-release.
 LATEST_PYTHON_VERSION="3.14"
 latest_version_und=$(echo "$LATEST_PYTHON_VERSION" | tr '.' '_')
 REQUIREMENTS_FILE="requirements/requirements_${latest_version_und}_latest.txt"
@@ -90,6 +117,7 @@ uv pip compile pyproject.toml \
   --python-platform "$PYTHON_PLATFORM" \
   --resolution highest \
   --generate-hashes \
+  --overrides requirements/overrides_3_15.txt \
   --output-file "$REQUIREMENTS_FILE"
 
 # Torch-only locks for the extra PyTorch versions the multi-ABI wheel ships a

@@ -22,6 +22,7 @@ SliceBuilder ports, and the launch-environment caching across back-to-back
 `dist_run` calls. The CPU tests live in `distributed_utils_test.py`.
 """
 
+from collections.abc import Sequence, Set
 import os
 
 from absl.testing import absltest
@@ -92,11 +93,11 @@ class DistributedUtilsTpuTest(seed_test_utils.MultiProcessRepeatableTest):
           f"expected at least {_TPU_NPROC} TPU devices, got {device_count}"
       )
 
-  def _read_attempts(self, output_dir: str) -> list[str]:
+  def _read_attempts(self, output_dir: str) -> Sequence[str]:
     with open(os.path.join(output_dir, _ATTEMPTS_FILE)) as f:
       return [line.strip() for line in f if line.strip()]
 
-  def _local_ports(self, addresses: str) -> set[int]:
+  def _local_ports(self, addresses: str) -> Set[int]:
     """Returns the ports of a single-host `host:port,...` address list."""
     parts = addresses.split(",")
     self.assertLen(parts, _TPU_NPROC)
@@ -108,7 +109,7 @@ class DistributedUtilsTpuTest(seed_test_utils.MultiProcessRepeatableTest):
     self.assertLen(ports, _TPU_NPROC)  # No duplicates within one attempt.
     return ports
 
-  def _assert_disjoint_fresh_ports(self, attempts: list[str]) -> None:
+  def _assert_disjoint_fresh_ports(self, attempts: Sequence[str]) -> None:
     """Asserts every attempt used `_TPU_NPROC` ports unseen by any other."""
     self.assertLen(attempts, 2)
     first, second = (self._local_ports(a) for a in attempts)

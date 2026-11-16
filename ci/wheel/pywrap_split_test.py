@@ -147,9 +147,7 @@ def _strong_defined_symbols(so: pathlib.Path) -> Sequence[str]:
   return _demangle(mangled)
 
 
-class PywrapSplitTest(
-    parameterized.TestCase,  # ABSLTEST_OK=standalone wheel packaging test
-):
+class PywrapSplitTest(parameterized.TestCase):
 
   @classmethod
   def setUpClass(cls):

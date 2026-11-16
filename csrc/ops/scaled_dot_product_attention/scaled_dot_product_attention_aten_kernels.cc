@@ -16,6 +16,7 @@
 
 #include "csrc/ops/scaled_dot_product_attention/scaled_dot_product_attention_aten_kernels.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <optional>
@@ -44,6 +45,7 @@
 #include "csrc/ops/scaled_dot_product_attention/flash_attention_kernel_builder.h"
 #include "csrc/ops/scaled_dot_product_attention/helpers.h"
 #include "csrc/ops/scaled_dot_product_attention/scaled_dot_product_attention_shlo.h"
+#include "llvm/Support/MathExtras.h"
 #include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
@@ -106,11 +108,63 @@ bool IsSupportedFlashAttentionShape(
   return has_batch && valid_head_dim;
 }
 
-// Returns true if both the query and key sequences are shorter than the minimum
-// tile size (128) that the flash attention kernel pads them to.
-bool AreBothSequencesShort(const at::Tensor& query, const at::Tensor& key) {
-  constexpr int64_t kMinFlashSeqLen = 128;
-  return query.size(-2) < kMinFlashSeqLen && key.size(-2) < kMinFlashSeqLen;
+// Returns true if StableHLO SDPA should be preferred over the FlashAttention
+// custom call for `query`, `key`, and `value` based on FlashAttention's
+// single-tile threshold and the device VMEM score-footprint limit.
+bool ShouldPreferShloSdpa(const at::Tensor& query, const at::Tensor& key,
+                          const at::Tensor& value) {
+  const int64_t rank = query.ndimension();
+  const int64_t q_seq_len = query.size(rank - 2);
+  const int64_t kv_seq_len = key.size(rank - 2);
+
+  // Sequences within kFlashMinSplitTileSize (256) never split into multiple
+  // FlashAttention blocks (num_q_blocks == 1 && num_kv_blocks == 1), so
+  // FlashAttention provides no online-softmax VMEM streaming benefit while
+  // adding custom-call fusion barriers and up to 256-lane tile padding.
+  if (q_seq_len <= kFlashMinSplitTileSize &&
+      kv_seq_len <= kFlashMinSplitTileSize) {
+    return true;
+  }
+
+  // Any sequence shorter than kFlashMinHardwareTileSize (128) is zero-padded
+  // to 128 lanes by the FlashAttention kernel, whereas StableHLO SDPA folds
+  // GQA heads into DotGeneral without lane padding.
+  if (std::min(q_seq_len, kv_seq_len) >= kFlashMinHardwareTileSize) {
+    return false;
+  }
+
+  const int64_t batch_size = get_batch_size(query.sizes());
+  const int64_t num_head_q = query.size(rank - 3);
+  const int64_t num_head_kv = key.size(rank - 3);
+  if (batch_size <= 0 || num_head_q <= 0 || num_head_kv <= 0) {
+    return true;
+  }
+
+  const int64_t vmem_limit_bytes = GetFlashDeviceVmemLimitBytes();
+  const bool requires_grad =
+      c10::GradMode::is_enabled() &&
+      (query.requires_grad() || key.requires_grad() || value.requires_grad());
+
+  const double score_elems_per_head =
+      static_cast<double>(q_seq_len) * static_cast<double>(kv_seq_len);
+  const double total_score_bytes = static_cast<double>(batch_size) *
+                                   static_cast<double>(num_head_q) *
+                                   score_elems_per_head * sizeof(float);
+  // In training, StableHLO backward has no online-softmax fusion and
+  // materializes the [B, N, S_q, S_kv] softmax and dP tensors across its
+  // backward contractions when total_score_bytes exceeds VMEM.
+  if (requires_grad) {
+    return total_score_bytes <= static_cast<double>(vmem_limit_bytes);
+  }
+
+  // In forward inference, XLA fuses softmax per GQA head group with two live
+  // fp32 score tiles in VMEM.
+  const int64_t head_group_size =
+      std::max<int64_t>(1, llvm::divideCeil(num_head_q, num_head_kv));
+  const double group_live_score_bytes = 2.0 *
+                                        static_cast<double>(head_group_size) *
+                                        score_elems_per_head * sizeof(float);
+  return group_live_score_bytes <= static_cast<double>(vmem_limit_bytes);
 }
 
 }  // namespace
@@ -173,7 +227,7 @@ int64_t AtenFusedSdpChoice(const at::Tensor& query, const at::Tensor& key,
             // The SHLO implementation is faster for short sequences. Prefer it
             // unless SDPA is restricted to the flash backend.
             if (shlo_enabled && shlo_supported &&
-                AreBothSequencesShort(query, key)) {
+                ShouldPreferShloSdpa(query, key, value)) {
               return static_cast<int64_t>(at::SDPBackend::overrideable);
             }
             return static_cast<int64_t>(at::SDPBackend::cudnn_attention);

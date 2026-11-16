@@ -25,6 +25,7 @@
 #include "c10/core/Scalar.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/utils.h"
 #include "csrc/ops/cumsum/cumsum.h"
 #include "csrc/ops/index_select/index_select.h"
 #include "csrc/ops/op_builder_utils.h"
@@ -33,6 +34,7 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Location.h"
 #include "mlir/IR/Value.h"
+#include "mlir/Support/LLVM.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
@@ -355,7 +357,7 @@ absl::StatusOr<std::array<mlir::MlirOp, 2>> BuildSliceCoalescedShlo(
   const mlir::ArrayRef<int64_t> val_shape =
       GetTensorTypeOrDie(compacted_values_op).getShape();
   Dimensions start(val_shape.size(), 0);
-  Dimensions limit(val_shape.begin(), val_shape.end());
+  Dimensions limit = CopyIntVector(val_shape);
   limit[0] = output_size;
   Dimensions strides(val_shape.size(), 1);
   mlir::MlirOp sliced_values =

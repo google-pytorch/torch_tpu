@@ -62,7 +62,6 @@ class StatusBuilderWithMessage;
 //   together when the result status is built.
 class [[nodiscard]] StatusBuilder {
  public:
-  explicit StatusBuilder();
   ~StatusBuilder();
 
   // Creates a `StatusBuilder` based on an original status.

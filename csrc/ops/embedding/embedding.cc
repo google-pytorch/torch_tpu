@@ -27,6 +27,7 @@
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/utils.h"
 #include "csrc/ops/cumsum/cumsum.h"
 #include "csrc/ops/index_select/index_select.h"
 #include "csrc/ops/op_builder_utils.h"
@@ -38,6 +39,7 @@
 #include "mlir/IR/Block.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Types.h"
 #include "mlir/IR/Value.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
@@ -66,8 +68,7 @@ absl::StatusOr<mlir::MlirOp> BuildEmbeddingGather(mlir::MlirBuilder& builder,
       &builder.getContext(), offset_dims, /*collapsed_slice_dims=*/{0},
       /*operand_batching_dims=*/{}, /*start_index_batching_dims=*/{},
       /*start_index_map=*/{0}, /*index_vector_dim=*/indices_rank);
-  Dimensions slice_sizes(weight_type.getShape().begin(),
-                         weight_type.getShape().end());
+  Dimensions slice_sizes = CopyIntVector(weight_type.getShape());
   slice_sizes[0] = 1;
   return mlir::stablehlo::Gather(weight, indices, dimension_numbers,
                                  slice_sizes);
@@ -532,8 +533,7 @@ absl::StatusOr<mlir::MlirOp> BuildEmbeddingShlo(mlir::MlirOp weight,
     if (indices_rank == 0) {
       out_shape = {embedding_dim};
     } else {
-      out_shape = Dimensions(indices_type.getShape().begin(),
-                             indices_type.getShape().end());
+      out_shape = CopyIntVector(indices_type.getShape());
       out_shape.push_back(embedding_dim);
     }
     const auto out_type =
@@ -879,12 +879,11 @@ absl::StatusOr<mlir::MlirOp> BuildEmbeddingDenseBackwardShlo(
     TT_ASSIGN_OR_RETURN(formatted_grad_output,
                         Unsqueeze(grad_output_converted, 0));
   } else if (grad_tensor_type.getRank() > 2) {
-    TT_ASSIGN_OR_RETURN(formatted_grad_output,
-                        ReshapeFromStaticDimensions(
-                            grad_output_converted,
-                            Dimensions(grad_tensor_type.getShape().begin(),
-                                       grad_tensor_type.getShape().end()),
-                            {num_indices, embedding_dim}));
+    TT_ASSIGN_OR_RETURN(
+        formatted_grad_output,
+        ReshapeFromStaticDimensions(grad_output_converted,
+                                    CopyIntVector(grad_tensor_type.getShape()),
+                                    {num_indices, embedding_dim}));
   }
 
   if (padding_idx.expect_int() >= 0) {

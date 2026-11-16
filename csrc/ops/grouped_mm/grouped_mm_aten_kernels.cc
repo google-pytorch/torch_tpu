@@ -30,7 +30,6 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
-#include "c10/util/SmallVector.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
@@ -46,7 +45,6 @@
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/precision_context.h"
-#include "csrc/ops/resize/resize_aten_kernels.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Types.h"
@@ -433,10 +431,20 @@ absl::StatusOr<mlir::MlirOp> BuildGroupedMmShlo(
     std::optional<mlir::MlirOp> offs_op, mlir::ElementType out_dtype,
     mlir::stablehlo::Precision precision) {
   const mlir::RankedTensorType self_type = GetTensorTypeOrDie(self_op);
-  const bool transpose_mat2 = UnwrapTransposed3dMat2(mat2_op);
-  const mlir::RankedTensorType mat2_type = GetTensorTypeOrDie(mat2_op);
-
   const bool a_is_2d = self_type.getRank() == 2;
+  // For the ragged 2D x 3D case, keep a [0, 2, 1] transpose of mat2 explicit
+  // instead of folding it into the RaggedDot rhs contracting dim. Folding hands
+  // XLA:TPU a contracting-dim-minor [g, n, k] rhs, for which TPU layout
+  // assignment keeps k in lanes and the RaggedDotExpander tiling search can
+  // fail (e.g. HF Gemma 4 gate_up [128, 1408, 2816]: estimated_cycles=INT64_MAX
+  // and [1, 16, 1] windows, ~50x slower). With an explicit [g, k, n] rhs, XLA
+  // fuses the relayout into the matmul operand.
+  // TODO: b/579516880 - Remove once XLA:TPU handles k-minor ragged dot rhs.
+  const bool keep_explicit_mat2_transpose =
+      a_is_2d && GetTensorTypeOrDie(mat2_op).getRank() == 3;
+  const bool transpose_mat2 =
+      !keep_explicit_mat2_transpose && UnwrapTransposed3dMat2(mat2_op);
+  const mlir::RankedTensorType mat2_type = GetTensorTypeOrDie(mat2_op);
   const bool b_is_2d = mat2_type.getRank() == 2;
 
   // Upcast input tensors to the computation precision (e.g., F32 or BF16)
@@ -656,7 +664,7 @@ absl::Status ValidateGroupedMmInputs(const at::Tensor& self,
   return absl::OkStatus();
 }
 
-absl::StatusOr<c10::SmallVector<int64_t, 3>> GetGroupedMmOutputSize(
+absl::StatusOr<Dimensions> GetGroupedMmOutputSize(
     const at::Tensor& self, const at::Tensor& mat2,
     const std::optional<at::Tensor>& offs) {
   const bool a_is_2d = self.dim() == 2;
@@ -678,7 +686,7 @@ absl::StatusOr<c10::SmallVector<int64_t, 3>> GetGroupedMmOutputSize(
            "tensors";
   }
 
-  c10::SmallVector<int64_t, 3> out_size;
+  Dimensions out_size;
   if (a_is_2d) {
     if (b_is_2d) {
       out_size = {offs->size(0), self.size(0), mat2.size(1)};
@@ -721,13 +729,12 @@ absl::StatusOr<DeviceBufferRef> GroupedMm(
 
   const bool has_offs = offs.has_value() && offs->defined();
 
-  TT_ASSIGN_OR_RETURN(auto out_size, GetGroupedMmOutputSize(self, mat2, offs));
+  TT_ASSIGN_OR_RETURN(Dimensions out_dims,
+                      GetGroupedMmOutputSize(self, mat2, offs));
 
   at::ScalarType target_dtype = out_dtype.value_or(self.scalar_type());
   TT_ASSIGN_OR_RETURN(mlir::ElementType output_elem_type,
                       ConvertTo<mlir::ElementType>(target_dtype));
-
-  Dimensions out_dims_vec(out_size.begin(), out_size.end());
 
   const auto current_precision = GetAndAddPrecisionTo(param_keys);
 
@@ -754,7 +761,7 @@ absl::StatusOr<DeviceBufferRef> GroupedMm(
       auto result_buffer,
       DispatchOp<kDynamicSize>(std::move(op_builder), inputs,
                                {.out_dtype = output_elem_type,
-                                .out_dims = out_dims_vec,
+                                .out_dims = out_dims,
                                 .op_param_cache_keys = std::move(param_keys)}));
   return result_buffer;
 }
@@ -770,7 +777,8 @@ absl::StatusOr<DeviceBufferRef> ScaledGroupedMm(
   const bool has_scale_result =
       scale_result.has_value() && scale_result->defined();
 
-  TT_ASSIGN_OR_RETURN(auto out_size, GetGroupedMmOutputSize(self, mat2, offs));
+  TT_ASSIGN_OR_RETURN(Dimensions out_dims,
+                      GetGroupedMmOutputSize(self, mat2, offs));
 
   const bool tensorwise = IsScalar(scale_a) && IsScalar(scale_b);
   const bool rowwise = IsRowwiseScales(self, mat2, scale_a, scale_b, offs);
@@ -794,7 +802,6 @@ absl::StatusOr<DeviceBufferRef> ScaledGroupedMm(
   TT_ASSIGN_OR_RETURN(mlir::ElementType output_elem_type,
                       ConvertTo<mlir::ElementType>(target_dtype));
 
-  Dimensions out_dims_vec(out_size.begin(), out_size.end());
   const auto current_precision = GetAndAddPrecisionTo(param_keys);
 
   std::vector<at::Tensor> inputs = {self, mat2, scale_a, scale_b};
@@ -831,7 +838,7 @@ absl::StatusOr<DeviceBufferRef> ScaledGroupedMm(
       auto result_buffer,
       DispatchOp<kDynamicSize>(std::move(op_builder), inputs,
                                {.out_dtype = output_elem_type,
-                                .out_dims = out_dims_vec,
+                                .out_dims = out_dims,
                                 .op_param_cache_keys = std::move(param_keys)}));
   return result_buffer;
 }
@@ -1086,10 +1093,8 @@ at::Tensor& AtenScaledGroupedMmV2Out(
         TT_THROW_IF_ERROR(
             ValidateOutDtype(out, out_dtype.value_or(self.scalar_type()),
                              /*allow_out_dtype_cast=*/false));
-        TT_THROW_IF_ERROR(
-            ResizeTensorIfShapeDiffers(out, result_buffer.dimensions()));
-        TT_THROW_IF_ERROR(
-            AssignBufferToAtTensor(std::move(result_buffer), out));
+        TT_THROW_IF_ERROR(internal::AssignBufferToOutput(
+            out, std::move(result_buffer), /*enable_autodonation=*/false));
         return out;
       });
 }

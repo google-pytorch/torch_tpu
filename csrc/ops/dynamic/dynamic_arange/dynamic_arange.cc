@@ -124,14 +124,13 @@ at::Tensor DynamicArange(const at::Tensor& start, const at::Tensor& end,
       OpName::kDynamicArange, param_keys, (start, end, step, max_length, dtype),
       {
         TT_CHECK_THROW(start.dim() == 0, error::kInvalidArgument)
-            << "expected a 0-dimensional tensor for start, got " << start.dim()
-            << "-dimensional tensor";
+            << "expected a 0D tensor for start, got " << start.dim()
+            << "D tensor";
         TT_CHECK_THROW(end.dim() == 0, error::kInvalidArgument)
-            << "expected a 0-dimensional tensor for end, got " << end.dim()
-            << "-dimensional tensor";
+            << "expected a 0D tensor for end, got " << end.dim() << "D tensor";
         TT_CHECK_THROW(step.dim() == 0, error::kInvalidArgument)
-            << "expected a 0-dimensional tensor for step, got " << step.dim()
-            << "-dimensional tensor";
+            << "expected a 0D tensor for step, got " << step.dim()
+            << "D tensor";
 
         TT_CHECK_THROW(c10::isIntegralType(dtype, /*includeBool=*/false) ||
                            c10::isFloatingType(dtype),

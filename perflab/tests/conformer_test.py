@@ -20,6 +20,7 @@ from absl.testing import absltest
 import torch
 from perflab import context as context_lib
 from perflab import mode as mode_lib
+from perflab import registry as registry_lib
 from perflab import target as target_lib
 from perflab.models import conformer
 from tests import seed_test_utils
@@ -48,13 +49,20 @@ class ConformerTest(seed_test_utils.RepeatableTest):
     self.assertTrue(torch.equal(explicit, expected_explicit))
 
   def test_conformer_forward_and_training_in_fake_tensor_mode(self):
-    presubmit_ctx = context_lib.Context(
-        target=target_lib.make_target(target_lib.Platform.CPU),
-        run_scope=context_lib.RunScope.PRESUBMIT,
+    spec = registry_lib.REGISTRY["conformer_forward"]
+    presubmit_ctx = registry_lib.resolve_context(
+        spec,
+        context_lib.Context(
+            target=target_lib.make_target(target_lib.Platform.CPU),
+            run_scope=context_lib.RunScope.PRESUBMIT,
+        ),
     )
-    full_ctx = context_lib.Context(
-        target=target_lib.make_target(target_lib.Platform.CPU),
-        run_scope=context_lib.RunScope.FULL,
+    full_ctx = registry_lib.resolve_context(
+        spec,
+        context_lib.Context(
+            target=target_lib.make_target(target_lib.Platform.CPU),
+            run_scope=context_lib.RunScope.FULL,
+        ),
     )
     with mode_lib.fake_tensor_context():
       with mock.patch.object(

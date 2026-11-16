@@ -17,7 +17,6 @@
 #include "csrc/ops/fmin/fmin_aten_kernels.h"
 
 #include "ATen/core/ATen_fwd.h"
-#include "ATen/core/TensorBody.h"
 #include "absl/status/statusor.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/error_utils.h"

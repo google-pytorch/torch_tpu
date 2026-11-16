@@ -763,8 +763,7 @@ def run_all_to_all_single_negative_split_size_error() -> None:
   input_split_sizes = [-1, 3] + [1] * (world_size - 2)
   output_split_sizes = [1] * world_size
   expected_msg = (
-      "distributed.all_to_all_single(): expected split sizes to be"
-      " non-negative, got -1"
+      "distributed.all_to_all_single(): expected split sizes to be >= 0, got -1"
   )
   with et.assert_raises_message(RuntimeError, tpu=expected_msg):
     torch.distributed.all_to_all_single(

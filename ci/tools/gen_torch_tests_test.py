@@ -42,7 +42,7 @@ _SAMPLE_BUILD_FILE_TEMPLATE: Final[str] = textwrap.dedent(f"""\
     """)
 
 
-class GenTorchTestsTest(unittest.TestCase):  # UNITTEST_OK=testing tools
+class GenTorchTestsTest(unittest.TestCase):
   """Unit tests for PyTorch test target generator."""
 
   def setUp(self):

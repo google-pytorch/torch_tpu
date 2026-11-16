@@ -20,7 +20,15 @@
     "type": "MODULE"
   },
   {
+    "importable_package_attributes": [
+      "get_pallas_mesh",
+      "jax_op"
+    ],
     "name": "torch.tpu.pallas",
+    "type": "PACKAGE"
+  },
+  {
+    "name": "torch.tpu.pallas.verifier",
     "type": "MODULE"
   },
   {

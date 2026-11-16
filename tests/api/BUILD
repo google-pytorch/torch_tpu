@@ -26,11 +26,17 @@ load(
     "torch_tpu_py_test",
 )
 load("//build_files:wheel.bzl", "WHEEL_PY_TARGETS")
-load("//shims/py_rules:pytype.bzl", "pytype_strict_binary")
+load("//shims/py_rules:py_binary.bzl", "py_binary")
 
 package(
     default_applicable_licenses = ["//:license"],
     default_visibility = ["//:__subpackages__"],
+)
+
+# Read by //src/torch_tpu/oss/tools:scan_external_api_uses.
+exports_files(
+    ["tt_apis.yaml"],
+    visibility = ["//src/torch_tpu/oss/tools:__pkg__"],
 )
 
 # Everything that the wheel ships, so that scan_tt_apis can import all of its
@@ -59,10 +65,11 @@ torch_tpu_py_library(
 
 # Updates tt_apis.yaml and docs/public_apis.md in the workspace. Run it
 # on a TPU VM with `bazel run` and the newest supported dependencies in OSS.
-pytype_strict_binary(
+py_binary(
     name = "scan_tt_apis",
     srcs = ["scan_tt_apis.py"],
     main = "scan_tt_apis.py",
+    type_checking = True,
     deps = [
         ":scan_tt_apis_lib",
     ],
@@ -125,12 +132,12 @@ filegroup(
     srcs = [
         "exposed_internal_apis.yaml",
         "tt_apis.yaml",
+        "//docs:all_doc_files_recursive",
+        "//docs:all_ipynb_files_recursive",
+        "//docs:all_py_files_recursive",
         "//docs/notebooks:all_doc_files_recursive",
         "//docs/notebooks:all_ipynb_files_recursive",
         "//docs/notebooks:all_py_files_recursive",
-        "//docs/source:all_doc_files_recursive",
-        "//docs/source:all_ipynb_files_recursive",
-        "//docs/source:all_py_files_recursive",
         "//examples:all_doc_files_recursive",
         "//examples:all_ipynb_files_recursive",
         "//examples:all_py_files_recursive",
@@ -150,19 +157,20 @@ torch_tpu_py_library(
     ],
 )
 
-pytype_strict_binary(
+py_binary(
     name = "scan_exposed_internal_apis",
     srcs = ["scan_exposed_internal_apis.py"],
     data = [":exposed_internal_apis_data"],
     main = "scan_exposed_internal_apis.py",
+    type_checking = True,
     deps = [
         ":scan_exposed_internal_apis_lib",
     ],
 )
 
 # Fails if exposed_internal_apis.yaml is out of sync with the internal APIs and
-# environment variables that the docs and examples use. It scans
-# docs/notebooks, docs/source and examples.
+# environment variables that the docs and examples use. It scans docs,
+# docs/notebooks, and examples.
 torch_tpu_py_test(
     name = "exposed_internal_apis_test",
     srcs = ["exposed_internal_apis_test.py"],

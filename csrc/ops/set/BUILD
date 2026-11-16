@@ -39,7 +39,6 @@ torch_tpu_cc_library(
         "//csrc/ops/macros:kernel",
         "//csrc/ops/stride:stride_helper",
         "//shims/torch:aten_headers",
-        "//shims/torch:torch_headers",
         "//shims/torch/c10/core:base_headers",
         "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
     ],

@@ -24,7 +24,6 @@
 #include "csrc/common/status_test_utils.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/materialize.h"
-#include "csrc/eager/split_traversal.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/eager/tpu_hooks.h"
@@ -69,9 +68,7 @@ TEST(ShutdownTest, E2EShutdownCompletes) {
 
   // Trigger materialization. We don't await the result because we just want to
   // start the process and then shutdown.
-  ASSERT_EQ(Materialize(refs, MaterializationReason::kExplicitSync,
-                        GraphSplitMode::kSplitGraph,
-                        MaterializationBlockMode::kNonBlocking),
+  ASSERT_EQ(Materialize(refs, MaterializationReason::kExplicitSync),
             absl::OkStatus());
 
   // 4. Call ShutDownMaterializationState().

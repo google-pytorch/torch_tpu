@@ -16,13 +16,13 @@
 
 #include "csrc/ops/addcdiv/addcdiv_aten_kernels.h"
 
+#include <optional>
 #include <utility>
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/native/TypeProperties.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
-#include "c10/core/ScalarType.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/device_type.h"
@@ -42,10 +42,12 @@
 namespace torch_tpu {
 namespace {
 
+// Returns self + value * (tensor1 / tensor2). If value is nullopt, assumes
+// value is 1 and omits the multiplication.
 absl::StatusOr<mlir::MlirOp> BuildAddcdivShlo(mlir::MlirOp self,
                                               mlir::MlirOp tensor1,
                                               mlir::MlirOp tensor2,
-                                              mlir::MlirOp value,
+                                              std::optional<mlir::MlirOp> value,
                                               mlir::ElementType promoted_dtype,
                                               mlir::ElementType out_dtype) {
   TT_ASSIGN_OR_RETURN(mlir::ElementType compute_dtype,
@@ -56,12 +58,15 @@ absl::StatusOr<mlir::MlirOp> BuildAddcdivShlo(mlir::MlirOp self,
                       ComplexSafeConvertElementType(tensor1, compute_dtype));
   TT_ASSIGN_OR_RETURN(tensor2,
                       ComplexSafeConvertElementType(tensor2, compute_dtype));
-  TT_ASSIGN_OR_RETURN(value,
-                      ComplexSafeConvertElementType(value, compute_dtype));
 
   TT_ASSIGN_OR_RETURN(mlir::MlirOp div, BuildDivShlo(tensor1, tensor2));
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp value_div, BuildMulShlo(value, div));
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp result, BuildAddShlo(self, value_div));
+  mlir::MlirOp term = div;
+  if (value.has_value()) {
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp value_op,
+                        ComplexSafeConvertElementType(*value, compute_dtype));
+    TT_ASSIGN_OR_RETURN(term, BuildMulShlo(value_op, div));
+  }
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp result, BuildAddShlo(self, term));
   return ComplexSafeConvertElementType(result, out_dtype);
 }
 
@@ -70,17 +75,15 @@ absl::StatusOr<mlir::MlirOp> BuildAddcdivShlo(mlir::MlirOp self,
 at::Tensor& AtenAddcdivOut(const at::Tensor& self, const at::Tensor& tensor1,
                            const at::Tensor& tensor2, const at::Scalar& value,
                            at::Tensor& out) {
-  auto promoted_value = PromoteScalar(value);
+  auto promoted_value = PromoteScalar(value).AvoidPromoting(ScalarValue::kOne);
   TT_KERNEL(
-      OpName::kAddcdivOut, _, (self, tensor1, tensor2, promoted_value, out), {
+      OpName::kAddcdivOut, param_keys,
+      (self, tensor1, tensor2, promoted_value, out), {
         TT_CHECK_THROW(IsPrivateUse1Device(out), error::kInvalidArgument)
             << "expected out tensor to be on "
             << GetPrivateUse1DeviceDebugName() << ", got " << out.device();
 
-        TT_CHECK_THROW(!(c10::isIntegralType(tensor1.scalar_type(),
-                                             /*includeBool=*/true) &&
-                         c10::isIntegralType(tensor2.scalar_type(),
-                                             /*includeBool=*/true)),
+        TT_CHECK_THROW(!IsIntegral(tensor1) || !IsIntegral(tensor2),
                        error::kInvalidArgument)
             << "integer division with addcdiv is no longer supported; use "
                "(input + value * torch.trunc(tensor1 / "
@@ -119,11 +122,30 @@ at::Tensor& AtenAddcdivOut(const at::Tensor& self, const at::Tensor& tensor1,
             << "value cannot be converted to type " << ToString(acc_type)
             << " without overflow";
 
-        TT_ASSIGN_OR_THROW(at::Tensor value_tensor, promoted_value.GetTensor());
         TT_ASSIGN_OR_THROW(mlir::ElementType promoted_dtype,
                            ConvertTo<mlir::ElementType>(promoted_type));
         TT_ASSIGN_OR_THROW(mlir::ElementType out_dtype,
                            ConvertTo<mlir::ElementType>(out.scalar_type()));
+
+        if (promoted_value.IsOne()) {
+          auto op_builder = [promoted_dtype,
+                             out_dtype](FixedSizeSpan<mlir::MlirOp, 3> inputs)
+              -> absl::StatusOr<mlir::MlirOp> {
+            auto& [self_op, tensor1_op, tensor2_op] = inputs;
+            return BuildAddcdivShlo(self_op, tensor1_op, tensor2_op,
+                                    std::nullopt, promoted_dtype, out_dtype);
+          };
+
+          TT_THROW_IF_ERROR(DispatchOpOut<3>(
+              std::move(op_builder), {self, tensor1, tensor2}, out,
+              {.out_dtype = out_dtype,
+               .out_dims = expected_size,
+               .op_param_cache_keys = std::move(param_keys)}));
+          return out;
+        }
+
+        TT_ASSIGN_OR_THROW(at::Tensor value_tensor,
+                           promoted_value.GetTensor(acc_type));
 
         // Build the op.
         auto op_builder = [promoted_dtype,
@@ -138,7 +160,7 @@ at::Tensor& AtenAddcdivOut(const at::Tensor& self, const at::Tensor& tensor1,
             std::move(op_builder), {self, tensor1, tensor2, value_tensor}, out,
             {.out_dtype = out_dtype,
              .out_dims = expected_size,
-             .op_param_cache_keys = OpParamCacheKeys::Empty()}));
+             .op_param_cache_keys = std::move(param_keys)}));
         return out;
       });
 }

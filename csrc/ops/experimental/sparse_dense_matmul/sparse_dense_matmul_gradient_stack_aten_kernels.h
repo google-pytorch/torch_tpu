@@ -22,6 +22,7 @@
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
 #include "absl/status/status.h"
+#include "c10/core/SymInt.h"
 
 namespace torch_tpu {
 
@@ -35,8 +36,8 @@ namespace torch_tpu {
  * @return OK if the inputs are valid, otherwise an error status.
  */
 absl::Status ValidateSparseDenseMatmulGradientStackInputs(
-    at::TensorList unstacked_gradients, int64_t stacked_batch_size,
-    int64_t stacked_feature_dim);
+    at::TensorList unstacked_gradients, const c10::SymInt& stacked_batch_size,
+    const c10::SymInt& stacked_feature_dim);
 
 /**
  * @brief Stacks and interleaves unstacked gradients across SparseCore cores.

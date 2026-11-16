@@ -25,7 +25,7 @@ load(
     "torch_tpu_package_end",
     "torch_tpu_py_library",
 )
-load("//shims/py_rules:pytype.bzl", "pytype_strict_library")
+load("//shims/py_rules:py_library.bzl", "py_library")
 load("//shims/py_rules:strict.bzl", "py_library_providing_imports_info")
 load("//shims/pybind11:pybind.bzl", "pybind_extension")
 
@@ -113,10 +113,11 @@ torch_tpu_py_library(
 # NOTE: We use pytype_strict_library here instead of torch_tpu_py_library to break a circular
 # dependency cycle where torch_tpu_py_library automatically injects a dependency on
 # //src/torch_tpu/_internal:testing.
-pytype_strict_library(
+py_library(
     # PY_LIBRARY_OK=Break circular dependency cycle with _internal:testing.
     name = "pallas_kernel_generate_utils",
     srcs = ["pallas_kernel_generate_utils.py"],
+    type_checking = True,
     deps = [],
 )
 
@@ -135,12 +136,14 @@ pybind_extension(
         "//csrc/common:error_utils",
         "//csrc/common:layout_utils",
         "//csrc/common:pybind_error_utils",
+        "//csrc/eager:device_assignment",
         "//csrc/eager:device_buffer",
         "//csrc/eager:op_dispatcher",
         "//csrc/eager:tensor_to_buffer",
         "//csrc/ops:custom_kernels",
         "//csrc/ops:op_builder_utils",
         "//csrc/ops:op_names",
+        "//csrc/ops:python_context",
         "//csrc/ops/macros:kernel",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",

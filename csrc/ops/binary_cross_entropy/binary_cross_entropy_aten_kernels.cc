@@ -29,6 +29,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
@@ -144,7 +145,7 @@ absl::Status DispatchBinaryCrossEntropyOut(
       << "expected input and target shapes to match, got " << self.sizes()
       << " vs " << target.sizes();
 
-  const bool has_weight = weight.has_value() && weight->defined();
+  const bool has_weight = weight.has_value();
 
   auto op_builder =
       [reduction, has_weight](
@@ -246,7 +247,7 @@ absl::Status DispatchBinaryCrossEntropyBackwardOut(
       << "expected grad_output to be broadcastable to input shape, got "
       << grad_output.sizes() << " vs " << self.sizes();
 
-  const bool has_weight = weight.has_value() && weight->defined();
+  const bool has_weight = weight.has_value();
 
   auto op_builder =
       [reduction, has_weight](
@@ -300,7 +301,8 @@ at::Tensor AtenBinaryCrossEntropy(const at::Tensor& self,
             at::Tensor out,
             MakeEmptyTensor(/*size=*/{0}, self.scalar_type(), self.device()));
         TT_THROW_IF_ERROR(DispatchBinaryCrossEntropyOut(
-            self, target, weight, reduction, out, std::move(param_keys)));
+            self, target, SanitizeOptionalTensor(weight), reduction, out,
+            std::move(param_keys)));
         return out;
       });
 }
@@ -312,7 +314,8 @@ at::Tensor& AtenBinaryCrossEntropyOut(const at::Tensor& self,
   TT_KERNEL(OpName::kBinaryCrossEntropyOut, param_keys,
             (self, target, weight, reduction, out), {
               TT_THROW_IF_ERROR(DispatchBinaryCrossEntropyOut(
-                  self, target, weight, reduction, out, std::move(param_keys)));
+                  self, target, SanitizeOptionalTensor(weight), reduction, out,
+                  std::move(param_keys)));
               return out;
             });
 }
@@ -328,8 +331,8 @@ at::Tensor AtenBinaryCrossEntropyBackward(
             at::Tensor grad_input,
             MakeEmptyTensor(/*size=*/{0}, self.scalar_type(), self.device()));
         TT_THROW_IF_ERROR(DispatchBinaryCrossEntropyBackwardOut(
-            grad_output, self, target, weight, reduction, grad_input,
-            std::move(param_keys)));
+            grad_output, self, target, SanitizeOptionalTensor(weight),
+            reduction, grad_input, std::move(param_keys)));
         return grad_input;
       });
 }
@@ -347,8 +350,8 @@ at::Tensor& AtenBinaryCrossEntropyBackwardGradInput(
                   << ToString(grad_input.scalar_type());
 
               TT_THROW_IF_ERROR(DispatchBinaryCrossEntropyBackwardOut(
-                  grad_output, self, target, weight, reduction, grad_input,
-                  std::move(param_keys)));
+                  grad_output, self, target, SanitizeOptionalTensor(weight),
+                  reduction, grad_input, std::move(param_keys)));
               return grad_input;
             });
 }

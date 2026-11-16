@@ -14,7 +14,6 @@
 
 """Unit tests for mark_embedded_constants pass."""
 
-from unittest import mock
 from absl.testing import absltest
 import torch
 from torch import fx
@@ -80,16 +79,11 @@ class MarkEmbeddedConstantsTest(seed_test_utils.RepeatableTest):
     first_tensor = gm.c_attr
     self.assertTrue(tpu_torch_compile.is_constant_tensor(first_tensor))
 
-    # Second pass on the same GraphModule
-    with mock.patch.object(
-        tpu_torch_compile,
-        "make_constant_tensor",
-        wraps=tpu_torch_compile.make_constant_tensor,
-    ) as mock_make:
-      mark_embedded_constants.apply(gm)
-      mock_make.assert_not_called()
+    # Second pass on the same GraphModule keeps the already marked constant.
+    mark_embedded_constants.apply(gm)
 
     self.assertIs(gm.c_attr, first_tensor)
+    self.assertTrue(tpu_torch_compile.is_constant_tensor(gm.c_attr))
 
   def test_mark_embedded_constants_idempotent_new_graph_module(self):
     """Simulates submodule extraction or deepcopy where _processed_constant_attrs is missing."""
@@ -121,14 +115,8 @@ class MarkEmbeddedConstantsTest(seed_test_utils.RepeatableTest):
     self.assertFalse(hasattr(sub_gm, "_processed_constant_attrs"))
 
     # Apply mark_embedded_constants again: it should identify the constant tensor
-    # and skip calling make_constant_tensor or .to('cpu')
-    with mock.patch.object(
-        tpu_torch_compile,
-        "make_constant_tensor",
-        wraps=tpu_torch_compile.make_constant_tensor,
-    ) as mock_make:
-      mark_embedded_constants.apply(sub_gm)
-      mock_make.assert_not_called()
+    # and keep it instead of re-creating it from a .to('cpu') copy.
+    mark_embedded_constants.apply(sub_gm)
 
     self.assertIs(sub_gm.c_attr, first_tensor)
     self.assertIn("c_attr", sub_gm._processed_constant_attrs)

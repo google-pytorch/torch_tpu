@@ -14,8 +14,8 @@
 
 """Unit tests for the test_utils module."""
 
+from collections.abc import Sequence
 import gzip
-import importlib.resources.abc
 import pathlib
 import plistlib
 from unittest import mock
@@ -35,21 +35,11 @@ class TestUtilsTest(seed_test_utils.RepeatableTest):
     self.assertEqual(pin_file.name, "goldens.pin")
 
   def test_locate_goldens_pin_not_found(self):
-    mock_traversable = mock.create_autospec(
-        importlib.resources.abc.Traversable, instance=True
-    )
-    mock_traversable.joinpath.return_value = None
-    with mock.patch.object(
-        test_utils.importlib.resources,
-        "files",
-        autospec=True,
-        return_value=mock_traversable,
-    ) as mock_files:
-      with self.assertRaises(FileNotFoundError):  # ASSERT_RAISES_OK=tool test
-        test_utils.locate_goldens_pinfile()
-      mock_files.assert_called_once_with(
-          test_utils.goldens_pin.__package__ or test_utils.goldens_pin
-      )
+    # absl.testing is a real package that ships no goldens.pin.
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=tool test
+        FileNotFoundError, "Could not locate goldens.pin"
+    ):
+      test_utils.locate_goldens_pinfile(package=absltest.__package__)
 
   @parameterized.named_parameters(
       (
@@ -106,7 +96,9 @@ class TestUtilsTest(seed_test_utils.RepeatableTest):
     dirs = test_utils.goldens_candidate_local_dirs(base_dir="/custom/path")
     self.assertIn(pathlib.Path("/custom/path"), dirs)
 
-  def _pin_with(self, filenames: list[str]) -> goldens_pin.GoldenPathPinFile:
+  def _pin_with(
+      self, filenames: Sequence[str]
+  ) -> goldens_pin.GoldenPathPinFile:
     """Builds a pin file listing `filenames`.
 
     The checksums are placeholders: goldens are verified against goldens.pin at
@@ -221,6 +213,33 @@ class TestUtilsTest(seed_test_utils.RepeatableTest):
           ValueError, "No golden files found matching"
       ):
         test_utils.load_golden_files("ops_test_gpu_golden")
+
+  def test_find_per_test_case_goldens_dir(self):
+    temp_dir = pathlib.Path(self.create_tempdir().full_path)
+    per_test_case_dir = temp_dir / "ops_test_gpu_golden_per_test_case"
+    per_test_case_dir.mkdir()
+
+    found = test_utils.find_per_test_case_goldens_dir(
+        "ops_test_gpu_golden_per_test_case", candidate_dirs=[temp_dir]
+    )
+    self.assertEqual(found, per_test_case_dir)
+
+    missing = test_utils.find_per_test_case_goldens_dir(
+        "nonexistent", candidate_dirs=[temp_dir]
+    )
+    self.assertIsNone(missing)
+
+  def test_load_single_test_case_golden(self):
+    temp_dir = pathlib.Path(self.create_tempdir().full_path)
+    test_case_data = {"variant": "base"}
+    with open(temp_dir / "test_sin.plist", "wb") as f:
+      plistlib.dump(test_case_data, f, fmt=plistlib.FMT_BINARY)
+
+    loaded = test_utils.load_single_test_case_golden("test_sin", temp_dir)
+    self.assertEqual(loaded, test_case_data)
+
+    missing = test_utils.load_single_test_case_golden("test_cos", temp_dir)
+    self.assertIsNone(missing)
 
 
 if __name__ == "__main__":

@@ -19,6 +19,7 @@ from unittest import mock
 
 from absl.testing import absltest
 from absl.testing import flagsaver
+import torch
 from perflab import context as context_lib
 from perflab import model_helpers
 from perflab import target as target_lib
@@ -66,6 +67,42 @@ class IsPresubmitSmokeTest(seed_test_utils.RepeatableTest):
                   _context(context_lib.RunScope.FULL)
               )
           )
+
+
+class _FakeModuleSpec:
+  """Fake transformers module spec of a small model."""
+
+  def __init__(self):
+    self.factory_dtypes = []
+
+  def module_factory(self, dtype: torch.dtype | None = None) -> torch.nn.Module:
+    self.factory_dtypes.append(dtype)
+    return torch.nn.Linear(4, 4, dtype=dtype)
+
+  def sample_inputs_factory(self, shape, device_str):
+    del device_str  # Unused.
+    return None, {"input_ids": torch.zeros(shape, dtype=torch.long)}
+
+
+class LoadHfLlmTest(seed_test_utils.RepeatableTest):
+
+  def test_constructs_model_in_benchmark_dtype(self):
+    # The registry constructs the model in the benchmark dtype. Constructing it
+    # in float32 and casting it afterwards needs twice the device memory of
+    # the model.
+    module_spec = _FakeModuleSpec()
+    registry = mock.Mock()
+    registry.get_module_spec.return_value = module_spec
+
+    with mock.patch.object(
+        model_helpers, "get_module_registry", return_value=registry
+    ):
+      model, _ = model_helpers.load_hf_llm(
+          "fake/model", dtype=torch.bfloat16, device_str="cpu", seq_len=8
+      )
+
+    self.assertEqual(module_spec.factory_dtypes, [torch.bfloat16])
+    self.assertEqual(model.weight.dtype, torch.bfloat16)
 
 
 if __name__ == "__main__":

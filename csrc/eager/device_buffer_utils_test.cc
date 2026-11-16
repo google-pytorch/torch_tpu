@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "absl/cleanup/cleanup.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/time/clock.h"
 #include "absl/time/time.h"
@@ -33,6 +34,7 @@
 #include "csrc/common/fingerprint_utils.h"
 #include "csrc/common/shape.h"
 #include "csrc/common/status_test_utils.h"
+#include "csrc/eager/current_stream.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/eager_mode.h"
 #include "csrc/eager/events_queue.h"
@@ -54,6 +56,25 @@ using testing::Pair;
 absl::StatusOr<DynamicMlirOpResults> FailsToCompileBuilder(
     mlir::MlirBuilder& builder, absl::Span<mlir::MlirOp> inputs) {
   return TT_ERROR(error::kInternal) << "Intentional compilation failure";
+}
+
+// Creates a deferred op that explicitly cannot compile or execute, returning an
+// 8-element F32 tensor.
+absl::StatusOr<DeviceBufferRef> CreateFailsToCompileOp(
+    const bool allow_materialization) {
+  internal::DeferredOpParams params{
+      .op_name = OpName::kAdd,
+      .op_builder = FailsToCompileBuilder,
+      .op_param_cache_keys = OpParamCacheKeys::Empty(),
+      .output_shapes = {Shape(Dimensions{8}, mlir::ElementType::F32)},
+      .allow_materialization = allow_materialization,
+  };
+  TT_ASSIGN_OR_RETURN(
+      std::vector<DeviceBufferRef> refs,
+      internal::CreateDeferredDeviceBufferList(std::move(params)));
+  TT_RET_CHECK(refs.size() == 1, error::kInternal)
+      << "expected 1 output, got " << refs.size();
+  return std::move(refs[0]);
 }
 
 TEST(DeviceBufferUtilsTest,
@@ -155,6 +176,73 @@ TEST(DeviceBufferUtilsTest, DisallowMaterializationInDeferAndFuse) {
       ten_refs.begin(), ten_refs.end(),
       [](const DeviceBufferRef& ref) { return ref.is_deferred(); }));
   // Drop the invalid refs from the stream.
+  ClearAllStreams();
+}
+
+TEST(DeviceBufferUtilsTest,
+     DisallowMaterializationSuspendsRepeatedOpsGraphBreaksInDeferAndFuse) {
+  ClearAllStreams();
+  ScopedPythonContextCapturer capturer(OpName::kAdd);
+  const EagerMode prev_mode = GetEagerMode();
+  SetEagerMode(EagerMode::kDeferAndFuse);
+  auto cleanup_mode =
+      absl::MakeCleanup([prev_mode]() { SetEagerMode(prev_mode); });
+
+  // Create four copies of an op that explicitly cannot compile or execute: the
+  // repeated ops heuristic requests a graph break on the fourth one. Only the
+  // first op disallows materialization, but that suspends the heuristic's graph
+  // breaks for the later ops too. If an op tries to execute, the test will
+  // fail.
+  std::vector<DeviceBufferRef> refs;
+  refs.reserve(4);
+  for (int i = 0; i < 4; ++i) {
+    TT_ASSERT_OK_AND_ASSIGN(
+        DeviceBufferRef ref,
+        CreateFailsToCompileOp(/*allow_materialization=*/i > 0));
+    refs.push_back(std::move(ref));
+  }
+
+  // Sleep for 100ms. This is enough that a background materialization should
+  // have started if there was a materialization attempt.
+  absl::SleepFor(absl::Milliseconds(100));
+
+  // Make sure all refs are still deferred.
+  EXPECT_TRUE(std::all_of(
+      refs.begin(), refs.end(),
+      [](const DeviceBufferRef& ref) { return ref.is_deferred(); }));
+  // The requested graph break is kept for RunPostponedMaterialization().
+  const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
+  EXPECT_TRUE(ResumeRepeatedOpsGraphBreaks(device_index, stream_id));
+  // Drop the invalid refs from the stream.
+  ClearAllStreams();
+}
+
+TEST(DeviceBufferUtilsTest,
+     RunPostponedMaterializationInDeferAndFuseKeepsOpsDeferred) {
+  ClearAllStreams();
+  ScopedPythonContextCapturer capturer(OpName::kAdd);
+  const EagerMode prev_mode = GetEagerMode();
+  SetEagerMode(EagerMode::kDeferAndFuse);
+  auto cleanup_mode =
+      absl::MakeCleanup([prev_mode]() { SetEagerMode(prev_mode); });
+
+  // A single op does not complete a repeated sequence, so the repeated ops
+  // heuristic requests no graph break. If the op tries to execute, the test
+  // will fail.
+  TT_ASSERT_OK_AND_ASSIGN(
+      const DeviceBufferRef ref,
+      CreateFailsToCompileOp(/*allow_materialization=*/false));
+  const absl::Status status = internal::RunPostponedMaterialization();
+  ASSERT_TRUE(status.ok()) << status;
+
+  // Sleep for 100ms. This is enough that a background materialization should
+  // have started if there was a materialization attempt.
+  absl::SleepFor(absl::Milliseconds(100));
+
+  // Make sure the ref is still deferred, so that it can be fused with later
+  // ops.
+  EXPECT_TRUE(ref.is_deferred());
+  // Drop the invalid ref from the stream.
   ClearAllStreams();
 }
 

@@ -126,11 +126,10 @@ c10::intrusive_ptr<c10d::Work> WindowTpu::PutDeviceToHostDma(
       const DeviceBufferRef buffer_ref,
       MaterializeAndReturn(tensor, MaterializationReason::kCpuTransfer));
 
-  TT_ASSIGN_OR_THROW(auto result,
+  TT_ASSIGN_OR_THROW(xla::Future<> dma_future,
                      TpuAsyncDmaCopyDtoH(buffer_ref, dst_ptr, copy_bytes));
 
-  auto work = c10::make_intrusive<WorkTpu>(std::move(result.future),
-                                           std::move(result.buffer_hold));
+  auto work = c10::make_intrusive<WorkTpu>(std::move(dma_future));
   if (!asyncOp) {
     work->wait(kNoTimeout);
   }
@@ -158,11 +157,10 @@ c10::intrusive_ptr<c10d::Work> WindowTpu::PutHostToDeviceDma(
                                           MaterializationReason::kCpuTransfer));
 
   TT_ASSIGN_OR_THROW(
-      auto result,
+      xla::Future<> dma_future,
       TpuAsyncDmaCopyHtoD(src_ptr, buffer_ref, dst_byte_offset, copy_bytes));
 
-  auto work = c10::make_intrusive<WorkTpu>(std::move(result.future),
-                                           std::move(result.buffer_hold));
+  auto work = c10::make_intrusive<WorkTpu>(std::move(dma_future));
   if (!asyncOp) {
     work->wait(kNoTimeout);
   }

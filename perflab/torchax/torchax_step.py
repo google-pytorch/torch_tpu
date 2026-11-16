@@ -16,7 +16,7 @@
 
 from collections.abc import Callable
 import inspect
-from typing import Any, Tuple
+from typing import Any
 
 import jax
 import optax
@@ -215,7 +215,7 @@ def _train_step_fn(
     args: Any,
     kwargs: Any,
     compute_loss: Callable[..., torch.Tensor] | None = None,
-) -> Tuple[Any, Any, Any]:
+) -> tuple[Any, Any, Any]:
   def loss_func(params):
     if compute_loss is not None:
       # The loss must be computed from the traced `params`, or it would not
@@ -266,6 +266,10 @@ class _TorchaxFactoryContext:
 
 class _BaseTorchaxStepper:
   """Base class for TorchAx steppers."""
+
+  # Pipelined torchax steps are not timed yet, so the torchax throughput still
+  # comes from the synchronized steps.
+  supports_pipelined_steps = False
 
   def __init__(self):
     self._weights = None

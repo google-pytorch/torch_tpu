@@ -31,13 +31,18 @@ torch_tpu_cc_library(
         "//csrc/common:aten_utils",
         "//csrc/common:cache_key",
         "//csrc/common:dimension_types",
+        "//csrc/common:dtype",
         "//csrc/common:error_utils",
+        "//csrc/common:to_string",
         "//csrc/common:utils",
+        "//csrc/eager:op_dispatcher",
         "//csrc/ops:op_names",
         "//csrc/ops/macros:kernel",
         "//csrc/ops/resize:resize_aten_kernels",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
+        "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
+        "@stablehlo//stablehlo/integrations/cpp/builder:stablehlo_builder",
     ],
 )
 
