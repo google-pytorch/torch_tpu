@@ -22,23 +22,18 @@
 #include <optional>
 #include <vector>
 
-#include "ATen/ExpandUtils.h"
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBase.h"
 #include "absl/algorithm/container.h"
 #include "absl/log/absl_check.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
-#include "c10/util/ArrayRef.h"
 #include "csrc/common/dimension_types.h"
+#include "csrc/common/layout_utils.h"
 #include "csrc/common/utils.h"
 #include "csrc/ops/op_builder_utils.h"
-#include "mlir/IR/BuiltinAttributes.h"
-#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Types.h"
-#include "mlir/Support/LLVM.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
-#include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 
 namespace torch_tpu {
 
@@ -100,16 +95,6 @@ mlir::MlirOp GetScaleDefaulted(mlir::MlirBuilder& builder,
     element_type = builder.getOpBuilder().getF32Type();
   }
   return MakeScalarConstant(builder, scale, element_type);
-}
-
-Strides EmptyLikeStrides(const at::TensorBase& tensor) {
-  if (tensor.is_non_overlapping_and_dense()) {
-    return CopyIntVector(tensor.strides());
-  }
-  // `at::infer_dense_strides` returns a `std::vector`.
-  const std::vector<int64_t> strides =  // INT_VEC_OK
-      at::infer_dense_strides(tensor.sizes(), tensor.strides());
-  return CopyIntVector(strides);
 }
 
 Strides MatchingLayoutStrides(const at::TensorBase& query,

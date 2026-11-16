@@ -23,6 +23,7 @@
 
 #include "ATen/core/ATen_fwd.h"
 #include "absl/cleanup/cleanup.h"
+#include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "c10/core/Storage.h"
 #include "c10/core/TensorImpl.h"
@@ -35,6 +36,7 @@
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/python_context.h"
+#include "csrc/ops/view_decomposition/contiguous_to_view.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
@@ -361,6 +363,168 @@ TEST(TensorToBufferTest, AssignBufferToAtTensorBumpVersion) {
             initial_version + 2);
   EXPECT_EQ(view.unsafeGetTensorImpl()->version_counter().current_version(),
             initial_version + 2);
+}
+
+bool ContainsOpInDag(const DeviceBufferRef& buffer, OpName op_name) {
+  auto op = buffer.deferred_op();
+  if (op == nullptr) {
+    return false;
+  }
+  if (op->op_name() == op_name) {
+    return true;
+  }
+  for (const auto& input : op->inputs()) {
+    if (ContainsOpInDag(input, op_name)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+absl::StatusOr<DeviceBufferRef> MakeConstantBuffer(Dimensions dims) {
+  int64_t numel = 1;
+  for (int64_t d : dims) {
+    numel *= d;
+  }
+  std::vector<char> data(numel * sizeof(float), 0);
+  return CreateConstantDeviceBufferRef(std::move(data), std::move(dims),
+                                       mlir::ElementType::F32);
+}
+
+TEST(ContiguousToViewTest, ContiguousLayoutReturnsInputDirectly) {
+  ScopedPythonContextCapturer capturer(OpName::kAdd);
+  EagerMode prev_mode = GetEagerMode();
+  SetEagerMode(EagerMode::kInternalDeferAll);
+  auto cleanup_mode =
+      absl::MakeCleanup([prev_mode]() { SetEagerMode(prev_mode); });
+
+  TT_ASSERT_OK_AND_ASSIGN(DeviceBufferRef in_buf, MakeConstantBuffer({2, 3}));
+  TT_ASSERT_OK_AND_ASSIGN(at::Tensor out, ContiguousToView(in_buf, {3, 1}, 0));
+  TT_ASSERT_OK_AND_ASSIGN(DeviceBufferRef base_buf, GetBaseBuffer(out));
+
+  EXPECT_EQ(base_buf, in_buf);
+  EXPECT_FALSE(ContainsOpInDag(base_buf, OpName::kEmpty));
+  EXPECT_FALSE(ContainsOpInDag(base_buf, OpName::kAsStridedInverse));
+  EXPECT_EQ(out.sizes(), at::IntArrayRef({2, 3}));
+  EXPECT_EQ(out.strides(), at::IntArrayRef({3, 1}));
+  EXPECT_EQ(out.storage_offset(), 0);
+}
+
+TEST(ContiguousToViewTest, ZeroElementTensorBypassesDecomposition) {
+  ScopedPythonContextCapturer capturer(OpName::kAdd);
+  EagerMode prev_mode = GetEagerMode();
+  SetEagerMode(EagerMode::kInternalDeferAll);
+  auto cleanup_mode =
+      absl::MakeCleanup([prev_mode]() { SetEagerMode(prev_mode); });
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      DeviceBufferRef in_buf,
+      CreateZeroSizeDeviceBufferRef({0, 3}, mlir::ElementType::F32));
+  TT_ASSERT_OK_AND_ASSIGN(at::Tensor out, ContiguousToView(in_buf, {3, 1}, 0));
+  TT_ASSERT_OK_AND_ASSIGN(DeviceBufferRef base_buf, GetBaseBuffer(out));
+
+  EXPECT_EQ(base_buf, in_buf);
+  EXPECT_FALSE(ContainsOpInDag(base_buf, OpName::kEmpty));
+  EXPECT_FALSE(ContainsOpInDag(base_buf, OpName::kAsStridedInverse));
+  EXPECT_EQ(out.sizes(), at::IntArrayRef({0, 3}));
+  EXPECT_EQ(out.strides(), at::IntArrayRef({3, 1}));
+  EXPECT_EQ(out.storage_offset(), 0);
+}
+
+TEST(ContiguousToViewTest, ZeroElementTensorWithStorageOffsetAllocatesStorage) {
+  ScopedPythonContextCapturer capturer(OpName::kAdd);
+  EagerMode prev_mode = GetEagerMode();
+  SetEagerMode(EagerMode::kInternalDeferAll);
+  auto cleanup_mode =
+      absl::MakeCleanup([prev_mode]() { SetEagerMode(prev_mode); });
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      DeviceBufferRef in_buf,
+      CreateZeroSizeDeviceBufferRef({4, 0}, mlir::ElementType::F32));
+  TT_ASSERT_OK_AND_ASSIGN(
+      at::Tensor out,
+      ContiguousToView(in_buf, {6, 2}, /*target_storage_offset=*/3));
+  TT_ASSERT_OK_AND_ASSIGN(DeviceBufferRef base_buf, GetBaseBuffer(out));
+
+  EXPECT_EQ(out.sizes(), at::IntArrayRef({4, 0}));
+  EXPECT_EQ(out.strides(), at::IntArrayRef({6, 2}));
+  EXPECT_EQ(out.storage_offset(), 3);
+  EXPECT_EQ(base_buf.dimensions(), Dimensions({3}));
+}
+
+TEST(ContiguousToViewTest, FullOverwriteViewsProduceInverseWithoutEmpty) {
+  ScopedPythonContextCapturer capturer(OpName::kAdd);
+  EagerMode prev_mode = GetEagerMode();
+  SetEagerMode(EagerMode::kInternalDeferAll);
+  auto cleanup_mode =
+      absl::MakeCleanup([prev_mode]() { SetEagerMode(prev_mode); });
+
+  struct TestCase {
+    Dimensions dims;
+    Strides strides;
+  };
+  const std::vector<TestCase> cases = {
+      // 1. Transposed 2D
+      {.dims = {2, 3}, .strides = {1, 2}},
+      // 2. ChannelsLast 4D
+      {.dims = {2, 3, 4, 5}, .strides = {60, 1, 15, 3}},
+      // 3. ChannelsLast unit channel 4D
+      {.dims = {2, 1, 4, 5}, .strides = {20, 1, 5, 1}},
+      // 4. Broadcast (2, 3) with stride (0, 1)
+      {.dims = {2, 3}, .strides = {0, 1}},
+  };
+
+  for (const auto& tc : cases) {
+    TT_ASSERT_OK_AND_ASSIGN(DeviceBufferRef in_buf,
+                            MakeConstantBuffer(tc.dims));
+    TT_ASSERT_OK_AND_ASSIGN(at::Tensor out,
+                            ContiguousToView(in_buf, tc.strides, 0));
+    TT_ASSERT_OK_AND_ASSIGN(DeviceBufferRef base_buf, GetBaseBuffer(out));
+
+    EXPECT_FALSE(ContainsOpInDag(base_buf, OpName::kEmpty));
+    ASSERT_TRUE(base_buf.deferred_op() != nullptr);
+    EXPECT_EQ(base_buf.deferred_op()->op_name(), OpName::kAsStridedInverse);
+    EXPECT_EQ(base_buf.deferred_op()->inputs().size(), 1);
+    EXPECT_EQ(out.sizes(), at::IntArrayRef(tc.dims.data(), tc.dims.size()));
+    EXPECT_EQ(out.strides(),
+              at::IntArrayRef(tc.strides.data(), tc.strides.size()));
+    EXPECT_EQ(out.storage_offset(), 0);
+  }
+}
+
+TEST(ContiguousToViewTest, PartialOverwriteViewsCreateEmptyBuffer) {
+  ScopedPythonContextCapturer capturer(OpName::kAdd);
+  EagerMode prev_mode = GetEagerMode();
+  SetEagerMode(EagerMode::kInternalDeferAll);
+  auto cleanup_mode =
+      absl::MakeCleanup([prev_mode]() { SetEagerMode(prev_mode); });
+
+  // 1. Gapped strides on (2, 3): target base shape is {13}, input numel is 6.
+  {
+    TT_ASSERT_OK_AND_ASSIGN(DeviceBufferRef in_buf, MakeConstantBuffer({2, 3}));
+    TT_ASSERT_OK_AND_ASSIGN(at::Tensor out,
+                            ContiguousToView(in_buf, {10, 1}, 0));
+    TT_ASSERT_OK_AND_ASSIGN(DeviceBufferRef base_buf, GetBaseBuffer(out));
+    EXPECT_TRUE(ContainsOpInDag(base_buf, OpName::kEmpty));
+  }
+
+  // 2. Nonzero storage offset: offset 1 requires base shape > input shape.
+  {
+    TT_ASSERT_OK_AND_ASSIGN(DeviceBufferRef in_buf, MakeConstantBuffer({2, 3}));
+    TT_ASSERT_OK_AND_ASSIGN(at::Tensor out,
+                            ContiguousToView(in_buf, {3, 1}, 1));
+    TT_ASSERT_OK_AND_ASSIGN(DeviceBufferRef base_buf, GetBaseBuffer(out));
+    EXPECT_TRUE(ContainsOpInDag(base_buf, OpName::kEmpty));
+  }
+
+  // 3. Overlapping strides: (2, 3) with {1, 1}.
+  {
+    TT_ASSERT_OK_AND_ASSIGN(DeviceBufferRef in_buf, MakeConstantBuffer({2, 3}));
+    TT_ASSERT_OK_AND_ASSIGN(at::Tensor out,
+                            ContiguousToView(in_buf, {1, 1}, 0));
+    TT_ASSERT_OK_AND_ASSIGN(DeviceBufferRef base_buf, GetBaseBuffer(out));
+    EXPECT_TRUE(ContainsOpInDag(base_buf, OpName::kEmpty));
+  }
 }
 
 }  // namespace

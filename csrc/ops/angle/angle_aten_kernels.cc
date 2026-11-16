@@ -80,10 +80,12 @@ at::Tensor AtenAngle(const at::Tensor& self) {
     }
 
     TT_ASSIGN_OR_THROW(
-        auto result, UnaryOp(self, BuildAngleShlo,
-                             {.op_param_cache_keys = OpParamCacheKeys::Empty(),
-                              .out_dtype = out_element_type,
-                              .computation_dtype = computation_dtype}));
+        auto result,
+        UnaryOp(self, BuildAngleShlo,
+                {.op_param_cache_keys = OpParamCacheKeys::Empty(),
+                 .out_dtype = out_element_type,
+                 .computation_dtype = computation_dtype,
+                 .output_layout = UnaryOpOutputLayout::kEmptyLike}));
     return result;
   });
 }

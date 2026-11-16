@@ -23,12 +23,14 @@
 #include <vector>
 
 #include "ATen/core/TensorBody.h"
+#include "absl/algorithm/container.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/layout_utils.h"
 #include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
 #include "csrc/eager/device_buffer.h"
@@ -36,6 +38,7 @@
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/view_decomposition/decomposition.h"
 #include "csrc/ops/view_decomposition/strided_layout.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 
 namespace torch_tpu {
 
@@ -277,6 +280,28 @@ absl::StatusOr<at::Tensor> ContiguousToView(
     return MakeTensor(std::move(contiguous_buffer));
   }
 
+  if (absl::c_contains(contiguous_buffer.dimensions(), 0)) {
+    const Dimensions dims = CopyIntVector(contiguous_buffer.dimensions());
+    TT_ASSIGN_OR_RETURN(
+        at::Tensor output_tensor,
+        [&]() -> absl::StatusOr<at::Tensor> {  // REF_CAPTURE_OK=called locally
+          if (target_storage_offset == 0) {
+            return MakeTensor(std::move(contiguous_buffer));
+          }
+          TT_ASSIGN_OR_RETURN(
+              DeviceBufferRef storage_buf,
+              CreateEmptyDeviceBufferRef({target_storage_offset},
+                                         contiguous_buffer.element_type()));
+          return MakeTensor(std::move(storage_buf));
+        }());
+    output_tensor.unsafeGetTensorImpl()->set_sizes_and_strides(
+        dims, target_strides, target_storage_offset);
+    return output_tensor;
+  }
+
+  const Dimensions target_dims = CopyIntVector(contiguous_buffer.dimensions());
+  const mlir::ElementType element_type = contiguous_buffer.element_type();
+
   // Create an empty contiguous base tensor to serve as the new storage.
   StridedLayout target_view_layout{
       .storage_offset = target_storage_offset,
@@ -288,19 +313,43 @@ absl::StatusOr<at::Tensor> ContiguousToView(
   }
   TT_ASSIGN_OR_RETURN(Dimensions target_contiguous_base_shape,
                       GetContiguousBaseShape(target_view_layout));
-  TT_ASSIGN_OR_RETURN(
-      DeviceBufferRef empty_contiguous_base,
-      CreateEmptyDeviceBufferRef(target_contiguous_base_shape,
-                                 contiguous_buffer.element_type()));
-  at::Tensor output_tensor = MakeTensor(std::move(empty_contiguous_base));
 
   // Get the non-overlapping windows to write to the output tensor.
   // If the output tensor is non-overlapping, or only has simple broadcasts,
   // there will only be one window.
   TT_ASSIGN_OR_RETURN(
       std::vector<NonOverlappingWindow> non_overlapping_windows,
-      GetNonOverlappingWindows(contiguous_buffer, target_strides,
+      GetNonOverlappingWindows(std::move(contiguous_buffer), target_strides,
                                target_storage_offset));
+
+  TT_ASSIGN_OR_RETURN(const int64_t base_numel,
+                      NumElements(target_contiguous_base_shape));
+  if (non_overlapping_windows.size() == 1 &&
+      non_overlapping_windows[0].write_storage_offset == 0 &&
+      non_overlapping_windows[0].window_value.num_elements() == base_numel) {
+    const TpuLayout window_layout{
+        .sizes =
+            CopyIntVector(non_overlapping_windows[0].window_value.dimensions()),
+        .strides = CopyIntVector(target_strides),
+        .storage_offset = 0,
+        .element_type = non_overlapping_windows[0].window_value.element_type(),
+    };
+    TT_ASSIGN_OR_RETURN(
+        DeviceBufferRef new_base_buffer_ref,
+        CreateFullOverwriteInverseViewDeviceBufferRef(
+            target_contiguous_base_shape, element_type,
+            std::move(non_overlapping_windows[0].window_value), window_layout,
+            /*view_is_conj=*/false));
+    at::Tensor output_tensor = MakeTensor(std::move(new_base_buffer_ref));
+    output_tensor.unsafeGetTensorImpl()->set_sizes_and_strides(
+        target_dims, target_strides, target_storage_offset);
+    return output_tensor;
+  }
+
+  TT_ASSIGN_OR_RETURN(
+      DeviceBufferRef empty_contiguous_base,
+      CreateEmptyDeviceBufferRef(target_contiguous_base_shape, element_type));
+  at::Tensor output_tensor = MakeTensor(std::move(empty_contiguous_base));
 
   // Write the non-overlapping windows to the output tensor.
   TT_RETURN_IF_ERROR(WriteWindowsToTensor(output_tensor, target_strides,
@@ -308,7 +357,7 @@ absl::StatusOr<at::Tensor> ContiguousToView(
 
   // Apply the target view to the output tensor.
   output_tensor.unsafeGetTensorImpl()->set_sizes_and_strides(
-      contiguous_buffer.dimensions(), target_strides, target_storage_offset);
+      target_dims, target_strides, target_storage_offset);
   ABSL_VLOG(1) << "[ContiguousToView] Successfully created view of shape "
                << ToString(output_tensor.sizes()) << ", strides "
                << ToString(output_tensor.strides()) << ", at offset "

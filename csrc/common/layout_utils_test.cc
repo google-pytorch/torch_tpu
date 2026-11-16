@@ -30,6 +30,7 @@
 #include "csrc/common/status_test_utils.h"
 #include "gtest/gtest.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "torch/headeronly/core/MemoryFormat.h"
 #include "xla/layout.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
@@ -249,6 +250,169 @@ TEST(LayoutUtilsTest, ExtractCustomLayoutOmitsTilesForDynamicShape) {
                           ExtractCustomLayoutIfDifferentFromDefault(shape));
   const CustomLayout untiled{.minor_to_major = {0, 1}};
   EXPECT_EQ(layout, untiled);
+}
+
+TEST(LayoutUtilsTest, EmptyLikeStrides_PreservesDenseAndRemovesGaps) {
+  auto contiguous = at::empty({2, 3, 4}, at::TensorOptions().dtype(at::kFloat));
+  EXPECT_EQ(EmptyLikeStrides(contiguous), Strides({12, 4, 1}));
+
+  auto transposed = contiguous.transpose(1, 2);
+  EXPECT_EQ(EmptyLikeStrides(transposed), Strides({12, 1, 4}));
+
+  // Sliced tensor has a stride gap; EmptyLikeStrides removes the gap while
+  // preserving dimension order.
+  auto sliced = at::empty({2, 3, 8}, at::TensorOptions().dtype(at::kFloat))
+                    .slice(/*dim=*/2, /*start=*/0, /*end=*/4)
+                    .transpose(1, 2);
+  EXPECT_EQ(EmptyLikeStrides(sliced), Strides({12, 1, 4}));
+
+  // Expanded tensor has zero stride; EmptyLikeStrides materializes dense
+  // strides matching at::infer_dense_strides.
+  auto expanded = at::empty({1, 3, 4}, at::TensorOptions().dtype(at::kFloat))
+                      .expand({2, 3, 4});
+  EXPECT_EQ(EmptyLikeStrides(expanded), Strides({12, 4, 1}));
+}
+
+TEST(LayoutUtilsTest, BinaryOpStrides_MatchesTensorIterator) {
+  auto a = at::empty({2, 3, 4}, at::TensorOptions().dtype(at::kFloat))
+               .transpose(1, 2);
+  auto b = at::empty({2, 3, 4}, at::TensorOptions().dtype(at::kFloat))
+               .transpose(1, 2);
+  EXPECT_EQ(BinaryOpStrides(a, b, {2, 4, 3}), Strides({12, 1, 4}));
+
+  // Scalar + non-contiguous tensor preserves the non-contiguous tensor strides.
+  auto scalar = at::empty({}, at::TensorOptions().dtype(at::kFloat));
+  EXPECT_EQ(BinaryOpStrides(scalar, a, {2, 4, 3}), Strides({12, 1, 4}));
+  EXPECT_EQ(BinaryOpStrides(a, scalar, {2, 4, 3}), Strides({12, 1, 4}));
+
+  // Two same-shape tensors with different strides follow the first operand's
+  // dimension permutation.
+  auto c = at::empty({2, 4, 3}, at::TensorOptions().dtype(at::kFloat));
+  EXPECT_EQ(BinaryOpStrides(a, c, {2, 4, 3}), Strides({12, 1, 4}));
+  EXPECT_EQ(BinaryOpStrides(c, a, {2, 4, 3}), Strides({12, 3, 1}));
+
+  // Zero-element broadcast tensor returns contiguous strides.
+  auto empty_transposed =
+      at::empty({4, 0, 5}, at::TensorOptions().dtype(at::kFloat))
+          .transpose(0, 2);
+  auto bcast = at::empty({1, 1, 4}, at::TensorOptions().dtype(at::kFloat));
+  EXPECT_EQ(BinaryOpStrides(empty_transposed, bcast, {5, 0, 4}),
+            Strides({4, 4, 1}));
+  EXPECT_EQ(BinaryOpStrides(scalar, empty_transposed, {5, 0, 4}),
+            Strides({4, 4, 1}));
+  EXPECT_EQ(BinaryOpStrides(empty_transposed, scalar, {5, 0, 4}),
+            Strides({4, 4, 1}));
+
+  // 4D zero-element tensor returns contiguous strides.
+  auto empty_4d =
+      at::empty({4, 0, 5, 2}, at::TensorOptions().dtype(at::kFloat));
+  EXPECT_EQ(BinaryOpStrides(empty_4d, empty_4d, {4, 0, 5, 2}),
+            Strides({10, 10, 2, 1}));
+
+  // Mixed-dtype binary op where an int32 operand is expanded on a dimension
+  // whose stride order conflicts with the float32 operand:
+  // TensorIteratorBase::compute_types casts the int32 operand to float32 before
+  // reorder_dimensions, giving it dense strides so that the expanded dimension
+  // participates in dimension comparison instead of being skipped.
+  auto int_expanded = at::empty({2, 1, 4}, at::TensorOptions().dtype(at::kInt))
+                          .expand({2, 3, 4});
+  auto float_permuted =
+      at::empty({2, 4, 3}, at::TensorOptions().dtype(at::kFloat))
+          .transpose(1, 2);
+  EXPECT_EQ(BinaryOpStrides(int_expanded, float_permuted, {2, 3, 4},
+                            /*common_dtype=*/at::kFloat),
+            Strides({12, 4, 1}));
+
+  // 4D (2, 1, 4, 5) where is_contiguous and is_channels_last both hold:
+  // 1. Same-shape (2, 1, 4, 5) where both operands are ChannelsLast
+  //    ((20, 1, 5, 1)) returns contiguous Strides({20, 20, 5, 1}).
+  auto cl_2145 = at::empty({2, 1, 4, 5},
+                           at::TensorOptions()
+                               .dtype(at::kFloat)
+                               .memory_format(at::MemoryFormat::ChannelsLast));
+  EXPECT_EQ(cl_2145.strides(), at::IntArrayRef({20, 1, 5, 1}));
+  EXPECT_EQ(BinaryOpStrides(cl_2145, cl_2145, {2, 1, 4, 5}),
+            Strides({20, 20, 5, 1}));
+
+  // 2. Same-shape (2, 1, 4, 5) where one is ChannelsLast and one is Contiguous,
+  //    plus mixed-dtype promoted int32 ChannelsLast (2, 1, 4, 5) with float32
+  //    Contiguous (2, 1, 4, 5) (and vice versa) returns Strides({20, 20, 5,
+  //    1}).
+  auto contig_2145 =
+      at::empty({2, 1, 4, 5}, at::TensorOptions().dtype(at::kFloat));
+  EXPECT_EQ(contig_2145.strides(), at::IntArrayRef({20, 20, 5, 1}));
+  EXPECT_EQ(BinaryOpStrides(cl_2145, contig_2145, {2, 1, 4, 5}),
+            Strides({20, 20, 5, 1}));
+  EXPECT_EQ(BinaryOpStrides(contig_2145, cl_2145, {2, 1, 4, 5}),
+            Strides({20, 20, 5, 1}));
+
+  auto int_cl_2145 =
+      at::empty({2, 1, 4, 5}, at::TensorOptions().dtype(at::kInt).memory_format(
+                                  at::MemoryFormat::ChannelsLast));
+  EXPECT_EQ(BinaryOpStrides(int_cl_2145, contig_2145, {2, 1, 4, 5},
+                            /*common_dtype=*/at::kFloat),
+            Strides({20, 20, 5, 1}));
+  EXPECT_EQ(BinaryOpStrides(contig_2145, int_cl_2145, {2, 1, 4, 5},
+                            /*common_dtype=*/at::kFloat),
+            Strides({20, 20, 5, 1}));
+
+  // 3. Broadcast (2, 1, 4, 5) ChannelsLast ((20, 1, 5, 1)) + (2, 1, 4, 1)
+  //    contiguous ((4, 4, 1, 1)) returns Strides({20, 1, 5, 1}).
+  auto contig_2141 =
+      at::empty({2, 1, 4, 1}, at::TensorOptions().dtype(at::kFloat));
+  EXPECT_EQ(contig_2141.strides(), at::IntArrayRef({4, 4, 1, 1}));
+  EXPECT_EQ(BinaryOpStrides(cl_2145, contig_2141, {2, 1, 4, 5}),
+            Strides({20, 1, 5, 1}));
+
+  // 4. Broadcast (2, 4, 1) transposed to (2, 1, 4) (strides (4, 1, 1), where
+  //    is_contiguous() is true) + (2, 1, 1) contiguous ((1, 1, 1)) returns
+  //    Strides({4, 1, 1}).
+  auto transposed_214 =
+      at::empty({2, 4, 1}, at::TensorOptions().dtype(at::kFloat))
+          .transpose(1, 2);
+  EXPECT_EQ(transposed_214.strides(), at::IntArrayRef({4, 1, 1}));
+  EXPECT_TRUE(transposed_214.is_contiguous());
+  auto contig_211 = at::empty({2, 1, 1}, at::TensorOptions().dtype(at::kFloat));
+  EXPECT_EQ(BinaryOpStrides(transposed_214, contig_211, {2, 1, 4}),
+            Strides({4, 1, 1}));
+}
+
+TEST(LayoutUtilsTest, UnaryOpStrides_MatchesTensorIterator) {
+  auto contiguous = at::empty({2, 3, 4}, at::TensorOptions().dtype(at::kFloat));
+  EXPECT_EQ(UnaryOpStrides(contiguous), Strides({12, 4, 1}));
+
+  auto transposed = contiguous.transpose(1, 2);
+  EXPECT_EQ(UnaryOpStrides(transposed), Strides({12, 1, 4}));
+
+  // Zero-element tensor returns contiguous strides matching TensorIterator.
+  auto empty_transposed =
+      at::empty({4, 0, 5}, at::TensorOptions().dtype(at::kFloat))
+          .transpose(0, 2);
+  EXPECT_EQ(UnaryOpStrides(empty_transposed), Strides({4, 4, 1}));
+}
+
+TEST(LayoutUtilsTest, SuggestMemoryFormatStrides_MatchesMemoryFormat) {
+  auto contiguous =
+      at::empty({2, 3, 4, 5}, at::TensorOptions().dtype(at::kFloat));
+  EXPECT_EQ(SuggestMemoryFormatStrides(contiguous), Strides({60, 20, 5, 1}));
+
+  auto channels_last = at::empty(
+      {2, 3, 4, 5}, at::TensorOptions()
+                        .dtype(at::kFloat)
+                        .memory_format(at::MemoryFormat::ChannelsLast));
+  EXPECT_EQ(SuggestMemoryFormatStrides(channels_last), Strides({60, 1, 15, 3}));
+
+  auto channels_last_3d = at::empty(
+      {2, 3, 4, 5, 6}, at::TensorOptions()
+                           .dtype(at::kFloat)
+                           .memory_format(at::MemoryFormat::ChannelsLast3d));
+  EXPECT_EQ(SuggestMemoryFormatStrides(channels_last_3d),
+            Strides({360, 1, 90, 18, 3}));
+
+  // 2D transposed tensor has suggest_memory_format() == Contiguous.
+  auto transposed_2d =
+      at::empty({3, 4}, at::TensorOptions().dtype(at::kFloat)).t();
+  EXPECT_EQ(SuggestMemoryFormatStrides(transposed_2d), Strides({3, 1}));
 }
 
 }  // namespace

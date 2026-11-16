@@ -369,6 +369,11 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
         tpu_torch_compile.OutputShape(
             dimensions=output_sym_shape.get_output_runtime_shape(args),
             is_dynamic=output_sym_shape.is_dynamic,
+            strides=output_sym_shape.get_output_runtime_stride(args),
+            storage_offset=output_sym_shape.get_output_runtime_storage_offset(
+                args
+            ),
+            has_runtime_layout=output_sym_shape.output_sym_stride is not None,
         )
         if output_sym_shape.is_tensor
         else None
@@ -387,12 +392,7 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
         "[DynamicTpuCompiledExecutable] Output shapes: %s",
         LazyString(
             lambda: "["
-            + ", ".join(
-                f"OutputShape(dimensions={s.dimensions},"
-                f" is_dynamic={s.is_dynamic})"
-                for s in output_shapes
-                if s is not None
-            )
+            + ", ".join(repr(s) for s in output_shapes if s is not None)
             + "]"
         ),
     )

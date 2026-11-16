@@ -88,18 +88,16 @@ torch_tpu_cc_library(
     visibility = ["//visibility:private"],  # Internal use only.
     deps = [
         "//csrc/common:dimension_types",
+        "//csrc/common:layout_utils",
         "//csrc/common:utils",
         "//csrc/ops:op_builder_utils",
         "//shims/torch:aten_headers",
-        "//shims/torch/c10/util:base_headers",
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/types:span",
         "@llvm-project//mlir:IR",
-        "@llvm-project//mlir:Support",
         "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
-        "@stablehlo//stablehlo/integrations/cpp/builder:stablehlo_builder",
     ],
 )
 

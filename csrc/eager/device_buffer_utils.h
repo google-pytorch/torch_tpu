@@ -156,6 +156,14 @@ absl::StatusOr<DeviceBufferRef> CreateInverseViewDeviceBufferRef(
     DeviceBufferRef base_buffer_ref, DeviceBufferRef write_buf,
     const TpuLayout& tpu_layout, bool view_is_conj, bool donate_base);
 
+// Creates an inverse view DeviceBufferRef for a full-overwrite window that
+// covers the entire base buffer, bypassing the need for a base buffer or an
+// empty buffer allocation.
+absl::StatusOr<DeviceBufferRef> CreateFullOverwriteInverseViewDeviceBufferRef(
+    absl::Span<const int64_t> base_dimensions,
+    mlir::ElementType base_element_type, DeviceBufferRef write_buf,
+    const TpuLayout& tpu_layout, bool view_is_conj);
+
 }  // namespace torch_tpu
 
 #endif  // TORCH_TPU_CSRC_EAGER_DEVICE_BUFFER_UTILS_H_

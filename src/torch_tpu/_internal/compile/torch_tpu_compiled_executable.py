@@ -596,7 +596,20 @@ class TorchTpuCompiledExecutable(CompiledArtifact):
         tpu_torch_compile.set_device_state_tensor(gen, device_state_tensor)
 
     if self._reconstruct_fx_outputs_fn is not None:
-      outputs = self._reconstruct_fx_outputs_fn(args, outputs)
+      if (
+          isinstance(
+              self._reconstruct_fx_outputs_fn,
+              tpu_torch_compile.FxOutputReconstructor,
+          )
+          and executable_output_shapes
+      ):
+        outputs = self._reconstruct_fx_outputs_fn(
+            args,
+            outputs,
+            output_shapes=executable_output_shapes[: len(outputs)],
+        )
+      else:
+        outputs = self._reconstruct_fx_outputs_fn(args, outputs)
 
     return outputs
 

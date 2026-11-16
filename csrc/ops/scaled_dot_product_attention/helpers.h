@@ -23,6 +23,7 @@
 #include "ATen/core/TensorBase.h"
 #include "absl/types/span.h"
 #include "csrc/common/dimension_types.h"
+#include "csrc/common/layout_utils.h"  // IWYU pragma: export  // NOLINT
 #include "mlir/IR/Types.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 
@@ -49,13 +50,6 @@ mlir::MlirOp GetScaleDefaulted(mlir::MlirBuilder& builder,
 // (e.g. merging heads) are then also valid in eager mode. The strides are
 // always dense, so results never inherit gaps from sliced inputs, which avoids
 // memory bloat and slice-by-slice writes (dynamic-update-slice).
-
-// Returns the strides of `torch.empty_like(tensor)` with the default
-// `torch.preserve_format`: the strides of `tensor` if it is non-overlapping and
-// dense, otherwise `at::infer_dense_strides`, which keeps the stride order,
-// removes gaps and leaves zero-stride (expanded) dims in place. The SDPA
-// backward meta functions allocate the gradients this way.
-Strides EmptyLikeStrides(const at::TensorBase& tensor);
 
 // Returns the strides of `alloc_with_matching_layout(query, result_sizes)` in
 // torch/_meta_registrations.py, which the SDPA forward meta functions use to

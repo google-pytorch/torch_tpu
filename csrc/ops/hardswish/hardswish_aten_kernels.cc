@@ -24,14 +24,15 @@
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
+#include "csrc/common/layout_utils.h"
 #include "csrc/common/to_string.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/op_dispatcher.h"
-#include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/unary_aten_kernels.h"
+#include "csrc/ops/view_decomposition/contiguous_to_view.h"  // NOLINT
 #include "mlir/IR/BuiltinTypes.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
@@ -146,7 +147,10 @@ at::Tensor AtenHardswishBackward(const at::Tensor& grad_output,
                          {.out_dtype = output_mlir_type,
                           .out_dims = self.sizes(),
                           .op_param_cache_keys = OpParamCacheKeys::Empty()})));
-    return MakeTensor(std::move(result));
+    TT_ASSIGN_OR_THROW(at::Tensor out,
+                       ContiguousToView(std::move(result), UnaryOpStrides(self),
+                                        /*target_storage_offset=*/0));
+    return out;
   });
 }
 

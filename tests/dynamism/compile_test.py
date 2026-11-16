@@ -1931,5 +1931,106 @@ class IndexPutDynamicBooleanMaskTest(seed_test_utils.RepeatableTest):
     utils.assert_close(out, expected)
 
 
+class DynamicTransposedOutputStrideTest(seed_test_utils.RepeatableTest):
+
+  def setUp(self):
+    super().setUp()
+    if not torch.accelerator.is_available():
+      self.skipTest("TPU accelerator not available in this test environment.")
+    tt_testing.reset_eager_state()
+    self.device = torch.accelerator.current_accelerator()
+
+  def test_dynamic_transposed_relu_strides_and_backward(self):
+    def fn(x: torch.Tensor) -> torch.Tensor:
+      return torch.relu(x.transpose(0, 1))
+
+    compiled = torch.compile(
+        fn, backend="tpu", options={"bounded_dynamism": True}
+    )
+
+    x_cpu = torch.randn(8, 10, requires_grad=True)
+    out_cpu = fn(x_cpu)
+    out_cpu.sum().backward()
+
+    x = x_cpu.detach().to(self.device).requires_grad_(True)
+    torch._dynamo.mark_dynamic(x, 1, min=2, max=16)
+
+    out = compiled(x)
+    out.sum().backward()
+    torch.accelerator.synchronize()
+
+    self.assertEqual(out.shape, (10, 8))
+    self.assertEqual(out.stride(), (1, 10))
+    utils.assert_close(out.to("cpu"), out_cpu)
+    self.assertIsNotNone(x.grad)
+    self.assertEqual(x.grad.shape, (8, 10))
+    utils.assert_close(x.grad.to("cpu"), x_cpu.grad)
+
+    # Second runtime size: (8, 6)
+    x_cpu2 = torch.randn(8, 6, requires_grad=True)
+    out_cpu2 = fn(x_cpu2)
+    out_cpu2.sum().backward()
+
+    x2 = x_cpu2.detach().to(self.device).requires_grad_(True)
+    torch._dynamo.mark_dynamic(x2, 1, min=2, max=16)
+
+    out2 = compiled(x2)
+    out2.sum().backward()
+    torch.accelerator.synchronize()
+
+    self.assertEqual(out2.shape, (6, 8))
+    self.assertEqual(out2.stride(), (1, 6))
+    utils.assert_close(out2.to("cpu"), out_cpu2)
+    self.assertIsNotNone(x2.grad)
+    self.assertEqual(x2.grad.shape, (8, 6))
+    utils.assert_close(x2.grad.to("cpu"), x_cpu2.grad)
+
+  def test_static_output_shape_with_dynamic_stride(self):
+    def fn(x: torch.Tensor) -> torch.Tensor:
+      return torch.relu(x).transpose(0, 1)[:4, :]
+
+    compiled = torch.compile(
+        fn, backend="tpu", options={"bounded_dynamism": True}
+    )
+
+    # First runtime size: (8, 10) -> stride (1, 10)
+    x_cpu1 = torch.randn(8, 10, requires_grad=True)
+    out_cpu1 = fn(x_cpu1)
+    out_cpu1.sum().backward()
+
+    x1 = x_cpu1.detach().to(self.device).requires_grad_(True)
+    torch._dynamo.mark_dynamic(x1, 1, min=4, max=16)
+
+    out1 = compiled(x1)
+    out1.sum().backward()
+    torch.accelerator.synchronize()
+
+    self.assertEqual(out1.shape, (4, 8))
+    self.assertEqual(out1.stride(), (1, 10))
+    utils.assert_close(out1.to("cpu"), out_cpu1)
+    self.assertIsNotNone(x1.grad)
+    self.assertEqual(x1.grad.shape, (8, 10))
+    utils.assert_close(x1.grad.to("cpu"), x_cpu1.grad)
+
+    # Second runtime size: (8, 6) -> stride (1, 6)
+    x_cpu2 = torch.randn(8, 6, requires_grad=True)
+    out_cpu2 = fn(x_cpu2)
+    out_cpu2.sum().backward()
+
+    x2 = x_cpu2.detach().to(self.device).requires_grad_(True)
+    torch._dynamo.mark_dynamic(x2, 1, min=4, max=16)
+
+    out2 = compiled(x2)
+    out2.sum().backward()
+    torch.accelerator.synchronize()
+
+    self.assertEqual(out2.shape, (4, 8))
+    self.assertEqual(out2.stride(), (1, 6))
+    utils.assert_close(out2.to("cpu"), out_cpu2)
+    self.assertIsNotNone(x2.grad)
+    self.assertEqual(x2.grad.shape, (8, 6))
+    utils.assert_close(x2.grad.to("cpu"), x_cpu2.grad)
+
+
 if __name__ == "__main__":
   absltest.main()
