@@ -363,6 +363,10 @@ def _gloo_worker_fn(
   """Runs `fn` inside a gloo default process group, then tears it down."""
   torch_dist.init_process_group(backend="gloo", init_method="env://")
   try:
+    # Wait for every rank to initialize. Otherwise, a rank whose `fn` returns
+    # right away destroys the group while a peer is still connecting to it, and
+    # that peer's `init_process_group` fails with "Connection closed by peer".
+    torch_dist.barrier()
     fn(*args, **kwargs)
   finally:
     torch_dist.destroy_process_group()
