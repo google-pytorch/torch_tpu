@@ -921,5 +921,63 @@ TEST_F(KilnE2eTest, WindowedLoadConcatAndValueIf) {
   RunAndCompare(std::move(kernel), {&x_in, &bias_in}, expected);
 }
 
+TEST_F(KilnE2eTest, MemRefReshapeDynamicStridedBandDma) {
+  constexpr int64_t kHbmRows = 64;
+  constexpr int64_t kCols = 128;
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      Kernel kernel,
+      CreateKernel(
+          GridSpec{.name = "reshape_strided_band_dma_e2e"},
+          ScalarPrefetchSpec{i32(4)}, InSpec::Hbm(u32(kHbmRows, 1, kCols)),
+          OutSpec::Hbm(u32(kHbmRows, 1, kCols)),
+          [](SmemRef meta, HbmRef in, HbmRef out) {
+            const Scalar bands = Load(meta(0));
+            const Scalar width = Load(meta(1));
+            const Scalar in_stride = Load(meta(2));
+            const Scalar out_stride = Load(meta(3));
+
+            VmemRef stage = AllocaVmem(u32(kHbmRows, 1, kCols));
+            Store(stage, Zeros(stage.shape()));
+            SyncCopy(stage, out);
+
+            HbmRef in_bands =
+                in(Slice(0, bands * in_stride), all, all)
+                    .Reshape({bands, in_stride, kCols})(
+                        Slice(0, bands), Slice(0, width), Slice(0, kCols));
+            VmemRef stage_bands = stage(Slice(0, bands * width), all, all)
+                                      .Reshape({bands, width, kCols});
+            SyncCopy(in_bands, stage_bands);
+
+            HbmRef out_bands =
+                out(Slice(0, bands * out_stride), all, all)
+                    .Reshape({bands, out_stride, kCols})(
+                        Slice(0, bands), Slice(0, width), Slice(0, kCols));
+            SyncCopy(stage_bands, out_bands);
+          }));
+
+  const xla::Literal meta_lit =
+      xla::LiteralUtil::CreateR1<int32_t>({3, 8, 16, 20});
+  xla::Literal in_lit(
+      xla::ShapeUtil::MakeShape(xla::U32, {kHbmRows, 1, kCols}));
+  xla::Literal expected(
+      xla::ShapeUtil::MakeShape(xla::U32, {kHbmRows, 1, kCols}));
+  for (int64_t r = 0; r < kHbmRows; ++r) {
+    for (int64_t c = 0; c < kCols; ++c) {
+      in_lit.Set<uint32_t>({r, 0, c}, static_cast<uint32_t>(r * 1000 + c + 1));
+      expected.Set<uint32_t>({r, 0, c}, 0u);
+    }
+  }
+  for (int64_t b = 0; b < 3; ++b) {
+    for (int64_t w = 0; w < 8; ++w) {
+      for (int64_t c = 0; c < kCols; ++c) {
+        expected.Set<uint32_t>({b * 20 + w, 0, c},
+                               in_lit.Get<uint32_t>({b * 16 + w, 0, c}));
+      }
+    }
+  }
+  RunAndCompare(std::move(kernel), {&meta_lit, &in_lit}, expected);
+}
+
 }  // namespace
 }  // namespace torch_tpu::kiln

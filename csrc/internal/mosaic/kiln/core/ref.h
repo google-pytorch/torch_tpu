@@ -130,6 +130,9 @@ class RefBase {
   // TODO: b/581411915 - Migrate to use absl::Span.
   ValueHandle AtImpl(llvm::ArrayRef<Indexer> indexers) const;
 
+  // Returns the memref value of `ref.Reshape(dims)` (`tpu.memref_reshape`).
+  ValueHandle ReshapeImpl(llvm::ArrayRef<IndexArg> dims) const;
+
  private:
   ValueHandle handle_;
   DType dtype_;
@@ -170,6 +173,11 @@ class TypedRef final : public internal::RefBase {
   // number is only known when the kernel is built (Pallas `ref.at[...]`).
   TypedRef At(llvm::ArrayRef<Indexer> indexers) const {
     return TypedRef(AtImpl(indexers), dtype());
+  }
+
+  // Reshapes this ref to `dims` (`tpu.memref_reshape`).
+  TypedRef Reshape(llvm::ArrayRef<IndexArg> dims) const {
+    return TypedRef(ReshapeImpl(dims), dtype());
   }
 };
 
@@ -212,6 +220,9 @@ class Ref final : public internal::RefBase {
   }
   Ref At(llvm::ArrayRef<Indexer> indexers) const {
     return Ref(AtImpl(indexers), dtype());
+  }
+  Ref Reshape(llvm::ArrayRef<IndexArg> dims) const {
+    return Ref(ReshapeImpl(dims), dtype());
   }
 };
 

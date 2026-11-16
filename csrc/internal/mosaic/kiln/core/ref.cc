@@ -284,6 +284,36 @@ ValueHandle RefBase::AtImpl(llvm::ArrayRef<Indexer> indexers) const {
   return SliceMemRefImpl(handle(), dims);
 }
 
+ValueHandle RefBase::ReshapeImpl(llvm::ArrayRef<IndexArg> dims) const {
+  ABSL_CHECK(!dims.empty())  // CRASH_OK
+      << "Reshape() requires a non-empty shape";
+  mlir::ImplicitLocOpBuilder& b = CurrentBuilder();
+  mlir::Value source = handle_.value();
+  auto base_type = llvm::cast<mlir::MemRefType>(source.getType());
+
+  llvm::SmallVector<int64_t, 4> shape_dims;
+  shape_dims.reserve(dims.size());
+  llvm::SmallVector<mlir::Value, 4> dynamic_sizes;
+  for (const IndexArg& dim : dims) {
+    if (dim.IsInt()) {
+      ABSL_CHECK_NE(dim.AsInt(), kDynamic)  // CRASH_OK
+          << "Pass a runtime Scalar for dynamic dims in Reshape()";
+      ValidateI32IndexArg(dim, IndexBounds::kPositive, "Reshape dim");
+      shape_dims.push_back(dim.AsInt());
+    } else {
+      shape_dims.push_back(kDynamic);
+      dynamic_sizes.push_back(
+          ToValidatedI32Value(dim, IndexBounds::kPositive, "Reshape dim"));
+    }
+  }
+  auto result_type =
+      mlir::MemRefType::get(shape_dims, base_type.getElementType(), nullptr,
+                            base_type.getMemorySpace());
+  return ValueHandle(
+      tpu::MemRefReshapeOp::create(b, result_type, source, dynamic_sizes)
+          .getResult());
+}
+
 ValueHandle SliceMemRefImpl(ValueHandle base, llvm::ArrayRef<DimDesc> dims) {
   mlir::ImplicitLocOpBuilder& b = CurrentBuilder();
   mlir::Value current = base.value();
