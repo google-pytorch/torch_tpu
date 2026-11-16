@@ -30,7 +30,6 @@ from typing import Any
 import torch
 from torch._dynamo.utils import dynamo_timed
 from torch._functorch._aot_autograd.schemas import AOTDispatchCompiler
-from torch._inductor.fx_passes import post_grad
 from torch._inductor.utils import InputType
 from torch._logging import trace_structured
 from torch._logging._internal import trace_log
@@ -565,6 +564,10 @@ class StaticCompiler(Compiler):
     # the default behaviour inserts flatten and unflatten ops at the boundaries
     # which then blocks buffer donation.
     # TODO(b/491716758): Replace with our own fork.
+    # Imported lazily: it pulls in most of Inductor (lowering, IR, pattern
+    # matcher), which adds ~0.6s to `import torch_tpu`.
+    from torch._inductor.fx_passes import post_grad  # pylint: disable=g-import-not-at-top
+
     graph_transform_observer.GraphTransformObserver(
         graph_module, "mark_auto_functionalized_mutations"
     ).apply_graph_pass(_mark_auto_functionalized_mutations)
