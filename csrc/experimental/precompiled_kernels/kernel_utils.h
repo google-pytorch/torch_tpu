@@ -17,7 +17,19 @@
 #ifndef TORCH_TPU_CSRC_EXPERIMENTAL_PRECOMPILED_KERNELS_KERNEL_UTILS_H_
 #define TORCH_TPU_CSRC_EXPERIMENTAL_PRECOMPILED_KERNELS_KERNEL_UTILS_H_
 
+#include <cstdint>
+#include <memory>
+
+#include "absl/status/statusor.h"
+#include "absl/types/span.h"
 #include "csrc/common/cache_key.h"
+#include "csrc/common/compilation_spec.h"
+#include "csrc/common/shape.h"
+#include "csrc/internal/mosaic/kiln/kiln.h"
+#include "xla/layout.h"
+#include "xla/pjrt/pjrt_client.h"
+#include "xla/pjrt/pjrt_executable.h"
+#include "xla/shape.h"
 
 namespace torch_tpu {
 
@@ -27,6 +39,20 @@ namespace torch_tpu {
 // that share a shapeless key.
 CompilationCacheKey MakeUnboundedDynamicKernelCacheKey(ShapelessKey key,
                                                        int id_key);
+
+// Compiles a Mosaic kernel, wrapped by `BuildMosaicCustomCall` with the other
+// arguments, for exactly the given input and output shapes and layouts: only
+// the backend runs, so no HLO pass changes them.
+absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>> CompileMosaicKernel(
+    xla::PjRtClient& client, UniqueCompileOptions compile_options,
+    kiln::Kernel kernel, absl::Span<const xla::Shape> inputs,
+    const xla::Shape& output, absl::Span<const int64_t> operand_to_metadata,
+    int aliased_parameter = -1);
+
+// Whether `shapes` resolve to exactly the on-device `layouts`, e.g. those a
+// kernel was compiled for.
+bool HasDeviceLayouts(absl::Span<const Shape> shapes,
+                      absl::Span<const xla::Layout> layouts);
 
 }  // namespace torch_tpu
 

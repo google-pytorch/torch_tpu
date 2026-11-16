@@ -18,7 +18,6 @@
 
 #include <cstdint>
 #include <memory>
-#include <string>
 #include <utility>
 #include <vector>
 
@@ -31,17 +30,12 @@
 #include "csrc/common/compilation_spec.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
-#include "csrc/common/layout_utils.h"
 #include "csrc/common/shape.h"
 #include "csrc/common/unbounded_dynamic_kernel_registry.h"
 #include "csrc/experimental/precompiled_kernels/kernel_utils.h"
-#include "csrc/experimental/precompiled_kernels/mosaic_custom_call.h"
 #include "csrc/internal/mosaic/kiln/kiln.h"
 #include "csrc/ops/op_names.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
-#include "xla/client/executable_build_options.h"
-#include "xla/hlo/builder/xla_computation.h"
-#include "xla/hlo/ir/hlo_module.h"
 #include "xla/layout.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_executable.h"
@@ -600,25 +594,16 @@ UnboundedDynamicExecutionMetadata MakeNonzeroDynamicMetadata() {
       .is_compatible =
           [](absl::Span<const Shape> input_shapes,
              absl::Span<const Shape> output_shapes) {
-            // The on-device layouts of the kernel's buffer contract.
-            const std::vector<xla::Layout> expected_input_layouts = {
-                NonzeroInputLayout<kRank, kTileMinorDim>()};
-            const std::vector<xla::Layout> expected_output_layouts = {
-                xla::Layout({0, 1}, {xla::Tile({kRank, 128})})};
-            // Resolved from the device defaults and any custom layouts on the
-            // shapes.
-            const absl::StatusOr<std::vector<xla::Layout>> input_layouts =
-                ResolveXlaLayouts(input_shapes);
-            const absl::StatusOr<std::vector<xla::Layout>> output_layouts =
-                ResolveXlaLayouts(output_shapes);
-
             // The shapeless key already fixes the number, ranks and dtypes of
             // the operands: one rank-kRank F32 input and one rank-2 S64
-            // output.
+            // output. The layouts are those of the kernel's buffer contract.
             return output_shapes[0].dimensions()[1] == kRank &&
-                   input_layouts.ok() && output_layouts.ok() &&
-                   *input_layouts == expected_input_layouts &&
-                   *output_layouts == expected_output_layouts;
+                   HasDeviceLayouts(
+                       input_shapes,
+                       {NonzeroInputLayout<kRank, kTileMinorDim>()}) &&
+                   HasDeviceLayouts(
+                       output_shapes,
+                       {xla::Layout({0, 1}, {xla::Tile({kRank, 128})})});
           },
   };
   return dynamic_meta;
@@ -631,24 +616,11 @@ absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>>
 BuildNonzeroIndicesExecutable(xla::PjRtClient& client,
                               UniqueCompileOptions compile_options) {
   const xla::Shape output_view = MakeUnbounded(xla::S32, xla::Tile({1, 128}));
-  const std::vector<xla::Shape> parameters =
-      NonzeroParameters<kRank, kTileMinorDim>();
   TT_ASSIGN_OR_RETURN(kiln::Kernel kernel, BuildNonzeroIndices(kRank));
-  TT_ASSIGN_OR_RETURN(const std::string serialized_kernel,
-                      std::move(kernel).Serialize());
-  TT_ASSIGN_OR_RETURN(
-      const std::unique_ptr<xla::HloModule> hlo,
-      BuildMosaicCustomCall(serialized_kernel, parameters, output_view,
-                            {2, 3, -1, -1}, /*aliased_parameter=*/1));
-  xla::ExecutableBuildOptions& build =
-      compile_options->executable_build_options;
-  build.set_run_backend_only(true);
-  build.set_result_layout(hlo->entry_computation_layout().result_shape());
-  compile_options->argument_layouts = parameters;
-  const xla::XlaComputation computation(hlo->ToProto());
-  return AdaptXlaError(
-      client.CompileAndLoad(computation, std::move(*compile_options)),
-      /*context=*/"failed to compile the nonzero indices kernel");
+  return CompileMosaicKernel(
+      client, std::move(compile_options), std::move(kernel),
+      NonzeroParameters<kRank, kTileMinorDim>(), output_view, {2, 3, -1, -1},
+      /*aliased_parameter=*/1);
 }
 
 // Returns the ShapelessKey a nonzero graph would be lowered to.
