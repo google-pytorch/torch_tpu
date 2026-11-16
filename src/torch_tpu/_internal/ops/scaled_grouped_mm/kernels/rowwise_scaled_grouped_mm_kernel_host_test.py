@@ -73,11 +73,10 @@ class GroupMetadataTest(seed_test_utils.RepeatableTest):
   """The visit schedule computed from `offs`."""
 
   def _check_schedule(self, offs: np.ndarray, num_rows: int, tile_m: int):
-    group_offsets, group_ids, m_tile_ids, num_visits = (
-        kernel.make_group_metadata(
-            jnp.asarray(offs), num_rows=num_rows, tile_m=tile_m
-        )
-    )
+    # Jitted, so each layout costs one compilation instead of one per eager op.
+    group_offsets, group_ids, m_tile_ids, num_visits = jax.jit(
+        kernel.make_group_metadata, static_argnames=("num_rows", "tile_m")
+    )(jnp.asarray(offs), num_rows=num_rows, tile_m=tile_m)
     group_offsets, group_ids, m_tile_ids = map(
         np.asarray, (group_offsets, group_ids, m_tile_ids)
     )
@@ -115,8 +114,9 @@ class GroupMetadataTest(seed_test_utils.RepeatableTest):
     self._check_schedule(_offs(sizes), num_rows, tile_m)
 
   def test_random_layouts(self):
+    # Each layout costs a compilation; the edge cases are in test_named_layouts.
     rng = np.random.default_rng(self.test_random_seed)
-    for _ in range(50):
+    for _ in range(25):
       num_groups = int(rng.integers(1, 10))
       num_rows = int(rng.integers(1, 2000))
       tile_m = int(rng.choice([128, 256, 512]))
