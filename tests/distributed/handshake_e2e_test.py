@@ -23,28 +23,41 @@ import portpicker
 import torch
 from torch import distributed as dist
 from torch_tpu._internal import compile as tpu_compile
+from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
 from tests.distributed import continuous_test_utils
 
 
-class _HandshakeE2ETestMixin(metaclass=parameterized.TestGeneratorMetaclass):
-  """Common end-to-end handshake tests shared across handshake stages.
+_STAGES = (
+    ("compile_stage", tpu_torch_compile.HandshakeStage.COMPILE_STAGE),
+    ("dispatch_stage", tpu_torch_compile.HandshakeStage.DISPATCH_STAGE),
+)
+_STAGES_AND_DIVERGENT_RANKS = tuple(
+    (f"{name}_rank_{divergent_rank}", stage, divergent_rank)
+    for name, stage in _STAGES
+    for divergent_rank in (0, 1)
+)
 
-  `TORCH_TPU_SPMD_HANDSHAKE_STAGE` and `TORCH_TPU_INTERNAL_HANDSHAKE_PORT` are
-  memoized once per process on first read, so each handshake stage runs in its
-  own `TpuMultiProcContinuousTest` subclass with its own worker pool.
+
+class HandshakeE2ETest(
+    continuous_test_utils.TpuMultiProcContinuousTest,
+    metaclass=parameterized.TestGeneratorMetaclass,
+):
+  """End-to-end tests for distributed handshake, for each handshake stage.
+
+  `TORCH_TPU_SPMD_HANDSHAKE_STAGE` is memoized once per process on first read.
+  So that both stages share one worker pool, each test sets its stage by
+  patching `get_handshake_stage_env_var_once()`, the only reader of the stage.
   """
 
   world_size = 8
-  _handshake_stage: str
 
   @classmethod
   def _spawn_processes(cls, world_size: int) -> None:
     with mock.patch.dict(
         os.environ,
         {
-            "TORCH_TPU_SPMD_HANDSHAKE_STAGE": cls._handshake_stage,
             # We patch the port with an unused one to ensure the test doesn't
             # fail due to a port conflict with another test.
             "TORCH_TPU_INTERNAL_HANDSHAKE_PORT": str(
@@ -52,10 +65,25 @@ class _HandshakeE2ETestMixin(metaclass=parameterized.TestGeneratorMetaclass):
             ),
         },
     ):
-      super()._spawn_processes(world_size)  # pyrefly: ignore[missing-attribute]
+      super()._spawn_processes(world_size)
 
-  def test_handshake_no_rank_divergence(self) -> None:
-    rank = self.rank  # pyrefly: ignore[missing-attribute]
+  def _set_handshake_stage(
+      self, handshake_stage: tpu_torch_compile.HandshakeStage
+  ) -> None:
+    self.enterContext(
+        mock.patch.object(
+            tpu_torch_compile,
+            "get_handshake_stage_env_var_once",
+            return_value=handshake_stage,
+        )
+    )
+
+  @parameterized.named_parameters(*_STAGES)
+  def test_handshake_no_rank_divergence(
+      self, handshake_stage: tpu_torch_compile.HandshakeStage
+  ) -> None:
+    self._set_handshake_stage(handshake_stage)
+    rank = self.rank
     debugs: list[tpu_compile.TpuCompileDebug] = []
     x = torch.ones(4, device="tpu") * (rank + 1)
     y = torch.ones(4, device="tpu") * 2
@@ -79,8 +107,12 @@ class _HandshakeE2ETestMixin(metaclass=parameterized.TestGeneratorMetaclass):
         f"{len(debugs[0].stablehlo_forward_text)}"
     )
 
-  def test_handshake_rank_divergence(self) -> None:
-    rank = self.rank  # pyrefly: ignore[missing-attribute]
+  @parameterized.named_parameters(*_STAGES)
+  def test_handshake_rank_divergence(
+      self, handshake_stage: tpu_torch_compile.HandshakeStage
+  ) -> None:
+    self._set_handshake_stage(handshake_stage)
+    rank = self.rank
     debugs: list[tpu_compile.TpuCompileDebug] = []
     x = torch.ones(4, device="tpu") * (rank + 1)
     y = torch.ones(4, device="tpu") * 2
@@ -110,8 +142,12 @@ class _HandshakeE2ETestMixin(metaclass=parameterized.TestGeneratorMetaclass):
         f"{exec_artifact.mlir_texts[1]}"
     )
 
-  def test_handshake_divergence_after_iteration(self) -> None:
-    rank = self.rank  # pyrefly: ignore[missing-attribute]
+  @parameterized.named_parameters(*_STAGES)
+  def test_handshake_divergence_after_iteration(
+      self, handshake_stage: tpu_torch_compile.HandshakeStage
+  ) -> None:
+    self._set_handshake_stage(handshake_stage)
+    rank = self.rank
     x = torch.ones(4, device="tpu") * (rank + 1)
     y = torch.ones(4, device="tpu") * 2
 
@@ -133,21 +169,21 @@ class _HandshakeE2ETestMixin(metaclass=parameterized.TestGeneratorMetaclass):
     iteration += 1
     _ = compiled_fn(x, y)
 
-  @parameterized.named_parameters(("rank_0", 0), ("rank_1", 1))
+  # Not run with `COMPILE_STAGE`: if a single rank enters a handshake due to
+  # rank specific recompilation it will timeout and throw an exception. The
+  # other ranks that haven't recompiled will get stuck on an enqueued
+  # collective. This results in a test timeout which happens because the
+  # subprocess exception won't get propagated as the process which raised the
+  # exception will wait on the global barrier.
+  @parameterized.named_parameters(
+      ("dispatch_stage_rank_0", 0), ("dispatch_stage_rank_1", 1)
+  )
   def test_handshake_divergence_after_iteration_on_a_single_rank(
       self, divergent_rank: int
   ) -> None:
-    if self._handshake_stage == "COMPILE_STAGE":
-      self.skipTest(  # pyrefly: ignore[missing-attribute]
-          "If a single rank enters a handshake due to rank specific"
-          " recompilation it will timeout and throw an exception. The other"
-          " ranks that haven't recompiled will get stuck on an enqueued"
-          " collective. This results in a test timeout which happens because"
-          " the subprocess exception won't get propagated as the process"
-          " which raised the exception will wait on the global barrier."
-      )
+    self._set_handshake_stage(tpu_torch_compile.HandshakeStage.DISPATCH_STAGE)
 
-    rank = self.rank  # pyrefly: ignore[missing-attribute]
+    rank = self.rank
     x = torch.ones(4, device="tpu") * (rank + 1)
     y = torch.ones(4, device="tpu") * 2
 
@@ -169,11 +205,14 @@ class _HandshakeE2ETestMixin(metaclass=parameterized.TestGeneratorMetaclass):
     iteration += 1
     _ = compiled_fn(x, y)
 
-  @parameterized.named_parameters(("rank_0", 0), ("rank_1", 1))
+  @parameterized.named_parameters(*_STAGES_AND_DIVERGENT_RANKS)
   def test_handshake_uneven_executables_between_ranks(
-      self, divergent_rank: int
+      self,
+      handshake_stage: tpu_torch_compile.HandshakeStage,
+      divergent_rank: int,
   ) -> None:
-    rank = self.rank  # pyrefly: ignore[missing-attribute]
+    self._set_handshake_stage(handshake_stage)
+    rank = self.rank
     debugs: list[tpu_compile.TpuCompileDebug] = []
     x = torch.ones(4, device="tpu") * (rank + 1)
     y = torch.ones(4, device="tpu") * 2
@@ -205,11 +244,14 @@ class _HandshakeE2ETestMixin(metaclass=parameterized.TestGeneratorMetaclass):
           f" {len(compiled_executables)}"
       )
 
-  @parameterized.named_parameters(("rank_0", 0), ("rank_1", 1))
+  @parameterized.named_parameters(*_STAGES_AND_DIVERGENT_RANKS)
   def test_handshake_last_frame_on_divergent_rank_is_not_collective_test(
-      self, divergent_rank: int
+      self,
+      handshake_stage: tpu_torch_compile.HandshakeStage,
+      divergent_rank: int,
   ) -> None:
-    rank = self.rank  # pyrefly: ignore[missing-attribute]
+    self._set_handshake_stage(handshake_stage)
+    rank = self.rank
     debugs: list[tpu_compile.TpuCompileDebug] = []
     x = torch.ones(4, device="tpu") * (rank + 1)
     y = torch.ones(4, device="tpu") * 2
@@ -275,11 +317,14 @@ class _HandshakeE2ETestMixin(metaclass=parameterized.TestGeneratorMetaclass):
         f"{len(debugs[spmd_function_index].stablehlo_forward_text)}"
     )
 
-  @parameterized.named_parameters(("rank_0", 0), ("rank_1", 1))
+  @parameterized.named_parameters(*_STAGES_AND_DIVERGENT_RANKS)
   def test_handshake_separate_vs_composed_compiled_functions(
-      self, divergent_rank: int
+      self,
+      handshake_stage: tpu_torch_compile.HandshakeStage,
+      divergent_rank: int,
   ) -> None:
-    rank = self.rank  # pyrefly: ignore[missing-attribute]
+    self._set_handshake_stage(handshake_stage)
+    rank = self.rank
     debugs: list[tpu_compile.TpuCompileDebug] = []
     x = torch.ones(4, device="tpu") * (rank + 1)
     y = torch.ones(4, device="tpu") * 2
@@ -336,8 +381,12 @@ class _HandshakeE2ETestMixin(metaclass=parameterized.TestGeneratorMetaclass):
           f" {len(compiled_executables)}"
       )
 
-  def test_handshake_no_rank_divergence_async_compile(self) -> None:
-    rank = self.rank  # pyrefly: ignore[missing-attribute]
+  @parameterized.named_parameters(*_STAGES)
+  def test_handshake_no_rank_divergence_async_compile(
+      self, handshake_stage: tpu_torch_compile.HandshakeStage
+  ) -> None:
+    self._set_handshake_stage(handshake_stage)
+    rank = self.rank
     world_size = self.world_size
     debugs: list[tpu_compile.TpuCompileDebug] = []
     x = torch.ones(4, device="tpu") * (rank + 1)
@@ -378,8 +427,12 @@ class _HandshakeE2ETestMixin(metaclass=parameterized.TestGeneratorMetaclass):
         f"{len(debugs[0].stablehlo_forward_text)}"
     )
 
-  def test_handshake_divergence_after_iteration_async_compile(self) -> None:
-    rank = self.rank  # pyrefly: ignore[missing-attribute]
+  @parameterized.named_parameters(*_STAGES)
+  def test_handshake_divergence_after_iteration_async_compile(
+      self, handshake_stage: tpu_torch_compile.HandshakeStage
+  ) -> None:
+    self._set_handshake_stage(handshake_stage)
+    rank = self.rank
     world_size = self.world_size
     x = torch.ones(4, device="tpu") * (rank + 1)
     y = torch.ones(4, device="tpu") * 2
@@ -424,20 +477,6 @@ class _HandshakeE2ETestMixin(metaclass=parameterized.TestGeneratorMetaclass):
     res1 = compiled_fn(x, y)
     expected_iter1 = expected_iter0 * 5.0
     utils.assert_close(res1, torch.ones(4, device="tpu") * expected_iter1)
-
-
-class HandshakeCompileStageE2ETest(
-    _HandshakeE2ETestMixin,
-    continuous_test_utils.TpuMultiProcContinuousTest,
-):
-  _handshake_stage = "COMPILE_STAGE"
-
-
-class HandshakeDispatchStageE2ETest(
-    _HandshakeE2ETestMixin,
-    continuous_test_utils.TpuMultiProcContinuousTest,
-):
-  _handshake_stage = "DISPATCH_STAGE"
 
 
 if __name__ == "__main__":
