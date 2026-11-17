@@ -26,13 +26,13 @@
 #include "csrc/ops/binary.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/reductions/reductions.h"
-#include "llvm/ADT/ArrayRef.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Types.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
+#include "stablehlo/transforms/StablehloBroadcastLowering.h"
 
 namespace torch_tpu {
 namespace {
@@ -56,14 +56,15 @@ absl::StatusOr<mlir::MlirOp> ApplyNormPower(mlir::MlirOp op,
   return BuildPowShlo(op, exp);
 }
 
-bool HasZeroReductionDim(mlir::RankedTensorType type,
+bool HasZeroReductionDim(mlir::MlirOp input_op,
                          absl::Span<const int64_t> reduce_dims) {
-  llvm::ArrayRef<int64_t> shape = type.getShape();
-  const int64_t rank = static_cast<int64_t>(shape.size());
+  const mlir::stablehlo::Dimensions dims = GetDimensions(input_op);
+  const int64_t rank = static_cast<int64_t>(dims.size());
   for (int64_t dim : reduce_dims) {
-    int64_t canonical_dim = dim < 0 ? dim + rank : dim;
+    const int64_t canonical_dim = dim < 0 ? dim + rank : dim;
     if (canonical_dim >= 0 && canonical_dim < rank &&
-        shape[canonical_dim] == 0) {
+        !dims[canonical_dim].boundOp.has_value() &&
+        dims[canonical_dim].size == 0) {
       return true;
     }
   }
@@ -72,19 +73,20 @@ bool HasZeroReductionDim(mlir::RankedTensorType type,
 
 // GENERIC: semantic 1-element Lp norm reduces to absolute value.
 [[nodiscard]] bool IsSingleElementReduction(
-    mlir::RankedTensorType type, absl::Span<const int64_t> reduce_dims) {
-  const int64_t rank = type.getRank();
+    mlir::MlirOp input_op, absl::Span<const int64_t> reduce_dims) {
+  const mlir::stablehlo::Dimensions dims = GetDimensions(input_op);
+  const int64_t rank = static_cast<int64_t>(dims.size());
   if (rank == 0) {
     return true;
   }
   if (reduce_dims.empty()) {
     return false;
   }
-  llvm::ArrayRef<int64_t> shape = type.getShape();
   for (int64_t dim : reduce_dims) {
-    int64_t canonical_dim = dim < 0 ? dim + rank : dim;
+    const int64_t canonical_dim = dim < 0 ? dim + rank : dim;
     if (canonical_dim < 0 || canonical_dim >= rank ||
-        shape[canonical_dim] != 1) {
+        dims[canonical_dim].boundOp.has_value() ||
+        dims[canonical_dim].size != 1) {
       return false;
     }
   }
@@ -104,8 +106,7 @@ absl::StatusOr<mlir::MlirOp> BuildZeroNormShlo(
     input_op = mlir::stablehlo::Abs(input_op);
   }
   TT_ASSIGN_OR_RETURN(input_op, CastIfNeeded(input_op, compute_dtype));
-  mlir::MlirOp zero_bcast = mlir::stablehlo::BroadcastInDim(
-      GetTensorTypeOrDie(input_op), init_val, {});
+  mlir::MlirOp zero_bcast = MakeConstantLike(input_op, 0.0);
   mlir::MlirOp ne_op = mlir::stablehlo::Compare(
       input_op, zero_bcast, mlir::stablehlo::ComparisonDirection::NE);
   TT_ASSIGN_OR_RETURN(mlir::MlirOp ne_cast, CastIfNeeded(ne_op, compute_dtype));
@@ -171,8 +172,7 @@ absl::StatusOr<mlir::MlirOp> BuildGeneralPNormShlo(
         compute_mlir_type, rb.getRegion(), rb.getOpBuilder());
   };
 
-  if (std::isnan(ord) &&
-      HasZeroReductionDim(GetTensorTypeOrDie(input_op), reduce_dims)) {
+  if (std::isnan(ord) && HasZeroReductionDim(input_op, reduce_dims)) {
     mlir::MlirOp reduction_res =
         BuildReductionShlo(input_op, reduce_dims, compute_mlir_type, init_val,
                            reduce_fn, reduction_mode);
@@ -192,8 +192,7 @@ absl::StatusOr<mlir::MlirOp> BuildGeneralPNormShlo(
   if (ord < 0.0) {
     // If ord < 0 and any element along reduce_dims is 0, pow(0, ord) = inf,
     // which may not reduce back to 0 cleanly; explicitly select 0.
-    mlir::MlirOp zero_bcast = mlir::stablehlo::BroadcastInDim(
-        GetTensorTypeOrDie(orig_abs_input), init_val, {});
+    mlir::MlirOp zero_bcast = MakeConstantLike(orig_abs_input, 0.0);
     mlir::MlirOp is_zero = mlir::stablehlo::Compare(
         orig_abs_input, zero_bcast, mlir::stablehlo::ComparisonDirection::EQ);
     const mlir::Type pred_mlir_type =
@@ -207,8 +206,7 @@ absl::StatusOr<mlir::MlirOp> BuildGeneralPNormShlo(
     mlir::MlirOp has_zero =
         BuildReductionShlo(is_zero, reduce_dims, pred_mlir_type, false_val,
                            or_reduce_fn, reduction_mode);
-    mlir::MlirOp zero_res = mlir::stablehlo::BroadcastInDim(
-        GetTensorTypeOrDie(reduction_res), init_val, {});
+    mlir::MlirOp zero_res = MakeConstantLike(reduction_res, 0.0);
     reduction_res = mlir::stablehlo::Select(has_zero, zero_res, reduction_res);
   }
 
@@ -239,8 +237,7 @@ absl::StatusOr<mlir::MlirOp> BuildPNormShlo(
   }
 
   // GENERIC: semantic 1-element Lp vector norm reduces to absolute value.
-  if (ord != 0.0 &&
-      IsSingleElementReduction(GetTensorTypeOrDie(input_op), reduce_dims)) {
+  if (ord != 0.0 && IsSingleElementReduction(input_op, reduce_dims)) {
     return BuildSingleElementPNormShlo(input_op, reduce_dims, reduction_mode,
                                        out_type);
   }

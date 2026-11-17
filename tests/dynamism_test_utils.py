@@ -498,10 +498,6 @@ DYNAMISM_DENY_LISTS: DenyList = {
     },
     # TODO: b/449736443 - Support bounded dimensions in these lowerings.
     "the lowering emits an op without bounded shape support": {
-        # Calls getNumElements() on a dynamic shaped type, failing an MLIR
-        # assertion that aborts the test process in builds with MLIR
-        # assertions enabled.
-        "_foreach_norm": {EAGER, COMPILE_GRAD},
         # BuildMlirModule fails to inline MLIR functions on bounded inputs.
         "_fused_moving_avg_obs_fq_helper": ALL_MODES,
         # XLA ragged-dot does not support propagating bounded dimensions.
