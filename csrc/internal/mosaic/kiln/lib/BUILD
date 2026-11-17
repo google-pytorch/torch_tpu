@@ -36,7 +36,6 @@ torch_tpu_cc_library(
         "//csrc/internal/mosaic/kiln/core:scalar",
         "//csrc/internal/mosaic/kiln/core:semaphore",
         "//csrc/internal/mosaic/kiln/core:shape",
-        "//csrc/internal/mosaic/kiln/core:specs",
         "@com_google_absl//absl/functional:any_invocable",
         "@com_google_absl//absl/functional:function_ref",
         "@com_google_absl//absl/log:absl_check",

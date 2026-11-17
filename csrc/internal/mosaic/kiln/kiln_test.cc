@@ -33,6 +33,7 @@
 #include <utility>
 #include <vector>
 
+#include "absl/functional/function_ref.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
@@ -1177,8 +1178,8 @@ TEST(KilnTest, ForLoopWithEmptyState) {
 TEST(KilnDeathTest, ScalarMismatchedTypesFail) {
   absl::StatusOr<Kernel> kernel = CreateKernel(
       GridSpec{.name = "mismatched", .grid = {1}}, InSpec{f32(32, 128)},
-      InSpec{i32(32, 128)}, InSpec{u32(32, 128)}, OutSpec{f32(32, 128)},
-      [](VmemRef f_in, VmemRef i_in, VmemRef u_in, VmemRef out) {
+      InSpec{i32(32, 128)}, OutSpec{f32(32, 128)},
+      [](VmemRef f_in, VmemRef i_in, VmemRef out) {
         Scalar s_i = I32(1);
         Scalar s_u = U32(1);
         Scalar s_f = F32(1.0);
@@ -1205,6 +1206,16 @@ TEST(KilnDeathTest, ScalarMismatchedTypesFail) {
         EXPECT_DEATH(For(s_f, [](Scalar) {}),
                      "IndexArg requires an integer scalar");
 
+        Store(out, Load(f_in));
+      });
+  ASSERT_THAT(kernel, IsOk());
+}
+
+TEST(KilnDeathTest, TileMismatchedTypesFail) {
+  absl::StatusOr<Kernel> kernel = CreateKernel(
+      GridSpec{.name = "mismatched", .grid = {1}}, InSpec{f32(32, 128)},
+      InSpec{i32(32, 128)}, InSpec{u32(32, 128)}, OutSpec{f32(32, 128)},
+      [](VmemRef f_in, VmemRef i_in, VmemRef u_in, VmemRef out) {
         Tile t_f = Load(f_in);
         Tile t_i = Load(i_in);
         Tile t_u = Load(u_in);
@@ -1219,6 +1230,18 @@ TEST(KilnDeathTest, ScalarMismatchedTypesFail) {
         EXPECT_DEATH(Reciprocal(t_i),
                      "Reciprocal\\(\\) requires a floating-point tile");
 
+        Store(out, t_f);
+      });
+  ASSERT_THAT(kernel, IsOk());
+}
+
+TEST(KilnDeathTest, InvalidRefAccessesFail) {
+  absl::StatusOr<Kernel> kernel = CreateKernel(
+      GridSpec{.name = "mismatched", .grid = {1}}, InSpec{f32(32, 128)},
+      InSpec{i32(32, 128)}, OutSpec{f32(32, 128)},
+      [](VmemRef f_in, VmemRef i_in, VmemRef out) {
+        Tile t_f = Load(f_in);
+        Tile t_i = Load(i_in);
         EXPECT_DEATH(f_in(0, 0, 0), "Too many slice indices");
         EXPECT_DEATH(f_in(0, Slice(0, 0)), "Slice size must be positive");
         EXPECT_DEATH(Load(f_in, {0}, {8, 128}),
@@ -2474,6 +2497,85 @@ TEST(KilnTest, EmitPipelineWithTwo2dInputs) {
     CHECK:               arith.addf
     CHECK:           tpu.yield
   )"));
+}
+
+TEST(KilnTest, EmitPipelineWithSqueezedDim) {
+  absl::StatusOr<Kernel> kernel = CreateKernel(
+      GridSpec{.name = "emit_pipeline_squeezed"},
+      InSpec::Hbm(f32(kDynamic, 8, 128)), OutSpec::Hbm(f32(8, 128)),
+      ScratchSpec::Vmem(f32(8, 128)), [&](HbmRef in, HbmRef out, VmemRef acc) {
+        PipelineOperand input{.hbm = in,
+                              .block_shape = {squeezed, 8, 128},
+                              .region = [](Scalar step) {
+                                return BlockRegion{.offsets = {step, 0, 0},
+                                                   .sizes = {1, 8, 128}};
+                              }};
+        Store(acc, Zeros(acc.shape()));
+        EmitPipeline(0, in.Dim(0), {std::move(input)}, /*outputs=*/{},
+                     [&](const PipelineStep& s) {
+                       Store(acc, Load(acc) + Load(s.inputs[0].ref));
+                     });
+        AsyncCopy(acc, out, AllocaDmaSemaphore()).Wait();
+      });
+
+  // The slots leave out the squeezed dimension, which each copy indexes away
+  // from `in`.
+  EXPECT_THAT(kernel, IsOkAndMatchesIr(R"(
+    CHECK-LABEL: func.func @emit_pipeline_squeezed(
+    CHECK:         memref.alloca() : memref<2x8x128xf32, #tpu.memory_space<vmem>>
+    CHECK:         %[[SRC:.*]] = tpu.memref_squeeze {{.*}} -> memref<8x128xf32, #tpu.memory_space<hbm>>
+    CHECK:         tpu.enqueue_dma source(%[[SRC]] : {{.*}})
+  )"));
+}
+
+TEST(KilnTest, EmitPipelineWithSqueezedOutputDim) {
+  auto slice = [](Scalar i) {
+    return BlockRegion{.offsets = {i, 0, 0}, .sizes = {1, 8, 128}};
+  };
+  absl::StatusOr<Kernel> kernel = CreateKernel(
+      GridSpec{.name = "emit_pipeline_squeezed_output"},
+      InSpec::Hbm(f32(kDynamic, 8, 128)), OutSpec::Hbm(f32(kDynamic, 8, 128)),
+      [&](HbmRef in, HbmRef out) {
+        EmitPipeline(
+            0, in.Dim(0),
+            {{.hbm = in, .block_shape = {squeezed, 8, 128}, .region = slice}},
+            {{.hbm = out, .block_shape = {squeezed, 8, 128}, .region = slice}},
+            [&](const PipelineStep& s) {
+              Store(s.outputs[0].ref, Load(s.inputs[0].ref) * 2.0);
+            });
+      });
+
+  // The output slots leave out the squeezed dimension too, and each copy out
+  // goes from a slot to a squeezed window of `out`.
+  EXPECT_THAT(kernel, IsOkAndMatchesIr(R"(
+    CHECK-LABEL: func.func @emit_pipeline_squeezed_output(
+    CHECK:         memref.alloca() : memref<2x8x128xf32, #tpu.memory_space<vmem>>
+    CHECK:         memref.alloca() : memref<2x8x128xf32, #tpu.memory_space<vmem>>
+    CHECK:         tpu.enqueue_dma source(%{{.*}} : memref<8x128xf32, #tpu.memory_space<vmem>>) target(%{{.*}} : memref<8x128xf32, #tpu.memory_space<hbm>>)
+  )"));
+}
+
+TEST(KilnDeathTest, EmitPipelineRejectsSqueezedMinorDims) {
+  auto emit = [](HbmRef hbm, BlockShape block_shape) {
+    EmitPipeline(0, 1,
+                 {{.hbm = hbm,
+                   .block_shape = std::move(block_shape),
+                   .region = [](Scalar) { return BlockRegion{}; }}},
+                 /*outputs=*/{}, [](const PipelineStep&) {});
+  };
+  EXPECT_THAT(
+      CreateKernel(GridSpec{.name = "emit_pipeline_squeezed_minor_errors"},
+                   InSpec::Hbm(f32(128)), InSpec::Hbm(f32(8, 128)),
+                   OutSpec::Vmem(f32(8, 128)),
+                   [&](HbmRef hbm_1d, HbmRef hbm_2d, VmemRef) {
+                     EXPECT_DEATH(emit(hbm_1d, {squeezed}),
+                                  "the two minor dimensions can't be squeezed");
+                     EXPECT_DEATH(emit(hbm_2d, {squeezed, 128}),
+                                  "the two minor dimensions can't be squeezed");
+                     EXPECT_DEATH(emit(hbm_2d, {8, squeezed}),
+                                  "the two minor dimensions can't be squeezed");
+                   }),
+      IsOk());
 }
 
 TEST(KilnTest, EmitPipelineWithOutputs) {
