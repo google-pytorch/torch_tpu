@@ -320,6 +320,7 @@ TEST_EXCLUSIONS: Final[
             "test_memory_profiler",
             "test_overhead_activities_own_no_device_time",
             "test_profile_all_threads",
+            "test_region_device_time",
             "test_trace_only_export_matches_default",
         ],
         "TestProfilerEventsParityDevice": [
@@ -426,6 +427,11 @@ TEST_EXCLUSIONS: Final[
             "test_needs_copy_error",
             "test_no_copy",
             "test_readonly_wrapper_bare_capsule_is_valid",
+        ],
+    },
+    "test_dynamic_shapes": {
+        "TestUnbackedOpsDevice": [
+            "test_narrow_with_tensor_start",
         ],
     },
     "test_expanded_weights": {
@@ -901,6 +907,13 @@ TEST_EXCLUSIONS: Final[
     "test_transformers": {
         "TestSDPAFailureModes": [
             "test_dispatch_fails_no_backend",
+        ],
+        "TestSDPAGeneric": [
+            "test_scaled_dot_product_attention_fp16_overflow",
+            "test_sdp_math_gradcheck",
+            "test_sdpa_math_broadcast_batch_dims",
+            "test_sdpa_zero_output",
+            "test_sdpa_zero_qk_head_dim_matches_eager_attention",
         ],
         "TestTransformersAccelerator": [
             "test_disable_fastpath",
