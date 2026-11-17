@@ -166,6 +166,7 @@ torch_tpu_py_test(
 
 torch_tpu_py_test(
     name = "pallas_verify_fx_test",
+    timeout = "long",  # Needed for asan.
     srcs = ["pallas_verify_fx_test.py"],
     env = {
         # Keeps JAX off the TPU of OSS CI hosts.
