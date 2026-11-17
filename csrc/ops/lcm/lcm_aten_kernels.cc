@@ -46,7 +46,9 @@ namespace {
 constexpr int32_t kMaxGcdIterationsI32 = 47;
 // Binary GCD bound on positive inputs in [1, 2^63] (at most 63 halving steps).
 constexpr int32_t kMaxBinaryGcdIterationsI64 = 65;
-constexpr int32_t kBitsPerInt64 = 64;
+// Number of quadratic Hensel/Newton doubling steps to lift a 5-bit modular
+// inverse `(3 * odd) ^ 2` (mod 32) to 64 bits (`5 -> 10 -> 20 -> 40 -> 80`).
+constexpr int kNumModularInverseStepsU64 = 4;
 
 absl::Status ValidateLcmInputs(const at::Tensor& self, const at::Tensor& other,
                                const at::Tensor& out) {
@@ -132,10 +134,17 @@ mlir::MlirOp BuildCtzU64(mlir::MlirOp x) {
   return mlir::stablehlo::PopulationCount(mask);
 }
 
+// Decomposition `gcd(u0, v0) = odd_factor << shift` for positive `UI64` inputs,
+// where `odd_factor` is odd and `shift` is the shared power-of-two exponent.
+struct BinaryGcdU64 {
+  mlir::MlirOp odd_factor;
+  mlir::MlirOp shift;
+};
+
 // Computes unsigned 64-bit GCD on strictly positive inputs (`u0, v0 >= 1`)
 // using Stein's binary GCD algorithm so TPU legalization avoids expanding
 // 64-bit `stablehlo.remainder` into 64 unrolled division stages.
-mlir::MlirOp BuildBinaryGcdPositiveU64(mlir::MlirOp u0, mlir::MlirOp v0) {
+BinaryGcdU64 BuildBinaryGcdPositiveU64(mlir::MlirOp u0, mlir::MlirOp v0) {
   mlir::MlirBuilder& builder = u0.getBuilder();
   mlir::MlirOp uv_or = mlir::stablehlo::Or(u0, v0);
   mlir::MlirOp shift = BuildCtzU64(uv_or);
@@ -180,63 +189,29 @@ mlir::MlirOp BuildBinaryGcdPositiveU64(mlir::MlirOp u0, mlir::MlirOp v0) {
 
         mlir::stablehlo::Return(body, {next_i, next_u, next_v});
       });
-  mlir::MlirOp g_odd = loop[1];
-  return mlir::stablehlo::ShiftLeft(g_odd, shift);
+  return BinaryGcdU64{.odd_factor = loop[1], .shift = shift};
 }
 
-// Computes unsigned 64-bit integer quotient `dividend / divisor` (`divisor >
-// 0`) in a 64-step `stablehlo.while` loop instead of `stablehlo.divide` so XLA
-// does not inline 64 unrolled 64-bit shift-subtract stages into the HLO graph.
-mlir::MlirOp BuildUnsignedDivU64(mlir::MlirOp dividend, mlir::MlirOp divisor) {
-  mlir::MlirBuilder& builder = dividend.getBuilder();
-  mlir::MlirOp zero_i32 =
-      MakeScalarConstant(builder, 0, mlir::ElementType::I32);
-  mlir::MlirOp zero_u64 = MakeConstantLike(dividend, 0);
-
-  mlir::SmallVector<mlir::MlirOp> loop = mlir::stablehlo::While(
-      builder, {zero_i32, dividend, zero_u64, divisor},
-      [](mlir::RegionBuilder& cond) {
-        mlir::SmallVector<mlir::MlirOp> args = mlir::stablehlo::Arguments(
-            cond, cond.getOp<mlir::stablehlo::WhileOp>());
-        mlir::MlirOp limit =
-            MakeScalarConstant(cond, kBitsPerInt64, mlir::ElementType::I32);
-        mlir::MlirOp below_limit = mlir::stablehlo::Compare(
-            args[0], limit, mlir::stablehlo::ComparisonDirection::LT);
-        mlir::stablehlo::Return(cond, below_limit);
-      },
-      [](mlir::RegionBuilder& body) {
-        mlir::SmallVector<mlir::MlirOp> args = mlir::stablehlo::Arguments(
-            body, body.getOp<mlir::stablehlo::WhileOp>());
-        mlir::MlirOp i = args[0];
-        mlir::MlirOp q = args[1];
-        mlir::MlirOp r = args[2];
-        mlir::MlirOp d = args[3];
-
-        mlir::MlirOp one_i32 =
-            MakeScalarConstant(body, 1, mlir::ElementType::I32);
-        mlir::MlirOp next_i = mlir::stablehlo::Add(i, one_i32);
-
-        mlir::MlirOp one_u64 = MakeConstantLike(q, 1);
-        mlir::MlirOp msb_shift = MakeConstantLike(q, kBitsPerInt64 - 1);
-        mlir::MlirOp q_msb = mlir::stablehlo::ShiftRightLogical(q, msb_shift);
-        mlir::MlirOp r_shl = mlir::stablehlo::ShiftLeft(r, one_u64);
-        mlir::MlirOp r_shifted = mlir::stablehlo::Or(r_shl, q_msb);
-        mlir::MlirOp q_shifted = mlir::stablehlo::ShiftLeft(q, one_u64);
-
-        mlir::MlirOp ge = mlir::stablehlo::Compare(
-            r_shifted, d, mlir::stablehlo::ComparisonDirection::GE,
-            mlir::stablehlo::ComparisonTypeAttr::get(
-                &d.getContext(), mlir::stablehlo::ComparisonType::UNSIGNED));
-        mlir::MlirOp r_sub = mlir::stablehlo::Subtract(r_shifted, d);
-        mlir::MlirOp next_r = mlir::stablehlo::Select(ge, r_sub, r_shifted);
-        mlir::MlirOp q_inc = mlir::stablehlo::Or(q_shifted, one_u64);
-        mlir::MlirOp next_q = mlir::stablehlo::Select(ge, q_inc, q_shifted);
-
-        mlir::stablehlo::Return(body, {next_i, next_q, next_r, d});
-      });
-  return loop[1];
+// Computes the modular inverse of odd `UI64` tensor `odd` modulo 2^64 using
+// standard Newton/Hensel lifting.
+mlir::MlirOp BuildModularInverseOddU64(mlir::MlirOp odd) {
+  mlir::MlirOp two = MakeConstantLike(odd, 2);
+  mlir::MlirOp three = MakeConstantLike(odd, 3);
+  mlir::MlirOp three_times_odd = mlir::stablehlo::Mul(three, odd);
+  mlir::MlirOp inv = mlir::stablehlo::Xor(three_times_odd, two);
+  for (int step = 0; step < kNumModularInverseStepsU64; ++step) {
+    mlir::MlirOp odd_times_inv = mlir::stablehlo::Mul(odd, inv);
+    mlir::MlirOp correction = mlir::stablehlo::Subtract(two, odd_times_inv);
+    inv = mlir::stablehlo::Mul(inv, correction);
+  }
+  return inv;
 }
 
+// Computes signed 64-bit LCM of broadcast-matched `I64` tensors `lhs` and `rhs`
+// without emitting 64-bit `stablehlo.remainder` or `stablehlo.divide`. Returns
+// 0 where either input is 0, and converts the unsigned product back to `I64`
+// before `Abs` to match PyTorch's two's-complement `int64` wrapping (e.g.
+// `lcm(INT64_MIN, 1) == INT64_MIN`).
 mlir::MlirOp BuildLcmI64Shlo(mlir::MlirOp lhs, mlir::MlirOp rhs) {
   mlir::MlirOp zero_i64 = MakeConstantLike(lhs, 0);
   mlir::MlirOp lhs_zero = mlir::stablehlo::Compare(
@@ -255,8 +230,11 @@ mlir::MlirOp BuildLcmI64Shlo(mlir::MlirOp lhs, mlir::MlirOp rhs) {
   mlir::MlirOp u_pos = mlir::stablehlo::Select(any_zero, one_u64, u_raw);
   mlir::MlirOp v_pos = mlir::stablehlo::Select(any_zero, one_u64, v_raw);
 
-  mlir::MlirOp g_u64 = BuildBinaryGcdPositiveU64(u_pos, v_pos);
-  mlir::MlirOp quotient_u64 = BuildUnsignedDivU64(u_pos, g_u64);
+  // `lcm(u_pos, v_pos) = ((u_pos >> shift) * inv(odd_factor)) * v_pos`.
+  BinaryGcdU64 gcd = BuildBinaryGcdPositiveU64(u_pos, v_pos);
+  mlir::MlirOp u_shifted = mlir::stablehlo::ShiftRightLogical(u_pos, gcd.shift);
+  mlir::MlirOp inv_odd = BuildModularInverseOddU64(gcd.odd_factor);
+  mlir::MlirOp quotient_u64 = mlir::stablehlo::Mul(u_shifted, inv_odd);
   mlir::MlirOp product_u64 = mlir::stablehlo::Mul(quotient_u64, v_pos);
   mlir::MlirOp product_i64 =
       mlir::stablehlo::ConvertElementType(product_u64, mlir::ElementType::I64);

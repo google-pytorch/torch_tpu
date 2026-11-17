@@ -14013,6 +14013,47 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(run_out, rtol=2e-2, atol=2e-2)
 
+  def test_lcm_int64_edge_cases(self):
+    """Tests int64 lcm with INT64_MIN, zero, and >32-bit composite GCDs."""
+
+    def compute(device):
+      a = torch.tensor(
+          [
+              1836311903,
+              -(2**63),
+              -(2**63),
+              -(2**63),
+              2**63 - 1,
+              2**63 - 1,
+              1000000007,
+              0,  # Make sure lcm(0, INT64_MIN) returns 0.
+              # Large >32-bit GCDs with even factors to test 64-bit modular inverse + shift.
+              12 * 1000000007,
+              -12 * 4294967311,
+          ],
+          dtype=torch.int64,
+          device=device,
+      )
+      b = torch.tensor(
+          [
+              1134903170,
+              1,
+              2,
+              -(2**63),
+              1,
+              7,
+              1000000009,
+              -(2**63),
+              18 * 1000000007,
+              18 * 4294967311,
+          ],
+          dtype=torch.int64,
+          device=device,
+      )
+      return torch.lcm(a, b)
+
+    self.assert_close_tpu_vs_cpu(compute)
+
   def test_lcm_promotion_out_cast_and_shapes(self):
     """Tests mixed-dtype promotion, out casting, resizing, 0-D, and 0-element tensors."""
 
@@ -14039,9 +14080,18 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       s2 = torch.tensor(18, dtype=torch.int32, device=device)
       res_scalar = torch.lcm(s1, s2)
 
+      # int64 has its own kernel; check 0-D and empty shapes for int64 too.
+      s1_i64 = torch.tensor(-12 * 1000000007, dtype=torch.int64, device=device)
+      s2_i64 = torch.tensor(18 * 1000000007, dtype=torch.int64, device=device)
+      res_scalar_i64 = torch.lcm(s1_i64, s2_i64)
+
       empty_a = torch.empty((2, 0, 3), dtype=torch.int32, device=device)
       empty_b = torch.empty((1, 0, 3), dtype=torch.int32, device=device)
       res_empty = torch.lcm(empty_a, empty_b)
+
+      empty_a_i64 = torch.empty((2, 0, 3), dtype=torch.int64, device=device)
+      empty_b_i64 = torch.empty((1, 0, 3), dtype=torch.int64, device=device)
+      res_empty_i64 = torch.lcm(empty_a_i64, empty_b_i64)
 
       return (
           res_promoted,
@@ -14050,13 +14100,15 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
           out_f32,
           out_resized,
           res_scalar,
+          res_scalar_i64,
           res_empty,
+          res_empty_i64,
       )
 
     self.assert_close_tpu_vs_cpu(compute)
 
   def test_lcm_int64_avoids_div_rem(self):
-    """Tests int64 lcm lowers via while loops without 64-bit div/rem ops."""
+    """Tests int64 lcm lowers via a single while loop without 64-bit div/rem ops."""
     a = torch.tensor([12, 0], dtype=torch.int64, device="tpu")
     b = torch.tensor([18, 5], dtype=torch.int64, device="tpu")
     with execution_mode.set_eager_mode(
@@ -14066,7 +14118,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     mlir_text = tpu_torch_compile.serialize_mlir_text(
         tpu_torch_compile.build_mlir([out], [a, b])
     )
-    self.assertIn("stablehlo.while", mlir_text)
+    self.assertEqual(mlir_text.count("stablehlo.while"), 1)
     self.assertNotIn("stablehlo.divide", mlir_text)
     self.assertNotIn("stablehlo.remainder", mlir_text)
 
