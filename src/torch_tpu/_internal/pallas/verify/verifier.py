@@ -87,7 +87,8 @@ class VerificationOptions:
     max_unrolled_iterations: Bound on loop iterations, scan steps, and recorded
       event-trace grid points in the model checker. Anything beyond it is
       reported as incomplete.
-    solver_timeout_seconds: Time budget for each model-checking query.
+    solver_timeout_seconds: Time budget in seconds for each model-checking query
+      (`0` skips CP-SAT solving; `float("inf")` disables the time limit).
     tpu_version: TPU generation used across contract, lowering, and
       model-checking phases. An explicit non-CPU TPU mesh on the kernel or its
       example arguments takes precedence (since TPU lowering targets that mesh's
@@ -148,11 +149,11 @@ class VerificationOptions:
           f" {type(self.solver_timeout_seconds).__name__}"
       )
     if (
-        not math.isfinite(self.solver_timeout_seconds)
+        math.isnan(self.solver_timeout_seconds)
         or self.solver_timeout_seconds < 0
     ):
       raise ValueError(
-          "solver_timeout_seconds must be a non-negative finite number, got"
+          "solver_timeout_seconds must be >= 0, got"
           f" {self.solver_timeout_seconds!r}"
       )
     if self.tpu_version is not None and not isinstance(

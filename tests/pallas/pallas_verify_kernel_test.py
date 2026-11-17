@@ -3529,9 +3529,6 @@ class KernelVerifierTest(seed_test_utils.RepeatableTest):
       )
       self.assertTrue(report.passed, msg=report.summary())
 
-  @test_utils.skip_if_msan(
-      "TODO(b/585575469): Solver race query times out under MSAN."
-  )
   def test_bugs_are_still_found_past_the_unrolling_bound(self):
     grid = 40  # Exceeds the default unrolling bound.
 
@@ -3567,15 +3564,16 @@ class KernelVerifierTest(seed_test_utils.RepeatableTest):
       return per_step_copy
 
     x_spec = jax.ShapeDtypeStruct((grid * 8, 128), jnp.float32)
+    options = verifier.VerificationOptions(solver_timeout_seconds=float("inf"))
     leak_rep = verifier.verify(
-        make_per_step_copy(leak=True), (x_spec,), mode=STATIC
+        make_per_step_copy(leak=True), (x_spec,), mode=STATIC, options=options
     )
     self.assertNotEmpty(
         leak_rep.findings_by_category(Category.SEMAPHORE_NONZERO_EXIT),
         msg=leak_rep.summary(),
     )
     race_rep = verifier.verify(
-        make_per_step_copy(leak=False), (x_spec,), mode=STATIC
+        make_per_step_copy(leak=False), (x_spec,), mode=STATIC, options=options
     )
     self.assertNotEmpty(
         race_rep.findings_by_category(Category.DATA_RACE),
@@ -4243,9 +4241,6 @@ class KernelVerifierTest(seed_test_utils.RepeatableTest):
         msg=rep.summary(),
     )
 
-  @test_utils.skip_if_msan(
-      "TODO(b/585575469): Solver race query times out under MSAN."
-  )
   def test_truncated_loop_causal_deadlock_and_zero_signal_deadlock_caught(self):
     grid = 40  # Exceeds default max_unrolled_iterations=32.
     x_spec = jax.ShapeDtypeStruct((grid * 8, 128), jnp.float32)
@@ -4327,8 +4322,12 @@ class KernelVerifierTest(seed_test_utils.RepeatableTest):
           ),
       )(x)
 
+    options = verifier.VerificationOptions(solver_timeout_seconds=float("inf"))
     dl_rep = verifier.verify(
-        step0_wait_before_signal_deadlock, (x_spec,), mode=STATIC
+        step0_wait_before_signal_deadlock,
+        (x_spec,),
+        mode=STATIC,
+        options=options,
     )
     self.assertFalse(dl_rep.passed, msg=dl_rep.summary())
     self.assertNotEmpty(
@@ -4337,7 +4336,10 @@ class KernelVerifierTest(seed_test_utils.RepeatableTest):
     )
 
     zs_rep = verifier.verify(
-        zero_signal_wait_on_truncated_grid, (x_spec,), mode=STATIC
+        zero_signal_wait_on_truncated_grid,
+        (x_spec,),
+        mode=STATIC,
+        options=options,
     )
     self.assertFalse(zs_rep.passed, msg=zs_rep.summary())
     self.assertNotEmpty(
@@ -4346,7 +4348,10 @@ class KernelVerifierTest(seed_test_utils.RepeatableTest):
     )
 
     pr_rep = verifier.verify(
-        prefix_race_with_tail_wait_on_truncated_grid, (x_spec,), mode=STATIC
+        prefix_race_with_tail_wait_on_truncated_grid,
+        (x_spec,),
+        mode=STATIC,
+        options=options,
     )
     self.assertFalse(pr_rep.passed, msg=pr_rep.summary())
     self.assertNotEmpty(

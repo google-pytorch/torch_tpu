@@ -164,6 +164,12 @@ class PallasVerifyErrorsTest(seed_test_utils.RepeatableTest):
     self.assertTrue(opts.check_autograd)
     self.assertEqual(opts.max_unrolled_iterations, 32)
     self.assertEqual(opts.solver_timeout_seconds, 5.0)
+    self.assertEqual(
+        verifier.VerificationOptions(
+            solver_timeout_seconds=float("inf")
+        ).solver_timeout_seconds,
+        float("inf"),
+    )
     self.assertIsNone(opts.tpu_version)
     for version in torch.tpu.TpuVersion:
       self.assertIs(
@@ -236,7 +242,7 @@ class PallasVerifyErrorsTest(seed_test_utils.RepeatableTest):
     with self.assertRaisesRegex(ValueError, "solver_timeout_seconds"):
       verifier.VerificationOptions(solver_timeout_seconds=float("nan"))
     with self.assertRaisesRegex(ValueError, "solver_timeout_seconds"):
-      verifier.VerificationOptions(solver_timeout_seconds=float("inf"))
+      verifier.VerificationOptions(solver_timeout_seconds=float("-inf"))
     for bad_version in ("TPU v7", "", "   ", 123):
       with self.assertRaisesRegex(TypeError, "tpu_version"):
         verifier.VerificationOptions(tpu_version=bad_version)  # type: ignore[arg-type]
