@@ -25,6 +25,7 @@ underlying providers (Torchvision, TIMM, and Transformers). It ensures that:
 from collections.abc import Iterator, Sequence
 import contextlib
 import copy
+import inspect
 import json
 import pathlib
 import tempfile
@@ -341,6 +342,24 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     self.assertIsNotNone(module_spec.preprocessor_factory)
     tokenizer = module_spec.preprocessor_factory()
     self.assertIsNotNone(tokenizer)
+
+  def test_transformers_select_inputs_from_forward(self):
+    module_spec = self.module_registry.get_module_spec(
+        "transformers",
+        "google/gemma-3-270m",
+    )
+    model = module_spec.module_factory().eval()
+    _, kwargs = module_spec.sample_inputs_factory()
+
+    self.assertContainsSubset(
+        kwargs.keys(), inspect.signature(type(model).forward).parameters
+    )
+    self.assertIn("input_ids", kwargs)
+    out = model(**kwargs)
+    self.assertEqual(
+        out.logits.shape,
+        (*kwargs["input_ids"].shape, module_spec.config.vocab_size),
+    )
 
   def test_transformers_causal_lm_architecture_casing_resolution(self):
     def modify_config(config):
