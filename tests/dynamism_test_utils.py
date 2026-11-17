@@ -485,7 +485,6 @@ DYNAMISM_DENY_LISTS: DenyList = {
         # Aborts the test process with a CHECK failure in BroadcastIfNeeded
         # (op_builder_utils.cc).
         "_segment_reduce": {EAGER, COMPILE},
-        "_weight_norm_interface_backward": {EAGER, COMPILE},
         "atanh": {COMPILE_GRAD},
         "bernoulli": {EAGER},
         "cdist": {EAGER},
@@ -508,8 +507,6 @@ DYNAMISM_DENY_LISTS: DenyList = {
         "_jagged_to_padded_dense_forward": {EAGER},
         # Fails to inline MLIR functions on bounded inputs.
         "_native_multi_head_attention": {EAGER},
-        # BuildMlirModule fails to inline MLIR functions on bounded inputs.
-        "_weight_norm_interface": {COMPILE, COMPILE_GRAD},
         # ViewPrimitiveShlo does not support slicing a dynamic dimension.
         "as_strided": ALL_MODES,
         # Fails to inline MLIR functions on bounded inputs.
@@ -944,6 +941,7 @@ class DynamicOpInfo:
         SdpaDynamicOpInfo,
         ConvolutionDynamicOpInfo,
         GluDynamicOpInfo,
+        WeightNormBackwardDynamicOpInfo,
     ]
     for adapter in adapters:
       if adapter.adapter_supports_op(op_info):
@@ -1602,6 +1600,58 @@ class GluDynamicOpInfo(DynamicOpInfo):
         for dim in super().dynamic_dimension_candidates(input_value, args)
         if dim != split_dim
     ]
+
+
+class WeightNormBackwardDynamicOpInfo(DynamicOpInfo):
+  """Couples `grad_w`, `saved_v`, `saved_g`, and `saved_norms` dimensions.
+
+  Upstream PyTorch's `meta_weight_norm_backward` returns
+  `(empty_like(saved_v), empty_like(saved_g))` without unifying `grad_w` with
+  `saved_v`, `saved_g`, or `saved_norms`, so symbolic `ShapeEnv` tracing alone
+  leaves the saved tensors static when `grad_w` is marked dynamic.
+  """
+
+  @staticmethod
+  def adapter_supports_op(op_info: core.OpInfo) -> bool:
+    """Method to declare ops supported by this adapter."""
+    return op_info.name == "_weight_norm_interface_backward"
+
+  def _discover_coupled_dims(
+      self,
+      candidates: Sequence[TensorDim],
+      tensors: Sequence[torch.Tensor],
+      op_args: _OpArgs,
+      op_func: Callable[..., Any],
+      mode: DynamismMode,
+  ) -> dict[TensorDim, tuple[TensorDim, ...]]:
+    """Couples `grad_w` dim `d` with `saved_v` and (on `dim`) `saved_g`/`norms`."""
+    del op_func, mode  # Coupling follows from the operator's input contract.
+    if len(tensors) < 4:
+      return {}
+    grad_w, saved_v, saved_g, saved_norms = tensors[:4]
+    if grad_w.shape != saved_v.shape or grad_w.ndim == 0:
+      return {}
+    raw_dim = (
+        op_args.args[3]
+        if len(op_args.args) >= 4
+        else op_args.kwargs.get("dim", 0)
+    )
+    wrapped_dim = int(raw_dim) % grad_w.ndim
+
+    proposed: dict[TensorDim, tuple[TensorDim, ...]] = {}
+    for candidate in candidates:
+      if candidate.tensor_index != 0:
+        continue
+      d = candidate.dim
+      coupled = [candidate, TensorDim(tensor_index=1, dim=d)]
+      if d == wrapped_dim:
+        for idx, aux in ((2, saved_g), (3, saved_norms)):
+          if aux.ndim == 1 and aux.shape[0] == grad_w.shape[d]:
+            coupled.append(TensorDim(tensor_index=idx, dim=0))
+          elif aux.ndim == grad_w.ndim and aux.shape[d] == grad_w.shape[d]:
+            coupled.append(TensorDim(tensor_index=idx, dim=d))
+      proposed[candidate] = tuple(sorted(coupled))
+    return proposed
 
 
 class SdpaDynamicOpInfo(DynamicOpInfo):

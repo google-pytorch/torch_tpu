@@ -1399,6 +1399,88 @@ class CoupledDimDiscoveryTest(seed_test_utils.RepeatableTest):
         (td(0, 0), td(1, 0), td(2, 0), td(3, 0), td(4, 0), td(5, 0)),
     )
 
+  def test_weight_norm_backward_couples_saved_tensors(self):
+    wn_bwd_op = op_testing._get_op("_weight_norm_interface_backward")
+    grad_w = torch.ones(4, 6)
+    saved_v = torch.ones(4, 6)
+    saved_g = torch.ones(4, 1)
+    saved_norms = torch.ones(4, 1)
+    plans = dynamism_test_utils.generate_exhaustive_input_marking_plans(
+        wn_bwd_op,
+        grad_w,
+        (saved_v, saved_g, saved_norms, 0),
+        mode=dynamism_test_utils.DynamismMode.COMPILE,
+    )
+    td = dynamism_test_utils.TensorDim
+    self.assertEqual(
+        plans,
+        (
+            dynamism_test_utils.DynamicMarkingPlan(
+                label="t0d0",
+                tensor_dims=(td(0, 0),),
+                coupled_dims=(td(0, 0), td(1, 0), td(2, 0), td(3, 0)),
+            ),
+            dynamism_test_utils.DynamicMarkingPlan(
+                label="t0d1",
+                tensor_dims=(td(0, 1),),
+                coupled_dims=(td(0, 1), td(1, 1)),
+            ),
+            dynamism_test_utils.DynamicMarkingPlan(
+                label="t0d0_t0d1",
+                tensor_dims=(td(0, 0), td(0, 1)),
+                coupled_dims=(
+                    td(0, 0),
+                    td(0, 1),
+                    td(1, 0),
+                    td(1, 1),
+                    td(2, 0),
+                    td(3, 0),
+                ),
+            ),
+        ),
+    )
+
+  def test_weight_norm_backward_couples_1d_saved_tensors_on_last_dim(self):
+    wn_bwd_op = op_testing._get_op("_weight_norm_interface_backward")
+    grad_w = torch.ones(4, 6)
+    saved_v = torch.ones(4, 6)
+    saved_g = torch.ones(6)
+    saved_norms = torch.ones(6)
+    plans = dynamism_test_utils.generate_exhaustive_input_marking_plans(
+        wn_bwd_op,
+        grad_w,
+        (saved_v, saved_g, saved_norms, 1),
+        mode=dynamism_test_utils.DynamismMode.COMPILE,
+    )
+    td = dynamism_test_utils.TensorDim
+    self.assertEqual(
+        plans,
+        (
+            dynamism_test_utils.DynamicMarkingPlan(
+                label="t0d0",
+                tensor_dims=(td(0, 0),),
+                coupled_dims=(td(0, 0), td(1, 0)),
+            ),
+            dynamism_test_utils.DynamicMarkingPlan(
+                label="t0d1",
+                tensor_dims=(td(0, 1),),
+                coupled_dims=(td(0, 1), td(1, 1), td(2, 0), td(3, 0)),
+            ),
+            dynamism_test_utils.DynamicMarkingPlan(
+                label="t0d0_t0d1",
+                tensor_dims=(td(0, 0), td(0, 1)),
+                coupled_dims=(
+                    td(0, 0),
+                    td(0, 1),
+                    td(1, 0),
+                    td(1, 1),
+                    td(2, 0),
+                    td(3, 0),
+                ),
+            ),
+        ),
+    )
+
 
 if __name__ == "__main__":
   absltest.main()
