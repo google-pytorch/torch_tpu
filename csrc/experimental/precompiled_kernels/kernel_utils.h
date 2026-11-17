@@ -34,10 +34,10 @@
 namespace torch_tpu {
 
 // Returns the compilation cache key that a precompiled unbounded dynamic kernel
-// serving graphs with shapeless key `key` is registered under: `key` with empty
-// dimensions and compile options keys, and `id_key`, which tells apart kernels
-// that share a shapeless key.
-CompilationCacheKey MakeUnboundedDynamicKernelCacheKey(ShapelessKey key,
+// serving graphs with extentless key `key` is registered under: `key` with
+// empty dimensions and compile options keys, and `id_key`, which tells apart
+// kernels that share an extentless key.
+CompilationCacheKey MakeUnboundedDynamicKernelCacheKey(ExtentlessKey key,
                                                        int id_key);
 
 // Compiles a Mosaic kernel, wrapped by `BuildMosaicCustomCall` with the other

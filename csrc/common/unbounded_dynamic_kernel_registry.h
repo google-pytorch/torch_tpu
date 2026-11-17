@@ -51,9 +51,10 @@ struct UnboundedDynamicKernel {
   bool enabled_by_default = false;
 };
 
-// Process-wide registry of unbounded dynamic kernels, grouped by shapeless key.
-// Several kernels may share a shapeless key, e.g. with different compatibility
-// predicates; a lookup returns the first compatible one in registration order.
+// Process-wide registry of unbounded dynamic kernels, grouped by extentless
+// key. Several kernels may share an extentless key, e.g. with different
+// compatibility predicates; a lookup returns the first compatible one in
+// registration order.
 class UnboundedDynamicKernelRegistry {
  public:
   static UnboundedDynamicKernelRegistry& GetInstance();
@@ -63,7 +64,7 @@ class UnboundedDynamicKernelRegistry {
   UnboundedDynamicKernelRegistry& operator=(
       const UnboundedDynamicKernelRegistry&) = delete;
 
-  // Registers `kernel` under `kernel.key` and its shapeless key. Must only be
+  // Registers `kernel` under `kernel.key` and its extentless key. Must only be
   // called during static initialization; it is not synchronized with lookups.
   // Returns kAlreadyExists if a kernel is already registered under that key.
   absl::Status RegisterKernel(UnboundedDynamicKernel kernel);
@@ -72,7 +73,7 @@ class UnboundedDynamicKernelRegistry {
   // whose compatibility predicate accepts the given logical input and output
   // shapes, or null if there is none.
   [[nodiscard]] const UnboundedDynamicKernel* absl_nullable
-  FindUnboundedDynamicKernel(const ShapelessKey& key,
+  FindUnboundedDynamicKernel(const ExtentlessKey& key,
                              absl::Span<const Shape> input_shapes,
                              absl::Span<const Shape> output_shapes) const;
 
@@ -81,19 +82,19 @@ class UnboundedDynamicKernelRegistry {
   using KernelMap = absl::flat_hash_map<CompilationCacheKey,
                                         std::unique_ptr<UnboundedDynamicKernel>,
                                         CompilationCacheKey::Hash>;
-  // Non-owning index from shapeless key to the kernels registered under it, in
+  // Non-owning index from extentless key to the kernels registered under it, in
   // registration order. Pointers point into `KernelMap`'s heap-allocated
   // values, which are never freed or moved (the registry is append-only).
   using KeysMap =
-      absl::flat_hash_map<ShapelessKey,
+      absl::flat_hash_map<ExtentlessKey,
                           std::vector<const UnboundedDynamicKernel*>,
-                          ShapelessKey::Hash>;
+                          ExtentlessKey::Hash>;
 
   friend class absl::NoDestructor<UnboundedDynamicKernelRegistry>;
   UnboundedDynamicKernelRegistry() = default;
 
   KernelMap kernels_;
-  KeysMap shapeless_map_;
+  KeysMap extentless_map_;
 };
 
 }  // namespace torch_tpu

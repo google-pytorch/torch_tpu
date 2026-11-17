@@ -103,7 +103,7 @@ namespace {
 using testing::MatchesRegex;
 
 CompilationCacheKey DummyKey(int key = 0) {
-  return CompilationCacheKey(GraphKey(ShapelessKey(key), DimensionsKey({})),
+  return CompilationCacheKey(GraphKey(ExtentlessKey(key), DimensionsKey({})),
                              CompileOptionsKey(0));
 }
 
@@ -419,10 +419,10 @@ TEST_F(CompilationCacheTest, DynamicCacheLayoutMismatch) {
   std::vector<Shape> input_shapes = {dynamic_shape};
   std::vector<Shape> output_shapes = {dynamic_shape};
 
-  ShapelessKey shapeless_key(111);
+  ExtentlessKey extentless_key(111);
   ShapeDynamismMetadata dynamism_metadata(input_shapes, output_shapes);
   DimensionsKey dimensions_key(dynamism_metadata);
-  GraphKey graph_key(shapeless_key, dimensions_key);
+  GraphKey graph_key(extentless_key, dimensions_key);
 
   CompilationCacheKey key1(graph_key, CompileOptionsKey(1));
   CompilationCacheKey key2(graph_key, CompileOptionsKey(2));
@@ -471,7 +471,7 @@ TEST_F(CompilationCacheTest, DynamicCacheLayoutMismatch) {
 }
 
 // A registered dummy kernel and a key that resolves to it through the registry
-// (same shapeless key, concrete dimensions).
+// (same extentless key, concrete dimensions).
 struct DummyKernelKeys {
   CompilationCacheKey kernel_key;
   CompilationCacheKey lookup_key;
@@ -484,11 +484,11 @@ DummyKernelKeys RegisterDummyKernelFor(
     UnboundedDynamicKernel::BuildFn build = CreateDummyExecutable,
     const DummyKernelLoading loading = DummyKernelLoading::kEnabledByDefault) {
   CompilationCacheKey kernel_key(
-      GraphKey(ShapelessKey(Fingerprint(name)), DimensionsKey({})),
+      GraphKey(ExtentlessKey(Fingerprint(name)), DimensionsKey({})),
       CompileOptionsKey({}));
   RegisterDummyKernel(kernel_key, build, loading);
   CompilationCacheKey lookup_key(
-      GraphKey(kernel_key.graph_key().shapeless_key(),
+      GraphKey(kernel_key.graph_key().extentless_key(),
                DimensionsKey({1, 2, 3})),
       CompileOptionsKey({}));
   return {.kernel_key = std::move(kernel_key),

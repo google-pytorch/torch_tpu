@@ -42,7 +42,7 @@
 
 namespace torch_tpu {
 
-CompilationCacheKey MakeUnboundedDynamicKernelCacheKey(ShapelessKey key,
+CompilationCacheKey MakeUnboundedDynamicKernelCacheKey(ExtentlessKey key,
                                                        int id_key) {
   return CompilationCacheKey(GraphKey(key, DimensionsKey({})),
                              CompileOptionsKey({}), id_key);

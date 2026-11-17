@@ -47,7 +47,7 @@ struct TestCase {
 using SortTest = ::testing::TestWithParam<TestCase>;
 
 // Serving and dtypes are tested through torch.sort in
-// tests/dynamic_ops_test.py, and the shapeless key fixes the number, ranks and
+// tests/dynamic_ops_test.py, and the extentless key fixes the number, ranks and
 // dtypes of the operands; this covers the size and layout checks that Python
 // can't reach.
 TEST_P(SortTest, IsCompatible) {

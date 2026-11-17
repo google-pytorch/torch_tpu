@@ -475,8 +475,8 @@ CompilationCache::GetCacheEntry(const CompilationCacheKey& key,
 }
 
 std::optional<CompilationCache::BoundedDynamicCache::iterator>
-CompilationCache::GetBoundedDynamicCacheEntries(ShapelessKey shapeless_key) {
-  if (auto it = bounded_dynamic_cache_.find(shapeless_key);
+CompilationCache::GetBoundedDynamicCacheEntries(ExtentlessKey extentless_key) {
+  if (auto it = bounded_dynamic_cache_.find(extentless_key);
       it != bounded_dynamic_cache_.end()) {
     return it;
   }
@@ -507,26 +507,26 @@ CompilationCache::CacheLookupInternal CompilationCache::AddCacheEntry(
 
 CompilationCache::CacheLookupInternal
 CompilationCache::AddBoundedDynamicCacheEntry(
-    ShapelessKey shapeless_key, CompileOptionsKey compile_options_key,
+    ExtentlessKey extentless_key, CompileOptionsKey compile_options_key,
     ShapeDynamismMetadata shape_dynamism_metadata,
     std::optional<CompilationCache::BoundedDynamicCache::iterator> dynamic_it) {
   std::vector<BoundedDynamicCacheEntry>* entries;
   if (dynamic_it.has_value()) {
-    ABSL_CHECK(shapeless_key == (*dynamic_it)->first)  // CRASH_OK
-        << "Shapeless key does not match dynamic iterator"
-        << ToString(shapeless_key)
+    ABSL_CHECK(extentless_key == (*dynamic_it)->first)  // CRASH_OK
+        << "Extentless key does not match dynamic iterator"
+        << ToString(extentless_key)
         << ", dynamic iterator key: " << ToString((*dynamic_it)->first);
     entries = &(*dynamic_it)->second;
   } else {
     auto [entry, inserted] = bounded_dynamic_cache_.insert(
-        {shapeless_key, std::vector<BoundedDynamicCacheEntry>()});
+        {extentless_key, std::vector<BoundedDynamicCacheEntry>()});
     ABSL_CHECK(inserted)  // CRASH_OK
         << "Key already exists in bounded dynamic cache: "
-        << ToString(shapeless_key);
+        << ToString(extentless_key);
     entries = &entry->second;
   }
 
-  const GraphKey graph_key(shapeless_key,
+  const GraphKey graph_key(extentless_key,
                            DimensionsKey(shape_dynamism_metadata));
   CompilationCacheKey middle_executable_key(graph_key, compile_options_key);
   entries->push_back(BoundedDynamicCacheEntry{
@@ -548,7 +548,7 @@ CompilationCache::GetOrCreateUnboundedDynamicCacheEntry(
   }
   const UnboundedDynamicKernel* dynamic_kernel =
       UnboundedDynamicKernelRegistry::GetInstance().FindUnboundedDynamicKernel(
-          key.graph_key().shapeless_key(), input_shapes, output_shapes);
+          key.graph_key().extentless_key(), input_shapes, output_shapes);
   if (dynamic_kernel == nullptr) {
     return std::nullopt;
   }
@@ -635,11 +635,11 @@ CompilationCache::GetOrCreateCacheEntry(
   }
 
   // 3. Try to find a bounded dynamic cache entry. We hold on to the iterator to
-  // avoid having to look up the shapeless key again later.
+  // avoid having to look up the extentless key again later.
   std::optional<BoundedDynamicCache::iterator> dynamic_it =
       skip_dynamic_lookup_and_compilation
           ? std::nullopt
-          : GetBoundedDynamicCacheEntries(key.graph_key().shapeless_key());
+          : GetBoundedDynamicCacheEntries(key.graph_key().extentless_key());
   if (dynamic_it.has_value()) {
     for (const auto& entry : (*dynamic_it)->second) {
       if (entry.shape_dynamism_metadata.IsStaticShapeCompatible(input_shapes) &&
@@ -680,7 +680,7 @@ CompilationCache::GetOrCreateCacheEntry(
   if (create_dynamic_entry) {
     auto dynamism_metadata = ShapeDynamismMetadata(input_shapes, output_shapes);
     ABSL_VLOG(2) << "Creating a dynamic cache entry for key: " << key;
-    return AddBoundedDynamicCacheEntry(key.graph_key().shapeless_key(),
+    return AddBoundedDynamicCacheEntry(key.graph_key().extentless_key(),
                                        key.compile_options_key(),
                                        dynamism_metadata, dynamic_it);
   }
@@ -961,7 +961,7 @@ absl::StatusOr<CompiledKernel> CompilationCache::GetOrCompileImpl(
   if (cache_lookup.shape_dynamism_metadata.has_value()) {
     // Create a key for the storage of the dynamic executable.
     const GraphKey graph_key(
-        key.graph_key().shapeless_key(),
+        key.graph_key().extentless_key(),
         DimensionsKey(*cache_lookup.shape_dynamism_metadata));
     storage_key = CompilationCacheKey(graph_key, key.compile_options_key());
     ABSL_VLOG(2) << "Storage key for dynamic executable: " << storage_key;

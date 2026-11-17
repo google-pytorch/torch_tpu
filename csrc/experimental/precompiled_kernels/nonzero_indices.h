@@ -25,8 +25,8 @@ namespace torch_tpu {
 
 // Returns the Mosaic nonzero indices kernels, 1-D to 8-D, for registration
 // with `UnboundedDynamicKernelRegistry` in that order. Each is keyed under the
-// shapeless key of a nonzero graph with an F32 input of its rank. The predicate
-// excludes only +0.0 and -0.0, matching torch.nonzero.
+// extentless key of a nonzero graph with an F32 input of its rank. The
+// predicate excludes only +0.0 and -0.0, matching torch.nonzero.
 //
 // Buffer contracts (all payloads have no dynamic-metadata prefix). The input is
 // the only buffer the caller supplies; `Execute` allocates the destination

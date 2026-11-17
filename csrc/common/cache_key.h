@@ -753,19 +753,23 @@ absl::StatusOr<OpParamCacheKeys> MakeOpParamCacheKeys(
 
 }  // namespace internal
 
-// Give the shapeless and dimensions keys separate types to avoid accidentally
+// Identifies everything about a graph except its tensor extents (dimension
+// sizes): the ops and their params, the tensor element types and ranks, etc.
+// Graphs that differ only in their extents share an `ExtentlessKey`.
+//
+// Give the extentless and dimensions keys separate types to avoid accidentally
 // using the wrong key.
-class ShapelessKey {
+class ExtentlessKey {
  public:
-  explicit ShapelessKey(FingerprintType key) : key_(key) {}
+  explicit ExtentlessKey(FingerprintType key) : key_(key) {}
 
   struct Hash {
-    [[nodiscard]] size_t operator()(const ShapelessKey key) const {
+    [[nodiscard]] size_t operator()(const ExtentlessKey key) const {
       return key.key_;
     }
   };
 
-  [[nodiscard]] bool operator==(const ShapelessKey rhs) const {
+  [[nodiscard]] bool operator==(const ExtentlessKey rhs) const {
     return key_ == rhs.key_;
   }
 
@@ -775,9 +779,9 @@ class ShapelessKey {
   FingerprintType key_;
 };
 
-// Formats a shapeless key as a human-readable string.
+// Formats an extentless key as a human-readable string.
 template <typename Sink>
-void AbslStringify(Sink& sink, const ShapelessKey key) {
+void AbslStringify(Sink& sink, const ExtentlessKey key) {
   absl::Format(&sink, "%016x", key.key());
 }
 
@@ -804,39 +808,39 @@ class DimensionsKey {
   FingerprintType key_;
 };
 
-// A `GraphKey` is used to identify a computation graph by
-// combining its structural representation (`ShapelessKey`) and the specific
-// tensor dimensions involved (`DimensionsKey`).
+// A `GraphKey` is used to identify a computation graph by combining
+// everything but its tensor extents (`ExtentlessKey`) with those extents
+// (`DimensionsKey`).
 class GraphKey {
  public:
   struct Hash {
     [[nodiscard]] inline size_t operator()(GraphKey key) const {
-      return FingerprintCat(key.shapeless_key().key(),
+      return FingerprintCat(key.extentless_key().key(),
                             key.dimensions_key().key());
     }
   };
 
-  GraphKey(ShapelessKey shapeless_key, DimensionsKey dimensions_key)
-      : shapeless_key_(shapeless_key), dimensions_key_(dimensions_key) {}
+  GraphKey(ExtentlessKey extentless_key, DimensionsKey dimensions_key)
+      : extentless_key_(extentless_key), dimensions_key_(dimensions_key) {}
 
   [[nodiscard]] friend bool operator==(GraphKey lhs, GraphKey rhs) {
-    return lhs.shapeless_key_ == rhs.shapeless_key_ &&
+    return lhs.extentless_key_ == rhs.extentless_key_ &&
            lhs.dimensions_key_ == rhs.dimensions_key_;
   }
 
-  [[nodiscard]] ShapelessKey shapeless_key() const { return shapeless_key_; }
+  [[nodiscard]] ExtentlessKey extentless_key() const { return extentless_key_; }
 
   [[nodiscard]] DimensionsKey dimensions_key() const { return dimensions_key_; }
 
  private:
-  ShapelessKey shapeless_key_;
+  ExtentlessKey extentless_key_;
   DimensionsKey dimensions_key_;
 };
 
 // Formats a graph key as a human-readable string.
 template <typename Sink>
 void AbslStringify(Sink& sink, const GraphKey key) {
-  absl::Format(&sink, "%016x_%016x", key.shapeless_key().key(),
+  absl::Format(&sink, "%016x_%016x", key.extentless_key().key(),
                key.dimensions_key().key());
 }
 
@@ -851,7 +855,7 @@ class CompilationCacheKey {
       const auto& graph_key = key.graph_key();
       const auto& compile_options_key = key.compile_options_key();
 
-      return FingerprintCat(graph_key.shapeless_key().key(),
+      return FingerprintCat(graph_key.extentless_key().key(),
                             graph_key.dimensions_key().key(),
                             compile_options_key.key(), key.id_key());
     }
@@ -875,7 +879,7 @@ class CompilationCacheKey {
   // Returns a compact string representation of the key, suitable for use in a
   // file name.
   //
-  // The format is "<shapeless_key>_<dimensions_key>_<compile_options_key>"
+  // The format is "<extentless_key>_<dimensions_key>_<compile_options_key>"
   // where each key part is formatted as a hexadecimal string of 16 digits.
   [[nodiscard]] std::string CompactFormat() const;
 

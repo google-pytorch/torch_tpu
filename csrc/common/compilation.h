@@ -112,7 +112,7 @@ struct UnboundedDynamicExecutionMetadata {
 
   // Returns whether this executable can serve a call with the given logical
   // input and output shapes. Consulted when scanning cache entries that share
-  // a shapeless key.
+  // an extentless key.
   using CompatibilityFunc = bool (*)(absl::Span<const Shape> input_shapes,
                                      absl::Span<const Shape> output_shapes);
 

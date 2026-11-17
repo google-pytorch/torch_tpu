@@ -213,7 +213,7 @@ absl::StatusOr<std::vector<std::unique_ptr<xla::PjRtBuffer>>> ToLogicalOutputs(
 
 bool IsCompatible(absl::Span<const Shape> input_shapes,
                   absl::Span<const Shape> output_shapes) {
-  // The shapeless key already fixes one rank-1 S32 input, and S32 and S64
+  // The extentless key already fixes one rank-1 S32 input, and S32 and S64
   // rank-1 outputs.
   return input_shapes[0].dimensions()[0] == kTile &&
          HasDeviceLayouts(input_shapes, {VectorLayout()}) &&
@@ -229,17 +229,17 @@ UnboundedDynamicExecutionMetadata MakeSortMetadata() {
   };
 }
 
-// Returns the ShapelessKey of the graph that `torch.sort` traces for a 1-D
+// Returns the ExtentlessKey of the graph that `torch.sort` traces for a 1-D
 // int32 input with these arguments.
-ShapelessKey SortCacheKey(std::optional<bool> stable_opt, int64_t dim,
-                          bool descending) {
+ExtentlessKey SortCacheKey(std::optional<bool> stable_opt, int64_t dim,
+                           bool descending) {
   absl::StatusOr<OpParamCacheKeys> param_keys =
       *OpParamCacheKeysBuilder()
            .SetParam("stable_opt", stable_opt)
            .SetParam("dim", dim)
            .SetParam("descending", descending);
   ABSL_CHECK_OK(param_keys);  // CRASH_OK=static-init registration bug
-  // Only ranks and dtypes reach the shapeless key, so the extents are
+  // Only ranks and dtypes reach the extentless key, so the extents are
   // placeholders.
   const Dimensions dims = {-1};
   GraphSignature graph;
@@ -257,7 +257,7 @@ ShapelessKey SortCacheKey(std::optional<bool> stable_opt, int64_t dim,
       });
   graph.AddGraphOutput(values);
   graph.AddGraphOutput(indices);
-  return graph.GetKey().shapeless_key();
+  return graph.GetKey().extentless_key();
 }
 
 UnboundedDynamicKernel GetSortKernel(std::optional<bool> stable_opt,

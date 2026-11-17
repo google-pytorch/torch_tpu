@@ -168,7 +168,7 @@ TEST_F(RemoteCacheTest, CreatesCacheDirectory) {
 
 TEST_F(RemoteCacheTest, GetFromTier3Cache) {
   const CompilationCacheKey key(
-      GraphKey(ShapelessKey(123), DimensionsKey({10})),
+      GraphKey(ExtentlessKey(123), DimensionsKey({10})),
       GetCompilationSpec(CompilationMode::kFastCompile).compile_options_key);
 
   // Write a cache entry file.

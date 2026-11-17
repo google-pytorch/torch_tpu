@@ -641,7 +641,7 @@ UnboundedDynamicExecutionMetadata MakeNonzeroDynamicMetadata() {
       .is_compatible =
           [](absl::Span<const Shape> input_shapes,
              absl::Span<const Shape> output_shapes) {
-            // The shapeless key already fixes the number, ranks and dtypes of
+            // The extentless key already fixes the number, ranks and dtypes of
             // the operands: one rank-kRank F32 input and one rank-2 S64
             // output. The layouts are those of the kernel's buffer contract.
             return output_shapes[0].dimensions()[1] == kRank &&
@@ -672,9 +672,9 @@ BuildNonzeroIndicesExecutable(xla::PjRtClient& client,
       /*aliased_parameter=*/1);
 }
 
-// Returns the ShapelessKey a nonzero graph would be lowered to.
-ShapelessKey NonZeroCacheKey(int64_t rank) {
-  // Only ranks and dtypes reach the shapeless key, so these extents are
+// Returns the ExtentlessKey a nonzero graph would be lowered to.
+ExtentlessKey NonZeroCacheKey(int64_t rank) {
+  // Only ranks and dtypes reach the extentless key, so these extents are
   // placeholders.
   const Dimensions input_dims(rank, -1);
   const Dimensions out_dims = {-1, static_cast<int64_t>(input_dims.size())};
@@ -690,7 +690,7 @@ ShapelessKey NonZeroCacheKey(int64_t rank) {
                 out = op.AddOutput(out_dims, mlir::ElementType::I64);
               });
   graph.AddGraphOutput(out);
-  return graph.GetKey().shapeless_key();
+  return graph.GetKey().extentless_key();
 }
 
 template <int kRank, int64_t kTileMinorDim = 128>

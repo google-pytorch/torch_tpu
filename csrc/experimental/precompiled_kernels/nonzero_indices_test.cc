@@ -44,7 +44,7 @@ struct TestCase {
 using NonzeroIndicesTest = ::testing::TestWithParam<TestCase>;
 
 // Execution, caching and compatibility with default layouts are tested through
-// torch.nonzero in tests/dynamic_ops_test.py, and the shapeless key fixes the
+// torch.nonzero in tests/dynamic_ops_test.py, and the extentless key fixes the
 // number, ranks and dtypes of the operands; this covers the compatibility
 // checks that neither can reach.
 TEST_P(NonzeroIndicesTest, IsCompatible) {

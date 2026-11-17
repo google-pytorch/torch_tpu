@@ -388,7 +388,7 @@ class CompilationCache {
   // CompilationCacheKey. The lookup tries, in order: the static cache
   // (executable_cache_) keyed by `key`; the unbounded dynamic kernel registry,
   // serving or creating the entry of a registered kernel that accepts the
-  // shapes; and the bounded_dynamic_cache_, matching the ShapelessKey and
+  // shapes; and the bounded_dynamic_cache_, matching the ExtentlessKey and
   // returning the internals of the middle executable cache entry along with
   // the shape dynamism metadata. If an entry was created or if
   // allow_cache_mode_ is false, needs_compilation is set to true.
@@ -421,15 +421,15 @@ class CompilationCache {
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(cache_mutex_);
 
   using BoundedDynamicCache =
-      absl::flat_hash_map<ShapelessKey, std::vector<BoundedDynamicCacheEntry>,
-                          ShapelessKey::Hash>;
+      absl::flat_hash_map<ExtentlessKey, std::vector<BoundedDynamicCacheEntry>,
+                          ExtentlessKey::Hash>;
   // Retrieves the bounded dynamic cache entries that match this key. If the
   // key is not found in the bounded dynamic cache, returns nullopt.
   std::optional<BoundedDynamicCache::iterator> GetBoundedDynamicCacheEntries(
-      ShapelessKey shapeless_key) ABSL_EXCLUSIVE_LOCKS_REQUIRED(cache_mutex_);
+      ExtentlessKey extentless_key) ABSL_EXCLUSIVE_LOCKS_REQUIRED(cache_mutex_);
 
   // Looks `key` up against the unbounded dynamic kernel registry. If the first
-  // registered kernel under the key's shapeless key that accepts
+  // registered kernel under the key's extentless key that accepts
   // `input_shapes` / `output_shapes` has a tier-1 entry that is in flight or
   // succeeded, returns a lookup for it. Otherwise, if
   // `unbounded_dynamic_kernel_mode_` enables the kernel, returns a newly
@@ -450,12 +450,12 @@ class CompilationCache {
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(cache_mutex_);
 
   // Creates a new bounded dynamic cache entry for the given key and input
-  // shapes. If dynamic_it is not nullopt, we check that the shapeless key
+  // shapes. If dynamic_it is not nullopt, we check that the extentless key
   // matches the dynamic iterator key, and we add it to the existing vector of
   // bounded dynamic cache entries. Otherwise, we create a new vector of bounded
   // dynamic cache entries.
   CacheLookupInternal AddBoundedDynamicCacheEntry(
-      ShapelessKey shapeless_key, CompileOptionsKey compile_options_key,
+      ExtentlessKey extentless_key, CompileOptionsKey compile_options_key,
       ShapeDynamismMetadata shape_dynamism_metadata,
       std::optional<BoundedDynamicCache::iterator> dynamic_it)
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(cache_mutex_);
