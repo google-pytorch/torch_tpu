@@ -311,6 +311,7 @@ torch_tpu_cc_test(
     # Enables the error message format checks so that they're tested in all
     # builds (they are always enabled in the internal build).
     env = {"TORCH_TPU_INTERNAL_CHECK_ERROR_FORMAT": "1"},
+    shard_count = 8,
     deps = [
         ":cache_key",
         ":env_vars",
