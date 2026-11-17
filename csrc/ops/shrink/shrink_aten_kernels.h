@@ -25,7 +25,7 @@ namespace torch_tpu {
 at::Tensor& AtenHardshrinkOut(const at::Tensor& self, const at::Scalar& lambd,
                               at::Tensor& out);
 
-at::Tensor& AtenHardshrinkBackwardGradInput(const at::Tensor& grad_out,
+at::Tensor& AtenHardshrinkBackwardGradInput(const at::Tensor& grad_output,
                                             const at::Tensor& self,
                                             const at::Scalar& lambd,
                                             at::Tensor& grad_input);
