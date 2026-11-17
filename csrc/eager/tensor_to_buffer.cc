@@ -574,10 +574,7 @@ class TpuAllocator final : public c10::DeviceAllocator {
               "Failed to get allocator stats: ", pjrt_stats_or.status());
       return {0, 0};
     }
-    const auto& pjrt_stats = pjrt_stats_or.value();
-    size_t limit = pjrt_stats.bytes_limit.value_or(0);
-    size_t used = pjrt_stats.bytes_in_use;
-    return {limit - used, limit};
+    return internal::GetFreeAndTotalMemory(pjrt_stats_or.value());
   }
 
  private:
@@ -599,6 +596,17 @@ void RegisterTpuAllocator() {
   c10::SetAllocator(GetPrivateUse1DeviceType(), GetTpuAllocator());
   at::setHostAllocator(GetPrivateUse1DeviceType(), GetTpuPinnedAllocator());
 }
+
+namespace internal {
+
+std::pair<size_t, size_t>  // STD_PAIR_OK=dictated by PyTorch.
+GetFreeAndTotalMemory(const tsl::AllocatorStats& stats) {
+  const size_t limit = stats.bytes_limit.value_or(0);
+  const size_t used = stats.bytes_in_use + stats.bytes_reserved;
+  return {used < limit ? limit - used : 0, limit};
+}
+
+}  // namespace internal
 
 c10::DataPtr MakeDataPtr(DeviceBufferRef buffer_ref,
                          const c10::DeviceIndex device_idx) {

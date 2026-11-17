@@ -17,8 +17,10 @@
 #ifndef TORCH_TPU_CSRC_EAGER_TENSOR_TO_BUFFER_H_
 #define TORCH_TPU_CSRC_EAGER_TENSOR_TO_BUFFER_H_
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <utility>
 #include <vector>
 
 #include "ATen/core/ATen_fwd.h"
@@ -35,6 +37,7 @@
 #include "torch/headeronly/core/Layout.h"
 #include "torch/headeronly/core/MemoryFormat.h"
 #include "torch/headeronly/core/ScalarType.h"
+#include "xla/tsl/framework/allocator.h"
 
 // This library connects the DeviceBufferRef/DeviceBufferList/DeferredOp graph
 // structure with aten, offering bidirectional conversion between the two.
@@ -205,6 +208,18 @@ c10::Allocator* GetTpuAllocator();
 // and the TpuPinnedAllocator as the pinned host allocator.
 // This must be called before using the allocator for any device operations.
 void RegisterTpuAllocator();
+
+namespace internal {
+
+// Returns the free and total device memory in bytes from the allocator stats of
+// a device, like `cudaMemGetInfo`. Memory that the runtime reserves, e.g. for
+// compiled programs, comes out of the same allocatable range as the buffers, so
+// it isn't free either. The free memory is clamped at 0, and both values are 0
+// if the stats have no limit. Exposed for testing.
+[[nodiscard]] std::pair<size_t, size_t>  // STD_PAIR_OK=dictated by PyTorch.
+GetFreeAndTotalMemory(const tsl::AllocatorStats& stats);
+
+}  // namespace internal
 
 // Returns a materialized DeviceBufferRef for the logical data in the tensor.
 // This will materialize the base tensor in-place (see Materialize()) if it is

@@ -792,6 +792,15 @@ class AcceleratorMemoryTest(seed_test_utils.RepeatableTest):
     ):
       get_memory_info_fn("cpu")
 
+  def test_get_memory_info_excludes_reserved_memory(self):
+    # As with CUDA, allocated memory isn't free, including the memory that the
+    # runtime reserves for compiled programs.
+    t = torch.randn(1024, 1024, device="tpu")
+    compiled = torch.compile(lambda x: (x @ x.T).softmax(-1) @ x, backend="tpu")
+    compiled(t).cpu()
+    free, total = torch.accelerator.get_memory_info()
+    self.assertLessEqual(free + torch.accelerator.memory_allocated(), total)
+
   @parameterized.named_parameters(
       ("top_level", torch.accelerator.memory_stats),
       ("memory_submodule", torch.accelerator.memory.memory_stats),

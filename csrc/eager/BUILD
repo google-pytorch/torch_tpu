@@ -350,6 +350,7 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/types:span",
         "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
         "@tsl//tsl/profiler/lib:traceme",
+        "@xla//xla/tsl/framework:allocator",
     ],
 )
 
@@ -398,6 +399,7 @@ torch_tpu_cc_test(
         "@com_google_absl//absl/cleanup",
         "@com_google_absl//absl/types:span",
         "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
+        "@xla//xla/tsl/framework:allocator",
     ],
 )
 
