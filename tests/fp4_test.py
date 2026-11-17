@@ -170,6 +170,28 @@ class FP4Test(seed_test_utils.RepeatableTest):
     self.assertEqual(x.dtype, torch.float4_e2m1fn_x2)
     self.assertEqual(x.device.type, "tpu")
 
+  def test_fp4_empty_materialization_and_partial_write(self):
+    device = torch.device("tpu")
+    empty = torch.empty(2, 4, dtype=torch.float4_e2m1fn_x2, device=device)
+    empty_cpu = empty.to("cpu")
+    self.assertEqual(empty_cpu.shape, torch.Size([2, 4]))
+    utils.assert_close(
+        quantize_utils.decode_sub_byte_tensor(empty_cpu),
+        torch.full((2, 8), 6.0, dtype=torch.float32),
+    )
+
+    partial = torch.empty(2, 2, dtype=torch.float4_e2m1fn_x2, device=device)
+    src = (
+        torch.tensor([[0x11, 0x22]], dtype=torch.uint8)
+        .view(torch.float4_e2m1fn_x2)
+        .to(device)
+    )
+    partial[:1].copy_(src)
+    self.assertEqual(
+        partial.to("cpu").view(torch.uint8).tolist(),
+        [[0x11, 0x22], [0x77, 0x77]],
+    )
+
   def test_fp4_zero_element_tensor(self):
     device = torch.device("tpu")
     x = torch.empty(2, 0, dtype=torch.float4_e2m1fn_x2, device=device)
