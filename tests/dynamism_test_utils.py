@@ -701,6 +701,11 @@ DYNAMISM_DENY_LISTS: DenyList = {
     "XLA runs out of HBM compiling multi-dim <=128 bounded shapes": {
         "nn.functional.conv_transpose3d": {COMPILE, COMPILE_GRAD},
     },
+    # TODO: b/449736443 - Remove once minimum supported PyTorch is >= 2.15,
+    # where upstream _weight_norm_interface promotes float16 norms to float32.
+    "PyTorch < 2.15 _weight_norm_interface decomposition returns float16 norm": {
+        "_weight_norm_interface": {COMPILE_GRAD},
+    },
     "untriaged: invalid result": {
         # TODO: fix clamp() returning enormous errors or nans when dynamism is
         # enabled.
