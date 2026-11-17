@@ -258,7 +258,7 @@ absl::Status TpuBatchNormTrainingUpdateStats(
       TT_RETURN_IF_ERROR(internal::AssignBufferToOutput(
           outputs[i], std::move((*results)[i]), output_donated[i]));
     } else {
-      outputs[i] = MakeTensor((*results)[i]);
+      outputs[i] = MakeTensor(std::move((*results)[i]));
     }
   }
   // Like PyTorch's CPU and CUDA kernels, update the running stats without
