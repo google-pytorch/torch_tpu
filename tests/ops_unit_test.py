@@ -21108,6 +21108,38 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
               preamble=f"close check failed for {name}",
           )
 
+  def test_scaled_dot_product_attention_compiled_step_backward(self):
+    """Tests compiled SDPA fwd+bwd step over FlashAttention (seq_len > 256).
+
+    Regression test for github.com/google-pytorch/torch_tpu/issues/4408.
+    """
+    torch._dynamo.reset()
+    torch.manual_seed(0)
+    x_cpu = torch.randn(3, 2, 4, 384, 64)
+    go_cpu = torch.randn(2, 4, 384, 64)
+
+    def fwd_bwd(x: torch.Tensor, go: torch.Tensor):
+      out = torch.nn.functional.scaled_dot_product_attention(x[0], x[1], x[2])
+      (out * go).sum().backward()
+      return out.detach()
+
+    x_ref = x_cpu.clone().requires_grad_()
+    out_ref = fwd_bwd(x_ref, go_cpu)
+
+    x_tpu = x_cpu.tpu().requires_grad_()
+    out_tpu = torch.compile(fwd_bwd, backend="tpu", dynamic=False)(
+        x_tpu, go_cpu.tpu()
+    )
+
+    self.assertIsNotNone(x_tpu.grad)
+    self.assertTrue(torch.isfinite(x_tpu.grad.cpu()).all())
+    self.assert_close(
+        golden_result=(out_ref, x_ref.grad),
+        torch_tpu_result=(out_tpu.cpu(), x_tpu.grad.cpu()),
+        rtol=5e-2,
+        atol=1e-1,
+    )
+
   @parameterized.product(
       compiled=[False, True],
   )
