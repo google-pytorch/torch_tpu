@@ -1088,6 +1088,10 @@ class ProfilerIntegrationTest(seed_test_utils.RepeatableTest):
         xplane_files, "Should have a .xplane.pb file in fallback directory"
     )
 
+  @unittest.skip(
+      "TODO(b/585659501): Re-enable once upstream PyTorch enableProfiler rolls"
+      " back ProfilerStateBase when startTrace throws."
+  )
   def test_invalid_profiler_config(self):
     """Tests that invalid profiler configuration raises a Python exception."""
     device = torch.device("tpu")
