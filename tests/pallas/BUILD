@@ -224,6 +224,7 @@ torch_tpu_py_test(
 
 torch_tpu_py_test(
     name = "pallas_verify_torchtpu_kernels_test",
+    timeout = "long",  # Needed for msan.
     srcs = ["pallas_verify_torchtpu_kernels_test.py"],
     env = {
         # Keeps JAX off the TPU of OSS CI hosts.
