@@ -535,11 +535,12 @@ class TpuAllocator final : public c10::DeviceAllocator {
     stats.active_bytes[static_cast<size_t>(StatType::AGGREGATE)].peak =
         pjrt_stats.peak_bytes_in_use;
 
-    // bytes_reserved -> reserved_bytes[all].current
-    stats.reserved_bytes[static_cast<size_t>(StatType::AGGREGATE)].current =
-        pjrt_stats.bytes_reserved;
-    stats.reserved_bytes[static_cast<size_t>(StatType::AGGREGATE)].peak =
-        pjrt_stats.peak_bytes_reserved;
+    // The reserved memory is the memory that the allocator holds. Unlike
+    // PyTorch's caching allocators, PJRT doesn't hold on to freed memory, so
+    // it's the allocated memory, which includes the memory that the runtime
+    // reserves, e.g. for the temporaries of programs.
+    stats.reserved_bytes[static_cast<size_t>(StatType::AGGREGATE)] =
+        stats.allocated_bytes[static_cast<size_t>(StatType::AGGREGATE)];
 
     // num_allocs -> allocation[all].current
     stats.allocation[static_cast<size_t>(StatType::AGGREGATE)].current =

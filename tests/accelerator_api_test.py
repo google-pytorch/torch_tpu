@@ -1013,6 +1013,21 @@ class AcceleratorMemoryTest(seed_test_utils.RepeatableTest):
     ):
       max_memory_reserved_fn(device_index=0)  # pytype: disable=wrong-keyword-args
 
+  def test_memory_reserved_includes_allocated_memory(self):
+    # As with CUDA, the reserved memory includes the allocated memory, including
+    # the memory that the runtime reserves for compiled programs.
+    t = torch.randn(1024, 1024, device="tpu")
+    compiled = torch.compile(lambda x: (x @ x.T).softmax(-1) @ x, backend="tpu")
+    compiled(t).cpu()
+    self.assertGreaterEqual(
+        torch.accelerator.memory_reserved(),
+        torch.accelerator.memory_allocated(),
+    )
+    self.assertGreaterEqual(
+        torch.accelerator.max_memory_reserved(),
+        torch.accelerator.max_memory_allocated(),
+    )
+
 
 class AcceleratorRandomTest(seed_test_utils.RepeatableTest):
   """Tests RNG APIs in torch.accelerator.random."""
