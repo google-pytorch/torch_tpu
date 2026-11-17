@@ -658,6 +658,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "distributed_runner_test",
     srcs = ["distributed_runner_test.py"],
+    tags = ["notsan"],  # TODO(b/584257115): Fails under OSS TSan.
     deps = [
         ":fakes",
         "//perflab:common",
