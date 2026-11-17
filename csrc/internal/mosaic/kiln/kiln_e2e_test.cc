@@ -399,6 +399,32 @@ TEST_F(KilnE2eTest, InequalityOfBoolMasks) {
   RunAndCompare(std::move(kernel), {&input}, expected);
 }
 
+TEST_F(KilnE2eTest, BoolAndOnes) {
+  TT_ASSERT_OK_AND_ASSIGN(
+      Kernel kernel,
+      CreateKernel(GridSpec{.name = "bool_and_ones_e2e", .grid = {1}},
+                   OutSpec{f32(8, 128)}, [](VmemRef out) {
+                     Store(out, Select(Splat(Bool(true), {8, 128}),
+                                       Ones(f32(8, 128)), 0.0));
+                   }));
+
+  RunAndCompare(std::move(kernel), {},
+                Make2dF32(8, 128, [](int64_t, int64_t) { return 1.0f; }));
+}
+
+TEST_F(KilnE2eTest, BoolAndZeros) {
+  TT_ASSERT_OK_AND_ASSIGN(
+      Kernel kernel,
+      CreateKernel(GridSpec{.name = "bool_and_zeros_e2e", .grid = {1}},
+                   OutSpec{f32(8, 128)}, [](VmemRef out) {
+                     Store(out, Select(Splat(Bool(false), {8, 128}),
+                                       Ones(f32(8, 128)), Zeros(f32(8, 128))));
+                   }));
+
+  RunAndCompare(std::move(kernel), {},
+                Make2dF32(8, 128, [](int64_t, int64_t) { return 0.0f; }));
+}
+
 // Without a grid, XLA copies VMEM operands in and out whole.
 TEST_F(KilnE2eTest, GridFreeKernelWithVmemOperands) {
   TT_ASSERT_OK_AND_ASSIGN(
