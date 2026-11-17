@@ -63,8 +63,7 @@ absl::Status ValidateLcmInputs(const at::Tensor& self, const at::Tensor& other,
 
 // Computes the greatest common divisor of `a` and `b` (which must share the
 // same shape and signed 32-bit integer element type).
-mlir::MlirOp BuildGcdShlo(mlir::MlirOp a, mlir::MlirOp b,
-                          const int32_t max_iters) {
+mlir::MlirOp BuildGcdShlo(mlir::MlirOp a, mlir::MlirOp b) {
   mlir::MlirBuilder& builder = a.getBuilder();
   mlir::MlirOp a_abs = mlir::stablehlo::Abs(a);
   mlir::MlirOp b_abs = mlir::stablehlo::Abs(b);
@@ -72,19 +71,21 @@ mlir::MlirOp BuildGcdShlo(mlir::MlirOp a, mlir::MlirOp b,
       MakeScalarConstant(builder, 0, mlir::ElementType::I32);
 
   // Run the Euclidean algorithm (`(a, b) = (b, |a % b|)`) in a
-  // `stablehlo.while` loop for a fixed number of iterations (`i < max_iters`).
+  // `stablehlo.while` loop for a fixed number of iterations
+  // (`i < kMaxGcdIterationsI32`).
   // The loop carries the state tuple `(i, a, b)`:
-  //   - `args[0]` (`i`): scalar I32 loop counter in `[0, max_iters)`.
+  //   - `args[0]` (`i`): scalar I32 loop counter in `[0,
+  //   kMaxGcdIterationsI32)`.
   //   - `args[1]` (`a`): current dividend tensor (converges to `gcd(a, b)`).
   //   - `args[2]` (`b`): current divisor/remainder tensor (converges to 0).
   mlir::SmallVector<mlir::MlirOp> loop = mlir::stablehlo::While(
       builder, {zero_i32, a_abs, b_abs},
-      [max_iters](mlir::RegionBuilder& cond) {
-        // Loop condition: continue while `i < max_iters`.
+      [](mlir::RegionBuilder& cond) {
+        // Loop condition: continue while `i < kMaxGcdIterationsI32`.
         mlir::SmallVector<mlir::MlirOp> args = mlir::stablehlo::Arguments(
             cond, cond.getOp<mlir::stablehlo::WhileOp>());
-        mlir::MlirOp limit =
-            MakeScalarConstant(cond, max_iters, mlir::ElementType::I32);
+        mlir::MlirOp limit = MakeScalarConstant(cond, kMaxGcdIterationsI32,
+                                                mlir::ElementType::I32);
         mlir::MlirOp cond_val = mlir::stablehlo::Compare(
             args[0], limit, mlir::stablehlo::ComparisonDirection::LT);
         mlir::stablehlo::Return(cond, cond_val);
@@ -119,8 +120,8 @@ mlir::MlirOp BuildGcdShlo(mlir::MlirOp a, mlir::MlirOp b,
 
         mlir::stablehlo::Return(body, {next_i, next_a, next_b});
       });
-  // After `max_iters` steps, `b` is 0 everywhere and `loop[1]` (`a`) holds the
-  // GCD.
+  // After `kMaxGcdIterationsI32` steps, `b` is 0 everywhere and `loop[1]` (`a`)
+  // holds the GCD.
   return loop[1];
 }
 
@@ -261,7 +262,7 @@ absl::StatusOr<mlir::MlirOp> BuildLcmShlo(mlir::MlirOp self,
     rhs = mlir::stablehlo::ConvertElementType(rhs, mlir::ElementType::I32);
   }
 
-  mlir::MlirOp g = BuildGcdShlo(lhs, rhs, kMaxGcdIterationsI32);
+  mlir::MlirOp g = BuildGcdShlo(lhs, rhs);
   mlir::MlirOp zero = MakeConstantLike(lhs, 0);
   mlir::MlirOp one = MakeConstantLike(lhs, 1);
   mlir::MlirOp is_g_zero = mlir::stablehlo::Compare(
