@@ -14,6 +14,7 @@
 
 """Tests that automatic mixed precision (AMP)/torch.autocast works on TPU."""
 
+import re
 from typing import TypeAlias
 from absl.testing import absltest
 import torch
@@ -103,13 +104,21 @@ class AmpTest(seed_test_utils.RepeatableTest):
         [loss], [x, y] + list(model.parameters())
     )
     mlir_text = tpu_torch_compile.serialize_mlir_text(mlir)
+    # Normalize the module name before comparing complete MLIR; it is an
+    # unstable PyTorch implementation detail (e.g., internal line numbers and
+    # op call chains).
+    normalized_mlir_text = re.sub(
+        r"module @tt_jit_\w+ \{",
+        "module @tt_jit_amp_test_test_autocast_works {",
+        mlir_text,
+    )
 
     # Operations that get actually performed:
     # - embedding layer uses f32 (%0)
     # - linear layer converts to bf16 (%1 through %6)
     # - multiplication preserves bf16 (%7)
     # - loss function converts to f32 (%8 through %16)
-    expected_mlir = """module @tt_jit_build_mlir_compile_mlir_as_strided {
+    expected_mlir = """module @tt_jit_amp_test_test_autocast_works {
   func.func @main(%arg0: tensor<10xi64>, %arg1: tensor<10x10xf32>, %arg2: tensor<10x10xf32>, %arg3: tensor<10x10xf32>, %arg4: tensor<10xf32>) -> tensor<f32> {
     %cst = stablehlo.constant dense<-1.000000e+00> : tensor<10x10xbf16>
     %c = stablehlo.constant dense<0> : tensor<i64>
@@ -136,7 +145,7 @@ class AmpTest(seed_test_utils.RepeatableTest):
     return %16 : tensor<f32>
   }
 }"""
-    expected_mlir_reduced = """module @tt_jit_functional_L4403C0_mse_loss_mse_loss {
+    expected_mlir_reduced = """module @tt_jit_amp_test_test_autocast_works {
   func.func @main(%arg0: tensor<10xi64>, %arg1: tensor<10x10xf32>, %arg2: tensor<10x10xf32>, %arg3: tensor<10x10xf32>, %arg4: tensor<10xf32>) -> tensor<f32> {
     %cst = stablehlo.constant dense<-1.000000e+00> : tensor<10x10xbf16>
     %cst_0 = stablehlo.constant dense<1.000000e+02> : tensor<f32>
@@ -158,7 +167,7 @@ class AmpTest(seed_test_utils.RepeatableTest):
   }
 }"""
     self.assertIn(
-        mlir_text.strip(),
+        normalized_mlir_text.strip(),
         [expected_mlir.strip(), expected_mlir_reduced.strip()],
     )
 
