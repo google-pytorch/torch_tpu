@@ -93,21 +93,30 @@ at::Tensor& AtenChunkCatOut(at::TensorList tensors, int64_t dim,
     auto op_builder = [num_rows, num_chunks, chunk_numels, result_dims](
                           absl::Span<mlir::MlirOp> inputs,
                           mlir::MlirBuilder& builder) {
-      const Indices stride = {1, 1};
+      // A single row (dim 0, as FSDP2 calls it) is kept 1-D: a (1, N) array
+      // makes the copy slower on TPU.
+      const int64_t axis = num_rows == 1 ? 0 : 1;
+      const auto row_shape = [num_rows](int64_t row_numel) {
+        return num_rows == 1 ? Dimensions{row_numel}
+                             : Dimensions{num_rows, row_numel};
+      };
+      const Indices stride(axis + 1, 1);
+      const Dimensions no_padding(axis + 1, 0);
       std::vector<mlir::MlirOp> rows;
       rows.reserve(inputs.size());
       for (size_t i = 0; i < inputs.size(); ++i) {
         const mlir::RankedTensorType type = GetTensorTypeOrDie(inputs[i]);
         const int64_t row_numel = type.getNumElements() / num_rows;
         mlir::MlirOp row =
-            mlir::stablehlo::Reshape(inputs[i], {num_rows, row_numel});
-        const int64_t padding = num_chunks * chunk_numels[i] - row_numel;
-        if (padding > 0) {
+            mlir::stablehlo::Reshape(inputs[i], row_shape(row_numel));
+        Dimensions padding = no_padding;
+        padding[axis] = num_chunks * chunk_numels[i] - row_numel;
+        if (padding[axis] > 0) {
           mlir::MlirOp zero =
               MakeScalarConstant(builder, 0, type.getElementType());
-          row = mlir::stablehlo::Pad(row, zero, /*edge_padding_low=*/{0, 0},
-                                     /*edge_padding_high=*/{0, padding},
-                                     /*interior_padding=*/{0, 0});
+          row = mlir::stablehlo::Pad(row, zero, /*edge_padding_low=*/no_padding,
+                                     /*edge_padding_high=*/padding,
+                                     /*interior_padding=*/no_padding);
         }
         rows.push_back(row);
       }
@@ -115,13 +124,14 @@ at::Tensor& AtenChunkCatOut(at::TensorList tensors, int64_t dim,
       chunks.reserve(num_chunks * inputs.size());
       for (int64_t chunk = 0; chunk < num_chunks; ++chunk) {
         for (size_t i = 0; i < inputs.size(); ++i) {
-          const Indices begin = {0, chunk * chunk_numels[i]};
-          const Indices limit = {num_rows, (chunk + 1) * chunk_numels[i]};
+          Indices begin(axis + 1, 0);
+          begin[axis] = chunk * chunk_numels[i];
+          const Indices limit = row_shape((chunk + 1) * chunk_numels[i]);
           chunks.push_back(
               mlir::stablehlo::Slice(rows[i], begin, limit, stride));
         }
       }
-      mlir::MlirOp result = mlir::stablehlo::Concatenate(builder, chunks, 1);
+      mlir::MlirOp result = mlir::stablehlo::Concatenate(builder, chunks, axis);
       return mlir::stablehlo::Reshape(result, result_dims);
     };
     TT_ASSIGN_OR_THROW(DeviceBufferRef result_buf,
