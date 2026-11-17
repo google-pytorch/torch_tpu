@@ -79,3 +79,48 @@ serving engines like vLLM and SGLang, custom or in-house serving solutions can
 integrate with TorchTPU via native PyTorch execution APIs and lower-level
 compiler backends. For advanced orchestration, customers can also deploy custom
 serving setups on GKE with llm-d.
+
+## Why is Hugging Face `generate()` slow on TPU, and how do I speed it up?
+
+By default, Hugging Face Transformers' `model.generate()` uses a `DynamicCache`,
+whose key/value tensors grow by one position per new token. In eager mode every
+new shape needs new XLA programs the first time it is seen, and decoding runs op
+by op, so it is slow even once those programs are cached.
+
+Pass `cache_implementation="static"`. Transformers then preallocates a
+fixed-size KV cache and, because its auto-compile check accepts `tpu` devices,
+compiles the decode step with `torch.compile`:
+
+```python
+outputs = model.generate(
+    **inputs, max_new_tokens=32, cache_implementation="static"
+)
+```
+
+For example, greedy 32-token generation with `Qwen/Qwen3-0.6B` in `bfloat16` on
+TPU v6e (torch 2.13.0, TorchTPU 0.2.0, libtpu 0.0.50, Transformers 5.19.0)
+measured:
+
+<!-- mdformat off(reason: standard GFM table rendering in Critique and Code Search) -->
+
+| KV cache                        | First call                         | Repeat call, same shapes |
+| ------------------------------- | ---------------------------------- | ------------------------ |
+| Default `DynamicCache`, eager   | 388 XLA compilations, 171 ms/token | 64 ms/token              |
+| `cache_implementation="static"` | about 12 s, mostly compilation     | 6 ms/token               |
+
+<!-- mdformat on -->
+
+Trade-offs:
+
+*   The first call pays the compilation cost, so warm up before timing.
+*   The cache size is fixed at prompt length plus `max_new_tokens`, and
+    attention runs over the whole cache. A longer prompt or a larger
+    `max_new_tokens` gives a new size and a recompile. To avoid this, pad
+    prompts to a few fixed lengths, or set `max_cache_len` to the largest call
+    you expect.
+*   Auto-compile on TPU needs Transformers v5; v4 only auto-compiles on CUDA.
+*   If you pass your own `compile_config`, set `backend="tpu"`. Its default,
+    `"inductor"`, is rejected for TPU inputs.
+
+To learn how TorchTPU handles growing shapes under `torch.compile` in general,
+see [Dynamic shapes](./dynamic_shapes.md).
