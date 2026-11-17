@@ -91,6 +91,10 @@ layout check). In addition, follow these conventions:
 *   **Const**: Make a variable or function parameter `const` unless there's a
     need to mutate it or move from it. Exception: `MlirOp` must not be `const`,
     as it acts as a reference.
+*   **`[[nodiscard]]`**: Mark a C++ function `[[nodiscard]]` if ignoring its
+    return value likely indicates a bug. Skip it when the return type is already
+    `[[nodiscard]]` (e.g. `absl::Status`, `absl::StatusOr`), and put it only on
+    the declaration, not on a separate definition.
 *   **Boolean Parameters**: Per
     [Tip of the Week #94](https://abseil.io/tips/94), use enum parameters as
     opposed to `bool` to improve call-site readability.

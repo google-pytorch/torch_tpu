@@ -39,9 +39,9 @@ You MUST manually evaluate the following gates.
         split what remains into smaller pull requests.
 *   **Conventions**: check the change against the code style rules in
     `AGENTS.md` ("Code Style & Conventions"), in particular const correctness,
-    enum-instead-of-`bool` parameters, no `sys.path` manipulation or
-    `ImportError` fallback shims in Python files, and comments that explain
-    *why* rather than *how*.
+    `[[nodiscard]]` usage, enum-instead-of-`bool` parameters, no `sys.path`
+    manipulation or `ImportError` fallback shims in Python files, and comments
+    that explain *why* rather than *how*.
 *   **`BUILD` Test Targets & CI Jobs**: When the pull request adds or modifies
     test rules in `BUILD` files or CI job configs in `.bazelrc`, verify
     compliance with
