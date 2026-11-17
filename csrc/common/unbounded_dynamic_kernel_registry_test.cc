@@ -97,6 +97,7 @@ UnboundedDynamicKernel DummyKernel(
   };
 }
 
+Shape Rank1Input() { return Shape(Dimensions({4}), mlir::ElementType::F32); }
 Shape Rank2Input() { return Shape(Dimensions({4, 4}), mlir::ElementType::F32); }
 Shape Rank3Input() {
   return Shape(Dimensions({2, 4, 4}), mlir::ElementType::F32);
@@ -155,28 +156,11 @@ TEST(UnboundedDynamicKernelRegistryTest,
             nullptr);
 }
 
-TEST(UnboundedDynamicKernelRegistryTest, GetUnboundedDynamicMetadata) {
-  UnboundedDynamicKernelRegistry& registry =
-      UnboundedDynamicKernelRegistry::GetInstance();
-  const ShapelessKey shapeless_key = DummyShapelessKey("get_exact_key");
-  const CompilationCacheKey key = DummyKey(shapeless_key, 1);
-  ASSERT_THAT(registry.RegisterKernel(DummyKernel(key, AcceptsRank2Input)),
-              IsOk());
-
-  const UnboundedDynamicExecutionMetadata* metadata =
-      registry.GetUnboundedDynamicMetadata(key);
-  ASSERT_NE(metadata, nullptr);
-  EXPECT_EQ(metadata->is_compatible, &AcceptsRank2Input);
-
-  // Same shapeless key, different dimensions key.
-  EXPECT_EQ(registry.GetUnboundedDynamicMetadata(DummyKey(shapeless_key, 2)),
-            nullptr);
-}
-
 TEST(UnboundedDynamicKernelRegistryTest, RegisterKernelRejectsDuplicateKey) {
   UnboundedDynamicKernelRegistry& registry =
       UnboundedDynamicKernelRegistry::GetInstance();
-  const CompilationCacheKey key = DummyKey(DummyShapelessKey("duplicate_key"));
+  const ShapelessKey shapeless_key = DummyShapelessKey("duplicate_key");
+  const CompilationCacheKey key = DummyKey(shapeless_key);
   ASSERT_THAT(registry.RegisterKernel(DummyKernel(key, AcceptsRank1Input)),
               IsOk());
 
@@ -185,11 +169,15 @@ TEST(UnboundedDynamicKernelRegistryTest, RegisterKernelRejectsDuplicateKey) {
       StatusIs(error::kAlreadyExists,
                HasSubstr("an unbounded dynamic kernel is already registered "
                          "for key")));
+  // The duplicate is not registered.
+  EXPECT_EQ(registry.FindUnboundedDynamicKernel(shapeless_key, {Rank2Input()},
+                                                {Output()}),
+            nullptr);
   // The first registration is kept.
-  const UnboundedDynamicExecutionMetadata* metadata =
-      registry.GetUnboundedDynamicMetadata(key);
-  ASSERT_NE(metadata, nullptr);
-  EXPECT_EQ(metadata->is_compatible, &AcceptsRank1Input);
+  const UnboundedDynamicKernel* first = registry.FindUnboundedDynamicKernel(
+      shapeless_key, {Rank1Input()}, {Output()});
+  ASSERT_NE(first, nullptr);
+  EXPECT_EQ(first->metadata.is_compatible, &AcceptsRank1Input);
 }
 
 }  // namespace

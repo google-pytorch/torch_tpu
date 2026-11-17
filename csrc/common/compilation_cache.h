@@ -86,9 +86,13 @@ class CompilationCache;
 // Invariant: executable_future is associated with executable_promise.
 class CacheEntry {
  public:
-  CacheEntry()
+  // `unbounded_dynamic_kernel` is the registered kernel whose executable the
+  // entry holds, if any.
+  explicit CacheEntry(const UnboundedDynamicKernel* absl_nullable
+                          unbounded_dynamic_kernel = nullptr)
       : executable_promise_(std::make_shared<LoadedExecutablePromise>()),
-        executable_future_(executable_promise_->get_future().share()) {}
+        executable_future_(executable_promise_->get_future().share()),
+        unbounded_dynamic_kernel_(unbounded_dynamic_kernel) {}
 
   // This class is movable but not copyable.
   CacheEntry(CacheEntry&&) = default;
@@ -108,12 +112,21 @@ class CacheEntry {
 
   [[nodiscard]] CacheEntryStats& stats() const { return stats_; }
 
+  // The registered unbounded dynamic kernel whose executable the entry holds,
+  // or null. Points into the process-wide registry, which never frees or moves
+  // its kernels.
+  [[nodiscard]] const UnboundedDynamicKernel* absl_nullable
+  unbounded_dynamic_kernel() const {
+    return unbounded_dynamic_kernel_;
+  }
+
  private:
   // Order the fields so that the promise is constructed before the future
   // and destroyed after it.
   std::shared_ptr<LoadedExecutablePromise> executable_promise_;
   SharedLoadedExecutableWithMetadataFuture executable_future_;
   mutable CacheEntryStats stats_;
+  const UnboundedDynamicKernel* absl_nullable unbounded_dynamic_kernel_;
 };
 
 struct BoundedDynamicCacheEntry {
@@ -428,10 +441,12 @@ class CompilationCache {
       absl::Span<const Shape> output_shapes)
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(cache_mutex_);
 
-  // Creates a pending entry for `key` in the tier-1 cache selected by `kind`.
-  // Crashes if the key is already present in that cache.
+  // Creates a pending entry for `key` in the static tier-1 cache, or, if
+  // `unbounded_dynamic_kernel` is set, in the unbounded dynamic one for that
+  // kernel's executable. Crashes if the key is already present in that cache.
   CacheLookupInternal AddCacheEntry(const CompilationCacheKey& key,
-                                    CacheEntryKind kind)
+                                    const UnboundedDynamicKernel* absl_nullable
+                                        unbounded_dynamic_kernel = nullptr)
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(cache_mutex_);
 
   // Creates a new bounded dynamic cache entry for the given key and input

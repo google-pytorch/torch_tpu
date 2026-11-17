@@ -17,7 +17,7 @@ csrc/common/aten_utils.cc: {remaining: 1, total: 1, infeasible: 0}
 csrc/common/aten_utils.h: {remaining: 0, total: 5, infeasible: 1}
 csrc/common/cache_key.cc: {remaining: 3, total: 3, infeasible: 0}
 csrc/common/compilation.cc: {remaining: 3, total: 3, infeasible: 0}
-csrc/common/compilation_cache.cc: {remaining: 1, total: 3, infeasible: 1}
+csrc/common/compilation_cache.cc: {remaining: 1, total: 2, infeasible: 0}
 csrc/common/compilation_cache_test_utils.cc: {remaining: 0, total: 1, infeasible: 1}
 csrc/common/compilation_cache_utils.cc: {remaining: 1, total: 1, infeasible: 0}
 csrc/common/const_tensor.cc: {remaining: 0, total: 10, infeasible: 10}

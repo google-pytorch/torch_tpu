@@ -76,11 +76,6 @@ class UnboundedDynamicKernelRegistry {
                              absl::Span<const Shape> input_shapes,
                              absl::Span<const Shape> output_shapes) const;
 
-  // Returns the execution metadata of the kernel registered under exactly
-  // `key`, or null if there is none.
-  [[nodiscard]] const UnboundedDynamicExecutionMetadata* absl_nullable
-  GetUnboundedDynamicMetadata(const CompilationCacheKey& key) const;
-
  private:
   // Owns the kernels, indexed by their exact cache key.
   using KernelMap = absl::flat_hash_map<CompilationCacheKey,

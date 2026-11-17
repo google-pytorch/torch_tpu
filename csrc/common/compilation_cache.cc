@@ -472,6 +472,7 @@ CompilationCache::GetCacheEntry(const CompilationCacheKey& key,
       .executable_future = cache_entry->executable_future(),
       .needs_compilation = false,
       .dump_on_cache_miss = false,
+      .unbounded_dynamic_kernel = cache_entry->unbounded_dynamic_kernel(),
   };
 }
 
@@ -485,19 +486,24 @@ CompilationCache::GetBoundedDynamicCacheEntries(ShapelessKey shapeless_key) {
 }
 
 CompilationCache::CacheLookupInternal CompilationCache::AddCacheEntry(
-    const CompilationCacheKey& key, const CacheEntryKind kind) {
+    const CompilationCacheKey& key,
+    const UnboundedDynamicKernel* absl_nullable unbounded_dynamic_kernel) {
   // Bind by reference: both operands are lvalues of the same type, so the
   // conditional is an lvalue and no map copy happens.
-  auto& cache = kind == CacheEntryKind::kStatic ? executable_cache_
-                                                : unbounded_dynamic_cache_;
-  const auto [entry, inserted] = cache.insert({key, CacheEntry()});
+  auto& cache = unbounded_dynamic_kernel == nullptr ? executable_cache_
+                                                    : unbounded_dynamic_cache_;
+  const auto [entry, inserted] =
+      cache.insert({key, CacheEntry(unbounded_dynamic_kernel)});
   ABSL_CHECK(inserted)  // CRASH_OK
-      << "Key already exists in " << kind << " cache: " << key;
+      << "Key already exists in "
+      << (unbounded_dynamic_kernel == nullptr ? "static" : "unbounded dynamic")
+      << " cache: " << key;
   return CacheLookupInternal{
       .executable_promise = entry->second.executable_promise(),
       .executable_future = entry->second.executable_future(),
       .needs_compilation = true,
       .dump_on_cache_miss = false,
+      .unbounded_dynamic_kernel = unbounded_dynamic_kernel,
   };
 }
 
@@ -530,8 +536,7 @@ CompilationCache::AddBoundedDynamicCacheEntry(
       .shape_dynamism_metadata = shape_dynamism_metadata,
   });
 
-  auto cache_lookup =
-      AddCacheEntry(middle_executable_key, CacheEntryKind::kStatic);
+  auto cache_lookup = AddCacheEntry(middle_executable_key);
   cache_lookup.shape_dynamism_metadata = shape_dynamism_metadata;
   return cache_lookup;
 }
@@ -564,9 +569,7 @@ CompilationCache::GetOrCreateUnboundedDynamicCacheEntry(
     }
     ABSL_VLOG(2) << "Creating an unbounded dynamic cache entry for key: "
                  << dynamic_key;
-    cache_lookup =
-        AddCacheEntry(dynamic_key, CacheEntryKind::kUnboundedDynamic);
-    cache_lookup->unbounded_dynamic_kernel = dynamic_kernel;
+    cache_lookup = AddCacheEntry(dynamic_key, dynamic_kernel);
     perf_stats_.num_unbounded_dynamic_hits++;
     return cache_lookup;
   }
@@ -576,7 +579,6 @@ CompilationCache::GetOrCreateUnboundedDynamicCacheEntry(
   const SharedLoadedExecutableWithMetadataFuture& future =
       cache_lookup->executable_future;
   if (!IsFutureReady(future) || future.get().ok()) {
-    cache_lookup->unbounded_dynamic_kernel = dynamic_kernel;
     perf_stats_.num_unbounded_dynamic_hits++;
     return cache_lookup;
   }
@@ -604,7 +606,7 @@ CompilationCache::GetOrCreateCacheEntry(
     if (cache_lookup_or.has_value()) {
       return *cache_lookup_or;
     }
-    return AddCacheEntry(key, CacheEntryKind::kStatic);
+    return AddCacheEntry(key);
   }
 
   // 1. Try to find a static CacheEntry.
@@ -687,7 +689,7 @@ CompilationCache::GetOrCreateCacheEntry(
 
   // 5. Lastly, create a static cache entry.
   ABSL_VLOG(2) << "Creating a static cache entry for key: " << key;
-  return AddCacheEntry(key, CacheEntryKind::kStatic);
+  return AddCacheEntry(key);
 }
 
 bool CompilationCache::IsExecutableReady(const CompilationCacheKey& key,
@@ -1112,20 +1114,13 @@ void CompilationCache::SetExecutable(
                  << " ms";
   }
 
-  if (kind == CacheEntryKind::kUnboundedDynamic && executable.ok()) {
+  const UnboundedDynamicKernel* absl_nullable kernel =
+      cache_entry->unbounded_dynamic_kernel();
+  if (kernel != nullptr && executable.ok()) {
     // Executables loaded from the persistent tiers carry no metadata, so it is
     // attached here for every source alike.
-    const UnboundedDynamicExecutionMetadata* metadata =
-        UnboundedDynamicKernelRegistry::GetInstance()
-            .GetUnboundedDynamicMetadata(key);
-    if (metadata == nullptr) {
-      executable = TT_ERROR(  // ERROR_COV_INFEASIBLE=unreachable from Python.
-                       error::kInternal)
-                   << "no unbounded dynamic kernel registered for key " << key;
-    } else {
-      executable = LoadedExecutableWithMetadata::WithDynamicExecutionMetadata(
-          *executable, *metadata);
-    }
+    executable = LoadedExecutableWithMetadata::WithDynamicExecutionMetadata(
+        *executable, kernel->metadata);
   }
 
   TrySetExecutablePromise(key, *cache_entry->executable_promise(),

@@ -67,11 +67,4 @@ UnboundedDynamicKernelRegistry::FindUnboundedDynamicKernel(
   return nullptr;
 }
 
-const UnboundedDynamicExecutionMetadata* absl_nullable
-UnboundedDynamicKernelRegistry::GetUnboundedDynamicMetadata(
-    const CompilationCacheKey& key) const {
-  const auto it = kernels_.find(key);
-  return it == kernels_.end() ? nullptr : &it->second->metadata;
-}
-
 }  // namespace torch_tpu
