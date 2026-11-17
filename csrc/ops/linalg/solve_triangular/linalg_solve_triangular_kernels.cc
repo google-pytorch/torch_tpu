@@ -110,8 +110,7 @@ at::Tensor& AtenLinalgSolveTriangularOut(const at::Tensor& a,
         TT_THROW_IF_ERROR(ValidateDimensions(a, b, left));
         TT_CHECK_THROW(a.scalar_type() != c10::ScalarType::BFloat16 &&
                            a.scalar_type() != c10::ScalarType::Half &&
-                           !at::isIntegralType(a.scalar_type(),
-                                               /*includeBool=*/true),
+                           !IsIntegral(a),
                        error::kInvalidArgument)
             << "triangular solve not supported for dtype "
             << ToString(a.scalar_type());
@@ -145,8 +144,7 @@ at::Tensor AtenLinalgSolveTriangular(const at::Tensor& a, const at::Tensor& b,
         TT_THROW_IF_ERROR(ValidateDimensions(a, b, left));
         TT_CHECK_THROW(a.scalar_type() != c10::ScalarType::BFloat16 &&
                            a.scalar_type() != c10::ScalarType::Half &&
-                           !at::isIntegralType(a.scalar_type(),
-                                               /*includeBool=*/true),
+                           !IsIntegral(a),
                        error::kInvalidArgument)
             << "triangular solve not supported for dtype "
             << ToString(a.scalar_type());
@@ -167,7 +165,7 @@ at::Tensor AtenLinalgSolveTriangular(const at::Tensor& a, const at::Tensor& b,
                 {.out_dtype = out_dtype,
                  .out_dims = CopyIntVector(b.sizes()),
                  .op_param_cache_keys = std::move(param_keys)}));
-        return MakeTensor(result_buffer);
+        return MakeTensor(std::move(result_buffer));
       });
 }
 

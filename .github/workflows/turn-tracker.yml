@@ -15,8 +15,10 @@
 name: Turn Tracker
 
 "on":
+  # Removing a reviewer or assignee never changes whose turn it is, so
+  # `unassigned` and `review_request_removed` are deliberately not triggers.
   issues:
-    types: [opened, reopened, transferred, assigned, unassigned]
+    types: [opened, reopened, transferred, assigned]
   issue_comment:
     types: [created]
   # `pull_request_target` grants a write token to label PRs from forks.
@@ -27,9 +29,7 @@ name: Turn Tracker
       - reopened
       - ready_for_review
       - review_requested
-      - review_request_removed
       - assigned
-      - unassigned
   # Review events on PRs from forks only get a read-only token, so
   # `turn-tracker-pr-review.yml` runs on them as a no-op and this workflow
   # handles its completion with a write token.

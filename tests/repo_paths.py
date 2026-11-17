@@ -18,6 +18,7 @@ This works the same way in google3 (Blaze), where the repository is at
 `third_party/py/torch_tpu`, and in OSS (Bazel), where it's the workspace root.
 """
 
+from collections.abc import Sequence
 import os
 import pathlib
 
@@ -50,7 +51,7 @@ _NON_REPO_DIR_NAMES = frozenset(
 
 
 def _first_containing_key_file(
-    candidates: list[pathlib.Path], location: str
+    candidates: Sequence[pathlib.Path], location: str
 ) -> str:
   """Returns the first candidate that contains `_KEY_FILE`.
 

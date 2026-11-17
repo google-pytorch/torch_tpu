@@ -190,7 +190,7 @@ at::Tensor AtenSparseDenseMatmulGradientStack(
             (DispatchOp<kDynamicSize, 1>(std::move(builder_fn), inputs_vec,
                                          std::move(options))));
 
-        return torch_tpu::MakeTensor(result);
+        return torch_tpu::MakeTensor(std::move(result));
       });
 }
 

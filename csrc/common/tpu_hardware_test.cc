@@ -16,6 +16,7 @@
 #include "csrc/common/tpu_hardware.h"
 
 #include <ftw.h>
+#include <stdlib.h>
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
 #include <unistd.h>
@@ -34,6 +35,7 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
 #include "absl/types/span.h"
+#include "csrc/common/env_vars.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/utils.h"  // IWYU pragma: keep
 #include "gtest/gtest.h"
@@ -116,11 +118,25 @@ class ScopedFakeHardwareDir {
     WriteFile(proc_devices_, contents);
   }
 
-  // Adds a VFIO group node for `iommu_group`.
-  void AddVfioGroup(std::string_view iommu_group) {
+  // Adds a VFIO group node for `iommu_group` that resolves to the real device
+  // node `target`, which defaults to /dev/null: a character device that any
+  // process can read and write.
+  void AddVfioGroup(std::string_view iommu_group,
+                    std::string_view target = "/dev/null") {
     MakeDir(dev_dir_);
     MakeDir(vfio_dir_);
-    WriteFile(absl::StrCat(vfio_dir_, "/", iommu_group), "");
+    AddLink(absl::StrCat(vfio_dir_, "/", iommu_group), target);
+  }
+
+  // Adds an empty regular file without any permissions at the VFIO group node
+  // path for `iommu_group`, like the placeholders that some sandboxes put at
+  // the paths of TPUs that they don't allocate to the process.
+  void AddVfioGroupPlaceholder(std::string_view iommu_group) {
+    MakeDir(dev_dir_);
+    MakeDir(vfio_dir_);
+    const std::string path = absl::StrCat(vfio_dir_, "/", iommu_group);
+    WriteFile(path, "");
+    ABSL_CHECK_EQ(chmod(path.c_str(), 0), 0);
   }
 
   // Creates the fake /dev/vfio/devices directory, which holds the VFIO
@@ -396,7 +412,9 @@ TEST(TpuSpecTest, PredefinedSpecsMatchExpected) {
   constexpr int64_t kTFlops = 1'000'000'000'000LL;
 
   const TpuSpec& v5p = TpuSpec::V5p();
-  EXPECT_EQ(v5p.name, "TPU v5p");
+  EXPECT_EQ(v5p.version, TpuVersion::kV5p);
+  EXPECT_EQ(v5p.name(), "TPU v5p");
+  EXPECT_EQ(&TpuSpec::ForVersion(TpuVersion::kV5p), &v5p);
   EXPECT_EQ(v5p.devices_per_chip, 1);
   EXPECT_EQ(v5p.hbm_bytes_per_chip, 95 * kGiB);
   EXPECT_EQ(v5p.hbm_bytes_per_device(), 95 * kGiB);
@@ -406,7 +424,9 @@ TEST(TpuSpecTest, PredefinedSpecsMatchExpected) {
   EXPECT_EQ(v5p.topologies.at(4), (TpuSpec::Topology{2, 2, 1}));
 
   const TpuSpec& v5e = TpuSpec::V5e();
-  EXPECT_EQ(v5e.name, "TPU v5e");
+  EXPECT_EQ(v5e.version, TpuVersion::kV5e);
+  EXPECT_EQ(v5e.name(), "TPU v5e");
+  EXPECT_EQ(&TpuSpec::ForVersion(TpuVersion::kV5e), &v5e);
   EXPECT_EQ(v5e.devices_per_chip, 1);
   EXPECT_EQ(v5e.hbm_bytes_per_chip, 16 * kGiB);
   EXPECT_EQ(v5e.bf16_flops_per_chip, 197 * kTFlops);
@@ -416,7 +436,9 @@ TEST(TpuSpecTest, PredefinedSpecsMatchExpected) {
                                       : TpuSpec::Topology{2, 4, 1}));
 
   const TpuSpec& v6e = TpuSpec::V6e();
-  EXPECT_EQ(v6e.name, "TPU v6e");
+  EXPECT_EQ(v6e.version, TpuVersion::kV6e);
+  EXPECT_EQ(v6e.name(), "TPU v6e");
+  EXPECT_EQ(&TpuSpec::ForVersion(TpuVersion::kV6e), &v6e);
   EXPECT_EQ(v6e.devices_per_chip, 1);
   EXPECT_EQ(v6e.hbm_bytes_per_chip, 32 * kGiB);
   EXPECT_EQ(v6e.bf16_flops_per_chip, 918 * kTFlops);
@@ -424,7 +446,9 @@ TEST(TpuSpecTest, PredefinedSpecsMatchExpected) {
   EXPECT_EQ(v6e.topologies.at(8), (TpuSpec::Topology{2, 4, 1}));
 
   const TpuSpec& v7 = TpuSpec::V7();
-  EXPECT_EQ(v7.name, "TPU v7");
+  EXPECT_EQ(v7.version, TpuVersion::kV7);
+  EXPECT_EQ(v7.name(), "TPU v7");
+  EXPECT_EQ(&TpuSpec::ForVersion(TpuVersion::kV7), &v7);
   EXPECT_EQ(v7.devices_per_chip, 2);
   EXPECT_EQ(v7.hbm_bytes_per_chip, 192 * kGiB);
   EXPECT_EQ(v7.hbm_bytes_per_device(), 96 * kGiB);
@@ -434,7 +458,9 @@ TEST(TpuSpecTest, PredefinedSpecsMatchExpected) {
   EXPECT_EQ(v7.topologies.at(2), (TpuSpec::Topology{1, 1, 1, 2}));
 
   const TpuSpec& v8i = TpuSpec::V8i();
-  EXPECT_EQ(v8i.name, "TPU v8i");
+  EXPECT_EQ(v8i.version, TpuVersion::kV8i);
+  EXPECT_EQ(v8i.name(), "TPU v8i");
+  EXPECT_EQ(&TpuSpec::ForVersion(TpuVersion::kV8i), &v8i);
   EXPECT_EQ(v8i.devices_per_chip, 2);
   EXPECT_EQ(v8i.hbm_bytes_per_chip, 309'000'000'000LL);
   EXPECT_EQ(v8i.hbm_bytes_per_device(), 309'000'000'000LL / 2);
@@ -444,7 +470,9 @@ TEST(TpuSpecTest, PredefinedSpecsMatchExpected) {
   EXPECT_EQ(v8i.topologies.at(2), (TpuSpec::Topology{1, 1, 1, 2}));
 
   const TpuSpec& v8t = TpuSpec::V8t();
-  EXPECT_EQ(v8t.name, "TPU v8t");
+  EXPECT_EQ(v8t.version, TpuVersion::kV8t);
+  EXPECT_EQ(v8t.name(), "TPU v8t");
+  EXPECT_EQ(&TpuSpec::ForVersion(TpuVersion::kV8t), &v8t);
   EXPECT_EQ(v8t.devices_per_chip, 1);
   EXPECT_EQ(v8t.hbm_bytes_per_chip, 231'000'000'000LL);
   EXPECT_EQ(v8t.bf16_flops_per_chip, 996'100'000'000'000LL);
@@ -591,6 +619,25 @@ TEST(GetTpuDeviceCountAndTopologyTest,
   EXPECT_EQ(*topology, "1,1,1");
 }
 
+TEST(GetTpuDeviceCountAndTopologyTest, IgnoresVfioGroupPlaceholders) {
+  ScopedFakeHardwareDir fake;
+  // A 1-chip sandbox on an 8-chip host has a real VFIO group node only
+  // for its own chip, and placeholders for the other chips.
+  for (int i = 0; i < 8; ++i) {
+    const std::string group = absl::StrCat(100 + i);
+    fake.AddPciDevice(absl::StrFormat("0000:00:%02x.0", i + 4), "0x1ae0",
+                      "0x0063", group, /*vfio_exposed=*/i == 5);
+    if (i != 5) {
+      fake.AddVfioGroupPlaceholder(group);
+    }
+  }
+  EXPECT_EQ(GetTpuDeviceCount(fake.pci_devices_dir(), fake.vfio_dir()), 1);
+  const absl::StatusOr<std::optional<std::string>> topology =
+      GetTpuTopology(std::nullopt, fake.pci_devices_dir(), fake.vfio_dir());
+  ASSERT_TRUE(topology.ok());
+  EXPECT_EQ(*topology, "1,1,1");
+}
+
 TEST(GetTpuDeviceCountAndTopologyTest,
      ReturnsZeroAndNulloptWhenAllTpusLackVfioNode) {
   ScopedFakeHardwareDir fake;
@@ -614,6 +661,59 @@ TEST(GetTpuDeviceCountAndTopologyTest,
   ASSERT_FALSE(topology.ok());
   EXPECT_EQ(topology.status().code(), error::kInvalidArgument);
   EXPECT_EQ(topology.status().message(), "No TPU topology found for count: 3");
+}
+
+// Returns GetVisibleTpuDeviceCount() for the devices in `fake` with
+// `TPU_VISIBLE_DEVICES` set to `visible_devices`, or unset if std::nullopt.
+int64_t GetVisibleTpuDeviceCountWith(
+    const ScopedFakeHardwareDir& fake,
+    const std::optional<std::string>& visible_devices) {
+  if (visible_devices.has_value()) {
+    ABSL_CHECK_EQ(setenv(kTpuVisibleDevicesEnvVar, visible_devices->c_str(),
+                         /*overwrite=*/1),
+                  0);
+  } else {
+    ABSL_CHECK_EQ(unsetenv(kTpuVisibleDevicesEnvVar), 0);
+  }
+  const int64_t count =
+      GetVisibleTpuDeviceCount(fake.pci_devices_dir(), fake.vfio_dir());
+  ABSL_CHECK_EQ(unsetenv(kTpuVisibleDevicesEnvVar), 0);
+  return count;
+}
+
+TEST(GetVisibleTpuDeviceCountTest, CapsCountAtListedDevices) {
+  ScopedFakeHardwareDir fake;
+  for (int i = 0; i < 8; ++i) {
+    fake.AddPciDevice(absl::StrFormat("0000:00:%02x.0", i + 4), "0x1ae0",
+                      "0x0063", absl::StrCat(i));
+  }
+  EXPECT_EQ(GetVisibleTpuDeviceCountWith(fake, std::nullopt), 8);
+  EXPECT_EQ(GetVisibleTpuDeviceCountWith(fake, "3"), 1);
+  EXPECT_EQ(GetVisibleTpuDeviceCountWith(fake, "0,1,2,3"), 4);
+  // Extra indices don't add devices.
+  EXPECT_EQ(GetVisibleTpuDeviceCountWith(fake, "0,1,2,3,4,5,6,7,8,9"), 8);
+}
+
+TEST(GetVisibleTpuDeviceCountTest, CountsOneDevicePerIndexOnMultiDeviceChips) {
+  ScopedFakeHardwareDir fake;
+  // 2 chips with 2 TensorCores (PCI functions) each. An index is a TensorCore.
+  fake.AddPciDevice("0000:10:01.0", "0x1ae0", "0x0076", "0");
+  fake.AddPciDevice("0000:10:01.1", "0x1ae0", "0x0076", "1");
+  fake.AddPciDevice("0000:11:01.0", "0x1ae0", "0x0076", "2");
+  fake.AddPciDevice("0000:11:01.1", "0x1ae0", "0x0076", "3");
+  EXPECT_EQ(GetVisibleTpuDeviceCountWith(fake, "2"), 1);
+  EXPECT_EQ(GetVisibleTpuDeviceCountWith(fake, "0,1,2"), 3);
+}
+
+TEST(GetVisibleTpuDeviceCountTest, IgnoresEmptyOrMalformedVisibleDevices) {
+  ScopedFakeHardwareDir fake;
+  fake.AddPciDevice("0000:00:04.0", "0x1ae0", "0x006f", "0");
+  fake.AddPciDevice("0000:00:05.0", "0x1ae0", "0x006f", "1");
+  for (const char* const visible_devices :
+       {"", "a", "0,-1", "0,,1", "0;1", "/dev/vfio/0"}) {
+    EXPECT_EQ(GetVisibleTpuDeviceCountWith(fake, visible_devices), 2)
+        << "TPU_VISIBLE_DEVICES=" << visible_devices;
+  }
 }
 
 TEST(GetSingleDeviceTpuBoundsTest, Returns3DBoundsWhenNoSupportedTpuIsPresent) {
@@ -651,9 +751,28 @@ TEST(GetSingleDeviceTpuBoundsTest,
     EXPECT_EQ(GetSingleDeviceTpuBounds(fake.pci_devices_dir()),
               (TpuSpec::Topology{1, 1, 1, 1}))
         << device_id;
+    EXPECT_EQ(
+        GetSingleDeviceTpuBounds<std::vector<int32_t>>(fake.pci_devices_dir()),
+        (std::vector<int32_t>{1, 1, 1, 1}))
+        << device_id;
     EXPECT_EQ(GetSingleDeviceTpuBoundsString(fake.pci_devices_dir()), "1,1,1,1")
         << device_id;
   }
+}
+
+TEST(MakeTpuBoundsTest, SingleDeviceBoundsMatchDevicesPerChip) {
+  EXPECT_EQ(MakeSingleDeviceTpuBounds(1), (TpuSpec::Topology{1, 1, 1}));
+  EXPECT_EQ(MakeSingleDeviceTpuBounds(2), (TpuSpec::Topology{1, 1, 1, 1}));
+  EXPECT_EQ(MakeSingleDeviceTpuBounds<std::vector<int32_t>>(2),
+            (std::vector<int32_t>{1, 1, 1, 1}));
+}
+
+TEST(MakeTpuBoundsTest, ChipBoundsMatchDevicesPerChip) {
+  EXPECT_EQ(MakeTpuChipBounds(1, 2, 1, 1), (TpuSpec::Topology{1, 2, 1}));
+  EXPECT_EQ(MakeTpuChipBounds(1, 2, 1, 2), (TpuSpec::Topology{1, 2, 1, 2}));
+  EXPECT_EQ(MakeTpuChipBounds(1, 1, 1, 2), (TpuSpec::Topology{1, 1, 1, 2}));
+  EXPECT_EQ(MakeTpuChipBounds<std::vector<int32_t>>(2, 2, 1, 2),
+            (std::vector<int32_t>{2, 2, 1, 2}));
 }
 
 }  // namespace

@@ -119,6 +119,29 @@ def _count_devices(
     conn.close()
 
 
+def _hold_device(conn: Any, device_type: str) -> None:
+  """Initializes the device runtime and holds a device until told to exit.
+
+  Runs in a spawned process. Sends `("ok", None)` over `conn` once the runtime
+  holds a device, or `("error", traceback)`, then waits for a message on `conn`
+  before exiting.
+
+  Args:
+    conn: A duplex connection to the test process.
+    device_type: "cuda" or "tpu".
+  """
+  try:
+    device = accelerator_test_utils.get_device(device_type)
+    (torch.ones(1, device=device) + 1).cpu()
+    conn.send(("ok", None))
+  except Exception:  # pylint: disable=broad-exception-caught
+    conn.send(("error", traceback.format_exc()))
+    conn.close()
+    return
+  conn.recv()
+  conn.close()
+
+
 # Not a `seed_test_utils` test class: those seed the device RNGs in `setUp()`,
 # which initializes the device runtime in the test process.
 class DeviceCountTest(
@@ -197,16 +220,64 @@ class DeviceCountTest(
         visible_devices_at_start=None, visible_devices_before_init="0"
     )
 
-    self.assertGreater(
-        counts.before_init,
-        1,
-        "This test needs a host with multiple devices.",
-    )
+    # With one device, the count is always 1 with or without the env change.
+    if counts.before_init <= 1:
+      self.skipTest("This test needs a host with multiple devices.")
+
     self.assertEqual(counts.after_env_change, 1)
     # Like PyTorch's `test_device_count_not_cached_pre_init`, this doesn't check
     # the count after init: CUDA can read `CUDA_VISIBLE_DEVICES` before the
     # change above (e.g. when the driver is loaded at process start), in which
     # case the count after init is still the host's device count.
+
+  def test_count_includes_devices_that_other_processes_hold(self):
+    """Tests that devices other processes hold are still counted.
+
+    The count must not drop as other processes, e.g. the other workers of the
+    same job, initialize the runtime and take devices.
+    """
+    device_module = accelerator_test_utils.get_backend_module(self.device_type)
+    self.assertFalse(device_module.is_initialized())
+    count = device_module.device_count()
+    self.assertGreater(count, 0)
+
+    ctx = multiprocessing.get_context("spawn")
+    conn, child_conn = ctx.Pipe()
+    process = ctx.Process(
+        target=_hold_device, args=(child_conn, self.device_type)
+    )
+    # The worker inherits the visible devices of this process, e.g. the device
+    # that the test runner assigned to this test, so it doesn't take a device
+    # that another test is using.
+    process.start()
+    child_conn.close()
+    try:
+      if not conn.poll(_WORKER_TIMEOUT_SECONDS):
+        self.fail(
+            f"The worker sent no result within {_WORKER_TIMEOUT_SECONDS}s"
+            f" (exit code: {process.exitcode})."
+        )
+      status, payload = conn.recv()
+      if status != "ok":
+        self.fail(f"The worker failed:\n{payload}")
+
+      self.assertEqual(device_module.device_count(), count)
+      self.assertFalse(device_module.is_initialized())
+    finally:
+      try:
+        conn.send("exit")
+      except (BrokenPipeError, EOFError, OSError):
+        pass
+      conn.close()
+      process.join(_WORKER_TIMEOUT_SECONDS)
+      if process.is_alive():
+        process.kill()
+        process.join()
+
+
+def setUpModule():
+  """Called by absltest after flags are parsed and before tests are run."""
+  annotations._internal_apis_allowed_for_testing = True  # pylint: disable=protected-access
 
 
 if __name__ == "__main__":

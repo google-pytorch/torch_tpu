@@ -12,9 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from collections.abc import Callable
 import copy
 import time
-from typing import Any, Callable, Tuple
+from typing import Any
 from absl.testing import absltest
 import numpy as np
 import torch
@@ -171,7 +172,7 @@ def apply_rotary_emb(
     xq: torch.Tensor,
     xk: torch.Tensor,
     freqs_cis: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor]:
   """Applies rotary positional embeddings to the input tensors.
 
   This is the original implementation in Llama3 8B.
@@ -253,7 +254,7 @@ def apply_rotary_emb_float(
     xq: torch.Tensor,
     xk: torch.Tensor,
     freqs_cis: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor]:
   """Applies rotary embeddings without the use of complex numbers.
 
   Args:
@@ -272,7 +273,7 @@ def apply_rotary_emb_float(
 
 
 def rand_complex(
-    *shape: Tuple[int, ...],
+    *shape: tuple[int, ...],
     device: torch.device,
 ) -> torch.Tensor:
   """Returns a random complex tensor.
@@ -292,7 +293,7 @@ def rand_complex(
   return torch.complex(real, imag)
 
 
-def materialize(*tensors: Tuple[torch.Tensor, ...]) -> None:
+def materialize(*tensors: tuple[torch.Tensor, ...]) -> None:
   """Materializes the given tensors synchronously.
 
   This does not transfer the tensors to the host.
@@ -305,7 +306,7 @@ def materialize(*tensors: Tuple[torch.Tensor, ...]) -> None:
 
 
 def make_materialized_rope_inputs() -> (
-    Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+    tuple[torch.Tensor, torch.Tensor, torch.Tensor]
 ):
   """Returns materialized random inputs for rotary positional embeddings.
 

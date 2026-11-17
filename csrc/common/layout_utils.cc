@@ -119,8 +119,8 @@ absl::StatusOr<TpuLayout> ResolveTpuLayout(const at::Tensor& tensor) {
     TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=PyTorch core rejects 0D FP4 tensors
                    // generally on all devices.
         !sizes.empty(), error::kInvalidArgument)
-        << "expected float4_e2m1fn_x2 tensors to be at least 1-dimensional, "
-           "got 0-dimensional";
+        << "expected float4_e2m1fn_x2 tensors to be at least 1D, "
+           "got 0D";
     const int64_t packed_dim = FindFp4PackedDim(tensor);
     TT_RET_CHECK(packed_dim >= 0, error::kInvalidArgument)
         << "expected packed dimension to be contiguous (stride 1) for "

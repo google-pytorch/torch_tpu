@@ -98,8 +98,7 @@ at::Tensor& AtenAddcmulOut(const at::Tensor& self, const at::Tensor& tensor1,
         const at::ScalarType promoted_type = at::native::result_type(
             at::ITensorListRef({self, tensor1, tensor2}));
 
-        TT_CHECK_THROW(promoted_type != at::ScalarType::Bool,
-                       error::kInvalidArgument)
+        TT_CHECK_THROW(!IsBool(promoted_type), error::kInvalidArgument)
             << "expected result type not to be bool, "
             << "got input: " << ToString(self.scalar_type())
             << ", tensor1: " << ToString(tensor1.scalar_type())

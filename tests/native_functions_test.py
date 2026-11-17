@@ -14,7 +14,7 @@
 
 """Parses ATen native function definitions and checks they are registered."""
 
-from collections.abc import Set
+from collections.abc import Mapping, Set
 import os
 import re
 from typing import Final
@@ -68,7 +68,7 @@ LINE_PATTERN = re.compile(
 
 def get_op_schemas(
     filepath: str, include_derived_ops: bool = False
-) -> dict[str, str]:
+) -> Mapping[str, str]:
   """Returns a dict of ops that require registration to their schema.
 
   We use third_party/py/torch/aten/src/ATen/RegistrationDeclarations.h and

@@ -48,6 +48,7 @@ torch_tpu_cc_library(
         "//csrc/common:dtype",
         "//csrc/common:error_utils",
         "//csrc/common:fixed_size_span",
+        "//csrc/common:to_string",
         "//csrc/common:utils",
         "//csrc/distributed:process_group_tpu",
         "//csrc/distributed:utils",

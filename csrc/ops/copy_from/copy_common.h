@@ -20,8 +20,15 @@
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
 #include "absl/status/status.h"
+#include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
+
+// Validates that a copy or cast between src and dst does not involve uncastable
+// shell dtypes (Bits*, sub-byte ints, and Float8_e5m3fnu).
+// Float4_e2m1fn_x2 is excluded because TorchTPU explicitly supports FP4
+// casting.
+absl::Status ValidateShellDtypeCast(at::ScalarType src, at::ScalarType dst);
 
 // Optimizes a view operation by applying broadcasting and transposing.
 // src and dest must be broadcastable, otherwise inferExpandGeometry will throw.
@@ -29,6 +36,12 @@ namespace torch_tpu {
 // dest will be row-major. Element types and storage offsets are unchanged.
 // This may strip size-1 dimensions from src and dest.
 absl::Status BroadcastAndTranspose(at::Tensor& src, at::Tensor& dest);
+
+// Returns an error unless src can be broadcast to the shape of dest, as
+// required by copy_(). Use this on paths that skip BroadcastAndTranspose(),
+// e.g. when src is empty.
+absl::Status ValidateBroadcastableToDest(const at::Tensor& src,
+                                         const at::Tensor& dest);
 
 // The synchronization mode of a host-to-device or device-to-host copy.
 enum class TransferSyncMode {
@@ -38,7 +51,8 @@ enum class TransferSyncMode {
   kEagerBlocking,
   // The copy operation is recorded on the current stream, and then the call
   // returns immediately. Errors will be reported in the future when the stream
-  // is synchronized or queried.
+  // is synchronized or queried. A device-to-host copy into pageable memory
+  // cannot be held until it completes and is run as kEagerBlocking instead.
   kEagerNonBlocking,
   // The copy operation is not recorded on the current stream. It is initiated
   // immediately (ignoring any cross-stream waits) and then the call blocks

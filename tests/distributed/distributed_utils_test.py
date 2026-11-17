@@ -26,6 +26,7 @@ from absl.testing import absltest
 import portpicker
 import torch
 import torch.multiprocessing as mp
+from torch_tpu._internal.utils import test_utils
 from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
 from tests.distributed import distributed_utils
@@ -86,6 +87,22 @@ def _worker_init_process_group() -> None:
   )
   torch.distributed.barrier()
   torch.distributed.destroy_process_group()
+
+
+def _worker_gloo_all_reduce(world_size: int) -> None:
+  assert torch.distributed.is_initialized()
+  assert torch.distributed.get_backend() == "gloo"
+  assert torch.distributed.get_world_size() == world_size
+  rank = torch.distributed.get_rank()
+  tensor = torch.tensor([float(rank + 1)])
+  torch.distributed.all_reduce(tensor)
+  expected = float(world_size * (world_size + 1) // 2)
+  assert tensor.item() == expected, f"rank {rank}: got {tensor.item()}"
+
+
+def _worker_fail_on_rank_one() -> None:
+  if torch.distributed.get_rank() == 1:
+    raise AssertionError("rank 1 failed on purpose")
 
 
 class DistributedUtilsTest(seed_test_utils.MultiProcessRepeatableTest):
@@ -200,6 +217,18 @@ class DistributedUtilsTest(seed_test_utils.MultiProcessRepeatableTest):
   def test_get_tpu_device_count_falls_back_to_default(self) -> None:
     with mock.patch.object(torch.accelerator, "device_count", return_value=0):
       self.assertEqual(distributed_utils.get_tpu_device_count(default=4), 4)
+
+  def test_gloo_run_provides_working_process_group(self) -> None:
+    """Verifies that gloo_run ranks share an initialized gloo group."""
+    distributed_utils.gloo_run(2, _worker_gloo_all_reduce, 2)
+
+  @test_utils.skip_if_msan("TODO(b/585574829): Flaky under MSAN.")
+  def test_gloo_run_propagates_rank_failure(self) -> None:
+    """Verifies that an assertion failing on one rank fails the caller."""
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=tests the test fixture
+        mp.ProcessRaisedException, "rank 1 failed on purpose"
+    ):
+      distributed_utils.gloo_run(2, _worker_fail_on_rank_one)
 
   def test_dist_run_retries_on_port_collision(self) -> None:
     """Verifies that dist_run retries when port collision (EADDRINUSE) occurs."""

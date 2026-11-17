@@ -39,6 +39,7 @@ torch_tpu_cc_library(
         "//csrc/eager:tensor_to_buffer",
         "//csrc/ops:op_names",
         "//csrc/ops/as_strided:as_strided_aten_kernels",
+        "//csrc/ops/copy_from:copy_common",
         "//csrc/ops/copy_from:copy_from_aten_kernels",
         "//csrc/ops/macros:kernel",
         "//csrc/ops/sparse_coo:sparse_coo_aten_kernels",

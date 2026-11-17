@@ -49,18 +49,43 @@ concurrency:
   cancel-in-progress: ${{ github.ref_name != 'main' }}
 
 jobs:
-  # Presubmit coverage for the local-torch build: build the wheel against a
-  # local PyTorch and run the wheel smoke tests on every PR, so breakage in
-  # the local-torch configuration (historically only exercised by the
-  # schedule / the ci:local-torch label, and therefore invisible in
-  # presubmit) surfaces before merge. The full bazel test suite still runs
-  # only under the old conditions below.
-  presubmit_build_and_smoke:
-    name: "Presubmit Local Torch Build and Smoke Test"
+  # Skips the presubmit build below for PRs that only touch documentation or
+  # repository metadata, which cannot affect the wheel.
+  check_diff:
+    name: "Inspect PR diff for wheel-affecting changes"
     # The full job below already covers labeled PRs.
     if: >-
       github.event_name == 'pull_request' &&
       !contains(github.event.pull_request.labels.*.name, 'ci:local-torch')
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.check_diff.outputs.should_build }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # Keep the current commit's first parent fetchable
+          # to resolve the base branch tip at CI runtime.
+          fetch-depth: 2
+      - name: Inspect PR diff for wheel-affecting changes
+        id: check_diff
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_SHA: ${{ github.sha }}
+          FORCE_BUILD: ${{ contains(github.event.pull_request.labels.*.name, 'ci:force-wheel-build') || contains(github.event.pull_request.labels.*.name, 'ci:disable-bazel-diff') }}
+        run: ci/check_wheel_diff.sh
+
+  # Presubmit coverage for the local-torch build: build the wheel against a
+  # local PyTorch and run the wheel smoke tests on every PR that can affect
+  # the wheel, so breakage in the local-torch configuration (historically only
+  # exercised by the schedule / the ci:local-torch label, and therefore
+  # invisible in presubmit) surfaces before merge. The full bazel test suite
+  # still runs only under the old conditions below.
+  presubmit_build_and_smoke:
+    name: "Presubmit Local Torch Build and Smoke Test"
+    needs: check_diff
+    # Also skipped whenever check_diff is skipped (non-PR events and PRs
+    # labeled ci:local-torch).
+    if: needs.check_diff.outputs.should_build == 'true'
     # A CPU runner, deliberately: the job exists to catch local-torch *build
     # and ABI* breakage, which the CPU smoke tests already surface, and TPU
     # runner capacity is scarce. The full job below still exercises the

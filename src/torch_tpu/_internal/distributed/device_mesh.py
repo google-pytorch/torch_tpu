@@ -37,9 +37,9 @@ axes rather than being repeated per slice.
 from __future__ import annotations
 
 import collections
+from collections.abc import Sequence
 import dataclasses
 import math
-from typing import Optional, Tuple
 
 from absl import logging
 import numpy as np
@@ -53,7 +53,7 @@ class _DeviceStub:
   """Duck-types the subset of jax.Device that mesh_utils touches."""
 
   id: int
-  coords: Tuple[int, int, int]
+  coords: tuple[int, int, int]
   core_on_chip: int
   device_kind: str
   platform: str
@@ -66,7 +66,7 @@ class _DeviceStub:
   has_slice_index: bool = True
 
 
-def _gather_global_device_info(device_type: str) -> list[_DeviceStub]:
+def _gather_global_device_info(device_type: str) -> Sequence[_DeviceStub]:
   """Each torch rank reports its PJRT device; returns list indexed by rank."""
   attrs = tpu_distributed.global_device_attributes()
   return [
@@ -89,8 +89,8 @@ def _gather_global_device_info(device_type: str) -> list[_DeviceStub]:
 
 
 def _infer_dcn_mesh_shape(
-    mesh_shape: Tuple[int, ...], num_slices: int
-) -> Tuple[int, ...]:
+    mesh_shape: Sequence[int], num_slices: int
+) -> Sequence[int]:
   """Picks the logical axis along which to split the mesh across slices.
 
   The split goes on the outermost non-trivial axis. `mesh_shape` is ordered by
@@ -149,9 +149,9 @@ def _infer_dcn_mesh_shape(
 
 
 def _validate_multi_slice(
-    infos: list[_DeviceStub],
-    mesh_shape: Tuple[int, ...],
-    dcn_mesh_shape: Tuple[int, ...],
+    infos: Sequence[_DeviceStub],
+    mesh_shape: Sequence[int],
+    dcn_mesh_shape: Sequence[int],
 ) -> None:
   """Validates a multi-slice request against the observed device topology.
 
@@ -223,9 +223,9 @@ __all__ = ["topology_aware_mesh", "get_device_assignment"]
 
 def topology_aware_mesh(
     device_type: str,
-    mesh_shape: Tuple[int, ...],
+    mesh_shape: Sequence[int],
     *,
-    dcn_mesh_shape: Optional[Tuple[int, ...]] = None,
+    dcn_mesh_shape: Sequence[int] | None = None,
     allow_split_physical_axes: bool = False,
     contiguous_submeshes: bool = False,
 ) -> torch.Tensor:
@@ -370,8 +370,8 @@ def topology_aware_mesh(
 
 
 def get_device_assignment(
-    pg: Optional[dist.ProcessGroup] = None,
-) -> list[int]:
+    pg: dist.ProcessGroup | None = None,
+) -> Sequence[int]:
   """Returns physical device assignment for the given process group.
 
   Args:

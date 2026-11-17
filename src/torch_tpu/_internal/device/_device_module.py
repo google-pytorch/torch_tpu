@@ -20,10 +20,11 @@ and runtime.
 
 import abc
 import atexit
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 import dataclasses
+import re
 import sys
-from typing import Any, Final, List
+from typing import Any, Final
 import torch
 from torch._dynamo.device_interface import DeviceInterface
 from torch_tpu._internal import env
@@ -83,14 +84,12 @@ class _DefaultGeneratorsProperty:
   overrides.
 
   Attributes:
-    _cached_default_generators: A lazily-initialized tuple holding the default
-      `torch.Generator` instances for each TPU device. It contains exactly
-      `owner.device_count()` elements, ordered by device ordinal (i.e. element
-      at index `i` corresponds to device index `i`). Crossing the pybind11
-      boundary creates new Python wrapper objects on each call to
-      `_device_ops_backend.get_default_generator()`, so caching this tuple
-      ensures identity persistence (`torch.tpu.default_generators is
-      torch.tpu.default_generators`) matching upstream PyTorch semantics.
+    _cached_default_generators: A lazily-initialized tuple of the default
+      `torch.Generator` of each addressable device, indexed by device index. It
+      can be shorter than `owner.device_count()`, which counts visible devices.
+      Each `_device_ops_backend.get_default_generator()` call returns a new
+      Python wrapper, so the cache keeps `torch.tpu.default_generators` the same
+      object, as in upstream PyTorch.
   """
 
   def __init__(self):
@@ -100,7 +99,8 @@ class _DefaultGeneratorsProperty:
     if owner is None:
       return ()
     _device_ops_backend._get_current_device_id()  # pylint: disable=protected-access
-    device_count = owner._public_module().device_count()  # pylint: disable=protected-access
+    # Generators exist only for addressable devices.
+    device_count = _device_ops_backend._get_addressable_device_count()  # pylint: disable=protected-access
     if (
         execution_mode.eager_mode
         == execution_mode.EagerMode._INTERNAL_COMPILE_FX_GRAPH
@@ -164,6 +164,11 @@ __tt_api_stages__: dict[str, annotations.ApiStageInfo] = {
         stage=annotations.Stage.EXPERIMENTAL,
         reason="On-device layout of TPU tensors.",
         value=_layout_module.TpuLayout,
+    ),
+    "TpuVersion": annotations.ApiStageInfo(
+        stage=annotations.Stage.EXPERIMENTAL,
+        reason="TPU hardware generation.",
+        value=hardware.TpuVersion,
     ),
 }
 
@@ -410,6 +415,8 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
 
   _device_type: str
 
+  Event = streams.TpuEvent  # pylint: disable=invalid-name
+  Stream = streams.TpuStream  # pylint: disable=invalid-name
   device = _DeviceContext  # pylint: disable=invalid-name
   device_of = _DeviceOfContext  # pylint: disable=invalid-name
   get_device_layout_if_materialized = (
@@ -672,7 +679,7 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
 
   @classmethod
   @annotations.internal_or_experimental(
-      internal_when=get_torch_version() >= (2, 13),
+      internal_when=get_torch_version() >= (2, 14),
       prefer="torch.accelerator.random.initial_seed",
       strict=_STRICT_INTERNAL_DEVICE_APIS,
       experimental_msg=(
@@ -697,7 +704,7 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
 
   @classmethod
   @annotations.internal_or_experimental(
-      internal_when=get_torch_version() >= (2, 13),
+      internal_when=get_torch_version() >= (2, 14),
       prefer="torch.accelerator.random.get_rng_state",
       strict=_STRICT_INTERNAL_DEVICE_APIS,
       experimental_msg=(
@@ -705,6 +712,7 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
           " notice."
       ),
   )
+  @torch._dynamo.disable
   def get_rng_state(
       cls, device: int | str | torch.device = "tpu"
   ) -> torch.Tensor:
@@ -727,6 +735,7 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
   @experimental(
       "set_rng_state() is experimental and subject to change without notice."
   )
+  @torch._dynamo.disable
   def set_rng_state(
       cls, new_state: torch.Tensor, device: int | str | torch.device = "tpu"
   ) -> None:
@@ -805,12 +814,12 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
       ),
   )
   def device_count(cls) -> int:  # This is in torch/cuda/__init__.py.
-    """Returns the count of devices. This is implemented for *local* devices.
+    """Returns the number of TPU devices visible to this process.
 
-    Before the TPU runtime is initialized, returns how many physical TPU PCI
-    devices are attached to this host without initializing PJRT. Once
-    initialized, returns how many addressable PJRT TPU devices this process's
-    runtime owns.
+    Like `torch.cuda.device_count()`, it is capped by ``TPU_VISIBLE_DEVICES``
+    and doesn't change when the TPU runtime is initialized. A process uses only
+    one device, so other device indices aren't usable yet. In distributed mode
+    (``WORLD_SIZE`` > 1), it is 1 once initialized: the worker's own device.
 
     .. warning::
         This API is experimental and subject to change in future releases.
@@ -819,7 +828,7 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
       if cls._public_module().is_initialized():
         cls._device_count = _device_ops_backend._get_device_count()  # pylint: disable=protected-access
       elif cls._device_type == "tpu":
-        return hardware.get_tpu_device_count()
+        return hardware.get_visible_tpu_device_count()
       else:
         # Fallback to init for other devices if needed.
         cls._device_count = _device_ops_backend._get_device_count()  # pylint: disable=protected-access
@@ -838,43 +847,6 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
         This API is experimental and subject to change in future releases.
     """
     return TpuStreamContext(stream)
-
-  @classmethod
-  @experimental(
-      "Stream() is experimental and may change or be removed without notice."
-  )
-  def Stream(cls, device=None, priority=0, **kwargs):  # pylint: disable=invalid-name
-    """Device-level wrapper for TpuStream object.
-
-    .. warning::
-        This API is experimental and subject to change in future releases.
-    """
-    return streams.TpuStream(device=device, priority=priority, **kwargs)
-
-  @classmethod
-  @experimental(
-      "Event() is experimental and may change or be removed without notice."
-  )
-  def Event(  # pylint: disable=invalid-name
-      cls,
-      enable_timing: bool = False,
-      blocking: bool = False,
-      interprocess: bool = False,
-      external: bool = False,
-      device=None,
-  ) -> streams.TpuEvent:
-    """Device-level wrapper for TpuEvent object.
-
-    .. warning::
-        This API is experimental and subject to change in future releases.
-    """
-    return streams.TpuEvent(
-        enable_timing=enable_timing,
-        blocking=blocking,
-        interprocess=interprocess,
-        external=external,
-        device=device,
-    )
 
   @classmethod
   @annotations.internal_or_experimental(
@@ -921,7 +893,7 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
       "get_amp_supported_dtype() is experimental and may change or be removed "
       "without notice."
   )
-  def get_amp_supported_dtype(cls) -> List[torch.dtype]:  # Needed for AMP.
+  def get_amp_supported_dtype(cls) -> list[torch.dtype]:  # Needed for AMP.
     """Returns the list of supported dtypes for Automatic Mixed Precision (AMP).
 
     .. warning::
@@ -1032,6 +1004,8 @@ class _TpuDeviceProperties:
       This API is experimental and subject to change in future releases.
 
   ``name`` is the human-readable name of the TPU generation, e.g. "TPU v7".
+  ``version`` is the ``torch.tpu.TpuVersion`` of the TPU generation, e.g.
+  ``torch.tpu.TpuVersion.V7``.
   ``devices_per_chip`` is the number of PyTorch devices per physical TPU chip.
   ``hbm_bytes_per_chip`` and ``hbm_bytes_per_device`` are the physical HBM
   capacity per chip and visible to a single device, in bytes.
@@ -1044,6 +1018,7 @@ class _TpuDeviceProperties:
   """
 
   name: str
+  version: hardware.TpuVersion
   devices_per_chip: int
   hbm_bytes_per_chip: int
   hbm_bytes_per_device: int
@@ -1077,6 +1052,10 @@ class _TpuDeviceProperties:
       "name": annotations.ApiStageInfo(
           stage=annotations.Stage.EXPERIMENTAL,
           reason="name is experimental and subject to change.",
+      ),
+      "version": annotations.ApiStageInfo(
+          stage=annotations.Stage.EXPERIMENTAL,
+          reason="version is experimental and subject to change.",
       ),
       "devices_per_chip": annotations.ApiStageInfo(
           stage=annotations.Stage.EXPERIMENTAL,
@@ -1135,6 +1114,55 @@ class _TpuDeviceProperties:
     return self._tpu_spec.topology(world_size)
 
 
+_TPU_DEVICE_STR_RE: Final[re.Pattern[str]] = re.compile(
+    r"tpu(?::(0|-?[1-9][0-9]*))?", re.ASCII
+)
+
+
+def _validate_tpu_device_arg(
+    device: int | str | torch.device | None,
+) -> None:
+  """Validates an optional TPU device specifier without initializing PJRT."""
+  if device is None:
+    return
+  if isinstance(device, bool):
+    raise TypeError(
+        "expected device to be a torch.device, str, int, or None, got bool"
+    )
+  if isinstance(device, int):
+    idx: int | None = device
+  elif isinstance(device, str):
+    match = _TPU_DEVICE_STR_RE.fullmatch(device)
+    if match is None:
+      raise ValueError(f"expected a 'tpu' device, got {device!r}")
+    idx_str = match.group(1)
+    idx = None if idx_str is None else int(idx_str, 10)
+  elif isinstance(device, torch.device):
+    if device.type != "tpu":
+      raise ValueError(f"expected a 'tpu' device, got {device!r}")
+    idx = device.index
+  else:
+    raise TypeError(
+        "expected device to be a torch.device, str, int, or None, got"
+        f" {type(device).__name__}"
+    )
+
+  if idx is not None:
+    if idx < 0:
+      raise ValueError(f"device index must be non-negative, got {idx}")
+    cached_count = TpuDeviceModule._device_count  # pylint: disable=protected-access
+    visible_count = (
+        cached_count
+        if cached_count is not None
+        else hardware.get_visible_tpu_device_count()
+    )
+    if visible_count > 0 and idx >= visible_count:
+      raise ValueError(
+          f"device index {idx} is out of range for {visible_count} visible TPU"
+          " device(s)"
+      )
+
+
 class TpuDeviceModule(_DeviceModule):
   """Device module implementation for TPU devices."""
 
@@ -1167,8 +1195,14 @@ class TpuDeviceModule(_DeviceModule):
     Returns:
       The name of the attached TPU generation, or None if no TPU generation that
       TorchTPU supports is attached.
+
+    Raises:
+      TypeError: If ``device`` is not a ``torch.device``, ``str``, ``int``, or
+        ``None``.
+      ValueError: If ``device`` is not a ``tpu`` device or its index is out of
+        range.
     """
-    del device  # Unused
+    _validate_tpu_device_arg(device)
     tpu_spec = hardware.get_tpu_spec()
     return None if tpu_spec is None else tpu_spec.name
 
@@ -1196,9 +1230,13 @@ class TpuDeviceModule(_DeviceModule):
       A _TpuDeviceProperties instance for the specified device.
 
     Raises:
+      TypeError: If ``device`` is not a ``torch.device``, ``str``, ``int``, or
+        ``None``.
+      ValueError: If ``device`` is not a ``tpu`` device or its index is out of
+        range.
       RuntimeError: If no TPU generation that TorchTPU supports is attached.
     """
-    del device  # Unused
+    _validate_tpu_device_arg(device)
     tpu_spec = hardware.get_tpu_spec()
     if tpu_spec is None:
       raise RuntimeError(
@@ -1208,6 +1246,7 @@ class TpuDeviceModule(_DeviceModule):
     sparse_core_spec = tpu_spec.sparse_core_spec
     return _TpuDeviceProperties(
         name=tpu_spec.name,
+        version=tpu_spec.version,
         devices_per_chip=tpu_spec.devices_per_chip,
         hbm_bytes_per_chip=tpu_spec.hbm_bytes_per_chip,
         hbm_bytes_per_device=tpu_spec.hbm_bytes_per_device,
@@ -1251,9 +1290,9 @@ class TpuDeviceModule(_DeviceModule):
   )
   def topology_aware_mesh(
       cls,
-      mesh_shape: tuple[int, ...],
+      mesh_shape: Sequence[int],
       *,
-      dcn_mesh_shape: tuple[int, ...] | None = None,
+      dcn_mesh_shape: Sequence[int] | None = None,
       allow_split_physical_axes: bool = False,
       contiguous_submeshes: bool = False,
   ) -> torch.Tensor:

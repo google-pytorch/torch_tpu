@@ -23,16 +23,8 @@
 
 namespace torch_tpu {
 
-at::Tensor AtenTriu(const at::Tensor& self, int64_t diagonal);
-
-at::Tensor& AtenTriu_(at::Tensor& self, int64_t diagonal);
-
 at::Tensor& AtenTriuOut(const at::Tensor& self, int64_t diagonal,
                         at::Tensor& out);
-
-at::Tensor AtenTril(const at::Tensor& self, int64_t diagonal);
-
-at::Tensor& AtenTril_(at::Tensor& self, int64_t diagonal);
 
 at::Tensor& AtenTrilOut(const at::Tensor& self, int64_t diagonal,
                         at::Tensor& out);

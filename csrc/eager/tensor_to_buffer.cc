@@ -64,7 +64,6 @@
 #include "csrc/eager/device_buffer_utils.h"
 #include "csrc/eager/host_allocator.h"
 #include "csrc/eager/materialize.h"
-#include "csrc/eager/split_traversal.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/python_context.h"
@@ -611,42 +610,25 @@ c10::DataPtr MakeDataPtr(DeviceBufferRef buffer_ref,
 }
 
 absl::StatusOr<DeviceBufferRef> MaterializeAndReturn(
-    const at::Tensor& tensor, MaterializationReason reason,
-    MaterializationBlockMode block_mode) {
+    const at::Tensor& tensor, MaterializationReason reason) {
   tsl::profiler::TraceMe trace("MaterializeAndReturn");
-  // If the tensor is a (non-trivial) view, these will be two different
-  // buffers. If the tensor's base is the same shape and layout as the tensor,
-  // these will be the same buffer.
-  TT_ASSIGN_OR_RETURN(const DeviceBufferRef base_buffer_ref,
-                      GetBaseBuffer(tensor));
+  // There are three cases here, all handled the same way:
+  //   1. `tensor` is not a view. In this case, materializing the view is the
+  //      same as materializing the base, and will execute everything on the
+  //      stream that `tensor` was created on.
+  //   2. `tensor` is a view, and its base was created on the current stream. In
+  //      this case, materializing the view will also force the base to
+  //      materialize (because it has a live Tensor using it) as part of the
+  //      same execution graph, along with everything else on `tensor'`s stream.
+  //   3. `tensor` is a view, and its base was created on a different stream.
+  //      This represents a cross-stream dependency; users are expected to
+  //      coordinate cross-stream dependencies using Event.wait and syncs, so
+  //      we assume that no further coordination is needed here. If this is not
+  //      the case, we detect the error and fail (see execution_task.cc).
+  //      Currently we also enforce this by blocking on Event creation (see
+  //      tpu_hooks.cc) which handles the single-thread, multi-stream case.
   TT_ASSIGN_OR_RETURN(DeviceBufferRef view_buffer_ref, GetBuffer(tensor));
-  if (base_buffer_ref.device_index() != view_buffer_ref.device_index() ||
-      base_buffer_ref.stream_id() != view_buffer_ref.stream_id()) {
-    // The base and view were created on different streams, but the implied
-    // dependency forces the base buffer to materialize first. Block until the
-    // base buffer has been enqueued to avoid scheduling the view buffer before
-    // its input.
-    //
-    // Note: in most cases, the materialization on exiting the prior stream
-    // will have already forced the base buffer to materialize and this will
-    // be a no-op. But exceptions are possible (such as in a
-    // one-stream-per-thread setup).
-    if (!base_buffer_ref.is_materializing()) {
-      TT_RETURN_IF_ERROR(
-          Materialize(base_buffer_ref, reason, GraphSplitMode::kSplitGraph,
-                      MaterializationBlockMode::kBlockUntilStarted));
-    }
-    TT_RETURN_IF_ERROR(Materialize(view_buffer_ref, reason,
-                                   GraphSplitMode::kSplitGraph, block_mode));
-  } else {
-    // Deduplication will happen inside the Materialize() call; this will cover
-    // the case where a tensor is a trivial view.
-    // If the view is not trivial but the base and view are on the same stream,
-    // we can materialize them jointly.
-    TT_RETURN_IF_ERROR(Materialize({base_buffer_ref, view_buffer_ref}, reason,
-                                   GraphSplitMode::kSplitGraph, block_mode));
-  }
-
+  TT_RETURN_IF_ERROR(Materialize(view_buffer_ref, reason));
   return view_buffer_ref;
 }
 
@@ -693,8 +675,8 @@ absl::StatusOr<at::Tensor> MakeEmptyMemoryFormat(
   Dimensions xla_sizes = CopyIntVector(size);
   if (dtype == mlir::ElementType::F4E2M1FN) {
     TT_RET_CHECK(!xla_sizes.empty(), error::kInvalidArgument)
-        << "expected float4_e2m1fn_x2 tensors to be at least 1-dimensional, "
-           "got 0-dimensional";
+        << "expected float4_e2m1fn_x2 tensors to be at least 1D, "
+           "got 0D";
     // A PyTorch tensor of shape [..., N] of dtype float4_e2m1fn_x2 represents
     // N container elements (each 1 byte), which contain 2N packed FP4 values.
     // On the TPU/XLA side, FP4 elements are represented as unpacked 1-byte
@@ -707,7 +689,7 @@ absl::StatusOr<at::Tensor> MakeEmptyMemoryFormat(
   // Create an empty DeviceBufferRef.
   TT_ASSIGN_OR_RETURN(DeviceBufferRef buffer,
                       CreateEmptyDeviceBufferRef(std::move(xla_sizes), dtype));
-  at::Tensor result = MakeTensor(buffer);
+  at::Tensor result = MakeTensor(std::move(buffer));
 
   // MakeTensor defaults to a contiguous tensor, and so
   // does aten::empty().

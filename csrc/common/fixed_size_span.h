@@ -22,6 +22,7 @@
 #include <initializer_list>
 #include <tuple>
 #include <type_traits>
+#include <utility>
 
 #include "absl/log/absl_check.h"
 #include "absl/types/span.h"
@@ -50,6 +51,12 @@ class FixedSizeSpan : public absl::Span<T> {
 
   // Constructs from an std::array of the expected size.
   template <typename U>
+  // NOLINTNEXTLINE(google-explicit-constructor)
+  FixedSizeSpan(std::array<U, kSize>& array)
+      : FixedSizeSpan(absl::Span<T>(array.data(), kSize)) {}
+
+  template <typename U>
+  // NOLINTNEXTLINE(google-explicit-constructor)
   FixedSizeSpan(const std::array<U, kSize>& array)
       : FixedSizeSpan(absl::Span<T>(array.data(), kSize)) {}
 };
@@ -75,55 +82,24 @@ T&& get(FixedSizeSpan<T, N>&& span) {
   return std::move(span[I]);
 }
 
+namespace internal {
+
+template <typename T, int N, std::size_t... Is>
+std::array<T, N> MoveToStdArrayImpl(FixedSizeSpan<T, N> span,
+                                    std::index_sequence<Is...>) {
+  return {std::move(span[Is])...};
+}
+
+}  // namespace internal
+
 // Move elements from a FixedSizeSpan to an std::array of the same size.
 //
-// Since T might not be default constructible, we have to have all N elements
+// Since T might not be default constructible, we have all N elements
 // ready in the aggregate initializer list when we create the std::array.
-// Therefore we overload MoveToStdArray for different N.
-template <typename T>
-std::array<T, 0> MoveToStdArray(torch_tpu::FixedSizeSpan<T, 0> span) {
-  return {};
+template <typename T, int N>
+[[nodiscard]] std::array<T, N> MoveToStdArray(FixedSizeSpan<T, N> span) {
+  return internal::MoveToStdArrayImpl(span, std::make_index_sequence<N>{});
 }
-template <typename T>
-std::array<T, 1> MoveToStdArray(torch_tpu::FixedSizeSpan<T, 1> span) {
-  return {std::move(span[0])};
-}
-template <typename T>
-std::array<T, 2> MoveToStdArray(torch_tpu::FixedSizeSpan<T, 2> span) {
-  return {std::move(span[0]), std::move(span[1])};
-}
-template <typename T>
-std::array<T, 3> MoveToStdArray(torch_tpu::FixedSizeSpan<T, 3> span) {
-  return {std::move(span[0]), std::move(span[1]), std::move(span[2])};
-}
-template <typename T>
-std::array<T, 4> MoveToStdArray(torch_tpu::FixedSizeSpan<T, 4> span) {
-  return {std::move(span[0]), std::move(span[1]), std::move(span[2]),
-          std::move(span[3])};
-}
-template <typename T>
-std::array<T, 5> MoveToStdArray(torch_tpu::FixedSizeSpan<T, 5> span) {
-  return {std::move(span[0]), std::move(span[1]), std::move(span[2]),
-          std::move(span[3]), std::move(span[4])};
-}
-template <typename T>
-std::array<T, 6> MoveToStdArray(torch_tpu::FixedSizeSpan<T, 6> span) {
-  return {std::move(span[0]), std::move(span[1]), std::move(span[2]),
-          std::move(span[3]), std::move(span[4]), std::move(span[5])};
-}
-template <typename T>
-std::array<T, 7> MoveToStdArray(torch_tpu::FixedSizeSpan<T, 7> span) {
-  return {std::move(span[0]), std::move(span[1]), std::move(span[2]),
-          std::move(span[3]), std::move(span[4]), std::move(span[5]),
-          std::move(span[6])};
-}
-template <typename T>
-std::array<T, 8> MoveToStdArray(torch_tpu::FixedSizeSpan<T, 8> span) {
-  return {std::move(span[0]), std::move(span[1]), std::move(span[2]),
-          std::move(span[3]), std::move(span[4]), std::move(span[5]),
-          std::move(span[6]), std::move(span[7])};
-}
-// More overloads can be added as needed.
 
 }  // namespace torch_tpu
 

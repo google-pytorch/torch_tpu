@@ -433,9 +433,9 @@ AtenThnnFusedGruCellBackward(const at::Tensor& grad_hy,
                               {.out_dtypes = out_dtypes,
                                .out_dims_list = out_dims_list,
                                .op_param_cache_keys = std::move(param_keys)})));
-        at::Tensor grad_input_gates = MakeTensor(gig);
-        at::Tensor grad_hidden_gates = MakeTensor(ghg);
-        at::Tensor grad_hx = MakeTensor(ghx);
+        at::Tensor grad_input_gates = MakeTensor(std::move(gig));
+        at::Tensor grad_hidden_gates = MakeTensor(std::move(ghg));
+        at::Tensor grad_hx = MakeTensor(std::move(ghx));
 
         at::Tensor grad_input_bias;   // UNINITIALIZED_TENSOR_OK
         at::Tensor grad_hidden_bias;  // UNINITIALIZED_TENSOR_OK

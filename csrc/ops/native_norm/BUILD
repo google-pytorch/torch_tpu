@@ -28,6 +28,7 @@ torch_tpu_cc_library(
     srcs = ["native_norm_aten_kernels.cc"],
     hdrs = ["native_norm_aten_kernels.h"],
     deps = [
+        "//csrc/common:aten_utils",
         "//csrc/common:cache_key",
         "//csrc/common:dimension_types",
         "//csrc/common:dtype",

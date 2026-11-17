@@ -24,7 +24,6 @@
 #include <tuple>
 #include <utility>
 
-#include "ATen/OpMathType.h"
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
 #include "absl/status/statusor.h"
@@ -177,7 +176,7 @@ at::Tensor AtenVar(const at::Tensor& self, c10::OptionalArrayRef<int64_t> dim,
 
         TT_ASSIGN_OR_THROW(
             at::Tensor correction_tensor,
-            promoted_correction.GetTensor(at::toOpMathType(scalar_dtype)));
+            promoted_correction.GetTensor(InferComputationDtype(scalar_dtype)));
         TT_ASSIGN_OR_THROW(int64_t reduction_size,
                            GetReductionFactor(self, dim));
         double correction_val = promoted_correction.scalar().toDouble();
@@ -196,7 +195,7 @@ at::Tensor AtenVar(const at::Tensor& self, c10::OptionalArrayRef<int64_t> dim,
                               {.out_dtype = scalar_dtype_mlir,
                                .out_dims = output_dims,
                                .op_param_cache_keys = std::move(param_keys)})));
-        return MakeTensor(result_bufs);
+        return MakeTensor(std::move(result_bufs));
       });
 }
 
@@ -227,7 +226,7 @@ at::Tensor& AtenVarOut(const at::Tensor& self,
 
         TT_ASSIGN_OR_THROW(
             at::Tensor correction_tensor,
-            promoted_correction.GetTensor(at::toOpMathType(scalar_dtype)));
+            promoted_correction.GetTensor(InferComputationDtype(scalar_dtype)));
         TT_ASSIGN_OR_THROW(const int64_t reduction_size,
                            GetReductionFactor(self, dim));
         double correction_val = promoted_correction.scalar().toDouble();
@@ -289,7 +288,7 @@ std::tuple<at::Tensor, at::Tensor> AtenVarMeanCorrection(
 
         TT_ASSIGN_OR_THROW(
             const at::Tensor correction_tensor,
-            promoted_correction.GetTensor(at::toOpMathType(scalar_dtype)));
+            promoted_correction.GetTensor(InferComputationDtype(scalar_dtype)));
         TT_ASSIGN_OR_THROW(const int64_t reduction_size,
                            GetReductionFactor(self, dim));
         double correction_val = promoted_correction.scalar().toDouble();
@@ -391,7 +390,8 @@ std::tuple<at::Tensor, at::Tensor> AtenVarMeanCorrection(
                  .computation_dtype = computation_dtype,
                  .op_param_cache_keys = std::move(param_keys)})));
 
-        return std::make_tuple(MakeTensor(var_buf), MakeTensor(mean_buf));
+        return std::make_tuple(MakeTensor(std::move(var_buf)),
+                               MakeTensor(std::move(mean_buf)));
       });
 }
 

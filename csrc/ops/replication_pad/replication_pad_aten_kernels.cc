@@ -30,6 +30,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
@@ -48,7 +49,6 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
-#include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
 
@@ -238,9 +238,8 @@ absl::Status ReplicationPadHelper(
     return absl::OkStatus();
   }
 
-  TT_RET_CHECK(self.scalar_type() != at::ScalarType::Bool,
-               error::kInvalidArgument)
-      << "not implemented for 'Bool'";
+  TT_RET_CHECK(!IsBool(self), error::kInvalidArgument)
+      << "not implemented for bool";
 
   Dimensions padding_vec = CopyIntVector(padding);
   TT_ASSIGN_OR_RETURN(auto element_type,

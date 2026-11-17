@@ -28,17 +28,67 @@
 #include "csrc/common/error_utils.h"
 #include "csrc/common/to_string.h"
 #include "csrc/ops/macros/kernel.h"
+#include "csrc/ops/nonzero/nonzero.h"
 #include "csrc/ops/nullary_aten_kernels.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
-#include "csrc/ops/tril_indices/tril_indices.h"
+#include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Types.h"
+#include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
+#include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "torch/headeronly/core/Layout.h"
 #include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
+
+namespace {
+
+absl::StatusOr<mlir::MlirOp> BuildTrilIndicesShlo(mlir::MlirBuilder& builder,
+                                                  int64_t row, int64_t col,
+                                                  int64_t offset,
+                                                  int64_t tril_size,
+                                                  mlir::Type element_type) {
+  // Based on jnp.tril_indices StableHLO dump, should be good for TPU
+  // Create a grid of row indices (i) of shape (row, col).
+  auto iota_row = mlir::stablehlo::Iota(
+      builder,
+      mlir::RankedTensorType::get({row, col},
+                                  builder.getOpBuilder().getI64Type()),
+      /*iota_dimension=*/0);
+
+  // Create a grid of column indices (j) of shape (row, col).
+  auto iota_col = mlir::stablehlo::Iota(
+      builder,
+      mlir::RankedTensorType::get({row, col},
+                                  builder.getOpBuilder().getI64Type()),
+      /*iota_dimension=*/1);
+
+  // Create a constant for the offset and broadcast it to (row, col).
+  mlir::MlirOp offset_op = MakeConstantLike(iota_row, offset);
+
+  // Calculate `i + offset` and compare `j <= i + offset` to get the boolean
+  // mask.
+  auto i_plus_offset = mlir::stablehlo::Add(iota_row, offset_op);
+  auto mask = mlir::stablehlo::Compare(
+      iota_col, i_plus_offset, mlir::stablehlo::ComparisonDirection::LE);
+
+  // Reuse the BuildNonzeroShlo function to get the coordinates of non-zero
+  // values.
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp nonzero_op,
+                      BuildNonzeroShlo(tril_size, mask));
+
+  // The result from BuildNonzeroShlo is shape (tril_size, 2), expected
+  // tril_indices is (2, tril_size). So we need to transpose it.
+  auto transposed_indices =
+      mlir::stablehlo::Transpose(nonzero_op, /*permutation=*/{1, 0});
+
+  return mlir::stablehlo::ConvertElementType(transposed_indices, element_type);
+}
+
+}  // namespace
 
 static absl::StatusOr<MlirNullaryOpBuilder> GetTrilIndicesFunctional(
     int64_t row, int64_t col, int64_t offset, int64_t tril_size,

@@ -37,7 +37,7 @@ def _extract_shape_tensors_and_bounds(
     node: torch.fx.Node,
     target_shape: Sequence[Any],
     transform_context: GraphTransformContext,
-) -> tuple[list[torch.fx.Node], list[int], list[bool]]:
+) -> tuple[Sequence[torch.fx.Node], Sequence[int], Sequence[bool]]:
   """Extracts shape tensor nodes, static bounds, and dynamic flags for a target shape."""
   shape_tensors = []
   static_shape = []
@@ -298,7 +298,7 @@ class HandleSliceLikeOpsPass:
       node: torch.fx.Node,
       inp: torch.fx.Node,
       inp_val: Any,
-  ) -> tuple[torch.fx.Node, list[int]]:
+  ) -> tuple[torch.fx.Node, Sequence[int]]:
     """Bounds every dynamic dim of inp to its static upper bound.
 
     Returns the bounded node (inp itself when it has no dynamic dim) and the
@@ -449,7 +449,7 @@ class HandleSliceLikeOpsPass:
 
   def _dynamic_output_dim_sizes(
       self, graph_module: torch.fx.GraphModule, node: torch.fx.Node
-  ) -> list[tuple[int, torch.fx.Node]]:
+  ) -> Sequence[tuple[int, torch.fx.Node]]:
     """Returns (dim, runtime size tensor) for every dynamic output dim."""
     out_val = node.meta.get("val")
     if not hasattr(out_val, "shape"):

@@ -21,6 +21,7 @@ in PyTorch, which is still used in practice (e.g. Meta's fairscale library).
 can run independently "along rows/columns" of the device mesh.
 """
 
+from collections.abc import Sequence
 import inspect
 
 from absl import logging
@@ -180,7 +181,9 @@ def run_manual_2d_all_gather_reduce_scatter() -> None:
 
 
 def _check_group_rank_order(
-    group: dist.ProcessGroup, ranks: list[int], world_rank_to_dev: list[int]
+    group: dist.ProcessGroup,
+    ranks: Sequence[int],
+    world_rank_to_dev: Sequence[int],
 ) -> None:
   """Checks that `group` follows the (unsorted) order of world `ranks`."""
   rank = dist.get_rank()

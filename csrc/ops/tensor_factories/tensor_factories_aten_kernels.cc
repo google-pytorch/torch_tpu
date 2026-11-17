@@ -189,7 +189,7 @@ absl::StatusOr<at::Tensor> CreateScalarFilledTensor(
                     {.out_dtype = out_mlir_element_type,
                      .out_dims = size,
                      .op_param_cache_keys = std::move(param_keys)}));
-  return MakeTensor(result_buf);
+  return MakeTensor(std::move(result_buf));
 }
 
 }  // namespace

@@ -81,6 +81,7 @@ pybind_extension(
     deps = [
         "//csrc/common:pybind_error_utils",
         "//csrc/common:tpu_hardware",
+        "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
     ],
@@ -174,6 +175,20 @@ torch_tpu_py_test(
         ":tracer_utils",
         ":utils",
         "//shims/absl_py/logging",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "test_utils_tpu_test",
+    srcs = ["test_utils_tpu_test.py"],
+    strict = True,
+    tags = ["requires-tpu-v5lite"],
+    deps = [
+        ":test_utils",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//src/torch_tpu",

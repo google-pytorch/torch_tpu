@@ -17,26 +17,16 @@
 #ifndef TORCH_TPU_CSRC_INTERNAL_MOSAIC_KILN_CORE_MEMORY_H_
 #define TORCH_TPU_CSRC_INTERNAL_MOSAIC_KILN_CORE_MEMORY_H_
 
-#include <utility>
-
 #include "csrc/internal/mosaic/kiln/core/ref.h"
 #include "csrc/internal/mosaic/kiln/core/semaphore.h"
 #include "csrc/internal/mosaic/kiln/core/shape.h"
-#include "csrc/internal/mosaic/kiln/core/specs.h"
 
 namespace torch_tpu::kiln {
 
-// Allocates a scratch `Ref` in VMEM or SMEM inside the current region/function
+// Allocates a scratch ref in VMEM / SMEM inside the current region/function
 // (`memref.alloca`).
-Ref Alloca(const ScratchSpec& spec);
-
-inline Ref AllocaVmem(Shape shape) {
-  return Alloca(ScratchSpec::Vmem(std::move(shape)));
-}
-
-inline Ref AllocaSmem(Shape shape) {
-  return Alloca(ScratchSpec::Smem(std::move(shape)));
-}
+VmemRef AllocaVmem(const Shape& shape);
+SmemRef AllocaSmem(const Shape& shape);
 
 // Allocates a 0-D DMA semaphore inside the current region/function
 // (`tpu.sem_alloc` with `!tpu.dma_semaphore`).

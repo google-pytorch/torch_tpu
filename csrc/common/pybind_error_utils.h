@@ -34,18 +34,6 @@
 namespace torch_tpu {
 namespace internal {
 
-// Detects if a type is pybind11 class_.
-//
-// Used to distinguish between a pybind11 module_ and a pybind11 class_ when
-// wrapping.
-template <typename T>
-struct IsPyBindClass : std::false_type {};
-
-template <typename... Args>
-struct IsPyBindClass<           //
-    pybind11::class_<Args...>>  // RAW_PYBIND_OK=Wrapper implementation.
-    : std::true_type {};
-
 // Helper struct to wrap functions bound to Python APIs with TorchTPU error
 // handling.
 //
@@ -120,95 +108,7 @@ auto WrapWithErrorHandling(const std::string_view api_name, const F& f) {
   return ErrorHandlingHelper<FuncType>::wrap(api_name, f);
 }
 
-// Wrapper around pybind11 objects to automatically wrap `def()` calls with
-// error handling.
-//
-// This should not be used directly. Use the `PyBindWrapWithErrorHandling()`
-// function below, instead.
-template <typename PyBindType>
-class  //
-    [[deprecated(
-        "TODO(b/556294340): use the newer abstractions PyBindModule and "
-        "PyBindClass.")]]  //
-    PyBindErrorHandlingWrapper {
-  static_assert(
-      std::is_same_v<PyBindType, pybind11::module_>  // RAW_PYBIND_OK=Wrapper
-                                                     // implementation.
-          || internal::IsPyBindClass<PyBindType>::value,
-      "PyBindErrorHandlingWrapper can only wrap a pybind11 module_ or a "
-      "pybind11 class_ type.");
-
- public:
-  // If `PyBindType` is a class, it sets the `prefix_` to "<class-name>."
-  // (ending in a dot). Otherwise, it leaves it empty.
-  //
-  // The error message should have the following format:
-  // `<class-name>.<api-name>(): <error-message>`
-  explicit PyBindErrorHandlingWrapper(PyBindType& wrapped) : wrapped_(wrapped) {
-    if constexpr (internal::IsPyBindClass<PyBindType>::value) {
-      auto class_name = wrapped_.attr("__name__").template cast<std::string>();
-      ABSL_CHECK(!class_name.empty());  // CRASH_OK
-      prefix_ = absl::StrCat(class_name, ".");
-    }
-  }
-
-  // Forward other common pybind11 class methods we use.
-  template <typename... Args>
-  PyBindErrorHandlingWrapper& def_readonly(Args&&... args) {
-    wrapped_.def_readonly(std::forward<Args>(args)...);
-    return *this;
-  }
-
-  // Overload for single-argument def (like py::init): forwards directly.
-  template <typename Func>
-  PyBindErrorHandlingWrapper& def(Func&& f) {
-    wrapped_.def(std::forward<Func>(f));
-    return *this;
-  }
-
-  // Registers the Python API `name` to the function `f` wrapped by the
-  // `internal::ErrorHandlingHelper<FuncType>::wrap()` function.
-  //
-  // In this context, `FuncType` is the inferred function type `Ret(Args...)`
-  // from `F` (actual type of `f`).
-  template <typename F, typename... Extra>
-  PyBindErrorHandlingWrapper& def(const char* name, const F& f,
-                                  const Extra&... extra) {
-    // API name. Either of:
-    //   - <class-name>.<name>
-    //   - <name>
-    const std::string api_name = absl::StrCat(prefix_, name);
-
-    // Actually registers the API into the wrapped object.
-    wrapped_.def(name, internal::WrapWithErrorHandling(api_name, f), extra...);
-    return *this;
-  }
-
- private:
-  // The pybind11 module or class object being wrapped.
-  PyBindType& wrapped_;
-
-  // The prefix string prepended to the API name.
-  //
-  // This is needed in cases where the wrapped object is a class registration.
-  // It allows us to prepend the error message with the class name, so that the
-  // error message format looks like:
-  //
-  // `<class-name>.<api-name>(): <error-message>`.
-  std::string prefix_;
-};
-
 }  // namespace internal
-
-// Creates a PyBindErrorHandlingWrapper for a pybind11 object.
-//
-// Convenient function for wrapping pybind11 objects (modules or classes)
-// without needing to specify the template type.
-template <typename T>
-internal::PyBindErrorHandlingWrapper<T> PyBindWrapWithErrorHandling(
-    T& wrapped) {
-  return internal::PyBindErrorHandlingWrapper<T>(wrapped);
-}
 
 // Wrapper around pybind11 module_ to automatically wrap `def()` calls with
 // error handling.

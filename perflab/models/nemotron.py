@@ -22,6 +22,7 @@ from perflab import model_helpers
 from perflab import registry as registry_lib
 from perflab import step_lib
 from perflab import torch_device_ops
+from perflab import workload as workload_lib
 
 
 def _load_hf_nemotron(
@@ -62,15 +63,40 @@ def _load_hf_nemotron(
         "Nemotron-3-Nano-30B uses too much memory to run on TPUs with smaller"
         " memory."
     ),
+    workload=registry_lib.scoped_workload(full=workload_lib.Workload(1, 512)),
 )
 def nemotron_3_nano_30b_6_layers_forward(ctx: context_lib.Context):
   """Benchmark factory for NVIDIA-Nemotron-3-Nano-30B-A3B-BF16 (6 Layers) forward."""
+  workload = ctx.require_workload()
   model, inputs = _load_hf_nemotron(
       ctx,
       "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
       is_training=False,
-      seq_len=512,
-      batch_size=1,
+      seq_len=workload.require_seq_len(),
+      batch_size=workload.batch_size,
+      num_layers=6,
+  )
+  return model, (), inputs
+
+
+@registry_lib.register_benchmark(
+    stepper=step_lib.StepperType.DECODER_ONLY_DECODE,
+    presubmit=registry_lib.PresubmitPolicy.SKIP,
+    presubmit_reason=(
+        "Nemotron-3-Nano-30B uses too much memory to run on TPUs with smaller"
+        " memory."
+    ),
+    workload=registry_lib.scoped_workload(full=workload_lib.Workload(1, 512)),
+)
+def nemotron_3_nano_30b_6_layers_decode(ctx: context_lib.Context):
+  """Benchmark factory for NVIDIA-Nemotron-3-Nano-30B-A3B-BF16 (6 Layers) decode."""
+  workload = ctx.require_workload()
+  model, inputs = _load_hf_nemotron(
+      ctx,
+      "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
+      is_training=False,
+      seq_len=workload.require_seq_len(),
+      batch_size=workload.batch_size,
       num_layers=6,
   )
   return model, (), inputs

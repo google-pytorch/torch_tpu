@@ -33,3 +33,24 @@ bzl_library(
         "@rules_python//python:py_test_bzl",
     ],
 )
+
+bzl_library(
+    name = "py_binary_bzl",
+    srcs = ["py_binary.bzl"],
+    visibility = ["//visibility:public"],
+    deps = [":pytype_bzl"],
+)
+
+bzl_library(
+    name = "py_library_bzl",
+    srcs = ["py_library.bzl"],
+    visibility = ["//visibility:public"],
+    deps = [":pytype_bzl"],
+)
+
+bzl_library(
+    name = "py_test_bzl",
+    srcs = ["py_test.bzl"],
+    visibility = ["//visibility:public"],
+    deps = [":pytype_bzl"],
+)

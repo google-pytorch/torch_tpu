@@ -174,7 +174,7 @@ absl::StatusOr<std::vector<NonOverlappingWindow>> GetNonOverlappingWindows(
       contiguous_buffer.dimensions(), target_strides, overlapping_axes);
   const Strides read_strides =
       GetStrides(MakeContiguousBaseLayout(contiguous_buffer.dimensions()));
-  const at::Tensor duplicated_tensor = MakeTensor(contiguous_buffer);
+  const at::Tensor duplicated_tensor = MakeTensor(std::move(contiguous_buffer));
 
   // Output value.
   std::vector<NonOverlappingWindow> non_overlapping_windows;
@@ -266,14 +266,15 @@ absl::StatusOr<at::Tensor> ContiguousToView(
                error::kInvalidArgument)
       << "must specify the same number of strides as dimensions in the tensor";
   TT_RET_CHECK(target_storage_offset >= 0, error::kInvalidArgument)
-      << "target_storage_offset must be non-negative";
+      << "expected target_storage_offset to be >= 0, got "
+      << target_storage_offset;
 
   if (target_storage_offset == 0 &&
       GetStrides(MakeContiguousBaseLayout(contiguous_buffer.dimensions())) ==
           target_strides) {
     ABSL_VLOG(2) << "[ContiguousToView] Buffer is already contiguous, no op";
     // The target view is a contiguous base. Lift directly into output tensor.
-    return MakeTensor(contiguous_buffer);
+    return MakeTensor(std::move(contiguous_buffer));
   }
 
   // Create an empty contiguous base tensor to serve as the new storage.
@@ -291,7 +292,7 @@ absl::StatusOr<at::Tensor> ContiguousToView(
       DeviceBufferRef empty_contiguous_base,
       CreateEmptyDeviceBufferRef(target_contiguous_base_shape,
                                  contiguous_buffer.element_type()));
-  at::Tensor output_tensor = MakeTensor(empty_contiguous_base);
+  at::Tensor output_tensor = MakeTensor(std::move(empty_contiguous_base));
 
   // Get the non-overlapping windows to write to the output tensor.
   // If the output tensor is non-overlapping, or only has simple broadcasts,

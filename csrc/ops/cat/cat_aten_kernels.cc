@@ -280,7 +280,7 @@ at::Tensor AtenStack(at::TensorList tensors, int64_t dim) {
                             .out_dims = params.output_dims,
                             .computation_dtype = params.output_dtype,
                             .op_param_cache_keys = std::move(param_keys)}));
-    return MakeTensor(result_buf);
+    return MakeTensor(std::move(result_buf));
   });
 }
 

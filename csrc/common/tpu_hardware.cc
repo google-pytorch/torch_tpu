@@ -16,14 +16,17 @@
 #include "csrc/common/tpu_hardware.h"
 
 #include <dirent.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <fstream>
 #include <iterator>
 #include <memory>
@@ -37,12 +40,15 @@
 #include "absl/base/nullability.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/functional/function_ref.h"
+#include "absl/log/absl_log.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/ascii.h"
 #include "absl/strings/match.h"
 #include "absl/strings/numbers.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
+#include "absl/strings/str_split.h"
+#include "csrc/common/env_vars.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/utils.h"  // IWYU pragma: keep
 
@@ -224,6 +230,44 @@ enum class DirListing { kListed, kMissing, kUnlistable };
   return it != spec_map.end() ? it->second : nullptr;
 }
 
+// Returns whether `path` resolves to a character device that this process has
+// read and write access to.
+//
+// Sandboxes may put placeholders at the paths of devices they don't allocate
+// to the process. For example, a sandbox with fewer TPU chips than its host may
+// have empty, unreadable regular files at the `/dev/vfio/<group>` paths of the
+// other chips. Those are not usable, so they should not count as devices.
+//
+// This function does not open any node because only one process at a time can
+// open a VFIO group. Opening a node could fail or prevent the TPU runtime of
+// this or another process from claiming it.
+[[nodiscard]] bool IsAccessibleCharDevice(const std::string& path) {
+  struct stat st;
+  return stat(path.c_str(), &st) == 0 && S_ISCHR(st.st_mode) &&
+         faccessat(AT_FDCWD, path.c_str(), R_OK | W_OK, AT_EACCESS) == 0;
+}
+
+// Returns the number of indices in `TPU_VISIBLE_DEVICES`, or std::nullopt if it
+// is unset, empty, or not a comma-separated list of non-negative indices.
+[[nodiscard]] std::optional<int64_t> GetVisibleDeviceIndexCount() {
+  // Not memoized: launchers may set it after the process starts.
+  const char* const visible_devices =
+      std::getenv(kTpuVisibleDevicesEnvVar);  // GETENV_OK=must not memoize.
+  if (visible_devices == nullptr || visible_devices[0] == '\0') {
+    return std::nullopt;
+  }
+
+  int64_t device_index_count = 0;
+  for (const std::string_view entry : absl::StrSplit(visible_devices, ',')) {
+    int64_t device_index = 0;
+    if (!absl::SimpleAtoi(entry, &device_index) || device_index < 0) {
+      return std::nullopt;
+    }
+    ++device_index_count;
+  }
+  return device_index_count;
+}
+
 // Result of scanning PCI devices for VFIO-exposed TPUs.
 struct PciTpuScanResult {
   int64_t device_count = 0;
@@ -231,8 +275,9 @@ struct PciTpuScanResult {
 };
 
 // Scans PCI devices under `pci_devices_dir` for supported Google TPUs whose
-// IOMMU group is exposed under `vfio_dir`. Returns the count of VFIO-exposed
-// TPU devices and the `TpuSpec` of the first one found (or nullptr if none).
+// IOMMU group is exposed under `vfio_dir` as a character device that this
+// process can read and write. Returns the count of VFIO-exposed TPU devices and
+// the `TpuSpec` of the first one found (or nullptr if none).
 [[nodiscard]] PciTpuScanResult ScanPciTpus(std::string_view pci_devices_dir,
                                            std::string_view vfio_dir) {
   PciTpuScanResult result;
@@ -260,8 +305,7 @@ struct PciTpuScanResult {
     if (group_id.empty()) {
       continue;
     }
-    struct stat st;
-    if (stat(absl::StrCat(vfio_dir, "/", group_id).c_str(), &st) != 0) {
+    if (!IsAccessibleCharDevice(absl::StrCat(vfio_dir, "/", group_id))) {
       continue;
     }
     ++result.device_count;
@@ -273,6 +317,25 @@ struct PciTpuScanResult {
 }
 
 }  // namespace
+
+std::string_view TpuVersionName(const TpuVersion version) {
+  switch (version) {
+    case TpuVersion::kV5e:
+      return "TPU v5e";
+    case TpuVersion::kV5p:
+      return "TPU v5p";
+    case TpuVersion::kV6e:
+      return "TPU v6e";
+    case TpuVersion::kV7:
+      return "TPU v7";
+    case TpuVersion::kV8i:
+      return "TPU v8i";
+    case TpuVersion::kV8t:
+      return "TPU v8t";
+  }
+  ABSL_LOG(FATAL)  // CRASH_OK
+      << "Invalid TpuVersion: " << static_cast<int>(version);
+}
 
 absl::StatusOr<TpuSpec::Topology> TpuSpec::GetTopology(
     std::optional<int64_t> world_size, std::string_view pci_devices_dir,
@@ -288,6 +351,25 @@ absl::StatusOr<TpuSpec::Topology> TpuSpec::GetTopology(
   return it->second;
 }
 
+const TpuSpec& TpuSpec::ForVersion(const TpuVersion version) {
+  switch (version) {
+    case TpuVersion::kV5e:
+      return V5e();
+    case TpuVersion::kV5p:
+      return V5p();
+    case TpuVersion::kV6e:
+      return V6e();
+    case TpuVersion::kV7:
+      return V7();
+    case TpuVersion::kV8i:
+      return V8i();
+    case TpuVersion::kV8t:
+      return V8t();
+  }
+  ABSL_LOG(FATAL)  // CRASH_OK
+      << "Invalid TpuVersion: " << static_cast<int>(version);
+}
+
 // HBM and bf16 FLOP/s sources:
 // - v5e, v5p, v6e, v7: https://cloud.google.com/tpu/docs/{v5e,v5p,v6e,tpu7x}
 // - v8i, v8t: `hbm_capacity_bytes` and `bf16_ops_per_second` (per TensorCore)
@@ -297,7 +379,7 @@ absl::StatusOr<TpuSpec::Topology> TpuSpec::GetTopology(
 // https://github.com/jax-ml/jax/blob/main/jax/_src/tpu_info.py.
 const TpuSpec& TpuSpec::V5p() {
   static const absl::NoDestructor<TpuSpec> kSpec(TpuSpec{
-      .name = "TPU v5p",
+      .version = TpuVersion::kV5p,
       .devices_per_chip = 1,
       .hbm_bytes_per_chip = 95LL * 1024 * 1024 * 1024,
       .bf16_flops_per_chip = 459'000'000'000'000LL,
@@ -316,7 +398,7 @@ const TpuSpec& TpuSpec::V5p() {
 
 const TpuSpec& TpuSpec::V5e() {
   static const absl::NoDestructor<TpuSpec> kSpec(TpuSpec{
-      .name = "TPU v5e",
+      .version = TpuVersion::kV5e,
       .devices_per_chip = 1,
       .hbm_bytes_per_chip = 16LL * 1024 * 1024 * 1024,
       .bf16_flops_per_chip = 197'000'000'000'000LL,
@@ -341,7 +423,7 @@ const TpuSpec& TpuSpec::V5e() {
 
 const TpuSpec& TpuSpec::V6e() {
   static const absl::NoDestructor<TpuSpec> kSpec(TpuSpec{
-      .name = "TPU v6e",
+      .version = TpuVersion::kV6e,
       .devices_per_chip = 1,
       .hbm_bytes_per_chip = 32LL * 1024 * 1024 * 1024,
       .bf16_flops_per_chip = 918'000'000'000'000LL,
@@ -359,7 +441,7 @@ const TpuSpec& TpuSpec::V6e() {
 
 const TpuSpec& TpuSpec::V7() {
   static const absl::NoDestructor<TpuSpec> kSpec(TpuSpec{
-      .name = "TPU v7",
+      .version = TpuVersion::kV7,
       .devices_per_chip = 2,
       .hbm_bytes_per_chip = 192LL * 1024 * 1024 * 1024,
       .bf16_flops_per_chip = 2'307'000'000'000'000LL,
@@ -377,7 +459,7 @@ const TpuSpec& TpuSpec::V7() {
 
 const TpuSpec& TpuSpec::V8i() {
   static const absl::NoDestructor<TpuSpec> kSpec(TpuSpec{
-      .name = "TPU v8i",
+      .version = TpuVersion::kV8i,
       .devices_per_chip = 2,
       .hbm_bytes_per_chip = 309'000'000'000LL,
       .bf16_flops_per_chip = 1'101'000'000'000'000LL,
@@ -395,7 +477,7 @@ const TpuSpec& TpuSpec::V8i() {
 
 const TpuSpec& TpuSpec::V8t() {
   static const absl::NoDestructor<TpuSpec> kSpec(TpuSpec{
-      .name = "TPU v8t",
+      .version = TpuVersion::kV8t,
       .devices_per_chip = 1,
       .hbm_bytes_per_chip = 231'000'000'000LL,
       .bf16_flops_per_chip = 996'100'000'000'000LL,
@@ -444,6 +526,17 @@ int64_t GetTpuDeviceCount(std::string_view pci_devices_dir,
   return ScanPciTpus(pci_devices_dir, vfio_dir).device_count;
 }
 
+int64_t GetVisibleTpuDeviceCount(std::string_view pci_devices_dir,
+                                 std::string_view vfio_dir) {
+  const int64_t device_count = GetTpuDeviceCount(pci_devices_dir, vfio_dir);
+  const std::optional<int64_t> visible_device_index_count =
+      GetVisibleDeviceIndexCount();
+  if (!visible_device_index_count.has_value()) {
+    return device_count;
+  }
+  return std::min(device_count, *visible_device_index_count);
+}
+
 absl::StatusOr<std::optional<std::string>> GetTpuTopology(
     std::optional<int64_t> world_size, std::string_view pci_devices_dir,
     std::string_view vfio_dir) {
@@ -457,13 +550,6 @@ absl::StatusOr<std::optional<std::string>> GetTpuTopology(
       const TpuSpec::Topology topology,
       scan.spec->GetTopology(target_count, pci_devices_dir, vfio_dir));
   return absl::StrJoin(topology, ",");
-}
-
-TpuSpec::Topology GetSingleDeviceTpuBounds(std::string_view pci_devices_dir) {
-  const TpuSpec* absl_nullable const spec = TpuSpec::Get(pci_devices_dir);
-  return (spec != nullptr && spec->devices_per_chip > 1)
-             ? TpuSpec::Topology{1, 1, 1, 1}
-             : TpuSpec::Topology{1, 1, 1};
 }
 
 std::string GetSingleDeviceTpuBoundsString(std::string_view pci_devices_dir) {

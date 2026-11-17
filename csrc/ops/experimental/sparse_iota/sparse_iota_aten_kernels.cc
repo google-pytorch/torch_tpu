@@ -97,8 +97,8 @@ absl::Status ValidateSparseIotaInputs(const at::Tensor& row_pointers,
       << "D tensor of shape " << ToString(row_pointers.sizes());
 
   TT_RET_CHECK(row_pointers.scalar_type() == at::kInt, error::kInvalidArgument)
-      << "expected row_pointers dtype to be torch.int32, got "
-      << row_pointers.scalar_type();
+      << "expected row_pointers dtype to be int32, got "
+      << ToString(row_pointers.scalar_type());
 
   TT_RET_CHECK(max_non_zeroes > 0, error::kInvalidArgument)
       << "expected max_non_zeroes to be positive, got " << max_non_zeroes;
@@ -130,7 +130,7 @@ at::Tensor AtenSparseIota(const at::Tensor& row_pointers,
                           {.out_dtype = mlir::ElementType::I32,
                            .out_dims = out_dims,
                            .op_param_cache_keys = std::move(param_keys)}));
-        return MakeTensor(results);
+        return MakeTensor(std::move(results));
       });
 }
 

@@ -180,22 +180,6 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
-    name = "graph_transformations_test",
-    srcs = ["graph_transformations_test.py"],
-    deps = [
-        "//csrc/eager:tpu_aten_kernels",
-        "//shims/absl_py/testing:absltest",
-        "//shims/torch:pytorch",
-        "//src/torch_tpu",
-        "//src/torch_tpu/_internal/compile/dynamic:graph_transform_context",
-        "//src/torch_tpu/_internal/compile/dynamic:graph_transformations",
-        "//src/torch_tpu/_internal/compile/dynamic:sym_bounds_manager",
-        "//src/torch_tpu/_internal/compile/dynamic:view_ops_passes",
-        "//tests:seed_test_utils",
-    ],
-)
-
-torch_tpu_py_test(
     name = "jagged_dynamism_test",
     srcs = ["jagged_dynamism_test.py"],
     tags = [
@@ -205,7 +189,6 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
-        "//src/torch_tpu/_internal/compile:tpu_backend",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
     ],
@@ -214,6 +197,9 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "view_decomposition_test",
     srcs = ["view_decomposition_test.py"],
+    # Restrict HWASan pointer tags on Arm to 5 bits (bits 56..60) so they do
+    # not collide with PyTorch c10::SymInt's 3-bit tag packing in bits 61..63.
+    env = {"HWASAN_OPTIONS": "tag_bits=5"},
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",

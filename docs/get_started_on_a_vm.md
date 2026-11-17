@@ -1,7 +1,5 @@
 # Get started with TorchTPU on a TPU VM
 
-<!-- Link to colab and to generated notebook -->
-
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/google-pytorch/torch_tpu/blob/0.2.0-docs/docs/notebooks/get_started_on_a_vm.ipynb)
 
 The simplest way to use TorchTPU is on a TPU VM. In this example we will run a
@@ -22,7 +20,7 @@ correctly.
 
 ### Step 1: Initialize Python 3.12
 
-```bash
+```shell
 sudo apt update && sudo apt install -y python3.12 python3.12-venv
 python3.12 -m venv env
 source env/bin/activate
@@ -30,7 +28,7 @@ source env/bin/activate
 
 ### Step 2: Install TorchTPU and dependencies
 
-```bash
+```shell
 pip install torch_tpu
 ```
 

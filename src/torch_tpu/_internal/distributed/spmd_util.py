@@ -58,8 +58,15 @@ def spmd_safe(func: _F) -> _F:
 
   The decorated function also synchronizes its input and output TPU tensors
   without waiting, so that no operations from outside the function are fused
-  into the graphs it produces. Under `torch.compile`, the decorator annotates
-  the traced graph nodes instead.
+  into the graphs it produces.
+
+  Under `torch.compile`, the decorator annotates the traced graph nodes
+  instead, and it must cover the whole compiled function: compiling a function
+  in which only some of the operations are `spmd_safe` raises a `ValueError`.
+  On PyTorch < 2.16, TorchDynamo cannot resume `torch.fx.traceback.annotate`
+  after a graph break and falls back to running the wrapper frame eagerly,
+  dropping `spmd_safe` on the traced subgraphs; pass `fullgraph=True` when the
+  compiled function is expected to have no graph breaks.
 
   Args:
     func: The function to decorate.

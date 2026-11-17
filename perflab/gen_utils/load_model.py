@@ -74,26 +74,23 @@ def default_load_model(
     ctx: context_lib.Context,
     model_id: str,
     is_training: bool,
-    full_scope_batch_size: int = 1,
 ):
   """Loads the model and generates sample inputs for benchmarking.
 
   Args:
-    ctx: Benchmark execution context containing device and run scope options.
+    ctx: Benchmark execution context containing device and run scope options,
+      and the workload whose batch size to generate the inputs at.
     model_id: Name of the transformer model to retrieve from the registry.
     is_training: Whether to generate training labels and configurations.
-    full_scope_batch_size: Batch size to use for the full run scope. The
-      presubmit run scope always uses a batch size of 1.
 
   Returns:
     A tuple of (model, inputs dictionary) ready for execution.
   """
-  if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
-    batch_size = 1
-    seq_len = 128
-  else:
-    batch_size = full_scope_batch_size
-    seq_len = 2048
+  batch_size = ctx.require_workload().batch_size
+  # The requested sequence length of token based models. The input generator
+  # caps it, e.g. at the positions of the model, or ignores it, e.g. for vision
+  # models, so the workloads of generated benchmarks declare no `seq_len`.
+  seq_len = 128 if ctx.run_scope == context_lib.RunScope.PRESUBMIT else 2048
 
   registry = model_helpers.get_module_registry()
   dtype = torch_device_ops.get_torch_dtype(ctx.dtype)
@@ -239,7 +236,6 @@ def tapas_load_model(
     ctx: context_lib.Context,
     model_id: str,
     is_training: bool,
-    full_scope_batch_size: int = 1,
 ) -> tuple[torch.nn.Module, dict[str, Any]]:
   """Loads a TAPAS QA model with binary `{0, 1}` cell-selection `labels`.
 
@@ -254,14 +250,11 @@ def tapas_load_model(
     ctx: Benchmark execution context containing device and run scope options.
     model_id: Name of the transformer model to retrieve from the registry.
     is_training: Whether to generate training labels and configurations.
-    full_scope_batch_size: Batch size to use for the full run scope.
 
   Returns:
     A tuple of `(model, inputs)` ready for execution.
   """
-  model, inputs = default_load_model(
-      ctx, model_id, is_training, full_scope_batch_size
-  )
+  model, inputs = default_load_model(ctx, model_id, is_training)
   if is_training and "labels" in inputs:
     inputs["labels"] = torch.randint(
         0,

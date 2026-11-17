@@ -23,6 +23,7 @@ import enum
 
 from absl import flags
 from perflab import target as target_lib
+from perflab import workload as workload_lib
 
 
 class RunScope(enum.Enum):
@@ -55,10 +56,29 @@ class Context:
   Attributes:
     target: The hardware target descriptor for the run.
     run_scope: The execution scope (e.g., FULL or PRESUBMIT).
+    workload: The workload to build the benchmark at (see
+      `BenchmarkSpec.workload`), or None for a benchmark that declares none. The
+      harness resolves it for each case; factories read it with
+      `require_workload`.
   """
 
   target: target_lib.Target
   run_scope: RunScope
+  workload: workload_lib.Workload | None = None
+
+  def require_workload(self) -> workload_lib.Workload:
+    """Returns the workload to build the benchmark at.
+
+    Raises:
+      ValueError: If the context has no workload, i.e. it was not resolved for
+        a benchmark that declares one.
+    """
+    if self.workload is None:
+      raise ValueError(
+          "Context has no workload; build benchmarks with a context from"
+          " `registry.resolve_context`."
+      )
+    return self.workload
 
   @property
   def device_kind(self) -> target_lib.DeviceKind:

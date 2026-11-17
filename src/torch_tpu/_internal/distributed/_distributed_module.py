@@ -19,7 +19,7 @@
 so that e.g. `torch.tpu.distributed.window_num_stripes = 8` invokes the setter.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
 
 import torch
@@ -109,9 +109,9 @@ class DistributedModuleProperties:
     " change."
 )
 def topology_aware_mesh(
-    mesh_shape: tuple[int, ...],
+    mesh_shape: Sequence[int],
     *,
-    dcn_mesh_shape: tuple[int, ...] | None = None,
+    dcn_mesh_shape: Sequence[int] | None = None,
     allow_split_physical_axes: bool = False,
     contiguous_submeshes: bool = False,
 ) -> torch.Tensor:

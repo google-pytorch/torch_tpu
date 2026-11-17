@@ -14,16 +14,20 @@
 
 """Unit tests for standalone distributed benchmark runner."""
 
+from collections.abc import Iterator
+from collections.abc import Set
+import contextlib
 import importlib.util
 import os
-import shutil
 import sys
 import types
+from typing import Any
 from unittest import mock
 from xml.etree import ElementTree
 
 from absl.testing import absltest
 from absl.testing import parameterized
+import portpicker
 import torch
 import torch.multiprocessing as mp
 from torch_tpu._internal import testing as tt_testing
@@ -37,10 +41,10 @@ from perflab import measure as measure_lib
 from perflab import metrics as metrics_lib
 from perflab import mode as mode_lib
 from perflab import registry as registry_lib
-from perflab import step_lib
 from perflab import steps
 from perflab import target as target_lib
-from perflab import torch_device_ops
+from perflab import workload as workload_lib
+from perflab.tests import fakes
 from tests import seed_test_utils
 
 
@@ -48,22 +52,58 @@ def setUpModule():
   discovery_lib.import_submodules(steps)
 
 
+@contextlib.contextmanager
+def _single_rank_gloo_env(rank: int = 0) -> Iterator[None]:
+  """Configures single-process Gloo rendezvous environment variables."""
+  port = portpicker.pick_unused_port()
+  with mock.patch.dict(
+      os.environ,
+      {
+          "MASTER_ADDR": "127.0.0.1",
+          "MASTER_PORT": str(port),
+          "RANK": str(rank),
+          "LOCAL_RANK": "0",
+          "WORLD_SIZE": "1",
+      },
+  ):
+    try:
+      yield
+    finally:
+      if torch.distributed.is_initialized():
+        torch.distributed.destroy_process_group()
+
+
+def _in_process_dist_run(nprocs: int, fn: Any, *args: Any) -> None:
+  """In-process stand-in for `dist_run` that executes rank 0 over Gloo."""
+  assert nprocs == 1
+  with _single_rank_gloo_env(rank=0):
+    fn(*args)
+
+
 class _FakeDistRun:
   """Stateful fake for `distributed_utils.dist_run`.
 
-  Records the spec name of every dispatched target, simulates a worker rank
-  raising (as surfaced by `torch.multiprocessing.spawn`) for specs listed in
-  `failing_specs`, and simulates a factory raising `UnsupportedBenchmark` for
-  specs listed in `unsupported_specs`.
+  Records the spec name of every dispatched target, simulates rank 0 writing
+  `METRICS` once every rank has measured for specs listed in `measured_specs`,
+  simulates a worker rank raising (as surfaced by `torch.multiprocessing.spawn`)
+  for specs listed in `failing_specs`, and simulates a factory raising
+  `UnsupportedBenchmark` for specs listed in `unsupported_specs`. A spec in both
+  `measured_specs` and `failing_specs` fails after measuring, e.g. in teardown.
   """
+
+  METRICS = metrics_lib.PerformanceMetrics(
+      e2e_wall_time_seconds=1.0, first_step_time_seconds=0.5
+  )
 
   def __init__(
       self,
-      failing_specs: set[str],
-      unsupported_specs: frozenset[str] = frozenset(),
+      failing_specs: Set[str],
+      unsupported_specs: Set[str] = frozenset(),
+      measured_specs: Set[str] = frozenset(),
   ):
     self._failing_specs = failing_specs
     self._unsupported_specs = unsupported_specs
+    self._measured_specs = measured_specs
     self.ran = []
 
   def __call__(
@@ -74,9 +114,12 @@ class _FakeDistRun:
       mode_value,
       platform_name,
       skip_reason_file,
+      metrics_file,
   ):
     del nproc_per_node, fn, mode_value, platform_name
     self.ran.append(spec_name)
+    if spec_name in self._measured_specs:
+      distributed_runner._write_metrics(metrics_file, self.METRICS)
     if spec_name in self._unsupported_specs:
       # What rank 0 does when the factory raises UnsupportedBenchmark.
       with open(skip_reason_file, "w") as f:
@@ -111,12 +154,14 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
     self.enter_context(
         mock.patch.dict(os.environ, {"XML_OUTPUT_FILE": self.xml_path})
     )
+    self.exporter = fakes.RecordingExporter()
+    self.enter_context(mock.patch.object(export_lib, "export", self.exporter))
+    self.enter_context(mock.patch.dict(registry_lib.REGISTRY, {}, clear=True))
 
-  @mock.patch.dict(registry_lib.REGISTRY, {}, clear=True)
   def test_resolve_benchmark_targets_deterministic(self):
-    spec1 = mock.MagicMock(spec=registry_lib.BenchmarkSpec)
-    spec1.name = "llama_8b_inference"
-    registry_lib.REGISTRY["llama_8b_inference"] = spec1
+    registry_lib.REGISTRY["llama_8b_inference"] = fakes.tiny_spec(
+        "llama_8b_inference"
+    )
 
     # No filter returns all modes
     targets = distributed_runner.resolve_benchmark_targets(test_filter=None)
@@ -158,13 +203,10 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
       )
     # pyformat: enable
 
-  @mock.patch.dict(registry_lib.REGISTRY, {}, clear=True)
   def test_resolve_benchmark_targets_wildcards(self):
     # Registered out of name order to check that targets are sorted by name
     for name in ("llama_8b_inference", "gemma_2b_training"):
-      benchmark = mock.MagicMock(spec=registry_lib.BenchmarkSpec)
-      benchmark.name = name
-      registry_lib.REGISTRY[name] = benchmark
+      registry_lib.REGISTRY[name] = fakes.tiny_spec(name)
 
     # Targets are in token order, and a wildcard's matches in name order
     targets = distributed_runner.resolve_benchmark_targets(
@@ -196,248 +238,231 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
       )
     # pyformat: enable
 
-  @mock.patch.dict(registry_lib.REGISTRY, {})
-  @mock.patch.object(target_lib, "make_target")
-  @mock.patch.object(torch_device_ops, "TorchDeviceOps")
-  @mock.patch.object(measure_lib, "measure")
-  @mock.patch.object(torch.distributed, "init_process_group")
-  @mock.patch.object(torch.distributed, "barrier")
-  @mock.patch.object(torch.distributed, "destroy_process_group")
-  @mock.patch.object(torch.distributed, "is_initialized", return_value=True)
-  @mock.patch.object(torch.compiler, "reset")
-  def test_run_single_target_task_tpu(
-      self,
-      mock_compiler_reset,
-      mock_is_initialized,
-      mock_destroy_group,
-      mock_barrier,
-      mock_init_group,
-      mock_measure,
-      mock_device_ops,
-      mock_make_target,
-  ):
-    del mock_is_initialized, mock_device_ops
-    fake_spec = mock.MagicMock(spec=registry_lib.BenchmarkSpec)
-    fake_spec.name = "dummy"
-    fake_spec.dtype = target_lib.DType.BF16
-    fake_spec.factory = mock.MagicMock(
-        return_value=(mock.MagicMock(), (), {}, None)
+  def test_backend_by_device_kind(self):
+    self.assertEqual(
+        distributed_runner._BACKEND_BY_DEVICE_KIND,
+        {
+            target_lib.DeviceKind.CPU: "gloo",
+            target_lib.DeviceKind.CUDA: "nccl",
+            target_lib.DeviceKind.TPU: "tpu_dist",
+        },
     )
-    fake_spec.stepper = step_lib.StepperType.FORWARD
-    fake_spec.stepper_kwargs = {}
-    fake_spec.compile_config = None
-    fake_spec.skipped_run_modes = set()
 
-    registry_lib.REGISTRY["dummy"] = fake_spec
+  def test_run_single_target_task_end_to_end_writes_metrics(self):
+    registry_lib.REGISTRY["tiny_linear"] = fakes.tiny_spec("tiny_linear")
+    metrics_file = os.path.join(self.create_tempdir().full_path, "metrics")
 
-    fake_target = mock.MagicMock(spec=target_lib.Target)
-    fake_target.device_kind = target_lib.DeviceKind.TPU
-    fake_target.platform = target_lib.Platform.V7_2X2X2
-    fake_target.dtype = target_lib.DType.BF16
-    mock_make_target.return_value = fake_target
-
-    mock_metrics = mock.MagicMock(spec=metrics_lib.PerformanceMetrics)
-    mock_metrics.e2e_wall_time_seconds = 1.0
-    mock_metrics.first_step_time_seconds = 0.5
-    mock_measure.return_value = mock_metrics
-
-    with mock.patch.dict(os.environ, {"RANK": "0"}):
+    with _single_rank_gloo_env():
       distributed_runner._run_single_target_task(
-          spec_name="dummy",
+          spec_name="tiny_linear",
           mode_value="eager_default",
-          platform_name="v7_2x2x2",
+          platform_name="cpu",
+          metrics_file=metrics_file,
       )
 
-    mock_init_group.assert_called_once_with(backend="tpu_dist")
-    self.assertTrue(mock_barrier.called)
-    mock_measure.assert_called_once()
-    mock_compiler_reset.assert_called_once()
-    mock_destroy_group.assert_called_once()
+    self.assertFalse(torch.distributed.is_initialized())
+    # The launcher in main() exports the metrics, not the worker.
+    self.assertEmpty(self.exporter.exported)
+    metrics = distributed_runner._read_metrics(metrics_file)
+    self.assertIsNotNone(metrics)
+    self.assertGreater(metrics.e2e_wall_time_seconds, 0.0)
+    self.assertGreater(metrics.first_step_time_seconds, 0.0)
+    self.assertGreater(metrics.post_warmup_step_time_seconds, 0.0)
 
-  @mock.patch.dict(registry_lib.REGISTRY, {})
-  @mock.patch.object(target_lib, "make_target")
-  @mock.patch.object(torch_device_ops, "TorchDeviceOps")
-  @mock.patch.object(measure_lib, "measure")
-  @mock.patch.object(torch.cuda, "set_device")
-  @mock.patch.object(torch.distributed, "init_process_group")
-  @mock.patch.object(torch.distributed, "barrier")
-  @mock.patch.object(torch.distributed, "destroy_process_group")
-  @mock.patch.object(torch.distributed, "is_initialized", return_value=True)
-  @mock.patch.object(torch.compiler, "reset")
-  def test_run_single_target_task_cuda(
-      self,
-      mock_compiler_reset,
-      mock_is_initialized,
-      mock_destroy_group,
-      mock_barrier,
-      mock_init_group,
-      mock_set_device,
-      mock_measure,
-      mock_device_ops,
-      mock_make_target,
+  @parameterized.named_parameters(
+      # The 4 ranks of a tensor-parallel replica all process its 2 x 128 tokens,
+      # so each device exports 1/4 of them.
+      (
+          "tensor_parallel",
+          {"devices_per_replica": lambda world_size: world_size},
+          2 * 128 / 4,
+      ),
+      # By default each rank is a replica that processes its own batch, e.g.
+      # with data parallelism (FSDP).
+      ("one_device_per_replica", {}, 2 * 128),
+  )
+  def test_run_single_target_task_exports_per_device_throughput(
+      self, spec_kwargs, expected_tokens_per_step
   ):
-    del mock_is_initialized, mock_device_ops
-    fake_spec = mock.MagicMock(spec=registry_lib.BenchmarkSpec)
-    fake_spec.name = "dummy_gpu"
-    fake_spec.dtype = target_lib.DType.BF16
-    fake_spec.factory = mock.MagicMock(
-        return_value=(mock.MagicMock(), (), {}, None)
+    registry_lib.REGISTRY["tiny_tp"] = fakes.tiny_spec(
+        "tiny_tp",
+        workload=lambda ctx: workload_lib.Workload(2, 128),
+        **spec_kwargs,
     )
-    fake_spec.stepper = step_lib.StepperType.FORWARD
-    fake_spec.stepper_kwargs = {}
-    fake_spec.compile_config = None
-    fake_spec.skipped_run_modes = set()
+    metrics_file = os.path.join(self.create_tempdir().full_path, "metrics")
 
-    registry_lib.REGISTRY["dummy_gpu"] = fake_spec
-
-    fake_target = mock.MagicMock(spec=target_lib.Target)
-    fake_target.device_kind = target_lib.DeviceKind.CUDA
-    fake_target.platform = target_lib.Platform.B200_8
-    fake_target.dtype = target_lib.DType.BF16
-    mock_make_target.return_value = fake_target
-
-    mock_metrics = mock.MagicMock(spec=metrics_lib.PerformanceMetrics)
-    mock_metrics.e2e_wall_time_seconds = 2.0
-    mock_metrics.first_step_time_seconds = 1.0
-    mock_measure.return_value = mock_metrics
-
-    with mock.patch.dict(os.environ, {"RANK": "0", "LOCAL_RANK": "3"}):
+    with (
+        _single_rank_gloo_env(),
+        # The single Gloo rank stands in for one of 4 ranks.
+        mock.patch.object(
+            torch.distributed, "get_world_size", lambda group=None: 4
+        ),
+    ):
       distributed_runner._run_single_target_task(
-          spec_name="dummy_gpu",
+          spec_name="tiny_tp",
           mode_value="eager_default",
-          platform_name="b200_8",
+          platform_name="cpu",
+          metrics_file=metrics_file,
       )
 
-    mock_set_device.assert_called_once_with(3)
-    mock_init_group.assert_called_once_with(backend="nccl")
-    self.assertTrue(mock_barrier.called)
-    mock_measure.assert_called_once()
-    mock_compiler_reset.assert_called_once()
-    mock_destroy_group.assert_called_once()
+    metrics = distributed_runner._read_metrics(metrics_file)
+    self.assertIsNotNone(metrics)
+    metric_map = metrics.metric_map()
+    self.assertEqual(metric_map["batch_size"], 2.0)
+    self.assertEqual(metric_map["seq_len"], 128.0)
+    self.assertEqual(metric_map["tokens_per_step"], expected_tokens_per_step)
+    self.assertAlmostEqual(
+        metric_map["tokens_per_second"],
+        expected_tokens_per_step / metrics.throughput_step_time_seconds,
+    )
 
-  @mock.patch.dict(registry_lib.REGISTRY, {})
-  @mock.patch.object(target_lib, "make_target")
-  @mock.patch.object(torch.distributed, "init_process_group")
-  def test_run_single_target_task_skips_unsupported_mode_on_cuda(
-      self,
-      mock_init_group,
-      mock_make_target,
+  @parameterized.named_parameters(
+      ("not_dividing_world_size", 3),
+      ("zero", 0),
+  )
+  def test_run_single_target_task_rejects_invalid_devices_per_replica(
+      self, devices_per_replica
   ):
-    fake_spec = mock.MagicMock(spec=registry_lib.BenchmarkSpec)
-    fake_spec.name = "dummy_gpu"
-    fake_spec.dtype = target_lib.DType.BF16
-    fake_spec.skipped_run_modes = set()
-    registry_lib.REGISTRY["dummy_gpu"] = fake_spec
+    registry_lib.REGISTRY["tiny_tp"] = fakes.tiny_spec(
+        "tiny_tp",
+        workload=lambda ctx: workload_lib.Workload(2, 128),
+        devices_per_replica=lambda world_size: devices_per_replica,
+    )
 
-    fake_target = mock.MagicMock(spec=target_lib.Target)
-    fake_target.device_kind = target_lib.DeviceKind.CUDA
-    fake_target.platform = target_lib.Platform.B200_8
-    fake_target.dtype = target_lib.DType.BF16
-    mock_make_target.return_value = fake_target
+    with (
+        _single_rank_gloo_env(),
+        self.assertRaisesRegex(  # ASSERT_RAISES_OK=benchmark
+            ValueError,
+            f"{devices_per_replica} devices per replica, which must be >= 1",
+        ),
+    ):
+      distributed_runner._run_single_target_task(
+          spec_name="tiny_tp",
+          mode_value="eager_default",
+          platform_name="cpu",
+      )
+
+    self.assertFalse(torch.distributed.is_initialized())
+
+  def test_run_single_target_task_skips_unsupported_mode(self):
+    registry_lib.REGISTRY["tiny_gpu"] = fakes.tiny_spec("tiny_gpu")
 
     distributed_runner._run_single_target_task(
-        spec_name="dummy_gpu",
+        spec_name="tiny_gpu",
         mode_value="eager_optimized",
         platform_name="b200_8",
     )
-    mock_init_group.assert_not_called()
 
-  @mock.patch.dict(registry_lib.REGISTRY, {})
-  @mock.patch.object(target_lib, "make_target")
-  @mock.patch.object(torch_device_ops, "TorchDeviceOps")
-  @mock.patch.object(
-      measure_lib, "measure", side_effect=RuntimeError("Model OOM")
-  )
-  @mock.patch.object(torch.distributed, "init_process_group")
-  @mock.patch.object(torch.distributed, "barrier")
-  @mock.patch.object(torch.distributed, "destroy_process_group")
-  @mock.patch.object(torch.distributed, "is_initialized", return_value=True)
-  @mock.patch.object(torch.compiler, "reset")
-  def test_run_single_target_task_exception_safety(
-      self,
-      mock_compiler_reset,
-      mock_is_initialized,
-      mock_destroy_group,
-      mock_barrier,
-      mock_init_group,
-      mock_measure,
-      mock_device_ops,
-      mock_make_target,
-  ):
-    del mock_is_initialized, mock_init_group, mock_measure, mock_device_ops
-    fake_spec = mock.MagicMock(spec=registry_lib.BenchmarkSpec)
-    fake_spec.name = "dummy"
-    fake_spec.dtype = target_lib.DType.BF16
-    fake_spec.factory = mock.MagicMock(
-        return_value=(mock.MagicMock(), (), {}, None)
-    )
-    fake_spec.stepper = step_lib.StepperType.FORWARD
-    fake_spec.stepper_kwargs = {}
-    fake_spec.compile_config = None
-    fake_spec.skipped_run_modes = set()
+    self.assertFalse(torch.distributed.is_initialized())
+    self.assertEmpty(self.exporter.exported)
 
-    registry_lib.REGISTRY["dummy"] = fake_spec
+  def test_run_single_target_task_rejects_zero_metrics_on_rank_0(self):
+    registry_lib.REGISTRY["tiny_linear"] = fakes.tiny_spec("tiny_linear")
+    frozen_clock = fakes.FakeClock(start=10.0)
+    orig_measure = measure_lib.measure
+    metrics_file = os.path.join(self.create_tempdir().full_path, "metrics")
 
-    fake_target = mock.MagicMock(spec=target_lib.Target)
-    fake_target.device_kind = target_lib.DeviceKind.TPU
-    fake_target.platform = target_lib.Platform.V7_2X2X2
-    fake_target.dtype = target_lib.DType.BF16
-    mock_make_target.return_value = fake_target
-
-    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Worker exception propagation and cleanup test.
-        RuntimeError, "Model OOM"
+    with (
+        _single_rank_gloo_env(),
+        mock.patch.object(
+            measure_lib,
+            "measure",
+            lambda *args, **kwargs: orig_measure(
+                *args, clock=frozen_clock, **kwargs
+            ),
+        ),
     ):
+      with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Rank 0 zero-metric guard.
+          AssertionError, "Invalid metrics measured"
+      ):
+        distributed_runner._run_single_target_task(
+            spec_name="tiny_linear",
+            mode_value="eager_default",
+            platform_name="cpu",
+            metrics_file=metrics_file,
+        )
+
+    self.assertFalse(torch.distributed.is_initialized())
+    # The launcher in main() exports the failure, not the worker.
+    self.assertEmpty(self.exporter.exported)
+    self.assertIsNone(distributed_runner._read_metrics(metrics_file))
+
+  def test_run_single_target_task_exception_propagates_and_cleans_up(self):
+    def failing_factory(unused_ctx):
+      raise RuntimeError("Model OOM")
+
+    registry_lib.REGISTRY["oom_spec"] = fakes.tiny_spec(
+        "oom_spec", factory=failing_factory
+    )
+
+    with _single_rank_gloo_env():
+      with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Worker exception propagation and cleanup test.
+          RuntimeError, "Model OOM"
+      ):
+        distributed_runner._run_single_target_task(
+            spec_name="oom_spec",
+            mode_value="eager_default",
+            platform_name="cpu",
+        )
+
+    self.assertFalse(torch.distributed.is_initialized())
+    # The launcher in main() exports the failure, not the worker.
+    self.assertEmpty(self.exporter.exported)
+
+  def test_run_single_target_task_reports_unsupported_benchmark(self):
+    def unsupported_factory(unused_ctx):
+      raise target_lib.UnsupportedBenchmark("needs more chips")
+
+    registry_lib.REGISTRY["too_big"] = fakes.tiny_spec(
+        "too_big", factory=unsupported_factory
+    )
+    skip_reason_file = os.path.join(self.create_tempdir().full_path, "skip.txt")
+
+    with _single_rank_gloo_env():
       distributed_runner._run_single_target_task(
-          spec_name="dummy",
+          spec_name="too_big",
           mode_value="eager_default",
-          platform_name="v7_2x2x2",
+          platform_name="cpu",
+          skip_reason_file=skip_reason_file,
       )
 
-    mock_compiler_reset.assert_called_once()
-    mock_destroy_group.assert_called_once()
-    self.assertEqual(mock_barrier.call_count, 1)
+    self.assertFalse(torch.distributed.is_initialized())
+    self.assertEmpty(self.exporter.exported)
+    with open(skip_reason_file) as f:
+      self.assertEqual(f.read(), "needs more chips")
 
-  @mock.patch.dict(os.environ, {"BENCHMARK_PLATFORM": "v7_2x2x2"})
-  @mock.patch("torch.tpu.distributed.set_tpu_launch_env")
-  @mock.patch.object(distributed_runner.distributed_utils, "dist_run")
-  @mock.patch.object(distributed_runner, "resolve_benchmark_targets")
-  def test_main_successful_dispatch(
-      self, mock_resolve_targets, mock_dist_run, mock_set_tpu_launch_env
-  ):
-    dummy_spec = mock.MagicMock(spec=registry_lib.BenchmarkSpec)
-    dummy_spec.name = "dummy"
-    dummy_spec.skipped_run_modes = set()
-    mock_resolve_targets.return_value = [
-        (dummy_spec, common.RunMode.EAGER_DEFAULT)
-    ]
+  def test_main_runs_filtered_target_end_to_end(self):
+    registry_lib.REGISTRY["tiny_linear"] = fakes.tiny_spec("tiny_linear")
 
-    with mock.patch.dict(
-        os.environ, {"TESTBRIDGE_TEST_ONLY": "dummy_eager_default"}
+    with (
+        mock.patch.dict(
+            os.environ,
+            {
+                "BENCHMARK_PLATFORM": "cpu",
+                "TESTBRIDGE_TEST_ONLY": "tiny_linear_eager_default",
+            },
+        ),
+        mock.patch.object(
+            distributed_runner.distributed_utils,
+            "dist_run",
+            side_effect=_in_process_dist_run,
+        ),
     ):
       distributed_runner.main(["distributed_runner"])
 
-    mock_set_tpu_launch_env.assert_not_called()
-    mock_dist_run.assert_called_once_with(
-        8,  # V7_2X2X2 has 8 procs per node
-        distributed_runner._run_single_target_task,
-        "dummy",
-        "eager_default",
-        "v7_2x2x2",
-        mock.ANY,
-    )
+    self.assertLen(self.exporter.exported, 1)
+    record = self.exporter.exported[0]
+    self.assertEqual(record.spec_name, "tiny_linear")
+    self.assertEqual(record.platform, target_lib.Platform.CPU)
+    self.assertEqual(record.run_mode, common.RunMode.EAGER_DEFAULT)
+    self.assertTrue(record.succeeded)
+    self.assertGreater(record.metrics.e2e_wall_time_seconds, 0.0)
 
-  @mock.patch.object(export_lib, "export")
   @mock.patch.object(mp, "spawn")
-  @mock.patch.object(distributed_runner, "resolve_benchmark_targets")
   def test_main_multihost_tpu_with_pinned_env_and_no_worker_hostnames(
-      self, mock_resolve_targets, mock_mp_spawn, mock_export
+      self, mock_mp_spawn
   ):
-    dummy_spec = mock.MagicMock(spec=registry_lib.BenchmarkSpec)
-    dummy_spec.name = "dummy"
-    dummy_spec.skipped_run_modes = set()
-    mock_resolve_targets.return_value = [
-        (dummy_spec, common.RunMode.EAGER_DEFAULT)
-    ]
+    registry_lib.REGISTRY["dummy"] = fakes.tiny_spec("dummy")
     pinned_env = {
         "BENCHMARK_PLATFORM": "v7_2x2x2",
         "TESTBRIDGE_TEST_ONLY": "dummy_eager_default",
@@ -460,39 +485,85 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
                 name, default_value
             ),
         ),
+        mock.patch.object(
+            distributed_runner.distributed_utils.env,
+            "get_int_env_once",
+            side_effect=lambda name, default_value=None: (
+                int(os.environ[name]) if name in os.environ else default_value
+            ),
+        ),
     ):
       distributed_runner.main(["distributed_runner"])
 
     mock_mp_spawn.assert_called_once()
-    mock_export.assert_not_called()
+    self.assertEmpty(self.exporter.exported)
 
-  @mock.patch.dict(os.environ, {"BENCHMARK_PLATFORM": "v7_2x2x1"})
-  @mock.patch("torch.tpu.distributed.set_tpu_launch_env")
-  @mock.patch.object(distributed_runner.distributed_utils, "dist_run")
-  @mock.patch.object(distributed_runner, "resolve_benchmark_targets")
-  def test_main_singlehost_tpu_prepares_environment(
-      self, mock_resolve_targets, mock_dist_run, mock_set_tpu_launch_env
-  ):
-    dummy_spec = mock.MagicMock(spec=registry_lib.BenchmarkSpec)
-    dummy_spec.name = "dummy"
-    dummy_spec.skipped_run_modes = set()
-    mock_resolve_targets.return_value = [
-        (dummy_spec, common.RunMode.EAGER_DEFAULT)
-    ]
+  def test_main_tpu_launch_env_singlehost_vs_multihost(self):
+    registry_lib.REGISTRY["tiny_linear"] = fakes.tiny_spec("tiny_linear")
+    dispatched: list[tuple[int, str, str, str]] = []
 
-    with mock.patch.dict(
-        os.environ, {"TESTBRIDGE_TEST_ONLY": "dummy_eager_default"}
+    def record_dispatch(
+        nprocs,
+        unused_fn,
+        spec_name,
+        mode_val,
+        platform_val,
+        unused_skip_file,
+        unused_metrics_file,
     ):
-      distributed_runner.main(["distributed_runner"])
+      dispatched.append((nprocs, spec_name, mode_val, platform_val))
 
-    mock_set_tpu_launch_env.assert_called_once_with(nproc_per_node=8)
-    mock_dist_run.assert_called_once_with(
-        8,
-        distributed_runner._run_single_target_task,
-        "dummy",
-        "eager_default",
-        "v7_2x2x1",
-        mock.ANY,
+    # Single-host TPU (nnodes=1, nprocs_per_node=8) populates TPU launch env.
+    with (
+        mock.patch.dict(
+            os.environ,
+            {
+                "BENCHMARK_PLATFORM": "v7_2x2x1",
+                "TESTBRIDGE_TEST_ONLY": "tiny_linear_eager_default",
+                "TORCH_TPU_TOPOLOGY": "2x2x1",
+            },
+            clear=False,
+        ),
+        mock.patch.object(
+            distributed_runner.distributed_utils,
+            "dist_run",
+            side_effect=record_dispatch,
+        ),
+    ):
+      os.environ.pop("TORCH_TPU_SLICEBUILDER_ADDRESSES", None)
+      distributed_runner.main(["distributed_runner"])
+      slicebuilder_addrs = os.environ.get(
+          "TORCH_TPU_SLICEBUILDER_ADDRESSES", ""
+      )
+      self.assertLen(slicebuilder_addrs.split(","), 8)
+
+    # Multi-host TPU (nnodes=2) does not override single-host TPU launch env.
+    with (
+        mock.patch.dict(
+            os.environ,
+            {
+                "BENCHMARK_PLATFORM": "v7_2x2x2",
+                "TESTBRIDGE_TEST_ONLY": "tiny_linear_eager_default",
+                "TORCH_TPU_TOPOLOGY": "2x2x2",
+            },
+            clear=False,
+        ),
+        mock.patch.object(
+            distributed_runner.distributed_utils,
+            "dist_run",
+            side_effect=record_dispatch,
+        ),
+    ):
+      os.environ.pop("TORCH_TPU_SLICEBUILDER_ADDRESSES", None)
+      distributed_runner.main(["distributed_runner"])
+      self.assertNotIn("TORCH_TPU_SLICEBUILDER_ADDRESSES", os.environ)
+
+    self.assertEqual(
+        dispatched,
+        [
+            (8, "tiny_linear", "eager_default", "v7_2x2x1"),
+            (8, "tiny_linear", "eager_default", "v7_2x2x2"),
+        ],
     )
 
   def test_module_imports_without_torch_tpu_module(self):
@@ -507,43 +578,54 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
     ):
       spec.loader.exec_module(module)
 
-  @mock.patch.dict(os.environ, {"BENCHMARK_PLATFORM": "b200_8"})
-  @mock.patch.object(distributed_runner.distributed_utils, "dist_run")
-  @mock.patch.object(distributed_runner, "resolve_benchmark_targets")
-  def test_main_gpu_does_not_require_torch_tpu_module(
-      self, mock_resolve_targets, mock_dist_run
-  ):
-    dummy_spec = mock.MagicMock(spec=registry_lib.BenchmarkSpec)
-    dummy_spec.name = "dummy"
-    dummy_spec.skipped_run_modes = set()
-    mock_resolve_targets.return_value = [
-        (dummy_spec, common.RunMode.EAGER_DEFAULT)
-    ]
+  def test_main_gpu_does_not_require_torch_tpu_module(self):
+    registry_lib.REGISTRY["tiny_linear"] = fakes.tiny_spec("tiny_linear")
+    dispatched: list[tuple[int, str, str, str]] = []
+
+    def record_dispatch(
+        nprocs,
+        unused_fn,
+        spec_name,
+        mode_val,
+        platform_val,
+        unused_skip_file,
+        unused_metrics_file,
+    ):
+      dispatched.append((nprocs, spec_name, mode_val, platform_val))
 
     # Simulate a GPU host with TORCH_DEVICE_BACKEND_AUTOLOAD=0, where
     # `torch.tpu` is not registered: any import of it raises ImportError.
-    with mock.patch.dict(
-        sys.modules, {"torch.tpu": None, "torch.tpu.distributed": None}
-    ), mock.patch.dict(
-        os.environ, {"TESTBRIDGE_TEST_ONLY": "dummy_eager_default"}
+    with (
+        mock.patch.dict(
+            sys.modules, {"torch.tpu": None, "torch.tpu.distributed": None}
+        ),
+        mock.patch.dict(
+            os.environ,
+            {
+                "BENCHMARK_PLATFORM": "b200_8",
+                "TESTBRIDGE_TEST_ONLY": "tiny_linear_eager_default",
+            },
+        ),
+        mock.patch.object(
+            distributed_runner.distributed_utils,
+            "dist_run",
+            side_effect=record_dispatch,
+        ),
     ):
       distributed_runner.main(["distributed_runner"])
 
-    mock_dist_run.assert_called_once_with(
-        8,
-        distributed_runner._run_single_target_task,
-        "dummy",
-        "eager_default",
-        "b200_8",
-        mock.ANY,
+    self.assertEqual(
+        dispatched,
+        [(8, "tiny_linear", "eager_default", "b200_8")],
     )
 
   def test_main_isolates_failed_target_and_exits_nonzero(self):
     fake_dist_run = _FakeDistRun(failing_specs={"broken"})
-    exported = []
     registry = {
         "broken": types.SimpleNamespace(
-            name="broken", skipped_run_modes=frozenset()
+            name="broken",
+            skipped_run_modes=frozenset(),
+            microbenchmark_name="batch_size_1",
         ),
         "healthy": types.SimpleNamespace(
             name="healthy", skipped_run_modes=frozenset()
@@ -564,7 +646,6 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
         mock.patch.object(
             distributed_runner.distributed_utils, "dist_run", fake_dist_run
         ),
-        mock.patch.object(export_lib, "export", exported.append),
         self.assertLogs(level="INFO") as logs,
         self.assertRaises(
             SystemExit
@@ -577,13 +658,201 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
     self.assertEqual(fake_dist_run.ran, ["broken", "healthy"])
     # The failed target is reported once as FAILED to the export path.
     self.assertEqual(
-        [(d.spec_name, d.run_mode, d.succeeded) for d in exported],
-        [("broken", common.RunMode.EAGER_DEFAULT, False)],
+        [
+            (d.spec_name, d.run_mode, d.succeeded, d.microbenchmark_name)
+            for d in self.exporter.exported
+        ],
+        [("broken", common.RunMode.EAGER_DEFAULT, False, "batch_size_1")],
     )
     summary = "\n".join(logs.output)
     self.assertRegex(summary, r"broken_eager_default\s+FAILED")
     self.assertRegex(summary, r"healthy_eager_default\s+PASSED")
     self.assertIn("1 passed, 1 failed, 0 skipped", summary)
+
+  def test_discovered_modules_import(self):
+    self.assertEqual(distributed_runner._IMPORT_FAILURES, ())
+
+  def _run_main_with_import_failure(
+      self, error: Exception, test_filter: str
+  ) -> tuple[_FakeDistRun, SystemExit]:
+    """Runs main() with a model import failure and one healthy target."""
+    failure = discovery_lib.ImportFailure(
+        module="torch_tpu.perflab.distributed_models.broken", error=error
+    )
+    fake_dist_run = _FakeDistRun(failing_specs=set())
+    registry = {
+        "healthy": types.SimpleNamespace(
+            name="healthy", skipped_run_modes=frozenset()
+        ),
+    }
+    with (
+        mock.patch.dict(registry_lib.REGISTRY, registry, clear=True),
+        mock.patch.dict(
+            os.environ,
+            {
+                "BENCHMARK_PLATFORM": "b200_8",
+                "TESTBRIDGE_TEST_ONLY": test_filter,
+            },
+        ),
+        mock.patch.object(
+            distributed_runner.distributed_utils, "dist_run", fake_dist_run
+        ),
+    ):
+      # pyformat: disable
+      with self.assertRaises(SystemExit) as exit_cm:  # ASSERT_RAISES_OK=Runner must exit non-zero when a model fails to import.
+        distributed_runner.main(
+            ["distributed_runner"], import_failures=(failure,)
+        )
+      # pyformat: enable
+    return fake_dist_run, exit_cm.exception
+
+  @parameterized.named_parameters(
+      ("import_error", ImportError("cannot import name 'Foo'")),
+      (
+          "missing_module",
+          ModuleNotFoundError(
+              "No module named 'transformers'", name="transformers"
+          ),
+      ),
+      (
+          "missing_torchtitan",
+          ModuleNotFoundError(
+              "No module named 'torchtitan.experiments'",
+              name="torchtitan.experiments",
+          ),
+      ),
+  )
+  def test_main_fails_on_model_import_error(self, error):
+    fake_dist_run, exit_exception = self._run_main_with_import_failure(
+        error, test_filter="healthy_eager_default"
+    )
+
+    self.assertNotEqual(exit_exception.code, 0)
+    # The import failure does not prevent the other benchmarks from running.
+    self.assertEqual(fake_dist_run.ran, ["healthy"])
+    cases = _read_test_xml(self.xml_path)
+    self.assertEqual(cases["benchmark_imports"][0], "FAILURE")
+    self.assertIn(
+        "torch_tpu.perflab.distributed_models.broken",
+        cases["benchmark_imports"][1],
+    )
+    self.assertEqual(cases["healthy_eager_default"], ("PASSED", ""))
+
+  def test_main_reports_import_error_when_filter_matches_no_target(self):
+    # The filter may only select targets of the module that failed to import.
+    fake_dist_run, exit_exception = self._run_main_with_import_failure(
+        ImportError("cannot import name 'Foo'"),
+        test_filter="broken_eager_default",
+    )
+
+    self.assertNotEqual(exit_exception.code, 0)
+    self.assertEqual(fake_dist_run.ran, [])
+    cases = _read_test_xml(self.xml_path)
+    self.assertEqual(list(cases), ["benchmark_imports"])
+    self.assertEqual(cases["benchmark_imports"][0], "FAILURE")
+
+  def test_main_exports_one_result_per_measured_target(self):
+    fake_dist_run = _FakeDistRun(
+        failing_specs={"teardown_broken"},
+        measured_specs=frozenset({"teardown_broken", "healthy"}),
+    )
+    registry = {
+        name: types.SimpleNamespace(
+            name=name, skipped_run_modes=frozenset(), microbenchmark_name=None
+        )
+        for name in ("teardown_broken", "healthy")
+    }
+
+    with (
+        mock.patch.dict(registry_lib.REGISTRY, registry, clear=True),
+        mock.patch.dict(
+            os.environ,
+            {
+                "BENCHMARK_PLATFORM": "b200_8",
+                "TESTBRIDGE_TEST_ONLY": (
+                    "teardown_broken_compiled healthy_compiled"
+                ),
+            },
+        ),
+        mock.patch.object(
+            distributed_runner.distributed_utils, "dist_run", fake_dist_run
+        ),
+        self.assertLogs(level="INFO") as logs,
+        self.assertRaises(
+            SystemExit
+        ),  # ASSERT_RAISES_OK=Runner must exit non-zero when a rank fails.
+    ):
+      distributed_runner.main(["distributed_runner"])
+
+    # Every rank measured both targets, so each has one record with its
+    # metrics, even though teardown_broken failed afterwards.
+    self.assertEqual(
+        [(d.spec_name, d.succeeded, d.metrics) for d in self.exporter.exported],
+        [
+            ("teardown_broken", True, _FakeDistRun.METRICS),
+            ("healthy", True, _FakeDistRun.METRICS),
+        ],
+    )
+    summary = "\n".join(logs.output)
+    self.assertRegex(
+        summary,
+        r"teardown_broken_compiled\s+FAILED\s+RuntimeError: factory failed",
+    )
+    self.assertRegex(summary, r"healthy_compiled\s+PASSED")
+
+  @parameterized.named_parameters(
+      ("all_ranks_measure", False, True),
+      ("peer_fails_after_measuring", True, False),
+  )
+  def test_run_single_target_task_writes_metrics_once_all_ranks_measured(
+      self, peer_fails, writes_metrics
+  ):
+    registry_lib.REGISTRY["tiny_linear"] = fakes.tiny_spec("tiny_linear")
+    measured = []
+    orig_measure = measure_lib.measure
+    orig_barrier = torch.distributed.barrier
+
+    def recording_measure(*args, **kwargs):
+      measured.append(orig_measure(*args, **kwargs))
+      return measured[-1]
+
+    def barrier(*args, **kwargs):
+      # A peer rank fails once rank 0 has measured, so every later barrier
+      # raises.
+      if measured and peer_fails:
+        raise RuntimeError("peer rank failed")
+      return orig_barrier(*args, **kwargs)
+
+    metrics_file = os.path.join(self.create_tempdir().full_path, "metrics")
+    expected_error = (
+        self.assertRaisesRegex(  # ASSERT_RAISES_OK=A peer failure fails rank 0.
+            RuntimeError, "peer rank failed"
+        )
+        if peer_fails
+        else contextlib.nullcontext()
+    )
+
+    with (
+        _single_rank_gloo_env(),
+        mock.patch.object(measure_lib, "measure", recording_measure),
+        mock.patch.object(torch.distributed, "barrier", barrier),
+        expected_error,
+    ):
+      distributed_runner._run_single_target_task(
+          spec_name="tiny_linear",
+          mode_value="eager_default",
+          platform_name="cpu",
+          metrics_file=metrics_file,
+      )
+
+    # The launcher exports the metrics, so the worker never does.
+    self.assertEmpty(self.exporter.exported)
+    self.assertLen(measured, 1)
+    self.assertEqual(
+        distributed_runner._read_metrics(metrics_file),
+        measured[0] if writes_metrics else None,
+    )
+    self.assertFalse(torch.distributed.is_initialized())
 
   def test_main_reports_unsupported_mode_as_skipped(self):
     fake_dist_run = _FakeDistRun(failing_specs=set())
@@ -809,7 +1078,9 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
   def test_main_writes_test_xml_per_target(self):
     fake_dist_run = _FakeDistRun(failing_specs={"broken"})
     registry = {
-        name: types.SimpleNamespace(name=name, skipped_run_modes=frozenset())
+        name: types.SimpleNamespace(
+            name=name, skipped_run_modes=frozenset(), microbenchmark_name=None
+        )
         for name in ("broken", "healthy")
     }
 
@@ -828,7 +1099,6 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
         mock.patch.object(
             distributed_runner.distributed_utils, "dist_run", fake_dist_run
         ),
-        mock.patch.object(export_lib, "export"),
         self.assertRaises(
             SystemExit
         ),  # ASSERT_RAISES_OK=Runner must exit non-zero when any target fails.
@@ -1040,13 +1310,195 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
     self.assertLen(eager_state_resets, expected_tpu_cleanups)
     self.assertLen(tpu_cache_clears, expected_tpu_cleanups)
 
-  @mock.patch.object(shutil, "rmtree")
-  def test_clear_persistent_compilation_caches(self, mock_rmtree):
-    with mock.patch("glob.glob", return_value=["/tmp/torchinductor_test"]):
-      distributed_runner._clear_persistent_compilation_caches()
+  def _enter_fake_tier2_cache_root(self) -> str:
+    """Returns a temporary Tier-2 cache root.
 
-    mock_rmtree.assert_any_call("/dev/shm/torch_tpu_cache", ignore_errors=True)
-    mock_rmtree.assert_any_call("/tmp/torchinductor_test", ignore_errors=True)
+    Also unsets the env vars that enable the Tier-2 cache, for the duration of
+    the test.
+    """
+    self.enter_context(mock.patch.dict(os.environ))
+    for name in (
+        "TORCH_TPU_TIER2_COMPILATION_CACHE",
+        "TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT",
+        "WORLD_SIZE",
+    ):
+      os.environ.pop(name, None)
+    return self.create_tempdir().full_path
+
+  def test_owned_compilation_caches_spares_shared_caches(self):
+    tier2_root = self._enter_fake_tier2_cache_root()
+    # Caches of other jobs on the host, which must survive the target.
+    shared_tier2_cache = os.path.join(tier2_root, "default")
+    os.makedirs(shared_tier2_cache)
+    shared_inductor_cache = self.create_tempdir().full_path
+    os.environ["TORCHINDUCTOR_CACHE_DIR"] = shared_inductor_cache
+
+    with distributed_runner._owned_compilation_caches(
+        8, tier2_cache_root=tier2_root
+    ):
+      inductor_cache = os.environ["TORCHINDUCTOR_CACHE_DIR"]
+      tier2_cache = os.path.join(
+          tier2_root, os.environ["TORCH_TPU_TIER2_COMPILATION_CACHE"]
+      )
+      # What the workers' compilations leave behind.
+      for cache in (inductor_cache, tier2_cache):
+        os.makedirs(cache, exist_ok=True)
+        with open(os.path.join(cache, "entry.bin"), "w") as f:
+          f.write("compiled")
+
+    self.assertFalse(os.path.exists(inductor_cache))
+    self.assertFalse(os.path.exists(tier2_cache))
+    self.assertTrue(os.path.isdir(shared_tier2_cache))
+    self.assertTrue(os.path.isdir(shared_inductor_cache))
+    self.assertEqual(
+        os.environ.get("TORCHINDUCTOR_CACHE_DIR"), shared_inductor_cache
+    )
+    self.assertNotIn("TORCH_TPU_TIER2_COMPILATION_CACHE", os.environ)
+
+  def test_owned_compilation_caches_are_fresh_per_target(self):
+    tier2_root = self._enter_fake_tier2_cache_root()
+    os.environ["TORCH_TPU_TIER2_COMPILATION_CACHE"] = "my_cache"
+
+    caches = []
+    for _ in range(2):
+      # An explicitly named Tier-2 cache is enabled even for a single process.
+      with distributed_runner._owned_compilation_caches(
+          1, tier2_cache_root=tier2_root
+      ):
+        caches.append((
+            os.environ["TORCHINDUCTOR_CACHE_DIR"],
+            os.environ["TORCH_TPU_TIER2_COMPILATION_CACHE"],
+        ))
+
+    self.assertNotEqual(caches[0][0], caches[1][0])
+    self.assertNotEqual(caches[0][1], caches[1][1])
+    # A user-named Tier-2 cache is neither reused nor deleted.
+    self.assertNotIn("my_cache", [name for _, name in caches])
+    self.assertEqual(
+        os.environ["TORCH_TPU_TIER2_COMPILATION_CACHE"], "my_cache"
+    )
+
+  def test_owned_compilation_caches_keep_tier2_cache_disabled(self):
+    tier2_root = self._enter_fake_tier2_cache_root()
+    os.environ["TORCH_TPU_TIER2_COMPILATION_CACHE"] = "disabled"
+
+    with distributed_runner._owned_compilation_caches(
+        8, tier2_cache_root=tier2_root
+    ):
+      tier2_cache_name = os.environ["TORCH_TPU_TIER2_COMPILATION_CACHE"]
+
+    self.assertEqual(tier2_cache_name, "disabled")
+
+  def test_owned_compilation_caches_keep_tier2_cache_off_for_single_process(
+      self,
+  ):
+    tier2_root = self._enter_fake_tier2_cache_root()
+    os.makedirs(os.path.join(tier2_root, "default"))
+
+    with distributed_runner._owned_compilation_caches(
+        1, tier2_cache_root=tier2_root
+    ):
+      env_during_target = dict(os.environ)
+
+    self.assertNotIn("TORCH_TPU_TIER2_COMPILATION_CACHE", env_during_target)
+    self.assertEqual(os.listdir(tier2_root), ["default"])
+
+  @parameterized.named_parameters(
+      dict(testcase_name="multi_host", world_size="16", uses_tier2_cache=True),
+      dict(testcase_name="single_rank", world_size="1", uses_tier2_cache=False),
+  )
+  def test_owned_compilation_caches_follow_worker_world_size(
+      self, world_size, uses_tier2_cache
+  ):
+    tier2_root = self._enter_fake_tier2_cache_root()
+    # The workers keep an inherited WORLD_SIZE over the per-node process count.
+    os.environ["WORLD_SIZE"] = world_size
+
+    with distributed_runner._owned_compilation_caches(
+        1 if uses_tier2_cache else 8, tier2_cache_root=tier2_root
+    ):
+      env_during_target = dict(os.environ)
+
+    self.assertEqual(
+        "TORCH_TPU_TIER2_COMPILATION_CACHE" in env_during_target,
+        uses_tier2_cache,
+    )
+
+  def test_owned_compilation_caches_own_tier2_cache_with_tier3_cache(self):
+    tier2_root = self._enter_fake_tier2_cache_root()
+    # The Tier-3 cache turns on the Tier-2 cache even for a single process.
+    os.environ["TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT"] = (
+        self.create_tempdir().full_path
+    )
+
+    with distributed_runner._owned_compilation_caches(
+        1, tier2_cache_root=tier2_root
+    ):
+      tier2_cache_name = os.environ["TORCH_TPU_TIER2_COMPILATION_CACHE"]
+
+    self.assertStartsWith(tier2_cache_name, "perflab_")
+
+  def test_owned_compilation_caches_removed_when_target_fails(self):
+    tier2_root = self._enter_fake_tier2_cache_root()
+
+    with self.assertRaisesRegex(RuntimeError, "target failed"):
+      with distributed_runner._owned_compilation_caches(
+          8, tier2_cache_root=tier2_root
+      ):
+        inductor_cache = os.environ["TORCHINDUCTOR_CACHE_DIR"]
+        tier2_cache = os.path.join(
+            tier2_root, os.environ["TORCH_TPU_TIER2_COMPILATION_CACHE"]
+        )
+        os.makedirs(tier2_cache)
+        raise RuntimeError("target failed")
+
+    self.assertFalse(os.path.exists(inductor_cache))
+    self.assertFalse(os.path.exists(tier2_cache))
+
+  def test_main_runs_each_target_with_its_own_compilation_caches(self):
+    tier2_root = self._enter_fake_tier2_cache_root()
+    # `main` takes no injected dependencies, so point it at the fake root.
+    self.enter_context(
+        mock.patch.object(distributed_runner, "_TIER2_CACHE_ROOT", tier2_root)
+    )
+    seen_caches = []
+
+    def fake_dist_run(*args):
+      del args
+      inductor_cache = os.environ["TORCHINDUCTOR_CACHE_DIR"]
+      tier2_cache = os.path.join(
+          tier2_root, os.environ["TORCH_TPU_TIER2_COMPILATION_CACHE"]
+      )
+      # What the workers' compilations leave behind.
+      os.makedirs(tier2_cache)
+      seen_caches.append((inductor_cache, tier2_cache))
+
+    registry = {
+        name: types.SimpleNamespace(name=name, skipped_run_modes=frozenset())
+        for name in ("first", "second")
+    }
+    with (
+        mock.patch.dict(registry_lib.REGISTRY, registry, clear=True),
+        mock.patch.dict(
+            os.environ,
+            {
+                "BENCHMARK_PLATFORM": "b200_8",
+                "TESTBRIDGE_TEST_ONLY": (
+                    "first_eager_default second_eager_default"
+                ),
+            },
+        ),
+        mock.patch.object(
+            distributed_runner.distributed_utils, "dist_run", fake_dist_run
+        ),
+    ):
+      distributed_runner.main(["distributed_runner"])
+
+    self.assertLen(seen_caches, 2)
+    self.assertLen(set(seen_caches), 2)
+    for inductor_cache, tier2_cache in seen_caches:
+      self.assertFalse(os.path.exists(inductor_cache))
+      self.assertFalse(os.path.exists(tier2_cache))
 
 
 if __name__ == "__main__":

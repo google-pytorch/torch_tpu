@@ -79,7 +79,6 @@ torch_tpu_cc_library(
         "//csrc/ops:op_names",
         "//csrc/ops:python_context",
         "//csrc/ops:unary_aten_kernels",
-        "//csrc/ops:xla_utils",
         "//csrc/ops/macros:kernel",
         "//csrc/ops/macros:logging",
         "//shims/torch:aten_headers",

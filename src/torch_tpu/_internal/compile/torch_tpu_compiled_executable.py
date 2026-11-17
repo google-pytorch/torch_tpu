@@ -50,7 +50,11 @@ _ReconstructFxOutputsFn: TypeAlias = Callable[
 
 
 def _normalize_output_shape(
-    shape: tpu_torch_compile.OutputShape | tuple[Any, bool] | Sequence[int],
+    shape: (
+        tpu_torch_compile.OutputShape
+        | tuple[Sequence[int], bool]
+        | Sequence[int]
+    ),
 ) -> tpu_torch_compile.OutputShape:
   """Normalizes user or framework shape specifications to OutputShape."""
   if isinstance(shape, tpu_torch_compile.OutputShape):
@@ -372,11 +376,6 @@ class TorchTpuCompiledExecutable(CompiledArtifact):
     self._fast_runner = None
 
   @property
-  def is_released(self) -> bool:
-    """Returns True if the executable has been released."""
-    return self._executable is None
-
-  @property
   def graph_module_debug_str(self) -> str | None:
     """The string representation of the FX graph module's code.
 
@@ -425,7 +424,7 @@ class TorchTpuCompiledExecutable(CompiledArtifact):
     self._mlir_text = value
 
   @property
-  def parameter_layouts(self) -> list[Any]:
+  def parameter_layouts(self) -> Sequence[Any]:
     """Returns the parameter layouts expected by the executable."""
     return self._executable.get_parameter_layouts()
 

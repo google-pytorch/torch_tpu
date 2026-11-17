@@ -132,7 +132,7 @@ def _glue_suffix(so_name: str) -> str | None:
 
 def discover_built_suffixes(
     package_dir: pathlib.Path,
-) -> frozenset[str]:
+) -> Set[str]:
   """Returns the set of glue suffixes bundled under `package_dir`."""
   return frozenset(
       suffix

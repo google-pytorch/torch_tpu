@@ -292,7 +292,7 @@ at::Tensor AtenHardtanh(const at::Tensor& self, const at::Scalar& min_val,
     TT_ASSIGN_OR_THROW(auto result_buf,
                        AtenHardtanhImpl(self, promoted_min, promoted_max,
                                         std::move(param_keys)));
-    return MakeTensor(result_buf);
+    return MakeTensor(std::move(result_buf));
   });
 }
 
@@ -326,7 +326,7 @@ at::Tensor AtenHardtanhBackward(const at::Tensor& grad_output,
                                  AtenHardtanhBackwardImpl(
                                      grad_output, self, promoted_min,
                                      promoted_max, std::move(param_keys)));
-              return MakeTensor(result_buf);
+              return MakeTensor(std::move(result_buf));
             });
 }
 

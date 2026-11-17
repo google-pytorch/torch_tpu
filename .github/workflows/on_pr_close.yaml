@@ -23,6 +23,9 @@ permissions: {}
 jobs:
   cancel_runs:
     name: Cancel In-flight PR Runs
+    # Copybara lands a merged PR's head SHA on main, and the Mergify action
+    # cancels every run with that SHA, including main's push-triggered runs.
+    if: ${{ !github.event.pull_request.merged }}
     runs-on: ubuntu-latest
     permissions:
       actions: write  # Cancel workflow runs.

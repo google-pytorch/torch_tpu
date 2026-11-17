@@ -35,6 +35,7 @@
 #include "csrc/eager/current_stream.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/as_strided/as_strided_aten_kernels.h"
+#include "csrc/ops/copy_from/copy_common.h"
 #include "csrc/ops/copy_from/copy_from_aten_kernels.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_names.h"
@@ -98,6 +99,7 @@ absl::StatusOr<at::Tensor> MakeEmptyTpuReceiver(
     const at::Tensor& self, at::ScalarType target_dtype,
     std::optional<at::MemoryFormat> format,
     std::optional<c10::DeviceIndex> tpu_device_index) {
+  TT_RETURN_IF_ERROR(ValidateShellDtypeCast(self.scalar_type(), target_dtype));
   format = format.value_or(at::MemoryFormat::Preserve);
   if (format == at::MemoryFormat::Preserve) {
     return MakeTpuReceiverPreserveStrides(self, target_dtype, tpu_device_index);
@@ -150,6 +152,8 @@ at::Tensor AtenToCopy(const at::Tensor& self,
       {
         at::Device target_device = device.value_or(self.device());
         at::ScalarType target_dtype = dtype.value_or(self.scalar_type());
+        TT_THROW_IF_ERROR(
+            ValidateShellDtypeCast(self.scalar_type(), target_dtype));
         at::MemoryFormat resolved_format =
             memory_format.value_or(at::MemoryFormat::Preserve);
         bool preserve_strides = resolved_format == at::MemoryFormat::Preserve;

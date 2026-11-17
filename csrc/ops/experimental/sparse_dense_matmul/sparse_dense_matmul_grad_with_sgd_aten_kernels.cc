@@ -220,20 +220,18 @@ at::Tensor AtenSparseDenseMatmulGradWithSgd(
                   std::vector<int64_t> device_assignment,  // INT_VEC_OK
                   GetWorldDeviceAssignment());
 
+              TT_ASSIGN_OR_THROW(const DeviceBufferRef table_buf,
+                                 GetBuffer(embedding_table));
               TT_ASSIGN_OR_THROW(
                   auto results,
                   (DispatchOp<7, 1>(
                       builder_fn, inputs,
                       {.out_dtype = out_dtype,
                        .out_dims = out_dims,
+                       .out_layout = table_buf.shape().layout(),
                        .op_param_cache_keys = std::move(param_keys),
                        .donated_indices = {4},
                        .device_assignment = std::move(device_assignment)})));
-              TT_ASSIGN_OR_THROW(const DeviceBufferRef table_buf,
-                                 GetBuffer(embedding_table));
-              if (table_buf.shape().layout().has_value()) {
-                results.set_layout(*table_buf.shape().layout());
-              }
 
               return MakeTensor(results);
             });

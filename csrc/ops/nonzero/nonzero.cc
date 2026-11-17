@@ -14,6 +14,7 @@
 
 #include "csrc/ops/nonzero/nonzero.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <vector>
 
@@ -228,6 +229,63 @@ absl::StatusOr<mlir::MlirOp> BuildNonzeroShlo(int64_t output_size,
       mlir::MlirOp indices,
       UnravelIndices(input, input_linear_indices, mlir::ElementType::I32));
   return indices;
+}
+
+absl::StatusOr<mlir::MlirOp> BuildNonzeroStaticShlo(int64_t size,
+                                                    int64_t fill_value,
+                                                    mlir::MlirOp input) {
+  mlir::MlirBuilder& builder = input.getBuilder();
+  const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
+  const int64_t rank = input_type.getRank();
+  const int64_t num_elements = input_type.getNumElements();
+
+  if (size == 0 || rank == 0) {
+    return MakeConstant(builder, int64_t{0},
+                        mlir::makeTensorType(builder.getContext(), {size, rank},
+                                             mlir::ElementType::I64));
+  }
+
+  if (num_elements == 0) {
+    return MakeConstant(builder, fill_value,
+                        mlir::makeTensorType(builder.getContext(), {size, rank},
+                                             mlir::ElementType::I64));
+  }
+
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp input_flattened, FlattenIfNeeded(input));
+  mlir::MlirOp input_mask = GetNonzeroMask(input_flattened);
+
+  SortShloOutputs sort_shlo_outputs = BuildSortShlo(
+      input_mask, /*stable=*/true, /*dim=*/0, /*descending=*/true);
+
+  const int64_t slice_len = std::min(size, num_elements);
+  mlir::MlirOp sorted_mask =
+      stablehlo::Slice(sort_shlo_outputs.values, /*start_indices=*/{0},
+                       /*limit_indices=*/{slice_len}, /*stride_indices=*/{1});
+  mlir::MlirOp input_linear_indices =
+      stablehlo::Slice(sort_shlo_outputs.indices, /*start_indices=*/{0},
+                       /*limit_indices=*/{slice_len}, /*stride_indices=*/{1});
+
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp unraveled_indices,
+      UnravelIndices(input, input_linear_indices, mlir::ElementType::I32));
+
+  mlir::RankedTensorType mask_2d_type =
+      mlir::makeTensorType(builder.getContext(), {slice_len, rank},
+                           GetTensorTypeOrDie(sorted_mask).getElementType());
+  mlir::MlirOp mask_2d =
+      stablehlo::BroadcastInDim(mask_2d_type, sorted_mask, {0});
+  mlir::MlirOp fill_slice = MakeConstantLike(unraveled_indices, fill_value);
+  mlir::MlirOp result =
+      stablehlo::Select(mask_2d, unraveled_indices, fill_slice);
+
+  if (size > slice_len) {
+    mlir::MlirOp pad = MakeConstant(
+        builder, fill_value,
+        mlir::makeTensorType(builder.getContext(), {size - slice_len, rank},
+                             mlir::ElementType::I64));
+    result = stablehlo::Concatenate(builder, {result, pad}, /*dim=*/0);
+  }
+  return result;
 }
 
 }  // namespace torch_tpu

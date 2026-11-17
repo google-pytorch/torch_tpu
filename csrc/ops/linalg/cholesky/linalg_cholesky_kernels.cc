@@ -79,8 +79,7 @@ absl::Status ValidateLinalgCholeskyInputs(const at::Tensor& self) {
   const bool is_supported_dtype =
       (dtype == at::kFloat || dtype == at::kDouble ||
        dtype == at::kComplexFloat || dtype == at::kComplexDouble) ||
-      (self.numel() == 0 &&
-       (c10::isFloatingType(dtype) || c10::isComplexType(dtype)));
+      (self.numel() == 0 && (c10::isFloatingType(dtype) || IsComplex(dtype)));
   TT_RET_CHECK(is_supported_dtype, error::kInvalidArgument)
       << "expected the input dtype to be float32, float64, complex64, or "
          "complex128, got "

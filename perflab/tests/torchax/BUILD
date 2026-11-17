@@ -30,18 +30,21 @@ package(
 torch_tpu_py_test(
     name = "torchax_device_ops_test",
     srcs = ["torchax_device_ops_test.py"],
+    tags = ["notsan"],  # TODO(b/584257115): Fails under OSS TSan.
     deps = [
         "//perflab:target",
         "//perflab/torchax:torchax_device_ops",
         "//shims/absl_py/testing:absltest",
         "//src/torch_tpu",
         "//tests:seed_test_utils",
+        "@pypi//jax",
     ],
 )
 
 torch_tpu_py_test(
     name = "torchax_step_test",
     srcs = ["torchax_step_test.py"],
+    tags = ["notsan"],  # TODO(b/584257115): Fails under OSS TSan.
     deps = [
         "//perflab:compile",
         "//perflab:context",
@@ -51,10 +54,10 @@ torch_tpu_py_test(
         "//perflab/torchax:torchax_step",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
+        "//shims/flax",  # buildcleaner: keep
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//tests:seed_test_utils",
-        "@pypi//flax",  # buildcleaner: keep
         "@pypi//numpy",
         "@pypi//torchax",
     ],
@@ -66,9 +69,12 @@ torch_tpu_py_test(
     deps = [
         "//perflab/torchax:optimizer",
         "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//tests:seed_test_utils",
+        "@pypi//jax",
+        "@pypi//numpy",
         "@pypi//optax",
     ],
 )

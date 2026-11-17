@@ -29,11 +29,8 @@ load(
 )
 load("//shims/mpm:genmpm.bzl", "genmpm")
 load("//shims/pkg:pkg.bzl", "pkg_binary_with_runfiles")
-load(
-    "//shims/py_rules:pytype.bzl",
-    "pytype_strict_binary",
-    "pytype_strict_library",
-)
+load("//shims/py_rules:py_binary.bzl", "py_binary")
+load("//shims/py_rules:py_library.bzl", "py_library")
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -106,14 +103,18 @@ torch_tpu_py_library(
     deps = [
         ":cases",
         ":common",
+        ":context",
+        ":device_ops",
+        ":discovery",
         ":export",
         ":flags",
-        ":known_failures",
+        ":measure",
         ":metrics",
         ":mode",
         ":registry",
         ":step_lib",
         ":target",
+        ":workload",
         "//shims/absl_py/flags",
         "//shims/absl_py/logging",
         "//shims/absl_py/testing:absltest",
@@ -125,6 +126,7 @@ torch_tpu_py_library(
     name = "flags",
     srcs = ["flags.py"],
     deps = [
+        ":common",
         ":context",
         ":target",
         "//shims/absl_py/flags",
@@ -136,8 +138,10 @@ torch_tpu_py_library(
     srcs = ["export.py"],
     deps = [
         ":common",
+        ":known_failures",
         ":metrics",
         ":mode",
+        ":registry",
         ":target",
         "//src/torch_tpu/_internal/benchmarks:export_adapter",
     ],
@@ -162,6 +166,7 @@ torch_tpu_py_library(
         ":registry",
         ":step_lib",
         ":target",
+        ":workload",
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
     ],
@@ -170,6 +175,15 @@ torch_tpu_py_library(
 torch_tpu_py_library(
     name = "metrics",
     srcs = ["metrics.py"],
+    deps = [":workload"],
+)
+
+py_library(
+    # PY_LIBRARY_OK=Decouple from torch_tpu to avoid C++ dependency in coverage tests.
+    name = "workload",
+    srcs = ["workload.py"],
+    type_checking = True,
+    deps = [":step_lib"],
 )
 
 torch_tpu_py_library(
@@ -186,6 +200,7 @@ torch_tpu_py_library(
     name = "measure",
     srcs = ["measure.py"],
     deps = [
+        ":common",
         ":device_ops",
         ":metrics",
         ":step_lib",
@@ -209,15 +224,18 @@ torch_tpu_py_library(
     ],
 )
 
-pytype_strict_library(
+py_library(
     # PY_LIBRARY_OK=Decouple from torch_tpu to avoid C++ dependency in coverage tests.
     name = "step_lib",
     srcs = ["step_lib.py"],
+    type_checking = True,
 )
 
-torch_tpu_py_library(
+py_library(
+    # PY_LIBRARY_OK=Keep loss C++-free for coverage tests.
     name = "loss",
     srcs = ["loss.py"],
+    type_checking = True,
     deps = [
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
@@ -229,15 +247,18 @@ torch_tpu_py_library(
     srcs = ["registry.py"],
     deps = [
         ":compile",
+        ":context",
         ":step_lib",
         ":target",
+        ":workload",
     ],
 )
 
-pytype_strict_library(
+py_library(
     # PY_LIBRARY_OK=Decouple from torch_tpu to avoid C++ dependency in coverage tests.
     name = "target",
     srcs = ["target.py"],
+    type_checking = True,
 )
 
 torch_tpu_py_library(
@@ -261,6 +282,7 @@ torch_tpu_py_library(
         "//perflab/steps:common",
         "//shims/torch:pytorch",
         "//src/torch_tpu/_internal/compile",
+        "//src/torch_tpu/_internal/distributed:spmd_util",
     ],
 )
 
@@ -269,6 +291,7 @@ torch_tpu_py_library(
     srcs = ["context.py"],
     deps = [
         ":target",
+        ":workload",
         "//shims/absl_py/flags",
     ],
 )
@@ -277,17 +300,24 @@ torch_tpu_py_library(
     name = "cases",
     srcs = ["cases.py"],
     deps = [
+        ":batch_sweep_benchmarks",
         ":common",
         ":context",
         ":flags",
         ":known_failures",
         ":mode",
         ":registry",
+        ":step_lib",
         ":target",
         "//shims/absl_py/flags",
         "//shims/absl_py/logging",
         "//shims/absl_py/testing:absltest",
     ],
+)
+
+torch_tpu_py_library(
+    name = "batch_sweep_benchmarks",
+    srcs = ["batch_sweep_benchmarks.py"],
 )
 
 torch_tpu_py_library(
@@ -308,6 +338,34 @@ torch_tpu_py_library(
         ":mode",
         "//shims/torch:pytorch",
         "//tests:module_registry",
+    ],
+)
+
+# The harness shared by the single-host torch benchmark binaries: builds,
+# measures, and reports one benchmark case. It discovers no benchmarks, so a
+# binary that depends on it chooses which benchmark modules it runs.
+torch_tpu_py_library(
+    name = "torch_base_test",
+    testonly = True,
+    srcs = ["torch_base_test.py"],
+    deps = [
+        ":base_test",
+        ":common",
+        ":compile",
+        ":context",
+        ":device_ops",
+        ":fake_memory",
+        ":flags",
+        ":flops",
+        ":metrics",
+        ":mode",
+        ":registry",
+        ":step_lib",
+        ":target",
+        ":torch_device_ops",
+        ":workload",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
     ],
 )
 
@@ -336,7 +394,7 @@ torch_tpu_py_test(
     },
     nolocal = "user requested to run this manually",
     notest_oss = True,  # requires huggingface configs from internal infra  # NOTEST_OSS_OK=benchmarks run nightly
-    shard_count = 10,
+    shard_count = 30,
     tags = [
         "benchmark-smoke",
         "nofastbuild",  # Benchmark.
@@ -352,25 +410,16 @@ torch_tpu_py_test(
         ":base_test",
         ":cases",
         ":common",
-        ":compile",
-        ":context",
         ":discovery",
-        ":fake_memory",
         ":flags",
-        ":flops",
-        ":measure",
-        ":metrics",
         ":mode",
         ":registry",
-        ":step_lib",
         ":target",
-        ":torch_device_ops",
+        ":torch_base_test",
         "//perflab/models",
         "//perflab/steps",
-        "//shims/absl_py/logging",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
-        "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
     ],
@@ -424,25 +473,16 @@ torch_tpu_py_test(
         ":base_test",
         ":cases",
         ":common",
-        ":compile",
-        ":context",
         ":discovery",
-        ":fake_memory",
         ":flags",
-        ":flops",
-        ":measure",
-        ":metrics",
         ":mode",
         ":registry",
-        ":step_lib",
         ":target",
-        ":torch_device_ops",
+        ":torch_base_test",
         "//perflab/models",
         "//perflab/steps",
-        "//shims/absl_py/logging",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
-        "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
     ],
@@ -495,25 +535,16 @@ torch_tpu_py_test(
         ":base_test",
         ":cases",
         ":common",
-        ":compile",
-        ":context",
         ":discovery",
-        ":fake_memory",
         ":flags",
-        ":flops",
-        ":measure",
-        ":metrics",
         ":mode",
         ":registry",
-        ":step_lib",
         ":target",
-        ":torch_device_ops",
+        ":torch_base_test",
         "//perflab/models",
         "//perflab/steps",
-        "//shims/absl_py/logging",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
-        "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
     ],
@@ -564,25 +595,16 @@ torch_tpu_py_test(
         ":base_test",
         ":cases",
         ":common",
-        ":compile",
-        ":context",
         ":discovery",
-        ":fake_memory",
         ":flags",
-        ":flops",
-        ":measure",
-        ":metrics",
         ":mode",
         ":registry",
-        ":step_lib",
         ":target",
-        ":torch_device_ops",
+        ":torch_base_test",
         "//perflab/models",
         "//perflab/steps",
-        "//shims/absl_py/logging",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
-        "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
     ],
@@ -615,7 +637,6 @@ torch_tpu_py_library(
         ":discovery",
         ":export",
         ":flags",
-        ":known_failures",
         ":measure",
         ":metrics",
         ":mode",
@@ -623,6 +644,7 @@ torch_tpu_py_library(
         ":step_lib",
         ":target",
         ":torch_device_ops",
+        ":workload",
         "//perflab/distributed_models",
         "//perflab/steps",
         "//shims/absl_py:app",
@@ -670,25 +692,16 @@ torch_tpu_py_test(
         ":base_test",
         ":cases",
         ":common",
-        ":compile",
-        ":context",
         ":discovery",
-        ":fake_memory",
         ":flags",
-        ":flops",
-        ":measure",
-        ":metrics",
         ":mode",
         ":registry",
-        ":step_lib",
         ":target",
-        ":torch_device_ops",
+        ":torch_base_test",
         "//perflab/models",
         "//perflab/steps",
-        "//shims/absl_py/logging",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
-        "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
     ],
@@ -730,28 +743,109 @@ torch_tpu_py_test(
         ":base_test",
         ":cases",
         ":common",
-        ":compile",
-        ":context",
         ":discovery",
-        ":fake_memory",
         ":flags",
-        ":flops",
-        ":measure",
-        ":metrics",
         ":mode",
         ":registry",
-        ":step_lib",
         ":target",
-        ":torch_device_ops",
+        ":torch_base_test",
         "//perflab/models",
         "//perflab/steps",
-        "//shims/absl_py/logging",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
-        "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
     ],
+)
+
+_TORCH_LAYER_BENCHMARK_DEPS = [
+    ":base_test",
+    ":cases",
+    ":common",
+    ":discovery",
+    ":mode",
+    ":registry",
+    ":target",
+    ":torch_base_test",
+    "//shims/absl_py/testing:absltest",
+    "//shims/absl_py/testing:parameterized",
+    "//src/torch_tpu",
+    "//src/torch_tpu/_internal/distributed:multiprocessing",
+    "//perflab/layers",
+    "//perflab/steps",
+]
+
+# CPU smoke of the layer benchmarks that runs in the TorchTPU `.opt` presubmit,
+# like `torch_benchmark_cpu_smoke_test`: every layer benchmark runs one forward
+# or train step on CPU under FakeTensorMode.
+torch_tpu_py_test(
+    name = "torch_layer_benchmark_cpu_smoke_test",
+    timeout = "long",
+    srcs = ["torch_layer_benchmark_test.py"],
+    args = [
+        "--run_scope=presubmit",
+        "--min_warmup_steps=1",
+        "--max_warmup_steps=1",
+        "--post_warmup_steps=0",
+        "--fake_tensor_mode",
+        "--norun_in_subprocess",
+    ],
+    env = {
+        "BENCHMARK_PLATFORM": "cpu",
+    },
+    main = "torch_layer_benchmark_test.py",
+    notest_oss = True,  # Not yet verified in OSS.  # NOTEST_OSS_OK=out of scope for the CPU smoke stack
+    # Grows as layer families land.
+    shard_count = 2,
+    tags = [
+        "nofastbuild",  # Runs in the .opt presubmit.
+        "nosan",  # *san tests provide no benefit for benchmarks.
+    ],
+    use_tcmalloc = True,
+    deps = _TORCH_LAYER_BENCHMARK_DEPS,
+)
+
+torch_tpu_py_test(
+    name = "torch_layer_benchmark_full",
+    timeout = "eternal",
+    srcs = ["torch_layer_benchmark_test.py"],
+    env = {
+        "BENCHMARK_PLATFORM": "v7_1x1x1",
+    },
+    main = "torch_layer_benchmark_test.py",
+    notap = "Intended to be run with nightly benchmark suite",
+    shard_count = 50,
+    tags = [
+        "nofastbuild",  # Benchmark.
+        "requires-accel-hbm",
+        "requires-net:external",
+        "requires-tpu-v7x",
+    ],
+    use_tcmalloc = True,
+    deps = _TORCH_LAYER_BENCHMARK_DEPS,
+)
+
+# buildozer: disable=forbidden-tag-requires-gpu
+torch_tpu_py_test(
+    name = "torch_layer_benchmark_full_cuda",
+    timeout = "long",
+    srcs = ["torch_layer_benchmark_test.py"],
+    env = {
+        "BENCHMARK_PLATFORM": "b200_1",
+    },
+    exec_properties = {
+        "cpp_link.mem": "16g",
+    },
+    main = "torch_layer_benchmark_test.py",
+    notap = "Intended to be run with nightly benchmark suite",
+    shard_count = 50,
+    tags = [
+        "nofastbuild",  # Benchmark.
+        "requires-accel-hbm",
+        "requires-gpu-sm100-full",
+        "requires-net:external",
+    ],
+    deps = _TORCH_LAYER_BENCHMARK_DEPS,
 )
 
 _DISTRIBUTED_RUNNER_DATA = [
@@ -771,11 +865,12 @@ _DISTRIBUTED_RUNNER_MODEL_DEPS = if_oss(
     ],
 )
 
-pytype_strict_binary(
+py_binary(
     name = "distributed_runner",
     testonly = 1,
     srcs = ["distributed_runner.py"],
     data = _DISTRIBUTED_RUNNER_DATA,
+    type_checking = True,
     deps = _DISTRIBUTED_RUNNER_MODEL_DEPS + [
         ":distributed_runner_lib",
     ],

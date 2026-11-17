@@ -20,6 +20,7 @@
 #include <array>
 #include <cstdint>
 #include <optional>
+#include <type_traits>
 #include <utility>
 #include <variant>
 
@@ -29,7 +30,7 @@
 #include "csrc/internal/mosaic/kiln/core/shape.h"
 #include "csrc/internal/mosaic/kiln/core/specs.h"
 #include "csrc/internal/mosaic/kiln/core/tile.h"
-#include "csrc/internal/mosaic/kiln/core/value_base.h"
+#include "csrc/internal/mosaic/kiln/core/value_handle.h"
 #include "llvm/ADT/ArrayRef.h"
 
 namespace torch_tpu::kiln {
@@ -61,8 +62,6 @@ inline SliceDim Slice(IndexArg offset, IndexArg size) {
 // `Slice(offset, size)`, or `all`.
 using Indexer = std::variant<IndexArg, SliceDim, All>;
 
-class Ref;
-
 namespace internal {
 
 struct DimDesc {
@@ -87,22 +86,16 @@ struct DimDesc {
   }
 };
 
-const void* SliceMemRefImpl(const void* base_impl,
-                            llvm::ArrayRef<DimDesc> dims);
-Ref SliceRefImpl(Ref base, llvm::ArrayRef<DimDesc> dims);
+ValueHandle SliceMemRefImpl(ValueHandle base, llvm::ArrayRef<DimDesc> dims);
 
-}  // namespace internal
-
-// A memref kernel argument or allocation (VMEM block, SMEM scalar-prefetch
-// buffer, or HBM buffer). Slicing emits `tpu::MemRefSliceOp` /
-// `tpu::MemRefSqueezeOp` and returns another `Ref`, so sliced and non-sliced
-// references share the exact same interface. Memory is only accessed through
-// the explicit free functions `Load`, `LoadScalar`, and `Store`.
-class Ref : public ValueBase {
+// Common implementation of `Ref` and `TypedRef<kSpace>`: a handle to a memref
+// value with shape queries and slicing helpers. Copy assignment is protected so
+// that a typed ref can never be rebound through a base reference to a ref in
+// another memory space.
+class RefBase {
  public:
-  Ref(const Ref&) = default;
-  Ref& operator=(const Ref&) = default;
-
+  ValueHandle handle() const { return handle_; }
+  DType dtype() const { return dtype_; }
   llvm::ArrayRef<int64_t> dims() const;
   Shape shape() const { return Shape(dims(), dtype()); }
   MemorySpace memory_space() const;
@@ -115,35 +108,134 @@ class Ref : public ValueBase {
   // dimensions).
   Scalar Dim(int64_t axis) const;
 
-  // Slices a view of the ref:
+ protected:
+  // CHECK-fails unless `handle` is a memref value whose element type is the IR
+  // type of `dtype`.
+  RefBase(ValueHandle handle, DType dtype);
+  // CHECK-fails unless the memref is in `expected_space`.
+  RefBase(ValueHandle handle, DType dtype, MemorySpace expected_space);
+
+  RefBase(const RefBase&) = default;
+  RefBase& operator=(const RefBase&) = default;
+
+  // Returns the memref value of `ref(dims...)` (see `TypedRef::operator()`).
+  template <typename... Dims>
+  ValueHandle SliceImpl(Dims&&... dims) const {
+    const std::array<DimDesc, sizeof...(Dims)> descs = {
+        DimDesc::From(std::forward<Dims>(dims))...};
+    return SliceMemRefImpl(handle(), descs);
+  }
+
+  // Returns the memref value of `ref.At(indexers)`.
+  // TODO: b/581411915 - Migrate to use absl::Span.
+  ValueHandle AtImpl(llvm::ArrayRef<Indexer> indexers) const;
+
+ private:
+  ValueHandle handle_;
+  DType dtype_;
+};
+
+}  // namespace internal
+
+// A memref kernel argument or allocation whose memory space is part of its
+// type: a VMEM block (`VmemRef`), an SMEM buffer (`SmemRef`), or an HBM buffer
+// (`HbmRef`). Slicing emits `tpu::MemRefSliceOp` / `tpu::MemRefSqueezeOp` and
+// returns a ref in the same memory space. Memory is only accessed through the
+// explicit free functions `Load` and `Store`, whose overloads depend on the
+// memory space, and through DMA.
+template <MemorySpace kSpace>
+class TypedRef final : public internal::RefBase {
+ public:
+  static constexpr MemorySpace kMemorySpace = kSpace;
+
+  // CHECK-fails unless the memref is in `kSpace`.
+  TypedRef(internal::ValueHandle handle, DType dtype)
+      : RefBase(handle, dtype, kSpace) {}
+
+  TypedRef(const TypedRef&) = default;
+  TypedRef& operator=(const TypedRef&) = default;
+
+  // Slices a view of the ref, in the same memory space:
   //   ref(0, 0)                        (collapses leading dims)
   //   ref(0, Slice(c, kChunk), all)
   // Trailing omitted dimensions default to `all`. Along trailing tiled dynamic
   // dimensions, non-identity slices must use `Slice(offset, size)` with
   // tile-aligned `Scalar` bounds rather than `all`.
   template <typename... Dims>
-  Ref operator()(Dims&&... dims) const {
-    std::array<internal::DimDesc, sizeof...(Dims)> descs = {
-        internal::DimDesc::From(std::forward<Dims>(dims))...};
-    return internal::SliceRefImpl(*this, descs);
+  TypedRef operator()(Dims&&... dims) const {
+    return TypedRef(SliceImpl(std::forward<Dims>(dims)...), dtype());
   }
 
   // Same as `operator()`, with the dimensions given as a list, e.g. when their
   // number is only known when the kernel is built (Pallas `ref.at[...]`).
-  Ref At(llvm::ArrayRef<Indexer> indexers) const;
+  TypedRef At(llvm::ArrayRef<Indexer> indexers) const {
+    return TypedRef(AtImpl(indexers), dtype());
+  }
+};
 
- private:
-  friend struct internal::ValueAccess;
-  Ref(const void* impl, DType dtype);
+using VmemRef = TypedRef<MemorySpace::kVmem>;
+using SmemRef = TypedRef<MemorySpace::kSmem>;
+using HbmRef = TypedRef<MemorySpace::kHbm>;
+
+// A memref whose memory space is only known when the kernel is built, for code
+// that is generic over memory spaces (e.g. DMA). Any `TypedRef` converts to a
+// `Ref` implicitly; converting back requires the checked `As<TypedRefT>()`.
+//
+// We allow implicit conversion from `TypedRef` to `Ref` to enable writing
+// generic code that is agnostic to the memory space. This sibling relationship
+// is advantageous vs inheritance as it avoids possible slicing bugs.
+class Ref final : public internal::RefBase {
+ public:
+  Ref(internal::ValueHandle handle, DType dtype) : RefBase(handle, dtype) {}
+
+  Ref(const Ref&) = default;
+  Ref& operator=(const Ref&) = default;
+
+  template <MemorySpace kSpace>
+  Ref(TypedRef<kSpace> ref)  // NOLINT(google-explicit-constructor)
+      : RefBase(ref) {}
+
+  // Returns this ref as `TypedRefT` (`VmemRef`, `SmemRef`, or `HbmRef`), e.g.
+  // `ref.As<VmemRef>()`. CHECK-fails if this ref is in another memory space.
+  template <typename TypedRefT>
+  TypedRefT As() const {
+    static_assert(
+        std::is_same_v<TypedRefT, TypedRef<TypedRefT::kMemorySpace>>,
+        "Ref::As<T>() requires T to be a TypedRef (VmemRef, SmemRef, HbmRef)");
+    return TypedRefT(handle(), dtype());
+  }
+
+  // Same as `TypedRef::operator()` and `TypedRef::At`, returning a `Ref`.
+  template <typename... Dims>
+  Ref operator()(Dims&&... dims) const {
+    return Ref(SliceImpl(std::forward<Dims>(dims)...), dtype());
+  }
+  Ref At(llvm::ArrayRef<Indexer> indexers) const {
+    return Ref(AtImpl(indexers), dtype());
+  }
 };
 
 // Loads the whole of `src`, a VMEM ref with a static shape, as a tile. Slice
 // first to load a window: `Load(ref(0, Slice(c, kChunk)))`.
-Tile Load(Ref src);
+Tile Load(VmemRef src);
+
+// Loads a static `sizes` window at `offsets` from `src`, a VMEM ref with a
+// static shape (`vector.load`). Unlike `Load(src(Slice(...)))`, `sizes` need
+// not be multiples of the memref tile dimensions; out-of-bounds lanes/sublanes
+// of the trailing VREGs are masked off in hardware. Along trailing tiled
+// dimensions, `offsets` must be aligned to the memref tile dimensions.
+Tile Load(VmemRef src, llvm::ArrayRef<IndexArg> offsets,
+          llvm::ArrayRef<int64_t> sizes);
 
 // Loads `src`, a 0-D SMEM ref, as a scalar (`memref.load`). Index first to load
-// an element: `LoadScalar(ref(i, j))`.
-Scalar LoadScalar(Ref src);
+// an element: `Load(ref(i, j))`.
+Scalar Load(SmemRef src);
+
+// HBM refs cannot be loaded from directly (use `AsyncCopy` / `SyncCopy`), and a
+// `Ref` must first be typed with `As<VmemRef>()` / `As<SmemRef>()`.
+void Load(Ref src) = delete;
+void Load(Ref src, llvm::ArrayRef<IndexArg> offsets,
+          llvm::ArrayRef<int64_t> sizes) = delete;
 
 // TODO(willfroom): Add the "add" option.
 struct StoreOptions {
@@ -154,11 +246,17 @@ struct StoreOptions {
 
 // Stores `value` into `dst`, a VMEM ref with a static shape. `value` is
 // converted to the dtype of `dst` and reshaped or broadcast to its dimensions.
-void Store(Ref dst, Tile value, const StoreOptions& options = {});
+void Store(VmemRef dst, Tile value, const StoreOptions& options = {});
 
 // Stores `value` into `dst`, a 0-D SMEM ref (`memref.store`). `value` is
 // converted to the dtype of `dst`.
-void Store(Ref dst, Scalar value);
+void Store(SmemRef dst, Scalar value);
+
+// Tiles can only be stored to VMEM and scalars to SMEM. HBM refs cannot be
+// stored to directly (use `AsyncCopy` / `SyncCopy`), and a `Ref` must first be
+// typed with `As<VmemRef>()` / `As<SmemRef>()`.
+void Store(Ref dst, Tile value, const StoreOptions& options = {}) = delete;
+void Store(Ref dst, Scalar value) = delete;
 
 }  // namespace torch_tpu::kiln
 

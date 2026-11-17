@@ -14,6 +14,7 @@
 
 """Tests for sparse_dense_matmul_activation_unstack and sparse_dense_matmul_gradient_stack ops."""
 
+from collections.abc import Sequence
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
@@ -26,7 +27,7 @@ from tests import oss_utils
 
 
 def reference_interleave_gradients(
-    unstacked_gradients: list[torch.Tensor],
+    unstacked_gradients: Sequence[torch.Tensor],
     stacked_batch_size: int,
     stacked_feature_dim: int,
     num_sc: int = 2,
@@ -52,10 +53,10 @@ def reference_interleave_gradients(
 
 def reference_uninterleave_activations(
     stacked_activations: torch.Tensor,
-    per_feature_batch_sizes: list[int],
-    per_feature_dims: list[int],
+    per_feature_batch_sizes: Sequence[int],
+    per_feature_dims: Sequence[int],
     num_sc: int = 2,
-) -> list[torch.Tensor]:
+) -> Sequence[torch.Tensor]:
   """CPU reference implementation for uninterleaving activations."""
   num_features = len(per_feature_batch_sizes)
   feature_batch_size = per_feature_batch_sizes[0]
@@ -328,7 +329,7 @@ class SparseDenseMatmulStackingOpsTest(op_testing.TorchTpuTestBase):
   def test_sparse_dense_matmul_activation_unstack_on_tpu(
       self,
       compile_op: bool,
-      per_feature_dims: list[int],
+      per_feature_dims: Sequence[int],
       stacked_dim: int,
   ):
     device = torch.device("tpu")
@@ -381,7 +382,7 @@ class SparseDenseMatmulStackingOpsTest(op_testing.TorchTpuTestBase):
   def test_sparse_dense_matmul_gradient_stack_on_tpu(
       self,
       compile_op: bool,
-      feature_dims: list[int],
+      feature_dims: Sequence[int],
       stacked_dim: int,
   ):
     device = torch.device("tpu")
@@ -428,7 +429,7 @@ class SparseDenseMatmulStackingOpsTest(op_testing.TorchTpuTestBase):
   )
   def test_unstack_stack_autograd_flow_on_tpu(
       self,
-      per_feature_dims: list[int],
+      per_feature_dims: Sequence[int],
       stacked_dim: int,
   ):
     device = torch.device("tpu")
@@ -490,7 +491,7 @@ class SparseDenseMatmulStackingOpsTest(op_testing.TorchTpuTestBase):
   )
   def test_unstack_autograd_partial_output_gradient(
       self,
-      per_feature_dims: list[int],
+      per_feature_dims: Sequence[int],
       stacked_dim: int,
   ):
     """Verifies backward pass when downstream loss only uses a subset of features."""

@@ -42,7 +42,7 @@ TEST_F(LibtpuVersionTest, SettingDifferentVersionThrows) {
 }
 
 TEST_F(LibtpuVersionTest, SettingInvalidVersionThrows) {
-  EXPECT_THROW(SetLibtpuVersion("0.1.2.3.4"), torch_tpu::TtError);
+  EXPECT_THROW(SetLibtpuVersion("not_a_version"), torch_tpu::TtError);
 }
 
 TEST_F(LibtpuVersionTest, SetAndGetVersion) {
@@ -65,33 +65,50 @@ TEST_F(LibtpuVersionTest, CompareVersion) {
   EXPECT_LT(GetLibtpuVersion(), Version(0, 2, 0));
 }
 
+TEST_F(LibtpuVersionTest, FourComponentPointReleaseVersion) {
+  SetLibtpuVersion("0.0.50.1");
+  EXPECT_EQ(GetLibtpuVersionString(), "0.0.50.1");
+  EXPECT_EQ(GetLibtpuVersion(), Version(0, 0, 50, 1));
+  EXPECT_GT(GetLibtpuVersion(), Version(0, 0, 50));
+  EXPECT_LT(GetLibtpuVersion(), Version(0, 0, 50, 2));
+  EXPECT_LT(GetLibtpuVersion(), Version(0, 0, 51));
+}
+
 TEST_F(LibtpuVersionTest, PaddingZerosForFirstThreeComponents) {
   SetLibtpuVersion("0.1");
   EXPECT_EQ(GetLibtpuVersion(), Version(0, 1, 0));
 }
 
-TEST_F(LibtpuVersionTest, StableVersionPrecedenceOverNightly) {
-  // Stable 0.0.47 has precedence over 0.0.47 nightly pre-releases.
+TEST_F(LibtpuVersionTest, StableVersionPrecedenceOverPreReleases) {
+  // Stable 0.0.47 has precedence over 0.0.47 nightly and rc pre-releases.
   SetLibtpuVersion("0.0.47");
-  EXPECT_GE(GetLibtpuVersion(), Version(0, 0, 47, 20260824));
+  EXPECT_GE(GetLibtpuVersion(), Version(0, 0, 47, Version::Dev(20260824)));
   EXPECT_GE(GetLibtpuVersion(), Version(0, 0, 47));
   EXPECT_GE(GetLibtpuVersion(), Version(0, 0, 46));
   EXPECT_LT(GetLibtpuVersion(), Version(0, 0, 48));
-  EXPECT_LT(GetLibtpuVersion(), Version(0, 0, 48, 20260824));
+  EXPECT_LT(GetLibtpuVersion(), Version(0, 0, 48, Version::Dev(20260824)));
 
   // Nightly 0.0.47 does not satisfy requirement for stable 0.0.47.
   ResetLibtpuVersionForTesting();
   SetLibtpuVersion("0.0.47.dev20260824+nightly");
   EXPECT_LT(GetLibtpuVersion(), Version(0, 0, 47));
-  EXPECT_GE(GetLibtpuVersion(), Version(0, 0, 47, 20260824));
-  EXPECT_GE(GetLibtpuVersion(), Version(0, 0, 47, 20260823));
-  EXPECT_LT(GetLibtpuVersion(), Version(0, 0, 47, 20260825));
+  EXPECT_GE(GetLibtpuVersion(), Version(0, 0, 47, Version::Dev(20260824)));
+  EXPECT_GE(GetLibtpuVersion(), Version(0, 0, 47, Version::Dev(20260823)));
+  EXPECT_LT(GetLibtpuVersion(), Version(0, 0, 47, Version::Dev(20260825)));
   EXPECT_GE(GetLibtpuVersion(), Version(0, 0, 46));
+
+  // Release candidate 0.0.48rc1 ranks above 0.0.47 and 0.0.48.dev*, but does
+  // not satisfy requirement for stable 0.0.48.
+  ResetLibtpuVersionForTesting();
+  SetLibtpuVersion("0.0.48rc1");
+  EXPECT_GT(GetLibtpuVersion(), Version(0, 0, 47));
+  EXPECT_GT(GetLibtpuVersion(), Version(0, 0, 48, Version::Dev(20260824)));
+  EXPECT_LT(GetLibtpuVersion(), Version(0, 0, 48));
 }
 
 TEST_F(LibtpuVersionTest, TimestampDevVersion) {
   SetLibtpuVersion("0.0.47.dev202605201400");
-  EXPECT_EQ(GetLibtpuVersion(), Version(0, 0, 47, 202605201400));
+  EXPECT_EQ(GetLibtpuVersion(), Version(0, 0, 47, Version::Dev(202605201400)));
 }
 
 TEST_F(LibtpuVersionTest, SetEmptyVersion) {

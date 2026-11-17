@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -24,11 +25,11 @@
 #include "absl/log/absl_log.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
-#include "c10/util/string_view.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/layout_utils.h"
 #include "csrc/common/pybind_error_utils.h"
+#include "csrc/eager/device_assignment.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
@@ -36,6 +37,7 @@
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
+#include "csrc/ops/python_context.h"
 #include "pybind11/pybind11.h"
 #include "pybind11/stl.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
@@ -46,8 +48,8 @@ namespace torch_tpu {
 namespace py = pybind11;
 namespace {
 
-void PyRegisterCustomKernel(c10::string_view name, c10::string_view kernel_key,
-                            c10::string_view mlir_module_string) {
+void PyRegisterCustomKernel(std::string_view name, std::string_view kernel_key,
+                            std::string_view mlir_module_string) {
   if (RegisterCustomKernel(name, kernel_key, mlir_module_string)) {
     ABSL_VLOG(1) << "Registered new custom kernel: name=" << name
                  << ", kernel_key=" << kernel_key;
@@ -57,7 +59,7 @@ void PyRegisterCustomKernel(c10::string_view name, c10::string_view kernel_key,
   }
 }
 
-bool PyLookupCustomKernel(c10::string_view name, c10::string_view kernel_key) {
+bool PyLookupCustomKernel(std::string_view name, std::string_view kernel_key) {
   return LookupCustomKernel(name, kernel_key);
 }
 
@@ -127,7 +129,7 @@ bool PyLookupCustomKernel(c10::string_view name, c10::string_view kernel_key) {
 //   out = results[0]
 //   ```
 std::vector<at::Tensor> PyCallCustomKernel(
-    c10::string_view name, c10::string_view kernel_key,
+    std::string_view name, std::string_view kernel_key,
     const std::vector<at::Tensor>& inputs,
     const std::vector<at::Tensor>& output_shapes,
     // Use std::vector as pybind has built-in support for it.
@@ -138,6 +140,12 @@ std::vector<at::Tensor> PyCallCustomKernel(
       (name, kernel_key, inputs, output_shapes, donate_argnums,
        device_assignment),
       {
+        // `TT_KERNEL` pushed the generic `OpName::kCustomKernel`
+        // ("custom_kernel") onto the Python context stack. Nest the registered
+        // kernel's name under it so MLIR locations and XProf traces identify
+        // the specific custom kernel being called.
+        std::optional<ScopedPythonContextCapturer> kernel_capturer;
+        if (!name.empty()) kernel_capturer.emplace(KernelName{name});
         if (output_shapes.empty()) {
           return {};
         }
@@ -165,12 +173,15 @@ std::vector<at::Tensor> PyCallCustomKernel(
           output_dims_list.push_back(dims);
         }
 
+        const bool has_pallas_da = !device_assignment.empty();
         DispatchOpOptions<kDynamicSize> options{
             .out_dtypes = output_dtypes,
             .out_dims_list = output_dims_list,
             .computation_dtype = std::nullopt,
             .op_param_cache_keys = std::move(op_param_cache_keys),
-            .device_assignment = std::move(device_assignment)};
+            .device_assignment =
+                DeviceAssignment(std::move(device_assignment), /*global=*/{},
+                                 /*contains_pallas_kernel=*/has_pallas_da)};
 
         // Note that this DeferredOp needs its inputs to be marked with
         // jax.buffer_donor if they are leaf inputs to the MLIR module.
@@ -188,7 +199,7 @@ std::vector<at::Tensor> PyCallCustomKernel(
         std::vector<at::Tensor> result_tensors;
         result_tensors.reserve(results.size());
         for (auto& result : results) {
-          result_tensors.push_back(MakeTensor(result));
+          result_tensors.push_back(MakeTensor(std::move(result)));
         }
         return result_tensors;
       });

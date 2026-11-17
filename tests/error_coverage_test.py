@@ -28,6 +28,7 @@ google3 and OSS share the baseline, so the internal C++ files (under `google/`)
 aren't checked.
 """
 
+from collections.abc import Sequence
 import os
 
 from absl import flags
@@ -46,7 +47,7 @@ _PRINT_COVERAGE_DATA = flags.DEFINE_bool(
 
 
 def _print_coverage_data(
-    per_file_coverage: list[error_coverage_lib.CoverageForFile],
+    per_file_coverage: Sequence[error_coverage_lib.CoverageForFile],
 ) -> None:
   """Prints the error coverage data to stdout."""
 

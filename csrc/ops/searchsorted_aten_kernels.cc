@@ -18,6 +18,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -29,7 +30,6 @@
 #include "c10/core/Device.h"
 #include "c10/core/ScalarType.h"
 #include "c10/util/Optional.h"
-#include "c10/util/string_view.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/device_type.h"
@@ -81,11 +81,12 @@ absl::StatusOr<at::Tensor> ResolveAuxiliaryTensorDevice(
 
 absl::StatusOr<c10::optional<at::Tensor>> ResolveAuxiliaryTensorDevice(
     const c10::optional<at::Tensor>& tensor) {
-  if (!tensor.has_value() || !tensor.value().defined()) {
+  const auto sanitized = SanitizeOptionalTensor(tensor);
+  if (!sanitized) {
     return tensor;
   }
   TT_ASSIGN_OR_RETURN(at::Tensor resolved_tensor,
-                      ResolveAuxiliaryTensorDevice(tensor.value()));
+                      ResolveAuxiliaryTensorDevice(*sanitized));
   return c10::make_optional(std::move(resolved_tensor));
 }
 
@@ -95,7 +96,7 @@ absl::Status ValidateSearchsortedInputs(
   // Reject booleans for non-empty inputs to keep consistent with CUDA impl,
   // which short-circuits and returns success for empty inputs before
   // dispatching on the input dtype.
-  TT_RET_CHECK(values.numel() == 0 || values.scalar_type() != at::kBool,
+  TT_RET_CHECK(values.numel() == 0 || !IsBool(values),
                error::kPythonNotImplementedError)
       << "not implemented for " << ToString(values.scalar_type());
   TT_RET_CHECK(sorted.dim() != 0, error::kInvalidArgument)
@@ -111,7 +112,7 @@ absl::Status ValidateSearchsortedInputs(
 
   if (sorted.dim() != 1) {
     TT_RET_CHECK(sorted.dim() == values.dim(), error::kInvalidArgument)
-        << "expected sorted_sequence to be 1-dimensional or have the same "
+        << "expected sorted_sequence to be 1D or have the same "
            "number of dimensions as values, got "
         << sorted.dim() << " and " << values.dim();
     for (int64_t i = 0; i < sorted.dim() - 1; ++i) {
@@ -122,22 +123,23 @@ absl::Status ValidateSearchsortedInputs(
     }
   }
 
-  if (sorter.has_value() && sorter.value().defined()) {
-    TT_RET_CHECK(sorter.value().sizes() == sorted.sizes(),
+  const auto sanitized_sorter = SanitizeOptionalTensor(sorter);
+  if (sanitized_sorter) {
+    TT_RET_CHECK(sanitized_sorter->sizes() == sorted.sizes(),
                  error::kInvalidArgument)
         << "expected sorter and sorted_sequence to have the same shape, got "
-        << sorter.value().sizes() << " and " << sorted.sizes();
-    TT_RET_CHECK(sorter.value().scalar_type() == at::ScalarType::Long,
+        << sanitized_sorter->sizes() << " and " << sorted.sizes();
+    TT_RET_CHECK(sanitized_sorter->scalar_type() == at::ScalarType::Long,
                  error::kInvalidArgument)
-        << "expected sorter to have Long dtype, got "
-        << sorter.value().scalar_type();
+        << "expected sorter to have int64 dtype, got "
+        << ToString(sanitized_sorter->scalar_type());
   }
 
   return absl::OkStatus();
 }
 
 absl::StatusOr<bool> ResolveSearchsortedIsRight(
-    bool right, c10::optional<c10::string_view> side) {
+    bool right, c10::optional<std::string_view> side) {
   if (!side.has_value()) {
     return right;
   }
@@ -271,7 +273,7 @@ template <typename ReturnType, typename DispatchFn>
 ReturnType SearchsortedTensorCommon(const at::Tensor& sorted_sequence,
                                     const at::Tensor& values, bool out_int32,
                                     bool right,
-                                    c10::optional<c10::string_view> side,
+                                    c10::optional<std::string_view> side,
                                     const c10::optional<at::Tensor>& sorter,
                                     OpParamCacheKeys&& param_keys,
                                     DispatchFn&& dispatch_fn) {
@@ -294,8 +296,11 @@ ReturnType SearchsortedTensorCommon(const at::Tensor& sorted_sequence,
 
   std::vector<at::Tensor> input_vec = {resolved_sorted, resolved_values};
   input_vec.reserve(3);
-  if (resolved_sorter.has_value() && resolved_sorter.value().defined()) {
-    input_vec.push_back(resolved_sorter.value());
+  const auto sanitized_resolved_sorter =
+      SanitizeOptionalTensor(resolved_sorter);
+  const bool has_sorter = sanitized_resolved_sorter.has_value();
+  if (has_sorter) {
+    input_vec.push_back(*sanitized_resolved_sorter);
   }
 
   int64_t seq_len = resolved_sorted.size(-1);
@@ -313,9 +318,7 @@ ReturnType SearchsortedTensorCommon(const at::Tensor& sorted_sequence,
   const bool is_float = at::isFloatingType(common_aten_type);
 
   auto build_shlo =
-      [is_right, out_mlir_type, seq_len, num_iters,
-       has_sorter =
-           (resolved_sorter.has_value() && resolved_sorter.value().defined()),
+      [is_right, out_mlir_type, seq_len, num_iters, has_sorter,
        common_elem_type,
        is_float](absl::Span<mlir::MlirOp const> inputs,
                  mlir::MlirBuilder& builder) -> absl::StatusOr<mlir::MlirOp> {
@@ -351,7 +354,7 @@ ReturnType SearchsortedTensorCommon(const at::Tensor& sorted_sequence,
 
 absl::StatusOr<DeviceBufferRef> SearchsortedTensorInternal(
     const at::Tensor& sorted_sequence, const at::Tensor& values, bool out_int32,
-    bool right, c10::optional<c10::string_view> side,
+    bool right, c10::optional<std::string_view> side,
     const c10::optional<at::Tensor>& sorter, OpParamCacheKeys&& param_keys) {
   return SearchsortedTensorCommon<absl::StatusOr<DeviceBufferRef>>(
       sorted_sequence, values, out_int32, right, side, sorter,
@@ -373,7 +376,7 @@ absl::StatusOr<DeviceBufferRef> SearchsortedTensorInternal(
 absl::Status SearchsortedTensorOut(const at::Tensor& sorted_sequence,
                                    const at::Tensor& values, bool out_int32,
                                    bool right,
-                                   c10::optional<c10::string_view> side,
+                                   c10::optional<std::string_view> side,
                                    const c10::optional<at::Tensor>& sorter,
                                    at::Tensor& out,
                                    OpParamCacheKeys&& param_keys) {
@@ -406,7 +409,7 @@ absl::Status SearchsortedTensorOut(const at::Tensor& sorted_sequence,
 at::Tensor AtenSearchsortedTensor(const at::Tensor& sorted_sequence,
                                   const at::Tensor& values, bool out_int32,
                                   bool right,
-                                  c10::optional<c10::string_view> side,
+                                  c10::optional<std::string_view> side,
                                   const c10::optional<at::Tensor>& sorter) {
   TT_KERNEL(OpName::kSearchsortedTensor, param_keys,
             (sorted_sequence, values, out_int32, right, side, sorter), {
@@ -414,14 +417,14 @@ at::Tensor AtenSearchsortedTensor(const at::Tensor& sorted_sequence,
                                  SearchsortedTensorInternal(
                                      sorted_sequence, values, out_int32, right,
                                      side, sorter, std::move(param_keys)));
-              return MakeTensor(result);
+              return MakeTensor(std::move(result));
             });
 }
 
 at::Tensor& AtenSearchsortedTensorOut(const at::Tensor& sorted_sequence,
                                       const at::Tensor& values, bool out_int32,
                                       bool right,
-                                      c10::optional<c10::string_view> side,
+                                      c10::optional<std::string_view> side,
                                       const c10::optional<at::Tensor>& sorter,
                                       at::Tensor& out) {
   TT_KERNEL(OpName::kSearchsortedTensorOut, param_keys,
@@ -436,7 +439,7 @@ at::Tensor& AtenSearchsortedTensorOut(const at::Tensor& sorted_sequence,
 at::Tensor AtenSearchsortedScalar(const at::Tensor& sorted_sequence,
                                   const at::Scalar& value, bool out_int32,
                                   bool right,
-                                  c10::optional<c10::string_view> side,
+                                  c10::optional<std::string_view> side,
                                   const c10::optional<at::Tensor>& sorter) {
   auto promoted_value = PromoteScalar(value);
   TT_KERNEL(OpName::kSearchsortedScalar, param_keys,
@@ -446,14 +449,14 @@ at::Tensor AtenSearchsortedScalar(const at::Tensor& sorted_sequence,
                                  SearchsortedTensorInternal(
                                      sorted_sequence, values, out_int32, right,
                                      side, sorter, std::move(param_keys)));
-              return MakeTensor(result);
+              return MakeTensor(std::move(result));
             });
 }
 
 at::Tensor& AtenSearchsortedScalarOut(const at::Tensor& sorted_sequence,
                                       const at::Scalar& value, bool out_int32,
                                       bool right,
-                                      c10::optional<c10::string_view> side,
+                                      c10::optional<std::string_view> side,
                                       const c10::optional<at::Tensor>& sorter,
                                       at::Tensor& out) {
   auto promoted_value = PromoteScalar(value);

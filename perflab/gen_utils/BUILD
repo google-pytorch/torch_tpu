@@ -74,6 +74,7 @@ torch_tpu_py_test(
         "//perflab:context",
         "//perflab:model_helpers",
         "//perflab:target",
+        "//perflab:workload",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//src/torch_tpu",

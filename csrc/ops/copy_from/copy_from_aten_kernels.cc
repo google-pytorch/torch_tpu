@@ -204,6 +204,9 @@ at::Tensor CopyTensor(const at::Tensor& src, const at::Tensor& self_dest,
     return self_dest;
   }
 
+  TT_THROW_IF_ERROR(
+      ValidateShellDtypeCast(src.scalar_type(), self_dest.scalar_type()));
+
   TT_ASSIGN_OR_THROW(CopyType to_copy_type, GetCopyType(src, self_dest));
   const TransferSyncMode transfer_sync_mode = GetTransferSyncMode(non_blocking);
 

@@ -171,7 +171,7 @@ at::Tensor AtenConstantPadNd(const at::Tensor& self, at::IntArrayRef pad,
                                  std::min<int64_t>(0, left_pad) +
                                  std::min<int64_t>(0, right_pad);
     TT_CHECK_THROW(cropped_size >= 0, error::kInvalidArgument)
-        << "length must be non-negative";
+        << "expected length to be >= 0, got " << cropped_size;
     out_dims[dim] += left_pad + right_pad;
   }
 

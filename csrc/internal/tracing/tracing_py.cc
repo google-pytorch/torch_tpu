@@ -50,6 +50,9 @@ py::dict PyDrainStructuredLogBuffer() {
     d["stablehlo"] = ev.mlir_payload;
     d["reason"] = std::string(ToString(ev.reason));
     d["chromium_payload"] = ev.chromium_payload;
+    if (ev.kernel_type.has_value()) {
+      d["kernel_type"] = std::string(ToString(*ev.kernel_type));
+    }
     events.append(std::move(d));
   }
   py::dict out;
@@ -73,7 +76,8 @@ TT_PYBIND11_MODULE(_tpu_torch_tracing, m) {
         py::doc("Drains the buffer and returns "
                 "{events: [<dict per event>], dropped_since_last_drain: int}. "
                 "Each event dict contains: name, ts_us, dur_us, cache_hit, "
-                "aten_graph, stablehlo, reason."));
+                "aten_graph, stablehlo, reason and, if set, "
+                "kernel_type."));
 
   m.def("_structured_log_enabled", &PyStructuredLogEnabled,
         py::doc("Returns true if TORCH_TRACE was set at program startup."));

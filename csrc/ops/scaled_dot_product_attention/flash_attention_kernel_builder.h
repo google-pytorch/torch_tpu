@@ -17,15 +17,31 @@
 #ifndef TORCH_TPU_CSRC_OPS_SCALED_DOT_PRODUCT_ATTENTION_FLASH_ATTENTION_KERNEL_BUILDER_H_
 #define TORCH_TPU_CSRC_OPS_SCALED_DOT_PRODUCT_ATTENTION_FLASH_ATTENTION_KERNEL_BUILDER_H_
 
+#include <cstdint>
 #include <optional>
 #include <tuple>
 
 #include "ATen/core/ATen_fwd.h"
-#include "ATen/core/Tensor.h"
 #include "ATen/core/TensorBase.h"
 #include "absl/status/statusor.h"
+// IWYU pragma: begin_keep
+#include "ATen/core/Tensor.h"
+// IWYU pragma: end_keep
 
 namespace torch_tpu {
+
+// TPU MXU/VPU hardware lane width; the FlashAttention kernel pads any shorter
+// sequence dimension up to 128.
+inline constexpr int64_t kFlashMinHardwareTileSize = 128;
+
+// Minimum block size produced by CreateTiling's splitting loop; sequences at
+// or below 256 always execute as a single 1x1 block.
+inline constexpr int64_t kFlashMinSplitTileSize = 256;
+
+// Returns 50% of on-chip VMEM capacity in bytes for the active TPU generation
+// (or 50% of the conservative 16 MB fallback when TPU device attributes are
+// unavailable).
+[[nodiscard]] int64_t GetFlashDeviceVmemLimitBytes();
 
 absl::StatusOr<std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor>>
 CreateFlashAttentionKernel(const at::Tensor& query, const at::Tensor& key,

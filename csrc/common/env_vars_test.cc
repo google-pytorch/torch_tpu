@@ -16,7 +16,6 @@
 
 #include "csrc/common/env_vars.h"
 
-#include <cstdint>
 #include <cstdlib>
 #include <optional>
 #include <string>
@@ -132,29 +131,28 @@ TEST(EnvVarsTest, GetBooleanEnvOnceReturnsNulloptOnInvalidValue) {
 
 TEST(EnvVarsTest, GetIntegerEnvOnceUnsetReturnsNullopt) {
   unsetenv(kMasterPortEnvVar);
-  EXPECT_EQ((GetIntegerEnvOnce<int, kMasterPortEnvVar>()), std::nullopt);
+  EXPECT_EQ((GetIntegerEnvOnce<kMasterPortEnvVar>()), std::nullopt);
 }
 
 TEST(EnvVarsTest, GetIntegerEnvOnceParsesValidInt) {
   setenv(kLocalRankEnvVar, "42", 1);
-  EXPECT_EQ((GetIntegerEnvOnce<int, kLocalRankEnvVar>()), 42);
+  EXPECT_EQ((GetIntegerEnvOnce<kLocalRankEnvVar>()), 42);
 }
 
 TEST(EnvVarsTest, GetIntegerEnvOnceParsesNegativeInt) {
   setenv(kRankEnvVar, "-1", 1);
-  EXPECT_EQ((GetIntegerEnvOnce<int, kRankEnvVar>()), -1);
+  EXPECT_EQ((GetIntegerEnvOnce<kRankEnvVar>()), -1);
 }
 
 TEST(EnvVarsTest, GetIntegerEnvOnceParsesInt64) {
   setenv(kTpuPremappedBufferSizeEnvVar, "10737418240", 1);
-  EXPECT_EQ((GetIntegerEnvOnce<int64_t, kTpuPremappedBufferSizeEnvVar>()),
+  EXPECT_EQ((GetIntegerEnvOnce<kTpuPremappedBufferSizeEnvVar>()),
             10737418240LL);
 }
 
 TEST(EnvVarsTest, GetIntegerEnvOnceReturnsNulloptOnInvalidValue) {
   setenv(kTorchTpuHandshakePortEnvVar, "invalid_int", 1);
-  EXPECT_EQ((GetIntegerEnvOnce<int, kTorchTpuHandshakePortEnvVar>()),
-            std::nullopt);
+  EXPECT_EQ((GetIntegerEnvOnce<kTorchTpuHandshakePortEnvVar>()), std::nullopt);
 }
 
 // Sets the env vars that reference ${RANK}, runs `read_first`, and checks that
@@ -162,9 +160,9 @@ TEST(EnvVarsTest, GetIntegerEnvOnceReturnsNulloptOnInvalidValue) {
 // environment that libtpu and XLA read.
 template <typename ReadFirst>
 void CheckRankIsExpandedOnFirstRead(ReadFirst read_first) {
-  SetEnv<kXlaFlagsEnvVar>("--xla_disable_hlo_passes=some_pass_${RANK}");
-  SetEnv<kLibtpuInitArgsEnvVar>("some_args_${RANK}");
-  SetEnv<kRankEnvVar>("1234");
+  SafeSetEnv<kXlaFlagsEnvVar>("--xla_disable_hlo_passes=some_pass_${RANK}");
+  SafeSetEnv<kLibtpuInitArgsEnvVar>("some_args_${RANK}");
+  SafeSetEnv<kRankEnvVar>("1234");
 
   read_first();
 
@@ -217,6 +215,35 @@ TEST(EnvVarsDeathTest, EnsureRankIsExpandedInEnvVarsExpandsRank) {
         std::exit(0);
       },
       testing::ExitedWithCode(0), "");
+}
+
+TEST(EnvVarsTest, SetEnvBeforeGetEnvOnceSucceeds) {
+  SafeSetEnv<kTorchTpuInternalDumpMlirPassesToEnvVar>("print");
+  EXPECT_EQ(GetEnvOnce<kTorchTpuInternalDumpMlirPassesToEnvVar>(), "print");
+}
+
+TEST(EnvVarsTest, UnsetEnvBeforeGetEnvOnceSucceeds) {
+  SafeSetEnv<kNnodesEnvVar>("2");
+  SafeUnsetEnv<kNnodesEnvVar>();
+  EXPECT_EQ(GetIntegerEnvOnce<kNnodesEnvVar>(), std::nullopt);
+}
+
+TEST(EnvVarsDeathTest, SetEnvAfterGetEnvOnceCrashes) {
+  EXPECT_DEATH(
+      {
+        static_cast<void>(GetEnvOnce<kTorchTpuSpmdHandshakeStageEnvVar>());
+        SafeSetEnv<kTorchTpuSpmdHandshakeStageEnvVar>("OFF");
+      },
+      "TORCH_TPU_SPMD_HANDSHAKE_STAGE.*GetEnvOnce");
+}
+
+TEST(EnvVarsDeathTest, UnsetEnvAfterGetIntegerEnvOnceCrashes) {
+  EXPECT_DEATH(
+      {
+        static_cast<void>(GetIntegerEnvOnce<kTorchcommRankEnvVar>());
+        SafeUnsetEnv<kTorchcommRankEnvVar>();
+      },
+      "TORCHCOMM_RANK.*GetEnvOnce");
 }
 
 }  // namespace

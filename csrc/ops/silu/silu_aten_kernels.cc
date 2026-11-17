@@ -16,7 +16,6 @@
 
 #include "csrc/ops/silu/silu_aten_kernels.h"
 
-#include "ATen/OpMathType.h"
 #include "ATen/core/LegacyTypeDispatch.h"
 #include "ATen/core/TensorBody.h"
 #include "ATen/ops/result_type.h"
@@ -71,11 +70,8 @@ absl::StatusOr<mlir::MlirOp> BuildSiluShlo(mlir::MlirOp input_op) {
 absl::StatusOr<mlir::MlirOp> BuildSiluBackwardShlo(mlir::MlirOp grad_output_op,
                                                    mlir::MlirOp input_op) {
   const mlir::ElementType out_dtype = GetElementTypeOrDie(input_op);
-  const at::ScalarType out_scalar_type = ConvertTo<at::ScalarType>(out_dtype);
-  const at::ScalarType computation_scalar_type =
-      at::toOpMathType(out_scalar_type);
   TT_ASSIGN_OR_RETURN(const mlir::ElementType computation_dtype,
-                      ConvertTo<mlir::ElementType>(computation_scalar_type));
+                      InferComputationDtype(out_dtype));
   mlir::MlirOp comp_grad_output =
       stablehlo::ConvertElementType(grad_output_op, computation_dtype);
   mlir::MlirOp comp_input =

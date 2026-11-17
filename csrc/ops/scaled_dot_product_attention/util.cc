@@ -117,7 +117,7 @@ std::optional<kiln::InSpec> AttnBiasSpec(const FlashAttnConfig& config,
   return kiln::InSpec{BiasBlockShape(config, tiling, dtype), bias_map};
 }
 
-kiln::Tile LoadBias(kiln::Ref bias_ref, const FlashAttnConfig& config,
+kiln::Tile LoadBias(kiln::VmemRef bias_ref, const FlashAttnConfig& config,
                     int64_t row_offset, int64_t rows, int64_t col_offset,
                     int64_t cols) {
   const bool q_bcast = llvm::is_contained(config.mask_broadcast_dims, 2);
@@ -148,8 +148,10 @@ kiln::Scalar IntersectsDiagonal(kiln::Scalar row_block, kiln::Scalar col_block,
 kiln::Tile ApplyStructuredMask(kiln::Tile s, kiln::Scalar row_block,
                                kiln::Scalar col_block,
                                const FlashAttnConfig& config, const Tiling& t,
-                               int64_t row_offset, int64_t col_offset) {
-  const bool ragged_q = config.q_sequence_length % t.qt != 0;
+                               int64_t row_offset, int64_t col_offset,
+                               QueryTailMasking query_tail_masking) {
+  const bool ragged_q = query_tail_masking == QueryTailMasking::kMask &&
+                        config.q_sequence_length % t.qt != 0;
   const bool ragged_kv = config.kv_sequence_length % t.kt != 0;
   if (!config.is_causal && !ragged_q && !ragged_kv) {
     return s;
@@ -185,7 +187,7 @@ kiln::Tile ApplyStructuredMask(kiln::Tile s, kiln::Scalar row_block,
 }
 
 kiln::Tile ComputeLogits(kiln::Tile q, kiln::Tile k,
-                         std::optional<kiln::Ref> bias_ref,
+                         std::optional<kiln::VmemRef> bias_ref,
                          kiln::Scalar row_block, kiln::Scalar col_block,
                          const FlashAttnConfig& config, const Tiling& tiling) {
   kiln::Tile s =
@@ -202,17 +204,17 @@ kiln::Tile ComputeLogits(kiln::Tile q, kiln::Tile k,
 kiln::Tile DropoutKeepMask(const FlashAttnConfig& config, const Tiling& tiling,
                            kiln::Scalar batch, kiln::Scalar q_head,
                            kiln::Scalar row_block, kiln::Scalar col_block,
-                           kiln::Ref seed_ref, int64_t row_offset,
+                           kiln::SmemRef seed_ref, int64_t row_offset,
                            int64_t col_offset, int64_t rows, int64_t cols) {
   const int64_t mask_rows = rows > 0 ? rows : tiling.qt;
   const int64_t mask_cols = cols > 0 ? cols : tiling.kt;
   const kiln::Shape i32_shape = kiln::i32(mask_rows, mask_cols);
 
   // 1. The Philox {seed_lo, seed_hi, offset_lo, offset_hi} words.
-  kiln::Scalar seed_lo = kiln::LoadScalar(seed_ref(0));
-  kiln::Scalar seed_hi = kiln::LoadScalar(seed_ref(1));
-  kiln::Scalar offset_lo = kiln::LoadScalar(seed_ref(2));
-  kiln::Scalar offset_hi = kiln::LoadScalar(seed_ref(3));
+  kiln::Scalar seed_lo = kiln::Load(seed_ref(0));
+  kiln::Scalar seed_hi = kiln::Load(seed_ref(1));
+  kiln::Scalar offset_lo = kiln::Load(seed_ref(2));
+  kiln::Scalar offset_hi = kiln::Load(seed_ref(3));
 
   // 2. Fold the stream identity into one word. This is scalar work, so it costs
   // once per tile rather than once per element, and we can afford to avalanche
@@ -235,10 +237,14 @@ kiln::Tile DropoutKeepMask(const FlashAttnConfig& config, const Tiling& tiling,
   kiln::Tile q_abs = kiln::Iota(i32_shape, 0) + q_start;
   kiln::Tile kv_abs = kiln::Iota(i32_shape, 1) + kv_start;
 
-  // 4. Pack the coordinates into a single word, then avalanche. The pack is
-  // exactly injective while padded_q * padded_kv <= 2^32, so within a stream
-  // no two positions can share a hash.
-  kiln::Tile key = q_abs * config.padded_kv_sequence_length + kv_abs;
+  // 4. Pack the coordinates into a single word, then avalanche. The stride is
+  // the unpadded kv length: the forward and backward kernels can pad the
+  // sequence to different tile multiples, and both must drop the same
+  // positions. The pack is exactly injective over unpadded positions while
+  // q_len * kv_len <= 2^32, so within a stream no two of them can share a
+  // hash. Padded positions are masked out, so it does not matter that their
+  // keys can collide with unpadded ones.
+  kiln::Tile key = q_abs * config.kv_sequence_length + kv_abs;
   kiln::Tile hash = Fmix32(key ^ stream);
 
   // 5. Keep iff uint32(hash) >= round(dropout_rate * 2^32). Only a signed

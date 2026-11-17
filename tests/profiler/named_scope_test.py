@@ -14,6 +14,7 @@
 
 """Tests for `named_scope`."""
 
+from collections.abc import MutableSequence, Set
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
@@ -101,7 +102,7 @@ def _layer_name_scopes(layer: int) -> tuple[str, ...]:
 _MODEL_NAME_SCOPES = _layer_name_scopes(0) + _layer_name_scopes(1)
 
 
-def _capturing_backend(graphs: list[torch.fx.GraphModule]):
+def _capturing_backend(graphs: MutableSequence[torch.fx.GraphModule]):
   """Returns a Dynamo backend that runs and appends its graphs to `graphs`."""
 
   def backend(gm, example_inputs):
@@ -121,7 +122,7 @@ _requires_annotate_resume = absltest.skipIf(
 )
 
 
-def _graph_name_scopes(gm: torch.fx.GraphModule) -> set[str]:
+def _graph_name_scopes(gm: torch.fx.GraphModule) -> Set[str]:
   """Returns the "/"-joined name scopes of the ops of a graph that have any."""
   node_scopes = named_scope.compute_graph_name_scopes(
       gm.graph, torch_tpu_export._module_scope_entries

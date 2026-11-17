@@ -20,6 +20,7 @@ keep that coverage from shrinking silently and catch configuration mistakes
 that otherwise only show up in the nightly benchmark runs.
 """
 
+from collections.abc import Set
 from absl.testing import absltest
 from perflab import common
 from perflab import mode as mode_lib
@@ -79,7 +80,7 @@ _ACCELERATOR_RUN_MODES = frozenset(
 )
 
 
-def _generated_benchmark_names() -> set[str]:
+def _generated_benchmark_names() -> Set[str]:
   return {
       model.benchmark_name(is_training, suffix="gen")
       for model in gen_utils.iter_models_csv()

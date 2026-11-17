@@ -28,7 +28,6 @@ torch_tpu_cc_library(
     srcs = ["index_copy_aten_kernels.cc"],
     hdrs = ["index_copy_aten_kernels.h"],
     deps = [
-        ":index_copy",
         "//csrc/common:aten_utils",
         "//csrc/common:cache_key",
         "//csrc/common:dimension_types",
@@ -46,21 +45,8 @@ torch_tpu_cc_library(
         "//shims/torch/c10/core:base_headers",
         "//shims/torch/torch/headeronly:torch_headeronly",
         "@com_google_absl//absl/log",
-        "@com_google_absl//absl/types:span",
-        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
-        "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
-    ],
-)
-
-torch_tpu_cc_library(
-    name = "index_copy",
-    srcs = ["index_copy.cc"],
-    hdrs = ["index_copy.h"],
-    deps = [
-        "//csrc/common:dimension_types",
-        "//csrc/ops:op_builder_utils",
-        "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:absl_log",
+        "@com_google_absl//absl/types:span",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Support",
         "@stablehlo//:stablehlo_ops",

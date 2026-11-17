@@ -18,6 +18,7 @@ Uses `TpuMultiProcContinuousTest` to spawn a persistent pool of TPU worker
 processes per test class and run distributed collective checks across ranks.
 """
 
+from collections.abc import Sequence
 import math
 from absl import logging
 from absl.testing import absltest
@@ -187,7 +188,7 @@ class AllToAllSingleUnevenTestData:
 
   def __init__(
       self,
-      split_matrix: list[list[int]],
+      split_matrix: Sequence[Sequence[int]],
       dtype: torch.dtype = torch.float32,
       extra_dims: tuple[int, ...] = (),
       md_shapes: bool = False,
@@ -409,7 +410,7 @@ class AllToAllTestData:
     self._dtype = dtype
     self._md_shapes = md_shapes
 
-  def _tensor(self, data: list[int]):
+  def _tensor(self, data: Sequence[int]):
     if self._dtype.is_complex:
       real_dtype = (
           torch.float32 if self._dtype == torch.cfloat else torch.float64
@@ -420,7 +421,9 @@ class AllToAllTestData:
       )
     return torch.tensor(data, dtype=self._dtype)
 
-  def get_input_tensors(self, rank: int, world_size: int) -> list[torch.Tensor]:
+  def get_input_tensors(
+      self, rank: int, world_size: int
+  ) -> Sequence[torch.Tensor]:
     """Returns the input tensor list for a given rank."""
     if self._md_shapes:
       return [
@@ -433,7 +436,7 @@ class AllToAllTestData:
 
   def get_expected_output_tensors(
       self, rank: int, world_size: int
-  ) -> list[torch.Tensor]:
+  ) -> Sequence[torch.Tensor]:
     """Returns the expected output tensor list for a given rank."""
     if self._md_shapes:
       return [
@@ -446,7 +449,7 @@ class AllToAllTestData:
 
   def get_output_tensors(
       self, rank: int, world_size: int
-  ) -> list[torch.Tensor]:
+  ) -> Sequence[torch.Tensor]:
     """Returns an empty output tensor list with the correct shape."""
     return [
         torch.empty_like(t)
@@ -462,7 +465,7 @@ class AllToAllNonUniformTestData:
 
   def __init__(
       self,
-      matrix: list[list[int]],
+      matrix: Sequence[Sequence[int]],
       dtype: torch.dtype = torch.int32,
       extra_dims: tuple[int, ...] = (),
   ):
@@ -475,7 +478,9 @@ class AllToAllNonUniformTestData:
     num_elems = count * math.prod(self._extra_dims)
     return torch.arange(num_elems, dtype=self._dtype).reshape(shape) + offset
 
-  def get_input_tensors(self, rank: int, world_size: int) -> list[torch.Tensor]:
+  def get_input_tensors(
+      self, rank: int, world_size: int
+  ) -> Sequence[torch.Tensor]:
     return [
         self._make_tensor(self._matrix[rank][dst], rank * 100 + dst * 10)
         for dst in range(world_size)
@@ -483,7 +488,7 @@ class AllToAllNonUniformTestData:
 
   def get_expected_output_tensors(
       self, rank: int, world_size: int
-  ) -> list[torch.Tensor]:
+  ) -> Sequence[torch.Tensor]:
     return [
         self._make_tensor(self._matrix[src][rank], src * 100 + rank * 10)
         for src in range(world_size)
@@ -491,7 +496,7 @@ class AllToAllNonUniformTestData:
 
   def get_output_tensors(
       self, rank: int, world_size: int
-  ) -> list[torch.Tensor]:
+  ) -> Sequence[torch.Tensor]:
     return [
         torch.empty_like(t)
         for t in self.get_expected_output_tensors(rank, world_size)

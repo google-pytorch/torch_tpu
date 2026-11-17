@@ -14,6 +14,8 @@
 
 """Clones placeholder nodes that the graph both mutates and returns."""
 
+from collections.abc import Collection, Mapping, Sequence, Set
+import copy
 import operator
 from typing import Any
 
@@ -81,7 +83,7 @@ def _root_descriptor(desc: Any) -> Any:
 
 
 def _aliased(
-    aliases: dict[torch.fx.Node, set[torch.fx.Node]], value: Any
+    aliases: Mapping[torch.fx.Node, Collection[torch.fx.Node]], value: Any
 ) -> set[torch.fx.Node]:
   """Returns the placeholders that the nodes in `value` may alias."""
   return set().union(*(aliases.get(n, ()) for n in _get_nodes(value)))
@@ -132,7 +134,7 @@ def _track_op_overload(
 
 def _find_mutated_placeholders(
     graph: torch.fx.Graph, output_node: torch.fx.Node
-) -> set[torch.fx.Node]:
+) -> Set[torch.fx.Node]:
   """Returns the placeholders whose storage may be written to.
 
   A write to a `Tensor(a!)` argument counts as a write to every placeholder
@@ -184,7 +186,7 @@ def _find_mutated_placeholders(
 
 def _is_returned_compute_placeholder(
     node: torch.fx.Node,
-    returned_nodes: set[torch.fx.Node],
+    returned_nodes: Collection[torch.fx.Node],
 ) -> bool:
   """Checks if a node is a torch.Tensor output placeholder consumed by compute operations."""
   if node.op != "placeholder" or node not in returned_nodes:
@@ -197,7 +199,7 @@ def _is_returned_compute_placeholder(
 def _find_placeholders_to_clone(
     graph: torch.fx.Graph,
     output_node: torch.fx.Node,
-) -> list[torch.fx.Node]:
+) -> Sequence[torch.fx.Node]:
   """Identifies all placeholder nodes that need cloning."""
   returned_nodes = _get_nodes(output_node.args)
   mutated = _find_mutated_placeholders(graph, output_node)
@@ -209,17 +211,45 @@ def _find_placeholders_to_clone(
   ]
 
 
+def _shared_custom_metadata(nodes: Sequence[torch.fx.Node]) -> dict[str, Any]:
+  """Returns the `custom` metadata entries that all of `nodes` have in common."""
+  if not nodes:
+    return {}
+  customs = [node.meta.get("custom") or {} for node in nodes]
+  return {
+      key: value
+      for key, value in customs[0].items()
+      if all(key in c and c[key] == value for c in customs[1:])
+  }
+
+
 def _clone_and_replace_placeholder(
     graph: torch.fx.Graph,
     placeholder: torch.fx.Node,
 ) -> None:
-  """Clones a placeholder and redirects all downstream uses to the clone."""
+  """Clones a placeholder and redirects all downstream uses to the clone.
+
+  The clone takes the placeholder's metadata.
+  Placeholders are created outside any user annotation so they don't have custom
+  metadata.
+  The clone will take the `custom` metadata entries shared by all of its compute
+  users.
+
+  Args:
+    graph: The graph containing `placeholder`.
+    placeholder: The placeholder to clone.
+  """
+  shared_custom = _shared_custom_metadata(
+      [u for u in placeholder.users if u.op != "output"]
+  )
   with graph.inserting_after(placeholder):
     p_clone = graph.call_function(
         torch.ops.aten.clone.default, args=(placeholder,)
     )
     if hasattr(placeholder, "meta"):
       p_clone.meta = placeholder.meta.copy()
+    if shared_custom:
+      p_clone.meta["custom"] = copy.deepcopy(shared_custom)
 
     placeholder.replace_all_uses_with(
         p_clone, delete_user_cb=lambda u, clone=p_clone: u != clone

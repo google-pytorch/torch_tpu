@@ -26,6 +26,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "c10/core/ScalarType.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
@@ -71,7 +72,7 @@ absl::StatusOr<AllAnyReductionParams> GetAllAnyReductionParams(
 // PyTorch only allows `bool` and `uint8` (`kByte`) for out (refer to
 // check_result_is_bytebool in PyTorch's ReduceOps.cpp).
 absl::Status ValidateAllAnyOut(const at::Tensor& out) {
-  TT_RET_CHECK(out.scalar_type() == at::kBool || out.scalar_type() == at::kByte,
+  TT_RET_CHECK(IsBool(out) || out.scalar_type() == at::kByte,
                error::kInvalidArgument)
       << "expected the output dtype to be bool or uint8, got "
       << ToString(out.scalar_type());

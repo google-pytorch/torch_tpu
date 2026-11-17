@@ -16,7 +16,6 @@
 
 #include "csrc/ops/copy_from/cpu_to_tpu.h"
 
-#include <memory>
 #include <optional>
 #include <utility>
 
@@ -90,7 +89,8 @@ absl::Status CopyCpuToTpu(const at::Tensor& src, const at::Tensor& dest,
   ABSL_VLOG(1) << "[AtenCopyFrom] CPU -> TPU copy path for "
                << ToString(src, "src");
   if (src.numel() == 0) {
-    // Copying nothing is a no-op.
+    // Copying nothing is a no-op, but only if src is broadcastable to dest.
+    TT_RETURN_IF_ERROR(ValidateBroadcastableToDest(src, dest));
     return absl::OkStatus();
   }
 
@@ -171,10 +171,9 @@ absl::Status CopyCpuToTpu(const at::Tensor& src, const at::Tensor& dest,
 
   if (transfer_sync_mode == TransferSyncMode::kEagerBlocking) {
     TT_ASSIGN_OR_RETURN(
-        std::shared_ptr<EventSnapshot> snapshot,
-        MaterializeCurrentStream(MaterializationReason::kCpuTransfer).Await());
-    TT_RETURN_IF_ERROR(snapshot->Synchronize());
-    TT_RETURN_IF_ERROR(SyncAndReturnStickyError());
+        EventSnapshot snapshot,
+        MaterializeCurrentStream(MaterializationReason::kCpuTransfer));
+    TT_RETURN_IF_ERROR(snapshot.Synchronize());
   }
   return absl::OkStatus();
 }

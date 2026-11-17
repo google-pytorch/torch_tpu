@@ -70,7 +70,7 @@ std::optional<kiln::InSpec> AttnBiasSpec(const FlashAttnConfig& config,
 
 // Loads the f32 (rows, cols) bias sub-block at (row_offset, col_offset),
 // broadcasting a size-1 query / key dim (see `BiasBlockShape`).
-kiln::Tile LoadBias(kiln::Ref bias_ref, const FlashAttnConfig& config,
+kiln::Tile LoadBias(kiln::VmemRef bias_ref, const FlashAttnConfig& config,
                     int64_t row_offset, int64_t rows, int64_t col_offset,
                     int64_t cols);
 
@@ -89,21 +89,30 @@ kiln::Scalar BelowOrOnDiagonal(kiln::Scalar row_block, kiln::Scalar col_block,
 kiln::Scalar IntersectsDiagonal(kiln::Scalar row_block, kiln::Scalar col_block,
                                 const Tiling& tiling);
 
+// Whether `ApplyStructuredMask` masks out the logits of query rows past the end
+// of the query sequence.
+enum class QueryTailMasking {
+  kMask,
+  // For kernels whose per-row results are dropped for those rows anyway (e.g.
+  // the forward kernel, whose out-of-bounds output writes are discarded).
+  kSkip,
+};
+
 // Masks out logits above the diagonal (causal) and in the padded tail of
 // either sequence for the sub-block starting at (row_offset, col_offset)
 // within the (row_block, col_block) grid tile. Returns `s` untouched when no
 // masking is required.
-kiln::Tile ApplyStructuredMask(kiln::Tile s, kiln::Scalar row_block,
-                               kiln::Scalar col_block,
-                               const FlashAttnConfig& config,
-                               const Tiling& tiling, int64_t row_offset = 0,
-                               int64_t col_offset = 0);
+kiln::Tile ApplyStructuredMask(
+    kiln::Tile s, kiln::Scalar row_block, kiln::Scalar col_block,
+    const FlashAttnConfig& config, const Tiling& tiling, int64_t row_offset = 0,
+    int64_t col_offset = 0,
+    QueryTailMasking query_tail_masking = QueryTailMasking::kMask);
 
 // log2-scaled logits for one (q, k) tile pair:
 //   s = (q @ k^T) * scale * log2(e) [+ bias * log2(e)]
 // with causal / sequence-padding masking applied. Returns an f32 (qt, kt) tile.
 kiln::Tile ComputeLogits(kiln::Tile q, kiln::Tile k,
-                         std::optional<kiln::Ref> bias_ref,
+                         std::optional<kiln::VmemRef> bias_ref,
                          kiln::Scalar row_block, kiln::Scalar col_block,
                          const FlashAttnConfig& config, const Tiling& tiling);
 
@@ -112,17 +121,19 @@ kiln::Tile ComputeLogits(kiln::Tile q, kiln::Tile k,
 // (row_offset, col_offset) within the [qt, kt] tile. When `rows` or `cols` are
 // <= 0 they default to `qt` and `kt` respectively.
 //
-// The mask is a pure function of (batch, q_head, absolute q, absolute kv) and
-// the Philox {seed, offset} in `seed_ref` (memref<4xi32, smem>), so the
-// backward kernel regenerates it rather than storing it. It is keyed on
-// absolute rather than within-tile coordinates so that the forward and
-// backward kernels agree despite their different tilings.
+// The mask is a pure function of (batch, q_head, absolute q, absolute kv),
+// `config.kv_sequence_length`, `config.dropout_rate` and the Philox
+// {seed, offset} in `seed_ref` (memref<4xi32, smem>), so the backward kernel
+// regenerates it rather than storing it. It does not depend on the tiling: the
+// forward and backward kernels can pick different tile sizes, and so pad the
+// sequences to different lengths, but they share the unpadded lengths and drop
+// the same positions.
 //
 // `q_head` must be the *query* head index.
 kiln::Tile DropoutKeepMask(const FlashAttnConfig& config, const Tiling& tiling,
                            kiln::Scalar batch, kiln::Scalar q_head,
                            kiln::Scalar row_block, kiln::Scalar col_block,
-                           kiln::Ref seed_ref, int64_t row_offset = 0,
+                           kiln::SmemRef seed_ref, int64_t row_offset = 0,
                            int64_t col_offset = 0, int64_t rows = 0,
                            int64_t cols = 0);
 

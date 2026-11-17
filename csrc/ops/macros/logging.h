@@ -43,6 +43,7 @@
 #include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
 #include "c10/core/Device.h"
+#include "c10/core/Stream.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/macro_utils.h"
@@ -463,6 +464,9 @@ void CheckKernelArgType(  // NOLINT: cognitive complexity
         << message();
   } else if constexpr (std::is_same_v<T, at::Storage>) {
     ABSL_CHECK_EQ(normalized_arg_type_in_func_sig, "at::Storage")  // CRASH_OK
+        << message();
+  } else if constexpr (std::is_same_v<T, c10::Stream>) {
+    ABSL_CHECK_EQ(normalized_arg_type_in_func_sig, "c10::Stream")  // CRASH_OK
         << message();
   } else if constexpr (std::is_same_v<T, uint64_t>) {
     ABSL_CHECK_EQ(normalized_arg_type_in_func_sig, "uint64_t")  // CRASH_OK)

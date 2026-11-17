@@ -14,7 +14,7 @@
 
 """Test utilities for TorchTPU tests, including locating and loading goldens data."""
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 import dataclasses
 import gzip
 import importlib.resources
@@ -89,9 +89,21 @@ def goldens_candidate_local_dirs(
   return candidate_dirs
 
 
-def locate_goldens_pinfile() -> pathlib.Path:
-  """Locates the tests/goldens.pin configuration file."""
-  package = goldens_pin.__package__
+def locate_goldens_pinfile(package: str | None = None) -> pathlib.Path:
+  """Locates the goldens.pin configuration file.
+
+  Args:
+    package: The package containing goldens.pin. Defaults to the package of
+      `torch_tpu.tests.goldens_pin`, i.e. `tests/goldens.pin`.
+
+  Returns:
+    The path to goldens.pin.
+
+  Raises:
+    FileNotFoundError: If `package` contains no goldens.pin file.
+  """
+  if package is None:
+    package = goldens_pin.__package__
   resource = importlib.resources.files(package).joinpath("goldens.pin")
   if resource is None or not resource.is_file():
     raise FileNotFoundError("Could not locate goldens.pin")
@@ -192,7 +204,7 @@ def find_per_test_case_goldens_dir(
 def load_single_test_case_golden(
     test_case_name: str,
     per_test_case_dir: pathlib.Path,
-) -> dict[str, Any] | None:
+) -> Mapping[str, Any] | None:
   """Loads the plist pytree for a single test case, if present.
 
   Args:

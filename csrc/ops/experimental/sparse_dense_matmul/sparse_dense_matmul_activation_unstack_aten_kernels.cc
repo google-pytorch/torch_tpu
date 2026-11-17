@@ -224,7 +224,7 @@ std::vector<at::Tensor> AtenSparseDenseMatmulActivationUnstack(
         std::vector<at::Tensor> results;
         results.reserve(result_buffers.size());
         for (auto& buf : result_buffers) {
-          results.push_back(torch_tpu::MakeTensor(buf));
+          results.push_back(torch_tpu::MakeTensor(std::move(buf)));
         }
         return results;
       });

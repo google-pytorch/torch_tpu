@@ -12,10 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Perflab model benchmarks that are known to fail.
+"""Perflab benchmarks that are known to fail.
 
 Benchmark runners skip the executions that match an entry in `KNOWN_FAILURES`
-the same way as the run modes in `BenchmarkSpec.skipped_run_modes`:
+(model benchmarks) or `LAYER_KNOWN_FAILURES` (layer benchmarks) the same way
+as the run modes in `BenchmarkSpec.skipped_run_modes`:
 `torch_benchmark_test` and `torchax_benchmark_test` apply `--skip_behavior` to
 both (e.g. `--skip_behavior=run_skipped` runs only the skipped executions to
 check whether they still fail), and `distributed_runner` always skips them.
@@ -30,11 +31,16 @@ from perflab import target as target_lib
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class KnownFailure:
-  """A model benchmark known to fail under specific execution coordinates.
+  """A benchmark known to fail under specific execution coordinates.
+
+  Exactly one of `benchmark` and `benchmark_prefix` must be set.
 
   Attributes:
     benchmark: Registered `BenchmarkSpec.name` in `perflab/models` or
-      `perflab/distributed_models`.
+      `perflab/distributed_models`, matched exactly.
+    benchmark_prefix: Prefix of the `BenchmarkSpec.name`s of a benchmark family
+      (e.g. `layer_tanh_train_` for all shapes of a layer), matched with
+      `str.startswith`.
     framework: Framework (`TORCH` for TorchTPU/GPU or `TORCHAX` for TorchAX).
     device_kind: Optional device kind filter (e.g. `TPU` or `CUDA`). `None`
       matches all device kinds.
@@ -43,11 +49,25 @@ class KnownFailure:
     reason: Human-readable explanation of why the benchmark fails.
   """
 
-  benchmark: str
+  benchmark: str | None = None
+  benchmark_prefix: str | None = None
   framework: mode_lib.Framework
   device_kind: target_lib.DeviceKind | None = None
   run_modes: frozenset[common.RunMode] | None = None
   reason: str
+
+  def __post_init__(self):
+    if (self.benchmark is None) == (self.benchmark_prefix is None):
+      raise ValueError(
+          "Exactly one of `benchmark` and `benchmark_prefix` must be set, got"
+          f" benchmark={self.benchmark!r} and"
+          f" benchmark_prefix={self.benchmark_prefix!r}."
+      )
+
+  def _matches_name(self, benchmark: str) -> bool:
+    if self.benchmark_prefix is not None:
+      return benchmark.startswith(self.benchmark_prefix)
+    return benchmark == self.benchmark
 
   def matches(
       self,
@@ -58,7 +78,7 @@ class KnownFailure:
       run_mode: common.RunMode,
   ) -> bool:
     """Returns whether this entry applies to the given execution coordinates."""
-    if self.benchmark != benchmark or self.framework != framework:
+    if not self._matches_name(benchmark) or self.framework != framework:
       return False
     if self.device_kind is not None and self.device_kind != device_kind:
       return False
@@ -70,22 +90,6 @@ class KnownFailure:
 KNOWN_FAILURES: tuple[KnownFailure, ...] = (
     # TorchTPU.
     #
-    # TODO(b/574632209): Remove once XLA:TPU cl/1001433059 lands. It fixes
-    # `TpuConvolutionRewriter` for non-`f0b_i0o->0bf` dimension orders.
-    # Repro: //perflab:distributed_dev_benchmarks_ws8
-    #   --test_filter=qwen3_8_27b_4_layers_simple_fsdp_training_compiled
-    KnownFailure(
-        benchmark="qwen3_8_27b_4_layers_simple_fsdp_training",
-        framework=mode_lib.Framework.TORCH,
-        device_kind=target_lib.DeviceKind.TPU,
-        run_modes=frozenset({common.RunMode.COMPILED}),
-        reason=(
-            "XLA:TPU HLO shape mismatch in qwen3_8_L147_split1_bwd: Expected"
-            " instruction to have shape equal to bf16[2048,2048,2048], actual"
-            " shape is bf16[2048,2048,1] on multiply(%slice, %silu_backward)"
-            " (b/574632209)"
-        ),
-    ),
     # TODO(b/568037427): Remove the TorchAX entries as their failures are fixed.
     #
     # `torch._grouped_mm`, used by the transformers MoE experts, has no
@@ -376,6 +380,30 @@ KNOWN_FAILURES: tuple[KnownFailure, ...] = (
         ),
         reason="HBM OOM during the training warmup on v7_1x1x1",
     ),
+    # TODO(b/581222586): Remove once XLA:TPU ragged dot tiling respects the
+    # scoped VMEM limit (b/579516880).
+    KnownFailure(
+        benchmark="nemotron_3_nano_30b_6_layers_forward",
+        framework=mode_lib.Framework.TORCH,
+        device_kind=target_lib.DeviceKind.TPU,
+        run_modes=frozenset({common.RunMode.EAGER_OPTIMIZED}),
+        reason=(
+            "XLA:TPU grouped_mm (ragged dot) fusion exceeds the scoped VMEM"
+            " limit on v7 (b/581222586, b/579516880)"
+        ),
+    ),
+    # TODO(b/581657168): Remove once XLA:TPU ragged dot tiling respects the
+    # scoped VMEM limit (b/579516880).
+    KnownFailure(
+        benchmark="gpt_oss_20b_decode",
+        framework=mode_lib.Framework.TORCH,
+        device_kind=target_lib.DeviceKind.TPU,
+        run_modes=frozenset({common.RunMode.EAGER_DEFAULT}),
+        reason=(
+            "XLA:TPU grouped_mm (ragged dot) fusion exceeds the scoped VMEM"
+            " limit on v7 (b/581657168, b/579516880)"
+        ),
+    ),
     # TODO(b/571695076): Remove once the 4096 parameter training step compiles
     # within the subprocess timeout.
     KnownFailure(
@@ -400,105 +428,15 @@ KNOWN_FAILURES: tuple[KnownFailure, ...] = (
             " subprocess timeout on b200_1"
         ),
     ),
-    # TODO(b/563472806): Remove once internal builds pick up
-    # https://github.com/llvm/llvm-project/pull/225808.
+    # TODO(b/563472806): Remove once verified on b200. Internal builds have
+    # picked up https://github.com/llvm/llvm-project/pull/225808, but the
+    # distributed b200 run of this benchmark has not completed since.
     #
-    # The LLVM of internal builds expands a vectorized integer division by a
-    # constant into a v2i16 smul_lohi or umul_lohi that its NVPTX backend cannot
-    # select, so Triton aborts while compiling an Inductor kernel of these
-    # models. The Triton wheel used in OSS is not affected.
+    # The LLVM of internal builds expanded a vectorized integer division by a
+    # constant into a v2i16 smul_lohi or umul_lohi that its NVPTX backend could
+    # not select, so Triton aborted while compiling an Inductor kernel. The
+    # Triton wheel used in OSS is not affected.
     # copybara:uncomment_begin(internal builds only)
-    # KnownFailure(
-        # benchmark="blip_image_captioning_base_train_gen",
-        # framework=mode_lib.Framework.TORCH,
-        # device_kind=target_lib.DeviceKind.CUDA,
-        # run_modes=frozenset({common.RunMode.COMPILED}),
-        # reason="LLVM cannot select v2i16 [su]mul_lohi in a Triton kernel",
-    # ),
-    # KnownFailure(
-        # benchmark="conformer_training",
-        # framework=mode_lib.Framework.TORCH,
-        # device_kind=target_lib.DeviceKind.CUDA,
-        # run_modes=frozenset({common.RunMode.COMPILED}),
-        # reason="LLVM cannot select v2i16 [su]mul_lohi in a Triton kernel",
-    # ),
-    # KnownFailure(
-        # benchmark="deit_tiny_forward",
-        # framework=mode_lib.Framework.TORCH,
-        # device_kind=target_lib.DeviceKind.CUDA,
-        # run_modes=frozenset({common.RunMode.COMPILED}),
-        # reason="LLVM cannot select v2i16 [su]mul_lohi in a Triton kernel",
-    # ),
-    # KnownFailure(
-        # benchmark="dinov2_small_forward_gen",
-        # framework=mode_lib.Framework.TORCH,
-        # device_kind=target_lib.DeviceKind.CUDA,
-        # run_modes=frozenset({common.RunMode.COMPILED}),
-        # reason="LLVM cannot select v2i16 [su]mul_lohi in a Triton kernel",
-    # ),
-    # KnownFailure(
-        # benchmark="dinov2_small_train_gen",
-        # framework=mode_lib.Framework.TORCH,
-        # device_kind=target_lib.DeviceKind.CUDA,
-        # run_modes=frozenset({common.RunMode.COMPILED}),
-        # reason="LLVM cannot select v2i16 [su]mul_lohi in a Triton kernel",
-    # ),
-    # KnownFailure(
-        # benchmark="dpt_hybrid_midas_forward_gen",
-        # framework=mode_lib.Framework.TORCH,
-        # device_kind=target_lib.DeviceKind.CUDA,
-        # run_modes=frozenset({common.RunMode.COMPILED}),
-        # reason="LLVM cannot select v2i16 [su]mul_lohi in a Triton kernel",
-    # ),
-    # KnownFailure(
-        # benchmark="gepard_1_0_forward_gen",
-        # framework=mode_lib.Framework.TORCH,
-        # device_kind=target_lib.DeviceKind.CUDA,
-        # run_modes=frozenset({common.RunMode.COMPILED}),
-        # reason="LLVM cannot select v2i16 [su]mul_lohi in a Triton kernel",
-    # ),
-    # KnownFailure(
-        # benchmark="gepard_1_0_train_gen",
-        # framework=mode_lib.Framework.TORCH,
-        # device_kind=target_lib.DeviceKind.CUDA,
-        # run_modes=frozenset({common.RunMode.COMPILED}),
-        # reason="LLVM cannot select v2i16 [su]mul_lohi in a Triton kernel",
-    # ),
-    # KnownFailure(
-        # benchmark="glm_ocr_forward_gen",
-        # framework=mode_lib.Framework.TORCH,
-        # device_kind=target_lib.DeviceKind.CUDA,
-        # run_modes=frozenset({common.RunMode.COMPILED}),
-        # reason="LLVM cannot select v2i16 [su]mul_lohi in a Triton kernel",
-    # ),
-    # KnownFailure(
-        # benchmark="glucose_base_ja_v2_train_gen",
-        # framework=mode_lib.Framework.TORCH,
-        # device_kind=target_lib.DeviceKind.CUDA,
-        # run_modes=frozenset({common.RunMode.COMPILED}),
-        # reason="LLVM cannot select v2i16 [su]mul_lohi in a Triton kernel",
-    # ),
-    # KnownFailure(
-        # benchmark="gpt2_train_gen",
-        # framework=mode_lib.Framework.TORCH,
-        # device_kind=target_lib.DeviceKind.CUDA,
-        # run_modes=frozenset({common.RunMode.COMPILED}),
-        # reason="LLVM cannot select v2i16 [su]mul_lohi in a Triton kernel",
-    # ),
-    # KnownFailure(
-        # benchmark="lahja_sa_ahmad_v1_forward_gen",
-        # framework=mode_lib.Framework.TORCH,
-        # device_kind=target_lib.DeviceKind.CUDA,
-        # run_modes=frozenset({common.RunMode.COMPILED}),
-        # reason="LLVM cannot select v2i16 [su]mul_lohi in a Triton kernel",
-    # ),
-    # KnownFailure(
-        # benchmark="mllama_11b_forward",
-        # framework=mode_lib.Framework.TORCH,
-        # device_kind=target_lib.DeviceKind.CUDA,
-        # run_modes=frozenset({common.RunMode.COMPILED}),
-        # reason="LLVM cannot select v2i16 [su]mul_lohi in a Triton kernel",
-    # ),
     # KnownFailure(
         # benchmark="qwen3_8_27b_4_layers_simple_fsdp_training",
         # framework=mode_lib.Framework.TORCH,
@@ -506,64 +444,26 @@ KNOWN_FAILURES: tuple[KnownFailure, ...] = (
         # run_modes=frozenset({common.RunMode.COMPILED}),
         # reason="LLVM cannot select v2i16 [su]mul_lohi in a Triton kernel",
     # ),
+    # # Inductor lowers part of the graph to its C++ CPU backend, and the
+    # # internal b200 test machines have no C++ compiler.
     # KnownFailure(
-        # benchmark="sam3_litetext_s0_forward_gen",
+        # benchmark="lahja_sa_ahmad_v1_forward_gen",
         # framework=mode_lib.Framework.TORCH,
         # device_kind=target_lib.DeviceKind.CUDA,
         # run_modes=frozenset({common.RunMode.COMPILED}),
-        # reason="LLVM cannot select v2i16 [su]mul_lohi in a Triton kernel",
-    # ),
-    # KnownFailure(
-        # benchmark="siglip_base_forward",
-        # framework=mode_lib.Framework.TORCH,
-        # device_kind=target_lib.DeviceKind.CUDA,
-        # run_modes=frozenset({common.RunMode.COMPILED}),
-        # reason="LLVM cannot select v2i16 [su]mul_lohi in a Triton kernel",
-    # ),
-    # KnownFailure(
-        # benchmark="timm_resnet_50_training",
-        # framework=mode_lib.Framework.TORCH,
-        # device_kind=target_lib.DeviceKind.CUDA,
-        # run_modes=frozenset({common.RunMode.COMPILED}),
-        # reason="LLVM cannot select v2i16 [su]mul_lohi in a Triton kernel",
-    # ),
-    # KnownFailure(
-        # benchmark="timm_vit_small_dino_forward",
-        # framework=mode_lib.Framework.TORCH,
-        # device_kind=target_lib.DeviceKind.CUDA,
-        # run_modes=frozenset({common.RunMode.COMPILED}),
-        # reason="LLVM cannot select v2i16 [su]mul_lohi in a Triton kernel",
-    # ),
-    # KnownFailure(
-        # benchmark="timm_vit_small_dino_training",
-        # framework=mode_lib.Framework.TORCH,
-        # device_kind=target_lib.DeviceKind.CUDA,
-        # run_modes=frozenset({common.RunMode.COMPILED}),
-        # reason="LLVM cannot select v2i16 [su]mul_lohi in a Triton kernel",
-    # ),
-    # KnownFailure(
-        # benchmark="tiny_doc_qa_vision_encoder_decoder_forward_gen",
-        # framework=mode_lib.Framework.TORCH,
-        # device_kind=target_lib.DeviceKind.CUDA,
-        # run_modes=frozenset({common.RunMode.COMPILED}),
-        # reason="LLVM cannot select v2i16 [su]mul_lohi in a Triton kernel",
-    # ),
-    # KnownFailure(
-        # benchmark="wan_2_2_ti2v_5b_training",
-        # framework=mode_lib.Framework.TORCH,
-        # device_kind=target_lib.DeviceKind.CUDA,
-        # run_modes=frozenset({common.RunMode.COMPILED}),
-        # reason="LLVM cannot select v2i16 [su]mul_lohi in a Triton kernel",
-    # ),
-    # KnownFailure(
-        # benchmark="yolos_small_forward_gen",
-        # framework=mode_lib.Framework.TORCH,
-        # device_kind=target_lib.DeviceKind.CUDA,
-        # run_modes=frozenset({common.RunMode.COMPILED}),
-        # reason="LLVM cannot select v2i16 [su]mul_lohi in a Triton kernel",
+        # reason=(
+            # "Inductor CPU codegen finds no working C++ compiler (g++) on b200_1"
+        # ),
     # ),
     # copybara:uncomment_end
 )
+
+# Layer benchmarks that are known to fail.
+#
+# They are kept separate from `KNOWN_FAILURES` because `model_config_test`
+# requires every `KNOWN_FAILURES` entry to be a registered model benchmark.
+# Entries usually set `benchmark_prefix` to cover every shape of a layer family.
+LAYER_KNOWN_FAILURES: tuple[KnownFailure, ...] = ()
 
 
 def get_known_failure_reason(
@@ -574,7 +474,7 @@ def get_known_failure_reason(
     run_mode: common.RunMode,
 ) -> str | None:
   """Returns the failure reason if the benchmark is known to fail, else None."""
-  for failure in KNOWN_FAILURES:
+  for failure in (*KNOWN_FAILURES, *LAYER_KNOWN_FAILURES):
     if failure.matches(
         benchmark,
         framework=framework,

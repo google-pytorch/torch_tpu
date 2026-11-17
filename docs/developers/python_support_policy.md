@@ -24,8 +24,8 @@ matrix for our minimum supported PyTorch release:
 
 <!-- LINT.IfChange(python_version_support) -->
 
-TorchTPU currently supports Python 3.11, 3.12, 3.13, and 3.14 (including
-free-threaded 3.14t).
+TorchTPU currently supports Python 3.11, 3.12, 3.13, 3.14, and 3.15 (including
+free-threaded 3.14t and 3.15t).
 
 <!-- LINT.ThenChange(
     ../../oss/pyproject.toml:requires_python,

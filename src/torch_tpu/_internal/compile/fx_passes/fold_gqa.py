@@ -30,6 +30,7 @@ unexpanded key and value tensors so that head broadcast and backward reduction
 are folded directly on device MXU without memory materialization.
 """
 
+from collections.abc import Sequence
 import operator
 import torch
 from torch import fx
@@ -38,11 +39,15 @@ _SDPA_FORWARD_TARGETS = {
     torch.ops.aten.scaled_dot_product_attention.default,
     torch.ops.aten._scaled_dot_product_fused_attention_overrideable.default,
     torch.ops.aten._scaled_dot_product_efficient_attention.default,
+    torch.ops.aten._scaled_dot_product_cudnn_attention.default,
+    torch.ops.aten._scaled_dot_product_flash_attention.default,
 }
 
 _SDPA_BACKWARD_TARGETS = {
     torch.ops.aten._scaled_dot_product_fused_attention_overrideable_backward.default,
     torch.ops.aten._scaled_dot_product_efficient_attention_backward.default,
+    torch.ops.aten._scaled_dot_product_cudnn_attention_backward.default,
+    torch.ops.aten._scaled_dot_product_flash_attention_backward.default,
 }
 
 _RESHAPE_TARGETS = {
@@ -72,6 +77,11 @@ _SQUEEZE_TARGETS = {
     torch.ops.aten.squeeze_copy.dim,
 }
 
+_CLONE_TARGETS = {
+    torch.ops.aten.clone.default,
+    torch.ops.aten.contiguous.default,
+}
+
 
 def _extract_repeat_kv_source(node: fx.Node) -> tuple[fx.Node, int] | None:
   """Extracts (orig_tensor_node, group_size) if node is a repeat_kv expansion.
@@ -85,10 +95,7 @@ def _extract_repeat_kv_source(node: fx.Node) -> tuple[fx.Node, int] | None:
 
   curr = node
   # Unwrap optional clone or contiguous operations
-  while curr.target in (
-      torch.ops.aten.clone.default,
-      torch.ops.aten.contiguous.default,
-  ):
+  while curr.target in _CLONE_TARGETS:
     if curr.args and isinstance(curr.args[0], fx.Node):
       curr = curr.args[0]
     else:
@@ -101,6 +108,15 @@ def _extract_repeat_kv_source(node: fx.Node) -> tuple[fx.Node, int] | None:
     return None
 
   expand_node = curr.args[0]
+  # Reshaping the non-contiguous expanded tensor cannot be a view, so AOT
+  # Autograd traces it as `expand -> clone -> _unsafe_view`.
+  while (
+      isinstance(expand_node, fx.Node)
+      and expand_node.target in _CLONE_TARGETS
+      and expand_node.args
+      and isinstance(expand_node.args[0], fx.Node)
+  ):
+    expand_node = expand_node.args[0]
   if (
       not isinstance(expand_node, fx.Node)
       or expand_node.target not in _EXPAND_TARGETS
@@ -151,7 +167,7 @@ def _extract_repeat_kv_source(node: fx.Node) -> tuple[fx.Node, int] | None:
 def _detect_repeat_kv_backward_reduction(
     grad_consumer: fx.Node,
     expected_group_size: int | None = None,
-) -> tuple[fx.Node, list[fx.Node]] | None:
+) -> tuple[fx.Node, Sequence[fx.Node]] | None:
   """Detects autograd backward reduction of repeat_kv.
 
   Forward repeat_kv pattern:

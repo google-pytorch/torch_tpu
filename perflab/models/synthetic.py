@@ -127,6 +127,8 @@ def _register_synthetic_benchmarks() -> None:
         name=f"synthetic_{n}_outputs_forward",
         presubmit=presubmit,
         presubmit_reason=presubmit_reason,
+        # Measures host overhead; has no batch.
+        workload=None,
     )
     registry_lib.add_benchmark(
         factory=_make_training_factory(n),
@@ -134,6 +136,8 @@ def _register_synthetic_benchmarks() -> None:
         name=f"synthetic_{n}_params_training",
         presubmit=presubmit,
         presubmit_reason=presubmit_reason,
+        # Measures host overhead; has no batch.
+        workload=None,
     )
 
 

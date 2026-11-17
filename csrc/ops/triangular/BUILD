@@ -28,24 +28,14 @@ torch_tpu_cc_library(
     srcs = ["triangular_aten_kernels.cc"],
     hdrs = ["triangular_aten_kernels.h"],
     deps = [
-        ":triangular",
         "//csrc/common:error_utils",
+        "//csrc/ops:op_builder_utils",
         "//csrc/ops:op_names",
         "//csrc/ops:unary_aten_kernels",
         "//csrc/ops/macros:kernel",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
         "@com_google_absl//absl/functional:bind_front",
-    ],
-)
-
-torch_tpu_cc_library(
-    name = "triangular",
-    srcs = ["triangular.cc"],
-    hdrs = ["triangular.h"],
-    deps = [
-        "//csrc/common:error_utils",
-        "//csrc/ops:op_builder_utils",
         "@com_google_absl//absl/status:statusor",
         "@llvm-project//mlir:IR",
         "@stablehlo//:stablehlo_ops",

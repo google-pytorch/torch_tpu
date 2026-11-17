@@ -14,8 +14,8 @@
 
 """Unit tests for the test_utils module."""
 
+from collections.abc import Sequence
 import gzip
-import importlib.resources.abc
 import pathlib
 import plistlib
 from unittest import mock
@@ -35,21 +35,11 @@ class TestUtilsTest(seed_test_utils.RepeatableTest):
     self.assertEqual(pin_file.name, "goldens.pin")
 
   def test_locate_goldens_pin_not_found(self):
-    mock_traversable = mock.create_autospec(
-        importlib.resources.abc.Traversable, instance=True
-    )
-    mock_traversable.joinpath.return_value = None
-    with mock.patch.object(
-        test_utils.importlib.resources,
-        "files",
-        autospec=True,
-        return_value=mock_traversable,
-    ) as mock_files:
-      with self.assertRaises(FileNotFoundError):  # ASSERT_RAISES_OK=tool test
-        test_utils.locate_goldens_pinfile()
-      mock_files.assert_called_once_with(
-          test_utils.goldens_pin.__package__ or test_utils.goldens_pin
-      )
+    # absl.testing is a real package that ships no goldens.pin.
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=tool test
+        FileNotFoundError, "Could not locate goldens.pin"
+    ):
+      test_utils.locate_goldens_pinfile(package=absltest.__package__)
 
   @parameterized.named_parameters(
       (
@@ -106,7 +96,9 @@ class TestUtilsTest(seed_test_utils.RepeatableTest):
     dirs = test_utils.goldens_candidate_local_dirs(base_dir="/custom/path")
     self.assertIn(pathlib.Path("/custom/path"), dirs)
 
-  def _pin_with(self, filenames: list[str]) -> goldens_pin.GoldenPathPinFile:
+  def _pin_with(
+      self, filenames: Sequence[str]
+  ) -> goldens_pin.GoldenPathPinFile:
     """Builds a pin file listing `filenames`.
 
     The checksums are placeholders: goldens are verified against goldens.pin at

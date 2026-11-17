@@ -31,7 +31,6 @@
 #include "c10/util/Optional.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/device_buffer_utils.h"
-#include "csrc/eager/materialize.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "torch/headeronly/core/Layout.h"
 #include "torch/headeronly/core/MemoryFormat.h"
@@ -215,9 +214,7 @@ void RegisterTpuAllocator();
 // materialized.
 // Errors if the tensor's base DeviceBufferRef is a placeholder.
 absl::StatusOr<DeviceBufferRef> MaterializeAndReturn(
-    const at::Tensor& tensor, MaterializationReason reason,
-    MaterializationBlockMode block_mode =
-        MaterializationBlockMode::kBlockUntilStarted);
+    const at::Tensor& tensor, MaterializationReason reason);
 
 absl::StatusOr<at::Tensor> MakeEmptyTensor(
     at::IntArrayRef size, c10::ScalarType dtype,

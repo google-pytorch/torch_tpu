@@ -13,7 +13,8 @@
 # limitations under the License.
 
 load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_library", "torch_tpu_py_test")
-load("//shims/py_rules:pytype.bzl", "pytype_strict_binary", "pytype_strict_library")
+load("//shims/py_rules:py_binary.bzl", "py_binary")
+load("//shims/py_rules:py_library.bzl", "py_library")
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -37,10 +38,11 @@ torch_tpu_py_library(
 )
 
 # Build-time generator for the precompiled kernel variants.
-pytype_strict_library(
+py_library(
     # PY_LIBRARY_OK=Build-time kernel generator library.
     name = "scaled_grouped_mm_generate",
     srcs = ["scaled_grouped_mm_generate.py"],
+    type_checking = True,
     deps = [
         ":rowwise_scaled_grouped_mm_kernel",
         "//shims/absl_py:app",
@@ -50,10 +52,11 @@ pytype_strict_library(
     ],
 )
 
-pytype_strict_binary(
+py_binary(
     name = "scaled_grouped_mm_generate_bin",
     srcs = ["scaled_grouped_mm_generate.py"],
     main = "scaled_grouped_mm_generate.py",
+    type_checking = True,
     deps = [
         ":scaled_grouped_mm_generate",
     ],
@@ -64,7 +67,9 @@ pytype_strict_binary(
 torch_tpu_py_test(
     name = "rowwise_scaled_grouped_mm_kernel_host_test",
     srcs = ["rowwise_scaled_grouped_mm_kernel_host_test.py"],
+    shard_count = 4,  # Compile-heavy: keeps sanitizer runs within the timeout.
     tags = [
+        "notsan",  # TODO(b/584257115): Fails under OSS TSan.
         # Tests build-time generator scaled_grouped_mm_generate (not packaged in runtime wheel).
         "wheel_test_excluded",
     ],

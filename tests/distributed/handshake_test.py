@@ -15,11 +15,12 @@
 """Tests for distributed handshake protocol using PyZMQ and asyncio."""
 
 import asyncio
+from collections.abc import Callable
 import os
 import select
 import threading
 import time
-from typing import Any, Callable
+from typing import Any
 from unittest import mock
 
 from absl.testing import absltest
@@ -101,6 +102,23 @@ class ProcessGroupCollectiveCountTest(seed_test_utils.RepeatableTest):
     count.increment_num_collectives_in_graph(0)
     self.assertEqual(count.collective_count_before, 5)
     self.assertEqual(count.num_collectives_in_graph, 0)
+
+  def test_repr(self) -> None:
+    count = ProcessGroupCollectiveCount(
+        collective_count_before=1,
+        num_collectives_in_graph=2,
+    )
+    self.assertEqual(
+        repr(count),
+        "ProcessGroupCollectiveCount("
+        "collective_count_before=1, num_collectives_in_graph=2)",
+    )
+    count.increment_num_collectives_in_graph(0)
+    self.assertEqual(
+        repr(count),
+        "ProcessGroupCollectiveCount("
+        "collective_count_before=3, num_collectives_in_graph=0)",
+    )
 
 
 class RankCollectiveCountsTest(seed_test_utils.RepeatableTest):
@@ -267,6 +285,30 @@ class RankCollectiveCountsTest(seed_test_utils.RepeatableTest):
     self.assertEqual(counts.collective_count(pg1), 5)
     self.assertEqual(counts.collective_count(pg2), 3)
 
+  def test_repr(self) -> None:
+    self.assertEqual(
+        repr(RankCollectiveCounts()),
+        "RankCollectiveCounts(pg_to_count={})",
+    )
+    counts = RankCollectiveCounts({
+        ProcessGroupId(range(4), world_size=4): ProcessGroupCollectiveCount(
+            collective_count_before=1, num_collectives_in_graph=2
+        ),
+        ProcessGroupId([0, 2]): ProcessGroupCollectiveCount(
+            collective_count_before=0, num_collectives_in_graph=3
+        ),
+    })
+    self.assertEqual(
+        repr(counts),
+        "RankCollectiveCounts(pg_to_count={"
+        "ProcessGroupId(ranks=range(0, 4), world_size=4): "
+        "ProcessGroupCollectiveCount("
+        "collective_count_before=1, num_collectives_in_graph=2), "
+        "ProcessGroupId(ranks=(0, 2)): "
+        "ProcessGroupCollectiveCount("
+        "collective_count_before=0, num_collectives_in_graph=3)})",
+    )
+
 
 class ShouldHandshakeTest(seed_test_utils.RepeatableTest):
   """Unit tests for should_handshake function."""
@@ -424,6 +466,33 @@ class CollectiveHandshakeRequestTest(seed_test_utils.RepeatableTest):
 
     self.assertEqual(request.participating_ranks, [0, 1])
 
+  def test_repr(self) -> None:
+    pg_counts = RankCollectiveCounts({
+        ProcessGroupId(
+            range(4096), world_size=4096
+        ): ProcessGroupCollectiveCount(
+            collective_count_before=2, num_collectives_in_graph=1
+        ),
+    })
+    with mock.patch.object(
+        handshake, "_is_torch_tpu_debug_mode", return_value=False
+    ):
+      request = CollectiveHandshakeRequest(
+          pg_collective_counts=pg_counts,
+          executable_fingerprint="fp_abc",
+          rank=3,
+      )
+    self.assertEqual(
+        repr(request),
+        "CollectiveHandshakeRequest("
+        "pg_collective_counts=RankCollectiveCounts(pg_to_count={"
+        "ProcessGroupId(ranks=range(0, 4096), world_size=4096): "
+        "ProcessGroupCollectiveCount("
+        "collective_count_before=2, num_collectives_in_graph=1)}), "
+        "executable_fingerprint='fp_abc', rank=3)",
+    )
+    self.assertNotIn("participating_ranks", request.__dict__)
+
 
 class CollectiveHandshakeResponseTest(seed_test_utils.RepeatableTest):
   """Unit tests for CollectiveHandshakeResponse class and serialization."""
@@ -433,6 +502,23 @@ class CollectiveHandshakeResponseTest(seed_test_utils.RepeatableTest):
     self.assertTrue(resp_true.success)
     resp_false = CollectiveHandshakeResponse(success=False)
     self.assertFalse(resp_false.success)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="success",
+          success=True,
+          expected="CollectiveHandshakeResponse(success=True)",
+      ),
+      dict(
+          testcase_name="failure",
+          success=False,
+          expected="CollectiveHandshakeResponse(success=False)",
+      ),
+  )
+  def test_repr(self, success: bool, expected: str) -> None:
+    self.assertEqual(
+        repr(CollectiveHandshakeResponse(success=success)), expected
+    )
 
   def test_to_bytes_and_from_bytes(self) -> None:
     resp = CollectiveHandshakeResponse(success=True)

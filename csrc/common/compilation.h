@@ -35,6 +35,7 @@
 #include "csrc/common/compile_options_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/shape.h"
+#include "csrc/eager/device_assignment.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
@@ -49,6 +50,7 @@
 namespace torch_tpu {
 
 class LoadedExecutableWithMetadata;
+struct UnboundedDynamicKernel;
 
 // TODO(basioli): Rename to something more descriptive.
 using SharedLoadedExecutableWithMetadata =
@@ -118,6 +120,21 @@ struct UnboundedDynamicExecutionMetadata {
   CompatibilityFunc is_compatible = nullptr;
 };
 
+// Whether a `CompilationCache` miss may be served by a kernel from
+// `UnboundedDynamicKernelRegistry` instead of compiling the traced computation.
+//
+// Only eager execution may opt in: executables of unbounded dynamic kernels
+// rely on their `UnboundedDynamicExecutionMetadata` (argument routing and
+// output transforms applied at launch), which only the eager execution path
+// is guaranteed to preserve (e.g. torch.compile's serialized executables drop
+// it). The policy is passed by value with each request rather than kept as
+// shared state, so concurrent eager and torch.compile requests (which run with
+// the GIL released) cannot affect each other's lookups.
+enum class UnboundedKernelPolicy {
+  kDisallow,
+  kAllow,
+};
+
 class LoadedExecutableWithMetadata {
  public:
   static absl::StatusOr<SharedLoadedExecutableWithMetadata> MakeShared(
@@ -132,8 +149,9 @@ class LoadedExecutableWithMetadata {
       Indices argument_indices) {
     return std::shared_ptr<const LoadedExecutableWithMetadata>(
         new LoadedExecutableWithMetadata(
-            existing->executable_, existing->output_shapes_,
-            existing->parameter_device_shapes_, std::move(argument_indices),
+            existing->executable_, existing->parameter_device_shapes_,
+            existing->output_shapes_, existing->output_shapes_kind_,
+            std::move(argument_indices),
             existing->unbounded_dynamic_execution_metadata_,
             existing->subslice_origin_));
   }
@@ -143,8 +161,9 @@ class LoadedExecutableWithMetadata {
       UnboundedDynamicExecutionMetadata unbounded_dynamic_execution_metadata) {
     return std::shared_ptr<const LoadedExecutableWithMetadata>(
         new LoadedExecutableWithMetadata(
-            existing->executable_, existing->output_shapes_,
-            existing->parameter_device_shapes_, existing->argument_indices_,
+            existing->executable_, existing->parameter_device_shapes_,
+            existing->output_shapes_, existing->output_shapes_kind_,
+            existing->argument_indices_,
             std::move(unbounded_dynamic_execution_metadata),
             existing->subslice_origin_));
   }
@@ -157,14 +176,29 @@ class LoadedExecutableWithMetadata {
     return executable_.get();
   }
 
-  const std::vector<Shape>& output_shapes() const { return output_shapes_; }
-  // For each argument buffer the executable takes, the on-device shape it was
-  // compiled for, or nullopt for dynamic parameters. Tuple parameters take one
-  // buffer per element and can't be nested. Empty if the executable doesn't
-  // report them.
-  const std::vector<std::optional<xla::Shape>>& parameter_device_shapes()
-      const {
+  // Flattened output shapes of the executable (one per output buffer).
+  absl::Span<const xla::Shape> output_shapes() const { return *output_shapes_; }
+  // For each flat argument buffer the executable takes, the on-device shape
+  // (including layout and bounded-dynamic dimension flags) it was compiled for.
+  // Tuple parameters take one buffer per element and can't be nested. Empty if
+  // the executable doesn't report them.
+  absl::Span<const xla::Shape> parameter_device_shapes() const {
     return parameter_device_shapes_;
+  }
+  // Shared immutable list of on-device shapes (including layout and
+  // bounded-dynamic dimension flags) for each flat output buffer the executable
+  // produces, allowing materialized DeviceBufferLists to retain output shapes
+  // without keeping `executable_` alive. Null if the executable doesn't report
+  // them or if an `output_transform` rewrites output buffers after execution.
+  absl_nullable std::shared_ptr<const std::vector<xla::Shape>>
+  shared_output_device_shapes() const {
+    return output_shapes_kind_ == OutputShapesKind::kOnDevice ? output_shapes_
+                                                              : nullptr;
+  }
+  absl::Span<const xla::Shape> output_device_shapes() const {
+    return output_shapes_kind_ == OutputShapesKind::kOnDevice
+               ? absl::MakeConstSpan(*output_shapes_)
+               : absl::Span<const xla::Shape>{};
   }
   const Indices& argument_indices() const { return argument_indices_; }
   const std::optional<UnboundedDynamicExecutionMetadata>&
@@ -180,27 +214,46 @@ class LoadedExecutableWithMetadata {
   }
 
  private:
+  enum class OutputShapesKind {
+    // `output_shapes_` holds the post-execution on-device shapes (with layouts
+    // and bounded-dynamic dimension flags).
+    kOnDevice,
+    // `output_shapes_` is only valid for inferring logical output shapes (HLO
+    // layout metadata was unavailable or an `output_transform` rewrites output
+    // buffers after execution).
+    kLogicalOnly,
+  };
+
   LoadedExecutableWithMetadata(
       absl_nonnull std::shared_ptr<const xla::PjRtLoadedExecutable> executable,
-      std::vector<Shape> output_shapes,
-      std::vector<std::optional<xla::Shape>> parameter_device_shapes,
-      Indices argument_indices = {},
+      std::vector<xla::Shape> parameter_device_shapes,
+      absl_nonnull std::shared_ptr<const std::vector<xla::Shape>> output_shapes,
+      const OutputShapesKind output_shapes_kind, Indices argument_indices = {},
       std::optional<UnboundedDynamicExecutionMetadata>
           unbounded_dynamic_execution_metadata = std::nullopt,
       std::optional<xla::PjRtDeviceDimensions> subslice_origin = std::nullopt)
       : executable_(std::move(executable)),
-        output_shapes_(std::move(output_shapes)),
         parameter_device_shapes_(std::move(parameter_device_shapes)),
+        output_shapes_(std::move(output_shapes)),
+        output_shapes_kind_(
+            unbounded_dynamic_execution_metadata.has_value() &&
+                    unbounded_dynamic_execution_metadata->output_transform !=
+                        nullptr
+                ? OutputShapesKind::kLogicalOnly
+                : output_shapes_kind),
         argument_indices_(std::move(argument_indices)),
         unbounded_dynamic_execution_metadata_(
             std::move(unbounded_dynamic_execution_metadata)),
         subslice_origin_(std::move(subslice_origin)) {}
 
   absl_nonnull std::shared_ptr<const xla::PjRtLoadedExecutable> executable_;
-  // Cached output shapes for the executable.
-  std::vector<Shape> output_shapes_;
-  // Cached on-device parameter shapes for the executable.
-  std::vector<std::optional<xla::Shape>> parameter_device_shapes_;
+  // Cached on-device parameter shapes (with layout) for the executable.
+  std::vector<xla::Shape> parameter_device_shapes_;
+  // Cached output shapes, shared with materialized output DeviceBufferLists
+  // when `output_shapes_kind_ == OutputShapesKind::kOnDevice` so cache eviction
+  // can still free `executable_`.
+  absl_nonnull std::shared_ptr<const std::vector<xla::Shape>> output_shapes_;
+  OutputShapesKind output_shapes_kind_;
   Indices argument_indices_;
   std::optional<UnboundedDynamicExecutionMetadata>
       unbounded_dynamic_execution_metadata_;
@@ -226,6 +279,13 @@ struct CompiledKernel {
   // TODO(b/563604764): Rename this field as it can also hold dynamic kernels.
   SharedLoadedExecutableWithMetadataFuture fixed_shape_kernel;
   std::optional<DynamicKernelAdapter> dynamic_kernel_adapter;
+  // Whether the tier-1 lookup found an existing entry, possibly in flight.
+  // Per-request view of `PerfStats::num_cache_hits`.
+  bool cache_hit = false;
+  // The registered unbounded dynamic kernel serving this request, if any.
+  // Per-request view of `PerfStats::num_unbounded_dynamic_hits`.
+  const UnboundedDynamicKernel* absl_nullable unbounded_dynamic_kernel =
+      nullptr;
 };
 
 // Builder function for a loaded executable.
@@ -269,13 +329,11 @@ class ContextedModule {
 
   // The resolved device assignment of the traced graph (empty if no op carries
   // one), which ops that embed this module (e.g. scans) must carry.
-  [[nodiscard]] const std::vector<int64_t>& device_assignment()  // INT_VEC_OK
-      const {
+  [[nodiscard]] const DeviceAssignment& device_assignment() const {
     return device_assignment_;
   }
 
-  void set_device_assignment(
-      std::vector<int64_t> device_assignment) {  // INT_VEC_OK
+  void set_device_assignment(DeviceAssignment device_assignment) {
     device_assignment_ = std::move(device_assignment);
   }
 
@@ -289,7 +347,7 @@ class ContextedModule {
   // The module. If the context is dropped, the module will be invalidated.
   mlir::OwningOpRef<mlir::ModuleOp> module_;
   // See device_assignment().
-  std::vector<int64_t> device_assignment_;  // INT_VEC_OK
+  DeviceAssignment device_assignment_;
 };
 
 // Lifts a MlirComputationBuilder into an ExecutableBuilder.

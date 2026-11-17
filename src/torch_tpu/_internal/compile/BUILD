@@ -118,6 +118,7 @@ torch_tpu_py_library(
     deps = [
         ":tpu_torch_compile",
         "//shims/torch:pytorch",
+        "//src/torch_tpu/_internal/device:_device_ops_backend",
         "//src/torch_tpu/_internal/execution_mode",
     ],
 )

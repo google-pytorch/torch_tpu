@@ -15,6 +15,7 @@
 """Tests on boolean-valued tensors, not suitable for fuzzing."""
 
 
+from collections.abc import Sequence
 from absl.testing import absltest
 import torch
 from tests import seed_test_utils
@@ -23,7 +24,7 @@ from tests import seed_test_utils
 class AllTest(seed_test_utils.RepeatableTest):
   """Tests torch.all(), including when using an out tensor."""
 
-  def _run_test(self, bools: list[bool], out=False) -> torch.Tensor:
+  def _run_test(self, bools: Sequence[bool], out=False) -> torch.Tensor:
     in_cpu_tensor = torch.tensor(bools, dtype=torch.bool)
     in_tpu_tensor = in_cpu_tensor.to(torch.device("tpu"))
     if not out:

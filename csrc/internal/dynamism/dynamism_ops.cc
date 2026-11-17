@@ -67,7 +67,7 @@ absl::StatusOr<mlir::MlirOp> Pad(mlir::MlirOp input_op,
     int64_t upper_bound = target_dimensions[i];
     int padding_size = upper_bound - input_type.getDimSize(i);
     TT_RET_CHECK(padding_size >= 0, error::kInvalidArgument)
-        << "padding size must be non-negative, got " << padding_size;
+        << "expected padding size to be >= 0, got " << padding_size;
     if (padding_size > 0) {
       was_padded = true;
     }

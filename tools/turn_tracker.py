@@ -28,12 +28,11 @@ Contract:
       GITHUB_API_URL: (Optional) Base API URL, defaults to
         'https://api.github.com'.
     Event payloads:
-      'issues': Triggered on 'opened', 'reopened', 'transferred', 'assigned',
-        or 'unassigned'.
+      'issues': Triggered on 'opened', 'reopened', 'transferred', or
+        'assigned'.
       'issue_comment': Triggered on 'created' (on issues or pull requests).
       'pull_request' / 'pull_request_target': Triggered on 'opened',
-        'reopened', 'ready_for_review', 'review_requested',
-        'review_request_removed', 'assigned', or 'unassigned'.
+        'reopened', 'ready_for_review', 'review_requested', or 'assigned'.
       'pull_request_review': Triggered on 'submitted'.
       'pull_request_review_comment': Triggered on 'created'.
       'workflow_run': Relays a 'pull_request_review' or
@@ -52,13 +51,16 @@ Contract:
     request and issue label endpoints:
       - Adds 'stat:awaiting-assignee' on issues and 'stat:awaiting-reviewers'
         on pull requests when the item is new, reopened, transferred, or
-        ready for review, when the reviewer list or assignee field changes,
-        or when the original poster comments or submits a review.
+        ready for review, when a reviewer is requested or an assignee is
+        added, or when the original poster comments or submits a review.
       - Adds 'stat:awaiting-requester' when a responder comments or submits
         a review. Responders are assignees on issues, and assignees plus
         reviewers (requested or already reviewed) on pull requests.
       - Deletes conflicting turn labels on turn flips (including
         'stat:awaiting-assignee' on pull requests).
+      - Leaves labels unchanged when a review request or an assignee is
+        removed ('review_request_removed', 'unassigned'), so removing a
+        responder does not hand the turn back to the responders.
 
 - Failure Cases and Ignored Events:
     - Closed or draft items: Activity on closed issues/PRs or draft PRs is
@@ -75,11 +77,12 @@ Contract:
       run to fail.
 """
 
+from collections.abc import Callable, Mapping, Sequence, Set
 import json
 import os
 from pathlib import Path
 import sys
-from typing import Any, Callable, Final, Mapping, NamedTuple, Sequence
+from typing import Any, Final, NamedTuple
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -94,7 +97,6 @@ _ISSUE_RESPONDER_ACTIONS: Final[frozenset[str]] = frozenset({
     "opened",
     "reopened",
     "transferred",
-    "unassigned",
     # go/keep-sorted end
 })
 _PR_RESPONDER_ACTIONS: Final[frozenset[str]] = frozenset({
@@ -103,9 +105,7 @@ _PR_RESPONDER_ACTIONS: Final[frozenset[str]] = frozenset({
     "opened",
     "ready_for_review",
     "reopened",
-    "review_request_removed",
     "review_requested",
-    "unassigned",
     # go/keep-sorted end
 })
 
@@ -130,7 +130,7 @@ def _logins(users: Sequence[Mapping[str, Any] | None]) -> frozenset[str]:
 def determine_label_changes(
     event_name: str,
     payload: Mapping[str, Any],
-    reviewers: frozenset[str] = frozenset(),
+    reviewers: Set[str] = frozenset(),
 ) -> LabelChanges:
   """Determines labels to add and remove based on the event.
 
@@ -361,7 +361,7 @@ def apply_label_changes(
       pass
 
 
-def main() -> None:
+def main(opener: Callable[..., Any] = urllib.request.urlopen) -> None:
   token = os.environ.get("GITHUB_TOKEN")  # PY_ENVIRON_OK=ci
   event_path = os.environ.get("GITHUB_EVENT_PATH")  # PY_ENVIRON_OK=ci
   repo = os.environ.get("GITHUB_REPOSITORY")  # PY_ENVIRON_OK=ci
@@ -378,7 +378,7 @@ def main() -> None:
   payload = json.loads(event_payload_path.read_text(encoding="utf-8"))
 
   if event_name == "workflow_run":
-    events = resolve_workflow_run(api_url, repo, token, payload)
+    events = resolve_workflow_run(api_url, repo, token, payload, opener=opener)
   else:
     events = [(event_name, payload)]
 
@@ -397,14 +397,22 @@ def main() -> None:
         "pull_request_review",
         "pull_request_review_comment",
     ):
-      reviewers = fetch_pr_reviewers(api_url, repo, token, issue_number)
+      reviewers = fetch_pr_reviewers(
+          api_url, repo, token, issue_number, opener=opener
+      )
 
     changes = determine_label_changes(name, event_payload, reviewers)
     if not changes.add and not changes.remove:
       continue
 
     apply_label_changes(
-        api_url, repo, token, issue_number, changes.add, changes.remove
+        api_url,
+        repo,
+        token,
+        issue_number,
+        changes.add,
+        changes.remove,
+        opener=opener,
     )
 
 

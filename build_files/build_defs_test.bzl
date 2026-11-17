@@ -244,52 +244,6 @@ def _test_py_test_multi_tpu_targets_existing_fails_on(name):
         },
     )
 
-def _test_py_test_auto_nopresubmit_build_test_impl(env, targets):
-    """Verifies that an auto-nopresubmit target gets a build_test even if a sibling runs in presubmit."""
-    env.expect.that_collection(targets.target_v6[_TagsInfo].tags).contains("nopresubmit")
-    env.expect.that_collection(env.ctx.attr.build_tests).contains_exactly(
-        env.ctx.attr.expected_build_tests,
-    )
-
-def _test_py_test_auto_nopresubmit_build_test(name):
-    torch_tpu_py_test(
-        name = name + "_subject",
-        srcs = ["build_defs_test.py"],
-        main = "build_defs_test.py",
-        is_wheel_test = True,
-        tags = [
-            "nofastbuild",
-            "noopt",
-        ],
-        run_on_accelerators = [
-            "requires-tpu-v5lite",
-            "requires-tpu-v6e",
-        ],
-        nobuild_oss = True,  # NOBUILD_OSS_OK=Analysis test subject.
-        nolocal = "Analysis test subject",
-    )
-    target_v6 = name + "_subject_" + get_tpu_version_for_testing("requires-tpu-v6e")
-    analysis_test(
-        name = name,
-        impl = _test_py_test_auto_nopresubmit_build_test_impl,
-        targets = {
-            "target_v6": target_v6,
-        },
-        attrs = {
-            "build_tests": attr.string_list(),
-            "expected_build_tests": attr.string_list(),
-            "target_v6": {"aspects": [tags_aspect]},
-        },
-        attr_values = {
-            "build_tests": [
-                rule_name
-                for rule_name in native.existing_rules()
-                if rule_name.startswith(name + "_subject") and rule_name.endswith("_build_test")
-            ],
-            "expected_build_tests": [] if is_oss() else [target_v6 + "_build_test"],
-        },
-    )
-
 def _test_py_test_single_tpu_target_impl(env, targets):
     """Verifies that torch_tpu_py_test with a single TPU tag creates target with original name."""
     tags = targets.subject[_TagsInfo].tags
@@ -458,8 +412,10 @@ def _test_is_backend_dep(env):
         "@com_google_absl//absl/status",
         "@eigen_archive//:eigen3",
         "@com_googlesource_code_re2//:re2",
-        # Non-torch package in the shared @pypi hub -> still backend.
+        # Non-torch package in the shared @pypi hub -> still backend, even when
+        # its package name starts with "torch".
         "@pypi//numpy:numpy_headers",
+        "@pypi//torchax",
         # Classification keys on the known torch sources, not on the substring
         # "torch": a backend repo whose label happens to contain it is not torch.
         "@backend_with_torch_in_name//:lib",
@@ -471,9 +427,12 @@ def _test_is_backend_dep(env):
     for dep in [
         "//shims/torch:torch_headers",
         "@local_torch//:libc10",
-        "@pypi_torch_2_12_1_312//:libc10",
-        "@pypi_torch_312//:libtorch_cpu",
-        "//shims/torch:torch_headers",
+        "@pypi_torch_2_12_1//torch:libc10",
+        "@pypi_cuda//torch:libc10",
+        # Split "@" + "pypi//" so Copybara's reversible @pypi// label
+        # rewrite does not fail on a raw @pypi// literal in internal sources.
+        "@" + "pypi//torch:libtorch_cpu",
+        "@" + "pypi//torch",
         "//csrc/common:dtype",
         ":a_local_target",
     ]:
@@ -1209,7 +1168,6 @@ def build_defs_test_suite(name):
         tests = [
             # go/keep-sorted start
             _test_macro_tags,
-            _test_py_test_auto_nopresubmit_build_test,
             _test_py_test_multi_tpu_targets,
             _test_py_test_multi_tpu_targets_existing_fails_on,
             _test_py_test_non_tpu_requires_tags,

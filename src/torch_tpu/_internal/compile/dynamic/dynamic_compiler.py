@@ -41,7 +41,10 @@ from torch_tpu._internal.compile.dynamic.symbol_bounds import SymbolBounds
 def _create_bounded_model_inputs(
     example_inputs: Sequence[InputType],
     bounds: SymbolBounds,
-) -> tuple[list[torch.Tensor | int], list[Any]]:
+) -> tuple[
+    Sequence[torch.Tensor | int],
+    Sequence[tpu_torch_compile.TensorBounds | None],
+]:
   """Specializes dynamic inputs to their static upper bounds and constructs TensorBounds.
 
   Args:

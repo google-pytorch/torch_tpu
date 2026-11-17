@@ -23,7 +23,6 @@
 #include "ATen/native/TypeProperties.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
-#include "c10/core/ScalarType.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/device_type.h"
@@ -39,7 +38,6 @@
 #include "csrc/ops/op_names.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
-#include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
 namespace {
@@ -85,10 +83,7 @@ at::Tensor& AtenAddcdivOut(const at::Tensor& self, const at::Tensor& tensor1,
             << "expected out tensor to be on "
             << GetPrivateUse1DeviceDebugName() << ", got " << out.device();
 
-        TT_CHECK_THROW(!(c10::isIntegralType(tensor1.scalar_type(),
-                                             /*includeBool=*/true) &&
-                         c10::isIntegralType(tensor2.scalar_type(),
-                                             /*includeBool=*/true)),
+        TT_CHECK_THROW(!IsIntegral(tensor1) || !IsIntegral(tensor2),
                        error::kInvalidArgument)
             << "integer division with addcdiv is no longer supported; use "
                "(input + value * torch.trunc(tensor1 / "

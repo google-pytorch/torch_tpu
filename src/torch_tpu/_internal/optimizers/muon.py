@@ -15,6 +15,7 @@
 """Muon optimizer implementations for TPU tracing."""
 
 import abc
+from collections.abc import Mapping
 import dataclasses
 import math
 from typing import ClassVar
@@ -155,7 +156,7 @@ class _MuonBase(_optim.Optimizer):
       " notice."
   )
   def init_param_group(
-      self, params: dict[str, torch.Tensor] | torch.nn.Module
+      self, params: Mapping[str, torch.Tensor] | torch.nn.Module
   ) -> ParamGroup:
     """Initializes Muon optimizer state from model parameters or nn.Module."""
     if isinstance(params, torch.nn.Module):
@@ -163,6 +164,8 @@ class _MuonBase(_optim.Optimizer):
           name.replace(".", "_"): param.detach()
           for name, param in params.named_parameters()
       }
+    else:
+      params = dict(params)
     if not params:
       return self.ParamGroup(params={})
 
@@ -194,7 +197,7 @@ class _MuonBase(_optim.Optimizer):
       "step() is experimental and may change or be removed without notice."
   )
   def step(
-      self, param_group: ParamGroup, grads: dict[str, torch.Tensor]
+      self, param_group: ParamGroup, grads: Mapping[str, torch.Tensor]
   ) -> ParamGroup:
     """Performs optimizer step on param_group given grads and returns updated ParamGroup."""
     pass
@@ -229,7 +232,7 @@ class ReferenceMuon(_MuonBase):
     param.add_(update, alpha=-adjusted_lr)
 
   def step(
-      self, param_group: _MuonBase.ParamGroup, grads: dict[str, torch.Tensor]
+      self, param_group: _MuonBase.ParamGroup, grads: Mapping[str, torch.Tensor]
   ) -> _MuonBase.ParamGroup:
     """Reference pure PyTorch implementation of Muon step."""
     for name, param in param_group.params.items():
@@ -298,7 +301,7 @@ class Muon(_MuonBase):
       "step() is experimental and may change or be removed without notice."
   )
   def step(
-      self, param_group: _MuonBase.ParamGroup, grads: dict[str, torch.Tensor]
+      self, param_group: _MuonBase.ParamGroup, grads: Mapping[str, torch.Tensor]
   ) -> _MuonBase.ParamGroup:
     """Torch Muon step calling torch.optim._muon.muon directly."""
     param_keys = list(param_group.params.keys())

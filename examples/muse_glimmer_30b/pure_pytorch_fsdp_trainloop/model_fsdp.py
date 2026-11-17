@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from collections.abc import Sequence
 import dataclasses
 
 import torch
@@ -361,7 +362,7 @@ def compute_swa_mask(seq_len: int, swa_size: int, device) -> torch.Tensor:
   return mask
 
 
-def get_non_fsdp_params(m: nn.Module) -> list:
+def get_non_fsdp_params(m: nn.Module) -> Sequence[nn.Parameter]:
   fsdp_param_suffixes = [
       ".self_attn.q_proj.weight",
       ".self_attn.k_proj.weight",

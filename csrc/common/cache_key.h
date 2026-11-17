@@ -309,9 +309,7 @@ absl::StatusOr<FingerprintType> EncodeParamCacheKey(at::Scalar value);
 [[nodiscard]] inline FingerprintType EncodeParamCacheKey(const double value) {
   static_assert(sizeof(double) <= sizeof(FingerprintType),
                 "double must be small enough to fit in a FingerprintType.");
-  // Normalize -0.0 to 0.0.
-  const double normalized_value = (value == 0.0) ? 0.0 : value;
-  return absl::bit_cast<FingerprintType>(normalized_value);
+  return absl::bit_cast<FingerprintType>(value);
 }
 template <typename T, typename = std::enable_if_t<std::is_integral_v<T>>>
 [[nodiscard]] inline FingerprintType EncodeParamCacheKey(const T value) {

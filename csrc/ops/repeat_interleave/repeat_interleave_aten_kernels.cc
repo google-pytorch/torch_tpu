@@ -41,6 +41,7 @@
 #include "csrc/common/fixed_size_span.h"
 #include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
+#include "csrc/eager/eager_mode.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/copy_from/copy_common.h"
@@ -50,6 +51,7 @@
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
+#include "csrc/ops/python_context.h"
 #include "csrc/ops/reductions/sum.h"
 #include "csrc/ops/resize/resize_aten_kernels.h"
 #include "llvm/ADT/SmallVector.h"
@@ -461,8 +463,8 @@ struct RepeatsStats {
   int64_t min = 0;
 };
 
-// Synchronizes `repeats` to host memory (if on TPU) via direct device-to-host
-// DMA (`CopyTpuToCpu`) without dispatching any TPU reduction kernel or ATen
+// Synchronizes `repeats` to host memory via direct device-to-host DMA
+// (`CopyTpuToCpu`) without dispatching any TPU reduction kernel or ATen
 // operator, and computes both `sum(repeats)` and `min(repeats)` in a single C++
 // pass.
 absl::StatusOr<RepeatsStats> ComputeRepeatsSumAndMinOnHost(
@@ -471,16 +473,11 @@ absl::StatusOr<RepeatsStats> ComputeRepeatsSumAndMinOnHost(
   if (numel == 0) {
     return RepeatsStats{0, 0};
   }
-  at::Tensor host_repeats =
-      repeats.is_cpu()
-          ? repeats.contiguous()
-          : at::empty(repeats.sizes(), at::TensorOptions()
-                                           .dtype(repeats.scalar_type())
-                                           .device(at::kCPU));
-  if (!repeats.is_cpu()) {
-    TT_RETURN_IF_ERROR(CopyTpuToCpu(
-        repeats, host_repeats, GetTransferSyncMode(/*non_blocking=*/false)));
-  }
+  at::Tensor host_repeats = at::empty(
+      repeats.sizes(),
+      at::TensorOptions().dtype(repeats.scalar_type()).device(at::kCPU));
+  TT_RETURN_IF_ERROR(CopyTpuToCpu(repeats, host_repeats,
+                                  GetTransferSyncMode(/*non_blocking=*/false)));
   RepeatsStats stats{0, std::numeric_limits<int64_t>::max()};
   if (host_repeats.scalar_type() == at::kLong) {
     const int64_t* const data = host_repeats.data_ptr<int64_t>();
@@ -498,6 +495,67 @@ absl::StatusOr<RepeatsStats> ComputeRepeatsSumAndMinOnHost(
     }
   }
   return stats;
+}
+
+// Validates that `self` and `repeats` for `repeat_interleave.self_Tensor` are
+// on the same device and that `repeats` is 0D or 1D with `int64` or `int32`
+// dtype.
+void ValidateRepeatInterleaveSelfTensorRepeats(const at::Tensor& self,
+                                               const at::Tensor& repeats) {
+  TT_CHECK_THROW(self.device() == repeats.device(), error::kInvalidArgument)
+      << "expected self and repeats to be on the same device, got "
+      << self.device() << " and " << repeats.device();
+  TT_CHECK_THROW(repeats.dim() <= 1, error::kInvalidArgument)
+      << "expected repeats to be a 0D or 1D tensor, got " << repeats.dim()
+      << "D";
+  TT_CHECK_THROW(
+      repeats.scalar_type() == at::kLong || repeats.scalar_type() == at::kInt,
+      error::kInvalidArgument)
+      << "expected repeats to have int64 or int32 dtype, got "
+      << ToString(repeats.scalar_type());
+}
+
+// Validates that a multi-element 1D `repeats` tensor has the same length as
+// `self` along the target dimension (`dim_size`).
+void ValidateRepeatsLengthMatchesInputDim(const at::Tensor& repeats,
+                                          const c10::SymInt& dim_size) {
+  const c10::SymInt repeats_len = repeats.sym_size(0);
+  TT_CHECK_THROW(repeats_len == dim_size, error::kInvalidArgument)
+      << "expected repeats to have the same size as input along dim ("
+      << dim_size << "), got " << repeats_len;
+}
+
+// Resolves and validates the total output size along the repeated dimension
+// from the host-synchronized sum of `repeats` (with all elements `>= 0`),
+// verifying that any explicit `output_size` is non-negative and matches the
+// sum of `repeats` (unless running under FX graph compilation or manual-sync
+// deferral where placeholder buffers cannot be materialized on host).
+int64_t ResolveAndValidateRepeatsTotal(
+    const at::Tensor& repeats, const std::optional<int64_t> output_size) {
+  if (repeats.numel() == 0) {
+    return 0;
+  }
+  if (output_size.has_value()) {
+    const int64_t total = *output_size;
+    TT_CHECK_THROW(total >= 0, error::kInvalidArgument)
+        << "expected output_size to be greater than or equal to zero, got "
+        << total;
+    if (GetEagerMode() == EagerMode::kInternalCompileFxGraph ||
+        GetEagerMode() == EagerMode::kInternalDeferAll) {
+      return total;
+    }
+  }
+  TT_ASSIGN_OR_THROW(const RepeatsStats stats,
+                     ComputeRepeatsSumAndMinOnHost(repeats));
+  TT_CHECK_THROW(stats.min >= 0, error::kInvalidArgument)
+      << "expected repeats to be greater than or equal to zero, got "
+      << stats.min;
+  if (output_size.has_value()) {
+    TT_CHECK_THROW(*output_size == stats.sum, error::kInvalidArgument)
+        << "expected output_size to equal " << stats.sum << ", got "
+        << *output_size;
+  }
+  return stats.sum;
 }
 
 }  // namespace
@@ -566,15 +624,12 @@ at::Tensor AtenRepeatInterleaveSelfInt(const at::Tensor& self,
 //   general variable-length kernel (`BuildRepeatInterleaveShlo`) would perform
 //   an unnecessary `CumSum`, materialize an $O(M \times N)$ comparison matrix,
 //   and execute an indirect gather.
-//   Instead, we intercept `repeats.numel() == 1` inside `TT_KERNEL` and lower
-//   directly via `BuildUniformRepeatInterleaveShlo` (`BroadcastInDim` +
-//   `Reshape`):
-//     - If `output_size` is explicitly provided, we compute the scalar repeat
-//       factor purely on the host (`*output_size / dim_size`) with zero device
-//       synchronization.
-//     - If `output_size` is omitted, we copy `repeats` directly to host memory
-//       via `ComputeRepeatsSumAndMinOnHost` (`CopyTpuToCpu`) without
-//       dispatching any intermediate ATen or TPU reduction ops.
+//   Instead, we intercept `repeats.numel() == 1` inside `TT_KERNEL`, copy
+//   `repeats` directly to host memory via `ComputeRepeatsSumAndMinOnHost`
+//   (`CopyTpuToCpu`) without dispatching any intermediate ATen or TPU reduction
+//   ops, validate `scalar_repeats` and any explicit `output_size` via
+//   `ValidateRepeatInterleaveSelfInt`, and lower directly via
+//   `BuildUniformRepeatInterleaveShlo` (`BroadcastInDim` + `Reshape`).
 at::Tensor AtenRepeatInterleave(const at::Tensor& self,
                                 const at::Tensor& repeats,
                                 std::optional<int64_t> dim,
@@ -582,24 +637,14 @@ at::Tensor AtenRepeatInterleave(const at::Tensor& self,
   TT_KERNEL(
       OpName::kRepeatInterleaveSelfTensor, param_keys,
       (self, repeats, dim, output_size), {
+        ValidateRepeatInterleaveSelfTensorRepeats(self, repeats);
         TT_ASSIGN_OR_THROW(const mlir::ElementType out_dtype,
                            ConvertTo<mlir::ElementType>(self.scalar_type()));
 
         if (repeats.numel() == 1) {
-          int64_t scalar_repeats;
-          if (output_size.has_value()) {
-            int64_t dim_size = self.numel();
-            if (dim.has_value()) {
-              TT_ASSIGN_OR_THROW(const int64_t wrapped_dim,
-                                 SafeWrapDim(*dim, self.dim()));
-              dim_size = self.size(wrapped_dim);
-            }
-            scalar_repeats = dim_size > 0 ? (*output_size / dim_size) : 0;
-          } else {
-            TT_ASSIGN_OR_THROW(const RepeatsStats stats,
-                               ComputeRepeatsSumAndMinOnHost(repeats));
-            scalar_repeats = stats.sum;
-          }
+          TT_ASSIGN_OR_THROW(const RepeatsStats stats,
+                             ComputeRepeatsSumAndMinOnHost(repeats));
+          const int64_t scalar_repeats = stats.sum;
           const auto [repeats_val, resolved_dim, resolved_output_size] =
               ValidateRepeatInterleaveSelfInt(
                   self, scalar_repeats, dim,
@@ -631,30 +676,21 @@ at::Tensor AtenRepeatInterleave(const at::Tensor& self,
           return MakeTensor(result);
         }
 
-        int64_t resolved_output_size;
-        if (output_size.has_value()) {
-          resolved_output_size = *output_size;
-        } else {
-          // Host sync to get the resolved output size when it is not provided
-          // explicitly.
-          //
-          // StableHLO compilation requires knowing the output shape statically
-          // (or its bounds) at compile time. Since the output size of
-          // repeat_interleave depends on the *values* of the `repeats` tensor,
-          // and those values are on the device, we copy `repeats` to the host
-          // via `CopyTpuToCpu` and sum on CPU without dispatching an extra TPU
-          // reduction kernel.
-          TT_ASSIGN_OR_THROW(const RepeatsStats stats,
-                             ComputeRepeatsSumAndMinOnHost(repeats));
-          resolved_output_size = stats.sum;
-        }
-
         std::optional<int64_t> resolved_dim = std::nullopt;
+        int64_t dim_size = self.numel();
         if (dim.has_value()) {
           TT_ASSIGN_OR_THROW(const int64_t wrapped_dim,
                              SafeWrapDim(*dim, self.dim()));
           resolved_dim = wrapped_dim;
+          dim_size = self.size(wrapped_dim);
         }
+        ValidateRepeatsLengthMatchesInputDim(repeats, dim_size);
+
+        // Resolve the output size from explicit `output_size` or via host sync
+        // (`CopyTpuToCpu`), verifying non-negativity of `output_size` or all
+        // elements of `repeats`.
+        const int64_t resolved_output_size =
+            ResolveAndValidateRepeatsTotal(repeats, output_size);
 
         Dimensions out_dims;
         if (resolved_dim.has_value()) {
@@ -662,6 +698,12 @@ at::Tensor AtenRepeatInterleave(const at::Tensor& self,
           out_dims[*resolved_dim] = resolved_output_size;
         } else {
           out_dims = Dimensions({resolved_output_size});
+        }
+        if (resolved_output_size == 0) {
+          TT_ASSIGN_OR_THROW(
+              at::Tensor empty,
+              MakeEmptyTensor(out_dims, self.scalar_type(), self.device()));
+          return empty;
         }
 
         auto shlo_builder = [resolved_dim, resolved_output_size](
@@ -697,23 +739,12 @@ int64_t ValidateAndResolveRepeatInterleaveTensor(
       << "expected repeats to have int64 or int32 dtype, got "
       << ToString(repeats.scalar_type());
 
-  int64_t total = 0;
-  if (repeats.size(0) > 0) {
-    if (output_size.has_value()) {
-      total = output_size_val;
-      TT_CHECK_THROW(total >= 0, error::kInvalidArgument)
-          << "expected output_size to be greater than or equal to zero, got "
-          << total;
-    } else {
-      TT_ASSIGN_OR_THROW(const RepeatsStats stats,
-                         ComputeRepeatsSumAndMinOnHost(repeats));
-      TT_CHECK_THROW(stats.min >= 0, error::kInvalidArgument)
-          << "expected repeats to be greater than or equal to zero, got "
-          << stats.min;
-      total = stats.sum;
-    }
+  if (repeats.size(0) == 0) {
+    return 0;
   }
-  return total;
+  return ResolveAndValidateRepeatsTotal(
+      repeats, output_size.has_value() ? std::optional<int64_t>(output_size_val)
+                                       : std::nullopt);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildRepeatInterleaveTensorShlo(
@@ -733,10 +764,10 @@ absl::StatusOr<mlir::MlirOp> BuildRepeatInterleaveTensorShlo(
 // `self_Tensor` path gathers with, so it reuses
 // `BuildRepeatInterleaveIndicesShlo` and skips the gather.
 //
-// When `output_size` is omitted, `ComputeRepeatsSumAndMinOnHost` copies
-// `repeats` directly to host memory (`CopyTpuToCpu`) and computes both the
-// total output size and the minimum element (for the non-negative check) on CPU
-// in a single pass, avoiding a separate TPU reduction dispatch.
+// `ComputeRepeatsSumAndMinOnHost` copies `repeats` directly to host memory
+// (`CopyTpuToCpu`) and computes both the total output size and the minimum
+// element (for the non-negative check) on CPU in a single pass, avoiding a
+// separate TPU reduction dispatch.
 at::Tensor AtenRepeatInterleaveTensor(
     const at::Tensor& repeats, const std::optional<c10::SymInt> output_size) {
   const int64_t output_size_val =
@@ -1032,16 +1063,6 @@ absl::StatusOr<bool> TryExtractScalarRepeatCount(
   if (repeats.sym_numel() != 1) {
     return false;
   }
-  if (output_size.has_value()) {
-    c10::SymInt dim_size;
-    if (dim.has_value()) {
-      TT_ASSIGN_OR_RETURN(dim_size, self.sym_size(*dim));
-    } else {
-      dim_size = self.sym_numel();
-    }
-    repeats_val = dim_size > 0 ? (*output_size / dim_size) : c10::SymInt(0);
-    return true;
-  }
   if (!IsFakeOrFunctorchTensor(repeats)) {
     // Reading the values of `repeats` needs the underlying tensor. This only
     // happens for real (non-fake) data, whose shapes are concrete.
@@ -1050,6 +1071,19 @@ absl::StatusOr<bool> TryExtractScalarRepeatCount(
       return false;
     }
     repeats_val = stats->sum;
+    return true;
+  }
+  if (output_size.has_value()) {
+    TT_RET_CHECK(*output_size >= 0, error::kInvalidArgument)
+        << "expected output_size to be greater than or equal to zero, got "
+        << *output_size;
+    c10::SymInt dim_size;
+    if (dim.has_value()) {
+      TT_ASSIGN_OR_RETURN(dim_size, self.sym_size(*dim));
+    } else {
+      dim_size = self.sym_numel();
+    }
+    repeats_val = dim_size > 0 ? (*output_size / dim_size) : c10::SymInt(0);
     return true;
   }
   return false;
@@ -1062,11 +1096,12 @@ absl::StatusOr<bool> TryExtractScalarRepeatCount(
 //
 // Dispatch Decision Tree:
 //   1. 1-Element Tensor Repeats (`repeats.numel() == 1`):
-//      Extracts the scalar repeat count (using `output_size / dim_size` if
-//      available to avoid device sync, or reading the scalar item if on eager
-//      CPU/TPU) and delegates to `AtenRepeatInterleaveSelfIntAutograd`. This
-//      upgrades both forward and backward passes from gather/scatter-add to
-//      `BroadcastInDim` (forward) and `Reshape + ReduceSum` (backward).
+//      Extracts the scalar repeat count (reading the scalar item via
+//      `CopyTpuToCpu`, or using `output_size / dim_size` when symbolically
+//      tracing with `FakeTensor`) and delegates to
+//      `AtenRepeatInterleaveSelfIntAutograd`. This upgrades both forward and
+//      backward passes from gather/scatter-add to `BroadcastInDim` (forward)
+//      and `Reshape + ReduceSum` (backward).
 //   2. Variable Multi-Element Repeats with Autograd or Tracing:
 //      When `self.requires_grad()` is true in grad mode (or when tracing under
 //      `FakeTensor` / `functorch`), decomposes into:
@@ -1082,19 +1117,35 @@ at::Tensor AtenRepeatInterleaveAutograd(
     std::optional<int64_t> dim, std::optional<c10::SymInt> output_size) {
   if ((c10::GradMode::is_enabled() && self.requires_grad()) ||
       IsFakeOrFunctorchTensor(self)) {
-    c10::SymInt repeats_val = 0;
-    TT_ASSIGN_OR_THROW(const bool has_scalar_repeat_count,
-                       TryExtractScalarRepeatCount(self, repeats, dim,
-                                                   output_size, repeats_val));
-    if (has_scalar_repeat_count) {
-      return AtenRepeatInterleaveSelfIntAutograd(self, repeats_val, dim,
-                                                 output_size);
+    ScopedPythonContextCapturer capturer(OpName::kRepeatInterleaveSelfTensor);
+    try {
+      ValidateRepeatInterleaveSelfTensorRepeats(self, repeats);
+      c10::SymInt repeats_val = 0;
+      TT_ASSIGN_OR_THROW(const bool has_scalar_repeat_count,
+                         TryExtractScalarRepeatCount(self, repeats, dim,
+                                                     output_size, repeats_val));
+      if (has_scalar_repeat_count) {
+        return AtenRepeatInterleaveSelfIntAutograd(self, repeats_val, dim,
+                                                   output_size);
+      }
+      int64_t d = 0;
+      if (dim.has_value()) {
+        TT_ASSIGN_OR_THROW(d, SafeWrapDim(*dim, self.dim()));
+      }
+      at::Tensor input = dim.has_value() ? self : self.flatten();
+      at::Tensor repeats_expanded = repeats;
+      if (repeats.sym_numel() == 1) {
+        repeats_expanded =
+            repeats.reshape({1}).expand_symint({input.sym_size(d)});
+      } else {
+        ValidateRepeatsLengthMatchesInputDim(repeats, input.sym_size(d));
+      }
+      at::Tensor repeat_indices =
+          at::repeat_interleave_symint(repeats_expanded, output_size);
+      return input.index_select(d, repeat_indices);
+    } catch (const TtError& e) {
+      TranslateToC10ErrorAndThrow(e);
     }
-    at::Tensor input = dim.has_value() ? self : self.flatten();
-    const int64_t d = dim.value_or(0);
-    at::Tensor repeat_indices =
-        at::repeat_interleave_symint(repeats, output_size);
-    return input.index_select(d, repeat_indices);
   }
   // `self` holds real data here, so `output_size` is a concrete value.
   return AtenRepeatInterleave(

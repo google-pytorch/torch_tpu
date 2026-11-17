@@ -14,7 +14,8 @@
 
 """Detects and eliminates redundant causal attention masks in SDPA ops."""
 
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 import torch
 import torch.fx
 from torch.utils import _pytree
@@ -177,6 +178,16 @@ _SDPA_SPECS: dict[Any, tuple[int, int, bool]] = {
     torch.ops.aten._scaled_dot_product_efficient_attention_backward.default: (
         4,
         11,
+        True,
+    ),
+    torch.ops.aten._scaled_dot_product_cudnn_attention.default: (
+        3,
+        6,
+        False,
+    ),
+    torch.ops.aten._scaled_dot_product_cudnn_attention_backward.default: (
+        8,
+        14,
         True,
     ),
     torch.ops.aten.scaled_dot_product_attention.default: (3, 5, False),

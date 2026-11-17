@@ -20,6 +20,7 @@ next to context-parallel collectives over other ranks. Each case compiles one
 such program and checks its results.
 """
 
+from collections.abc import Sequence
 from absl.testing import absltest
 import torch
 from torch import distributed as dist
@@ -38,7 +39,7 @@ def _my_group(rank: int, layout: list[list[int]]) -> dist.ProcessGroup:
   return mine
 
 
-def _group_sum(rank: int, layout: list[list[int]]) -> float:
+def _group_sum(rank: int, layout: Sequence[Sequence[int]]) -> float:
   """Sum of `r + 1` over the ranks r of the group of `layout` holding `rank`."""
   return float(sum(r + 1 for r in next(g for g in layout if rank in g)))
 

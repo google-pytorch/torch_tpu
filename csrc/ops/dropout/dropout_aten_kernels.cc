@@ -77,7 +77,7 @@ std::tuple<at::Tensor, at::Tensor> AtenDropoutCommonImpl(
   TT_CHECK_THROW(input.is_floating_point() || input.is_complex(),
                  error::kInvalidArgument)
       << "expected input to be floating point or complex, got "
-      << input.scalar_type();
+      << ToString(input.scalar_type());
 
   TT_ASSIGN_OR_THROW(mlir::ElementType output_dtype,
                      ConvertTo<mlir::ElementType>(input.scalar_type()));
@@ -97,7 +97,8 @@ std::tuple<at::Tensor, at::Tensor> AtenDropoutCommonImpl(
             {.out_dtypes = {output_dtype, mlir::ElementType::PRED},
              .out_dims_list = {input.sizes(), input.sizes()},
              .op_param_cache_keys = std::move(param_keys)})));
-    return {MakeTensor(results[0]), MakeTensor(results[1])};
+    return {MakeTensor(std::move(results[0])),
+            MakeTensor(std::move(results[1]))};
   }
   if (p >= 1.0) {
     auto op_builder =
@@ -115,7 +116,8 @@ std::tuple<at::Tensor, at::Tensor> AtenDropoutCommonImpl(
             {.out_dtypes = {output_dtype, mlir::ElementType::PRED},
              .out_dims_list = {input.sizes(), input.sizes()},
              .op_param_cache_keys = std::move(param_keys)})));
-    return {MakeTensor(results[0]), MakeTensor(results[1])};
+    return {MakeTensor(std::move(results[0])),
+            MakeTensor(std::move(results[1]))};
   }
 
   const int64_t num_elements = input.numel();
@@ -136,7 +138,7 @@ std::tuple<at::Tensor, at::Tensor> AtenDropoutCommonImpl(
           RngUsage{num_elements, bit_width}));
 
   // [output, mask]
-  return {MakeTensor(results[0]), MakeTensor(results[1])};
+  return {MakeTensor(std::move(results[0])), MakeTensor(std::move(results[1]))};
 }
 
 }  // namespace
@@ -181,8 +183,8 @@ at::Tensor AtenNativeDropoutBackward(const at::Tensor& grad_output,
                        error::kPythonNotImplementedError)
             << "not implemented for " << ToString(grad_output.scalar_type());
         TT_CHECK_THROW(mask.scalar_type() == at::kBool, error::kInvalidArgument)
-            << "expected mask to be Bool scalar type, got "
-            << mask.scalar_type();
+            << "expected mask dtype to be bool, got "
+            << ToString(mask.scalar_type());
         at::ScalarType output_scalar_type = grad_output.scalar_type();
         if (!c10::isFloatingType(output_scalar_type) &&
             !c10::isComplexType(output_scalar_type)) {
@@ -197,7 +199,7 @@ at::Tensor AtenNativeDropoutBackward(const at::Tensor& grad_output,
                               {.out_dtype = output_dtype,
                                .out_dims = grad_output.sizes(),
                                .op_param_cache_keys = std::move(param_keys)})));
-        return MakeTensor(output_buf);
+        return MakeTensor(std::move(output_buf));
       });
 }
 

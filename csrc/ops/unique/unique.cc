@@ -118,13 +118,11 @@ FlattenedSlices2D TransposeAndFlattenSlices(mlir::MlirOp input,
 
   mlir::MlirOp input_dim0 = input;
   if (dim != 0 && rank > 1) {
-    Dimensions permutation(rank);
-    permutation[0] = dim;
-    for (int64_t i = 0, j = 1; i < rank; ++i) {
-      if (i != dim) {
-        permutation[j++] = i;
-      }
-    }
+    Dimensions permutation;
+    permutation.reserve(rank);
+    permutation.push_back(dim);
+    const Dimensions batch_dims = GetBatchDimensions(rank, dim);
+    permutation.insert(permutation.end(), batch_dims.begin(), batch_dims.end());
     input_dim0 = mlir::stablehlo::Transpose(input, permutation);
   }
 

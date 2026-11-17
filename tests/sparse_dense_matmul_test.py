@@ -13,6 +13,7 @@
 # limitations under the License.
 
 
+from collections.abc import Mapping, MutableSequence, Sequence
 from typing import Any
 from absl.testing import absltest
 from absl.testing import parameterized
@@ -21,6 +22,7 @@ import torch
 from torch._dynamo import testing as dynamo_testing
 from torch._subclasses import fake_tensor
 from torch.fx.experimental import symbolic_shapes
+from torch_tpu._internal import execution_mode
 from torch_tpu._internal.compile import tpu_torch_compile
 import torch_tpu._internal.device_utils.annotations as tpu_annotations
 from tests import op_testing
@@ -34,9 +36,9 @@ def preprocess_sparse_dense_matmul_input(
     suggested_coo_buffer_size: int = 128,
     batch_size: int = 16,
     combiner: str = "sum",
-    options: dict[str, Any] | None = None,
+    options: Mapping[str, Any] | None = None,
     table_name: str = "table_0",
-) -> dict[str, torch.Tensor]:
+) -> Mapping[str, torch.Tensor]:
   """Preprocesses sparse dense matmul input tensors for a table into CSR buffers and stats.
 
   Args:
@@ -344,6 +346,35 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
           2,
           2,
       ),
+      (
+          "int64_large_vocab_5b",
+          torch.tensor(
+              [
+                  4,
+                  3_000_000_000,
+                  4_999_999_996,
+                  4_999_999_997,
+                  4_999_999_998,
+                  4_999_999_999,
+                  3_000_000_000,
+                  5,
+              ],
+              dtype=torch.int64,
+          ),
+          torch.tensor([0, 2, 4, 6, 8], dtype=torch.int64),
+          2,
+          2,
+      ),
+      (
+          "int64_indices_int32_offsets",
+          torch.tensor(
+              [2_500_000_000, 4_500_000_001, 4_500_000_002, 4_500_000_003],
+              dtype=torch.int64,
+          ),
+          torch.tensor([0, 2, 4], dtype=torch.int32),
+          2,
+          2,
+      ),
   )
   def test_compute_stats_parity_with_input_preprocessing(
       self,
@@ -404,6 +435,68 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
         ),
     )
 
+  def test_input_preprocessing_int64_large_vocab_local_ids(self):
+    """Verifies 5B-row int64 IDs narrow to int32 per-SparseCore row IDs."""
+    global_device_count = 2
+    num_sc_per_device = 2
+    num_scs = global_device_count * num_sc_per_device
+    # Route one ID (> 2^31 - 1 and > 2^32 - 1) to each global SparseCore p.
+    raw_ids = [
+        4_999_999_996,  # % 4 == 0 -> local_id = 1_249_999_999
+        3_000_000_001,  # % 4 == 1 -> local_id = 750_000_000
+        4_999_999_998,  # % 4 == 2 -> local_id = 1_249_999_999
+        4_999_999_999,  # % 4 == 3 -> local_id = 1_249_999_999
+    ]
+    indices = torch.tensor(raw_ids, dtype=torch.int64)
+    offsets = torch.tensor([0, 2, 4, 4, 4], dtype=torch.int64)
+
+    hbm_word_size_in_4b = _get_hbm_word_size_in_4b()
+    device_simd_width = torch.tpu.get_device_properties().sparse_core_simd_width
+    for sc_simd_width in sorted({device_simd_width, 8, 16}):
+      with self.subTest(sc_simd_width=sc_simd_width):
+        outputs = torch.ops.tpu.preprocess_sparse_dense_matmul_input(
+            indices,
+            offsets,
+            16,  # max_ids_per_partition
+            16,  # max_unique_ids_per_partition
+            64,  # suggested_coo_buffer_size
+            4,  # batch_size
+            "sum",
+            1,  # local_device_count
+            global_device_count,
+            num_sc_per_device,
+            sc_simd_width,
+            hbm_word_size_in_4b,
+            False,  # allow_id_dropping
+            "table_5b",
+        )
+
+        self.assertEqual(outputs["embedding_ids"].dtype, torch.int32)
+        self.assertEqual(int(outputs["dropped_id_count"].item()), 0)
+
+        row_pointers = outputs["row_pointers"]
+        embedding_ids = outputs["embedding_ids"]
+        rp_stride = max(num_scs, sc_simd_width, hbm_word_size_in_4b)
+        extracted_local_ids = []
+        # Local SC0 processes samples [0, 2) containing all 4 IDs in p = 0..3.
+        start = 0
+        for p in range(num_scs):
+          end = int(row_pointers[p].item())
+          self.assertEqual(end - start, 1)
+          extracted_local_ids.append(int(embedding_ids[start].item()))
+          start = (
+              (end + hbm_word_size_in_4b - 1) // hbm_word_size_in_4b
+          ) * hbm_word_size_in_4b
+        self.assertEqual(int(row_pointers[rp_stride].item()), 0)
+        self.assert_close(
+            golden_result=torch.tensor(
+                [v // num_scs for v in raw_ids], dtype=torch.int32
+            ),
+            torch_tpu_result=torch.tensor(
+                extracted_local_ids, dtype=torch.int32
+            ),
+        )
+
   def test_compute_stats_invalid_inputs(self):
     """Verifies error handling for invalid input arguments."""
     val_float = torch.tensor([0.0, 1.0], dtype=torch.float32)
@@ -449,7 +542,7 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
     )
     return row_pointers, embedding_ids, sample_ids, gains, embedding_table
 
-  def _get_updated_rows(self, vocab_size: int = 32) -> list[int]:
+  def _get_updated_rows(self, vocab_size: int = 32) -> Sequence[int]:
     num_sc = torch.tpu.get_device_properties().sparse_cores_per_device
     shard_size = vocab_size // num_sc
     logical_ids = [0, 1, 2, 3, 4, 6]
@@ -1562,6 +1655,11 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
   def test_sparse_dense_matmul_grad_preserves_t8_layout_on_tpu(
       self, compile_op
   ):
+    self.enter_context(
+        execution_mode.set_eager_mode(
+            execution_mode.EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING
+        )
+    )
     device = torch.device("tpu")
     row_pointers, embedding_ids, sample_ids, gains, embedding_table = (
         self._get_inputs(device)
@@ -1658,7 +1756,7 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
       self.assertEqual(tpu_annotations.TpuLayout(*layout_tuple), t8_layout)
 
   def _compile_sgd(
-      self, device: torch.device, debugs: list[Any]
+      self, device: torch.device, debugs: MutableSequence[Any]
   ) -> tuple[Any, torch.Tensor]:
     """Returns a compiled SGD step on a table, and the table's initial value."""
     row_pointers, embedding_ids, sample_ids, gains, embedding_table = (

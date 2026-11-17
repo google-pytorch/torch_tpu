@@ -35,6 +35,7 @@
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/op_dispatcher.h"
@@ -68,7 +69,7 @@ at::Tensor ApplyNullaryOp(MlirNullaryOpBuilder op_builder,
                      .out_dims = out_dims,
                      .op_param_cache_keys = std::move(op_param_cache_keys),
                      .split_mode = split_mode}));
-  return MakeTensor(result_buf);
+  return MakeTensor(std::move(result_buf));
 }
 
 absl::Status ApplyNullaryOpOut(at::Tensor& out, MlirNullaryOpBuilder op_builder,
@@ -89,8 +90,8 @@ absl::Status ApplyNullaryOpOut(at::Tensor& out, MlirNullaryOpBuilder op_builder,
   TT_RETURN_IF_ERROR(ResizeTensorIfShapeDiffers(out, out_dims));
   TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=PyTorch catches this first.
       out.scalar_type() == out_dtype, error::kInvalidArgument)
-      << "expected the out tensor dtype to be " << out_dtype << ", got "
-      << out.scalar_type();
+      << "expected the out tensor dtype to be " << ToString(out_dtype)
+      << ", got " << ToString(out.scalar_type());
 
   TT_ASSIGN_OR_RETURN(  // ERROR_COV_INFEASIBLE=errors should be covered inside.
       auto result_buf,
@@ -159,7 +160,6 @@ at::Tensor AtenEmptyStrided(c10::SymIntArrayRef size_sym,
 
         // Determine how much "storage" we require, in terms of the number of
         // elements.
-        int64_t max_index = 0;
         bool is_zero_sized = false;
         for (int64_t i = 0; i < final_sizes_vec.size(); ++i) {
           TT_CHECK_THROW(final_sizes_vec[i] >= 0, error::kInvalidArgument)
@@ -169,9 +169,18 @@ at::Tensor AtenEmptyStrided(c10::SymIntArrayRef size_sym,
               << "expected strides to be >= 0, got strides ["
               << absl::StrJoin(final_strides_vec, ", ") << "]";
           is_zero_sized |= final_sizes_vec[i] == 0;
-          max_index += (final_sizes_vec[i] - 1) * final_strides_vec[i];
         }
-        const int64_t element_count = is_zero_sized ? 0 : max_index + 1;
+        int64_t element_count = 0;
+        if (!is_zero_sized) {
+          int64_t max_index = 0;
+          for (int64_t i = 0; i < final_sizes_vec.size(); ++i) {
+            TT_ASSIGN_OR_THROW(
+                const int64_t dim_span,
+                SafeMultiply(final_sizes_vec[i] - 1, final_strides_vec[i]));
+            TT_ASSIGN_OR_THROW(max_index, SafeAdd(max_index, dim_span));
+          }
+          TT_ASSIGN_OR_THROW(element_count, SafeAdd(max_index, 1));
+        }
 
         // Create a 1D contiguous empty (really, deterministically filled)
         // tensor to act as this "storage".

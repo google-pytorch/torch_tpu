@@ -24,7 +24,7 @@
 
 #include "csrc/internal/mosaic/kiln/core/index_arg.h"
 #include "csrc/internal/mosaic/kiln/core/scalar.h"
-#include "csrc/internal/mosaic/kiln/core/value_base.h"
+#include "csrc/internal/mosaic/kiln/core/value_handle.h"
 #include "llvm/ADT/ArrayRef.h"
 
 namespace torch_tpu::kiln {
@@ -47,8 +47,12 @@ struct SemaphoreSignalOptions {
 // `tpu.wait_dma`) strictly require a 0-D semaphore memref and semaphore arrays
 // cannot be sliced into sub-arrays, so separating the types enforces full
 // indexing to a 0-D `Semaphore` at compile time.
-class Semaphore {
+class Semaphore final {
  public:
+  explicit Semaphore(internal::ValueHandle handle);
+
+  internal::ValueHandle handle() const { return handle_; }
+
   bool is_dma() const;
 
   // Reads the current value of this semaphore as an i32 Scalar
@@ -63,11 +67,7 @@ class Semaphore {
   void Wait(IndexArg amount = 1) const;
 
  private:
-  friend struct internal::ValueAccess;
-  explicit Semaphore(const void* impl);
-  const void* impl() const { return impl_; }
-
-  const void* impl_;
+  internal::ValueHandle handle_;
 };
 
 // A multi-dimensional array of TPU regular or DMA semaphores
@@ -75,8 +75,12 @@ class Semaphore {
 // `memref<...x!tpu.dma_semaphore, #tpu.memory_space<semaphore_mem>>`),
 // allocated via `AllocaSemaphore(shape)` / `AllocaDmaSemaphore(shape)`.
 // Indexing with `sems(i, ...)` extracts a single 0-D `Semaphore`.
-class SemaphoreArray {
+class SemaphoreArray final {
  public:
+  explicit SemaphoreArray(internal::ValueHandle handle);
+
+  internal::ValueHandle handle() const { return handle_; }
+
   llvm::ArrayRef<int64_t> shape() const;
   int64_t rank() const;
   bool is_dma() const;
@@ -93,13 +97,9 @@ class SemaphoreArray {
   }
 
  private:
-  friend struct internal::ValueAccess;
-  explicit SemaphoreArray(const void* impl);
-  const void* impl() const { return impl_; }
-
   Semaphore AtImpl(llvm::ArrayRef<IndexArg> indices) const;
 
-  const void* impl_;
+  internal::ValueHandle handle_;
 };
 
 }  // namespace torch_tpu::kiln

@@ -161,16 +161,14 @@ absl::Status ExecuteCurrentStreamForDeferNever(
   const GraphSplitMode graph_split_mode = GraphSplitMode::kFullGraph;
   if (eager_mode == EagerMode::kDeferNeverAndLaunchBlocking) {
     // In DeferNeverAndLaunchBlocking, we do a full stream sync after every op.
-    auto snapshot_future =
-        MaterializeCurrentStream(reason, graph_split_mode, must_materialize);
-    TT_ASSIGN_OR_RETURN(auto snapshot, snapshot_future.Await());
-    TT_RETURN_IF_ERROR(snapshot->Synchronize());
-    TT_RETURN_IF_ERROR(SyncAndReturnStickyError());
-  } else {
-    // In DeferNever, we don't block at all, we initiate and continue.
-    EagerlyExecuteCurrentStream(reason, graph_split_mode, must_materialize);
+    TT_ASSIGN_OR_RETURN(
+        EventSnapshot snapshot,
+        MaterializeCurrentStream(reason, graph_split_mode, must_materialize));
+    return snapshot.Synchronize();
   }
-  return absl::OkStatus();
+  // In DeferNever, we don't block at all, we initiate and continue.
+  return EagerlyExecuteCurrentStream(reason, graph_split_mode,
+                                     must_materialize);
 }
 
 // Handles post-op creation events for the kDeferNever and
@@ -233,9 +231,9 @@ absl::Status DeferAndFuseDispatch(absl::Span<const DeviceBufferRef> results,
     if (RecordDeferredOpAndDetectRepetition(device_buffer_list)) {
       // Start a background materialization of the current stream; don't
       // wait for it to complete.
-      (void)EagerlyExecuteCurrentStream(
+      TT_RETURN_IF_ERROR(EagerlyExecuteCurrentStream(
           MaterializationReason::kRepeatedOpDetection,
-          GetRepeatedOpsGraphSplitMode());
+          GetRepeatedOpsGraphSplitMode()));
     }
   } else {
     RecordDeferredOpCreated(device_buffer_list);
@@ -298,9 +296,10 @@ absl::Status RunPostponedMaterialization() {
       if (ResumeRepeatedOpsGraphBreaks(device_index, stream_id)) {
         // Start a background materialization of the current stream; don't
         // wait for it to complete.
-        EagerlyExecuteStream(device_index, stream_id,
-                             MaterializationReason::kRepeatedOpDetection,
-                             GetRepeatedOpsGraphSplitMode());
+        TT_RETURN_IF_ERROR(
+            EagerlyExecuteStream(device_index, stream_id,
+                                 MaterializationReason::kRepeatedOpDetection,
+                                 GetRepeatedOpsGraphSplitMode()));
       }
       return absl::OkStatus();
     }
@@ -495,13 +494,14 @@ struct AsStridedInverseBuilderResult {
 };
 
 // Slices an MLIR input operand down to view_dimensions if its compiled type
-// shape differs.
+// shape (with bounded dynamic dimensions at their upper bounds) differs.
+//
+// A bounded dynamic dimension whose upper bound equals the view dimension is
+// kept as is: slicing it would turn it into a static dimension, which then
+// can't be combined with other bounded operands (e.g. in a broadcast).
 mlir::MlirOp SliceOperandIfNeeded(mlir::MlirOp input,
                                   const Dimensions& view_dimensions) {
-  auto type = GetTensorTypeOrDie(input);
-  bool should_slice =
-      type.getShape() !=
-      llvm::ArrayRef<int64_t>(view_dimensions.data(), view_dimensions.size());
+  const bool should_slice = GetStaticShape(input) != view_dimensions;
   if (should_slice) {
     Indices start_indices(view_dimensions.size(), 0);
     Strides strides(view_dimensions.size(), 1);

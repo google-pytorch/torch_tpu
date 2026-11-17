@@ -20,6 +20,7 @@ from absl.testing import absltest
 from absl.testing import parameterized
 from perflab import context as context_lib
 from perflab import target as target_lib
+from perflab import workload as workload_lib
 from tests import seed_test_utils
 
 
@@ -99,6 +100,30 @@ class ContextIsFrameworkAgnosticTest(seed_test_utils.RepeatableTest):
     """Importing harness.context must not bind torch or jax into its namespace."""
     self.assertFalse(hasattr(context_lib, "torch"))
     self.assertFalse(hasattr(context_lib, "jax"))
+
+
+class ContextWorkloadTest(seed_test_utils.RepeatableTest):
+
+  def test_require_workload(self):
+    context = context_lib.Context(
+        target=target_lib.make_target(target_lib.Platform.CPU),
+        run_scope=context_lib.RunScope.FULL,
+        workload=workload_lib.Workload(16, 2048),
+    )
+    self.assertEqual(
+        context.require_workload(), workload_lib.Workload(16, 2048)
+    )
+
+  def test_require_workload_raises_without_workload(self):
+    context = context_lib.Context(
+        target=target_lib.make_target(target_lib.Platform.CPU),
+        run_scope=context_lib.RunScope.FULL,
+    )
+    self.assertIsNone(context.workload)
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=benchmark
+        ValueError, "no workload"
+    ):
+      context.require_workload()
 
 
 if __name__ == "__main__":

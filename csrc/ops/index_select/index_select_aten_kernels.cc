@@ -87,7 +87,7 @@ at::Tensor TpuAtenIndexSelect(const at::Tensor& self, int64_t dim,
   TT_KERNEL(OpName::kIndexSelect, param_keys, (self, dim, index), {
     TT_ASSIGN_OR_THROW(DeviceBufferRef result_buf,
                        IndexSelect(self, dim, index, std::move(param_keys)));
-    return MakeTensor(result_buf);
+    return MakeTensor(std::move(result_buf));
   });
 }
 

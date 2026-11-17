@@ -68,7 +68,7 @@ docker run --rm \
   -w "/workspace" \
   "${CONTAINER_IMAGE}" \
   ci/build_wheels.sh "${release_args[@]}" \
-    --output-dir /workspace/dist 3.11 3.12 3.13 3.14 3.14t -- "${WHEEL_CONFIG}" "${kokoro_rbe_config}"
+    --output-dir /workspace/dist 3.11 3.12 3.13 3.14 3.15 3.14t 3.15t -- "${WHEEL_CONFIG}" "${kokoro_rbe_config}"
 
 # Move the built wheels from local dist back to Kokoro artifacts directory
 if [[ -d dist && -n "$(ls -A dist/*.whl 2>/dev/null)" ]]; then

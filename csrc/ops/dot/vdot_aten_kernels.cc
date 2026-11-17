@@ -45,21 +45,10 @@ absl::StatusOr<mlir::MlirOp> BuildVdotShlo(
   return BuildDotShlo(conjugated_lhs, rhs, precision);
 }
 
-absl::Status ValidateInputs(const at::Tensor& lhs, const at::Tensor& rhs) {
-  TT_RETURN_IF_ERROR(ValidateIsVector(lhs, "first"));
-  TT_RETURN_IF_ERROR(ValidateIsVector(rhs, "second"));
-
-  TT_RET_CHECK(lhs.size(0) == rhs.size(0), error::kInvalidArgument)
-      << "expected inputs to have the same shape, got " << ToString(lhs.sizes())
-      << " vs " << ToString(rhs.sizes());
-
-  return absl::OkStatus();
-}
-
 absl::StatusOr<DeviceBufferRef> Vdot(const at::Tensor& lhs,
                                      const at::Tensor& rhs,
                                      OpParamCacheKeys param_keys) {
-  TT_RETURN_IF_ERROR(ValidateInputs(lhs, rhs));
+  TT_RETURN_IF_ERROR(ValidateDotInputs(lhs, rhs));
 
   TT_ASSIGN_OR_RETURN(auto result_scalar_type,
                       ValidateAndGetDotOutputType(lhs, rhs));
@@ -86,7 +75,7 @@ absl::StatusOr<DeviceBufferRef> Vdot(const at::Tensor& lhs,
 at::Tensor AtenVdot(const at::Tensor& lhs, const at::Tensor& rhs) {
   TT_KERNEL(OpName::kVdot, param_keys, (lhs, rhs), {
     TT_ASSIGN_OR_THROW(auto result, Vdot(lhs, rhs, std::move(param_keys)));
-    return MakeTensor(result);
+    return MakeTensor(std::move(result));
   });
 }
 

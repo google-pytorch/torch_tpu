@@ -39,6 +39,17 @@ absl::Status ValidateIsVector(const at::Tensor& tensor,
   return absl::OkStatus();
 }
 
+absl::Status ValidateDotInputs(const at::Tensor& lhs, const at::Tensor& rhs) {
+  TT_RETURN_IF_ERROR(ValidateIsVector(lhs, "first"));
+  TT_RETURN_IF_ERROR(ValidateIsVector(rhs, "second"));
+
+  TT_RET_CHECK(lhs.size(0) == rhs.size(0), error::kInvalidArgument)
+      << "expected inputs to have the same shape, got " << ToString(lhs.sizes())
+      << " vs " << ToString(rhs.sizes());
+
+  return absl::OkStatus();
+}
+
 absl::StatusOr<mlir::ElementType> ValidateAndGetDotOutputType(
     const at::Tensor& lhs, const at::Tensor& rhs) {
   TT_RET_CHECK(lhs.scalar_type() == rhs.scalar_type(), error::kInvalidArgument)
@@ -47,9 +58,9 @@ absl::StatusOr<mlir::ElementType> ValidateAndGetDotOutputType(
   at::ScalarType output_scalar_type = lhs.scalar_type();
   TT_RET_CHECK(!IsBool(output_scalar_type), error::kInvalidArgument)
       << "the input dtypes cannot be bool";
-  TT_RET_CHECK(c10::isFloatingType(output_scalar_type) ||
-                   c10::isComplexType(output_scalar_type),
-               error::kPythonNotImplementedError)
+  TT_RET_CHECK(
+      c10::isFloatingType(output_scalar_type) || IsComplex(output_scalar_type),
+      error::kPythonNotImplementedError)
       << "not implemented for " << ToString(output_scalar_type);
   TT_RETURN_IF_ERROR(ValidateNotLowPrecisionFloat(output_scalar_type));
 

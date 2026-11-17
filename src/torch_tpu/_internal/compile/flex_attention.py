@@ -21,6 +21,7 @@ import torch
 from torch.nn.attention import flex_attention as fa
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal.compile import tpu_torch_compile
+from torch_tpu._internal.device import _device_ops_backend
 
 
 def mod_to_mlir(
@@ -60,12 +61,135 @@ def mod_to_mlir(
   return tpu_torch_compile.serialize_mlir_text(module)
 
 
+def _round_up(n: int, multiple: int) -> int:
+  """Returns the smallest multiple of `multiple` that is >= `n`."""
+  return (n + multiple - 1) // multiple * multiple
+
+
+def _flash_tile(
+    q_len: int, kv_len: int, head_dim: int, is_f32: bool
+) -> tuple[int, int]:
+  """Returns the largest (q, kv) tile that fits in VMEM.
+
+  Port of CreateTiling (flash_attention_kernel_builder.cc), forward only.
+  """
+  elem = 4 if is_f32 else 2
+
+  def initial_tile(n):  # GetInitialTileSize
+    return 128 if n <= 128 else 256 if n <= 256 else _round_up(n, 256)
+
+  def vmem_bytes(qt, kt):  # EstimateTileVmemBytes
+    linear = 2 * (qt * head_dim * (3 * elem + 4) + kt * head_dim * 2 * elem)
+    return linear + 2 * qt * 1024 + 2 * 4 * qt * kt
+
+  def halve(n):
+    return max(256, _round_up(n // 2, 256))
+
+  def kv_compute_tile(kt):  # GetKvComputeTileSize
+    if kt < 1024:
+      return kt
+    for kc in (1024, 768, 512, 256):
+      if kt % kc == 0:
+        return kc
+    return 128
+
+  # Same limit as the kernel (flex_attention_aten_kernels.cc).
+  limit = _device_ops_backend._get_vmem_capacity_bytes() // 2  # pylint: disable=protected-access
+  qt, kt = initial_tile(q_len), initial_tile(kv_len)
+  while vmem_bytes(qt, kt) > limit and (qt > 256 or kt > 256):
+    if qt > kt and qt > 256:
+      qt = halve(qt)
+    elif kt > 256:
+      kt = halve(kt)
+    else:
+      qt = halve(qt)
+  return qt, kv_compute_tile(kt)
+
+
+def _fit(tile: int, block: int, length: int) -> int:
+  """Returns the largest multiple of `block` <= `tile` dividing `length`.
+
+  Uses the same heuristic as F.sdpa, but can be improved in the future.
+  """
+  if length % block:
+    return block
+  tile = max(block, tile // block * block)
+  while length % tile:
+    tile -= block
+  return tile
+
+
 def _block_tables(
-    block_mask: fa.BlockMask,
-) -> tuple[torch.Tensor, torch.Tensor]:
-  """Returns the (kv_num_blocks, kv_indices) of every listed block."""
+    block_mask: fa.BlockMask, has_mask_mod: bool, tile: tuple[int, int]
+) -> tuple[torch.Tensor, torch.Tensor, tuple[int, int]]:
+  """Merges the mask's blocks into `tile` blocks for the kernel to visit.
+
+  Returns (kv_num_blocks, kv_indices, tile). Without a mask_mod, keeps the
+  mask's block size if a merged block would mix listed and unlisted blocks.
+  """
   dense = block_mask.to_dense()
-  return dense.sum(-1), dense.argsort(dim=-1, descending=True, stable=True)
+  q_block, kv_block = block_mask.BLOCK_SIZE
+  rq, rk = tile[0] // q_block, tile[1] // kv_block
+  b, h, nq, nkv = dense.shape
+  dense = dense.to(torch.int32)
+  groups = dense.reshape(b, h, nq // rq, rq, nkv // rk, rk)
+  merged = groups.amax(dim=(3, 5))
+  if not has_mask_mod and not torch.equal(merged, groups.amin(dim=(3, 5))):
+    merged, tile = dense, (q_block, kv_block)
+  num_blocks = merged.sum(-1)
+  indices = merged.argsort(dim=-1, descending=True, stable=True)
+  return num_blocks, indices, tile
+
+
+def kernel_args(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    block_mask: fa.BlockMask,
+    *,
+    scale: float | None = None,
+    score_mod: Callable[..., torch.Tensor] | None = None,
+) -> tuple[object, ...]:
+  """Returns the arguments of `_flex_attention_fwd` after query, key, value."""
+  if scale is None:
+    scale = 1.0 / math.sqrt(query.shape[-1])
+  q_len, kv_len = query.shape[-2], key.shape[-2]
+  mask_q_block, mask_kv_block = block_mask.BLOCK_SIZE
+  qt, kc = _flash_tile(
+      q_len,
+      kv_len,
+      max(query.shape[-1], value.shape[-1]),
+      query.dtype == torch.float32,
+  )
+  tile = (_fit(qt, mask_q_block, q_len), _fit(kc, mask_kv_block, kv_len))
+  # A noop mask_mod masks nothing; skip it.
+  mask_mod = block_mask.mask_mod
+  if mask_mod is fa.noop_mask:
+    mask_mod = None
+  kv_num_blocks, kv_indices, (q_block, kv_block) = _block_tables(
+      block_mask, mask_mod is not None, tile
+  )
+  mask_batch, mask_heads, _ = kv_num_blocks.shape
+  device = query.device
+
+  def mlir(mod, has_score):
+    if mod is None:
+      return ""
+    return mod_to_mlir(
+        mod, q_block=q_block, kv_block=kv_block, has_score=has_score
+    )
+
+  return (
+      kv_num_blocks.reshape(-1).to(device=device, dtype=torch.int32),
+      kv_indices.reshape(-1).to(device=device, dtype=torch.int32),
+      mask_batch,
+      mask_heads,
+      q_block,
+      kv_block,
+      float(scale),
+      mlir(score_mod, has_score=True),
+      mlir(mask_mod, has_score=False),
+  )
 
 
 def flex_attention_fwd(
@@ -92,36 +216,17 @@ def flex_attention_fwd(
     `(out, lse)`: out is [B, Hq, T, Dv] in query's dtype; lse is f32
     [B, Hq, T] in log2 units, matching the flex_attention HOP contract.
   """
-  if scale is None:
-    scale = 1.0 / math.sqrt(query.shape[-1])
-  q_block, kv_block = block_mask.BLOCK_SIZE
-  kv_num_blocks, kv_indices = _block_tables(block_mask)
-  mask_batch, mask_heads, _ = kv_num_blocks.shape
-  device = query.device
-  # A noop mask_mod keeps every listed block whole; skip splicing it.
-  mask_mod = block_mask.mask_mod
-  if mask_mod is fa.noop_mask:
-    mask_mod = None
-
-  def mlir(mod, has_score):
-    if mod is None:
-      return ""
-    return mod_to_mlir(
-        mod, q_block=q_block, kv_block=kv_block, has_score=has_score
-    )
-
   out, lse = torch.ops.tpu._flex_attention_fwd(
       query,
       key,
       value,
-      kv_num_blocks.reshape(-1).to(device=device, dtype=torch.int32),
-      kv_indices.reshape(-1).to(device=device, dtype=torch.int32),
-      mask_batch,
-      mask_heads,
-      q_block,
-      kv_block,
-      float(scale),
-      mlir(score_mod, has_score=True),
-      mlir(mask_mod, has_score=False),
+      *kernel_args(
+          query,
+          key,
+          value,
+          block_mask,
+          scale=scale,
+          score_mod=score_mod,
+      ),
   )
   return out, lse.reshape(query.shape[:3])

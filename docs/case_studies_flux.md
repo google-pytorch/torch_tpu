@@ -1,7 +1,5 @@
 # FLUX optimization
 
-<!-- Link to colab and to generated notebook -->
-
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/google-pytorch/torch_tpu/blob/0.2.0-docs/docs/notebooks/case_studies_flux.ipynb)
 
 This case study walks through how we took a reference PyTorch implementation of
@@ -113,7 +111,7 @@ training.
 
 The reference implementation moves the `3` (Q/K/V) axis to the front:
 
-```python
+```py
 img_q, img_k, img_v = einops.rearrange(
     img_qkv, "B L (K H D) -> K B L H D", K=3, H=self.num_heads
 )
@@ -158,9 +156,7 @@ of the step, but it is removed at no cost.
 ```python
 # AFTER (optimized): keep Q/K/V adjacent to (H, D) and unbind.
 _b, _l, _ = qkv.shape
-q_after, _k, _v = torch.unbind(
-    qkv.view(_b, _l, 3, num_heads, head_dim), dim=2
-)
+q_after, _k, _v = torch.unbind(qkv.view(_b, _l, 3, num_heads, head_dim), dim=2)
 print(f"q shape: {tuple(q_after.shape)}")
 print(f"Matches reference: {torch.equal(q_after.cpu(), q_before.cpu())}")
 ```
@@ -190,6 +186,7 @@ def rope_ref(pos, dim, theta=10000):
   )
   return out.reshape(*out.shape[:-1], 2, 2).float()
 
+
 def apply_rope_ref(xq, xk, freqs_cis):
   """6D matrix-vector contraction against the rotation matrices."""
   xq_ = xq.float().reshape(*xq.shape[:-1], -1, 1, 2)
@@ -200,6 +197,7 @@ def apply_rope_ref(xq, xk, freqs_cis):
       xq_out.reshape(*xq.shape).type_as(xq),
       xk_out.reshape(*xk.shape).type_as(xk),
   )
+
 
 _b, _s, _h, rope_head_dim = 2, 64, 4, 32
 positions = (
@@ -222,7 +220,7 @@ print(f"Rotation matrix freqs shape: {tuple(_freqs_ref.shape)}")
 The optimized implementation stores only compact `[cos, sin]` pairs and applies
 the rotation directly with elementwise math:
 
-```python
+```py
 # (x0 * cos - x1 * sin, x0 * sin + x1 * cos)
 xq_out_0 = xq_0 * cos - xq_1 * sin
 xq_out_1 = xq_0 * sin + xq_1 * cos
@@ -253,6 +251,7 @@ def rope(pos, dim, theta=10000):
   out = torch.einsum("...n,d->...nd", pos, omega)
   return torch.stack([torch.cos(out).float(), torch.sin(out).float()], dim=-1)
 
+
 def apply_rope(xq, xk, freqs_cis):
   """Direct 2D algebraic rotation with elementwise math."""
   cos = freqs_cis[..., 0]
@@ -269,6 +268,7 @@ def apply_rope(xq, xk, freqs_cis):
       [xk_0 * cos - xk_1 * sin, xk_0 * sin + xk_1 * cos], dim=-1
   ).view(b, s, h, d)
   return xq_out.type_as(xq), xk_out.type_as(xk)
+
 
 # Add a broadcast head dimension: (B, S, 1, D/2, 2).
 freqs = rope(positions, rope_head_dim).unsqueeze(2)
@@ -314,7 +314,7 @@ Compiling the entire `DoubleStreamBlock` with `torch.compile()` lowers it to a
 single XLA graph, letting the compiler fuse elementwise ops, normalizations, and
 residual additions:
 
-```python
+```py
 block = DoubleStreamBlock(
     hidden_size=1024,
     num_heads=8,
@@ -365,7 +365,7 @@ for the full, runnable implementation.
 
 ### Before (reference): standard PyTorch SDPA
 
-```python
+```py
 attn = F.scaled_dot_product_attention(q, k, v, is_causal=False)
 ```
 
@@ -373,7 +373,7 @@ Un-tiled attention materializes an `O(S^2)` score matrix in HBM.
 
 ### After (optimized): Pallas SplashAttention
 
-```python
+```py
 attn = splash_sdpa(q, k, v, is_causal=False)  # Drop-in replacement.
 ```
 
@@ -388,7 +388,7 @@ infers the PyTorch custom operator schema. The forward pass saves the softmax
 `logsumexp` residual so the backward kernel does not need to re-run the forward
 computation:
 
-```python
+```py
 torch_fwd_fn = torch.tpu.pallas.jax_op(f"pallas::{op_fwd_name}", splash_fn)
 torch_bwd_fn = torch.tpu.pallas.jax_op(f"pallas::{op_bwd_name}", splash_bwd_fn)
 

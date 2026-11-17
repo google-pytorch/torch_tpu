@@ -64,7 +64,6 @@ class Shape {
   Dimensions& dimensions() { return dimensions_; }
 
   mlir::ElementType dtype() const { return dtype_; }
-  void set_dtype(mlir::ElementType dtype) { dtype_ = dtype; }
 
   bool on_device_shape_is_dynamic() const {
     return on_device_shape_is_dynamic_;

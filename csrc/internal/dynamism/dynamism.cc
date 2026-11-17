@@ -28,7 +28,6 @@
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/eager_mode.h"
 #include "csrc/eager/materialize.h"
-#include "csrc/eager/split_traversal.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
 
@@ -50,9 +49,8 @@ absl::StatusOr<at::Tensor> MarkDynamic(const at::Tensor& tensor,
   if (!buffer_ref.is_placeholder() &&
       GetEagerMode() != EagerMode::kInternalCompileFxGraph) {
     TT_RETURN_IF_ERROR(
-        Materialize(buffer_ref, MaterializationReason::kExplicitSync,
-                    GraphSplitMode::kSplitGraph,
-                    MaterializationBlockMode::kBlockUntilStarted));
+        Materialize(buffer_ref, MaterializationReason::kExplicitSync));
+    TT_RETURN_IF_ERROR(buffer_ref.GetMaterializationFuture().Await());
   }
 
   auto dynamic_dimensions = buffer_ref.dynamic_dimensions();
@@ -93,9 +91,8 @@ absl::StatusOr<absl::Span<const BoundedDynamicDimension>> GetDynamismInfo(
   if (!buffer_ref.is_placeholder() && !buffer_ref.is_constant() &&
       GetEagerMode() != EagerMode::kInternalCompileFxGraph) {
     TT_RETURN_IF_ERROR(
-        Materialize(buffer_ref, MaterializationReason::kExplicitSync,
-                    GraphSplitMode::kSplitGraph,
-                    MaterializationBlockMode::kBlockUntilStarted));
+        Materialize(buffer_ref, MaterializationReason::kExplicitSync));
+    TT_RETURN_IF_ERROR(buffer_ref.GetMaterializationFuture().Await());
   }
   return buffer_ref.dynamic_dimensions();
 }

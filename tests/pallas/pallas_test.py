@@ -14,18 +14,21 @@
 
 """Tests for Pallas custom kernels."""
 
+from collections.abc import Sequence
 import enum
 import functools
 import os
 import pathlib
 import re
 import sys
-from typing import Optional, Sequence, Tuple, TypeAlias
+from typing import TypeAlias
 from unittest import mock
 import warnings
 from absl.testing import absltest
+from absl.testing import parameterized
 import jax
 from jax.experimental import pallas as pl
+from jax.interpreters.mlir import ir
 import jax.numpy as jnp
 import numpy as np
 from packaging import version
@@ -36,8 +39,10 @@ from torch_tpu._internal import compile as tpu_compile
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal import pallas
 from torch_tpu._internal import testing as tt_testing
+from torch_tpu._internal.export import export as tpu_export
 from torch_tpu._internal.ops import splash_attention
 from torch_tpu._internal.pallas import _compat
+from torch_tpu._internal.profiler import named_scope
 from torch_tpu._internal.utils import test_utils
 from torch_tpu._internal.utils import utils
 from tests import seed_test_utils
@@ -52,6 +57,25 @@ def _is_deferred_mode():
       _EagerMode.INTERNAL_DEFER_ALL,
       EagerMode._INTERNAL_COMPILE_FX_GRAPH,
   )
+
+
+def _mlir_op_scopes(mlir_text: str) -> list[str]:
+  """Returns the composed name scopes of operations in `@main`."""
+  with jax.interpreters.mlir.make_ir_context() as ctx:
+    module = ir.Module.parse(mlir_text, context=ctx)
+    main_block = module.body.operations[0].regions[0].blocks[0]
+    scopes = []
+    for op in main_block.operations:
+      loc = op.location
+      if isinstance(loc, ir.NameLoc):
+        scopes.append(loc.name_str)
+      elif (
+          isinstance(loc, ir.CallSiteLoc)
+          and isinstance(loc.caller, ir.NameLoc)
+          and isinstance(loc.callee, ir.NameLoc)
+      ):
+        scopes.append(f"{loc.caller.name_str}/{loc.callee.name_str}")
+    return scopes
 
 
 def add_vectors_kernel_body(x_ref, y_ref, o_ref):
@@ -70,6 +94,32 @@ def add_vectors(x: jax.Array, y: jax.Array) -> jax.Array:
   return add_vectors_jax(x, y)
 
 
+class _Block(torch.nn.Module):
+
+  def __init__(self, kernel_fn=add_vectors):
+    super().__init__()
+    self._kernel_fn = kernel_fn
+
+  def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    x = x * y
+    with named_scope.named_scope("pallas_phase"):
+      return self._kernel_fn(x, y)
+
+
+class _Model(torch.nn.Module):
+
+  def __init__(self, kernel_fn=add_vectors, num_layers: int = 2):
+    super().__init__()
+    self.layers = torch.nn.ModuleList(
+        [_Block(kernel_fn) for _ in range(num_layers)]
+    )
+
+  def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    for layer in self.layers:
+      x = layer(x, y)
+    return x
+
+
 def add_subtract_vectors_kernel(x_ref, y_ref, oadd_ref, osub_ref):
   x, y = x_ref[...], y_ref[...]
   oadd_ref[...] = x + y
@@ -79,7 +129,7 @@ def add_subtract_vectors_kernel(x_ref, y_ref, oadd_ref, osub_ref):
 @pallas.jax_op("pallas::add_subtract_vectors")
 def add_subtract_vectors(
     x: jax.Array, y: jax.Array
-) -> Tuple[jax.Array, jax.Array]:
+) -> tuple[jax.Array, jax.Array]:
   dt = jax.ShapeDtypeStruct(x.shape, x.dtype)
   return pl.pallas_call(add_subtract_vectors_kernel, out_shape=(dt, dt))(x, y)
 
@@ -133,6 +183,13 @@ def jax_add_or_subtract_vectors_wrapper(
   out_shape = jax.ShapeDtypeStruct(x.shape, x.dtype)
   wrapped = functools.partial(_add_or_subtract_vectors_kernel, mode)
   return pl.pallas_call(wrapped, out_shape=out_shape)(x, y)
+
+
+def _donate_kernel(
+    x: jax.Array, kv: jax.Array, scale: int, *, mode: str = "a"
+) -> tuple[jax.Array, jax.Array]:
+  del mode  # Unused.
+  return x * scale, kv
 
 
 class TestPallasKernels(seed_test_utils.RepeatableTest):
@@ -586,7 +643,7 @@ class TestPallasKernels(seed_test_utils.RepeatableTest):
     """Simulate kernel libraries like tokamax that wrap pallas kernels."""
 
     @pallas.jax_op("pallas::jax_test")
-    def wrapper(x: jax.Array, y: Optional[jax.Array]) -> jax.Array:
+    def wrapper(x: jax.Array, y: jax.Array | None) -> jax.Array:
       if y is None:
         return x
       return jax.numpy.add(x, y)
@@ -762,7 +819,7 @@ class TestPallasKernels(seed_test_utils.RepeatableTest):
     # Create the kernel in JAX. Do not jax.jit this, jax_op will do it later.
     def mul_and_add_scalars_jax_kernel(
         x: jax.Array, y: jax.Array
-    ) -> Tuple[jax.Array, jax.Array]:
+    ) -> tuple[jax.Array, jax.Array]:
       if x.ndim != 0 or y.ndim != 0:
         raise ValueError("Only scalars are supported.")
       return jax.numpy.multiply(x, y), jax.numpy.add(x, y)
@@ -777,7 +834,7 @@ class TestPallasKernels(seed_test_utils.RepeatableTest):
     # extract them from jax._src.interpreters.ad.primitive_jvps
     def mul_and_add_scalars_backward_jax_kernel(
         x: jax.Array, y: jax.Array, d_mul: jax.Array, d_add: jax.Array
-    ) -> Tuple[jax.Array, jax.Array]:
+    ) -> tuple[jax.Array, jax.Array]:
 
       def scalar_surrogate(x_local: jax.Array, y_local: jax.Array):
         output_mul, output_add = mul_and_add_scalars_jax_kernel(
@@ -1195,6 +1252,186 @@ class TestPallasKernels(seed_test_utils.RepeatableTest):
         )
     )
 
+  def test_pallas_kernel_name_scopes_in_compiled_mlir(self):
+    """Verifies Pallas ops carry caller module/named scopes and kernel name."""
+    debugs = []
+    compiled_model = torch.compile(
+        _Model().to(self.device),
+        backend="tpu",
+        options={"debug_callback": debugs.append},
+    )
+    x = torch.ones((8, 128), dtype=torch.float32, device=self.device)
+    y = torch.ones((8, 128), dtype=torch.float32, device=self.device)
+    out = compiled_model(x, y)
+    test_utils.assert_close(out.cpu(), torch.full((8, 128), 3.0))
+
+    self.assertLen(debugs, 1)
+    forward_mlir = "\n".join(debugs[0].stablehlo_forward_text)
+    self.assertEqual(
+        _mlir_op_scopes(forward_mlir),
+        [
+            "layers.0[_Block]/mul/mul",
+            (
+                "layers.0[_Block]/pallas_phase/call_custom_kernel/"
+                "custom_kernel/pallas_add_vectors/jit(add_vectors)/pallas_call"
+            ),
+            "layers.1[_Block]/mul/mul",
+            (
+                "layers.1[_Block]/pallas_phase/call_custom_kernel/"
+                "custom_kernel/pallas_add_vectors/jit(add_vectors)/pallas_call"
+            ),
+        ],
+    )
+
+  def test_pallas_kernel_name_scopes_in_exported_mlir(self):
+    """Verifies torch.export Pallas ops carry caller module and named scopes."""
+    x = torch.ones((8, 128), dtype=torch.float32, device=self.device)
+    y = torch.ones((8, 128), dtype=torch.float32, device=self.device)
+    exported = torch.export.export(_Model().to(self.device), (x, y))
+    mlir_text = tpu_export.exported_to_mlir(exported).serialize_text(
+        enable_debug_info=True
+    )
+    self.assertEqual(
+        _mlir_op_scopes(mlir_text),
+        [
+            "layers.0[_Block]/mul/mul",
+            (
+                "layers.0[_Block]/pallas_phase/call_custom_kernel/"
+                "custom_kernel/pallas_add_vectors/jit(add_vectors)/pallas_call"
+            ),
+            "layers.1[_Block]/mul/mul",
+            (
+                "layers.1[_Block]/pallas_phase/call_custom_kernel/"
+                "custom_kernel/pallas_add_vectors/jit(add_vectors)/pallas_call"
+            ),
+        ],
+    )
+
+  def test_pallas_kernel_backward_preserves_forward_scopes(self):
+    """Verifies backward Pallas kernels inherit forward module/named scopes."""
+
+    def scoped_add_bwd_jax(grad_out: jax.Array) -> tuple[jax.Array, jax.Array]:
+      dt = jax.ShapeDtypeStruct(grad_out.shape, grad_out.dtype)
+      dx = pl.pallas_call(add_vectors_kernel_body, out_shape=dt)(
+          grad_out, jnp.zeros_like(grad_out)
+      )
+      return dx, dx
+
+    scoped_add_fwd = pallas.jax_op("pallas::scoped_add_fwd", add_vectors_jax)
+    scoped_add_bwd = pallas.jax_op("pallas::scoped_add_bwd", scoped_add_bwd_jax)
+
+    def setup_context(ctx, inputs, output):
+      del ctx, inputs, output
+
+    def backward(ctx, grad_out):
+      del ctx
+      return scoped_add_bwd(grad_out)
+
+    scoped_add_fwd.register_autograd(backward, setup_context=setup_context)
+
+    debugs = []
+    compiled_model = torch.compile(
+        _Model(scoped_add_fwd, num_layers=1).to(self.device),
+        backend="tpu",
+        options={"debug_callback": debugs.append},
+    )
+    x = torch.ones(
+        (8, 128), dtype=torch.float32, device=self.device, requires_grad=True
+    )
+    y = torch.ones(
+        (8, 128), dtype=torch.float32, device=self.device, requires_grad=True
+    )
+    out = compiled_model(x, y)
+    out.sum().backward()
+    test_utils.assert_close(x.grad.cpu(), torch.ones((8, 128)))
+
+    self.assertLen(debugs, 1)
+    forward_mlir = "\n".join(debugs[0].stablehlo_forward_text)
+    backward_mlir = "\n".join(debugs[0].stablehlo_backward_text)
+    self.assertEqual(
+        _mlir_op_scopes(forward_mlir),
+        [
+            "layers.0[_Block]/mul/mul",
+            (
+                "layers.0[_Block]/pallas_phase/call_custom_kernel/"
+                "custom_kernel/pallas_scoped_add_fwd/jit(add_vectors_jax)/"
+                "pallas_call"
+            ),
+        ],
+    )
+    self.assertEqual(
+        _mlir_op_scopes(backward_mlir),
+        [
+            (
+                "layers.0[_Block]/pallas_phase/call_custom_kernel/"
+                "custom_kernel/pallas_scoped_add_bwd/jit(scoped_add_bwd_jax)/"
+                "broadcast_in_dim"
+            ),
+            (
+                "layers.0[_Block]/pallas_phase/call_custom_kernel/"
+                "custom_kernel/pallas_scoped_add_bwd/jit(scoped_add_bwd_jax)/"
+                "pallas_call"
+            ),
+            "layers.0[_Block]/mul/mul",
+            "layers.0[_Block]/mul/mul",
+            "add/add",
+        ],
+    )
+
+  def test_nested_jax_jit_in_pallas_kernel_preserves_outer_jit_scope(self):
+    """Verifies nested @jax.jit helpers in a jax_op keep outer jit scopes."""
+
+    @jax.jit
+    def inner_pallas_add(x: jax.Array, y: jax.Array) -> jax.Array:
+      return pl.pallas_call(
+          add_vectors_kernel_body,
+          out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype),
+      )(x, y)
+
+    @jax.jit
+    def mid_pallas_add(x: jax.Array, y: jax.Array) -> jax.Array:
+      with jax.named_scope("first_call"):
+        z = inner_pallas_add(x, y)
+      with jax.named_scope("second_call"):
+        return inner_pallas_add(z, y)
+
+    def outer_add(x: jax.Array, y: jax.Array) -> jax.Array:
+      return mid_pallas_add(x, y)
+
+    torch_outer_add = pallas.jax_op("pallas::outer_add", outer_add)
+
+    debugs = []
+    compiled_model = torch.compile(
+        _Model(torch_outer_add, num_layers=1).to(self.device),
+        backend="tpu",
+        options={"debug_callback": debugs.append},
+    )
+    x = torch.ones((8, 128), dtype=torch.float32, device=self.device)
+    y = torch.ones((8, 128), dtype=torch.float32, device=self.device)
+    out = compiled_model(x, y)
+    test_utils.assert_close(out.cpu(), torch.full((8, 128), 3.0))
+
+    self.assertLen(debugs, 1)
+    forward_mlir = "\n".join(debugs[0].stablehlo_forward_text)
+    self.assertEqual(
+        _mlir_op_scopes(forward_mlir),
+        [
+            "layers.0[_Block]/mul/mul",
+            (
+                "layers.0[_Block]/pallas_phase/call_custom_kernel/"
+                "custom_kernel/pallas_outer_add/jit(outer_add)/"
+                "jit(mid_pallas_add)/first_call/"
+                "jit(inner_pallas_add)/pallas_call"
+            ),
+            (
+                "layers.0[_Block]/pallas_phase/call_custom_kernel/"
+                "custom_kernel/pallas_outer_add/jit(outer_add)/"
+                "jit(mid_pallas_add)/second_call/"
+                "jit(inner_pallas_add)/pallas_call"
+            ),
+        ],
+    )
+
 
 class TestPallasCompat(seed_test_utils.RepeatableTest):
 
@@ -1236,7 +1473,7 @@ class TestPallasCompat(seed_test_utils.RepeatableTest):
         self.assertTrue(issubclass(w[0].category, DeprecationWarning))
         self.assertEqual(
             str(w[0].message),
-            "<TorchTpu/ApiStage/DeprecatedApi/> test message",
+            "//TorchTpu/ApiStage/DeprecatedApi// test message",
         )
         self.assertIn("pallas_test.py", w[0].filename)
     else:
@@ -1254,7 +1491,7 @@ class TestPallasCompat(seed_test_utils.RepeatableTest):
         self.assertTrue(issubclass(w[0].category, DeprecationWarning))
         self.assertEqual(
             str(w[0].message),
-            "<TorchTpu/ApiStage/DeprecatedApi/> test message",
+            "//TorchTpu/ApiStage/DeprecatedApi// test message",
         )
         self.assertIn("pallas_test.py", w[0].filename)
 
@@ -1724,6 +1961,122 @@ class TestPallasCompat(seed_test_utils.RepeatableTest):
     res_aliased = aliased_opt_kernel(None, t_aliased)
     test_utils.assert_close(res_aliased.cpu(), torch.full((2, 2), 10.0))
     test_utils.assert_close(t_aliased.cpu(), torch.full((2, 2), 10.0))
+
+  def test_custom_jax_kernel_donates_keyword_arguments_by_name(self):
+    """Verifies custom_jax_kernel donates keyword arguments by name on TPU."""
+
+    def kernel_donate_kwonly_tensor(
+        x: jax.Array, kv: jax.Array, *, extra: jax.Array
+    ) -> tuple[jax.Array, jax.Array, jax.Array]:
+      return x * 3, kv, extra
+
+    # `x` is donated at the position jax.jit inferred from its name, and the
+    # keyword-only `extra` by name.
+    kernel = pallas.custom_jax_kernel(
+        kernel_donate_kwonly_tensor,
+        donate_argnames=("x", "extra"),
+        warn_deprecated=False,
+    )
+    t_x = torch.ones((2, 2), dtype=torch.float32, device="tpu")
+    t_kv = torch.full((2, 2), 2.0, dtype=torch.float32, device="tpu")
+    t_extra = torch.full((2, 2), 4.0, dtype=torch.float32, device="tpu")
+    out_x, out_kv, out_extra = kernel(t_x, t_kv, extra=t_extra)
+    test_utils.assert_close(out_x.cpu(), torch.full((2, 2), 3.0))
+    test_utils.assert_close(out_kv.cpu(), torch.full((2, 2), 2.0))
+    test_utils.assert_close(out_extra.cpu(), torch.full((2, 2), 4.0))
+    self._assert_donated(t_x)
+    self._assert_donated(t_extra)
+    test_utils.assert_close(t_kv.cpu(), torch.full((2, 2), 2.0))
+
+  @parameterized.named_parameters(
+      ("positional", lambda op, x, kv: op(x, kv, 3)),
+      ("keyword", lambda op, x, kv: op(x, kv=kv, scale=3)),
+  )
+  def test_donate_argnames(self, call_op):
+    """Verifies jax_op donates only the named tensor, however it's passed."""
+    op = pallas.jax_op(
+        f"test::{self._testMethodName}", _donate_kernel, donate_argnames="kv"
+    )
+    t_x = torch.ones((2, 2), dtype=torch.float32, device="tpu")
+    t_kv = torch.full((2, 2), 2.0, dtype=torch.float32, device="tpu")
+    out_x, out_kv = call_op(op, t_x, t_kv)
+    test_utils.assert_close(out_x.cpu(), torch.full((2, 2), 3.0))
+    test_utils.assert_close(out_kv.cpu(), torch.full((2, 2), 2.0))
+    test_utils.assert_close(t_x.cpu(), torch.ones((2, 2)))
+    self._assert_donated(t_kv)
+
+  def test_donate_argnames_sequence(self):
+    """Verifies jax_op donates every tensor of a sequence donated by name."""
+
+    def kernel_donate_seq_by_name(
+        opt: jax.Array | None,
+        xs: Sequence[jax.Array],
+        kv: jax.Array,
+    ) -> tuple[jax.Array, jax.Array, jax.Array]:
+      base = xs[0] if opt is None else xs[0] + opt
+      return base, xs[1], kv
+
+    op_seq = pallas.jax_op(
+        "test::kernel_donate_seq_by_name",
+        kernel_donate_seq_by_name,
+        donate_argnames=("xs",),
+    )
+    d0 = torch.ones((2, 2), dtype=torch.float32, device="tpu")
+    d1 = torch.full((2, 2), 2.0, dtype=torch.float32, device="tpu")
+    kv_kept = torch.full((2, 2), 4.0, dtype=torch.float32, device="tpu")
+    r0, r1, r_kv = op_seq(None, [d0, d1], kv_kept)
+    test_utils.assert_close(r0.cpu(), torch.ones((2, 2)))
+    test_utils.assert_close(r1.cpu(), torch.full((2, 2), 2.0))
+    test_utils.assert_close(r_kv.cpu(), torch.full((2, 2), 4.0))
+    self._assert_donated(d0)
+    self._assert_donated(d1)
+    test_utils.assert_close(kv_kept.cpu(), torch.full((2, 2), 4.0))
+
+  def test_donate_argnames_partial(self):
+    """Verifies jax_op donates by name through `functools.partial`."""
+    op_partial = pallas.jax_op(
+        "test::kernel_donate_partial",
+        functools.partial(_donate_kernel, scale=3),
+        donate_argnames=("kv",),
+    )
+    t_x = torch.ones((2, 2), dtype=torch.float32, device="tpu")
+    t_kv = torch.full((2, 2), 2.0, dtype=torch.float32, device="tpu")
+    out_x, out_kv = op_partial(t_x, t_kv)
+    test_utils.assert_close(out_x.cpu(), torch.full((2, 2), 3.0))
+    test_utils.assert_close(out_kv.cpu(), torch.full((2, 2), 2.0))
+    test_utils.assert_close(t_x.cpu(), torch.ones((2, 2)))
+    self._assert_donated(t_kv)
+
+  def test_negative_donate_argnums_skip_keyword_only_parameters(self):
+    """Verifies negative donate_argnums count only positional parameters."""
+    if jax.__version_info__ < (0, 12, 0):
+      self.skipTest("jax.jit ignores negative donate_argnums before JAX 0.12.")
+
+    def kernel_donate_before_kwonly(
+        x: jax.Array,
+        y: jax.Array,
+        z: jax.Array,
+        *,
+        scale: int = 1,
+    ) -> tuple[jax.Array, jax.Array, jax.Array]:
+      return x * scale, y, z
+
+    # As in jax.jit, -2 is `y`; the keyword-only `scale` is not counted.
+    op = pallas.jax_op(
+        "test::kernel_donate_before_kwonly",
+        kernel_donate_before_kwonly,
+        donate_argnums=(-2,),
+    )
+    t_x = torch.ones((2, 2), dtype=torch.float32, device="tpu")
+    t_y = torch.full((2, 2), 2.0, dtype=torch.float32, device="tpu")
+    t_z = torch.full((2, 2), 3.0, dtype=torch.float32, device="tpu")
+    out_x, out_y, out_z = op(t_x, t_y, t_z, scale=4)
+    test_utils.assert_close(out_x.cpu(), torch.full((2, 2), 4.0))
+    test_utils.assert_close(out_y.cpu(), torch.full((2, 2), 2.0))
+    test_utils.assert_close(out_z.cpu(), torch.full((2, 2), 3.0))
+    test_utils.assert_close(t_x.cpu(), torch.ones((2, 2)))
+    self._assert_donated(t_y)
+    test_utils.assert_close(t_z.cpu(), torch.full((2, 2), 3.0))
 
   def test_jax_placeholders_mesh_tensor_sequence(self):
     """Verifies jax_placeholders does not crash when called with a mesh and tensor sequence."""

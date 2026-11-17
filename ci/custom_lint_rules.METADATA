@@ -40,15 +40,13 @@ presubmit {
   check_contents {
     base {
       id: "CheckCopybaraTags"
-      disable_tags: "ALLOW_IRREVERSIBLE_TRANSFORM"
       disable_tags: "ROLLBACK_OF"  # Don't require for rollback CLs.
     }
     failure_status: ERROR
     failure_message:
       "Found irreversible 'copybara:' tags (strip or insert). "
       "Please use reversible alternatives instead. "
-      "See go/ml-velocity-copybara#reversibility for instructions on how to use reversible alternatives. "
-      "If you must use these tags, add ALLOW_IRREVERSIBLE_TRANSFORM=<reason> to the CL description."
+      "See go/ml-velocity-copybara#reversibility for instructions on how to use reversible alternatives."
     prohibited_regexp: "\\bcopybara:(strip|strip_begin|insert|insert_begin)\\b"
     check_delta_only: true
   }
@@ -153,7 +151,6 @@ presubmit {
   check_file_operation {
     base {
       id: "CheckOpFileName"
-      disable_tags: "ALLOW_SINGULAR_KERNEL_FILENAME"
       disable_tags: "ROLLBACK_OF"
     }
     operation: ADD
@@ -161,9 +158,7 @@ presubmit {
     operation: INTEGRATE
     failure_message:
       "Files under torch_tpu/csrc/ops/ should not end with 'kernel.cc' or "
-      "'kernel.h'. Use 'kernels.cc' or 'kernels.h' instead. If you have a "
-      "legitimate reason to use the singular filename, add "
-      "ALLOW_SINGULAR_KERNEL_FILENAME=<reason> to the CL description."
+      "'kernel.h'. Use 'kernels.cc' or 'kernels.h' instead."
   }
 }
 
@@ -174,20 +169,24 @@ presubmit {
   path_regexp: "torch_tpu/csrc/ops/\\w+/.*\\.(cc|h)"
   path_regexp_exclusion: ".*_kernels\\.(cc|h)"
 
-  check_file_operation {
+  check_contents {
     base {
       id: "CheckOpImplFilename"
-      disable_tags: "ALLOW_ANY_OP_IMPL_FILENAME"
       disable_tags: "ROLLBACK_OF"
     }
+    # Only check newly added, branched, or integrated files so pre-existing
+    # legacy and utility files under csrc/ops/<subdir>/ are not flagged on EDIT
+    # or full-repo (--all) runs.
     operation: ADD
     operation: BRANCH
     operation: INTEGRATE
+    required_regexp: "//\\s*ANY_OP_IMPL_FILENAME_OK=.+"
     failure_message:
       "C++ files under torch_tpu/csrc/ops/<op>/ should be named *_kernels.cc or "
       "*_kernels.h. In particular, we decided to no longer split an op library "
       "into foo and foo_kernels. If you have a legitimate reason to break this "
-      "rule, add ALLOW_ANY_OP_IMPL_FILENAME=<reason> to the CL description."
+      "rule, add a `// ANY_OP_IMPL_FILENAME_OK=<reason>` comment in the file."
+    check_delta_only: false
   }
 }
 
@@ -202,17 +201,14 @@ presubmit {
     base {
       id: "CheckKernelMacro"
       disable_tags: "ROLLBACK_OF"
-      disable_tags: "NO_TT_KERNEL_OK"
     }
     required_regexp: "\\bTT_KERNEL\\b"
     failure_message:
       "All *kernels.cc files must use TT_KERNEL() to implement a kernel (see "
-      "go/torch-tpu-op-easy for the rationale and more details. If you have "
+      "go/torch-tpu-op-easy for the rationale and more details). If you have "
       "a legitimate reason to not use TT_KERNEL(), add a comment in the file "
       "to explain why TT_KERNEL is not used (as long as the comment mentions "
-      "TT_KERNEL, this check passes). You can also suppress this check for all "
-      "files in the CL by adding NO_TT_KERNEL_OK=<reason> to the CL "
-      "description."
+      "TT_KERNEL, this check passes)."
     # As long as the file contains TT_KERNEL, this check passes. We don't need
     # the changed lines to use TT_KERNEL.
     check_delta_only: false
@@ -242,11 +238,10 @@ presubmit {
   check_contents {
     base {
       id: "CheckC10ToStringUsage"
-      disable_tags: "C10_TOSTRING_OK"
       disable_tags: "ROLLBACK_OF"
     }
     prohibited_regexp: "\\bc10::toString\\b"
-    suppression_regexp: "\\bC10_TOSTRING_OK\\b"
+    suppression_regexp: "\\bC10_TOSTRING_OK=.+"
     failure_message:
       "Please do not use c10::toString in torch_tpu codebase. "
       "Instead, use torch_tpu::ToString (defined in common/to_string.h). "
@@ -260,9 +255,9 @@ presubmit {
     base {
       id: "CheckDeprecatedMutexLock"
       disable_tags: "ROLLBACK_OF"
-      disable_tags: "DEPRECATED_MUTEX_LOCK_OK"
     }
     prohibited_regexp: "\\b(MutexLock|ReaderMutexLock|WriterMutexLock)\\b.*&"
+    suppression_regexp: "\\bDEPRECATED_MUTEX_LOCK_OK=.+"
     failure_message:
       "Please use `absl::MutexLock lock(mutex)` instead of `absl::MutexLock "
       "lock(&mutex)`. The latter is deprecated. If you have a legitimate "
@@ -275,18 +270,18 @@ presubmit {
   check_contents {
     base {
       id: "CheckIgnoreInCacheKeyLegacy"
-      disable_tags: "IGNORE_IN_CACHE_KEY_LEGACY_OK"
       disable_tags: "ROLLBACK_OF"
     }
     prohibited_regexp: "\\bIgnoreInCacheKey\\([^,]+,.*\\b(Legacy|legacy)\\b"
+    suppression_regexp: "\\bIGNORE_IN_CACHE_KEY_LEGACY_OK=.+"
     failure_message:
       "Please do not use \"Legacy usage\" as the reason for IgnoreInCacheKey() "
       "in *new* code. This reason is only used to get old code to compile. "
       "Instead, state the actual reason this parameter should be excluded "
       "from the cache key computation. If this is a false alarm (e.g. you are "
-      "moving or reformatting existing code), add "
-      "IGNORE_IN_CACHE_KEY_LEGACY_OK=<reason> to the CL description to "
-      "suppress this check."
+      "moving or reformatting existing code), add a "
+      "`// IGNORE_IN_CACHE_KEY_LEGACY_OK=<reason>` comment on the same line "
+      "to suppress this check."
     check_delta_only: true
   }
 
@@ -669,6 +664,29 @@ presubmit {
     check_delta_only: true  # Only check new/changed lines.
   }
 
+  # Prefer InferComputationDtype() over at::toOpMathType().
+  check_contents {
+    base {
+      id: "CheckAtToOpMathType"
+      disable_tags: "ROLLBACK_OF"  # Don't require for rollback CLs.
+    }
+    prohibited_regexp: "\\bat::toOpMathType\\b"
+    suppression_regexp:
+      # Allow suppression with this marker.
+      "\\bAT_TO_OP_MATH_TYPE_OK=.+|"
+      # Ignore occurrences in comments.
+      "//.*\\bat::toOpMathType\\b"
+    failure_message:
+      "Please use `InferComputationDtype()` (defined in "
+      "csrc/common/aten_utils.h) instead of `at::toOpMathType()`. Upstream "
+      "`at::toOpMathType()` crashes with an internal assert on "
+      "unsigned/sub-byte integer types (UInt16, UInt32, UInt64, Int2, Int4, "
+      "UInt2, UInt4) and does not promote FP4 to F32 for XLA HLO. If you have "
+      "a legitimate reason to call `at::toOpMathType()` directly, add a "
+      "`// AT_TO_OP_MATH_TYPE_OK=<reason>` comment on the same line."
+    check_delta_only: true  # Only check new/changed lines.
+  }
+
   # Prevent using std::function in new code.
   check_contents {
     base {
@@ -787,7 +805,6 @@ presubmit {
     base {
       id: "CheckNoVoidCast"
       disable_tags: "ROLLBACK_OF"
-      disable_tags: "VOID_CAST_OK"
     }
     prohibited_regexp: "\\(void\\)|\\bstatic_cast<void>"
     suppression_regexp:
@@ -866,6 +883,32 @@ presubmit {
       "they are not introduced by TorchTPU. If you have a legitimate reason "
       "to suppress this check, add a "
       "`// STRING_LITERAL_ENV_VAR_NAME_OK=<reason>` comment on the same line."
+    check_delta_only: true  # Only check new/changed lines.
+  }
+
+  # Prevent using setenv and unsetenv.
+  check_contents {
+    base {
+      id: "CheckSetenv"
+      disable_tags: "ROLLBACK_OF"  # Don't require for rollback CLs.
+    }
+    # The unescaped regex is:
+    #   \b(setenv|unsetenv)\(
+    prohibited_regexp: "\\b(setenv|unsetenv)\\("
+    suppression_regexp:
+      # Allow suppression with this marker.
+      "\\bSETENV_OK=.+|"
+      # Ignore occurrences in C++ and Python comments.
+      "(//|#).*\\b(setenv|unsetenv)\\("
+    failure_message:
+      "Please use SafeSetEnv<>() or SafeUnsetEnv<>() instead of setenv or "
+      "unsetenv. "
+      "They crash if the env var's value has already been memoized by "
+      "GetEnvOnce<>(), which would otherwise silently ignore the new value. "
+      "If TorchTPU needs to change an env var at runtime, read it with "
+      "std::getenv() instead of GetEnvOnce<>(). "
+      "If you have a legitimate reason to use setenv or unsetenv, add a "
+      "`// SETENV_OK=<reason>` comment on the same line."
     check_delta_only: true  # Only check new/changed lines.
   }
 
@@ -1176,6 +1219,7 @@ presubmit {
 # Checks for BUILD, BUILD.bazel and .bzl files.
 presubmit {
   path_regexp: "torch_tpu/.*(BUILD|BUILD\\.bazel|\\.bzl)"
+  path_expression_exclusion: "torch_tpu/oss/ci/..."
 
   # Prevent new uses of notest_oss.
   check_contents {
@@ -1296,7 +1340,7 @@ presubmit {
     }
     prohibited_regexp: "\\b(py_library|pytype_library|pytype_strict_library)\\("
     match_multi_line: true
-    suppression_regexp: "\\b(py_library|pytype_library|pytype_strict_library)\\(\\n\\s*# PY_LIBRARY_OK=.+"
+    suppression_regexp: "\\b(py_library|pytype_library|pytype_strict_library)\\((.*# PY_LIBRARY_OK=.+|\\n\\s*# PY_LIBRARY_OK=.+)"
     failure_message:
       "Please use torch_tpu_py_library instead of py_library, pytype_library, "
       "or pytype_strict_library. For example:\n"
@@ -1309,8 +1353,8 @@ presubmit {
       "\n"
       "This enforces best practices. "
       "If you have a legitimate reason to bypass this check, add "
-      "a comment `# PY_LIBRARY_OK=<reason>` on the first line "
-      "after the `py_library(`, etc, line, e.g.\n"
+      "a comment `# PY_LIBRARY_OK=<reason>` on the same line as "
+      "(or the first line after) the `py_library(`, etc, line, e.g.\n"
       "  py_library(\n"
       "    # PY_LIBRARY_OK=<reason>\n"
       "    name = \"foo\",\n"
@@ -1353,9 +1397,8 @@ presubmit {
     base {
       id: "CheckTorchTpuPackageEnd"
       disable_tags: "ROLLBACK_OF"
-      disable_tags: "NO_TORCH_TPU_PACKAGE_END_OK"
     }
-    required_regexp: "\\btorch_tpu_package_end\\(\\)[\\s|\\n]*$"
+    required_regexp: "\\btorch_tpu_package_end\\(\\)[\\s|\\n]*$|#\\s*NO_TORCH_TPU_PACKAGE_END_OK=.+"
     match_entire_file: true
     failure_message:
       "All BUILD files must include the following lines to define some "
@@ -1367,7 +1410,7 @@ presubmit {
       "# This must be the last line in the BUILD file.\n"
       "torch_tpu_package_end()\n\n"
       "If you have a legitimate reason to not include them, "
-      "add NO_TORCH_TPU_PACKAGE_END_OK=<reason> to the CL description."
+      "add a `# NO_TORCH_TPU_PACKAGE_END_OK=<reason>` comment in the BUILD file."
   }
 }
 
@@ -1455,6 +1498,7 @@ presubmit {
   path_expression: "....py"
   path_expression_exclusion: "torch_tpu/examples/..."
   path_expression_exclusion: "torch_tpu/google/prototypes/..."
+  path_expression_exclusion: "torch_tpu/oss/ci/..."
   check_contents {
     base {
       id: "CheckRelativeImports"
@@ -1480,6 +1524,7 @@ presubmit {
   # go/keep-sorted start
   path_expression_exclusion: "torch_tpu/_internal/performance/micro/..."
   path_expression_exclusion: "torch_tpu/google/..."
+  path_expression_exclusion: "torch_tpu/oss/ci/..."
   path_regexp_exclusion: ".*benchmark.*"
   path_regexp_exclusion: ".*example.*"
   path_regexp_exclusion: ".*test.*"
@@ -1498,6 +1543,50 @@ presubmit {
       "If you have a legitimate reason to not follow this rule, add a "
       "PYTHON_FLAG_OK=<reason> comment on the same line as the "
       "flags.DEFINE_* call."
+    check_delta_only: true
+  }
+}
+
+# Check that mock objects (Mock, MagicMock, AsyncMock, etc.) have a spec.
+presubmit {
+  # go/keep-sorted start
+  path_expression: "....ipynb"
+  path_expression: "....py"
+  # go/keep-sorted end
+  check_contents {
+    base {
+      id: "CheckMockSpec"
+      disable_tags: "ROLLBACK_OF"  # Don't require for rollback CLs.
+    }
+    # The unescaped regexes are:
+    #   prohibited: \b(AsyncMock|MagicMock|Mock|NonCallableMagicMock|NonCallableMock)\(
+    #   suppression:
+    #     \b(AsyncMock|MagicMock|Mock|NonCallableMagicMock|NonCallableMock)\([^\n]*(\n[^\n]*)?
+    #       \b(spec(_set)?\s*=|NO_SPEC_OK=)|
+    #     \b(AsyncMock|MagicMock|Mock|NonCallableMagicMock|NonCallableMock)\(\s*[A-Za-z_][\w.]*\s*[,)]
+    # The first suppression alternative accepts `spec=`, `spec_set=` or a
+    # NO_SPEC_OK= comment on the line of the mock call (e.g. `Mock(`) or the
+    # line after it, so that calls wrapped by the formatter pass. The second
+    # accepts a positional spec, e.g. `Mock(torch.Tensor)`, which keyword-only
+    # calls do not match. The mock classes are enumerated rather than grouped
+    # by prefix, so that code search finds the rule by class name.
+    prohibited_regexp: "\\b(AsyncMock|MagicMock|Mock|NonCallableMagicMock|NonCallableMock)\\("
+    match_multi_line: true
+    suppression_regexp:
+      "\\b(AsyncMock|MagicMock|Mock|NonCallableMagicMock|NonCallableMock)\\([^\\n]*(\\n[^\\n]*)?"
+      "\\b(spec(_set)?\\s*=|NO_SPEC_OK=)|"
+      "\\b(AsyncMock|MagicMock|Mock|NonCallableMagicMock|NonCallableMock)\\(\\s*[A-Za-z_][\\w.]*\\s*[,)]"
+    failure_message:
+      "Please give every mock a spec, e.g. `mock.Mock(spec=Foo)`, "
+      "`mock.MagicMock(spec_set=Foo)` or `mock.create_autospec(Foo)`. "
+      "Without one, the mock silently accepts any attribute or call, so a "
+      "test can pass even when the code uses an API the real object does not "
+      "have. Prefer a fake or a real object over a mock where practical. "
+      "The spec must be on the same line as the mock call (e.g. `Mock(`) or "
+      "the line after it.\n\n"
+      "If you have a legitimate reason to use a mock without a spec, add "
+      "a NO_SPEC_OK=<reason> comment on the same line as the mock call or the "
+      "line after it."
     check_delta_only: true
   }
 }
@@ -1569,6 +1658,7 @@ presubmit {
   # go/keep-sorted end
   path_expression_exclusion: "torch_tpu/examples/..."
   path_expression_exclusion: "torch_tpu/google/prototypes/..."
+  path_expression_exclusion: "torch_tpu/oss/ci/..."
   check_contents {
     base {
       id: "CheckPythonLogging"
@@ -1649,6 +1739,7 @@ presubmit {
     base {
       id: "CheckCopyrightYearUpdate"
       disable_tags: "ALLOW_COPYRIGHT_YEAR_UPDATE"
+      disable_tags: "ROLLBACK_OF"
     }
     # EDIT is for existing files.
     # Unfortunately, check_contents cannot distinguish between new and branched

@@ -26,9 +26,11 @@
 #include "ATen/core/TensorBody.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/types/span.h"
 #include "c10/core/ScalarType.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
+#include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
@@ -129,7 +131,8 @@ ReturnType DispatchLogit(const at::Tensor& self, PromotedScalar& promoted_eps,
   TT_ASSIGN_OR_RETURN(const auto out_dtype,
                       ConvertTo<mlir::ElementType>(out_type));
 
-  const c10::ScalarType comp_scalar_type = InferOutputDtype(self);
+  const c10::ScalarType comp_scalar_type =
+      InferComputationDtype(InferOutputDtype(self));
   TT_ASSIGN_OR_RETURN(at::Tensor eps_tensor,
                       promoted_eps.GetTensor(comp_scalar_type));
 
@@ -262,7 +265,7 @@ at::Tensor AtenLogit(const at::Tensor& self, std::optional<double> eps) {
         DeviceBufferRef result_buf,
         BuildLogitBuffer(self, promoted_eps, out_type, std::move(param_keys)));
 
-    return MakeTensor(result_buf);
+    return MakeTensor(std::move(result_buf));
   });
 }
 
@@ -306,12 +309,24 @@ at::Tensor& AtenLogitBackwardGradInput(const at::Tensor& grad_output,
             << "expected non-complex dtype, got "
             << ToString(grad_output_dtype);
         TT_THROW_IF_ERROR(ValidateOutDtype(grad_input, InferOutputDtype(self)));
+        TT_ASSIGN_OR_THROW(const Dimensions out_dims,
+                           InferSize(grad_output.sizes(), self.sizes()));
+        if (grad_input.is_alias_of(grad_output) ||
+            grad_input.is_alias_of(self)) {
+          TT_CHECK_THROW(absl::MakeConstSpan(grad_input.sizes()) == out_dims,
+                         error::kInvalidArgument)
+              << "output with shape " << ToString(grad_input.sizes())
+              << " doesn't match the broadcast shape of the tensor being "
+                 "operated on in-place, which has shape "
+              << ToString(out_dims);
+        }
         const c10::ScalarType out_type = grad_input.scalar_type();
 
         TT_ASSIGN_OR_THROW(const auto out_dtype,
                            ConvertTo<mlir::ElementType>(out_type));
 
-        const c10::ScalarType comp_scalar_type = InferOutputDtype(self);
+        const c10::ScalarType comp_scalar_type = InferComputationDtype(
+            c10::promoteTypes(grad_output_dtype, InferOutputDtype(self)));
         TT_ASSIGN_OR_THROW(const at::Tensor eps_tensor,
                            promoted_eps.GetTensor(comp_scalar_type));
 
@@ -325,7 +340,7 @@ at::Tensor& AtenLogitBackwardGradInput(const at::Tensor& grad_output,
         TT_THROW_IF_ERROR(DispatchOpOut<3>(
             std::move(op_builder), {grad_output, self, eps_tensor}, grad_input,
             {.out_dtype = out_dtype,
-             .out_dims = self.sizes(),
+             .out_dims = out_dims,
              .op_param_cache_keys = std::move(param_keys)}));
         return grad_input;
       });

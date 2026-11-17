@@ -29,6 +29,7 @@ torch_tpu_cc_library(
     hdrs = ["all_any_aten_kernels.h"],
     deps = [
         ":all_any",
+        "//csrc/common:aten_utils",
         "//csrc/common:cache_key",
         "//csrc/common:dimension_types",
         "//csrc/common:error_utils",

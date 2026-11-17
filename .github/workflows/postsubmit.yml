@@ -159,6 +159,11 @@ jobs:
             echo "::notice::Commit $GITHUB_SHA was superseded by latest main HEAD ($LATEST_SHA) during build phase. Skipping TPU test execution."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
+      # Runs only when a check above skipped the tests. GitHub still concludes this job as
+      # `success`; dashboards match the `job-skipped:` name prefix to report it as skipped instead.
+      - name: "job-skipped: superseded by newer main HEAD"
+        if: steps.check_superseded.outputs.skip == 'true' || steps.check_superseded_midway.outputs.skip == 'true'
+        run: echo "::notice::Commit $GITHUB_SHA was superseded by a newer main HEAD. Tests were skipped."
       - name: Run Bazel Test
         if: steps.check_superseded.outputs.skip != 'true' && steps.check_superseded_midway.outputs.skip != 'true'
         run: bazel test --config=${{ matrix.job_info.bazel_config }} ${{ matrix.job_info.extra_flags }} //...
@@ -168,7 +173,7 @@ jobs:
         if: steps.check_superseded.outputs.skip != 'true' && steps.check_superseded_midway.outputs.skip != 'true' && matrix.job_info.newest_deps_config
         run: bazel test --config=${{ matrix.job_info.newest_deps_config }} ${{ matrix.job_info.extra_flags }} //...
       - name: Upload Test Logs on Failure
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         if: failure()
         with:
           name: bazel-testlogs-${{ matrix.job_info.name || matrix.job_info.runner }}

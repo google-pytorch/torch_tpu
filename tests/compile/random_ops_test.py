@@ -14,7 +14,8 @@
 
 """Tests for RNG state and random operations under compile mode."""
 
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch

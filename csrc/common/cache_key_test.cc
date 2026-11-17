@@ -21,6 +21,7 @@
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/ops/empty.h"
+#include "absl/base/casts.h"
 #include "absl/status/statusor.h"
 #include "c10/core/ConstantSymNodeImpl.h"
 #include "c10/core/Device.h"
@@ -44,6 +45,7 @@
 #include "torch/headeronly/core/Layout.h"
 #include "torch/headeronly/core/MemoryFormat.h"
 #include "torch/headeronly/core/ScalarType.h"
+#include "torch/headeronly/util/complex.h"
 #include "xla/xla_data.pb.h"
 
 namespace torch_tpu {
@@ -347,6 +349,62 @@ TEST(OpParamCacheKeys, SetParamDouble) {
                           *OpParamCacheKeysBuilder().SetParam("foo", 4.5));
   EXPECT_THAT(params,
               ElementsAre(Pair("foo", absl::bit_cast<FingerprintType>(4.5))));
+}
+
+TEST(OpParamCacheKeys, SetParamDoubleSignedZero) {
+  TT_ASSERT_OK_AND_ASSIGN(const auto pos_zero_params,
+                          *OpParamCacheKeysBuilder().SetParam("foo", 0.0));
+  TT_ASSERT_OK_AND_ASSIGN(const auto neg_zero_params,
+                          *OpParamCacheKeysBuilder().SetParam("foo", -0.0));
+  EXPECT_THAT(pos_zero_params,
+              ElementsAre(Pair("foo", absl::bit_cast<FingerprintType>(0.0))));
+  EXPECT_THAT(neg_zero_params,
+              ElementsAre(Pair("foo", absl::bit_cast<FingerprintType>(-0.0))));
+  EXPECT_NE(pos_zero_params.begin()->second, neg_zero_params.begin()->second);
+}
+
+TEST(OpParamCacheKeys, SetParamOptionalDoubleSignedZero) {
+  TT_ASSERT_OK_AND_ASSIGN(
+      const auto pos_zero_params,
+      *OpParamCacheKeysBuilder().SetParam("foo", std::optional<double>(0.0)));
+  TT_ASSERT_OK_AND_ASSIGN(
+      const auto neg_zero_params,
+      *OpParamCacheKeysBuilder().SetParam("foo", std::optional<double>(-0.0)));
+  EXPECT_THAT(
+      pos_zero_params,
+      ElementsAre(Pair(
+          "foo", FingerprintCat("+", absl::bit_cast<FingerprintType>(0.0)))));
+  EXPECT_THAT(
+      neg_zero_params,
+      ElementsAre(Pair(
+          "foo", FingerprintCat("+", absl::bit_cast<FingerprintType>(-0.0)))));
+  EXPECT_NE(pos_zero_params.begin()->second, neg_zero_params.begin()->second);
+}
+
+TEST(OpParamCacheKeys, SetParamScalarSignedZero) {
+  TT_ASSERT_OK_AND_ASSIGN(
+      const auto pos_zero_params,
+      *OpParamCacheKeysBuilder().SetParam("foo", at::Scalar(0.0)));
+  TT_ASSERT_OK_AND_ASSIGN(
+      const auto neg_zero_params,
+      *OpParamCacheKeysBuilder().SetParam("foo", at::Scalar(-0.0)));
+  EXPECT_NE(pos_zero_params.begin()->second, neg_zero_params.begin()->second);
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      const auto complex_pos_pos,
+      *OpParamCacheKeysBuilder().SetParam(
+          "foo", at::Scalar(c10::complex<double>(0.0, 0.0))));
+  TT_ASSERT_OK_AND_ASSIGN(
+      const auto complex_neg_pos,
+      *OpParamCacheKeysBuilder().SetParam(
+          "foo", at::Scalar(c10::complex<double>(-0.0, 0.0))));
+  TT_ASSERT_OK_AND_ASSIGN(
+      const auto complex_pos_neg,
+      *OpParamCacheKeysBuilder().SetParam(
+          "foo", at::Scalar(c10::complex<double>(0.0, -0.0))));
+  EXPECT_NE(complex_pos_pos.begin()->second, complex_neg_pos.begin()->second);
+  EXPECT_NE(complex_pos_pos.begin()->second, complex_pos_neg.begin()->second);
+  EXPECT_NE(complex_neg_pos.begin()->second, complex_pos_neg.begin()->second);
 }
 
 TEST(OpParamCacheKeys, SetParamNullopt) {

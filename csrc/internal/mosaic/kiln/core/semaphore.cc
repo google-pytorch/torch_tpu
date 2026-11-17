@@ -26,6 +26,7 @@
 #include "csrc/internal/mosaic/kiln/core/mlir_utils.h"
 #include "csrc/internal/mosaic/kiln/core/ref.h"
 #include "csrc/internal/mosaic/kiln/core/scalar.h"
+#include "csrc/internal/mosaic/kiln/core/value_handle.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
@@ -56,8 +57,8 @@ void ValidateSemaphoreMemRefType(mlir::Type type, std::string_view type_name) {
 
 }  // namespace
 
-Semaphore::Semaphore(const void* impl) : impl_(impl) {
-  mlir::Type type = internal::unwrap(*this).getType();
+Semaphore::Semaphore(internal::ValueHandle handle) : handle_(handle) {
+  mlir::Type type = handle.value().getType();
   ValidateSemaphoreMemRefType(type, "Semaphore");
   ABSL_CHECK_EQ(llvm::cast<mlir::MemRefType>(type).getRank(), 0)  // CRASH_OK
       << "Semaphore must be 0-D (use SemaphoreArray for multi-dimensional "
@@ -100,8 +101,8 @@ void Semaphore::Wait(IndexArg amount) const {
   tpu::SemaphoreWaitOp::create(b, internal::unwrap(*this), amt);
 }
 
-SemaphoreArray::SemaphoreArray(const void* impl) : impl_(impl) {
-  mlir::Type type = internal::unwrap(*this).getType();
+SemaphoreArray::SemaphoreArray(internal::ValueHandle handle) : handle_(handle) {
+  mlir::Type type = handle.value().getType();
   ValidateSemaphoreMemRefType(type, "SemaphoreArray");
   ABSL_CHECK_GE(llvm::cast<mlir::MemRefType>(type).getRank(), 1)  // CRASH_OK
       << "SemaphoreArray must have rank >= 1";
@@ -129,8 +130,7 @@ Semaphore SemaphoreArray::AtImpl(llvm::ArrayRef<IndexArg> indices) const {
   for (const IndexArg& idx : indices) {
     dims.push_back(internal::DimDesc::From(idx));
   }
-  const void* sliced = internal::SliceMemRefImpl(impl_, dims);
-  return internal::wrap<Semaphore>(mlir::Value::getFromOpaquePointer(sliced));
+  return Semaphore(internal::SliceMemRefImpl(handle(), dims));
 }
 
 }  // namespace torch_tpu::kiln

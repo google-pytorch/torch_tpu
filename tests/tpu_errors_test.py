@@ -12,13 +12,36 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests error handling on TPU only."""
+"""Tests error handling on TPU only.
+
+Tests for ensuring the quality of TorchTPU error messages for behaviors and
+constraints that only apply to TPU (with no GPU counterpart). They should
+internally call `et.assert_raises_message()`, specifying the expected TPU error
+message.
+
+Tests that belong in this file should have all of the following properties:
+
+- It tests the quality of a user-facing error message.
+- It tests an error condition that only occurs or is only relevant on TPU
+  (e.g. unsupported TPU operations, TorchTPU-specific API calls, etc).
+- It must be decorated with `@et.why_tpu_only("reason")` explaining why the test
+  only applies to TPU and cannot be verified on GPU.
+
+Tests that don't belong in this file:
+
+- Errors that crash or raise on GPU.
+- Framework mechanism and execution flow tests (e.g. compilation caching) where
+  error raising is incidental.
+- Internal utility or test harness tests.
+- Anything whose main focus isn't the actual error message contract.
+"""
 
 import collections
 from collections.abc import Mapping, Sequence
 import contextlib
 import os
 import re
+import tempfile
 from typing import Any, TypeAlias
 from unittest import mock
 from absl.testing import absltest
@@ -31,6 +54,7 @@ from torch.nn.attention import flex_attention
 from torch.testing._internal.distributed import fake_pg
 from torch.tpu import distributed  # pyrefly: ignore[missing-import]
 from torch.utils import _pytree as pytree
+from torch.utils import checkpoint
 from torch_tpu._internal import dynamism
 from torch_tpu._internal import env
 from torch_tpu._internal import env_utils
@@ -38,9 +62,11 @@ from torch_tpu._internal import execution_mode
 from torch_tpu._internal import pallas
 from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.compile import flex_attention as tpu_flex_attention
+from torch_tpu._internal.compile import split_compiler
 from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.compile.compiler import StaticCompiler
 from torch_tpu._internal.distributed import distributed as internal_distributed
+from torch_tpu._internal.distributed import spmd_util
 from torch_tpu._internal.export import export as torch_tpu_export
 from torch_tpu._internal.pallas import tpu_torch_pallas
 from torch_tpu._internal.sync import sync
@@ -57,43 +83,6 @@ _EagerMode: TypeAlias = execution_mode._EagerMode
 def setUpModule():
   """Called by absltest after flags are parsed and before tests are run."""
   et.set_up_module()
-
-
-def _get_aminmax_outputs(
-    op: Any, device: str, dtype: torch.dtype
-) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
-  """Creates the output tensors for `op` of `dtype`, on `device`.
-
-  Args:
-    op: a torch function. Should be one of: amax, amin, or aminmax.
-    device: the device of the output tensors
-    dtype: the dtype of the output tensors
-
-  Returns:
-    The out object to be used as a kwarg when calling `op`.
-  """
-
-  assert op in (torch.amax, torch.amin, torch.aminmax)
-
-  def scalar_tensor() -> torch.Tensor:
-    return torch.tensor(0, device=device, dtype=dtype)
-
-  return (
-      scalar_tensor()
-      if op != torch.aminmax
-      else (scalar_tensor(), scalar_tensor())
-  )
-
-
-def _make_lu_unpack_outputs(
-    p: tuple[int, ...], l: tuple[int, ...], u: tuple[int, ...]
-) -> tuple[torch.Tensor, ...]:
-  """Creates a 3-tuple of tensors for `lu_unpack()` op."""
-  return (
-      torch.empty(p, device=et.device()),
-      torch.empty(l, device=et.device()),
-      torch.empty(u, device=et.device()),
-  )
 
 
 def _ensure_ao_ops_registered() -> None:
@@ -163,7 +152,6 @@ class TpuOnlyErrorTest(et.TpuOnlyErrorTestBase):
     with et.assert_raises_message(
         NotImplementedError,
         tpu="""fill_(): complex128 dtype is not supported""",
-        message_reviewed_by="wan",
     ):
       t = torch.empty((2, 2), dtype=torch.complex128, device=et.device())
       t.fill_(1.0)
@@ -370,7 +358,6 @@ class TpuOnlyErrorTest(et.TpuOnlyErrorTestBase):
     with et.assert_raises_message(
         RuntimeError,
         tpu="""index(): expected index tensors to have dtype bool, int32, or int64, got uint8 at index 0; indexing with uint8 tensors is deprecated in PyTorch and not supported in TorchTPU, use bool tensors instead""",
-        message_reviewed_by="jihonggan",
     ):
       x[index].to("cpu")
 
@@ -386,9 +373,40 @@ class TpuOnlyErrorTest(et.TpuOnlyErrorTestBase):
     with et.assert_raises_message(
         RuntimeError,
         tpu="""index_put_(): expected index tensors to have dtype bool, int32, or int64, got uint8 at index 0; indexing with uint8 tensors is deprecated in PyTorch and not supported in TorchTPU, use bool tensors instead""",
-        message_reviewed_by="jihonggan",
     ):
       x.index_put_([index], torch.ones(3, 3, device="tpu"))
+      x.to("cpu")
+
+  @et.why_tpu_only(
+      "Deliberate divergence: PyTorch accepts a trailing `:` past the last"
+      " dimension for a single-element CPU value with accumulate=False through"
+      " its masked_fill fast path, while TorchTPU rejects it consistently."
+  )
+  def test_index_put_trailing_slice_exceeds_dims_with_cpu_scalar_value(self):
+    """Tests index_put_() with a trailing `:` and a single-element CPU value."""
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""index_put_(): too many indices for tensor of dimension 3""",
+    ):
+      torch.ops.aten.index_put_(
+          torch.zeros(2, 3, 4, device="tpu"),
+          [None, torch.ones(3, 4, dtype=torch.bool, device="tpu"), None],
+          torch.tensor(1.0),
+          False,
+      )
+
+  @et.why_tpu_only(
+      "PyTorch hits an internal assert in its index_put_ kernel for 0-d bool"
+      " masks with non-scalar values."
+  )
+  def test_index_put_0d_mask_with_non_broadcastable_values(self):
+    """Tests index_put_() with a lone 0-d mask and non-broadcastable values."""
+    x = torch.zeros(2, 3, device="tpu")
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""index_put_(): indices must be specified""",
+    ):
+      x.index_put_([torch.tensor(True)], torch.ones(2, 2, 3, device="tpu"))
       x.to("cpu")
 
   @et.why_tpu_only("The behavior is undefined on CPU.")
@@ -448,14 +466,12 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     with et.assert_raises_message(
         RuntimeError,
         tpu="""mm(): expected the first argument to be a 2D tensor (matrix), got 0D of shape []""",
-        message_reviewed_by="gunhyun",
     ):
       torch.ops.aten.mm.dtype(scalar_tensor, matrix_tensor, torch.float32)
 
     with et.assert_raises_message(
         RuntimeError,
         tpu="""mm(): expected the second argument to be a 2D tensor (matrix), got 1D of shape [4]""",
-        message_reviewed_by="gunhyun",
     ):
       torch.ops.aten.mm.dtype(matrix_tensor, vector_tensor, torch.float32)
 
@@ -464,7 +480,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     with et.assert_raises_message(
         RuntimeError,
         tpu="""empty(): TorchTPU does not yet support dtype complex32""",
-        message_reviewed_by="wan",
     ):
       torch.empty(2, dtype=torch.complex32, device="tpu")
 
@@ -473,7 +488,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     with et.assert_raises_message(
         RuntimeError,
         tpu="""empty_strided(): TorchTPU does not yet support dtype complex32""",
-        message_reviewed_by="wan",
     ):
       torch.empty_strided((2,), (1,), dtype=torch.complex32, device="tpu")
 
@@ -564,15 +578,22 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     ):
       x[:, ::2].cpu()
 
+  @parameterized.named_parameters(
+      ("bool_bool", False, True, "bool", "bool"),
+      ("int_bool", 0, True, "int64", "bool"),
+      ("bool_float", False, 1.5, "bool", "float64"),
+  )
   @et.why_tpu_only("TODO: investigate why this is TPU-only.")
-  def test_histc_bounds_unsupported_dtype(self):
+  def test_histc_bounds_unsupported_dtype(
+      self, min_val, max_val, min_type, max_type
+  ):
     """Tests that torch.histc() fails when the bounds have an unsupported dtype."""
     t = torch.tensor([0, 0], device=et.device(), dtype=torch.float32)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""histc(): expected min and max to be float or int type, got Bool and Bool""",
+        tpu=f"""histc(): expected min and max to be float or int type, got {min_type} and {max_type}""",
     ):
-      torch.histc(t, min=False, max=True)
+      torch.histc(t, min=min_val, max=max_val)
 
   @et.why_tpu_only("TODO: investigate why this is TPU-only.")
   def test_dynamic_arange_unsupported_dtype(self):
@@ -596,7 +617,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     step = torch.tensor(1, device=device, dtype=torch.int32)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""dynamic_arange(): expected a 0-dimensional tensor for start, got 1-dimensional tensor""",
+        tpu="""dynamic_arange(): expected a 0D tensor for start, got 1D tensor""",
     ):
       torch.ops.tpu._dynamic_arange(start, end, step, 5, torch.int32)
 
@@ -609,7 +630,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     step = torch.tensor(1, device=device, dtype=torch.int32)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""dynamic_arange(): expected a 0-dimensional tensor for end, got 1-dimensional tensor""",
+        tpu="""dynamic_arange(): expected a 0D tensor for end, got 1D tensor""",
     ):
       torch.ops.tpu._dynamic_arange(start, end, step, 5, torch.int32)
 
@@ -622,7 +643,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     step = torch.tensor([1], device=device, dtype=torch.int32)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""dynamic_arange(): expected a 0-dimensional tensor for step, got 1-dimensional tensor""",
+        tpu="""dynamic_arange(): expected a 0D tensor for step, got 1D tensor""",
     ):
       torch.ops.tpu._dynamic_arange(start, end, step, 5, torch.int32)
 
@@ -683,7 +704,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     is_dynamic = [True, False]
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""dynamic_broadcast(): expected shape tensor at index 0 to be a 0-D (scalar) tensor, got 1-D tensor""",
+        tpu="""dynamic_broadcast(): expected shape tensor at index 0 to be a 0D (scalar) tensor, got 1D tensor""",
     ):
       torch.ops.tpu._dynamic_broadcast(
           x, shape, broadcast_dims, static_shape, is_dynamic
@@ -799,7 +820,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     slice_sizes = [1, 2]
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""dynamic_slice(): expected start_indices tensor at index 0 to be a 0-D (scalar) tensor, got 1-D tensor""",
+        tpu="""dynamic_slice(): expected start_indices tensor at index 0 to be a 0D (scalar) tensor, got 1D tensor""",
     ):
       torch.ops.tpu._dynamic_slice(x, start_indices, slice_sizes)
 
@@ -878,7 +899,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     with et.assert_raises_message(
         RuntimeError,
         tpu="""set_(): expected the number of bytes required by the given arguments to be <= 32 (actual storage size), got 64""",
-        message_reviewed_by="wan",
     ):
       t.set_(source.untyped_storage(), storage_offset=0, size=[16], stride=[1])
 
@@ -915,32 +935,9 @@ Please use clone() or contiguous() to copy the tensor before writing""",
       torch.addmm(input_, mat1, mat2)
 
   @et.why_tpu_only(
-      "CUDA validates operand dtypes separately but its kernels need them to"
-      " match; TPU rejects the mismatch up front."
+      "TPU cummax uses int32 for the indices output. GPU supports larger"
+      " indices."
   )
-  def test_grouped_mm_mismatched_operand_dtypes(self):
-    """Tests _grouped_mm rejects self and mat2 with different dtypes."""
-    a = torch.randn(3, 4, device=et.device(), dtype=torch.float32)
-    b = torch.randn(3, 4, 8, device=et.device(), dtype=torch.bfloat16)
-    offs = torch.tensor([1, 2, 3], dtype=torch.int32, device=et.device())
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""grouped_mm(): expected self and mat2 to have the same dtype, got float32 and bfloat16""",
-    ):
-      torch._grouped_mm(a, b, offs=offs)
-
-  @et.why_tpu_only("CUDA doesn't check K for 2D x 2D (ragged K).")
-  def test_grouped_mm_2d_2d_mismatch_contraction_dimension(self):
-    a = torch.randn(4, 8, device=et.device())
-    b = torch.randn(6, 5, device=et.device())
-    offs = torch.tensor([4, 8], dtype=torch.int32, device=et.device())
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""grouped_mm(): expected the contraction dimension of self and mat2 to match, got 8 and 6""",
-    ):
-      torch._grouped_mm(a, b, offs=offs)
-
-  @et.why_tpu_only("TODO: investigate why this is TPU-only.")
   def test_cummax_dimension_size_limit(self):
     """Tests cummax fails if dimension size has > 2^31-1 elements."""
     # Create an empty tensor with shape 2**31
@@ -952,7 +949,10 @@ Please use clone() or contiguous() to copy the tensor before writing""",
       y, _ = torch.cummax(t, dim=0)
       y.cpu()
 
-  @et.why_tpu_only("TODO: investigate why this is TPU-only.")
+  @et.why_tpu_only(
+      "TPU cummix uses int32 for the indices output. GPU supports larger"
+      " indices."
+  )
   def test_cummin_dimension_size_limit(self):
     """Tests cummin fails if dimension size has > 2^31-1 elements."""
     # Create an empty tensor with shape 2**31
@@ -1105,7 +1105,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     with et.assert_raises_message(
         NotImplementedError,
         tpu="""index(): indexing with more than one bool tensor is not yet supported""",
-        message_reviewed_by="wan",
     ):
       torch.ops.aten.index(inp, indices)
 
@@ -1118,7 +1117,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     with et.assert_raises_message(
         NotImplementedError,
         tpu="""gather(): sparse_grad is not yet supported""",
-        message_reviewed_by="wan",
     ):
       torch.gather(inp, dim, index, sparse_grad=True)
 
@@ -1131,7 +1129,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     with et.assert_raises_message(
         RuntimeError,
         tpu="""copy_from(): expected at least one of the inputs to be on 'tpu' device, got 'cpu' (source) and 'cpu' (destination)""",
-        message_reviewed_by="wan",
     ):
       # Dispatch to `_copy_from()` TPU kernel with CPU inputs.
       # Otherwise, can't reach the error.
@@ -1146,7 +1143,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     with et.assert_raises_message(
         RuntimeError,
         tpu="""local_scalar_dense(): expected the input tensor to have 1 element, got 2""",
-        message_reviewed_by="wan",
     ):
       torch.ops.aten._local_scalar_dense(inp)
 
@@ -1368,7 +1364,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
       with et.assert_raises_message(
           RuntimeError,
           tpu="""embedding_bag_forward_only(): expected all dimensions of the indices tensor to be static, got 1 dynamic dimension in the underlying tensor behind a view of shape [100]""",
-          message_reviewed_by="wan",
       ):
         torch.nn.functional.embedding_bag(indices, weight)
 
@@ -1382,7 +1377,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
       with et.assert_raises_message(
           RuntimeError,
           tpu="""embedding_bag_forward_only(): expected all dimensions of the weight tensor to be static, got 1 dynamic dimension within shape [10, 10 (up to 20)]""",
-          message_reviewed_by="wan",
       ):
         torch.nn.functional.embedding_bag(indices, weight)
 
@@ -1397,22 +1391,22 @@ Please use clone() or contiguous() to copy the tensor before writing""",
       with et.assert_raises_message(
           RuntimeError,
           tpu="""embedding_bag_forward_only(): expected all dimensions of the offsets tensor to be static, got 1 dynamic dimension within shape [10 (up to 20)]""",
-          message_reviewed_by="wan",
       ):
         torch.nn.functional.embedding_bag(indices, weight, offsets)
 
-  @et.why_tpu_only(
-      "On CPU/GPU, linear with bool input raises RuntimeError from matmul; on"
-      " TPU, AtenLinear raises NotImplementedError."
-  )
-  def test_linear_bool_input_error(self):
-    inp = torch.ones(2, 4, dtype=torch.bool, device=et.device())
-    weight = torch.ones(3, 4, dtype=torch.bool, device=et.device())
-    with et.assert_raises_message(
-        NotImplementedError,
-        tpu="""linear(): not implemented for bool""",
-    ):
-      torch.nn.functional.linear(inp, weight)
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_glu_dynamic_split_dim(self):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      x = torch.ones(2, 4, device=et.device())
+      dim = 1
+      dynamism.mark_dynamic(x, dim, 2, 8)
+
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu="""glu(): expected dimension 1 of input to have a static size, got dynamic size""",
+      ):
+        # cpu() is needed because the error is triggered inside the op builder.
+        torch.nn.functional.glu(x, dim=dim).cpu()
 
   @et.why_tpu_only(
       "aten.linear_backward is only registered for TPU (PrivateUse1), not"
@@ -1488,7 +1482,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     with et.assert_raises_message(
         RuntimeError,
         tpu="""grid_sampler_2d(): expected the interpolation mode to be 0 (bilinear), 1 (nearest), or 2 (bicubic), got 3""",
-        message_reviewed_by="wan",
     ):
       interpolation_mode = 3
       torch.grid_sampler(inp, grid, interpolation_mode, 0, False)
@@ -1538,7 +1531,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
         RuntimeError,
         tpu="""elu_backward(): expected the grad output dtype to be floating"""
         f""" point, got {tpu_dtype_str}""",
-        message_reviewed_by="wan",
     ):
       torch.ops.aten.elu_backward(
           grad_output, alpha, scale, input_scale, is_result, self_or_result
@@ -1554,7 +1546,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     with et.assert_raises_message(
         RuntimeError,
         tpu="""fft_r2c(): expected all dimensions of the input tensor to be static, got 1 dynamic dimension within shape [10 (up to 20)]""",
-        message_reviewed_by="wan",
     ):
       torch.fft.rfftn(inp)
 
@@ -1673,7 +1664,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     with et.assert_raises_message(
         RuntimeError,
         tpu="""mark_dynamic(): cannot mark dimension 1 as dynamic, because dimension 0 is already marked as dynamic (multiple dynamic dimensions in one tensor is not yet supported)""",
-        message_reviewed_by="wan",
     ):
       # Try to mark dimension 1 as dynamic too.
       dynamism.mark_dynamic(inp, 1, 5, 20)
@@ -1685,14 +1675,12 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     with et.assert_raises_message(
         IndexError,
         tpu="""mark_dynamic(): expected dimension to be >= 0, got -1""",
-        message_reviewed_by="wan",
     ):
       dynamism.mark_dynamic(x, -1, 2, 10)
 
     with et.assert_raises_message(
         IndexError,
         tpu="""mark_dynamic(): expected dimension to be < 1 (the tensor's number of dimensions), got 3""",
-        message_reviewed_by="wan",
     ):
       dynamism.mark_dynamic(x, 3, 2, 10)
 
@@ -1703,7 +1691,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     with et.assert_raises_message(
         RuntimeError,
         tpu="""mark_dynamic(): expected lower_bound to be >= 2 as 0/1-sized dimensions are processed with particular assumptions (e.g. no-data, broadcastable), got 1""",
-        message_reviewed_by="wan",
     ):
       dynamism.mark_dynamic(x, 0, 1, 10)
 
@@ -1714,7 +1701,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     with et.assert_raises_message(
         RuntimeError,
         tpu="""mark_dynamic(): expected lower_bound <= upper_bound, got 2 vs 1""",
-        message_reviewed_by="wan",
     ):
       dynamism.mark_dynamic(x, 0, 2, 1)
 
@@ -1725,7 +1711,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     with et.assert_raises_message(
         IndexError,
         tpu="""mark_dynamic(): expected the size range [lower, upper] for dimension 0 to contain its size (10), got [2, 9]""",
-        message_reviewed_by="wan",
     ):
       dynamism.mark_dynamic(x, 0, 2, 9)
 
@@ -1790,7 +1775,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     with et.assert_raises_message(
         RuntimeError,
         tpu="""resize_(): non-contiguous memory formats are not yet supported""",
-        message_reviewed_by="wan",
     ):
       t.resize_((1, 2, 3, 4), memory_format=torch.channels_last)
 
@@ -1802,7 +1786,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     with et.assert_raises_message(
         NotImplementedError,
         tpu="""threshold_backward(): expected the input dtype to be non-bool and non-complex, got bool""",
-        message_reviewed_by="gunhyun",
     ):
       torch.ops.aten.threshold_backward(grad_output, self_tensor, 0.5)
 
@@ -1812,8 +1795,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     size = torch.tensor([5], device=et.device(), dtype=torch.int32)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""set_dimension_logical_size(): expected a 0-dimensional tensor for size, got 1-dimensional tensor""",
-        message_reviewed_by="wan",
+        tpu="""set_dimension_logical_size(): expected a 0D tensor for size, got 1D tensor""",
     ):
       torch.ops.tpu._set_dimension_logical_size(inp, 0, size)
 
@@ -1824,7 +1806,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     with et.assert_raises_message(
         RuntimeError,
         tpu="""set_dimension_logical_size(): expected an int32 tensor for size, got float32""",
-        message_reviewed_by="wan",
     ):
       torch.ops.tpu._set_dimension_logical_size(inp, 0, size)
 
@@ -1872,7 +1853,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     is_dynamic = [False, False]
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""dynamic_reshape(): expected shape tensor at index 0 to be a 0-D (scalar) tensor, got 1-D tensor""",
+        tpu="""dynamic_reshape(): expected shape tensor at index 0 to be a 0D (scalar) tensor, got 1D tensor""",
     ):
       torch.ops.tpu._dynamic_reshape(inp, shape, static_shape, is_dynamic)
 
@@ -1952,7 +1933,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     is_dynamic = [False, False]
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""pad_real_to_static(): expected runtime_shape tensor at index 0 to be a 0-D (scalar) tensor, got 1-D tensor""",
+        tpu="""pad_real_to_static(): expected runtime_shape tensor at index 0 to be a 0D (scalar) tensor, got 1D tensor""",
     ):
       torch.ops.tpu._pad_real_to_static(
           inp, runtime_shape, static_shape, is_dynamic
@@ -1984,7 +1965,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     with et.assert_raises_message(
         RuntimeError,
         tpu="""view_as_complex(): float16 dtype is not yet supported""",
-        message_reviewed_by="wan",
     ):
       torch.view_as_complex(t1)
 
@@ -2339,31 +2319,39 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     ):
       tpu_torch_compile.execute(compile_result.executable, [ph])
 
-  @et.why_tpu_only("Asynchronous device assertions are TPU-only.")
+  @et.why_tpu_only("Compiled TPU programs only take TPU tensors.")
+  def test_execute_cpu_argument(self):
+    with execution_mode.set_eager_mode(EagerMode._INTERNAL_COMPILE_FX_GRAPH):
+      x = torch.ones(2, 3, device="cpu").to(device=et.device())
+      z = x + x
+    compile_result = tpu_torch_compile.traverse_and_compile([z], [x])
+    cpu_argument = torch.ones(2, 3)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""execute(): failed to prepare compiled mode arguments: failed to get buffer from argument tensor (shape=[2, 3], strides=[3, 1], numel=6, dtype=float32, device=cpu, is_contiguous=1, is_cpu=1, is_cuda=0, is_meta=0, has_storage=1, storage_offset=0): expected tensor to be on tpu, got cpu""",
+    ):
+      tpu_torch_compile.execute(compile_result.executable, [cpu_argument])
+
+  @et.why_tpu_only("CUDA errors synchronously due to CUDA_LAUNCH_BLOCKING=1.")
   def test_synchronize_surfaces_async_assertion(self):
     false_cond = torch.tensor(False, device=et.device())
     torch.ops.aten._assert_async.msg(false_cond, "async assertion failure")
-    try:
-      with et.assert_raises_message(
-          RuntimeError,
-          tpu=re.compile(r".*async assertion failure.*", re.DOTALL),
-      ):
-        torch.accelerator.synchronize()
-    finally:
-      tt_testing.clear_sticky_error()
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(r".*async assertion failure.*", re.DOTALL),
+    ):
+      torch.accelerator.synchronize()
 
-  @et.why_tpu_only("Asynchronous device assertions are TPU-only.")
+  @et.why_tpu_only("CUDA errors synchronously due to CUDA_LAUNCH_BLOCKING=1.")
   def test_accelerator_synchronize_surfaces_async_assertion(self):
     false_cond = torch.tensor(False, device=et.device())
     torch.ops.aten._assert_async.msg(false_cond, "async assertion failure")
-    try:
-      with et.assert_raises_message(
-          RuntimeError,
-          tpu=re.compile(r".*async assertion failure.*", re.DOTALL),
-      ):
-        torch.accelerator.synchronize()
-    finally:
-      tt_testing.clear_sticky_error()
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(r".*async assertion failure.*", re.DOTALL),
+    ):
+      torch.accelerator.synchronize()
 
   @et.why_tpu_only("Sync materialization status checks are TPU-specific.")
   def test_is_materializing_tensor_not_on_tpu(self):
@@ -2372,7 +2360,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     with et.assert_raises_message(
         RuntimeError,
         tpu="""is_materializing(): tensor is not on the PrivateUse1 device""",
-        message_reviewed_by="adivinpatel",
     ):
       sync.is_materializing(x)
 
@@ -2383,7 +2370,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     with et.assert_raises_message(
         RuntimeError,
         tpu="""is_materialized(): tensor is not on the PrivateUse1 device""",
-        message_reviewed_by="adivinpatel",
     ):
       sync.is_materialized(x)
 
@@ -2393,7 +2379,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     with et.assert_raises_message(
         RuntimeError,
         tpu="""_get_computation_mlir(): the tensor list must not be empty""",
-        message_reviewed_by="wan",
     ):
       sync.computation_mlir()
 
@@ -2403,7 +2388,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     with et.assert_raises_message(
         RuntimeError,
         tpu="""_get_computation_graphviz(): the tensor list must not be empty""",
-        message_reviewed_by="wan",
     ):
       sync.computation_graphviz()
 
@@ -2415,7 +2399,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     with et.assert_raises_message(
         RuntimeError,
         tpu="""_get_computation_mlir(): the tensors must not be placeholders""",
-        message_reviewed_by="wan",
     ):
       sync.computation_mlir(x)
 
@@ -2427,7 +2410,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     with et.assert_raises_message(
         RuntimeError,
         tpu="""_get_computation_graphviz(): the tensors must not be placeholders""",
-        message_reviewed_by="wan",
     ):
       sync.computation_graphviz(x)
 
@@ -2512,6 +2494,44 @@ Please use clone() or contiguous() to copy the tensor before writing""",
       tpu_torch_compile.traverse_and_compile(
           [z], [x], argument_layouts=[[0, 0]]
       )
+
+  @et.why_tpu_only("For testing TPU compile API validation.")
+  def test_missing_input_to_traverse_and_compile(self):
+    with execution_mode.set_eager_mode(_EagerMode.INTERNAL_DEFER_ALL):
+      x = torch.ones(10, device="cpu").to(device=et.device())
+      y = torch.ones(10, device="cpu").to(device=et.device())
+      z = x + y
+    result_tensors = [z]
+    argument_tensors = [x]
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""traverse_and_compile(): failed to validate and reorder traversal inputs: identified an argument that was not provided: 10xfloat32""",
+    ):
+      tpu_torch_compile.traverse_and_compile(result_tensors, argument_tensors)
+
+  @et.why_tpu_only("For testing TPU compile API validation.")
+  def test_scan_with_unlifted_buffer_in_graph_module(self):
+    class CombineWithBuffer(torch.nn.Module):
+
+      def __init__(self, bias: torch.Tensor):
+        super().__init__()
+        self.register_buffer("bias", bias)
+
+      def forward(self, carry: torch.Tensor, x: torch.Tensor):
+        return carry + x + self.bias, carry + x
+
+    device = et.device()
+    gm = torch.fx.symbolic_trace(
+        CombineWithBuffer(torch.ones(10, device="cpu").to(device=device))
+    )
+    init = torch.ones(10, device="cpu").to(device=device)
+    xs = torch.ones((4, 10), device="cpu").to(device=device)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""traverse_and_compile(): failed to validate and reorder traversal inputs: identified an argument that was not provided: 10xfloat32""",
+    ):
+      with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+        torch.ops.higher_order.scan(gm, [init], [xs], [])
 
   @et.why_tpu_only("For testing TPU compile API validation.")
   def test_missing_input_to_build_mlir(self):
@@ -2615,7 +2635,6 @@ module {
     with et.assert_raises_message(
         RuntimeError,
         tpu="""weight_norm_interface(): expected weight magnitude (g) size 0 to match weight size 2 at dimension 0, got 3""",
-        message_reviewed_by="wan",
     ):
       torch._weight_norm(v, g, 0)
 
@@ -2634,7 +2653,6 @@ module {
     with et.assert_raises_message(
         RuntimeError,
         tpu="""weight_norm_interface(): expected the size of the weight magnitude (g) at dimension 0 to be 1, got 3""",
-        message_reviewed_by="wan",
     ):
       torch._weight_norm(v, g, 1)
 
@@ -2649,7 +2667,6 @@ module {
     with et.assert_raises_message(
         RuntimeError,
         tpu="""weight_norm_interface(): expected the weight magnitude (g) to be a scalar, a 1D tensor, or have the same rank as v, got a tensor of shape [2, 3]""",
-        message_reviewed_by="wan",
     ):
       torch._weight_norm(v, g, 0)
 
@@ -2663,7 +2680,6 @@ module {
     with et.assert_raises_message(
         RuntimeError,
         tpu="""weight_norm_interface(): expected the size of the weight magnitude (g) at dimension 1 to be 3, got 2""",
-        message_reviewed_by="wan",
     ):
       torch._weight_norm(v, g, 1)
 
@@ -2678,7 +2694,6 @@ module {
     with et.assert_raises_message(
         RuntimeError,
         tpu="""copy_(): expected all dimensions of the bitcast input tensor to be static, got 1 dynamic dimension within shape [dyn, 2]; calling ViewPrimitiveShlo() with input shape=[dyn, 2] and primitive=bitcast(from_type=int32, to_type=int64)""",
-        message_reviewed_by="wan",
     ):
       # clone to force the bitcast to happen on TPU and not on CPU
       out = inp.view(torch.int64).clone()
@@ -2697,7 +2712,7 @@ module {
     grad_out = torch.randn(2, device=et.device())
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""ctc_loss_backward(): expected targets to be 1-D or 2-D, got 3-D""",
+        tpu="""ctc_loss_backward(): expected targets to be 1D or 2D, got 3D""",
     ):
       torch.ops.aten._ctc_loss_backward.Tensor(
           grad_out,
@@ -2809,6 +2824,39 @@ module {
       tt_testing.set_init_default_generator_failure("")
       tt_testing.reset_default_device_generators()
 
+  @et.why_tpu_only(
+      "GPU missing check: undefined behavior (out-of-bounds read) does not"
+      " consistently crash and leads to flakiness."
+  )
+  def test_fused_adamw_mismatched_grads_size(self):
+    device = et.device()
+    p1 = torch.tensor([1.0], dtype=torch.float32, device=device)
+    p2 = torch.tensor([2.0], dtype=torch.float32, device=device)
+    g1 = torch.tensor([0.1], dtype=torch.float32, device=device)
+    ea1 = torch.tensor([0.0], dtype=torch.float32, device=device)
+    eas1 = torch.tensor([0.0], dtype=torch.float32, device=device)
+    step1 = torch.tensor(1.0, dtype=torch.float32, device=device)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""fused_adamw_(): expected grads to have the same number of tensors as self, got 1""",
+    ):
+      torch.ops.aten._fused_adamw_.default(
+          [p1, p2],
+          [g1],
+          [ea1, ea1],
+          [eas1, eas1],
+          [],
+          [step1, step1],
+          lr=0.001,
+          beta1=0.9,
+          beta2=0.999,
+          weight_decay=0.01,
+          eps=1e-8,
+          amsgrad=False,
+          maximize=False,
+      )
+
   @et.why_tpu_only("GPU missing check: out-of-bounds read corrupts computation")
   def test_fused_adamw_mismatched_state_steps_size(self):
     device = et.device()
@@ -2822,7 +2870,6 @@ module {
     with et.assert_raises_message(
         RuntimeError,
         tpu="""fused_adamw_(): expected state_steps to have the same number of tensors as self, got 1""",
-        message_reviewed_by="gunhyun",
     ):
       torch.ops.aten._fused_adamw_.default(
           [p1, p2],
@@ -2853,7 +2900,6 @@ module {
     with et.assert_raises_message(
         RuntimeError,
         tpu="""fused_adam_(): expected state_steps to have the same number of tensors as self, got 1""",
-        message_reviewed_by="gunhyun",
     ):
       torch.ops.aten._fused_adam_.default(
           [p1, p2],
@@ -2891,7 +2937,6 @@ module {
     with et.assert_raises_message(
         RuntimeError,
         tpu="""fused_adagrad_(): expected state_steps to have size 2, got 1""",
-        message_reviewed_by="adivinpatel",
     ):
       torch.ops.aten._fused_adagrad_.default(
           p,
@@ -2926,7 +2971,6 @@ module {
     with et.assert_raises_message(
         RuntimeError,
         tpu="""fused_adagrad_(): expected state_steps to have size 2, got 1""",
-        message_reviewed_by="adivinpatel",
     ):
       torch.ops.aten._fused_adagrad_.tensor_lr(
           p,
@@ -3045,7 +3089,6 @@ module {
     with et.assert_raises_message(
         RuntimeError,
         tpu="""sparse_dense_matmul_grad_with_adam(): expected velocity tensor to be 1D or 2D, got rank 3""",
-        message_reviewed_by="songbaie",
     ):
       with execution_mode.set_eager_mode(
           EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING
@@ -3077,7 +3120,6 @@ module {
     with et.assert_raises_message(
         RuntimeError,
         tpu="""sparse_dense_matmul_grad_with_adam(): expected velocity tensor dimension 1 to be 8, got 9""",
-        message_reviewed_by="songbaie",
     ):
       with execution_mode.set_eager_mode(
           EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING
@@ -3273,7 +3315,7 @@ module {
     )
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""sparse_iota(): expected row_pointers dtype to be torch.int32, got Float""",
+        tpu="""sparse_iota(): expected row_pointers dtype to be int32, got float32""",
     ):
       torch.tpu.ops.sparse_iota(row_pointers_float, 2048, 256)
 
@@ -3361,7 +3403,7 @@ module {
     )
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""expected row_pointers dtype to be torch.int32, got Float""",
+        tpu="""expected row_pointers dtype to be int32, got float32""",
     ):
       torch.tpu.ops.sparse_iota(row_pointers_float, 2048, 256)
 
@@ -3656,37 +3698,6 @@ module {
           [dummy], [1], [], "mlir", [dummy], 16, 0, 8, 0.5, 0
       )
 
-  @et.why_tpu_only("TPU-specific C++ kernel argument validation")
-  def test_scaled_mm_v2_non_standard_contraction_dim(self):
-    (
-        self_tpu,
-        mat2_tpu,
-        scale_a_tpu,
-        recipe_a,
-        swizzle_a,
-        scale_b_tpu,
-        recipe_b,
-        swizzle_b,
-    ) = et.get_scaled_mm_v2_default_inputs()
-    with et.assert_raises_message(
-        NotImplementedError,
-        tpu="""scaled_mm_v2(): expected contraction_dim to be [1, 0], got [0, 1]""",
-        message_reviewed_by="wan",
-    ):
-      torch._scaled_mm_v2(
-          self_tpu,
-          mat2_tpu,
-          scale_a_tpu,
-          recipe_a,
-          swizzle_a,
-          scale_b_tpu,
-          recipe_b,
-          swizzle_b,
-          None,
-          None,
-          contraction_dim=[0, 1],
-      )
-
   @et.why_tpu_only("Sparse operations fallback to SparsePrivateUse1 on TPU.")
   def test_sparse_ops_not_supported(self):
     indices = torch.tensor([[0, 1], [1, 2]], device="tpu")
@@ -3698,7 +3709,6 @@ module {
       with et.assert_raises_message(
           RuntimeError,
           tpu="""aten::sparse_mask(): sparse operators are not supported on TPU yet""",
-          message_reviewed_by="wan",
       ):
         torch.ops.aten.sparse_mask(dense, sp)
 
@@ -3706,15 +3716,13 @@ module {
       with et.assert_raises_message(
           RuntimeError,
           tpu="""add(): add(sparse, dense) is not supported; use add(dense, sparse) instead""",
-          message_reviewed_by="wan",
       ):
         torch.add(sp, dense, out=sp)
 
     with self.subTest("mul_sparse_non_scalar"):
       with et.assert_raises_message(
           RuntimeError,
-          tpu="""mul(): only multiplication of a sparse tensor with a 0-dim scalar tensor is supported on TPU""",
-          message_reviewed_by="wan",
+          tpu="""mul(): only multiplication of a sparse tensor with a 0D scalar tensor is supported on TPU""",
       ):
         torch.mul(sp, dense)
 
@@ -3722,7 +3730,6 @@ module {
       with et.assert_raises_message(
           RuntimeError,
           tpu="""add(): expected dense output tensor when adding dense and sparse tensors, got sparse""",
-          message_reviewed_by="wan",
       ):
         torch.add(dense, sp, out=sp)
 
@@ -3735,7 +3742,6 @@ module {
       with et.assert_raises_message(
           RuntimeError,
           tpu="""add(): expected 'self' and 'other' to have same size, got [2, 3] and [3, 3]""",
-          message_reviewed_by="wan",
       ):
         torch.add(dense, sp_wrong, out=dense)
 
@@ -3743,7 +3749,6 @@ module {
       with et.assert_raises_message(
           RuntimeError,
           tpu="""add(): expected sparse output tensor when adding two sparse tensors, got dense""",
-          message_reviewed_by="wan",
       ):
         torch.add(sp, sp, out=dense)
 
@@ -3751,7 +3756,6 @@ module {
       with et.assert_raises_message(
           RuntimeError,
           tpu="""add(): expected 'self' and 'other' to have same size, got [2, 3] and [3, 3]""",
-          message_reviewed_by="wan",
       ):
         torch.add(sp, sp_wrong, out=sp)
 
@@ -3764,7 +3768,6 @@ module {
       with et.assert_raises_message(
           RuntimeError,
           tpu="""add(): expected matching sparse_dim and dense_dim, got (2, 0) and (1, 1)""",
-          message_reviewed_by="wan",
       ):
         torch.add(sp, sp_1d, out=sp)
 
@@ -3778,16 +3781,14 @@ module {
     with self.subTest("add_dense_sparse_out_dtype_cast"):
       with et.assert_raises_message(
           RuntimeError,
-          tpu="""add(): expected result dtype to be castable to 'out' dtype, got Float and Int""",
-          message_reviewed_by="wan",
+          tpu="""add(): expected result dtype to be castable to 'out' dtype, got float32 and int32""",
       ):
         torch.add(dense, sp, out=dense_i32)
 
     with self.subTest("add_sparse_sparse_out_dtype_cast"):
       with et.assert_raises_message(
           RuntimeError,
-          tpu="""add(): expected result dtype to be castable to 'out' dtype, got Float and Int""",
-          message_reviewed_by="wan",
+          tpu="""add(): expected result dtype to be castable to 'out' dtype, got float32 and int32""",
       ):
         torch.add(sp, sp, out=sp_i32)
 
@@ -3795,15 +3796,13 @@ module {
       with et.assert_raises_message(
           RuntimeError,
           tpu="""clone(): unsupported memory format option for sparse tensor""",
-          message_reviewed_by="wan",
       ):
         sp.clone(memory_format=torch.channels_last)
 
     with self.subTest("mul_sparse_out_dtype_cast"):
       with et.assert_raises_message(
           RuntimeError,
-          tpu="""mul(): expected result dtype to be castable to 'out' dtype, got Float and Int""",
-          message_reviewed_by="wan",
+          tpu="""mul(): expected result dtype to be castable to 'out' dtype, got float32 and int32""",
       ):
         torch.mul(sp, torch.tensor(2.0, device="tpu"), out=sp_i32)
 
@@ -3816,24 +3815,21 @@ module {
     with self.subTest("neg_sparse_bool"):
       with et.assert_raises_message(
           RuntimeError,
-          tpu="""neg(): expected non-bool tensor for negation, got Bool""",
-          message_reviewed_by="wan",
+          tpu="""neg(): expected non-bool tensor for negation, got bool""",
       ):
         torch.neg(sp_bool)
 
     with self.subTest("neg_sparse_out_dtype_cast"):
       with et.assert_raises_message(
           RuntimeError,
-          tpu="""neg(): expected result dtype to be castable to 'out' dtype, got Float and Int""",
-          message_reviewed_by="wan",
+          tpu="""neg(): expected result dtype to be castable to 'out' dtype, got float32 and int32""",
       ):
         torch.neg(sp, out=sp_i32)
 
     with self.subTest("sub_sparse_bool"):
       with et.assert_raises_message(
           RuntimeError,
-          tpu="""sub(): expected non-bool tensors for subtraction, got Bool and Bool""",
-          message_reviewed_by="wan",
+          tpu="""sub(): expected non-bool tensors for subtraction, got bool and bool""",
       ):
         torch.sub(sp_bool, sp_bool)
 
@@ -3841,15 +3837,13 @@ module {
       with et.assert_raises_message(
           RuntimeError,
           tpu="""to_dense(): dtype argument is not supported by sparse_to_dense""",
-          message_reviewed_by="wan",
       ):
         sp.to_dense(dtype=torch.float64)
 
     with self.subTest("copy_sparse_dense"):
       with et.assert_raises_message(
           RuntimeError,
-          tpu="""copy_(): copy_() between dense and sparse tensors is not implemented""",
-          message_reviewed_by="wan",
+          tpu="""copy_(): copying between dense and sparse tensors is not implemented""",
       ):
         sp.copy_(dense)
 
@@ -3863,7 +3857,6 @@ module {
       with et.assert_raises_message(
           RuntimeError,
           tpu="""indices(): cannot get indices on an uncoalesced tensor, please call .coalesce() first""",
-          message_reviewed_by="wan",
       ):
         sp_uncoalesced.indices()
 
@@ -3871,7 +3864,6 @@ module {
       with et.assert_raises_message(
           RuntimeError,
           tpu="""values(): cannot get values on an uncoalesced tensor, please call .coalesce() first""",
-          message_reviewed_by="wan",
       ):
         sp_uncoalesced.values()
 
@@ -3879,7 +3871,6 @@ module {
       with et.assert_raises_message(
           RuntimeError,
           tpu="""embedding_sparse_backward(): scale_grad_by_freq not supported with sparse gradients""",
-          message_reviewed_by="wan",
       ):
         torch.ops.aten.embedding_sparse_backward(
             torch.ones(2, 3, device="tpu"),
@@ -3893,7 +3884,6 @@ module {
       with et.assert_raises_message(
           RuntimeError,
           tpu="""embedding_sparse_backward(): expected indices to be int64 or int32, got float32""",
-          message_reviewed_by="wan",
       ):
         torch.ops.aten.embedding_sparse_backward(
             torch.ones(2, 3, device="tpu"),
@@ -3907,7 +3897,6 @@ module {
       with et.assert_raises_message(
           RuntimeError,
           tpu="""embedding_bag_backward(): scale_grad_by_freq not supported with sparse gradients""",
-          message_reviewed_by="wan",
       ):
         empty = torch.empty(0, dtype=torch.long, device="tpu")
         torch.ops.aten._embedding_bag_backward(
@@ -3929,7 +3918,6 @@ module {
       with et.assert_raises_message(
           RuntimeError,
           tpu="""embedding_bag_backward(): expected indices to be int64 or int32, got float32""",
-          message_reviewed_by="wan",
       ):
         empty = torch.empty(0, dtype=torch.long, device="tpu")
         torch.ops.aten._embedding_bag_backward(
@@ -3951,7 +3939,6 @@ module {
       with et.assert_raises_message(
           RuntimeError,
           tpu="""embedding_bag_backward(): expected mode to be sum (0) or mean (1) for sparse embedding_bag_backward, got 2""",
-          message_reviewed_by="wan",
       ):
         empty = torch.empty(0, dtype=torch.long, device="tpu")
         torch.ops.aten._embedding_bag_backward(
@@ -3973,7 +3960,6 @@ module {
       with et.assert_raises_message(
           RuntimeError,
           tpu="""embedding_bag_backward(): per_sample_weights only supported for mode='sum'""",
-          message_reviewed_by="wan",
       ):
         empty = torch.empty(0, dtype=torch.long, device="tpu")
         torch.ops.aten._embedding_bag_backward(
@@ -4011,32 +3997,6 @@ module {
         tpu="""prelu_kernel_backward(): expected weight tensor shape to be broadcastable to self shape [2, 3], got [1, 2, 3]""",
     ):
       torch.ops.aten._prelu_kernel_backward(grad_output, self_tensor, weight)
-
-  @et.why_tpu_only("torch._scaled_grouped_mm is not supported on GPU.")
-  def test_scaled_grouped_mm_invalid_scale_a_dim(self):
-    a = torch.randn(3, 4, device=et.device())
-    b = torch.randn(3, 4, 8, device=et.device())
-    scale_a = torch.randn(2, 2, device=et.device())
-    scale_b = torch.tensor(1.0, device=et.device())
-    offs = torch.tensor([1, 2, 3], dtype=torch.int32, device=et.device())
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""scaled_grouped_mm(): expected scale_a and scale_b to both be scalar/size-1 or match rowwise shapes for self [3, 4] and mat2 [3, 4, 8], got scale_a [2, 2] and scale_b []""",
-    ):
-      torch._scaled_grouped_mm(a, b, scale_a, scale_b, offs=offs)
-
-  @et.why_tpu_only("torch._scaled_grouped_mm is not supported on GPU.")
-  def test_scaled_grouped_mm_invalid_scale_b_dim(self):
-    a = torch.randn(3, 4, device=et.device())
-    b = torch.randn(3, 4, 8, device=et.device())
-    scale_a = torch.tensor(1.0, device=et.device())
-    scale_b = torch.randn(2, 2, device=et.device())
-    offs = torch.tensor([1, 2, 3], dtype=torch.int32, device=et.device())
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""scaled_grouped_mm(): expected scale_a and scale_b to both be scalar/size-1 or match rowwise shapes for self [3, 4] and mat2 [3, 4, 8], got scale_a [] and scale_b [2, 2]""",
-    ):
-      torch._scaled_grouped_mm(a, b, scale_a, scale_b, offs=offs)
 
   @et.why_tpu_only("torch._scaled_grouped_mm is not supported on GPU.")
   def test_scaled_grouped_mm_invalid_bias_dim(self):
@@ -4153,7 +4113,7 @@ module {
       "GPU _scaled_grouped_mm_v2 supports these recipes, swizzles and options."
   )
   def test_scaled_grouped_mm_v2_unsupported_args(
-      self, overrides: dict[str, Any], message: str
+      self, overrides: Mapping[str, Any], message: str
   ):
     a = torch.randn(16, 8, device=et.device())
     b = torch.randn(2, 8, 8, device=et.device())
@@ -4203,27 +4163,10 @@ module {
     proj_bias = torch.ones(8, 1, device=et.device())
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""native_multi_head_attention(): expected 1-D proj_bias, got 2-D tensor""",
+        tpu="""native_multi_head_attention(): expected 1D proj_bias, got 2D tensor""",
     ):
       torch.ops.aten._native_multi_head_attention(
           query, key, value, 8, 2, qkv_weight, qkv_bias, proj_weight, proj_bias
-      )
-
-  @et.why_tpu_only("GPU doesn't check if num_head >= 0.")
-  def test_native_multi_head_attention_non_positive_num_head(self):
-    query = torch.ones(2, 4, 8, device=et.device())
-    key = torch.ones(2, 4, 8, device=et.device())
-    value = torch.ones(2, 4, 8, device=et.device())
-    qkv_weight = torch.ones(24, 8, device=et.device())
-    qkv_bias = torch.ones(24, device=et.device())
-    proj_weight = torch.ones(8, 8, device=et.device())
-    proj_bias = torch.ones(8, device=et.device())
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""native_multi_head_attention(): expected num_head to be positive, got 0""",
-    ):
-      torch.ops.aten._native_multi_head_attention(
-          query, key, value, 8, 0, qkv_weight, qkv_bias, proj_weight, proj_bias
       )
 
   @et.why_tpu_only("Optimization Barrier requires non-empty list input")
@@ -4260,7 +4203,7 @@ module {
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""transformer_encoder_layer_fwd(): expected 1-D proj_bias, got 2-D tensor""",
+        tpu="""transformer_encoder_layer_fwd(): expected 1D proj_bias, got 2D tensor""",
     ):
       torch._transformer_encoder_layer_fwd(
           src,
@@ -4344,16 +4287,6 @@ module {
       )
 
   @et.why_tpu_only("Custom eager input validation in TorchTPU jagged kernels")
-  def test_padded_to_jagged_total_l_mismatch(self):
-    dense = torch.randn(2, 5, 4, device=et.device())
-    offsets = torch.tensor([0, 2, 5], dtype=torch.int64, device=et.device())
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""padded_dense_to_jagged_forward(): expected the last offset to match total_L (6), got 5""",
-    ):
-      torch.ops.aten._padded_dense_to_jagged_forward(dense, [offsets], 6)
-
-  @et.why_tpu_only("Custom eager input validation in TorchTPU jagged kernels")
   def test_padded_to_jagged_segment_exceeds_max_length(self):
     dense = torch.randn(2, 4, 4, device=et.device())
     offsets = torch.tensor([0, 5, 7], dtype=torch.int64, device=et.device())
@@ -4368,7 +4301,6 @@ module {
     with et.assert_raises_message(
         RuntimeError,
         tpu="""_set_window_num_stripes(): expected window_num_stripes to be > 0, got 0""",
-        message_reviewed_by="wan",
     ):
       torch.tpu.distributed.window_num_stripes = 0
 
@@ -4377,7 +4309,6 @@ module {
     with et.assert_raises_message(
         RuntimeError,
         tpu="""_set_window_num_stripes(): expected window_num_stripes to be > 0, got -1""",
-        message_reviewed_by="wan",
     ):
       torch.tpu.distributed.window_num_stripes = -1
 
@@ -4386,7 +4317,6 @@ module {
     with et.assert_raises_message(
         RuntimeError,
         tpu="""_set_window_stripe_chunk_mb(): expected window_stripe_chunk_mb to be > 0, got 0""",
-        message_reviewed_by="wan",
     ):
       torch.tpu.distributed.window_stripe_chunk_mb = 0
 
@@ -4395,7 +4325,6 @@ module {
     with et.assert_raises_message(
         RuntimeError,
         tpu="""_set_window_stripe_chunk_mb(): expected window_stripe_chunk_mb to be > 0, got -1""",
-        message_reviewed_by="wan",
     ):
       torch.tpu.distributed.window_stripe_chunk_mb = -1
 
@@ -4642,27 +4571,40 @@ module {
     ):
       torch.ops.ao.reload(y, torch.device("tpu", 1))
 
+  @parameterized.named_parameters(
+      ("non_numeric", "not_a_version"),
+      ("double_dot", "1..2"),
+      ("invalid_suffix", "1.0.0-invalid"),
+  )
   @et.why_tpu_only("libtpu only present for TPU devices.")
-  def test_invalid_libtpu_version(self):
+  def test_invalid_libtpu_version(self, version: str):
     env.reset_libtpu_version_for_testing()
     self.addCleanup(env.reset_libtpu_version_for_testing)
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""set_libtpu_version(): expected version string to be of the format <major>[.<minor>[.<patch>]][.dev<build>][<suffix>], got '1.2.3.4.dev20260914'""",
+        tpu=f"""set_libtpu_version(): expected a valid PEP 440 version string, got '{version}'""",
     ):
-      env.set_libtpu_version("1.2.3.4.dev20260914")
+      env.set_libtpu_version(version)
 
+  @parameterized.named_parameters(
+      ("release_component", "99999999999.0.0", "99999999999"),
+      (
+          "dev_component",
+          "0.0.50.dev99999999999999999999",
+          "99999999999999999999",
+      ),
+  )
   @et.why_tpu_only("libtpu only present for TPU devices.")
-  def test_overflowing_libtpu_version(self):
+  def test_overflowing_libtpu_version(self, version: str, component: str):
     env.reset_libtpu_version_for_testing()
     self.addCleanup(env.reset_libtpu_version_for_testing)
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""set_libtpu_version(): version component '99999999999' overflows in '99999999999.0.0'""",
+        tpu=f"""set_libtpu_version(): version component '{component}' overflows in '{version}'""",
     ):
-      env.set_libtpu_version("99999999999.0.0")
+      env.set_libtpu_version(version)
 
   @et.why_tpu_only("libtpu only present for TPU devices.")
   def test_reset_different_libtpu_version(self):
@@ -4716,6 +4658,19 @@ module {
       with execution_mode.set_eager_mode(EagerMode._INTERNAL_COMPILE_FX_GRAPH):
         _ = torch.Event(device="tpu").record()
 
+  @et.why_tpu_only("TorchTPU specific eager mode")
+  def test_data_dependent_op_during_fx_trace(self):
+    x = torch.arange(4, device="tpu")
+    mask = torch.tensor(
+        [True, False, True, False], dtype=torch.bool, device="tpu"
+    )
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""masked_select(): cannot materialize a tensor during a stream-isolated copy, materialization requires an active stream""",
+    ):
+      with execution_mode.set_eager_mode(EagerMode._INTERNAL_COMPILE_FX_GRAPH):
+        _ = torch.masked_select(x, mask)
+
   @et.why_tpu_only(
       "PyTorch CUDA nll_loss_forward does not validate integer reduction"
       " values."
@@ -4728,77 +4683,6 @@ module {
         tpu="""nll_loss_nd(): expected reduction to be one of ['none', 'mean', 'sum'], got 3""",
     ):
       torch.ops.aten.nll_loss_nd(t, target, None, 3, -100)
-
-  @et.why_tpu_only(
-      "torch.tpu.Event is a TorchTPU class; errors_test.py covers torch.Event."
-  )
-  def test_tpu_event_elapsed_time_untimed_event(self):
-    timed = torch.tpu.Event(enable_timing=True)
-    untimed = torch.tpu.Event()
-    timed.record()
-    untimed.record()
-
-    with et.assert_raises_message(
-        ValueError,
-        tpu="""Both events must be created with argument 'enable_timing=True'.""",
-    ):
-      timed.elapsed_time(untimed)
-    with et.assert_raises_message(
-        ValueError,
-        tpu="""Both events must be created with argument 'enable_timing=True'.""",
-    ):
-      untimed.elapsed_time(timed)
-
-  @et.why_tpu_only(
-      "torch.tpu.Event is a TorchTPU class; errors_test.py covers torch.Event."
-  )
-  def test_tpu_event_elapsed_time_unrecorded_event(self):
-    recorded = torch.tpu.Event(enable_timing=True)
-    unrecorded = torch.tpu.Event(enable_timing=True)
-    recorded.record()
-
-    with et.assert_raises_message(
-        ValueError,
-        tpu="""Both events must be recorded before calculating elapsed time.""",
-    ):
-      recorded.elapsed_time(unrecorded)
-    with et.assert_raises_message(
-        ValueError,
-        tpu="""Both events must be recorded before calculating elapsed time.""",
-    ):
-      unrecorded.elapsed_time(recorded)
-
-  @et.why_tpu_only("torch.tpu.Event is a TorchTPU class.")
-  def test_tpu_event_elapsed_time_non_event(self):
-    event = torch.tpu.Event(enable_timing=True)
-
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""_event_elapsed_time(): expected start and end to be torch.Event objects, got TpuEvent and NoneType""",
-    ):
-      event.elapsed_time(None)
-
-  @et.why_tpu_only(
-      "errors_test.py runs on GPU with CUDA_LAUNCH_BLOCKING=1, so events cannot"
-      " be kept pending there reliably."
-  )
-  def test_tpu_event_elapsed_time_pending_event(self):
-    # A large device-to-host copy keeps the events recorded after it pending.
-    size = 8192 * 8192
-    t_tpu = torch.ones(size, device="tpu", dtype=torch.float32)
-    t_cpu = torch.empty(size, device="cpu", pin_memory=True)
-    start = torch.tpu.Event(enable_timing=True)
-    end = torch.tpu.Event(enable_timing=True)
-    t_cpu.copy_(t_tpu, non_blocking=True)
-    start.record()
-    end.record()
-
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""Both events must be completed before calculating elapsed time.""",
-    ):
-      start.elapsed_time(end)
-    end.synchronize()
 
   @et.why_tpu_only("torch.tpu.allow_excess_precision is TPU-specific.")
   def test_allow_excess_precision_after_compilation(self):
@@ -5045,6 +4929,87 @@ module {
     ):
       op_fn(t)
 
+  @et.why_tpu_only(
+      "CUDA nonzero.out omits assert_no_overlap(out, self) and silently"
+      " produces garbage, whereas CPU and TPU enforce it."
+  )
+  def test_nonzero_out_input_memory_overlap(self):
+    t = torch.tensor([[1, 0], [0, 2]], device=et.device(), dtype=torch.int64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.""",
+    ):
+      torch.nonzero(t, out=t)
+
+  @et.why_tpu_only(
+      "CUDA nonzero_static.out omits assert_no_overlap(out, self) and silently"
+      " produces garbage, whereas CPU and TPU enforce it."
+  )
+  def test_nonzero_static_out_input_memory_overlap(self):
+    t = torch.tensor([[1, 0], [0, 2]], device=et.device(), dtype=torch.int64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.""",
+    ):
+      torch.nonzero_static(t, size=2, out=t)
+
+  @et.why_tpu_only(
+      "Tensor repeats validates output_size against the host-synchronized sum"
+      " of repeats synchronously on TPU."
+  )
+  def test_repeat_interleave_single_element_tensor_invalid_output_size(self):
+    for repeats_val in ([2], [1, 2, 3]):
+      repeats = torch.tensor(repeats_val, device=et.device())
+      for requires_grad in (False, True):
+        with self.subTest(repeats=repeats_val, requires_grad=requires_grad):
+          t = torch.tensor(
+              [1.0, 2.0, 3.0], device=et.device(), requires_grad=requires_grad
+          )
+          with et.assert_raises_message(
+              RuntimeError,
+              tpu="""repeat_interleave(): expected output_size to equal 6, got 9""",
+          ):
+            torch.repeat_interleave(t, repeats, dim=0, output_size=9)
+
+    repeats_only = torch.tensor([1, 2, 3], device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""repeat_interleave(): expected output_size to equal 6, got 9""",
+    ):
+      torch.repeat_interleave(repeats_only, output_size=9)
+
+  @et.why_tpu_only(
+      "Single-element tensor repeats under torch.compile validates output_size"
+      " in TryExtractScalarRepeatCount before decomposing."
+  )
+  def test_repeat_interleave_compiled_single_element_tensor_negative_output_size(
+      self,
+  ):
+    with torch._subclasses.fake_tensor.FakeTensorMode():
+      fake_t = torch.empty(2, device=et.device())
+      fake_repeats = torch.empty(1, dtype=torch.int64, device=et.device())
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""repeat_interleave(): expected output_size to be greater than or equal to zero, got -1""",
+      ):
+        torch.repeat_interleave(fake_t, fake_repeats, dim=0, output_size=-1)
+
+    @torch.compile(backend="tpu", fullgraph=True)
+    def fn(x, r):
+      return torch.repeat_interleave(x, r, dim=0, output_size=-1)
+
+    t = torch.tensor([1.0, 2.0], device=et.device())
+    repeats = torch.tensor([1], device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(
+            r".*repeat_interleave\(\): expected output_size to be greater than"
+            r" or equal to zero, got -1.*",
+            re.DOTALL,
+        ),
+    ):
+      fn(t, repeats)
+
 
 class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):
 
@@ -5056,7 +5021,6 @@ class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):
     with et.assert_raises_message(
         RuntimeError,
         tpu="""throw_tterror_in_free_function(): throwing invalid argument""",
-        message_reviewed_by="wan",
     ):
       tt_testing.throw_tterror_in_free_function()
 
@@ -5066,7 +5030,6 @@ class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):
     with et.assert_raises_message(
         IndexError,
         tpu="""throw_tterror_index_error(): throwing index error""",
-        message_reviewed_by="wan",
     ):
       tt_testing.throw_tterror_index_error()
 
@@ -5079,7 +5042,6 @@ class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):
     with et.assert_raises_message(
         RuntimeError,
         tpu="""TestErrorClass.throw_tterror_in_member_function(): class throwing invalid argument""",
-        message_reviewed_by="wan",
     ):
       obj.throw_tterror_in_member_function()
 
@@ -5179,27 +5141,6 @@ class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):
             pallas.get_default_pallas_mesh()
 
   @et.why_tpu_only(
-      "GPU raises NotImplementedError from avg_pool2d_out_cuda_frame instead of"
-      " RuntimeError."
-  )
-  def test_avg_pool1d_out_unsupported_dtypes(self):
-    for dtype, dtype_str in [
-        (torch.bool, "bool"),
-        (torch.complex64, "complex64"),
-        (torch.uint8, "uint8"),
-        (torch.int8, "int8"),
-        (torch.int16, "int16"),
-        (torch.int32, "int32"),
-    ]:
-      t = torch.zeros((1, 1, 4), device=et.device(), dtype=dtype)
-      out = torch.empty((1, 1, 2), device=et.device(), dtype=dtype)
-      with et.assert_raises_message(
-          RuntimeError,
-          tpu=f"""avg_pool1d(): expected input dtype to be none of (bool, uint8, int8, int16, int32, complex64), got {dtype_str}""",
-      ):
-        torch.ops.aten.avg_pool1d.out(t, [3], out=out)
-
-  @et.why_tpu_only(
       "Upstream CUDA _fused_rms_norm skips dtype validation when M == 0."
   )
   def test_rms_norm_empty_input_weight_int(self):
@@ -5268,7 +5209,7 @@ def _patch_env_vars(names: Sequence[str], values: Mapping[str, str]):
 
 
 @contextlib.contextmanager
-def _mock_launch_env(values: dict[str, str]):
+def _mock_launch_env(values: Mapping[str, str]):
   """Makes the environment look like `values` to `distributed.set_tpu_launch_env`.
 
   Reads through `torch_tpu._internal.env` are redirected to `values`. In
@@ -5555,6 +5496,36 @@ class InitializationErrorsTest(et.TpuOnlyErrorTestBase):
     )
 
 
+def _create_compilation_cache_in_fresh_process(local_rank: int) -> None:
+  """Worker that creates the compilation cache."""
+  del local_rank  # Unused.
+  torch.tpu._get_cache_stats()
+
+
+class CompilationCacheErrorsTest(et.TpuOnlyErrorTestBase):
+
+  @et.why_tpu_only("The env var only configures TorchTPU's compilation cache.")
+  def test_invalid_unbounded_dynamic_kernels_env_var_crashes(self):
+    name = "TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS"
+    # The env var is read once per process, so a fresh worker inherits the
+    # invalid value, and the stderr file that captures its crash message.
+    stderr_fd = os.dup(2)
+    with tempfile.TemporaryFile("w+") as stderr:
+      os.dup2(stderr.fileno(), 2)
+      try:
+        with _patch_env_vars((name,), {name: "bogus"}):
+          with self.assertRaises(mp.ProcessExitedException):
+            mp.spawn(_create_compilation_cache_in_fresh_process)
+      finally:
+        os.dup2(stderr_fd, 2)
+        os.close(stderr_fd)
+      stderr.seek(0)
+      # The coverage tool looks for "Covered file:line"; the crash message
+      # holds "cpp_error_trace='file:line: Function()...'".
+      for loc in re.findall(r"cpp_error_trace='([/\w\.]+:\d+)", stderr.read()):
+        print(f"\nCovered {loc}")
+
+
 class ForkErrorsTest(et.TpuOnlyErrorTestBase):
 
   @et.why_tpu_only("Testing bad fork fail-fast RuntimeError on TPU.")
@@ -5592,7 +5563,7 @@ class FlexAttentionErrorsTest(et.TpuOnlyErrorTestBase):
     )
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""flex_attention_fwd(): sequence lengths must be multiples of the block sizes (got q_len=1000, kv_len=1024, q_block=128, kv_block=128)""",
+        tpu="""flex_attention_fwd(): sequence lengths must be multiples of the block sizes (got q_len=1000, kv_len=1024, q_block=128, kv_block=1024)""",
     ):
       tpu_flex_attention.flex_attention_fwd(q[:, :, :1000], k, v, block_mask)
 
@@ -5621,7 +5592,7 @@ class FlexAttentionErrorsTest(et.TpuOnlyErrorTestBase):
   def test_inputs_must_be_4d(self):
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""flex_attention_fwd(): expected 4-D q, k and v, got 3-D, 3-D and 3-D""",
+        tpu="""flex_attention_fwd(): expected 4D q, k and v, got 3D, 3D and 3D""",
     ):
       self._fwd(q_shape=(1, 256, 128))
 
@@ -5629,7 +5600,7 @@ class FlexAttentionErrorsTest(et.TpuOnlyErrorTestBase):
   def test_inputs_must_share_a_dtype(self):
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""flex_attention_fwd(): expected q, k and v to share a dtype, got Float, Float and BFloat16""",
+        tpu="""flex_attention_fwd(): expected q, k and v to share a dtype, got float32, float32 and bfloat16""",
     ):
       self._fwd(
           v=torch.randn(
@@ -5665,7 +5636,7 @@ class FlexAttentionErrorsTest(et.TpuOnlyErrorTestBase):
   def test_unsupported_dtype(self):
     with et.assert_raises_message(
         NotImplementedError,
-        tpu="""flex_attention_fwd(): expected bfloat16 or float32 inputs, got Half""",
+        tpu="""flex_attention_fwd(): expected bfloat16 or float32 inputs, got float16""",
     ):
       self._fwd(**{
           name: torch.randn(1, 1, 256, 128, device=et.device()).half()
@@ -5686,7 +5657,7 @@ class FlexAttentionErrorsTest(et.TpuOnlyErrorTestBase):
   def test_kv_num_blocks_size(self):
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""flex_attention_fwd(): expected kv_num_blocks to be 1-D with 2 entries, got [3]""",
+        tpu="""flex_attention_fwd(): expected kv_num_blocks to be 1D with 2 entries, got [3]""",
     ):
       self._fwd(
           kv_num_blocks=torch.ones(3, dtype=torch.int32, device=et.device())
@@ -5696,7 +5667,7 @@ class FlexAttentionErrorsTest(et.TpuOnlyErrorTestBase):
   def test_kv_indices_size(self):
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""flex_attention_fwd(): expected kv_indices to be 1-D with 4 entries, got [3]""",
+        tpu="""flex_attention_fwd(): expected kv_indices to be 1D with 4 entries, got [3]""",
     ):
       self._fwd(
           kv_indices=torch.zeros(3, dtype=torch.int32, device=et.device())
@@ -5723,7 +5694,7 @@ class FlexAttentionErrorsTest(et.TpuOnlyErrorTestBase):
     q, k, v = self._inputs(1024)
     with et.assert_raises_message(
         ValueError,
-        tpu="""expected score_mod to return shape [128, 128], got [128]""",
+        tpu="""expected score_mod to return shape [1024, 1024], got [1024]""",
     ):
       tpu_flex_attention.flex_attention_fwd(
           q,
@@ -5732,6 +5703,136 @@ class FlexAttentionErrorsTest(et.TpuOnlyErrorTestBase):
           self._causal_mask(),
           score_mod=lambda score, b, h, q_idx, kv_idx: score.sum(-1),
       )
+
+
+class SpmdSafeCompileErrorsTest(et.TpuOnlyErrorTestBase):
+  """Tests error messages for partially `spmd_safe` compiled graphs."""
+
+  @et.why_tpu_only("`spmd_safe` only exists on TPU.")
+  def test_partially_spmd_safe_tensor_indexing(self):
+    """Verifies unannotated tensor indexing (`operator.getitem`) is rejected."""
+
+    @distributed.spmd_safe
+    def safe_fn(t):
+      return t * 2 + 1
+
+    compiled_index = torch.compile(lambda t: safe_fn(t[0]), backend="tpu")
+    compiled_ckpt_index = torch.compile(
+        lambda t: checkpoint.checkpoint(safe_fn, t, use_reentrant=False)[0],
+        backend="tpu",
+    )
+    x = torch.ones((2, 2), device=et.device())
+    x_grad = torch.ones((2, 2), device=et.device(), requires_grad=True)
+    expected = re.compile(
+        r".*ValueError: The graph is partially annotated with `spmd_safe`: 1 of"
+        r" 3 ops are not `spmd_safe`, e\.g\. \['(?:getitem|getitem_1):"
+        r" operator\.getitem \([^']*tpu_errors_test\.py:\d+\)'\]\..*",
+        re.DOTALL,
+    )
+    with et.assert_raises_message(
+        torch._dynamo.exc.BackendCompilerFailed,  # pylint: disable=protected-access
+        tpu=expected,
+    ):
+      compiled_index(x)
+    with et.assert_raises_message(
+        torch._dynamo.exc.BackendCompilerFailed,  # pylint: disable=protected-access
+        tpu=expected,
+    ):
+      compiled_ckpt_index(x_grad)
+
+  @et.why_tpu_only("`spmd_safe` only exists on TPU.")
+  def test_partially_spmd_safe_checkpoint_subgraph(self):
+    """Verifies unannotated ops inside a `checkpoint` subgraph are rejected."""
+
+    @distributed.spmd_safe
+    def safe_fn(t):
+      return t * 2 + 1
+
+    compiled_fn = torch.compile(
+        lambda t: checkpoint.checkpoint(
+            lambda y: torch.neg(safe_fn(y)), t, use_reentrant=False
+        ),
+        backend="tpu",
+    )
+    x = torch.ones((2, 2), device=et.device(), requires_grad=True)
+    with et.assert_raises_message(
+        torch._dynamo.exc.BackendCompilerFailed,  # pylint: disable=protected-access
+        tpu=re.compile(
+            r".*ValueError: The graph is partially annotated with `spmd_safe`:"
+            r" 1 of 3 ops are not `spmd_safe`, e\.g\. \['neg: torch\.neg"
+            r" \([^']*tpu_errors_test\.py:\d+\)'\]\..*",
+            re.DOTALL,
+        ),
+    ):
+      compiled_fn(x)
+
+  @et.why_tpu_only("`spmd_safe` only exists on TPU.")
+  def test_partially_spmd_safe_bodyless_higher_order_op(self):
+    """Verifies unannotated higher-order ops without a subgraph are rejected."""
+
+    @distributed.spmd_safe
+    def safe_fn(t):
+      return t + 1
+
+    def fn(t):
+      y = torch.ops.higher_order.out_dtype(
+          torch.ops.aten.mul.Scalar, torch.float32, t, 2.0
+      )
+      return safe_fn(y)
+
+    compiled_fn = torch.compile(fn, backend="tpu")
+    x = torch.ones((2, 2), device=et.device())
+    with et.assert_raises_message(
+        torch._dynamo.exc.BackendCompilerFailed,  # pylint: disable=protected-access
+        tpu=re.compile(
+            r".*ValueError: The graph is partially annotated with `spmd_safe`:"
+            r" 1 of 2 ops are not `spmd_safe`, e\.g\. \['y:"
+            r" torch\.ops\.higher_order\.out_dtype"
+            r" \([^']*tpu_errors_test\.py:\d+\)'\]\..*",
+            re.DOTALL,
+        ),
+    ):
+      compiled_fn(x)
+
+  @et.why_tpu_only("`spmd_safe` only exists on TPU.")
+  def test_partially_spmd_safe_error_formatting(self):
+    """Verifies node formatting without stack traces and 3-op truncation."""
+    no_trace_gm = torch.fx.symbolic_trace(lambda x: torch.neg(x) + 1)
+    neg_node, add_node = (
+        n for n in no_trace_gm.graph.nodes if n.op == "call_function"
+    )
+    neg_node.meta["custom"] = {spmd_util.SPMD_SAFE_METADATA_KEY: True}
+    self.assertIsNone(add_node.stack_trace)
+    with et.assert_raises_message(
+        ValueError,
+        tpu="""The graph is partially annotated with `spmd_safe`: 1 of 2 ops are not `spmd_safe`, e.g. ['add: operator.add']. Under `torch.compile`, `spmd_safe` must cover the whole compiled function: either compile the `spmd_safe` function directly, or decorate the whole compiled function with `spmd_safe`.""",
+    ):
+      split_compiler._is_fully_spmd_safe(no_trace_gm)  # pylint: disable=protected-access
+
+    @distributed.spmd_safe
+    def safe_fn(t):
+      return t * 2 + 1
+
+    compiled_fn = torch.compile(
+        lambda t: safe_fn(torch.neg(torch.abs(torch.sin(torch.cos(t))))),
+        backend="tpu",
+    )
+    x = torch.ones((2, 2), device=et.device())
+    with et.assert_raises_message(
+        torch._dynamo.exc.BackendCompilerFailed,  # pylint: disable=protected-access
+        tpu=re.compile(
+            r".*ValueError: The graph is partially annotated with `spmd_safe`:"
+            r" 4 of 6 ops are not `spmd_safe`, e\.g\. \['cos: torch\.cos"
+            r" \([^']*tpu_errors_test\.py:\d+\)', 'sin: torch\.sin"
+            r" \([^']*tpu_errors_test\.py:\d+\)', 'abs_1: torch\.abs"
+            r" \([^']*tpu_errors_test\.py:\d+\)'\]\. Under `torch\.compile`,"
+            r" `spmd_safe` must cover the whole compiled function: either"
+            r" compile the `spmd_safe` function directly, or decorate the"
+            r" whole compiled function with `spmd_safe`\..*",
+            re.DOTALL,
+        ),
+    ):
+      compiled_fn(x)
 
 
 if __name__ == "__main__":

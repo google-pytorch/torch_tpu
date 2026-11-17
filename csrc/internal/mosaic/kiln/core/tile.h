@@ -26,7 +26,7 @@
 #include "csrc/internal/mosaic/kiln/core/literal.h"
 #include "csrc/internal/mosaic/kiln/core/scalar.h"
 #include "csrc/internal/mosaic/kiln/core/shape.h"
-#include "csrc/internal/mosaic/kiln/core/value_base.h"
+#include "csrc/internal/mosaic/kiln/core/value_handle.h"
 #include "llvm/ADT/ArrayRef.h"
 
 namespace torch_tpu::kiln {
@@ -39,11 +39,17 @@ namespace torch_tpu::kiln {
 // e.g. `(qt, kt) - (qt, 1)`), and accept a `Literal` (splatted in the tile's
 // dtype) or `Scalar` (broadcast to the tile's dimensions) on either side.
 // Element types are never promoted implicitly; use `AsType`.
-class Tile : public ValueBase,
-             public WithElementwiseOps<Tile>,
-             public WithOperandOps<Tile, Literal>,
-             public WithOperandOps<Tile, Scalar> {
+class Tile final : public WithElementwiseOps<Tile>,
+                   public WithOperandOps<Tile, Literal>,
+                   public WithOperandOps<Tile, Scalar> {
  public:
+  // CHECK-fails unless `handle` is a vector value whose element type is the IR
+  // type of `dtype`.
+  Tile(internal::ValueHandle handle, DType dtype);
+
+  internal::ValueHandle handle() const { return handle_; }
+  DType dtype() const { return dtype_; }
+
   llvm::ArrayRef<int64_t> dims() const;
   Shape shape() const { return Shape(dims(), dtype()); }
   int64_t rank() const;
@@ -95,14 +101,14 @@ class Tile : public ValueBase,
   }
 
  private:
-  friend struct internal::ValueAccess;
   friend class WithOperandOps<Tile, Literal>;
   friend class WithOperandOps<Tile, Scalar>;
 
-  Tile(const void* impl, DType dtype);
-
   Tile Coerce(Literal value) const { return Full(value); }
   Tile Coerce(Scalar scalar) const { return Splat(scalar); }
+
+  internal::ValueHandle handle_;
+  DType dtype_;
 };
 
 // Tile constructors.
@@ -137,6 +143,10 @@ Tile Reciprocal(Tile t, ReciprocalMode mode = ReciprocalMode::kExact);
 // Reductions along `axis`, keeping the reduced dimension as size 1.
 Tile MaxReduce(Tile t, int axis);
 Tile SumReduce(Tile t, int axis);
+
+// Concatenates `tiles` along `axis` (`tpu.concatenate` / `jnp.concatenate`).
+// All tiles must share the same rank, dtype, and non-`axis` dimensions.
+Tile Concat(llvm::ArrayRef<Tile> tiles, int32_t axis);
 
 // 2-D transpose.
 Tile Transpose(Tile t);

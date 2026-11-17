@@ -27,8 +27,9 @@ Supports two compilation scopes:
       region in one torch.compile.
 """
 
+from collections.abc import Callable
 import dataclasses
-from typing import Any, Callable
+from typing import Any
 import torch
 from perflab import target as target_lib
 from perflab.steps import common
@@ -43,6 +44,28 @@ class CompileConfig:
   scope: Scope = Scope.STEP
   dynamic: bool | None = None
   fullgraph: bool = False
+  spmd_safe: bool = False
+
+  def select_backend(self, target: target_lib.Target) -> Any:
+    """Returns the torch.compile backend for `target`.
+
+    For non-TPU targets this also configures Inductor for benchmarking.
+
+    Args:
+      target: The target to compile for.
+
+    Returns:
+      A `TpuBackend` for TPU targets, otherwise the "inductor" backend name.
+    """
+    if target.device_kind is target_lib.DeviceKind.TPU:
+      from torch_tpu._internal import compile as torch_tpu_compile  # pylint: disable=g-import-not-at-top
+
+      return torch_tpu_compile.TpuBackend(dynamism=self.dynamic is not False)
+
+    from perflab import device_utils  # pylint: disable=g-import-not-at-top
+
+    device_utils.configure_inductor_for_benchmarks()
+    return "inductor"
 
   def apply(self, obj: Any, target: target_lib.Target) -> Callable:
     """Compile `obj` based on the target.
@@ -57,19 +80,17 @@ class CompileConfig:
     Returns:
       The compiled object.
     """
-    backend = "inductor"
-    if target.device_kind is target_lib.DeviceKind.TPU:
-      from torch_tpu._internal import compile as torch_tpu_compile  # pylint: disable=g-import-not-at-top
+    if self.spmd_safe and target.device_kind is target_lib.DeviceKind.TPU:
+      from torch_tpu._internal.distributed import spmd_util  # pylint: disable=g-import-not-at-top
 
-      backend = torch_tpu_compile.TpuBackend(dynamism=self.dynamic is not False)
-    else:
-      from perflab import device_utils  # pylint: disable=g-import-not-at-top
-
-      device_utils.configure_inductor_for_benchmarks()
+      if isinstance(obj, torch.nn.Module):
+        obj.forward = spmd_util.spmd_safe(obj.forward)
+      else:
+        obj = spmd_util.spmd_safe(obj)
 
     return torch.compile(
         obj,
-        backend=backend,
+        backend=self.select_backend(target),
         dynamic=self.dynamic,
         fullgraph=self.fullgraph,
     )

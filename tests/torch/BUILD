@@ -22,7 +22,7 @@ load(
     "torch_tpu_py_library",
 )
 load("//shims/build_files:torch_rules.bzl", "torch_tpu_torch_test")
-load("//shims/py_rules:pytype.bzl", "pytype_strict_binary")
+load("//shims/py_rules:py_binary.bzl", "py_binary")
 
 package(default_applicable_licenses = ["//:license"])
 
@@ -36,10 +36,11 @@ torch_tpu_py_library(
     ],
 )
 
-pytype_strict_binary(
+py_binary(
     name = "torch_test_runner",
     testonly = True,
     srcs = ["torch_test_runner.py"],
+    type_checking = True,
     deps = [
         ":torch_test_configs",
         "//shims/absl_py:app",
@@ -47,7 +48,6 @@ pytype_strict_binary(
         "//shims/torch:pytorch",
         "//shims/torch:testing_internal",
         "//src/torch_tpu",
-        "//src/torch_tpu/_internal/device:_device_ops_backend",
         "//src/torch_tpu/_internal/utils:annotations",
     ],
 )
@@ -73,11 +73,6 @@ torch_tpu_torch_test(
 torch_tpu_torch_test(
     name = "distributed__composable_fsdp_fully_shard_comm_test",
     torch_test_module = "distributed/_composable/fsdp/test_fully_shard_comm",
-)
-
-torch_tpu_torch_test(
-    name = "distributed_checkpoint__experimental_staging_test",
-    torch_test_module = "distributed/checkpoint/_experimental/test_staging",
 )
 
 torch_tpu_torch_test(
@@ -643,7 +638,7 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "nn_pooling_test",
-    shard_count = 4,
+    shard_count = 5,
     torch_test_module = "nn/test_pooling",
 )
 
@@ -662,11 +657,6 @@ torch_tpu_torch_test(
     name = "profiler_profiler_test",
     shard_count = 4,
     torch_test_module = "profiler/test_profiler",
-)
-
-torch_tpu_torch_test(
-    name = "profiler_trace_validator_test",
-    torch_test_module = "profiler/test_trace_validator",
 )
 
 torch_tpu_torch_test(
@@ -692,6 +682,7 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "ao_sparsity_test",
+    shard_count = 3,
     torch_test_module = "test_ao_sparsity",
 )
 
@@ -767,7 +758,7 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "expanded_weights_test",
-    shard_count = 2,
+    shard_count = 4,
     torch_test_module = "test_expanded_weights",
 )
 
@@ -781,11 +772,6 @@ torch_tpu_torch_test(
     notap = "b/563402379",  # NOTAP_OK=torch tests
     shard_count = 4,
     torch_test_module = "test_foreach",
-)
-
-torch_tpu_torch_test(
-    name = "fx_experimental_test",
-    torch_test_module = "test_fx_experimental",
 )
 
 torch_tpu_torch_test(
@@ -968,12 +954,13 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "shape_ops_test",
+    shard_count = 2,
     torch_test_module = "test_shape_ops",
 )
 
 torch_tpu_torch_test(
     name = "sort_and_select_test",
-    shard_count = 4,
+    shard_count = 6,
     torch_test_module = "test_sort_and_select",
 )
 
@@ -1060,6 +1047,7 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "utils_test",
+    shard_count = 4,
     torch_test_module = "test_utils",
 )
 

@@ -152,7 +152,7 @@ _DYNAMO_ROOT_RE = re.compile(r"^[LG]\[['\"]([^'\"]+)['\"]\]")
 _SUBSCRIPT_RE = re.compile(r"\[['\"]?([^'\"\]]+)['\"]?\]")
 
 
-def _module_scope_entries(node: torch.fx.Node) -> list[tuple[str, str]]:
+def _module_scope_entries(node: torch.fx.Node) -> Sequence[tuple[str, str]]:
   """Returns the `nn_module_stack` keys and name scopes of a node's modules.
 
   Args:
@@ -201,7 +201,7 @@ def _module_scope_entries(node: torch.fx.Node) -> list[tuple[str, str]]:
   return entries
 
 
-def _extract_node_name_scopes(node: torch.fx.Node) -> list[str]:
+def _extract_node_name_scopes(node: torch.fx.Node) -> Sequence[str]:
   """Extracts hierarchical module name scopes from FX node metadata.
 
   Args:
@@ -523,10 +523,15 @@ def _isolated_fx_name_scopes():
 # test usages with the new traverse_and_compile API.
 def fx_to_mlir(
     module: torch.fx.GraphModule,
-    args: list[torch.Tensor | Any],
+    args: Sequence[Any],
     build_mlir_module: bool = True,
     use_stablehlo_bounds: bool = False,
-    argument_layouts: list[list[int]] | None = None,
+    argument_layouts: (
+        Sequence[
+            tuple[Sequence[int], Sequence[Sequence[int]], int] | Sequence[int]
+        ]
+        | None
+    ) = None,
     dynamic_outputs: Sequence[bool] | None = None,
     donated_inputs: Sequence[int] | None = None,
     module_name: str | None = None,

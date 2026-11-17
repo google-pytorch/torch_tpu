@@ -78,12 +78,16 @@ CreateFailingExecutable(xla::PjRtClient& client,
 }
 
 void RegisterDummyKernel(const CompilationCacheKey& key,
-                         UnboundedDynamicKernel::BuildFn build) {
+                         UnboundedDynamicKernel::BuildFn build,
+                         const DummyKernelLoading loading) {
   const absl::Status status =
       UnboundedDynamicKernelRegistry::GetInstance().RegisterKernel(
-          UnboundedDynamicKernel{.build = build,
-                                 .metadata = MakeDummyDynamicMetadata(),
-                                 .key = key});
+          UnboundedDynamicKernel{
+              .build = build,
+              .metadata = MakeDummyDynamicMetadata(),
+              .key = key,
+              .enabled_by_default =
+                  loading == DummyKernelLoading::kEnabledByDefault});
   ABSL_CHECK(status.ok() || absl::IsAlreadyExists(status))  // CRASH_OK
       << status;
 }

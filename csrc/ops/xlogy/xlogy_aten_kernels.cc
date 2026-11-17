@@ -21,9 +21,9 @@
 #include "ATen/core/ATen_fwd.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/device_type.h"
-#include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/to_string.h"
 #include "csrc/ops/binary.h"
@@ -41,29 +41,33 @@ namespace torch_tpu {
 namespace {
 
 absl::StatusOr<mlir::MlirOp> BuildXlogyShlo(mlir::MlirOp x, mlir::MlirOp y) {
-  auto type = GetTensorTypeOrDie(x);
-  TT_ASSIGN_OR_RETURN(auto computation_dtype,
-                      ConvertTo<mlir::ElementType>(type.getElementType()));
+  const mlir::ElementType input_dtype = GetElementTypeOrDie(x);
+  TT_ASSIGN_OR_RETURN(const auto computation_dtype,
+                      InferComputationDtype(input_dtype));
 
   TT_ASSIGN_OR_RETURN((auto [x_bcst, y_bcst]), ApplyBroadcastIfNeeded(x, y));
 
-  auto zero = MakeConstantLike(x_bcst, 0.0, computation_dtype);
-  auto one = MakeConstantLike(x_bcst, 1.0, computation_dtype);
+  auto comp_x = mlir::stablehlo::ConvertElementType(x_bcst, computation_dtype);
+  auto comp_y = mlir::stablehlo::ConvertElementType(y_bcst, computation_dtype);
+
+  auto zero = MakeConstantLike(comp_x, 0.0);
+  auto one = MakeConstantLike(comp_x, 1.0);
 
   // If x is zero, use 1.0 for y to avoid log(0)
   mlir::MlirOp is_zero_x = mlir::stablehlo::Compare(
-      x_bcst, zero, mlir::stablehlo::ComparisonDirection::EQ);
-  auto safe_y = mlir::stablehlo::Select(is_zero_x, one, y_bcst);
+      comp_x, zero, mlir::stablehlo::ComparisonDirection::EQ);
+  auto safe_y = mlir::stablehlo::Select(is_zero_x, one, comp_y);
 
   TT_ASSIGN_OR_RETURN(auto log_y, BuildLogShlo(safe_y, computation_dtype));
-  TT_ASSIGN_OR_RETURN(auto x_log_y, BuildMulShlo(x_bcst, log_y));
+  TT_ASSIGN_OR_RETURN(auto x_log_y, BuildMulShlo(comp_x, log_y));
 
   // If y is NaN, always return NaN regardless of x
   mlir::MlirOp is_nan_y = mlir::stablehlo::Compare(
-      y_bcst, y_bcst, mlir::stablehlo::ComparisonDirection::NE);
+      comp_y, comp_y, mlir::stablehlo::ComparisonDirection::NE);
 
   auto x_or_zero = mlir::stablehlo::Select(is_zero_x, zero, x_log_y);
-  return mlir::stablehlo::Select(is_nan_y, y_bcst, x_or_zero);
+  auto res = mlir::stablehlo::Select(is_nan_y, comp_y, x_or_zero);
+  return mlir::stablehlo::ConvertElementType(res, input_dtype);
 }
 
 }  // namespace

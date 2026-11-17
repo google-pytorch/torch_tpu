@@ -126,6 +126,43 @@ class CopyTest(seed_test_utils.RepeatableTest):
     # We can't observe that the transfers complete but we shouldn't crash here.
     torch.accelerator.synchronize()
 
+  def test_non_blocking_copy_into_pageable_memory_is_synchronous(self):
+    """A non_blocking D2H copy into pageable memory holds the data on return."""
+    device = torch.device('tpu')
+    shape = (4096, 4096)
+    x = torch.full(shape, 1 / 4096, device=device)
+    # A fresh result of a long chain, so the data is produced late.
+    y = x
+    for _ in range(50):
+      y = y @ x
+    t_cpu = torch.zeros(shape, device='cpu')
+    self.assertFalse(t_cpu.is_pinned())
+
+    t_cpu.copy_(y, non_blocking=True)
+    # Taken right after copy_() returns, without a device synchronization.
+    snapshot = t_cpu.clone()
+
+    torch.accelerator.synchronize()
+    utils.assert_close(snapshot, torch.full(shape, 1 / 4096))
+
+  def test_non_blocking_copy_into_pinned_memory_stays_asynchronous(self):
+    """A non_blocking D2H copy into pinned memory returns before it completes."""
+    device = torch.device('tpu')
+    shape = (4096, 4096)
+    x = torch.full(shape, 1 / 4096, device=device)
+    y = x
+    for _ in range(50):
+      y = y @ x
+    t_cpu = torch.empty(shape, device='cpu', pin_memory=True)
+
+    t_cpu.copy_(y, non_blocking=True)
+    done = torch.tpu.Event()
+    done.record()
+    self.assertFalse(done.query())
+
+    done.synchronize()
+    utils.assert_close(t_cpu, torch.full(shape, 1 / 4096))
+
 
 if __name__ == '__main__':
   absltest.main()

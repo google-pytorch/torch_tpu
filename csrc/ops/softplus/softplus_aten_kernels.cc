@@ -36,6 +36,7 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
+#include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
 namespace {
@@ -98,13 +99,17 @@ at::Tensor& AtenSoftplusOut(const at::Tensor& self, const at::Scalar& beta,
         TT_THROW_IF_ERROR(ValidateOutDtype(out, self.scalar_type(),
                                            /*allow_out_dtype_cast=*/false));
 
+        const at::ScalarType comp_scalar_type =
+            InferComputationDtype(self.scalar_type());
         TT_ASSIGN_OR_THROW(const at::Tensor beta_tensor,
-                           promoted_beta.GetTensor(self.scalar_type()));
+                           promoted_beta.GetTensor(comp_scalar_type));
         TT_ASSIGN_OR_THROW(const at::Tensor threshold_tensor,
-                           promoted_threshold.GetTensor(self.scalar_type()));
+                           promoted_threshold.GetTensor(comp_scalar_type));
 
         TT_ASSIGN_OR_THROW(const mlir::ElementType out_dtype,
                            ConvertTo<mlir::ElementType>(out.scalar_type()));
+        TT_ASSIGN_OR_THROW(const mlir::ElementType computation_dtype,
+                           InferComputationDtype(out_dtype));
 
         auto op_builder = [](FixedSizeSpan<mlir::MlirOp, 3> inputs)
             -> absl::StatusOr<mlir::MlirOp> {
@@ -116,6 +121,7 @@ at::Tensor& AtenSoftplusOut(const at::Tensor& self, const at::Scalar& beta,
             std::move(op_builder), {self, beta_tensor, threshold_tensor}, out,
             {.out_dtype = out_dtype,
              .out_dims = CopyIntVector(self.sizes()),
+             .computation_dtype = computation_dtype,
              .op_param_cache_keys = std::move(param_keys)}));
         return out;
       });
@@ -147,15 +153,18 @@ at::Tensor& AtenSoftplusBackwardGradInput(const at::Tensor& grad_output,
             << ", self=" << ToString(self.scalar_type())
             << ", and grad_input=" << ToString(grad_input.scalar_type());
 
+        const at::ScalarType comp_scalar_type =
+            InferComputationDtype(grad_input.scalar_type());
         TT_ASSIGN_OR_THROW(const at::Tensor beta_tensor,
-                           promoted_beta.GetTensor(grad_input.scalar_type()));
-        TT_ASSIGN_OR_THROW(
-            const at::Tensor threshold_tensor,
-            promoted_threshold.GetTensor(grad_input.scalar_type()));
+                           promoted_beta.GetTensor(comp_scalar_type));
+        TT_ASSIGN_OR_THROW(const at::Tensor threshold_tensor,
+                           promoted_threshold.GetTensor(comp_scalar_type));
 
         TT_ASSIGN_OR_THROW(
             const mlir::ElementType out_dtype,
             ConvertTo<mlir::ElementType>(grad_input.scalar_type()));
+        TT_ASSIGN_OR_THROW(const mlir::ElementType computation_dtype,
+                           InferComputationDtype(out_dtype));
 
         auto op_builder = [](FixedSizeSpan<mlir::MlirOp, 4> inputs)
             -> absl::StatusOr<mlir::MlirOp> {
@@ -168,6 +177,7 @@ at::Tensor& AtenSoftplusBackwardGradInput(const at::Tensor& grad_output,
             {grad_output, self, beta_tensor, threshold_tensor}, grad_input,
             {.out_dtype = out_dtype,
              .out_dims = CopyIntVector(grad_input.sizes()),
+             .computation_dtype = computation_dtype,
              .op_param_cache_keys = std::move(param_keys)}));
         return grad_input;
       });

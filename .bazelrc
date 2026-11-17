@@ -18,7 +18,22 @@ common --analysis_testing_deps_limit=16000
 # while we have 3.14 configured.
 common --repo_env=HERMETIC_PYTHON_VERSION=3.14
 
+# TODO: Remove --enable_workspace=false, common:workspace, WORKSPACE*, and
+# bazel/pip_parse.bzl in a follow-up CL now that Bazel 9 has removed WORKSPACE.
 common --enable_bzlmod=true --enable_workspace=false
+
+# TODO: Remove once transitive dependencies explicitly load all rules/providers
+# removed from Bazel 9 built-ins:
+# - +@rules_cc: @com_github_grpc_grpc (bazel/cc_grpc_library.bzl,
+#   bazel/grpc_build_system.bzl), @rules_go (go/private/rules/cgo.bzl), and
+#   @rules_ml_toolchain (fixed on upstream main +
+#   https://github.com/google-ml-infra/rules_ml_toolchain/pull/340 once the
+#   MODULE.bazel pin is bumped past 236a498)
+# - +@rules_java: @protoc-gen-validate (bazel/protobuf.bzl uses JavaInfo)
+# - +@rules_shell: @rules_ml_toolchain (cc/sanitizers/sanitizer_wrapper.bzl,
+#   fixed on upstream main once the MODULE.bazel pin is bumped past 236a498)
+# - +@com_google_protobuf: @cel-spec (proto/cel/expr/BUILD.bazel)
+common --incompatible_autoload_externally=+@rules_cc,+@rules_java,+@rules_shell,+@com_google_protobuf
 
 # Config to enable legacy WORKSPACE. Use with --config=workspace.
 common:workspace --enable_bzlmod=false
@@ -200,8 +215,6 @@ test:tsan_cc --test_env=LD_PRELOAD=
 # leaves its TSan symbols undefined, allowing our LD_PRELOAD wrapper to satisfy
 # them at runtime via the custom Python interpreter.
 common:tsan_py --config=tsan_cc
-build:tsan_py --config=tsan_cc
-test:tsan_py --config=tsan_cc
 common:tsan_py --copt=-shared-libsan
 common:tsan_py --linkopt=-shared-libsan
 # Hermetic Python Configuration for TSan (Python 3.12)
@@ -297,13 +310,12 @@ common:helion_public_caching_readwrite --config=helion_public_caching_readonly
 common:helion_public_caching_readwrite --remote_upload_local_results=true
 common:helion_public_caching_readwrite --google_default_credentials
 
-# Settings specific to CI runs.
-common:ci --build_tests_only
-common:ci --config=remote_execution_readwrite
-common:ci --config=resultstore_base
-common:ci --remote_download_minimal
-common:ci --keep_going
-test:ci --test_output=errors
+# Settings shared by all CI runs, independent of where actions execute.
+common:ci_base --build_tests_only
+common:ci_base --config=resultstore_base
+common:ci_base --remote_download_minimal
+common:ci_base --keep_going
+test:ci_base --test_output=errors
 
 # Enable ANSI color in CI logs.
 #
@@ -316,8 +328,12 @@ test:ci --test_output=errors
 # lists, query results, and every other machine-readable payload written to
 # stdout are still uncolored, so analyers like `bazel-diff` and `bazel query`
 # keep parsing clean text.
-common:ci --color=yes
-common:ci --curses=no
+common:ci_base --color=yes
+common:ci_base --curses=no
+
+# Settings specific to CI runs.
+common:ci --config=ci_base
+common:ci --config=remote_execution_readwrite
 
 # Setting specific to benchmarking runs.
 common:bench --config=ci
@@ -331,6 +347,14 @@ common:bench --strategy=TestRunner=standalone,local
 common:ci_cpu --config=ci
 common:ci_cpu --build_tag_filters=-nobuild,-requires-gpu,-requires-tpu,-cuda-build-test
 common:ci_cpu --test_tag_filters=-nobuild,-notest,-requires-gpu,-requires-tpu,-cuda-build-test,-requires-newest-deps
+# CPU tests run remotely on RBE, so skip building local .runfiles symlink trees,
+# the slowest tail of the CPU presubmit build. Bazel still builds them on demand
+# for any test that runs locally.
+common:ci_cpu --nobuild_runfile_links
+
+# Settings specific to CPU ThreadSanitizer CI runs.
+common:ci_cpu_tsan --config=ci_cpu
+common:ci_cpu_tsan --test_tag_filters=-nobuild,-notest,-requires-gpu,-requires-tpu,-cuda-build-test,-requires-newest-deps,-notsan,-nosan
 
 # Settings specific to CPU presubmit.
 common:ci_cpu_presubmit --config=ci_cpu
@@ -503,16 +527,11 @@ common:rbe_test_execution --test_env=VBAR_CONTROL_SERVICE_URL=
 # out by that tag and multi-chip v5 tests by their `:8`/`:4` tags. Tests that
 # cannot run in the RBE container environment are tagged no-remote-exec.
 #
-# This repeats `ci` minus remote_execution_readwrite, whose platform would
-# otherwise come ahead of rbe_platform in --extra_execution_platforms.
-# rbe_test_execution comes after resultstore_base so its BES instance wins.
-common:ci_rbe_presubmit --build_tests_only
-common:ci_rbe_presubmit --config=resultstore_base
-common:ci_rbe_presubmit --remote_download_minimal
-common:ci_rbe_presubmit --keep_going
-test:ci_rbe_presubmit --test_output=errors
-common:ci_rbe_presubmit --color=yes
-common:ci_rbe_presubmit --curses=no
+# This uses ci_base rather than ci: ci's remote_execution_readwrite would put
+# its platform ahead of rbe_platform in --extra_execution_platforms.
+# rbe_test_execution comes after ci_base (and so resultstore_base) so its BES
+# instance wins.
+common:ci_rbe_presubmit --config=ci_base
 common:ci_rbe_presubmit --config=rbe_test_execution
 common:ci_rbe_presubmit --build_tag_filters=-nobuild,-requires-gpu,-cuda-build-test
 common:ci_rbe_presubmit --test_tag_filters=-nobuild,-notest,-nopresubmit,-fails-on-tpu-v5,-requires-gpu,-cuda-build-test,-presubmit-v6,-presubmit-v7,-requires-tpu-v5lite:4,-requires-tpu-v5lite:8,-requires-tpu-v5p:4,-no-remote-exec,-requires-newest-deps

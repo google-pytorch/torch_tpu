@@ -49,7 +49,7 @@ class HandleDynamicInputTensorPass:
   def __init__(
       self,
       transform_context: GraphTransformContext,
-      placeholders: list[torch.fx.Node],
+      placeholders: Sequence[torch.fx.Node],
   ):
     self._transform_context = transform_context
     self._placeholders = placeholders
@@ -79,8 +79,8 @@ class HandleDynamicInputTensorPass:
       self,
       graph_module: torch.fx.GraphModule,
       node: torch.fx.Node,
-      bounded_shape: list[int],
-      is_dynamic: list[bool],
+      bounded_shape: Sequence[int],
+      is_dynamic: Sequence[bool],
   ) -> None:
     """Processes a single placeholder node and inserts pad_real_to_static."""
     original_users = set(node.users.keys())
@@ -118,7 +118,7 @@ class HandleDynamicInputTensorSetDimensionSizePass:
   def __init__(
       self,
       transform_context: GraphTransformContext,
-      placeholders: list[torch.fx.Node],
+      placeholders: Sequence[torch.fx.Node],
   ):
     self._transform_context = transform_context
     self._placeholders = placeholders
@@ -333,7 +333,7 @@ class DetectSymIntUsagesPass:
 
   def __call__(
       self, graph_module: torch.fx.GraphModule
-  ) -> list[tuple[torch.fx.Node, Any]]:
+  ) -> Sequence[tuple[torch.fx.Node, Any]]:
     unhandled_usages = []
     for node in graph_module.graph.nodes:
       if _is_assertion_or_check_node(node):

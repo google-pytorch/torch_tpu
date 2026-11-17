@@ -21,6 +21,7 @@ from typing import Any, ParamSpec, TypeVar, cast
 
 import torch
 from torch_tpu._internal.compile import tpu_torch_compile
+from torch_tpu._internal.utils import annotations
 
 # Prefix of the `node.meta["custom"]` keys that carry `named_scope` names
 # through torch.compile and torch.export. Each name gets its own key so that
@@ -130,6 +131,9 @@ def _validate_name(name: str) -> None:
     )
 
 
+@annotations.experimental(
+    "torch.tpu.profiler.named_scope is experimental and subject to change."
+)
 def named_scope(name: str) -> _NameScope:
   """Names the TPU ops issued inside the context or the decorated function.
 
@@ -157,10 +161,10 @@ def named_scope(name: str) -> _NameScope:
 
   Example:
 
-    with named_scope.named_scope("route"):
+    with torch.tpu.profiler.named_scope("route"):
       weights = router(x)
 
-    @named_scope.named_scope("permute")
+    @torch.tpu.profiler.named_scope("permute")
     def permute(x, indices):
       ...
 
@@ -192,7 +196,7 @@ def named_scope(name: str) -> _NameScope:
   return _EagerNameScope(name)
 
 
-def _get_name_scopes(meta: Mapping[str, Any]) -> list[str]:
+def _get_name_scopes(meta: Mapping[str, Any]) -> Sequence[str]:
   """Returns the `named_scope` names in FX node metadata, outer first."""
   custom = meta.get("custom")
   if not isinstance(custom, Mapping):
@@ -219,7 +223,7 @@ def _common_prefix_len(a: Sequence[str], b: Sequence[str]) -> int:
 def compute_graph_name_scopes(
     graph: torch.fx.Graph,
     module_scopes: Callable[[torch.fx.Node], Sequence[tuple[str, str]]],
-) -> dict[torch.fx.Node, tuple[str, ...]]:
+) -> Mapping[torch.fx.Node, Sequence[str]]:
   """Computes the hierarchical name scopes of the op nodes of a graph.
 
   The scopes of a node are its module scopes interleaved with the

@@ -14,11 +14,60 @@
 
 # Core building blocks of the Kiln kernel language.
 
-load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_end")
+load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_cc_test", "torch_tpu_package_end")
 
 package(
     default_applicable_licenses = ["//:license"],
     default_visibility = ["//csrc/internal/mosaic/kiln:__subpackages__"],
+)
+
+torch_tpu_cc_library(
+    name = "builder_scope",
+    srcs = ["builder_scope.cc"],
+    hdrs = ["builder_scope.h"],
+    deps = [
+        "@com_google_absl//absl/base:nullability",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "builder_scope_test",
+    srcs = ["builder_scope_test.cc"],
+    deps = [
+        ":builder_scope",
+        "//csrc/common:oss_test_main",
+        "@com_google_absl//absl/status:status_matchers",
+        "@llvm-project//mlir:IR",
+    ],
+)
+
+torch_tpu_cc_library(
+    name = "error",
+    srcs = ["error.cc"],
+    hdrs = ["error.h"],
+    deps = [
+        ":builder_scope",
+        "//csrc/common:error_utils",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "error_test",
+    srcs = ["error_test.cc"],
+    deps = [
+        ":builder_scope",
+        ":error",
+        "//csrc/common:error_utils",
+        "//csrc/common:oss_test_main",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@llvm-project//mlir:IR",
+    ],
 )
 
 torch_tpu_cc_library(
@@ -30,21 +79,49 @@ torch_tpu_cc_library(
         "//csrc/internal/mosaic/kiln/mlir:__pkg__",
     ],
     deps = [
+        ":builder_scope",
         ":dtype",
         ":literal",
         ":shape",
-        ":value_base",
+        ":value_handle",
         "@com_google_absl//absl/log:absl_check",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:ArithDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Support",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "context_test",
+    srcs = ["context_test.cc"],
+    deps = [
+        ":context",
+        ":dtype",
+        ":value_handle",
+        "//csrc/common:oss_test_main",
         "@llvm-project//mlir:IR",
     ],
 )
 
 torch_tpu_cc_library(
-    name = "value_base",
-    hdrs = ["value_base.h"],
-    deps = [":dtype"],
+    name = "value_handle",
+    srcs = ["value_handle.cc"],
+    hdrs = ["value_handle.h"],
+    deps = [
+        "@com_google_absl//absl/log:absl_check",
+        "@llvm-project//mlir:IR",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "value_handle_test",
+    srcs = ["value_handle_test.cc"],
+    deps = [
+        ":value_handle",
+        "//csrc/common:oss_test_main",
+        "@llvm-project//mlir:IR",
+    ],
 )
 
 torch_tpu_cc_library(
@@ -106,7 +183,7 @@ torch_tpu_cc_library(
         ":elementwise",
         ":elementwise_impl",
         ":literal",
-        ":value_base",
+        ":value_handle",
         "@com_google_absl//absl/log:absl_check",
         "@llvm-project//mlir:ArithDialect",
         "@llvm-project//mlir:IR",
@@ -134,6 +211,9 @@ torch_tpu_cc_library(
         ":index_arg",
         ":scalar",
         ":shape",
+        ":specs",
+        "//csrc/internal/mosaic:op_builders",
+        "@com_google_absl//absl/base:nullability",
         "@com_google_absl//absl/log:absl_check",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:ArithDialect",
@@ -149,6 +229,7 @@ torch_tpu_cc_library(
         ":context",
         ":dtype",
         ":index_arg",
+        ":mlir_utils",
         ":scalar",
         ":shape",
         ":tile",
@@ -176,7 +257,7 @@ torch_tpu_cc_library(
         ":mlir_utils",
         ":scalar",
         ":shape",
-        ":value_base",
+        ":value_handle",
         "//csrc/internal/mosaic:op_builders",
         "@com_google_absl//absl/log:absl_check",
         "@llvm-project//llvm:Support",
@@ -200,7 +281,7 @@ torch_tpu_cc_library(
         ":shape",
         ":specs",
         ":tile",
-        ":value_base",
+        ":value_handle",
         "@com_google_absl//absl/log:absl_check",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:ArithDialect",
@@ -222,7 +303,7 @@ torch_tpu_cc_library(
         ":mlir_utils",
         ":ref",
         ":scalar",
-        ":value_base",
+        ":value_handle",
         "@com_google_absl//absl/log:absl_check",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:IR",
@@ -237,10 +318,10 @@ torch_tpu_cc_library(
     deps = [
         ":context",
         ":dtype",
+        ":mlir_utils",
         ":ref",
         ":semaphore",
         ":shape",
-        ":specs",
         "//csrc/internal/mosaic:op_builders",
         "@com_google_absl//absl/log:absl_check",
         "@llvm-project//llvm:Support",
@@ -274,10 +355,12 @@ torch_tpu_cc_library(
     srcs = ["kernel.cc"],
     hdrs = ["kernel.h"],
     deps = [
+        ":builder_scope",
         ":context",
         ":dtype",
         ":index_arg",
         ":index_map",
+        ":mlir_utils",
         ":ref",
         ":scalar",
         ":shape",
@@ -295,6 +378,26 @@ torch_tpu_cc_library(
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Pass",
         "@llvm-project//mlir:Transforms",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "kernel_test",
+    srcs = ["kernel_test.cc"],
+    deps = [
+        ":control_flow",
+        ":dtype",
+        ":error",
+        ":index_map",
+        ":kernel",
+        ":ref",
+        ":scalar",
+        ":specs",
+        "//csrc/common:error_utils",
+        "//csrc/common:oss_test_main",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/status:statusor",
     ],
 )
 

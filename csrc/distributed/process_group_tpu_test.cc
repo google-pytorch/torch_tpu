@@ -18,10 +18,13 @@
 
 #include <atomic>
 #include <chrono>  // NOLINT - needed for c10d::Store timeouts
+#include <cstddef>
 #include <cstdint>
+#include <exception>
+#include <memory>
 #include <string>
 #include <string_view>
-#include <thread>
+#include <thread>  // NOLINT - needed for async send test thread
 #include <utility>
 #include <vector>
 
@@ -36,6 +39,7 @@
 #include "torch/csrc/distributed/c10d/FileStore.hpp"
 #include "torch/csrc/distributed/c10d/HashStore.hpp"
 #include "torch/csrc/distributed/c10d/PrefixStore.hpp"
+#include "torch/csrc/distributed/c10d/Store.hpp"
 #include "xla/pjrt/pjrt_client.h"
 
 namespace torch_tpu {
@@ -63,6 +67,22 @@ class CountingHashStore : public c10d::HashStore {
     return c10d::HashStore::add(key, value);
   }
 
+  bool check(const std::vector<std::string>& keys) override {
+    check_calls_.fetch_add(1, std::memory_order_relaxed);
+    return c10d::HashStore::check(keys);
+  }
+
+  void wait(const std::vector<std::string>& keys) override {
+    wait_calls_.fetch_add(1, std::memory_order_relaxed);
+    c10d::HashStore::wait(keys);
+  }
+
+  void wait(const std::vector<std::string>& keys,
+            const std::chrono::milliseconds& timeout) override {
+    wait_calls_.fetch_add(1, std::memory_order_relaxed);
+    c10d::HashStore::wait(keys, timeout);
+  }
+
   void multiSet(const std::vector<std::string>& keys,
                 const std::vector<std::vector<uint8_t>>& values) override {
     multi_set_calls_.fetch_add(1, std::memory_order_relaxed);
@@ -84,6 +104,12 @@ class CountingHashStore : public c10d::HashStore {
   int64_t add_increment_calls() const {
     return add_increment_calls_.load(std::memory_order_relaxed);
   }
+  int64_t check_calls() const {
+    return check_calls_.load(std::memory_order_relaxed);
+  }
+  int64_t wait_calls() const {
+    return wait_calls_.load(std::memory_order_relaxed);
+  }
   int64_t multi_set_calls() const {
     return multi_set_calls_.load(std::memory_order_relaxed);
   }
@@ -95,8 +121,29 @@ class CountingHashStore : public c10d::HashStore {
   std::atomic<int64_t> set_calls_{0};
   std::atomic<int64_t> get_calls_{0};
   std::atomic<int64_t> add_increment_calls_{0};
+  std::atomic<int64_t> check_calls_{0};
+  std::atomic<int64_t> wait_calls_{0};
   std::atomic<int64_t> multi_set_calls_{0};
   std::atomic<int64_t> multi_get_calls_{0};
+};
+
+struct AsyncSendWaiter {
+  std::atomic<bool> done{false};
+  std::exception_ptr error;
+
+  void MarkDone() { done.store(true, std::memory_order_release); }
+  void SetError(std::exception_ptr eptr) {
+    error = std::move(eptr);
+    done.store(true, std::memory_order_release);
+  }
+  void WaitAndThrow() {
+    while (!done.load(std::memory_order_acquire)) {
+      std::this_thread::sleep_for(std::chrono::microseconds(100));
+    }
+    if (error) {
+      std::rethrow_exception(error);
+    }
+  }
 };
 
 // Arguments for one rank's AllGatherViaNodeLocalStore call.
@@ -742,6 +789,156 @@ TEST(ProcessGroupTpuTest, ComputeRankToTopologyOrderMissingAttributes) {
   const std::vector<int64_t>  // INT_VEC_OK
       expected_with_slice = {1, 2, 0};
   EXPECT_EQ(ComputeRankToTopologyOrder(device_attrs), expected_with_slice);
+}
+
+TEST(ProcessGroupTpuTest,
+     P2pSendQueueDispatchesWhenDescriptorsArriveAfterEnqueue) {
+  auto store = c10::make_intrusive<CountingHashStore>();
+  P2pSendQueue queue(store);
+
+  auto waiter = std::make_shared<AsyncSendWaiter>();
+  std::atomic<bool> callback_invoked{false};
+  std::vector<std::vector<uint8_t>> received_descriptors;
+
+  auto status = queue.Enqueue(
+      /*dst_rank=*/1, {"desc_0"},
+      [&, waiter](std::vector<std::vector<uint8_t>> descriptors) {
+        received_descriptors = std::move(descriptors);
+        callback_invoked.store(true, std::memory_order_release);
+        waiter->MarkDone();
+      },
+      [waiter](std::exception_ptr eptr) { waiter->SetError(std::move(eptr)); });
+  ASSERT_TRUE(status.ok()) << status;
+
+  // Send returns immediately while "desc_0" is absent.
+  EXPECT_FALSE(waiter->done.load(std::memory_order_acquire));
+  EXPECT_FALSE(callback_invoked.load(std::memory_order_acquire));
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  EXPECT_EQ(store->check_calls(), 0);
+
+  // Posting "desc_0" triggers ReadyCallback, completes waiter, and deletes
+  // "desc_0" from store.
+  const std::vector<uint8_t> payload = {'d', 'a', 't', 'a'};
+  store->set("desc_0", payload);
+
+  waiter->WaitAndThrow();
+  EXPECT_TRUE(callback_invoked.load(std::memory_order_acquire));
+  ASSERT_EQ(received_descriptors.size(), 1);
+  EXPECT_EQ(received_descriptors[0], payload);
+  EXPECT_EQ(store->check_calls(), 0);
+  EXPECT_EQ(store->wait_calls(), 0);
+  EXPECT_EQ(store->multi_get_calls(), 1);
+
+  queue.Shutdown();
+  EXPECT_FALSE(store->check({"desc_0"}));
+}
+
+TEST(ProcessGroupTpuTest,
+     P2pSendQueueDispatchesOutOfOrderWithoutHeadOfLineBlocking) {
+  auto store = c10::make_intrusive<CountingHashStore>();
+  P2pSendQueue queue(store);
+
+  auto waiter_a = std::make_shared<AsyncSendWaiter>();
+  auto waiter_b = std::make_shared<AsyncSendWaiter>();
+
+  ASSERT_TRUE(queue
+                  .Enqueue(
+                      /*dst_rank=*/1, {"key_a"},
+                      [waiter_a](std::vector<std::vector<uint8_t>>) {
+                        waiter_a->MarkDone();
+                      },
+                      [waiter_a](std::exception_ptr eptr) {
+                        waiter_a->SetError(std::move(eptr));
+                      })
+                  .ok());
+  ASSERT_TRUE(queue
+                  .Enqueue(
+                      /*dst_rank=*/2, {"key_b"},
+                      [waiter_b](std::vector<std::vector<uint8_t>>) {
+                        waiter_b->MarkDone();
+                      },
+                      [waiter_b](std::exception_ptr eptr) {
+                        waiter_b->SetError(std::move(eptr));
+                      })
+                  .ok());
+
+  // Post "key_b" first -> task B completes while task A remains incomplete.
+  store->set("key_b", {'b'});
+  waiter_b->WaitAndThrow();
+  EXPECT_FALSE(waiter_a->done.load(std::memory_order_acquire));
+
+  // Post "key_a" -> task A completes.
+  store->set("key_a", {'a'});
+  waiter_a->WaitAndThrow();
+
+  EXPECT_EQ(store->check_calls(), 0);
+
+  queue.Shutdown();
+  EXPECT_FALSE(store->check({"key_a"}));
+  EXPECT_FALSE(store->check({"key_b"}));
+}
+
+TEST(ProcessGroupTpuTest, P2pSendQueueFailsFutureOnStoreTimeout) {
+  auto store = c10::make_intrusive<CountingHashStore>();
+  store->setTimeout(std::chrono::milliseconds(30));
+  P2pSendQueue queue(store);
+
+  auto waiter = std::make_shared<AsyncSendWaiter>();
+  ASSERT_TRUE(queue
+                  .Enqueue(
+                      /*dst_rank=*/1, {"missing_key"},
+                      [](std::vector<std::vector<uint8_t>>) {},
+                      [waiter](std::exception_ptr eptr) {
+                        waiter->SetError(std::move(eptr));
+                      })
+                  .ok());
+
+  try {
+    waiter->WaitAndThrow();
+    FAIL() << "expected store timeout exception";
+  } catch (const std::exception& e) {
+    EXPECT_THAT(e.what(), testing::HasSubstr(
+                              "p2p send timed out waiting for descriptors"));
+  }
+  EXPECT_EQ(store->check_calls(), 0);
+}
+
+TEST(ProcessGroupTpuTest,
+     P2pSendQueueShutdownCancelsPendingAndRejectsNewEnqueues) {
+  auto store = c10::make_intrusive<CountingHashStore>();
+  P2pSendQueue queue(store);
+
+  auto waiter = std::make_shared<AsyncSendWaiter>();
+  ASSERT_TRUE(queue
+                  .Enqueue(
+                      /*dst_rank=*/1, {"missing_key"},
+                      [](std::vector<std::vector<uint8_t>>) {},
+                      [waiter](std::exception_ptr eptr) {
+                        waiter->SetError(std::move(eptr));
+                      })
+                  .ok());
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  queue.Shutdown();
+
+  try {
+    waiter->WaitAndThrow();
+    FAIL() << "expected shutdown cancellation exception";
+  } catch (const std::exception& e) {
+    EXPECT_THAT(e.what(), testing::HasSubstr("process group is shut down"));
+  }
+
+  auto waiter_after = std::make_shared<AsyncSendWaiter>();
+  const auto status = queue.Enqueue(
+      /*dst_rank=*/1, {"another_key"}, [](std::vector<std::vector<uint8_t>>) {},
+      [waiter_after](std::exception_ptr eptr) {
+        waiter_after->SetError(std::move(eptr));
+      });
+  EXPECT_EQ(status.code(), error::kCancelled);
+  EXPECT_THAT(status.message(),
+              testing::HasSubstr("process group is shut down"));
+  EXPECT_FALSE(store->check({"missing_key"}));
 }
 
 }  // namespace

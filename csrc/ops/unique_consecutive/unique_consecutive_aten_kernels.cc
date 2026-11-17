@@ -28,11 +28,13 @@
 #include "ATen/ops/empty.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
+#include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/op_dispatcher.h"
@@ -450,6 +452,12 @@ absl::StatusOr<int64_t> ExtractOutputSize(const at::Tensor& count_tensor) {
   return count_cpu.item<int64_t>();
 }
 
+void ValidateUniqueConsecutiveDtype(const at::Tensor& self) {
+  TT_CHECK_THROW(!IsComplex(self), error::kPythonNotImplementedError)
+      << "not implemented for " << ToString(self.scalar_type());
+  TT_THROW_IF_ERROR(ValidateNotLowPrecisionFloat(self));
+}
+
 void ValidateUniqueConsecutiveDimInputs(const at::Tensor& self,
                                         const int64_t wrapped_dim) {
   int64_t num_zero_dims = 0;
@@ -563,6 +571,9 @@ UniqueConsecutiveDispatch(const at::Tensor& self, const int64_t output_size,
 std::tuple<at::Tensor, at::Tensor, at::Tensor> UniqueConsecutiveDimHelper(
     const at::Tensor& self, const int64_t dim, const bool return_inverse,
     const bool return_counts) {
+  ValidateUniqueConsecutiveDtype(self);
+  TT_CHECK_THROW(self.dim() > 0, error::kIndexError)
+      << "expected tensor with at least 1 dimension, got " << self.dim();
   TT_ASSIGN_OR_THROW(const int64_t wrapped_dim, SafeWrapDim(dim, self.dim()));
   ValidateUniqueConsecutiveDimInputs(self, wrapped_dim);
 
@@ -593,6 +604,7 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> UniqueConsecutiveDimHelper(
 std::tuple<at::Tensor, at::Tensor, at::Tensor> UniqueConsecutiveFlattenedHelper(
     const at::Tensor& self, const bool return_inverse,
     const bool return_counts) {
+  ValidateUniqueConsecutiveDtype(self);
   if (self.numel() == 0) {
     TT_ASSIGN_OR_THROW(at::Tensor empty_values,
                        MakeEmptyTensor({0}, self.scalar_type(), self.device()));

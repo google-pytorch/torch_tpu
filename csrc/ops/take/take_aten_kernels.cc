@@ -15,6 +15,7 @@
 #include "csrc/ops/take/take_aten_kernels.h"
 
 #include <cstdint>
+#include <utility>
 
 #include "ATen/core/TensorBody.h"
 #include "absl/status/status.h"
@@ -92,8 +93,8 @@ absl::StatusOr<mlir::MlirOp> BuildTakeShlo(const int64_t num_elements,
 }
 
 // Validates that the indices are in the range [-num_elements, num_elements).
-absl::Status ValidateIndices(const int64_t num_elements,
-                             const at::Tensor& index) {
+absl::Status ValidateIndicesInRange(const int64_t num_elements,
+                                    const at::Tensor& index) {
   TT_ASSIGN_OR_RETURN(const int64_t num_indices, NumElements(index));
   if (num_indices == 0) {  // No indices to check.
     return absl::OkStatus();
@@ -120,7 +121,7 @@ absl::Status ValidateTakeInputs(const at::Tensor& self,
 
   TT_ASSIGN_OR_RETURN(const int64_t num_elements, NumElements(self));
   if (GetEnableDebugChecks()) {
-    TT_RETURN_IF_ERROR(ValidateIndices(num_elements, index));
+    TT_RETURN_IF_ERROR(ValidateIndicesInRange(num_elements, index));
   } else {
     TT_WARN_ONCE(
         WarningCategory::kCorrectness,
@@ -156,7 +157,7 @@ at::Tensor AtenTake(const at::Tensor& self, const at::Tensor& index) {
                       {.out_dtype = out_dtype,
                        .out_dims = index.sizes(),
                        .op_param_cache_keys = OpParamCacheKeys::Empty()}));
-    return MakeTensor(result);
+    return MakeTensor(std::move(result));
   });
 }
 

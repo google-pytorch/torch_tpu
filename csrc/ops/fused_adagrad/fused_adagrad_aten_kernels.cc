@@ -56,14 +56,14 @@ enum class FoundInfMode : bool { kDisabled = false, kEnabled = true };
 
 // Determines whether gradient scaling is enabled from the optional tensor.
 GradScaleMode GetGradScaleMode(const std::optional<at::Tensor>& grad_scale) {
-  return (grad_scale.has_value() && grad_scale->defined())
+  return SanitizeOptionalTensor(grad_scale).has_value()
              ? GradScaleMode::kEnabled
              : GradScaleMode::kDisabled;
 }
 
 // Determines whether inf/nan check is enabled from the optional tensor.
 FoundInfMode GetFoundInfMode(const std::optional<at::Tensor>& found_inf) {
-  return (found_inf.has_value() && found_inf->defined())
+  return SanitizeOptionalTensor(found_inf).has_value()
              ? FoundInfMode::kEnabled
              : FoundInfMode::kDisabled;
 }

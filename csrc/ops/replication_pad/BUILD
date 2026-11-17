@@ -28,6 +28,7 @@ torch_tpu_cc_library(
     srcs = ["replication_pad_aten_kernels.cc"],
     hdrs = ["replication_pad_aten_kernels.h"],
     deps = [
+        "//csrc/common:aten_utils",
         "//csrc/common:cache_key",
         "//csrc/common:dimension_types",
         "//csrc/common:dtype",
@@ -43,7 +44,6 @@ torch_tpu_cc_library(
         "//csrc/ops/reductions:sum",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
-        "//shims/torch/torch/headeronly:torch_headeronly",
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/functional:any_invocable",
         "@com_google_absl//absl/status",

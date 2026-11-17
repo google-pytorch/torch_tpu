@@ -21,7 +21,7 @@ import dataclasses
 import enum
 import http
 import json
-import logging  # PYTHON_LOGGING_OK=CI utility script running in standard Python environment
+import logging
 import subprocess
 import sys
 import time

@@ -16,7 +16,7 @@
 
 import bisect
 import collections
-import collections.abc
+from collections.abc import Iterator, Mapping, Sequence
 import functools
 from typing import Any
 
@@ -24,6 +24,7 @@ import torch
 import torch.distributed as dist
 from torch.utils import _pytree as pytree
 from torch_tpu._internal.distributed import collective_ops
+
 
 class ProcessGroupId:
   """Identifier for a process group consisting of sorted, unique ranks.
@@ -37,7 +38,7 @@ class ProcessGroupId:
 
   def __init__(
       self,
-      ranks: collections.abc.Sequence[int],
+      ranks: Sequence[int],
       world_size: int | None = None,
   ) -> None:
     if not ranks:
@@ -89,7 +90,7 @@ class ProcessGroupId:
     i = bisect.bisect_left(self.ranks, rank)
     return i < len(self.ranks) and self.ranks[i] == rank
 
-  def __iter__(self) -> collections.abc.Iterator[int]:
+  def __iter__(self) -> Iterator[int]:
     return iter(self.ranks)
 
   def __len__(self) -> int:
@@ -97,6 +98,15 @@ class ProcessGroupId:
 
   def __getitem__(self, index: int) -> int:
     return self.ranks[index]
+
+  def __repr__(self) -> str:
+    if self.is_contiguous() and len(self.ranks) > 1:
+      ranks_repr = f"range({self.ranks[0]}, {self.ranks[-1] + 1})"
+    else:
+      ranks_repr = repr(self.ranks)
+    if self.world_size is not None:
+      return f"ProcessGroupId(ranks={ranks_repr}, world_size={self.world_size})"
+    return f"ProcessGroupId(ranks={ranks_repr})"
 
   def is_contiguous(self) -> bool:
     """Returns whether ranks are exactly range(ranks[0], ranks[-1] + 1)."""
@@ -251,7 +261,7 @@ def _extract_process_group_id_from_node(
 
 def get_num_collectives_per_pg(
     graph_module: torch.fx.GraphModule,
-) -> dict[ProcessGroupId, int]:
+) -> Mapping[ProcessGroupId, int]:
   """Returns the number of collective operations per process group in the given graph_module.
 
   Args:
@@ -271,7 +281,7 @@ def get_num_collectives_per_pg(
 
 def get_process_groups(
     graph_module: torch.fx.GraphModule,
-) -> dict[str, dist.ProcessGroup]:
+) -> Mapping[str, dist.ProcessGroup]:
   """Returns the registered process groups `graph_module` refers to, by name.
 
   A group counts if it, or its name, is an argument of a node of the graph or of
@@ -280,7 +290,7 @@ def get_process_groups(
   argument that only happens to equal a group's name adds that group.
   """
   # pylint: disable=protected-access
-  pg_names: collections.abc.Mapping[dist.ProcessGroup, str] = (
+  pg_names: Mapping[dist.ProcessGroup, str] = (
       dist.distributed_c10d._world.pg_names
   )
   # pylint: enable=protected-access

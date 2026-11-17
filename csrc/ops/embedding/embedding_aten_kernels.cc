@@ -213,7 +213,7 @@ at::Tensor DispatchEmbeddingSparseBackward(const at::Tensor& grad,
                            .op_param_cache_keys = std::move(pk)})));
     return MakeSparseCooTensor(
         /*sparse_dim=*/1, /*dense_dim=*/1, {num_weights, num_features},
-        MakeTensor(results[0]), MakeTensor(results[1]),
+        MakeTensor(std::move(results[0])), MakeTensor(std::move(results[1])),
         /*is_coalesced=*/false);
   }
 
@@ -233,9 +233,9 @@ at::Tensor DispatchEmbeddingSparseBackward(const at::Tensor& grad,
                         {.out_dtypes = out_dtypes,
                          .out_dims_list = out_dims_list,
                          .op_param_cache_keys = std::move(pk)})));
-  const at::Tensor compacted_indices = MakeTensor(pad_results[0]);
-  const at::Tensor compacted_values = MakeTensor(pad_results[1]);
-  const at::Tensor count_tensor = MakeTensor(pad_results[2]);
+  const at::Tensor compacted_indices = MakeTensor(std::move(pad_results[0]));
+  const at::Tensor compacted_values = MakeTensor(std::move(pad_results[1]));
+  const at::Tensor count_tensor = MakeTensor(std::move(pad_results[2]));
   TT_ASSIGN_OR_THROW(const int64_t valid_count,
                      ExtractValidCount(count_tensor));
   if (valid_count == 0) {
@@ -263,10 +263,11 @@ at::Tensor DispatchEmbeddingSparseBackward(const at::Tensor& grad,
                         {.out_dtypes = slice_dtypes,
                          .out_dims_list = slice_dims_list,
                          .op_param_cache_keys = std::move(slice_pk)})));
-  return MakeSparseCooTensor(
-      /*sparse_dim=*/1, /*dense_dim=*/1, {num_weights, num_features},
-      MakeTensor(slice_results[0]), MakeTensor(slice_results[1]),
-      /*is_coalesced=*/false);
+  return MakeSparseCooTensor(/*sparse_dim=*/1, /*dense_dim=*/1,
+                             {num_weights, num_features},
+                             MakeTensor(std::move(slice_results[0])),
+                             MakeTensor(std::move(slice_results[1])),
+                             /*is_coalesced=*/false);
 }
 
 }  // namespace
@@ -299,7 +300,7 @@ at::Tensor AtenEmbedding(const at::Tensor& weight, const at::Tensor& indices,
         TT_ASSIGN_OR_THROW(auto result,
                            BuildAndDispatchEmbedding(weight, indices, out_dims,
                                                      std::move(pk)));
-        return MakeTensor(result);
+        return MakeTensor(std::move(result));
       });
 }
 
@@ -359,22 +360,23 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor> AtenEmbeddingBag(
         }
         int64_t emb_dim = weight.size(1);
 
-        bool has_psw =
-            per_sample_weights.has_value() && per_sample_weights->defined();
+        const std::optional<at::Tensor> psw =
+            SanitizeOptionalTensor(per_sample_weights);
+        const bool has_psw = psw.has_value();
 
         auto builder_fn = [scale_grad_by_freq, mode, sparse,
                            include_last_offset, padding_idx,
                            has_psw](absl::Span<mlir::MlirOp> inputs,
                                     mlir::MlirBuilder& builder) {
-          std::optional<mlir::MlirOp> psw;
-          if (has_psw) psw = inputs[3];
+          std::optional<mlir::MlirOp> psw_op;
+          if (has_psw) psw_op = inputs[3];
           return BuildEmbeddingBagShlo(inputs[0], inputs[1], inputs[2],
-                                       scale_grad_by_freq, mode, sparse, psw,
+                                       scale_grad_by_freq, mode, sparse, psw_op,
                                        include_last_offset, padding_idx);
         };
 
         std::vector<at::Tensor> inputs = {weight, indices, offsets};
-        if (has_psw) inputs.push_back(*per_sample_weights);
+        if (has_psw) inputs.push_back(*psw);
 
         std::array<mlir::ElementType, 4> out_dtypes = {weight_dtype, i64_dtype,
                                                        i64_dtype, i64_dtype};
@@ -394,8 +396,10 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor> AtenEmbeddingBag(
                                 .out_dims_list = out_dims_list,
                                 .op_param_cache_keys = std::move(pk)})));
 
-        return std::make_tuple(MakeTensor(results[0]), MakeTensor(results[1]),
-                               MakeTensor(results[2]), MakeTensor(results[3]));
+        return std::make_tuple(MakeTensor(std::move(results[0])),
+                               MakeTensor(std::move(results[1])),
+                               MakeTensor(std::move(results[2])),
+                               MakeTensor(std::move(results[3])));
       });
 }
 
@@ -438,8 +442,9 @@ at::Tensor AtenEmbeddingBagBackward(
           TT_THROW_IF_ERROR(ValidateEmbeddingBagMaxBackwardDtype(grad, mode));
         }
 
-        bool has_psw =
-            per_sample_weights.has_value() && per_sample_weights->defined();
+        const std::optional<at::Tensor> psw =
+            SanitizeOptionalTensor(per_sample_weights);
+        const bool has_psw = psw.has_value();
         int64_t nw_val = num_weights.expect_int();
 
         if (sparse) {
@@ -451,15 +456,15 @@ at::Tensor AtenEmbeddingBagBackward(
           auto index_grad_builder_fn = [mode, padding_idx, has_psw](
                                            absl::Span<mlir::MlirOp> inputs,
                                            mlir::MlirBuilder& builder) {
-            std::optional<mlir::MlirOp> psw;
-            if (has_psw) psw = inputs[5];
+            std::optional<mlir::MlirOp> psw_op;
+            if (has_psw) psw_op = inputs[5];
             return BuildEmbeddingBagSparseBackwardIndexGradShlo(
                 inputs[0], inputs[1], inputs[2], inputs[3], inputs[4], mode,
-                psw, padding_idx);
+                psw_op, padding_idx);
           };
           std::vector<at::Tensor> inputs = {grad, indices, offsets, offset2bag,
                                             bag_size};
-          if (has_psw) inputs.push_back(*per_sample_weights);
+          if (has_psw) inputs.push_back(*psw);
           TT_ASSIGN_OR_THROW(auto result_dtype,
                              ConvertTo<mlir::ElementType>(grad.scalar_type()));
           TT_ASSIGN_OR_THROW(auto index_grad_buf,
@@ -468,7 +473,7 @@ at::Tensor AtenEmbeddingBagBackward(
                                  {.out_dtype = result_dtype,
                                   .out_dims = {indices.numel(), grad.size(-1)},
                                   .op_param_cache_keys = std::move(pk)})));
-          at::Tensor index_grad = MakeTensor(index_grad_buf);
+          at::Tensor index_grad = MakeTensor(std::move(index_grad_buf));
           TT_ASSIGN_OR_THROW(auto sparse_pk,
                              TT_MAKE_OP_PARAM_CACHE_KEYS(nw_val, padding_idx,
                                                          scale_grad_by_freq));
@@ -480,17 +485,17 @@ at::Tensor AtenEmbeddingBagBackward(
         auto builder_fn =
             [nw_val, scale_grad_by_freq, mode, sparse, padding_idx, has_psw](
                 absl::Span<mlir::MlirOp> inputs, mlir::MlirBuilder& builder) {
-              std::optional<mlir::MlirOp> psw;
-              if (has_psw) psw = inputs[6];
+              std::optional<mlir::MlirOp> psw_op;
+              if (has_psw) psw_op = inputs[6];
               return BuildEmbeddingBagBackwardShlo(
                   inputs[0], inputs[1], inputs[2], inputs[3], inputs[4],
                   inputs[5], at::SymInt(nw_val), scale_grad_by_freq, mode,
-                  sparse, psw, padding_idx);
+                  sparse, psw_op, padding_idx);
             };
 
         std::vector<at::Tensor> inputs = {grad,       indices,  offsets,
                                           offset2bag, bag_size, max_indices};
-        if (has_psw) inputs.push_back(*per_sample_weights);
+        if (has_psw) inputs.push_back(*psw);
 
         TT_ASSIGN_OR_THROW(auto result_dtype,
                            ConvertTo<mlir::ElementType>(grad.scalar_type()));
@@ -502,7 +507,7 @@ at::Tensor AtenEmbeddingBagBackward(
                                 .out_dims = {nw_val, grad.size(-1)},
                                 .op_param_cache_keys = std::move(pk)})));
 
-        return MakeTensor(results);
+        return MakeTensor(std::move(results));
       });
 }
 
@@ -534,7 +539,7 @@ at::Tensor AtenEmbeddingDenseBackward(const at::Tensor& grad_output,
                                .out_dims = {nw_val, grad_output.size(-1)},
                                .op_param_cache_keys = std::move(pk)})));
 
-        return MakeTensor(result);
+        return MakeTensor(std::move(result));
       });
 }
 
@@ -566,7 +571,7 @@ at::Tensor& AtenEmbeddingRenorm_(at::Tensor& self, const at::Tensor& indices,
                                .out_dims = out_dims,
                                .op_param_cache_keys = std::move(pk)})));
 
-        self.index_put_({indices}, MakeTensor(renorm_rows));
+        self.index_put_({indices}, MakeTensor(std::move(renorm_rows)));
         return self;
       });
 }

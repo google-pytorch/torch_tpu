@@ -14,6 +14,7 @@
 
 """Qwen model benchmark definitions for distributed benchmark harness."""
 
+from collections.abc import Mapping
 import math
 import re
 from typing import Any
@@ -29,6 +30,7 @@ from perflab import registry as registry_lib
 from perflab import step_lib
 from perflab import target as target_lib
 from perflab import torch_device_ops
+from perflab import workload as workload_lib
 from perflab.model_utils import ragged_moe
 from tests import module_registry
 from transformers.models.qwen3_5_moe import modeling_qwen3_5_moe
@@ -78,7 +80,7 @@ def _warn_if_attn_dimensions_not_divisible(
 def _apply_tensor_parallel_plan(
     module: nn.Module,
     name_prefix: str = "",
-    tp_plan: dict[str, str] | None = None,
+    tp_plan: Mapping[str, str] | None = None,
     world_size: int = 1,
     rank: int = 0,
 ) -> None:
@@ -315,6 +317,20 @@ def get_qwen3_5_397b_a17b_model(
   return model
 
 
+def _tensor_parallel_size(world_size: int) -> int:
+  """Returns the number of processes that one replica of Qwen3.5-397B spans.
+
+  The model is split across all processes. It cannot span fewer:
+  `RaggedMoeQwen35` shards its experts over the default process group, i.e.
+  `torch.distributed.get_world_size()`, rather than over the FairScale
+  model-parallel group.
+
+  Args:
+    world_size: The number of processes.
+  """
+  return world_size
+
+
 def _load_qwen3_5_397b(
     ctx: context_lib.Context,
 ) -> tuple[torch.nn.Module, tuple[torch.Tensor, ...]]:
@@ -328,13 +344,12 @@ def _load_qwen3_5_397b(
   world_size = torch.distributed.get_world_size()
   rank = torch.distributed.get_rank()
 
+  workload = ctx.require_workload()
+  batch_size = workload.batch_size
+  seq_len = workload.require_seq_len()
   if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
-    batch_size = 1
-    seq_len = 128
     num_hidden_layers = 2
   else:
-    batch_size = 1
-    seq_len = 2048
     num_hidden_layers = 60
 
   dtype = torch_device_ops.get_torch_dtype(ctx.dtype)
@@ -344,7 +359,7 @@ def _load_qwen3_5_397b(
   try:
     model = get_qwen3_5_397b_a17b_model(
         rank=rank,
-        world_size=world_size,
+        world_size=_tensor_parallel_size(world_size),
         device=device_str,
         torch_dtype=dtype,
         use_ragged_dot_moe=True,
@@ -370,6 +385,11 @@ def _load_qwen3_5_397b(
     ),
     skipped_run_modes={"eager_default", "eager_optimized"},
     presubmit=registry_lib.PresubmitPolicy.RUN,
+    workload=registry_lib.scoped_workload(
+        full=workload_lib.Workload(1, 2048),
+        presubmit=workload_lib.Workload(1, 128),
+    ),
+    devices_per_replica=_tensor_parallel_size,
 )
 def qwen3_5_397b_a17b_forward(
     ctx: context_lib.Context,

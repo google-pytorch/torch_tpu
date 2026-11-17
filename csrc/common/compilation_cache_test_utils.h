@@ -46,13 +46,24 @@ absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>>
 CreateFailingExecutable(xla::PjRtClient& client,
                         UniqueCompileOptions compile_options);
 
+// How the compilation cache treats a dummy kernel, as recorded in
+// `UnboundedDynamicKernel::enabled_by_default`.
+enum class DummyKernelLoading {
+  kEnabledByDefault,  // Loaded unless the mode is `kNone`.
+  kOptIn,             // Loaded only in mode `kAll`.
+};
+
 // Registers a kernel built by `build` with `MakeDummyDynamicMetadata()` under
 // `key`, ignoring kAlreadyExists so that tests sharing a process can register
 // the same key repeatedly. The registry is process-wide and append-only, so
-// tests must use keys that are unique to the behaviour they exercise.
+// tests must use keys that are unique to the behaviour they exercise. Unlike
+// production kernels, dummy kernels are enabled by default unless `loading`
+// says otherwise; re-registering a key keeps its first registration's
+// `loading`.
 void RegisterDummyKernel(
     const CompilationCacheKey& key,
-    UnboundedDynamicKernel::BuildFn build = CreateDummyExecutable);
+    UnboundedDynamicKernel::BuildFn build = CreateDummyExecutable,
+    DummyKernelLoading loading = DummyKernelLoading::kEnabledByDefault);
 
 }  // namespace torch_tpu
 

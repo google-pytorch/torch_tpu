@@ -46,7 +46,6 @@ aligning flat values buffers to hardware microarchitectural boundaries:
    dispatch and create TPU execution bubbles.
 """
 
-import typing
 import torch
 from torch.nested._internal import nested_tensor as nt_internal
 from torch_tpu._internal.utils import annotations as _annotations
@@ -100,7 +99,7 @@ def _with_values(nt: torch.Tensor, values: torch.Tensor) -> torch.Tensor:
 def align_jagged_to_multiple(
     nt: torch.Tensor,
     multiple: int = 128,
-    padding_value: typing.Union[float, int, bool] = 0.0,
+    padding_value: float | int | bool = 0.0,
 ) -> torch.Tensor:
   """Pads a jagged tensor's values buffer to a multiple of `multiple`.
 
@@ -146,7 +145,7 @@ def align_jagged_to_multiple(
 )
 def strip_jagged_padding(
     nt: torch.Tensor,
-    valid_tokens: typing.Optional[int] = None,
+    valid_tokens: int | None = None,
 ) -> torch.Tensor:
   """Removes trailing padding tokens along the ragged dim of `nt.values()`.
 
