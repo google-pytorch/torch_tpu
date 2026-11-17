@@ -51,6 +51,7 @@ class FakeShapeEnv:
     self.replacements = {}
     self._translation_validation_enabled = False
     self._replacements_version_counter = 1
+    self._var_to_range_version_counter = 0
 
   def replace(self, expr: sympy.Expr) -> sympy.Expr:
     return expr.xreplace(self.replacements) if self.replacements else expr
