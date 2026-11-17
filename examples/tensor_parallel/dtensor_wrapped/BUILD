@@ -17,8 +17,11 @@
 # zhanyong-wan
 
 load(
+    "//build_files:accelerator_specification.bzl",
+    "tpus",
+)
+load(
     "//build_files:build_defs.bzl",
-    "if_oss",
     "torch_tpu_oss_doc_test",
     "torch_tpu_package_end",
     "torch_tpu_py_library",
@@ -33,21 +36,16 @@ package(
 torch_tpu_py_test(
     name = "launch",
     srcs = ["launch.py"],
+    compatible_accelerators = tpus(min_chips = 4),
     env = {
         "JOB_COMPLETION_INDEX": "0",
         "TPU_WORKER_HOSTNAMES": "localhost",
     },
     main = "launch.py",
     nopresubmit = "slow example",
-    # In OSS CI, tests run on a shared TPU host where only one test can acquire
-    # all 8 TPU chips at a time; in Google3, requires-tpu-v5lite:8 isolates it.
-    tags = if_oss(
-        ["exclusive"],
-        [],
-    ) + [
+    tags = [
         "noasan",  # OOMs even with the highest memory limit.
         "requires-mem:28g",
-        "requires-tpu-v5lite:8",
     ],
     deps = [
         ":dtp_worker",

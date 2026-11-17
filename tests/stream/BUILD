@@ -20,8 +20,12 @@
 # jparkerh
 
 load(
+    "//build_files:accelerator_specification.bzl",
+    "SPARSECORE_TPUS",
+    "tpus",
+)
+load(
     "//build_files:build_defs.bzl",
-    "REQUIRES_V5_MULTI_DEVICE",
     "if_oss",
     "torch_tpu_package_end",
     "torch_tpu_py_test",
@@ -39,10 +43,11 @@ torch_tpu_py_test(
         [],
         ["--deepsea_chip_config_name=mpmd"],
     ),
-    tags = [
-        # A device with SparseCore is required to allow for SparseCore pinning.
-        "requires-tpu-v5p",
-    ],
+    # A device with SparseCore is required to allow for SparseCore pinning.
+    compatible_accelerators = if_oss(
+        tpus(),
+        SPARSECORE_TPUS,
+    ),
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
@@ -60,9 +65,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "copy_test",
     srcs = ["copy_test.py"],
-    tags = [
-        "requires-tpu-v5lite",
-    ],
+    compatible_accelerators = tpus(),
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
@@ -79,8 +82,8 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "stream_integration_test",
     srcs = ["stream_integration_test.py"],
+    compatible_accelerators = tpus(),
     main = "stream_integration_test.py",
-    tags = ["requires-tpu-v5lite"],
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
@@ -123,13 +126,8 @@ torch_tpu_py_test(
     name = "stream_collectives_test",
     timeout = "long",
     srcs = ["stream_collectives_test.py"],
-    # OSS runs every test on one runner: the 8-chip slice must not be acquired
-    # by two tests at once (/dev/vfio contention).
-    tags = if_oss(
-        ["exclusive"],
-        [],
-    ) + [
-        REQUIRES_V5_MULTI_DEVICE,
+    compatible_accelerators = tpus(min_chips = 4),
+    tags = [
         "noasan",  # 8-rank tests exceed Forge memory under sanitizers (b/497035517).
         "nomsan",  # 8-rank tests exceed Forge memory under sanitizers (b/497035517).
         "notsan",  # 8-rank tests exceed Forge memory under sanitizers (b/497035517).
@@ -151,12 +149,12 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "stream_overlap_benchmark",
     srcs = ["stream_overlap_benchmark.py"],
+    compatible_accelerators = tpus(),
     main = "stream_overlap_benchmark.py",
     nopresubmit = "Benchmark.",
     nopresubmit_oss = "Timing benchmark, runs in OSS nightly only.",
     tags = [
         "nofastbuild",  # Measures performance.
-        "requires-tpu-v5lite",
     ],
     deps = [
         "//shims/absl_py/logging",

@@ -21,7 +21,16 @@
 # adivinpatel04
 # chizhang529
 
-load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_library", "torch_tpu_py_test")
+load(
+    "//build_files:accelerator_specification.bzl",
+    "tpus",
+)
+load(
+    "//build_files:build_defs.bzl",
+    "torch_tpu_package_end",
+    "torch_tpu_py_library",
+    "torch_tpu_py_test",
+)
 load("//shims/pybind11:pybind.bzl", "pybind_extension")
 
 package(
@@ -114,9 +123,9 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "utils_test",
     srcs = ["utils_test.py"],
+    compatible_accelerators = tpus(),
     tags = [
         "nomsan",  # 3p 'py/torch' error: use-of-uninitialized-value in 3 in reduced_float_type_copy
-        "requires-tpu-v5lite",
     ],
     deps = [
         ":test_fixtures",
@@ -167,9 +176,9 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "tracer_utils_tpu_test",
     srcs = ["tracer_utils_tpu_test.py"],
+    compatible_accelerators = tpus(),
     main = "tracer_utils_tpu_test.py",
     strict = True,
-    tags = ["requires-tpu-v5lite"],
     deps = [
         ":test_utils",
         ":tracer_utils",
@@ -185,8 +194,8 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "test_utils_tpu_test",
     srcs = ["test_utils_tpu_test.py"],
+    compatible_accelerators = tpus(),
     strict = True,
-    tags = ["requires-tpu-v5lite"],
     deps = [
         ":test_utils",
         "//shims/absl_py/testing:absltest",
@@ -230,7 +239,7 @@ torch_tpu_py_library(
 torch_tpu_py_test(
     name = "annotations_test",
     srcs = ["annotations_test.py"],
-    tags = ["requires-tpu-v5lite"],
+    compatible_accelerators = tpus(),
     deps = [
         ":annotations",
         ":test_utils",

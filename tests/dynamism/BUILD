@@ -17,10 +17,16 @@
 # salkan0
 
 load(
+    "//build_files:accelerator_specification.bzl",
+    "run_on_config",
+    "tpu_config",
+    "tpus",
+)
+load(
     "//build_files:build_defs.bzl",
+    "if_oss",
     "torch_tpu_package_end",
     "torch_tpu_py_test",
-    "tpu_gen",
 )
 
 package(
@@ -31,9 +37,7 @@ package(
 torch_tpu_py_test(
     name = "compile_test",
     srcs = ["compile_test.py"],
-    tags = [
-        "requires-tpu-v5lite",
-    ],
+    compatible_accelerators = tpus(),
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
@@ -48,9 +52,9 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "model_test",
     srcs = ["model_test.py"],
+    compatible_accelerators = tpus(),
     tags = [
         "nomsan",  # TODO(b/507536079): 3p 'py/torch' error: use-of-uninitialized-value in reduced_float_type_copy
-        "requires-tpu-v5lite",
     ],
     deps = [
         "//shims/absl_py/testing:absltest",
@@ -65,9 +69,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "multi_bucket_compile_test",
     srcs = ["multi_bucket_compile_test.py"],
-    tags = [
-        "requires-tpu-v5lite",
-    ],
+    compatible_accelerators = tpus(),
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
@@ -82,9 +84,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "sym_constraint_test",
     srcs = ["sym_constraint_test.py"],
-    tags = [
-        "requires-tpu-v5lite",
-    ],
+    compatible_accelerators = tpus(),
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
@@ -97,9 +97,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "generative_ops_test",
     srcs = ["generative_ops_test.py"],
-    tags = [
-        "requires-tpu-v5lite",
-    ],
+    compatible_accelerators = tpus(),
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
@@ -112,13 +110,13 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "dynamic_view_test",
     srcs = ["dynamic_view_test.py"],
+    compatible_accelerators = tpus(),
     # Run on single-chip TPU v7 for faster dynamic shape compilation and
     # to utilize idle single-chip v7 runner capacity in OSS presubmit.
-    oss_presubmit_tpu_generation = tpu_gen(
-        "v7",
+    run_on = if_oss(run_on_config(
+        presubmit = [tpu_config("v7x")],
         reason = "Faster dynamic shape compilation on single-chip TPU v7",
-    ),
-    tags = ["requires-tpu-v5lite"],
+    )),
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
@@ -132,13 +130,13 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "sym_expr_arg_test",
     srcs = ["sym_expr_arg_test.py"],
+    compatible_accelerators = tpus(),
     # Run on single-chip TPU v7 for faster symbolic expression evaluation and compilation,
     # utilizing idle single-chip v7 runner capacity in OSS presubmit.
-    oss_presubmit_tpu_generation = tpu_gen(
-        "v7",
+    run_on = if_oss(run_on_config(
+        presubmit = [tpu_config("v7x")],
         reason = "Faster symbolic expression evaluation on single-chip TPU v7",
-    ),
-    tags = ["requires-tpu-v5lite"],
+    )),
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
@@ -182,9 +180,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "jagged_dynamism_test",
     srcs = ["jagged_dynamism_test.py"],
-    tags = [
-        "requires-tpu-v5lite",
-    ],
+    compatible_accelerators = tpus(),
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
@@ -214,11 +210,11 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "dynamic_slice_test",
     srcs = ["dynamic_slice_test.py"],
-    oss_presubmit_tpu_generation = tpu_gen(
-        "v7",
+    compatible_accelerators = tpus(),
+    run_on = if_oss(run_on_config(
+        presubmit = [tpu_config("v7x")],
         reason = "Faster dynamic shape compilation on single-chip TPU v7",
-    ),
-    tags = ["requires-tpu-v5lite"],
+    )),
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
@@ -237,8 +233,8 @@ torch_tpu_py_test(
     srcs = ["sdpa_vlog_test.py"],
     # TT_KERNEL logs its arguments at VLOG(1).
     args = ["--vmodule=scaled_dot_product_attention_aten_kernels=1"],
+    compatible_accelerators = tpus(),
     notest_oss = True,  # NOTEST_OSS_OK=The C++ --vmodule flag is only bridged into absl.flags in internal test binaries.
-    tags = ["requires-tpu-v5lite"],
     deps = [
         "//shims/absl_py/flags",
         "//shims/absl_py/testing:absltest",

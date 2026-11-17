@@ -16,7 +16,18 @@
 # minospapa
 # ryo-not-rio
 
-load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_library", "torch_tpu_py_test")
+load(
+    "//build_files:accelerator_specification.bzl",
+    "run_on_config",
+    "tpu_config",
+    "tpus",
+)
+load(
+    "//build_files:build_defs.bzl",
+    "torch_tpu_package_end",
+    "torch_tpu_py_library",
+    "torch_tpu_py_test",
+)
 load("//shims/py_rules:py_binary.bzl", "py_binary")
 load("//shims/py_rules:py_library.bzl", "py_library")
 
@@ -90,12 +101,16 @@ torch_tpu_py_library(
 torch_tpu_py_test(
     name = "blockwise_scaled_mm_kernel_test",
     srcs = ["blockwise_scaled_mm_kernel_test.py"],
+    compatible_accelerators = tpus(exclude = ["v5p"]),
     main = "blockwise_scaled_mm_kernel_test.py",
-    run_on_accelerators = [
-        "requires-tpu-v5lite",
-        "requires-tpu-v6e",
-        "requires-tpu-v7x",
-    ],
+    run_on = run_on_config(
+        postsubmit = [
+            tpu_config("v5e"),
+            tpu_config("v6e"),
+            tpu_config("v7x"),
+        ],
+        reason = "Keeps the pre-migration per-TPU test targets.",
+    ),
     deps = [
         ":blockwise_scaled_mm_kernel",
         ":scaled_mm_test_utils",
@@ -145,12 +160,16 @@ torch_tpu_py_library(
 torch_tpu_py_test(
     name = "blockwise128_scaled_mm_kernel_test",
     srcs = ["blockwise128_scaled_mm_kernel_test.py"],
+    compatible_accelerators = tpus(exclude = ["v5p"]),
     main = "blockwise128_scaled_mm_kernel_test.py",
-    run_on_accelerators = [
-        "requires-tpu-v5lite",
-        "requires-tpu-v6e",
-        "requires-tpu-v7x",
-    ],
+    run_on = run_on_config(
+        postsubmit = [
+            tpu_config("v5e"),
+            tpu_config("v6e"),
+            tpu_config("v7x"),
+        ],
+        reason = "Keeps the pre-migration per-TPU test targets.",
+    ),
     tags = [
         "nosan",  # *san builds are low-value for accelerator numerics tests.
     ],

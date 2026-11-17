@@ -18,6 +18,10 @@
 # cbasile-g
 
 load(
+    "//build_files:accelerator_specification.bzl",
+    "tpus",
+)
+load(
     "//build_files:build_defs.bzl",
     "if_oss",
     "torch_tpu_package_end",
@@ -65,9 +69,7 @@ torch_tpu_py_test(
         [],
         ["--torch_tpu_internal_enable_compilation_container=true"],
     ),
-    tags = [
-        "requires-tpu-v5lite",
-    ],
+    compatible_accelerators = tpus(),
     deps = [
         ":device_utils",
         "//shims/absl_py/testing:absltest",
@@ -383,6 +385,7 @@ torch_tpu_py_test(
         "--max_warmup_steps=1",
         "--post_warmup_steps=0",
     ],
+    compatible_accelerators = tpus(),
     data = [
         "//perflab/huggingface_transformers:model_configs_data",
         "//shims/model_configs:google_model_configs_data",
@@ -398,7 +401,6 @@ torch_tpu_py_test(
         "nofastbuild",  # Benchmark.
         "nosan",  # *san tests provide no benefit for benchmarks.
         "requires-net:external",
-        "requires-tpu-v5lite",
     ],
     use_tcmalloc = True,
     # Do not depend on perflab/models:muse_glimmer or :qwen3_8 here: torchtitan
@@ -562,6 +564,7 @@ torch_tpu_py_test(
         "--xprof_steps=2",
         "--enable_xprof=true",
     ],
+    compatible_accelerators = tpus(only = ["v7x"]),
     data = [
         "//perflab/huggingface_transformers:model_configs_data",
     ],
@@ -578,7 +581,6 @@ torch_tpu_py_test(
         "nosan",  # *san tests provide no benefit for benchmarks.
         "requires-accel-hbm",
         "requires-net:external",
-        "requires-tpu-v7x",
     ],
     # The torchtitan dep (via models:qwen3_8) exceeds the Forge input file limit
     # with precompiled .pyc inputs.
@@ -662,6 +664,7 @@ torch_tpu_py_test(
     name = "torch_benchmark_full",
     timeout = "eternal",
     srcs = ["torch_benchmark_test.py"],
+    compatible_accelerators = tpus(only = ["v7x"]),
     data = [
         "//perflab/huggingface_transformers:model_configs_data",
         "//shims/model_configs:google_model_configs_data",
@@ -676,7 +679,6 @@ torch_tpu_py_test(
         "nofastbuild",  # Benchmark.
         "requires-accel-hbm",
         "requires-net:external",
-        "requires-tpu-v7x",
     ],
     # The torchtitan dep (via models:qwen3_8) exceeds the Forge input file limit
     # with precompiled .pyc inputs.
@@ -809,6 +811,7 @@ torch_tpu_py_test(
     name = "torch_layer_benchmark_full",
     timeout = "eternal",
     srcs = ["torch_layer_benchmark_test.py"],
+    compatible_accelerators = tpus(only = ["v7x"]),
     env = {
         "BENCHMARK_PLATFORM": "v7_1x1x1",
     },
@@ -819,7 +822,6 @@ torch_tpu_py_test(
         "nofastbuild",  # Benchmark.
         "requires-accel-hbm",
         "requires-net:external",
-        "requires-tpu-v7x",
     ],
     use_tcmalloc = True,
     deps = _TORCH_LAYER_BENCHMARK_DEPS,
@@ -924,6 +926,7 @@ torch_tpu_py_test(
     timeout = "eternal",
     srcs = ["distributed_runner.py"],
     args = _DISTRIBUTED_DEV_BENCHMARKS_ARGS,
+    compatible_accelerators = tpus(only = ["v7x"]),
     data = _DISTRIBUTED_RUNNER_DATA,
     env = {
         "BENCHMARK_PLATFORM": "v7_1x1x1_2tc",
@@ -937,7 +940,6 @@ torch_tpu_py_test(
         "nosan",  # *san tests provide no benefit for benchmarks.
         "requires-accel-hbm",
         "requires-net:external",
-        "requires-tpu-v7x",
     ],
     # The torchtitan dep (via distributed_models:qwen3_8) exceeds the Forge input
     # file limit with precompiled .pyc inputs.
@@ -953,6 +955,10 @@ torch_tpu_py_test(
     timeout = "eternal",
     srcs = ["distributed_runner.py"],
     args = _DISTRIBUTED_DEV_BENCHMARKS_ARGS,
+    compatible_accelerators = tpus(
+        min_chips = 4,
+        only = ["v7x"],
+    ),
     data = _DISTRIBUTED_RUNNER_DATA,
     env = {
         "BENCHMARK_PLATFORM": "v7_1x2x1",
@@ -966,7 +972,6 @@ torch_tpu_py_test(
         "nosan",  # *san tests provide no benefit for benchmarks.
         "requires-accel-hbm",
         "requires-net:external",
-        "requires-tpu-v7x:4",
     ],
     # The torchtitan dep (via distributed_models:qwen3_8) exceeds the Forge input
     # file limit with precompiled .pyc inputs.
@@ -980,6 +985,11 @@ torch_tpu_py_test(
     timeout = "eternal",
     srcs = ["distributed_runner.py"],
     args = _DISTRIBUTED_DEV_BENCHMARKS_ARGS,
+    # Needs the full 4-chip host (8 TensorCores).
+    compatible_accelerators = tpus(
+        min_chips = 4,
+        only = ["v7x"],
+    ),
     data = _DISTRIBUTED_RUNNER_DATA,
     env = {
         "BENCHMARK_PLATFORM": "v7_2x2x1",
@@ -996,9 +1006,6 @@ torch_tpu_py_test(
         # plus the allocated chips' HBM (go/forge-requires-mem#accel-hbm).
         # Forge rejects `requires-mem` combined with `requires-accel-hbm`.
         "requires-accel-hbm",
-        # A bare "requires-tpu-v7x" allocates one chip; ":4" allocates the
-        # full 4-chip host (8 TensorCores).
-        "requires-tpu-v7x:4",
         "requires-net:external",
     ],
     # The torchtitan dep (via distributed_models:qwen3_8) exceeds the Forge input

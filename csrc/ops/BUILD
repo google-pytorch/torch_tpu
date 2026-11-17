@@ -22,6 +22,10 @@
 # jparkerh
 
 load(
+    "//build_files:accelerator_specification.bzl",
+    "tpus",
+)
+load(
     "//build_files:build_defs.bzl",
     "torch_tpu_cc_library",
     "torch_tpu_cc_test",
@@ -469,10 +473,10 @@ torch_tpu_cc_library(
 torch_tpu_cc_test(
     name = "binary_aten_kernels_test",
     srcs = ["binary_aten_kernels_test.cc"],
+    compatible_accelerators = tpus(),
     exec_properties = {
         "cpp_link.mem": "16g",
     },
-    tags = ["requires-tpu-v5lite"],
     deps = [
         ":binary",
         ":binary_aten_kernels",
@@ -647,12 +651,10 @@ torch_tpu_cc_library(
 torch_tpu_cc_test(
     name = "custom_kernels_test",
     srcs = ["custom_kernels_test.cc"],
+    compatible_accelerators = tpus(),
     exec_properties = {
         "cpp_link.mem": "20g",
     },
-    tags = [
-        "requires-tpu-v5lite",
-    ],
     deps = [
         ":custom_kernels",
         ":op_builder_utils",

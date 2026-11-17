@@ -17,7 +17,14 @@
 # zhanyong-wan
 
 load(
+    "//build_files:accelerator_specification.bzl",
+    "run_on_config",
+    "tpu_config",
+    "tpus",
+)
+load(
     "//build_files:build_defs.bzl",
+    "if_oss",
     "torch_tpu_oss_doc_test",
     "torch_tpu_package_end",
     "torch_tpu_py_library",
@@ -43,11 +50,19 @@ torch_tpu_py_test(
     name = "flux_test",
     size = "large",
     srcs = ["flux_test.py"],
+    compatible_accelerators = tpus(),
     nopresubmit = "Slow tutorial",
+    run_on = if_oss(
+        None,
+        run_on_config(
+            postsubmit = [tpu_config("v6e")],
+            presubmit = [],
+            reason = "Keeps the pre-migration v6e placement in google3.",
+        ),
+    ),
     tags = [
         "requires-accel-hbm",
         "requires-net:external",
-        "requires-tpu-v6e",
     ],
     deps = [
         ":flux",
@@ -63,11 +78,19 @@ torch_tpu_py_test(
     name = "flux_rope_parity_test",
     size = "large",
     srcs = ["flux_rope_parity_test.py"],
+    compatible_accelerators = tpus(),
     nopresubmit = "Requires TPU hardware",
+    run_on = if_oss(
+        None,
+        run_on_config(
+            postsubmit = [tpu_config("v6e")],
+            presubmit = [],
+            reason = "Keeps the pre-migration v6e placement in google3.",
+        ),
+    ),
     tags = [
         "requires-accel-hbm",
         "requires-net:external",
-        "requires-tpu-v6e",
     ],
     deps = [
         ":flux",
@@ -92,11 +115,19 @@ torch_tpu_py_test(
     name = "splash_attention_test",
     size = "large",
     srcs = ["splash_attention_test.py"],
+    compatible_accelerators = tpus(),
     nopresubmit = "Requires TPU hardware",
+    run_on = if_oss(
+        None,
+        run_on_config(
+            postsubmit = [tpu_config("v6e")],
+            presubmit = [],
+            reason = "Keeps the pre-migration v6e placement in google3.",
+        ),
+    ),
     tags = [
         "requires-accel-hbm",
         "requires-net:external",
-        "requires-tpu-v6e",
     ],
     deps = [
         ":splash_attention",
