@@ -1494,6 +1494,7 @@ torch_tpu_cc_library(
         "@llvm-project//mlir:IR",
         "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
         "@tsl//tsl/platform:numbers",
+        "@tsl//tsl/platform:platform_port",
         "@xla//xla/hlo/utils/concurrency:concurrency_utils",
         "@xla//xla/pjrt:pjrt_client",
         "@xla//xla/pjrt:pjrt_compiler",
@@ -1798,7 +1799,7 @@ torch_tpu_cc_test(
         "@com_google_absl//absl/flags:flag",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/log:absl_log",
-        "@xla//xla:xla_proto_cc",
+        "@com_google_absl//absl/strings",
         "@xla//xla/pjrt/plugin/xla_tpu:xla_tpu_pjrt_client",  # buildcleaner: keep
     ],
 )

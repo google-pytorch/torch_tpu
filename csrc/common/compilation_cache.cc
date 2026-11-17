@@ -16,8 +16,6 @@
 
 #include "csrc/common/compilation_cache.h"
 
-#include <unistd.h>
-
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
@@ -27,7 +25,6 @@
 #include <optional>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <utility>
 #include <vector>
 
@@ -75,6 +72,7 @@
 #include "csrc/pjrt/pjrt_state.h"
 #include "mlir/IR/MLIRContext.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "tsl/platform/cpu_info.h"
 #include "tsl/platform/numbers.h"
 #include "xla/hlo/utils/concurrency/concurrency_utils.h"
 #include "xla/pjrt/pjrt_client.h"
@@ -84,7 +82,8 @@
 
 ABSL_FLAG(int32_t, torch_tpu_internal_num_compilation_threads, 0,
           "The number of threads to use for compilation. If 0, use the default "
-          "number of threads based on the number of logical CPUs.");
+          "number of threads based on the number of logical CPUs the process "
+          "may run on.");
 
 namespace torch_tpu {
 
@@ -105,8 +104,6 @@ bool IsFutureReady(const SharedLoadedExecutableWithMetadataFuture& future) {
   }();
   return num_procs;
 }
-
-int GetNumCpus() { return sysconf(_SC_NPROCESSORS_ONLN); }
 
 // Reads TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS, treating an unset
 // value as "default". Returns an error for any other value, which is likely a
@@ -161,12 +158,13 @@ int GetNumCompilationThreads(const int num_procs) {
     num_hyperthreads_per_cpu = 4;
     method = "NPROC";
   } else {
-    // NPROC is not set; use the hardware concurrency, which already accounts
-    // for num_hyper-threading.
-    num_cpus = GetNumCpus();
-    num_hyperthreads_per_cpu =
-        std::thread::hardware_concurrency() / GetNumCpus();
-    method = "HW concurrency";
+    // NPROC is not set; use one thread per logical CPU that this process may
+    // run on (its CPU affinity mask), as XLA's default executor does. Unlike
+    // the number of online CPUs, this respects `taskset`, cpuset cgroups and
+    // per-rank CPU pinning.
+    num_cpus = tsl::port::MaxParallelism();
+    num_hyperthreads_per_cpu = 1;
+    method = "CPU affinity";
   }
 
   // Take out one entire CPU core so as to not interfere with the PyTorch main

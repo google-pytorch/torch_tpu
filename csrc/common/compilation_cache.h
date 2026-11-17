@@ -654,8 +654,8 @@ class CompilationCache {
 };
 
 // Returns the number of threads to use for compilation based on the flag value,
-// the NPROC environment variable, or the hardware concurrency. Guaranteed to be
-// > 0.
+// the NPROC environment variable, or the number of logical CPUs this process
+// may run on. Guaranteed to be > 0.
 [[nodiscard]] int GetNumCompilationThreads();
 
 }  // namespace torch_tpu
