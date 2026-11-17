@@ -169,6 +169,10 @@ Notes:
     [Approve Workflow Runs](#approve-workflow-runs)).
 *   We want the quality champion's review to be in the open so that external
     contributors can learn Google's coding standard.
+*   If the PR's reviewer, assignee, or author decides that the PR shouldn't be
+    merged (e.g. it's obsolete, duplicates another PR, or the proposed change
+    isn't wanted), they may abandon it by closing it without landing it. Please
+    leave a comment on the PR explaining why.
 *   The bot-generated CL cannot be changed manually, but if you update the PR it
     is connected to, the bot will update it automatically (once the quality
     champion re-approves the import), or the CL can be patched into a new
