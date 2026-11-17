@@ -109,6 +109,17 @@ class TpuDeviceModuleTest(
     """Verifies private attributes do not appear in dir(torch.tpu)."""
     self.assertEmpty([name for name in dir(torch.tpu) if name.startswith("_")])
 
+  def test_is_current_stream_capturing(self):
+    """Verifies the device module reports that no stream is capturing a graph.
+
+    Like `torch.cuda.is_current_stream_capturing()`, code shared with CUDA calls
+    it through `torch.get_device_module()`. TPU streams don't capture graphs.
+    """
+    device_module = torch.get_device_module("tpu")
+    self.assertFalse(device_module.is_current_stream_capturing())
+    with device_module.stream(device_module.Stream()):
+      self.assertFalse(device_module.is_current_stream_capturing())
+
   def test_dynamo_traces_torch_tpu_without_recompilation(self):
     """Verifies Dynamo traces torch.tpu calls without graph breaks or recompiles."""
     # Warm up @experimental once-per-process warnings outside Dynamo so the
