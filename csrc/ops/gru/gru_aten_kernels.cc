@@ -29,16 +29,27 @@
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
+#include "ATen/core/dispatch/Dispatcher.h"
+#include "ATen/ops/empty.h"
+#include "ATen/ops/gru_native.h"
 #include "ATen/ops/zeros.h"
+#include "absl/base/no_destructor.h"
+#include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "c10/core/DispatchKey.h"
 #include "c10/core/GradMode.h"
-#include "c10/util/ArrayRef.h"  // IWYU pragma: keep for at::IntArrayRef
+#include "c10/core/SymInt.h"
+#include "c10/core/SymIntArrayRef.h"
+#include "c10/core/impl/LocalDispatchKeySet.h"
+#include "c10/util/ArrayRef.h"  // IWYU pragma: keep for operator==
+#include "c10/util/DimVector.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/op_name_stack.h"
 #include "csrc/common/to_string.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/op_dispatcher.h"
@@ -48,6 +59,7 @@
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/precision_context.h"
+#include "csrc/ops/python_context.h"
 #include "csrc/ops/rng_utils.h"
 #include "csrc/ops/uniform/uniform.h"
 #include "mlir/IR/Builders.h"
@@ -164,27 +176,27 @@ constexpr int64_t kGruUnrollFactor = 8;
 // InvalidArgument status.
 absl::Status ValidateGruTensorShapes(const at::Tensor& hx,
                                      const int64_t num_layers,
-                                     const int64_t batch,
+                                     const c10::SymInt& batch,
                                      const bool bidirectional = false) {
   const int64_t num_directions = bidirectional ? 2 : 1;
   // Step 1: Verify rank is 3D [num_layers * num_directions, batch, hidden]
   TT_RET_CHECK(hx.dim() == 3, error::kInvalidArgument)
       << "expected the initial hidden state hx to be a 3D tensor "
          "[num_layers * num_directions, batch, hidden_size], got "
-      << hx.dim() << "D tensor of shape " << ToString(hx.sizes());
+      << hx.dim() << "D tensor of shape " << ToString(hx.sym_sizes());
   // Step 2: Verify layer/direction dimension matches num_layers *
   // num_directions
-  TT_RET_CHECK(hx.size(0) == num_layers * num_directions,
+  TT_RET_CHECK(hx.sym_size(0) == num_layers * num_directions,
                error::kInvalidArgument)
       << "expected the size of the initial hidden state hx at dimension 0 to "
          "be "
       << num_layers * num_directions
-      << " (num_layers * number of directions), got " << hx.size(0);
+      << " (num_layers * number of directions), got " << hx.sym_size(0);
   // Step 3: Verify batch size matches the input batch dimension
-  TT_RET_CHECK(hx.size(1) == batch, error::kInvalidArgument)
+  TT_RET_CHECK(hx.sym_size(1) == batch, error::kInvalidArgument)
       << "expected the size of the initial hidden state hx at dimension 1 to "
          "be "
-      << batch << " (batch size), got " << hx.size(1);
+      << batch << " (batch size), got " << hx.sym_size(1);
   return absl::OkStatus();
 }
 
@@ -219,7 +231,8 @@ absl::Status ValidateGruTensorShapes(const at::Tensor& hx,
 // mismatched shape.
 absl::Status ValidateGruWeights(const at::TensorList params,
                                 const bool has_biases, const int64_t num_layers,
-                                const int64_t input_size, const int64_t hidden,
+                                const c10::SymInt& input_size,
+                                const c10::SymInt& hidden,
                                 const bool bidirectional = false) {
   const int64_t num_directions = bidirectional ? 2 : 1;
   const size_t params_per_direction = has_biases ? 4 : 2;
@@ -234,44 +247,44 @@ absl::Status ValidateGruWeights(const at::TensorList params,
   // Validate matrix and bias dimensions layer-by-layer and
   // direction-by-direction
   for (int64_t l = 0; l < num_layers; ++l) {
-    const int64_t in_dim = (l == 0) ? input_size : hidden * num_directions;
+    const c10::SymInt in_dim = (l == 0) ? input_size : hidden * num_directions;
     for (int64_t d_dir = 0; d_dir < num_directions; ++d_dir) {
       const size_t p_offset =
           (l * num_directions + d_dir) * params_per_direction;
       const std::string_view dir_str = (d_dir == 0) ? "forward" : "reverse";
 
       // w_ih shape check: [3 * hidden, in_dim]
-      TT_RET_CHECK(
-          params[p_offset].sizes() == at::IntArrayRef({3 * hidden, in_dim}),
-          error::kInvalidArgument)
+      TT_RET_CHECK(params[p_offset].sym_sizes() ==
+                       c10::SymIntArrayRef({3 * hidden, in_dim}),
+                   error::kInvalidArgument)
           << "expected the input-hidden weight tensor of layer " << l << " ("
           << dir_str << " direction) to have shape [" << 3 * hidden << ", "
-          << in_dim << "], got " << ToString(params[p_offset].sizes());
+          << in_dim << "], got " << ToString(params[p_offset].sym_sizes());
 
       // w_hh shape check: [3 * hidden, hidden]
-      TT_RET_CHECK(
-          params[p_offset + 1].sizes() == at::IntArrayRef({3 * hidden, hidden}),
-          error::kInvalidArgument)
+      TT_RET_CHECK(params[p_offset + 1].sym_sizes() ==
+                       c10::SymIntArrayRef({3 * hidden, hidden}),
+                   error::kInvalidArgument)
           << "expected the hidden-hidden weight tensor of layer " << l << " ("
           << dir_str << " direction) to have shape [" << 3 * hidden << ", "
-          << hidden << "], got " << ToString(params[p_offset + 1].sizes());
+          << hidden << "], got " << ToString(params[p_offset + 1].sym_sizes());
 
       if (has_biases) {
         // b_ih shape check: [3 * hidden]
-        TT_RET_CHECK(
-            params[p_offset + 2].sizes() == at::IntArrayRef({3 * hidden}),
-            error::kInvalidArgument)
+        TT_RET_CHECK(params[p_offset + 2].sym_sizes() ==
+                         c10::SymIntArrayRef({3 * hidden}),
+                     error::kInvalidArgument)
             << "expected the input-hidden bias tensor of layer " << l << " ("
             << dir_str << " direction) to have shape [" << 3 * hidden
-            << "], got " << ToString(params[p_offset + 2].sizes());
+            << "], got " << ToString(params[p_offset + 2].sym_sizes());
 
         // b_hh shape check: [3 * hidden]
-        TT_RET_CHECK(
-            params[p_offset + 3].sizes() == at::IntArrayRef({3 * hidden}),
-            error::kInvalidArgument)
+        TT_RET_CHECK(params[p_offset + 3].sym_sizes() ==
+                         c10::SymIntArrayRef({3 * hidden}),
+                     error::kInvalidArgument)
             << "expected the hidden-hidden bias tensor of layer " << l << " ("
             << dir_str << " direction) to have shape [" << 3 * hidden
-            << "], got " << ToString(params[p_offset + 3].sizes());
+            << "], got " << ToString(params[p_offset + 3].sym_sizes());
       }
     }
   }
@@ -313,9 +326,14 @@ absl::Status ValidateGruInputs(const at::Tensor& input, const at::Tensor& hx,
   TT_RET_CHECK(input.dim() == 3, error::kInvalidArgument)
       << "expected input to be a 3D tensor, got " << input.dim() << "D";
 
-  const int64_t batch = batch_first ? input.size(0) : input.size(1);
-  const int64_t seq_len = batch_first ? input.size(1) : input.size(0);
-  const int64_t input_size = input.size(2);
+  // The fused lowering has no bounded-dimension support, so this specializes
+  // the sequence length, batch and hidden sizes, as the CPU composite does.
+  // Only the input size stays symbolic.
+  const int64_t batch = (batch_first ? input.sym_size(0) : input.sym_size(1))
+                            .guard_int(__FILE__, __LINE__);
+  const int64_t seq_len = (batch_first ? input.sym_size(1) : input.sym_size(0))
+                              .guard_int(__FILE__, __LINE__);
+  const c10::SymInt input_size = input.sym_size(2);
 
   // Validate positive dimensions
   TT_RET_CHECK(seq_len > 0, error::kInvalidArgument)
@@ -333,7 +351,7 @@ absl::Status ValidateGruInputs(const at::Tensor& input, const at::Tensor& hx,
   // Validate initial hidden state tensor shapes
   TT_RETURN_IF_ERROR(
       ValidateGruTensorShapes(hx, num_layers, batch, bidirectional));
-  const int64_t hidden = hx.size(2);
+  const int64_t hidden = hx.sym_size(2).guard_int(__FILE__, __LINE__);
   // Validate weight and bias parameter tensor shapes
   TT_RETURN_IF_ERROR(ValidateGruWeights(params, has_biases, num_layers,
                                         input_size, hidden, bidirectional));
@@ -6987,19 +7005,30 @@ torch::autograd::variable_list AtenGruInputAutograd::forward(
     const at::Tensor& hx, const at::TensorList params, const bool has_biases,
     const int64_t num_layers, const double dropout, const bool train,
     const bool bidirectional, const bool batch_first) {
-  auto [output, hy, cached_acts] =
-      AtenGruInputForwardCached(input, hx, params, has_biases, num_layers,
-                                dropout, train, bidirectional, batch_first);
+  static const absl::NoDestructor op(
+      at::Dispatcher::singleton()
+          .findSchemaOrThrow("tpu::_gru_input_forward_cached", "")
+          .typed<std::vector<at::Tensor>(const at::Tensor&, const at::Tensor&,
+                                         at::TensorList, bool, int64_t, double,
+                                         bool, bool, bool)>());
+  std::vector<at::Tensor> results;
+  {
+    at::AutoDispatchBelowADInplaceOrView guard;
+    results = op->call(input, hx, params, has_biases, num_layers, dropout,
+                       train, bidirectional, batch_first);
+  }
+  ABSL_CHECK_GE(  // CRASH_OK=internal custom op contract
+      results.size(), size_t{2});
 
   std::vector<at::Tensor> to_save;
-  to_save.reserve(2 + params.size() + cached_acts.size());
+  to_save.reserve(2 + params.size() + (results.size() - 2));
   to_save.push_back(input);
   to_save.push_back(hx);
   for (const at::Tensor& p : params) {
     to_save.push_back(p);
   }
-  for (const at::Tensor& a : cached_acts) {
-    to_save.push_back(a);
+  for (size_t i = 2; i < results.size(); ++i) {
+    to_save.push_back(results[i]);
   }
   ctx->save_for_backward(to_save);
 
@@ -7011,7 +7040,7 @@ torch::autograd::variable_list AtenGruInputAutograd::forward(
   ctx->saved_data["batch_first"] = batch_first;
   ctx->saved_data["params_count"] = static_cast<int64_t>(params.size());
 
-  return {output, hy};
+  return {std::move(results[0]), std::move(results[1])};
 }
 
 // Autograd backward implementation: unpacks saved variables, calls
@@ -7036,35 +7065,50 @@ torch::autograd::variable_list AtenGruInputAutograd::backward(
   const bool bidirectional = ctx->saved_data["bidirectional"].toBool();
   const bool batch_first = ctx->saved_data["batch_first"].toBool();
 
-  const int64_t batch = batch_first ? input.size(0) : input.size(1);
-  const int64_t seq_len = batch_first ? input.size(1) : input.size(0);
-  const int64_t hidden = hx.size(2);
+  // Uses sym_size() so that FakeTensors with symbolic shapes are not
+  // specialized.
+  const c10::SymInt batch = batch_first ? input.sym_size(0) : input.sym_size(1);
+  const c10::SymInt seq_len =
+      batch_first ? input.sym_size(1) : input.sym_size(0);
+  const c10::SymInt hidden = hx.sym_size(2);
   const int64_t num_directions = bidirectional ? 2 : 1;
 
   at::Tensor grad_output = grad_outputs[0];
   if (!grad_output.defined()) {
-    Dimensions out_shape =
-        batch_first ? Dimensions{batch, seq_len, hidden * num_directions}
-                    : Dimensions{seq_len, batch, hidden * num_directions};
-    grad_output = at::zeros(out_shape, input.options());
+    const c10::SymDimVector out_shape =
+        batch_first
+            ? c10::SymDimVector{batch, seq_len, hidden * num_directions}
+            : c10::SymDimVector{seq_len, batch, hidden * num_directions};
+    grad_output = at::zeros_symint(out_shape, input.options());
   }
 
   at::Tensor grad_hy = grad_outputs[1];
   if (!grad_hy.defined()) {
-    grad_hy = at::zeros({num_layers * num_directions, batch, hidden},
-                        input.options());
+    grad_hy = at::zeros_symint({num_layers * num_directions, batch, hidden},
+                               input.options());
   }
 
-  auto [grad_input, grad_hx, grad_params] = AtenGruInputBackward(
-      grad_output, grad_hy, input, hx, params, has_biases, num_layers, dropout,
-      train, bidirectional, batch_first, cached_acts);
+  static const absl::NoDestructor op(
+      at::Dispatcher::singleton()
+          .findSchemaOrThrow("tpu::_gru_input_backward", "")
+          .typed<std::vector<at::Tensor>(const at::Tensor&, const at::Tensor&,
+                                         const at::Tensor&, const at::Tensor&,
+                                         at::TensorList, bool, int64_t, double,
+                                         bool, bool, bool, at::TensorList)>());
+  std::vector<at::Tensor> grads;
+  {
+    at::AutoDispatchBelowADInplaceOrView guard;
+    grads = op->call(grad_output, grad_hy, input, hx, params, has_biases,
+                     num_layers, dropout, train, bidirectional, batch_first,
+                     cached_acts);
+  }
+  ABSL_CHECK_EQ(  // CRASH_OK=internal custom op contract
+      grads.size(), static_cast<size_t>(2 + params_count));
 
   torch::autograd::variable_list result;
   result.reserve(2 + params_count + 6);
-  result.push_back(std::move(grad_input));
-  result.push_back(std::move(grad_hx));
-  for (at::Tensor& p_grad : grad_params) {
-    result.push_back(std::move(p_grad));
+  for (at::Tensor& grad : grads) {
+    result.push_back(std::move(grad));
   }
   result.push_back(at::Tensor());  // has_biases
   result.push_back(at::Tensor());  // num_layers
@@ -7076,46 +7120,223 @@ torch::autograd::variable_list AtenGruInputAutograd::backward(
   return result;
 }
 
+void ValidateGruInputsOrThrow(const at::Tensor& input, const at::Tensor& hx,
+                              const at::TensorList params,
+                              const bool has_biases, const int64_t num_layers,
+                              const double dropout, const bool train,
+                              const bool bidirectional,
+                              const bool batch_first) {
+  internal::ScopedOpName scoped_op_name(OpName::kGruInput);
+  ScopedPythonContextCapturer capturer(OpName::kGruInput);
+  try {
+    TT_THROW_IF_ERROR(ValidateGruInputs(input, hx, params, has_biases,
+                                        num_layers, dropout, train,
+                                        bidirectional, batch_first));
+  } catch (const TtError& e) {
+    TranslateToC10ErrorAndThrow(e);
+  }
+}
+
+bool HasAnyForwardGrad(const at::Tensor& input, const at::Tensor& hx,
+                       const at::TensorList params) {
+  if (input._fw_grad(/*level=*/0).defined() ||
+      hx._fw_grad(/*level=*/0).defined()) {
+    return true;
+  }
+  for (const at::Tensor& p : params) {
+    if (p._fw_grad(/*level=*/0).defined()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool HasAnyRequiresGrad(const at::Tensor& input, const at::Tensor& hx,
+                        const at::TensorList params) {
+  if (input.requires_grad() || hx.requires_grad()) {
+    return true;
+  }
+  for (const at::Tensor& p : params) {
+    if (p.requires_grad()) {
+      return true;
+    }
+  }
+  return false;
+}
+
 }  // namespace
 
-// Top-level public ATen operator for GRU execution on TPU.
-// Automatically routes between autograd-aware differentiation (when gradients
-// are required) and optimized direct inference.
-//
-// Arguments:
-//   input: Input sequence tensor.
-//   hx: Initial hidden states.
-//   params: List of layer weight and bias parameters.
-//   has_biases: Whether bias parameters are used.
-//   num_layers: Number of stacked layers.
-//   dropout: Inter-layer dropout probability.
-//   train: Whether running in training mode.
-//   bidirectional: Whether layer is bidirectional.
-//   batch_first: Whether sequence layout is [batch, seq, feature].
-//
-// Returns:
-//   Tuple of (output_sequence, final_hidden_state).
-std::tuple<at::Tensor, at::Tensor> AtenGruInput(
+std::tuple<at::Tensor, at::Tensor> TpuGruInput(
     const at::Tensor& input, const at::Tensor& hx, const at::TensorList params,
     const bool has_biases, const int64_t num_layers, const double dropout,
     const bool train, const bool bidirectional, const bool batch_first) {
-  bool requires_grad = input.requires_grad() || hx.requires_grad();
-  if (!requires_grad) {
-    for (const at::Tensor& p : params) {
-      if (p.requires_grad()) {
-        requires_grad = true;
-        break;
-      }
+  return AtenGruInputForward(input, hx, params, has_biases, num_layers, dropout,
+                             train, bidirectional, batch_first);
+}
+
+std::tuple<at::Tensor, at::Tensor> MetaTpuGruInput(
+    const at::Tensor& input, const at::Tensor& hx, const at::TensorList params,
+    const bool has_biases, const int64_t num_layers, const double dropout,
+    const bool train, const bool bidirectional, const bool batch_first) {
+  ValidateGruInputsOrThrow(input, hx, params, has_biases, num_layers, dropout,
+                           train, bidirectional, batch_first);
+  const c10::SymInt batch = batch_first ? input.sym_size(0) : input.sym_size(1);
+  const c10::SymInt seq_len =
+      batch_first ? input.sym_size(1) : input.sym_size(0);
+  const c10::SymInt hidden = hx.sym_size(2);
+  const int64_t num_directions = bidirectional ? 2 : 1;
+  const c10::SymDimVector output_shape =
+      batch_first ? c10::SymDimVector{batch, seq_len, hidden * num_directions}
+                  : c10::SymDimVector{seq_len, batch, hidden * num_directions};
+  return {at::empty_symint(output_shape, input.options()),
+          at::empty_symint({num_layers * num_directions, batch, hidden},
+                           input.options())};
+}
+
+std::vector<at::Tensor> TpuGruInputForwardCached(
+    const at::Tensor& input, const at::Tensor& hx, const at::TensorList params,
+    const bool has_biases, const int64_t num_layers, const double dropout,
+    const bool train, const bool bidirectional, const bool batch_first) {
+  auto [output, hy, cached_acts] =
+      AtenGruInputForwardCached(input, hx, params, has_biases, num_layers,
+                                dropout, train, bidirectional, batch_first);
+  std::vector<at::Tensor> results;
+  results.reserve(2 + cached_acts.size());
+  results.push_back(std::move(output));
+  results.push_back(std::move(hy));
+  for (at::Tensor& act : cached_acts) {
+    results.push_back(std::move(act));
+  }
+  return results;
+}
+
+std::vector<at::Tensor> MetaTpuGruInputForwardCached(
+    const at::Tensor& input, const at::Tensor& hx, const at::TensorList params,
+    const bool has_biases, const int64_t num_layers, const double dropout,
+    const bool train, const bool bidirectional, const bool batch_first) {
+  ValidateGruInputsOrThrow(input, hx, params, has_biases, num_layers, dropout,
+                           train, bidirectional, batch_first);
+  const c10::SymInt batch = batch_first ? input.sym_size(0) : input.sym_size(1);
+  const c10::SymInt seq_len =
+      batch_first ? input.sym_size(1) : input.sym_size(0);
+  const c10::SymInt hidden = hx.sym_size(2);
+  const int64_t num_directions = bidirectional ? 2 : 1;
+  const bool has_dropout = (dropout > 0.0 && train && num_layers > 1);
+
+  const c10::SymDimVector output_shape =
+      batch_first ? c10::SymDimVector{batch, seq_len, hidden * num_directions}
+                  : c10::SymDimVector{seq_len, batch, hidden * num_directions};
+  const c10::SymDimVector act_shape =
+      batch_first ? c10::SymDimVector{batch, seq_len, 4 * hidden}
+                  : c10::SymDimVector{seq_len, batch, 4 * hidden};
+  const auto acc_options =
+      input.options().dtype(ToAccumulateType(input.scalar_type()));
+
+  std::vector<at::Tensor> results;
+  results.reserve(2 + num_layers * num_directions + (has_dropout ? 1 : 0));
+  results.push_back(at::empty_symint(output_shape, input.options()));
+  results.push_back(at::empty_symint(
+      {num_layers * num_directions, batch, hidden}, input.options()));
+
+  for (int64_t l = 0; l < num_layers; ++l) {
+    for (int64_t d = 0; d < num_directions; ++d) {
+      results.push_back(at::empty_symint(act_shape, acc_options));
     }
   }
+  if (has_dropout) {
+    results.push_back(at::empty({2}, input.options().dtype(at::kUInt64)));
+  }
+  return results;
+}
 
-  if (c10::GradMode::is_enabled() && requires_grad) {
+std::vector<at::Tensor> TpuGruInputBackward(
+    const at::Tensor& grad_output, const at::Tensor& grad_hy,
+    const at::Tensor& input, const at::Tensor& hx, const at::TensorList params,
+    const bool has_biases, const int64_t num_layers, const double dropout,
+    const bool train, const bool bidirectional, const bool batch_first,
+    const at::TensorList cached_activations) {
+  auto [grad_input, grad_hx, grad_params] = AtenGruInputBackward(
+      grad_output, grad_hy, input, hx, params, has_biases, num_layers, dropout,
+      train, bidirectional, batch_first, cached_activations);
+  ABSL_CHECK_EQ(  // CRASH_OK=internal kernel contract
+      grad_params.size(), params.size());
+  std::vector<at::Tensor> results;
+  results.reserve(2 + grad_params.size());
+  results.push_back(grad_input.scalar_type() == input.scalar_type()
+                        ? std::move(grad_input)
+                        : grad_input.to(input.scalar_type()));
+  results.push_back(grad_hx.scalar_type() == hx.scalar_type()
+                        ? std::move(grad_hx)
+                        : grad_hx.to(hx.scalar_type()));
+  for (size_t i = 0; i < grad_params.size(); ++i) {
+    results.push_back(grad_params[i].scalar_type() == params[i].scalar_type()
+                          ? std::move(grad_params[i])
+                          : grad_params[i].to(params[i].scalar_type()));
+  }
+  return results;
+}
+
+std::vector<at::Tensor> MetaTpuGruInputBackward(
+    const at::Tensor& /*grad_output*/, const at::Tensor& /*grad_hy*/,
+    const at::Tensor& input, const at::Tensor& hx, const at::TensorList params,
+    const bool has_biases, const int64_t num_layers, const double dropout,
+    const bool train, const bool bidirectional, const bool batch_first,
+    const at::TensorList cached_activations) {
+  ValidateGruInputsOrThrow(input, hx, params, has_biases, num_layers, dropout,
+                           train, bidirectional, batch_first);
+  const int64_t num_directions = bidirectional ? 2 : 1;
+  const bool has_dropout = (dropout > 0.0 && train && num_layers > 1);
+  const size_t expected_cached_acts =
+      static_cast<size_t>(num_layers * num_directions + (has_dropout ? 1 : 0));
+  ABSL_CHECK_EQ(  // CRASH_OK=internal custom op contract
+      cached_activations.size(), expected_cached_acts);
+  std::vector<at::Tensor> results;
+  results.reserve(2 + params.size());
+  results.push_back(at::empty_symint(input.sym_sizes(), input.options()));
+  results.push_back(at::empty_symint(hx.sym_sizes(), hx.options()));
+  for (const at::Tensor& param : params) {
+    results.push_back(at::empty_symint(param.sym_sizes(), param.options()));
+  }
+  return results;
+}
+
+std::tuple<at::Tensor, at::Tensor> AtenGruInputAutogradKernel(
+    const at::Tensor& input, const at::Tensor& hx, const at::TensorList params,
+    const bool has_biases, const int64_t num_layers, const double dropout,
+    const bool train, const bool bidirectional, const bool batch_first) {
+  if (HasAnyForwardGrad(input, hx, params) ||
+      c10::impl::tls_is_dispatch_key_included(
+          c10::DispatchKey::FuncTorchBatched)) {
+    return at::native::gru(input, hx, params, has_biases, num_layers, dropout,
+                           train, bidirectional, batch_first);
+  }
+  if (c10::GradMode::is_enabled() && HasAnyRequiresGrad(input, hx, params)) {
     auto results =
         AtenGruInputAutograd::apply(input, hx, params, has_biases, num_layers,
                                     dropout, train, bidirectional, batch_first);
     return {results[0], results[1]};
   }
+  static const absl::NoDestructor op(
+      at::Dispatcher::singleton()
+          .findSchemaOrThrow("tpu::_gru_input", "")
+          .typed<std::tuple<at::Tensor, at::Tensor>(
+              const at::Tensor&, const at::Tensor&, at::TensorList, bool,
+              int64_t, double, bool, bool, bool)>());
+  at::AutoDispatchBelowADInplaceOrView guard;
+  return op->call(input, hx, params, has_biases, num_layers, dropout, train,
+                  bidirectional, batch_first);
+}
 
+std::tuple<at::Tensor, at::Tensor> AtenGruInput(
+    const at::Tensor& input, const at::Tensor& hx, const at::TensorList params,
+    const bool has_biases, const int64_t num_layers, const double dropout,
+    const bool train, const bool bidirectional, const bool batch_first) {
+  if (c10::GradMode::is_enabled() && HasAnyRequiresGrad(input, hx, params)) {
+    auto results =
+        AtenGruInputAutograd::apply(input, hx, params, has_biases, num_layers,
+                                    dropout, train, bidirectional, batch_first);
+    return {results[0], results[1]};
+  }
   return AtenGruInputForward(input, hx, params, has_biases, num_layers, dropout,
                              train, bidirectional, batch_first);
 }

@@ -19,6 +19,7 @@
 
 #include <cstdint>
 #include <tuple>
+#include <vector>
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
@@ -26,13 +27,51 @@
 
 namespace torch_tpu {
 
-// Implements aten::gru.input on TPU via pure StableHLO builder operations.
-// Fuses batched input projections and the recurrence loop on-chip.
-// Seamlessly delegates to AtenGruInputAutograd when gradients are required.
+// Implements aten::gru.input on PrivateUse1 via fused StableHLO recurrence.
 std::tuple<at::Tensor, at::Tensor> AtenGruInput(
     const at::Tensor& input, const at::Tensor& hx, at::TensorList params,
     bool has_biases, int64_t num_layers, double dropout, bool train,
     bool bidirectional, bool batch_first);
+
+// AutogradPrivateUse1 entry point for aten::gru.input across eager and
+// torch.compile.
+std::tuple<at::Tensor, at::Tensor> AtenGruInputAutogradKernel(
+    const at::Tensor& input, const at::Tensor& hx, at::TensorList params,
+    bool has_biases, int64_t num_layers, double dropout, bool train,
+    bool bidirectional, bool batch_first);
+
+// Internal tpu::_gru_input* custom op implementations and Meta kernels.
+std::tuple<at::Tensor, at::Tensor> TpuGruInput(
+    const at::Tensor& input, const at::Tensor& hx, at::TensorList params,
+    bool has_biases, int64_t num_layers, double dropout, bool train,
+    bool bidirectional, bool batch_first);
+
+std::tuple<at::Tensor, at::Tensor> MetaTpuGruInput(
+    const at::Tensor& input, const at::Tensor& hx, at::TensorList params,
+    bool has_biases, int64_t num_layers, double dropout, bool train,
+    bool bidirectional, bool batch_first);
+
+std::vector<at::Tensor> TpuGruInputForwardCached(
+    const at::Tensor& input, const at::Tensor& hx, at::TensorList params,
+    bool has_biases, int64_t num_layers, double dropout, bool train,
+    bool bidirectional, bool batch_first);
+
+std::vector<at::Tensor> MetaTpuGruInputForwardCached(
+    const at::Tensor& input, const at::Tensor& hx, at::TensorList params,
+    bool has_biases, int64_t num_layers, double dropout, bool train,
+    bool bidirectional, bool batch_first);
+
+std::vector<at::Tensor> TpuGruInputBackward(
+    const at::Tensor& grad_output, const at::Tensor& grad_hy,
+    const at::Tensor& input, const at::Tensor& hx, at::TensorList params,
+    bool has_biases, int64_t num_layers, double dropout, bool train,
+    bool bidirectional, bool batch_first, at::TensorList cached_activations);
+
+std::vector<at::Tensor> MetaTpuGruInputBackward(
+    const at::Tensor& grad_output, const at::Tensor& grad_hy,
+    const at::Tensor& input, const at::Tensor& hx, at::TensorList params,
+    bool has_biases, int64_t num_layers, double dropout, bool train,
+    bool bidirectional, bool batch_first, at::TensorList cached_activations);
 
 }  // namespace torch_tpu
 

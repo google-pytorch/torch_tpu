@@ -29,6 +29,7 @@
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
 #include "ATen/core/dispatch/Dispatcher.h"
+#include "ATen/core/enum_tag.h"
 #include "ATen/core/stack.h"
 #include "ATen/native/CPUFallback.h"
 #include "ATen/native/DispatchStub.h"
@@ -1277,7 +1278,9 @@ TORCH_LIBRARY_IMPL(aten, AutogradPrivateUse1, m) {
   ImplStable<OpName::kFftIrfftOut>(m, AtenFftIrfftOut);
   ImplStable<OpName::kFftRfft>(m, AtenFftRfft);
   ImplStable<OpName::kFftRfftOut>(m, AtenFftRfftOut);
+  ImplStable<OpName::kGruInput>(m, AtenGruInputAutogradKernel);
   ImplStable<OpName::kLinear>(m, AtenLinearAutograd);
+  ImplStable<OpName::kLstmInput>(m, AtenLstmInputAutogradKernel);
   ImplStable<OpName::kNllLossNd>(m, AtenNllLossNdAutograd);
   ImplStable<OpName::kRepeatInterleaveSelfInt>(
       m, AtenRepeatInterleaveSelfIntAutograd);
@@ -1294,6 +1297,37 @@ TORCH_LIBRARY(tpu, m) {
   // We don't need to use ImplExperimental/ImplStable/ImplDeprecated here as
   // these are just signatures. The actual stages of the ops are marked in
   // TORCH_LIBRARY_IMPL(tpu, PrivateUse1, m).
+  m.def(
+      "_gru_input(Tensor input, Tensor hx, Tensor[] params, bool has_biases, "
+      "int num_layers, float dropout, bool train, bool bidirectional, "
+      "bool batch_first) -> (Tensor, Tensor)",
+      {at::Tag::nondeterministic_seeded});
+  m.def(
+      "_gru_input_forward_cached(Tensor input, Tensor hx, Tensor[] params, "
+      "bool has_biases, int num_layers, float dropout, bool train, "
+      "bool bidirectional, bool batch_first) -> Tensor[]",
+      {at::Tag::nondeterministic_seeded});
+  m.def(
+      "_gru_input_backward(Tensor grad_output, Tensor grad_hy, Tensor input, "
+      "Tensor hx, Tensor[] params, bool has_biases, int num_layers, "
+      "float dropout, bool train, bool bidirectional, bool batch_first, "
+      "Tensor[] cached_activations) -> Tensor[]");
+  m.def(
+      "_lstm_input(Tensor input, Tensor[] hx, Tensor[] params, "
+      "bool has_biases, int num_layers, float dropout, bool train, "
+      "bool bidirectional, bool batch_first) -> (Tensor, Tensor, Tensor)",
+      {at::Tag::nondeterministic_seeded});
+  m.def(
+      "_lstm_input_forward_cached(Tensor input, Tensor[] hx, Tensor[] params, "
+      "bool has_biases, int num_layers, float dropout, bool train, "
+      "bool bidirectional, bool batch_first) -> Tensor[]",
+      {at::Tag::nondeterministic_seeded});
+  m.def(
+      "_lstm_input_backward(Tensor grad_output, Tensor grad_hy, "
+      "Tensor grad_cy, Tensor input, Tensor[] hx, Tensor[] params, "
+      "bool has_biases, int num_layers, float dropout, bool train, "
+      "bool bidirectional, bool batch_first, "
+      "Tensor[] cached_activations) -> Tensor[]");
   m.def(
       "_max_pool1d(Tensor self, int[] kernel_size, int[] stride, "
       "int[] padding, int[] dilation, bool ceil_mode) -> Tensor");
@@ -1769,6 +1803,14 @@ TORCH_LIBRARY_IMPL(tpu, Meta, m) {
       });
   ImplInternal<OpName::kDistributedAllGatherDim>(m, MetaAllGatherDim);
   ImplInternal<OpName::kDistributedReduceScatterDim>(m, MetaReduceScatterDim);
+  ImplInternal<OpName::kTpuGruInput>(m, MetaTpuGruInput);
+  ImplInternal<OpName::kTpuGruInputForwardCached>(m,
+                                                  MetaTpuGruInputForwardCached);
+  ImplInternal<OpName::kTpuGruInputBackward>(m, MetaTpuGruInputBackward);
+  ImplInternal<OpName::kTpuLstmInput>(m, MetaTpuLstmInput);
+  ImplInternal<OpName::kTpuLstmInputForwardCached>(
+      m, MetaTpuLstmInputForwardCached);
+  ImplInternal<OpName::kTpuLstmInputBackward>(m, MetaTpuLstmInputBackward);
 }
 
 // Registers implementations for torch.ops.tpu ops for TPU tensors.
@@ -1815,6 +1857,13 @@ TORCH_LIBRARY_IMPL(tpu, PrivateUse1, m) {
   ImplInternal<OpName::kSparseMapRow>(m, AtenSparseMapRow);
   ImplInternal<OpName::kDistributedAllGatherDim>(m, AllGatherDim);
   ImplInternal<OpName::kDistributedReduceScatterDim>(m, ReduceScatterDim);
+  ImplInternal<OpName::kTpuGruInput>(m, TpuGruInput);
+  ImplInternal<OpName::kTpuGruInputForwardCached>(m, TpuGruInputForwardCached);
+  ImplInternal<OpName::kTpuGruInputBackward>(m, TpuGruInputBackward);
+  ImplInternal<OpName::kTpuLstmInput>(m, TpuLstmInput);
+  ImplInternal<OpName::kTpuLstmInputForwardCached>(m,
+                                                   TpuLstmInputForwardCached);
+  ImplInternal<OpName::kTpuLstmInputBackward>(m, TpuLstmInputBackward);
 }
 
 // Registers custom autograd for torch.ops.tpu ops.
