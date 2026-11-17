@@ -282,7 +282,7 @@ class HandleSliceLikeOpsPassTest(seed_test_utils.RepeatableTest):
         if isinstance(node.meta.get("val"), torch.Tensor)
         and node.meta["val"].dim() == 3
     )
-    x_len_size_placeholder = f"{x_placeholder.meta['val'].shape[-1]}_size"
+    x_len_size_placeholder = f"sym_{x_placeholder.meta['val'].shape[-1]}_size"
     self.assertIn(
         x_len_size_placeholder,
         _transitive_placeholder_names(slice_node.args[1][-1]),

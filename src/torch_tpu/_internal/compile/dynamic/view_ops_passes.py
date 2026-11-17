@@ -136,12 +136,23 @@ class HandleReshapeLikeOpsPass:
     graph_module.graph.erase_node(node)
 
 
+def _needs_block_repeat(input_dim: Any, repeat_count: Any) -> bool:
+  """Returns True if repeating `input_dim` by `repeat_count` needs reshape."""
+  if sym_utils.is_statically_equal(repeat_count, 1):
+    return False
+  return not (
+      sym_utils.is_statically_equal(input_dim, 1)
+      or sym_utils.is_statically_equal(input_dim, 0)
+  )
+
+
 class HandleBroadcastLikeOpsPass:
   """Broadcast-like ops transformation pass.
 
-  Detects broadcast operations (such as aten.expand, aten.expand_copy) that
-  have dynamic dimensions (SymInt or SymInt expressions) as input and replaces
-  them with torch.ops.tpu._dynamic_broadcast.
+  Detects broadcast and tile operations (such as aten.expand, aten.expand_copy,
+  aten.broadcast_to, and aten.repeat) with dynamic dimensions (SymInt or SymInt
+  expressions) and lowers them via torch.ops.tpu._dynamic_broadcast (plus
+  torch.ops.tpu._dynamic_reshape when repeating non-unit dimensions).
   """
 
   def __init__(self, transform_context: GraphTransformContext):
@@ -150,6 +161,7 @@ class HandleBroadcastLikeOpsPass:
         torch.ops.aten.expand.default: self._process_broadcast_op,
         torch.ops.aten.expand_copy.default: self._process_broadcast_op,
         torch.ops.aten.broadcast_to.default: self._process_broadcast_op,
+        torch.ops.aten.repeat.default: self._process_repeat_op,
     }
 
   def __call__(self, graph_module: torch.fx.GraphModule) -> None:
@@ -208,6 +220,201 @@ class HandleBroadcastLikeOpsPass:
 
     node.replace_all_uses_with(dynamic_broadcast_node)
     graph_module.graph.erase_node(node)
+
+  def _process_repeat_op(
+      self,
+      graph_module: torch.fx.GraphModule,
+      node: torch.fx.Node,
+  ) -> None:
+    """Lowers dynamic aten.repeat ops under two scenarios.
+
+    1. Broadcast only (`_lower_repeat_as_broadcast`): every repeated dimension
+       (`repeat_count != 1`) is either a newly prepended leading axis or has
+       input size 0 or 1, so a single `_dynamic_broadcast` suffices.
+       Example: `x` of shape `[1, s1, 4]` with `repeats=[s0, 1, 1]` broadcasts
+       directly to `[s0, s1, 4]` with `broadcast_dims=[0, 1, 2]`.
+    2. Broadcast + reshape (`_lower_repeat_as_broadcast_and_reshape`): at least
+       one existing input axis of size > 1 (or dynamic) is repeated
+       (`repeat_count != 1`), requiring `_dynamic_broadcast` into an expanded
+       intermediate shape followed by `_dynamic_reshape` to collapse tiled axes.
+       Example: `x` of shape `[3, 4]` with `repeats=[s0, 1]` broadcasts to
+       `[s0, 3, 4]` (`broadcast_dims=[1, 2]`) and reshapes to `[3 * s0, 4]`.
+    """
+    input_node = node.args[0]
+    repeats = (
+        node.args[1] if len(node.args) > 1 else node.kwargs.get("repeats", ())
+    )
+    if not isinstance(repeats, (list, tuple)):
+      repeats = [repeats]
+
+    input_value = _get_node_val(input_node)
+    output_value = _get_node_val(node)
+    if not hasattr(input_value, "shape") or not hasattr(output_value, "shape"):
+      return
+
+    if not any(
+        sym_utils.is_symint(count) for count in repeats
+    ) and not sym_utils.has_dynamic_shape(input_value):
+      return
+
+    input_shape = list(input_value.shape)
+    output_shape = list(output_value.shape)
+    if any(sym_utils.is_statically_equal(count, 0) for count in repeats):
+      zero_scalar = self._transform_context.ensure_tensor(
+          graph_module, 0, node, dtype=input_value.dtype
+      )
+      result_node = self._lower_repeat_as_broadcast(
+          graph_module,
+          node,
+          zero_scalar,
+          output_shape,
+          broadcast_dims=[],
+      )
+      node.replace_all_uses_with(result_node)
+      graph_module.graph.erase_node(node)
+      return
+
+    # When len(repeats) > len(input_shape), aten.repeat implicitly prepends
+    # leading size-1 dimensions that have no source axis in `input_node`.
+    num_prepended_dims = len(output_shape) - len(input_shape)
+    needs_reshape = any(
+        _needs_block_repeat(in_dim, rep_count)
+        for in_dim, rep_count in zip(
+            input_shape, repeats[num_prepended_dims:], strict=True
+        )
+    )
+    if not needs_reshape:
+      broadcast_dims = list(range(num_prepended_dims, len(output_shape)))
+      result_node = self._lower_repeat_as_broadcast(
+          graph_module,
+          node,
+          input_node,
+          output_shape,
+          broadcast_dims=broadcast_dims,
+      )
+    else:
+      result_node = self._lower_repeat_as_broadcast_and_reshape(
+          graph_module,
+          node,
+          input_node,
+          input_shape,
+          output_value,
+          output_shape,
+          repeats,
+          num_prepended_dims,
+      )
+
+    node.replace_all_uses_with(result_node)
+    graph_module.graph.erase_node(node)
+
+  def _lower_repeat_as_broadcast(
+      self,
+      graph_module: torch.fx.GraphModule,
+      node: torch.fx.Node,
+      input_node: Any,
+      output_shape: Sequence[Any],
+      broadcast_dims: Sequence[int],
+  ) -> torch.fx.Node:
+    """Lowers repeat via a single `_dynamic_broadcast` without reshape.
+
+    Example: `x` of shape `[s1]` with `repeats=[s0, 1]` (`num_prepended_dims=1`)
+    emits `_dynamic_broadcast(x, shape=[s0, s1], broadcast_dims=[1])`.
+    """
+    out_shape_tensors, out_static_shape, out_is_dynamic = (
+        _extract_shape_tensors_and_bounds(
+            graph_module, node, output_shape, self._transform_context
+        )
+    )
+    with graph_module.graph.inserting_before(node):
+      result_node = graph_module.graph.call_function(
+          torch.ops.tpu._dynamic_broadcast,
+          args=(
+              input_node,
+              out_shape_tensors,
+              list(broadcast_dims),
+              out_static_shape,
+              out_is_dynamic,
+          ),
+      )
+      result_node.meta = node.meta.copy()
+    return result_node
+
+  def _lower_repeat_as_broadcast_and_reshape(
+      self,
+      graph_module: torch.fx.GraphModule,
+      node: torch.fx.Node,
+      input_node: Any,
+      input_shape: Sequence[Any],
+      output_value: Any,
+      output_shape: Sequence[Any],
+      repeats: Sequence[Any],
+      num_prepended_dims: int,
+  ) -> torch.fx.Node:
+    """Lowers repeat by broadcasting block copies and reshaping to collapse.
+
+    Example: `x` of shape `[3, 4]` with `repeats=[2, s0, 1]`
+    (`num_prepended_dims=1`, `output_shape=[2, 3 * s0, 4]`):
+      1. `_dynamic_broadcast(x, shape=[2, s0, 3, 4], broadcast_dims=[2, 3])`
+      2. `_dynamic_reshape(..., shape=[2, 3 * s0, 4])`
+    """
+    # Prepended leading axes (when len(repeats) > len(input_shape)) are newly
+    # created by the broadcast and do not map from any axis of `input_node`.
+    broadcast_target_shape: list[Any] = list(output_shape[:num_prepended_dims])
+    broadcast_dims: list[int] = []
+
+    for input_dim, repeat_count, output_dim in zip(
+        input_shape,
+        repeats[num_prepended_dims:],
+        output_shape[num_prepended_dims:],
+        strict=True,
+    ):
+      if not _needs_block_repeat(input_dim, repeat_count):
+        broadcast_dims.append(len(broadcast_target_shape))
+        broadcast_target_shape.append(output_dim)
+      else:
+        # Place `repeat_count` before `input_dim` so row-major reshape tiles
+        # whole blocks rather than repeating individual elements. For example,
+        # for x = [10, 20, 30] (shape [3]) with repeat_count = 2:
+        #   - target [2, 3] with broadcast_dims=[1] broadcasts x along axis 0
+        #     to [[10, 20, 30], [10, 20, 30]], reshaping to
+        #     [10, 20, 30, 10, 20, 30].
+        #   - target [3, 2] with broadcast_dims=[0] would instead produce
+        #     [[10, 10], [20, 20], [30, 30]], reshaping to
+        #     [10, 10, 20, 20, 30, 30].
+        # When `input_dim` is bounded dynamic, XLA's DynamicPadder packs valid
+        # elements of each row to the front of the collapsed dimension.
+        broadcast_target_shape.append(repeat_count)
+        broadcast_dims.append(len(broadcast_target_shape))
+        broadcast_target_shape.append(input_dim)
+
+    bcast_node = self._lower_repeat_as_broadcast(
+        graph_module,
+        node,
+        input_node,
+        broadcast_target_shape,
+        broadcast_dims=broadcast_dims,
+    )
+    if isinstance(output_value, torch.Tensor):
+      bcast_val_shape = [_get_node_val(dim) for dim in broadcast_target_shape]
+      bcast_node.meta["val"] = output_value.new_empty(bcast_val_shape)
+
+    out_shape_tensors, out_static_shape, out_is_dynamic = (
+        _extract_shape_tensors_and_bounds(
+            graph_module, node, output_shape, self._transform_context
+        )
+    )
+    with graph_module.graph.inserting_before(node):
+      reshape_node = graph_module.graph.call_function(
+          torch.ops.tpu._dynamic_reshape,
+          args=(
+              bcast_node,
+              out_shape_tensors,
+              out_static_shape,
+              out_is_dynamic,
+          ),
+      )
+      reshape_node.meta = node.meta.copy()
+    return reshape_node
 
 
 class HandleSliceLikeOpsPass:
