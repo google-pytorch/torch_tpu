@@ -1931,5 +1931,39 @@ class IndexPutDynamicBooleanMaskTest(seed_test_utils.RepeatableTest):
     utils.assert_close(out, expected)
 
 
+# TODO: b/581040310 - Remove once `atanh` leaves the `COMPILE_GRAD` deny list in
+# dynamism_test_utils.py, so `ops_test_dynamic_compiled_grad` covers this path.
+class DynamicAtanhBackwardTest(seed_test_utils.RepeatableTest):
+
+  def setUp(self):
+    super().setUp()
+    if not torch.accelerator.is_available():
+      self.skipTest("TPU accelerator not available in this test environment.")
+    tt_testing.reset_eager_state()
+    self.device = torch.accelerator.current_accelerator()
+
+  @parameterized.named_parameters(
+      ("float32", torch.float32, 1e-4),
+      ("bfloat16", torch.bfloat16, 2e-2),
+  )
+  def test_atanh_dynamic_compiled_backward(self, dtype, tol):
+    def fn(x):
+      return torch.atanh(x).sum()
+
+    compiled = torch.compile(fn, backend="tpu")
+    x_cpu = torch.linspace(-0.7, 0.7, 24, dtype=dtype).reshape(4, 6)
+    x_tpu = x_cpu.to(self.device).detach().requires_grad_(True)
+    x_ref = x_cpu.detach().clone().requires_grad_(True)
+    torch._dynamo.mark_dynamic(x_tpu, 0, min=2, max=10)
+    torch._dynamo.mark_dynamic(x_tpu, 1, min=2, max=12)
+
+    loss = compiled(x_tpu)
+    loss.backward()
+    loss_ref = fn(x_ref)
+    loss_ref.backward()
+    utils.assert_close(loss, loss_ref, rtol=tol, atol=tol)
+    utils.assert_close(x_tpu.grad, x_ref.grad, rtol=tol, atol=tol)
+
+
 if __name__ == "__main__":
   absltest.main()

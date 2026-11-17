@@ -2320,6 +2320,17 @@ class InplaceBufferDonationTest(seed_test_utils.RepeatableTest):
       self.assertTrue(torch.equal(res.cpu(), expected))
       self.assertTrue(torch.equal(v.cpu(), expected))
 
+  def test_fill_with_view_of_self_in_defer_never(self):
+    """Verifies fill_ with a fill value that is a view of the donated self."""
+    with execution_mode.set_eager_mode(EagerMode.DEFER_NEVER):
+      x = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=self.device)
+      x.fill_(x[1])
+      self.assertTrue(torch.equal(x.cpu(), torch.tensor([2.0, 2.0, 2.0])))
+
+      y = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=self.device)
+      y[0].fill_(y[2])
+      self.assertTrue(torch.equal(y.cpu(), torch.tensor([3.0, 2.0, 3.0])))
+
 
 if __name__ == "__main__":
   absltest.main()

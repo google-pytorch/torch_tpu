@@ -485,7 +485,6 @@ DYNAMISM_DENY_LISTS: DenyList = {
         # Aborts the test process with a CHECK failure in BroadcastIfNeeded
         # (op_builder_utils.cc).
         "_segment_reduce": {EAGER, COMPILE},
-        "atanh": {COMPILE_GRAD},
         "bernoulli": {EAGER},
         "cdist": {EAGER},
         # These abort the test process with a CHECK failure in
@@ -705,6 +704,12 @@ DYNAMISM_DENY_LISTS: DenyList = {
     # where upstream _weight_norm_interface promotes float16 norms to float32.
     "PyTorch < 2.15 _weight_norm_interface decomposition returns float16 norm": {
         "_weight_norm_interface": {COMPILE_GRAD},
+    },
+    # TODO: b/581040310 - Generate compiled-grad GPU goldens; AOTAutograd
+    # decomposes backward in bfloat16/float16 while eager GPU grad goldens
+    # compute in float32 opmath.
+    "compiled backward differs from eager GPU grad goldens in low precision": {
+        "atanh": {COMPILE_GRAD},
     },
     "untriaged: invalid result": {
         # TODO: fix clamp() returning enormous errors or nans when dynamism is

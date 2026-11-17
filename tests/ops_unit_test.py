@@ -6810,6 +6810,21 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         ),
     )
 
+  def test_fill_tensor_value_aliases_self(self):
+    def test_fn(device):
+      t = torch.tensor([1.0, 2.0, 3.0], device=device)
+      t.fill_(t[1])
+      return t
+
+    self.assert_close_tpu_vs_cpu(test_fn)
+
+    def test_fn_view(device):
+      t = torch.tensor([1.0, 2.0, 3.0], device=device)
+      t[0].fill_(t[2])
+      return t
+
+    self.assert_close_tpu_vs_cpu(test_fn_view)
+
   def test_device_gen(self):
     gen = torch.Generator(device=torch.device("tpu"))
     self.assertEqual(gen.device.type, torch.device("tpu").type)
