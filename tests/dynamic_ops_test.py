@@ -136,25 +136,38 @@ _NONZERO_SERVED_CASES = (
     _nonzero_case((16385,), 2),
     _nonzero_case((40000,), 777),
     _nonzero_case((40000,), _ALL_NONZERO),
+    # 3-D to 8-D: several row blocks with flushes spanning slices, wide rows,
+    # then one case per rank. M is a multiple of 8 so that XLA, which picks the
+    # input layout that pads least, defaults to row-major T(8,128).
+    _nonzero_case((3, 16, 129), 1025),
+    _nonzero_case((2, 8, 16385), 5),
+    _nonzero_case((2, 3, 8, 129), _ALL_NONZERO),
+    _nonzero_case((2, 1, 3, 8, 129), 777),
+    _nonzero_case((1, 2, 1, 2, 8, 129), _ALL_NONZERO),
+    _nonzero_case((2, 1, 2, 1, 2, 8, 129), 99),
+    _nonzero_case((1, 2, 1, 2, 1, 2, 8, 129), _ALL_NONZERO),
 )
 
 _NONZERO_NOT_SERVED_CASES = (
-    # Default 2-D input layout isn't {1,0:T(8,128)}.
+    # Default input layout isn't row-major with T(8,128) tiles.
     _nonzero_case((3, 7), 5),
     _nonzero_case((5, 1), 5),
     _nonzero_case((5, 3), 5),
-    # K = 0 skips the index graph; K <= rank uses row-major S64[K,rank] layout.
+    _nonzero_case((2, 4, 4), 5),
+    # K = 0 skips the index graph; K <= rank rounded up to a power of two uses
+    # row-major S64[K,rank] layout.
     _nonzero_case((17, 257), 0),
     _nonzero_case((17, 257), 1),
     _nonzero_case((17, 257), 2),
     _nonzero_case((3000,), 0),
     _nonzero_case((3000,), 1),
     _nonzero_case((16,), 1),
-    # Not 1-D or 2-D F32.
-    _nonzero_case((2, 4, 4), 5),
+    _nonzero_case((2, 8, 129), 4),
+    # Not F32, or rank above 8.
     _nonzero_case((17, 257), 5, torch.bfloat16),
     _nonzero_case((3000,), 5, torch.bfloat16),
     _nonzero_case((16,), 5, torch.bfloat16),
+    _nonzero_case((1,) * 7 + (5, 5), 10),
 )
 
 
@@ -173,11 +186,13 @@ class DynamicOpsTest(UnboundedDynamicKernelTestBase):
     # (minor_to_major, tiles, element_size_in_bits); see nonzero_indices.h.
     self.assertEqual(
         torch.tpu.get_device_layout_if_materialized(x_tpu),
-        ([1, 0], [[8, 128]], 0) if x.ndim == 2 else ([0], [[tile]], 0),
+        ([0], [[tile]], 0)
+        if x.ndim == 1
+        else (list(range(x.ndim))[::-1], [[8, 128]], 0),
     )
     self.assertEqual(
         torch.tpu.get_device_layout_if_materialized(result),
-        ([0, 1], [[x.ndim, 128]], 0),
+        ([0, 1], [[1 << (x.ndim - 1).bit_length(), 128]], 0),
     )
 
   @parameterized.named_parameters(*_NONZERO_NOT_SERVED_CASES)

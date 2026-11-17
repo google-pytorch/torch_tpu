@@ -23,7 +23,7 @@
 
 namespace torch_tpu {
 
-// Returns the Mosaic nonzero indices kernels, 2-D then 1-D, for registration
+// Returns the Mosaic nonzero indices kernels, 1-D to 8-D, for registration
 // with `UnboundedDynamicKernelRegistry` in that order. Each is keyed under the
 // shapeless key of a nonzero graph with an F32 input of its rank. The predicate
 // excludes only +0.0 and -0.0, matching torch.nonzero.
@@ -58,6 +58,18 @@ namespace torch_tpu {
 //     to {1,0:T(1,128)} when K == 1.
 //   - Caller-checked arithmetic bounds: 2 <= N <= INT32_MAX - 127 and
 //     2 <= K <= N.
+// - N-D kernels, one per rank D in [3, 8]: as the 2-D kernel, with coordinates
+//   in row-major order.
+//   - Input: F32[...,M,N]{D-1,...,0:T(8,128)}. XLA defaults to another layout
+//     if that pads less, e.g. to {2,0,1:T(4,128)} for F32[3,5,5].
+//   - Output: S64[K,D]{0,1:T(P,128)}, P = D rounded up to a power of two,
+//     through the view with R = 2 * P * ceil(K/128); rows [0, R/2) hold P rows
+//     per 128 nonzeros, one per coordinate and then tile padding, [R/2, R)
+//     hold zeroed high words.
+//     NB: requires K > P because the XLA default layout for S64[K,D] switches
+//     to {1,0} when K <= P.
+//   - Caller-checked arithmetic bounds: every dimension is at most INT32_MAX,
+//     N <= INT32_MAX - 127, and P < K <= min(element count, INT32_MAX).
 std::vector<UnboundedDynamicKernel> GetNonzeroUnboundedDynamicKernels();
 
 }  // namespace torch_tpu
