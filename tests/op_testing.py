@@ -3673,7 +3673,10 @@ def _addmm_dtype_wrapper(
       raise RuntimeError(
           "out_dtype must be the same as the dtype of the provided out tensor"
       )
-    if out.shape == (0,):
+    # Upstream CUDA `aten.*.dtype_out` kernels do not resize zero-element `out`
+    # tensors, whereas TorchTPU's `DispatchOpOut` resizes natively without
+    # triggering a Dynamo `Tensor.resize_()` graph break.
+    if out.device.type == "cuda" and out.shape == (0,):
       out.resize_((mat1.size(0), mat2.size(1)))
     return torch.ops.aten.addmm.dtype_out(
         self, mat1, mat2, out_dtype, beta=beta, alpha=alpha, out=out
@@ -3698,7 +3701,7 @@ def _baddbmm_dtype_wrapper(
       raise RuntimeError(
           "out_dtype must be the same as the dtype of the provided out tensor"
       )
-    if out.shape == (0,):
+    if out.device.type == "cuda" and out.shape == (0,):
       out.resize_((batch1.size(0), batch1.size(1), batch2.size(2)))
     return torch.ops.aten.baddbmm.dtype_out(
         self, batch1, batch2, out_dtype, beta=beta, alpha=alpha, out=out
@@ -3720,7 +3723,7 @@ def _bmm_dtype_wrapper(
       raise RuntimeError(
           "out_dtype must be the same as the dtype of the provided out tensor"
       )
-    if out.shape == (0,):
+    if out.device.type == "cuda" and out.shape == (0,):
       out.resize_((self.size(0), self.size(1), mat2.size(2)))
     return torch.ops.aten.bmm.dtype_out(self, mat2, out_dtype, out=out)
   return torch.ops.aten.bmm.dtype(self, mat2, out_dtype)
@@ -3738,7 +3741,7 @@ def _mm_dtype_wrapper(
       raise RuntimeError(
           "out_dtype must be the same as the dtype of the provided out tensor"
       )
-    if out.shape == (0,):
+    if out.device.type == "cuda" and out.shape == (0,):
       out.resize_((self.size(0), mat2.size(1)))
     return torch.ops.aten.mm.dtype_out(self, mat2, out_dtype, out=out)
   return torch.ops.aten.mm.dtype(self, mat2, out_dtype)

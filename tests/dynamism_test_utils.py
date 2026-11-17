@@ -626,13 +626,6 @@ DYNAMISM_DENY_LISTS: DenyList = {
         # View decomposition reshape reassociation fails on bounded dimensions.
         "unfold": ALL_MODES,
     },
-    # TODO: b/449736443 - Avoid Tensor.resize_() graph break in the *.dtype
-    # test wrappers in op_testing.py.
-    "the test wrapper calls Tensor.resize_(), which graph-breaks in Dynamo": {
-        "addmm.dtype": {COMPILE},
-        "bmm.dtype": {COMPILE},
-        "mm.dtype": {COMPILE},
-    },
     # TODO: b/449736443 - Support bounded dimensions in these lowerings.
     "linalg decompositions do not support bounded dimensions": {
         # Slicing a dynamic dimension is not supported.
