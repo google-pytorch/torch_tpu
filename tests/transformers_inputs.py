@@ -15,6 +15,7 @@
 """Dummy input generation for Hugging Face Transformers models."""
 
 from collections.abc import Callable, Mapping, MutableMapping, Sequence
+import copy
 import dataclasses
 import math
 import types
@@ -195,11 +196,11 @@ _TIME_SERIES_MODEL_TYPES: frozenset[str] = frozenset({
 })
 
 
-class _ConfigWrapper:
+class ConfigWrapper:
   """Wrapper around HF config objects for attribute and dict access."""
 
   def __init__(self, data: Any):
-    if isinstance(data, _ConfigWrapper):
+    if isinstance(data, ConfigWrapper):
       object.__setattr__(self, "_data", data._data)
     else:
       object.__setattr__(self, "_data", data)
@@ -208,43 +209,17 @@ class _ConfigWrapper:
     """Returns the underlying wrapped config object or dictionary."""
     return self._data
 
-  def get(self, key: str, default: Any = None) -> Any:
-    data = self._data
-    if hasattr(data, "allow_global_per_layer_attribute_access"):
-      try:
-        data.allow_global_per_layer_attribute_access = True
-      except Exception:
-        pass
-    if isinstance(data, (dict, Mapping)):
-      val = data.get(key, default)
-    elif hasattr(data, "_mock_name") and key not in getattr(
-        data, "__dict__", {}
-    ):
-      val = default
-    else:
-      try:
-        val = getattr(data, key, default)
-      except Exception:
-        val = default
-    if val is default:
-      return default
-    if val is not None and default is not None:
-      try:
-        val = type(default)(val)
-      except Exception:
-        pass
-    return _wrap_config(val)
+  def __copy__(self) -> "ConfigWrapper":
+    return ConfigWrapper(copy.copy(self._data))
 
-  def __getitem__(self, key: Any) -> Any:
-    data = self._data
-    if isinstance(data, (dict, Mapping)) or hasattr(data, "__getitem__"):
-      return _wrap_config(data[key])
-    if isinstance(key, str):
-      try:
-        return getattr(self, key)
-      except AttributeError as exc:
-        raise KeyError(key) from exc
-    raise KeyError(key)
+  def __deepcopy__(self, memo: dict[int, Any]) -> "ConfigWrapper":
+    return ConfigWrapper(copy.deepcopy(self._data, memo))
+
+  def __getstate__(self) -> dict[str, Any]:
+    return {"_data": self._data}
+
+  def __setstate__(self, state: Mapping[str, Any]) -> None:
+    object.__setattr__(self, "_data", state["_data"])
 
   def __getattr__(self, name: str) -> Any:
     if name == "_data" or "_data" not in self.__dict__:
@@ -256,14 +231,14 @@ class _ConfigWrapper:
       raise AttributeError(
           f"'{type(self).__name__}' object has no attribute '{name}'"
       )
-    if hasattr(data, "allow_global_per_layer_attribute_access"):
+    if getattr(data, "allow_global_per_layer_attribute_access", None) is False:
       try:
         data.allow_global_per_layer_attribute_access = True
-      except Exception:
+      except (AttributeError, TypeError):
         pass
     if isinstance(data, (dict, Mapping)):
       if name in data:
-        return _wrap_config(data[name])
+        return wrap_config(data[name])
       raise AttributeError(
           f"'{type(self).__name__}' object has no attribute '{name}'"
       )
@@ -274,29 +249,102 @@ class _ConfigWrapper:
           f"'{type(self).__name__}' mock has no attribute '{name}'"
       )
     val = getattr(data, name)
-    return _wrap_config(val)
+    return wrap_config(val)
 
   def __setattr__(self, name: str, value: Any) -> None:
     if name == "_data":
       object.__setattr__(self, name, value)
       return
-    if isinstance(self._data, dict):
+    if isinstance(self._data, MutableMapping):
       self._data[name] = value
+    elif hasattr(self._data, "__dict__"):
+      self._data.__dict__[name] = value
     else:
       setattr(self._data, name, value)
 
-  def __contains__(self, key: str) -> bool:
+  def get(self, key: str, default: Any = None) -> Any:
     data = self._data
+    if getattr(data, "allow_global_per_layer_attribute_access", None) is False:
+      try:
+        data.allow_global_per_layer_attribute_access = True
+      except (AttributeError, TypeError):
+        pass
     if isinstance(data, (dict, Mapping)):
-      return key in data
-    if hasattr(data, "_mock_name") and key not in getattr(data, "__dict__", {}):
+      val = data.get(key, default)
+    elif hasattr(data, "_mock_name") and key not in getattr(
+        data, "__dict__", {}
+    ):
+      val = default
+    else:
+      try:
+        val = getattr(data, key, default)
+      except (AttributeError, TypeError):
+        val = default
+    if val is default:
+      return default
+    if (
+        val is not None
+        and default is not None
+        and not isinstance(val, type(default))
+    ):
+      try:
+        val = type(default)(val)
+      except (ValueError, TypeError):
+        pass
+    return wrap_config(val)
+
+  def __getitem__(self, key: Any) -> Any:
+    data = self._data
+    if isinstance(data, (dict, Mapping)) or hasattr(data, "__getitem__"):
+      return wrap_config(data[key])
+    if isinstance(key, str):
+      try:
+        return getattr(self, key)
+      except AttributeError as exc:
+        raise KeyError(key) from exc
+    raise KeyError(key)
+
+  def __contains__(self, key: str) -> bool:
+    if isinstance(self._data, (dict, Mapping)):
+      return key in self._data
+    if hasattr(self._data, "_mock_name") and key not in getattr(
+        self._data, "__dict__", {}
+    ):
       return False
-    return hasattr(data, key)
+    return hasattr(self._data, key)
+
+  def __bool__(self) -> bool:
+    return bool(self._data)
+
+  def __len__(self) -> int:
+    if isinstance(self._data, (dict, Mapping)) or hasattr(
+        self._data, "__len__"
+    ):
+      return len(self._data)
+    return len(dir(self._data))
+
+  def __iter__(self):
+    if isinstance(self._data, (dict, Mapping)) or hasattr(
+        self._data, "__iter__"
+    ):
+      return iter(self._data)
+    return iter(dir(self._data))
+
+  def __call__(self, *args: Any, **kwargs: Any) -> Any:
+    if callable(self._data):
+      return wrap_config(self._data(*args, **kwargs))
+    raise TypeError(f"'{type(self).__name__}' object is not callable")
+
+  def __str__(self) -> str:
+    return str(self._data)
+
+  def __repr__(self) -> str:
+    return f"{type(self).__name__}({self._data!r})"
 
 
-def _wrap_config(config: Any) -> Any:
-  """Wraps a config in _ConfigWrapper if not already wrapped."""
-  if config is None or isinstance(config, _ConfigWrapper):
+def wrap_config(config: Any) -> Any:
+  """Wraps a config in ConfigWrapper if not already wrapped."""
+  if config is None or isinstance(config, ConfigWrapper):
     return config
   if isinstance(
       config,
@@ -320,22 +368,22 @@ def _wrap_config(config: Any) -> Any:
       ),
   ):
     return config
-  return _ConfigWrapper(config)
+  return ConfigWrapper(config)
 
 
 @overload
-def _safe_int(
+def safe_int(
     val: Any, default: None = None, min_val: int | None = None
 ) -> int | None:
   ...
 
 
 @overload
-def _safe_int(val: Any, default: int = 0, min_val: int | None = None) -> int:
+def safe_int(val: Any, default: int = 0, min_val: int | None = None) -> int:
   ...
 
 
-def _safe_int(
+def safe_int(
     val: Any, default: int | None = 0, min_val: int | None = None
 ) -> int | None:
   """Safely converts a value to int, defaulting if invalid or a boolean."""
@@ -368,16 +416,16 @@ def _get_max_seq_len(config: Any, default: int = 512) -> int:
   Returns:
     The determined maximum sequence length.
   """
-  cfg = _wrap_config(config)
+  cfg = wrap_config(config)
   configs_to_check = [cfg]
   for sub in ("text_config", "encoder", "decoder", "thinker_config"):
     sub_cfg = cfg.get(sub)
     if sub_cfg is not None:
-      wrapped_sub = _wrap_config(sub_cfg)
+      wrapped_sub = wrap_config(sub_cfg)
       configs_to_check.append(wrapped_sub)
       nested_text = wrapped_sub.get("text_config")
       if nested_text is not None:
-        configs_to_check.append(_wrap_config(nested_text))
+        configs_to_check.append(wrap_config(nested_text))
 
   found_vals = []
   for c in configs_to_check:
@@ -391,7 +439,7 @@ def _get_max_seq_len(config: Any, default: int = 512) -> int:
         "model_max_length",
     ):
       raw_val = c.get(attr)
-      val = _safe_int(raw_val, default=0, min_val=1)
+      val = safe_int(raw_val, default=0, min_val=1)
       if 0 < val < _MAX_SEQ_LEN_HEURISTIC_CAP:
         # Several HuggingFace encoder and seq2seq models offset their learned
         # positional embedding indices by `pad_token_id + 1` (computing
@@ -408,7 +456,7 @@ def _get_max_seq_len(config: Any, default: int = 512) -> int:
         # and triggers a CUDA device-side out-of-bounds assertion. Subtracting
         # `pad_token_id + 1` keeps all generated position IDs within `[0, val)`.
         if attr in ("max_position_embeddings", "max_target_positions"):
-          pad_id = _safe_int(
+          pad_id = safe_int(
               c.get("pad_token_id") or cfg.get("pad_token_id"),
               default=0,
               min_val=0,
@@ -425,11 +473,11 @@ def _get_max_seq_len(config: Any, default: int = 512) -> int:
   return default
 
 
-def _parse_image_size(config: Any, default_size: int = 224) -> int:
+def parse_image_size(config: Any, default_size: int = 224) -> int:
   """Extracts image_size as an int from config, vision_config, or encoder."""
-  cfg = _wrap_config(config)
+  cfg = wrap_config(config)
   if "depth_pro" in str(cfg.get("model_type", "")):
-    patch_size = _safe_int(cfg.get("patch_size"), default=384, min_val=1)
+    patch_size = safe_int(cfg.get("patch_size"), default=384, min_val=1)
     ratios = cfg.get("scaled_images_ratios")
     min_ratio = (
         min(r for r in ratios if r > 0)
@@ -475,12 +523,12 @@ def _parse_image_size(config: Any, default_size: int = 224) -> int:
   )
   if isinstance(raw_val, (list, tuple)) and raw_val:
     raw_val = raw_val[0]
-  val = _safe_int(raw_val, default=None, min_val=1)
+  val = safe_int(raw_val, default=None, min_val=1)
   if val is None:
     raw_val = cfg.get("image_size") or cfg.get("resolution")
     if isinstance(raw_val, (list, tuple)) and raw_val:
       raw_val = raw_val[0]
-    val = _safe_int(raw_val, default=None, min_val=1)
+    val = safe_int(raw_val, default=None, min_val=1)
   if val is None:
     pretrained_cfg = cfg.get("pretrained_cfg") or (
         vision_config.get("pretrained_cfg") if vision_config else None
@@ -489,18 +537,18 @@ def _parse_image_size(config: Any, default_size: int = 224) -> int:
         pretrained_cfg.get("input_size") if pretrained_cfg else None
     )
     if isinstance(raw_val, (list, tuple)) and raw_val:
-      val = _safe_int(raw_val[-1], default=None, min_val=1)
+      val = safe_int(raw_val[-1], default=None, min_val=1)
     else:
-      val = _safe_int(raw_val, default=None, min_val=1)
+      val = safe_int(raw_val, default=None, min_val=1)
   if val is None:
     val = default_size
 
   return val
 
 
-def _get_num_channels(config: Any, default_channels: int = 3) -> int:
+def get_num_channels(config: Any, default_channels: int = 3) -> int:
   """Extracts num_channels from config or vision_config or encoder."""
-  cfg = _wrap_config(config)
+  cfg = wrap_config(config)
   vlm_cfg = cfg.get("vlm_config")
   vision_config = (
       cfg.get("vision_config")
@@ -508,13 +556,13 @@ def _get_num_channels(config: Any, default_channels: int = 3) -> int:
       or cfg.get("encoder")
       or cfg.get("backbone_config")
   )
-  val = _safe_int(
+  val = safe_int(
       vision_config.get("num_channels") if vision_config else None,
       default=None,
       min_val=1,
   )
   if val is None:
-    val = _safe_int(
+    val = safe_int(
         cfg.get("num_channels"),
         default=default_channels,
         min_val=1,
@@ -556,7 +604,7 @@ def _generate_gemma4_inputs(
     device: The device to place the tensors on.
     input_kwargs: The dictionary to populate with the generated inputs.
   """
-  cfg = _wrap_config(config)
+  cfg = wrap_config(config)
   vision_config = cfg.get("vision_config")
   patch_size = vision_config.get("patch_size", 16) if vision_config else 16
   pooling_kernel_size = (
@@ -645,9 +693,9 @@ def _generate_gemma4_inputs(
   input_kwargs["image_position_ids"] = image_position_ids
 
 
-def _extract_target_dtype(config: Any) -> torch.dtype:
+def extract_target_dtype(config: Any) -> torch.dtype:
   """Extracts target torch_dtype from root or nested transformer configs."""
-  cfg = _wrap_config(config)
+  cfg = wrap_config(config)
   if cfg.get("model_type", "") == "gemma2":
     return torch.bfloat16
 
@@ -688,7 +736,7 @@ class InputContext:
   dtype propagation, and device placement.
   """
 
-  config: Any  # _ConfigWrapper
+  config: Any  # ConfigWrapper
   model_type: str  # lower-cased
   arch_name: str  # lower-cased architectures[0] or ""
   type_str: str  # f"{model_type} {arch_name}" (existing convention)
@@ -706,10 +754,10 @@ class InputContext:
       device: str,
       dtype: torch.dtype | None = None,
   ) -> "InputContext":
-    config = _wrap_config(config)
+    config = wrap_config(config)
     g = torch.Generator(device="cpu").manual_seed(42)
     raw_model_type = config.get("model_type", "unknown")
-    if isinstance(raw_model_type, _ConfigWrapper):
+    if isinstance(raw_model_type, ConfigWrapper):
       raw_model_type = raw_model_type.unwrap()
     model_type = (
         raw_model_type.lower()
@@ -717,11 +765,11 @@ class InputContext:
         else str(raw_model_type).lower()
     )
     raw_archs = config.get("architectures", [])
-    if isinstance(raw_archs, _ConfigWrapper):
+    if isinstance(raw_archs, ConfigWrapper):
       raw_archs = raw_archs.unwrap()
     if isinstance(raw_archs, (list, tuple)) and raw_archs:
       raw_arch_name = raw_archs[0]
-      if isinstance(raw_arch_name, _ConfigWrapper):
+      if isinstance(raw_arch_name, ConfigWrapper):
         raw_arch_name = raw_arch_name.unwrap()
       arch_name = (
           raw_arch_name.lower()
@@ -792,13 +840,13 @@ def _cfg_lookup(cfg: Any, *paths: str, default: Any = None) -> Any:
 
   ("vision_config.patch_size", "patch_size").
   """
-  cfg = _wrap_config(cfg)
+  cfg = wrap_config(cfg)
   for path in paths:
     cur = cfg
     for part in path.split("."):
       if cur is None:
         break
-      if isinstance(cur, _ConfigWrapper):
+      if isinstance(cur, ConfigWrapper):
         cur = cur.get(part)
       elif isinstance(cur, Mapping):
         cur = cur.get(part)
@@ -815,7 +863,7 @@ def _cfg_lookup(cfg: Any, *paths: str, default: Any = None) -> Any:
         cur = None
         break
     if cur is not None:
-      if isinstance(cur, _ConfigWrapper):
+      if isinstance(cur, ConfigWrapper):
         return cur.unwrap()
       return cur
   return default
@@ -847,11 +895,11 @@ def _cfg_int(
     default: int | None = None,
     min_val: int = 1,
 ) -> int | None:
-  """_safe_int(_cfg_lookup(...)) helper for config access."""
+  """safe_int(_cfg_lookup(...)) helper for config access."""
   val = _cfg_lookup(cfg, *paths, default=None)
   if val is None:
     return default
-  return _safe_int(val, default=default, min_val=min_val)
+  return safe_int(val, default=default, min_val=min_val)
 
 
 def _resolve_seq_len(
@@ -955,12 +1003,12 @@ def _build_siglip2_inputs(
     image_size: int | None = None,
 ) -> None:
   img_size = (
-      image_size if image_size is not None else _parse_image_size(ctx.config)
+      image_size if image_size is not None else parse_image_size(ctx.config)
   )
   patch_size = _cfg_int(
       ctx.config, "vision_config.patch_size", "patch_size", default=16
   )
-  num_channels = _get_num_channels(ctx.config)
+  num_channels = get_num_channels(ctx.config)
   grid_size = img_size // patch_size
   num_patches = grid_size * grid_size
   patch_dim = num_channels * patch_size * patch_size
@@ -985,7 +1033,7 @@ def _build_oneformer_inputs(
     ctx: InputContext,
     input_kwargs: MutableMapping[str, Any],
 ) -> None:
-  task_len = _safe_int(ctx.config.get("task_seq_len"), default=77, min_val=1)
+  task_len = safe_int(ctx.config.get("task_seq_len"), default=77, min_val=1)
   input_kwargs["task_inputs"] = torch.zeros(
       (ctx.batch_size, task_len), device=ctx.device, dtype=torch.long
   )
@@ -1041,7 +1089,7 @@ def _add_encoder_decoder_inputs(
     text_cfg = ctx.config.get("text_config")
     gen_cfg = ctx.config.get("generator") or ctx.config.get("generator_config")
     decoder_cfg = ctx.config.get("decoder") or ctx.config.get("decoder_config")
-    vocab_size = _safe_int(
+    vocab_size = safe_int(
         gen_cfg.get("vocab_size")
         if "rag" in ctx.type_str and gen_cfg
         else (
@@ -1057,7 +1105,7 @@ def _add_encoder_decoder_inputs(
     max_len = _get_max_seq_len(ctx.config)
     if "whisper" in ctx.model_type:
       max_len = min(max_len, 448)
-    max_target_pos = _safe_int(
+    max_target_pos = safe_int(
         ctx.config.get("max_target_positions"),
         default=None,
         min_val=1,
@@ -1085,7 +1133,7 @@ def _cast_floating_point_inputs(
     input_kwargs: dict[str, Any],
 ) -> dict[str, Any]:
   """Casts float tensors in input_kwargs to model target dtype."""
-  target_dtype = _extract_target_dtype(config)
+  target_dtype = extract_target_dtype(config)
 
   def _cast_floating_point(val: Any) -> Any:
     if isinstance(val, torch.Tensor) and torch.is_floating_point(val):
@@ -1364,7 +1412,7 @@ def _build_gemma4_assistant_text_inputs(
 
     is_global = "full" in layer_key or "global" in layer_key
     if is_global:
-      h_dim = _safe_int(
+      h_dim = safe_int(
           layer_cfg.get("global_head_dim")
           or layer_cfg.get("head_dim")
           or (
@@ -1374,7 +1422,7 @@ def _build_gemma4_assistant_text_inputs(
           default=512,
           min_val=1,
       )
-      n_kv = _safe_int(
+      n_kv = safe_int(
           layer_cfg.get("num_global_key_value_heads")
           or layer_cfg.get("num_key_value_heads")
           or layer_cfg.get("num_attention_heads"),
@@ -1382,7 +1430,7 @@ def _build_gemma4_assistant_text_inputs(
           min_val=1,
       )
     else:
-      h_dim = _safe_int(
+      h_dim = safe_int(
           layer_cfg.get("head_dim")
           or (
               layer_cfg.get("hidden_size", 1024)
@@ -1391,7 +1439,7 @@ def _build_gemma4_assistant_text_inputs(
           default=256,
           min_val=1,
       )
-      n_kv = _safe_int(
+      n_kv = safe_int(
           layer_cfg.get("num_key_value_heads")
           or layer_cfg.get("num_attention_heads"),
           default=8,
@@ -1467,7 +1515,7 @@ def _build_text_inputs(ctx: InputContext) -> dict[str, Any]:
   eos_token_id = ctx.config.get("eos_token_id", 2)
   if isinstance(eos_token_id, (list, tuple)):
     eos_token_id = eos_token_id[0] if eos_token_id else 2
-  eos_token_id = _safe_int(eos_token_id, default=2)
+  eos_token_id = safe_int(eos_token_id, default=2)
 
   input_kwargs = _build_text_tokens(
       ctx,
@@ -1498,7 +1546,7 @@ def _build_text_inputs(ctx: InputContext) -> dict[str, Any]:
 def _build_seggpt_vision_inputs(
     ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
-  num_channels = _get_num_channels(ctx.config)
+  num_channels = get_num_channels(ctx.config)
   input_kwargs["pixel_values"] = ctx.randn(
       ctx.batch_size, num_channels, 448, 448
   )
@@ -1513,8 +1561,8 @@ def _build_seggpt_vision_inputs(
 def _build_qwen3_vision_inputs(
     ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
-  image_size = _parse_image_size(ctx.config)
-  num_channels = _get_num_channels(ctx.config)
+  image_size = parse_image_size(ctx.config)
+  num_channels = get_num_channels(ctx.config)
   patch_size = _cfg_int(ctx.config, "patch_size", default=14)
   temporal_patch_size = _cfg_int(ctx.config, "temporal_patch_size", default=2)
   grid_h = image_size // patch_size
@@ -1536,8 +1584,8 @@ def _build_qwen3_vision_inputs(
 def _build_mllama_vision_inputs(
     ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
-  image_size = _parse_image_size(ctx.config)
-  num_channels = _get_num_channels(ctx.config)
+  image_size = parse_image_size(ctx.config)
+  num_channels = get_num_channels(ctx.config)
   num_images = 1
   num_tiles = _cfg_int(ctx.config, "max_num_tiles", default=4)
   input_kwargs["pixel_values"] = ctx.randn(
@@ -1558,7 +1606,7 @@ def _build_videomae_vision_inputs(
     ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   if "videoclassification" not in ctx.type_str:
-    image_size = _parse_image_size(ctx.config)
+    image_size = parse_image_size(ctx.config)
     patch_size = _cfg_int(ctx.config, "patch_size", default=16)
     tubelet_size = _cfg_int(ctx.config, "tubelet_size", default=2)
     num_frames = _cfg_int(ctx.config, "num_frames", default=8)
@@ -1584,10 +1632,10 @@ def _build_vitpose_vision_inputs(
 def _build_gemma4_vision_inputs(
     ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
-  image_size = _parse_image_size(ctx.config)
+  image_size = parse_image_size(ctx.config)
   patch_size = _cfg_int(ctx.config, "patch_size", default=16)
   pooling_kernel_size = _cfg_int(ctx.config, "pooling_kernel_size", default=3)
-  num_channels = _get_num_channels(ctx.config)
+  num_channels = get_num_channels(ctx.config)
   raw_grid = max(image_size // patch_size, pooling_kernel_size)
   grid_size = (
       (raw_grid + pooling_kernel_size - 1) // pooling_kernel_size
@@ -1613,8 +1661,8 @@ def _build_gemma4_vision_inputs(
 def _build_safety_checker_vision_inputs(
     ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
-  image_size = _parse_image_size(ctx.config)
-  num_channels = _get_num_channels(ctx.config)
+  image_size = parse_image_size(ctx.config)
+  num_channels = get_num_channels(ctx.config)
   input_kwargs["clip_input"] = ctx.randn(
       ctx.batch_size, num_channels, image_size, image_size
   )
@@ -1674,7 +1722,7 @@ def _build_vision_inputs(
     preprocessor_loader: Callable[[str], Any] | None = None,
 ) -> dict[str, Any]:
   """Builds inputs for vision models."""
-  image_size = _parse_image_size(ctx.config)
+  image_size = parse_image_size(ctx.config)
 
   processor = None
   if model_dir and _HAS_TRANSFORMERS:
@@ -1696,15 +1744,15 @@ def _build_vision_inputs(
     elif "shortest_edge" in processor.size:
       image_size = processor.size["shortest_edge"]
 
-  num_channels = _get_num_channels(
+  num_channels = get_num_channels(
       ctx.config, default_channels=4 if "vitmatte" in ctx.type_str else 3
   )
 
   raw_img_size = ctx.config.get("image_size")
   h, w = image_size, image_size
   if isinstance(raw_img_size, (list, tuple)) and len(raw_img_size) == 2:
-    parsed_h = _safe_int(raw_img_size[0], default=None)
-    parsed_w = _safe_int(raw_img_size[1], default=None)
+    parsed_h = safe_int(raw_img_size[0], default=None)
+    parsed_w = safe_int(raw_img_size[1], default=None)
     if parsed_h is not None and parsed_w is not None:
       h, w = parsed_h, parsed_w
   elif "vitpose" in ctx.type_str:
@@ -1775,12 +1823,12 @@ def _build_clap_audio_inputs(
     ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   audio_cfg = ctx.config.get("audio_config") or ctx.config
-  num_mel = _safe_int(
+  num_mel = safe_int(
       audio_cfg.get("num_mel_bins") or ctx.config.get("num_mel_bins"),
       default=64,
       min_val=1,
   )
-  spec_size = _safe_int(
+  spec_size = safe_int(
       audio_cfg.get("spec_size") or ctx.config.get("spec_size"),
       default=256,
       min_val=1,
@@ -1834,13 +1882,13 @@ def _build_w2v_bert_audio_inputs(
       ]
   ):
     enc_cfg = ctx.config.get("encoder_config")
-    num_mel = _safe_int(
+    num_mel = safe_int(
         ctx.config.get("num_mel_bins")
         or (enc_cfg.get("num_mel_bins") if enc_cfg else None),
         default=128,
         min_val=1,
     )
-    max_positions = _safe_int(
+    max_positions = safe_int(
         ctx.config.get("max_source_positions"),
         default=1500,
         min_val=1,
@@ -1866,7 +1914,7 @@ def _build_w2v_bert_audio_inputs(
       and subsampling_channels
       else None
   )
-  num_mel = _safe_int(
+  num_mel = safe_int(
       ctx.config.get("feature_projection_input_dim")
       or (enc_cfg.get("num_mel_bins") if enc_cfg else None)
       or (enc_cfg.get("input_feat_per_channel") if enc_cfg else None)
@@ -1907,7 +1955,7 @@ def _build_omnitoken2wav_audio_inputs(
 def _build_kyutai_stt_inputs(
     ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
-  num_codebooks = _safe_int(
+  num_codebooks = safe_int(
       ctx.config.get("num_codebooks"), default=32, min_val=1
   )
   seq_len = 16
@@ -1922,11 +1970,11 @@ def _build_kyutai_stt_inputs(
 def _build_moshi_audio_inputs(
     ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
-  num_codebooks = _safe_int(
+  num_codebooks = safe_int(
       ctx.config.get("num_codebooks"), default=8, min_val=1
   )
-  vocab_size = _safe_int(ctx.config.get("vocab_size"), default=32000, min_val=1)
-  audio_vocab_size = _safe_int(
+  vocab_size = safe_int(ctx.config.get("vocab_size"), default=32000, min_val=1)
+  audio_vocab_size = safe_int(
       ctx.config.get("audio_vocab_size"), default=2048, min_val=1
   )
   seq_len = 1
@@ -1954,7 +2002,7 @@ def _build_glmasr_audio_inputs(
     ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
   text_cfg = ctx.config.get("text_config") or ctx.config
-  vocab_size = _safe_int(
+  vocab_size = safe_int(
       text_cfg.get("vocab_size") if text_cfg else None,
       default=151552,
       min_val=1,
@@ -1970,7 +2018,7 @@ def _build_glmasr_audio_inputs(
 def _build_s2t_audio_inputs(
     ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
-  num_mel = _safe_int(
+  num_mel = safe_int(
       ctx.config.get("feature_projection_input_dim")
       or ctx.config.get("num_mel_bins"),
       default=80,
@@ -2006,7 +2054,7 @@ def _build_xcodec2_audio_inputs(
       5,
   ]
   hop_length = math.prod(
-      _safe_int(r, default=2, min_val=1) for r in downsampling_ratios
+      safe_int(r, default=2, min_val=1) for r in downsampling_ratios
   )
   num_frames = 10
   num_samples = hop_length * num_frames
@@ -2086,7 +2134,7 @@ def _build_voxtral_realtime_audio_inputs(
   )
   text_cfg = ctx.config.get("text_config") or ctx.config
   audio_cfg = ctx.config.get("audio_config") or ctx.config
-  vocab_size = _safe_int(
+  vocab_size = safe_int(
       text_cfg.get("vocab_size") or ctx.config.get("vocab_size"),
       default=131072,
       min_val=1,
@@ -2097,15 +2145,15 @@ def _build_voxtral_realtime_audio_inputs(
   input_kwargs["attention_mask"] = ctx.ones(
       (ctx.batch_size, safe_seq_len), dtype=torch.long
   )
-  num_mel = _safe_int(
+  num_mel = safe_int(
       audio_cfg.get("num_mel_bins") or ctx.config.get("num_mel_bins"),
       default=128,
       min_val=1,
   )
-  downsample_factor = _safe_int(
+  downsample_factor = safe_int(
       ctx.config.get("downsample_factor"), default=4, min_val=1
   )
-  audio_length_per_tok = _safe_int(
+  audio_length_per_tok = safe_int(
       ctx.config.get("audio_length_per_tok"),
       default=2 * downsample_factor,
       min_val=1,
@@ -2134,7 +2182,7 @@ def _build_cohere_asr_audio_inputs(
       or ctx.config.get("encoder")
       or ctx.config
   )
-  num_mel = _safe_int(
+  num_mel = safe_int(
       (enc_cfg.get("num_mel_bins") if enc_cfg else None)
       or ctx.config.get("num_mel_bins"),
       default=128,
@@ -2151,21 +2199,21 @@ def _build_dia_audio_inputs(
 ) -> None:
   enc_cfg = ctx.config.get("encoder_config") or ctx.config
   dec_cfg = ctx.config.get("decoder_config") or ctx.config
-  enc_vocab = _safe_int(
+  enc_vocab = safe_int(
       enc_cfg.get("vocab_size")
       if hasattr(enc_cfg, "get")
       else getattr(enc_cfg, "vocab_size", None),
       default=256,
       min_val=1,
   )
-  dec_vocab = _safe_int(
+  dec_vocab = safe_int(
       dec_cfg.get("vocab_size")
       if hasattr(dec_cfg, "get")
       else getattr(dec_cfg, "vocab_size", None),
       default=1028,
       min_val=1,
   )
-  num_channels = _safe_int(
+  num_channels = safe_int(
       dec_cfg.get("num_channels")
       if hasattr(dec_cfg, "get")
       else getattr(dec_cfg, "num_channels", None),
@@ -2243,7 +2291,7 @@ def _build_granite_audio_inputs(
       or ctx.config.get("encoder")
       or ctx.config.get("speech_config")
   )
-  num_mel = _safe_int(
+  num_mel = safe_int(
       (encoder_cfg.get("input_dim") or encoder_cfg.get("num_mel_bins"))
       if encoder_cfg
       else None,
@@ -2256,7 +2304,7 @@ def _build_granite_audio_inputs(
   input_kwargs["input_features"] = ctx.randn(ctx.batch_size, audio_len, num_mel)
   # Calculate exact number of audio tokens expected by GraniteSpeech
   num_audio_tokens = window_size // downsample_rate
-  audio_token_id = _safe_int(
+  audio_token_id = safe_int(
       ctx.config.get("audio_token_id") or ctx.config.get("audio_token_index"),
       default=49152,
   )
@@ -2271,7 +2319,7 @@ def _build_fastspeech_audio_inputs(
 ) -> None:
   safe_seq_len = min(_get_max_seq_len(ctx.config), 16)
   model_cfg = ctx.config.get("model_config")
-  vocab_size = _safe_int(
+  vocab_size = safe_int(
       ctx.config.get("vocab_size")
       or (model_cfg.get("vocab_size") if model_cfg else None),
       default=38,
@@ -2287,7 +2335,7 @@ def _build_pe_audio_inputs(
 ) -> None:
   safe_seq_len = min(_get_max_seq_len(ctx.config), 16)
   text_cfg = ctx.config.get("text_config")
-  vocab_size = _safe_int(
+  vocab_size = safe_int(
       ctx.config.get("vocab_size")
       or (text_cfg.get("vocab_size") if text_cfg else None),
       default=32000,
@@ -2481,8 +2529,8 @@ def _build_audio_inputs(ctx: InputContext) -> dict[str, Any]:
 def _build_idefics_multimodal_inputs(
     ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
-  image_size = _parse_image_size(ctx.config)
-  num_channels = _get_num_channels(ctx.config)
+  image_size = parse_image_size(ctx.config)
+  num_channels = get_num_channels(ctx.config)
   is_video = (
       "video" in str(getattr(ctx.config, "name_or_path", "")).lower()
       or "video" in ctx.type_str
@@ -2508,8 +2556,8 @@ def _build_idefics_multimodal_inputs(
 def _build_video_multimodal_inputs(
     ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
-  image_size = _parse_image_size(ctx.config)
-  num_channels = _get_num_channels(ctx.config)
+  image_size = parse_image_size(ctx.config)
+  num_channels = get_num_channels(ctx.config)
   num_frames = _cfg_int(
       ctx.config, "vision_config.num_frames", "num_frames", default=8
   )
@@ -2522,7 +2570,7 @@ def _build_video_multimodal_inputs(
 def _build_llava_next_multimodal_inputs(
     ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
-  image_size = _parse_image_size(ctx.config)
+  image_size = parse_image_size(ctx.config)
   size_device = "cpu" if str(ctx.device) == "meta" else ctx.device
   input_kwargs["image_sizes"] = torch.tensor(
       [[image_size, image_size]] * ctx.batch_size,
@@ -2534,7 +2582,7 @@ def _build_llava_next_multimodal_inputs(
 def _build_minicpmv_multimodal_inputs(
     ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
-  num_channels = _get_num_channels(ctx.config)
+  num_channels = get_num_channels(ctx.config)
   vision_cfg = ctx.config.get("vision_config")
   patch_size = _cfg_int(vision_cfg, "patch_size", default=14)
   grid_side = 4
@@ -2609,7 +2657,7 @@ def _build_pix2struct_multimodal_inputs(
   )
   vision_cfg = ctx.config.get("vision_config") or ctx.config
   text_cfg = ctx.config.get("text_config") or ctx.config
-  patch_hidden_size = _safe_int(
+  patch_hidden_size = safe_int(
       vision_cfg.get("patch_embed_hidden_size")
       or ctx.config.get("patch_embed_hidden_size")
       or text_cfg.get("hidden_size"),
@@ -2631,14 +2679,14 @@ def _build_pix2struct_multimodal_inputs(
 def _build_qwen_vl_multimodal_inputs(
     ctx: InputContext, input_kwargs: dict[str, Any]
 ) -> None:
-  image_size = _parse_image_size(ctx.config)
-  num_channels = _get_num_channels(ctx.config)
+  image_size = parse_image_size(ctx.config)
+  num_channels = get_num_channels(ctx.config)
   num_img_tokens = _build_spatial_merged_patches(
       ctx, input_kwargs, image_size=image_size, num_channels=num_channels
   )
   img_token_id = _cfg_int(ctx.config, "image_token_id", default=151652)
   text_cfg = ctx.config.get("text_config")
-  vocab_size = _safe_int(
+  vocab_size = safe_int(
       ctx.config.get("src_vocab_size")
       or ctx.config.get("vocab_size")
       or (text_cfg.get("vocab_size") if text_cfg else None),
@@ -2664,8 +2712,8 @@ def _build_qwen_vl_multimodal_inputs(
 def _build_glm_vl_multimodal_inputs(
     ctx: InputContext, input_kwargs: dict[str, Any]
 ) -> None:
-  image_size = _parse_image_size(ctx.config)
-  num_channels = _get_num_channels(ctx.config)
+  image_size = parse_image_size(ctx.config)
+  num_channels = get_num_channels(ctx.config)
   num_img_tokens = _build_spatial_merged_patches(
       ctx, input_kwargs, image_size=image_size, num_channels=num_channels
   )
@@ -2674,7 +2722,7 @@ def _build_glm_vl_multimodal_inputs(
   img_end_id = _cfg_int(ctx.config, "image_end_token_id", default=59257)
 
   text_cfg = ctx.config.get("text_config")
-  vocab_size = _safe_int(
+  vocab_size = safe_int(
       ctx.config.get("src_vocab_size")
       or ctx.config.get("vocab_size")
       or (text_cfg.get("vocab_size") if text_cfg else None),
@@ -2710,8 +2758,8 @@ def _build_glm_vl_multimodal_inputs(
 def _build_hunyuan_vl_multimodal_inputs(
     ctx: InputContext, input_kwargs: dict[str, Any]
 ) -> None:
-  image_size = _parse_image_size(ctx.config)
-  num_channels = _get_num_channels(ctx.config)
+  image_size = parse_image_size(ctx.config)
+  num_channels = get_num_channels(ctx.config)
   vision_config = ctx.config.get("vision_config")
   patch_size = _cfg_int(vision_config, "patch_size", default=16)
   spatial_merge_size = _cfg_int(vision_config, "spatial_merge_size", default=2)
@@ -2731,7 +2779,7 @@ def _build_hunyuan_vl_multimodal_inputs(
   )
   img_token_id = _cfg_int(ctx.config, "image_token_id", default=120120)
   text_cfg = ctx.config.get("text_config")
-  vocab_size = _safe_int(
+  vocab_size = safe_int(
       ctx.config.get("src_vocab_size")
       or ctx.config.get("vocab_size")
       or (text_cfg.get("vocab_size") if text_cfg else None),
@@ -2759,7 +2807,7 @@ def _build_kosmos_multimodal_inputs(
 ) -> None:
   latent_query_num = _cfg_int(ctx.config, "latent_query_num", default=64)
   text_cfg = ctx.config.get("text_config")
-  vocab_size = _safe_int(
+  vocab_size = safe_int(
       ctx.config.get("src_vocab_size")
       or ctx.config.get("vocab_size")
       or (text_cfg.get("vocab_size") if text_cfg else None),
@@ -2780,8 +2828,8 @@ def _build_kosmos_multimodal_inputs(
   if "kosmos-2.5" in ctx.model_type or "kosmos_2_5" in ctx.model_type:
     vision_config = ctx.config.get("vision_config")
     patch_size = _cfg_int(vision_config, "patch_size", default=16)
-    image_size = _parse_image_size(ctx.config)
-    num_channels = _get_num_channels(ctx.config)
+    image_size = parse_image_size(ctx.config)
+    num_channels = get_num_channels(ctx.config)
     num_patches = (image_size // patch_size) ** 2
     patch_dim = patch_size * patch_size * num_channels + 2
     input_kwargs["flattened_patches"] = ctx.randn(
@@ -2793,8 +2841,8 @@ def _build_kosmos_multimodal_inputs(
 def _build_xclip_multimodal_inputs(
     ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
-  image_size = _parse_image_size(ctx.config)
-  num_channels = _get_num_channels(ctx.config)
+  image_size = parse_image_size(ctx.config)
+  num_channels = get_num_channels(ctx.config)
   num_frames = _cfg_int(
       ctx.config, "vision_config.num_frames", "num_frames", default=8
   )
@@ -2826,7 +2874,7 @@ def _build_clvp_multimodal_inputs(
 ) -> None:
   input_kwargs.pop("pixel_values", None)
   dec_cfg = ctx.config.get("decoder_config") or ctx.config
-  feature_size = _safe_int(
+  feature_size = safe_int(
       dec_cfg.get("feature_size") if dec_cfg else None,
       default=80,
       min_val=1,
@@ -2927,7 +2975,7 @@ def _compute_num_image_tokens(
     num_frames = 16 if is_video else 1
     return num_frames * (((image_size // patch_size) // scale) ** 2)
   if "got_ocr2" in ctx.model_type:
-    patch_size = _safe_int(
+    patch_size = safe_int(
         vision_config.get("patch_size") if vision_config else None,
         default=16,
         min_val=1,
@@ -2985,11 +3033,11 @@ def _build_multimodal_inputs(ctx: InputContext) -> dict[str, Any]:
   semantic_cfg = ctx.config.get("semantic_config")
   qformer_cfg = ctx.config.get("qformer_config")
   if ("retrieval" in ctx.arch_name or "itm" in ctx.type_str) and qformer_cfg:
-    vocab_size = _safe_int(
+    vocab_size = safe_int(
         qformer_cfg.get("vocab_size"), default=30522, min_val=1
     )
   else:
-    vocab_size = _safe_int(
+    vocab_size = safe_int(
         ctx.config.get("src_vocab_size")
         or (text_cfg.get("vocab_size") if text_cfg else None)
         or ctx.config.get("vocab_size")
@@ -3004,7 +3052,7 @@ def _build_multimodal_inputs(ctx: InputContext) -> dict[str, Any]:
   }
 
   if ctx.model_type.startswith("gemma4"):
-    image_size = _parse_image_size(ctx.config, default_size=288)
+    image_size = parse_image_size(ctx.config, default_size=288)
     _generate_gemma4_inputs(
         ctx.config,
         actual_shape[0],
@@ -3014,10 +3062,10 @@ def _build_multimodal_inputs(ctx: InputContext) -> dict[str, Any]:
         generator=ctx.generator,
     )
   elif any(k in ctx.model_type for k in _VISION_LANGUAGE_MODEL_TYPES):
-    image_size = _parse_image_size(ctx.config)
+    image_size = parse_image_size(ctx.config)
     if any(k in ctx.type_str for k in ["smolvlm", "idefics3"]):
       image_size = 512
-    num_channels = _get_num_channels(ctx.config)
+    num_channels = get_num_channels(ctx.config)
     batch_size = ctx.batch_size
     vision_config = ctx.config.get("vision_config") or (
         vlm_cfg.get("vision_config") if vlm_cfg else None
@@ -3103,7 +3151,7 @@ def _build_multimodal_inputs(ctx: InputContext) -> dict[str, Any]:
             )
         )
         if image_token_id is not None:
-          image_token_id = _safe_int(image_token_id, default=None)
+          image_token_id = safe_int(image_token_id, default=None)
 
         if image_token_id is not None and num_image_tokens is not None:
           _ensure_min_seq_len(
