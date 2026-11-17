@@ -745,6 +745,7 @@ DYNAMISM_DENY_LISTS: DenyList = {
     },
     "untriaged: expected all dimensions to be static": {
         "fft.ifft": {EAGER},
+        "fft.irfft": {EAGER},
         "fft.rfft": {EAGER},
         # Expects a static weight tensor.
         "nn.functional.embedding": {EAGER},
