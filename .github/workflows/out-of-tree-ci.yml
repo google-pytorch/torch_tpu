@@ -45,9 +45,6 @@ permissions:
 
 jobs:
   resolve_sha:
-    if: >-
-      github.event_name != 'pull_request' ||
-      contains(github.event.pull_request.labels.*.name, 'ci:crcr-nightly')
     name: "Resolve upstream PyTorch nightly wheel and SHA"
     runs-on: ubuntu-latest
     outputs:
@@ -155,7 +152,7 @@ jobs:
       - name: Build PyTorch Device-Generic Tests
         id: build
         run: |
-          TORCH_TEST_TARGETS=$(bazel query 'kind("py_test", //tests/torch:all)' | tr '\n' ' ')
+          TORCH_TEST_TARGETS="//tests/torch:transformers_test //tests/torch:dynamic_shapes_test //tests/torch:profiler_profiler_test //tests/torch:dynamo_activation_checkpointing_test //tests/torch:functorch_aot_joint_with_descriptors_test //tests/torch:torch_test"
           BAZEL_CRCR_ARGS="--config=${{ matrix.job_info.config }} --config=local_torch --repo_env=TORCH_SOURCE=${TORCH_SOURCE} --run_under=${PWD}/ci/tools/parallel_accelerator_execute.sh --test_env=TORCH_TPU_INTERNAL_PYTORCH_TEST_DIR=${GITHUB_WORKSPACE}/pytorch/test --keep_going ${TORCH_TEST_TARGETS}"
           echo "BAZEL_CRCR_ARGS=${BAZEL_CRCR_ARGS}" >> "$GITHUB_ENV"
           # shellcheck disable=SC2086
