@@ -18,6 +18,10 @@
 # jialei-chen
 
 load(
+    "//build_files:accelerator_specification.bzl",
+    "tpus",
+)
+load(
     "//build_files:build_defs.bzl",
     "torch_tpu_package_end",
     "torch_tpu_py_library",
@@ -47,11 +51,11 @@ torch_tpu_py_library(
 torch_tpu_py_test(
     name = "qwen3_explore",
     srcs = ["qwen3_explore.py"],
+    compatible_accelerators = tpus(),
     nopresubmit = "Benchmark.",
     shuffle_tests = False,
     tags = [
         "nofastbuild",  # Benchmark.
-        "requires-tpu-v5lite",
     ],
     deps = [
         ":utils",

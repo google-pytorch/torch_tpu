@@ -22,7 +22,16 @@
 # This is a workaround to avoid depending on internal components
 # directly from the main torch_tpu library.
 
-load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_cc_test", "torch_tpu_package_end")
+load(
+    "//build_files:accelerator_specification.bzl",
+    "tpus",
+)
+load(
+    "//build_files:build_defs.bzl",
+    "torch_tpu_cc_library",
+    "torch_tpu_cc_test",
+    "torch_tpu_package_end",
+)
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -94,10 +103,10 @@ torch_tpu_cc_library(
 torch_tpu_cc_test(
     name = "pjrt_init_test",
     srcs = ["pjrt_init_test.cc"],
+    compatible_accelerators = tpus(),
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
-    tags = ["requires-tpu-v5lite"],
     deps = [
         ":pjrt_state",
         "//csrc/common:env_vars",
@@ -244,11 +253,11 @@ torch_tpu_cc_library(
 torch_tpu_cc_test(
     name = "pjrt_execute_test",
     srcs = ["pjrt_execute_test.cc"],
+    compatible_accelerators = tpus(),
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
     requires_libtpu = True,
-    tags = ["requires-tpu-v5lite"],
     deps = [
         ":counting_pjrt_buffer_test_util",
         ":pjrt_execute",

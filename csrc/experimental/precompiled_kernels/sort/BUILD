@@ -19,6 +19,10 @@
 # Sorting building blocks for precompiled unbounded dynamic kernels.
 
 load(
+    "//build_files:accelerator_specification.bzl",
+    "tpus",
+)
+load(
     "//build_files:build_defs.bzl",
     "torch_tpu_cc_library",
     "torch_tpu_cc_test",
@@ -61,10 +65,10 @@ torch_tpu_cc_library(
 torch_tpu_cc_test(
     name = "sort_test",
     srcs = ["sort_test.cc"],
+    compatible_accelerators = tpus(),
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
-    tags = ["requires-tpu-v5lite"],
     deps = [
         ":sort",
         "//csrc/common:dimension_types",

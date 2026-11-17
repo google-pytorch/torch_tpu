@@ -24,6 +24,10 @@
 """Utilities for building torch_tpu."""
 
 load(
+    "//build_files:accelerator_specification_test.bzl",
+    "accelerator_specification_test_suite",
+)
+load(
     "//build_files:build_defs.bzl",
     "torch_tpu_package_end",
 )
@@ -41,6 +45,18 @@ exports_files([
 ])
 
 bzl_library(
+    name = "accelerator_specification_internal_bzl",
+    srcs = ["accelerator_specification_internal.bzl"],
+    visibility = ["//visibility:private"],
+)
+
+bzl_library(
+    name = "accelerator_specification_bzl",
+    srcs = ["accelerator_specification.bzl"],
+    deps = [":accelerator_specification_internal_bzl"],
+)
+
+bzl_library(
     name = "rbe_bzl",
     srcs = ["rbe.bzl"],
 )
@@ -49,6 +65,7 @@ bzl_library(
     name = "build_defs_bzl",
     srcs = ["build_defs.bzl"],
     deps = [
+        ":accelerator_specification_bzl",
         ":rbe_bzl",
         "//bazel:supported_python_versions_bzl",
         "//shims/build_cleaner:build_defs_lib",
@@ -97,11 +114,24 @@ bzl_library(
 )
 
 bzl_library(
+    name = "accelerator_specification_test_bzl",
+    srcs = ["accelerator_specification_test.bzl"],
+    parse_tests = False,
+    visibility = ["//visibility:private"],
+    deps = [
+        ":accelerator_specification_bzl",
+        ":accelerator_specification_internal_bzl",
+        "@rules_testing//lib:test_suite_bzl",
+    ],
+)
+
+bzl_library(
     name = "build_defs_test_bzl",
     srcs = ["build_defs_test.bzl"],
     parse_tests = False,
     visibility = ["//visibility:private"],
     deps = [
+        ":accelerator_specification_bzl",
         ":build_defs_bzl",
         ":rbe_bzl",
         "@rules_testing//lib:analysis_test_bzl",
@@ -113,6 +143,10 @@ bzl_library(
 # the suite are named build_defs_test_<suffix> and defined in build_defs_test.bzl.
 build_defs_test_suite(
     name = "build_defs_test",
+)
+
+accelerator_specification_test_suite(
+    name = "accelerator_specification_test",
 )
 
 torch_tpu_package_end()

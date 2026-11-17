@@ -16,7 +16,15 @@
 # pgmoka
 # adamomainz
 
-load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_test")
+load(
+    "//build_files:accelerator_specification.bzl",
+    "tpus",
+)
+load(
+    "//build_files:build_defs.bzl",
+    "torch_tpu_package_end",
+    "torch_tpu_py_test",
+)
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -26,13 +34,13 @@ package(
 torch_tpu_py_test(
     name = "launch",
     srcs = ["launch.py"],
+    compatible_accelerators = tpus(min_chips = 4),
     env = {
         "WORLD_SIZE": "8",
     },
     notap = "this is a manual test",
     tags = [
         "requires-net:external",
-        "requires-tpu-v5lite:8",
     ],
     deps = [
         "//examples/fsdp/fsdp_to_simple_fsdp:fsdp_to_simple_fsdp_worker",

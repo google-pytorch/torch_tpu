@@ -17,9 +17,11 @@
 # zhanyong-wan
 
 load(
+    "//build_files:accelerator_specification.bzl",
+    "tpus",
+)
+load(
     "//build_files:build_defs.bzl",
-    "REQUIRES_V5_MULTI_DEVICE",
-    "if_oss",
     "torch_tpu_oss_doc_test",
     "torch_tpu_package_end",
     "torch_tpu_py_library",
@@ -34,12 +36,9 @@ package(
 torch_tpu_py_test(
     name = "launch",
     srcs = ["launch.py"],
+    compatible_accelerators = tpus(min_chips = 4),
     main = "launch.py",
-    tags = if_oss(
-        ["exclusive"],
-        [],
-    ) + [
-        REQUIRES_V5_MULTI_DEVICE,
+    tags = [
         "nosan",  # *san builds are low-value for this example and cause OOMs.
     ],
     deps = [
@@ -52,12 +51,9 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "manual_fsdp_memory_test",
     srcs = ["manual_fsdp_memory_test.py"],
+    compatible_accelerators = tpus(min_chips = 4),
     main = "manual_fsdp_memory_test.py",
-    tags = if_oss(
-        ["exclusive"],
-        [],
-    ) + [
-        REQUIRES_V5_MULTI_DEVICE,
+    tags = [
         "noasan",  # OOMs even with the highest memory limit.
         "requires-mem:28g",  # For the *san builds.
     ],

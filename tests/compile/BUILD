@@ -22,12 +22,17 @@
 # basioli-k
 
 load(
+    "//build_files:accelerator_specification.bzl",
+    "run_on_config",
+    "tpu_config",
+    "tpus",
+)
+load(
     "//build_files:build_defs.bzl",
     "if_oss",
     "torch_tpu_package_end",
     "torch_tpu_py_library",
     "torch_tpu_py_test",
-    "tpu_gen",
 )
 
 package(
@@ -40,10 +45,8 @@ exports_files(["data/goldfish.jpg"])
 torch_tpu_py_test(
     name = "flex_attention_test",
     srcs = ["flex_attention_test.py"],
+    compatible_accelerators = tpus(),
     shard_count = 4,
-    tags = [
-        "requires-tpu-v5lite",
-    ],
     deps = [
         "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/testing:absltest",
@@ -59,15 +62,15 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "detect_causal_mask_test",
     srcs = ["detect_causal_mask_test.py"],
+    compatible_accelerators = tpus(),
     # Run on single-chip TPU v7 for faster TorchDynamo/Inductor compilation
     # and to utilize idle single-chip v7 runner capacity in OSS presubmit.
-    oss_presubmit_tpu_generation = tpu_gen(
-        "v7",
+    run_on = if_oss(run_on_config(
+        presubmit = [tpu_config("v7x")],
         reason = "Faster TorchDynamo/Inductor compilation on single-chip TPU v7",
-    ),
+    )),
     tags = [
         "requires-net:external",
-        "requires-tpu-v5lite",
     ],
     deps = [
         "//shims/absl_py/testing:absltest",
@@ -95,15 +98,15 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "backend_serialization_test",
     srcs = ["backend_serialization_test.py"],
+    compatible_accelerators = tpus(),
     # Run on single-chip TPU v7 for faster TorchDynamo/Inductor compilation
     # and to utilize idle single-chip v7 runner capacity in OSS presubmit.
-    oss_presubmit_tpu_generation = tpu_gen(
-        "v7",
+    run_on = if_oss(run_on_config(
+        presubmit = [tpu_config("v7x")],
         reason = "Faster TorchDynamo/Inductor compilation on single-chip TPU v7",
-    ),
+    )),
     tags = [
         "requires-net:external",
-        "requires-tpu-v5lite",
     ],
     deps = [
         "//shims/absl_py/testing:absltest",
@@ -118,15 +121,15 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "fx_output_reconstructor_test",
     srcs = ["fx_output_reconstructor_test.py"],
+    compatible_accelerators = tpus(),
     # Run on single-chip TPU v7 for faster TorchDynamo/Inductor compilation
     # and to utilize idle single-chip v7 runner capacity in OSS presubmit.
-    oss_presubmit_tpu_generation = tpu_gen(
-        "v7",
+    run_on = if_oss(run_on_config(
+        presubmit = [tpu_config("v7x")],
         reason = "Faster TorchDynamo/Inductor compilation on single-chip TPU v7",
-    ),
+    )),
     tags = [
         "requires-net:external",
-        "requires-tpu-v5lite",
     ],
     deps = [
         "//shims/absl_py/testing:absltest",
@@ -142,16 +145,16 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "small_graph_test",
     srcs = ["small_graph_test.py"],
+    compatible_accelerators = tpus(),
     # Run on single-chip TPU v7 for faster TorchDynamo/Inductor compilation
     # and to utilize idle single-chip v7 runner capacity in OSS presubmit.
-    oss_presubmit_tpu_generation = tpu_gen(
-        "v7",
+    run_on = if_oss(run_on_config(
+        presubmit = [tpu_config("v7x")],
         reason = "Faster TorchDynamo/Inductor compilation on single-chip TPU v7",
-    ),
+    )),
     tags = [
         "nomsan",  # b/516945438
         "requires-net:external",
-        "requires-tpu-v5lite",
     ],
     deps = [
         "//shims/absl_py/testing:absltest",
@@ -170,16 +173,16 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "split_compile_test",
     srcs = ["split_compile_test.py"],
+    compatible_accelerators = tpus(),
     # Run on single-chip TPU v7 for faster TorchDynamo/Inductor compilation
     # and to utilize idle single-chip v7 runner capacity in OSS presubmit.
-    oss_presubmit_tpu_generation = tpu_gen(
-        "v7",
+    run_on = if_oss(run_on_config(
+        presubmit = [tpu_config("v7x")],
         reason = "Faster TorchDynamo/Inductor compilation on single-chip TPU v7",
-    ),
+    )),
     tags = [
         "requires-mem:28g",
         "requires-net:external",
-        "requires-tpu-v5lite",
     ],
     deps = [
         "//shims/absl_py/logging",
@@ -199,15 +202,15 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "heterogeneous_device_test",
     srcs = ["heterogeneous_device_test.py"],
+    compatible_accelerators = tpus(),
     # Run on single-chip TPU v7 for faster TorchDynamo/Inductor compilation
     # and to utilize idle single-chip v7 runner capacity in OSS presubmit.
-    oss_presubmit_tpu_generation = tpu_gen(
-        "v7",
+    run_on = if_oss(run_on_config(
+        presubmit = [tpu_config("v7x")],
         reason = "Faster TorchDynamo/Inductor compilation on single-chip TPU v7",
-    ),
+    )),
     tags = [
         "requires-net:external",
-        "requires-tpu-v5lite",
     ],
     deps = [
         "//shims/absl_py/testing:absltest",
@@ -224,15 +227,15 @@ torch_tpu_py_test(
     name = "activation_checkpointing_test",
     timeout = "long",
     srcs = ["activation_checkpointing_test.py"],
+    compatible_accelerators = tpus(),
     # Run on single-chip TPU v7 for faster TorchDynamo/Inductor compilation
     # and to utilize idle single-chip v7 runner capacity in OSS presubmit.
-    oss_presubmit_tpu_generation = tpu_gen(
-        "v7",
+    run_on = if_oss(run_on_config(
+        presubmit = [tpu_config("v7x")],
         reason = "Faster TorchDynamo/Inductor compilation on single-chip TPU v7",
-    ),
+    )),
     tags = [
         "requires-net:external",
-        "requires-tpu-v5lite",
     ],
     deps = [
         "//shims/absl_py/testing:absltest",
@@ -249,15 +252,15 @@ torch_tpu_py_test(
     name = "upstream_activation_checkpointing_test",
     timeout = "long",
     srcs = ["upstream_activation_checkpointing_test.py"],
+    compatible_accelerators = tpus(),
     # Run on single-chip TPU v7 for faster TorchDynamo/Inductor compilation
     # and to utilize idle single-chip v7 runner capacity in OSS presubmit.
-    oss_presubmit_tpu_generation = tpu_gen(
-        "v7",
+    run_on = if_oss(run_on_config(
+        presubmit = [tpu_config("v7x")],
         reason = "Faster TorchDynamo/Inductor compilation on single-chip TPU v7",
-    ),
+    )),
     tags = [
         "requires-net:external",
-        "requires-tpu-v5lite",
     ],
     deps = [
         "//shims/absl_py/testing:absltest",
@@ -274,16 +277,16 @@ torch_tpu_py_test(
     name = "activation_checkpointing_mem_test",
     timeout = "long",
     srcs = ["activation_checkpointing_mem_test.py"],
+    compatible_accelerators = tpus(),
     # Run on single-chip TPU v7 for faster TorchDynamo/Inductor compilation
     # and to utilize idle single-chip v7 runner capacity in OSS presubmit.
-    oss_presubmit_tpu_generation = tpu_gen(
-        "v7",
+    run_on = if_oss(run_on_config(
+        presubmit = [tpu_config("v7x")],
         reason = "Faster TorchDynamo/Inductor compilation on single-chip TPU v7",
-    ),
+    )),
     shard_count = 2,
     tags = [
         "requires-net:external",
-        "requires-tpu-v5lite",
     ],
     use_tcmalloc = True,
     deps = [
@@ -299,15 +302,13 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "dtensor_test",
     srcs = ["dtensor_test.py"],
+    compatible_accelerators = tpus(),
     # Run on single-chip TPU v7 for faster TorchDynamo/Inductor compilation
     # and to utilize idle single-chip v7 runner capacity in OSS presubmit.
-    oss_presubmit_tpu_generation = tpu_gen(
-        "v7",
+    run_on = if_oss(run_on_config(
+        presubmit = [tpu_config("v7x")],
         reason = "Faster TorchDynamo/Inductor compilation on single-chip TPU v7",
-    ),
-    tags = [
-        "requires-tpu-v5lite",
-    ],
+    )),
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
@@ -319,15 +320,15 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "random_ops_test",
     srcs = ["random_ops_test.py"],
+    compatible_accelerators = tpus(),
     # Run on single-chip TPU v7 for faster TorchDynamo/Inductor compilation
     # and to utilize idle single-chip v7 runner capacity in OSS presubmit.
-    oss_presubmit_tpu_generation = tpu_gen(
-        "v7",
+    run_on = if_oss(run_on_config(
+        presubmit = [tpu_config("v7x")],
         reason = "Faster TorchDynamo/Inductor compilation on single-chip TPU v7",
-    ),
+    )),
     tags = [
         "requires-net:external",
-        "requires-tpu-v5lite",
     ],
     deps = [
         "//shims/absl_py/testing:absltest",
@@ -343,15 +344,15 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "ensure_no_dynamic_test",
     srcs = ["ensure_no_dynamic_test.py"],
+    compatible_accelerators = tpus(),
     # Run on single-chip TPU v7 for faster TorchDynamo/Inductor compilation
     # and to utilize idle single-chip v7 runner capacity in OSS presubmit.
-    oss_presubmit_tpu_generation = tpu_gen(
-        "v7",
+    run_on = if_oss(run_on_config(
+        presubmit = [tpu_config("v7x")],
         reason = "Faster TorchDynamo/Inductor compilation on single-chip TPU v7",
-    ),
+    )),
     tags = [
         "requires-net:external",
-        "requires-tpu-v5lite",
     ],
     deps = [
         "//shims/absl_py/testing:absltest",
@@ -369,16 +370,11 @@ torch_tpu_py_test(
     size = "large",
     timeout = "long",
     srcs = ["compile_with_distributed_test.py"],
+    compatible_accelerators = tpus(min_chips = 4),
     shard_count = 2,
-    tags = if_oss(
-        # Run test shards exclusively to prevent device contention on /dev/vfio/* when acquiring the
-        # 8-chip TPU slice concurrently.
-        ["exclusive"],
-        [],
-    ) + [
+    tags = [
         "noasan",  # TODO(b/555762239): fix the test in asan mode.
         "requires-accel-hbm",
-        "requires-tpu-v5lite:8",
     ],
     deps = [
         "//shims/absl_py/testing:absltest",
@@ -394,15 +390,15 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "compile_api_test",
     srcs = ["compile_api_test.py"],
+    compatible_accelerators = tpus(),
     # Run on single-chip TPU v7 for faster TorchDynamo/Inductor compilation
     # and to utilize idle single-chip v7 runner capacity in OSS presubmit.
-    oss_presubmit_tpu_generation = tpu_gen(
-        "v7",
+    run_on = if_oss(run_on_config(
+        presubmit = [tpu_config("v7x")],
         reason = "Faster TorchDynamo/Inductor compilation on single-chip TPU v7",
-    ),
+    )),
     tags = [
         "requires-net:external",
-        "requires-tpu-v5lite",
     ],
     deps = [
         "//shims/absl_py/testing:absltest",
@@ -440,16 +436,24 @@ torch_tpu_py_test(
     name = "stablehlo_compile_test",
     timeout = "long",
     srcs = ["stablehlo_compile_test.py"],
+    compatible_accelerators = tpus(),
     exec_properties = {
         "cpp_link.mem": "20g",  # Needed for asan.
     },
     linking_mode = "static",
     main = "stablehlo_compile_test.py",
     nopresubmit = "Slow test.",
+    run_on = if_oss(
+        None,
+        run_on_config(
+            postsubmit = [tpu_config("v6e")],
+            presubmit = [],
+            reason = "Keeps the pre-migration v6e placement in google3.",
+        ),
+    ),
     tags = [
         "cpu:1",  # Ensure reproducible performance on Forge.
         "nofastbuild",  # Measures performance.
-        "requires-tpu-v6e",
     ],
     deps = [
         ":stablehlo_compile_testing",
@@ -465,15 +469,15 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "output_modify_test",
     srcs = ["output_modify_test.py"],
+    compatible_accelerators = tpus(),
     # Run on single-chip TPU v7 for faster TorchDynamo/Inductor compilation
     # and to utilize idle single-chip v7 runner capacity in OSS presubmit.
-    oss_presubmit_tpu_generation = tpu_gen(
-        "v7",
+    run_on = if_oss(run_on_config(
+        presubmit = [tpu_config("v7x")],
         reason = "Faster TorchDynamo/Inductor compilation on single-chip TPU v7",
-    ),
+    )),
     tags = [
         "requires-net:external",
-        "requires-tpu-v5lite",
     ],
     deps = [
         "//shims/absl_py/logging",
@@ -489,15 +493,15 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "compile_with_inference_mode_test",
     srcs = ["compile_with_inference_mode_test.py"],
+    compatible_accelerators = tpus(),
     # Run on single-chip TPU v7 for faster TorchDynamo/Inductor compilation
     # and to utilize idle single-chip v7 runner capacity in OSS presubmit.
-    oss_presubmit_tpu_generation = tpu_gen(
-        "v7",
+    run_on = if_oss(run_on_config(
+        presubmit = [tpu_config("v7x")],
         reason = "Faster TorchDynamo/Inductor compilation on single-chip TPU v7",
-    ),
+    )),
     tags = [
         "requires-net:external",
-        "requires-tpu-v5lite",
     ],
     deps = [
         "//shims/absl_py/testing:absltest",
@@ -549,16 +553,16 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "trace_autograd_ops_test",
     srcs = ["trace_autograd_ops_test.py"],
+    compatible_accelerators = tpus(),
     # Run on single-chip TPU v7 for faster TorchDynamo/Inductor compilation
     # and to utilize idle single-chip v7 runner capacity in OSS presubmit.
-    oss_presubmit_tpu_generation = tpu_gen(
-        "v7",
+    run_on = if_oss(run_on_config(
+        presubmit = [tpu_config("v7x")],
         reason = "Faster TorchDynamo/Inductor compilation on single-chip TPU v7",
-    ),
+    )),
     strict = "true",
     tags = [
         "nomsan",  # 3p 'py/torch' error: use-of-uninitialized-value in 3 in reduced_float_type_copy
-        "requires-tpu-v5lite",
     ],
     deps = [
         "//shims/absl_py/testing:absltest",
@@ -574,9 +578,9 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "cache_test",
     srcs = ["cache_test.py"],
+    compatible_accelerators = tpus(),
     tags = [
         "requires-net:external",
-        "requires-tpu-v5lite",
     ],
     deps = [
         "//shims/absl_py/flags",
@@ -594,9 +598,9 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "aot_autograd_cache_test",
     srcs = ["aot_autograd_cache_test.py"],
+    compatible_accelerators = tpus(),
     tags = [
         "requires-net:external",
-        "requires-tpu-v5lite",
     ],
     deps = [
         "//shims/absl_py/flags",
@@ -675,9 +679,9 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "async_compile_test",
     srcs = ["async_compile_test.py"],
+    compatible_accelerators = tpus(),
     tags = [
         "requires-net:external",
-        "requires-tpu-v5lite",
     ],
     deps = [
         "//shims/absl_py/testing:absltest",
@@ -695,13 +699,13 @@ torch_tpu_py_test(
     name = "async_compile_benchmark_test",
     timeout = "eternal",
     srcs = ["async_compile_benchmark_test.py"],
+    compatible_accelerators = tpus(only = ["v7x"]),
     notap = "Slow benchmark test.",
     tags = [
         "cpu:8",
         "nofastbuild",  # Measures performance.
         "requires-accel-hbm",
         "requires-net:external",
-        "requires-tpu-v7x",
     ],
     deps = [
         "//shims/absl_py/flags",
@@ -731,15 +735,13 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "jagged_compile_test",
     srcs = ["jagged_compile_test.py"],
+    compatible_accelerators = tpus(),
     # Run on single-chip TPU v7 for faster TorchDynamo/Inductor compilation
     # and to utilize idle single-chip v7 runner capacity in OSS presubmit.
-    oss_presubmit_tpu_generation = tpu_gen(
-        "v7",
+    run_on = if_oss(run_on_config(
+        presubmit = [tpu_config("v7x")],
         reason = "Faster TorchDynamo/Inductor compilation on single-chip TPU v7",
-    ),
-    tags = [
-        "requires-tpu-v5lite",
-    ],
+    )),
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
@@ -777,9 +779,9 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "compile_teardown_test",
     srcs = ["compile_teardown_test.py"],
+    compatible_accelerators = tpus(),
     tags = [
         "requires-net:external",
-        "requires-tpu-v5lite",
     ],
     deps = [
         "//shims/absl_py:app",
@@ -795,16 +797,16 @@ torch_tpu_py_test(
     name = "nested_compile_region_benchmark_test",
     timeout = "long",
     srcs = ["nested_compile_region_benchmark_test.py"],
+    compatible_accelerators = tpus(),
     # Run on single-chip TPU v7 for faster TorchDynamo/Inductor compilation
     # and to utilize idle single-chip v7 runner capacity in OSS presubmit.
-    oss_presubmit_tpu_generation = tpu_gen(
-        "v7",
+    run_on = if_oss(run_on_config(
+        presubmit = [tpu_config("v7x")],
         reason = "Faster TorchDynamo/Inductor compilation on single-chip TPU v7",
-    ),
+    )),
     tags = [
         "nofastbuild",
         "requires-net:external",
-        "requires-tpu-v5lite",
     ],
     deps = [
         "//shims/absl_py/flags",
