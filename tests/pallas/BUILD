@@ -166,6 +166,7 @@ torch_tpu_py_test(
         "XLA_FLAGS": "--xla_force_host_platform_device_count=4",
     },
     shard_count = 4,
+    tags = ["notsan"],  # TODO(b/584257115): Fails under OSS TSan.
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/jax:pallas",
@@ -192,6 +193,7 @@ torch_tpu_py_test(
         "XLA_FLAGS": "--xla_force_host_platform_device_count=4",
     },
     shard_count = 4,
+    tags = ["notsan"],  # TODO(b/584257115): Fails under OSS TSan.
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",

@@ -97,6 +97,7 @@ torch_tpu_py_test(
     name = "distributed_utils_test",
     srcs = ["distributed_utils_test.py"],
     shard_count = 5,
+    tags = ["notsan"],  # TODO(b/584257115): Fails under OSS TSan.
     deps = [
         ":distributed_utils",
         "//shims/absl_py/testing:absltest",
@@ -1101,6 +1102,7 @@ torch_tpu_py_test(
     srcs = ["handshake_test.py"],
     shard_count = 8,
     tags = [
+        "notsan",  # TODO(b/584257115): Fails under OSS TSan.
         "requires-mem:28g",
     ],
     deps = [

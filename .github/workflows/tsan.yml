@@ -58,7 +58,7 @@ jobs:
           {
             name: "CPU",
             runner: "linux-x86-n4-16",
-            config: "ci_cpu",
+            config: "ci_cpu_tsan",
           }
         ]
     # Use self-hosted runners. For a Linux runner, a corresponding container image used for the

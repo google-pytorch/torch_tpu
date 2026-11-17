@@ -30,6 +30,7 @@ package(
 torch_tpu_py_test(
     name = "torchax_device_ops_test",
     srcs = ["torchax_device_ops_test.py"],
+    tags = ["notsan"],  # TODO(b/584257115): Fails under OSS TSan.
     deps = [
         "//perflab:target",
         "//perflab/torchax:torchax_device_ops",
@@ -43,6 +44,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "torchax_step_test",
     srcs = ["torchax_step_test.py"],
+    tags = ["notsan"],  # TODO(b/584257115): Fails under OSS TSan.
     deps = [
         "//perflab:compile",
         "//perflab:context",

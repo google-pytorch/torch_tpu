@@ -347,6 +347,10 @@ common:ci_cpu --config=ci
 common:ci_cpu --build_tag_filters=-nobuild,-requires-gpu,-requires-tpu,-cuda-build-test
 common:ci_cpu --test_tag_filters=-nobuild,-notest,-requires-gpu,-requires-tpu,-cuda-build-test,-requires-newest-deps
 
+# Settings specific to CPU ThreadSanitizer CI runs.
+common:ci_cpu_tsan --config=ci_cpu
+common:ci_cpu_tsan --test_tag_filters=-nobuild,-notest,-requires-gpu,-requires-tpu,-cuda-build-test,-requires-newest-deps,-notsan,-nosan
+
 # Settings specific to CPU presubmit.
 common:ci_cpu_presubmit --config=ci_cpu
 common:ci_cpu_presubmit --test_tag_filters=-nobuild,-notest,-requires-gpu,-requires-tpu,-nopresubmit,-cuda-build-test,-requires-newest-deps
