@@ -14,9 +14,9 @@
  * limitations under the License.
  */
 
-// Registers the nonzero indices kernels with the unbounded dynamic kernel
-// registry when this library is loaded. Nothing references this file, so it is
-// built with `alwayslink = True`; link it only into TPU-only targets.
+// Registers the precompiled unbounded dynamic kernels with the registry when
+// this library is loaded. Nothing references this file, so it is built with
+// `alwayslink = True`; link it only into TPU-only targets.
 
 #include <utility>
 #include <vector>
@@ -24,6 +24,7 @@
 #include "absl/log/absl_check.h"
 #include "csrc/common/unbounded_dynamic_kernel_registry.h"
 #include "csrc/experimental/precompiled_kernels/nonzero_indices.h"
+#include "csrc/experimental/precompiled_kernels/sort/sort.h"
 
 namespace torch_tpu {
 namespace {
@@ -89,6 +90,7 @@ class UnboundedDynamicKernelRegistrar {
                                      __COUNTER__)((kernels))
 
 TT_REGISTER_DYNAMIC_KERNELS(GetNonzeroUnboundedDynamicKernels());
+TT_REGISTER_DYNAMIC_KERNELS(GetSortUnboundedDynamicKernels());
 
 }  // namespace
 }  // namespace torch_tpu

@@ -2514,11 +2514,12 @@ torch_tpu_py_test(
     ],
 )
 
-# Checks that the precompiled unbounded dynamic kernels serve the ops of
-# dynamic_ops_test.py.
+# Checks that the precompiled unbounded dynamic kernels, including the opt-in
+# ones, serve the ops of dynamic_ops_test.py.
 torch_tpu_py_test(
     name = "dynamic_ops_test",
     srcs = ["dynamic_ops_test.py"],
+    env = {"TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS": "all"},
     main = "dynamic_ops_test.py",
     run_on_accelerators = [
         "requires-tpu-v6e",
