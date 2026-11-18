@@ -19,10 +19,11 @@ https://github.com/pytorch/pytorch/blob/main/docs/source/accelerator/testing.md.
 """
 
 from collections.abc import Mapping, Sequence
-from typing import Final
+from typing import Final, TypeAlias
 
 import torch
 from torch.testing._internal.opinfo import core as opinfo_core
+from torch_tpu._internal.utils import hardware
 
 # Decorators applied to OpInfo-based tests, i.e. tests parametrized by `@ops`,
 # for TPU.
@@ -64,17 +65,13 @@ _FLOAT8_E5M3FNU_DTYPES: Final[Sequence[torch.dtype]] = (
     else ()
 )
 
-TEST_EXCLUSIONS: Final[
-    Mapping[
-        str,
-        Mapping[
-            str,
-            str
-            | Sequence[str]
-            | Mapping[str, str | Mapping[str, Sequence[torch.dtype]]],
-        ],
-    ]
-] = {
+_MethodExclusion: TypeAlias = str | Mapping[str, Sequence[torch.dtype]]
+_ClassExclusions: TypeAlias = (
+    str | Sequence[str] | Mapping[str, _MethodExclusion]
+)
+_TestExclusions: TypeAlias = Mapping[str, Mapping[str, _ClassExclusions]]
+
+_BASE_TEST_EXCLUSIONS: Final[_TestExclusions] = {
     # TODO(b/573758862): track per-test exclusion reasons and triage.
     # go/keep-sorted start block=yes
     "distributed/_composable/fsdp/test_fully_shard_comm": {
@@ -1004,3 +1001,70 @@ TEST_EXCLUSIONS: Final[
     },
     # go/keep-sorted end
 }
+
+# Exclusions that apply only on TPU v7x (`hardware.TpuVersion.V7`), merged into
+# `TEST_EXCLUSIONS` below when running on TPU v7x.
+_TPU_V7_EXCLUSIONS: Final[_TestExclusions] = {
+    # go/keep-sorted start block=yes
+    "test_indexing": {
+        "TestIndexingDevice": [
+            # TODO(https://github.com/pytorch/pytorch/issues/205534): Remove
+            # TPU v7x exclusion once the upstream test uses a float32 reference.
+            "test_index_put_large_indices",
+        ],
+    },
+    # go/keep-sorted end
+}
+
+
+def _merge_exclusions(
+    base: _TestExclusions, extra: _TestExclusions
+) -> _TestExclusions:
+  """Merges per-generation exclusions into a base exclusion mapping."""
+  merged: dict[str, dict[str, _ClassExclusions]] = {
+      module: dict(classes) for module, classes in base.items()
+  }
+  for module, classes in extra.items():
+    target = merged.setdefault(module, {})
+    for cls_name, extra_entry in classes.items():
+      if cls_name not in target:
+        target[cls_name] = extra_entry
+        continue
+      base_entry = target[cls_name]
+      if isinstance(base_entry, str) or isinstance(extra_entry, str):
+        target[cls_name] = "*"
+      elif isinstance(base_entry, Sequence) and isinstance(
+          extra_entry, Sequence
+      ):
+        target[cls_name] = [*base_entry, *extra_entry]
+      else:
+        base_map: dict[str, _MethodExclusion] = (
+            {m: "*" for m in base_entry}
+            if isinstance(base_entry, Sequence)
+            else dict(base_entry)
+        )
+        extra_map: Mapping[str, _MethodExclusion] = (
+            {m: "*" for m in extra_entry}
+            if isinstance(extra_entry, Sequence)
+            else extra_entry
+        )
+        for method, spec in extra_map.items():
+          existing = base_map.get(method)
+          if existing is None:
+            base_map[method] = spec
+          elif isinstance(existing, str) or isinstance(spec, str):
+            base_map[method] = "*"
+          else:
+            base_map[method] = {
+                "dtypes": [*existing.get("dtypes", ()), *spec.get("dtypes", ())]
+            }
+        target[cls_name] = base_map
+  return merged
+
+
+TEST_EXCLUSIONS: Final[_TestExclusions] = (
+    _merge_exclusions(_BASE_TEST_EXCLUSIONS, _TPU_V7_EXCLUSIONS)
+    if getattr(hardware.get_tpu_spec(), "version", None)
+    == hardware.TpuVersion.V7
+    else _BASE_TEST_EXCLUSIONS
+)

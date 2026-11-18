@@ -33,6 +33,7 @@ torch_tpu_py_library(
     deps = [
         "//shims/torch:pytorch",
         "//shims/torch:testing_internal",
+        "//src/torch_tpu/_internal/utils:hardware",
     ],
 )
 
