@@ -48,6 +48,7 @@ torch_tpu_cc_library(
 torch_tpu_cc_test(
     name = "kiln_test",
     srcs = ["kiln_test.cc"],
+    shard_count = 8,
     deps = [
         ":kiln",
         "//csrc/common:error_utils",
