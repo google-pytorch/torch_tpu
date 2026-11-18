@@ -1107,6 +1107,75 @@ class KernelVerifierTest(seed_test_utils.RepeatableTest):
     ):
       jaxpr_model.decode_dma_operands((object(), object()))
 
+  def test_semaphore_wait_operands_decode_static_param_layout(self):
+    sem, transforms, amount = object(), (1,), 2
+    tree = types.SimpleNamespace(unflatten=tuple)
+    eqn_false = types.SimpleNamespace(
+        params={"decrement": False, "args_tree": tree},
+        invars=(sem, transforms, amount),
+    )
+    eqn_true_overrides_legacy = types.SimpleNamespace(
+        params={"decrement": True, "args_tree": tree},
+        invars=(sem, transforms, amount, False),
+    )
+    out_sem, out_tr, out_amt, out_dec = (
+        jaxpr_model.decode_semaphore_wait_operands(eqn_false)
+    )
+    self.assertIs(out_sem, sem)
+    self.assertEqual(out_tr, transforms)
+    self.assertEqual(out_amt, amount)
+    self.assertIs(out_dec, False)
+
+    out_sem, out_tr, out_amt, out_dec = (
+        jaxpr_model.decode_semaphore_wait_operands(eqn_true_overrides_legacy)
+    )
+    self.assertIs(out_sem, sem)
+    self.assertEqual(out_tr, transforms)
+    self.assertEqual(out_amt, amount)
+    self.assertIs(out_dec, True)
+
+  def test_semaphore_wait_operands_decode_legacy_args_tree_layout(self):
+    sem, transforms, amount, dynamic_var = object(), (1,), 2, object()
+    tree = types.SimpleNamespace(unflatten=tuple)
+    eqn_false = types.SimpleNamespace(
+        params={"args_tree": tree},
+        invars=(sem, transforms, amount, False),
+    )
+    eqn_dynamic = types.SimpleNamespace(
+        params={"args_tree": tree},
+        invars=(sem, transforms, amount, dynamic_var),
+    )
+    out_sem, out_tr, out_amt, out_dec = (
+        jaxpr_model.decode_semaphore_wait_operands(eqn_false)
+    )
+    self.assertIs(out_sem, sem)
+    self.assertEqual(out_tr, transforms)
+    self.assertEqual(out_amt, amount)
+    self.assertIs(out_dec, False)
+
+    out_sem, out_tr, out_amt, out_dec = (
+        jaxpr_model.decode_semaphore_wait_operands(eqn_dynamic)
+    )
+    self.assertIs(out_sem, sem)
+    self.assertEqual(out_tr, transforms)
+    self.assertEqual(out_amt, amount)
+    self.assertIs(out_dec, dynamic_var)
+
+  def test_semaphore_wait_operands_default_decrement_to_true_when_absent(self):
+    sem, transforms, amount = object(), (1,), 2
+    tree = types.SimpleNamespace(unflatten=tuple)
+    eqn_short_tree = types.SimpleNamespace(
+        params={"args_tree": tree},
+        invars=(sem, transforms, amount),
+    )
+    out_sem, out_tr, out_amt, out_dec = (
+        jaxpr_model.decode_semaphore_wait_operands(eqn_short_tree)
+    )
+    self.assertIs(out_sem, sem)
+    self.assertEqual(out_tr, transforms)
+    self.assertEqual(out_amt, amount)
+    self.assertIs(out_dec, True)
+
   def test_regular_sem_in_dma_rejected_on_tpu_v5e(self):
     def regular_sem_in_dma(counts: jax.Array, x: jax.Array) -> jax.Array:
       def kernel(counts_ref, x_hbm, y_hbm, scratch_vmem, regular_sems):
@@ -1355,6 +1424,36 @@ class KernelVerifierTest(seed_test_utils.RepeatableTest):
 
     x_spec = jax.ShapeDtypeStruct((8, 128), jnp.float32)
     rep = verifier.verify(peek_semaphore_wait, (x_spec,), mode=STATIC)
+    hw = rep.findings_by_category(Category.HARDWARE_CONSTRAINT_VIOLATION)
+    self.assertNotEmpty(hw, msg=rep.summary())
+    self.assertIn("decrement=False", hw[0].message)
+
+  def test_semaphore_wait_decrement_false_in_unreachable_when_rejected(self):
+    def dead_branch_peek_wait(x: jax.Array) -> jax.Array:
+      def kernel(x_ref, y_ref, sem):
+        @pl.when(pl.program_id(0) == 99)
+        def _unreachable():
+          pl.semaphore_wait(sem, 1, decrement=False)
+
+        y_ref[...] = x_ref[...]
+
+      return pl.pallas_call(
+          kernel,
+          out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype),
+          grid_spec=pltpu.PrefetchScalarGridSpec(
+              num_scalar_prefetch=0,
+              grid=(2,),
+              in_specs=[pl.BlockSpec(x.shape, lambda _i: (0, 0))],
+              out_specs=pl.BlockSpec(x.shape, lambda _i: (0, 0)),
+              scratch_shapes=(pltpu.SemaphoreType.REGULAR,),
+          ),
+      )(x)
+
+    x_spec = jax.ShapeDtypeStruct((8, 128), jnp.float32)
+    rep, _ = jaxpr_model.check_kernel_static_models(
+        dead_branch_peek_wait, (x_spec,)
+    )
+    self.assertFalse(rep.passed, msg=rep.summary())
     hw = rep.findings_by_category(Category.HARDWARE_CONSTRAINT_VIOLATION)
     self.assertNotEmpty(hw, msg=rep.summary())
     self.assertIn("decrement=False", hw[0].message)

@@ -482,6 +482,31 @@ def decode_dma_operands(operands: Sequence[Any]) -> DmaOperands:
   )
 
 
+def decode_semaphore_wait_operands(eqn: Any) -> tuple[Any, Any, Any, Any]:
+  """Decodes `(sem, transforms, value, decrement)` for `semaphore_wait`.
+
+  Newer JAX releases store `decrement` as a static equation parameter
+  (`eqn.params["decrement"]`) and pass `(sem, transforms, value)` in
+  `args_tree`. Older releases pass `(sem, transforms, value, decrement)` in
+  `args_tree`, defaulting to `True` when absent.
+
+  Args:
+    eqn: A `semaphore_wait` Jaxpr equation (or compatible object exposing
+      `params` and `invars`).
+
+  Returns:
+    `(sem, transforms, value, decrement)` tuple.
+  """
+  sem_arg, sem_tr, val_arg, *rest = eqn.params["args_tree"].unflatten(
+      eqn.invars
+  )
+  if "decrement" in eqn.params:
+    decrement_arg = eqn.params["decrement"]
+  else:
+    decrement_arg = rest[0] if rest else True
+  return sem_arg, sem_tr, val_arg, decrement_arg
+
+
 @dataclasses.dataclass(frozen=True)
 class _RefView:
   """A `Ref` or view of it, tracked back to its root buffer or semaphore."""
@@ -3212,13 +3237,12 @@ def _handle_sem_wait(eqn: Any, ctx: _WalkContext, env: _Env, loc: str | None):
     ctx.builder.note_unresolved_sync(_UNRESOLVED_SYNC)
     return
   try:
-    sem_arg, sem_tr, val_arg, *rest = eqn.params["args_tree"].unflatten(
-        eqn.invars
+    sem_arg, sem_tr, val_arg, decrement_arg = decode_semaphore_wait_operands(
+        eqn
     )
   except (TypeError, ValueError):
     ctx.builder.note_unresolved_sync(_UNRESOLVED_SYNC)
     return
-  decrement_arg = rest[0] if rest else True
   view = _resolve_view(
       ctx, env, sem_arg, sem_tr, loc, access_kind=_SliceAccessKind.DMA
   )
@@ -4247,7 +4271,7 @@ def _check_static_hardware_rules(
               dedup_key=("neg_sem_amt", loc, what, int(amt_val)),
           )
         if name == "semaphore_wait":
-          dec_arg = unflattened[3] if len(unflattened) > 3 else True
+          _, _, _, dec_arg = decode_semaphore_wait_operands(eqn)
           if _is_jax_var(dec_arg):
             builder.record_issue(
                 _Category.HARDWARE_CONSTRAINT_VIOLATION,
@@ -6351,7 +6375,7 @@ def static_model_findings(
 def _classify_trace_exception(
     exc: Exception,
 ) -> tuple[_Category, _Severity]:
-  """Maps trace-time bounds and device-id errors to finding categories."""
+  """Maps trace-time bounds, device-id, and hardware errors to categories."""
   lower = str(exc).lower()
   if (
       isinstance(exc, (IndexError, ValueError))
@@ -6380,6 +6404,12 @@ def _classify_trace_exception(
       )
   ):
     return _Category.INVALID_DEVICE_ID, _Severity.ERROR
+  if (
+      isinstance(exc, TypeError)
+      and "primitive semaphore_wait" in lower
+      and "parameter decrement" in lower
+  ):
+    return _Category.HARDWARE_CONSTRAINT_VIOLATION, _Severity.ERROR
   return _Category.VERIFICATION_INCOMPLETE, _Severity.WARNING
 
 
