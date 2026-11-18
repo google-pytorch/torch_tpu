@@ -4214,6 +4214,20 @@ module {
     ):
       torch.tpu.ops.optimization_barrier([])
 
+  @et.why_tpu_only("The optimization barrier is a TPU-only op.")
+  def test_optimization_barrier_forward_mode_ad_fails(self):
+    primal = torch.ones(2, device=et.device())
+    tangent = torch.ones(2, device=et.device())
+    with torch.autograd.forward_ad.dual_level():
+      dual = torch.autograd.forward_ad.make_dual(primal, tangent)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu=re.compile(
+              r"""jvp is not implemented for the c\+\+ API of custom Function(.|\n)*"""
+          ),
+      ):
+        torch.tpu.ops.optimization_barrier([dual])
+
   @et.why_tpu_only(
       "Native PyTorch accepts 2-D proj_bias without throwing an error."
   )

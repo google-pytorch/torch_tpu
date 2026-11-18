@@ -16794,6 +16794,132 @@ module {{
     results = torch.tpu.ops.optimization_barrier([x])
     self.assertEqual(results[0].shape, torch.Size([]))
 
+  def _assert_barrier_keeps_gradients(
+      self,
+      fn: Callable[..., torch.Tensor],
+      inputs: Sequence[torch.Tensor],
+      compiled: bool,
+  ) -> None:
+    """Checks that `fn` has the same gradients with a barrier as without one."""
+
+    def gradients(
+        barrier: Callable[[Sequence[torch.Tensor]], Sequence[torch.Tensor]],
+        run_compiled: bool,
+    ) -> Sequence[torch.Tensor | None]:
+      def loss_fn(*args: torch.Tensor) -> torch.Tensor:
+        return fn(barrier, *args)
+
+      if run_compiled:
+        loss_fn = torch.compile(loss_fn, backend="tpu", fullgraph=True)
+      leaves = [x.detach().requires_grad_(x.requires_grad) for x in inputs]
+      loss_fn(*leaves).backward()
+      return [leaf.grad for leaf in leaves]
+
+    actual = gradients(torch.tpu.ops.optimization_barrier, compiled)
+    expected = gradients(list, False)
+    for actual_grad, expected_grad in zip(actual, expected, strict=True):
+      if expected_grad is None:
+        self.assertIsNone(actual_grad)
+      else:
+        utils.assert_close(actual=actual_grad, expected=expected_grad)
+
+  @parameterized.named_parameters(
+      dict(testcase_name="eager", compiled=False),
+      dict(testcase_name="compiled", compiled=True),
+  )
+  def test_optimization_barrier_gradient_single_tensor(self, compiled: bool):
+    def fn(barrier, x):
+      (y,) = barrier([x * 2.0])
+      return (y * y).sum()
+
+    x = torch.linspace(-1.0, 1.0, 12).reshape(4, 3).to("tpu")
+    self._assert_barrier_keeps_gradients(fn, [x.requires_grad_()], compiled)
+
+  @parameterized.named_parameters(
+      dict(testcase_name="eager", compiled=False),
+      dict(testcase_name="compiled", compiled=True),
+  )
+  def test_optimization_barrier_gradient_mixed_list(self, compiled: bool):
+    def fn(barrier, a, b, frozen, scale, mask):
+      a, b, frozen, scale, mask = barrier([a * 2.0, b, frozen, scale, mask])
+      return (torch.where(mask, a * b, frozen) * scale).sum()
+
+    a = torch.linspace(-1.0, 1.0, 12).reshape(4, 3).to("tpu")
+    b = torch.linspace(0.5, 2.0, 12).reshape(4, 3).to("tpu")
+    frozen = torch.ones(3, 4, device="tpu").t()
+    scale = torch.arange(12, dtype=torch.int32).reshape(4, 3).to("tpu")
+    mask = (torch.arange(12).reshape(4, 3) % 2 == 0).to("tpu")
+    self._assert_barrier_keeps_gradients(
+        fn,
+        [a.requires_grad_(), b.requires_grad_(), frozen, scale, mask],
+        compiled,
+    )
+
+  @parameterized.named_parameters(
+      dict(testcase_name="eager", compiled=False),
+      dict(testcase_name="compiled", compiled=True),
+  )
+  def test_optimization_barrier_gradient_one_path_around_it(
+      self, compiled: bool
+  ):
+    def fn(barrier, a, b):
+      (gated,) = barrier([a])
+      return (gated * 2.0).sum() + (b * 5.0).sum()
+
+    a = torch.ones(4, 4, device="tpu", requires_grad=True)
+    b = torch.ones(4, 4, device="tpu", requires_grad=True)
+    self._assert_barrier_keeps_gradients(fn, [a, b], compiled)
+
+  @parameterized.named_parameters(
+      dict(testcase_name="eager", compiled=False),
+      dict(testcase_name="compiled", compiled=True),
+  )
+  def test_optimization_barrier_gradient_skips_unused_output(
+      self, compiled: bool
+  ):
+    def fn(barrier, x):
+      # log(0) has an infinite derivative, which an unused output must not see.
+      _, x = barrier([torch.log(x), x])
+      return x.sum()
+
+    x = torch.zeros(3, device="tpu", requires_grad=True)
+    self._assert_barrier_keeps_gradients(fn, [x], compiled)
+
+  @parameterized.named_parameters(
+      dict(testcase_name="eager", compiled=False),
+      dict(testcase_name="compiled", compiled=True),
+  )
+  def test_optimization_barrier_gradient_scalar(self, compiled: bool):
+    def fn(barrier, scalar):
+      (scalar,) = barrier([scalar * 3.0])
+      return scalar * scalar
+
+    scalar = torch.tensor(2.0, device="tpu", requires_grad=True)
+    self._assert_barrier_keeps_gradients(fn, [scalar], compiled)
+
+  def test_optimization_barrier_double_backward(self):
+    def second_derivative(barrier):
+      x = torch.tensor([0.5, -1.5, 2.0], device="tpu", requires_grad=True)
+      (y,) = barrier([x * x])
+      (grad,) = torch.autograd.grad((y * y).sum(), x, create_graph=True)
+      grad.sum().backward()
+      return x.grad
+
+    utils.assert_close(
+        actual=second_derivative(torch.tpu.ops.optimization_barrier),
+        expected=second_derivative(list),
+    )
+
+  def test_optimization_barrier_outputs_require_grad_like_their_inputs(self):
+    trained = torch.ones(2, device="tpu", requires_grad=True)
+    frozen = torch.ones(3, 2, device="tpu").t()
+    index = torch.ones(2, dtype=torch.int32, device="tpu")
+
+    outputs = torch.tpu.ops.optimization_barrier([trained, frozen, index])
+
+    self.assertEqual([t.requires_grad for t in outputs], [True, False, False])
+    self.assertEqual(outputs[1].stride(), frozen.stride())
+
 
 class OpsGradUnitTest(TorchTpuVsCpuTestBase):
   """Tests for backward ops."""

@@ -1840,6 +1840,8 @@ TORCH_LIBRARY_IMPL(tpu, AutogradPrivateUse1, m) {
         return AtenSparseDenseMatmulActivationUnstackAutograd::apply(
             stacked_activations, per_feature_batch_sizes, per_feature_dims);
       });
+  ImplInternal<OpName::kTorchTpuOptimizationBarrier>(
+      m, TorchTpuOptimizationBarrierAutograd);
 }
 
 // Registers implementations for torch.ops.tpu ops for CPU tensors.

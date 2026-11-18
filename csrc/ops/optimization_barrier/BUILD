@@ -38,6 +38,8 @@ torch_tpu_cc_library(
         "//csrc/ops/macros:kernel",
         "//csrc/ops/view_decomposition:contiguous_to_view",
         "//shims/torch:aten_headers",
+        "//shims/torch:torch_headers",
+        "@com_google_absl//absl/base:no_destructor",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/types:span",
         "@llvm-project//mlir:Support",
