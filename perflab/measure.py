@@ -401,6 +401,7 @@ def _warmup_run(
     enable_xprof: bool = False,
     profiling_time: _ProfilingTime | None = None,
     clock: Callable[[], float] = time.perf_counter,
+    capture_xprof: bool | None = None,
 ) -> metrics.WarmupRunResult:
   """Runs the model to warmup the caches.
 
@@ -420,11 +421,14 @@ def _warmup_run(
     profiling_time: If set, accumulates the wall time spent starting and ending
       the xprof session.
     clock: Returns the current time in seconds; used to time each step.
+    capture_xprof: Whether this process opens the xprof session. Defaults to
+      `enable_xprof`; ignored when `enable_xprof` is False.
 
   Returns:
     A WarmupRunResult instance containing the number of warmup steps, the time
     taken for the first step, and the warmup overhead in seconds.
   """
+  capture_xprof = enable_xprof and capture_xprof is not False
   timings = np.zeros(MAX_WARMUP_STEPS.value, dtype=np.float64)
   compile_count = np.zeros(MAX_WARMUP_STEPS.value, dtype=np.int64)
   num_warmup_steps = None
@@ -439,7 +443,7 @@ def _warmup_run(
 
   with gc_disabled(), XprofContext(
       name="warmup_run",
-      enable_xprof=enable_xprof,
+      enable_xprof=capture_xprof,
       trace_only_host=True,
       clock=clock,
   ) as warmup_run_context:
@@ -490,7 +494,7 @@ def _warmup_run(
   logging.info("Warmup Timings for %s: %s", name, timings)
   logging.info("Warmup compile counts for %s: %s", name, compile_count)
   warmup_session_xprof_url = None
-  if enable_xprof and warmup_run_context.session_id:
+  if capture_xprof and warmup_run_context.session_id:
     warmup_session_xprof_url = (
         f"http://xprof/?session_id={warmup_run_context.session_id}"
     )
@@ -674,6 +678,7 @@ def _post_warmup_run(
     enable_xprof: bool = False,
     profiling_time: _ProfilingTime | None = None,
     clock: Callable[[], float] = time.perf_counter,
+    capture_xprof: bool | None = None,
 ) -> metrics.PostWarmupRunResult:
   """Runs the model once after the warmup is complete.
 
@@ -681,16 +686,21 @@ def _post_warmup_run(
     stepper: The stepper to run.
     device_ops: The device operations to use.
     name: The name of the benchmark.
-    enable_xprof: Whether to enable xprof profiling.
+    enable_xprof: Whether to run the profiled steps. Must be the same on every
+      rank: all ranks run the profiled steps in lockstep.
     profiling_time: If set, accumulates the wall time of the profiled steps,
       including starting and ending their xprof session.
     clock: Returns the current time in seconds; used to time each step.
+    capture_xprof: Whether this process opens the xprof session and emits the
+      TraceMe step scopes. Defaults to `enable_xprof`; ignored when
+      `enable_xprof` is False.
 
   Returns:
     A PostWarmupRunResult instance containing the average step time and peak
     device memory usage.
   """
 
+  capture_xprof = enable_xprof and capture_xprof is not False
   xprof_timings = np.zeros(XPROF_STEPS.value, dtype=np.float64)
   # gc is explicitly disabled below to prevent GC pauses from affecting the
   # measurements. Collect garbage once before the timed loop.
@@ -846,7 +856,7 @@ def _post_warmup_run(
     with gc_disabled():
       with XprofContext(
           name="post_warmup_run",
-          enable_xprof=enable_xprof,
+          enable_xprof=capture_xprof,
           trace_only_host=False,
           clock=clock,
       ) as xprof_context:
@@ -854,20 +864,21 @@ def _post_warmup_run(
           xprof_timings[xprof_step] = _run_single_step(
               compile_count_before,
               run_post_hook=(xprof_step < XPROF_STEPS.value - 1),
-              trace_step_num=xprof_step,
+              trace_step_num=xprof_step if capture_xprof else None,
           )
       stepper.post_warmup_hook()
     if profiling_time is not None:
       profiling_time.seconds += clock() - profiling_start_time
 
-    xspace = xprof_context.xspace
-    if xprof_context.session_id:
-      post_warmup_run_session_xprof_url = (
-          f"http://xprof/?session_id={xprof_context.session_id}"
+    if capture_xprof:
+      xspace = xprof_context.xspace
+      if xprof_context.session_id:
+        post_warmup_run_session_xprof_url = (
+            f"http://xprof/?session_id={xprof_context.session_id}"
+        )
+      avg_device_time = _calculate_avg_device_time(
+          device_ops, xspace, XPROF_STEPS.value
       )
-    avg_device_time = _calculate_avg_device_time(
-        device_ops, xspace, XPROF_STEPS.value
-    )
 
   logging.info(
       "Post Warmup Timings summary for %s: %s", name, _timings_summary(timings)
@@ -905,6 +916,7 @@ def measure(
     name: str,
     enable_xprof: bool = False,
     clock: Callable[[], float] = time.perf_counter,
+    capture_xprof: bool | None = None,
 ) -> metrics.PerformanceMetrics:
   """Warms up and measures a stepper.
 
@@ -913,8 +925,13 @@ def measure(
     device_ops: The device operations to use.
     name: The name of the benchmark, used in logs.
     enable_xprof: Whether to profile the warmup and extra post-warmup steps.
+      Must be the same on every rank: all ranks run the profiled steps in
+      lockstep so collectives inside the step function do not deadlock.
     clock: Returns the current time in seconds. Tests inject a fake clock to
       control the measured durations.
+    capture_xprof: Whether this process opens the xprof sessions and emits the
+      TraceMe step scopes, e.g. only rank 0 of a distributed run. Defaults to
+      `enable_xprof`; ignored when `enable_xprof` is False.
 
   Returns:
     The measured metrics. The e2e wall time leaves out the wall time spent only
@@ -943,6 +960,7 @@ def measure(
             enable_xprof=enable_xprof,
             profiling_time=profiling_time,
             clock=clock,
+            capture_xprof=capture_xprof,
         )
     )
 
@@ -955,6 +973,7 @@ def measure(
               enable_xprof=enable_xprof,
               profiling_time=profiling_time,
               clock=clock,
+              capture_xprof=capture_xprof,
           )
       )
   finally:

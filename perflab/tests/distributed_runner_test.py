@@ -18,6 +18,7 @@ from collections.abc import Iterator
 from collections.abc import Set
 import contextlib
 import importlib.util
+import json
 import os
 import sys
 import types
@@ -26,6 +27,7 @@ from unittest import mock
 from xml.etree import ElementTree
 
 from absl.testing import absltest
+from absl.testing import flagsaver
 from absl.testing import parameterized
 import portpicker
 import torch
@@ -46,6 +48,7 @@ from perflab import target as target_lib
 from perflab import workload as workload_lib
 from perflab.tests import fakes
 from tests import seed_test_utils
+from tests.distributed import distributed_utils
 
 
 def setUpModule():
@@ -130,6 +133,86 @@ class _FakeDistRun:
           error_index=0,
           error_pid=1234,
       )
+
+
+class _AllReduceModule(torch.nn.Module):
+  """Tiny CPU module that runs a real collective on every forward step."""
+
+  def __init__(self) -> None:
+    super().__init__()
+    self.steps_executed = 0
+
+  def forward(self, x: torch.Tensor) -> torch.Tensor:
+    self.steps_executed += 1
+    out = x * (torch.distributed.get_rank() + 1)
+    torch.distributed.all_reduce(out)
+    return out
+
+
+def _gloo_run_single_target_worker(
+    state_dir: str, enable_xprof_flag: bool
+) -> None:
+  """Runs `_run_single_target_task` on one gloo CPU rank and saves rank state."""
+  rank = int(os.environ["RANK"])
+  xprof_sessions = fakes.FakeXprofSessionFactory()
+  traceme_events = []
+  exporter = fakes.RecordingExporter()
+  built_models: list[_AllReduceModule] = []
+
+  def _recording_traceme(name, step_num=None):
+    traceme_events.append([name, step_num])
+    return contextlib.nullcontext()
+
+  def _factory(ctx):
+    del ctx
+    model = _AllReduceModule()
+    built_models.append(model)
+    return model, (torch.ones(1, 2),), {}
+
+  spec = fakes.tiny_spec("gloo_all_reduce_xprof", factory=_factory)
+
+  with (
+      mock.patch.dict(registry_lib.REGISTRY, {spec.name: spec}, clear=True),
+      mock.patch.object(
+          measure_lib.xprof_adapter, "XprofSession", xprof_sessions
+      ),
+      mock.patch.object(
+          measure_lib.xprof_adapter, "TraceMe", _recording_traceme
+      ),
+      mock.patch.object(export_lib, "export", exporter),
+      flagsaver.flagsaver(
+          enable_xprof=enable_xprof_flag,
+          min_warmup_steps=2,
+          max_warmup_steps=4,
+          post_warmup_steps=2,
+          post_warmup_min_seconds=0.0,
+          xprof_steps=2,
+      ),
+  ):
+    distributed_runner._run_single_target_task(
+        spec_name=spec.name,
+        mode_value=common.RunMode.EAGER_DEFAULT.value,
+        platform_name=target_lib.Platform.CPU.value,
+        metrics_file=os.path.join(state_dir, f"metrics_{rank}.pkl"),
+    )
+
+  with open(os.path.join(state_dir, f"rank_{rank}.json"), "w") as f:
+    json.dump(
+        {
+            "steps_executed": built_models[0].steps_executed,
+            "pg_destroyed": not torch.distributed.is_initialized(),
+            "xprof_sessions": [
+                {
+                    "trace_mode": s.start_kwargs.get("trace_mode", "FULL"),
+                    "ended": s.ended,
+                }
+                for s in xprof_sessions.started
+            ],
+            "traceme_events": traceme_events,
+            "num_exported": len(exporter.exported),
+        },
+        f,
+    )
 
 
 def _read_test_xml(path: str) -> dict[str, tuple[str, str]]:
@@ -1499,6 +1582,65 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
     for inductor_cache, tier2_cache in seen_caches:
       self.assertFalse(os.path.exists(inductor_cache))
       self.assertFalse(os.path.exists(tier2_cache))
+
+  @parameterized.named_parameters(
+      ("xprof_enabled", True),
+      ("xprof_disabled", False),
+  )
+  def test_run_single_target_task_profiles_xprof_only_on_rank_0(
+      self, enable_xprof_flag: bool
+  ):
+    state_dir = self.create_tempdir().full_path
+    distributed_utils.dist_run(
+        2, _gloo_run_single_target_worker, state_dir, enable_xprof_flag
+    )
+
+    with open(os.path.join(state_dir, "rank_0.json")) as f:
+      rank0 = json.load(f)
+    with open(os.path.join(state_dir, "rank_1.json")) as f:
+      rank1 = json.load(f)
+
+    # 2 warmup + 4 untimed post-warmup + 2 timed post-warmup + 2 pipelined
+    # post-warmup (+ 2 xprof).
+    expected_steps = 12 if enable_xprof_flag else 10
+    self.assertTrue(rank0["pg_destroyed"])
+    self.assertTrue(rank1["pg_destroyed"])
+    self.assertEqual(rank0["steps_executed"], expected_steps)
+    self.assertEqual(rank1["steps_executed"], expected_steps)
+
+    # Non-zero ranks never open XProf sessions or emit TraceMe scopes.
+    self.assertEmpty(rank1["xprof_sessions"])
+    self.assertEmpty(rank1["traceme_events"])
+    if enable_xprof_flag:
+      self.assertEqual(
+          rank0["xprof_sessions"],
+          [
+              {"trace_mode": "TRACE_ONLY_HOST", "ended": True},
+              {"trace_mode": "FULL", "ended": True},
+          ],
+      )
+      self.assertEqual(
+          rank0["traceme_events"],
+          [["post_warmup_step", 0], ["post_warmup_step", 1]],
+      )
+    else:
+      self.assertEmpty(rank0["xprof_sessions"])
+      self.assertEmpty(rank0["traceme_events"])
+
+    # Only rank 0 reports metrics, which the launcher exports; no rank exports.
+    rank0_metrics = distributed_runner._read_metrics(
+        os.path.join(state_dir, "metrics_0.pkl")
+    )
+    self.assertIsNotNone(rank0_metrics)
+    self.assertEqual(rank0_metrics.num_warmup_steps, 2)
+    self.assertGreater(rank0_metrics.e2e_wall_time_seconds, 0.0)
+    self.assertIsNone(
+        distributed_runner._read_metrics(
+            os.path.join(state_dir, "metrics_1.pkl")
+        )
+    )
+    self.assertEqual(rank0["num_exported"], 0)
+    self.assertEqual(rank1["num_exported"], 0)
 
 
 if __name__ == "__main__":

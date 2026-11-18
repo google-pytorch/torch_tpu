@@ -493,13 +493,18 @@ def _run_single_target_task(
         compile_config = spec.compile_config or compile_lib.CompileConfig()
         stepper.compile(compile_config, ctx.target)
 
-      # Measure
+      # Measure. Only rank 0 collects xprof and reports metrics: TPU xprof
+      # profiles every chip on the host from a single process, and starting
+      # concurrent sessions across processes sharing a multi-core chip races on
+      # the chip profiler lock. Every rank still runs the profiled steps, so all
+      # ranks run the same steps and their collectives match.
       logging.info("Rank %s calling measure...", rank)
       metrics = measure_lib.measure(
           stepper,
           device_ops,
           name=f"{spec.name}_{mode.value}",
           enable_xprof=flags_lib.ENABLE_XPROF.value,
+          capture_xprof=(rank == 0),
       )
       metrics.step_work = step_work
       logging.info(
