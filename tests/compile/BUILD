@@ -821,4 +821,16 @@ torch_tpu_py_test(
     ],
 )
 
+torch_tpu_py_test(
+    name = "meta_registration_overrides_test",
+    srcs = ["meta_registration_overrides_test.py"],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/compile:meta_registration_overrides",
+        "//tests:seed_test_utils",
+    ],
+)
+
 torch_tpu_package_end()

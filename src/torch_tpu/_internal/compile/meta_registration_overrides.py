@@ -83,6 +83,45 @@ def _patch_addmm_dtype_meta(meta_lib: torch.library.Library) -> None:
   # pylint: enable=protected-access
 
 
+@decompositions.out_wrapper(exact_dtype=True)
+def _bmm_dtype_meta(
+    self: torch.Tensor,
+    mat2: torch.Tensor,
+    out_dtype: torch.dtype,
+):
+  return _meta_registrations.common_meta_baddbmm_bmm(
+      self, mat2, True, out_dtype=out_dtype
+  )
+
+
+# TODO: b/576283069 - Remove once minimum supported PyTorch includes
+# https://github.com/pytorch/pytorch/pull/175619 (PyTorch 2.12+).
+def _patch_bmm_dtype_meta(meta_lib: torch.library.Library) -> None:
+  """Patches `aten.bmm.dtype` and `aten.bmm.dtype_out` Meta kernels."""
+  # pylint: disable=protected-access
+  meta_key = torch._C.DispatchKey.Meta
+  for op in (torch.ops.aten.bmm.dtype, torch.ops.aten.bmm.dtype_out):
+    existing = op.py_kernels.get(meta_key)
+    if (
+        existing is not None and "out" in inspect.signature(existing).parameters
+    ) or (
+        existing is None
+        and torch._C._dispatch_has_kernel_for_dispatch_key(op.name(), meta_key)
+    ):
+      continue
+    if op not in _decomp.meta_table and hasattr(
+        torch._C, "_fake_dispatch_register_meta"
+    ):
+      torch._C._fake_dispatch_register_meta(
+          op._schema.name, op._schema.overload_name
+      )
+    _decomp.meta_table[op] = _bmm_dtype_meta
+    op.py_kernels.pop(meta_key, None)
+    meta_lib.impl(op, _bmm_dtype_meta, allow_override=True)
+    op.py_impl(meta_key)(_bmm_dtype_meta)
+  # pylint: enable=protected-access
+
+
 # TODO: Remove once PyTorch includes https://github.com/pytorch/pytorch/pull/194271
 # and https://github.com/pytorch/pytorch/pull/198303 (PyTorch 2.15+).
 def _patch_sdpa_meta(meta_lib: torch.library.Library) -> None:
@@ -150,3 +189,4 @@ def register() -> None:
   _meta_lib = torch.library.Library("aten", "IMPL", "Meta")
   _patch_sdpa_meta(_meta_lib)
   _patch_addmm_dtype_meta(_meta_lib)
+  _patch_bmm_dtype_meta(_meta_lib)
