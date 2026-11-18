@@ -57,10 +57,12 @@ _TORCH_TEST_MODULE_ENV_VAR: Final = "TORCH_TPU_INTERNAL_TORCH_TEST_MODULE"
 # newly introduced accelerator testing APIs.
 _MINIMAL_TORCH_VERSION: Final = "2.14"
 
-# Capabilities supported on TPU for `@requires_capabilities(...)` tests.
-# Unsupported capabilities are omitted so new tests fail loudly until triaged.
+# Capabilities declared on TPU for `@requires_capabilities(...)` tests:
+# True runs the test, False skips it. Untriaged capabilities are omitted so
+# new tests fail loudly until triaged.
 _TPU_CAPABILITIES: Final[Mapping[str, Callable[[], bool]]] = {
     "attention.flex_attention": lambda: True,
+    "attention.mem_efficient_attention": lambda: False,
 }
 
 

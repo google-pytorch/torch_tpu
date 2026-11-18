@@ -92,7 +92,6 @@ TEST_EXCLUSIONS: Final[
     "dynamo/test_activation_checkpointing": {
         "ActivationCheckpointingViaTagsTests": [
             "test_autocast_flash_attention",
-            "test_compile_checkpoint_mem_eff_attention_no_dropout",
             "test_compile_selective_checkpoint_random_op",
             "test_pattern_matcher",
             "test_tags_dropout",
