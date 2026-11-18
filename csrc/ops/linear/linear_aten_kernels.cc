@@ -75,37 +75,46 @@ namespace torch_tpu {
 namespace {
 
 // Builds a StableHLO `dot_general` operation with the given contracting
-// dimensions and precision config. Casts 64-bit integer inputs to `f64` before
-// the dot product and back to `i64` afterwards to work around XLA TPU backend
+// dimensions, precision config, and optional preferred result element type.
+// Casts 64-bit integer inputs to `f64` before the dot product and back to the
+// target integer type afterwards to work around XLA TPU backend
 // precision/performance limitations on `i64` dot products.
 mlir::MlirOp BuildDotGeneral(mlir::MlirOp lhs, mlir::MlirOp rhs,
-                             absl::Span<const int64_t> lhs_contracting,
-                             absl::Span<const int64_t> rhs_contracting,
-                             mlir::stablehlo::Precision precision) {
+                             const absl::Span<const int64_t> lhs_contracting,
+                             const absl::Span<const int64_t> rhs_contracting,
+                             const mlir::stablehlo::Precision precision,
+                             const std::optional<mlir::ElementType>
+                                 preferred_element_type = std::nullopt) {
   const mlir::RankedTensorType lhs_type = GetTensorTypeOrDie(lhs);
   const mlir::RankedTensorType rhs_type = GetTensorTypeOrDie(rhs);
-  const bool is_any_i64 = lhs_type.getElementType().isInteger(64) ||
+  const mlir::Type orig_lhs_elem_type = lhs_type.getElementType();
+  const bool is_any_i64 = orig_lhs_elem_type.isInteger(64) ||
                           rhs_type.getElementType().isInteger(64);
   if (is_any_i64) {
     lhs = mlir::stablehlo::ConvertElementType(lhs, mlir::ElementType::F64);
     rhs = mlir::stablehlo::ConvertElementType(rhs, mlir::ElementType::F64);
   }
 
-  auto dot_dimension_numbers = mlir::stablehlo::DotDimensionNumbersAttr::get(
-      &lhs.getContext(),
-      /*lhs_batching_dimensions=*/{},
-      /*rhs_batching_dimensions=*/{},
-      /*lhs_contracting_dimensions=*/AsArrayRef(lhs_contracting),
-      /*rhs_contracting_dimensions=*/AsArrayRef(rhs_contracting));
+  const auto dot_dimension_numbers =
+      mlir::stablehlo::DotDimensionNumbersAttr::get(
+          &lhs.getContext(),
+          /*lhs_batching_dimensions=*/{},
+          /*rhs_batching_dimensions=*/{},
+          /*lhs_contracting_dimensions=*/AsArrayRef(lhs_contracting),
+          /*rhs_contracting_dimensions=*/AsArrayRef(rhs_contracting));
   const mlir::stablehlo::Precision precisions[2] = {precision, precision};
-  auto precision_config =
+  const auto precision_config =
       mlir::stablehlo::PrecisionConfigAttr::get(&lhs.getContext(), precisions);
 
   mlir::MlirOp dot_result = mlir::stablehlo::DotGeneral(
-      lhs, rhs, dot_dimension_numbers, precision_config);
+      lhs, rhs, dot_dimension_numbers, precision_config,
+      is_any_i64 ? std::nullopt : preferred_element_type);
   if (is_any_i64) {
-    return mlir::stablehlo::ConvertElementType(dot_result,
-                                               mlir::ElementType::I64);
+    if (preferred_element_type.has_value()) {
+      return mlir::stablehlo::ConvertElementType(dot_result,
+                                                 *preferred_element_type);
+    }
+    return mlir::stablehlo::ConvertElementType(dot_result, orig_lhs_elem_type);
   }
   return dot_result;
 }
@@ -113,23 +122,34 @@ mlir::MlirOp BuildDotGeneral(mlir::MlirOp lhs, mlir::MlirOp rhs,
 // Builds the StableHLO graph for `aten::linear`: y = input @ weight^T + bias.
 // Supports arbitrary input rank >= 1 and 1D or 2D weight without intermediate
 // reshapes by contracting `input`'s last dimension with `weight`'s last
-// dimension directly via `stablehlo.dot_general`.
+// dimension directly via `stablehlo.dot_general`. When `bias` is present,
+// accumulates and adds the bias in `InferComputationDtype(out_dtype)` (e.g.
+// `f32` for `bf16`/`f16`) before converting once to `out_dtype`.
 absl::StatusOr<mlir::MlirOp> BuildLinearShlo(
     mlir::MlirOp input, mlir::MlirOp weight, std::optional<mlir::MlirOp> bias,
-    mlir::stablehlo::Precision precision) {
+    const mlir::ElementType out_dtype,
+    const mlir::stablehlo::Precision precision) {
   const int64_t input_rank = GetTensorTypeOrDie(input).getRank();
   const int64_t weight_rank = GetTensorTypeOrDie(weight).getRank();
-  const int64_t lhs_contracting[1] = {input_rank - 1};
-  const int64_t rhs_contracting[1] = {weight_rank - 1};
+  const Dimensions lhs_contracting = {input_rank - 1};
+  const Dimensions rhs_contracting = {weight_rank - 1};
 
-  mlir::MlirOp dot_result = BuildDotGeneral(input, weight, lhs_contracting,
-                                            rhs_contracting, precision);
-  if (bias.has_value()) {
-    TT_ASSIGN_OR_RETURN(auto broadcasted,
-                        ApplyBroadcastIfNeeded(dot_result, *bias));
-    return mlir::stablehlo::Add(broadcasted[0], broadcasted[1]);
+  if (!bias.has_value()) {
+    return BuildDotGeneral(input, weight, lhs_contracting, rhs_contracting,
+                           precision);
   }
-  return dot_result;
+
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
+                      InferComputationDtype(out_dtype));
+  mlir::MlirOp dot_result =
+      BuildDotGeneral(input, weight, lhs_contracting, rhs_contracting,
+                      precision, compute_dtype);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp bias_comp,
+                      CastIfNeeded(*bias, compute_dtype));
+  TT_ASSIGN_OR_RETURN((auto [dot_bcast, bias_bcast]),
+                      ApplyBroadcastIfNeeded(dot_result, bias_comp));
+  mlir::MlirOp sum = mlir::stablehlo::Add(dot_bcast, bias_bcast);
+  return CastIfNeeded(sum, out_dtype);
 }
 
 absl::StatusOr<mlir::MlirOp> MaybeConjPhysicalShlo(mlir::MlirOp op,
@@ -305,7 +325,7 @@ ReturnType DispatchLinearImpl(const at::Tensor& input, const at::Tensor& weight,
                               OpParamCacheKeys param_keys,
                               Dispatch2Fn&& dispatch2_fn,
                               Dispatch3Fn&& dispatch3_fn) {
-  TT_ASSIGN_OR_RETURN(mlir::ElementType output_dtype_mlir,
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType output_dtype_mlir,
                       ConvertTo<mlir::ElementType>(input.scalar_type()));
   const auto sanitized_bias = SanitizeOptionalTensor(bias);
   const bool has_bias = sanitized_bias.has_value();
@@ -316,18 +336,21 @@ ReturnType DispatchLinearImpl(const at::Tensor& input, const at::Tensor& weight,
                                .op_param_cache_keys = std::move(param_keys)};
 
   if (has_bias) {
-    auto op_builder = [current_precision](FixedSizeSpan<mlir::MlirOp, 3> inputs)
+    auto op_builder = [output_dtype_mlir,
+                       current_precision](FixedSizeSpan<mlir::MlirOp, 3> inputs)
         -> absl::StatusOr<mlir::MlirOp> {
       auto& [input_op, weight_op, bias_op] = inputs;
-      return BuildLinearShlo(input_op, weight_op, bias_op, current_precision);
+      return BuildLinearShlo(input_op, weight_op, bias_op, output_dtype_mlir,
+                             current_precision);
     };
     return dispatch3_fn(std::move(op_builder), std::move(options));
   } else {
-    auto op_builder = [current_precision](FixedSizeSpan<mlir::MlirOp, 2> inputs)
+    auto op_builder = [output_dtype_mlir,
+                       current_precision](FixedSizeSpan<mlir::MlirOp, 2> inputs)
         -> absl::StatusOr<mlir::MlirOp> {
       auto& [input_op, weight_op] = inputs;
       return BuildLinearShlo(input_op, weight_op, std::nullopt,
-                             current_precision);
+                             output_dtype_mlir, current_precision);
     };
     return dispatch2_fn(std::move(op_builder), std::move(options));
   }

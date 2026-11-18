@@ -581,7 +581,7 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.bfloat16: {"rtol": 3.3e-2, "atol": 8e-2},
     },
     "nn.functional.linear": {
-        torch.bfloat16: {"rtol": 8.7e-3, "atol": 1.9e-2},
+        torch.bfloat16: {"atol": 4.7e-3},
         torch.complex64: {"rtol": 2.2e-2, "atol": 3.5e-2},
         torch.float16: {"rtol": 1.9e-2, "atol": 1.5e-2},
         torch.float32: {"rtol": 2.0e-2, "atol": 1.7e-2},
