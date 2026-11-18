@@ -82,7 +82,10 @@ inputs:
   env_vars:
     description: >-
       Comma-separated KEY=VALUE pairs exported for the benchmark process, e.g.
-      "BENCHMARK_PLATFORM=b200_1,TORCH_DEVICE_BACKEND_AUTOLOAD=0".
+      "BENCHMARK_PLATFORM=b200_1,TORCH_DEVICE_BACKEND_AUTOLOAD=0". Non-empty
+      TEST_TOTAL_SHARDS and TEST_SHARD_INDEX values already set in the job
+      environment (for example via BAP's custom_env_vars) are preserved instead
+      of overwritten.
     required: false
     default: ""
   env_vars_hw:
@@ -180,6 +183,19 @@ runs:
             echo "error: invalid environment variable name: $var_name" >&2
             exit 1
           fi
+
+          # Preserve non-empty shard overrides already set in the job
+          # environment (via BAP's custom_env_vars, e.g. TEST_TOTAL_SHARDS=1
+          # for filtered ad-hoc runs) instead of overwriting them from the
+          # registry.
+          case "$var_name" in
+            TEST_TOTAL_SHARDS|TEST_SHARD_INDEX)
+              if [[ -n "${!var_name:-}" ]]; then
+                echo "Preserving existing $var_name"
+                continue
+              fi
+              ;;
+          esac
 
           echo "Exporting $var_name"
           printf '%s\n' "$pair" >> "$GITHUB_ENV"
@@ -412,5 +428,16 @@ runs:
         echo "----------------------------------------------------------------"
 
         read -ra SCRIPT_ARGS <<< "$ARGS"
-        "$BENCHMARK_PYTHON" "$SCRIPT" ${SCRIPT_ARGS[@]+"${SCRIPT_ARGS[@]}"}
+        if [[ -n "${TESTBRIDGE_TEST_ONLY:-}" ]]; then
+          LOG_FILE="$(mktemp)"
+          trap 'rm -f "$LOG_FILE"' EXIT
+          "$BENCHMARK_PYTHON" "$SCRIPT" ${SCRIPT_ARGS[@]+"${SCRIPT_ARGS[@]}"} 2>&1 \
+            | tee "$LOG_FILE"
+          if grep -Eq '^Ran 0 tests in ' "$LOG_FILE"; then
+            echo "error: TESTBRIDGE_TEST_ONLY='${TESTBRIDGE_TEST_ONLY}' matched 0 tests." >&2
+            exit 1
+          fi
+        else
+          "$BENCHMARK_PYTHON" "$SCRIPT" ${SCRIPT_ARGS[@]+"${SCRIPT_ARGS[@]}"}
+        fi
         echo "::endgroup::"
