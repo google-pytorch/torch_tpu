@@ -82,6 +82,18 @@ torch.tpu.TpuVersion.V8I: {category: Public Python API, defined_in: runtime, sta
 torch.tpu.TpuVersion.V8T: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.allow_excess_precision getter: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.allow_excess_precision setter: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.compiler.CacheEntryStats: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.compiler.CacheEntryStats.compilation_duration: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.compiler.CacheEntryStats.last_read: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.compiler.CacheEntryStats.read_count: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.compiler.CacheStats: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.compiler.CacheStats.num_cache_hits: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.compiler.CacheStats.num_cache_misses: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.compiler.CacheStats.num_cache_reqs: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.compiler.CacheStats.num_compilations: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.compiler.CacheStats.per_entry_stats: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.compiler.cache_stats: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.compiler.clear_cache: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.compiler.custom_compiler_options: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.current_device: {category: Public Python API, defined_in: runtime, prefer: torch.accelerator.current_device_index, stage: Internal}
 torch.tpu.current_stream: {category: Public Python API, defined_in: runtime, prefer: torch.accelerator.current_stream, stage: Internal}
