@@ -193,6 +193,28 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "compile_cache_world_size_test",
+    timeout = "long",
+    srcs = ["compile_cache_world_size_test.py"],
+    tags = if_oss(
+        ["exclusive"],
+        [],
+    ) + [
+        "requires-accel-hbm",
+        "requires-tpu-v5lite:8",
+    ],
+    deps = [
+        ":distributed_utils",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/distributed:multiprocessing",
+        "//src/torch_tpu/_internal/utils:test_utils",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
     name = "compile_cache_process_groups_test",
     timeout = "long",
     srcs = ["compile_cache_process_groups_test.py"],

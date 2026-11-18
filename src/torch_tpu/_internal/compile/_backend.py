@@ -67,6 +67,7 @@ from torch_tpu._internal.compile.debug import TpuCompileDebug
 from torch_tpu._internal.compile.dynamic import dynamic_compiler
 from torch_tpu._internal.distributed import device_mesh
 from torch_tpu._internal.distributed import process_group_utils
+from torch_tpu._internal.distributed import tpu_distributed
 from torch_tpu._internal.precision import precision_impl
 from torch_tpu._internal.sync import sync
 from torch_tpu._internal.utils import utils
@@ -351,16 +352,56 @@ def _mark_device_layouts(
       example_input._tpu_device_layout = layout
 
 
-def _process_group_cache_key_tag(graph_module: torch.fx.GraphModule) -> str:
-  """Returns the devices of the process groups that `graph_module` refers to.
+@functools.cache
+def _default_device_assignment() -> tuple[int, ...]:
+  """Returns the devices that executables without collectives are built for.
 
-  Cached executables embed the devices of the groups their collectives use, but
-  graphs name groups by creation order, which does not determine their members.
+  Mirrors `SetDefaultDeviceAssignment` in csrc/common/compilation.cc: with one
+  device, this process's device; otherwise all devices of the PJRT client. The
+  devices are fixed once the runtime is initialized, so this is computed once.
+  Runtime errors propagate: a cache key without the devices would let runs of
+  different world sizes share executables.
+  """
+  device_ids = tuple(tpu_distributed.all_global_device_ids())
+  if len(device_ids) == 1:
+    return (tpu_distributed.global_device_id(),)
+  return device_ids
+
+
+def _device_cache_key_tag(graph_module: torch.fx.GraphModule) -> str:
+  """Returns the devices that the executables of `graph_module` run on.
+
+  Cached executables embed the devices they were compiled for:
+  - every executable, the default device assignment (this process's device if
+    it sees one device, all devices of the PJRT client otherwise);
+  - executables with collectives, the devices of the groups they use. Graphs
+    name groups by creation order, which does not determine their members.
+
+  The default device assignment matters when jobs of different world sizes (or
+  single processes on different devices) compile the same graph with one
+  on-disk cache (`TORCHINDUCTOR_CACHE_DIR`, by default shared by all processes
+  of a user on a host), e.g. a world-size-1 baseline followed by a
+  tensor-parallel run of the same model. Without it in the key, a graph without
+  collectives would load the executable cached by the world-size-1 run on every
+  rank of the world-size-N run. Only the rank owning that one device could run
+  it; every other rank would fail with "attempted to execute with 1 argument
+  lists when local device count is 0 (total replica count: 1, partition count:
+  1)" in the background executor and then hang.
+
+  Args:
+    graph_module: The Dynamo graph being compiled.
+
+  Returns:
+    A tag for the cache key.
   """
   groups = process_group_utils.get_process_groups(graph_module)
+  default_da = ",".join(map(str, _default_device_assignment()))
   return ";".join(
-      f"{name}:{','.join(map(str, device_mesh.get_device_assignment(pg)))}"
-      for name, pg in sorted(groups.items())
+      [f"default_da:{default_da}"]
+      + [
+          f"{name}:{','.join(map(str, device_mesh.get_device_assignment(pg)))}"
+          for name, pg in sorted(groups.items())
+      ]
   )
 
 
@@ -428,14 +469,13 @@ def _serialization_context(
     stack.enter_context(
         functorch_config.patch("bundled_autograd_cache", True),
     )
-    pg_tag = _process_group_cache_key_tag(graph_module)
-    if pg_tag:
-      tag = compiler_config.cache_key_tag
-      stack.enter_context(
-          compiler_config.patch(  # pyrefly: ignore[missing-attribute]
-              cache_key_tag=f"{tag}:{pg_tag}" if tag else pg_tag
-          )
-      )
+    device_tag = _device_cache_key_tag(graph_module)
+    tag = compiler_config.cache_key_tag
+    stack.enter_context(
+        compiler_config.patch(  # pyrefly: ignore[missing-attribute]
+            cache_key_tag=f"{tag}:{device_tag}" if tag else device_tag
+        )
+    )
 
     # The default tensor metadata extraction methods below are used during cache
     # key generation and unfortunately they zero-out `storage_offset` in the
