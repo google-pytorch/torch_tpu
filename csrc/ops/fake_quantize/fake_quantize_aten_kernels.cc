@@ -56,7 +56,8 @@ BuildFakeQuantizePerTensorAffineCachemaskShlo(mlir::MlirOp self, double scale,
 
   mlir::MlirOp fake_quantized_tensor;
   fake_quantized_tensor = mlir::stablehlo::Div(self, scale_op);
-  fake_quantized_tensor = mlir::stablehlo::Round(fake_quantized_tensor);
+  fake_quantized_tensor =
+      mlir::stablehlo::RoundNearestEven(fake_quantized_tensor);
   fake_quantized_tensor = mlir::stablehlo::Add(fake_quantized_tensor, zp_op);
 
   // Compute the mask.

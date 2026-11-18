@@ -6755,6 +6755,66 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         allow_failure=True,
     )
 
+  @parameterized.parameters(
+      (torch.float32, False),
+      (torch.float32, True),
+      (torch.bfloat16, False),
+      (torch.bfloat16, True),
+      (torch.float16, False),
+      (torch.float16, True),
+  )
+  def test_round_decimals_ties_to_even(self, dtype, compiled):
+    """Regression test for github.com/google-pytorch/torch_tpu/issues/6712."""
+    cases = [
+        ([0.25, 0.75, -0.25, -0.75], 1),
+        ([0.125, 0.375, -0.125], 2),
+        # Exercise float32 opmath for float16/bfloat16 where 10^|decimals| or
+        # scaled values would otherwise overflow (float16) or lose precision
+        # (bfloat16).
+        ([1.2345, 7.0, -7.0], 4),
+        ([1.2345, 7.0, -7.0], 5),
+        ([25.0, -25.0, 45.0, 15.0], -1),
+        ([250.0, -250.0, 150.0, -150.0, 450.0], -2),
+        ([15000.0, 25000.0, -25000.0, 45000.0], -4),
+    ]
+    if dtype == torch.float32:
+      cases.append(([2500.0, -2500.0, 4500.0], -3))
+
+    for values, decimals in cases:
+      with self.subTest(decimals=decimals, values=values):
+
+        def run(device, vals=values, dec=decimals):
+          x = torch.tensor(vals, dtype=dtype, device=device)
+
+          def fn(t):
+            return torch.round(t, decimals=dec)
+
+          if compiled and str(device).startswith("tpu"):
+            fn = torch.compile(fn, backend="tpu", fullgraph=True)
+          return fn(x)
+
+        self.assert_close_tpu_vs_cpu(run)
+
+    # Also verify out-variant and 0-D scalar / empty tensors for decimals != 0.
+    if not compiled:
+      self.assert_close_tpu_vs_cpu(
+          lambda device: torch.round(
+              torch.tensor(0.25, dtype=dtype, device=device), decimals=1
+          )
+      )
+      self.assert_close_tpu_vs_cpu(
+          lambda device: torch.round(
+              torch.empty((0,), dtype=dtype, device=device), decimals=-2
+          )
+      )
+
+      def run_out(device):
+        x = torch.tensor([0.25, 0.75, -0.25, -0.75], dtype=dtype, device=device)
+        out = torch.empty_like(x)
+        return torch.round(x, decimals=1, out=out)
+
+      self.assert_close_tpu_vs_cpu(run_out)
+
   def test_solve_ex_singular(self):
     torch.manual_seed(1234)
     # Create a singular matrix to trigger the unsolvable case.
@@ -11329,6 +11389,54 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     )
 
     self.assertEqual(cpu_mask.cpu(), tpu_mask.cpu())
+
+  @parameterized.parameters(
+      (torch.float32, False),
+      (torch.float32, True),
+      (torch.bfloat16, False),
+      (torch.bfloat16, True),
+      (torch.float16, False),
+      (torch.float16, True),
+  )
+  def test_fake_quantize_per_tensor_affine_ties_to_even(self, dtype, compiled):
+    """Regression test for github.com/google-pytorch/torch_tpu/issues/6712."""
+    cases = [
+        ([0.5, 1.5, 2.5, -0.5, -1.5], 1.0, 0, -128, 127),
+        ([0.5, 1.5, 2.5, -0.5, -1.5], 1.0, 1, -128, 127),
+        ([0.25, 0.75, -0.25, -0.75], 0.5, 0, -128, 127),
+        # -64.5 is exact in float16, bfloat16, and float32, exposing the
+        # boundary tie where ties-to-even stays in [-64, 63] while
+        # ties-away-from-zero flips the mask to False.
+        ([-64.5, -63.5, 62.5, 63.5], 1.0, 0, -64, 63),
+    ]
+    if dtype == torch.float32:
+      cases.append(([-128.5, -127.5, 126.5, 127.5], 1.0, 0, -128, 127))
+    for values, scale, zero_point, quant_min, quant_max in cases:
+      with self.subTest(values=values, scale=scale, zero_point=zero_point):
+
+        def run_cachemask(
+            device,
+            vals=values,
+            sc=scale,
+            zp=zero_point,
+            qmin=quant_min,
+            qmax=quant_max,
+        ):
+          x = torch.tensor(vals, dtype=dtype, device=device)
+
+          def fn(t):
+            return torch.ops.aten.fake_quantize_per_tensor_affine_cachemask(
+                t, sc, zp, qmin, qmax
+            )
+
+          if compiled and str(device).startswith("tpu"):
+            fn = torch.compile(fn, backend="tpu", fullgraph=True)
+          return fn(x)
+
+        cpu_out, cpu_mask = run_cachemask("cpu")
+        tpu_out, tpu_mask = run_cachemask(torch.device("tpu"))
+        utils.assert_close(tpu_out.cpu(), cpu_out.cpu(), rtol=0, atol=0)
+        self.assertEqual(cpu_mask.cpu(), tpu_mask.cpu())
 
   def test_embedding_bag_max_indices(self):
     """Tests that max_indices is computed correctly in _embedding_bag."""
@@ -23464,6 +23572,53 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
             expected=grid_cpu.grad,
             rtol=1e-4,
             atol=1e-4,
+        )
+
+  @parameterized.parameters(
+      (torch.float32, False),
+      (torch.float32, True),
+      (torch.bfloat16, False),
+      (torch.bfloat16, True),
+      (torch.float16, False),
+      (torch.float16, True),
+  )
+  def test_fake_quantize_per_tensor_affine_tie_boundary_grad(
+      self, dtype, compiled
+  ):
+    """Regression test for github.com/google-pytorch/torch_tpu/issues/6712."""
+    cases = [([-64.5, -0.5, 0.5, 1.5, 63.5], -64, 63)]
+    if dtype == torch.float32:
+      cases.append(([-128.5, -0.5, 0.5, 1.5, 127.5], -128, 127))
+
+    for values, quant_min, quant_max in cases:
+      with self.subTest(quant_min=quant_min, quant_max=quant_max):
+
+        def run_grad(device, vals=values, qmin=quant_min, qmax=quant_max):
+          x = torch.tensor(
+              vals,
+              dtype=dtype,
+              device=device,
+              requires_grad=True,
+          )
+
+          def fn(t):
+            return torch.fake_quantize_per_tensor_affine(
+                t, scale=1.0, zero_point=0, quant_min=qmin, quant_max=qmax
+            )
+
+          if compiled and str(device).startswith("tpu"):
+            fn = torch.compile(fn, backend="tpu", fullgraph=True)
+          out = fn(x)
+          out.sum().backward()
+          return out.detach(), x.grad
+
+        cpu_out, cpu_grad = run_grad("cpu")
+        tpu_out, tpu_grad = run_grad(torch.device("tpu"))
+        utils.assert_close(
+            (tpu_out.cpu(), tpu_grad.cpu()),
+            (cpu_out.cpu(), cpu_grad.cpu()),
+            rtol=0,
+            atol=0,
         )
 
 
