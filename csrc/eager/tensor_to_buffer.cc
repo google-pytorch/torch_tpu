@@ -500,7 +500,12 @@ class TpuAllocator final : public c10::DeviceAllocator {
     return DeleteDeviceBufferRef;
   }
 
-  bool initialized() override { return true; }
+  // `torch.accelerator.memory_stats()` and `reset_peak_memory_stats()` skip
+  // the allocator until it's initialized, so that, like CUDA's, querying memory
+  // before the TPU runtime is initialized doesn't initialize it.
+  bool initialized() override {
+    return PjrtBackend::GetInstance().IsInitialized();
+  }
 
   void emptyCache(c10::MempoolId_t mempool_id) override {
     // No-op for now as PjRt handles memory management.
@@ -558,6 +563,14 @@ class TpuAllocator final : public c10::DeviceAllocator {
   }
 
   void resetPeakStats(c10::DeviceIndex device) override {
+    // Like `initialized()`, so that resetting the peak stats before the TPU
+    // runtime is initialized doesn't initialize it (`ValidateDevice()` would).
+    // PyTorch 2.13+ already skips this call until `initialized()`; older
+    // PyTorch doesn't.
+    // TODO: b/585211199 - Remove once the minimum PyTorch version is >= 2.13.
+    if (!initialized()) {
+      return;
+    }
     ValidateDevice(device);
     auto status = PjrtBackend::GetInstance().ClearAllocatorStats();
     if (!status.ok()) {

@@ -12,13 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests `device_count()` before and after the device runtime is initialized.
+"""Tests device APIs before and after the device runtime is initialized.
 
 PyTorch CUDA's `torch.cuda.device_count()` returns the number of devices this
 process can use both before and after CUDA is initialized: before
 initialization it applies `CUDA_VISIBLE_DEVICES` to the NVML device count, and
-it doesn't cache the count until CUDA is initialized. The same tests run
-against `torch.cuda` (`--device_type=cuda`) and `torch.tpu`
+it doesn't cache the count until CUDA is initialized. Querying memory stats
+before CUDA is initialized doesn't initialize it and reports no memory. The
+same tests run against `torch.cuda` (`--device_type=cuda`) and `torch.tpu`
 (`--device_type=tpu`) to check that TorchTPU matches this behavior.
 
 Each scenario runs in a freshly spawned process, since the device runtime can
@@ -119,6 +120,101 @@ def _count_devices(
     conn.close()
 
 
+@dataclasses.dataclass(frozen=True)
+class _MemorySnapshot:
+  """The `torch.accelerator` memory stats and whether the runtime is initialized.
+
+  Attributes:
+    memory_stats: `memory_stats()`.
+    memory_allocated: `memory_allocated()`.
+    max_memory_allocated: `max_memory_allocated()`.
+    memory_reserved: `memory_reserved()`.
+    max_memory_reserved: `max_memory_reserved()`.
+    is_initialized: Whether the device runtime is initialized after the queries
+      above, i.e. whether they initialized it if it wasn't.
+  """
+
+  memory_stats: dict[str, int]
+  memory_allocated: int
+  max_memory_allocated: int
+  memory_reserved: int
+  max_memory_reserved: int
+  is_initialized: bool
+
+
+@dataclasses.dataclass(frozen=True)
+class _MemoryStats:
+  """The memory stats that a worker observed.
+
+  Attributes:
+    before_init: The snapshot when the process starts, before the device runtime
+      is initialized.
+    after_init: The snapshot after the device runtime is initialized and holds a
+      tensor.
+  """
+
+  before_init: _MemorySnapshot
+  after_init: _MemorySnapshot
+
+
+def _snapshot_memory_stats(device_module: Any) -> _MemorySnapshot:
+  """Returns the `torch.accelerator` memory stats and whether it's initialized.
+
+  Args:
+    device_module: `torch.cuda` or `torch.tpu`.
+  """
+  memory_stats = dict(torch.accelerator.memory_stats())
+  memory_allocated = torch.accelerator.memory_allocated()
+  max_memory_allocated = torch.accelerator.max_memory_allocated()
+  memory_reserved = torch.accelerator.memory_reserved()
+  max_memory_reserved = torch.accelerator.max_memory_reserved()
+  return _MemorySnapshot(
+      memory_stats=memory_stats,
+      memory_allocated=memory_allocated,
+      max_memory_allocated=max_memory_allocated,
+      memory_reserved=memory_reserved,
+      max_memory_reserved=max_memory_reserved,
+      # Read after the queries above, so it tells whether they initialized the
+      # device runtime.
+      is_initialized=device_module.is_initialized(),
+  )
+
+
+def _query_memory_stats(conn: Any, device_type: str) -> None:
+  """Reports the memory stats before and after initializing the runtime.
+
+  Runs in a spawned process. Sends either `("ok", _MemoryStats)` or
+  `("error", traceback)` over `conn`.
+
+  Args:
+    conn: The sending end of a pipe to the test process.
+    device_type: "cuda" or "tpu".
+  """
+  # `setUpModule` doesn't run in spawned processes.
+  annotations._internal_apis_allowed_for_testing = True  # pylint: disable=protected-access
+  try:
+    device_module = accelerator_test_utils.get_backend_module(device_type)
+    if device_module.is_initialized():
+      raise AssertionError(f"{device_type} is initialized at process start.")
+
+    torch.accelerator.reset_peak_memory_stats()
+    before_init = _snapshot_memory_stats(device_module)
+
+    # Running a computation and copying its result to the host initializes the
+    # device runtime; allocating a tensor alone doesn't on TPU.
+    device = accelerator_test_utils.get_device(device_type)
+    x = torch.ones(1024, device=device) + 1
+    x.cpu()
+    # `x` is still alive, so the stats count it.
+    after_init = _snapshot_memory_stats(device_module)
+
+    conn.send(("ok", _MemoryStats(before_init, after_init)))
+  except Exception:  # pylint: disable=broad-exception-caught
+    conn.send(("error", traceback.format_exc()))
+  finally:
+    conn.close()
+
+
 def _hold_device(conn: Any, device_type: str) -> None:
   """Initializes the device runtime and holds a device until told to exit.
 
@@ -156,22 +252,28 @@ class DeviceCountTest(
 
   def _run_worker(
       self,
+      target: Any,
       visible_devices_at_start: str | None,
-      visible_devices_before_init: str | None = None,
-  ) -> _DeviceCounts:
-    """Runs `_count_devices` in a new process and returns its counts.
+      *args: Any,
+  ) -> Any:
+    """Runs `target(conn, device_type, *args)` in a new process.
 
     Args:
+      target: A worker function, e.g. `_count_devices`, that sends `("ok",
+        result)` or `("error", traceback)` over `conn`.
       visible_devices_at_start: The visible devices environment variable that
         the new process starts with, or None to start it with the variable
         unset.
-      visible_devices_before_init: Passed to `_count_devices`.
+      *args: More arguments to `target`.
+
+    Returns:
+      The result that `target` sent.
     """
     ctx = multiprocessing.get_context("spawn")
     receiver, sender = ctx.Pipe(duplex=False)
     process = ctx.Process(
-        target=_count_devices,
-        args=(sender, self.device_type, visible_devices_before_init),
+        target=target,
+        args=(sender, self.device_type, *args),
     )
     # The spawned process inherits the environment at `start()`.
     with mock.patch.dict(os.environ):
@@ -202,23 +304,21 @@ class DeviceCountTest(
 
   def test_count_is_the_same_before_and_after_init(self):
     """Verifies that initializing the runtime doesn't change the count."""
-    counts = self._run_worker(visible_devices_at_start=None)
+    counts = self._run_worker(_count_devices, None, None)
 
     self.assertGreater(counts.before_init, 0)
     self.assertEqual(counts.before_init, counts.after_init)
 
   def test_count_before_init_respects_visible_devices(self):
     """Verifies the count before init applies the visible devices variable."""
-    counts = self._run_worker(visible_devices_at_start="0")
+    counts = self._run_worker(_count_devices, "0", None)
 
     self.assertEqual(counts.before_init, 1)
     self.assertEqual(counts.after_init, 1)
 
   def test_count_is_not_cached_before_init(self):
     """Verifies the count follows visible devices changes made before init."""
-    counts = self._run_worker(
-        visible_devices_at_start=None, visible_devices_before_init="0"
-    )
+    counts = self._run_worker(_count_devices, None, "0")
 
     # With one device, the count is always 1 with or without the env change.
     if counts.before_init <= 1:
@@ -273,6 +373,27 @@ class DeviceCountTest(
       if process.is_alive():
         process.kill()
         process.join()
+
+  def test_memory_stats_do_not_initialize_the_runtime(self):
+    """Verifies memory stats report no memory and don't initialize the runtime."""
+    # The worker inherits the visible devices of this process.
+    stats = self._run_worker(
+        _query_memory_stats, os.environ.get(self.visible_devices_env_var)
+    )
+
+    self.assertEqual(
+        stats.before_init,
+        _MemorySnapshot(
+            memory_stats={},
+            memory_allocated=0,
+            max_memory_allocated=0,
+            memory_reserved=0,
+            max_memory_reserved=0,
+            is_initialized=False,
+        ),
+    )
+    self.assertTrue(stats.after_init.is_initialized)
+    self.assertGreater(stats.after_init.memory_allocated, 0)
 
 
 def setUpModule():
