@@ -24,7 +24,8 @@
 
 namespace torch_tpu {
 
-// Load the test's pinned PJRT plugin and create a client for the attached TPU.
+// Configures a single-device TPU environment, loads the test's pinned PJRT
+// plugin, and creates a client for the selected TPU device.
 absl::StatusOr<std::unique_ptr<xla::PjRtClient>> CreateKernelTestClient();
 
 }  // namespace torch_tpu

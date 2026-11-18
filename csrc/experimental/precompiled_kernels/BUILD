@@ -51,6 +51,7 @@ torch_tpu_cc_library(
     srcs = ["kernel_test_utils.cc"],
     hdrs = ["kernel_test_utils.h"],
     deps = [
+        "//csrc/common:environment",
         "//csrc/common:error_utils",
         "@com_google_absl//absl/status:statusor",
         "@xla//xla/pjrt:pjrt_api",

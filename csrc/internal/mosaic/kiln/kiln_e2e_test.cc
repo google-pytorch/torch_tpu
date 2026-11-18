@@ -62,6 +62,7 @@ class KilnE2eTest : public testing::Test {
   static void SetUpTestSuite() {
     TT_ASSERT_OK_AND_ASSIGN(std::unique_ptr<xla::PjRtClient> client,
                             CreateKernelTestClient());
+    ASSERT_EQ(client->device_count(), 1);
     runner_ = new xla::HloRunner(std::move(client));
   }
 

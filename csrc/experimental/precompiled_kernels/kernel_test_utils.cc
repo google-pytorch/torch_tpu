@@ -19,6 +19,7 @@
 #include <memory>
 
 #include "absl/status/statusor.h"
+#include "csrc/common/environment.h"
 #include "csrc/common/error_utils.h"
 #include "xla/pjrt/c_api_client/pjrt_c_api_client.h"
 #include "xla/pjrt/pjrt_api.h"
@@ -27,6 +28,13 @@
 namespace torch_tpu {
 
 absl::StatusOr<std::unique_ptr<xla::PjRtClient>> CreateKernelTestClient() {
+  // Restrict libtpu to a single device before initializing the plugin so
+  // concurrent TPU test jobs on multi-chip hosts do not open each other's VFIO
+  // devices.
+  ApplyTpuVisibleDevices();
+  TT_RETURN_IF_ERROR(InitializeSingleDeviceEnvironment()).SetPrepend()
+      << "failed to initialize single-device environment: ";
+
   TT_ASSIGN_OR_RETURN(bool initialized,
                       AdaptXlaError(pjrt::IsPjrtPluginInitialized("tpu"),
                                     "failed to query test plugin"));
