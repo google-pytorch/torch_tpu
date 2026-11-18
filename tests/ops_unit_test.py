@@ -46,6 +46,7 @@ from torch.nn.attention import flex_attention
 from torch.testing._internal import common_methods_invocations
 from torch.utils import _python_dispatch
 from torch_tpu._internal import dynamism
+from torch_tpu._internal import env
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal import sync
 from torch_tpu._internal.compile import compiler as compile_compiler
@@ -15380,19 +15381,58 @@ module {{
         actual_compiled.cpu(), expected.cpu(), rtol=1e-2, atol=1e-2
     )
 
-  def test_grouped_mm_2d_3d_transposed_rhs_stablehlo(self):
-    """Pins the 2D x 3D lowering of a transposed rhs to a [g, k, n] operand.
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="default_in_tree",
+          libtpu_ver=None,
+          expect_explicit_transpose=False,
+      ),
+      dict(
+          testcase_name="libtpu_with_k_minor_fix",
+          libtpu_ver="0.0.53.dev20261110",
+          expect_explicit_transpose=False,
+      ),
+      dict(
+          testcase_name="legacy_libtpu_0_0_50",
+          libtpu_ver="0.0.50",
+          expect_explicit_transpose=True,
+      ),
+  )
+  def test_grouped_mm_2d_3d_transposed_rhs_stablehlo(
+      self, libtpu_ver, expect_explicit_transpose
+  ):
+    """Tests 2D x 3D transposed rhs folding across libtpu versions.
 
-    Folding the transpose into the RaggedDot contracting dim gives XLA:TPU a
-    contracting-dim-minor [g, n, k] rhs, which it can tile very poorly, so the
-    transpose must stay explicit and the rhs must contract on dim 1.
+    On libtpu >= 0.0.53.dev20261110 (and in-tree builds), folding the [0, 2, 1]
+    transpose into rhs_contracting_dimensions = [2] avoids an explicit
+    SparseCore relayout of all expert weights. Older libtpu builds keep the
+    transpose explicit to avoid degenerate k-minor RaggedDotExpander tiling.
     """
+    original_version = env.get_libtpu_version()
+
+    def _restore_version():
+      env.reset_libtpu_version_for_testing()
+      if original_version is not None:
+        env.set_libtpu_version(original_version)
+
+    self.addCleanup(_restore_version)
+    env.reset_libtpu_version_for_testing()
+    if libtpu_ver is not None:
+      env.set_libtpu_version(libtpu_ver)
+
     num_groups, m, k, n = 4, 256, 128, 256
     device = torch.device("tpu")
-    lhs = torch.randn(m, k, dtype=torch.bfloat16, device=device)
-    rhs_storage = torch.randn(num_groups, n, k, dtype=torch.bfloat16)
-    rhs_storage = rhs_storage.to(device)
-    offs = torch.tensor([64, 128, 192, 256], dtype=torch.int32, device=device)
+    lhs_cpu = torch.randn(m, k, dtype=torch.bfloat16)
+    rhs_storage_cpu = torch.randn(num_groups, n, k, dtype=torch.bfloat16)
+    offs_cpu = torch.tensor([64, 128, 192, 256], dtype=torch.int32)
+    expected = torch.cat([
+        lhs_cpu[g * 64 : (g + 1) * 64].float() @ rhs_storage_cpu[g].float().T
+        for g in range(num_groups)
+    ]).to(torch.bfloat16)
+
+    lhs = lhs_cpu.to(device)
+    rhs_storage = rhs_storage_cpu.to(device)
+    offs = offs_cpu.to(device)
 
     torch.compiler.reset()
     debugs = []
@@ -15402,21 +15442,90 @@ module {{
         dynamic=False,
         options={"serializable": False, "debug_callback": debugs.append},
     )
-    compiled(lhs, rhs_storage, offs)
+    actual = compiled(lhs, rhs_storage, offs)
+    utils.assert_close(actual.cpu(), expected, rtol=1e-2, atol=1e-2)
     text = "\n".join(
         t for debug in debugs for t in debug.stablehlo_forward_text
     )
 
     self.assertIn("chlo.ragged_dot", text)
-    self.assertIn("dims = [0, 2, 1]", text)
     for attr in (
         "lhs_contracting_dimensions = [1]",
-        "rhs_contracting_dimensions = [1]",
         "lhs_ragged_dimensions = [0]",
         "rhs_group_dimensions = [0]",
     ):
       self.assertIn(attr, text)
-    self.assertNotIn("rhs_contracting_dimensions = [2]", text)
+    if expect_explicit_transpose:
+      self.assertIn("dims = [0, 2, 1]", text)
+      self.assertIn("rhs_contracting_dimensions = [1]", text)
+      self.assertNotIn("rhs_contracting_dimensions = [2]", text)
+    else:
+      self.assertNotIn("dims = [0, 2, 1]", text)
+      self.assertIn("rhs_contracting_dimensions = [2]", text)
+      self.assertNotIn("rhs_contracting_dimensions = [1]", text)
+
+  def test_grouped_mm_2d_3d_libtpu_version_cache_isolation(self):
+    """Verifies CompilationCache isolation across the libtpu 0.0.53 cutoff."""
+    original_version = env.get_libtpu_version()
+
+    def _restore_version():
+      env.reset_libtpu_version_for_testing()
+      if original_version is not None:
+        env.set_libtpu_version(original_version)
+
+    self.addCleanup(_restore_version)
+
+    device = torch.device("tpu")
+    # Distinct shapes from other grouped_mm tests so neither version is warm.
+    lhs = torch.randn(48, 32, dtype=torch.bfloat16, device=device)
+    rhs_storage = torch.randn(3, 48, 32, dtype=torch.bfloat16, device=device)
+    offs = torch.tensor([16, 32, 48], dtype=torch.int32, device=device)
+
+    lhs_f8 = lhs.to(torch.float8_e4m3fn)
+    rhs_f8 = rhs_storage.to(torch.float8_e4m3fn)
+    scale_a = torch.ones(48, dtype=torch.float32, device=device)
+    scale_b = torch.ones(3, 48, dtype=torch.float32, device=device)
+
+    env.reset_libtpu_version_for_testing()
+    env.set_libtpu_version("0.0.50")
+    _ = torch._grouped_mm(lhs, rhs_storage.transpose(-2, -1), offs=offs).cpu()
+    _ = torch._scaled_grouped_mm(
+        lhs_f8,
+        rhs_f8.transpose(-2, -1),
+        scale_a,
+        scale_b,
+        offs=offs,
+        out_dtype=torch.bfloat16,
+    ).cpu()
+
+    same_ver_misses = torch.tpu._get_cache_misses()
+    _ = torch._grouped_mm(lhs, rhs_storage.transpose(-2, -1), offs=offs).cpu()
+    _ = torch._scaled_grouped_mm(
+        lhs_f8,
+        rhs_f8.transpose(-2, -1),
+        scale_a,
+        scale_b,
+        offs=offs,
+        out_dtype=torch.bfloat16,
+    ).cpu()
+    self.assertEqual(torch.tpu._get_cache_misses() - same_ver_misses, 0)
+
+    env.reset_libtpu_version_for_testing()
+    env.set_libtpu_version("0.0.53.dev20261110")
+    grouped_misses = torch.tpu._get_cache_misses()
+    _ = torch._grouped_mm(lhs, rhs_storage.transpose(-2, -1), offs=offs).cpu()
+    self.assertGreater(torch.tpu._get_cache_misses() - grouped_misses, 0)
+
+    scaled_misses = torch.tpu._get_cache_misses()
+    _ = torch._scaled_grouped_mm(
+        lhs_f8,
+        rhs_f8.transpose(-2, -1),
+        scale_a,
+        scale_b,
+        offs=offs,
+        out_dtype=torch.bfloat16,
+    ).cpu()
+    self.assertGreater(torch.tpu._get_cache_misses() - scaled_misses, 0)
 
   def test_aten_grouped_mm_meta_symbolic_shapes(self):
     """Tests the TPU meta preserves SymInt shapes without guarding."""

@@ -35,8 +35,10 @@
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/libtpu_version.h"
 #include "csrc/common/macro_utils.h"
 #include "csrc/common/to_string.h"
+#include "csrc/common/version.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
@@ -426,22 +428,45 @@ mlir::MlirOp BuildRaggedDot2d2d(mlir::MlirOp self_op, mlir::MlirOp mat2_op,
 //   Input:  self [b, m, k], mat2 [b, k, n]
 //   Output: [b, m, n]
 //   Degrades to standard batched matrix multiplication (DotGeneral).
+enum class RaggedDot2d3dRhsMode {
+  kFoldTranspose,
+  kKeepExplicitTranspose,
+};
+
+// Resolves the 2D x 3D RHS transpose lowering mode on the dispatch thread and
+// records it in `param_keys` so deferred eager lowering and compilation cache
+// lookup observe the exact same libtpu capability decision.
+// XLA:TPU fixed k-minor 3D ragged-dot RHS window selection ([g, n, k] with
+// rhs_contracting_dimensions={2}) prior to libtpu 0.0.53.dev20261110.
+// TODO: b/579516880 - Remove this version gate once the minimum OSS libtpu
+// version is >= 0.0.53.
+absl::StatusOr<RaggedDot2d3dRhsMode> GetAndAddRaggedDot2d3dRhsModeTo(
+    OpParamCacheKeys& param_keys) {
+  constexpr Version kMinLibtpuForKMinorRaggedDotRhs(0, 0, 53,
+                                                    Version::Dev(20261110));
+  const bool fold_transpose =
+      GetLibtpuVersion() >= kMinLibtpuForKMinorRaggedDotRhs;
+  TT_RETURN_IF_ERROR(
+      param_keys.SetParam("libtpu_k_minor_ragged_dot_rhs", fold_transpose));
+  return fold_transpose ? RaggedDot2d3dRhsMode::kFoldTranspose
+                        : RaggedDot2d3dRhsMode::kKeepExplicitTranspose;
+}
+
 absl::StatusOr<mlir::MlirOp> BuildGroupedMmShlo(
     mlir::MlirOp self_op, mlir::MlirOp mat2_op,
     std::optional<mlir::MlirOp> offs_op, mlir::ElementType out_dtype,
-    mlir::stablehlo::Precision precision) {
+    mlir::stablehlo::Precision precision, RaggedDot2d3dRhsMode rhs_2d3d_mode) {
   const mlir::RankedTensorType self_type = GetTensorTypeOrDie(self_op);
   const bool a_is_2d = self_type.getRank() == 2;
-  // For the ragged 2D x 3D case, keep a [0, 2, 1] transpose of mat2 explicit
-  // instead of folding it into the RaggedDot rhs contracting dim. Folding hands
-  // XLA:TPU a contracting-dim-minor [g, n, k] rhs, for which TPU layout
-  // assignment keeps k in lanes and the RaggedDotExpander tiling search can
-  // fail (e.g. HF Gemma 4 gate_up [128, 1408, 2816]: estimated_cycles=INT64_MAX
-  // and [1, 16, 1] windows, ~50x slower). With an explicit [g, k, n] rhs, XLA
-  // fuses the relayout into the matmul operand.
-  // TODO: b/579516880 - Remove once XLA:TPU handles k-minor ragged dot rhs.
+  // On libtpu < 0.0.53.dev20261110, keep a [0, 2, 1] transpose of mat2 explicit
+  // in the ragged 2D x 3D case instead of folding it into the RaggedDot rhs
+  // contracting dim: older RaggedDotExpander builds fail window search on
+  // k-minor [g, n, k] rhs operands and fall back to [1, 16, 1] windows (~50x
+  // slower). Newer libtpu builds handle k-minor 3D rhs natively, avoiding an
+  // explicit SparseCore relayout copy of all expert weights.
   const bool keep_explicit_mat2_transpose =
-      a_is_2d && GetTensorTypeOrDie(mat2_op).getRank() == 3;
+      a_is_2d && GetTensorTypeOrDie(mat2_op).getRank() == 3 &&
+      rhs_2d3d_mode == RaggedDot2d3dRhsMode::kKeepExplicitTranspose;
   const bool transpose_mat2 =
       !keep_explicit_mat2_transpose && UnwrapTransposed3dMat2(mat2_op);
   const mlir::RankedTensorType mat2_type = GetTensorTypeOrDie(mat2_op);
@@ -549,7 +574,8 @@ absl::StatusOr<mlir::MlirOp> BuildScaledGroupedMmShlo(
     mlir::MlirOp self_op, mlir::MlirOp mat2_op, mlir::MlirOp scale_a,
     mlir::MlirOp scale_b, std::optional<mlir::MlirOp> offs_op,
     std::optional<mlir::MlirOp> bias, std::optional<mlir::MlirOp> scale_result,
-    mlir::ElementType out_dtype, mlir::stablehlo::Precision precision) {
+    mlir::ElementType out_dtype, mlir::stablehlo::Precision precision,
+    RaggedDot2d3dRhsMode rhs_2d3d_mode) {
   const mlir::RankedTensorType self_type = GetTensorTypeOrDie(self_op);
   const mlir::RankedTensorType mat2_type = GetTensorTypeOrDie(mat2_op);
   TT_ASSIGN_OR_RETURN(const mlir::ElementType self_elem_type,
@@ -562,9 +588,9 @@ absl::StatusOr<mlir::MlirOp> BuildScaledGroupedMmShlo(
   TT_ASSIGN_OR_RETURN(const mlir::ElementType comp_dtype,
                       InferComputationDtype(self_elem_type));
 
-  TT_ASSIGN_OR_RETURN(
-      mlir::MlirOp mm_result,
-      BuildGroupedMmShlo(self_op, mat2_op, offs_op, comp_dtype, precision));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp mm_result,
+                      BuildGroupedMmShlo(self_op, mat2_op, offs_op, comp_dtype,
+                                         precision, rhs_2d3d_mode));
   TT_ASSIGN_OR_RETURN(mm_result,
                       CastIfNeeded(mm_result, mlir::ElementType::F32));
 
@@ -737,6 +763,8 @@ absl::StatusOr<DeviceBufferRef> GroupedMm(
                       ConvertTo<mlir::ElementType>(target_dtype));
 
   const auto current_precision = GetAndAddPrecisionTo(param_keys);
+  TT_ASSIGN_OR_RETURN(const RaggedDot2d3dRhsMode rhs_2d3d_mode,
+                      GetAndAddRaggedDot2d3dRhsModeTo(param_keys));
 
   std::vector<at::Tensor> inputs = {self, mat2};
   if (has_offs) {
@@ -744,7 +772,7 @@ absl::StatusOr<DeviceBufferRef> GroupedMm(
   }
 
   auto op_builder =
-      [output_elem_type, current_precision](
+      [output_elem_type, current_precision, rhs_2d3d_mode](
           absl::Span<mlir::MlirOp> inputs,
           mlir::MlirBuilder& builder) -> absl::StatusOr<mlir::MlirOp> {
     auto self_op = inputs[0];
@@ -752,8 +780,9 @@ absl::StatusOr<DeviceBufferRef> GroupedMm(
     std::optional<mlir::MlirOp> offs_op =
         inputs.size() > 2 ? std::make_optional(inputs[2]) : std::nullopt;
     TT_ASSIGN_OR_RETURN(
-        auto result, BuildGroupedMmShlo(self_op, mat2_op, offs_op,
-                                        output_elem_type, current_precision));
+        auto result,
+        BuildGroupedMmShlo(self_op, mat2_op, offs_op, output_elem_type,
+                           current_precision, rhs_2d3d_mode));
     return result;
   };
 
@@ -803,6 +832,8 @@ absl::StatusOr<DeviceBufferRef> ScaledGroupedMm(
                       ConvertTo<mlir::ElementType>(target_dtype));
 
   const auto current_precision = GetAndAddPrecisionTo(param_keys);
+  TT_ASSIGN_OR_RETURN(const RaggedDot2d3dRhsMode rhs_2d3d_mode,
+                      GetAndAddRaggedDot2d3dRhsModeTo(param_keys));
 
   std::vector<at::Tensor> inputs = {self, mat2, scale_a, scale_b};
   if (has_offs) inputs.push_back(*offs);
@@ -810,7 +841,7 @@ absl::StatusOr<DeviceBufferRef> ScaledGroupedMm(
   if (has_scale_result) inputs.push_back(*scale_result);
 
   auto op_builder =
-      [output_elem_type, current_precision, has_offs, has_bias,
+      [output_elem_type, current_precision, rhs_2d3d_mode, has_offs, has_bias,
        has_scale_result](
           absl::Span<mlir::MlirOp> inputs,
           mlir::MlirBuilder& builder) -> absl::StatusOr<mlir::MlirOp> {
@@ -826,11 +857,11 @@ absl::StatusOr<DeviceBufferRef> ScaledGroupedMm(
     auto scale_result_op =
         has_scale_result ? std::make_optional(inputs[idx++]) : std::nullopt;
 
-    TT_ASSIGN_OR_RETURN(
-        auto result,
-        BuildScaledGroupedMmShlo(self_op, mat2_op, scale_a_op, scale_b_op,
-                                 offs_op, bias_op, scale_result_op,
-                                 output_elem_type, current_precision));
+    TT_ASSIGN_OR_RETURN(auto result,
+                        BuildScaledGroupedMmShlo(
+                            self_op, mat2_op, scale_a_op, scale_b_op, offs_op,
+                            bias_op, scale_result_op, output_elem_type,
+                            current_precision, rhs_2d3d_mode));
     return result;
   };
 
