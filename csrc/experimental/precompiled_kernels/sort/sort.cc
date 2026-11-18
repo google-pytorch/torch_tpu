@@ -225,7 +225,6 @@ UnboundedDynamicExecutionMetadata MakeSortMetadata() {
       .logical_input_to_pjrt_param = {0},
       .pjrt_param_shapes = {InputShape()},
       .output_transform = ToLogicalOutputs,
-      .is_compatible = IsCompatible,
   };
 }
 
@@ -268,6 +267,7 @@ UnboundedDynamicKernel GetSortKernel(std::optional<bool> stable_opt,
       .key = MakeUnboundedDynamicKernelCacheKey(
           SortCacheKey(stable_opt, /*dim=*/-1, /*descending=*/false),
           static_cast<int>(id)),
+      .is_compatible = IsCompatible,
       .enabled_by_default = false,
   };
 }

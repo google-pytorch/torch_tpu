@@ -49,12 +49,6 @@ bool IsCompatible(absl::Span<const Shape> input_shapes,
 
 }  // namespace
 
-UnboundedDynamicExecutionMetadata MakeDummyDynamicMetadata() {
-  UnboundedDynamicExecutionMetadata dynamic_meta;
-  dynamic_meta.is_compatible = IsCompatible;
-  return dynamic_meta;
-}
-
 absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>>
 CreateDummyExecutable(xla::PjRtClient& client,
                       UniqueCompileOptions compile_options) {
@@ -84,8 +78,8 @@ void RegisterDummyKernel(const CompilationCacheKey& key,
       UnboundedDynamicKernelRegistry::GetInstance().RegisterKernel(
           UnboundedDynamicKernel{
               .build = build,
-              .metadata = MakeDummyDynamicMetadata(),
               .key = key,
+              .is_compatible = IsCompatible,
               .enabled_by_default =
                   loading == DummyKernelLoading::kEnabledByDefault});
   ABSL_CHECK(status.ok() || absl::IsAlreadyExists(status))  // CRASH_OK

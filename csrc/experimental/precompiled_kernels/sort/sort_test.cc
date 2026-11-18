@@ -53,9 +53,8 @@ using SortTest = ::testing::TestWithParam<TestCase>;
 TEST_P(SortTest, IsCompatible) {
   for (const UnboundedDynamicKernel& kernel :
        GetSortUnboundedDynamicKernels()) {
-    EXPECT_EQ(
-        kernel.metadata.is_compatible(GetParam().inputs, GetParam().outputs),
-        GetParam().expected);
+    EXPECT_EQ(kernel.is_compatible(GetParam().inputs, GetParam().outputs),
+              GetParam().expected);
   }
 }
 

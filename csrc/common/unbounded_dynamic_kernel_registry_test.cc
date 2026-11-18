@@ -88,12 +88,11 @@ CompilationCacheKey DummyKey(const ExtentlessKey& extentless_key,
 
 UnboundedDynamicKernel DummyKernel(
     CompilationCacheKey key,
-    UnboundedDynamicExecutionMetadata::CompatibilityFunc is_compatible) {
+    UnboundedDynamicKernel::CompatibilityFunc is_compatible) {
   return UnboundedDynamicKernel{
       .build = &BuildDummyKernel,
-      .metadata =
-          UnboundedDynamicExecutionMetadata{.is_compatible = is_compatible},
       .key = key,
+      .is_compatible = is_compatible,
   };
 }
 
@@ -177,7 +176,7 @@ TEST(UnboundedDynamicKernelRegistryTest, RegisterKernelRejectsDuplicateKey) {
   const UnboundedDynamicKernel* first = registry.FindUnboundedDynamicKernel(
       extentless_key, {Rank1Input()}, {Output()});
   ASSERT_NE(first, nullptr);
-  EXPECT_EQ(first->metadata.is_compatible, &AcceptsRank1Input);
+  EXPECT_EQ(first->is_compatible, &AcceptsRank1Input);
 }
 
 }  // namespace

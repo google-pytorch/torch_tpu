@@ -638,23 +638,23 @@ UnboundedDynamicExecutionMetadata MakeNonzeroDynamicMetadata() {
           },
       .pjrt_param_shapes = NonzeroParameters<kRank, kTileMinorDim>(),
       .output_transform = BitcastToLogicalIndices,
-      .is_compatible =
-          [](absl::Span<const Shape> input_shapes,
-             absl::Span<const Shape> output_shapes) {
-            // The extentless key already fixes the number, ranks and dtypes of
-            // the operands: one rank-kRank F32 input and one rank-2 S64
-            // output. The layouts are those of the kernel's buffer contract.
-            return output_shapes[0].dimensions()[1] == kRank &&
-                   HasDeviceLayouts(
-                       input_shapes,
-                       {NonzeroInputLayout<kRank, kTileMinorDim>()}) &&
-                   HasDeviceLayouts(
-                       output_shapes,
-                       {xla::Layout({0, 1},
-                                    {xla::Tile({TileRows(kRank), 128})})});
-          },
   };
   return dynamic_meta;
+}
+
+// Whether the nonzero indices kernel for rank-`kRank` inputs serves a graph
+// with these shapes. Its extentless key already fixes the number, ranks and
+// dtypes of the operands: one rank-kRank F32 input and one rank-2 S64 output.
+// The layouts are those of the kernel's buffer contract.
+template <int kRank, int64_t kTileMinorDim>
+bool IsNonzeroCompatible(absl::Span<const Shape> input_shapes,
+                         absl::Span<const Shape> output_shapes) {
+  return output_shapes[0].dimensions()[1] == kRank &&
+         HasDeviceLayouts(input_shapes,
+                          {NonzeroInputLayout<kRank, kTileMinorDim>()}) &&
+         HasDeviceLayouts(
+             output_shapes,
+             {xla::Layout({0, 1}, {xla::Tile({TileRows(kRank), 128})})});
 }
 
 // Builds and compiles the Mosaic nonzero kernel for rank-`kRank` inputs. See
@@ -700,6 +700,7 @@ UnboundedDynamicKernel GetNonzeroUnboundedDynamicKernel(NonzeroKernelId id) {
       .metadata = MakeNonzeroDynamicMetadata<kRank, kTileMinorDim>(),
       .key = MakeUnboundedDynamicKernelCacheKey(NonZeroCacheKey(kRank),
                                                 static_cast<int>(id)),
+      .is_compatible = IsNonzeroCompatible<kRank, kTileMinorDim>,
       .enabled_by_default = true,
   };
 }

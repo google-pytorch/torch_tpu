@@ -29,10 +29,6 @@
 
 namespace torch_tpu {
 
-// Returns dummy unbounded dynamic execution metadata whose compatibility check
-// accepts exactly one rank-2 shape.
-UnboundedDynamicExecutionMetadata MakeDummyDynamicMetadata();
-
 // Compiles a trivial identity computation with `client`. Matches the
 // UnboundedDynamicKernel::BuildFn signature, so it can be registered directly
 // with UnboundedDynamicKernelRegistry.
@@ -53,13 +49,13 @@ enum class DummyKernelLoading {
   kOptIn,             // Loaded only in mode `kAll`.
 };
 
-// Registers a kernel built by `build` with `MakeDummyDynamicMetadata()` under
-// `key`, ignoring kAlreadyExists so that tests sharing a process can register
-// the same key repeatedly. The registry is process-wide and append-only, so
-// tests must use keys that are unique to the behaviour they exercise. Unlike
-// production kernels, dummy kernels are enabled by default unless `loading`
-// says otherwise; re-registering a key keeps its first registration's
-// `loading`.
+// Registers a kernel built by `build` under `key`, ignoring kAlreadyExists so
+// that tests sharing a process can register the same key repeatedly. The kernel
+// accepts calls with one rank-2 input and one rank-2 output. The registry is
+// process-wide and append-only, so tests must use keys that are unique to the
+// behaviour they exercise. Unlike production kernels, dummy kernels are enabled
+// by default unless `loading` says otherwise; re-registering a key keeps its
+// first registration's `loading`.
 void RegisterDummyKernel(
     const CompilationCacheKey& key,
     UnboundedDynamicKernel::BuildFn build = CreateDummyExecutable,

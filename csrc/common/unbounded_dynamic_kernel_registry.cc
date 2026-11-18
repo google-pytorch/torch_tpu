@@ -58,9 +58,8 @@ UnboundedDynamicKernelRegistry::FindUnboundedDynamicKernel(
     return nullptr;
   }
   for (const UnboundedDynamicKernel* kernel : it->second) {
-    const UnboundedDynamicExecutionMetadata::CompatibilityFunc& is_compatible =
-        kernel->metadata.is_compatible;
-    if (!is_compatible || is_compatible(input_shapes, output_shapes)) {
+    if (!kernel->is_compatible ||
+        kernel->is_compatible(input_shapes, output_shapes)) {
       return kernel;
     }
   }

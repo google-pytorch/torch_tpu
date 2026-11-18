@@ -41,10 +41,17 @@ struct UnboundedDynamicKernel {
   using BuildFn =
       absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>> (*)(
           xla::PjRtClient& client, UniqueCompileOptions compile_options);
+  // Returns whether the kernel can serve a call with the given logical input
+  // and output shapes.
+  using CompatibilityFunc = bool (*)(absl::Span<const Shape> input_shapes,
+                                     absl::Span<const Shape> output_shapes);
 
   BuildFn absl_nonnull build;
   UnboundedDynamicExecutionMetadata metadata;
   CompilationCacheKey key;
+  // Picks the kernel among those sharing its extentless key; it accepts every
+  // call if null.
+  CompatibilityFunc absl_nullable is_compatible = nullptr;
   // Whether a cache miss may load the kernel when
   // TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS is "default" (or unset).
   // Opt-in kernels (false) are only loaded when it is "all".

@@ -110,14 +110,7 @@ struct UnboundedDynamicExecutionMetadata {
   std::vector<MetadataParamBinding> metadata_params;
   std::vector<xla::Shape> pjrt_param_shapes;
 
-  // Returns whether this executable can serve a call with the given logical
-  // input and output shapes. Consulted when scanning cache entries that share
-  // an extentless key.
-  using CompatibilityFunc = bool (*)(absl::Span<const Shape> input_shapes,
-                                     absl::Span<const Shape> output_shapes);
-
   OutputTransform absl_nullable output_transform = nullptr;
-  CompatibilityFunc is_compatible = nullptr;
 };
 
 // Whether a `CompilationCache` miss may be served by a kernel from

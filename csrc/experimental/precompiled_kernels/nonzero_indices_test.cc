@@ -52,7 +52,7 @@ TEST_P(NonzeroIndicesTest, IsCompatible) {
   // first, then the 2-D one.
   const auto is_compatible =
       GetNonzeroUnboundedDynamicKernels()[GetParam().rank == 1 ? 0 : 4]
-          .metadata.is_compatible;
+          .is_compatible;
   EXPECT_EQ(is_compatible(GetParam().inputs, GetParam().outputs),
             GetParam().expected);
 }
