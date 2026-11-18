@@ -17,6 +17,7 @@
 #include "csrc/ops/scaled_dot_product_attention/flash_attention_kernel.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <optional>
@@ -27,7 +28,9 @@
 #include "csrc/internal/mosaic/kiln/kiln.h"
 #include "csrc/ops/scaled_dot_product_attention/flash_attention_config.h"
 #include "csrc/ops/scaled_dot_product_attention/util.h"
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
 
 namespace torch_tpu {
 
@@ -41,6 +44,12 @@ struct SoftmaxState {
   kiln::Tile m;    // [rows, 128] f32 running max (log2 domain).
   kiln::Tile l;    // [rows, 128] f32 running sum.
   kiln::Tile acc;  // [rows, d_vo] f32 unnormalized output.
+};
+
+// Selected KV sub-block index and whether its logits need band masking.
+struct ActiveKvSubblock {
+  int64_t index = 0;
+  bool apply_band_mask = false;
 };
 
 // Kernel arguments that are shared by all sub-blocks of a grid step.
@@ -247,6 +256,7 @@ SoftmaxState UpdateSoftmaxState(const FlashAttnConfig& config,
                                 const Tiling& tiling, const KernelArgs& args,
                                 kiln::Tile q, int64_t row_offset, int64_t rows,
                                 int64_t col_offset, bool apply_masking,
+                                std::optional<int64_t> fixed_block_delta,
                                 const std::optional<SoftmaxState>& prev) {
   const int64_t kc = tiling.kc;
   const int64_t d_vo = config.vo_head_dim;
@@ -264,12 +274,16 @@ SoftmaxState UpdateSoftmaxState(const FlashAttnConfig& config,
     s += bias * kLog2e;
   }
   if (apply_masking) {
-    s = ApplyStructuredMask(s, args.qi, args.ki, config, tiling, row_offset,
-                            col_offset, QueryTailMasking::kSkip);
+    const bool has_explicit_band =
+        config.window_left.has_value() || config.window_right.has_value();
+    s = ApplyStructuredMask(
+        s, args.qi, args.ki, config, tiling, row_offset, col_offset,
+        QueryTailMasking::kSkip,
+        has_explicit_band ? fixed_block_delta : std::nullopt);
   }
 
   kiln::Tile mij = kiln::MaxReduce(s, 1).Lanes(kLanes);
-  if (args.bias_ref) {
+  if (args.bias_ref || config.window_left.has_value()) {
     // Clamping mij instead of sij ensures that when a row is entirely masked
     // out with -inf, sij - mij evaluates to (-inf) - (<large negative finite>)
     // = -inf, so exp2(-inf) = 0.0 naturally without any vector compare or
@@ -320,13 +334,41 @@ void StoreSoftmaxState(const KernelArgs& args, const SoftmaxState& state,
   kiln::Store(args.acc_ref(row_slice, kiln::all), state.acc);
 }
 
+[[nodiscard]] bool SubblockOverlapsBand(const FlashAttnConfig& config,
+                                        int64_t q_min, int64_t q_max,
+                                        int64_t k_min, int64_t k_max) {
+  const std::optional<int64_t> right_win = config.EffectiveRightWindow();
+  if (right_win.has_value() && k_min > q_max + *right_win) {
+    return false;
+  }
+  if (config.window_left.has_value() && k_max + *config.window_left < q_min) {
+    return false;
+  }
+  return true;
+}
+
+[[nodiscard]] bool SubblockIntersectsBandBoundary(const FlashAttnConfig& config,
+                                                  int64_t q_min, int64_t q_max,
+                                                  int64_t k_min,
+                                                  int64_t k_max) {
+  const std::optional<int64_t> right_win = config.EffectiveRightWindow();
+  if (right_win.has_value() && k_max > q_min + *right_win) {
+    return true;
+  }
+  if (config.window_left.has_value() && k_min + *config.window_left < q_max) {
+    return true;
+  }
+  return false;
+}
+
 // Processes a single [band_rows, kt] query band across its active KV
 // sub-blocks.
 void EmitQueryBand(const FlashAttnConfig& config, const Tiling& tiling,
                    const KernelArgs& args, int64_t row_offset,
-                   int64_t band_rows, int64_t num_kv_subblocks,
+                   int64_t band_rows,
+                   llvm::ArrayRef<ActiveKvSubblock> active_kv_subblocks,
                    bool single_kv_step, bool ragged_kv,
-                   bool square_causal_diag_block, bool intersects_causal_diag) {
+                   std::optional<int64_t> fixed_block_delta) {
   const int64_t num_q_blocks = config.padded_q_sequence_length / tiling.qt;
   kiln::Tile q =
       LoadClampedRows(args.q_ref, args.qi, num_q_blocks,
@@ -337,13 +379,11 @@ void EmitQueryBand(const FlashAttnConfig& config, const Tiling& tiling,
           ? std::nullopt
           : std::make_optional(LoadSoftmaxState(args, row_offset, band_rows));
 
-  for (int64_t kv_sub = 0; kv_sub < num_kv_subblocks; ++kv_sub) {
-    const bool apply_causal_mask = square_causal_diag_block
-                                       ? (kv_sub == num_kv_subblocks - 1)
-                                       : intersects_causal_diag;
-    const bool apply_masking = ragged_kv || apply_causal_mask;
+  for (const ActiveKvSubblock& kv_sub : active_kv_subblocks) {
+    const bool apply_masking = ragged_kv || kv_sub.apply_band_mask;
     state = UpdateSoftmaxState(config, tiling, args, q, row_offset, band_rows,
-                               kv_sub * tiling.kc, apply_masking, state);
+                               kv_sub.index * tiling.kc, apply_masking,
+                               fixed_block_delta, state);
   }
 
   if (single_kv_step) {
@@ -354,24 +394,108 @@ void EmitQueryBand(const FlashAttnConfig& config, const Tiling& tiling,
 }
 
 // Processes the [qt, kt] grid tile as a static grid of [band_rows, kc]
-// sub-blocks.
+// sub-blocks. When `fixed_block_delta` (`qi - ki` for `qt == kt`) is known,
+// out-of-band sub-blocks and empty query bands are pruned at compile time.
 void EmitGridStep(const FlashAttnConfig& config, const Tiling& tiling,
                   const KernelArgs& args, bool single_kv_step, bool ragged_kv,
-                  bool intersects_causal_diag) {
+                  std::optional<int64_t> fixed_block_delta,
+                  bool intersects_band) {
   const int64_t qt = tiling.qt;
   const int64_t kt = tiling.kt;
   const int64_t kc = tiling.kc;
-  const bool square_causal_diag_block = intersects_causal_diag && qt == kt;
-  const int64_t band_rows = square_causal_diag_block ? kc : qt;
+  const bool prune_subblocks = fixed_block_delta.has_value() && qt == kt;
+  const int64_t band_rows = prune_subblocks ? kc : qt;
   const int64_t num_bands = qt / band_rows;
+  const int64_t total_kv_subs = kt / kc;
 
   for (int64_t band = 0; band < num_bands; ++band) {
-    const int64_t num_kv_subblocks =
-        square_causal_diag_block ? (band + 1) : (kt / kc);
+    llvm::SmallVector<ActiveKvSubblock, 8> active_subs;
+    if (prune_subblocks) {
+      const int64_t q_min = *fixed_block_delta * qt + band * band_rows;
+      const int64_t q_max = q_min + band_rows - 1;
+      for (int64_t kv_sub = 0; kv_sub < total_kv_subs; ++kv_sub) {
+        const int64_t k_min = kv_sub * kc;
+        const int64_t k_max = k_min + kc - 1;
+        if (SubblockOverlapsBand(config, q_min, q_max, k_min, k_max)) {
+          active_subs.push_back(ActiveKvSubblock{
+              .index = kv_sub,
+              .apply_band_mask = SubblockIntersectsBandBoundary(
+                  config, q_min, q_max, k_min, k_max),
+          });
+        }
+      }
+      if (active_subs.empty()) {
+        continue;
+      }
+    } else {
+      for (int64_t kv_sub = 0; kv_sub < total_kv_subs; ++kv_sub) {
+        active_subs.push_back(ActiveKvSubblock{
+            .index = kv_sub,
+            .apply_band_mask = intersects_band,
+        });
+      }
+    }
     EmitQueryBand(config, tiling, args, band * band_rows, band_rows,
-                  num_kv_subblocks, single_kv_step, ragged_kv,
-                  square_causal_diag_block, intersects_causal_diag);
+                  active_subs, single_kv_step, ragged_kv, fixed_block_delta);
   }
+}
+
+[[nodiscard]] llvm::SmallVector<int64_t, 4> GetSquareBoundaryDeltas(
+    const FlashAttnConfig& config, const Tiling& tiling, int64_t num_q_blocks,
+    int64_t num_kv_blocks) {
+  llvm::SmallVector<int64_t, 4> deltas;
+  if (tiling.qt != tiling.kt) {
+    return deltas;
+  }
+  const int64_t min_delta = -(num_kv_blocks - 1);
+  const int64_t max_delta = num_q_blocks - 1;
+  auto add_delta = [&](int64_t d) {  // REF_CAPTURE_OK=called locally
+    if (d >= min_delta && d <= max_delta && !llvm::is_contained(deltas, d)) {
+      deltas.push_back(d);
+    }
+  };
+  if (const std::optional<int64_t> right_win = config.EffectiveRightWindow();
+      right_win.has_value()) {
+    const int64_t q = *right_win / tiling.qt;
+    add_delta(-q);
+    if (*right_win % tiling.qt != 0) {
+      add_delta(-q - 1);
+    }
+  }
+  if (config.window_left.has_value()) {
+    const int64_t q = *config.window_left / tiling.qt;
+    add_delta(q);
+    if (*config.window_left % tiling.qt != 0) {
+      add_delta(q + 1);
+    }
+  }
+  return deltas;
+}
+
+void EmitBoundaryGridStep(const FlashAttnConfig& config, const Tiling& tiling,
+                          const KernelArgs& args, bool single_kv_step,
+                          bool ragged_kv, llvm::ArrayRef<int64_t> deltas,
+                          size_t idx = 0) {
+  if (deltas.empty()) {
+    EmitGridStep(config, tiling, args, single_kv_step, ragged_kv, std::nullopt,
+                 /*intersects_band=*/true);
+    return;
+  }
+  if (idx + 1 >= deltas.size()) {
+    EmitGridStep(config, tiling, args, single_kv_step, ragged_kv, deltas[idx],
+                 /*intersects_band=*/true);
+    return;
+  }
+  kiln::If(
+      args.qi - args.ki == deltas[idx],
+      [&] {  // REF_CAPTURE_OK=called synchronously
+        EmitGridStep(config, tiling, args, single_kv_step, ragged_kv,
+                     deltas[idx], /*intersects_band=*/true);
+      },
+      [&] {  // REF_CAPTURE_OK=called synchronously
+        EmitBoundaryGridStep(config, tiling, args, single_kv_step, ragged_kv,
+                             deltas, idx + 1);
+      });
 }
 
 }  // namespace
@@ -399,9 +523,16 @@ absl::StatusOr<kiln::Kernel> CreateKernel(const FlashAttnConfig& config,
   // The grid covers the sequences rounded up to whole tiles.
   const int64_t num_q_blocks = config.padded_q_sequence_length / qt;
   const int64_t num_kv_blocks = config.padded_kv_sequence_length / kt;
-  const bool single_kv_step = num_kv_blocks == 1 && !config.is_causal;
+  const bool has_explicit_band =
+      config.window_left.has_value() || config.window_right.has_value();
+  const bool single_band_grid =
+      num_q_blocks == 1 && num_kv_blocks == 1 && has_explicit_band && qt == kt;
+  const bool single_kv_step =
+      (num_kv_blocks == 1 && !config.HasBandMask()) || single_band_grid;
   // Out-of-bounds query rows are discarded when writing the output.
   const bool ragged_kv = config.kv_sequence_length % kt != 0;
+  const llvm::SmallVector<int64_t, 4> boundary_deltas = GetSquareBoundaryDeltas(
+      config, normalized_tiling, num_q_blocks, num_kv_blocks);
   kiln::DType dt = config.element_type;
 
   // ---------------------------------------------------------------------------
@@ -462,11 +593,21 @@ absl::StatusOr<kiln::Kernel> CreateKernel(const FlashAttnConfig& config,
                 .ki = kiln::ProgramId(3),
             };
 
-            if (config.is_causal) {
+            if (single_band_grid) {
+              EmitGridStep(config, normalized_tiling, args,
+                           /*single_kv_step=*/true, ragged_kv,
+                           /*fixed_block_delta=*/0, /*intersects_band=*/true);
+            } else if (config.HasBandMask()) {
+              if (!single_kv_step && config.window_left.has_value()) {
+                kiln::If(args.ki == 0,
+                         [&] {  // REF_CAPTURE_OK=called synchronously
+                           InitSoftmaxScratch(config, normalized_tiling, args);
+                         });
+              }
               kiln::If(
-                  BelowOrOnDiagonal(args.qi, args.ki, normalized_tiling),
+                  OverlapsBand(args.qi, args.ki, config, normalized_tiling),
                   [&] {  // REF_CAPTURE_OK=called synchronously
-                    if (!single_kv_step) {
+                    if (!single_kv_step && !config.window_left.has_value()) {
                       kiln::If(args.ki == 0,
                                [&] {  // REF_CAPTURE_OK=called synchronously
                                  InitSoftmaxScratch(config, normalized_tiling,
@@ -474,16 +615,17 @@ absl::StatusOr<kiln::Kernel> CreateKernel(const FlashAttnConfig& config,
                                });
                     }
                     kiln::If(
-                        IntersectsDiagonal(args.qi, args.ki, normalized_tiling),
+                        IntersectsBandBoundary(args.qi, args.ki, config,
+                                               normalized_tiling),
                         [&] {  // REF_CAPTURE_OK=called synchronously
-                          EmitGridStep(config, normalized_tiling, args,
-                                       single_kv_step, ragged_kv,
-                                       /*intersects_causal_diag=*/true);
+                          EmitBoundaryGridStep(config, normalized_tiling, args,
+                                               single_kv_step, ragged_kv,
+                                               boundary_deltas);
                         },
                         [&] {  // REF_CAPTURE_OK=called synchronously
                           EmitGridStep(config, normalized_tiling, args,
-                                       single_kv_step, ragged_kv,
-                                       /*intersects_causal_diag=*/false);
+                                       single_kv_step, ragged_kv, std::nullopt,
+                                       /*intersects_band=*/false);
                         });
                   });
             } else {
@@ -494,7 +636,7 @@ absl::StatusOr<kiln::Kernel> CreateKernel(const FlashAttnConfig& config,
                          });
               }
               EmitGridStep(config, normalized_tiling, args, single_kv_step,
-                           ragged_kv, /*intersects_causal_diag=*/false);
+                           ragged_kv, std::nullopt, /*intersects_band=*/false);
             }
 
             if (!single_kv_step) {

@@ -66,6 +66,12 @@ absl::Status ValidateFlashAttnConfig(const FlashAttnConfig& config,
                error::kInvalidArgument)
            << "dropout_rate must be in [0.0, 1.0), got " << config.dropout_rate;
   }
+  if ((config.window_left.has_value() && *config.window_left < 0) ||
+      (config.window_right.has_value() && *config.window_right < 0)) {
+    return TT_ERROR(  // ERROR_COV_INFEASIBLE=Checked by caller.
+               error::kInvalidArgument)
+           << "Attention band window bounds must be >= 0.";
+  }
   return absl::OkStatus();
 }
 
@@ -80,13 +86,37 @@ std::optional<kiln::ScalarPrefetchSpec> DropoutSeedSpec(
 kiln::IndexMap KvBlockIndexMap(const FlashAttnConfig& config,
                                const Tiling& tiling) {
   const int64_t head_group = config.num_heads / config.kv_num_heads;
-  return kiln::IndexMap([head_group, is_causal = config.is_causal,
+  const std::optional<int64_t> left_win = config.window_left;
+  const std::optional<int64_t> right_win = config.EffectiveRightWindow();
+  const int64_t num_kv_blocks = config.padded_kv_sequence_length / tiling.kt;
+  return kiln::IndexMap([head_group, left_win, right_win, num_kv_blocks,
                          tiling]() -> kiln::IndexIndices {
     kiln::Scalar kv_head = kiln::ProgramId(1) / head_group;
     kiln::Scalar kv_block = kiln::ProgramId(3);
-    if (is_causal) {
+    if (!left_win.has_value() && right_win == 0) {
       kv_block = Select(BelowOrOnDiagonal(kiln::ProgramId(2), kv_block, tiling),
                         kv_block, 0);
+    } else if (num_kv_blocks > 1 &&
+               (left_win.has_value() || right_win.has_value())) {
+      kiln::Scalar qi = kiln::ProgramId(2);
+      kiln::Scalar orig_kv = kv_block;
+      kiln::Scalar next_first_kv = kiln::I32(0);
+      if (left_win.has_value()) {
+        kiln::Scalar next_q_left = Max(0, (qi + 1) * tiling.qt - *left_win);
+        next_first_kv = Min(num_kv_blocks - 1, next_q_left / tiling.kt);
+      }
+      if (right_win.has_value()) {
+        kiln::Scalar meets_right =
+            orig_kv * tiling.kt <= (qi + 1) * tiling.qt - 1 + *right_win;
+        kv_block = Select(meets_right, kv_block, next_first_kv);
+      }
+      if (left_win.has_value()) {
+        kiln::Scalar q_left = Max(0, qi * tiling.qt - *left_win);
+        kiln::Scalar first_kv = Min(num_kv_blocks - 1, q_left / tiling.kt);
+        kiln::Scalar meets_left =
+            (orig_kv + 1) * tiling.kt - 1 + *left_win >= qi * tiling.qt;
+        kv_block = Select(meets_left, kv_block, first_kv);
+      }
     }
     return {kiln::ProgramId(0), kv_head, kv_block, 0};
   });
@@ -145,19 +175,91 @@ kiln::Scalar IntersectsDiagonal(kiln::Scalar row_block, kiln::Scalar col_block,
   return (col_block + 1) * t.kt - 1 > row_block * t.qt;
 }
 
+kiln::Scalar OverlapsBand(kiln::Scalar row_block, kiln::Scalar col_block,
+                          const FlashAttnConfig& config, const Tiling& t) {
+  const std::optional<int64_t> left_win = config.window_left;
+  const std::optional<int64_t> right_win = config.EffectiveRightWindow();
+  if (!left_win.has_value() && right_win == 0) {
+    return BelowOrOnDiagonal(row_block, col_block, t);
+  }
+  std::optional<kiln::Scalar> cond;
+  if (right_win.has_value()) {
+    cond = col_block * t.kt <= (row_block + 1) * t.qt - 1 + *right_win;
+  }
+  if (left_win.has_value()) {
+    kiln::Scalar left_ok =
+        (col_block + 1) * t.kt - 1 + *left_win >= row_block * t.qt;
+    cond = cond ? (*cond & left_ok) : left_ok;
+  }
+  return cond ? *cond : (kiln::I32(0) == 0);
+}
+
+kiln::Scalar IntersectsBandBoundary(kiln::Scalar row_block,
+                                    kiln::Scalar col_block,
+                                    const FlashAttnConfig& config,
+                                    const Tiling& t) {
+  const std::optional<int64_t> left_win = config.window_left;
+  const std::optional<int64_t> right_win = config.EffectiveRightWindow();
+  if (!left_win.has_value() && right_win == 0) {
+    return IntersectsDiagonal(row_block, col_block, t);
+  }
+  std::optional<kiln::Scalar> cond;
+  if (right_win.has_value()) {
+    cond = (col_block + 1) * t.kt - 1 > row_block * t.qt + *right_win;
+  }
+  if (left_win.has_value()) {
+    kiln::Scalar cuts_left =
+        col_block * t.kt + *left_win < (row_block + 1) * t.qt - 1;
+    cond = cond ? (*cond | cuts_left) : cuts_left;
+  }
+  return cond ? *cond : (kiln::I32(0) != 0);
+}
+
 kiln::Tile ApplyStructuredMask(kiln::Tile s, kiln::Scalar row_block,
                                kiln::Scalar col_block,
                                const FlashAttnConfig& config, const Tiling& t,
                                int64_t row_offset, int64_t col_offset,
-                               QueryTailMasking query_tail_masking) {
+                               QueryTailMasking query_tail_masking,
+                               std::optional<int64_t> fixed_block_delta) {
   const bool ragged_q = query_tail_masking == QueryTailMasking::kMask &&
                         config.q_sequence_length % t.qt != 0;
   const bool ragged_kv = config.kv_sequence_length % t.kt != 0;
-  if (!config.is_causal && !ragged_q && !ragged_kv) {
+  const std::optional<int64_t> left_win = config.window_left;
+  const std::optional<int64_t> right_win = config.EffectiveRightWindow();
+  if (!left_win.has_value() && !right_win.has_value() && !ragged_q &&
+      !ragged_kv) {
     return s;
   }
 
   const kiln::Shape i32_shape(s.dims(), kiln::i32);
+  std::optional<kiln::Tile> valid;
+  auto also = [&](kiln::Tile m) {  // REF_CAPTURE_OK=called locally
+    valid = valid ? (*valid & m) : m;
+  };
+
+  if (fixed_block_delta.has_value() && t.qt == t.kt && !ragged_q &&
+      (!ragged_kv || config.padded_kv_sequence_length == t.kt)) {
+    const int64_t diag_shift =
+        *fixed_block_delta * t.qt + row_offset - col_offset;
+    kiln::Tile r_local = kiln::Iota(i32_shape, 0);
+    kiln::Tile c_local = kiln::Iota(i32_shape, 1);
+    kiln::Tile diff = r_local - c_local;
+    if (diag_shift != 0) {
+      diff = diff + diag_shift;
+    }
+    if (right_win.has_value()) {
+      also(diff >= -*right_win);
+    }
+    if (left_win.has_value()) {
+      also(diff <= *left_win);
+    }
+    if (ragged_kv) {
+      kiln::Tile col = (col_offset != 0) ? (c_local + col_offset) : c_local;
+      also(col < config.kv_sequence_length);
+    }
+    return Select(*valid, s, kiln::NInf(s.shape()));
+  }
+
   kiln::Scalar row_start = row_block * t.qt;
   if (row_offset != 0) {
     row_start += row_offset;
@@ -170,12 +272,11 @@ kiln::Tile ApplyStructuredMask(kiln::Tile s, kiln::Scalar row_block,
   kiln::Tile row = kiln::Iota(i32_shape, 0) + row_start;
   kiln::Tile col = kiln::Iota(i32_shape, 1) + col_start;
 
-  std::optional<kiln::Tile> valid;
-  auto also = [&](kiln::Tile m) {  // REF_CAPTURE_OK=called locally
-    valid = valid ? (*valid & m) : m;
-  };
-  if (config.is_causal) {
-    also(row >= col);
+  if (right_win.has_value()) {
+    also(*right_win == 0 ? (row >= col) : (col <= row + *right_win));
+  }
+  if (left_win.has_value()) {
+    also(*left_win == 0 ? (col >= row) : (row <= col + *left_win));
   }
   if (ragged_q) {
     also(row < config.q_sequence_length);
