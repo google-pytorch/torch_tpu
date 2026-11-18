@@ -1918,6 +1918,50 @@ class FxVerifierTest(seed_test_utils.RepeatableTest):
         msg=oob_rep.summary(),
     )
 
+  def test_joint_autograd_cond_retries_missing_tpu_device_kind(self):
+    def _rank1_out_pallas(arr: jax.Array) -> jax.Array:
+      return pl.pallas_call(
+          lambda x_ref, o_ref: o_ref.__setitem__(Ellipsis, x_ref[0, :]),
+          out_shape=jax.ShapeDtypeStruct((128,), arr.dtype),
+          in_specs=[pl.BlockSpec((1, 128), lambda i: (0, 0))],
+          out_specs=pl.BlockSpec((128,), lambda i: (0,)),
+          grid=(1,),
+      )(arr)
+
+    cond_op = jax_op(
+        "pallas_verify_fx::cond_joint_rank1_out",
+        _rank1_out_pallas,
+        donate_argnums=(0,),
+    )
+    cond_op.register_autograd(
+        lambda ctx, g: g.unsqueeze(0).expand(8, 128).clone()
+    )
+
+    def _cond_saved_then_donated(
+        p_flag: torch.Tensor, t_in: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+      h = t_in * 2.0
+      sq = h * h
+      cond_out = torch.cond(
+          p_flag,
+          lambda t: t[:1, :].squeeze(0).clone(),
+          lambda t: cond_op(t),
+          (h,),
+      )
+      return sq, cond_out
+
+    pred = torch.tensor(True)
+    x = torch.ones((8, 128), dtype=torch.float32, requires_grad=True)
+    rep = verifier.verify(_cond_saved_then_donated, (pred, x), mode=STATIC)
+    self.assertEmpty(
+        rep.findings_by_category(Category.VERIFICATION_INCOMPLETE),
+        msg=rep.summary(),
+    )
+    self.assertNotEmpty(
+        rep.findings_by_category(Category.USE_AFTER_DONATE),
+        msg=rep.summary(),
+    )
+
   def test_multi_output_aminmax_out_and_set_inplace_provenance(self):
     donating_op = jax_op(
         "pallas_verify_fx::multi_out_and_set_donate",

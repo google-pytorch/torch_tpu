@@ -3535,7 +3535,9 @@ def trace_to_fx_graph(
         return proxy_tensor.make_fx(
             _bound, tracing_mode="fake", _allow_non_fake_inputs=True
         )(*_make_cloned_args())
-    except ValueError as exc:
+    # TorchDynamo wraps `ValueError` raised inside higher-order ops such as
+    # `torch.cond` in `TorchRuntimeError` (a `RuntimeError` subclass).
+    except (ValueError, RuntimeError) as exc:
       if (
           not _is_missing_tpu_device_kind_error(exc)
           or not jax.sharding.get_abstract_mesh().empty
@@ -4693,7 +4695,9 @@ def _check_joint_autograd_donation(
           joint_gm = proxy_tensor.make_fx(
               _joint, tracing_mode="fake", _allow_non_fake_inputs=True
           )(*_make_joint_args())
-      except ValueError as exc:
+      # TorchDynamo wraps `ValueError` raised inside higher-order ops such as
+      # `torch.cond` in `TorchRuntimeError` (a `RuntimeError` subclass).
+      except (ValueError, RuntimeError) as exc:
         if (
             not _is_missing_tpu_device_kind_error(exc)
             or not jax.sharding.get_abstract_mesh().empty
