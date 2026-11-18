@@ -495,7 +495,7 @@ void ValidateHistcOutTensorOrThrow(const at::Tensor& self,
 }
 
 absl::StatusOr<HistcBoundTensors> ComputeHistcBoundsFromInput(
-    const at::Tensor& self) {
+    const at::Tensor& self, std::optional<OpName> op_name_override) {
   // Compute min/max from input data. This is done when min == max and
   // numel > 0, which happens when the min and max are not provided as
   // arguments to torch.histc and the input tensor is not empty. The
@@ -522,7 +522,8 @@ absl::StatusOr<HistcBoundTensors> ComputeHistcBoundsFromInput(
       (auto [min_buf, max_buf]),
       (DispatchOp<1, 2>(
           std::move(op_builder), self,
-          {.out_dtypes = {mlir_input_dtype, mlir_input_dtype},
+          {.op_name = op_name_override,
+           .out_dtypes = {mlir_input_dtype, mlir_input_dtype},
            .out_dims_list = {Dimensions(), Dimensions()},
            .op_param_cache_keys = std::move(compute_bounds_param_keys)})));
   at::Tensor min_val = MakeTensor(std::move(min_buf));
@@ -579,17 +580,21 @@ absl::Status DispatchHistcOut(const at::Tensor& self, const int64_t bins,
                               OpParamCacheKeys param_keys) {
   TT_ASSIGN_OR_RETURN(const auto mlir_out_dtype,
                       ConvertTo<mlir::ElementType>(out.scalar_type()));
+  // Override op name to OpName::kHistc so histc.out shares the compiled
+  // program cache with histc, avoiding duplicate compilations.
   return DispatchOpOut<3>(MakeHistcOpBuilder(bins), {self, min_val, max_val},
                           out,
-                          {.out_dtype = mlir_out_dtype,
+                          {.op_name = OpName::kHistc,
+                           .out_dtype = mlir_out_dtype,
                            .out_dims = {bins},
                            .op_param_cache_keys = std::move(param_keys)});
 }
 
 at::Tensor HistcFromInput(const at::Tensor& self, const int64_t bins) {
   TT_KERNEL(OpName::kHistc, param_keys, (self, bins), {
-    TT_ASSIGN_OR_THROW(const HistcBoundTensors bounds,
-                       ComputeHistcBoundsFromInput(self));
+    TT_ASSIGN_OR_THROW(
+        const HistcBoundTensors bounds,
+        ComputeHistcBoundsFromInput(self, /*op_name_override=*/std::nullopt));
     TT_ASSIGN_OR_THROW(at::Tensor out,
                        DispatchHistc(self, bins, bounds.min_val, bounds.max_val,
                                      std::move(param_keys)));
@@ -618,8 +623,11 @@ at::Tensor HistcExplicit(const at::Tensor& self, const int64_t bins,
 at::Tensor& HistcOutFromInput(const at::Tensor& self, const int64_t bins,
                               at::Tensor& out) {
   TT_KERNEL(OpName::kHistcOut, param_keys, (self, bins, out), {
-    TT_ASSIGN_OR_THROW(const HistcBoundTensors bounds,
-                       ComputeHistcBoundsFromInput(self));
+    // Override op name to OpName::kHistc so histc.out shares the compiled
+    // program cache with histc, avoiding duplicate compilations.
+    TT_ASSIGN_OR_THROW(
+        const HistcBoundTensors bounds,
+        ComputeHistcBoundsFromInput(self, /*op_name_override=*/OpName::kHistc));
     TT_THROW_IF_ERROR(DispatchHistcOut(self, bins, bounds.min_val,
                                        bounds.max_val, out,
                                        std::move(param_keys)));
