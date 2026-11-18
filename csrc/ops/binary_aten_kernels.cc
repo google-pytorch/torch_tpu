@@ -1546,11 +1546,23 @@ at::Tensor& AtenLdexpOut(const at::Tensor& self, const at::Tensor& other,
 at::Tensor AtenLdexpTensor(const at::Tensor& self, const at::Tensor& other) {
   TT_KERNEL(OpName::kLdexpTensor, _, (self, other), {
     TT_THROW_IF_ERROR(ValidateLdexpInputs(self, other));
+    const at::ScalarType promoted_scalar_type = at::result_type(self, other);
+    const at::ScalarType expected_result_type =
+        c10::isIntegralType(promoted_scalar_type, /*includeBool=*/true)
+            ? c10::get_default_dtype_as_scalartype()
+            : promoted_scalar_type;
+    TT_ASSIGN_OR_THROW(const auto expected_element_type,
+                       ConvertTo<mlir::ElementType>(expected_result_type));
+    // Override op name to OpName::kLdexpOut so ldexp shares the compiled
+    // program cache with ldexp.out, avoiding duplicate compilations. Setting
+    // result_dtype also aligns the cache key for all-integral inputs.
     TT_ASSIGN_OR_THROW(
         at::Tensor out,
         BinaryOp(self, other, BuildLdexpShlo,
-                 {.force_float_inputs = true,
-                  .op_param_cache_keys = OpParamCacheKeys::Empty()}));
+                 {.op_name = OpName::kLdexpOut,
+                  .force_float_inputs = true,
+                  .op_param_cache_keys = OpParamCacheKeys::Empty(),
+                  .result_dtype = expected_element_type}));
     return out;
   });
 }
@@ -1565,9 +1577,13 @@ at::Tensor& AtenLdexp_(at::Tensor& self, const at::Tensor& other) {
             : self.scalar_type();
     TT_ASSIGN_OR_THROW(const auto expected_element_type,
                        ConvertTo<mlir::ElementType>(expected_result_type));
+    // Override op name to OpName::kLdexpOut so ldexp_ shares the compiled
+    // program cache with ldexp.out(..., out=self) when BinaryOpOut auto-donates
+    // `self`, and with ldexp/ldexp.out when donation does not apply.
     TT_THROW_IF_ERROR(
         BinaryOpOut(self, other, self, BuildLdexpShlo,
-                    {.force_float_inputs = true,
+                    {.op_name = OpName::kLdexpOut,
+                     .force_float_inputs = true,
                      .op_param_cache_keys = OpParamCacheKeys::Empty(),
                      .result_dtype = expected_element_type}));
     return self;
