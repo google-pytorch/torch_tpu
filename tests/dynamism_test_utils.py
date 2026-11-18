@@ -744,6 +744,8 @@ DYNAMISM_DENY_LISTS: DenyList = {
         "isin": ALL_MODES,
     },
     "untriaged: expected all dimensions to be static": {
+        # TODO: b/449736443 - FFT ATen kernels enforce FFTValidateStaticShape.
+        "fft.fft": {EAGER},
         "fft.ifft": {EAGER},
         "fft.irfft": {EAGER},
         "fft.rfft": {EAGER},
