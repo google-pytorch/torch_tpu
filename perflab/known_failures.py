@@ -380,16 +380,18 @@ KNOWN_FAILURES: tuple[KnownFailure, ...] = (
         ),
         reason="HBM OOM during the training warmup on v7_1x1x1",
     ),
-    # TODO(b/581222586): Remove once XLA:TPU ragged dot tiling respects the
+    # TODO(b/584532817): Remove once XLA:TPU ragged dot tiling respects the
     # scoped VMEM limit (b/579516880).
     KnownFailure(
         benchmark="nemotron_3_nano_30b_6_layers_forward",
         framework=mode_lib.Framework.TORCH,
         device_kind=target_lib.DeviceKind.TPU,
-        run_modes=frozenset({common.RunMode.EAGER_OPTIMIZED}),
+        run_modes=frozenset(
+            {common.RunMode.EAGER_OPTIMIZED, common.RunMode.COMPILED}
+        ),
         reason=(
             "XLA:TPU grouped_mm (ragged dot) fusion exceeds the scoped VMEM"
-            " limit on v7 (b/581222586, b/579516880)"
+            " limit on v7 (b/584532817, b/579516880)"
         ),
     ),
     # TODO(b/581657168): Remove once XLA:TPU ragged dot tiling respects the
