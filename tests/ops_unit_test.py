@@ -14273,18 +14273,22 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
   def test_lcm_int64_avoids_div_rem(self):
     """Tests int64 lcm lowers via a single while loop without 64-bit div/rem ops."""
-    a = torch.tensor([12, 0], dtype=torch.int64, device="tpu")
-    b = torch.tensor([18, 5], dtype=torch.int64, device="tpu")
+    tpu_lhs = torch.tensor([12, 0], dtype=torch.int64, device="tpu")
+    tpu_rhs = torch.tensor([18, 5], dtype=torch.int64, device="tpu")
     with execution_mode.set_eager_mode(
         execution_mode.EagerMode._INTERNAL_COMPILE_FX_GRAPH
     ):
-      out = torch.lcm(a, b)
+      traced_out = torch.lcm(tpu_lhs, tpu_rhs)
     mlir_text = tpu_torch_compile.serialize_mlir_text(
-        tpu_torch_compile.build_mlir([out], [a, b])
+        tpu_torch_compile.build_mlir([traced_out], [tpu_lhs, tpu_rhs])
     )
     self.assertEqual(mlir_text.count("stablehlo.while"), 1)
     self.assertNotIn("stablehlo.divide", mlir_text)
     self.assertNotIn("stablehlo.remainder", mlir_text)
+    utils.assert_close(
+        actual=torch.lcm(tpu_lhs, tpu_rhs).cpu(),
+        expected=torch.tensor([36, 0], dtype=torch.int64),
+    )
 
   def test_var_empty_reduction_dim(self):
     """Tests 0-sized reduction with negative correction returns NaN (b/568045113)."""
