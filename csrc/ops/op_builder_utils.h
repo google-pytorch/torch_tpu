@@ -581,6 +581,23 @@ absl::StatusOr<mlir::MlirOp> Unsqueeze(mlir::MlirOp input, int64_t dim);
 absl::StatusOr<mlir::MlirOp> Squeeze(mlir::MlirOp input,
                                      absl::Span<const int64_t> dims);
 
+// Reshapes `op` to the result dimensions `output_dims` with a
+// `stablehlo.dynamic_reshape`, whose result may have several bounded
+// dimensions (unlike `stablehlo.reshape`). `output_sizes` holds the runtime
+// size of each result dimension as an i32 scalar. XLA's dynamic padder
+// handles the padding of the bounded dimensions. `output_dims` must not be
+// empty (a rank-0 result has no bounded dimension).
+mlir::MlirOp DynamicReshapeWithRuntimeSizes(
+    mlir::MlirOp op, const mlir::stablehlo::Dimensions& output_dims,
+    absl::Span<const mlir::MlirOp> output_sizes);
+
+// Returns the runtime size of each dimension in `dims` as an i32 scalar: the
+// size of its `boundOp` at `boundOpDim` (which must be set) if bounded, or a
+// constant `size` if static. E.g. for the `output_sizes` of
+// `DynamicReshapeWithRuntimeSizes`.
+std::vector<mlir::MlirOp> GetRuntimeSizes(
+    mlir::MlirBuilder& builder, const mlir::stablehlo::Dimensions& dims);
+
 // Flattens the input tensor to a single dimension.
 // Supports bounded dynamic flatten.
 mlir::MlirOp Flatten(mlir::MlirOp input);

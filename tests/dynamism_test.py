@@ -516,6 +516,77 @@ class DynamismTest(seed_test_utils.RepeatableTest):
     self._run_bounded_dynamism_test(reshape_fn, mark_dynamic, *args)
 
   @parameterized.named_parameters(
+      dict(
+          # [1, 4, ?, ?] to [4, ?, ?, 1]
+          testcase_name="move_unit_dim",
+          shape=(1, 4, 10, 10),
+          small_shape=(1, 4, 5, 6),
+          dynamic_dims=(2, 3),
+          reshape_fn=lambda x: x.reshape(4, x.shape[2], x.shape[3], 1),
+      ),
+      dict(
+          # [?, ?, 4] to [?, ? * 4]
+          testcase_name="merge_bounded_dim",
+          shape=(10, 10, 4),
+          small_shape=(5, 6, 4),
+          dynamic_dims=(0, 1),
+          reshape_fn=lambda x: x.reshape(x.shape[0], x.shape[1] * 4),
+      ),
+      dict(
+          # [3, ?, ?, 4] to [3 * ?, ? * 4]
+          testcase_name="merge_static_into_bounded_dims",
+          shape=(3, 10, 10, 4),
+          small_shape=(3, 5, 6, 4),
+          dynamic_dims=(1, 2),
+          reshape_fn=lambda x: x.reshape(3 * x.shape[1], x.shape[2] * 4),
+      ),
+      dict(
+          # [?, ?, 8] to [?, ?, 2, 4]
+          testcase_name="split_static_dim",
+          shape=(10, 10, 8),
+          small_shape=(5, 6, 8),
+          dynamic_dims=(0, 1),
+          reshape_fn=lambda x: x.reshape(x.shape[0], x.shape[1], 2, 4),
+      ),
+  )
+  def test_reshape_multiple_bounded_dims_compiled(
+      self, shape, small_shape, dynamic_dims, reshape_fn
+  ):
+    # Results with several bounded dims lower to stablehlo.dynamic_reshape.
+    def fn(x):
+      return reshape_fn(x * 2)
+
+    x = torch.randn(*shape)
+    x_tpu = x.to(self.device)
+    for dim in dynamic_dims:
+      torch._dynamo.mark_dynamic(x_tpu, dim, min=2, max=shape[dim])
+    compiled = torch.compile(fn, backend="tpu", dynamic=None)
+    utils.assert_close(compiled(x_tpu).to("cpu"), fn(x))
+    # Smaller sizes reuse the graph compiled for the bounded dims.
+    small = torch.randn(*small_shape)
+    with torch._dynamo.config.patch(error_on_recompile=True):
+      act = compiled(small.to(self.device))
+    utils.assert_close(act.to("cpu"), fn(small))
+
+  def test_reshape_merge_bounded_dims_eager(self):
+    # Broadcasting gives a tensor two bounded dims; merging a static dim into
+    # one of them ([?, ?, 4] to [?, ? * 4]) keeps both bounded, which lowers to
+    # stablehlo.dynamic_reshape with the merged runtime size. Compiled reshapes
+    # go through `_dynamic_reshape` instead, so this covers the eager path.
+    def mark_dynamic(x, y):
+      dynamism.mark_dynamic(x, 0, 2, 10)
+      dynamism.mark_dynamic(y, 1, 2, 10)
+
+    def fn(x, y):
+      # The multiply materializes the reshaped view on TPU.
+      z = x + y
+      return z.reshape(z.shape[0], z.shape[1] * 4) * 2
+
+    args = (torch.randn(5, 1, 4), torch.randn(1, 6, 4))
+    act = self._run_bounded_dynamism_test(fn, mark_dynamic, *args)
+    self.assertLen(dynamism.get_dynamism_info(act), 2)
+
+  @parameterized.named_parameters(
       ("indexed_dynamic_dim", lambda x, idx: x[idx], []),
       (
           "unindexed_dynamic_dim",
@@ -1067,6 +1138,27 @@ class DynamismTest(seed_test_utils.RepeatableTest):
     self.assertEqual(grad_x_dynamism_info[0].lower_bound, 2)
     self.assertEqual(grad_x_dynamism_info[0].upper_bound, upper_bound)
     self.assertEmpty(dynamism.get_dynamism_info(act[1]))
+
+  def test_channels_last_permute_compiled_two_dynamic_spatial_dims(self):
+    # Channels-last blocks (e.g. timm `LayerNorm2d` in ConvNeXt) permute NCHW
+    # images to NHWC and back around a per-channel op. With both H and W
+    # bounded, the permutes lower to reshapes with two bounded dimensions.
+    def fn(x, w):
+      y = torch.relu(x.permute(0, 2, 3, 1)) * w
+      return y.permute(0, 3, 1, 2)
+
+    args = [torch.randn(1, 4, 16, 16), torch.randn(4)]
+    expected = fn(*args)
+    x, w = [a.to(self.device) for a in args]
+    torch._dynamo.mark_dynamic(x, 2, min=8, max=16)
+    torch._dynamo.mark_dynamic(x, 3, min=8, max=16)
+    compiled = torch.compile(fn, backend="tpu", dynamic=None)
+    utils.assert_close(compiled(x, w).to("cpu"), expected)
+    # A smaller image reuses the graph compiled for the bounded dims.
+    small = torch.randn(1, 4, 8, 12)
+    with torch._dynamo.config.patch(error_on_recompile=True):
+      act = compiled(small.to(self.device), w)
+    utils.assert_close(act.to("cpu"), fn(small, args[1]))
 
   @parameterized.named_parameters(
       dict(

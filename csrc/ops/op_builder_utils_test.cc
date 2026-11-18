@@ -1320,6 +1320,115 @@ TEST(BroadcastIfNeeded, MultipleBoundedResultDimensionsBoundedToStaticFailure) {
                        HasSubstr("cannot mix bounded and static dimensions")));
 }
 
+// Moves a size-1 dim around two bounded dims: [1, 4, ?8, ?8] -> [4, ?8, ?8, 1].
+TEST(DynamicReshapeWithRuntimeSizes, StaticAndBoundedDimsWithExplicitSizes) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp input = MakeBoundedArg(fb, {1, 4, 8, 8}, /*bound_dims=*/{2, 3});
+  const mlir::Type i32_type = fb.getOpBuilder().getI32Type();
+  const mlir::stablehlo::Dimensions output_dims = {
+      {.size = 4},
+      {.size = 8, .boundOp = input.getValue(), .boundOpDim = 2},
+      {.size = 8, .boundOp = input.getValue(), .boundOpDim = 3},
+      {.size = 1},
+  };
+  const std::vector<mlir::MlirOp> output_sizes = {
+      MakeScalarConstant(fb, 4, i32_type),
+      mlir::stablehlo::GetDimensionSize(input, 2),
+      mlir::stablehlo::GetDimensionSize(input, 3),
+      MakeScalarConstant(fb, 1, i32_type),
+  };
+
+  mlir::MlirOp reshaped =
+      DynamicReshapeWithRuntimeSizes(input, output_dims, output_sizes);
+  mlir::func::Return(fb, reshaped);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+  EXPECT_TRUE(
+      reshaped.getValue().getDefiningOp<mlir::stablehlo::DynamicReshapeOp>())
+      << DebugString(module.get());
+  EXPECT_THAT(GetStaticShape(reshaped), ElementsAre(4, 8, 8, 1));
+  EXPECT_THAT(GetBoundedDims(reshaped), ElementsAre(1, 2));
+}
+
+// Merges a static dim into a bounded dim, with the runtime size of the merged
+// dim computed by the caller: [?8, ?8, 4] -> [?8, ?32].
+TEST(DynamicReshapeWithRuntimeSizes, MergedBoundedDimWithExplicitSizes) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp input = MakeBoundedArg(fb, {8, 8, 4}, /*bound_dims=*/{0, 1});
+  const mlir::Type i32_type = fb.getOpBuilder().getI32Type();
+  const mlir::stablehlo::Dimensions output_dims = {
+      {.size = 8, .boundOp = input.getValue(), .boundOpDim = 0},
+      {.size = 32, .boundOp = input.getValue()},
+  };
+  mlir::MlirOp dim1_size = mlir::stablehlo::GetDimensionSize(input, 1);
+  mlir::MlirOp four = MakeScalarConstant(fb, 4, i32_type);
+  const std::vector<mlir::MlirOp> output_sizes = {
+      mlir::stablehlo::GetDimensionSize(input, 0),
+      mlir::stablehlo::Mul(dim1_size, four),
+  };
+
+  mlir::MlirOp reshaped =
+      DynamicReshapeWithRuntimeSizes(input, output_dims, output_sizes);
+  mlir::func::Return(fb, reshaped);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+  EXPECT_TRUE(
+      reshaped.getValue().getDefiningOp<mlir::stablehlo::DynamicReshapeOp>())
+      << DebugString(module.get());
+  EXPECT_THAT(GetStaticShape(reshaped), ElementsAre(8, 32));
+  EXPECT_THAT(GetBoundedDims(reshaped), ElementsAre(0, 1));
+}
+
+// Same reshape as StaticAndBoundedDimsWithExplicitSizes, with the runtime sizes
+// from GetRuntimeSizes, i.e. each dim's boundOp and boundOpDim.
+TEST(DynamicReshapeWithRuntimeSizes, StaticAndBoundedDimsFromGetRuntimeSizes) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp input = MakeBoundedArg(fb, {1, 4, 8, 8}, /*bound_dims=*/{2, 3});
+  const mlir::stablehlo::Dimensions output_dims = {
+      {.size = 4},
+      {.size = 8, .boundOp = input.getValue(), .boundOpDim = 2},
+      {.size = 8, .boundOp = input.getValue(), .boundOpDim = 3},
+      {.size = 1},
+  };
+
+  mlir::MlirOp reshaped = DynamicReshapeWithRuntimeSizes(
+      input, output_dims, GetRuntimeSizes(fb, output_dims));
+  mlir::func::Return(fb, reshaped);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+  auto dynamic_reshape =
+      reshaped.getValue().getDefiningOp<mlir::stablehlo::DynamicReshapeOp>();
+  ASSERT_TRUE(dynamic_reshape) << DebugString(module.get());
+  EXPECT_THAT(GetStaticShape(reshaped), ElementsAre(4, 8, 8, 1));
+  EXPECT_THAT(GetBoundedDims(reshaped), ElementsAre(1, 2));
+  // The output shape operand holds one i32 size per result dim.
+  EXPECT_EQ(mlir::cast<mlir::RankedTensorType>(
+                dynamic_reshape.getOutputShape().getType())
+                .getShape(),
+            llvm::ArrayRef<int64_t>({4}));
+}
+
+TEST(DynamicReshapeWithRuntimeSizesDeathTest, RankZeroResult) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::func::FunctionBuilder fb(op_builder_utils_builder.get(), "main");
+  mlir::MlirOp input = MakeBoundedArg(fb, {1}, /*bound_dims=*/{0});
+  EXPECT_DEATH(
+      DynamicReshapeWithRuntimeSizes(input, mlir::stablehlo::Dimensions{}, {}),
+      "rank at least 1");
+}
+
 TEST(GetStaticShape, ReturnsUpperBoundsForBoundedDims) {
   OpBuilderUtilsBuilder op_builder_utils_builder;
   mlir::func::FunctionBuilder fb(op_builder_utils_builder.get(), "main");
