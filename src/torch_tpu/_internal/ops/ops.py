@@ -40,9 +40,9 @@ def optimization_barrier(
   rather than being merged with the original computation, or to prevent the
   compiler from fusing a numerically sensitive region with its neighbors.
 
-  Gradients flow through the barrier. In the backward pass, the gradients of
-  the returned tensors pass together through a barrier of their own, so the
-  backward computation is fenced in the same way.
+  Gradients and forward-mode tangents flow through the barrier. In both the
+  backward pass and forward-mode AD, they pass together through a barrier of
+  their own, fencing the derivative computation in the same way.
 
   Example:
     a, b = torch.tpu.ops.optimization_barrier([a, b])
