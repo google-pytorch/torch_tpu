@@ -17,9 +17,14 @@
 #ifndef TORCH_TPU_CSRC_DISTRIBUTED_UTILS_H_
 #define TORCH_TPU_CSRC_DISTRIBUTED_UTILS_H_
 
+#include <cstdint>
+#include <optional>
+
 #include "absl/status/status.h"
+#include "csrc/common/dimension_types.h"
 #include "csrc/distributed/types.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "torch/csrc/distributed/c10d/Types.hpp"
@@ -55,6 +60,16 @@ void ExitSpmdSafeRegion();
 
 absl::Status ValidateReductionOp(c10d::ReduceOp reduce_op,
                                  c10::ScalarType scalar_type);
+
+// Returns `[numel / 128, 128]` if a rank-1 collective operand of `type` can be
+// viewed that way for free, else std::nullopt. With exactly 128 columns, the
+// default TPU tiled layouts of the 1-D and 2-D bf16/f32 arrays hold the same
+// bytes in the same order, so the reshape is a bitcast, and TPU collectives run
+// faster on the 2-D form. `num_chunks` is the number of dim-0 chunks the
+// collective splits or concatenates (the group size): each chunk must be whole
+// rows, so numel must be a multiple of 128 * num_chunks.
+std::optional<Dimensions> LaneAlignedCollectiveShape(
+    mlir::RankedTensorType type, int64_t num_chunks);
 
 }  // namespace torch_tpu
 

@@ -559,6 +559,51 @@ def _run_reduce_scatter_tensor_avg() -> None:
   utils.assert_close(output_cpu, expected)
 
 
+def _run_flat_collectives_lane_view() -> None:
+  """Tests rank-1 reduce_scatter_tensor and all_gather_into_tensor sizes.
+
+  bf16/f32 sizes that split into whole 128-element rows per rank take the
+  [numel / 128, 128] lowering; the others, and other dtypes, keep the old one.
+  """
+  rank = dist.get_rank()
+  world_size = dist.get_world_size()
+  # Elements per rank: lane-aligned (whole rows), and not.
+  for per_rank in (128, 128 * 3, 128 * 1024, 96, 1000):
+    for dtype in (torch.bfloat16, torch.float32, torch.int32):
+      torch.manual_seed(per_rank)
+      n = per_rank * world_size
+      if dtype == torch.int32:
+        x_full_cpu = torch.randint(-100, 100, (world_size, n), dtype=dtype)
+      else:
+        x_full_cpu = torch.randn((world_size, n)).to(dtype)
+
+      # Reduce-scatter: compare with an fp64 reference, cast to the dtype.
+      for op in (dist.ReduceOp.SUM, dist.ReduceOp.AVG):
+        if dtype == torch.int32 and op == dist.ReduceOp.AVG:
+          continue
+        output = torch.empty(per_rank, dtype=dtype, device="tpu")
+        dist.reduce_scatter_tensor(output, x_full_cpu[rank].to("tpu"), op=op)
+        reduced = x_full_cpu.double().sum(dim=0)
+        if op == dist.ReduceOp.AVG:
+          reduced = reduced / world_size
+        expected = reduced.view(world_size, per_rank)[rank].to(dtype)
+        if dtype == torch.bfloat16:
+          # Rounding in a bf16 reduction of world_size terms.
+          utils.assert_close(output.cpu(), expected, rtol=2e-2, atol=5e-2)
+        else:
+          utils.assert_close(output.cpu(), expected, rtol=1e-5, atol=1e-5)
+
+      # All-gather: bitwise, in concat and stack form.
+      local = x_full_cpu[rank, :per_rank]
+      expected = x_full_cpu[:, :per_rank]
+      concat = torch.empty(n, dtype=dtype, device="tpu")
+      dist.all_gather_into_tensor(concat, local.to("tpu"))
+      assert torch.equal(concat.cpu(), expected.reshape(-1))
+      stack = torch.empty(world_size, per_rank, dtype=dtype, device="tpu")
+      dist.all_gather_into_tensor(stack, local.to("tpu"))
+      assert torch.equal(stack.cpu(), expected)
+
+
 def _run_broadcast() -> None:
   """Tests collective broadcast functionality."""
   rank = dist.get_rank()
@@ -1058,6 +1103,9 @@ class CollectiveOpsTest(continuous_test_utils.TpuMultiProcContinuousTest):
 
   def test_reduce_scatter_tensor_avg(self) -> None:
     _run_reduce_scatter_tensor_avg()
+
+  def test_flat_collectives_lane_view(self) -> None:
+    _run_flat_collectives_lane_view()
 
   def test_broadcast(self) -> None:
     _run_broadcast()

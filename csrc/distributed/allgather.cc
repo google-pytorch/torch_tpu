@@ -62,17 +62,38 @@ absl::StatusOr<mlir::SmallVector<mlir::MlirOp>> BuildDistributedAllGatherShlo(
   auto output_type =
       mlir::RankedTensorType::get(output_shape, input_element_type);
 
+  // Gather a rank-1 input as its free [numel / 128, 128] view (see
+  // LaneAlignedCollectiveShape). Every rank's chunk is whole rows, so the
+  // gathered rows flatten back to the rank-1 result in the same order.
+  mlir::MlirOp gather_input = input;
+  auto gather_type = output_type;
+  int64_t lane_gather_dim = gather_dim;
+  if (gather_dim == 0) {
+    if (auto lane_shape =
+            LaneAlignedCollectiveShape(GetTensorTypeOrDie(input), 1)) {
+      gather_input = mlir::stablehlo::Reshape(input, *lane_shape);
+      Dimensions lane_output_shape = *lane_shape;
+      lane_output_shape[0] *= group_size;
+      gather_type =
+          mlir::RankedTensorType::get(lane_output_shape, input_element_type);
+      lane_gather_dim = 0;
+    }
+  }
+
   auto& builder = input.getBuilder();
   auto gather_outputs = mlir::stablehlo::AllGather(
       builder,
-      /*resultType=*/output_type,
-      /*operands=*/input,
-      /*all_gather_dim=*/gather_dim,
+      /*resultType=*/gather_type,
+      /*operands=*/gather_input,
+      /*all_gather_dim=*/lane_gather_dim,
       /*replica_groups=*/BuildReplicaGroupsAttr(builder, device_groups),
       /*channel_id=*/BuildChannelHandleAttr(builder, /*handle=*/1, /*type=*/0),
       /*use_global_device_ids=*/true);
   ABSL_CHECK_EQ(gather_outputs.size(), 1);  // CRASH_OK
   auto gather_output = gather_outputs[0];
+  if (gather_type != output_type) {
+    gather_output = mlir::stablehlo::Reshape(gather_output, output_shape);
+  }
 
   switch (output_mode) {
     case AllGatherOutputMode::kConcat:

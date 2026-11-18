@@ -17,9 +17,11 @@
 #include "csrc/distributed/utils.h"
 
 #include <cstdint>
+#include <optional>
 
 #include "absl/status/status.h"
 #include "csrc/common/aten_utils.h"
+#include "csrc/common/dimension_types.h"
 #include "csrc/common/context_manager.h"
 #include "csrc/common/context_states.h"
 #include "csrc/common/error_utils.h"
@@ -29,6 +31,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Casting.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
@@ -104,6 +107,23 @@ void ExitSpmdSafeRegion() { PopContextState<IsSpmdSafeContextState>(); }
 
 bool IsSpmdSafe() {
   return GetContextState<IsSpmdSafeContextState>().value_or(false);
+}
+
+std::optional<Dimensions> LaneAlignedCollectiveShape(
+    mlir::RankedTensorType type, int64_t num_chunks) {
+  constexpr int64_t kLanes = 128;
+  if (type.getRank() != 1 || !type.hasStaticShape() || num_chunks <= 0) {
+    return std::nullopt;
+  }
+  const mlir::Type element_type = type.getElementType();
+  if (!element_type.isBF16() && !element_type.isF32()) {
+    return std::nullopt;
+  }
+  const int64_t numel = type.getDimSize(0);
+  if (numel == 0 || numel % (kLanes * num_chunks) != 0) {
+    return std::nullopt;
+  }
+  return Dimensions{numel / kLanes, kLanes};
 }
 
 }  // namespace torch_tpu

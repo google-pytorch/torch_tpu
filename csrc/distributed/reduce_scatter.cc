@@ -22,6 +22,7 @@
 #include "absl/log/absl_log.h"
 #include "absl/status/statusor.h"
 #include "csrc/common/dimension_types.h"
+#include "csrc/common/error_utils.h"
 #include "csrc/common/utils.h"
 #include "csrc/distributed/types.h"
 #include "csrc/distributed/utils.h"
@@ -40,6 +41,21 @@ absl::StatusOr<mlir::MlirOp> BuildDistributedReduceScatterShlo(
   ABSL_CHECK(!device_groups.empty())  // CRASH_OK
       << "[BuildDistributedReduceScatterShlo]: device_groups is empty";
   const int group_size = device_groups[0].size();
+
+  // Scatter a rank-1 input as its free [numel / 128, 128] view (see
+  // LaneAlignedCollectiveShape), and reshape the result back to rank 1.
+  if (scatter_dim == 0) {
+    const mlir::RankedTensorType flat_type = GetTensorTypeOrDie(input);
+    if (auto lane_shape = LaneAlignedCollectiveShape(flat_type, group_size)) {
+      TT_ASSIGN_OR_RETURN(
+          mlir::MlirOp output,
+          BuildDistributedReduceScatterShlo(
+              mlir::stablehlo::Reshape(input, *lane_shape), reduce_op_type,
+              device_groups, /*scatter_dim=*/0));
+      return mlir::stablehlo::Reshape(
+          output, {flat_type.getDimSize(0) / group_size});
+    }
+  }
 
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
   auto element_type = input_type.getElementType();
