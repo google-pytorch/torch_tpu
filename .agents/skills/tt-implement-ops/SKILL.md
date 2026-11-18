@@ -52,6 +52,13 @@ TorchTPU.
     *   **Avoid passing shapes**: Rely on StableHLO type inference. Only pass
         shapes if they depend on scalars (e.g., `torch.ones`, reshapes).
     *   **Watch for dtype mismatches** in StableHLO op chains.
+    *   **Spell out concrete MLIR types instead of `auto`**: Use explicit
+        `mlir::MlirOp` and `mlir::SmallVector<mlir::MlirOp>` declarations rather
+        than `auto` when the type is not visible on the right-hand side. Builder
+        helpers return different types (`mlir::MlirOp`,
+        `absl::StatusOr<mlir::MlirOp>`, `mlir::Value`,
+        `mlir::SmallVector<mlir::MlirOp>`), so explicit types make each
+        intermediate value immediately clear.
     *   Follow [dynamism guidelines](../tt-support-dynamism/SKILL.md) for
         bounded dynamism.
     *   **Do NOT add `(void)param_keys;`**: The `TT_KERNEL` macro handles it;

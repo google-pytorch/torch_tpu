@@ -43,7 +43,7 @@ namespace {
 absl::StatusOr<mlir::MlirOp> BuildCustomScaledAddShlo(mlir::MlirOp x_op,
                                                       mlir::MlirOp y_op,
                                                       mlir::MlirOp alpha_op) {
-  auto scaled_y = mlir::stablehlo::Mul(alpha_op, y_op);
+  mlir::MlirOp scaled_y = mlir::stablehlo::Mul(alpha_op, y_op);
   return mlir::stablehlo::Add(x_op, scaled_y);
 }
 
