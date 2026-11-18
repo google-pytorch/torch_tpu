@@ -6019,6 +6019,16 @@ _COMPILED_DENY_LIST: frozenset[str] = frozenset(
         if utils.get_torch_version() < (2, 14, 0)
         else []
     )
+    + (
+        # TODO: b/587370995 - Override `bmm.dtype_out` Meta kernel on PyTorch
+        # 2.11 and remove from `_COMPILED_DENY_LIST`.
+        # Before PyTorch 2.12 (pytorch/pytorch#175619), `aten.bmm.dtype_out`
+        # lacks an `@out_wrapper` Meta kernel, leaving zero-element `out=`
+        # tensors unresized at shape (0,) under `torch.compile`.
+        ["bmm.dtype.out"]
+        if utils.get_torch_version() < (2, 12, 0)
+        else []
+    )
 )
 
 
