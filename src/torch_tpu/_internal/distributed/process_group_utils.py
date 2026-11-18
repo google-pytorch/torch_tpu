@@ -65,9 +65,12 @@ class ProcessGroupId:
 
     self.ranks = tuple(ranks)
     self.world_size = world_size
+    # Process groups are dictionary keys on the critical path of the handshake
+    # coordinator, and hashing `ranks` costs O(len(ranks)).
+    self._hash = hash(self.ranks)
 
   def __hash__(self) -> int:
-    return hash(self.ranks)
+    return self._hash
 
   def __eq__(self, other: object) -> bool:
     if self is other:
