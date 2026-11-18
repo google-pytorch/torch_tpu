@@ -238,6 +238,9 @@ in `ci/custom_lint_rules.METADATA`:
 Before starting a task, check whether one of these skills covers it. If so, read
 its `SKILL.md` and follow it.
 
+*   [`tt-add-precompiled-kernels`](.agents/skills/tt-add-precompiled-kernels/SKILL.md):
+    adding or extending precompiled unbounded dynamic kernels (Mosaic kernels
+    written in Kiln), with their registration and tests.
 *   [`tt-create-change`](.agents/skills/tt-create-change/SKILL.md): committing a
     change, and opening, describing, or updating a pull request, including
     addressing review comments.
