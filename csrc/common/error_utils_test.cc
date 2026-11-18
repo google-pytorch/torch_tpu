@@ -2075,11 +2075,25 @@ TEST_F(ErrorMessageGuidelinesPassTest, DimensionalityLookalikesAreAllowed) {
                c10::Error);
 }
 
-// Throws `status` the way an op kernel does.
+// Throws an error with `message`, marked as holding the user's text if
+// `is_user_message`, the way an op kernel does.
+void ThrowWithMessageAndIsUserMessage(const std::string_view message,
+                                      const bool is_user_message) {
+  TT_KERNEL(OpName::kAdd, _,
+            (IgnoreInCacheKey(message, "test"),
+             IgnoreInCacheKey(is_user_message, "test")),
+            {
+              StatusBuilder builder = TT_ERROR(error::kInternal);
+              if (is_user_message) builder.SetUserMessage();
+              TT_THROW_IF_ERROR(builder << message);
+            });
+}
+
+// Throws an error with the message and "is user message" state of `status`,
+// the way an op kernel does.
 void ThrowStatus(const absl::Status& status) {
-  const std::string_view message = status.message();
-  TT_KERNEL(OpName::kAdd, _, (IgnoreInCacheKey(message, "test")),
-            { TT_THROW_IF_ERROR(status); });
+  ThrowWithMessageAndIsUserMessage(status.message(),
+                                   internal::HasUserMessagePayload(status));
 }
 
 // Returns an error whose message is marked as holding the user's text.
