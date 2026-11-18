@@ -224,8 +224,10 @@ _BASE_TEST_EXCLUSIONS: Final[_TestExclusions] = {
             "test_Conv3d_depthwise_naive_groups",
             "test_ConvTranspose2d_size_1_kernel",
             "test_conv1d_vs_scipy",
+            # TODO(b/587476687): Re-enable once conv preserves channels_last.
             "test_conv2d_nhwc",
             "test_conv2d_vs_scipy",
+            # TODO(b/587476687): Re-enable once conv preserves channels_last_3d.
             "test_conv3d_ndhwc",
             "test_conv3d_same_padding_backward",
             "test_conv3d_vs_scipy",
@@ -233,6 +235,7 @@ _BASE_TEST_EXCLUSIONS: Final[_TestExclusions] = {
             "test_conv_empty_channel",
             "test_conv_inputs_device_mismatch",
             "test_conv_mismatch_memory_format",
+            # TODO(b/587476687): Re-enable once conv preserves channels_last.
             "test_conv_not_mutate_stride",
             "test_convert_conv2d_weight_memory_format",
             "test_convert_conv3d_weight_memory_format",
