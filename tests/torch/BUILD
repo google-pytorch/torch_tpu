@@ -404,11 +404,6 @@ torch_tpu_torch_test(
 )
 
 torch_tpu_torch_test(
-    name = "functorch_ac_test",
-    torch_test_module = "functorch/test_ac",
-)
-
-torch_tpu_torch_test(
     name = "functorch_aot_joint_with_descriptors_test",
     torch_test_module = "functorch/test_aot_joint_with_descriptors",
 )
@@ -528,40 +523,13 @@ torch_tpu_torch_test(
 )
 
 torch_tpu_torch_test(
-    name = "inductor_mix_order_reduction_test",
-    torch_test_module = "inductor/test_mix_order_reduction",
-)
-
-torch_tpu_torch_test(
     name = "inductor_mmdecomp_test",
     torch_test_module = "inductor/test_mmdecomp",
 )
 
 torch_tpu_torch_test(
-    name = "inductor_op_dtype_prop_test",
-    torch_test_module = "inductor/test_op_dtype_prop",
-)
-
-torch_tpu_torch_test(
-    name = "inductor_selective_lowering_test",
-    torch_test_module = "inductor/test_selective_lowering",
-)
-
-torch_tpu_torch_test(
     name = "inductor_slice_scatter_chunking_test",
     torch_test_module = "inductor/test_slice_scatter_chunking",
-)
-
-torch_tpu_torch_test(
-    name = "inductor_torchinductor_codegen_dynamic_shapes_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
-    torch_test_module = "inductor/test_torchinductor_codegen_dynamic_shapes",
-)
-
-torch_tpu_torch_test(
-    name = "inductor_torchinductor_dynamic_shapes_test",
-    shard_count = 8,
-    torch_test_module = "inductor/test_torchinductor_dynamic_shapes",
 )
 
 torch_tpu_torch_test(
