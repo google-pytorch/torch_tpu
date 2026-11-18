@@ -486,7 +486,6 @@ DYNAMISM_DENY_LISTS: DenyList = {
         # (op_builder_utils.cc).
         "_segment_reduce": {EAGER, COMPILE},
         "bernoulli": {EAGER},
-        "cdist": {EAGER},
         # These abort the test process with a CHECK failure in
         # BroadcastIfNeeded (op_builder_utils.cc).
         "linalg.qr": {EAGER},
@@ -510,9 +509,7 @@ DYNAMISM_DENY_LISTS: DenyList = {
         "as_strided": ALL_MODES,
         # Fails to inline MLIR functions on bounded inputs.
         "bincount": {EAGER},
-        # BuildMlirModule fails to inline MLIR functions on bounded inputs;
-        # EAGER mode is triaged under "the lowering broadcasts a bounded input
-        # to a static shape".
+        # BuildMlirModule fails to inline MLIR functions on bounded inputs.
         "cdist": {COMPILE_GRAD},
         # cummax_helper and cummin_helper emit static stablehlo.iota and query
         # static dim sizes (-9223372036854775808). Aborts the test process.

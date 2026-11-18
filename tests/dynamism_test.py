@@ -1677,6 +1677,147 @@ class DynamismTest(seed_test_utils.RepeatableTest):
     with torch._dynamo.config.patch(error_on_recompile=True):
       run_step(((6, 4), (5, 3)), mark_dims=False)
 
+  @parameterized.named_parameters(
+      ("zeros_like_direct", lambda x: torch.zeros_like(x)),
+      ("ones_like_direct", lambda x: torch.ones_like(x)),
+      ("zeros_like_device_str", lambda x: torch.zeros_like(x, device="tpu")),
+      ("ones_like_dtype", lambda x: torch.ones_like(x, dtype=torch.int32)),
+      (
+          "ones_like_deferred_chain",
+          lambda x: torch.ones_like(x.sum(-1, keepdim=True)),
+      ),
+  )
+  def test_zeros_and_ones_like_preserve_bounded_dynamism(
+      self, like_fn: Callable[[torch.Tensor], torch.Tensor]
+  ) -> None:
+    def mark_dynamic(tensor: torch.Tensor) -> None:
+      dynamism.mark_dynamic(tensor, 0, 2, 10)
+
+    for rows in (4, 7):
+      input_tensor = torch.randn(rows, 5, dtype=torch.float32)
+      act = self._run_bounded_dynamism_test(like_fn, mark_dynamic, input_tensor)
+      act_dynamism_info = dynamism.get_dynamism_info(act)
+      self.assertLen(act_dynamism_info, 1)
+      self.assertEqual(act_dynamism_info[0].dimension, 0)
+      self.assertEqual(act_dynamism_info[0].lower_bound, 2)
+      self.assertEqual(act_dynamism_info[0].upper_bound, 10)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="static_slice_view",
+          like_fn=lambda x: torch.zeros_like(x[0]),
+          cols=5,
+      ),
+      dict(
+          testcase_name="empty",
+          like_fn=lambda x: torch.ones_like(x),
+          cols=0,
+      ),
+  )
+  def test_zeros_and_ones_like_static_fallback(
+      self, like_fn: Callable[[torch.Tensor], torch.Tensor], cols: int
+  ) -> None:
+    def mark_dynamic(tensor: torch.Tensor) -> None:
+      dynamism.mark_dynamic(tensor, 0, 2, 10)
+
+    input_tensor = torch.randn(4, cols, dtype=torch.float32)
+    act = self._run_bounded_dynamism_test(like_fn, mark_dynamic, input_tensor)
+    self.assertEmpty(dynamism.get_dynamism_info(act))
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="x1_rows_p1",
+          p=1.0,
+          x1_shape=(2, 4, 3),
+          x2_shape=(2, 6, 3),
+          x1_dynamic_dim=1,
+          x2_dynamic_dim=None,
+          expected_dynamic_dims=(1,),
+      ),
+      dict(
+          testcase_name="x2_rows_p1",
+          p=1.0,
+          x1_shape=(2, 4, 3),
+          x2_shape=(2, 6, 3),
+          x1_dynamic_dim=None,
+          x2_dynamic_dim=1,
+          expected_dynamic_dims=(2,),
+      ),
+      dict(
+          testcase_name="both_rows_p2",
+          p=2.0,
+          x1_shape=(2, 4, 3),
+          x2_shape=(2, 6, 3),
+          x1_dynamic_dim=1,
+          x2_dynamic_dim=1,
+          expected_dynamic_dims=(1, 2),
+      ),
+      dict(
+          testcase_name="both_rows_p2_mm",
+          p=2.0,
+          x1_shape=(2, 4, 3),
+          x2_shape=(2, 6, 3),
+          x1_dynamic_dim=1,
+          x2_dynamic_dim=1,
+          expected_dynamic_dims=(1, 2),
+          compute_mode="use_mm_for_euclid_dist",
+          # The matmul-based path runs at default TPU matmul precision.
+          tol=2e-2,
+      ),
+      dict(
+          testcase_name="both_rows_p0",
+          p=0.0,
+          x1_shape=(2, 4, 3),
+          x2_shape=(2, 6, 3),
+          x1_dynamic_dim=1,
+          x2_dynamic_dim=1,
+          expected_dynamic_dims=(1, 2),
+      ),
+      dict(
+          testcase_name="broadcast_batch_p1",
+          p=1.0,
+          x1_shape=(4, 3),
+          x2_shape=(5, 6, 3),
+          x1_dynamic_dim=None,
+          x2_dynamic_dim=0,
+          expected_dynamic_dims=(0,),
+      ),
+  )
+  def test_cdist_dynamic_input(
+      self,
+      p: float,
+      x1_shape: tuple[int, ...],
+      x2_shape: tuple[int, ...],
+      x1_dynamic_dim: int | None,
+      x2_dynamic_dim: int | None,
+      expected_dynamic_dims: tuple[int, ...],
+      compute_mode: str = "use_mm_for_euclid_dist_if_necessary",
+      tol: float = 1e-4,
+  ) -> None:
+    upper_bound = 10
+
+    def mark_dynamic(x1: torch.Tensor, x2: torch.Tensor) -> None:
+      if x1_dynamic_dim is not None:
+        dynamism.mark_dynamic(x1, x1_dynamic_dim, 2, upper_bound)
+      if x2_dynamic_dim is not None:
+        dynamism.mark_dynamic(x2, x2_dynamic_dim, 2, upper_bound)
+
+    def cdist_fn(x1: torch.Tensor, x2: torch.Tensor) -> torch.Tensor:
+      return torch.cdist(x1, x2, p=p, compute_mode=compute_mode)
+
+    x1 = torch.randn(x1_shape, dtype=torch.float32)
+    x2 = torch.randn(x2_shape, dtype=torch.float32)
+    act = self._run_bounded_dynamism_test(
+        cdist_fn, mark_dynamic, x1, x2, rtol=tol, atol=tol
+    )
+    act_dynamism_info = dynamism.get_dynamism_info(act)
+    self.assertEqual(
+        [info.dimension for info in act_dynamism_info],
+        list(expected_dynamic_dims),
+    )
+    for info in act_dynamism_info:
+      self.assertEqual(info.upper_bound, upper_bound)
+
 
 if __name__ == "__main__":
   absltest.main()
