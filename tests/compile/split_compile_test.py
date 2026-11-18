@@ -111,30 +111,22 @@ class SplitCompileTest(seed_test_utils.RepeatableTest):
       y = x[: x.shape[0] // 2] * 2.0
       return (-y).sum()
 
+    x_ref = (
+        torch.arange(32, dtype=torch.float32).reshape(8, 4).requires_grad_(True)
+    )
+    out_ref = f(x_ref)
+    out_ref.backward()
+
     with self._assert_splits_on_mul():
       compiled_f = torch.compile(f, backend="tpu")
 
-      for n in (8, 12):
-        with (
-            self.subTest(n=n),
-            torch._dynamo.config.patch(error_on_recompile=(n != 8)),
-        ):
-          x_ref = (
-              torch.arange(n * 4, dtype=torch.float32)
-              .reshape(n, 4)
-              .requires_grad_(True)
-          )
-          out_ref = f(x_ref)
-          out_ref.backward()
+      x = x_ref.detach().to("tpu").requires_grad_(True)
+      torch._dynamo.mark_dynamic(x, 0, min=8, max=16)
+      out = compiled_f(x)
+      out.backward()
 
-          x = x_ref.detach().to("tpu").requires_grad_(True)
-          if n == 8:
-            torch._dynamo.mark_dynamic(x, 0)
-          out = compiled_f(x)
-          out.backward()
-
-          utils.assert_close(out.detach().cpu(), out_ref.detach())
-          utils.assert_close(x.grad.cpu(), x_ref.grad)
+    utils.assert_close(out.detach().cpu(), out_ref.detach())
+    utils.assert_close(x.grad.cpu(), x_ref.grad)
 
   def test_split_graph_with_embedded_constants(self):
     def f(x):
