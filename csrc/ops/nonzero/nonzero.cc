@@ -57,8 +57,7 @@ absl::StatusOr<mlir::MlirOp> FlattenIfNeeded(mlir::MlirOp input) {
 }
 
 absl::StatusOr<mlir::MlirOp> UnravelIndices(mlir::MlirOp input,
-                                            mlir::MlirOp linear_indices,
-                                            mlir::ElementType element_type) {
+                                            mlir::MlirOp linear_indices) {
   mlir::MlirBuilder& builder = input.getBuilder();
 
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
@@ -245,9 +244,8 @@ absl::StatusOr<mlir::MlirOp> BuildNonzeroShlo(int64_t output_size,
   // STEP 4:
   // The linear indices are then converted back into multi-dimensional
   // coordinates.
-  TT_ASSIGN_OR_RETURN(
-      mlir::MlirOp indices,
-      UnravelIndices(input, input_linear_indices, mlir::ElementType::I32));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp indices,
+                      UnravelIndices(input, input_linear_indices));
   return indices;
 }
 
@@ -285,9 +283,8 @@ absl::StatusOr<mlir::MlirOp> BuildNonzeroStaticShlo(int64_t size,
       stablehlo::Slice(sort_shlo_outputs.indices, /*start_indices=*/{0},
                        /*limit_indices=*/{slice_len}, /*stride_indices=*/{1});
 
-  TT_ASSIGN_OR_RETURN(
-      mlir::MlirOp unraveled_indices,
-      UnravelIndices(input, input_linear_indices, mlir::ElementType::I32));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp unraveled_indices,
+                      UnravelIndices(input, input_linear_indices));
 
   mlir::RankedTensorType mask_2d_type =
       mlir::makeTensorType(builder.getContext(), {slice_len, rank},
