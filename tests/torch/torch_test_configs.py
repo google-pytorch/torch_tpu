@@ -132,6 +132,11 @@ TEST_EXCLUSIONS: Final[
             "test_synchronize_explicit_none_matches_no_arg",
         ],
     },
+    "dynamo/test_unspec": {
+        "UnspecTestsDevice": [
+            "test_no_recompilations_with_efficient_attention",
+        ],
+    },
     "functorch/test_eager_transforms": {
         "TestCompileTransforms": [
             "test_compile_dynamic_grad_vjp_trace_pytree",
@@ -222,13 +227,16 @@ TEST_EXCLUSIONS: Final[
             "test_Conv3d_depthwise_naive_groups",
             "test_ConvTranspose2d_size_1_kernel",
             "test_conv1d_vs_scipy",
+            "test_conv2d_nhwc",
             "test_conv2d_vs_scipy",
+            "test_conv3d_ndhwc",
             "test_conv3d_same_padding_backward",
             "test_conv3d_vs_scipy",
             "test_conv_backend",
             "test_conv_empty_channel",
             "test_conv_inputs_device_mismatch",
             "test_conv_mismatch_memory_format",
+            "test_conv_not_mutate_stride",
             "test_convert_conv2d_weight_memory_format",
             "test_convert_conv3d_weight_memory_format",
             "test_slow_conv_dilated2d_unbatched",
@@ -366,6 +374,11 @@ TEST_EXCLUSIONS: Final[
             "test_prune_linear_bias_linear",
         ],
     },
+    "test_autocast": {
+        "TestAutocastDevice": [
+            "test_autocast_rnn",
+        ],
+    },
     "test_autograd": {
         "TestAutogradDeviceType": [
             "test_checkpointing_without_reentrant_dataparallel",
@@ -399,6 +412,12 @@ TEST_EXCLUSIONS: Final[
             "test_autograd_registration_check_incorrect",
             "test_autograd_registration_check_incorrect_composite",
             "test_incorrect_schema_mutation",
+        ],
+    },
+    "test_dataloader": {
+        "TestDataLoaderDevice": [
+            "test_custom_batch_pin",
+            "test_string_shuffle_pin_memory",
         ],
     },
     "test_dlpack": {
@@ -838,6 +857,7 @@ TEST_EXCLUSIONS: Final[
             "test_grad_scaling_state_dict": "*",
             "test_grad_scaling_unscale_sparse": "*",
             "test_grad_scaling_update_scale": "*",
+            "test_has_storage_data": "*",
             "test_index_add_all_dtypes": "*",
             "test_index_add_large_inputs": "*",
             "test_index_fill_mem_overlap": "*",
@@ -890,6 +910,7 @@ TEST_EXCLUSIONS: Final[
             "test_scatter_reduce_scalar": {"dtypes": [torch.complex128]},
             "test_shift_mem_overlap": "*",
             "test_split_with_sizes_copy_out": "*",
+            "test_split_with_sizes_copy_out_non_canonical_layouts": "*",
             "test_storage": "*",
             "test_strides_propagation": "*",
             "test_take_empty": "*",
