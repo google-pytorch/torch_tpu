@@ -11516,6 +11516,14 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       a = torch.full((3, 5), lhs_value, dtype=torch.int8, device=device)
       b = torch.tensor([-128, -1, 0, 1, 127], dtype=torch.int8).to(device)
       b = b.reshape(5, 1).expand(5, 7)
+      # TODO: b/587341302 - Remove once minimum OSS PyTorch is >= 2.15.0.
+      # Before PyTorch 2.15 (pytorch/pytorch#194682), CPU `_int_mm` on
+      # AVX512-VNNI hosts left the output uninitialized when `mat2` had a zero
+      # stride.
+      if torch.device(device).type == "cpu" and utils.parse_version(
+          torch.__version__
+      ) < (2, 15, 0):
+        b = b.contiguous()
       if use_out:
         out = torch.empty((3, 7), dtype=torch.int32, device=device)
         return torch.ops.aten._int_mm.out(a, b, out=out)
