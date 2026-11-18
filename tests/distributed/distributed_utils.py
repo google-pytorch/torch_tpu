@@ -362,14 +362,19 @@ def _gloo_worker_fn(
 ) -> None:
   """Runs `fn` inside a gloo default process group, then tears it down."""
   torch_dist.init_process_group(backend="gloo", init_method="env://")
+  # Wait for every rank to initialize before running `fn`, and wait for every
+  # rank to finish `fn` before tearing down the group. If `fn` raises on any
+  # rank, skip `destroy_process_group()` so the failing rank does not close its
+  # sockets on peers; if a peer failed in `fn` and exited, ignore the resulting
+  # socket-close error during teardown so `mp.spawn` reports the peer's
+  # exception from `fn`.
+  torch_dist.barrier()
+  fn(*args, **kwargs)
   try:
-    # Wait for every rank to initialize. Otherwise, a rank whose `fn` returns
-    # right away destroys the group while a peer is still connecting to it, and
-    # that peer's `init_process_group` fails with "Connection closed by peer".
     torch_dist.barrier()
-    fn(*args, **kwargs)
-  finally:
     torch_dist.destroy_process_group()
+  except RuntimeError as e:
+    logging.debug("Ignoring gloo teardown error: %s", e)
 
 
 def gloo_run(

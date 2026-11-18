@@ -26,7 +26,6 @@ from absl.testing import absltest
 import portpicker
 import torch
 import torch.multiprocessing as mp
-from torch_tpu._internal.utils import test_utils
 from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
 from tests.distributed import distributed_utils
@@ -222,7 +221,6 @@ class DistributedUtilsTest(seed_test_utils.MultiProcessRepeatableTest):
     """Verifies that gloo_run ranks share an initialized gloo group."""
     distributed_utils.gloo_run(2, _worker_gloo_all_reduce, 2)
 
-  @test_utils.skip_if_msan("TODO(b/585574829): Flaky under MSAN.")
   def test_gloo_run_propagates_rank_failure(self) -> None:
     """Verifies that an assertion failing on one rank fails the caller."""
     with self.assertRaisesRegex(  # ASSERT_RAISES_OK=tests the test fixture
@@ -350,7 +348,7 @@ class DistributedUtilsTest(seed_test_utils.MultiProcessRepeatableTest):
     catch the ProcessRaisedException, request a new port from portpicker, and
     succeed on attempt 2.
     """
-    free_port = portpicker.pick_unused_port()
+    real_pick_unused_port = portpicker.pick_unused_port
 
     # Open and hold a real listening socket to guarantee EADDRINUSE on attempt 1.
     busy_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -358,17 +356,31 @@ class DistributedUtilsTest(seed_test_utils.MultiProcessRepeatableTest):
     busy_sock.listen(1)
     busy_port = busy_sock.getsockname()[1]
 
+    call_count = 0
+
+    def pick_busy_then_free() -> int:
+      nonlocal call_count
+      call_count += 1
+      if call_count == 1:
+        return busy_port
+      return real_pick_unused_port()
+
     try:
-      with mock.patch.object(
-          portpicker,
-          "pick_unused_port",
-          side_effect=[busy_port, free_port],
+      with (
+          mock.patch.dict(os.environ),
+          mock.patch.object(
+              portpicker,
+              "pick_unused_port",
+              side_effect=pick_busy_then_free,
+          ),
       ):
+        os.environ.pop("MASTER_PORT", None)
         distributed_utils.dist_run(
             2,
             _worker_init_process_group,
             max_retries=3,
         )
+      self.assertGreaterEqual(call_count, 2)
     finally:
       busy_sock.close()
 
