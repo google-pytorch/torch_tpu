@@ -5966,22 +5966,13 @@ _COMPILED_DENY_LIST: frozenset[str] = frozenset(
         ####
         # TODO: Materialize was called on a placeholder tensor.
         #  Dynamo handing our compile backend a graph with data dependent ops.
-        "index_put",
         "masked_scatter",
-        "masked_select",
-        "nonzero",
         ####
         # TODO: failed to validate and reorder inputs.
         # This is mostly the same as the numel == 0 case, but for embedded
         # constants in the graph.
         "arange",
-        "empty",
-        "split_with_sizes",
         "tril_indices",
-        ####
-        # TODO: NaN result
-        "prod",
-        "topk",
         ####
         # TODO: Precision mismatch, need to update tolerance.
         "nn.functional.gelu",
@@ -5991,16 +5982,9 @@ _COMPILED_DENY_LIST: frozenset[str] = frozenset(
         #  difference
         "addcdiv",
         ####
-        # TODO: Timeout, looks like this causes a hang somewhere.
-        "_foreach_erf",
-        "_foreach_erf.out",
-        ####
         # TODO: dynamo assert _PyEval_EvalFrameDefault is EMPTY
         #  Unclear if these are dynamo bugs or due to the special dynamo flags
         #  we set in our backend.
-        "_foreach_add",
-        "_foreach_add.out",
-        "bincount",
         "exponential",  # exponential_complex64_sample0
         "empty_strided",
         "empty_strided.out",
@@ -6011,12 +5995,7 @@ _COMPILED_DENY_LIST: frozenset[str] = frozenset(
         "randint",
         "randint.out",
         "randn",
-        "resize_",
         "uniform",
-        # TODO(b/568080282): Fix list index out of range and 0D shape mismatch
-        # in compiled .out variant with dim.
-        "max.out",
-        "min.out",
         # Zero-element 1D (0,) out tensor passed by _prepare_out fails shape
         # expansion in Inductor for 4D _masked_softmax inputs.
         "_masked_softmax.out",

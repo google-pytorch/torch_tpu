@@ -609,7 +609,7 @@ DYNAMISM_DENY_LISTS: DenyList = {
         "squeeze": {COMPILE, COMPILE_GRAD},
         "squeeze_copy": {COMPILE, COMPILE_GRAD},
         # Lowers via sort with %iota, which lacks XLA dynamic_padder support.
-        "topk": {EAGER},
+        "topk": ALL_MODES,
         # Calls getNumElements() and static scale checks on bounded operands.
         # torch._scaled_mm_v2 aborts the test process.
         "torch._scaled_mm.rowwise": {EAGER, COMPILE},
@@ -785,7 +785,7 @@ DYNAMISM_DENY_LISTS: DenyList = {
         # Slicing a dynamic dimension is not supported.
         "select": {EAGER},
         "split": {EAGER},
-        "split_with_sizes": {EAGER},
+        "split_with_sizes": ALL_MODES,
         "split_with_sizes_copy": {EAGER},
         # Reshape has mismatched element counts (eager), and unflatten is
         # ambiguous for a bounded dimension (compile_grad).
@@ -794,6 +794,7 @@ DYNAMISM_DENY_LISTS: DenyList = {
     "untriaged: shape mismatch": {
         # Compile marks self dim bounded but not source.
         "index_add": {COMPILE, COMPILE_GRAD},
+        "index_put": {COMPILE, COMPILE_GRAD},
         "nn.functional.logsigmoid": {COMPILE_GRAD},  # inferred bound [0]
         # src does not match the bounded self slice.
         "slice_scatter": {COMPILE_GRAD},
