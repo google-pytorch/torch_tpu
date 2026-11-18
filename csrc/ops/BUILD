@@ -381,6 +381,7 @@ torch_tpu_cc_library(
         ":op_names",
         "//csrc/common:cache_key",
         "//csrc/common:error_utils",
+        "//csrc/common:status_builder",
         "//csrc/eager:current_stream",
         "//csrc/eager:eager_mode",
         "//csrc/eager:events_queue",

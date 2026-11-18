@@ -2353,6 +2353,41 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     ):
       torch.accelerator.synchronize()
 
+  @parameterized.named_parameters(
+      ("host_read", lambda cond: cond.cpu()),
+      (
+          "stream_synchronize",
+          lambda cond: torch.tpu.default_stream().synchronize(),
+      ),
+      ("device_synchronize", lambda cond: torch.accelerator.synchronize()),
+  )
+  @et.why_tpu_only("CUDA errors synchronously due to CUDA_LAUNCH_BLOCKING=1.")
+  def test_async_assertion_message_is_raised_as_written(self, surface: Any):
+    false_cond = torch.tensor(False, device=et.device())
+    torch.ops.aten._assert_async.msg(false_cond, "Value must be positive.")
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""Value must be positive.""",
+    ):
+      surface(false_cond)
+
+  @et.why_tpu_only("CUDA errors synchronously due to CUDA_LAUNCH_BLOCKING=1.")
+  def test_launch_blocking_op_raises_async_assertion_message_as_written(self):
+    x = torch.ones(2, device=et.device())
+    false_cond = torch.tensor(False, device=et.device())
+    with execution_mode.set_eager_mode(
+        EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING
+    ):
+      torch.ops.aten._assert_async.msg(false_cond, "Value must be positive.")
+
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu=re.compile(r".*Value must be positive\.", re.DOTALL),
+      ):
+        # In launch-blocking mode the next op reports the failure.
+        x.to(torch.int32)
+
   @et.why_tpu_only("Sync materialization status checks are TPU-specific.")
   def test_is_materializing_tensor_not_on_tpu(self):
     """Tests is_materializing throws on a tensor not on PrivateUse1."""

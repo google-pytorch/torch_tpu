@@ -2075,6 +2075,47 @@ TEST_F(ErrorMessageGuidelinesPassTest, DimensionalityLookalikesAreAllowed) {
                c10::Error);
 }
 
+// Throws `status` the way an op kernel does.
+void ThrowStatus(const absl::Status& status) {
+  const std::string_view message = status.message();
+  TT_KERNEL(OpName::kAdd, _, (IgnoreInCacheKey(message, "test")),
+            { TT_THROW_IF_ERROR(status); });
+}
+
+// Returns an error whose message is marked as holding the user's text.
+absl::Status UserMessageError(const std::string_view message) {
+  return TT_ERROR(error::kInternal).SetUserMessage() << message;
+}
+
+TEST_F(ErrorMessageGuidelinesPassTest, UserMessage) {
+  EXPECT_THROW(ThrowStatus(UserMessageError("Value must be positive.")),
+               c10::Error);
+  StatusBuilder builder = TT_ERROR(error::kInternal);
+  builder.SetUserMessage();
+  EXPECT_THROW(ThrowStatus(builder << "Value must be positive."), c10::Error);
+}
+
+TEST_F(ErrorMessageGuidelinesPassTest, UserMessageWithAddedContext) {
+  EXPECT_THROW(
+      ThrowStatus(StatusBuilder(UserMessageError("Value must be positive."))
+                      .SetPrepend()
+                  << "failed to copy: "),
+      c10::Error);
+  EXPECT_THROW(
+      ThrowStatus(StatusBuilder(UserMessageError("Value must be positive."))
+                  << " Try again."),
+      c10::Error);
+}
+
+TEST_F(ErrorMessageGuidelinesDeathTest, OverriddenUserMessage) {
+  // The replacement is TorchTPU's own text, so it is checked.
+  EXPECT_DEATH(
+      ThrowStatus(StatusBuilder(UserMessageError("Value must be positive."))
+                      .SetOverride()
+                  << "Dimension size negative"),
+      HasSubstr("start with a lowercase character"));
+}
+
 TEST_F(ErrorMessageGuidelinesPassTest, StartsWithNonLetter) {
   EXPECT_THROW(ThrowWithMessage("1D tensor is not supported"), c10::Error);
   EXPECT_THROW(ThrowWithMessage("-1 is not a valid dimension"), c10::Error);
