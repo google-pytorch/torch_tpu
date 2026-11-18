@@ -36,6 +36,9 @@ absl::StatusOr<mlir::MlirOp> BuildFmaxShlo(mlir::MlirOp self,
                                            mlir::MlirOp other) {
   TT_ASSIGN_OR_RETURN((auto [self_, other_]),
                       ApplyBroadcastIfNeeded(self, other));
+  if (!IsFloatType(GetTensorTypeOrDie(self_))) {
+    return mlir::stablehlo::Max(self_, other_);
+  }
 
   mlir::MlirOp self_greater = mlir::stablehlo::Compare(
       self_, other_, mlir::stablehlo::ComparisonDirection::GT);

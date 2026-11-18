@@ -526,11 +526,6 @@ DYNAMISM_DENY_LISTS: DenyList = {
         # embedding_renorm_ uses static BroadcastInDim and Scatter shapes.
         # Aborts the test process.
         "embedding_renorm_": {EAGER, COMPILE},
-        # BuildFmaxShlo and BuildFminShlo emit NaN CompareOp on integer tensors,
-        # failing an MLIR assertion in DenseElementsAttr. Aborts the test
-        # process in builds with MLIR assertions enabled.
-        "fmax": {EAGER},
-        "fmin": {EAGER},
         # Checks index.size(d) <= input.size(d) against INT64_MIN.
         "gather": {EAGER, COMPILE_GRAD},
         # Compiled backward loses grad_fn when hidden size is dynamic.
