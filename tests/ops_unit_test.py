@@ -6756,6 +6756,82 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(fn, allow_failure=True)
 
+  @parameterized.product(
+      dtypes=[
+          (torch.float32, torch.bfloat16),
+          (torch.bfloat16, torch.bfloat16),
+          (torch.float32, torch.float32),
+      ],
+      world_size=[1, 2, 8],
+  )
+  def test_foreach_copy_fsdp2_all_gather_copy_in(self, dtypes, world_size):
+    """Tests _foreach_copy_ as FSDP2 (fully_shard) calls it.
+
+    FSDP2 casts its sharded parameters into split views of a fresh flat buffer,
+    then copies them into split views of this rank's slot of the all-gather
+    output. Both destinations tile one contiguous range of a storage.
+
+    Args:
+      dtypes: The source (sharded parameter) and destination dtypes.
+      world_size: The number of slots in the all-gather output.
+    """
+    src_dtype, dst_dtype = dtypes
+    numels = [512, 128, 1, 0, 130]
+    shards = [torch.randn(n).to(src_dtype) for n in numels]
+    total = sum(numels)
+    rank = world_size - 1
+    background = torch.randn(world_size * total).to(dst_dtype)
+
+    def fn(device):
+      srcs = [s.to(device) for s in shards]
+      # The cast into a fresh flat buffer: the views cover the whole storage.
+      flat = torch.empty(total, dtype=dst_dtype, device=device)
+      torch._foreach_copy_(torch.split(flat, numels), srcs)
+      # The copy into one slot of the all-gather output: a partial range.
+      output = background.to(device)
+      slot = output.narrow(0, rank * total, total)
+      torch._foreach_copy_(torch.split(slot, numels), list(torch.split(flat, numels)))
+      return flat, output
+
+    self.assert_close_tpu_vs_cpu(fn, check_value=CheckValueMode.STRICT)
+
+  def test_foreach_copy_tiled_2d_views(self):
+    """2-D sources into 2-D contiguous views that tile a flat buffer."""
+    shapes = [(8, 128), (3, 5), (16, 256)]
+    srcs = [torch.randn(shape) for shape in shapes]
+
+    def fn(device):
+      flat = torch.zeros(sum(math.prod(s) for s in shapes), device=device)
+      dsts, offset = [], 0
+      for shape in shapes:
+        dsts.append(flat.narrow(0, offset, math.prod(shape)).view(shape))
+        offset += math.prod(shape)
+      torch._foreach_copy_(dsts, [s.to(device) for s in srcs])
+      return flat
+
+    self.assert_close_tpu_vs_cpu(fn, check_value=CheckValueMode.STRICT)
+
+  def test_foreach_copy_untiled_destinations(self):
+    """Destinations out of storage order, with gaps, or overlapping a source
+    take the per-tensor path."""
+    srcs = [torch.randn(4), torch.randn(6)]
+
+    def fn(device):
+      buf = torch.zeros(12, device=device)
+      # Reversed order and a gap.
+      torch._foreach_copy_(
+          [buf.narrow(0, 6, 4), buf.narrow(0, 0, 6)], [s.to(device) for s in srcs]
+      )
+      # Sources that alias the destination storage.
+      other = torch.arange(12.0, device=device)
+      torch._foreach_copy_(
+          [other.narrow(0, 0, 4), other.narrow(0, 4, 4)],
+          [other.narrow(0, 4, 4), other.narrow(0, 8, 4)],
+      )
+      return buf, other
+
+    self.assert_close_tpu_vs_cpu(fn, check_value=CheckValueMode.STRICT)
+
   def test_arange_start_step_float32(self):
     golden_result = torch.arange(
         0, 10, 2, dtype=torch.float32, device=self.golden_device
