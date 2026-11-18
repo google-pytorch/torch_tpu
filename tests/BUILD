@@ -652,6 +652,9 @@ torch_tpu_py_test(
     shard_count = 15,
     tags = [
         "noasan",  # TODO: fix the test timing out in asan mode.
+        # Runs in .opt presubmit and continuous; :foreach_ops_test covers
+        # ops_test.py (foreach) in fastbuild.
+        "nofastbuild",
         "nomsan",  # TODO: fix the test in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.  # This test times out in tsan mode.
         "ops-test",  # Heavy ops test: see run_bazel_diff.py for details.
@@ -771,6 +774,9 @@ torch_tpu_py_test(
     shard_count = 40,
     tags = [
         "noasan",  # TODO: fix the timeout of test_grid_sampler in asan mode.
+        # Runs in .opt presubmit and continuous; :ops_test and :ops_unit_test
+        # cover fastbuild.
+        "nofastbuild",
         "nomsan",  # TODO: fix the test in msan mode.
         "notsan",  # TODO: fix the timeout of test_grid_sampler in tsan mode.
         "ops-test",  # Heavy ops test: see run_bazel_diff.py for details.
@@ -851,6 +857,8 @@ torch_tpu_py_test(
     ],
     shard_count = 35,
     tags = [
+        # Runs in .opt presubmit and continuous; :ops_test covers fastbuild.
+        "nofastbuild",
         "nosan",  # Rely on ops_test_grad for *san coverage.
         "ok-to-wait-for-v6e-in-presubmit",
         "ops-test",  # Heavy ops test: see run_bazel_diff.py for details.
@@ -1127,6 +1135,9 @@ torch_tpu_py_test(
     ],
     shard_count = 50,
     tags = [
+        # Runs in .opt continuous; :ops_test_dynamic and :ops_unit_test cover
+        # fastbuild and ASAN.
+        "nofastbuild",
         "nomsan",  # TODO: fix the test in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.
         "ops-test",  # Heavy ops test: see run_bazel_diff.py for details.
@@ -1168,6 +1179,8 @@ torch_tpu_py_test(
     ],
     shard_count = 50,
     tags = [
+        # Runs in .opt continuous; :ops_test_dynamic covers fastbuild.
+        "nofastbuild",
         "nosan",  # Rely on ops_test_grad for *san coverage.
         "ops-test",  # Heavy ops test: see run_bazel_diff.py for details.
     ] + _OSS_GOLDEN_TAGS,
