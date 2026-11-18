@@ -6003,12 +6003,20 @@ _COMPILED_DENY_LIST: frozenset[str] = frozenset(
     ]
     + (
         # Before PyTorch 2.15, Dynamo does not treat a torch.return_types
-        # `out=` (e.g. cummax's (values, indices)) as a tuple, so it misses the
-        # graph break for resizing the zero-element out tensors. Tracing then
-        # fails with "list index out of range" (or leaves the wrong out shape
-        # for 0-D inputs).
-        ["cummax.out", "cummin.out"]
+        # `out=` (e.g. cummax/max/min/topk's (values, indices)) as a tuple, so
+        # it misses the graph break for resizing the zero-element out tensors.
+        # Tracing then fails with "list index out of range" (or leaves the
+        # wrong out shape for 0-D inputs).
+        ["cummax.out", "cummin.out", "max.out", "min.out", "topk.out"]
         if utils.get_torch_version() < (2, 15, 0)
+        else []
+    )
+    + (
+        # Before PyTorch 2.14, Dynamo does not resize the zero-element `out=`
+        # tensor passed to `torch.empty(..., out=out)`, leaving it at shape
+        # (0,).
+        ["empty.out"]
+        if utils.get_torch_version() < (2, 14, 0)
         else []
     )
 )
