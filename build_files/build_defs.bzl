@@ -25,7 +25,11 @@ load(
 load("//bazel:supported_python_versions.bzl", "DEFAULT_PYTHON_VERSION", "SUPPORTED_PYTHON_VERSIONS")
 load("//build_files:rbe.bzl", "add_rbe_exec_properties", "select_rbe_shard_count")
 load("//shims/build_cleaner:build_defs.bzl", "register_extension_info")
-load("//shims/build_files:build_defs.bzl", "process_accelerator_tags")
+load(
+    "//shims/build_files:build_defs.bzl",
+    "configure_tpu_env",
+    "process_accelerator_tags",
+)
 load("//shims/build_files:torch_version.bzl", "is_backend_dep", "reset_torch_config")
 load("//shims/py_platform_test:py_platform_test.bzl", "py_platform_test")
 load("//shims/py_rules:py_test.bzl", "py_test")
@@ -335,6 +339,16 @@ def _is_cuda_test(tags):
         if tag.startswith("requires-gpu-"):
             return True
     return False
+
+def _is_gpu_test(tags, platform = None):
+    """Returns whether a test with `tags` and `platform` runs on GPUs."""
+    return platform == "gpu" or any([tag.startswith("requires-gpu") for tag in tags])
+
+# Disables TCMalloc's GWP-ASan guarded page allocator in Google3 tests that may
+# load the dynamically loaded `_libtpu.so`, in which sampled allocations crashed
+# with GWP-ASan buffer underflow reports during the migration to it.
+# TODO(b/549484939): Triage the reports and remove this.
+_DISABLE_GWP_ASAN_ARG = "--tcmalloc_guarded_sample_parameter=-1"
 
 def _is_tpu_tag(tag):
     """Returns true if the tag is a TPU accelerator requirement tag."""
@@ -768,21 +782,41 @@ def torch_tpu_cc_test(
             "--gtest_fail_if_no_test_linked" if is_oss() else "--gunit_fail_if_no_test_linked",
         ]
 
+    tags = tags or []
+    _fail_on_generic_requires_tpu_tag(tags)
+
+    # In Google3, tests load the `_libtpu.so` built from source if they declare
+    # `requires_libtpu = True` or, by default, if they run on TPUs.
+    loads_internal_libtpu = not is_oss() and not _is_gpu_test(tags) and (
+        requires_libtpu if requires_libtpu != None else any([_is_tpu_tag(t) for t in tags])
+    )
+
     # Prevent the massive output of per-thread stack traces when a test
     # crashes. Such logs are usually more painful than useful. One can
     # opt out of this behavior by setting `--suppress_failure_output`
     # in a test target's `args` field, or by passing
     # `--test_arg=--nosuppress_failure_output` on the bazel command line.
     #
-    # Note that we add this arg before the user-provided args so that the
-    # user can override it in the `args` field (the last arg wins).
+    # Note that we add these args before the user-provided args so that the
+    # user can override them in the `args` field (the last arg wins).
     if not is_oss():
-        args = ["--suppress_failure_output"] + args
-    tags = tags or []
-    _fail_on_generic_requires_tpu_tag(tags)
+        default_args = ["--suppress_failure_output"]
+        if loads_internal_libtpu:
+            default_args.append(_DISABLE_GWP_ASAN_ARG)
+        args = default_args + args
     data = list(kwargs.pop("data", []))
     if is_oss():
         data = data + ["@bazel_tools//tools/bash/runfiles"]
+    elif loads_internal_libtpu:
+        cc_env = kwargs.pop("env", None) or {}
+
+        # A select() env can't be extended here, so such tests must set the
+        # libtpu env vars themselves.
+        if type(cc_env) == type({}):
+            # Copy the dict, which may be a frozen constant of a .bzl file.
+            cc_env = dict(cc_env)
+            configure_tpu_env(data, cc_env)
+        kwargs["env"] = cc_env
     kwargs["data"] = data
 
     cc_test_name = name
@@ -1089,13 +1123,19 @@ def torch_tpu_py_test(
         # Shuffle test cases to avoid test ordering dependencies.
         args = args + ["--test_randomize_ordering_seed=random"]
 
-    # See the comment about suppress_failure_output in torch_tpu_cc_test
-    # for more details.
+    tags = tags or []
+    is_gpu = _is_gpu_test(tags, kwargs.get("platform"))
+
+    # See the comment about suppress_failure_output in torch_tpu_cc_test for
+    # more details. Python tests import torch_tpu, which may load `_libtpu.so`
+    # in any test that doesn't run on GPUs.
     if not is_oss():
         # Python tests in OSS don't support flags, so we only do this for the
         # internal build.
-        args = ["--suppress_failure_output"] + args
-    tags = tags or []
+        default_args = ["--suppress_failure_output"]
+        if not is_gpu:
+            default_args.append(_DISABLE_GWP_ASAN_ARG)
+        args = default_args + args
     _fail_on_generic_requires_tpu_tag(tags)
     data = list(kwargs.pop("data", []))
     if is_wheel_test:
@@ -1169,6 +1209,11 @@ def torch_tpu_py_test(
 
         # 2. Build environment variants starting from base environment
         base_env = existing_env
+        if not is_oss() and not is_gpu:
+            # `import torch_tpu` configures libtpu too, but processes may load
+            # libtpu before importing torch_tpu (e.g. JAX in torchax tests),
+            # or not import it at all (e.g. subprocesses of the test).
+            configure_tpu_env(data, base_env)
 
         # Apply LeakSanitizer suppressions (propagates to copies)
         lsan_opts = [base_env.get("LSAN_OPTIONS", "")]
