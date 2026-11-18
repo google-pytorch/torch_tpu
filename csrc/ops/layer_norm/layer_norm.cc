@@ -199,29 +199,35 @@ absl::StatusOr<LayerNormShloResults> BuildLayerNormShlo(
       mlir::stablehlo::Mul(input_minus_mean, rstd_broadcasted);
 
   // Compute affine output by multiplying normalized input by gamma and adding
-  // beta.
-  mlir::MlirOp normalized_input_casted = normalized_input;
-  if (stats_type != element_type) {
-    normalized_input_casted =
-        mlir::stablehlo::ConvertElementType(normalized_input, element_type);
-  }
+  // beta. Like the CPU/CUDA kernels, the affine transform is applied in
+  // `stats_type` and only the final result is cast to the input dtype. This
+  // also supports gamma/beta with a different dtype than the input, e.g. a
+  // bf16 input with f32 parameters (as produced by `torch.autocast`).
+  const auto to_stats_type = [stats_type](mlir::MlirOp op) {
+    if (GetTensorTypeOrDie(op).getElementType() == stats_type) {
+      return op;
+    }
+    return mlir::stablehlo::ConvertElementType(op, stats_type);
+  };
 
-  mlir::MlirOp normalized_input_times_weight = normalized_input_casted;
+  mlir::MlirOp affine_output = normalized_input;
   if (weight_op.has_value()) {
-    TT_ASSIGN_OR_RETURN(
-        mlir::MlirOp weight_broadcasted,
-        BroadcastIfNeeded(*weight_op, input_op, reduction_axes));
-    normalized_input_times_weight =
-        mlir::stablehlo::Mul(normalized_input_casted, weight_broadcasted);
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp weight_broadcasted,
+                        BroadcastIfNeeded(to_stats_type(*weight_op),
+                                          input_casted, reduction_axes));
+    affine_output = mlir::stablehlo::Mul(affine_output, weight_broadcasted);
   }
 
-  mlir::MlirOp affine_output = normalized_input_times_weight;
   if (bias_op.has_value()) {
     TT_ASSIGN_OR_RETURN(mlir::MlirOp bias_broadcasted,
-                        BroadcastIfNeeded(*bias_op, input_op, reduction_axes));
+                        BroadcastIfNeeded(to_stats_type(*bias_op), input_casted,
+                                          reduction_axes));
+    affine_output = mlir::stablehlo::Add(affine_output, bias_broadcasted);
+  }
 
+  if (stats_type != element_type) {
     affine_output =
-        mlir::stablehlo::Add(normalized_input_times_weight, bias_broadcasted);
+        mlir::stablehlo::ConvertElementType(affine_output, element_type);
   }
 
   // mean and rstd are returned without trailing size-1 dimensions.
@@ -234,8 +240,9 @@ absl::StatusOr<LayerNormShloResults> BuildLayerNormShlo(
 absl::StatusOr<LayerNormBackwardShloResults> BuildLayerNormBackwardShlo(
     mlir::MlirOp dy, mlir::MlirOp x, mlir::MlirOp mean, mlir::MlirOp rstd,
     std::optional<mlir::MlirOp> weight, at::IntArrayRef normalized_shape,
-    bool compute_dbeta) {
+    std::optional<mlir::ElementType> bias_dtype) {
   mlir::MlirBuilder& builder = x.getBuilder();
+  const bool compute_dbeta = bias_dtype.has_value();
   const mlir::RankedTensorType x_type = GetTensorTypeOrDie(x);
   const mlir::Type orig_elem_type = x_type.getElementType();
   bool needs_upcast = orig_elem_type.isF16() || orig_elem_type.isBF16();
@@ -304,12 +311,15 @@ absl::StatusOr<LayerNormBackwardShloResults> BuildLayerNormBackwardShlo(
   mlir::MlirOp x_hat = mlir::stablehlo::Subtract(x, mean_bcast);
   x_hat = mlir::stablehlo::Mul(x_hat, rstd_bcast);
 
-  // Optionally broadcast and upcast weight.
+  // Optionally broadcast and convert weight to the accumulation dtype. The
+  // weight may have a different dtype than x (e.g. f32 weight, bf16 x).
   std::optional<mlir::MlirOp> gamma_bcast;
+  std::optional<mlir::Type> weight_elem_type;
   if (weight.has_value()) {
     mlir::MlirOp w = weight.value();
-    if (needs_upcast) {
-      TT_ASSIGN_OR_RETURN(w, PromoteFloatDtype(w));
+    weight_elem_type = GetTensorTypeOrDie(w).getElementType();
+    if (*weight_elem_type != acc_elem_type) {
+      w = mlir::stablehlo::ConvertElementType(w, acc_elem_type);
     }
     TT_ASSIGN_OR_RETURN(gamma_bcast, BroadcastIfNeeded(w, x, norm_dims));
   }
@@ -373,8 +383,22 @@ absl::StatusOr<LayerNormBackwardShloResults> BuildLayerNormBackwardShlo(
 
   if (needs_upcast) {
     dx = mlir::stablehlo::ConvertElementType(dx, orig_elem_type);
-    dgamma = mlir::stablehlo::ConvertElementType(dgamma, orig_elem_type);
-    dbeta = mlir::stablehlo::ConvertElementType(dbeta, orig_elem_type);
+  }
+  // The parameter gradients have the dtypes of the parameters, which may differ
+  // from the dtype of x. Placeholder gradients for absent parameters use the
+  // dtype of x.
+  const mlir::Type grad_weight_elem_type =
+      weight_elem_type.value_or(orig_elem_type);
+  if (grad_weight_elem_type != acc_elem_type) {
+    dgamma = mlir::stablehlo::ConvertElementType(dgamma, grad_weight_elem_type);
+  }
+  const mlir::Type grad_bias_elem_type =
+      bias_dtype.has_value()
+          ? mlir::getElementType(*builder.getOpBuilder().getContext(),
+                                 *bias_dtype)
+          : orig_elem_type;
+  if (grad_bias_elem_type != acc_elem_type) {
+    dbeta = mlir::stablehlo::ConvertElementType(dbeta, grad_bias_elem_type);
   }
 
   return LayerNormBackwardShloResults{

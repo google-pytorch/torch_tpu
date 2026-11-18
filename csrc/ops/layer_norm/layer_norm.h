@@ -21,6 +21,7 @@
 
 #include "ATen/core/ATen_fwd.h"
 #include "absl/status/statusor.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 
 namespace torch_tpu {
@@ -42,10 +43,15 @@ absl::StatusOr<LayerNormShloResults> BuildLayerNormShlo(
     mlir::MlirOp input_op, std::optional<mlir::MlirOp> weight_op,
     std::optional<mlir::MlirOp> bias_op, int normalized_num_dims, double eps);
 
+// Computes the layer norm gradients. Supports `weight_op` (and the bias) having
+// a different dtype than `x`, e.g. f32 parameters with a bf16 input as produced
+// by `torch.autocast`. `grad_weight` has the dtype of `weight_op`, and
+// `grad_bias` has dtype `bias_dtype`. `grad_bias` is only computed if
+// `bias_dtype` is set.
 absl::StatusOr<LayerNormBackwardShloResults> BuildLayerNormBackwardShlo(
     mlir::MlirOp dy, mlir::MlirOp x, mlir::MlirOp mean, mlir::MlirOp rstd,
     std::optional<mlir::MlirOp> weight_op, at::IntArrayRef normalized_shape,
-    bool compute_dbeta);
+    std::optional<mlir::ElementType> bias_dtype);
 
 }  // namespace torch_tpu
 
