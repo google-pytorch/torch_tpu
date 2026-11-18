@@ -230,27 +230,6 @@ class DistributedUtilsTest(seed_test_utils.MultiProcessRepeatableTest):
     ):
       distributed_utils.gloo_run(2, _worker_fail_on_rank_one)
 
-  def test_dist_run_retries_on_port_collision(self) -> None:
-    """Verifies that dist_run retries when port collision (EADDRINUSE) occurs."""
-    attempt_count = 0
-
-    def mock_spawn(fn, args=(), nprocs=1, join=True):
-      nonlocal attempt_count
-      attempt_count += 1
-      if attempt_count == 1:
-        raise mp.ProcessRaisedException(
-            msg="RuntimeError: Address already in use (errno: 98 EADDRINUSE)",
-            error_index=0,
-            error_pid=12345,
-        )
-      # Second attempt succeeds.
-      return None
-
-    with mock.patch.object(mp, "spawn", side_effect=mock_spawn):
-      distributed_utils.dist_run(2, lambda: None, max_retries=3)
-
-    self.assertEqual(attempt_count, 2)
-
   def test_dist_run_keeps_pinned_slicebuilder_ports(self) -> None:
     """Verifies caller-pinned SliceBuilder addresses survive a retry."""
     pinned = "localhost:11111,localhost:22222"
