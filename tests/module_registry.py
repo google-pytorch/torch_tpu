@@ -49,7 +49,7 @@ import pathlib
 import sys
 import tempfile
 import types
-from typing import Any, overload
+from typing import Any
 import uuid
 
 from absl import flags
@@ -726,179 +726,14 @@ _PROVIDER_ALIASES: dict[str, str] = {
 }
 
 
-class _ConfigWrapper:
-  """Wrapper around HF config objects for attribute and dict access."""
-
-  def __init__(self, data: Any):
-    if isinstance(data, _ConfigWrapper):
-      object.__setattr__(self, "_data", data._data)
-    else:
-      object.__setattr__(self, "_data", data)
-
-  def unwrap(self) -> Any:
-    """Returns the underlying wrapped config object or dictionary."""
-    return self._data
-
-  def __copy__(self) -> "_ConfigWrapper":
-    return _ConfigWrapper(copy.copy(self._data))
-
-  def __deepcopy__(self, memo: dict[int, Any]) -> "_ConfigWrapper":
-    return _ConfigWrapper(copy.deepcopy(self._data, memo))
-
-  def __getstate__(self) -> dict[str, Any]:
-    return {"_data": self._data}
-
-  def __setstate__(self, state: Mapping[str, Any]) -> None:
-    object.__setattr__(self, "_data", state["_data"])
-
-  def __getattr__(self, name: str) -> Any:
-    if name == "_data" or "_data" not in self.__dict__:
-      raise AttributeError(
-          f"'{type(self).__name__}' object has no attribute '{name}'"
-      )
-    data = self._data
-    if data is None:
-      raise AttributeError(
-          f"'{type(self).__name__}' object has no attribute '{name}'"
-      )
-    if getattr(data, "allow_global_per_layer_attribute_access", None) is False:
-      try:
-        data.allow_global_per_layer_attribute_access = True
-      except (AttributeError, TypeError):
-        pass
-    if isinstance(data, (dict, Mapping)):
-      if name in data:
-        return _wrap_config(data[name])
-      raise AttributeError(
-          f"'{type(self).__name__}' object has no attribute '{name}'"
-      )
-    if hasattr(data, "_mock_name") and name not in getattr(
-        data, "__dict__", {}
-    ):
-      raise AttributeError(
-          f"'{type(self).__name__}' mock has no attribute '{name}'"
-      )
-    val = getattr(data, name)
-    return _wrap_config(val)
-
-  def __setattr__(self, name: str, value: Any) -> None:
-    if name == "_data":
-      object.__setattr__(self, name, value)
-      return
-    if isinstance(self._data, MutableMapping):
-      self._data[name] = value
-    elif hasattr(self._data, "__dict__"):
-      self._data.__dict__[name] = value
-    else:
-      setattr(self._data, name, value)
-
-  def get(self, key: str, default: Any = None) -> Any:
-    data = self._data
-    if getattr(data, "allow_global_per_layer_attribute_access", None) is False:
-      try:
-        data.allow_global_per_layer_attribute_access = True
-      except (AttributeError, TypeError):
-        pass
-    if isinstance(data, (dict, Mapping)):
-      val = data.get(key, default)
-    elif hasattr(data, "_mock_name") and key not in getattr(
-        data, "__dict__", {}
-    ):
-      val = default
-    else:
-      try:
-        val = getattr(data, key, default)
-      except (AttributeError, TypeError):
-        val = default
-    if val is default:
-      return default
-    if (
-        val is not None
-        and default is not None
-        and not isinstance(val, type(default))
-    ):
-      try:
-        val = type(default)(val)
-      except (ValueError, TypeError):
-        pass
-    return _wrap_config(val)
-
-  def __getitem__(self, key: Any) -> Any:
-    data = self._data
-    if isinstance(data, (dict, Mapping)) or hasattr(data, "__getitem__"):
-      return _wrap_config(data[key])
-    if isinstance(key, str):
-      try:
-        return getattr(self, key)
-      except AttributeError as exc:
-        raise KeyError(key) from exc
-    raise KeyError(key)
-
-  def __contains__(self, key: str) -> bool:
-    if isinstance(self._data, (dict, Mapping)):
-      return key in self._data
-    if hasattr(self._data, "_mock_name") and key not in getattr(
-        self._data, "__dict__", {}
-    ):
-      return False
-    return hasattr(self._data, key)
-
-  def __bool__(self) -> bool:
-    return bool(self._data)
-
-  def __len__(self) -> int:
-    if isinstance(self._data, (dict, Mapping)) or hasattr(
-        self._data, "__len__"
-    ):
-      return len(self._data)
-    return len(dir(self._data))
-
-  def __iter__(self):
-    if isinstance(self._data, (dict, Mapping)) or hasattr(
-        self._data, "__iter__"
-    ):
-      return iter(self._data)
-    return iter(dir(self._data))
-
-  def __call__(self, *args: Any, **kwargs: Any) -> Any:
-    if callable(self._data):
-      return _wrap_config(self._data(*args, **kwargs))
-    raise TypeError(f"'{type(self).__name__}' object is not callable")
-
-  def __str__(self) -> str:
-    return str(self._data)
-
-  def __repr__(self) -> str:
-    return f"{type(self).__name__}({self._data!r})"
-
-
-def _wrap_config(config: Any) -> Any:
-  """Wraps a config in _ConfigWrapper if not already wrapped."""
-  if config is None or isinstance(config, _ConfigWrapper):
-    return config
-  if isinstance(
-      config,
-      (
-          int,
-          float,
-          str,
-          bool,
-          bytes,
-          list,
-          tuple,
-          set,
-          frozenset,
-          type,
-          types.FunctionType,
-          types.BuiltinFunctionType,
-          types.MethodType,
-          torch.dtype,
-          torch.device,
-          torch.Tensor,
-      ),
-  ):
-    return config
-  return _ConfigWrapper(config)
+# Config helpers shared with `transformers_inputs`, re-exported under the
+# legacy `_`-prefixed names for existing callers (e.g. hf_coverage_utils).
+_ConfigWrapper = transformers_inputs.ConfigWrapper
+_wrap_config = transformers_inputs.wrap_config
+_safe_int = transformers_inputs.safe_int
+_parse_image_size = transformers_inputs.parse_image_size
+_get_num_channels = transformers_inputs.get_num_channels
+_extract_target_dtype = transformers_inputs.extract_target_dtype
 
 
 def is_supported_transformers_model_type(
@@ -1364,37 +1199,6 @@ class TimmProvider(BaseProvider):
     )
 
 
-@overload
-def _safe_int(
-    val: Any, default: None = None, min_val: int | None = None
-) -> int | None:
-  ...
-
-
-@overload
-def _safe_int(val: Any, default: int = 0, min_val: int | None = None) -> int:
-  ...
-
-
-def _safe_int(
-    val: Any, default: int | None = 0, min_val: int | None = None
-) -> int | None:
-  """Safely converts a value to int, defaulting if invalid or a boolean."""
-  if (
-      val is None
-      or isinstance(val, bool)
-      or not isinstance(val, (int, float, str))
-  ):
-    return default
-  try:
-    res = int(val)
-    if min_val is not None and res < min_val:
-      return default
-    return res
-  except (ValueError, TypeError):
-    return default
-
-
 def _get_max_seq_len(config: Any, default: int = 512) -> int:
   """Heuristically determines the maximum sequence length from a config.
 
@@ -1705,103 +1509,6 @@ def _determine_modality(config: Any) -> Modality:
   return Modality.TEXT
 
 
-def _parse_image_size(config: Any, default_size: int = 224) -> int:
-  """Extracts image_size as an int from config, vision_config, or encoder."""
-  cfg = _wrap_config(config)
-  if "depth_pro" in str(cfg.get("model_type", "")):
-    patch_size = _safe_int(cfg.get("patch_size"), default=384, min_val=1)
-    ratios = cfg.get("scaled_images_ratios")
-    min_ratio = (
-        min(r for r in ratios if r > 0)
-        if isinstance(ratios, (list, tuple)) and any(r > 0 for r in ratios)
-        else 0.25
-    )
-    return max(int(patch_size / min_ratio), 1536)
-  if any(
-      k in str(cfg.get("model_type", "")).lower() for k in ["d_fine", "dfine"]
-  ):
-    return 640
-  if "rf_detr" in str(cfg.get("model_type", "")).lower():
-    return 560
-
-  detector_cfg = cfg.get("detector_config")
-  vlm_cfg = cfg.get("vlm_config")
-  vision_config = (
-      cfg.get("vision_config")
-      or (vlm_cfg.get("vision_config") if vlm_cfg else None)
-      or (detector_cfg.get("vision_config") if detector_cfg else None)
-      or cfg.get("encoder")
-      or cfg.get("backbone_config")
-  )
-  if vision_config and vision_config.get("model_type") == "pixtral":
-    return 128
-  backbone_cfg = vision_config.get("backbone_config") if vision_config else None
-  raw_val = (
-      (
-          vision_config.get("image_size")
-          or vision_config.get("resolution")
-          or (
-              backbone_cfg.get("image_size") or backbone_cfg.get("resolution")
-              if backbone_cfg is not None
-              and (
-                  isinstance(backbone_cfg, Mapping)
-                  or hasattr(backbone_cfg, "get")
-              )
-              else None
-          )
-      )
-      if vision_config
-      else None
-  )
-  if isinstance(raw_val, (list, tuple)) and raw_val:
-    raw_val = raw_val[0]
-  val = _safe_int(raw_val, default=None, min_val=1)
-  if val is None:
-    raw_val = cfg.get("image_size") or cfg.get("resolution")
-    if isinstance(raw_val, (list, tuple)) and raw_val:
-      raw_val = raw_val[0]
-    val = _safe_int(raw_val, default=None, min_val=1)
-  if val is None:
-    pretrained_cfg = cfg.get("pretrained_cfg") or (
-        vision_config.get("pretrained_cfg") if vision_config else None
-    )
-    raw_val = cfg.get("input_size") or (
-        pretrained_cfg.get("input_size") if pretrained_cfg else None
-    )
-    if isinstance(raw_val, (list, tuple)) and raw_val:
-      val = _safe_int(raw_val[-1], default=None, min_val=1)
-    else:
-      val = _safe_int(raw_val, default=None, min_val=1)
-  if val is None:
-    val = default_size
-
-  return val
-
-
-def _get_num_channels(config: Any, default_channels: int = 3) -> int:
-  """Extracts num_channels from config or vision_config or encoder."""
-  cfg = _wrap_config(config)
-  vlm_cfg = cfg.get("vlm_config")
-  vision_config = (
-      cfg.get("vision_config")
-      or (vlm_cfg.get("vision_config") if vlm_cfg else None)
-      or cfg.get("encoder")
-      or cfg.get("backbone_config")
-  )
-  val = _safe_int(
-      vision_config.get("num_channels") if vision_config else None,
-      default=None,
-      min_val=1,
-  )
-  if val is None:
-    val = _safe_int(
-        cfg.get("num_channels"),
-        default=default_channels,
-        min_val=1,
-    )
-  return val
-
-
 @contextlib.contextmanager
 def _default_dtype(dtype: torch.dtype | None) -> Iterator[None]:
   """Sets the default floating point dtype within the context.
@@ -1822,40 +1529,6 @@ def _default_dtype(dtype: torch.dtype | None) -> Iterator[None]:
     yield
   finally:
     torch.set_default_dtype(original_dtype)
-
-
-def _extract_target_dtype(config: Any) -> torch.dtype:
-  """Extracts target torch_dtype from root or nested transformer configs."""
-  cfg = _wrap_config(config)
-  if cfg.get("model_type", "") == "gemma2":
-    return torch.bfloat16
-
-  dtype = cfg.get("torch_dtype") or cfg.get("dtype")
-
-  if dtype is None:
-    text_config = cfg.get("text_config")
-    if text_config is not None:
-      dtype = text_config.get("torch_dtype") or text_config.get("dtype")
-
-  if dtype is None:
-    vision_config = cfg.get("vision_config")
-    if vision_config is not None:
-      dtype = vision_config.get("torch_dtype") or vision_config.get("dtype")
-
-  if dtype is None:
-    thinker_config = cfg.get("thinker_config")
-    if thinker_config is not None:
-      dtype = thinker_config.get("torch_dtype") or thinker_config.get("dtype")
-      if dtype is None:
-        thinker_text = thinker_config.get("text_config")
-        if thinker_text is not None:
-          dtype = thinker_text.get("torch_dtype") or thinker_text.get("dtype")
-
-  if isinstance(dtype, str):
-    return getattr(torch, dtype, torch.float32)
-  elif isinstance(dtype, torch.dtype):
-    return dtype
-  return torch.float32
 
 
 def _load_transformers_preprocessor(
@@ -2720,6 +2393,11 @@ def _sanitize_config(config: Any) -> Any:
   if cfg.get("return_dict") is False:
     cfg.return_dict = True
 
+  # Some checkpoints (e.g. meta-llama/Llama-2-13b-chat-hf) store
+  # `"_name_or_path": null`; callers expect a string.
+  if "_name_or_path" in cfg and cfg.get("_name_or_path") is None:
+    cfg._name_or_path = ""  # pylint: disable=protected-access
+
   model_type = cfg.get("model_type")
   if model_type in _ARCHITECTURE_ALIASES:
     aliases = _ARCHITECTURE_ALIASES[model_type]
@@ -3545,6 +3223,17 @@ class TransformersProvider(BaseProvider):
     target_dtype = _extract_target_dtype(config)
     config_dtype = None if target_dtype == torch.float32 else target_dtype
 
+    # `forward` of the resolved model class, used to select generated inputs.
+    # Skipped for model types whose instance `forward` is monkeypatched in
+    # `_apply_model_patches` to replace required arguments (`inference_session`
+    # -> `pixel_values`), since the unpatched class signature does not match.
+    model_type_lower = str(config.get("model_type", "") or "").lower()
+    has_patched_forward = model_type_lower in (
+        "edgetam_video",
+        "sam2_video",
+        "sam3_video",
+    )
+    model_forward = None
     if load_weights:
       if modality == Modality.CAUSAL_LM:
         model_cls = transformers.AutoModelForCausalLM
@@ -3557,6 +3246,13 @@ class TransformersProvider(BaseProvider):
           model_cls = transformers.AutoModelForSeq2SeqLM
       else:
         model_cls = transformers.AutoModel
+
+      if not has_patched_forward:
+        try:
+          resolved_cls = _resolve_transformers_model_class(config, modality)
+          model_forward = getattr(resolved_cls, "forward", None)
+        except Exception:  # pylint: disable=broad-exception-caught
+          model_forward = None
 
       kwargs.setdefault("low_cpu_mem_usage", True)
       kwargs.setdefault("ignore_mismatched_sizes", True)
@@ -3579,6 +3275,8 @@ class TransformersProvider(BaseProvider):
     else:
       # Stage 3 & Stage 4: Resolve model class and instantiate model.
       resolved_cls = _resolve_transformers_model_class(config, modality)
+      if not has_patched_forward:
+        model_forward = getattr(resolved_cls, "forward", None)
 
       def model_fn(dtype: torch.dtype | None = None) -> torch.nn.Module:
         return _instantiate_transformers_model(
@@ -3616,6 +3314,7 @@ class TransformersProvider(BaseProvider):
           preprocessor_loader=lambda d: _load_transformers_preprocessor(
               d, modality=Modality.VISION
           ),
+          forward=model_forward,
       )
       return (), input_kwargs
 
