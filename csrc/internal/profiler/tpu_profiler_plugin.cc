@@ -405,7 +405,13 @@ absl::StatusOr<std::string> GetXPlaneOutputPath(
 TpuKinetoProfilerSession::TpuKinetoProfilerSession(
     const libkineto::Config& config,
     std::set<libkineto::ActivityType> activity_types)
-    : config_(config), activity_types_(std::move(activity_types)) {}
+    : config_(config), activity_types_(std::move(activity_types)) {
+  tensorflow::ProfileOptions opts = tsl::ProfilerSession::DefaultOptions();
+  std::string run_dir;
+  std::optional<std::string> worker_rank;
+  TT_THROW_IF_ERROR(UpdateProfileOptions(config_.getCustomConfig(), opts,
+                                         run_dir, worker_rank));
+}
 
 void TpuKinetoProfilerSession::start() {
   absl::MutexLock lock(mutex_);
@@ -413,6 +419,7 @@ void TpuKinetoProfilerSession::start() {
     ABSL_LOG(WARNING) << "TpuKinetoProfilerSession already started";
     return;
   }
+  start_error_ = absl::OkStatus();
   worker_rank_ = std::nullopt;
   tensorflow::ProfileOptions opts = tsl::ProfilerSession::DefaultOptions();
   opts.set_device_type(tensorflow::ProfileOptions::TPU);
@@ -427,8 +434,17 @@ void TpuKinetoProfilerSession::start() {
     opts.set_python_tracer_level(1);
   }
 
-  TT_THROW_IF_ERROR(UpdateProfileOptions(config_.getCustomConfig(), opts,
-                                         run_dir_, worker_rank_));
+  // The custom config was already validated in the constructor, so this is
+  // not expected to fail.
+  if (absl::Status status = UpdateProfileOptions(config_.getCustomConfig(),
+                                                 opts, run_dir_, worker_rank_);
+      !status.ok()) {
+    ABSL_LOG(ERROR) << "Invalid TPU profiler config: " << status;
+    errors_.push_back(std::string(status.message()));
+    status_ = libkineto::TraceStatus::ERROR;
+    start_error_ = std::move(status);
+    return;
+  }
 
   start_time_ns_ = absl::GetCurrentTimeNanos();
 
@@ -444,7 +460,11 @@ void TpuKinetoProfilerSession::start() {
     errors_.push_back(err);
     status_ = libkineto::TraceStatus::ERROR;
     session_.reset();
-    TT_THROW_IF_ERROR(status);
+    // Adapt the external TSL message (e.g. "Another profiling session
+    // active.") to the TorchTPU error format before raising it from `stop()`.
+    start_error_ = absl::Status(
+        status.code(), absl::StrCat("failed to start the TPU profiler: ",
+                                    AdaptExternalErrorMessage(err)));
   } else {
     ABSL_LOG(INFO) << "Successfully created Tpu ProfilerSession!";
     status_ = libkineto::TraceStatus::RECORDING;
@@ -485,6 +505,7 @@ absl::Status SynchronizeTpuDevicesBeforeStop() {
 
 void TpuKinetoProfilerSession::stop() {
   absl::MutexLock lock(mutex_);
+  TT_THROW_IF_ERROR(std::exchange(start_error_, absl::OkStatus()));
   if (session_ != nullptr) {
     // Stop recording PyTorch frontend events immediately before synchronizing
     // and collecting trace data so teardown operations are not captured.

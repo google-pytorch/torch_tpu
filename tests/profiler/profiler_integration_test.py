@@ -1088,36 +1088,6 @@ class ProfilerIntegrationTest(seed_test_utils.RepeatableTest):
         xplane_files, "Should have a .xplane.pb file in fallback directory"
     )
 
-  @unittest.skip(
-      "TODO(b/585659501): Re-enable once upstream PyTorch enableProfiler rolls"
-      " back ProfilerStateBase when startTrace throws."
-  )
-  def test_invalid_profiler_config(self):
-    """Tests that invalid profiler configuration raises a Python exception."""
-    device = torch.device("tpu")
-    output_dir = self.create_tempdir("invalid_config").full_path
-
-    _cleanup_profile_dir()
-
-    bad_config = torch.profiler._ExperimentalConfig(
-        custom_profiler_config="invalid_option_missing_colon"
-    )
-
-    with self.assertRaisesRegex(
-        RuntimeError,
-        r"expected the config item to be in the 'key:value' format, got"
-        r" 'invalid_option_missing_colon'",
-    ):
-      with torch.profiler.profile(
-          activities=[
-              torch.profiler.ProfilerActivity.CPU,
-              torch.profiler.ProfilerActivity.TPU,  # type: ignore
-          ],
-          on_trace_ready=torch.profiler.tensorboard_trace_handler(output_dir),
-          experimental_config=bad_config,
-      ):
-        _ = torch.ones((16, 16)).to(device) @ torch.ones((16, 16)).to(device)
-
   def test_tpu_profiler_config_experimental_options(self):
     device = torch.device("tpu")
     output_dir = pathlib.Path(

@@ -5884,5 +5884,40 @@ class SpmdSafeCompileErrorsTest(et.TpuOnlyErrorTestBase):
       compiled_fn(x)
 
 
+class ProfilerErrorsTest(et.TpuOnlyErrorTestBase):
+
+  @et.why_tpu_only("The custom profiler config is parsed by the TPU profiler.")
+  def test_invalid_custom_profiler_config(self):
+    activities = [
+        torch.profiler.ProfilerActivity.CPU,
+        torch.profiler.ProfilerActivity.TPU,  # type: ignore
+    ]
+    bad_config = torch.profiler._ExperimentalConfig(
+        custom_profiler_config="invalid_option_missing_colon"
+    )
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""expected the config item to be in the 'key:value' format, got 'invalid_option_missing_colon'""",
+    ):
+      with torch.profiler.profile(
+          activities=activities, experimental_config=bad_config
+      ):
+        pass
+
+    # The failed start must not leave profiler state behind on this thread.
+    # `custom_compiler_options` pushes thread-local debug info on top of any
+    # leaked profiler state, which made the next profile fail with "Expected
+    # debug info of type PROFILER_STATE".
+    self.assertFalse(torch.autograd._profiler_enabled())
+    with torch.tpu.compiler.custom_compiler_options(
+        {"xla_enable_custom_call_region_trace": "true"}
+    ):
+      with torch.profiler.profile(activities=activities):
+        c = torch.ones((16, 16), device="tpu") @ torch.ones(
+            (16, 16), device="tpu"
+        )
+        sync.synchronize(c)
+
+
 if __name__ == "__main__":
   multiprocessing.handle_test_main(absltest.main)

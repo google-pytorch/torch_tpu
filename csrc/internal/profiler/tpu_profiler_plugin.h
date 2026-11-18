@@ -29,6 +29,7 @@
 
 #include "absl/base/no_destructor.h"
 #include "absl/base/thread_annotations.h"
+#include "absl/status/status.h"
 #include "absl/synchronization/mutex.h"
 #include "csrc/common/utils.h"
 #include "csrc/internal/profiler/xprof_callback_handler.h"
@@ -41,10 +42,19 @@ namespace torch_tpu {
 // It manages a single profiling session, interacting with tensorflow::profiler.
 class TpuKinetoProfilerSession : public libkineto::IActivityProfilerSession {
  public:
+  // Throws if the custom profiler config is invalid. Validating here, during
+  // `prepare_trace`, raises the error before PyTorch's `enableProfiler()`
+  // pushes any profiler state.
   TpuKinetoProfilerSession(const libkineto::Config& config,
                            std::set<libkineto::ActivityType> activity_types);
 
+  // Must not throw: PyTorch's `enableProfiler()` calls this after pushing
+  // `PROFILER_STATE` and registering `RecordFunction` callbacks, and does not
+  // unwind them if this throws. Start failures are recorded in `start_error_`
+  // and raised from `stop()` instead.
   void start() override ABSL_LOCKS_EXCLUDED(mutex_);
+  // Throws `start_error_` if `start()` failed. This is safe because PyTorch's
+  // `disableProfiler()` removes its profiler state before stopping sessions.
   void stop() override ABSL_LOCKS_EXCLUDED(mutex_);
   std::vector<std::string> errors() override ABSL_LOCKS_EXCLUDED(mutex_) {
     absl::MutexLock lock(mutex_);
@@ -76,6 +86,8 @@ class TpuKinetoProfilerSession : public libkineto::IActivityProfilerSession {
   std::unique_ptr<XProfCallbackHandler> callback_handler_;
   std::string run_dir_ ABSL_GUARDED_BY(mutex_);
   std::optional<std::string> worker_rank_ ABSL_GUARDED_BY(mutex_);
+  // Error from a failed `start()`, raised from `stop()`. See `start()`.
+  absl::Status start_error_ ABSL_GUARDED_BY(mutex_);
   uint64_t start_time_ns_ = 0;
   std::vector<libkineto::ResourceInfo> resource_infos_;
 };
