@@ -2077,9 +2077,18 @@ TEST_F(ErrorMessageGuidelinesPassTest, DimensionalityLookalikesAreAllowed) {
 
 // Throws `status` the way an op kernel does.
 void ThrowStatus(const absl::Status& status) {
-  const std::string_view message = status.message();
-  TT_KERNEL(OpName::kAdd, _, (IgnoreInCacheKey(message, "test")),
-            { TT_THROW_IF_ERROR(status); });
+  // TT_KERNEL() validates its arguments against the enclosing function
+  // signature in debug/fastbuild mode, and absl::Status is not a supported
+  // kernel parameter type. Wrap TT_KERNEL() in a zero-parameter method (not a
+  // lambda, because Clang rejects TT_STATIC_ASSERT_RETURN_TYPE_NOT_STATUS_()
+  // inside void lambdas).
+  struct StatusThrower {
+    const absl::Status& status;
+    void Throw() const {
+      TT_KERNEL(OpName::kAdd, _, (), { TT_THROW_IF_ERROR(status); });
+    }
+  };
+  StatusThrower{status}.Throw();
 }
 
 // Returns an error whose message is marked as holding the user's text.
