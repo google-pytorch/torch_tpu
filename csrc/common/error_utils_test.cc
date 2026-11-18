@@ -27,6 +27,7 @@
 #include <ios>
 #include <map>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -2261,6 +2262,65 @@ TEST(TranslateXlaTensorOomError, TranslatesInternalErrorWithAllocationSize) {
 TEST(TranslateXlaTensorOomError, ReturnsNonOomErrorUnchanged) {
   const absl::Status original(error::kInvalidArgument, "some other error");
   EXPECT_EQ(TranslateXlaTensorOomError(original, "float32", {2, 3}), original);
+}
+
+TEST(TranslateTtErrorToC10Error, ForwardsReturnValuesAndMemberPointers) {
+  struct Helper {
+    std::string stored = "hello";
+    int Add(int a, int b) const { return a + b; }
+    const std::string& Stored() const { return stored; }
+    void Set(std::string value) { stored = std::move(value); }
+  };
+
+  EXPECT_EQ(TranslateTtErrorToC10Error([](int x) { return x * 2; }, 21), 42);
+
+  Helper helper;
+  EXPECT_EQ(TranslateTtErrorToC10Error(&Helper::Add, helper, 10, 5), 15);
+
+  const std::string& out = TranslateTtErrorToC10Error(&Helper::Stored, helper);
+  EXPECT_EQ(&out, &helper.stored);
+
+  TranslateTtErrorToC10Error(&Helper::Set, helper, "updated");
+  EXPECT_EQ(helper.stored, "updated");
+}
+
+void ThrowTtErrorWithCode(absl::StatusCode code, std::string_view message) {
+  TT_THROW_IF_ERROR(TT_ERROR(code) << message);
+}
+
+TEST(TranslateTtErrorToC10Error, TranslatesTtErrorByStatusCode) {
+  EXPECT_THROW(
+      TranslateTtErrorToC10Error(&ThrowTtErrorWithCode,
+                                 error::kResourceExhausted, "out of memory"),
+      c10::OutOfMemoryError);
+  EXPECT_THROW(TranslateTtErrorToC10Error(&ThrowTtErrorWithCode,
+                                          error::kPythonIndexError,
+                                          "index is out of bounds"),
+               c10::IndexError);
+  EXPECT_THROW(TranslateTtErrorToC10Error(&ThrowTtErrorWithCode,
+                                          error::kPythonNotImplementedError,
+                                          "operation is not implemented"),
+               c10::NotImplementedError);
+  try {
+    TranslateTtErrorToC10Error(&ThrowTtErrorWithCode, error::kInvalidArgument,
+                               "invalid argument value");
+    FAIL() << "Expected c10::Error";
+  } catch (const c10::OutOfMemoryError&) {
+    FAIL() << "Expected plain c10::Error, got c10::OutOfMemoryError";
+  } catch (const c10::IndexError&) {
+    FAIL() << "Expected plain c10::Error, got c10::IndexError";
+  } catch (const c10::NotImplementedError&) {
+    FAIL() << "Expected plain c10::Error, got c10::NotImplementedError";
+  } catch (const c10::Error& e) {
+    EXPECT_THAT(e.what(), HasSubstr("invalid argument value"));
+  }
+}
+
+TEST(TranslateTtErrorToC10Error, PropagatesNonTtErrorUnchanged) {
+  const auto throw_non_tt = []() {
+    throw std::logic_error("other");  // Tests non-TtError passthrough.
+  };
+  EXPECT_THROW(TranslateTtErrorToC10Error(throw_non_tt), std::logic_error);
 }
 
 }  // namespace

@@ -21,6 +21,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -349,6 +350,17 @@ class TtError : public std::runtime_error {
 
 // Translates a TtError to a c10::Error or one of its subclasses and throws it.
 [[noreturn]] void TranslateToC10ErrorAndThrow(const TtError& e);
+
+// Invokes `fn(args...)`, translating any thrown TtError into the c10::Error
+// subclass that PyTorch maps to the matching Python exception type.
+template <typename Fn, typename... Args>
+decltype(auto) TranslateTtErrorToC10Error(Fn&& fn, Args&&... args) {
+  try {
+    return std::invoke(std::forward<Fn>(fn), std::forward<Args>(args)...);
+  } catch (const TtError& e) {
+    TranslateToC10ErrorAndThrow(e);
+  }
+}
 
 // =============================================================================
 // Macros for reporting errors in torch_tpu C++ code.

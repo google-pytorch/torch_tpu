@@ -5433,6 +5433,98 @@ class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):
       torch.nn.functional.rms_norm(x_empty, (8,), weight=w_int, eps=1e-5)
 
 
+def _tensor_too_large_for_the_device() -> torch.Tensor:
+  """Returns a tensor that runs out of memory when it is materialized."""
+  return torch.ones(1024, 1024, 1024, 1024, 1024, device=et.device())
+
+
+def _glu_with_dynamic_split_dimension() -> torch.Tensor:
+  """Returns an op result whose lowering fails when materialized."""
+  x = torch.ones(2, 4, device=et.device())
+  dynamism.mark_dynamic(x, 1, 2, 8)
+  return torch.nn.functional.glu(x, dim=1)
+
+
+class DeviceGuardErrorsTest(et.TpuOnlyErrorTestBase):
+  """Tests the error types raised through torch.accelerator, Stream and Event.
+
+  PyTorch calls the TPU device guard directly for these APIs.
+  """
+
+  @et.why_tpu_only("CUDA runs out of memory when the tensor is allocated.")
+  def test_failed_event_raises_out_of_memory_error(self):
+    # Deferred, so that the events are recorded before the failure is known.
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      too_large = _tensor_too_large_for_the_device()
+      start = torch.Event(device=et.device(), enable_timing=True)
+      start.record()
+      end = torch.Event(device=et.device(), enable_timing=True)
+      end.record()
+
+    # Synchronizing goes first: it waits until the failure is known.
+    with self.subTest("synchronize"):
+      with et.assert_raises_message(
+          torch.OutOfMemoryError,
+          tpu="""the TPU ran out of memory while allocating tensor float32[1024, 1024, 1024, 1024, 1024]""",
+      ):
+        start.synchronize()
+    with self.subTest("query"):
+      with et.assert_raises_message(
+          torch.OutOfMemoryError,
+          tpu="""the TPU ran out of memory while allocating tensor float32[1024, 1024, 1024, 1024, 1024]""",
+      ):
+        start.query()
+    with self.subTest("elapsed_time"):
+      with et.assert_raises_message(
+          torch.OutOfMemoryError,
+          tpu="""the TPU ran out of memory while allocating tensor float32[1024, 1024, 1024, 1024, 1024]""",
+      ):
+        start.elapsed_time(end)
+    del too_large
+
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_accelerator_synchronize_raises_not_implemented_error(self):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      unsupported = _glu_with_dynamic_split_dimension()
+
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu="""glu(): expected dimension 1 of input to have a static size, got dynamic size""",
+      ):
+        torch.accelerator.synchronize()
+    del unsupported
+
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_event_record_raises_not_implemented_error(self):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      unsupported = _glu_with_dynamic_split_dimension()
+      event = torch.Event(device=et.device())
+
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu="""glu(): expected dimension 1 of input to have a static size, got dynamic size""",
+      ):
+        # Recording materializes the deferred ops of the stream.
+        event.record()
+    del unsupported
+
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_set_stream_raises_not_implemented_error(self):
+    default_stream = torch.accelerator.current_stream()
+    self.addCleanup(torch.accelerator.set_stream, default_stream)
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      torch.accelerator.set_stream(torch.tpu.Stream())
+      unsupported = _glu_with_dynamic_split_dimension()
+
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu="""glu(): expected dimension 1 of input to have a static size, got dynamic size""",
+      ):
+        # Leaving a stream materializes its deferred ops.
+        torch.accelerator.set_stream(default_stream)
+    del unsupported
+
+
 # Environment variables that `distributed.set_tpu_launch_env` reads or writes,
 # directly or through `torch_tpu._internal.env`.
 _LAUNCH_ENV_VARS = (

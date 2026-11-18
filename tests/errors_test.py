@@ -19538,6 +19538,35 @@ class UpsampleBilinear2dAaErrorTest(et.ErrorTestBase):
       # upon materialization:
       b[:8].sum().item()
 
+  def test_accelerator_synchronize_raises_out_of_memory_error(self):
+    with et.assert_raises_message(
+        torch.OutOfMemoryError,
+        tpu="""the TPU ran out of memory while allocating tensor float32[1024, 1024, 1024, 1024, 1024]""",
+        gpu=re.compile(
+            r"CUDA out of memory\. Tried to allocate 4194304\.00 GiB\..*",
+            re.DOTALL,
+        ),
+    ):
+      # GPU raises torch.OutOfMemoryError here during eager allocation:
+      _ = torch.ones(1024, 1024, 1024, 1024, 1024, device=et.device())
+      # TPU raises torch.OutOfMemoryError here when synchronizing the device:
+      torch.accelerator.synchronize()
+
+  def test_stream_synchronize_raises_out_of_memory_error(self):
+    stream = torch.accelerator.current_stream()
+    with et.assert_raises_message(
+        torch.OutOfMemoryError,
+        tpu="""the TPU ran out of memory while allocating tensor float32[1024, 1024, 1024, 1024, 1024]""",
+        gpu=re.compile(
+            r"CUDA out of memory\. Tried to allocate 4194304\.00 GiB\..*",
+            re.DOTALL,
+        ),
+    ):
+      # GPU raises torch.OutOfMemoryError here during eager allocation:
+      _ = torch.ones(1024, 1024, 1024, 1024, 1024, device=et.device())
+      # TPU raises torch.OutOfMemoryError here when synchronizing the stream:
+      stream.synchronize()
+
 
 class UnaryOpsErrorTest(et.ErrorTestBase):
 

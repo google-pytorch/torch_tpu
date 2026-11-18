@@ -114,28 +114,55 @@ void ValidateDeviceIndex(c10::DeviceIndex device_index) {
               : "");
 }
 
+// Translates TtError into c10::Error across every non-noexcept guard hook.
 class TpuDeviceGuardImpl final : public c10::impl::DeviceGuardImplInterface {
  public:
-  TpuDeviceGuardImpl() = default;
-  explicit TpuDeviceGuardImpl(c10::DeviceType t);
-
-  c10::DeviceType type() const override;
-  c10::Device exchangeDevice(c10::Device d) const override;
-  c10::Device getDevice() const override;
-  void setDevice(c10::Device d) const override;
+  c10::DeviceType type() const override {
+    return TranslateTtErrorToC10Error(&TpuDeviceGuardImpl::Type, this);
+  }
+  c10::Device exchangeDevice(c10::Device d) const override {
+    return TranslateTtErrorToC10Error(&TpuDeviceGuardImpl::ExchangeDevice, this,
+                                      d);
+  }
+  c10::Device getDevice() const override {
+    return TranslateTtErrorToC10Error(&TpuDeviceGuardImpl::GetDevice, this);
+  }
+  void setDevice(c10::Device d) const override {
+    return TranslateTtErrorToC10Error(&TpuDeviceGuardImpl::SetDevice, this, d);
+  }
   void uncheckedSetDevice(c10::Device d) const noexcept override;
-  c10::Stream getStream(c10::Device d) const override;
-  c10::Stream getNewStream(c10::Device d, int priority) const override;
-  c10::Stream getDefaultStream(c10::Device d) const override;
-  c10::Stream exchangeStream(c10::Stream s) const override;
+  c10::Stream getStream(c10::Device d) const override {
+    return TranslateTtErrorToC10Error(&TpuDeviceGuardImpl::GetStream, this, d);
+  }
+  c10::Stream getNewStream(c10::Device d, int priority) const override {
+    return TranslateTtErrorToC10Error(&TpuDeviceGuardImpl::GetNewStream, this,
+                                      d, priority);
+  }
+  c10::Stream getDefaultStream(c10::Device d) const override {
+    return TranslateTtErrorToC10Error(&TpuDeviceGuardImpl::GetDefaultStream,
+                                      this, d);
+  }
+  c10::Stream exchangeStream(c10::Stream s) const override {
+    return TranslateTtErrorToC10Error(&TpuDeviceGuardImpl::ExchangeStream, this,
+                                      s);
+  }
   // All `void* event` values are actually `EventSnapshot*`.
   void destroyEvent(void* event,
                     c10::DeviceIndex device_index) const noexcept override;
   void record(void** event, const c10::Stream& stream,
               c10::DeviceIndex device_index,
-              c10::EventFlag flag) const override;
-  void block(void* event, const c10::Stream& stream) const override;
-  bool queryEvent(void* event) const override;
+              c10::EventFlag flag) const override {
+    return TranslateTtErrorToC10Error(&TpuDeviceGuardImpl::Record, this, event,
+                                      stream, device_index, flag);
+  }
+  void block(void* event, const c10::Stream& stream) const override {
+    return TranslateTtErrorToC10Error(&TpuDeviceGuardImpl::Block, this, event,
+                                      stream);
+  }
+  bool queryEvent(void* event) const override {
+    return TranslateTtErrorToC10Error(&TpuDeviceGuardImpl::QueryEvent, this,
+                                      event);
+  }
   // Returns how many addressable PJRT TPU devices this process's runtime owns,
   // initializing the runtime first if needed (0 if initialization fails). If
   // the runtime isn't initialized and no TPU device is reachable (no TPU device
@@ -145,14 +172,32 @@ class TpuDeviceGuardImpl final : public c10::impl::DeviceGuardImplInterface {
   // PyTorch sizes per-device state with it, e.g. the autograd engine sets each
   // device index below it on a thread of its own.
   c10::DeviceIndex deviceCount() const noexcept override;
-  bool queryStream(const c10::Stream& stream) const override;
-  void synchronizeStream(const c10::Stream& stream) const override;
-  void synchronizeDevice(c10::DeviceIndex device_index) const override;
-  void synchronizeEvent(void* event) const override;
+  bool queryStream(const c10::Stream& stream) const override {
+    return TranslateTtErrorToC10Error(&TpuDeviceGuardImpl::QueryStream, this,
+                                      stream);
+  }
+  void synchronizeStream(const c10::Stream& stream) const override {
+    return TranslateTtErrorToC10Error(&TpuDeviceGuardImpl::SynchronizeStream,
+                                      this, stream);
+  }
+  void synchronizeDevice(c10::DeviceIndex device_index) const override {
+    return TranslateTtErrorToC10Error(&TpuDeviceGuardImpl::SynchronizeDevice,
+                                      this, device_index);
+  }
+  void synchronizeEvent(void* event) const override {
+    return TranslateTtErrorToC10Error(&TpuDeviceGuardImpl::SynchronizeEvent,
+                                      this, event);
+  }
   double elapsedTime(void* event1, void* event2,
-                     c10::DeviceIndex device_index) const override;
+                     c10::DeviceIndex device_index) const override {
+    return TranslateTtErrorToC10Error(&TpuDeviceGuardImpl::ElapsedTime, this,
+                                      event1, event2, device_index);
+  }
 #if TT_TORCH_VERSION_GE(2, 12)  // PyTorch 2.12 added isStreamCapturing.
-  bool isStreamCapturing(const c10::Stream& stream) const override;
+  bool isStreamCapturing(const c10::Stream& stream) const override {
+    return TranslateTtErrorToC10Error(&TpuDeviceGuardImpl::IsStreamCapturing,
+                                      this, stream);
+  }
 #endif
   // Not implemented: getStreamFromGlobalPool
   // Not implemented: getDeviceCapability
@@ -164,7 +209,27 @@ class TpuDeviceGuardImpl final : public c10::impl::DeviceGuardImplInterface {
   //   only on CUDA, and reject the reads in a capture whose ID differs (see
   //   c10/core/impl/COW.cpp), so a nonzero ID would reject every read of a
   //   copy-on-write TPU storage during capture.
+
  private:
+  c10::DeviceType Type() const;
+  c10::Device ExchangeDevice(c10::Device d) const;
+  c10::Device GetDevice() const;
+  void SetDevice(c10::Device d) const;
+  c10::Stream GetStream(c10::Device d) const;
+  c10::Stream GetNewStream(c10::Device d, int priority) const;
+  c10::Stream GetDefaultStream(c10::Device d) const;
+  c10::Stream ExchangeStream(c10::Stream s) const;
+  void Record(void** event, const c10::Stream& stream,
+              c10::DeviceIndex device_index, c10::EventFlag flag) const;
+  void Block(void* event, const c10::Stream& stream) const;
+  bool QueryEvent(void* event) const;
+  bool QueryStream(const c10::Stream& stream) const;
+  void SynchronizeStream(const c10::Stream& stream) const;
+  void SynchronizeDevice(c10::DeviceIndex device_index) const;
+  void SynchronizeEvent(void* event) const;
+  double ElapsedTime(void* event1, void* event2,
+                     c10::DeviceIndex device_index) const;
+  bool IsStreamCapturing(const c10::Stream& stream) const;
   void ValidateDevice(c10::Device d) const;
 };
 
@@ -178,7 +243,7 @@ class TpuDeviceGuardImpl final : public c10::impl::DeviceGuardImplInterface {
 
 }  // namespace
 
-c10::DeviceType TpuDeviceGuardImpl::type() const {
+c10::DeviceType TpuDeviceGuardImpl::Type() const {
   return GetPrivateUse1DeviceType();
 }
 
@@ -187,46 +252,46 @@ void TpuDeviceGuardImpl::ValidateDevice(c10::Device d) const {
   // should fail before calling this DeviceGuardImpl (such as in the
   // torch.accelerator submodule).
   TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=see comment above
-      d.type() == type(), error::kInvalidArgument)
+      d.type() == Type(), error::kInvalidArgument)
       << "TpuDeviceGuardImpl: invalid device type " << d.type();
   ValidateDeviceIndex(d.index());
 }
 
-c10::Device TpuDeviceGuardImpl::exchangeDevice(c10::Device d) const {
+c10::Device TpuDeviceGuardImpl::ExchangeDevice(c10::Device d) const {
   ValidateDevice(d);
   c10::DeviceIndex old_device_index = ExchangeCurrentDeviceIndex(d.index());
-  return c10::Device(type(), old_device_index);
+  return c10::Device(Type(), old_device_index);
 }
 
-c10::Device TpuDeviceGuardImpl::getDevice() const {
-  return c10::Device(type(), GetCurrentDeviceIndex());
+c10::Device TpuDeviceGuardImpl::GetDevice() const {
+  return c10::Device(Type(), GetCurrentDeviceIndex());
 }
 
-void TpuDeviceGuardImpl::setDevice(c10::Device d) const {
+void TpuDeviceGuardImpl::SetDevice(c10::Device d) const {
   ValidateDevice(d);
   ExchangeCurrentDeviceIndex(d.index());
 }
 
 void TpuDeviceGuardImpl::uncheckedSetDevice(c10::Device d) const noexcept {
-  if (d.type() == type()) {
+  if (d.type() == Type()) {
     ExchangeCurrentDeviceIndex(d.index());
   }
 }
 
-c10::Stream TpuDeviceGuardImpl::getStream(c10::Device d) const {
+c10::Stream TpuDeviceGuardImpl::GetStream(c10::Device d) const {
   ValidateDevice(d);
   const c10::StreamId stream_id = GetCurrentStreamId(d.index());
   return c10::Stream(c10::Stream::UNSAFE, d, stream_id);
 }
 
-c10::Stream TpuDeviceGuardImpl::getNewStream(c10::Device d,
+c10::Stream TpuDeviceGuardImpl::GetNewStream(c10::Device d,
                                              int priority) const {
   ValidateDevice(d);
   const c10::StreamId stream_id = NextStreamId(d.index());
   return c10::Stream(c10::Stream::UNSAFE, d, stream_id);
 }
 
-c10::Stream TpuDeviceGuardImpl::exchangeStream(c10::Stream s) const {
+c10::Stream TpuDeviceGuardImpl::ExchangeStream(c10::Stream s) const {
   ValidateDevice(s.device());
   c10::StreamId old_stream_id =
       ExchangeCurrentStreamId(s.device_index(), s.id());
@@ -315,12 +380,12 @@ c10::DeviceIndex TpuDeviceGuardImpl::deviceCount() const noexcept {
       (*pjrt_client_or)->addressable_device_count());
 }
 
-c10::Stream TpuDeviceGuardImpl::getDefaultStream(c10::Device d) const {
+c10::Stream TpuDeviceGuardImpl::GetDefaultStream(c10::Device d) const {
   ValidateDevice(d);
   return c10::Stream(c10::Stream::DEFAULT, d);
 }
 
-void TpuDeviceGuardImpl::record(void** event, const c10::Stream& stream,
+void TpuDeviceGuardImpl::Record(void** event, const c10::Stream& stream,
                                 const c10::DeviceIndex device_index,
                                 const c10::EventFlag flag) const {
   if (*event != nullptr) {
@@ -332,29 +397,29 @@ void TpuDeviceGuardImpl::record(void** event, const c10::Stream& stream,
   TT_THROW_IF_ERROR(snapshot.BlockUntilStarted());
   *event = new EventSnapshot(std::move(snapshot));
 }
-void TpuDeviceGuardImpl::block(void* event, const c10::Stream& stream) const {
+void TpuDeviceGuardImpl::Block(void* event, const c10::Stream& stream) const {
   EventSnapshot* snapshot = reinterpret_cast<EventSnapshot*>(event);
   c10::DeviceIndex device_index = stream.device_index();
   c10::StreamId stream_id = stream.id();
   InsertStreamWait(device_index, stream_id, *snapshot);
 }
 
-bool TpuDeviceGuardImpl::queryEvent(void* event) const {
+bool TpuDeviceGuardImpl::QueryEvent(void* event) const {
   EventSnapshot* snapshot = reinterpret_cast<EventSnapshot*>(event);
   TT_ASSIGN_OR_THROW(bool ready, snapshot->Query());
   return ready;
 }
-bool TpuDeviceGuardImpl::queryStream(const c10::Stream& stream) const {
+bool TpuDeviceGuardImpl::QueryStream(const c10::Stream& stream) const {
   TT_WARN_ONCE(WarningCategory::kTorchTpu, "queryStream not yet implemented.");
   return true;
 }
-void TpuDeviceGuardImpl::synchronizeStream(const c10::Stream& stream) const {
+void TpuDeviceGuardImpl::SynchronizeStream(const c10::Stream& stream) const {
   TT_ASSIGN_OR_THROW(EventSnapshot snapshot,
                      MaterializeStream(stream.device_index(), stream.id(),
                                        MaterializationReason::kExplicitSync));
   TT_THROW_IF_ERROR(snapshot.Synchronize());
 }
-void TpuDeviceGuardImpl::synchronizeDevice(
+void TpuDeviceGuardImpl::SynchronizeDevice(
     c10::DeviceIndex device_index) const {
   TT_ASSIGN_OR_THROW(
       std::vector<EventSnapshot> snapshots,
@@ -369,12 +434,12 @@ void TpuDeviceGuardImpl::destroyEvent(
   delete snapshot;
 }
 
-void TpuDeviceGuardImpl::synchronizeEvent(void* event) const {
+void TpuDeviceGuardImpl::SynchronizeEvent(void* event) const {
   EventSnapshot* snapshot = reinterpret_cast<EventSnapshot*>(event);
   TT_THROW_IF_ERROR(snapshot->Synchronize());
 }
 
-double TpuDeviceGuardImpl::elapsedTime(
+double TpuDeviceGuardImpl::ElapsedTime(
     void* event1, void* event2, const c10::DeviceIndex device_index) const {
   EventSnapshot* start = reinterpret_cast<EventSnapshot*>(event1);
   EventSnapshot* end = reinterpret_cast<EventSnapshot*>(event2);
@@ -390,13 +455,11 @@ double TpuDeviceGuardImpl::elapsedTime(
   return absl::ToDoubleMilliseconds(duration);
 }
 
-#if TT_TORCH_VERSION_GE(2, 12)
-bool TpuDeviceGuardImpl::isStreamCapturing(const c10::Stream& stream) const {
+bool TpuDeviceGuardImpl::IsStreamCapturing(const c10::Stream& stream) const {
   // A pure query: unlike the other methods, this does not validate the device,
   // so that querying any stream neither raises nor initializes the runtime.
-  return IsStreamCapturing(stream.device_index(), stream.id());
+  return torch_tpu::IsStreamCapturing(stream.device_index(), stream.id());
 }
-#endif  // TT_TORCH_VERSION_GE(2, 12)
 
 C10_REGISTER_GUARD_IMPL(PrivateUse1, TpuDeviceGuardImpl);
 
