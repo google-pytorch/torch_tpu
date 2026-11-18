@@ -49,6 +49,15 @@ from tests.distributed import distributed_utils
 # torch < 2.13 cannot return Work.exception() to Python.
 _WORK_EXCEPTION_IS_BOUND = utils.parse_version(torch.__version__) >= (2, 13, 0)
 
+_IS_LAUNCH_BLOCKING = (
+    execution_mode.eager_mode
+    == execution_mode.EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING
+)
+_SKIP_LAUNCH_BLOCKING_REASON = (
+    "Launch-blocking mode synchronizes at each op dispatch, preventing async"
+    " stream gating and deferred error propagation."
+)
+
 _UNSUPPORTED_64BIT_REDUCE_OPS = (
     (
         torch.int64,
@@ -724,8 +733,9 @@ def run_async_work_reports_failure_of_its_stream() -> None:
   rank = dist.get_rank()
   err_stream = torch.tpu.Stream()
   with torch.tpu.stream(err_stream):
-    # Fails to compile (compile-time OOM: 4 PiB of HBM).
-    bad = torch.ones((1024,) * 5, device="tpu")
+    # Fails to compile (compile-time OOM: 4 PiB of HBM); start it on its own.
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_NEVER):
+      bad = torch.ones((1024,) * 5, device="tpu")
     with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
       t = torch.full((4,), float(rank), device="tpu")
       work = dist.all_reduce(t, op=dist.ReduceOp.SUM, async_op=True)
@@ -740,6 +750,13 @@ def run_async_work_reports_failure_of_its_stream() -> None:
       assert not work.is_success(), "failed Work reported is_success()"
       if _WORK_EXCEPTION_IS_BOUND:
         assert work.exception() is not None
+      barrier_work = dist.barrier(async_op=True)
+      barrier_work.result()[0].zero_()
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""the TPU ran out of memory while allocating tensor float32[1024, 1024, 1024, 1024, 1024]""",
+      ):
+        barrier_work.wait()
     # The stream still reports the failure that its Work reported.
     with et.assert_raises_message(
         RuntimeError,
@@ -756,7 +773,6 @@ def run_async_work_reports_failure_of_its_stream() -> None:
 def run_collective_validation_errors() -> None:
   """Runs synchronous collective input validation error checks."""
   run_all_reduce_error()
-  run_async_work_wait_timeout()
   run_all_gather_tensor_wrong_number_output_dimensions()
   run_all_gather_tensor_wrong_concat_dimension()
   run_all_gather_tensor_wrong_stack_dimension()
@@ -1366,12 +1382,17 @@ class CollectiveErrorsTest(
   def test_collective_validation_errors(self):
     run_collective_validation_errors()
 
+  @absltest.skipIf(_IS_LAUNCH_BLOCKING, _SKIP_LAUNCH_BLOCKING_REASON)
+  def test_async_work_wait_timeout(self):
+    run_async_work_wait_timeout()
+
   def test_async_work_tracks_collective_with_overwritten_result(self):
     run_async_work_tracks_collective_with_overwritten_result(spmd_safe=False)
 
   def test_async_work_tracks_fused_collective_with_overwritten_result(self):
     run_async_work_tracks_collective_with_overwritten_result(spmd_safe=True)
 
+  @absltest.skipIf(_IS_LAUNCH_BLOCKING, _SKIP_LAUNCH_BLOCKING_REASON)
   def test_async_work_reports_failure(self):
     run_async_work_reports_failure()
 

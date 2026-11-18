@@ -71,6 +71,15 @@ except RuntimeError:  # No TPU generation that TorchTPU supports is attached.
 # torch < 2.13 cannot return Work.exception() to Python.
 _WORK_EXCEPTION_IS_BOUND = utils.parse_version(torch.__version__) >= (2, 13, 0)
 
+_IS_LAUNCH_BLOCKING = (
+    execution_mode.eager_mode
+    == execution_mode.EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING
+)
+_SKIP_LAUNCH_BLOCKING_REASON = (
+    "Launch-blocking mode synchronizes at each op dispatch, preventing async"
+    " stream gating and non-blocking issue."
+)
+
 
 def _test_wrapper(
     test_fn: Callable[..., None], *args: Any, **kwargs: Any
@@ -1465,15 +1474,18 @@ class CollectiveOpsTest(continuous_test_utils.TpuMultiProcContinuousTest):
   def test_broadcast_objects(self) -> None:
     _run_broadcast_objects()
 
+  @absltest.skipIf(_IS_LAUNCH_BLOCKING, _SKIP_LAUNCH_BLOCKING_REASON)
   def test_async_work_tracks_completion(self) -> None:
     _run_async_work_tracks_completion()
 
+  @absltest.skipIf(_IS_LAUNCH_BLOCKING, _SKIP_LAUNCH_BLOCKING_REASON)
   def test_async_work_wait_holds_the_current_stream(self) -> None:
     _run_async_work_wait_holds_the_current_stream()
 
   def test_async_work_future_resolves_to_results(self) -> None:
     _run_async_work_future_resolves_to_results()
 
+  @absltest.skipIf(_IS_LAUNCH_BLOCKING, _SKIP_LAUNCH_BLOCKING_REASON)
   def test_async_work_future_is_complete_at_issue(self) -> None:
     _run_async_work_future_is_complete_at_issue()
 
@@ -1487,7 +1499,8 @@ class CollectiveOpsTest(continuous_test_utils.TpuMultiProcContinuousTest):
     _run_async_work_of_barrier_blocks_the_host()
 
   def test_async_work_ignores_later_stream_work(self) -> None:
-    _run_async_work_ignores_later_stream_work()
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_NEVER):
+      _run_async_work_ignores_later_stream_work()
 
   def test_async_work_ignores_later_stream_work_when_deferred(self) -> None:
     with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
@@ -1563,6 +1576,8 @@ class CollectiveOpsTest(continuous_test_utils.TpuMultiProcContinuousTest):
       ("async", True),
   )
   def test_barrier_blocking(self, async_op: bool) -> None:
+    if async_op and _IS_LAUNCH_BLOCKING:
+      self.skipTest(_SKIP_LAUNCH_BLOCKING_REASON)
     _run_barrier_blocking(async_op=async_op)
 
   @absltest.skipIf(_IS_TPU_V7, _SKIP_P2P_ON_TPU_V7_REASON)

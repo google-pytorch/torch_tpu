@@ -24,11 +24,20 @@ from absl.testing import absltest
 import torch
 from torch import distributed as dist
 import torch.multiprocessing as mp
+from torch_tpu._internal import execution_mode
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
 from tests.distributed import continuous_test_utils
 from tests.distributed import distributed_utils
 
+_IS_LAUNCH_BLOCKING = (
+    execution_mode.eager_mode
+    == execution_mode.EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING
+)
+_SKIP_LAUNCH_BLOCKING_REASON = (
+    'Launch-blocking mode synchronizes at each op dispatch, so async Work is'
+    ' already completed on return.'
+)
 _SKIP_P2P_ON_TPU_V7_REASON = (
     'P2P send/recv aborts in libtpu on TPU v7 (b/540414751).'
 )
@@ -85,6 +94,7 @@ class StreamCollectivesTest(continuous_test_utils.TpuMultiProcContinuousTest):
 class AsyncCollectiveWorkTest(continuous_test_utils.TpuMultiProcContinuousTest):
   world_size = distributed_utils.get_tpu_device_count()
 
+  @absltest.skipIf(_IS_LAUNCH_BLOCKING, _SKIP_LAUNCH_BLOCKING_REASON)
   def test_async_op_work_tracks_completion(self) -> None:
     """The Work of an async_op collective reports its completion."""
     moe_in, moe_out, expected = _all_to_all_inputs(self.rank, self.world_size)

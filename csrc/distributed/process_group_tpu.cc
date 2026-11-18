@@ -281,14 +281,17 @@ class TpuWork : public c10d::Work {
       return true;
     }
     synchronize();
-    if (timeout > kNoTimeout || opType_ == c10d::OpType::BARRIER) {
+    if (timeout > kNoTimeout) {
       TT_ASSIGN_OR_THROW(const xla::Future<void> completion, Completion());
-      if (timeout > kNoTimeout) {
-        TT_CHECK_THROW(AwaitFutureWithTimeout(completion, timeout),
-                       error::kDeadlineExceeded)
-            << "timed out waiting for collective after " << timeout.count()
-            << " ms";
-      }
+      TT_CHECK_THROW(AwaitFutureWithTimeout(completion, timeout),
+                     error::kDeadlineExceeded)
+          << "timed out waiting for collective after " << timeout.count()
+          << " ms";
+      TT_THROW_IF_ERROR(completion.Await());
+      return true;
+    }
+    if (opType_ == c10d::OpType::BARRIER) {
+      TT_ASSIGN_OR_THROW(const xla::Future<void> completion, Completion());
       TT_THROW_IF_ERROR(completion.Await());
       return true;
     }
