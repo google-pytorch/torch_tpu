@@ -7217,14 +7217,6 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       ),
   )
   def test_boolean_indexing(self, x_fn, mask_fn, index_fn):
-    # TODO(b/584350545): 1d_long_mask and same_rank_mask time out / are slow
-    # under ASAN. Skip these cases under ASAN mode only.
-    if (
-        self._testMethodName.endswith(("_1d_long_mask", "_same_rank_mask"))
-        and utils.is_asan()
-    ):
-      self.skipTest("b/584350545: Times out in ASAN mode.")
-
     x = x_fn()
     mask = mask_fn()
 
