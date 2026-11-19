@@ -21,6 +21,7 @@
 
 load(
     "//build_files:build_defs.bzl",
+    "if_oss",
     "internal_target",
     "torch_tpu_package_end",
     "torch_tpu_py_library",
@@ -657,7 +658,15 @@ torch_tpu_py_test(
 
 torch_tpu_py_test(
     name = "distributed_runner_test",
+    timeout = "long",
     srcs = ["distributed_runner_test.py"],
+    exec_properties = if_oss(
+        None,
+        select({
+            "//tools/cpp:sanitizer_build": {"test.mem": "24g"},
+            "//conditions:default": None,
+        }),
+    ),
     tags = ["notsan"],  # TODO(b/584257115): Fails under OSS TSan.
     deps = [
         ":fakes",
