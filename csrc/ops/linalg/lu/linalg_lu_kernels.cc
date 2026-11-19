@@ -29,15 +29,12 @@
 #include "ATen/ops/_linalg_check_errors.h"
 #include "ATen/ops/add.h"
 #include "ATen/ops/any.h"
-#include "ATen/ops/arange.h"
 #include "ATen/ops/argmax.h"
 #include "ATen/ops/diagonal.h"
 #include "ATen/ops/empty.h"
 #include "ATen/ops/empty_like.h"
 #include "ATen/ops/eq.h"
 #include "ATen/ops/eye.h"
-#include "ATen/ops/gather.h"
-#include "ATen/ops/reshape.h"
 #include "ATen/ops/tril.h"
 #include "ATen/ops/triu.h"
 #include "ATen/ops/where.h"
@@ -50,6 +47,7 @@
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/fixed_size_span.h"
 #include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
 #include "csrc/eager/op_dispatcher.h"
@@ -435,36 +433,26 @@ absl::Status ApplyPivotsInPlace(at::Tensor& tensor, const at::Tensor& pivots,
     return absl::OkStatus();
   }
 
-  // Flatten batch dimensions.
-  const at::Tensor pivots_flat =
-      at::reshape(pivots, {-1, pivots.size(-1)}).to(at::kLong).sub(1);
-  const int64_t n_batch = pivots_flat.size(0);
-  const int64_t n_pivots = pivots_flat.size(1);
-  at::Tensor permutation = at::arange(size, pivots.options().dtype(at::kLong))
-                               .unsqueeze(0)
-                               .expand({n_batch, size})
-                               .clone();
-  for (int64_t i = 0; i < n_pivots; ++i) {
-    // Forward swaps apply P^T, reverse swaps apply P.
-    const int64_t k = inverse ? i : n_pivots - 1 - i;
-    const at::Tensor pivot_index = pivots_flat.select(1, k).unsqueeze(1);
-    const at::Tensor permutation_at_k =
-        permutation.select(1, k).unsqueeze(1).clone();
-    const at::Tensor permutation_at_pivot =
-        at::gather(permutation, 1, pivot_index);
-    permutation.select(1, k).copy_(permutation_at_pivot.squeeze(1));
-    permutation.scatter_(1, pivot_index, permutation_at_k);
-  }
-  const int64_t rows = tensor.size(-2);
-  const int64_t cols = tensor.size(-1);
-  const at::Tensor tensor_flat = tensor.reshape({n_batch, rows, cols});
-  const at::Tensor gather_indices =
-      to_rows ? permutation.unsqueeze(2).expand({n_batch, rows, cols})
-              : permutation.unsqueeze(1).expand({n_batch, rows, cols});
-  const at::Tensor permuted =
-      at::gather(tensor_flat, to_rows ? 1 : 2, gather_indices);
-  tensor.copy_(permuted.reshape(tensor.sizes()));
-  return absl::OkStatus();
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType out_dtype,
+                      ConvertTo<mlir::ElementType>(tensor.scalar_type()));
+  auto cache_keys = OpParamCacheKeys::Empty();
+  TT_RETURN_IF_ERROR(cache_keys.SetParam("step", "P"));
+  TT_RETURN_IF_ERROR(cache_keys.SetParam("to_rows", to_rows));
+  TT_RETURN_IF_ERROR(cache_keys.SetParam("inverse", inverse));
+
+  const LuPivotOptions pivot_options{
+      .target = to_rows ? LuPivotTarget::kRows : LuPivotTarget::kColumns,
+      .direction =
+          inverse ? LuPivotDirection::kInverse : LuPivotDirection::kForward,
+  };
+  auto op_builder = [pivot_options](FixedSizeSpan<mlir::MlirOp, 2> inputs)
+      -> absl::StatusOr<mlir::MlirOp> {
+    return ApplyLuPivotsLike(inputs[0], inputs[1], pivot_options);
+  };
+  return DispatchOpOut<2>(std::move(op_builder), {tensor, pivots}, tensor,
+                          {.out_dtype = out_dtype,
+                           .out_dims = tensor.sizes(),
+                           .op_param_cache_keys = std::move(cache_keys)});
 }
 
 absl::Status ValidateLuUnpackInputs(const at::Tensor& lu_data,
