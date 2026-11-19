@@ -149,3 +149,73 @@ issue it duplicates.
 and agree on a plan with the author before they rewrite the PR. If the new
 approach is substantially different, ask the author to open a new PR (linked to
 the same issue) and close the old one.
+
+## Import the PR
+
+### When does the import happen?
+
+**Champion**: Google's Copybara bot imports a PR into an internal change once
+the PR has the `pull ready` label **and** a Googler has approved its latest
+commit. After you approve the PR, add the `pull ready` label. If you forget, any
+Googler may add it once you've approved. The import usually starts within
+minutes; the PR's `import/copybara` check shows its status.
+
+### How do I check if a PR has been imported?
+
+**Googler**: The bot usually creates or updates the internal change within about
+five minutes of the import being triggered. To find it, search for
+`torch_tpu/pull/123` (with your PR number) in Critique, Google's internal code
+review tool: the internal change's description includes an `Imported from:` line
+with the PR's URL. If nothing shows up after 15 minutes, see
+[The import didn't happen](#the-import-didnt-happen-how-do-i-find-out-why).
+
+### The author pushed new commits after approval. What now?
+
+**Expert or champion**: Approvals apply to a specific commit, so a new commit
+stops the import until a Googler approves the PR again. Review the new commits
+and approve the PR again on GitHub. That approval re-triggers the import, and
+the bot updates the existing internal change.
+
+### `import/copybara` says "Waiting for internal safe review approval". What do I do?
+
+**Googler**: The bot skips its internal safe review when a Googler has approved
+the PR's latest commit, so first make sure that's the case. If the check still
+waits (e.g. it's left over from before the latest approval), click the check's
+**Details** link and vote **Code-Review+2** on the internal safe-review page
+that opens. The page is Google-internal, so external authors can't do this step.
+
+<img src="images/copybara_import_approval.png" alt="Pending import/copybara checks" width="600px">
+
+### The import didn't happen. How do I find out why?
+
+**Googler**: First check the conditions in
+[When does the import happen?](#when-does-the-import-happen): the PR isn't a
+draft, has the `pull ready` label, and a Googler approved its latest commit.
+Then open the details of the PR's `import/copybara` check, if it has one, which
+says why an import is blocked, e.g. a missing `pull ready` label, no Googler
+approval of the latest commit, or a merge conflict. Fix that cause and the
+import retries. The check doesn't appear on every PR, so if it's missing, look
+for the internal change (see
+[How do I check if a PR has been imported?](#how-do-i-check-if-a-pr-has-been-imported)).
+If the conditions are met but there's no internal change after an hour, or the
+change exists but was never sent for review, start the import yourself (see the
+next answer).
+
+### How do I start an import myself?
+
+**Googler**: Use this when an import should have happened but didn't, or when it
+failed partway: the bot created the internal change but didn't send it for
+review, so the change has no reviewers and never gets approvals, runs presubmit,
+or lands. The bot doesn't retry such an import on its own, and approving the PR
+again doesn't restart it unless the PR has new commits. Start the import by hand
+as described in
+[Starting a GitHub PR import manually](http://go/tt-devguide#starting-a-github-pr-import-manually)
+in the TorchTPU developer guide (a Google-internal link that works only for
+Googlers). The bot then updates the existing internal change (or creates one)
+and sends it for review.
+
+### The PR conflicts with `main`. What do I do?
+
+**Author**: Rebase your branch on the latest `main`, resolve the conflicts, and
+push. The new commit needs a Googler's approval again before the PR can be
+imported.
