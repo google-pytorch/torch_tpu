@@ -1542,6 +1542,22 @@ Please use clone() or contiguous() to copy the tensor before writing""",
         # cpu() is needed because the error is triggered inside the op builder.
         torch.nn.functional.glu(x, dim=dim).cpu()
 
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_scaled_grouped_mm_dynamic_rowwise_scales(self):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      a = torch.ones(8, 4, device=et.device())
+      b = torch.ones(2, 4, 6, device=et.device())
+      scale_a = torch.ones(8, device=et.device())
+      scale_b = torch.ones(2, 6, device=et.device())
+      offs = torch.tensor([4, 8], dtype=torch.int32, device=et.device())
+      dynamism.mark_dynamic(a, 0, 2, 16)
+
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu="""scaled_grouped_mm(): expected static shapes with rowwise scales, got bounded dynamic self of type tensor<?x4xf32, #stablehlo.bounds<16, ?>>""",
+      ):
+        torch._scaled_grouped_mm(a, b, scale_a, scale_b, offs=offs).cpu()
+
   @et.why_tpu_only(
       "aten.linear_backward is only registered for TPU (PrivateUse1), not"
       " CPU/CUDA."
