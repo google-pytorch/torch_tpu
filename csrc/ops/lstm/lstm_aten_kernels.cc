@@ -28,6 +28,7 @@
 #include <vector>
 
 #include "ATen/core/ATen_fwd.h"
+#include "ATen/core/LegacyTypeDispatch.h"
 #include "ATen/core/TensorBody.h"
 #include "ATen/core/dispatch/Dispatcher.h"
 #include "ATen/ops/empty.h"
@@ -38,17 +39,15 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
-#include "c10/core/DispatchKey.h"
-#include "c10/core/GradMode.h"
 #include "c10/core/SymInt.h"
 #include "c10/core/SymIntArrayRef.h"
-#include "c10/core/impl/LocalDispatchKeySet.h"
 #include "c10/util/ArrayRef.h"  // IWYU pragma: keep for operator==
 #include "c10/util/DimVector.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/fake_tensor_utils.h"
 #include "csrc/common/fixed_size_span.h"
 #include "csrc/common/op_name_stack.h"
 #include "csrc/common/to_string.h"
@@ -76,6 +75,7 @@
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "torch/csrc/autograd/custom_function.h"  // IWYU pragma: keep for torch::autograd::variable_list
+#include "torch/csrc/autograd/functions/utils.h"
 
 // =============================================================================
 // StableHLO LSTM Forward & Backward Kernels for TorchTPU
@@ -170,9 +170,9 @@
 // In PyTorch core, aten::lstm.input does not have an entry in derivatives.yaml
 // and has no autograd backward kernel schema (such as
 // aten::lstm_input_backward). Therefore, when requires_grad is enabled,
-// AtenLstmInput intercepts execution and dispatches via
-// torch::autograd::Function (AtenLstmInputAutograd), which directly invokes
-// AtenLstmInputBackward during the autograd backward phase.
+// AtenLstmInputAutogradKernel (registered on AutogradPrivateUse1) dispatches
+// via torch::autograd::Function (AtenLstmInputAutograd), whose backward calls
+// tpu::_lstm_input_backward during the autograd backward phase.
 // =============================================================================
 
 namespace torch_tpu {
@@ -368,8 +368,8 @@ absl::Status ValidateLstmInputs(const at::Tensor& input,
       << FormatCount(hx.size(), "tensor", "tensors");
 
   // The fused lowering has no bounded-dimension support, so this specializes
-  // the sequence length, batch and hidden (and projection) sizes, as the CPU
-  // composite does. Only the input size stays symbolic.
+  // the sequence length, batch and hidden (and projection) sizes. Only the
+  // input size stays symbolic.
   const int64_t batch = (batch_first ? input.sym_size(0) : input.sym_size(1))
                             .guard_int(__FILE__, __LINE__);
   const int64_t seq_len = (batch_first ? input.sym_size(1) : input.sym_size(0))
@@ -2377,7 +2377,7 @@ LayerRecomputeResult RecomputeLayerForward(
 // buffers.
 // - Performs full-sequence 2D dot generals to accumulate W_ih and W_hh
 // gradients across all steps.
-template <typename ToOutFn, typename ReduceBuilderFn>
+template <typename ReduceBuilderFn>
 LayerBackwardOutputs ComputeLayerBackwardStatic(
     mlir::MlirBuilder& builder, const LayerForwardState& layer_state,
     mlir::MlirOp grad_x_curr, mlir::MlirOp grad_hy_l, mlir::MlirOp grad_cy_l,
@@ -2386,8 +2386,7 @@ LayerBackwardOutputs ComputeLayerBackwardStatic(
     mlir::stablehlo::DotDimensionNumbersAttr bwd_weight_dot_dims,
     mlir::stablehlo::DotDimensionNumbersAttr grad_w_dot_dims,
     const int64_t seq_len, const int64_t batch, const int64_t hidden,
-    const int64_t in_dim, const int64_t out_h, ToOutFn to_out,
-    std::optional<mlir::MlirOp> w_hr,
+    const int64_t in_dim, const int64_t out_h, std::optional<mlir::MlirOp> w_hr,
     std::optional<mlir::stablehlo::DotDimensionNumbersAttr> bwd_hr_dot_dims,
     const bool batch_first, mlir::stablehlo::Precision precision) {
   const int64_t concat_dim = batch_first ? 1 : 0;
@@ -2442,9 +2441,9 @@ LayerBackwardOutputs ComputeLayerBackwardStatic(
   }
 
   mlir::MlirOp grad_h0_layer =
-      mlir::stablehlo::Reshape(to_out(delta_h_rec), {1, batch, out_h});
+      mlir::stablehlo::Reshape(delta_h_rec, {1, batch, out_h});
   mlir::MlirOp grad_c0_layer =
-      mlir::stablehlo::Reshape(to_out(delta_c_next), {1, batch, hidden});
+      mlir::stablehlo::Reshape(delta_c_next, {1, batch, hidden});
 
   mlir::MlirOp delta_pre_seq = ConcatDim(builder, delta_pre_steps, concat_dim);
   mlir::MlirOp delta_pre_2d =
@@ -2482,8 +2481,7 @@ LayerBackwardOutputs ComputeLayerBackwardStatic(
   if (has_biases) {
     mlir::MlirOp grad_b_clumped = mlir::stablehlo::Reduce(
         builder, delta_pre_seq, zero_const, sum_reduce_builder, {0, 1})[0];
-    mlir::MlirOp grad_b = UnclumpBias3H(builder, grad_b_clumped, hidden);
-    grad_bias = to_out(grad_b);
+    grad_bias = UnclumpBias3H(builder, grad_b_clumped, hidden);
   }
 
   std::optional<mlir::MlirOp> grad_w_hr;
@@ -2494,13 +2492,12 @@ LayerBackwardOutputs ComputeLayerBackwardStatic(
     mlir::MlirOp r_seq = ConcatDim(builder, r_steps, concat_dim);
     mlir::MlirOp r_2d =
         mlir::stablehlo::Reshape(r_seq, {seq_len * batch, hidden});
-    mlir::MlirOp grad_w_hr_val = MixedPrecisionDotGeneral(
-        delta_h_2d, r_2d, grad_w_dot_dims, acc_dtype, out_dtype, precision);
-    grad_w_hr = to_out(grad_w_hr_val);
+    grad_w_hr = MixedPrecisionDotGeneral(delta_h_2d, r_2d, grad_w_dot_dims,
+                                         acc_dtype, out_dtype, precision);
   }
 
-  return {grad_x_layer,      grad_h0_layer, grad_c0_layer, to_out(grad_w_ih),
-          to_out(grad_w_hh), grad_bias,     grad_w_hr};
+  return {grad_x_layer, grad_h0_layer, grad_c0_layer, grad_w_ih,
+          grad_w_hh,    grad_bias,     grad_w_hr};
 }
 
 // Chunked streaming helper for unidirectional LSTM backward pass (seq_len >=
@@ -2522,7 +2519,7 @@ LayerBackwardOutputs ComputeLayerBackwardStatic(
 // kLstmUnrollFactor)
 //    upfront at sequence boundary t = seq_len - 1 down to chunked_steps,
 //    initializing the loop carry states.
-template <typename ToOutFn, typename ReduceBuilderFn>
+template <typename ReduceBuilderFn>
 LayerBackwardOutputs ComputeLayerBackwardChunked(
     mlir::MlirBuilder& builder, const LayerForwardState& layer_state,
     mlir::MlirOp grad_x_curr, mlir::MlirOp grad_hy_l, mlir::MlirOp grad_cy_l,
@@ -2531,8 +2528,7 @@ LayerBackwardOutputs ComputeLayerBackwardChunked(
     mlir::stablehlo::DotDimensionNumbersAttr bwd_weight_dot_dims,
     mlir::stablehlo::DotDimensionNumbersAttr grad_w_dot_dims,
     const int64_t seq_len, const int64_t batch, const int64_t hidden,
-    const int64_t in_dim, const int64_t out_h, ToOutFn to_out,
-    std::optional<mlir::MlirOp> w_hr,
+    const int64_t in_dim, const int64_t out_h, std::optional<mlir::MlirOp> w_hr,
     std::optional<mlir::stablehlo::DotDimensionNumbersAttr> bwd_hr_dot_dims,
     const bool batch_first, mlir::stablehlo::Precision precision) {
   const int64_t concat_dim = batch_first ? 1 : 0;
@@ -2947,9 +2943,9 @@ LayerBackwardOutputs ComputeLayerBackwardChunked(
   }
 
   mlir::MlirOp grad_h0_layer =
-      mlir::stablehlo::Reshape(to_out(final_delta_h_rec), {1, batch, out_h});
+      mlir::stablehlo::Reshape(final_delta_h_rec, {1, batch, out_h});
   mlir::MlirOp grad_c0_layer =
-      mlir::stablehlo::Reshape(to_out(final_delta_c_next), {1, batch, hidden});
+      mlir::stablehlo::Reshape(final_delta_c_next, {1, batch, hidden});
 
   mlir::MlirOp grad_w_ih =
       UnclumpWeight3H(builder, final_grad_w_ih_clumped, hidden, in_dim);
@@ -2960,18 +2956,16 @@ LayerBackwardOutputs ComputeLayerBackwardChunked(
   std::optional<mlir::MlirOp> grad_bias;
   if (has_biases) {
     mlir::MlirOp final_grad_b_clumped(builder, while_op.getResult(res_idx++));
-    mlir::MlirOp grad_b = UnclumpBias3H(builder, final_grad_b_clumped, hidden);
-    grad_bias = to_out(grad_b);
+    grad_bias = UnclumpBias3H(builder, final_grad_b_clumped, hidden);
   }
 
   std::optional<mlir::MlirOp> grad_w_hr;
   if (w_hr.has_value()) {
-    mlir::MlirOp final_grad_w_hr(builder, while_op.getResult(res_idx++));
-    grad_w_hr = to_out(final_grad_w_hr);
+    grad_w_hr = mlir::MlirOp(builder, while_op.getResult(res_idx++));
   }
 
-  return {grad_x_layer,      grad_h0_layer, grad_c0_layer, to_out(grad_w_ih),
-          to_out(grad_w_hh), grad_bias,     grad_w_hr};
+  return {grad_x_layer, grad_h0_layer, grad_c0_layer, grad_w_ih,
+          grad_w_hh,    grad_bias,     grad_w_hr};
 }
 
 // Evaluates backward recurrence through time (BPTT) for a single unidirectional
@@ -2989,7 +2983,7 @@ LayerBackwardOutputs ComputeLayerBackwardChunked(
 //    - For standard sequences (seq_len >= kLstmUnrollFactor), calls
 //    ComputeLayerBackwardChunked
 //      for streaming memory reduction.
-template <typename ToOutFn, typename ReduceBuilderFn>
+template <typename ReduceBuilderFn>
 LayerBackwardOutputs ComputeLayerBackward(
     mlir::MlirBuilder& builder, const LayerForwardState& layer_state,
     mlir::MlirOp grad_x_curr, mlir::MlirOp grad_hy_l, mlir::MlirOp grad_cy_l,
@@ -2998,8 +2992,7 @@ LayerBackwardOutputs ComputeLayerBackward(
     mlir::stablehlo::DotDimensionNumbersAttr bwd_weight_dot_dims,
     mlir::stablehlo::DotDimensionNumbersAttr grad_w_dot_dims,
     const int64_t seq_len, const int64_t batch, const int64_t hidden,
-    const int64_t in_dim, const int64_t out_h, ToOutFn to_out,
-    std::optional<mlir::MlirOp> w_hr,
+    const int64_t in_dim, const int64_t out_h, std::optional<mlir::MlirOp> w_hr,
     std::optional<mlir::stablehlo::DotDimensionNumbersAttr> bwd_hr_dot_dims,
     const bool batch_first, mlir::stablehlo::Precision precision) {
   mlir::MlirOp w_ih_clumped = ClumpWeight3H(builder, w_ih, hidden, in_dim);
@@ -3010,14 +3003,14 @@ LayerBackwardOutputs ComputeLayerBackward(
         builder, layer_state, grad_x_curr, grad_hy_l, grad_cy_l, w_ih_clumped,
         w_hh_clumped, has_biases, zero_const, sum_reduce_builder,
         bwd_weight_dot_dims, grad_w_dot_dims, seq_len, batch, hidden, in_dim,
-        out_h, to_out, w_hr, bwd_hr_dot_dims, batch_first, precision);
+        out_h, w_hr, bwd_hr_dot_dims, batch_first, precision);
   }
 
   return ComputeLayerBackwardChunked(
       builder, layer_state, grad_x_curr, grad_hy_l, grad_cy_l, w_ih_clumped,
       w_hh_clumped, has_biases, zero_const, sum_reduce_builder,
       bwd_weight_dot_dims, grad_w_dot_dims, seq_len, batch, hidden, in_dim,
-      out_h, to_out, w_hr, bwd_hr_dot_dims, batch_first, precision);
+      out_h, w_hr, bwd_hr_dot_dims, batch_first, precision);
 }
 
 // Evaluates backward recurrence through time (BPTT) for a multi-layer
@@ -3037,7 +3030,7 @@ LayerBackwardOutputs ComputeLayerBackward(
 // - All intermediate [T, B, out_h] sequence gradient buffers between layers are
 //   completely eliminated, reducing peak HBM usage and enabling fine-grained
 //   inter-layer execution overlap on the TPU.
-template <typename ToOutFn, typename ReduceBuilderFn>
+template <typename ReduceBuilderFn>
 MultiLayerBackwardOutputs BuildLstmPipelinedWavefrontBackward(
     mlir::MlirBuilder& builder,
     absl::Span<const LayerForwardState> layer_states,
@@ -3050,7 +3043,7 @@ MultiLayerBackwardOutputs BuildLstmPipelinedWavefrontBackward(
     mlir::stablehlo::DotDimensionNumbersAttr grad_w_dot_dims,
     const int64_t seq_len, const int64_t batch, const int64_t hidden,
     const int64_t input_size, const int64_t out_h, const int64_t num_layers,
-    ToOutFn to_out, absl::Span<const std::optional<mlir::MlirOp>> w_hr_list,
+    absl::Span<const std::optional<mlir::MlirOp>> w_hr_list,
     std::optional<mlir::stablehlo::DotDimensionNumbersAttr> bwd_hr_dot_dims,
     const bool has_dropout, const double dropout,
     absl::Span<const mlir::MlirOp> dropout_masks, const bool batch_first,
@@ -3605,22 +3598,22 @@ MultiLayerBackwardOutputs BuildLstmPipelinedWavefrontBackward(
                                          while_op.getResult(res_idx++));
 
     result.grad_h0[l] =
-        mlir::stablehlo::Reshape(to_out(final_delta_h_rec), {1, batch, out_h});
-    result.grad_c0[l] = mlir::stablehlo::Reshape(to_out(final_delta_c_next),
-                                                 {1, batch, hidden});
-    result.grad_w_ih[l] = to_out(
-        UnclumpWeight3H(builder, final_grad_w_ih_clumped, hidden, in_dim_l));
-    result.grad_w_hh[l] = to_out(
-        UnclumpWeight3H(builder, final_grad_w_hh_clumped, hidden, out_h));
+        mlir::stablehlo::Reshape(final_delta_h_rec, {1, batch, out_h});
+    result.grad_c0[l] =
+        mlir::stablehlo::Reshape(final_delta_c_next, {1, batch, hidden});
+    result.grad_w_ih[l] =
+        UnclumpWeight3H(builder, final_grad_w_ih_clumped, hidden, in_dim_l);
+    result.grad_w_hh[l] =
+        UnclumpWeight3H(builder, final_grad_w_hh_clumped, hidden, out_h);
 
     if (has_biases) {
       mlir::MlirOp final_grad_b_clumped(builder, while_op.getResult(res_idx++));
       result.grad_bias[l] =
-          to_out(UnclumpBias3H(builder, final_grad_b_clumped, hidden));
+          UnclumpBias3H(builder, final_grad_b_clumped, hidden);
     }
     if (is_projected) {
-      mlir::MlirOp final_grad_w_hr(builder, while_op.getResult(res_idx++));
-      result.grad_w_hr[l] = to_out(final_grad_w_hr);
+      result.grad_w_hr[l] =
+          mlir::MlirOp(builder, while_op.getResult(res_idx++));
     }
   }
 
@@ -3655,7 +3648,7 @@ MultiLayerBackwardOutputs BuildLstmPipelinedWavefrontBackward(
 // execution concurrency.
 // - Performs full-sequence 2D dot generals to accumulate W_ih and W_hh
 // gradients across all steps.
-template <typename ToOutFn, typename ReduceBuilderFn>
+template <typename ReduceBuilderFn>
 LstmBidirLayerBackwardOutputs ComputeBidirLayerBackwardStatic(
     mlir::MlirBuilder& builder, const LayerForwardState& state_fwd,
     const LayerForwardState& state_rev, mlir::MlirOp grad_y_fwd,
@@ -3668,7 +3661,7 @@ LstmBidirLayerBackwardOutputs ComputeBidirLayerBackwardStatic(
     mlir::stablehlo::DotDimensionNumbersAttr bwd_weight_dot_dims,
     mlir::stablehlo::DotDimensionNumbersAttr grad_w_dot_dims,
     const int64_t seq_len, const int64_t batch, const int64_t hidden,
-    const int64_t in_dim, const int64_t out_h, ToOutFn to_out,
+    const int64_t in_dim, const int64_t out_h,
     std::optional<mlir::MlirOp> w_hr_fwd, std::optional<mlir::MlirOp> w_hr_rev,
     std::optional<mlir::stablehlo::DotDimensionNumbersAttr> bwd_hr_dot_dims,
     const bool batch_first, mlir::stablehlo::Precision precision) {
@@ -3774,13 +3767,13 @@ LstmBidirLayerBackwardOutputs ComputeBidirLayerBackwardStatic(
   // Final initial state gradients: delta_h_rec (at t=0) -> grad_h0,
   // delta_c_next (at t=0) -> grad_c0.
   mlir::MlirOp grad_h0_fwd =
-      mlir::stablehlo::Reshape(to_out(delta_h_rec_fwd), {1, batch, out_h});
+      mlir::stablehlo::Reshape(delta_h_rec_fwd, {1, batch, out_h});
   mlir::MlirOp grad_c0_fwd =
-      mlir::stablehlo::Reshape(to_out(delta_c_next_fwd), {1, batch, hidden});
+      mlir::stablehlo::Reshape(delta_c_next_fwd, {1, batch, hidden});
   mlir::MlirOp grad_h0_rev =
-      mlir::stablehlo::Reshape(to_out(delta_h_rec_rev), {1, batch, out_h});
+      mlir::stablehlo::Reshape(delta_h_rec_rev, {1, batch, out_h});
   mlir::MlirOp grad_c0_rev =
-      mlir::stablehlo::Reshape(to_out(delta_c_next_rev), {1, batch, hidden});
+      mlir::stablehlo::Reshape(delta_c_next_rev, {1, batch, hidden});
 
   // Concatenate pre-activation adjoints across time and flatten to 2D for
   // batched GEMMs.
@@ -3866,11 +3859,11 @@ LstmBidirLayerBackwardOutputs ComputeBidirLayerBackwardStatic(
   if (has_biases) {
     mlir::MlirOp grad_b_fwd_clumped = mlir::stablehlo::Reduce(
         builder, delta_pre_seq_fwd, zero_const, sum_reduce_builder, {0, 1})[0];
-    grad_bias_fwd = to_out(UnclumpBias3H(builder, grad_b_fwd_clumped, hidden));
+    grad_bias_fwd = UnclumpBias3H(builder, grad_b_fwd_clumped, hidden);
 
     mlir::MlirOp grad_b_rev_clumped = mlir::stablehlo::Reduce(
         builder, delta_pre_seq_rev, zero_const, sum_reduce_builder, {0, 1})[0];
-    grad_bias_rev = to_out(UnclumpBias3H(builder, grad_b_rev_clumped, hidden));
+    grad_bias_rev = UnclumpBias3H(builder, grad_b_rev_clumped, hidden);
   }
 
   // Projection weight gradients (if enabled).
@@ -3884,9 +3877,9 @@ LstmBidirLayerBackwardOutputs ComputeBidirLayerBackwardStatic(
     mlir::MlirOp r_seq_fwd = ConcatDim(builder, r_steps_fwd, concat_dim);
     mlir::MlirOp r_2d_fwd =
         mlir::stablehlo::Reshape(r_seq_fwd, {seq_len * batch, hidden});
-    grad_w_hr_fwd = to_out(MixedPrecisionDotGeneral(delta_h_2d_fwd, r_2d_fwd,
-                                                    grad_w_dot_dims, acc_dtype,
-                                                    out_dtype, precision));
+    grad_w_hr_fwd =
+        MixedPrecisionDotGeneral(delta_h_2d_fwd, r_2d_fwd, grad_w_dot_dims,
+                                 acc_dtype, out_dtype, precision);
 
     mlir::MlirOp delta_h_seq_rev =
         ConcatDim(builder, delta_h_steps_rev, concat_dim);
@@ -3895,15 +3888,14 @@ LstmBidirLayerBackwardOutputs ComputeBidirLayerBackwardStatic(
     mlir::MlirOp r_seq_rev = ConcatDim(builder, r_steps_rev, concat_dim);
     mlir::MlirOp r_2d_rev =
         mlir::stablehlo::Reshape(r_seq_rev, {seq_len * batch, hidden});
-    grad_w_hr_rev = to_out(MixedPrecisionDotGeneral(delta_h_2d_rev, r_2d_rev,
-                                                    grad_w_dot_dims, acc_dtype,
-                                                    out_dtype, precision));
+    grad_w_hr_rev =
+        MixedPrecisionDotGeneral(delta_h_2d_rev, r_2d_rev, grad_w_dot_dims,
+                                 acc_dtype, out_dtype, precision);
   }
 
-  return {grad_x_layer,          grad_h0_fwd,           grad_c0_fwd,
-          grad_h0_rev,           grad_c0_rev,           to_out(grad_w_ih_fwd),
-          to_out(grad_w_hh_fwd), to_out(grad_w_ih_rev), to_out(grad_w_hh_rev),
-          grad_bias_fwd,         grad_bias_rev,         grad_w_hr_fwd,
+  return {grad_x_layer,  grad_h0_fwd,   grad_c0_fwd,   grad_h0_rev,
+          grad_c0_rev,   grad_w_ih_fwd, grad_w_hh_fwd, grad_w_ih_rev,
+          grad_w_hh_rev, grad_bias_fwd, grad_bias_rev, grad_w_hr_fwd,
           grad_w_hr_rev};
 }
 
@@ -3930,7 +3922,7 @@ LstmBidirLayerBackwardOutputs ComputeBidirLayerBackwardStatic(
 // kLstmUnrollFactor)
 //    upfront at sequence boundary t = seq_len - 1 down to chunked_steps,
 //    initializing the loop carry states.
-template <typename ToOutFn, typename ReduceBuilderFn>
+template <typename ReduceBuilderFn>
 LstmBidirLayerBackwardOutputs ComputeBidirLayerBackwardChunked(
     mlir::MlirBuilder& builder, const LayerForwardState& state_fwd,
     const LayerForwardState& state_rev, mlir::MlirOp grad_y_fwd,
@@ -3943,7 +3935,7 @@ LstmBidirLayerBackwardOutputs ComputeBidirLayerBackwardChunked(
     mlir::stablehlo::DotDimensionNumbersAttr bwd_weight_dot_dims,
     mlir::stablehlo::DotDimensionNumbersAttr grad_w_dot_dims,
     const int64_t seq_len, const int64_t batch, const int64_t hidden,
-    const int64_t in_dim, const int64_t out_h, ToOutFn to_out,
+    const int64_t in_dim, const int64_t out_h,
     std::optional<mlir::MlirOp> w_hr_fwd, std::optional<mlir::MlirOp> w_hr_rev,
     std::optional<mlir::stablehlo::DotDimensionNumbersAttr> bwd_hr_dot_dims,
     const bool batch_first, mlir::stablehlo::Precision precision) {
@@ -4646,14 +4638,14 @@ LstmBidirLayerBackwardOutputs ComputeBidirLayerBackwardChunked(
   mlir::MlirOp grad_x_layer =
       mlir::stablehlo::Add(grad_x_layer_fwd, grad_x_from_rev);
 
-  mlir::MlirOp grad_h0_fwd = mlir::stablehlo::Reshape(
-      to_out(final_delta_h_rec_fwd), {1, batch, out_h});
-  mlir::MlirOp grad_c0_fwd = mlir::stablehlo::Reshape(
-      to_out(final_delta_c_next_fwd), {1, batch, hidden});
-  mlir::MlirOp grad_h0_rev = mlir::stablehlo::Reshape(
-      to_out(final_delta_h_rec_rev), {1, batch, out_h});
-  mlir::MlirOp grad_c0_rev = mlir::stablehlo::Reshape(
-      to_out(final_delta_c_next_rev), {1, batch, hidden});
+  mlir::MlirOp grad_h0_fwd =
+      mlir::stablehlo::Reshape(final_delta_h_rec_fwd, {1, batch, out_h});
+  mlir::MlirOp grad_c0_fwd =
+      mlir::stablehlo::Reshape(final_delta_c_next_fwd, {1, batch, hidden});
+  mlir::MlirOp grad_h0_rev =
+      mlir::stablehlo::Reshape(final_delta_h_rec_rev, {1, batch, out_h});
+  mlir::MlirOp grad_c0_rev =
+      mlir::stablehlo::Reshape(final_delta_c_next_rev, {1, batch, hidden});
 
   mlir::MlirOp grad_w_ih_fwd =
       UnclumpWeight3H(builder, final_grad_w_ih_fwd, hidden, in_dim);
@@ -4670,23 +4662,20 @@ LstmBidirLayerBackwardOutputs ComputeBidirLayerBackwardChunked(
   if (has_biases) {
     mlir::MlirOp final_grad_b_fwd(builder, while_op.getResult(res_idx++));
     mlir::MlirOp final_grad_b_rev(builder, while_op.getResult(res_idx++));
-    grad_bias_fwd = to_out(UnclumpBias3H(builder, final_grad_b_fwd, hidden));
-    grad_bias_rev = to_out(UnclumpBias3H(builder, final_grad_b_rev, hidden));
+    grad_bias_fwd = UnclumpBias3H(builder, final_grad_b_fwd, hidden);
+    grad_bias_rev = UnclumpBias3H(builder, final_grad_b_rev, hidden);
   }
 
   std::optional<mlir::MlirOp> grad_w_hr_fwd;
   std::optional<mlir::MlirOp> grad_w_hr_rev;
   if (w_hr_fwd.has_value()) {
-    mlir::MlirOp final_grad_w_hr_fwd(builder, while_op.getResult(res_idx++));
-    mlir::MlirOp final_grad_w_hr_rev(builder, while_op.getResult(res_idx++));
-    grad_w_hr_fwd = to_out(final_grad_w_hr_fwd);
-    grad_w_hr_rev = to_out(final_grad_w_hr_rev);
+    grad_w_hr_fwd = mlir::MlirOp(builder, while_op.getResult(res_idx++));
+    grad_w_hr_rev = mlir::MlirOp(builder, while_op.getResult(res_idx++));
   }
 
-  return {grad_x_layer,          grad_h0_fwd,           grad_c0_fwd,
-          grad_h0_rev,           grad_c0_rev,           to_out(grad_w_ih_fwd),
-          to_out(grad_w_hh_fwd), to_out(grad_w_ih_rev), to_out(grad_w_hh_rev),
-          grad_bias_fwd,         grad_bias_rev,         grad_w_hr_fwd,
+  return {grad_x_layer,  grad_h0_fwd,   grad_c0_fwd,   grad_h0_rev,
+          grad_c0_rev,   grad_w_ih_fwd, grad_w_hh_fwd, grad_w_ih_rev,
+          grad_w_hh_rev, grad_bias_fwd, grad_bias_rev, grad_w_hr_fwd,
           grad_w_hr_rev};
 }
 
@@ -4705,7 +4694,7 @@ LstmBidirLayerBackwardOutputs ComputeBidirLayerBackwardChunked(
 //    - For standard sequences (seq_len >= kLstmUnrollFactor), calls
 //    ComputeBidirLayerBackwardChunked
 //      for streaming memory reduction and concurrent execution.
-template <typename ToOutFn, typename ReduceBuilderFn>
+template <typename ReduceBuilderFn>
 LstmBidirLayerBackwardOutputs ComputeBidirLayerBackward(
     mlir::MlirBuilder& builder, const LayerForwardState& state_fwd,
     const LayerForwardState& state_rev, mlir::MlirOp grad_y_fwd,
@@ -4717,7 +4706,7 @@ LstmBidirLayerBackwardOutputs ComputeBidirLayerBackward(
     mlir::stablehlo::DotDimensionNumbersAttr bwd_weight_dot_dims,
     mlir::stablehlo::DotDimensionNumbersAttr grad_w_dot_dims,
     const int64_t seq_len, const int64_t batch, const int64_t hidden,
-    const int64_t in_dim, const int64_t out_h, ToOutFn to_out,
+    const int64_t in_dim, const int64_t out_h,
     std::optional<mlir::MlirOp> w_hr_fwd, std::optional<mlir::MlirOp> w_hr_rev,
     std::optional<mlir::stablehlo::DotDimensionNumbersAttr> bwd_hr_dot_dims,
     const bool batch_first, mlir::stablehlo::Precision precision) {
@@ -4739,7 +4728,7 @@ LstmBidirLayerBackwardOutputs ComputeBidirLayerBackward(
         grad_hy_fwd, grad_cy_fwd, grad_hy_rev, grad_cy_rev, w_ih_fwd_clumped,
         w_hh_fwd_clumped, w_ih_rev_clumped, w_hh_rev_clumped, has_biases,
         zero_const, sum_reduce_builder, bwd_weight_dot_dims, grad_w_dot_dims,
-        seq_len, batch, hidden, in_dim, out_h, to_out, w_hr_fwd, w_hr_rev,
+        seq_len, batch, hidden, in_dim, out_h, w_hr_fwd, w_hr_rev,
         bwd_hr_dot_dims, batch_first, precision);
   }
 
@@ -4748,7 +4737,7 @@ LstmBidirLayerBackwardOutputs ComputeBidirLayerBackward(
       grad_hy_fwd, grad_cy_fwd, grad_hy_rev, grad_cy_rev, w_ih_fwd_clumped,
       w_hh_fwd_clumped, w_ih_rev_clumped, w_hh_rev_clumped, has_biases,
       zero_const, sum_reduce_builder, bwd_weight_dot_dims, grad_w_dot_dims,
-      seq_len, batch, hidden, in_dim, out_h, to_out, w_hr_fwd, w_hr_rev,
+      seq_len, batch, hidden, in_dim, out_h, w_hr_fwd, w_hr_rev,
       bwd_hr_dot_dims, batch_first, precision);
 }
 
@@ -5550,8 +5539,8 @@ absl::StatusOr<std::vector<DeviceBufferRef>> LstmInputBackwardImpl(
               grad_cy_list, w_ih_clumped_list, w_hh_clumped_list, has_biases,
               zero_const, sum_reduce_builder, bwd_weight_dot_dims,
               grad_w_dot_dims, seq_len, batch, hidden, input_size, out_h,
-              num_layers, to_out, w_hr_list, bwd_hr_dot_dims, has_dropout,
-              dropout, dropout_masks, batch_first, current_precision);
+              num_layers, w_hr_list, bwd_hr_dot_dims, has_dropout, dropout,
+              dropout_masks, batch_first, current_precision);
 
       for (int64_t l = 0; l < num_layers; ++l) {
         const size_t p_fwd_base = l * params_per_direction;
@@ -5594,7 +5583,7 @@ absl::StatusOr<std::vector<DeviceBufferRef>> LstmInputBackwardImpl(
               builder, layer_states_fwd[l], grad_x_curr, grad_hy_fwd,
               grad_cy_fwd, w_ih_fwd, w_hh_fwd, has_biases, zero_const,
               sum_reduce_builder, bwd_weight_dot_dims, grad_w_dot_dims, seq_len,
-              batch, hidden, in_dim, out_h, to_out, w_hr_fwd, bwd_hr_dot_dims,
+              batch, hidden, in_dim, out_h, w_hr_fwd, bwd_hr_dot_dims,
               batch_first, current_precision);
 
           all_grad_h0[l * num_directions] = bwd_fwd.grad_h0_layer;
@@ -5654,9 +5643,8 @@ absl::StatusOr<std::vector<DeviceBufferRef>> LstmInputBackwardImpl(
               grad_y_rev_time_reversed, grad_hy_fwd, grad_cy_fwd, grad_hy_rev,
               grad_cy_rev, w_ih_fwd, w_hh_fwd, w_ih_rev, w_hh_rev, has_biases,
               zero_const, sum_reduce_builder, bwd_weight_dot_dims,
-              grad_w_dot_dims, seq_len, batch, hidden, in_dim, out_h, to_out,
-              w_hr_fwd, w_hr_rev, bwd_hr_dot_dims, batch_first,
-              current_precision);
+              grad_w_dot_dims, seq_len, batch, hidden, in_dim, out_h, w_hr_fwd,
+              w_hr_rev, bwd_hr_dot_dims, batch_first, current_precision);
 
           all_grad_h0[l * num_directions] = bwd_bidir.grad_h0_fwd;
           all_grad_c0[l * num_directions] = bwd_bidir.grad_c0_fwd;
@@ -6286,8 +6274,7 @@ AtenLstmInputBackward(const at::Tensor& grad_output, const at::Tensor& grad_hy,
 // - When activation caching is enabled, forward activations are cached on TPU
 // and reused directly in backward, completely skipping forward recomputation.
 // - In `backward()`, incoming adjoints (grad_output, grad_hy, grad_cy) are
-// passed
-//   directly to `AtenLstmInputBackward` to compute gradients on TPU in
+//   passed to `tpu::_lstm_input_backward` to compute gradients on TPU in
 //   StableHLO.
 // - Gradients are returned in the precise sequence matching `forward()`
 // parameters,
@@ -6456,36 +6443,26 @@ void ValidateLstmInputsOrThrow(const at::Tensor& input, const at::TensorList hx,
   }
 }
 
-bool HasAnyForwardGrad(const at::Tensor& input, const at::TensorList hx,
-                       const at::TensorList params) {
-  if (input._fw_grad(/*level=*/0).defined()) {
+// Returns true if `aten::lstm.input` must run PyTorch's composite
+// `at::native::lstm`: `functorch` transforms (e.g. `torch.func.grad`) and
+// forward-mode AD don't support the C++ `AtenLstmInputAutograd`, and Python
+// wrapper subclasses (e.g. `DTensor`) must see the composite's ATen ops.
+bool ShouldFallbackToNativeLstm(const at::Tensor& input,
+                                const at::TensorList hx,
+                                const at::TensorList params) {
+  if (IsFunctorchActive() || IsPythonWrapperSubclass(input) ||
+      torch::autograd::isFwGradDefined(input) ||
+      torch::autograd::isFwGradDefinedTensorList(hx) ||
+      torch::autograd::isFwGradDefinedTensorList(params)) {
     return true;
   }
   for (const at::Tensor& h : hx) {
-    if (h._fw_grad(/*level=*/0).defined()) {
+    if (IsPythonWrapperSubclass(h)) {
       return true;
     }
   }
   for (const at::Tensor& p : params) {
-    if (p._fw_grad(/*level=*/0).defined()) {
-      return true;
-    }
-  }
-  return false;
-}
-
-bool HasAnyRequiresGrad(const at::Tensor& input, const at::TensorList hx,
-                        const at::TensorList params) {
-  if (input.requires_grad()) {
-    return true;
-  }
-  for (const at::Tensor& h : hx) {
-    if (h.requires_grad()) {
-      return true;
-    }
-  }
-  for (const at::Tensor& p : params) {
-    if (p.requires_grad()) {
+    if (IsPythonWrapperSubclass(p)) {
       return true;
     }
   }
@@ -6647,13 +6624,11 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenLstmInputAutogradKernel(
     const at::TensorList params, const bool has_biases,
     const int64_t num_layers, const double dropout, const bool train,
     const bool bidirectional, const bool batch_first) {
-  if (HasAnyForwardGrad(input, hx, params) ||
-      c10::impl::tls_is_dispatch_key_included(
-          c10::DispatchKey::FuncTorchBatched)) {
+  if (ShouldFallbackToNativeLstm(input, hx, params)) {
     return at::native::lstm(input, hx, params, has_biases, num_layers, dropout,
                             train, bidirectional, batch_first);
   }
-  if (c10::GradMode::is_enabled() && HasAnyRequiresGrad(input, hx, params)) {
+  if (torch::autograd::compute_requires_grad(input, hx, params)) {
     auto results = AtenLstmInputAutograd::apply(input, hx, params, has_biases,
                                                 num_layers, dropout, train,
                                                 bidirectional, batch_first);
@@ -6675,12 +6650,6 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenLstmInput(
     const at::TensorList params, const bool has_biases,
     const int64_t num_layers, const double dropout, const bool train,
     const bool bidirectional, const bool batch_first) {
-  if (c10::GradMode::is_enabled() && HasAnyRequiresGrad(input, hx, params)) {
-    auto results = AtenLstmInputAutograd::apply(input, hx, params, has_biases,
-                                                num_layers, dropout, train,
-                                                bidirectional, batch_first);
-    return {results[0], results[1], results[2]};
-  }
   return AtenLstmInputForward(input, hx, params, has_biases, num_layers,
                               dropout, train, bidirectional, batch_first);
 }
