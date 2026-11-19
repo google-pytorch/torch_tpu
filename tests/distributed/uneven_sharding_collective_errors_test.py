@@ -14,7 +14,6 @@
 
 import os
 from typing import Final
-from unittest import mock
 
 from absl.testing import absltest
 from absl.testing import parameterized
@@ -38,7 +37,6 @@ def _replicate_tensor(
     tensor_size: int,
     compiled: bool,
     ndims: int = 1,
-    pass_shape_stride: bool = False,
     trailing_dim_size: int = 4,
 ) -> None:
   """Redistributes a tensor from shard to replicate."""
@@ -48,22 +46,12 @@ def _replicate_tensor(
   device_mesh = dt.init_device_mesh("tpu", (world_size,))
 
   trailing_dims = [trailing_dim_size] * (ndims - 1)
-  global_shape = (
-      torch.Size([tensor_size] + trailing_dims) if pass_shape_stride else None
-  )
-  global_stride = (
-      torch.empty(global_shape, device="meta").stride()
-      if pass_shape_stride
-      else None
-  )
 
   def shard_and_redistribute(x):
     dtensor = dt.DTensor.from_local(
         x,
         device_mesh=device_mesh,
         placements=[dt.Shard(0)],
-        shape=global_shape,
-        stride=global_stride,
     )
     return dtensor.redistribute(device_mesh, [dt.Replicate()]).to_local()
 
@@ -85,13 +73,15 @@ def _replicate_tensor(
 
   out = output.cpu()
 
-  if pass_shape_stride or rank == 0:
+  if rank == 0:
     expected_shape = [tensor_size] + trailing_dims
     expected = torch.ones(*expected_shape, dtype=torch.float32)
     utils.assert_close(out, expected)
 
 
-class UnevenShardingErrorsTest(seed_test_utils.MultiProcessRepeatableTest):
+class UnevenShardingCollectiveErrorsTest(
+    seed_test_utils.MultiProcessRepeatableTest
+):
   _world_size = distributed_utils.get_tpu_device_count()
   # Fewer rows than ranks, so the upper half of the ranks get empty shards.
   _small_size = _world_size // 2
@@ -158,38 +148,7 @@ class UnevenShardingErrorsTest(seed_test_utils.MultiProcessRepeatableTest):
           tensor_size=tensor_size,
           compiled=compiled,
           ndims=ndims,
-          pass_shape_stride=False,
       )
-
-  @parameterized.named_parameters(
-      ("1d_without_shape_stride_small", 1, _small_size, False),
-      ("1d_with_shape_stride_small", 1, _small_size, True),
-      ("1d_without_shape_stride_uneven", 1, _uneven_size, False),
-      ("1d_with_shape_stride_uneven", 1, _uneven_size, True),
-      ("2d_without_shape_stride_small", 2, _small_size, False),
-      ("2d_with_shape_stride_small", 2, _small_size, True),
-      ("2d_without_shape_stride_uneven", 2, _uneven_size, False),
-      ("2d_with_shape_stride_uneven", 2, _uneven_size, True),
-  )
-  def test_replicate_tensor_debug_eager(
-      self, ndims, tensor_size, pass_shape_stride
-  ):
-    def run_fn():
-      with mock.patch.dict(os.environ, {"TORCH_TPU_ENABLE_DEBUG_CHECKS": "1"}):
-        distributed_utils.dist_run(
-            nproc_per_node=self._world_size,
-            fn=_replicate_tensor,
-            tensor_size=tensor_size,
-            compiled=False,
-            ndims=ndims,
-            pass_shape_stride=pass_shape_stride,
-        )
-
-    if pass_shape_stride:
-      run_fn()
-    else:
-      with self.assertRaisesRegex(Exception, "Inconsistent tensor metadata"):
-        run_fn()
 
 
 if __name__ == "__main__":

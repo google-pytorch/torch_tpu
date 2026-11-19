@@ -741,9 +741,9 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
-    name = "uneven_sharding_errors_test",
+    name = "uneven_sharding_collective_errors_test",
     timeout = "long",
-    srcs = ["uneven_sharding_errors_test.py"],
+    srcs = ["uneven_sharding_collective_errors_test.py"],
     args = if_oss(
         [],
         [
@@ -763,10 +763,13 @@ torch_tpu_py_test(
                 "--xla_tpu_debug_sflag_wait_timeout_ms=10000",
             ]),
             "TORCH_DISABLE_ADDR2LINE": "1",
+            "TORCH_TPU_ENABLE_DEBUG_CHECKS": "0",
         },
-        {},
+        {
+            "TORCH_TPU_ENABLE_DEBUG_CHECKS": "0",
+        },
     ),
-    shard_count = 8,
+    shard_count = 4,
     tags = if_oss(
         ["exclusive"],
         [],
@@ -789,7 +792,9 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "uneven_sharding_test",
     srcs = ["uneven_sharding_test.py"],
-    shard_count = 2,
+    env = {
+        "TORCH_TPU_ENABLE_DEBUG_CHECKS": "0",
+    },
     tags = if_oss(
         ["exclusive"],
         [],
@@ -798,6 +803,34 @@ torch_tpu_py_test(
         "nomsan",  # Disabled due to b/516945438.
         "notsan",  # Disabled due to b/497035517.
         REQUIRES_V5_MULTI_DEVICE,
+    ],
+    deps = [
+        ":continuous_test_utils",
+        ":distributed_utils",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/distributed:multiprocessing",
+        "//src/torch_tpu/_internal/utils:test_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "uneven_sharding_debug_checks_test",
+    srcs = ["uneven_sharding_test.py"],
+    env = {
+        "TORCH_TPU_ENABLE_DEBUG_CHECKS": "1",
+    },
+    main = "uneven_sharding_test.py",
+    tags = if_oss(
+        ["exclusive"],
+        [],
+    ) + [
+        REQUIRES_V5_MULTI_DEVICE,
+        "noasan",  # Disabled due to b/497035517.
+        "nomsan",  # Disabled due to b/516945438.
+        "notsan",  # Disabled due to b/497035517.
     ],
     deps = [
         ":continuous_test_utils",
