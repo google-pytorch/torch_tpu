@@ -16,7 +16,7 @@
 # yilingyuan
 # zhanyong-wan
 
-load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_library", "torch_tpu_py_test")
+load("//build_files:build_defs.bzl", "if_oss", "torch_tpu_package_end", "torch_tpu_py_library", "torch_tpu_py_test")
 load("//shims/py_rules:py_binary.bzl", "py_binary")
 load("//shims/py_rules:py_library.bzl", "py_library")
 
@@ -149,8 +149,12 @@ torch_tpu_py_test(
     run_on_accelerators = [
         "requires-tpu-v5lite",
         "requires-tpu-v6e",
-        "requires-tpu-v7x",
-    ],
+    ] + if_oss(
+        # TODO(b/587797500): Fails on multi-core-per-chip TPU v7x OSS runners
+        # with 'No TPU devices found after filtering'.
+        [],
+        ["requires-tpu-v7x"],
+    ),
     tags = [
         "nosan",  # *san builds are low-value for accelerator numerics tests.
     ],
