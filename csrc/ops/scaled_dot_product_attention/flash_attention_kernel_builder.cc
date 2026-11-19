@@ -32,7 +32,6 @@
 #include "ATen/core/TensorBase.h"
 #include "ATen/core/grad_mode.h"
 #include "ATen/ops/empty.h"
-#include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
@@ -51,6 +50,7 @@
 #include "csrc/internal/device/vmem_capacity.h"
 #include "csrc/internal/mosaic/kiln/kiln.h"
 #include "csrc/internal/mosaic/kiln_custom_call.h"
+#include "csrc/internal/mosaic/kiln_utils.h"
 #include "csrc/ops/binary.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/precision_context.h"
@@ -444,29 +444,6 @@ mlir::MlirOp PackPhiloxSeedAndOffsetTo4xI32(mlir::MlirOp philox_seed,
       /*dimension=*/0));
 }
 
-kiln::DType ToKilnDType(mlir::ElementType element_type) {
-  switch (element_type) {
-    case mlir::ElementType::PRED:
-      return kiln::bool_;
-    case mlir::ElementType::I8:
-      return kiln::i8;
-    case mlir::ElementType::I16:
-      return kiln::i16;
-    case mlir::ElementType::I32:
-      return kiln::i32;
-    case mlir::ElementType::I64:
-      return kiln::i64;
-    case mlir::ElementType::F16:
-      return kiln::f16;
-    case mlir::ElementType::BF16:
-      return kiln::bf16;
-    case mlir::ElementType::F32:
-      return kiln::f32;
-    default:
-      ABSL_CHECK(false) << "Unsupported element type for Kiln";  // CRASH_OK
-  }
-}
-
 absl::StatusOr<FlashAttnConfig> CreateFlashAttnConfig(
     mlir::MlirOp query, mlir::MlirOp key, mlir::MlirOp value,
     const std::optional<mlir::MlirOp>& attn_bias, bool is_causal,
@@ -506,7 +483,7 @@ absl::StatusOr<FlashAttnConfig> CreateFlashAttnConfig(
   config.return_lse = return_lse;
   TT_ASSIGN_OR_RETURN(const mlir::ElementType element_type,
                       GetElementType(query));
-  config.element_type = ToKilnDType(element_type);
+  TT_ASSIGN_OR_RETURN(config.element_type, ToKilnDType(element_type));
   if (config.element_type == kiln::f32) {
     if (precision ==
         mlir::stablehlo::Precision::HIGHEST) {  // EXPLICIT_PRECISION_OK=sdpa
