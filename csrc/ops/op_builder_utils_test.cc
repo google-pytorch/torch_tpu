@@ -33,6 +33,7 @@
 #include "absl/types/span.h"
 #include "c10/core/DefaultDtype.h"
 #include "c10/util/Exception.h"
+#include "c10/util/StringUtil.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -2847,6 +2848,268 @@ TEST(BuildFillUninitialized, StandardFloatTypesUseNaN) {
   ASSERT_TRUE(dense_attr != nullptr);
   ASSERT_TRUE(dense_attr.isSplat());
   EXPECT_TRUE(dense_attr.getSplatValue<llvm::APFloat>().isNaN());
+}
+
+TEST(InferBroadcastDimensions, BroadcastsSingletonToBoundedDimension) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp lhs = MakeBoundedArg(fb, {1, 4}, {});
+  mlir::MlirOp rhs = MakeBoundedArg(fb, {6, 1}, {0});
+  mlir::func::Return(fb, {lhs, rhs});
+
+  const mlir::stablehlo::Dimensions lhs_dims = GetDimensions(lhs);
+  const mlir::stablehlo::Dimensions rhs_dims = GetDimensions(rhs);
+  TT_ASSERT_OK_AND_ASSIGN(const mlir::stablehlo::Dimensions bcast_dims,
+                          InferBroadcastDimensions(lhs_dims, rhs_dims));
+  ASSERT_EQ(bcast_dims.size(), 2);
+  EXPECT_EQ(bcast_dims[0].size, 6);
+  EXPECT_EQ(bcast_dims[0].boundOp, rhs.getValue());
+  EXPECT_EQ(bcast_dims[1].size, 4);
+  EXPECT_FALSE(bcast_dims[1].boundOp.has_value());
+}
+
+TEST(InferBroadcastDimensions, ExpandsRankWhenOperandHasFewerDims) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp rhs = MakeBoundedArg(fb, {6, 4}, {0});
+  mlir::func::Return(fb, rhs);
+
+  const mlir::stablehlo::Dimensions rhs_dims = GetDimensions(rhs);
+  TT_ASSERT_OK_AND_ASSIGN(
+      const mlir::stablehlo::Dimensions bcast_dims,
+      InferBroadcastDimensions(/*lhs_dims=*/{}, /*rhs_dims=*/rhs_dims));
+  ASSERT_EQ(bcast_dims.size(), 2);
+  EXPECT_EQ(bcast_dims[0].size, 6);
+  EXPECT_EQ(bcast_dims[0].boundOp, rhs.getValue());
+  EXPECT_EQ(bcast_dims[1].size, 4);
+  EXPECT_FALSE(bcast_dims[1].boundOp.has_value());
+}
+
+TEST(InferBroadcastDimensions, RejectsIncompatibleSizes) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp lhs = MakeBoundedArg(fb, {4}, {});
+  mlir::MlirOp rhs = MakeBoundedArg(fb, {6}, {});
+  mlir::func::Return(fb, {lhs, rhs});
+
+  const mlir::stablehlo::Dimensions lhs_dims = GetDimensions(lhs);
+  const mlir::stablehlo::Dimensions rhs_dims = GetDimensions(rhs);
+  EXPECT_THAT(
+      InferBroadcastDimensions(lhs_dims, rhs_dims),
+      StatusIs(
+          error::kInvalidArgument,
+          HasSubstr("expected compatible shapes for broadcasting, got 4 and "
+                    "6")));
+}
+
+TEST(InferBroadcastDimensions, RejectsMixedStaticAndBoundedDim) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp lhs = MakeBoundedArg(fb, {6}, {});
+  mlir::MlirOp rhs = MakeBoundedArg(fb, {6}, {0});
+  mlir::func::Return(fb, {lhs, rhs});
+
+  const mlir::stablehlo::Dimensions lhs_dims = GetDimensions(lhs);
+  const mlir::stablehlo::Dimensions rhs_dims = GetDimensions(rhs);
+  EXPECT_THAT(
+      InferBroadcastDimensions(lhs_dims, rhs_dims),
+      StatusIs(
+          error::kInvalidArgument,
+          HasSubstr("cannot mix bounded and static dimensions in broadcast")));
+}
+
+TEST(TriangularSolveLike, EmitsStaticTriangularSolveForBoundedOperands) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp a = MakeBoundedArg(fb, {6, 8, 8}, {0, 1, 2});
+  mlir::MlirOp b = MakeBoundedArg(fb, {6, 8, 5}, {0, 1, 2});
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      mlir::MlirOp result,
+      TriangularSolveLike(a, b,
+                          TriangularSolveOptions{
+                              .side = MatrixSide::kLeft,
+                              .triangular = MatrixTriangular::kUpper,
+                              .diagonal = DiagonalKind::kNonUnit,
+                          }));
+  mlir::func::Return(fb, result);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+
+  int num_solves = 0;
+  module->walk([&](mlir::stablehlo::TriangularSolveOp solve) {
+    ++num_solves;
+    EXPECT_TRUE(solve.getA().getType().hasStaticShape());
+    EXPECT_TRUE(solve.getB().getType().hasStaticShape());
+    EXPECT_TRUE(solve.getType().hasStaticShape());
+  });
+  EXPECT_EQ(num_solves, 1);
+
+  const mlir::stablehlo::Dimensions dims = GetDimensions(result);
+  ASSERT_EQ(dims.size(), 3);
+  EXPECT_EQ(dims[0].size, 6);
+  EXPECT_TRUE(dims[0].boundOp.has_value());
+  EXPECT_EQ(dims[1].size, 8);
+  EXPECT_TRUE(dims[1].boundOp.has_value());
+  EXPECT_EQ(dims[2].size, 5);
+  EXPECT_TRUE(dims[2].boundOp.has_value());
+}
+
+TEST(TriangularSolveLike, UsesLastDimAsSharedMatrixDimForRightSide) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  // Solving X * A = B makes the last dimension of `b` the one shared with `a`.
+  // It is static on `b`, so only `a` carries its runtime size.
+  mlir::MlirOp a = MakeBoundedArg(fb, {6, 8, 8}, {0, 1, 2});
+  mlir::MlirOp b = MakeBoundedArg(fb, {6, 5, 8}, {0, 1});
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      mlir::MlirOp result,
+      TriangularSolveLike(a, b,
+                          TriangularSolveOptions{.side = MatrixSide::kRight}));
+  mlir::func::Return(fb, result);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+
+  int num_solves = 0;
+  module->walk([&](mlir::stablehlo::TriangularSolveOp solve) {
+    ++num_solves;
+    EXPECT_FALSE(solve.getLeftSide());
+  });
+  EXPECT_EQ(num_solves, 1);
+
+  const mlir::stablehlo::Dimensions dims = GetDimensions(result);
+  ASSERT_EQ(dims.size(), 3);
+  EXPECT_EQ(dims[0].size, 6);
+  EXPECT_TRUE(dims[0].boundOp.has_value());
+  EXPECT_EQ(dims[1].size, 5);
+  EXPECT_TRUE(dims[1].boundOp.has_value());
+  EXPECT_EQ(dims[2].size, 8);
+  EXPECT_TRUE(dims[2].boundOp.has_value());
+}
+
+TEST(TriangularSolveLike, PassesStaticMatrixUnpaddedForBoundedRhs) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp a = MakeBoundedArg(fb, {8, 8}, {});
+  mlir::MlirOp b = MakeBoundedArg(fb, {8, 5}, {1});
+
+  TT_ASSERT_OK_AND_ASSIGN(mlir::MlirOp result,
+                          TriangularSolveLike(a, b, TriangularSolveOptions{}));
+  mlir::func::Return(fb, result);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+
+  int num_solves = 0;
+  module->walk([&](mlir::stablehlo::TriangularSolveOp solve) {
+    ++num_solves;
+    EXPECT_EQ(solve.getA(), a.getValue());
+    EXPECT_TRUE(solve.getB().getType().hasStaticShape());
+  });
+  EXPECT_EQ(num_solves, 1);
+
+  const mlir::stablehlo::Dimensions dims = GetDimensions(result);
+  ASSERT_EQ(dims.size(), 2);
+  EXPECT_EQ(dims[0].size, 8);
+  EXPECT_FALSE(dims[0].boundOp.has_value());
+  EXPECT_EQ(dims[1].size, 5);
+  EXPECT_TRUE(dims[1].boundOp.has_value());
+}
+
+TEST(TriangularSolveLike, PropagatesMatrixRuntimeSizeToStaticSharedDim) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  // The dimension of `b` shared with `a` (dimension 1) is static, so only `a`
+  // carries its runtime size.
+  mlir::MlirOp a = MakeBoundedArg(fb, {6, 8, 8}, {0, 1, 2});
+  mlir::MlirOp b = MakeBoundedArg(fb, {6, 8, 5}, {0, 2});
+
+  TT_ASSERT_OK_AND_ASSIGN(mlir::MlirOp result,
+                          TriangularSolveLike(a, b, TriangularSolveOptions{}));
+  mlir::func::Return(fb, result);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+
+  const mlir::stablehlo::Dimensions dims = GetDimensions(result);
+  ASSERT_EQ(dims.size(), 3);
+  EXPECT_EQ(dims[0].size, 6);
+  EXPECT_TRUE(dims[0].boundOp.has_value());
+  EXPECT_EQ(dims[1].size, 8);
+  EXPECT_TRUE(dims[1].boundOp.has_value());
+  EXPECT_EQ(dims[2].size, 5);
+  EXPECT_TRUE(dims[2].boundOp.has_value());
+}
+
+TEST(TriangularSolveLike, RejectsNonSquareStaticMatrix) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp a = MakeBoundedArg(fb, {6, 8, 10}, {});
+  mlir::MlirOp b = MakeBoundedArg(fb, {6, 8, 5}, {});
+
+  EXPECT_THAT(
+      TriangularSolveLike(a, b, TriangularSolveOptions{}),
+      StatusIs(
+          error::kInvalidArgument,
+          HasSubstr("expected square matrix in triangular solve, got 8 and "
+                    "10")));
+}
+
+TEST(TriangularSolveLike, RejectsMismatchedStaticSharedMatrixDim) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp a = MakeBoundedArg(fb, {6, 8, 8}, {});
+  mlir::MlirOp b = MakeBoundedArg(fb, {6, 10, 5}, {});
+
+  EXPECT_THAT(
+      TriangularSolveLike(a, b, TriangularSolveOptions{}),
+      StatusIs(error::kInvalidArgument,
+               HasSubstr("expected the shared matrix dimensions in triangular "
+                         "solve to match, got 8 and 10")));
+}
+
+TEST(TriangularSolveLike, RejectsNonSquareUpperBoundMatrix) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp a = MakeBoundedArg(fb, {6, 8, 10}, {0, 1, 2});
+  mlir::MlirOp b = MakeBoundedArg(fb, {6, 8, 5}, {0, 1, 2});
+
+  EXPECT_THAT(
+      TriangularSolveLike(a, b, TriangularSolveOptions{}),
+      StatusIs(
+          error::kInvalidArgument,
+          HasSubstr(
+              "expected square upper-bound matrix in triangular solve, got 8 "
+              "and 10")));
+}
+
+TEST(TriangularSolveLike, RejectsMismatchedSharedMatrixUpperBound) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp a = MakeBoundedArg(fb, {6, 8, 8}, {0, 1, 2});
+  mlir::MlirOp b = MakeBoundedArg(fb, {6, 10, 5}, {0, 1});
+
+  EXPECT_THAT(
+      TriangularSolveLike(a, b, TriangularSolveOptions{}),
+      StatusIs(error::kInvalidArgument,
+               HasSubstr("expected the upper bounds of the shared matrix "
+                         "dimension in triangular solve to match, got 8 and "
+                         "10")));
 }
 
 }  // namespace
