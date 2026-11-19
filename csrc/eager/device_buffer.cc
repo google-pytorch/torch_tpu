@@ -425,9 +425,18 @@ absl::StatusOr<std::vector<DeviceBufferRef>> DeviceBufferList::CreateDeferred(
   //    is > 1. Skipping donation ensures in-place mutations do not corrupt
   //    the buffer needed for gradient computation.
   //
-  // We only donate an input buffer if it exists (`dbl != nullptr`) and
-  // satisfies the per-slot exclusivity check (`input_ref.live_data_ptrs() ==
-  // 1`), falling back safely to normal allocation otherwise.
+  // 3. Zero-element buffers:
+  //    Assigning a zero-element result to a tensor is a no-op (see
+  //    `AssignBufferToAtTensor`), so the tensor keeps its input buffer. If
+  //    that buffer were donated, the next in-place op on the tensor (e.g.
+  //    fused AdamW on an empty FSDP shard) would fail with "Donation requested
+  //    for invalid buffer". Donating zero bytes saves no memory, so we never
+  //    do it.
+  //
+  // We only donate an input buffer if it exists (`dbl != nullptr`), is not
+  // zero-sized, and satisfies the per-slot exclusivity check
+  // (`input_ref.live_data_ptrs() == 1`), falling back safely to normal
+  // allocation otherwise.
   //
   // Note: We bypass this check for custom kernels (Pallas), which manage buffer
   // donation explicitly through their compiler/runtime signatures, and for
@@ -440,7 +449,8 @@ absl::StatusOr<std::vector<DeviceBufferRef>> DeviceBufferList::CreateDeferred(
     for (int64_t idx : donated_indices) {
       const auto& input_ref = inputs[idx];
       const auto& dbl = input_ref.device_buffer_list();
-      if (dbl != nullptr && input_ref.live_data_ptrs() == 1) {
+      if (dbl != nullptr && input_ref.num_elements() != 0 &&
+          input_ref.live_data_ptrs() == 1) {
         safe_donated_indices.push_back(idx);
       }
     }
