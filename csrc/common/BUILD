@@ -1179,6 +1179,7 @@ torch_tpu_cc_library(
         ":env_vars",
         ":error_utils",
         ":premapped_buffer_defaults",
+        ":warnings",
         "@com_google_absl//absl/base:no_destructor",
         "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/status:statusor",
@@ -1194,6 +1195,8 @@ torch_tpu_cc_test(
         ":env_vars",
         ":error_utils",
         "//csrc/common:oss_test_main",
+        "//shims/torch",  # build_cleaner: keep for c10::WarningUtils
+        "//shims/torch/c10/util:base",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",

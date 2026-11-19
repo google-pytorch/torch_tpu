@@ -30,6 +30,7 @@ namespace torch_tpu {
 // physical RAM and any cgroup memory limit) by the number of local TorchTPU
 // worker processes. It is 0 when that per-worker share is below 16 GiB, and
 // otherwise min(4 GiB, per-worker share / 16) rounded down to a power of two.
+// A performance warning is emitted if the default is 0.
 // Expected defaults in common environments:
 //
 //   Environment                    | Memory limit | Workers | Default/worker

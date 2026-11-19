@@ -17,10 +17,14 @@
 
 #include <cstdint>
 #include <cstdlib>
+#include <string>
+#include <vector>
 
 #include "absl/log/absl_check.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/match.h"
 #include "absl/strings/numbers.h"
+#include "c10/util/Exception.h"
 #include "csrc/common/env_vars.h"
 #include "csrc/common/error_utils.h"
 #include "gtest/gtest.h"
@@ -73,6 +77,62 @@ TEST(GetPremappedBufferSizeFromEnvOnceDeathTest, ReturnsErrorIfInvalid) {
         setenv(kTpuPremappedBufferSizeEnvVar, "not_an_int", 1);
         const auto& status_or_size = GetPremappedBufferSizeFromEnvOnce();
         exit(status_or_size.ok() ? 1 : 0);
+      },
+      ExitedWithCode(0), "");
+}
+
+// Records the c10 warnings (e.g. from TT_WARN) emitted while in scope.
+class WarningCapture : public c10::WarningHandler {
+ public:
+  WarningCapture() : prev_(c10::WarningUtils::get_warning_handler()) {
+    c10::WarningUtils::set_warning_handler(this);
+  }
+
+  ~WarningCapture() override { c10::WarningUtils::set_warning_handler(prev_); }
+
+  void process(const c10::Warning& warning) override {
+    messages_.push_back(warning.msg());
+  }
+
+  const std::vector<std::string>& messages() const { return messages_; }
+
+ private:
+  c10::WarningHandler* prev_ = nullptr;
+  std::vector<std::string> messages_;
+};
+
+TEST(GetPremappedBufferSizeFromEnvOnceDeathTest, WarnsIfDefaultIsZero) {
+  EXPECT_EXIT(
+      {
+        unsetenv(kTpuPremappedBufferSizeEnvVar);
+        // So many local processes that no host can give each of them enough
+        // memory for a non-zero default.
+        setenv(kWorldSizeEnvVar, "1048576", 1);
+        setenv(kTorchTpuDevicesPerHostEnvVar, "1048576", 1);
+        WarningCapture warnings;
+        TT_ASSIGN_OR_CRASH(const int64_t size,
+                           GetPremappedBufferSizeFromEnvOnce());
+        ABSL_CHECK_EQ(size, 0);
+        ABSL_CHECK_EQ(warnings.messages().size(), 1);
+        ABSL_CHECK(absl::StrContains(warnings.messages()[0],
+                                     "//TorchTpu/Performance// "
+                                     "TPU_PREMAPPED_BUFFER_SIZE is unset and "
+                                     "its automatic default is 0"));
+        exit(0);
+      },
+      ExitedWithCode(0), "");
+}
+
+TEST(GetPremappedBufferSizeFromEnvOnceDeathTest, DoesNotWarnIfSetToZero) {
+  EXPECT_EXIT(
+      {
+        setenv(kTpuPremappedBufferSizeEnvVar, "0", 1);
+        WarningCapture warnings;
+        TT_ASSIGN_OR_CRASH(const int64_t size,
+                           GetPremappedBufferSizeFromEnvOnce());
+        ABSL_CHECK_EQ(size, 0);
+        ABSL_CHECK(warnings.messages().empty());
+        exit(0);
       },
       ExitedWithCode(0), "");
 }
