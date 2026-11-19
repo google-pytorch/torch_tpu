@@ -21,11 +21,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
-#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
-#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -46,8 +44,8 @@
 #include "c10/core/ScalarType.h"
 #include "c10/core/SymInt.h"
 #include "c10/core/TensorImpl.h"
-#include "c10/util/intrusive_ptr.h"
 #include "csrc/common/aten_utils.h"
+#include "csrc/common/autograd_utils.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -1139,17 +1137,6 @@ bool AnyOperandHasSymbolicSizes(at::TensorList tensors) {
     }
   }
   return false;
-}
-
-// TODO: b/585211199 - Simplify to `c10::make_intrusive<T>()` once minimum OSS
-// PyTorch is >= 2.13.0, where `Node` is a `c10::intrusive_ptr_target`.
-template <typename T>
-auto MakeAutogradNode() {
-  if constexpr (std::is_base_of_v<c10::intrusive_ptr_target, T>) {
-    return c10::make_intrusive<T>();
-  } else {
-    return std::shared_ptr<T>(new T(), [](T* ptr) { deleteNode(ptr); });
-  }
 }
 
 std::string LabelsToSubscriptString(const Indices& labels,

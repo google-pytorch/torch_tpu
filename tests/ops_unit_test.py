@@ -17022,18 +17022,20 @@ module {{
       dict(testcase_name="compiled", compiled=True),
   )
   def test_optimization_barrier_gradient_mixed_list(self, compiled: bool):
-    def fn(barrier, a, b, frozen, scale, mask):
-      a, b, frozen, scale, mask = barrier([a * 2.0, b, frozen, scale, mask])
-      return (torch.where(mask, a * b, frozen) * scale).sum()
+    def fn(barrier, frozen, a, scale, b, mask):
+      frozen, a, scale, b, mask = barrier(
+          [frozen, a * 2.0, scale, b * 3.0, mask]
+      )
+      return (torch.where(mask, a * 5.0 + b * 7.0, frozen) * scale).sum()
 
     a = torch.linspace(-1.0, 1.0, 12).reshape(4, 3).to("tpu")
     b = torch.linspace(0.5, 2.0, 12).reshape(4, 3).to("tpu")
     frozen = torch.ones(3, 4, device="tpu").t()
-    scale = torch.arange(12, dtype=torch.int32).reshape(4, 3).to("tpu")
+    scale = torch.arange(1, 13, dtype=torch.int32).reshape(4, 3).to("tpu")
     mask = (torch.arange(12).reshape(4, 3) % 2 == 0).to("tpu")
     self._assert_barrier_keeps_gradients(
         fn,
-        [a.requires_grad_(), b.requires_grad_(), frozen, scale, mask],
+        [frozen, a.requires_grad_(), scale, b.requires_grad_(), mask],
         compiled,
     )
 
@@ -17079,6 +17081,20 @@ module {{
     scalar = torch.tensor(2.0, device="tpu", requires_grad=True)
     self._assert_barrier_keeps_gradients(fn, [scalar], compiled)
 
+  @parameterized.named_parameters(
+      dict(testcase_name="eager", compiled=False),
+      dict(testcase_name="compiled", compiled=True),
+  )
+  def test_optimization_barrier_duplicate_inputs_accumulate_grad(
+      self, compiled: bool
+  ):
+    def fn(barrier, x):
+      y0, y1 = barrier([x, x])
+      return (y0 * 2.0 + y1 * 3.0).sum()
+
+    x = torch.ones(4, 3, device="tpu", requires_grad=True)
+    self._assert_barrier_keeps_gradients(fn, [x], compiled)
+
   def test_optimization_barrier_double_backward(self):
     def second_derivative(barrier):
       x = torch.tensor([0.5, -1.5, 2.0], device="tpu", requires_grad=True)
@@ -17093,14 +17109,223 @@ module {{
     )
 
   def test_optimization_barrier_outputs_require_grad_like_their_inputs(self):
-    trained = torch.ones(2, device="tpu", requires_grad=True)
     frozen = torch.ones(3, 2, device="tpu").t()
+    trained_a = torch.ones(2, device="tpu", requires_grad=True)
     index = torch.ones(2, dtype=torch.int32, device="tpu")
+    trained_b = torch.ones(2, device="tpu", requires_grad=True)
 
-    outputs = torch.tpu.ops.optimization_barrier([trained, frozen, index])
+    outputs = torch.tpu.ops.optimization_barrier(
+        [frozen, trained_a, index, trained_b]
+    )
 
-    self.assertEqual([t.requires_grad for t in outputs], [True, False, False])
-    self.assertEqual(outputs[1].stride(), frozen.stride())
+    self.assertEqual(
+        [t.requires_grad for t in outputs], [False, True, False, True]
+    )
+    self.assertEqual(outputs[0].stride(), frozen.stride())
+
+  def test_optimization_barrier_fires_node_creation_hooks(self):
+    if utils.parse_version(torch.__version__) < (2, 14, 0):
+      self.skipTest("node_creation_hook requires PyTorch >= 2.14.")
+    x = torch.ones(2, device="tpu", requires_grad=True)
+    created_nodes = []
+
+    with torch.autograd.graph.node_creation_hook(created_nodes.append):
+      (y,) = torch.tpu.ops.optimization_barrier([x])
+
+    self.assertIn(y.grad_fn, created_nodes)
+
+  @parameterized.named_parameters(
+      dict(testcase_name="eager", compiled=False),
+      dict(testcase_name="compiled", compiled=True),
+  )
+  def test_optimization_barrier_forward_ad_single_tensor(self, compiled: bool):
+    x = torch.linspace(-1.0, 1.0, 12).reshape(4, 3).to("tpu")
+    direction = torch.linspace(0.5, 2.0, 12).reshape(4, 3).to("tpu")
+
+    def tangent(barrier, run_compiled: bool):
+      def step(primal, v):
+        with torch.autograd.forward_ad.dual_level():
+          dual = torch.autograd.forward_ad.make_dual(primal, v)
+          (y,) = barrier([dual * 2.0])
+          return torch.autograd.forward_ad.unpack_dual(y * y).tangent
+
+      if run_compiled:
+        step = torch.compile(step, backend="tpu", fullgraph=True)
+      return step(x, direction)
+
+    utils.assert_close(
+        actual=tangent(torch.tpu.ops.optimization_barrier, compiled),
+        expected=tangent(list, False),
+    )
+
+  def test_optimization_barrier_forward_ad_mixed_list(self):
+    def tangents(barrier):
+      x = torch.linspace(-1.0, 1.0, 6).to("tpu")
+      direction = torch.linspace(0.5, 2.0, 6).to("tpu")
+      constant = torch.full((6,), 3.0, device="tpu")
+      index = torch.arange(6, dtype=torch.int32).to("tpu")
+      with torch.autograd.forward_ad.dual_level():
+        dual = torch.autograd.forward_ad.make_dual(x, direction)
+        outputs = barrier([dual * 2.0, constant, index])
+        # Only the first member has a tangent; the others have None.
+        return [
+            torch.autograd.forward_ad.unpack_dual(output).tangent
+            for output in outputs
+        ]
+
+    utils.assert_close(
+        actual=tangents(torch.tpu.ops.optimization_barrier),
+        expected=tangents(list),
+    )
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="grad_eager",
+          transform=lambda loss, x, v: torch.func.grad(loss)(x),
+          compiled=False,
+      ),
+      dict(
+          testcase_name="grad_compiled",
+          transform=lambda loss, x, v: torch.func.grad(loss)(x),
+          compiled=True,
+      ),
+      dict(
+          testcase_name="vjp_eager",
+          transform=lambda loss, x, v: torch.func.vjp(loss, x)[1](v.sum()),
+          compiled=False,
+      ),
+      dict(
+          testcase_name="vjp_compiled",
+          transform=lambda loss, x, v: torch.func.vjp(loss, x)[1](v.sum()),
+          compiled=True,
+      ),
+      dict(
+          testcase_name="jvp_eager",
+          transform=lambda loss, x, v: torch.func.jvp(loss, (x,), (v,)),
+          compiled=False,
+      ),
+      dict(
+          testcase_name="jvp_compiled",
+          transform=lambda loss, x, v: torch.func.jvp(loss, (x,), (v,)),
+          compiled=True,
+      ),
+      dict(
+          testcase_name="grad_of_grad",
+          transform=lambda loss, x, v: torch.func.grad(
+              lambda t: (torch.func.grad(loss)(t) * v).sum()
+          )(x),
+          compiled=False,
+      ),
+      dict(
+          testcase_name="jvp_of_grad",
+          transform=lambda loss, x, v: torch.func.jvp(
+              torch.func.grad(loss), (x,), (v,)
+          ),
+          compiled=False,
+      ),
+      dict(
+          testcase_name="grad_of_jvp",
+          transform=lambda loss, x, v: torch.func.grad(
+              lambda t: torch.func.jvp(loss, (t,), (v,))[1]
+          )(x),
+          compiled=False,
+      ),
+      dict(
+          testcase_name="jvp_of_jvp",
+          transform=lambda loss, x, v: torch.func.jvp(
+              lambda t: torch.func.jvp(loss, (t,), (v,))[1], (x,), (v,)
+          ),
+          compiled=False,
+      ),
+  )
+  def test_optimization_barrier_under_func_transform(
+      self,
+      transform: Callable[
+          [Callable[[torch.Tensor], torch.Tensor], torch.Tensor, torch.Tensor],
+          Any,
+      ],
+      compiled: bool,
+  ):
+    x = torch.linspace(-1.0, 1.0, 6).to("tpu")
+    v = torch.linspace(0.5, 2.0, 6).to("tpu")
+
+    def transformed(barrier, run_compiled: bool):
+      def loss(t):
+        (y,) = barrier([t * t])
+        return (y * y).sum()
+
+      def step(primal, tangent):
+        return transform(loss, primal, tangent)
+
+      if run_compiled:
+        step = torch.compile(step, backend="tpu", fullgraph=True)
+      return step(x, v)
+
+    utils.assert_close(
+        actual=transformed(torch.tpu.ops.optimization_barrier, compiled),
+        expected=transformed(list, False),
+    )
+
+  def test_optimization_barrier_tangents_pass_through_one_barrier(self):
+    class _BarrierOperandCounts(_python_dispatch.TorchDispatchMode):
+
+      def __init__(self):
+        super().__init__()
+        self.counts = []
+
+      def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+        if func is torch.ops.tpu._optimization_barrier.default:
+          self.counts.append(len(args[0]))
+        return func(*args, **(kwargs or {}))
+
+    a, b, a_direction, b_direction, constant = (
+        torch.ones(2, device="tpu") for _ in range(5)
+    )
+    with torch.autograd.forward_ad.dual_level():
+      inputs = [
+          torch.autograd.forward_ad.make_dual(a, a_direction),
+          torch.autograd.forward_ad.make_dual(b, b_direction),
+          constant,
+      ]
+      with _BarrierOperandCounts() as calls:
+        torch.tpu.ops.optimization_barrier(inputs)
+
+    # One barrier over the three primals, then one over the two tangents.
+    self.assertEqual(calls.counts, [3, 2])
+
+    a_grad = torch.linspace(-1.0, 1.0, 4).to("tpu").requires_grad_()
+    b_grad = torch.linspace(0.5, 2.0, 4).to("tpu").requires_grad_()
+    da = torch.linspace(1.0, 4.0, 4).to("tpu")
+    db = torch.linspace(2.0, 5.0, 4).to("tpu")
+    with torch.no_grad(), torch.autograd.forward_ad.dual_level():
+      dual_a = torch.autograd.forward_ad.make_dual(a_grad, da)
+      dual_b = torch.autograd.forward_ad.make_dual(b_grad, db)
+      with _BarrierOperandCounts() as no_grad_calls:
+        out_a, out_b = torch.tpu.ops.optimization_barrier(
+            [dual_a * 2.0, dual_b * 3.0]
+        )
+      tangent_a = torch.autograd.forward_ad.unpack_dual(out_a).tangent
+      tangent_b = torch.autograd.forward_ad.unpack_dual(out_b).tangent
+
+    self.assertFalse(out_a.requires_grad)
+    self.assertFalse(out_b.requires_grad)
+    self.assertEqual(no_grad_calls.counts, [2, 2])
+    utils.assert_close(actual=tangent_a, expected=da * 2.0)
+    utils.assert_close(actual=tangent_b, expected=db * 3.0)
+
+  def test_optimization_barrier_meta_backward(self):
+    x = torch.empty((4, 3), device="meta", requires_grad=True)
+
+    with warnings.catch_warnings():
+      warnings.filterwarnings(
+          "error", message=".*autograd kernel was not registered"
+      )
+      (y,) = torch.tpu.ops.optimization_barrier([x])
+      y.sum().backward()
+
+    self.assertIsNotNone(x.grad)
+    self.assertEqual(x.grad.device.type, "meta")
+    self.assertEqual(x.grad.shape, x.shape)
 
 
 class OpsGradUnitTest(TorchTpuVsCpuTestBase):

@@ -1172,6 +1172,31 @@ torch_tpu_cc_test(
 )
 
 torch_tpu_cc_library(
+    name = "autograd_utils",
+    hdrs = ["autograd_utils.h"],
+    deps = [
+        ":macro_utils",
+        "//shims/torch:torch_headers",
+        "//shims/torch/c10/util:base_headers",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "autograd_utils_test",
+    srcs = ["autograd_utils_test.cc"],
+    deps = [
+        ":autograd_utils",
+        ":macro_utils",
+        "//csrc/common:oss_test_main",
+        "//shims/torch",
+        "//shims/torch:aten",
+        "//shims/torch:aten_headers",
+        "//shims/torch:torch_headers",
+        "//shims/torch/c10/util:base_headers",
+    ],
+)
+
+torch_tpu_cc_library(
     name = "discovery",
     srcs = ["discovery.cc"],
     hdrs = ["discovery.h"],

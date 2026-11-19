@@ -18,6 +18,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -28,6 +29,7 @@
 #include "absl/base/no_destructor.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "csrc/common/autograd_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -41,8 +43,9 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
-#include "torch/csrc/autograd/custom_function.h"
+#include "torch/csrc/autograd/function.h"
 #include "torch/csrc/autograd/functions/utils.h"
+#include "torch/csrc/dynamo/compiled_autograd.h"
 
 namespace torch_tpu {
 
@@ -57,45 +60,53 @@ std::vector<at::Tensor> CallOptimizationBarrier(at::TensorList tensors) {
   return op->call(tensors);
 }
 
-// Autograd function of the barrier, which is an identity on every tensor.
-class OptimizationBarrierFunction
-    : public torch::autograd::Function<OptimizationBarrierFunction> {
- public:
-  static constexpr bool is_traceable = true;
+// Passes the defined tensors together through one barrier.
+[[nodiscard]] std::vector<at::Tensor> PassThroughOneBarrier(
+    std::vector<at::Tensor> tensors) {
+  std::vector<at::Tensor> defined;
+  for (const at::Tensor& tensor : tensors) {
+    if (tensor.defined()) {
+      defined.push_back(tensor);
+    }
+  }
+  if (!defined.empty()) {
+    // Dispatched above autograd, which keeps higher-order derivatives working.
+    std::vector<at::Tensor> fenced = CallOptimizationBarrier(defined);
+    size_t next = 0;
+    for (at::Tensor& tensor : tensors) {
+      if (tensor.defined()) {
+        tensor = std::move(fenced[next++]);
+      }
+    }
+  }
+  return tensors;
+}
 
-  static std::vector<at::Tensor> forward(torch::autograd::AutogradContext* ctx,
-                                         at::TensorList self) {
-    // An output without a gradient must not send zeros back: the derivative
-    // of what produced it may be infinite.
-    ctx->set_materialize_grads(false);
-    at::AutoDispatchBelowADInplaceOrView guard;
-    return CallOptimizationBarrier(self);
+// Backward node of the barrier. Its k-th input and its k-th edge belong to the
+// k-th tensor of the barrier that requires gradients.
+class OptimizationBarrierBackward : public torch::autograd::Node {
+ public:
+  std::string name() const override { return "OptimizationBarrierBackward0"; }
+
+  // Compiled autograd traces `apply`; the node has no state to swap.
+  void compiled_args(
+      torch::dynamo::autograd::CompiledNodeArgs& /*args*/) const override {}
+  std::vector<at::Tensor> apply_with_saved(
+      const std::vector<at::Tensor>& inputs,
+      torch::dynamo::autograd::SwapSavedVariables& /*saved*/) override {
+    return apply(std::vector<at::Tensor>(inputs));
   }
 
+ protected:
   // The gradients pass together through one barrier, as in JAX, so that the
   // backward computation is fenced like the forward one.
-  static std::vector<at::Tensor> backward(
-      torch::autograd::AutogradContext* ctx,
-      std::vector<at::Tensor> grad_outputs) {
-    std::vector<at::Tensor> gradients;
-    for (size_t i = 0; i < grad_outputs.size(); ++i) {
-      if (!ctx->needs_input_grad(i)) {
-        grad_outputs[i].reset();
-      } else if (grad_outputs[i].defined()) {
-        gradients.push_back(grad_outputs[i]);
+  std::vector<at::Tensor> apply(std::vector<at::Tensor>&& grads) override {
+    for (size_t i = 0; i < grads.size(); ++i) {
+      if (!task_should_compute_output(i)) {
+        grads[i].reset();
       }
     }
-    if (!gradients.empty()) {
-      // Dispatched above autograd, which keeps double backward working.
-      std::vector<at::Tensor> fenced = CallOptimizationBarrier(gradients);
-      size_t next = 0;
-      for (at::Tensor& gradient : grad_outputs) {
-        if (gradient.defined()) {
-          gradient = std::move(fenced[next++]);
-        }
-      }
-    }
-    return grad_outputs;
+    return PassThroughOneBarrier(std::move(grads));
   }
 };
 
@@ -146,19 +157,40 @@ std::vector<at::Tensor> TorchTpuOptimizationBarrier(at::TensorList self) {
 
 std::vector<at::Tensor> TorchTpuOptimizationBarrierAutograd(
     at::TensorList self) {
-  // Nothing to differentiate. Forward-mode tangents are not dropped here: the
-  // autograd function below rejects them.
-  if (!torch::autograd::compute_requires_grad(self) &&
-      !torch::autograd::isFwGradDefinedTensorList(self)) {
+  std::vector<at::Tensor> outputs;
+  {
     at::AutoDispatchBelowADInplaceOrView guard;
-    return CallOptimizationBarrier(self);
+    outputs = CallOptimizationBarrier(self);
   }
-  std::vector<at::Tensor> outputs = OptimizationBarrierFunction::apply(self);
-  // An output requires gradients only if its own input does. It is detached
-  // rather than marked non-differentiable, which compiled autograd rejects.
-  for (size_t i = 0; i < outputs.size(); ++i) {
-    if (outputs[i].requires_grad() && !self[i].requires_grad()) {
-      outputs[i].detach_();
+  if (torch::autograd::compute_requires_grad(self)) {
+    // An output has history only if its own input requires gradients.
+    std::vector<at::Tensor> differentiable_inputs;
+    std::vector<at::Tensor> differentiable_outputs;
+    for (size_t i = 0; i < outputs.size(); ++i) {
+      if (torch::autograd::compute_requires_grad(self[i])) {
+        differentiable_inputs.push_back(self[i]);
+        differentiable_outputs.push_back(outputs[i]);
+      }
+    }
+    const auto grad_fn = MakeAutogradNode<OptimizationBarrierBackward>();
+    grad_fn->set_next_edges(
+        torch::autograd::collect_next_edges(differentiable_inputs));
+    torch::autograd::set_history(differentiable_outputs, grad_fn);
+    FireNodeCreationHooks(grad_fn);
+  }
+  if (torch::autograd::isFwGradDefinedTensorList(self)) {
+    // Forward mode: the tangents pass together through one barrier, as in JAX.
+    std::vector<at::Tensor> tangents;
+    tangents.reserve(self.size());
+    for (const at::Tensor& tensor : self) {
+      tangents.push_back(tensor._fw_grad(/*level=*/0));
+    }
+    tangents = PassThroughOneBarrier(std::move(tangents));
+    for (size_t i = 0; i < outputs.size(); ++i) {
+      if (tangents[i].defined()) {
+        outputs[i]._set_fw_grad(tangents[i], /*level=*/0,
+                                /*is_inplace_op=*/false);
+      }
     }
   }
   return outputs;
