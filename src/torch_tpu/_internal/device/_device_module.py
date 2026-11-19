@@ -974,6 +974,10 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
     return _device_ops_backend._get_cache_stats()  # pylint: disable=protected-access
 
   @classmethod
+  def _get_unbounded_dynamic_kernel_op_names(cls):
+    return _device_ops_backend._get_unbounded_dynamic_kernel_op_names()  # pylint: disable=protected-access
+
+  @classmethod
   def _shutdown_runtime(cls):
     if cls._public_module().is_initialized():
       # Ensure clear_compiled_executables() executes before

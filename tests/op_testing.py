@@ -5742,6 +5742,46 @@ def runs_all_samples(max_samples_per_op_dtype: int | None = None) -> bool:
   return "all" in _DTYPES.value and max_samples_per_op_dtype < 0
 
 
+_UNBOUNDED_DYNAMIC_KERNELS_ENV_VAR: Final[str] = (
+    "TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS"
+)
+
+
+def is_kiln_kernel_mode() -> bool:
+  """Returns True if the test checks Kiln kernels instead of StableHLO kernels.
+
+  The ops_test_kiln* targets in tests/BUILD set
+  `_UNBOUNDED_DYNAMIC_KERNELS_ENV_VAR` to "all". A test can use this to skip a
+  known issue of one kind of kernel.
+  """
+  return os.environ.get(_UNBOUNDED_DYNAMIC_KERNELS_ENV_VAR) == "all"
+
+
+def _is_stablehlo_kernel_mode() -> bool:
+  """Returns True if the test checks StableHLO kernels only.
+
+  The other TPU ops_test targets in tests/BUILD set
+  `_UNBOUNDED_DYNAMIC_KERNELS_ENV_VAR` to "none". If it's unset, ops run on the
+  Kiln kernels enabled by default where compatible, and on StableHLO kernels
+  elsewhere.
+  """
+  return os.environ.get(_UNBOUNDED_DYNAMIC_KERNELS_ENV_VAR) == "none"
+
+
+def _num_kiln_kernel_hits() -> int:
+  """Returns the number of cache lookups that Kiln kernels have served."""
+  return torch.tpu._get_cache_stats().num_unbounded_dynamic_hits  # pylint: disable=protected-access
+
+
+@functools.cache
+def _ops_with_kiln_kernels() -> frozenset[str]:
+  """Returns the ATen ops that registered Kiln kernels serve, sans overloads."""
+  return frozenset(
+      op_name.split(".")[0]
+      for op_name in torch.tpu._get_unbounded_dynamic_kernel_op_names()  # pylint: disable=protected-access
+  )
+
+
 def _is_enum(obj: Any) -> bool:
   """Returns True if obj is a Python enum or a pybind11 enum object."""
   cls = obj if isinstance(obj, type) else type(obj)
@@ -7678,6 +7718,11 @@ class OpInfoTestBase(TorchTpuTestBase):
       )
       if isinstance(out, Exception):
         return out
+      if is_kiln_kernel_mode():
+        # Preparing `out` runs the base variant, which a Kiln kernel may serve
+        # even if none serves the out variant: count only the op's own hits.
+        torch.accelerator.synchronize()
+        self._kiln_kernel_hits_before_op = _num_kiln_kernel_hits()
 
     op_func = _op_func(op, variant, target_device)
 
@@ -8153,6 +8198,10 @@ class OpInfoTestBase(TorchTpuTestBase):
           dtype, {}
       )
 
+    kiln_kernel_mode = is_kiln_kernel_mode()
+    if kiln_kernel_mode:
+      # _run_op() moves this past the preparation of the out variant's `out`.
+      self._kiln_kernel_hits_before_op = _num_kiln_kernel_hits()
     torch_tpu_result, torch_tpu_printable_input = self._run_on_tpu(
         subtest_name,
         op,
@@ -8163,6 +8212,11 @@ class OpInfoTestBase(TorchTpuTestBase):
         use_compiled=use_compiled,
         **run_op_kwargs,
     )
+    if kiln_kernel_mode:
+      torch.accelerator.synchronize()
+      if _num_kiln_kernel_hits() == self._kiln_kernel_hits_before_op:
+        self.skipTest(f"No Kiln kernel served {subtest_name}.")
+      self._kiln_kernel_subtests_served += 1
     golden_thrown = isinstance(golden_result, Exception)
     torch_tpu_thrown = isinstance(torch_tpu_result, Exception)
 
@@ -8717,6 +8771,7 @@ class OpInfoTestBase(TorchTpuTestBase):
       skip_if: Callable[[OpVariant, OpInput], bool] | None = None,
       max_samples_per_op_dtype: int | None = None,
       variant_test_name: str | None = None,
+      kiln_kernel_unserved_reason: str | None = None,
   ) -> None:
     """Does the standard suite of testing for the given op.
 
@@ -8754,6 +8809,9 @@ class OpInfoTestBase(TorchTpuTestBase):
         variant_test_name field of the OpInfo, when named variants are
         available. If None, the base variant set, filtering only on the op_name,
         will be tested.
+      kiln_kernel_unserved_reason: Why no OpInfo sample of the op can reach its
+        Kiln kernel. In Kiln kernel mode, the test fails if no sample was served
+        and this is unset, or if a sample was served and this is set.
 
     Raises:
       RuntimeError: If this is called twice in the same test method.
@@ -8771,6 +8829,13 @@ class OpInfoTestBase(TorchTpuTestBase):
     self._do_test_op_called = True
     self._subtests_run = 0
     self._dynamism_subtests_run = 0
+    self._kiln_kernel_subtests_served = 0
+    check_no_kiln_kernel_hits = (
+        _is_stablehlo_kernel_mode() and _torch_tpu_vs_gpu_mode()
+    )
+    kiln_kernel_hits_before = (
+        _num_kiln_kernel_hits() if check_no_kiln_kernel_hits else 0
+    )
 
     if _dump_dtype_exclusions_mode():
       _record_gpu_dtype_exclusions(
@@ -8816,6 +8881,9 @@ class OpInfoTestBase(TorchTpuTestBase):
         self.skipTest(message)
 
       op = _get_op(op_name, variant_test_name=variant_test_name)
+      # Skip the ops without Kiln kernels before generating any sample.
+      if is_kiln_kernel_mode() and op.aten_name not in _ops_with_kiln_kernels():
+        self.skipTest(f"No Kiln kernel serves {op.aten_name}.")
       dtypes_to_test = _dtypes_to_test_for_op(op, recording)
       # No applicable dtypes means exclude_dtypes intentionally excluded
       # everything, so skipping is expected.
@@ -8929,6 +8997,21 @@ class OpInfoTestBase(TorchTpuTestBase):
         _DYNAMISM_COVERAGE.append(self._dynamism_coverage)
         self._dynamism_coverage = None
 
+    if is_kiln_kernel_mode() and self._subtests_run:
+      self._check_kiln_kernel_served(
+          op_name,
+          kiln_kernel_unserved_reason=kiln_kernel_unserved_reason,
+          max_samples_per_op_dtype=max_samples_per_op_dtype,
+      )
+    if check_no_kiln_kernel_hits:
+      torch.accelerator.synchronize()
+      self.assertEqual(
+          _num_kiln_kernel_hits(),
+          kiln_kernel_hits_before,
+          f"Kiln kernels served samples of {op_name}, although"
+          f" {_UNBOUNDED_DYNAMIC_KERNELS_ENV_VAR} disables them.",
+      )
+
     if track_dynamism and self._dynamism_subtests_run == 0:
       print(
           f">>> No valid sample for dynamism found for op {op_name} across all"
@@ -8949,6 +9032,47 @@ class OpInfoTestBase(TorchTpuTestBase):
             f"golden_device={self.golden_device_name()}. "
             f"Check exclude_dtypes ({exclude_dtypes}) vs candidate dtypes."
         )
+
+  def _check_kiln_kernel_served(
+      self,
+      op_name: str,
+      *,
+      kiln_kernel_unserved_reason: str | None,
+      max_samples_per_op_dtype: int | None,
+  ) -> None:
+    """Fails if do_test_op() served no sample of `op_name` on a Kiln kernel.
+
+    Only called for ops with a Kiln kernel, as do_test_op() skips the others.
+
+    Args:
+      op_name: The name of the op.
+      kiln_kernel_unserved_reason: See do_test_op().
+      max_samples_per_op_dtype: See do_test_op().
+    """
+    served = self._kiln_kernel_subtests_served > 0
+    if kiln_kernel_unserved_reason is not None:
+      if served:
+        self.fail(
+            f"A Kiln kernel served {op_name}, so remove its"
+            f" kiln_kernel_unserved_reason: {kiln_kernel_unserved_reason}"
+        )
+      return
+    if served:
+      return
+    # The served samples may be filtered out by the dtypes or the sample limit.
+    if not runs_all_samples(max_samples_per_op_dtype):
+      print(
+          f"Not checking that a Kiln kernel served {op_name}, as --dtypes or"
+          " the sample limit filter its samples.",
+          flush=True,
+      )
+      return
+    self.fail(
+        f"No Kiln kernel served any sample of {op_name}, although it has a"
+        " registered Kiln kernel. Fix the kernel's key or compatibility"
+        " predicate, or, if no OpInfo sample can reach the kernel, set"
+        " kiln_kernel_unserved_reason."
+    )
 
 
 class TorchTpuVsCpuTestBase(TorchTpuTestBase):

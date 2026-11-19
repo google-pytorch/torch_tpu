@@ -21,12 +21,14 @@
 
 #include "absl/base/no_destructor.h"
 #include "absl/base/nullability.h"
+#include "absl/container/btree_set.h"
 #include "absl/status/status.h"
 #include "absl/types/span.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/compilation.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/shape.h"
+#include "csrc/ops/op_names.h"
 
 namespace torch_tpu {
 
@@ -70,6 +72,14 @@ UnboundedDynamicKernelRegistry::FindUnboundedDynamicKernel(
     }
   }
   return nullptr;
+}
+
+absl::btree_set<OpName> UnboundedDynamicKernelRegistry::GetOpNames() const {
+  absl::btree_set<OpName> op_names;
+  for (const auto& [key, kernel] : kernels_) {
+    op_names.insert(kernel->op_name);
+  }
+  return op_names;
 }
 
 }  // namespace torch_tpu

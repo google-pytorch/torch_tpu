@@ -34,6 +34,7 @@
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fingerprint_utils.h"
 #include "csrc/common/shape.h"
+#include "csrc/ops/op_names.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
@@ -46,6 +47,7 @@ namespace {
 using absl_testing::IsOk;
 using absl_testing::StatusIs;
 using testing::HasSubstr;
+using testing::IsSupersetOf;
 
 // The registry is a process-wide, append-only singleton, so each test
 // registers dummy kernels under its own extentless key to stay independent of
@@ -94,7 +96,8 @@ CompilationCacheKey DummyKey(const ExtentlessKey& extentless_key,
 UnboundedDynamicKernelRegistration DummyRegistration(
     const CompilationCacheKey& key,
     const UnboundedDynamicExecutionMetadata::CompatibilityFunc is_compatible,
-    std::vector<ExtentlessKey> additional_search_keys = {}) {
+    std::vector<ExtentlessKey> additional_search_keys = {},
+    const OpName op_name = OpName::kNonzero) {
   return {
       .kernel =
           UnboundedDynamicKernel{
@@ -102,6 +105,7 @@ UnboundedDynamicKernelRegistration DummyRegistration(
               .metadata = UnboundedDynamicExecutionMetadata{.is_compatible =
                                                                 is_compatible},
               .key = key,
+              .op_name = op_name,
           },
       .additional_search_keys = std::move(additional_search_keys),
   };
@@ -216,6 +220,28 @@ TEST(UnboundedDynamicKernelRegistryTest,
   EXPECT_EQ(registry.FindUnboundedDynamicKernel(other_key, {Rank2Input()},
                                                 {Output()}),
             nullptr);
+}
+
+TEST(UnboundedDynamicKernelRegistryTest, GetOpNamesReturnsRegisteredOpNames) {
+  UnboundedDynamicKernelRegistry& registry =
+      UnboundedDynamicKernelRegistry::GetInstance();
+  const ExtentlessKey extentless_key = DummyExtentlessKey("op_names");
+  ASSERT_THAT(
+      registry.RegisterKernel(DummyRegistration(
+          DummyKey(extentless_key, 1), AcceptsRank1Input, {}, OpName::kAbsOut)),
+      IsOk());
+  ASSERT_THAT(
+      registry.RegisterKernel(DummyRegistration(
+          DummyKey(extentless_key, 2), AcceptsRank2Input, {}, OpName::kAbsOut)),
+      IsOk());
+  ASSERT_THAT(
+      registry.RegisterKernel(DummyRegistration(
+          DummyKey(extentless_key, 3), AcceptsAnyInput, {}, OpName::kAcosOut)),
+      IsOk());
+
+  // The other tests register kernels too, so the op names include theirs.
+  EXPECT_THAT(registry.GetOpNames(),
+              IsSupersetOf({OpName::kAbsOut, OpName::kAcosOut}));
 }
 
 }  // namespace
