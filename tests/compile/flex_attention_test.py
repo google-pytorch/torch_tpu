@@ -86,14 +86,31 @@ def _first_block_or_batch_1(b, h, q_idx, kv_idx):
   return (b == 1) | (kv_idx < _BLOCK)
 
 
+def _prefix_lm(b, h, q_idx, kv_idx):
+  # The first 640 tokens attend bidirectionally; the rest causally.
+  del b, h
+  return (kv_idx < 640) | (q_idx >= kv_idx)
+
+
+def _causal_offset(b, h, q_idx, kv_idx):
+  # Queries are the last T of S keys (prefill after a cache of S - T).
+  del b, h
+  return q_idx + 1024 >= kv_idx
+
+
 def _alibi(score, b, h, q_idx, kv_idx):
   del b
   return score - 0.1 * (h + 1) * (q_idx - kv_idx).abs()
 
 
-def _block_mask(mask_mod, batch, seq):
+def _rel_pos(score, b, h, q_idx, kv_idx):
+  del b, h
+  return score + (q_idx - kv_idx).to(torch.float32) * 0.01
+
+
+def _block_mask(mask_mod, batch, seq, kv_seq=None):
   return fa.create_block_mask(
-      mask_mod, batch, 1, seq, seq, device="cpu", BLOCK_SIZE=_BLOCK
+      mask_mod, batch, 1, seq, kv_seq or seq, device="cpu", BLOCK_SIZE=_BLOCK
   )
 
 
@@ -142,7 +159,7 @@ class FlexAttentionKilnTest(seed_test_utils.RepeatableTest):
     """Runs the kernel and compares (out, lse) with the CPU reference."""
     scale = q.shape[-1] ** -0.5
     if block_mask is None:
-      block_mask = _block_mask(mask_mod, mask_batch, q.shape[-2])
+      block_mask = _block_mask(mask_mod, mask_batch, q.shape[-2], k.shape[-2])
     out, lse = flex_attention.flex_attention_fwd(
         q,
         k,
@@ -192,7 +209,7 @@ class FlexAttentionKilnTest(seed_test_utils.RepeatableTest):
     self.assertTrue((out[:, :, :_BLOCK] == 0).all())
     self.assertTrue((lse[:, :, :_BLOCK] == -torch.inf).all())
 
-  @parameterized.parameters(_sliding_window, _documents)
+  @parameterized.parameters(_sliding_window, _documents, _prefix_lm)
   def test_mask_mod(self, mask_mod):
     q, k, v = self._inputs(1, 2, 2, 2048, 128, torch.float32)
     self._check(q, k, v, mask_mod)
@@ -286,7 +303,7 @@ class FlexAttentionKilnTest(seed_test_utils.RepeatableTest):
 
   def _check_dkv(self, q, k, v, mask_mod, *, mask_batch=1):
     scale = q.shape[-1] ** -0.5
-    block_mask = _block_mask(mask_mod, mask_batch, q.shape[-2])
+    block_mask = _block_mask(mask_mod, mask_batch, q.shape[-2], k.shape[-2])
     out, lse = flex_attention.flex_attention_fwd(
         q, k, v, block_mask, scale=scale
     )
@@ -310,7 +327,7 @@ class FlexAttentionKilnTest(seed_test_utils.RepeatableTest):
     q, k, v = self._inputs(1, 2, 2, 2048, 128, dtype)
     self._check_dkv(q, k, v, mask_mod)
 
-  @parameterized.parameters(_sliding_window, _documents)
+  @parameterized.parameters(_sliding_window, _documents, _prefix_lm)
   def test_dkv_mask_mod(self, mask_mod):
     q, k, v = self._inputs(1, 2, 2, 2048, 128, torch.float32)
     self._check_dkv(q, k, v, mask_mod)
@@ -324,6 +341,20 @@ class FlexAttentionKilnTest(seed_test_utils.RepeatableTest):
   def test_dkv_with_fully_masked_rows(self):
     q, k, v = self._inputs(1, 1, 1, 1024, 128, torch.float32)
     self._check_dkv(q, k, v, _block_causal_empty_first_row)
+
+  def test_rel_pos_score_mod(self):
+    q, k, v = self._inputs(1, 2, 2, 1024, 128, torch.float32)
+    self._check(q, k, v, _causal, score_mod=_rel_pos)
+
+  def test_rectangular(self):
+    q, _, _ = self._inputs(1, 2, 2, 3072, 128, torch.float32)
+    _, k, v = self._inputs(1, 2, 2, 4096, 128, torch.float32)
+    self._check(q, k, v, _causal_offset)
+
+  def test_dkv_rectangular(self):
+    q, _, _ = self._inputs(1, 2, 2, 3072, 128, torch.float32)
+    _, k, v = self._inputs(1, 2, 2, 4096, 128, torch.float32)
+    self._check_dkv(q, k, v, _causal_offset)
 
 
 if __name__ == "__main__":
