@@ -16,7 +16,12 @@
 # adivinpatel04
 # ghpvnist
 
-load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_end")
+load(
+    "//build_files:build_defs.bzl",
+    "torch_tpu_cc_library",
+    "torch_tpu_cc_test",
+    "torch_tpu_package_end",
+)
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -34,6 +39,7 @@ torch_tpu_cc_library(
         "//csrc/common:dimension_types",
         "//csrc/common:dtype",
         "//csrc/common:error_utils",
+        "//csrc/common:fixed_size_span",
         "//csrc/common:to_string",
         "//csrc/common:utils",
         "//csrc/eager:device_buffer",
@@ -49,12 +55,39 @@ torch_tpu_cc_library(
         "//shims/torch:aten_headers",
         "//shims/torch/c10/core:base_headers",
         "//shims/torch/torch/headeronly:torch_headeronly",
+        "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Support",
         "@stablehlo//:stablehlo_ops",
         "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
+        "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
+        "@stablehlo//stablehlo/integrations/cpp/builder:stablehlo_builder",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "linalg_lu_kernels_test",
+    srcs = ["linalg_lu_kernels_test.cc"],
+    requires_libtpu = True,
+    deps = [
+        ":linalg_lu_kernels",
+        "//csrc/common:dimension_types",
+        "//csrc/common:error_utils",
+        "//csrc/common:oss_test_main",
+        "//csrc/common:status_test_utils",
+        "//csrc/ops:op_builder_utils",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/types:span",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Support",
+        "@stablehlo//:register",
+        "@stablehlo//:stablehlo_broadcast_lowering",
+        "@stablehlo//:stablehlo_ops",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
+        "@stablehlo//stablehlo/integrations/cpp/builder:func_builder",
         "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
         "@stablehlo//stablehlo/integrations/cpp/builder:stablehlo_builder",
     ],

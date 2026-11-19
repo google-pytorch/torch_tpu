@@ -2166,6 +2166,107 @@ def ml_layer_model_builder(
     example_inputs = raw @ raw.mH + matrix_size * eye
     if is_training:
       example_inputs = example_inputs.detach().requires_grad_(True)
+  elif model_name == "lu_unpack":
+    matrix_size = kwargs["matrix_size"]
+    unpack_data = kwargs.get("unpack_data", True)
+    unpack_pivots = kwargs.get("unpack_pivots", True)
+    input_dtype = (
+        weights_dtype
+        if weights_dtype in (
+            torch.float32,
+            torch.float64,
+            torch.complex64,
+            torch.complex128,
+        )
+        else torch.float32
+    )
+
+    class LuUnpackModel(torch.nn.Module):
+
+      def __init__(self, unpack_data: bool, unpack_pivots: bool) -> None:
+        super().__init__()
+        self.unpack_data = unpack_data
+        self.unpack_pivots = unpack_pivots
+
+      def forward(
+          self, lu: torch.Tensor, pivots: torch.Tensor
+      ) -> tuple[torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
+        return torch.lu_unpack(
+            lu,
+            pivots,
+            unpack_data=self.unpack_data,
+            unpack_pivots=self.unpack_pivots,
+        )
+
+    model = LuUnpackModel(
+        unpack_data=unpack_data,
+        unpack_pivots=unpack_pivots,
+    )
+    lu = torch.randn(
+        (batch_size, matrix_size, matrix_size),
+        dtype=input_dtype,
+        device=device,
+    )
+    pivots = (
+        torch.arange(1, matrix_size + 1, dtype=torch.int32, device=device)
+        .flip(0)
+        .unsqueeze(0)
+        .expand(batch_size, matrix_size)
+        .clone()
+    )
+    example_inputs = (lu, pivots)
+  elif model_name == "linalg_lu_solve":
+    matrix_size = kwargs["matrix_size"]
+    nrhs = kwargs["nrhs"]
+    left = kwargs.get("left", True)
+    adjoint = kwargs.get("adjoint", False)
+    input_dtype = (
+        weights_dtype
+        if weights_dtype in (
+            torch.float32,
+            torch.float64,
+            torch.complex64,
+            torch.complex128,
+        )
+        else torch.float32
+    )
+
+    class LinalgLuSolveModel(torch.nn.Module):
+
+      def __init__(self, left: bool, adjoint: bool) -> None:
+        super().__init__()
+        self.left = left
+        self.adjoint = adjoint
+
+      def forward(
+          self, lu: torch.Tensor, pivots: torch.Tensor, b: torch.Tensor
+      ) -> torch.Tensor:
+        return torch.linalg.lu_solve(
+            lu, pivots, b, left=self.left, adjoint=self.adjoint
+        )
+
+    model = LinalgLuSolveModel(left=left, adjoint=adjoint)
+    raw = torch.randn(
+        (batch_size, matrix_size, matrix_size),
+        dtype=input_dtype,
+        device=device,
+    )
+    eye = torch.eye(matrix_size, dtype=input_dtype, device=device)
+    lu = raw + matrix_size * eye
+    pivots = (
+        torch.arange(1, matrix_size + 1, dtype=torch.int32, device=device)
+        .flip(0)
+        .unsqueeze(0)
+        .expand(batch_size, matrix_size)
+        .clone()
+    )
+    b_shape = (
+        (batch_size, matrix_size, nrhs)
+        if left
+        else (batch_size, nrhs, matrix_size)
+    )
+    b = torch.randn(b_shape, dtype=input_dtype, device=device)
+    example_inputs = (lu, pivots, b)
   else:
     raise ValueError(f"Unknown ML layer model: {model_name}")
 
