@@ -30,6 +30,7 @@
 #include "csrc/common/error_utils.h"
 #include "csrc/common/shape.h"
 #include "csrc/common/unbounded_dynamic_kernel_registry.h"
+#include "csrc/ops/op_names.h"
 #include "xla/hlo/builder/xla_builder.h"
 #include "xla/hlo/builder/xla_computation.h"
 #include "xla/layout_util.h"
@@ -90,6 +91,7 @@ void RegisterDummyKernel(
                       .build = build,
                       .metadata = MakeDummyDynamicMetadata(),
                       .key = key,
+                      .op_name = OpName::kNonzero,
                       .enabled_by_default =
                           loading == DummyKernelLoading::kEnabledByDefault},
               .additional_search_keys =

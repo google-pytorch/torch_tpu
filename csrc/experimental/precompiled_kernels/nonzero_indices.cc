@@ -798,6 +798,7 @@ UnboundedDynamicKernelRegistration GetNonzeroUnboundedDynamicKernel() {
               .key = MakeUnboundedDynamicKernelCacheKey(
                   NonZeroCacheKey(kDtype, kRank),
                   static_cast<int>(GetNonzeroKernelId(kRank, kTileMinorDim))),
+              .op_name = OpName::kNonzero,
               .enabled_by_default = true,
           },
   };
