@@ -94,11 +94,11 @@ bazel_dep(name = "rules_ml_toolchain")
 
 archive_override(
     module_name = "xla",
-    integrity = "sha256-F2qwAiAtNnbMiZbcfzt+4Y6Jxq3UVRfTgiLj/mS8slM=",
+    integrity = "sha256-oFKPfygzXQuTjzUcxloRvi/3bs5obUR6PiozjImTmiI=",
     patch_strip = 1,
     patches = ["//bazel/patches/xla:remove_stablehlo_source_location.patch"],
-    strip_prefix = "xla-535f1b6d9375667393c77f05c3845b91fa60edb5",
-    urls = ["https://github.com/openxla/xla/archive/535f1b6d9375667393c77f05c3845b91fa60edb5.tar.gz"],
+    strip_prefix = "xla-c7fc9905da63f8f7bb79530f9a6e6a3588fc0857",
+    urls = ["https://github.com/openxla/xla/archive/c7fc9905da63f8f7bb79530f9a6e6a3588fc0857.tar.gz"],
 )
 
 archive_override(
