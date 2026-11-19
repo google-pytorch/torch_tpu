@@ -18,6 +18,7 @@
 
 #include <memory>
 #include <utility>
+#include <vector>
 
 #include "absl/log/absl_check.h"
 #include "absl/status/status.h"
@@ -77,17 +78,23 @@ CreateFailingExecutable(xla::PjRtClient& client,
          << "Kernel build failed.";
 }
 
-void RegisterDummyKernel(const CompilationCacheKey& key,
-                         UnboundedDynamicKernel::BuildFn build,
-                         const DummyKernelLoading loading) {
+void RegisterDummyKernel(
+    const CompilationCacheKey& key, UnboundedDynamicKernel::BuildFn build,
+    const DummyKernelLoading loading,
+    const absl::Span<const ExtentlessKey> additional_search_keys) {
   const absl::Status status =
       UnboundedDynamicKernelRegistry::GetInstance().RegisterKernel(
-          UnboundedDynamicKernel{
-              .build = build,
-              .metadata = MakeDummyDynamicMetadata(),
-              .key = key,
-              .enabled_by_default =
-                  loading == DummyKernelLoading::kEnabledByDefault});
+          UnboundedDynamicKernelRegistration{
+              .kernel =
+                  UnboundedDynamicKernel{
+                      .build = build,
+                      .metadata = MakeDummyDynamicMetadata(),
+                      .key = key,
+                      .enabled_by_default =
+                          loading == DummyKernelLoading::kEnabledByDefault},
+              .additional_search_keys =
+                  std::vector<ExtentlessKey>(additional_search_keys.begin(),
+                                             additional_search_keys.end())});
   ABSL_CHECK(status.ok() || absl::IsAlreadyExists(status))  // CRASH_OK
       << status;
 }

@@ -34,23 +34,24 @@ namespace {
 // instantiating this class directly.
 class UnboundedDynamicKernelRegistrar {
  public:
-  explicit UnboundedDynamicKernelRegistrar(UnboundedDynamicKernel kernel) {
-    Register(std::move(kernel));
+  explicit UnboundedDynamicKernelRegistrar(
+      UnboundedDynamicKernelRegistration registration) {
+    Register(std::move(registration));
   }
 
-  // Registers `kernels` in order.
+  // Registers `registrations` in order.
   explicit UnboundedDynamicKernelRegistrar(
-      std::vector<UnboundedDynamicKernel> kernels) {
-    for (UnboundedDynamicKernel& kernel : kernels) {
-      Register(std::move(kernel));
+      std::vector<UnboundedDynamicKernelRegistration> registrations) {
+    for (UnboundedDynamicKernelRegistration& registration : registrations) {
+      Register(std::move(registration));
     }
   }
 
  private:
-  static void Register(UnboundedDynamicKernel kernel) {
+  static void Register(UnboundedDynamicKernelRegistration registration) {
     ABSL_CHECK_OK(  // CRASH_OK=static-init registration bug
         UnboundedDynamicKernelRegistry::GetInstance().RegisterKernel(
-            std::move(kernel)));
+            std::move(registration)));
   }
 };
 
@@ -64,9 +65,11 @@ class UnboundedDynamicKernelRegistrar {
 //
 //   TT_REGISTER_DYNAMIC_KERNEL(GetFooUnboundedDynamicKernel());
 //
-// `kernel` is an `UnboundedDynamicKernel`, registered under its `key`. Each
-// kernel defines its key next to its builder, e.g. with
-// `MakeUnboundedDynamicKernelCacheKey`.
+// `registration` is an `UnboundedDynamicKernelRegistration`: an
+// `UnboundedDynamicKernel`, registered under its `key`, which graphs with that
+// key's extentless key find, and `additional_search_keys`, the extentless keys
+// of other graphs that can also find it. Each kernel defines its key next to
+// its builder, e.g. with `MakeUnboundedDynamicKernelCacheKey`.
 //
 // The argument is evaluated during static initialization, so it must not
 // depend on dynamically initialized globals from other translation units
@@ -74,23 +77,23 @@ class UnboundedDynamicKernelRegistrar {
 //
 // Registering two kernels under the same key is a programming error and
 // crashes at startup.
-#define TT_REGISTER_DYNAMIC_KERNEL(kernel)                              \
+#define TT_REGISTER_DYNAMIC_KERNEL(registration)                        \
   const ::torch_tpu::UnboundedDynamicKernelRegistrar                    \
   TT_REGISTER_DYNAMIC_KERNEL_CONCAT_(kUnboundedDynamicKernelRegistrar_, \
-                                     __COUNTER__)((kernel))
+                                     __COUNTER__)((registration))
 
 // Registers a list of unbounded dynamic kernels, in order, like
-// `TT_REGISTER_DYNAMIC_KERNEL`. `kernels` is a
-// `std::vector<UnboundedDynamicKernel>`:
+// `TT_REGISTER_DYNAMIC_KERNEL`. `registrations` is a
+// `std::vector<UnboundedDynamicKernelRegistration>`:
 //
 //   TT_REGISTER_DYNAMIC_KERNELS(GetNonzeroUnboundedDynamicKernels());
-#define TT_REGISTER_DYNAMIC_KERNELS(kernels)                            \
+#define TT_REGISTER_DYNAMIC_KERNELS(registrations)                      \
   const ::torch_tpu::UnboundedDynamicKernelRegistrar                    \
   TT_REGISTER_DYNAMIC_KERNEL_CONCAT_(kUnboundedDynamicKernelRegistrar_, \
-                                     __COUNTER__)((kernels))
+                                     __COUNTER__)((registrations))
 
 TT_REGISTER_DYNAMIC_KERNELS(GetNonzeroUnboundedDynamicKernels());
-TT_REGISTER_DYNAMIC_KERNELS(GetSortUnboundedDynamicKernels());
+TT_REGISTER_DYNAMIC_KERNEL(GetSortUnboundedDynamicKernel());
 
 }  // namespace
 }  // namespace torch_tpu

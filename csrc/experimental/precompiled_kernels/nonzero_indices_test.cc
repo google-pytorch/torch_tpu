@@ -21,6 +21,7 @@
 #include "csrc/common/compilation.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/shape.h"
+#include "csrc/common/unbounded_dynamic_kernel_registry.h"
 #include "gtest/gtest.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 
@@ -52,7 +53,7 @@ TEST_P(NonzeroIndicesTest, IsCompatible) {
   // first, then the 2-D one.
   const auto is_compatible =
       GetNonzeroUnboundedDynamicKernels()[GetParam().rank == 1 ? 0 : 4]
-          .metadata.is_compatible;
+          .kernel.metadata.is_compatible;
   EXPECT_EQ(is_compatible(GetParam().inputs, GetParam().outputs),
             GetParam().expected);
 }

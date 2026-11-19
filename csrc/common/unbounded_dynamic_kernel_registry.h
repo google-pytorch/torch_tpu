@@ -44,11 +44,20 @@ struct UnboundedDynamicKernel {
 
   BuildFn absl_nonnull build;
   UnboundedDynamicExecutionMetadata metadata;
+  // Identifies the kernel, and its executable in the compilation cache.
   CompilationCacheKey key;
   // Whether a cache miss may load the kernel when
   // TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS is "default" (or unset).
   // Opt-in kernels (false) are only loaded when it is "all".
   bool enabled_by_default = false;
+};
+
+// A kernel to register. Graphs with the extentless key of `kernel.key` can find
+// it, as can graphs with any of the extentless keys in
+// `additional_search_keys`.
+struct UnboundedDynamicKernelRegistration {
+  UnboundedDynamicKernel kernel;
+  std::vector<ExtentlessKey> additional_search_keys;
 };
 
 // Process-wide registry of unbounded dynamic kernels, grouped by extentless
@@ -64,10 +73,13 @@ class UnboundedDynamicKernelRegistry {
   UnboundedDynamicKernelRegistry& operator=(
       const UnboundedDynamicKernelRegistry&) = delete;
 
-  // Registers `kernel` under `kernel.key` and its extentless key. Must only be
-  // called during static initialization; it is not synchronized with lookups.
-  // Returns kAlreadyExists if a kernel is already registered under that key.
-  absl::Status RegisterKernel(UnboundedDynamicKernel kernel);
+  // Registers `registration.kernel` under its `key`, that key's extentless key
+  // and each of `registration.additional_search_keys`, so that graphs with any
+  // of them can find it and share its executable. Must only be called during
+  // static initialization; it is not synchronized with lookups. Returns
+  // kAlreadyExists if a kernel is already registered under
+  // `registration.kernel.key`.
+  absl::Status RegisterKernel(UnboundedDynamicKernelRegistration registration);
 
   // Returns the first kernel registered under `key`, in registration order,
   // whose compatibility predicate accepts the given logical input and output

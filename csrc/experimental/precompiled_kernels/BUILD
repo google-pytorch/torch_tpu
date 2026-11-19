@@ -165,6 +165,7 @@ torch_tpu_cc_test(
         "//csrc/common:dimension_types",
         "//csrc/common:oss_test_main",
         "//csrc/common:shape",
+        "//csrc/common:unbounded_dynamic_kernel_registry",
         "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
     ],
 )

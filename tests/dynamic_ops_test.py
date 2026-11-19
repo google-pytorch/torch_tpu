@@ -255,6 +255,15 @@ class DynamicOpsTest(UnboundedDynamicKernelTestBase):
 
     self.run_and_check_cache(sort, x, served=True)
 
+  def test_sort_shares_the_stable_kernel(self):
+    # Unstable sorts are served by the stable sort's kernel, so once a stable
+    # sort has loaded it, an unstable sort compiles nothing.
+    torch.tpu._clear_cache()  # pylint: disable=protected-access
+    x = _sort_case(1024, repeated=False)
+    torch.sort(torch.zeros_like(x).to("tpu"), stable=True)
+
+    self.run_and_check_cache(torch.sort, x, served=True)
+
   @parameterized.named_parameters(*_SORT_NOT_SERVED_CASES)
   def test_sort_not_served(self, x: torch.Tensor, kwargs: dict[str, Any]):
     torch.tpu._clear_cache()  # pylint: disable=protected-access

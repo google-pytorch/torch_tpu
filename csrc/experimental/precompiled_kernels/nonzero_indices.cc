@@ -694,19 +694,24 @@ ExtentlessKey NonZeroCacheKey(int64_t rank) {
 }
 
 template <int kRank, int64_t kTileMinorDim = 128>
-UnboundedDynamicKernel GetNonzeroUnboundedDynamicKernel(NonzeroKernelId id) {
-  return UnboundedDynamicKernel{
-      .build = BuildNonzeroIndicesExecutable<kRank, kTileMinorDim>,
-      .metadata = MakeNonzeroDynamicMetadata<kRank, kTileMinorDim>(),
-      .key = MakeUnboundedDynamicKernelCacheKey(NonZeroCacheKey(kRank),
-                                                static_cast<int>(id)),
-      .enabled_by_default = true,
+UnboundedDynamicKernelRegistration GetNonzeroUnboundedDynamicKernel(
+    NonzeroKernelId id) {
+  return {
+      .kernel =
+          UnboundedDynamicKernel{
+              .build = BuildNonzeroIndicesExecutable<kRank, kTileMinorDim>,
+              .metadata = MakeNonzeroDynamicMetadata<kRank, kTileMinorDim>(),
+              .key = MakeUnboundedDynamicKernelCacheKey(NonZeroCacheKey(kRank),
+                                                        static_cast<int>(id)),
+              .enabled_by_default = true,
+          },
   };
 }
 
 }  // namespace
 
-std::vector<UnboundedDynamicKernel> GetNonzeroUnboundedDynamicKernels() {
+std::vector<UnboundedDynamicKernelRegistration>
+GetNonzeroUnboundedDynamicKernels() {
   return {GetNonzeroUnboundedDynamicKernel<1, 1024>(
               NonzeroKernelId::kNonzeroInputMinorTile1024),
           GetNonzeroUnboundedDynamicKernel<1, 512>(

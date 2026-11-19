@@ -25,8 +25,8 @@ namespace torch_tpu {
 
 // Returns the Mosaic nonzero indices kernels, 1-D to 8-D, for registration
 // with `UnboundedDynamicKernelRegistry` in that order. Each is keyed under the
-// extentless key of a nonzero graph with an F32 input of its rank. The
-// predicate excludes only +0.0 and -0.0, matching torch.nonzero.
+// extentless key of the graphs it serves: nonzero graphs with an F32 input of
+// its rank. The predicate excludes only +0.0 and -0.0, matching torch.nonzero.
 //
 // Buffer contracts (all payloads have no dynamic-metadata prefix). The input is
 // the only buffer the caller supplies; `Execute` allocates the destination
@@ -70,7 +70,8 @@ namespace torch_tpu {
 //     to {1,0} when K <= P.
 //   - Caller-checked arithmetic bounds: every dimension is at most INT32_MAX,
 //     N <= INT32_MAX - 127, and P < K <= min(element count, INT32_MAX).
-std::vector<UnboundedDynamicKernel> GetNonzeroUnboundedDynamicKernels();
+std::vector<UnboundedDynamicKernelRegistration>
+GetNonzeroUnboundedDynamicKernels();
 
 }  // namespace torch_tpu
 

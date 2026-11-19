@@ -51,12 +51,9 @@ using SortTest = ::testing::TestWithParam<TestCase>;
 // dtypes of the operands; this covers the size and layout checks that Python
 // can't reach.
 TEST_P(SortTest, IsCompatible) {
-  for (const UnboundedDynamicKernel& kernel :
-       GetSortUnboundedDynamicKernels()) {
-    EXPECT_EQ(
-        kernel.metadata.is_compatible(GetParam().inputs, GetParam().outputs),
-        GetParam().expected);
-  }
+  EXPECT_EQ(GetSortUnboundedDynamicKernel().kernel.metadata.is_compatible(
+                GetParam().inputs, GetParam().outputs),
+            GetParam().expected);
 }
 
 INSTANTIATE_TEST_SUITE_P(SortTests, SortTest,

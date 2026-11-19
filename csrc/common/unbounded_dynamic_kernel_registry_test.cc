@@ -19,6 +19,8 @@
 #include <cstdint>
 #include <memory>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
@@ -86,14 +88,22 @@ CompilationCacheKey DummyKey(const ExtentlessKey& extentless_key,
                              CompileOptionsKey({}));
 }
 
-UnboundedDynamicKernel DummyKernel(
-    CompilationCacheKey key,
-    UnboundedDynamicExecutionMetadata::CompatibilityFunc is_compatible) {
-  return UnboundedDynamicKernel{
-      .build = &BuildDummyKernel,
-      .metadata =
-          UnboundedDynamicExecutionMetadata{.is_compatible = is_compatible},
-      .key = key,
+// Returns a registration of a dummy kernel under `key`, for graphs with `key`'s
+// extentless key or any of `additional_search_keys` whose shapes
+// `is_compatible` accepts.
+UnboundedDynamicKernelRegistration DummyRegistration(
+    const CompilationCacheKey& key,
+    const UnboundedDynamicExecutionMetadata::CompatibilityFunc is_compatible,
+    std::vector<ExtentlessKey> additional_search_keys = {}) {
+  return {
+      .kernel =
+          UnboundedDynamicKernel{
+              .build = &BuildDummyKernel,
+              .metadata = UnboundedDynamicExecutionMetadata{.is_compatible =
+                                                                is_compatible},
+              .key = key,
+          },
+      .additional_search_keys = std::move(additional_search_keys),
   };
 }
 
@@ -113,13 +123,14 @@ TEST(UnboundedDynamicKernelRegistryTest,
   const CompilationCacheKey rank2_key = DummyKey(extentless_key, 2);
   const CompilationCacheKey any_key = DummyKey(extentless_key, 3);
   ASSERT_THAT(
-      registry.RegisterKernel(DummyKernel(rank1_key, AcceptsRank1Input)),
+      registry.RegisterKernel(DummyRegistration(rank1_key, AcceptsRank1Input)),
       IsOk());
   ASSERT_THAT(
-      registry.RegisterKernel(DummyKernel(rank2_key, AcceptsRank2Input)),
+      registry.RegisterKernel(DummyRegistration(rank2_key, AcceptsRank2Input)),
       IsOk());
-  ASSERT_THAT(registry.RegisterKernel(DummyKernel(any_key, AcceptsAnyInput)),
-              IsOk());
+  ASSERT_THAT(
+      registry.RegisterKernel(DummyRegistration(any_key, AcceptsAnyInput)),
+      IsOk());
 
   // The incompatible rank-1 kernel is skipped, and the rank-2 kernel is
   // returned rather than the later, also compatible, catch-all kernel.
@@ -141,8 +152,8 @@ TEST(UnboundedDynamicKernelRegistryTest,
   UnboundedDynamicKernelRegistry& registry =
       UnboundedDynamicKernelRegistry::GetInstance();
   const ExtentlessKey extentless_key = DummyExtentlessKey("no_match");
-  ASSERT_THAT(registry.RegisterKernel(
-                  DummyKernel(DummyKey(extentless_key), AcceptsRank1Input)),
+  ASSERT_THAT(registry.RegisterKernel(DummyRegistration(
+                  DummyKey(extentless_key), AcceptsRank1Input)),
               IsOk());
 
   // No kernel is registered under the extentless key.
@@ -161,11 +172,12 @@ TEST(UnboundedDynamicKernelRegistryTest, RegisterKernelRejectsDuplicateKey) {
       UnboundedDynamicKernelRegistry::GetInstance();
   const ExtentlessKey extentless_key = DummyExtentlessKey("duplicate_key");
   const CompilationCacheKey key = DummyKey(extentless_key);
-  ASSERT_THAT(registry.RegisterKernel(DummyKernel(key, AcceptsRank1Input)),
-              IsOk());
+  ASSERT_THAT(
+      registry.RegisterKernel(DummyRegistration(key, AcceptsRank1Input)),
+      IsOk());
 
   EXPECT_THAT(
-      registry.RegisterKernel(DummyKernel(key, AcceptsRank2Input)),
+      registry.RegisterKernel(DummyRegistration(key, AcceptsRank2Input)),
       StatusIs(error::kAlreadyExists,
                HasSubstr("an unbounded dynamic kernel is already registered "
                          "for key")));
@@ -178,6 +190,32 @@ TEST(UnboundedDynamicKernelRegistryTest, RegisterKernelRejectsDuplicateKey) {
       extentless_key, {Rank1Input()}, {Output()});
   ASSERT_NE(first, nullptr);
   EXPECT_EQ(first->metadata.is_compatible, &AcceptsRank1Input);
+}
+
+TEST(UnboundedDynamicKernelRegistryTest,
+     FindUnboundedDynamicKernelFindsAKernelThroughEachOfItsExtentlessKeys) {
+  UnboundedDynamicKernelRegistry& registry =
+      UnboundedDynamicKernelRegistry::GetInstance();
+  const ExtentlessKey own_key = DummyExtentlessKey("several_keys_kernel");
+  const ExtentlessKey other_key = DummyExtentlessKey("several_keys_other");
+  const CompilationCacheKey key = DummyKey(own_key);
+  ASSERT_THAT(registry.RegisterKernel(
+                  DummyRegistration(key, AcceptsRank1Input, {other_key})),
+              IsOk());
+
+  // The extentless key of the kernel's own key finds it.
+  const UnboundedDynamicKernel* found =
+      registry.FindUnboundedDynamicKernel(own_key, {Rank1Input()}, {Output()});
+  ASSERT_NE(found, nullptr);
+  EXPECT_EQ(found->key, key);
+  // The other extentless key finds the same kernel, if its compatibility
+  // predicate accepts the shapes.
+  EXPECT_EQ(registry.FindUnboundedDynamicKernel(other_key, {Rank1Input()},
+                                                {Output()}),
+            found);
+  EXPECT_EQ(registry.FindUnboundedDynamicKernel(other_key, {Rank2Input()},
+                                                {Output()}),
+            nullptr);
 }
 
 }  // namespace

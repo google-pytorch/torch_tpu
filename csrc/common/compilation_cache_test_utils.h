@@ -20,6 +20,7 @@
 #include <memory>
 
 #include "absl/status/statusor.h"
+#include "absl/types/span.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/compilation.h"
 #include "csrc/common/compilation_spec.h"
@@ -55,15 +56,17 @@ enum class DummyKernelLoading {
 
 // Registers a kernel built by `build` with `MakeDummyDynamicMetadata()` under
 // `key`, ignoring kAlreadyExists so that tests sharing a process can register
-// the same key repeatedly. The registry is process-wide and append-only, so
-// tests must use keys that are unique to the behaviour they exercise. Unlike
-// production kernels, dummy kernels are enabled by default unless `loading`
-// says otherwise; re-registering a key keeps its first registration's
-// `loading`.
+// the same key repeatedly. Graphs with `key`'s extentless key, or one of
+// `additional_search_keys`, can find it. The registry is process-wide and
+// append-only, so tests must use keys that are unique to the behaviour they
+// exercise. Unlike production kernels, dummy kernels are enabled by default
+// unless `loading` says otherwise; re-registering a key keeps its first
+// registration.
 void RegisterDummyKernel(
     const CompilationCacheKey& key,
     UnboundedDynamicKernel::BuildFn build = CreateDummyExecutable,
-    DummyKernelLoading loading = DummyKernelLoading::kEnabledByDefault);
+    DummyKernelLoading loading = DummyKernelLoading::kEnabledByDefault,
+    absl::Span<const ExtentlessKey> additional_search_keys = {});
 
 }  // namespace torch_tpu
 

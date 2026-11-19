@@ -36,14 +36,19 @@ UnboundedDynamicKernelRegistry& UnboundedDynamicKernelRegistry::GetInstance() {
 }
 
 absl::Status UnboundedDynamicKernelRegistry::RegisterKernel(
-    UnboundedDynamicKernel kernel) {
+    UnboundedDynamicKernelRegistration registration) {
   TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=unreachable from Python.
-      !kernels_.contains(kernel.key), error::kAlreadyExists)
+      !kernels_.contains(registration.kernel.key), error::kAlreadyExists)
       << "an unbounded dynamic kernel is already registered for key "
-      << kernel.key;
-  const ExtentlessKey extentless_key = kernel.key.graph_key().extentless_key();
-  auto owned = std::make_unique<UnboundedDynamicKernel>(std::move(kernel));
-  extentless_map_[extentless_key].push_back(owned.get());
+      << registration.kernel.key;
+  auto owned =
+      std::make_unique<UnboundedDynamicKernel>(std::move(registration.kernel));
+  extentless_map_[owned->key.graph_key().extentless_key()].push_back(
+      owned.get());
+  for (const ExtentlessKey& extentless_key :
+       registration.additional_search_keys) {
+    extentless_map_[extentless_key].push_back(owned.get());
+  }
   const CompilationCacheKey key = owned->key;
   kernels_.emplace(key, std::move(owned));
   return absl::OkStatus();

@@ -17,20 +17,18 @@
 #ifndef TORCH_TPU_CSRC_EXPERIMENTAL_PRECOMPILED_KERNELS_SORT_SORT_H_
 #define TORCH_TPU_CSRC_EXPERIMENTAL_PRECOMPILED_KERNELS_SORT_SORT_H_
 
-#include <vector>
-
 #include "csrc/common/unbounded_dynamic_kernel_registry.h"
 
 namespace torch_tpu {
 
-// Returns the Mosaic sort kernels, for registration with
-// `UnboundedDynamicKernelRegistry`. They are opt-in, so they only run when
+// Returns the Mosaic sort kernel, for registration with
+// `UnboundedDynamicKernelRegistry`. It is opt-in, so it only runs when
 // TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS is "all".
 //
-// For now they serve `torch.sort(x)` and `torch.sort(x, stable=True)` of a
-// 1-D int32 tensor of exactly 1024 elements: ascending, along dim -1. The sort
-// is stable in both cases.
-std::vector<UnboundedDynamicKernel> GetSortUnboundedDynamicKernels();
+// For now it serves `torch.sort(x)` and `torch.sort(x, stable=True)` of a 1-D
+// int32 tensor of exactly 1024 elements: ascending, along dim -1. Its sort is
+// stable, so both share one executable.
+UnboundedDynamicKernelRegistration GetSortUnboundedDynamicKernel();
 
 }  // namespace torch_tpu
 

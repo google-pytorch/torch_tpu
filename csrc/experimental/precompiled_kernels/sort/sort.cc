@@ -52,8 +52,9 @@ using kiln::Tile;
 // kernel's `CompilationCacheKey`, which is persisted in the names of tier-2
 // cache entries, so values must never be reused or renumbered.
 enum class SortKernelId : int {
-  kSort1024Unstable = 1,
-  kSort1024Stable = 2,
+  // 1 identified a separate kernel for unstable sorts, which kSort1024 now
+  // serves.
+  kSort1024 = 2,
 };
 
 constexpr int64_t kRows = 8;
@@ -260,23 +261,27 @@ ExtentlessKey SortCacheKey(std::optional<bool> stable_opt, int64_t dim,
   return graph.GetKey().extentless_key();
 }
 
-UnboundedDynamicKernel GetSortKernel(std::optional<bool> stable_opt,
-                                     SortKernelId id) {
-  return UnboundedDynamicKernel{
-      .build = BuildSortExecutable,
-      .metadata = MakeSortMetadata(),
-      .key = MakeUnboundedDynamicKernelCacheKey(
-          SortCacheKey(stable_opt, /*dim=*/-1, /*descending=*/false),
-          static_cast<int>(id)),
-      .enabled_by_default = false,
-  };
-}
-
 }  // namespace
 
-std::vector<UnboundedDynamicKernel> GetSortUnboundedDynamicKernels() {
-  return {GetSortKernel(false, SortKernelId::kSort1024Unstable),
-          GetSortKernel(true, SortKernelId::kSort1024Stable)};
+UnboundedDynamicKernelRegistration GetSortUnboundedDynamicKernel() {
+  const ExtentlessKey stable_key =
+      SortCacheKey(/*stable_opt=*/true, /*dim=*/-1, /*descending=*/false);
+  const ExtentlessKey unstable_key =
+      SortCacheKey(/*stable_opt=*/false, /*dim=*/-1, /*descending=*/false);
+  UnboundedDynamicKernel kernel = {
+      .build = BuildSortExecutable,
+      .metadata = MakeSortMetadata(),
+      // Keyed like stable sorts were when they had a kernel of their
+      // own, so that its persisted cache entries stay valid.
+      .key = MakeUnboundedDynamicKernelCacheKey(
+          stable_key, static_cast<int>(SortKernelId::kSort1024)),
+      .enabled_by_default = false,
+  };
+  // Unstable sorts also find it, through their own extentless key.
+  return {
+      .kernel = std::move(kernel),
+      .additional_search_keys = {unstable_key},
+  };
 }
 
 }  // namespace torch_tpu
