@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <memory>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "absl/status/statusor.h"
@@ -34,13 +35,22 @@
 #include "xla/hlo/ir/hlo_schedule.h"
 #include "xla/service/hlo_module_config.h"
 #include "xla/shape.h"
+#include "xla/shape_util.h"
 
 namespace torch_tpu {
+namespace {
 
-absl::StatusOr<std::unique_ptr<xla::HloModule>> BuildMosaicCustomCall(
+// A result that must alias operand `parameter`: the whole result if `output`
+// is {}, or element i of a tuple result if it is {i}.
+struct ResultAlias {
+  xla::ShapeIndex output;
+  int64_t parameter;
+};
+
+absl::StatusOr<std::unique_ptr<xla::HloModule>> BuildCustomCall(
     std::string_view serialized_kernel, absl::Span<const xla::Shape> parameters,
     const xla::Shape& result, absl::Span<const int64_t> operand_to_metadata,
-    int aliased_parameter) {
+    absl::Span<const ResultAlias> aliases) {
   xla::HloComputation::Builder builder("main");
   std::vector<xla::HloInstruction*> operands;
   for (const auto& shape : parameters) {
@@ -58,8 +68,16 @@ absl::StatusOr<std::unique_ptr<xla::HloModule>> BuildMosaicCustomCall(
       R"(","serialization_format":1,"needs_layout_passes":true,)"
       R"("needs_hlo_passes":false,"operand_to_metadata":[)",
       absl::StrJoin(operand_to_metadata, ","), "]}}"));
-  if (aliased_parameter >= 0) {
-    call->set_output_to_operand_aliasing({{{}, {aliased_parameter, {}}}});
+  std::vector<
+      std::pair<xla::ShapeIndex,  // STD_PAIR_OK=dictated by XLA.
+                std::pair<int64_t, xla::ShapeIndex>>>  // STD_PAIR_OK=ditto.
+      aliasing;
+  aliasing.reserve(aliases.size());
+  for (const ResultAlias& alias : aliases) {
+    aliasing.push_back({alias.output, {alias.parameter, {}}});
+  }
+  if (!aliasing.empty()) {
+    call->set_output_to_operand_aliasing(std::move(aliasing));
   }
   xla::HloModuleConfig config;
   config.set_use_spmd_partitioning(false);
@@ -74,14 +92,42 @@ absl::StatusOr<std::unique_ptr<xla::HloModule>> BuildMosaicCustomCall(
   schedule.set_sequence(entry, entry->MakeInstructionPostOrder());
   TT_RETURN_IF_ERROR(AdaptXlaError(hlo->set_schedule(schedule),
                                    "failed to schedule dynamic kernel"));
-  if (aliased_parameter >= 0) {
+  for (const ResultAlias& alias : aliases) {
     TT_RETURN_IF_ERROR(
         AdaptXlaError(hlo->input_output_alias_config().SetUpAlias(
-                          {}, aliased_parameter, {},
+                          alias.output, alias.parameter, {},
                           xla::HloInputOutputAliasConfig::kMustAlias),
                       "failed to alias private output"));
   }
   return hlo;
+}
+
+}  // namespace
+
+absl::StatusOr<std::unique_ptr<xla::HloModule>> BuildMosaicCustomCall(
+    std::string_view serialized_kernel, absl::Span<const xla::Shape> parameters,
+    const xla::Shape& result, absl::Span<const int64_t> operand_to_metadata,
+    int aliased_parameter) {
+  std::vector<ResultAlias> aliases;
+  if (aliased_parameter >= 0) {
+    aliases.push_back({.output = {}, .parameter = aliased_parameter});
+  }
+  return BuildCustomCall(serialized_kernel, parameters, result,
+                         operand_to_metadata, aliases);
+}
+
+absl::StatusOr<std::unique_ptr<xla::HloModule>> BuildMosaicTupleCustomCall(
+    std::string_view serialized_kernel, absl::Span<const xla::Shape> parameters,
+    const xla::Shape& result, absl::Span<const int64_t> operand_to_metadata,
+    absl::Span<const int64_t> aliased_parameters) {
+  std::vector<ResultAlias> aliases;
+  for (int64_t i = 0; i < aliased_parameters.size(); ++i) {
+    if (aliased_parameters[i] >= 0) {
+      aliases.push_back({.output = {i}, .parameter = aliased_parameters[i]});
+    }
+  }
+  return BuildCustomCall(serialized_kernel, parameters, result,
+                         operand_to_metadata, aliases);
 }
 
 }  // namespace torch_tpu

@@ -30,6 +30,7 @@
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_executable.h"
 #include "xla/shape.h"
+#include "xla/xla_data.pb.h"
 
 namespace torch_tpu {
 
@@ -40,14 +41,21 @@ namespace torch_tpu {
 CompilationCacheKey MakeUnboundedDynamicKernelCacheKey(ExtentlessKey key,
                                                        int id_key);
 
-// Compiles a Mosaic kernel, wrapped by `BuildMosaicCustomCall` with the other
-// arguments, for exactly the given input and output shapes and layouts: only
-// the backend runs, so no HLO pass changes them.
+// Compiles a Mosaic kernel, wrapped in a custom call (see
+// mosaic_custom_call.h) with the other arguments, for exactly the given input
+// and output shapes and layouts: only the backend runs, so no HLO pass changes
+// them. Element i of a tuple `output`, or a non-tuple `output` for i = 0, must
+// alias input `aliased_parameters[i]`, unless that is negative or absent.
 absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>> CompileMosaicKernel(
     xla::PjRtClient& client, UniqueCompileOptions compile_options,
     kiln::Kernel kernel, absl::Span<const xla::Shape> inputs,
     const xla::Shape& output, absl::Span<const int64_t> operand_to_metadata,
-    int aliased_parameter = -1);
+    absl::Span<const int64_t> aliased_parameters = {});
+
+// Returns an unbounded dynamic shape of rank `rank` with a row-major layout
+// tiled by `tile`.
+xla::Shape MakeUnboundedShape(xla::PrimitiveType type, int64_t rank,
+                              const xla::Tile& tile);
 
 // Whether `shapes` resolve to exactly the on-device `layouts`, e.g. those a
 // kernel was compiled for.

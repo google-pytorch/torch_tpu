@@ -27,6 +27,7 @@
 #include "csrc/common/cache_key.h"
 #include "csrc/common/compilation_spec.h"
 #include "csrc/common/compile_options_key.h"
+#include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/layout_utils.h"
 #include "csrc/common/shape.h"
@@ -39,6 +40,8 @@
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_executable.h"
 #include "xla/shape.h"
+#include "xla/shape_util.h"
+#include "xla/xla_data.pb.h"
 
 namespace torch_tpu {
 
@@ -52,13 +55,19 @@ absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>> CompileMosaicKernel(
     xla::PjRtClient& client, UniqueCompileOptions compile_options,
     kiln::Kernel kernel, absl::Span<const xla::Shape> inputs,
     const xla::Shape& output, absl::Span<const int64_t> operand_to_metadata,
-    int aliased_parameter) {
+    absl::Span<const int64_t> aliased_parameters) {
   TT_ASSIGN_OR_RETURN(const std::string serialized_kernel,
                       std::move(kernel).Serialize());
   TT_ASSIGN_OR_RETURN(
       const std::unique_ptr<xla::HloModule> hlo,
-      BuildMosaicCustomCall(serialized_kernel, inputs, output,
-                            operand_to_metadata, aliased_parameter));
+      output.IsTuple()
+          ? BuildMosaicTupleCustomCall(serialized_kernel, inputs, output,
+                                       operand_to_metadata, aliased_parameters)
+          : BuildMosaicCustomCall(
+                serialized_kernel, inputs, output, operand_to_metadata,
+                aliased_parameters.empty()
+                    ? -1
+                    : static_cast<int>(aliased_parameters[0])));
   xla::ExecutableBuildOptions& build =
       compile_options->executable_build_options;
   build.set_run_backend_only(true);
@@ -69,6 +78,15 @@ absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>> CompileMosaicKernel(
   return AdaptXlaError(
       client.CompileAndLoad(computation, std::move(*compile_options)),
       /*context=*/"failed to compile the Mosaic kernel");
+}
+
+xla::Shape MakeUnboundedShape(const xla::PrimitiveType type, const int64_t rank,
+                              const xla::Tile& tile) {
+  xla::Shape shape = xla::ShapeUtil::MakeShape(
+      type, Dimensions(rank, xla::Shape::kUnboundedSize),
+      std::vector<bool>(rank, true));
+  *shape.mutable_layout()->add_tiles() = tile;
+  return shape;
 }
 
 bool HasDeviceLayouts(absl::Span<const Shape> shapes,

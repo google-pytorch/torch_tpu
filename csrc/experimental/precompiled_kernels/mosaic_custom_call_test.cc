@@ -22,12 +22,14 @@
 #include <utility>
 #include <vector>
 
-#include "absl/status/statusor.h"
-#include "csrc/common/error_utils.h"
 #include "csrc/common/status_test_utils.h"
 #include "csrc/experimental/precompiled_kernels/kernel_test_utils.h"
 #include "csrc/internal/mosaic/kiln/kiln.h"
+#include "gmock/gmock.h"
 #include "gtest/gtest.h"
+#include "xla/hlo/ir/hlo_input_output_alias_config.h"
+#include "xla/hlo/ir/hlo_instruction.h"
+#include "xla/hlo/ir/hlo_module.h"
 #include "xla/literal.h"
 #include "xla/literal_util.h"
 #include "xla/pjrt/pjrt_executable.h"
@@ -38,6 +40,9 @@
 
 namespace torch_tpu {
 namespace {
+
+using ::testing::ElementsAre;
+using ::testing::Pair;
 
 TEST(DynamicMosaic, CopiesDifferentShapesWithOneExecutable) {
   TT_ASSERT_OK_AND_ASSIGN(auto client, CreateKernelTestClient());
@@ -123,6 +128,28 @@ TEST(DynamicMosaic, CopiesDifferentShapesWithOneExecutable) {
     TT_ASSERT_OK_AND_ASSIGN(auto result, outputs[0]->ToLiteral().Await());
     EXPECT_EQ(*result, input);
   }
+}
+
+// Each element of a tuple result aliases its own operand, both on the custom
+// call (so Mosaic finds the element's metadata) and on the module (so the
+// runtime donates the buffer).
+TEST(BuildMosaicTupleCustomCall, AliasesEachElementToItsOperand) {
+  const xla::Shape shape = xla::ShapeUtil::MakeShape(xla::F32, {8, 128});
+  TT_ASSERT_OK_AND_ASSIGN(
+      const std::unique_ptr<xla::HloModule> hlo,
+      BuildMosaicTupleCustomCall(
+          /*serialized_kernel=*/"", {shape, shape, shape},
+          xla::ShapeUtil::MakeTupleShape({shape, shape}),
+          /*operand_to_metadata=*/{}, /*aliased_parameters=*/{2, 1}));
+
+  EXPECT_THAT(
+      hlo->entry_computation()->root_instruction()->output_operand_aliasing(),
+      ElementsAre(Pair(xla::ShapeIndex({0}), Pair(2, xla::ShapeIndex())),
+                  Pair(xla::ShapeIndex({1}), Pair(1, xla::ShapeIndex()))));
+  const xla::HloInputOutputAliasConfig& config =
+      hlo->input_output_alias_config();
+  EXPECT_EQ(config.GetAliasedOutput(2, {}), xla::ShapeIndex({0}));
+  EXPECT_EQ(config.GetAliasedOutput(1, {}), xla::ShapeIndex({1}));
 }
 
 }  // namespace

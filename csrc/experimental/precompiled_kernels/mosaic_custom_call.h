@@ -40,6 +40,13 @@ absl::StatusOr<std::unique_ptr<xla::HloModule>> BuildMosaicCustomCall(
     const xla::Shape& result, absl::Span<const int64_t> operand_to_metadata,
     int aliased_parameter = -1);
 
+// As `BuildMosaicCustomCall`, for a tuple `result`: element i must alias
+// operand `aliased_parameters[i]`, unless that is negative.
+absl::StatusOr<std::unique_ptr<xla::HloModule>> BuildMosaicTupleCustomCall(
+    std::string_view serialized_kernel, absl::Span<const xla::Shape> parameters,
+    const xla::Shape& result, absl::Span<const int64_t> operand_to_metadata,
+    absl::Span<const int64_t> aliased_parameters);
+
 }  // namespace torch_tpu
 
 #endif  // TORCH_TPU_CSRC_EXPERIMENTAL_PRECOMPILED_KERNELS_MOSAIC_CUSTOM_CALL_H_
