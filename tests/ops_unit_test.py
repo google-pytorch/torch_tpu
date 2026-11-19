@@ -16467,13 +16467,6 @@ module {{
         single-token ragged dimension (M=1 / N=1 / K=1).
       out_dtype: The output dtype.
     """
-    if layout in ("2d_3d", "3d_2d") and group_sizes == [1, 0, 0, 0]:
-      # TODO(b/587720267): Re-enable once XLA:TPU RegroupDynamicDimRangeChunks
-      # supports source_extent=1.
-      self.skipTest(
-          "b/587720267: XLA:TPU RegroupDynamicDimRangeChunks aborts on"
-          " single-token 2d_3d and 3d_2d layouts."
-      )
     a, b, scale_a, scale_b, offs = self._make_rowwise_inputs(
         layout, group_sizes
     )
