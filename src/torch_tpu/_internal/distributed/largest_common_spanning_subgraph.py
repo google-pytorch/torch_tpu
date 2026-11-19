@@ -14,6 +14,7 @@
 
 """Finds common partitions between `torch.fx` graphs."""
 
+import bisect
 import collections
 from collections.abc import Iterable, Sequence
 import graphlib
@@ -220,8 +221,9 @@ def _is_valid_partition(
 ) -> bool:
   """Returns whether `split_module` builds identical submodules for `members`.
 
-  Each tuple in `members` must already pass `_nodes_match`. Growth reaches each
-  member through one input or user, so this checks that all graphs agree on:
+  Each tuple in `members` must already pass `_nodes_match`, and `members` must
+  be in the node order of `graphs[0]`. Growth reaches each member through one
+  input or user, so this checks that all graphs agree on:
 
   *   Node order, since `split_module` copies nodes in graph order. If `sin(x)`
       and `cos(y)` both feed `add(sin, cos)` but run in opposite orders, the
@@ -233,11 +235,6 @@ def _is_valid_partition(
       submodule input, while `add(x, y)` reads two.
   *   Outputs, which `_outputs_match` checks.
   """
-  # TODO(b/553332536): Keep `members` sorted as they are built instead of
-  # sorting on every call.
-  members = sorted(
-      members, key=lambda member: node_positions_in_graph[0][member[0]]
-  )
   index_per_graph: list[dict[fx.Node, int]] = []
   reads_per_graph: list[list[tuple[bool, int]]] = []
   for graph_index, node_positions in enumerate(node_positions_in_graph):
@@ -316,13 +313,15 @@ def _assign_if_valid(
     partition_maps: Sequence[_PartitionMap],
     partition_id: int,
     members: list[_NodePerGraph],
+    candidate: _NodePerGraph,
 ) -> list[_PartitionMap] | None:
-  """Returns `partition_maps` with `members` in `partition_id`, if valid.
+  """Returns `partition_maps` with `candidate` in `partition_id`, if valid.
 
   Valid means `split_module` builds the same submodule for `members` on every
   graph, and one run order of all partitions still fits every graph. Returns
-  `None` otherwise. Assumes `members[:-1]` are already in `partition_id` in
-  `partition_maps`. Does not modify `partition_maps`.
+  `None` otherwise. Assumes `candidate` is in `members` and all other tuples in
+  `members` are already in `partition_id` in `partition_maps`. Does not modify
+  `partition_maps`.
   """
   # TODO(b/553332536): Re-checking the whole partition and re-sorting every
   # graph for each candidate makes growth quadratic. Only the new member's
@@ -330,7 +329,7 @@ def _assign_if_valid(
   if not _is_valid_partition(members, node_positions_in_graph):
     return None
   new_partition_maps = [dict(partition_map) for partition_map in partition_maps]
-  for partition_map, node in zip(new_partition_maps, members[-1], strict=True):
+  for partition_map, node in zip(new_partition_maps, candidate, strict=True):
     partition_map[node] = partition_id
   if _partition_order(graphs, new_partition_maps) is None:
     return None
@@ -385,6 +384,7 @@ def _grow_partitions(
         partition_maps,
         partition_id,
         [anchor],
+        anchor,
     )
     if new_partition_maps is None:
       continue
@@ -412,13 +412,20 @@ def _grow_partitions(
         }
         if len(candidate_anchor_indices) > 1:
           continue
-        members = [*partitions[partition_id], candidate]
+        first_graph_positions = node_positions_in_graph[0]
+        members = list(partitions[partition_id])
+        bisect.insort(
+            members,
+            candidate,
+            key=lambda member: first_graph_positions[member[0]],
+        )
         new_partition_maps = _assign_if_valid(
             graphs,
             node_positions_in_graph,
             partition_maps,
             partition_id,
             members,
+            candidate,
         )
         if new_partition_maps is not None:
           partition_maps = new_partition_maps
