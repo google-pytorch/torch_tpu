@@ -5287,6 +5287,28 @@ module {
       torch.nonzero_static(t, size=2, out=t)
 
   @et.why_tpu_only(
+      "CUDA masked_select.out expands broadcast inputs before index_out,"
+      " missing overlap on broadcasted self or mask, whereas CPU and TPU"
+      " check before broadcasting."
+  )
+  def test_masked_select_out_broadcast_memory_overlap(self):
+    t = torch.tensor([2.0], device=et.device())
+    mask = torch.tensor([True, False, True, False], device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.""",
+    ):
+      torch.masked_select(t, mask, out=t)
+
+    t_bool = torch.tensor([True, False, True, True], device=et.device())
+    mask_scalar = torch.tensor([True], device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.""",
+    ):
+      torch.masked_select(t_bool, mask_scalar, out=mask_scalar)
+
+  @et.why_tpu_only(
       "Tensor repeats validates output_size against the host-synchronized sum"
       " of repeats synchronously on TPU."
   )
