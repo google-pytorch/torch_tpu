@@ -38,10 +38,6 @@ on:
         description: 'The pip index URL to download the torch wheel from'
         type: string
         default: 'https://download.pytorch.org/whl/nightly/cpu'
-  pull_request:
-    branches:
-      - main
-    types: [opened, synchronize, reopened, labeled]
   schedule:
     - cron: '0 7 * * *'  # Run automatically every day at 0:00 AM PDT
 
@@ -129,8 +125,8 @@ jobs:
             --config=${{ matrix.job_info.config }} \
             --config=local_torch \
             --repo_env=TORCH_SOURCE="$TORCH_SOURCE" \
+            --repo_env=TORCH_TPU_INTERNAL_PYTORCH_TEST_DIR="$GITHUB_WORKSPACE/pytorch/test" \
             --run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh" \
-            --test_env=TORCH_TPU_INTERNAL_PYTORCH_TEST_DIR="$GITHUB_WORKSPACE/pytorch/test" \
             --keep_going \
             ${TORCH_TEST_TARGETS}
           # shellcheck disable=SC2086
@@ -138,7 +134,7 @@ jobs:
             --config=${{ matrix.job_info.config }} \
             --config=local_torch \
             --repo_env=TORCH_SOURCE="$TORCH_SOURCE" \
+            --repo_env=TORCH_TPU_INTERNAL_PYTORCH_TEST_DIR="$GITHUB_WORKSPACE/pytorch/test" \
             --run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh" \
-            --test_env=TORCH_TPU_INTERNAL_PYTORCH_TEST_DIR="$GITHUB_WORKSPACE/pytorch/test" \
             --keep_going \
             ${TORCH_TEST_TARGETS}

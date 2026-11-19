@@ -144,6 +144,13 @@ TEST_MODULE_SHARDS: Final[Mapping[str, int]] = {
     # go/keep-sorted end
 }
 
+
+def torch_test_target_name(test_module: str) -> str:
+  """Returns the normalized Bazel target name for a PyTorch test module."""
+  *dirs, basename = test_module.split("/")
+  return "_".join([*dirs, basename.removeprefix("test_"), "test"])
+
+
 # Test modules with no device-generic tests for TPU, including
 #   1. Test modules specific to non-TPU accelerators, e.g. NCCL for Nvidia GPU.
 #   2. Test modules where every test class is labelled for other hardware or
