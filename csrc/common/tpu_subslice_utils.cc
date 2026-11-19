@@ -140,6 +140,24 @@ absl::StatusOr<std::optional<Subslice>> MaybeMakeSubslice(
   return subslice;
 }
 
+bool IsMegaScaleClient(const xla::PjRtClient& client) {
+  for (const xla::PjRtDevice* const device : client.addressable_devices()) {
+    if (device != nullptr && device->Attributes().contains("slice_index")) {
+      return true;
+    }
+  }
+  const absl::StatusOr<const xla::PjRtTopologyDescription*> topology =
+      client.GetTopologyDescription();
+  if (topology.ok() && *topology != nullptr) {
+    const absl::StatusOr<int> num_devices =
+        (*topology)->LogicalDeviceCountOfDefaultType();
+    if (num_devices.ok() && client.device_count() > *num_devices) {
+      return true;
+    }
+  }
+  return false;
+}
+
 }  // namespace
 
 absl::StatusOr<std::optional<xla::PjRtDeviceDimensions>> GetSubsliceOrigin(
@@ -156,21 +174,40 @@ absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>>
 CompileAndLoadMaybeSubslice(xla::PjRtClient& client,
                             xla::MaybeOwningMlirModule module,
                             xla::CompileOptions options) {
-  TT_ASSIGN_OR_RETURN(std::optional<Subslice> subslice,
-                      MaybeMakeSubslice(client, options));
-  if (!subslice.has_value()) {
+  if (client.platform_id() != xla::TpuId()) {
     return client.CompileAndLoad(std::move(module), std::move(options));
   }
-  options.executable_build_options.set_device_assignment(
-      subslice->device_assignment);
-  TT_ASSIGN_OR_RETURN(const std::unique_ptr<xla::PjRtExecutable> executable,
-                      xla::PjRtCompile(std::move(options), std::move(module),
-                                       *subslice->topology, &client));
-  // PjRtCApiClient::Load() drops LoadOptions, so load via serialization, which
-  // honors computation_origin.
+  TT_ASSIGN_OR_RETURN(std::optional<Subslice> subslice,
+                      MaybeMakeSubslice(client, options));
+  std::unique_ptr<xla::PjRtExecutable> executable;
+  std::optional<xla::PjRtDeviceDimensions> subslice_origin;
+  if (subslice.has_value()) {
+    options.executable_build_options.set_device_assignment(
+        subslice->device_assignment);
+    subslice_origin = subslice->origin;
+    TT_ASSIGN_OR_RETURN(executable,
+                        xla::PjRtCompile(std::move(options), std::move(module),
+                                         *subslice->topology, &client));
+  } else {
+    // MegaScale multi-slice clients populate `multi_slice_config` inside
+    // CompileAndLoad (and may not implement Compile()), so keep them on
+    // CompileAndLoad.
+    if (IsMegaScaleClient(client)) {
+      return client.CompileAndLoad(std::move(module), std::move(options));
+    }
+    TT_ASSIGN_OR_RETURN(executable,
+                        client.Compile(std::move(module), std::move(options)));
+  }
+  // Serialize, drop the compile-time executable, and load from serialized bytes
+  // so compile-time state (retained under CompilerMetadataOnLoad::kKeep) is
+  // released from Host DRAM. Also honors `computation_origin` on subslice loads
+  // because PjRtCApiClient::Load() drops LoadOptions.
+  // TODO(b/589846005): Reuse `serialized` for Tier-2/Tier-3 cache writes
+  // instead of serializing a second time.
   TT_ASSIGN_OR_RETURN(const std::string serialized,
                       executable->SerializeExecutable());
-  return LoadSerializedExecutableAtOrigin(client, serialized, subslice->origin);
+  executable.reset();
+  return LoadSerializedExecutableAtOrigin(client, serialized, subslice_origin);
 }
 
 absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>>
