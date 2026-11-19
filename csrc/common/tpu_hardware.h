@@ -223,6 +223,11 @@ template <typename Bounds = TpuSpec::Topology>
     std::string_view dev_borg_dir = "/dev_borg",
     std::string_view proc_devices = "/proc/devices");
 
+// Reads the entire contents of `path` and returns it with leading and trailing
+// ASCII whitespace stripped, or std::nullopt if `path` cannot be opened or
+// read. Used to read small sysfs and cgroup files.
+[[nodiscard]] std::optional<std::string> ReadTrimmedFile(std::string_view path);
+
 }  // namespace torch_tpu
 
 #endif  // TORCH_TPU_CSRC_COMMON_TPU_HARDWARE_H_

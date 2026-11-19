@@ -1178,7 +1178,9 @@ torch_tpu_cc_library(
     deps = [
         ":env_vars",
         ":error_utils",
+        ":premapped_buffer_defaults",
         "@com_google_absl//absl/base:no_destructor",
+        "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
     ],
@@ -1194,6 +1196,33 @@ torch_tpu_cc_test(
         "//csrc/common:oss_test_main",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+# Implementation details of the TPU_PREMAPPED_BUFFER_SIZE default computed by
+# :discovery. Private so that only :discovery and its unit tests can use it.
+torch_tpu_cc_library(
+    name = "premapped_buffer_defaults",
+    srcs = ["premapped_buffer_defaults.cc"],
+    hdrs = ["premapped_buffer_defaults.h"],
+    visibility = ["//visibility:private"],
+    deps = [
+        ":env_vars",
+        ":tpu_hardware",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "premapped_buffer_defaults_test",
+    srcs = ["premapped_buffer_defaults_test.cc"],
+    deps = [
+        ":env_vars",
+        ":premapped_buffer_defaults",
+        "//csrc/common:oss_test_main",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/strings",
     ],
 )
 

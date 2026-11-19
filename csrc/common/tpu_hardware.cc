@@ -176,23 +176,6 @@ enum class DirListing { kListed, kMissing, kUnlistable };
       });
 }
 
-// Reads the entire contents of `path` and returns it with leading and trailing
-// ASCII whitespace stripped, or std::nullopt if `path` cannot be opened or
-// read.
-[[nodiscard]] std::optional<std::string> ReadTrimmedFile(
-    std::string_view path) {
-  std::ifstream file{std::string(path)};
-  if (!file.is_open()) {
-    return std::nullopt;
-  }
-  std::string contents((std::istreambuf_iterator<char>(file)),
-                       std::istreambuf_iterator<char>());
-  if (file.bad()) {
-    return std::nullopt;
-  }
-  return std::string(absl::StripAsciiWhitespace(contents));
-}
-
 // Returns the full paths of all entries in `pci_devices_dir` (excluding "." and
 // "..") in lexicographical order, or an empty vector if `pci_devices_dir` does
 // not exist or cannot be listed.
@@ -317,6 +300,19 @@ struct PciTpuScanResult {
 }
 
 }  // namespace
+
+std::optional<std::string> ReadTrimmedFile(std::string_view path) {
+  std::ifstream file{std::string(path)};
+  if (!file.is_open()) {
+    return std::nullopt;
+  }
+  std::string contents((std::istreambuf_iterator<char>(file)),
+                       std::istreambuf_iterator<char>());
+  if (file.bad()) {
+    return std::nullopt;
+  }
+  return std::string(absl::StripAsciiWhitespace(contents));
+}
 
 std::string_view TpuVersionName(const TpuVersion version) {
   switch (version) {
