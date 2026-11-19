@@ -219,3 +219,83 @@ and sends it for review.
 **Author**: Rebase your branch on the latest `main`, resolve the conflicts, and
 push. The new commit needs a Googler's approval again before the PR can be
 imported.
+
+## Land the internal change
+
+### The internal change fails presubmit. Who fixes it?
+
+**Expert**: You do, usually. For a fix the author should learn from, or one that
+belongs in the PR, ask the author to push it to the PR (or push it yourself if
+you can), approve the new commit, and let the bot update the internal change.
+For an internal-only fix, such as a build file or an internal test, patch the
+internal change instead (see the next answer).
+
+### How do I patch the internal change and land it myself?
+
+**Expert**: Patch the bot's internal change into your own workspace with
+Copybara's patch workflow (the internal change's Copybara comment shows how),
+make your fixes there, and get the champion's approval. Your copy is authored by
+you, so it needs only that one approval. After it lands, comment on the PR with
+the commit SHA from `main` and close the PR. The bot deletes its original
+internal change later.
+
+### Who approves the internal change?
+
+**Expert and champion**: When the author isn't a Googler, the internal change
+needs approvals from two different Googlers. A Googler's GitHub approval of the
+PR's latest commit counts as one. So if the expert approved an older commit, the
+expert also approves the internal change (or approves the latest commit on
+GitHub again), and the champion approves the internal change.
+
+### It's approved but hasn't landed. What's blocking it?
+
+**Googler**: The internal change lands automatically once it has the required
+approvals, passes presubmit, and has no unresolved comments, so check those
+three on the internal change. A presubmit failure needs a fix (see "The internal
+change fails presubmit"), and each unresolved comment needs a reply and
+resolution. If Copybara has stopped retrying the submit, approve the internal
+change again to restart it.
+
+### My PR was closed, not merged. Is that normal?
+
+**Author**: Yes. The project's source of truth is Google's internal repository,
+so Copybara lands your change there, then commits it to `main` and closes the PR
+instead of merging it. Look for a commit on `main` that mentions your PR number.
+
+### My change was rolled back. What now?
+
+**Author**: The project rolls back changes that break the main branch, so that
+`main` stays dependable. The rollback commit explains what broke. Fix the
+problem, then open a new PR that reapplies your change with the fix, and link
+the rolled-back PR.
+
+### How is my authorship credited?
+
+**Author**: The commit on `main` lists you as its author, using the name and
+email address of your PR commits. Make sure those match the account that signed
+the CLA.
+
+## Find the answers for your role
+
+*   **Author**: [issues](#do-i-need-an-issue-before-opening-a-pr),
+    [CLA](#the-cla-check-failed-what-do-i-do),
+    [no reviewer](#my-pr-has-no-reviewer-yet-what-do-i-do),
+    [CI failures](#ci-failed-who-fixes-it),
+    [handing the PR back](#i-addressed-the-comments-how-do-i-hand-the-pr-back),
+    [unresponsive reviewer](#my-reviewer-hasnt-responded-what-do-i-do),
+    [conflicts](#the-pr-conflicts-with-main-what-do-i-do), and
+    [closed, not merged](#my-pr-was-closed-not-merged-is-that-normal).
+*   **Oncaller**:
+    [closing unwanted PRs](#the-pr-shouldnt-land-how-do-i-close-it).
+*   **Expert**:
+    [approving CI runs](#the-pr-says-workflows-awaiting-approval-what-do-i-do),
+    [checking CI](#no-checks-failed-did-ci-pass),
+    [handing off to a champion](#when-does-the-expert-hand-off-to-a-champion),
+    [new commits](#the-author-pushed-new-commits-after-approval-what-now),
+    [presubmit failures](#the-internal-change-fails-presubmit-who-fixes-it), and
+    [patching](#how-do-i-patch-the-internal-change-and-land-it-myself).
+*   **Champion**:
+    [what to check](#what-do-the-expert-and-the-champion-each-check),
+    [starting the import](#when-does-the-import-happen),
+    [failed imports](#the-import-didnt-happen-how-do-i-find-out-why), and
+    [approving the internal change](#who-approves-the-internal-change).
