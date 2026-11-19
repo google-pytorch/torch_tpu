@@ -52,6 +52,7 @@ from tests.torch import torch_test_configs
 
 _TORCH_TEST_DIR_ENV_VAR: Final = "TORCH_TPU_INTERNAL_PYTORCH_TEST_DIR"
 _TORCH_TEST_MODULE_ENV_VAR: Final = "TORCH_TPU_INTERNAL_TORCH_TEST_MODULE"
+_PYTORCH_TEST_REPO_NAME: Final = "pytorch_test"
 
 # Intentionally keep it close to the latest PyTorch version to leverage
 # newly introduced accelerator testing APIs.
@@ -117,23 +118,48 @@ def _filter_device_generic_tests() -> None:
   unittest.TestLoader.getTestCaseNames = device_generic_tests
 
 
+def _find_runfiles_test_dir(test_module: str) -> pathlib.Path | None:
+  """Locates the mounted `@pytorch_test` test/ directory in Bazel runfiles."""
+  runfiles_dir = os.environ.get("TEST_SRCDIR") or os.environ.get("RUNFILES_DIR")
+  if not runfiles_dir:
+    return None
+  # In OSS, the PyTorch test/ tree is mounted via `@pytorch_test` (see
+  # oss/bazel/pytorch_test_repo.bzl) and staged in runfiles. Its runfiles
+  # directory is named after the repository's canonical name, whose
+  # Bazel-version-dependent prefix (e.g. "+pytorch_test_repo+" or
+  # "+_repo_rules+") always ends in the apparent name.
+  for repo_dir in sorted(
+      pathlib.Path(runfiles_dir).glob(f"*{_PYTORCH_TEST_REPO_NAME}")
+  ):
+    candidate = repo_dir / "test"
+    if (candidate / f"{test_module}.py").is_file():
+      return candidate
+  return None
+
+
 def _parse_test_env_vars() -> tuple[str, pathlib.Path, pathlib.Path]:
-  """Parses required test directory and module from environment variables."""
+  """Parses required test directory and module from environment or runfiles."""
   test_module = os.environ.get(_TORCH_TEST_MODULE_ENV_VAR)
   if not test_module:
     raise EnvironmentError(f"{_TORCH_TEST_MODULE_ENV_VAR} is not set.")
 
   test_dir = os.environ.get(_TORCH_TEST_DIR_ENV_VAR)
-  if not test_dir:
-    raise EnvironmentError(
-        f"{_TORCH_TEST_DIR_ENV_VAR} is not set. Please supply it via "
-        f"--test_env={_TORCH_TEST_DIR_ENV_VAR}=/path/to/pytorch/test"
-    )
+  if test_dir:
+    # Absolute paths stay valid even if the working directory changes later,
+    # e.g. when the test module is run by a test framework that changes it.
+    # Unlike resolve(), absolute() does not follow symlinks out of the runfiles.
+    test_dir_path = pathlib.Path(test_dir).absolute()
+  else:
+    runfiles_test_dir = _find_runfiles_test_dir(test_module)
+    if runfiles_test_dir is None:
+      raise EnvironmentError(
+          f"{_TORCH_TEST_DIR_ENV_VAR} is not set and `{test_module}.py` was not"
+          " found in Bazel runfiles. Please supply it via"
+          f" --repo_env={_TORCH_TEST_DIR_ENV_VAR}=/path/to/pytorch/test (or"
+          f" --test_env={_TORCH_TEST_DIR_ENV_VAR}=/path/to/pytorch/test)."
+      )
+    test_dir_path = runfiles_test_dir.absolute()
 
-  # Absolute paths stay valid even if the working directory changes later,
-  # e.g. when the test module is run by a test framework that changes it.
-  # Unlike resolve(), absolute() does not follow symlinks out of the runfiles.
-  test_dir_path = pathlib.Path(test_dir).absolute()
   test_module_path = test_dir_path / f"{test_module}.py"
   if not test_module_path.is_file():
     raise FileNotFoundError(
