@@ -31,6 +31,7 @@ import torch.multiprocessing as mp
 from torch.testing._internal.distributed import fake_pg
 from torch_tpu._internal import env
 from torch_tpu._internal.distributed import handshake
+from torch_tpu._internal.distributed import handshake_messages
 from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
 from tests.distributed import distributed_utils
@@ -466,7 +467,7 @@ class CollectiveHandshakeRequestTest(seed_test_utils.RepeatableTest):
     pg_counts = RankCollectiveCounts()
     pg_counts.increment_pg_collective_counts({ProcessGroupId([0, 1]): 1})
     with mock.patch.object(
-        handshake, "_is_torch_tpu_debug_mode", return_value=False
+        handshake_messages, "is_torch_tpu_debug_mode", return_value=False
     ):
       request = CollectiveHandshakeRequest(
           pg_collective_counts=pg_counts, executable_fingerprint="fp", rank=2
@@ -499,7 +500,7 @@ class CollectiveHandshakeRequestTest(seed_test_utils.RepeatableTest):
         ),
     })
     with mock.patch.object(
-        handshake, "_is_torch_tpu_debug_mode", return_value=False
+        handshake_messages, "is_torch_tpu_debug_mode", return_value=False
     ):
       request = CollectiveHandshakeRequest(
           pg_collective_counts=pg_counts,

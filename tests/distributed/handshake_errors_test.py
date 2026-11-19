@@ -25,6 +25,7 @@ import portpicker
 import torch.distributed as dist
 from torch_tpu._internal import env
 from torch_tpu._internal.distributed import handshake
+from torch_tpu._internal.distributed import handshake_messages
 from tests import seed_test_utils
 import zmq
 
@@ -129,7 +130,7 @@ class CollectiveHandshakeRequestTest(seed_test_utils.RepeatableTest):
     # Participating-rank validation only runs in debug mode.
     self.enter_context(
         mock.patch.object(
-            handshake, "_is_torch_tpu_debug_mode", return_value=True
+            handshake_messages, "is_torch_tpu_debug_mode", return_value=True
         )
     )
 
