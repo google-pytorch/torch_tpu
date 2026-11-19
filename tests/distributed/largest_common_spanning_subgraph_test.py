@@ -583,6 +583,24 @@ class LargestCommonSpanningSubgraphTest(seed_test_utils.RepeatableTest):
     # from and feeding into the partition.
     self.assertEqual(partitions, [{"sin": 0}, {"sin": 0}])
 
+  def test_backward_bypass_path_prevents_cycle(self):
+    def build(scale_op):
+      g = fx.Graph()
+      s = g.call_function(torch.sin, (g.placeholder("x"),))
+      m = g.call_function(scale_op, (s, 2))
+      a = g.call_function(torch.add, (s, m))
+      g.output(a)
+      return g, a
+
+    g0, a0 = build(torch.mul)
+    g1, a1 = build(torch.div)
+
+    partitions = _shared_partitions([g0, g1], [(a0, a1)])
+
+    # Growing backward from `add` cannot take `sin` in while `mul`/`div` stays
+    # out, since that op would both read from and feed the partition.
+    self.assertEqual(partitions, [{"add": 0}, {"add": 0}])
+
   def test_asymmetric_diamond_reaches_join_after_longer_branch(self):
     def build():
       g = fx.Graph()
@@ -774,6 +792,125 @@ class LargestCommonSpanningSubgraphTest(seed_test_utils.RepeatableTest):
     # `sin` feeds `cos` on `g0` and `cos` feeds `sin` on `g1`, so the later
     # anchor, `cos`, is left out.
     self.assertEqual(partitions, [{"sin": 0}, {"sin": 0}])
+
+  def test_run_order_conflict_with_earlier_partition_stops_growth(self):
+    g0 = fx.Graph()
+    x0 = g0.placeholder("x")
+    s0 = g0.call_function(torch.sin, (x0,))
+    r0 = g0.call_function(torch.relu, (x0,))
+    # Reads `relu` like `sin` does on `g1`, so `{relu, add}` returns `relu` on
+    # both graphs and only the run order keeps `add` out.
+    t0 = g0.call_function(torch.tanh, (r0,))
+    a0 = g0.call_function(torch.add, (r0, s0))
+    g0.output((t0, a0))
+
+    g1 = fx.Graph()
+    x1, y1 = g1.placeholder("x"), g1.placeholder("y")
+    r1 = g1.call_function(torch.relu, (x1,))
+    s1 = g1.call_function(torch.sin, (r1,))
+    a1 = g1.call_function(torch.add, (r1, y1))
+    g1.output((s1, a1))
+
+    partitions = _shared_partitions([g0, g1], [(s0, s1), (r0, r1)])
+
+    # Adding `add` to `relu`'s partition would require `sin` before `relu` on
+    # `g0`, conflicting with `relu` before `sin` on `g1`.
+    expected = {"relu": 0, "sin": 1}
+    self.assertEqual(partitions, [expected, expected])
+
+  def test_bypass_path_opened_by_backward_growth_prevents_cycle(self):
+    def build(scale_op):
+      g = fx.Graph()
+      s = g.call_function(torch.sin, (g.placeholder("x"),))
+      r = g.call_function(torch.relu, (s,))
+      m = g.call_function(scale_op, (s, 2))
+      g.output(g.call_function(torch.add, (r, m)))
+      return g, r
+
+    g0, r0 = build(torch.mul)
+    g1, r1 = build(torch.div)
+
+    partitions = _shared_partitions([g0, g1], [(r0, r1)])
+
+    # Taking `sin` in backward from `relu` puts `mul`/`div` downstream of the
+    # partition, so `add` can no longer join.
+    expected = {"sin": 0, "relu": 0}
+    self.assertEqual(partitions, [expected, expected])
+
+  def test_bypass_path_opened_by_forward_growth_prevents_cycle(self):
+    def build(scale_op):
+      g = fx.Graph()
+      x = g.placeholder("x")
+      t = g.call_function(torch.tanh, (x,))
+      m = g.call_function(scale_op, (t, 2))
+      s = g.call_function(torch.sin, (x,))
+      a = g.call_function(torch.add, (s, m))
+      g.output(g.call_function(torch.sub, (a, t)))
+      return g, s
+
+    g0, s0 = build(torch.mul)
+    g1, s1 = build(torch.div)
+
+    partitions = _shared_partitions([g0, g1], [(s0, s1)])
+
+    # Taking `add` in forward from `sin` puts `mul`/`div` upstream of the
+    # partition, so `tanh` can no longer join through `sub`.
+    expected = {"sin": 0, "add": 0, "sub": 0}
+    self.assertEqual(partitions, [expected, expected])
+
+  def test_run_order_conflict_through_two_node_partition_stops_growth(self):
+    g0 = fx.Graph()
+    x0, y0 = g0.placeholder("x"), g0.placeholder("y")
+    s0 = g0.call_function(torch.sin, (x0,))
+    c0 = g0.call_function(torch.cos, (s0,))
+    n0 = g0.call_function(torch.neg, (c0,))
+    m0 = g0.call_function(torch.mul, (y0, 2))
+    a0 = g0.call_function(torch.add, (s0, m0))
+    g0.output((n0, a0))
+
+    g1 = fx.Graph()
+    x1 = g1.placeholder("x")
+    s1 = g1.call_function(torch.sin, (x1,))
+    # Reads `sin` like `cos` does on `g0`, so `{sin, add}` returns `sin` on both
+    # graphs and only the run order keeps `add` out.
+    t1 = g1.call_function(torch.tanh, (s1,))
+    c1 = g1.call_function(torch.cos, (x1,))
+    n1 = g1.call_function(torch.neg, (c1,))
+    d1 = g1.call_function(torch.div, (n1, 2))
+    a1 = g1.call_function(torch.add, (s1, d1))
+    g1.output((n1, a1, t1))
+
+    partitions = _shared_partitions([g0, g1], [(c0, c1), (s0, s1)])
+
+    # `sin` feeds `{cos, neg}` through `cos` on `g0`, and `{cos, neg}` feeds
+    # `add` through `neg` and `div` on `g1`.
+    expected = {"sin": 0, "cos": 1, "neg": 1}
+    self.assertEqual(partitions, [expected, expected])
+
+  def test_backward_run_order_conflict_with_earlier_partition(self):
+    g0 = fx.Graph()
+    x0, y0 = g0.placeholder("x"), g0.placeholder("y")
+    s0 = g0.call_function(torch.sin, (x0,))
+    c0 = g0.call_function(torch.cos, (s0,))
+    a0 = g0.call_function(torch.add, (s0, y0))
+    g0.output((c0, a0))
+
+    g1 = fx.Graph()
+    x1 = g1.placeholder("x")
+    s1 = g1.call_function(torch.sin, (x1,))
+    # Reads `sin` like `cos` does on `g0`, so `{sin, add}` returns `sin` on both
+    # graphs and only the run order keeps `sin` out.
+    t1 = g1.call_function(torch.tanh, (s1,))
+    c1 = g1.call_function(torch.cos, (x1,))
+    a1 = g1.call_function(torch.add, (s1, c1))
+    g1.output((t1, a1))
+
+    partitions = _shared_partitions([g0, g1], [(c0, c1), (a0, a1)])
+
+    # Taking `sin` in backward from `add` would require `add` before `cos` on
+    # `g0`, conflicting with `cos` before `add` on `g1`.
+    expected = {"cos": 0, "add": 1}
+    self.assertEqual(partitions, [expected, expected])
 
   def test_graph_object_passed_twice_counts_as_two_graphs(self):
     g = fx.Graph()
