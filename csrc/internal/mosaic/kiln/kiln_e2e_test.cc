@@ -442,6 +442,40 @@ TEST_F(KilnE2eTest, GridFreeKernelWithVmemOperands) {
   RunAndCompare(std::move(kernel), {&input}, expected);
 }
 
+// Row g of the i32 view of a u8 ref packs rows 4g to 4g+3, the lowest row in
+// the least significant byte. Each word row is loaded and stored alone.
+TEST_F(KilnE2eTest, BitcastU8RowsToI32Words) {
+  TT_ASSERT_OK_AND_ASSIGN(
+      Kernel kernel,
+      CreateKernel(GridSpec{.name = "bitcast_u8_e2e"}, InSpec::Vmem(u8(8, 128)),
+                   OutSpec::Vmem(i32(2, 128)), [](VmemRef in, VmemRef out) {
+                     const VmemRef words = in.Bitcast(i32);
+                     for (int64_t g = 0; g < 2; ++g) {
+                       Store(out(Slice(g, 1), all),
+                             Load(words(Slice(g, 1), all)));
+                     }
+                   }));
+  const auto byte_at = [](int64_t row, int64_t col) {
+    return static_cast<uint8_t>((row + 1) * 19 + col);
+  };
+  const auto pack_word = [&](absl::Span<const int64_t> index) {
+    uint32_t word = 0;
+    for (int64_t byte_idx = 0; byte_idx < 4; ++byte_idx) {
+      word |= static_cast<uint32_t>(byte_at(index[0] * 4 + byte_idx, index[1]))
+              << (8 * byte_idx);
+    }
+    return static_cast<int32_t>(word);
+  };
+  xla::Literal input(xla::ShapeUtil::MakeShape(xla::U8, {8, 128}));
+  xla::Literal expected(xla::ShapeUtil::MakeShape(xla::S32, {2, 128}));
+  ASSERT_THAT(input.Populate<uint8_t>([&](absl::Span<const int64_t> index) {
+    return byte_at(index[0], index[1]);
+  }),
+              IsOk());
+  ASSERT_THAT(expected.Populate<int32_t>(pack_word), IsOk());
+  RunAndCompare(std::move(kernel), {&input}, expected);
+}
+
 TEST_F(KilnE2eTest, GridKernelWithHbmAndDma) {
   constexpr int64_t kSteps = 4, kTileRows = 8, kCols = 128;
 
