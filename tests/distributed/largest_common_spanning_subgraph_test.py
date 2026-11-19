@@ -654,11 +654,14 @@ class LargestCommonSpanningSubgraphTest(seed_test_utils.RepeatableTest):
     a1 = g1.call_function(torch.add, (s1, c1))
     g1.output(a1)
 
-    partitions = _shared_partitions([g0, g1], [(a0, a1)])
+    anchors = [(a0, a1), (s0, s1), (c0, c1)]
+    partitions = _shared_partitions([g0, g1], anchors)
 
     # `sin` and `cos` run in a different order on each graph, so only one of
-    # them can join `add`.
-    with_sin, with_cos = {"sin": 0, "add": 0}, {"cos": 0, "add": 0}
+    # them can join `add`. The other starts its own partition, which runs
+    # first.
+    with_sin = {"cos": 0, "sin": 1, "add": 1}
+    with_cos = {"sin": 0, "cos": 1, "add": 1}
     self.assertIn(partitions, ([with_sin] * 2, [with_cos] * 2))
 
   def test_swapped_external_output_read_order_stops_growth(self):
@@ -979,6 +982,164 @@ class LargestCommonSpanningSubgraphTest(seed_test_utils.RepeatableTest):
     # before `tanh` before `sin`, so the last anchor, `tanh`, is left out.
     expected = {"sin": 0, "cos": 1}
     self.assertEqual(partitions, [expected] * 3)
+
+  @parameterized.named_parameters(
+      ("same_input", True, {"sin": 0, "add": 0}),
+      ("diverging_input", False, {"add": 0}),
+  )
+  def test_backward_growth_checks_shared_external_inputs(
+      self, add0_reads_x, expected
+  ):
+    def build(add_reads_x):
+      g = fx.Graph()
+      x, y = g.placeholder("x"), g.placeholder("y")
+      s = g.call_function(torch.sin, (x,))
+      a = g.call_function(torch.add, (s, x if add_reads_x else y))
+      g.output(a)
+      return g, a
+
+    g0, a0 = build(add_reads_x=add0_reads_x)
+    g1, a1 = build(add_reads_x=True)
+
+    partitions = _shared_partitions([g0, g1], [(a0, a1)])
+
+    # Anchored at `add`, `y` on `g0` pairs with `x` on `g1`, so `sin(x)`
+    # cannot join before `add` unless both `add` nodes read `x`.
+    self.assertEqual(partitions, [expected, expected])
+
+  def test_input_slot_internal_on_only_one_graph_stops_growth(self):
+    def build(add_reads_cos):
+      g = fx.Graph()
+      x, y = g.placeholder("x"), g.placeholder("y")
+      c = g.call_function(torch.cos, (x,))
+      s = g.call_function(torch.sin, (c,))
+      a = g.call_function(torch.add, (s, c if add_reads_cos else y))
+      g.output((a, c))
+      return g, s
+
+    g0, s0 = build(add_reads_cos=True)
+    g1, s1 = build(add_reads_cos=False)
+
+    partitions = _shared_partitions([g0, g1], [(s0, s1)])
+
+    # After `cos` joins, `add` reads an internal member on `g0` and an
+    # outside input on `g1`, so `add` cannot join.
+    expected = {"cos": 0, "sin": 0}
+    self.assertEqual(partitions, [expected, expected])
+
+  def test_outside_reader_joining_cannot_shift_output_order(self):
+    g0 = fx.Graph()
+    s0 = g0.call_function(torch.sin, (g0.placeholder("x"),))
+    c0 = g0.call_function(torch.cos, (s0,))
+    r0 = g0.call_function(torch.relu, (s0,))
+    t0 = g0.call_function(torch.tanh, (s0,))
+    g0.output((c0, t0, r0))
+
+    g1 = fx.Graph()
+    s1 = g1.call_function(torch.sin, (g1.placeholder("x"),))
+    c1 = g1.call_function(torch.cos, (s1,))
+    r1 = g1.call_function(torch.relu, (s1,))
+    g1.output((c1, s1, r1))
+
+    partitions = _shared_partitions([g0, g1], [(s0, s1)])
+
+    # Joining `relu` leaves `sin` read before `cos` on `g0` (`tanh`), but
+    # shifts `sin`'s first outside read past `cos` in `g1`'s output.
+    self.assertEqual(partitions, [{"sin": 0, "cos": 0}, {"sin": 0, "cos": 0}])
+
+  @parameterized.named_parameters(
+      ("tanh_returned_first_on_g0", True),
+      ("cos_returned_first_on_g0", False),
+  )
+  def test_new_output_must_keep_its_order_with_other_outputs(
+      self, tanh_first_on_g0
+  ):
+    def build(return_tanh_first):
+      g = fx.Graph()
+      s = g.call_function(torch.sin, (g.placeholder("x"),))
+      t = g.call_function(torch.tanh, (s,))
+      c = g.call_function(torch.cos, (s,))
+      g.output((t, c) if return_tanh_first else (c, t))
+      return g, s
+
+    g0, s0 = build(return_tanh_first=tanh_first_on_g0)
+    g1, s1 = build(return_tanh_first=not tanh_first_on_g0)
+
+    partitions = _shared_partitions([g0, g1], [(s0, s1)])
+
+    # `tanh` joins first. Taking `cos` in too would return `tanh` and `cos` in
+    # a different order on each graph.
+    expected = {"sin": 0, "tanh": 0}
+    self.assertEqual(partitions, [expected, expected])
+
+  def test_candidate_reached_twice_is_rejected_both_times(self):
+    def build(return_sin_first):
+      g = fx.Graph()
+      s = g.call_function(torch.sin, (g.placeholder("x"),))
+      m = g.call_function(torch.mul, (s, s))
+      g.output((s, m) if return_sin_first else (m, s))
+      return g, m
+
+    g0, m0 = build(return_sin_first=True)
+    g1, m1 = build(return_sin_first=False)
+
+    partitions = _shared_partitions([g0, g1], [(m0, m1)])
+
+    # Growth reaches `sin` once per argument of `mul`. `{sin, mul}` would
+    # return them in a different order on each graph, both times.
+    self.assertEqual(partitions, [{"mul": 0}, {"mul": 0}])
+
+  def test_nothing_grows_from_an_anchor_that_starts_no_partition(self):
+    def build(add_reads_x_twice):
+      g = fx.Graph()
+      x, y = g.placeholder("x"), g.placeholder("y")
+      a = g.call_function(torch.add, (x, x if add_reads_x_twice else y))
+      g.output(g.call_function(torch.relu, (a,)))
+      return g, a
+
+    g0, a0 = build(add_reads_x_twice=True)
+    g1, a1 = build(add_reads_x_twice=False)
+
+    partitions = _shared_partitions([g0, g1], [(a0, a1)])
+
+    # `add` reads one input on `g0` and two on `g1`, so it starts no partition
+    # for `relu` to join.
+    self.assertEqual(partitions, [{}, {}])
+
+  def test_node_that_nothing_reads_can_join(self):
+    def build():
+      g = fx.Graph()
+      s = g.call_function(torch.sin, (g.placeholder("x"),))
+      g.call_function(torch.cos, (s,))
+      g.output(s)
+      return g, s
+
+    (g0, s0), (g1, s1) = build(), build()
+
+    partitions = _shared_partitions([g0, g1], [(s0, s1)])
+
+    # Nothing reads `cos`, so the submodule does not return it.
+    expected = {"sin": 0, "cos": 0}
+    self.assertEqual(partitions, [expected, expected])
+
+  def test_member_still_read_outside_on_one_graph_stops_growth(self):
+    def build(return_sin):
+      g = fx.Graph()
+      s = g.call_function(torch.sin, (g.placeholder("x"),))
+      c = g.call_function(torch.cos, (s,))
+      n = g.call_function(torch.neg, (s,))
+      g.output((n, c, s) if return_sin else (n, c))
+      return g, n
+
+    g0, n0 = build(return_sin=False)
+    g1, n1 = build(return_sin=True)
+
+    partitions = _shared_partitions([g0, g1], [(n0, n1)])
+
+    # With `cos` in, only members read `sin` on `g0`, while the output of `g1`
+    # still reads it. So only the `g1` submodule would return `sin`.
+    expected = {"sin": 0, "neg": 0}
+    self.assertEqual(partitions, [expected, expected])
 
 
 if __name__ == "__main__":
