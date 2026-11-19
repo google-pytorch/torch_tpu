@@ -39,11 +39,16 @@ torch_tpu_cc_library(
         "//shims/torch",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
-        "@com_google_absl//absl/base:no_destructor",
         "@com_google_absl//absl/base:nullability",
+        "@com_google_absl//absl/status",
+        "@tsl//tsl/profiler/lib:profiler_factory",
+        "@tsl//tsl/profiler/lib:profiler_interface",
         "@tsl//tsl/profiler/lib:traceme",
         "@tsl//tsl/profiler/lib:traceme_encode",
+        "@tsl//tsl/profiler/protobuf:profiler_options_proto_cc",
+        "@tsl//tsl/profiler/protobuf:xplane_proto_cc",
     ],
+    alwayslink = True,
 )
 
 torch_tpu_cc_library(
@@ -77,6 +82,7 @@ torch_tpu_cc_library(
         "@tsl//tsl/profiler/protobuf:xplane_proto_cc",
         "@xla//xla/tsl/platform:env",
     ],
+    alwayslink = True,
 )
 
 # This library is not used directly, but is needed for go/cclean and Clangd.
@@ -87,6 +93,7 @@ torch_tpu_cc_library(
         "profiler_api.cc",
     ],
     deps = [
+        # buildcleaner: keep
         ":xprof_callback_handler",
         "//csrc/common:context_manager",
         "//csrc/common:context_states",
