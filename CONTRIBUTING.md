@@ -85,168 +85,53 @@ We treat all contributors with respect, warmth, and professionalism.
 All submissions, including submissions by project members, require review. We
 use
 [GitHub pull requests](https://help.github.com/articles/about-pull-requests/)
-for this purpose.
+(PRs) for this purpose.
 
-Approved Pull Requests (PRs) are then copied to Google's internal repository via
-a tool called Copybara. For this reason, Copybara won't mark the PR as merged,
-it will close the PR and separately apply a commit to the `main` branch with the
-same changes proposed in the PR.
+#### How a PR lands
 
-1.  When a PR is created, the **Google oncall** triages it and adds a **Google
-    domain expert** as its **reviewer**.
-1.  The **domain expert** reviews the PR, makes sure it passes presubmit,
-    approves it, and then adds a **Google quality champion** as a reviewer AND
-    the **assignee**.
+A PR goes through four hand-offs. At each one, exactly one person owns the next
+step:
 
-    *   **Don't approve the PR or pass it to the quality champion until all of
-        its presubmit checks (e.g. `CI - Presubmit` and `Lint checks`) have run
-        on the latest commit and passed.** A PR with no failing checks hasn't
-        necessarily passed presubmit: on PRs from some outside contributors'
-        forked repos, GitHub doesn't run the checks at all until a maintainer
-        approves the workflows to run, and the PR's checks list only shows the
-        few workflows that don't need approval. If the PR shows "Workflow(s)
-        awaiting approval", review the changes and click **Approve workflows to
-        run** first (see [Approve Workflow Runs](#approve-workflow-runs)).
-    *   If presubmit fails, ask the author to fix it (or help them) before
-        approving the PR.
-    *   For now the domain expert needs to manually find a quality champion (one
-        of `cbasile-g`, `LeeHowes`, `vladbelous`, and `zhanyong-wan`). Later
-        we'll try to automate it.
-    *   Use
-        [this list](https://github.com/google-pytorch/torch_tpu/pulls?q=is%3Apr+is%3Aopen+repo%3Agoogle-pytorch%2Ftorch_tpu+-author%3Aapp%2Fcopybara-service+sort%3Aupdated-asc+draft%3Afalse)
-        to balance the load between quality champions: try to pick someone who
-        occurs fewer times in the "Assignee" column.
-    *   See the image below for how the domain expert and quality champion roles
-        map to the GitHub UI.
+1.  **Triage**: a Google **oncaller** assigns a Google **domain expert** as the
+    PR's reviewer.
+2.  **Review**: the **domain expert** reviews the PR, makes sure CI passes on
+    its latest commit, approves it, and adds a Google **quality champion** as a
+    reviewer and the assignee.
+3.  **Quality**: the **quality champion** reviews the PR for style and quality,
+    approves it, and adds the `pull ready` label.
+4.  **Land**: a bot (Copybara) copies the PR into Google's internal repository
+    as a change. Once two Googlers have approved it and all review comments on
+    it are resolved, the change lands, the bot commits it to `main`, and the PR
+    is closed rather than merged.
 
-        <img src="docs/developers/images/pr_roles.png" alt="PR Roles" width="400px">
-1.  The **Google quality champion** reviews the PR, focusing on style and
-    quality, approves it, and then applies the `pull ready` label to the PR.
-1.  Once the PR has the `pull ready` label **and** a Googler's approval of its
-    latest commit, the bot generates a contribution (called a changelist, CL in
-    short) to the internal Google repository from the PR.
+Two rules hold throughout:
 
-    *   The **author** will be the bot.
-    *   The **original author** will be the (external) PR author.
-    *   The **reviewers** will be the Googler assigned to the PR (the quality
-        champion), whose approval of the Google-internal CL is required, and the
-        Google domain expert.
-    *   When the PR author is external, the CL needs approvals from **two
-        different Googlers** to be submitted. If the domain expert approved an
-        older version of the PR (before the author's later changes), they need
-        to **approve the CL too** (or re-approve the latest version of the PR on
-        GitHub).
-    *   As long as the quality champion has approved the PR, anyone is allowed
-        to apply the `pull ready` label in case the quality champion forgets to
-        do so.
-1.  By this time, the CL should most likely be ready. If, however, more changes
-    are needed (e.g. due to presubmit failures), the Google domain expert is
-    usually responsible for making such changes. They can pick one of two ways
-    depending on the task:
+*   The PR's `stat:*` label shows whose turn it is: `stat:awaiting-reviewers`
+    (the reviewers' and assignee's) or `stat:awaiting-requester` (the author's).
+*   Approvals apply to a specific commit. After the author pushes a new commit,
+    a Googler approves the PR again before it can move forward.
 
-    1.  **Patch the CL into a workspace**, iterate there, get approval from the
-        quality champion, submit it, add a comment on the original PR with the
-        commit SHA, and manually close the PR. (The patched CL is authored by
-        the domain expert, so only the quality champion's approval is needed.)
-    1.  **Make changes to the PR's branch** (exact instructions to be
-        documented), let the bot update the CL, iterate until the CL is ready,
-        and get approval from the quality champion (and the domain expert, as
-        above). The CL will auto submit, and the original PR will auto close.
-1.  In rare cases, the internal testing of the CL may reveal an issue that
-    requires a big change to the PR's design. The Google domain expert should
-    work with the external contributor to address it, possibly via a new PR.
+<img src="docs/developers/images/pr_roles.png" alt="Where the reviewer and assignee roles appear in a PR" width="400px">
 
-    *   If more changes are made to the original PR, a Googler will need to
-        re-approve the PR on GitHub (see
-        [Re-approve After PR Updates](#re-approve-after-pr-updates)) for the
-        changes to propagate to the CL.
+#### Details
 
-Notes:
+*   **Author**: Keep the PR small and linked to an issue. After you address
+    comments, click **Re-request review** to hand the PR back. Keep CI green.
+*   **Domain expert**: On PRs from some forks, GitHub doesn't run CI until you
+    approve the workflow runs; review the changes first, since approving runs
+    the PR's code. Don't approve the PR until the full set of checks has run on
+    the latest commit and passed. If the internal change later needs fixes,
+    you're usually the one who makes them.
+*   **Quality champion**: Review in the open, so contributors can learn the
+    project's standards. If the PR's author isn't a Googler, the internal change
+    needs a second Googler's approval besides yours; a domain expert's GitHub
+    approval of the latest commit counts.
+*   **Anyone involved**: If the PR shouldn't land (e.g. it's obsolete or a
+    duplicate), close it with a comment explaining why.
 
-*   When a PR is ready for another review, click on the "Re-request review"
-    (spinning arrows) button next to a reviewer name to notify them.
-*   On PRs from some outside contributors' forked repos, the reviewers and the
-    assignee also need to approve the PR's workflow runs (see
-    [Approve Workflow Runs](#approve-workflow-runs)).
-*   We want the quality champion's review to be in the open so that external
-    contributors can learn Google's coding standard.
-*   If the PR's reviewer, assignee, or author decides that the PR shouldn't be
-    merged (e.g. it's obsolete, duplicates another PR, or the proposed change
-    isn't wanted), they may abandon it by closing it without landing it. Please
-    leave a comment on the PR explaining why.
-*   The bot-generated CL cannot be changed manually, but if you update the PR it
-    is connected to, the bot will update it automatically (once a Googler
-    approves the PR's latest commit), or the CL can be patched into a new
-    workspace controlled by an internal user.
-
-### Re-approve After PR Updates
-
-The bot imports a PR only after a Googler approves its **latest** commit on
-GitHub. Earlier approvals don't carry over to new commits, so after the author
-updates a PR, a Googler (usually the quality champion) needs to approve the PR
-again on GitHub. That approval re-triggers the import, and the bot updates the
-CL.
-
-The internal CL needs approvals from two different Googlers to auto-submit. So
-when the PR author is external, the **Google domain expert** (also a reviewer of
-the CL) needs to re-approve the updated PR on GitHub too, or approve the updated
-CL.
-
-If the import is blocked, the PR's `import/copybara` check explains why (e.g.
-missing approvals).
-
-#### If an `import/copybara` Check Waits for Safe Review
-
-The bot normally skips Google's internal safe review because a Googler approved
-the PR's latest commit. If an `import/copybara` check still shows "Waiting for
-internal safe review approval" (e.g. one left over from before the latest
-approval), a Googler can approve it instead:
-
-1.  In the PR's checks section, click the **Details** link of the
-    `import/copybara` check. The link points to a Google-internal page, so it is
-    not accessible to external contributors.
-
-    <img src="docs/developers/images/copybara_import_approval.png" alt="Pending import/copybara checks" width="600px">
-1.  On the safe-review page that opens, vote **Code-Review+2** to approve the
-    import.
-
-### Approve Workflow Runs
-
-GitHub doesn't run workflows on PRs from some outside contributors' forked repos
-until a maintainer approves them. These include CI and the bot that tracks whose
-turn it is, so until the runs are approved, the PR's checks don't run, and
-reviews don't hand the turn back to the author. The PR's **reviewers and
-assignee** are responsible for approving the runs whenever the PR shows
-"Workflow(s) awaiting approval". This can happen:
-
-*   when the PR is opened or the author pushes new commits, and
-*   after anyone submits a review or a review comment on the PR.
-
-In particular, the **Google domain expert** must approve the runs when they
-start reviewing the PR and every time the author pushes new commits.
-
-<!-- mdformat off(reason: GitHub renders an alert only if its marker is on its own line) -->
-
-> [!IMPORTANT]
-> Review the PR's changes before approving its runs. Approving runs the PR's
-> code, including any changes to `.github/workflows/` and other CI scripts, on
-> the repository's CI machines.
-
-<!-- mdformat on -->
-
-To approve the runs:
-
-1.  In the **Files changed** tab, check that the PR doesn't change
-    `.github/workflows/` or other CI scripts in a way that could misuse the
-    repository's secrets or CI machines.
-1.  In the **Conversation** tab, click **Approve workflows to run** next to
-    "Workflow(s) awaiting approval".
-
-    <img src="docs/developers/images/ci_workflow_approval.png" alt="Approve CI workflows" width="600px">
-
-Runs that aren't approved within 30 days expire: GitHub marks them as failed,
-and they can no longer be approved or re-run. To run the workflows again, the
-author needs to push a new commit (or a maintainer can close and reopen the PR).
+When you're not sure what to do next, for example when CI doesn't run, an import
+fails, or the internal change fails presubmit, see the
+[pull request FAQ](docs/developers/pr_faq.md).
 
 ## Proposing Major Changes and API Design
 
