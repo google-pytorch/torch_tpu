@@ -26,6 +26,7 @@
 #include "csrc/common/compilation_spec.h"
 #include "csrc/common/shape.h"
 #include "csrc/internal/mosaic/kiln/kiln.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "xla/layout.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_executable.h"
@@ -39,6 +40,10 @@ namespace torch_tpu {
 // kernels that share an extentless key.
 CompilationCacheKey MakeUnboundedDynamicKernelCacheKey(ExtentlessKey key,
                                                        int id_key);
+
+// Returns the Kiln dtype of `element_type`, which must be PRED, I8 to I64, UI8
+// to UI64, F16, BF16 or F32.
+kiln::DType ToKilnDType(mlir::ElementType element_type);
 
 // Compiles a Mosaic kernel, wrapped by `BuildMosaicCustomCall` with the other
 // arguments, for exactly the given input and output shapes and layouts: only

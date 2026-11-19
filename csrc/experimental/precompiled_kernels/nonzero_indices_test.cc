@@ -48,8 +48,8 @@ using NonzeroIndicesTest = ::testing::TestWithParam<TestCase>;
 // number, ranks and dtypes of the operands; this covers the compatibility
 // checks that neither can reach.
 TEST_P(NonzeroIndicesTest, IsCompatible) {
-  // GetNonzeroUnboundedDynamicKernels returns the four 1-D kernels, T(1024)
-  // first, then the 2-D one.
+  // GetNonzeroUnboundedDynamicKernels returns the four F32 1-D kernels, T(1024)
+  // first, then the F32 2-D one.
   const auto is_compatible =
       GetNonzeroUnboundedDynamicKernels()[GetParam().rank == 1 ? 0 : 4]
           .metadata.is_compatible;

@@ -2360,6 +2360,81 @@ TEST(KilnTest, RefAtSlicesWithAListOfIndexers) {
   )"));
 }
 
+struct RefBitcastTestCase {
+  std::string_view name;
+  Shape from;
+  Shape to;
+};
+
+using RefBitcastTest = TestWithParam<RefBitcastTestCase>;
+
+TEST_P(RefBitcastTest, ScalesTheSecondMinorDimByTheBitwidthRatio) {
+  const RefBitcastTestCase& tc = GetParam();
+  EXPECT_THAT(
+      CreateKernel(GridSpec{.name = "ref_bitcast"}, InSpec::Vmem(tc.from),
+                   [&](VmemRef in) {
+                     EXPECT_EQ(in.Bitcast(tc.to.dtype()).shape(), tc.to);
+                   }),
+      IsOkAndMatchesIr("CHECK: tpu.memref_bitcast"));
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    KilnTest, RefBitcastTest,
+    testing::ValuesIn<RefBitcastTestCase>({
+        // Equal bitwidths keep the shape, even of rank one or with dynamic
+        // rows.
+        {"F32ToI32", f32(8, 128), i32(8, 128)},
+        {"F32ToI32Rank1", f32(128), i32(128)},
+        {"F32ToI32DynamicRows", f32(kDynamic, 128), i32(kDynamic, 128)},
+        // Rows of a narrower dtype pack into fewer rows of a wider one; bool
+        // counts as 1 bit.
+        {"U8ToI32", u8(8, 128), i32(2, 128)},
+        {"Bf16ToI32", bf16(16, 128), i32(8, 128)},
+        {"U8ToBf16", u8(16, 128), bf16(8, 128)},
+        {"BoolToI32", bool_(32, 128), i32(1, 128)},
+        // Rows of a wider dtype unpack into more rows of a narrower one.
+        {"I32ToU8", i32(2, 128), u8(8, 128)},
+        {"I32ToBf16", i32(8, 128), bf16(16, 128)},
+        {"Bf16ToU8", bf16(8, 128), u8(16, 128)},
+        {"I32ToBool", i32(1, 128), bool_(32, 128)},
+        // Only the second-minor dimension scales.
+        {"U8ToI32Rank3", u8(2, 8, 128), i32(2, 2, 128)},
+    }),
+    [](const TestParamInfo<RefBitcastTestCase>& info) {
+      return std::string(info.param.name);
+    });
+
+struct RefBitcastDeathTestCase {
+  std::string_view name;
+  Shape from;
+  DType to;
+  std::string error;
+};
+
+using RefBitcastDeathTest = TestWithParam<RefBitcastDeathTestCase>;
+
+TEST_P(RefBitcastDeathTest, RequiresAScalableSecondMinorDim) {
+  const RefBitcastDeathTestCase& tc = GetParam();
+  EXPECT_THAT(
+      CreateKernel(
+          GridSpec{.name = "ref_bitcast"}, InSpec::Vmem(tc.from),
+          [&](VmemRef in) { EXPECT_DEATH(in.Bitcast(tc.to), tc.error); }),
+      IsOk());
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    KilnTest, RefBitcastDeathTest,
+    testing::ValuesIn<RefBitcastDeathTestCase>({
+        {"Rank1", u8(128), i32, "rank 2 or more"},
+        {"DynamicRows", u8(kDynamic, 128), i32,
+         "static second-minor dimension"},
+        {"PartialRows", u8(6, 128), i32, "whole number of i32 rows"},
+        {"PartialBoolRows", bool_(16, 128), i32, "whole number of i32 rows"},
+    }),
+    [](const TestParamInfo<RefBitcastDeathTestCase>& info) {
+      return std::string(info.param.name);
+    });
+
 // Copy assignment rebinds the handle and emits no IR; a later `Store` writes
 // to the newly bound memref.
 TEST(KilnTest, RefCopyAssignmentRebinds) {

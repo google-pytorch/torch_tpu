@@ -22,16 +22,19 @@
 #include <utility>
 #include <vector>
 
+#include "absl/log/absl_log.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/compilation_spec.h"
 #include "csrc/common/compile_options_key.h"
+#include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/layout_utils.h"
 #include "csrc/common/shape.h"
 #include "csrc/experimental/precompiled_kernels/mosaic_custom_call.h"
 #include "csrc/internal/mosaic/kiln/kiln.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "xla/client/executable_build_options.h"
 #include "xla/hlo/builder/xla_computation.h"
 #include "xla/hlo/ir/hlo_module.h"
@@ -46,6 +49,39 @@ CompilationCacheKey MakeUnboundedDynamicKernelCacheKey(ExtentlessKey key,
                                                        int id_key) {
   return CompilationCacheKey(GraphKey(key, DimensionsKey({})),
                              CompileOptionsKey({}), id_key);
+}
+
+kiln::DType ToKilnDType(const mlir::ElementType element_type) {
+  switch (element_type) {
+    case mlir::ElementType::PRED:
+      return kiln::bool_;
+    case mlir::ElementType::I8:
+      return kiln::i8;
+    case mlir::ElementType::I16:
+      return kiln::i16;
+    case mlir::ElementType::I32:
+      return kiln::i32;
+    case mlir::ElementType::I64:
+      return kiln::i64;
+    case mlir::ElementType::UI8:
+      return kiln::u8;
+    case mlir::ElementType::UI16:
+      return kiln::u16;
+    case mlir::ElementType::UI32:
+      return kiln::u32;
+    case mlir::ElementType::UI64:
+      return kiln::u64;
+    case mlir::ElementType::F16:
+      return kiln::f16;
+    case mlir::ElementType::BF16:
+      return kiln::bf16;
+    case mlir::ElementType::F32:
+      return kiln::f32;
+    default:
+      ABSL_LOG(FATAL)  // CRASH_OK
+          << "Kiln has no dtype for " << ToShortString(element_type)
+          << ". This is a TorchTPU bug.";
+  }
 }
 
 absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>> CompileMosaicKernel(
