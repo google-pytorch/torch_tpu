@@ -285,6 +285,9 @@ inline constexpr char kTpuChipsPerProcessBoundsEnvVar[] =
     "TPU_CHIPS_PER_PROCESS_BOUNDS";
 inline constexpr char kTpuHostBoundsEnvVar[] =
     "TPU_HOST_BOUNDS";  // Read by Google Cloud.
+// Specifies the filesystem path to the libtpu shared library. Read by PJRT
+// dynamic plugin loader.
+inline constexpr char kTpuLibraryPathEnvVar[] = "TPU_LIBRARY_PATH";
 inline constexpr char kTpuPremappedBufferSizeEnvVar[] =
     "TPU_PREMAPPED_BUFFER_SIZE";  // Premapped buffer size in bytes for PjRt
                                   // client.
@@ -461,6 +464,8 @@ inline constexpr auto kEnvVarInfo = MakeConstexprMap<std::string_view,
      {SymbolStage::InternalImplementation(), EnvVarType::kString}},
     {kTpuHostBoundsEnvVar,
      {SymbolStage::InternalImplementation(), EnvVarType::kString}},
+    {kTpuLibraryPathEnvVar,
+     {SymbolStage::InternalImplementation(), EnvVarType::kString}},
     // Marked as Stable because it is an established XLA/PJRT runtime
     // configuration knob widely used by production workloads. The TorchTPU
     // team is committed to honor this env var.
@@ -620,10 +625,19 @@ template <const char* name>
   return value;
 }
 
-// Ensures that the rank is expanded in environment variables that depend on it.
-// It may overwrite the env vars when called for the first time, and has no
-// effect on subsequent calls.
+// Ensures that the rank is expanded in environment variables that depend on it,
+// and runs the function set by SetLibtpuInitArgsFinalizer(), if any. It may
+// overwrite the env vars when called for the first time, and has no effect on
+// subsequent calls.
 void EnsureRankIsExpandedInEnvVars();
+
+// Sets a function that prepares the process for loading libtpu and may update
+// LIBTPU_INIT_ARGS with SafeSetEnv<>(), which EnsureRankIsExpandedInEnvVars()
+// runs once, before TorchTPU reads LIBTPU_INIT_ARGS with
+// ExpandAndGetLibtpuInitArgsEnvVarOnce() or initializes the TPU runtime. Must
+// be called before EnsureRankIsExpandedInEnvVars(), e.g. during static
+// initialization.
+void SetLibtpuInitArgsFinalizer(void (*finalizer)());
 
 // Returns the value of the XLA_FLAGS env var, with the "${RANK}" placeholder
 // expanded to the current rank.
