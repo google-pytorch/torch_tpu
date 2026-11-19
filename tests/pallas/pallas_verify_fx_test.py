@@ -894,10 +894,18 @@ class FxVerifierTest(seed_test_utils.RepeatableTest):
     )
     with (
         fx_verifier.tpu_export_mesh_context(ambient_mesh),
-        jax._src.config.export_ignore_forward_compatibility(True),
+        fx_verifier.ignore_export_forward_compatibility(),
     ):
       exported = export_fn(*jax_args, **jax_kwargs)
     self.assertEqual(_exported_donor_indices(exported), [1])
+
+  def test_ignore_export_forward_compatibility_nests_and_restores(self):
+    orig = jax.config.jax_export_ignore_forward_compatibility
+    with fx_verifier.ignore_export_forward_compatibility():
+      with fx_verifier.ignore_export_forward_compatibility():
+        self.assertTrue(jax.config.jax_export_ignore_forward_compatibility)
+      self.assertTrue(jax.config.jax_export_ignore_forward_compatibility)
+    self.assertEqual(jax.config.jax_export_ignore_forward_compatibility, orig)
 
   def test_abstract_mesh_lowering_keeps_keyword_only_donation(self):
     abstract_mesh = jax.sharding.AbstractMesh((2,), ("tp",))
@@ -938,7 +946,7 @@ class FxVerifierTest(seed_test_utils.RepeatableTest):
     )
     with (
         fx_verifier.tpu_export_mesh_context(ambient_mesh),
-        jax._src.config.export_ignore_forward_compatibility(True),
+        fx_verifier.ignore_export_forward_compatibility(),
     ):
       exported = export_fn(*jax_args, **jax_kwargs)
     self.assertEqual(_exported_donor_indices(exported), [1])
@@ -1918,6 +1926,18 @@ class FxVerifierTest(seed_test_utils.RepeatableTest):
         msg=oob_rep.summary(),
     )
 
+    grad_oob_rep = verifier.verify(
+        cond_nested_oob, (pred, x.clone().requires_grad_(True)), mode=STATIC
+    )
+    self.assertNotEmpty(
+        grad_oob_rep.findings_by_category(Category.OUT_OF_BOUNDS_ACCESS),
+        msg=grad_oob_rep.summary(),
+    )
+    self.assertEmpty(
+        grad_oob_rep.findings_by_category(Category.VERIFICATION_INCOMPLETE),
+        msg=grad_oob_rep.summary(),
+    )
+
   def test_multi_output_aminmax_out_and_set_inplace_provenance(self):
     donating_op = jax_op(
         "pallas_verify_fx::multi_out_and_set_donate",
@@ -2082,8 +2102,8 @@ class FxVerifierTest(seed_test_utils.RepeatableTest):
   def test_exported_fallback_hook_is_thread_local(self):
     def _bad_lowering_fn(x: jax.Array) -> jax.Array:
       def _bad_body(x_ref, o_ref):
-        o_ref[...] = x_ref[...]
-        raise ValueError("synthetic lowering failure")
+        # Traces fine but has no Mosaic TPU lowering.
+        o_ref[...] = jnp.sort(x_ref[...], axis=0)
 
       return pl.pallas_call(
           _bad_body, out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype)
@@ -2521,37 +2541,6 @@ class FxVerifierTest(seed_test_utils.RepeatableTest):
     )
 
   def test_preconstructed_pallas_call_autograd_and_interior_tile_and_spmd(self):
-    preconstructed_non_interp = pl.pallas_call(
-        lambda g_ref, o_ref, _sem: o_ref.__setitem__(
-            Ellipsis, g_ref[...] * 2.0
-        ),
-        out_shape=jax.ShapeDtypeStruct((8, 128), jnp.float32),
-        grid_spec=pltpu.PrefetchScalarGridSpec(
-            num_scalar_prefetch=0,
-            scratch_shapes=(pltpu.SemaphoreType.DMA,),
-        ),
-    )
-    params = pltpu.InterpretParams(dma_execution_mode="on_wait")
-    worker_interprets: list[object] = []
-    x_spec = jax.ShapeDtypeStruct((8, 128), jnp.float32)
-    with (
-        pltpu.force_tpu_interpret_mode(params),
-        fx_verifier.force_primitive_interpret_params(params),
-    ):
-      main_jaxpr = jax.make_jaxpr(preconstructed_non_interp)(x_spec)
-      self.assertEqual(main_jaxpr.eqns[0].params["interpret"], params)
-
-      def _check_worker() -> None:
-        w_jaxpr = jax.make_jaxpr(preconstructed_non_interp)(x_spec)
-        worker_interprets.append(w_jaxpr.eqns[0].params["interpret"])
-
-      worker = threading.Thread(target=_check_worker)
-      worker.start()
-      worker.join()
-    self.assertEqual(worker_interprets, [False])
-    after_jaxpr = jax.make_jaxpr(preconstructed_non_interp)(x_spec)
-    self.assertFalse(after_jaxpr.eqns[0].params["interpret"])
-
     preconstructed_bwd = pl.pallas_call(
         lambda g_ref, o_ref: o_ref.__setitem__(Ellipsis, g_ref[...] * 2.0),
         out_shape=jax.ShapeDtypeStruct((8, 128), jnp.float32),
@@ -2573,7 +2562,18 @@ class FxVerifierTest(seed_test_utils.RepeatableTest):
     fwd_scale2.register_autograd(lambda ctx, g: bwd_jax_op(g))
     x_small = torch.randn((8, 128), dtype=torch.float32, requires_grad=True)
     pre_rep = verifier.verify(fwd_scale2, (x_small,))
-    self._assert_autograd_ran(pre_rep)
+    # A backward kernel built before verification keeps interpret mode off, so
+    # the autograd check reports that it could not run it.
+    self.assertTrue(pre_rep.passed, msg=pre_rep.summary())
+    self.assertNotIn(verifier.Phase.AUTOGRAD, pre_rep.checked_phases)
+    pre_skips = [
+        f
+        for f in pre_rep.findings_by_category(Category.VERIFICATION_INCOMPLETE)
+        if f.phase == verifier.Phase.AUTOGRAD
+    ]
+    self.assertLen(pre_skips, 1, msg=pre_rep.summary())
+    self.assertIs(pre_skips[0].severity, verifier.Severity.INFO)
+    self.assertIn("built outside the verified function", pre_skips[0].message)
 
     # Interior-tile zero-gradient bug on (128, 128) bfloat16: rows 0:16 and
     # 112:128 are exact, while interior rows 16:112 are zeroed out.

@@ -79,7 +79,7 @@ Findings have a severity: errors fail the report, warnings and infos do not
 | `concurrent_dma_sem_sharing`    | `model_check`              | A race enabled by concurrent DMAs that signal the same semaphore.                                                                                                    |
 | `unthrottled_remote_overwrite`  | `model_check`              | A remote DMA can overwrite a buffer its receiver is still using.                                                                                                     |
 | `parallel_grid_conflict`        | `model_check`              | Grid iterations along a `parallel` axis access overlapping shared memory with at least one write.                                                                    |
-| `semaphore_deadlock`            | `model_check`, `interpret` | No schedule lets every semaphore wait complete (or a CPU interpret wait timed out).                                                                                  |
+| `semaphore_deadlock`            | `model_check`              | No schedule lets every semaphore wait complete.                                                                                                                      |
 | `semaphore_nonzero_exit`        | `model_check`, `interpret` | A semaphore is not back at zero when the kernel exits.                                                                                                               |
 | `unwritten_output`              | `model_check`              | Part of an output is never written, is clobbered by an unwritten parallel tile, or is accumulated into before being initialized.                                     |
 | `out_of_bounds_access`          | `model_check`, `interpret` | A static or runtime ref slice, DMA slice, or `BlockSpec` `index_map` is out of bounds.                                                                               |
@@ -116,12 +116,12 @@ run the full verification in a separate process such as a unit test.
 ## How the model checker works
 
 `jaxpr_model.py` traces the kernel without initializing a backend, locates every
-`pallas_call` and `mpmd_map` (`pl.core_map` / `pl.kernel`), and unrolls each
-kernel across mesh devices, grid points, and control-flow primitives (`scan` /
-`fori_loop`, `while_loop`, `cond` / `pl.when`, and `run_scoped`). Concrete
-integer and Boolean scalars are propagated per unrolled step to resolve
-`BlockSpec` `index_map`s, `Ref` slices, DMA/semaphore operands, remote
-`device_id`s, and coordinate-compressed output write coverage.
+`pallas_call` and `mpmd_map` (`pl.kernel`), and unrolls each kernel across mesh
+devices, grid points, and control-flow primitives (`scan` / `fori_loop`,
+`while_loop`, `cond` / `pl.when`, and `run_scoped`). Concrete integer and
+Boolean scalars are propagated per unrolled step to resolve `BlockSpec`
+`index_map`s, `Ref` slices, DMA/semaphore operands, remote `device_id`s, and
+coordinate-compressed output write coverage.
 
 `smt_checker.py` gives every event an integer timestamp and encodes program
 order, async DMA causality (start < read done <= write done, with progressive
@@ -130,6 +130,11 @@ once the signals before it cover its amount plus what earlier waits consumed) as
 difference and pseudo-Boolean constraints. If no schedule satisfies them, the
 kernel deadlocks. For each pair of conflicting accesses it asks whether some
 schedule lets them overlap.
+
+Pallas has no public API to inspect kernels, so `jaxpr_model.py` decodes the
+parameters of Pallas primitives in the jaxprs of the public `jax.make_jaxpr`,
+and reports `verification_incomplete` when they do not match. Everything else
+uses only public Pallas and JAX APIs.
 
 The constraints are decided by the Google OR-Tools CP-SAT solver
 (`ortools.sat.python.cp_model`), installed via `pip install "torch_tpu[verify]"`
@@ -157,9 +162,18 @@ even without OR-Tools).
     are modeled at grid-step boundaries rather than overlapped across steps.
 *   Dynamic CPU TPU-interpret sweeps sample a finite set of schedules (2 DMA
     modes × 2 PRNG seeds by default), simulate 1 thread per device outside
-    `pl.core_map` over a multi-core `TensorCoreMesh`, poison kernel VMEM buffers
-    at initial allocation (first visit), guard semaphore and barrier waits with
-    a progress watchdog, and require JAX >= 0.11.2 for cross-device remote DMAs.
+    `pl.kernel` over a multi-core `TensorCoreMesh`, poison kernel VMEM buffers
+    at initial allocation (first visit), and require JAX >= 0.11.2 for
+    cross-device remote DMAs.
+*   The CPU TPU interpreter cannot abort a semaphore or DMA wait that never
+    completes, so kernels (including those called by a custom backward) only run
+    in CPU interpret mode when model checking proves that their waits can
+    complete: they have no waits, or their synchronization is fully modeled and
+    CP-SAT finds a schedule that completes every wait.
+*   `pl.pallas_call` and `pl.kernel` read `pltpu.force_tpu_interpret_mode` when
+    they are built, so kernels built before `verify` runs (for example at module
+    level) cannot run in CPU interpret mode and are reported as
+    `verification_incomplete`.
 *   VMEM and SMEM capacity are not checked.
 *   Every bounded or skipped check is reported as `verification_incomplete`.
 

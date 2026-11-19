@@ -16,7 +16,7 @@
 
 `check_kernel_static_models` traces a TorchTPU `@jax_op` or a raw JAX function
 to a closed Jaxpr without initializing TPU backends, finds every `pallas_call`
-and `mpmd_map` (`pl.core_map`, including inside `shard_map` for multi-chip
+and `mpmd_map` (`pl.kernel`, including inside `shard_map` for multi-chip
 kernels), and unrolls it per mesh device and grid point into a
 `KernelVerificationModel`:
 
@@ -65,6 +65,15 @@ import torch
 from torch_tpu._internal.pallas import pallas as pallas_lib
 from torch_tpu._internal.pallas.verify import findings
 from torch_tpu._internal.pallas.verify import fx_verifier
+
+# Pallas has no public API to inspect kernels, so models are built from the
+# jaxprs of the public `jax.make_jaxpr` by decoding the parameters of Pallas
+# primitives (`args_tree`, `tree`, `grid_mapping`, ref transforms), and
+# `check_kernel_static_models` fails closed with `VERIFICATION_INCOMPLETE` when
+# they change.
+# TODO: decode kernels through public APIs once Pallas exposes them;
+# `jax.extend.pallas` only exposes `GridMapping`, not the Pallas kernel
+# primitives or their operands.
 
 _Category = findings.FindingCategory
 _Severity = findings.Severity
@@ -377,10 +386,14 @@ class KernelVerificationModel:
     has_verified_full_overwrite_revisit: Whether the kernel has a
       non-consecutive output block revisit where every revisiting run was
       statically proven to overwrite the full tile without reading stale values.
-    core_axis_names: Core-mesh axis names when lowered via `core_map` /
+    core_axis_names: Core-mesh axis names when lowered via `pl.kernel` /
       `mpmd_map`, or `()` for `pallas_call`.
     signaled_sem_keys: Semaphores signaled at least once across all walked grid
       points (including beyond `max_unrolled_iterations`).
+    waits_proven_completable: Set by `smt_checker`: whether the model's
+      synchronization is reliable and untruncated, and some schedule completes
+      every wait (trivially true without waits). CPU TPU interpret runs need it
+      for kernels with waits, since the interpreter cannot abort a blocked wait.
   """
 
   kernel_name: str
@@ -406,6 +419,7 @@ class KernelVerificationModel:
   has_verified_full_overwrite_revisit: bool = False
   core_axis_names: tuple[str, ...] = ()
   signaled_sem_keys: frozenset[SemaphoreKey] = frozenset()
+  waits_proven_completable: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -2298,7 +2312,7 @@ def _resolve_target_location(
     device_id_expr: Pallas `device_id` expression (scalar, tuple, or dict).
     loc: Source location for diagnostic reporting.
     core_index_expr: Optional explicit `core_index` expression.
-    device_id_type: Optional `pltpu.DeviceIdType` (`MESH` or `LOGICAL`).
+    device_id_type: Optional deprecated `device_id_type` (`MESH` or `LOGICAL`).
     affects_coverage: Whether unresolved targets affect output coverage.
     target_view: Optional target `_RefView` carrying destination core-mesh
       metadata in multi-mesh `mpmd_map`.
@@ -2373,8 +2387,7 @@ def _resolve_target_location(
       ctx.builder.record_issue(
           _Category.INVALID_DEVICE_ID,
           "device_id is an axis-name dictionary, which is incompatible with"
-          " device_id_type=pltpu.DeviceIdType.LOGICAL (use"
-          " pltpu.DeviceIdType.MESH)",
+          " the deprecated LOGICAL device_id_type (omit device_id_type)",
           loc,
       )
       ctx.builder.note_unresolved_sync(
@@ -2534,8 +2547,8 @@ def _resolve_target_location(
     if id_type_str == "logical":
       ctx.builder.record_issue(
           _Category.INVALID_DEVICE_ID,
-          "device_id is a coordinate tuple, which is incompatible with"
-          " device_id_type=pltpu.DeviceIdType.LOGICAL",
+          "device_id is a coordinate tuple, which is incompatible with the"
+          " deprecated LOGICAL device_id_type",
           loc,
       )
       ctx.builder.note_unresolved_sync(
@@ -2565,10 +2578,9 @@ def _resolve_target_location(
     if id_type_str == "mesh" and len(mesh.mesh_shape) > 1:
       ctx.builder.record_issue(
           _Category.INVALID_DEVICE_ID,
-          "scalar device_id with DeviceIdType.MESH is invalid on"
+          "scalar device_id with the MESH device_id_type is invalid on"
           f" {len(mesh.mesh_shape)}D mesh {mesh.axis_names}; pass a dict of"
-          f" axis names, a {len(mesh.mesh_shape)}-tuple of coordinates, or"
-          " device_id_type=pltpu.DeviceIdType.LOGICAL",
+          f" axis names or a {len(mesh.mesh_shape)}-tuple of coordinates",
           loc,
       )
       ctx.builder.note_unresolved_sync(
@@ -4708,7 +4720,7 @@ def _uncovered_region(
 
 @dataclasses.dataclass(frozen=True)
 class _Operand:
-  """A pipelined or directly accessed `pallas_call` or `core_map` operand."""
+  """A pipelined or directly accessed `pallas_call` or `pl.kernel` operand."""
 
   index: int  # Position among all block operands.
   io_index: int  # Position among the inputs or among the outputs.
@@ -5573,7 +5585,7 @@ def _extract_mpmd_map_models(
     tpu_version: findings.TpuVersion = fx_verifier.DEFAULT_TPU_VERSION,
     outer_output_vars: AbstractSet[Any] = frozenset(),
 ) -> list[KernelVerificationModel]:
-  """Extracts kernel models from a `pl.core_map` (`mpmd_map`) equation."""
+  """Extracts kernel models from a `pl.kernel` (`mpmd_map`) equation."""
   meshes = tuple(eqn.params.get("meshes", ()) or ())
   external_meshes = tuple(eqn.params.get("external_meshes", ()) or ())
   all_meshes = (*meshes, *external_meshes)
@@ -6454,7 +6466,7 @@ def check_kernel_static_models(
 
   Args:
     op_or_fn: `@jax_op` handle (`CustomOpDef` / `JaxCallable`) or raw JAX
-      callable containing `pl.pallas_call`, `pl.core_map`, or `pl.kernel`.
+      callable containing `pl.pallas_call` or `pl.kernel`.
     example_args: Positional example arguments (`torch.Tensor`, `jax.Array`,
       `jax.ShapeDtypeStruct`, or Python scalars/pytrees) supplying shapes,
       dtypes, shardings, and optional small CPU integer/boolean index inputs.
@@ -6557,8 +6569,8 @@ def check_kernel_static_models(
                 phase=findings.Phase.MODEL_CHECK,
                 op_name=name,
                 message=(
-                    "no pallas_call or core_map was found, so there was nothing"
-                    " to model check"
+                    "no pl.pallas_call or pl.kernel was found, so there was"
+                    " nothing to model check"
                 ),
             )
         ],

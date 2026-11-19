@@ -18,10 +18,11 @@
 on CPU virtual devices under `pltpu.force_tpu_interpret_mode` across multiple
 `(DmaScheduleMode, seed)` schedules:
 
-* Enables `detect_races=True` (`on_race="raise"`) and inspects the interpreter's
-  internal vector-clock `races` tracker after each schedule for dynamically
-  observed data races (`DATA_RACE`) and its kernel-exit semaphore validation for
-  non-zero semaphore counts (`SEMAPHORE_NONZERO_EXIT`).
+* Enables `detect_races=True` (with `on_race="raise"` when available, and
+  capturing `RACE DETECTED` reports from stdout or logs on older JAX releases),
+  so dynamically observed data races are reported (`DATA_RACE`), and records
+  the semaphores that the interpreter reports with non-zero counts at kernel
+  exit (`SEMAPHORE_NONZERO_EXIT`).
 * Runs with `uninitialized_memory="nan"` (which poisons VMEM scratch and block
   buffers at allocation time: quiet NaNs for floats, `iinfo.max` for integers,
   and `True` for booleans) and compares race-free runs against a
@@ -31,22 +32,23 @@ on CPU virtual devices under `pltpu.force_tpu_interpret_mode` across multiple
   (later-visit unwritten output blocks are checked statically in `MODEL_CHECK`).
 * Compares output tensors across all `(DmaScheduleMode, seed)` combinations to
   detect schedule-dependent non-determinism (`SCHEDULE_DIVERGENCE`).
+
+Kernels only run when `MODEL_CHECK` proves that they cannot block forever on a
+semaphore or DMA wait, because the interpreter cannot abort such a wait.
 """
 
 from __future__ import annotations
 
 from collections.abc import (
-    Callable,
-    Iterator,
     Mapping,
-    MutableSequence,
     Sequence,
 )
 import contextlib
 import dataclasses
-import inspect
-import threading
-import time
+import io
+import logging  # PYTHON_LOGGING_OK=std logging.Handler for JAX race warnings
+import re
+import sys
 from typing import Any, cast
 
 import jax
@@ -56,6 +58,8 @@ import numpy as np
 import torch
 from torch_tpu._internal.pallas.verify import findings
 from torch_tpu._internal.pallas.verify import fx_verifier
+from torch_tpu._internal.pallas.verify import jaxpr_model
+from torch_tpu._internal.pallas.verify import smt_checker
 
 _INTERPRET = findings.Phase.INTERPRET
 
@@ -64,14 +68,8 @@ InterpretSweepConfig = findings.InterpretSweepConfig
 # Shared with `fx_verifier` so autograd-parity and schedule-sweep CPU TPU
 # interpret runs serialize access to JAX's process-global interpreter state.
 _INTERPRET_LOCK = fx_verifier.INTERPRET_LOCK
-_force_primitive_interpret_params = fx_verifier.force_primitive_interpret_params
 
-# Per-schedule stall timeout: aborts only when a semaphore or barrier wait
-# makes no forward progress across the interpreter for this duration.
-_DEFAULT_INTERPRET_TIMEOUT_SECONDS = 10.0
-_DEFAULT_INTERPRET_RUN_TIMEOUT_SECONDS = _DEFAULT_INTERPRET_TIMEOUT_SECONDS
-
-_OPTIONAL_INTERPRET_PARAMS = frozenset({"on_race"})
+_OPTIONAL_INTERPRET_PARAMS = frozenset({"on_race", "detect_races"})
 
 _STANDARD_NUMPY_FLOAT_DTYPES = (
     np.dtype(np.float16),
@@ -79,15 +77,20 @@ _STANDARD_NUMPY_FLOAT_DTYPES = (
     np.dtype(np.float64),
 )
 
-_MISSING = object()
-_WATCHDOG_STATE = threading.local()
+# What the interpreter prints for each device that exits a kernel with a
+# non-zero semaphore.
+_NONZERO_SEMAPHORE_RE = re.compile(
+    r"Semaphore (?P<sem>\S+) has non-zero count for (?P<device>\S+) \(global"
+    r" core (?P<core>\S+)\) at kernel exit: (?P<count>\S+)"
+)
 
 
 def make_interpret_params(**params: Any) -> pltpu.InterpretParams:
   """Builds `pltpu.InterpretParams`, dropping optional fields this JAX lacks.
 
-  For example `on_race` only exists in newer JAX releases; without it races
-  are still recorded and checked after the run.
+  For example `on_race` only exists in newer JAX releases; on older releases
+  with `detect_races=True`, the interpreter prints `RACE DETECTED` reports to
+  stdout instead of raising, which `_interpret_run` captures.
 
   Args:
     **params: `pltpu.InterpretParams` fields.
@@ -103,6 +106,14 @@ def make_interpret_params(**params: Any) -> pltpu.InterpretParams:
     raise TypeError(f"unexpected InterpretParams field(s): {sorted(unknown)!r}")
   return pltpu.InterpretParams(
       **{k: v for k, v in params.items() if k in supported}
+  )
+
+
+def detect_races_supported() -> bool:
+  """Returns whether this JAX supports `detect_races` in CPU TPU interpret."""
+  return any(
+      field.name == "detect_races"
+      for field in dataclasses.fields(pltpu.InterpretParams)
   )
 
 
@@ -441,12 +452,26 @@ def classify_interpret_exception(
   msg = str(exc).strip()
   exc_text = _extract_innermost_exception_text(msg)
   lower = exc_text.lower()
+  if fx_verifier.is_prebuilt_kernel_error(lower):
+    prefix = (
+        "skipped CPU interpret runs"
+        if phase is _INTERPRET
+        else f"skipped {phase.value} check"
+    )
+    return findings.VerificationFinding(
+        category=findings.FindingCategory.VERIFICATION_INCOMPLETE,
+        severity=findings.Severity.INFO,
+        phase=phase,
+        op_name=op_name,
+        message=(
+            f"{prefix} ({schedule_desc}) because"
+            f" {fx_verifier.PREBUILT_KERNEL_SKIP_REASON}"
+        ),
+    )
   if "race detected" in lower:
     category = findings.FindingCategory.DATA_RACE
   elif "out of bounds" in lower or "out-of-bounds" in lower:
     category = findings.FindingCategory.OUT_OF_BOUNDS_ACCESS
-  elif "semaphore wait timed out" in lower:
-    category = findings.FindingCategory.SEMAPHORE_DEADLOCK
   elif "semaphore" in lower and (
       "non-zero" in lower
       or "nonzero" in lower
@@ -515,332 +540,86 @@ def classify_interpret_exception(
 
 _classify_interpret_exception = classify_interpret_exception
 
-# Check corrected spelling first, then upstream JAX's misspelled method name in
-# `jax/_src/pallas/mosaic/interpret/shared_memory.py` (split across `+` so typo
-# analyzers do not reject the intentional upstream spelling).
-_SEM_NONZERO_ATTR_CANDIDATES = (
-    "get_semaphores_with_nonzero_count",
-    "get_sempa" + "hores_with_nonzero_count",
-)
 
-# `SharedMemory` buffer methods that constitute genuine forward progress during
-# kernel execution (excluding `check_failed`, which a deadlocked
-# `Semaphore.wait` polls every 0.1s).
-_SHM_PROGRESS_METHODS = (
-    "allocate_buffer",
-    "deallocate_buffer",
-    "get_buffer_content",
-    "store_buffer_content",
-    "swap_buffer_content",
-)
-
-
-@dataclasses.dataclass
-class _WatchdogSession:
-  """Mutable stall-tracking state shared between hooks and watchdog thread."""
-
-  lock: threading.Lock
-  cond: threading.Condition
-  timeout_seconds: float
-  clock: Callable[[], float]
-  last_progress: float
-  nonzero_sems: MutableSequence[str] | None = None
-  stopped: bool = False
-  active_sem_waits: int = 0
-  wait_stall_since: float | None = None
-  last_barrier_waiters: tuple[int, int] = (0, 0)
-  aborted_shm_id: int | None = None
-  timeout_exc: TimeoutError | None = None
-
-
-@contextlib.contextmanager
-def _watchdog_session_context(
-    timeout_seconds: float,
-    *,
-    clock: Callable[[], float] = time.monotonic,
-    nonzero_sems: MutableSequence[str] | None = None,
-) -> Iterator[_WatchdogSession]:
-  """Acquires interpreter hooks and runs the stall watchdog (re-entrant)."""
-  existing: _WatchdogSession | None = getattr(_WATCHDOG_STATE, "session", None)
-  if existing is not None:
-    with existing.lock:
-      prev_timeout = existing.timeout_seconds
-      prev_clock = existing.clock
-      prev_nonzero = existing.nonzero_sems
-      existing.timeout_seconds = timeout_seconds
-      existing.clock = clock
-      existing.nonzero_sems = nonzero_sems
-      now = clock()
-      existing.last_progress = now
-      existing.wait_stall_since = now if existing.active_sem_waits > 0 else None
-      existing.timeout_exc = None
-      existing.cond.notify_all()
-    try:
-      yield existing
-    finally:
-      with existing.lock:
-        existing.timeout_seconds = prev_timeout
-        existing.clock = prev_clock
-        existing.nonzero_sems = prev_nonzero
-        existing.cond.notify_all()
-    return
-
-  with _INTERPRET_LOCK:
-    interpret_mod = inspect.getmodule(pltpu.reset_tpu_interpret_mode_state)
-    memory_mod = getattr(interpret_mod, "memory", None)
-    shm_cls = getattr(memory_mod, "SharedMemory", None)
-    sem_cls = getattr(memory_mod, "Semaphore", None)
-    sem_nonzero_attr: str | None = None
-    orig_get_nonzero: Any = None
-    if shm_cls is not None:
-      for candidate in _SEM_NONZERO_ATTR_CANDIDATES:
-        fn = getattr(shm_cls, candidate, None)
-        if callable(fn):
-          sem_nonzero_attr = candidate
-          orig_get_nonzero = fn
-          break
-
-    w_lock = threading.Lock()
-    w_cond = threading.Condition(w_lock)
-    session = _WatchdogSession(
-        lock=w_lock,
-        cond=w_cond,
-        timeout_seconds=timeout_seconds,
-        clock=clock,
-        last_progress=clock(),
-        nonzero_sems=nonzero_sems,
-    )
-
-    def _mark_progress() -> None:
-      with session.lock:
-        now = session.clock()
-        session.last_progress = now
-        if session.wait_stall_since is not None:
-          session.wait_stall_since = now
-
-    def _wrap_progress_method(orig_fn: Any) -> Any:
-      def _wrapped(*m_args: Any, **m_kwargs: Any) -> Any:
-        _mark_progress()
-        try:
-          return orig_fn(*m_args, **m_kwargs)
-        finally:
-          _mark_progress()
-
-      return _wrapped
-
-    def _watchdog_loop() -> None:
-      while True:
-        try:
-          with session.lock:
-            if session.stopped:
-              return
-            cur_timeout = session.timeout_seconds
-            poll_interval = min(0.05, max(0.005, cur_timeout / 4.0))
-            session.cond.wait(timeout=poll_interval)
-            if session.stopped:
-              return
-            cur_timeout = session.timeout_seconds
-            shm = getattr(interpret_mod, "_shared_memory", None)
-            if shm is not None and id(shm) == session.aborted_shm_id:
-              continue
-            barrier_obj = (
-                getattr(shm, "barrier", None) if shm is not None else None
-            )
-            cleanup_obj = (
-                getattr(shm, "clean_up_barrier", None)
-                if shm is not None
-                else None
-            )
-            cur_barrier_waiters = (
-                int(getattr(barrier_obj, "n_waiting", 0) or 0),
-                int(getattr(cleanup_obj, "n_waiting", 0) or 0),
-            )
-            now = session.clock()
-            if cur_barrier_waiters != session.last_barrier_waiters:
-              session.last_barrier_waiters = cur_barrier_waiters
-              session.last_progress = now
-              if session.wait_stall_since is not None:
-                session.wait_stall_since = now
-            has_waiters = (
-                session.active_sem_waits > 0
-                or cur_barrier_waiters[0] > 0
-                or cur_barrier_waiters[1] > 0
-            )
-            if not has_waiters or shm is None or not hasattr(shm, "set_failed"):
-              session.wait_stall_since = None
-              continue
-            if session.wait_stall_since is None:
-              session.wait_stall_since = now
-            should_abort = (
-                now - max(session.last_progress, session.wait_stall_since)
-                >= cur_timeout
-            )
-            if not should_abort:
-              continue
-            timeout_exc = TimeoutError(
-                "semaphore wait timed out in CPU TPU interpret mode (possible"
-                " semaphore deadlock)"
-            )
-            session.timeout_exc = timeout_exc
-            session.aborted_shm_id = id(shm)
-            session.wait_stall_since = None
-            # Pass `top_level=False` because `top_level=True` waits on
-            # `clean_up_barrier` (`shared_memory.py`), which would block this
-            # external watchdog thread instead of waking stalled device threads.
-            shm.set_failed(timeout_exc, top_level=False)
-            if (
-                barrier_obj is not None
-                and hasattr(barrier_obj, "abort")
-                and cur_barrier_waiters[0] > 0
-            ):
-              barrier_obj.abort()
-            # Only abort `clean_up_barrier` when no semaphore waiter remains;
-            # waking an active semaphore waiter lets `fail_on_exception` call
-            # `set_failed(top_level=True)` and satisfy `clean_up_barrier`
-            # cleanly.
-            if (
-                cleanup_obj is not None
-                and hasattr(cleanup_obj, "abort")
-                and cur_barrier_waiters[1] > 0
-                and session.active_sem_waits == 0
-            ):
-              cleanup_obj.abort()
-            for sem_dict_attr in ("sem", "fixed_id_sem"):
-              sem_dict = getattr(shm, sem_dict_attr, None)
-              if isinstance(sem_dict, dict):
-                for sem_obj in list(sem_dict.values()):
-                  cv = getattr(sem_obj, "cv", None)
-                  if cv is not None:
-                    with cv:
-                      cv.notify_all()
-        except Exception:  # pylint: disable=broad-exception-caught
-          # Never let an unexpected interpreter attribute mismatch silently
-          # terminate the daemon watchdog thread mid-run.
-          continue
-
-    saved_attrs: list[tuple[Any, str, Any]] = []
-
-    def _patch_cls_attr(target_cls: Any, attr_name: str, wrapper: Any) -> None:
-      # Save via `__dict__` rather than `getattr` so methods inherited from
-      # `GenericSharedMemory` are deleted rather than copied onto subclasses on
-      # restore.
-      orig_raw = target_cls.__dict__.get(attr_name, _MISSING)
-      saved_attrs.append((target_cls, attr_name, orig_raw))
-      setattr(target_cls, attr_name, wrapper)
-
-    watchdog_thread: threading.Thread | None = None
-    try:
-      if shm_cls is not None and sem_nonzero_attr is not None:
-
-        def _recording_get_nonzero(self_shm: Any, device_id: int) -> Any:
-          nonzero_semaphores = orig_get_nonzero(self_shm, device_id)
-          with session.lock:
-            out_sems = session.nonzero_sems
-          if out_sems is not None:
-            for sem, global_core_index in nonzero_semaphores:
-              count = sem.count_by_core[global_core_index]
-              out_sems.append(
-                  f"semaphore {sem.id} has non-zero count {count} for device"
-                  f" {device_id} (global core {global_core_index}) at kernel"
-                  " exit"
-              )
-          return nonzero_semaphores
-
-        _patch_cls_attr(shm_cls, sem_nonzero_attr, _recording_get_nonzero)
-
-      if shm_cls is not None:
-        for method_name in _SHM_PROGRESS_METHODS:
-          orig_method = getattr(shm_cls, method_name, None)
-          if callable(orig_method):
-            _patch_cls_attr(
-                shm_cls, method_name, _wrap_progress_method(orig_method)
-            )
-
-      if sem_cls is not None:
-        for method_name in ("signal", "enqueue_task"):
-          orig_method = getattr(sem_cls, method_name, None)
-          if callable(orig_method):
-            _patch_cls_attr(
-                sem_cls, method_name, _wrap_progress_method(orig_method)
-            )
-        orig_sem_wait = getattr(sem_cls, "wait", None)
-        if callable(orig_sem_wait):
-
-          def _tracked_sem_wait(
-              self_sem: Any, *w_args: Any, **w_kwargs: Any
-          ) -> Any:
-            with session.lock:
-              enter_now = session.clock()
-              session.last_progress = enter_now
-              session.active_sem_waits += 1
-              session.wait_stall_since = enter_now
-            try:
-              return orig_sem_wait(self_sem, *w_args, **w_kwargs)
-            finally:
-              with session.lock:
-                exit_now = session.clock()
-                session.active_sem_waits = max(0, session.active_sem_waits - 1)
-                session.last_progress = exit_now
-                session.wait_stall_since = (
-                    exit_now if session.active_sem_waits > 0 else None
-                )
-
-          _patch_cls_attr(sem_cls, "wait", _tracked_sem_wait)
-
-      watchdog_thread = threading.Thread(target=_watchdog_loop, daemon=True)
-      watchdog_thread.start()
-      _WATCHDOG_STATE.session = session
-      yield session
-    finally:
-      _WATCHDOG_STATE.session = None
-      with session.lock:
-        session.stopped = True
-        session.cond.notify_all()
-      if watchdog_thread is not None:
-        watchdog_thread.join(timeout=1.0)
-      for target_cls, attr_name, orig_raw in reversed(saved_attrs):
-        if orig_raw is _MISSING:
-          if attr_name in target_cls.__dict__:
-            delattr(target_cls, attr_name)
-        else:
-          setattr(target_cls, attr_name, orig_raw)
-
-
-@contextlib.contextmanager
-def interpret_watchdog_context(
-    timeout_seconds: float = _DEFAULT_INTERPRET_TIMEOUT_SECONDS,
-) -> Iterator[None]:
-  """Installs the CPU TPU-interpret semaphore/barrier stall watchdog.
-
-  Acquires `INTERPRET_LOCK`, installs `SharedMemory` and `Semaphore` progress
-  and wait wrappers, and runs a daemon watchdog thread that aborts stalled
-  semaphore or barrier waits after `timeout_seconds` without forward progress.
-  Safely re-entrant on the same thread when already active.
+def _split_nonzero_semaphore_reports(text: str) -> tuple[list[str], str]:
+  """Separates the interpreter's non-zero semaphore reports from other output.
 
   Args:
-    timeout_seconds: Maximum duration in seconds that a semaphore or barrier
-      wait may stall without buffer or semaphore progress before being aborted
-      with `TimeoutError`.
+    text: Standard output captured during an interpret run.
 
-  Yields:
-    None.
+  Returns:
+    A `(reports, passthrough)` pair of normalized non-zero semaphore messages
+    and the remaining output, which belongs to the kernel or other code.
   """
-  with _watchdog_session_context(
-      timeout_seconds=timeout_seconds,
-      clock=time.monotonic,
-      nonzero_sems=None,
-  ) as session:
-    try:
-      yield
-    except Exception as exc:
-      with session.lock:
-        timeout_exc = session.timeout_exc
-      if timeout_exc is not None and (
-          isinstance(exc, threading.BrokenBarrierError)
-          or "BrokenBarrierError" in str(exc)
-      ):
-        raise timeout_exc from exc
-      raise
+  reports: list[str] = []
+  passthrough: list[str] = []
+  for line in text.splitlines(keepends=True):
+    match = _NONZERO_SEMAPHORE_RE.fullmatch(line.strip())
+    if match is None:
+      passthrough.append(line)
+      continue
+    reports.append(
+        f"semaphore {match['sem']} has non-zero count {match['count']} for"
+        f" device {match['device']} (global core {match['core']}) at kernel"
+        " exit"
+    )
+  return reports, "".join(passthrough)
+
+
+def _split_race_reports(text: str) -> tuple[list[str], str]:
+  """Separates the interpreter's `RACE DETECTED` blocks from other output.
+
+  Older JAX releases without `InterpretParams.on_race` print multi-line
+  `RACE DETECTED` blocks to stdout instead of raising when `detect_races=True`.
+
+  Args:
+    text: Standard output captured during an interpret run.
+
+  Returns:
+    A `(reports, passthrough)` pair of stripped race descriptions and the
+    remaining output, which belongs to the kernel or other code.
+  """
+  reports: list[str] = []
+  passthrough: list[str] = []
+  current: list[str] | None = None
+
+  def _flush_current() -> None:
+    nonlocal current
+    if current is not None:
+      reports.append("".join(current).strip())
+      current = None
+
+  for line in text.splitlines(keepends=True):
+    stripped = line.strip()
+    if stripped == "RACE DETECTED":
+      _flush_current()
+      current = [line]
+      continue
+    if current is not None:
+      if not stripped:
+        _flush_current()
+        continue
+      if line[0] in (" ", "\t"):
+        current.append(line)
+        continue
+      _flush_current()
+    passthrough.append(line)
+
+  _flush_current()
+  return reports, "".join(passthrough)
+
+
+class _RaceLogHandler(logging.Handler):
+  """Captures `RACE DETECTED` warnings emitted via `logging`."""
+
+  def __init__(self) -> None:
+    super().__init__(level=logging.WARNING)
+    self.reports: list[str] = []
+
+  def emit(self, record: logging.LogRecord) -> None:
+    msg = record.getMessage().strip()
+    if msg.startswith("RACE DETECTED"):
+      self.reports.append(msg)
 
 
 def _leaf_to_numpy(leaf: jax.Array) -> np.ndarray:
@@ -865,8 +644,8 @@ class _InterpretRunOutcome:
 
   leaves: list[np.ndarray] | None
   exc: Exception | None
-  race_found: bool
   nonzero_sems: tuple[str, ...]
+  race_reports: tuple[str, ...] = ()
 
 
 def _interpret_run(
@@ -876,11 +655,11 @@ def _interpret_run(
     params: pltpu.InterpretParams,
     cpu_device: jax.Device | None,
     cpu_mesh: jax.sharding.Mesh | None = None,
-    *,
-    timeout_seconds: float = _DEFAULT_INTERPRET_TIMEOUT_SECONDS,
-    clock: Callable[[], float] = time.monotonic,
 ) -> _InterpretRunOutcome:
   """Runs `raw_fn` once in TPU interpret mode.
+
+  The kernels of `raw_fn` must not block forever on a semaphore or DMA wait:
+  the interpreter cannot abort such a wait.
 
   Args:
     raw_fn: The JAX function to run.
@@ -890,92 +669,80 @@ def _interpret_run(
     cpu_device: Default device for single-device functions; None for functions
       that place their inputs on a CPU mesh themselves.
     cpu_mesh: Concrete CPU mesh when running multi-device kernels.
-    timeout_seconds: Stall timeout to abort semaphore or barrier waits that make
-      no forward progress across the interpreter.
-    clock: Monotonic clock callable returning seconds (injectable for
-      deterministic watchdog testing).
 
   Returns:
     An `_InterpretRunOutcome` capturing output leaves (or the raised exception)
-    along with any races or non-zero semaphores observed before state reset.
+    along with any non-zero exit semaphores and non-raising race reports.
   """
   with _INTERPRET_LOCK:
     pltpu.reset_tpu_interpret_mode_state()
-    interpret_mod = inspect.getmodule(pltpu.reset_tpu_interpret_mode_state)
-    nonzero_sems: list[str] = []
+    default_cpu = (
+        cpu_device if cpu_device is not None else jax.devices("cpu")[0]
+    )
+    leaves: list[np.ndarray] | None = None
+    run_exc: Exception | None = None
+    # Older JAX releases print non-zero exit semaphores and race reports from
+    # interpreter callback threads, so capture process-wide `sys.stdout` (and
+    # warning logs when `on_race="warn"`) for the run.
+    captured_stdout = io.StringIO()
+    root_logger = logging.getLogger()
+    race_log_handler = _RaceLogHandler()
+    root_logger.addHandler(race_log_handler)
     try:
-      with _watchdog_session_context(
-          timeout_seconds=timeout_seconds,
-          clock=clock,
-          nonzero_sems=nonzero_sems,
-      ) as session:
-        default_cpu = (
-            cpu_device if cpu_device is not None else jax.devices("cpu")[0]
-        )
-        dev_ctx = jax.default_device(default_cpu)
-        mesh_ctx = fx_verifier.cpu_interpret_mesh_context(cpu_mesh)
-        leaves: list[np.ndarray] | None = None
-        run_exc: Exception | None = None
-        with (
-            mesh_ctx,
-            dev_ctx,
-            pltpu.force_tpu_interpret_mode(params),
-            _force_primitive_interpret_params(params),
-        ):
-          try:
-            # Copy array inputs so `donate_argnums` on outer or nested `jax.jit`
-            # wrappers cannot invalidate buffers reused by later sweep runs.
-            run_args = jax.tree.map(
-                lambda arg: (
-                    jnp.copy(arg)
-                    if isinstance(arg, jax.Array)
-                    and not _is_prng_key_dtype(arg.dtype)
-                    else arg
-                ),
-                list(args),
-            )
-            run_kwargs = jax.tree.map(
-                lambda value: (
-                    jnp.copy(value)
-                    if isinstance(value, jax.Array)
-                    and not _is_prng_key_dtype(value.dtype)
-                    else value
-                ),
-                dict(kwargs),
-            )
-            out = raw_fn(*run_args, **run_kwargs)
-            leaves = [
-                _leaf_to_numpy(leaf)
-                for leaf in jax.tree.leaves(out)
-                if isinstance(leaf, jax.Array)
-            ]
-            jax.effects_barrier()
-          except Exception as exc:  # pylint: disable=broad-exception-caught
-            with session.lock:
-              timeout_exc = session.timeout_exc
-            run_exc = (
-                timeout_exc
-                if timeout_exc is not None
-                and (
-                    isinstance(exc, threading.BrokenBarrierError)
-                    or "BrokenBarrierError" in str(exc)
-                )
-                else exc
-            )
-          with session.lock:
-            timeout_exc = session.timeout_exc
-          if run_exc is None and timeout_exc is not None:
-            run_exc = timeout_exc
-          races_state = getattr(interpret_mod, "races", None)
-          race_found = races_state is not None and bool(races_state.races_found)
-        return _InterpretRunOutcome(
-            leaves=leaves,
-            exc=run_exc,
-            race_found=race_found,
-            nonzero_sems=tuple(nonzero_sems),
-        )
+      with (
+          contextlib.redirect_stdout(captured_stdout),
+          fx_verifier.cpu_interpret_mesh_context(cpu_mesh),
+          jax.default_device(default_cpu),
+          pltpu.force_tpu_interpret_mode(params),
+      ):
+        try:
+          # Copy array inputs so `donate_argnums` on outer or nested `jax.jit`
+          # wrappers cannot invalidate buffers reused by later sweep runs.
+          run_args = jax.tree.map(
+              lambda arg: (
+                  jnp.copy(arg)
+                  if isinstance(arg, jax.Array)
+                  and not _is_prng_key_dtype(arg.dtype)
+                  else arg
+              ),
+              list(args),
+          )
+          run_kwargs = jax.tree.map(
+              lambda value: (
+                  jnp.copy(value)
+                  if isinstance(value, jax.Array)
+                  and not _is_prng_key_dtype(value.dtype)
+                  else value
+              ),
+              dict(kwargs),
+          )
+          out = raw_fn(*run_args, **run_kwargs)
+          leaves = [
+              _leaf_to_numpy(leaf)
+              for leaf in jax.tree.leaves(out)
+              if isinstance(leaf, jax.Array)
+          ]
+          jax.effects_barrier()
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+          run_exc = exc
     finally:
+      root_logger.removeHandler(race_log_handler)
       pltpu.reset_tpu_interpret_mode_state()
+      nonzero_sems, remaining_stdout = _split_nonzero_semaphore_reports(
+          captured_stdout.getvalue()
+      )
+      stdout_races, passthrough = _split_race_reports(remaining_stdout)
+      if passthrough:
+        sys.stdout.write(passthrough)
+    race_reports = tuple(
+        dict.fromkeys([*stdout_races, *race_log_handler.reports])
+    )
+    return _InterpretRunOutcome(
+        leaves=leaves,
+        exc=run_exc,
+        nonzero_sems=tuple(nonzero_sems),
+        race_reports=race_reports,
+    )
 
 
 def _uninitialized_memory_message(
@@ -1133,8 +900,12 @@ def verify_with_cpu_interpret(
     config: InterpretSweepConfig | None = None,
     has_revisit_any_output: bool = False,
     revisit_verified_full_overwrite: bool = False,
+    kernel_models: Sequence[jaxpr_model.KernelVerificationModel] | None = None,
 ) -> findings.VerificationReport:
   """Sweeps a single-chip or distributed Pallas op on CPU TPU interpret mode.
+
+  Kernels run only if `smt_checker.interpret_block_reason` finds that they
+  cannot block forever on a semaphore or DMA wait.
 
   Args:
     op_or_fn: Target `@jax_op` or raw JAX/Pallas callable to sweep.
@@ -1149,6 +920,9 @@ def verify_with_cpu_interpret(
       interpreter does not support).
     revisit_verified_full_overwrite: Whether `Phase.MODEL_CHECK` already
       verified that revisited output blocks perform safe full-tile overwrites.
+    kernel_models: The kernel models of `op_or_fn` as returned by
+      `smt_checker.check_kernel_concurrency_with_models`. When None, they are
+      extracted and checked here with the default `ModelCheckConfig`.
 
   Returns:
     A `VerificationReport` recording findings observed across the sweep.
@@ -1158,6 +932,23 @@ def verify_with_cpu_interpret(
   kwargs = dict(example_kwargs or {})
   op_name = fx_verifier.get_op_display_name(op_or_fn)
   detected: list[findings.VerificationFinding] = []
+
+  if kernel_models is None:
+    _, kernel_models = smt_checker.check_kernel_concurrency_with_models(
+        op_or_fn, example_args, kwargs
+    )
+  block_reason = smt_checker.interpret_block_reason(kernel_models)
+  if block_reason is not None:
+    detected.append(
+        findings.VerificationFinding(
+            category=findings.FindingCategory.VERIFICATION_INCOMPLETE,
+            severity=findings.Severity.INFO,
+            phase=_INTERPRET,
+            op_name=op_name,
+            message=f"skipped CPU interpret runs because {block_reason}",
+        )
+    )
+    return findings.report_of(None, detected)
 
   try:
     (
@@ -1192,7 +983,22 @@ def verify_with_cpu_interpret(
   reported_exc_categories: set[findings.FindingCategory] = set()
   reported_nan = not poison_uninitialized
   reported_divergence = False
-  deadlock_confirmed = False
+  stop_sweep = False
+  detect_races = detect_races_supported()
+  if not detect_races:
+    detected.append(
+        findings.VerificationFinding(
+            category=findings.FindingCategory.VERIFICATION_INCOMPLETE,
+            severity=findings.Severity.INFO,
+            phase=_INTERPRET,
+            op_name=op_name,
+            message=(
+                "skipped CPU interpret race detection because"
+                " pltpu.InterpretParams of this JAX version has no"
+                " detect_races field"
+            ),
+        )
+    )
 
   def _run_schedule(**run_params: Any) -> _InterpretRunOutcome:
     nonlocal effective_uninit_mode, reported_nan
@@ -1241,23 +1047,6 @@ def verify_with_cpu_interpret(
           cpu_mesh,
       )
     return out
-
-  def _record_race_flag(schedule_desc: str) -> None:
-    nonlocal reported_race
-    if not reported_race:
-      reported_race = True
-      detected.append(
-          findings.VerificationFinding(
-              category=findings.FindingCategory.DATA_RACE,
-              severity=findings.Severity.ERROR,
-              phase=_INTERPRET,
-              op_name=op_name,
-              message=(
-                  "vector-clock race detector flagged a data race under"
-                  f" CPU TPU interpret ({schedule_desc})"
-              ),
-          )
-      )
 
   def _record_nonzero_sems(sems: Sequence[str], schedule_desc: str) -> None:
     nonlocal reported_nonzero_sem
@@ -1320,7 +1109,7 @@ def verify_with_cpu_interpret(
     return classified
 
   for mode in config.schedule_modes:
-    if deadlock_confirmed:
+    if stop_sweep:
       break
     for seed in config.seeds:
       schedule_desc = f"dma={mode.value}, seed={seed}"
@@ -1328,13 +1117,29 @@ def verify_with_cpu_interpret(
           dma_execution_mode=(
               "eager" if mode is findings.DmaScheduleMode.EAGER else "on_wait"
           ),
-          detect_races=True,
+          detect_races=detect_races,
           on_race="raise",
           out_of_bounds_reads="raise",
           random_seed=seed,
       )
       outcome = _run_schedule(**schedule_params)
-      schedule_had_race = outcome.race_found
+      schedule_had_race = False
+      if outcome.race_reports:
+        schedule_had_race = True
+        if not reported_race:
+          reported_race = True
+          detected.append(
+              findings.VerificationFinding(
+                  category=findings.FindingCategory.DATA_RACE,
+                  severity=findings.Severity.ERROR,
+                  phase=_INTERPRET,
+                  op_name=op_name,
+                  message=(
+                      f"CPU TPU interpret ({schedule_desc}):"
+                      f" {outcome.race_reports[0]}"
+                  ),
+              )
+          )
       if outcome.exc is not None:
         finding = _classify_for_sweep(outcome.exc, schedule_desc)
         if finding.category is findings.FindingCategory.VERIFICATION_INCOMPLETE:
@@ -1342,10 +1147,8 @@ def verify_with_cpu_interpret(
             if not reported_incomplete:
               reported_incomplete = True
               detected.append(finding)
-            deadlock_confirmed = True
+            stop_sweep = True
             break
-          if outcome.race_found:
-            _record_race_flag(schedule_desc)
           _record_nonzero_sems(outcome.nonzero_sems, schedule_desc)
           # Retry without `detect_races` in case the exception came from a
           # limitation in `race_detection_state` (such as strided slices) rather
@@ -1377,18 +1180,12 @@ def verify_with_cpu_interpret(
                 is not findings.FindingCategory.VERIFICATION_INCOMPLETE
             ):
               _record_exc_finding(fallback_finding)
-              if (
-                  fallback_finding.category
-                  is findings.FindingCategory.SEMAPHORE_DEADLOCK
-              ):
-                deadlock_confirmed = True
-                break
               continue
             if not reported_incomplete:
               reported_incomplete = True
               detected.append(fallback_finding)
             if fallback_finding.severity is findings.Severity.INFO:
-              deadlock_confirmed = True
+              stop_sweep = True
               break
             continue
         elif finding.category is findings.FindingCategory.DATA_RACE:
@@ -1411,36 +1208,23 @@ def verify_with_cpu_interpret(
                 reported_incomplete = True
                 detected.append(fallback_finding)
               if fallback_finding.severity is findings.Severity.INFO:
-                deadlock_confirmed = True
+                stop_sweep = True
                 break
             elif (
                 fallback_finding.category
                 is not findings.FindingCategory.DATA_RACE
             ):
               _record_exc_finding(fallback_finding)
-              if (
-                  fallback_finding.category
-                  is findings.FindingCategory.SEMAPHORE_DEADLOCK
-              ):
-                deadlock_confirmed = True
-                break
             continue
           assert fallback.leaves is not None
           np_leaves = fallback.leaves
         else:
-          if outcome.race_found:
-            _record_race_flag(schedule_desc)
           _record_nonzero_sems(outcome.nonzero_sems, schedule_desc)
           _record_exc_finding(finding)
-          if finding.category is findings.FindingCategory.SEMAPHORE_DEADLOCK:
-            deadlock_confirmed = True
-            break
           continue
       else:
         assert outcome.leaves is not None
         np_leaves = outcome.leaves
-        if outcome.race_found:
-          _record_race_flag(schedule_desc)
         _record_nonzero_sems(outcome.nonzero_sems, schedule_desc)
 
       completed_any_schedule = True

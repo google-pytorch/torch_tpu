@@ -41,6 +41,7 @@ import dataclasses
 import enum
 import hashlib
 import math
+import numbers
 import operator
 from typing import Any
 
@@ -261,8 +262,8 @@ def _is_jax_program(
 def _dynamic_check_skip_reason(
     model_report: findings.VerificationReport,
     models: Sequence[jaxpr_model.KernelVerificationModel] | None,
-) -> tuple[findings.Severity, str, str] | None:
-  """Returns skip severity and messages when dynamic runs must be skipped.
+) -> tuple[findings.Severity, str] | None:
+  """Returns why kernels must not run in CPU TPU interpret mode, if they must not.
 
   Args:
     model_report: Static model checking report.
@@ -270,65 +271,138 @@ def _dynamic_check_skip_reason(
       did not produce models.
 
   Returns:
-    `(severity, autograd_msg, interpret_msg)` when dynamic runs must be skipped,
-    or None when dynamic runs may proceed.
+    `(severity, reason)` when CPU interpret runs and the autograd parity check
+    must not run the kernels, or None when they may.
   """
   if model_report.findings_by_category(
       findings.FindingCategory.SEMAPHORE_DEADLOCK
   ):
     return (
         findings.Severity.INFO,
-        (
-            "skipped the autograd parity check because a semaphore deadlock was"
-            " proven and running the forward kernel would hang"
-        ),
-        (
-            "skipped CPU interpret runs because a semaphore deadlock was proven"
-            " and they would hang"
-        ),
+        "a semaphore deadlock was proven, so running the kernel would hang",
     )
   if model_report.findings_by_category(
       findings.FindingCategory.INVALID_DEVICE_ID
   ):
     return (
         findings.Severity.INFO,
-        (
-            "skipped the autograd parity check because an invalid remote device"
-            " or core id was found in the kernel"
-        ),
-        (
-            "skipped CPU interpret runs because an invalid remote device or"
-            " core id was found in the kernel"
-        ),
+        "an invalid remote device or core id was found in the kernel",
     )
   if models is not None and any(
       model.uses_done_count_regular_dma for model in models
   ):
-    done_count_reason = (
-        "the CPU TPU interpreter increments DMA semaphores by byte count"
-        " rather than transfer completion count on REGULAR semaphores"
-    )
     return (
         findings.Severity.INFO,
-        f"skipped the autograd parity check because {done_count_reason}",
-        f"skipped CPU interpret runs because {done_count_reason}",
+        (
+            "the CPU TPU interpreter increments DMA semaphores by byte count"
+            " rather than transfer completion count on REGULAR semaphores"
+        ),
     )
   if not interpret_verifier.remote_interpret_supported() and (
       models is None or any(model.uses_remote_operations for model in models)
   ):
-    unsupported_reason = (
-        f"the CPU interpreter of JAX {jax.__version__} cannot run DMAs or"
-        " semaphore signals between devices, which the kernel"
-        f" {'may use' if models is None else 'uses'}; use JAX"
-        f" {interpret_verifier.MIN_JAX_FOR_REMOTE_INTERPRET_STR} or newer to"
-        " run them"
-    )
     return (
         findings.Severity.WARNING,
-        f"skipped the autograd parity check because {unsupported_reason}",
-        f"skipped CPU interpret runs because {unsupported_reason}",
+        (
+            f"the CPU interpreter of JAX {jax.__version__} cannot run DMAs or"
+            " semaphore signals between devices, which the kernel"
+            f" {'may use' if models is None else 'uses'}; use JAX"
+            f" {interpret_verifier.MIN_JAX_FOR_REMOTE_INTERPRET_STR} or newer"
+            " to run them"
+        ),
     )
+  block_reason = smt_checker.interpret_block_reason(models)
+  if block_reason is not None:
+    return findings.Severity.INFO, block_reason
   return None
+
+
+def _call_signature(
+    args: Sequence[Any], kwargs: Mapping[str, Any]
+) -> tuple[Any, ...]:
+  """Returns a hashable key of the call arguments that can change kernel models.
+
+  Shapes, dtypes, and static values select the traced kernels, and the values of
+  small integer or boolean arrays are specialized into their models.
+
+  Args:
+    args: Positional arguments.
+    kwargs: Keyword arguments.
+
+  Returns:
+    The key.
+  """
+  key: list[Any] = []
+  for leaf in jax.tree.leaves((tuple(args), dict(kwargs))):
+    if isinstance(leaf, numbers.Number):
+      key.append(leaf)
+    elif hasattr(leaf, "shape") and hasattr(leaf, "dtype"):
+      # pylint: disable-next=protected-access
+      small_ints = jaxpr_model._extract_small_int_cpu_array(leaf)
+      key.append((
+          type(leaf).__name__,
+          tuple(leaf.shape),
+          str(leaf.dtype),
+          None if small_ints is None else small_ints.tobytes(),
+      ))
+    else:
+      try:
+        hash(leaf)
+      except TypeError:
+        key.append(repr(leaf))
+      else:
+        key.append(leaf)
+  return tuple(key)
+
+
+def _make_interpret_gate(
+    target: Any,
+    args: Sequence[Any],
+    kwargs: Mapping[str, Any],
+    config: smt_checker.ModelCheckConfig,
+) -> fx_verifier.InterpretGate:
+  """Returns a gate that model checks each `@jax_op` call before it runs.
+
+  Results are cached per op and `_call_signature`. The call of `target` with
+  `args` and `kwargs` is already known to be safe.
+
+  Args:
+    target: The verified `@jax_op`, which `_dynamic_check_skip_reason` allowed
+      to run with `args` and `kwargs`.
+    args: Positional arguments of `target`.
+    kwargs: Keyword arguments of `target`.
+    config: Model checking configuration for other calls, such as of the
+      `@jax_op`s that the backward of `target` calls.
+
+  Returns:
+    The `InterpretGate`.
+  """
+  reasons: dict[tuple[int, tuple[Any, ...]], str | None] = {}
+
+  def _key(
+      op: Any, op_args: Sequence[Any], op_kwargs: Mapping[str, Any]
+  ) -> tuple[int, tuple[Any, ...]]:
+    jax_callable = fx_verifier.extract_jax_callable(op)
+    return (
+        id(jax_callable if jax_callable is not None else op),
+        _call_signature(op_args, op_kwargs),
+    )
+
+  reasons[_key(target, args, kwargs)] = None
+
+  def _gate(
+      op: Any, op_args: Sequence[Any], op_kwargs: Mapping[str, Any]
+  ) -> str | None:
+    key = _key(op, op_args, op_kwargs)
+    if key not in reasons:
+      op_report, op_models = smt_checker.check_kernel_concurrency_with_models(
+          op, op_args, op_kwargs, config=config
+      )
+      skip_info = _dynamic_check_skip_reason(op_report, op_models)
+      reasons[key] = None if skip_info is None else skip_info[1]
+    return reasons[key]
+
+  return _gate
 
 
 def _drop_duplicate_trace_incomplete(
@@ -411,15 +485,16 @@ def _verify_kernel(
       # The kernel cannot be traced with inconsistent shardings.
       return findings.merge_reports(*reports)
 
+  model_check_config = smt_checker.ModelCheckConfig(
+      max_unrolled_iterations=options.max_unrolled_iterations,
+      solver_timeout_seconds=options.solver_timeout_seconds,
+      tpu_version=effective_tpu_version,
+  )
   model_report, models = smt_checker.check_kernel_concurrency_with_models(
       target,
       args,
       kwargs,
-      config=smt_checker.ModelCheckConfig(
-          max_unrolled_iterations=options.max_unrolled_iterations,
-          solver_timeout_seconds=options.solver_timeout_seconds,
-          tpu_version=effective_tpu_version,
-      ),
+      config=model_check_config,
       concrete_arg_ids=concrete_arg_ids,
   )
   # If tracing failed in `Phase.MODEL_CHECK` and was already classified as a
@@ -450,7 +525,7 @@ def _verify_kernel(
               target,
               findings.Phase.INTERPRET,
               skip_info[0],
-              skip_info[2],
+              f"skipped CPU interpret runs because {skip_info[1]}",
           )
       )
     elif has_unresolved_int_args:
@@ -481,6 +556,7 @@ def _verify_kernel(
           config=options.interpret,
           has_revisit_any_output=has_revisit_any,
           revisit_verified_full_overwrite=revisit_warn_only,
+          kernel_models=models,
       )
       reports.append(interpret_report)
 
@@ -497,7 +573,7 @@ def _verify_kernel(
                   target,
                   findings.Phase.AUTOGRAD,
                   skip_info[0],
-                  skip_info[1],
+                  f"skipped the autograd parity check because {skip_info[1]}",
               )
           )
         elif has_unresolved_int_args:
@@ -508,20 +584,6 @@ def _verify_kernel(
                   findings.Severity.INFO,
                   "skipped the autograd parity check because an integer or"
                   " boolean FX input depends on dynamic or mutated operations",
-              )
-          )
-        elif interpret_report is not None and (
-            interpret_report.findings_by_category(
-                findings.FindingCategory.SEMAPHORE_DEADLOCK
-            )
-        ):
-          reports.append(
-              _skipped_dynamic_check(
-                  target,
-                  findings.Phase.AUTOGRAD,
-                  findings.Severity.INFO,
-                  "skipped the autograd parity check because CPU interpret"
-                  " timed out on a possible semaphore deadlock",
               )
           )
         elif interpret_report is not None and (
@@ -544,7 +606,9 @@ def _verify_kernel(
                   target,
                   args,
                   kwargs,
-                  watchdog_ctx=interpret_verifier.interpret_watchdog_context,
+                  interpret_gate=_make_interpret_gate(
+                      target, args, kwargs, model_check_config
+                  ),
                   exception_classifier=(
                       interpret_verifier.classify_interpret_exception
                   ),

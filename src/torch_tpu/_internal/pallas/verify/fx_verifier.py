@@ -57,19 +57,15 @@ import dataclasses
 import dis
 import enum
 import functools
-import importlib
-import importlib.util
 import inspect
 import math
 import operator
 import sys
 import threading
-import time
 import types
-from typing import Any
+from typing import Any, TypeAlias
 
 import jax
-from jax.experimental import pallas as pl
 from jax.experimental.pallas import tpu as pltpu
 import jax.numpy as jnp
 import numpy as np
@@ -88,8 +84,8 @@ _FX_GRAPH = findings.Phase.FX_GRAPH
 _AUTOGRAD = findings.Phase.AUTOGRAD
 _LOWERING = findings.Phase.LOWERING
 
-# Serializes CPU TPU interpret runs, which share process-global state in JAX's
-# `interpret_pallas_call` module (`_shared_memory`, `races`, `dma_id_counter`).
+# Serializes CPU TPU interpret runs, which share the process-global state of
+# JAX's TPU interpreter (reset with `pltpu.reset_tpu_interpret_mode_state`).
 INTERPRET_LOCK = threading.RLock()
 
 # Guards ref-counted installation of temporary process-level wrappers while
@@ -97,25 +93,41 @@ INTERPRET_LOCK = threading.RLock()
 # concurrent calls on other threads pass straight through unpatched.
 _PATCH_LOCK = threading.Lock()
 _THREAD_PATCH_STATE = threading.local()
-_PRIM_BIND_REFCOUNT = 0
-_SAVED_PRIM_BINDS: list[tuple[Any, Any, bool]] = []
-_PALLAS_CALL_STUB_REFCOUNT = 0
-_ORIG_PALLAS_CALL: Any = None
 _JC_EXPORTED_PATCHES: dict[int, tuple[pallas_lib.JaxCallable, Any, int]] = {}
 _BACKWARD_BOUNDARY_OP: Any = None
-_MISSING = object()
-_DEFAULT_WATCHDOG_TIMEOUT_SECONDS = 10.0
 
-# `SharedMemory` buffer methods that constitute genuine forward progress during
-# kernel execution (excluding `check_failed`, which a deadlocked
-# `Semaphore.wait` polls every 0.1s).
-_SHM_PROGRESS_METHODS = (
-    "allocate_buffer",
-    "deallocate_buffer",
-    "get_buffer_content",
-    "store_buffer_content",
-    "swap_buffer_content",
+# Held while `jax_export_ignore_forward_compatibility`, a process-wide option,
+# is overridden by `ignore_export_forward_compatibility`.
+_EXPORT_FORWARD_COMPAT_LOCK = threading.RLock()
+
+# Returns why running a `@jax_op` (called with the given positional and keyword
+# arguments) in CPU TPU interpret mode might never finish, or None if it is
+# safe. JAX's TPU interpreter cannot abort a semaphore or DMA wait that is never
+# satisfied, and a stuck run would also hang interpreter exit.
+InterpretGate: TypeAlias = Callable[
+    [Any, Sequence[Any], Mapping[str, Any]], str | None
+]
+
+
+class InterpretRunSkipped(Exception):
+  """Raised instead of running a kernel that might block CPU TPU interpret."""
+
+
+# Why a kernel that Pallas rejects with `_PREBUILT_KERNEL_ERROR` was not run.
+PREBUILT_KERNEL_SKIP_REASON = (
+    "a pl.pallas_call or pl.kernel built outside the verified function keeps"
+    " interpret mode off; build it inside the function so that"
+    " pltpu.force_tpu_interpret_mode applies"
 )
+# Lowercase error that Pallas raises for kernels without interpret mode on CPU.
+# `pl.pallas_call` and `pl.kernel` read `pltpu.force_tpu_interpret_mode` when
+# they are built, not when they are called.
+_PREBUILT_KERNEL_ERROR = "only interpret mode is supported on cpu backend"
+
+
+def is_prebuilt_kernel_error(exc_text: str) -> bool:
+  """Returns whether `exc_text` reports a kernel built without interpret mode."""
+  return _PREBUILT_KERNEL_ERROR in exc_text.lower()
 
 
 def _get_backward_boundary_op() -> Any:
@@ -137,285 +149,24 @@ def _get_backward_boundary_op() -> Any:
   return _BACKWARD_BOUNDARY_OP
 
 
-def _make_interpret_bind(bound_orig: Any) -> Any:
-  """Wraps a JAX Pallas primitive `.bind` with thread-local interpret params."""
-
-  def _wrapped_bind(*args: Any, **kwargs: Any) -> Any:
-    active = getattr(_THREAD_PATCH_STATE, "interpret_params_stack", None)
-    if active and "interpret" in kwargs:
-      kwargs = dict(kwargs, interpret=active[-1])
-    return bound_orig(*args, **kwargs)
-
-  return _wrapped_bind
-
-
 @contextlib.contextmanager
-def force_primitive_interpret_params(
-    params: pltpu.InterpretParams,
-) -> Iterator[None]:
-  """Overrides `interpret` on pre-constructed `pallas_call` / `mpmd_map` binds.
+def ignore_export_forward_compatibility() -> Iterator[None]:
+  """Exports with the newest lowering rules, as TPU execution uses them.
 
-  `pl.pallas_call(...)` and `@pl.kernel(...)` evaluate
-  `config.pallas_tpu_interpret_mode_context_manager.value` when the wrapper is
-  constructed rather than when it is called. Because
-  `pltpu.force_tpu_interpret_mode` is part of `@jax.jit`'s cache key, re-tracing
-  inside the context manager re-invokes `pallas_call_p.bind` /
-  `mpmd_map_p.bind`, where this hook supplies `params` for the calling thread
-  only (other threads pass through the original `.bind` unpatched). Callers
-  executing CPU TPU-interpret mode must also hold `INTERPRET_LOCK`.
-
-  Args:
-    params: Interpret parameters to force on every Pallas primitive bind on the
-      current thread.
+  Sets the public `jax_export_ignore_forward_compatibility` option, which is
+  process-wide, so the lock is held for the whole block: other threads wait,
+  while nested entries on the holding thread restore values in LIFO order.
 
   Yields:
     None.
   """
-  global _PRIM_BIND_REFCOUNT
-  resolved_prims: list[Any] = []
-  # Probe optional internal Pallas modules (`mpmd` is absent in older JAX
-  # releases) without raising `ImportError`.
-  for mod_name, prim_attr in (
-      ("jax._src.pallas.pallas_call", "pallas_call_p"),
-      ("jax._src.pallas.mpmd", "mpmd_map_p"),
-  ):
-    mod = sys.modules.get(mod_name)
-    if mod is None and importlib.util.find_spec(mod_name) is not None:
-      mod = importlib.import_module(mod_name)
-    prim = getattr(mod, prim_attr, None) if mod is not None else None
-    if prim is not None and getattr(prim, "bind", None) is not None:
-      resolved_prims.append(prim)
-
-  raw_stack = getattr(_THREAD_PATCH_STATE, "interpret_params_stack", None)
-  if raw_stack is None:
-    stack: list[pltpu.InterpretParams] = []
-    _THREAD_PATCH_STATE.interpret_params_stack = stack
-  else:
-    stack = raw_stack
-
-  pushed = False
-  inc_refcount = False
-  try:
-    stack.append(params)
-    pushed = True
-    with _PATCH_LOCK:
-      if _PRIM_BIND_REFCOUNT == 0:
-        for prim in resolved_prims:
-          had_instance_bind = "bind" in prim.__dict__
-          orig_bind = prim.bind
-          _SAVED_PRIM_BINDS.append((prim, orig_bind, had_instance_bind))
-          prim.bind = _make_interpret_bind(orig_bind)
-      _PRIM_BIND_REFCOUNT += 1
-      inc_refcount = True
-    yield
-  finally:
-    if pushed:
-      stack.pop()
-    if inc_refcount:
-      with _PATCH_LOCK:
-        _PRIM_BIND_REFCOUNT -= 1
-        if _PRIM_BIND_REFCOUNT == 0:
-          for prim, orig_bind, had_instance_bind in reversed(_SAVED_PRIM_BINDS):
-            if had_instance_bind:
-              prim.bind = orig_bind
-            elif "bind" in prim.__dict__:
-              delattr(prim, "bind")
-          _SAVED_PRIM_BINDS.clear()
-
-
-@contextlib.contextmanager
-def interpret_watchdog_context(
-    timeout_seconds: float = _DEFAULT_WATCHDOG_TIMEOUT_SECONDS,
-    *,
-    clock: Callable[[], float] = time.monotonic,
-) -> Iterator[None]:
-  """Aborts stalled CPU TPU-interpret semaphore or barrier waits after timeout.
-
-  Args:
-    timeout_seconds: Stall duration without forward progress before aborting
-      blocked semaphore or barrier waits.
-    clock: Monotonic clock returning seconds (injectable for testing).
-
-  Yields:
-    None.
-  """
-  depth = int(getattr(_THREAD_PATCH_STATE, "watchdog_depth", 0))
-  if depth > 0:
-    yield
-    return
-
-  with INTERPRET_LOCK:
-    interpret_mod = inspect.getmodule(pltpu.reset_tpu_interpret_mode_state)
-    memory_mod = getattr(interpret_mod, "memory", None)
-    shm_cls = getattr(memory_mod, "SharedMemory", None)
-    sem_cls = getattr(memory_mod, "Semaphore", None)
-
-    watchdog_lock = threading.Lock()
-    watchdog_stop = threading.Event()
-    last_progress = clock()
-    active_sem_waits = 0
-    wait_stall_since: float | None = None
-    last_barrier_waiters = (0, 0)
-    watchdog_timeout_exc: TimeoutError | None = None
-
-    def _mark_progress() -> None:
-      nonlocal last_progress, wait_stall_since
-      now = clock()
-      with watchdog_lock:
-        last_progress = now
-        if wait_stall_since is not None:
-          wait_stall_since = now
-
-    def _wrap_progress_method(orig_fn: Any) -> Any:
-      def _wrapped(*m_args: Any, **m_kwargs: Any) -> Any:
-        _mark_progress()
-        try:
-          return orig_fn(*m_args, **m_kwargs)
-        finally:
-          _mark_progress()
-
-      return _wrapped
-
-    def _watchdog_loop() -> None:
-      nonlocal last_progress, wait_stall_since, last_barrier_waiters
-      nonlocal watchdog_timeout_exc
-      poll_interval = min(0.05, max(0.005, timeout_seconds / 4.0))
-      while not watchdog_stop.wait(poll_interval):
-        try:
-          with watchdog_lock:
-            if watchdog_stop.is_set():
-              return
-            shm = getattr(interpret_mod, "_shared_memory", None)
-            barrier_obj = (
-                getattr(shm, "barrier", None) if shm is not None else None
-            )
-            cleanup_obj = (
-                getattr(shm, "clean_up_barrier", None)
-                if shm is not None
-                else None
-            )
-            cur_barrier_waiters = (
-                int(getattr(barrier_obj, "n_waiting", 0) or 0),
-                int(getattr(cleanup_obj, "n_waiting", 0) or 0),
-            )
-            now = clock()
-            if cur_barrier_waiters != last_barrier_waiters:
-              last_barrier_waiters = cur_barrier_waiters
-              last_progress = now
-              if wait_stall_since is not None:
-                wait_stall_since = now
-            has_waiters = (
-                active_sem_waits > 0
-                or cur_barrier_waiters[0] > 0
-                or cur_barrier_waiters[1] > 0
-            )
-            if not has_waiters or shm is None or not hasattr(shm, "set_failed"):
-              wait_stall_since = None
-              continue
-            if wait_stall_since is None:
-              wait_stall_since = now
-            if now - max(last_progress, wait_stall_since) < timeout_seconds:
-              continue
-            watchdog_timeout_exc = TimeoutError(
-                "semaphore wait timed out in CPU TPU interpret mode (possible"
-                " semaphore deadlock)"
-            )
-            shm.set_failed(watchdog_timeout_exc, top_level=False)
-            if (
-                barrier_obj is not None
-                and hasattr(barrier_obj, "abort")
-                and cur_barrier_waiters[0] > 0
-            ):
-              barrier_obj.abort()
-            if (
-                cleanup_obj is not None
-                and hasattr(cleanup_obj, "abort")
-                and cur_barrier_waiters[1] > 0
-                and active_sem_waits == 0
-            ):
-              cleanup_obj.abort()
-            for sem_dict_attr in ("sem", "fixed_id_sem"):
-              sem_dict = getattr(shm, sem_dict_attr, None)
-              if isinstance(sem_dict, dict):
-                for sem_obj in list(sem_dict.values()):
-                  cv = getattr(sem_obj, "cv", None)
-                  if cv is not None:
-                    with cv:
-                      cv.notify_all()
-            return
-        except Exception:  # pylint: disable=broad-exception-caught
-          return
-
-    saved_attrs: list[tuple[Any, str, Any]] = []
-    watchdog_thread: threading.Thread | None = None
-    _THREAD_PATCH_STATE.watchdog_depth = depth + 1
+  with _EXPORT_FORWARD_COMPAT_LOCK:
+    prev = jax.config.jax_export_ignore_forward_compatibility
+    jax.config.update("jax_export_ignore_forward_compatibility", True)
     try:
-      if shm_cls is not None:
-        for method_name in _SHM_PROGRESS_METHODS:
-          orig_method = getattr(shm_cls, method_name, None)
-          if callable(orig_method):
-            orig_raw = shm_cls.__dict__.get(method_name, _MISSING)
-            saved_attrs.append((shm_cls, method_name, orig_raw))
-            setattr(shm_cls, method_name, _wrap_progress_method(orig_method))
-
-      if sem_cls is not None:
-        for method_name in ("signal", "enqueue_task"):
-          orig_method = getattr(sem_cls, method_name, None)
-          if callable(orig_method):
-            orig_raw = sem_cls.__dict__.get(method_name, _MISSING)
-            saved_attrs.append((sem_cls, method_name, orig_raw))
-            setattr(sem_cls, method_name, _wrap_progress_method(orig_method))
-        orig_sem_wait = getattr(sem_cls, "wait", None)
-        if callable(orig_sem_wait):
-
-          def _tracked_sem_wait(
-              self_sem: Any, *w_args: Any, **w_kwargs: Any
-          ) -> Any:
-            nonlocal active_sem_waits, last_progress, wait_stall_since
-            enter_now = clock()
-            with watchdog_lock:
-              last_progress = enter_now
-              active_sem_waits += 1
-              wait_stall_since = enter_now
-            try:
-              return orig_sem_wait(self_sem, *w_args, **w_kwargs)
-            finally:
-              exit_now = clock()
-              with watchdog_lock:
-                active_sem_waits = max(0, active_sem_waits - 1)
-                last_progress = exit_now
-                wait_stall_since = exit_now if active_sem_waits > 0 else None
-
-          saved_attrs.append(
-              (sem_cls, "wait", sem_cls.__dict__.get("wait", _MISSING))
-          )
-          setattr(sem_cls, "wait", _tracked_sem_wait)
-
-      watchdog_thread = threading.Thread(target=_watchdog_loop, daemon=True)
-      watchdog_thread.start()
-      try:
-        yield
-      except Exception as exc:  # pylint: disable=broad-exception-caught
-        if watchdog_timeout_exc is not None and (
-            isinstance(exc, threading.BrokenBarrierError)
-            or "BrokenBarrierError" in str(exc)
-        ):
-          raise watchdog_timeout_exc from exc
-        raise
+      yield
     finally:
-      _THREAD_PATCH_STATE.watchdog_depth = depth
-      with watchdog_lock:
-        watchdog_stop.set()
-      if watchdog_thread is not None:
-        watchdog_thread.join(timeout=1.0)
-      for target_cls, attr_name, orig_dict_val in reversed(saved_attrs):
-        if orig_dict_val is _MISSING:
-          if attr_name in target_cls.__dict__:
-            delattr(target_cls, attr_name)
-        else:
-          setattr(target_cls, attr_name, orig_dict_val)
-    if watchdog_timeout_exc is not None:
-      raise watchdog_timeout_exc
+      jax.config.update("jax_export_ignore_forward_compatibility", prev)
 
 
 # Longest lowering error message kept in a finding; Mosaic errors can embed
@@ -648,7 +399,6 @@ _SKIP_MODULE_PREFIXES = (
 # to reference an underlying callable.
 _CALLABLE_WRAPPER_ATTRS = (
     "__wrapped__",
-    "_fun",
     "func",
     "f",
     "_fn",
@@ -1175,37 +925,13 @@ def override_abstract_mesh(mesh: jax.sharding.AbstractMesh):
 @contextlib.contextmanager
 def tpu_export_mesh_context(mesh: jax.sharding.AbstractMesh):
   """Binds `mesh` for TPU lowering while clearing any ambient CPU mesh."""
-  mesh_mod = jax._src.mesh
-  prev_env = mesh_mod.thread_resources.env
-  clear_phys = not prev_env.physical_mesh.empty and not is_mock_tpu_mesh(
-      prev_env.physical_mesh
-  )
-  dev_ctx = getattr(mesh_mod, "device_context", None)
-  prev_conc = None
-  swapped_conc = False
-  swapped_phys = False
-  try:
-    if dev_ctx is not None:
-      cur_conc = dev_ctx.value
-      if (
-          cur_conc is not None
-          and not getattr(cur_conc, "empty", True)
-          and not is_mock_tpu_mesh(cur_conc)
-      ):
-        prev_conc = dev_ctx.swap_local(mesh_mod.empty_concrete_mesh)
-        swapped_conc = True
-    if clear_phys:
-      mesh_mod.thread_resources.env = prev_env.with_mesh(
-          mesh_mod.empty_concrete_mesh
-      )
-      swapped_phys = True
-    with override_abstract_mesh(mesh):
-      yield
-  finally:
-    if swapped_phys:
-      mesh_mod.thread_resources.env = prev_env
-    if swapped_conc and dev_ctx is not None:
-      dev_ctx.set_local(prev_conc)
+  ambient_mesh = jax.sharding.get_mesh()
+  clear_ambient = not ambient_mesh.empty and not is_mock_tpu_mesh(ambient_mesh)
+  with (
+      jax.set_mesh(None) if clear_ambient else contextlib.nullcontext(),
+      override_abstract_mesh(mesh),
+  ):
+    yield
 
 
 @contextlib.contextmanager
@@ -1225,7 +951,8 @@ def cpu_interpret_mesh_context(cpu_mesh: jax.sharding.Mesh | None):
     # axis is manual while keeping the concrete CPU device assignment.
     ctx_mesh = (
         jax.sharding.Mesh(cpu_mesh.devices, cpu_mesh.axis_names)
-        if cpu_mesh is not None and getattr(cpu_mesh, "_any_axis_manual", False)
+        if cpu_mesh is not None
+        and jax.sharding.AxisType.Manual in cpu_mesh.axis_types
         else cpu_mesh
     )
     with set_mesh_fn(ctx_mesh):
@@ -1234,12 +961,17 @@ def cpu_interpret_mesh_context(cpu_mesh: jax.sharding.Mesh | None):
     yield
 
 
+def _is_jax_jit_wrapper(fn: Any) -> bool:
+  """Returns whether `fn` is a `jax.jit` wrapper exposing its function."""
+  return isinstance(fn, jax.stages.Wrapped) and hasattr(fn, "__wrapped__")
+
+
 def _unwrap_jax_jit(fn: Any) -> Any:
-  """Unwraps `jax.jit` (`PjitFunction`) layers without stripping `shard_map`."""
+  """Unwraps `jax.jit` layers without stripping `shard_map`."""
   seen: set[int] = set()
-  while hasattr(fn, "_fun") and hasattr(fn, "lower") and id(fn) not in seen:
+  while _is_jax_jit_wrapper(fn) and id(fn) not in seen:
     seen.add(id(fn))
-    fn = getattr(fn, "_fun")
+    fn = fn.__wrapped__
   return fn
 
 
@@ -1260,9 +992,6 @@ def _is_hashable_partial(obj: Any) -> bool:
 
 def _get_ambient_jax_mesh() -> MeshLike | None:
   """Returns the currently active concrete or abstract JAX mesh, if any."""
-  phys_mesh = jax._src.mesh.thread_resources.env.physical_mesh
-  if not phys_mesh.empty:
-    return phys_mesh
   get_mesh_fn = getattr(jax.sharding, "get_mesh", None)
   if get_mesh_fn is not None:
     try:
@@ -1271,11 +1000,6 @@ def _get_ambient_jax_mesh() -> MeshLike | None:
       pub_mesh = None
     if pub_mesh is not None and not pub_mesh.empty:
       return pub_mesh
-  conc_fn = getattr(jax._src.mesh, "get_concrete_mesh", None)
-  if conc_fn is not None:
-    conc_mesh = conc_fn()
-    if not conc_mesh.empty:
-      return conc_mesh
   abs_mesh = jax.sharding.get_abstract_mesh()
   if not abs_mesh.empty:
     return abs_mesh
@@ -1308,14 +1032,15 @@ def find_function_mesh(fn: Any) -> MeshLike | None:
     visited.add(obj_id)
 
     # Check shardings attached to a `jax.jit` (`PjitFunction`) wrapper.
-    if hasattr(obj, "_fun") and hasattr(obj, "lower"):
+    # TODO: read them through a public API once JAX exposes jit shardings.
+    if _is_jax_jit_wrapper(obj):
       jit_info = getattr(obj, "_jit_info", None)
       if jit_info is not None:
         for leaves_attr in ("in_shardings_leaves", "out_shardings_leaves"):
           found = _search(getattr(jit_info, leaves_attr, ()))
           if found is not None:
             return found
-      return _search(getattr(obj, "_fun"))
+      return _search(obj.__wrapped__)
 
     if _is_hashable_partial(obj):
       return (
@@ -1444,7 +1169,8 @@ def _replace_mesh_if_mock(
     return out, changed
 
   def _rewrite_pjit(pjit_fn: Any) -> tuple[Any, bool]:
-    inner, changed = _rewrite(getattr(pjit_fn, "_fun"))
+    inner, changed = _rewrite(pjit_fn.__wrapped__)
+    # TODO: read the jit options through a public API once JAX exposes them.
     jit_info = getattr(pjit_fn, "_jit_info", None)
     jit_kwargs: dict[str, Any] = {}
     if jit_info is not None:
@@ -1601,7 +1327,7 @@ def _replace_mesh_if_mock(
     if obj_id in memo:
       return memo[obj_id]
 
-    if hasattr(obj, "_fun") and hasattr(obj, "lower"):
+    if _is_jax_jit_wrapper(obj):
       res = _rewrite_pjit(obj)
       memo[obj_id] = res
       return res
@@ -2689,7 +2415,7 @@ def _prepare_tpu_export(
       # Given both, `jax.jit` donates exactly what it resolved for the op.
       jit_kwargs["donate_argnames"] = donate_argnames
     jitted_fn = jax.jit(rebound_raw, **jit_kwargs)
-    with jax._src.config.export_ignore_forward_compatibility(True):
+    with ignore_export_forward_compatibility():
       export_fn = jax.export.export(
           jitted_fn,
           platforms=["tpu"],
@@ -2744,8 +2470,9 @@ def _to_export_shape_dtype_struct(
 
 def has_jit_named_sharding(fn: Any) -> bool:
   """Returns whether `fn` is a `jax.jit` wrapper specifying `NamedSharding`s."""
-  if not (hasattr(fn, "_fun") and hasattr(fn, "lower")):
+  if not _is_jax_jit_wrapper(fn):
     return False
+  # TODO: read them through a public API once JAX exposes jit shardings.
   jit_info = getattr(fn, "_jit_info", None)
   if jit_info is None:
     return False
@@ -2840,8 +2567,7 @@ def _prepare_raw_jax_tpu_export(
   # are dynamic positional array specs, export `target_fn` directly so top-level
   # `in_shardings`, `out_shardings`, and `donate_argnums` apply at entry.
   is_direct_pjit = (
-      hasattr(target_fn, "_fun")
-      and hasattr(target_fn, "lower")
+      _is_jax_jit_wrapper(target_fn)
       and not raw_kwargs
       and len(raw_args) == len(dyn_specs)
       and all(not is_static for is_static, _ in slot_map)
@@ -2859,7 +2585,7 @@ def _prepare_raw_jax_tpu_export(
 
     jitted_fn = jax.jit(_export_wrapper, keep_unused=True)
 
-  with jax._src.config.export_ignore_forward_compatibility(True):
+  with ignore_export_forward_compatibility():
     export_fn = jax.export.export(
         jitted_fn,
         platforms=["tpu"],
@@ -2950,7 +2676,7 @@ def verify_tpu_lowering(
           dict(example_kwargs or {}),
           resolved_tpu_version,
       )
-    with jax._src.config.export_ignore_forward_compatibility(True):
+    with ignore_export_forward_compatibility():
       try:
         with tpu_export_mesh_context(ambient_mesh):
           export_fn(*jax_args, **jax_kwargs)
@@ -3360,47 +3086,49 @@ def _preserve_module_state(target: Any) -> Iterator[None]:
           t.copy_(backup)
 
 
-def _make_thread_local_pallas_call(orig_pallas_call: Any) -> Any:
-  """Returns a `pl.pallas_call` wrapper stubbing shapes on active threads."""
-
-  def _thread_local_pallas_call(*p_args: Any, **p_kwargs: Any) -> Any:
-    if int(getattr(_THREAD_PATCH_STATE, "stub_pallas_call_depth", 0)) <= 0:
-      return orig_pallas_call(*p_args, **p_kwargs)
-    out_shape = p_args[1] if len(p_args) > 1 else p_kwargs.get("out_shape")
-
-    def _stub(*call_args: Any, **call_kwargs: Any) -> Any:
-      del call_args, call_kwargs
-      return jax.tree.map(lambda s: jnp.zeros(s.shape, s.dtype), out_shape)
-
-    return _stub
-
-  return _thread_local_pallas_call
+def _should_retry_with_abstract_tpu_mesh(exc: BaseException) -> bool:
+  """Returns whether `exc` requires retrying under a synthetic TPU mesh."""
+  return (
+      isinstance(exc, (ValueError, RuntimeError))
+      and _is_missing_tpu_device_kind_error(exc)
+      and jax.sharding.get_abstract_mesh().empty
+  )
 
 
-@contextlib.contextmanager
-def _stub_pallas_call_out_shapes() -> Iterator[None]:
-  """Temporarily stubs `pl.pallas_call` on the current thread only."""
-  global _PALLAS_CALL_STUB_REFCOUNT, _ORIG_PALLAS_CALL
-  depth = int(getattr(_THREAD_PATCH_STATE, "stub_pallas_call_depth", 0))
-  inc_refcount = False
+def _trace_fx_with_tpu_mesh_fallback(
+    fn_to_trace: Callable[..., Any],
+    make_args: Callable[[], tuple[Any, ...]],
+    state_root: Any,
+    tpu_version: findings.TpuVersion | None,
+    example_args: Sequence[Any],
+    kwargs: Mapping[str, Any],
+    *,
+    before_retry: Callable[[], None] | None = None,
+) -> fx.GraphModule:
+  """Traces `fn_to_trace` with `make_fx`, retrying under a target TPU mesh."""
   try:
-    _THREAD_PATCH_STATE.stub_pallas_call_depth = depth + 1
-    with _PATCH_LOCK:
-      if _PALLAS_CALL_STUB_REFCOUNT == 0:
-        orig_pallas_call = pl.pallas_call
-        _ORIG_PALLAS_CALL = orig_pallas_call
-        pl.pallas_call = _make_thread_local_pallas_call(orig_pallas_call)
-      _PALLAS_CALL_STUB_REFCOUNT += 1
-      inc_refcount = True
-    yield
-  finally:
-    _THREAD_PATCH_STATE.stub_pallas_call_depth = depth
-    if inc_refcount:
-      with _PATCH_LOCK:
-        _PALLAS_CALL_STUB_REFCOUNT -= 1
-        if _PALLAS_CALL_STUB_REFCOUNT == 0 and _ORIG_PALLAS_CALL is not None:
-          pl.pallas_call = _ORIG_PALLAS_CALL
-          _ORIG_PALLAS_CALL = None
+    with _preserve_module_state(state_root):
+      return proxy_tensor.make_fx(
+          fn_to_trace, tracing_mode="fake", _allow_non_fake_inputs=True
+      )(*make_args())
+  except (ValueError, RuntimeError) as exc:
+    # TorchDynamo HOPs (`torch.cond`, `while_loop`, `scan`) wrap JAX's
+    # `ValueError('Unsupported TPU device kind: ...')` into
+    # `TorchRuntimeError` (`RuntimeError`), so check both types.
+    if not _should_retry_with_abstract_tpu_mesh(exc):
+      raise
+    if before_retry is not None:
+      before_retry()
+    resolved_version = infer_tpu_version(
+        state_root, tpu_version, example_args, kwargs
+    )
+    with (
+        _preserve_module_state(state_root),
+        override_abstract_mesh(abstract_tpu_mesh(resolved_version)),
+    ):
+      return proxy_tensor.make_fx(
+          fn_to_trace, tracing_mode="fake", _allow_non_fake_inputs=True
+      )(*make_args())
 
 
 def _make_eval_shape_fallback_exported(
@@ -3414,18 +3142,13 @@ def _make_eval_shape_fallback_exported(
     try:
       return orig_exported(*j_args, **j_kwargs)
     except Exception as exc:  # pylint: disable=broad-exception-caught
-      if (
-          isinstance(exc, ValueError)
-          and _is_missing_tpu_device_kind_error(exc)
-          and jax.sharding.get_abstract_mesh().empty
-      ):
+      if _should_retry_with_abstract_tpu_mesh(exc):
         raise
       try:
         out_struct = jax.eval_shape(jc.jit_fn, *j_args, **j_kwargs)
       except Exception:  # pylint: disable=broad-exception-caught
-        raw_fn, _ = unwrap_raw_jax_fn(jc)
-        with _stub_pallas_call_out_shapes():
-          out_struct = jax.eval_shape(raw_fn, *j_args, **j_kwargs)
+        # A kernel that cannot even be traced has no output shapes to infer.
+        raise exc from None
       out_leaves, out_tree = jax.tree.flatten(out_struct)
       out_avals = [
           jax.core.ShapedArray(leaf.shape, leaf.dtype)
@@ -3530,27 +3253,14 @@ def trace_to_fx_graph(
   # attempt runs inside its own `_preserve_module_state` so lazy FakeTensor
   # caches from a failed first trace are cleared before retrying.
   with _eval_shape_fallback_for_jax_callables((fn_or_gm, example_args, kwargs)):
-    try:
-      with _preserve_module_state(fn_or_gm):
-        return proxy_tensor.make_fx(
-            _bound, tracing_mode="fake", _allow_non_fake_inputs=True
-        )(*_make_cloned_args())
-    except ValueError as exc:
-      if (
-          not _is_missing_tpu_device_kind_error(exc)
-          or not jax.sharding.get_abstract_mesh().empty
-      ):
-        raise
-      resolved_version = infer_tpu_version(
-          fn_or_gm, tpu_version, example_args, kwargs
-      )
-      with (
-          _preserve_module_state(fn_or_gm),
-          override_abstract_mesh(abstract_tpu_mesh(resolved_version)),
-      ):
-        return proxy_tensor.make_fx(
-            _bound, tracing_mode="fake", _allow_non_fake_inputs=True
-        )(*_make_cloned_args())
+    return _trace_fx_with_tpu_mesh_fallback(
+        _bound,
+        _make_cloned_args,
+        fn_or_gm,
+        tpu_version,
+        example_args,
+        kwargs,
+    )
 
 
 def match_placeholders_to_inputs(
@@ -4681,6 +4391,10 @@ def _check_joint_autograd_donation(
           collected_grads.extend(g for g in part_grads if g is not None)
         return tuple(collected_grads)
 
+  def _reset_ran_backward() -> None:
+    nonlocal ran_backward
+    ran_backward = False
+
   try:
     with (
         torch.inference_mode(False),
@@ -4688,28 +4402,15 @@ def _check_joint_autograd_donation(
             (callable_ref, example_args, kwargs)
         ),
     ):
-      try:
-        with _preserve_module_state(callable_ref):
-          joint_gm = proxy_tensor.make_fx(
-              _joint, tracing_mode="fake", _allow_non_fake_inputs=True
-          )(*_make_joint_args())
-      except ValueError as exc:
-        if (
-            not _is_missing_tpu_device_kind_error(exc)
-            or not jax.sharding.get_abstract_mesh().empty
-        ):
-          raise
-        ran_backward = False
-        resolved_version = infer_tpu_version(
-            callable_ref, tpu_version, example_args, kwargs
-        )
-        with (
-            _preserve_module_state(callable_ref),
-            override_abstract_mesh(abstract_tpu_mesh(resolved_version)),
-        ):
-          joint_gm = proxy_tensor.make_fx(
-              _joint, tracing_mode="fake", _allow_non_fake_inputs=True
-          )(*_make_joint_args())
+      joint_gm = _trace_fx_with_tpu_mesh_fallback(
+          _joint,
+          _make_joint_args,
+          callable_ref,
+          tpu_version,
+          example_args,
+          kwargs,
+          before_retry=_reset_ran_backward,
+      )
   except Exception as exc:  # pylint: disable=broad-exception-caught
     if _is_unregistered_autograd_error(exc):
       return []
@@ -5021,11 +4722,11 @@ def _run_jax_callable_on_cpu_interpret(
     distinguish_ranks: bool = True,
     return_all_shards: bool = False,
     rank0_overrides: Mapping[int, torch.Tensor] | None = None,
-    watchdog_ctx: (
-        Callable[[], contextlib.AbstractContextManager[None]] | None
-    ) = None,
 ) -> Any:
   """Executes a single-chip or multi-chip `JaxCallable` on CPU interpret mode.
+
+  Callers must ensure that the kernels cannot block on a semaphore or DMA wait
+  forever (see `InterpretGate`).
 
   Args:
     jax_callable: Target `JaxCallable` wrapper to execute.
@@ -5040,8 +4741,6 @@ def _run_jax_callable_on_cpu_interpret(
       rank 0's logical slice (`s_idx == 0`) for perturbed inputs. Keying by
       `id(tensor)` relies on `_normalize_invocation_args` (`Signature.bind`) and
       `replace_mock_meshes_in_pytree` preserving `torch.Tensor` leaf identity.
-    watchdog_ctx: Zero-argument context manager factory aborting stalled
-      semaphore or barrier waits (defaults to `interpret_watchdog_context`).
 
   Returns:
     Output PyTree of `torch.Tensor` leaves (when `return_all_shards` is `False`)
@@ -5065,7 +4764,6 @@ def _run_jax_callable_on_cpu_interpret(
   norm_kwargs = replace_mock_meshes_in_pytree(norm_kwargs, cpu_mesh)
   cpu0 = jax.devices("cpu")[0]
   in_specs = jax_callable.input_partition_specs
-  active_watchdog = watchdog_ctx or interpret_watchdog_context
 
   def _to_jax_input(val: Any, spec: Any = None) -> Any:
     if isinstance(val, torch.Tensor):
@@ -5110,12 +4808,7 @@ def _run_jax_callable_on_cpu_interpret(
         else jax.default_device(cpu0)
     )
     try:
-      with (
-          dev_ctx,
-          pltpu.force_tpu_interpret_mode(params),
-          force_primitive_interpret_params(params),
-          active_watchdog(),
-      ):
+      with dev_ctx, pltpu.force_tpu_interpret_mode(params):
         out = raw_fn(*jax_args, **jax_kwargs)
         jax.effects_barrier()
     finally:
@@ -5143,15 +4836,9 @@ def _run_jax_callable_on_cpu_interpret(
 class _CpuPallasInterpretDispatchMode(_python_dispatch.TorchDispatchMode):
   """Intercepts `@pallas.jax_op` calls below Autograd and runs them on CPU."""
 
-  def __init__(
-      self,
-      *,
-      watchdog_ctx: (
-          Callable[[], contextlib.AbstractContextManager[None]] | None
-      ) = None,
-  ) -> None:
+  def __init__(self, *, interpret_gate: InterpretGate) -> None:
     super().__init__()
-    self._watchdog_ctx = watchdog_ctx
+    self._interpret_gate = interpret_gate
     self.last_interpret_exception: Exception | None = None
 
   def __torch_dispatch__(self, func, types_unused, args=(), kwargs=None):
@@ -5160,12 +4847,14 @@ class _CpuPallasInterpretDispatchMode(_python_dispatch.TorchDispatchMode):
     jax_callable = extract_jax_callable(func)
     if jax_callable is not None:
       try:
+        skip_reason = self._interpret_gate(func, args, kwargs)
+        if skip_reason is not None:
+          raise InterpretRunSkipped(skip_reason)
         return _run_jax_callable_on_cpu_interpret(
             jax_callable,
             args,
             kwargs,
             distinguish_ranks=True,
-            watchdog_ctx=self._watchdog_ctx,
         )
       except Exception as exc:  # pylint: disable=broad-exception-caught
         self.last_interpret_exception = exc
@@ -5300,10 +4989,6 @@ def _try_analytical_jax_vjp(
     pt_args: Sequence[Any],
     pt_kwargs: Mapping[str, Any],
     cotangents_pt: Sequence[torch.Tensor],
-    *,
-    watchdog_ctx: (
-        Callable[[], contextlib.AbstractContextManager[None]] | None
-    ) = None,
 ) -> Sequence[Any] | None:
   """Computes `jax.vjp` gradients on CPU interpret mode if supported."""
   raw_fwd_fn, cpu_mesh = unwrap_raw_jax_fn(jax_callable, prefer_cpu_mesh=True)
@@ -5311,7 +4996,6 @@ def _try_analytical_jax_vjp(
     return None
 
   cpu0 = jax.devices("cpu")[0]
-  active_watchdog = watchdog_ctx or interpret_watchdog_context
   with INTERPRET_LOCK, cpu_interpret_mesh_context(None):
     jax_primals = [
         _torch_to_jax_array(slot.tensor, cpu0) for slot in diff_slots
@@ -5358,12 +5042,7 @@ def _try_analytical_jax_vjp(
         uninitialized_memory="zero",
     )
     try:
-      with (
-          jax.default_device(cpu0),
-          pltpu.force_tpu_interpret_mode(params),
-          force_primitive_interpret_params(params),
-          active_watchdog(),
-      ):
+      with jax.default_device(cpu0), pltpu.force_tpu_interpret_mode(params):
         jax_fwd_out, vjp_fn = jax.vjp(_pure_diff_fwd, *jax_primals)
         out_leaves, out_tree = jax.tree.flatten(jax_fwd_out)
         cot_leaves = []
@@ -5381,8 +5060,6 @@ def _try_analytical_jax_vjp(
         ref_jax_grads = vjp_fn(jax_cotangents)
         jax.effects_barrier()
         return ref_jax_grads
-    except TimeoutError:
-      raise
     except Exception:  # pylint: disable=broad-exception-caught
       return None
     finally:
@@ -5513,9 +5190,6 @@ def _try_directional_jax_jvp_slot(
     is_low_prec: bool,
     rtol: float,
     atol: float,
-    watchdog_ctx: (
-        Callable[[], contextlib.AbstractContextManager[None]] | None
-    ) = None,
 ) -> bool:
   """Evaluates exact directional `jax.jvp` on `probes` when supported.
 
@@ -5530,7 +5204,6 @@ def _try_directional_jax_jvp_slot(
     return False
 
   cpu0 = jax.devices("cpu")[0]
-  active_watchdog = watchdog_ctx or interpret_watchdog_context
   x_base = slot.tensor.detach().cpu()
   orig_dtype = x_base.dtype
   is_bf16 = orig_dtype == torch.bfloat16
@@ -5580,12 +5253,7 @@ def _try_directional_jax_jvp_slot(
       )
 
     try:
-      with (
-          jax.default_device(cpu0),
-          pltpu.force_tpu_interpret_mode(params),
-          force_primitive_interpret_params(params),
-          active_watchdog(),
-      ):
+      with jax.default_device(cpu0), pltpu.force_tpu_interpret_mode(params):
         for probe_idx, v_f32 in enumerate(probes):
           v_pt = v_f32.to(orig_dtype)
           v_exact = v_pt.to(torch.float32)
@@ -5657,8 +5325,6 @@ def _try_directional_jax_jvp_slot(
             )
             return True
         return True
-    except TimeoutError:
-      raise
     except Exception:  # pylint: disable=broad-exception-caught
       return False
     finally:
@@ -5680,9 +5346,6 @@ def _compare_finite_difference_gradients(
     *,
     rtol: float,
     atol: float,
-    watchdog_ctx: (
-        Callable[[], contextlib.AbstractContextManager[None]] | None
-    ) = None,
 ) -> list[findings.VerificationFinding]:
   """Compares custom backward gradients against `jax.jvp` or central FD.
 
@@ -5717,7 +5380,6 @@ def _compare_finite_difference_gradients(
     op_name: Operator name for reported findings.
     rtol: Base relative tolerance.
     atol: Base absolute tolerance.
-    watchdog_ctx: Optional watchdog context manager factory for CPU interpret.
 
   Returns:
     List of `AUTOGRAD_PARITY_MISMATCH` or `VERIFICATION_INCOMPLETE` findings.
@@ -5808,7 +5470,6 @@ def _compare_finite_difference_gradients(
         is_low_prec=is_low_prec,
         rtol=rtol,
         atol=atol,
-        watchdog_ctx=watchdog_ctx,
     ):
       continue
 
@@ -5846,7 +5507,6 @@ def _compare_finite_difference_gradients(
             distinguish_ranks=True,
             return_all_shards=True,
             rank0_overrides={id(x_base): x_pos},
-            watchdog_ctx=watchdog_ctx,
         )
         out_neg = _run_jax_callable_on_cpu_interpret(
             jax_callable,
@@ -5855,10 +5515,7 @@ def _compare_finite_difference_gradients(
             distinguish_ranks=True,
             return_all_shards=True,
             rank0_overrides={id(x_base): x_neg},
-            watchdog_ctx=watchdog_ctx,
         )
-      except TimeoutError:
-        raise
       except Exception as exc:  # pylint: disable=broad-exception-caught
         detected.append(
             findings.VerificationFinding(
@@ -6004,12 +5661,21 @@ def _default_classify_interpret_exception(
   msg = str(exc).strip()
   tail = msg.split("with exception:\n\n")[-1].strip()
   lower = tail.lower()
+  if is_prebuilt_kernel_error(lower):
+    return findings.VerificationFinding(
+        category=findings.FindingCategory.VERIFICATION_INCOMPLETE,
+        severity=findings.Severity.INFO,
+        phase=phase,
+        op_name=op_name,
+        message=(
+            f"skipped {phase.value} check ({schedule_desc}) because"
+            f" {PREBUILT_KERNEL_SKIP_REASON}"
+        ),
+    )
   if "race detected" in lower:
     category = findings.FindingCategory.DATA_RACE
   elif "out of bounds" in lower or "out-of-bounds" in lower:
     category = findings.FindingCategory.OUT_OF_BOUNDS_ACCESS
-  elif "semaphore wait timed out" in lower:
-    category = findings.FindingCategory.SEMAPHORE_DEADLOCK
   elif "semaphore" in lower and (
       "non-zero" in lower
       or "nonzero" in lower
@@ -6054,21 +5720,55 @@ def _default_classify_interpret_exception(
   )
 
 
+def _skipped_autograd_report(
+    op_name: str,
+    reason: str,
+    prior: Sequence[findings.VerificationFinding] = (),
+) -> findings.VerificationReport:
+  """Returns a report noting that the autograd check did not run."""
+  return findings.report_of(
+      None,
+      [
+          *prior,
+          findings.VerificationFinding(
+              category=findings.FindingCategory.VERIFICATION_INCOMPLETE,
+              severity=findings.Severity.INFO,
+              phase=_AUTOGRAD,
+              op_name=op_name,
+              message=f"skipped autograd parity check because {reason}",
+          ),
+      ],
+  )
+
+
 def verify_autograd_parity(
     op_def: Any,
     example_args: Sequence[Any],
     example_kwargs: Mapping[str, Any] | None = None,
     *,
+    interpret_gate: InterpretGate,
     rtol: float = 1e-3,
     atol: float = 1e-3,
-    watchdog_ctx: (
-        Callable[[], contextlib.AbstractContextManager[None]] | None
-    ) = None,
     exception_classifier: (
         Callable[..., findings.VerificationFinding] | None
     ) = None,
 ) -> findings.VerificationReport:
-  """Checks a registered PyTorch custom autograd backward against the forward op."""
+  """Checks a registered PyTorch custom autograd backward against the forward op.
+
+  Args:
+    op_def: The `@jax_op` whose registered backward is checked.
+    example_args: Example positional arguments.
+    example_kwargs: Example keyword arguments.
+    interpret_gate: Decides whether a `@jax_op` (`op_def`, or one called by its
+      backward) may run in CPU TPU interpret mode; ops that it rejects are not
+      run, and the check is reported as incomplete.
+    rtol: Relative gradient tolerance.
+    atol: Absolute gradient tolerance.
+    exception_classifier: Maps CPU interpret exceptions to findings.
+
+  Returns:
+    A `Phase.AUTOGRAD` report.
+  """
   resolved = resolve_custom_op_def(op_def)
   if resolved is None or resolved._backward_fn is None:  # pylint: disable=protected-access
     return findings.VerificationReport()
@@ -6078,7 +5778,6 @@ def verify_autograd_parity(
     return findings.VerificationReport()
 
   op_name = resolved._qualname  # pylint: disable=protected-access
-  active_watchdog = watchdog_ctx or interpret_watchdog_context
   active_classifier = (
       exception_classifier or _default_classify_interpret_exception
   )
@@ -6107,11 +5806,18 @@ def verify_autograd_parity(
       )
     if not diff_slots:
       return findings.VerificationReport()
+    skip_reason = interpret_gate(
+        op_def, example_args, dict(example_kwargs or {})
+    )
+    if skip_reason is not None:
+      return _skipped_autograd_report(op_name, skip_reason)
 
     # 1. Run the PyTorch forward pass under CPU TPU-interpret dispatch and
     # record any tensors saved by `setup_context` for backward.
     saved_for_backward: list[torch.Tensor] = []
-    fwd_dispatch = _CpuPallasInterpretDispatchMode(watchdog_ctx=active_watchdog)
+    fwd_dispatch = _CpuPallasInterpretDispatchMode(
+        interpret_gate=interpret_gate
+    )
     # pylint: disable=protected-access
     with INTERPRET_LOCK:
       orig_setup_context: Callable[..., Any] | None = getattr(
@@ -6146,17 +5852,10 @@ def verify_autograd_parity(
           pt_out = resolved(*pt_args, **pt_kwargs)
       except Exception as exc:  # pylint: disable=broad-exception-caught
         interp_exc = fwd_dispatch.last_interpret_exception or exc
-        if isinstance(interp_exc, TimeoutError) and (
-            "semaphore wait timed out" in str(interp_exc).lower()
-        ):
-          return findings.report_of(
-              _AUTOGRAD,
-              [
-                  active_classifier(
-                      interp_exc, op_name, "autograd forward", phase=_AUTOGRAD
-                  )
-              ],
-          )
+        if isinstance(interp_exc, InterpretRunSkipped):
+          return _skipped_autograd_report(op_name, str(interp_exc))
+        if is_prebuilt_kernel_error(str(interp_exc)):
+          return _skipped_autograd_report(op_name, PREBUILT_KERNEL_SKIP_REASON)
         return findings.report_of(
             _AUTOGRAD,
             [
@@ -6203,7 +5902,9 @@ def verify_autograd_parity(
     cotangents_pt, cotangents_f32 = _build_normalized_cotangents(
         tensor_outs, differentiable, rng
     )
-    bwd_dispatch = _CpuPallasInterpretDispatchMode(watchdog_ctx=active_watchdog)
+    bwd_dispatch = _CpuPallasInterpretDispatchMode(
+        interpret_gate=interpret_gate
+    )
     try:
       with INTERPRET_LOCK, bwd_dispatch:
         pt_grads = torch.autograd.grad(
@@ -6216,14 +5917,15 @@ def verify_autograd_parity(
         )
     except Exception as exc:  # pylint: disable=broad-exception-caught
       interp_exc = bwd_dispatch.last_interpret_exception
-      if (
-          interp_exc is not None
-          or isinstance(exc, NotImplementedError)
-          or (
-              isinstance(exc, TimeoutError)
-              and "semaphore wait timed out" in str(exc).lower()
-          )
-      ):
+      if isinstance(interp_exc, InterpretRunSkipped):
+        return _skipped_autograd_report(
+            op_name, str(interp_exc), saved_donor_findings
+        )
+      if interp_exc is not None and is_prebuilt_kernel_error(str(interp_exc)):
+        return _skipped_autograd_report(
+            op_name, PREBUILT_KERNEL_SKIP_REASON, saved_donor_findings
+        )
+      if interp_exc is not None or isinstance(exc, NotImplementedError):
         classified = active_classifier(
             interp_exc or exc, op_name, "custom backward", phase=_AUTOGRAD
         )
@@ -6266,51 +5968,38 @@ def verify_autograd_parity(
     return findings.report_of(_AUTOGRAD, [*saved_donor_findings, *shape_errors])
 
   # 3. Compare against analytical `jax.vjp` if supported, else `jax.jvp` / FD.
-  try:
-    ref_jax_grads = _try_analytical_jax_vjp(
+  ref_jax_grads = _try_analytical_jax_vjp(
+      jax_callable,
+      diff_slots,
+      pt_args,
+      pt_kwargs,
+      cotangents_pt,
+  )
+  if ref_jax_grads is not None:
+    detected = _compare_vjp_gradients(
+        diff_slots,
+        pt_grads,
+        ref_jax_grads,
+        tensor_outs,
+        differentiable,
+        op_name,
+        rtol=rtol,
+        atol=atol,
+    )
+  else:
+    detected = _compare_finite_difference_gradients(
         jax_callable,
         diff_slots,
+        pt_grads,
         pt_args,
         pt_kwargs,
+        tensor_outs,
         cotangents_pt,
-        watchdog_ctx=active_watchdog,
-    )
-    if ref_jax_grads is not None:
-      detected = _compare_vjp_gradients(
-          diff_slots,
-          pt_grads,
-          ref_jax_grads,
-          tensor_outs,
-          differentiable,
-          op_name,
-          rtol=rtol,
-          atol=atol,
-      )
-    else:
-      detected = _compare_finite_difference_gradients(
-          jax_callable,
-          diff_slots,
-          pt_grads,
-          pt_args,
-          pt_kwargs,
-          tensor_outs,
-          cotangents_pt,
-          cotangents_f32,
-          differentiable,
-          rng,
-          op_name,
-          rtol=rtol,
-          atol=atol,
-          watchdog_ctx=active_watchdog,
-      )
-  except TimeoutError as exc:
-    return findings.report_of(
-        _AUTOGRAD,
-        [
-            *saved_donor_findings,
-            active_classifier(
-                exc, op_name, "autograd reference", phase=_AUTOGRAD
-            ),
-        ],
+        cotangents_f32,
+        differentiable,
+        rng,
+        op_name,
+        rtol=rtol,
+        atol=atol,
     )
   return findings.report_of(_AUTOGRAD, [*saved_donor_findings, *detected])
