@@ -73,6 +73,12 @@ build --copt=-Werror
 # Default to optimized (-c opt) builds in OSS.
 build --compilation_mode=opt
 
+# Compile all target C++ as PIC so each source is compiled only once. With
+# -c opt, Bazel otherwise compiles most sources twice: PIC for the pywrap .so,
+# non-PIC for cc_test binaries and *_build_test targets. Test binaries become
+# PIE, as in google3, whose toolchain enables `prefer_pic_for_opt_binaries`.
+build --force_pic
+
 # ===== Start spammy C++ compile warning disables =====
 # Some low-level legacy glibc macros are used in lots of
 # places, which very spammy, so silence this one.
