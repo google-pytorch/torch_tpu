@@ -261,17 +261,24 @@ absl::Status PjrtBackend::InitializeInternal() {
   // enabled.
   torch_tpu::ScopedMemMeasuringContainer container;
 
-  // Read and default TPU_PREMAPPED_BUFFER_SIZE before initializing the PJRT
-  // plugin so that libtpu does not overwrite an unset env var with its 4 GiB
-  // default during InitializePjrtPlugin.
-  const int64_t premapped_buffer_size_bytes =
-      GetPremappedBufferSizeFromEnvOnce().value_or(0);
-
   TT_ASSIGN_OR_RETURN(bool is_initialized,
                       pjrt::IsPjrtPluginInitialized(plugin_name));
   if (!is_initialized) {
     TT_RETURN_IF_ERROR(pjrt::InitializePjrtPlugin(plugin_name)).SetPrepend()
         << "failed to initialize the PjRt plugin: ";
+  }
+
+  // Read TPU_PREMAPPED_BUFFER_SIZE after initializing the PJRT plugin so that
+  // torch_tpu adopts any runtime default the plugin sets (matching other PJRT
+  // clients in this process, e.g. JAX). If it is still unset,
+  // GetPremappedBufferSizeFromEnvOnce() sets it to "0" and returns 0 so that
+  // later PJRT clients in this process see the same disabled setting.
+  const int64_t premapped_buffer_size_bytes =
+      GetPremappedBufferSizeFromEnvOnce().value_or(0);
+  if (premapped_buffer_size_bytes > 0) {
+    ABSL_LOG(INFO) << "Using PJRT premapped host buffer of "
+                   << premapped_buffer_size_bytes << " bytes (set "
+                   << kTpuPremappedBufferSizeEnvVar << "=0 to disable).";
   }
 
   // Mem tracking note: Background threads in XLA spun up during GetPjRtClient.

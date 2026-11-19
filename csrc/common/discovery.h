@@ -27,6 +27,7 @@ namespace torch_tpu {
 // "0" and 0 is returned.
 //
 // This function is memoized, so the environment variable is only read once.
+// Call it only after PJRT plugin initialization, which may set the variable.
 const absl::StatusOr<int64_t>& GetPremappedBufferSizeFromEnvOnce();
 
 }  // namespace torch_tpu
