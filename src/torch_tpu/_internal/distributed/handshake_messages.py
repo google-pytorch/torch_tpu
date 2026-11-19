@@ -82,6 +82,11 @@ class ProcessGroupCollectiveCount:
     self.collective_count_before = collective_count_before
     self.num_collectives_in_graph = num_collectives_in_graph
 
+  @property
+  def collective_count_after(self) -> int:
+    """Number of collectives of the process group after the compiled region."""
+    return self.collective_count_before + self.num_collectives_in_graph
+
   def increment_num_collectives_in_graph(
       self, number_of_collectives: int
   ) -> None:
@@ -316,8 +321,7 @@ class RankCollectiveCounts:
     Raises:
       KeyError: If key is not present in _pg_to_count.
     """
-    count = self._pg_to_count[key]
-    return count.collective_count_before + count.num_collectives_in_graph
+    return self._pg_to_count[key].collective_count_after
 
 
 class CollectiveHandshakeRequest:

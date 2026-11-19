@@ -91,6 +91,16 @@ class ProcessGroupCollectiveCountTest(seed_test_utils.RepeatableTest):
     self.assertEqual(count.collective_count_before, 0)
     self.assertEqual(count.num_collectives_in_graph, 2)
 
+  def test_collective_count_after(self) -> None:
+    count = ProcessGroupCollectiveCount(
+        collective_count_before=3,
+        num_collectives_in_graph=2,
+    )
+    self.assertEqual(count.collective_count_after, 5)
+
+    count.increment_num_collectives_in_graph(4)
+    self.assertEqual(count.collective_count_after, 9)
+
   def test_increment_num_collectives_in_graph(self) -> None:
     count = ProcessGroupCollectiveCount(
         collective_count_before=0,
