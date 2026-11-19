@@ -41,7 +41,6 @@ from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
 from tests.distributed import distributed_utils
 
-_WORLD = 4
 # A rank that cannot run its executable hangs instead of raising; report it as
 # failed after this long.
 _WATCHDOG_S = 300
@@ -101,6 +100,9 @@ class CompileCacheWorldSizeTest(seed_test_utils.MultiProcessRepeatableTest):
     super().setUp()
     self._cache_dir = self.create_tempdir().full_path
     self._out_dir = self.create_tempdir().full_path
+    # Use all host TPU chips: 8-chip v5e hosts cannot form a 4-chip sub-slice.
+    self._world_size = distributed_utils.get_tpu_device_count()
+    self.assertGreater(self._world_size, 1)
 
   def _run(self, phase: str, world_size: int) -> list[dict[str, int]]:
     """Runs `run_no_collectives` on `world_size` ranks; returns their counters."""
@@ -115,16 +117,16 @@ class CompileCacheWorldSizeTest(seed_test_utils.MultiProcessRepeatableTest):
     self.assertEmpty(errors, f"failing ranks of {phase}")
     return [o["aot"] for o in outcomes]
 
-  def test_world_size_1_entry_is_not_loaded_at_world_size_4(self):
+  def test_world_size_1_entry_is_not_loaded_at_larger_world_size(self):
     (aot,) = self._run("world_size_1", 1)
-    # Otherwise the world-size-4 run would not exercise the cache.
+    # Otherwise the multi-device run would not exercise the cache.
     self.assertEqual(aot.get("autograd_cache_saved"), 1, aot)
-    # Ranks 1-3 fail if they load the world-size-1 executable.
-    self._run("world_size_4", _WORLD)
+    # Ranks >= 1 fail if they load the world-size-1 executable.
+    self._run(f"world_size_{self._world_size}", self._world_size)
 
   def test_entry_is_loaded_at_the_same_world_size(self):
-    self._run("first", _WORLD)
-    for aot in self._run("second", _WORLD):
+    self._run("first", self._world_size)
+    for aot in self._run("second", self._world_size):
       self.assertEqual(aot.get("autograd_cache_hit"), 1, aot)
 
 

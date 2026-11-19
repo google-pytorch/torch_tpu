@@ -200,8 +200,14 @@ torch_tpu_py_test(
         ["exclusive"],
         [],
     ) + [
+        REQUIRES_V5_MULTI_DEVICE,
+        # The world-size-1 phase calls topology(1), which does not exist on
+        # 2-TensorCore-per-chip TPU v7x ('No TPU topology found for count: 1').
+        "fails-on-tpu-v7",
+        "noasan",  # 8-rank tests exceed Forge memory under sanitizers (b/497035517).
+        "nomsan",  # 8-rank tests exceed Forge memory under sanitizers (b/497035517).
+        "notsan",  # 8-rank tests exceed Forge memory under sanitizers (b/497035517).
         "requires-accel-hbm",
-        "requires-tpu-v5lite:8",
     ],
     deps = [
         ":distributed_utils",
