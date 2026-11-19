@@ -130,6 +130,9 @@ class RefBase {
   // TODO: b/581411915 - Migrate to use absl::Span.
   ValueHandle AtImpl(llvm::ArrayRef<Indexer> indexers) const;
 
+  // Returns the memref value of `ref.Bitcast(dtype)`.
+  ValueHandle BitcastImpl(DType dtype) const;
+
  private:
   ValueHandle handle_;
   DType dtype_;
@@ -170,6 +173,15 @@ class TypedRef final : public internal::RefBase {
   // number is only known when the kernel is built (Pallas `ref.at[...]`).
   TypedRef At(llvm::ArrayRef<Indexer> indexers) const {
     return TypedRef(AtImpl(indexers), dtype());
+  }
+
+  // Views the ref's memory as `dtype` elements (Pallas `ref.bitcast`). Mosaic
+  // packs narrow elements of consecutive rows into 32-bit words, so between
+  // bitwidths the second-minor dimension, which must be static, scales: row g
+  // of the i32 view of a u8 ref holds the bytes of rows 4g to 4g+3. Accepts
+  // every dtype; bool refs are i1 memrefs, so bool counts as 1 bit.
+  TypedRef Bitcast(DType dtype) const {
+    return TypedRef(BitcastImpl(dtype), dtype);
   }
 };
 
