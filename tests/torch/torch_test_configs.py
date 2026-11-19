@@ -129,11 +129,6 @@ _BASE_TEST_EXCLUSIONS: Final[_TestExclusions] = {
             "test_synchronize_explicit_none_matches_no_arg",
         ],
     },
-    "dynamo/test_unspec": {
-        "UnspecTestsDevice": [
-            "test_no_recompilations_with_efficient_attention",
-        ],
-    },
     "functorch/test_eager_transforms": {
         "TestCompileTransforms": [
             "test_compile_dynamic_grad_vjp_trace_pytree",
