@@ -69,12 +69,7 @@ torch_tpu_cc_test(
     exec_properties = {
         "cpp_link.mem": "16g",
     },
-    tags = [
-        # TODO(b/587797500): Fails on multi-core-per-chip TPU v7x OSS runners
-        # with 'No TPU devices found after filtering' or VFIO collisions.
-        "fails-on-tpu-v7",
-        "requires-tpu-v5p",
-    ],
+    tags = ["requires-tpu-v5p"],
     deps = [
         ":kiln",
         "//csrc/common:error_utils",
