@@ -1637,8 +1637,10 @@ absl::StatusOr<mlir::MlirOp> BuildMaybeSlice(mlir::MlirOp op, int64_t dimension,
     return op;
   }
 
-  auto input_tensor_type = GetTensorTypeOrDie(op);
-  Dimensions input_shape = CopyIntVector(input_tensor_type.getShape());
+  // Slice at the upper bounds of bounded dynamic dimensions. This is a no-op
+  // for static shapes.
+  StaticAtBounds static_op = MakeStaticAtBounds(op);
+  Dimensions input_shape = GetStaticShape(static_op.op);
 
   TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Current usages are guaranteed to be
                  // within range.
@@ -1658,12 +1660,30 @@ absl::StatusOr<mlir::MlirOp> BuildMaybeSlice(mlir::MlirOp op, int64_t dimension,
   }
   TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Current usages are guaranteed to be
                  // within range.
-      left_dim[dimension] < right_dim[dimension], error::kInvalidArgument)
+      left_dim[dimension] <= right_dim[dimension], error::kInvalidArgument)
       << "padding values for dimension " << dimension
       << " exceeds tensor size.";
   auto strides = Dimensions(input_shape.size(), 1);
 
-  return mlir::stablehlo::Slice(op, left_dim, right_dim, strides);
+  mlir::MlirOp sliced =
+      mlir::stablehlo::Slice(static_op.op, left_dim, right_dim, strides);
+
+  // A bounded `dimension` keeps the elements of `op` from `left_dim` up to its
+  // runtime size minus the right truncation, so its runtime size shrinks by
+  // the total truncation (clamped at 0). No element past the runtime size of
+  // `op` is read within the new runtime size.
+  if (std::optional<mlir::MlirOp>& size = static_op.runtime_sizes[dimension];
+      size.has_value()) {
+    const int64_t truncation =
+        left_dim[dimension] + input_shape[dimension] - right_dim[dimension];
+    const mlir::Type size_type = GetElementTypeOrSelf(*size);
+    mlir::MlirOp truncation_op =
+        MakeScalarConstant(op.getBuilder(), truncation, size_type);
+    mlir::MlirOp shrunk = stablehlo::Subtract(*size, truncation_op);
+    mlir::MlirOp zero = MakeScalarConstant(op.getBuilder(), 0, size_type);
+    size = stablehlo::Max(shrunk, zero);
+  }
+  return RestoreDynamicDimSizes(sliced, static_op.runtime_sizes);
 }
 
 Dimensions GetAllDimensions(mlir::MlirOp op) {

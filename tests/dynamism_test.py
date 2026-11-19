@@ -1910,6 +1910,184 @@ class DynamismTest(seed_test_utils.RepeatableTest):
     for info in act_dynamism_info:
       self.assertEqual(info.upper_bound, upper_bound)
 
+  # Each entry of `dynamic_dims` is `(tensor_index, dim, upper_bound)`, where
+  # tensor 0 is `data` and tensor 1 is `lengths` or `offsets`. Zero lengths
+  # cover empty segments.
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="lengths_bounded_data_dim",
+          data_shape=(6, 3),
+          segments=[2, 0, 3, 1],
+          use_offsets=False,
+          axis=0,
+          dynamic_dims=[(0, 0, 10)],
+      ),
+      dict(
+          testcase_name="lengths_bounded_segment_dim",
+          data_shape=(6, 3),
+          segments=[2, 0, 3, 1],
+          use_offsets=False,
+          axis=0,
+          dynamic_dims=[(1, 0, 10)],
+      ),
+      dict(
+          testcase_name="lengths_bounded_data_and_segment_dims",
+          data_shape=(6, 3),
+          segments=[2, 0, 3, 1],
+          use_offsets=False,
+          axis=0,
+          dynamic_dims=[(0, 0, 10), (1, 0, 10)],
+      ),
+      dict(
+          testcase_name="lengths_bounded_window_dim",
+          data_shape=(6, 3),
+          segments=[2, 0, 3, 1],
+          use_offsets=False,
+          axis=0,
+          dynamic_dims=[(0, 1, 8)],
+      ),
+      dict(
+          testcase_name="offsets_bounded_data_dim",
+          data_shape=(6, 3),
+          segments=[0, 2, 2, 5, 6],
+          use_offsets=True,
+          axis=0,
+          dynamic_dims=[(0, 0, 10)],
+      ),
+      dict(
+          testcase_name="offsets_bounded_segment_dim",
+          data_shape=(6, 3),
+          segments=[0, 2, 2, 5, 6],
+          use_offsets=True,
+          axis=0,
+          dynamic_dims=[(1, 0, 10)],
+      ),
+      dict(
+          testcase_name="lengths_axis_1_bounded_outer_dim",
+          data_shape=(3, 6, 2),
+          segments=[[1, 2, 3], [0, 6, 0], [3, 3, 0]],
+          use_offsets=False,
+          axis=1,
+          dynamic_dims=[(0, 0, 8), (1, 0, 8)],
+      ),
+      dict(
+          testcase_name="lengths_axis_1_bounded_window_and_segment_dims",
+          data_shape=(3, 6, 2),
+          segments=[[1, 2, 3], [0, 6, 0], [3, 3, 0]],
+          use_offsets=False,
+          axis=1,
+          dynamic_dims=[(0, 2, 6), (1, 1, 10)],
+      ),
+      dict(
+          testcase_name="offsets_axis_1_bounded_outer_dim",
+          data_shape=(3, 6, 2),
+          segments=[[0, 1, 3, 6], [0, 0, 6, 6], [0, 3, 6, 6]],
+          use_offsets=True,
+          axis=1,
+          dynamic_dims=[(0, 0, 8), (1, 0, 8)],
+      ),
+      dict(
+          testcase_name="offsets_axis_1_bounded_data_and_segment_dims",
+          data_shape=(3, 6, 2),
+          segments=[[0, 1, 3, 6], [0, 0, 6, 6], [0, 3, 6, 6]],
+          use_offsets=True,
+          axis=1,
+          dynamic_dims=[(0, 1, 10), (1, 1, 10)],
+      ),
+  )
+  def test_segment_reduce_dynamic_input(
+      self,
+      data_shape: tuple[int, ...],
+      segments: Sequence[int] | Sequence[Sequence[int]],
+      use_offsets: bool,
+      axis: int,
+      dynamic_dims: Sequence[tuple[int, int, int]],
+  ) -> None:
+    def mark_dynamic(*tensors: torch.Tensor) -> None:
+      for tensor_index, dim, upper_bound in dynamic_dims:
+        dynamism.mark_dynamic(tensors[tensor_index], dim, 2, upper_bound)
+
+    data = torch.randint(-3, 4, data_shape, dtype=torch.float32)
+    segment_info = torch.tensor(segments, dtype=torch.int64)
+    # Mean of an empty segment without an initial value is NaN.
+    for reduce, initial in (
+        ("sum", None),
+        ("prod", None),
+        ("max", None),
+        ("min", None),
+        ("mean", 2.0),
+    ):
+      with self.subTest(reduce=reduce):
+        tt_testing.reset_eager_state()
+
+        def segment_reduce_fn(
+            data: torch.Tensor,
+            segment_info: torch.Tensor,
+            reduce: str = reduce,
+            initial: float | None = initial,
+        ) -> torch.Tensor:
+          segment_kwarg = "offsets" if use_offsets else "lengths"
+          return torch.segment_reduce(
+              data,
+              reduce,
+              axis=axis,
+              initial=initial,
+              **{segment_kwarg: segment_info},
+          )
+
+        self._run_bounded_dynamism_test(
+            segment_reduce_fn, mark_dynamic, data, segment_info
+        )
+
+  @parameterized.named_parameters(
+      dict(testcase_name="lengths", use_offsets=False),
+      dict(testcase_name="offsets", use_offsets=True),
+  )
+  def test_segment_reduce_compiled_multi_dynamic(self, use_offsets: bool):
+    def segment_reduce_fn(
+        data: torch.Tensor, segment_info: torch.Tensor
+    ) -> torch.Tensor:
+      segment_kwarg = "offsets" if use_offsets else "lengths"
+      return torch.segment_reduce(
+          data, "sum", axis=1, **{segment_kwarg: segment_info}
+      )
+
+    def make_inputs(
+        lengths: Sequence[Sequence[int]], window: int
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+      lengths = torch.tensor(lengths, dtype=torch.int64)
+      data_shape = (lengths.shape[0], int(lengths[0].sum()), window)
+      data = torch.randint(-3, 4, data_shape, dtype=torch.float32)
+      if not use_offsets:
+        return data, lengths
+      offsets = torch.nn.functional.pad(torch.cumsum(lengths, dim=1), (1, 0))
+      return data, offsets
+
+    compiled_fn = torch.compile(segment_reduce_fn, backend="tpu", dynamic=None)
+    data, segment_info = make_inputs(
+        [[1, 2, 3], [0, 6, 0], [3, 3, 0]], window=4
+    )
+    data_tpu = data.to(self.device)
+    segment_info_tpu = segment_info.to(self.device)
+    for dim in range(data_tpu.dim()):
+      torch._dynamo.mark_dynamic(data_tpu, dim, min=2, max=16)
+    for dim in range(segment_info_tpu.dim()):
+      # PyTorch guards against a single segment, i.e. offsets of size 2.
+      min_size = 3 if use_offsets and dim == segment_info_tpu.dim() - 1 else 2
+      torch._dynamo.mark_dynamic(segment_info_tpu, dim, min=min_size, max=16)
+    utils.assert_close(
+        compiled_fn(data_tpu, segment_info_tpu).to("cpu"),
+        segment_reduce_fn(data, segment_info),
+    )
+
+    # Other sizes of every bounded dim reuse the compiled graph.
+    data, segment_info = make_inputs(
+        [[2, 0, 1, 2], [1, 1, 1, 2], [5, 0, 0, 0], [0, 0, 0, 5]], window=3
+    )
+    with torch._dynamo.config.patch(error_on_recompile=True):
+      act = compiled_fn(data.to(self.device), segment_info.to(self.device))
+    utils.assert_close(act.to("cpu"), segment_reduce_fn(data, segment_info))
+
 
 if __name__ == "__main__":
   absltest.main()

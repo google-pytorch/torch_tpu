@@ -482,9 +482,6 @@ DenyList = dict[str, dict[str, set[DynamismMode] | frozenset[DynamismMode]]]
 DYNAMISM_DENY_LISTS: DenyList = {
     # TODO: b/449736443 - Support bounded dimensions in these lowerings.
     "the lowering broadcasts a bounded input to a static shape": {
-        # Aborts the test process with a CHECK failure in BroadcastIfNeeded
-        # (op_builder_utils.cc).
-        "_segment_reduce": {EAGER, COMPILE},
         "bernoulli": {EAGER},
         # These abort the test process with a CHECK failure in
         # BroadcastIfNeeded (op_builder_utils.cc).

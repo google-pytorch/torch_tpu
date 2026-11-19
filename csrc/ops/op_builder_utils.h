@@ -863,6 +863,10 @@ mlir::MlirOp BuildFillUninitialized(mlir::MlirBuilder& builder,
 
 // Slice if left_pad or right_pad is negative to truncate the tensor in the
 // dimension specified, otherwise return op.
+//
+// Supports bounded dynamic dimensions. If the dimension specified is bounded,
+// the truncation applies to its upper bound and to its runtime size (clamped
+// at 0), so the elements kept are those of `op` within its runtime size.
 absl::StatusOr<mlir::MlirOp> BuildMaybeSlice(mlir::MlirOp op, int64_t dimension,
                                              int64_t left_pad,
                                              int64_t right_pad);

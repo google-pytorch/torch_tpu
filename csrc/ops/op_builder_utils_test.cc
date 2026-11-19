@@ -1489,6 +1489,136 @@ TEST(RestoreDynamicDimSizes, RestoresBoundedDynamicDims) {
   EXPECT_EQ(set_size.getDimension(), 1);
 }
 
+TEST(BuildMaybeSlice, StaticDimTruncated) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp input = MakeBoundedArg(fb, {6, 5}, /*bound_dims=*/{});
+  TT_ASSERT_OK_AND_ASSIGN(
+      mlir::MlirOp sliced,
+      BuildMaybeSlice(input, /*dimension=*/1, /*left_pad=*/-1,
+                      /*right_pad=*/-2));
+  mlir::func::Return(fb, sliced);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+
+  EXPECT_TRUE(GetTensorTypeOrDie(sliced).hasStaticShape());
+  EXPECT_THAT(GetStaticShape(sliced), ElementsAre(6, 2));
+  EXPECT_TRUE(sliced.getValue().getDefiningOp<mlir::stablehlo::SliceOp>())
+      << DebugString(module.get());
+}
+
+TEST(BuildMaybeSlice, BoundedDimTruncatedAtBoundAndRuntimeSize) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp input = MakeBoundedArg(fb, {6, 5}, /*bound_dims=*/{0, 1});
+  TT_ASSERT_OK_AND_ASSIGN(
+      mlir::MlirOp sliced,
+      BuildMaybeSlice(input, /*dimension=*/1, /*left_pad=*/0,
+                      /*right_pad=*/-1));
+  mlir::func::Return(fb, sliced);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+
+  // Both dimensions stay bounded, and the bound of dimension 1 shrinks.
+  const mlir::stablehlo::Dimensions dims = GetDimensions(sliced);
+  ASSERT_EQ(dims.size(), 2);
+  EXPECT_EQ(dims[0].size, 6);
+  EXPECT_TRUE(dims[0].boundOp.has_value());
+  EXPECT_EQ(dims[1].size, 4);
+  EXPECT_TRUE(dims[1].boundOp.has_value());
+  // The runtime size of dimension 1 is the input runtime size minus 1, clamped
+  // at 0.
+  auto set_size =
+      sliced.getValue().getDefiningOp<mlir::stablehlo::SetDimensionSizeOp>();
+  ASSERT_TRUE(set_size) << DebugString(module.get());
+  EXPECT_EQ(set_size.getDimension(), 1);
+  auto clamp = set_size.getSize().getDefiningOp<mlir::stablehlo::MaxOp>();
+  ASSERT_TRUE(clamp) << DebugString(module.get());
+  EXPECT_TRUE(clamp.getLhs().getDefiningOp<mlir::stablehlo::SubtractOp>())
+      << DebugString(module.get());
+}
+
+TEST(BuildMaybeSlice, BoundedDimTruncatedOnBothSides) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp input = MakeBoundedArg(fb, {6, 5}, /*bound_dims=*/{1});
+  TT_ASSERT_OK_AND_ASSIGN(
+      mlir::MlirOp sliced,
+      BuildMaybeSlice(input, /*dimension=*/1, /*left_pad=*/-1,
+                      /*right_pad=*/-1));
+  mlir::func::Return(fb, sliced);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+
+  const mlir::stablehlo::Dimensions dims = GetDimensions(sliced);
+  ASSERT_EQ(dims.size(), 2);
+  EXPECT_EQ(dims[0].size, 6);
+  EXPECT_FALSE(dims[0].boundOp.has_value());
+  EXPECT_EQ(dims[1].size, 3);
+  EXPECT_TRUE(dims[1].boundOp.has_value());
+  // The runtime size of dimension 1 shrinks by the truncation on both sides.
+  auto set_size =
+      sliced.getValue().getDefiningOp<mlir::stablehlo::SetDimensionSizeOp>();
+  ASSERT_TRUE(set_size) << DebugString(module.get());
+  EXPECT_EQ(set_size.getDimension(), 1);
+  auto clamp = set_size.getSize().getDefiningOp<mlir::stablehlo::MaxOp>();
+  ASSERT_TRUE(clamp) << DebugString(module.get());
+  auto shrunk = clamp.getLhs().getDefiningOp<mlir::stablehlo::SubtractOp>();
+  ASSERT_TRUE(shrunk) << DebugString(module.get());
+  auto truncation =
+      shrunk.getRhs().getDefiningOp<mlir::stablehlo::ConstantOp>();
+  ASSERT_TRUE(truncation) << DebugString(module.get());
+  auto truncation_attr =
+      mlir::dyn_cast<mlir::DenseIntElementsAttr>(truncation.getValue());
+  ASSERT_TRUE(truncation_attr) << DebugString(module.get());
+  EXPECT_EQ(truncation_attr.getSplatValue<int32_t>(), 2);
+}
+
+TEST(BuildMaybeSlice, StaticDimTruncatedToZeroLength) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp input = MakeBoundedArg(fb, {6, 5}, /*bound_dims=*/{});
+  TT_ASSERT_OK_AND_ASSIGN(
+      mlir::MlirOp sliced,
+      BuildMaybeSlice(input, /*dimension=*/1, /*left_pad=*/-2,
+                      /*right_pad=*/-3));
+  mlir::func::Return(fb, sliced);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+
+  EXPECT_THAT(GetStaticShape(sliced), ElementsAre(6, 0));
+}
+
+TEST(BuildMaybeSlice, OtherBoundedDimKept) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp input = MakeBoundedArg(fb, {6, 5}, /*bound_dims=*/{0});
+  TT_ASSERT_OK_AND_ASSIGN(
+      mlir::MlirOp sliced,
+      BuildMaybeSlice(input, /*dimension=*/1, /*left_pad=*/-1,
+                      /*right_pad=*/0));
+  mlir::func::Return(fb, sliced);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+
+  const mlir::stablehlo::Dimensions dims = GetDimensions(sliced);
+  ASSERT_EQ(dims.size(), 2);
+  EXPECT_EQ(dims[0].size, 6);
+  EXPECT_TRUE(dims[0].boundOp.has_value());
+  EXPECT_EQ(dims[1].size, 4);
+  EXPECT_FALSE(dims[1].boundOp.has_value());
+}
+
 TEST(FillPastRuntimeSizes, ScalarFillValue) {
   OpBuilderUtilsBuilder op_builder_utils_builder;
   mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
