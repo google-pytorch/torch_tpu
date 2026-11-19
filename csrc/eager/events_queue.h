@@ -139,12 +139,6 @@ class EventSnapshot {
   // materialization worker thread (unless the stream is cleared).
   void Start(xla::Future<void> future) { state_->Start(std::move(future)); }
 
-  // Blocks the calling thread until the event snapshot has been started by
-  // the materialization worker thread.
-  absl::Status BlockUntilStarted() const {
-    return state_->started_future().Await();
-  }
-
   // Blocks the calling thread until the event snapshot is complete, then
   // surfaces the warnings rerouted from background threads. Must be called on a
   // dispatch thread.
@@ -212,7 +206,7 @@ class EventSnapshot {
    private:
     // Promises that must be set during the lifecycle of the event snapshot.
     struct Promises {
-      // The promise backing BlockUntilStarted().
+      // The promise backing started_future.
       xla::Promise<void> start;
       // The promise to supply a completion time through.
       xla::Promise<std::chrono::steady_clock::time_point> completion_time;
@@ -247,12 +241,8 @@ class EventSnapshot {
 
 // Instructs the stream specified by device_index and stream_id to wait for the
 // given EventSnapshot to complete before starting any subsequent work.
-// TODO(bawilson): this currently only blocks transfers, not op executions;
-// we handle op execution waits in the case of a single Python thread with the
-// block in TpuDeviceGuardImpl::exchangeStream but this is not sound under
-// multithreading.
 void InsertStreamWait(c10::DeviceIndex device_index, c10::StreamId stream_id,
-                      EventSnapshot& snapshot);
+                      EventSnapshot snapshot);
 
 // Records one EventSnapshot for each stream on the given device.
 std::vector<EventSnapshot> RecordDeviceSnapshots(
@@ -311,13 +301,17 @@ struct SnapshotRequest {
   EventSnapshot snapshot_to_start;
 };
 
-using ReadyWork =
+using ReadyWorkItem =
     std::variant<EagerExecution, CompiledExecution, SnapshotRequest>;
 
+struct ReadyWork {
+  std::vector<ReadyWorkItem> ready_work_items;
+  std::optional<xla::Future<void>> blocked_after = std::nullopt;
+};
+
 // Returns a list of work items that are ready to be processed for the given
-// device and stream.
-std::vector<ReadyWork> GetReadyWork(c10::DeviceIndex device_index,
-                                    c10::StreamId stream_id);
+// device and stream, and a future indicating when more work will be ready.
+ReadyWork GetReadyWork(c10::DeviceIndex device_index, c10::StreamId stream_id);
 
 // Sets the core pinning mode for the given stream.
 void SetCorePinningMode(c10::DeviceIndex device_index, c10::StreamId stream_id,

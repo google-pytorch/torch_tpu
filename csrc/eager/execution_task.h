@@ -104,6 +104,7 @@ class ExecutionTask {
   // Sets all output nodes as having a specified error.
   void SetOutputNodesAsError(absl::Status status);
 
+  absl::Span<const DeviceBufferRef> arguments() const { return arguments_; }
   absl::Span<const DeviceBufferRef> outputs() const { return outputs_; }
 
   [[nodiscard]] CorePinningMode core_pinning_mode() const {

@@ -230,6 +230,33 @@ def run_spmd_safe_multi_dtensor_compile_test():
   assert isinstance(out, torch.distributed.tensor.DTensor)
 
 
+def run_collectives_on_alternating_streams_test() -> None:
+  rank = dist.get_rank()
+  world_size = dist.get_world_size()
+  first, second = torch.tpu.Stream(), torch.tpu.Stream()
+  x = torch.ones((2, 2), device="cpu").to("tpu")
+  u = torch.ones((2, 2), device="cpu").to("tpu")
+  torch.accelerator.synchronize()
+
+  @torch.tpu.distributed.spmd_safe
+  def body(x, u):
+    with torch.tpu.stream(first):
+      dist.all_reduce(x)
+    if rank % 2 == 0:
+      # Host-side delay on even ranks so `first`'s collective has already
+      # materialized (`prev_future.IsKnownReady() == true`) there.
+      time.sleep(3.0)
+    with torch.tpu.stream(second):
+      y = u * 5
+      dist.all_reduce(y)
+      return y + 1
+
+  with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+    z = body(x, u)
+  torch.accelerator.synchronize()
+  assert torch.equal(z.cpu(), torch.full((2, 2), 5.0 * world_size + 1.0))
+
+
 class SpmdSafeDecoratorTest(continuous_test_utils.TpuMultiProcContinuousTest):
 
   # Using world_size = 4 has flakiness on 8-chip TPU v5e CI runners:
@@ -394,6 +421,10 @@ class SpmdSafeDecoratorTest(continuous_test_utils.TpuMultiProcContinuousTest):
     del res
     if self.rank == 0:
       self._check_fused_mlir(_DUMP_DIR)
+
+  def test_collectives_on_alternating_streams(self):
+    run_collectives_on_alternating_streams_test()
+    self._check_all_reduce_mlir_matching(_DUMP_DIR)
 
 
 class SpmdSafeDTensorTest(continuous_test_utils.TpuMultiProcContinuousTest):

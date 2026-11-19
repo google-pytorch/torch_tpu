@@ -300,42 +300,11 @@ c10::Stream TpuDeviceGuardImpl::ExchangeStream(c10::Stream s) const {
     return s;
   }
 
-  // Explanation: CUDA users expect that work on a stream begins as soon as
-  // the op or transfer is called.
-  //
-  // Strictly speaking, anything which depends on the completion of another
-  // stream should use syncs or waits, to avoid reading uninitialized data
-  // (on CUDA) or crashing due to unresolved dependencies (on TPU).
-  //
-  // In practice though, users may not be this defensive and assume that work on
-  // stream that was started sufficiently long ago has completed. In TorchTPU's
-  // DeferAndFuse mode, work on a stream can remain deferred indefinitely until
-  // something forces it to materialize.
-  //
-  // Defensively materializing on exiting a stream means that any cross-stream
-  // dependencies after this point will have the ability to await the result,
-  // even without an explicit wait or sync.
-  //
-  // Additionally, we block until materialization starts to prevent a race:
-  //   - Op X is dispatched on stream 1, and a MaterializeStream is queued on 1
-  //   - Op Y is dispatched on stream 2, and a MaterializeStream is queued on 2
-  //   - Op Z, which depends on Y, is dispatched on stream 1, and another
-  //     MaterializeStream is queued on 1
-  //   - The MaterializationWorker wakes up, and sees that stream 1 needs to
-  //     be materialized. It attempts to materialize both X and Z, but fails,
-  //     because Z depends on Y, which has not yet been started.
-  // By blocking on the exit from stream 2 until Y's materialization is queued,
-  // Z's materialization cannot race its inputs, even if Y hasn't finished.
-  TT_ASSIGN_OR_THROW(EventSnapshot snapshot,
-                     MaterializeStream(s.device_index(), old_stream_id,
-                                       MaterializationReason::kExplicitSync));
-  TT_THROW_IF_ERROR(snapshot.BlockUntilStarted());
-  // Because we're dropping this snapshot without returning it to the user, any
-  // errors would be lost if we only chained the OkCallback. To ensure all
-  // errors are raised correctly we inject the full completion future into the
-  // stream so errors are picked up by the next snapshot.
-  internal::MarkStreamActive(s.device_index(), old_stream_id,
-                             snapshot.completion_future());
+  // Exiting a stream context acts as a natural graph break; this ensures that
+  // the work created on the old stream will eventually be executed.
+  TT_THROW_IF_ERROR(EagerlyExecuteStream(s.device_index(), old_stream_id,
+                                         MaterializationReason::kExplicitSync));
+
   return c10::Stream(c10::Stream::UNSAFE, s.device(), old_stream_id);
 }
 
@@ -394,7 +363,6 @@ void TpuDeviceGuardImpl::Record(void** event, const c10::Stream& stream,
   TT_ASSIGN_OR_THROW(EventSnapshot snapshot,
                      MaterializeStream(stream.device_index(), stream.id(),
                                        MaterializationReason::kExplicitSync));
-  TT_THROW_IF_ERROR(snapshot.BlockUntilStarted());
   *event = new EventSnapshot(std::move(snapshot));
 }
 void TpuDeviceGuardImpl::Block(void* event, const c10::Stream& stream) const {
