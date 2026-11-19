@@ -6348,6 +6348,38 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(fn)
 
+  def test_split_with_sizes_copy_dim1_non_contiguous(self):
+    def fn(device):
+      # 2D transposed input (non-contiguous self) with leading empty split.
+      x_t = torch.arange(12.0, device=device).reshape(3, 4).t()
+      out_t = [torch.empty(4, 0, device=device), torch.empty_like(x_t)]
+      torch.split_with_sizes_copy(x_t, [0, 3], dim=1, out=out_t)
+
+      # 2D non-contiguous output (contiguous self, transposed out[1]).
+      x_c = torch.arange(12.0, device=device).reshape(4, 3)
+      out_buf = torch.empty(3, 4, device=device).t()
+      out_nc = [torch.empty(4, 0, device=device), out_buf]
+      torch.split_with_sizes_copy(x_c, [0, 3], dim=1, out=out_nc)
+
+      # Multi-split [1, 2] with non-zero start offset: transposed input into
+      # contiguous outputs, and contiguous input into mixed contiguous/transposed
+      # outputs.
+      out_t_multi = [
+          torch.empty(4, 1, device=device),
+          torch.empty(4, 2, device=device),
+      ]
+      torch.split_with_sizes_copy(x_t, [1, 2], dim=1, out=out_t_multi)
+
+      out_mixed = [
+          torch.empty(4, 1, device=device),
+          torch.empty(2, 4, device=device).t(),
+      ]
+      torch.split_with_sizes_copy(x_c, [1, 2], dim=1, out=out_mixed)
+
+      return tuple(out_t + out_nc + out_t_multi + out_mixed)
+
+    self.assert_close_tpu_vs_cpu(fn, check_value=CheckValueMode.STRICT)
+
   def test_split_with_sizes_copy_dim1_split_sizes_mismatch(self):
     def fn(device):
       out = [torch.empty(2, 2, device=device), torch.empty(2, 3, device=device)]

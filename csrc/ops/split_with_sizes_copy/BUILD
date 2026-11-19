@@ -41,6 +41,7 @@ torch_tpu_cc_library(
         "//csrc/ops/resize:resize_aten_kernels",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
         "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
         "@stablehlo//stablehlo/integrations/cpp/builder:stablehlo_builder",
     ],

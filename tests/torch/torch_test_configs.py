@@ -899,8 +899,6 @@ _BASE_TEST_EXCLUSIONS: Final[_TestExclusions] = {
             },
             "test_scatter_reduce_scalar": {"dtypes": [torch.complex128]},
             "test_shift_mem_overlap": "*",
-            "test_split_with_sizes_copy_out": "*",
-            "test_split_with_sizes_copy_out_non_canonical_layouts": "*",
             "test_storage": "*",
             "test_strides_propagation": "*",
             "test_take_empty": "*",
