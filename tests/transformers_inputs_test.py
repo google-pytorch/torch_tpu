@@ -79,6 +79,44 @@ class MultimodalInputsTest(seed_test_utils.RepeatableTest):
     self.assertEqual(inputs["pixel_mask"].dtype, torch.long)
     self.assertTrue(bool(inputs["pixel_mask"].all()))
 
+  def test_fuyu_pixel_values_are_patches_matching_image_tokens(self):
+    config = {
+        "model_type": "fuyu",
+        "architectures": ["FuyuForCausalLM"],
+        "image_size": 300,
+        "patch_size": 30,
+        "num_channels": 3,
+        "image_token_id": 71011,
+        "vocab_size": 262144,
+    }
+    inputs = transformers_inputs.generate_transformers_inputs(
+        config, "multimodal", shape=(2, 128)
+    )
+
+    self.assertEqual(inputs["pixel_values"].shape, (2, 100, 2700))
+    self.assertEqual(int((inputs["input_ids"] == 71011).sum()), 2 * 100)
+
+  def test_hunyuan_vl_pixel_values_are_patches_matching_image_tokens(self):
+    config = {
+        "model_type": "hunyuan_vl",
+        "architectures": ["HunYuanVLForConditionalGeneration"],
+        "image_token_id": 120120,
+        "vision_config": {
+            "patch_size": 16,
+            "spatial_merge_size": 2,
+            "num_channels": 3,
+        },
+        "text_config": {"vocab_size": 120818},
+    }
+    inputs = transformers_inputs.generate_transformers_inputs(
+        config, "multimodal", shape=(2, 128)
+    )
+
+    self.assertEqual(inputs["pixel_values"].shape, (2 * 14 * 14, 768))
+    self.assertEqual(inputs["image_grid_thw"].tolist(), [[1, 14, 14]] * 2)
+    self.assertEqual(int((inputs["input_ids"] == 120120).sum()), 2 * 58)
+    self.assertEqual(int(inputs["mm_token_type_ids"].sum()), 2 * 58)
+
 
 if __name__ == "__main__":
   absltest.main()

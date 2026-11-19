@@ -341,6 +341,42 @@ class LoadModelTest(seed_test_utils.RepeatableTest):
     self.assertEqual(model.config.vision_config.num_hidden_layers, 2)
     self.assertEqual(model.config.vision_config.depth, 2)
 
+  def test_presubmit_front_loads_one_layer_of_each_type(self):
+    # The layer pattern of Qwen/Qwen3.5-9B.
+    layer_types = (["linear_attention"] * 3 + ["full_attention"]) * 8
+    model = self._load_text(
+        types.SimpleNamespace(
+            num_hidden_layers=32,
+            text_config=types.SimpleNamespace(
+                num_hidden_layers=32, layer_types=list(layer_types)
+            ),
+        ),
+        context_lib.RunScope.PRESUBMIT,
+    )
+
+    self.assertEqual(
+        model.config.text_config.layer_types[:2],
+        ["linear_attention", "full_attention"],
+    )
+    self.assertCountEqual(model.config.text_config.layer_types, layer_types)
+
+  def test_presubmit_keeps_heterogeneous_layer_types(self):
+    # Gemma 4 sets per-layer overrides on its full-attention layers.
+    layer_types = ["sliding_attention"] * 5 + ["full_attention"]
+    model = self._load_text(
+        types.SimpleNamespace(
+            num_hidden_layers=6,
+            text_config=types.SimpleNamespace(
+                num_hidden_layers=6,
+                layer_types=list(layer_types),
+                is_heterogeneous=True,
+            ),
+        ),
+        context_lib.RunScope.PRESUBMIT,
+    )
+
+    self.assertEqual(model.config.text_config.layer_types, layer_types)
+
   def test_set_config_dtype_updates_pretrained_config_property_and_dicts(self):
     class _FakePretrainedConfig:
       """Mirrors HF PretrainedConfig where torch_dtype is a dtype property."""

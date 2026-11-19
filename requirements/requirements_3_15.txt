@@ -3271,9 +3271,9 @@ tqdm==4.66.3 \
     #   huggingface-hub
     #   peft
     #   transformers
-transformers==5.16.1 \
-    --hash=sha256:17b0eac726ddc55e84ac58946063e0c6d37fd000c456b581f050ea0f4e822869 \
-    --hash=sha256:2f2d5b98a5ad3718713653734298fa620754ed683702a635ebb587df3ed29c7e
+transformers==5.22.2 \
+    --hash=sha256:55f57e5cbd7c0b500b7a706daa0ecd76567b56ca139e6e02ef0bba0437e3a763 \
+    --hash=sha256:829c2820aff91730b8ec45a4b8ff4be07f586a140b68a9073998b36fa35297dc
     # via
     #   torch-tpu (pyproject.toml)
     #   peft
