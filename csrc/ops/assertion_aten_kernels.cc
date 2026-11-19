@@ -130,7 +130,7 @@ void ScheduleAsyncAssertionCheck(const at::Tensor& self,
       return;
     }
     // The message is the user's, so it is reported as written.
-    promise.Set(TT_ERROR(error::kInternal).SetUserMessage() << msg);
+    promise.Set(TT_ERROR(error::kInternal).SetIsUserMessage() << msg);
   });
 }
 

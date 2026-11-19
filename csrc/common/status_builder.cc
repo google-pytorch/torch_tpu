@@ -73,9 +73,7 @@ StatusBuilder::Rep::Rep(absl::Status&& s) : status(std::move(s)) {}
 StatusBuilder::Rep::~Rep() = default;
 
 StatusBuilder::Rep::Rep(const Rep& r)
-    : status(r.status),
-      message_join_style(r.message_join_style),
-      is_user_message(r.is_user_message) {
+    : status(r.status), message_join_style(r.message_join_style) {
   if (r.stream.has_value()) {
     std::stringstream ss;
     ss << r.stream->str();
@@ -114,10 +112,9 @@ absl::Status StatusBuilder::JoinMessageToStatus(absl::Status s,
                           std::move(old_root_op_name).value());
   }
 
-  // Keep the mark of the user's text, unless that text is replaced.
-  if (style != MessageJoinStyle::kOverride &&
-      internal::HasUserMessagePayload(s)) {
-    new_status.SetPayload(internal::kUserMessageUrl, absl::Cord());
+  // Preserve the "is user message" state in the original Status if any.
+  if (internal::IsUserMessage(s)) {
+    new_status.SetPayload(internal::kIsUserMessageUrl, absl::Cord());
   }
 
   return new_status;
@@ -128,9 +125,6 @@ absl::Status StatusBuilder::CreateStatus() && {
       JoinMessageToStatus(std::move(rep_->status),
                           rep_->stream.has_value() ? rep_->stream->str() : "",
                           rep_->message_join_style);
-  if (rep_->is_user_message) {
-    result.SetPayload(internal::kUserMessageUrl, absl::Cord());
-  }
   ABSL_CHECK(!result.ok())  // CRASH_OK
       << "StatusBuilder can only hold a non-OK status.";
   ABSL_CHECK(!result.message().empty())  // CRASH_OK
@@ -154,8 +148,8 @@ std::string GetRootOpNamePayload(const absl::Status& status) {
   return std::string(payload.value());
 }
 
-bool HasUserMessagePayload(const absl::Status& status) {
-  return status.GetPayload(kUserMessageUrl).has_value();
+bool IsUserMessage(const absl::Status& status) {
+  return status.GetPayload(kIsUserMessageUrl).has_value();
 }
 
 absl::Status MaybeAddCppSourceLoc(absl::Status status,

@@ -695,7 +695,7 @@ class ErrorFormatChecker {
   // explanation of all violations if it doesn't. A message that holds text
   // written by the user is reported as written, so it isn't checked.
   void Check(const TtError& error) {
-    if (internal::HasUserMessagePayload(error.status())) {
+    if (internal::IsUserMessage(error.status())) {
       return;
     }
     violations_.clear();

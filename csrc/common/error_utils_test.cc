@@ -2085,7 +2085,7 @@ void ThrowWithMessageAndIsUserMessage(const std::string_view message,
              IgnoreInCacheKey(is_user_message, "test")),
             {
               StatusBuilder builder = TT_ERROR(error::kInternal);
-              if (is_user_message) builder.SetUserMessage();
+              if (is_user_message) builder.SetIsUserMessage();
               TT_THROW_IF_ERROR(builder << message);
             });
 }
@@ -2094,19 +2094,19 @@ void ThrowWithMessageAndIsUserMessage(const std::string_view message,
 // the way an op kernel does.
 void ThrowStatus(const absl::Status& status) {
   ThrowWithMessageAndIsUserMessage(status.message(),
-                                   internal::HasUserMessagePayload(status));
+                                   internal::IsUserMessage(status));
 }
 
 // Returns an error whose message is marked as holding the user's text.
 absl::Status UserMessageError(const std::string_view message) {
-  return TT_ERROR(error::kInternal).SetUserMessage() << message;
+  return TT_ERROR(error::kInternal).SetIsUserMessage() << message;
 }
 
 TEST_F(ErrorMessageGuidelinesPassTest, UserMessage) {
   EXPECT_THROW(ThrowStatus(UserMessageError("Value must be positive.")),
                c10::Error);
   StatusBuilder builder = TT_ERROR(error::kInternal);
-  builder.SetUserMessage();
+  builder.SetIsUserMessage();
   EXPECT_THROW(ThrowStatus(builder << "Value must be positive."), c10::Error);
 }
 
@@ -2122,13 +2122,14 @@ TEST_F(ErrorMessageGuidelinesPassTest, UserMessageWithAddedContext) {
       c10::Error);
 }
 
-TEST_F(ErrorMessageGuidelinesDeathTest, OverriddenUserMessage) {
-  // The replacement is TorchTPU's own text, so it is checked.
-  EXPECT_DEATH(
+TEST_F(ErrorMessageGuidelinesPassTest, OverriddenUserMessage) {
+  // Overriding the message keeps the "is user message" state, so the
+  // replacement isn't checked.
+  EXPECT_THROW(
       ThrowStatus(StatusBuilder(UserMessageError("Value must be positive."))
                       .SetOverride()
                   << "Dimension size negative"),
-      HasSubstr("start with a lowercase character"));
+      c10::Error);
 }
 
 TEST_F(ErrorMessageGuidelinesPassTest, StartsWithNonLetter) {

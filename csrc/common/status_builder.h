@@ -30,8 +30,19 @@
 #include <utility>
 
 #include "absl/status/status.h"
+#include "absl/strings/cord.h"
 
 namespace torch_tpu {
+
+namespace internal {
+
+// Key for the payload in absl::Status that marks its message as holding text
+// written by the user (e.g. the message of a failed assertion). The payload's
+// presence is the state; its value is unused.
+inline constexpr std::string_view kIsUserMessageUrl =
+    "type.googleapis.com/torch_tpu.is_user_message";
+
+}  // namespace internal
 
 // A status builder that may not yet contain a message.
 class StatusBuilder;
@@ -91,11 +102,13 @@ class [[nodiscard]] StatusBuilder {
 
   // Mutates the builder so that the resulting status is marked as holding text
   // written by the user (e.g. a failed assertion message), which is reported as
-  // written and skips the error message format checks.
+  // written and skips the error message format checks. This flag survives
+  // `SetOverride()`, even though the overridden message may no longer be the
+  // user's text.
   //
   // Returns `*this` to allow method chaining.
-  StatusBuilder& SetUserMessage() &;
-  [[nodiscard]] StatusBuilder&& SetUserMessage() &&;
+  StatusBuilder& SetIsUserMessage() &;
+  [[nodiscard]] StatusBuilder&& SetIsUserMessage() &&;
 
   // Appends to the extra message that will be added to the original status.  By
   // default, the extra message is appended to the original message.
@@ -180,7 +193,6 @@ class [[nodiscard]] StatusBuilder {
     // Lazily initialized as it's expensive to construct.
     std::optional<std::stringstream> stream;
     MessageJoinStyle message_join_style = MessageJoinStyle::kAppend;
-    bool is_user_message = false;
   };
 
   // Creates a new status based on an old one by joining the message from the
@@ -260,13 +272,13 @@ inline StatusBuilder&& StatusBuilder::SetOverride() && {
   return std::move(SetOverride());
 }
 
-inline StatusBuilder& StatusBuilder::SetUserMessage() & {
+inline StatusBuilder& StatusBuilder::SetIsUserMessage() & {
   if (rep_ == nullptr) return *this;
-  rep_->is_user_message = true;
+  rep_->status.SetPayload(internal::kIsUserMessageUrl, absl::Cord());
   return *this;
 }
-inline StatusBuilder&& StatusBuilder::SetUserMessage() && {
-  return std::move(SetUserMessage());
+inline StatusBuilder&& StatusBuilder::SetIsUserMessage() && {
+  return std::move(SetIsUserMessage());
 }
 
 template <typename T>
@@ -330,11 +342,6 @@ inline constexpr std::string_view kCppErrorTraceUrl =
 inline constexpr std::string_view kRootOpNameUrl =
     "type.googleapis.com/torch_tpu.root_op_name";
 
-// Key for the payload in absl::Status that marks its message as holding text
-// written by the user (e.g. the message of a failed assertion).
-inline constexpr std::string_view kUserMessageUrl =
-    "type.googleapis.com/torch_tpu.user_message";
-
 // Sets the root op name in the absl::Status payload.
 absl::Status SetRootOpNamePayload(absl::Status status,
                                   std::string_view root_op_name);
@@ -343,7 +350,7 @@ absl::Status SetRootOpNamePayload(absl::Status status,
 [[nodiscard]] std::string GetRootOpNamePayload(const absl::Status& status);
 
 // Returns whether the message of `status` holds text written by the user.
-[[nodiscard]] bool HasUserMessagePayload(const absl::Status& status);
+[[nodiscard]] bool IsUserMessage(const absl::Status& status);
 
 // Appends the given C++ source location to the absl::Status payload if
 // requested by the user and status is not OK.
