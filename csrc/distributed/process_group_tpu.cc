@@ -114,6 +114,7 @@
 #include "csrc/pjrt/pjrt_state.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
+#include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "torch/csrc/distributed/c10d/Work.hpp"
 #include "torch/headeronly/core/ScalarType.h"
 #include "xla/future.h"
@@ -2271,6 +2272,31 @@ const DeviceGroupList& ProcessGroupTpu::GetReplicaGroups() const {
   return replica_groups_;
 }
 
+absl::Status ProcessGroupTpu::DispatchAllReduceInplace(
+    at::Tensor& tensor, c10d::ReduceOp reduce_op, OpParamCacheKeys param_keys,
+    bool fence_operand) {
+  auto op_builder = [subgroups = replica_groups_,
+                     reduce_op = std::move(reduce_op),
+                     fence_operand](mlir::MlirOp input) {
+    if (fence_operand) {
+      input =
+          mlir::stablehlo::OptimizationBarrier(input.getBuilder(), {input})[0];
+    }
+    return BuildDistributedAllReduceShlo(input, reduce_op, subgroups);
+  };
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType output_dtype,
+                      ConvertTo<mlir::ElementType>(tensor.scalar_type()));
+  TT_ASSIGN_OR_RETURN(
+      DeviceBufferRef result_buffer,
+      DispatchOp<1>(std::move(op_builder), tensor,
+                    {.out_dtype = output_dtype,
+                     .out_dims = tensor.sizes(),
+                     .op_param_cache_keys = std::move(param_keys),
+                     .split_mode = GetCollectiveSplitMode(),
+                     .device_assignment = device_assignment()}));
+  return AssignBufferToAtTensor(std::move(result_buffer), tensor);
+}
+
 c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::allreduce(
     std::vector<at::Tensor>& tensors, const c10d::AllreduceOptions& opts) {
   TT_KERNEL(OpName::kDistributedAllReduce, param_keys, (tensors, opts), {
@@ -2287,28 +2313,8 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::allreduce(
     ABSL_VLOG(1) << "[ProcessGroupTpu::allreduce] Rank: " << getRank()
                  << ", DeviceBufferRef: " << DeviceBufferRefDebugString(tensor);
 
-    auto& maybe_materialized_input_tensor = tensor;
-
-    auto op_builder = [subgroups = replica_groups_,
-                       reduce_op = opts.reduceOp](mlir::MlirOp input) {
-      return BuildDistributedAllReduceShlo(input, reduce_op, subgroups);
-    };
-
-    TT_ASSIGN_OR_THROW(auto output_dtype,
-                       ConvertTo<mlir::ElementType>(tensor.scalar_type()));
-
-    TT_ASSIGN_OR_THROW(
-        auto result_buffer,
-        DispatchOp<1>(std::move(op_builder), maybe_materialized_input_tensor,
-                      {.out_dtype = output_dtype,
-                       .out_dims = tensor.sizes(),
-                       .op_param_cache_keys = std::move(param_keys),
-                       .split_mode = GetCollectiveSplitMode(),
-                       .device_assignment = device_assignment()}));
-    // TODO: respect async.
-
-    // All-reduce is inplace, assign output buffer ref to input tensors.
-    TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(result_buffer), tensor));
+    TT_THROW_IF_ERROR(DispatchAllReduceInplace(
+        tensor, opts.reduceOp, std::move(param_keys), /*fence_operand=*/false));
 
     // NOTE: from distributed/c10d/ProcessGroupNCCL.cpp;l=3604 in
     // pytorch/pytorch if not async should return nullptr.
@@ -3342,7 +3348,8 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::alltoall(
 
 c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::barrier(
     const c10d::BarrierOptions& opts) {
-  TT_KERNEL(OpName::kDistributedBarrier, _, (opts), {
+  TT_KERNEL(OpName::kDistributedBarrier, param_keys, (opts), {
+    TT_SET_SUBGROUPS_FINGERPRINT(param_keys);
     // Check for unsupported options.
     //
     // A process addresses exactly one TPU, so the only device id it can name
@@ -3362,31 +3369,19 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::barrier(
     TT_CHECK_THROW(!opts.device.has_value(), error::kPythonNotImplementedError)
         << "device in barrier options is not supported";
 
-    // A barrier is implemented by performing an all-reduce operation on a dummy
-    // tensor. Since all-reduce is a synchronizing collective, this ensures all
-    // participating devices reach this point before any can proceed.
     at::Tensor dummy_tensor =
         at::ones({1}, at::device(GetPrivateUse1DeviceType()).dtype(at::kLong));
-    std::vector<at::Tensor> tensors = {dummy_tensor};
+    // Fence the constant operand so XLA does not fold the barrier all-reduce.
+    TT_THROW_IF_ERROR(DispatchAllReduceInplace(
+        dummy_tensor, c10d::ReduceOp::SUM, std::move(param_keys),
+        /*fence_operand=*/true));
 
-    c10d::AllreduceOptions allreduce_opts;
-    allreduce_opts.reduceOp = c10d::ReduceOp::SUM;
-    allreduce_opts.asyncOp = opts.asyncOp;
-
-    auto work_ptr = allreduce(tensors, allreduce_opts);
-
-    // If the barrier is synchronous, we must block the host until the
-    // operation completes on the device. We do this by moving the result
-    // to the CPU, which forces a synchronization.
     if (!opts.asyncOp) {
       dummy_tensor.item();
+      return nullptr;
     }
-
-    if (work_ptr != nullptr) {
-      dynamic_cast<TpuWork* absl_nonnull>(work_ptr.get())->opType_ =
-          c10d::OpType::BARRIER;
-    }
-    return work_ptr;
+    return MakeCollectiveWork(std::vector<at::Tensor>{dummy_tensor}, getRank(),
+                              c10d::OpType::BARRIER);
   });
 }
 

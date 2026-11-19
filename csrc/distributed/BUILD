@@ -110,6 +110,7 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/types:span",
         "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
         "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
+        "@stablehlo//stablehlo/integrations/cpp/builder:stablehlo_builder",
         "@xla//xla:future",
         "@xla//xla:shape_util",
         "@xla//xla/pjrt:pjrt_client",

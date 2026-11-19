@@ -17,6 +17,7 @@ import hashlib
 import os
 import re
 import shutil
+import time
 from typing import Any, TypeAlias
 from unittest import mock
 
@@ -87,6 +88,65 @@ def run_deferred_async_collective_test() -> None:
     del unused
   torch.accelerator.synchronize()
   del work
+
+
+def run_spmd_safe_barrier_waits_for_delayed_rank(
+    async_op: bool, tag: str
+) -> None:
+  """Tests that barrier inside @spmd_safe waits for a delayed peer rank."""
+  rank = dist.get_rank()
+  store = dist.distributed_c10d._get_default_store()
+  entered_key = f"spmd_safe_barrier_entered:{tag}:{int(async_op)}"
+  delay_s = 1.0
+
+  @torch.tpu.distributed.spmd_safe
+  def _step_with_barrier(
+      x: torch.Tensor,
+  ) -> tuple[torch.Tensor, dist.Work | None]:
+    y = x + 1.0
+    work = dist.barrier(async_op=async_op)
+    return y * 2.0, work
+
+  x = torch.full((4,), float(rank), device="tpu")
+  out_warm, work_warm = _step_with_barrier(x)
+  if work_warm is not None:
+    work_warm.wait()
+  del out_warm
+  torch.accelerator.synchronize()
+  dist.barrier()
+
+  t0 = time.monotonic()
+  if rank == 0:
+    time.sleep(delay_s)
+    store.set(entered_key, "1")
+  out, work = _step_with_barrier(x)
+  if work is not None:
+    work.wait()
+  elapsed_s = time.monotonic() - t0
+  delayed_entered = store.check([entered_key])
+
+  out_vals = out.cpu().tolist()
+  status = torch.tensor(
+      [1.0 if delayed_entered else 0.0, elapsed_s],
+      dtype=torch.float32,
+      device="tpu",
+  )
+  all_status = torch.empty((dist.get_world_size(), 2), device="tpu")
+  dist.all_gather_into_tensor(all_status, status)
+  all_entered, all_elapsed = all_status.cpu().unbind(dim=1)
+  if rank == 0:
+    store.delete_key(entered_key)
+
+  assert bool(all_entered.all()), (
+      "barrier returned before delayed rank 0 entered:"
+      f" entered={all_entered.tolist()}, elapsed={all_elapsed.tolist()}"
+  )
+  min_elapsed_s = float(all_elapsed.min())
+  assert min_elapsed_s >= delay_s * 0.5, (
+      f"barrier returned in {min_elapsed_s:.3f}s, expected to wait for rank"
+      f" 0's {delay_s:.1f}s delay"
+  )
+  assert out_vals == [float(rank + 1) * 2.0] * 4
 
 
 def run_spmd_safe_decorator_backward_test():
@@ -306,6 +366,34 @@ class SpmdSafeDecoratorTest(continuous_test_utils.TpuMultiProcContinuousTest):
     run_uncoordinated_op_stream_test()
     if self.rank == 0:
       self._check_all_reduce_mlir_matching(_DUMP_DIR)
+
+  def test_spmd_safe_barrier_waits_for_delayed_rank(self):
+    for async_op in (False, True):
+      run_spmd_safe_barrier_waits_for_delayed_rank(
+          async_op=async_op, tag="ambient"
+      )
+
+  def test_spmd_safe_barrier_waits_for_delayed_rank_when_deferred(self):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      for async_op in (False, True):
+        run_spmd_safe_barrier_waits_for_delayed_rank(
+            async_op=async_op, tag="deferred"
+        )
+
+  def test_spmd_safe_barrier_stays_fused(self):
+    @torch.tpu.distributed.spmd_safe
+    def eager_fused_barrier(x: torch.Tensor) -> torch.Tensor:
+      y = x * 5
+      dist.barrier()
+      return y
+
+    x = torch.ones((2, 3), device="cpu").to("tpu")
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      res = eager_fused_barrier(x)
+    torch.accelerator.synchronize()
+    del res
+    if self.rank == 0:
+      self._check_fused_mlir(_DUMP_DIR)
 
 
 class SpmdSafeDTensorTest(continuous_test_utils.TpuMultiProcContinuousTest):
