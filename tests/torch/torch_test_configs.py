@@ -369,11 +369,6 @@ _BASE_TEST_EXCLUSIONS: Final[_TestExclusions] = {
             "test_prune_linear_bias_linear",
         ],
     },
-    "test_autocast": {
-        "TestAutocastDevice": [
-            "test_autocast_rnn",
-        ],
-    },
     "test_autograd": {
         "TestAutogradDeviceType": [
             "test_checkpointing_without_reentrant_dataparallel",

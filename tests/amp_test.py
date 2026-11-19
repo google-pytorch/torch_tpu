@@ -20,6 +20,7 @@ from absl.testing import absltest
 import torch
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal.compile import tpu_torch_compile
+from torch_tpu._internal.utils import test_utils
 from tests import seed_test_utils
 
 EagerMode: TypeAlias = execution_mode.EagerMode
@@ -175,6 +176,47 @@ class AmpTest(seed_test_utils.RepeatableTest):
         normalized_mlir_text.strip(),
         [expected_mlir.strip(), expected_mlir_reduced.strip()],
     )
+
+  def test_autocast_rnn(self):
+    x = torch.randn(1, 2, 1, device="tpu", dtype=torch.float32)
+    hx = torch.randn(2, 2, 1, device="tpu", dtype=torch.float32)
+    cx = torch.randn(2, 2, 1, device="tpu", dtype=torch.float32)
+    m = torch.nn.LSTM(1, 1, 2, device="tpu").to(torch.bfloat16)
+
+    default_dtype = torch.get_autocast_dtype("tpu")
+    with torch.amp.autocast(device_type="tpu"):
+      out, (hy, cy) = m(x, (hx, cx))
+    # Materialize outputs on CPU to surface any asynchronous TPU compile errors.
+    out_cpu, hy_cpu, cy_cpu = out.cpu(), hy.cpu(), cy.cpu()
+    self.assertEqual(out_cpu.dtype, default_dtype)
+    self.assertEqual(hy_cpu.dtype, default_dtype)
+    self.assertEqual(cy_cpu.dtype, default_dtype)
+
+    with torch.amp.autocast(device_type="tpu", dtype=torch.bfloat16):
+      out_bf16, (hy_bf16, cy_bf16) = m(x, (hx, cx))
+    ref_out, (ref_hy, ref_cy) = m(
+        x.to(torch.bfloat16), (hx.to(torch.bfloat16), cx.to(torch.bfloat16))
+    )
+    self.assertEqual(out_bf16.dtype, torch.bfloat16)
+    self.assertEqual(hy_bf16.dtype, torch.bfloat16)
+    self.assertEqual(cy_bf16.dtype, torch.bfloat16)
+    test_utils.assert_close(out_bf16.cpu(), ref_out.cpu())
+    test_utils.assert_close(hy_bf16.cpu(), ref_hy.cpu())
+    test_utils.assert_close(cy_bf16.cpu(), ref_cy.cpu())
+
+    for rnn_cls in (
+        lambda: torch.nn.GRU(1, 1, 2, device="tpu"),
+        lambda: torch.nn.RNN(1, 1, 2, nonlinearity="tanh", device="tpu"),
+        lambda: torch.nn.RNN(1, 1, 2, nonlinearity="relu", device="tpu"),
+    ):
+      rnn = rnn_cls().to(torch.bfloat16)
+      with torch.amp.autocast(device_type="tpu", dtype=torch.bfloat16):
+        rnn_out, rnn_hy = rnn(x, hx)
+      ref_rnn_out, ref_rnn_hy = rnn(x.to(torch.bfloat16), hx.to(torch.bfloat16))
+      self.assertEqual(rnn_out.dtype, torch.bfloat16)
+      self.assertEqual(rnn_hy.dtype, torch.bfloat16)
+      test_utils.assert_close(rnn_out.cpu(), ref_rnn_out.cpu())
+      test_utils.assert_close(rnn_hy.cpu(), ref_rnn_hy.cpu())
 
 
 if __name__ == "__main__":
