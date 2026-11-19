@@ -244,6 +244,10 @@ torch_tpu_cc_library(
 torch_tpu_cc_test(
     name = "python_context_test",
     srcs = ["python_context_test.cc"],
+    # PyTorch 2.15.0 defaults C++ stack symbolization to dladdr, which cannot
+    # resolve internal symbols in -c opt test binaries (PyTorch 2.16.0 switches
+    # the default to fast). Use fast in-process .symtab symbolization explicitly.
+    env = {"TORCH_SYMBOLIZE_MODE": "fast"},
     deps = [
         ":op_names",
         ":python_context",
