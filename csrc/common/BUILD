@@ -1297,8 +1297,10 @@ torch_tpu_cc_test(
 
 torch_tpu_cc_library(
     name = "device_utils",
+    srcs = ["device_utils.cc"],
     hdrs = ["device_utils.h"],
     deps = [
+        ":env_vars",
         "@com_google_absl//absl/strings",
     ],
 )
@@ -1308,7 +1310,9 @@ torch_tpu_cc_test(
     srcs = ["device_utils_test.cc"],
     deps = [
         ":device_utils",
+        ":env_vars",
         "//csrc/common:oss_test_main",
+        "@com_google_absl//absl/log:absl_check",
     ],
 )
 
