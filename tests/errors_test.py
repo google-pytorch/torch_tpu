@@ -9222,6 +9222,65 @@ Note: this function is intended to be used with the output produced by torch.lin
           x, 2.0, [0], False, dtype=torch.float64, out=out
       )
 
+    x_c64 = torch.ones(5, device=et.device(), dtype=torch.complex64)
+    out_c64 = torch.empty((), dtype=torch.complex64, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""norm(): expected the output dtype to be float32, got complex64""",
+        gpu="""Expected out tensor to have dtype float, but got c10::complex<float> instead""",
+    ):
+      torch.ops.aten.norm.dtype_out(
+          x_c64, 2.0, [0], False, dtype=torch.complex64, out=out_c64
+      )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""norm(): expected the output dtype to be float32, got complex64""",
+        gpu="""Expected out tensor to have dtype float, but got c10::complex<float> instead""",
+    ):
+      torch.ops.aten.norm.ScalarOpt_dim_dtype(
+          x_c64, 2.0, [0], False, dtype=torch.complex64
+      )
+
+    out_i32 = torch.empty((), dtype=torch.int32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""norm(): expected dtype to be floating point or complex, got int32""",
+        gpu="""norm(): the desired output dtype should be either floating point or complex. Got Int instead.""",
+    ):
+      torch.ops.aten.norm.dtype_out(
+          x, 2.0, [0], False, dtype=torch.int32, out=out_i32
+      )
+
+    out_f32 = torch.empty((), dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""norm(): expected dtype to match complexness of input (float32), got complex64""",
+        gpu="""linalg.vector_norm: dtype should be real for real inputs, but got ComplexFloat""",
+    ):
+      torch.ops.aten.norm.dtype_out(
+          x, 2.0, [0], False, dtype=torch.complex64, out=out_f32
+      )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""norm(): expected dtype to match complexness of input (complex64), got float32""",
+        gpu="""linalg.vector_norm: dtype should be complex for complex inputs, but got Float""",
+    ):
+      torch.ops.aten.norm.dtype_out(
+          x_c64, 2.0, [0], False, dtype=torch.float32, out=out_f32
+      )
+
+    x_f64 = torch.ones(5, device=et.device(), dtype=torch.float64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""norm(): expected dtype to be safely castable from float64 without narrowing, got float32""",
+        gpu="""linalg.vector_norm: the dtype of the input (Double) should be convertible without narrowing to the specified dtype (Float)""",
+    ):
+      torch.ops.aten.norm.dtype_out(
+          x_f64, 2.0, [0], False, dtype=torch.float32, out=out_f32
+      )
+
   def test_norm_out_integral_input(self):
     x = torch.tensor([1, 2, 3], dtype=torch.int32, device=et.device())
     out = torch.empty((), dtype=torch.float32, device=et.device())
@@ -9264,6 +9323,55 @@ Note: this function is intended to be used with the output produced by torch.lin
         gpu=msg,
     ):
       torch.norm(t, p=2, dim=[0, 0])
+
+  def test_norm_empty_reduction(self):
+    x_empty = torch.empty((0,), device=et.device(), dtype=torch.float32)
+    out = torch.empty((), device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""norm(): expected non-empty reduction dimension for ord inf, got size 0 along dim 0""",
+        gpu="""linalg.vector_norm cannot compute the inf norm on an empty tensor because the operation does not have an identity""",
+    ):
+      torch.ops.aten.norm.out(x_empty, float("inf"), [], False, out=out)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""norm(): expected non-empty reduction dimension for ord -inf, got size 0 along dim 0""",
+        gpu="""linalg.vector_norm cannot compute the -inf norm on an empty tensor because the operation does not have an identity""",
+    ):
+      torch.ops.aten.norm.out(x_empty, float("-inf"), [], False, out=out)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""norm(): expected non-empty reduction dimension for ord -1, got size 0 along dim 0""",
+        gpu="""linalg.vector_norm cannot compute the -1 norm on an empty tensor because the operation does not have an identity""",
+    ):
+      torch.ops.aten.norm.out(x_empty, -1.0, [], False, out=out)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""norm(): expected non-empty reduction dimension for ord inf, got size 0 along dim 0""",
+        gpu="""linalg.vector_norm cannot compute the inf norm on an empty tensor because the operation does not have an identity""",
+    ):
+      torch.ops.aten.norm.dtype_out(
+          x_empty, float("inf"), [], False, dtype=torch.float32, out=out
+      )
+
+    x_2d = torch.empty((2, 0), device=et.device(), dtype=torch.float32)
+    out_2d = torch.empty((2,), device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""norm(): expected non-empty reduction dimension for ord inf, got size 0 along dim 1""",
+        gpu="""linalg.vector_norm cannot compute the inf norm on the dimension 1because this dimension is empty and the operation does not have an identity""",
+    ):
+      torch.ops.aten.norm.out(x_2d, float("inf"), [1], False, out=out_2d)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""norm(): expected non-empty reduction dimension for ord -1, got size 0 along dim 1""",
+        gpu="""linalg.vector_norm cannot compute the -1 norm on the dimension 1because this dimension is empty and the operation does not have an identity""",
+    ):
+      torch.ops.aten.norm.out(x_2d, -1.0, [1], False, out=out_2d)
 
   def test_rms_norm_int(self):
     inp = torch.ones(5, 5, device=et.device(), dtype=torch.int32)

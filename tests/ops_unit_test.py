@@ -17720,18 +17720,27 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
     )
 
     # Complex tensor norm
-    def test_complex_fn(device, p=2.0, dim=0):
+    def test_complex_fn(device, p=2.0, dim=0, dtype=None):
       x = torch.tensor(
           [[1.0 + 2.0j, -3.0 + 4.0j], [5.0 - 6.0j, 7.0 + 8.0j]],
           device=device,
           dtype=torch.complex64,
       )
       out = torch.empty(0, device=device, dtype=torch.float32)
-      torch.ops.aten.norm.out(x, p, [dim], False, out=out)
+      if dtype is not None:
+        torch.ops.aten.norm.dtype_out(x, p, [dim], False, dtype=dtype, out=out)
+      else:
+        torch.ops.aten.norm.out(x, p, [dim], False, out=out)
       return out
 
     assert_with_tol(functools.partial(test_complex_fn, p=2.0, dim=0))
     assert_with_tol(functools.partial(test_complex_fn, p=1.0, dim=1))
+    assert_with_tol(
+        functools.partial(test_complex_fn, p=2.0, dim=0, dtype=torch.complex64)
+    )
+    assert_with_tol(
+        functools.partial(test_complex_fn, p=1.0, dim=1, dtype=torch.complex64)
+    )
 
     # 0-D scalar tensor
     def test_0d_fn(device, p=2.0):
@@ -17752,6 +17761,13 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
 
     assert_with_tol(functools.partial(test_empty_tensor_fn, p=2.0, dim=0))
     assert_with_tol(functools.partial(test_empty_tensor_fn, p=2.0, dim=1))
+    assert_with_tol(
+        functools.partial(test_empty_tensor_fn, p=float("inf"), dim=1)
+    )
+    assert_with_tol(functools.partial(test_empty_tensor_fn, p=-1.0, dim=1))
+    assert_with_tol(
+        functools.partial(test_empty_tensor_fn, p=float("-inf"), dim=1)
+    )
 
     # Non-contiguous tensor
     def test_noncontiguous_fn(device, p=2.0):
