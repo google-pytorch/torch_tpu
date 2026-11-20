@@ -18,6 +18,7 @@ from collections.abc import Mapping, Sequence
 import dataclasses
 import gzip
 import hashlib
+import io
 import os
 import pathlib
 import plistlib
@@ -425,6 +426,178 @@ class OpTestingTest(op_testing.OpInfoTestBase):
           exclude_dtypes=all_dtypes,
       )
     self.assertIn("All dtypes excluded for abs", str(cm.exception))
+
+  def test_check_kiln_kernel_served_fails_if_no_sample_served(self):
+    self._kiln_kernel_subtests_served = 0
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Tests the op_testing harness, not op error handling.
+        self.failureException, "No Kiln kernel served any sample of nonzero"
+    ):
+      self._check_kiln_kernel_served(
+          "nonzero",
+          kiln_kernel_unserved_reason=None,
+          max_samples_per_op_dtype=None,
+      )
+
+  def test_check_kiln_kernel_served_passes_if_sample_served(self):
+    self._kiln_kernel_subtests_served = 1
+    with mock.patch("sys.stdout", new_callable=io.StringIO) as stdout:
+      self._check_kiln_kernel_served(
+          "nonzero",
+          kiln_kernel_unserved_reason=None,
+          max_samples_per_op_dtype=None,
+      )
+    self.assertNotIn("Not checking", stdout.getvalue())
+
+  def test_check_kiln_kernel_served_passes_if_unserved_with_reason(self):
+    self._kiln_kernel_subtests_served = 0
+    self._check_kiln_kernel_served(
+        "sort",
+        kiln_kernel_unserved_reason="Samples are too small.",
+        max_samples_per_op_dtype=None,
+    )
+
+  def test_check_kiln_kernel_served_fails_if_served_with_reason(self):
+    self._kiln_kernel_subtests_served = 1
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Tests the op_testing harness, not op error handling.
+        self.failureException, "remove its kiln_kernel_unserved_reason"
+    ):
+      self._check_kiln_kernel_served(
+          "sort",
+          kiln_kernel_unserved_reason="Samples are too small.",
+          max_samples_per_op_dtype=None,
+      )
+
+  @parameterized.named_parameters(
+      dict(testcase_name="dtypes", flags={"dtypes": ["float32"]}, limit=None),
+      dict(
+          testcase_name="flag_limit",
+          flags={"max_samples_per_op_dtype": 10},
+          limit=None,
+      ),
+      dict(testcase_name="argument_limit", flags={}, limit=10),
+  )
+  def test_check_kiln_kernel_served_skips_if_samples_filtered(
+      self, flags, limit
+  ):
+    self._kiln_kernel_subtests_served = 0
+    with (
+        flagsaver.flagsaver(**flags),
+        mock.patch("sys.stdout", new_callable=io.StringIO) as stdout,
+    ):
+      self._check_kiln_kernel_served(
+          "nonzero",
+          kiln_kernel_unserved_reason=None,
+          max_samples_per_op_dtype=limit,
+      )
+    self.assertIn(
+        "Not checking that a Kiln kernel served nonzero", stdout.getvalue()
+    )
+
+  def _do_test_op_with_fake_kiln_kernel(
+      self, mode: str, *, serves: bool, ops_with_kiln_kernels: frozenset[str]
+  ) -> None:
+    """Runs do_test_op("abs") on fake samples, as if Kiln kernels served them.
+
+    Args:
+      mode: The value of TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS.
+      serves: Whether running a sample on the TPU counts as a Kiln kernel hit.
+      ops_with_kiln_kernels: The ops that have registered Kiln kernels.
+    """
+    op_input = op_testing.OpInput(FakeSample("s0", torch.ones(1), (), {}))
+    hits = 0
+
+    def fake_run_on_tpu(*unused_args, **unused_kwargs):
+      nonlocal hits
+      hits += serves
+      return torch.ones(1), op_input
+
+    with (
+        mock.patch.dict(
+            os.environ,
+            {"TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS": mode},
+        ),
+        flagsaver.flagsaver(dtypes=["float32"], ignore_accuracy_overrides=True),
+        mock.patch.object(
+            self,
+            "_get_golden_input_output_pairs",
+            return_value=[(op_input, op_testing.OpOutput(torch.ones(1)))],
+        ),
+        mock.patch.object(self, "_run_on_tpu", side_effect=fake_run_on_tpu),
+        mock.patch.object(
+            op_testing, "_num_kiln_kernel_hits", side_effect=lambda: hits
+        ),
+        mock.patch.object(
+            op_testing,
+            "_ops_with_kiln_kernels",
+            return_value=ops_with_kiln_kernels,
+        ),
+        mock.patch.object(torch.accelerator, "synchronize", autospec=True),
+    ):
+      self.do_test_op("abs", check_device=False)
+
+  def test_do_test_op_skips_op_without_kiln_kernel_in_kiln_mode(self):
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Tests the op_testing harness, not op error handling.
+        unittest.SkipTest, "No Kiln kernel serves abs"
+    ):
+      self._do_test_op_with_fake_kiln_kernel(
+          "all", serves=True, ops_with_kiln_kernels=frozenset()
+      )
+
+  def test_do_test_op_counts_served_samples_in_kiln_mode(self):
+    self._do_test_op_with_fake_kiln_kernel(
+        "all", serves=True, ops_with_kiln_kernels=frozenset({"abs"})
+    )
+    self.assertGreater(self._kiln_kernel_subtests_served, 0)
+    self.assertEqual(self._kiln_kernel_subtests_served, self._subtests_run)
+
+  def test_do_test_op_skips_unserved_samples_in_kiln_mode(self):
+    self._do_test_op_with_fake_kiln_kernel(
+        "all", serves=False, ops_with_kiln_kernels=frozenset({"abs"})
+    )
+    self.assertEqual(self._kiln_kernel_subtests_served, 0)
+
+  def test_do_test_op_fails_if_kiln_kernel_serves_in_stablehlo_mode(self):
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Tests the op_testing harness, not op error handling.
+        self.failureException, "Kiln kernels served samples of abs"
+    ):
+      self._do_test_op_with_fake_kiln_kernel(
+          "none", serves=True, ops_with_kiln_kernels=frozenset({"abs"})
+      )
+
+  def test_run_op_counts_kiln_kernel_hits_after_preparing_out(self):
+    op = next(op for op in op_db if op.name == "abs")
+    op_input = op_testing.OpInput(FakeSample("s0", torch.ones(2), (), {}))
+    hits = 0
+
+    def fake_prepare_out(*unused_args, **unused_kwargs):
+      # Preparing `out` runs the base variant, which a Kiln kernel serves.
+      nonlocal hits
+      hits += 1
+      return torch.empty(2)
+
+    self._kiln_kernel_hits_before_op = 0
+    with (
+        mock.patch.dict(
+            os.environ,
+            {"TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS": "all"},
+        ),
+        mock.patch.object(self, "_prepare_out", side_effect=fake_prepare_out),
+        mock.patch.object(
+            op_testing, "_num_kiln_kernel_hits", side_effect=lambda: hits
+        ),
+        mock.patch.object(torch.accelerator, "synchronize", autospec=True),
+    ):
+      self._run_op(
+          op,
+          op_testing.OpVariant.OUT,
+          torch.float32,
+          op_input,
+          torch.device("cpu"),
+          subtest_name="abs.out_float32_s0",
+          check_device=False,
+      )
+    # The out variant's own hits are counted from after the base variant's.
+    self.assertEqual(self._kiln_kernel_hits_before_op, 1)
 
   def test_do_test_op_fails_when_zero_subtests_executed(self):
     with mock.patch.object(

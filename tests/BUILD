@@ -81,6 +81,17 @@ _WHEN_OSS_PRESUBMIT_OVERLOADED = (
     "This test is lower-priority and thus skipped in presubmit." if _OSS_PRESUBMIT_OVERLOADED else None
 )
 
+# The kernels that the TPU ops_test targets check, selected by
+# TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS (see
+# op_testing.is_kiln_kernel_mode): the kernels compiled from the ops' StableHLO
+# lowerings, or the precompiled Kiln kernels, including the opt-in ones. No
+# ops_test target runs the default mode, which mixes the two: each kind of
+# kernel is checked on its own, and csrc/common:compilation_cache_test checks
+# which kernels each mode selects.
+_STABLEHLO_KERNELS_ENV = {"TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS": "none"}
+
+_KILN_KERNELS_ENV = {"TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS": "all"}
+
 # Ops tests download GPU goldens from GCS in OSS; internally they read them from runfiles.
 _OSS_GOLDEN_TAGS = if_oss(
     ["requires-net:external"],
@@ -626,8 +637,11 @@ torch_tpu_py_library(
 # * ops_test_dynamic_compiled: TPU vs GPU, bounds a dimension under torch.compile.
 # * ops_test_dynamic_compiled_grad: gradient on TPU vs GPU, bounds dimensions under torch.compile.
 # * ops_test_compiled: TPU vs GPU (torch.compile TpuBackend vs GPU inductor backend).
-# * ops_test_static: TPU vs GPU, with unbounded dynamic kernels disabled, for
-#   tests marked with @also_run_static only.
+# * ops_test_kiln: TPU vs GPU, for the samples that Kiln kernels serve.
+# * ops_test_kiln_grad: gradient on TPU vs GPU, for the samples that Kiln
+#   kernels serve.
+# The other TPU targets check the kernels compiled from the ops' StableHLO
+# lowerings only.
 
 # We chose to manually maintain the duplicate tests instead of using a for-loop to generate the
 # targets because:
@@ -650,6 +664,7 @@ torch_tpu_py_test(
         ["--max_samples_per_op_dtype=20"],
     ),
     data = _GPU_GOLDENS_GRAD_DATA,
+    env = _STABLEHLO_KERNELS_ENV,
     main = "ops_test.py",
     run_on_accelerators = [
         "requires-tpu-v6e",
@@ -690,6 +705,7 @@ torch_tpu_py_test(
         ["--max_samples_per_op_dtype=20"],
     ),
     data = _GPU_GOLDENS_GRAD_DATA,
+    env = _STABLEHLO_KERNELS_ENV,
     main = "ops_test.py",
     run_on_accelerators = [
         "requires-tpu-v6e",
@@ -730,6 +746,7 @@ torch_tpu_py_test(
         ["--max_samples_per_op_dtype=20"],
     ),
     data = _GPU_GOLDENS_GRAD_DATA,
+    env = _STABLEHLO_KERNELS_ENV,
     main = "ops_test.py",
     run_on_accelerators = [
         "requires-tpu-v6e",
@@ -768,6 +785,7 @@ torch_tpu_py_test(
         ["--max_samples_per_op_dtype=20"],
     ),
     data = _GPU_GOLDENS_COMPILED_DATA,
+    env = _STABLEHLO_KERNELS_ENV,
     main = "ops_test.py",
     nopresubmit_oss = "This slow test is enabled in postsubmit and nightly.",
     run_on_accelerators = [
@@ -808,6 +826,7 @@ torch_tpu_py_test(
         ["--max_samples_per_op_dtype=20"],
     ),
     data = _GPU_GOLDENS_DATA,
+    env = _STABLEHLO_KERNELS_ENV,
     main = "ops_test.py",
     run_on_accelerators = [
         "requires-tpu-v6e",
@@ -848,6 +867,7 @@ torch_tpu_py_test(
         ["--max_samples_per_op_dtype=20"],
     ),
     data = _GPU_GOLDENS_GRAD_DATA,
+    env = _STABLEHLO_KERNELS_ENV,
     main = "ops_test.py",
     # Skip this in OSS presubmit when it's overloaded.
     nopresubmit_oss = _WHEN_OSS_PRESUBMIT_OVERLOADED,
@@ -888,6 +908,7 @@ torch_tpu_py_test(
         ["--max_samples_per_op_dtype=20"],
     ),
     data = _GPU_GOLDENS_DATA,
+    env = _STABLEHLO_KERNELS_ENV,
     main = "ops_test.py",
     # Skip this in OSS presubmit when it's overloaded.
     nopresubmit_oss = _WHEN_OSS_PRESUBMIT_OVERLOADED,
@@ -922,9 +943,11 @@ torch_tpu_py_test(
     srcs = ["ops_test.py"],
     args = [
         "--test_categories=nonzero",
-        "--max_samples_per_op_dtype=10",  # To avoid timeout.
+        # No sample limit: nonzero's first samples are ones that no dynamic
+        # kernel serves (0-d inputs and inputs with fewer than 2 nonzeros).
     ],
     data = _GPU_GOLDENS_DATA,
+    env = _STABLEHLO_KERNELS_ENV,
     main = "ops_test.py",
     # Skip this in OSS presubmit when it's overloaded.
     nopresubmit_oss = _WHEN_OSS_PRESUBMIT_OVERLOADED,
@@ -953,23 +976,59 @@ torch_tpu_py_test(
     ],
 )
 
-# Runs only the ops_test tests marked with @also_run_static with dynamic kernels disabled.
+# Runs the samples of ops_test that Kiln kernels serve, skipping the others.
 torch_tpu_py_test(
-    name = "ops_test_static",
+    name = "ops_test_kiln",
     timeout = "long",
     srcs = ["ops_test.py"],
-    args = [
-        "--max_samples_per_op_dtype=10",
-    ],
+    # No sample limit, not even in OSS: an op's first samples are often ones
+    # that no Kiln kernel serves (e.g. nonzero's 0-d inputs and inputs with
+    # fewer than 2 nonzeros), and the test fails if no sample is served.
     data = _GPU_GOLDENS_DATA,
-    env = {"TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS": "none"},
+    env = _KILN_KERNELS_ENV,
     main = "ops_test.py",
     nopresubmit_oss = _WHEN_OSS_PRESUBMIT_OVERLOADED,
     run_on_accelerators = [
         "requires-tpu-v6e",
         "requires-tpu-v5lite",
     ],
-    shard_count = 1,  # Increase as more tests are marked with @also_run_static.
+    shard_count = 1,  # Increase as Kiln kernels serve more ops.
+    tags = [
+        "ops-test",  # Heavy ops test: see run_bazel_diff.py for details.
+    ] + _OSS_GOLDEN_TAGS,
+    deps = [
+        ":dynamism_test_utils",
+        ":op_testing",
+        ":oss_utils",
+        ":quantize_utils",
+        "//csrc/eager:tpu_aten_kernels",
+        "//shims/absl_py/flags",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/utils:test_utils",
+    ],
+)
+
+# Runs the gradient samples of ops_test that Kiln kernels serve, skipping the
+# others.
+torch_tpu_py_test(
+    name = "ops_test_kiln_grad",
+    timeout = "long",
+    srcs = ["ops_test.py"],
+    # No sample limit, as in ops_test_kiln.
+    args = [
+        "--compute_grad=True",
+    ],
+    data = _GPU_GOLDENS_GRAD_DATA,
+    env = _KILN_KERNELS_ENV,
+    main = "ops_test.py",
+    nopresubmit_oss = _WHEN_OSS_PRESUBMIT_OVERLOADED,
+    run_on_accelerators = [
+        "requires-tpu-v6e",
+        "requires-tpu-v5lite",
+    ],
+    shard_count = 1,  # Increase as Kiln kernels serve more ops.
     tags = [
         "ops-test",  # Heavy ops test: see run_bazel_diff.py for details.
     ] + _OSS_GOLDEN_TAGS,
@@ -1000,6 +1059,7 @@ torch_tpu_py_test(
         ["--max_samples_per_op_dtype=20"],
     ),
     data = _GPU_GOLDENS_DATA,
+    env = _STABLEHLO_KERNELS_ENV,
     main = "ops_test.py",
     # Skip this in OSS presubmit when it's overloaded.
     nopresubmit_oss = _WHEN_OSS_PRESUBMIT_OVERLOADED,
@@ -1055,6 +1115,7 @@ torch_tpu_py_test(
     ),
     # The perf mode measures the ops on the GPU golden inputs.
     data = _GPU_GOLDENS_DATA,
+    env = _STABLEHLO_KERNELS_ENV,
     main = "ops_test.py",
     nolocal = "slow test",
     nopresubmit = "Benchmark.",
@@ -1089,6 +1150,7 @@ torch_tpu_py_test(
         "--max_samples_per_op_dtype=1",  # No need to test many samples to catch dynamism bugs.
     ],
     data = _GPU_GOLDENS_DATA,
+    env = _STABLEHLO_KERNELS_ENV,
     main = "ops_test.py",
     run_on_accelerators = [
         "requires-tpu-v6e",
@@ -1125,6 +1187,7 @@ torch_tpu_py_test(
         "--max_samples_per_op_dtype=1",  # No need to test many samples to catch dynamism bugs.
     ],
     data = _GPU_GOLDENS_COMPILED_DATA,
+    env = _STABLEHLO_KERNELS_ENV,
     main = "ops_test.py",
     nopresubmit = "Dynamic compile tests are run in postsubmit to avoid overloading the presubmit.",
     run_on_accelerators = [
@@ -1166,6 +1229,7 @@ torch_tpu_py_test(
     # ops_test_gpu_golden_grad_compiled dataset exists yet, so reuse eager GPU
     # grad goldens for now.
     data = _GPU_GOLDENS_GRAD_DATA,
+    env = _STABLEHLO_KERNELS_ENV,
     main = "ops_test.py",
     nopresubmit = "Dynamic compile grad tests are run in postsubmit to avoid overloading the presubmit.",
     run_on_accelerators = [
@@ -1208,6 +1272,7 @@ torch_tpu_py_test(
         "--max_samples_per_op_dtype=5",
     ],
     data = _GPU_GOLDENS_DATA,
+    env = _STABLEHLO_KERNELS_ENV,
     main = "ops_test.py",
     run_on_accelerators = [
         "requires-tpu-v5lite",

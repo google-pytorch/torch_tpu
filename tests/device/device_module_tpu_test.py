@@ -56,6 +56,13 @@ class TpuDeviceModuleTest(
     self.assertTrue(t.is_tpu)
     self.assertFalse(torch.zeros(1).is_tpu)
 
+  def test_get_unbounded_dynamic_kernel_op_names(self):
+    # Kernels serve specific overloads, e.g. `sort.values_stable`.
+    self.assertContainsSubset(
+        {"nonzero", "sort.values_stable"},
+        torch.tpu._get_unbounded_dynamic_kernel_op_names(),  # pylint: disable=protected-access
+    )
+
   def test_tensor_tpu_method(self):
     t = torch.zeros(1).tpu()
     self.assertEqual(t.device.type, "tpu")
