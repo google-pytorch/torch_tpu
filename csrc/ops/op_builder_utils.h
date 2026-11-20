@@ -55,6 +55,7 @@
 #include "mlir/IR/Types.h"
 #include "mlir/Support/DebugStringHelper.h"
 #include "mlir/Support/LLVM.h"
+#include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/ChloBuilder.h"
@@ -531,6 +532,31 @@ absl::StatusOr<mlir::MlirOp> ConvolutionLike(
 // result type without the bounds of operand.
 mlir::MlirOp ClampLike(mlir::MlirOp min, mlir::MlirOp operand,
                        mlir::MlirOp max);
+
+// Builds a chlo.ragged_dot that also supports bounded dynamic dimensions.
+//
+// If lhs, rhs and group_sizes have no bounded dynamic dimensions, emits
+// chlo.ragged_dot directly with the static result shape inferred from the
+// operands and dimension_numbers.
+//
+// Otherwise, XLA does not implement dynamic dimension inference or padding for
+// ragged-dot, so the ragged dot runs on lhs, rhs and group_sizes made static at
+// their upper bounds with elements past the runtime sizes of the contracting,
+// rhs group and group_sizes dimensions zeroed, and restores the runtime
+// dimension sizes on the result.
+//
+// If preferred_element_type is omitted, the result uses the element type of
+// lhs.
+//
+// Returns a kInvalidArgument if dimension_numbers, precision_config or static
+// operand shapes are invalid for chlo.ragged_dot, or a
+// kPythonNotImplementedError if paired batching, contracting, group, or
+// group_sizes prefix dimensions do not match in boundedness and upper bounds.
+absl::StatusOr<mlir::MlirOp> RaggedDotLike(
+    mlir::MlirOp lhs, mlir::MlirOp rhs, mlir::MlirOp group_sizes,
+    mlir::chlo::RaggedDotDimensionNumbersAttr dimension_numbers,
+    mlir::ArrayAttr precision_config = {},
+    std::optional<mlir::ElementType> preferred_element_type = std::nullopt);
 
 // Returns an mlir::MlirOp representing the number of elements in the input
 // tensor with the given element type, only counting the dimensions specified.

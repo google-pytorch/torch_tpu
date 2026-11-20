@@ -2137,6 +2137,184 @@ class DynamismTest(seed_test_utils.RepeatableTest):
         fq_fn, mark_dynamic, *args, rtol=2e-2, atol=2e-2
     )
 
+  def test_grouped_mm_2d_3d_eager_and_compiled_multi_dynamic(self) -> None:
+    def mm_fn(
+        x: torch.Tensor, w: torch.Tensor, offs: torch.Tensor
+    ) -> torch.Tensor:
+      return torch._grouped_mm(x, w, offs=offs)
+
+    # Eager mode supports at most one dynamic dimension per tensor.
+    def mark_eager_mn(
+        x: torch.Tensor, w: torch.Tensor, offs: torch.Tensor
+    ) -> None:
+      del offs
+      dynamism.mark_dynamic(x, 0, 2, 16)
+      dynamism.mark_dynamic(w, 2, 2, 12)
+
+    def mark_eager_kg(
+        x: torch.Tensor, w: torch.Tensor, offs: torch.Tensor
+    ) -> None:
+      del x
+      dynamism.mark_dynamic(w, 0, 2, 6)
+      dynamism.mark_dynamic(offs, 0, 2, 6)
+
+    x1 = (torch.arange(64, dtype=torch.float32) * 0.25).reshape(8, 8)
+    w1 = (torch.arange(64, dtype=torch.float32) * 0.25).reshape(2, 8, 4)
+    offs1 = torch.tensor([3, 8], dtype=torch.int32)
+    act_eager = self._run_bounded_dynamism_test(
+        mm_fn, mark_eager_mn, x1, w1, offs1
+    )
+    self.assertEqual(
+        [
+            (info.dimension, info.upper_bound)
+            for info in dynamism.get_dynamism_info(act_eager)
+        ],
+        [(0, 16), (1, 12)],
+    )
+    act_eager_kg = self._run_bounded_dynamism_test(
+        mm_fn, mark_eager_kg, x1, w1, offs1
+    )
+    self.assertEmpty(dynamism.get_dynamism_info(act_eager_kg))
+
+    compiled_fn = torch.compile(mm_fn, backend="tpu", dynamic=None)
+    x1_tpu = x1.to(self.device)
+    w1_tpu = w1.to(self.device)
+    offs1_tpu = offs1.to(self.device)
+    torch._dynamo.mark_dynamic(x1_tpu, 0, min=2, max=16)
+    torch._dynamo.mark_dynamic(x1_tpu, 1, min=2, max=16)
+    torch._dynamo.mark_dynamic(w1_tpu, 0, min=2, max=6)
+    torch._dynamo.mark_dynamic(w1_tpu, 1, min=2, max=16)
+    torch._dynamo.mark_dynamic(w1_tpu, 2, min=2, max=12)
+    torch._dynamo.mark_dynamic(offs1_tpu, 0, min=2, max=6)
+    utils.assert_close(
+        compiled_fn(x1_tpu, w1_tpu, offs1_tpu).to("cpu"),
+        mm_fn(x1, w1, offs1),
+    )
+
+    x2 = (torch.arange(48, dtype=torch.float32) * 0.25).reshape(12, 4)
+    w2 = (torch.arange(96, dtype=torch.float32) * 0.25).reshape(3, 4, 8)
+    offs2 = torch.tensor([4, 9, 12], dtype=torch.int32)
+    with torch._dynamo.config.patch(error_on_recompile=True):
+      act = compiled_fn(
+          x2.to(self.device), w2.to(self.device), offs2.to(self.device)
+      )
+    utils.assert_close(act.to("cpu"), mm_fn(x2, w2, offs2))
+
+  def test_grouped_mm_3d_2d_compiled_multi_dynamic(self) -> None:
+    def mm_fn(
+        x: torch.Tensor, w: torch.Tensor, offs: torch.Tensor
+    ) -> torch.Tensor:
+      return torch._grouped_mm(x, w, offs=offs)
+
+    compiled_fn = torch.compile(mm_fn, backend="tpu", dynamic=None)
+    x1 = (torch.arange(64, dtype=torch.float32) * 0.25).reshape(2, 4, 8)
+    w1 = (torch.arange(64, dtype=torch.float32) * 0.25).reshape(8, 8)
+    offs1 = torch.tensor([3, 8], dtype=torch.int32)
+    x1_tpu = x1.to(self.device)
+    w1_tpu = w1.to(self.device)
+    offs1_tpu = offs1.to(self.device)
+    torch._dynamo.mark_dynamic(x1_tpu, 0, min=2, max=6)
+    torch._dynamo.mark_dynamic(x1_tpu, 1, min=2, max=12)
+    torch._dynamo.mark_dynamic(x1_tpu, 2, min=2, max=16)
+    torch._dynamo.mark_dynamic(w1_tpu, 0, min=2, max=16)
+    torch._dynamo.mark_dynamic(w1_tpu, 1, min=2, max=16)
+    torch._dynamo.mark_dynamic(offs1_tpu, 0, min=2, max=6)
+    utils.assert_close(
+        compiled_fn(x1_tpu, w1_tpu, offs1_tpu).to("cpu"),
+        mm_fn(x1, w1, offs1),
+    )
+
+    x2 = (torch.arange(96, dtype=torch.float32) * 0.25).reshape(3, 8, 4)
+    w2 = (torch.arange(48, dtype=torch.float32) * 0.25).reshape(4, 12)
+    offs2 = torch.tensor([4, 9, 12], dtype=torch.int32)
+    with torch._dynamo.config.patch(error_on_recompile=True):
+      act = compiled_fn(
+          x2.to(self.device), w2.to(self.device), offs2.to(self.device)
+      )
+    utils.assert_close(act.to("cpu"), mm_fn(x2, w2, offs2))
+
+  # Ragged K is zero-padded to a multiple of kRaggedTokenTile (256) unless its
+  # upper bound is already tile-aligned.
+  @parameterized.named_parameters(
+      dict(testcase_name="unaligned_k_bound", k_upper_bound=44),
+      dict(testcase_name="tile_aligned_k_bound", k_upper_bound=256),
+  )
+  def test_grouped_mm_2d_2d_eager_and_compiled_multi_dynamic(
+      self, k_upper_bound: int
+  ) -> None:
+    def mm_fn(
+        x: torch.Tensor, w: torch.Tensor, offs: torch.Tensor
+    ) -> torch.Tensor:
+      return torch._grouped_mm(x, w, offs=offs)
+
+    # Eager mode supports at most one dynamic dimension per tensor.
+    def mark_eager(
+        x: torch.Tensor, w: torch.Tensor, offs: torch.Tensor
+    ) -> None:
+      dynamism.mark_dynamic(x, 1, 2, k_upper_bound)
+      dynamism.mark_dynamic(w, 0, 2, k_upper_bound)
+      dynamism.mark_dynamic(offs, 0, 2, 6)
+
+    x1 = ((torch.arange(32, dtype=torch.float32) % 7) * 0.25).reshape(4, 8)
+    w1 = ((torch.arange(64, dtype=torch.float32) % 5) * 0.25).reshape(8, 8)
+    offs1 = torch.tensor([3, 8], dtype=torch.int32)
+    act_eager = self._run_bounded_dynamism_test(
+        mm_fn, mark_eager, x1, w1, offs1
+    )
+    self.assertEqual(
+        [
+            (info.dimension, info.upper_bound)
+            for info in dynamism.get_dynamism_info(act_eager)
+        ],
+        [(0, 6)],
+    )
+
+    compiled_fn = torch.compile(mm_fn, backend="tpu", dynamic=None)
+    x1_tpu = x1.to(self.device)
+    w1_tpu = w1.to(self.device)
+    offs1_tpu = offs1.to(self.device)
+    torch._dynamo.mark_dynamic(x1_tpu, 0, min=2, max=12)
+    torch._dynamo.mark_dynamic(x1_tpu, 1, min=2, max=k_upper_bound)
+    torch._dynamo.mark_dynamic(w1_tpu, 0, min=2, max=k_upper_bound)
+    torch._dynamo.mark_dynamic(w1_tpu, 1, min=2, max=16)
+    torch._dynamo.mark_dynamic(offs1_tpu, 0, min=2, max=6)
+    utils.assert_close(
+        compiled_fn(x1_tpu, w1_tpu, offs1_tpu).to("cpu"),
+        mm_fn(x1, w1, offs1),
+    )
+
+    x2 = ((torch.arange(96, dtype=torch.float32) % 7) * 0.25).reshape(8, 12)
+    w2 = ((torch.arange(48, dtype=torch.float32) % 5) * 0.25).reshape(12, 4)
+    offs2 = torch.tensor([4, 9, 12], dtype=torch.int32)
+    with torch._dynamo.config.patch(error_on_recompile=True):
+      act = compiled_fn(
+          x2.to(self.device), w2.to(self.device), offs2.to(self.device)
+      )
+    utils.assert_close(act.to("cpu"), mm_fn(x2, w2, offs2))
+
+  def test_grouped_mm_3d_3d_compiled_multi_dynamic(self) -> None:
+    def mm_fn(x: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
+      return torch._grouped_mm(x, w)
+
+    compiled_fn = torch.compile(mm_fn, backend="tpu", dynamic=None)
+    x1 = (torch.arange(64, dtype=torch.float32) * 0.25).reshape(2, 4, 8)
+    w1 = (torch.arange(64, dtype=torch.float32) * 0.25).reshape(2, 8, 4)
+    x1_tpu = x1.to(self.device)
+    w1_tpu = w1.to(self.device)
+    torch._dynamo.mark_dynamic(x1_tpu, 0, min=2, max=6)
+    torch._dynamo.mark_dynamic(x1_tpu, 1, min=2, max=12)
+    torch._dynamo.mark_dynamic(x1_tpu, 2, min=2, max=16)
+    torch._dynamo.mark_dynamic(w1_tpu, 0, min=2, max=6)
+    torch._dynamo.mark_dynamic(w1_tpu, 1, min=2, max=16)
+    torch._dynamo.mark_dynamic(w1_tpu, 2, min=2, max=12)
+    utils.assert_close(compiled_fn(x1_tpu, w1_tpu).to("cpu"), mm_fn(x1, w1))
+
+    x2 = (torch.arange(96, dtype=torch.float32) * 0.25).reshape(3, 8, 4)
+    w2 = (torch.arange(96, dtype=torch.float32) * 0.25).reshape(3, 4, 8)
+    with torch._dynamo.config.patch(error_on_recompile=True):
+      act = compiled_fn(x2.to(self.device), w2.to(self.device))
+    utils.assert_close(act.to("cpu"), mm_fn(x2, w2))
+
 
 if __name__ == "__main__":
   absltest.main()
