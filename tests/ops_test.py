@@ -3986,6 +3986,14 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op("unfold")
 
   def test_unique(self):
+    if (
+        not op_testing._CHECK_DYNAMISM.value
+        and op_testing.is_compiled_mode()
+        and not op_testing._gen_gpu_golden_mode()
+    ):
+      self.skipTest(
+          "TODO(b/584809741): unique is not supported in static compiled mode."
+      )
     self.do_test_op(
         "unique",
         # PyTorch autograd backward is not implemented for _unique2.
@@ -3996,8 +4004,7 @@ class TestOps(op_testing.OpInfoTestBase):
         skip_if=lambda _variant, op_input: (
             not op_testing._CHECK_DYNAMISM.value
             and (
-                op_testing.is_compiled_mode()
-                or (
+                (
                     not op_input.kwargs.get("sorted", True)
                     and op_input.kwargs.get("dim") is None
                 )
