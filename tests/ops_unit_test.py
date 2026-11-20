@@ -3074,8 +3074,11 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       for i, x in enumerate(inputs):
         output = step(x.to(device))
         output.sum().backward()
-        if on_tpu and i == 1:
-          start_misses = torch.tpu._get_cache_misses()
+        if on_tpu:
+          # Synchronize so async step compilations finish before sampling.
+          torch.accelerator.synchronize()
+          if i == 1:
+            start_misses = torch.tpu._get_cache_misses()
       if on_tpu:
         cache_misses_after_warm_up.append(
             torch.tpu._get_cache_misses() - start_misses
