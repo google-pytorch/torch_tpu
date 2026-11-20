@@ -892,6 +892,37 @@ def _schedule_divergence_message(
   return None
 
 
+def _models_may_use_dma(
+    kernel_models: Sequence[jaxpr_model.KernelVerificationModel] | None,
+) -> bool:
+  """Returns whether any kernel in `kernel_models` may execute a DMA."""
+  if kernel_models is None:
+    return True
+  return any(
+      bool(model.dma_starts)
+      or bool(model.dma_waits)
+      or model.sync_truncated
+      or model.unwalked_sync
+      or not model.sync_reliable
+      for model in kernel_models
+  )
+
+
+def _models_have_nontrivial_parallel_grid(
+    kernel_models: Sequence[jaxpr_model.KernelVerificationModel] | None,
+) -> bool:
+  """Returns whether any kernel has a `parallel` grid dimension of size > 1."""
+  if kernel_models is None:
+    return True
+  for model in kernel_models:
+    if len(model.grid) != len(model.dimension_semantics):
+      return True
+    for size, sem in zip(model.grid, model.dimension_semantics, strict=True):
+      if sem == "parallel" and (not isinstance(size, int) or size > 1):
+        return True
+  return False
+
+
 def verify_with_cpu_interpret(
     op_or_fn: Any,
     example_args: Sequence[Any],
@@ -1108,10 +1139,25 @@ def verify_with_cpu_interpret(
       )
     return classified
 
-  for mode in config.schedule_modes:
+  # Prune sweep dimensions that JAX's TPU interpreter ignores for this kernel
+  # (`dma_execution_mode` only affects `dma_start`, and `random_seed` only
+  # permutes `parallel` grid dimensions of size > 1). Each distinct
+  # `InterpretParams` forces a separate XLA CPU compilation.
+  effective_schedule_modes = (
+      config.schedule_modes
+      if _models_may_use_dma(kernel_models)
+      else (config.schedule_modes[0],)
+  )
+  effective_seeds = (
+      config.seeds
+      if _models_have_nontrivial_parallel_grid(kernel_models)
+      else (config.seeds[0],)
+  )
+
+  for mode in effective_schedule_modes:
     if stop_sweep:
       break
-    for seed in config.seeds:
+    for seed in effective_seeds:
       schedule_desc = f"dma={mode.value}, seed={seed}"
       schedule_params = dict(
           dma_execution_mode=(
