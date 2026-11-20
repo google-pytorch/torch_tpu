@@ -18,6 +18,7 @@ from collections.abc import Iterator
 from collections.abc import Set
 import contextlib
 import importlib.util
+import itertools
 import json
 import os
 import sys
@@ -581,7 +582,7 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
     mock_mp_spawn.assert_called_once()
     self.assertEmpty(self.exporter.exported)
 
-  def test_main_tpu_launch_env_singlehost_vs_multihost(self):
+  def test_main_dispatches_single_and_multihost_tpu(self):
     registry_lib.REGISTRY["tiny_linear"] = fakes.tiny_spec("tiny_linear")
     dispatched: list[tuple[int, str, str, str]] = []
 
@@ -596,7 +597,8 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
     ):
       dispatched.append((nprocs, spec_name, mode_val, platform_val))
 
-    # Single-host TPU (nnodes=1, nprocs_per_node=8) populates TPU launch env.
+    # Single-host TPU (nnodes=1, nprocs_per_node=8) leaves TPU launch env to
+    # dist_run() so it can rotate SliceBuilder ports per target.
     with (
         mock.patch.dict(
             os.environ,
@@ -615,12 +617,9 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
     ):
       os.environ.pop("TORCH_TPU_SLICEBUILDER_ADDRESSES", None)
       distributed_runner.main(["distributed_runner"])
-      slicebuilder_addrs = os.environ.get(
-          "TORCH_TPU_SLICEBUILDER_ADDRESSES", ""
-      )
-      self.assertLen(slicebuilder_addrs.split(","), 8)
+      self.assertNotIn("TORCH_TPU_SLICEBUILDER_ADDRESSES", os.environ)
 
-    # Multi-host TPU (nnodes=2) does not override single-host TPU launch env.
+    # Multi-host TPU (nnodes=2) also leaves TPU launch env untouched.
     with (
         mock.patch.dict(
             os.environ,
@@ -648,6 +647,90 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
             (8, "tiny_linear", "eager_default", "v7_2x2x2"),
         ],
     )
+
+  def test_main_singlehost_tpu_rotates_slicebuilder_ports_per_target(self):
+    registry_lib.REGISTRY["first"] = fakes.tiny_spec("first")
+    registry_lib.REGISTRY["second"] = fakes.tiny_spec("second")
+    seen_addresses: list[str] = []
+    seen_topologies: list[str] = []
+
+    def record_spawn(fn, args=(), nprocs=1, join=True):
+      del fn, args, nprocs, join
+      seen_addresses.append(os.environ["TORCH_TPU_SLICEBUILDER_ADDRESSES"])
+      seen_topologies.append(os.environ["TORCH_TPU_TOPOLOGY"])
+
+    with (
+        mock.patch.dict(
+            os.environ,
+            {
+                "BENCHMARK_PLATFORM": "v7_2x2x1",
+                "TESTBRIDGE_TEST_ONLY": (
+                    "first_eager_default second_eager_default"
+                ),
+            },
+            clear=False,
+        ),
+        mock.patch.object(
+            distributed_runner.distributed_utils.env,
+            "get_str_env_once",
+            autospec=True,
+            side_effect=lambda name, default_value=None: os.environ.get(
+                name, default_value
+            ),
+        ),
+        mock.patch.object(
+            distributed_runner.distributed_utils.env,
+            "get_int_env_once",
+            autospec=True,
+            side_effect=lambda name, default_value=None: (
+                int(os.environ[name]) if name in os.environ else default_value
+            ),
+        ),
+        mock.patch.object(
+            torch.accelerator,
+            "current_accelerator",
+            autospec=True,
+            return_value=types.SimpleNamespace(type="tpu"),
+        ),
+        mock.patch.object(
+            torch.accelerator, "is_available", autospec=True, return_value=True
+        ),
+        mock.patch.object(
+            torch.tpu,
+            "get_device_properties",
+            autospec=True,
+            return_value=types.SimpleNamespace(
+                topology=lambda nprocs=None: (2, 2, 1, 2)
+            ),
+        ),
+        mock.patch.object(
+            distributed_utils, "_picked_slicebuilder_addresses", set()
+        ),
+        mock.patch.object(distributed_utils, "_picked_topologies", set()),
+        mock.patch.object(
+            portpicker,
+            "pick_unused_port",
+            autospec=True,
+            side_effect=itertools.count(20000),
+        ),
+        mock.patch.object(mp, "spawn", autospec=True, side_effect=record_spawn),
+    ):
+      for key in (
+          "TORCH_TPU_SLICEBUILDER_ADDRESSES",
+          "TORCH_TPU_TOPOLOGY",
+          "JOB_COMPLETION_INDEX",
+          "TPU_WORKER_HOSTNAMES",
+      ):
+        os.environ.pop(key, None)
+      distributed_runner.main(["distributed_runner"])
+
+    self.assertLen(seen_addresses, 2)
+    first_addrs = seen_addresses[0].split(",")
+    second_addrs = seen_addresses[1].split(",")
+    self.assertLen(first_addrs, 8)
+    self.assertLen(second_addrs, 8)
+    self.assertTrue(set(first_addrs).isdisjoint(second_addrs))
+    self.assertEqual(seen_topologies, ["2,2,1,2", "2,2,1,2"])
 
   def test_module_imports_without_torch_tpu_module(self):
     # Re-execute the module body as a GPU host with

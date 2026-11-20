@@ -913,16 +913,6 @@ def main(argv: Sequence[str]) -> None:
         "Running on a single-node single-process platform: %s", platform
     )
 
-  if target.device_kind == target_lib.DeviceKind.TPU and nnodes == 1:
-    # Populate TORCH_TPU_SLICEBUILDER_ADDRESSES and TORCH_TPU_TOPOLOGY when
-    # running standalone single-host TPU benchmarks (e.g., on GCP or GitHub
-    # Actions runners). This is a no-op if already set in os.environ.
-    # Imported lazily so GPU runs (TORCH_DEVICE_BACKEND_AUTOLOAD=0) never depend
-    # on `torch.tpu`, which only exists once the TorchTPU backend is loaded.
-    from torch.tpu import distributed  # pylint: disable=g-import-not-at-top  # pyrefly: ignore[missing-import]
-
-    distributed.set_tpu_launch_env(nproc_per_node=local_nproc)
-
   node_rank = int(os.environ.get("NODE_RANK", "0"))  # PY_ENVIRON_OK=benchmark
   reporter = _Reporter(
       platform,
