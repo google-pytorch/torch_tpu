@@ -7569,10 +7569,14 @@ class OpInfoTestBase(TorchTpuTestBase):
   ) -> Callable[..., Any]:
     """Returns `op_func` compiled for `device`, or skips the test."""
     op_name = _op_name_for_logging(op, variant)
-    if not _compiled_supports_op(op, device_op_input, variant):
+    # Skipping during GPU golden generation drops all remaining samples for the
+    # op/dtype; record Inductor errors instead and apply TPU skips at test time.
+    if device.type == "tpu" and not _compiled_supports_op(
+        op, device_op_input, variant
+    ):
       self.skipTest(f"TpuBackend does not support {op_name} currently.")
     logging.getLogger(tt_compile.TpuBackend.__module__).setLevel(logging.DEBUG)
-    backend = "tpu" if str(device) == "tpu" else "inductor"
+    backend = "tpu" if device.type == "tpu" else "inductor"
     print(f"Compiling {op_name} for device {device} ...", flush=True)
     if is_dynamic_test:
       # Reset Dynamo state so dimensions marked dynamic in earlier subtests
