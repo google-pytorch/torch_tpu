@@ -53,10 +53,13 @@ std::tuple<at::Tensor&, at::Tensor&> AtenTopKValues(
                                            /*allow_out_dtype_cast=*/false));
         TT_THROW_IF_ERROR(ValidateOutDtype(indices, at::ScalarType::Long,
                                            /*allow_out_dtype_cast=*/false));
-        int64_t wrapped_dim = 0;
-        if (self.dim() > 0) {
-          TT_ASSIGN_OR_THROW(wrapped_dim, SafeWrapDim(dim, self.dim()));
-        }
+        TT_ASSIGN_OR_THROW(const int64_t wrapped_dim,
+                           SafeWrapDim(dim, self.dim()));
+
+        const int64_t slice_size =
+            self.dim() == 0 ? 1 : self.size(wrapped_dim);
+        TT_CHECK_THROW(k >= 0 && k <= slice_size, error::kInvalidArgument)
+            << "selected index k out of range";
 
         // TODO(b/435537869): Optimize sorted = false.
 

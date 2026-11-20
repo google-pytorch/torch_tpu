@@ -11463,6 +11463,61 @@ Note: this function is intended to be used with the output produced by torch.lin
     ):
       torch.topk(t, 2, out=(values, bad_indices))
 
+  def test_topk_k_out_of_range(self):
+    t = torch.tensor([3.0, 1.0, 2.0], device=et.device(), dtype=torch.float32)
+    scalar = torch.tensor(3.0, device=et.device(), dtype=torch.float32)
+    empty = torch.empty(0, 5, device=et.device(), dtype=torch.float32)
+
+    # Negative k on 1D tensor
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""topk(): selected index k out of range""",
+        gpu="""selected index k out of range""",
+    ):
+      torch.topk(t, -1)
+
+    # k > size on 1D tensor
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""topk(): selected index k out of range""",
+        gpu="""selected index k out of range""",
+    ):
+      torch.topk(t, 5)
+
+    # Negative k on 0-dim scalar tensor
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""topk(): selected index k out of range""",
+        gpu="""selected index k out of range""",
+    ):
+      torch.topk(scalar, -1)
+
+    # k > 1 on 0-dim scalar tensor
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""topk(): selected index k out of range""",
+        gpu="""selected index k out of range""",
+    ):
+      torch.topk(scalar, 2)
+
+    # k > 0 on 0-volume dimension
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""topk(): selected index k out of range""",
+        gpu="""selected index k out of range""",
+    ):
+      torch.topk(empty, 1, dim=0)
+
+    # out variant
+    v = torch.empty(0, device=et.device(), dtype=torch.float32)
+    idx = torch.empty(0, device=et.device(), dtype=torch.int64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""topk(): selected index k out of range""",
+        gpu="""selected index k out of range""",
+    ):
+      torch.topk(t, -1, out=(v, idx))
+
   def test_angle_out_dtype_mismatch(self):
     t = torch.tensor([1.0 + 1.0j], device=et.device())
     out_int = torch.empty(1, device=et.device(), dtype=torch.int32)
