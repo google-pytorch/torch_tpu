@@ -28,14 +28,11 @@ import os
 import pathlib
 import sys
 from typing import Any, NamedTuple
-import urllib.request
 
-STATUS_CONTEXT = "assignee-is-quality-champion"
-DEFAULT_CHAMPIONS_PATH = (
-    pathlib.Path(__file__).resolve().parent.parent
-    / ".github"
-    / "quality_champions.txt"
-)
+from tools import pr_champions
+
+STATUS_CONTEXT = pr_champions.STATUS_CONTEXT
+DEFAULT_CHAMPIONS_PATH = pr_champions.DEFAULT_CHAMPIONS_PATH
 
 
 class EnforcementPlan(NamedTuple):
@@ -72,12 +69,7 @@ def load_champions(
     path: pathlib.Path = DEFAULT_CHAMPIONS_PATH,
 ) -> Set[str]:
   """Loads lowercase GitHub logins from the quality champions config file."""
-  champions: set[str] = set()
-  for raw_line in path.read_text(encoding="utf-8").splitlines():
-    line = raw_line.split("#", 1)[0].strip()
-    if line:
-      champions.add(line.lower())
-  return frozenset(champions)
+  return frozenset(login.lower() for login in pr_champions.load_champions(path))
 
 
 def plan_enforcement(
@@ -179,21 +171,13 @@ def _github_request(
     method: str,
     data: Mapping[str, Any],
 ) -> None:
-  body = json.dumps(data).encode("utf-8")
-  req = urllib.request.Request(
+  pr_champions.github_request(
       url,
-      data=body,
+      token,
       method=method,
-      headers={
-          "Accept": "application/vnd.github+json",
-          "Authorization": f"Bearer {token}",
-          "Content-Type": "application/json",
-          "User-Agent": "torch-tpu-enforce-pr-assignee",
-          "X-GitHub-Api-Version": "2022-11-28",
-      },
+      data=data,
+      user_agent="torch-tpu-enforce-pr-assignee",
   )
-  with urllib.request.urlopen(req, timeout=30) as resp:
-    resp.read()
 
 
 def apply_plan(

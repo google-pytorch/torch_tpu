@@ -113,11 +113,11 @@ reviewer.
 ### When does the expert hand off to a champion?
 
 **Expert**: Once you're satisfied with the PR and CI passed on its latest
-commit, approve it, then add a quality champion as both a reviewer and the
-assignee. The champions are listed in
-[`.github/quality_champions.txt`](../../.github/quality_champions.txt). To
-balance their load, pick the one who is assignee on the fewest
-[open PRs](https://github.com/google-pytorch/torch_tpu/pulls?q=is%3Apr+is%3Aopen+-author%3Aapp%2Fcopybara-service+sort%3Aupdated-asc+draft%3Afalse).
+commit, approve it. A bot then picks a quality champion at random (excluding
+you) from [`.github/quality_champions.txt`](../../.github/quality_champions.txt)
+and adds them as both a reviewer and the assignee. If the PR still has no
+assignee after a few minutes, add a quality champion from that list manually as
+both a reviewer and the assignee.
 
 <img src="images/pr_roles.png" alt="Where the reviewer and assignee roles appear in a PR" width="400px">
 
