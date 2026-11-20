@@ -201,6 +201,7 @@ class ScanInputsCreatePlaceholdersPass:
       if sym_utils.is_symint_node(node):
         sym_str = str(node.meta["val"])
         sanitized_sym_str = re.sub(r"\W+", "_", sym_str).strip("_")
+        sanitized_sym_str = f"sym_{sanitized_sym_str}".rstrip("_")
         count = seen_counts.get(sym_str, 0)
         seen_counts[sym_str] = count + 1
         ph_name = (

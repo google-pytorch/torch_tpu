@@ -29,6 +29,22 @@ package(
 )
 
 torch_tpu_py_test(
+    name = "broadcast_ops_test",
+    srcs = ["broadcast_ops_test.py"],
+    tags = [
+        "requires-tpu-v5lite",
+    ],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/utils:test_utils",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
     name = "compile_test",
     srcs = ["compile_test.py"],
     tags = [
