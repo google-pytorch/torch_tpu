@@ -23,6 +23,7 @@
 
 #include "absl/log/absl_check.h"
 #include "csrc/common/unbounded_dynamic_kernel_registry.h"
+#include "csrc/experimental/precompiled_kernels/matmul.h"
 #include "csrc/experimental/precompiled_kernels/nonzero_indices.h"
 #include "csrc/experimental/precompiled_kernels/sort/sort.h"
 
@@ -92,6 +93,7 @@ class UnboundedDynamicKernelRegistrar {
   TT_REGISTER_DYNAMIC_KERNEL_CONCAT_(kUnboundedDynamicKernelRegistrar_, \
                                      __COUNTER__)((registrations))
 
+TT_REGISTER_DYNAMIC_KERNELS(GetMatmulUnboundedDynamicKernels());
 TT_REGISTER_DYNAMIC_KERNELS(GetNonzeroUnboundedDynamicKernels());
 TT_REGISTER_DYNAMIC_KERNEL(GetSortUnboundedDynamicKernel());
 

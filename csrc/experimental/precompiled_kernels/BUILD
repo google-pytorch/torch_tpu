@@ -87,6 +87,34 @@ torch_tpu_cc_library(
 )
 
 torch_tpu_cc_library(
+    name = "matmul",
+    srcs = ["matmul.cc"],
+    hdrs = ["matmul.h"],
+    deps = [
+        ":kernel_utils",
+        "//csrc/common:cache_key",
+        "//csrc/common:compilation",
+        "//csrc/common:compilation_spec",
+        "//csrc/common:dimension_types",
+        "//csrc/common:error_utils",
+        "//csrc/common:shape",
+        "//csrc/common:unbounded_dynamic_kernel_registry",
+        "//csrc/internal/mosaic:kiln_utils",
+        "//csrc/internal/mosaic/kiln",
+        "//csrc/ops:op_names",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/types:span",
+        "@stablehlo//:stablehlo_ops",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
+        "@xla//xla:shape_util",
+        "@xla//xla:xla_data_proto_cc",
+        "@xla//xla/pjrt:pjrt_client",
+        "@xla//xla/pjrt:pjrt_executable",
+    ],
+)
+
+torch_tpu_cc_library(
     name = "nonzero_indices",
     srcs = ["nonzero_indices.cc"],
     hdrs = ["nonzero_indices.h"],
@@ -121,6 +149,7 @@ torch_tpu_cc_library(
     name = "kernel_registration",
     srcs = ["kernel_registration.cc"],
     deps = [
+        ":matmul",
         ":nonzero_indices",
         "//csrc/common:unbounded_dynamic_kernel_registry",
         "//csrc/experimental/precompiled_kernels/sort",
