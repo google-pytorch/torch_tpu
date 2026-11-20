@@ -247,12 +247,12 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
     )
 
     # No filter returns all modes
-    targets = distributed_runner.resolve_benchmark_targets(test_filter=None)
+    targets = distributed_runner._resolve_benchmark_targets(test_filter=None)
     self.assertLen(targets, len(common.RunMode))
     self.assertEqual(targets[0][0].name, "llama_8b_inference")
 
     # Exact target_name match
-    targets = distributed_runner.resolve_benchmark_targets(
+    targets = distributed_runner._resolve_benchmark_targets(
         test_filter=(
             "llama_8b_inference_eager_default"
             " llama_8b_inference_eager_optimized"
@@ -263,7 +263,7 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
     self.assertEqual(targets[1][1], common.RunMode.EAGER_OPTIMIZED)
 
     # Duplicate targets preserved in order
-    targets = distributed_runner.resolve_benchmark_targets(
+    targets = distributed_runner._resolve_benchmark_targets(
         test_filter=(
             "llama_8b_inference_eager_default llama_8b_inference_eager_default"
         )
@@ -275,13 +275,13 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
     # pyformat: disable
     # Spec name without mode suffix throws ValueError
     with self.assertRaises(ValueError):  # ASSERT_RAISES_OK=Runner target resolution validation.
-      distributed_runner.resolve_benchmark_targets(
+      distributed_runner._resolve_benchmark_targets(
           test_filter="llama_8b_inference"
       )
 
     # Invalid target throws ValueError
     with self.assertRaises(ValueError):  # ASSERT_RAISES_OK=Runner target resolution validation.
-      distributed_runner.resolve_benchmark_targets(
+      distributed_runner._resolve_benchmark_targets(
           test_filter="invalid_target_xyz"
       )
     # pyformat: enable
@@ -292,7 +292,7 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
       registry_lib.REGISTRY[name] = fakes.tiny_spec(name)
 
     # Targets are in token order, and a wildcard's matches in name order
-    targets = distributed_runner.resolve_benchmark_targets(
+    targets = distributed_runner._resolve_benchmark_targets(
         test_filter="llama_8b_inference_compiled *_eager_default"
     )
     self.assertEqual(
@@ -305,7 +305,7 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
     )
 
     # A wildcard can match every mode of a benchmark, in run mode order
-    targets = distributed_runner.resolve_benchmark_targets(
+    targets = distributed_runner._resolve_benchmark_targets(
         test_filter="gemma_2b_training_*"
     )
     self.assertEqual(
@@ -316,7 +316,7 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
     # pyformat: disable
     # Wildcard pattern matching no target throws ValueError
     with self.assertRaises(ValueError):  # ASSERT_RAISES_OK=Runner target resolution validation.
-      distributed_runner.resolve_benchmark_targets(
+      distributed_runner._resolve_benchmark_targets(
           test_filter="*_no_such_mode"
       )
     # pyformat: enable
@@ -770,6 +770,7 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
     }
     with (
         mock.patch.dict(registry_lib.REGISTRY, registry, clear=True),
+        mock.patch.object(distributed_runner, "_IMPORT_FAILURES", (failure,)),
         mock.patch.dict(
             os.environ,
             {
@@ -783,9 +784,7 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
     ):
       # pyformat: disable
       with self.assertRaises(SystemExit) as exit_cm:  # ASSERT_RAISES_OK=Runner must exit non-zero when a model fails to import.
-        distributed_runner.main(
-            ["distributed_runner"], import_failures=(failure,)
-        )
+        distributed_runner.main(["distributed_runner"])
       # pyformat: enable
     return fake_dist_run, exit_cm.exception
 
