@@ -512,6 +512,7 @@ torch_tpu_cc_library(
         "//csrc/common:status_builder",
         "//shims/torch:torch_headers",
         "//shims/torch/c10/core:base_headers",
+        "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/base:no_destructor",
         "@com_google_absl//absl/base:nullability",
@@ -988,6 +989,7 @@ torch_tpu_cc_library(
         "//csrc/common:cache_key",
         "//csrc/common:device_type",
         "//csrc/common:dtype",
+        "//csrc/common:env_vars",
         "//csrc/common:environment",
         "//csrc/common:error_utils",
         "//csrc/common:macro_utils",
@@ -1221,6 +1223,7 @@ torch_tpu_cc_library(
 torch_tpu_cc_test(
     name = "events_queue_test",
     srcs = ["events_queue_test.cc"],
+    env = {"TORCH_TPU_INTERNAL_BLOCK_ON_STREAM_EXIT": "0"},
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },

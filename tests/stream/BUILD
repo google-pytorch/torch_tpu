@@ -39,6 +39,7 @@ torch_tpu_py_test(
         [],
         ["--deepsea_chip_config_name=mpmd"],
     ),
+    env = {"TORCH_TPU_INTERNAL_BLOCK_ON_STREAM_EXIT": "0"},
     tags = [
         # A device with SparseCore is required to allow for SparseCore pinning.
         "requires-tpu-v5p",
@@ -79,6 +80,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "stream_integration_test",
     srcs = ["stream_integration_test.py"],
+    env = {"TORCH_TPU_INTERNAL_BLOCK_ON_STREAM_EXIT": "0"},
     main = "stream_integration_test.py",
     tags = ["requires-tpu-v5lite"],
     deps = [

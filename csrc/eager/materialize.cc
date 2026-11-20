@@ -31,6 +31,7 @@
 #include <variant>
 #include <vector>
 
+#include "absl/algorithm/container.h"
 #include "absl/base/no_destructor.h"
 #include "absl/base/nullability.h"
 #include "absl/base/optimization.h"
@@ -76,6 +77,143 @@ namespace {
 struct MaterializationTask {
   c10::DeviceIndex device_index;
   c10::StreamId stream_id;
+};
+
+// Signals that a shutdown has been initiated.
+enum class ShutdownSentinel {};
+
+using MaterializationOrShutdown =
+    std::variant<ShutdownSentinel, MaterializationTask>;
+using ExecutionOrShutdown = std::variant<ShutdownSentinel, ExecutionTask>;
+
+// A waker for materialization tasks.
+// Streams can become blocked while waiting for executions on other streams.
+// If some streams are blocked while others are unblocked, this class will
+// executed the unblocked streams, prioritizing them in order of original
+// insertion.
+// If all streams are blocked (or there are no streams at all) then it will put
+// the thread to sleep until either a new stream is added, or a future signals
+// that a previously blocked stream has been unblocked.
+class MaterializationWaker {
+ public:
+  // Initiates a shutdown. After this is called, no new tasks will be accepted;
+  // existing tasks will be executed if they are unblocked, but as soon as they
+  // are all blocked we will stop executing immediately.
+  void Shutdown() {
+    absl::MutexLock lock(mu_);
+    shutdown_ = true;
+    sleeping_ = false;
+  }
+
+  // Pushes a new, unblocked materialization task to the waker.
+  // If a task for the same stream already exists, this is a no-op.
+  void Push(c10::DeviceIndex device_index, c10::StreamId stream_id) {
+    absl::MutexLock lock(mu_);
+    if (shutdown_) {
+      return;
+    }
+    if (FindBlockedMaterializationTask(device_index, stream_id) != nullptr) {
+      return;
+    }
+    tasks_.emplace_back(device_index, stream_id);
+    sleeping_ = false;
+  }
+
+  // Pushes a new, blocked materialization task to the waker.
+  // If this device and stream already exists, then the blocking future is
+  // updated to the new one.
+  void PushBlocked(c10::DeviceIndex device_index, c10::StreamId stream_id,
+                   xla::Future<void> blocked_until) {
+    // Register the callback without holding the mutex.
+    // If blocked_until is already ready, this will be called immediately by
+    // the registering thread, which acquires the mutex; absl::MutexLock is not
+    // re-entry safe, so the callback must be fully registered before we acquire
+    // the mutex below to prevent recursive deadlock.
+    blocked_until.OnReady([this](absl::Status status) mutable {
+      if (!status.ok()) {
+        // Satisfy the status.IgnoreError() linter
+        ABSL_VLOG(1)
+            << "stream-blocking future failed, waking up materialization "
+               "thread anyway. Error: "
+            << status;
+      }
+      absl::MutexLock lock(mu_);
+      if (shutdown_) {
+        return;
+      }
+      sleeping_ = false;
+    });
+
+    absl::MutexLock lock(mu_);
+    if (shutdown_) {
+      return;
+    }
+    if (auto* existing_task =
+            FindBlockedMaterializationTask(device_index, stream_id);
+        existing_task != nullptr) {
+      existing_task->blocked_until = std::move(blocked_until);
+      return;
+    }
+    tasks_.emplace_back(device_index, stream_id, std::move(blocked_until));
+  }
+
+  // Blocks the calling thread until there is unblocked work to be processed.
+  MaterializationOrShutdown Pull() {
+    absl::MutexLock lock(mu_);
+
+    while (true) {
+      // Check if we have an unblocked task; if so, return it.
+      if (auto it = absl::c_find_if(tasks_,
+                                    [](const BlockedMaterializationTask& task) {
+                                      return task.blocked_until.IsReady();
+                                    });
+          it != tasks_.end()) {
+        MaterializationTask task = {
+            .device_index = it->device_index,
+            .stream_id = it->stream_id,
+        };
+        tasks_.erase(it);
+        return task;
+      }
+
+      // No unblocked task. If we're shutting down, do not wait for any to
+      // become unblocked, just exit now.
+      if (shutdown_) {
+        tasks_.clear();
+        return ShutdownSentinel{};
+      }
+
+      // Wait until any blocked task is ready, or we get a new one, or we are
+      // shutting down.
+      sleeping_ = true;
+      mu_.Await(absl::Condition(
+          +[](bool* sleeping) { return !(*sleeping); }, &sleeping_));
+    }
+  }
+
+ private:
+  struct BlockedMaterializationTask {
+    c10::DeviceIndex device_index;
+    c10::StreamId stream_id;
+    xla::Future<void> blocked_until = absl::OkStatus();
+  };
+
+  // Convenience function, common between Push and PushBlocked.
+  BlockedMaterializationTask* absl_nullable FindBlockedMaterializationTask(
+      c10::DeviceIndex device_index, c10::StreamId stream_id)
+      ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
+    for (auto& task : tasks_) {
+      if (task.device_index == device_index && task.stream_id == stream_id) {
+        return &task;
+      }
+    }
+    return nullptr;
+  }
+
+  absl::Mutex mu_;
+  std::vector<BlockedMaterializationTask> tasks_ ABSL_GUARDED_BY(mu_);
+  bool shutdown_ ABSL_GUARDED_BY(mu_) = false;
+  bool sleeping_ ABSL_GUARDED_BY(mu_) = false;
 };
 
 // Checks that all must_materialize nodes in the task have started
@@ -240,7 +378,7 @@ void ProcessSnapshotRequest(
 }
 
 void ProcessReadyWorkItem(
-    ReadyWork ready_work_item, mlir::MLIRContext& mlir_context,
+    ReadyWorkItem ready_work_item, mlir::MLIRContext& mlir_context,
     std::vector<ExecutionTask>& flattened_execution_tasks,
     std::vector<xla::Future<void>>& materialization_futures,
     std::optional<DeviceBufferRef>& last_device_output,
@@ -264,7 +402,8 @@ void ProcessReadyWorkItem(
 // Processes a MaterializationTask, converting it into a sequence of
 // ExecutionTasks.
 std::vector<ExecutionTask> ProcessMaterializationTask(
-    MaterializationTask& task, mlir::MLIRContext& mlir_context) {
+    MaterializationTask& task, mlir::MLIRContext& mlir_context,
+    MaterializationWaker& materialization_waker) {
   ABSL_VLOG(1) << "[MaterializationWorker] Processing MaterializationTask with "
                << "stream " << task.stream_id << " on device "
                << task.device_index;
@@ -272,7 +411,8 @@ std::vector<ExecutionTask> ProcessMaterializationTask(
   std::vector<xla::Future<void>> materialization_futures;
   std::optional<DeviceBufferRef> last_device_output;
   absl::Status materialization_error = absl::OkStatus();
-  auto ready_work = GetReadyWork(task.device_index, task.stream_id);
+  auto [ready_work, maybe_blocked_after] =
+      GetReadyWork(task.device_index, task.stream_id);
   for (auto& ready_work_item : ready_work) {
     ProcessReadyWorkItem(std::move(ready_work_item), mlir_context,
                          flattened_execution_tasks, materialization_futures,
@@ -294,6 +434,12 @@ std::vector<ExecutionTask> ProcessMaterializationTask(
                                     std::move(last_device_output));
   }
 
+  if (maybe_blocked_after.has_value()) {
+    // If the ready work on a stream does not fully catch the stream up,
+    // re-enqueue it with a future to signal when it should be rechecked.
+    materialization_waker.PushBlocked(task.device_index, task.stream_id,
+                                      std::move(*maybe_blocked_after));
+  }
   return flattened_execution_tasks;
 }
 
@@ -319,13 +465,6 @@ absl::Status MarkPinnedHostOutputs(
   return absl::OkStatus();
 }
 
-// Signals that a shutdown has been initiated.
-enum class ShutdownSentinel {};
-
-using MaterializationOrShutdown =
-    std::variant<ShutdownSentinel, MaterializationTask>;
-using ExecutionOrShutdown = std::variant<ShutdownSentinel, ExecutionTask>;
-
 class MaterializationWorker {
  public:
   // This class is move-only.
@@ -345,10 +484,7 @@ class MaterializationWorker {
     bool expected_shutdown = false;
     // The shutdown_ flag prevents duplicate shutdown runs.
     if (shutdown_.compare_exchange_strong(expected_shutdown, true)) {
-      {
-        absl::MutexLock lock(materialize_mu_);
-        materialize_tasks_.push(ShutdownSentinel{});
-      }
+      materialization_waker_.Shutdown();
       // Release the lock so that the thread can dequeue until the sentinel.
       if (materialize_thread_.joinable()) {
         materialize_thread_.join();
@@ -368,41 +504,7 @@ class MaterializationWorker {
                      const c10::StreamId stream_id) {
     ABSL_VLOG(1) << "[MaterializationWorker] Enqueuing stream " << stream_id
                  << " on device " << device_index << " for materialization";
-    absl::MutexLock lock(materialize_mu_);
-    // Check shutdown state after acquiring the lock to avoid a time-of-check/
-    // time-of-use error relative to Shutdown().
-    if (shutdown_.load()) {
-      return;
-    }
-
-    // If multiple materialization tasks are pushed to the same stream
-    // back-to-back, the materialization worker will process them all together
-    // and set a single started future.
-    if (!materialize_tasks_.empty()) {
-      // Known to not be a shutdown sentinel because of the check above.
-      auto& prev_task =
-          std::get<MaterializationTask>(materialize_tasks_.back());
-      if (prev_task.device_index == device_index &&
-          prev_task.stream_id == stream_id) {
-        return;
-      }
-    }
-
-    // Either the queue is empty or the previous task is on a different stream.
-    materialize_tasks_.push(MaterializationTask(device_index, stream_id));
-  }
-
-  // Dequeues a materialization task or a shutdown signal.
-  MaterializationOrShutdown DequeueMaterializationTask() {
-    absl::MutexLock lock(materialize_mu_);
-    materialize_mu_.Await(absl::Condition(
-        +[](std::queue<MaterializationOrShutdown>* tasks) {
-          return !tasks->empty();
-        },
-        &materialize_tasks_));
-    auto popped_task = std::move(materialize_tasks_.front());
-    materialize_tasks_.pop();
-    return popped_task;
+    materialization_waker_.Push(device_index, stream_id);
   }
 
   // Dequeues an execution task or a shutdown signal.
@@ -426,13 +528,14 @@ class MaterializationWorker {
   // Returns true if the loop should continue, or false if the worker should
   // shutdown.
   bool MaterializeLoopStep(mlir::MLIRContext& mlir_context) {
-    auto task_or_shutdown = DequeueMaterializationTask();
+    MaterializationOrShutdown task_or_shutdown = materialization_waker_.Pull();
     if (std::holds_alternative<ShutdownSentinel>(task_or_shutdown)) {
       return false;
     }
     auto& task = std::get<MaterializationTask>(task_or_shutdown);
     ABSL_VLOG(1) << "[MaterializationWorker] Processing MaterializationTask";
-    auto execution_tasks = ProcessMaterializationTask(task, mlir_context);
+    auto execution_tasks =
+        ProcessMaterializationTask(task, mlir_context, materialization_waker_);
 
     // Enqueue as many execution tasks as were successfully created.
     ABSL_VLOG(1) << "[MaterializationWorker] Enqueuing "
@@ -514,11 +617,7 @@ class MaterializationWorker {
   // preventing concurrent or duplicate shutdown sequences from executing.
   std::atomic<bool> shutdown_{false};
 
-  absl::Mutex materialize_mu_;
-  // Queue of materialization tasks. Storing std::variant allows enqueuing
-  // ShutdownSentinel as a shutdown sentinel / poison pill.
-  std::queue<MaterializationOrShutdown> materialize_tasks_
-      ABSL_GUARDED_BY(materialize_mu_);
+  MaterializationWaker materialization_waker_;
 
   absl::Mutex execute_mu_;
   // Queue of execution tasks. Storing std::variant allows enqueuing

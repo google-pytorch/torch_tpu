@@ -105,9 +105,11 @@ TEST_F(EventsQueueTest, GetsLiveDeferredBuffers) {
                   .ok());
   auto ready_work = GetReadyWork(device_index, stream_id);
 
-  ASSERT_EQ(ready_work.size(), 1);
-  ASSERT_TRUE(std::holds_alternative<EagerExecution>(ready_work[0]));
-  const auto& eager_execution = std::get<EagerExecution>(ready_work[0]);
+  ASSERT_EQ(ready_work.ready_work_items.size(), 1);
+  ASSERT_TRUE(
+      std::holds_alternative<EagerExecution>(ready_work.ready_work_items[0]));
+  const auto& eager_execution =
+      std::get<EagerExecution>(ready_work.ready_work_items[0]);
   EXPECT_THAT(eager_execution.must_execute,
               testing::ElementsAre(ref_a.device_buffer_list(),
                                    ref_b.device_buffer_list()));
@@ -130,7 +132,7 @@ TEST_F(EventsQueueTest, IgnoresPlaceholderBuffers) {
                                GraphSplitMode::kSplitGraph)
                   .ok());
   auto ready_work = GetReadyWork(device_index, stream_id);
-  EXPECT_TRUE(ready_work.empty());
+  EXPECT_TRUE(ready_work.ready_work_items.empty());
 }
 
 TEST_F(EventsQueueTest, IgnoresEmptyBuffers) {
@@ -151,7 +153,7 @@ TEST_F(EventsQueueTest, IgnoresEmptyBuffers) {
                   .ok());
   auto ready_work = GetReadyWork(device_index, stream_id);
 
-  EXPECT_TRUE(ready_work.empty());
+  EXPECT_TRUE(ready_work.ready_work_items.empty());
 }
 
 TEST_F(EventsQueueTest, IgnoresAlreadyMaterializedBuffers) {
@@ -174,7 +176,7 @@ TEST_F(EventsQueueTest, IgnoresAlreadyMaterializedBuffers) {
                   .ok());
   auto ready_work = GetReadyWork(device_index, stream_id);
 
-  EXPECT_TRUE(ready_work.empty());
+  EXPECT_TRUE(ready_work.ready_work_items.empty());
 }
 
 TEST_F(EventsQueueTest, ClearsBuffersAfterMaterialization) {
@@ -220,7 +222,7 @@ TEST_F(EventsQueueTest, ClearsBuffersAfterMaterialization) {
                   .ok());
   auto ready_work = GetReadyWork(device_index, stream_id);
 
-  EXPECT_TRUE(ready_work.empty());
+  EXPECT_TRUE(ready_work.ready_work_items.empty());
 }
 
 TEST_F(EventsQueueTest, StopsTrackingAfterClearEventsQueue) {
@@ -246,7 +248,7 @@ TEST_F(EventsQueueTest, StopsTrackingAfterClearEventsQueue) {
                   .ok());
   auto ready_work1 = GetReadyWork(device_index, stream_id);
 
-  EXPECT_TRUE(ready_work1.empty());
+  EXPECT_TRUE(ready_work1.ready_work_items.empty());
 
   // Create a second data pointer to the same buffer.
   ref.device_buffer_list()->IncrementLiveDataPtrs(ref.index());
@@ -258,7 +260,7 @@ TEST_F(EventsQueueTest, StopsTrackingAfterClearEventsQueue) {
   // The buffer is live, but the DeferredOp was cleared and so does not need
   // to be materialized.
   auto ready_work2 = GetReadyWork(device_index, stream_id);
-  EXPECT_TRUE(ready_work2.empty());
+  EXPECT_TRUE(ready_work2.ready_work_items.empty());
 }
 
 TEST_F(EventsQueueTest, DeadCodeEliminated) {
@@ -306,9 +308,11 @@ TEST_F(EventsQueueTest, DeadCodeEliminated) {
                   .ok());
   auto ready_work = GetReadyWork(device_index, stream_id);
 
-  ASSERT_EQ(ready_work.size(), 1);
-  ASSERT_TRUE(std::holds_alternative<EagerExecution>(ready_work[0]));
-  const auto& eager_execution = std::get<EagerExecution>(ready_work[0]);
+  ASSERT_EQ(ready_work.ready_work_items.size(), 1);
+  ASSERT_TRUE(
+      std::holds_alternative<EagerExecution>(ready_work.ready_work_items[0]));
+  const auto& eager_execution =
+      std::get<EagerExecution>(ready_work.ready_work_items[0]);
   // The dead ops should be stripped.
   EXPECT_THAT(eager_execution.must_execute, testing::ElementsAre(list_d));
 }
@@ -366,9 +370,11 @@ TEST_F(EventsQueueTest, DeadSideEffectsRetained) {
                                GraphSplitMode::kSplitGraph)
                   .ok());
   auto ready_work = GetReadyWork(device_index, stream_id);
-  ASSERT_EQ(ready_work.size(), 1);
-  ASSERT_TRUE(std::holds_alternative<EagerExecution>(ready_work[0]));
-  const auto& eager_execution = std::get<EagerExecution>(ready_work[0]);
+  ASSERT_EQ(ready_work.ready_work_items.size(), 1);
+  ASSERT_TRUE(
+      std::holds_alternative<EagerExecution>(ready_work.ready_work_items[0]));
+  const auto& eager_execution =
+      std::get<EagerExecution>(ready_work.ready_work_items[0]);
 
   // We must still execute the dead ops.
   ASSERT_EQ(eager_execution.must_execute.size(), 4);
@@ -410,9 +416,11 @@ TEST_F(EventsQueueTest, MaterializationIgnoresUnusedEmptyOps) {
                                GraphSplitMode::kSplitGraph)
                   .ok());
   auto ready_work = GetReadyWork(device_index, stream_id);
-  ASSERT_EQ(ready_work.size(), 1);
-  ASSERT_TRUE(std::holds_alternative<EagerExecution>(ready_work[0]));
-  const auto& eager_execution = std::get<EagerExecution>(ready_work[0]);
+  ASSERT_EQ(ready_work.ready_work_items.size(), 1);
+  ASSERT_TRUE(
+      std::holds_alternative<EagerExecution>(ready_work.ready_work_items[0]));
+  const auto& eager_execution =
+      std::get<EagerExecution>(ready_work.ready_work_items[0]);
   EXPECT_THAT(eager_execution.must_execute,
               testing::ElementsAre(non_empty_list));
 }
@@ -460,15 +468,18 @@ TEST_F(EventsQueueTest, PrepareDeviceTraversals) {
 
   auto ready_work =
       GetReadyWork(device_index, pending_stream_snapshots[0].stream_id());
-  ASSERT_EQ(ready_work.size(), 2);
-  ASSERT_TRUE(std::holds_alternative<EagerExecution>(ready_work[0]));
-  const auto& eager_execution = std::get<EagerExecution>(ready_work[0]);
+  ASSERT_EQ(ready_work.ready_work_items.size(), 2);
+  ASSERT_TRUE(
+      std::holds_alternative<EagerExecution>(ready_work.ready_work_items[0]));
+  const auto& eager_execution =
+      std::get<EagerExecution>(ready_work.ready_work_items[0]);
   // The execution will contain a and b but not c, as it is on a different
   // device.
   EXPECT_THAT(eager_execution.must_execute,
               testing::ElementsAre(list_a, list_b));
   // There will be a snapshot request for the stream after the eager execution.
-  EXPECT_TRUE(std::holds_alternative<SnapshotRequest>(ready_work[1]));
+  EXPECT_TRUE(
+      std::holds_alternative<SnapshotRequest>(ready_work.ready_work_items[1]));
 }
 
 TEST_F(EventsQueueTest, PrepareStreamTraversals) {
@@ -513,15 +524,18 @@ TEST_F(EventsQueueTest, PrepareStreamTraversals) {
   // Ask for a plan to materialize the stream for a and b (but not c).
   (void)EventSnapshot::Record(device_index, default_stream_id, {});
   auto ready_work = GetReadyWork(device_index, default_stream_id);
-  ASSERT_EQ(ready_work.size(), 2);
-  ASSERT_TRUE(std::holds_alternative<EagerExecution>(ready_work[0]));
-  const auto& eager_execution = std::get<EagerExecution>(ready_work[0]);
+  ASSERT_EQ(ready_work.ready_work_items.size(), 2);
+  ASSERT_TRUE(
+      std::holds_alternative<EagerExecution>(ready_work.ready_work_items[0]));
+  const auto& eager_execution =
+      std::get<EagerExecution>(ready_work.ready_work_items[0]);
 
   // c is not included as it is on a different stream.
   EXPECT_THAT(eager_execution.must_execute,
               testing::ElementsAre(list_a, list_b));
   // There will be a snapshot request for the stream after the eager execution.
-  EXPECT_TRUE(std::holds_alternative<SnapshotRequest>(ready_work[1]));
+  EXPECT_TRUE(
+      std::holds_alternative<SnapshotRequest>(ready_work.ready_work_items[1]));
 }
 
 TEST_F(EventsQueueTest, StreamsMaterializeSeparately) {
@@ -569,9 +583,11 @@ TEST_F(EventsQueueTest, StreamsMaterializeSeparately) {
                                GraphSplitMode::kSplitGraph)
                   .ok());
   auto ready_work = GetReadyWork(device_index, non_default_stream_id);
-  ASSERT_EQ(ready_work.size(), 1);
-  ASSERT_TRUE(std::holds_alternative<EagerExecution>(ready_work[0]));
-  const auto& eager_execution = std::get<EagerExecution>(ready_work[0]);
+  ASSERT_EQ(ready_work.ready_work_items.size(), 1);
+  ASSERT_TRUE(
+      std::holds_alternative<EagerExecution>(ready_work.ready_work_items[0]));
+  const auto& eager_execution =
+      std::get<EagerExecution>(ready_work.ready_work_items[0]);
 
   // Only c is included as it is on a different stream from a and b.
   EXPECT_THAT(eager_execution.must_execute, testing::ElementsAre(list_c));
@@ -589,9 +605,11 @@ TEST_F(EventsQueueTest, RetainsFailedCompletedFutures) {
 
   (void)EventSnapshot::Record(device_index, stream_id);
   auto ready_work = GetReadyWork(device_index, stream_id);
-  ASSERT_EQ(ready_work.size(), 1);
-  ASSERT_TRUE(std::holds_alternative<SnapshotRequest>(ready_work[0]));
-  const auto& snapshot_request = std::get<SnapshotRequest>(ready_work[0]);
+  ASSERT_EQ(ready_work.ready_work_items.size(), 1);
+  ASSERT_TRUE(
+      std::holds_alternative<SnapshotRequest>(ready_work.ready_work_items[0]));
+  const auto& snapshot_request =
+      std::get<SnapshotRequest>(ready_work.ready_work_items[0]);
   ASSERT_EQ(snapshot_request.futures.size(), 1);
 
   auto status = snapshot_request.futures[0].Await();
@@ -609,9 +627,11 @@ TEST_F(EventsQueueTest, PrunesSuccessfulCompletedFutures) {
 
   (void)EventSnapshot::Record(device_index, stream_id);
   auto ready_work = GetReadyWork(device_index, stream_id);
-  ASSERT_EQ(ready_work.size(), 1);
-  ASSERT_TRUE(std::holds_alternative<SnapshotRequest>(ready_work[0]));
-  const auto& snapshot_request = std::get<SnapshotRequest>(ready_work[0]);
+  ASSERT_EQ(ready_work.ready_work_items.size(), 1);
+  ASSERT_TRUE(
+      std::holds_alternative<SnapshotRequest>(ready_work.ready_work_items[0]));
+  const auto& snapshot_request =
+      std::get<SnapshotRequest>(ready_work.ready_work_items[0]);
   EXPECT_TRUE(snapshot_request.futures.empty());
 }
 
@@ -639,19 +659,22 @@ TEST_F(EventsQueueTest, StreamMustMaterializeEmptyTensors) {
                   .ok());
   auto ready_work = GetReadyWork(device_index, stream_id);
 
-  EXPECT_TRUE(ready_work.empty());
+  EXPECT_TRUE(ready_work.ready_work_items.empty());
 
   // A stream materialization that must materialize the empty tensor does so.
   (void)EventSnapshot::Record(device_index, stream_id, {empty_list});
   ready_work = GetReadyWork(device_index, stream_id);
-  ASSERT_EQ(ready_work.size(), 2);
-  ASSERT_TRUE(std::holds_alternative<EagerExecution>(ready_work[0]));
-  const auto& eager_execution = std::get<EagerExecution>(ready_work[0]);
+  ASSERT_EQ(ready_work.ready_work_items.size(), 2);
+  ASSERT_TRUE(
+      std::holds_alternative<EagerExecution>(ready_work.ready_work_items[0]));
+  const auto& eager_execution =
+      std::get<EagerExecution>(ready_work.ready_work_items[0]);
   // Constant ops are listed only in must_materialize, but not must_execute.
   EXPECT_EQ(eager_execution.must_execute.size(), 0);
   EXPECT_THAT(eager_execution.must_materialize,
               testing::ElementsAre(empty_list));
-  EXPECT_TRUE(std::holds_alternative<SnapshotRequest>(ready_work[1]));
+  EXPECT_TRUE(
+      std::holds_alternative<SnapshotRequest>(ready_work.ready_work_items[1]));
 }
 
 TEST_F(EventsQueueTest, DeviceMustMaterializeEmptyTensors) {
@@ -674,20 +697,24 @@ TEST_F(EventsQueueTest, DeviceMustMaterializeEmptyTensors) {
   // A normal device materialization does not materialize the empty tensor.
   RecordDeviceSnapshots(device_index);
   auto ready_work = GetReadyWork(device_index, stream_id);
-  ASSERT_EQ(ready_work.size(), 1);
-  EXPECT_TRUE(std::holds_alternative<SnapshotRequest>(ready_work[0]));
+  ASSERT_EQ(ready_work.ready_work_items.size(), 1);
+  EXPECT_TRUE(
+      std::holds_alternative<SnapshotRequest>(ready_work.ready_work_items[0]));
 
   // A device materialization that must materialize the empty tensor does so.
   RecordDeviceSnapshots(device_index, {empty_list});
   ready_work = GetReadyWork(device_index, stream_id);
-  ASSERT_EQ(ready_work.size(), 2);
-  ASSERT_TRUE(std::holds_alternative<EagerExecution>(ready_work[0]));
-  const auto& eager_execution = std::get<EagerExecution>(ready_work[0]);
+  ASSERT_EQ(ready_work.ready_work_items.size(), 2);
+  ASSERT_TRUE(
+      std::holds_alternative<EagerExecution>(ready_work.ready_work_items[0]));
+  const auto& eager_execution =
+      std::get<EagerExecution>(ready_work.ready_work_items[0]);
   // Constant ops are listed only in must_materialize, but not must_execute.
   EXPECT_TRUE(eager_execution.must_execute.empty());
   EXPECT_THAT(eager_execution.must_materialize,
               testing::ElementsAre(empty_list));
-  EXPECT_TRUE(std::holds_alternative<SnapshotRequest>(ready_work[1]));
+  EXPECT_TRUE(
+      std::holds_alternative<SnapshotRequest>(ready_work.ready_work_items[1]));
 }
 
 TEST_F(EventsQueueTest, MultipleSnapshotsPulled) {
@@ -719,20 +746,26 @@ TEST_F(EventsQueueTest, MultipleSnapshotsPulled) {
 
   // Each snapshot request results in one pending execution and one pending
   // snapshot.
-  ASSERT_EQ(ready_work.size(), 4);
+  ASSERT_EQ(ready_work.ready_work_items.size(), 4);
 
   // The first pending snapshot will materialize a (only).
-  ASSERT_TRUE(std::holds_alternative<EagerExecution>(ready_work[0]));
-  const auto& first_eager_execution = std::get<EagerExecution>(ready_work[0]);
+  ASSERT_TRUE(
+      std::holds_alternative<EagerExecution>(ready_work.ready_work_items[0]));
+  const auto& first_eager_execution =
+      std::get<EagerExecution>(ready_work.ready_work_items[0]);
   EXPECT_THAT(first_eager_execution.must_execute, testing::ElementsAre(list_a));
-  EXPECT_TRUE(std::holds_alternative<SnapshotRequest>(ready_work[1]));
+  EXPECT_TRUE(
+      std::holds_alternative<SnapshotRequest>(ready_work.ready_work_items[1]));
 
   // The second pending snapshot will materialize b (only).
-  ASSERT_TRUE(std::holds_alternative<EagerExecution>(ready_work[2]));
-  const auto& second_eager_execution = std::get<EagerExecution>(ready_work[2]);
+  ASSERT_TRUE(
+      std::holds_alternative<EagerExecution>(ready_work.ready_work_items[2]));
+  const auto& second_eager_execution =
+      std::get<EagerExecution>(ready_work.ready_work_items[2]);
   EXPECT_THAT(second_eager_execution.must_execute,
               testing::ElementsAre(list_b));
-  EXPECT_TRUE(std::holds_alternative<SnapshotRequest>(ready_work[3]));
+  EXPECT_TRUE(
+      std::holds_alternative<SnapshotRequest>(ready_work.ready_work_items[3]));
 }
 
 TEST_F(EventsQueueTest, MultipleEagerExecutionsPulled) {
@@ -768,21 +801,26 @@ TEST_F(EventsQueueTest, MultipleEagerExecutionsPulled) {
 
   // The graph break results in separate work items for a and b, and the
   // snapshot request is a third work item.
-  ASSERT_EQ(ready_work.size(), 3);
+  ASSERT_EQ(ready_work.ready_work_items.size(), 3);
 
   // The first eager execution will materialize a (only).
-  ASSERT_TRUE(std::holds_alternative<EagerExecution>(ready_work[0]));
-  const auto& first_eager_execution = std::get<EagerExecution>(ready_work[0]);
+  ASSERT_TRUE(
+      std::holds_alternative<EagerExecution>(ready_work.ready_work_items[0]));
+  const auto& first_eager_execution =
+      std::get<EagerExecution>(ready_work.ready_work_items[0]);
   EXPECT_THAT(first_eager_execution.must_execute, testing::ElementsAre(list_a));
 
   // The second eager execution will materialize b (only).
-  ASSERT_TRUE(std::holds_alternative<EagerExecution>(ready_work[1]));
-  const auto& second_eager_execution = std::get<EagerExecution>(ready_work[1]);
+  ASSERT_TRUE(
+      std::holds_alternative<EagerExecution>(ready_work.ready_work_items[1]));
+  const auto& second_eager_execution =
+      std::get<EagerExecution>(ready_work.ready_work_items[1]);
   EXPECT_THAT(second_eager_execution.must_execute,
               testing::ElementsAre(list_b));
 
   // The third work item is the snapshot request.
-  EXPECT_TRUE(std::holds_alternative<SnapshotRequest>(ready_work[2]));
+  EXPECT_TRUE(
+      std::holds_alternative<SnapshotRequest>(ready_work.ready_work_items[2]));
 }
 
 TEST_F(EventsQueueTest, NotPulledAfterLastSnapshot) {
@@ -812,11 +850,14 @@ TEST_F(EventsQueueTest, NotPulledAfterLastSnapshot) {
   auto ready_work = GetReadyWork(list_a->device_index(), list_a->stream_id());
 
   // List b is left in the queue.
-  ASSERT_EQ(ready_work.size(), 2);
-  ASSERT_TRUE(std::holds_alternative<EagerExecution>(ready_work[0]));
-  const auto& eager_execution = std::get<EagerExecution>(ready_work[0]);
+  ASSERT_EQ(ready_work.ready_work_items.size(), 2);
+  ASSERT_TRUE(
+      std::holds_alternative<EagerExecution>(ready_work.ready_work_items[0]));
+  const auto& eager_execution =
+      std::get<EagerExecution>(ready_work.ready_work_items[0]);
   EXPECT_THAT(eager_execution.must_execute, testing::ElementsAre(list_a));
-  EXPECT_TRUE(std::holds_alternative<SnapshotRequest>(ready_work[1]));
+  EXPECT_TRUE(
+      std::holds_alternative<SnapshotRequest>(ready_work.ready_work_items[1]));
 }
 
 TEST_F(EventsQueueTest, SingleOpFastPathAndExtraConstantFallback) {
@@ -840,9 +881,11 @@ TEST_F(EventsQueueTest, SingleOpFastPathAndExtraConstantFallback) {
                                GraphSplitMode::kSplitGraph)
                   .ok());
   auto ready_work = GetReadyWork(device_index, stream_id);
-  ASSERT_EQ(ready_work.size(), 1);
-  ASSERT_TRUE(std::holds_alternative<EagerExecution>(ready_work[0]));
-  const auto& eager_execution = std::get<EagerExecution>(ready_work[0]);
+  ASSERT_EQ(ready_work.ready_work_items.size(), 1);
+  ASSERT_TRUE(
+      std::holds_alternative<EagerExecution>(ready_work.ready_work_items[0]));
+  const auto& eager_execution =
+      std::get<EagerExecution>(ready_work.ready_work_items[0]);
   EXPECT_THAT(eager_execution.must_execute, testing::ElementsAre(list_single));
   EXPECT_THAT(eager_execution.must_materialize,
               testing::ElementsAre(list_single));
@@ -871,9 +914,11 @@ TEST_F(EventsQueueTest, SingleOpFastPathAndExtraConstantFallback) {
                                GraphSplitMode::kSplitGraph)
                   .ok());
   ready_work = GetReadyWork(device_index, stream_id);
-  ASSERT_EQ(ready_work.size(), 1);
-  ASSERT_TRUE(std::holds_alternative<EagerExecution>(ready_work[0]));
-  const auto& eager_execution_2 = std::get<EagerExecution>(ready_work[0]);
+  ASSERT_EQ(ready_work.ready_work_items.size(), 1);
+  ASSERT_TRUE(
+      std::holds_alternative<EagerExecution>(ready_work.ready_work_items[0]));
+  const auto& eager_execution_2 =
+      std::get<EagerExecution>(ready_work.ready_work_items[0]);
   EXPECT_THAT(eager_execution_2.must_execute, testing::ElementsAre(list_op));
   EXPECT_THAT(eager_execution_2.must_materialize,
               testing::ElementsAre(list_op, empty_list));
@@ -899,15 +944,18 @@ TEST_F(EventsQueueTest, NodeMatcherAcrossSmallAndLargeSpans) {
     }
     (void)EventSnapshot::Record(device_index, stream_id, nodes);
     auto ready_work = GetReadyWork(device_index, stream_id);
-    ASSERT_EQ(ready_work.size(), 2);
-    ASSERT_TRUE(std::holds_alternative<EagerExecution>(ready_work[0]));
-    const auto& eager_execution = std::get<EagerExecution>(ready_work[0]);
+    ASSERT_EQ(ready_work.ready_work_items.size(), 2);
+    ASSERT_TRUE(
+        std::holds_alternative<EagerExecution>(ready_work.ready_work_items[0]));
+    const auto& eager_execution =
+        std::get<EagerExecution>(ready_work.ready_work_items[0]);
     EXPECT_EQ(eager_execution.must_execute.size(), count);
     EXPECT_EQ(eager_execution.must_materialize.size(), count);
     EXPECT_THAT(eager_execution.must_execute, testing::ElementsAreArray(nodes));
     EXPECT_THAT(eager_execution.must_materialize,
                 testing::ElementsAreArray(nodes));
-    EXPECT_TRUE(std::holds_alternative<SnapshotRequest>(ready_work[1]));
+    EXPECT_TRUE(std::holds_alternative<SnapshotRequest>(
+        ready_work.ready_work_items[1]));
   }
 }
 
@@ -985,7 +1033,7 @@ TEST_F(EventsQueueTest, InsertedWaitBlocksHostToDeviceTransfer) {
   absl::Cleanup cleanup = [device_index, default_stream_id] {
     ExchangeCurrentStreamId(device_index, default_stream_id);
   };
-  InsertStreamWait(device_index, other_stream_id, snapshot);
+  InsertStreamWait(device_index, other_stream_id, std::move(snapshot));
 
   // Schedule a transfer on the other stream.
   auto h2d_transfer =
@@ -1036,7 +1084,7 @@ TEST_F(EventsQueueTest, InsertedWaitBlocksDeviceToHostTransfer) {
   absl::Cleanup cleanup = [device_index, default_stream_id] {
     ExchangeCurrentStreamId(device_index, default_stream_id);
   };
-  InsertStreamWait(device_index, other_stream_id, snapshot);
+  InsertStreamWait(device_index, other_stream_id, std::move(snapshot));
 
   // Schedule a transfer on the other stream.
   std::vector<char> dst = {0x00};
@@ -1074,9 +1122,11 @@ TEST_F(EventsQueueTest, CompletedTime) {
   // Start the snapshot; the completion time is still not set, as the work
   // is not yet complete.
   auto ready_work = GetReadyWork(device_index, stream_id);
-  ASSERT_EQ(ready_work.size(), 1);
-  EXPECT_TRUE(std::holds_alternative<SnapshotRequest>(ready_work[0]));
-  auto& snapshot_request = std::get<SnapshotRequest>(ready_work[0]);
+  ASSERT_EQ(ready_work.ready_work_items.size(), 1);
+  EXPECT_TRUE(
+      std::holds_alternative<SnapshotRequest>(ready_work.ready_work_items[0]));
+  auto& snapshot_request =
+      std::get<SnapshotRequest>(ready_work.ready_work_items[0]);
   ASSERT_EQ(snapshot_request.futures.size(), 1);
   snapshot_request.snapshot_to_start.Start(
       std::move(snapshot_request.futures[0]));
@@ -1101,9 +1151,11 @@ TEST_F(EventsQueueTest, CompletedTimeOnError) {
   // Start the snapshot; the completion time is still not set, as the work
   // is not yet complete.
   auto ready_work = GetReadyWork(device_index, stream_id);
-  ASSERT_EQ(ready_work.size(), 1);
-  EXPECT_TRUE(std::holds_alternative<SnapshotRequest>(ready_work[0]));
-  auto& snapshot_request = std::get<SnapshotRequest>(ready_work[0]);
+  ASSERT_EQ(ready_work.ready_work_items.size(), 1);
+  EXPECT_TRUE(
+      std::holds_alternative<SnapshotRequest>(ready_work.ready_work_items[0]));
+  auto& snapshot_request =
+      std::get<SnapshotRequest>(ready_work.ready_work_items[0]);
   ASSERT_EQ(snapshot_request.futures.size(), 1);
   snapshot_request.snapshot_to_start.Start(
       std::move(snapshot_request.futures[0]));
@@ -1125,6 +1177,215 @@ TEST_F(EventsQueueTest, InsertGraphBreakDuringFxTrace) {
                                          MaterializationReason::kCpuTransfer,
                                          GraphSplitMode::kFullGraph);
   EXPECT_EQ(status.code(), error::kFailedPrecondition);
+}
+
+TEST_F(EventsQueueTest, InsertedWaitBlocksDeferredOpExecution) {
+  ClearAllStreams();
+  const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
+
+  // Create an op on one stream, and take a snapshot after it.
+  ScopedPythonContextCapturer capturer(OpName::kEmpty);
+  Shape shape(Dimensions{8}, mlir::ElementType::F32);
+
+  TT_ASSERT_OK_AND_ASSIGN(auto refs_a, DeviceBufferList::CreateDeferred(
+                                           OpName::kAdd, DummyBuilder, {},
+                                           OpParamCacheKeys::Empty(), {shape}));
+  auto ref_a = refs_a[0];
+  RecordDeferredOpCreated(ref_a.device_buffer_list());
+  ref_a.device_buffer_list()->IncrementLiveDataPtrs(ref_a.index());
+
+  TT_ASSERT_OK_AND_ASSIGN(EventSnapshot snapshot,
+                          EventSnapshot::Record(device_index, stream_id));
+
+  // Insert a stream wait for the snapshot in a different stream, create
+  // a new op (with no data dependencies on the first op) after it, and insert
+  // a graph break.
+  const auto other_stream_id = NextStreamId(device_index);
+  ExchangeCurrentStreamId(device_index, other_stream_id);
+  absl::Cleanup cleanup = [device_index, stream_id] {
+    ExchangeCurrentStreamId(device_index, stream_id);
+  };
+  InsertStreamWait(device_index, other_stream_id, std::move(snapshot));
+
+  TT_ASSERT_OK_AND_ASSIGN(auto refs_b, DeviceBufferList::CreateDeferred(
+                                           OpName::kAdd, DummyBuilder, {},
+                                           OpParamCacheKeys::Empty(), {shape}));
+  auto ref_b = refs_b[0];
+  RecordDeferredOpCreated(ref_b.device_buffer_list());
+  ref_b.device_buffer_list()->IncrementLiveDataPtrs(ref_b.index());
+
+  ASSERT_TRUE(InsertGraphBreak(device_index, other_stream_id, {},
+                               MaterializationReason::kUnknown,
+                               GraphSplitMode::kFullGraph)
+                  .ok());
+
+  // Get the ready work for the stream that has the inserted wait.
+  auto blocked_ready_work = GetReadyWork(device_index, other_stream_id);
+  // Nothing should be ready to execute yet.
+  EXPECT_TRUE(blocked_ready_work.ready_work_items.empty());
+  // It should be blocked on the snapshot's future.
+  ASSERT_TRUE(blocked_ready_work.blocked_after.has_value());
+  EXPECT_FALSE(blocked_ready_work.blocked_after->IsReady());
+
+  // Simulate the completion of the snapshot's work.
+  auto ready_work = GetReadyWork(device_index, stream_id);
+  ASSERT_EQ(ready_work.ready_work_items.size(), 2);
+  EXPECT_TRUE(
+      std::holds_alternative<EagerExecution>(ready_work.ready_work_items[0]));
+  ASSERT_TRUE(
+      std::holds_alternative<SnapshotRequest>(ready_work.ready_work_items[1]));
+  auto& snapshot_request =
+      std::get<SnapshotRequest>(ready_work.ready_work_items[1]);
+  snapshot_request.snapshot_to_start.Start(absl::OkStatus());
+
+  // The blocked work is now ready.
+  EXPECT_TRUE(blocked_ready_work.blocked_after->IsReady());
+
+  // Re-pulling from the blocked stream should now yield the deferred op.
+  auto unblocked_ready_work = GetReadyWork(device_index, other_stream_id);
+  EXPECT_FALSE(unblocked_ready_work.blocked_after.has_value());
+  ASSERT_EQ(unblocked_ready_work.ready_work_items.size(), 1);
+  EXPECT_TRUE(std::holds_alternative<EagerExecution>(
+      unblocked_ready_work.ready_work_items[0]));
+}
+
+TEST_F(EventsQueueTest, DataDependencyBlocksDeferredOpExecution) {
+  ClearAllStreams();
+  const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
+
+  // Create an op on one stream, and insert a graph break after it (but not
+  // a snapshot).
+  ScopedPythonContextCapturer capturer(OpName::kEmpty);
+  Shape shape(Dimensions{8}, mlir::ElementType::F32);
+
+  TT_ASSERT_OK_AND_ASSIGN(auto refs_a, DeviceBufferList::CreateDeferred(
+                                           OpName::kAdd, DummyBuilder, {},
+                                           OpParamCacheKeys::Empty(), {shape}));
+  auto ref_a = refs_a[0];
+  RecordDeferredOpCreated(ref_a.device_buffer_list());
+  ref_a.device_buffer_list()->IncrementLiveDataPtrs(ref_a.index());
+  ASSERT_TRUE(InsertGraphBreak(device_index, stream_id, {},
+                               MaterializationReason::kUnknown,
+                               GraphSplitMode::kFullGraph)
+                  .ok());
+
+  // Insert an op which depends on the first op in a different stream,
+  // followed by a graph break.
+  const auto other_stream_id = NextStreamId(device_index);
+  ExchangeCurrentStreamId(device_index, other_stream_id);
+  absl::Cleanup cleanup = [device_index, stream_id] {
+    ExchangeCurrentStreamId(device_index, stream_id);
+  };
+
+  TT_ASSERT_OK_AND_ASSIGN(auto refs_b, DeviceBufferList::CreateDeferred(
+                                           OpName::kAdd, DummyBuilder, {ref_a},
+                                           OpParamCacheKeys::Empty(), {shape}));
+  auto ref_b = refs_b[0];
+  RecordDeferredOpCreated(ref_b.device_buffer_list());
+  ref_b.device_buffer_list()->IncrementLiveDataPtrs(ref_b.index());
+  ASSERT_TRUE(InsertGraphBreak(device_index, other_stream_id, {},
+                               MaterializationReason::kUnknown,
+                               GraphSplitMode::kFullGraph)
+                  .ok());
+
+  // Get the ready work for the stream with the data dependency.
+  auto blocked_ready_work = GetReadyWork(device_index, other_stream_id);
+  // Nothing should be ready to execute yet.
+  EXPECT_TRUE(blocked_ready_work.ready_work_items.empty());
+  // It should be blocked on the first op's materialization.
+  ASSERT_TRUE(blocked_ready_work.blocked_after.has_value());
+  EXPECT_FALSE(blocked_ready_work.blocked_after->IsReady());
+
+  // Complete the first op (with a failure).
+  auto ready_work = GetReadyWork(device_index, stream_id);
+  ASSERT_EQ(ready_work.ready_work_items.size(), 1);
+  EXPECT_TRUE(
+      std::holds_alternative<EagerExecution>(ready_work.ready_work_items[0]));
+  auto& eager_execution =
+      std::get<EagerExecution>(ready_work.ready_work_items[0]);
+  ASSERT_EQ(eager_execution.must_execute.size(), 1);
+  EXPECT_EQ(eager_execution.must_execute[0], ref_a.device_buffer_list());
+  eager_execution.must_execute[0]->SetAsError(TT_ERROR(error::kAborted)
+                                              << "test error");
+
+  // The blocked work is now ready.
+  EXPECT_TRUE(blocked_ready_work.blocked_after->IsReady());
+
+  // Re-pulling from the blocked stream should now yield the deferred op.
+  auto unblocked_ready_work = GetReadyWork(device_index, other_stream_id);
+  ASSERT_EQ(unblocked_ready_work.ready_work_items.size(), 1);
+  EXPECT_TRUE(std::holds_alternative<EagerExecution>(
+      unblocked_ready_work.ready_work_items[0]));
+  EXPECT_FALSE(unblocked_ready_work.blocked_after.has_value());
+}
+
+TEST_F(EventsQueueTest, CollectivesOrderBlocksDeferredOpExecution) {
+  ClearAllStreams();
+  const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
+
+  // Create distributed collectives on two streams, with no implied data
+  // dependency and no explicit wait, with graph breaks after each.
+  ScopedPythonContextCapturer capturer(OpName::kEmpty);
+  Shape shape(Dimensions{8}, mlir::ElementType::F32);
+  TT_ASSERT_OK_AND_ASSIGN(auto refs_a,
+                          DeviceBufferList::CreateDeferred(
+                              OpName::kDistributedAllReduce, DummyBuilder, {},
+                              OpParamCacheKeys::Empty(), {shape}));
+  auto ref_a = refs_a[0];
+  RecordDeferredOpCreated(ref_a.device_buffer_list());
+  ref_a.device_buffer_list()->IncrementLiveDataPtrs(ref_a.index());
+  ASSERT_TRUE(InsertGraphBreak(device_index, stream_id, {},
+                               MaterializationReason::kUnknown,
+                               GraphSplitMode::kFullGraph)
+                  .ok());
+
+  const auto other_stream_id = NextStreamId(device_index);
+  ExchangeCurrentStreamId(device_index, other_stream_id);
+  absl::Cleanup cleanup = [device_index, stream_id] {
+    ExchangeCurrentStreamId(device_index, stream_id);
+  };
+  TT_ASSERT_OK_AND_ASSIGN(auto refs_b,
+                          DeviceBufferList::CreateDeferred(
+                              OpName::kDistributedAllReduce, DummyBuilder, {},
+                              OpParamCacheKeys::Empty(), {shape}));
+  auto ref_b = refs_b[0];
+  RecordDeferredOpCreated(ref_b.device_buffer_list());
+  ref_b.device_buffer_list()->IncrementLiveDataPtrs(ref_b.index());
+  ASSERT_TRUE(InsertGraphBreak(device_index, other_stream_id, {},
+                               MaterializationReason::kUnknown,
+                               GraphSplitMode::kFullGraph)
+                  .ok());
+
+  // Get the ready work for the stream with the collective that was created
+  // second.
+  auto blocked_ready_work = GetReadyWork(device_index, other_stream_id);
+  // Nothing should be ready to execute yet.
+  EXPECT_TRUE(blocked_ready_work.ready_work_items.empty());
+  // It should be blocked on the first op's materialization.
+  ASSERT_TRUE(blocked_ready_work.blocked_after.has_value());
+  EXPECT_FALSE(blocked_ready_work.blocked_after->IsReady());
+
+  // Complete the first op (with a failure).
+  auto ready_work = GetReadyWork(device_index, stream_id);
+  ASSERT_EQ(ready_work.ready_work_items.size(), 1);
+  EXPECT_TRUE(
+      std::holds_alternative<EagerExecution>(ready_work.ready_work_items[0]));
+  auto& eager_execution =
+      std::get<EagerExecution>(ready_work.ready_work_items[0]);
+  ASSERT_EQ(eager_execution.must_execute.size(), 1);
+  EXPECT_EQ(eager_execution.must_execute[0], ref_a.device_buffer_list());
+  eager_execution.must_execute[0]->SetAsError(TT_ERROR(error::kAborted)
+                                              << "test error");
+
+  // The blocked work is now ready.
+  EXPECT_TRUE(blocked_ready_work.blocked_after->IsReady());
+
+  // Re-pulling from the blocked stream should now yield the deferred op.
+  auto unblocked_ready_work = GetReadyWork(device_index, other_stream_id);
+  ASSERT_EQ(unblocked_ready_work.ready_work_items.size(), 1);
+  EXPECT_TRUE(std::holds_alternative<EagerExecution>(
+      unblocked_ready_work.ready_work_items[0]));
+  EXPECT_FALSE(unblocked_ready_work.blocked_after.has_value());
 }
 
 TEST(CompilationModeTest, GetCompilationMode) {
@@ -1298,7 +1559,7 @@ TEST(RepeatedOpsTest, GraphBreakEndsSuspension) {
                                GraphSplitMode::kSplitGraph)
                   .ok());
   // Take the graph break's work off the stream, as the ops cannot be executed.
-  EXPECT_EQ(GetReadyWork(device_index, stream_id).size(), 1);
+  EXPECT_EQ(GetReadyWork(device_index, stream_id).ready_work_items.size(), 1);
   EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list_a));
   EXPECT_TRUE(RecordDeferredOpAndDetectRepetition(list_b));
   EXPECT_FALSE(ResumeRepeatedOpsGraphBreaks(device_index, stream_id));
