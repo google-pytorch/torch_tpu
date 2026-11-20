@@ -1502,6 +1502,16 @@ mlir::MlirOp BuildFillUninitialized(mlir::MlirBuilder& builder,
   }
 }
 
+mlir::MlirOp ClampLike(mlir::MlirOp min, mlir::MlirOp operand,
+                       mlir::MlirOp max) {
+  if (GetTensorTypeOrDie(operand).hasStaticShape()) {
+    return stablehlo::Clamp(min, operand, max);
+  }
+  // Same semantics as stablehlo.clamp: min(max(operand, min), max).
+  mlir::MlirOp lower_clamped = stablehlo::Max(operand, min);
+  return stablehlo::Min(lower_clamped, max);
+}
+
 mlir::MlirOp GetNumElements(mlir::MlirOp input, mlir::Type element_type,
                             mlir::ArrayRef<int64_t> dims) {
   // Set `dims` to all dimensions if not specified.

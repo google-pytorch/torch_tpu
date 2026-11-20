@@ -1295,6 +1295,44 @@ Please use clone() or contiguous() to copy the tensor before writing""",
         torch.nn.functional.conv1d(inp, weight).cpu()
 
   @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_fused_moving_avg_obs_fq_helper_dynamic_channels_static_buffers(
+      self,
+  ):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      inp = torch.ones(3, 4, device=et.device())
+      observer_on = torch.ones(1, dtype=torch.int64, device=et.device())
+      fake_quant_on = torch.ones(1, dtype=torch.int64, device=et.device())
+      running_min = torch.zeros(3, device=et.device())
+      running_max = torch.ones(3, device=et.device())
+      scale = torch.ones(3, device=et.device())
+      zero_point = torch.zeros(3, dtype=torch.int32, device=et.device())
+
+      # Mark the channel dimension of `inp` as dynamic, but not the buffers.
+      dynamism.mark_dynamic(inp, 0, 2, 6)
+
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu="""fused_moving_avg_obs_fq_helper(): expected running_min to have the size and bounded dynamism of dimension 0 of self, got self type tensor<?x4xf32, #stablehlo.bounds<6, ?>> and running_min type tensor<3xf32>""",
+      ):
+        out, _ = torch._fused_moving_avg_obs_fq_helper(
+            inp,
+            observer_on,
+            fake_quant_on,
+            running_min,
+            running_max,
+            scale,
+            zero_point,
+            0.01,
+            0,
+            255,
+            0,
+            True,
+            False,
+        )
+        # cpu() is needed because the error is triggered inside the op builder.
+        out.cpu()
+
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
   def test_convolution_backward_dynamic_channel_dimension(self):
     with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
       grad_output = torch.ones(1, 3, 6, device=et.device())

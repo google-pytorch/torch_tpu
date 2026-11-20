@@ -1649,6 +1649,78 @@ class CoupledDimDiscoveryTest(seed_test_utils.RepeatableTest):
         },
     )
 
+  def _discover_fused_moving_avg_obs_fq_helper_coupled_dims(
+      self, num_buffer_channels: int, per_row_fq: bool
+  ):
+    fq_op = op_testing._get_op("_fused_moving_avg_obs_fq_helper")
+    dyn_info = dynamism_test_utils.DynamicOpInfo.get(fq_op)
+    inp = torch.ones(3, 5)
+    args = (
+        torch.tensor([1]),
+        torch.tensor([1]),
+        torch.full((num_buffer_channels,), -1.0),
+        torch.full((num_buffer_channels,), 1.0),
+        torch.full((num_buffer_channels,), 0.1),
+        torch.zeros((num_buffer_channels,), dtype=torch.int32),
+        0.01,
+        0,
+        255,
+        -1,
+        per_row_fq,
+        False,
+    )
+    candidates = list(dyn_info.get_candidate_dims(inp, args))
+    op_args = dynamism_test_utils._OpArgs(inp, args, {})  # pylint: disable=protected-access
+    tensors = dynamism_test_utils._collect_tensors(op_args)  # pylint: disable=protected-access
+    return dyn_info._discover_coupled_dims(  # pylint: disable=protected-access
+        candidates,
+        tensors,
+        op_args,
+        fq_op.op,
+        dynamism_test_utils.DynamismMode.COMPILE,
+    )
+
+  def test_discover_coupled_dims_fused_moving_avg_obs_fq_helper_per_channel(
+      self,
+  ):
+    discovered = self._discover_fused_moving_avg_obs_fq_helper_coupled_dims(
+        num_buffer_channels=5, per_row_fq=True
+    )
+    t0d0 = dynamism_test_utils.TensorDim(0, 0)
+    t0d1 = dynamism_test_utils.TensorDim(0, 1)
+    t3d0 = dynamism_test_utils.TensorDim(3, 0)
+    t4d0 = dynamism_test_utils.TensorDim(4, 0)
+    t5d0 = dynamism_test_utils.TensorDim(5, 0)
+    t6d0 = dynamism_test_utils.TensorDim(6, 0)
+    self.assertDictEqual(
+        discovered,
+        {
+            t0d0: (t0d0,),
+            t0d1: (t0d1, t3d0, t4d0, t5d0, t6d0),
+        },
+    )
+
+  def test_discover_coupled_dims_fused_moving_avg_obs_fq_helper_per_tensor(
+      self,
+  ):
+    discovered = self._discover_fused_moving_avg_obs_fq_helper_coupled_dims(
+        num_buffer_channels=1, per_row_fq=False
+    )
+    t0d0 = dynamism_test_utils.TensorDim(0, 0)
+    t0d1 = dynamism_test_utils.TensorDim(0, 1)
+    self.assertDictEqual(discovered, {t0d0: (t0d0,), t0d1: (t0d1,)})
+
+  def test_discover_coupled_dims_fused_moving_avg_obs_fq_helper_uninitialized(
+      self,
+  ):
+    # Empty buffers are uninitialized, so they are not coupled.
+    discovered = self._discover_fused_moving_avg_obs_fq_helper_coupled_dims(
+        num_buffer_channels=0, per_row_fq=True
+    )
+    t0d0 = dynamism_test_utils.TensorDim(0, 0)
+    t0d1 = dynamism_test_utils.TensorDim(0, 1)
+    self.assertDictEqual(discovered, {t0d0: (t0d0,), t0d1: (t0d1,)})
+
   def test_validate_coupled_plans_filters_specialized_dims(self):
     add_op = op_testing._get_op("add")
     dyn_info = dynamism_test_utils.DynamicOpInfo(add_op)

@@ -1619,6 +1619,44 @@ TEST(BuildMaybeSlice, OtherBoundedDimKept) {
   EXPECT_FALSE(dims[1].boundOp.has_value());
 }
 
+TEST(ClampLike, StaticOperandEmitsClamp) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp input = MakeBoundedArg(fb, {4, 8}, /*bound_dims=*/{});
+  mlir::MlirOp min = MakeConstantLike(input, -1.0);
+  mlir::MlirOp max = MakeConstantLike(input, 1.0);
+  mlir::MlirOp clamped = ClampLike(min, input, max);
+  mlir::func::Return(fb, clamped);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+
+  EXPECT_EQ(GetTensorTypeOrDie(clamped), GetTensorTypeOrDie(input));
+  EXPECT_TRUE(clamped.getValue().getDefiningOp<mlir::stablehlo::ClampOp>())
+      << DebugString(module.get());
+}
+
+TEST(ClampLike, BoundedOperandKeepsBounds) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp input = MakeBoundedArg(fb, {4, 8}, /*bound_dims=*/{0, 1});
+  mlir::MlirOp min = MakeConstantLike(input, -1.0);
+  mlir::MlirOp max = MakeConstantLike(input, 1.0);
+  mlir::MlirOp clamped = ClampLike(min, input, max);
+  mlir::func::Return(fb, clamped);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+
+  EXPECT_EQ(GetTensorTypeOrDie(clamped), GetTensorTypeOrDie(input));
+  auto min_op = clamped.getValue().getDefiningOp<mlir::stablehlo::MinOp>();
+  ASSERT_TRUE(min_op) << DebugString(module.get());
+  EXPECT_TRUE(min_op.getLhs().getDefiningOp<mlir::stablehlo::MaxOp>())
+      << DebugString(module.get());
+}
+
 TEST(FillPastRuntimeSizes, ScalarFillValue) {
   OpBuilderUtilsBuilder op_builder_utils_builder;
   mlir::ModuleBuilder& mb = op_builder_utils_builder.get();

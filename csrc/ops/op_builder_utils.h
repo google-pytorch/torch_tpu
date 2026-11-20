@@ -522,6 +522,16 @@ absl::StatusOr<mlir::MlirOp> ConvolutionLike(
     const std::optional<mlir::stablehlo::Dimensions>& result_dims =
         std::nullopt);
 
+// Builds a stablehlo.clamp that also supports bounded dynamic dimensions.
+// Takes the same arguments as mlir::stablehlo::Clamp.
+//
+// If operand has a static shape, emits stablehlo.clamp. Otherwise, min and max
+// must have the type of operand, and this emits the equivalent
+// stablehlo.maximum and stablehlo.minimum, because stablehlo.clamp infers a
+// result type without the bounds of operand.
+mlir::MlirOp ClampLike(mlir::MlirOp min, mlir::MlirOp operand,
+                       mlir::MlirOp max);
+
 // Returns an mlir::MlirOp representing the number of elements in the input
 // tensor with the given element type, only counting the dimensions specified.
 // If dims is empty, all dimensions are counted.

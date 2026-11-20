@@ -2088,6 +2088,55 @@ class DynamismTest(seed_test_utils.RepeatableTest):
       act = compiled_fn(data.to(self.device), segment_info.to(self.device))
     utils.assert_close(act.to("cpu"), segment_reduce_fn(data, segment_info))
 
+  @parameterized.named_parameters(
+      dict(testcase_name="fake_quant_on", fake_quant_on=1),
+      dict(testcase_name="fake_quant_off", fake_quant_on=0),
+  )
+  def test_fused_moving_avg_obs_fq_helper_uninitialized_dynamic_channels(
+      self, fake_quant_on: int
+  ) -> None:
+    # Empty observer buffers are uninitialized, so the op initializes them with
+    # the bounded channel dimension of `x`.
+    def fq_fn(x, obs_on, fq_on, rmin, rmax, scale, zp):
+      rmin_c, rmax_c = rmin.clone(), rmax.clone()
+      scale_c, zp_c = scale.clone(), zp.clone()
+      out, mask = torch._fused_moving_avg_obs_fq_helper(
+          x,
+          obs_on,
+          fq_on,
+          rmin_c,
+          rmax_c,
+          scale_c,
+          zp_c,
+          0.01,
+          0,
+          255,
+          0,
+          True,
+          False,
+      )
+      outputs = (out, mask, rmin_c, rmax_c, scale_c, zp_c)
+      # With fake_quant_on 0, the CPU kernel leaves the resized scale and
+      # zero_point uninitialized.
+      return outputs if fake_quant_on else outputs[:4]
+
+    def mark_dynamic(x: torch.Tensor, *unused_args: torch.Tensor) -> None:
+      dynamism.mark_dynamic(x, 0, 2, 10)
+
+    args = (
+        torch.randn(5, 3, dtype=torch.float32),
+        torch.tensor([1]),
+        torch.tensor([fake_quant_on]),
+        torch.empty(0, dtype=torch.float32),
+        torch.empty(0, dtype=torch.float32),
+        torch.empty(0, dtype=torch.float32),
+        torch.empty(0, dtype=torch.int32),
+    )
+    # Fake quantization can round an element to an adjacent quantization level.
+    self._run_bounded_dynamism_test(
+        fq_fn, mark_dynamic, *args, rtol=2e-2, atol=2e-2
+    )
+
 
 if __name__ == "__main__":
   absltest.main()

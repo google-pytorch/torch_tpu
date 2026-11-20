@@ -493,8 +493,6 @@ DYNAMISM_DENY_LISTS: DenyList = {
     },
     # TODO: b/449736443 - Support bounded dimensions in these lowerings.
     "the lowering emits an op without bounded shape support": {
-        # BuildMlirModule fails to inline MLIR functions on bounded inputs.
-        "_fused_moving_avg_obs_fq_helper": ALL_MODES,
         # XLA ragged-dot does not support propagating bounded dimensions.
         "_grouped_mm": {EAGER, COMPILE},
         # XLA Scatter updates bound mismatches static scatter_indices bound.
@@ -644,6 +642,8 @@ DYNAMISM_DENY_LISTS: DenyList = {
     "XLA fails layout verification with 'layout does not match any allowed tile kind'": {
         "__lshift__": {COMPILE},
         "__rshift__": {COMPILE},
+        # The bool `mask` output has the bounded dimensions of the input.
+        "_fused_moving_avg_obs_fq_helper": {COMPILE, COMPILE_GRAD},
         "abs": {COMPILE},
         "addcmul": {COMPILE},
         "ceil": {COMPILE},
@@ -940,6 +940,7 @@ class DynamicOpInfo:
         ConvolutionDynamicOpInfo,
         GluDynamicOpInfo,
         WeightNormBackwardDynamicOpInfo,
+        FusedMovingAvgObsFqHelperDynamicOpInfo,
     ]
     for adapter in adapters:
       if adapter.adapter_supports_op(op_info):
@@ -1649,6 +1650,59 @@ class WeightNormBackwardDynamicOpInfo(DynamicOpInfo):
           elif aux.ndim == grad_w.ndim and aux.shape[d] == grad_w.shape[d]:
             coupled.append(TensorDim(tensor_index=idx, dim=d))
       proposed[candidate] = tuple(sorted(coupled))
+    return proposed
+
+
+class FusedMovingAvgObsFqHelperDynamicOpInfo(DynamicOpInfo):
+  """Couples per-channel observer buffers with `self`'s channel axis."""
+
+  # Indices of `ch_axis` and `per_row_fq` in `args`, which exclude `self`.
+  _CH_AXIS_ARG_INDEX = 9
+  _PER_ROW_FQ_ARG_INDEX = 10
+  # Indices of `running_min`, `running_max`, `scale`, and `zero_point` in
+  # `tensors`, which include `self`.
+  _BUFFER_TENSOR_INDICES = range(3, 7)
+
+  @staticmethod
+  def adapter_supports_op(op_info: core.OpInfo) -> bool:
+    """Method to declare ops supported by this adapter."""
+    return op_info.name == "_fused_moving_avg_obs_fq_helper"
+
+  def _discover_coupled_dims(
+      self,
+      candidates: Sequence[TensorDim],
+      tensors: Sequence[torch.Tensor],
+      op_args: _OpArgs,
+      op_func: Callable[..., Any],
+      mode: DynamismMode,
+  ) -> dict[TensorDim, tuple[TensorDim, ...]]:
+    """Couples `ch_axis` on `self` with non-empty per-channel stat buffers."""
+    proposed = super()._discover_coupled_dims(
+        candidates, tensors, op_args, op_func, mode
+    )
+    # Like the OpInfo samples, read the arguments positionally.
+    if (
+        not isinstance(op_args.input_value, torch.Tensor)
+        or op_args.input_value.ndim == 0
+        or len(op_args.args) <= self._PER_ROW_FQ_ARG_INDEX
+        or not op_args.args[self._PER_ROW_FQ_ARG_INDEX]
+    ):
+      return proposed
+    ch_dim = op_args.args[self._CH_AXIS_ARG_INDEX] % op_args.input_value.ndim
+    ch_candidate = TensorDim(tensor_index=0, dim=ch_dim)
+    if ch_candidate not in proposed:
+      return proposed
+    ch_size = op_args.input_value.shape[ch_dim]
+    # Upstream's meta kernel omits the per-channel buffer size check, so couple
+    # the buffers structurally. Uninitialized (empty) buffers stay uncoupled.
+    stat_dims = [
+        TensorDim(tensor_index=idx, dim=0)
+        for idx in self._BUFFER_TENSOR_INDICES
+        if tensors[idx].ndim == 1 and tensors[idx].shape[0] == ch_size
+    ]
+    proposed[ch_candidate] = tuple(
+        sorted(set(proposed[ch_candidate]) | set(stat_dims))
+    )
     return proposed
 
 
