@@ -437,8 +437,8 @@ mlir::MlirOp PackPhiloxPairTo4xI32(mlir::MlirOp pair_i64) {
 }
 
 // Packs `philox_seed` and `philox_offset` into a 4-element i32 tensor. The
-// inputs may be 0-d (e.g. from the torch.compile meta function) or have shape
-// [1] (from the eager forward kernel).
+// inputs are 0-d scalars (matching PyTorch's SDPA meta functions), and may also
+// have shape [1] if passed by a caller directly.
 mlir::MlirOp PackPhiloxSeedAndOffsetTo4xI32(mlir::MlirOp philox_seed,
                                             mlir::MlirOp philox_offset) {
   return PackPhiloxPairTo4xI32(mlir::stablehlo::Concatenate(
@@ -668,8 +668,10 @@ CreateFlashAttentionKernelImpl(const at::Tensor& query, const at::Tensor& key,
       mlir::Type i64_type = builder.getOpBuilder().getI64Type();
       mlir::MlirOp state_i64 =
           mlir::stablehlo::ConvertElementType(*rng_state_mlir, i64_type);
-      philox_seed_mlir = mlir::stablehlo::Slice(state_i64, {0}, {1}, {1});
-      philox_offset_mlir = mlir::stablehlo::Slice(state_i64, {1}, {2}, {1});
+      philox_seed_mlir = mlir::stablehlo::Reshape(
+          mlir::stablehlo::Slice(state_i64, {0}, {1}, {1}), {});
+      philox_offset_mlir = mlir::stablehlo::Reshape(
+          mlir::stablehlo::Slice(state_i64, {1}, {2}, {1}), {});
       operands.push_back(PackPhiloxPairTo4xI32(state_i64).getValue());
     }
     operands.push_back(query_4d.getValue());
@@ -725,7 +727,7 @@ CreateFlashAttentionKernelImpl(const at::Tensor& query, const at::Tensor& key,
     dispatch_inputs.push_back(*attn_bias);
   }
 
-  const Dimensions seed_dims = {1};
+  const Dimensions seed_dims = {};
   std::vector<mlir::ElementType> out_dtypes = {out_dtype};
   std::vector<absl::Span<const int64_t>> out_dims_list = {out_dims};
   if (return_lse) {
