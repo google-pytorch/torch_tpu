@@ -20,6 +20,7 @@ import contextlib
 import dataclasses
 import enum
 import functools
+import gc
 import itertools
 import math
 import os
@@ -24307,6 +24308,68 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
               )
             else:
               self.assertTrue(tpu_grad is None or not tpu_grad.defined())
+
+  def test_linear_backward_frees_grad_input_before_grad_weight(self):
+    for eager_mode in (
+        execution_mode.EagerMode.DEFER_NEVER,
+        execution_mode.EagerMode.DEFER_AND_FUSE,
+    ):
+      with (
+          self.subTest(eager_mode=eager_mode),
+          execution_mode.set_eager_mode(eager_mode),
+      ):
+        # `x` and its gradient are 32 MiB each, the gradients of `w` and `b`
+        # are 64 KiB and 64 bytes.
+        x = torch.ones(8192, 1024, device="tpu", requires_grad=True)
+        w = torch.ones(16, 1024, device="tpu", requires_grad=True)
+        b = torch.ones(16, device="tpu", requires_grad=True)
+        torch.nn.functional.linear(x, w, b).sum().backward()
+        torch.accelerator.synchronize()
+        gc.collect()
+        mem_with_all_grads = torch.accelerator.memory_allocated()
+        x.grad = None
+        torch.accelerator.synchronize()
+        gc.collect()
+        mem_with_param_grads = torch.accelerator.memory_allocated()
+        # Dropping `x.grad` releases its buffer while `w.grad` and `b.grad` are
+        # still alive.
+        self.assertGreaterEqual(
+            mem_with_all_grads - mem_with_param_grads, x.nbytes // 2
+        )
+        w.grad = None
+        b.grad = None
+        torch.accelerator.synchronize()
+        gc.collect()
+        freed = mem_with_param_grads - torch.accelerator.memory_allocated()
+        # Dropping the parameter gradients must not be what releases the
+        # gradient of `x`. Allow for allocator page alignment.
+        self.assertLess(freed, x.nbytes // 8)
+
+  def test_linear_backward_does_not_hold_unmaterialized_grad_input(self):
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      # The first iteration warms up the compilation caches and the allocator.
+      for iteration in ("warm-up", "measured"):
+        x = torch.ones(8192, 1024, device="tpu", requires_grad=True)
+        w = torch.ones(16, 1024, device="tpu", requires_grad=True)
+        b = torch.ones(16, device="tpu", requires_grad=True)
+        torch.accelerator.synchronize()
+        gc.collect()
+        mem_before_backward = torch.accelerator.memory_allocated()
+        torch.nn.functional.linear(x, w, b).sum().backward()
+        # Dropped before the deferred gradient of `x` is materialized.
+        x.grad = None
+        torch.accelerator.synchronize()
+        gc.collect()
+        held = torch.accelerator.memory_allocated() - mem_before_backward
+        w.grad = None
+        b.grad = None
+        del x, w, b
+        torch.accelerator.synchronize()
+        gc.collect()
+        if iteration == "measured":
+          # Only `w.grad` and `b.grad` are alive, so the 32 MiB gradient of `x`
+          # must not be allocated. Allow for allocator page alignment.
+          self.assertLess(held, 4 * 1024 * 1024)
 
   def test_materialize_non_leaf_tensor_does_not_warn(self):
     """Verifies copying a non-leaf tensor with requires_grad does not warn."""
