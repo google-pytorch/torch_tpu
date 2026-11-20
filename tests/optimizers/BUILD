@@ -17,6 +17,12 @@
 # lukeboyer
 
 load(
+    "//build_files:accelerator_specification.bzl",
+    "run_on_config",
+    "tpu_config",
+    "tpus",
+)
+load(
     "//build_files:build_defs.bzl",
     "internal_target",
     "torch_tpu_package_end",
@@ -43,11 +49,11 @@ torch_tpu_py_library(
 torch_tpu_py_test(
     name = "adamw_test",
     srcs = ["adamw_test.py"],
+    compatible_accelerators = tpus(),
     main = "adamw_test.py",
     tags = [
         "requires-accel-hbm",
         "requires-net:external",
-        "requires-tpu-v5lite",
     ],
     deps = [
         ":test_utils",
@@ -63,11 +69,11 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "sgd_test",
     srcs = ["sgd_test.py"],
+    compatible_accelerators = tpus(),
     main = "sgd_test.py",
     tags = [
         "requires-accel-hbm",
         "requires-net:external",
-        "requires-tpu-v5lite",
     ],
     deps = [
         ":test_utils",
@@ -83,11 +89,11 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "muon_test",
     srcs = ["muon_test.py"],
+    compatible_accelerators = tpus(),
     main = "muon_test.py",
     tags = [
         "requires-accel-hbm",
         "requires-net:external",
-        "requires-tpu-v5lite",
     ],
     deps = [
         ":test_utils",
@@ -103,12 +109,12 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "single_trace_trainer_test",
     srcs = ["single_trace_trainer_test.py"],
+    compatible_accelerators = tpus(),
     main = "single_trace_trainer_test.py",
     nopresubmit = "slow example",
     tags = [
         "requires-accel-hbm",
         "requires-net:external",
-        "requires-tpu-v5lite",
     ],
     deps = [
         "//shims/absl_py/testing:absltest",
@@ -161,13 +167,16 @@ internal_target(
     name = "distributed_single_trace_trainer_tpu_test",
     srcs = ["distributed_single_trace_trainer_test.py"],
     args = ["--device=tpu"],
+    compatible_accelerators = tpus(),
     main = "distributed_single_trace_trainer_test.py",
+    run_on = run_on_config(
+        presubmit = [tpu_config("v7x")],
+        reason = "Keeps the pre-migration v7x placement in google3.",
+    ),
     tags = [
         "nosan",  # Spawns TPU processes.
-        "ok-to-wait-for-v7x-in-presubmit",
         "requires-accel-hbm",
         "requires-net:external",
-        "requires-tpu-v7x",
     ],
     use_precompile = False,
     deps = _DISTRIBUTED_SINGLE_TRACE_TRAINER_TEST_DEPS,

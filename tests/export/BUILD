@@ -19,7 +19,15 @@
 # gleasonk
 # haifeng-jin
 
-load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_test")
+load(
+    "//build_files:accelerator_specification.bzl",
+    "tpus",
+)
+load(
+    "//build_files:build_defs.bzl",
+    "torch_tpu_package_end",
+    "torch_tpu_py_test",
+)
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -29,9 +37,7 @@ package(
 torch_tpu_py_test(
     name = "export_test",
     srcs = ["export_test.py"],
-    tags = [
-        "requires-tpu-v5lite",
-    ],
+    compatible_accelerators = tpus(),
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",

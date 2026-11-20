@@ -20,6 +20,10 @@
 # agarwalt
 
 load(
+    "//build_files:accelerator_specification.bzl",
+    "tpus",
+)
+load(
     "//build_files:build_defs.bzl",
     "if_oss",
     "internal_target",
@@ -389,7 +393,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "step_test",
     srcs = ["step_test.py"],
-    tags = ["requires-tpu-v5lite"],
+    compatible_accelerators = tpus(),
     deps = [
         "//perflab:compile",
         "//perflab:discovery",
@@ -413,13 +417,13 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "decode_stepper_coverage_test",
     srcs = ["decode_stepper_coverage_test.py"],
+    compatible_accelerators = tpus(),
     # Resolves model configs from module_registry's weights mirror, which is not
     # hermetic for TAP.
     notap = "reads model configs from external storage; run manually",
     shard_count = 4,
     tags = [
         "requires-net:external",
-        "requires-tpu-v5lite",
     ],
     deps = [
         "//perflab:target",
@@ -450,7 +454,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "torch_device_ops_test",
     srcs = ["torch_device_ops_test.py"],
-    tags = ["requires-tpu-v5lite"],
+    compatible_accelerators = tpus(),
     deps = [
         "//perflab:device_utils",
         "//perflab:mode",

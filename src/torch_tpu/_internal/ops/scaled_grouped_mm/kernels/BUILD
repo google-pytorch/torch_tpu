@@ -16,7 +16,18 @@
 # ryo-not-rio
 # lukeboyer
 
-load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_library", "torch_tpu_py_test")
+load(
+    "//build_files:accelerator_specification.bzl",
+    "run_on_config",
+    "tpu_config",
+    "tpus",
+)
+load(
+    "//build_files:build_defs.bzl",
+    "torch_tpu_package_end",
+    "torch_tpu_py_library",
+    "torch_tpu_py_test",
+)
 load("//shims/py_rules:py_binary.bzl", "py_binary")
 load("//shims/py_rules:py_library.bzl", "py_library")
 
@@ -93,12 +104,16 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "rowwise_scaled_grouped_mm_kernel_test",
     srcs = ["rowwise_scaled_grouped_mm_kernel_test.py"],
+    compatible_accelerators = tpus(exclude = ["v5p"]),
     main = "rowwise_scaled_grouped_mm_kernel_test.py",
-    run_on_accelerators = [
-        "requires-tpu-v5lite",
-        "requires-tpu-v6e",
-        "requires-tpu-v7x",
-    ],
+    run_on = run_on_config(
+        postsubmit = [
+            tpu_config("v5e"),
+            tpu_config("v6e"),
+            tpu_config("v7x"),
+        ],
+        reason = "Keeps the pre-migration per-TPU test targets.",
+    ),
     tags = [
         "nosan",  # *san builds are low-value for accelerator numerics tests.
     ],
@@ -117,11 +132,9 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "rowwise_scaled_grouped_mm_benchmark_test",
     srcs = ["rowwise_scaled_grouped_mm_benchmark_test.py"],
+    compatible_accelerators = tpus(only = ["v7x"]),
     main = "rowwise_scaled_grouped_mm_benchmark_test.py",
     notap = "Manual microbenchmark",
-    run_on_accelerators = [
-        "requires-tpu-v7x",
-    ],
     deps = [
         ":rowwise_scaled_grouped_mm_kernel",
         "//shims/absl_py/logging",

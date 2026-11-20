@@ -16,7 +16,15 @@
 # yilingyuan
 # jialei-chen
 
-load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_test")
+load(
+    "//build_files:accelerator_specification.bzl",
+    "tpus",
+)
+load(
+    "//build_files:build_defs.bzl",
+    "torch_tpu_package_end",
+    "torch_tpu_py_test",
+)
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -26,8 +34,8 @@ package(
 torch_tpu_py_test(
     name = "strictly_ordering_test",
     srcs = ["strictly_ordering_test.py"],
+    compatible_accelerators = tpus(),
     strict = True,
-    tags = ["requires-tpu-v5lite"],
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
@@ -40,8 +48,8 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "xla_compile_options_test",
     srcs = ["xla_compile_options_test.py"],
+    compatible_accelerators = tpus(),
     strict = True,
-    tags = ["requires-tpu-v5lite"],
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",

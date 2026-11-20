@@ -19,6 +19,12 @@
 # willfroom
 
 load(
+    "//build_files:accelerator_specification.bzl",
+    "run_on_config",
+    "tpu_config",
+    "tpus",
+)
+load(
     "//build_files:build_defs.bzl",
     "torch_tpu_cc_library",
     "torch_tpu_cc_test",
@@ -161,11 +167,15 @@ torch_tpu_cc_library(
 torch_tpu_cc_test(
     name = "mosaic_custom_call_test",
     srcs = ["mosaic_custom_call_test.cc"],
+    compatible_accelerators = tpus(),
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
     notest_oss = True,  # NOTEST_OSS_OK=Requires libtpu >= 0.0.48 with operand_to_metadata support
-    tags = ["requires-tpu-v5p"],
+    run_on = run_on_config(
+        presubmit = [tpu_config("v5p")],
+        reason = "Keeps the pre-migration v5p placement in google3.",
+    ),
     deps = [
         ":kernel_test_utils",
         ":mosaic_custom_call",
@@ -186,10 +196,10 @@ torch_tpu_cc_test(
 torch_tpu_cc_test(
     name = "nonzero_indices_test",
     srcs = ["nonzero_indices_test.cc"],
+    compatible_accelerators = tpus(),
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
-    tags = ["requires-tpu-v5lite"],
     deps = [
         ":nonzero_indices",
         "//csrc/common:compilation",

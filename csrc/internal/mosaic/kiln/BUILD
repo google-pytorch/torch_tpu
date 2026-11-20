@@ -18,7 +18,19 @@
 
 # A Pallas-shaped C++ kernel language (Kiln) for authoring Mosaic TPU kernels.
 
-load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_cc_test", "torch_tpu_package_end")
+load(
+    "//build_files:accelerator_specification.bzl",
+    "run_on_config",
+    "tpu_config",
+    "tpus",
+)
+load(
+    "//build_files:build_defs.bzl",
+    "if_oss",
+    "torch_tpu_cc_library",
+    "torch_tpu_cc_test",
+    "torch_tpu_package_end",
+)
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -70,10 +82,17 @@ torch_tpu_cc_test(
 torch_tpu_cc_test(
     name = "kiln_e2e_test",
     srcs = ["kiln_e2e_test.cc"],
+    compatible_accelerators = tpus(),
     exec_properties = {
         "cpp_link.mem": "16g",
     },
-    tags = ["requires-tpu-v5p"],
+    run_on = if_oss(
+        None,
+        run_on_config(
+            presubmit = [tpu_config("v5p")],
+            reason = "Keeps the pre-migration v5p placement in google3.",
+        ),
+    ),
     deps = [
         ":kiln",
         "//csrc/common:error_utils",

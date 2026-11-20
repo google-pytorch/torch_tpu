@@ -17,6 +17,10 @@
 # vladbelous
 
 load(
+    "//build_files:accelerator_specification.bzl",
+    "tpus",
+)
+load(
     "//build_files:build_defs.bzl",
     "torch_tpu_oss_doc_test",
     "torch_tpu_package_end",
@@ -105,11 +109,11 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "swa_cache_tpu_test",
     srcs = ["swa_cache_test.py"],
+    compatible_accelerators = tpus(),
     main = "swa_cache_test.py",
     notest_oss = True,  # NOTEST_OSS_OK=Requires Cloud TPU hardware not available on OSS CI runners.
     tags = [
         "nofastbuild",  # Slow example.
-        "requires-tpu-v5lite",
     ],
     deps = [
         ":kv_cache",
@@ -157,13 +161,13 @@ torch_tpu_py_test(
     args = [
         "--xla_tpu_dvfs_p_state=7",  # Required to get 2307 TFLOP/s on Ironwood
     ],
+    compatible_accelerators = tpus(only = ["v7x"]),
     notap = "manual performance run",
     tags = [
         "cpu:8",
         "nofastbuild",  # Measures performance.
         "requires-accel-hbm",
         "requires-net:external",
-        "requires-tpu-v7x",  # Ironwood
     ],
     deps = [
         ":runner_dynamic",
@@ -179,13 +183,13 @@ torch_tpu_py_test(
     args = [
         "--xla_tpu_dvfs_p_state=7",  # Required to get 2307 TFLOP/s on Ironwood
     ],
+    compatible_accelerators = tpus(only = ["v7x"]),
     notap = "manual performance run",
     tags = [
         "cpu:8",
         "nofastbuild",  # Measures performance.
         "requires-accel-hbm",
         "requires-net:external",
-        "requires-tpu-v7x",  # Ironwood
     ],
     deps = [
         ":runner_static",

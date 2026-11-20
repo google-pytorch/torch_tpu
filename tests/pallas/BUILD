@@ -22,8 +22,11 @@
 # nvgrw
 
 load(
+    "//build_files:accelerator_specification.bzl",
+    "tpus",
+)
+load(
     "//build_files:build_defs.bzl",
-    "REQUIRES_V5_MULTI_DEVICE",
     "if_oss",
     "torch_tpu_package_end",
     "torch_tpu_py_test",
@@ -41,13 +44,13 @@ exports_files([
 torch_tpu_py_test(
     name = "pallas_test",
     srcs = ["pallas_test.py"],
+    compatible_accelerators = tpus(),
     # Not supported on vl chips.
     env = {
         "IS_OSS": if_oss("1", "0"),
         "TPU_PREMAPPED_BUFFER_SIZE": "0",
     },
     shard_count = 4,
-    tags = ["requires-tpu-v5lite"],
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
@@ -73,11 +76,11 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "pallas_signature_test",
     srcs = ["pallas_signature_test.py"],
+    compatible_accelerators = tpus(),
     env = {
         "IS_OSS": if_oss("1", "0"),
         "TPU_PREMAPPED_BUFFER_SIZE": "0",
     },
-    tags = ["requires-tpu-v5lite"],
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
@@ -93,7 +96,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "pallas_fingerprint_test",
     srcs = ["pallas_fingerprint_test.py"],
-    tags = ["requires-tpu-v5lite"],
+    compatible_accelerators = tpus(),
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/jax:pallas",
@@ -111,15 +114,12 @@ torch_tpu_py_test(
     name = "pallas_communication_test",
     timeout = "long",
     srcs = ["pallas_communication_test.py"],
+    compatible_accelerators = tpus(min_chips = 4),
     env = {"TPU_PREMAPPED_BUFFER_SIZE": "0"},
-    tags = if_oss(
-        ["exclusive"],
-        [],
-    ) + [
+    tags = [
         "noasan",  # TODO(b/497035517): fix the test in asan mode.
         "nomsan",  # TODO(b/497035517): fix the test in msan mode.
         "notsan",  # TODO(b/497035517): fix the test in tsan mode.
-        REQUIRES_V5_MULTI_DEVICE,
     ],
     deps = [
         "//shims/absl_py/logging",
