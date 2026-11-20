@@ -5093,6 +5093,19 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       )
       utils.assert_close(out_tpu.cpu(), expected)
 
+  def test_histc_out_shares_cache(self):
+    x = torch.tensor(
+        [0.2, 0.9, 1.4, 2.1, 2.8, 3.3, 3.9], dtype=torch.float32, device="tpu"
+    )
+    for min_val, max_val in [(0.0, 4.0), (0.0, 0.0)]:
+      expected = torch.histc(x, bins=5, min=min_val, max=max_val).cpu()
+      start_misses = torch.tpu._get_cache_misses()
+      out = torch.empty((5,), dtype=torch.float32, device="tpu")
+      torch.histc(x, bins=5, min=min_val, max=max_val, out=out)
+      actual = out.cpu()
+      self.assertEqual(torch.tpu._get_cache_misses() - start_misses, 0)
+      utils.assert_close(actual, expected, rtol=0, atol=0)
+
   def test_lerp_complex128(self):
     # Regression test for b/451684563: lerp() supports complex128.
     # TODO(b/451684563): Switch to testing TPU-vs-GPU in ops_test.py once GPU
