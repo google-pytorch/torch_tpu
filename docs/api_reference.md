@@ -157,6 +157,8 @@ architectural walkthrough, see
 | `torch.tpu.eager_mode` | Gets or sets the active `EagerMode` globally. |
 | `torch.tpu.set_eager_mode(mode)` | Context manager that temporarily sets the active `EagerMode`. |
 | `torch.tpu.compiler.custom_compiler_options(options)` | Context manager that passes custom XLA compiler flags to eager operations materialized inside the block. |
+| `torch.tpu.compiler.cache_stats()` | Returns a `torch.tpu.compiler.CacheStats` snapshot of the in-memory compilation cache: lookups (`num_cache_reqs`), hits, misses, compilations, and per-program `CacheEntryStats` (`compilation_duration`, `last_read`, `read_count`). Use it to detect recompilations. |
+| `torch.tpu.compiler.clear_cache()` | Evicts all programs from the in-memory compilation cache, after in-flight compilations finish. |
 <!-- mdformat on -->
 
 ```python

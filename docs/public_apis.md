@@ -123,6 +123,18 @@ process. Use it at your own risk. Using it triggers a one-time warning.
 *   `torch.tpu.TpuVersion.V8T`
 *   `torch.tpu.allow_excess_precision` (getter)
 *   `torch.tpu.allow_excess_precision` (setter)
+*   `torch.tpu.compiler.CacheEntryStats`
+*   `torch.tpu.compiler.CacheEntryStats.compilation_duration`
+*   `torch.tpu.compiler.CacheEntryStats.last_read`
+*   `torch.tpu.compiler.CacheEntryStats.read_count`
+*   `torch.tpu.compiler.CacheStats`
+*   `torch.tpu.compiler.CacheStats.num_cache_hits`
+*   `torch.tpu.compiler.CacheStats.num_cache_misses`
+*   `torch.tpu.compiler.CacheStats.num_cache_reqs`
+*   `torch.tpu.compiler.CacheStats.num_compilations`
+*   `torch.tpu.compiler.CacheStats.per_entry_stats`
+*   `torch.tpu.compiler.cache_stats`
+*   `torch.tpu.compiler.clear_cache`
 *   `torch.tpu.compiler.custom_compiler_options`
 *   `torch.tpu.default_generators`
 *   `torch.tpu.default_stream`

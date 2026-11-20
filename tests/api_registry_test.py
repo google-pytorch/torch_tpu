@@ -462,9 +462,46 @@ class ApiRegistryTest(seed_test_utils.RepeatableTest):
         "torch.tpu.compiler.custom_compiler_options is experimental and subject"
         " to change.",
     )
+    for name in ("CacheEntryStats", "CacheStats", "cache_stats", "clear_cache"):
+      with self.subTest(name=name):
+        api = getattr(torch.tpu.compiler, name)
+        self.assertIs(api, getattr(internal_compiler_options, name))
+        self.assertEqual(
+            getattr(api, annotations.TT_API_STAGE, None),
+            annotations.Stage.EXPERIMENTAL.value,
+        )
+    for cls, names in (
+        (
+            torch.tpu.compiler.CacheEntryStats,
+            {"compilation_duration", "last_read", "read_count"},
+        ),
+        (
+            torch.tpu.compiler.CacheStats,
+            {
+                "num_cache_reqs",
+                "num_cache_hits",
+                "num_cache_misses",
+                "num_compilations",
+                "per_entry_stats",
+            },
+        ),
+    ):
+      stages_map = getattr(cls, annotations.TT_API_STAGES_MAP)
+      self.assertEqual(set(stages_map), names)
+      for info in stages_map.values():
+        self.assertEqual(info.stage, annotations.Stage.EXPERIMENTAL)
 
     # 3. Proxy dir and invalid attribute handling
-    self.assertEqual(dir(torch.tpu.compiler), ["custom_compiler_options"])
+    self.assertEqual(
+        dir(torch.tpu.compiler),
+        [
+            "CacheEntryStats",
+            "CacheStats",
+            "cache_stats",
+            "clear_cache",
+            "custom_compiler_options",
+        ],
+    )
     with self.assertRaises(  # ASSERT_RAISES_OK=Verifies proxy module raises AttributeError for non-existent attributes
         AttributeError
     ):

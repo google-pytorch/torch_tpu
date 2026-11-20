@@ -37,6 +37,8 @@ torch_tpu_py_library(
     ],
     deps = [
         ":compiler_options_impl",
+        "//src/torch_tpu/_internal/device:_device_module",
+        "//src/torch_tpu/_internal/device:_device_ops_backend",
         "//src/torch_tpu/_internal/utils:annotations",
     ],
 )

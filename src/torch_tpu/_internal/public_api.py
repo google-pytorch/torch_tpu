@@ -180,6 +180,12 @@ _PUBLIC_MODULES: Mapping[str, ModuleSpec] = {
     "torch.tpu.compiler": ModuleSpec(
         exports={
             # go/keep-sorted start
+            "CacheEntryStats": (
+                "torch_tpu._internal.compiler_options:CacheEntryStats"
+            ),
+            "CacheStats": "torch_tpu._internal.compiler_options:CacheStats",
+            "cache_stats": "torch_tpu._internal.compiler_options:cache_stats",
+            "clear_cache": "torch_tpu._internal.compiler_options:clear_cache",
             "custom_compiler_options": (
                 "torch_tpu._internal.compiler_options:custom_compiler_options"
             ),

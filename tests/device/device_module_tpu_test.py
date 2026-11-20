@@ -14,6 +14,7 @@
 
 """Tests for the device module with TPU backend."""
 
+import datetime
 import tempfile
 import warnings
 from absl.testing import absltest
@@ -108,6 +109,35 @@ class TpuDeviceModuleTest(
   def test_hidden_attributes_not_in_dir(self):
     """Verifies private attributes do not appear in dir(torch.tpu)."""
     self.assertEmpty([name for name in dir(torch.tpu) if name.startswith("_")])
+
+  def test_compiler_cache_stats_and_clear_cache(self):
+    """Verifies torch.tpu.compiler's cache API reports the compilation cache."""
+    torch.tpu.compiler.clear_cache()
+    self.assertEmpty(torch.tpu.compiler.cache_stats().per_entry_stats)
+
+    before = torch.tpu.compiler.cache_stats()
+    (torch.ones(3, 7, device="tpu") * 2).cpu()  # Compiles a program.
+    stats = torch.tpu.compiler.cache_stats()
+    private_stats = torch.tpu._get_cache_stats()  # pylint: disable=protected-access
+
+    self.assertGreater(stats.num_cache_reqs, before.num_cache_reqs)
+    self.assertGreater(stats.num_cache_misses, before.num_cache_misses)
+    self.assertEqual(
+        stats.num_cache_misses, stats.num_cache_reqs - stats.num_cache_hits
+    )
+    self.assertEqual(stats.num_cache_reqs, private_stats.num_cache_reqs)
+    self.assertEqual(stats.num_cache_hits, private_stats.num_cache_hits)
+    self.assertEqual(stats.num_compilations, private_stats.num_compilations)
+    self.assertNotEmpty(stats.per_entry_stats)
+    self.assertLen(stats.per_entry_stats, len(private_stats.per_entry_stats))
+    for entry in stats.per_entry_stats:
+      self.assertIsInstance(entry, torch.tpu.compiler.CacheEntryStats)
+      self.assertIsInstance(entry.compilation_duration, datetime.timedelta)
+      self.assertIsInstance(entry.last_read, datetime.datetime)
+      self.assertIsInstance(entry.read_count, int)
+
+    torch.tpu.compiler.clear_cache()
+    self.assertEmpty(torch.tpu.compiler.cache_stats().per_entry_stats)
 
   def test_dynamo_traces_torch_tpu_without_recompilation(self):
     """Verifies Dynamo traces torch.tpu calls without graph breaks or recompiles."""
