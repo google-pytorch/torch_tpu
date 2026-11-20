@@ -19,6 +19,7 @@ import os
 import random
 import socket
 import sys
+import time
 import types
 from unittest import mock
 
@@ -29,6 +30,7 @@ import torch.multiprocessing as mp
 from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
 from tests.distributed import distributed_utils
+from tests.distributed import worker_supervisor
 
 
 def _worker_seed_check(
@@ -102,6 +104,10 @@ def _worker_gloo_all_reduce(world_size: int) -> None:
 def _worker_fail_on_rank_one() -> None:
   if torch.distributed.get_rank() == 1:
     raise AssertionError("rank 1 failed on purpose")
+
+
+def _worker_hang() -> None:
+  time.sleep(120)
 
 
 class DistributedUtilsTest(seed_test_utils.MultiProcessRepeatableTest):
@@ -335,6 +341,43 @@ class DistributedUtilsTest(seed_test_utils.MultiProcessRepeatableTest):
 
       self.assertNotIn("TORCH_TPU_SLICEBUILDER_ADDRESSES", os.environ)
     mock_spawn.assert_called_once()
+
+  def test_dist_run_timeout_kills_hung_workers(self) -> None:
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=The workers hang.
+        worker_supervisor.WorkerTimeoutError,
+        "did not finish by the deadline",
+    ):
+      distributed_utils.dist_run(2, _worker_hang, timeout_seconds=0.2)
+
+  def test_dist_run_retries_share_one_deadline(self) -> None:
+    deadlines = []
+
+    def fake_spawn_and_join(fn, args=(), nprocs=1, *, deadline=None):
+      del fn, args, nprocs  # Unused.
+      deadlines.append(deadline)
+      if len(deadlines) == 1:
+        raise mp.ProcessRaisedException(
+            msg="RuntimeError: Address already in use (errno: 98 EADDRINUSE)",
+            error_index=0,
+            error_pid=12345,
+        )
+
+    start = time.monotonic()
+    with (
+        mock.patch.dict(os.environ),
+        mock.patch.object(
+            worker_supervisor,
+            "spawn_and_join",
+            autospec=True,
+            side_effect=fake_spawn_and_join,
+        ),
+    ):
+      os.environ.pop("MASTER_PORT", None)
+      distributed_utils.dist_run(2, lambda: None, timeout_seconds=30.0)
+
+    self.assertLen(deadlines, 2)
+    self.assertEqual(deadlines[0], deadlines[1])
+    self.assertBetween(deadlines[0], start + 30.0, time.monotonic() + 30.0)
 
   def test_dist_run_retries_and_succeeds_with_real_socket_collision(
       self,

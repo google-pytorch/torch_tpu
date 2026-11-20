@@ -75,6 +75,31 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_library(
+    name = "worker_supervisor",
+    testonly = True,
+    srcs = ["worker_supervisor.py"],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//shims/absl_py/logging",
+        "//shims/torch:pytorch",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "worker_supervisor_test",
+    srcs = ["worker_supervisor_test.py"],
+    tags = ["notsan"],  # TODO(b/584257115): Fails under OSS TSan.
+    deps = [
+        ":worker_supervisor",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/distributed:multiprocessing",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_library(
     name = "distributed_utils",
     testonly = True,
     srcs = [
@@ -82,6 +107,7 @@ torch_tpu_py_library(
     ],
     visibility = ["//:__subpackages__"],
     deps = [
+        ":worker_supervisor",
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
@@ -100,6 +126,7 @@ torch_tpu_py_test(
     tags = ["notsan"],  # TODO(b/584257115): Fails under OSS TSan.
     deps = [
         ":distributed_utils",
+        ":worker_supervisor",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
