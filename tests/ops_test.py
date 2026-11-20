@@ -1308,8 +1308,6 @@ SYMBOLIC_SHAPES_KNOWN_FAILURES = {
     "fft.fft": "TorchTPU's FFT pins all input dims",
     "fft.ifft": "TorchTPU's FFT pins all input dims",
     "fft.rfft": "TorchTPU's FFT pins all input dims with requires_grad",
-    "gru.input": "TorchTPU's GRU pins the sequence, batch and hidden dims",
-    "lstm.input": "TorchTPU's LSTM pins the sequence, batch and hidden dims",
     "nn.functional.max_pool1d": "TorchTPU's max_pool pins the channel dim",
     "nn.functional.max_pool2d": (
         "TorchTPU's max_pool pins the channel and spatial dims"
@@ -1326,11 +1324,6 @@ if oss_utils.is_oss():
   del SYMBOLIC_SHAPES_KNOWN_FAILURES["fft.fft"]
   del SYMBOLIC_SHAPES_KNOWN_FAILURES["fft.ifft"]
   del SYMBOLIC_SHAPES_KNOWN_FAILURES["fft.rfft"]
-  # OSS pins a PyTorch older than 2.16, whose CPU pins the batch dims of
-  # gru.input and lstm.input or throws on their symbolic dims, so these ops pass
-  # there.
-  del SYMBOLIC_SHAPES_KNOWN_FAILURES["gru.input"]
-  del SYMBOLIC_SHAPES_KNOWN_FAILURES["lstm.input"]
 
 
 def _if_tpu_vs_gpu_compiled(true_value: Any, false_value: Any) -> Any:
