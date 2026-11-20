@@ -16,6 +16,7 @@
 
 #include "csrc/ops/op_builder_utils.h"
 
+#include <algorithm>
 #include <complex>
 #include <cstddef>
 #include <cstdint>
@@ -968,6 +969,407 @@ absl::StatusOr<mlir::MlirOp> ConvolutionLike(
   }
   return BoundConvolutionResult(result, dimension_numbers, windows,
                                 static_lhs.runtime_sizes);
+}
+
+absl::StatusOr<stablehlo::Dimensions> InferBroadcastDimensions(
+    const absl::Span<const stablehlo::DimensionInfo> lhs_dims,
+    const absl::Span<const stablehlo::DimensionInfo> rhs_dims) {
+  const size_t result_rank = std::max(lhs_dims.size(), rhs_dims.size());
+  stablehlo::Dimensions result(result_rank);
+  for (size_t i = 1; i <= result_rank; ++i) {
+    const stablehlo::DimensionInfo dim_a =
+        i <= lhs_dims.size() ? lhs_dims[lhs_dims.size() - i]
+                             : stablehlo::DimensionInfo{.size = 1};
+    const stablehlo::DimensionInfo dim_b =
+        i <= rhs_dims.size() ? rhs_dims[rhs_dims.size() - i]
+                             : stablehlo::DimensionInfo{.size = 1};
+    const size_t res_idx = result_rank - i;
+    if (!dim_a.boundOp.has_value() && dim_a.size == 1) {
+      result[res_idx] = dim_b;
+      continue;
+    }
+    if (!dim_b.boundOp.has_value() && dim_b.size == 1) {
+      result[res_idx] = dim_a;
+      continue;
+    }
+    TT_RET_CHECK(dim_a.size == dim_b.size, error::kInvalidArgument)
+        << "expected compatible shapes for broadcasting, got " << dim_a.size
+        << " and " << dim_b.size;
+    TT_RET_CHECK(dim_a.boundOp.has_value() == dim_b.boundOp.has_value(),
+                 error::kInvalidArgument)
+        << "cannot mix bounded and static dimensions in broadcast";
+    result[res_idx] = dim_a;
+  }
+  return result;
+}
+
+absl::StatusOr<mlir::MlirOp> TriangularSolveLike(
+    mlir::MlirOp a, mlir::MlirOp b, const TriangularSolveOptions& options) {
+  const mlir::RankedTensorType a_type = GetTensorTypeOrDie(a);
+  const mlir::RankedTensorType b_type = GetTensorTypeOrDie(b);
+  const int64_t rank = a_type.getRank();
+  ABSL_CHECK_GE(rank, 2)  // CRASH_OK=internal invariant.
+      << "Expected rank >= 2, got " << rank << ". This is a TorchTPU bug.";
+  ABSL_CHECK_EQ(b_type.getRank(), rank)  // CRASH_OK=internal invariant.
+      << "Expected operand ranks to match, got " << rank << " and "
+      << b_type.getRank() << ". This is a TorchTPU bug.";
+
+  const bool left_side = options.side == MatrixSide::kLeft;
+  const bool lower = options.triangular == MatrixTriangular::kLower;
+  const bool unit_diagonal = options.diagonal == DiagonalKind::kUnit;
+  enum stablehlo::Transpose transpose_a = stablehlo::Transpose::NO_TRANSPOSE;
+  switch (options.transpose_a) {
+    case MatrixTranspose::kNoTranspose:
+      transpose_a = stablehlo::Transpose::NO_TRANSPOSE;
+      break;
+    case MatrixTranspose::kTranspose:
+      transpose_a = stablehlo::Transpose::TRANSPOSE;
+      break;
+    case MatrixTranspose::kAdjoint:
+      transpose_a = stablehlo::Transpose::ADJOINT;
+      break;
+  }
+
+  const stablehlo::Dimensions a_dims = GetDimensions(a);
+  const stablehlo::Dimensions b_dims = GetDimensions(b);
+  for (int64_t d = 0; d < rank - 2; ++d) {
+    ABSL_CHECK_EQ(a_dims[d].size,  // CRASH_OK=internal invariant.
+                  b_dims[d].size)
+        << "Expected matching batch dimensions at dimension " << d << ", got "
+        << a_dims[d].size << " and " << b_dims[d].size
+        << ". This is a TorchTPU bug.";
+  }
+  const int64_t a_rows = a_dims[rank - 2].size;
+  const int64_t a_cols = a_dims[rank - 1].size;
+  TT_RET_CHECK(a_rows == a_cols, error::kInvalidArgument)
+      << "expected square "
+      << (a_type.hasStaticShape() ? "matrix" : "upper-bound matrix")
+      << " in triangular solve, got " << a_rows << " and " << a_cols;
+  const int64_t m_dim = left_side ? rank - 2 : rank - 1;
+  const int64_t b_shared = b_dims[m_dim].size;
+  TT_RET_CHECK(a_cols == b_shared, error::kInvalidArgument)
+      << "expected "
+      << (a_type.hasStaticShape() && b_type.hasStaticShape()
+              ? "the shared matrix dimensions"
+              : "the upper bounds of the shared matrix dimension")
+      << " in triangular solve to match, got " << a_cols << " and " << b_shared;
+
+  mlir::MlirBuilder& builder = a.getBuilder();
+  if (a_type.hasStaticShape() && b_type.hasStaticShape()) {
+    return builder.create<stablehlo::TriangularSolveOp>(
+        a.getValue(), b.getValue(), left_side, lower, unit_diagonal,
+        transpose_a);
+  }
+
+  const StaticAtBounds static_a = MakeStaticAtBounds(a);
+  const StaticAtBounds static_b = MakeStaticAtBounds(b);
+
+  // When `a` has bounded dimensions, elements past its runtime sizes are
+  // undefined. Fill them with the identity matrix (rather than zeros) so that:
+  // 1) out-of-bounds diagonal entries are 1 instead of 0 (avoiding division by
+  //    zero in non-unit solves), and
+  // 2) out-of-bounds off-diagonal entries are 0, decoupling the padded block
+  //    from the in-bounds system (e.g., during back-substitution from the last
+  //    row/column) when paired with zero-padded `b`.
+  // When `a` is static (`!a_has_dynamic`) and only `b` is bounded, `a` has no
+  // out-of-bounds elements and can be used directly.
+  mlir::MlirOp padded_a = static_a.op;
+  const bool a_has_dynamic = absl::c_any_of(
+      static_a.runtime_sizes,
+      [](const std::optional<mlir::MlirOp>& sz) { return sz.has_value(); });
+  if (a_has_dynamic) {
+    mlir::MlirOp row_idx =
+        stablehlo::IotaLike(static_a.op, rank - 2, mlir::ElementType::I32);
+    mlir::MlirOp col_idx =
+        stablehlo::IotaLike(static_a.op, rank - 1, mlir::ElementType::I32);
+    mlir::MlirOp is_diag = stablehlo::Compare(
+        row_idx, col_idx, stablehlo::ComparisonDirection::EQ);
+    mlir::MlirOp one = MakeConstantLike(static_a.op, 1);
+    mlir::MlirOp zero = MakeConstantLike(static_a.op, 0);
+    mlir::MlirOp identity_a = stablehlo::Select(is_diag, one, zero);
+    padded_a =
+        FillPastRuntimeSizes(static_a.op, identity_a, static_a.runtime_sizes);
+  }
+
+  mlir::MlirOp zeroed_b =
+      ZeroPastRuntimeSizes(static_b.op, static_b.runtime_sizes);
+  mlir::MlirOp result = builder.create<stablehlo::TriangularSolveOp>(
+      padded_a.getValue(), zeroed_b.getValue(), left_side, lower, unit_diagonal,
+      transpose_a);
+
+  std::vector<std::optional<mlir::MlirOp>> result_runtime_sizes =
+      static_b.runtime_sizes;
+  for (int64_t d = 0; d < rank - 2; ++d) {
+    if (!result_runtime_sizes[d].has_value()) {
+      result_runtime_sizes[d] = static_a.runtime_sizes[d];
+    }
+  }
+  if (!result_runtime_sizes[m_dim].has_value()) {
+    result_runtime_sizes[m_dim] = static_a.runtime_sizes[rank - 2].has_value()
+                                      ? static_a.runtime_sizes[rank - 2]
+                                      : static_a.runtime_sizes[rank - 1];
+  }
+  return RestoreDynamicDimSizes(result, result_runtime_sizes);
+}
+
+absl::StatusOr<mlir::MlirOp> ApplyLuPivotsLike(mlir::MlirOp input,
+                                               mlir::MlirOp pivots,
+                                               const LuPivotOptions& options) {
+  const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
+  const mlir::RankedTensorType pivots_type = GetTensorTypeOrDie(pivots);
+  const int64_t rank = input_type.getRank();
+  const int64_t pivots_rank = pivots_type.getRank();
+  ABSL_CHECK_GE(rank, 2)  // CRASH_OK=internal invariant.
+      << "Expected rank >= 2, got " << rank << ". This is a TorchTPU bug.";
+  ABSL_CHECK_EQ(pivots_rank, rank - 1)  // CRASH_OK=internal invariant.
+      << "Expected pivots rank (" << pivots_rank << ") == input rank - 1 ("
+      << (rank - 1) << "). This is a TorchTPU bug.";
+
+  const StaticAtBounds static_input = MakeStaticAtBounds(input);
+  const StaticAtBounds static_pivots = MakeStaticAtBounds(pivots);
+  const mlir::RankedTensorType static_in_type =
+      GetTensorTypeOrDie(static_input.op);
+  const mlir::RankedTensorType static_piv_type =
+      GetTensorTypeOrDie(static_pivots.op);
+
+  int64_t num_batches = 1;
+  for (int64_t d = 0; d < rank - 2; ++d) {
+    TT_RET_CHECK(static_in_type.getDimSize(d) == static_piv_type.getDimSize(d),
+                 error::kInvalidArgument)
+        << "expected input and pivots to have matching batch upper bounds at "
+           "dimension "
+        << d << ", got " << static_in_type.getDimSize(d) << " and "
+        << static_piv_type.getDimSize(d);
+    num_batches *= static_in_type.getDimSize(d);
+  }
+  const int64_t rows = static_in_type.getDimSize(rank - 2);
+  const int64_t cols = static_in_type.getDimSize(rank - 1);
+  const int64_t size = options.target == LuPivotTarget::kRows ? rows : cols;
+  const int64_t num_pivots = static_piv_type.getDimSize(pivots_rank - 1);
+  if (num_batches == 0 || rows == 0 || cols == 0 || num_pivots == 0) {
+    return input;
+  }
+
+  mlir::MlirBuilder& builder = input.getBuilder();
+  mlir::MlirOp pivots_i32 =
+      stablehlo::ConvertElementType(static_pivots.op, mlir::ElementType::I32);
+  mlir::MlirOp ones_piv = MakeConstantLike(pivots_i32, 1);
+  mlir::MlirOp pivots_zero_based = stablehlo::Subtract(pivots_i32, ones_piv);
+  mlir::MlirOp identity_pivots = stablehlo::IotaLike(
+      pivots_zero_based, pivots_rank - 1, mlir::ElementType::I32);
+  pivots_zero_based = FillPastRuntimeSizes(pivots_zero_based, identity_pivots,
+                                           static_pivots.runtime_sizes);
+  mlir::MlirOp zero_piv = MakeConstantLike(pivots_zero_based, 0);
+  mlir::MlirOp max_piv = MakeConstantLike(pivots_zero_based, size - 1);
+  pivots_zero_based = stablehlo::Clamp(zero_piv, pivots_zero_based, max_piv);
+  mlir::MlirOp pivots_flat =
+      stablehlo::Reshape(pivots_zero_based, {num_batches, num_pivots});
+
+  const mlir::RankedTensorType perm_type = mlir::makeTensorType(
+      builder.getContext(), {num_batches, size}, mlir::ElementType::I32);
+  mlir::MlirOp init_perm =
+      stablehlo::Iota(builder, perm_type, /*iota_dimension=*/1);
+  mlir::MlirOp zero_i32 =
+      MakeScalarConstant(builder, 0, mlir::ElementType::I32);
+
+  const LuPivotDirection direction = options.direction;
+  mlir::SmallVector<mlir::MlirOp> while_results = stablehlo::While(
+      builder, {zero_i32, init_perm, pivots_flat},
+      [num_pivots](mlir::RegionBuilder& cond) {
+        mlir::SmallVector<mlir::MlirOp> args =
+            stablehlo::Arguments(cond, cond.getOp<stablehlo::WhileOp>());
+        mlir::MlirOp limit =
+            MakeScalarConstant(cond, num_pivots, mlir::ElementType::I32);
+        mlir::MlirOp cond_val = stablehlo::Compare(
+            args[0], limit, stablehlo::ComparisonDirection::LT);
+        stablehlo::Return(cond, cond_val);
+      },
+      [num_batches, num_pivots, direction,
+       perm_type](mlir::RegionBuilder& body) {
+        mlir::SmallVector<mlir::MlirOp> args =
+            stablehlo::Arguments(body, body.getOp<stablehlo::WhileOp>());
+        mlir::MlirOp step = args[0];
+        mlir::MlirOp perm = args[1];
+        mlir::MlirOp pivs = args[2];
+
+        mlir::MlirOp one_i32 =
+            MakeScalarConstant(body, 1, mlir::ElementType::I32);
+        mlir::MlirOp next_step = stablehlo::Add(step, one_i32);
+
+        mlir::MlirOp k = step;
+        if (direction == LuPivotDirection::kForward) {
+          mlir::MlirOp last_idx =
+              MakeScalarConstant(body, num_pivots - 1, mlir::ElementType::I32);
+          k = stablehlo::Subtract(last_idx, step);
+        }
+
+        mlir::MlirOp zero_idx =
+            MakeScalarConstant(body, 0, mlir::ElementType::I32);
+        mlir::MlirOp pk_slice =
+            stablehlo::DynamicSlice(pivs, {zero_idx, k}, {num_batches, 1});
+        mlir::MlirOp val_at_k_slice =
+            stablehlo::DynamicSlice(perm, {zero_idx, k}, {num_batches, 1});
+
+        mlir::MlirOp col_iota =
+            stablehlo::Iota(body, perm_type, /*iota_dimension=*/1);
+        mlir::MlirOp pk_bcast =
+            stablehlo::BroadcastInDim(perm_type, pk_slice, {0, 1});
+        mlir::MlirOp k_bcast = stablehlo::BroadcastInDim(perm_type, k, {});
+        mlir::MlirOp val_at_k_bcast =
+            stablehlo::BroadcastInDim(perm_type, val_at_k_slice, {0, 1});
+
+        mlir::MlirOp is_pk = stablehlo::Compare(
+            col_iota, pk_bcast, stablehlo::ComparisonDirection::EQ);
+        mlir::MlirOp zero_perm = MakeConstantLike(perm, 0);
+        mlir::MlirOp masked_at_pk = stablehlo::Select(is_pk, perm, zero_perm);
+        mlir::MlirOp val_at_pk_1d =
+            stablehlo::Reduce(body, {masked_at_pk}, {zero_idx},
+                              [](mlir::RegionBuilder& rb) {
+                                stablehlo::buildReduceBody<stablehlo::AddOp>(
+                                    rb.getOpBuilder().getI32Type(),
+                                    rb.getRegion(), rb.getOpBuilder());
+                              },
+                              {1})[0];
+        mlir::MlirOp val_at_pk_bcast =
+            stablehlo::BroadcastInDim(perm_type, val_at_pk_1d, {0});
+
+        mlir::MlirOp is_k = stablehlo::Compare(
+            col_iota, k_bcast, stablehlo::ComparisonDirection::EQ);
+        mlir::MlirOp after_pk = stablehlo::Select(is_pk, val_at_k_bcast, perm);
+        mlir::MlirOp next_perm =
+            stablehlo::Select(is_k, val_at_pk_bcast, after_pk);
+        stablehlo::Return(body, {next_step, next_perm, pivs});
+      });
+
+  mlir::MlirOp final_perm = while_results[1];
+  mlir::MlirOp flat_input =
+      stablehlo::Reshape(static_input.op, {num_batches, rows, cols});
+  mlir::MlirOp gather_indices =
+      stablehlo::Reshape(final_perm, {num_batches, size, 1});
+
+  const bool is_rows = options.target == LuPivotTarget::kRows;
+  const stablehlo::GatherDimensionNumbersAttr gather_dnums =
+      stablehlo::GatherDimensionNumbersAttr::get(
+          &input.getContext(),
+          /*offset_dims=*/{is_rows ? int64_t{2} : int64_t{1}},
+          /*collapsed_slice_dims=*/{is_rows ? int64_t{1} : int64_t{2}},
+          /*operand_batching_dims=*/{0},
+          /*start_indices_batching_dims=*/{0},
+          /*start_index_map=*/{is_rows ? int64_t{1} : int64_t{2}},
+          /*index_vector_dim=*/2);
+  const Indices slice_sizes =
+      is_rows ? Indices{1, 1, cols} : Indices{1, rows, 1};
+  mlir::MlirOp permuted_flat =
+      stablehlo::Gather(flat_input, gather_indices, gather_dnums, slice_sizes,
+                        /*indices_are_sorted=*/false);
+  mlir::MlirOp permuted =
+      stablehlo::Reshape(permuted_flat, static_in_type.getShape());
+  return RestoreDynamicDimSizes(permuted, static_input.runtime_sizes);
+}
+
+namespace {
+
+mlir::MlirOp RestoreBatchedMatrixOutput(
+    mlir::MlirOp output, const size_t output_index,
+    const MatrixOutputSpec& spec, const int64_t batch_rank,
+    const absl::Span<const std::optional<mlir::MlirOp>> input_runtime_sizes,
+    const std::optional<mlir::MlirOp>& m_runtime,
+    const std::optional<mlir::MlirOp>& n_runtime,
+    const std::optional<mlir::MlirOp>& min_mn_runtime) {
+  const int64_t expected_batch_rank =
+      spec.batch_mode == MatrixBatchMode::kInheritInputBatch ? batch_rank : 0;
+  const int64_t out_rank =
+      expected_batch_rank + static_cast<int64_t>(spec.trailing_dims.size());
+  ABSL_CHECK_EQ(  // CRASH_OK=internal invariant.
+      GetTensorTypeOrDie(output).getRank(), out_rank)
+      << "Output " << output_index << " rank mismatch. This is a TorchTPU bug.";
+
+  std::vector<std::optional<mlir::MlirOp>> out_runtime_sizes(out_rank);
+  for (int64_t d = 0; d < expected_batch_rank; ++d) {
+    out_runtime_sizes[d] = input_runtime_sizes[d];
+  }
+  for (int64_t t = 0; t < static_cast<int64_t>(spec.trailing_dims.size());
+       ++t) {
+    const int64_t out_dim = expected_batch_rank + t;
+    switch (spec.trailing_dims[t]) {
+      case MatrixDimKind::kStatic:
+        break;
+      case MatrixDimKind::kRows:
+        out_runtime_sizes[out_dim] = m_runtime;
+        break;
+      case MatrixDimKind::kCols:
+        out_runtime_sizes[out_dim] = n_runtime;
+        break;
+      case MatrixDimKind::kMinRowsCols:
+        out_runtime_sizes[out_dim] = min_mn_runtime;
+        break;
+    }
+  }
+  return RestoreDynamicDimSizes(output, out_runtime_sizes);
+}
+
+}  // namespace
+
+absl::StatusOr<DynamicMlirOpResults> RunBatchedMatrixOpAtStaticBounds(
+    mlir::MlirOp input, const absl::Span<const MatrixOutputSpec> output_specs,
+    NAryMlirOpBuilder<1, kDynamicSize> static_builder) {
+  const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
+  const int64_t input_rank = input_type.getRank();
+  ABSL_CHECK_GE(input_rank, 2)  // CRASH_OK=internal invariant.
+      << "Expected batched matrix input rank >= 2, got " << input_rank
+      << ". This is a TorchTPU bug.";
+
+  if (input_type.hasStaticShape()) {
+    TT_ASSIGN_OR_RETURN(DynamicMlirOpResults results,
+                        std::move(static_builder)(input));
+    ABSL_CHECK_EQ(  // CRASH_OK=internal invariant.
+        results.size(), output_specs.size())
+        << "Expected " << output_specs.size() << " outputs, got "
+        << results.size() << ". This is a TorchTPU bug.";
+    return results;
+  }
+
+  const StaticAtBounds static_input = MakeStaticAtBounds(input);
+  const mlir::RankedTensorType static_in_type =
+      GetTensorTypeOrDie(static_input.op);
+  const int64_t batch_rank = input_rank - 2;
+  const int64_t m_bound = static_in_type.getDimSize(input_rank - 2);
+  const int64_t n_bound = static_in_type.getDimSize(input_rank - 1);
+  const std::optional<mlir::MlirOp>& m_runtime =
+      static_input.runtime_sizes[input_rank - 2];
+  const std::optional<mlir::MlirOp>& n_runtime =
+      static_input.runtime_sizes[input_rank - 1];
+
+  mlir::MlirOp zeroed_input =
+      ZeroPastRuntimeSizes(static_input.op, static_input.runtime_sizes);
+  TT_ASSIGN_OR_RETURN(DynamicMlirOpResults results,
+                      std::move(static_builder)(zeroed_input));
+  ABSL_CHECK_EQ(  // CRASH_OK=internal invariant.
+      results.size(), output_specs.size())
+      << "Expected " << output_specs.size() << " outputs, got "
+      << results.size() << ". This is a TorchTPU bug.";
+
+  mlir::MlirBuilder& builder = input.getBuilder();
+  std::optional<mlir::MlirOp> min_mn_runtime;
+  if ((m_runtime.has_value() || n_runtime.has_value()) &&
+      std::min(m_bound, n_bound) >= 2) {
+    mlir::MlirOp m_op =
+        m_runtime.has_value()
+            ? *m_runtime
+            : MakeScalarConstant(builder, m_bound, mlir::ElementType::I32);
+    mlir::MlirOp n_op =
+        n_runtime.has_value()
+            ? *n_runtime
+            : MakeScalarConstant(builder, n_bound, mlir::ElementType::I32);
+    min_mn_runtime = stablehlo::Min(m_op, n_op);
+  }
+
+  for (size_t i = 0; i < results.size(); ++i) {
+    results[i] = RestoreBatchedMatrixOutput(
+        results[i], i, output_specs[i], batch_rank, static_input.runtime_sizes,
+        m_runtime, n_runtime, min_mn_runtime);
+  }
+  return results;
 }
 
 std::string ConsumeMlirDiagnostics(

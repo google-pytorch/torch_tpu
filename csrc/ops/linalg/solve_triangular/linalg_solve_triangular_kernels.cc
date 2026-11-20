@@ -19,12 +19,13 @@
 #include <utility>
 
 #include "ATen/core/ATen_fwd.h"
+#include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/types/span.h"
 #include "c10/core/ScalarType.h"
 #include "csrc/common/aten_utils.h"
-#include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
@@ -35,9 +36,9 @@
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
-#include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
+#include "stablehlo/transforms/StablehloBroadcastLowering.h"
 #include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
@@ -71,32 +72,43 @@ NAryMlirOpBuilder<2, 1> LinalgSolveTriangularBuilder(
   return [options](FixedSizeSpan<mlir::MlirOp, 2> inputs)
              -> absl::StatusOr<mlir::MlirOp> {
     auto& [a_op, b_op] = inputs;
-    mlir::MlirBuilder& builder = a_op.getBuilder();
     ABSL_VLOG(1) << "triangular solve: " << "upper:" << options.upper
                  << " left:" << options.left
                  << " unitriangular:" << options.unitriangular;
-    auto a_type = GetTensorTypeOrDie(a_op);
-    auto b_type = GetTensorTypeOrDie(b_op);
-    auto a_batch_shape = a_type.getShape().slice(0, a_type.getRank() - 2);
-    auto b_batch_shape = b_type.getShape().slice(0, b_type.getRank() - 2);
-    TT_ASSIGN_OR_RETURN(auto broadcasted_batch_shape,
-                        InferSize(a_batch_shape, b_batch_shape));
-    Dimensions a_broadcasted_shape = broadcasted_batch_shape;
-    a_broadcasted_shape.push_back(a_type.getShape()[a_type.getRank() - 2]);
-    a_broadcasted_shape.push_back(a_type.getShape()[a_type.getRank() - 1]);
-
-    Dimensions b_broadcasted_shape = broadcasted_batch_shape;
-    b_broadcasted_shape.push_back(b_type.getShape()[b_type.getRank() - 2]);
-    b_broadcasted_shape.push_back(b_type.getShape()[b_type.getRank() - 1]);
-    TT_ASSIGN_OR_RETURN(a_op, BroadcastIfNeeded(a_op, a_broadcasted_shape));
-    TT_ASSIGN_OR_RETURN(b_op, BroadcastIfNeeded(b_op, b_broadcasted_shape));
-    auto triangular_solve_op =
-        builder.create<mlir::stablehlo::TriangularSolveOp>(
-            a_op.getValue(), b_op.getValue(), options.left, !options.upper,
-            options.unitriangular,
-            options.adjoint ? mlir::stablehlo::Transpose::ADJOINT
-                            : mlir::stablehlo::Transpose::NO_TRANSPOSE);
-    return triangular_solve_op;
+    const mlir::stablehlo::Dimensions a_dims = GetDimensions(a_op);
+    const mlir::stablehlo::Dimensions b_dims = GetDimensions(b_op);
+    ABSL_CHECK_GE(a_dims.size(), 2)  // CRASH_OK=validated by caller.
+        << "Expected rank >= 2, got " << a_dims.size()
+        << ". This is a TorchTPU bug.";
+    ABSL_CHECK_GE(b_dims.size(), 2)  // CRASH_OK=validated by caller.
+        << "Expected rank >= 2, got " << b_dims.size()
+        << ". This is a TorchTPU bug.";
+    const absl::Span<const mlir::stablehlo::DimensionInfo> a_batch_dims =
+        absl::MakeConstSpan(a_dims).subspan(0, a_dims.size() - 2);
+    const absl::Span<const mlir::stablehlo::DimensionInfo> b_batch_dims =
+        absl::MakeConstSpan(b_dims).subspan(0, b_dims.size() - 2);
+    TT_ASSIGN_OR_RETURN(
+        const mlir::stablehlo::Dimensions broadcasted_batch_dims,
+        InferBroadcastDimensions(a_batch_dims, b_batch_dims));
+    mlir::stablehlo::Dimensions a_broadcasted_dims = broadcasted_batch_dims;
+    a_broadcasted_dims.append(a_dims.end() - 2, a_dims.end());
+    mlir::stablehlo::Dimensions b_broadcasted_dims = broadcasted_batch_dims;
+    b_broadcasted_dims.append(b_dims.end() - 2, b_dims.end());
+    TT_ASSIGN_OR_RETURN(a_op,
+                        BroadcastIfNeeded(a_op, std::move(a_broadcasted_dims)));
+    TT_ASSIGN_OR_RETURN(b_op,
+                        BroadcastIfNeeded(b_op, std::move(b_broadcasted_dims)));
+    return TriangularSolveLike(
+        a_op, b_op,
+        TriangularSolveOptions{
+            .side = options.left ? MatrixSide::kLeft : MatrixSide::kRight,
+            .triangular = options.upper ? MatrixTriangular::kUpper
+                                        : MatrixTriangular::kLower,
+            .diagonal = options.unitriangular ? DiagonalKind::kUnit
+                                              : DiagonalKind::kNonUnit,
+            .transpose_a = options.adjoint ? MatrixTranspose::kAdjoint
+                                           : MatrixTranspose::kNoTranspose,
+        });
   };
 }
 
