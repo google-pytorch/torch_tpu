@@ -23,6 +23,13 @@ load(
     "use_pywrap_rules",
 )
 load("//bazel:supported_python_versions.bzl", "DEFAULT_PYTHON_VERSION", "SUPPORTED_PYTHON_VERSIONS")
+load(
+    "//build_files:accelerator_specification.bzl",
+    "OSS_TPU_RUNNER_CHIPS",
+    "TPU_GENERATION_PREFERENCES",
+    "TPU_VERSION_TO_GENERATION",
+    _resolve_legacy_accelerator_config = "resolve_legacy_accelerator_config",
+)
 load("//build_files:rbe.bzl", "add_rbe_exec_properties", "select_rbe_shard_count")
 load("//shims/build_cleaner:build_defs.bzl", "register_extension_info")
 load("//shims/build_files:build_defs.bzl", "process_accelerator_tags")
@@ -61,28 +68,6 @@ _TORCH_TPU_COPTS = [
     # We must explicitly enable them for TorchTPU headers.
     "--no-system-header-prefix=third_party/py/torch_tpu/",
 ]
-
-# The default ranking of which hardware generations to prioritize when automatically
-# assigning an OSS presubmit runner to a test.
-TPU_GENERATION_PREFERENCES = ["v5", "v7", "v6"]
-
-# Maps a `requires-tpu-<version>` tag to the TPU generation it corresponds to.
-# Hardware is selected by the `presubmit-v<N>` tag filters in .bazelrc, not
-# by `requires-tpu-<version>`, so a test asking for a specific accelerator
-# must be given the matching generation.
-TPU_VERSION_TO_GENERATION = {
-    "requires-tpu-v5lite": "v5",
-    "requires-tpu-v5p": "v5",
-    "requires-tpu-v6e": "v6",
-    "requires-tpu-v7x": "v7",
-}
-
-# Number of TPU chips available on a single OSS CI runner VM per generation.
-OSS_TPU_RUNNER_CHIPS = {
-    "v5": 8,
-    "v6": 8,
-    "v7": 4,
-}
 
 # Environment variables for `*_test_cov` targets that collect error coverage.
 # Disables addr2line C++ stack trace symbolization to avoid symbolizer overhead
@@ -181,8 +166,8 @@ def if_oss(oss_value, internal_value = None):
 # single-chip "requires-tpu-v5lite" and 8-chip "requires-tpu-v5lite:8"), so it
 # must only be used in the OSS branch of `if_oss(...)`. We write the internal
 # codename here rather than the exported external tag because:
-# 1. `build_defs.bzl` keys `TPU_VERSION_TO_GENERATION` on `"requires-tpu-v5lite"`
-#    before Copybara export.
+# 1. `TPU_VERSION_TO_GENERATION` (in `accelerator_specification.bzl`) keys on
+#    `"requires-tpu-v5lite"` before Copybara export.
 # 2. Copybara's reversible `tpu_codenames_to_external` transform rewrites the
 #    internal codenames to external tags across all BUILD/.bzl files and fails
 #    the reversibility check if the exported tag is present in the internal
@@ -676,6 +661,150 @@ def check_and_adjust_test_tags_for_testing(
         shard_count = shard_count,
     )
 
+def _runs_in_oss(nobuild, notap, notest_oss, nobuild_oss):
+    """Returns whether a test runs in OSS.
+
+    Mirrors `_check_and_adjust_test_tags`, where `nobuild` implies `nobuild_oss`, `notap` implies
+    `notest_oss`, and `nobuild_oss` implies `notest_oss`.
+
+    Args:
+        nobuild: Optional reason string for `nobuild`.
+        notap: Optional reason string for `notap`.
+        notest_oss: Whether OSS test execution is disabled.
+        nobuild_oss: Whether OSS building is disabled.
+
+    Returns:
+        `True` if the test executes in OSS CI, else `False`.
+    """
+    return not (nobuild or notap or notest_oss or nobuild_oss)
+
+def _check_compatible_accelerators_tags(tags):
+    """Checks whether `tags` directly selects TPU hardware or scheduling.
+
+    Args:
+        tags: List of target tag strings.
+
+    Returns:
+        An error message string if conflicting TPU tags are present, or `None`.
+    """
+    conflicting_tags = [
+        t
+        for t in tags
+        if (
+            _is_tpu_tag(t) or
+            t.startswith("fails-on-tpu-") or
+            t.startswith("presubmit-v") or
+            t.startswith("ok-to-wait-for-")
+        )
+    ]
+    if not conflicting_tags:
+        return None
+    return (
+        "Do not pass TPU hardware or scheduling tags %s in 'tags' when using " +
+        "'compatible_accelerators'; configure compatibility via tpus() and workflow " +
+        "selection via 'run_on' instead."
+    ) % (conflicting_tags,)
+
+def _apply_compatible_accelerators(
+        *,
+        name,
+        compatible_accelerators,
+        run_on,
+        is_oss,
+        nobuild,
+        notap,
+        nopresubmit,
+        notest_oss,
+        nobuild_oss,
+        nopresubmit_oss,
+        nonightly_oss,
+        oss_presubmit_tpu_generation,
+        run_on_accelerators,
+        tags,
+        supports_multi_target):
+    """Maps `compatible_accelerators` and `run_on` onto legacy test macro attributes.
+
+    Args:
+        name: Base name of the test target.
+        compatible_accelerators: Dict returned by `tpus()`, or `None`.
+        run_on: Dict returned by `run_on_config()`, or `None`.
+        is_oss: Whether building for OSS CI.
+        nobuild: Optional reason string to skip building the test.
+        notap: Optional reason string to skip TAP execution.
+        nopresubmit: Optional reason string to skip presubmit execution.
+        notest_oss: Whether OSS test execution is disabled.
+        nobuild_oss: Whether OSS building is disabled.
+        nopresubmit_oss: Optional reason string to skip OSS presubmit.
+        nonightly_oss: Optional reason string to skip OSS nightly.
+        oss_presubmit_tpu_generation: Legacy `tpu_gen()` dict, or `None`.
+        run_on_accelerators: Legacy multi-accelerator tag list, or `None`.
+        tags: Existing tag list on the target.
+        supports_multi_target: Whether the calling macro supports `run_on_accelerators`.
+
+    Returns:
+        A struct; see the implementation for its fields and their meaning.
+    """
+    if compatible_accelerators == None and run_on == None:
+        return struct(
+            tags = tags,
+            oss_presubmit_tpu_generation = oss_presubmit_tpu_generation,
+            run_on_accelerators = run_on_accelerators,
+            nopresubmit = nopresubmit,
+            nopresubmit_oss = nopresubmit_oss,
+            nonightly_oss = nonightly_oss,
+        )
+
+    if run_on_accelerators:
+        fail("'compatible_accelerators' and 'run_on_accelerators' are mutually exclusive.")
+    if oss_presubmit_tpu_generation != None:
+        fail("'compatible_accelerators' and 'oss_presubmit_tpu_generation' are mutually exclusive. " +
+             "Configure workflow accelerators via 'run_on' instead.")
+    tags_error = _check_compatible_accelerators_tags(tags)
+    if tags_error:
+        fail(tags_error)
+
+    resolved = _resolve_legacy_accelerator_config(
+        name = name,
+        compatible_accelerators = compatible_accelerators,
+        run_on = run_on,
+        is_oss = is_oss,
+        runs_in_oss = _runs_in_oss(nobuild, notap, notest_oss, nobuild_oss),
+        has_notap = notap != None,
+        has_nopresubmit = nopresubmit != None,
+        supports_multi_target = supports_multi_target,
+    )
+
+    merged_tags = list(tags)
+    for t in resolved["tags"]:
+        if t not in merged_tags:
+            merged_tags.append(t)
+
+    if nopresubmit == None and notap == None:
+        nopresubmit = resolved["nopresubmit"]
+    if nopresubmit_oss == None:
+        nopresubmit_oss = resolved["nopresubmit_oss"]
+    if nonightly_oss == None:
+        nonightly_oss = resolved["nonightly_oss"]
+
+    return struct(
+        # list[str]: Merged target tags including resolved hardware and scheduling tags.
+        tags = merged_tags,
+        # dict[str, str] | None: Resolved `tpu_gen`-shaped dict for OSS presubmit.
+        oss_presubmit_tpu_generation = resolved["oss_presubmit_tpu_generation"],
+        # list[str] | None: `requires-*` tags for multi-target expansion, if used.
+        run_on_accelerators = resolved["run_on_accelerators"],
+        # str | None: Effective reason string for `nopresubmit`.
+        nopresubmit = nopresubmit,
+        # str | None: Effective reason string for `nopresubmit_oss`.
+        nopresubmit_oss = nopresubmit_oss,
+        # str | None: Effective reason string for `nonightly_oss`.
+        nonightly_oss = nonightly_oss,
+    )
+
+# Exported for build_defs_test.bzl.
+check_compatible_accelerators_tags_for_testing = _check_compatible_accelerators_tags
+runs_in_oss_for_testing = _runs_in_oss
+
 def torch_tpu_cc_test(
         name,
         size = None,
@@ -696,6 +825,8 @@ def torch_tpu_cc_test(
         nopresubmit_oss = None,
         nonightly_oss = None,
         oss_presubmit_tpu_generation = None,
+        compatible_accelerators = None,
+        run_on = None,
         tags = None,
         requires_libtpu = None,
         use_tcmalloc = False,
@@ -738,8 +869,14 @@ def torch_tpu_cc_test(
             non-nightly OSS, and it will be built and run in the nightly OSS.
         nonightly_oss: If a string is provided, the test will be built but not run in the nightly
             OSS.
-        oss_presubmit_tpu_generation: Optional integer specifying the TPU generation to run this
+        oss_presubmit_tpu_generation: Optional tpu_gen() specifying the TPU generation to run this
             test on in OSS presubmit.
+        compatible_accelerators: Optional dict returned by `tpus()` declaring TPU compatibility
+            and minimum chip count. Mutually exclusive with TPU hardware or scheduling tags and
+            `oss_presubmit_tpu_generation`.
+        run_on: Optional dict returned by `run_on_config()` configuring which compatible
+            accelerators run across CI workflows (single-target configurations only; multi-target
+            expansion is not yet supported). Requires `compatible_accelerators`.
         requires_libtpu: If True, wraps the C++ test inside an sh_test wrapper
             in OSS to load libtpu.so cleanly. If None (default), the value is set
             depending on whether the test is declared as running on TPUs (`True`)
@@ -778,8 +915,30 @@ def torch_tpu_cc_test(
     # user can override it in the `args` field (the last arg wins).
     if not is_oss():
         args = ["--suppress_failure_output"] + args
-    tags = tags or []
+    tags = list(tags) if tags else []
     _fail_on_generic_requires_tpu_tag(tags)
+    mapped_acc = _apply_compatible_accelerators(
+        name = name,
+        compatible_accelerators = compatible_accelerators,
+        run_on = run_on,
+        is_oss = is_oss(),
+        nobuild = nobuild,
+        notap = notap,
+        nopresubmit = nopresubmit,
+        notest_oss = notest_oss,  # NOTEST_OSS_OK=Forwarding parameter in torch_tpu_cc_test macro
+        nobuild_oss = nobuild_oss,  # NOBUILD_OSS_OK=Forwarding parameter in torch_tpu_cc_test macro
+        nopresubmit_oss = nopresubmit_oss,
+        nonightly_oss = nonightly_oss,
+        oss_presubmit_tpu_generation = oss_presubmit_tpu_generation,
+        run_on_accelerators = None,
+        tags = tags,
+        supports_multi_target = False,
+    )
+    tags = mapped_acc.tags
+    oss_presubmit_tpu_generation = mapped_acc.oss_presubmit_tpu_generation
+    nopresubmit = mapped_acc.nopresubmit
+    nopresubmit_oss = mapped_acc.nopresubmit_oss
+    nonightly_oss = mapped_acc.nonightly_oss
     data = list(kwargs.pop("data", []))
     if is_oss():
         data = data + ["@bazel_tools//tools/bash/runfiles"]
@@ -1012,6 +1171,8 @@ def torch_tpu_py_test(
         nonightly_oss = None,
         oss_presubmit_tpu_generation = None,
         run_on_accelerators = None,
+        compatible_accelerators = None,
+        run_on = None,
         tags = None,
         **kwargs):
     """Creates a py_test for torch_tpu.
@@ -1075,6 +1236,11 @@ def torch_tpu_py_test(
             2. It is rare that a test fails on `requires-tpu-v6e` or `requires-tpu-v7x` but
                succeeds on `requires-tpu-v5lite` or `requires-tpu-v5p`, so it is wasteful to test
                for both in presubmit.
+        compatible_accelerators: Optional dict returned by `tpus()` declaring TPU compatibility
+            and minimum chip count. Mutually exclusive with TPU hardware or scheduling tags,
+            `oss_presubmit_tpu_generation`, and `run_on_accelerators`.
+        run_on: Optional dict returned by `run_on_config()` configuring which compatible
+            accelerators run across CI workflows. Requires `compatible_accelerators`.
         tags: The tags to add to the test.
         use_tcmalloc: Whether to preload hermetic Bazel-built libtcmalloc.so in OSS runs.
         **kwargs: Any additional arguments.
@@ -1095,8 +1261,31 @@ def torch_tpu_py_test(
         # Python tests in OSS don't support flags, so we only do this for the
         # internal build.
         args = ["--suppress_failure_output"] + args
-    tags = tags or []
+    tags = list(tags) if tags else []
     _fail_on_generic_requires_tpu_tag(tags)
+    mapped_acc = _apply_compatible_accelerators(
+        name = name,
+        compatible_accelerators = compatible_accelerators,
+        run_on = run_on,
+        is_oss = is_oss(),
+        nobuild = nobuild,
+        notap = notap,
+        nopresubmit = nopresubmit,
+        notest_oss = notest_oss,  # NOTEST_OSS_OK=Forwarding parameter in torch_tpu_py_test macro
+        nobuild_oss = nobuild_oss,  # NOBUILD_OSS_OK=Forwarding parameter in torch_tpu_py_test macro
+        nopresubmit_oss = nopresubmit_oss,
+        nonightly_oss = nonightly_oss,
+        oss_presubmit_tpu_generation = oss_presubmit_tpu_generation,
+        run_on_accelerators = run_on_accelerators,
+        tags = tags,
+        supports_multi_target = True,
+    )
+    tags = mapped_acc.tags
+    oss_presubmit_tpu_generation = mapped_acc.oss_presubmit_tpu_generation
+    run_on_accelerators = mapped_acc.run_on_accelerators
+    nopresubmit = mapped_acc.nopresubmit
+    nopresubmit_oss = mapped_acc.nopresubmit_oss
+    nonightly_oss = mapped_acc.nonightly_oss
     data = list(kwargs.pop("data", []))
     if is_wheel_test:
         if ":torch_tpu_wheel" not in data:
@@ -1296,7 +1485,7 @@ def torch_tpu_py_test(
             generation = _get_tpu_generation(requires_acc)
             if not generation:
                 fail("Unknown accelerator '%s'. Please add it to " % requires_acc +
-                     "TPU_VERSION_TO_GENERATION.")
+                     "TPU_MODELS in accelerator_specification_internal.bzl.")
 
             other_gen_tags = [
                 "fails-on-tpu-" + gen
