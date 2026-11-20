@@ -892,6 +892,37 @@ def _schedule_divergence_message(
   return None
 
 
+def _needs_dma_schedule_sweep(
+    kernel_models: Sequence[jaxpr_model.KernelVerificationModel] | None,
+) -> bool:
+  """Returns whether varying `dma_execution_mode` can affect execution."""
+  if kernel_models is None:
+    return True
+  return any(
+      m.dma_starts
+      or m.dma_waits
+      or m.sync_truncated
+      or m.unwalked_sync
+      or not m.sync_reliable
+      for m in kernel_models
+  )
+
+
+def _needs_parallel_seed_sweep(
+    kernel_models: Sequence[jaxpr_model.KernelVerificationModel] | None,
+) -> bool:
+  """Returns whether varying `random_seed` can affect parallel grid order."""
+  if kernel_models is None:
+    return True
+  return any(
+      any(
+          sem == "parallel" and (not isinstance(size, int) or size > 1)
+          for sem, size in zip(m.dimension_semantics, m.grid)
+      )
+      for m in kernel_models
+  )
+
+
 def verify_with_cpu_interpret(
     op_or_fn: Any,
     example_args: Sequence[Any],
@@ -1108,10 +1139,23 @@ def verify_with_cpu_interpret(
       )
     return classified
 
-  for mode in config.schedule_modes:
+  # Skip redundant DMA modes or seeds when static models prove they cannot
+  # affect interpreter execution (each distinct InterpretParams recompiles).
+  schedule_modes = (
+      config.schedule_modes
+      if _needs_dma_schedule_sweep(kernel_models)
+      else config.schedule_modes[:1]
+  )
+  seeds = (
+      config.seeds
+      if _needs_parallel_seed_sweep(kernel_models)
+      else config.seeds[:1]
+  )
+
+  for mode in schedule_modes:
     if stop_sweep:
       break
-    for seed in config.seeds:
+    for seed in seeds:
       schedule_desc = f"dma={mode.value}, seed={seed}"
       schedule_params = dict(
           dma_execution_mode=(
