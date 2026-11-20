@@ -1782,7 +1782,7 @@ TORCH_LIBRARY_IMPL(tpu, Meta, m) {
              const at::Tensor& input_offsets, const at::Tensor& send_sizes,
              const at::Tensor& output_offsets, const at::Tensor& recv_sizes,
              std::string_view process_group_name) {
-        return at::empty_like(output);
+        return at::empty_symint(output.sym_sizes(), output.options());
       });
   ImplInternal<OpName::kRaggedAllToAllOut>(
       m,
@@ -1790,7 +1790,7 @@ TORCH_LIBRARY_IMPL(tpu, Meta, m) {
           const at::Tensor& input_offsets, const at::Tensor& send_sizes,
           const at::Tensor& output_offsets, const at::Tensor& recv_sizes,
           std::string_view process_group_name, at::Tensor& out) -> at::Tensor& {
-        at::native::resize_output(out, output.sizes());
+        at::native::resize_output_symint(out, output.sym_sizes());
         return out;
       });
   ImplInternal<OpName::kTorchTpuOptimizationBarrier>(
@@ -1875,15 +1875,7 @@ TORCH_LIBRARY_IMPL(tpu, AutogradPrivateUse1, m) {
              const at::Tensor& group_sizes) {
         return AtenRaggedDotAutograd::apply(lhs, rhs, group_sizes);
       });
-  ImplInternal<OpName::kRaggedAllToAll>(
-      m, +[](const at::Tensor& operand, const at::Tensor& output,
-             const at::Tensor& input_offsets, const at::Tensor& send_sizes,
-             const at::Tensor& output_offsets, const at::Tensor& recv_sizes,
-             std::string_view process_group_name) {
-        return AtenRaggedAllToAllAutograd::apply(
-            operand, output, input_offsets, send_sizes, output_offsets,
-            recv_sizes, process_group_name);
-      });
+  ImplInternal<OpName::kRaggedAllToAll>(m, AtenRaggedAllToAllAutograd);
   ImplInternal<OpName::kSparseGather>(
       m, +[](const at::Tensor& row_pointers, const at::Tensor& indices,
              const at::Tensor& operand, int64_t max_non_zeroes_per_row) {

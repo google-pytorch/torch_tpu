@@ -1242,10 +1242,42 @@ def run_ragged_all_to_all_dtype_mismatch_error() -> None:
     )
 
 
+def run_ragged_all_to_all_offsets_errors() -> None:
+  world_size = dist.get_world_size()
+  _, send_sizes, output_offsets, recv_sizes = _make_ragged_all_to_all_metadata(
+      world_size
+  )
+  operand = torch.ones(
+      world_size, dtype=torch.float32, device="tpu", requires_grad=True
+  )
+  output = torch.zeros(world_size, dtype=torch.float32, device="tpu")
+  for bad_shape, pattern in (
+      ((world_size, 1), ".*expected 1D offsets, got 2D.*"),
+      (
+          (world_size + 1,),
+          ".*expected the size of offsets to be divisible by process group.*",
+      ),
+  ):
+    input_offsets = torch.zeros(bad_shape, dtype=torch.int32, device="tpu")
+    with et.assert_raises_message(
+        RuntimeError, tpu=re.compile(pattern, re.DOTALL)
+    ):
+      torch.tpu.ops.ragged_all_to_all(
+          operand,
+          output,
+          input_offsets,
+          send_sizes,
+          output_offsets,
+          recv_sizes,
+          dist.group.WORLD.group_name,
+      )
+
+
 def run_ragged_all_to_all_errors() -> None:
   run_ragged_all_to_all_dim_count_mismatch_error()
   run_ragged_all_to_all_trailing_dims_mismatch_error()
   run_ragged_all_to_all_dtype_mismatch_error()
+  run_ragged_all_to_all_offsets_errors()
 
 
 def run_all_to_all_collective_errors() -> None:
