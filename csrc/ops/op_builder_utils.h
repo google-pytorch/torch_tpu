@@ -823,6 +823,76 @@ absl::StatusOr<DynamicMlirOpResults> ToResultVector(
 absl::StatusOr<DynamicMlirOpResults> ToResultVector(
     absl::StatusOr<mlir::MlirOp> results);
 
+// Computes the NumPy-broadcasted shape of `lhs_dims` and `rhs_dims`,
+// preserving bounded dynamic dimension metadata.
+absl::StatusOr<mlir::stablehlo::Dimensions> InferBroadcastDimensions(
+    absl::Span<const mlir::stablehlo::DimensionInfo> lhs_dims,
+    absl::Span<const mlir::stablehlo::DimensionInfo> rhs_dims);
+
+enum class MatrixSide {
+  kLeft,
+  kRight,
+};
+
+enum class MatrixTriangular {
+  kLower,
+  kUpper,
+};
+
+enum class DiagonalKind {
+  kNonUnit,
+  kUnit,
+};
+
+enum class MatrixTranspose {
+  kNoTranspose,
+  kTranspose,
+  kAdjoint,
+};
+
+struct TriangularSolveOptions {
+  MatrixSide side = MatrixSide::kLeft;
+  MatrixTriangular triangular = MatrixTriangular::kLower;
+  DiagonalKind diagonal = DiagonalKind::kNonUnit;
+  MatrixTranspose transpose_a = MatrixTranspose::kNoTranspose;
+};
+
+// Builds a `stablehlo.triangular_solve` that also supports bounded dynamic
+// batch and matrix dimensions. Expects `a` and `b` to have equal rank >= 2 and
+// matching batch dimensions; runs the triangular solve at static upper bounds
+// when bounded (padding `a` past runtime sizes with an identity diagonal and
+// zeroing `b` past runtime sizes), and restores bounded dynamic dimension
+// sizes on the result.
+absl::StatusOr<mlir::MlirOp> TriangularSolveLike(
+    mlir::MlirOp a, mlir::MlirOp b, const TriangularSolveOptions& options);
+
+enum class LuPivotTarget {
+  kRows,
+  kColumns,
+};
+
+enum class LuPivotDirection {
+  // Applies P by iterating swaps in reverse order (`k = num_pivots - 1 .. 0`).
+  kForward,
+  // Applies P^T by iterating swaps in forward order (`k = 0 .. num_pivots -
+  // 1`).
+  kInverse,
+};
+
+struct LuPivotOptions {
+  LuPivotTarget target = LuPivotTarget::kRows;
+  LuPivotDirection direction = LuPivotDirection::kForward;
+};
+
+// Applies a batch of 1-indexed LAPACK/PyTorch LU pivot swaps (`pivots` of shape
+// `(B..., P)`) to the rows or columns of `input` (of shape `(B..., R, C)`).
+// Supports both static and bounded dynamic batch and matrix dimensions.
+// Callers must ensure that the runtime `P` is at most the runtime size of the
+// pivoted dimension (`R` for rows, `C` for columns).
+absl::StatusOr<mlir::MlirOp> ApplyLuPivotsLike(mlir::MlirOp input,
+                                               mlir::MlirOp pivots,
+                                               const LuPivotOptions& options);
+
 // Builds a module name from the current Python stack frame.
 // In most cases this frame is the one that triggered a materialization.
 //
