@@ -922,7 +922,8 @@ torch_tpu_py_test(
     srcs = ["ops_test.py"],
     args = [
         "--test_categories=nonzero",
-        "--max_samples_per_op_dtype=10",  # To avoid timeout.
+        # No sample limit: nonzero's first samples are ones that no dynamic
+        # kernel serves (0-d inputs and inputs with fewer than 2 nonzeros).
     ],
     data = _GPU_GOLDENS_DATA,
     main = "ops_test.py",

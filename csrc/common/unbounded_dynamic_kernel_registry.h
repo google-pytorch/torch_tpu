@@ -22,6 +22,7 @@
 
 #include "absl/base/no_destructor.h"
 #include "absl/base/nullability.h"
+#include "absl/container/btree_set.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -30,6 +31,7 @@
 #include "csrc/common/compilation.h"
 #include "csrc/common/compilation_spec.h"
 #include "csrc/common/shape.h"
+#include "csrc/ops/op_names.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_executable.h"
 
@@ -46,6 +48,10 @@ struct UnboundedDynamicKernel {
   UnboundedDynamicExecutionMetadata metadata;
   // Identifies the kernel, and its executable in the compilation cache.
   CompilationCacheKey key;
+  // The op of the single-op graphs that the kernel serves, e.g. `kNonzero`,
+  // through `key` and any additional search keys. Tests use it to find the ops
+  // that have kernels.
+  OpName op_name;
   // Whether a cache miss may load the kernel when
   // TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS is "default" (or unset).
   // Opt-in kernels (false) are only loaded when it is "all".
@@ -88,6 +94,10 @@ class UnboundedDynamicKernelRegistry {
   FindUnboundedDynamicKernel(const ExtentlessKey& key,
                              absl::Span<const Shape> input_shapes,
                              absl::Span<const Shape> output_shapes) const;
+
+  // Returns the `op_name`s of the registered kernels, whether or not
+  // TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS enables them.
+  [[nodiscard]] absl::btree_set<OpName> GetOpNames() const;
 
  private:
   // Owns the kernels, indexed by their exact cache key.
