@@ -21,6 +21,7 @@ import hashlib
 import os
 import pathlib
 import plistlib
+import re
 import tempfile
 from typing import Any
 import unittest
@@ -37,6 +38,7 @@ from tests import dynamism_test_utils
 from tests import goldens_pin
 from tests import op_testing
 from tests import ops_test
+from tests import oss_utils
 from tests import seed_test_utils
 from tests import test_utils as tests_test_utils
 
@@ -1103,6 +1105,152 @@ class OpTestingTest(op_testing.OpInfoTestBase):
     self.assertNotEmpty(samples)
     for sample in samples:
       self.assertLessEqual(op_testing._sample_max_tensor_numel(sample), 100_000)
+
+  def test_all_known_ops_have_test_in_ops_test(self):
+    # Synthetic CUDA-only NVRTC JIT harness ops in common_methods_invocations.py
+    # (not real ATen operators; compiling them with NVRTC slows/times out GPU
+    # smoke shards).
+    excluded_jiterator_op_names = frozenset({
+        "jiterator_2inputs_2outputs",
+        "jiterator_4inputs_with_extra_args",
+        "jiterator_binary",
+        "jiterator_binary_return_by_ref",
+        "jiterator_unary",
+    })
+    non_aten_excluded_op_keys = frozenset(
+        (op.name, op.variant_test_name)
+        for db in (
+            op_testing.autograd_function_db.autograd_function_db,
+            op_testing.custom_op_db.custom_op_db,
+            op_testing.hop_db.hop_db,
+            # dsl_ops_by_dsl was added after PyTorch 2.11 (used in OSS RBE).
+            *getattr(common_methods_invocations, "dsl_ops_by_dsl", {}).values(),
+        )
+        for op in db
+    )
+    expected_ops: dict[tuple[str, str], op_testing.OpInfo] = {}
+    for op in op_testing._KNOWN_OPS:
+      if op.name in excluded_jiterator_op_names:
+        continue
+      key = (op.name, op.variant_test_name)
+      if key not in non_aten_excluded_op_keys and key not in expected_ops:
+        expected_ops[key] = op
+
+    existing_method_names: set[str] = set()
+    covered_op_keys: set[tuple[str, str]] = set()
+    missing_foreach_category: list[str] = []
+    unexpected_jiterator_tests: list[str] = []
+    recorded_calls: list[tuple[str, str | None]] = []
+
+    def record(
+        test_self: op_testing.OpInfoTestBase,
+        op_name: str,
+        *,
+        variant_test_name: str | None = None,
+        **kwargs: Any,
+    ) -> None:
+      del test_self, kwargs
+      recorded_calls.append((op_name, variant_test_name))
+
+    test_instance = ops_test.TestOps("test_abs")
+    with mock.patch.object(ops_test.TestOps, "do_test_op", record):
+      for attr_name in sorted(dir(ops_test.TestOps)):
+        if not attr_name.startswith("test_"):
+          continue
+        method = getattr(test_instance, attr_name)
+        if not callable(method):
+          continue
+        existing_method_names.add(attr_name)
+        has_foreach_category = "foreach" in getattr(method, "categories", set())
+        is_unimplemented = bool(
+            getattr(method, op_testing._UNIMPLEMENTED_ON_TPU_ATTR, None)
+        )
+        recorded_calls.clear()
+        method()
+        self.assertNotEmpty(
+            recorded_calls,
+            f"TestOps.{attr_name} did not invoke do_test_op().",
+        )
+        for op_name, variant_test_name in recorded_calls:
+          if op_name in excluded_jiterator_op_names:
+            unexpected_jiterator_tests.append(attr_name)
+            continue
+          try:
+            resolved = op_testing._get_op(
+                op_name, variant_test_name=variant_test_name
+            )
+          except ValueError:
+            # Older OSS PyTorch versions (e.g. 2.11) may lack OpInfos added in
+            # newer PyTorch snapshots. Tolerate missing unimplemented stubs in
+            # OSS while enforcing strict resolution internally.
+            if is_unimplemented and oss_utils.is_oss():
+              continue
+            raise
+          covered_op_keys.add((resolved.name, resolved.variant_test_name))
+          if (
+              isinstance(resolved, op_testing.core.ForeachFuncInfo)
+              and not has_foreach_category
+          ):
+            missing_foreach_category.append(attr_name)
+
+    self.assertEmpty(
+        unexpected_jiterator_tests,
+        "Synthetic NVRTC jiterator_* ops should not be registered in"
+        f" ops_test.py: {unexpected_jiterator_tests}",
+    )
+    self.assertEmpty(
+        missing_foreach_category,
+        "ForeachFuncInfo tests in ops_test.py missing @category('foreach'):"
+        f" {missing_foreach_category}",
+    )
+
+    if oss_utils.is_oss():
+      # Nightly OSS PyTorch may introduce new OpInfos before they are imported
+      # internally; only enforce full coverage in internal builds.
+      return
+
+    missing_keys = [key for key in expected_ops if key not in covered_op_keys]
+    if missing_keys:
+      used_names = set(existing_method_names)
+      stubs: list[str] = []
+      for op_name, variant_test_name in sorted(missing_keys):
+        op = expected_ops[(op_name, variant_test_name)]
+        raw_slug = op_name
+        if raw_slug.startswith("__") and raw_slug.endswith("__"):
+          raw_slug = f"dunder_{raw_slug.strip('_')}"
+        if variant_test_name:
+          raw_slug = f"{raw_slug}_{variant_test_name}"
+        slug = re.sub(r"[^a-zA-Z0-9_]+", "_", raw_slug).strip("_")
+        method_name = f"test_{slug}"
+        suffix = 2
+        while method_name in used_names:
+          method_name = f"test_{slug}_{suffix}"
+          suffix += 1
+        used_names.add(method_name)
+
+        lines = []
+        if isinstance(op, op_testing.core.ForeachFuncInfo):
+          lines.append('  @category("foreach")')
+        lines.append("  @op_testing.unimplemented_on_tpu")
+        lines.append(f"  def {method_name}(self):")
+        needs_explicit_variant = bool(variant_test_name) or (
+            op_testing._get_op(op_name).variant_test_name != ""
+        )
+        if needs_explicit_variant:
+          lines.append(
+              f'    self.do_test_op("{op_name}",'
+              f' variant_test_name="{variant_test_name}")'
+          )
+        else:
+          lines.append(f'    self.do_test_op("{op_name}")')
+        stubs.append("\n".join(lines))
+
+      stubs_text = "\n\n".join(stubs) + "\n"
+      self.fail(
+          f"{len(missing_keys)} OpInfo(s) in _KNOWN_OPS are missing test_*"
+          " methods in ops_test.TestOps. Add the following stubs to"
+          f" ops_test.py:\n\n{stubs_text[:4000]}"
+      )
 
 
 @dataclasses.dataclass(frozen=True)

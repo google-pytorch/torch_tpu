@@ -1320,7 +1320,7 @@ torch_tpu_py_test(
     main = "ops_test.py",
     nolocal = "slow test",
     platform = _GPU_GOLDEN_PLATFORM,
-    shard_count = 6,
+    shard_count = 12,
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
@@ -1409,11 +1409,13 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "op_testing_test",
     srcs = ["op_testing_test.py"],
+    env = {"IS_OSS": if_oss("1", "0")},
     deps = [
         ":dynamism_test_utils",
         ":goldens_pin",
         ":op_testing",
         ":ops_test_lib",
+        ":oss_utils",
         ":seed_test_utils",
         ":test_utils",
         "//shims/absl_py/testing:absltest",
