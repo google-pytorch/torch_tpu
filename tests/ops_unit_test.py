@@ -14688,6 +14688,47 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
               actual=out_tpu.cpu(), expected=out_cpu, rtol=1e-12, atol=1e-12
           )
 
+  def test_flip_scalar_and_empty_dims(self):
+    """Tests flip on 0D scalars, empty dims, zero-sized dims, and copy semantics."""
+    for dims in ([], [0], [-1]):
+      with self.subTest(case="0d", dims=dims):
+        x_cpu = torch.tensor(5.0, dtype=torch.float32)
+        x_tpu = x_cpu.to("tpu")
+        y_cpu = torch.flip(x_cpu, dims)
+        y_tpu = torch.flip(x_tpu, dims)
+        self.assertEqual(y_tpu.shape, ())
+        utils.assert_close(actual=y_tpu.cpu(), expected=y_cpu)
+        x_tpu.add_(1.0)
+        utils.assert_close(actual=y_tpu.cpu(), expected=y_cpu)
+
+    with self.subTest(case="nd_empty_dims"):
+      x_cpu = torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+      x_tpu = x_cpu.to("tpu")
+      y_cpu = torch.flip(x_cpu, [])
+      y_tpu = torch.flip(x_tpu, [])
+      utils.assert_close(actual=y_tpu.cpu(), expected=y_cpu)
+      x_tpu.add_(1.0)
+      utils.assert_close(actual=y_tpu.cpu(), expected=y_cpu)
+
+    with self.subTest(case="zero_sized_dim"):
+      x_cpu = torch.empty((3, 0, 2), dtype=torch.float32)
+      x_tpu = x_cpu.to("tpu")
+      for dims in ([0], [1], [0, -1], []):
+        y_cpu = torch.flip(x_cpu, dims)
+        y_tpu = torch.flip(x_tpu, dims)
+        self.assertEqual(y_tpu.shape, y_cpu.shape)
+        utils.assert_close(actual=y_tpu.cpu(), expected=y_cpu)
+
+    with self.subTest(case="0d_compiled"):
+      compiled_flip = torch.compile(
+          lambda t: torch.flip(t, [0]), fullgraph=True
+      )
+      x_cpu = torch.tensor(7.0, dtype=torch.float32)
+      x_tpu = x_cpu.to("tpu")
+      utils.assert_close(
+          actual=compiled_flip(x_tpu).cpu(), expected=torch.flip(x_cpu, [0])
+      )
+
 
 class OpsCustomOpUnitTest(TorchTpuVsCpuTestBase):
   """Tests for custom ops."""

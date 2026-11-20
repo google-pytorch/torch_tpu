@@ -18094,6 +18094,77 @@ Got a.dtype()=Float8_e4m3fn, scale_a.dtype()=Float, scale_a.size()=[1], scale_a.
           contraction_dim=[0, 1],
       )
 
+  def test_flip_dim_out_of_bounds(self):
+    t = torch.ones(2, 3, device=et.device())
+    with self.subTest("positive"):
+      with et.assert_raises_message(
+          IndexError,
+          tpu="""flip(): expected dimension to be in range [-2, 1], got 2""",
+          gpu="""Dimension out of range (expected to be in range of [-2, 1], but got 2)""",
+      ):
+        torch.flip(t, [2])
+
+    with self.subTest("negative"):
+      with et.assert_raises_message(
+          IndexError,
+          tpu="""flip(): expected dimension to be in range [-2, 1], got -3""",
+          gpu="""Dimension out of range (expected to be in range of [-2, 1], but got -3)""",
+      ):
+        torch.flip(t, [-3])
+
+  def test_flip_scalar_dim_out_of_bounds(self):
+    t = torch.tensor(5.0, device=et.device())
+    with self.subTest("positive"):
+      with et.assert_raises_message(
+          IndexError,
+          tpu="""flip(): expected dimension to be either 0 or -1 for a shape with 0 dimensions, got 1""",
+          gpu="""Dimension out of range (expected to be in range of [-1, 0], but got 1)""",
+      ):
+        torch.flip(t, [1])
+
+    with self.subTest("negative"):
+      with et.assert_raises_message(
+          IndexError,
+          tpu="""flip(): expected dimension to be either 0 or -1 for a shape with 0 dimensions, got -2""",
+          gpu="""Dimension out of range (expected to be in range of [-1, 0], but got -2)""",
+      ):
+        torch.flip(t, [-2])
+
+  def test_flip_duplicate_dims(self):
+    t = torch.ones(2, 3, device=et.device())
+    with self.subTest("2d_exact_duplicate"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""flip(): dim 0 appears multiple times in the list of dims""",
+          gpu="""dim 0 appears multiple times in the list of dims""",
+      ):
+        torch.flip(t, [0, 0])
+
+    with self.subTest("2d_wrapped_duplicate"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""flip(): dim 0 appears multiple times in the list of dims""",
+          gpu="""dim 0 appears multiple times in the list of dims""",
+      ):
+        torch.flip(t, [0, -2])
+
+    t_scalar = torch.tensor(5.0, device=et.device())
+    with self.subTest("0d_exact_duplicate"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""flip(): dim 0 appears multiple times in the list of dims""",
+          gpu="""dim 0 appears multiple times in the list of dims""",
+      ):
+        torch.flip(t_scalar, [0, 0])
+
+    with self.subTest("0d_wrapped_duplicate"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""flip(): dim 0 appears multiple times in the list of dims""",
+          gpu="""dim 0 appears multiple times in the list of dims""",
+      ):
+        torch.flip(t_scalar, [0, -1])
+
 
 class InputPreprocessingErrorTest(et.ErrorTestBase):
 
