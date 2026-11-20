@@ -2078,6 +2078,36 @@ class CoupledDimDiscoveryTest(seed_test_utils.RepeatableTest):
         ),
     )
 
+  def test_compile_bucket_size(self):
+    td = dynamism_test_utils.TensorDim
+    # Single dim and 2 dims per tensor keep the default bucket size (None).
+    single_dim_plan = dynamism_test_utils.DynamicMarkingPlan(
+        label="t0d0",
+        tensor_dims=(td(0, 0),),
+        coupled_dims=(td(0, 0),),
+    )
+    self.assertIsNone(dynamism_test_utils.compile_bucket_size(single_dim_plan))
+
+    two_dims_two_tensors_plan = dynamism_test_utils.DynamicMarkingPlan(
+        label="t0d0_t0d1",
+        tensor_dims=(td(0, 0), td(0, 1)),
+        coupled_dims=(td(0, 0), td(0, 1), td(1, 0), td(1, 1)),
+    )
+    self.assertIsNone(
+        dynamism_test_utils.compile_bucket_size(two_dims_two_tensors_plan)
+    )
+
+    # 3+ dynamic dims on a single tensor use the smaller multi-dim bucket size.
+    three_dims_plan = dynamism_test_utils.DynamicMarkingPlan(
+        label="t0d0_t0d1_t0d2",
+        tensor_dims=(td(0, 0), td(0, 1), td(0, 2)),
+        coupled_dims=(td(0, 0), td(0, 1), td(0, 2)),
+    )
+    self.assertEqual(
+        dynamism_test_utils.compile_bucket_size(three_dims_plan),
+        dynamism_test_utils.MULTI_DIM_BUCKET_SIZE,
+    )
+
 
 if __name__ == "__main__":
   absltest.main()

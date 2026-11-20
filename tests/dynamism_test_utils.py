@@ -21,6 +21,7 @@ Handles the following details for per-op unit testing:
   - Mark inputs as dynamic.
 """
 
+import collections
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 import dataclasses
 import enum
@@ -53,6 +54,17 @@ EAGER = DynamismMode.EAGER
 COMPILE = DynamismMode.COMPILE
 COMPILE_GRAD = DynamismMode.COMPILE_GRAD
 ALL_MODES = frozenset(DynamismMode)
+
+DEFAULT_BUCKET_SIZE = 128
+# When 3+ dimensions on a single tensor are marked dynamic simultaneously
+# without explicit upper bounds, rounding every dimension to 128 produces
+# 128^3 = 2,097,152+ elements (e.g., `flatten` / `repeat_interleave`), causing
+# XLA SliceToDynamic backend compilation to emit ~70k bundles (~2 min per dtype
+# under ASAN) and blow up HBM. Use a smaller power-of-2 bucket step (16) so
+# 3D+ bounded tensors stay small while preserving power-of-2 divisibility
+# guards.
+MULTI_DIM_BUCKET_THRESHOLD = 3
+MULTI_DIM_BUCKET_SIZE = 16
 
 
 @dataclasses.dataclass(frozen=True, order=True)
@@ -103,6 +115,16 @@ class DynamicMarkingPlan:
           "tensor_dims must be non-negative and strictly ascending without"
           f" duplicates, got {self.tensor_dims}."
       )
+
+
+def compile_bucket_size(plan: DynamicMarkingPlan) -> int | None:
+  """Returns an override `bucket_size` for `torch.compile`, or None."""
+  dims_per_tensor = collections.Counter(
+      c.tensor_index for c in plan.coupled_dims
+  )
+  if max(dims_per_tensor.values(), default=0) >= MULTI_DIM_BUCKET_THRESHOLD:
+    return MULTI_DIM_BUCKET_SIZE
+  return None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -319,12 +341,20 @@ def _satisfies_upper_bound_guards(
 
   bucket_ub: dict[str, int] = {}
   fallback_ub: dict[str, int] = {}
-  for sym in canonical_syms:
+  canonical_syms_tuple = tuple(canonical_syms)
+  bucket_step = (
+      MULTI_DIM_BUCKET_SIZE
+      if len(canonical_syms_tuple) >= MULTI_DIM_BUCKET_THRESHOLD
+      else DEFAULT_BUCKET_SIZE
+  )
+  for sym in canonical_syms_tuple:
     sz = int(shape_env.backed_var_to_val[sym])
     vr_upper = shape_env.var_to_range[sym].upper
     finite_ub = None if sympy_numbers.is_infinite(vr_upper) else int(vr_upper)
     bucket_ub[str(sym)] = (
-        finite_ub if finite_ub is not None else -(-sz // 128) * 128
+        finite_ub
+        if finite_ub is not None
+        else -(-sz // bucket_step) * bucket_step
     )
     fallback_ub[str(sym)] = (
         finite_ub

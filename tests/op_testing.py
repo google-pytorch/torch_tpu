@@ -7399,6 +7399,7 @@ class OpInfoTestBase(TorchTpuTestBase):
           device,
           device_op_input,
           is_dynamic_test=is_dynamic_test,
+          marking_plan=marking_plan,
       )
     input_value = device_op_input.input_value
 
@@ -7566,6 +7567,7 @@ class OpInfoTestBase(TorchTpuTestBase):
       device_op_input: OpInput,
       *,
       is_dynamic_test: bool,
+      marking_plan: DynamicMarkingPlan | None = None,
   ) -> Callable[..., Any]:
     """Returns `op_func` compiled for `device`, or skips the test."""
     op_name = _op_name_for_logging(op, variant)
@@ -7578,6 +7580,12 @@ class OpInfoTestBase(TorchTpuTestBase):
       # Reset Dynamo state so dimensions marked dynamic in earlier subtests
       # do not carry over across compilations.
       torch._dynamo.reset()  # pylint: disable=protected-access
+      if backend == "tpu" and marking_plan is not None:
+        bucket_size = dynamism_test_utils.compile_bucket_size(marking_plan)
+        if bucket_size is not None:
+          return torch.compile(
+              op_func, backend=backend, options={"bucket_size": bucket_size}
+          )
       return torch.compile(op_func, backend=backend)
     return torch.compile(op_func, dynamic=False, backend=backend)
 
