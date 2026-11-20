@@ -918,6 +918,59 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     ):
       (tensor + 1).cpu()
 
+  @et.why_tpu_only(
+      "CUDA set_.source_Tensor resizes shared untyped byte storage when sizes"
+      " change instead of checking dtype"
+  )
+  def test_set_source_tensor_different_dtype_empty_self(self):
+    dst = torch.empty(0, device=et.device(), dtype=torch.float32)
+    source = torch.ones(4, device=et.device(), dtype=torch.int8)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""set_(): expected self and source to have the same dtype, got float32 and int8""",
+    ):
+      torch.ops.aten.set_.source_Tensor(dst, source)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="float32",
+          shape=(4,),
+          dtype=torch.float32,
+          required_bytes=16,
+      ),
+      dict(
+          testcase_name="float4_e2m1fn_x2",
+          shape=(3, 4),
+          dtype=torch.float4_e2m1fn_x2,
+          required_bytes=12,
+      ),
+  )
+  @et.why_tpu_only(
+      "CUDA set_.source_Tensor omits storage bounds validation when setting"
+      " from a Tensor"
+  )
+  def test_set_tensor_storage_out_of_bounds(
+      self,
+      shape: tuple[int, ...],
+      dtype: torch.dtype,
+      required_bytes: int,
+  ):
+    dst_shape = (1, 2) if len(shape) == 2 else (2,)
+    dst = torch.empty(dst_shape, device=et.device(), dtype=dtype)
+    orig_stride = dst.stride()
+    orig_ptr = dst.data_ptr()
+    source = torch.empty(shape, device=et.device(), dtype=dtype)
+    source.untyped_storage().resize_(0)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""set_(): expected the number of bytes required by the given arguments to be <= 0 (actual storage size), got {required_bytes}""",
+    ):
+      dst.set_(source)
+    self.assertEqual(dst.size(), dst_shape)
+    self.assertEqual(dst.stride(), orig_stride)
+    self.assertEqual(dst.dtype, dtype)
+    self.assertEqual(dst.data_ptr(), orig_ptr)
+
   # Confirmed this test does NOT fail on cpu.
   @et.why_tpu_only("TODO: support complex dtypes in addmm on TPU.")
   def test_addmm_on_complex_input(self):

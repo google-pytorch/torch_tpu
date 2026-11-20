@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <utility>
 
+#include "ATen/core/TensorBody.h"
 #include "c10/core/Storage.h"
 #include "c10/core/SymInt.h"
 #include "c10/core/SymIntArrayRef.h"
@@ -27,6 +28,8 @@
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/layout_utils.h"
+#include "csrc/common/to_string.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/device_buffer_utils.h"
 #include "csrc/eager/tensor_to_buffer.h"
@@ -107,13 +110,34 @@ at::Tensor& AtenSet_SourceStorageOffset(at::Tensor& self, c10::Storage src,
 
 at::Tensor& AtenSet_SourceTensor(at::Tensor& self, const at::Tensor& src) {
   TT_KERNEL(OpName::kSet_SourceTensor, _, (self, src), {
-    auto tensor_impl = src.unsafeGetTensorImpl();
-    c10::Storage src_storage = tensor_impl->storage();
+    if (self.unsafeGetTensorImpl() == src.unsafeGetTensorImpl()) {
+      return self;
+    }
+    TT_CHECK_THROW(self.device() == src.device(), error::kInvalidArgument)
+        << "expected self and source to be on the same device, got "
+        << ToString(self.device()) << " and " << ToString(src.device());
+    TT_CHECK_THROW(self.scalar_type() == src.scalar_type(),
+                   error::kInvalidArgument)
+        << "expected self and source to have the same dtype, got "
+        << ToString(self.scalar_type()) << " and "
+        << ToString(src.scalar_type());
+
+    TT_ASSIGN_OR_THROW(const DeviceBufferRef buffer_ref, GetBaseBuffer(src));
+    TT_ASSIGN_OR_THROW(TpuLayout tpu_layout, ResolveTpuLayout(src));
+    TT_THROW_IF_ERROR(ValidateProvidedLayoutDataFitsInStorage(
+        buffer_ref.num_elements(), buffer_ref.element_type(),
+        std::move(tpu_layout.sizes), std::move(tpu_layout.strides),
+        tpu_layout.storage_offset, tpu_layout.element_type));
+
+    const c10::TensorImpl* src_impl = src.unsafeGetTensorImpl();
+    c10::Storage src_storage = src_impl->storage();
     c10::TensorImpl* impl = self.unsafeGetTensorImpl();
-    impl->set_storage_keep_dtype(std::move(src_storage));
-    impl->set_sizes_and_strides(
-        /*sizes=*/tensor_impl->sizes(), /*strides=*/tensor_impl->strides(),
-        /*storage_offset=*/tensor_impl->storage_offset());
+    if (!self.storage().is_alias_of(src_storage)) {
+      impl->set_storage_keep_dtype(std::move(src_storage));
+    }
+    impl->set_sizes_and_strides(/*sizes=*/src_impl->sizes(),
+                                /*strides=*/src_impl->strides(),
+                                /*storage_offset=*/src_impl->storage_offset());
     return self;
   });
 }

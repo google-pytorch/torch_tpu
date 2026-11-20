@@ -14732,6 +14732,37 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
           actual=compiled_flip(x_tpu).cpu(), expected=torch.flip(x_cpu, [0])
       )
 
+  @parameterized.named_parameters(
+      ("scalar_f32", (), torch.float32, False),
+      ("empty_bf16", (0, 4), torch.bfloat16, False),
+      ("strided_int32", (4, 4), torch.int32, True),
+      ("contiguous_int8", (6,), torch.int8, False),
+      ("contiguous_bool", (5,), torch.bool, False),
+  )
+  def test_set_source_tensor_edge_cases(self, shape, dtype, is_strided):
+    def make_source(device):
+      numel = math.prod(shape)
+      if dtype == torch.bool:
+        base = (torch.arange(numel, device=device) % 2 == 0).reshape(shape)
+      else:
+        base = torch.arange(numel, dtype=dtype, device=device).reshape(shape)
+      if is_strided:
+        return base[1:, ::2]
+      return base
+
+    src_cpu = make_source("cpu")
+    dst_cpu = torch.empty(1, dtype=dtype, device="cpu")
+    dst_cpu.set_(src_cpu)
+
+    src_tpu = make_source("tpu")
+    dst_tpu = torch.empty(1, dtype=dtype, device="tpu")
+    dst_tpu.set_(src_tpu)
+
+    self.assertEqual(dst_tpu.shape, dst_cpu.shape)
+    self.assertEqual(dst_tpu.stride(), dst_cpu.stride())
+    self.assertEqual(dst_tpu.storage_offset(), dst_cpu.storage_offset())
+    utils.assert_close(dst_tpu.cpu(), dst_cpu)
+
 
 class OpsCustomOpUnitTest(TorchTpuVsCpuTestBase):
   """Tests for custom ops."""
