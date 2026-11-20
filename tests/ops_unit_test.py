@@ -20932,6 +20932,18 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(compute)
 
+  def test_unique2_inverse_compiles_no_extra_graph(self):
+    # The inverse only needs the sort, so the sort-and-count graph computes it:
+    # a new input compiles that graph and the values graph, nothing else.
+    torch.tpu._clear_cache()  # pylint: disable=protected-access
+    x = torch.randint(0, 10, (1234,), dtype=torch.int32).to("tpu")
+
+    before = torch.tpu._get_cache_stats().num_compilations
+    torch.unique(x, return_inverse=True)[1].cpu()
+    compilations = torch.tpu._get_cache_stats().num_compilations - before
+
+    self.assertEqual(compilations, 2)
+
   def test_unique2_distributions(self):
     for dtype in [torch.float32, torch.int64]:
       for distribution in [
