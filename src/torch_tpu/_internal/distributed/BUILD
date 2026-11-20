@@ -108,6 +108,14 @@ torch_tpu_py_library(
 )
 
 torch_tpu_py_library(
+    name = "handshake_consensus",
+    srcs = ["handshake_consensus.py"],
+    deps = [
+        ":process_group_utils",
+    ],
+)
+
+torch_tpu_py_library(
     name = "handshake_messages",
     srcs = ["handshake_messages.py"],
     deps = [
