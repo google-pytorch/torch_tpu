@@ -139,10 +139,11 @@ absl::StatusOr<mlir::MlirOp> MaybeConjPhysicalShlo(mlir::MlirOp op) {
   return BuildConjPhysicalShlo(op);
 }
 
-// Builds the StableHLO graph for `grad_input = grad_output @ conj(weight)`.
+// Builds the StableHLO graph for `grad_input = grad_output @ conj(weight)`
+// (the outer product when `weight` is 1-D).
 absl::StatusOr<mlir::MlirOp> BuildGradInputShlo(
     mlir::MlirOp grad_output, mlir::MlirOp weight,
-    mlir::stablehlo::Precision precision) {
+    const mlir::stablehlo::Precision precision) {
   TT_ASSIGN_OR_RETURN(mlir::MlirOp w_for_grad_input,
                       MaybeConjPhysicalShlo(weight));
   if (GetTensorTypeOrDie(weight).getRank() == 2) {
@@ -158,7 +159,7 @@ absl::StatusOr<mlir::MlirOp> BuildGradInputShlo(
 // Builds the StableHLO graph for `grad_weight = grad_output^T @ conj(input)`.
 absl::StatusOr<mlir::MlirOp> BuildGradWeightShlo(
     mlir::MlirOp grad_output, mlir::MlirOp input,
-    mlir::stablehlo::Precision precision) {
+    const mlir::stablehlo::Precision precision) {
   TT_ASSIGN_OR_RETURN(mlir::MlirOp x_for_grad_weight,
                       MaybeConjPhysicalShlo(input));
   Dimensions contracting_dims(GetTensorTypeOrDie(input).getRank() - 1);
@@ -170,7 +171,7 @@ absl::StatusOr<mlir::MlirOp> BuildGradWeightShlo(
 // Builds the StableHLO graph for
 // `grad_bias = sum(grad_output, dims=[0..input_rank-2])`.
 absl::StatusOr<mlir::MlirOp> BuildGradBiasShlo(mlir::MlirOp grad_output,
-                                               int64_t input_rank) {
+                                               const int64_t input_rank) {
   if (input_rank == 1) {
     return grad_output;
   }
@@ -350,13 +351,20 @@ absl::Status LinearOut(const at::Tensor& input, const at::Tensor& weight,
 // for as long as `grad_weight` or `grad_bias` lives in a parameter's `.grad`.
 absl::StatusOr<std::tuple<at::Tensor, at::Tensor, at::Tensor>> LinearBackward(
     const at::Tensor& self, const at::Tensor& grad_output,
-    const at::Tensor& weight, std::array<bool, 3> output_mask,
+    const at::Tensor& weight, const std::array<bool, 3> output_mask,
     OpParamCacheKeys param_keys) {
   TT_RETURN_IF_ERROR(ValidateLinearBackwardInputs(self, grad_output, weight));
   TT_ASSIGN_OR_RETURN(const mlir::ElementType output_dtype,
                       ConvertTo<mlir::ElementType>(grad_output.scalar_type()));
+  // `grad_bias` does not depend on the precision, so its keys are cloned before
+  // the precision is added.
+  OpParamCacheKeys grad_bias_keys = param_keys.Clone();
   const mlir::stablehlo::Precision precision = GetAndAddPrecisionTo(param_keys);
 
+  // The "gradient" key tells the ops apart. Without it `grad_input` and
+  // `grad_weight` have the same cache key when the batch size equals
+  // `out_features`, because both then map the same two input shapes to the same
+  // output shape.
   at::Tensor grad_input;  // UNINITIALIZED_TENSOR_OK
   if (output_mask[0]) {
     OpParamCacheKeys grad_input_keys = param_keys.Clone();
@@ -395,7 +403,6 @@ absl::StatusOr<std::tuple<at::Tensor, at::Tensor, at::Tensor>> LinearBackward(
 
   at::Tensor grad_bias;  // UNINITIALIZED_TENSOR_OK
   if (output_mask[2]) {
-    OpParamCacheKeys grad_bias_keys = param_keys.Clone();
     TT_RETURN_IF_ERROR(grad_bias_keys.SetParam("gradient", "bias"));
     Dimensions bias_dims;
     if (weight.dim() == 2) {
@@ -528,7 +535,7 @@ at::Tensor& AtenLinearOut(const at::Tensor& input, const at::Tensor& weight,
 
 std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenLinearBackward(
     const at::Tensor& self, const at::Tensor& grad_output,
-    const at::Tensor& weight, std::array<bool, 3> output_mask) {
+    const at::Tensor& weight, const std::array<bool, 3> output_mask) {
   TT_KERNEL(OpName::kLinearBackward, param_keys,
             (self, grad_output, weight,
              IgnoreInCacheKey(output_mask, "Each gradient is its own op")),
